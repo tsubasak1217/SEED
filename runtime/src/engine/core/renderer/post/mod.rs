@@ -16,13 +16,13 @@
 //  最小実装する。R4 のブルーム/FXAA はこの上に stage を積む前提。
 // ============================================================
 
-mod rt_pool;
-mod post_pass;
 mod bloom;
+mod post_pass;
+mod rt_pool;
 
-pub use rt_pool::RtPool;
+pub use bloom::{BloomParams, BloomPipelines};
 pub use post_pass::{PostPipeline, run_post_stage};
-pub use bloom::{BloomPipelines, BloomParams};
+pub use rt_pool::RtPool;
 // run_post_stage_load / MAX_BLOOM_MIPS は post 配下（bloom.rs）でのみ使うため再公開しない。
 // PostFxSettings とそのデフォルト定数は本ファイル下部で定義・公開する。
 
@@ -76,10 +76,10 @@ pub struct GiSettings {
 impl Default for GiSettings {
     fn default() -> Self {
         Self {
-            intensity:        DEFAULT_GI_INTENSITY,
+            intensity: DEFAULT_GI_INTENSITY,
             probes_per_frame: DEFAULT_GI_PROBES_PER_FRAME,
-            rays_per_probe:   DEFAULT_GI_RAYS_PER_PROBE,
-            hysteresis:       DEFAULT_GI_HYSTERESIS,
+            rays_per_probe: DEFAULT_GI_RAYS_PER_PROBE,
+            hysteresis: DEFAULT_GI_HYSTERESIS,
             recursive_weight: DEFAULT_GI_RECURSIVE_WEIGHT,
         }
     }
@@ -97,23 +97,23 @@ impl Default for GiSettings {
 #[derive(Copy, Clone, Debug)]
 pub struct PostFxSettings {
     /// ブルーム有効フラグ。
-    pub bloom_enabled:   bool,
+    pub bloom_enabled: bool,
     /// ブルーム抽出しきい値。
     pub bloom_threshold: f32,
     /// ブルームのソフトニー幅係数（0..1）。
-    pub bloom_knee:      f32,
+    pub bloom_knee: f32,
     /// ブルーム合成強度。
     pub bloom_intensity: f32,
     /// FXAA 有効フラグ（最終 LDR 段）。
-    pub fxaa_enabled:    bool,
+    pub fxaa_enabled: bool,
     /// 透明描画の方式（距離ソート / WBOIT）。既定は距離ソート（Phase R5）。
-    pub transparency:    super::transparency::TransparencyMode,
+    pub transparency: super::transparency::TransparencyMode,
     /// Deferred（G-Buffer）レンダリング有効フラグ（Phase D3 Deferred Phase B）。既定 true。
     /// OFF で完全に従来のフォワード経路（不透明を direct にシーン HDR へ描く）にフォールバックする
     /// （A/B パリティ検証用）。デファードはメインカメラの不透明・Lit のみが対象で、
     /// unlit／ワイヤーフレーム／2D シーンビュー等は本フラグに関わらず常にフォワードで描く
     /// （frame_renderer.rs の deferred_active 判定を参照）。
-    pub deferred:        bool,
+    pub deferred: bool,
     /// RT屈折の「逐次グラブ」有効フラグ。既定 false。
     /// RT屈折（TLAS屈折レイ）は背景を捉えたミップチェーンをサンプルして屈折表現するが、通常は
     /// フレーム先頭で 1 回だけグラブしたミップチェーンを全ガラスで共有する。本フラグを ON にすると、
@@ -124,7 +124,7 @@ pub struct PostFxSettings {
     /// それ以外（WBOIT 等）では効果がない。既定 OFF（従来の 1 回グラブ挙動を維持）。
     pub refract_sequential_grab: bool,
     /// DDGI（レイトレGI）設定（Phase RT-GI）。相乗りで SET_POST_FX から更新される。
-    pub gi:              GiSettings,
+    pub gi: GiSettings,
     /// 反射（SSR / RT）の強度倍率（Phase D6）。SET_POST_FX から更新される。
     /// 反射の有効/無効・方式は RenderFeatures.reflection（ReflectionMode）が決め、
     /// 本値は反射寄与の全体スケール（既定 1.0）のみを保持する。
@@ -139,24 +139,24 @@ pub struct PostFxSettings {
 /// ブルーム抽出しきい値の既定（この輝度以上をブルーム対象にする）。
 pub const DEFAULT_BLOOM_THRESHOLD: f32 = 1.0;
 /// ブルームのソフトニー幅係数の既定。
-pub const DEFAULT_BLOOM_KNEE:      f32 = 0.5;
+pub const DEFAULT_BLOOM_KNEE: f32 = 0.5;
 /// ブルーム合成強度の既定。
 pub const DEFAULT_BLOOM_INTENSITY: f32 = 0.6;
 
 impl Default for PostFxSettings {
     fn default() -> Self {
         Self {
-            bloom_enabled:   false,
+            bloom_enabled: false,
             bloom_threshold: DEFAULT_BLOOM_THRESHOLD,
-            bloom_knee:      DEFAULT_BLOOM_KNEE,
+            bloom_knee: DEFAULT_BLOOM_KNEE,
             bloom_intensity: DEFAULT_BLOOM_INTENSITY,
-            fxaa_enabled:    false,
-            transparency:    super::transparency::TransparencyMode::DistanceSort,
-            deferred:        true,
+            fxaa_enabled: false,
+            transparency: super::transparency::TransparencyMode::DistanceSort,
+            deferred: true,
             refract_sequential_grab: false,
-            gi:              GiSettings::default(),
+            gi: GiSettings::default(),
             reflection_intensity: super::reflection::DEFAULT_REFLECTION_INTENSITY,
-            ao_intensity:         super::ao::DEFAULT_AO_INTENSITY,
+            ao_intensity: super::ao::DEFAULT_AO_INTENSITY,
         }
     }
 }
@@ -169,7 +169,7 @@ struct FxaaParams {
     inv_res: [f32; 2],
     /// FXAA 有効フラグ（0=単純コピー, 1=FXAA）。
     enabled: u32,
-    _pad:    u32,
+    _pad: u32,
 }
 
 // ============================================================
@@ -192,13 +192,18 @@ pub struct TonemapParams {
     pub operator: u32,
     /// 露出倍率（トーンマップ前に乗算。既定 1.0）
     pub exposure: f32,
-    pub _pad0:    u32,
-    pub _pad1:    u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
 }
 
 impl Default for TonemapParams {
     fn default() -> Self {
-        Self { operator: TonemapOperator::ReinhardLuma as u32, exposure: 1.0, _pad0: 0, _pad1: 0 }
+        Self {
+            operator: TonemapOperator::ReinhardLuma as u32,
+            exposure: 1.0,
+            _pad0: 0,
+            _pad1: 0,
+        }
     }
 }
 
@@ -209,16 +214,21 @@ pub struct VignetteParams {
     /// 効果の強さ（0=無効, 1=標準）
     pub intensity: f32,
     /// 効果の開始半径（正規化距離 0..1）
-    pub radius:    f32,
+    pub radius: f32,
     /// 減衰の柔らかさ
-    pub softness:  f32,
-    pub _pad:      f32,
+    pub softness: f32,
+    pub _pad: f32,
 }
 
 impl Default for VignetteParams {
     fn default() -> Self {
         // 既定の見た目（強度は呼び出し側で決定。ここは形状パラメータの妥当な初期値）。
-        Self { intensity: 0.0, radius: 0.5, softness: 0.5, _pad: 0.0 }
+        Self {
+            intensity: 0.0,
+            radius: 0.5,
+            softness: 0.5,
+            _pad: 0.0,
+        }
     }
 }
 
@@ -240,14 +250,14 @@ pub struct VignetteStage<'a> {
 /// ポストパスの WGSL ソースを解決する。post 配下で自己完結させる。
 fn resolve_post_shader(name: &str) -> &'static str {
     match name {
-        "fullscreen.wgsl"    => include_str!("../shaders/fullscreen.wgsl"),
-        "tonemap_ops.wgsl"   => include_str!("../shaders/tonemap_ops.wgsl"),
-        "post_tonemap.wgsl"  => include_str!("../shaders/post_tonemap.wgsl"),
+        "fullscreen.wgsl" => include_str!("../shaders/fullscreen.wgsl"),
+        "tonemap_ops.wgsl" => include_str!("../shaders/tonemap_ops.wgsl"),
+        "post_tonemap.wgsl" => include_str!("../shaders/post_tonemap.wgsl"),
         "post_vignette.wgsl" => include_str!("../shaders/post_vignette.wgsl"),
         "post_bloom_prefilter.wgsl" => include_str!("../shaders/post_bloom_prefilter.wgsl"),
-        "post_bloom_down.wgsl"      => include_str!("../shaders/post_bloom_down.wgsl"),
-        "post_bloom_up.wgsl"        => include_str!("../shaders/post_bloom_up.wgsl"),
-        "post_fxaa.wgsl"            => include_str!("../shaders/post_fxaa.wgsl"),
+        "post_bloom_down.wgsl" => include_str!("../shaders/post_bloom_down.wgsl"),
+        "post_bloom_up.wgsl" => include_str!("../shaders/post_bloom_up.wgsl"),
+        "post_fxaa.wgsl" => include_str!("../shaders/post_fxaa.wgsl"),
         other => panic!("unknown post shader source: {other}"),
     }
 }
@@ -262,15 +272,15 @@ fn resolve_post_shader(name: &str) -> &'static str {
 /// PostContext は起動時に 1 回生成し、毎フレーム `run` で使い回す。
 pub struct PostContext {
     /// トーンマップパス（HDR → LDR 中間）。出力は LDR 中間 RT（Rgba16Float, Phase R4）。
-    tonemap:  PostPipeline,
+    tonemap: PostPipeline,
     /// ビネットパス（サンプル）。出力は HDR 中間（トーンマップ前段に挿す）。
     vignette: PostPipeline,
     /// ブルームパイプライン一式（プレフィルタ／ダウン／アップ, Phase R4）。出力は HDR。
-    bloom:    BloomPipelines,
+    bloom: BloomPipelines,
     /// FXAA／プレゼントコピー最終段（LDR 中間 → スワップチェーン, Phase R4）。
-    fxaa:     PostPipeline,
+    fxaa: PostPipeline,
     /// 入力・マスク共通のリニア clamp サンプラー。
-    sampler:  wgpu::Sampler,
+    sampler: wgpu::Sampler,
     /// マスク未指定時の既定（白 1x1、全面適用）。
     white_view: wgpu::TextureView,
     /// シーン HDR / ポスト中間のフォーマット（RtPool 確保時に使う）。
@@ -283,58 +293,90 @@ impl PostContext {
     /// - `hdr_format`     : シーン HDR / ポスト中間バッファのフォーマット（Rgba16Float 想定）
     /// - `surface_format` : スワップチェーンフォーマット（トーンマップの出力先）
     pub fn new(
-        device:         &wgpu::Device,
-        queue:          &wgpu::Queue,
-        hdr_format:     wgpu::TextureFormat,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        hdr_format: wgpu::TextureFormat,
         surface_format: wgpu::TextureFormat,
-        cache:          Option<&wgpu::PipelineCache>,
+        cache: Option<&wgpu::PipelineCache>,
     ) -> Self {
         // トーンマップ: 出力は LDR 中間 RT（Rgba16Float = hdr_format, Phase R4）。
         //   R3 ではスワップチェーンへ直接出していたが、R4 で 2D オーバーレイをトーンマップ後の
         //   LDR へ描くため、いったん LDR 中間へ出す構成に変えた。
         let tonemap = PostPipeline::from_toml(
-            device, include_str!("../pipelines/post_tonemap.toml"), hdr_format, cache, resolve_post_shader,
+            device,
+            include_str!("../pipelines/post_tonemap.toml"),
+            hdr_format,
+            cache,
+            resolve_post_shader,
         );
         let vignette = PostPipeline::from_toml(
-            device, include_str!("../pipelines/post_vignette.toml"), hdr_format, cache, resolve_post_shader,
+            device,
+            include_str!("../pipelines/post_vignette.toml"),
+            hdr_format,
+            cache,
+            resolve_post_shader,
         );
         // ブルームは全パス HDR 出力。FXAA／プレゼントはスワップチェーンへ出す最終段。
         let bloom = BloomPipelines::new(device, hdr_format, cache, resolve_post_shader);
-        let fxaa  = PostPipeline::from_toml(
-            device, include_str!("../pipelines/post_fxaa.toml"), surface_format, cache, resolve_post_shader,
+        let fxaa = PostPipeline::from_toml(
+            device,
+            include_str!("../pipelines/post_fxaa.toml"),
+            surface_format,
+            cache,
+            resolve_post_shader,
         );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label:          Some("Post Sampler"),
+            label: Some("Post Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter:     wgpu::FilterMode::Linear,
-            min_filter:     wgpu::FilterMode::Linear,
-            mipmap_filter:  wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
 
         // 既定マスク（白 1x1, R=1 = 全面適用）。
         let white_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label:           Some("Post White Mask"),
-            size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            label: Some("Post White Mask"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
-            sample_count:    1,
-            dimension:       wgpu::TextureDimension::D2,
-            format:          wgpu::TextureFormat::Rgba8Unorm,
-            usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats:    &[],
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         });
         queue.write_texture(
             white_tex.as_image_copy(),
             &[255u8, 255, 255, 255],
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
         let white_view = white_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-        Self { tonemap, vignette, bloom, fxaa, sampler, white_view, hdr_format }
+        Self {
+            tonemap,
+            vignette,
+            bloom,
+            fxaa,
+            sampler,
+            white_view,
+            hdr_format,
+        }
     }
 
     /// ブルーム一式を記録し、シーン HDR へ加算合成する（Phase R4）。
@@ -343,16 +385,22 @@ impl PostContext {
     /// `rt_pool` は `targets` と `scene_hdr` を含む確保済みプール。
     pub fn run_bloom(
         &self,
-        device:    &wgpu::Device,
-        encoder:   &mut wgpu::CommandEncoder,
-        rt_pool:   &RtPool,
-        targets:   &[(&'static str, u32, u32)],
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        rt_pool: &RtPool,
+        targets: &[(&'static str, u32, u32)],
         scene_hdr: &wgpu::TextureView,
-        params:    BloomParams,
+        params: BloomParams,
     ) {
         self.bloom.record(
-            device, encoder, rt_pool, targets, scene_hdr,
-            &self.sampler, &self.white_view, params,
+            device,
+            encoder,
+            rt_pool,
+            targets,
+            scene_hdr,
+            &self.sampler,
+            &self.white_view,
+            params,
         );
     }
 
@@ -363,23 +411,30 @@ impl PostContext {
     #[allow(clippy::too_many_arguments)]
     pub fn present(
         &self,
-        device:       &wgpu::Device,
-        encoder:      &mut wgpu::CommandEncoder,
-        ldr_view:     &wgpu::TextureView,
-        swapchain:    &wgpu::TextureView,
-        width:        u32,
-        height:       u32,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        ldr_view: &wgpu::TextureView,
+        swapchain: &wgpu::TextureView,
+        width: u32,
+        height: u32,
         fxaa_enabled: bool,
     ) {
         let p = FxaaParams {
             inv_res: [1.0 / width.max(1) as f32, 1.0 / height.max(1) as f32],
             enabled: if fxaa_enabled { 1 } else { 0 },
-            _pad:    0,
+            _pad: 0,
         };
         run_post_stage(
-            device, encoder, &self.fxaa,
-            ldr_view, None, &self.white_view, &self.sampler,
-            bytemuck::bytes_of(&p), swapchain, "Post FXAA/Present",
+            device,
+            encoder,
+            &self.fxaa,
+            ldr_view,
+            None,
+            &self.white_view,
+            &self.sampler,
+            bytemuck::bytes_of(&p),
+            swapchain,
+            "Post FXAA/Present",
         );
     }
 
@@ -393,18 +448,25 @@ impl PostContext {
     /// GPU が自動で sRGB エンコードする）。
     pub fn run(
         &self,
-        device:     &wgpu::Device,
-        encoder:    &mut wgpu::CommandEncoder,
-        hdr_view:   &wgpu::TextureView,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        hdr_view: &wgpu::TextureView,
         final_view: &wgpu::TextureView,
-        vignette:   Option<VignetteStage<'_>>,
+        vignette: Option<VignetteStage<'_>>,
     ) {
         // ── 前段: ビネット（任意）。hdr → HDR 中間 ─────────────
         let tonemap_input: &wgpu::TextureView = if let Some(v) = &vignette {
             run_post_stage(
-                device, encoder, &self.vignette,
-                hdr_view, v.mask, &self.white_view, &self.sampler,
-                bytemuck::bytes_of(&v.params), v.inter_view, "Post Vignette",
+                device,
+                encoder,
+                &self.vignette,
+                hdr_view,
+                v.mask,
+                &self.white_view,
+                &self.sampler,
+                bytemuck::bytes_of(&v.params),
+                v.inter_view,
+                "Post Vignette",
             );
             v.inter_view
         } else {
@@ -414,9 +476,16 @@ impl PostContext {
         // ── 最終段: トーンマップ。入力 → 最終ターゲット ─────────
         let tm = TonemapParams::default();
         run_post_stage(
-            device, encoder, &self.tonemap,
-            tonemap_input, None, &self.white_view, &self.sampler,
-            bytemuck::bytes_of(&tm), final_view, "Post Tonemap",
+            device,
+            encoder,
+            &self.tonemap,
+            tonemap_input,
+            None,
+            &self.white_view,
+            &self.sampler,
+            bytemuck::bytes_of(&tm),
+            final_view,
+            "Post Tonemap",
         );
     }
 }
@@ -433,22 +502,22 @@ mod tests {
     #[test]
     fn post_shaders_parse_and_validate() {
         let fullscreen = include_str!("../shaders/fullscreen.wgsl");
-        let tm_ops     = include_str!("../shaders/tonemap_ops.wgsl");
-        let tonemap    = include_str!("../shaders/post_tonemap.wgsl");
-        let vignette   = include_str!("../shaders/post_vignette.wgsl");
+        let tm_ops = include_str!("../shaders/tonemap_ops.wgsl");
+        let tonemap = include_str!("../shaders/post_tonemap.wgsl");
+        let vignette = include_str!("../shaders/post_vignette.wgsl");
         // Phase R4 追加分。
-        let bloom_pf   = include_str!("../shaders/post_bloom_prefilter.wgsl");
-        let bloom_dn   = include_str!("../shaders/post_bloom_down.wgsl");
-        let bloom_up   = include_str!("../shaders/post_bloom_up.wgsl");
-        let fxaa       = include_str!("../shaders/post_fxaa.wgsl");
+        let bloom_pf = include_str!("../shaders/post_bloom_prefilter.wgsl");
+        let bloom_dn = include_str!("../shaders/post_bloom_down.wgsl");
+        let bloom_up = include_str!("../shaders/post_bloom_up.wgsl");
+        let fxaa = include_str!("../shaders/post_fxaa.wgsl");
 
         let variants: [(&str, Vec<&str>); 6] = [
-            ("post_tonemap",          vec![fullscreen, tm_ops, tonemap]),
-            ("post_vignette",         vec![fullscreen, vignette]),
-            ("post_bloom_prefilter",  vec![fullscreen, bloom_pf]),
-            ("post_bloom_down",       vec![fullscreen, bloom_dn]),
-            ("post_bloom_up",         vec![fullscreen, bloom_up]),
-            ("post_fxaa",             vec![fullscreen, fxaa]),
+            ("post_tonemap", vec![fullscreen, tm_ops, tonemap]),
+            ("post_vignette", vec![fullscreen, vignette]),
+            ("post_bloom_prefilter", vec![fullscreen, bloom_pf]),
+            ("post_bloom_down", vec![fullscreen, bloom_dn]),
+            ("post_bloom_up", vec![fullscreen, bloom_up]),
+            ("post_fxaa", vec![fullscreen, fxaa]),
         ];
 
         for (name, parts) in variants {

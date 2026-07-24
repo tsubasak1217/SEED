@@ -41,17 +41,29 @@ const POINT_CROSS_SIZE: f32 = 0.15;
 // ── ベクトルヘルパー ──────────────────────────────────────────
 
 #[inline]
-fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] { [a[0] + b[0], a[1] + b[1], a[2] + b[2]] }
+fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
 #[inline]
-fn scale3(v: [f32; 3], s: f32) -> [f32; 3] { [v[0] * s, v[1] * s, v[2] * s] }
+fn scale3(v: [f32; 3], s: f32) -> [f32; 3] {
+    [v[0] * s, v[1] * s, v[2] * s]
+}
 #[inline]
 fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 #[inline]
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
     let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if len < 1e-6 { [0.0, 1.0, 0.0] } else { [v[0] / len, v[1] / len, v[2] / len] }
+    if len < 1e-6 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [v[0] / len, v[1] / len, v[2] / len]
+    }
 }
 
 /// Transform の回転（＋スケール）でローカル方向ベクトルをワールドへ回す（正規化する）。
@@ -109,7 +121,11 @@ fn add_spawn_volume_gizmo(lb: &mut LineBatch, tf: &Transform, spawn: &SpawnVolum
             let axes = [normalize3(ex), normalize3(ey), normalize3(ez)];
             for a in axes {
                 let arm = scale3(a, POINT_CROSS_SIZE);
-                lb.add_line(add3(center, scale3(arm, -1.0)), add3(center, arm), SPAWN_GIZMO_COLOR);
+                lb.add_line(
+                    add3(center, scale3(arm, -1.0)),
+                    add3(center, arm),
+                    SPAWN_GIZMO_COLOR,
+                );
             }
         }
         // Box: ローカル軸並行ボックス（±half_extents）の 12 辺。
@@ -123,13 +139,18 @@ fn add_spawn_volume_gizmo(lb: &mut LineBatch, tf: &Transform, spawn: &SpawnVolum
                 let sx = if i & 1 == 0 { -1.0 } else { 1.0 };
                 let sy = if i & 2 == 0 { -1.0 } else { 1.0 };
                 let sz = if i & 4 == 0 { -1.0 } else { 1.0 };
-                corner[i] = add3(center, add3(scale3(hx, sx), add3(scale3(hy, sy), scale3(hz, sz))));
+                corner[i] = add3(
+                    center,
+                    add3(scale3(hx, sx), add3(scale3(hy, sy), scale3(hz, sz))),
+                );
             }
             // 各辺は 1 ビットだけ異なるコーナー対（12 辺）。
             for i in 0..8usize {
                 for bit in [1usize, 2, 4] {
                     let j = i ^ bit;
-                    if i < j { lb.add_line(corner[i], corner[j], SPAWN_GIZMO_COLOR); }
+                    if i < j {
+                        lb.add_line(corner[i], corner[j], SPAWN_GIZMO_COLOR);
+                    }
                 }
             }
         }
@@ -155,8 +176,13 @@ fn icon_matrix(tf: &Transform) -> [[f32; 4]; 4] {
     Transform {
         position: tf.position,
         rotation: tf.rotation,
-        scale:    [PARTICLE_ICON_SCALE, PARTICLE_ICON_SCALE, PARTICLE_ICON_SCALE],
-    }.to_mat4()
+        scale: [
+            PARTICLE_ICON_SCALE,
+            PARTICLE_ICON_SCALE,
+            PARTICLE_ICON_SCALE,
+        ],
+    }
+    .to_mat4()
 }
 
 // ── 公開 API ──────────────────────────────────────────────────
@@ -173,10 +199,10 @@ fn icon_matrix(tf: &Transform) -> [[f32; 4]; 4] {
 /// - `wl`     : 対象の世界線番号
 pub fn collect_particle_actor_matrices(
     actors: &[Actor],
-    world:  &World,
-    wl:     u32,
+    world: &World,
+    wl: u32,
 ) -> Vec<(usize, [[f32; 4]; 4])> {
-    let mut result  = Vec::new();
+    let mut result = Vec::new();
     let mut counter = 0usize;
     collect_particle_matrices_recursive(actors, world, wl, &mut counter, &mut result);
     result
@@ -188,20 +214,23 @@ pub fn collect_particle_actor_matrices(
 /// DFS カウンタはすべての world_line 一致アクターを数えるため、
 /// ParticleEmitterComponent 非保持アクターもカウントのみ行う。
 fn collect_particle_matrices_recursive(
-    actors:  &[Actor],
-    world:   &World,
-    wl:      u32,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
     counter: &mut usize,
-    result:  &mut Vec<(usize, [[f32; 4]; 4])>,
+    result: &mut Vec<(usize, [[f32; 4]; 4])>,
 ) {
     for actor in actors {
-        if actor.world_line != wl { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
         let dfs_id = *counter;
         *counter += 1;
 
         // ParticleEmitterComponent を持つアクターのみアイコン行列を追加する
         if actor.has_kind(ComponentKind::ParticleEmitter) {
-            if let Some(pe_entity) = actor.first_slot_entity_of_kind(ComponentKind::ParticleEmitter) {
+            if let Some(pe_entity) = actor.first_slot_entity_of_kind(ComponentKind::ParticleEmitter)
+            {
                 if world.get::<ParticleEmitterComponent>(pe_entity).is_some() {
                     if let Some(tf) = world.get::<Transform>(actor.entity) {
                         result.push((dfs_id, icon_matrix(tf)));
@@ -219,37 +248,45 @@ fn collect_particle_matrices_recursive(
 ///
 /// バッチが空（エミッタなし・非選択）の場合は None を返す。
 pub fn build_selected_particle_gizmo_batch(
-    actors:       &[Actor],
-    world:        &World,
-    wl:           u32,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
     selected_dfs: Option<usize>,
-    device:       &wgpu::Device,
+    device: &wgpu::Device,
 ) -> Option<GpuLineBatch> {
     let dfs = selected_dfs? as u32;
     let mut lb = LineBatch::new();
     let mut counter = 0u32;
     add_gizmo_for_dfs(actors, world, wl, dfs, &mut counter, &mut lb);
-    if lb.is_empty() { None } else { Some(lb.build(device)) }
+    if lb.is_empty() {
+        None
+    } else {
+        Some(lb.build(device))
+    }
 }
 
 /// DFS 走査して対象アクターの全 ParticleEmitter スロットのギズモを追加する。
 fn add_gizmo_for_dfs(
-    actors:  &[Actor],
-    world:   &World,
-    wl:      u32,
-    dfs:     u32,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
+    dfs: u32,
     counter: &mut u32,
-    lb:      &mut LineBatch,
+    lb: &mut LineBatch,
 ) -> bool {
     for actor in actors {
-        if actor.world_line != wl { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
         let current = *counter;
         *counter += 1;
 
         if current == dfs {
             if let Some(tf) = world.get::<Transform>(actor.entity) {
                 for slot in actor.slots() {
-                    if slot.kind != ComponentKind::ParticleEmitter { continue; }
+                    if slot.kind != ComponentKind::ParticleEmitter {
+                        continue;
+                    }
                     if let Some(pe) = world.get::<ParticleEmitterComponent>(slot.entity) {
                         add_one_emitter_gizmo(lb, tf, pe);
                     }
@@ -271,9 +308,13 @@ fn add_one_emitter_gizmo(lb: &mut LineBatch, tf: &Transform, pe: &ParticleEmitte
     // 放出軸（Transform で回した direction_local）。
     let axis = rotate_dir_by_transform(tf, pe.direction_local);
     // 軸に直交する基底を作る。
-    let up_ref = if axis[1].abs() > 0.99 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
-    let right  = normalize3(cross3(up_ref, axis));
-    let up     = normalize3(cross3(axis, right));
+    let up_ref = if axis[1].abs() > 0.99 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let right = normalize3(cross3(up_ref, axis));
+    let up = normalize3(cross3(axis, right));
 
     // 円錐長さ＝初速 max × 寿命 max（放出粒子の到達距離の目安）。
     let len = (pe.initial_speed[1] * pe.lifetime[1] * CONE_LEN_FACTOR).max(CONE_LEN_MIN);
@@ -291,7 +332,10 @@ fn add_one_emitter_gizmo(lb: &mut LineBatch, tf: &Transform, pe: &ParticleEmitte
     for i in 0..CONE_RIB_COUNT {
         let t = 2.0 * PI * (i as f32) / (CONE_RIB_COUNT as f32);
         let (s, c) = t.sin_cos();
-        let rim = add3(base_c, add3(scale3(right, base_r * c), scale3(up, base_r * s)));
+        let rim = add3(
+            base_c,
+            add3(scale3(right, base_r * c), scale3(up, base_r * s)),
+        );
         lb.add_line(apex, rim, PARTICLE_GIZMO_COLOR);
     }
     // 中心軸線（apex → 底面中心）。

@@ -21,10 +21,10 @@
 //    どちらも SetEditViewMode / SetActiveWorldLine ハンドラのフックから呼ばれる。
 // ============================================================
 
-use std::collections::HashMap;
-use crate::engine::ecs::Entity;
 use super::App;
 use super::physics_timeline::PhysicsSnapshot;
+use crate::engine::ecs::Entity;
+use std::collections::HashMap;
 
 // ─── タブ識別キー ────────────────────────────────────────────────────────────
 
@@ -38,7 +38,7 @@ use super::physics_timeline::PhysicsSnapshot;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabKey {
     world_line: u32,
-    view_2d:    bool,
+    view_2d: bool,
 }
 
 // ─── 退避する物理状態 ────────────────────────────────────────────────────────
@@ -49,19 +49,19 @@ pub struct TabKey {
 /// タイムライン UI 状態と Dynamic ボディ速度のみを保持する。
 pub struct TabPhysicsState {
     /// フレームスナップショット列
-    snapshots:     Vec<PhysicsSnapshot>,
+    snapshots: Vec<PhysicsSnapshot>,
     /// 現在表示フレーム
     current_frame: usize,
     /// 累積シミュレーション時間（秒）
-    sim_time:      f64,
+    sim_time: f64,
     /// 停止中フラグ
-    paused:        bool,
+    paused: bool,
     /// 最新フレーム停止フラグ
-    at_latest:     bool,
+    at_latest: bool,
     /// 3D Dynamic ボディ速度（ECS Entity → (linvel, angvel)）
-    vel_3d:        HashMap<Entity, ([f32; 3], [f32; 3])>,
+    vel_3d: HashMap<Entity, ([f32; 3], [f32; 3])>,
     /// 2D Dynamic ボディ速度（ECS Entity → (linvel, angvel スカラー)）
-    vel_2d:        HashMap<Entity, ([f32; 2], f32)>,
+    vel_2d: HashMap<Entity, ([f32; 2], f32)>,
 }
 
 impl App {
@@ -71,7 +71,7 @@ impl App {
     pub(super) fn current_tab_key(&self) -> TabKey {
         TabKey {
             world_line: self.active_world_line,
-            view_2d:    self.edit_view_is_2d(),
+            view_2d: self.edit_view_is_2d(),
         }
     }
 
@@ -83,18 +83,20 @@ impl App {
     /// 状態差し替えの前（current_tab_key が旧タブを指すうち）に呼ぶ。
     /// 編集時物理が無効なら何もしない（切替が物理に触れないようにする）。
     pub(super) fn leave_current_tab_physics(&mut self) {
-        if !(self.edit_physics_enabled || self.edit_physics_2d_enabled) { return; }
+        if !(self.edit_physics_enabled || self.edit_physics_2d_enabled) {
+            return;
+        }
 
         // 状態差し替え前のキーで退避する
         let key = self.current_tab_key();
         let state = TabPhysicsState {
-            snapshots:     std::mem::take(&mut self.edit_physics_snapshots),
+            snapshots: std::mem::take(&mut self.edit_physics_snapshots),
             current_frame: self.edit_physics_current_frame,
-            sim_time:      self.edit_physics_sim_time,
-            paused:        self.edit_physics_paused,
-            at_latest:     self.edit_physics_at_latest,
-            vel_3d:        std::mem::take(&mut self.current_vel_cache_3d),
-            vel_2d:        std::mem::take(&mut self.current_vel_cache_2d),
+            sim_time: self.edit_physics_sim_time,
+            paused: self.edit_physics_paused,
+            at_latest: self.edit_physics_at_latest,
+            vel_3d: std::mem::take(&mut self.current_vel_cache_3d),
+            vel_2d: std::mem::take(&mut self.current_vel_cache_2d),
         };
         self.tab_physics.insert(key, state);
 
@@ -104,15 +106,15 @@ impl App {
         self.active_collision_dfs_ids.clear();
         self.active_collision_2d_dfs_ids.clear();
         // 念のため: タブをまたいだドラッグ登録の取り残しを防ぐ
-        self.dragging_physics_entity_id    = None;
+        self.dragging_physics_entity_id = None;
         self.dragging_physics_2d_entity_id = None;
         // プレイバック/シーク中の離脱でもフラグを落とし、復帰は停止フレーム表示から始める
-        self.edit_physics_in_playback     = false;
+        self.edit_physics_in_playback = false;
         // タイムラインの一時状態をクリーンにしておく（未保存タブへ進んだ場合の初期値）
-        self.edit_physics_current_frame   = 0;
-        self.edit_physics_sim_time        = 0.0;
+        self.edit_physics_current_frame = 0;
+        self.edit_physics_sim_time = 0.0;
         self.edit_physics_no_change_count = 0;
-        self.edit_physics_warmup_frames   = 0;
+        self.edit_physics_warmup_frames = 0;
     }
 
     // ─── 進入 ──────────────────────────────────────────────────────────────
@@ -124,7 +126,9 @@ impl App {
     /// 保存済み状態があれば「続き」（位置＋速度）を復元して一時停止状態で復帰し、
     /// 無ければ現状態を初期フレームとして新規初期化する。
     pub(super) fn enter_tab_physics(&mut self) {
-        if !(self.edit_physics_enabled || self.edit_physics_2d_enabled) { return; }
+        if !(self.edit_physics_enabled || self.edit_physics_2d_enabled) {
+            return;
+        }
 
         let key = self.current_tab_key();
 
@@ -141,22 +145,22 @@ impl App {
 
         if let Some(st) = self.tab_physics.remove(&key) {
             // ── 保存済みタブ: 続き（位置＋速度）から一時停止状態で復帰 ──────────
-            self.edit_physics_snapshots       = st.snapshots;
-            self.edit_physics_current_frame   = st.current_frame;
-            self.edit_physics_sim_time        = st.sim_time;
-            self.edit_physics_paused          = st.paused;
-            self.edit_physics_at_latest       = st.at_latest;
-            self.edit_physics_in_playback     = false;
+            self.edit_physics_snapshots = st.snapshots;
+            self.edit_physics_current_frame = st.current_frame;
+            self.edit_physics_sim_time = st.sim_time;
+            self.edit_physics_paused = st.paused;
+            self.edit_physics_at_latest = st.at_latest;
+            self.edit_physics_in_playback = false;
             self.edit_physics_no_change_count = 0;
-            self.edit_physics_warmup_frames   = 0;
+            self.edit_physics_warmup_frames = 0;
 
             // 退避した速度を「次の start で積む初速」として渡す。
             // キャッシュ側にも同値を復元しておくことで、再生前にもう一度タブを
             // 離脱しても速度が失われないようにする（Rapier 側の速度は stop で消えるため）。
-            self.current_vel_cache_3d      = st.vel_3d.clone();
-            self.current_vel_cache_2d      = st.vel_2d.clone();
-            self.pending_restore_vel_3d    = Some(st.vel_3d);
-            self.pending_restore_vel_2d    = Some(st.vel_2d);
+            self.current_vel_cache_3d = st.vel_3d.clone();
+            self.current_vel_cache_2d = st.vel_2d.clone();
+            self.pending_restore_vel_3d = Some(st.vel_3d);
+            self.pending_restore_vel_2d = Some(st.vel_2d);
 
             self.start_physics();
             self.start_physics_2d();

@@ -23,11 +23,11 @@ use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
+use crate::engine::core::renderer::post::{VignetteParams, run_post_stage};
 use crate::engine::methods::drawer::{DrawContext, GpuSpriteTexture, load_sprite_texture};
-use crate::engine::core::renderer::post::{run_post_stage, VignetteParams};
 
-use super::{BlurParams, PostfxContext, TintParams, WORK_FORMAT};
 use super::asset::{PostfxAsset, PostfxEffect};
+use super::{BlurParams, PostfxContext, TintParams, WORK_FORMAT};
 
 // ============================================================
 //  キャッシュ
@@ -36,7 +36,7 @@ use super::asset::{PostfxAsset, PostfxEffect};
 /// 焼き込み済みテクスチャ 1 件のキャッシュエントリ。
 struct CacheEntry {
     /// 焼き上げたテクスチャ（None = エフェクト空 or 焼き込み不能 → 呼び出し側は元を使う）。
-    tex:   Option<Arc<GpuSpriteTexture>>,
+    tex: Option<Arc<GpuSpriteTexture>>,
     /// 焼いた時点の .postfx ファイル mtime（変化で焼き直し）。
     mtime: u64,
 }
@@ -50,18 +50,24 @@ pub struct SpritePostfxCache {
 }
 
 impl Default for SpritePostfxCache {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SpritePostfxCache {
     /// 空のキャッシュを生成する。
     pub fn new() -> Self {
-        Self { map: RefCell::new(HashMap::new()) }
+        Self {
+            map: RefCell::new(HashMap::new()),
+        }
     }
 
     /// 指定 .postfx パスに紐づく全エントリを破棄する（IPC でのパス変更・編集反映用）。
     pub fn invalidate_postfx(&self, postfx_path: &str) {
-        self.map.borrow_mut().retain(|(_, pfx), _| pfx != postfx_path);
+        self.map
+            .borrow_mut()
+            .retain(|(_, pfx), _| pfx != postfx_path);
     }
 
     /// キャッシュ全体を破棄する。
@@ -81,18 +87,22 @@ impl SpritePostfxCache {
 /// - 返り値 `None`: エフェクト空・.postfx ロード失敗・焼き込み不能。呼び出し側は
 ///   元テクスチャをそのまま使う。
 pub fn resolve_baked(
-    draw_ctx:    &DrawContext,
-    base:        &GpuSpriteTexture,
+    draw_ctx: &DrawContext,
+    base: &GpuSpriteTexture,
     texture_path: &str,
-    postfx_path:  &str,
+    postfx_path: &str,
 ) -> Option<Arc<GpuSpriteTexture>> {
     let key = (texture_path.to_string(), postfx_path.to_string());
     let mtime = crate::engine::asset_fs::mtime(postfx_path);
 
     // ── キャッシュ参照 ────────────────────────────────────
     // 既存エントリがあり、.postfx が unchanged（mtime 一致）かつ every_frame でなければ再利用。
-    let cached_mtime = draw_ctx.sprite_postfx_cache.map.borrow()
-        .get(&key).map(|e| e.mtime);
+    let cached_mtime = draw_ctx
+        .sprite_postfx_cache
+        .map
+        .borrow()
+        .get(&key)
+        .map(|e| e.mtime);
     // .postfx（every_frame 判定に必要）をロードする（キャッシュ済みなら安価）。
     let asset = if cached_mtime.map(|cm| cm != mtime).unwrap_or(false) {
         // mtime が変わっていればファイル編集を反映するため reload する。
@@ -103,8 +113,12 @@ pub fn resolve_baked(
 
     if let Some(cm) = cached_mtime {
         if cm == mtime && !asset.every_frame {
-            return draw_ctx.sprite_postfx_cache.map.borrow()
-                .get(&key).and_then(|e| e.tex.clone());
+            return draw_ctx
+                .sprite_postfx_cache
+                .map
+                .borrow()
+                .get(&key)
+                .and_then(|e| e.tex.clone());
         }
     }
 
@@ -112,7 +126,10 @@ pub fn resolve_baked(
     let baked = bake(draw_ctx, base, &asset);
     draw_ctx.sprite_postfx_cache.map.borrow_mut().insert(
         key,
-        CacheEntry { tex: baked.clone(), mtime },
+        CacheEntry {
+            tex: baked.clone(),
+            mtime,
+        },
     );
     baked
 }
@@ -124,18 +141,22 @@ pub fn resolve_baked(
 /// 作業テクスチャ（リニア HDR, 描画/サンプル/storage の 3 用途）を確保する。
 fn make_work(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label:           Some("Postfx Work"),
-        size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        label: Some("Postfx Work"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
-        sample_count:    1,
-        dimension:       wgpu::TextureDimension::D2,
-        format:          WORK_FORMAT,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: WORK_FORMAT,
         // フラグメントパス出力（RENDER_ATTACHMENT）・次段入力（TEXTURE_BINDING）・
         // blur compute 出力（STORAGE_BINDING）の 3 用途を兼ねる。
-        usage:           wgpu::TextureUsages::RENDER_ATTACHMENT
-                       | wgpu::TextureUsages::TEXTURE_BINDING
-                       | wgpu::TextureUsages::STORAGE_BINDING,
-        view_formats:    &[],
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::STORAGE_BINDING,
+        view_formats: &[],
     });
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     (tex, view)
@@ -146,22 +167,29 @@ fn make_work(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::Tex
 /// エフェクトが空／サイズ 0 のときは `None`（呼び出し側は元テクスチャを使う）。
 fn bake(
     draw_ctx: &DrawContext,
-    base:     &GpuSpriteTexture,
-    asset:    &PostfxAsset,
+    base: &GpuSpriteTexture,
+    asset: &PostfxAsset,
 ) -> Option<Arc<GpuSpriteTexture>> {
-    if asset.effects.is_empty() { return None; }
+    if asset.effects.is_empty() {
+        return None;
+    }
     let (w, h) = (base.width, base.height);
-    if w == 0 || h == 0 { return None; }
+    if w == 0 || h == 0 {
+        return None;
+    }
 
     let device = &draw_ctx.device;
-    let queue  = &draw_ctx.queue;
+    let queue = &draw_ctx.queue;
     let pfx: &PostfxContext = &draw_ctx.postfx;
 
     // チェーン用ピンポン 2 枚（Vec で保持し、最後に swap_remove で最終枚を取り出す）。
     let mut works: Vec<(wgpu::Texture, wgpu::TextureView)> =
         vec![make_work(device, w, h), make_work(device, w, h)];
     // blur がある場合のみ内部ピンポン用 temp を 2 枚確保する。
-    let has_blur = asset.effects.iter().any(|e| matches!(e, PostfxEffect::Blur { .. }));
+    let has_blur = asset
+        .effects
+        .iter()
+        .any(|e| matches!(e, PostfxEffect::Blur { .. }));
     let temps: Vec<(wgpu::Texture, wgpu::TextureView)> = if has_blur {
         vec![make_work(device, w, h), make_work(device, w, h)]
     } else {
@@ -174,11 +202,20 @@ fn bake(
 
     // ── ingest: ベース sRGB テクスチャ → works[0]（リニア HDR）─────────
     // tint(白=恒等) で取り込む。以降のチェーンは全てリニア HDR で処理する。
-    let identity = TintParams { color: [1.0, 1.0, 1.0, 1.0] };
+    let identity = TintParams {
+        color: [1.0, 1.0, 1.0, 1.0],
+    };
     run_post_stage(
-        device, &mut encoder, &pfx.tint,
-        &base.view, None, &pfx.white_view, &pfx.sampler,
-        bytemuck::bytes_of(&identity), &works[0].1, "Postfx Ingest",
+        device,
+        &mut encoder,
+        &pfx.tint,
+        &base.view,
+        None,
+        &pfx.white_view,
+        &pfx.sampler,
+        bytemuck::bytes_of(&identity),
+        &works[0].1,
+        "Postfx Ingest",
     );
     let mut cur = 0usize;
 
@@ -189,9 +226,16 @@ fn bake(
             PostfxEffect::Tint { color } => {
                 let p = TintParams { color: *color };
                 run_post_stage(
-                    device, &mut encoder, &pfx.tint,
-                    &works[cur].1, None, &pfx.white_view, &pfx.sampler,
-                    bytemuck::bytes_of(&p), &works[dst].1, "Postfx Tint",
+                    device,
+                    &mut encoder,
+                    &pfx.tint,
+                    &works[cur].1,
+                    None,
+                    &pfx.white_view,
+                    &pfx.sampler,
+                    bytemuck::bytes_of(&p),
+                    &works[dst].1,
+                    "Postfx Tint",
                 );
             }
             PostfxEffect::Vignette { strength, mask } => {
@@ -200,7 +244,9 @@ fn bake(
                     None
                 } else {
                     load_sprite_texture(
-                        device, queue, mask,
+                        device,
+                        queue,
+                        mask,
                         &draw_ctx.pipelines.sprite.tex_bgl,
                         &draw_ctx.pipelines.sprite.sampler,
                     )
@@ -209,22 +255,35 @@ fn bake(
                 // 既存 VignetteParams を流用（strength を intensity へ、形状は既定値）。
                 let vp = VignetteParams {
                     intensity: *strength,
-                    radius:    0.5,
-                    softness:  0.5,
-                    _pad:      0.0,
+                    radius: 0.5,
+                    softness: 0.5,
+                    _pad: 0.0,
                 };
                 run_post_stage(
-                    device, &mut encoder, &pfx.vignette,
-                    &works[cur].1, mask_view, &pfx.white_view, &pfx.sampler,
-                    bytemuck::bytes_of(&vp), &works[dst].1, "Postfx Vignette",
+                    device,
+                    &mut encoder,
+                    &pfx.vignette,
+                    &works[cur].1,
+                    mask_view,
+                    &pfx.white_view,
+                    &pfx.sampler,
+                    bytemuck::bytes_of(&vp),
+                    &works[dst].1,
+                    "Postfx Vignette",
                 );
             }
             PostfxEffect::Blur { radius } => {
                 run_blur(
-                    device, &mut encoder, pfx,
-                    &works[cur].1, &works[dst].1,
-                    &temps[0].1, &temps[1].1,
-                    w as i32, h as i32, radius.round() as i32,
+                    device,
+                    &mut encoder,
+                    pfx,
+                    &works[cur].1,
+                    &works[dst].1,
+                    &temps[0].1,
+                    &temps[1].1,
+                    w as i32,
+                    h as i32,
+                    radius.round() as i32,
                 );
             }
         }
@@ -241,7 +300,8 @@ fn bake(
         final_tex,
         &draw_ctx.pipelines.sprite.tex_bgl,
         &draw_ctx.pipelines.sprite.sampler,
-        w, h,
+        w,
+        h,
     ))
 }
 
@@ -255,22 +315,25 @@ fn bake(
 ///   src→t0(H), t0→t1(V), t1→t0(H), t0→t1(V), t1→t0(H), t0→dst(V)
 #[allow(clippy::too_many_arguments)]
 fn run_blur(
-    device:  &wgpu::Device,
+    device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
-    pfx:     &PostfxContext,
-    src:     &wgpu::TextureView,
-    dst:     &wgpu::TextureView,
-    t0:      &wgpu::TextureView,
-    t1:      &wgpu::TextureView,
-    w:       i32,
-    h:       i32,
-    radius:  i32,
+    pfx: &PostfxContext,
+    src: &wgpu::TextureView,
+    dst: &wgpu::TextureView,
+    t0: &wgpu::TextureView,
+    t1: &wgpu::TextureView,
+    w: i32,
+    h: i32,
+    radius: i32,
 ) {
     // (入力, 出力, 水平フラグ) の 6 サブパス。
     let steps: [(&wgpu::TextureView, &wgpu::TextureView, u32); 6] = [
-        (src, t0, 1), (t0, t1, 0),
-        (t1, t0, 1), (t0, t1, 0),
-        (t1, t0, 1), (t0, dst, 0),
+        (src, t0, 1),
+        (t0, t1, 0),
+        (t1, t0, 1),
+        (t0, t1, 0),
+        (t1, t0, 1),
+        (t0, dst, 0),
     ];
     for (s, d, horizontal) in steps {
         blur_step(device, encoder, pfx, s, d, horizontal, w, h, radius);
@@ -280,33 +343,47 @@ fn run_blur(
 /// blur の 1 サブパス（1 方向の走査線ランニング和）を記録する。
 #[allow(clippy::too_many_arguments)]
 fn blur_step(
-    device:     &wgpu::Device,
-    encoder:    &mut wgpu::CommandEncoder,
-    pfx:        &PostfxContext,
-    src:        &wgpu::TextureView,
-    dst:        &wgpu::TextureView,
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    pfx: &PostfxContext,
+    src: &wgpu::TextureView,
+    dst: &wgpu::TextureView,
     horizontal: u32,
-    w:          i32,
-    h:          i32,
-    radius:     i32,
+    w: i32,
+    h: i32,
+    radius: i32,
 ) {
-    let params = BlurParams { radius, horizontal, width: w, height: h };
+    let params = BlurParams {
+        radius,
+        horizontal,
+        width: w,
+        height: h,
+    };
     let ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label:    Some("Postfx Blur Params"),
+        label: Some("Postfx Blur Params"),
         contents: bytemuck::bytes_of(&params),
-        usage:    wgpu::BufferUsages::UNIFORM,
+        usage: wgpu::BufferUsages::UNIFORM,
     });
     let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label:   Some("Postfx Blur BG"),
-        layout:  &pfx.blur.bgl,
+        label: Some("Postfx Blur BG"),
+        layout: &pfx.blur.bgl,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: ubo.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(dst) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: ubo.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(src),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(dst),
+            },
         ],
     });
     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-        label:            Some("Postfx Blur Pass"),
+        label: Some("Postfx Blur Pass"),
         timestamp_writes: None,
     });
     pass.set_pipeline(&pfx.blur.pipeline);

@@ -10,7 +10,7 @@ use std::{env, fs, path::PathBuf};
 
 fn main() {
     // Cargo が教えてくれるビルド成果物ディレクトリ（target/debug/ または target/release/）
-    let out_dir  = env::var("OUT_DIR").unwrap_or_default();
+    let out_dir = env::var("OUT_DIR").unwrap_or_default();
     // OUT_DIR は target/debug/build/sample_plugin-.../out の形式なので 3 階層上が target/debug/
     let target_dir = PathBuf::from(&out_dir)
         .ancestors()
@@ -48,7 +48,10 @@ fn main() {
     if dll_src.exists() {
         let dll_dst = plugin_dir.join(dll_name);
         match fs::copy(&dll_src, &dll_dst) {
-            Ok(_)  => println!("cargo:warning=DLL をデプロイしました: {}", dll_dst.display()),
+            Ok(_) => println!(
+                "cargo:warning=DLL をデプロイしました: {}",
+                dll_dst.display()
+            ),
             Err(e) => eprintln!("cargo:warning=DLL コピー失敗: {e}"),
         }
     }
@@ -58,7 +61,7 @@ fn main() {
     if json_src.exists() {
         let json_dst = plugin_dir.join("plugin.json");
         match fs::copy(&json_src, &json_dst) {
-            Ok(_)  => println!("cargo:warning=plugin.json をデプロイしました"),
+            Ok(_) => println!("cargo:warning=plugin.json をデプロイしました"),
             Err(e) => eprintln!("cargo:warning=plugin.json コピー失敗: {e}"),
         }
     }

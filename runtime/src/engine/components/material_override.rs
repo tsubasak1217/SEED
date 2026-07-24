@@ -13,9 +13,9 @@
 //  （同一 slot の重複は禁止：常に「その slot に対する唯一の有効なオーバーライド」を 1 件保持する）。
 // ============================================================
 
+use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use serde::{Deserialize, Serialize};
 
 // ============================================================
 //  MaterialOverride

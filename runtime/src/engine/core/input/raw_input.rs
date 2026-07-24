@@ -8,12 +8,15 @@
 /// のまま累積する。これらは既にフォーカスなしで動作している。
 pub struct RawInput {
     mouse_delta: (f32, f32),
-    scroll:      f32,
+    scroll: f32,
 }
 
 impl RawInput {
     pub fn new() -> Self {
-        Self { mouse_delta: (0.0, 0.0), scroll: 0.0 }
+        Self {
+            mouse_delta: (0.0, 0.0),
+            scroll: 0.0,
+        }
     }
 
     // ─── イベント受取（App 側から毎フレーム呼ぶ）──────────────
@@ -32,7 +35,7 @@ impl RawInput {
     /// フレーム末に呼ぶ。累積値をリセットする。
     pub fn end_frame(&mut self) {
         self.mouse_delta = (0.0, 0.0);
-        self.scroll      = 0.0;
+        self.scroll = 0.0;
     }
 
     // ─── ポーリング API ───────────────────────────────────────
@@ -46,26 +49,47 @@ impl RawInput {
             return unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 };
         }
         #[cfg(not(windows))]
-        { let _ = vk; false }
+        {
+            let _ = vk;
+            false
+        }
     }
 
     // マウスボタン
-    pub fn is_right_mouse(&self) -> bool { Self::vk_down(0x02) } // VK_RBUTTON
+    pub fn is_right_mouse(&self) -> bool {
+        Self::vk_down(0x02)
+    } // VK_RBUTTON
 
     // キーボード
-    pub fn is_w(&self) -> bool     { Self::vk_down(0x57) }
-    pub fn is_a(&self) -> bool     { Self::vk_down(0x41) }
-    pub fn is_s(&self) -> bool     { Self::vk_down(0x53) }
-    pub fn is_d(&self) -> bool     { Self::vk_down(0x44) }
-    pub fn is_q(&self) -> bool     { Self::vk_down(0x51) }
-    pub fn is_e(&self) -> bool     { Self::vk_down(0x45) }
+    pub fn is_w(&self) -> bool {
+        Self::vk_down(0x57)
+    }
+    pub fn is_a(&self) -> bool {
+        Self::vk_down(0x41)
+    }
+    pub fn is_s(&self) -> bool {
+        Self::vk_down(0x53)
+    }
+    pub fn is_d(&self) -> bool {
+        Self::vk_down(0x44)
+    }
+    pub fn is_q(&self) -> bool {
+        Self::vk_down(0x51)
+    }
+    pub fn is_e(&self) -> bool {
+        Self::vk_down(0x45)
+    }
     pub fn is_shift(&self) -> bool {
         Self::vk_down(0xA0) || Self::vk_down(0xA1) // VK_LSHIFT / VK_RSHIFT
     }
 
     // マウス状態
     /// 今フレームのマウス移動デルタ (dx, dy)。
-    pub fn mouse_delta(&self) -> (f32, f32) { self.mouse_delta }
+    pub fn mouse_delta(&self) -> (f32, f32) {
+        self.mouse_delta
+    }
     /// 今フレームのスクロール量（ライン数）。
-    pub fn scroll(&self) -> f32 { self.scroll }
+    pub fn scroll(&self) -> f32 {
+        self.scroll
+    }
 }

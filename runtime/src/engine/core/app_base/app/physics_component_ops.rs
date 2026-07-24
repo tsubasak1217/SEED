@@ -14,8 +14,7 @@
 // ============================================================
 
 use crate::engine::components::{
-    ComponentKind, ColliderComponent, ColliderComponentData,
-    Transform as ActorTransform,
+    ColliderComponent, ColliderComponentData, ComponentKind, Transform as ActorTransform,
 };
 use crate::engine::physics::{PhysicsCommand, PhysicsObject};
 use crate::engine::structs::tensor::Vector3 as SeedVec3;
@@ -29,10 +28,15 @@ impl App {
     /// ECS 更新後、物理スレッドが動いている場合はボディを再登録してパラメータを即時反映する。
     ///
     /// フォーマット: SET_COLLIDER_DATA:{actor_dfs_id},{slot_idx},{json}
-    pub(super) fn handle_set_collider_data(&mut self, actor_dfs_id: u32, slot_idx: u32, json: &str) {
+    pub(super) fn handle_set_collider_data(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx: u32,
+        json: &str,
+    ) {
         // ── JSON パース ──────────────────────────────────────────────────────
         let data: ColliderComponentData = match serde_json::from_str(json) {
-            Ok(d)  => d,
+            Ok(d) => d,
             Err(e) => {
                 if let Some(ipc) = &self.ipc {
                     ipc.send(&format!("LOAD_ERROR:SET_COLLIDER_DATA parse error: {e}"));
@@ -70,19 +74,23 @@ impl App {
             // そのため +1 して 1-indexed entity_id に変換する。
             let entity_id = actor_dfs_id as u64 + 1;
             // force_kinematic: Edit コライダーのみモードでは全ボディを kinematic にする
-            let force_kinematic = self.mode == RuntimeMode::Edit && !self.edit_physics_with_rigidbody;
+            let force_kinematic =
+                self.mode == RuntimeMode::Edit && !self.edit_physics_with_rigidbody;
 
             // scene を先に借用して PhysicsObject を構築し、次に physics_thread へ送信する
             // （Rust の借用規則で self.scene と self.physics_thread を同時に借用できないため）
             let phys_obj: Option<PhysicsObject> = self.scene.as_ref().and_then(|scene| {
                 let mut c = 0u32;
                 let actor = find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)?;
-                let tf       = scene.world.get::<ActorTransform>(actor.entity)?;
-                let cslot    = actor.slots().iter().find(|s| s.kind == ComponentKind::Collider)?;
+                let tf = scene.world.get::<ActorTransform>(actor.entity)?;
+                let cslot = actor
+                    .slots()
+                    .iter()
+                    .find(|s| s.kind == ComponentKind::Collider)?;
                 let collider = scene.world.get::<ColliderComponent>(cslot.entity)?;
 
                 let position = [tf.position[0], tf.position[1], tf.position[2]];
-                let scale    = [tf.scale[0],    tf.scale[1],    tf.scale[2]];
+                let scale = [tf.scale[0], tf.scale[1], tf.scale[2]];
 
                 // YXZ オイラー角（度）→ クォータニオン [x, y, z, w] に変換
                 let euler_rad = SeedVec3::new(
@@ -96,7 +104,9 @@ impl App {
                 let rigidbody = if collider.use_rigidbody {
                     let mut rb = collider.to_rigidbody_state();
                     // コライダーのみモードでは動的ボディも kinematic として扱う
-                    if force_kinematic { rb.is_kinematic = true; }
+                    if force_kinematic {
+                        rb.is_kinematic = true;
+                    }
                     Some(rb)
                 } else {
                     None
@@ -107,12 +117,12 @@ impl App {
                     position,
                     rotation,
                     scale,
-                    collider:        collider.shape.to_physics_shape(),
+                    collider: collider.shape.to_physics_shape(),
                     collider_offset: collider.offset,
                     rigidbody,
-                    is_trigger:      collider.is_trigger,
-                    physics_layer:   collider.physics_layer,
-                    layer_mask:      collider.layer_mask,
+                    is_trigger: collider.is_trigger,
+                    physics_layer: collider.physics_layer,
+                    layer_mask: collider.layer_mask,
                 })
             });
 
@@ -126,6 +136,8 @@ impl App {
         }
 
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 }

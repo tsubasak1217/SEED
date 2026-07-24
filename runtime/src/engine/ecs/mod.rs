@@ -5,13 +5,13 @@
 // ============================================================
 
 pub mod entity;
-pub mod storage;
-pub mod world;
-pub mod system;
 pub mod schedule;
+pub mod storage;
+pub mod system;
+pub mod world;
 
 pub use entity::Entity;
-pub use storage::Component;
-pub use world::World;
-pub use system::{System, FnSystem};
 pub use schedule::{Phase, Schedule};
+pub use storage::Component;
+pub use system::{FnSystem, System};
+pub use world::World;

@@ -10,8 +10,8 @@
 //      let dir = input_map.get_action_vector2("Move");
 // ============================================================
 
-use serde::{Deserialize, Serialize};
 use crate::engine::ecs::Component;
+use serde::{Deserialize, Serialize};
 
 // ─── InputMapComponentData ────────────────────────────────────────────────────
 
@@ -43,14 +43,18 @@ pub struct InputMapComponent {
 impl InputMapComponent {
     /// シリアライズ用データに変換する。
     pub fn to_data(&self) -> InputMapComponentData {
-        InputMapComponentData { asset_path: self.asset_path.clone() }
+        InputMapComponentData {
+            asset_path: self.asset_path.clone(),
+        }
     }
 }
 
 impl Default for InputMapComponent {
     /// デフォルトは未設定（アセットパスなし）。
     fn default() -> Self {
-        Self { asset_path: String::new() }
+        Self {
+            asset_path: String::new(),
+        }
     }
 }
 

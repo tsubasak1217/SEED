@@ -131,7 +131,10 @@ fn model_cache_path(resolved_src: &Path) -> Option<PathBuf> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     resolved_src.to_string_lossy().hash(&mut hasher);
     let hash = hasher.finish();
-    let stem = resolved_src.file_stem().and_then(|s| s.to_str()).unwrap_or("model");
+    let stem = resolved_src
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("model");
     Some(dir.join(format!("{hash:016x}_{stem}.smdl")))
 }
 
@@ -169,21 +172,31 @@ fn write_header(buf: &mut Vec<u8>, stamp: (u64, u32, u64), bc_used: bool) {
 /// ヘッダを検証する。マジック・バージョン・mtime・サイズ・BC フラグが
 /// すべて期待値と一致した場合のみ Some(本体開始オフセット) を返す。
 fn validate_header(data: &[u8], expect_stamp: (u64, u32, u64)) -> Option<usize> {
-    if data.len() < HEADER_LEN { return None; }
-    if &data[0..8] != MODEL_MAGIC { return None; }
+    if data.len() < HEADER_LEN {
+        return None;
+    }
+    if &data[0..8] != MODEL_MAGIC {
+        return None;
+    }
 
     let version = u32::from_le_bytes(data[8..12].try_into().ok()?);
-    if version != CACHE_FORMAT_VERSION { return None; }
+    if version != CACHE_FORMAT_VERSION {
+        return None;
+    }
 
     let flags = u32::from_le_bytes(data[12..16].try_into().ok()?);
     let bc_used = flags & FLAG_BC_USED != 0;
     // GPU の BC 対応状態が変わった場合はフォーマットが噛み合わないため無効化する。
-    if bc_used != bc_supported() { return None; }
+    if bc_used != bc_supported() {
+        return None;
+    }
 
-    let mtime_secs  = u64::from_le_bytes(data[16..24].try_into().ok()?);
+    let mtime_secs = u64::from_le_bytes(data[16..24].try_into().ok()?);
     let mtime_nanos = u32::from_le_bytes(data[24..28].try_into().ok()?);
-    let size        = u64::from_le_bytes(data[28..36].try_into().ok()?);
-    if (mtime_secs, mtime_nanos, size) != expect_stamp { return None; }
+    let size = u64::from_le_bytes(data[28..36].try_into().ok()?);
+    if (mtime_secs, mtime_nanos, size) != expect_stamp {
+        return None;
+    }
 
     Some(HEADER_LEN)
 }
@@ -275,7 +288,7 @@ impl OwnedBlob {
             OwnedBlob::Bytes(v) => v,
             OwnedBlob::Verts(v) => bytemuck::cast_slice(v),
             OwnedBlob::Skins(v) => bytemuck::cast_slice(v),
-            OwnedBlob::U32s(v)  => bytemuck::cast_slice(v),
+            OwnedBlob::U32s(v) => bytemuck::cast_slice(v),
             OwnedBlob::Meshlets(v) => bytemuck::cast_slice(v),
         }
     }
@@ -289,7 +302,7 @@ fn extract_blobs(model: &mut Model) -> Vec<OwnedBlob> {
             BlobSlot::Bytes(v) => OwnedBlob::Bytes(std::mem::take(v)),
             BlobSlot::Verts(v) => OwnedBlob::Verts(std::mem::take(v)),
             BlobSlot::Skins(v) => OwnedBlob::Skins(std::mem::take(v)),
-            BlobSlot::U32s(v)  => OwnedBlob::U32s(std::mem::take(v)),
+            BlobSlot::U32s(v) => OwnedBlob::U32s(std::mem::take(v)),
             BlobSlot::Meshlets(v) => OwnedBlob::Meshlets(std::mem::take(v)),
         };
         blobs.push(blob);
@@ -302,12 +315,14 @@ fn restore_blobs(model: &mut Model, blobs: Vec<OwnedBlob>) {
     let mut it = blobs.into_iter();
     visit_blob_slots(model, &mut |slot| {
         // extract と同一トラバーサルのためスロット数・順序は必ず一致する。
-        let Some(blob) = it.next() else { return; };
+        let Some(blob) = it.next() else {
+            return;
+        };
         match (slot, blob) {
             (BlobSlot::Bytes(v), OwnedBlob::Bytes(b)) => *v = b,
             (BlobSlot::Verts(v), OwnedBlob::Verts(b)) => *v = b,
             (BlobSlot::Skins(v), OwnedBlob::Skins(b)) => *v = b,
-            (BlobSlot::U32s(v),  OwnedBlob::U32s(b))  => *v = b,
+            (BlobSlot::U32s(v), OwnedBlob::U32s(b)) => *v = b,
             (BlobSlot::Meshlets(v), OwnedBlob::Meshlets(b)) => *v = b,
             // 型不一致は起こらない想定（同一トラバーサル）。安全側で無視。
             _ => {}
@@ -323,13 +338,16 @@ fn inject_blob_bytes(model: &mut Model, slices: &[&[u8]]) -> bool {
     let mut i = 0usize;
     let mut ok = true;
     visit_blob_slots(model, &mut |slot| {
-        let Some(bytes) = slices.get(i) else { ok = false; return; };
+        let Some(bytes) = slices.get(i) else {
+            ok = false;
+            return;
+        };
         i += 1;
         match slot {
             BlobSlot::Bytes(v) => *v = bytes.to_vec(),
             BlobSlot::Verts(v) => *v = bytemuck::pod_collect_to_vec(bytes),
             BlobSlot::Skins(v) => *v = bytemuck::pod_collect_to_vec(bytes),
-            BlobSlot::U32s(v)  => *v = bytemuck::pod_collect_to_vec(bytes),
+            BlobSlot::U32s(v) => *v = bytemuck::pod_collect_to_vec(bytes),
             BlobSlot::Meshlets(v) => *v = bytemuck::pod_collect_to_vec(bytes),
         }
     });
@@ -357,9 +375,9 @@ fn inject_blob_bytes(model: &mut Model, slices: &[&[u8]]) -> bool {
 ///
 /// ブロブ取り出しのため `&mut Model` を取るが、成否に関わらず必ず復元する。
 fn write_model_cache<W: std::io::Write>(
-    w:       &mut W,
-    model:   &mut Model,
-    stamp:   (u64, u32, u64),
+    w: &mut W,
+    model: &mut Model,
+    stamp: (u64, u32, u64),
     bc_used: bool,
 ) -> std::io::Result<()> {
     // ── ブロブを取り出してメタデータを小さくする ──────────────
@@ -402,8 +420,8 @@ fn write_model_cache<W: std::io::Write>(
 fn encode_model_cache(model: &mut Model, stamp: (u64, u32, u64), bc_used: bool) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
     match write_model_cache(&mut buf, model, stamp, bc_used) {
-        Ok(())  => Some(buf),
-        Err(e)  => {
+        Ok(()) => Some(buf),
+        Err(e) => {
             eprintln!("[SEED cache] モデルのエンコードに失敗: err={e}");
             None
         }
@@ -489,7 +507,9 @@ pub fn try_load_model(src: &Path) -> Option<Model> {
 
     eprintln!(
         "[SEED cache]   内訳: read {:.1}ms ({} MiB) + decode {:.1}ms",
-        read_ms, data.len() / (1024 * 1024), decode_ms,
+        read_ms,
+        data.len() / (1024 * 1024),
+        decode_ms,
     );
     Some(model)
 }
@@ -504,9 +524,15 @@ pub fn try_load_model(src: &Path) -> Option<Model> {
 /// ブロブ分離のため `&mut` を取るが、書き出し後に内容は元通り復元される。
 pub fn store_model(src: &Path, model: &mut Model) {
     let resolved = resolve_src(src);
-    let Some(stamp) = source_stamp(&resolved) else { return; };
-    let Some(cache_path) = model_cache_path(&resolved) else { return; };
-    let Some(dir) = cache_dir() else { return; };
+    let Some(stamp) = source_stamp(&resolved) else {
+        return;
+    };
+    let Some(cache_path) = model_cache_path(&resolved) else {
+        return;
+    };
+    let Some(dir) = cache_dir() else {
+        return;
+    };
 
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("[SEED cache] キャッシュディレクトリ作成失敗（キャッシュ無効）: {dir:?} err={e}");
@@ -562,7 +588,11 @@ fn resolve_src(src: &Path) -> PathBuf {
 
 /// sRGB 1 成分（0..1）をリニアへ変換する（IEC 61966-2-1）。
 fn srgb_to_linear(c: f32) -> f32 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 /// RGBA8 バイト列のアルファ加重平均色（リニア RGB）を返す。
@@ -579,14 +609,25 @@ fn alpha_weighted_linear_avg(rgba: &[u8]) -> [f32; 3] {
             srgb_to_linear(px[1] as f32 / 255.0) as f64,
             srgb_to_linear(px[2] as f32 / 255.0) as f64,
         ];
-        for i in 0..3 { acc[i] += lin[i] * a as f64; acc_uw[i] += lin[i]; }
+        for i in 0..3 {
+            acc[i] += lin[i] * a as f64;
+            acc_uw[i] += lin[i];
+        }
         wsum += a as f64;
         n += 1.0;
     }
     if wsum > 1e-6 {
-        [(acc[0] / wsum) as f32, (acc[1] / wsum) as f32, (acc[2] / wsum) as f32]
+        [
+            (acc[0] / wsum) as f32,
+            (acc[1] / wsum) as f32,
+            (acc[2] / wsum) as f32,
+        ]
     } else if n > 0.0 {
-        [(acc_uw[0] / n) as f32, (acc_uw[1] / n) as f32, (acc_uw[2] / n) as f32]
+        [
+            (acc_uw[0] / n) as f32,
+            (acc_uw[1] / n) as f32,
+            (acc_uw[2] / n) as f32,
+        ]
     } else {
         [1.0, 1.0, 1.0]
     }
@@ -596,14 +637,16 @@ fn alpha_weighted_linear_avg(rgba: &[u8]) -> [f32; 3] {
 /// `Ready`（処理済み）は None。デコード不能も None。
 fn decode_ref_rgba(src: &TextureSource) -> Option<(u32, u32, Vec<u8>)> {
     match src {
-        TextureSource::Embedded { width, height, pixels } => Some((*width, *height, pixels.clone())),
-        TextureSource::EncodedBytes { bytes } => {
-            image::load_from_memory(bytes).ok().map(|img| {
-                let r = img.to_rgba8();
-                let (w, h) = r.dimensions();
-                (w, h, r.into_raw())
-            })
-        }
+        TextureSource::Embedded {
+            width,
+            height,
+            pixels,
+        } => Some((*width, *height, pixels.clone())),
+        TextureSource::EncodedBytes { bytes } => image::load_from_memory(bytes).ok().map(|img| {
+            let r = img.to_rgba8();
+            let (w, h) = r.dimensions();
+            (w, h, r.into_raw())
+        }),
         TextureSource::FilePath(path) => {
             let path_str = path.to_string_lossy().to_string();
             crate::engine::asset_fs::read_bytes(&path_str)
@@ -633,21 +676,30 @@ pub fn compute_material_avg_albedo(model: &mut Model) {
     // ColorSrgb（ベースカラー/エミッシブ）テクスチャの平均リニア色。ベースカラーのみ参照する。
     let mut tex_avg: Vec<Option<[f32; 3]>> = vec![None; n];
     for (i, td) in model.textures.iter().enumerate() {
-        if usages.get(i).copied() != Some(TextureUsage::ColorSrgb) { continue; }
+        if usages.get(i).copied() != Some(TextureUsage::ColorSrgb) {
+            continue;
+        }
         if let Some((_, _, rgba)) = decode_ref_rgba(&td.source) {
             tex_avg[i] = Some(alpha_weighted_linear_avg(&rgba));
         }
     }
     for mat in &mut model.materials {
         let f = mat.base_color_factor;
-        let tex_rgb = mat.base_color_texture.as_ref()
+        let tex_rgb = mat
+            .base_color_texture
+            .as_ref()
             .and_then(|t| tex_avg.get(t.texture_index).copied().flatten())
             .unwrap_or([1.0, 1.0, 1.0]);
         // テクスチャ平均（factor 抜き）を独立に焼く。インライン編集で base_color_factor を
         // 変えたとき、eff_avg_albedo が「テクスチャ平均 × 新 factor」を再計算できるようにする
         // （factor 折込済みの avg_albedo だけだと、元 factor が 0 成分を含む場合に復元不能）。
         mat.base_color_tex_avg = tex_rgb;
-        mat.avg_albedo = [tex_rgb[0] * f[0], tex_rgb[1] * f[1], tex_rgb[2] * f[2], f[3]];
+        mat.avg_albedo = [
+            tex_rgb[0] * f[0],
+            tex_rgb[1] * f[1],
+            tex_rgb[2] * f[2],
+            f[3],
+        ];
     }
 }
 
@@ -659,8 +711,8 @@ fn classify_textures(model: &Model) -> Vec<TextureUsage> {
     // 用途を格上げ方向にのみ更新するヘルパー（NormalMap が最優先）。
     fn assign(slot: &mut Option<TextureUsage>, u: TextureUsage) {
         let rank = |x: TextureUsage| match x {
-            TextureUsage::NormalMap  => 2,
-            TextureUsage::ColorSrgb  => 1,
+            TextureUsage::NormalMap => 2,
+            TextureUsage::ColorSrgb => 1,
             TextureUsage::LinearData => 0,
         };
         match slot {
@@ -670,7 +722,9 @@ fn classify_textures(model: &Model) -> Vec<TextureUsage> {
     }
 
     let mark = |usage: &mut Vec<Option<TextureUsage>>, idx: usize, u: TextureUsage| {
-        if idx < usage.len() { assign(&mut usage[idx], u); }
+        if idx < usage.len() {
+            assign(&mut usage[idx], u);
+        }
     };
 
     for mat in &model.materials {
@@ -678,20 +732,36 @@ fn classify_textures(model: &Model) -> Vec<TextureUsage> {
     }
 
     // 未参照テクスチャは linear フラグから推定
-    (0..n).map(|i| {
-        usage[i].unwrap_or_else(|| {
-            if model.textures[i].linear { TextureUsage::LinearData } else { TextureUsage::ColorSrgb }
+    (0..n)
+        .map(|i| {
+            usage[i].unwrap_or_else(|| {
+                if model.textures[i].linear {
+                    TextureUsage::LinearData
+                } else {
+                    TextureUsage::ColorSrgb
+                }
+            })
         })
-    }).collect()
+        .collect()
 }
 
 /// 1 マテリアルの各テクスチャスロットを走査し、用途を通知する。
 fn classify_one_material(mat: &Material, mark: &mut impl FnMut(usize, TextureUsage)) {
-    if let Some(t) = &mat.base_color_texture         { mark(t.texture_index, TextureUsage::ColorSrgb); }
-    if let Some(t) = &mat.emissive_texture           { mark(t.texture_index, TextureUsage::ColorSrgb); }
-    if let Some(t) = &mat.normal_texture             { mark(t.texture_index, TextureUsage::NormalMap); }
-    if let Some(t) = &mat.metallic_roughness_texture { mark(t.texture_index, TextureUsage::LinearData); }
-    if let Some(t) = &mat.occlusion_texture          { mark(t.texture_index, TextureUsage::LinearData); }
+    if let Some(t) = &mat.base_color_texture {
+        mark(t.texture_index, TextureUsage::ColorSrgb);
+    }
+    if let Some(t) = &mat.emissive_texture {
+        mark(t.texture_index, TextureUsage::ColorSrgb);
+    }
+    if let Some(t) = &mat.normal_texture {
+        mark(t.texture_index, TextureUsage::NormalMap);
+    }
+    if let Some(t) = &mat.metallic_roughness_texture {
+        mark(t.texture_index, TextureUsage::LinearData);
+    }
+    if let Some(t) = &mat.occlusion_texture {
+        mark(t.texture_index, TextureUsage::LinearData);
+    }
 }
 
 // ============================================================
@@ -730,11 +800,13 @@ pub fn process_model_textures(model: &mut Model) -> usize {
     let usages = classify_textures(model);
     let bc = bc_supported();
     let total = model.textures.len();
-    if total == 0 { return 0; }
+    if total == 0 {
+        return 0;
+    }
 
     // 進捗カウンタ（並列クロージャ間で共有。ユーザーがハングと進行を判別できるように
     // 1 枚ごとに n/N を出力する）
-    let done          = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
     let src_bytes_sum = AtomicUsize::new(0);
 
     // ── 有界並列ストリーミング ─────────────────────────────────
@@ -791,21 +863,23 @@ pub fn process_model_textures(model: &mut Model) -> usize {
 fn decode_source_rgba(source: TextureSource) -> Result<(u32, u32, Vec<u8>), TextureSource> {
     match source {
         // デコード済み RGBA（コピーなしで所有権ごと使う）
-        TextureSource::Embedded { width, height, pixels } => Ok((width, height, pixels)),
+        TextureSource::Embedded {
+            width,
+            height,
+            pixels,
+        } => Ok((width, height, pixels)),
         // エンコード済みバイト（PNG/JPG 等）をデコード
-        TextureSource::EncodedBytes { bytes } => {
-            match image::load_from_memory(&bytes) {
-                Ok(img) => {
-                    let rgba = img.to_rgba8();
-                    let (w, h) = rgba.dimensions();
-                    Ok((w, h, rgba.into_raw()))
-                }
-                Err(e) => {
-                    eprintln!("[SEED cache] 埋め込み画像のデコード失敗: err={e}");
-                    Err(TextureSource::EncodedBytes { bytes })
-                }
+        TextureSource::EncodedBytes { bytes } => match image::load_from_memory(&bytes) {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                Ok((w, h, rgba.into_raw()))
             }
-        }
+            Err(e) => {
+                eprintln!("[SEED cache] 埋め込み画像のデコード失敗: err={e}");
+                Err(TextureSource::EncodedBytes { bytes })
+            }
+        },
         // 外部ファイル（glTF 外部画像 / OBJ）。asset_fs 経由で PAK にも対応。
         TextureSource::FilePath(path) => {
             let path_str = path.to_string_lossy().to_string();
@@ -828,11 +902,11 @@ fn decode_source_rgba(source: TextureSource) -> Result<(u32, u32, Vec<u8>), Text
 
 /// RGBA8 ピクセルからミップチェーンを生成し、用途に応じて BC 圧縮した `Ready` を作る。
 fn build_ready_texture(
-    width:  u32,
+    width: u32,
     height: u32,
     pixels: &[u8],
-    usage:  TextureUsage,
-    bc:     bool,
+    usage: TextureUsage,
+    bc: bool,
 ) -> TextureSource {
     // ── ミップチェーン（RGBA8）を生成 ────────────────────────────
     let mip_chain = generate_mip_chain(width, height, pixels);
@@ -846,24 +920,35 @@ fn build_ready_texture(
     if !bc_ok {
         let format = match usage {
             TextureUsage::ColorSrgb => CachedTexFormat::Rgba8UnormSrgb,
-            _                       => CachedTexFormat::Rgba8Unorm,
+            _ => CachedTexFormat::Rgba8Unorm,
         };
         let mips = mip_chain.into_iter().map(|m| m.pixels).collect();
-        return TextureSource::Ready { format, width, height, mips };
+        return TextureSource::Ready {
+            format,
+            width,
+            height,
+            mips,
+        };
     }
 
     // ── BC 対応: 用途別フォーマットで各ミップを圧縮 ──────────────
     let format = match usage {
-        TextureUsage::ColorSrgb  => CachedTexFormat::Bc3RgbaUnormSrgb,
-        TextureUsage::NormalMap  => CachedTexFormat::Bc5RgUnorm,
+        TextureUsage::ColorSrgb => CachedTexFormat::Bc3RgbaUnormSrgb,
+        TextureUsage::NormalMap => CachedTexFormat::Bc5RgUnorm,
         TextureUsage::LinearData => CachedTexFormat::Bc3RgbaUnorm,
     };
 
-    let mips: Vec<Vec<u8>> = mip_chain.iter()
+    let mips: Vec<Vec<u8>> = mip_chain
+        .iter()
         .map(|m| compress_mip(m.width, m.height, &m.pixels, format))
         .collect();
 
-    TextureSource::Ready { format, width, height, mips }
+    TextureSource::Ready {
+        format,
+        width,
+        height,
+        mips,
+    }
 }
 
 // ============================================================
@@ -872,7 +957,7 @@ fn build_ready_texture(
 
 /// 1 ミップレベルの RGBA8 データ。
 struct MipLevel {
-    width:  u32,
+    width: u32,
     height: u32,
     pixels: Vec<u8>, // 長さ = width*height*4
 }
@@ -883,11 +968,19 @@ fn generate_mip_chain(width: u32, height: u32, pixels: &[u8]) -> Vec<MipLevel> {
     let mut chain = Vec::new();
     // 入力ピクセル長が不足している場合は安全側に倒して 1 レベルのみ返す。
     if (width as usize) * (height as usize) * 4 != pixels.len() || width == 0 || height == 0 {
-        chain.push(MipLevel { width: width.max(1), height: height.max(1), pixels: pixels.to_vec() });
+        chain.push(MipLevel {
+            width: width.max(1),
+            height: height.max(1),
+            pixels: pixels.to_vec(),
+        });
         return chain;
     }
 
-    chain.push(MipLevel { width, height, pixels: pixels.to_vec() });
+    chain.push(MipLevel {
+        width,
+        height,
+        pixels: pixels.to_vec(),
+    });
 
     let (mut w, mut h) = (width, height);
     while w > 1 || h > 1 {
@@ -895,7 +988,11 @@ fn generate_mip_chain(width: u32, height: u32, pixels: &[u8]) -> Vec<MipLevel> {
         let nw = (w / 2).max(1);
         let nh = (h / 2).max(1);
         let down = downsample_box(prev.width, prev.height, &prev.pixels, nw, nh);
-        chain.push(MipLevel { width: nw, height: nh, pixels: down });
+        chain.push(MipLevel {
+            width: nw,
+            height: nh,
+            pixels: down,
+        });
         w = nw;
         h = nh;
     }
@@ -915,8 +1012,10 @@ fn downsample_box(sw: u32, sh: u32, src: &[u8], dw: u32, dh: u32) -> Vec<u8> {
             let sx = dx * 2;
             let sy = dy * 2;
             for c in 0..4 {
-                let sum = sample(sx, sy, c) + sample(sx + 1, sy, c)
-                        + sample(sx, sy + 1, c) + sample(sx + 1, sy + 1, c);
+                let sum = sample(sx, sy, c)
+                    + sample(sx + 1, sy, c)
+                    + sample(sx, sy + 1, c)
+                    + sample(sx + 1, sy + 1, c);
                 out[((dy * dw + dx) as usize) * 4 + c] = ((sum + 2) / 4) as u8;
             }
         }
@@ -936,18 +1035,20 @@ fn texpresso_format(format: CachedTexFormat) -> Option<texpresso::Format> {
     use texpresso::Format as F;
     match format {
         CachedTexFormat::Bc3RgbaUnormSrgb | CachedTexFormat::Bc3RgbaUnorm => Some(F::Bc3),
-        CachedTexFormat::Bc1RgbaUnorm                                     => Some(F::Bc1),
-        CachedTexFormat::Bc5RgUnorm                                       => Some(F::Bc5),
-        CachedTexFormat::Bc4RUnorm                                        => Some(F::Bc4),
+        CachedTexFormat::Bc1RgbaUnorm => Some(F::Bc1),
+        CachedTexFormat::Bc5RgUnorm => Some(F::Bc5),
+        CachedTexFormat::Bc4RUnorm => Some(F::Bc4),
         // BC6H は texpresso 非対応（将来 HDR パイプライン導入時に別経路で対応）。
-        CachedTexFormat::Bc6hRgbUfloat                                    => None,
-        CachedTexFormat::Rgba8Unorm | CachedTexFormat::Rgba8UnormSrgb     => None,
+        CachedTexFormat::Bc6hRgbUfloat => None,
+        CachedTexFormat::Rgba8Unorm | CachedTexFormat::Rgba8UnormSrgb => None,
     }
 }
 
 /// 4 の倍数に切り上げる（BC ブロックは 4×4 テクセル単位）。
 #[inline]
-fn align4(v: u32) -> u32 { (v + 3) & !3 }
+fn align4(v: u32) -> u32 {
+    (v + 3) & !3
+}
 
 /// 1 ミップ（RGBA8）を指定フォーマットで BC 圧縮し、ブロック列を返す。
 ///
@@ -1161,7 +1262,13 @@ mod tests {
         for y in 0..4usize {
             for x in 0..4usize {
                 let i = (y * 4 + x) * 4;
-                let expect: [u8; 4] = if x < 1 { [255, 0, 0, 255] } else if x == 1 { [0, 255, 0, 255] } else { [0, 255, 0, 255] };
+                let expect: [u8; 4] = if x < 1 {
+                    [255, 0, 0, 255]
+                } else if x == 1 {
+                    [0, 255, 0, 255]
+                } else {
+                    [0, 255, 0, 255]
+                };
                 assert_eq!(&out2[i..i + 4], &expect, "at ({x},{y})");
             }
         }
@@ -1175,18 +1282,32 @@ mod tests {
 
         // ── テスト用 Model 構築 ─────────────────────────────
         let vertices = vec![
-            Vertex { position: [1.0, 2.0, 3.0], ..Default::default() },
-            Vertex { position: [4.0, 5.0, 6.0], ..Default::default() },
-            Vertex { position: [7.0, 8.0, 9.0], ..Default::default() },
+            Vertex {
+                position: [1.0, 2.0, 3.0],
+                ..Default::default()
+            },
+            Vertex {
+                position: [4.0, 5.0, 6.0],
+                ..Default::default()
+            },
+            Vertex {
+                position: [7.0, 8.0, 9.0],
+                ..Default::default()
+            },
         ];
         let indices = vec![0u32, 1, 2];
         let lod_indices = vec![vec![0u32, 1, 2], vec![2u32, 1, 0]];
         let mips = vec![vec![1u8; 64], vec![2u8; 16], vec![3u8; 16]];
         // メッシュレット（v3）: 記述子（メタ）＋連結配列（ブロブ）のラウンドトリップを検証。
         let meshlets = vec![MeshletDesc {
-            vertex_offset: 0, triangle_offset: 0, vertex_count: 3, triangle_count: 1,
-            center: [1.0, 2.0, 3.0], radius: 4.0,
-            cone_axis: [0.0, 0.0, 1.0], cone_cutoff: 0.5,
+            vertex_offset: 0,
+            triangle_offset: 0,
+            vertex_count: 3,
+            triangle_count: 1,
+            center: [1.0, 2.0, 3.0],
+            radius: 4.0,
+            cone_axis: [0.0, 0.0, 1.0],
+            cone_cutoff: 0.5,
         }];
         let meshlet_vertices = vec![0u32, 1, 2];
         let meshlet_triangles = vec![0u8, 1, 2];
@@ -1224,7 +1345,9 @@ mod tests {
                 // 未デコード画像（v5: デコード失敗時などに残るケース）もブロブとして往復する
                 TextureData {
                     name: Some("enc".to_string()),
-                    source: TextureSource::EncodedBytes { bytes: vec![9u8, 8, 7, 6, 5] },
+                    source: TextureSource::EncodedBytes {
+                        bytes: vec![9u8, 8, 7, 6, 5],
+                    },
                     sampler: SamplerData::default(),
                     linear: true,
                 },
@@ -1262,7 +1385,12 @@ mod tests {
         assert_eq!(prim.meshlet_vertices, meshlet_vertices);
         assert_eq!(prim.meshlet_triangles, meshlet_triangles);
         match &decoded.textures[0].source {
-            TextureSource::Ready { format, width, height, mips: m } => {
+            TextureSource::Ready {
+                format,
+                width,
+                height,
+                mips: m,
+            } => {
                 assert_eq!(*format, CachedTexFormat::Bc3RgbaUnormSrgb);
                 assert_eq!((*width, *height), (8, 8));
                 assert_eq!(m, &mips);
@@ -1328,18 +1456,31 @@ mod tests {
             .expect("png encode failed");
 
         let mk = |source| TextureData {
-            name: None, source, sampler: SamplerData::default(), linear: false,
+            name: None,
+            source,
+            sampler: SamplerData::default(),
+            linear: false,
         };
         let mut model = Model {
-            name: String::new(), nodes: vec![], root_nodes: vec![], meshes: vec![],
+            name: String::new(),
+            nodes: vec![],
+            root_nodes: vec![],
+            meshes: vec![],
             materials: vec![],
             textures: vec![
-                mk(TextureSource::Embedded { width: 4, height: 4, pixels: vec![128; 4 * 4 * 4] }),
+                mk(TextureSource::Embedded {
+                    width: 4,
+                    height: 4,
+                    pixels: vec![128; 4 * 4 * 4],
+                }),
                 mk(TextureSource::EncodedBytes { bytes: png }),
                 // 画像として不正なバイト列（デコード失敗 → フォールバックで残る）
-                mk(TextureSource::EncodedBytes { bytes: vec![0, 1, 2] }),
+                mk(TextureSource::EncodedBytes {
+                    bytes: vec![0, 1, 2],
+                }),
             ],
-            animations: vec![], skins: vec![],
+            animations: vec![],
+            skins: vec![],
         };
 
         let processed = process_model_textures(&mut model);
@@ -1347,17 +1488,28 @@ mod tests {
         assert!(processed >= 4 * 4 * 4 + 8 * 8 * 4);
 
         // Embedded → Ready
-        assert!(matches!(model.textures[0].source, TextureSource::Ready { .. }));
+        assert!(matches!(
+            model.textures[0].source,
+            TextureSource::Ready { .. }
+        ));
         // PNG → Ready（8,4,2,1 の 4 ミップ）
         match &model.textures[1].source {
-            TextureSource::Ready { width, height, mips, .. } => {
+            TextureSource::Ready {
+                width,
+                height,
+                mips,
+                ..
+            } => {
                 assert_eq!((*width, *height), (8, 8));
                 assert_eq!(mips.len(), 4);
             }
             _ => panic!("PNG texture not converted"),
         }
         // 破損バイトは EncodedBytes のまま（クラッシュせずフォールバック）
-        assert!(matches!(model.textures[2].source, TextureSource::EncodedBytes { .. }));
+        assert!(matches!(
+            model.textures[2].source,
+            TextureSource::EncodedBytes { .. }
+        ));
     }
 
     /// テクスチャ用途分類: 法線が最優先で確定される。
@@ -1366,22 +1518,36 @@ mod tests {
         use super::super::model::*;
         let tex = |linear: bool| TextureData {
             name: None,
-            source: TextureSource::Embedded { width: 1, height: 1, pixels: vec![0; 4] },
+            source: TextureSource::Embedded {
+                width: 1,
+                height: 1,
+                pixels: vec![0; 4],
+            },
             sampler: SamplerData::default(),
             linear,
         };
         let mut mat = Material::default();
         // テクスチャ 0 を base_color(sRGB) と normal(NormalMap) の両方で参照
-        mat.base_color_texture = Some(TextureInfo { texture_index: 0, tex_coord_set: 0 });
-        mat.normal_texture = Some(NormalTextureInfo { texture_index: 0, tex_coord_set: 0, scale: 1.0 });
+        mat.base_color_texture = Some(TextureInfo {
+            texture_index: 0,
+            tex_coord_set: 0,
+        });
+        mat.normal_texture = Some(NormalTextureInfo {
+            texture_index: 0,
+            tex_coord_set: 0,
+            scale: 1.0,
+        });
         let model = Model {
-            name: String::new(), nodes: vec![], root_nodes: vec![], meshes: vec![],
-            materials: vec![mat], textures: vec![tex(true)], animations: vec![], skins: vec![],
+            name: String::new(),
+            nodes: vec![],
+            root_nodes: vec![],
+            meshes: vec![],
+            materials: vec![mat],
+            textures: vec![tex(true)],
+            animations: vec![],
+            skins: vec![],
         };
         let usages = classify_textures(&model);
         assert_eq!(usages[0], TextureUsage::NormalMap);
     }
 }
-
-
-

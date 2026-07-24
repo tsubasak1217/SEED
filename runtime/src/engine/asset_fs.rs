@@ -52,7 +52,7 @@ pub fn init(assets_root: PathBuf, pak_path: Option<&Path>) {
         if p.exists() {
             match PakReader::open(p) {
                 Ok(reader) => Some(Mutex::new(reader)),
-                Err(_)     => None,
+                Err(_) => None,
             }
         } else {
             None
@@ -129,7 +129,7 @@ pub fn normalize_asset_path(path: &str) -> String {
 pub fn to_virtual(absolute: &str) -> String {
     if let Some(root) = ASSETS_ROOT.get() {
         // 比較のため '\\' → '/' 正規化
-        let abs_norm  = absolute.replace('\\', "/");
+        let abs_norm = absolute.replace('\\', "/");
         let root_norm = root.to_string_lossy().replace('\\', "/");
         let root_prefix = format!("{root_norm}/");
         if abs_norm.starts_with(&root_prefix) {
@@ -255,7 +255,10 @@ mod tests {
             "assets://terrain/textures/rock_normal.jpeg"
         );
         // スキーム付きなら区切りも触らない。
-        assert_eq!(normalize_asset_path("assets://a\\b.png"), "assets://a\\b.png");
+        assert_eq!(
+            normalize_asset_path("assets://a\\b.png"),
+            "assets://a\\b.png"
+        );
     }
 
     /// 絶対パスは一切書き換えられないこと（エディタモード・後方互換の保護）。

@@ -13,14 +13,12 @@
 //  反発係数などのパラメータが即座に反映される。
 // ============================================================
 
-use crate::engine::components::{
-    ComponentKind, Collider2dComponent, Collider2dComponentData,
-};
-use crate::engine::physics::{PhysicsCommand2d, PhysicsObject2d, PIXELS_PER_METER};
+use crate::engine::components::{Collider2dComponent, Collider2dComponentData, ComponentKind};
+use crate::engine::physics::{PIXELS_PER_METER, PhysicsCommand2d, PhysicsObject2d};
 
-use super::{App, RuntimeMode, find_actor_by_dfs};
-use super::physics2d_ops::collect_actor2d_contexts;
 use super::canvas_collect::build_canvas_viewport_map;
+use super::physics2d_ops::collect_actor2d_contexts;
+use super::{App, RuntimeMode, find_actor_by_dfs};
 
 impl App {
     /// Collider2dComponent のデータ全体（リジッドボディ設定を含む）を JSON からデシリアライズして更新する。
@@ -28,10 +26,15 @@ impl App {
     /// ECS 更新後、2D 物理スレッドが動いている場合はボディを再登録してパラメータを即時反映する。
     ///
     /// フォーマット: SET_COLLIDER2D_DATA:{actor_dfs_id},{slot_idx},{json}
-    pub(super) fn handle_set_collider2d_data(&mut self, actor_dfs_id: u32, slot_idx: u32, json: &str) {
+    pub(super) fn handle_set_collider2d_data(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx: u32,
+        json: &str,
+    ) {
         // ── JSON パース ──────────────────────────────────────────────────────
         let data: Collider2dComponentData = match serde_json::from_str(json) {
-            Ok(d)  => d,
+            Ok(d) => d,
             Err(e) => {
                 if let Some(ipc) = &self.ipc {
                     ipc.send(&format!("LOAD_ERROR:SET_COLLIDER2D_DATA parse error: {e}"));
@@ -66,35 +69,48 @@ impl App {
             // entity_id は 1-indexed（DFS カウンタは 1 始まり）
             let entity_id = actor_dfs_id as u64 + 1;
             // force_kinematic: Edit コライダーのみモードでは全ボディを kinematic にする
-            let force_kinematic = self.mode == RuntimeMode::Edit && !self.edit_physics_2d_with_rigidbody;
+            let force_kinematic =
+                self.mode == RuntimeMode::Edit && !self.edit_physics_2d_with_rigidbody;
 
             // ビューポートサイズを取得する（scene 借用前に計算）
             let viewport_size = self.compute_viewport_size_2d();
-            let (win_w, win_h) = viewport_size.map(|[w, h]| (w, h)).unwrap_or((1280.0, 720.0));
+            let (win_w, win_h) = viewport_size
+                .map(|[w, h]| (w, h))
+                .unwrap_or((1280.0, 720.0));
 
             // PhysicsObject2d を構築する（self.scene と self.physics_thread_2d を同時借用しないよう分離）
             let phys_obj: Option<PhysicsObject2d> = self.scene.as_ref().and_then(|scene| {
                 // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
                 let (canvas_vp_overrides, root_auto_sizes) = if viewport_size.is_some() {
-                    self.build_ss_layout_maps(
-                        &scene.actors, &scene.world, wl, win_w, win_h, None)
+                    self.build_ss_layout_maps(&scene.actors, &scene.world, wl, win_w, win_h, None)
                 } else {
                     (
                         build_canvas_viewport_map(
-                            &scene.actors, &scene.world, wl, win_w, win_h, None),
+                            &scene.actors,
+                            &scene.world,
+                            wl,
+                            win_w,
+                            win_h,
+                            None,
+                        ),
                         std::collections::HashMap::new(),
                     )
                 };
                 // canvas_collect.rs と同一の変換チェーンで body_pos_px を取得する
                 // （design_space は表示と一致させる。ドラッグ位置と描画をそろえる）
                 let ctx = collect_actor2d_contexts(
-                        scene, wl, viewport_size, &canvas_vp_overrides, &root_auto_sizes,
-                        self.edit_view_is_2d())
-                    .into_iter()
-                    .find(|c| c.dfs_id == entity_id)?;
+                    scene,
+                    wl,
+                    viewport_size,
+                    &canvas_vp_overrides,
+                    &root_auto_sizes,
+                    self.edit_view_is_2d(),
+                )
+                .into_iter()
+                .find(|c| c.dfs_id == entity_id)?;
 
                 let slot_entity = ctx.collider_slot_entity?;
-                let collider    = scene.world.get::<Collider2dComponent>(slot_entity)?;
+                let collider = scene.world.get::<Collider2dComponent>(slot_entity)?;
 
                 // body_pos_px は ortho 空間なので PPM で除算するだけでよい
                 let position = [
@@ -109,7 +125,9 @@ impl App {
 
                 let rigidbody = if collider.use_rigidbody {
                     let mut rb = collider.to_rigidbody_state();
-                    if force_kinematic { rb.is_kinematic = true; }
+                    if force_kinematic {
+                        rb.is_kinematic = true;
+                    }
                     Some(rb)
                 } else {
                     None
@@ -118,15 +136,17 @@ impl App {
                 Some(PhysicsObject2d {
                     entity_id,
                     position,
-                    rotation:        ctx.rot_rad,
-                    scale:           ctx.scale,
+                    rotation: ctx.rot_rad,
+                    scale: ctx.scale,
                     // コライダー形状に ctx.size_sx/size_sy を適用する
-                    collider:        collider.shape.to_physics_shape_scaled(ctx.size_sx, ctx.size_sy),
+                    collider: collider
+                        .shape
+                        .to_physics_shape_scaled(ctx.size_sx, ctx.size_sy),
                     collider_offset,
                     rigidbody,
-                    is_trigger:      collider.is_trigger,
-                    physics_layer:   collider.physics_layer,
-                    layer_mask:      collider.layer_mask,
+                    is_trigger: collider.is_trigger,
+                    physics_layer: collider.physics_layer,
+                    layer_mask: collider.layer_mask,
                 })
             });
 
@@ -140,6 +160,8 @@ impl App {
         }
 
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 }

@@ -20,16 +20,13 @@
 // ============================================================
 
 use crate::engine::components::{CanvasTransform, ComponentKind};
-use crate::engine::core::app_base::scene::{Scene, DebugCameraData};
+use crate::engine::core::app_base::scene::{DebugCameraData, Scene};
 use crate::engine::core::app_base::undo::UndoHistory;
 use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::ActorKind;
 
-use super::{
-    App, CanvasEditSession,
-    extract_actor_by_dfs_with_origin, find_actor_by_entity_mut,
-};
+use super::{App, CanvasEditSession, extract_actor_by_dfs_with_origin, find_actor_by_entity_mut};
 
 /// シーン世界線の番号（0 = 通常シーン）。
 const SCENE_WORLD_LINE: u32 = 0;
@@ -43,19 +40,26 @@ impl App {
     /// `ACTOR_EDIT_STARTED` → `CAM_STATE:...` の順にエディタへ送信する。
     pub(super) fn handle_edit_canvas_begin(&mut self, world_line: u32, actor_dfs_id: u32) {
         // シーン世界線そのものへは開始できない・同一世界線の二重開始も不可
-        if world_line == SCENE_WORLD_LINE { return; }
-        if self.canvas_edit_sessions.contains_key(&world_line) { return; }
+        if world_line == SCENE_WORLD_LINE {
+            return;
+        }
+        if self.canvas_edit_sessions.contains_key(&world_line) {
+            return;
+        }
 
         // 現在の世界線のカメラを退避する（OpenActor と同じ手順）
         let pos = self.camera.base.transform.position;
-        self.saved_cameras.insert(self.active_world_line, DebugCameraData {
-            position: [pos.x, pos.y, pos.z],
-            yaw:      self.camera.yaw,
-            pitch:    self.camera.pitch,
-            fov_deg:  self.camera.base.projection.fov_y_rad.to_degrees(),
-            far:      self.camera.base.projection.far,
-            speed:    self.camera.move_speed,
-        });
+        self.saved_cameras.insert(
+            self.active_world_line,
+            DebugCameraData {
+                position: [pos.x, pos.y, pos.z],
+                yaw: self.camera.yaw,
+                pitch: self.camera.pitch,
+                fov_deg: self.camera.base.projection.fov_y_rad.to_degrees(),
+                far: self.camera.base.projection.far,
+                speed: self.camera.move_speed,
+            },
+        );
 
         // シーンからアクターを取り出して専用世界線へ移動する
         let (root_is_2d, actor_name, session) = {
@@ -72,7 +76,9 @@ impl App {
             // CanvasComponent を持たないアクターは対象外（エディタ側でガード済みの二重チェック）。
             // 取り出したアクターを元の位置へ戻してから中断する。
             if !actor.has_kind(ComponentKind::Canvas) {
-                eprintln!("[EDIT_CANVAS_BEGIN] DFS ID {actor_dfs_id} は CanvasComponent を持ちません");
+                eprintln!(
+                    "[EDIT_CANVAS_BEGIN] DFS ID {actor_dfs_id} は CanvasComponent を持ちません"
+                );
                 Self::reinsert_scene_actor(scene, actor, parent_entity, child_index);
                 return;
             }
@@ -92,11 +98,15 @@ impl App {
 
             scene.actors.push(actor);
 
-            (root_is_2d, actor_name, CanvasEditSession {
-                parent_entity,
-                child_index,
-                was_3d_root: !root_is_2d,
-            })
+            (
+                root_is_2d,
+                actor_name,
+                CanvasEditSession {
+                    parent_entity,
+                    child_index,
+                    was_3d_root: !root_is_2d,
+                },
+            )
         };
 
         // 2D キャンバス編集世界線として登録する（Ortho カメラ + 常時スクリーンスペース描画）
@@ -106,7 +116,10 @@ impl App {
 
         // アクティブ世界線を切り替える（SetActiveWorldLine と同じリセット手順）
         self.active_world_line = world_line;
-        let cam = self.saved_cameras.get(&world_line).cloned()
+        let cam = self
+            .saved_cameras
+            .get(&world_line)
+            .cloned()
             .unwrap_or_else(DebugCameraData::default);
         self.apply_camera_data(&cam);
         self.selected_instances.clear();
@@ -120,11 +133,15 @@ impl App {
         if let Some(ipc) = &self.ipc {
             // タブ生成用の応答（root_is_2d はタブを閉じたとき戻るシーンタブの判定に使う）
             let is_2d_flag = if root_is_2d { 1 } else { 0 };
-            ipc.send(&format!("CANVAS_EDIT_WL:{world_line},{is_2d_flag},{actor_name}"));
+            ipc.send(&format!(
+                "CANVAS_EDIT_WL:{world_line},{is_2d_flag},{actor_name}"
+            ));
             // 既存のアクター編集タブと同じ開始通知 → カメラ状態の順に送信する
             ipc.send("ACTOR_EDIT_STARTED");
             let (pos, euler_x, euler_y, euler_z, fov, far, spd) = self.cam_state_tuple();
-            ipc.send(&format!("CAM_STATE:{pos},{euler_x},{euler_y},{euler_z},{fov},{far},{spd}"));
+            ipc.send(&format!(
+                "CAM_STATE:{pos},{euler_x},{euler_y},{euler_z},{fov},{far},{spd}"
+            ));
         }
     }
 
@@ -135,7 +152,9 @@ impl App {
     /// シーン世界線へ切り替えて `ACTOR_EDIT_ENDED` を送信する
     /// （エディタが別タブへ移動済みの場合は世界線切替を行わない）。
     pub(super) fn handle_edit_canvas_end(&mut self, world_line: u32) {
-        let Some(session) = self.canvas_edit_sessions.remove(&world_line) else { return };
+        let Some(session) = self.canvas_edit_sessions.remove(&world_line) else {
+            return;
+        };
 
         // アクターをシーン世界線へ戻す
         if let Some(scene) = &mut self.scene {
@@ -150,7 +169,12 @@ impl App {
                     scene.world.remove::<CanvasTransform>(actor.entity);
                 }
 
-                Self::reinsert_scene_actor(scene, actor, session.parent_entity, session.child_index);
+                Self::reinsert_scene_actor(
+                    scene,
+                    actor,
+                    session.parent_entity,
+                    session.child_index,
+                );
             }
         }
 
@@ -176,7 +200,9 @@ impl App {
             if let Some(ipc) = &self.ipc {
                 ipc.send("ACTOR_EDIT_ENDED");
                 let (pos, euler_x, euler_y, euler_z, fov, far, spd) = self.cam_state_tuple();
-                ipc.send(&format!("CAM_STATE:{pos},{euler_x},{euler_y},{euler_z},{fov},{far},{spd}"));
+                ipc.send(&format!(
+                    "CAM_STATE:{pos},{euler_x},{euler_y},{euler_z},{fov},{far},{spd}"
+                ));
             }
         } else if self.active_world_line == SCENE_WORLD_LINE {
             // シーン表示中に非アクティブなタブを閉じた場合: アクターが戻ったので
@@ -192,10 +218,10 @@ impl App {
     /// - 親エンティティが None: シーン直下（scene.actors）の記録位置へ挿入する。
     /// 記録位置が現在の要素数を超える場合は末尾へクランプする。
     fn reinsert_scene_actor(
-        scene:         &mut Scene,
-        actor:         Actor,
+        scene: &mut Scene,
+        actor: Actor,
         parent_entity: Option<Entity>,
-        child_index:   usize,
+        child_index: usize,
     ) {
         match parent_entity {
             Some(pe) => {

@@ -4,13 +4,11 @@
 //  do_copy / do_paste
 // ============================================================
 
-use crate::engine::components::{ModelComponent, GROUP_ID_BASE};
-use crate::engine::core::app_base::undo::{
-    SceneSnapshotCommand, ActorTreeSnapshotCommand,
-};
+use crate::engine::components::{GROUP_ID_BASE, ModelComponent};
 use crate::engine::core::app_base::scene::build_actor;
+use crate::engine::core::app_base::undo::{ActorTreeSnapshotCommand, SceneSnapshotCommand};
 
-use super::{App, find_actor_by_dfs, count_actor_dfs_nodes, ClipboardItem};
+use super::{App, ClipboardItem, count_actor_dfs_nodes, find_actor_by_dfs};
 
 impl App {
     /// 選択アクター / 選択インスタンスをクリップボードへコピーする。
@@ -40,8 +38,13 @@ impl App {
         // レガシー: MC インスタンス直接選択（アクター編集モード等）
         use std::collections::{HashMap, HashSet};
         let Some(scene) = &self.scene else { return };
-        let Some(mc)    = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line) else { return };
-        if self.selected_instances.is_empty() { return; }
+        let Some(mc) = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line)
+        else {
+            return;
+        };
+        if self.selected_instances.is_empty() {
+            return;
+        }
 
         let mut copy_set: HashSet<u32> = self.selected_instances.iter().copied().collect();
         for &root in &self.selected_instances {
@@ -50,21 +53,28 @@ impl App {
         let mut copy_list: Vec<u32> = copy_set.into_iter().collect();
         copy_list.sort_unstable();
 
-        let orig_to_local: HashMap<u32, usize> = copy_list.iter()
-            .enumerate().map(|(i, &orig)| (orig, i)).collect();
+        let orig_to_local: HashMap<u32, usize> = copy_list
+            .iter()
+            .enumerate()
+            .map(|(i, &orig)| (orig, i))
+            .collect();
 
-        self.clipboard = copy_list.iter().map(|&orig| {
-            let meta         = &mc.instance_meta[orig as usize];
-            let local_parent = meta.parent
-                .filter(|&p| p < GROUP_ID_BASE)
-                .and_then(|p| orig_to_local.get(&p).copied());
-            ClipboardItem {
-                name:         meta.name.clone(),
-                mat:          mc.instance_mats[orig as usize],
-                local_parent,
-                anim_seed:    meta.anim_seed,
-            }
-        }).collect();
+        self.clipboard = copy_list
+            .iter()
+            .map(|&orig| {
+                let meta = &mc.instance_meta[orig as usize];
+                let local_parent = meta
+                    .parent
+                    .filter(|&p| p < GROUP_ID_BASE)
+                    .and_then(|p| orig_to_local.get(&p).copied());
+                ClipboardItem {
+                    name: meta.name.clone(),
+                    mat: mc.instance_mats[orig as usize],
+                    local_parent,
+                    anim_seed: meta.anim_seed,
+                }
+            })
+            .collect();
         // アクタークリップボードはクリアしておく（混在防止）
         self.actor_clipboard.clear();
     }
@@ -77,7 +87,9 @@ impl App {
         // シーンモード: ActorData クリップボードからアクターを復元する
         if !self.actor_clipboard.is_empty() {
             let wl = self.active_world_line;
-            if self.scene.is_none() || self.draw_ctx.is_none() { return; }
+            if self.scene.is_none() || self.draw_ctx.is_none() {
+                return;
+            }
 
             let before_actors = self.snapshot_actors_for_wl(wl);
             let data_list = self.actor_clipboard.clone();
@@ -93,7 +105,7 @@ impl App {
             };
 
             {
-                let ctx  = self.draw_ctx.as_ref().unwrap();
+                let ctx = self.draw_ctx.as_ref().unwrap();
                 let host = self.scripting_host.as_ref();
                 let scene = self.scene.as_mut().unwrap();
 
@@ -125,31 +137,37 @@ impl App {
             }));
 
             // 新規追加されたアクターを選択状態にする
-            self.selected_actor_dfs_ids = (dfs_start .. dfs_start + clipboard_count).collect();
+            self.selected_actor_dfs_ids = (dfs_start..dfs_start + clipboard_count).collect();
             self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
             self.selected_instances.clear();
 
             self.send_selected();
             self.send_hierarchy();
-            if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+            if let Some(ipc) = &self.ipc {
+                ipc.send("SCENE_MODIFIED");
+            }
             return;
         }
 
         // レガシー: MC インスタンスクリップボードから復元する（アクター編集モード等）
         use crate::engine::structs::components::model_component::InstanceMeta;
-        if self.clipboard.is_empty() { return; }
+        if self.clipboard.is_empty() {
+            return;
+        }
 
         let before_selection = self.selected_instances.clone();
 
         let new_indices = {
             let wl = self.active_world_line;
             let Some(scene) = &mut self.scene else { return };
-            let Some(mc)    = scene.find_component_in_world_line_mut::<ModelComponent>(wl) else { return };
+            let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(wl) else {
+                return;
+            };
 
-            let before_mats   = mc.instance_mats.clone();
-            let before_meta   = mc.instance_meta.clone();
+            let before_mats = mc.instance_mats.clone();
+            let before_meta = mc.instance_meta.clone();
             let before_groups = mc.group_meta.clone();
-            let before_gid    = mc.next_group_id;
+            let before_gid = mc.next_group_id;
 
             let base_idx = mc.instance_mats.len() as u32;
             let mut new_indices = Vec::with_capacity(self.clipboard.len());
@@ -157,24 +175,30 @@ impl App {
             for (i, item) in self.clipboard.iter().enumerate() {
                 mc.instance_mats.push(item.mat);
                 mc.instance_meta.push(InstanceMeta {
-                    name:      format!("{}(1)", item.name),
-                    parent:    item.local_parent.map(|lp| base_idx + lp as u32),
+                    name: format!("{}(1)", item.name),
+                    parent: item.local_parent.map(|lp| base_idx + lp as u32),
                     anim_seed: item.anim_seed,
                 });
                 new_indices.push(base_idx + i as u32);
             }
             mc.mark_batch_dirty();
 
-            let after_mats   = mc.instance_mats.clone();
-            let after_meta   = mc.instance_meta.clone();
+            let after_mats = mc.instance_mats.clone();
+            let after_meta = mc.instance_meta.clone();
             let after_groups = mc.group_meta.clone();
-            let after_gid    = mc.next_group_id;
+            let after_gid = mc.next_group_id;
 
             self.undo_history.record(Box::new(SceneSnapshotCommand {
-                before_mats, before_meta, before_groups, before_gid,
-                after_mats,  after_meta,  after_groups,  after_gid,
+                before_mats,
+                before_meta,
+                before_groups,
+                before_gid,
+                after_mats,
+                after_meta,
+                after_groups,
+                after_gid,
                 before_selection: before_selection.clone(),
-                after_selection:  new_indices.clone(),
+                after_selection: new_indices.clone(),
             }));
 
             new_indices

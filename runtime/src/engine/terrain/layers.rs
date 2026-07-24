@@ -88,18 +88,42 @@ const DETILE_CODE_MACRO: u32 = 2;
 
 // ─── serde default 用関数 ───────────────────────────────────────────────────
 
-fn default_slope_min_deg() -> f32 { DEFAULT_SLOPE_MIN_DEG }
-fn default_slope_max_deg() -> f32 { DEFAULT_SLOPE_MAX_DEG }
-fn default_slope_fade_deg() -> f32 { DEFAULT_SLOPE_FADE_DEG }
-fn default_height_min() -> f32 { DEFAULT_HEIGHT_MIN }
-fn default_height_max() -> f32 { DEFAULT_HEIGHT_MAX }
-fn default_height_fade() -> f32 { DEFAULT_HEIGHT_FADE }
-fn default_priority() -> f32 { DEFAULT_PRIORITY }
-fn default_layer_base_color() -> [f32; 3] { DEFAULT_LAYER_BASE_COLOR }
-fn default_layer_roughness() -> f32 { DEFAULT_LAYER_ROUGHNESS }
-fn default_layer_metallic() -> f32 { DEFAULT_LAYER_METALLIC }
-fn default_layer_uv_scale() -> f32 { DEFAULT_LAYER_UV_SCALE }
-fn default_layer_detile_strength() -> f32 { DEFAULT_LAYER_DETILE_STRENGTH }
+fn default_slope_min_deg() -> f32 {
+    DEFAULT_SLOPE_MIN_DEG
+}
+fn default_slope_max_deg() -> f32 {
+    DEFAULT_SLOPE_MAX_DEG
+}
+fn default_slope_fade_deg() -> f32 {
+    DEFAULT_SLOPE_FADE_DEG
+}
+fn default_height_min() -> f32 {
+    DEFAULT_HEIGHT_MIN
+}
+fn default_height_max() -> f32 {
+    DEFAULT_HEIGHT_MAX
+}
+fn default_height_fade() -> f32 {
+    DEFAULT_HEIGHT_FADE
+}
+fn default_priority() -> f32 {
+    DEFAULT_PRIORITY
+}
+fn default_layer_base_color() -> [f32; 3] {
+    DEFAULT_LAYER_BASE_COLOR
+}
+fn default_layer_roughness() -> f32 {
+    DEFAULT_LAYER_ROUGHNESS
+}
+fn default_layer_metallic() -> f32 {
+    DEFAULT_LAYER_METALLIC
+}
+fn default_layer_uv_scale() -> f32 {
+    DEFAULT_LAYER_UV_SCALE
+}
+fn default_layer_detile_strength() -> f32 {
+    DEFAULT_LAYER_DETILE_STRENGTH
+}
 
 // ============================================================
 //  DetileMode — タイリング（繰り返し模様）解消モード
@@ -172,13 +196,13 @@ pub struct LayerRule {
 impl Default for LayerRule {
     fn default() -> Self {
         Self {
-            slope_min_deg:  DEFAULT_SLOPE_MIN_DEG,
-            slope_max_deg:  DEFAULT_SLOPE_MAX_DEG,
+            slope_min_deg: DEFAULT_SLOPE_MIN_DEG,
+            slope_max_deg: DEFAULT_SLOPE_MAX_DEG,
             slope_fade_deg: DEFAULT_SLOPE_FADE_DEG,
-            height_min:     DEFAULT_HEIGHT_MIN,
-            height_max:     DEFAULT_HEIGHT_MAX,
-            height_fade:    DEFAULT_HEIGHT_FADE,
-            priority:       DEFAULT_PRIORITY,
+            height_min: DEFAULT_HEIGHT_MIN,
+            height_max: DEFAULT_HEIGHT_MAX,
+            height_fade: DEFAULT_HEIGHT_FADE,
+            priority: DEFAULT_PRIORITY,
         }
     }
 }
@@ -187,7 +211,12 @@ impl LayerRule {
     /// 斜度（度）・高度（ワールド Y）に対する生の重みを返す（正規化前・0 以上）。
     pub fn evaluate(&self, slope_deg: f32, height: f32) -> f32 {
         // ─── 斜度ウィンドウ × 高度ウィンドウ × 優先度 ───
-        let s = window(slope_deg, self.slope_min_deg, self.slope_max_deg, self.slope_fade_deg);
+        let s = window(
+            slope_deg,
+            self.slope_min_deg,
+            self.slope_max_deg,
+            self.slope_fade_deg,
+        );
         let h = window(height, self.height_min, self.height_max, self.height_fade);
         (self.priority.max(0.0) * s * h).max(0.0)
     }
@@ -302,7 +331,11 @@ impl TerrainLayerSet {
         // 確保なし版へ委譲するだけの薄いラッパ（演算は 1 箇所に集約する）。
         let mut w = vec![0.0f32; self.layers.len()];
         let written = self.rule_weights_all_into(normal_y, world_y, &mut w);
-        debug_assert_eq!(written, w.len(), "rule_weights_all_into の書き込み数が層数と不一致");
+        debug_assert_eq!(
+            written,
+            w.len(),
+            "rule_weights_all_into の書き込み数が層数と不一致"
+        );
         w
     }
 
@@ -322,7 +355,8 @@ impl TerrainLayerSet {
         let n = self.layers.len();
         assert!(
             out.len() >= n,
-            "rule_weights_all_into: 出力バッファが短い（{} < {n}）", out.len()
+            "rule_weights_all_into: 出力バッファが短い（{} < {n}）",
+            out.len()
         );
 
         // ─── 法線 Y から斜度（度）を求める。上向き=0 度、水平方向=90 度 ───
@@ -473,7 +507,10 @@ impl Default for BlendSlots {
     fn default() -> Self {
         let mut weight = [0.0f32; TERRAIN_BLEND_SLOTS];
         weight[0] = 1.0;
-        Self { index: [0; TERRAIN_BLEND_SLOTS], weight }
+        Self {
+            index: [0; TERRAIN_BLEND_SLOTS],
+            weight,
+        }
     }
 }
 
@@ -535,7 +572,8 @@ pub fn expand_slots(slots: &BlendSlots, len: usize) -> Vec<f32> {
 pub fn expand_slots_into(slots: &BlendSlots, len: usize, out: &mut [f32]) {
     assert!(
         out.len() >= len,
-        "expand_slots_into: 出力バッファが短い（{} < {len}）", out.len()
+        "expand_slots_into: 出力バッファが短い（{} < {len}）",
+        out.len()
     );
     // ─── 先頭 len 要素を 0 クリア（vec![0.0; len] と同じ初期状態を作る）───
     for v in out[..len].iter_mut() {
@@ -554,11 +592,7 @@ pub fn expand_slots_into(slots: &BlendSlots, len: usize, out: &mut [f32]) {
 ///
 /// `blend_rule_and_paint` の任意レイヤ数版。戻り値は len = rule.len() の密ベクトルで、
 /// 総和 1 に正規化済み（縮退時はレイヤ 0 へ寄せる）。
-pub fn blend_rule_and_paint_all(
-    rule: &[f32],
-    paint: &BlendSlots,
-    paint_amount: f32,
-) -> Vec<f32> {
+pub fn blend_rule_and_paint_all(rule: &[f32], paint: &BlendSlots, paint_amount: f32) -> Vec<f32> {
     // 確保なし版へ委譲するだけの薄いラッパ。
     let mut out = vec![0.0f32; rule.len()];
     blend_rule_and_paint_all_into(rule, paint, paint_amount, &mut out);
@@ -582,7 +616,8 @@ pub fn blend_rule_and_paint_all_into(
     let len = rule.len();
     assert!(
         out.len() >= len,
-        "blend_rule_and_paint_all_into: 出力バッファが短い（{} < {len}）", out.len()
+        "blend_rule_and_paint_all_into: 出力バッファが短い（{} < {len}）",
+        out.len()
     );
     let t = paint_amount.clamp(0.0, 1.0);
     // ペイントをルールと同じ次元へ展開（out をそのまま展開先に使う）。

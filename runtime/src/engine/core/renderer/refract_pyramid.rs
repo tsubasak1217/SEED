@@ -26,9 +26,9 @@
 //  b[m] を copy_texture_to_texture でミップチェーンの mip m へ書き戻す。
 // ============================================================
 
-use super::imos_blur::{ImosBlur, IMOS_BLUR_FORMAT};
-use super::post::{PostPipeline, run_post_stage};
 use super::HDR_FORMAT;
+use super::imos_blur::{IMOS_BLUR_FORMAT, ImosBlur};
+use super::post::{PostPipeline, run_post_stage};
 
 /// 屈折背景ミップチェーンのミップ数（mip0 含む）。
 /// refract_common.wgsl の REFRACT_MAX_MIP（= REFRACT_MIP_COUNT - 1）と一致させること。
@@ -83,35 +83,44 @@ impl PyramidPipes {
             None,
             |name: &str| -> &'static str {
                 match name {
-                    "fullscreen.wgsl"      => include_str!("shaders/fullscreen.wgsl"),
+                    "fullscreen.wgsl" => include_str!("shaders/fullscreen.wgsl"),
                     "post_bloom_down.wgsl" => include_str!("shaders/post_bloom_down.wgsl"),
                     other => panic!("refract_pyramid: unknown shader source: {other}"),
                 }
             },
         );
         let down_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label:          Some("Refract Pyramid Downsample Sampler"),
+            label: Some("Refract Pyramid Downsample Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter:     wgpu::FilterMode::Linear,
-            min_filter:     wgpu::FilterMode::Linear,
-            mipmap_filter:  wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
         // マスク引数用の白 1x1（down は group2 を持たないため実際にはバインドされない）。
         let white_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label:           Some("Refract Pyramid White 1x1"),
-            size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            label: Some("Refract Pyramid White 1x1"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
-            sample_count:    1,
-            dimension:       wgpu::TextureDimension::D2,
-            format:          PYRAMID_FORMAT,
-            usage:           wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats:    &[],
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: PYRAMID_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
         });
         let white_view = white_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        Self { down_pipeline, down_sampler, white_view, imos: ImosBlur::new(device, None) }
+        Self {
+            down_pipeline,
+            down_sampler,
+            white_view,
+            imos: ImosBlur::new(device, None),
+        }
     }
 }
 
@@ -132,7 +141,9 @@ pub struct RefractPyramid {
 }
 
 impl Default for RefractPyramid {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RefractPyramid {
@@ -164,15 +175,19 @@ impl RefractPyramid {
         // ── ミップチェーン本体（mip0 は copy_dst、以降も copy_dst で書き戻す）──
         let mip_count = REFRACT_MIP_COUNT.min(max_mips(w, h));
         let tex = device.create_texture(&wgpu::TextureDescriptor {
-            label:           Some("Refract Pyramid"),
-            size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            label: Some("Refract Pyramid"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: mip_count,
-            sample_count:    1,
-            dimension:       wgpu::TextureDimension::D2,
-            format:          PYRAMID_FORMAT,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: PYRAMID_FORMAT,
             // サンプル（binding15）＋ mip0/各ミップへの copy 書き込み。
-            usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats:    &[],
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         });
         // 全ミップを含むサンプルビュー（binding15）。
         let full_view = tex.create_view(&wgpu::TextureViewDescriptor {
@@ -180,14 +195,16 @@ impl RefractPyramid {
             ..Default::default()
         });
         // ミップ m を入力として読むための単一ミップビュー。
-        let mip_input_views: Vec<wgpu::TextureView> = (0..mip_count).map(|m| {
-            tex.create_view(&wgpu::TextureViewDescriptor {
-                label:           Some("Refract Pyramid Mip Input"),
-                base_mip_level:  m,
-                mip_level_count: Some(1),
-                ..Default::default()
+        let mip_input_views: Vec<wgpu::TextureView> = (0..mip_count)
+            .map(|m| {
+                tex.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("Refract Pyramid Mip Input"),
+                    base_mip_level: m,
+                    mip_level_count: Some(1),
+                    ..Default::default()
+                })
             })
-        }).collect();
+            .collect();
 
         // ── ブラー対象ミップ（1..mip_count）ごとのスクラッチ 3 枚 ──
         let storage = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING;
@@ -195,11 +212,30 @@ impl RefractPyramid {
         for m in 1..mip_count {
             let mw = (w >> m).max(1);
             let mh = (h >> m).max(1);
-            let down = make_tex(device, "refract_down", mw, mh,
-                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING).1;
+            let down = make_tex(
+                device,
+                "refract_down",
+                mw,
+                mh,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            )
+            .1;
             let a = make_tex(device, "refract_a", mw, mh, storage).1;
-            let (b_tex, b) = make_tex(device, "refract_b", mw, mh, storage | wgpu::TextureUsages::COPY_SRC);
-            scratch.push(MipScratch { down, a, b_tex, b, w: mw, h: mh });
+            let (b_tex, b) = make_tex(
+                device,
+                "refract_b",
+                mw,
+                mh,
+                storage | wgpu::TextureUsages::COPY_SRC,
+            );
+            scratch.push(MipScratch {
+                down,
+                a,
+                b_tex,
+                b,
+                w: mw,
+                h: mh,
+            });
         }
 
         self.tex = Some(tex);
@@ -212,40 +248,50 @@ impl RefractPyramid {
 
     /// binding15 に差すサンプルビュー（全ミップ）。ensure 済みであること。
     pub fn full_view(&self) -> &wgpu::TextureView {
-        self.full_view.as_ref().expect("RefractPyramid: full_view 未確保（ensure を先に呼ぶこと）")
+        self.full_view
+            .as_ref()
+            .expect("RefractPyramid: full_view 未確保（ensure を先に呼ぶこと）")
     }
 
     /// ミップチェーンを生成する（不透明ライティング完成後・半透明パス前に呼ぶ）。
     /// mip0 に scene_hdr をコピーし、以降のミップをダウンサンプル→いもすブラーで作る。
     pub fn record(
         &self,
-        device:        &wgpu::Device,
-        encoder:       &mut wgpu::CommandEncoder,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
         scene_hdr_tex: &wgpu::Texture,
     ) {
-        let Some(tex) = self.tex.as_ref() else { return; };
-        let Some(pipes) = self.pipes.as_ref() else { return; };
+        let Some(tex) = self.tex.as_ref() else {
+            return;
+        };
+        let Some(pipes) = self.pipes.as_ref() else {
+            return;
+        };
 
         // mip0 = scene_hdr のコピー（シャープな屈折背景。従来の refract_bg と同一内容）。
         encoder.copy_texture_to_texture(
             wgpu::ImageCopyTexture {
-                texture:   scene_hdr_tex,
+                texture: scene_hdr_tex,
                 mip_level: 0,
-                origin:    wgpu::Origin3d::ZERO,
-                aspect:    wgpu::TextureAspect::All,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
             },
             wgpu::ImageCopyTexture {
-                texture:   tex,
+                texture: tex,
                 mip_level: 0,
-                origin:    wgpu::Origin3d::ZERO,
-                aspect:    wgpu::TextureAspect::All,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
             },
-            wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
         );
 
         // 各ブラーミップ: ダウンサンプル → いもすブラー → mip へ書き戻し。
         for (idx, s) in self.scratch.iter().enumerate() {
-            let m = idx + 1;                     // 生成先ミップ（1 起点）
+            let m = idx + 1; // 生成先ミップ（1 起点）
             let in_view = &self.mip_input_views[m - 1]; // 入力＝1 段上のミップ（既に確定済み）
             let in_w = (self.width >> (m - 1)).max(1);
             let in_h = (self.height >> (m - 1)).max(1);
@@ -253,34 +299,50 @@ impl RefractPyramid {
             // ① ダウンサンプル（13-tap）: mip(m-1) → down[m]。params は入力の 1 テクセルサイズ。
             let texel = [1.0f32 / in_w as f32, 1.0f32 / in_h as f32, 0.0f32, 0.0f32];
             run_post_stage(
-                device, encoder, &pipes.down_pipeline,
-                in_view, None, &pipes.white_view, &pipes.down_sampler,
-                bytemuck::bytes_of(&texel), &s.down, "Refract Pyramid Downsample",
+                device,
+                encoder,
+                &pipes.down_pipeline,
+                in_view,
+                None,
+                &pipes.white_view,
+                &pipes.down_sampler,
+                bytemuck::bytes_of(&texel),
+                &s.down,
+                "Refract Pyramid Downsample",
             );
 
             // ② いもす法ブラー: down[m] → (a,b の ping-pong)。結果は必ず b に残る。
             pipes.imos.record(
-                device, encoder,
-                &s.down, &s.a, &s.b,
-                s.w as i32, s.h as i32,
-                REFRACT_BLUR_RADIUS, REFRACT_BLUR_ITERATIONS,
+                device,
+                encoder,
+                &s.down,
+                &s.a,
+                &s.b,
+                s.w as i32,
+                s.h as i32,
+                REFRACT_BLUR_RADIUS,
+                REFRACT_BLUR_ITERATIONS,
             );
 
             // ③ b[m]（ぼかし結果）→ ミップチェーンの mip m へ書き戻す。
             encoder.copy_texture_to_texture(
                 wgpu::ImageCopyTexture {
-                    texture:   &s.b_tex,
+                    texture: &s.b_tex,
                     mip_level: 0,
-                    origin:    wgpu::Origin3d::ZERO,
-                    aspect:    wgpu::TextureAspect::All,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
                 },
                 wgpu::ImageCopyTexture {
-                    texture:   tex,
+                    texture: tex,
                     mip_level: m as u32,
-                    origin:    wgpu::Origin3d::ZERO,
-                    aspect:    wgpu::TextureAspect::All,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
                 },
-                wgpu::Extent3d { width: s.w, height: s.h, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: s.w,
+                    height: s.h,
+                    depth_or_array_layers: 1,
+                },
             );
         }
     }
@@ -300,20 +362,24 @@ fn max_mips(w: u32, h: u32) -> u32 {
 /// スクラッチテクスチャ 1 枚を作る（ao.rs の make_tex 相当）。
 fn make_tex(
     device: &wgpu::Device,
-    label:  &str,
-    w:      u32,
-    h:      u32,
-    usage:  wgpu::TextureUsages,
+    label: &str,
+    w: u32,
+    h: u32,
+    usage: wgpu::TextureUsages,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label:           Some(label),
-        size:            wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: w.max(1),
+            height: h.max(1),
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
-        sample_count:    1,
-        dimension:       wgpu::TextureDimension::D2,
-        format:          IMOS_BLUR_FORMAT,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: IMOS_BLUR_FORMAT,
         usage,
-        view_formats:    &[],
+        view_formats: &[],
     });
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     (tex, view)
@@ -335,10 +401,15 @@ mod tests {
         let src = include_str!("shaders/refract_common.wgsl");
         // "const REFRACT_MAX_MIP: f32 = 4.0;" の数値を抜き出して (MIP_COUNT-1) と照合する。
         let needle = "REFRACT_MAX_MIP: f32 =";
-        let pos = src.find(needle).expect("REFRACT_MAX_MIP 宣言が見つからない");
+        let pos = src
+            .find(needle)
+            .expect("REFRACT_MAX_MIP 宣言が見つからない");
         let tail = &src[pos + needle.len()..];
-        let num: String = tail.trim_start()
-            .chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let num: String = tail
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
         let wgsl_max_mip: f32 = num.parse().expect("REFRACT_MAX_MIP の数値パースに失敗");
         assert_eq!(
             wgsl_max_mip as u32,

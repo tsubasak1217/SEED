@@ -13,7 +13,7 @@ use std::sync::Arc;
 use winit::event_loop::ActiveEventLoop;
 
 use crate::engine::core::renderer::Renderer;
-use crate::engine::core::window::{create_window, WindowConfig};
+use crate::engine::core::window::{WindowConfig, create_window};
 use crate::engine::methods::drawer::{DrawContext, IdBuffer};
 use crate::engine::structs::tensor::Vector3;
 
@@ -40,11 +40,14 @@ impl App {
         } else {
             None
         };
-        let window = Arc::new(create_window(event_loop, &WindowConfig {
-            parent_hwnd: self.parent_hwnd,
-            physical_size,
-            ..WindowConfig::default()
-        }));
+        let window = Arc::new(create_window(
+            event_loop,
+            &WindowConfig {
+                parent_hwnd: self.parent_hwnd,
+                physical_size,
+                ..WindowConfig::default()
+            },
+        ));
 
         // GPU 初期化（wgpu DX12 デバイス + シェーダーコンパイル）は数秒かかることがある。
         // この間はメインスレッドがブロックされるため、ウィンドウを表示してしまうと
@@ -78,16 +81,16 @@ impl App {
 
         let scene = crate::engine::core::app_base::scene::Scene::new("Untitled");
         let camera_buf = ctx.create_camera_buffer();
-        let id_buffer  = IdBuffer::new(&ctx.device, size.width, size.height);
+        let id_buffer = IdBuffer::new(&ctx.device, size.width, size.height);
         let line_model_buf = ctx.create_identity_model_bg_for_unlit();
 
         let canvas_overlay_camera_buf = ctx.create_camera_buffer();
 
-        self.draw_ctx      = Some(ctx);
-        self.scene         = Some(scene);
-        self.camera_buf    = Some(camera_buf);
+        self.draw_ctx = Some(ctx);
+        self.scene = Some(scene);
+        self.camera_buf = Some(camera_buf);
         self.canvas_overlay_camera_buf = Some(canvas_overlay_camera_buf);
-        self.id_buffer     = Some(id_buffer);
+        self.id_buffer = Some(id_buffer);
         self.line_model_buf = Some(line_model_buf);
 
         // 軸ギズモ・アイコンオーバーレイ（エディタモードのみ初期化）
@@ -99,11 +102,7 @@ impl App {
             // 軸ギズモ・アイコンオーバーレイはメインパス（HDR オフスクリーン）へ描くため
             // HDR_FORMAT でビルドする（Phase R3）。
             let scene_fmt = crate::engine::core::renderer::HDR_FORMAT;
-            self.axis_gizmo = Some(AxisGizmo::new(
-                dev,
-                scene_fmt,
-                renderer.depth_format(),
-            ));
+            self.axis_gizmo = Some(AxisGizmo::new(dev, scene_fmt, renderer.depth_format()));
             self.icon_overlay = Some(IconOverlay::new(
                 dev,
                 que,
@@ -114,9 +113,8 @@ impl App {
         }
 
         self.renderer = Some(renderer);
-        self.window   = Some(window);
-        self.clock    = crate::engine::core::clock::Clock::new();
-
+        self.window = Some(window);
+        self.clock = crate::engine::core::clock::Clock::new();
 
         // asset_fs を初期化する（全モード共通）
         self.init_asset_fs();
@@ -124,7 +122,10 @@ impl App {
 
         // プラグインをロードする
         self.load_plugins();
-        eprintln!("[SEED INIT] load_plugins done  count={}", self.plugin_registry.len());
+        eprintln!(
+            "[SEED INIT] load_plugins done  count={}",
+            self.plugin_registry.len()
+        );
 
         // シーンレジストリ（シーンマネージャ登録名 → パス）をロードする。
         // スクリプトの SEED.Scene.Load / Transition("名前") の名前解決に使う。
@@ -137,7 +138,10 @@ impl App {
         // シーンロード・モデルロードはメインスレッドをブロックするため、
         // ウィンドウ表示より先に完了させる。
         if self.mode == RuntimeMode::Play {
-            eprintln!("[SEED INIT] load_play_scene start  scene_path={:?}", self.scene_path);
+            eprintln!(
+                "[SEED INIT] load_play_scene start  scene_path={:?}",
+                self.scene_path
+            );
             // シーン復元の所要時間を恒久計測する。
             // モデルキャッシュのヒット／ミスは体感ロード時間を桁で変えるため
             // （Sponza 級はミス時に glTF 再パース＋メッシュレット再構築が走る）、
@@ -212,7 +216,8 @@ impl App {
         };
 
         // 実行ファイルの隣に assets.pak があれば PAK モードにする
-        let pak_path = assets_root.parent()
+        let pak_path = assets_root
+            .parent()
             .map(|dir| dir.join("assets.pak"))
             .filter(|p| p.exists());
 
@@ -242,8 +247,12 @@ impl App {
         };
 
         let settings_path = assets_root.join("project_settings.json");
-        let Ok(text) = std::fs::read_to_string(&settings_path) else { return DEFAULT_WINDOW_SIZE };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return DEFAULT_WINDOW_SIZE };
+        let Ok(text) = std::fs::read_to_string(&settings_path) else {
+            return DEFAULT_WINDOW_SIZE;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return DEFAULT_WINDOW_SIZE;
+        };
 
         // 幅・高さを個別に取り出し、範囲内ならペアで採用する（片方欠けは既定値）
         let (w, h) = (
@@ -264,8 +273,8 @@ impl App {
     /// プラグインフォルダ: `{assets_root}/../plugins/`
     /// 有効化リスト: `{assets_root}/project_settings.json` の plugins フィールド
     fn load_plugins(&mut self) {
-        use crate::engine::plugin::registry::PluginRegistry;
         use crate::engine::plugin::manifest::PluginEntry;
+        use crate::engine::plugin::registry::PluginRegistry;
 
         // アセットルートを解決する
         let assets_root = if let Some(root) = &self.assets_root {
@@ -278,7 +287,8 @@ impl App {
         };
 
         // プラグインフォルダ = assets の隣の plugins/ ディレクトリ
-        let plugins_dir = assets_root.parent()
+        let plugins_dir = assets_root
+            .parent()
             .map(|p| p.join("plugins"))
             .unwrap_or_else(|| std::path::PathBuf::from("plugins"));
 
@@ -297,7 +307,10 @@ impl App {
         };
 
         self.plugin_registry = PluginRegistry::load_from_dir(&plugins_dir, &enabled_list);
-        eprintln!("[App] プラグイン {} 件ロード完了", self.plugin_registry.len());
+        eprintln!(
+            "[App] プラグイン {} 件ロード完了",
+            self.plugin_registry.len()
+        );
     }
 
     /// Play モードでシーンをロードする。
@@ -317,17 +330,27 @@ impl App {
         use crate::engine::asset_fs;
 
         self.scene_registry.clear();
-        let Ok(json) = asset_fs::read_string("assets://project_settings.json") else { return };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else { return };
-        let Some(scenes) = v["scenes"].as_array() else { return };
+        let Ok(json) = asset_fs::read_string("assets://project_settings.json") else {
+            return;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else {
+            return;
+        };
+        let Some(scenes) = v["scenes"].as_array() else {
+            return;
+        };
         for entry in scenes {
             let name = entry["name"].as_str().unwrap_or("");
             let path = entry["path"].as_str().unwrap_or("");
             if !name.is_empty() && !path.is_empty() {
-                self.scene_registry.insert(name.to_string(), path.to_string());
+                self.scene_registry
+                    .insert(name.to_string(), path.to_string());
             }
         }
-        eprintln!("[SEED INIT] scene registry loaded  count={}", self.scene_registry.len());
+        eprintln!(
+            "[SEED INIT] scene registry loaded  count={}",
+            self.scene_registry.len()
+        );
     }
 
     /// project_settings.json のグラフィックス関連設定を読み込み、App の対応フィールドへ反映する。
@@ -338,8 +361,12 @@ impl App {
     pub(super) fn load_graphics_settings(&mut self) {
         use crate::engine::asset_fs;
 
-        let Ok(json) = asset_fs::read_string("assets://project_settings.json") else { return };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else { return };
+        let Ok(json) = asset_fs::read_string("assets://project_settings.json") else {
+            return;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else {
+            return;
+        };
         // 影方式（旧キー rt_shadows: bool）→ ShadowMode。既定 false=ShadowMap（後方互換）。
         self.render_features.shadow = if v["rt_shadows"].as_bool().unwrap_or(false) {
             crate::engine::core::renderer::ShadowMode::Rt
@@ -351,13 +378,21 @@ impl App {
         // ブルーム／FXAA（Phase R4, 既定すべて OFF）。読み側は unwrap_or でデフォルト維持。
         // project_settings.json はコミットしないため、キーが無くても後方互換で OFF になる。
         use crate::engine::core::renderer::{
-            DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_INTENSITY,
+            DEFAULT_BLOOM_INTENSITY, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_THRESHOLD,
         };
-        self.post_fx.bloom_enabled   = v["bloom"].as_bool().unwrap_or(false);
-        self.post_fx.bloom_threshold = v["bloom_threshold"].as_f64().unwrap_or(DEFAULT_BLOOM_THRESHOLD as f64) as f32;
-        self.post_fx.bloom_knee      = v["bloom_knee"].as_f64().unwrap_or(DEFAULT_BLOOM_KNEE as f64) as f32;
-        self.post_fx.bloom_intensity = v["bloom_intensity"].as_f64().unwrap_or(DEFAULT_BLOOM_INTENSITY as f64) as f32;
-        self.post_fx.fxaa_enabled    = v["fxaa"].as_bool().unwrap_or(false);
+        self.post_fx.bloom_enabled = v["bloom"].as_bool().unwrap_or(false);
+        self.post_fx.bloom_threshold = v["bloom_threshold"]
+            .as_f64()
+            .unwrap_or(DEFAULT_BLOOM_THRESHOLD as f64)
+            as f32;
+        self.post_fx.bloom_knee = v["bloom_knee"]
+            .as_f64()
+            .unwrap_or(DEFAULT_BLOOM_KNEE as f64) as f32;
+        self.post_fx.bloom_intensity = v["bloom_intensity"]
+            .as_f64()
+            .unwrap_or(DEFAULT_BLOOM_INTENSITY as f64)
+            as f32;
+        self.post_fx.fxaa_enabled = v["fxaa"].as_bool().unwrap_or(false);
         // 透明描画方式（Phase R5, 既定 "sort" = 距離ソート）。キー欠落時も後方互換で距離ソート。
         self.post_fx.transparency = crate::engine::core::renderer::TransparencyMode::from_str(
             v["transparency"].as_str().unwrap_or("sort"),
@@ -369,7 +404,8 @@ impl App {
         self.post_fx.deferred = v["deferred"].as_bool().unwrap_or(true);
         // RT屈折の逐次グラブ（既定 false）。キー欠落時は無効＝従来の 1 回グラブ共有挙動を維持する。
         // ガラス 1 個描画ごとに背景ミップチェーンを再グラブし、ガラス越しガラスの多重屈折を表現する重い設定。
-        self.post_fx.refract_sequential_grab = v["refract_sequential_grab"].as_bool().unwrap_or(false);
+        self.post_fx.refract_sequential_grab =
+            v["refract_sequential_grab"].as_bool().unwrap_or(false);
         // DDGI（Phase RT-GI, 既定 有効・強度 1.0）。既定値から出発し、存在するキーだけ上書きする。
         // enabled は RT 非対応 GPU では実行時に強制無効化される（frame_renderer のゲート）。
         // GI 方式（旧キー gi_enabled: bool）→ GiMode。旧既定は enabled=true のため、
@@ -379,17 +415,33 @@ impl App {
         } else {
             crate::engine::core::renderer::GiMode::Flat
         };
-        if let Some(x) = v["gi_intensity"].as_f64()         { self.post_fx.gi.intensity = x as f32; }
-        if let Some(x) = v["gi_probes_per_frame"].as_u64()  { self.post_fx.gi.probes_per_frame = x as u32; }
-        if let Some(x) = v["gi_rays_per_probe"].as_u64()    { self.post_fx.gi.rays_per_probe = x as u32; }
-        if let Some(x) = v["gi_hysteresis"].as_f64()        { self.post_fx.gi.hysteresis = x as f32; }
-        if let Some(x) = v["gi_recursive_weight"].as_f64()  { self.post_fx.gi.recursive_weight = x as f32; }
+        if let Some(x) = v["gi_intensity"].as_f64() {
+            self.post_fx.gi.intensity = x as f32;
+        }
+        if let Some(x) = v["gi_probes_per_frame"].as_u64() {
+            self.post_fx.gi.probes_per_frame = x as u32;
+        }
+        if let Some(x) = v["gi_rays_per_probe"].as_u64() {
+            self.post_fx.gi.rays_per_probe = x as u32;
+        }
+        if let Some(x) = v["gi_hysteresis"].as_f64() {
+            self.post_fx.gi.hysteresis = x as f32;
+        }
+        if let Some(x) = v["gi_recursive_weight"].as_f64() {
+            self.post_fx.gi.recursive_weight = x as f32;
+        }
         // 反射（SSR / RT）強度（Phase D6）。欠落時は既定 1.0 を維持。
-        if let Some(x) = v["reflection_intensity"].as_f64() { self.post_fx.reflection_intensity = x as f32; }
-        if let Some(x) = v["ao_intensity"].as_f64() { self.post_fx.ao_intensity = x as f32; }
+        if let Some(x) = v["reflection_intensity"].as_f64() {
+            self.post_fx.reflection_intensity = x as f32;
+        }
+        if let Some(x) = v["ao_intensity"].as_f64() {
+            self.post_fx.ao_intensity = x as f32;
+        }
         // 新キー features（あれば機能マトリクス全体を上書き。project_settings.json 将来対応）。
         if let Some(fv) = v.get("features") {
-            if let Ok(f) = serde_json::from_value::<crate::engine::core::renderer::RenderFeatures>(fv.clone()) {
+            if let Ok(f) =
+                serde_json::from_value::<crate::engine::core::renderer::RenderFeatures>(fv.clone())
+            {
                 self.render_features = f;
             }
         }
@@ -405,15 +457,20 @@ impl App {
                 ];
             }
         }
-        self.ambient_intensity =
-            v["ambient_intensity"].as_f64().unwrap_or(DEFAULT_AMBIENT_INTENSITY as f64) as f32;
+        self.ambient_intensity = v["ambient_intensity"]
+            .as_f64()
+            .unwrap_or(DEFAULT_AMBIENT_INTENSITY as f64) as f32;
         eprintln!(
             "[SEED INIT] graphics settings loaded  shadow={:?} post_vignette={} bloom={} fxaa={} transparency={} deferred={} seq_grab={} gi={:?} gi_intensity={}",
-            self.render_features.shadow, self.post_vignette_enabled,
-            self.post_fx.bloom_enabled, self.post_fx.fxaa_enabled,
-            self.post_fx.transparency.as_str(), self.post_fx.deferred,
+            self.render_features.shadow,
+            self.post_vignette_enabled,
+            self.post_fx.bloom_enabled,
+            self.post_fx.fxaa_enabled,
+            self.post_fx.transparency.as_str(),
+            self.post_fx.deferred,
             self.post_fx.refract_sequential_grab,
-            self.render_features.gi, self.post_fx.gi.intensity,
+            self.render_features.gi,
+            self.post_fx.gi.intensity,
         );
     }
 
@@ -429,14 +486,19 @@ impl App {
             if self.render_features.reflection != crate::engine::core::renderer::ReflectionMode::Off
                 && !self.post_fx.deferred
             {
-                eprintln!("[SEED FEATURES] 反射:deferred無効のため停止（反射は G-Buffer 有効時のみ動作）");
+                eprintln!(
+                    "[SEED FEATURES] 反射:deferred無効のため停止（反射は G-Buffer 有効時のみ動作）"
+                );
             }
             // SSGI も deferred（G-Buffer）有効時のみ動く独立パス。実効 GI が Ssgi でも deferred が
             // 無効なら SSGI は走らずフラットアンビエントで描画されるため、その旨を 1 行付記する（Phase SSGI）。
-            if self.render_features.resolve(rt_sup).gi == crate::engine::core::renderer::GiMode::Ssgi
+            if self.render_features.resolve(rt_sup).gi
+                == crate::engine::core::renderer::GiMode::Ssgi
                 && !self.post_fx.deferred
             {
-                eprintln!("[SEED FEATURES] GI(SSGI):deferred無効のため停止（フラットアンビエントで描画）");
+                eprintln!(
+                    "[SEED FEATURES] GI(SSGI):deferred無効のため停止（フラットアンビエントで描画）"
+                );
             }
             self.features_log_state = Some(key);
         }
@@ -458,7 +520,9 @@ impl App {
             match serde_json::from_str::<serde_json::Value>(&json) {
                 Ok(v) => {
                     let s = v["start_scene"].as_str().unwrap_or("").to_string();
-                    if s.is_empty() { return; }
+                    if s.is_empty() {
+                        return;
+                    }
                     s
                 }
                 Err(_) => return,
@@ -488,7 +552,9 @@ impl App {
                 // 2D アクターが含まれていれば WL 0 をキャンバス世界線として登録する。
                 // IPC の LoadScene 処理と同様に has_any_2d_actor を再帰チェックする。
                 fn has_any_2d_actor(actors: &[crate::engine::structs::objects::Actor]) -> bool {
-                    actors.iter().any(|a| a.is_2d() || has_any_2d_actor(a.children()))
+                    actors
+                        .iter()
+                        .any(|a| a.is_2d() || has_any_2d_actor(a.children()))
                 }
                 if has_any_2d_actor(&new_scene.actors) {
                     self.canvas_world_lines.insert(0);
@@ -500,7 +566,9 @@ impl App {
                 // terrain:// ガードで model=None のまま読まれた ModelComponent を埋める。
                 self.rebuild_terrain_after_load();
             }
-            Some(Err(e)) => { eprintln!("[SEED INIT] load_play_scene FAILED: {e}"); }
+            Some(Err(e)) => {
+                eprintln!("[SEED INIT] load_play_scene FAILED: {e}");
+            }
             None => {}
         }
     }

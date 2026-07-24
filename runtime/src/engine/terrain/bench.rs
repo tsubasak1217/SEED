@@ -144,15 +144,18 @@ fn bench_terrain_load_cpu() {
     for cells in BENCH_CELL_COUNTS {
         let settings = bench_settings(cells);
         // 全チャンク同一形状（起伏あり）でよい。狙いは 1 枚の絶対コスト×枚数の直並列差。
-        let chunks: Vec<TerrainChunkData> =
-            (0..BENCH_LOAD_CHUNKS).map(|_| bench_chunk(&settings)).collect();
+        let chunks: Vec<TerrainChunkData> = (0..BENCH_LOAD_CHUNKS)
+            .map(|_| bench_chunk(&settings))
+            .collect();
 
         // ── 直列（旧ロード経路相当）──
         let mut t_serial = std::time::Duration::ZERO;
         for _ in 0..BENCH_ITERS {
             let t = Instant::now();
-            let out: Vec<(usize, usize)> =
-                chunks.iter().map(|c| build_one_chunk_cpu(c, &settings, &layers)).collect();
+            let out: Vec<(usize, usize)> = chunks
+                .iter()
+                .map(|c| build_one_chunk_cpu(c, &settings, &layers))
+                .collect();
             t_serial += t.elapsed();
             std::hint::black_box(out);
         }
@@ -161,8 +164,10 @@ fn bench_terrain_load_cpu() {
         let mut t_par = std::time::Duration::ZERO;
         for _ in 0..BENCH_ITERS {
             let t = Instant::now();
-            let out: Vec<(usize, usize)> =
-                chunks.par_iter().map(|c| build_one_chunk_cpu(c, &settings, &layers)).collect();
+            let out: Vec<(usize, usize)> = chunks
+                .par_iter()
+                .map(|c| build_one_chunk_cpu(c, &settings, &layers))
+                .collect();
             t_par += t.elapsed();
             std::hint::black_box(out);
         }
@@ -205,10 +210,14 @@ fn parallel_mesh_matches_serial() {
         })
         .collect();
 
-    let serial: Vec<(usize, usize)> =
-        chunks.iter().map(|c| build_one_chunk_cpu(c, &settings, &layers)).collect();
-    let parallel: Vec<(usize, usize)> =
-        chunks.par_iter().map(|c| build_one_chunk_cpu(c, &settings, &layers)).collect();
+    let serial: Vec<(usize, usize)> = chunks
+        .iter()
+        .map(|c| build_one_chunk_cpu(c, &settings, &layers))
+        .collect();
+    let parallel: Vec<(usize, usize)> = chunks
+        .par_iter()
+        .map(|c| build_one_chunk_cpu(c, &settings, &layers))
+        .collect();
 
     assert_eq!(
         serial, parallel,
@@ -250,7 +259,11 @@ fn bench_paint_fast_path_cpu() {
             let t = Instant::now();
             // 1 頂点につき interp_vertex_paint は 1 回だけ呼ぶ（実装と同じ形）。
             // 2 回呼ぶと補間コストが二重に乗り、計測値が実態より悪く出る。
-            let pairs: Vec<_> = mesh.edges.iter().map(|e| interp_vertex_paint(&chunk, e)).collect();
+            let pairs: Vec<_> = mesh
+                .edges
+                .iter()
+                .map(|e| interp_vertex_paint(&chunk, e))
+                .collect();
             paint = pairs.iter().map(|p| p.0).collect();
             paint_amount = pairs.iter().map(|p| p.1).collect();
             t_recalc += t.elapsed();
@@ -261,7 +274,12 @@ fn bench_paint_fast_path_cpu() {
         for _ in 0..BENCH_ITERS {
             let t = Instant::now();
             let _ = compute_layer_colors(
-                &mesh.positions, &mesh.normals, &paint, &paint_amount, BENCH_ORIGIN, &layers,
+                &mesh.positions,
+                &mesh.normals,
+                &paint,
+                &paint_amount,
+                BENCH_ORIGIN,
+                &layers,
             );
             t_colors += t.elapsed();
         }

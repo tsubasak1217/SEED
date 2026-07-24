@@ -38,13 +38,13 @@ use super::imos_blur::IMOS_BLUR_FORMAT;
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ShadowMaskBilateralParams {
     /// ブラー半径（画素。>=0）。
-    pub radius:     i32,
+    pub radius: i32,
     /// 走査方向（1=水平 / 0=垂直）。
     pub horizontal: u32,
     /// 対象テクスチャ幅（画素, half-res）。
-    pub width:      i32,
+    pub width: i32,
     /// 対象テクスチャ高さ（画素, half-res）。
-    pub height:     i32,
+    pub height: i32,
 }
 
 /// 影マスク専用 separable バイラテラルブラーのコンピュートパイプライン一式。
@@ -52,48 +52,50 @@ pub struct ShadowMaskBilateral {
     /// blur_cs コンピュートパイプライン。
     pipeline: wgpu::ComputePipeline,
     /// group0 レイアウト（0=params / 1=src マスク（.a=深度ガイド）/ 2=dst storage）。
-    bgl:      wgpu::BindGroupLayout,
+    bgl: wgpu::BindGroupLayout,
 }
 
 impl ShadowMaskBilateral {
     /// バイラテラルブラーのコンピュートパイプラインを構築する。
     pub fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("Shadow Mask Bilateral Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shadow_mask_bilateral.wgsl").into()),
+            label: Some("Shadow Mask Bilateral Shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("shaders/shadow_mask_bilateral.wgsl").into(),
+            ),
         });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label:   Some("Shadow Mask Bilateral BGL"),
+            label: Some("Shadow Mask Bilateral BGL"),
             entries: &[
                 // binding 0: params UBO
                 wgpu::BindGroupLayoutEntry {
-                    binding:    0,
+                    binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
-                        ty:                 wgpu::BufferBindingType::Uniform,
+                        ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size:   None,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
                 // binding 1: src マスクテクスチャ（textureLoad。.rgb=透過率, .a=深度ガイド。Rgba16Float は filterable）
                 wgpu::BindGroupLayoutEntry {
-                    binding:    1,
+                    binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
-                        sample_type:    wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled:   false,
+                        multisampled: false,
                     },
                     count: None,
                 },
                 // binding 2: 出力 storage テクスチャ（write, IMOS_BLUR_FORMAT=Rgba16Float）
                 wgpu::BindGroupLayoutEntry {
-                    binding:    2,
+                    binding: 2,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
-                        access:         wgpu::StorageTextureAccess::WriteOnly,
-                        format:         IMOS_BLUR_FORMAT,
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: IMOS_BLUR_FORMAT,
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
@@ -101,15 +103,15 @@ impl ShadowMaskBilateral {
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:                Some("Shadow Mask Bilateral Layout"),
-            bind_group_layouts:   &[&bgl],
+            label: Some("Shadow Mask Bilateral Layout"),
+            bind_group_layouts: &[&bgl],
             push_constant_ranges: &[],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               Some("Shadow Mask Bilateral Pipeline"),
-            layout:              Some(&layout),
-            module:              &shader,
-            entry_point:         Some("blur_cs"),
+            label: Some("Shadow Mask Bilateral Pipeline"),
+            layout: Some(&layout),
+            module: &shader,
+            entry_point: Some("blur_cs"),
             compilation_options: Default::default(),
             cache,
         });
@@ -129,14 +131,14 @@ impl ShadowMaskBilateral {
     #[allow(clippy::too_many_arguments)]
     pub fn record_layer(
         &self,
-        device:  &wgpu::Device,
+        device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-        src:     &wgpu::TextureView,
-        tmp:     &wgpu::TextureView,
-        dst:     &wgpu::TextureView,
-        width:   i32,
-        height:  i32,
-        radius:  i32,
+        src: &wgpu::TextureView,
+        tmp: &wgpu::TextureView,
+        dst: &wgpu::TextureView,
+        width: i32,
+        height: i32,
+        radius: i32,
     ) {
         // 水平パス: src → tmp（各行を独立にバイラテラル）。
         self.subpass(device, encoder, src, tmp, 1, width, height, radius);
@@ -149,39 +151,53 @@ impl ShadowMaskBilateral {
     #[allow(clippy::too_many_arguments)]
     fn subpass(
         &self,
-        device:     &wgpu::Device,
-        encoder:    &mut wgpu::CommandEncoder,
-        src:        &wgpu::TextureView,
-        dst:        &wgpu::TextureView,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        src: &wgpu::TextureView,
+        dst: &wgpu::TextureView,
         horizontal: u32,
-        width:      i32,
-        height:     i32,
-        radius:     i32,
+        width: i32,
+        height: i32,
+        radius: i32,
     ) {
         use wgpu::util::DeviceExt;
-        let params = ShadowMaskBilateralParams { radius, horizontal, width, height };
+        let params = ShadowMaskBilateralParams {
+            radius,
+            horizontal,
+            width,
+            height,
+        };
         let ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("Shadow Mask Bilateral Params"),
+            label: Some("Shadow Mask Bilateral Params"),
             contents: bytemuck::bytes_of(&params),
-            usage:    wgpu::BufferUsages::UNIFORM,
+            usage: wgpu::BufferUsages::UNIFORM,
         });
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Shadow Mask Bilateral BG"),
-            layout:  &self.bgl,
+            label: Some("Shadow Mask Bilateral BG"),
+            layout: &self.bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: ubo.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(dst) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: ubo.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(src),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(dst),
+                },
             ],
         });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label:            Some("Shadow Mask Bilateral Pass"),
+            label: Some("Shadow Mask Bilateral Pass"),
             timestamp_writes: None,
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bg, &[]);
         // 走査線本数（水平=行数=高さ / 垂直=列数=幅）を 64 スレッド/ワークグループで割る。
-        let count  = if horizontal == 1 { height } else { width };
+        let count = if horizontal == 1 { height } else { width };
         let groups = ((count.max(0) as u32) + 63) / 64;
         pass.dispatch_workgroups(groups.max(1), 1, 1);
     }
@@ -216,7 +232,10 @@ mod tests {
         for &r in &[1, 3, 5] {
             for &d in &[0.01f32, 1.0, 100.0, -50.0] {
                 let w = bilateral_weight(0, r, d, d);
-                assert!((w - 1.0).abs() < 1e-6, "中心タップ重みは 1 のはず: r={r} d={d} w={w}");
+                assert!(
+                    (w - 1.0).abs() < 1e-6,
+                    "中心タップ重みは 1 のはず: r={r} d={d} w={w}"
+                );
             }
         }
     }
@@ -230,8 +249,10 @@ mod tests {
         for k in -r..=r {
             let w = bilateral_weight(k, r, d, d);
             let gauss = (-(k as f32) * (k as f32) / (2.0 * sigma * sigma)).exp();
-            assert!((w - gauss).abs() < 1e-6,
-                "同深度ではガウスに一致: k={k} w={w} gauss={gauss}");
+            assert!(
+                (w - gauss).abs() < 1e-6,
+                "同深度ではガウスに一致: k={k} w={w} gauss={gauss}"
+            );
         }
     }
 
@@ -263,7 +284,9 @@ mod tests {
         let module = naga::front::wgsl::parse_str(src)
             .unwrap_or_else(|e| panic!("[shadow_mask_bilateral] WGSL parse 失敗: {e:?}"));
         let mut v = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty());
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        );
         v.validate(&module)
             .unwrap_or_else(|e| panic!("[shadow_mask_bilateral] WGSL validate 失敗: {e:?}"));
     }
@@ -273,14 +296,28 @@ mod tests {
     fn wgsl_constants_match_cpu_reference() {
         let src = include_str!("shaders/shadow_mask_bilateral.wgsl");
         let parse_f32 = |name: &str| -> f32 {
-            let decl = src.lines().map(str::trim)
+            let decl = src
+                .lines()
+                .map(str::trim)
                 .find(|l| l.starts_with(&format!("const {name}")))
                 .unwrap_or_else(|| panic!("WGSL に const {name} が見つかりません"));
-            decl.split('=').nth(1).unwrap().trim().trim_end_matches(';').trim()
-                .parse::<f32>().unwrap_or_else(|_| panic!("const {name} が f32 として解釈できません"))
+            decl.split('=')
+                .nth(1)
+                .unwrap()
+                .trim()
+                .trim_end_matches(';')
+                .trim()
+                .parse::<f32>()
+                .unwrap_or_else(|_| panic!("const {name} が f32 として解釈できません"))
         };
-        assert_eq!(parse_f32("BILATERAL_SIGMA_FRAC"),     BILATERAL_SIGMA_FRAC);
-        assert_eq!(parse_f32("BILATERAL_DEPTH_TOL_FRAC"), BILATERAL_DEPTH_TOL_FRAC);
-        assert_eq!(parse_f32("BILATERAL_DEPTH_TOL_MIN"),  BILATERAL_DEPTH_TOL_MIN);
+        assert_eq!(parse_f32("BILATERAL_SIGMA_FRAC"), BILATERAL_SIGMA_FRAC);
+        assert_eq!(
+            parse_f32("BILATERAL_DEPTH_TOL_FRAC"),
+            BILATERAL_DEPTH_TOL_FRAC
+        );
+        assert_eq!(
+            parse_f32("BILATERAL_DEPTH_TOL_MIN"),
+            BILATERAL_DEPTH_TOL_MIN
+        );
     }
 }

@@ -19,9 +19,9 @@
 //  9-slice スプライトも本バッチャの対象外（別ジオメトリのため TODO）。
 // ============================================================
 
-use std::sync::Arc;
-use crate::engine::core::renderer::pipeline::{SpritePipeline, SpriteOutlinePipeline};
+use crate::engine::core::renderer::pipeline::{SpriteOutlinePipeline, SpritePipeline};
 use crate::engine::methods::drawer::GpuSpriteTexture;
+use std::sync::Arc;
 
 // ============================================================
 //  per-instance データ
@@ -57,9 +57,9 @@ const INSTANCE_GROWTH_FACTOR: u32 = 2;
 /// テクスチャ境界で区切られた 1 バッチ（= 1 ドローコール）。
 pub struct SpriteBatch {
     /// このバッチのテクスチャ。None は白フォールバック（アウトラインは常に None）。
-    pub tex:   Option<Arc<GpuSpriteTexture>>,
+    pub tex: Option<Arc<GpuSpriteTexture>>,
     /// 所属インスタンスバッファ先頭からのインスタンス番号。
-    pub base:  u32,
+    pub base: u32,
     /// インスタンス数。
     pub count: u32,
 }
@@ -72,15 +72,17 @@ pub struct SpriteBatchList {
 
 impl SpriteBatchList {
     /// 空（＝描画するバッチが無い）か。
-    pub fn is_empty(&self) -> bool { self.batches.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.batches.is_empty()
+    }
 }
 
 /// 2 つのテクスチャオプションが同一バッチに属せるか（両 None または同一 Arc）。
 fn same_tex(a: &Option<Arc<GpuSpriteTexture>>, b: &Option<Arc<GpuSpriteTexture>>) -> bool {
     match (a, b) {
-        (None, None)       => true,
+        (None, None) => true,
         (Some(x), Some(y)) => Arc::ptr_eq(x, y),
-        _                  => false,
+        _ => false,
     }
 }
 
@@ -94,27 +96,32 @@ fn same_tex(a: &Option<Arc<GpuSpriteTexture>>, b: &Option<Arc<GpuSpriteTexture>>
 /// `push()` は CPU 側 scratch へ積み、`upload()` で 1 度だけ write_buffer する
 /// （容量不足時のみ倍々成長で再確保）。
 pub struct InstanceStream {
-    buffer:   Arc<wgpu::Buffer>,
+    buffer: Arc<wgpu::Buffer>,
     /// 収容可能インスタンス数。
     capacity: u32,
     /// このフレーム分の CPU 積み上げ。
-    scratch:  Vec<SpriteInstance>,
-    label:    &'static str,
+    scratch: Vec<SpriteInstance>,
+    label: &'static str,
 }
 
 impl InstanceStream {
     /// 初期容量でバッファを確保する。
     fn new(device: &wgpu::Device, label: &'static str) -> Self {
         let buffer = Arc::new(Self::alloc(device, INITIAL_INSTANCE_CAPACITY, label));
-        Self { buffer, capacity: INITIAL_INSTANCE_CAPACITY, scratch: Vec::new(), label }
+        Self {
+            buffer,
+            capacity: INITIAL_INSTANCE_CAPACITY,
+            scratch: Vec::new(),
+            label,
+        }
     }
 
     /// 指定容量の VERTEX|COPY_DST バッファを確保する。
     fn alloc(device: &wgpu::Device, capacity: u32, label: &'static str) -> wgpu::Buffer {
         device.create_buffer(&wgpu::BufferDescriptor {
-            label:              Some(label),
-            size:               capacity as u64 * SPRITE_INSTANCE_SIZE,
-            usage:              wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            label: Some(label),
+            size: capacity as u64 * SPRITE_INSTANCE_SIZE,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
     }
@@ -140,7 +147,11 @@ impl InstanceStream {
             // 直前バッチと同一テクスチャなら融合、違えば新バッチを開始する。
             match batches.last_mut() {
                 Some(b) if same_tex(&b.tex, &tex) => b.count += 1,
-                _ => batches.push(SpriteBatch { tex, base: idx, count: 1 }),
+                _ => batches.push(SpriteBatch {
+                    tex,
+                    base: idx,
+                    count: 1,
+                }),
             }
         }
         SpriteBatchList { batches }
@@ -149,12 +160,16 @@ impl InstanceStream {
     /// scratch を GPU バッファへ書き込む。容量不足なら倍々成長で再確保する。
     pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         let needed = self.scratch.len() as u32;
-        if needed == 0 { return; }
+        if needed == 0 {
+            return;
+        }
         if needed > self.capacity {
             // 収容できるまで倍々に増やす（最低 1 から開始）。
             let mut cap = self.capacity.max(1);
-            while cap < needed { cap = cap.saturating_mul(INSTANCE_GROWTH_FACTOR); }
-            self.buffer   = Arc::new(Self::alloc(device, cap, self.label));
+            while cap < needed {
+                cap = cap.saturating_mul(INSTANCE_GROWTH_FACTOR);
+            }
+            self.buffer = Arc::new(Self::alloc(device, cap, self.label));
             self.capacity = cap;
         }
         queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&self.scratch));
@@ -184,7 +199,7 @@ impl InstanceStream {
 /// 記録済みプレビューコマンドの参照バッファを無効化してしまう。
 /// チャンネルを分ければ各ストリームは自分のパス記録前に upload/確定でき、この危険が無い。
 pub struct SpriteBatcher {
-    pub main:    InstanceStream,
+    pub main: InstanceStream,
     pub preview: InstanceStream,
 }
 
@@ -192,7 +207,7 @@ impl SpriteBatcher {
     /// 2 ストリームを初期容量で確保する。
     pub fn new(device: &wgpu::Device) -> Self {
         Self {
-            main:    InstanceStream::new(device, "Sprite Instance Buf (main)"),
+            main: InstanceStream::new(device, "Sprite Instance Buf (main)"),
             preview: InstanceStream::new(device, "Sprite Instance Buf (preview)"),
         }
     }
@@ -208,13 +223,15 @@ impl SpriteBatcher {
 /// - `inst_buf`:  当該ストリームの永続インスタンスバッファ（`InstanceStream::buffer()`）
 /// - `list`:      当該描画順の `SpriteBatchList`
 pub fn draw_sprite_batches<'rp>(
-    pass:      &mut wgpu::RenderPass<'rp>,
-    pipeline:  &'rp SpritePipeline,
+    pass: &mut wgpu::RenderPass<'rp>,
+    pipeline: &'rp SpritePipeline,
     camera_bg: &'rp wgpu::BindGroup,
-    inst_buf:  &'rp wgpu::Buffer,
-    list:      &SpriteBatchList,
+    inst_buf: &'rp wgpu::Buffer,
+    list: &SpriteBatchList,
 ) {
-    if list.batches.is_empty() { return; }
+    if list.batches.is_empty() {
+        return;
+    }
 
     pass.set_pipeline(&pipeline.pipeline);
     // slot0: ユニットクワッド（per-vertex, 全バッチ共有）
@@ -224,10 +241,12 @@ pub fn draw_sprite_batches<'rp>(
     for b in &list.batches {
         // slot1: このバッチのインスタンス範囲だけをスライスして束ねる
         let start = b.base as u64 * SPRITE_INSTANCE_SIZE;
-        let end   = start + b.count as u64 * SPRITE_INSTANCE_SIZE;
+        let end = start + b.count as u64 * SPRITE_INSTANCE_SIZE;
         pass.set_vertex_buffer(1, inst_buf.slice(start..end));
         // group 1: テクスチャ（未設定なら白フォールバック）
-        let tex_bg = b.tex.as_ref()
+        let tex_bg = b
+            .tex
+            .as_ref()
             .map(|t| &t.bind_group)
             .unwrap_or(&pipeline.white_fallback_bg);
         pass.set_bind_group(1, tex_bg, &[]);
@@ -242,14 +261,16 @@ pub fn draw_sprite_batches<'rp>(
 /// 実スプライトと同じ。全インスタンスが tex=None のため通常 1 バッチに融合される。
 /// ユニットクワッド頂点バッファは `sprite_pipeline` から供給する。
 pub fn draw_sprite_outline_batches<'rp>(
-    pass:             &mut wgpu::RenderPass<'rp>,
-    sprite_pipeline:  &'rp SpritePipeline,
+    pass: &mut wgpu::RenderPass<'rp>,
+    sprite_pipeline: &'rp SpritePipeline,
     outline_pipeline: &'rp SpriteOutlinePipeline,
-    camera_bg:        &'rp wgpu::BindGroup,
-    inst_buf:         &'rp wgpu::Buffer,
-    list:             &SpriteBatchList,
+    camera_bg: &'rp wgpu::BindGroup,
+    inst_buf: &'rp wgpu::Buffer,
+    list: &SpriteBatchList,
 ) {
-    if list.batches.is_empty() { return; }
+    if list.batches.is_empty() {
+        return;
+    }
 
     pass.set_pipeline(&outline_pipeline.pipeline);
     pass.set_vertex_buffer(0, sprite_pipeline.unit_quad_vbuf.slice(..));
@@ -257,7 +278,7 @@ pub fn draw_sprite_outline_batches<'rp>(
 
     for b in &list.batches {
         let start = b.base as u64 * SPRITE_INSTANCE_SIZE;
-        let end   = start + b.count as u64 * SPRITE_INSTANCE_SIZE;
+        let end = start + b.count as u64 * SPRITE_INSTANCE_SIZE;
         pass.set_vertex_buffer(1, inst_buf.slice(start..end));
         // テクスチャ不要（group 1 なし、単色塗りつぶし）
         pass.draw(0..6, 0..b.count);
@@ -274,7 +295,7 @@ pub fn draw_sprite_outline_batches<'rp>(
 mod tests {
     #[test]
     fn sprite_shaders_parse_and_validate() {
-        let sprite  = include_str!("shaders/sprite.wgsl");
+        let sprite = include_str!("shaders/sprite.wgsl");
         let outline = include_str!("shaders/sprite_outline.wgsl");
 
         for (name, src) in [("sprite", sprite), ("sprite_outline", outline)] {

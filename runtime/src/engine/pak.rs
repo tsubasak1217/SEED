@@ -75,11 +75,10 @@ impl PakReader {
             let path_len = read_u32(&mut file)? as usize;
             let mut path_bytes = vec![0u8; path_len];
             file.read_exact(&mut path_bytes)?;
-            let entry_path = String::from_utf8(path_bytes).map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, e)
-            })?;
+            let entry_path = String::from_utf8(path_bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             let offset = read_u64(&mut file)?;
-            let size   = read_u64(&mut file)?;
+            let size = read_u64(&mut file)?;
             entries.insert(entry_path, (offset, size));
         }
 

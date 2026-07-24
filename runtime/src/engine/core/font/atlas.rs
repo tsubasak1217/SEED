@@ -17,8 +17,8 @@ const ATLAS_PADDING: u32 = 2;
 /// グリフキャッシュのキー。
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct GlyphKey {
-    pub codepoint:    char,
-    pub font_size_px: u32,  // f32 の切り捨て値
+    pub codepoint: char,
+    pub font_size_px: u32, // f32 の切り捨て値
 }
 
 // ── GlyphInfo ─────────────────────────────────────────────────
@@ -27,10 +27,10 @@ pub struct GlyphKey {
 #[derive(Clone, Copy, Debug)]
 pub struct GlyphInfo {
     /// アトラス UV の左上・右下 [0, 1]
-    pub uv_min : [f32; 2],
-    pub uv_max : [f32; 2],
+    pub uv_min: [f32; 2],
+    pub uv_max: [f32; 2],
     /// グリフビットマップのピクセルサイズ
-    pub size   : [f32; 2],
+    pub size: [f32; 2],
     /// ペン基点からグリフビットマップ左上へのオフセット（スクリーン座標系、Y 下向き）
     pub bearing: [f32; 2],
     /// 水平アドバンス幅（ピクセル）
@@ -40,40 +40,39 @@ pub struct GlyphInfo {
 // ── Shelf ─────────────────────────────────────────────────────
 
 struct Shelf {
-    y:      u32,  // シェルフの Y 開始位置
-    height: u32,  // シェルフの高さ（最大グリフ高さ + パディング）
-    cursor: u32,  // 現在の X 書き込み位置
+    y: u32,      // シェルフの Y 開始位置
+    height: u32, // シェルフの高さ（最大グリフ高さ + パディング）
+    cursor: u32, // 現在の X 書き込み位置
 }
 
 // ── GlyphAtlas ────────────────────────────────────────────────
 
 pub struct GlyphAtlas {
-    pub texture:      wgpu::Texture,
+    pub texture: wgpu::Texture,
     pub texture_view: wgpu::TextureView,
-    pub atlas_size:   u32,
+    pub atlas_size: u32,
 
-    cpu_data: Vec<u8>,                      // CPU 側の R8 バッファ
-    glyphs:   HashMap<GlyphKey, GlyphInfo>, // キャッシュ
-    shelves:  Vec<Shelf>,
-    dirty:    bool,
+    cpu_data: Vec<u8>,                    // CPU 側の R8 バッファ
+    glyphs: HashMap<GlyphKey, GlyphInfo>, // キャッシュ
+    shelves: Vec<Shelf>,
+    dirty: bool,
 }
 
 impl GlyphAtlas {
     pub fn new(device: &wgpu::Device, atlas_size: u32) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label:           Some("Glyph Atlas"),
-            size:            wgpu::Extent3d {
-                width:                 atlas_size,
-                height:                atlas_size,
+            label: Some("Glyph Atlas"),
+            size: wgpu::Extent3d {
+                width: atlas_size,
+                height: atlas_size,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
-            sample_count:    1,
-            dimension:       wgpu::TextureDimension::D2,
-            format:          wgpu::TextureFormat::R8Unorm,
-            usage:           wgpu::TextureUsages::TEXTURE_BINDING
-                           | wgpu::TextureUsages::COPY_DST,
-            view_formats:    &[],
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         });
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -82,9 +81,9 @@ impl GlyphAtlas {
             texture_view,
             atlas_size,
             cpu_data: vec![0u8; (atlas_size * atlas_size) as usize],
-            glyphs:   HashMap::new(),
-            shelves:  Vec::new(),
-            dirty:    false,
+            glyphs: HashMap::new(),
+            shelves: Vec::new(),
+            dirty: false,
         }
     }
 
@@ -100,10 +99,10 @@ impl GlyphAtlas {
     /// アトラスが満杯の場合は `None`。
     pub fn insert(
         &mut self,
-        key:     GlyphKey,
-        bitmap:  &[u8],
-        width:   u32,
-        height:  u32,
+        key: GlyphKey,
+        bitmap: &[u8],
+        width: u32,
+        height: u32,
         bearing: [f32; 2],
         advance: f32,
     ) -> Option<GlyphInfo> {
@@ -123,9 +122,9 @@ impl GlyphAtlas {
 
         let inv = 1.0 / self.atlas_size as f32;
         let info = GlyphInfo {
-            uv_min:  [sx as f32 * inv, sy as f32 * inv],
-            uv_max:  [(sx + width) as f32 * inv, (sy + height) as f32 * inv],
-            size:    [width as f32, height as f32],
+            uv_min: [sx as f32 * inv, sy as f32 * inv],
+            uv_max: [(sx + width) as f32 * inv, (sy + height) as f32 * inv],
+            size: [width as f32, height as f32],
             bearing,
             advance,
         };
@@ -136,23 +135,25 @@ impl GlyphAtlas {
 
     /// ダーティなら GPU テクスチャへ全域アップロードする。
     pub fn upload_if_dirty(&mut self, queue: &wgpu::Queue) {
-        if !self.dirty { return; }
+        if !self.dirty {
+            return;
+        }
         queue.write_texture(
             wgpu::ImageCopyTexture {
-                texture:   &self.texture,
+                texture: &self.texture,
                 mip_level: 0,
-                origin:    wgpu::Origin3d::ZERO,
-                aspect:    wgpu::TextureAspect::All,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
             },
             &self.cpu_data,
             wgpu::ImageDataLayout {
-                offset:         0,
-                bytes_per_row:  Some(self.atlas_size),
+                offset: 0,
+                bytes_per_row: Some(self.atlas_size),
                 rows_per_image: Some(self.atlas_size),
             },
             wgpu::Extent3d {
-                width:                 self.atlas_size,
-                height:                self.atlas_size,
+                width: self.atlas_size,
+                height: self.atlas_size,
                 depth_or_array_layers: 1,
             },
         );
@@ -177,9 +178,15 @@ impl GlyphAtlas {
 
         // 新しいシェルフを作る
         let new_y = self.shelves.last().map(|s| s.y + s.height).unwrap_or(0);
-        if new_y + h > atlas_h { return None; }
+        if new_y + h > atlas_h {
+            return None;
+        }
 
-        self.shelves.push(Shelf { y: new_y, height: h, cursor: w });
+        self.shelves.push(Shelf {
+            y: new_y,
+            height: h,
+            cursor: w,
+        });
         Some((0, new_y))
     }
 }

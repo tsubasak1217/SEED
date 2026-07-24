@@ -100,7 +100,10 @@ mod tests {
     #[test]
     fn octahedral_axis_directions() {
         let uv = oct_encode([0.0, 0.0, 1.0]);
-        assert!((uv[0] - 0.5).abs() < 1e-5 && (uv[1] - 0.5).abs() < 1e-5, "+Z は中心へ: {uv:?}");
+        assert!(
+            (uv[0] - 0.5).abs() < 1e-5 && (uv[1] - 0.5).abs() < 1e-5,
+            "+Z は中心へ: {uv:?}"
+        );
         let back = oct_decode(oct_encode([0.0, 0.0, -1.0]));
         assert!(dot([0.0, 0.0, -1.0], back) > 0.9999, "-Z 往復: {back:?}");
     }

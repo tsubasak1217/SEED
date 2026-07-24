@@ -24,7 +24,7 @@ use std::cell::Cell;
 use wgpu::util::DeviceExt;
 
 use super::{
-    params::GiParams, grid::GiGrid, GI_ATLAS_FORMAT, GI_DEFAULT_DIMS, GI_PROBE_WG_THREADS,
+    GI_ATLAS_FORMAT, GI_DEFAULT_DIMS, GI_PROBE_WG_THREADS, grid::GiGrid, params::GiParams,
 };
 use crate::engine::core::renderer::post::GiSettings;
 
@@ -72,7 +72,11 @@ impl GiResources {
     /// compute BindGroup は `attach`（ライトバッファ・TLAS・平均アルベドが揃った後）で作る。
     pub fn new(device: &wgpu::Device, supported: bool) -> Self {
         // 次元は固定（UI では変えない）。原点/間隔は fit で後から設定する。
-        let grid = GiGrid { dims: GI_DEFAULT_DIMS, origin: [0.0; 3], spacing: [1.0; 3] };
+        let grid = GiGrid {
+            dims: GI_DEFAULT_DIMS,
+            origin: [0.0; 3],
+            spacing: [1.0; 3],
+        };
 
         let (iw, ih) = grid.irradiance_atlas_size();
         let (vw, vh) = grid.visibility_atlas_size();
@@ -88,7 +92,11 @@ impl GiResources {
         let mk = |label: &str, w: u32, h: u32, usage: wgpu::TextureUsages| {
             let tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
-                size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: w.max(1),
+                    height: h.max(1),
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -100,9 +108,11 @@ impl GiResources {
             (tex, view)
         };
         let (irradiance_tex, irradiance_view) = mk("GI Irradiance Atlas", iw, ih, atlas_usage);
-        let (irradiance_hist_tex, irradiance_hist_view) = mk("GI Irradiance Hist", iw, ih, hist_usage);
+        let (irradiance_hist_tex, irradiance_hist_view) =
+            mk("GI Irradiance Hist", iw, ih, hist_usage);
         let (visibility_tex, visibility_view) = mk("GI Visibility Atlas", vw, vh, atlas_usage);
-        let (visibility_hist_tex, visibility_hist_view) = mk("GI Visibility Hist", vw, vh, hist_usage);
+        let (visibility_hist_tex, visibility_hist_view) =
+            mk("GI Visibility Hist", vw, vh, hist_usage);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("GI Sampler"),
@@ -132,10 +142,14 @@ impl GiResources {
             grid: Cell::new(grid),
             params_buffer,
             params_disabled_buffer,
-            irradiance_view, irradiance_tex,
-            irradiance_hist_view, irradiance_hist_tex,
-            visibility_view, visibility_tex,
-            visibility_hist_view, visibility_hist_tex,
+            irradiance_view,
+            irradiance_tex,
+            irradiance_hist_view,
+            irradiance_hist_tex,
+            visibility_view,
+            visibility_tex,
+            visibility_hist_view,
+            visibility_hist_tex,
             sampler,
             compute_bg: None,
             frame_index: Cell::new(0),
@@ -145,20 +159,35 @@ impl GiResources {
     }
 
     // --- accessors used by lighting.rs group-4 bind groups (bindings 10-13) ---
-    pub fn irradiance_view(&self) -> &wgpu::TextureView { &self.irradiance_view }
-    pub fn visibility_view(&self) -> &wgpu::TextureView { &self.visibility_view }
-    pub fn sampler(&self) -> &wgpu::Sampler { &self.sampler }
-    pub fn params_buffer(&self) -> &wgpu::Buffer { &self.params_buffer }
-    pub fn params_disabled_buffer(&self) -> &wgpu::Buffer { &self.params_disabled_buffer }
-    pub fn grid(&self) -> GiGrid { self.grid.get() }
-    pub fn is_attached(&self) -> bool { self.compute_bg.is_some() }
+    pub fn irradiance_view(&self) -> &wgpu::TextureView {
+        &self.irradiance_view
+    }
+    pub fn visibility_view(&self) -> &wgpu::TextureView {
+        &self.visibility_view
+    }
+    pub fn sampler(&self) -> &wgpu::Sampler {
+        &self.sampler
+    }
+    pub fn params_buffer(&self) -> &wgpu::Buffer {
+        &self.params_buffer
+    }
+    pub fn params_disabled_buffer(&self) -> &wgpu::Buffer {
+        &self.params_disabled_buffer
+    }
+    pub fn grid(&self) -> GiGrid {
+        self.grid.get()
+    }
+    pub fn is_attached(&self) -> bool {
+        self.compute_bg.is_some()
+    }
 
     /// シーン AABB へプローブ格子をフィットさせる（次元は固定。原点/間隔のみ更新）。
     /// アトラス寸法は次元固定のため変わらず、テクスチャ再生成は不要。
     /// シーンロード/モデル変化時に呼ぶこと（毎フレームではない）。
     pub fn fit(&self, aabb_min: [f32; 3], aabb_max: [f32; 3]) {
         // 次元は固定のためアトラス寸法は不変。原点/間隔のみ更新（内部可変）。
-        self.grid.set(GiGrid::fit_from_aabb(aabb_min, aabb_max, GI_DEFAULT_DIMS));
+        self.grid
+            .set(GiGrid::fit_from_aabb(aabb_min, aabb_max, GI_DEFAULT_DIMS));
     }
 
     /// プローブ更新 compute の group0 BindGroup を構築する（RT 対応かつ TLAS がある場合のみ）。
@@ -179,21 +208,53 @@ impl GiResources {
         tlas: &wgpu::Tlas,
         albedo: &wgpu::Buffer,
     ) {
-        if !self.supported { return; }
+        if !self.supported {
+            return;
+        }
         self.compute_bg = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("GI Update BG (group 0)"),
             layout: bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.params_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: lights.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: light_meta.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::AccelerationStructure(tlas) },
-                wgpu::BindGroupEntry { binding: 4, resource: albedo.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.irradiance_hist_view) },
-                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&self.visibility_hist_view) },
-                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&self.irradiance_view) },
-                wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&self.visibility_view) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: lights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: light_meta.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::AccelerationStructure(tlas),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: albedo.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&self.irradiance_hist_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&self.visibility_hist_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&self.irradiance_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::TextureView(&self.visibility_view),
+                },
             ],
         }));
     }
@@ -223,8 +284,8 @@ impl GiResources {
                 tex.as_image_copy(),
                 &bytes,
                 wgpu::TexelCopyBufferLayout {
-                    offset:         0,
-                    bytes_per_row:  Some(size.width * BYTES_PER_PIXEL),
+                    offset: 0,
+                    bytes_per_row: Some(size.width * BYTES_PER_PIXEL),
                     rows_per_image: Some(size.height),
                 },
                 size,
@@ -246,7 +307,13 @@ impl GiResources {
     ///               gi_on=false で record をスキップする）が、描画側が t_ssgi を参照できるよう
     ///               enabled=true・gi_mode=SSGI で書く（初回/リサイズの未収束フレームだけは
     ///               呼び出し側が active=false で 1 フレームだけフラットに倒す）。
-    pub fn update_params(&self, queue: &wgpu::Queue, gi: &GiSettings, active: bool, gi_mode: u32) -> u32 {
+    pub fn update_params(
+        &self,
+        queue: &wgpu::Queue,
+        gi: &GiSettings,
+        active: bool,
+        gi_mode: u32,
+    ) -> u32 {
         // 初回のみアトラスをゼロ初期化（未初期化 storage テクスチャの読みを避ける）。
         self.ensure_zero_init(queue);
         let grid = self.grid.get();
@@ -256,13 +323,24 @@ impl GiResources {
         let ppf = gi.probes_per_frame.clamp(1, probe_count);
 
         let live = GiParams::new(
-            &grid, active, gi_mode, gi.rays_per_probe, base, frame,
-            gi.intensity, gi.hysteresis, gi.recursive_weight,
+            &grid,
+            active,
+            gi_mode,
+            gi.rays_per_probe,
+            base,
+            frame,
+            gi.intensity,
+            gi.hysteresis,
+            gi.recursive_weight,
         );
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&live));
         // disabled 側も格子だけ最新にしておく（fit で原点/間隔が変わり得るため）。
         let disabled = GiParams::disabled(&grid);
-        queue.write_buffer(&self.params_disabled_buffer, 0, bytemuck::bytes_of(&disabled));
+        queue.write_buffer(
+            &self.params_disabled_buffer,
+            0,
+            bytemuck::bytes_of(&disabled),
+        );
 
         // ローテーションを進める（次フレームは続きのプローブ群を更新）。
         self.probe_cursor.set((base + ppf) % probe_count);
@@ -280,8 +358,12 @@ impl GiResources {
         pipeline: &wgpu::ComputePipeline,
         probes_this_frame: u32,
     ) {
-        let Some(bg) = self.compute_bg.as_ref() else { return; };
-        if probes_this_frame == 0 { return; }
+        let Some(bg) = self.compute_bg.as_ref() else {
+            return;
+        };
+        if probes_this_frame == 0 {
+            return;
+        }
 
         // 1. 初回クリアは update_params 内の ensure_zero_init（write_texture 方式）で
         //    実施済み（clear_texture は CLEAR_TEXTURE フィーチャーが必要なため使わない）。

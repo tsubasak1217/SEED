@@ -13,16 +13,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::engine::components::{
-    CanvasTransform, CanvasComponent, SpriteComponent, ComponentKind,
-    CanvasViewportRef, CameraComponent, ScalingMode, AspectRatioAxis,
-    CanvasDrawZone, Transform as ActorTransform,
+    AspectRatioAxis, CameraComponent, CanvasComponent, CanvasDrawZone, CanvasTransform,
+    CanvasViewportRef, ComponentKind, ScalingMode, SpriteComponent, Transform as ActorTransform,
 };
 use crate::engine::ecs::{Entity, World};
-use crate::engine::structs::objects::Actor;
 use crate::engine::methods::drawer::{
-    DrawContext, LineBatch, GpuSpriteTexture, load_sprite_texture,
+    DrawContext, GpuSpriteTexture, LineBatch, load_sprite_texture,
 };
 use crate::engine::methods::gizmo_interact::mat4x4_mul;
+use crate::engine::structs::objects::Actor;
 
 /// キャンバス座標（ピクセル）→ 3D ワールド座標の変換スケール係数。
 /// mod.rs の CANVAS_WORLD_SCALE と同値。
@@ -46,7 +45,12 @@ const CANVAS_WORLD_SCALE: f32 = 1.0 / 100.0;
 ///   「キャンバスを編集」モードと同様に**キャンバス左上をワールド原点**へ一致させる。
 ///   センタリング（`-vp/2`）を行わず、anchor=(0,0) のルートキャンバス左上が原点になる。
 #[inline]
-pub(super) fn root_anchor_offset(anchor: [f32; 2], vw: f32, vh: f32, design_space: bool) -> [f32; 2] {
+pub(super) fn root_anchor_offset(
+    anchor: [f32; 2],
+    vw: f32,
+    vh: f32,
+    design_space: bool,
+) -> [f32; 2] {
     if design_space {
         [vw * anchor[0], vh * anchor[1]]
     } else {
@@ -91,7 +95,13 @@ const ROOT_CANVAS_OUTLINE_COL: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 /// 中心→コーナー方向の押し出しだと縦横比の大きい矩形で長辺側の間隔が潰れて
 /// 太さが不均一になるため、コーナーは隣接 2 辺の法線オフセットの合成で求める。
 /// `corners` は tl→tr→br→bl の順（回転した矩形にも対応）。
-fn add_thick_rect(lb: &mut LineBatch, corners: [[f32; 3]; 4], color: [f32; 4], rings: u32, step: f32) {
+fn add_thick_rect(
+    lb: &mut LineBatch,
+    corners: [[f32; 3]; 4],
+    color: [f32; 4],
+    rings: u32,
+    step: f32,
+) {
     // 矩形中心（法線の向き判定用）
     let cx = (corners[0][0] + corners[1][0] + corners[2][0] + corners[3][0]) * 0.25;
     let cy = (corners[0][1] + corners[1][1] + corners[2][1] + corners[3][1]) * 0.25;
@@ -101,18 +111,21 @@ fn add_thick_rect(lb: &mut LineBatch, corners: [[f32; 3]; 4], color: [f32; 4], r
         let ex = b[0] - a[0];
         let ey = b[1] - a[1];
         let len = (ex * ex + ey * ey).sqrt().max(f32::EPSILON);
-        let (mut nx, mut ny) = (ey / len, -ex / len);   // 辺に垂直な単位ベクトル
+        let (mut nx, mut ny) = (ey / len, -ex / len); // 辺に垂直な単位ベクトル
         // 辺の中点から中心へのベクトルと逆向き（外向き）に揃える
         let mx = (a[0] + b[0]) * 0.5 - cx;
         let my = (a[1] + b[1]) * 0.5 - cy;
-        if nx * mx + ny * my < 0.0 { nx = -nx; ny = -ny; }
+        if nx * mx + ny * my < 0.0 {
+            nx = -nx;
+            ny = -ny;
+        }
         [nx, ny]
     };
     // 各コーナーの押し出し方向 = 隣接 2 辺の外向き法線の和
     // （矩形なら対角方向の単位×√2 相当。各辺がちょうど off だけ外へ動く）
     let dirs: [[f32; 2]; 4] = std::array::from_fn(|i| {
         let prev = corners[(i + 3) % 4];
-        let cur  = corners[i];
+        let cur = corners[i];
         let next = corners[(i + 1) % 4];
         let n1 = edge_normal(prev, cur);
         let n2 = edge_normal(cur, next);
@@ -156,42 +169,52 @@ fn add_thick_rect(lb: &mut LineBatch, corners: [[f32; 3]; 4], color: [f32; 4], r
 /// - 回転は常に追従する
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_sprite_items(
-    actors:             &[Actor],
-    world:              &World,
-    wl:                 u32,
-    draw_ctx:           &DrawContext,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
+    draw_ctx: &DrawContext,
     // 親アクターの CanvasComponent サイズ（anchor 計算用）。None = ルートレベル。
     parent_canvas_size: Option<[f32; 2]>,
     // 親のワールド行列（スケールなし: 回転+平行移動のみ）
-    parent_world_rs:    [[f32; 4]; 4],
+    parent_world_rs: [[f32; 4]; 4],
     // 親の累積スケール。スケールモードに応じて子に伝播するかを制御する。
     parent_cumul_scale: [f32; 2],
     // ワールドスペース変換スケール（1.0=スクリーンスペース, CANVAS_WORLD_SCALE=ワールドスペース）
-    canvas_scale:       f32,
+    canvas_scale: f32,
     // Y 軸符号（スクリーンスペース=1.0, ワールドスペース=-1.0 で Y を反転）
-    y_sign:             f32,
+    y_sign: f32,
     // シーン SS モード時のビューポートサイズ（ルートアンカー計算用）。None = アクター編集タブまたはワールドスペース。
-    viewport_size:      Option<[f32; 2]>,
+    viewport_size: Option<[f32; 2]>,
     // ルートキャンバスアクターごとの有効ビューポートサイズ上書き（Camera 参照用）。
     // actor.entity → [w, h]。viewport_size より優先される。
     canvas_viewport_overrides: &HashMap<Entity, [f32; 2]>,
     // ビューポート・ルートキャンバスの自動解像度マップ（build_root_canvas_auto_size_map）。
     // 登録済みルートは width/height をこの値へ置き換え、CanvasTransform を恒等として扱う。
-    root_auto_sizes:    &HashMap<Entity, [f32; 2]>,
+    root_auto_sizes: &HashMap<Entity, [f32; 2]>,
     // 親（ルートキャンバス）から継承する描画ゾーン。ルートレベルでは各ルートの
     // CanvasComponent.draw_zone で上書きされる。呼び出し側は Foreground を渡す。
-    parent_zone:        CanvasDrawZone,
+    parent_zone: CanvasDrawZone,
     // ビューポートタブの設計空間表示中か（= edit_view_is_2d）。
     // true のときルートキャンバス左上をワールド原点に一致させる（センタリングしない）。
-    design_space:       bool,
-    out:                &mut Vec<([[f32; 4]; 4], [f32; 4], Option<Arc<GpuSpriteTexture>>, CanvasDrawZone, i32)>,
+    design_space: bool,
+    out: &mut Vec<(
+        [[f32; 4]; 4],
+        [f32; 4],
+        Option<Arc<GpuSpriteTexture>>,
+        CanvasDrawZone,
+        i32,
+    )>,
 ) {
     for actor in actors {
-        if actor.world_line != wl { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
         // 非アクティブアクター: 自身と全子孫のスプライトを描画しない。
         // 子孫は本再帰でしか到達しないため、ここで continue すればサブツリー全体が省かれる
         // （この収集は DFS カウンタを持たないためスキップしても番号ズレは起きない）。
-        if !actor.active { continue; }
+        if !actor.active {
+            continue;
+        }
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
         if let Some(ct) = ct_opt {
             // ビューポート・ルートキャンバスの自動解像度上書き（Phase B）。
@@ -202,10 +225,16 @@ pub(super) fn collect_sprite_items(
             } else {
                 None
             };
-            let ct = if root_auto.is_some() { CanvasTransform::default() } else { ct };
+            let ct = if root_auto.is_some() {
+                CanvasTransform::default()
+            } else {
+                ct
+            };
             // スケールモードはこのノード自身の CanvasTransform から読み取る
             let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
-                ct.scale_transform, ct.scale_size, ct.keep_aspect_ratio,
+                ct.scale_transform,
+                ct.scale_size,
+                ct.keep_aspect_ratio,
                 matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
             );
             // アンカーオフセット計算:
@@ -214,7 +243,10 @@ pub(super) fn collect_sprite_items(
             // Camera 参照が設定されているルートキャンバスはオーバーライドマップの値を優先する。
             // それ以外は親キャンバスサイズ基準。
             let eff_viewport = if parent_canvas_size.is_none() {
-                canvas_viewport_overrides.get(&actor.entity).copied().or(viewport_size)
+                canvas_viewport_overrides
+                    .get(&actor.entity)
+                    .copied()
+                    .or(viewport_size)
             } else {
                 viewport_size
             };
@@ -227,31 +259,38 @@ pub(super) fn collect_sprite_items(
                     (0.0, 0.0)
                 }
             } else {
-                (parent_canvas_size.map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
-                 parent_canvas_size.map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]))
+                (
+                    parent_canvas_size
+                        .map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
+                    parent_canvas_size
+                        .map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]),
+                )
             };
 
             // 有効位置（スケールモードに応じて位置にスケールを乗算する）
             let eff_pos = if sm_transform {
-                [ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
-                 ct.position[1] * parent_cumul_scale[1] + anchor_off_y]
+                [
+                    ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
+                    ct.position[1] * parent_cumul_scale[1] + anchor_off_y,
+                ]
             } else {
-                [ct.position[0] + anchor_off_x,
-                 ct.position[1] + anchor_off_y]
+                [ct.position[0] + anchor_off_x, ct.position[1] + anchor_off_y]
             };
 
             // 有効 CanvasTransform（位置を調整済み・anchor は適用済み）
             let eff_ct = CanvasTransform {
                 position: eff_pos,
                 rotation: ct.rotation,
-                scale:    ct.scale,
-                pivot:    ct.pivot,
-                anchor:   [0.0, 0.0],
+                scale: ct.scale,
+                pivot: ct.pivot,
+                anchor: [0.0, 0.0],
                 ..ct.clone()
             };
 
             // 自アクターの CanvasComponent を取得する
-            let my_canvas = actor.slots().iter()
+            let my_canvas = actor
+                .slots()
+                .iter()
                 .filter(|s| s.kind == ComponentKind::Canvas)
                 .find_map(|s| world.get::<CanvasComponent>(s.entity));
             // 描画ゾーンの決定（Phase C）:
@@ -263,23 +302,40 @@ pub(super) fn collect_sprite_items(
             };
             // sm_size による拡縮を反映した有効キャンバスサイズ（アスペクト比維持を考慮）
             let size_scale_x = if sm_size {
-                if keep_aspect && !is_width_axis { parent_cumul_scale[1] } else { parent_cumul_scale[0] }
-            } else { 1.0 };
+                if keep_aspect && !is_width_axis {
+                    parent_cumul_scale[1]
+                } else {
+                    parent_cumul_scale[0]
+                }
+            } else {
+                1.0
+            };
             let size_scale_y = if sm_size {
-                if keep_aspect && is_width_axis { parent_cumul_scale[0] } else { parent_cumul_scale[1] }
-            } else { 1.0 };
+                if keep_aspect && is_width_axis {
+                    parent_cumul_scale[0]
+                } else {
+                    parent_cumul_scale[1]
+                }
+            } else {
+                1.0
+            };
             // 自動解像度上書きがあればそれを基準サイズとする（なければ保存値）
-            let (my_eff_w, my_eff_h) = my_canvas.map(|cc| {
-                let [bw, bh] = root_auto.unwrap_or([cc.width, cc.height]);
-                (bw * size_scale_x, bh * size_scale_y)
-            }).unwrap_or((1.0, 1.0));
+            let (my_eff_w, my_eff_h) = my_canvas
+                .map(|cc| {
+                    let [bw, bh] = root_auto.unwrap_or([cc.width, cc.height]);
+                    (bw * size_scale_x, bh * size_scale_y)
+                })
+                .unwrap_or((1.0, 1.0));
 
             // 自分のワールド行列（スケールなし）を親 world_rs と合成する
             // pivot オフセットを正しく計算するため実際のキャンバスサイズを渡す
             let self_world_rs = mat4x4_mul(
                 parent_world_rs,
-                CanvasTransform { scale: [1.0, 1.0], ..eff_ct.clone() }
-                    .to_mat4_sized(my_eff_w, my_eff_h),
+                CanvasTransform {
+                    scale: [1.0, 1.0],
+                    ..eff_ct.clone()
+                }
+                .to_mat4_sized(my_eff_w, my_eff_h),
             );
 
             // SpriteComponent スロットを走査して GPU 行列とテクスチャを収集する
@@ -288,10 +344,11 @@ pub(super) fn collect_sprite_items(
                 if slot.kind == ComponentKind::Sprite && slot.enabled {
                     if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
                         // scale_size モードに応じたスプライト有効サイズ（アスペクト比維持を考慮）
-                        let eff_w = sc.width  * size_scale_x;
+                        let eff_w = sc.width * size_scale_x;
                         let eff_h = sc.height * size_scale_y;
                         // スプライト行優先行列を親 world_rs と合成し、GPU 列優先に変換する
-                        let sprite_world = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(eff_w, eff_h));
+                        let sprite_world =
+                            mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(eff_w, eff_h));
                         // y_sign でキャンバス Y 軸（下向き）→ ワールド Y 軸（上向き）を反転する
                         let csy = canvas_scale * y_sign;
                         // GPU 行列（列優先）:
@@ -302,10 +359,30 @@ pub(super) fn collect_sprite_items(
                         // sprite_world[2][*] は 2D キャンバス時は常に 0 (x,y基底) / 1 (z基底) / 0 (translation)
                         // のため 2D キャンバスの挙動は変わらない。
                         let gpu_mat = [
-                            [sprite_world[0][0] * canvas_scale, sprite_world[1][0] * csy, sprite_world[2][0], 0.0],
-                            [sprite_world[0][1] * canvas_scale, sprite_world[1][1] * csy, sprite_world[2][1], 0.0],
-                            [sprite_world[0][2] * canvas_scale, sprite_world[1][2] * csy, sprite_world[2][2], 0.0],
-                            [sprite_world[0][3] * canvas_scale, sprite_world[1][3] * csy, sprite_world[2][3], 1.0],
+                            [
+                                sprite_world[0][0] * canvas_scale,
+                                sprite_world[1][0] * csy,
+                                sprite_world[2][0],
+                                0.0,
+                            ],
+                            [
+                                sprite_world[0][1] * canvas_scale,
+                                sprite_world[1][1] * csy,
+                                sprite_world[2][1],
+                                0.0,
+                            ],
+                            [
+                                sprite_world[0][2] * canvas_scale,
+                                sprite_world[1][2] * csy,
+                                sprite_world[2][2],
+                                0.0,
+                            ],
+                            [
+                                sprite_world[0][3] * canvas_scale,
+                                sprite_world[1][3] * csy,
+                                sprite_world[2][3],
+                                1.0,
+                            ],
                         ];
                         // テクスチャをキャッシュから取得または新規ロードする
                         // キャッシュ値: Some(arc)=成功 / None=失敗済み（毎フレームのリトライ・ログ爆発防止）
@@ -334,9 +411,14 @@ pub(super) fn collect_sprite_items(
                         // スプライト描画コードは無変更）。焼き込み不能・エフェクト空なら元のまま。
                         if !sc.postfx_path.is_empty() {
                             if let Some(base) = tex.clone() {
-                                if let Some(baked) = crate::engine::core::renderer::postfx::resolve_baked(
-                                    draw_ctx, &base, &sc.texture_path, &sc.postfx_path,
-                                ) {
+                                if let Some(baked) =
+                                    crate::engine::core::renderer::postfx::resolve_baked(
+                                        draw_ctx,
+                                        &base,
+                                        &sc.texture_path,
+                                        &sc.postfx_path,
+                                    )
+                                {
                                     tex = Some(baked);
                                 }
                             }
@@ -350,10 +432,8 @@ pub(super) fn collect_sprite_items(
             // 子アクターへの基準 Canvas サイズと auto_scale を構築する
             // （子のアンカー基準サイズにも自動解像度上書きを反映する）。
             // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
-            let child_info = my_canvas.map(|cc| (
-                root_auto.unwrap_or([cc.width, cc.height]),
-                cc.auto_scale,
-            ));
+            let child_info =
+                my_canvas.map(|cc| (root_auto.unwrap_or([cc.width, cc.height]), cc.auto_scale));
             let child_canvas_size = child_info.map(|(sz, _)| sz);
             // ルートキャンバスかつ auto_scale=true のとき、ビューポートサイズ/参照サイズで自動スケールする
             // Camera 参照の場合は eff_viewport がカメラの描画範囲になる
@@ -368,19 +448,33 @@ pub(super) fn collect_sprite_items(
             };
             // 子への累積スケール（このノード自身の scale_transform に応じて自分のスケールを積む）
             let child_cumul_scale = if sm_transform {
-                [parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
-                 parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1]]
+                [
+                    parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
+                    parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1],
+                ]
             } else {
                 // スケール伝播なし: auto_scale のみ適用
-                [ct.scale[0] * auto_scale_factor[0],
-                 ct.scale[1] * auto_scale_factor[1]]
+                [
+                    ct.scale[0] * auto_scale_factor[0],
+                    ct.scale[1] * auto_scale_factor[1],
+                ]
             };
             collect_sprite_items(
-                &actor.children, world, wl, draw_ctx,
-                child_canvas_size, self_world_rs,
+                &actor.children,
+                world,
+                wl,
+                draw_ctx,
+                child_canvas_size,
+                self_world_rs,
                 child_cumul_scale,
-                canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
-                root_auto_sizes, my_zone, design_space, out,
+                canvas_scale,
+                y_sign,
+                viewport_size,
+                canvas_viewport_overrides,
+                root_auto_sizes,
+                my_zone,
+                design_space,
+                out,
             );
         }
     }
@@ -398,32 +492,34 @@ pub(super) fn collect_sprite_items(
 /// DFS カウンタは `collect_sprite_items` と同じ規則で全アクターを数える。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_canvas_rects(
-    actors:             &[Actor],
-    world:              &World,
-    wl:                 u32,
-    lb:                 &mut LineBatch,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
+    lb: &mut LineBatch,
     // キャンバスアウトラインの色 [r, g, b, a]
-    col:                [f32; 4],
+    col: [f32; 4],
     // 現在選択中のアクター DFS ID リスト（Sprite アウトラインの描画判定に使う）
-    selected_dfs_ids:   &[usize],
-    counter:            &mut u32,
+    selected_dfs_ids: &[usize],
+    counter: &mut u32,
     parent_canvas_size: Option<[f32; 2]>,
-    parent_world_rs:    [[f32; 4]; 4],
+    parent_world_rs: [[f32; 4]; 4],
     parent_cumul_scale: [f32; 2],
-    canvas_scale:       f32,
-    y_sign:             f32,
-    viewport_size:      Option<[f32; 2]>,
+    canvas_scale: f32,
+    y_sign: f32,
+    viewport_size: Option<[f32; 2]>,
     canvas_viewport_overrides: &HashMap<Entity, [f32; 2]>,
     // ビューポート・ルートキャンバスの自動解像度マップ（collect_sprite_items と同じ扱い）
-    root_auto_sizes:    &HashMap<Entity, [f32; 2]>,
+    root_auto_sizes: &HashMap<Entity, [f32; 2]>,
     // ビューポートタブの設計空間表示中か（= edit_view_is_2d。collect_sprite_items と同じ扱い）
-    design_space:       bool,
+    design_space: bool,
     // アウトラインのリング間隔（描画空間の単位）。
     // SS 表示では「画面 1px 相当」を渡すことで、ズームに依らず連続した太線に見える。
-    outline_step:       f32,
+    outline_step: f32,
 ) {
     for actor in actors {
-        if actor.world_line != wl { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
         let my_dfs = *counter as usize;
         *counter += 1;
 
@@ -441,16 +537,25 @@ pub(super) fn collect_canvas_rects(
             } else {
                 None
             };
-            let ct = if root_auto.is_some() { CanvasTransform::default() } else { ct };
+            let ct = if root_auto.is_some() {
+                CanvasTransform::default()
+            } else {
+                ct
+            };
             // スケールモードはこのノード自身の CanvasTransform から読み取る
             let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
-                ct.scale_transform, ct.scale_size, ct.keep_aspect_ratio,
+                ct.scale_transform,
+                ct.scale_size,
+                ct.keep_aspect_ratio,
                 matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
             );
             // アンカーオフセット計算（collect_sprite_items と同じロジック）
             // Camera 参照のルートキャンバスはオーバーライドマップの値を優先する
             let eff_viewport = if parent_canvas_size.is_none() {
-                canvas_viewport_overrides.get(&actor.entity).copied().or(viewport_size)
+                canvas_viewport_overrides
+                    .get(&actor.entity)
+                    .copied()
+                    .or(viewport_size)
             } else {
                 viewport_size
             };
@@ -463,44 +568,72 @@ pub(super) fn collect_canvas_rects(
                     (0.0, 0.0)
                 }
             } else {
-                (parent_canvas_size.map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
-                 parent_canvas_size.map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]))
+                (
+                    parent_canvas_size
+                        .map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
+                    parent_canvas_size
+                        .map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]),
+                )
             };
 
             // 有効位置（スケールモードに応じて）
             let eff_pos = if sm_transform {
-                [ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
-                 ct.position[1] * parent_cumul_scale[1] + anchor_off_y]
+                [
+                    ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
+                    ct.position[1] * parent_cumul_scale[1] + anchor_off_y,
+                ]
             } else {
-                [ct.position[0] + anchor_off_x,
-                 ct.position[1] + anchor_off_y]
+                [ct.position[0] + anchor_off_x, ct.position[1] + anchor_off_y]
             };
             let eff_ct = CanvasTransform {
                 position: eff_pos,
                 rotation: ct.rotation,
-                scale:    ct.scale,
-                pivot:    ct.pivot,
-                anchor:   [0.0, 0.0],
+                scale: ct.scale,
+                pivot: ct.pivot,
+                anchor: [0.0, 0.0],
                 ..ct.clone()
             };
 
             // pivot はノーマライズ値のため実際のキャンバスサイズで補正する
-            let my_canvas_r = actor.slots().iter()
+            let my_canvas_r = actor
+                .slots()
+                .iter()
                 .filter(|s| s.kind == ComponentKind::Canvas)
                 .find_map(|s| world.get::<CanvasComponent>(s.entity));
             // アスペクト比維持を考慮したスケール係数
-            let size_sc_x = if sm_size { if keep_aspect && !is_width_axis { parent_cumul_scale[1] } else { parent_cumul_scale[0] } } else { 1.0 };
-            let size_sc_y = if sm_size { if keep_aspect && is_width_axis  { parent_cumul_scale[0] } else { parent_cumul_scale[1] } } else { 1.0 };
+            let size_sc_x = if sm_size {
+                if keep_aspect && !is_width_axis {
+                    parent_cumul_scale[1]
+                } else {
+                    parent_cumul_scale[0]
+                }
+            } else {
+                1.0
+            };
+            let size_sc_y = if sm_size {
+                if keep_aspect && is_width_axis {
+                    parent_cumul_scale[0]
+                } else {
+                    parent_cumul_scale[1]
+                }
+            } else {
+                1.0
+            };
             // 自動解像度上書きがあればそれを基準サイズとする（なければ保存値）
-            let (my_eff_w_r, my_eff_h_r) = my_canvas_r.map(|cc| {
-                let [bw, bh] = root_auto.unwrap_or([cc.width, cc.height]);
-                (bw * size_sc_x, bh * size_sc_y)
-            }).unwrap_or((1.0, 1.0));
+            let (my_eff_w_r, my_eff_h_r) = my_canvas_r
+                .map(|cc| {
+                    let [bw, bh] = root_auto.unwrap_or([cc.width, cc.height]);
+                    (bw * size_sc_x, bh * size_sc_y)
+                })
+                .unwrap_or((1.0, 1.0));
 
             let self_world_rs = mat4x4_mul(
                 parent_world_rs,
-                CanvasTransform { scale: [1.0, 1.0], ..eff_ct.clone() }
-                    .to_mat4_sized(my_eff_w_r, my_eff_h_r),
+                CanvasTransform {
+                    scale: [1.0, 1.0],
+                    ..eff_ct.clone()
+                }
+                .to_mat4_sized(my_eff_w_r, my_eff_h_r),
             );
 
             for slot in actor.slots() {
@@ -513,7 +646,7 @@ pub(super) fn collect_canvas_rects(
                         if let Some(cc) = world.get::<CanvasComponent>(slot.entity) {
                             const SELECTED_COL: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
                             let is_selected = selected_dfs_ids.contains(&my_dfs);
-                            let is_root     = parent_canvas_size.is_none();
+                            let is_root = parent_canvas_size.is_none();
                             let draw_col = if is_selected {
                                 SELECTED_COL
                             } else if is_root {
@@ -533,14 +666,23 @@ pub(super) fn collect_canvas_rects(
                             let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(eff_w, eff_h));
                             let csy = canvas_scale * y_sign;
                             let tp = |lx: f32, ly: f32| -> [f32; 3] {
-                                [(m[0][0]*lx + m[0][1]*ly + m[0][3]) * canvas_scale,
-                                 (m[1][0]*lx + m[1][1]*ly + m[1][3]) * csy,
-                                 0.0f32]
+                                [
+                                    (m[0][0] * lx + m[0][1] * ly + m[0][3]) * canvas_scale,
+                                    (m[1][0] * lx + m[1][1] * ly + m[1][3]) * csy,
+                                    0.0f32,
+                                ]
                             };
                             add_thick_rect(
                                 lb,
-                                [tp(0.0, 0.0), tp(eff_w, 0.0), tp(eff_w, eff_h), tp(0.0, eff_h)],
-                                draw_col, rings, outline_step,
+                                [
+                                    tp(0.0, 0.0),
+                                    tp(eff_w, 0.0),
+                                    tp(eff_w, eff_h),
+                                    tp(0.0, eff_h),
+                                ],
+                                draw_col,
+                                rings,
+                                outline_step,
                             );
                         }
                     }
@@ -549,20 +691,26 @@ pub(super) fn collect_canvas_rects(
                         // 選択色はキャンバス枠と共通のオレンジに統一する。
                         if selected_dfs_ids.contains(&my_dfs) {
                             if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
-                                let eff_w = sc.width  * size_sc_x;
+                                let eff_w = sc.width * size_sc_x;
                                 let eff_h = sc.height * size_sc_y;
                                 const SPRITE_OUTLINE_COL: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
-                                let m = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(eff_w, eff_h));
+                                let m = mat4x4_mul(
+                                    parent_world_rs,
+                                    eff_ct.to_sprite_mat4(eff_w, eff_h),
+                                );
                                 let csy2 = canvas_scale * y_sign;
                                 let tp = |lx: f32, ly: f32| -> [f32; 3] {
-                                    [(m[0][0]*lx + m[0][1]*ly + m[0][3]) * canvas_scale,
-                                     (m[1][0]*lx + m[1][1]*ly + m[1][3]) * csy2,
-                                     0.0f32]
+                                    [
+                                        (m[0][0] * lx + m[0][1] * ly + m[0][3]) * canvas_scale,
+                                        (m[1][0] * lx + m[1][1] * ly + m[1][3]) * csy2,
+                                        0.0f32,
+                                    ]
                                 };
                                 add_thick_rect(
                                     lb,
                                     [tp(0.0, 0.0), tp(1.0, 0.0), tp(1.0, 1.0), tp(0.0, 1.0)],
-                                    SPRITE_OUTLINE_COL, OUTLINE_RINGS_THICK,
+                                    SPRITE_OUTLINE_COL,
+                                    OUTLINE_RINGS_THICK,
                                     outline_step,
                                 );
                             }
@@ -574,10 +722,8 @@ pub(super) fn collect_canvas_rects(
 
             // 子への継承情報を構築する（子のアンカー基準サイズにも自動解像度上書きを反映）。
             // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
-            let child_info = my_canvas_r.map(|cc| (
-                root_auto.unwrap_or([cc.width, cc.height]),
-                cc.auto_scale,
-            ));
+            let child_info =
+                my_canvas_r.map(|cc| (root_auto.unwrap_or([cc.width, cc.height]), cc.auto_scale));
             let child_canvas_size = child_info.map(|(sz, _)| sz);
             let auto_scale_factor = if parent_canvas_size.is_none() {
                 if let (Some([vw, vh]), Some((_, true))) = (eff_viewport, child_info) {
@@ -589,19 +735,34 @@ pub(super) fn collect_canvas_rects(
                 [1.0f32, 1.0]
             };
             let child_cumul_scale = if sm_transform {
-                [parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
-                 parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1]]
+                [
+                    parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
+                    parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1],
+                ]
             } else {
-                [ct.scale[0] * auto_scale_factor[0],
-                 ct.scale[1] * auto_scale_factor[1]]
+                [
+                    ct.scale[0] * auto_scale_factor[0],
+                    ct.scale[1] * auto_scale_factor[1],
+                ]
             };
             collect_canvas_rects(
-                &actor.children, world, wl, lb, col,
-                selected_dfs_ids, counter,
-                child_canvas_size, self_world_rs,
+                &actor.children,
+                world,
+                wl,
+                lb,
+                col,
+                selected_dfs_ids,
+                counter,
+                child_canvas_size,
+                self_world_rs,
                 child_cumul_scale,
-                canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
-                root_auto_sizes, design_space, outline_step,
+                canvas_scale,
+                y_sign,
+                viewport_size,
+                canvas_viewport_overrides,
+                root_auto_sizes,
+                design_space,
+                outline_step,
             );
         } else {
             // CanvasTransform なし（Actor3D 等）: 枠描画対象外だが、DFS 番号は
@@ -634,35 +795,37 @@ pub(super) fn collect_canvas_rects(
 /// 並べ替えることで、クリック時に視覚的最前面のスプライトがピックされる。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_canvas_id_items(
-    actors:             &[Actor],
-    world:              &World,
-    wl:                 u32,
-    counter:            &mut u32,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
+    counter: &mut u32,
     parent_canvas_size: Option<[f32; 2]>,
-    parent_world_rs:    [[f32; 4]; 4],
+    parent_world_rs: [[f32; 4]; 4],
     parent_cumul_scale: [f32; 2],
-    canvas_scale:       f32,
-    y_sign:             f32,
-    viewport_size:      Option<[f32; 2]>,
+    canvas_scale: f32,
+    y_sign: f32,
+    viewport_size: Option<[f32; 2]>,
     canvas_viewport_overrides: &HashMap<Entity, [f32; 2]>,
     // ビューポート・ルートキャンバスの自動解像度マップ（collect_sprite_items と同じ扱い）
-    root_auto_sizes:    &HashMap<Entity, [f32; 2]>,
+    root_auto_sizes: &HashMap<Entity, [f32; 2]>,
     // 3D MC インスタンスの総数（canvas_id の raw_id オフセット計算に使用）
-    mc_total:           u32,
+    mc_total: u32,
     // 親（ルートキャンバス）から継承する描画ゾーン（collect_sprite_items と同じ扱い）
-    parent_zone:        CanvasDrawZone,
+    parent_zone: CanvasDrawZone,
     // スクリーンスペースのサブツリー内かどうか。
     // CanvasTransform を持たないアクター（Actor3D。3D ワールドキャンバス等）を通過した時点で
     // false になり、それ以降の子孫は DFS カウントのみ行い ID quad を出力しない。
     // 3D ワールドキャンバス配下のスプライトは WS 用の collect_3d_canvas_child_id_items が
     // 担当するため、ここで出力すると SS 座標の誤った ID quad が重なり誤選択の原因になる。
-    in_ss_subtree:      bool,
+    in_ss_subtree: bool,
     // ビューポートタブの設計空間表示中か（= edit_view_is_2d。collect_sprite_items と同じ扱い）
-    design_space:       bool,
-    out:                &mut Vec<(u32, [[f32; 4]; 4], Option<String>, CanvasDrawZone, i32)>,
+    design_space: bool,
+    out: &mut Vec<(u32, [[f32; 4]; 4], Option<String>, CanvasDrawZone, i32)>,
 ) {
     for actor in actors {
-        if actor.world_line != wl { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
         let my_dfs = *counter;
         *counter += 1;
 
@@ -684,48 +847,65 @@ pub(super) fn collect_canvas_id_items(
                 } else {
                     None
                 };
-                let ct = if root_auto.is_some() { CanvasTransform::default() } else { ct };
+                let ct = if root_auto.is_some() {
+                    CanvasTransform::default()
+                } else {
+                    ct
+                };
                 // スケールモードはこのノード自身の CanvasTransform から読み取る
                 let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
-                    ct.scale_transform, ct.scale_size, ct.keep_aspect_ratio,
+                    ct.scale_transform,
+                    ct.scale_size,
+                    ct.keep_aspect_ratio,
                     matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
                 );
                 // アンカーオフセット（collect_sprite_items と同じロジック）
                 // Camera 参照のルートキャンバスはオーバーライドマップの値を優先する
                 let eff_viewport = if parent_canvas_size.is_none() {
-                    canvas_viewport_overrides.get(&actor.entity).copied().or(viewport_size)
+                    canvas_viewport_overrides
+                        .get(&actor.entity)
+                        .copied()
+                        .or(viewport_size)
                 } else {
                     viewport_size
                 };
-                let (anchor_off_x, anchor_off_y) =
-                    if parent_canvas_size.is_none() {
-                        if let Some([vw, vh]) = eff_viewport {
-                            // ルートレベル: design_space に応じて原点位置を切り替える（共通ヘルパー）
-                            let [ox, oy] = root_anchor_offset(ct.anchor, vw, vh, design_space);
-                            (ox, oy)
-                        } else { (0.0, 0.0) }
+                let (anchor_off_x, anchor_off_y) = if parent_canvas_size.is_none() {
+                    if let Some([vw, vh]) = eff_viewport {
+                        // ルートレベル: design_space に応じて原点位置を切り替える（共通ヘルパー）
+                        let [ox, oy] = root_anchor_offset(ct.anchor, vw, vh, design_space);
+                        (ox, oy)
                     } else {
-                        (parent_canvas_size.map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
-                         parent_canvas_size.map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]))
-                    };
-                let eff_pos = if sm_transform {
-                    [ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
-                     ct.position[1] * parent_cumul_scale[1] + anchor_off_y]
+                        (0.0, 0.0)
+                    }
                 } else {
-                    [ct.position[0] + anchor_off_x,
-                     ct.position[1] + anchor_off_y]
+                    (
+                        parent_canvas_size
+                            .map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
+                        parent_canvas_size
+                            .map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]),
+                    )
+                };
+                let eff_pos = if sm_transform {
+                    [
+                        ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
+                        ct.position[1] * parent_cumul_scale[1] + anchor_off_y,
+                    ]
+                } else {
+                    [ct.position[0] + anchor_off_x, ct.position[1] + anchor_off_y]
                 };
                 let eff_ct = CanvasTransform {
                     position: eff_pos,
                     rotation: ct.rotation,
-                    scale:    ct.scale,
-                    pivot:    ct.pivot,
-                    anchor:   [0.0, 0.0],
+                    scale: ct.scale,
+                    pivot: ct.pivot,
+                    anchor: [0.0, 0.0],
                     ..ct.clone()
                 };
 
                 // 自アクターの CanvasComponent
-                let my_canvas = actor.slots().iter()
+                let my_canvas = actor
+                    .slots()
+                    .iter()
                     .filter(|s| s.kind == ComponentKind::Canvas)
                     .find_map(|s| world.get::<CanvasComponent>(s.entity));
                 // 描画ゾーンの決定（collect_sprite_items と同じロジック）:
@@ -736,19 +916,40 @@ pub(super) fn collect_canvas_id_items(
                     parent_zone
                 };
                 // アスペクト比維持を考慮したスケール係数
-                let id_sc_x = if sm_size { if keep_aspect && !is_width_axis { parent_cumul_scale[1] } else { parent_cumul_scale[0] } } else { 1.0 };
-                let id_sc_y = if sm_size { if keep_aspect && is_width_axis  { parent_cumul_scale[0] } else { parent_cumul_scale[1] } } else { 1.0 };
+                let id_sc_x = if sm_size {
+                    if keep_aspect && !is_width_axis {
+                        parent_cumul_scale[1]
+                    } else {
+                        parent_cumul_scale[0]
+                    }
+                } else {
+                    1.0
+                };
+                let id_sc_y = if sm_size {
+                    if keep_aspect && is_width_axis {
+                        parent_cumul_scale[0]
+                    } else {
+                        parent_cumul_scale[1]
+                    }
+                } else {
+                    1.0
+                };
                 // 自動解像度上書きがあればそれを基準サイズとする（なければ保存値）
-                let (my_eff_w, my_eff_h) = my_canvas.map(|cc| {
-                    let [bw, bh] = root_auto.unwrap_or([cc.width, cc.height]);
-                    (bw * id_sc_x, bh * id_sc_y)
-                }).unwrap_or((1.0, 1.0));
+                let (my_eff_w, my_eff_h) = my_canvas
+                    .map(|cc| {
+                        let [bw, bh] = root_auto.unwrap_or([cc.width, cc.height]);
+                        (bw * id_sc_x, bh * id_sc_y)
+                    })
+                    .unwrap_or((1.0, 1.0));
 
                 // 子への親ワールド RS 行列
                 let self_world_rs = mat4x4_mul(
                     parent_world_rs,
-                    CanvasTransform { scale: [1.0, 1.0], ..eff_ct.clone() }
-                        .to_mat4_sized(my_eff_w, my_eff_h),
+                    CanvasTransform {
+                        scale: [1.0, 1.0],
+                        ..eff_ct.clone()
+                    }
+                    .to_mat4_sized(my_eff_w, my_eff_h),
                 );
 
                 // ID quad 用 GPU 行列の構築
@@ -760,17 +961,25 @@ pub(super) fn collect_canvas_id_items(
                     // enabled=false のスプライトは非表示のためピック対象からも外す
                     if slot.kind == ComponentKind::Sprite && slot.enabled {
                         if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
-                            let ew = sc.width  * id_sc_x;
+                            let ew = sc.width * id_sc_x;
                             let eh = sc.height * id_sc_y;
                             let sw = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(ew, eh));
                             // テクスチャなしは None → 白フォールバック（全面 alpha=1）
-                            let tex_path = if sc.texture_path.is_empty() { None } else { Some(sc.texture_path.clone()) };
-                            gpu_mat_and_path = Some(([
-                                [sw[0][0] * canvas_scale, sw[1][0] * csy, 0.0, 0.0],
-                                [sw[0][1] * canvas_scale, sw[1][1] * csy, 0.0, 0.0],
-                                [0.0, 0.0, 1.0, 0.0],
-                                [sw[0][3] * canvas_scale, sw[1][3] * csy, 0.0, 1.0],
-                            ], tex_path, sc.layer));
+                            let tex_path = if sc.texture_path.is_empty() {
+                                None
+                            } else {
+                                Some(sc.texture_path.clone())
+                            };
+                            gpu_mat_and_path = Some((
+                                [
+                                    [sw[0][0] * canvas_scale, sw[1][0] * csy, 0.0, 0.0],
+                                    [sw[0][1] * canvas_scale, sw[1][1] * csy, 0.0, 0.0],
+                                    [0.0, 0.0, 1.0, 0.0],
+                                    [sw[0][3] * canvas_scale, sw[1][3] * csy, 0.0, 1.0],
+                                ],
+                                tex_path,
+                                sc.layer,
+                            ));
                             break;
                         }
                     }
@@ -786,37 +995,60 @@ pub(super) fn collect_canvas_id_items(
                 // 子への継承情報を計算する（collect_sprite_items と同じロジック。
                 // 子のアンカー基準サイズにも自動解像度上書きを反映する）。
                 // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
-                let child_info = my_canvas.map(|cc| (
-                    root_auto.unwrap_or([cc.width, cc.height]),
-                    cc.auto_scale,
-                ));
+                let child_info =
+                    my_canvas.map(|cc| (root_auto.unwrap_or([cc.width, cc.height]), cc.auto_scale));
                 let child_canvas_size = child_info.map(|(sz, _)| sz);
                 let auto_scale_factor = if parent_canvas_size.is_none() {
                     if let (Some([vw, vh]), Some((_, true))) = (eff_viewport, child_info) {
                         [vw / my_eff_w, vh / my_eff_h]
-                    } else { [1.0f32, 1.0] }
-                } else { [1.0f32, 1.0] };
-                let child_cumul_scale = if sm_transform {
-                    [parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
-                     parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1]]
+                    } else {
+                        [1.0f32, 1.0]
+                    }
                 } else {
-                    [ct.scale[0] * auto_scale_factor[0],
-                     ct.scale[1] * auto_scale_factor[1]]
+                    [1.0f32, 1.0]
+                };
+                let child_cumul_scale = if sm_transform {
+                    [
+                        parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
+                        parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1],
+                    ]
+                } else {
+                    [
+                        ct.scale[0] * auto_scale_factor[0],
+                        ct.scale[1] * auto_scale_factor[1],
+                    ]
                 };
                 (child_canvas_size, child_cumul_scale, self_world_rs, my_zone)
             } else {
                 // CanvasTransform なし・または SS サブツリー外:
                 // ID quad は出力せず、子は親の情報をそのまま引き継ぐ（DFS カウントのみ）
-                (parent_canvas_size, parent_cumul_scale, parent_world_rs, parent_zone)
+                (
+                    parent_canvas_size,
+                    parent_cumul_scale,
+                    parent_world_rs,
+                    parent_zone,
+                )
             };
 
         // 常に子に再帰する（DFS カウンタを全アクターで管理するため）
         collect_canvas_id_items(
-            &actor.children, world, wl, counter,
-            next_canvas_size, next_world_rs,
+            &actor.children,
+            world,
+            wl,
+            counter,
+            next_canvas_size,
+            next_world_rs,
             next_cumul_scale,
-            canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
-            root_auto_sizes, mc_total, next_zone, next_in_ss, design_space, out,
+            canvas_scale,
+            y_sign,
+            viewport_size,
+            canvas_viewport_overrides,
+            root_auto_sizes,
+            mc_total,
+            next_zone,
+            next_in_ss,
+            design_space,
+            out,
         );
     }
 }
@@ -841,12 +1073,12 @@ pub(super) fn collect_canvas_id_items(
 /// これにより ID パスの描画順（後勝ち）がスプライト描画順と一致し、
 /// クリック時に視覚的最前面のスプライトがピックされる。
 pub(super) fn collect_3d_canvas_child_id_items(
-    actors:   &[Actor],
-    world:    &World,
-    wl:       u32,
-    counter:  &mut u32,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
+    counter: &mut u32,
     mc_total: u32,
-    out:      &mut Vec<(u32, [[f32; 4]; 4], Option<String>)>,
+    out: &mut Vec<(u32, [[f32; 4]; 4], Option<String>)>,
     // 3D キャンバス（Actor3D + CanvasComponent）のパネル面そのものをピック対象にする
     // ための面クワッド出力（raw_id, GPU 列優先モデル行列）。透明でも面全体を選択可能に
     // するため、深度対応の canvas_id パイプライン（白フォールバック alpha=1）で描画する。
@@ -854,7 +1086,9 @@ pub(super) fn collect_3d_canvas_child_id_items(
     panel_out: &mut Vec<(u32, [[f32; 4]; 4])>,
 ) {
     for actor in actors {
-        if actor.world_line != wl { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
         // このアクターの 0 始まり DFS 番号（find_actor_by_dfs と同一規則）。
         // パネル面 raw_id = mc_total + my_dfs + 1（子スプライト・コライダーと同一 ID 空間）。
         let my_dfs = *counter;
@@ -870,7 +1104,9 @@ pub(super) fn collect_3d_canvas_child_id_items(
         // Actor3D + CanvasComponent: 子を canvas_to_world で走査する
         // （Canvas スロットが enabled=false のときは通常再帰へフォールバック）
         let handled = if !actor.is_2d() {
-            let canvas_slot = actor.slots().iter()
+            let canvas_slot = actor
+                .slots()
+                .iter()
                 .find(|s| s.kind == ComponentKind::Canvas && s.enabled);
             if let Some(cs) = canvas_slot {
                 if let (Some(cc), Some(tf)) = (
@@ -882,19 +1118,27 @@ pub(super) fn collect_3d_canvas_child_id_items(
                     let (piv_x, piv_y) = (cc.pivot[0], cc.pivot[1]);
                     let canvas_to_world = mat4x4_mul(
                         tf.to_mat4(),
-                        [[ cws,  0.0, 0.0, -piv_x * cc.width  * cws],
-                         [ 0.0, -cws, 0.0,  piv_y * cc.height * cws],
-                         [ 0.0,  0.0, 1.0,  0.0                    ],
-                         [ 0.0,  0.0, 0.0,  1.0                    ]],
+                        [
+                            [cws, 0.0, 0.0, -piv_x * cc.width * cws],
+                            [0.0, -cws, 0.0, piv_y * cc.height * cws],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ],
                     );
                     // キャンバスパネル面（キャンバス空間 [0,0]-[width,height]）を面ピック対象にする。
                     // canvas_to_world でパネル 3 隅を 3D ワールドへ写し、ユニットクワッド [0,1]²
                     // を覆うアフィンモデル行列（col0=u 基底, col1=v 基底, col3=原点）を構築する。
                     let cpw = |x: f32, y: f32| -> [f32; 3] {
                         [
-                            canvas_to_world[0][0] * x + canvas_to_world[0][1] * y + canvas_to_world[0][3],
-                            canvas_to_world[1][0] * x + canvas_to_world[1][1] * y + canvas_to_world[1][3],
-                            canvas_to_world[2][0] * x + canvas_to_world[2][1] * y + canvas_to_world[2][3],
+                            canvas_to_world[0][0] * x
+                                + canvas_to_world[0][1] * y
+                                + canvas_to_world[0][3],
+                            canvas_to_world[1][0] * x
+                                + canvas_to_world[1][1] * y
+                                + canvas_to_world[1][3],
+                            canvas_to_world[2][0] * x
+                                + canvas_to_world[2][1] * y
+                                + canvas_to_world[2][3],
                         ]
                     };
                     let c00 = cpw(0.0, 0.0);
@@ -905,7 +1149,7 @@ pub(super) fn collect_3d_canvas_child_id_items(
                     let panel_model = [
                         [ex[0], ex[1], ex[2], 0.0],
                         [ey[0], ey[1], ey[2], 0.0],
-                        [0.0,   0.0,   1.0,   0.0],
+                        [0.0, 0.0, 1.0, 0.0],
                         [c00[0], c00[1], c00[2], 1.0],
                     ];
                     panel_out.push((mc_total + my_dfs + 1, panel_model));
@@ -913,25 +1157,43 @@ pub(super) fn collect_3d_canvas_child_id_items(
                     // 子を 3D ワールド行列で再帰走査する。
                     // このキャンバス内の追加分をレイヤー昇順で安定ソートしてから out へ
                     // 追加する（ワールドキャンバスのレイヤーはキャンバス内で完結する）。
-                    let mut canvas_items: Vec<(u32, [[f32; 4]; 4], Option<String>, i32)> = Vec::new();
+                    let mut canvas_items: Vec<(u32, [[f32; 4]; 4], Option<String>, i32)> =
+                        Vec::new();
                     walk_3d_canvas_children_id(
-                        &actor.children, world, wl, counter,
+                        &actor.children,
+                        world,
+                        wl,
+                        counter,
                         Some([cc.width, cc.height]),
-                        canvas_to_world, [1.0, 1.0],
-                        mc_total, &mut canvas_items,
+                        canvas_to_world,
+                        [1.0, 1.0],
+                        mc_total,
+                        &mut canvas_items,
                     );
                     // 安定ソート: 同一レイヤーはヒエラルキー DFS 順を維持する
                     canvas_items.sort_by_key(|&(_, _, _, layer)| layer);
                     out.extend(canvas_items.into_iter().map(|(id, m, p, _)| (id, m, p)));
                     true
-                } else { false }
-            } else { false }
-        } else { false };
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
 
         // 3D Canvas でない場合は通常再帰する（DFS カウンタを全アクターで維持する）
         if !handled {
             collect_3d_canvas_child_id_items(
-                &actor.children, world, wl, counter, mc_total, out, panel_out,
+                &actor.children,
+                world,
+                wl,
+                counter,
+                mc_total,
+                out,
+                panel_out,
             );
         }
     }
@@ -944,18 +1206,20 @@ pub(super) fn collect_3d_canvas_child_id_items(
 /// 出力タプル末尾の `layer` は呼び出し側のキャンバス内レイヤーソートに使用する。
 #[allow(clippy::too_many_arguments)]
 fn walk_3d_canvas_children_id(
-    actors:             &[Actor],
-    world:              &World,
-    wl:                 u32,
-    counter:            &mut u32,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
+    counter: &mut u32,
     parent_canvas_size: Option<[f32; 2]>,
-    parent_world_rs:    [[f32; 4]; 4],
+    parent_world_rs: [[f32; 4]; 4],
     parent_cumul_scale: [f32; 2],
-    mc_total:           u32,
-    out:                &mut Vec<(u32, [[f32; 4]; 4], Option<String>, i32)>,
+    mc_total: u32,
+    out: &mut Vec<(u32, [[f32; 4]; 4], Option<String>, i32)>,
 ) {
     for actor in actors {
-        if actor.world_line != wl { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
         let my_dfs = *counter;
         *counter += 1;
 
@@ -967,57 +1231,79 @@ fn walk_3d_canvas_children_id(
 
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
 
-        let (next_canvas_size, next_world_rs, next_cumul_scale) =
-        if let Some(ct) = ct_opt {
+        let (next_canvas_size, next_world_rs, next_cumul_scale) = if let Some(ct) = ct_opt {
             // スケールモードはこのノード自身の CanvasTransform から読み取る
             let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
-                ct.scale_transform, ct.scale_size, ct.keep_aspect_ratio,
+                ct.scale_transform,
+                ct.scale_size,
+                ct.keep_aspect_ratio,
                 matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
             );
             // アンカーオフセット（collect_sprite_items の 3D Canvas パスと同じロジック）
-            let (anchor_off_x, anchor_off_y) = parent_canvas_size.map_or((0.0f32, 0.0f32), |[pw, ph]| {
-                (pw * ct.anchor[0] * parent_cumul_scale[0],
-                 ph * ct.anchor[1] * parent_cumul_scale[1])
-            });
+            let (anchor_off_x, anchor_off_y) =
+                parent_canvas_size.map_or((0.0f32, 0.0f32), |[pw, ph]| {
+                    (
+                        pw * ct.anchor[0] * parent_cumul_scale[0],
+                        ph * ct.anchor[1] * parent_cumul_scale[1],
+                    )
+                });
 
             // 有効位置（スケールモードに応じて親累積スケールを適用する）
             let eff_pos = if sm_transform {
-                [ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
-                 ct.position[1] * parent_cumul_scale[1] + anchor_off_y]
+                [
+                    ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
+                    ct.position[1] * parent_cumul_scale[1] + anchor_off_y,
+                ]
             } else {
                 [ct.position[0] + anchor_off_x, ct.position[1] + anchor_off_y]
             };
             let eff_ct = CanvasTransform {
                 position: eff_pos,
                 rotation: ct.rotation,
-                scale:    ct.scale,
-                pivot:    ct.pivot,
-                anchor:   [0.0, 0.0],
+                scale: ct.scale,
+                pivot: ct.pivot,
+                anchor: [0.0, 0.0],
                 ..ct.clone()
             };
 
             // 自アクターの CanvasComponent
-            let my_canvas = actor.slots().iter()
+            let my_canvas = actor
+                .slots()
+                .iter()
                 .filter(|s| s.kind == ComponentKind::Canvas)
                 .find_map(|s| world.get::<CanvasComponent>(s.entity));
 
             // sm_size による拡縮スケール（アスペクト比維持を考慮）
             let size_sc_x = if sm_size {
-                if keep_aspect && !is_width_axis { parent_cumul_scale[1] } else { parent_cumul_scale[0] }
-            } else { 1.0 };
+                if keep_aspect && !is_width_axis {
+                    parent_cumul_scale[1]
+                } else {
+                    parent_cumul_scale[0]
+                }
+            } else {
+                1.0
+            };
             let size_sc_y = if sm_size {
-                if keep_aspect && is_width_axis { parent_cumul_scale[0] } else { parent_cumul_scale[1] }
-            } else { 1.0 };
-            let (my_eff_w, my_eff_h) = my_canvas.map(|cc| (
-                cc.width  * size_sc_x,
-                cc.height * size_sc_y,
-            )).unwrap_or((1.0, 1.0));
+                if keep_aspect && is_width_axis {
+                    parent_cumul_scale[0]
+                } else {
+                    parent_cumul_scale[1]
+                }
+            } else {
+                1.0
+            };
+            let (my_eff_w, my_eff_h) = my_canvas
+                .map(|cc| (cc.width * size_sc_x, cc.height * size_sc_y))
+                .unwrap_or((1.0, 1.0));
 
             // 自分のワールド RS 行列（CanvasComponent サイズで to_mat4_sized を使う）
             let self_world_rs = mat4x4_mul(
                 parent_world_rs,
-                CanvasTransform { scale: [1.0, 1.0], ..eff_ct.clone() }
-                    .to_mat4_sized(my_eff_w, my_eff_h),
+                CanvasTransform {
+                    scale: [1.0, 1.0],
+                    ..eff_ct.clone()
+                }
+                .to_mat4_sized(my_eff_w, my_eff_h),
             );
 
             // SpriteComponent を持つアクターを ID アイテムとして追加する。
@@ -1026,7 +1312,7 @@ fn walk_3d_canvas_children_id(
             for slot in actor.slots() {
                 if slot.kind == ComponentKind::Sprite && slot.enabled {
                     if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
-                        let ew = sc.width  * size_sc_x;
+                        let ew = sc.width * size_sc_x;
                         let eh = sc.height * size_sc_y;
                         // 3D ワールド空間のスプライト行列（canvas_to_world 込み）
                         let sw = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(ew, eh));
@@ -1038,7 +1324,11 @@ fn walk_3d_canvas_children_id(
                             [sw[0][3], sw[1][3], sw[2][3], 1.0],
                         ];
                         // テクスチャなしは None → 白フォールバック（全面 alpha=1）
-                        let tex_path = if sc.texture_path.is_empty() { None } else { Some(sc.texture_path.clone()) };
+                        let tex_path = if sc.texture_path.is_empty() {
+                            None
+                        } else {
+                            Some(sc.texture_path.clone())
+                        };
                         // raw_id = canvas_id_offset + dfs_id（canvas_id_offset = mc_total）
                         // layer は呼び出し側のキャンバス内レイヤーソートに使用する
                         out.push((mc_total + my_dfs + 1, gpu_mat, tex_path, sc.layer));
@@ -1049,10 +1339,12 @@ fn walk_3d_canvas_children_id(
 
             // 子への基準 Canvas サイズを計算する。
             // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
-            let child_canvas_size  = my_canvas.map(|cc| [cc.width, cc.height]);
-            let child_cumul_scale  = if sm_transform {
-                [parent_cumul_scale[0] * ct.scale[0],
-                 parent_cumul_scale[1] * ct.scale[1]]
+            let child_canvas_size = my_canvas.map(|cc| [cc.width, cc.height]);
+            let child_cumul_scale = if sm_transform {
+                [
+                    parent_cumul_scale[0] * ct.scale[0],
+                    parent_cumul_scale[1] * ct.scale[1],
+                ]
             } else {
                 [ct.scale[0], ct.scale[1]]
             };
@@ -1064,9 +1356,15 @@ fn walk_3d_canvas_children_id(
 
         // 常に子に再帰する（DFS カウンタを全アクターで維持するため）
         walk_3d_canvas_children_id(
-            &actor.children, world, wl, counter,
-            next_canvas_size, next_world_rs, next_cumul_scale,
-            mc_total, out,
+            &actor.children,
+            world,
+            wl,
+            counter,
+            next_canvas_size,
+            next_world_rs,
+            next_cumul_scale,
+            mc_total,
+            out,
         );
     }
 }
@@ -1097,14 +1395,14 @@ fn walk_3d_canvas_children_id(
 /// 出力タプル: `([TL, TR, BR, BL] の 3D ワールド座標, そのノードの dfs_id)`
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_3d_canvas_child_outlines(
-    actors:             &[Actor],
-    world:              &World,
-    wl:                 u32,
-    counter:            &mut u32,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
+    counter: &mut u32,
     parent_canvas_size: Option<[f32; 2]>,
-    parent_world_rs:    [[f32; 4]; 4],
+    parent_world_rs: [[f32; 4]; 4],
     parent_cumul_scale: [f32; 2],
-    out:                &mut Vec<([[f32; 3]; 4], u32)>,
+    out: &mut Vec<([[f32; 3]; 4], u32)>,
 ) {
     for actor in actors {
         // このノードの 0 始まり DFS 番号（find_actor_by_dfs の子規則と同一。
@@ -1121,56 +1419,78 @@ pub(super) fn collect_3d_canvas_child_outlines(
 
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
 
-        let (next_canvas_size, next_world_rs, next_cumul_scale) =
-        if let Some(ct) = ct_opt {
+        let (next_canvas_size, next_world_rs, next_cumul_scale) = if let Some(ct) = ct_opt {
             // スケールモードはこのノード自身の CanvasTransform から読み取る
             let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
-                ct.scale_transform, ct.scale_size, ct.keep_aspect_ratio,
+                ct.scale_transform,
+                ct.scale_size,
+                ct.keep_aspect_ratio,
                 matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
             );
             // アンカーオフセット（walk_3d_canvas_children_id / collect_sprite_items と同じ）
-            let (anchor_off_x, anchor_off_y) = parent_canvas_size.map_or((0.0f32, 0.0f32), |[pw, ph]| {
-                (pw * ct.anchor[0] * parent_cumul_scale[0],
-                 ph * ct.anchor[1] * parent_cumul_scale[1])
-            });
+            let (anchor_off_x, anchor_off_y) =
+                parent_canvas_size.map_or((0.0f32, 0.0f32), |[pw, ph]| {
+                    (
+                        pw * ct.anchor[0] * parent_cumul_scale[0],
+                        ph * ct.anchor[1] * parent_cumul_scale[1],
+                    )
+                });
             // 有効位置（スケールモードに応じて親累積スケールを適用する）
             let eff_pos = if sm_transform {
-                [ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
-                 ct.position[1] * parent_cumul_scale[1] + anchor_off_y]
+                [
+                    ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
+                    ct.position[1] * parent_cumul_scale[1] + anchor_off_y,
+                ]
             } else {
                 [ct.position[0] + anchor_off_x, ct.position[1] + anchor_off_y]
             };
             let eff_ct = CanvasTransform {
                 position: eff_pos,
                 rotation: ct.rotation,
-                scale:    ct.scale,
-                pivot:    ct.pivot,
-                anchor:   [0.0, 0.0],
+                scale: ct.scale,
+                pivot: ct.pivot,
+                anchor: [0.0, 0.0],
                 ..ct.clone()
             };
 
             // 自アクターの CanvasComponent
-            let my_canvas = actor.slots().iter()
+            let my_canvas = actor
+                .slots()
+                .iter()
                 .filter(|s| s.kind == ComponentKind::Canvas)
                 .find_map(|s| world.get::<CanvasComponent>(s.entity));
 
             // sm_size による拡縮スケール（アスペクト比維持を考慮）
             let size_sc_x = if sm_size {
-                if keep_aspect && !is_width_axis { parent_cumul_scale[1] } else { parent_cumul_scale[0] }
-            } else { 1.0 };
+                if keep_aspect && !is_width_axis {
+                    parent_cumul_scale[1]
+                } else {
+                    parent_cumul_scale[0]
+                }
+            } else {
+                1.0
+            };
             let size_sc_y = if sm_size {
-                if keep_aspect && is_width_axis { parent_cumul_scale[0] } else { parent_cumul_scale[1] }
-            } else { 1.0 };
-            let (my_eff_w, my_eff_h) = my_canvas.map(|cc| (
-                cc.width  * size_sc_x,
-                cc.height * size_sc_y,
-            )).unwrap_or((1.0, 1.0));
+                if keep_aspect && is_width_axis {
+                    parent_cumul_scale[0]
+                } else {
+                    parent_cumul_scale[1]
+                }
+            } else {
+                1.0
+            };
+            let (my_eff_w, my_eff_h) = my_canvas
+                .map(|cc| (cc.width * size_sc_x, cc.height * size_sc_y))
+                .unwrap_or((1.0, 1.0));
 
             // 子伝播用のワールド RS 行列（scale=[1,1]。スプライト子走査と同一）
             let self_world_rs = mat4x4_mul(
                 parent_world_rs,
-                CanvasTransform { scale: [1.0, 1.0], ..eff_ct.clone() }
-                    .to_mat4_sized(my_eff_w, my_eff_h),
+                CanvasTransform {
+                    scale: [1.0, 1.0],
+                    ..eff_ct.clone()
+                }
+                .to_mat4_sized(my_eff_w, my_eff_h),
             );
 
             // このノードが CanvasComponent を持つなら、その矩形アウトラインを出力する。
@@ -1178,12 +1498,19 @@ pub(super) fn collect_3d_canvas_child_outlines(
             if my_canvas.is_some() {
                 let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(my_eff_w, my_eff_h));
                 let tp = |cx: f32, cy: f32| -> [f32; 3] {
-                    [m[0][0]*cx + m[0][1]*cy + m[0][3],
-                     m[1][0]*cx + m[1][1]*cy + m[1][3],
-                     m[2][0]*cx + m[2][1]*cy + m[2][3]]
+                    [
+                        m[0][0] * cx + m[0][1] * cy + m[0][3],
+                        m[1][0] * cx + m[1][1] * cy + m[1][3],
+                        m[2][0] * cx + m[2][1] * cy + m[2][3],
+                    ]
                 };
                 out.push((
-                    [tp(0.0, 0.0), tp(my_eff_w, 0.0), tp(my_eff_w, my_eff_h), tp(0.0, my_eff_h)],
+                    [
+                        tp(0.0, 0.0),
+                        tp(my_eff_w, 0.0),
+                        tp(my_eff_w, my_eff_h),
+                        tp(0.0, my_eff_h),
+                    ],
                     my_dfs,
                 ));
             }
@@ -1191,7 +1518,10 @@ pub(super) fn collect_3d_canvas_child_outlines(
             // 子への基準 Canvas サイズと累積スケール（walk_3d_canvas_children_id と同一）
             let child_canvas_size = my_canvas.map(|cc| [cc.width, cc.height]);
             let child_cumul_scale = if sm_transform {
-                [parent_cumul_scale[0] * ct.scale[0], parent_cumul_scale[1] * ct.scale[1]]
+                [
+                    parent_cumul_scale[0] * ct.scale[0],
+                    parent_cumul_scale[1] * ct.scale[1],
+                ]
             } else {
                 [ct.scale[0], ct.scale[1]]
             };
@@ -1203,8 +1533,14 @@ pub(super) fn collect_3d_canvas_child_outlines(
 
         // 常に子に再帰する（DFS カウンタを全アクターで維持するため）
         collect_3d_canvas_child_outlines(
-            &actor.children, world, wl, counter,
-            next_canvas_size, next_world_rs, next_cumul_scale, out,
+            &actor.children,
+            world,
+            wl,
+            counter,
+            next_canvas_size,
+            next_world_rs,
+            next_cumul_scale,
+            out,
         );
     }
 }
@@ -1215,12 +1551,19 @@ pub(super) fn collect_3d_canvas_child_outlines(
 /// `sprite_world` は `mat4x4_mul(canvas_to_world, eff_ct.to_sprite_mat4(w, h))` の行優先行列。
 pub(super) fn sprite_world_corners(sprite_world: &[[f32; 4]; 4]) -> [[f32; 3]; 4] {
     // unit quad の各 UV コーナーに sprite_world を適用する
-    let corner = |u: f32, v: f32| -> [f32; 3] {[
-        u * sprite_world[0][0] + v * sprite_world[0][1] + sprite_world[0][3],
-        u * sprite_world[1][0] + v * sprite_world[1][1] + sprite_world[1][3],
-        u * sprite_world[2][0] + v * sprite_world[2][1] + sprite_world[2][3],
-    ]};
-    [corner(0.0, 0.0), corner(1.0, 0.0), corner(1.0, 1.0), corner(0.0, 1.0)]
+    let corner = |u: f32, v: f32| -> [f32; 3] {
+        [
+            u * sprite_world[0][0] + v * sprite_world[0][1] + sprite_world[0][3],
+            u * sprite_world[1][0] + v * sprite_world[1][1] + sprite_world[1][3],
+            u * sprite_world[2][0] + v * sprite_world[2][1] + sprite_world[2][3],
+        ]
+    };
+    [
+        corner(0.0, 0.0),
+        corner(1.0, 0.0),
+        corner(1.0, 1.0),
+        corner(0.0, 1.0),
+    ]
 }
 
 // ============================================================
@@ -1235,24 +1578,26 @@ pub(super) fn sprite_world_corners(sprite_world: &[[f32; 4]; 4]) -> [[f32; 3]; 4
 /// 戻り値: (vp_x, vp_y, vp_w, vp_h, proj_aspect, fov_y_rad)
 pub(super) fn compute_game_viewport(
     scaling_mode: &ScalingMode,
-    window_w:  f32,
-    window_h:  f32,
-    target_w:  u32,
-    target_h:  u32,
+    window_w: f32,
+    window_h: f32,
+    target_w: u32,
+    target_h: u32,
     fov_y_deg: f32,
 ) -> (f32, f32, f32, f32, f32, f32) {
     let tw = target_w.max(1) as f32;
     let th = target_h.max(1) as f32;
     let target_aspect = tw / th;
-    let window_aspect = if window_h > 0.0 { window_w / window_h } else { target_aspect };
+    let window_aspect = if window_h > 0.0 {
+        window_w / window_h
+    } else {
+        target_aspect
+    };
     let fov_y_rad = fov_y_deg.to_radians();
 
     match scaling_mode {
-        ScalingMode::VertMinus => {
-            (0.0, 0.0, window_w, window_h, window_aspect, fov_y_rad)
-        }
+        ScalingMode::VertMinus => (0.0, 0.0, window_w, window_h, window_aspect, fov_y_rad),
         ScalingMode::HorPlus => {
-            let fov_x     = 2.0 * ((fov_y_rad * 0.5).tan() * target_aspect).atan();
+            let fov_x = 2.0 * ((fov_y_rad * 0.5).tan() * target_aspect).atan();
             let fov_y_adj = if window_aspect > 0.0 {
                 2.0 * ((fov_x * 0.5).tan() / window_aspect).atan()
             } else {
@@ -1262,30 +1607,28 @@ pub(super) fn compute_game_viewport(
         }
         ScalingMode::LetterBox => {
             let scale = window_w / tw;
-            let vp_h  = (th * scale).min(window_h);
+            let vp_h = (th * scale).min(window_h);
             let y_off = ((window_h - vp_h) * 0.5).max(0.0);
             (0.0, y_off, window_w, vp_h, target_aspect, fov_y_rad)
         }
         ScalingMode::PillarBox => {
             let scale = window_h / th;
-            let vp_w  = (tw * scale).min(window_w);
+            let vp_w = (tw * scale).min(window_w);
             let x_off = ((window_w - vp_w) * 0.5).max(0.0);
             (x_off, 0.0, vp_w, window_h, target_aspect, fov_y_rad)
         }
         ScalingMode::LetterPillarBox => {
             if window_aspect >= target_aspect {
-                let vp_w  = window_h * target_aspect;
+                let vp_w = window_h * target_aspect;
                 let x_off = ((window_w - vp_w) * 0.5).max(0.0);
                 (x_off, 0.0, vp_w, window_h, target_aspect, fov_y_rad)
             } else {
-                let vp_h  = window_w / target_aspect;
+                let vp_h = window_w / target_aspect;
                 let y_off = ((window_h - vp_h) * 0.5).max(0.0);
                 (0.0, y_off, window_w, vp_h, target_aspect, fov_y_rad)
             }
         }
-        ScalingMode::FullScale => {
-            (0.0, 0.0, window_w, window_h, target_aspect, fov_y_rad)
-        }
+        ScalingMode::FullScale => (0.0, 0.0, window_w, window_h, target_aspect, fov_y_rad),
     }
 }
 
@@ -1294,21 +1637,25 @@ pub(super) fn compute_game_viewport(
 /// `CanvasViewportRef::Camera { actor_name, slot_name }` の参照解決に使用する。
 /// component_ops（インスペクタ用自動解像度計算）からも共用するため pub(super)。
 pub(super) fn find_camera_component_by_ref<'a>(
-    actors:     &'a [Actor],
-    world:      &'a World,
+    actors: &'a [Actor],
+    world: &'a World,
     actor_name: &str,
-    slot_name:  &str,
+    slot_name: &str,
 ) -> Option<&'a CameraComponent> {
     for a in actors {
         if a.name == actor_name {
-            if let Some(cam) = a.slots().iter()
+            if let Some(cam) = a
+                .slots()
+                .iter()
                 .find(|s| s.name == slot_name && s.kind == ComponentKind::Camera)
                 .and_then(|s| world.get::<CameraComponent>(s.entity))
             {
                 return Some(cam);
             }
         }
-        if let Some(found) = find_camera_component_by_ref(a.children(), world, actor_name, slot_name) {
+        if let Some(found) =
+            find_camera_component_by_ref(a.children(), world, actor_name, slot_name)
+        {
             return Some(found);
         }
     }
@@ -1321,16 +1668,20 @@ pub(super) fn find_camera_component_by_ref<'a>(
 /// component_ops（インスペクタ用自動解像度計算）からも共用するため pub(super)。
 pub(super) fn find_main_camera_in_wl<'a>(
     actors: &'a [Actor],
-    world:  &'a World,
-    wl:     u32,
+    world: &'a World,
+    wl: u32,
 ) -> Option<&'a CameraComponent> {
     /// サブツリー内を DFS で探索する内部ヘルパー（world_line チェックはルートのみ）。
     fn find_main_camera<'a>(actors: &'a [Actor], world: &'a World) -> Option<&'a CameraComponent> {
         for a in actors {
             for slot in a.slots() {
-                if slot.kind != ComponentKind::Camera { continue; }
+                if slot.kind != ComponentKind::Camera {
+                    continue;
+                }
                 if let Some(cam) = world.get::<CameraComponent>(slot.entity) {
-                    if cam.is_main { return Some(cam); }
+                    if cam.is_main {
+                        return Some(cam);
+                    }
                 }
             }
             if let Some(found) = find_main_camera(a.children(), world) {
@@ -1354,21 +1705,25 @@ pub(super) fn find_main_camera_in_wl<'a>(
 /// 参照カメラのスケーリングモードを適用し、帯を除いたコンテンツ領域のサイズを返す。
 /// 参照先が見つからない場合は `[win_w, win_h]` を返す。
 pub(super) fn resolve_camera_viewport_size(
-    actors:         &[Actor],
-    world:          &World,
+    actors: &[Actor],
+    world: &World,
     cam_actor_name: &str,
-    cam_slot_name:  &str,
+    cam_slot_name: &str,
     win_w: f32,
     win_h: f32,
 ) -> [f32; 2] {
-    let Some(cam) = find_camera_component_by_ref(actors, world, cam_actor_name, cam_slot_name) else {
+    let Some(cam) = find_camera_component_by_ref(actors, world, cam_actor_name, cam_slot_name)
+    else {
         return [win_w, win_h];
     };
 
     let (_, _, rendered_w, rendered_h, _, _) = compute_game_viewport(
         &cam.scaling_mode,
-        win_w, win_h,
-        cam.target_width, cam.target_height, cam.fov_y_deg,
+        win_w,
+        win_h,
+        cam.target_width,
+        cam.target_height,
+        cam.fov_y_deg,
     );
     [rendered_w, rendered_h]
 }
@@ -1382,17 +1737,20 @@ pub(super) fn resolve_camera_viewport_size(
 /// メインカメラが存在しない場合は `None` を返す（= ウィンドウ基準へフォールバック）。
 pub(super) fn resolve_main_camera_viewport_size(
     actors: &[Actor],
-    world:  &World,
-    wl:     u32,
-    win_w:  f32,
-    win_h:  f32,
+    world: &World,
+    wl: u32,
+    win_w: f32,
+    win_h: f32,
 ) -> Option<[f32; 2]> {
     let cam = find_main_camera_in_wl(actors, world, wl)?;
     // 明示 Camera 参照（resolve_camera_viewport_size）と同一の実効矩形計算を再利用する
     let (_, _, rendered_w, rendered_h, _, _) = compute_game_viewport(
         &cam.scaling_mode,
-        win_w, win_h,
-        cam.target_width, cam.target_height, cam.fov_y_deg,
+        win_w,
+        win_h,
+        cam.target_width,
+        cam.target_height,
+        cam.fov_y_deg,
     );
     Some([rendered_w, rendered_h])
 }
@@ -1417,7 +1775,7 @@ pub(super) fn resolve_main_camera_viewport_size(
 /// 同一計算を共有するための単一の正典関数。
 pub(super) fn effective_root_canvas_size(
     project_res: (u32, u32),
-    camera:      Option<&CameraComponent>,
+    camera: Option<&CameraComponent>,
 ) -> [f32; 2] {
     let proj_w = project_res.0.max(1) as f32;
     let proj_h = project_res.1.max(1) as f32;
@@ -1426,8 +1784,11 @@ pub(super) fn effective_root_canvas_size(
             // 明示 Camera / MainCamera 参照と同一のスケーリングモード計算を再利用する
             let (_, _, rendered_w, rendered_h, _, _) = compute_game_viewport(
                 &cam.scaling_mode,
-                proj_w, proj_h,
-                cam.target_width, cam.target_height, cam.fov_y_deg,
+                proj_w,
+                proj_h,
+                cam.target_width,
+                cam.target_height,
+                cam.fov_y_deg,
             );
             [rendered_w, rendered_h]
         }
@@ -1445,27 +1806,36 @@ pub(super) fn effective_root_canvas_size(
 /// シーン SS レイアウト時のみ構築し、アクター編集タブ・ワールドキャンバスでは
 /// 空マップを渡して従来動作を維持する。
 pub(super) fn build_root_canvas_auto_size_map(
-    actors:      &[Actor],
-    world:       &World,
-    wl:          u32,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
     project_res: (u32, u32),
 ) -> HashMap<Entity, [f32; 2]> {
     let mut map = HashMap::new();
     // MainCamera 参照の解決結果はキャンバス間で共通のため 1 回だけ計算してキャッシュする
     let mut main_cam: Option<Option<&CameraComponent>> = None;
     for actor in actors {
-        if actor.world_line != wl { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
         // ビューポート所属ルートキャンバス = トップレベル Actor2D + CanvasTransform + Canvas スロット
-        if !actor.is_2d() { continue; }
-        if world.get::<CanvasTransform>(actor.entity).is_none() { continue; }
+        if !actor.is_2d() {
+            continue;
+        }
+        if world.get::<CanvasTransform>(actor.entity).is_none() {
+            continue;
+        }
         for slot in actor.slots() {
-            if slot.kind != ComponentKind::Canvas { continue; }
+            if slot.kind != ComponentKind::Canvas {
+                continue;
+            }
             if let Some(cc) = world.get::<CanvasComponent>(slot.entity) {
                 // 参照カメラを解決する（Window / カメラ不在は None = プロジェクト解像度をそのまま使用）
                 let cam = match &cc.viewport_ref {
-                    CanvasViewportRef::Camera { actor_name, slot_name } => {
-                        find_camera_component_by_ref(actors, world, actor_name, slot_name)
-                    }
+                    CanvasViewportRef::Camera {
+                        actor_name,
+                        slot_name,
+                    } => find_camera_component_by_ref(actors, world, actor_name, slot_name),
                     CanvasViewportRef::MainCamera => {
                         *main_cam.get_or_insert_with(|| find_main_camera_in_wl(actors, world, wl))
                     }
@@ -1501,13 +1871,13 @@ pub(super) fn build_root_canvas_auto_size_map(
 /// それ以外の呼び出し元向けに同名の App メソッドを用意する。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_ss_layout_maps_free(
-    actors:       &[Actor],
-    world:        &World,
-    wl:           u32,
-    win_w:        f32,
-    win_h:        f32,
-    play_gvp:     Option<(f32, f32, f32, f32)>,
-    project_res:  (u32, u32),
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
+    win_w: f32,
+    win_h: f32,
+    play_gvp: Option<(f32, f32, f32, f32)>,
+    project_res: (u32, u32),
     design_space: bool,
 ) -> (HashMap<Entity, [f32; 2]>, HashMap<Entity, [f32; 2]>) {
     let mut vp_overrides = build_canvas_viewport_map(actors, world, wl, win_w, win_h, play_gvp);
@@ -1526,16 +1896,22 @@ impl super::App {
     /// プロジェクト解像度キャッシュと Edit View2D 判定を self から補完する。
     pub(super) fn build_ss_layout_maps(
         &self,
-        actors:   &[Actor],
-        world:    &World,
-        wl:       u32,
-        win_w:    f32,
-        win_h:    f32,
+        actors: &[Actor],
+        world: &World,
+        wl: u32,
+        win_w: f32,
+        win_h: f32,
         play_gvp: Option<(f32, f32, f32, f32)>,
     ) -> (HashMap<Entity, [f32; 2]>, HashMap<Entity, [f32; 2]>) {
         build_ss_layout_maps_free(
-            actors, world, wl, win_w, win_h, play_gvp,
-            self.project_resolution, self.edit_view_is_2d(),
+            actors,
+            world,
+            wl,
+            win_w,
+            win_h,
+            play_gvp,
+            self.project_resolution,
+            self.edit_view_is_2d(),
         )
     }
 }
@@ -1547,11 +1923,11 @@ impl super::App {
 /// `MainCamera` 参照でメインカメラが見つからない場合もマップに追加しない
 /// （= `Window` と同じ挙動になる）。
 pub(super) fn build_canvas_viewport_map(
-    actors:        &[Actor],
-    world:         &World,
-    wl:            u32,
-    win_w:         f32,
-    win_h:         f32,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
+    win_w: f32,
+    win_h: f32,
     _game_viewport: Option<(f32, f32, f32, f32)>,
 ) -> HashMap<Entity, [f32; 2]> {
     let mut map = HashMap::new();
@@ -1559,13 +1935,22 @@ pub(super) fn build_canvas_viewport_map(
     // （None = 未計算、Some(None) = メインカメラなし、Some(Some(vp)) = 解決済み）
     let mut main_cam_vp: Option<Option<[f32; 2]>> = None;
     for actor in actors {
-        if actor.world_line != wl { continue; }
-        if world.get::<CanvasTransform>(actor.entity).is_none() { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
+        if world.get::<CanvasTransform>(actor.entity).is_none() {
+            continue;
+        }
         for slot in actor.slots() {
-            if slot.kind != ComponentKind::Canvas { continue; }
+            if slot.kind != ComponentKind::Canvas {
+                continue;
+            }
             if let Some(cc) = world.get::<CanvasComponent>(slot.entity) {
                 match &cc.viewport_ref {
-                    CanvasViewportRef::Camera { actor_name, slot_name } => {
+                    CanvasViewportRef::Camera {
+                        actor_name,
+                        slot_name,
+                    } => {
                         let vp = resolve_camera_viewport_size(
                             actors, world, actor_name, slot_name, win_w, win_h,
                         );

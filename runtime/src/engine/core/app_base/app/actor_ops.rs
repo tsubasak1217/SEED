@@ -7,10 +7,10 @@
 //  snapshot_actors_for_wl / rebuild_actors_for_wl
 // ============================================================
 
-use crate::engine::components::{Transform as ActorTransform, ComponentKind};
+use crate::engine::components::{CanvasComponent, CanvasTransform, SpriteComponent};
+use crate::engine::components::{ComponentKind, Transform as ActorTransform};
 use crate::engine::core::app_base::scene::{Scene, build_actor};
 use crate::engine::core::app_base::undo::ActorTreeSnapshotCommand;
-use crate::engine::components::{CanvasTransform, CanvasComponent, SpriteComponent};
 use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::ActorData;
@@ -30,15 +30,9 @@ fn is_image_path(path: &str) -> bool {
 }
 
 use super::{
-    App,
-    find_actor_by_dfs, find_actor_by_dfs_mut,
-    actor_subtree_size,
-    extract_actor_by_dfs,
-    extract_actor_by_dfs_with_origin,
-    find_actor_by_entity_mut,
-    despawn_actor_recursive,
-    remove_actor_by_dfs,
-    collect_entities_for_wl,
+    App, actor_subtree_size, collect_entities_for_wl, despawn_actor_recursive,
+    extract_actor_by_dfs, extract_actor_by_dfs_with_origin, find_actor_by_dfs,
+    find_actor_by_dfs_mut, find_actor_by_entity_mut, remove_actor_by_dfs,
 };
 
 impl App {
@@ -50,11 +44,13 @@ impl App {
     /// None の場合はデフォルト Transform（原点）で配置する。操作は Undo/Redo の対象。
     pub(super) fn handle_add_actor(
         &mut self,
-        world_line:    u32,
+        world_line: u32,
         parent_dfs_id: Option<u32>,
-        spawn_pos:     Option<[f32; 3]>,
+        spawn_pos: Option<[f32; 3]>,
     ) {
-        if self.scene.is_none() { return; }
+        if self.scene.is_none() {
+            return;
+        }
 
         // ── キャンバス編集タブでのトップレベル追加を禁止（課題3(b)） ──────────
         // canvas_edit_sessions に world_line が登録されている間は、そのタブの
@@ -78,7 +74,11 @@ impl App {
         // 必ず world.spawn() で一意な entity を取得する。
         let entity = scene.world.spawn();
         let tf = if let Some(pos) = spawn_pos {
-            ActorTransform { position: pos, rotation: [0.0, 0.0, 0.0], scale: [1.0, 1.0, 1.0] }
+            ActorTransform {
+                position: pos,
+                rotation: [0.0, 0.0, 0.0],
+                scale: [1.0, 1.0, 1.0],
+            }
         } else {
             ActorTransform::default()
         };
@@ -92,7 +92,8 @@ impl App {
 
         if let Some(pid) = parent_dfs_id {
             let mut c = 0u32;
-            if let Some(parent) = find_actor_by_dfs_mut(&mut scene.actors, world_line, pid, &mut c) {
+            if let Some(parent) = find_actor_by_dfs_mut(&mut scene.actors, world_line, pid, &mut c)
+            {
                 parent.add_child(new_actor);
             }
         } else {
@@ -107,7 +108,9 @@ impl App {
         }));
 
         self.send_hierarchy();
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// 2D Actor（CanvasTransform を持つ）をシーンに追加する。
@@ -115,7 +118,9 @@ impl App {
     /// handle_add_actor の 2D 版。World に CanvasTransform を挿入し、
     /// Actor::new_2d でアクターを生成する。
     pub(super) fn handle_add_actor_2d(&mut self, world_line: u32, parent_dfs_id: Option<u32>) {
-        if self.scene.is_none() { return; }
+        if self.scene.is_none() {
+            return;
+        }
 
         // ── キャンバス編集タブでのトップレベル追加を禁止（課題3(b)） ──────────
         // canvas_edit_sessions は「そのタブの world_line に対して常にトップレベル
@@ -124,11 +129,12 @@ impl App {
         // キャンバス自身（DFS id は当該 world_line 内で常に 0 = find_actor_by_dfs の
         // カウンタは world_line 一致アクターのみを数える）の子として追加する。
         // 2D 同士の親子付けなので種別不整合ガードには抵触しない。
-        let parent_dfs_id = if parent_dfs_id.is_none() && self.canvas_edit_sessions.contains_key(&world_line) {
-            Some(0)
-        } else {
-            parent_dfs_id
-        };
+        let parent_dfs_id =
+            if parent_dfs_id.is_none() && self.canvas_edit_sessions.contains_key(&world_line) {
+                Some(0)
+            } else {
+                parent_dfs_id
+            };
 
         let before_actors = self.snapshot_actors_for_wl(world_line);
 
@@ -146,7 +152,8 @@ impl App {
 
         if let Some(pid) = parent_dfs_id {
             let mut c = 0u32;
-            if let Some(parent) = find_actor_by_dfs_mut(&mut scene.actors, world_line, pid, &mut c) {
+            if let Some(parent) = find_actor_by_dfs_mut(&mut scene.actors, world_line, pid, &mut c)
+            {
                 parent.add_child(new_actor);
             }
         } else {
@@ -161,7 +168,9 @@ impl App {
         }));
 
         self.send_hierarchy();
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// 指定アクターの子として 3D アクターを追加する。
@@ -182,9 +191,10 @@ impl App {
         {
             let Some(scene) = &self.scene else { return };
             let mut c = 0u32;
-            let parent_is_2d = find_actor_by_dfs(&scene.actors, self.active_world_line, parent_dfs_id, &mut c)
-                .map(|a| a.is_2d())
-                .unwrap_or(false);
+            let parent_is_2d =
+                find_actor_by_dfs(&scene.actors, self.active_world_line, parent_dfs_id, &mut c)
+                    .map(|a| a.is_2d())
+                    .unwrap_or(false);
             if parent_is_2d {
                 if let Some(ipc) = &self.ipc {
                     ipc.send("LOAD_ERROR:3Dアクターは2Dアクターの子にできません");
@@ -228,7 +238,9 @@ impl App {
     ///
     /// 操作は Undo/Redo の対象。
     pub(super) fn handle_wrap_actor(&mut self, child_dfs: u32, is_2d: bool) {
-        if self.scene.is_none() { return; }
+        if self.scene.is_none() {
+            return;
+        }
         let wl = self.active_world_line;
 
         // ── キャンバス編集タブのルートはラップ禁止（ルート一意性維持） ──────────
@@ -243,9 +255,11 @@ impl App {
         {
             let scene = self.scene.as_ref().unwrap();
             let mut c = 0u32;
-            let Some(child_is_2d) = find_actor_by_dfs(&scene.actors, wl, child_dfs, &mut c)
-                .map(|a| a.is_2d())
-            else { return }; // 対象が見つからなければ何もしない
+            let Some(child_is_2d) =
+                find_actor_by_dfs(&scene.actors, wl, child_dfs, &mut c).map(|a| a.is_2d())
+            else {
+                return;
+            }; // 対象が見つからなければ何もしない
             // 子 3D → 2D ラッパー を禁止
             if is_2d && !child_is_2d {
                 if let Some(ipc) = &self.ipc {
@@ -271,16 +285,22 @@ impl App {
             // 出自 (parent_entity, index) を使ってラッパーを同じ位置へ挿入する。
             let Some((child_actor, parent_entity, index)) =
                 extract_actor_by_dfs_with_origin(&mut scene.actors, wl, child_dfs)
-            else { return };
+            else {
+                return;
+            };
 
             // 新規ラッパーアクターを生成する（2D/3D で Transform 種別を分ける）。
             // Actor::new/new_2d が使う Entity::default() は衝突するため world.spawn() で一意化する。
             let wrapper_entity = scene.world.spawn();
             let mut wrapper = if is_2d {
-                scene.world.insert(wrapper_entity, CanvasTransform::default());
+                scene
+                    .world
+                    .insert(wrapper_entity, CanvasTransform::default());
                 Actor::new_2d(wrapper_entity, "Actor")
             } else {
-                scene.world.insert(wrapper_entity, ActorTransform::default());
+                scene
+                    .world
+                    .insert(wrapper_entity, ActorTransform::default());
                 Actor::new(wrapper_entity, "Actor")
             };
             wrapper.world_line = wl;
@@ -313,7 +333,9 @@ impl App {
         }));
 
         self.send_hierarchy();
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// .actor ファイルをシーンにドロップ配置する（3D ビュー用）。
@@ -329,11 +351,15 @@ impl App {
     /// シーンへ誤配置していた）。ビューポート（wl==0）では従来どおり動作する。
     /// 配置操作は Undo/Redo の対象。
     pub(super) fn handle_drop_actor(&mut self, path: &str, spawn_pos: [f32; 3]) {
-        if self.draw_ctx.is_none() || self.scene.is_none() { return; }
+        if self.draw_ctx.is_none() || self.scene.is_none() {
+            return;
+        }
 
         // 画像ファイルのドロップはスプライト生成用（2D コンテキスト専用）のため、
         // 3D 経路では対象外として無視する（3D ワールドへの画像ドロップは未対応）。
-        if is_image_path(path) { return; }
+        if is_image_path(path) {
+            return;
+        }
 
         // 配置先はアクティブタブの world_line（3D アクター編集タブ対応）
         let wl = self.active_world_line;
@@ -346,7 +372,7 @@ impl App {
         // load_actor_into は draw_ctx と scene.world を同時に参照するため
         // ブロックスコープで借用ライフタイムを制限する
         let load_result = {
-            let ctx   = self.draw_ctx.as_ref().unwrap();
+            let ctx = self.draw_ctx.as_ref().unwrap();
             let scene = self.scene.as_mut().unwrap();
             Scene::load_actor_into(
                 std::path::Path::new(path),
@@ -384,7 +410,9 @@ impl App {
                     // Model と子孫の Transform）へ平行移動 T(spawn_pos) を適用して同期する
                     // （ファイル側ルート位置が 0 のため移動量はドロップ位置そのもの）。
                     let scene = self.scene.as_mut().unwrap();
-                    let mut tf = scene.world.get::<ActorTransform>(actor.entity)
+                    let mut tf = scene
+                        .world
+                        .get::<ActorTransform>(actor.entity)
                         .cloned()
                         .unwrap_or_default();
                     tf.position = spawn_pos;
@@ -407,7 +435,9 @@ impl App {
                 }));
 
                 self.send_hierarchy();
-                if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                if let Some(ipc) = &self.ipc {
+                    ipc.send("SCENE_MODIFIED");
+                }
             }
             Err(e) => {
                 eprintln!("[Drop] load_actor_into ERR: {e}");
@@ -442,7 +472,9 @@ impl App {
     ///
     /// 配置操作は ActorTreeSnapshotCommand で Undo/Redo の対象。
     pub(super) fn handle_drop_actor_2d(&mut self, path: &str, screen_x: u32, screen_y: u32) {
-        if self.draw_ctx.is_none() || self.scene.is_none() { return; }
+        if self.draw_ctx.is_none() || self.scene.is_none() {
+            return;
+        }
 
         // 配置先はアクティブタブの world_line（ビューポートは 0）
         let wl = self.active_world_line;
@@ -457,8 +489,8 @@ impl App {
         let load_result: Result<Actor, String> = if is_image_path(path) {
             self.build_sprite_actor_from_image(path, wl)
         } else {
-            let host  = self.scripting_host.clone();
-            let ctx   = self.draw_ctx.as_ref().unwrap();
+            let host = self.scripting_host.clone();
+            let ctx = self.draw_ctx.as_ref().unwrap();
             let scene = self.scene.as_mut().unwrap();
             // load_actor_into の SceneError は Display 経由で String へ統一する
             // （画像経路の build_sprite_actor_from_image と戻り値型を揃えるため）
@@ -469,7 +501,8 @@ impl App {
                 host.as_ref(),
                 wl,   // world_line = アクティブタブ
                 None, // ルートエンティティは新規 spawn
-            ).map_err(|e| e.to_string())
+            )
+            .map_err(|e| e.to_string())
         };
 
         match load_result {
@@ -489,7 +522,10 @@ impl App {
                     if !actor.is_2d() {
                         // 2D タブのトップレベルは 2D のみ。3D アクターは 2D ルートの
                         // 子にできないため、ロード済みエンティティを破棄して拒否する。
-                        self.despawn_actor_and_reject(actor, "3Dアクターは2Dアクターの子にできません");
+                        self.despawn_actor_and_reject(
+                            actor,
+                            "3Dアクターは2Dアクターの子にできません",
+                        );
                         self.drag_hover_canvas_entity = None;
                         return;
                     }
@@ -515,7 +551,9 @@ impl App {
                 }));
 
                 self.send_hierarchy();
-                if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                if let Some(ipc) = &self.ipc {
+                    ipc.send("SCENE_MODIFIED");
+                }
             }
             Err(e) => {
                 eprintln!("[Drop2D] load actor ERR: {e}");
@@ -540,7 +578,10 @@ impl App {
             // ── ルートに Canvas あり ─────────────────────────────────────
             // カーソルが既存のルートキャンバスにヒットしていれば、その
             // キャンバスの子として挿入する（キャンバスのネスト対応）。
-            let hit_entity = self.collect_root_canvas_infos().iter().rev()
+            let hit_entity = self
+                .collect_root_canvas_infos()
+                .iter()
+                .rev()
                 .find(|i| i.contains(drop_pt))
                 .map(|i| i.entity);
 
@@ -551,8 +592,8 @@ impl App {
                 // ルートレベルの順変換 world = position + anchor_off（ビューポート中央基準）
                 // より position = drop_pt - anchor_off。
                 let win_size = self.window.as_ref().map(|w| w.inner_size());
-                let vw = win_size.map_or(1280.0, |s| s.width  as f32);
-                let vh = win_size.map_or(720.0,  |s| s.height as f32);
+                let vw = win_size.map_or(1280.0, |s| s.width as f32);
+                let vh = win_size.map_or(720.0, |s| s.height as f32);
                 let scene = self.scene.as_mut().unwrap();
                 if let Some(ct) = scene.world.get_mut::<CanvasTransform>(actor.entity) {
                     let anchor_off = [vw * ct.anchor[0] - vw / 2.0, vh * ct.anchor[1] - vh / 2.0];
@@ -563,14 +604,15 @@ impl App {
         } else {
             // ── ルートに Canvas なし: 既存ルートキャンバスの子として挿入 ──
             let infos = self.collect_root_canvas_infos();
-            let target_entity: Option<Entity> = infos.iter().rev()
+            let target_entity: Option<Entity> = infos
+                .iter()
+                .rev()
                 .find(|i| i.contains(drop_pt))
                 .map(|i| i.entity)
                 .or_else(|| infos.first().map(|i| i.entity));
 
             // ルートキャンバスが 1 つもなければデフォルトキャンバスを新規作成する
-            let target_entity = target_entity
-                .unwrap_or_else(|| self.spawn_default_root_canvas());
+            let target_entity = target_entity.unwrap_or_else(|| self.spawn_default_root_canvas());
 
             self.insert_actor_as_canvas_child(actor, target_entity, drop_pt);
         }
@@ -587,7 +629,9 @@ impl App {
     ///   アクター（wl の唯一のトップレベル）の子として配置する
     fn place_dropped_2d_in_edit_tab(&mut self, actor: Actor, drop_pt: [f32; 2], wl: u32) {
         let infos = self.collect_root_canvas_infos();
-        let target_entity: Option<Entity> = infos.iter().rev()
+        let target_entity: Option<Entity> = infos
+            .iter()
+            .rev()
             .find(|i| i.contains(drop_pt))
             .map(|i| i.entity)
             .or_else(|| infos.first().map(|i| i.entity));
@@ -652,18 +696,19 @@ impl App {
         let actor_entity = scene.world.spawn();
         scene.world.insert(actor_entity, CanvasTransform::default());
         let slot_entity = scene.world.spawn();
-        scene.world.insert(slot_entity, SpriteComponent {
-            texture_path,
-            width:  w,
-            height: h,
-            ..default_sc
-        });
+        scene.world.insert(
+            slot_entity,
+            SpriteComponent {
+                texture_path,
+                width: w,
+                height: h,
+                ..default_sc
+            },
+        );
 
         let mut actor = Actor::new_2d(actor_entity, &name);
         actor.world_line = wl;
-        actor.add_slot_typed::<SpriteComponent>(
-            name.clone(), ComponentKind::Sprite, slot_entity,
-        );
+        actor.add_slot_typed::<SpriteComponent>(name.clone(), ComponentKind::Sprite, slot_entity);
         Ok(actor)
     }
 
@@ -674,7 +719,12 @@ impl App {
     /// 設定したうえで、アクティブ world_line のトップレベルキャンバスアクターへ子付けする。
     /// 対象エンティティの矩形情報が取得できない・親が見つからない場合は
     /// シーンルートへフォールバックする。
-    fn insert_actor_as_canvas_child(&mut self, actor: Actor, target_entity: Entity, drop_pt: [f32; 2]) {
+    fn insert_actor_as_canvas_child(
+        &mut self,
+        actor: Actor,
+        target_entity: Entity,
+        drop_pt: [f32; 2],
+    ) {
         let wl = self.active_world_line;
         // spawn_default_root_canvas 等で新規作成された分も含めて矩形情報を収集する
         let infos = self.collect_root_canvas_infos();
@@ -682,7 +732,9 @@ impl App {
             let scene = self.scene.as_mut().unwrap();
             // 子アクター自身の anchor と scale_transform を考慮してローカル position を逆算する
             // （スケールモードは各ノードの CanvasTransform が保持するため子の値を使う）
-            let (child_anchor, child_sm_transform) = scene.world.get::<CanvasTransform>(actor.entity)
+            let (child_anchor, child_sm_transform) = scene
+                .world
+                .get::<CanvasTransform>(actor.entity)
                 .map(|ct| (ct.anchor, ct.scale_transform))
                 .unwrap_or(([0.0, 0.0], true));
             let local_pos = info.world_to_child_local(drop_pt, child_anchor, child_sm_transform);
@@ -690,7 +742,9 @@ impl App {
                 ct.position = local_pos;
             }
             // ヒットしたキャンバス（トップレベル）の子として挿入する
-            if let Some(parent) = scene.actors.iter_mut()
+            if let Some(parent) = scene
+                .actors
+                .iter_mut()
                 .find(|a| a.world_line == wl && a.entity == target_entity)
             {
                 parent.add_child(actor);
@@ -725,7 +779,9 @@ impl App {
         let mut canvas_actor = Actor::new_2d(actor_entity, "Canvas");
         canvas_actor.world_line = wl;
         canvas_actor.add_slot_typed::<CanvasComponent>(
-            "Canvas".to_string(), ComponentKind::Canvas, slot_entity,
+            "Canvas".to_string(),
+            ComponentKind::Canvas,
+            slot_entity,
         );
         scene.actors.push(canvas_actor);
         actor_entity
@@ -767,11 +823,15 @@ impl App {
         self.selected_instances.clear();
         self.actor_virtual_selected_idx = None;
         self.actor_virtual_selected_slot_idx = 0;
-        if let Some(ipc) = &self.ipc { ipc.send("SELECTED:-1"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SELECTED:-1");
+        }
         // 2D アクターが全削除された場合に canvas_world_lines を更新する
         self.update_canvas_wl_state_for(wl);
         self.send_hierarchy();
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// アクター編集モードでアクターツリーのペアレント関係を変更する。
@@ -825,7 +885,9 @@ impl App {
                 if let Some((parent_is_2d, parent_has_canvas)) = new_parent_info {
                     if !parent_is_2d && !parent_has_canvas {
                         if let Some(ipc) = &self.ipc {
-                            ipc.send("LOAD_ERROR:2DアクターはCanvasを持たない3Dアクターの子にできません");
+                            ipc.send(
+                                "LOAD_ERROR:2DアクターはCanvasを持たない3Dアクターの子にできません",
+                            );
                         }
                         return;
                     }
@@ -853,19 +915,27 @@ impl App {
                     .map(|a| actor_subtree_size(a))
                     .unwrap_or(0)
             };
-            if child_subtree_size == 0 { return; }
+            if child_subtree_size == 0 {
+                return;
+            }
 
             // child をツリーから取り出す
             let mut extracted: Option<Actor> = None;
             let mut c = 0u32;
             extract_actor_by_dfs(&mut scene.actors, wl, child_dfs, &mut c, &mut extracted);
-            let Some(mut child_actor) = extracted else { return };
+            let Some(mut child_actor) = extracted else {
+                return;
+            };
             child_actor.set_world_line_recursive(wl);
 
             // child が new_parent より前（DFS 順）にある場合、取り出し後に new_parent の
             // DFS id が child_subtree_size 分ずれるため補正する
             let adjusted_parent_dfs = new_parent_dfs.map(|pid| {
-                if child_dfs < pid { pid - child_subtree_size } else { pid }
+                if child_dfs < pid {
+                    pid - child_subtree_size
+                } else {
+                    pid
+                }
             });
 
             // 挿入先の兄弟リストへ、アンカー（entity 一致）を基準に挿入する。
@@ -902,7 +972,9 @@ impl App {
         }));
 
         self.send_hierarchy();
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// アクター名を変更する。
@@ -914,7 +986,9 @@ impl App {
             actor.name = name.to_string();
         }
         self.send_hierarchy();
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// 選択インスタンス／グループを削除し Undo 履歴に記録する。
@@ -923,7 +997,9 @@ impl App {
     /// - `recursive = false` → 指定ノードのみ削除（子孫は root へ移動）※現在は recursive と同一動作
     pub(super) fn apply_delete(&mut self, base_ids: &[u32], _recursive: bool) {
         let wl = self.active_world_line;
-        if self.scene.is_none() { return; }
+        if self.scene.is_none() {
+            return;
+        }
 
         // ── キャンバス編集タブのルート保護（課題3(a)） ────────────────────
         // 複数選択削除（DELETE_RECURSIVE）に当該タブのルート（DFS id 0）が
@@ -967,11 +1043,15 @@ impl App {
         self.selected_instances.clear();
         self.actor_virtual_selected_idx = None;
         self.actor_virtual_selected_slot_idx = 0;
-        if let Some(ipc) = &self.ipc { ipc.send("SELECTED:-1"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SELECTED:-1");
+        }
         // 2D アクターが全削除された場合に canvas_world_lines を更新する
         self.update_canvas_wl_state_for(wl);
         self.send_hierarchy();
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// `dfs_id` が「canvas 編集タブ `wl` のルート親キャンバス」かどうかを判定する。
@@ -988,32 +1068,43 @@ impl App {
 
     /// 指定世界線のアクターツリー全体をデータとしてスナップショットする。
     pub(super) fn snapshot_actors_for_wl(&self, wl: u32) -> Vec<ActorData> {
-        self.scene.as_ref().map(|s| {
-            s.actors.iter()
-                .filter(|a| a.world_line == wl)
-                .map(|a| a.to_data(&s.world))
-                .collect()
-        }).unwrap_or_default()
+        self.scene
+            .as_ref()
+            .map(|s| {
+                s.actors
+                    .iter()
+                    .filter(|a| a.world_line == wl)
+                    .map(|a| a.to_data(&s.world))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 指定世界線のアクターを data から再構築する（Undo/Redo 用）。
     pub(super) fn rebuild_actors_for_wl(&mut self, wl: u32, actors_data: Vec<ActorData>) {
         let host = self.scripting_host.clone();
-        if self.draw_ctx.is_none() { return; }
+        if self.draw_ctx.is_none() {
+            return;
+        }
 
         // scene を一時的に取り出して draw_ctx との同時借用問題を回避
         let mut scene = self.scene.take().unwrap_or_else(|| Scene::new("main"));
 
         // 既存の wl アクターエンティティを despawn して削除
         let old_entities: Vec<_> = collect_entities_for_wl(&scene.actors, wl);
-        for e in old_entities { scene.world.despawn(e); }
+        for e in old_entities {
+            scene.world.despawn(e);
+        }
         scene.actors.retain(|a| a.world_line != wl);
 
         // 新アクターを構築
         let ctx = self.draw_ctx.as_ref().unwrap();
         for data in actors_data {
             match build_actor(data, ctx, &mut scene.world, host.as_ref(), None) {
-                Ok(mut a) => { a.set_world_line_recursive(wl); scene.actors.push(a); }
+                Ok(mut a) => {
+                    a.set_world_line_recursive(wl);
+                    scene.actors.push(a);
+                }
                 Err(e) => eprintln!("[SEED] rebuild_actors_for_wl error: {e}"),
             }
         }
@@ -1036,7 +1127,9 @@ impl App {
     /// canvas_world_lines に含めない。含めると canvas ID picking が 3D シーンで誤動作する。
     pub(super) fn update_canvas_wl_state_for(&mut self, wl: u32) {
         if let Some(scene) = &self.scene {
-            let has = scene.actors.iter()
+            let has = scene
+                .actors
+                .iter()
                 .filter(|a| a.world_line == wl)
                 .any(|a| a.is_2d());
             if has {
@@ -1114,7 +1207,9 @@ impl App {
                 let vpath = crate::engine::asset_fs::to_virtual(&saved_path);
                 if let Some(scene) = &mut self.scene {
                     let mut c = 0u32;
-                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
+                    if let Some(actor) =
+                        find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c)
+                    {
                         actor.prefab_source = Some(vpath.clone());
                     }
                 }
@@ -1152,14 +1247,18 @@ fn translate_exported_subtree(data: &mut ActorData, t: [f32; 3], is_root: bool) 
     // 子孫アクターの Transform（ワールド空間）へ平行移動を適用する
     if !is_root {
         if let Some(ref mut tf) = data.transform {
-            for axis in 0..3 { tf.position[axis] += t[axis]; }
+            for axis in 0..3 {
+                tf.position[axis] += t[axis];
+            }
         }
     }
     // ModelComponent の全 instance_mats（ワールド行列）の平行移動列へ加算する
     for slot in &mut data.components {
         if let ComponentData::ModelComponent(ref mut mc) = slot.component {
             for m in &mut mc.instances {
-                for axis in 0..3 { m[axis][3] += t[axis]; }
+                for axis in 0..3 {
+                    m[axis][3] += t[axis];
+                }
             }
         }
     }

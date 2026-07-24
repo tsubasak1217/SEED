@@ -12,14 +12,14 @@
 //    戻って再生する場合は現在のTransform状態で物理エンジンを再起動する。
 // ============================================================
 
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicU32, Ordering};
+use super::{App, RuntimeMode};
 use crate::engine::components::{
-    Transform as ActorTransform, CanvasTransform, ModelComponent, ComponentKind,
+    CanvasTransform, ComponentKind, ModelComponent, Transform as ActorTransform,
 };
 use crate::engine::ecs::Entity;
 use crate::engine::physics::{PhysicsCommand, PhysicsCommand2d};
-use super::{App, RuntimeMode};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 // スナップショット最大保持数（変化なしフレームはスキップするため実際はもっと少ない）
 const MAX_SNAPSHOTS: usize = 7200;
@@ -115,11 +115,15 @@ impl App {
     /// 物理を毎フレーム走らせてドラッグ／インスペクタ編集による押し戻しを常時有効にする。
     /// 逆に、一つでも RigidBody 有効（ダイナミクスあり）の物理があればタイムラインを優先する。
     pub(super) fn is_edit_physics_pushback_mode(&self) -> bool {
-        if self.mode != RuntimeMode::Edit { return false; }
+        if self.mode != RuntimeMode::Edit {
+            return false;
+        }
         let any_enabled = self.edit_physics_enabled || self.edit_physics_2d_enabled;
-        if !any_enabled { return false; }
+        if !any_enabled {
+            return false;
+        }
         // RigidBody（タイムライン）モードの物理が一つでもあればタイムライン優先＝押し戻しモードではない
-        let timeline_3d = self.edit_physics_enabled    && self.edit_physics_with_rigidbody;
+        let timeline_3d = self.edit_physics_enabled && self.edit_physics_with_rigidbody;
         let timeline_2d = self.edit_physics_2d_enabled && self.edit_physics_2d_with_rigidbody;
         !timeline_3d && !timeline_2d
     }
@@ -220,9 +224,11 @@ impl App {
     /// （記録のたびに try_record 側でも true が設定される）。
     pub(super) fn begin_edit_physics_drag_live_sim(&mut self) {
         // 既に再生中なら何もしない（冪等）
-        if !self.edit_physics_paused { return; }
-        self.edit_physics_paused          = false;
-        self.edit_physics_in_playback     = false;
+        if !self.edit_physics_paused {
+            return;
+        }
+        self.edit_physics_paused = false;
+        self.edit_physics_in_playback = false;
         self.edit_physics_no_change_count = 0;
         // 実測速度を受信するまで「移動中」とみなす（実データ前の誤停止防止）
         self.mark_edit_physics_moving();
@@ -238,13 +244,13 @@ impl App {
     /// 物理スレッドには Pause を送信して、再生ボタンが押されるまでシミュレーションを止める。
     pub(super) fn init_physics_timeline(&mut self) {
         self.edit_physics_snapshots.clear();
-        self.edit_physics_current_frame   = 0;
-        self.edit_physics_paused          = true;
-        self.edit_physics_at_latest       = true;
-        self.edit_physics_sim_time        = 0.0;
+        self.edit_physics_current_frame = 0;
+        self.edit_physics_paused = true;
+        self.edit_physics_at_latest = true;
+        self.edit_physics_sim_time = 0.0;
         self.edit_physics_no_change_count = 0;
-        self.edit_physics_warmup_frames   = 0;
-        self.edit_physics_in_playback     = false;
+        self.edit_physics_warmup_frames = 0;
+        self.edit_physics_in_playback = false;
 
         // 初期状態をフレーム 0 として記録する
         if let Some(snap) = self.capture_current_snapshot(0.0) {
@@ -264,28 +270,32 @@ impl App {
     pub(super) fn reset_physics_timeline(&mut self) {
         self.edit_physics_snapshots.clear();
         self.edit_physics_current_frame = 0;
-        self.edit_physics_paused        = true;
-        self.edit_physics_at_latest     = true;
-        self.edit_physics_sim_time      = 0.0;
+        self.edit_physics_paused = true;
+        self.edit_physics_at_latest = true;
+        self.edit_physics_sim_time = 0.0;
         self.edit_physics_warmup_frames = 0;
-        self.edit_physics_in_playback   = false;
+        self.edit_physics_in_playback = false;
     }
 
     /// 現在の ECS 状態からスナップショットを生成して返す。
     fn capture_current_snapshot(&self, time_secs: f64) -> Option<PhysicsSnapshot> {
         let scene = self.scene.as_ref()?;
-        let wl    = self.active_world_line;
+        let wl = self.active_world_line;
 
         let mut transforms_3d = Vec::new();
         let mut transforms_2d = Vec::new();
 
         // DFS でアクターツリーを走査してTransformを収集する
-        let mut stack = scene.actors.iter()
+        let mut stack = scene
+            .actors
+            .iter()
             .filter(|a| a.world_line == wl)
             .collect::<Vec<_>>();
 
         while let Some(actor) = stack.pop() {
-            for child in &actor.children { stack.push(child); }
+            for child in &actor.children {
+                stack.push(child);
+            }
 
             if actor.is_2d() {
                 if let Some(ct) = scene.world.get::<CanvasTransform>(actor.entity) {
@@ -318,7 +328,9 @@ impl App {
         // ・RigidBody タイムラインモードで最新フレーム停止中のドラッグ検知ステップ:
         //   ドラッグ終了自動再開のためだけに物理をステップさせており、記録はしない。
         // 再生中（paused=false）のみ記録する。
-        if self.edit_physics_paused { return; }
+        if self.edit_physics_paused {
+            return;
+        }
 
         self.edit_physics_sim_time += dt;
         let time = self.edit_physics_sim_time;
@@ -335,7 +347,7 @@ impl App {
                         self.edit_physics_no_change_count = 0;
                         self.edit_physics_snapshots.push(new_snap);
                         self.edit_physics_current_frame = self.edit_physics_snapshots.len() - 1;
-                        self.edit_physics_at_latest     = true;
+                        self.edit_physics_at_latest = true;
                         self.send_physics_timeline_state();
                     }
                 }
@@ -343,7 +355,9 @@ impl App {
             return;
         }
 
-        let Some(new_snap) = self.capture_current_snapshot(time) else { return };
+        let Some(new_snap) = self.capture_current_snapshot(time) else {
+            return;
+        };
 
         // 前スナップショットとの差分チェック
         let has_change = if let Some(prev) = self.edit_physics_snapshots.last() {
@@ -377,8 +391,8 @@ impl App {
             if self.edit_physics_no_change_count < NO_CHANGE_STOP_THRESHOLD {
                 return; // まだ猶予中: 停止しない
             }
-            self.edit_physics_paused          = true;
-            self.edit_physics_at_latest       = true;
+            self.edit_physics_paused = true;
+            self.edit_physics_at_latest = true;
             self.edit_physics_no_change_count = 0;
             // 速度を保持したまま物理スレッドを停止する
             self.send_pause_to_physics_threads();
@@ -398,7 +412,7 @@ impl App {
 
         self.edit_physics_snapshots.push(new_snap);
         self.edit_physics_current_frame = self.edit_physics_snapshots.len() - 1;
-        self.edit_physics_at_latest     = true;
+        self.edit_physics_at_latest = true;
 
         self.send_physics_timeline_state();
     }
@@ -412,7 +426,7 @@ impl App {
             self.start_edit_physics_play();
         } else {
             let was_in_playback = self.edit_physics_in_playback;
-            self.edit_physics_paused      = true;
+            self.edit_physics_paused = true;
             self.edit_physics_in_playback = false;
             self.edit_physics_at_latest =
                 self.edit_physics_current_frame + 1 >= self.edit_physics_snapshots.len();
@@ -430,13 +444,13 @@ impl App {
     /// - 最新フレームから再開・編集あり: 現在の ECS 状態から物理を再起動（速度 0 で再開）
     /// - 過去フレームからの再開: 記録済みスナップショットをコマ送り再生
     fn start_edit_physics_play(&mut self) {
-        let cur       = self.edit_physics_current_frame;
+        let cur = self.edit_physics_current_frame;
         let max_frame = self.edit_physics_snapshots.len().saturating_sub(1);
         // 最新フレームにいるかどうか（シーク操作なしで停止していた場合 or 最終フレームを指す場合）
         let is_at_latest = cur >= max_frame;
 
-        self.edit_physics_paused          = false;
-        self.edit_physics_at_latest       = false;
+        self.edit_physics_paused = false;
+        self.edit_physics_at_latest = false;
         self.edit_physics_no_change_count = 0;
         // 実測速度を受信するまで「移動中」とみなす（実データ前の誤停止防止）
         self.mark_edit_physics_moving();
@@ -451,7 +465,7 @@ impl App {
                     // 物理エンジンは起動せず、履歴も破棄しない。
                     self.edit_physics_current_frame = 0;
                     self.restore_snapshot(0);
-                    self.edit_physics_in_playback   = true;
+                    self.edit_physics_in_playback = true;
                 } else {
                     // ── 初回再生（スナップショットがフレーム 0 のみ）: 物理スレッドを起動 ──
                     // init_physics_timeline で Pause 済みの物理スレッドを Resume して
@@ -490,10 +504,10 @@ impl App {
                 *last = snap;
             }
         }
-        self.edit_physics_paused          = false;
-        self.edit_physics_in_playback     = false;
-        self.edit_physics_at_latest       = false;
-        self.edit_physics_warmup_frames   = PHYSICS_WARMUP_FRAMES;
+        self.edit_physics_paused = false;
+        self.edit_physics_in_playback = false;
+        self.edit_physics_at_latest = false;
+        self.edit_physics_warmup_frames = PHYSICS_WARMUP_FRAMES;
         self.edit_physics_no_change_count = 0;
         // 実測速度を受信するまで「移動中」とみなす（実データ前の誤停止防止）
         self.mark_edit_physics_moving();
@@ -517,10 +531,10 @@ impl App {
         let next = self.edit_physics_current_frame + 1;
         if next >= self.edit_physics_snapshots.len() {
             // 最終フレームに達したら自動停止
-            self.edit_physics_paused      = true;
+            self.edit_physics_paused = true;
             self.edit_physics_in_playback = false;
-            self.edit_physics_at_latest   = true;
-            self.hovered_gizmo_part       = None;
+            self.edit_physics_at_latest = true;
+            self.hovered_gizmo_part = None;
             self.send_physics_timeline_state();
             return;
         }
@@ -528,7 +542,7 @@ impl App {
         self.edit_physics_current_frame = next;
         self.restore_snapshot(next);
         self.edit_physics_at_latest = next + 1 >= self.edit_physics_snapshots.len();
-        self.hovered_gizmo_part     = None;
+        self.hovered_gizmo_part = None;
         self.send_physics_timeline_state();
     }
 
@@ -538,14 +552,20 @@ impl App {
     /// - `step < 0`: 後退（過去フレームへ）。フレーム 0 より前には戻れない。
     /// - 停止中のみ有効（再生中は無視）。
     pub(super) fn handle_edit_physics_step(&mut self, step: i32) {
-        if !self.edit_physics_paused { return; }
-        if self.edit_physics_snapshots.is_empty() { return; }
+        if !self.edit_physics_paused {
+            return;
+        }
+        if self.edit_physics_snapshots.is_empty() {
+            return;
+        }
 
         let max_frame = self.edit_physics_snapshots.len() - 1;
         let cur = self.edit_physics_current_frame as i32;
         let next = (cur + step).clamp(0, max_frame as i32) as usize;
 
-        if next == self.edit_physics_current_frame { return; }
+        if next == self.edit_physics_current_frame {
+            return;
+        }
 
         self.edit_physics_current_frame = next;
         self.restore_snapshot(next);
@@ -561,12 +581,14 @@ impl App {
     /// これによりシークバーのドラッグ中（再生中）でも任意のフレームに移動できる。
     /// 一時停止後に再開するかどうかはエディタ（C# 側）が PLAY_PAUSE コマンドで制御する。
     pub(super) fn handle_edit_physics_seek(&mut self, frame: usize) {
-        if self.edit_physics_snapshots.is_empty() { return; }
+        if self.edit_physics_snapshots.is_empty() {
+            return;
+        }
 
         // 再生中のシーク: 自動で一時停止してからシークする
         if !self.edit_physics_paused {
             let was_in_playback = self.edit_physics_in_playback;
-            self.edit_physics_paused      = true;
+            self.edit_physics_paused = true;
             self.edit_physics_in_playback = false;
             // ライブ物理シミュレーション中だった場合は物理スレッドも停止する
             // （スナップショットプレイバック中は物理スレッドが動いていないため不要）
@@ -589,15 +611,19 @@ impl App {
     /// ActorTransform だけでなく、GPU 描画行列（ModelComponent.instance_mats）も同期する。
     /// これを怠ると 3D モデルの描画位置がスナップショット復元後もずれたままになる。
     fn restore_snapshot(&mut self, frame: usize) {
-        let Some(snap) = self.edit_physics_snapshots.get(frame).cloned() else { return };
+        let Some(snap) = self.edit_physics_snapshots.get(frame).cloned() else {
+            return;
+        };
 
         // ── Step 0: このフレーム時点の接触状態（コライダー色）を復元する ─────
         // シーク・ステップ・プレイバックのいずれでも、直前のライブシミュレーション時の
         // 接触状態が凍結・残留しないよう、フレームごとに保存した集合へ差し替える。
-        self.active_collision_dfs_ids    = snap.colliding_3d.clone();
+        self.active_collision_dfs_ids = snap.colliding_3d.clone();
         self.active_collision_2d_dfs_ids = snap.colliding_2d.clone();
 
-        let Some(scene) = self.scene.as_mut() else { return };
+        let Some(scene) = self.scene.as_mut() else {
+            return;
+        };
         let wl = self.active_world_line;
 
         // ── Step 1: ActorTransform / CanvasTransform を書き戻す ───────────
@@ -617,11 +643,11 @@ impl App {
         // 借用規則を満たすため、収集フェーズ（不変参照）と更新フェーズ（可変参照）を分離する。
         let pairs: Vec<(Entity, Entity)> = {
             let mut result = Vec::new();
-            let mut stack: Vec<&_> = scene.actors.iter()
-                .filter(|a| a.world_line == wl)
-                .collect();
+            let mut stack: Vec<&_> = scene.actors.iter().filter(|a| a.world_line == wl).collect();
             while let Some(actor) = stack.pop() {
-                for child in &actor.children { stack.push(child); }
+                for child in &actor.children {
+                    stack.push(child);
+                }
                 for slot in actor.slots() {
                     if slot.kind == ComponentKind::Model {
                         result.push((actor.entity, slot.entity));
@@ -634,7 +660,7 @@ impl App {
         for (actor_entity, slot_entity) in pairs {
             let mat = match scene.world.get::<ActorTransform>(actor_entity) {
                 Some(tf) => tf.to_mat4(),
-                None     => continue,
+                None => continue,
             };
             if let Some(mc) = scene.world.get_mut::<ModelComponent>(slot_entity) {
                 if let Some(m) = mc.instance_mats.first_mut() {
@@ -650,30 +676,34 @@ impl App {
     /// 履歴を全て削除し、現在フレームのスナップショットを新たなフレーム 0 として設定する。
     /// 物理エンジンをこの状態で再起動し、シミュレーション時間をリセットする。
     pub(super) fn handle_edit_physics_apply_frame(&mut self) {
-        if self.edit_physics_snapshots.is_empty() { return; }
+        if self.edit_physics_snapshots.is_empty() {
+            return;
+        }
 
         let cur = self.edit_physics_current_frame;
-        let Some(snap) = self.edit_physics_snapshots.get(cur).cloned() else { return };
+        let Some(snap) = self.edit_physics_snapshots.get(cur).cloned() else {
+            return;
+        };
 
         // 現在フレームを time_secs=0.0 のフレーム 0 として再設定する。
         // 接触状態（コライダー色）も引き継いで、このフレーム時点の色を維持する。
         let new_snap = PhysicsSnapshot {
             transforms_3d: snap.transforms_3d,
             transforms_2d: snap.transforms_2d,
-            colliding_3d:  snap.colliding_3d.clone(),
-            colliding_2d:  snap.colliding_2d.clone(),
+            colliding_3d: snap.colliding_3d.clone(),
+            colliding_2d: snap.colliding_2d.clone(),
             time_secs: 0.0,
         };
         // 現在の接触色を適用フレームの状態へ揃える（残留した接触色を防ぐ）
-        self.active_collision_dfs_ids    = snap.colliding_3d;
+        self.active_collision_dfs_ids = snap.colliding_3d;
         self.active_collision_2d_dfs_ids = snap.colliding_2d;
 
         self.edit_physics_snapshots.clear();
         self.edit_physics_snapshots.push(new_snap);
-        self.edit_physics_current_frame  = 0;
-        self.edit_physics_sim_time       = 0.0;
-        self.edit_physics_paused         = true;
-        self.edit_physics_at_latest      = true;
+        self.edit_physics_current_frame = 0;
+        self.edit_physics_sim_time = 0.0;
+        self.edit_physics_paused = true;
+        self.edit_physics_at_latest = true;
         self.edit_physics_no_change_count = 0;
 
         // 物理エンジンを現在の ECS 状態（適用後の Transform）で再起動する
@@ -694,7 +724,9 @@ impl App {
 
         self.hovered_gizmo_part = None;
         self.send_physics_timeline_state();
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// 現在の ECS 状態が最新スナップショットと一致するかを返す。
@@ -702,8 +734,12 @@ impl App {
     /// 停止中に Gizmo でアクターを移動させた場合に差分が生じる。
     /// 一致すれば Resume（速度保持）、不一致なら再起動（速度リセット）を選択する。
     fn current_ecs_matches_latest_snapshot(&self) -> bool {
-        let Some(latest) = self.edit_physics_snapshots.last() else { return true };
-        let Some(current) = self.capture_current_snapshot_ref() else { return true };
+        let Some(latest) = self.edit_physics_snapshots.last() else {
+            return true;
+        };
+        let Some(current) = self.capture_current_snapshot_ref() else {
+            return true;
+        };
         !snapshot_has_change(latest, &current)
     }
 
@@ -718,11 +754,15 @@ impl App {
     pub(super) fn send_physics_timeline_state(&self) {
         let Some(ipc) = &self.ipc else { return };
 
-        let paused    = if self.edit_physics_paused    { 1u8 } else { 0u8 };
-        let at_latest = if self.edit_physics_at_latest { 1u8 } else { 0u8 };
-        let cur       = self.edit_physics_current_frame;
-        let total     = self.edit_physics_snapshots.len();
-        let time      = self.current_snapshot_time();
+        let paused = if self.edit_physics_paused { 1u8 } else { 0u8 };
+        let at_latest = if self.edit_physics_at_latest {
+            1u8
+        } else {
+            0u8
+        };
+        let cur = self.edit_physics_current_frame;
+        let total = self.edit_physics_snapshots.len();
+        let time = self.current_snapshot_time();
 
         ipc.send(&format!(
             "EDIT_PHYSICS_STATE:{paused},{at_latest},{cur},{total},{time:.4}"
@@ -748,14 +788,20 @@ impl App {
     /// at_latest をここで使うと、スナップショット記録のたびに物理が止まってしまう。
     pub(super) fn should_step_edit_physics(&self) -> bool {
         // いずれの編集時物理（3D/2D）も無効ならステップしない
-        if !self.edit_physics_enabled && !self.edit_physics_2d_enabled { return false; }
+        if !self.edit_physics_enabled && !self.edit_physics_2d_enabled {
+            return false;
+        }
 
         // 【変更3(a)】常時押し戻しモード（RigidBody 無効）:
         // タイムラインを使わず物理を毎フレーム走らせて、押し戻しを常時有効にする。
-        if self.is_edit_physics_pushback_mode() { return true; }
+        if self.is_edit_physics_pushback_mode() {
+            return true;
+        }
 
         // 再生中は常にステップする
-        if !self.edit_physics_paused { return true; }
+        if !self.edit_physics_paused {
+            return true;
+        }
 
         // 【変更3(b)】RigidBody タイムラインモードで最新フレーム停止中:
         // ドラッグ操作が行われている（またはドラッグ中として物理登録済みの）間だけ
@@ -780,20 +826,32 @@ impl App {
 /// 2 つのスナップショットに変化があるかどうかを返す。
 fn snapshot_has_change(old: &PhysicsSnapshot, new: &PhysicsSnapshot) -> bool {
     // 3D Transform の比較
-    if old.transforms_3d.len() != new.transforms_3d.len() { return true; }
+    if old.transforms_3d.len() != new.transforms_3d.len() {
+        return true;
+    }
     for ((_, old_tf), (_, new_tf)) in old.transforms_3d.iter().zip(new.transforms_3d.iter()) {
-        if transform_differs(old_tf, new_tf) { return true; }
+        if transform_differs(old_tf, new_tf) {
+            return true;
+        }
     }
     // 2D Transform の比較
-    if old.transforms_2d.len() != new.transforms_2d.len() { return true; }
+    if old.transforms_2d.len() != new.transforms_2d.len() {
+        return true;
+    }
     for ((_, old_ct), (_, new_ct)) in old.transforms_2d.iter().zip(new.transforms_2d.iter()) {
-        if canvas_transform_differs(old_ct, new_ct) { return true; }
+        if canvas_transform_differs(old_ct, new_ct) {
+            return true;
+        }
     }
     // 接触状態（コライダー色）の比較。
     // Transform が不変でも接触の有無が変われば「変化あり」として記録し、
     // そのフレーム時点の接触色を残す。Transform も接触も不変なら変化なし＝停止でよい。
-    if old.colliding_3d != new.colliding_3d { return true; }
-    if old.colliding_2d != new.colliding_2d { return true; }
+    if old.colliding_3d != new.colliding_3d {
+        return true;
+    }
+    if old.colliding_2d != new.colliding_2d {
+        return true;
+    }
     false
 }
 
@@ -801,7 +859,7 @@ fn snapshot_has_change(old: &PhysicsSnapshot, new: &PhysicsSnapshot) -> bool {
 fn transform_differs(a: &ActorTransform, b: &ActorTransform) -> bool {
     vec3_differs(a.position, b.position)
         || vec3_differs(a.rotation, b.rotation)
-        || vec3_differs(a.scale,    b.scale)
+        || vec3_differs(a.scale, b.scale)
 }
 
 /// 2D CanvasTransform に有意な差異があるか。
@@ -812,12 +870,11 @@ fn canvas_transform_differs(a: &CanvasTransform, b: &CanvasTransform) -> bool {
 }
 
 fn vec3_differs(a: [f32; 3], b: [f32; 3]) -> bool {
-    (a[0]-b[0]).abs() > CHANGE_EPSILON
-    || (a[1]-b[1]).abs() > CHANGE_EPSILON
-    || (a[2]-b[2]).abs() > CHANGE_EPSILON
+    (a[0] - b[0]).abs() > CHANGE_EPSILON
+        || (a[1] - b[1]).abs() > CHANGE_EPSILON
+        || (a[2] - b[2]).abs() > CHANGE_EPSILON
 }
 
 fn vec2_differs(a: [f32; 2], b: [f32; 2]) -> bool {
-    (a[0]-b[0]).abs() > CHANGE_EPSILON
-    || (a[1]-b[1]).abs() > CHANGE_EPSILON
+    (a[0] - b[0]).abs() > CHANGE_EPSILON || (a[1] - b[1]).abs() > CHANGE_EPSILON
 }

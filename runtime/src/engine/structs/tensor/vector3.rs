@@ -1,11 +1,6 @@
 use std::fmt;
 use std::ops::{
-    Add, AddAssign,
-    Sub, SubAssign,
-    Mul, MulAssign,
-    Div, DivAssign,
-    Neg,
-    Index, IndexMut,
+    Add, AddAssign, Div, DivAssign, Index, IndexMut, Mul, MulAssign, Neg, Sub, SubAssign,
 };
 
 use super::vector2::Vector2;
@@ -56,7 +51,11 @@ impl<T: Default + Copy> Vector3<T> {
     /// 零ベクトル (0, 0, 0) を生成する。
     #[inline]
     pub fn zero() -> Self {
-        Self { x: T::default(), y: T::default(), z: T::default() }
+        Self {
+            x: T::default(),
+            y: T::default(),
+            z: T::default(),
+        }
     }
 }
 

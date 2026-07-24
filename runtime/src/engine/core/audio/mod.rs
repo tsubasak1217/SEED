@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::sync::Arc;
 
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, SpatialSink, Source};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source, SpatialSink};
 
 use crate::engine::ecs::Entity;
 
@@ -37,7 +37,9 @@ const EAR_OFFSET: f32 = 0.3;
 struct SharedBytes(Arc<Vec<u8>>);
 
 impl AsRef<[u8]> for SharedBytes {
-    fn as_ref(&self) -> &[u8] { &self.0 }
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 // ─── AudioManager ────────────────────────────────────────────
@@ -69,13 +71,13 @@ impl AudioManager {
     pub fn new() -> Option<Self> {
         let (stream, handle) = OutputStream::try_default().ok()?;
         Some(Self {
-            _stream:  stream,
+            _stream: stream,
             handle,
-            bgm:      None,
+            bgm: None,
             se_sinks: Vec::new(),
-            component_voices:  HashMap::new(),
+            component_voices: HashMap::new(),
             component_started: HashSet::new(),
-            cache:    HashMap::new(),
+            cache: HashMap::new(),
         })
     }
 
@@ -86,7 +88,9 @@ impl AudioManager {
             eprintln!("[Script] Audio: デコード失敗 ({path})");
             return;
         };
-        let Ok(sink) = Sink::try_new(&self.handle) else { return };
+        let Ok(sink) = Sink::try_new(&self.handle) else {
+            return;
+        };
         sink.set_volume(volume.max(0.0));
         sink.append(decoder);
         self.se_sinks.push(sink);
@@ -101,7 +105,9 @@ impl AudioManager {
             eprintln!("[Script] Audio: デコード失敗 ({path})");
             return;
         };
-        let Ok(sink) = Sink::try_new(&self.handle) else { return };
+        let Ok(sink) = Sink::try_new(&self.handle) else {
+            return;
+        };
         sink.set_volume(volume.max(0.0));
         if looped {
             sink.append(decoder.repeat_infinite());
@@ -150,7 +156,9 @@ impl AudioManager {
             [0.0, 0.0, 1.0],
             [-EAR_OFFSET, 0.0, 0.0],
             [EAR_OFFSET, 0.0, 0.0],
-        ) else { return };
+        ) else {
+            return;
+        };
         sink.set_volume(volume.max(0.0));
         if looped {
             sink.append(decoder.repeat_infinite());

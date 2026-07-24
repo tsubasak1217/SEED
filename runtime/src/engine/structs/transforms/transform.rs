@@ -1,5 +1,5 @@
-use crate::engine::structs::tensor::{Vector3, Mat4x4};
 use super::quaternion::Quaternion;
+use crate::engine::structs::tensor::{Mat4x4, Vector3};
 
 /// オブジェクトのワールド空間における位置・回転・スケールを保持する構造体。
 ///
@@ -14,13 +14,17 @@ use super::quaternion::Quaternion;
 pub struct Transform {
     pub position: Vector3<f32>,
     pub rotation: Quaternion,
-    pub scale:    Vector3<f32>,
+    pub scale: Vector3<f32>,
 }
 
 impl Transform {
     /// 成分を直接指定して生成する。
     pub fn new(position: Vector3<f32>, rotation: Quaternion, scale: Vector3<f32>) -> Self {
-        Self { position, rotation, scale }
+        Self {
+            position,
+            rotation,
+            scale,
+        }
     }
 
     /// 位置 = 原点、回転 = 無回転、スケール = 1.0 の恒等変換を返す。
@@ -28,7 +32,7 @@ impl Transform {
         Self {
             position: Vector3::zero(),
             rotation: Quaternion::identity(),
-            scale:    Vector3::new(1.0, 1.0, 1.0),
+            scale: Vector3::new(1.0, 1.0, 1.0),
         }
     }
 
@@ -48,17 +52,25 @@ impl Transform {
 
     /// オブジェクトの前方向（+Z）を返す。
     #[inline]
-    pub fn forward(self) -> Vector3<f32> { self.rotation.forward() }
+    pub fn forward(self) -> Vector3<f32> {
+        self.rotation.forward()
+    }
 
     /// オブジェクトの右方向（+X）を返す。
     #[inline]
-    pub fn right(self) -> Vector3<f32> { self.rotation.right() }
+    pub fn right(self) -> Vector3<f32> {
+        self.rotation.right()
+    }
 
     /// オブジェクトの上方向（+Y）を返す。
     #[inline]
-    pub fn up(self) -> Vector3<f32> { self.rotation.up() }
+    pub fn up(self) -> Vector3<f32> {
+        self.rotation.up()
+    }
 }
 
 impl Default for Transform {
-    fn default() -> Self { Self::identity() }
+    fn default() -> Self {
+        Self::identity()
+    }
 }

@@ -17,8 +17,8 @@
 //  設計テンプレートは sprite_component.rs（パス文字列の永続化）に倣う。
 // ============================================================
 
-use serde::{Deserialize, Serialize};
 use crate::engine::ecs::Component;
+use serde::{Deserialize, Serialize};
 
 /// 地形チャンクのメッシュアクターが持つ ModelComponent の合成 source_path 接頭辞。
 ///
@@ -75,9 +75,9 @@ impl TerrainChunkComponent {
     /// シリアライズ用データからコンポーネントを構築する。
     pub fn from_data(data: TerrainChunkComponentData) -> Self {
         Self {
-            chunk_x:   data.chunk_x,
-            chunk_y:   data.chunk_y,
-            chunk_z:   data.chunk_z,
+            chunk_x: data.chunk_x,
+            chunk_y: data.chunk_y,
+            chunk_z: data.chunk_z,
             tvox_path: data.tvox_path,
         }
     }
@@ -85,9 +85,9 @@ impl TerrainChunkComponent {
     /// シリアライズ用データに変換する。
     pub fn to_data(&self) -> TerrainChunkComponentData {
         TerrainChunkComponentData {
-            chunk_x:   self.chunk_x,
-            chunk_y:   self.chunk_y,
-            chunk_z:   self.chunk_z,
+            chunk_x: self.chunk_x,
+            chunk_y: self.chunk_y,
+            chunk_z: self.chunk_z,
             tvox_path: self.tvox_path.clone(),
         }
     }

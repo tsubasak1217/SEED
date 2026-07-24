@@ -17,9 +17,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use crate::engine::methods::drawer::IdBuffer;
 
 use super::{
-    App, RuntimeMode,
-    camera_grab_start, camera_grab_end,
-    mmb_grab_start, mmb_grab_end,
+    App, RuntimeMode, camera_grab_end, camera_grab_start, mmb_grab_end, mmb_grab_start,
     release_window_clamp, warp_cursor_to_local,
 };
 
@@ -35,11 +33,18 @@ impl App {
     /// depth と color attachment の不一致が起こるため、親がいる場合は GetClientRect(parent) を優先する。
     pub(super) fn on_resize(&mut self, size: PhysicalSize<u32>) {
         let effective_size = self.get_parent_client_size().unwrap_or(size);
-        if let Some(r) = &mut self.renderer { r.resize(effective_size); }
-        self.camera.set_aspect_ratio(effective_size.width, effective_size.height);
+        if let Some(r) = &mut self.renderer {
+            r.resize(effective_size);
+        }
+        self.camera
+            .set_aspect_ratio(effective_size.width, effective_size.height);
         if effective_size.width > 0 && effective_size.height > 0 {
             if let Some(dc) = &self.draw_ctx {
-                self.id_buffer = Some(IdBuffer::new(&dc.device, effective_size.width, effective_size.height));
+                self.id_buffer = Some(IdBuffer::new(
+                    &dc.device,
+                    effective_size.width,
+                    effective_size.height,
+                ));
             }
         }
     }
@@ -65,7 +70,9 @@ impl App {
                     // Ctrl+Z: Undo 実行
                     let result = if let Some(scene) = &mut self.scene {
                         self.undo_history.undo(scene)
-                    } else { None };
+                    } else {
+                        None
+                    };
                     if let Some((structural, sel)) = result {
                         if let Some(ids) = sel {
                             self.selected_instances = ids;
@@ -80,7 +87,9 @@ impl App {
                     // Ctrl+Y: Redo 実行
                     let result = if let Some(scene) = &mut self.scene {
                         self.undo_history.redo(scene)
-                    } else { None };
+                    } else {
+                        None
+                    };
                     if let Some((structural, sel)) = result {
                         if let Some(ids) = sel {
                             self.selected_instances = ids;
@@ -111,10 +120,7 @@ impl App {
         self.input.process_mouse_button(button, pressed);
 
         if button == MouseButton::Left {
-            if pressed
-                && (self.mode == RuntimeMode::Edit || self.paused)
-                && !self.cam_input.rmb
-            {
+            if pressed && (self.mode == RuntimeMode::Edit || self.paused) && !self.cam_input.rmb {
                 self.handle_lmb_press();
             }
             if !pressed {
@@ -158,11 +164,10 @@ impl App {
                 if let Some(window) = &self.window {
                     if pressed {
                         self.rmb_press_pos = self.last_cursor_pos;
-                        self.rmb_moved     = false;
+                        self.rmb_moved = false;
                         // MMB 押し込み中はカーソル管理を MMB に任せる（ClipCursor の二重適用を避ける）
                         if !self.cam_input.mmb {
-                            self.cam_grab_screen_pos =
-                                camera_grab_start(self.window_hwnd());
+                            self.cam_grab_screen_pos = camera_grab_start(self.window_hwnd());
                             window.set_cursor_visible(false);
                         }
                         // Pause モード: DeviceEvent::MouseMotion は WS_CHILD に届かないため
@@ -170,9 +175,9 @@ impl App {
                         // ウィンドウ中央をピボットとしてカーソルをワープして固定する。
                         if self.paused {
                             if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
-                                let pvx = ws.width  as f32 / 2.0;
+                                let pvx = ws.width as f32 / 2.0;
                                 let pvy = ws.height as f32 / 2.0;
-                                self.pause_cam_pivot        = Some((pvx, pvy));
+                                self.pause_cam_pivot = Some((pvx, pvy));
                                 self.pause_cam_warp_pending = 1;
                                 warp_cursor_to_local(self.window_hwnd(), pvx as i32, pvy as i32);
                             }
@@ -190,25 +195,24 @@ impl App {
                                     ipc.send("CONTEXT_MENU");
                                 }
                                 // アクタ追加時のスポーン位置計算用に座標を保存する
-                                self.context_menu_screen_pos = self.last_cursor_pos
-                                    .map(|(x, y)| (x as u32, y as u32));
+                                self.context_menu_screen_pos =
+                                    self.last_cursor_pos.map(|(x, y)| (x as u32, y as u32));
                             }
                         } else {
                             // RMB_DOWN が処理されていない（コンテキストメニューのポップアップが
                             // WM_RBUTTONDOWN を横取りした等）。ClipCursor のみ解除する。
                             release_window_clamp();
                         }
-                        self.rmb_press_pos          = None;
-                        self.rmb_moved              = false;
+                        self.rmb_press_pos = None;
+                        self.rmb_moved = false;
                         // Pause モードカメラ回転用ピボットをリセット
-                        self.pause_cam_pivot        = None;
+                        self.pause_cam_pivot = None;
                         self.pause_cam_warp_pending = 0;
                     }
                 }
             }
         }
     }
-
 
     // ============================================================
     //  on_mouse_wheel
@@ -219,7 +223,7 @@ impl App {
         self.input.process_scroll(&delta);
         let lines = match delta {
             MouseScrollDelta::LineDelta(_, y) => y,
-            MouseScrollDelta::PixelDelta(p)   => p.y as f32 / 20.0,
+            MouseScrollDelta::PixelDelta(p) => p.y as f32 / 20.0,
         };
         self.cam_input.scroll += lines;
     }

@@ -11,8 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{Plugin, PluginCreateFn, PLUGIN_ENTRY_FN};
 use super::manifest::{PluginEntry, PluginManifest};
+use super::{PLUGIN_ENTRY_FN, Plugin, PluginCreateFn};
 
 // ============================================================
 //  LoadedPlugin — ロード済みプラグインの保持単位
@@ -24,11 +24,11 @@ use super::manifest::{PluginEntry, PluginManifest};
 /// Drop 時に plugin を先に解放し、その後 _lib（DLL のアンロード）が行われる。
 pub struct LoadedPlugin {
     /// プラグイン実装（DLL 内のオブジェクト）
-    pub plugin:   Box<dyn Plugin>,
+    pub plugin: Box<dyn Plugin>,
     /// フィールド定義キャッシュ（初回 field_defs() 呼び出し時に生成）
     field_defs_cache: Option<Vec<super::PluginFieldDef>>,
     /// DLL ライブラリハンドル（生存期間を plugin より長くする必要がある）
-    _lib:         libloading::Library,
+    _lib: libloading::Library,
 }
 
 impl LoadedPlugin {
@@ -66,7 +66,10 @@ pub struct PluginRegistry {
 impl PluginRegistry {
     /// 空のレジストリを生成する。
     pub fn empty() -> Self {
-        Self { plugins: Vec::new(), plugins_dir: PathBuf::new() }
+        Self {
+            plugins: Vec::new(),
+            plugins_dir: PathBuf::new(),
+        }
     }
 
     /// プラグインフォルダを走査し、有効なプラグインをロードしてレジストリを生成する。
@@ -74,7 +77,10 @@ impl PluginRegistry {
     /// - plugins_dir:  プラグインが入っているフォルダ（各サブフォルダが 1 プラグイン）
     /// - enabled_list: project_settings.json の plugins リスト（有効/無効フラグ付き）
     pub fn load_from_dir(plugins_dir: &Path, enabled_list: &[PluginEntry]) -> Self {
-        let mut registry = Self { plugins: Vec::new(), plugins_dir: plugins_dir.to_path_buf() };
+        let mut registry = Self {
+            plugins: Vec::new(),
+            plugins_dir: plugins_dir.to_path_buf(),
+        };
 
         // プラグインフォルダが存在しない場合はスキップ
         if !plugins_dir.exists() {
@@ -91,19 +97,25 @@ impl PluginRegistry {
 
         for entry in entries.flatten() {
             let dir = entry.path();
-            if !dir.is_dir() { continue; }
+            if !dir.is_dir() {
+                continue;
+            }
 
             // plugin.json を読む
             let manifest = match PluginManifest::load_from_dir(&dir) {
                 Some(m) => m,
                 None => {
-                    eprintln!("[PluginRegistry] plugin.json が見つかりません: {}", dir.display());
+                    eprintln!(
+                        "[PluginRegistry] plugin.json が見つかりません: {}",
+                        dir.display()
+                    );
                     continue;
                 }
             };
 
             // 有効化リストで enabled = false のものはスキップ
-            let is_enabled = enabled_list.iter()
+            let is_enabled = enabled_list
+                .iter()
                 .find(|e| e.name == manifest.name)
                 .map(|e| e.enabled)
                 .unwrap_or(true); // リストに存在しない場合はデフォルト有効
@@ -128,14 +140,16 @@ impl PluginRegistry {
     }
 
     /// DLL をロードしてレジストリに登録する。
-    fn load_dll(&mut self, dll_path: &Path, expected_name: String) -> Result<(), Box<dyn std::error::Error>> {
+    fn load_dll(
+        &mut self,
+        dll_path: &Path,
+        expected_name: String,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Safety: DLL のエクスポート関数を呼び出す。
         // Plugin トレイトの実装が engine と同一ツールチェーンでコンパイルされている前提。
         let lib = unsafe { libloading::Library::new(dll_path)? };
 
-        let create_fn: libloading::Symbol<PluginCreateFn> = unsafe {
-            lib.get(PLUGIN_ENTRY_FN)?
-        };
+        let create_fn: libloading::Symbol<PluginCreateFn> = unsafe { lib.get(PLUGIN_ENTRY_FN)? };
 
         // seed_create_plugin() → *mut Box<dyn Plugin>
         let raw = unsafe { create_fn() };
@@ -143,15 +157,14 @@ impl PluginRegistry {
             return Err("seed_create_plugin() が null を返しました".into());
         }
 
-        let plugin: Box<dyn Plugin> = unsafe {
-            *Box::from_raw(raw as *mut Box<dyn Plugin>)
-        };
+        let plugin: Box<dyn Plugin> = unsafe { *Box::from_raw(raw as *mut Box<dyn Plugin>) };
 
         // プラグイン名の整合性チェック（警告のみ）
         if plugin.name() != expected_name {
             eprintln!(
                 "[PluginRegistry] 警告: manifest の name ({}) と Plugin::name() ({}) が一致しません",
-                expected_name, plugin.name()
+                expected_name,
+                plugin.name()
             );
         }
 
@@ -187,10 +200,14 @@ impl PluginRegistry {
     }
 
     /// ロード済みプラグイン数を返す。
-    pub fn len(&self) -> usize { self.plugins.len() }
+    pub fn len(&self) -> usize {
+        self.plugins.len()
+    }
 
     /// プラグインがロードされているかを返す。
-    pub fn is_empty(&self) -> bool { self.plugins.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.plugins.is_empty()
+    }
 
     /// ロード済みプラグインの名前一覧を返す。
     pub fn names(&self) -> Vec<&str> {
@@ -202,12 +219,16 @@ impl PluginRegistry {
     /// フォーマット:
     /// [{"name":"PhysicsPlugin","version":"0.1.0","description":"..."},...]
     pub fn to_json(&self) -> String {
-        let entries: Vec<String> = self.plugins.iter().map(|p| {
-            let name    = p.plugin.name().replace('"', "\\\"");
-            let version = p.plugin.version().replace('"', "\\\"");
-            let desc    = p.plugin.description().replace('"', "\\\"");
-            format!(r#"{{"name":"{name}","version":"{version}","description":"{desc}"}}"#)
-        }).collect();
+        let entries: Vec<String> = self
+            .plugins
+            .iter()
+            .map(|p| {
+                let name = p.plugin.name().replace('"', "\\\"");
+                let version = p.plugin.version().replace('"', "\\\"");
+                let desc = p.plugin.description().replace('"', "\\\"");
+                format!(r#"{{"name":"{name}","version":"{version}","description":"{desc}"}}"#)
+            })
+            .collect();
         format!("[{}]", entries.join(","))
     }
 }

@@ -40,12 +40,12 @@ pub struct SpriteVertex {
 pub struct GpuSpriteTexture {
     pub bind_group: wgpu::BindGroup,
     /// テクスチャビュー（キャンバス ID パス等の別パイプラインでアルファ参照に使用）
-    pub view:     wgpu::TextureView,
+    pub view: wgpu::TextureView,
     /// テクスチャ幅（画素）。ポストエフェクト焼き込み時の作業バッファサイズに使う。
-    pub width:    u32,
+    pub width: u32,
     /// テクスチャ高さ（画素）。
-    pub height:   u32,
-    _texture:     wgpu::Texture,
+    pub height: u32,
+    _texture: wgpu::Texture,
 }
 
 impl GpuSpriteTexture {
@@ -55,23 +55,35 @@ impl GpuSpriteTexture {
     /// `tex_bgl` / `sampler` はスプライトパイプライン（group 1）のものを渡す。
     /// これにより焼き込みテクスチャを通常のスプライトと同一の描画経路で扱える。
     pub fn from_texture(
-        device:  &wgpu::Device,
+        device: &wgpu::Device,
         texture: wgpu::Texture,
         tex_bgl: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
-        width:   u32,
-        height:  u32,
+        width: u32,
+        height: u32,
     ) -> Arc<Self> {
         let view = texture.create_view(&Default::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Postfx Sprite Texture BG"),
-            layout:  tex_bgl,
+            label: Some("Postfx Sprite Texture BG"),
+            layout: tex_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
             ],
         });
-        Arc::new(GpuSpriteTexture { bind_group, view, width, height, _texture: texture })
+        Arc::new(GpuSpriteTexture {
+            bind_group,
+            view,
+            width,
+            height,
+            _texture: texture,
+        })
     }
 }
 
@@ -82,9 +94,9 @@ impl GpuSpriteTexture {
 /// 失敗時は 1×1 マゼンタ画像が返るため None にはならない
 /// （デバッグ用の eprintln は asset_fs 側で出力される）。
 pub fn load_sprite_texture(
-    device:  &wgpu::Device,
-    queue:   &wgpu::Queue,
-    path:    &str,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    path: &str,
     tex_bgl: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
 ) -> Option<Arc<GpuSpriteTexture>> {
@@ -92,39 +104,53 @@ pub fn load_sprite_texture(
     let (w, h) = rgba.dimensions();
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label:           Some("SpriteTexture"),
-        size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        label: Some("SpriteTexture"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
-        sample_count:    1,
-        dimension:       wgpu::TextureDimension::D2,
-        format:          wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats:    &[],
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
     });
     queue.write_texture(
         texture.as_image_copy(),
         &rgba,
         wgpu::ImageDataLayout {
-            offset:         0,
-            bytes_per_row:  Some(4 * w),
+            offset: 0,
+            bytes_per_row: Some(4 * w),
             rows_per_image: Some(h),
         },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
     );
     let view = texture.create_view(&Default::default());
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label:   Some("SpriteTexture BG"),
-        layout:  tex_bgl,
+        label: Some("SpriteTexture BG"),
+        layout: tex_bgl,
         entries: &[
             wgpu::BindGroupEntry {
-                binding:  0,
+                binding: 0,
                 resource: wgpu::BindingResource::TextureView(&view),
             },
             wgpu::BindGroupEntry {
-                binding:  1,
+                binding: 1,
                 resource: wgpu::BindingResource::Sampler(sampler),
             },
         ],
     });
-    Some(Arc::new(GpuSpriteTexture { bind_group, view, width: w, height: h, _texture: texture }))
+    Some(Arc::new(GpuSpriteTexture {
+        bind_group,
+        view,
+        width: w,
+        height: h,
+        _texture: texture,
+    }))
 }

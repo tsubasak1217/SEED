@@ -13,25 +13,37 @@
 //    エディタからの明示リロード要求（IPC）に応じて `reload` / `clear_cache` で無効化する。
 // ============================================================
 
+use crate::engine::core::loader::model::{AlphaMode, CullFace};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use serde::{Deserialize, Serialize};
-use crate::engine::core::loader::model::{AlphaMode, CullFace};
 
 // ─── デフォルト値関数（マジックナンバー禁止のため名前付きで定義） ─────────────
 
 /// base_color の既定値（不透明・白）
-fn def_white() -> [f32; 4] { [1.0, 1.0, 1.0, 1.0] }
+fn def_white() -> [f32; 4] {
+    [1.0, 1.0, 1.0, 1.0]
+}
 /// metallic / roughness の既定値（glTF PBR の慣例に合わせフルスケール）
-fn def_one() -> f32 { 1.0 }
+fn def_one() -> f32 {
+    1.0
+}
 /// transmission（透過率）の既定値（0.0＝透過なし＝従来動作）。
-fn def_zero() -> f32 { 0.0 }
+fn def_zero() -> f32 {
+    0.0
+}
 /// alpha_mode の既定値
-fn def_opaque() -> String { "opaque".to_string() }
+fn def_opaque() -> String {
+    "opaque".to_string()
+}
 /// alpha_cutoff（Mask モード時の閾値）の既定値
-fn def_cutoff() -> f32 { 0.5 }
+fn def_cutoff() -> f32 {
+    0.5
+}
 /// cull_face の既定値（背面カリング）。`CullFace::default()` と一致させること。
-fn def_cull_face() -> String { CullFace::default().as_str().to_ascii_lowercase() }
+fn def_cull_face() -> String {
+    CullFace::default().as_str().to_ascii_lowercase()
+}
 
 // ============================================================
 //  MaterialAsset — .mat ファイルの JSON スキーマ
@@ -107,19 +119,19 @@ pub struct MatTextures {
 /// Rust 側の他処理（テスト等）からも参照できるよう公開しておく。
 pub fn default_mat_json() -> String {
     let asset = MaterialAsset {
-        name:         "NewMaterial".to_string(),
-        base_color:   def_white(),
-        metallic:     def_one(),
-        roughness:    def_one(),
-        emissive:     [0.0; 3],
-        alpha_mode:   def_opaque(),
+        name: "NewMaterial".to_string(),
+        base_color: def_white(),
+        metallic: def_one(),
+        roughness: def_one(),
+        emissive: [0.0; 3],
+        alpha_mode: def_opaque(),
         alpha_cutoff: def_cutoff(),
-        ior:          def_one(),
+        ior: def_one(),
         transmission: def_zero(),
         diffuse_transmission: def_zero(),
         mr_tex_ignore: false,
-        cull_face:    def_cull_face(),
-        textures:     MatTextures::default(),
+        cull_face: def_cull_face(),
+        textures: MatTextures::default(),
     };
     // pretty JSON（人手編集・diff レビューのしやすさを優先）
     serde_json::to_string_pretty(&asset).unwrap_or_default()
@@ -131,9 +143,9 @@ pub fn default_mat_json() -> String {
 /// Opaque にフォールバックする（安全側デフォルト）。
 pub fn parse_alpha_mode(s: &str) -> AlphaMode {
     match s.to_ascii_lowercase().as_str() {
-        "mask"  => AlphaMode::Mask,
+        "mask" => AlphaMode::Mask,
         "blend" => AlphaMode::Blend,
-        _       => AlphaMode::Opaque,
+        _ => AlphaMode::Opaque,
     }
 }
 
@@ -144,8 +156,8 @@ pub fn parse_alpha_mode(s: &str) -> AlphaMode {
 pub fn parse_cull_face(s: &str) -> CullFace {
     match s.to_ascii_lowercase().as_str() {
         "front" => CullFace::Front,
-        "none"  => CullFace::None,
-        _       => CullFace::Back,
+        "none" => CullFace::None,
+        _ => CullFace::Back,
     }
 }
 
@@ -156,11 +168,11 @@ mod tests {
     /// cull_face 文字列 → CullFace の変換（大文字小文字非依存・不明値は Back）。
     #[test]
     fn parse_cull_face_maps_all_values() {
-        assert_eq!(parse_cull_face("back"),  CullFace::Back);
+        assert_eq!(parse_cull_face("back"), CullFace::Back);
         assert_eq!(parse_cull_face("Front"), CullFace::Front);
-        assert_eq!(parse_cull_face("NONE"),  CullFace::None);
+        assert_eq!(parse_cull_face("NONE"), CullFace::None);
         assert_eq!(parse_cull_face("bogus"), CullFace::Back);
-        assert_eq!(parse_cull_face(""),      CullFace::Back);
+        assert_eq!(parse_cull_face(""), CullFace::Back);
     }
 
     /// cull_face キーを持たない既存 .mat が壊れず、既定（back）で読めること。
@@ -174,7 +186,8 @@ mod tests {
     /// 新規 .mat の既定 JSON に cull_face が含まれ、back として解釈されること。
     #[test]
     fn default_mat_json_contains_cull_face() {
-        let asset: MaterialAsset = serde_json::from_str(&default_mat_json()).expect("既定 .mat のパースに失敗");
+        let asset: MaterialAsset =
+            serde_json::from_str(&default_mat_json()).expect("既定 .mat のパースに失敗");
         assert_eq!(parse_cull_face(&asset.cull_face), CullFace::Back);
     }
 
@@ -190,14 +203,16 @@ mod tests {
     #[test]
     fn mat_with_mr_tex_ignore_true_parses() {
         let json = r#"{"name":"NoMR","base_color":[1,1,1,1],"metallic":1,"roughness":1,"mr_tex_ignore":true}"#;
-        let asset: MaterialAsset = serde_json::from_str(json).expect("mr_tex_ignore 付き .mat のパースに失敗");
+        let asset: MaterialAsset =
+            serde_json::from_str(json).expect("mr_tex_ignore 付き .mat のパースに失敗");
         assert!(asset.mr_tex_ignore, "true を指定したら true");
     }
 
     /// 新規 .mat の既定 JSON に mr_tex_ignore が含まれ、false として読めること。
     #[test]
     fn default_mat_json_contains_mr_tex_ignore_false() {
-        let asset: MaterialAsset = serde_json::from_str(&default_mat_json()).expect("既定 .mat のパースに失敗");
+        let asset: MaterialAsset =
+            serde_json::from_str(&default_mat_json()).expect("既定 .mat のパースに失敗");
         assert!(!asset.mr_tex_ignore, "既定 .mat は false");
     }
 }
@@ -227,7 +242,7 @@ pub fn load(path: &str) -> Option<Arc<MaterialAsset>> {
 
     // asset_fs::read_string は仮想パス(assets://)・PAK・絶対パスのいずれにも対応する。
     let text = match crate::engine::asset_fs::read_string(path) {
-        Ok(t)  => t,
+        Ok(t) => t,
         Err(e) => {
             eprintln!("[SEED material_asset] .mat 読み込み失敗: path={path:?} err={e}");
             return None;
@@ -235,7 +250,7 @@ pub fn load(path: &str) -> Option<Arc<MaterialAsset>> {
     };
 
     let asset: MaterialAsset = match serde_json::from_str(&text) {
-        Ok(a)  => a,
+        Ok(a) => a,
         Err(e) => {
             eprintln!("[SEED material_asset] .mat パース失敗: path={path:?} err={e}");
             return None;

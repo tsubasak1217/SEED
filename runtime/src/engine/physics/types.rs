@@ -44,7 +44,10 @@ pub enum ColliderShape {
     /// 三角形ごとに頂点を複製せずそのまま Rapier の `trimesh(vertices, indices)` へ
     /// 渡すためのバリアント。`TriangleMesh`（展開済み）に比べ頂点データが 1/3〜1/6 で済む。
     /// `indices` は各要素が 1 三角形を成す頂点添字の三つ組で、値は `vertices` の範囲内。
-    TriangleMeshIndexed { vertices: Vec<[f32; 3]>, indices: Vec<[u32; 3]> },
+    TriangleMeshIndexed {
+        vertices: Vec<[f32; 3]>,
+        indices: Vec<[u32; 3]>,
+    },
 }
 
 // ─── リジッドボディ状態 ──────────────────────────────────────────────────────
@@ -55,25 +58,25 @@ pub enum ColliderShape {
 #[derive(Clone, Debug)]
 pub struct RigidBodyState {
     /// 質量（kg）
-    pub mass:             f32,
+    pub mass: f32,
     /// 反発係数（0 = 完全非弾性、1 = 完全弾性）
-    pub restitution:      f32,
+    pub restitution: f32,
     /// 摩擦係数（大きいほど減速する）
-    pub friction:         f32,
+    pub friction: f32,
     /// 移動速度の線形減衰係数（0 = 減衰なし）
-    pub linear_damping:   f32,
+    pub linear_damping: f32,
     /// 回転速度の角速度減衰係数
-    pub angular_damping:  f32,
+    pub angular_damping: f32,
     /// 重力の倍率（0 = 無重力、1 = 標準重力）
-    pub gravity_scale:    f32,
+    pub gravity_scale: f32,
     /// true なら Kinematic（外部で位置を制御）、false なら Dynamic（重力・衝突力を受ける）
-    pub is_kinematic:     bool,
+    pub is_kinematic: bool,
     /// 各軸の位置フリーズフラグ [X, Y, Z]
-    pub freeze_position:  [bool; 3],
+    pub freeze_position: [bool; 3],
     /// 各軸の回転フリーズフラグ [X, Y, Z]
-    pub freeze_rotation:  [bool; 3],
+    pub freeze_rotation: [bool; 3],
     /// Play 開始時の初期移動速度（m/s）[x, y, z]
-    pub linear_velocity:  [f32; 3],
+    pub linear_velocity: [f32; 3],
     /// Play 開始時の初期回転速度（rad/s）[x, y, z]
     pub angular_velocity: [f32; 3],
 }
@@ -83,15 +86,15 @@ impl RigidBodyState {
     pub fn new(mass: f32) -> Self {
         Self {
             mass,
-            restitution:     0.3,
-            friction:        0.5,
-            linear_damping:  0.01,
+            restitution: 0.3,
+            friction: 0.5,
+            linear_damping: 0.01,
             angular_damping: 0.05,
-            gravity_scale:   1.0,
-            is_kinematic:    false,
+            gravity_scale: 1.0,
+            is_kinematic: false,
             freeze_position: [false; 3],
             freeze_rotation: [false; 3],
-            linear_velocity:  [0.0; 3],
+            linear_velocity: [0.0; 3],
             angular_velocity: [0.0; 3],
         }
     }
@@ -104,25 +107,25 @@ impl RigidBodyState {
 /// `entity_id` は DFS 順カウンタで、メインスレッドとのトランスフォーム同期に使用する。
 pub struct PhysicsObject {
     /// Actor の DFS 順識別 ID（シーン内で一意）
-    pub entity_id:       u64,
+    pub entity_id: u64,
     /// ワールド座標位置 [x, y, z]
-    pub position:        [f32; 3],
+    pub position: [f32; 3],
     /// クォータニオン回転 [x, y, z, w]（SEED 規約）
-    pub rotation:        [f32; 4],
+    pub rotation: [f32; 4],
     /// ワールドスケール [x, y, z]
-    pub scale:           [f32; 3],
+    pub scale: [f32; 3],
     /// コライダー形状
-    pub collider:        ColliderShape,
+    pub collider: ColliderShape,
     /// コライダーの Actor Transform からのローカルオフセット [x, y, z]
     pub collider_offset: [f32; 3],
     /// リジッドボディ設定（None の場合は Static コライダー）
-    pub rigidbody:       Option<RigidBodyState>,
+    pub rigidbody: Option<RigidBodyState>,
     /// true なら衝突応答なし（トリガー）
-    pub is_trigger:      bool,
+    pub is_trigger: bool,
     /// 物理レイヤービット
-    pub physics_layer:   u32,
+    pub physics_layer: u32,
     /// 衝突対象レイヤーマスク（0 = 全レイヤーと衝突）
-    pub layer_mask:      u32,
+    pub layer_mask: u32,
 }
 
 // ─── 物理スレッドコマンド ────────────────────────────────────────────────────
@@ -136,8 +139,8 @@ pub enum PhysicsCommand {
     /// Kinematic オブジェクトの目標 Transform を設定する（次ステップで適用）
     UpdateKinematic {
         entity_id: u64,
-        position:  [f32; 3],
-        rotation:  [f32; 4],
+        position: [f32; 3],
+        rotation: [f32; 4],
     },
     /// 重力ベクトルを変更する
     SetGravity { gravity: [f32; 3] },
@@ -191,24 +194,24 @@ pub enum PhysicsCommand {
         /// 判定対象のボディ（ドラッグ中のオブジェクト）
         entity_id: u64,
         /// 提案ワールド位置 [x, y, z]
-        position:  [f32; 3],
+        position: [f32; 3],
         /// 提案クォータニオン回転 [x, y, z, w]（SEED 規約）
-        rotation:  [f32; 4],
+        rotation: [f32; 4],
         /// 結果送信チャンネル（true = めり込みあり＝押し戻しが必要）
-        reply:     crossbeam_channel::Sender<bool>,
+        reply: crossbeam_channel::Sender<bool>,
     },
     /// レイキャストを実行し、結果を reply チャンネルへ返す（同期問い合わせ）。
     /// スクリプトの Physics.Raycast 用。物理スレッドはコマンドドレイン間隔
     /// （約 1ms）で応答するため、メインスレッドは短いタイムアウト付きで待機する。
     Raycast {
         /// レイの始点（ワールド座標）
-        origin:       [f32; 3],
+        origin: [f32; 3],
         /// レイの方向（正規化推奨）
-        direction:    [f32; 3],
+        direction: [f32; 3],
         /// 最大距離
         max_distance: f32,
         /// 結果送信チャンネル（ヒットなし = None）
-        reply:        crossbeam_channel::Sender<Option<RaycastHit>>,
+        reply: crossbeam_channel::Sender<Option<RaycastHit>>,
     },
     /// スレッドを停止する
     Stop,
@@ -221,9 +224,9 @@ pub struct PhysicsResult {
     /// Dynamic Rigidbody の更新後 Transform: (entity_id, position [x,y,z], rotation [x,y,z,w])
     pub transform_updates: Vec<(u64, [f32; 3], [f32; 4])>,
     /// 衝突イベントリスト
-    pub collision_events:  Vec<CollisionEvent>,
+    pub collision_events: Vec<CollisionEvent>,
     /// トリガーイベントリスト
-    pub trigger_events:    Vec<TriggerEvent>,
+    pub trigger_events: Vec<TriggerEvent>,
     /// NarrowPhase から直接収集したアクティブ接触中のエンティティ ID リスト。
     /// CollisionEvent が発火しないケース（kinematic vs static 等）でも正確に検出できる。
     /// 編集時コライダーのみモードのドラッグ押し戻し判定に使用する。
@@ -235,13 +238,13 @@ pub struct PhysicsResult {
     /// 全 Dynamic ボディの並進速度の最大の大きさ（m/s）。
     /// 編集時タイムラインの収束停止判定を「実際に静止したか（速度≈0）」で行うために使う。
     /// Dynamic ボディが無い場合は 0.0。
-    pub max_linear_speed:  f32,
+    pub max_linear_speed: f32,
     /// 全 Dynamic ボディの角速度の最大の大きさ（rad/s）。
     pub max_angular_speed: f32,
     /// 全 Dynamic ボディの現在速度: (entity_id, linvel [x,y,z], angvel [x,y,z])。
     /// タブごとの物理状態退避（続きから再開）で唯一失われる「速度」を復元するために使う。
     /// entity_id は DFS 順識別 ID（メインスレッド側で ECS Entity へ変換する）。
-    pub body_velocities:   Vec<(u64, [f32; 3], [f32; 3])>,
+    pub body_velocities: Vec<(u64, [f32; 3], [f32; 3])>,
 }
 
 // ─── 衝突イベント ────────────────────────────────────────────────────────────
@@ -253,7 +256,7 @@ pub struct CollisionEvent {
     /// 衝突した他方の entity_id
     pub entity_b: u64,
     /// 衝突フェーズ
-    pub phase:    CollisionPhase,
+    pub phase: CollisionPhase,
 }
 
 /// 衝突フェーズ。
@@ -274,9 +277,9 @@ pub struct TriggerEvent {
     /// トリガーコライダー側の entity_id
     pub trigger_entity: u64,
     /// 相手側の entity_id
-    pub other_entity:   u64,
+    pub other_entity: u64,
     /// トリガーフェーズ
-    pub phase:          TriggerPhase,
+    pub phase: TriggerPhase,
 }
 
 /// トリガーフェーズ。
@@ -295,9 +298,9 @@ pub struct RaycastHit {
     /// ヒットしたオブジェクトの entity_id
     pub entity_id: u64,
     /// ヒット点のワールド座標 [x, y, z]
-    pub point:     [f32; 3],
+    pub point: [f32; 3],
     /// ヒット点の法線ベクトル [x, y, z]
-    pub normal:    [f32; 3],
+    pub normal: [f32; 3],
     /// レイ始点からヒット点までの距離
-    pub distance:  f32,
+    pub distance: f32,
 }

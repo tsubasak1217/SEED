@@ -83,15 +83,15 @@ impl GiParams {
     /// 格子とノブから GiParams を構築する。
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        grid:              &GiGrid,
-        enabled:           bool,
-        gi_mode:           u32,
-        rays_per_probe:    u32,
+        grid: &GiGrid,
+        enabled: bool,
+        gi_mode: u32,
+        rays_per_probe: u32,
         probe_update_base: u32,
-        frame_index:       u32,
-        intensity:         f32,
-        hysteresis:        f32,
-        recursive_weight:  f32,
+        frame_index: u32,
+        intensity: f32,
+        hysteresis: f32,
+        recursive_weight: f32,
     ) -> Self {
         Self {
             origin_x: grid.origin[0],
@@ -126,7 +126,11 @@ mod tests {
     /// GiParams の Rust レイアウト（サイズ・主要オフセット）を固定する。
     #[test]
     fn gi_params_layout() {
-        assert_eq!(size_of::<GiParams>(), 80, "GiParams は 80 バイト（16 の倍数）");
+        assert_eq!(
+            size_of::<GiParams>(),
+            80,
+            "GiParams は 80 バイト（16 の倍数）"
+        );
         assert_eq!(offset_of!(GiParams, origin_x), 0);
         assert_eq!(offset_of!(GiParams, spacing_x), 12);
         assert_eq!(offset_of!(GiParams, dim_x), 24);
@@ -141,16 +145,20 @@ mod tests {
     #[test]
     fn wgsl_gi_params_size_matches_rust() {
         let src = include_str!("../shaders/ddgi_common.wgsl");
-        let module = naga::front::wgsl::parse_str(src)
-            .expect("ddgi_common.wgsl の parse に失敗");
-        let (handle, _) = module.types.iter()
+        let module = naga::front::wgsl::parse_str(src).expect("ddgi_common.wgsl の parse に失敗");
+        let (handle, _) = module
+            .types
+            .iter()
             .find(|(_, t)| t.name.as_deref() == Some("GiParams"))
             .expect("WGSL に struct GiParams が見つかりません");
         let mut layouter = naga::proc::Layouter::default();
-        layouter.update(module.to_ctx()).expect("naga Layouter の計算に失敗");
+        layouter
+            .update(module.to_ctx())
+            .expect("naga Layouter の計算に失敗");
         let wgsl_size = layouter[handle].size as usize;
         assert_eq!(
-            wgsl_size, size_of::<GiParams>(),
+            wgsl_size,
+            size_of::<GiParams>(),
             "WGSL の GiParams サイズ（naga 計算）が Rust と一致しません。\
              vec3 パディング等の align16 押し出しを疑うこと（スカラーで詰める）"
         );

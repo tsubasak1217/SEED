@@ -57,17 +57,17 @@ const SPHERE_RADIUS: f32 = 1.0;
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct SkyboxUniform {
     /// WorldAnchored の配置行列（列優先＝CPU 行優先を転置済み）。CameraLocked は単位行列。offset 0
-    pub model:     [[f32; 4]; 4],
+    pub model: [[f32; 4]; 4],
     /// 色味（リニア RGB 乗算）。offset 64
-    pub tint:      [f32; 3],
+    pub tint: [f32; 3],
     /// 強度（色への乗算）。offset 76（tint の 4 番目スロットに同居）
     pub intensity: f32,
     /// 配置モード（0=CameraLocked / 1=WorldAnchored）。offset 80
-    pub mode:      u32,
+    pub mode: u32,
     /// 16 バイト境界パディング（offset 84/88/92）。
-    pub _pad0:     u32,
-    pub _pad1:     u32,
-    pub _pad2:     u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+    pub _pad2: u32,
 }
 
 // ─── SkyboxPipelines（パイプライン＋共有メッシュ・DrawPipelines が保持）──
@@ -78,13 +78,13 @@ pub struct SkyboxUniform {
 /// （CameraLocked=false / WorldAnchored=true）。group1 BGL は BindGroup 生成に使う。
 pub struct SkyboxPipelines {
     /// CameraLocked 用（depth 書込 OFF・far 固定・背景として最初に描く）。
-    pub locked:      wgpu::RenderPipeline,
+    pub locked: wgpu::RenderPipeline,
     /// WorldAnchored 用（通常深度・実体化）。
-    pub anchored:    wgpu::RenderPipeline,
+    pub anchored: wgpu::RenderPipeline,
     /// group1 レイアウト（skybox uniform + texture + sampler）。per-skybox BG 生成に使う。
-    pub group1_bgl:  wgpu::BindGroupLayout,
+    pub group1_bgl: wgpu::BindGroupLayout,
     /// 天球サンプラー（横 Repeat・縦 Clamp のリニアフィルタ）。
-    pub sampler:     wgpu::Sampler,
+    pub sampler: wgpu::Sampler,
     /// 内向き UV 球の頂点バッファ（位置のみ・"pos3" レイアウト）。全スカイボックスで共有。
     pub sphere_vbuf: wgpu::Buffer,
     /// 内向き UV 球のインデックスバッファ（u32）。
@@ -100,56 +100,54 @@ impl SkyboxPipelines {
     /// - `df` : 深度フォーマット（DEPTH_FORMAT）。
     pub fn new(
         device: &wgpu::Device,
-        sf:     wgpu::TextureFormat,
-        df:     wgpu::TextureFormat,
-        cache:  Option<&wgpu::PipelineCache>,
+        sf: wgpu::TextureFormat,
+        df: wgpu::TextureFormat,
+        cache: Option<&wgpu::PipelineCache>,
     ) -> Self {
         // CameraLocked 用（TOML の depth_write=false をそのまま使う）。返り値の BGL Vec は
         // group 番号順（0=camera, 1=skybox）。group1 を BindGroup 生成用に取り出す。
-        let (locked, mut bgls) = RenderPipelineBuilder::new(
-            device, include_str!("pipelines/skybox.toml"), sf, df,
-        )
-        .with_label("skybox_locked")
-        .with_cache(cache)
-        .build(super::pipeline::get_shader_source);
+        let (locked, mut bgls) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/skybox.toml"), sf, df)
+                .with_label("skybox_locked")
+                .with_cache(cache)
+                .build(super::pipeline::get_shader_source);
 
         // group1（skybox uniform + tex + sampler）を取り出す（index 1）。
         // wgpu の BGL 重複排除により、以降 anchored パイプラインの group1 とも互換になる。
         let group1_bgl = bgls.remove(1);
 
         // WorldAnchored 用（同一 TOML から depth_write=true へ上書きして再構築）。
-        let (anchored, _) = RenderPipelineBuilder::new(
-            device, include_str!("pipelines/skybox.toml"), sf, df,
-        )
-        .with_label("skybox_anchored")
-        .with_depth_write(true)
-        .with_cache(cache)
-        .build(super::pipeline::get_shader_source);
+        let (anchored, _) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/skybox.toml"), sf, df)
+                .with_label("skybox_anchored")
+                .with_depth_write(true)
+                .with_cache(cache)
+                .build(super::pipeline::get_shader_source);
 
         // 天球サンプラー：経度方向（U）は継ぎ目でループするため Repeat、
         // 緯度方向（V）は極でクランプ。リニアフィルタ。
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label:          Some("Skybox Sampler"),
+            label: Some("Skybox Sampler"),
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter:     wgpu::FilterMode::Linear,
-            min_filter:     wgpu::FilterMode::Linear,
-            mipmap_filter:  wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
 
         // 共有の内向き UV 球メッシュ（位置のみ）を生成する。
         let (positions, indices) = generate_uv_sphere(SPHERE_STACKS, SPHERE_SECTORS, SPHERE_RADIUS);
         let sphere_vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("Skybox Sphere VBuf"),
+            label: Some("Skybox Sphere VBuf"),
             contents: bytemuck::cast_slice(&positions),
-            usage:    wgpu::BufferUsages::VERTEX,
+            usage: wgpu::BufferUsages::VERTEX,
         });
         let sphere_ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("Skybox Sphere IBuf"),
+            label: Some("Skybox Sphere IBuf"),
             contents: bytemuck::cast_slice(&indices),
-            usage:    wgpu::BufferUsages::INDEX,
+            usage: wgpu::BufferUsages::INDEX,
         });
 
         Self {
@@ -169,21 +167,21 @@ impl SkyboxPipelines {
 /// このフレームに描画する 1 スカイボックスの記述（collect が構築）。
 struct SkyboxFrame {
     /// スロットの entity（GPU リソースのキャッシュキー）。
-    entity:       Entity,
+    entity: Entity,
     /// テクスチャ参照（assets:// 仮想パス）。
     texture_path: String,
     /// 配置モード（パイプライン選択）。
-    mode:         SkyboxMode,
+    mode: SkyboxMode,
     /// GPU へ書き込む uniform（sync_gpu が model 転置・値確定済みで作る）。
-    uniform:      SkyboxUniform,
+    uniform: SkyboxUniform,
 }
 
 /// スカイボックス 1 個の GPU 側状態（uniform バッファ＋BindGroup）。
 struct SkyboxGpu {
     /// パラメータ uniform（毎フレーム write_buffer で更新）。
-    uniform_buf:  wgpu::Buffer,
+    uniform_buf: wgpu::Buffer,
     /// group1 BindGroup（uniform + テクスチャビュー + サンプラー）。
-    bind_group:   wgpu::BindGroup,
+    bind_group: wgpu::BindGroup,
     /// 現在 BindGroup が参照しているテクスチャパス（差し替え検知用）。
     texture_path: String,
 }
@@ -194,29 +192,33 @@ struct SkyboxGpu {
 /// シーンから消えた分は毎フレーム retain で破棄する。テクスチャはパス単位で共有キャッシュする。
 pub struct SkyboxSystem {
     /// entity → GPU 状態。
-    gpu:       HashMap<Entity, SkyboxGpu>,
+    gpu: HashMap<Entity, SkyboxGpu>,
     /// テクスチャパス → ロード済みビュー（複数スカイボックスで共有。差し替え時のみ再ロード）。
     tex_cache: HashMap<String, Arc<wgpu::TextureView>>,
     /// このフレームの描画対象（collect が毎フレーム再構築）。
-    frame:     Vec<SkyboxFrame>,
+    frame: Vec<SkyboxFrame>,
 }
 
 impl Default for SkyboxSystem {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SkyboxSystem {
     /// 空のシステムを生成する（デバイス不要）。
     pub fn new() -> Self {
         Self {
-            gpu:       HashMap::new(),
+            gpu: HashMap::new(),
             tex_cache: HashMap::new(),
-            frame:     Vec::new(),
+            frame: Vec::new(),
         }
     }
 
     /// このフレームに描画すべきスカイボックスが 1 つでもあるか（追加コストゼロ判定）。
-    pub fn has_skyboxes(&self) -> bool { !self.frame.is_empty() }
+    pub fn has_skyboxes(&self) -> bool {
+        !self.frame.is_empty()
+    }
 
     // ── フェーズ 1: 収集 ──────────────────────────────────────
 
@@ -239,11 +241,13 @@ impl SkyboxSystem {
     /// スカイボックス 0 個なら即 return（追加コストなし）。
     pub fn sync_gpu(
         &mut self,
-        device:    &wgpu::Device,
-        queue:     &wgpu::Queue,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
         pipelines: &SkyboxPipelines,
     ) {
-        if self.frame.is_empty() { return; }
+        if self.frame.is_empty() {
+            return;
+        }
 
         // 今フレーム存在する entity 集合（消えた GPU 状態を破棄するため）。
         let mut present: HashSet<Entity> = HashSet::with_capacity(self.frame.len());
@@ -252,14 +256,17 @@ impl SkyboxSystem {
         let mut keep: Vec<bool> = Vec::with_capacity(self.frame.len());
 
         for i in 0..self.frame.len() {
-            let entity   = self.frame[i].entity;
+            let entity = self.frame[i].entity;
             let tex_path = self.frame[i].texture_path.clone();
-            let uniform  = self.frame[i].uniform;
+            let uniform = self.frame[i].uniform;
 
             // ① テクスチャを（キャッシュ経由で）確保する。失敗ならこの記述は捨てる。
             let tex_view = match self.ensure_texture(device, queue, &tex_path) {
                 Some(v) => v,
-                None    => { keep.push(false); continue; }
+                None => {
+                    keep.push(false);
+                    continue;
+                }
             };
             present.insert(entity);
             keep.push(true);
@@ -267,29 +274,32 @@ impl SkyboxSystem {
             // ② GPU 状態（uniform バッファ＋BG）を確保・更新する。
             let need_new_bg = match self.gpu.get(&entity) {
                 Some(g) => g.texture_path != tex_path,
-                None    => true,
+                None => true,
             };
             if !self.gpu.contains_key(&entity) {
                 // uniform バッファを新規確保する（BG は下で作る）。
                 let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                    label:              Some("Skybox Uniform"),
-                    size:               std::mem::size_of::<SkyboxUniform>() as u64,
-                    usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    label: Some("Skybox Uniform"),
+                    size: std::mem::size_of::<SkyboxUniform>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
                 // 仮の BG（下の need_new_bg 分岐で必ず作り直すためダミーではなく本物を作る）。
                 let bind_group = create_skybox_bg(device, pipelines, &uniform_buf, &tex_view);
-                self.gpu.insert(entity, SkyboxGpu {
-                    uniform_buf,
-                    bind_group,
-                    texture_path: tex_path.clone(),
-                });
+                self.gpu.insert(
+                    entity,
+                    SkyboxGpu {
+                        uniform_buf,
+                        bind_group,
+                        texture_path: tex_path.clone(),
+                    },
+                );
             } else if need_new_bg {
                 // テクスチャが変わった: BG を作り直す（uniform バッファは再利用）。
                 let g = self.gpu.get(&entity).expect("gpu state exists");
                 let bind_group = create_skybox_bg(device, pipelines, &g.uniform_buf, &tex_view);
                 let g = self.gpu.get_mut(&entity).expect("gpu state exists");
-                g.bind_group   = bind_group;
+                g.bind_group = bind_group;
                 g.texture_path = tex_path.clone();
             }
 
@@ -300,7 +310,11 @@ impl SkyboxSystem {
 
         // ロード失敗の記述を frame から取り除く（描画対象から除外）。
         let mut idx = 0usize;
-        self.frame.retain(|_| { let k = keep[idx]; idx += 1; k });
+        self.frame.retain(|_| {
+            let k = keep[idx];
+            idx += 1;
+            k
+        });
 
         // シーンから消えた GPU 状態を破棄する。
         self.gpu.retain(|e, _| present.contains(e));
@@ -309,9 +323,9 @@ impl SkyboxSystem {
     /// テクスチャをキャッシュ経由でロードして共有ビューを返す（失敗時 None）。
     fn ensure_texture(
         &mut self,
-        device:   &wgpu::Device,
-        queue:    &wgpu::Queue,
-        path:     &str,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        path: &str,
     ) -> Option<Arc<wgpu::TextureView>> {
         if let Some(v) = self.tex_cache.get(path) {
             return Some(Arc::clone(v));
@@ -330,20 +344,24 @@ impl SkyboxSystem {
     /// スカイボックス 0 個なら即 return。
     pub fn draw<'p>(
         &'p self,
-        pass:      &mut wgpu::RenderPass<'p>,
+        pass: &mut wgpu::RenderPass<'p>,
         pipelines: &'p SkyboxPipelines,
         camera_bg: &'p wgpu::BindGroup,
     ) {
-        if self.frame.is_empty() { return; }
+        if self.frame.is_empty() {
+            return;
+        }
         // group0（camera）は両パイプラインでレイアウト共通のため 1 度だけセットする。
         pass.set_bind_group(0, camera_bg, &[]);
         pass.set_vertex_buffer(0, pipelines.sphere_vbuf.slice(..));
         pass.set_index_buffer(pipelines.sphere_ibuf.slice(..), wgpu::IndexFormat::Uint32);
 
         for f in &self.frame {
-            let Some(g) = self.gpu.get(&f.entity) else { continue; };
+            let Some(g) = self.gpu.get(&f.entity) else {
+                continue;
+            };
             let pipeline = match f.mode {
-                SkyboxMode::CameraLocked  => &pipelines.locked,
+                SkyboxMode::CameraLocked => &pipelines.locked,
                 SkyboxMode::WorldAnchored => &pipelines.anchored,
             };
             pass.set_pipeline(pipeline);
@@ -357,18 +375,27 @@ impl SkyboxSystem {
 
 /// group1（skybox uniform + texture + sampler）の BindGroup を作る。
 fn create_skybox_bg(
-    device:      &wgpu::Device,
-    pipelines:   &SkyboxPipelines,
+    device: &wgpu::Device,
+    pipelines: &SkyboxPipelines,
     uniform_buf: &wgpu::Buffer,
-    tex_view:    &wgpu::TextureView,
+    tex_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label:   Some("Skybox BG (group1)"),
-        layout:  &pipelines.group1_bgl,
+        label: Some("Skybox BG (group1)"),
+        layout: &pipelines.group1_bgl,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: uniform_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(tex_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&pipelines.sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(tex_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&pipelines.sampler),
+            },
         ],
     })
 }
@@ -388,8 +415,8 @@ fn create_skybox_bg(
 /// TODO: 将来課題 — マテリアル等の他テクスチャ経路への .hdr 対応拡張（現状はスカイボックスのみ）。
 fn load_equirect_texture(
     device: &wgpu::Device,
-    queue:  &wgpu::Queue,
-    path:   &str,
+    queue: &wgpu::Queue,
+    path: &str,
 ) -> Option<wgpu::TextureView> {
     if is_hdr_path(path) {
         load_equirect_texture_hdr(device, queue, path)
@@ -407,8 +434,8 @@ fn is_hdr_path(path: &str) -> bool {
 /// LDR 画像（png/jpeg 等）を Rgba8UnormSrgb でアップロードする（従来経路）。
 fn load_equirect_texture_ldr(
     device: &wgpu::Device,
-    queue:  &wgpu::Queue,
-    path:   &str,
+    queue: &wgpu::Queue,
+    path: &str,
 ) -> Option<wgpu::TextureView> {
     let img = crate::engine::asset_fs::read_image(path);
     let (w, h) = img.dimensions();
@@ -417,24 +444,32 @@ fn load_equirect_texture_ldr(
         return None;
     }
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label:           Some("Skybox Equirect Texture (LDR sRGB)"),
-        size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        label: Some("Skybox Equirect Texture (LDR sRGB)"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
-        sample_count:    1,
-        dimension:       wgpu::TextureDimension::D2,
-        format:          wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats:    &[],
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
     });
     queue.write_texture(
         texture.as_image_copy(),
         img.as_raw(),
         wgpu::TexelCopyBufferLayout {
-            offset:         0,
-            bytes_per_row:  Some(4 * w),
+            offset: 0,
+            bytes_per_row: Some(4 * w),
             rows_per_image: Some(h),
         },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
     );
     Some(texture.create_view(&wgpu::TextureViewDescriptor::default()))
 }
@@ -445,8 +480,8 @@ fn load_equirect_texture_ldr(
 /// （呼び出し側 sync_gpu が描画対象から除外し、ピンクのプレースホルダにはしない）。
 fn load_equirect_texture_hdr(
     device: &wgpu::Device,
-    queue:  &wgpu::Queue,
-    path:   &str,
+    queue: &wgpu::Queue,
+    path: &str,
 ) -> Option<wgpu::TextureView> {
     // ① バイト列を取得（assets:// 仮想パス／PAK を解決）。
     let bytes = match crate::engine::asset_fs::read_bytes(path) {
@@ -475,14 +510,18 @@ fn load_equirect_texture_hdr(
 
     // ③ Rgba16Float テクスチャを確保（sRGB なし＝リニア。1.0 超の輝度を保持）。
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label:           Some("Skybox Equirect Texture (HDR Rgba16Float)"),
-        size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        label: Some("Skybox Equirect Texture (HDR Rgba16Float)"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
-        sample_count:    1,
-        dimension:       wgpu::TextureDimension::D2,
-        format:          wgpu::TextureFormat::Rgba16Float,
-        usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats:    &[],
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
     });
     // Rgba16Float: 1 テクセル = 4 チャンネル × 2 バイト = 8 バイト。
     const BYTES_PER_TEXEL: u32 = 8;
@@ -490,11 +529,15 @@ fn load_equirect_texture_hdr(
         texture.as_image_copy(),
         bytemuck::cast_slice(&texels),
         wgpu::TexelCopyBufferLayout {
-            offset:         0,
-            bytes_per_row:  Some(BYTES_PER_TEXEL * w),
+            offset: 0,
+            bytes_per_row: Some(BYTES_PER_TEXEL * w),
             rows_per_image: Some(h),
         },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
     );
     Some(texture.create_view(&wgpu::TextureViewDescriptor::default()))
 }
@@ -521,26 +564,36 @@ fn decode_hdr_rgba16f(bytes: &[u8]) -> Option<(u32, u32, Vec<half::f16>)> {
 
 /// シーンを DFS 走査してスカイボックスを収集する（CameraLocked は 1 つのみ）。
 fn gather_skyboxes(
-    world:             &World,
-    actors:            &[Actor],
-    wl:                u32,
-    out:               &mut Vec<SkyboxFrame>,
+    world: &World,
+    actors: &[Actor],
+    wl: u32,
+    out: &mut Vec<SkyboxFrame>,
     has_camera_locked: &mut bool,
 ) {
     for actor in actors {
-        if actor.world_line != wl { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
         // 非アクティブアクターはサブツリーごと除外する。
-        if !actor.active { continue; }
+        if !actor.active {
+            continue;
+        }
 
         // WorldAnchored の配置行列（無い＝単位行列）。CameraLocked では未使用。
         let world_mat = world.get::<Transform>(actor.entity).map(|t| t.to_mat4());
 
         for slot in actor.slots() {
-            if slot.kind != ComponentKind::Skybox || !slot.enabled { continue; }
-            let Some(sb) = world.get::<SkyboxComponent>(slot.entity) else { continue };
+            if slot.kind != ComponentKind::Skybox || !slot.enabled {
+                continue;
+            }
+            let Some(sb) = world.get::<SkyboxComponent>(slot.entity) else {
+                continue;
+            };
 
             // テクスチャ未設定は描画しない。
-            if sb.texture_path.trim().is_empty() { continue; }
+            if sb.texture_path.trim().is_empty() {
+                continue;
+            }
 
             // CameraLocked は最初の 1 つのみ有効。
             if sb.mode == SkyboxMode::CameraLocked {
@@ -558,21 +611,21 @@ fn gather_skyboxes(
             // 行優先（CPU）→ 列優先（GPU）へ転置する。CameraLocked は単位行列。
             let model = match sb.mode {
                 SkyboxMode::WorldAnchored => transpose4x4(&world_mat.unwrap_or(IDENTITY4)),
-                SkyboxMode::CameraLocked  => IDENTITY4,
+                SkyboxMode::CameraLocked => IDENTITY4,
             };
 
             out.push(SkyboxFrame {
-                entity:       slot.entity,
+                entity: slot.entity,
                 texture_path: sb.texture_path.clone(),
-                mode:         sb.mode,
+                mode: sb.mode,
                 uniform: SkyboxUniform {
                     model,
-                    tint:      sb.tint,
+                    tint: sb.tint,
                     intensity: sb.intensity.max(0.0),
-                    mode:      sb.mode.to_code(),
-                    _pad0:     0,
-                    _pad1:     0,
-                    _pad2:     0,
+                    mode: sb.mode.to_code(),
+                    _pad0: 0,
+                    _pad1: 0,
+                    _pad2: 0,
                 },
             });
         }
@@ -593,7 +646,11 @@ const IDENTITY4: [[f32; 4]; 4] = [
 /// 行優先行列（CPU）→ 列優先行列（GPU）への転置。
 fn transpose4x4(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     let mut out = [[0.0f32; 4]; 4];
-    for i in 0..4 { for j in 0..4 { out[i][j] = m[j][i]; } }
+    for i in 0..4 {
+        for j in 0..4 {
+            out[i][j] = m[j][i];
+        }
+    }
     out
 }
 
@@ -608,12 +665,12 @@ fn generate_uv_sphere(stacks: u32, sectors: u32, r: f32) -> (Vec<[f32; 3]>, Vec<
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(((stacks + 1) * (sectors + 1)) as usize);
     // 頂点: stack（緯度 0..=π）× sector（経度 0..=2π）。
     for i in 0..=stacks {
-        let v = i as f32 / stacks as f32;      // 0..1
-        let phi = v * PI;                       // 緯度（0=北極, π=南極）
+        let v = i as f32 / stacks as f32; // 0..1
+        let phi = v * PI; // 緯度（0=北極, π=南極）
         let (sin_phi, cos_phi) = phi.sin_cos();
         for j in 0..=sectors {
-            let u = j as f32 / sectors as f32;  // 0..1
-            let theta = u * 2.0 * PI;           // 経度
+            let u = j as f32 / sectors as f32; // 0..1
+            let theta = u * 2.0 * PI; // 経度
             let (sin_th, cos_th) = theta.sin_cos();
             // y-up 球面（fs の equirect 変換 u=atan2(z,x), v=acos(y) と整合させる）。
             let x = sin_phi * cos_th;
@@ -642,16 +699,16 @@ fn generate_uv_sphere(stacks: u32, sectors: u32, r: f32) -> (Vec<[f32; 3]>, Vec<
 #[cfg(test)]
 mod layout_tests {
     use super::*;
-    use std::mem::{size_of, offset_of};
+    use std::mem::{offset_of, size_of};
 
     /// SkyboxUniform は 96 バイト。vec3 tint の 4 番目スロットに intensity が同居する。
     #[test]
     fn skybox_uniform_layout() {
         assert_eq!(size_of::<SkyboxUniform>(), 96, "SkyboxUniform は 96 バイト");
-        assert_eq!(offset_of!(SkyboxUniform, model),     0);
-        assert_eq!(offset_of!(SkyboxUniform, tint),      64);
+        assert_eq!(offset_of!(SkyboxUniform, model), 0);
+        assert_eq!(offset_of!(SkyboxUniform, tint), 64);
         assert_eq!(offset_of!(SkyboxUniform, intensity), 76);
-        assert_eq!(offset_of!(SkyboxUniform, mode),      80);
+        assert_eq!(offset_of!(SkyboxUniform, mode), 80);
     }
 
     /// UV 球の頂点数・インデックス数が格子数から決まる本数であること。
@@ -680,8 +737,8 @@ mod layout_tests {
     /// 1.0 超の輝度（4.0）が f16 で保持されること（HDR パイプラインで生きる前提）を確認する。
     #[test]
     fn decode_hdr_preserves_high_luminance() {
-        use image::codecs::hdr::HdrEncoder;
         use image::Rgb;
+        use image::codecs::hdr::HdrEncoder;
 
         // 2×2 の HDR 画像を生成（各ピクセル R=1.0, G=2.0, B=4.0）。
         // 2 の冪は RGBE エンコードで（ほぼ）正確に往復する。

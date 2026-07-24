@@ -94,18 +94,45 @@ impl MouseState {
 
     // ─── ボタン クエリ ─────────────────────────────────────────
 
-    #[inline] pub fn is_press(&self, button: MouseButton) -> bool   { self.held.contains(&button) }
-    #[inline] pub fn is_trigger(&self, button: MouseButton) -> bool { self.just_pressed.contains(&button) }
-    #[inline] pub fn is_release(&self, button: MouseButton) -> bool { self.just_released.contains(&button) }
+    #[inline]
+    pub fn is_press(&self, button: MouseButton) -> bool {
+        self.held.contains(&button)
+    }
+    #[inline]
+    pub fn is_trigger(&self, button: MouseButton) -> bool {
+        self.just_pressed.contains(&button)
+    }
+    #[inline]
+    pub fn is_release(&self, button: MouseButton) -> bool {
+        self.just_released.contains(&button)
+    }
 
     // ─── 座標・移動量 クエリ ───────────────────────────────────
 
-    #[inline] pub fn position(&self) -> Vector2<f32>      { self.position }
-    #[inline] pub fn prev_position(&self) -> Vector2<f32> { self.prev_position }
-    #[inline] pub fn delta(&self) -> Vector2<f32>         { self.delta }
-    #[inline] pub fn prev_delta(&self) -> Vector2<f32>    { self.prev_delta }
-    #[inline] pub fn scroll(&self) -> f32                 { self.scroll }
-    #[inline] pub fn prev_scroll(&self) -> f32            { self.prev_scroll }
+    #[inline]
+    pub fn position(&self) -> Vector2<f32> {
+        self.position
+    }
+    #[inline]
+    pub fn prev_position(&self) -> Vector2<f32> {
+        self.prev_position
+    }
+    #[inline]
+    pub fn delta(&self) -> Vector2<f32> {
+        self.delta
+    }
+    #[inline]
+    pub fn prev_delta(&self) -> Vector2<f32> {
+        self.prev_delta
+    }
+    #[inline]
+    pub fn scroll(&self) -> f32 {
+        self.scroll
+    }
+    #[inline]
+    pub fn prev_scroll(&self) -> f32 {
+        self.prev_scroll
+    }
 
     /// このフレームにマウスが動いたか（delta が 0 でないか）
     #[inline]
@@ -127,6 +154,12 @@ impl MouseState {
 
     // ─── カーソル ─────────────────────────────────────────────
 
-    #[inline] pub fn cursor_visible(&self) -> bool { self.cursor_visible }
-    #[inline] pub fn set_cursor_visible(&mut self, visible: bool) { self.cursor_visible = visible; }
+    #[inline]
+    pub fn cursor_visible(&self) -> bool {
+        self.cursor_visible
+    }
+    #[inline]
+    pub fn set_cursor_visible(&mut self, visible: bool) {
+        self.cursor_visible = visible;
+    }
 }

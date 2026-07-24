@@ -22,9 +22,7 @@
 //  ジョイント位置へ吸着する。
 // ============================================================
 
-use crate::engine::components::{
-    ComponentKind, JointAttachComponent, ModelComponent, Transform,
-};
+use crate::engine::components::{ComponentKind, JointAttachComponent, ModelComponent, Transform};
 use crate::engine::core::loader::model::Model;
 use crate::engine::core::renderer::animator::{compute_node_world_matrices, mat4_mul};
 use crate::engine::ecs::{Entity, World};
@@ -42,7 +40,9 @@ use super::App;
 pub fn model_joint_names(model: &Model) -> Vec<String> {
     if !model.skins.is_empty() {
         // 全 skin のジョイント名を順に収集する（重複はそのまま：名前一致で解決するため）
-        model.skins.iter()
+        model
+            .skins
+            .iter()
             .flat_map(|s| s.joints.iter().map(|j| j.name.clone()))
             .collect()
     } else {
@@ -56,8 +56,8 @@ pub fn model_joint_names(model: &Model) -> Vec<String> {
 /// インスペクタのジョイントドロップダウン（JointAttachComponent の選択肢）用。
 pub fn collect_target_model_joints(
     actors: &[Actor],
-    world:  &World,
-    wl:     u32,
+    world: &World,
+    wl: u32,
     dfs_id: u32,
 ) -> Vec<String> {
     let mut counter = 0u32;
@@ -73,12 +73,12 @@ pub fn collect_target_model_joints(
 /// DFS で dfs_id のアクターに到達したら、その祖先モデルのジョイント名一覧を `found` に格納する。
 /// 戻り値 true = 目的アクターに到達済み（探索打ち切り）。
 fn find_target_joints_recursive(
-    actor:          &Actor,
-    world:          &World,
-    ancestor_model: Option<Entity>,   // 祖先の最初の Model スロット entity
-    dfs_id:         u32,
-    counter:        &mut u32,
-    found:          &mut Option<Vec<String>>,
+    actor: &Actor,
+    world: &World,
+    ancestor_model: Option<Entity>, // 祖先の最初の Model スロット entity
+    dfs_id: u32,
+    counter: &mut u32,
+    found: &mut Option<Vec<String>>,
 ) -> bool {
     let current = *counter;
     *counter += 1;
@@ -108,7 +108,9 @@ fn find_target_joints_recursive(
 
 /// アクターの最初の有効な Model スロットの entity を返す（無ければ None）。
 fn first_enabled_model_slot(actor: &Actor) -> Option<Entity> {
-    actor.slots().iter()
+    actor
+        .slots()
+        .iter()
         .find(|s| s.kind == ComponentKind::Model && s.enabled)
         .map(|s| s.entity)
 }
@@ -118,31 +120,33 @@ fn first_enabled_model_slot(actor: &Actor) -> Option<Entity> {
 /// 1 件の追従ジョブ（借用フェーズで収集し、書き込みフェーズで消費する）。
 struct AttachJob<'a> {
     /// 追従させる（書き込み先）アクター
-    attached:     &'a Actor,
+    attached: &'a Actor,
     /// JointAttach スロットの entity（パラメータ読み出し・警告キー用）
-    attach_slot:  Entity,
+    attach_slot: Entity,
     /// ターゲットモデルの Model スロット entity（ノード行列の取得元）
-    model_slot:   Entity,
+    model_slot: Entity,
     /// ターゲットモデルアクターの entity（ワールド行列 Transform の取得元）
-    model_actor:  Entity,
+    model_actor: Entity,
 }
 
 /// アクター木を DFS し、有効な JointAttach スロットについて追従ジョブを収集する。
 /// ancestor_model = (最寄り祖先の Model スロット entity, そのアクターの entity)。
 fn collect_attach_jobs<'a>(
-    actor:          &'a Actor,
+    actor: &'a Actor,
     ancestor_model: Option<(Entity, Entity)>,
-    out:            &mut Vec<AttachJob<'a>>,
+    out: &mut Vec<AttachJob<'a>>,
 ) {
     // 非アクティブなアクター配下はソケット追従させない（描画もされないため）
-    if !actor.active { return; }
+    if !actor.active {
+        return;
+    }
 
     // このアクターの JointAttach スロットは「祖先モデル」を対象にする（自分自身の Model ではない）
     for slot in actor.slots() {
         if slot.kind == ComponentKind::JointAttach && slot.enabled {
             if let Some((model_slot, model_actor)) = ancestor_model {
                 out.push(AttachJob {
-                    attached:    actor,
+                    attached: actor,
                     attach_slot: slot.entity,
                     model_slot,
                     model_actor,
@@ -168,36 +172,43 @@ impl App {
         let active_wl = self.active_world_line;
         // self の別フィールドを個別に可変借用する（disjoint borrow）
         let warned = &mut self.joint_attach_warned;
-        let Some(scene) = self.scene.as_mut() else { return };
+        let Some(scene) = self.scene.as_mut() else {
+            return;
+        };
         // scene.actors（不変）と scene.world（可変）は別フィールドのため同時借用できる
         let actors = &scene.actors;
-        let world  = &mut scene.world;
+        let world = &mut scene.world;
 
         // ── ① ジョブ収集（active_world_line のアクター木のみ）──
         let mut jobs: Vec<AttachJob> = Vec::new();
         for root in actors.iter().filter(|a| a.world_line == active_wl) {
             collect_attach_jobs(root, None, &mut jobs);
         }
-        if jobs.is_empty() { return; }
+        if jobs.is_empty() {
+            return;
+        }
 
         // ── ② モデルごとのノードワールド行列キャッシュ（フレーム内 1 回計算）──
         // キー = Model スロット entity。値 = (モデル参照, ノードワールド行列列)。
         // None = モデル未ロード（この Model へのアタッチは今フレームはスキップ）。
         let mut node_world_cache: std::collections::HashMap<
-            Entity, Option<(std::sync::Arc<Model>, Vec<[[f32; 4]; 4]>)>,
+            Entity,
+            Option<(std::sync::Arc<Model>, Vec<[[f32; 4]; 4]>)>,
         > = std::collections::HashMap::new();
 
         // ── ③ 各ジョブを解決して書き込む ──
         for job in jobs {
             // JointAttach パラメータ（ジョイント名・オフセット行列）を読み出す。
             // joint_name 空＝無効（追従しない）。
-            let (joint_name, offset_mat) = match world.get::<JointAttachComponent>(job.attach_slot) {
+            let (joint_name, offset_mat) = match world.get::<JointAttachComponent>(job.attach_slot)
+            {
                 Some(ja) if !ja.joint_name.is_empty() => {
                     let off = Transform {
                         position: ja.offset_pos,
                         rotation: ja.offset_rot_deg,
-                        scale:    ja.offset_scale,
-                    }.to_mat4();
+                        scale: ja.offset_scale,
+                    }
+                    .to_mat4();
                     (ja.joint_name.clone(), off)
                 }
                 _ => continue,
@@ -210,13 +221,15 @@ impl App {
                         // 時刻源: anim_drive（Play の Animator 権威時刻）。無ければ静止＝バインドポーズ。
                         let (anim_idx, time) = match mc.anim_drive {
                             Some(d) => (d.anim_idx, d.time),
-                            None    => (usize::MAX, 0.0), // 無効 anim_idx → local_matrix（バインドポーズ）
+                            None => (usize::MAX, 0.0), // 無効 anim_idx → local_matrix（バインドポーズ）
                         };
                         (m.clone(), compute_node_world_matrices(m, anim_idx, time))
                     })
                 })
             });
-            let Some((model, node_world)) = entry.as_ref() else { continue }; // モデル未ロード
+            let Some((model, node_world)) = entry.as_ref() else {
+                continue;
+            }; // モデル未ロード
 
             // joint_name 一致ノードのインデックスを探す。
             let node_idx = match model.nodes.iter().position(|n| n.name == joint_name) {
@@ -243,7 +256,7 @@ impl App {
 
             // 最終ワールド行列 = モデルワールド × ジョイントワールド(モデル空間) × オフセット。
             let world_joint = mat4_mul(&model_world, &joint_world_local);
-            let final_mat   = mat4_mul(&world_joint, &offset_mat);
+            let final_mat = mat4_mul(&world_joint, &offset_mat);
 
             // 自アクターの Transform を更新（インスペクタ・他システム用に TRS 分解して保持）。
             if let Some(tf) = world.get_mut::<Transform>(job.attached.entity) {
@@ -263,9 +276,9 @@ impl App {
     pub(super) fn handle_set_jointattach_field(
         &mut self,
         actor_dfs_id: u32,
-        slot_idx:     u32,
-        key:          &str,
-        value:        &str,
+        slot_idx: u32,
+        key: &str,
+        value: &str,
     ) {
         use super::find_actor_by_dfs;
 
@@ -281,7 +294,9 @@ impl App {
         };
         let Some(entity) = slot_entity else { return };
         let Some(scene) = &mut self.scene else { return };
-        let Some(ja) = scene.world.get_mut::<JointAttachComponent>(entity) else { return };
+        let Some(ja) = scene.world.get_mut::<JointAttachComponent>(entity) else {
+            return;
+        };
 
         // key ごとに値を解釈して反映する（パース失敗は無視）。
         match key {
@@ -290,14 +305,28 @@ impl App {
                 // ジョイント名変更で過去の警告を有効化し直す（新名で再度 1 回警告できるように）。
                 self.joint_attach_warned.retain(|(e, _)| *e != entity);
             }
-            "offset_pos"   => if let Some(v) = parse_vec3(value) { ja.offset_pos = v; },
-            "offset_rot"   => if let Some(v) = parse_vec3(value) { ja.offset_rot_deg = v; },
-            "offset_scale" => if let Some(v) = parse_vec3(value) { ja.offset_scale = v; },
+            "offset_pos" => {
+                if let Some(v) = parse_vec3(value) {
+                    ja.offset_pos = v;
+                }
+            }
+            "offset_rot" => {
+                if let Some(v) = parse_vec3(value) {
+                    ja.offset_rot_deg = v;
+                }
+            }
+            "offset_scale" => {
+                if let Some(v) = parse_vec3(value) {
+                    ja.offset_scale = v;
+                }
+            }
             _ => return,
         }
 
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 }
 
@@ -306,7 +335,9 @@ impl App {
 /// registry::sync_model_instance_mats と同方針だが、TRS 分解を経ず最終ワールド行列を
 /// そのまま書き込む（ジョイントの回転・スケールを厳密に反映するため）。
 fn sync_attached_instance_mats(world: &mut World, actor: &Actor, mat: &[[f32; 4]; 4]) {
-    let model_slots: Vec<Entity> = actor.slots().iter()
+    let model_slots: Vec<Entity> = actor
+        .slots()
+        .iter()
         .filter(|s| s.kind == ComponentKind::Model)
         .map(|s| s.entity)
         .collect();
@@ -325,7 +356,9 @@ fn sync_attached_instance_mats(world: &mut World, actor: &Actor, mat: &[[f32; 4]
 /// "x,y,z"（3 成分・カンマ区切り）を [f32;3] にパースする。失敗時は None。
 fn parse_vec3(s: &str) -> Option<[f32; 3]> {
     let parts: Vec<&str> = s.split(',').collect();
-    if parts.len() != 3 { return None; }
+    if parts.len() != 3 {
+        return None;
+    }
     let x = parts[0].trim().parse::<f32>().ok()?;
     let y = parts[1].trim().parse::<f32>().ok()?;
     let z = parts[2].trim().parse::<f32>().ok()?;

@@ -1,8 +1,8 @@
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 
-use crate::engine::structs::tensor::{Vector3, Mat4x4};
-use crate::engine::structs::transforms::{Quaternion, Transform};
 use super::base_camera::{BaseCamera, CameraProjection};
+use crate::engine::structs::tensor::{Mat4x4, Vector3};
+use crate::engine::structs::transforms::{Quaternion, Transform};
 
 // ============================================================
 //  CameraInput — Editor から IPC + winit イベントで組み立てる
@@ -14,32 +14,32 @@ use super::base_camera::{BaseCamera, CameraProjection};
 /// マウスボタン・デルタ・スクロールは winit イベントから直接受け取る。
 #[derive(Default)]
 pub struct CameraInput {
-    pub w:     bool,
-    pub a:     bool,
-    pub s:     bool,
-    pub d:     bool,
-    pub q:     bool,
-    pub e:     bool,
+    pub w: bool,
+    pub a: bool,
+    pub s: bool,
+    pub d: bool,
+    pub q: bool,
+    pub e: bool,
     pub shift: bool,
-    pub rmb:   bool,       // 右クリック（winit MouseInput）
-    pub mmb:   bool,       // 中ボタン押し込み（winit MouseInput）
-    pub mouse_dx: f32,     // フレーム内累積（winit DeviceEvent）
+    pub rmb: bool,     // 右クリック（winit MouseInput）
+    pub mmb: bool,     // 中ボタン押し込み（winit MouseInput）
+    pub mouse_dx: f32, // フレーム内累積（winit DeviceEvent）
     pub mouse_dy: f32,
-    pub scroll:   f32,     // フレーム内累積（winit MouseWheel）
+    pub scroll: f32, // フレーム内累積（winit MouseWheel）
 }
 
 impl CameraInput {
     /// IPC キー名でキー状態を更新する。
     pub fn set_key(&mut self, key: &str, pressed: bool) {
         match key {
-            "W"     => self.w     = pressed,
-            "A"     => self.a     = pressed,
-            "S"     => self.s     = pressed,
-            "D"     => self.d     = pressed,
-            "Q"     => self.q     = pressed,
-            "E"     => self.e     = pressed,
+            "W" => self.w = pressed,
+            "A" => self.a = pressed,
+            "S" => self.s = pressed,
+            "D" => self.d = pressed,
+            "Q" => self.q = pressed,
+            "E" => self.e = pressed,
             "SHIFT" => self.shift = pressed,
-            _       => {}
+            _ => {}
         }
     }
 
@@ -53,7 +53,7 @@ impl CameraInput {
     pub fn end_frame(&mut self) {
         self.mouse_dx = 0.0;
         self.mouse_dy = 0.0;
-        self.scroll   = 0.0;
+        self.scroll = 0.0;
     }
 
     /// 全キー状態を強制リセットする（CAM_KEYS_CLEAR IPC 用）。
@@ -62,8 +62,13 @@ impl CameraInput {
     /// 移動キーがスタックして「RMB 押下だけでカメラが移動する」
     /// 「軸スナップが any_move_key() により即キャンセルされる」問題になる。
     pub fn clear_keys(&mut self) {
-        self.w = false; self.a = false; self.s = false; self.d = false;
-        self.q = false; self.e = false; self.shift = false;
+        self.w = false;
+        self.a = false;
+        self.s = false;
+        self.d = false;
+        self.q = false;
+        self.e = false;
+        self.shift = false;
     }
 }
 
@@ -90,18 +95,18 @@ pub struct DebugCamera {
     pub base: BaseCamera,
 
     /// 水平回転量（ラジアン）。マウス X 移動で増減。
-    pub yaw:   f32,
+    pub yaw: f32,
     /// 垂直回転量（ラジアン）。マウス Y 移動で増減。正 = 下向き。
     pub pitch: f32,
 
     /// 移動速度（ユニット/秒）
-    pub move_speed:        f32,
+    pub move_speed: f32,
     /// マウス感度（ラジアン/ピクセル）
     pub mouse_sensitivity: f32,
 
     /// 投影ブレンド係数（0.0 = 透視投影, 1.0 = 正射投影）。
     /// `ortho_target` へ 0.3 秒かけて補間され、射影行列は両者を線形補間する。
-    pub ortho_blend:  f32,
+    pub ortho_blend: f32,
     /// 投影ブレンドの目標値（0.0 or 1.0）。トグルで切り替える。
     pub ortho_target: f32,
     /// 正射投影時の縦方向の描画範囲（ワールド単位・半分の高さ）。
@@ -150,18 +155,18 @@ fn lerp_mat4(a: &Mat4x4<f32>, b: &Mat4x4<f32>, t: f32) -> Mat4x4<f32> {
 impl DebugCamera {
     /// パラメータを指定して生成する。
     pub fn new(
-        transform:        Transform,
-        projection:       CameraProjection,
-        move_speed:       f32,
+        transform: Transform,
+        projection: CameraProjection,
+        move_speed: f32,
         mouse_sensitivity: f32,
     ) -> Self {
         Self {
-            base:             BaseCamera::new(transform, projection),
-            yaw:              0.0,
-            pitch:            0.0,
+            base: BaseCamera::new(transform, projection),
+            yaw: 0.0,
+            pitch: 0.0,
             move_speed,
             mouse_sensitivity,
-            ortho_blend:  0.0,
+            ortho_blend: 0.0,
             ortho_target: 0.0,
             ortho_half_h: 5.0,
             viewport_h_px: 720.0,
@@ -173,10 +178,10 @@ impl DebugCamera {
         Self::new(
             Transform::identity(),
             CameraProjection {
-                fov_y_rad:    FRAC_PI_4,
+                fov_y_rad: FRAC_PI_4,
                 aspect_ratio: 16.0 / 9.0,
-                near:         0.1,
-                far:          1000.0,
+                near: 0.1,
+                far: 1000.0,
             },
             5.0,
             0.002,
@@ -198,16 +203,20 @@ impl DebugCamera {
     fn update_rotation(&mut self, cam: &CameraInput) {
         // 2D（正射投影）ビュー中は RMB による視点回転を無効にする。
         // （右上の軸ギズモクリックによる軸スナップは別経路のため有効なまま）
-        if self.ortho_target >= 0.5 { return; }
+        if self.ortho_target >= 0.5 {
+            return;
+        }
         // MMB 押し込み中は視点回転を無効にする（パン操作に専念させる）
-        if !cam.rmb || cam.mmb { return; }
-        self.yaw   += cam.mouse_dx * self.mouse_sensitivity;
+        if !cam.rmb || cam.mmb {
+            return;
+        }
+        self.yaw += cam.mouse_dx * self.mouse_sensitivity;
         self.pitch += cam.mouse_dy * self.mouse_sensitivity;
 
         const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.02;
         self.pitch = self.pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
 
-        let yaw_q   = Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), self.yaw);
+        let yaw_q = Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), self.yaw);
         let pitch_q = Quaternion::from_axis_angle(Vector3::new(1.0, 0.0, 0.0), self.pitch);
         self.base.transform.rotation = yaw_q * pitch_q;
     }
@@ -222,7 +231,9 @@ impl DebugCamera {
     /// つまり「RMB で回転しているだけ」ならホイールで寄せ引きでき、
     /// WASDQE で飛行中はホイールが速度ダイヤルとして機能する（Unity 風）。
     fn update_scroll_dolly(&mut self, cam: &CameraInput) {
-        if cam.scroll == 0.0 { return; }
+        if cam.scroll == 0.0 {
+            return;
+        }
 
         // フライ移動中（RMB + 移動キー押下）: スクロールで移動速度を調整する。
         // 回転のみ（移動キーなし）の場合はここを通らず、下のドリーへ進む。
@@ -243,27 +254,41 @@ impl DebugCamera {
         // それ以外: 視点方向への前後移動（ホイール1ノッチで move_speed * SCROLL_DOLLY_STEP ユニット移動）。
         // RMB による視点回転のみ（移動キーなし）の場合もここを通るため、回転しながらのドリーが可能。
         let forward = self.base.transform.forward();
-        let dist    = self.move_speed * cam.scroll * SCROLL_DOLLY_STEP;
+        let dist = self.move_speed * cam.scroll * SCROLL_DOLLY_STEP;
         self.base.transform.position += forward * dist;
     }
 
     /// 右クリック中のみ WASDQE でカメラ位置を移動する。Shift で 3 倍速。
     fn update_movement(&mut self, cam: &CameraInput, delta_time: f32) {
-        if !cam.rmb { return; }
+        if !cam.rmb {
+            return;
+        }
 
         let speed_mul = if cam.shift { 3.0 } else { 1.0 };
         let speed = self.move_speed * speed_mul * delta_time;
 
-        let forward  = self.base.transform.forward();
-        let right    = self.base.transform.right();
+        let forward = self.base.transform.forward();
+        let right = self.base.transform.right();
         let world_up = Vector3::new(0.0, 1.0, 0.0);
 
-        if cam.w { self.base.transform.position += forward  * speed; }
-        if cam.s { self.base.transform.position -= forward  * speed; }
-        if cam.a { self.base.transform.position -= right    * speed; }
-        if cam.d { self.base.transform.position += right    * speed; }
-        if cam.e { self.base.transform.position += world_up * speed; }
-        if cam.q { self.base.transform.position -= world_up * speed; }
+        if cam.w {
+            self.base.transform.position += forward * speed;
+        }
+        if cam.s {
+            self.base.transform.position -= forward * speed;
+        }
+        if cam.a {
+            self.base.transform.position -= right * speed;
+        }
+        if cam.d {
+            self.base.transform.position += right * speed;
+        }
+        if cam.e {
+            self.base.transform.position += world_up * speed;
+        }
+        if cam.q {
+            self.base.transform.position -= world_up * speed;
+        }
     }
 
     /// 中ボタン押し込み中のカメラ平面パンを処理する（Unity / Blender 方式）。
@@ -274,8 +299,12 @@ impl DebugCamera {
     /// - 正射投影: 1px = 2 * ortho_half_h / viewport_h（正確に 1:1）
     /// - 透視投影: 焦点距離（原点までの距離）における 1px 相当のワールド長
     fn update_mmb_pan(&mut self, cam: &CameraInput, _delta_time: f32) {
-        if !cam.mmb { return; }
-        if cam.mouse_dx == 0.0 && cam.mouse_dy == 0.0 { return; }
+        if !cam.mmb {
+            return;
+        }
+        if cam.mouse_dx == 0.0 && cam.mouse_dy == 0.0 {
+            return;
+        }
 
         // 1 スクリーンピクセルあたりのワールドユニット数
         let vp_h = self.viewport_h_px.max(1.0);
@@ -291,16 +320,18 @@ impl DebugCamera {
         // ドラッグ方向へシーンが追従する（= カメラは逆方向へ動く）
         // スクリーン +X（右ドラッグ）→ カメラを左へ / +Y（下ドラッグ・Y-down）→ カメラを上へ
         let right = self.base.transform.right();
-        let up    = self.base.transform.up();
+        let up = self.base.transform.up();
         self.base.transform.position -= right * cam.mouse_dx * world_per_px;
-        self.base.transform.position += up    * cam.mouse_dy * world_per_px;
+        self.base.transform.position += up * cam.mouse_dy * world_per_px;
     }
 
     // ─── BaseCamera への委譲 ──────────────────────────────────
 
     /// ビュー行列を返す（BaseCamera に委譲）。
     #[inline]
-    pub fn view_matrix(&self) -> Mat4x4<f32> { self.base.view_matrix() }
+    pub fn view_matrix(&self) -> Mat4x4<f32> {
+        self.base.view_matrix()
+    }
 
     /// 射影行列を返す。
     ///
@@ -308,20 +339,26 @@ impl DebugCamera {
     /// 補間中は両行列の要素を線形にブレンドすることで、投影切替をなめらかに見せる。
     pub fn projection_matrix(&self) -> Mat4x4<f32> {
         let persp = self.base.projection_matrix();
-        if self.ortho_blend <= 0.0 { return persp; }
+        if self.ortho_blend <= 0.0 {
+            return persp;
+        }
 
-        let p      = &self.base.projection;
+        let p = &self.base.projection;
         let half_h = self.ortho_half_h.max(0.01);
         let half_w = half_h * p.aspect_ratio;
-        let ortho  = Mat4x4::orthographic_lh(-half_w, half_w, -half_h, half_h, p.near, p.far);
-        if self.ortho_blend >= 1.0 { return ortho; }
+        let ortho = Mat4x4::orthographic_lh(-half_w, half_w, -half_h, half_h, p.near, p.far);
+        if self.ortho_blend >= 1.0 {
+            return ortho;
+        }
 
         lerp_mat4(&persp, &ortho, self.ortho_blend)
     }
 
     /// 現在（目標）が正射投影モードか。
     #[inline]
-    pub fn is_ortho(&self) -> bool { self.ortho_target >= 0.5 }
+    pub fn is_ortho(&self) -> bool {
+        self.ortho_target >= 0.5
+    }
 
     /// 投影方式を設定する（true = 正射, false = 透視）。0.3 秒かけて補間される。
     ///
@@ -329,7 +366,9 @@ impl DebugCamera {
     /// `ortho_half_h` を算出し、切替前後で見た目の大きさを維持する（視点は変えない）。
     pub fn set_ortho(&mut self, on: bool) {
         let target = if on { 1.0 } else { 0.0 };
-        if (self.ortho_target - target).abs() < f32::EPSILON { return; }
+        if (self.ortho_target - target).abs() < f32::EPSILON {
+            return;
+        }
         if on {
             let focal = self.base.transform.position.length().max(1.0);
             self.ortho_half_h = (self.base.projection.fov_y_rad * 0.5).tan() * focal;
@@ -339,7 +378,9 @@ impl DebugCamera {
 
     /// 投影方式を透視↔正射でトグルする。
     #[inline]
-    pub fn toggle_ortho(&mut self) { self.set_ortho(self.ortho_target < 0.5); }
+    pub fn toggle_ortho(&mut self) {
+        self.set_ortho(self.ortho_target < 0.5);
+    }
 
     /// 投影ブレンドを目標値へ 0.3 秒で補間する。フレームループで毎フレーム呼ぶ。
     pub fn update_projection_anim(&mut self, dt: f32) {
@@ -360,10 +401,14 @@ impl DebugCamera {
     #[inline]
     pub fn set_aspect_ratio(&mut self, width: u32, height: u32) {
         self.base.set_aspect_ratio(width, height);
-        if height > 0 { self.viewport_h_px = height as f32; }
+        if height > 0 {
+            self.viewport_h_px = height as f32;
+        }
     }
 
     /// カメラの現在位置を返す。
     #[inline]
-    pub fn position(&self) -> Vector3<f32> { self.base.transform.position }
+    pub fn position(&self) -> Vector3<f32> {
+        self.base.transform.position
+    }
 }

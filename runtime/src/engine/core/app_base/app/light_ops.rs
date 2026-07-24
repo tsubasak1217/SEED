@@ -39,9 +39,9 @@ impl App {
     pub(super) fn handle_set_light_field(
         &mut self,
         actor_dfs_id: u32,
-        slot_idx:     u32,
-        key:          &str,
-        value:        &str,
+        slot_idx: u32,
+        key: &str,
+        value: &str,
     ) {
         use super::find_actor_by_dfs;
 
@@ -57,12 +57,16 @@ impl App {
         };
         let Some(entity) = slot_entity else { return };
         let Some(scene) = &mut self.scene else { return };
-        let Some(lc) = scene.world.get_mut::<LightComponent>(entity) else { return };
+        let Some(lc) = scene.world.get_mut::<LightComponent>(entity) else {
+            return;
+        };
 
         // key ごとに値を解釈して反映する（パース失敗は無視）。
         match key {
             "kind" => {
-                if let Some(k) = LightKind::from_str_opt(value) { lc.kind = k; }
+                if let Some(k) = LightKind::from_str_opt(value) {
+                    lc.kind = k;
+                }
             }
             "color" => {
                 // "r,g,b"（リニア）をパースする。
@@ -77,21 +81,55 @@ impl App {
                     }
                 }
             }
-            "intensity"    => if let Ok(v) = value.parse::<f32>() { lc.intensity = v.max(0.0); },
-            "range"        => if let Ok(v) = value.parse::<f32>() { lc.range = v.max(0.0); },
-            "inner_angle"  => if let Ok(v) = value.parse::<f32>() { lc.inner_angle_deg = v.clamp(0.0, 89.0); },
-            "outer_angle"  => if let Ok(v) = value.parse::<f32>() { lc.outer_angle_deg = v.clamp(0.0, 89.0); },
-            "rect_width"   => if let Ok(v) = value.parse::<f32>() { lc.rect_width = v.max(0.0); },
-            "rect_height"  => if let Ok(v) = value.parse::<f32>() { lc.rect_height = v.max(0.0); },
-            "soft_radius"  => if let Ok(v) = value.parse::<f32>() { lc.soft_radius = v.max(0.0); },
+            "intensity" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    lc.intensity = v.max(0.0);
+                }
+            }
+            "range" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    lc.range = v.max(0.0);
+                }
+            }
+            "inner_angle" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    lc.inner_angle_deg = v.clamp(0.0, 89.0);
+                }
+            }
+            "outer_angle" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    lc.outer_angle_deg = v.clamp(0.0, 89.0);
+                }
+            }
+            "rect_width" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    lc.rect_width = v.max(0.0);
+                }
+            }
+            "rect_height" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    lc.rect_height = v.max(0.0);
+                }
+            }
+            "soft_radius" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    lc.soft_radius = v.max(0.0);
+                }
+            }
             // 疑似バウンス（間接光近似）の強度。負値は 0 にクランプ（上限は設けない）。
-            "bounce_intensity" => if let Ok(v) = value.parse::<f32>() { lc.bounce_intensity = v.max(0.0); },
+            "bounce_intensity" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    lc.bounce_intensity = v.max(0.0);
+                }
+            }
             "cast_shadows" => lc.cast_shadows = value == "1" || value == "true",
             _ => return,
         }
 
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 }
 
@@ -114,7 +152,11 @@ pub(crate) fn collect_gpu_lights(actors: &[Actor], world: &World, wl: u32) -> Ve
         // FALLBACK_LIGHT_L は「光源への方向（L）」なので、GpuLight.direction
         // （光が進む向き）はその反転で渡す（シェーダが L = -direction を取る）。
         out.push(GpuLight::directional(
-            [-FALLBACK_LIGHT_L[0], -FALLBACK_LIGHT_L[1], -FALLBACK_LIGHT_L[2]],
+            [
+                -FALLBACK_LIGHT_L[0],
+                -FALLBACK_LIGHT_L[1],
+                -FALLBACK_LIGHT_L[2],
+            ],
             FALLBACK_LIGHT_COLOR,
             FALLBACK_LIGHT_INTENSITY,
         ));
@@ -126,41 +168,55 @@ pub(crate) fn collect_gpu_lights(actors: &[Actor], world: &World, wl: u32) -> Ve
 /// アクターツリーを DFS 走査して Light スロットを GpuLight に変換する。
 fn collect_lights_recursive(actors: &[Actor], world: &World, wl: u32, out: &mut Vec<GpuLight>) {
     for actor in actors {
-        if actor.world_line != wl { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
         // 非アクティブアクターはサブツリーごと除外する。
-        if !actor.active { continue; }
+        if !actor.active {
+            continue;
+        }
 
         // アクターの Transform（位置・向き）。無い（2D 等）場合は原点・+Z 前方。
         let tf = world.get::<Transform>(actor.entity);
 
         for slot in actor.slots() {
-            if slot.kind != ComponentKind::Light || !slot.enabled { continue; }
-            let Some(lc) = world.get::<LightComponent>(slot.entity) else { continue };
+            if slot.kind != ComponentKind::Light || !slot.enabled {
+                continue;
+            }
+            let Some(lc) = world.get::<LightComponent>(slot.entity) else {
+                continue;
+            };
 
-            let position  = tf.map(|t| t.position).unwrap_or([0.0, 0.0, 0.0]);
+            let position = tf.map(|t| t.position).unwrap_or([0.0, 0.0, 0.0]);
             // forward() = +Z 前方（光が進む向き）。up()/right() で rect 面軸を作る。
             let direction = tf.map(|t| t.forward()).unwrap_or([0.0, 0.0, 1.0]);
 
             let mut gpu = match lc.kind {
-                LightKind::Directional => {
-                    GpuLight::directional(direction, lc.color, lc.intensity)
-                }
-                LightKind::Point => {
-                    GpuLight::point(position, lc.color, lc.intensity, lc.range)
-                }
-                LightKind::Spot => {
-                    GpuLight::spot(
-                        position, direction, lc.color, lc.intensity, lc.range,
-                        lc.inner_angle_deg, lc.outer_angle_deg,
-                    )
-                }
+                LightKind::Directional => GpuLight::directional(direction, lc.color, lc.intensity),
+                LightKind::Point => GpuLight::point(position, lc.color, lc.intensity, lc.range),
+                LightKind::Spot => GpuLight::spot(
+                    position,
+                    direction,
+                    lc.color,
+                    lc.intensity,
+                    lc.range,
+                    lc.inner_angle_deg,
+                    lc.outer_angle_deg,
+                ),
                 LightKind::Rect => {
-                    let up    = tf.map(|t| t.up()).unwrap_or([0.0, 1.0, 0.0]);
+                    let up = tf.map(|t| t.up()).unwrap_or([0.0, 1.0, 0.0]);
                     // right = forward × up（面の横軸）。
                     let right = cross(direction, up);
                     GpuLight::rect(
-                        position, direction, right, up, lc.color, lc.intensity,
-                        lc.range, lc.rect_width, lc.rect_height,
+                        position,
+                        direction,
+                        right,
+                        up,
+                        lc.color,
+                        lc.intensity,
+                        lc.range,
+                        lc.rect_width,
+                        lc.rect_height,
                     )
                 }
             };

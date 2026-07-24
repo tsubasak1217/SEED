@@ -9,13 +9,13 @@
 
 use std::collections::HashMap;
 
-use super::brush::{apply, chunks_in_brush_aabb, BrushOp, SampleField, SphereBrush};
+use super::brush::{BrushOp, SampleField, SphereBrush, apply, chunks_in_brush_aabb};
 use super::chunk_coord::ChunkCoord;
 use super::chunk_data::TerrainChunkData;
 use super::heightmap::HeightmapField;
 use super::marching_cubes::generate_standalone;
 use super::settings::TerrainSettings;
-use super::tvox::{read_chunk, write_chunk, TvoxError, TVOX_MAGIC};
+use super::tvox::{TVOX_MAGIC, TvoxError, read_chunk, write_chunk};
 
 // ─── テスト用定数（マジックナンバー回避） ───────────────────────────────────
 /// 球 SDF テストの球中心（ローカル座標メートル、チャンク中央）
@@ -173,7 +173,8 @@ fn sphere_winding_matches_engine_front_face_convention() {
     assert!(total > 0, "non-degenerate triangles should exist");
     // 縮退を除いた三角形は 1 枚残らず規約を満たすこと（100%）。
     assert_eq!(
-        ok, total,
+        ok,
+        total,
         "{}/{total} triangles violate the engine front-face winding convention",
         total - ok
     );
@@ -256,7 +257,8 @@ fn cavity_winding_matches_engine_front_face_convention() {
     assert!(total > 0, "cavity: non-degenerate triangles should exist");
     // 縮退を除いた三角形は 1 枚残らず規約を満たすこと（100%）。
     assert_eq!(
-        ok, total,
+        ok,
+        total,
         "cavity: {}/{total} triangles violate the engine front-face winding convention",
         total - ok
     );
@@ -314,7 +316,7 @@ const WALL_HORIZONTAL_MIN: f32 = 0.3;
 /// 掘削の内壁を見たいので、ここでは地表がチャンク中央に来るよう密度をオフセットする。
 struct MidGroundField {
     settings: TerrainSettings,
-    chunk:    TerrainChunkData,
+    chunk: TerrainChunkData,
     /// 地表のワールド Y（＝チャンク中央高さ）。
     ground_y: f32,
 }
@@ -334,7 +336,11 @@ impl MidGroundField {
                 }
             }
         }
-        Self { settings, chunk, ground_y }
+        Self {
+            settings,
+            chunk,
+            ground_y,
+        }
     }
 
     /// グローバルサンプル座標をチャンク内へクランプする。
@@ -350,14 +356,16 @@ impl SampleField for MidGroundField {
     }
 
     fn read_global(&self, gx: i32, gy: i32, gz: i32) -> f32 {
-        self.chunk.sample(self.clamped(gx), self.clamped(gy), self.clamped(gz))
+        self.chunk
+            .sample(self.clamped(gx), self.clamped(gy), self.clamped(gz))
     }
 
     fn write_global(&mut self, gx: i32, gy: i32, gz: i32, v: f32) {
         // 範囲外は捨てる（クランプして書くと壁面が歪むため）。
         let s = self.settings.samples_per_axis() as i32;
         if (0..s).contains(&gx) && (0..s).contains(&gy) && (0..s).contains(&gz) {
-            self.chunk.set_sample(gx as usize, gy as usize, gz as usize, v);
+            self.chunk
+                .set_sample(gx as usize, gy as usize, gz as usize, v);
         }
     }
 
@@ -385,13 +393,16 @@ fn dug_hole_walls_match_winding_and_normal_convention() {
 
     // ── 掘削前のメッシュ（平坦地表）が存在することを確かめる ──
     let before = generate_standalone(&field.chunk, &settings);
-    assert!(before.triangle_count() > 0, "掘削前の地表メッシュが空（前提の崩れ）");
+    assert!(
+        before.triangle_count() > 0,
+        "掘削前の地表メッシュが空（前提の崩れ）"
+    );
 
     // ── 地表中央を掘る ──
     let extent = settings.chunk_extent();
     let brush = SphereBrush {
-        center:   [extent * 0.5, field.ground_y, extent * 0.5],
-        radius:   DIG_BRUSH_RADIUS,
+        center: [extent * 0.5, field.ground_y, extent * 0.5],
+        radius: DIG_BRUSH_RADIUS,
         strength: DIG_BRUSH_STRENGTH,
     };
     let touched = apply(&mut field, &brush, BrushOp::Subtract, DIG_BRUSH_DT);
@@ -424,7 +435,11 @@ fn dug_hole_walls_match_winding_and_normal_convention() {
         let na = mesh.normals[tri[0] as usize];
         let nb = mesh.normals[tri[1] as usize];
         let nc = mesh.normals[tri[2] as usize];
-        let avg = [na[0] + nb[0] + nc[0], na[1] + nb[1] + nc[1], na[2] + nb[2] + nc[2]];
+        let avg = [
+            na[0] + nb[0] + nc[0],
+            na[1] + nb[1] + nc[1],
+            na[2] + nb[2] + nc[2],
+        ];
 
         // 規約: 外積は air 側法線と「逆向き」。
         if geo[0] * avg[0] + geo[1] * avg[1] + geo[2] * avg[2] < 0.0 {
@@ -433,7 +448,8 @@ fn dug_hole_walls_match_winding_and_normal_convention() {
     }
     assert!(win_total > 0, "非縮退な三角形が無い");
     assert_eq!(
-        win_ok, win_total,
+        win_ok,
+        win_total,
         "掘削後: {}/{win_total} 枚の三角形が front-face 規約に違反（穴の内壁が消える）",
         win_total - win_ok
     );
@@ -470,10 +486,14 @@ fn dug_hole_walls_match_winding_and_normal_convention() {
                 gp[1] + sign * nrm[1] * NORMAL_PROBE_SAMPLES,
                 gp[2] + sign * nrm[2] * NORMAL_PROBE_SAMPLES,
             ];
-            sample_clamped(p[0].round() as i32, p[1].round() as i32, p[2].round() as i32)
+            sample_clamped(
+                p[0].round() as i32,
+                p[1].round() as i32,
+                p[2].round() as i32,
+            )
         };
-        let d_air   = probe(1.0);   // +n 方向（air 側のはず＝密度大）
-        let d_solid = probe(-1.0);  // -n 方向（solid 側のはず＝密度小）
+        let d_air = probe(1.0); // +n 方向（air 側のはず＝密度大）
+        let d_solid = probe(-1.0); // -n 方向（solid 側のはず＝密度小）
 
         // 密度差が無い（クランプ域など）頂点は判定不能なので除外する。
         if (d_air - d_solid).abs() <= f32::EPSILON {
@@ -515,7 +535,11 @@ impl TwoChunkField {
         // 両チャンクとも平坦地面で初期化。
         let chunk0 = TerrainChunkData::from_ground_plane(&settings, ChunkCoord::new(0, 0, 0));
         let chunk1 = TerrainChunkData::from_ground_plane(&settings, ChunkCoord::new(1, 0, 0));
-        Self { settings, chunk0, chunk1 }
+        Self {
+            settings,
+            chunk0,
+            chunk1,
+        }
     }
 
     /// y,z を [0, C] に、x はそのまま返す（境界外読みの安全化）。
@@ -608,9 +632,8 @@ fn boundary_samples_stay_synced() {
     let eps = voxel * 1e-3;
 
     // (y,z) を丸めてキー化するヘルパ。
-    let key = |p: [f32; 3]| -> (i64, i64) {
-        ((p[1] / eps).round() as i64, (p[2] / eps).round() as i64)
-    };
+    let key =
+        |p: [f32; 3]| -> (i64, i64) { ((p[1] / eps).round() as i64, (p[2] / eps).round() as i64) };
     let mut face0 = std::collections::HashSet::new();
     for p in &mesh0.positions {
         if (p[0] - face_x0).abs() < eps {
@@ -662,7 +685,11 @@ fn tvox_round_trip_and_corruption() {
         "sample count must match"
     );
     // 全サンプルがビット一致。
-    for (a, b) in chunk.raw_density().iter().zip(restored.raw_density().iter()) {
+    for (a, b) in chunk
+        .raw_density()
+        .iter()
+        .zip(restored.raw_density().iter())
+    {
         assert_eq!(a.to_bits(), b.to_bits(), "density sample bit mismatch");
     }
 
@@ -701,7 +728,11 @@ fn raw_density_snapshot_round_trip() {
     // 編集後は before と異なっていること（テストの前提が成立していることの確認）。
     assert_ne!(
         before.iter().map(|f| f.to_bits()).collect::<Vec<_>>(),
-        edited.raw_density().iter().map(|f| f.to_bits()).collect::<Vec<_>>(),
+        edited
+            .raw_density()
+            .iter()
+            .map(|f| f.to_bits())
+            .collect::<Vec<_>>(),
         "precondition failed: edit did not change density"
     );
 
@@ -710,7 +741,11 @@ fn raw_density_snapshot_round_trip() {
 
     // ─── 全サンプルがビット一致で復元されていること ───
     for (a, b) in before.iter().zip(edited.raw_density().iter()) {
-        assert_eq!(a.to_bits(), b.to_bits(), "density sample bit mismatch after undo restore");
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "density sample bit mismatch after undo restore"
+        );
     }
 }
 
@@ -763,8 +798,14 @@ fn chunks_in_brush_aabb_covers_seam() {
     };
     let coords = chunks_in_brush_aabb(&brush, &settings);
 
-    assert!(coords.contains(&ChunkCoord::new(0, 0, 0)), "should include chunk on the near side of the seam");
-    assert!(coords.contains(&ChunkCoord::new(1, 0, 0)), "should include chunk on the far side of the seam");
+    assert!(
+        coords.contains(&ChunkCoord::new(0, 0, 0)),
+        "should include chunk on the near side of the seam"
+    );
+    assert!(
+        coords.contains(&ChunkCoord::new(1, 0, 0)),
+        "should include chunk on the far side of the seam"
+    );
 }
 
 /// 1 チャンク（33³ サンプル）の marching cubes 再生成時間を実測する計測用テスト。
@@ -797,7 +838,6 @@ fn mc_regen_timing() {
         tri_total / iterations as usize,
     );
 }
-
 
 // ============================================================
 //  メッシュ出力のバイト一致回帰（辺キャッシュ実装の差し替えを守る）
@@ -895,8 +935,12 @@ fn paint_sphere_chunk(settings: &TerrainSettings) -> TerrainChunkData {
                 let secondary = (primary + 1) % PAINT_TEST_LAYER_COUNT;
                 let mut slots = BlendSlots::default();
                 slots.index = [primary, secondary, 0, 0];
-                slots.weight =
-                    [PAINT_TEST_PRIMARY_WEIGHT, PAINT_TEST_SECONDARY_WEIGHT, 0.0, 0.0];
+                slots.weight = [
+                    PAINT_TEST_PRIMARY_WEIGHT,
+                    PAINT_TEST_SECONDARY_WEIGHT,
+                    0.0,
+                    0.0,
+                ];
                 chunk.set_paint_slots(ix, iy, iz, &slots);
                 // ペイント量もサンプルごとに 0..1 を巡回させる。
                 let amount = ((ix + iy + iz) as f32 * PAINT_TEST_AMOUNT_STEP).fract();
@@ -925,7 +969,8 @@ fn interp_vertex_paint_reproduces_mesh_paint() {
     // 前提: メッシュが空でなく、由来辺が頂点数ぶん記録されていること。
     assert!(mesh.triangle_count() > 0, "球メッシュが空（前提の崩れ）");
     assert_eq!(
-        mesh.edges.len(), mesh.positions.len(),
+        mesh.edges.len(),
+        mesh.positions.len(),
         "edges は positions と同じ長さでなければならない"
     );
 
@@ -939,12 +984,14 @@ fn interp_vertex_paint_reproduces_mesh_paint() {
         );
         for k in 0..super::layers::TERRAIN_BLEND_SLOTS {
             assert_eq!(
-                paint.weight[k].to_bits(), mesh.paint[i].weight[k].to_bits(),
+                paint.weight[k].to_bits(),
+                mesh.paint[i].weight[k].to_bits(),
                 "頂点 {i} スロット {k}: 再構築した重みがビット不一致"
             );
         }
         assert_eq!(
-            amount.to_bits(), mesh.paint_amount[i].to_bits(),
+            amount.to_bits(),
+            mesh.paint_amount[i].to_bits(),
             "頂点 {i}: 再構築したペイント量がビット不一致"
         );
     }
@@ -964,17 +1011,14 @@ fn vertex_edge_descriptor_reconstructs_positions() {
 
     for (i, edge) in mesh.edges.iter().enumerate() {
         // hi = lo + unit(axis)。位置は lo→hi を t で内分したもの（メートル換算）。
-        let mut p = [
-            edge.lo[0] as f32,
-            edge.lo[1] as f32,
-            edge.lo[2] as f32,
-        ];
+        let mut p = [edge.lo[0] as f32, edge.lo[1] as f32, edge.lo[2] as f32];
         p[edge.axis as usize] += edge.t;
         for k in 0..3 {
             let expected = mesh.positions[i][k];
             let actual = p[k] * voxel;
             assert_eq!(
-                actual.to_bits(), expected.to_bits(),
+                actual.to_bits(),
+                expected.to_bits(),
                 "頂点 {i} 軸 {k}: 由来辺から復元した位置がビット不一致 \
                  ({actual} vs {expected}, edge={edge:?})"
             );
@@ -1031,7 +1075,11 @@ fn apply_chunk_config_updates_derived_values() {
     assert_eq!(s.ground_chunks_z, 8);
     assert_eq!(s.samples_per_axis(), 17, "サンプル数 = cells + 1");
     assert_eq!(s.chunk_extent(), 16.0, "実寸 = voxel_size * chunk_cells");
-    assert_eq!(s.density_clamp, s.chunk_extent(), "density_clamp は実寸に追随する");
+    assert_eq!(
+        s.density_clamp,
+        s.chunk_extent(),
+        "density_clamp は実寸に追随する"
+    );
 }
 
 /// 既定以外のチャンク分割数で作ったチャンクが .tvox を往復して壊れないこと。
@@ -1046,7 +1094,11 @@ fn tvox_roundtrip_with_custom_chunk_cells() {
     let (restored, restored_coord) = read_chunk(&bytes).expect("読み込めること");
     assert_eq!(restored_coord, coord);
     assert_eq!(restored.samples_per_axis(), settings.samples_per_axis());
-    assert_eq!(restored.raw_density(), chunk.raw_density(), "密度がビット一致すること");
+    assert_eq!(
+        restored.raw_density(),
+        chunk.raw_density(),
+        "密度がビット一致すること"
+    );
 }
 
 /// tvox ヘッダだけを読む read_header が、書き出したチャンク構成をそのまま返すこと。
@@ -1065,7 +1117,11 @@ fn tvox_read_header_reports_chunk_config() {
     assert_eq!(header.coord, coord);
     assert_eq!(header.samples_per_axis, settings.samples_per_axis() as u32);
     assert_eq!(header.voxel_size, settings.voxel_size);
-    assert_eq!(header.chunk_cells(), settings.chunk_cells, "cells = samples - 1 が復元できる");
+    assert_eq!(
+        header.chunk_cells(),
+        settings.chunk_cells,
+        "cells = samples - 1 が復元できる"
+    );
 }
 
 /// 壊れた／短すぎるバイト列では read_header がエラーを返すこと（本体を読む前に弾ける）。

@@ -16,14 +16,20 @@
 //      d >= max_distance          → 無音
 // ============================================================
 
-use serde::{Deserialize, Serialize};
 use crate::engine::ecs::Component;
+use serde::{Deserialize, Serialize};
 
 // ─── デフォルト値関数 ─────────────────────────────────────────
 
-fn default_volume()       -> f32 { 1.0 }
-fn default_min_distance() -> f32 { 2.0 }
-fn default_max_distance() -> f32 { 50.0 }
+fn default_volume() -> f32 {
+    1.0
+}
+fn default_min_distance() -> f32 {
+    2.0
+}
+fn default_max_distance() -> f32 {
+    50.0
+}
 
 // ─── AudioComponentData ──────────────────────────────────────
 
@@ -59,14 +65,14 @@ pub struct AudioComponentData {
 impl Default for AudioComponentData {
     fn default() -> Self {
         Self {
-            audio_path:    String::new(),
-            volume:        default_volume(),
-            looped:        false,
+            audio_path: String::new(),
+            volume: default_volume(),
+            looped: false,
             play_on_start: false,
-            spatial:       false,
-            min_distance:  default_min_distance(),
-            max_distance:  default_max_distance(),
-            pan:           0.0,
+            spatial: false,
+            min_distance: default_min_distance(),
+            max_distance: default_max_distance(),
+            pan: 0.0,
         }
     }
 }
@@ -99,34 +105,36 @@ impl AudioComponent {
     /// シリアライズ用データからコンポーネントを構築する。
     pub fn from_data(data: AudioComponentData) -> Self {
         Self {
-            audio_path:    data.audio_path,
-            volume:        data.volume,
-            looped:        data.looped,
+            audio_path: data.audio_path,
+            volume: data.volume,
+            looped: data.looped,
             play_on_start: data.play_on_start,
-            spatial:       data.spatial,
-            min_distance:  data.min_distance,
-            max_distance:  data.max_distance,
-            pan:           data.pan,
+            spatial: data.spatial,
+            min_distance: data.min_distance,
+            max_distance: data.max_distance,
+            pan: data.pan,
         }
     }
 
     /// シリアライズ用データに変換する。
     pub fn to_data(&self) -> AudioComponentData {
         AudioComponentData {
-            audio_path:    self.audio_path.clone(),
-            volume:        self.volume,
-            looped:        self.looped,
+            audio_path: self.audio_path.clone(),
+            volume: self.volume,
+            looped: self.looped,
             play_on_start: self.play_on_start,
-            spatial:       self.spatial,
-            min_distance:  self.min_distance,
-            max_distance:  self.max_distance,
-            pan:           self.pan,
+            spatial: self.spatial,
+            min_distance: self.min_distance,
+            max_distance: self.max_distance,
+            pan: self.pan,
         }
     }
 }
 
 impl Default for AudioComponent {
-    fn default() -> Self { Self::from_data(AudioComponentData::default()) }
+    fn default() -> Self {
+        Self::from_data(AudioComponentData::default())
+    }
 }
 
 impl Component for AudioComponent {}

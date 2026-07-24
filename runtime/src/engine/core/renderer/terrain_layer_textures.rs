@@ -28,7 +28,7 @@ use std::collections::HashMap;
 
 use image::RgbaImage;
 
-use crate::engine::terrain::layers::{TerrainLayerSet, TERRAIN_MAX_LAYERS};
+use crate::engine::terrain::layers::{TERRAIN_MAX_LAYERS, TerrainLayerSet};
 
 // ─── 調整用定数（マジックナンバー禁止）──────────────────────────────────────
 
@@ -87,32 +87,38 @@ impl TerrainLayerTextureArrays {
         let mut cache: HashMap<String, RgbaImage> = HashMap::new();
 
         // ─── 各マップのレイヤ画像列を作る ───
-        let base_imgs = collect_layer_images(
-            set, &mut cache, DEFAULT_BASE_COLOR_PIXEL,
-            |l| l.base_color_texture.as_deref(),
-        );
-        let normal_imgs = collect_layer_images(
-            set, &mut cache, DEFAULT_NORMAL_PIXEL,
-            |l| l.normal_texture.as_deref(),
-        );
-        let rough_imgs = collect_layer_images(
-            set, &mut cache, DEFAULT_ROUGHNESS_PIXEL,
-            |l| l.roughness_texture.as_deref(),
-        );
+        let base_imgs = collect_layer_images(set, &mut cache, DEFAULT_BASE_COLOR_PIXEL, |l| {
+            l.base_color_texture.as_deref()
+        });
+        let normal_imgs = collect_layer_images(set, &mut cache, DEFAULT_NORMAL_PIXEL, |l| {
+            l.normal_texture.as_deref()
+        });
+        let rough_imgs = collect_layer_images(set, &mut cache, DEFAULT_ROUGHNESS_PIXEL, |l| {
+            l.roughness_texture.as_deref()
+        });
 
         // ─── GPU へアップロード ───
         //   ベースカラーだけ sRGB（サンプル時に自動でリニア展開される）。
         //   法線・ラフネスは数値データなのでリニアフォーマットでなければならない。
         let base_tex = upload_array_texture(
-            device, queue, &base_imgs, wgpu::TextureFormat::Rgba8UnormSrgb,
+            device,
+            queue,
+            &base_imgs,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
             "terrain_layer_base_color_array",
         );
         let normal_tex = upload_array_texture(
-            device, queue, &normal_imgs, wgpu::TextureFormat::Rgba8Unorm,
+            device,
+            queue,
+            &normal_imgs,
+            wgpu::TextureFormat::Rgba8Unorm,
             "terrain_layer_normal_array",
         );
         let rough_tex = upload_array_texture(
-            device, queue, &rough_imgs, wgpu::TextureFormat::Rgba8Unorm,
+            device,
+            queue,
+            &rough_imgs,
+            wgpu::TextureFormat::Rgba8Unorm,
             "terrain_layer_roughness_array",
         );
 
@@ -121,8 +127,8 @@ impl TerrainLayerTextureArrays {
             ..Default::default()
         };
         let base_color = base_tex.create_view(&view_desc);
-        let normal     = normal_tex.create_view(&view_desc);
-        let roughness  = rough_tex.create_view(&view_desc);
+        let normal = normal_tex.create_view(&view_desc);
+        let roughness = rough_tex.create_view(&view_desc);
 
         Self {
             base_color,
@@ -142,10 +148,10 @@ impl TerrainLayerTextureArrays {
 /// - `pick`      : `TerrainLayer` からそのマップのパスを取り出すクロージャ。
 /// - `default_px`: パス未指定レイヤに敷く既定色。
 fn collect_layer_images<F>(
-    set:        &TerrainLayerSet,
-    cache:      &mut HashMap<String, RgbaImage>,
+    set: &TerrainLayerSet,
+    cache: &mut HashMap<String, RgbaImage>,
     default_px: [u8; 4],
-    pick:       F,
+    pick: F,
 ) -> Vec<RgbaImage>
 where
     F: Fn(&crate::engine::terrain::layers::TerrainLayer) -> Option<&str>,
@@ -177,8 +183,8 @@ where
 /// パスは `asset_fs::normalize_asset_path` で正規化される（layers.json の
 /// アセットルート相対表記がカレントディレクトリ基準で解決されないようにするため）。
 fn load_and_resize(
-    path:        &str,
-    cache:       &mut HashMap<String, RgbaImage>,
+    path: &str,
+    cache: &mut HashMap<String, RgbaImage>,
     fallback_px: [u8; 4],
 ) -> RgbaImage {
     // キャッシュキーは正規化後のパス（同じ実体を指す別表記を 1 回のデコードにまとめる）。
@@ -240,25 +246,25 @@ fn solid_image(px: [u8; 4]) -> RgbaImage {
 /// レイヤ画像列を 1 本の 2D 配列テクスチャへアップロードする（ミップ連鎖を CPU 生成）。
 fn upload_array_texture(
     device: &wgpu::Device,
-    queue:  &wgpu::Queue,
+    queue: &wgpu::Queue,
     layers: &[RgbaImage],
     format: wgpu::TextureFormat,
-    label:  &str,
+    label: &str,
 ) -> wgpu::Texture {
     let mips = mip_level_count(TERRAIN_LAYER_TEXTURE_SIZE);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
-            width:                 TERRAIN_LAYER_TEXTURE_SIZE,
-            height:                TERRAIN_LAYER_TEXTURE_SIZE,
+            width: TERRAIN_LAYER_TEXTURE_SIZE,
+            height: TERRAIN_LAYER_TEXTURE_SIZE,
             depth_or_array_layers: layers.len().max(1) as u32,
         },
         mip_level_count: mips,
-        sample_count:    1,
-        dimension:       wgpu::TextureDimension::D2,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
         format,
-        usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats:    &[],
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
     });
 
     for (layer_idx, img) in layers.iter().enumerate() {
@@ -271,18 +277,26 @@ fn upload_array_texture(
             }
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
-                    texture:   &texture,
+                    texture: &texture,
                     mip_level: level,
-                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer_idx as u32 },
-                    aspect:    wgpu::TextureAspect::All,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer_idx as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
                 },
                 level_img.as_raw(),
                 wgpu::TexelCopyBufferLayout {
-                    offset:         0,
-                    bytes_per_row:  Some(BYTES_PER_TEXEL * size),
+                    offset: 0,
+                    bytes_per_row: Some(BYTES_PER_TEXEL * size),
                     rows_per_image: Some(size),
                 },
-                wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
             );
         }
     }
@@ -322,17 +336,29 @@ mod tests {
         let mut cache = HashMap::new();
 
         // 法線: 平坦（+Z）。マゼンタであってはならない。
-        let normal = load_and_resize("no/such/normal_for_test.png", &mut cache, DEFAULT_NORMAL_PIXEL);
+        let normal = load_and_resize(
+            "no/such/normal_for_test.png",
+            &mut cache,
+            DEFAULT_NORMAL_PIXEL,
+        );
         assert_eq!(normal.get_pixel(0, 0).0, DEFAULT_NORMAL_PIXEL);
         assert_ne!(normal.get_pixel(0, 0).0, [255, 0, 255, 255]);
         assert_eq!(normal.width(), TERRAIN_LAYER_TEXTURE_SIZE);
 
         // ラフネス: 白（係数そのまま）。
-        let rough = load_and_resize("no/such/rough_for_test.png", &mut cache, DEFAULT_ROUGHNESS_PIXEL);
+        let rough = load_and_resize(
+            "no/such/rough_for_test.png",
+            &mut cache,
+            DEFAULT_ROUGHNESS_PIXEL,
+        );
         assert_eq!(rough.get_pixel(0, 0).0, DEFAULT_ROUGHNESS_PIXEL);
 
         // ベースカラー: 白（base_color 係数そのまま）。
-        let base = load_and_resize("no/such/base_for_test.png", &mut cache, DEFAULT_BASE_COLOR_PIXEL);
+        let base = load_and_resize(
+            "no/such/base_for_test.png",
+            &mut cache,
+            DEFAULT_BASE_COLOR_PIXEL,
+        );
         assert_eq!(base.get_pixel(0, 0).0, DEFAULT_BASE_COLOR_PIXEL);
     }
 
@@ -343,7 +369,11 @@ mod tests {
         let _ = load_and_resize("no/such/tex_for_test.png", &mut cache, DEFAULT_NORMAL_PIXEL);
         assert!(cache.contains_key("assets://no/such/tex_for_test.png"));
         // 区切り違いの別表記でも同じエントリに当たる（デコード 1 回で済む）。
-        let _ = load_and_resize(r"no\such\tex_for_test.png", &mut cache, DEFAULT_NORMAL_PIXEL);
+        let _ = load_and_resize(
+            r"no\such\tex_for_test.png",
+            &mut cache,
+            DEFAULT_NORMAL_PIXEL,
+        );
         assert_eq!(cache.len(), 1);
     }
 

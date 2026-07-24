@@ -35,9 +35,13 @@ use crate::engine::ecs::Component;
 
 /// intensity（テクスチャ色への乗算強度）の既定値。1.0＝素の色。
 /// HDR メインパスへ描くため 1.0 超で発光的になり Bloom と連動する。
-fn default_intensity() -> f32 { 1.0 }
+fn default_intensity() -> f32 {
+    1.0
+}
 /// tint（色味乗算）の既定値（白＝素通し）。
-fn default_tint() -> [f32; 3] { [1.0, 1.0, 1.0] }
+fn default_tint() -> [f32; 3] {
+    [1.0, 1.0, 1.0]
+}
 
 // ─── SkyboxMode ──────────────────────────────────────────────
 
@@ -59,14 +63,16 @@ pub enum SkyboxMode {
 
 impl Default for SkyboxMode {
     /// mode 省略時の既定は CameraLocked（標準スカイボックス）。
-    fn default() -> Self { SkyboxMode::CameraLocked }
+    fn default() -> Self {
+        SkyboxMode::CameraLocked
+    }
 }
 
 impl SkyboxMode {
     /// GPU（シェーダ）へ渡すモードコード。skybox.wgsl の `SKYBOX_MODE_*` と一致させること。
     pub fn to_code(self) -> u32 {
         match self {
-            SkyboxMode::CameraLocked  => 0,
+            SkyboxMode::CameraLocked => 0,
             SkyboxMode::WorldAnchored => 1,
         }
     }
@@ -74,16 +80,16 @@ impl SkyboxMode {
     /// IPC 文字列（インスペクタのドロップダウン Tag）→ enum。
     pub fn from_str_opt(s: &str) -> Option<Self> {
         match s {
-            "camera_locked"  => Some(SkyboxMode::CameraLocked),
+            "camera_locked" => Some(SkyboxMode::CameraLocked),
             "world_anchored" => Some(SkyboxMode::WorldAnchored),
-            _                => None,
+            _ => None,
         }
     }
 
     /// インスペクタ／シリアライズへ送るモード文字列。
     pub fn as_str(self) -> &'static str {
         match self {
-            SkyboxMode::CameraLocked  => "camera_locked",
+            SkyboxMode::CameraLocked => "camera_locked",
             SkyboxMode::WorldAnchored => "world_anchored",
         }
     }
@@ -112,9 +118,9 @@ impl Default for SkyboxComponentData {
     fn default() -> Self {
         Self {
             texture_path: String::new(),
-            mode:         SkyboxMode::default(),
-            intensity:    default_intensity(),
-            tint:         default_tint(),
+            mode: SkyboxMode::default(),
+            intensity: default_intensity(),
+            tint: default_tint(),
         }
     }
 }
@@ -128,9 +134,9 @@ impl Default for SkyboxComponentData {
 #[derive(Clone, Debug)]
 pub struct SkyboxComponent {
     pub texture_path: String,
-    pub mode:         SkyboxMode,
-    pub intensity:    f32,
-    pub tint:         [f32; 3],
+    pub mode: SkyboxMode,
+    pub intensity: f32,
+    pub tint: [f32; 3],
 }
 
 impl SkyboxComponent {
@@ -138,9 +144,9 @@ impl SkyboxComponent {
     pub fn from_data(data: SkyboxComponentData) -> Self {
         Self {
             texture_path: data.texture_path,
-            mode:         data.mode,
-            intensity:    data.intensity,
-            tint:         data.tint,
+            mode: data.mode,
+            intensity: data.intensity,
+            tint: data.tint,
         }
     }
 
@@ -148,15 +154,17 @@ impl SkyboxComponent {
     pub fn to_data(&self) -> SkyboxComponentData {
         SkyboxComponentData {
             texture_path: self.texture_path.clone(),
-            mode:         self.mode,
-            intensity:    self.intensity,
-            tint:         self.tint,
+            mode: self.mode,
+            intensity: self.intensity,
+            tint: self.tint,
         }
     }
 }
 
 impl Default for SkyboxComponent {
-    fn default() -> Self { Self::from_data(SkyboxComponentData::default()) }
+    fn default() -> Self {
+        Self::from_data(SkyboxComponentData::default())
+    }
 }
 
 impl Component for SkyboxComponent {}

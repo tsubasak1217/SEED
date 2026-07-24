@@ -9,12 +9,10 @@
 //  - undo/redo  : past/future を移動し、Scene に再適用。
 // ============================================================
 
-use crate::engine::ecs::Entity;
-use crate::engine::components::{
-    ModelComponent, Transform, CanvasTransform,
-};
 use crate::engine::components::model_component::{GroupMeta, InstanceMeta};
+use crate::engine::components::{CanvasTransform, ModelComponent, Transform};
 use crate::engine::core::app_base::scene::Scene;
+use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::{ActorData, ComponentSlotData};
 
@@ -26,25 +24,45 @@ pub trait Command {
     fn execute(&mut self, scene: &mut Scene);
     fn undo(&mut self, scene: &mut Scene);
     /// true を返すと構造変更（追加・削除）を示す。
-    fn is_structural(&self) -> bool { false }
+    fn is_structural(&self) -> bool {
+        false
+    }
     /// Undo 後に復元すべき選択状態。None なら変更しない。
-    fn selection_after_undo(&self) -> Option<Vec<u32>> { None }
+    fn selection_after_undo(&self) -> Option<Vec<u32>> {
+        None
+    }
     /// Redo (re-execute) 後に復元すべき選択状態。None なら変更しない。
-    fn selection_after_redo(&self) -> Option<Vec<u32>> { None }
+    fn selection_after_redo(&self) -> Option<Vec<u32>> {
+        None
+    }
     /// Undo 実行後に AppBase がアクターツリーを再構築するためのデータ。
-    fn actor_rebuild_for_undo(&self) -> Option<(u32, Vec<ActorData>)> { None }
+    fn actor_rebuild_for_undo(&self) -> Option<(u32, Vec<ActorData>)> {
+        None
+    }
     /// Redo 実行後に AppBase がアクターツリーを再構築するためのデータ。
-    fn actor_rebuild_for_redo(&self) -> Option<(u32, Vec<ActorData>)> { None }
+    fn actor_rebuild_for_redo(&self) -> Option<(u32, Vec<ActorData>)> {
+        None
+    }
     /// Undo 実行後に AppBase がコンポーネントスロットを再構築するためのデータ。
-    fn component_rebuild_for_undo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> { None }
+    fn component_rebuild_for_undo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
+        None
+    }
     /// Redo 実行後に AppBase がコンポーネントスロットを再構築するためのデータ。
-    fn component_rebuild_for_redo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> { None }
+    fn component_rebuild_for_redo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
+        None
+    }
     /// Undo/Redo 後にインスペクターへ通知すべきアクターの (world_line, dfs_id)。
-    fn actor_inspect_notify(&self) -> Option<(u32, u32)> { None }
+    fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
+        None
+    }
     /// Undo 実行後に AppBase が復元すべきアクター DFS 選択状態 (dfs_ids, primary)。
-    fn actor_dfs_selection_after_undo(&self) -> Option<(Vec<usize>, Option<usize>)> { None }
+    fn actor_dfs_selection_after_undo(&self) -> Option<(Vec<usize>, Option<usize>)> {
+        None
+    }
     /// Redo 実行後に AppBase が復元すべきアクター DFS 選択状態 (dfs_ids, primary)。
-    fn actor_dfs_selection_after_redo(&self) -> Option<(Vec<usize>, Option<usize>)> { None }
+    fn actor_dfs_selection_after_redo(&self) -> Option<(Vec<usize>, Option<usize>)> {
+        None
+    }
 }
 
 // ============================================================
@@ -54,13 +72,16 @@ pub trait Command {
 const MAX_HISTORY: usize = 100;
 
 pub struct UndoHistory {
-    past:   Vec<Box<dyn Command>>,
+    past: Vec<Box<dyn Command>>,
     future: Vec<Box<dyn Command>>,
 }
 
 impl UndoHistory {
     pub fn new() -> Self {
-        Self { past: Vec::new(), future: Vec::new() }
+        Self {
+            past: Vec::new(),
+            future: Vec::new(),
+        }
     }
 
     /// 操作がすでに Scene に適用済みの場合に履歴へ積む。
@@ -107,8 +128,12 @@ impl UndoHistory {
         }
     }
 
-    pub fn can_undo(&self) -> bool { !self.past.is_empty() }
-    pub fn can_redo(&self) -> bool { !self.future.is_empty() }
+    pub fn can_undo(&self) -> bool {
+        !self.past.is_empty()
+    }
+    pub fn can_redo(&self) -> bool {
+        !self.future.is_empty()
+    }
 
     /// 最後に積んだコマンドを取り出す（CompositeCommand へ統合するため）。
     /// future スタックは変更しない。
@@ -154,16 +179,16 @@ impl UndoHistory {
 /// ModelComponent の完全スナップショット。
 /// 追加・削除操作の前後状態を保持し、任意の方向に復元する。
 pub struct SceneSnapshotCommand {
-    pub before_mats:   Vec<[[f32; 4]; 4]>,
-    pub before_meta:   Vec<InstanceMeta>,
+    pub before_mats: Vec<[[f32; 4]; 4]>,
+    pub before_meta: Vec<InstanceMeta>,
     pub before_groups: Vec<GroupMeta>,
-    pub before_gid:    u32,
-    pub after_mats:    Vec<[[f32; 4]; 4]>,
-    pub after_meta:    Vec<InstanceMeta>,
-    pub after_groups:  Vec<GroupMeta>,
-    pub after_gid:     u32,
+    pub before_gid: u32,
+    pub after_mats: Vec<[[f32; 4]; 4]>,
+    pub after_meta: Vec<InstanceMeta>,
+    pub after_groups: Vec<GroupMeta>,
+    pub after_gid: u32,
     pub before_selection: Vec<u32>,
-    pub after_selection:  Vec<u32>,
+    pub after_selection: Vec<u32>,
 }
 
 impl Command for SceneSnapshotCommand {
@@ -171,7 +196,7 @@ impl Command for SceneSnapshotCommand {
         if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(0) {
             mc.instance_mats = self.after_mats.clone();
             mc.instance_meta = self.after_meta.clone();
-            mc.group_meta    = self.after_groups.clone();
+            mc.group_meta = self.after_groups.clone();
             mc.next_group_id = self.after_gid;
             mc.mark_batch_dirty();
         }
@@ -180,12 +205,14 @@ impl Command for SceneSnapshotCommand {
         if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(0) {
             mc.instance_mats = self.before_mats.clone();
             mc.instance_meta = self.before_meta.clone();
-            mc.group_meta    = self.before_groups.clone();
+            mc.group_meta = self.before_groups.clone();
             mc.next_group_id = self.before_gid;
             mc.mark_batch_dirty();
         }
     }
-    fn is_structural(&self) -> bool { true }
+    fn is_structural(&self) -> bool {
+        true
+    }
     fn selection_after_undo(&self) -> Option<Vec<u32>> {
         Some(self.before_selection.clone())
     }
@@ -200,8 +227,8 @@ impl Command for SceneSnapshotCommand {
 
 pub struct TransformCommand {
     pub instance_idx: u32,
-    pub old_mat:      [[f32; 4]; 4],
-    pub new_mat:      [[f32; 4]; 4],
+    pub old_mat: [[f32; 4]; 4],
+    pub new_mat: [[f32; 4]; 4],
 }
 
 impl Command for TransformCommand {
@@ -224,10 +251,14 @@ pub struct MultiTransformCommand {
 
 impl Command for MultiTransformCommand {
     fn execute(&mut self, scene: &mut Scene) {
-        for &(idx, _, new_mat) in &self.transforms { set_instance_mat(scene, idx, new_mat); }
+        for &(idx, _, new_mat) in &self.transforms {
+            set_instance_mat(scene, idx, new_mat);
+        }
     }
     fn undo(&mut self, scene: &mut Scene) {
-        for &(idx, old_mat, _) in &self.transforms { set_instance_mat(scene, idx, old_mat); }
+        for &(idx, old_mat, _) in &self.transforms {
+            set_instance_mat(scene, idx, old_mat);
+        }
     }
 }
 
@@ -237,14 +268,18 @@ impl Command for MultiTransformCommand {
 
 pub struct SelectionCommand {
     pub before: Vec<u32>,
-    pub after:  Vec<u32>,
+    pub after: Vec<u32>,
 }
 
 impl Command for SelectionCommand {
     fn execute(&mut self, _scene: &mut Scene) {}
     fn undo(&mut self, _scene: &mut Scene) {}
-    fn selection_after_undo(&self) -> Option<Vec<u32>> { Some(self.before.clone()) }
-    fn selection_after_redo(&self) -> Option<Vec<u32>> { Some(self.after.clone()) }
+    fn selection_after_undo(&self) -> Option<Vec<u32>> {
+        Some(self.before.clone())
+    }
+    fn selection_after_redo(&self) -> Option<Vec<u32>> {
+        Some(self.after.clone())
+    }
 }
 
 // ============================================================
@@ -254,15 +289,17 @@ impl Command for SelectionCommand {
 /// ADD_ACTOR / REMOVE_ACTOR のスナップショット。
 /// execute/undo は No-op で、AppBase が peek_*_actor_rebuild() を使い GPU 再構築する。
 pub struct ActorTreeSnapshotCommand {
-    pub world_line:    u32,
+    pub world_line: u32,
     pub before_actors: Vec<ActorData>,
-    pub after_actors:  Vec<ActorData>,
+    pub after_actors: Vec<ActorData>,
 }
 
 impl Command for ActorTreeSnapshotCommand {
     fn execute(&mut self, _scene: &mut Scene) {}
     fn undo(&mut self, _scene: &mut Scene) {}
-    fn is_structural(&self) -> bool { true }
+    fn is_structural(&self) -> bool {
+        true
+    }
     fn actor_rebuild_for_undo(&self) -> Option<(u32, Vec<ActorData>)> {
         Some((self.world_line, self.before_actors.clone()))
     }
@@ -277,18 +314,24 @@ impl Command for ActorTreeSnapshotCommand {
 
 /// ADD_COMPONENT / REMOVE_COMPONENT のスナップショット。
 pub struct ComponentSlotsSnapshotCommand {
-    pub world_line:   u32,
+    pub world_line: u32,
     pub actor_dfs_id: u32,
     pub before_slots: Vec<ComponentSlotData>,
-    pub after_slots:  Vec<ComponentSlotData>,
+    pub after_slots: Vec<ComponentSlotData>,
 }
 
 impl Command for ComponentSlotsSnapshotCommand {
     fn execute(&mut self, _scene: &mut Scene) {}
     fn undo(&mut self, _scene: &mut Scene) {}
-    fn is_structural(&self) -> bool { true }
+    fn is_structural(&self) -> bool {
+        true
+    }
     fn component_rebuild_for_undo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
-        Some((self.world_line, self.actor_dfs_id, self.before_slots.clone()))
+        Some((
+            self.world_line,
+            self.actor_dfs_id,
+            self.before_slots.clone(),
+        ))
     }
     fn component_rebuild_for_redo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
         Some((self.world_line, self.actor_dfs_id, self.after_slots.clone()))
@@ -309,40 +352,68 @@ pub struct CompositeCommand {
 
 impl Command for CompositeCommand {
     fn execute(&mut self, scene: &mut Scene) {
-        for cmd in &mut self.commands { cmd.execute(scene); }
+        for cmd in &mut self.commands {
+            cmd.execute(scene);
+        }
     }
     fn undo(&mut self, scene: &mut Scene) {
-        for cmd in self.commands.iter_mut().rev() { cmd.undo(scene); }
+        for cmd in self.commands.iter_mut().rev() {
+            cmd.undo(scene);
+        }
     }
     fn is_structural(&self) -> bool {
         self.commands.iter().any(|c| c.is_structural())
     }
     fn selection_after_undo(&self) -> Option<Vec<u32>> {
-        self.commands.iter().rev().find_map(|c| c.selection_after_undo())
+        self.commands
+            .iter()
+            .rev()
+            .find_map(|c| c.selection_after_undo())
     }
     fn selection_after_redo(&self) -> Option<Vec<u32>> {
-        self.commands.iter().rev().find_map(|c| c.selection_after_redo())
+        self.commands
+            .iter()
+            .rev()
+            .find_map(|c| c.selection_after_redo())
     }
     fn actor_rebuild_for_undo(&self) -> Option<(u32, Vec<ActorData>)> {
-        self.commands.iter().rev().find_map(|c| c.actor_rebuild_for_undo())
+        self.commands
+            .iter()
+            .rev()
+            .find_map(|c| c.actor_rebuild_for_undo())
     }
     fn actor_rebuild_for_redo(&self) -> Option<(u32, Vec<ActorData>)> {
-        self.commands.iter().rev().find_map(|c| c.actor_rebuild_for_redo())
+        self.commands
+            .iter()
+            .rev()
+            .find_map(|c| c.actor_rebuild_for_redo())
     }
     fn component_rebuild_for_undo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
-        self.commands.iter().rev().find_map(|c| c.component_rebuild_for_undo())
+        self.commands
+            .iter()
+            .rev()
+            .find_map(|c| c.component_rebuild_for_undo())
     }
     fn component_rebuild_for_redo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
-        self.commands.iter().rev().find_map(|c| c.component_rebuild_for_redo())
+        self.commands
+            .iter()
+            .rev()
+            .find_map(|c| c.component_rebuild_for_redo())
     }
     fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
         self.commands.iter().find_map(|c| c.actor_inspect_notify())
     }
     fn actor_dfs_selection_after_undo(&self) -> Option<(Vec<usize>, Option<usize>)> {
-        self.commands.iter().rev().find_map(|c| c.actor_dfs_selection_after_undo())
+        self.commands
+            .iter()
+            .rev()
+            .find_map(|c| c.actor_dfs_selection_after_undo())
     }
     fn actor_dfs_selection_after_redo(&self) -> Option<(Vec<usize>, Option<usize>)> {
-        self.commands.iter().rev().find_map(|c| c.actor_dfs_selection_after_redo())
+        self.commands
+            .iter()
+            .rev()
+            .find_map(|c| c.actor_dfs_selection_after_redo())
     }
 }
 
@@ -383,9 +454,9 @@ impl Command for MultiActorDragTransformCommand {
 /// execute/undo は No-op で、AppBase が peek_*_actor_dfs_selection() で読み取って反映する。
 pub struct ActorDfsSelectionCommand {
     pub before_dfs_ids: Vec<usize>,
-    pub after_dfs_ids:  Vec<usize>,
+    pub after_dfs_ids: Vec<usize>,
     pub before_primary: Option<usize>,
-    pub after_primary:  Option<usize>,
+    pub after_primary: Option<usize>,
 }
 
 impl Command for ActorDfsSelectionCommand {
@@ -404,18 +475,28 @@ impl Command for ActorDfsSelectionCommand {
 // ============================================================
 
 pub struct ActorTransformCommand {
-    pub world_line:    u32,
-    pub dfs_id:        u32,
+    pub world_line: u32,
+    pub dfs_id: u32,
     pub old_transform: Transform,
     pub new_transform: Transform,
 }
 
 impl Command for ActorTransformCommand {
     fn execute(&mut self, scene: &mut Scene) {
-        set_actor_transform(scene, self.world_line, self.dfs_id, self.new_transform.clone());
+        set_actor_transform(
+            scene,
+            self.world_line,
+            self.dfs_id,
+            self.new_transform.clone(),
+        );
     }
     fn undo(&mut self, scene: &mut Scene) {
-        set_actor_transform(scene, self.world_line, self.dfs_id, self.old_transform.clone());
+        set_actor_transform(
+            scene,
+            self.world_line,
+            self.dfs_id,
+            self.old_transform.clone(),
+        );
     }
     fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
         Some((self.world_line, self.dfs_id))
@@ -428,10 +509,10 @@ impl Command for ActorTransformCommand {
 // ============================================================
 
 pub struct ActorGroupTransformCommand {
-    pub wl:         u32,
-    pub dfs_id:     u32,
-    pub old_tf:     Transform,
-    pub new_tf:     Transform,
+    pub wl: u32,
+    pub dfs_id: u32,
+    pub old_tf: Transform,
+    pub new_tf: Transform,
     /// (instance_idx, old_mat, new_mat) — 選択スロット MC インスタンスの変換
     pub transforms: Vec<(u32, [[f32; 4]; 4], [[f32; 4]; 4])>,
     /// (child_dfs_id, old_tf, new_tf, old_mc_mat, new_mc_mat) — 子孫アクター
@@ -514,7 +595,14 @@ fn set_mc_mat_in_actor(scene: &mut Scene, wl: u32, dfs_id: u32, idx: u32, mat: [
 /// DFS id + スロットインデックスで指定 MC スロットのインスタンス行列を更新する。
 /// slot_i はアクター内の Model スロット連番（0-indexed）。
 /// 複数 MC スロット対応の Undo/Redo に使用する。
-fn set_mc_mat_in_actor_at_slot(scene: &mut Scene, wl: u32, dfs_id: u32, slot_i: usize, idx: u32, mat: [[f32; 4]; 4]) {
+fn set_mc_mat_in_actor_at_slot(
+    scene: &mut Scene,
+    wl: u32,
+    dfs_id: u32,
+    slot_i: usize,
+    idx: u32,
+    mat: [[f32; 4]; 4],
+) {
     let mc_entity = find_mc_entity_at_slot_by_dfs(&scene.actors, wl, dfs_id, slot_i);
     if let Some(entity) = mc_entity {
         if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
@@ -527,26 +615,52 @@ fn set_mc_mat_in_actor_at_slot(scene: &mut Scene, wl: u32, dfs_id: u32, slot_i: 
 }
 
 /// DFS id でアクターの slot_i 番目 MC スロット entity を返す。
-fn find_mc_entity_at_slot_by_dfs(actors: &[Actor], wl: u32, dfs_id: u32, slot_i: usize) -> Option<Entity> {
+fn find_mc_entity_at_slot_by_dfs(
+    actors: &[Actor],
+    wl: u32,
+    dfs_id: u32,
+    slot_i: usize,
+) -> Option<Entity> {
     let mut c = 0u32;
     find_mc_entity_at_slot_in_actors(actors, wl, dfs_id, slot_i, &mut c)
 }
 
-fn find_mc_entity_at_slot_in_actors(actors: &[Actor], wl: u32, dfs_id: u32, slot_i: usize, c: &mut u32) -> Option<Entity> {
+fn find_mc_entity_at_slot_in_actors(
+    actors: &[Actor],
+    wl: u32,
+    dfs_id: u32,
+    slot_i: usize,
+    c: &mut u32,
+) -> Option<Entity> {
     for actor in actors {
-        if actor.world_line != wl { continue; }
-        if *c == dfs_id { return actor.mc_entity_at(slot_i); }
+        if actor.world_line != wl {
+            continue;
+        }
+        if *c == dfs_id {
+            return actor.mc_entity_at(slot_i);
+        }
         *c += 1;
-        if let Some(e) = find_mc_entity_at_slot_in_children(actor, dfs_id, slot_i, c) { return Some(e); }
+        if let Some(e) = find_mc_entity_at_slot_in_children(actor, dfs_id, slot_i, c) {
+            return Some(e);
+        }
     }
     None
 }
 
-fn find_mc_entity_at_slot_in_children(actor: &Actor, dfs_id: u32, slot_i: usize, c: &mut u32) -> Option<Entity> {
+fn find_mc_entity_at_slot_in_children(
+    actor: &Actor,
+    dfs_id: u32,
+    slot_i: usize,
+    c: &mut u32,
+) -> Option<Entity> {
     for child in actor.children() {
-        if *c == dfs_id { return child.mc_entity_at(slot_i); }
+        if *c == dfs_id {
+            return child.mc_entity_at(slot_i);
+        }
         *c += 1;
-        if let Some(e) = find_mc_entity_at_slot_in_children(child, dfs_id, slot_i, c) { return Some(e); }
+        if let Some(e) = find_mc_entity_at_slot_in_children(child, dfs_id, slot_i, c) {
+            return Some(e);
+        }
     }
     None
 }
@@ -559,19 +673,29 @@ fn find_mc_entity_by_dfs(actors: &[Actor], wl: u32, dfs_id: u32) -> Option<Entit
 
 fn find_mc_entity_in_actors(actors: &[Actor], wl: u32, dfs_id: u32, c: &mut u32) -> Option<Entity> {
     for actor in actors {
-        if actor.world_line != wl { continue; }
-        if *c == dfs_id { return actor.mc_entity(); }
+        if actor.world_line != wl {
+            continue;
+        }
+        if *c == dfs_id {
+            return actor.mc_entity();
+        }
         *c += 1;
-        if let Some(e) = find_mc_entity_in_children(actor, dfs_id, c) { return Some(e); }
+        if let Some(e) = find_mc_entity_in_children(actor, dfs_id, c) {
+            return Some(e);
+        }
     }
     None
 }
 
 fn find_mc_entity_in_children(actor: &Actor, dfs_id: u32, c: &mut u32) -> Option<Entity> {
     for child in actor.children() {
-        if *c == dfs_id { return child.mc_entity(); }
+        if *c == dfs_id {
+            return child.mc_entity();
+        }
         *c += 1;
-        if let Some(e) = find_mc_entity_in_children(child, dfs_id, c) { return Some(e); }
+        if let Some(e) = find_mc_entity_in_children(child, dfs_id, c) {
+            return Some(e);
+        }
     }
     None
 }
@@ -582,9 +706,9 @@ fn find_mc_entity_in_children(actor: &Actor, dfs_id: u32, c: &mut u32) -> Option
 
 pub struct CanvasTransformCommand {
     pub world_line: u32,
-    pub dfs_id:     u32,
-    pub old_ct:     CanvasTransform,
-    pub new_ct:     CanvasTransform,
+    pub dfs_id: u32,
+    pub old_ct: CanvasTransform,
+    pub new_ct: CanvasTransform,
 }
 
 impl Command for CanvasTransformCommand {
@@ -627,19 +751,29 @@ fn find_entity_by_dfs(actors: &[Actor], wl: u32, dfs_id: u32) -> Option<Entity> 
 
 fn find_entity_in_actors(actors: &[Actor], wl: u32, dfs_id: u32, c: &mut u32) -> Option<Entity> {
     for actor in actors {
-        if actor.world_line != wl { continue; }
-        if *c == dfs_id { return Some(actor.entity); }
+        if actor.world_line != wl {
+            continue;
+        }
+        if *c == dfs_id {
+            return Some(actor.entity);
+        }
         *c += 1;
-        if let Some(e) = find_entity_in_children(actor, dfs_id, c) { return Some(e); }
+        if let Some(e) = find_entity_in_children(actor, dfs_id, c) {
+            return Some(e);
+        }
     }
     None
 }
 
 fn find_entity_in_children(actor: &Actor, dfs_id: u32, c: &mut u32) -> Option<Entity> {
     for child in actor.children() {
-        if *c == dfs_id { return Some(child.entity); }
+        if *c == dfs_id {
+            return Some(child.entity);
+        }
         *c += 1;
-        if let Some(e) = find_entity_in_children(child, dfs_id, c) { return Some(e); }
+        if let Some(e) = find_entity_in_children(child, dfs_id, c) {
+            return Some(e);
+        }
     }
     None
 }
@@ -657,15 +791,15 @@ use crate::engine::components::PluginComponent;
 /// undo:    old_value に戻す
 pub struct PluginFieldCommand {
     /// スロット専用 ECS エンティティ（PluginComponent が格納されている）
-    pub slot_entity:  Entity,
+    pub slot_entity: Entity,
     /// 変更フィールドのキー
-    pub key:          String,
+    pub key: String,
     /// 変更前の値
-    pub old_value:    String,
+    pub old_value: String,
     /// 変更後の値
-    pub new_value:    String,
+    pub new_value: String,
     /// インスペクタ再送信用 (world_line, actor_dfs_id)
-    pub world_line:   u32,
+    pub world_line: u32,
     pub actor_dfs_id: u32,
 }
 

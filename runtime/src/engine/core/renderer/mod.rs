@@ -2,118 +2,139 @@
 //  サブモジュール（GPU リソース・パイプライン管理）
 // ============================================================
 
-pub(crate) mod uniforms;
-pub(crate) mod gpu_resources;
-pub(crate) mod pipeline_config;
-pub(crate) mod pipeline;
-pub(crate) mod hiz;
-pub(crate) mod skin_system;
 pub(crate) mod animator;
-pub(crate) mod lighting;
+pub(crate) mod batch2d;
 /// Clustered Lighting（3D フロクセル単位のライトカリング, Phase C1）
 pub(crate) mod clustered;
 pub(crate) mod ddgi;
-pub(crate) mod shadow;
-pub(crate) mod rt_shadow;
-pub(crate) mod post;
-pub(crate) mod transparency;
-pub(crate) mod batch2d;
-/// GPU パーティクル シミュレーション＋描画（Phase RP）
-pub(crate) mod particle_system;
-/// GPU パーティクルの組込み形状メッシュ（Point/Sphere/Box/Plane/Model）
-pub(crate) mod particle_shapes;
-/// スカイボックス（天球：equirectangular 背景, Phase R9）
-pub(crate) mod skybox;
-/// .mat マテリアルアセット（Phase R7: マルチマテリアル編集）
-pub mod material_asset;
-/// .postfx ポストエフェクトアセット＋テクスチャ単位ポストプロセス（Phase R3 応用）
-pub mod postfx;
-/// エディタのシーンビュー表示モード（Lit / Unlit / Wireframe）
-pub(crate) mod view_mode;
 /// G-Buffer リソース＋MRT ジオメトリパイプライン（Phase D3 Deferred Phase A）
 pub(crate) mod gbuffer;
+pub(crate) mod gpu_resources;
+pub(crate) mod hiz;
+pub(crate) mod lighting;
+/// .mat マテリアルアセット（Phase R7: マルチマテリアル編集）
+pub mod material_asset;
+/// GPU パーティクルの組込み形状メッシュ（Point/Sphere/Box/Plane/Model）
+pub(crate) mod particle_shapes;
+/// GPU パーティクル シミュレーション＋描画（Phase RP）
+pub(crate) mod particle_system;
+pub(crate) mod pipeline;
+pub(crate) mod pipeline_config;
+pub(crate) mod post;
+/// .postfx ポストエフェクトアセット＋テクスチャ単位ポストプロセス（Phase R3 応用）
+pub mod postfx;
+pub(crate) mod rt_shadow;
+pub(crate) mod shadow;
+pub(crate) mod skin_system;
+/// スカイボックス（天球：equirectangular 背景, Phase R9）
+pub(crate) mod skybox;
 /// 地形レイヤブレンド用 G-Buffer パイプライン（Terrain T2）。
 pub(crate) mod terrain_gbuffer;
+pub(crate) mod transparency;
+pub(crate) mod uniforms;
+/// エディタのシーンビュー表示モード（Lit / Unlit / Wireframe）
+pub(crate) mod view_mode;
 
-/// プロシージャル草の GPU インスタンシング パイプライン（G-Buffer 書き込み）。
-pub(crate) mod grass_gbuffer;
-/// 提示フレームの PNG 書き出し（環境変数ゲートの常設デバッグフック）。
-pub(crate) mod screenshot;
-/// 地形レイヤテクスチャ配列（texture_2d_array）の構築（Terrain T2b）。
-pub(crate) mod terrain_layer_textures;
-/// フルスクリーン・ライティングパイプライン（G-Buffer 復元, Phase D3 Deferred Phase A）
-pub(crate) mod deferred;
-/// 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）
-pub(crate) mod reflection;
-/// いもす法（累積和）単一チャンネル分離ボックスブラー基盤（Phase D4。AO で初適用・SSGI へ転用可）
-pub(crate) mod imos_blur;
 /// AO（SSAO / RT-AO）フルスクリーンパス＋いもす法ブラー＋半解像度リソース（Phase D4）
 pub(crate) mod ao;
-/// SSGI（スクリーンスペース GI）フルスクリーンパス＋いもす法カラーブラー＋半解像度リソース（Phase SSGI）
-pub(crate) mod ssgi;
+/// バインドレス基盤（フェーズ B1）: テクスチャ配列レジストリ・UV/index メガバッファ・
+/// インスタンステーブル。RT ヒットシェーディングの土台（消費は B2/B3）。
+pub(crate) mod bindless;
+/// フルスクリーン・ライティングパイプライン（G-Buffer 復元, Phase D3 Deferred Phase A）
+pub(crate) mod deferred;
+/// プロシージャル草の GPU インスタンシング パイプライン（G-Buffer 書き込み）。
+pub(crate) mod grass_gbuffer;
+/// いもす法（累積和）単一チャンネル分離ボックスブラー基盤（Phase D4。AO で初適用・SSGI へ転用可）
+pub(crate) mod imos_blur;
+/// 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）
+pub(crate) mod reflection;
+/// すりガラス用の屈折背景ミップチェーン（ダウンサンプル→いもす法ブラー。ガラス表現）
+pub(crate) mod refract_pyramid;
+/// レンダリング機能マトリクス（RT/代替のモード管理）
+pub(crate) mod render_features;
+/// 提示フレームの PNG 書き出し（環境変数ゲートの常設デバッグフック）。
+pub(crate) mod screenshot;
 /// RT ソフト影マスク生成＋バイラテラルデノイズ＋半解像度リソース（Phase RT-Shadow-Denoise）
 pub(crate) mod shadow_mask;
 /// 影マスク専用 separable バイラテラルブラー基盤（深度エッジ保持。imos とは別物）
 pub(crate) mod shadow_mask_bilateral;
-/// レンダリング機能マトリクス（RT/代替のモード管理）
-pub(crate) mod render_features;
-/// すりガラス用の屈折背景ミップチェーン（ダウンサンプル→いもす法ブラー。ガラス表現）
-pub(crate) mod refract_pyramid;
-/// バインドレス基盤（フェーズ B1）: テクスチャ配列レジストリ・UV/index メガバッファ・
-/// インスタンステーブル。RT ヒットシェーディングの土台（消費は B2/B3）。
-pub(crate) mod bindless;
+/// SSGI（スクリーンスペース GI）フルスクリーンパス＋いもす法カラーブラー＋半解像度リソース（Phase SSGI）
+pub(crate) mod ssgi;
+/// 地形レイヤテクスチャ配列（texture_2d_array）の構築（Terrain T2b）。
+pub(crate) mod terrain_layer_textures;
 
-pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
-                   GpuCullData, GizmoVertex};
-pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel, InlineUpdateResult,
-                        InstancedModelBatch, NodePrimDraw, GpuLineBatch, GpuGizmoBatch,
-                        DefaultTextures, CameraBuffer,
-                        extract_frustum_planes, NUM_LODS};
-pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, DrawPipelines,
-                   SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
-                   SpritePipeline, SpriteOutlinePipeline, CanvasIdPipeline, CanvasIdUniform,
-                   CameraPreviewBlitPipeline, ShadowDepthPipelines,
-                   BarFillPipeline, BarFillUniform};
+pub use clustered::{
+    CLUSTER_COUNT, CLUSTER_SLICES_Z, CLUSTER_TILES_X, CLUSTER_TILES_Y, ClusterResources,
+    MAX_LIGHTS_PER_CLUSTER, partition_directional_first,
+};
+pub use gpu_resources::{
+    CameraBuffer, DefaultTextures, GpuGizmoBatch, GpuLineBatch, GpuMaterial, GpuMesh, GpuModel,
+    GpuPrimitive, GpuTexture, InlineUpdateResult, InstancedModelBatch, NUM_LODS, NodePrimDraw,
+    extract_frustum_planes,
+};
+pub use lighting::{
+    DEFAULT_AMBIENT_COLOR, DEFAULT_AMBIENT_INTENSITY, GpuLight, LightBuffer, LightMeta,
+    LightingPass, MAX_LIGHTS,
+};
 pub use particle_system::ParticleSystem;
-pub use skybox::{SkyboxSystem, SkyboxPipelines};
-pub use lighting::{GpuLight, LightBuffer, LightMeta, LightingPass, MAX_LIGHTS,
-                   DEFAULT_AMBIENT_COLOR, DEFAULT_AMBIENT_INTENSITY};
-pub use clustered::{ClusterResources, partition_directional_first,
-                    CLUSTER_TILES_X, CLUSTER_TILES_Y, CLUSTER_SLICES_Z, CLUSTER_COUNT,
-                    MAX_LIGHTS_PER_CLUSTER};
-pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
-                 CSM_CASCADE_COUNT, MAX_SHADOW_SPOTS, SHADOW_DEPTH_FORMAT};
+pub use pipeline::{
+    BarFillPipeline, BarFillUniform, CameraPreviewBlitPipeline, CanvasIdPipeline, CanvasIdUniform,
+    DepthPrepassPipelines, DrawPipelines, IdPassPipeline, MeshPipeline, OutlinePipeline,
+    ShadowDepthPipelines, SkinComputePipeline, SkinnedMeshPipeline, SpriteOutlinePipeline,
+    SpritePipeline, UnlitPipeline,
+};
 pub use rt_shadow::RtShadowResources;
+pub use shadow::{
+    CSM_CASCADE_COUNT, MAX_SHADOW_SPOTS, SHADOW_DEPTH_FORMAT, ShadowMatricesUbo, ShadowPlan,
+    ShadowResources,
+};
+pub use skybox::{SkyboxPipelines, SkyboxSystem};
+pub use uniforms::{
+    CameraUniform, ColorVertex, GizmoVertex, GpuCullData, JointUniform, MaterialUniform,
+    ModelUniform,
+};
 // B2/B3 が消費する API 群。B1 時点ではエンジン内から一部しか参照しないため未使用警告が出るが、
 // 公開 API 面の一覧として明示的に re-export しておく（消費側 B2 が pub パスで使う）。
+pub use ao::{
+    AO_FORMAT, AO_RESOLUTION_DIVISOR, AO_RTAO_WORLD_RADIUS, AO_SSAO_WORLD_RADIUS, AoParams,
+    AoPipelines, AoTargets, DEFAULT_AO_INTENSITY,
+};
+pub use batch2d::{
+    SPRITE_INSTANCE_SIZE, SpriteBatch, SpriteBatchList, SpriteBatcher, SpriteInstance,
+    draw_sprite_batches, draw_sprite_outline_batches,
+};
 #[allow(unused_imports)]
-pub use bindless::{BindlessResources, BindlessInstanceRecord, BindlessModelAlloc,
-                   BINDLESS_MAX_TEXTURES, BINDLESS_DUMMY_TEX_INDEX, BINDLESS_FLAG_ELIGIBLE,
-                   set_bindless_supported, bindless_supported, bindless_capacity};
-pub use refract_pyramid::{RefractPyramid, REFRACT_MIP_COUNT};
-pub use reflection::{ReflectionPipelines, ReflectionParams,
-                     RT_REFLECTION_NAME, REFLECTION_FORMAT, DEFAULT_REFLECTION_INTENSITY};
-pub use imos_blur::{ImosBlur, ImosBlurParams, IMOS_BLUR_FORMAT};
-pub use ao::{AoPipelines, AoTargets, AoParams, AO_FORMAT, AO_RESOLUTION_DIVISOR,
-             AO_SSAO_WORLD_RADIUS, AO_RTAO_WORLD_RADIUS, DEFAULT_AO_INTENSITY};
-pub use ssgi::{SsgiPipelines, SsgiTargets, SsgiParams, SSGI_FORMAT, SSGI_RESOLUTION_DIVISOR};
-pub use shadow_mask::{ShadowMaskPipelines, ShadowMaskTargets, ShadowMaskParams,
-                      RT_SHADOW_MASK_LIGHTS, SHADOW_MASK_FORMAT, SHADOW_MASK_RESOLUTION_DIVISOR,
-                      select_shadow_mask_lights, assign_shadow_mask_slots};
-pub use shadow_mask_bilateral::{ShadowMaskBilateral, ShadowMaskBilateralParams};
-pub use post::{RtPool, PostContext, VignetteParams, VignetteStage,
-               PostFxSettings, BloomParams, BloomPipelines,
-               DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_INTENSITY,
-               RT_SCENE_HDR, RT_POST_INTER, RT_LDR, GiSettings};
-pub use transparency::{TransparencyMode, TransparentPipelines,
-                       RT_WBOIT_ACCUM, RT_WBOIT_REVEAL,
-                       WBOIT_ACCUM_FORMAT, WBOIT_REVEAL_FORMAT};
-pub use batch2d::{SpriteBatcher, SpriteInstance, SpriteBatch, SpriteBatchList,
-                  SPRITE_INSTANCE_SIZE, draw_sprite_batches, draw_sprite_outline_batches};
+pub use bindless::{
+    BINDLESS_DUMMY_TEX_INDEX, BINDLESS_FLAG_ELIGIBLE, BINDLESS_MAX_TEXTURES,
+    BindlessInstanceRecord, BindlessModelAlloc, BindlessResources, bindless_capacity,
+    bindless_supported, set_bindless_supported,
+};
+pub use imos_blur::{IMOS_BLUR_FORMAT, ImosBlur, ImosBlurParams};
+pub use post::{
+    BloomParams, BloomPipelines, DEFAULT_BLOOM_INTENSITY, DEFAULT_BLOOM_KNEE,
+    DEFAULT_BLOOM_THRESHOLD, GiSettings, PostContext, PostFxSettings, RT_LDR, RT_POST_INTER,
+    RT_SCENE_HDR, RtPool, VignetteParams, VignetteStage,
+};
 pub use postfx::{PostfxContext, SpritePostfxCache};
+pub use reflection::{
+    DEFAULT_REFLECTION_INTENSITY, REFLECTION_FORMAT, RT_REFLECTION_NAME, ReflectionParams,
+    ReflectionPipelines,
+};
+pub use refract_pyramid::{REFRACT_MIP_COUNT, RefractPyramid};
+pub use render_features::{
+    AoMode, GiMode, ReflectionMode, RenderFeatures, ResolvedFeatures, ShadowMode, TranslucencyMode,
+};
+pub use shadow_mask::{
+    RT_SHADOW_MASK_LIGHTS, SHADOW_MASK_FORMAT, SHADOW_MASK_RESOLUTION_DIVISOR, ShadowMaskParams,
+    ShadowMaskPipelines, ShadowMaskTargets, assign_shadow_mask_slots, select_shadow_mask_lights,
+};
+pub use shadow_mask_bilateral::{ShadowMaskBilateral, ShadowMaskBilateralParams};
+pub use ssgi::{SSGI_FORMAT, SSGI_RESOLUTION_DIVISOR, SsgiParams, SsgiPipelines, SsgiTargets};
+pub use transparency::{
+    RT_WBOIT_ACCUM, RT_WBOIT_REVEAL, TransparencyMode, TransparentPipelines, WBOIT_ACCUM_FORMAT,
+    WBOIT_REVEAL_FORMAT,
+};
 pub use view_mode::{SceneViewMode, set_wireframe_supported, wireframe_supported};
-pub use render_features::{RenderFeatures, ResolvedFeatures, ShadowMode, GiMode,
-                          ReflectionMode, AoMode, TranslucencyMode};
 
 // ============================================================
 //  Renderer 本体
@@ -144,28 +165,31 @@ const COPY_ROW_ALIGNMENT: u32 = 256;
 
 struct DepthTexture {
     #[allow(dead_code)]
-    texture:         wgpu::Texture,
+    texture: wgpu::Texture,
     /// レンダーアタッチメント用（All aspect: depth+stencil 両方）
-    view:            wgpu::TextureView,
+    view: wgpu::TextureView,
     /// Hi-Z テクスチャサンプリング用（DepthOnly aspect）
     depth_only_view: wgpu::TextureView,
     /// 作成時のテクスチャ幅（サーフェスサイズとの不一致検出に使用）
-    width:           u32,
+    width: u32,
     /// 作成時のテクスチャ高さ（サーフェスサイズとの不一致検出に使用）
-    height:          u32,
+    height: u32,
 }
 
 impl DepthTexture {
     fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Depth Texture"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
-            sample_count:    1,
-            dimension:       wgpu::TextureDimension::D2,
-            format:          DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                 | wgpu::TextureUsages::TEXTURE_BINDING,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         // All aspect: レンダーパスで depth+stencil を同時に操作するために使用
@@ -175,7 +199,13 @@ impl DepthTexture {
             aspect: wgpu::TextureAspect::DepthOnly,
             ..Default::default()
         });
-        Self { texture, view, depth_only_view, width, height }
+        Self {
+            texture,
+            view,
+            depth_only_view,
+            width,
+            height,
+        }
     }
 }
 
@@ -187,12 +217,12 @@ impl DepthTexture {
 ///
 /// `device` / `queue` は `Arc` で共有し、`DrawContext` と所有権なしに共用できる。
 pub struct Renderer {
-    surface:        wgpu::Surface<'static>,
-    device:         Arc<wgpu::Device>,
-    queue:          Arc<wgpu::Queue>,
-    config:         wgpu::SurfaceConfiguration,
-    size:           PhysicalSize<u32>,
-    depth_texture:  DepthTexture,
+    surface: wgpu::Surface<'static>,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    config: wgpu::SurfaceConfiguration,
+    size: PhysicalSize<u32>,
+    depth_texture: DepthTexture,
     /// コンパイル済みパイプライン状態のキャッシュ。
     /// GPU が PIPELINE_CACHE フィーチャーをサポートする場合のみ Some になる。
     pipeline_cache: Option<wgpu::PipelineCache>,
@@ -239,13 +269,13 @@ impl Renderer {
 
         // PIPELINE_CACHE はオプション機能（DX12 の一部 GPU では非対応）。
         // アダプターが対応している場合のみ要求する。
-        let supports_pipeline_cache = adapter.features()
-            .contains(wgpu::Features::PIPELINE_CACHE);
+        let supports_pipeline_cache = adapter.features().contains(wgpu::Features::PIPELINE_CACHE);
 
         // TEXTURE_COMPRESSION_BC はデスクトップ GPU ではほぼ全対応だが念のため確認する。
         // 対応時は派生キャッシュのテクスチャを BC 圧縮形式で保持し、
         // 非対応時は非圧縮 RGBA ミップでキャッシュする（デコードスキップだけでも高速）。
-        let supports_bc = adapter.features()
+        let supports_bc = adapter
+            .features()
             .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
         crate::engine::core::loader::asset_cache::set_bc_supported(supports_bc);
 
@@ -262,16 +292,19 @@ impl Renderer {
         // request_device より前に設定する必要はないが、以降のリソース生成に効くよう早めに設定。
         rt_shadow::set_rt_shadows_supported(supports_rt);
         if supports_rt {
-            eprintln!("[SEED RT] インラインレイトレ: 対応（EXPERIMENTAL_RAY_QUERY + ACCELERATION_STRUCTURE を要求）");
+            eprintln!(
+                "[SEED RT] インラインレイトレ: 対応（EXPERIMENTAL_RAY_QUERY + ACCELERATION_STRUCTURE を要求）"
+            );
         } else {
             // 非対応理由をできるだけ具体的に出す（両フィーチャーのどちらが欠けているか）。
             let has_q = af.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY);
-            let has_a = af.contains(wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE);
+            let has_a =
+                af.contains(wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE);
             let reason = match (has_q, has_a) {
                 (false, false) => "RAY_QUERY と ACCELERATION_STRUCTURE の両方が非対応",
-                (true,  false) => "ACCELERATION_STRUCTURE が非対応",
-                (false, true ) => "RAY_QUERY が非対応",
-                (true,  true ) => "不明",
+                (true, false) => "ACCELERATION_STRUCTURE が非対応",
+                (false, true) => "RAY_QUERY が非対応",
+                (true, true) => "不明",
             };
             eprintln!("[SEED RT] インラインレイトレ: 非対応（{reason}）→ シャドウマップ経路を使用");
         }
@@ -288,7 +321,9 @@ impl Renderer {
                     "[SEED GI] DDGI: 有効（プローブ {probes} 個 / 更新 {ppf}個×{rpp}レイ/フレーム）"
                 );
             } else {
-                eprintln!("[SEED GI] DDGI: 非対応（EXPERIMENTAL_RAY_QUERY 非対応）→ フラットアンビエントを使用");
+                eprintln!(
+                    "[SEED GI] DDGI: 非対応（EXPERIMENTAL_RAY_QUERY 非対応）→ フラットアンビエントを使用"
+                );
             }
         }
 
@@ -304,7 +339,9 @@ impl Renderer {
         // （既定 0＝配列不可）で制限するため、アダプタがこれを 1 以上公開していることも条件にする。
         let adapter_limits = adapter.limits();
         let bindless_feat = af.contains(wgpu::Features::TEXTURE_BINDING_ARRAY)
-            && af.contains(wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING);
+            && af.contains(
+                wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
+            );
         let bindless_array_cap = adapter_limits.max_binding_array_elements_per_shader_stage;
         let supports_bindless = bindless_feat && bindless_array_cap > 0;
         // テクスチャ配列容量 = 目安上限をアダプタ上限（配列要素数・sampled テクスチャ数）でクランプ。
@@ -314,14 +351,22 @@ impl Renderer {
             .max(1);
         let supports_partially_bound = af.contains(wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY);
         bindless::set_bindless_supported(supports_bindless);
-        bindless::set_bindless_capacity(if supports_bindless { bindless_capacity } else { 0 });
+        bindless::set_bindless_capacity(if supports_bindless {
+            bindless_capacity
+        } else {
+            0
+        });
         if supports_bindless {
             eprintln!(
                 "[SEED BINDLESS] 対応（TEXTURE_BINDING_ARRAY + 非一様インデックス）。\
                  テクスチャ配列容量={bindless_capacity}（要求目安 {BINDLESS_MAX_TEXTURES} / \
                  アダプタ上限: 配列要素 {bindless_array_cap} / sampled {}）, 部分バインド={}",
                 adapter_limits.max_sampled_textures_per_shader_stage,
-                if supports_partially_bound { "対応" } else { "非対応（全スロットをダミーで充填）" }
+                if supports_partially_bound {
+                    "対応"
+                } else {
+                    "非対応（全スロットをダミーで充填）"
+                }
             );
         } else {
             let reason = if !bindless_feat {
@@ -337,9 +382,13 @@ impl Renderer {
         let supports_mdi_count = af.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT);
         gpu_resources::set_meshlet_cull_supported(supports_mdi_count);
         if supports_mdi_count {
-            eprintln!("[SEED MESHLET] メッシュレットカリング: 対応（MULTI_DRAW_INDIRECT_COUNT を要求）");
+            eprintln!(
+                "[SEED MESHLET] メッシュレットカリング: 対応（MULTI_DRAW_INDIRECT_COUNT を要求）"
+            );
         } else {
-            eprintln!("[SEED MESHLET] メッシュレットカリング: 非対応 → 従来 CPU カリング経路を使用");
+            eprintln!(
+                "[SEED MESHLET] メッシュレットカリング: 非対応 → 従来 CPU カリング経路を使用"
+            );
         }
 
         // エディタのシーンビュー「ワイヤーフレーム」モードは POLYGON_MODE_LINE（ネイティブ限定）
@@ -350,7 +399,9 @@ impl Renderer {
         if supports_wireframe {
             eprintln!("[SEED VIEWMODE] ワイヤーフレーム: 対応（POLYGON_MODE_LINE を要求）");
         } else {
-            eprintln!("[SEED VIEWMODE] ワイヤーフレーム: 非対応 → ワイヤ選択時は Unlit 表示にフォールバック");
+            eprintln!(
+                "[SEED VIEWMODE] ワイヤーフレーム: 非対応 → ワイヤ選択時は Unlit 表示にフォールバック"
+            );
         }
 
         let (device, queue) = pollster::block_on(adapter.request_device(
@@ -399,7 +450,7 @@ impl Renderer {
         .expect("Failed to create device");
 
         let device = Arc::new(device);
-        let queue  = Arc::new(queue);
+        let queue = Arc::new(queue);
 
         // GPU が PIPELINE_CACHE をサポートする場合のみキャッシュを生成する。
         // exe 隣の pipeline_cache.bin からデータを読み込み、
@@ -415,8 +466,8 @@ impl Renderer {
             // fallback=true なので不正データでもパニックせず再コンパイルに移行する。
             let cache = unsafe {
                 device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
-                    label:    Some("SEED Pipeline Cache"),
-                    data:     cache_data.as_deref(),
+                    label: Some("SEED Pipeline Cache"),
+                    data: cache_data.as_deref(),
                     fallback: true,
                 })
             };
@@ -425,7 +476,7 @@ impl Renderer {
             None
         };
 
-        let surface_caps   = surface.get_capabilities(&adapter);
+        let surface_caps = surface.get_capabilities(&adapter);
         // sRGB フォーマットを優先して選択する。
         // Bgra8UnormSrgb 等の sRGB サーフェスは GPU がレンダーターゲット書き込み時に
         // linear → sRGB エンコードを自動適用するため、全シェーダーで統一的にガンマ補正される。
@@ -446,9 +497,15 @@ impl Renderer {
         // Mailbox: GPU が終わり次第フレームを上書き → DWM の次コンポジットで最新フレームが映る
         // Immediate: 即時表示（DWM が VSync を管理するので実用上問題なし）
         // Fifo: 埋め込みモードでは二重 VSync でカクつくため最後の手段とする
-        let present_mode = if surface_caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+        let present_mode = if surface_caps
+            .present_modes
+            .contains(&wgpu::PresentMode::Mailbox)
+        {
             wgpu::PresentMode::Mailbox
-        } else if surface_caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+        } else if surface_caps
+            .present_modes
+            .contains(&wgpu::PresentMode::Immediate)
+        {
             wgpu::PresentMode::Immediate
         } else {
             wgpu::PresentMode::Fifo
@@ -464,20 +521,28 @@ impl Renderer {
             wgpu::TextureUsages::RENDER_ATTACHMENT
         };
         let config = wgpu::SurfaceConfiguration {
-            usage:                        surface_usage,
-            format:                       surface_format,
-            width:                        size.width,
-            height:                       size.height,
+            usage: surface_usage,
+            format: surface_format,
+            width: size.width,
+            height: size.height,
             present_mode,
-            alpha_mode:                   surface_caps.alpha_modes[0],
-            view_formats:                 vec![],
+            alpha_mode: surface_caps.alpha_modes[0],
+            view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
 
         let depth_texture = DepthTexture::new(&device, size.width, size.height);
 
-        Self { surface, device, queue, config, size, depth_texture, pipeline_cache }
+        Self {
+            surface,
+            device,
+            queue,
+            config,
+            size,
+            depth_texture,
+            pipeline_cache,
+        }
     }
 
     // ── アダプター選択 ──────────────────────────────────────────
@@ -489,17 +554,17 @@ impl Renderer {
     fn select_adapter(
         instance: &wgpu::Instance,
         backends: wgpu::Backends,
-        surface:  &wgpu::Surface<'_>,
+        surface: &wgpu::Surface<'_>,
     ) -> wgpu::Adapter {
         use wgpu::DeviceType;
 
         // DiscreteGpu を最優先にスコアリングする。
         fn adapter_score(info: &wgpu::AdapterInfo) -> u8 {
             match info.device_type {
-                DeviceType::DiscreteGpu   => 3,
+                DeviceType::DiscreteGpu => 3,
                 DeviceType::IntegratedGpu => 2,
-                DeviceType::VirtualGpu    => 1,
-                _                         => 0,
+                DeviceType::VirtualGpu => 1,
+                _ => 0,
             }
         }
 
@@ -514,8 +579,8 @@ impl Renderer {
             // enumerate_adapters が空（環境依存でまれに発生）の場合のフォールバック。
             // HighPerformance を明示して dGPU を優先させる（iGPU への揺れを防ぐ）。
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference:       wgpu::PowerPreference::HighPerformance,
-                compatible_surface:     Some(surface),
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(surface),
                 force_fallback_adapter: false,
             }))
             .expect("Failed to find a suitable GPU adapter")
@@ -528,8 +593,13 @@ impl Renderer {
         let info = adapter.get_info();
         eprintln!(
             "[SEED INIT] adapter={} type={:?} backend={:?} driver={} driver_info={} vendor=0x{:04x} device=0x{:04x}",
-            info.name, info.device_type, info.backend,
-            info.driver, info.driver_info, info.vendor, info.device,
+            info.name,
+            info.device_type,
+            info.backend,
+            info.driver,
+            info.driver_info,
+            info.vendor,
+            info.device,
         );
 
         adapter
@@ -538,20 +608,30 @@ impl Renderer {
     // ── アクセサ ────────────────────────────────────────────────
 
     /// `wgpu::Device` の Arc クローンを返す。
-    pub fn device(&self) -> Arc<wgpu::Device> { Arc::clone(&self.device) }
+    pub fn device(&self) -> Arc<wgpu::Device> {
+        Arc::clone(&self.device)
+    }
 
     /// `wgpu::Queue` の Arc クローンを返す。
-    pub fn queue(&self) -> Arc<wgpu::Queue> { Arc::clone(&self.queue) }
+    pub fn queue(&self) -> Arc<wgpu::Queue> {
+        Arc::clone(&self.queue)
+    }
 
     /// スワップチェーンのピクセルフォーマットを返す。
-    pub fn surface_format(&self) -> wgpu::TextureFormat { self.config.format }
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.config.format
+    }
 
     /// 深度バッファのフォーマットを返す。
-    pub fn depth_format(&self) -> wgpu::TextureFormat { DEPTH_FORMAT }
+    pub fn depth_format(&self) -> wgpu::TextureFormat {
+        DEPTH_FORMAT
+    }
 
     /// コンパイル済みパイプラインキャッシュへの参照を返す。
     /// GPU が非対応の場合は None を返す。
-    pub fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> { self.pipeline_cache.as_ref() }
+    pub fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> {
+        self.pipeline_cache.as_ref()
+    }
 
     // ── パイプラインキャッシュ保存 ──────────────────────────────
 
@@ -560,12 +640,18 @@ impl Renderer {
     /// exe 隣の `pipeline_cache.bin` に保存する。
     /// キャッシュが None（GPU 非対応）または `get_data()` が None の場合は何もしない。
     pub fn save_pipeline_cache(&self) {
-        let Some(cache) = &self.pipeline_cache else { return; };
-        let Some(data)  = cache.get_data() else { return; };
-        let Some(path)  = std::env::current_exe()
+        let Some(cache) = &self.pipeline_cache else {
+            return;
+        };
+        let Some(data) = cache.get_data() else {
+            return;
+        };
+        let Some(path) = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("pipeline_cache.bin")))
-        else { return; };
+        else {
+            return;
+        };
         if let Err(e) = std::fs::write(&path, &data) {
             eprintln!("[SEED] pipeline cache save failed: {e}");
         }
@@ -576,7 +662,7 @@ impl Renderer {
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.size = new_size;
-            self.config.width  = new_size.width;
+            self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
             self.depth_texture = DepthTexture::new(&self.device, new_size.width, new_size.height);
@@ -604,7 +690,9 @@ impl Renderer {
     /// frame.finish();
     /// ```
     /// 深度テクスチャビューへの参照を返す（Hi-Z ピラミッド生成用、DepthOnly aspect）。
-    pub fn depth_view(&self) -> &wgpu::TextureView { &self.depth_texture.depth_only_view }
+    pub fn depth_view(&self) -> &wgpu::TextureView {
+        &self.depth_texture.depth_only_view
+    }
 
     pub fn begin_frame(&mut self) -> Result<RenderFrame<'_>, wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
@@ -615,32 +703,35 @@ impl Renderer {
         // レンダーパス検証でパニックする。フレーム開始時に実際のサーフェステクスチャ
         // サイズと depth_texture を同期させることで問題を防ぐ。
         let surf_extent = output.texture.size();
-        if surf_extent.width  != self.depth_texture.width
-        || surf_extent.height != self.depth_texture.height
+        if surf_extent.width != self.depth_texture.width
+            || surf_extent.height != self.depth_texture.height
         {
-            self.config.width  = surf_extent.width;
+            self.config.width = surf_extent.width;
             self.config.height = surf_extent.height;
             self.size = winit::dpi::PhysicalSize {
-                width:  surf_extent.width,
+                width: surf_extent.width,
                 height: surf_extent.height,
             };
-            self.depth_texture = DepthTexture::new(
-                &self.device, surf_extent.width, surf_extent.height,
-            );
+            self.depth_texture =
+                DepthTexture::new(&self.device, surf_extent.width, surf_extent.height);
         }
 
-        let color_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let encoder    = self.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("Render Encoder") },
-        );
+        let color_view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
         Ok(RenderFrame {
             output,
             encoder,
             color_view,
-            depth_view:      &self.depth_texture.view,
+            depth_view: &self.depth_texture.view,
             depth_only_view: &self.depth_texture.depth_only_view,
-            queue:           &self.queue,
-            device:          &self.device,
+            queue: &self.queue,
+            device: &self.device,
         })
     }
 }
@@ -665,24 +756,28 @@ impl Drop for Renderer {
 /// `begin_render_pass()` でレンダーパスを開き、描画コマンドを積んだあと、
 /// スコープを外れてレンダーパスを閉じてから `finish()` でサブミットする。
 pub struct RenderFrame<'r> {
-    output:          wgpu::SurfaceTexture,
-    encoder:         wgpu::CommandEncoder,
-    color_view:      wgpu::TextureView,
+    output: wgpu::SurfaceTexture,
+    encoder: wgpu::CommandEncoder,
+    color_view: wgpu::TextureView,
     /// All aspect: レンダーアタッチメント（depth+stencil 操作）用
-    depth_view:      &'r wgpu::TextureView,
+    depth_view: &'r wgpu::TextureView,
     /// DepthOnly aspect: Hi-Z テクスチャサンプリング用
     depth_only_view: &'r wgpu::TextureView,
-    queue:           &'r wgpu::Queue,
+    queue: &'r wgpu::Queue,
     /// スクリーンショットの読み戻し（バッファ生成 + マップ完了待ち）に使う。
-    device:          &'r wgpu::Device,
+    device: &'r wgpu::Device,
 }
 
 impl<'r> RenderFrame<'r> {
     /// コマンドエンコーダへの可変参照を返す（Hi-Z compute pass 等に使用）。
-    pub fn encoder_mut(&mut self) -> &mut wgpu::CommandEncoder { &mut self.encoder }
+    pub fn encoder_mut(&mut self) -> &mut wgpu::CommandEncoder {
+        &mut self.encoder
+    }
 
     /// 深度バッファビューへの参照を返す（Hi-Z ピラミッド生成用、DepthOnly aspect）。
-    pub fn depth_view(&self) -> &wgpu::TextureView { self.depth_only_view }
+    pub fn depth_view(&self) -> &wgpu::TextureView {
+        self.depth_only_view
+    }
 
     /// 深度テクスチャの DepthOnly aspect ビューを返す（G-Buffer 深度サンプリング用）。
     ///
@@ -690,7 +785,9 @@ impl<'r> RenderFrame<'r> {
     /// 「深度をテクスチャとしてサンプルする」用途であることを呼び出し側で明示するための別名。
     /// アタッチメント用途（レンダーパスの depth_stencil_attachment）には引き続き
     /// `depth_view` フィールド（All aspect）側を使う（begin_gbuffer_pass_to 等を参照）。
-    pub fn depth_only_view(&self) -> &wgpu::TextureView { self.depth_only_view }
+    pub fn depth_only_view(&self) -> &wgpu::TextureView {
+        self.depth_only_view
+    }
 
     /// DepthOnly ビューを **フレーム('r) 寿命** で返す（Hi-Z ピラミッド生成用）。
     ///
@@ -698,7 +795,9 @@ impl<'r> RenderFrame<'r> {
     /// を呼べない。Hi-Z は「深度ビュー＋エンコーダ」を同時に使うため、深度ビューを
     /// フレーム全体の借用 'r として取り出せるこのメソッドを使う（深度テクスチャは
     /// Renderer が所有し 'r の間は不変なので安全）。
-    pub fn depth_only_view_r(&self) -> &'r wgpu::TextureView { self.depth_only_view }
+    pub fn depth_only_view_r(&self) -> &'r wgpu::TextureView {
+        self.depth_only_view
+    }
 
     // ── 深度プリパス（カラー出力なし、深度クリアあり）────────────
 
@@ -711,22 +810,22 @@ impl<'r> RenderFrame<'r> {
         'r: 'f,
     {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label:             Some("Depth Prepass"),
-            color_attachments: &[],  // カラー出力なし
+            label: Some("Depth Prepass"),
+            color_attachments: &[], // カラー出力なし
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: self.depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(1.0),
+                    load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
                 }),
                 // 深度プリパスではステンシルを使わない
                 stencil_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(0),
+                    load: wgpu::LoadOp::Clear(0),
                     store: wgpu::StoreOp::Discard,
                 }),
             }),
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -743,27 +842,32 @@ impl<'r> RenderFrame<'r> {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Main Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           &self.color_view,
+                view: &self.color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.1, g: 0.1, b: 0.1, a: 1.0 }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.1,
+                        g: 0.1,
+                        b: 0.1,
+                        a: 1.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: self.depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Load,   // プリパスの深度を引き継ぐ
+                    load: wgpu::LoadOp::Load, // プリパスの深度を引き継ぐ
                     store: wgpu::StoreOp::Store,
                 }),
                 // ステンシルをクリアして、このパスで描画された全ピクセルに 1 を書き込む
                 stencil_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(0),
+                    load: wgpu::LoadOp::Clear(0),
                     store: wgpu::StoreOp::Store,
                 }),
             }),
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -777,28 +881,28 @@ impl<'r> RenderFrame<'r> {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Main Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           &self.color_view,
+                view: &self.color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(clear_color),
+                    load: wgpu::LoadOp::Clear(clear_color),
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: self.depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(1.0),
+                    load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
                 }),
                 // ステンシルを 0 にクリア。draw_model_indirect が 1 を書き込み、
                 // draw_outline が 0 の箇所（シルエット外側）のみ描画する。
                 stencil_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(0),
+                    load: wgpu::LoadOp::Clear(0),
                     store: wgpu::StoreOp::Store,
                 }),
             }),
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -811,7 +915,9 @@ impl<'r> RenderFrame<'r> {
     }
 
     /// スワップチェーンのカラービューへの参照を返す（トーンマップ出力先）。
-    pub fn swapchain_view(&self) -> &wgpu::TextureView { &self.color_view }
+    pub fn swapchain_view(&self) -> &wgpu::TextureView {
+        &self.color_view
+    }
 
     /// 外部カラービュー（HDR オフスクリーン等）へメインレンダーパスを開始する（Phase R3）。
     ///
@@ -820,7 +926,7 @@ impl<'r> RenderFrame<'r> {
     /// 深度・ステンシルは従来どおり共有深度テクスチャを使う（ID パス等がこの深度を参照する）。
     pub fn begin_scene_pass_to<'f>(
         &'f mut self,
-        color_view:  &'f wgpu::TextureView,
+        color_view: &'f wgpu::TextureView,
         clear_color: wgpu::Color,
     ) -> wgpu::RenderPass<'f>
     where
@@ -829,27 +935,27 @@ impl<'r> RenderFrame<'r> {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Main Render Pass (HDR)"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           color_view,
+                view: color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(clear_color),
+                    load: wgpu::LoadOp::Clear(clear_color),
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: self.depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(1.0),
+                    load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
                 }),
                 // begin_render_pass と同じくステンシルを 0 にクリア（アウトライン用）。
                 stencil_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(0),
+                    load: wgpu::LoadOp::Clear(0),
                     store: wgpu::StoreOp::Store,
                 }),
             }),
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -867,26 +973,26 @@ impl<'r> RenderFrame<'r> {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Canvas Overlay Pass (HDR)"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           color_view,
+                view: color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: self.depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(1.0),
+                    load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(0),
+                    load: wgpu::LoadOp::Clear(0),
                     store: wgpu::StoreOp::Store,
                 }),
             }),
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -899,7 +1005,7 @@ impl<'r> RenderFrame<'r> {
     /// メインパス drop 後・ブルーム前に呼ぶこと。
     pub fn begin_wboit_pass_to<'f>(
         &'f mut self,
-        accum_view:  &'f wgpu::TextureView,
+        accum_view: &'f wgpu::TextureView,
         reveal_view: &'f wgpu::TextureView,
     ) -> wgpu::RenderPass<'f>
     where
@@ -909,18 +1015,28 @@ impl<'r> RenderFrame<'r> {
             label: Some("WBOIT Accum/Reveal Pass"),
             color_attachments: &[
                 Some(wgpu::RenderPassColorAttachment {
-                    view:           accum_view,
+                    view: accum_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 }),
                 Some(wgpu::RenderPassColorAttachment {
-                    view:           reveal_view,
+                    view: reveal_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load:  wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 1.0,
+                            g: 1.0,
+                            b: 1.0,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 }),
@@ -928,17 +1044,17 @@ impl<'r> RenderFrame<'r> {
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: self.depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Load, // 不透明の深度を保持（テストのみ）。
+                    load: wgpu::LoadOp::Load, // 不透明の深度を保持（テストのみ）。
                     store: wgpu::StoreOp::Store,
                 }),
                 // Depth24PlusStencil8 は stencil 面を持つため ops を明示（Load/Store）。
                 stencil_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 }),
             }),
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -959,27 +1075,27 @@ impl<'r> RenderFrame<'r> {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Particle Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           hdr_view,
+                view: hdr_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Load, // 既存シーン HDR を保持して重ねる。
+                    load: wgpu::LoadOp::Load, // 既存シーン HDR を保持して重ねる。
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: self.depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Load, // 不透明の深度を保持（テストのみ・書込なし）。
+                    load: wgpu::LoadOp::Load, // 不透明の深度を保持（テストのみ・書込なし）。
                     store: wgpu::StoreOp::Store,
                 }),
                 // Depth24PlusStencil8 は stencil 面を持つため ops を明示（Load/Store）。
                 stencil_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 }),
             }),
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -1003,30 +1119,51 @@ impl<'r> RenderFrame<'r> {
         'r: 'f,
     {
         let mrt_clear = wgpu::Operations {
-            load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+            load: wgpu::LoadOp::Clear(wgpu::Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            }),
             store: wgpu::StoreOp::Store,
         };
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("GBuffer Pass"),
             color_attachments: &[
-                Some(wgpu::RenderPassColorAttachment { view: g0, resolve_target: None, ops: mrt_clear }),
-                Some(wgpu::RenderPassColorAttachment { view: g1, resolve_target: None, ops: mrt_clear }),
-                Some(wgpu::RenderPassColorAttachment { view: g2, resolve_target: None, ops: mrt_clear }),
-                Some(wgpu::RenderPassColorAttachment { view: g3, resolve_target: None, ops: mrt_clear }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: g0,
+                    resolve_target: None,
+                    ops: mrt_clear,
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: g1,
+                    resolve_target: None,
+                    ops: mrt_clear,
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: g2,
+                    resolve_target: None,
+                    ops: mrt_clear,
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: g3,
+                    resolve_target: None,
+                    ops: mrt_clear,
+                }),
             ],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: self.depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(1.0),
+                    load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(0),
+                    load: wgpu::LoadOp::Clear(0),
                     store: wgpu::StoreOp::Store,
                 }),
             }),
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -1039,7 +1176,7 @@ impl<'r> RenderFrame<'r> {
     ///   G-Buffer 深度は `depth_only_view` からテクスチャとしてサンプルして使うため）。
     pub fn begin_deferred_lighting_pass_to<'f>(
         &'f mut self,
-        hdr:   &'f wgpu::TextureView,
+        hdr: &'f wgpu::TextureView,
         clear: wgpu::Color,
     ) -> wgpu::RenderPass<'f>
     where
@@ -1048,16 +1185,16 @@ impl<'r> RenderFrame<'r> {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Deferred Lighting Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           hdr,
+                view: hdr,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(clear),
+                    load: wgpu::LoadOp::Clear(clear),
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: None,
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -1078,26 +1215,26 @@ impl<'r> RenderFrame<'r> {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Main Render Pass (HDR, Deferred Load)"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           hdr,
+                view: hdr,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: self.depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 }),
             }),
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -1110,26 +1247,28 @@ impl<'r> RenderFrame<'r> {
     /// - depth = None（フルスクリーン三角形。G-Buffer 深度はテクスチャとして読む）。
     /// この後にいもす法ブラー（compute）を同一エンコーダで走らせ、結果 ao_b を deferred
     /// ライティングの group1 binding6（t_ao）へ供給する。
-    pub fn begin_ao_pass_to<'f>(
-        &'f mut self,
-        ao: &'f wgpu::TextureView,
-    ) -> wgpu::RenderPass<'f>
+    pub fn begin_ao_pass_to<'f>(&'f mut self, ao: &'f wgpu::TextureView) -> wgpu::RenderPass<'f>
     where
         'r: 'f,
     {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("AO Generation Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           ao,
+                view: ao,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: None,
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -1142,26 +1281,28 @@ impl<'r> RenderFrame<'r> {
     /// scene_hdr（不透明ライティング済み）はサンプル入力として読む＝描画先が別テクスチャ（ssgi_raw）の
     /// ため読み書き競合しない。この後にいもす法カラーブラー（compute）を同一エンコーダで走らせ、
     /// 結果 ssgi_b を **次フレーム** の deferred ライティングの group1 binding8（t_ssgi）へ供給する。
-    pub fn begin_ssgi_pass_to<'f>(
-        &'f mut self,
-        ssgi: &'f wgpu::TextureView,
-    ) -> wgpu::RenderPass<'f>
+    pub fn begin_ssgi_pass_to<'f>(&'f mut self, ssgi: &'f wgpu::TextureView) -> wgpu::RenderPass<'f>
     where
         'r: 'f,
     {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("SSGI Generation Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           ssgi,
+                view: ssgi,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: None,
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -1187,20 +1328,41 @@ impl<'r> RenderFrame<'r> {
         'r: 'f,
     {
         let clear = wgpu::Operations {
-            load:  wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+            load: wgpu::LoadOp::Clear(wgpu::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            }),
             store: wgpu::StoreOp::Store,
         };
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Shadow Mask Generation Pass"),
             color_attachments: &[
-                Some(wgpu::RenderPassColorAttachment { view: l0, resolve_target: None, ops: clear }),
-                Some(wgpu::RenderPassColorAttachment { view: l1, resolve_target: None, ops: clear }),
-                Some(wgpu::RenderPassColorAttachment { view: l2, resolve_target: None, ops: clear }),
-                Some(wgpu::RenderPassColorAttachment { view: l3, resolve_target: None, ops: clear }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: l0,
+                    resolve_target: None,
+                    ops: clear,
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: l1,
+                    resolve_target: None,
+                    ops: clear,
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: l2,
+                    resolve_target: None,
+                    ops: clear,
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: l3,
+                    resolve_target: None,
+                    ops: clear,
+                }),
             ],
             depth_stencil_attachment: None,
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -1222,16 +1384,21 @@ impl<'r> RenderFrame<'r> {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Reflection Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           reflection,
+                view: reflection,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: None,
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -1250,16 +1417,16 @@ impl<'r> RenderFrame<'r> {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Reflection Composite Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           hdr,
+                view: hdr,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: None,
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -1270,8 +1437,8 @@ impl<'r> RenderFrame<'r> {
     /// この後にオーバーレイを `ldr_view` へ描き、最終段 `present_to_swapchain` で書き出す。
     pub fn tonemap_to_ldr(
         &mut self,
-        post:     &PostContext,
-        device:   &wgpu::Device,
+        post: &PostContext,
+        device: &wgpu::Device,
         hdr_view: &wgpu::TextureView,
         ldr_view: &wgpu::TextureView,
         vignette: Option<VignetteStage<'_>>,
@@ -1282,14 +1449,22 @@ impl<'r> RenderFrame<'r> {
     /// LDR 中間（＋オーバーレイ）をスワップチェーンへ書き出す最終段（FXAA or コピー, Phase R4）。
     pub fn present_to_swapchain(
         &mut self,
-        post:         &PostContext,
-        device:       &wgpu::Device,
-        ldr_view:     &wgpu::TextureView,
+        post: &PostContext,
+        device: &wgpu::Device,
+        ldr_view: &wgpu::TextureView,
         fxaa_enabled: bool,
     ) {
         let (w, h) = self.surface_size();
         // self.encoder（可変）と self.color_view（不変）は別フィールドのため同時借用可。
-        post.present(device, &mut self.encoder, ldr_view, &self.color_view, w, h, fxaa_enabled);
+        post.present(
+            device,
+            &mut self.encoder,
+            ldr_view,
+            &self.color_view,
+            w,
+            h,
+            fxaa_enabled,
+        );
     }
 
     /// キャンバスオーバーレイパスを開始する。
@@ -1304,11 +1479,11 @@ impl<'r> RenderFrame<'r> {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Canvas Overlay Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           &self.color_view,
+                view: &self.color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     // 3D シーンのカラーを保持する（クリアしない）
-                    load:  wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -1316,16 +1491,16 @@ impl<'r> RenderFrame<'r> {
                 view: self.depth_view,
                 depth_ops: Some(wgpu::Operations {
                     // 深度をクリアして 2D 要素を必ず前面描画
-                    load:  wgpu::LoadOp::Clear(1.0),
+                    load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(0),
+                    load: wgpu::LoadOp::Clear(0),
                     store: wgpu::StoreOp::Store,
                 }),
             }),
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -1335,8 +1510,8 @@ impl<'r> RenderFrame<'r> {
     /// 深度バッファは `depth_view` にクリア（1.0）して描画する。
     pub fn begin_offscreen_pass<'f>(
         &'f mut self,
-        color_view:  &'f wgpu::TextureView,
-        depth_view:  &'f wgpu::TextureView,
+        color_view: &'f wgpu::TextureView,
+        depth_view: &'f wgpu::TextureView,
         clear_color: wgpu::Color,
     ) -> wgpu::RenderPass<'f>
     where
@@ -1345,23 +1520,23 @@ impl<'r> RenderFrame<'r> {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Offscreen Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           color_view,
+                view: color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(clear_color),
+                    load: wgpu::LoadOp::Clear(clear_color),
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(1.0),
+                    load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: None,
             }),
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -1376,17 +1551,17 @@ impl<'r> RenderFrame<'r> {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Blit Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           &self.color_view,
+                view: &self.color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
             })],
             // 深度アタッチメントなし（常に最前面）
             depth_stencil_attachment: None,
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -1402,48 +1577,51 @@ impl<'r> RenderFrame<'r> {
     where
         'r: 'f,
     {
-        self.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label:            Some("Cull Compute Pass"),
-            timestamp_writes: None,
-        })
+        self.encoder
+            .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Cull Compute Pass"),
+                timestamp_writes: None,
+            })
     }
 
     /// ID バッファパスを開始する（メインレンダーパスの後に呼ぶ）。
     ///
     /// - `id_view`  : R32Uint テクスチャビュー（クリアして書き込む）
     /// - 深度は Load して参照するのみ（write なし）
-    pub fn begin_id_pass<'f>(
-        &'f mut self,
-        id_view: &'f wgpu::TextureView,
-    ) -> wgpu::RenderPass<'f>
+    pub fn begin_id_pass<'f>(&'f mut self, id_view: &'f wgpu::TextureView) -> wgpu::RenderPass<'f>
     where
         'r: 'f,
     {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("World Pos ID Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           id_view,
+                view: id_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     // 全チャンネル 0.0 でクリア。
                     // A = bitcast<f32>(0u) = 0.0 が「背景」を意味する。
-                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: self.depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Discard,
                 }),
                 stencil_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Discard,
                 }),
             }),
             occlusion_query_set: None,
-            timestamp_writes:    None,
+            timestamp_writes: None,
         })
     }
 
@@ -1453,26 +1631,30 @@ impl<'r> RenderFrame<'r> {
     pub fn schedule_id_copy(
         &mut self,
         src_texture: &wgpu::Texture,
-        x:           u32,
-        y:           u32,
+        x: u32,
+        y: u32,
         readback_buf: &wgpu::Buffer,
     ) {
         self.encoder.copy_texture_to_buffer(
             wgpu::ImageCopyTexture {
-                texture:   src_texture,
+                texture: src_texture,
                 mip_level: 0,
-                origin:    wgpu::Origin3d { x, y, z: 0 },
-                aspect:    wgpu::TextureAspect::All,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
             },
             wgpu::ImageCopyBuffer {
                 buffer: readback_buf,
                 layout: wgpu::ImageDataLayout {
-                    offset:         0,
-                    bytes_per_row:  Some(COPY_ROW_ALIGNMENT),
+                    offset: 0,
+                    bytes_per_row: Some(COPY_ROW_ALIGNMENT),
                     rows_per_image: None,
                 },
             },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
     }
 

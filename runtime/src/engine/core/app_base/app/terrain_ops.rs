@@ -26,20 +26,19 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 
-use crate::engine::ecs::Entity;
 use crate::engine::components::{
-    ColliderComponent, ColliderShapeData,
-    ComponentKind, InstanceMeta, ModelComponent, TerrainChunkComponent,
-    Transform as ActorTransform, GROUP_ID_BASE, next_batch_instance_id,
+    ColliderComponent, ColliderShapeData, ComponentKind, GROUP_ID_BASE, InstanceMeta,
+    ModelComponent, TerrainChunkComponent, Transform as ActorTransform, next_batch_instance_id,
 };
 use crate::engine::core::loader::model::Model;
+use crate::engine::ecs::Entity;
 use crate::engine::methods::drawer::{DrawContext, GpuModel, InstancedModelBatch};
 use crate::engine::physics::{ColliderShape, PhysicsCommand, PhysicsObject};
 use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::{
-    self, interp_vertex_paint, BlendSlots, BrushOp, ChunkCoord, PaintField, SampleField,
-    SphereBrush, TerrainChunkData, TerrainLayerSet, TerrainSettings, TerrainVertexEdge,
-    TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS, tvox,
+    self, BlendSlots, BrushOp, ChunkCoord, PaintField, SampleField, SphereBrush,
+    TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS, TerrainChunkData, TerrainLayerSet, TerrainSettings,
+    TerrainVertexEdge, interp_vertex_paint, tvox,
 };
 
 // 散布プロップ（Terrain T3）。状態の器だけをここで持ち、処理は terrain_scatter_ops.rs にある。
@@ -308,30 +307,30 @@ const SMOKE_CLOSEUP_SPEED: f32 = 2.0;
 const SMOKE_CLOSEUP_PROP_INDEX: u32 = 0;
 
 /// クローズアップ切替フレーム（環境変数 `SEED_SMOKE_CLOSEUP_FRAME`）。未指定なら `None`。
-static SMOKE_CLOSEUP_FRAME: std::sync::LazyLock<Option<u32>> =
-    std::sync::LazyLock::new(|| {
-        std::env::var(ENV_SMOKE_CLOSEUP_FRAME).ok()?.trim().parse::<u32>().ok()
-    });
+static SMOKE_CLOSEUP_FRAME: std::sync::LazyLock<Option<u32>> = std::sync::LazyLock::new(|| {
+    std::env::var(ENV_SMOKE_CLOSEUP_FRAME)
+        .ok()?
+        .trim()
+        .parse::<u32>()
+        .ok()
+});
 /// クローズアップの被写体プロップ添字（環境変数 `SEED_SMOKE_CLOSEUP_PROP` 優先・既定 `SMOKE_CLOSEUP_PROP_INDEX`）。
-static SMOKE_CLOSEUP_PROP: std::sync::LazyLock<u32> =
-    std::sync::LazyLock::new(|| {
-        std::env::var(ENV_SMOKE_CLOSEUP_PROP)
-            .ok()
-            .and_then(|v| v.trim().parse::<u32>().ok())
-            .unwrap_or(SMOKE_CLOSEUP_PROP_INDEX)
-    });
+static SMOKE_CLOSEUP_PROP: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
+    std::env::var(ENV_SMOKE_CLOSEUP_PROP)
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(SMOKE_CLOSEUP_PROP_INDEX)
+});
 /// クローズアップの水平距離（環境変数 `SEED_SMOKE_CLOSEUP_DIST` 優先・既定 `SMOKE_CLOSEUP_DISTANCE`）。
-static SMOKE_CLOSEUP_DIST: std::sync::LazyLock<f32> =
-    std::sync::LazyLock::new(|| {
-        std::env::var(ENV_SMOKE_CLOSEUP_DISTANCE)
-            .ok()
-            .and_then(|v| v.trim().parse::<f32>().ok())
-            .filter(|d| d.is_finite() && *d > 0.0)
-            .unwrap_or(SMOKE_CLOSEUP_DISTANCE)
-    });
+static SMOKE_CLOSEUP_DIST: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| {
+    std::env::var(ENV_SMOKE_CLOSEUP_DISTANCE)
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|d| d.is_finite() && *d > 0.0)
+        .unwrap_or(SMOKE_CLOSEUP_DISTANCE)
+});
 /// クローズアップ判定用のフレームカウンタ（描画開始後のフレーム数）。
-static SMOKE_CLOSEUP_COUNTER: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
+static SMOKE_CLOSEUP_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// クローズアップへの切り替えが済んだか（1 度だけ実行するためのラッチ）。
 static SMOKE_CLOSEUP_DONE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -436,8 +435,8 @@ impl ChunkSnapshot {
     /// チャンクの現在状態を控える。
     pub fn capture(chunk: &TerrainChunkData) -> Self {
         Self {
-            density:      chunk.raw_density().to_vec(),
-            paint_index:  chunk.raw_paint_index().to_vec(),
+            density: chunk.raw_density().to_vec(),
+            paint_index: chunk.raw_paint_index().to_vec(),
             paint_weight: chunk.raw_paint_weight().to_vec(),
             paint_amount: chunk.raw_paint_amount().to_vec(),
         }
@@ -522,9 +521,8 @@ pub struct TerrainState {
     /// レイヤ定義の GPU リソース一式（group3）。地形描画時に G-Buffer パスへ渡す。
     /// パレット（レイヤ番号 4 つ）別のバインドグループをキャッシュする（Terrain T2b）。
     /// `None` のときは地形専用パイプラインへ切り替えない（通常マテリアル描画へフォールバック）。
-    pub layer_resources: Option<
-        crate::engine::core::renderer::terrain_gbuffer::TerrainLayerResources,
-    >,
+    pub layer_resources:
+        Option<crate::engine::core::renderer::terrain_gbuffer::TerrainLayerResources>,
     /// ペイントブラシで塗る対象レイヤ番号（エディタのレイヤ選択 UI と対応）。
     pub paint_layer: usize,
     /// terrain 専用 undo スタック（末尾が最新）。上限 TERRAIN_UNDO_MAX。
@@ -768,10 +766,16 @@ fn read_paint_global_impl(
     gz: i32,
 ) -> (BlendSlots, f32) {
     match find_owner(chunks, cells, gx, gy, gz) {
-        Some((chunk, lx, ly, lz)) => (chunk.paint_slots(lx, ly, lz), chunk.paint_amount(lx, ly, lz)),
+        Some((chunk, lx, ly, lz)) => (
+            chunk.paint_slots(lx, ly, lz),
+            chunk.paint_amount(lx, ly, lz),
+        ),
         // 地形外 = 未ペイント（＝ルール自動生成に従う）。重みは全 0 で返す。
         None => (
-            BlendSlots { index: [0; TERRAIN_BLEND_SLOTS], weight: [0.0; TERRAIN_BLEND_SLOTS] },
+            BlendSlots {
+                index: [0; TERRAIN_BLEND_SLOTS],
+                weight: [0.0; TERRAIN_BLEND_SLOTS],
+            },
             0.0,
         ),
     }
@@ -832,7 +836,9 @@ pub(super) fn sample_density_world(
     let ix = x0 as i32;
     let iy = y0 as i32;
     let iz = z0 as i32;
-    let r = |dx: i32, dy: i32, dz: i32| read_global_impl(chunks, cells, clamp, ix + dx, iy + dy, iz + dz);
+    let r = |dx: i32, dy: i32, dz: i32| {
+        read_global_impl(chunks, cells, clamp, ix + dx, iy + dy, iz + dz)
+    };
     // 8 コーナー → x → y → z の順で線形補間。
     let c000 = r(0, 0, 0);
     let c100 = r(1, 0, 0);
@@ -916,7 +922,10 @@ fn terrain_source_path(scene: &str, coord: ChunkCoord) -> String {
     format!(
         "{}{}/chunk_{}_{}_{}",
         crate::engine::components::TERRAIN_SOURCE_SCHEME,
-        scene, coord.x, coord.y, coord.z
+        scene,
+        coord.x,
+        coord.y,
+        coord.z
     )
 }
 
@@ -925,7 +934,10 @@ fn tvox_virtual_path(scene: &str, coord: ChunkCoord) -> String {
     format!(
         "{}terrain/{}/chunk_{}_{}_{}.tvox",
         crate::engine::asset_fs::ASSETS_SCHEME,
-        scene, coord.x, coord.y, coord.z
+        scene,
+        coord.x,
+        coord.y,
+        coord.z
     )
 }
 
@@ -952,7 +964,12 @@ fn build_chunk_render(
     layers: &TerrainLayerSet,
     ctx: &DrawContext,
     coord: ChunkCoord,
-) -> Option<(Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>, Arc<Vec<TerrainVertexEdge>>)> {
+) -> Option<(
+    Arc<Model>,
+    Option<GpuModel>,
+    Option<InstancedModelBatch>,
+    Arc<Vec<TerrainVertexEdge>>,
+)> {
     // CPU メッシュ生成（純粋部）とアップロード（GPU 部）は分離してある。
     // ここは「1 チャンクを単独で作り直す」旧来の呼び出し側（初期化・チャンク追加・
     // シーンロード復元）向けの薄いラッパで、両者を続けて実行するだけ。
@@ -1018,7 +1035,14 @@ fn build_chunk_cpu_model(
         None => {
             // LOD0（フル解像度・隣接サンプラで境界勾配を連続化）。
             let m = terrain::generate(chunk, settings, |lx, ly, lz| {
-                read_global_impl(chunks, cells, clamp, base[0] + lx, base[1] + ly, base[2] + lz)
+                read_global_impl(
+                    chunks,
+                    cells,
+                    clamp,
+                    base[0] + lx,
+                    base[1] + ly,
+                    base[2] + lz,
+                )
             });
             (m, true)
         }
@@ -1070,7 +1094,14 @@ fn build_chunk_collider_shape(
     // ローカルサンプル (lx,ly,lz) → グローバル = coord*cells + local（描画経路と同一）。
     let base = [coord.x * cells, coord.y * cells, coord.z * cells];
     let mesh = terrain::generate(chunk, settings, |lx, ly, lz| {
-        read_global_impl(chunks, cells, clamp, base[0] + lx, base[1] + ly, base[2] + lz)
+        read_global_impl(
+            chunks,
+            cells,
+            clamp,
+            base[0] + lx,
+            base[1] + ly,
+            base[2] + lz,
+        )
     });
     // 空メッシュ（三角形 0）はコライダーを作らない。
     if mesh.indices.is_empty() {
@@ -1083,7 +1114,10 @@ fn build_chunk_collider_shape(
         .chunks_exact(3)
         .map(|t| [t[0], t[1], t[2]])
         .collect();
-    Some(ColliderShape::TriangleMeshIndexed { vertices: mesh.positions, indices })
+    Some(ColliderShape::TriangleMeshIndexed {
+        vertices: mesh.positions,
+        indices,
+    })
 }
 
 /// **既に生成済みの描画メッシュ（`Model`）から**物理コライダー形状を取り出す。
@@ -1130,7 +1164,11 @@ fn collider_shape_from_model(model: &Model) -> Option<ColliderShape> {
 /// `spawn_chunk_actor` の Transform 参照）なので、コライダーも回転単位・スケール 1・
 /// オフセット 0 で、位置＝チャンクのワールド原点にする。`rigidbody = None` により
 /// RigidBody 無しの Static コライダー（ワールド固定）として登録される。
-fn terrain_collider_object(entity_id: u64, position: [f32; 3], shape: ColliderShape) -> PhysicsObject {
+fn terrain_collider_object(
+    entity_id: u64,
+    position: [f32; 3],
+    shape: ColliderShape,
+) -> PhysicsObject {
     PhysicsObject {
         entity_id,
         position,
@@ -1252,7 +1290,11 @@ fn sync_new_chunk_boundary(
                 if !(on_x || on_y || on_z) {
                     continue;
                 }
-                let g = [base[0] + lx as i32, base[1] + ly as i32, base[2] + lz as i32];
+                let g = [
+                    base[0] + lx as i32,
+                    base[1] + ly as i32,
+                    base[2] + lz as i32,
+                ];
                 // 既存チャンクがこのサンプルを所有していれば、その値を正として引き写す。
                 if let Some((density, slots, amount)) =
                     try_read_sample_global(existing, cells, g[0], g[1], g[2])
@@ -1341,7 +1383,9 @@ fn spawn_chunk_actor(
         make_terrain_model_component(source_path, model, gpu, batch, world_mat),
     );
     mesh_actor.add_slot_typed::<ModelComponent>(
-        TERRAIN_MODEL_SLOT_NAME, ComponentKind::Model, mc_slot,
+        TERRAIN_MODEL_SLOT_NAME,
+        ComponentKind::Model,
+        mc_slot,
     );
 
     // ── TerrainChunkComponent スロット（座標＋.tvox リンク・ロード時復元の手掛かり）──
@@ -1356,7 +1400,9 @@ fn spawn_chunk_actor(
         },
     );
     mesh_actor.add_slot_typed::<TerrainChunkComponent>(
-        TERRAIN_CHUNK_SLOT_NAME, ComponentKind::TerrainChunk, tc_slot,
+        TERRAIN_CHUNK_SLOT_NAME,
+        ComponentKind::TerrainChunk,
+        tc_slot,
     );
 
     folder.add_child(mesh_actor);
@@ -1439,7 +1485,11 @@ impl App {
         let settings = self.terrain.settings.clone();
         self.terrain = TerrainState::default();
         self.terrain.settings = settings.clone();
-        let scene_name = self.scene.as_ref().map(|s| s.name.clone()).unwrap_or_default();
+        let scene_name = self
+            .scene
+            .as_ref()
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
         self.terrain.scene_name = scene_name.clone();
 
         // ── レイヤ定義（layers.json）を読み込み、GPU バインドグループを用意する ──
@@ -1459,7 +1509,12 @@ impl App {
 
         // ── フェーズ 2: 各チャンクをメッシュ化して GPU アップロード（描画リソースを先に作る）──
         //   self.terrain.chunks（不変）と self.draw_ctx（不変）を同時借用する（別フィールドなので可）。
-        let mut prebuilt: Vec<(ChunkCoord, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> = Vec::new();
+        let mut prebuilt: Vec<(
+            ChunkCoord,
+            Arc<Model>,
+            Option<GpuModel>,
+            Option<InstancedModelBatch>,
+        )> = Vec::new();
         // 由来辺は借用の都合で一旦ローカルへ溜め、フェーズ 3 の後で self.terrain へ入れる。
         let mut prebuilt_edges: Vec<(ChunkCoord, Arc<Vec<TerrainVertexEdge>>)> = Vec::new();
 
@@ -1478,7 +1533,9 @@ impl App {
             for (&coord, cpu) in coords.iter().zip(cpu_models.into_iter()) {
                 // 空メッシュチャンクも gpu/batch=None で積まれ、全チャンクがアクター＋MC スロットを
                 // 得る（掘削で後から表面が出ても差し替えられる）。
-                let Some((model, is_empty, edges)) = cpu else { continue };
+                let Some((model, is_empty, edges)) = cpu else {
+                    continue;
+                };
                 let (gpu, batch) = upload_chunk_model(ctx, &model, is_empty);
                 prebuilt.push((coord, model, gpu, batch));
                 prebuilt_edges.push((coord, edges));
@@ -1505,7 +1562,13 @@ impl App {
                 // チャンク 1 枚分のアクター構造は spawn_chunk_actor へ集約している
                 // （チャンク追加（TERRAIN_ADD_CHUNKS）と完全に同じ構造にするため）。
                 let (folder, mc_slot) = spawn_chunk_actor(
-                    &mut scene.world, &scene_name, &settings, coord, model, gpu, batch,
+                    &mut scene.world,
+                    &scene_name,
+                    &settings,
+                    coord,
+                    model,
+                    gpu,
+                    batch,
                 );
                 slot_map.push((coord, mc_slot));
                 root_actor.add_child(folder);
@@ -1638,8 +1701,12 @@ impl App {
         models: impl IntoIterator<Item = &'a Model>,
     ) {
         // draw_ctx とレイヤリソースの両方が揃っているときだけ意味を持つ。
-        let Some(ctx) = self.draw_ctx.as_ref() else { return };
-        let Some(res) = self.terrain.layer_resources.as_mut() else { return };
+        let Some(ctx) = self.draw_ctx.as_ref() else {
+            return;
+        };
+        let Some(res) = self.terrain.layer_resources.as_mut() else {
+            return;
+        };
         let layout = &ctx.pipelines.gbuffer.terrain.layer_bgl;
         for model in models {
             res.ensure_palettes_from_model(&ctx.device, layout, model);
@@ -1675,7 +1742,13 @@ impl App {
 
         // 定義済みレイヤ数でクランプする（T2b でレイヤ総数は可変になったため、
         // 同時ブレンド数 TERRAIN_BLEND_SLOTS ではなく定義数が上限になる）。
-        let max_layer = self.terrain.layers.layers.len().min(TERRAIN_MAX_LAYERS).saturating_sub(1);
+        let max_layer = self
+            .terrain
+            .layers
+            .layers
+            .len()
+            .min(TERRAIN_MAX_LAYERS)
+            .saturating_sub(1);
         self.terrain.paint_layer = layer.min(max_layer);
         self.handle_terrain_paint_world(self.terrain.paint_layer, center, radius, strength);
 
@@ -1706,7 +1779,11 @@ impl App {
             return;
         }
         let settings = self.terrain.settings.clone();
-        let brush = SphereBrush { center, radius, strength };
+        let brush = SphereBrush {
+            center,
+            radius,
+            strength,
+        };
 
         // ── ① undo 用ストローク開始（暗黙）＆ 編集前スナップショット ──
         //   密度ブラシと同じ stroke_before を共有するため、密度編集とペイントを
@@ -1720,7 +1797,9 @@ impl App {
                     continue;
                 }
                 if let Some(chunk) = terrain.chunks.get(&coord) {
-                    terrain.stroke_before.insert(coord, ChunkSnapshot::capture(chunk));
+                    terrain
+                        .stroke_before
+                        .insert(coord, ChunkSnapshot::capture(chunk));
                 }
             }
         }
@@ -1765,12 +1844,19 @@ impl App {
     ) {
         let Some(c) = config else { return };
         self.terrain.settings.apply_chunk_config(
-            c.chunks_x, c.chunks_z, c.chunk_cells, c.voxel_size,
+            c.chunks_x,
+            c.chunks_z,
+            c.chunk_cells,
+            c.voxel_size,
         );
         let s = &self.terrain.settings;
         eprintln!(
             "[SEED terrain] chunk config applied: {}x{} chunks, cells={}, voxel={}m (chunk extent={}m)",
-            s.ground_chunks_x, s.ground_chunks_z, s.chunk_cells, s.voxel_size, s.chunk_extent()
+            s.ground_chunks_x,
+            s.ground_chunks_z,
+            s.chunk_cells,
+            s.voxel_size,
+            s.chunk_extent()
         );
     }
 
@@ -1848,7 +1934,9 @@ impl App {
         if self.terrain.chunks.len() + new_coords.len() > terrain::MAX_TOTAL_CHUNKS {
             self.send_add_chunks_error(&format!(
                 "chunk limit exceeded ({} existing + {} new > {})",
-                self.terrain.chunks.len(), new_coords.len(), terrain::MAX_TOTAL_CHUNKS
+                self.terrain.chunks.len(),
+                new_coords.len(),
+                terrain::MAX_TOTAL_CHUNKS
             ));
             return;
         }
@@ -1870,8 +1958,12 @@ impl App {
         //   全チャンクを map へ入れ終えた後に行うことで、隣接読み（neighbor_sampler）が
         //   新規チャンク同士の境界でも正しい値を返す。
         let layers = self.terrain.layers.clone();
-        let mut prebuilt: Vec<(ChunkCoord, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> =
-            Vec::with_capacity(new_coords.len());
+        let mut prebuilt: Vec<(
+            ChunkCoord,
+            Arc<Model>,
+            Option<GpuModel>,
+            Option<InstancedModelBatch>,
+        )> = Vec::with_capacity(new_coords.len());
         // 由来辺は、アクター構築が成功して初めてキャッシュへ入れる（下の ⑤ 参照）。
         // ここで先に入れてしまうと、terrain ルート不在で中断する経路（チャンクを
         // `chunks` から取り消す）で、実体の無いチャンクの辺だけが残ってしまう。
@@ -1903,13 +1995,23 @@ impl App {
             let mut folders: Vec<Actor> = Vec::with_capacity(prebuilt.len());
             for (coord, model, gpu, batch) in prebuilt {
                 let (folder, mc_slot) = spawn_chunk_actor(
-                    &mut scene.world, &scene_name, &settings, coord, model, gpu, batch,
+                    &mut scene.world,
+                    &scene_name,
+                    &settings,
+                    coord,
+                    model,
+                    gpu,
+                    batch,
                 );
                 slot_map.push((coord, mc_slot));
                 folders.push(folder);
             }
             // terrain ルート（トップレベルの同名フォルダ）へ追加する。
-            match scene.actors.iter_mut().find(|a| a.name == TERRAIN_ROOT_NAME) {
+            match scene
+                .actors
+                .iter_mut()
+                .find(|a| a.name == TERRAIN_ROOT_NAME)
+            {
                 Some(root) => {
                     for folder in folders {
                         root.add_child(folder);
@@ -1955,7 +2057,8 @@ impl App {
                     for dz in -1..=1 {
                         let n = ChunkCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
                         // 新規チャンクは ④ で既にメッシュ化済みなので除外する。
-                        if !new_set.contains(&n) && self.terrain.chunk_slot_entity.contains_key(&n) {
+                        if !new_set.contains(&n) && self.terrain.chunk_slot_entity.contains_key(&n)
+                        {
                             neighbors.insert(n);
                         }
                     }
@@ -1968,12 +2071,15 @@ impl App {
         self.send_hierarchy();
         eprintln!(
             "[SEED terrain] add chunks: +{} (remeshed neighbors={}, total={})",
-            new_coords.len(), neighbor_list.len(), self.terrain.chunks.len()
+            new_coords.len(),
+            neighbor_list.len(),
+            self.terrain.chunks.len()
         );
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!(
                 "TERRAIN_ADD_CHUNKS_OK:{},{}",
-                new_coords.len(), neighbor_list.len()
+                new_coords.len(),
+                neighbor_list.len()
             ));
         }
     }
@@ -2054,7 +2160,9 @@ impl App {
         let ms = start.elapsed().as_millis();
         // 重い処理（画像デコード＋全チャンク再メッシュ）なので、IPC 未接続時（スモーク等）
         // でも進捗が追えるよう常に eprintln する。
-        eprintln!("[SEED terrain] heightmap applied: {path} ({w}x{h}, scale={height_scale}) in {ms}ms");
+        eprintln!(
+            "[SEED terrain] heightmap applied: {path} ({w}x{h}, scale={height_scale}) in {ms}ms"
+        );
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("TERRAIN_HEIGHTMAP_OK:{ms}"));
         }
@@ -2095,7 +2203,10 @@ impl App {
         self.terrain.brush_preview = Some((center, radius, strength));
 
         if let Some(ipc) = &self.ipc {
-            ipc.send(&format!("TERRAIN_BRUSH_OK:{},{},{}", center[0], center[1], center[2]));
+            ipc.send(&format!(
+                "TERRAIN_BRUSH_OK:{},{},{}",
+                center[0], center[1], center[2]
+            ));
         }
     }
 
@@ -2161,7 +2272,13 @@ impl App {
     /// 当たれば `terrain.brush_preview` に (着弾点, 半径, 強度) をセットし、当たらなければ
     /// `None`（非表示）にする。押下していないホバー中に高頻度で呼ばれるため IPC 応答は返さない。
     /// strength は frame_renderer 側でプレビュー球の色（低強度=水色〜高強度=オレンジ）に使われる。
-    pub(super) fn handle_terrain_brush_preview(&mut self, screen_x: f32, screen_y: f32, radius: f32, strength: f32) {
+    pub(super) fn handle_terrain_brush_preview(
+        &mut self,
+        screen_x: f32,
+        screen_y: f32,
+        radius: f32,
+        strength: f32,
+    ) {
         self.terrain.brush_preview = self
             .terrain_raymarch_hit(screen_x, screen_y)
             .map(|center| (center, radius, strength));
@@ -2186,7 +2303,11 @@ impl App {
             return;
         }
         let settings = self.terrain.settings.clone();
-        let brush = SphereBrush { center, radius, strength };
+        let brush = SphereBrush {
+            center,
+            radius,
+            strength,
+        };
 
         // ── ① undo 用ストローク開始（暗黙）＆ 編集前スナップショット ──
         //   ストローク開始は「stroke_active でない状態で最初の TERRAIN_BRUSH（＝本メソッド呼び出し）
@@ -2203,7 +2324,9 @@ impl App {
                     continue;
                 }
                 if let Some(chunk) = terrain.chunks.get(&coord) {
-                    terrain.stroke_before.insert(coord, ChunkSnapshot::capture(chunk));
+                    terrain
+                        .stroke_before
+                        .insert(coord, ChunkSnapshot::capture(chunk));
                 }
             }
         }
@@ -2267,35 +2390,37 @@ impl App {
         // LOD 無効（before 計測）のときは遷移処理を丸ごと飛ばすが、下の計測ログは
         // 全チャンク LOD0 の総三角形数を出すために引き続き実行する（on/off 比較の分母）。
         if !*TERRAIN_LOD_DISABLED {
-        // ── 各チャンクの目標 LOD を求め、変化するものを (最近点距離, coord, 目標LOD) で集める ──
-        let mut changes: Vec<(f32, ChunkCoord, u8)> = Vec::new();
-        for &coord in self.terrain.chunk_slot_entity.keys() {
-            let origin = coord.world_origin(&settings);
-            let min = origin;
-            let max = [origin[0] + extent, origin[1] + extent, origin[2] + extent];
-            let dist_sq =
-                crate::engine::core::renderer::gpu_resources::aabb_distance_sq(min, max, cam);
-            let dist = dist_sq.sqrt();
-            let current = self.terrain.chunk_lod.get(&coord).copied().unwrap_or(0);
-            let desired = desired_lod_for_distance(current, dist, d1, d2).min(max_lod);
-            if desired != current {
-                changes.push((dist, coord, desired));
+            // ── 各チャンクの目標 LOD を求め、変化するものを (最近点距離, coord, 目標LOD) で集める ──
+            let mut changes: Vec<(f32, ChunkCoord, u8)> = Vec::new();
+            for &coord in self.terrain.chunk_slot_entity.keys() {
+                let origin = coord.world_origin(&settings);
+                let min = origin;
+                let max = [origin[0] + extent, origin[1] + extent, origin[2] + extent];
+                let dist_sq =
+                    crate::engine::core::renderer::gpu_resources::aabb_distance_sq(min, max, cam);
+                let dist = dist_sq.sqrt();
+                let current = self.terrain.chunk_lod.get(&coord).copied().unwrap_or(0);
+                let desired = desired_lod_for_distance(current, dist, d1, d2).min(max_lod);
+                if desired != current {
+                    changes.push((dist, coord, desired));
+                }
             }
-        }
 
-        if !changes.is_empty() {
-            // 近いチャンクほど見た目への影響が大きいので、近い順に優先して処理する。
-            changes.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-            let mut coords: Vec<ChunkCoord> = Vec::new();
-            for (_dist, coord, desired) in changes.into_iter().take(TERRAIN_LOD_TRANSITIONS_PER_FRAME) {
-                // 先に目標 LOD を確定してから再メッシュする（remesh_chunks がこの値を読む）。
-                self.terrain.chunk_lod.insert(coord, desired);
-                coords.push(coord);
+            if !changes.is_empty() {
+                // 近いチャンクほど見た目への影響が大きいので、近い順に優先して処理する。
+                changes.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                let mut coords: Vec<ChunkCoord> = Vec::new();
+                for (_dist, coord, desired) in
+                    changes.into_iter().take(TERRAIN_LOD_TRANSITIONS_PER_FRAME)
+                {
+                    // 先に目標 LOD を確定してから再メッシュする（remesh_chunks がこの値を読む）。
+                    self.terrain.chunk_lod.insert(coord, desired);
+                    coords.push(coord);
+                }
+                // 既存の VRAM 安全な再メッシュ機構をそのまま使う（gpu_model と instanced_batch を
+                // 同時に作り直し、派生キャッシュ＝統合バッチ・BLAS も破棄される）。
+                self.remesh_chunks(&coords);
             }
-            // 既存の VRAM 安全な再メッシュ機構をそのまま使う（gpu_model と instanced_batch を
-            // 同時に作り直し、派生キャッシュ＝統合バッチ・BLAS も破棄される）。
-            self.remesh_chunks(&coords);
-        }
         } // if !*TERRAIN_LOD_DISABLED（遷移処理ここまで。以降の計測ログは on/off 共通）
 
         // ── 計測ログ（60 フレームに 1 回）: 現在アップロード済みの地形総三角形数と LOD 内訳 ──
@@ -2343,8 +2468,9 @@ impl App {
         }
 
         if !self.terrain.pending_remesh.is_empty() {
-            let mut coords: Vec<ChunkCoord> =
-                std::mem::take(&mut self.terrain.pending_remesh).into_iter().collect();
+            let mut coords: Vec<ChunkCoord> = std::mem::take(&mut self.terrain.pending_remesh)
+                .into_iter()
+                .collect();
             coords.sort_by_key(|c| (c.x, c.y, c.z));
             self.remesh_chunks(&coords);
             // ── 密度編集で地面が動いた → 散布プロップを新しい地表へ貼り直す ──
@@ -2360,8 +2486,9 @@ impl App {
         // ── ② 頂点カラーだけの更新待ちを消化する（ペイント高速パス）──
         //   決定性の担保は ① と同じ理由でソートする（`HashSet` の走査順は実行ごとに変わる）。
         if !self.terrain.pending_paint.is_empty() {
-            let mut coords: Vec<ChunkCoord> =
-                std::mem::take(&mut self.terrain.pending_paint).into_iter().collect();
+            let mut coords: Vec<ChunkCoord> = std::mem::take(&mut self.terrain.pending_paint)
+                .into_iter()
+                .collect();
             coords.sort_by_key(|c| (c.x, c.y, c.z));
             self.apply_terrain_paint_colors(&coords);
         }
@@ -2433,7 +2560,10 @@ impl App {
         // 地形チャンクが使うパレットを group3 へ登録する（描画前に済ませる必要がある）。
         // パレット用バインドグループはメッシュ VRAM とは別枠なので、フェーズ A より前でよい。
         self.ensure_terrain_palettes(
-            cpu_models.iter().filter_map(|m| m.as_ref()).map(|(model, _, _)| model.as_ref()),
+            cpu_models
+                .iter()
+                .filter_map(|m| m.as_ref())
+                .map(|(model, _, _)| model.as_ref()),
         );
 
         // ── フェーズ A: 対象全チャンクの旧 GpuModel を drop する ──
@@ -2477,7 +2607,9 @@ impl App {
             let ctx = self.draw_ctx.as_ref().unwrap();
             for (&coord, cpu) in coords.iter().zip(cpu_models.into_iter()) {
                 // 空メッシュのチャンクは gpu/batch=None で積まれ、下で非描画に差し替わる。
-                let Some((model, is_empty, edges)) = cpu else { continue };
+                let Some((model, is_empty, edges)) = cpu else {
+                    continue;
+                };
                 let (gpu, batch) = upload_chunk_model(ctx, &model, is_empty);
                 uploaded.push((coord, model, gpu, batch, edges));
             }
@@ -2531,7 +2663,11 @@ impl App {
             let gpu_ms = (swap_ms - poll_ms).max(0.0);
             eprintln!(
                 "[PERF terrain] remesh chunks={} cpu_mesh={:.2}ms gpu_swap={:.2}ms poll_wait={:.2}ms total={:.2}ms",
-                coords.len(), cpu_ms, gpu_ms, poll_ms, total_ms
+                coords.len(),
+                cpu_ms,
+                gpu_ms,
+                poll_ms,
+                total_ms
             );
         }
     }
@@ -2614,7 +2750,11 @@ impl App {
         // ── ③ 物理ワールドへ登録する（シリアル送信）──
         for entry in built.into_iter().flatten() {
             let (entity_id, position, shape, used_mc) = entry;
-            if used_mc { n_mc += 1; } else { n_reused += 1; }
+            if used_mc {
+                n_mc += 1;
+            } else {
+                n_reused += 1;
+            }
             let obj = terrain_collider_object(entity_id, position, shape);
             if let Some(thread) = &self.physics_thread {
                 thread.send(PhysicsCommand::AddObject(obj));
@@ -2626,7 +2766,10 @@ impl App {
             let total_ms = t_total.elapsed().as_secs_f64() * MILLIS_PER_SEC;
             eprintln!(
                 "[PERF terrain phys] register colliders total={:.2}ms registered={} (reused_mesh={} mc_fallback={})",
-                total_ms, n_reused + n_mc, n_reused, n_mc
+                total_ms,
+                n_reused + n_mc,
+                n_reused,
+                n_mc
             );
         }
     }
@@ -2762,11 +2905,11 @@ impl App {
         //   判断できない。理由別に数えておけば、ログ 1 行で
         //   「パレット変化（＝仕様どおり・ストローク 1 発目だけ）」なのか
         //   「キャッシュ欠落（＝配線の不備）」なのかを切り分けられる。
-        let mut fb_no_edges = 0usize;   // ① 由来辺キャッシュが無い
-        let mut fb_no_slot = 0usize;    // ③ スロット／ModelComponent が引けない
-        let mut fb_no_gpu = 0usize;     // 空メッシュチャンク（GPU リソース不在）
+        let mut fb_no_edges = 0usize; // ① 由来辺キャッシュが無い
+        let mut fb_no_slot = 0usize; // ③ スロット／ModelComponent が引けない
+        let mut fb_no_gpu = 0usize; // 空メッシュチャンク（GPU リソース不在）
         let mut fb_vert_mismatch = 0usize; // ④ 頂点数不一致
-        let mut fb_palette = 0usize;    // ⑦ パレット変化
+        let mut fb_palette = 0usize; // ⑦ パレット変化
 
         for &coord in coords {
             // ── ① 由来辺キャッシュ（無ければフル再メッシュ）──
@@ -2795,7 +2938,10 @@ impl App {
             let interpolated: Vec<(BlendSlots, f32)> = {
                 // `unwrap` は ② の存在確認済みなので安全。
                 let chunk = self.terrain.chunks.get(&coord).unwrap();
-                edges.par_iter().map(|edge| interp_vertex_paint(chunk, edge)).collect()
+                edges
+                    .par_iter()
+                    .map(|edge| interp_vertex_paint(chunk, edge))
+                    .collect()
             };
             let paint: Vec<BlendSlots> = interpolated.iter().map(|p| p.0).collect();
             let paint_amount: Vec<f32> = interpolated.iter().map(|p| p.1).collect();
@@ -2835,8 +2981,7 @@ impl App {
                     continue;
                 }
                 // 地形チャンクは単一メッシュ・単一プリミティブ・単一マテリアル。
-                let (Some(mesh), Some(material)) =
-                    (model.meshes.first(), model.materials.first())
+                let (Some(mesh), Some(material)) = (model.meshes.first(), model.materials.first())
                 else {
                     fb_no_gpu += 1;
                     fallback.push(coord);
@@ -2857,7 +3002,12 @@ impl App {
                 let positions: Vec<[f32; 3]> = prim.vertices.iter().map(|v| v.position).collect();
                 let normals: Vec<[f32; 3]> = prim.vertices.iter().map(|v| v.normal).collect();
                 let (colors, palette) = compute_layer_colors(
-                    &positions, &normals, &paint, &paint_amount, world_origin, &layers,
+                    &positions,
+                    &normals,
+                    &paint,
+                    &paint_amount,
+                    world_origin,
+                    &layers,
                 );
 
                 // ── ⑦ パレット変化＝頂点カラー成分の意味が変わる → フル再メッシュ ──
@@ -2867,7 +3017,11 @@ impl App {
                     continue;
                 }
                 rebuild_terrain_model_with_colors(
-                    &prim.vertices, &prim.indices, &model.name, &colors, palette,
+                    &prim.vertices,
+                    &prim.indices,
+                    &model.name,
+                    &colors,
+                    palette,
                 )
             };
             colors_ms += t_colors.elapsed().as_secs_f64() * MILLIS_PER_SEC;
@@ -2882,7 +3036,9 @@ impl App {
             let t_upload = Instant::now();
             {
                 let ctx = self.draw_ctx.as_ref().unwrap();
-                let Some(scene) = self.scene.as_mut() else { continue };
+                let Some(scene) = self.scene.as_mut() else {
+                    continue;
+                };
                 let Some(mc) = scene.world.get_mut::<ModelComponent>(slot_entity) else {
                     continue;
                 };
@@ -2931,9 +3087,18 @@ impl App {
             eprintln!(
                 "[PERF terrain] paint chunks={} fast={} fallback={} (edges={} slot={} gpu={} verts={} palette={}) recalc={:.2}ms \
                  colors={:.2}ms upload={:.2}ms total={:.2}ms",
-                coords.len(), painted.len(), fallback.len(),
-                fb_no_edges, fb_no_slot, fb_no_gpu, fb_vert_mismatch, fb_palette,
-                recalc_ms, colors_ms, upload_ms, total_ms
+                coords.len(),
+                painted.len(),
+                fallback.len(),
+                fb_no_edges,
+                fb_no_slot,
+                fb_no_gpu,
+                fb_vert_mismatch,
+                fb_palette,
+                recalc_ms,
+                colors_ms,
+                upload_ms,
+                total_ms
             );
         }
     }
@@ -2994,7 +3159,8 @@ impl App {
             let before = std::mem::take(&mut self.terrain.stroke_before);
 
             // ── before と同じチャンク集合について、現在（ストローク終了時点）の密度を after として集める ──
-            let mut after: HashMap<ChunkCoord, ChunkSnapshot> = HashMap::with_capacity(before.len());
+            let mut after: HashMap<ChunkCoord, ChunkSnapshot> =
+                HashMap::with_capacity(before.len());
             for &coord in before.keys() {
                 if let Some(chunk) = self.terrain.chunks.get(&coord) {
                     after.insert(coord, ChunkSnapshot::capture(chunk));
@@ -3124,7 +3290,10 @@ impl App {
         }
         // 地形状態をリセットしてシーン名を取り込む。
         self.terrain = TerrainState::default();
-        let scene_name = match self.scene.as_ref() { Some(s) => s.name.clone(), None => return };
+        let scene_name = match self.scene.as_ref() {
+            Some(s) => s.name.clone(),
+            None => return,
+        };
         self.terrain.scene_name = scene_name;
 
         // ── 旧シーン（アクター親子版 terrain）→ フォルダ版への移行 ──
@@ -3264,8 +3433,10 @@ impl App {
                         eprintln!(
                             "[SEED terrain] tvox chunk config mismatch, skip: {path} \
                              (samples={} voxel={} / expected samples={} voxel={})",
-                            header.samples_per_axis, header.voxel_size,
-                            first.samples_per_axis, first.voxel_size
+                            header.samples_per_axis,
+                            header.voxel_size,
+                            first.samples_per_axis,
+                            first.voxel_size
                         );
                         continue;
                     }
@@ -3311,7 +3482,12 @@ impl App {
         let layers_ms = t_layers.elapsed().as_secs_f64() * MILLIS_PER_SEC;
         let settings = self.terrain.settings.clone();
         let layers = self.terrain.layers.clone();
-        let mut prebuilt: Vec<(Entity, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> = Vec::new();
+        let mut prebuilt: Vec<(
+            Entity,
+            Arc<Model>,
+            Option<GpuModel>,
+            Option<InstancedModelBatch>,
+        )> = Vec::new();
         // 由来辺は借用の都合で一旦ローカルへ溜め、この後 self.terrain へ入れる。
         let mut prebuilt_edges: Vec<(ChunkCoord, Arc<Vec<TerrainVertexEdge>>)> = Vec::new();
 
@@ -3325,7 +3501,9 @@ impl App {
         let t_mc = Instant::now();
         let cpu_models: Vec<Option<(Arc<Model>, bool, Arc<Vec<TerrainVertexEdge>>)>> = loaded
             .par_iter()
-            .map(|(coord, _mc_slot)| build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, *coord, 0))
+            .map(|(coord, _mc_slot)| {
+                build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, *coord, 0)
+            })
             .collect();
         let mc_ms = t_mc.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 
@@ -3336,7 +3514,9 @@ impl App {
             let ctx = self.draw_ctx.as_ref().unwrap();
             for ((coord, mc_slot), cpu) in loaded.iter().zip(cpu_models.into_iter()) {
                 // 空メッシュチャンクは gpu/batch=None で返る（非描画のまま MC を埋める）。
-                let Some((model, is_empty, edges)) = cpu else { continue };
+                let Some((model, is_empty, edges)) = cpu else {
+                    continue;
+                };
                 let (gpu, batch) = upload_chunk_model(ctx, &model, is_empty);
                 prebuilt.push((*mc_slot, model, gpu, batch));
                 prebuilt_edges.push((*coord, edges));
@@ -3382,8 +3562,14 @@ impl App {
             eprintln!(
                 "[PERF terrain load] chunks={} cells={} tvox_io={:.2}ms layers={:.2}ms \
                  mc_mesh={:.2}ms gpu_upload={:.2}ms palettes={:.2}ms total={:.2}ms",
-                loaded.len(), settings.chunk_cells,
-                io_ms, layers_ms, mc_ms, upload_ms, palettes_ms, total_ms
+                loaded.len(),
+                settings.chunk_cells,
+                io_ms,
+                layers_ms,
+                mc_ms,
+                upload_ms,
+                palettes_ms,
+                total_ms
             );
         }
     }
@@ -3400,10 +3586,10 @@ impl App {
         //   「構成指定が効くこと」「既存を保ったまま広げられること」を実機で通す。
         //   本編のスクリーンショット構図に影響しないよう、確認後に既定構成で作り直す。
         self.handle_terrain_init(Some(TerrainChunkConfig {
-            chunks_x:    SMOKE_CONFIG_CHUNKS,
-            chunks_z:    SMOKE_CONFIG_CHUNKS,
+            chunks_x: SMOKE_CONFIG_CHUNKS,
+            chunks_z: SMOKE_CONFIG_CHUNKS,
             chunk_cells: SMOKE_CONFIG_CHUNK_CELLS,
-            voxel_size:  SMOKE_CONFIG_VOXEL_SIZE,
+            voxel_size: SMOKE_CONFIG_VOXEL_SIZE,
         }));
         let small_chunks = self.terrain.chunks.len();
         let small_cells = self.terrain.settings.chunk_cells;
@@ -3426,10 +3612,10 @@ impl App {
             .filter(|v| *v > 0)
             .unwrap_or(SMOKE_DEFAULT_CHUNKS);
         self.handle_terrain_init(Some(TerrainChunkConfig {
-            chunks_x:    smoke_chunks,
-            chunks_z:    smoke_chunks,
+            chunks_x: smoke_chunks,
+            chunks_z: smoke_chunks,
             chunk_cells: SMOKE_DEFAULT_CHUNK_CELLS,
-            voxel_size:  SMOKE_DEFAULT_VOXEL_SIZE,
+            voxel_size: SMOKE_DEFAULT_VOXEL_SIZE,
         }));
 
         // ── デバッグカメラをフットプリント全体が見える位置へ向ける ──
@@ -3449,7 +3635,9 @@ impl App {
         // 視線方向 = 正規化(center - eye)。yaw/pitch は debug_camera の規約に合わせる
         //   （forward → yaw = atan2(fwd.x, fwd.z), pitch = asin(-fwd.y)）。
         let dir = [center[0] - eye[0], center[1] - eye[1], center[2] - eye[2]];
-        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(f32::EPSILON);
+        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2])
+            .sqrt()
+            .max(f32::EPSILON);
         let fwd = [dir[0] / len, dir[1] / len, dir[2] / len];
         let yaw = fwd[0].atan2(fwd[2]);
         let pitch = (-fwd[1]).clamp(-1.0, 1.0).asin();
@@ -3467,8 +3655,8 @@ impl App {
             const LOOKAWAY_EYE_HEIGHT: f32 = 12.0;
             (
                 [center[0], center[1] + LOOKAWAY_EYE_HEIGHT, -span],
-                std::f32::consts::PI,       // yaw=180°（-Z 方向＝地形と反対を向く）
-                0.0f32,                     // 水平（地形は真後ろ）
+                std::f32::consts::PI, // yaw=180°（-Z 方向＝地形と反対を向く）
+                0.0f32,               // 水平（地形は真後ろ）
                 SMOKE_CAM_FOV_DEG,
                 SMOKE_CAM_FAR,
             )
@@ -3484,14 +3672,19 @@ impl App {
             //   SEED_SMOKE_FPV_EYE=<m>   … 目線高さ（既定 12m）
             //   SEED_SMOKE_FPV_YAW=<deg> … 向き（既定 0=+Z。ハイトマップの傾斜は X 方向なので
             //                              90 で +X の上り坂へ向く＝尾根越しの遮蔽が出る）
-            let eye_h = std::env::var("SEED_SMOKE_FPV_EYE").ok()
-                .and_then(|s| s.parse::<f32>().ok()).unwrap_or(FPV_EYE_HEIGHT);
-            let yaw_fpv = std::env::var("SEED_SMOKE_FPV_YAW").ok()
-                .and_then(|s| s.parse::<f32>().ok()).map(|d| d * deg2rad).unwrap_or(0.0);
+            let eye_h = std::env::var("SEED_SMOKE_FPV_EYE")
+                .ok()
+                .and_then(|s| s.parse::<f32>().ok())
+                .unwrap_or(FPV_EYE_HEIGHT);
+            let yaw_fpv = std::env::var("SEED_SMOKE_FPV_YAW")
+                .ok()
+                .and_then(|s| s.parse::<f32>().ok())
+                .map(|d| d * deg2rad)
+                .unwrap_or(0.0);
             (
                 [center[0], center[1] + eye_h, center[2]],
                 yaw_fpv,
-                FPV_PITCH_DEG * deg2rad,    // わずかに下向き（地面が見える）
+                FPV_PITCH_DEG * deg2rad, // わずかに下向き（地面が見える）
                 SMOKE_CAM_FOV_DEG,
                 SMOKE_CAM_FAR,
             )
@@ -3515,28 +3708,36 @@ impl App {
         //   向きは「斜め上から見下ろす」= forward が下向き＋わずかに傾く姿勢にする。
         if let Some(scene) = self.scene.as_mut() {
             let light_entity = scene.world.spawn();
-            scene.world.insert(light_entity, ActorTransform {
-                position: [center[0], span * SMOKE_CAM_UP_RATIO, center[2]],
-                rotation: [SMOKE_LIGHT_PITCH_DEG, SMOKE_LIGHT_YAW_DEG, 0.0],
-                scale:    [1.0, 1.0, 1.0],
-            });
+            scene.world.insert(
+                light_entity,
+                ActorTransform {
+                    position: [center[0], span * SMOKE_CAM_UP_RATIO, center[2]],
+                    rotation: [SMOKE_LIGHT_PITCH_DEG, SMOKE_LIGHT_YAW_DEG, 0.0],
+                    scale: [1.0, 1.0, 1.0],
+                },
+            );
             let mut light_actor = Actor::new(light_entity, SMOKE_LIGHT_ACTOR_NAME);
             let light_slot = scene.world.spawn();
-            scene.world.insert(light_slot, crate::engine::components::LightComponent {
-                kind:             crate::engine::components::LightKind::Directional,
-                color:            SMOKE_LIGHT_COLOR,
-                intensity:        SMOKE_LIGHT_INTENSITY,
-                range:            SMOKE_LIGHT_RANGE,
-                inner_angle_deg:  0.0,
-                outer_angle_deg:  0.0,
-                rect_width:       0.0,
-                rect_height:      0.0,
-                cast_shadows:     true,
-                soft_radius:      SMOKE_LIGHT_SOFT_RADIUS_DEG,
-                bounce_intensity: 0.0,
-            });
+            scene.world.insert(
+                light_slot,
+                crate::engine::components::LightComponent {
+                    kind: crate::engine::components::LightKind::Directional,
+                    color: SMOKE_LIGHT_COLOR,
+                    intensity: SMOKE_LIGHT_INTENSITY,
+                    range: SMOKE_LIGHT_RANGE,
+                    inner_angle_deg: 0.0,
+                    outer_angle_deg: 0.0,
+                    rect_width: 0.0,
+                    rect_height: 0.0,
+                    cast_shadows: true,
+                    soft_radius: SMOKE_LIGHT_SOFT_RADIUS_DEG,
+                    bounce_intensity: 0.0,
+                },
+            );
             light_actor.add_slot_typed::<crate::engine::components::LightComponent>(
-                SMOKE_LIGHT_SLOT_NAME, ComponentKind::Light, light_slot,
+                SMOKE_LIGHT_SLOT_NAME,
+                ComponentKind::Light,
+                light_slot,
             );
             scene.actors.push(light_actor);
         }
@@ -3545,8 +3746,18 @@ impl App {
         //   Add は密度を下げて solid を増やす（隆起）、Subtract は密度を上げて air を増やす（陥没/洞窟）。
         let bump_center = [center[0] - SMOKE_BRUSH_OFFSET, 0.0, center[2]];
         let hole_center = [center[0] + SMOKE_BRUSH_OFFSET, 0.0, center[2]];
-        self.handle_terrain_brush_world(BrushOp::Add, bump_center, SMOKE_BRUSH_RADIUS, SMOKE_BRUSH_STRENGTH);
-        self.handle_terrain_brush_world(BrushOp::Subtract, hole_center, SMOKE_BRUSH_RADIUS, SMOKE_BRUSH_STRENGTH);
+        self.handle_terrain_brush_world(
+            BrushOp::Add,
+            bump_center,
+            SMOKE_BRUSH_RADIUS,
+            SMOKE_BRUSH_STRENGTH,
+        );
+        self.handle_terrain_brush_world(
+            BrushOp::Subtract,
+            hole_center,
+            SMOKE_BRUSH_RADIUS,
+            SMOKE_BRUSH_STRENGTH,
+        );
 
         // ── 連続ストローク（畝）: エディタのドラッグ相当を模擬する ──
         //   -Z 方向へ点を並べて Add ブラシを連続適用し、線を引いたような盛り上がりを作る。
@@ -3555,7 +3766,12 @@ impl App {
         let stroke_z0 = center[2] - (SMOKE_STROKE_STEPS as f32 * SMOKE_STROKE_SPACING) * 0.5;
         for i in 0..SMOKE_STROKE_STEPS {
             let sc = [stroke_x, 0.0, stroke_z0 + i as f32 * SMOKE_STROKE_SPACING];
-            self.handle_terrain_brush_world(BrushOp::Add, sc, SMOKE_BRUSH_RADIUS * 0.6, SMOKE_BRUSH_STRENGTH);
+            self.handle_terrain_brush_world(
+                BrushOp::Add,
+                sc,
+                SMOKE_BRUSH_RADIUS * 0.6,
+                SMOKE_BRUSH_STRENGTH,
+            );
         }
 
         // 上の盛り/掘り/畝はすべて同じ暗黙ストローク中（handle_terrain_brush_world の最初の
@@ -3574,13 +3790,26 @@ impl App {
             (undo_test_center[2] / extent).floor() as i32,
         );
         for _ in 0..SMOKE_UNDO_TEST_BRUSH_COUNT {
-            self.handle_terrain_brush_world(BrushOp::Add, undo_test_center, SMOKE_BRUSH_RADIUS, SMOKE_BRUSH_STRENGTH);
+            self.handle_terrain_brush_world(
+                BrushOp::Add,
+                undo_test_center,
+                SMOKE_BRUSH_RADIUS,
+                SMOKE_BRUSH_STRENGTH,
+            );
         }
-        let density_after_stroke = self.terrain.chunks.get(&undo_test_coord).map(|c| c.raw_density().to_vec());
+        let density_after_stroke = self
+            .terrain
+            .chunks
+            .get(&undo_test_coord)
+            .map(|c| c.raw_density().to_vec());
         self.handle_terrain_stroke_end();
 
         self.handle_terrain_undo();
-        let density_after_undo = self.terrain.chunks.get(&undo_test_coord).map(|c| c.raw_density().to_vec());
+        let density_after_undo = self
+            .terrain
+            .chunks
+            .get(&undo_test_coord)
+            .map(|c| c.raw_density().to_vec());
         eprintln!(
             "[SEED terrain] smoke: undo reverted density = {} (undo_stack={}, redo_stack={})",
             density_after_undo != density_after_stroke && density_after_undo.is_some(),
@@ -3589,7 +3818,11 @@ impl App {
         );
 
         self.handle_terrain_redo();
-        let density_after_redo = self.terrain.chunks.get(&undo_test_coord).map(|c| c.raw_density().to_vec());
+        let density_after_redo = self
+            .terrain
+            .chunks
+            .get(&undo_test_coord)
+            .map(|c| c.raw_density().to_vec());
         eprintln!(
             "[SEED terrain] smoke: redo reapplied density = {} (undo_stack={}, redo_stack={})",
             density_after_redo == density_after_stroke,
@@ -3605,11 +3838,10 @@ impl App {
         {
             use image::{ImageBuffer, Luma};
             let denom = (SMOKE_HEIGHTMAP_SIZE - 1).max(1);
-            let img: ImageBuffer<Luma<u8>, Vec<u8>> = ImageBuffer::from_fn(
-                SMOKE_HEIGHTMAP_SIZE,
-                SMOKE_HEIGHTMAP_SIZE,
-                |x, _y| Luma([(x * 255 / denom) as u8]),
-            );
+            let img: ImageBuffer<Luma<u8>, Vec<u8>> =
+                ImageBuffer::from_fn(SMOKE_HEIGHTMAP_SIZE, SMOKE_HEIGHTMAP_SIZE, |x, _y| {
+                    Luma([(x * 255 / denom) as u8])
+                });
             if let Err(e) = img.save(&heightmap_path) {
                 eprintln!("[SEED terrain] smoke: heightmap PNG write failed: {e}");
             }
@@ -3633,8 +3865,18 @@ impl App {
         //   強い盛り／掘りで確実に 38 度超の斜面を作る。
         let steep_up = [center[0] - SMOKE_STEEP_OFFSET, 0.0, center[2]];
         let steep_dn = [center[0] + SMOKE_STEEP_OFFSET, 0.0, center[2]];
-        self.handle_terrain_brush_world(BrushOp::Add, steep_up, SMOKE_BRUSH_RADIUS, SMOKE_STEEP_STRENGTH);
-        self.handle_terrain_brush_world(BrushOp::Subtract, steep_dn, SMOKE_BRUSH_RADIUS, SMOKE_STEEP_STRENGTH);
+        self.handle_terrain_brush_world(
+            BrushOp::Add,
+            steep_up,
+            SMOKE_BRUSH_RADIUS,
+            SMOKE_STEEP_STRENGTH,
+        );
+        self.handle_terrain_brush_world(
+            BrushOp::Subtract,
+            steep_dn,
+            SMOKE_BRUSH_RADIUS,
+            SMOKE_STEEP_STRENGTH,
+        );
         self.handle_terrain_stroke_end();
 
         // ── レイヤペイント（手ペイント）の実機確認 ──
@@ -3647,7 +3889,10 @@ impl App {
             let y = i as f32 * SMOKE_PAINT_COLUMN_STEP_Y;
             let paint_center = [center[0] + SMOKE_PAINT_OFFSET, y, center[2]];
             self.handle_terrain_paint_world(
-                SMOKE_PAINT_LAYER, paint_center, SMOKE_PAINT_RADIUS, SMOKE_PAINT_STRENGTH,
+                SMOKE_PAINT_LAYER,
+                paint_center,
+                SMOKE_PAINT_RADIUS,
+                SMOKE_PAINT_STRENGTH,
             );
         }
         self.handle_terrain_stroke_end();
@@ -3687,14 +3932,20 @@ impl App {
                 self.terrain.props.active_count(),
             );
         } else {
-            eprintln!("[SEED terrain] smoke: SEED_SMOKE_NO_SCATTER 設定により散布をスキップ（地形のみ計測）");
+            eprintln!(
+                "[SEED terrain] smoke: SEED_SMOKE_NO_SCATTER 設定により散布をスキップ（地形のみ計測）"
+            );
         }
 
         // ── プレビュー球の模擬 ──
         //   エディタ経由でしか出ないワイヤスフィアを、スモークでも直接セットして映す。
         //   footprint 中心の地表付近に置く（レイマーチのヒット点に相当）。
         //   strength を高め（⑥の色分岐が視認できる値）にセットする。
-        self.terrain.brush_preview = Some(([center[0], 0.0, center[2]], SMOKE_PREVIEW_RADIUS, SMOKE_PREVIEW_STRENGTH));
+        self.terrain.brush_preview = Some((
+            [center[0], 0.0, center[2]],
+            SMOKE_PREVIEW_RADIUS,
+            SMOKE_PREVIEW_STRENGTH,
+        ));
 
         // ── カメラを再適用する ──
         //   ハイトマップと急斜面デモで地形が上へ伸びたため、初期化時の画角のままでは
@@ -3723,7 +3974,9 @@ impl App {
     /// ハードコードした座標ではなく散布データから引くので、地形やルールを変えても追従する。
     pub(super) fn tick_terrain_smoke_closeup(&mut self) {
         use std::sync::atomic::Ordering;
-        let Some(target_frame) = *SMOKE_CLOSEUP_FRAME else { return };
+        let Some(target_frame) = *SMOKE_CLOSEUP_FRAME else {
+            return;
+        };
         if SMOKE_CLOSEUP_DONE.load(Ordering::Relaxed) {
             return;
         }
@@ -3768,7 +4021,11 @@ impl App {
         }
         let inv = 1.0 / picked.len() as f32;
         let centroid = picked.iter().fold([0.0f32; 3], |acc, p| {
-            [acc[0] + p[0] * inv, acc[1] + p[1] * inv, acc[2] + p[2] * inv]
+            [
+                acc[0] + p[0] * inv,
+                acc[1] + p[1] * inv,
+                acc[2] + p[2] * inv,
+            ]
         });
         let subject = *picked
             .iter()
@@ -3783,7 +4040,11 @@ impl App {
             .expect("空でないことは上で確認済み");
 
         // 注視点は被写体の少し上（草の中ほど）。カメラは -Z 側からほぼ水平に見る。
-        let target = [subject[0], subject[1] + SMOKE_CLOSEUP_TARGET_LIFT, subject[2]];
+        let target = [
+            subject[0],
+            subject[1] + SMOKE_CLOSEUP_TARGET_LIFT,
+            subject[2],
+        ];
         let eye = [
             target[0],
             subject[1] + SMOKE_CLOSEUP_EYE_HEIGHT,
@@ -3791,15 +4052,17 @@ impl App {
         ];
         // yaw/pitch は debug_camera の規約（forward → yaw = atan2(fwd.x, fwd.z), pitch = asin(-fwd.y)）。
         let dir = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
-        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(f32::EPSILON);
+        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2])
+            .sqrt()
+            .max(f32::EPSILON);
         let fwd = [dir[0] / len, dir[1] / len, dir[2] / len];
         let cam = crate::engine::core::app_base::scene::DebugCameraData {
             position: eye,
-            yaw:      fwd[0].atan2(fwd[2]),
-            pitch:    (-fwd[1]).clamp(-1.0, 1.0).asin(),
-            fov_deg:  SMOKE_CLOSEUP_FOV_DEG,
-            far:      SMOKE_CLOSEUP_FAR,
-            speed:    SMOKE_CLOSEUP_SPEED,
+            yaw: fwd[0].atan2(fwd[2]),
+            pitch: (-fwd[1]).clamp(-1.0, 1.0).asin(),
+            fov_deg: SMOKE_CLOSEUP_FOV_DEG,
+            far: SMOKE_CLOSEUP_FAR,
+            speed: SMOKE_CLOSEUP_SPEED,
         };
         self.apply_camera_data(&cam);
         // ブラシのプレビュー球は近接では画面を覆ってしまうので消す。
@@ -3906,7 +4169,10 @@ impl App {
 
         // ── 中央に小山を盛る（球が転がる斜面を作る）──
         self.handle_terrain_brush_world(
-            BrushOp::Add, center, PHYS_SMOKE_MOUND_RADIUS, PHYS_SMOKE_MOUND_STRENGTH,
+            BrushOp::Add,
+            center,
+            PHYS_SMOKE_MOUND_RADIUS,
+            PHYS_SMOKE_MOUND_STRENGTH,
         );
         self.handle_terrain_stroke_end();
         // ブラシ由来の pending_remesh をここで確実に消化して地形メッシュを確定させる
@@ -3920,7 +4186,9 @@ impl App {
             center[2] - span * SMOKE_CAM_BACK_RATIO,
         ];
         let dir = [center[0] - eye[0], center[1] - eye[1], center[2] - eye[2]];
-        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(f32::EPSILON);
+        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2])
+            .sqrt()
+            .max(f32::EPSILON);
         let fwd = [dir[0] / len, dir[1] / len, dir[2] / len];
         let cam = crate::engine::core::app_base::scene::DebugCameraData {
             position: eye,
@@ -3944,25 +4212,35 @@ impl App {
                 let y = PHYS_SMOKE_DROP_Y + i as f32 * PHYS_SMOKE_DROP_Y_STEP;
 
                 let ball_entity = scene.world.spawn();
-                scene.world.insert(ball_entity, ActorTransform {
-                    position: [x, y, z],
-                    rotation: [0.0, 0.0, 0.0],
-                    scale: [1.0, 1.0, 1.0],
-                });
+                scene.world.insert(
+                    ball_entity,
+                    ActorTransform {
+                        position: [x, y, z],
+                        rotation: [0.0, 0.0, 0.0],
+                        scale: [1.0, 1.0, 1.0],
+                    },
+                );
                 let mut ball_actor = Actor::new(ball_entity, PHYS_SMOKE_BALL_ACTOR_NAME);
 
                 let col_slot = scene.world.spawn();
-                scene.world.insert(col_slot, ColliderComponent {
-                    shape: ColliderShapeData::Sphere { radius: PHYS_SMOKE_BALL_RADIUS },
-                    use_rigidbody: true,
-                    is_kinematic: false,
-                    mass: PHYS_SMOKE_BALL_MASS,
-                    restitution: PHYS_SMOKE_BALL_RESTITUTION,
-                    friction: PHYS_SMOKE_BALL_FRICTION,
-                    ..ColliderComponent::default()
-                });
+                scene.world.insert(
+                    col_slot,
+                    ColliderComponent {
+                        shape: ColliderShapeData::Sphere {
+                            radius: PHYS_SMOKE_BALL_RADIUS,
+                        },
+                        use_rigidbody: true,
+                        is_kinematic: false,
+                        mass: PHYS_SMOKE_BALL_MASS,
+                        restitution: PHYS_SMOKE_BALL_RESTITUTION,
+                        friction: PHYS_SMOKE_BALL_FRICTION,
+                        ..ColliderComponent::default()
+                    },
+                );
                 ball_actor.add_slot_typed::<ColliderComponent>(
-                    PHYS_SMOKE_BALL_SLOT_NAME, ComponentKind::Collider, col_slot,
+                    PHYS_SMOKE_BALL_SLOT_NAME,
+                    ComponentKind::Collider,
+                    col_slot,
                 );
                 scene.actors.push(ball_actor);
                 spawned.push(ball_entity);
@@ -3994,26 +4272,41 @@ impl App {
             return;
         }
         let balls = PHYS_SMOKE_BALLS.lock().unwrap().clone();
-        let Some(scene) = self.scene.as_ref() else { return };
+        let Some(scene) = self.scene.as_ref() else {
+            return;
+        };
 
         // 各球の現在 Y を収集する。
-        let ys: Vec<f32> = balls.iter().map(|&e| {
-            scene.world.get::<ActorTransform>(e).map(|t| t.position[1]).unwrap_or(f32::NAN)
-        }).collect();
+        let ys: Vec<f32> = balls
+            .iter()
+            .map(|&e| {
+                scene
+                    .world
+                    .get::<ActorTransform>(e)
+                    .map(|t| t.position[1])
+                    .unwrap_or(f32::NAN)
+            })
+            .collect();
 
-        let min_y = ys.iter().cloned().filter(|y| y.is_finite()).fold(f32::INFINITY, f32::min);
-        let max_y = ys.iter().cloned().filter(|y| y.is_finite()).fold(f32::NEG_INFINITY, f32::max);
-        eprintln!(
-            "[SEED phys-smoke] frame {n}: ball Y = {ys:?} (min={min_y:.3}, max={max_y:.3})"
-        );
+        let min_y = ys
+            .iter()
+            .cloned()
+            .filter(|y| y.is_finite())
+            .fold(f32::INFINITY, f32::min);
+        let max_y = ys
+            .iter()
+            .cloned()
+            .filter(|y| y.is_finite())
+            .fold(f32::NEG_INFINITY, f32::max);
+        eprintln!("[SEED phys-smoke] frame {n}: ball Y = {ys:?} (min={min_y:.3}, max={max_y:.3})");
 
         // 最終観測フレームで合否判定する。
         if Some(&n) == PHYS_SMOKE_SAMPLE_FRAMES.last() {
             // すべての球が「地表付近で静止」＝ Y が下限より上（すり抜けていない）かつ
             // 落下開始位置よりは十分下（実際に落ちて着地した）。
-            let all_rested = ys.iter().all(|&y| {
-                y.is_finite() && y > PHYS_SMOKE_REST_Y_MIN && y < PHYS_SMOKE_REST_Y_MAX
-            });
+            let all_rested = ys
+                .iter()
+                .all(|&y| y.is_finite() && y > PHYS_SMOKE_REST_Y_MIN && y < PHYS_SMOKE_REST_Y_MAX);
             eprintln!(
                 "[SEED phys-smoke] RESULT: all_balls_rested_on_terrain = {all_rested} \
                  (期待範囲 {PHYS_SMOKE_REST_Y_MIN}..{PHYS_SMOKE_REST_Y_MAX}; \
@@ -4247,10 +4540,19 @@ mod tests {
                 .iter()
                 .map(|&coord| {
                     let base = [coord.x * cell_i, coord.y * cell_i, coord.z * cell_i];
-                    let mesh = terrain::generate(chunks.get(&coord).unwrap(), &settings, |lx, ly, lz| {
-                        read_global_impl(&chunks, cell_i, clamp, base[0] + lx, base[1] + ly, base[2] + lz)
-                    });
-                    let (m, _) = terrain_mesh_to_model(&mesh, "b", coord.world_origin(&settings), &layers);
+                    let mesh =
+                        terrain::generate(chunks.get(&coord).unwrap(), &settings, |lx, ly, lz| {
+                            read_global_impl(
+                                &chunks,
+                                cell_i,
+                                clamp,
+                                base[0] + lx,
+                                base[1] + ly,
+                                base[2] + lz,
+                            )
+                        });
+                    let (m, _) =
+                        terrain_mesh_to_model(&mesh, "b", coord.world_origin(&settings), &layers);
                     (coord, m)
                 })
                 .collect();
@@ -4284,7 +4586,10 @@ mod tests {
             let c_count = c.iter().filter(|s| s.is_some()).count();
 
             assert_eq!(a_count, b_count);
-            assert_eq!(a_count, c_count, "再利用経路のコライダー数が MC 経路と一致する");
+            assert_eq!(
+                a_count, c_count,
+                "再利用経路のコライダー数が MC 経路と一致する"
+            );
 
             println!(
                 "[BENCH phys] cells={cells:>3} chunks={} with_collider={a_count} | \
@@ -4320,8 +4625,10 @@ mod tests {
         chunks.insert(coord, chunk);
 
         // ── 正典: MC 経路のコライダー ──
-        let ColliderShape::TriangleMeshIndexed { vertices: mc_v, indices: mc_i } =
-            build_chunk_collider_shape(&chunks, &settings, coord).expect("有効メッシュ")
+        let ColliderShape::TriangleMeshIndexed {
+            vertices: mc_v,
+            indices: mc_i,
+        } = build_chunk_collider_shape(&chunks, &settings, coord).expect("有効メッシュ")
         else {
             panic!("TriangleMeshIndexed");
         };
@@ -4332,18 +4639,30 @@ mod tests {
         let clamp = settings.density_clamp;
         let base = [coord.x * cells, coord.y * cells, coord.z * cells];
         let mesh = terrain::generate(chunks.get(&coord).unwrap(), &settings, |lx, ly, lz| {
-            read_global_impl(&chunks, cells, clamp, base[0] + lx, base[1] + ly, base[2] + lz)
+            read_global_impl(
+                &chunks,
+                cells,
+                clamp,
+                base[0] + lx,
+                base[1] + ly,
+                base[2] + lz,
+            )
         });
         let layers = TerrainLayerSet::default();
         let (model, _) =
             terrain_mesh_to_model(&mesh, "test_chunk", coord.world_origin(&settings), &layers);
-        let ColliderShape::TriangleMeshIndexed { vertices: m_v, indices: m_i } =
-            collider_shape_from_model(&model).expect("Model からコライダーを取り出せる")
+        let ColliderShape::TriangleMeshIndexed {
+            vertices: m_v,
+            indices: m_i,
+        } = collider_shape_from_model(&model).expect("Model からコライダーを取り出せる")
         else {
             panic!("TriangleMeshIndexed");
         };
 
-        assert_eq!(mc_v, m_v, "頂点位置（チャンクローカル）が MC 経路と一致する");
+        assert_eq!(
+            mc_v, m_v,
+            "頂点位置（チャンクローカル）が MC 経路と一致する"
+        );
         assert_eq!(mc_i, m_i, "三角形インデックスが MC 経路と一致する");
     }
 
@@ -4380,7 +4699,11 @@ mod tests {
         let obj = terrain_collider_object(42, [3.0, 0.0, -5.0], shape);
         assert_eq!(obj.entity_id, 42);
         assert_eq!(obj.position, [3.0, 0.0, -5.0]);
-        assert_eq!(obj.rotation, [0.0, 0.0, 0.0, 1.0], "回転は単位クォータニオン");
+        assert_eq!(
+            obj.rotation,
+            [0.0, 0.0, 0.0, 1.0],
+            "回転は単位クォータニオン"
+        );
         assert_eq!(obj.scale, [1.0, 1.0, 1.0], "スケールは 1");
         assert_eq!(obj.collider_offset, [0.0, 0.0, 0.0]);
         assert!(obj.rigidbody.is_none(), "地形は Static（RigidBody なし）");
@@ -4394,7 +4717,11 @@ mod tests {
         let chunks = ground_map(&settings);
         // (0..=1) × (0..=0) の 2 枚を要求するが、(0,0,0) は既存なので 1 枚だけ返るはず。
         let new = collect_new_chunk_coords(&chunks, &settings, 0, 0, 1, 0);
-        assert_eq!(new, vec![ChunkCoord::new(1, 0, 0)], "既存チャンクは列挙されてはならない");
+        assert_eq!(
+            new,
+            vec![ChunkCoord::new(1, 0, 0)],
+            "既存チャンクは列挙されてはならない"
+        );
     }
 
     /// 範囲が反転（min > max）していても正規化されて同じ結果になること。
@@ -4402,7 +4729,7 @@ mod tests {
     fn collect_new_chunks_normalizes_reversed_range() {
         let settings = test_settings();
         let chunks = ground_map(&settings);
-        let forward  = collect_new_chunk_coords(&chunks, &settings, 1, 0, 2, 1);
+        let forward = collect_new_chunk_coords(&chunks, &settings, 1, 0, 2, 1);
         let reversed = collect_new_chunk_coords(&chunks, &settings, 2, 1, 1, 0);
         assert_eq!(forward, reversed);
         assert_eq!(forward.len(), 4, "2×2 枚が新規として列挙される");
@@ -4435,7 +4762,7 @@ mod tests {
         {
             let existing = chunks.get_mut(&ChunkCoord::new(0, 0, 0)).unwrap();
             let marker_slots = BlendSlots {
-                index:  [MARKER_PAINT_LAYER, 0, 0, 0],
+                index: [MARKER_PAINT_LAYER, 0, 0, 0],
                 weight: [1.0, 0.0, 0.0, 0.0],
             };
             for lz in 0..samples {
@@ -4457,16 +4784,19 @@ mod tests {
             for ly in 0..samples {
                 // 密度: 共有面がビット一致すること。
                 assert_eq!(
-                    new_chunk.sample(0, ly, lz), existing.sample(cells, ly, lz),
+                    new_chunk.sample(0, ly, lz),
+                    existing.sample(cells, ly, lz),
                     "共有面の密度が一致しない (ly={ly}, lz={lz})"
                 );
                 // ペイント量・レイヤ番号も引き継がれること（色の継ぎ目も出さない）。
                 assert_eq!(
-                    new_chunk.paint_amount(0, ly, lz), existing.paint_amount(cells, ly, lz),
+                    new_chunk.paint_amount(0, ly, lz),
+                    existing.paint_amount(cells, ly, lz),
                     "共有面のペイント量が一致しない (ly={ly}, lz={lz})"
                 );
                 assert_eq!(
-                    new_chunk.paint_slots(0, ly, lz).index[0], MARKER_PAINT_LAYER,
+                    new_chunk.paint_slots(0, ly, lz).index[0],
+                    MARKER_PAINT_LAYER,
                     "共有面のペイントレイヤ番号が引き継がれていない (ly={ly}, lz={lz})"
                 );
             }
@@ -4505,7 +4835,8 @@ mod tests {
                         continue;
                     }
                     assert_eq!(
-                        new_chunk.sample(lx, ly, lz), pristine.sample(lx, ly, lz),
+                        new_chunk.sample(lx, ly, lz),
+                        pristine.sample(lx, ly, lz),
                         "隣接の無いサンプルが書き換えられた ({lx},{ly},{lz})"
                     );
                 }

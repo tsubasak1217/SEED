@@ -45,11 +45,17 @@ impl GiGrid {
 
     /// 放射輝度アトラスのピクセル寸法（cols*10, rows*10）。
     pub fn irradiance_atlas_size(&self) -> (u32, u32) {
-        (self.atlas_cols() * GI_IRRADIANCE_TILE, self.atlas_rows() * GI_IRRADIANCE_TILE)
+        (
+            self.atlas_cols() * GI_IRRADIANCE_TILE,
+            self.atlas_rows() * GI_IRRADIANCE_TILE,
+        )
     }
     /// 可視性アトラスのピクセル寸法（cols*18, rows*18）。
     pub fn visibility_atlas_size(&self) -> (u32, u32) {
-        (self.atlas_cols() * GI_VISIBILITY_TILE, self.atlas_rows() * GI_VISIBILITY_TILE)
+        (
+            self.atlas_cols() * GI_VISIBILITY_TILE,
+            self.atlas_rows() * GI_VISIBILITY_TILE,
+        )
     }
 
     /// プローブ番号 → 格子座標 (px, py, pz)。
@@ -114,7 +120,11 @@ impl GiGrid {
                 origin[a] = 0.5 * (emin + emax);
             }
         }
-        Self { dims: clamped_dims, origin, spacing }
+        Self {
+            dims: clamped_dims,
+            origin,
+            spacing,
+        }
     }
 }
 
@@ -132,8 +142,15 @@ mod tests {
         let g = default_grid();
         for idx in 0..g.probe_count() {
             let c = g.coord_of_index(idx);
-            assert!(c[0] < g.dims[0] && c[1] < g.dims[1] && c[2] < g.dims[2], "座標が範囲外: {c:?}");
-            assert_eq!(g.index_of_coord(c), idx, "index→coord→index が不一致: idx={idx} c={c:?}");
+            assert!(
+                c[0] < g.dims[0] && c[1] < g.dims[1] && c[2] < g.dims[2],
+                "座標が範囲外: {c:?}"
+            );
+            assert_eq!(
+                g.index_of_coord(c),
+                idx,
+                "index→coord→index が不一致: idx={idx} c={c:?}"
+            );
         }
     }
 
@@ -144,9 +161,17 @@ mod tests {
         let p0 = g.probe_world_position([0, 0, 0]);
         // 原点は拡張後 min（= min - 5%/2*size）に一致。
         // size_x=20 → ext=0.5*0.05*20=0.5 → emin_x=-10.5
-        assert!((p0[0] - (-10.5)).abs() < 1e-3, "隅(0,0,0).x が拡張後 min と不一致: {}", p0[0]);
+        assert!(
+            (p0[0] - (-10.5)).abs() < 1e-3,
+            "隅(0,0,0).x が拡張後 min と不一致: {}",
+            p0[0]
+        );
         let plast = g.probe_world_position([g.dims[0] - 1, g.dims[1] - 1, g.dims[2] - 1]);
-        assert!((plast[0] - 10.5).abs() < 1e-3, "反対隅.x が拡張後 max と不一致: {}", plast[0]);
+        assert!(
+            (plast[0] - 10.5).abs() < 1e-3,
+            "反対隅.x が拡張後 max と不一致: {}",
+            plast[0]
+        );
     }
 
     /// アトラス寸法がタイル配置と整合すること。
@@ -164,7 +189,11 @@ mod tests {
     fn degenerate_aabb_has_nonzero_spacing() {
         let g = GiGrid::fit_from_aabb([1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [4, 4, 4]);
         for a in 0..3 {
-            assert!(g.spacing[a].is_finite() && g.spacing[a] > 0.0, "spacing[{a}]={} が不正", g.spacing[a]);
+            assert!(
+                g.spacing[a].is_finite() && g.spacing[a] > 0.0,
+                "spacing[{a}]={} が不正",
+                g.spacing[a]
+            );
         }
     }
 }

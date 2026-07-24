@@ -13,22 +13,19 @@
 //  両者は Actor.entity をキーで連携する。
 // ============================================================
 
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
 
-use crate::engine::ecs::{Entity, World, Phase, Schedule};
-use crate::engine::core::clock::FrameContext;
-use crate::engine::core::loader::{load_model, LoadError};
-use crate::engine::core::scripting::ScriptingHost;
-use crate::engine::methods::drawer::DrawContext;
 use crate::engine::components::{
-    ComponentData, ComponentKind,
-    Transform,
-    ModelComponent, InstanceMeta,
-    ScriptComponent, PlaceholderScriptSlot,
-    CameraComponent, CameraComponentData,
+    CameraComponent, CameraComponentData, ComponentData, ComponentKind, InstanceMeta,
+    ModelComponent, PlaceholderScriptSlot, ScriptComponent, Transform,
 };
+use crate::engine::core::clock::FrameContext;
+use crate::engine::core::loader::{LoadError, load_model};
+use crate::engine::core::scripting::ScriptingHost;
+use crate::engine::ecs::{Entity, Phase, Schedule, World};
+use crate::engine::methods::drawer::DrawContext;
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::ActorData;
 
@@ -46,7 +43,7 @@ pub enum SceneError {
 impl std::fmt::Display for SceneError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SceneError::Io(e)   => write!(f, "IO error: {e}"),
+            SceneError::Io(e) => write!(f, "IO error: {e}"),
             SceneError::Json(e) => write!(f, "JSON error: {e}"),
             SceneError::Load(e) => write!(f, "Load error: {e}"),
         }
@@ -54,9 +51,21 @@ impl std::fmt::Display for SceneError {
 }
 
 impl std::error::Error for SceneError {}
-impl From<std::io::Error>    for SceneError { fn from(e: std::io::Error)    -> Self { Self::Io(e) } }
-impl From<serde_json::Error> for SceneError { fn from(e: serde_json::Error) -> Self { Self::Json(e) } }
-impl From<LoadError>         for SceneError { fn from(e: LoadError)          -> Self { Self::Load(e) } }
+impl From<std::io::Error> for SceneError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+impl From<serde_json::Error> for SceneError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Json(e)
+    }
+}
+impl From<LoadError> for SceneError {
+    fn from(e: LoadError) -> Self {
+        Self::Load(e)
+    }
+}
 
 // ============================================================
 //  DebugCameraData — デバッグカメラの保存データ
@@ -65,18 +74,22 @@ impl From<LoadError>         for SceneError { fn from(e: LoadError)          -> 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DebugCameraData {
     pub position: [f32; 3],
-    pub yaw:      f32,
-    pub pitch:    f32,
-    pub fov_deg:  f32,
-    pub far:      f32,
-    pub speed:    f32,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub fov_deg: f32,
+    pub far: f32,
+    pub speed: f32,
 }
 
 impl Default for DebugCameraData {
     fn default() -> Self {
         Self {
             position: [0.0, 2.0, -10.0],
-            yaw: 0.0, pitch: 0.0, fov_deg: 45.0, far: 1000.0, speed: 5.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 45.0,
+            far: 1000.0,
+            speed: 5.0,
         }
     }
 }
@@ -91,15 +104,19 @@ impl Default for DebugCameraData {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CanvasCameraData {
     /// カメラの XY パン量（ワールドユニット）
-    pub pan_x:       f32,
-    pub pan_y:       f32,
+    pub pan_x: f32,
+    pub pan_y: f32,
     /// 垂直方向に見える範囲の半分（ワールドユニット）。小さいほどズームイン。
     pub ortho_half_h: f32,
 }
 
 impl Default for CanvasCameraData {
     fn default() -> Self {
-        Self { pan_x: 0.0, pan_y: 0.0, ortho_half_h: 10.0 }
+        Self {
+            pan_x: 0.0,
+            pan_y: 0.0,
+            ortho_half_h: 10.0,
+        }
     }
 }
 
@@ -109,7 +126,7 @@ impl Default for CanvasCameraData {
 
 #[derive(Serialize, Deserialize)]
 struct SceneData {
-    name:   String,
+    name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     debug_camera: Option<DebugCameraData>,
     actors: Vec<ActorData>,
@@ -121,9 +138,9 @@ struct SceneData {
 
 /// シーン本体。World（コンポーネントデータ）と Actor ツリーを所有する。
 pub struct Scene {
-    pub name:   String,
+    pub name: String,
     /// ECS コンポーネントストア。全 Actor のコンポーネントデータを格納する。
-    pub world:  World,
+    pub world: World,
     /// ルート Actor のリスト（順序を保持し DFS ID の計算に使う）。
     pub actors: Vec<Actor>,
     /// ECS システムスケジューラ。フレームの各フェーズで run_phase() から実行される。
@@ -136,7 +153,12 @@ impl Scene {
         // エンジン標準の ECS システム（ScriptSystem 等）を登録した Schedule を構築する
         let mut schedule = Schedule::new();
         crate::engine::systems::register_default_systems(&mut schedule);
-        Self { name: name.into(), world: World::new(), actors: Vec::new(), schedule }
+        Self {
+            name: name.into(),
+            world: World::new(),
+            actors: Vec::new(),
+            schedule,
+        }
     }
 
     pub fn add_actor(&mut self, actor: Actor) {
@@ -173,10 +195,7 @@ impl Scene {
     /// (Transform, CameraComponentData) を返す。
     /// シーン内にメインカメラが存在しない場合は None を返す。
     pub fn find_main_camera(&self) -> Option<(Transform, CameraComponentData)> {
-        fn search(
-            actor: &Actor,
-            world: &World,
-        ) -> Option<(Transform, CameraComponentData)> {
+        fn search(actor: &Actor, world: &World) -> Option<(Transform, CameraComponentData)> {
             // このアクターの Camera スロットを確認する
             for slot in actor.slots() {
                 if slot.kind == ComponentKind::Camera {
@@ -223,7 +242,10 @@ impl Scene {
 
     /// 指定 world_line の ModelComponent を持つ最初のスロットの
     /// (Entity, &mut ModelComponent) を返す。
-    pub fn find_model_in_world_line_mut(&mut self, wl: u32) -> Option<(Entity, &mut ModelComponent)> {
+    pub fn find_model_in_world_line_mut(
+        &mut self,
+        wl: u32,
+    ) -> Option<(Entity, &mut ModelComponent)> {
         // borrow checker 対策: スロット entity を先に取得し world を別借用する
         let slot_entity = {
             let mut found = None;
@@ -237,12 +259,17 @@ impl Scene {
             }
             found?
         };
-        self.world.get_mut::<ModelComponent>(slot_entity).map(|mc| (slot_entity, mc))
+        self.world
+            .get_mut::<ModelComponent>(slot_entity)
+            .map(|mc| (slot_entity, mc))
     }
 
     /// 後方互換 API: world_line 内の最初の T コンポーネント（不変）を返す。
     /// スロット専用 entity からコンポーネントを検索する。
-    pub fn find_component_in_world_line<T: crate::engine::ecs::Component>(&self, wl: u32) -> Option<&T> {
+    pub fn find_component_in_world_line<T: crate::engine::ecs::Component>(
+        &self,
+        wl: u32,
+    ) -> Option<&T> {
         for root in self.actors.iter().filter(|a| a.world_line == wl) {
             for slot in root.slots() {
                 if let Some(c) = self.world.get::<T>(slot.entity) {
@@ -255,7 +282,10 @@ impl Scene {
 
     /// 後方互換 API: world_line 内の最初の T コンポーネント（可変）を返す。
     /// スロット専用 entity からコンポーネントを検索する。
-    pub fn find_component_in_world_line_mut<T: crate::engine::ecs::Component>(&mut self, wl: u32) -> Option<&mut T> {
+    pub fn find_component_in_world_line_mut<T: crate::engine::ecs::Component>(
+        &mut self,
+        wl: u32,
+    ) -> Option<&mut T> {
         // borrow checker 対策: スロット entity を先に特定してから world を可変借用する
         let slot_entity = {
             let mut found = None;
@@ -288,7 +318,12 @@ impl Scene {
         // Actor ツリーの読み取り専用ポインタを公開しながらフェーズを実行する。
         // スクリプトの Find（名前検索）が Actor 名を参照できるようにするため。
         // actors と world は別フィールドなので分割借用で競合しない。
-        let Self { actors, world, schedule, .. } = self;
+        let Self {
+            actors,
+            world,
+            schedule,
+            ..
+        } = self;
         crate::engine::core::scripting::with_actors(actors, || {
             schedule.run_phase(phase, world, ctx);
         });
@@ -302,20 +337,20 @@ impl Scene {
     /// false のスクリプトは script_system がライフサイクル呼び出しをスキップする。
     fn sync_script_owners(
         actors: &[crate::engine::structs::objects::Actor],
-        world:  &mut crate::engine::ecs::World,
+        world: &mut crate::engine::ecs::World,
     ) {
         use crate::engine::components::{ComponentKind, ScriptComponent};
 
         fn walk(
-            actor:         &crate::engine::structs::objects::Actor,
-            world:         &mut crate::engine::ecs::World,
+            actor: &crate::engine::structs::objects::Actor,
+            world: &mut crate::engine::ecs::World,
             parent_active: bool,
         ) {
             let active = parent_active && actor.active;
             for slot in actor.slots() {
                 if slot.kind == ComponentKind::Script {
                     if let Some(sc) = world.get_mut::<ScriptComponent>(slot.entity) {
-                        sc.owner  = Some(actor.entity);
+                        sc.owner = Some(actor.entity);
                         sc.active = active && slot.enabled;
                     }
                 }
@@ -334,9 +369,9 @@ impl Scene {
 
     pub fn save(&self, path: &Path, camera: &DebugCameraData) -> Result<(), SceneError> {
         let data = SceneData {
-            name:         self.name.clone(),
+            name: self.name.clone(),
             debug_camera: Some(camera.clone()),
-            actors:       self.actors.iter().map(|a| a.to_data(&self.world)).collect(),
+            actors: self.actors.iter().map(|a| a.to_data(&self.world)).collect(),
         };
         let json = serde_json::to_string_pretty(&data)?;
         std::fs::write(path, json)?;
@@ -347,11 +382,11 @@ impl Scene {
 
     /// `.actor` ファイル（ActorData JSON）を読み込み、単一アクターのシーンを生成する。
     pub fn load_actor(
-        path:           &Path,
-        ctx:            &DrawContext,
+        path: &Path,
+        ctx: &DrawContext,
         scripting_host: Option<&Arc<ScriptingHost>>,
     ) -> Result<Self, SceneError> {
-        let raw  = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
+        let raw = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
         let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
         let data: ActorData = serde_json::from_str(json)?;
         let name = data.name.clone();
@@ -369,14 +404,14 @@ impl Scene {
     /// `root_entity` に Some を渡すと、ルートを予約済みエンティティで構築する
     /// （スクリプトの Instantiate 用。詳細は build_actor を参照）。
     pub fn load_actor_into(
-        path:           &Path,
-        ctx:            &DrawContext,
-        world:          &mut World,
+        path: &Path,
+        ctx: &DrawContext,
+        world: &mut World,
         scripting_host: Option<&Arc<ScriptingHost>>,
-        world_line:     u32,
-        root_entity:    Option<Entity>,
+        world_line: u32,
+        root_entity: Option<Entity>,
     ) -> Result<Actor, SceneError> {
-        let raw  = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
+        let raw = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
         let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
         let data: ActorData = serde_json::from_str(json)?;
         let mut actor = build_actor(data, ctx, world, scripting_host, root_entity)?;
@@ -386,11 +421,11 @@ impl Scene {
     }
 
     pub fn load(
-        path:           &Path,
-        ctx:            &DrawContext,
+        path: &Path,
+        ctx: &DrawContext,
         scripting_host: Option<&Arc<ScriptingHost>>,
     ) -> Result<(Self, Option<DebugCameraData>), SceneError> {
-        let raw  = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
+        let raw = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
         let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
         let data: SceneData = serde_json::from_str(json)?;
 
@@ -414,14 +449,14 @@ impl Scene {
 /// エンティティを使う（スクリプトの Instantiate 用。予約時に挿入済みの Transform を
 /// スクリプトが設定した値として優先する）。子アクターには影響しない。
 pub fn build_actor(
-    data:           ActorData,
-    ctx:            &DrawContext,
-    world:          &mut World,
+    data: ActorData,
+    ctx: &DrawContext,
+    world: &mut World,
     scripting_host: Option<&Arc<ScriptingHost>>,
-    root_entity:    Option<Entity>,
+    root_entity: Option<Entity>,
 ) -> Result<Actor, SceneError> {
-    use crate::engine::structs::objects::actor::ActorKind;
     use crate::engine::components::Transform;
+    use crate::engine::structs::objects::actor::ActorKind;
 
     // 予約済みルートがあればそれを使い、なければ新規 spawn する
     let reused = root_entity.is_some();
@@ -485,29 +520,33 @@ pub fn build_actor(
                 // 存在しないため load_model をスキップする（さもないとシーンロード全体が失敗する）。
                 // model/gpu_model は None のままにし、terrain_ops の rebuild_terrain_after_load が
                 // 対応する .tvox からメッシュを再構築して埋める。空パス（未設定）と同じ経路で扱う。
-                let is_terrain_synthetic =
-                    mc_data.model_path.starts_with(crate::engine::components::TERRAIN_SOURCE_SCHEME);
+                let is_terrain_synthetic = mc_data
+                    .model_path
+                    .starts_with(crate::engine::components::TERRAIN_SOURCE_SCHEME);
                 if mc_data.model_path.is_empty() || is_terrain_synthetic {
                     // モデル未設定の空コンポーネント、または地形チャンク（後で rebuild される）。
                     // source_path は保持する（terrain:// パスは rebuild 後の描画・RT キャスタ判定に必要）。
                     let meta = mc_data.meta;
-                    world.insert(slot_entity, ModelComponent {
-                        source_path:     mc_data.model_path,
-                        model:           None,
-                        gpu_model:       None,
-                        instanced_batch: None,
-                        instance_mats:   mc_data.instances,
-                        instance_meta:   meta,
-                        group_meta:      mc_data.groups,
-                        next_group_id:   mc_data.next_group_id,
-                        anim_drive:      None,
-                        cast_shadows,
-                        material_overrides: mc_data.material_overrides,
-                        batch_instance_id: crate::engine::components::next_batch_instance_id(),
-                    });
+                    world.insert(
+                        slot_entity,
+                        ModelComponent {
+                            source_path: mc_data.model_path,
+                            model: None,
+                            gpu_model: None,
+                            instanced_batch: None,
+                            instance_mats: mc_data.instances,
+                            instance_meta: meta,
+                            group_meta: mc_data.groups,
+                            next_group_id: mc_data.next_group_id,
+                            anim_drive: None,
+                            cast_shadows,
+                            material_overrides: mc_data.material_overrides,
+                            batch_instance_id: crate::engine::components::next_batch_instance_id(),
+                        },
+                    );
                 } else {
                     use std::sync::Arc;
-                    let path  = Path::new(&mc_data.model_path);
+                    let path = Path::new(&mc_data.model_path);
                     // キャッシュから CPU モデルを取得するか、ディスクから読み込んでキャッシュに追加する
                     let model: Arc<crate::engine::core::loader::model::Model> = {
                         let mut cache = ctx.model_cache.borrow_mut();
@@ -520,30 +559,40 @@ pub fn build_actor(
                         }
                     };
                     let total = mc_data.instances.len();
-                    let gpu_model       = ctx.upload_model_with_overrides(&*model, &mc_data.material_overrides);
+                    let gpu_model =
+                        ctx.upload_model_with_overrides(&*model, &mc_data.material_overrides);
                     let instanced_batch = ctx.create_instanced_batch(&*model, total as u32);
                     let mut meta = mc_data.meta;
                     if meta.len() < total {
                         let start = meta.len();
                         meta.resize_with(total, || InstanceMeta::new("Instance"));
-                        for i in start..total { meta[i].name = format!("Instance_{i}"); }
+                        for i in start..total {
+                            meta[i].name = format!("Instance_{i}");
+                        }
                     }
-                    world.insert(slot_entity, ModelComponent {
-                        source_path:     mc_data.model_path,
-                        model:           Some(model),
-                        gpu_model:       Some(gpu_model),
-                        instanced_batch: Some(instanced_batch),
-                        instance_mats:   mc_data.instances,
-                        instance_meta:   meta,
-                        group_meta:      mc_data.groups,
-                        next_group_id:   mc_data.next_group_id,
-                        anim_drive:      None,
-                        cast_shadows,
-                        material_overrides: mc_data.material_overrides,
-                        batch_instance_id: crate::engine::components::next_batch_instance_id(),
-                    });
+                    world.insert(
+                        slot_entity,
+                        ModelComponent {
+                            source_path: mc_data.model_path,
+                            model: Some(model),
+                            gpu_model: Some(gpu_model),
+                            instanced_batch: Some(instanced_batch),
+                            instance_mats: mc_data.instances,
+                            instance_meta: meta,
+                            group_meta: mc_data.groups,
+                            next_group_id: mc_data.next_group_id,
+                            anim_drive: None,
+                            cast_shadows,
+                            material_overrides: mc_data.material_overrides,
+                            batch_instance_id: crate::engine::components::next_batch_instance_id(),
+                        },
+                    );
                 }
-                actor.add_slot_typed::<ModelComponent>(slot_name, ComponentKind::Model, slot_entity);
+                actor.add_slot_typed::<ModelComponent>(
+                    slot_name,
+                    ComponentKind::Model,
+                    slot_entity,
+                );
             }
             ComponentData::ScriptComponent(sc_data) => {
                 // CLR ホストがあれば実インスタンスを生成し、[SerializeField] 値も復元する。
@@ -557,133 +606,216 @@ pub fn build_actor(
                 });
                 if let Some(sc) = created {
                     world.insert(slot_entity, sc);
-                    actor.add_slot_typed::<ScriptComponent>(slot_name, ComponentKind::Script, slot_entity);
+                    actor.add_slot_typed::<ScriptComponent>(
+                        slot_name,
+                        ComponentKind::Script,
+                        slot_entity,
+                    );
                 } else {
-                    world.insert(slot_entity, PlaceholderScriptSlot {
-                        script_path: sc_data.type_name,
-                        fields:      sc_data.fields,
-                    });
-                    actor.add_slot_typed::<PlaceholderScriptSlot>(slot_name, ComponentKind::Placeholder, slot_entity);
+                    world.insert(
+                        slot_entity,
+                        PlaceholderScriptSlot {
+                            script_path: sc_data.type_name,
+                            fields: sc_data.fields,
+                        },
+                    );
+                    actor.add_slot_typed::<PlaceholderScriptSlot>(
+                        slot_name,
+                        ComponentKind::Placeholder,
+                        slot_entity,
+                    );
                 }
             }
             ComponentData::CanvasComponent(cc_data) => {
                 use crate::engine::components::CanvasComponent;
-                world.insert(slot_entity, CanvasComponent {
-                    width:             cc_data.width,
-                    height:            cc_data.height,
-                    auto_scale:        cc_data.auto_scale,
-                    viewport_ref:      cc_data.viewport_ref.clone(),
-                    gravity_mode:      cc_data.gravity_mode,
-                    draw_zone:         cc_data.draw_zone,
-                    pivot:             cc_data.pivot,
-                });
-                actor.add_slot_typed::<CanvasComponent>(slot_name, ComponentKind::Canvas, slot_entity);
+                world.insert(
+                    slot_entity,
+                    CanvasComponent {
+                        width: cc_data.width,
+                        height: cc_data.height,
+                        auto_scale: cc_data.auto_scale,
+                        viewport_ref: cc_data.viewport_ref.clone(),
+                        gravity_mode: cc_data.gravity_mode,
+                        draw_zone: cc_data.draw_zone,
+                        pivot: cc_data.pivot,
+                    },
+                );
+                actor.add_slot_typed::<CanvasComponent>(
+                    slot_name,
+                    ComponentKind::Canvas,
+                    slot_entity,
+                );
             }
             ComponentData::SpriteComponent(sc_data) => {
                 use crate::engine::components::SpriteComponent;
-                world.insert(slot_entity, SpriteComponent {
-                    texture_path: sc_data.texture_path,
-                    color:        sc_data.color,
-                    width:        sc_data.width,
-                    height:       sc_data.height,
-                    layer:        sc_data.layer,
-                    postfx_path:  sc_data.postfx_path,
-                });
-                actor.add_slot_typed::<SpriteComponent>(slot_name, ComponentKind::Sprite, slot_entity);
+                world.insert(
+                    slot_entity,
+                    SpriteComponent {
+                        texture_path: sc_data.texture_path,
+                        color: sc_data.color,
+                        width: sc_data.width,
+                        height: sc_data.height,
+                        layer: sc_data.layer,
+                        postfx_path: sc_data.postfx_path,
+                    },
+                );
+                actor.add_slot_typed::<SpriteComponent>(
+                    slot_name,
+                    ComponentKind::Sprite,
+                    slot_entity,
+                );
             }
             ComponentData::InputMapComponent(ic_data) => {
                 use crate::engine::components::InputMapComponent;
-                world.insert(slot_entity, InputMapComponent { asset_path: ic_data.asset_path });
-                actor.add_slot_typed::<InputMapComponent>(slot_name, ComponentKind::InputMap, slot_entity);
+                world.insert(
+                    slot_entity,
+                    InputMapComponent {
+                        asset_path: ic_data.asset_path,
+                    },
+                );
+                actor.add_slot_typed::<InputMapComponent>(
+                    slot_name,
+                    ComponentKind::InputMap,
+                    slot_entity,
+                );
             }
             ComponentData::CameraComponent(cc_data) => {
                 world.insert(slot_entity, CameraComponent::from_data(cc_data));
-                actor.add_slot_typed::<CameraComponent>(slot_name, ComponentKind::Camera, slot_entity);
+                actor.add_slot_typed::<CameraComponent>(
+                    slot_name,
+                    ComponentKind::Camera,
+                    slot_entity,
+                );
             }
             ComponentData::PluginComponent(pc_data) => {
                 // PluginComponent はそのまま復元する。
                 // 対応する Plugin が存在しなくてもデータは保持し続ける（プラグイン無効時の互換性維持）。
                 use crate::engine::components::PluginComponent;
-                world.insert(slot_entity, PluginComponent {
-                    plugin_name: pc_data.plugin_name,
-                    fields:      pc_data.fields,
-                });
-                actor.add_slot_typed::<PluginComponent>(slot_name, ComponentKind::Plugin, slot_entity);
+                world.insert(
+                    slot_entity,
+                    PluginComponent {
+                        plugin_name: pc_data.plugin_name,
+                        fields: pc_data.fields,
+                    },
+                );
+                actor.add_slot_typed::<PluginComponent>(
+                    slot_name,
+                    ComponentKind::Plugin,
+                    slot_entity,
+                );
             }
             ComponentData::ColliderComponent(cc_data) => {
                 use crate::engine::components::ColliderComponent;
                 world.insert(slot_entity, ColliderComponent::from(cc_data));
-                actor.add_slot_typed::<ColliderComponent>(slot_name, ComponentKind::Collider, slot_entity);
+                actor.add_slot_typed::<ColliderComponent>(
+                    slot_name,
+                    ComponentKind::Collider,
+                    slot_entity,
+                );
             }
             ComponentData::Collider2dComponent(cc_data) => {
                 // 2D コライダーコンポーネントを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::Collider2dComponent;
                 world.insert(slot_entity, Collider2dComponent::from(cc_data));
-                actor.add_slot_typed::<Collider2dComponent>(slot_name, ComponentKind::Collider2d, slot_entity);
+                actor.add_slot_typed::<Collider2dComponent>(
+                    slot_name,
+                    ComponentKind::Collider2d,
+                    slot_entity,
+                );
             }
             ComponentData::AudioComponent(ac_data) => {
                 // オーディオソースコンポーネントを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::AudioComponent;
                 world.insert(slot_entity, AudioComponent::from_data(ac_data));
-                actor.add_slot_typed::<AudioComponent>(slot_name, ComponentKind::Audio, slot_entity);
+                actor.add_slot_typed::<AudioComponent>(
+                    slot_name,
+                    ComponentKind::Audio,
+                    slot_entity,
+                );
             }
             ComponentData::AnimatorComponent(an_data) => {
                 // アニメーターコンポーネントを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::AnimatorComponent;
                 world.insert(slot_entity, AnimatorComponent::from_data(an_data));
-                actor.add_slot_typed::<AnimatorComponent>(slot_name, ComponentKind::Animator, slot_entity);
+                actor.add_slot_typed::<AnimatorComponent>(
+                    slot_name,
+                    ComponentKind::Animator,
+                    slot_entity,
+                );
             }
             ComponentData::LightComponent(lc_data) => {
                 // ライトコンポーネントを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::LightComponent;
                 world.insert(slot_entity, LightComponent::from_data(lc_data));
-                actor.add_slot_typed::<LightComponent>(slot_name, ComponentKind::Light, slot_entity);
+                actor.add_slot_typed::<LightComponent>(
+                    slot_name,
+                    ComponentKind::Light,
+                    slot_entity,
+                );
             }
             ComponentData::JointAttachComponent(ja_data) => {
                 // ジョイントアタッチ（ソケット）コンポーネントを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::JointAttachComponent;
                 world.insert(slot_entity, JointAttachComponent::from_data(ja_data));
-                actor.add_slot_typed::<JointAttachComponent>(slot_name, ComponentKind::JointAttach, slot_entity);
+                actor.add_slot_typed::<JointAttachComponent>(
+                    slot_name,
+                    ComponentKind::JointAttach,
+                    slot_entity,
+                );
             }
             ComponentData::ParticleEmitterComponent(pe_data) => {
                 // パーティクルエミッタコンポーネントを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::ParticleEmitterComponent;
                 world.insert(slot_entity, ParticleEmitterComponent::from_data(pe_data));
-                actor.add_slot_typed::<ParticleEmitterComponent>(slot_name, ComponentKind::ParticleEmitter, slot_entity);
+                actor.add_slot_typed::<ParticleEmitterComponent>(
+                    slot_name,
+                    ComponentKind::ParticleEmitter,
+                    slot_entity,
+                );
             }
             ComponentData::SkyboxComponent(sb_data) => {
                 // スカイボックスコンポーネントを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::SkyboxComponent;
                 world.insert(slot_entity, SkyboxComponent::from_data(sb_data));
-                actor.add_slot_typed::<SkyboxComponent>(slot_name, ComponentKind::Skybox, slot_entity);
+                actor.add_slot_typed::<SkyboxComponent>(
+                    slot_name,
+                    ComponentKind::Skybox,
+                    slot_entity,
+                );
             }
             ComponentData::TerrainChunkComponent(tc_data) => {
                 // 地形チャンクコンポーネントを ECS ワールドに挿入してスロットを登録する。
                 // 実メッシュ（ModelComponent）は rebuild_terrain_after_load が .tvox から復元する。
                 use crate::engine::components::TerrainChunkComponent;
                 world.insert(slot_entity, TerrainChunkComponent::from_data(tc_data));
-                actor.add_slot_typed::<TerrainChunkComponent>(slot_name, ComponentKind::TerrainChunk, slot_entity);
+                actor.add_slot_typed::<TerrainChunkComponent>(
+                    slot_name,
+                    ComponentKind::TerrainChunk,
+                    slot_entity,
+                );
             }
             ComponentData::LegacyRigidbodyComponent(rb_data) => {
                 // 旧フォーマット（Rigidbody が独立コンポーネント）の後方互換マイグレーション。
                 // スロットエンティティは生成せず、同アクターの ColliderComponent にデータを適用する。
                 use crate::engine::components::ColliderComponent;
                 world.despawn(slot_entity);
-                if let Some(collider_slot) = actor.slots().iter()
+                if let Some(collider_slot) = actor
+                    .slots()
+                    .iter()
                     .find(|s| s.kind == ComponentKind::Collider)
                 {
                     if let Some(cc) = world.get_mut::<ColliderComponent>(collider_slot.entity) {
-                        cc.use_rigidbody            = true;
-                        cc.mass                     = rb_data.mass;
-                        cc.restitution              = rb_data.restitution;
-                        cc.friction                 = rb_data.friction;
-                        cc.linear_damping           = rb_data.linear_damping;
-                        cc.angular_damping          = rb_data.angular_damping;
-                        cc.gravity_scale            = rb_data.gravity_scale;
-                        cc.is_kinematic             = rb_data.is_kinematic;
-                        cc.freeze_position          = rb_data.freeze_position;
-                        cc.freeze_rotation          = rb_data.freeze_rotation;
-                        cc.initial_linear_velocity  = rb_data.initial_linear_velocity;
+                        cc.use_rigidbody = true;
+                        cc.mass = rb_data.mass;
+                        cc.restitution = rb_data.restitution;
+                        cc.friction = rb_data.friction;
+                        cc.linear_damping = rb_data.linear_damping;
+                        cc.angular_damping = rb_data.angular_damping;
+                        cc.gravity_scale = rb_data.gravity_scale;
+                        cc.is_kinematic = rb_data.is_kinematic;
+                        cc.freeze_position = rb_data.freeze_position;
+                        cc.freeze_rotation = rb_data.freeze_rotation;
+                        cc.initial_linear_velocity = rb_data.initial_linear_velocity;
                         cc.initial_angular_velocity = rb_data.initial_angular_velocity;
                     }
                 }

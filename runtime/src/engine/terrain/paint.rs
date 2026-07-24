@@ -27,7 +27,7 @@
 
 use std::collections::HashSet;
 
-use super::brush::{falloff, SphereBrush};
+use super::brush::{SphereBrush, falloff};
 use super::chunk_coord::ChunkCoord;
 use super::layers::{BlendSlots, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS};
 use super::settings::TerrainSettings;

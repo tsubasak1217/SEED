@@ -31,11 +31,15 @@ pub fn watch(parent_pid: Option<u32>) {
             .spawn(move || {
                 if !wait_for_process_exit(pid) {
                     // プロセスを開けなかった場合: すでに存在しない可能性があるため即終了
-                    eprintln!("[parent_guard] 親プロセス (PID={pid}) を開けませんでした。終了します。");
+                    eprintln!(
+                        "[parent_guard] 親プロセス (PID={pid}) を開けませんでした。終了します。"
+                    );
                     std::process::exit(0);
                 }
                 // wait_for_process_exit が true を返した = 待機が完了 = 親が終了した
-                eprintln!("[parent_guard] 親プロセス (PID={pid}) が終了しました。SEED.exe を終了します。");
+                eprintln!(
+                    "[parent_guard] 親プロセス (PID={pid}) が終了しました。SEED.exe を終了します。"
+                );
                 std::process::exit(0);
             })
             .expect("parent-guard スレッドの起動に失敗しました");
@@ -57,13 +61,14 @@ pub fn watch(parent_pid: Option<u32>) {
 fn wait_for_process_exit(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, WaitForSingleObject,
-        PROCESS_SYNCHRONIZE, INFINITE,
+        INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
     };
 
     // SYNCHRONIZE 権限でプロセスハンドルを取得する。
     // このハンドルを WaitForSingleObject に渡すと、プロセス終了時にシグナルされる。
-    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0 /* inherit=FALSE */, pid) };
+    let handle = unsafe {
+        OpenProcess(PROCESS_SYNCHRONIZE, 0 /* inherit=FALSE */, pid)
+    };
     if handle.is_null() {
         // プロセスが存在しないか、権限がない
         return false;

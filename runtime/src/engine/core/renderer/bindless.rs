@@ -232,15 +232,15 @@ impl BindlessInstanceRecord {
     /// バインドレス非対象（全ゼロ＝ダミー白・フォールバック）のレコード。
     pub fn dummy() -> Self {
         Self {
-            avg_albedo:        [0.0; 4],
+            avg_albedo: [0.0; 4],
             base_color_factor: [1.0, 1.0, 1.0, 1.0],
-            albedo_tex_index:  BINDLESS_DUMMY_TEX_INDEX,
-            uv_offset:         0,
-            index_offset:      0,
-            flags:             0,
-            alpha_cutoff:      0.0,
-            normal_offset:     0,
-            _pad:              [0; 2],
+            albedo_tex_index: BINDLESS_DUMMY_TEX_INDEX,
+            uv_offset: 0,
+            index_offset: 0,
+            flags: 0,
+            alpha_cutoff: 0.0,
+            normal_offset: 0,
+            _pad: [0; 2],
         }
     }
 }
@@ -277,7 +277,12 @@ pub struct MegaAllocator {
 impl MegaAllocator {
     /// 容量 `capacity`（バイト）のアロケータを作る。
     pub fn new(capacity: u64) -> Self {
-        Self { capacity, bump: 0, free: Vec::new(), used: 0 }
+        Self {
+            capacity,
+            bump: 0,
+            free: Vec::new(),
+            used: 0,
+        }
     }
 
     /// `size` バイトを `align` 境界に整列して確保し、先頭バイトオフセットを返す。
@@ -288,7 +293,10 @@ impl MegaAllocator {
     ///      見つかれば前パディング・後残りを分割してフリーリストへ戻す。
     ///   2. 無ければバンプを整列前進させて確保する。
     pub fn alloc(&mut self, size: u64, align: u64) -> Option<u64> {
-        debug_assert!(align > 0 && align.is_power_of_two(), "align は 2 の冪であること");
+        debug_assert!(
+            align > 0 && align.is_power_of_two(),
+            "align は 2 の冪であること"
+        );
         if size == 0 {
             // 0 バイト要求は「先頭を指す有効なオフセット 0」を返す（空 UV/index の縮退回避）。
             return Some(0);
@@ -298,16 +306,20 @@ impl MegaAllocator {
         for i in 0..self.free.len() {
             let (off, sz) = self.free[i];
             let aligned = align_up(off, align);
-            let pad = aligned - off;               // 前パディング
+            let pad = aligned - off; // 前パディング
             if pad + size <= sz {
                 // この領域を使う。前パディングと後残りをフリーリストへ戻す。
                 self.free.remove(i);
                 let tail_off = aligned + size;
                 let tail_sz = sz - pad - size;
                 // 後残り（tail）を先に push（順序は下の正規化で整える）。
-                if tail_sz > 0 { self.free.push((tail_off, tail_sz)); }
+                if tail_sz > 0 {
+                    self.free.push((tail_off, tail_sz));
+                }
                 // 前パディング（head）も無駄領域として戻す（次回の小要求で再利用可能）。
-                if pad > 0 { self.free.push((off, pad)); }
+                if pad > 0 {
+                    self.free.push((off, pad));
+                }
                 self.normalize_free();
                 self.used += size;
                 return Some(aligned);
@@ -331,7 +343,9 @@ impl MegaAllocator {
 
     /// `offset` から `size` バイトの領域を解放する（フリーリストへ戻し、隣接をコアレス）。
     pub fn free(&mut self, offset: u64, size: u64) {
-        if size == 0 { return; }
+        if size == 0 {
+            return;
+        }
         debug_assert!(offset + size <= self.capacity, "解放範囲が容量外");
         self.used = self.used.saturating_sub(size);
         self.free.push((offset, size));
@@ -340,7 +354,9 @@ impl MegaAllocator {
 
     /// フリーリストを offset 昇順ソートし、隣接領域をコアレスする。
     fn normalize_free(&mut self) {
-        if self.free.len() <= 1 { return; }
+        if self.free.len() <= 1 {
+            return;
+        }
         self.free.sort_unstable_by_key(|&(off, _)| off);
         let mut merged: Vec<(u64, u64)> = Vec::with_capacity(self.free.len());
         for &(off, sz) in &self.free {
@@ -357,9 +373,13 @@ impl MegaAllocator {
     }
 
     /// 現在確保中の総バイト数。
-    pub fn used(&self) -> u64 { self.used }
+    pub fn used(&self) -> u64 {
+        self.used
+    }
     /// 総容量（バイト）。
-    pub fn capacity(&self) -> u64 { self.capacity }
+    pub fn capacity(&self) -> u64 {
+        self.capacity
+    }
 }
 
 /// `v` を `align`（2 の冪）境界へ切り上げる。
@@ -383,10 +403,12 @@ pub fn colored_shadow_bgl(device: &wgpu::Device, capacity: u32) -> wgpu::BindGro
     let cap = capacity.max(1);
     let vis = wgpu::ShaderStages::FRAGMENT;
     let storage_ro = |binding: u32| wgpu::BindGroupLayoutEntry {
-        binding, visibility: vis,
+        binding,
+        visibility: vis,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false, min_binding_size: None,
+            has_dynamic_offset: false,
+            min_binding_size: None,
         },
         count: None,
     };
@@ -397,15 +419,18 @@ pub fn colored_shadow_bgl(device: &wgpu::Device, capacity: u32) -> wgpu::BindGro
             storage_ro(1), // UV メガバッファ（vec2<f32>）
             storage_ro(2), // index メガバッファ（u32）
             wgpu::BindGroupLayoutEntry {
-                binding: 3, visibility: vis,
+                binding: 3,
+                visibility: vis,
                 ty: wgpu::BindingType::Texture {
-                    sample_type:    wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2, multisampled: false,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
                 },
                 count: Some(std::num::NonZeroU32::new(cap).unwrap()),
             },
             wgpu::BindGroupLayoutEntry {
-                binding: 4, visibility: vis,
+                binding: 4,
+                visibility: vis,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
@@ -450,7 +475,13 @@ impl TextureRegistry {
             slots.push(None);
             occupied.push(i == BINDLESS_DUMMY_TEX_INDEX); // 0 番は常に占有（ダミー予約）
         }
-        Self { slots, occupied, free_indices: Vec::new(), next: 1, capacity }
+        Self {
+            slots,
+            occupied,
+            free_indices: Vec::new(),
+            next: 1,
+            capacity,
+        }
     }
 
     /// 空きインデックスを 1 個確保して返す（純ロジック・wgpu 非依存＝単体テスト対象）。
@@ -478,7 +509,9 @@ impl TextureRegistry {
 
     /// インデックスを解放する（スロットを空にし、再利用リストへ戻す）。0 番（ダミー）は無視。
     fn free(&mut self, index: u32) {
-        if index == BINDLESS_DUMMY_TEX_INDEX { return; }
+        if index == BINDLESS_DUMMY_TEX_INDEX {
+            return;
+        }
         let i = index as usize;
         if i < self.occupied.len() && self.occupied[i] {
             self.occupied[i] = false;
@@ -516,7 +549,7 @@ struct BindlessFree {
     /// 解放する albedo テクスチャ index 群（登録順）。
     tex: Vec<u32>,
     /// 解放する UV 領域 `(要素オフセット, 要素数)` 群。
-    uv:  Vec<(u32, u32)>,
+    uv: Vec<(u32, u32)>,
     /// 解放するインデックス領域 `(要素オフセット, 要素数)` 群。
     idx: Vec<(u32, u32)>,
     /// 解放する法線領域 `(要素オフセット, 要素数)` 群。
@@ -534,32 +567,46 @@ type BindlessFreeQueue = Arc<Mutex<Vec<BindlessFree>>>;
 pub struct BindlessModelAlloc {
     /// 解放要求の積み先（`BindlessResources` と共有）。
     queue: BindlessFreeQueue,
-    tex:   Vec<u32>,
-    uv:    Vec<(u32, u32)>,
-    idx:   Vec<(u32, u32)>,
-    nrm:   Vec<(u32, u32)>,
+    tex: Vec<u32>,
+    uv: Vec<(u32, u32)>,
+    idx: Vec<(u32, u32)>,
+    nrm: Vec<(u32, u32)>,
 }
 
 impl BindlessModelAlloc {
     /// 空のハンドルを作る（キューを共有）。以後 `record_*` で登録内容を積む。
     fn new(queue: BindlessFreeQueue) -> Self {
-        Self { queue, tex: Vec::new(), uv: Vec::new(), idx: Vec::new(), nrm: Vec::new() }
+        Self {
+            queue,
+            tex: Vec::new(),
+            uv: Vec::new(),
+            idx: Vec::new(),
+            nrm: Vec::new(),
+        }
     }
     /// 登録した albedo テクスチャ index を記録する（ダミー 0 番は記録しない＝解放不要）。
     fn record_texture(&mut self, index: u32) {
-        if index != BINDLESS_DUMMY_TEX_INDEX { self.tex.push(index); }
+        if index != BINDLESS_DUMMY_TEX_INDEX {
+            self.tex.push(index);
+        }
     }
     /// 登録した UV 領域（要素オフセット・要素数）を記録する。
     fn record_uv(&mut self, elem_offset: u32, elem_count: u32) {
-        if elem_count > 0 { self.uv.push((elem_offset, elem_count)); }
+        if elem_count > 0 {
+            self.uv.push((elem_offset, elem_count));
+        }
     }
     /// 登録したインデックス領域（要素オフセット・要素数）を記録する。
     fn record_index(&mut self, elem_offset: u32, elem_count: u32) {
-        if elem_count > 0 { self.idx.push((elem_offset, elem_count)); }
+        if elem_count > 0 {
+            self.idx.push((elem_offset, elem_count));
+        }
     }
     /// 登録した法線領域（要素オフセット・要素数）を記録する。
     fn record_normal(&mut self, elem_offset: u32, elem_count: u32) {
-        if elem_count > 0 { self.nrm.push((elem_offset, elem_count)); }
+        if elem_count > 0 {
+            self.nrm.push((elem_offset, elem_count));
+        }
     }
     /// 何も登録していないか（Drop の無操作判定・テスト用）。
     fn is_empty(&self) -> bool {
@@ -571,10 +618,12 @@ impl Drop for BindlessModelAlloc {
     /// 登録内容を 1 件の解放要求としてキューへ積む（実際の返却は process_pending_frees）。
     /// `mem::take` で中身を移すため二重登録は起こらない。空なら積まない。
     fn drop(&mut self) {
-        if self.is_empty() { return; }
+        if self.is_empty() {
+            return;
+        }
         let free = BindlessFree {
             tex: std::mem::take(&mut self.tex),
-            uv:  std::mem::take(&mut self.uv),
+            uv: std::mem::take(&mut self.uv),
             idx: std::mem::take(&mut self.idx),
             nrm: std::mem::take(&mut self.nrm),
         };
@@ -651,7 +700,11 @@ impl BindlessResources {
         // ── ダミー 1x1 白テクスチャ（index 0）─────────────────
         let dummy_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Bindless Dummy White"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -668,8 +721,16 @@ impl BindlessResources {
                 aspect: wgpu::TextureAspect::All,
             },
             &[255u8, 255, 255, 255],
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
         let dummy_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -766,7 +827,9 @@ impl BindlessResources {
     // ── 遅延解放（RAII）─────────────────────────────────────
 
     /// GpuModel の `BindlessModelAlloc` に渡す解放要求キュー（共有クローン）を返す。
-    pub fn free_queue_handle(&self) -> BindlessFreeQueue { Arc::clone(&self.free_queue) }
+    pub fn free_queue_handle(&self) -> BindlessFreeQueue {
+        Arc::clone(&self.free_queue)
+    }
 
     /// 新しい空の割り当てハンドルを作る（このリソースのキューを共有）。
     /// GpuModel の登録時に受け取り、登録内容を記録して GpuModel に保持させる。
@@ -780,23 +843,44 @@ impl BindlessResources {
     pub fn process_pending_frees(&mut self) -> usize {
         let frees: Vec<BindlessFree> = match self.free_queue.lock() {
             Ok(mut q) => std::mem::take(&mut *q),
-            Err(_)    => return 0,
+            Err(_) => return 0,
         };
         let n = frees.len();
         for f in frees {
-            for t in f.tex          { self.registry.free(t); }
-            for (o, c) in f.uv      { self.uv_alloc.free(o as u64 * BINDLESS_UV_ELEM_BYTES,   c as u64 * BINDLESS_UV_ELEM_BYTES); }
-            for (o, c) in f.idx     { self.index_alloc.free(o as u64 * BINDLESS_INDEX_ELEM_BYTES, c as u64 * BINDLESS_INDEX_ELEM_BYTES); }
-            for (o, c) in f.nrm     { self.normal_alloc.free(o as u64 * BINDLESS_NORMAL_ELEM_BYTES, c as u64 * BINDLESS_NORMAL_ELEM_BYTES); }
+            for t in f.tex {
+                self.registry.free(t);
+            }
+            for (o, c) in f.uv {
+                self.uv_alloc.free(
+                    o as u64 * BINDLESS_UV_ELEM_BYTES,
+                    c as u64 * BINDLESS_UV_ELEM_BYTES,
+                );
+            }
+            for (o, c) in f.idx {
+                self.index_alloc.free(
+                    o as u64 * BINDLESS_INDEX_ELEM_BYTES,
+                    c as u64 * BINDLESS_INDEX_ELEM_BYTES,
+                );
+            }
+            for (o, c) in f.nrm {
+                self.normal_alloc.free(
+                    o as u64 * BINDLESS_NORMAL_ELEM_BYTES,
+                    c as u64 * BINDLESS_NORMAL_ELEM_BYTES,
+                );
+            }
         }
-        if n > 0 { self.dirty = true; } // テクスチャ配列 BindGroup を作り直させる
+        if n > 0 {
+            self.dirty = true;
+        } // テクスチャ配列 BindGroup を作り直させる
         n
     }
 
     /// 登録した albedo テクスチャ index を `alloc` に記録する版の登録。
     /// 満杯ならダミー 0 番を返し、`alloc` には記録しない（解放不要）。
     pub fn register_albedo_texture_tracked(
-        &mut self, view: &wgpu::TextureView, alloc: &mut BindlessModelAlloc,
+        &mut self,
+        view: &wgpu::TextureView,
+        alloc: &mut BindlessModelAlloc,
     ) -> u32 {
         let idx = self.register_albedo_texture(view);
         alloc.record_texture(idx);
@@ -808,7 +892,10 @@ impl BindlessResources {
     /// albedo テクスチャを登録して安定インデックスを返す。満杯ならダミー 0 番を返す。
     pub fn register_albedo_texture(&mut self, view: &wgpu::TextureView) -> u32 {
         match self.registry.register(view) {
-            Some(idx) => { self.dirty = true; idx }
+            Some(idx) => {
+                self.dirty = true;
+                idx
+            }
             None => BINDLESS_DUMMY_TEX_INDEX,
         }
     }
@@ -820,7 +907,9 @@ impl BindlessResources {
     }
 
     /// 現在登録中の albedo テクスチャ数（ダミー除く）。
-    pub fn registered_texture_count(&self) -> usize { self.registry.registered_count() }
+    pub fn registered_texture_count(&self) -> usize {
+        self.registry.registered_count()
+    }
 
     // ── メガバッファ API ────────────────────────────────────
 
@@ -925,7 +1014,9 @@ impl BindlessResources {
     /// `records.len()` は `BINDLESS_MAX_INSTANCES` 以下であること（超過分は無視）。
     pub fn upload_instance_records(&self, queue: &wgpu::Queue, records: &[BindlessInstanceRecord]) {
         let n = records.len().min(BINDLESS_MAX_INSTANCES as usize);
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
         queue.write_buffer(&self.instance_table, 0, bytemuck::cast_slice(&records[..n]));
     }
 
@@ -983,13 +1074,13 @@ impl BindlessResources {
     /// `normals_oct` は `uvs` と同じ頂点順・同じ要素数の八面体エンコード u32 列であること。
     pub fn register_primitive_geometry(
         &mut self,
-        queue:       &wgpu::Queue,
-        uvs:         &[[f32; 2]],
-        indices:     &[u32],
+        queue: &wgpu::Queue,
+        uvs: &[[f32; 2]],
+        indices: &[u32],
         normals_oct: &[u32],
-        alloc:       &mut BindlessModelAlloc,
+        alloc: &mut BindlessModelAlloc,
     ) -> (u32, u32, u32, bool) {
-        let uv_off  = self.append_uv(queue, uvs);
+        let uv_off = self.append_uv(queue, uvs);
         let idx_off = self.append_indices(queue, indices);
         let nrm_off = self.append_normals(queue, normals_oct);
         match (uv_off, idx_off, nrm_off) {
@@ -1001,9 +1092,15 @@ impl BindlessResources {
             }
             // いずれか欠けた → 確保できた側をすべて即解放して縮退（対象外）。
             (u, x, n) => {
-                if let Some(u) = u { self.free_uv(u, uvs.len() as u32); }
-                if let Some(x) = x { self.free_indices(x, indices.len() as u32); }
-                if let Some(n) = n { self.free_normals(n, normals_oct.len() as u32); }
+                if let Some(u) = u {
+                    self.free_uv(u, uvs.len() as u32);
+                }
+                if let Some(x) = x {
+                    self.free_indices(x, indices.len() as u32);
+                }
+                if let Some(n) = n {
+                    self.free_normals(n, normals_oct.len() as u32);
+                }
                 (0, 0, 0, false)
             }
         }
@@ -1019,36 +1116,67 @@ impl BindlessResources {
     /// `bgl` は `colored_shadow_bgl` で作った同一レイアウトであること（deferred.rs が保持）。
     /// バインディング: 0=instance_table / 1=UV / 2=index / 3=テクスチャ配列 / 4=共有サンプラー。
     pub fn create_colored_shadow_bind_group(
-        &self, device: &wgpu::Device, bgl: &wgpu::BindGroupLayout,
+        &self,
+        device: &wgpu::Device,
+        bgl: &wgpu::BindGroupLayout,
     ) -> wgpu::BindGroup {
         let views = self.texture_view_list();
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Bindless Colored Shadow BG (group3)"),
             layout: bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.instance_table.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.uv_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.index_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureViewArray(&views) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.instance_table.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.uv_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.index_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureViewArray(&views),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
             ],
         })
     }
 
     /// テクスチャ配列 BindGroupLayout（B2 が消費側パイプライン構築に使う）。
-    pub fn texture_bind_group_layout(&self) -> &wgpu::BindGroupLayout { &self.tex_bgl }
+    pub fn texture_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.tex_bgl
+    }
     /// UV メガバッファ。
-    pub fn uv_buffer(&self) -> &wgpu::Buffer { &self.uv_buffer }
+    pub fn uv_buffer(&self) -> &wgpu::Buffer {
+        &self.uv_buffer
+    }
     /// インデックス メガバッファ。
-    pub fn index_buffer(&self) -> &wgpu::Buffer { &self.index_buffer }
+    pub fn index_buffer(&self) -> &wgpu::Buffer {
+        &self.index_buffer
+    }
     /// 法線メガバッファ（八面体エンコード u32）。RT 屈折の界面法線復元に使う。
-    pub fn normal_buffer(&self) -> &wgpu::Buffer { &self.normal_buffer }
+    pub fn normal_buffer(&self) -> &wgpu::Buffer {
+        &self.normal_buffer
+    }
     /// インスタンステーブル。
-    pub fn instance_table_buffer(&self) -> &wgpu::Buffer { &self.instance_table }
+    pub fn instance_table_buffer(&self) -> &wgpu::Buffer {
+        &self.instance_table
+    }
     /// 共有サンプラー。
-    pub fn shared_sampler(&self) -> &wgpu::Sampler { &self.sampler }
+    pub fn shared_sampler(&self) -> &wgpu::Sampler {
+        &self.sampler
+    }
     /// テクスチャ配列容量。
-    pub fn texture_capacity(&self) -> u32 { self.capacity }
+    pub fn texture_capacity(&self) -> u32 {
+        self.capacity
+    }
 }
 
 // ============================================================
@@ -1065,8 +1193,16 @@ mod tests {
     /// WGSL ミラー（shaders/bindless_common.wgsl）と一致させるための基準。
     #[test]
     fn bindless_record_layout() {
-        assert_eq!(size_of::<BindlessInstanceRecord>(), 64, "record は 64 バイト");
-        assert_eq!(align_of::<BindlessInstanceRecord>(), 16, "record は 16B 整列（vec4 先頭）");
+        assert_eq!(
+            size_of::<BindlessInstanceRecord>(),
+            64,
+            "record は 64 バイト"
+        );
+        assert_eq!(
+            align_of::<BindlessInstanceRecord>(),
+            16,
+            "record は 16B 整列（vec4 先頭）"
+        );
         assert_eq!(offset_of!(BindlessInstanceRecord, avg_albedo), 0);
         assert_eq!(offset_of!(BindlessInstanceRecord, base_color_factor), 16);
         assert_eq!(offset_of!(BindlessInstanceRecord, albedo_tex_index), 32);
@@ -1083,17 +1219,33 @@ mod tests {
     #[test]
     fn wgsl_mirror_has_record_fields() {
         let src = include_str!("shaders/bindless_common.wgsl");
-        for field in ["avg_albedo", "base_color_factor", "albedo_tex_index",
-                      "uv_offset", "index_offset", "flags", "alpha_cutoff", "normal_offset"] {
-            assert!(src.contains(field),
-                "bindless_common.wgsl に BindlessInstanceRecord.{field} が見つかりません");
+        for field in [
+            "avg_albedo",
+            "base_color_factor",
+            "albedo_tex_index",
+            "uv_offset",
+            "index_offset",
+            "flags",
+            "alpha_cutoff",
+            "normal_offset",
+        ] {
+            assert!(
+                src.contains(field),
+                "bindless_common.wgsl に BindlessInstanceRecord.{field} が見つかりません"
+            );
         }
         // 先頭 16B 互換の要（avg_albedo が最初のメンバ）。
-        let s = src.find("struct BindlessInstanceRecord")
+        let s = src
+            .find("struct BindlessInstanceRecord")
             .expect("bindless_common.wgsl に struct BindlessInstanceRecord が無い");
         let avg = src[s..].find("avg_albedo").expect("avg_albedo が無い");
-        let bcf = src[s..].find("base_color_factor").expect("base_color_factor が無い");
-        assert!(avg < bcf, "avg_albedo は base_color_factor より前（先頭 16B 互換）");
+        let bcf = src[s..]
+            .find("base_color_factor")
+            .expect("base_color_factor が無い");
+        assert!(
+            avg < bcf,
+            "avg_albedo は base_color_factor より前（先頭 16B 互換）"
+        );
     }
 
     /// WGSL ミラーの定数（容量・ダミー index・フラグ）が Rust 定数と一致すること。
@@ -1101,20 +1253,36 @@ mod tests {
     fn wgsl_mirror_constants_match() {
         let src = include_str!("shaders/bindless_common.wgsl");
         let read = |name: &str| -> String {
-            let decl = src.lines().map(str::trim)
+            let decl = src
+                .lines()
+                .map(str::trim)
                 .find(|l| l.starts_with(&format!("const {name}")))
                 .unwrap_or_else(|| panic!("bindless_common.wgsl に const {name} が無い"));
-            decl.split('=').nth(1).unwrap().trim()
-                .trim_end_matches(';').trim().trim_end_matches('u').to_string()
+            decl.split('=')
+                .nth(1)
+                .unwrap()
+                .trim()
+                .trim_end_matches(';')
+                .trim()
+                .trim_end_matches('u')
+                .to_string()
         };
-        assert_eq!(read("BINDLESS_DUMMY_TEX_INDEX").parse::<u32>().unwrap(),
-                   BINDLESS_DUMMY_TEX_INDEX);
-        assert_eq!(read("BINDLESS_FLAG_ELIGIBLE").parse::<u32>().unwrap(),
-                   BINDLESS_FLAG_ELIGIBLE);
-        assert_eq!(read("BINDLESS_FLAG_MASK").parse::<u32>().unwrap(),
-                   BINDLESS_FLAG_MASK);
-        assert_eq!(read("BINDLESS_FLAG_GEOM").parse::<u32>().unwrap(),
-                   BINDLESS_FLAG_GEOM);
+        assert_eq!(
+            read("BINDLESS_DUMMY_TEX_INDEX").parse::<u32>().unwrap(),
+            BINDLESS_DUMMY_TEX_INDEX
+        );
+        assert_eq!(
+            read("BINDLESS_FLAG_ELIGIBLE").parse::<u32>().unwrap(),
+            BINDLESS_FLAG_ELIGIBLE
+        );
+        assert_eq!(
+            read("BINDLESS_FLAG_MASK").parse::<u32>().unwrap(),
+            BINDLESS_FLAG_MASK
+        );
+        assert_eq!(
+            read("BINDLESS_FLAG_GEOM").parse::<u32>().unwrap(),
+            BINDLESS_FLAG_GEOM
+        );
     }
 
     // ── 八面体法線エンコードの往復一致（Rust ↔ WGSL ミラーの基準）──
@@ -1146,16 +1314,22 @@ mod tests {
             }
         }
         // 16bit/成分の八面体で、1-cos の最悪誤差は 1e-4 未満に収まる（十分に精密）。
-        assert!(max_err < 1.0e-4, "八面体往復の最悪誤差が大きすぎる: {max_err}");
+        assert!(
+            max_err < 1.0e-4,
+            "八面体往復の最悪誤差が大きすぎる: {max_err}"
+        );
     }
 
     /// 軸方向法線（±X/±Y/±Z）は往復でほぼ完全一致すること（境界の折り返しの健全性）。
     #[test]
     fn oct_roundtrip_axis_normals() {
         let axes = [
-            [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0], [0.0, -1.0, 0.0],
-            [0.0, 0.0, 1.0], [0.0, 0.0, -1.0],
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
         ];
         for n in axes {
             let d = oct_decode_normal(oct_encode_normal(n));
@@ -1169,10 +1343,14 @@ mod tests {
     #[test]
     fn wgsl_mirror_has_oct_decode() {
         let src = include_str!("shaders/bindless_common.wgsl");
-        assert!(src.contains("fn oct_decode_normal"),
-            "bindless_common.wgsl に oct_decode_normal が無い");
-        assert!(src.contains("65535.0"),
-            "bindless_common.wgsl の oct_decode_normal は 16bit 分解（65535.0）であること");
+        assert!(
+            src.contains("fn oct_decode_normal"),
+            "bindless_common.wgsl に oct_decode_normal が無い"
+        );
+        assert!(
+            src.contains("65535.0"),
+            "bindless_common.wgsl の oct_decode_normal は 16bit 分解（65535.0）であること"
+        );
     }
 
     // ── MegaAllocator ───────────────────────────────────────
@@ -1264,7 +1442,10 @@ mod tests {
     /// 容量計算: BINDLESS_MAX_INSTANCES が rt_shadow の MAX_RT_INSTANCES と一致すること。
     #[test]
     fn instance_capacity_matches_rt_shadow() {
-        assert_eq!(BINDLESS_MAX_INSTANCES, super::super::rt_shadow::MAX_RT_INSTANCES);
+        assert_eq!(
+            BINDLESS_MAX_INSTANCES,
+            super::super::rt_shadow::MAX_RT_INSTANCES
+        );
     }
 
     /// WGSL ミラーが単体で naga に parse できる（＝構文が有効）ことを確認する。
@@ -1304,7 +1485,7 @@ mod tests {
         let queued = q.lock().unwrap();
         assert_eq!(queued.len(), 1, "drop で解放要求はちょうど 1 件");
         assert_eq!(queued[0].tex, vec![3, 5]);
-        assert_eq!(queued[0].uv,  vec![(10, 4)]);
+        assert_eq!(queued[0].uv, vec![(10, 4)]);
         assert_eq!(queued[0].idx, vec![(20, 6)]);
     }
 
@@ -1327,7 +1508,7 @@ mod tests {
     fn register_then_drop_drain_balances_no_leak() {
         let q: BindlessFreeQueue = Arc::new(Mutex::new(Vec::new()));
         let mut reg = TextureRegistry::new(16);
-        let mut uv  = MegaAllocator::new(4096);
+        let mut uv = MegaAllocator::new(4096);
         let mut idx = MegaAllocator::new(4096);
 
         let mut handles = Vec::new();
@@ -1337,14 +1518,18 @@ mod tests {
                 let ti = reg.alloc_index().unwrap();
                 a.record_texture(ti);
             }
-            let uo = uv.alloc(8 * BINDLESS_UV_ELEM_BYTES, BINDLESS_UV_ELEM_BYTES).unwrap();
+            let uo = uv
+                .alloc(8 * BINDLESS_UV_ELEM_BYTES, BINDLESS_UV_ELEM_BYTES)
+                .unwrap();
             a.record_uv((uo / BINDLESS_UV_ELEM_BYTES) as u32, 8);
-            let io = idx.alloc(12 * BINDLESS_INDEX_ELEM_BYTES, BINDLESS_INDEX_ELEM_BYTES).unwrap();
+            let io = idx
+                .alloc(12 * BINDLESS_INDEX_ELEM_BYTES, BINDLESS_INDEX_ELEM_BYTES)
+                .unwrap();
             a.record_index((io / BINDLESS_INDEX_ELEM_BYTES) as u32, 12);
             handles.push(a);
         }
         assert_eq!(reg.registered_count(), 8, "4 モデル×2 テクスチャ = 8 登録");
-        assert_eq!(uv.used(),  4 * 8 * BINDLESS_UV_ELEM_BYTES);
+        assert_eq!(uv.used(), 4 * 8 * BINDLESS_UV_ELEM_BYTES);
         assert_eq!(idx.used(), 4 * 12 * BINDLESS_INDEX_ELEM_BYTES);
 
         drop(handles); // 全モデル drop → 解放要求がキューへ
@@ -1353,12 +1538,24 @@ mod tests {
         let frees = std::mem::take(&mut *q.lock().unwrap());
         assert_eq!(frees.len(), 4, "4 モデル分の解放要求");
         for f in frees {
-            for t in f.tex      { reg.free(t); }
-            for (o, c) in f.uv  { uv.free(o as u64 * BINDLESS_UV_ELEM_BYTES,   c as u64 * BINDLESS_UV_ELEM_BYTES); }
-            for (o, c) in f.idx { idx.free(o as u64 * BINDLESS_INDEX_ELEM_BYTES, c as u64 * BINDLESS_INDEX_ELEM_BYTES); }
+            for t in f.tex {
+                reg.free(t);
+            }
+            for (o, c) in f.uv {
+                uv.free(
+                    o as u64 * BINDLESS_UV_ELEM_BYTES,
+                    c as u64 * BINDLESS_UV_ELEM_BYTES,
+                );
+            }
+            for (o, c) in f.idx {
+                idx.free(
+                    o as u64 * BINDLESS_INDEX_ELEM_BYTES,
+                    c as u64 * BINDLESS_INDEX_ELEM_BYTES,
+                );
+            }
         }
         assert_eq!(reg.registered_count(), 0, "全テクスチャ解放（リークなし）");
-        assert_eq!(uv.used(),  0, "全 UV 領域解放");
+        assert_eq!(uv.used(), 0, "全 UV 領域解放");
         assert_eq!(idx.used(), 0, "全 index 領域解放");
     }
 }

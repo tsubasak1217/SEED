@@ -19,7 +19,7 @@
 // ============================================================
 
 use crate::engine::components::{
-    Transform, CanvasTransform, SpriteComponent, ModelComponent, ComponentKind,
+    CanvasTransform, ComponentKind, ModelComponent, SpriteComponent, Transform,
 };
 use crate::engine::ecs::World;
 use crate::engine::structs::objects::Actor;
@@ -54,8 +54,9 @@ impl PropBinding {
             PropBinding::ActorTransformPosition
             | PropBinding::ActorTransformRotation
             | PropBinding::ActorTransformScale => ValueType::Vec3,
-            PropBinding::CanvasTransformPosition
-            | PropBinding::CanvasTransformScale => ValueType::Vec2,
+            PropBinding::CanvasTransformPosition | PropBinding::CanvasTransformScale => {
+                ValueType::Vec2
+            }
             PropBinding::CanvasTransformRotation => ValueType::Float,
             PropBinding::SpriteColor => ValueType::Color,
         }
@@ -70,13 +71,13 @@ impl PropBinding {
 /// - sprite: color(color)
 pub fn resolve_binding(component: &str, property: &str) -> Option<PropBinding> {
     match (component, property) {
-        ("actor_transform", "position")  => Some(PropBinding::ActorTransformPosition),
-        ("actor_transform", "rotation")  => Some(PropBinding::ActorTransformRotation),
-        ("actor_transform", "scale")     => Some(PropBinding::ActorTransformScale),
+        ("actor_transform", "position") => Some(PropBinding::ActorTransformPosition),
+        ("actor_transform", "rotation") => Some(PropBinding::ActorTransformRotation),
+        ("actor_transform", "scale") => Some(PropBinding::ActorTransformScale),
         ("canvas_transform", "position") => Some(PropBinding::CanvasTransformPosition),
         ("canvas_transform", "rotation") => Some(PropBinding::CanvasTransformRotation),
-        ("canvas_transform", "scale")    => Some(PropBinding::CanvasTransformScale),
-        ("sprite", "color")              => Some(PropBinding::SpriteColor),
+        ("canvas_transform", "scale") => Some(PropBinding::CanvasTransformScale),
+        ("sprite", "color") => Some(PropBinding::SpriteColor),
         _ => None,
     }
 }
@@ -94,52 +95,77 @@ pub fn apply_write(world: &mut World, target: &Actor, binding: PropBinding, valu
         PropBinding::ActorTransformPosition => {
             if let AnimValue::Vec3(v) = value {
                 let changed = if let Some(tf) = world.get_mut::<Transform>(target.entity) {
-                    tf.position = *v; true
-                } else { false };
-                if changed { sync_model_instance_mats(world, target); }
+                    tf.position = *v;
+                    true
+                } else {
+                    false
+                };
+                if changed {
+                    sync_model_instance_mats(world, target);
+                }
             }
         }
         PropBinding::ActorTransformRotation => {
             if let AnimValue::Vec3(v) = value {
                 let changed = if let Some(tf) = world.get_mut::<Transform>(target.entity) {
-                    tf.rotation = *v; true
-                } else { false };
-                if changed { sync_model_instance_mats(world, target); }
+                    tf.rotation = *v;
+                    true
+                } else {
+                    false
+                };
+                if changed {
+                    sync_model_instance_mats(world, target);
+                }
             }
         }
         PropBinding::ActorTransformScale => {
             if let AnimValue::Vec3(v) = value {
                 let changed = if let Some(tf) = world.get_mut::<Transform>(target.entity) {
-                    tf.scale = *v; true
-                } else { false };
-                if changed { sync_model_instance_mats(world, target); }
+                    tf.scale = *v;
+                    true
+                } else {
+                    false
+                };
+                if changed {
+                    sync_model_instance_mats(world, target);
+                }
             }
         }
         // ── 2D CanvasTransform 系（同期不要）──
         PropBinding::CanvasTransformPosition => {
             if let AnimValue::Vec2(v) = value {
-                if let Some(ct) = world.get_mut::<CanvasTransform>(target.entity) { ct.position = *v; }
+                if let Some(ct) = world.get_mut::<CanvasTransform>(target.entity) {
+                    ct.position = *v;
+                }
             }
         }
         PropBinding::CanvasTransformRotation => {
             if let AnimValue::Float(v) = value {
-                if let Some(ct) = world.get_mut::<CanvasTransform>(target.entity) { ct.rotation = *v; }
+                if let Some(ct) = world.get_mut::<CanvasTransform>(target.entity) {
+                    ct.rotation = *v;
+                }
             }
         }
         PropBinding::CanvasTransformScale => {
             if let AnimValue::Vec2(v) = value {
-                if let Some(ct) = world.get_mut::<CanvasTransform>(target.entity) { ct.scale = *v; }
+                if let Some(ct) = world.get_mut::<CanvasTransform>(target.entity) {
+                    ct.scale = *v;
+                }
             }
         }
         // ── Sprite カラー（同期不要）──
         PropBinding::SpriteColor => {
             if let AnimValue::Color(v) = value {
                 // 最初の Sprite スロットへ書き込む
-                if let Some(slot_entity) = target.slots().iter()
+                if let Some(slot_entity) = target
+                    .slots()
+                    .iter()
                     .find(|s| s.kind == ComponentKind::Sprite)
                     .map(|s| s.entity)
                 {
-                    if let Some(sp) = world.get_mut::<SpriteComponent>(slot_entity) { sp.color = *v; }
+                    if let Some(sp) = world.get_mut::<SpriteComponent>(slot_entity) {
+                        sp.color = *v;
+                    }
                 }
             }
         }
@@ -154,26 +180,32 @@ pub fn apply_write(world: &mut World, target: &Actor, binding: PropBinding, valu
 /// 元値を退避するために使う。値が読み取れない（対象コンポーネントが無い等）場合は None。
 pub fn read_binding(world: &World, target: &Actor, binding: PropBinding) -> Option<AnimValue> {
     match binding {
-        PropBinding::ActorTransformPosition =>
-            world.get::<Transform>(target.entity).map(|tf| AnimValue::Vec3(tf.position)),
-        PropBinding::ActorTransformRotation =>
-            world.get::<Transform>(target.entity).map(|tf| AnimValue::Vec3(tf.rotation)),
-        PropBinding::ActorTransformScale =>
-            world.get::<Transform>(target.entity).map(|tf| AnimValue::Vec3(tf.scale)),
-        PropBinding::CanvasTransformPosition =>
-            world.get::<CanvasTransform>(target.entity).map(|ct| AnimValue::Vec2(ct.position)),
-        PropBinding::CanvasTransformRotation =>
-            world.get::<CanvasTransform>(target.entity).map(|ct| AnimValue::Float(ct.rotation)),
-        PropBinding::CanvasTransformScale =>
-            world.get::<CanvasTransform>(target.entity).map(|ct| AnimValue::Vec2(ct.scale)),
+        PropBinding::ActorTransformPosition => world
+            .get::<Transform>(target.entity)
+            .map(|tf| AnimValue::Vec3(tf.position)),
+        PropBinding::ActorTransformRotation => world
+            .get::<Transform>(target.entity)
+            .map(|tf| AnimValue::Vec3(tf.rotation)),
+        PropBinding::ActorTransformScale => world
+            .get::<Transform>(target.entity)
+            .map(|tf| AnimValue::Vec3(tf.scale)),
+        PropBinding::CanvasTransformPosition => world
+            .get::<CanvasTransform>(target.entity)
+            .map(|ct| AnimValue::Vec2(ct.position)),
+        PropBinding::CanvasTransformRotation => world
+            .get::<CanvasTransform>(target.entity)
+            .map(|ct| AnimValue::Float(ct.rotation)),
+        PropBinding::CanvasTransformScale => world
+            .get::<CanvasTransform>(target.entity)
+            .map(|ct| AnimValue::Vec2(ct.scale)),
         // apply_write と同じスロット選択規則（最初の Sprite スロット）で読む。
         // 退避と復元の対象を一致させるため必須。
-        PropBinding::SpriteColor => {
-            target.slots().iter()
-                .find(|s| s.kind == ComponentKind::Sprite)
-                .and_then(|s| world.get::<SpriteComponent>(s.entity))
-                .map(|sp| AnimValue::Color(sp.color))
-        }
+        PropBinding::SpriteColor => target
+            .slots()
+            .iter()
+            .find(|s| s.kind == ComponentKind::Sprite)
+            .and_then(|s| world.get::<SpriteComponent>(s.entity))
+            .map(|sp| AnimValue::Color(sp.color)),
     }
 }
 
@@ -189,7 +221,9 @@ fn sync_model_instance_mats(world: &mut World, target: &Actor) {
         None => return,
     };
     // 対象アクターの全 Model スロットに反映する
-    let model_slots: Vec<_> = target.slots().iter()
+    let model_slots: Vec<_> = target
+        .slots()
+        .iter()
         .filter(|s| s.kind == ComponentKind::Model)
         .map(|s| s.entity)
         .collect();

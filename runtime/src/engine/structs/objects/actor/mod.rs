@@ -23,22 +23,17 @@
 //  シリアライズは World を渡して actor.to_data(&world) を呼ぶ。
 // ============================================================
 
-use std::any::TypeId;
 use serde::{Deserialize, Serialize};
+use std::any::TypeId;
 
-use crate::engine::ecs::{Entity, World};
 use crate::engine::components::{
-    ComponentData, ComponentKind,
-    Transform, CanvasTransform,
-    ModelComponent, ModelComponentData,
-    ScriptComponent, ScriptComponentData, PlaceholderScriptSlot,
-    CanvasComponent, CanvasComponentData,
-    SpriteComponent,
-    InputMapComponent,
-    CameraComponent,
-    ColliderComponent, ColliderComponentData,
+    CameraComponent, CanvasComponent, CanvasComponentData, CanvasTransform, ColliderComponent,
+    ColliderComponentData, ComponentData, ComponentKind, InputMapComponent, ModelComponent,
+    ModelComponentData, PlaceholderScriptSlot, ScriptComponent, ScriptComponentData,
+    SpriteComponent, Transform,
 };
 use crate::engine::core::clock::FrameContext;
+use crate::engine::ecs::{Entity, World};
 
 // ─── ActorKind ────────────────────────────────────────────────────────────────
 
@@ -84,15 +79,23 @@ pub struct ComponentSlot {
 impl ComponentSlot {
     /// 型パラメータから ComponentSlot を生成するヘルパー。
     pub fn new<T: crate::engine::ecs::Component + 'static>(
-        name:   impl Into<String>,
-        kind:   ComponentKind,
+        name: impl Into<String>,
+        kind: ComponentKind,
         entity: Entity,
     ) -> Self {
-        Self { name: name.into(), kind, type_id: TypeId::of::<T>(), entity, enabled: true }
+        Self {
+            name: name.into(),
+            kind,
+            type_id: TypeId::of::<T>(),
+            entity,
+            enabled: true,
+        }
     }
 
     /// このスロットが指定型のコンポーネントかを確認する。
-    pub fn is<T: 'static>(&self) -> bool { self.type_id == TypeId::of::<T>() }
+    pub fn is<T: 'static>(&self) -> bool {
+        self.type_id == TypeId::of::<T>()
+    }
 }
 
 // ─── ActorData ────────────────────────────────────────────────────────────────
@@ -100,16 +103,16 @@ impl ComponentSlot {
 /// Actor のシリアライズ用データ（JSON 保存・Undo スナップショット）。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ActorData {
-    pub name:       String,
+    pub name: String,
     /// エディタ/AI 用の DFS 順 ID。保存時は出力しない。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dfs_id:     Option<u32>,
+    pub dfs_id: Option<u32>,
     /// Actor の種別（3D / 2D）。省略時は Actor3D。
     #[serde(default, skip_serializing_if = "is_actor3d")]
     pub actor_kind: ActorKind,
     /// 3D アクターのトランスフォーム。Actor3D のみ使用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transform:  Option<Transform>,
+    pub transform: Option<Transform>,
     /// 2D アクターのキャンバストランスフォーム（position/rotation/scale/pivot/anchor）。
     /// Actor2D のみ使用。既存の .actor ファイルとの互換性のため省略可（省略時はデフォルト）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -119,9 +122,9 @@ pub struct ActorData {
     /// 単なる階層グルーピングのための器であり、地形ルート／チャンクの整理などに使う。
     /// 既存シーンとの後方互換のため省略時は false（＝通常アクター）、false のときは書き出さない。
     #[serde(default, skip_serializing_if = "is_false")]
-    pub is_folder:  bool,
+    pub is_folder: bool,
     pub components: Vec<ComponentSlotData>,
-    pub children:   Vec<ActorData>,
+    pub children: Vec<ActorData>,
     /// アクターのアクティブフラグ（Unity の activeSelf 相当）。
     /// false のとき自身と全子孫が描画・更新・物理の対象から外れる。
     /// 既存ファイルとの互換性のため省略時は true、true の場合は書き出さない。
@@ -139,18 +142,26 @@ pub struct ActorData {
 }
 
 /// actor_kind が Actor3D（デフォルト）の場合は JSON に書き出さない。
-fn is_actor3d(k: &ActorKind) -> bool { *k == ActorKind::Actor3D }
+fn is_actor3d(k: &ActorKind) -> bool {
+    *k == ActorKind::Actor3D
+}
 
 /// serde 用: デフォルト true / true なら省略（active / enabled フラグの互換性維持）。
-fn default_true() -> bool { true }
-fn is_true(v: &bool) -> bool { *v }
+fn default_true() -> bool {
+    true
+}
+fn is_true(v: &bool) -> bool {
+    *v
+}
 /// serde 用: false なら省略（is_folder フラグの互換性維持。既存シーンは false 扱い）。
-fn is_false(v: &bool) -> bool { !*v }
+fn is_false(v: &bool) -> bool {
+    !*v
+}
 
 /// ComponentSlot のシリアライズ用データ。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ComponentSlotData {
-    pub name:      String,
+    pub name: String,
     pub component: ComponentData,
     /// コンポーネントの有効フラグ。省略時は true、true の場合は書き出さない。
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
@@ -166,19 +177,19 @@ pub struct ComponentSlotData {
 /// - DFS 順の計算・世界線フィルタに必要な情報はフィールドで保持
 pub struct Actor {
     /// ECS エンティティ ID（World でのコンポーネント検索キー）
-    pub entity:     Entity,
+    pub entity: Entity,
     /// ヒエラルキー表示名
-    pub name:       String,
+    pub name: String,
     /// 所属世界線（0=通常シーン, N=アクター編集タブ）
     pub world_line: u32,
     /// Actor の種別（3D / 2D）
     pub actor_kind: ActorKind,
     /// 子 Actor（順序を保持しているため DFS が確定的）
-    pub children:   Vec<Actor>,
+    pub children: Vec<Actor>,
     /// アクティブフラグ（Unity の activeSelf 相当）。
     /// 自身が true でも祖先が false なら実効的に非アクティブになる
     /// （実効判定は collect_inactive_actor_entities で集合として計算する）。
-    pub active:     bool,
+    pub active: bool,
     /// プレハブ参照リンク（アセット相対 `assets://` パス）。ActorData の同名フィールドと対応する。
     /// **インスタンスのルートのみ Some**（子アクターは常に None）。
     /// build_actor で ActorData から復元し、to_data で書き戻す。
@@ -186,23 +197,23 @@ pub struct Actor {
     /// フォルダノードフラグ（整理専用ノード）。true のとき Transform を持たず、
     /// 子のワールド変換に影響しない（描画・物理・スクリプトから透過）。
     /// ActorData の同名フィールドと往復する。地形ルート／チャンクの器などに使う。
-    pub is_folder:  bool,
+    pub is_folder: bool,
     /// 保持コンポーネントの目録（実データは World）
-    slots:          Vec<ComponentSlot>,
+    slots: Vec<ComponentSlot>,
 }
 
 impl Actor {
     pub fn new(entity: Entity, name: impl Into<String>) -> Self {
         Self {
             entity,
-            name:       name.into(),
+            name: name.into(),
             world_line: 0,
             actor_kind: ActorKind::Actor3D,
-            children:   Vec::new(),
-            active:     true,
+            children: Vec::new(),
+            active: true,
             prefab_source: None,
-            is_folder:  false,
-            slots:      Vec::new(),
+            is_folder: false,
+            slots: Vec::new(),
         }
     }
 
@@ -210,14 +221,14 @@ impl Actor {
     pub fn new_2d(entity: Entity, name: impl Into<String>) -> Self {
         Self {
             entity,
-            name:       name.into(),
+            name: name.into(),
             world_line: 0,
             actor_kind: ActorKind::Actor2D,
-            children:   Vec::new(),
-            active:     true,
+            children: Vec::new(),
+            active: true,
             prefab_source: None,
-            is_folder:  false,
-            slots:      Vec::new(),
+            is_folder: false,
+            slots: Vec::new(),
         }
     }
 
@@ -228,14 +239,14 @@ impl Actor {
     pub fn new_folder(entity: Entity, name: impl Into<String>) -> Self {
         Self {
             entity,
-            name:       name.into(),
+            name: name.into(),
             world_line: 0,
             actor_kind: ActorKind::Actor3D,
-            children:   Vec::new(),
-            active:     true,
+            children: Vec::new(),
+            active: true,
             prefab_source: None,
-            is_folder:  true,
-            slots:      Vec::new(),
+            is_folder: true,
+            slots: Vec::new(),
         }
     }
 
@@ -258,22 +269,38 @@ impl Actor {
     }
 
     /// スロット目録（不変）
-    pub fn slots(&self) -> &[ComponentSlot] { &self.slots }
+    pub fn slots(&self) -> &[ComponentSlot] {
+        &self.slots
+    }
 
     /// スロット目録（可変）— Undo 復元など内部操作用
-    pub fn slots_mut(&mut self) -> &mut Vec<ComponentSlot> { &mut self.slots }
+    pub fn slots_mut(&mut self) -> &mut Vec<ComponentSlot> {
+        &mut self.slots
+    }
 
     /// スロットを追加する（World への insert と entity spawn は呼び出し元が行う）。
-    pub fn add_slot(&mut self, name: impl Into<String>, kind: ComponentKind, type_id: TypeId, entity: Entity) {
-        self.slots.push(ComponentSlot { name: name.into(), kind, type_id, entity, enabled: true });
+    pub fn add_slot(
+        &mut self,
+        name: impl Into<String>,
+        kind: ComponentKind,
+        type_id: TypeId,
+        entity: Entity,
+    ) {
+        self.slots.push(ComponentSlot {
+            name: name.into(),
+            kind,
+            type_id,
+            entity,
+            enabled: true,
+        });
     }
 
     /// 型パラメータ付きスロット追加ヘルパー。
     /// entity はスロット専用の ECS エンティティ（呼び出し元で world.spawn() して渡す）。
     pub fn add_slot_typed<T: crate::engine::ecs::Component + 'static>(
         &mut self,
-        name:   impl Into<String>,
-        kind:   ComponentKind,
+        name: impl Into<String>,
+        kind: ComponentKind,
         entity: Entity,
     ) {
         self.slots.push(ComponentSlot::new::<T>(name, kind, entity));
@@ -293,7 +320,8 @@ impl Actor {
     /// slot_i 番目（Model スロット内の連番）の ModelComponent entity を返す。
     /// ピッキング後の選択スロット特定に使用する。
     pub fn mc_entity_at(&self, slot_i: usize) -> Option<Entity> {
-        self.slots.iter()
+        self.slots
+            .iter()
             .filter(|s| s.kind == ComponentKind::Model)
             .nth(slot_i)
             .map(|s| s.entity)
@@ -306,24 +334,36 @@ impl Actor {
 
     /// インデックス指定でスロットを削除する（World からの remove は呼び出し元が行う）。
     pub fn remove_slot_at(&mut self, idx: usize) {
-        if idx < self.slots.len() { self.slots.remove(idx); }
+        if idx < self.slots.len() {
+            self.slots.remove(idx);
+        }
     }
 
     /// スロット目録をまるごと置き換える（Undo/Redo 用）。
-    pub fn replace_slots(&mut self, slots: Vec<ComponentSlot>) { self.slots = slots; }
+    pub fn replace_slots(&mut self, slots: Vec<ComponentSlot>) {
+        self.slots = slots;
+    }
 
     // ─── 親子関係 ─────────────────────────────────────────────
 
-    pub fn add_child(&mut self, child: Actor) { self.children.push(child); }
-    pub fn children(&self)     -> &[Actor]         { &self.children }
-    pub fn children_mut(&mut self) -> &mut Vec<Actor> { &mut self.children }
+    pub fn add_child(&mut self, child: Actor) {
+        self.children.push(child);
+    }
+    pub fn children(&self) -> &[Actor] {
+        &self.children
+    }
+    pub fn children_mut(&mut self) -> &mut Vec<Actor> {
+        &mut self.children
+    }
 
     // ─── world_line 伝播 ──────────────────────────────────────
 
     /// world_line を自身と全子孫に再帰的に設定する（Undo 復元・OpenActor 用）。
     pub fn set_world_line_recursive(&mut self, wl: u32) {
         self.world_line = wl;
-        for child in &mut self.children { child.set_world_line_recursive(wl); }
+        for child in &mut self.children {
+            child.set_world_line_recursive(wl);
+        }
     }
 
     // ─── シリアライズ ─────────────────────────────────────────
@@ -339,115 +379,124 @@ impl Actor {
             let id = *c;
             *c += 1;
             Some(id)
-        } else { None };
+        } else {
+            None
+        };
 
-        let transform        = world.get::<Transform>(self.entity).cloned();
+        let transform = world.get::<Transform>(self.entity).cloned();
         let canvas_transform = world.get::<CanvasTransform>(self.entity).cloned();
-        let components = self.slots.iter().filter_map(|slot| {
-            let data = match slot.kind {
-                ComponentKind::Model => {
-                    world.get::<ModelComponent>(slot.entity)
-                        .map(|mc| ComponentData::ModelComponent(mc.to_data()))
-                }
-                ComponentKind::Script => {
-                    world.get::<ScriptComponent>(slot.entity)
-                        .map(|sc| ComponentData::ScriptComponent(sc.to_data()))
-                }
-                ComponentKind::Placeholder => {
-                    world.get::<PlaceholderScriptSlot>(slot.entity)
-                        .map(|ps| ComponentData::ScriptComponent(ps.to_data()))
-                }
-                ComponentKind::Canvas => {
-                    world.get::<CanvasComponent>(slot.entity)
-                        .map(|cc| ComponentData::CanvasComponent(cc.to_data()))
-                }
-                ComponentKind::Sprite => {
-                    world.get::<SpriteComponent>(slot.entity)
-                        .map(|sc| ComponentData::SpriteComponent(sc.to_data()))
-                }
-                ComponentKind::InputMap => {
-                    world.get::<InputMapComponent>(slot.entity)
-                        .map(|ic| ComponentData::InputMapComponent(ic.to_data()))
-                }
-                ComponentKind::Camera => {
-                    world.get::<CameraComponent>(slot.entity)
-                        .map(|cc| ComponentData::CameraComponent(cc.to_data()))
-                }
-                ComponentKind::Plugin => {
-                    world.get::<crate::engine::components::PluginComponent>(slot.entity)
+        let components = self
+            .slots
+            .iter()
+            .filter_map(|slot| {
+                let data = match slot.kind {
+                    ComponentKind::Model => world
+                        .get::<ModelComponent>(slot.entity)
+                        .map(|mc| ComponentData::ModelComponent(mc.to_data())),
+                    ComponentKind::Script => world
+                        .get::<ScriptComponent>(slot.entity)
+                        .map(|sc| ComponentData::ScriptComponent(sc.to_data())),
+                    ComponentKind::Placeholder => world
+                        .get::<PlaceholderScriptSlot>(slot.entity)
+                        .map(|ps| ComponentData::ScriptComponent(ps.to_data())),
+                    ComponentKind::Canvas => world
+                        .get::<CanvasComponent>(slot.entity)
+                        .map(|cc| ComponentData::CanvasComponent(cc.to_data())),
+                    ComponentKind::Sprite => world
+                        .get::<SpriteComponent>(slot.entity)
+                        .map(|sc| ComponentData::SpriteComponent(sc.to_data())),
+                    ComponentKind::InputMap => world
+                        .get::<InputMapComponent>(slot.entity)
+                        .map(|ic| ComponentData::InputMapComponent(ic.to_data())),
+                    ComponentKind::Camera => world
+                        .get::<CameraComponent>(slot.entity)
+                        .map(|cc| ComponentData::CameraComponent(cc.to_data())),
+                    ComponentKind::Plugin => world
+                        .get::<crate::engine::components::PluginComponent>(slot.entity)
                         .map(|pc| pc.clone())
-                        .map(ComponentData::PluginComponent)
-                }
-                ComponentKind::Collider => {
-                    world.get::<ColliderComponent>(slot.entity)
-                        .map(|cc| ComponentData::ColliderComponent(ColliderComponentData::from(cc)))
-                }
-                ComponentKind::Collider2d => {
-                    // 2D コライダーコンポーネントをシリアライズ用データに変換する
-                    world.get::<crate::engine::components::Collider2dComponent>(slot.entity)
-                        .map(|cc| ComponentData::Collider2dComponent(crate::engine::components::Collider2dComponentData::from(cc)))
-                }
-                ComponentKind::Audio => {
-                    world.get::<crate::engine::components::AudioComponent>(slot.entity)
-                        .map(|ac| ComponentData::AudioComponent(ac.to_data()))
-                }
-                ComponentKind::Animator => {
-                    world.get::<crate::engine::components::AnimatorComponent>(slot.entity)
-                        .map(|an| ComponentData::AnimatorComponent(an.to_data()))
-                }
-                ComponentKind::Light => {
-                    world.get::<crate::engine::components::LightComponent>(slot.entity)
-                        .map(|lc| ComponentData::LightComponent(lc.to_data()))
-                }
-                ComponentKind::JointAttach => {
-                    world.get::<crate::engine::components::JointAttachComponent>(slot.entity)
-                        .map(|ja| ComponentData::JointAttachComponent(ja.to_data()))
-                }
-                ComponentKind::ParticleEmitter => {
-                    world.get::<crate::engine::components::ParticleEmitterComponent>(slot.entity)
-                        .map(|pe| ComponentData::ParticleEmitterComponent(pe.to_data()))
-                }
-                ComponentKind::Skybox => {
-                    world.get::<crate::engine::components::SkyboxComponent>(slot.entity)
-                        .map(|sb| ComponentData::SkyboxComponent(sb.to_data()))
-                }
-                ComponentKind::TerrainChunk => {
-                    // 地形チャンクの座標＋.tvox リンクをシリアライズ用データへ変換する
-                    world.get::<crate::engine::components::TerrainChunkComponent>(slot.entity)
-                        .map(|tc| ComponentData::TerrainChunkComponent(tc.to_data()))
-                }
-            };
-            data.map(|d| ComponentSlotData {
-                name:      slot.name.clone(),
-                component: d,
-                enabled:   slot.enabled,
+                        .map(ComponentData::PluginComponent),
+                    ComponentKind::Collider => {
+                        world.get::<ColliderComponent>(slot.entity).map(|cc| {
+                            ComponentData::ColliderComponent(ColliderComponentData::from(cc))
+                        })
+                    }
+                    ComponentKind::Collider2d => {
+                        // 2D コライダーコンポーネントをシリアライズ用データに変換する
+                        world
+                            .get::<crate::engine::components::Collider2dComponent>(slot.entity)
+                            .map(|cc| {
+                                ComponentData::Collider2dComponent(
+                                    crate::engine::components::Collider2dComponentData::from(cc),
+                                )
+                            })
+                    }
+                    ComponentKind::Audio => world
+                        .get::<crate::engine::components::AudioComponent>(slot.entity)
+                        .map(|ac| ComponentData::AudioComponent(ac.to_data())),
+                    ComponentKind::Animator => world
+                        .get::<crate::engine::components::AnimatorComponent>(slot.entity)
+                        .map(|an| ComponentData::AnimatorComponent(an.to_data())),
+                    ComponentKind::Light => world
+                        .get::<crate::engine::components::LightComponent>(slot.entity)
+                        .map(|lc| ComponentData::LightComponent(lc.to_data())),
+                    ComponentKind::JointAttach => world
+                        .get::<crate::engine::components::JointAttachComponent>(slot.entity)
+                        .map(|ja| ComponentData::JointAttachComponent(ja.to_data())),
+                    ComponentKind::ParticleEmitter => world
+                        .get::<crate::engine::components::ParticleEmitterComponent>(slot.entity)
+                        .map(|pe| ComponentData::ParticleEmitterComponent(pe.to_data())),
+                    ComponentKind::Skybox => world
+                        .get::<crate::engine::components::SkyboxComponent>(slot.entity)
+                        .map(|sb| ComponentData::SkyboxComponent(sb.to_data())),
+                    ComponentKind::TerrainChunk => {
+                        // 地形チャンクの座標＋.tvox リンクをシリアライズ用データへ変換する
+                        world
+                            .get::<crate::engine::components::TerrainChunkComponent>(slot.entity)
+                            .map(|tc| ComponentData::TerrainChunkComponent(tc.to_data()))
+                    }
+                };
+                data.map(|d| ComponentSlotData {
+                    name: slot.name.clone(),
+                    component: d,
+                    enabled: slot.enabled,
+                })
             })
-        }).collect();
+            .collect();
 
         ActorData {
-            name:             self.name.clone(),
+            name: self.name.clone(),
             dfs_id,
-            actor_kind:       self.actor_kind,
+            actor_kind: self.actor_kind,
             transform,
             canvas_transform,
-            is_folder:        self.is_folder,
+            is_folder: self.is_folder,
             components,
-            children:         self.children.iter().map(|c| c.to_data_recursive(world, counter)).collect(),
-            active:           self.active,
+            children: self
+                .children
+                .iter()
+                .map(|c| c.to_data_recursive(world, counter))
+                .collect(),
+            active: self.active,
             // プレハブ参照リンクを往復させる（ルートのみ Some、子は None）。
-            prefab_source:    self.prefab_source.clone(),
+            prefab_source: self.prefab_source.clone(),
         }
     }
 
     /// 2D Actor かどうかを返す。
-    pub fn is_2d(&self) -> bool { self.actor_kind == ActorKind::Actor2D }
+    pub fn is_2d(&self) -> bool {
+        self.actor_kind == ActorKind::Actor2D
+    }
 
     /// フォルダノード（整理専用・Transform 非保持）かどうかを返す。
-    pub fn is_folder(&self) -> bool { self.is_folder }
+    pub fn is_folder(&self) -> bool {
+        self.is_folder
+    }
 }
 
 impl Default for Actor {
-    fn default() -> Self { Self::with_name("Actor") }
+    fn default() -> Self {
+        Self::with_name("Actor")
+    }
 }
 
 // ============================================================
@@ -467,33 +516,45 @@ mod folder_tests {
     #[test]
     fn folder_flag_serde_roundtrip_and_backward_compat() {
         let folder = ActorData {
-            name:             "terrain".into(),
-            dfs_id:           None,
-            actor_kind:       ActorKind::Actor3D,
-            transform:        None,
+            name: "terrain".into(),
+            dfs_id: None,
+            actor_kind: ActorKind::Actor3D,
+            transform: None,
             canvas_transform: None,
-            is_folder:        true,
-            components:       Vec::new(),
-            children:         Vec::new(),
-            active:           true,
-            prefab_source:    None,
+            is_folder: true,
+            components: Vec::new(),
+            children: Vec::new(),
+            active: true,
+            prefab_source: None,
         };
 
         // is_folder=true は出力され、往復で保持される。
         let json = serde_json::to_string(&folder).unwrap();
-        assert!(json.contains("\"is_folder\":true"), "folder must serialize is_folder: {json}");
+        assert!(
+            json.contains("\"is_folder\":true"),
+            "folder must serialize is_folder: {json}"
+        );
         let back: ActorData = serde_json::from_str(&json).unwrap();
         assert!(back.is_folder);
 
         // is_folder=false は出力されない（既存シーンとのバイト互換維持）。
-        let normal = ActorData { is_folder: false, ..folder.clone() };
+        let normal = ActorData {
+            is_folder: false,
+            ..folder.clone()
+        };
         let json_n = serde_json::to_string(&normal).unwrap();
-        assert!(!json_n.contains("is_folder"), "normal actor must omit is_folder: {json_n}");
+        assert!(
+            !json_n.contains("is_folder"),
+            "normal actor must omit is_folder: {json_n}"
+        );
 
         // is_folder フィールドの無い旧 JSON は false として読める。
         let legacy = r#"{"name":"legacy","components":[],"children":[]}"#;
         let parsed: ActorData = serde_json::from_str(legacy).unwrap();
-        assert!(!parsed.is_folder, "legacy scene without is_folder must default to false");
+        assert!(
+            !parsed.is_folder,
+            "legacy scene without is_folder must default to false"
+        );
     }
 
     /// フォルダノードが Transform を一切保持しない（＝子のワールド変換へ継承しない）ことを検証する。
@@ -511,7 +572,10 @@ mod folder_tests {
         assert!(folder.is_folder());
         let fdata = folder.to_data(&world);
         assert!(fdata.is_folder);
-        assert!(fdata.transform.is_none(), "folder must not carry a Transform");
+        assert!(
+            fdata.transform.is_none(),
+            "folder must not carry a Transform"
+        );
 
         // 通常アクター: Transform を保持し、継承の起点になり得る。
         let me = world.spawn();
@@ -519,6 +583,9 @@ mod folder_tests {
         let mesh = Actor::new(me, "mesh");
         let mdata = mesh.to_data(&world);
         assert!(!mesh.is_folder());
-        assert!(mdata.transform.is_some(), "normal actor must carry a Transform");
+        assert!(
+            mdata.transform.is_some(),
+            "normal actor must carry a Transform"
+        );
     }
 }

@@ -13,8 +13,8 @@
 //    pub extern "C" fn seed_create_plugin() -> *mut std::ffi::c_void
 // ============================================================
 
-pub mod registry;
 pub mod manifest;
+pub mod registry;
 
 // ── seed-plugin-api の型を engine 内から使いやすいよう re-export ──
 

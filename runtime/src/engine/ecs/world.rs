@@ -15,17 +15,17 @@
 //  シングルスレッドで実行されることを想定している。
 // ============================================================
 
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
 use super::entity::{Entities, Entity};
 use super::storage::{AnyStorage, Component, SparseSet};
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
 
 // ─── World ────────────────────────────────────────────────────────────────────
 
 pub struct World {
-    entities:  Entities,
+    entities: Entities,
     /// TypeId → 型消去されたコンポーネントストレージ
-    storages:  HashMap<TypeId, Box<dyn AnyStorage>>,
+    storages: HashMap<TypeId, Box<dyn AnyStorage>>,
     /// グローバルリソース（システムが共有するシングルトンデータ）
     resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
@@ -33,8 +33,8 @@ pub struct World {
 impl World {
     pub fn new() -> Self {
         Self {
-            entities:  Entities::new(),
-            storages:  HashMap::new(),
+            entities: Entities::new(),
+            storages: HashMap::new(),
             resources: HashMap::new(),
         }
     }
@@ -42,7 +42,9 @@ impl World {
     // ─── Entity ───────────────────────────────────────────────
 
     /// 新しい Entity を生成して返す。コンポーネントは別途 insert() で追加する。
-    pub fn spawn(&mut self) -> Entity { self.entities.spawn() }
+    pub fn spawn(&mut self) -> Entity {
+        self.entities.spawn()
+    }
 
     /// Entity とその全コンポーネントを削除する。
     pub fn despawn(&mut self, entity: Entity) {
@@ -54,7 +56,9 @@ impl World {
     }
 
     /// Entity が有効かどうかを確認する。
-    pub fn is_alive(&self, entity: Entity) -> bool { self.entities.is_alive(entity) }
+    pub fn is_alive(&self, entity: Entity) -> bool {
+        self.entities.is_alive(entity)
+    }
 
     // ─── コンポーネント書き込み ────────────────────────────────
 
@@ -125,8 +129,12 @@ impl World {
     /// A と B 両方のコンポーネントを持つ Entity を (Entity, &A, &B) でまとめて返す。
     /// 内部で小さい方のストレージを走査してフィルタリングする。
     pub fn query2<A: Component, B: Component>(&self) -> Vec<(Entity, &A, &B)> {
-        let Some(sa) = self.storage_ref::<A>() else { return Vec::new() };
-        let Some(sb) = self.storage_ref::<B>() else { return Vec::new() };
+        let Some(sa) = self.storage_ref::<A>() else {
+            return Vec::new();
+        };
+        let Some(sb) = self.storage_ref::<B>() else {
+            return Vec::new();
+        };
         sa.iter()
             .filter_map(|(e, a)| sb.get(e).map(|b| (e, a, b)))
             .collect()
@@ -141,13 +149,13 @@ impl World {
 
     /// リソースへの不変参照を返す。
     pub fn resource<R: Any + Send + Sync + 'static>(&self) -> Option<&R> {
-        self.resources.get(&TypeId::of::<R>())?
-            .downcast_ref::<R>()
+        self.resources.get(&TypeId::of::<R>())?.downcast_ref::<R>()
     }
 
     /// リソースへの可変参照を返す。
     pub fn resource_mut<R: Any + Send + Sync + 'static>(&mut self) -> Option<&mut R> {
-        self.resources.get_mut(&TypeId::of::<R>())?
+        self.resources
+            .get_mut(&TypeId::of::<R>())?
             .downcast_mut::<R>()
     }
 
@@ -163,12 +171,15 @@ impl World {
     }
 
     fn storage_ref<T: Component>(&self) -> Option<&SparseSet<T>> {
-        self.storages.get(&TypeId::of::<T>())?
+        self.storages
+            .get(&TypeId::of::<T>())?
             .as_any()
             .downcast_ref::<SparseSet<T>>()
     }
 }
 
 impl Default for World {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

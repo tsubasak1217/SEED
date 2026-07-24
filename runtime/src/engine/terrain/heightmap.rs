@@ -40,8 +40,16 @@ impl HeightmapField {
     /// エッジを引き延ばした扱いになる。地形は footprint 内にしか存在しないため実害はない）。
     pub fn height_at(&self, wx: f32, wz: f32) -> f32 {
         // ── ワールド座標 → uv ∈ [0,1] ──（footprint が 0 の異常値は 0 割りを避けて 0 扱い）
-        let u = if self.footprint_w > 0.0 { (wx / self.footprint_w).clamp(0.0, 1.0) } else { 0.0 };
-        let v = if self.footprint_d > 0.0 { (wz / self.footprint_d).clamp(0.0, 1.0) } else { 0.0 };
+        let u = if self.footprint_w > 0.0 {
+            (wx / self.footprint_w).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let v = if self.footprint_d > 0.0 {
+            (wz / self.footprint_d).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
 
         // ── uv → 連続ピクセル座標（端は w-1 / h-1 にクランプ済みなので安全） ──
         let fx = u * (self.w.saturating_sub(1)) as f32;

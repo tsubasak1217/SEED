@@ -16,9 +16,10 @@ public readonly struct Vector2 : IEquatable<Vector2>
     public readonly float y;
 
     public Vector2(float x, float y) { this.x = x; this.y = y; }
+    public Vector2(Vector2 v) : this(v.x, v.y) { }
 
-    // ── 定義済みベクトル ─────────────────────────────────────
-    public static Vector2 Zero  => new(0f, 0f);
+	// ── 定義済みベクトル ─────────────────────────────────────
+	public static Vector2 Zero  => new(0f, 0f);
     public static Vector2 One   => new(1f, 1f);
     public static Vector2 Up    => new(0f, 1f);
     public static Vector2 Down  => new(0f, -1f);

@@ -16,12 +16,12 @@ use super::brush::SphereBrush;
 use super::chunk_coord::ChunkCoord;
 use super::chunk_data::TerrainChunkData;
 use super::layers::{
-    blend_rule_and_paint_all, blend_rule_and_paint_all_into, dequantize_weight, expand_slots,
-    expand_slots_into, normalize_weights_slice, quantize_weight, select_top_slots, BlendSlots,
-    DetileMode, LayerRule, LayerWeights, TerrainLayer, TerrainLayerSet, TERRAIN_BLEND_SLOTS,
-    TERRAIN_MAX_LAYERS,
+    BlendSlots, DetileMode, LayerRule, LayerWeights, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS,
+    TerrainLayer, TerrainLayerSet, blend_rule_and_paint_all, blend_rule_and_paint_all_into,
+    dequantize_weight, expand_slots, expand_slots_into, normalize_weights_slice, quantize_weight,
+    select_top_slots,
 };
-use super::paint::{apply_paint, PaintField};
+use super::paint::{PaintField, apply_paint};
 use super::settings::TerrainSettings;
 use super::tvox::{read_chunk, write_chunk, write_chunk_v1, write_chunk_v2};
 
@@ -50,7 +50,10 @@ fn default_test_layer() -> TerrainLayer {
 
 /// レイヤ名だけを与えたテスト用レイヤ（ルールは既定＝常に重み 1）。
 fn named_layer(name: &str) -> TerrainLayer {
-    TerrainLayer { name: name.to_string(), ..default_test_layer() }
+    TerrainLayer {
+        name: name.to_string(),
+        ..default_test_layer()
+    }
 }
 
 /// テスト用の 2 層セット（平地=レイヤ0 赤 / 急斜面=レイヤ1 青）。
@@ -154,7 +157,10 @@ fn rule_weights_match_expected_slope_selection() {
     assert_eq!(w, vec![1.0, 0.0], "45deg fallback: {w:?}");
 
     // ─── 下向き法線（天井）も |n.y| で同じ斜度として扱う ───
-    assert_eq!(set.rule_weights_all(-1.0, 0.0), set.rule_weights_all(1.0, 0.0));
+    assert_eq!(
+        set.rule_weights_all(-1.0, 0.0),
+        set.rule_weights_all(1.0, 0.0)
+    );
 }
 
 /// 高度ウィンドウが効くこと（低地だけに載るレイヤ）。
@@ -164,7 +170,10 @@ fn rule_weights_respect_height_window() {
         layers: vec![
             TerrainLayer {
                 name: "base".to_string(),
-                rule: LayerRule { priority: 1.0, ..LayerRule::default() },
+                rule: LayerRule {
+                    priority: 1.0,
+                    ..LayerRule::default()
+                },
                 ..default_test_layer()
             },
             TerrainLayer {
@@ -275,7 +284,11 @@ impl<'a> PaintView<'a> {
     fn split(&self, gx: i32, gy: i32, gz: i32) -> (ChunkCoord, usize, usize, usize) {
         let cells = self.settings.chunk_cells as i32;
         (
-            ChunkCoord::new(gx.div_euclid(cells), gy.div_euclid(cells), gz.div_euclid(cells)),
+            ChunkCoord::new(
+                gx.div_euclid(cells),
+                gy.div_euclid(cells),
+                gz.div_euclid(cells),
+            ),
             gx.rem_euclid(cells) as usize,
             gy.rem_euclid(cells) as usize,
             gz.rem_euclid(cells) as usize,
@@ -290,9 +303,15 @@ impl<'a> PaintField for PaintView<'a> {
     fn read_paint_global(&self, gx: i32, gy: i32, gz: i32) -> (BlendSlots, f32) {
         let (c, lx, ly, lz) = self.split(gx, gy, gz);
         match self.chunks.get(&c) {
-            Some(chunk) => (chunk.paint_slots(lx, ly, lz), chunk.paint_amount(lx, ly, lz)),
+            Some(chunk) => (
+                chunk.paint_slots(lx, ly, lz),
+                chunk.paint_amount(lx, ly, lz),
+            ),
             None => (
-                BlendSlots { index: [0; TERRAIN_BLEND_SLOTS], weight: [0.0; TERRAIN_BLEND_SLOTS] },
+                BlendSlots {
+                    index: [0; TERRAIN_BLEND_SLOTS],
+                    weight: [0.0; TERRAIN_BLEND_SLOTS],
+                },
                 0.0,
             ),
         }
@@ -315,33 +334,62 @@ impl<'a> PaintField for PaintView<'a> {
 fn paint_brush_raises_target_layer_and_normalizes() {
     let settings = TerrainSettings::default();
     let mut chunks: HashMap<ChunkCoord, TerrainChunkData> = HashMap::new();
-    chunks.insert(ChunkCoord::new(0, 0, 0), TerrainChunkData::new_filled(&settings, 0.0));
+    chunks.insert(
+        ChunkCoord::new(0, 0, 0),
+        TerrainChunkData::new_filled(&settings, 0.0),
+    );
 
     // チャンク中央にレイヤ 1 を強くペイントする（dt=1.0・中心 falloff=1 → delta=1）。
-    let brush = SphereBrush { center: PAINT_CENTER, radius: PAINT_RADIUS, strength: 1.0 };
+    let brush = SphereBrush {
+        center: PAINT_CENTER,
+        radius: PAINT_RADIUS,
+        strength: 1.0,
+    };
     let affected = {
-        let mut view = PaintView { settings: &settings, chunks: &mut chunks };
+        let mut view = PaintView {
+            settings: &settings,
+            chunks: &mut chunks,
+        };
         apply_paint(&mut view, &brush, 1, 1.0)
     };
-    assert!(!affected.is_empty(), "ペイントがどのチャンクにも届いていない");
+    assert!(
+        !affected.is_empty(),
+        "ペイントがどのチャンクにも届いていない"
+    );
 
     // ─── ブラシ中心のサンプルはレイヤ 1 が支配的・総和 1 ───
     let chunk = chunks.get(&ChunkCoord::new(0, 0, 0)).unwrap();
     let idx = |v: f32| (v / settings.voxel_size) as usize;
-    let (cx, cy, cz) = (idx(PAINT_CENTER[0]), idx(PAINT_CENTER[1]), idx(PAINT_CENTER[2]));
+    let (cx, cy, cz) = (
+        idx(PAINT_CENTER[0]),
+        idx(PAINT_CENTER[1]),
+        idx(PAINT_CENTER[2]),
+    );
     let slots = chunk.paint_slots(cx, cy, cz);
     // 重み降順ソート済みなので、支配的な層はスロット 0 に来る。
-    assert_eq!(slots.index[0], 1, "中心のスロット 0 がレイヤ 1 でない: {slots:?}");
+    assert_eq!(
+        slots.index[0], 1,
+        "中心のスロット 0 がレイヤ 1 でない: {slots:?}"
+    );
     assert!(slots.weight[0] > 0.99, "中心のレイヤ1重みが弱い: {slots:?}");
-    assert!((slots.weight.iter().sum::<f32>() - 1.0).abs() < QUANT_EPS, "{slots:?}");
-    assert!(chunk.paint_amount(cx, cy, cz) > 0.99, "中心のペイント量が弱い");
+    assert!(
+        (slots.weight.iter().sum::<f32>() - 1.0).abs() < QUANT_EPS,
+        "{slots:?}"
+    );
+    assert!(
+        chunk.paint_amount(cx, cy, cz) > 0.99,
+        "中心のペイント量が弱い"
+    );
 
     // ─── ブラシ半径の外は未ペイントのまま（ルール任せ）───
     assert_eq!(chunk.paint_amount(0, 0, 0), 0.0);
 
     // ─── 不正なレイヤ番号（定義上限以上）は無操作 ───
     let noop = {
-        let mut view = PaintView { settings: &settings, chunks: &mut chunks };
+        let mut view = PaintView {
+            settings: &settings,
+            chunks: &mut chunks,
+        };
         apply_paint(&mut view, &brush, TERRAIN_MAX_LAYERS as u32, 1.0)
     };
     assert!(noop.is_empty(), "範囲外レイヤ番号で書き込みが起きている");
@@ -359,11 +407,18 @@ fn paint_brush_replaces_weakest_slot_when_full() {
 
     // ─── ブラシ中心のサンプル添字（ワールド座標 → グリッド添字）───
     let idx = |v: f32| (v / settings.voxel_size) as usize;
-    let (cx, cy, cz) = (idx(PAINT_CENTER[0]), idx(PAINT_CENTER[1]), idx(PAINT_CENTER[2]));
+    let (cx, cy, cz) = (
+        idx(PAINT_CENTER[0]),
+        idx(PAINT_CENTER[1]),
+        idx(PAINT_CENTER[2]),
+    );
 
     // ─── 4 スロットを重み降順（すべて異なる値）で埋めておく ───
     //   最弱スロットはレイヤ 5（重み 0.1）で一意。
-    let seeded = BlendSlots { index: [1, 2, 3, 5], weight: [0.4, 0.3, 0.2, 0.1] };
+    let seeded = BlendSlots {
+        index: [1, 2, 3, 5],
+        weight: [0.4, 0.3, 0.2, 0.1],
+    };
     chunk.set_paint_slots(cx, cy, cz, &seeded);
     chunk.set_paint_amount(cx, cy, cz, 1.0);
 
@@ -372,24 +427,46 @@ fn paint_brush_replaces_weakest_slot_when_full() {
 
     // ─── 5 番目の層（レイヤ 8）を弱めに塗る（delta = strength * falloff(0) * dt = 0.2）───
     //   delta を小さくすることで「新しい層が全部を塗り潰す」ケースと区別する。
-    let brush = SphereBrush { center: PAINT_CENTER, radius: PAINT_RADIUS, strength: 0.2 };
+    let brush = SphereBrush {
+        center: PAINT_CENTER,
+        radius: PAINT_RADIUS,
+        strength: 0.2,
+    };
     {
-        let mut view = PaintView { settings: &settings, chunks: &mut chunks };
+        let mut view = PaintView {
+            settings: &settings,
+            chunks: &mut chunks,
+        };
         apply_paint(&mut view, &brush, 8, 1.0);
     }
-    let after = chunks.get(&ChunkCoord::new(0, 0, 0)).unwrap().paint_slots(cx, cy, cz);
+    let after = chunks
+        .get(&ChunkCoord::new(0, 0, 0))
+        .unwrap()
+        .paint_slots(cx, cy, cz);
 
     // 新しい層が入り、最弱だったレイヤ 5 が落ちている。
-    assert!(after.index.contains(&8), "新しい層が入っていない: {after:?}");
-    assert!(!after.index.contains(&5), "最小重みスロットが置換されていない: {after:?}");
+    assert!(
+        after.index.contains(&8),
+        "新しい層が入っていない: {after:?}"
+    );
+    assert!(
+        !after.index.contains(&5),
+        "最小重みスロットが置換されていない: {after:?}"
+    );
     // 残りの 3 層はそのまま残る。
     for layer in [1u32, 2, 3] {
         assert!(after.index.contains(&layer), "強い層が落ちた: {after:?}");
     }
     // 正規化されている（総和 1・降順）。
-    assert!((after.weight.iter().sum::<f32>() - 1.0).abs() < QUANT_EPS, "{after:?}");
+    assert!(
+        (after.weight.iter().sum::<f32>() - 1.0).abs() < QUANT_EPS,
+        "{after:?}"
+    );
     for k in 1..TERRAIN_BLEND_SLOTS {
-        assert!(after.weight[k - 1] >= after.weight[k], "降順でない: {after:?}");
+        assert!(
+            after.weight[k - 1] >= after.weight[k],
+            "降順でない: {after:?}"
+        );
     }
 }
 
@@ -404,9 +481,25 @@ fn tvox_v3_round_trip_includes_splat() {
     let mut chunk = TerrainChunkData::new_filled(&settings, 0.0);
     chunk.set_sample(1, 2, 3, -1.25);
     // レイヤ番号 4 桁（TERRAIN_BLEND_SLOTS を超える番号）も往復できることを確かめる。
-    chunk.set_paint_slots(1, 2, 3, &BlendSlots { index: [7, 0, 0, 0], weight: [1.0, 0.0, 0.0, 0.0] });
+    chunk.set_paint_slots(
+        1,
+        2,
+        3,
+        &BlendSlots {
+            index: [7, 0, 0, 0],
+            weight: [1.0, 0.0, 0.0, 0.0],
+        },
+    );
     chunk.set_paint_amount(1, 2, 3, 1.0);
-    chunk.set_paint_slots(4, 5, 6, &BlendSlots { index: [2, 9, 0, 0], weight: [0.5, 0.5, 0.0, 0.0] });
+    chunk.set_paint_slots(
+        4,
+        5,
+        6,
+        &BlendSlots {
+            index: [2, 9, 0, 0],
+            weight: [0.5, 0.5, 0.0, 0.0],
+        },
+    );
     chunk.set_paint_amount(4, 5, 6, 0.5);
 
     let coord = ChunkCoord::new(-2, 0, 7);
@@ -453,14 +546,27 @@ fn tvox_v2_is_readable_with_identity_layer_indices() {
 
     // ─── スロットのレイヤ番号は恒等 [0,1,2,3]、重みはファイルのまま ───
     let s = restored.paint_slots(3, 3, 3);
-    assert_eq!(s.index, [0, 1, 2, 3], "v2 のレイヤ番号が恒等になっていない: {s:?}");
-    assert!((s.weight[2] - 1.0).abs() < QUANT_EPS, "レイヤ 2 の重みが復元されていない: {s:?}");
-    assert!(s.weight[0] < QUANT_EPS && s.weight[1] < QUANT_EPS && s.weight[3] < QUANT_EPS, "{s:?}");
+    assert_eq!(
+        s.index,
+        [0, 1, 2, 3],
+        "v2 のレイヤ番号が恒等になっていない: {s:?}"
+    );
+    assert!(
+        (s.weight[2] - 1.0).abs() < QUANT_EPS,
+        "レイヤ 2 の重みが復元されていない: {s:?}"
+    );
+    assert!(
+        s.weight[0] < QUANT_EPS && s.weight[1] < QUANT_EPS && s.weight[3] < QUANT_EPS,
+        "{s:?}"
+    );
     assert!(restored.paint_amount(3, 3, 3) > 0.99);
 
     // 全サンプルで恒等インデックスが入っている。
     assert!(
-        restored.raw_paint_index().iter().all(|i| *i == [0, 1, 2, 3]),
+        restored
+            .raw_paint_index()
+            .iter()
+            .all(|i| *i == [0, 1, 2, 3]),
         "v2 読み込みで恒等インデックスになっていないサンプルがある"
     );
 }
@@ -475,7 +581,15 @@ fn tvox_v1_is_readable_and_defaults_to_rule_generated_splat() {
     let mut chunk = TerrainChunkData::new_filled(&settings, 0.0);
     chunk.set_sample(3, 3, 3, -2.5);
     // v1 に無いはずのスプラットをあえて書いておき、v1 経由で消えることを確かめる。
-    chunk.set_paint_slots(3, 3, 3, &BlendSlots { index: [2, 0, 0, 0], weight: [1.0, 0.0, 0.0, 0.0] });
+    chunk.set_paint_slots(
+        3,
+        3,
+        3,
+        &BlendSlots {
+            index: [2, 0, 0, 0],
+            weight: [1.0, 0.0, 0.0, 0.0],
+        },
+    );
     chunk.set_paint_amount(3, 3, 3, 1.0);
 
     let coord = ChunkCoord::new(1, -1, 2);
@@ -491,7 +605,10 @@ fn tvox_v1_is_readable_and_defaults_to_rule_generated_splat() {
         "v1 読み込みでペイント量が 0 になっていない"
     );
     assert!(
-        restored.raw_paint_weight().iter().all(|w| w.iter().all(|&q| q == 0)),
+        restored
+            .raw_paint_weight()
+            .iter()
+            .all(|w| w.iter().all(|&q| q == 0)),
         "v1 読み込みでペイント重みが 0 になっていない"
     );
 
@@ -545,7 +662,10 @@ fn triplanar_blend_weights_reference() {
     // ─── 総和は常に 1 ───
     for n in [[1.0, 0.0, 0.0], [0.3, 0.9, 0.31], [-0.5, -0.5, 0.7071]] {
         let w = triplanar_blend_weights_ref(n, TRIPLANAR_SHARPNESS);
-        assert!((w.iter().sum::<f32>() - 1.0).abs() < WEIGHT_EPS, "n={n:?} w={w:?}");
+        assert!(
+            (w.iter().sum::<f32>() - 1.0).abs() < WEIGHT_EPS,
+            "n={n:?} w={w:?}"
+        );
     }
 
     // ─── 縮退（0 ベクトル）: XZ 平面（真上投影）へフォールバック ───
@@ -580,22 +700,34 @@ fn layer_blend_composition_reference() {
     // ─── 平地（斜度 0）: レイヤ 0（赤）が 100% ───
     let w = set.rule_weights_all(1.0, 0.0);
     let albedo = blend_layer_albedo_ref(&set, &w);
-    assert!((albedo[0] - 1.0).abs() < WEIGHT_EPS, "flat albedo={albedo:?}");
+    assert!(
+        (albedo[0] - 1.0).abs() < WEIGHT_EPS,
+        "flat albedo={albedo:?}"
+    );
     assert!(albedo[2] < WEIGHT_EPS, "flat albedo={albedo:?}");
 
     // ─── 崖（斜度 90）: レイヤ 1（青）が 100% ───
     let w = set.rule_weights_all(0.0, 0.0);
     let albedo = blend_layer_albedo_ref(&set, &w);
     assert!(albedo[0] < WEIGHT_EPS, "steep albedo={albedo:?}");
-    assert!((albedo[2] - 1.0).abs() < WEIGHT_EPS, "steep albedo={albedo:?}");
+    assert!(
+        (albedo[2] - 1.0).abs() < WEIGHT_EPS,
+        "steep albedo={albedo:?}"
+    );
 
     // ─── 半々に手ペイントした場合は色が中間になる ───
     let rule = vec![1.0, 0.0, 0.0, 0.0];
     let paint = select_top_slots(&[0.0, 1.0, 0.0, 0.0]);
     let w = blend_rule_and_paint_all(&rule, &paint, 0.5);
     let albedo = blend_layer_albedo_ref(&set, &w);
-    assert!((albedo[0] - 0.5).abs() < WEIGHT_EPS, "mix albedo={albedo:?}");
-    assert!((albedo[2] - 0.5).abs() < WEIGHT_EPS, "mix albedo={albedo:?}");
+    assert!(
+        (albedo[0] - 0.5).abs() < WEIGHT_EPS,
+        "mix albedo={albedo:?}"
+    );
+    assert!(
+        (albedo[2] - 0.5).abs() < WEIGHT_EPS,
+        "mix albedo={albedo:?}"
+    );
 }
 
 // ============================================================
@@ -610,14 +742,24 @@ fn select_top_slots_picks_four_strongest_in_descending_order() {
     let weights = [0.05, 0.20, 0.01, 0.40, 0.00, 0.30, 0.10];
     let slots = select_top_slots(&weights);
 
-    assert_eq!(slots.index, [3, 5, 1, 6], "上位 4 層の選択が誤り: {slots:?}");
+    assert_eq!(
+        slots.index,
+        [3, 5, 1, 6],
+        "上位 4 層の選択が誤り: {slots:?}"
+    );
 
     // 重みは降順で、上位 4 層だけで総和 1 に再正規化されている
     //（落ちたレイヤ 0/2/4 のぶん 0.06 が配分されるので元の値そのままではない）。
     for k in 1..TERRAIN_BLEND_SLOTS {
-        assert!(slots.weight[k - 1] >= slots.weight[k], "降順でない: {slots:?}");
+        assert!(
+            slots.weight[k - 1] >= slots.weight[k],
+            "降順でない: {slots:?}"
+        );
     }
-    assert!((slots.weight.iter().sum::<f32>() - 1.0).abs() < WEIGHT_EPS, "{slots:?}");
+    assert!(
+        (slots.weight.iter().sum::<f32>() - 1.0).abs() < WEIGHT_EPS,
+        "{slots:?}"
+    );
     // 0.40 / (0.40+0.30+0.20+0.10) = 0.40
     assert!((slots.weight[0] - 0.4).abs() < WEIGHT_EPS, "{slots:?}");
 }
@@ -627,7 +769,11 @@ fn select_top_slots_picks_four_strongest_in_descending_order() {
 fn select_top_slots_handles_ties_degenerate_and_short_input() {
     // ─── 同点はレイヤ番号の小さい方を優先（安定ソート）───
     let slots = select_top_slots(&[0.25, 0.25, 0.25, 0.25, 0.25]);
-    assert_eq!(slots.index, [0, 1, 2, 3], "同点でレイヤ番号昇順になっていない: {slots:?}");
+    assert_eq!(
+        slots.index,
+        [0, 1, 2, 3],
+        "同点でレイヤ番号昇順になっていない: {slots:?}"
+    );
 
     // ─── 全 0（縮退）: レイヤ 0 に 1.0 を寄せる（黒落ち防止の規約）───
     let slots = select_top_slots(&[0.0; 7]);
@@ -665,16 +811,25 @@ fn expand_and_select_slots_round_trip() {
     let back = select_top_slots(&dense);
     assert_eq!(back.index, original.index, "往復でスロット構成が変わった");
     for k in 0..TERRAIN_BLEND_SLOTS {
-        assert!((back.weight[k] - original.weight[k]).abs() < WEIGHT_EPS, "{back:?}");
+        assert!(
+            (back.weight[k] - original.weight[k]).abs() < WEIGHT_EPS,
+            "{back:?}"
+        );
     }
 
     // ─── 範囲外 index は無視される（レイヤ定義が減ったケース）───
-    let slots = BlendSlots { index: [0, 9, 0, 0], weight: [0.5, 0.5, 0.0, 0.0] };
+    let slots = BlendSlots {
+        index: [0, 9, 0, 0],
+        weight: [0.5, 0.5, 0.0, 0.0],
+    };
     let dense = expand_slots(&slots, 3);
     assert_eq!(dense.len(), 3);
     assert!((dense[0] - 0.5).abs() < WEIGHT_EPS, "{dense:?}");
     // レイヤ 9 は範囲外なので落ちる → 総和は 0.5 のまま（正規化はしない）。
-    assert!((dense.iter().sum::<f32>() - 0.5).abs() < WEIGHT_EPS, "{dense:?}");
+    assert!(
+        (dense.iter().sum::<f32>() - 0.5).abs() < WEIGHT_EPS,
+        "{dense:?}"
+    );
 }
 
 /// BlendSlots が chunk_data の u8 量子化を経ても往復すること。
@@ -684,11 +839,17 @@ fn blend_slots_quantization_round_trip_through_chunk() {
     let mut chunk = TerrainChunkData::new_filled(&settings, 0.0);
 
     // レイヤ番号が 4 を超える（可変レイヤ数）ケースも含める。
-    let slots = BlendSlots { index: [12, 3, 7, 0], weight: [0.5, 0.25, 0.125, 0.125] };
+    let slots = BlendSlots {
+        index: [12, 3, 7, 0],
+        weight: [0.5, 0.25, 0.125, 0.125],
+    };
     chunk.set_paint_slots(2, 4, 6, &slots);
     let back = chunk.paint_slots(2, 4, 6);
 
-    assert_eq!(back.index, slots.index, "レイヤ番号が往復していない: {back:?}");
+    assert_eq!(
+        back.index, slots.index,
+        "レイヤ番号が往復していない: {back:?}"
+    );
     for k in 0..TERRAIN_BLEND_SLOTS {
         assert!(
             (back.weight[k] - slots.weight[k]).abs() < QUANT_EPS,
@@ -698,7 +859,10 @@ fn blend_slots_quantization_round_trip_through_chunk() {
 
     // 未書き込みのサンプルは「全 0」のまま（縮退補正を掛けない規約）。
     let empty = chunk.paint_slots(0, 0, 0);
-    assert_eq!(empty.weight, [0.0; TERRAIN_BLEND_SLOTS], "未ペイントが 0 でない: {empty:?}");
+    assert_eq!(
+        empty.weight, [0.0; TERRAIN_BLEND_SLOTS],
+        "未ペイントが 0 でない: {empty:?}"
+    );
 }
 
 /// blend_rule_and_paint_all が任意レイヤ数で lerp できること。
@@ -706,7 +870,10 @@ fn blend_slots_quantization_round_trip_through_chunk() {
 fn blend_rule_and_paint_all_lerps_dense_weights() {
     // ルールは 6 層ぶん（レイヤ 0 が 100%）、ペイントはレイヤ 5 が 100%。
     let rule = vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-    let paint = BlendSlots { index: [5, 0, 0, 0], weight: [1.0, 0.0, 0.0, 0.0] };
+    let paint = BlendSlots {
+        index: [5, 0, 0, 0],
+        weight: [1.0, 0.0, 0.0, 0.0],
+    };
 
     // ─── 未ペイント（amount=0）: 完全にルール任せ ───
     let w = blend_rule_and_paint_all(&rule, &paint, 0.0);
@@ -763,9 +930,18 @@ fn expand_slots_into_matches_vec_version() {
     // スロット構成をいくつか用意する（重複レイヤ・範囲外レイヤを含む）。
     let cases = [
         BlendSlots::default(),
-        BlendSlots { index: [0, 1, 2, 3], weight: [0.4, 0.3, 0.2, 0.1] },
-        BlendSlots { index: [5, 5, 0, 0], weight: [0.5, 0.25, 0.25, 0.0] },
-        BlendSlots { index: [15, 14, 13, 12], weight: [0.7, 0.1, 0.1, 0.1] },
+        BlendSlots {
+            index: [0, 1, 2, 3],
+            weight: [0.4, 0.3, 0.2, 0.1],
+        },
+        BlendSlots {
+            index: [5, 5, 0, 0],
+            weight: [0.5, 0.25, 0.25, 0.0],
+        },
+        BlendSlots {
+            index: [15, 14, 13, 12],
+            weight: [0.7, 0.1, 0.1, 0.1],
+        },
     ];
     // 出力バッファは常に上限長で確保し、len だけを変えて呼ぶ。
     let mut buf = [0.0f32; TERRAIN_MAX_LAYERS];
@@ -777,8 +953,11 @@ fn expand_slots_into_matches_vec_version() {
             expand_slots_into(slots, len, &mut buf);
             for k in 0..len {
                 assert_eq!(
-                    buf[k].to_bits(), expected[k].to_bits(),
-                    "len={len} slot={k} が不一致: {} vs {}", buf[k], expected[k]
+                    buf[k].to_bits(),
+                    expected[k].to_bits(),
+                    "len={len} slot={k} が不一致: {} vs {}",
+                    buf[k],
+                    expected[k]
                 );
             }
         }
@@ -799,9 +978,11 @@ fn rule_weights_all_into_matches_vec_version() {
                 assert_eq!(written, expected.len(), "n={n}: 書き込み数が不一致");
                 for k in 0..written {
                     assert_eq!(
-                        buf[k].to_bits(), expected[k].to_bits(),
+                        buf[k].to_bits(),
+                        expected[k].to_bits(),
                         "n={n} ny={ny} wy={wy} layer={k} が不一致: {} vs {}",
-                        buf[k], expected[k]
+                        buf[k],
+                        expected[k]
                     );
                 }
             }
@@ -815,8 +996,11 @@ fn rule_weights_all_into_matches_vec_version() {
 /// （＝ホットパスが実際に通る組み合わせをそのまま再現する）。
 #[test]
 fn blend_rule_and_paint_all_into_matches_vec_version() {
-    let paint = BlendSlots { index: [2, 0, 1, 3], weight: [0.5, 0.2, 0.2, 0.1] };
-    let mut rule_buf  = [0.0f32; TERRAIN_MAX_LAYERS];
+    let paint = BlendSlots {
+        index: [2, 0, 1, 3],
+        weight: [0.5, 0.2, 0.2, 0.1],
+    };
+    let mut rule_buf = [0.0f32; TERRAIN_MAX_LAYERS];
     let mut blend_buf = [0.0f32; TERRAIN_MAX_LAYERS];
 
     for &n in INTO_LAYER_COUNTS.iter() {
@@ -832,9 +1016,11 @@ fn blend_rule_and_paint_all_into_matches_vec_version() {
                 blend_rule_and_paint_all_into(rule, &paint, amount, &mut blend_buf);
                 for k in 0..written {
                     assert_eq!(
-                        blend_buf[k].to_bits(), expected[k].to_bits(),
+                        blend_buf[k].to_bits(),
+                        expected[k].to_bits(),
                         "n={n} ny={ny} amount={amount} layer={k} が不一致: {} vs {}",
-                        blend_buf[k], expected[k]
+                        blend_buf[k],
+                        expected[k]
                     );
                 }
             }
@@ -872,7 +1058,10 @@ fn detile_mode_parses_from_json() {
 
     // ─── 不正値はパースエラー ───
     let bad = r#"{ "layers": [ { "name": "x", "detile": "bogus" } ] }"#;
-    assert!(TerrainLayerSet::from_json_str(bad).is_err(), "不正な detile がエラーにならない");
+    assert!(
+        TerrainLayerSet::from_json_str(bad).is_err(),
+        "不正な detile がエラーにならない"
+    );
 }
 
 /// 既存の 4 層 layers.json（detile / normal / roughness テクスチャ未指定）が
@@ -898,14 +1087,21 @@ fn legacy_four_layer_json_is_still_readable() {
 
     assert_eq!(set.layers.len(), 4);
     assert_eq!(set.layers[0].name, "grass");
-    assert_eq!(set.layers[0].base_color_texture.as_deref(), Some("terrain/grass.png"));
+    assert_eq!(
+        set.layers[0].base_color_texture.as_deref(),
+        Some("terrain/grass.png")
+    );
     assert!((set.layers[0].roughness - 0.95).abs() < WEIGHT_EPS);
     assert!((set.layers[2].rule.priority - 1.2).abs() < WEIGHT_EPS);
 
     // ─── 新フィールドはすべて既定値へフォールバックする ───
     for layer in &set.layers {
         assert_eq!(layer.detile, DetileMode::None, "{}", layer.name);
-        assert!((layer.detile_strength - 1.0).abs() < WEIGHT_EPS, "{}", layer.name);
+        assert!(
+            (layer.detile_strength - 1.0).abs() < WEIGHT_EPS,
+            "{}",
+            layer.name
+        );
         assert!(layer.normal_texture.is_none(), "{}", layer.name);
         assert!(layer.roughness_texture.is_none(), "{}", layer.name);
     }
@@ -933,11 +1129,17 @@ fn layer_set_supports_many_layers_and_truncates_at_max() {
 
     // ─── 17 層 → 16 層へ切り詰め ───
     let set = TerrainLayerSet {
-        layers: (0..TERRAIN_MAX_LAYERS + 1).map(|i| named_layer(&format!("L{i}"))).collect(),
+        layers: (0..TERRAIN_MAX_LAYERS + 1)
+            .map(|i| named_layer(&format!("L{i}")))
+            .collect(),
     };
     let json = serde_json::to_string(&set).expect("直列化に失敗");
     let back = TerrainLayerSet::from_json_str(&json).expect("17 層の読み込みに失敗");
-    assert_eq!(back.layers.len(), TERRAIN_MAX_LAYERS, "16 層へ切り詰められていない");
+    assert_eq!(
+        back.layers.len(),
+        TERRAIN_MAX_LAYERS,
+        "16 層へ切り詰められていない"
+    );
     assert_eq!(back.active_count(), TERRAIN_MAX_LAYERS);
 }
 
@@ -970,7 +1172,11 @@ fn chunk_palette_selects_dominant_layers_from_vertex_weights() {
 
     // ─── パレット = 上位 4 層（1, 4, 5, 3）───
     let palette = select_top_slots(&chunk_total);
-    assert_eq!(palette.index, [1, 4, 5, 3], "パレット選択が期待と異なる: {palette:?}");
+    assert_eq!(
+        palette.index,
+        [1, 4, 5, 3],
+        "パレット選択が期待と異なる: {palette:?}"
+    );
 
     // ─── パス 2 相当: 頂点 0 の重みをパレットへ射影して再正規化 ───
     let v = &vertex_weights[0];
@@ -990,6 +1196,12 @@ fn chunk_palette_selects_dominant_layers_from_vertex_weights() {
     assert!(w[2] < WEIGHT_EPS, "レイヤ 5 は頂点 0 では 0 のはず: {w:?}");
 
     // ─── 設計上の限界の明示: レイヤ 0/2 はパレットから落ちる ───
-    assert!(!palette.index.contains(&0), "弱い層が残っている: {palette:?}");
-    assert!(!palette.index.contains(&2), "弱い層が残っている: {palette:?}");
+    assert!(
+        !palette.index.contains(&0),
+        "弱い層が残っている: {palette:?}"
+    );
+    assert!(
+        !palette.index.contains(&2),
+        "弱い層が残っている: {palette:?}"
+    );
 }

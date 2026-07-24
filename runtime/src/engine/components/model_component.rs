@@ -8,14 +8,14 @@
 //  複数のモデルが必要な場合は子 Actor を作成してそれぞれに持たせる。
 // ============================================================
 
+use super::material_override::{MaterialOverride, MaterialOverrideKind, overrides_signature};
+use crate::engine::core::loader::model::Model;
+use crate::engine::ecs::Component;
+use crate::engine::methods::drawer::{GpuModel, InstancedModelBatch};
+use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use serde::{Deserialize, Serialize};
-use crate::engine::ecs::Component;
-use crate::engine::core::loader::model::Model;
-use crate::engine::methods::drawer::{GpuModel, InstancedModelBatch};
-use super::material_override::{MaterialOverride, MaterialOverrideKind, overrides_signature};
 
 /// `batch_key()` でオーバーライド署名を source_path に連結する際の区切り文字。
 /// ファイルパスに通常出現しない制御文字（SOH）を使い、パス文字列との衝突を避ける。
@@ -48,20 +48,24 @@ pub fn next_batch_instance_id() -> u64 {
 /// グループ ID はこの値以上（インスタンスインデックスと衝突しない）
 pub const GROUP_ID_BASE: u32 = 1_000_000;
 
-fn default_next_group_id() -> u32 { GROUP_ID_BASE }
+fn default_next_group_id() -> u32 {
+    GROUP_ID_BASE
+}
 
 /// cast_shadows の既定値（true）。シャドウマップレンダリングで使用する
 /// （LightComponent.cast_shadows と同一の慣例。旧 .scene には存在しない
 /// フィールドのため、欠落時は #[serde(default = ...)] でこの値にフォールバックする）。
-fn default_cast_shadows() -> bool { true }
+fn default_cast_shadows() -> bool {
+    true
+}
 
 // ─── InstanceMeta ─────────────────────────────────────────────────────────────
 
 /// インスタンスごとのメタデータ（ヒエラルキー・アニメーション）。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct InstanceMeta {
-    pub name:      String,
-    pub parent:    Option<u32>,
+    pub name: String,
+    pub parent: Option<u32>,
     /// 【旧機能・シーン互換のため残置】位相シード付き群衆デモ再生（廃止済み）で
     /// 使用していた安定アニメーション位相シード。現在は参照されないが、
     /// 既存 .scene に保存済みのため serde 互換維持でフィールドのみ残す。
@@ -71,7 +75,11 @@ pub struct InstanceMeta {
 
 impl InstanceMeta {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), parent: None, anim_seed: 0 }
+        Self {
+            name: name.into(),
+            parent: None,
+            anim_seed: 0,
+        }
     }
 }
 
@@ -80,8 +88,8 @@ impl InstanceMeta {
 /// グループフォルダのメタデータ（描画なし・ヒエラルキー整理用）。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct GroupMeta {
-    pub id:     u32,
-    pub name:   String,
+    pub id: u32,
+    pub name: String,
     pub parent: Option<u32>,
 }
 
@@ -90,12 +98,12 @@ pub struct GroupMeta {
 /// シリアライズ用データ（JSON 保存・Undo スナップショット）。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ModelComponentData {
-    pub model_path:    String,
-    pub instances:     Vec<[[f32; 4]; 4]>,
+    pub model_path: String,
+    pub instances: Vec<[[f32; 4]; 4]>,
     #[serde(default)]
-    pub meta:          Vec<InstanceMeta>,
+    pub meta: Vec<InstanceMeta>,
     #[serde(default)]
-    pub groups:        Vec<GroupMeta>,
+    pub groups: Vec<GroupMeta>,
     #[serde(default = "default_next_group_id")]
     pub next_group_id: u32,
     /// 影を落とすか（シャドウマップレンダリングで使用）。既定 true。
@@ -124,9 +132,9 @@ pub struct ModelAnimDrive {
     /// 再生対象アニメの Model::animations インデックス
     pub anim_idx: usize,
     /// 権威再生時刻（秒。ループ/クランプ後の 0..=duration 正規化済み）
-    pub time:     f32,
+    pub time: f32,
     /// 再生中フラグ（false = 一時停止・停止でこの時刻を保持）
-    pub playing:  bool,
+    pub playing: bool,
 }
 
 // ─── ModelComponent ───────────────────────────────────────────────────────────
@@ -134,19 +142,19 @@ pub struct ModelAnimDrive {
 /// Actor にアタッチするモデルコンポーネント。
 /// GPU リソース (GpuModel, InstancedModelBatch) を含む純粋データ構造。
 pub struct ModelComponent {
-    pub source_path:     String,
+    pub source_path: String,
     /// CPU モデルデータ。Arc 共有でモデルキャッシュを実現する（同一パスの GPU リソース再生成コスト削減）。
-    pub model:           Option<Arc<Model>>,
-    pub gpu_model:       Option<GpuModel>,
+    pub model: Option<Arc<Model>>,
+    pub gpu_model: Option<GpuModel>,
     pub instanced_batch: Option<InstancedModelBatch>,
-    pub instance_mats:   Vec<[[f32; 4]; 4]>,
-    pub instance_meta:   Vec<InstanceMeta>,
-    pub group_meta:      Vec<GroupMeta>,
-    pub next_group_id:   u32,
+    pub instance_mats: Vec<[[f32; 4]; 4]>,
+    pub instance_meta: Vec<InstanceMeta>,
+    pub group_meta: Vec<GroupMeta>,
+    pub next_group_id: u32,
     /// Animator 駆動のアニメ再生状態（揮発。None = デモ再生 / Animator 非駆動）
-    pub anim_drive:      Option<ModelAnimDrive>,
+    pub anim_drive: Option<ModelAnimDrive>,
     /// 影を落とすか（シャドウマップレンダリングで使用）。既定 true。
-    pub cast_shadows:    bool,
+    pub cast_shadows: bool,
     /// マテリアルスロットごとのオーバーライド（Phase R7）。
     /// GpuModel 構築時にこの内容が `apply_overrides` で焼き込まれる。
     /// `batch_key()` の署名計算にも使われる（インスタンスバッチのマージキー）。
@@ -161,26 +169,30 @@ impl ModelComponent {
     /// モデルが未設定の空コンポーネントを作成する。
     pub fn empty() -> Self {
         Self {
-            source_path:     String::new(),
-            model:           None,
-            gpu_model:       None,
+            source_path: String::new(),
+            model: None,
+            gpu_model: None,
             instanced_batch: None,
-            instance_mats:   Vec::new(),
-            instance_meta:   Vec::new(),
-            group_meta:      Vec::new(),
-            next_group_id:   GROUP_ID_BASE,
-            anim_drive:      None,
-            cast_shadows:    true,
+            instance_mats: Vec::new(),
+            instance_meta: Vec::new(),
+            group_meta: Vec::new(),
+            next_group_id: GROUP_ID_BASE,
+            anim_drive: None,
+            cast_shadows: true,
             material_overrides: Vec::new(),
             batch_instance_id: next_batch_instance_id(),
         }
     }
 
-    pub fn is_loaded(&self) -> bool { self.model.is_some() }
+    pub fn is_loaded(&self) -> bool {
+        self.model.is_some()
+    }
 
     /// instanced_batch に「次回更新が必要」フラグを立てる。
     pub fn mark_batch_dirty(&mut self) {
-        if let Some(b) = &mut self.instanced_batch { b.mark_dirty(); }
+        if let Some(b) = &mut self.instanced_batch {
+            b.mark_dirty();
+        }
     }
 
     /// インスタンスバッチのマージキーを返す（frame_renderer 側の shared_model_batches が使用）。
@@ -192,7 +204,8 @@ impl ModelComponent {
     /// 誤って同一バッチにマージされないようにする（per-アクタ整合、方式(a)の最軽量形）。
     /// オーバーライドの中に 1 件でも Inline があるか（＝安定キーを使うべきか）。
     fn has_inline_override(&self) -> bool {
-        self.material_overrides.iter()
+        self.material_overrides
+            .iter()
             .any(|o| matches!(o.kind, MaterialOverrideKind::Inline { .. }))
     }
 
@@ -229,7 +242,9 @@ impl ModelComponent {
 
     /// 指定インスタンスの直接の子インスタンスインデックス一覧を返す。
     pub fn children_of(&self, idx: u32) -> Vec<u32> {
-        self.instance_meta.iter().enumerate()
+        self.instance_meta
+            .iter()
+            .enumerate()
             .filter(|(_, m)| m.parent == Some(idx))
             .map(|(i, _)| i as u32)
             .collect()
@@ -238,7 +253,7 @@ impl ModelComponent {
     /// 指定インスタンスの全子孫インデックスを BFS で収集する。
     pub fn all_descendants(&self, root: u32) -> Vec<u32> {
         let mut result = Vec::new();
-        let mut queue  = std::collections::VecDeque::new();
+        let mut queue = std::collections::VecDeque::new();
         queue.extend(self.children_of(root));
         while let Some(idx) = queue.pop_front() {
             result.push(idx);
@@ -250,14 +265,20 @@ impl ModelComponent {
     /// 選択セットのうち「他の選択インスタンスの子孫でないもの」を返す（ルート選択）。
     pub fn filter_selection_roots(&self, selected: &[u32]) -> Vec<u32> {
         let set: std::collections::HashSet<u32> = selected.iter().copied().collect();
-        selected.iter().copied().filter(|&idx| {
-            let mut cur = self.instance_meta.get(idx as usize).and_then(|m| m.parent);
-            while let Some(p) = cur {
-                if set.contains(&p) { return false; }
-                cur = self.instance_meta.get(p as usize).and_then(|m| m.parent);
-            }
-            true
-        }).collect()
+        selected
+            .iter()
+            .copied()
+            .filter(|&idx| {
+                let mut cur = self.instance_meta.get(idx as usize).and_then(|m| m.parent);
+                while let Some(p) = cur {
+                    if set.contains(&p) {
+                        return false;
+                    }
+                    cur = self.instance_meta.get(p as usize).and_then(|m| m.parent);
+                }
+                true
+            })
+            .collect()
     }
 
     /// roots の全子孫のうち roots 自身に含まれないものを (index, start_mat) で収集する。
@@ -272,9 +293,9 @@ impl ModelComponent {
 
     fn collect_desc_inner(
         &self,
-        idx:       u32,
+        idx: u32,
         roots_set: &std::collections::HashSet<u32>,
-        result:    &mut Vec<(u32, [[f32; 4]; 4])>,
+        result: &mut Vec<(u32, [[f32; 4]; 4])>,
     ) {
         for child in self.children_of(idx) {
             if !roots_set.contains(&child) {
@@ -291,12 +312,12 @@ impl ModelComponent {
     /// シリアライズ用データに変換する。
     pub fn to_data(&self) -> ModelComponentData {
         ModelComponentData {
-            model_path:    self.source_path.clone(),
-            instances:     self.instance_mats.clone(),
-            meta:          self.instance_meta.clone(),
-            groups:        self.group_meta.clone(),
+            model_path: self.source_path.clone(),
+            instances: self.instance_mats.clone(),
+            meta: self.instance_meta.clone(),
+            groups: self.group_meta.clone(),
             next_group_id: self.next_group_id,
-            cast_shadows:  self.cast_shadows,
+            cast_shadows: self.cast_shadows,
             material_overrides: self.material_overrides.clone(),
         }
     }
@@ -327,8 +348,16 @@ mod batch_key_tests {
             slot: 0,
             kind: MaterialOverrideKind::Inline {
                 base_color: Some(c),
-                metallic: None, roughness: None, emissive: None,
-                alpha_mode: None, alpha_cutoff: None, ior: None, transmission: None, diffuse_transmission: None, mr_tex_ignore: None, cull_face: None,
+                metallic: None,
+                roughness: None,
+                emissive: None,
+                alpha_mode: None,
+                alpha_cutoff: None,
+                ior: None,
+                transmission: None,
+                diffuse_transmission: None,
+                mr_tex_ignore: None,
+                cull_face: None,
             },
         }
     }
@@ -350,7 +379,10 @@ mod batch_key_tests {
         let k2 = mc.batch_key();
         assert_eq!(k1, k2, "インライン値編集でバッチキーが変わってはならない");
         // 安定キーは source_path を接頭辞に持つ。
-        assert!(k1.starts_with("chess.glb"), "安定キーは source_path 起点であること");
+        assert!(
+            k1.starts_with("chess.glb"),
+            "安定キーは source_path 起点であること"
+        );
     }
 
     /// エンティティ（MC）が違えばインラインキーも違う（別バッチに分離）。
@@ -358,8 +390,11 @@ mod batch_key_tests {
     fn different_mc_have_different_inline_keys() {
         let a = mc_with("chess.glb", vec![inline_base_color([1.0, 0.0, 0.0, 1.0])]);
         let b = mc_with("chess.glb", vec![inline_base_color([1.0, 0.0, 0.0, 1.0])]);
-        assert_ne!(a.batch_key(), b.batch_key(),
-            "別 MC の同一インライン値でもキーは分かれること（per-instance 編集）");
+        assert_ne!(
+            a.batch_key(),
+            b.batch_key(),
+            "別 MC の同一インライン値でもキーは分かれること（per-instance 編集）"
+        );
     }
 
     /// MatAsset は署名キー（同一 .mat 共有 MC は同一キー＝インスタンシング維持）。
@@ -367,15 +402,25 @@ mod batch_key_tests {
     fn mat_asset_uses_signature_key_shared_across_mcs() {
         let asset = |p: &str| MaterialOverride {
             slot: 0,
-            kind: MaterialOverrideKind::MatAsset { path: p.to_string() },
+            kind: MaterialOverrideKind::MatAsset {
+                path: p.to_string(),
+            },
         };
         let a = mc_with("chess.glb", vec![asset("assets://red.mat")]);
         let b = mc_with("chess.glb", vec![asset("assets://red.mat")]);
         // 同一 .mat → 同一署名キー（別 MC でも一致）。
-        assert_eq!(a.batch_key(), b.batch_key(), "同一 .mat 共有 MC は同一キーであること");
+        assert_eq!(
+            a.batch_key(),
+            b.batch_key(),
+            "同一 .mat 共有 MC は同一キーであること"
+        );
         // 別 .mat → キーが変わる。
         let c = mc_with("chess.glb", vec![asset("assets://blue.mat")]);
-        assert_ne!(a.batch_key(), c.batch_key(), ".mat が変われば署名キーも変わること");
+        assert_ne!(
+            a.batch_key(),
+            c.batch_key(),
+            ".mat が変われば署名キーも変わること"
+        );
     }
 }
 
@@ -399,31 +444,33 @@ mod override_serde_tests {
     #[test]
     fn model_component_data_material_overrides_roundtrip() {
         let original = ModelComponentData {
-            model_path:    "assets://chess.glb".to_string(),
-            instances:     vec![[[1.0, 0.0, 0.0, 0.0],
-                                 [0.0, 1.0, 0.0, 0.0],
-                                 [0.0, 0.0, 1.0, 0.0],
-                                 [0.0, 0.0, 0.0, 1.0]]],
-            meta:          vec![InstanceMeta::new("Instance_0")],
-            groups:        vec![],
+            model_path: "assets://chess.glb".to_string(),
+            instances: vec![[
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]],
+            meta: vec![InstanceMeta::new("Instance_0")],
+            groups: vec![],
             next_group_id: GROUP_ID_BASE,
-            cast_shadows:  true,
+            cast_shadows: true,
             material_overrides: vec![
                 // インライン: 全フィールドを非 None で埋める（往復漏れの検出のため）。
                 MaterialOverride {
                     slot: 0,
                     kind: MaterialOverrideKind::Inline {
-                        base_color:    Some([0.1, 0.2, 0.3, 0.4]),
-                        metallic:      Some(0.55),
-                        roughness:     Some(0.66),
-                        emissive:      Some([0.7, 0.8, 0.9]),
-                        alpha_mode:    Some("blend".to_string()),
-                        alpha_cutoff:  Some(0.25),
-                        ior:           Some(1.45),
-                        transmission:  Some(0.9),
+                        base_color: Some([0.1, 0.2, 0.3, 0.4]),
+                        metallic: Some(0.55),
+                        roughness: Some(0.66),
+                        emissive: Some([0.7, 0.8, 0.9]),
+                        alpha_mode: Some("blend".to_string()),
+                        alpha_cutoff: Some(0.25),
+                        ior: Some(1.45),
+                        transmission: Some(0.9),
                         diffuse_transmission: Some(0.35),
                         mr_tex_ignore: Some(true),
-                        cull_face:     Some("none".to_string()),
+                        cull_face: Some("none".to_string()),
                     },
                 },
                 // MatAsset: パスが往復すること。
@@ -438,20 +485,31 @@ mod override_serde_tests {
 
         // シリアライズ → デシリアライズ。
         let json = serde_json::to_string(&original).expect("serialize");
-        let restored: ModelComponentData =
-            serde_json::from_str(&json).expect("deserialize");
+        let restored: ModelComponentData = serde_json::from_str(&json).expect("deserialize");
 
         // 復元後を再シリアライズして原本 JSON と完全一致するか比較する
         // （MaterialOverride[Kind] は PartialEq を持たないため、正規化 JSON 同士で全フィールドを検証する）。
         let json_again = serde_json::to_string(&restored).expect("re-serialize");
-        assert_eq!(json, json_again, "material_overrides の全フィールドが往復すること");
+        assert_eq!(
+            json, json_again,
+            "material_overrides の全フィールドが往復すること"
+        );
 
         // 主要フィールドを個別にも検証（JSON 比較のすり抜け防止）。
         assert_eq!(restored.material_overrides.len(), 2);
         match &restored.material_overrides[0].kind {
             MaterialOverrideKind::Inline {
-                base_color, metallic, roughness, emissive,
-                alpha_mode, alpha_cutoff, ior, transmission, diffuse_transmission, mr_tex_ignore, cull_face,
+                base_color,
+                metallic,
+                roughness,
+                emissive,
+                alpha_mode,
+                alpha_cutoff,
+                ior,
+                transmission,
+                diffuse_transmission,
+                mr_tex_ignore,
+                cull_face,
             } => {
                 assert_eq!(*base_color, Some([0.1, 0.2, 0.3, 0.4]));
                 assert_eq!(*metallic, Some(0.55));
@@ -469,8 +527,9 @@ mod override_serde_tests {
         }
         assert_eq!(restored.material_overrides[0].slot, 0);
         match &restored.material_overrides[1].kind {
-            MaterialOverrideKind::MatAsset { path } =>
-                assert_eq!(path, "assets://materials/red.mat"),
+            MaterialOverrideKind::MatAsset { path } => {
+                assert_eq!(path, "assets://materials/red.mat")
+            }
             _ => panic!("slot 2 は MatAsset であること"),
         }
         assert_eq!(restored.material_overrides[1].slot, 2);
@@ -491,7 +550,13 @@ mod override_serde_tests {
         }"#;
         let data: ModelComponentData =
             serde_json::from_str(old_json).expect("旧 .scene が読めること（serde default 必須）");
-        assert!(data.material_overrides.is_empty(), "欠落時は空 Vec へフォールバック");
-        assert!(data.cast_shadows, "欠落時は cast_shadows=true へフォールバック");
+        assert!(
+            data.material_overrides.is_empty(),
+            "欠落時は空 Vec へフォールバック"
+        );
+        assert!(
+            data.cast_shadows,
+            "欠落時は cast_shadows=true へフォールバック"
+        );
     }
 }

@@ -33,11 +33,11 @@ impl PostPipeline {
     /// ポストパスは深度を使わないため（TOML 側 `no_depth = true`）、depth_format は
     /// 参照されないダミー値を渡す。
     pub fn from_toml<F: Fn(&str) -> &'static str>(
-        device:     &wgpu::Device,
-        toml_src:   &str,
+        device: &wgpu::Device,
+        toml_src: &str,
         out_format: wgpu::TextureFormat,
-        cache:      Option<&wgpu::PipelineCache>,
-        resolve:    F,
+        cache: Option<&wgpu::PipelineCache>,
+        resolve: F,
     ) -> Self {
         // out_format を builder の surface_format 引数として渡す（TOML の color_format="surface" が解決される）。
         // depth_format は no_depth=true のため未使用（任意の深度フォーマットでよい）。
@@ -70,19 +70,21 @@ impl PostPipeline {
 /// （ブルームのアップサンプル／合成）は `run_post_stage_load` を使う。
 #[allow(clippy::too_many_arguments)]
 pub fn run_post_stage(
-    device:     &wgpu::Device,
-    encoder:    &mut wgpu::CommandEncoder,
-    pipe:       &PostPipeline,
-    input:      &wgpu::TextureView,
-    mask:       Option<&wgpu::TextureView>,
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    pipe: &PostPipeline,
+    input: &wgpu::TextureView,
+    mask: Option<&wgpu::TextureView>,
     white_mask: &wgpu::TextureView,
-    sampler:    &wgpu::Sampler,
-    params:     &[u8],
-    output:     &wgpu::TextureView,
-    label:      &str,
+    sampler: &wgpu::Sampler,
+    params: &[u8],
+    output: &wgpu::TextureView,
+    label: &str,
 ) {
     // 既存の呼び出し互換のため Clear（全面上書き）で委譲する。
-    run_post_stage_load(device, encoder, pipe, input, mask, white_mask, sampler, params, output, label, false);
+    run_post_stage_load(
+        device, encoder, pipe, input, mask, white_mask, sampler, params, output, label, false,
+    );
 }
 
 /// `run_post_stage` の拡張版。出力の LoadOp を選べる。
@@ -92,39 +94,48 @@ pub fn run_post_stage(
 ///   と組み合わせてブルームのアップサンプル寄与を積み上げる）
 #[allow(clippy::too_many_arguments)]
 pub fn run_post_stage_load(
-    device:     &wgpu::Device,
-    encoder:    &mut wgpu::CommandEncoder,
-    pipe:       &PostPipeline,
-    input:      &wgpu::TextureView,
-    mask:       Option<&wgpu::TextureView>,
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    pipe: &PostPipeline,
+    input: &wgpu::TextureView,
+    mask: Option<&wgpu::TextureView>,
     white_mask: &wgpu::TextureView,
-    sampler:    &wgpu::Sampler,
-    params:     &[u8],
-    output:     &wgpu::TextureView,
-    label:      &str,
-    load:       bool,
+    sampler: &wgpu::Sampler,
+    params: &[u8],
+    output: &wgpu::TextureView,
+    label: &str,
+    load: bool,
 ) {
     use wgpu::util::DeviceExt;
 
     // ── group 0: パラメータ UBO ──────────────────────────────
     let param_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label:    Some("Post Params UBO"),
+        label: Some("Post Params UBO"),
         contents: params,
-        usage:    wgpu::BufferUsages::UNIFORM,
+        usage: wgpu::BufferUsages::UNIFORM,
     });
     let bg0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label:   Some("Post BG0 params"),
-        layout:  &pipe.bgls[0],
-        entries: &[wgpu::BindGroupEntry { binding: 0, resource: param_buf.as_entire_binding() }],
+        label: Some("Post BG0 params"),
+        layout: &pipe.bgls[0],
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: param_buf.as_entire_binding(),
+        }],
     });
 
     // ── group 1: 入力テクスチャ + サンプラー ────────────────
     let bg1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label:   Some("Post BG1 input"),
-        layout:  &pipe.bgls[1],
+        label: Some("Post BG1 input"),
+        layout: &pipe.bgls[1],
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(input) },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(input),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
         ],
     });
 
@@ -132,11 +143,17 @@ pub fn run_post_stage_load(
     let mask_view = mask.unwrap_or(white_mask);
     let bg2 = if pipe.bgls.len() >= 3 {
         Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Post BG2 mask"),
-            layout:  &pipe.bgls[2],
+            label: Some("Post BG2 mask"),
+            layout: &pipe.bgls[2],
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(mask_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(mask_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
             ],
         }))
     } else {
@@ -147,11 +164,11 @@ pub fn run_post_stage_load(
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(label),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view:           output,
+            view: output,
             resolve_target: None,
             ops: wgpu::Operations {
                 // 通常は全面上書きの Clear。加算合成時（load=true）は既存内容を保持する Load。
-                load:  if load {
+                load: if load {
                     wgpu::LoadOp::Load
                 } else {
                     wgpu::LoadOp::Clear(wgpu::Color::BLACK)
@@ -160,8 +177,8 @@ pub fn run_post_stage_load(
             },
         })],
         depth_stencil_attachment: None,
-        occlusion_query_set:      None,
-        timestamp_writes:         None,
+        occlusion_query_set: None,
+        timestamp_writes: None,
     });
     pass.set_pipeline(&pipe.pipeline);
     pass.set_bind_group(0, &bg0, &[]);

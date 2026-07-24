@@ -9,9 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::engine::components::{
-    ComponentKind, ScriptComponent, PlaceholderScriptSlot,
-};
+use crate::engine::components::{ComponentKind, PlaceholderScriptSlot, ScriptComponent};
 use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
 
@@ -20,12 +18,11 @@ use super::{App, find_actor_by_dfs};
 /// リロード時に収集するスクリプトスロット 1 件分の情報。
 struct ScriptSlotInfo {
     entity: Entity,
-    path:   String,
+    path: String,
     fields: BTreeMap<String, String>,
 }
 
 impl App {
-
     /// ScriptComponent / PlaceholderScriptSlot の [SerializeField] フィールド値を設定する。
     ///
     /// - ScriptComponent  : CLR インスタンスへ即時反映し、シリアライズ用の fields にも保存
@@ -33,18 +30,24 @@ impl App {
     pub(super) fn handle_set_script_field(
         &mut self,
         actor_dfs_id: u32,
-        slot_idx:     u32,
-        field:        &str,
-        value:        &str,
+        slot_idx: u32,
+        field: &str,
+        value: &str,
     ) {
         let wl = self.active_world_line;
-        let Some(scene) = self.scene.as_mut() else { return };
+        let Some(scene) = self.scene.as_mut() else {
+            return;
+        };
 
         // 対象スロットの entity を特定する
         let slot_entity = {
             let mut c = 0u32;
-            let Some(actor) = find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c) else { return };
-            let Some(slot) = actor.slots().get(slot_idx as usize) else { return };
+            let Some(actor) = find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c) else {
+                return;
+            };
+            let Some(slot) = actor.slots().get(slot_idx as usize) else {
+                return;
+            };
             slot.entity
         };
 
@@ -57,7 +60,9 @@ impl App {
             return;
         }
 
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// ユーザースクリプトを再コンパイルし、シーン内の全スクリプトを再生成する。
@@ -71,25 +76,35 @@ impl App {
     /// スクリプトのプライベート状態（実行中の変数など）は失われる。
     pub(super) fn handle_reload_scripts(&mut self) {
         let Some(host) = self.scripting_host.clone() else {
-            if let Some(ipc) = &self.ipc { ipc.send("SCRIPTS_RELOADED:-1,CLR not loaded"); }
+            if let Some(ipc) = &self.ipc {
+                ipc.send("SCRIPTS_RELOADED:-1,CLR not loaded");
+            }
             return;
         };
         let Some(assets_root) = self.assets_root.clone() else {
-            if let Some(ipc) = &self.ipc { ipc.send("SCRIPTS_RELOADED:-1,assets root unknown"); }
+            if let Some(ipc) = &self.ipc {
+                ipc.send("SCRIPTS_RELOADED:-1,assets root unknown");
+            }
             return;
         };
-        let Some(scene) = self.scene.as_mut() else { return };
+        let Some(scene) = self.scene.as_mut() else {
+            return;
+        };
 
         // 1. 全世界線のスクリプトスロットを収集する
         let mut infos: Vec<ScriptSlotInfo> = Vec::new();
-        fn collect(actor: &Actor, world: &crate::engine::ecs::World, out: &mut Vec<ScriptSlotInfo>) {
+        fn collect(
+            actor: &Actor,
+            world: &crate::engine::ecs::World,
+            out: &mut Vec<ScriptSlotInfo>,
+        ) {
             for slot in actor.slots() {
                 match slot.kind {
                     ComponentKind::Script => {
                         if let Some(sc) = world.get::<ScriptComponent>(slot.entity) {
                             out.push(ScriptSlotInfo {
                                 entity: slot.entity,
-                                path:   sc.type_name().to_string(),
+                                path: sc.type_name().to_string(),
                                 fields: sc.fields.clone(),
                             });
                         }
@@ -98,7 +113,7 @@ impl App {
                         if let Some(ps) = world.get::<PlaceholderScriptSlot>(slot.entity) {
                             out.push(ScriptSlotInfo {
                                 entity: slot.entity,
-                                path:   ps.script_path.clone(),
+                                path: ps.script_path.clone(),
                                 fields: ps.fields.clone(),
                             });
                         }
@@ -129,27 +144,35 @@ impl App {
             std::collections::HashMap::new();
         for info in infos {
             let created = ScriptComponent::new_with_fields(
-                std::sync::Arc::clone(&host), info.path.clone(), info.fields.clone(),
+                std::sync::Arc::clone(&host),
+                info.path.clone(),
+                info.fields.clone(),
             );
             let kind = if let Some(sc) = created {
                 scene.world.insert(info.entity, sc);
                 restored += 1;
                 ComponentKind::Script
             } else {
-                scene.world.insert(info.entity, PlaceholderScriptSlot {
-                    script_path: info.path,
-                    fields:      info.fields,
-                });
+                scene.world.insert(
+                    info.entity,
+                    PlaceholderScriptSlot {
+                        script_path: info.path,
+                        fields: info.fields,
+                    },
+                );
                 ComponentKind::Placeholder
             };
             kind_by_entity.insert(info.entity, kind);
         }
 
         // スロットの kind / type_id を再生成結果に合わせて更新する
-        fn update_kinds(actor: &mut Actor, kinds: &std::collections::HashMap<Entity, ComponentKind>) {
+        fn update_kinds(
+            actor: &mut Actor,
+            kinds: &std::collections::HashMap<Entity, ComponentKind>,
+        ) {
             for slot in actor.slots_mut() {
                 if let Some(kind) = kinds.get(&slot.entity) {
-                    slot.kind    = *kind;
+                    slot.kind = *kind;
                     slot.type_id = if *kind == ComponentKind::Script {
                         std::any::TypeId::of::<ScriptComponent>()
                     } else {

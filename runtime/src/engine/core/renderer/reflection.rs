@@ -22,8 +22,8 @@
 //  （frame_renderer は camera_buf.bind_group と deferred::create_gbuffer_bind_group をそのまま流用）。
 // ============================================================
 
-use super::deferred::DeferredLightingPipelines;
 use super::ddgi::GiResources;
+use super::deferred::DeferredLightingPipelines;
 use super::pipeline::get_shader_source;
 
 // ─── 定数 ────────────────────────────────────────────────────
@@ -49,15 +49,20 @@ pub const DEFAULT_REFLECTION_INTENSITY: f32 = 1.0;
 pub struct ReflectionParams {
     /// 反射寄与の全体倍率。
     pub intensity: f32,
-    pub _pad0:     f32,
-    pub _pad1:     f32,
-    pub _pad2:     f32,
+    pub _pad0: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
 }
 
 impl ReflectionParams {
     /// intensity から UBO 値を作る。
     pub fn new(intensity: f32) -> Self {
-        Self { intensity, _pad0: 0.0, _pad1: 0.0, _pad2: 0.0 }
+        Self {
+            intensity,
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
+        }
     }
 }
 
@@ -66,23 +71,23 @@ impl ReflectionParams {
 /// 反射パイプライン一式（SSR 常時・RT は対応 GPU のみ・合成）。
 pub struct ReflectionPipelines {
     /// SSR パイプライン（RAY_QUERY 不要・常に構築）。
-    pub ssr:          wgpu::RenderPipeline,
+    pub ssr: wgpu::RenderPipeline,
     /// RT 反射パイプライン（RAY_QUERY 必須・RT 対応 GPU でのみ Some）。
-    pub rt:           Option<wgpu::RenderPipeline>,
+    pub rt: Option<wgpu::RenderPipeline>,
     /// 合成パイプライン（Additive One/One で RT_REFLECTION を scene_hdr へ加算）。
-    pub composite:    wgpu::RenderPipeline,
+    pub composite: wgpu::RenderPipeline,
     /// group2: 反射パラメータ＋シーン HDR 入力のレイアウト。
-    pub input_bgl:    wgpu::BindGroupLayout,
+    pub input_bgl: wgpu::BindGroupLayout,
     /// GI レイアウト（SSR は group3・RT は group4 で共用）。
-    pub gi_bgl:       wgpu::BindGroupLayout,
+    pub gi_bgl: wgpu::BindGroupLayout,
     /// RT データレイアウト（RT の group3。lights/meta/tlas/albedo）。
-    pub rt_data_bgl:  wgpu::BindGroupLayout,
+    pub rt_data_bgl: wgpu::BindGroupLayout,
     /// 合成の group0 レイアウト（反射 RT テクスチャ＋サンプラー）。
     pub composite_bgl: wgpu::BindGroupLayout,
     /// ReflectionParams UBO（毎フレーム intensity を書き込む）。
     pub params_buffer: wgpu::Buffer,
     /// 入力・GI・合成で共用するリニア clamp サンプラー。
-    pub sampler:      wgpu::Sampler,
+    pub sampler: wgpu::Sampler,
 }
 
 impl ReflectionPipelines {
@@ -91,38 +96,45 @@ impl ReflectionPipelines {
     /// - `deferred`   : group0/1（camera/gbuffer）の BGL を借用する（等価性担保）。
     /// - `out_format` : 出力先 HDR フォーマット（scene_hdr / RT_REFLECTION と同一）。
     pub fn new(
-        device:     &wgpu::Device,
-        deferred:   &DeferredLightingPipelines,
+        device: &wgpu::Device,
+        deferred: &DeferredLightingPipelines,
         out_format: wgpu::TextureFormat,
-        cache:      Option<&wgpu::PipelineCache>,
+        cache: Option<&wgpu::PipelineCache>,
     ) -> Self {
         let vis = wgpu::ShaderStages::FRAGMENT;
         let uniform = |binding: u32| wgpu::BindGroupLayoutEntry {
-            binding, visibility: vis,
+            binding,
+            visibility: vis,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false, min_binding_size: None,
+                has_dynamic_offset: false,
+                min_binding_size: None,
             },
             count: None,
         };
         let storage_ro = |binding: u32| wgpu::BindGroupLayoutEntry {
-            binding, visibility: vis,
+            binding,
+            visibility: vis,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Storage { read_only: true },
-                has_dynamic_offset: false, min_binding_size: None,
+                has_dynamic_offset: false,
+                min_binding_size: None,
             },
             count: None,
         };
         let tex = |binding: u32| wgpu::BindGroupLayoutEntry {
-            binding, visibility: vis,
+            binding,
+            visibility: vis,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2, multisampled: false,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
             },
             count: None,
         };
         let samp = |binding: u32| wgpu::BindGroupLayoutEntry {
-            binding, visibility: vis,
+            binding,
+            visibility: vis,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         };
@@ -141,7 +153,8 @@ impl ReflectionPipelines {
         // シェーディングをテクスチャサンプルに差し替える。片方でも欠ければ従来の平均色経路。
         // 非対応 GPU で binding_array を宣言すると BGL 生成が失敗するため、**BGL/パイプライン
         // レベルで分岐**する（シェーダ内分岐では不可）。
-        let use_bindless = super::rt_shadow::rt_shadows_supported() && super::bindless::bindless_supported();
+        let use_bindless =
+            super::rt_shadow::rt_shadows_supported() && super::bindless::bindless_supported();
 
         // RT データ（group3）: lights storage + meta storage + tlas + albedo storage。
         // meta は **storage** で持つ（WebGPU 制約: binding_array と uniform buffer は同一 bind group
@@ -155,8 +168,11 @@ impl ReflectionPipelines {
             storage_ro(0),
             storage_ro(1),
             wgpu::BindGroupLayoutEntry {
-                binding: 2, visibility: vis,
-                ty: wgpu::BindingType::AccelerationStructure { vertex_return: false },
+                binding: 2,
+                visibility: vis,
+                ty: wgpu::BindingType::AccelerationStructure {
+                    vertex_return: false,
+                },
                 count: None,
             },
             storage_ro(3),
@@ -168,10 +184,12 @@ impl ReflectionPipelines {
             rt_entries.push(storage_ro(5)); // UV メガバッファ（vec2<f32> 配列）
             rt_entries.push(storage_ro(6)); // index メガバッファ（u32 配列）
             rt_entries.push(wgpu::BindGroupLayoutEntry {
-                binding: 7, visibility: vis,
+                binding: 7,
+                visibility: vis,
                 ty: wgpu::BindingType::Texture {
-                    sample_type:    wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2, multisampled: false,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
                 },
                 // binding_array（count=cap）。max_binding_array_elements_per_shader_stage=cap に一致。
                 count: Some(std::num::NonZeroU32::new(cap).unwrap()),
@@ -190,10 +208,24 @@ impl ReflectionPipelines {
 
         // SSR パイプライン（group0..3, blend なし＝反射 RT を上書き）。
         let ssr = build_reflection_pipeline(
-            device, cache,
-            &[&deferred.camera_bgl, &deferred.gbuffer_bgl, &input_bgl, &gi_bgl],
-            &["reflection_common.wgsl", "ddgi_common.wgsl", "reflection_ssr.wgsl"],
-            "vs_fullscreen", "fs_ssr", "reflection_ssr", out_format, None,
+            device,
+            cache,
+            &[
+                &deferred.camera_bgl,
+                &deferred.gbuffer_bgl,
+                &input_bgl,
+                &gi_bgl,
+            ],
+            &[
+                "reflection_common.wgsl",
+                "ddgi_common.wgsl",
+                "reflection_ssr.wgsl",
+            ],
+            "vs_fullscreen",
+            "fs_ssr",
+            "reflection_ssr",
+            out_format,
+            None,
         );
 
         // RT 反射パイプライン（group0..4, RT 対応 GPU のみ）。
@@ -202,18 +234,33 @@ impl ReflectionPipelines {
         //   従来    : reflection_rt_hit_off.wgsl（平均色。binding_array 宣言なし）
         let rt = if super::rt_shadow::rt_shadows_supported() {
             let mut srcs: Vec<&str> = vec![
-                "cluster_common.wgsl", "reflection_common.wgsl", "ddgi_common.wgsl", "reflection_rt.wgsl",
+                "cluster_common.wgsl",
+                "reflection_common.wgsl",
+                "ddgi_common.wgsl",
+                "reflection_rt.wgsl",
             ];
             if use_bindless {
-                srcs.push("bindless_common.wgsl");         // BindlessInstanceRecord 定義
-                srcs.push("reflection_rt_hit_on.wgsl");    // 配列宣言＋UV サンプル
+                srcs.push("bindless_common.wgsl"); // BindlessInstanceRecord 定義
+                srcs.push("reflection_rt_hit_on.wgsl"); // 配列宣言＋UV サンプル
             } else {
-                srcs.push("reflection_rt_hit_off.wgsl");   // 平均色フォールバック
+                srcs.push("reflection_rt_hit_off.wgsl"); // 平均色フォールバック
             }
             Some(build_reflection_pipeline(
-                device, cache,
-                &[&deferred.camera_bgl, &deferred.gbuffer_bgl, &input_bgl, &rt_data_bgl, &gi_bgl],
-                &srcs, "vs_fullscreen", "fs_rt", "reflection_rt", out_format, None,
+                device,
+                cache,
+                &[
+                    &deferred.camera_bgl,
+                    &deferred.gbuffer_bgl,
+                    &input_bgl,
+                    &rt_data_bgl,
+                    &gi_bgl,
+                ],
+                &srcs,
+                "vs_fullscreen",
+                "fs_rt",
+                "reflection_rt",
+                out_format,
+                None,
             ))
         } else {
             None
@@ -222,18 +269,26 @@ impl ReflectionPipelines {
         // 合成パイプライン（Additive One/One で scene_hdr へ加算）。
         let additive = wgpu::BlendState {
             color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One,
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
             },
             alpha: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One,
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
             },
         };
         let composite = build_reflection_pipeline(
-            device, cache, &[&composite_bgl],
+            device,
+            cache,
+            &[&composite_bgl],
             &["reflection_composite.wgsl"],
-            "vs_composite", "fs_composite", "reflection_composite", out_format, Some(additive),
+            "vs_composite",
+            "fs_composite",
+            "reflection_composite",
+            out_format,
+            Some(additive),
         );
 
         // 反射 RT・GI・合成で共用するリニア clamp サンプラー。
@@ -251,28 +306,55 @@ impl ReflectionPipelines {
         // ReflectionParams UBO（初期値は既定強度で write_params にて毎フレーム更新）。
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Reflection Params UBO"),
-            size:  std::mem::size_of::<ReflectionParams>() as u64,
+            size: std::mem::size_of::<ReflectionParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        Self { ssr, rt, composite, input_bgl, gi_bgl, rt_data_bgl, composite_bgl, params_buffer, sampler }
+        Self {
+            ssr,
+            rt,
+            composite,
+            input_bgl,
+            gi_bgl,
+            rt_data_bgl,
+            composite_bgl,
+            params_buffer,
+            sampler,
+        }
     }
 
     /// intensity を ReflectionParams UBO へ書き込む（毎フレーム反射パス直前に呼ぶ）。
     pub fn write_params(&self, queue: &wgpu::Queue, intensity: f32) {
-        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&ReflectionParams::new(intensity)));
+        queue.write_buffer(
+            &self.params_buffer,
+            0,
+            bytemuck::bytes_of(&ReflectionParams::new(intensity)),
+        );
     }
 
     /// group2（input）の BindGroup を生成する（params UBO + scene_hdr + sampler）。
-    pub fn create_input_bg(&self, device: &wgpu::Device, scene_hdr: &wgpu::TextureView) -> wgpu::BindGroup {
+    pub fn create_input_bg(
+        &self,
+        device: &wgpu::Device,
+        scene_hdr: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Reflection Input BG"),
             layout: &self.input_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.params_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(scene_hdr) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(scene_hdr),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
             ],
         })
     }
@@ -283,28 +365,55 @@ impl ReflectionPipelines {
             label: Some("Reflection GI BG"),
             layout: &self.gi_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: gi.params_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(gi.irradiance_view()) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(gi.visibility_view()) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gi.params_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(gi.irradiance_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(gi.visibility_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
             ],
         })
     }
 
     /// RT データの BindGroup を生成する（RT の group3。lights/meta/tlas/albedo）。
     pub fn create_rt_data_bg(
-        &self, device: &wgpu::Device,
-        lights: &wgpu::Buffer, meta: &wgpu::Buffer,
-        tlas: &wgpu::Tlas, albedo: &wgpu::Buffer,
+        &self,
+        device: &wgpu::Device,
+        lights: &wgpu::Buffer,
+        meta: &wgpu::Buffer,
+        tlas: &wgpu::Tlas,
+        albedo: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Reflection RT Data BG"),
             layout: &self.rt_data_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: lights.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: meta.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::AccelerationStructure(tlas) },
-                wgpu::BindGroupEntry { binding: 3, resource: albedo.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: lights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: meta.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::AccelerationStructure(tlas),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: albedo.as_entire_binding(),
+                },
             ],
         })
     }
@@ -315,9 +424,12 @@ impl ReflectionPipelines {
     /// 構築されている前提（`ReflectionPipelines::new`）。テクスチャ配列は毎フレーム全スロット
     /// （登録済み＝実 view / 空き＝ダミー白）を並べて構築する（登録変化の追従は再構築で担保）。
     pub fn create_rt_data_bg_bindless(
-        &self, device: &wgpu::Device,
-        lights: &wgpu::Buffer, meta: &wgpu::Buffer,
-        tlas: &wgpu::Tlas, albedo: &wgpu::Buffer,
+        &self,
+        device: &wgpu::Device,
+        lights: &wgpu::Buffer,
+        meta: &wgpu::Buffer,
+        tlas: &wgpu::Tlas,
+        albedo: &wgpu::Buffer,
         bindless: &super::bindless::BindlessResources,
     ) -> wgpu::BindGroup {
         // capacity 個の view 参照列（登録済み or ダミー）。TextureViewArray はこのスライスを要求する。
@@ -326,27 +438,64 @@ impl ReflectionPipelines {
             label: Some("Reflection RT Data BG (bindless)"),
             layout: &self.rt_data_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: lights.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: meta.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::AccelerationStructure(tlas) },
-                wgpu::BindGroupEntry { binding: 3, resource: albedo.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: bindless.instance_table_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: bindless.uv_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: bindless.index_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureViewArray(&views) },
-                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Sampler(bindless.shared_sampler()) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: lights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: meta.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::AccelerationStructure(tlas),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: albedo.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: bindless.instance_table_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: bindless.uv_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: bindless.index_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureViewArray(&views),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::Sampler(bindless.shared_sampler()),
+                },
             ],
         })
     }
 
     /// 合成の group0 BindGroup を生成する（反射 RT テクスチャ＋サンプラー）。
-    pub fn create_composite_bg(&self, device: &wgpu::Device, refl_view: &wgpu::TextureView) -> wgpu::BindGroup {
+    pub fn create_composite_bg(
+        &self,
+        device: &wgpu::Device,
+        refl_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Reflection Composite BG"),
             layout: &self.composite_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(refl_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(refl_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
             ],
         })
     }
@@ -356,52 +505,53 @@ impl ReflectionPipelines {
 /// build_gbuffer_pipeline と同じ手法）。深度なし・単一カラーターゲット。
 #[allow(clippy::too_many_arguments)]
 fn build_reflection_pipeline(
-    device:         &wgpu::Device,
-    cache:          Option<&wgpu::PipelineCache>,
-    bgls:           &[&wgpu::BindGroupLayout],
+    device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
+    bgls: &[&wgpu::BindGroupLayout],
     shader_sources: &[&str],
-    vs_entry:       &str,
-    fs_entry:       &str,
-    label:          &str,
-    out_format:     wgpu::TextureFormat,
-    blend:          Option<wgpu::BlendState>,
+    vs_entry: &str,
+    fs_entry: &str,
+    label: &str,
+    out_format: wgpu::TextureFormat,
+    blend: Option<wgpu::BlendState>,
 ) -> wgpu::RenderPipeline {
-    let combined: String = shader_sources.iter()
+    let combined: String = shader_sources
+        .iter()
         .map(|n| get_shader_source(n))
         .collect::<Vec<_>>()
         .join("\n");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label:  Some(label),
+        label: Some(label),
         source: wgpu::ShaderSource::Wgsl(combined.into()),
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label:                Some(label),
-        bind_group_layouts:   bgls,
+        label: Some(label),
+        bind_group_layouts: bgls,
         push_constant_ranges: &[],
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label:  Some(label),
+        label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module:              &shader,
-            entry_point:         Some(vs_entry),
-            buffers:             &[],
+            module: &shader,
+            entry_point: Some(vs_entry),
+            buffers: &[],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module:              &shader,
-            entry_point:         Some(fs_entry),
-            targets:             &[Some(wgpu::ColorTargetState {
-                format:     out_format,
+            module: &shader,
+            entry_point: Some(fs_entry),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: out_format,
                 blend,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: Default::default(),
         }),
-        primitive:     wgpu::PrimitiveState::default(),
+        primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
-        multisample:   wgpu::MultisampleState::default(),
-        multiview:     None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
         cache,
     })
 }
@@ -418,13 +568,16 @@ mod tests {
     fn reflection_ssr_shader_parses() {
         let refl_c = include_str!("shaders/reflection_common.wgsl");
         let ddgi_c = include_str!("shaders/ddgi_common.wgsl");
-        let ssr    = include_str!("shaders/reflection_ssr.wgsl");
+        let ssr = include_str!("shaders/reflection_ssr.wgsl");
         let src = [refl_c, ddgi_c, ssr].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[reflection_ssr] WGSL parse 失敗: {e:?}"));
         let mut v = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty());
-        v.validate(&module).unwrap_or_else(|e| panic!("[reflection_ssr] validate 失敗: {e:?}"));
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        );
+        v.validate(&module)
+            .unwrap_or_else(|e| panic!("[reflection_ssr] validate 失敗: {e:?}"));
     }
 
     /// RT 反射連結（従来・平均色フォールバック, RAY_QUERY 必須）を naga で parse + validate する。
@@ -433,16 +586,19 @@ mod tests {
     #[test]
     fn reflection_rt_off_shader_parses() {
         let cluster = include_str!("shaders/cluster_common.wgsl");
-        let refl_c  = include_str!("shaders/reflection_common.wgsl");
-        let ddgi_c  = include_str!("shaders/ddgi_common.wgsl");
-        let rt      = include_str!("shaders/reflection_rt.wgsl");
+        let refl_c = include_str!("shaders/reflection_common.wgsl");
+        let ddgi_c = include_str!("shaders/ddgi_common.wgsl");
+        let rt = include_str!("shaders/reflection_rt.wgsl");
         let hit_off = include_str!("shaders/reflection_rt_hit_off.wgsl");
         let src = [cluster, refl_c, ddgi_c, rt, hit_off].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[reflection_rt off] WGSL parse 失敗: {e:?}"));
         let mut v = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(), naga::valid::Capabilities::RAY_QUERY);
-        v.validate(&module).unwrap_or_else(|e| panic!("[reflection_rt off] validate 失敗: {e:?}"));
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::RAY_QUERY,
+        );
+        v.validate(&module)
+            .unwrap_or_else(|e| panic!("[reflection_rt off] validate 失敗: {e:?}"));
     }
 
     /// RT 反射連結（バインドレス・本物のテクスチャ色）を naga で parse + validate する。
@@ -450,19 +606,20 @@ mod tests {
     /// 非一様インデックスのため SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING を要求する。
     #[test]
     fn reflection_rt_on_bindless_shader_parses() {
-        let cluster  = include_str!("shaders/cluster_common.wgsl");
-        let refl_c   = include_str!("shaders/reflection_common.wgsl");
-        let ddgi_c   = include_str!("shaders/ddgi_common.wgsl");
-        let rt       = include_str!("shaders/reflection_rt.wgsl");
+        let cluster = include_str!("shaders/cluster_common.wgsl");
+        let refl_c = include_str!("shaders/reflection_common.wgsl");
+        let ddgi_c = include_str!("shaders/ddgi_common.wgsl");
+        let rt = include_str!("shaders/reflection_rt.wgsl");
         let bindless = include_str!("shaders/bindless_common.wgsl");
-        let hit_on   = include_str!("shaders/reflection_rt_hit_on.wgsl");
+        let hit_on = include_str!("shaders/reflection_rt_hit_on.wgsl");
         let src = [cluster, refl_c, ddgi_c, rt, bindless, hit_on].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[reflection_rt on] WGSL parse 失敗: {e:?}"));
         let caps = naga::valid::Capabilities::RAY_QUERY
             | naga::valid::Capabilities::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
         let mut v = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps);
-        v.validate(&module).unwrap_or_else(|e| panic!("[reflection_rt on] validate 失敗: {e:?}"));
+        v.validate(&module)
+            .unwrap_or_else(|e| panic!("[reflection_rt on] validate 失敗: {e:?}"));
     }
 
     /// 合成連結（自前完結）を naga で parse + validate する。
@@ -472,8 +629,11 @@ mod tests {
         let module = naga::front::wgsl::parse_str(comp)
             .unwrap_or_else(|e| panic!("[reflection_composite] WGSL parse 失敗: {e:?}"));
         let mut v = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty());
-        v.validate(&module).unwrap_or_else(|e| panic!("[reflection_composite] validate 失敗: {e:?}"));
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        );
+        v.validate(&module)
+            .unwrap_or_else(|e| panic!("[reflection_composite] validate 失敗: {e:?}"));
     }
 
     /// ReflectionParams は 16 バイト（WGSL reflection_common.wgsl の ReflectionParams と一致）。
@@ -487,22 +647,34 @@ mod tests {
     #[test]
     fn reflection_rt_mirror_layouts_match() {
         let cluster = include_str!("shaders/cluster_common.wgsl");
-        let refl_c  = include_str!("shaders/reflection_common.wgsl");
-        let ddgi_c  = include_str!("shaders/ddgi_common.wgsl");
-        let rt      = include_str!("shaders/reflection_rt.wgsl");
+        let refl_c = include_str!("shaders/reflection_common.wgsl");
+        let ddgi_c = include_str!("shaders/ddgi_common.wgsl");
+        let rt = include_str!("shaders/reflection_rt.wgsl");
         let hit_off = include_str!("shaders/reflection_rt_hit_off.wgsl");
         let src = [cluster, refl_c, ddgi_c, rt, hit_off].join("\n");
         let module = naga::front::wgsl::parse_str(&src).expect("RT 反射連結の parse に失敗");
         let mut layouter = naga::proc::Layouter::default();
-        layouter.update(module.to_ctx()).expect("naga Layouter 計算に失敗");
+        layouter
+            .update(module.to_ctx())
+            .expect("naga Layouter 計算に失敗");
         let size_of = |name: &str| -> usize {
-            let (h, _) = module.types.iter()
+            let (h, _) = module
+                .types
+                .iter()
                 .find(|(_, t)| t.name.as_deref() == Some(name))
                 .unwrap_or_else(|| panic!("WGSL に struct {name} が見つかりません"));
             layouter[h].size as usize
         };
-        assert_eq!(size_of("GpuLightR"), 112, "GpuLightR は 112B（lighting.rs GpuLight と一致）");
-        assert_eq!(size_of("LightMetaR"), 32, "LightMetaR は 32B（lighting.rs LightMeta と一致）");
+        assert_eq!(
+            size_of("GpuLightR"),
+            112,
+            "GpuLightR は 112B（lighting.rs GpuLight と一致）"
+        );
+        assert_eq!(
+            size_of("LightMetaR"),
+            32,
+            "LightMetaR は 32B（lighting.rs LightMeta と一致）"
+        );
     }
 
     /// 粗さフェードが roughness=1（＝完全に粗い面）で反射寄与を**厳密に 0** にすることを保証する。
@@ -522,18 +694,25 @@ mod tests {
         // reflection_common.wgsl から `const NAME: f32 = <値>;` を抽出する小さなパーサ。
         let src = include_str!("shaders/reflection_common.wgsl");
         let parse_f32 = |name: &str| -> f32 {
-            let line = src.lines().map(str::trim)
+            let line = src
+                .lines()
+                .map(str::trim)
                 .find(|l| l.starts_with(&format!("const {name}")))
-                .unwrap_or_else(|| panic!("reflection_common.wgsl に const {name} が見つかりません"));
+                .unwrap_or_else(|| {
+                    panic!("reflection_common.wgsl に const {name} が見つかりません")
+                });
             // `const NAME: f32 = 0.30; // ...` → `=` の後ろから `;` までを数値化。
             let rhs = line.split('=').nth(1).unwrap();
-            let num: String = rhs.trim().chars()
+            let num: String = rhs
+                .trim()
+                .chars()
                 .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
                 .collect();
-            num.parse::<f32>().unwrap_or_else(|_| panic!("const {name} を f32 として解釈できません: {num:?}"))
+            num.parse::<f32>()
+                .unwrap_or_else(|_| panic!("const {name} を f32 として解釈できません: {num:?}"))
         };
         let start = parse_f32("REFLECTION_ROUGHNESS_FADE_START");
-        let end   = parse_f32("REFLECTION_ROUGHNESS_FADE_END");
+        let end = parse_f32("REFLECTION_ROUGHNESS_FADE_END");
 
         // WGSL smoothstep(e0,e1,x) と同一（clamp 後に 3t^2-2t^3）。weight = 1 - smoothstep。
         let smoothstep = |e0: f32, e1: f32, x: f32| -> f32 {
@@ -543,13 +722,31 @@ mod tests {
         let weight = |r: f32| -> f32 { 1.0 - smoothstep(start, end, r) };
 
         // 定数の健全性: START < END <= 1.0。END>1.0 だと roughness=1 でも weight>0 となり漏れる。
-        assert!(start < end, "FADE_START({start}) < FADE_END({end}) であること");
-        assert!(end <= 1.0, "FADE_END({end}) <= 1.0（roughness=1 で必ず 0 にするため）");
+        assert!(
+            start < end,
+            "FADE_START({start}) < FADE_END({end}) であること"
+        );
+        assert!(
+            end <= 1.0,
+            "FADE_END({end}) <= 1.0（roughness=1 で必ず 0 にするため）"
+        );
 
         // 端点性質: roughness=1 で厳密に 0（＝反射寄与 0）。FADE_END でも 0。FADE_START 以下で全反射(1)。
-        assert_eq!(weight(1.0), 0.0, "roughness=1 で反射フェード weight は厳密に 0 であること");
-        assert_eq!(weight(end), 0.0, "roughness=FADE_END で weight は 0 であること");
-        assert_eq!(weight(start), 1.0, "roughness<=FADE_START で weight は 1（全反射）であること");
+        assert_eq!(
+            weight(1.0),
+            0.0,
+            "roughness=1 で反射フェード weight は厳密に 0 であること"
+        );
+        assert_eq!(
+            weight(end),
+            0.0,
+            "roughness=FADE_END で weight は 0 であること"
+        );
+        assert_eq!(
+            weight(start),
+            1.0,
+            "roughness<=FADE_START で weight は 1（全反射）であること"
+        );
     }
 
     /// RT 反射のハイブリッド（画面内ヒット採用）の深度一致許容 HIT_DEPTH_TOLERANCE の健全性。
@@ -561,16 +758,30 @@ mod tests {
     fn rt_reflection_hit_depth_tolerance_is_valid() {
         let src = include_str!("shaders/reflection_rt.wgsl");
         // `const HIT_DEPTH_TOLERANCE: f32 = 0.05;` の右辺から数値部分を抽出する。
-        let line = src.lines().map(str::trim)
+        let line = src
+            .lines()
+            .map(str::trim)
             .find(|l| l.starts_with("const HIT_DEPTH_TOLERANCE"))
             .expect("reflection_rt.wgsl に const HIT_DEPTH_TOLERANCE が見つかりません");
-        let rhs = line.split('=').nth(1).expect("HIT_DEPTH_TOLERANCE の右辺がありません");
-        let num: String = rhs.trim().chars()
+        let rhs = line
+            .split('=')
+            .nth(1)
+            .expect("HIT_DEPTH_TOLERANCE の右辺がありません");
+        let num: String = rhs
+            .trim()
+            .chars()
             .take_while(|c| c.is_ascii_digit() || *c == '.')
             .collect();
-        let t: f32 = num.parse()
+        let t: f32 = num
+            .parse()
             .unwrap_or_else(|_| panic!("HIT_DEPTH_TOLERANCE を f32 として解釈できません: {num:?}"));
-        assert!(t > 0.0, "HIT_DEPTH_TOLERANCE({t}) は 0 より大（0 だと一致成立せず機能無効化）");
-        assert!(t < 0.5, "HIT_DEPTH_TOLERANCE({t}) は 0.5 未満（遮蔽面の誤一致を防ぐ許容幅）");
+        assert!(
+            t > 0.0,
+            "HIT_DEPTH_TOLERANCE({t}) は 0 より大（0 だと一致成立せず機能無効化）"
+        );
+        assert!(
+            t < 0.5,
+            "HIT_DEPTH_TOLERANCE({t}) は 0.5 未満（遮蔽面の誤一致を防ぐ許容幅）"
+        );
     }
 }

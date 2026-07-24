@@ -48,7 +48,9 @@ pub enum Interp {
 
 impl Default for Interp {
     /// interp 省略時の既定は線形補間とする。
-    fn default() -> Self { Interp::Linear }
+    fn default() -> Self {
+        Interp::Linear
+    }
 }
 
 /// クリップ全体のループ再生種別。
@@ -65,7 +67,9 @@ pub enum LoopMode {
 
 impl Default for LoopMode {
     /// loop_mode 省略時の既定は once とする。
-    fn default() -> Self { LoopMode::Once }
+    fn default() -> Self {
+        LoopMode::Once
+    }
 }
 
 // ─── AnimValue（統一値型）─────────────────────────────────────
@@ -93,10 +97,10 @@ impl AnimValue {
     pub fn value_type(&self) -> ValueType {
         match self {
             AnimValue::Float(_) => ValueType::Float,
-            AnimValue::Vec2(_)  => ValueType::Vec2,
-            AnimValue::Vec3(_)  => ValueType::Vec3,
+            AnimValue::Vec2(_) => ValueType::Vec2,
+            AnimValue::Vec3(_) => ValueType::Vec3,
             AnimValue::Color(_) => ValueType::Color,
-            AnimValue::Bool(_)  => ValueType::Bool,
+            AnimValue::Bool(_) => ValueType::Bool,
         }
     }
 
@@ -104,10 +108,10 @@ impl AnimValue {
     pub fn to_components(&self) -> Vec<f32> {
         match self {
             AnimValue::Float(v) => vec![*v],
-            AnimValue::Vec2(v)  => v.to_vec(),
-            AnimValue::Vec3(v)  => v.to_vec(),
+            AnimValue::Vec2(v) => v.to_vec(),
+            AnimValue::Vec3(v) => v.to_vec(),
             AnimValue::Color(v) => v.to_vec(),
-            AnimValue::Bool(b)  => vec![if *b { 1.0 } else { 0.0 }],
+            AnimValue::Bool(b) => vec![if *b { 1.0 } else { 0.0 }],
         }
     }
 
@@ -118,11 +122,11 @@ impl AnimValue {
         let g = |i: usize| c.get(i).copied().unwrap_or(0.0);
         match vt {
             ValueType::Float => AnimValue::Float(g(0)),
-            ValueType::Vec2  => AnimValue::Vec2([g(0), g(1)]),
-            ValueType::Vec3  => AnimValue::Vec3([g(0), g(1), g(2)]),
+            ValueType::Vec2 => AnimValue::Vec2([g(0), g(1)]),
+            ValueType::Vec3 => AnimValue::Vec3([g(0), g(1), g(2)]),
             ValueType::Color => AnimValue::Color([g(0), g(1), g(2), g(3)]),
             // Bool は 0.5 を境に true/false 判定
-            ValueType::Bool  => AnimValue::Bool(g(0) >= 0.5),
+            ValueType::Bool => AnimValue::Bool(g(0) >= 0.5),
         }
     }
 }
@@ -225,7 +229,9 @@ struct RawTrack {
 }
 
 /// duration 省略時の既定値関数（0.0 = 後段でキー時刻から補完）。
-fn default_duration() -> f32 { 0.0 }
+fn default_duration() -> f32 {
+    0.0
+}
 
 /// AnimationClip の serde 受け口。
 #[derive(Deserialize)]
@@ -249,26 +255,43 @@ struct RawClip {
 fn parse_value(vt: ValueType, raw: &serde_json::Value) -> Result<AnimValue, String> {
     // 配列を固定長 f32 スライスとして取り出すヘルパー
     let as_arr = |n: usize| -> Result<Vec<f32>, String> {
-        let arr = raw.as_array()
+        let arr = raw
+            .as_array()
             .ok_or_else(|| format!("expected array of len {n}, got {raw}"))?;
         if arr.len() != n {
             return Err(format!("expected array len {n}, got {}", arr.len()));
         }
         arr.iter()
-            .map(|v| v.as_f64().map(|f| f as f32)
-                .ok_or_else(|| format!("non-number element in array: {v}")))
+            .map(|v| {
+                v.as_f64()
+                    .map(|f| f as f32)
+                    .ok_or_else(|| format!("non-number element in array: {v}"))
+            })
             .collect()
     };
     match vt {
         ValueType::Float => {
-            let f = raw.as_f64().ok_or_else(|| format!("expected number, got {raw}"))?;
+            let f = raw
+                .as_f64()
+                .ok_or_else(|| format!("expected number, got {raw}"))?;
             Ok(AnimValue::Float(f as f32))
         }
-        ValueType::Vec2 => { let a = as_arr(2)?; Ok(AnimValue::Vec2([a[0], a[1]])) }
-        ValueType::Vec3 => { let a = as_arr(3)?; Ok(AnimValue::Vec3([a[0], a[1], a[2]])) }
-        ValueType::Color => { let a = as_arr(4)?; Ok(AnimValue::Color([a[0], a[1], a[2], a[3]])) }
+        ValueType::Vec2 => {
+            let a = as_arr(2)?;
+            Ok(AnimValue::Vec2([a[0], a[1]]))
+        }
+        ValueType::Vec3 => {
+            let a = as_arr(3)?;
+            Ok(AnimValue::Vec3([a[0], a[1], a[2]]))
+        }
+        ValueType::Color => {
+            let a = as_arr(4)?;
+            Ok(AnimValue::Color([a[0], a[1], a[2], a[3]]))
+        }
         ValueType::Bool => {
-            let b = raw.as_bool().ok_or_else(|| format!("expected bool, got {raw}"))?;
+            let b = raw
+                .as_bool()
+                .ok_or_else(|| format!("expected bool, got {raw}"))?;
             Ok(AnimValue::Bool(b))
         }
     }
@@ -282,10 +305,10 @@ impl AnimationClip {
     ///   クリップ全体のロードは継続する（1 トラックの不備で全滅させない）。
     pub fn load(path: &str) -> Result<AnimationClip, String> {
         // ファイル読み込み（PAK / FS フォールバックは asset_fs が処理）
-        let text = crate::engine::asset_fs::read_string(path)
-            .map_err(|e| format!("{path}: {e}"))?;
-        let raw: RawClip = serde_json::from_str(&text)
-            .map_err(|e| format!("{path}: JSON parse error: {e}"))?;
+        let text =
+            crate::engine::asset_fs::read_string(path).map_err(|e| format!("{path}: {e}"))?;
+        let raw: RawClip =
+            serde_json::from_str(&text).map_err(|e| format!("{path}: JSON parse error: {e}"))?;
 
         // トラックを型付きへ変換する
         let mut tracks = Vec::new();
@@ -298,7 +321,11 @@ impl AnimationClip {
                 match parse_value(vt, &rk.value) {
                     Ok(value) => {
                         // bool は補間不可のため interp を step に固定する
-                        let interp = if vt == ValueType::Bool { Interp::Step } else { rk.interp };
+                        let interp = if vt == ValueType::Bool {
+                            Interp::Step
+                        } else {
+                            rk.interp
+                        };
                         keys.push(Keyframe {
                             time: rk.time,
                             value,
@@ -308,21 +335,29 @@ impl AnimationClip {
                         });
                     }
                     Err(err) => {
-                        eprintln!("[SEED anim] track {ti} ({}/{}): 値パース失敗のためトラックを無視: {err}",
-                                  rt.target.component, rt.target.property);
+                        eprintln!(
+                            "[SEED anim] track {ti} ({}/{}): 値パース失敗のためトラックを無視: {err}",
+                            rt.target.component, rt.target.property
+                        );
                         track_ok = false;
                         break;
                     }
                 }
             }
-            if !track_ok { continue; }
+            if !track_ok {
+                continue;
+            }
             // 時刻昇順に整列（評価は昇順前提）
-            keys.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+            keys.sort_by(|a, b| {
+                a.time
+                    .partial_cmp(&b.time)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             tracks.push(Track {
                 target: TrackTarget {
                     actor_path: rt.target.actor_path,
-                    component:  rt.target.component,
-                    property:   rt.target.property,
+                    component: rt.target.component,
+                    property: rt.target.property,
                 },
                 value_type: vt,
                 keys,
@@ -332,7 +367,8 @@ impl AnimationClip {
         // duration が未指定（0 以下）なら全トラックの最大キー時刻から補完する
         let mut duration = raw.duration;
         if duration <= 0.0 {
-            duration = tracks.iter()
+            duration = tracks
+                .iter()
                 .flat_map(|t| t.keys.iter().map(|k| k.time))
                 .fold(0.0_f32, f32::max);
         }

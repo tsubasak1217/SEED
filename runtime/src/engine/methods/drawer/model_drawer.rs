@@ -25,12 +25,12 @@ use crate::engine::core::loader::model::CullFace;
 /// 渡すこと。None のときは従来パイプライン＋従来 group 4 BG を使う。
 pub fn draw_model_indirect<'pass>(
     render_pass: &mut wgpu::RenderPass<'pass>,
-    gpu_model:   &'pass GpuModel,
-    batch:       &'pass InstancedModelBatch,
-    camera_bg:   &'pass wgpu::BindGroup,
-    lights_bg:   &'pass wgpu::BindGroup,
-    pipelines:   &'pass DrawPipelines,
-    rt_pipes:    Option<&'pass RtMeshPipelines>,
+    gpu_model: &'pass GpuModel,
+    batch: &'pass InstancedModelBatch,
+    camera_bg: &'pass wgpu::BindGroup,
+    lights_bg: &'pass wgpu::BindGroup,
+    pipelines: &'pass DrawPipelines,
+    rt_pipes: Option<&'pass RtMeshPipelines>,
     // GPU メッシュレットカリング（第1弾）を LOD0 で使うか。true でも対象外プリミティブ
     // （スキン/メッシュレット無し/Blend/非アクティブスロット）は従来 draw_indexed へ自動フォールバック。
     // preview/gizmo 等の呼び出しは false を渡し、従来経路と完全一致（パリティ担保）。
@@ -43,38 +43,51 @@ pub fn draw_model_indirect<'pass>(
     // 呼び出し側はワイヤ時に rt_pipes=None・メインカメラ用（非 RT）lights_bg を渡すこと。
     wireframe: bool,
 ) {
-    if batch.n_prims == 0 { return; }
+    if batch.n_prims == 0 {
+        return;
+    }
 
     // RT 影オン時は RT バリアント、オフ/非対応時は従来パイプラインを選ぶ。
     // フラグメントは LightMeta.rt_shadows で RT/シャドウマップを分岐するため、
     // ここでの選択は「TLAS バインディングを持つレイアウトか否か」の違いに対応する。
     // 各々はさらにカリング面（Back/Front/None）の 3 バリアント配列で、
     // プリミティブのマテリアルの CullFace で添字を引く。
-    let mesh_pipelines    = rt_pipes.map_or(&pipelines.mesh.pipelines,         |r| &r.mesh);
+    let mesh_pipelines = rt_pipes.map_or(&pipelines.mesh.pipelines, |r| &r.mesh);
     let skinned_pipelines = rt_pipes.map_or(&pipelines.skinned_mesh.pipelines, |r| &r.skinned);
-    let empty_bg3         = rt_pipes.map_or(&pipelines.mesh.empty_bg3,         |r| &r.empty_bg3);
+    let empty_bg3 = rt_pipes.map_or(&pipelines.mesh.empty_bg3, |r| &r.empty_bg3);
 
     // ワイヤ用パイプライン（対応 GPU かつ wireframe 指定時のみ Some）。
     // Some のとき set_pipeline はカリング面バリアントの代わりにこの単一パイプラインを使う。
-    let wire_mesh    = if wireframe { pipelines.mesh.wireframe.as_ref() }         else { None };
-    let wire_skinned = if wireframe { pipelines.skinned_mesh.wireframe.as_ref() } else { None };
+    let wire_mesh = if wireframe {
+        pipelines.mesh.wireframe.as_ref()
+    } else {
+        None
+    };
+    let wire_skinned = if wireframe {
+        pipelines.skinned_mesh.wireframe.as_ref()
+    } else {
+        None
+    };
 
     for lod in 0..NUM_LODS {
         let visible = batch.lod_visible_counts[lod];
-        if visible == 0 { continue; }
+        if visible == 0 {
+            continue;
+        }
 
-        let mut cur_skinned: Option<bool>                   = None;
+        let mut cur_skinned: Option<bool> = None;
         // 現在バインド中のカリング面。node_prim_list は (is_skinned, cull_face, material_idx) 順に
         // ソート済みのため、同じカリング面が連続する区間では set_pipeline を省略できる。
-        let mut cur_cull:    Option<CullFace>               = None;
+        let mut cur_cull: Option<CullFace> = None;
         let mut cur_mat_ptr: Option<*const wgpu::BindGroup> = None;
 
         // LOD のジョイント BG（スキンなしの場合は None）
         let joint_bg = batch.joint_vs_bg(lod);
 
         for (draw_idx, draw) in batch.node_prim_list.iter().enumerate() {
-            let Some((_, model_bg)) = batch.lod_node_data[lod][draw.node_idx].as_ref()
-                else { continue };
+            let Some((_, model_bg)) = batch.lod_node_data[lod][draw.node_idx].as_ref() else {
+                continue;
+            };
 
             // 半透明（Blend）プリミティブは不透明パスでは描かず、透明パス
             // （transparency.rs）へ委ねる（Phase R5）。Opaque/Mask のみここで描画する。
@@ -86,9 +99,10 @@ pub fn draw_model_indirect<'pass>(
             }
 
             let gpu_mesh = &gpu_model.meshes[draw.mesh_idx];
-            let prim     = &gpu_mesh.primitives[draw.prim_idx];
+            let prim = &gpu_mesh.primitives[draw.prim_idx];
 
-            let mat_bg: &wgpu::BindGroup = draw.material_idx
+            let mat_bg: &wgpu::BindGroup = draw
+                .material_idx
                 .and_then(|mi| gpu_model.materials.get(mi))
                 .map(|m| &m.bind_group)
                 .unwrap_or(&gpu_model.default_material.bind_group);
@@ -104,7 +118,8 @@ pub fn draw_model_indirect<'pass>(
             if cur_skinned != Some(draw.is_skinned) || cur_cull != Some(cull) {
                 if draw.is_skinned {
                     // ワイヤ用があればそれを、なければ従来のカリング面バリアントを使う。
-                    render_pass.set_pipeline(wire_skinned.unwrap_or(&skinned_pipelines[cull.index()]));
+                    render_pass
+                        .set_pipeline(wire_skinned.unwrap_or(&skinned_pipelines[cull.index()]));
                     // GPU スキニング: コンピュートシェーダが書き込んだ joint BG を設定
                     if let Some(jbg) = joint_bg {
                         render_pass.set_bind_group(3, jbg, &[]);
@@ -129,7 +144,7 @@ pub fn draw_model_indirect<'pass>(
                 // 無効化されるため、camera と同様に切り替えのたびに再設定する。
                 render_pass.set_bind_group(4, lights_bg, &[]);
                 cur_skinned = Some(draw.is_skinned);
-                cur_cull    = Some(cull);
+                cur_cull = Some(cull);
                 cur_mat_ptr = None;
             }
 
@@ -146,7 +161,8 @@ pub fn draw_model_indirect<'pass>(
             // ── 頂点バッファ ───────────────────────────────────────
             render_pass.set_vertex_buffer(0, prim.vertex_buffer.slice(..));
             if draw.is_skinned {
-                render_pass.set_vertex_buffer(1, prim.skin_vertex_buffer.as_ref().unwrap().slice(..));
+                render_pass
+                    .set_vertex_buffer(1, prim.skin_vertex_buffer.as_ref().unwrap().slice(..));
             }
 
             // ── メッシュレット間接描画（LOD0 のみ、対象プリミティブのみ）──────
@@ -156,13 +172,13 @@ pub fn draw_model_indirect<'pass>(
             // ワイヤ時はメッシュレット間接描画を使わず従来 draw_indexed で線描画する
             // （ワイヤ用パイプラインとの経路を単純化し、想定外の相互作用を避ける）。
             if meshlet_cull && !wireframe && lod == 0 && !draw.is_skinned {
-                if let (Some(mi_buf), Some((cmd_buf, count_buf, capacity))) =
-                    (prim.meshlet_index_buffer.as_ref(), batch.meshlet_draw(draw_idx))
-                {
+                if let (Some(mi_buf), Some((cmd_buf, count_buf, capacity))) = (
+                    prim.meshlet_index_buffer.as_ref(),
+                    batch.meshlet_draw(draw_idx),
+                ) {
                     render_pass.set_index_buffer(mi_buf.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.multi_draw_indexed_indirect_count(
-                        cmd_buf, 0, count_buf, 0, capacity,
-                    );
+                    render_pass
+                        .multi_draw_indexed_indirect_count(cmd_buf, 0, count_buf, 0, capacity);
                     continue;
                 }
             }

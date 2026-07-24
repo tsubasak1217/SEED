@@ -20,9 +20,9 @@ impl App {
     pub(super) fn handle_set_skybox_field(
         &mut self,
         actor_dfs_id: u32,
-        slot_idx:     u32,
-        key:          &str,
-        value:        &str,
+        slot_idx: u32,
+        key: &str,
+        value: &str,
     ) {
         use super::find_actor_by_dfs;
 
@@ -38,7 +38,9 @@ impl App {
         };
         let Some(entity) = slot_entity else { return };
         let Some(scene) = &mut self.scene else { return };
-        let Some(sb) = scene.world.get_mut::<SkyboxComponent>(entity) else { return };
+        let Some(sb) = scene.world.get_mut::<SkyboxComponent>(entity) else {
+            return;
+        };
 
         // key ごとに値を解釈して反映する（パース失敗は無視）。
         match key {
@@ -47,9 +49,15 @@ impl App {
                 sb.texture_path = value.trim().to_string();
             }
             "mode" => {
-                if let Some(m) = SkyboxMode::from_str_opt(value) { sb.mode = m; }
+                if let Some(m) = SkyboxMode::from_str_opt(value) {
+                    sb.mode = m;
+                }
             }
-            "intensity" => if let Ok(v) = value.parse::<f32>() { sb.intensity = v.max(0.0); },
+            "intensity" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    sb.intensity = v.max(0.0);
+                }
+            }
             "tint" => {
                 // "r,g,b"（リニア）をパースする。
                 let parts: Vec<&str> = value.split(',').collect();
@@ -67,6 +75,8 @@ impl App {
         }
 
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 }

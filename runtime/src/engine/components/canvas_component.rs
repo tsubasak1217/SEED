@@ -11,8 +11,8 @@
 //   - 2D 物理はキャンバスローカル座標で完結し、他のキャンバスと干渉しない。
 // ============================================================
 
-use serde::{Deserialize, Serialize};
 use crate::engine::ecs::Component;
+use serde::{Deserialize, Serialize};
 
 // ─── GravityMode ─────────────────────────────────────────────────────────────
 
@@ -54,7 +54,9 @@ pub enum AspectRatioAxis {
 }
 
 impl Default for AspectRatioAxis {
-    fn default() -> Self { Self::Width }
+    fn default() -> Self {
+        Self::Width
+    }
 }
 
 // ─── CanvasDrawZone ───────────────────────────────────────────────────────────
@@ -113,14 +115,16 @@ pub enum CanvasViewportRef {
         /// 参照するカメラアクターの名前
         actor_name: String,
         /// 参照するカメラコンポーネントのスロット名
-        slot_name:  String,
+        slot_name: String,
     },
 }
 
 impl Default for CanvasViewportRef {
     // 注意: これは「フィールド欠落時の deserialization デフォルト」。
     // 既存保存データとの互換のため Window を維持する（上記 doc コメント参照）。
-    fn default() -> Self { Self::Window }
+    fn default() -> Self {
+        Self::Window
+    }
 }
 
 // ─── CanvasComponentData ──────────────────────────────────────────────────────
@@ -129,7 +133,7 @@ impl Default for CanvasViewportRef {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CanvasComponentData {
     /// キャンバスの基準幅（ワールドユニット）
-    pub width:  f32,
+    pub width: f32,
     /// キャンバスの基準高さ（ワールドユニット）
     pub height: f32,
     /// 画面サイズに自動スケール。親キャンバスを持たないルートキャンバスにのみ有効。
@@ -154,7 +158,9 @@ pub struct CanvasComponentData {
     pub pivot: [f32; 2],
 }
 
-fn default_auto_scale() -> bool { true }
+fn default_auto_scale() -> bool {
+    true
+}
 
 // ─── CanvasComponent ─────────────────────────────────────────────────────────
 
@@ -185,7 +191,7 @@ fn default_auto_scale() -> bool { true }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanvasComponent {
     /// キャンバスの基準幅（ワールドユニット）
-    pub width:  f32,
+    pub width: f32,
     /// キャンバスの基準高さ（ワールドユニット）
     pub height: f32,
     /// 画面サイズに自動スケール（デフォルト true）。
@@ -216,13 +222,13 @@ impl CanvasComponent {
     /// シリアライズ用データに変換する。
     pub fn to_data(&self) -> CanvasComponentData {
         CanvasComponentData {
-            width:             self.width,
-            height:            self.height,
-            auto_scale:        self.auto_scale,
-            viewport_ref:      self.viewport_ref.clone(),
-            gravity_mode:      self.gravity_mode,
-            draw_zone:         self.draw_zone,
-            pivot:             self.pivot,
+            width: self.width,
+            height: self.height,
+            auto_scale: self.auto_scale,
+            viewport_ref: self.viewport_ref.clone(),
+            gravity_mode: self.gravity_mode,
+            draw_zone: self.draw_zone,
+            pivot: self.pivot,
         }
     }
 }
@@ -230,16 +236,16 @@ impl CanvasComponent {
 impl Default for CanvasComponent {
     fn default() -> Self {
         Self {
-            width:             1920.0,
-            height:            1080.0,
-            auto_scale:        true,
+            width: 1920.0,
+            height: 1080.0,
+            auto_scale: true,
             // 新規作成コンポーネントはメインカメラ基準をデフォルトとする
             // （メインカメラが無い場合は実行時にウィンドウ基準へフォールバック）
-            viewport_ref:      CanvasViewportRef::MainCamera,
-            gravity_mode:      GravityMode::WorldDown,
+            viewport_ref: CanvasViewportRef::MainCamera,
+            gravity_mode: GravityMode::WorldDown,
             // 新規作成時は従来どおり前面（オーバーレイ）
-            draw_zone:         CanvasDrawZone::Foreground,
-            pivot:             [0.0, 0.0],
+            draw_zone: CanvasDrawZone::Foreground,
+            pivot: [0.0, 0.0],
         }
     }
 }

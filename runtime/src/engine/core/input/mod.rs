@@ -9,9 +9,9 @@ use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 use winit::window::Window;
 
+use crate::engine::structs::tensor::Vector2;
 use keyboard::KeyboardState;
 use mouse::MouseState;
-use crate::engine::structs::tensor::Vector2;
 
 // ─── InputState ────────────────────────────────────────────────────────────
 
@@ -108,7 +108,9 @@ impl Input {
     ///
     /// `LineDelta` はそのまま y 値、`PixelDelta` は 1 ライン = 20px として正規化する。
     pub fn process_scroll(&mut self, delta: &MouseScrollDelta) {
-        if !self.is_active { return; }
+        if !self.is_active {
+            return;
+        }
         let lines = match *delta {
             MouseScrollDelta::LineDelta(_, y) => y,
             MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 20.0,
@@ -174,7 +176,7 @@ impl Input {
     /// マウスの移動ベクトル（生の相対量）を返す（C++: GetMouseVector）
     pub fn mouse_vector(&self, state: InputState) -> Vector2<f32> {
         match state {
-            InputState::Current  => self.mouse.delta(),
+            InputState::Current => self.mouse.delta(),
             InputState::Previous => self.mouse.prev_delta(),
         }
     }
@@ -187,7 +189,7 @@ impl Input {
     /// マウスのスクリーン座標を返す（C++: GetMousePosition）
     pub fn mouse_position(&self, state: InputState) -> Vector2<f32> {
         match state {
-            InputState::Current  => self.mouse.position(),
+            InputState::Current => self.mouse.position(),
             InputState::Previous => self.mouse.prev_position(),
         }
     }
@@ -195,7 +197,7 @@ impl Input {
     /// マウスホイールのスクロール量を返す（C++: GetMouseWheel）
     pub fn mouse_scroll(&self, state: InputState) -> f32 {
         match state {
-            InputState::Current  => self.mouse.scroll(),
+            InputState::Current => self.mouse.scroll(),
             InputState::Previous => self.mouse.prev_scroll(),
         }
     }
@@ -203,7 +205,7 @@ impl Input {
     /// マウスが動いたか（C++: IsMouseMoved）
     pub fn is_mouse_moved(&self, state: InputState) -> bool {
         match state {
-            InputState::Current  => self.mouse.is_moved(),
+            InputState::Current => self.mouse.is_moved(),
             InputState::Previous => self.mouse.is_prev_moved(),
         }
     }
@@ -240,10 +242,20 @@ impl Input {
         let mut new_pos = pos;
         let mut moved = false;
 
-        if pos.x < min.x       { new_pos.x = max.x; moved = true; }
-        else if pos.x > max.x  { new_pos.x = min.x; moved = true; }
-        if pos.y < min.y       { new_pos.y = max.y; moved = true; }
-        else if pos.y > max.y  { new_pos.y = min.y; moved = true; }
+        if pos.x < min.x {
+            new_pos.x = max.x;
+            moved = true;
+        } else if pos.x > max.x {
+            new_pos.x = min.x;
+            moved = true;
+        }
+        if pos.y < min.y {
+            new_pos.y = max.y;
+            moved = true;
+        } else if pos.y > max.y {
+            new_pos.y = min.y;
+            moved = true;
+        }
 
         if moved {
             let _ = window.set_cursor_position(PhysicalPosition::new(new_pos.x, new_pos.y));
@@ -253,7 +265,11 @@ impl Input {
     // ─── アクティブフラグ ──────────────────────────────────────
 
     /// 入力受付の有効/無効を切り替える（C++: SetIsActive）
-    pub fn set_active(&mut self, active: bool) { self.is_active = active; }
+    pub fn set_active(&mut self, active: bool) {
+        self.is_active = active;
+    }
     /// 入力受付が有効かどうかを返す（C++: GetIsActive）
-    pub fn is_active(&self) -> bool { self.is_active }
+    pub fn is_active(&self) -> bool {
+        self.is_active
+    }
 }

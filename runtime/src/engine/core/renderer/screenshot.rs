@@ -51,7 +51,7 @@ const FILE_NAME_EXT: &str = ".png";
 /// 環境変数から読んだキャプチャ設定（プロセス起動時に 1 度だけ解決する）。
 struct ScreenshotConfig {
     /// PNG の出力先ディレクトリ。
-    dir:    PathBuf,
+    dir: PathBuf,
     /// 撮影対象のフレーム番号（昇順・重複除去済み）。
     frames: Vec<u64>,
 }
@@ -69,13 +69,18 @@ static CONFIG: LazyLock<Option<ScreenshotConfig>> = LazyLock::new(|| {
     frames.sort_unstable();
     frames.dedup();
     if frames.is_empty() {
-        eprintln!("[SEED screenshot] {ENV_FRAMES}=\"{frames_raw}\" にフレーム番号が 1 つも無いため無効化します");
+        eprintln!(
+            "[SEED screenshot] {ENV_FRAMES}=\"{frames_raw}\" にフレーム番号が 1 つも無いため無効化します"
+        );
         return None;
     }
 
     let dir = PathBuf::from(dir);
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("[SEED screenshot] 出力先 {} を作成できません: {e}", dir.display());
+        eprintln!(
+            "[SEED screenshot] 出力先 {} を作成できません: {e}",
+            dir.display()
+        );
         return None;
     }
 
@@ -112,17 +117,17 @@ fn should_capture(frame_index: u64) -> bool {
 /// GPU サブミット後に読み出すための、コピー先バッファと復元情報。
 pub struct PendingCapture {
     /// テクスチャからコピーされた（行パディング付きの）読み戻しバッファ。
-    buffer:               wgpu::Buffer,
+    buffer: wgpu::Buffer,
     /// 画像の幅（画素）。
-    width:                u32,
+    width: u32,
     /// 画像の高さ（画素）。
-    height:               u32,
+    height: u32,
     /// アラインメント調整済みの 1 行あたりバイト数（`width * 4` 以上）。
     padded_bytes_per_row: u32,
     /// コピー元テクスチャのフォーマット（チャンネル順の判定に使う）。
-    format:               wgpu::TextureFormat,
+    format: wgpu::TextureFormat,
     /// 書き出し先のフルパス。
-    path:                 PathBuf,
+    path: PathBuf,
 }
 
 /// `value` を `alignment` の倍数へ切り上げる（アラインメントは 2 の冪を想定）。
@@ -135,9 +140,9 @@ fn align_up(value: u32, alignment: u32) -> u32 {
 /// 実際の読み出しは GPU サブミット後に [`resolve`] で行う。
 /// 撮影対象でない、または機能無効なら `None` を返し何もしない。
 pub fn schedule(
-    device:      &wgpu::Device,
-    encoder:     &mut wgpu::CommandEncoder,
-    texture:     &wgpu::Texture,
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
     frame_index: u64,
 ) -> Option<PendingCapture> {
     if !should_capture(frame_index) {
@@ -153,9 +158,9 @@ pub fn schedule(
     let buffer_size = u64::from(padded_bytes_per_row) * u64::from(height);
 
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label:              Some("Screenshot Readback"),
-        size:               buffer_size,
-        usage:              wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        label: Some("Screenshot Readback"),
+        size: buffer_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
 
@@ -163,18 +168,22 @@ pub fn schedule(
         wgpu::ImageCopyTexture {
             texture,
             mip_level: 0,
-            origin:    wgpu::Origin3d::ZERO,
-            aspect:    wgpu::TextureAspect::All,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
         },
         wgpu::ImageCopyBuffer {
             buffer: &buffer,
             layout: wgpu::ImageDataLayout {
-                offset:         0,
-                bytes_per_row:  Some(padded_bytes_per_row),
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
                 rows_per_image: Some(height),
             },
         },
-        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
     );
 
     let path = config
@@ -254,9 +263,7 @@ pub fn resolve(device: &wgpu::Device, pending: PendingCapture) {
         px[3] = ALPHA_OPAQUE;
     }
 
-    let Some(img) =
-        image::RgbaImage::from_raw(pending.width, pending.height, pixels)
-    else {
+    let Some(img) = image::RgbaImage::from_raw(pending.width, pending.height, pixels) else {
         eprintln!("[SEED screenshot] 画素バッファのサイズが画像サイズと一致しません");
         return;
     };

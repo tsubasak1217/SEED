@@ -1,5 +1,5 @@
 use std::fmt;
-use std::ops::{Add, AddAssign, Sub, SubAssign, Mul, Neg};
+use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
 use super::vector2::Vector2;
 
@@ -41,7 +41,9 @@ impl<T: Copy> Mat2x2<T> {
     /// ```
     #[inline]
     pub fn new(m00: T, m01: T, m10: T, m11: T) -> Self {
-        Self { data: [[m00, m01], [m10, m11]] }
+        Self {
+            data: [[m00, m01], [m10, m11]],
+        }
     }
 }
 
@@ -49,7 +51,9 @@ impl<T: Default + Copy> Mat2x2<T> {
     /// 零行列（全成分 0）を生成する。
     #[inline]
     pub fn zero() -> Self {
-        Self { data: [[T::default(); 2]; 2] }
+        Self {
+            data: [[T::default(); 2]; 2],
+        }
     }
 }
 
@@ -62,8 +66,7 @@ impl Mat2x2<f32> {
     /// ```
     #[inline]
     pub fn identity() -> Self {
-        Self::new(1.0, 0.0,
-                  0.0, 1.0)
+        Self::new(1.0, 0.0, 0.0, 1.0)
     }
 }
 
@@ -74,8 +77,10 @@ impl<T: Add<Output = T> + Copy> Add for Mat2x2<T> {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
         Self::new(
-            self.data[0][0] + rhs.data[0][0], self.data[0][1] + rhs.data[0][1],
-            self.data[1][0] + rhs.data[1][0], self.data[1][1] + rhs.data[1][1],
+            self.data[0][0] + rhs.data[0][0],
+            self.data[0][1] + rhs.data[0][1],
+            self.data[1][0] + rhs.data[1][0],
+            self.data[1][1] + rhs.data[1][1],
         )
     }
 }
@@ -83,7 +88,11 @@ impl<T: Add<Output = T> + Copy> Add for Mat2x2<T> {
 /// `A += B`
 impl<T: AddAssign + Copy> AddAssign for Mat2x2<T> {
     fn add_assign(&mut self, rhs: Self) {
-        for r in 0..2 { for c in 0..2 { self.data[r][c] += rhs.data[r][c]; } }
+        for r in 0..2 {
+            for c in 0..2 {
+                self.data[r][c] += rhs.data[r][c];
+            }
+        }
     }
 }
 
@@ -92,8 +101,10 @@ impl<T: Sub<Output = T> + Copy> Sub for Mat2x2<T> {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
         Self::new(
-            self.data[0][0] - rhs.data[0][0], self.data[0][1] - rhs.data[0][1],
-            self.data[1][0] - rhs.data[1][0], self.data[1][1] - rhs.data[1][1],
+            self.data[0][0] - rhs.data[0][0],
+            self.data[0][1] - rhs.data[0][1],
+            self.data[1][0] - rhs.data[1][0],
+            self.data[1][1] - rhs.data[1][1],
         )
     }
 }
@@ -101,7 +112,11 @@ impl<T: Sub<Output = T> + Copy> Sub for Mat2x2<T> {
 /// `A -= B`
 impl<T: SubAssign + Copy> SubAssign for Mat2x2<T> {
     fn sub_assign(&mut self, rhs: Self) {
-        for r in 0..2 { for c in 0..2 { self.data[r][c] -= rhs.data[r][c]; } }
+        for r in 0..2 {
+            for c in 0..2 {
+                self.data[r][c] -= rhs.data[r][c];
+            }
+        }
     }
 }
 
@@ -110,8 +125,10 @@ impl<T: Neg<Output = T> + Copy> Neg for Mat2x2<T> {
     type Output = Self;
     fn neg(self) -> Self {
         Self::new(
-            -self.data[0][0], -self.data[0][1],
-            -self.data[1][0], -self.data[1][1],
+            -self.data[0][0],
+            -self.data[0][1],
+            -self.data[1][0],
+            -self.data[1][1],
         )
     }
 }
@@ -125,8 +142,10 @@ impl<T: Mul<Output = T> + Add<Output = T> + Copy> Mul<Mat2x2<T>> for Mat2x2<T> {
         let a = &self.data;
         let b = &rhs.data;
         Self::new(
-            a[0][0]*b[0][0] + a[0][1]*b[1][0],  a[0][0]*b[0][1] + a[0][1]*b[1][1],
-            a[1][0]*b[0][0] + a[1][1]*b[1][0],  a[1][0]*b[0][1] + a[1][1]*b[1][1],
+            a[0][0] * b[0][0] + a[0][1] * b[1][0],
+            a[0][0] * b[0][1] + a[0][1] * b[1][1],
+            a[1][0] * b[0][0] + a[1][1] * b[1][0],
+            a[1][0] * b[0][1] + a[1][1] * b[1][1],
         )
     }
 }
@@ -138,10 +157,7 @@ impl<T: Mul<Output = T> + Add<Output = T> + Copy> Mul<Vector2<T>> for Mat2x2<T> 
     type Output = Vector2<T>;
     fn mul(self, v: Vector2<T>) -> Vector2<T> {
         let m = &self.data;
-        Vector2::new(
-            m[0][0]*v.x + m[0][1]*v.y,
-            m[1][0]*v.x + m[1][1]*v.y,
-        )
+        Vector2::new(m[0][0] * v.x + m[0][1] * v.y, m[1][0] * v.x + m[1][1] * v.y)
     }
 }
 
@@ -156,8 +172,7 @@ impl Mat2x2<f32> {
     #[inline]
     pub fn transpose(self) -> Self {
         let m = &self.data;
-        Self::new(m[0][0], m[1][0],
-                  m[0][1], m[1][1])
+        Self::new(m[0][0], m[1][0], m[0][1], m[1][1])
     }
 
     /// 行列式 (determinant) を返す。
@@ -168,7 +183,7 @@ impl Mat2x2<f32> {
     #[inline]
     pub fn determinant(self) -> f32 {
         let m = &self.data;
-        m[0][0]*m[1][1] - m[0][1]*m[1][0]
+        m[0][0] * m[1][1] - m[0][1] * m[1][0]
     }
 
     /// 逆行列を返す。特異行列（det=0）の場合は `None`。
@@ -179,12 +194,16 @@ impl Mat2x2<f32> {
     /// ```
     pub fn inverse(self) -> Option<Self> {
         let det = self.determinant();
-        if det.abs() < f32::EPSILON { return None; }
+        if det.abs() < f32::EPSILON {
+            return None;
+        }
         let inv_det = 1.0 / det;
         let m = &self.data;
         Some(Self::new(
-             m[1][1] * inv_det, -m[0][1] * inv_det,
-            -m[1][0] * inv_det,  m[0][0] * inv_det,
+            m[1][1] * inv_det,
+            -m[0][1] * inv_det,
+            -m[1][0] * inv_det,
+            m[0][0] * inv_det,
         ))
     }
 }
@@ -194,6 +213,6 @@ impl Mat2x2<f32> {
 impl<T: fmt::Display> fmt::Display for Mat2x2<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "[ {:.4},  {:.4} ]", self.data[0][0], self.data[0][1])?;
-        write!(f,   "[ {:.4},  {:.4} ]", self.data[1][0], self.data[1][1])
+        write!(f, "[ {:.4},  {:.4} ]", self.data[1][0], self.data[1][1])
     }
 }

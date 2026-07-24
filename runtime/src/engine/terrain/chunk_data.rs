@@ -38,7 +38,7 @@
 // ============================================================
 
 use super::chunk_coord::ChunkCoord;
-use super::layers::{dequantize_weight, quantize_weight, BlendSlots, TERRAIN_BLEND_SLOTS};
+use super::layers::{BlendSlots, TERRAIN_BLEND_SLOTS, dequantize_weight, quantize_weight};
 use super::settings::TerrainSettings;
 
 /// 1 チャンク分の密度サンプル＋スプラット（手ペイント重み）を保持する構造体。
@@ -123,8 +123,11 @@ impl TerrainChunkData {
     /// 使うことを前提にしており、通常は長さが変わることはない）。
     pub fn set_raw_density(&mut self, d: Vec<f32>) {
         debug_assert_eq!(
-            d.len(), self.density.len(),
-            "set_raw_density length mismatch: {} != {}", d.len(), self.density.len()
+            d.len(),
+            self.density.len(),
+            "set_raw_density length mismatch: {} != {}",
+            d.len(),
+            self.density.len()
         );
         self.density = d;
     }
@@ -141,7 +144,10 @@ impl TerrainChunkData {
         let i = self.index(ix, iy, iz);
         let qi = self.paint_index[i];
         let qw = self.paint_weight[i];
-        let mut slots = BlendSlots { index: [0; TERRAIN_BLEND_SLOTS], weight: [0.0; TERRAIN_BLEND_SLOTS] };
+        let mut slots = BlendSlots {
+            index: [0; TERRAIN_BLEND_SLOTS],
+            weight: [0.0; TERRAIN_BLEND_SLOTS],
+        };
         for k in 0..TERRAIN_BLEND_SLOTS {
             slots.index[k] = qi[k] as u32;
             slots.weight[k] = dequantize_weight(qw[k]);
@@ -192,8 +198,11 @@ impl TerrainChunkData {
     /// ペイントのレイヤ番号配列全体を書き換える（undo/redo 復元・.tvox 読込で使用）。
     pub fn set_raw_paint_index(&mut self, p: Vec<[u8; TERRAIN_BLEND_SLOTS]>) {
         debug_assert_eq!(
-            p.len(), self.paint_index.len(),
-            "set_raw_paint_index length mismatch: {} != {}", p.len(), self.paint_index.len()
+            p.len(),
+            self.paint_index.len(),
+            "set_raw_paint_index length mismatch: {} != {}",
+            p.len(),
+            self.paint_index.len()
         );
         self.paint_index = p;
     }
@@ -201,8 +210,11 @@ impl TerrainChunkData {
     /// ペイント重み配列全体を書き換える（undo/redo 復元・.tvox 読込で使用）。
     pub fn set_raw_paint_weight(&mut self, p: Vec<[u8; TERRAIN_BLEND_SLOTS]>) {
         debug_assert_eq!(
-            p.len(), self.paint_weight.len(),
-            "set_raw_paint_weight length mismatch: {} != {}", p.len(), self.paint_weight.len()
+            p.len(),
+            self.paint_weight.len(),
+            "set_raw_paint_weight length mismatch: {} != {}",
+            p.len(),
+            self.paint_weight.len()
         );
         self.paint_weight = p;
     }
@@ -210,8 +222,11 @@ impl TerrainChunkData {
     /// ペイント量配列全体を書き換える（undo/redo 復元・.tvox 読込で使用）。
     pub fn set_raw_paint_amount(&mut self, a: Vec<u8>) {
         debug_assert_eq!(
-            a.len(), self.paint_amount.len(),
-            "set_raw_paint_amount length mismatch: {} != {}", a.len(), self.paint_amount.len()
+            a.len(),
+            self.paint_amount.len(),
+            "set_raw_paint_amount length mismatch: {} != {}",
+            a.len(),
+            self.paint_amount.len()
         );
         self.paint_amount = a;
     }

@@ -1,5 +1,5 @@
-use std::ops::{Add, Sub, Mul, Div, Neg};
-use crate::engine::structs::tensor::{Vector3, Mat4x4};
+use crate::engine::structs::tensor::{Mat4x4, Vector3};
+use std::ops::{Add, Div, Mul, Neg, Sub};
 
 /// クォータニオン（四元数）。回転表現に使用する。
 ///
@@ -35,7 +35,12 @@ impl Quaternion {
     /// 恒等回転（無回転）を返す。
     #[inline]
     pub fn identity() -> Self {
-        Self { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+        Self {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        }
     }
 
     /// 軸と角度からクォータニオンを生成する。
@@ -75,9 +80,9 @@ impl Quaternion {
         let q = self.normalize();
         let (x, y, z, w) = (q.x, q.y, q.z, q.w);
         Vector3::new(
-            (2.0 * (w * x - y * z)).clamp(-1.0, 1.0).asin(),          // pitch (X)
-            (2.0 * (w * y + z * x)).atan2(1.0 - 2.0 * (y*y + x*x)),   // yaw   (Y)
-            (2.0 * (w * z + x * y)).atan2(1.0 - 2.0 * (z*z + x*x)),   // roll  (Z)
+            (2.0 * (w * x - y * z)).clamp(-1.0, 1.0).asin(), // pitch (X)
+            (2.0 * (w * y + z * x)).atan2(1.0 - 2.0 * (y * y + x * x)), // yaw   (Y)
+            (2.0 * (w * z + x * y)).atan2(1.0 - 2.0 * (z * z + x * x)), // roll  (Z)
         )
     }
 
@@ -95,10 +100,22 @@ impl Quaternion {
         let q = self.normalize();
         let (x, y, z, w) = (q.x, q.y, q.z, q.w);
         Mat4x4::new(
-            1.0 - 2.0*(y*y + z*z),  2.0*(x*y - w*z),        2.0*(x*z + w*y),        0.0,
-            2.0*(x*y + w*z),        1.0 - 2.0*(x*x + z*z),  2.0*(y*z - w*x),        0.0,
-            2.0*(x*z - w*y),        2.0*(y*z + w*x),        1.0 - 2.0*(x*x + y*y),  0.0,
-            0.0,                    0.0,                     0.0,                     1.0,
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - w * z),
+            2.0 * (x * z + w * y),
+            0.0,
+            2.0 * (x * y + w * z),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - w * x),
+            0.0,
+            2.0 * (x * z - w * y),
+            2.0 * (y * z + w * x),
+            1.0 - 2.0 * (x * x + y * y),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
         )
     }
 
@@ -118,21 +135,23 @@ impl Quaternion {
                 let four_x_sq = omr22 - dif10;
                 let inv4x = 0.5 / four_x_sq.sqrt();
                 Self::new(
-                    four_x_sq        * inv4x,
-                    (d[0][1] + d[1][0]) * inv4x,   // 4xy
-                    (d[0][2] + d[2][0]) * inv4x,   // 4xz
-                    (d[2][1] - d[1][2]) * inv4x,   // 4wx
-                ).normalize()
+                    four_x_sq * inv4x,
+                    (d[0][1] + d[1][0]) * inv4x, // 4xy
+                    (d[0][2] + d[2][0]) * inv4x, // 4xz
+                    (d[2][1] - d[1][2]) * inv4x, // 4wx
+                )
+                .normalize()
             } else {
                 // 4y² = 1 - R00 + R11 - R22
                 let four_y_sq = omr22 + dif10;
                 let inv4y = 0.5 / four_y_sq.sqrt();
                 Self::new(
-                    (d[0][1] + d[1][0]) * inv4y,   // 4xy
-                    four_y_sq        * inv4y,
-                    (d[1][2] + d[2][1]) * inv4y,   // 4yz
-                    (d[0][2] - d[2][0]) * inv4y,   // 4wy
-                ).normalize()
+                    (d[0][1] + d[1][0]) * inv4y, // 4xy
+                    four_y_sq * inv4y,
+                    (d[1][2] + d[2][1]) * inv4y, // 4yz
+                    (d[0][2] - d[2][0]) * inv4y, // 4wy
+                )
+                .normalize()
             }
         } else {
             let sum10 = d[1][1] + d[0][0];
@@ -142,21 +161,23 @@ impl Quaternion {
                 let four_z_sq = opr22 - sum10;
                 let inv4z = 0.5 / four_z_sq.sqrt();
                 Self::new(
-                    (d[0][2] + d[2][0]) * inv4z,   // 4xz
-                    (d[1][2] + d[2][1]) * inv4z,   // 4yz
-                    four_z_sq        * inv4z,
-                    (d[1][0] - d[0][1]) * inv4z,   // 4wz
-                ).normalize()
+                    (d[0][2] + d[2][0]) * inv4z, // 4xz
+                    (d[1][2] + d[2][1]) * inv4z, // 4yz
+                    four_z_sq * inv4z,
+                    (d[1][0] - d[0][1]) * inv4z, // 4wz
+                )
+                .normalize()
             } else {
                 // 4w² = 1 + R00 + R11 + R22
                 let four_w_sq = opr22 + sum10;
                 let inv4w = 0.5 / four_w_sq.sqrt();
                 Self::new(
-                    (d[2][1] - d[1][2]) * inv4w,   // 4wx
-                    (d[0][2] - d[2][0]) * inv4w,   // 4wy
-                    (d[1][0] - d[0][1]) * inv4w,   // 4wz
-                    four_w_sq        * inv4w,
-                ).normalize()
+                    (d[2][1] - d[1][2]) * inv4w, // 4wx
+                    (d[0][2] - d[2][0]) * inv4w, // 4wy
+                    (d[1][0] - d[0][1]) * inv4w, // 4wz
+                    four_w_sq * inv4w,
+                )
+                .normalize()
             }
         }
     }
@@ -166,12 +187,12 @@ impl Quaternion {
     /// クォータニオン同士の内積。
     #[inline]
     pub fn dot(self, other: Self) -> f32 {
-        self.x*other.x + self.y*other.y + self.z*other.z + self.w*other.w
+        self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
     }
 
     #[inline]
     pub fn length_sq(self) -> f32 {
-        self.x*self.x + self.y*self.y + self.z*self.z + self.w*self.w
+        self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w
     }
 
     #[inline]
@@ -212,19 +233,19 @@ impl Quaternion {
     ///
     /// 最短経路を保証するため内積が負の場合は `other` を反転する。
     pub fn slerp(self, other: Self, t: f32) -> Self {
-        let mut dot   = self.dot(other).clamp(-1.0, 1.0);
+        let mut dot = self.dot(other).clamp(-1.0, 1.0);
         let mut other = other;
         if dot < 0.0 {
             other = -other;
-            dot   = -dot;
+            dot = -dot;
         }
         if dot > 1.0 - 1e-6 {
             return self.lerp(other, t);
         }
-        let theta     = dot.acos();
+        let theta = dot.acos();
         let sin_theta = theta.sin();
         let w1 = ((1.0 - t) * theta).sin() / sin_theta;
-        let w2 = (t          * theta).sin() / sin_theta;
+        let w2 = (t * theta).sin() / sin_theta;
         (self * w1 + other * w2).normalize()
     }
 
@@ -241,8 +262,8 @@ impl Quaternion {
     /// 逆方向（dot ≈ -1）の場合は任意の垂直軸で 180° 回転する。
     pub fn look_at(from: Vector3<f32>, to: Vector3<f32>) -> Self {
         let from = from.normalize();
-        let to   = to.normalize();
-        let dot  = from.dot(to);
+        let to = to.normalize();
+        let dot = from.dot(to);
         if dot < -0.999_999 {
             let mut axis = Vector3::new(0.0_f32, 0.0, 1.0).cross(from);
             if axis.length_sq() < 1e-12 {
@@ -253,7 +274,7 @@ impl Quaternion {
         if dot > 0.999_999 {
             return Self::identity();
         }
-        let axis  = from.cross(to).normalize();
+        let axis = from.cross(to).normalize();
         let angle = dot.clamp(-1.0, 1.0).acos();
         Self::from_axis_angle(axis, angle)
     }
@@ -262,7 +283,7 @@ impl Quaternion {
 
     /// クォータニオンの対数 `ln(q)`。単位クォータニオンを想定（結果の w = 0）。
     pub fn log(self) -> Self {
-        let a     = self.w.clamp(-1.0, 1.0).acos();
+        let a = self.w.clamp(-1.0, 1.0).acos();
         let sin_a = a.sin();
         if sin_a.abs() > 1e-6 {
             let c = a / sin_a;
@@ -274,7 +295,7 @@ impl Quaternion {
 
     /// クォータニオンの指数関数 `exp(q)`。純虚クォータニオン（w=0）を想定。
     pub fn exp(self) -> Self {
-        let a     = (self.x*self.x + self.y*self.y + self.z*self.z).sqrt();
+        let a = (self.x * self.x + self.y * self.y + self.z * self.z).sqrt();
         let cos_a = a.cos();
         if a.abs() > 1e-6 {
             let c = a.sin() / a;
@@ -323,7 +344,12 @@ impl Add for Quaternion {
     type Output = Self;
     #[inline]
     fn add(self, rhs: Self) -> Self {
-        Self::new(self.x+rhs.x, self.y+rhs.y, self.z+rhs.z, self.w+rhs.w)
+        Self::new(
+            self.x + rhs.x,
+            self.y + rhs.y,
+            self.z + rhs.z,
+            self.w + rhs.w,
+        )
     }
 }
 
@@ -332,7 +358,12 @@ impl Sub for Quaternion {
     type Output = Self;
     #[inline]
     fn sub(self, rhs: Self) -> Self {
-        Self::new(self.x-rhs.x, self.y-rhs.y, self.z-rhs.z, self.w-rhs.w)
+        Self::new(
+            self.x - rhs.x,
+            self.y - rhs.y,
+            self.z - rhs.z,
+            self.w - rhs.w,
+        )
     }
 }
 
@@ -350,7 +381,7 @@ impl Mul<f32> for Quaternion {
     type Output = Self;
     #[inline]
     fn mul(self, s: f32) -> Self {
-        Self::new(self.x*s, self.y*s, self.z*s, self.w*s)
+        Self::new(self.x * s, self.y * s, self.z * s, self.w * s)
     }
 }
 
@@ -359,7 +390,7 @@ impl Div<f32> for Quaternion {
     type Output = Self;
     #[inline]
     fn div(self, s: f32) -> Self {
-        Self::new(self.x/s, self.y/s, self.z/s, self.w/s)
+        Self::new(self.x / s, self.y / s, self.z / s, self.w / s)
     }
 }
 
@@ -369,10 +400,10 @@ impl Mul for Quaternion {
     #[inline]
     fn mul(self, rhs: Self) -> Self {
         Self::new(
-            self.w*rhs.x + self.x*rhs.w + self.y*rhs.z - self.z*rhs.y,
-            self.w*rhs.y - self.x*rhs.z + self.y*rhs.w + self.z*rhs.x,
-            self.w*rhs.z + self.x*rhs.y - self.y*rhs.x + self.z*rhs.w,
-            self.w*rhs.w - self.x*rhs.x - self.y*rhs.y - self.z*rhs.z,
+            self.w * rhs.x + self.x * rhs.w + self.y * rhs.z - self.z * rhs.y,
+            self.w * rhs.y - self.x * rhs.z + self.y * rhs.w + self.z * rhs.x,
+            self.w * rhs.z + self.x * rhs.y - self.y * rhs.x + self.z * rhs.w,
+            self.w * rhs.w - self.x * rhs.x - self.y * rhs.y - self.z * rhs.z,
         )
     }
 }

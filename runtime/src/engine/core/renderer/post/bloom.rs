@@ -22,8 +22,9 @@ pub const MAX_BLOOM_MIPS: usize = 6;
 /// mip を刻む下限サイズ（この px 未満になる手前で段数を止める）。
 const MIN_BLOOM_MIP_SIZE: u32 = 8;
 /// bloom mip の RtPool 名（段数ぶん静的に用意。MAX_BLOOM_MIPS と一致させること）。
-const BLOOM_RT_NAMES: [&str; MAX_BLOOM_MIPS] =
-    ["bloom_0", "bloom_1", "bloom_2", "bloom_3", "bloom_4", "bloom_5"];
+const BLOOM_RT_NAMES: [&str; MAX_BLOOM_MIPS] = [
+    "bloom_0", "bloom_1", "bloom_2", "bloom_3", "bloom_4", "bloom_5",
+];
 
 // ─── パラメータ UBO（WGSL 側 struct と #[repr(C)] 一致）──────────
 
@@ -32,9 +33,9 @@ const BLOOM_RT_NAMES: [&str; MAX_BLOOM_MIPS] =
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct BloomPrefilterParams {
     threshold: f32,
-    knee:      f32,
-    _pad0:     f32,
-    _pad1:     f32,
+    knee: f32,
+    _pad0: f32,
+    _pad1: f32,
 }
 
 /// ダウンサンプルパラメータ（post_bloom_down.wgsl BloomDownParams と一致）。
@@ -55,7 +56,7 @@ struct BloomUpParams {
     texel: [f32; 2],
     /// 加算合成スケール（中間アップ=1.0, 最終合成=intensity）。
     scale: f32,
-    _pad:  f32,
+    _pad: f32,
 }
 
 /// ブルーム 1 フレームぶんの設定（PostFxSettings から抜き出したもの）。
@@ -64,7 +65,7 @@ pub struct BloomParams {
     /// 抽出しきい値。
     pub threshold: f32,
     /// ソフトニー幅係数（0..1）。
-    pub knee:      f32,
+    pub knee: f32,
     /// 合成強度。
     pub intensity: f32,
 }
@@ -76,28 +77,44 @@ pub struct BloomParams {
 /// ブルームの 3 パイプライン（プレフィルタ・ダウン・アップ）。すべて HDR 出力。
 pub struct BloomPipelines {
     prefilter: PostPipeline,
-    down:      PostPipeline,
-    up:        PostPipeline,
+    down: PostPipeline,
+    up: PostPipeline,
 }
 
 impl BloomPipelines {
     /// ブルームパイプラインを構築する。出力はすべて `hdr_format`（Rgba16Float）。
     pub fn new<F: Fn(&str) -> &'static str>(
-        device:     &wgpu::Device,
+        device: &wgpu::Device,
         hdr_format: wgpu::TextureFormat,
-        cache:      Option<&wgpu::PipelineCache>,
-        resolve:    F,
+        cache: Option<&wgpu::PipelineCache>,
+        resolve: F,
     ) -> Self {
         let prefilter = PostPipeline::from_toml(
-            device, include_str!("../pipelines/post_bloom_prefilter.toml"), hdr_format, cache, &resolve,
+            device,
+            include_str!("../pipelines/post_bloom_prefilter.toml"),
+            hdr_format,
+            cache,
+            &resolve,
         );
         let down = PostPipeline::from_toml(
-            device, include_str!("../pipelines/post_bloom_down.toml"), hdr_format, cache, &resolve,
+            device,
+            include_str!("../pipelines/post_bloom_down.toml"),
+            hdr_format,
+            cache,
+            &resolve,
         );
         let up = PostPipeline::from_toml(
-            device, include_str!("../pipelines/post_bloom_up.toml"), hdr_format, cache, &resolve,
+            device,
+            include_str!("../pipelines/post_bloom_up.toml"),
+            hdr_format,
+            cache,
+            &resolve,
         );
-        Self { prefilter, down, up }
+        Self {
+            prefilter,
+            down,
+            up,
+        }
     }
 
     /// ブルーム mip のサイズ計画を返す（level0 = 半解像度から 1/2 ずつ）。
@@ -125,11 +142,11 @@ impl BloomPipelines {
     ///
     /// 返り値は各 mip の (RtPool 名, 幅, 高さ)。`record` へそのまま渡す。
     pub fn ensure_targets(
-        rt_pool:    &mut RtPool,
-        device:     &wgpu::Device,
+        rt_pool: &mut RtPool,
+        device: &wgpu::Device,
         hdr_format: wgpu::TextureFormat,
-        surf_w:     u32,
-        surf_h:     u32,
+        surf_w: u32,
+        surf_h: u32,
     ) -> Vec<(&'static str, u32, u32)> {
         let plan = Self::mip_plan(surf_w, surf_h);
         let mut targets = Vec::with_capacity(plan.len());
@@ -150,14 +167,14 @@ impl BloomPipelines {
     #[allow(clippy::too_many_arguments)]
     pub fn record(
         &self,
-        device:    &wgpu::Device,
-        encoder:   &mut wgpu::CommandEncoder,
-        rt_pool:   &RtPool,
-        targets:   &[(&'static str, u32, u32)],
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        rt_pool: &RtPool,
+        targets: &[(&'static str, u32, u32)],
         scene_hdr: &wgpu::TextureView,
-        sampler:   &wgpu::Sampler,
-        white:     &wgpu::TextureView,
-        params:    BloomParams,
+        sampler: &wgpu::Sampler,
+        white: &wgpu::TextureView,
+        params: BloomParams,
     ) {
         // 段数 0（あり得ないが保険）は何もしない。
         let n = targets.len();
@@ -168,13 +185,21 @@ impl BloomPipelines {
         // ── 1. プレフィルタ: scene_hdr → bloom[0]（Clear）─────────
         let pf = BloomPrefilterParams {
             threshold: params.threshold,
-            knee:      params.knee,
-            _pad0: 0.0, _pad1: 0.0,
+            knee: params.knee,
+            _pad0: 0.0,
+            _pad1: 0.0,
         };
         run_post_stage(
-            device, encoder, &self.prefilter,
-            scene_hdr, None, white, sampler,
-            bytemuck::bytes_of(&pf), rt_pool.view(targets[0].0), "Bloom Prefilter",
+            device,
+            encoder,
+            &self.prefilter,
+            scene_hdr,
+            None,
+            white,
+            sampler,
+            bytemuck::bytes_of(&pf),
+            rt_pool.view(targets[0].0),
+            "Bloom Prefilter",
         );
 
         // ── 2. ダウンサンプル: bloom[i-1] → bloom[i]（Clear）──────
@@ -182,12 +207,20 @@ impl BloomPipelines {
             let (src_name, src_w, src_h) = targets[i - 1];
             let dn = BloomDownParams {
                 texel: [1.0 / src_w as f32, 1.0 / src_h as f32],
-                _pad0: 0.0, _pad1: 0.0,
+                _pad0: 0.0,
+                _pad1: 0.0,
             };
             run_post_stage(
-                device, encoder, &self.down,
-                rt_pool.view(src_name), None, white, sampler,
-                bytemuck::bytes_of(&dn), rt_pool.view(targets[i].0), "Bloom Downsample",
+                device,
+                encoder,
+                &self.down,
+                rt_pool.view(src_name),
+                None,
+                white,
+                sampler,
+                bytemuck::bytes_of(&dn),
+                rt_pool.view(targets[i].0),
+                "Bloom Downsample",
             );
         }
 
@@ -198,12 +231,20 @@ impl BloomPipelines {
             let up = BloomUpParams {
                 texel: [1.0 / src_w as f32, 1.0 / src_h as f32],
                 scale: 1.0,
-                _pad:  0.0,
+                _pad: 0.0,
             };
             run_post_stage_load(
-                device, encoder, &self.up,
-                rt_pool.view(src_name), None, white, sampler,
-                bytemuck::bytes_of(&up), rt_pool.view(targets[i].0), "Bloom Upsample", true,
+                device,
+                encoder,
+                &self.up,
+                rt_pool.view(src_name),
+                None,
+                white,
+                sampler,
+                bytemuck::bytes_of(&up),
+                rt_pool.view(targets[i].0),
+                "Bloom Upsample",
+                true,
             );
         }
 
@@ -213,12 +254,20 @@ impl BloomPipelines {
         let comp = BloomUpParams {
             texel: [1.0 / b0_w as f32, 1.0 / b0_h as f32],
             scale: params.intensity,
-            _pad:  0.0,
+            _pad: 0.0,
         };
         run_post_stage_load(
-            device, encoder, &self.up,
-            rt_pool.view(b0_name), None, white, sampler,
-            bytemuck::bytes_of(&comp), scene_hdr, "Bloom Composite", true,
+            device,
+            encoder,
+            &self.up,
+            rt_pool.view(b0_name),
+            None,
+            white,
+            sampler,
+            bytemuck::bytes_of(&comp),
+            scene_hdr,
+            "Bloom Composite",
+            true,
         );
     }
 }

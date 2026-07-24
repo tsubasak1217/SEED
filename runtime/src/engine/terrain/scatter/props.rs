@@ -160,39 +160,99 @@ const DEFAULT_GRASS_LAYER_NAME: &str = "grass";
 
 // ─── serde default 用関数 ───────────────────────────────────────────────────
 
-fn default_grass_width() -> f32 { DEFAULT_GRASS_WIDTH }
-fn default_grass_height() -> f32 { DEFAULT_GRASS_HEIGHT }
-fn default_grass_height_variance() -> f32 { DEFAULT_GRASS_HEIGHT_VARIANCE }
-fn default_grass_segments() -> u32 { DEFAULT_GRASS_SEGMENTS }
-fn default_grass_cross_planes() -> bool { DEFAULT_GRASS_CROSS_PLANES }
-fn default_grass_bend() -> f32 { DEFAULT_GRASS_BEND }
-fn default_grass_color_bottom() -> [f32; 3] { DEFAULT_GRASS_COLOR_BOTTOM }
-fn default_grass_color_top() -> [f32; 3] { DEFAULT_GRASS_COLOR_TOP }
-fn default_grass_roughness() -> f32 { DEFAULT_GRASS_ROUGHNESS }
-fn default_grass_tip_alpha_cutoff() -> f32 { DEFAULT_GRASS_TIP_ALPHA_CUTOFF }
-fn default_grass_normal_up_blend() -> f32 { DEFAULT_GRASS_NORMAL_UP_BLEND }
+fn default_grass_width() -> f32 {
+    DEFAULT_GRASS_WIDTH
+}
+fn default_grass_height() -> f32 {
+    DEFAULT_GRASS_HEIGHT
+}
+fn default_grass_height_variance() -> f32 {
+    DEFAULT_GRASS_HEIGHT_VARIANCE
+}
+fn default_grass_segments() -> u32 {
+    DEFAULT_GRASS_SEGMENTS
+}
+fn default_grass_cross_planes() -> bool {
+    DEFAULT_GRASS_CROSS_PLANES
+}
+fn default_grass_bend() -> f32 {
+    DEFAULT_GRASS_BEND
+}
+fn default_grass_color_bottom() -> [f32; 3] {
+    DEFAULT_GRASS_COLOR_BOTTOM
+}
+fn default_grass_color_top() -> [f32; 3] {
+    DEFAULT_GRASS_COLOR_TOP
+}
+fn default_grass_roughness() -> f32 {
+    DEFAULT_GRASS_ROUGHNESS
+}
+fn default_grass_tip_alpha_cutoff() -> f32 {
+    DEFAULT_GRASS_TIP_ALPHA_CUTOFF
+}
+fn default_grass_normal_up_blend() -> f32 {
+    DEFAULT_GRASS_NORMAL_UP_BLEND
+}
 
-fn default_wind_strength() -> f32 { DEFAULT_WIND_STRENGTH }
-fn default_wind_speed() -> f32 { DEFAULT_WIND_SPEED }
-fn default_wind_frequency() -> f32 { DEFAULT_WIND_FREQUENCY }
-fn default_wind_gust_strength() -> f32 { DEFAULT_WIND_GUST_STRENGTH }
-fn default_wind_gust_speed() -> f32 { DEFAULT_WIND_GUST_SPEED }
+fn default_wind_strength() -> f32 {
+    DEFAULT_WIND_STRENGTH
+}
+fn default_wind_speed() -> f32 {
+    DEFAULT_WIND_SPEED
+}
+fn default_wind_frequency() -> f32 {
+    DEFAULT_WIND_FREQUENCY
+}
+fn default_wind_gust_strength() -> f32 {
+    DEFAULT_WIND_GUST_STRENGTH
+}
+fn default_wind_gust_speed() -> f32 {
+    DEFAULT_WIND_GUST_SPEED
+}
 
-fn default_scatter_density() -> f32 { DEFAULT_SCATTER_DENSITY }
-fn default_scatter_scale_min() -> f32 { DEFAULT_SCATTER_SCALE_MIN }
-fn default_scatter_scale_max() -> f32 { DEFAULT_SCATTER_SCALE_MAX }
-fn default_scatter_align_to_normal() -> bool { DEFAULT_SCATTER_ALIGN_TO_NORMAL }
-fn default_scatter_tilt_max_deg() -> f32 { DEFAULT_SCATTER_TILT_MAX_DEG }
-fn default_scatter_random_yaw() -> bool { DEFAULT_SCATTER_RANDOM_YAW }
+fn default_scatter_density() -> f32 {
+    DEFAULT_SCATTER_DENSITY
+}
+fn default_scatter_scale_min() -> f32 {
+    DEFAULT_SCATTER_SCALE_MIN
+}
+fn default_scatter_scale_max() -> f32 {
+    DEFAULT_SCATTER_SCALE_MAX
+}
+fn default_scatter_align_to_normal() -> bool {
+    DEFAULT_SCATTER_ALIGN_TO_NORMAL
+}
+fn default_scatter_tilt_max_deg() -> f32 {
+    DEFAULT_SCATTER_TILT_MAX_DEG
+}
+fn default_scatter_random_yaw() -> bool {
+    DEFAULT_SCATTER_RANDOM_YAW
+}
 
-fn default_rule_slope_min_deg() -> f32 { DEFAULT_RULE_SLOPE_MIN_DEG }
-fn default_rule_slope_max_deg() -> f32 { DEFAULT_RULE_SLOPE_MAX_DEG }
-fn default_rule_slope_fade_deg() -> f32 { DEFAULT_RULE_SLOPE_FADE_DEG }
-fn default_rule_height_min() -> f32 { DEFAULT_RULE_HEIGHT_MIN }
-fn default_rule_height_max() -> f32 { DEFAULT_RULE_HEIGHT_MAX }
-fn default_rule_height_fade() -> f32 { DEFAULT_RULE_HEIGHT_FADE }
-fn default_rule_threshold() -> f32 { DEFAULT_RULE_THRESHOLD }
-fn default_layer_condition_min_weight() -> f32 { DEFAULT_LAYER_CONDITION_MIN_WEIGHT }
+fn default_rule_slope_min_deg() -> f32 {
+    DEFAULT_RULE_SLOPE_MIN_DEG
+}
+fn default_rule_slope_max_deg() -> f32 {
+    DEFAULT_RULE_SLOPE_MAX_DEG
+}
+fn default_rule_slope_fade_deg() -> f32 {
+    DEFAULT_RULE_SLOPE_FADE_DEG
+}
+fn default_rule_height_min() -> f32 {
+    DEFAULT_RULE_HEIGHT_MIN
+}
+fn default_rule_height_max() -> f32 {
+    DEFAULT_RULE_HEIGHT_MAX
+}
+fn default_rule_height_fade() -> f32 {
+    DEFAULT_RULE_HEIGHT_FADE
+}
+fn default_rule_threshold() -> f32 {
+    DEFAULT_RULE_THRESHOLD
+}
+fn default_layer_condition_min_weight() -> f32 {
+    DEFAULT_LAYER_CONDITION_MIN_WEIGHT
+}
 
 // ============================================================
 //  PropKind — プロップの種別
@@ -264,17 +324,17 @@ pub struct GrassParams {
 impl Default for GrassParams {
     fn default() -> Self {
         Self {
-            width:            DEFAULT_GRASS_WIDTH,
-            height:           DEFAULT_GRASS_HEIGHT,
-            height_variance:  DEFAULT_GRASS_HEIGHT_VARIANCE,
-            segments:         DEFAULT_GRASS_SEGMENTS,
-            cross_planes:     DEFAULT_GRASS_CROSS_PLANES,
-            bend:             DEFAULT_GRASS_BEND,
-            color_bottom:     DEFAULT_GRASS_COLOR_BOTTOM,
-            color_top:        DEFAULT_GRASS_COLOR_TOP,
-            roughness:        DEFAULT_GRASS_ROUGHNESS,
+            width: DEFAULT_GRASS_WIDTH,
+            height: DEFAULT_GRASS_HEIGHT,
+            height_variance: DEFAULT_GRASS_HEIGHT_VARIANCE,
+            segments: DEFAULT_GRASS_SEGMENTS,
+            cross_planes: DEFAULT_GRASS_CROSS_PLANES,
+            bend: DEFAULT_GRASS_BEND,
+            color_bottom: DEFAULT_GRASS_COLOR_BOTTOM,
+            color_top: DEFAULT_GRASS_COLOR_TOP,
+            roughness: DEFAULT_GRASS_ROUGHNESS,
             tip_alpha_cutoff: DEFAULT_GRASS_TIP_ALPHA_CUTOFF,
-            normal_up_blend:  DEFAULT_GRASS_NORMAL_UP_BLEND,
+            normal_up_blend: DEFAULT_GRASS_NORMAL_UP_BLEND,
         }
     }
 }
@@ -319,11 +379,11 @@ pub struct WindParams {
 impl Default for WindParams {
     fn default() -> Self {
         Self {
-            strength:      DEFAULT_WIND_STRENGTH,
-            speed:         DEFAULT_WIND_SPEED,
-            frequency:     DEFAULT_WIND_FREQUENCY,
+            strength: DEFAULT_WIND_STRENGTH,
+            speed: DEFAULT_WIND_SPEED,
+            frequency: DEFAULT_WIND_FREQUENCY,
             gust_strength: DEFAULT_WIND_GUST_STRENGTH,
-            gust_speed:    DEFAULT_WIND_GUST_SPEED,
+            gust_speed: DEFAULT_WIND_GUST_SPEED,
         }
     }
 }
@@ -363,12 +423,12 @@ pub struct ScatterParams {
 impl Default for ScatterParams {
     fn default() -> Self {
         Self {
-            density:         DEFAULT_SCATTER_DENSITY,
-            scale_min:       DEFAULT_SCATTER_SCALE_MIN,
-            scale_max:       DEFAULT_SCATTER_SCALE_MAX,
+            density: DEFAULT_SCATTER_DENSITY,
+            scale_min: DEFAULT_SCATTER_SCALE_MIN,
+            scale_max: DEFAULT_SCATTER_SCALE_MAX,
             align_to_normal: DEFAULT_SCATTER_ALIGN_TO_NORMAL,
-            tilt_max_deg:    DEFAULT_SCATTER_TILT_MAX_DEG,
-            random_yaw:      DEFAULT_SCATTER_RANDOM_YAW,
+            tilt_max_deg: DEFAULT_SCATTER_TILT_MAX_DEG,
+            random_yaw: DEFAULT_SCATTER_RANDOM_YAW,
         }
     }
 }
@@ -450,14 +510,14 @@ pub struct ScatterRule {
 impl Default for ScatterRule {
     fn default() -> Self {
         Self {
-            slope_min_deg:    DEFAULT_RULE_SLOPE_MIN_DEG,
-            slope_max_deg:    DEFAULT_RULE_SLOPE_MAX_DEG,
-            slope_fade_deg:   DEFAULT_RULE_SLOPE_FADE_DEG,
-            height_min:       DEFAULT_RULE_HEIGHT_MIN,
-            height_max:       DEFAULT_RULE_HEIGHT_MAX,
-            height_fade:      DEFAULT_RULE_HEIGHT_FADE,
+            slope_min_deg: DEFAULT_RULE_SLOPE_MIN_DEG,
+            slope_max_deg: DEFAULT_RULE_SLOPE_MAX_DEG,
+            slope_fade_deg: DEFAULT_RULE_SLOPE_FADE_DEG,
+            height_min: DEFAULT_RULE_HEIGHT_MIN,
+            height_max: DEFAULT_RULE_HEIGHT_MAX,
+            height_fade: DEFAULT_RULE_HEIGHT_FADE,
             layer_conditions: Vec::new(),
-            threshold:        DEFAULT_RULE_THRESHOLD,
+            threshold: DEFAULT_RULE_THRESHOLD,
         }
     }
 }
@@ -478,7 +538,12 @@ impl ScatterRule {
         layer_weights_by_name: &dyn Fn(&str) -> f32,
     ) -> f32 {
         // ─── 斜度ウィンドウ × 高度ウィンドウ（layers.rs と同一の台形関数）───
-        let s = window(slope_deg, self.slope_min_deg, self.slope_max_deg, self.slope_fade_deg);
+        let s = window(
+            slope_deg,
+            self.slope_min_deg,
+            self.slope_max_deg,
+            self.slope_fade_deg,
+        );
         let h = window(height, self.height_min, self.height_max, self.height_fade);
         let mut p = s * h;
 

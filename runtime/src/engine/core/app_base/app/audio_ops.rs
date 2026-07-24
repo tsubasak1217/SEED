@@ -12,7 +12,7 @@
 
 use crate::engine::components::{AudioComponent, CameraComponent, ComponentKind, Transform};
 use crate::engine::core::audio::AudioManager;
-use crate::engine::core::scripting::{take_audio_commands, ScriptAudioCommand};
+use crate::engine::core::scripting::{ScriptAudioCommand, take_audio_commands};
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
 
@@ -51,7 +51,11 @@ impl App {
                         audio.play_se(&path, volume);
                     }
                 }
-                ScriptAudioCommand::PlayBgm { path, volume, looped } => {
+                ScriptAudioCommand::PlayBgm {
+                    path,
+                    volume,
+                    looped,
+                } => {
                     if let Some(audio) = &mut self.audio {
                         audio.play_bgm(&path, volume, looped);
                     }
@@ -69,10 +73,14 @@ impl App {
                 ScriptAudioCommand::PlayComponent { entity } => {
                     // コンポーネントデータを読み取ってから再生する
                     //（scene と audio の借用を分離するため 2 段階で行う）
-                    let params = self.scene.as_ref()
+                    let params = self
+                        .scene
+                        .as_ref()
                         .and_then(|s| s.world.get::<AudioComponent>(entity))
                         .map(|a| (a.audio_path.clone(), a.volume, a.looped));
-                    if let (Some((path, volume, looped)), Some(audio)) = (params, self.audio.as_mut()) {
+                    if let (Some((path, volume, looped)), Some(audio)) =
+                        (params, self.audio.as_mut())
+                    {
                         if !path.is_empty() {
                             audio.play_component(entity, &path, volume, looped);
                         }
@@ -108,28 +116,42 @@ impl App {
     /// リスナーはメインカメラ（is_main な CameraComponent を持つアクター）。
     /// メインカメラが無い場合は減衰なし・中央で再生される。
     pub(super) fn update_component_audio(&mut self) {
-        if self.mode != RuntimeMode::Play { return; }
+        if self.mode != RuntimeMode::Play {
+            return;
+        }
         let Some(scene) = &self.scene else { return };
 
         // AudioComponent スロットを収集する: (スロット, データ, アクター位置)
         let mut sources: Vec<(Entity, AudioComponent, [f32; 3])> = Vec::new();
         collect_audio_sources(&scene.actors, &scene.world, &mut sources);
-        if sources.is_empty() { return; }
+        if sources.is_empty() {
+            return;
+        }
 
         // 自動再生が必要なものがあれば AudioManager を初期化する
-        let needs_autostart = sources.iter().any(|(_, a, _)| a.play_on_start && !a.audio_path.is_empty());
+        let needs_autostart = sources
+            .iter()
+            .any(|(_, a, _)| a.play_on_start && !a.audio_path.is_empty());
         if needs_autostart {
             self.ensure_audio_manager();
         }
-        let listener = find_listener_pose(&self.scene.as_ref().unwrap().actors, &self.scene.as_ref().unwrap().world);
+        let listener = find_listener_pose(
+            &self.scene.as_ref().unwrap().actors,
+            &self.scene.as_ref().unwrap().world,
+        );
         let Some(audio) = &mut self.audio else { return };
 
         for (slot, comp, pos) in sources {
             // 1. play_on_start の自動再生（一度だけ発火する）
-            if comp.play_on_start && !comp.audio_path.is_empty() && audio.component_needs_autostart(slot) {
+            if comp.play_on_start
+                && !comp.audio_path.is_empty()
+                && audio.component_needs_autostart(slot)
+            {
                 audio.play_component(slot, &comp.audio_path, comp.volume, comp.looped);
             }
-            if !audio.is_component_playing(slot) { continue; }
+            if !audio.is_component_playing(slot) {
+                continue;
+            }
 
             // 2. 減衰・パンの反映
             if comp.spatial {
@@ -195,23 +217,43 @@ impl App {
         };
         let Some(entity) = slot_entity else { return };
         let Some(scene) = &mut self.scene else { return };
-        let Some(a) = scene.world.get_mut::<AudioComponent>(entity) else { return };
+        let Some(a) = scene.world.get_mut::<AudioComponent>(entity) else {
+            return;
+        };
 
         // key ごとに値を解釈して反映する（数値・真偽値のパース失敗は無視）
         match key {
-            "path"          => a.audio_path = value.to_string(),
-            "volume"        => if let Ok(v) = value.parse::<f32>() { a.volume = v.max(0.0); },
-            "loop"          => a.looped = value == "1" || value == "true",
+            "path" => a.audio_path = value.to_string(),
+            "volume" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    a.volume = v.max(0.0);
+                }
+            }
+            "loop" => a.looped = value == "1" || value == "true",
             "play_on_start" => a.play_on_start = value == "1" || value == "true",
-            "spatial"       => a.spatial = value == "1" || value == "true",
-            "min_distance"  => if let Ok(v) = value.parse::<f32>() { a.min_distance = v.max(0.0); },
-            "max_distance"  => if let Ok(v) = value.parse::<f32>() { a.max_distance = v.max(0.0); },
-            "pan"           => if let Ok(v) = value.parse::<f32>() { a.pan = v.clamp(-1.0, 1.0); },
+            "spatial" => a.spatial = value == "1" || value == "true",
+            "min_distance" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    a.min_distance = v.max(0.0);
+                }
+            }
+            "max_distance" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    a.max_distance = v.max(0.0);
+                }
+            }
+            "pan" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    a.pan = v.clamp(-1.0, 1.0);
+                }
+            }
             _ => return,
         }
 
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// 再生中の AudioComponent スロット一覧を返す（IsPlaying 判定の公開用）。
@@ -243,11 +285,12 @@ impl App {
 /// 2D アクター（Transform なし）は位置 [0,0,0] として扱う（spatial は実質無効）。
 fn collect_audio_sources(
     actors: &[Actor],
-    world:  &World,
-    out:    &mut Vec<(Entity, AudioComponent, [f32; 3])>,
+    world: &World,
+    out: &mut Vec<(Entity, AudioComponent, [f32; 3])>,
 ) {
     for actor in actors {
-        let pos = world.get::<Transform>(actor.entity)
+        let pos = world
+            .get::<Transform>(actor.entity)
             .map(|t| t.position)
             .unwrap_or([0.0, 0.0, 0.0]);
         for slot in actor.slots() {

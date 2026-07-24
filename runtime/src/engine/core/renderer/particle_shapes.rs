@@ -49,10 +49,10 @@ impl ShapeVertex {
     /// 頂点バッファレイアウト（位置 vec3 @location(0)）。pipeline.rs と共有する。
     pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<ShapeVertex>() as wgpu::BufferAddress,
-        step_mode:    wgpu::VertexStepMode::Vertex,
-        attributes:   &[wgpu::VertexAttribute {
-            format:          wgpu::VertexFormat::Float32x3,
-            offset:          0,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &[wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 0,
             shader_location: 0,
         }],
     };
@@ -63,29 +63,38 @@ impl ShapeVertex {
 /// GPU 上に確保した 1 個の形状メッシュ（全エミッタで共有）。
 pub struct ShapeMesh {
     /// 位置頂点バッファ（VERTEX）。
-    pub vbuf:        wgpu::Buffer,
+    pub vbuf: wgpu::Buffer,
     /// インデックスバッファ（INDEX, u32）。
-    pub ibuf:        wgpu::Buffer,
+    pub ibuf: wgpu::Buffer,
     /// インデックス数（draw_indexed の範囲）。
     pub index_count: u32,
 }
 
 impl ShapeMesh {
     /// 位置配列とインデックス配列から GPU メッシュを生成する。
-    fn from_data(device: &wgpu::Device, label: &str, positions: &[[f32; 3]], indices: &[u32]) -> Self {
+    fn from_data(
+        device: &wgpu::Device,
+        label: &str,
+        positions: &[[f32; 3]],
+        indices: &[u32],
+    ) -> Self {
         // 位置のみ頂点へ詰め替える（bytemuck で bytes 化するため repr(C) の ShapeVertex を使う）。
         let verts: Vec<ShapeVertex> = positions.iter().map(|&p| ShapeVertex { pos: p }).collect();
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some(label),
+            label: Some(label),
             contents: bytemuck::cast_slice(&verts),
-            usage:    wgpu::BufferUsages::VERTEX,
+            usage: wgpu::BufferUsages::VERTEX,
         });
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some(label),
+            label: Some(label),
             contents: bytemuck::cast_slice(indices),
-            usage:    wgpu::BufferUsages::INDEX,
+            usage: wgpu::BufferUsages::INDEX,
         });
-        Self { vbuf, ibuf, index_count: indices.len() as u32 }
+        Self {
+            vbuf,
+            ibuf,
+            index_count: indices.len() as u32,
+        }
     }
 }
 
@@ -99,9 +108,9 @@ fn point_quad() -> (Vec<[f32; 3]>, Vec<u32>) {
     let h = UNIT_HALF;
     let positions = vec![
         [-h, -h, 0.0], // 0 左下
-        [ h, -h, 0.0], // 1 右下
-        [ h,  h, 0.0], // 2 右上
-        [-h,  h, 0.0], // 3 左上
+        [h, -h, 0.0],  // 1 右下
+        [h, h, 0.0],   // 2 右上
+        [-h, h, 0.0],  // 3 左上
     ];
     // 2 三角形（CCW）。
     let indices = vec![0, 1, 2, 0, 2, 3];
@@ -124,27 +133,22 @@ fn box_mesh() -> (Vec<[f32; 3]>, Vec<u32>) {
     // 8 コーナー（-x/-y/-z を 0 として bit で並べる）。
     let positions = vec![
         [-h, -h, -h], // 0
-        [ h, -h, -h], // 1
-        [ h,  h, -h], // 2
-        [-h,  h, -h], // 3
-        [-h, -h,  h], // 4
-        [ h, -h,  h], // 5
-        [ h,  h,  h], // 6
-        [-h,  h,  h], // 7
+        [h, -h, -h],  // 1
+        [h, h, -h],   // 2
+        [-h, h, -h],  // 3
+        [-h, -h, h],  // 4
+        [h, -h, h],   // 5
+        [h, h, h],    // 6
+        [-h, h, h],   // 7
     ];
     // 6 面 × 2 三角形（CCW 外向き）。cull None なので巻き向きは描画に影響しないが一応外向きで定義。
     let indices = vec![
         // -z 面
-        0, 2, 1, 0, 3, 2,
-        // +z 面
-        4, 5, 6, 4, 6, 7,
-        // -x 面
-        0, 4, 7, 0, 7, 3,
-        // +x 面
-        1, 2, 6, 1, 6, 5,
-        // -y 面
-        0, 1, 5, 0, 5, 4,
-        // +y 面
+        0, 2, 1, 0, 3, 2, // +z 面
+        4, 5, 6, 4, 6, 7, // -x 面
+        0, 4, 7, 0, 7, 3, // +x 面
+        1, 2, 6, 1, 6, 5, // -y 面
+        0, 1, 5, 0, 5, 4, // +y 面
         3, 7, 6, 3, 6, 2,
     ];
     (positions, indices)
@@ -159,21 +163,36 @@ fn icosphere_mesh() -> (Vec<[f32; 3]>, Vec<u32>) {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
     // 未正規化の 12 頂点（±1, ±φ の 3 平面矩形）。
     let raw: [[f32; 3]; 12] = [
-        [-1.0,  phi, 0.0], [ 1.0,  phi, 0.0], [-1.0, -phi, 0.0], [ 1.0, -phi, 0.0],
-        [ 0.0, -1.0,  phi], [ 0.0,  1.0,  phi], [ 0.0, -1.0, -phi], [ 0.0,  1.0, -phi],
-        [ phi, 0.0, -1.0], [ phi, 0.0,  1.0], [-phi, 0.0, -1.0], [-phi, 0.0,  1.0],
+        [-1.0, phi, 0.0],
+        [1.0, phi, 0.0],
+        [-1.0, -phi, 0.0],
+        [1.0, -phi, 0.0],
+        [0.0, -1.0, phi],
+        [0.0, 1.0, phi],
+        [0.0, -1.0, -phi],
+        [0.0, 1.0, -phi],
+        [phi, 0.0, -1.0],
+        [phi, 0.0, 1.0],
+        [-phi, 0.0, -1.0],
+        [-phi, 0.0, 1.0],
     ];
     // 各頂点を単位球面へ正規化し、半径 0.5 へスケールする。
-    let positions: Vec<[f32; 3]> = raw.iter().map(|v| {
-        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-        [v[0] / len * UNIT_HALF, v[1] / len * UNIT_HALF, v[2] / len * UNIT_HALF]
-    }).collect();
+    let positions: Vec<[f32; 3]> = raw
+        .iter()
+        .map(|v| {
+            let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            [
+                v[0] / len * UNIT_HALF,
+                v[1] / len * UNIT_HALF,
+                v[2] / len * UNIT_HALF,
+            ]
+        })
+        .collect();
     // 20 三角形（標準的な正二十面体のインデックス）。
     let indices = vec![
-        0, 11, 5, 0, 5, 1, 0, 1, 7, 0, 7, 10, 0, 10, 11,
-        1, 5, 9, 5, 11, 4, 11, 10, 2, 10, 7, 6, 7, 1, 8,
-        3, 9, 4, 3, 4, 2, 3, 2, 6, 3, 6, 8, 3, 8, 9,
-        4, 9, 5, 2, 4, 11, 6, 2, 10, 8, 6, 7, 9, 8, 1,
+        0, 11, 5, 0, 5, 1, 0, 1, 7, 0, 7, 10, 0, 10, 11, 1, 5, 9, 5, 11, 4, 11, 10, 2, 10, 7, 6, 7,
+        1, 8, 3, 9, 4, 3, 4, 2, 3, 2, 6, 3, 6, 8, 3, 8, 9, 4, 9, 5, 2, 4, 11, 6, 2, 10, 8, 6, 7, 9,
+        8, 1,
     ];
     (positions, indices)
 }
@@ -186,13 +205,13 @@ fn icosphere_mesh() -> (Vec<[f32; 3]>, Vec<u32>) {
 /// HashMap に保持する（ロード失敗・頂点数超過は None＝Point フォールバック）。
 pub struct ShapeMeshCache {
     /// Point（ビルボード）用クアッド。
-    point:  ShapeMesh,
+    point: ShapeMesh,
     /// Sphere（icosphere）。
     sphere: ShapeMesh,
     /// Box（立方体）。
-    cube:   ShapeMesh,
+    cube: ShapeMesh,
     /// Plane（両面クアッド）。
-    plane:  ShapeMesh,
+    plane: ShapeMesh,
     /// Model パス → メッシュ（None はロード失敗／頂点数超過で Point 代替）。
     models: std::collections::HashMap<String, Option<ShapeMesh>>,
 }
@@ -205,22 +224,30 @@ impl ShapeMeshCache {
         let (bx, bxi) = box_mesh();
         let (pl, pli) = plane_mesh();
         Self {
-            point:  ShapeMesh::from_data(device, "Particle Point Quad", &pq, &pqi),
-            sphere: ShapeMesh::from_data(device, "Particle Icosphere",  &ic, &ici),
-            cube:   ShapeMesh::from_data(device, "Particle Cube",       &bx, &bxi),
-            plane:  ShapeMesh::from_data(device, "Particle Plane",      &pl, &pli),
+            point: ShapeMesh::from_data(device, "Particle Point Quad", &pq, &pqi),
+            sphere: ShapeMesh::from_data(device, "Particle Icosphere", &ic, &ici),
+            cube: ShapeMesh::from_data(device, "Particle Cube", &bx, &bxi),
+            plane: ShapeMesh::from_data(device, "Particle Plane", &pl, &pli),
             models: std::collections::HashMap::new(),
         }
     }
 
     /// Point（ビルボード）メッシュを返す。
-    pub fn point(&self) -> &ShapeMesh { &self.point }
+    pub fn point(&self) -> &ShapeMesh {
+        &self.point
+    }
     /// Sphere メッシュを返す。
-    pub fn sphere(&self) -> &ShapeMesh { &self.sphere }
+    pub fn sphere(&self) -> &ShapeMesh {
+        &self.sphere
+    }
     /// Box メッシュを返す。
-    pub fn cube(&self) -> &ShapeMesh { &self.cube }
+    pub fn cube(&self) -> &ShapeMesh {
+        &self.cube
+    }
     /// Plane メッシュを返す。
-    pub fn plane(&self) -> &ShapeMesh { &self.plane }
+    pub fn plane(&self) -> &ShapeMesh {
+        &self.plane
+    }
 
     /// ロード済み Model メッシュを（ロードを試みずに）返す。
     ///
@@ -255,30 +282,42 @@ impl ShapeMeshCache {
         let model = match crate::engine::core::loader::load_model(&fs_path) {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("[SEED particle] モデル形状のロード失敗: path={path:?} err={e} → Point へフォールバック");
+                eprintln!(
+                    "[SEED particle] モデル形状のロード失敗: path={path:?} err={e} → Point へフォールバック"
+                );
                 return None;
             }
         };
         // 先頭メッシュの先頭プリミティブを使う（位置のみ）。
         let prim = model.meshes.first().and_then(|m| m.primitives.first());
         let Some(prim) = prim else {
-            eprintln!("[SEED particle] モデルにプリミティブが無い: path={path:?} → Point へフォールバック");
+            eprintln!(
+                "[SEED particle] モデルにプリミティブが無い: path={path:?} → Point へフォールバック"
+            );
             return None;
         };
         // 頂点数上限チェック（GPU 頂点バッファの肥大・描画コスト抑制）。
         if prim.vertices.len() > MAX_PARTICLE_MODEL_VERTS {
             eprintln!(
                 "[SEED particle] モデル頂点数 {} が上限 {} を超過: path={path:?} → Point へフォールバック",
-                prim.vertices.len(), MAX_PARTICLE_MODEL_VERTS,
+                prim.vertices.len(),
+                MAX_PARTICLE_MODEL_VERTS,
             );
             return None;
         }
         if prim.vertices.is_empty() || prim.indices.is_empty() {
-            eprintln!("[SEED particle] モデルの頂点／インデックスが空: path={path:?} → Point へフォールバック");
+            eprintln!(
+                "[SEED particle] モデルの頂点／インデックスが空: path={path:?} → Point へフォールバック"
+            );
             return None;
         }
         // 位置のみ抽出（法線・UV 等は使わない）。
         let positions: Vec<[f32; 3]> = prim.vertices.iter().map(|v| v.position).collect();
-        Some(ShapeMesh::from_data(device, "Particle Model", &positions, &prim.indices))
+        Some(ShapeMesh::from_data(
+            device,
+            "Particle Model",
+            &positions,
+            &prim.indices,
+        ))
     }
 }

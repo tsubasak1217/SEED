@@ -12,7 +12,7 @@
 //  完全に同一のロジックを使用する。
 // ============================================================
 
-use crate::engine::components::{CanvasTransform, CanvasComponent, ComponentKind};
+use crate::engine::components::{CanvasComponent, CanvasTransform, ComponentKind};
 use crate::engine::ecs::Entity;
 
 use super::App;
@@ -36,25 +36,25 @@ const DRAG_HOVER_OUTLINE_STEP_PX: f32 = 1.5;
 /// 逆変換（子アクターの CanvasTransform.position 算出）の両方に使用する。
 pub(super) struct RootCanvasInfo {
     /// ルートキャンバスアクターのエンティティ（ハイライト対象の特定・親検索用）
-    pub(super) entity:             Entity,
+    pub(super) entity: Entity,
     /// 矩形描画と同じ行優先ワールド行列（eff_ct.to_mat4_sized(eff_w, eff_h)）。
     /// ローカル [0, eff_w]×[0, eff_h] を ortho 空間へマップする。
-    pub(super) rect_m:             [[f32; 4]; 4],
+    pub(super) rect_m: [[f32; 4]; 4],
     /// キャンバスの有効幅（ビューポート・ルートは自動解像度、それ以外は CanvasComponent.width）
-    pub(super) eff_w:              f32,
+    pub(super) eff_w: f32,
     /// キャンバスの有効高さ（ビューポート・ルートは自動解像度、それ以外は CanvasComponent.height）
-    pub(super) eff_h:              f32,
+    pub(super) eff_h: f32,
     /// キャンバスローカル [0,0] の ortho 空間ワールド位置（子の座標系原点）。
     /// collect_actor2d_contexts の child_canvas_origin と同一の計算
     /// （scale=1 の行列で pivot オフセットを逆適用した平行移動成分）。
-    pub(super) origin:             [f32; 2],
+    pub(super) origin: [f32; 2],
     /// キャンバスのワールド回転（ラジアン、ルートのため自身の rotation のみ）
-    pub(super) world_rot:          f32,
+    pub(super) world_rot: f32,
     /// 子が参照する基準キャンバスサイズ（スケール前の [width, height]）
-    pub(super) canvas_size:        [f32; 2],
+    pub(super) canvas_size: [f32; 2],
     /// 子への累積スケール（auto_scale_factor 込み）。
     /// collect_actor2d_contexts の child_cumul_scale と同一の計算。
-    pub(super) child_cumul_scale:  [f32; 2],
+    pub(super) child_cumul_scale: [f32; 2],
 }
 
 impl RootCanvasInfo {
@@ -73,15 +73,17 @@ impl RootCanvasInfo {
     ///   eff_pos_local = position (* cumul_scale) + anchor_off
     ///   world = origin + R(rot) * eff_pos_local
     /// の逆を解く。
-    pub(super) fn world_to_child_local(&self, world_pt: [f32; 2], child_anchor: [f32; 2], child_sm_transform: bool) -> [f32; 2] {
+    pub(super) fn world_to_child_local(
+        &self,
+        world_pt: [f32; 2],
+        child_anchor: [f32; 2],
+        child_sm_transform: bool,
+    ) -> [f32; 2] {
         // ワールド → キャンバスローカル（回転の逆適用）
         let dx = world_pt[0] - self.origin[0];
         let dy = world_pt[1] - self.origin[1];
         let (sin_r, cos_r) = self.world_rot.sin_cos();
-        let eff_pos_local = [
-            cos_r * dx + sin_r * dy,
-            -sin_r * dx + cos_r * dy,
-        ];
+        let eff_pos_local = [cos_r * dx + sin_r * dy, -sin_r * dx + cos_r * dy];
 
         // 子のアンカーオフセット（親キャンバスサイズ × anchor × 累積スケール）
         let anchor_off = [
@@ -93,8 +95,16 @@ impl RootCanvasInfo {
         let px = eff_pos_local[0] - anchor_off[0];
         let py = eff_pos_local[1] - anchor_off[1];
         if child_sm_transform {
-            let sx = if self.child_cumul_scale[0].abs() > f32::EPSILON { self.child_cumul_scale[0] } else { 1.0 };
-            let sy = if self.child_cumul_scale[1].abs() > f32::EPSILON { self.child_cumul_scale[1] } else { 1.0 };
+            let sx = if self.child_cumul_scale[0].abs() > f32::EPSILON {
+                self.child_cumul_scale[0]
+            } else {
+                1.0
+            };
+            let sy = if self.child_cumul_scale[1].abs() > f32::EPSILON {
+                self.child_cumul_scale[1]
+            } else {
+                1.0
+            };
             [px / sx, py / sy]
         } else {
             [px, py]
@@ -109,14 +119,18 @@ impl App {
     ///   canvas = pan + NDC × half_size（2D ortho カメラのパン・ズームを反映）。
     pub(super) fn window_to_canvas_2d(&self, cx: f32, cy: f32) -> [f32; 2] {
         let win_size = self.window.as_ref().map(|w| w.inner_size());
-        let vp_w     = win_size.map_or(1280.0, |s| s.width  as f32);
-        let vp_h     = win_size.map_or(720.0,  |s| s.height as f32);
+        let vp_w = win_size.map_or(1280.0, |s| s.width as f32);
+        let vp_h = win_size.map_or(720.0, |s| s.height as f32);
 
-        let cam_2d = self.canvas_cameras.get(&self.active_world_line).cloned().unwrap_or_default();
+        let cam_2d = self
+            .canvas_cameras
+            .get(&self.active_world_line)
+            .cloned()
+            .unwrap_or_default();
         let half_h = cam_2d.ortho_half_h;
         let half_w = half_h * (vp_w / vp_h);
-        let ndx    = 2.0 * cx / vp_w - 1.0;
-        let ndy    = 2.0 * cy / vp_h - 1.0; // Y-down
+        let ndx = 2.0 * cx / vp_w - 1.0;
+        let ndy = 2.0 * cy / vp_h - 1.0; // Y-down
         [cam_2d.pan_x + ndx * half_w, cam_2d.pan_y + ndy * half_h]
     }
 
@@ -133,51 +147,76 @@ impl App {
     pub(super) fn collect_root_canvas_infos(&self) -> Vec<RootCanvasInfo> {
         let scene_wl = self.active_world_line;
         let mut result = Vec::new();
-        let Some(scene) = &self.scene else { return result };
+        let Some(scene) = &self.scene else {
+            return result;
+        };
 
         // ビューポートサイズ（WYSIWYG レイアウトの基準）
         let win_size = self.window.as_ref().map(|w| w.inner_size());
-        let vp_w     = win_size.map_or(1280.0, |s| s.width  as f32);
-        let vp_h     = win_size.map_or(720.0,  |s| s.height as f32);
+        let vp_w = win_size.map_or(1280.0, |s| s.width as f32);
+        let vp_h = win_size.map_or(720.0, |s| s.height as f32);
 
         // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー。
         // View2D では設計空間表示 = キャンバス中心が ortho 原点になる）
-        let (vp_overrides, auto_sizes) = self.build_ss_layout_maps(
-            &scene.actors, &scene.world, scene_wl, vp_w, vp_h, None,
-        );
+        let (vp_overrides, auto_sizes) =
+            self.build_ss_layout_maps(&scene.actors, &scene.world, scene_wl, vp_w, vp_h, None);
 
         for actor in &scene.actors {
-            if actor.world_line != scene_wl { continue; }
-            if !actor.is_2d() { continue; }
+            if actor.world_line != scene_wl {
+                continue;
+            }
+            if !actor.is_2d() {
+                continue;
+            }
 
             // CanvasTransform + CanvasComponent の両方を持つルートのみ対象
-            let Some(ct) = scene.world.get::<CanvasTransform>(actor.entity) else { continue };
-            let Some(cc) = actor.slots().iter()
+            let Some(ct) = scene.world.get::<CanvasTransform>(actor.entity) else {
+                continue;
+            };
+            let Some(cc) = actor
+                .slots()
+                .iter()
                 .filter(|s| s.kind == ComponentKind::Canvas)
-                .find_map(|s| scene.world.get::<CanvasComponent>(s.entity)) else { continue };
+                .find_map(|s| scene.world.get::<CanvasComponent>(s.entity))
+            else {
+                continue;
+            };
 
             // 自動解像度上書き（Some のとき Transform は恒等として扱う）
             let root_auto = auto_sizes.get(&actor.entity).copied();
             // ルートキャンバスの実効 CanvasTransform（自動解像度対象は恒等固定）
-            let ct = if root_auto.is_some() { CanvasTransform::default() } else { ct.clone() };
+            let ct = if root_auto.is_some() {
+                CanvasTransform::default()
+            } else {
+                ct.clone()
+            };
 
             // 実効ビューポート（Camera 参照キャンバスはオーバーライドを優先）
-            let [evw, evh] = vp_overrides.get(&actor.entity).copied().unwrap_or([vp_w, vp_h]);
+            let [evw, evh] = vp_overrides
+                .get(&actor.entity)
+                .copied()
+                .unwrap_or([vp_w, vp_h]);
 
             // ルートレベルのアンカーオフセット（collect_canvas_rects と同一の共通ヘルパー）。
             // design_space=true（ビューポート編集）ではキャンバス左上をワールド原点に一致させる。
             let anchor_off = super::canvas_collect::root_anchor_offset(
-                ct.anchor, evw, evh, self.edit_view_is_2d(),
+                ct.anchor,
+                evw,
+                evh,
+                self.edit_view_is_2d(),
             );
 
             // ルートのため親累積スケール=1 なので position をそのまま使用する
             // （eff_ct は行列計算専用。スケールモードフラグは行列に影響しない）
             let eff_ct = CanvasTransform {
-                position: [ct.position[0] + anchor_off[0], ct.position[1] + anchor_off[1]],
+                position: [
+                    ct.position[0] + anchor_off[0],
+                    ct.position[1] + anchor_off[1],
+                ],
                 rotation: ct.rotation,
-                scale:    ct.scale,
-                pivot:    ct.pivot,
-                anchor:   [0.0, 0.0],
+                scale: ct.scale,
+                pivot: ct.pivot,
+                anchor: [0.0, 0.0],
                 ..ct.clone()
             };
 
@@ -188,8 +227,11 @@ impl App {
             let rect_m = eff_ct.to_mat4_sized(eff_w, eff_h);
 
             // 子座標系原点用行列（scale=1、collect_canvas_rects の self_world_rs と同一）
-            let origin_m = CanvasTransform { scale: [1.0, 1.0], ..eff_ct.clone() }
-                .to_mat4_sized(eff_w, eff_h);
+            let origin_m = CanvasTransform {
+                scale: [1.0, 1.0],
+                ..eff_ct.clone()
+            }
+            .to_mat4_sized(eff_w, eff_h);
 
             // auto_scale_factor: ルートキャンバスかつ auto_scale=true のとき
             // ビューポートサイズ / 基準キャンバスサイズ
@@ -206,14 +248,14 @@ impl App {
             ];
 
             result.push(RootCanvasInfo {
-                entity:             actor.entity,
+                entity: actor.entity,
                 rect_m,
                 eff_w,
                 eff_h,
-                origin:             [origin_m[0][3], origin_m[1][3]],
-                world_rot:          ct.rotation.to_radians(),
+                origin: [origin_m[0][3], origin_m[1][3]],
+                world_rot: ct.rotation.to_radians(),
                 // 子のアンカー基準サイズにも自動解像度上書きを反映する
-                canvas_size:        root_auto.unwrap_or([cc.width, cc.height]),
+                canvas_size: root_auto.unwrap_or([cc.width, cc.height]),
                 child_cumul_scale,
             });
         }
@@ -241,21 +283,27 @@ impl App {
     /// frame_renderer 側で可変借用前に事前計算してから LineBatch へ流し込む。
     pub(super) fn collect_drag_hover_highlight_lines(&self) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
         let mut lines = Vec::new();
-        let Some(hover_entity) = self.drag_hover_canvas_entity else { return lines };
+        let Some(hover_entity) = self.drag_hover_canvas_entity else {
+            return lines;
+        };
         let infos = self.collect_root_canvas_infos();
-        let Some(info) = infos.iter().find(|i| i.entity == hover_entity) else { return lines };
+        let Some(info) = infos.iter().find(|i| i.entity == hover_entity) else {
+            return lines;
+        };
 
         // 矩形の 4 隅を ortho 空間へ変換する（collect_canvas_rects の tp と同一）
         let m = &info.rect_m;
         let tp = |lx: f32, ly: f32| -> [f32; 2] {
-            [m[0][0] * lx + m[0][1] * ly + m[0][3],
-             m[1][0] * lx + m[1][1] * ly + m[1][3]]
+            [
+                m[0][0] * lx + m[0][1] * ly + m[0][3],
+                m[1][0] * lx + m[1][1] * ly + m[1][3],
+            ]
         };
         let corners = [
-            tp(0.0,        0.0),
+            tp(0.0, 0.0),
             tp(info.eff_w, 0.0),
             tp(info.eff_w, info.eff_h),
-            tp(0.0,        info.eff_h),
+            tp(0.0, info.eff_h),
         ];
 
         // 矩形中心（コーナー平均）から外側方向へ各リングをオフセットする
@@ -267,14 +315,21 @@ impl App {
         for ring in 0..DRAG_HOVER_OUTLINE_RINGS {
             let offset = ring as f32 * DRAG_HOVER_OUTLINE_STEP_PX;
             // 各コーナーを中心から外側方向へ offset だけ移動した矩形を生成する
-            let ring_corners: Vec<[f32; 3]> = corners.iter().map(|c| {
-                let dx  = c[0] - center[0];
-                let dy  = c[1] - center[1];
-                let len = (dx * dx + dy * dy).sqrt().max(f32::EPSILON);
-                [c[0] + dx / len * offset, c[1] + dy / len * offset, 0.0]
-            }).collect();
+            let ring_corners: Vec<[f32; 3]> = corners
+                .iter()
+                .map(|c| {
+                    let dx = c[0] - center[0];
+                    let dy = c[1] - center[1];
+                    let len = (dx * dx + dy * dy).sqrt().max(f32::EPSILON);
+                    [c[0] + dx / len * offset, c[1] + dy / len * offset, 0.0]
+                })
+                .collect();
             for i in 0..4 {
-                lines.push((ring_corners[i], ring_corners[(i + 1) % 4], DRAG_HOVER_CANVAS_COL));
+                lines.push((
+                    ring_corners[i],
+                    ring_corners[(i + 1) % 4],
+                    DRAG_HOVER_CANVAS_COL,
+                ));
             }
         }
         lines

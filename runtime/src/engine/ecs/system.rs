@@ -11,8 +11,8 @@
 //    schedule.add_system(Phase::Update, FnSystem::new("model_update", model_update));
 // ============================================================
 
-use crate::engine::core::clock::FrameContext;
 use super::world::World;
+use crate::engine::core::clock::FrameContext;
 
 // ─── System トレイト ──────────────────────────────────────────────────────────
 
@@ -43,11 +43,18 @@ impl FnSystem {
         name: &'static str,
         f: impl FnMut(&mut World, &FrameContext) + Send + Sync + 'static,
     ) -> Self {
-        Self { name, func: Box::new(f) }
+        Self {
+            name,
+            func: Box::new(f),
+        }
     }
 }
 
 impl System for FnSystem {
-    fn name(&self) -> &'static str { self.name }
-    fn run(&mut self, world: &mut World, ctx: &FrameContext) { (self.func)(world, ctx); }
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn run(&mut self, world: &mut World, ctx: &FrameContext) {
+        (self.func)(world, ctx);
+    }
 }

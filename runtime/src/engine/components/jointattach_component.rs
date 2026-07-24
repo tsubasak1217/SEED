@@ -31,7 +31,9 @@ use crate::engine::ecs::Component;
 // マジックナンバー禁止のため、非ゼロ既定値はすべて関数に切り出す。
 
 /// offset_scale の既定値（等倍）。
-fn default_offset_scale() -> [f32; 3] { [1.0, 1.0, 1.0] }
+fn default_offset_scale() -> [f32; 3] {
+    [1.0, 1.0, 1.0]
+}
 
 // ─── JointAttachComponentData（シリアライズ用）───────────────
 
@@ -56,10 +58,10 @@ pub struct JointAttachComponentData {
 impl Default for JointAttachComponentData {
     fn default() -> Self {
         Self {
-            joint_name:     String::new(),
-            offset_pos:     [0.0, 0.0, 0.0],
+            joint_name: String::new(),
+            offset_pos: [0.0, 0.0, 0.0],
             offset_rot_deg: [0.0, 0.0, 0.0],
-            offset_scale:   default_offset_scale(),
+            offset_scale: default_offset_scale(),
         }
     }
 }
@@ -73,36 +75,38 @@ impl Default for JointAttachComponentData {
 /// 揮発状態は持たない（Data と同一構成）。
 #[derive(Clone, Debug)]
 pub struct JointAttachComponent {
-    pub joint_name:     String,
-    pub offset_pos:     [f32; 3],
+    pub joint_name: String,
+    pub offset_pos: [f32; 3],
     pub offset_rot_deg: [f32; 3],
-    pub offset_scale:   [f32; 3],
+    pub offset_scale: [f32; 3],
 }
 
 impl JointAttachComponent {
     /// シリアライズ用データからコンポーネントを構築する。
     pub fn from_data(data: JointAttachComponentData) -> Self {
         Self {
-            joint_name:     data.joint_name,
-            offset_pos:     data.offset_pos,
+            joint_name: data.joint_name,
+            offset_pos: data.offset_pos,
             offset_rot_deg: data.offset_rot_deg,
-            offset_scale:   data.offset_scale,
+            offset_scale: data.offset_scale,
         }
     }
 
     /// シリアライズ用データへ変換する。
     pub fn to_data(&self) -> JointAttachComponentData {
         JointAttachComponentData {
-            joint_name:     self.joint_name.clone(),
-            offset_pos:     self.offset_pos,
+            joint_name: self.joint_name.clone(),
+            offset_pos: self.offset_pos,
             offset_rot_deg: self.offset_rot_deg,
-            offset_scale:   self.offset_scale,
+            offset_scale: self.offset_scale,
         }
     }
 }
 
 impl Default for JointAttachComponent {
-    fn default() -> Self { Self::from_data(JointAttachComponentData::default()) }
+    fn default() -> Self {
+        Self::from_data(JointAttachComponentData::default())
+    }
 }
 
 impl Component for JointAttachComponent {}

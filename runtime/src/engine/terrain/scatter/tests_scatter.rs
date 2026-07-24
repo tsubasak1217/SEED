@@ -14,15 +14,15 @@
 use super::super::chunk_coord::ChunkCoord;
 use super::super::settings::TerrainSettings;
 use super::generate::{
-    hash_seed, restick_instances, scatter_brush, scatter_chunk_by_rules, surface_hit_down,
-    ScatterField, ScatterRng, MAX_SCATTER_GRID_PER_AXIS,
+    MAX_SCATTER_GRID_PER_AXIS, ScatterField, ScatterRng, hash_seed, restick_instances,
+    scatter_brush, scatter_chunk_by_rules, surface_hit_down,
 };
 use super::props::{
-    LayerCondition, PropKind, ScatterParams, ScatterRule, TerrainProp, TerrainPropSet,
-    GRASS_MAX_SEGMENTS, TERRAIN_MAX_PROPS,
+    GRASS_MAX_SEGMENTS, LayerCondition, PropKind, ScatterParams, ScatterRule, TERRAIN_MAX_PROPS,
+    TerrainProp, TerrainPropSet,
 };
 use super::tscatter::{
-    read_chunk, read_header, write_chunk, ScatterInstance, TscatterError, TSCATTER_MAGIC,
+    ScatterInstance, TSCATTER_MAGIC, TscatterError, read_chunk, read_header, write_chunk,
 };
 
 // ─── テスト用定数（マジックナンバー回避）─────────────────────────────────────
@@ -97,12 +97,18 @@ impl TestField {
 
     /// X 方向に傾いた斜面（dh/dx = slope_x）。
     fn sloped(h: f32, slope_x: f32) -> Self {
-        Self { slope_x, ..Self::flat(h) }
+        Self {
+            slope_x,
+            ..Self::flat(h)
+        }
     }
 
     /// 地面が一切ない場（全域 AIR）。
     fn empty() -> Self {
-        Self { has_ground: false, ..Self::flat(0.0) }
+        Self {
+            has_ground: false,
+            ..Self::flat(0.0)
+        }
     }
 
     /// レイヤ重みを差し替えたコピーを作る。
@@ -153,8 +159,14 @@ fn bit_identical(a: &[ScatterInstance], b: &[ScatterInstance]) -> bool {
         return false;
     }
     a.iter().zip(b.iter()).all(|(x, y)| {
-        x.pos.iter().zip(y.pos.iter()).all(|(p, q)| p.to_bits() == q.to_bits())
-            && x.normal.iter().zip(y.normal.iter()).all(|(p, q)| p.to_bits() == q.to_bits())
+        x.pos
+            .iter()
+            .zip(y.pos.iter())
+            .all(|(p, q)| p.to_bits() == q.to_bits())
+            && x.normal
+                .iter()
+                .zip(y.normal.iter())
+                .all(|(p, q)| p.to_bits() == q.to_bits())
             && x.yaw.to_bits() == y.yaw.to_bits()
             && x.scale.to_bits() == y.scale.to_bits()
             && x.prop_id == y.prop_id
@@ -168,7 +180,10 @@ fn always_prop(density: f32) -> TerrainPropSet {
         props: vec![TerrainProp {
             id: "always".to_string(),
             name: "Always".to_string(),
-            scatter: ScatterParams { density, ..ScatterParams::default() },
+            scatter: ScatterParams {
+                density,
+                ..ScatterParams::default()
+            },
             rule: ScatterRule {
                 // 窓を全開・フェード 0・閾値 0 にして確率を厳密に 1 に固定する。
                 slope_min_deg: 0.0,
@@ -215,7 +230,10 @@ fn tscatter_roundtrip_single_bit_exact() {
     }];
     let (got, got_coord) = read_chunk(&write_chunk(&src, coord)).expect("読めること");
     assert_eq!(got_coord, coord);
-    assert!(bit_identical(&src, &got), "1 件のラウンドトリップがビット一致しない");
+    assert!(
+        bit_identical(&src, &got),
+        "1 件のラウンドトリップがビット一致しない"
+    );
 }
 
 /// 多数のインスタンスでも順序とビット値が完全に保たれることを保証する。
@@ -236,7 +254,10 @@ fn tscatter_roundtrip_many_bit_exact() {
         })
         .collect();
     let (got, _) = read_chunk(&write_chunk(&src, coord)).expect("読めること");
-    assert!(bit_identical(&src, &got), "多数件のラウンドトリップがビット一致しない");
+    assert!(
+        bit_identical(&src, &got),
+        "多数件のラウンドトリップがビット一致しない"
+    );
 }
 
 /// マジックが違うバイト列を `BadMagic` として弾くことを保証する。
@@ -278,7 +299,10 @@ fn tscatter_truncated_header_is_rejected() {
 /// （末尾が欠けた／余分が付いたファイルを黙って読み込む回帰を防ぐ）
 #[test]
 fn tscatter_count_mismatch_is_rejected() {
-    let src = vec![instance([0.0, 0.0, 0.0], 0, 1), instance([1.0, 0.0, 0.0], 0, 2)];
+    let src = vec![
+        instance([0.0, 0.0, 0.0], 0, 1),
+        instance([1.0, 0.0, 0.0], 0, 2),
+    ];
     let bytes = write_chunk(&src, ChunkCoord::new(0, 0, 0));
 
     // 末尾を 1 バイト削る → 本体長が 2 件ぶんに足りない。
@@ -319,7 +343,10 @@ fn props_serde_roundtrip_preserves_default_set() {
         assert_eq!(a.id, b.id);
         assert_eq!(a.kind, b.kind);
         assert_eq!(a.scatter.density.to_bits(), b.scatter.density.to_bits());
-        assert_eq!(a.rule.slope_max_deg.to_bits(), b.rule.slope_max_deg.to_bits());
+        assert_eq!(
+            a.rule.slope_max_deg.to_bits(),
+            b.rule.slope_max_deg.to_bits()
+        );
         assert_eq!(a.rule.layer_conditions.len(), b.rule.layer_conditions.len());
     }
 }
@@ -347,9 +374,15 @@ fn props_minimal_json_fills_documented_defaults() {
     assert_eq!(p.wind.gust_speed.to_bits(), d.wind.gust_speed.to_bits());
     assert_eq!(p.scatter.density.to_bits(), d.scatter.density.to_bits());
     assert_eq!(p.scatter.align_to_normal, d.scatter.align_to_normal);
-    assert_eq!(p.rule.slope_max_deg.to_bits(), d.rule.slope_max_deg.to_bits());
+    assert_eq!(
+        p.rule.slope_max_deg.to_bits(),
+        d.rule.slope_max_deg.to_bits()
+    );
     assert_eq!(p.rule.threshold.to_bits(), d.rule.threshold.to_bits());
-    assert!(p.rule.layer_conditions.is_empty(), "レイヤ条件の既定は空であるべき");
+    assert!(
+        p.rule.layer_conditions.is_empty(),
+        "レイヤ条件の既定は空であるべき"
+    );
 }
 
 /// 未知のフィールドがあっても読み込みが壊れないことを保証する。
@@ -371,14 +404,18 @@ fn props_kind_is_serialized_lowercase() {
     assert_eq!(set.props[0].kind, PropKind::Model);
     assert_eq!(set.props[0].model_path.as_deref(), Some("a/b.glb"));
     let out = serde_json::to_string(&set).expect("直列化できること");
-    assert!(out.contains("\"model\""), "kind が小文字で書かれていない: {out}");
+    assert!(
+        out.contains("\"model\""),
+        "kind が小文字で書かれていない: {out}"
+    );
 }
 
 /// レイヤ条件の min_weight が省略できることを保証する。
 /// （条件を名前だけ書いた props.json が読めなくなる回帰を防ぐ）
 #[test]
 fn props_layer_condition_min_weight_defaults() {
-    let json = r#"{"props":[{"id":"g","name":"g","rule":{"layer_conditions":[{"layer":"rock"}]}}]}"#;
+    let json =
+        r#"{"props":[{"id":"g","name":"g","rule":{"layer_conditions":[{"layer":"rock"}]}}]}"#;
     let set = TerrainPropSet::from_json_str(json).expect("読めること");
     let cond = &set.props[0].rule.layer_conditions[0];
     assert_eq!(cond.layer, "rock");
@@ -399,7 +436,11 @@ fn props_are_truncated_at_max() {
         .collect();
     let json = format!(r#"{{"props":[{}]}}"#, items.join(","));
     let set = TerrainPropSet::from_json_str(&json).expect("読めること");
-    assert_eq!(set.props.len(), TERRAIN_MAX_PROPS, "上限で切り詰められていない");
+    assert_eq!(
+        set.props.len(),
+        TERRAIN_MAX_PROPS,
+        "上限で切り詰められていない"
+    );
     assert_eq!(set.active_count(), TERRAIN_MAX_PROPS);
     // 先頭側が残ること（末尾から削られていない）。
     assert_eq!(set.props[0].id, "p0");
@@ -410,9 +451,18 @@ fn props_are_truncated_at_max() {
 #[test]
 fn empty_props_falls_back_to_default_set() {
     let set = TerrainPropSet::from_json_str(r#"{"props":[]}"#).expect("読めること");
-    assert!(!set.props.is_empty(), "空 JSON が既定へフォールバックしていない");
-    assert!(set.find_by_id("grass_field").is_some(), "既定の草プロップが無い");
-    assert!(set.find_by_id("tree_pine").is_some(), "既定の木プロップが無い");
+    assert!(
+        !set.props.is_empty(),
+        "空 JSON が既定へフォールバックしていない"
+    );
+    assert!(
+        set.find_by_id("grass_field").is_some(),
+        "既定の草プロップが無い"
+    );
+    assert!(
+        set.find_by_id("tree_pine").is_some(),
+        "既定の木プロップが無い"
+    );
 }
 
 /// 既定セットの中身（種別・密度・草の可視性）が意図どおりであることを保証する。
@@ -421,7 +471,10 @@ fn empty_props_falls_back_to_default_set() {
 fn default_set_produces_visible_grass_on_flat_ground() {
     let set = TerrainPropSet::default();
     let (idx, grass) = set.find_by_id("grass_field").expect("既定の草プロップ");
-    assert_eq!(idx, 0, "草プロップは先頭にあること（既定 prop_id=0 の前提）");
+    assert_eq!(
+        idx, 0,
+        "草プロップは先頭にあること（既定 prop_id=0 の前提）"
+    );
     assert_eq!(grass.kind, PropKind::Grass);
     assert!(grass.scatter.density >= 1.0, "既定の草密度が疎すぎる");
 
@@ -431,15 +484,25 @@ fn default_set_produces_visible_grass_on_flat_ground() {
 
     let (_, tree) = set.find_by_id("tree_pine").expect("既定の木プロップ");
     assert_eq!(tree.kind, PropKind::Model);
-    assert!(tree.scatter.density < grass.scatter.density, "木が草より密なのはおかしい");
-    assert!(!tree.scatter.align_to_normal, "木は地表法線に沿わせない想定");
+    assert!(
+        tree.scatter.density < grass.scatter.density,
+        "木が草より密なのはおかしい"
+    );
+    assert!(
+        !tree.scatter.align_to_normal,
+        "木は地表法線に沿わせない想定"
+    );
 }
 
 /// find_by_id が未知 ID に None を返すことを保証する。
 /// （存在しない ID でパニックする回帰を防ぐ）
 #[test]
 fn find_by_id_returns_none_for_unknown() {
-    assert!(TerrainPropSet::default().find_by_id("no_such_prop").is_none());
+    assert!(
+        TerrainPropSet::default()
+            .find_by_id("no_such_prop")
+            .is_none()
+    );
 }
 
 /// 草の分割数が 1..=GRASS_MAX_SEGMENTS へ丸められることを保証する。
@@ -472,9 +535,18 @@ fn rule_evaluate_inside_is_one_outside_is_zero() {
         threshold: 0.0,
     };
     let any = |_: &str| 1.0;
-    assert!((rule.evaluate(20.0, 5.0, &any) - 1.0).abs() < PROB_EPS, "窓の内側が 1 でない");
-    assert!(rule.evaluate(40.0, 5.0, &any) < PROB_EPS, "斜度が窓の外なのに 0 でない");
-    assert!(rule.evaluate(20.0, 50.0, &any) < PROB_EPS, "高度が窓の外なのに 0 でない");
+    assert!(
+        (rule.evaluate(20.0, 5.0, &any) - 1.0).abs() < PROB_EPS,
+        "窓の内側が 1 でない"
+    );
+    assert!(
+        rule.evaluate(40.0, 5.0, &any) < PROB_EPS,
+        "斜度が窓の外なのに 0 でない"
+    );
+    assert!(
+        rule.evaluate(20.0, 50.0, &any) < PROB_EPS,
+        "高度が窓の外なのに 0 でない"
+    );
 }
 
 /// フェード領域が単調増加であることを保証する。
@@ -497,7 +569,10 @@ fn rule_evaluate_fade_edge_is_monotonic() {
     for i in 0..=STEPS {
         let slope = 30.0 + 10.0 * (i as f32 / STEPS as f32);
         let p = rule.evaluate(slope, 0.0, &any);
-        assert!(p <= prev + PROB_EPS, "フェードが単調減少していない slope={slope} p={p}");
+        assert!(
+            p <= prev + PROB_EPS,
+            "フェードが単調減少していない slope={slope} p={p}"
+        );
         prev = p;
     }
     assert!(prev < PROB_EPS, "フェード終端で 0 に落ちていない: {prev}");
@@ -511,7 +586,10 @@ fn rule_evaluate_layer_condition_gates() {
         slope_fade_deg: 0.0,
         height_fade: 0.0,
         threshold: 0.0,
-        layer_conditions: vec![LayerCondition { layer: "grass".to_string(), min_weight: 0.5 }],
+        layer_conditions: vec![LayerCondition {
+            layer: "grass".to_string(),
+            min_weight: 0.5,
+        }],
         ..ScatterRule::default()
     };
     // 重み十分 → 1。
@@ -531,14 +609,23 @@ fn rule_evaluate_multiple_layer_conditions_are_anded() {
         height_fade: 0.0,
         threshold: 0.0,
         layer_conditions: vec![
-            LayerCondition { layer: "grass".to_string(), min_weight: 0.5 },
-            LayerCondition { layer: "rock".to_string(), min_weight: 0.5 },
+            LayerCondition {
+                layer: "grass".to_string(),
+                min_weight: 0.5,
+            },
+            LayerCondition {
+                layer: "rock".to_string(),
+                min_weight: 0.5,
+            },
         ],
         ..ScatterRule::default()
     };
     // "grass" だけ重みがあり "rock" は 0 → 全体は 0。
     let only_grass = |name: &str| if name == "grass" { 1.0 } else { 0.0 };
-    assert!(rule.evaluate(0.0, 0.0, &only_grass) < PROB_EPS, "AND 合成になっていない");
+    assert!(
+        rule.evaluate(0.0, 0.0, &only_grass) < PROB_EPS,
+        "AND 合成になっていない"
+    );
     // 両方あれば 1。
     assert!((rule.evaluate(0.0, 0.0, &|_| 1.0) - 1.0).abs() < PROB_EPS);
 }
@@ -575,11 +662,22 @@ fn rule_evaluate_threshold_cuts_tail() {
 fn surface_hit_on_flat_plane_returns_height_and_up_normal() {
     let field = TestField::flat(TEST_GROUND_HEIGHT);
     let (hit, normal) = surface_hit_down(&field, 1.0, 2.0, 16.0, 0.0).expect("平面に当たること");
-    assert!((hit[1] - TEST_GROUND_HEIGHT).abs() < HIT_Y_EPS, "接地 Y がずれている: {}", hit[1]);
-    assert!((hit[0] - 1.0).abs() < NORMAL_EPS && (hit[2] - 2.0).abs() < NORMAL_EPS, "XZ が動いた");
+    assert!(
+        (hit[1] - TEST_GROUND_HEIGHT).abs() < HIT_Y_EPS,
+        "接地 Y がずれている: {}",
+        hit[1]
+    );
+    assert!(
+        (hit[0] - 1.0).abs() < NORMAL_EPS && (hit[2] - 2.0).abs() < NORMAL_EPS,
+        "XZ が動いた"
+    );
     assert!(normal[1] > 0.0, "法線が下向き（符号規約違反）: {normal:?}");
     assert!((normal[0]).abs() < NORMAL_EPS, "水平面なのに X 成分がある");
-    assert!((normal[1] - 1.0).abs() < NORMAL_EPS, "水平面の法線 Y が 1 でない: {}", normal[1]);
+    assert!(
+        (normal[1] - 1.0).abs() < NORMAL_EPS,
+        "水平面の法線 Y が 1 でない: {}",
+        normal[1]
+    );
     assert!((normal[2]).abs() < NORMAL_EPS, "水平面なのに Z 成分がある");
 }
 
@@ -611,8 +709,16 @@ fn surface_hit_on_slope_yields_expected_tilt() {
     let (_, normal) = surface_hit_down(&field, 0.0, 0.0, 16.0, 0.0).expect("斜面に当たること");
     /// 45 度斜面の法線成分の期待値（1/√2）。
     const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;
-    assert!((normal[1] - INV_SQRT2).abs() < NORMAL_EPS, "斜面法線 Y が想定外: {}", normal[1]);
-    assert!((normal[0] + INV_SQRT2).abs() < NORMAL_EPS, "斜面法線 X が想定外: {}", normal[0]);
+    assert!(
+        (normal[1] - INV_SQRT2).abs() < NORMAL_EPS,
+        "斜面法線 Y が想定外: {}",
+        normal[1]
+    );
+    assert!(
+        (normal[0] + INV_SQRT2).abs() < NORMAL_EPS,
+        "斜面法線 X が想定外: {}",
+        normal[0]
+    );
     assert!(normal[1] > 0.0, "斜面でも法線は上向きであるべき");
 }
 
@@ -639,7 +745,10 @@ fn scatter_is_bit_deterministic() {
     let a = scatter_chunk_by_rules(&field, &props, &[0], coord, TEST_SEED_A);
     let b = scatter_chunk_by_rules(&field, &props, &[0], coord, TEST_SEED_A);
     assert!(!a.is_empty(), "テスト前提: 何かしら生えていること");
-    assert!(bit_identical(&a, &b), "同一入力なのに結果がビット一致しない");
+    assert!(
+        bit_identical(&a, &b),
+        "同一入力なのに結果がビット一致しない"
+    );
 }
 
 /// グローバルシードを変えると結果が変わることを保証する。
@@ -672,12 +781,36 @@ fn scatter_differs_with_chunk_coord() {
 #[test]
 fn hash_seed_reacts_to_every_input() {
     let base = hash_seed(1, ChunkCoord::new(1, 2, 3), 4, 5);
-    assert_ne!(base, hash_seed(2, ChunkCoord::new(1, 2, 3), 4, 5), "global_seed が効いていない");
-    assert_ne!(base, hash_seed(1, ChunkCoord::new(9, 2, 3), 4, 5), "coord.x が効いていない");
-    assert_ne!(base, hash_seed(1, ChunkCoord::new(1, 9, 3), 4, 5), "coord.y が効いていない");
-    assert_ne!(base, hash_seed(1, ChunkCoord::new(1, 2, 9), 4, 5), "coord.z が効いていない");
-    assert_ne!(base, hash_seed(1, ChunkCoord::new(1, 2, 3), 9, 5), "prop_index が効いていない");
-    assert_ne!(base, hash_seed(1, ChunkCoord::new(1, 2, 3), 4, 9), "cell_index が効いていない");
+    assert_ne!(
+        base,
+        hash_seed(2, ChunkCoord::new(1, 2, 3), 4, 5),
+        "global_seed が効いていない"
+    );
+    assert_ne!(
+        base,
+        hash_seed(1, ChunkCoord::new(9, 2, 3), 4, 5),
+        "coord.x が効いていない"
+    );
+    assert_ne!(
+        base,
+        hash_seed(1, ChunkCoord::new(1, 9, 3), 4, 5),
+        "coord.y が効いていない"
+    );
+    assert_ne!(
+        base,
+        hash_seed(1, ChunkCoord::new(1, 2, 9), 4, 5),
+        "coord.z が効いていない"
+    );
+    assert_ne!(
+        base,
+        hash_seed(1, ChunkCoord::new(1, 2, 3), 9, 5),
+        "prop_index が効いていない"
+    );
+    assert_ne!(
+        base,
+        hash_seed(1, ChunkCoord::new(1, 2, 3), 4, 9),
+        "cell_index が効いていない"
+    );
 }
 
 /// ScatterRng の next_f32 が [0,1) に収まることを保証する。
@@ -708,8 +841,7 @@ fn scatter_count_matches_density_within_band() {
     let field = TestField::flat(TEST_GROUND_HEIGHT);
     let props = always_prop(COUNT_TEST_DENSITY);
     let extent = field.settings.chunk_extent();
-    let insts =
-        scatter_chunk_by_rules(&field, &props, &[0], ChunkCoord::new(0, 0, 0), TEST_SEED_A);
+    let insts = scatter_chunk_by_rules(&field, &props, &[0], ChunkCoord::new(0, 0, 0), TEST_SEED_A);
 
     let expected = COUNT_TEST_DENSITY * extent * extent;
     let ratio = insts.len() as f32 / expected;
@@ -732,11 +864,13 @@ fn scatter_instances_stay_inside_chunk_footprint() {
     for inst in scatter_chunk_by_rules(&field, &props, &[0], coord, TEST_SEED_A) {
         assert!(
             inst.pos[0] >= origin[0] && inst.pos[0] < origin[0] + extent,
-            "X がチャンク外: {}", inst.pos[0]
+            "X がチャンク外: {}",
+            inst.pos[0]
         );
         assert!(
             inst.pos[2] >= origin[2] && inst.pos[2] < origin[2] + extent,
-            "Z がチャンク外: {}", inst.pos[2]
+            "Z がチャンク外: {}",
+            inst.pos[2]
         );
     }
 }
@@ -748,11 +882,16 @@ fn scatter_produces_nothing_when_rule_rejects() {
     // レイヤ重み 0 の場に、レイヤ条件付きのプロップを撒く。
     let field = TestField::flat(TEST_GROUND_HEIGHT).with_layer_weight(0.0);
     let mut props = always_prop(COUNT_TEST_DENSITY);
-    props.props[0].rule.layer_conditions =
-        vec![LayerCondition { layer: "grass".to_string(), min_weight: 0.5 }];
-    let insts =
-        scatter_chunk_by_rules(&field, &props, &[0], ChunkCoord::new(0, 0, 0), TEST_SEED_A);
-    assert!(insts.is_empty(), "ルール不成立なのに {} 本生えた", insts.len());
+    props.props[0].rule.layer_conditions = vec![LayerCondition {
+        layer: "grass".to_string(),
+        min_weight: 0.5,
+    }];
+    let insts = scatter_chunk_by_rules(&field, &props, &[0], ChunkCoord::new(0, 0, 0), TEST_SEED_A);
+    assert!(
+        insts.is_empty(),
+        "ルール不成立なのに {} 本生えた",
+        insts.len()
+    );
 }
 
 /// 範囲外のプロップ添字を指定してもパニックせず無視されることを保証する。
@@ -773,11 +912,18 @@ fn scatter_grid_is_clamped_for_absurd_density() {
     let field = TestField::flat(TEST_GROUND_HEIGHT);
     // 1 m² に 100 万本という非現実的な指定。
     let props = always_prop(1.0e6);
-    let insts =
-        scatter_chunk_by_rules(&field, &props, &[0], ChunkCoord::new(0, 0, 0), TEST_SEED_A);
+    let insts = scatter_chunk_by_rules(&field, &props, &[0], ChunkCoord::new(0, 0, 0), TEST_SEED_A);
     let cap = (MAX_SCATTER_GRID_PER_AXIS * MAX_SCATTER_GRID_PER_AXIS) as usize;
-    assert!(insts.len() <= cap, "グリッド上限 {cap} を超えた: {}", insts.len());
-    assert_eq!(insts.len(), cap, "上限に張り付いていない（全採用ルールなので一致するはず）");
+    assert!(
+        insts.len() <= cap,
+        "グリッド上限 {cap} を超えた: {}",
+        insts.len()
+    );
+    assert_eq!(
+        insts.len(),
+        cap,
+        "上限に張り付いていない（全採用ルールなので一致するはず）"
+    );
 }
 
 /// ブラシ追加がブラシ半径の内側にだけインスタンスを置くことを保証する。
@@ -788,8 +934,17 @@ fn brush_adds_only_inside_radius() {
     let props = always_prop(BRUSH_DENSITY);
     let center = [0.0, TEST_GROUND_HEIGHT, 0.0];
     let mut insts = Vec::new();
-    let changed =
-        scatter_brush(&field, &props, 0, &mut insts, center, BRUSH_RADIUS, BRUSH_DENSITY, false, TEST_SEED_A);
+    let changed = scatter_brush(
+        &field,
+        &props,
+        0,
+        &mut insts,
+        center,
+        BRUSH_RADIUS,
+        BRUSH_DENSITY,
+        false,
+        TEST_SEED_A,
+    );
 
     assert!(changed, "ブラシで何も追加されなかった");
     assert!(!insts.is_empty());
@@ -797,7 +952,10 @@ fn brush_adds_only_inside_radius() {
         let dx = inst.pos[0] - center[0];
         let dz = inst.pos[2] - center[2];
         let d = (dx * dx + dz * dz).sqrt();
-        assert!(d <= BRUSH_RADIUS + RADIUS_EPS, "半径 {BRUSH_RADIUS} の外に置かれた: {d}");
+        assert!(
+            d <= BRUSH_RADIUS + RADIUS_EPS,
+            "半径 {BRUSH_RADIUS} の外に置かれた: {d}"
+        );
     }
 }
 
@@ -809,12 +967,21 @@ fn brush_erase_removes_only_inside_radius() {
     let props = always_prop(BRUSH_DENSITY);
     let center = [0.0, TEST_GROUND_HEIGHT, 0.0];
     let mut insts = vec![
-        instance([0.0, TEST_GROUND_HEIGHT, 0.0], 0, 1),          // 中心（消える）
-        instance([2.0, TEST_GROUND_HEIGHT, 0.0], 0, 2),          // 半径内（消える）
-        instance([10.0, TEST_GROUND_HEIGHT, 0.0], 0, 3),         // 半径外（残る）
+        instance([0.0, TEST_GROUND_HEIGHT, 0.0], 0, 1), // 中心（消える）
+        instance([2.0, TEST_GROUND_HEIGHT, 0.0], 0, 2), // 半径内（消える）
+        instance([10.0, TEST_GROUND_HEIGHT, 0.0], 0, 3), // 半径外（残る）
     ];
-    let changed =
-        scatter_brush(&field, &props, 0, &mut insts, center, BRUSH_RADIUS, BRUSH_DENSITY, true, TEST_SEED_A);
+    let changed = scatter_brush(
+        &field,
+        &props,
+        0,
+        &mut insts,
+        center,
+        BRUSH_RADIUS,
+        BRUSH_DENSITY,
+        true,
+        TEST_SEED_A,
+    );
 
     assert!(changed, "消去が変化なし扱いになった");
     assert_eq!(insts.len(), 1, "消去件数が想定外");
@@ -833,7 +1000,17 @@ fn brush_erase_removes_all_prop_kinds() {
         instance([0.0, TEST_GROUND_HEIGHT, 0.0], 0, 1),
         instance([1.0, TEST_GROUND_HEIGHT, 0.0], 7, 2),
     ];
-    scatter_brush(&field, &props, 0, &mut insts, center, BRUSH_RADIUS, BRUSH_DENSITY, true, TEST_SEED_A);
+    scatter_brush(
+        &field,
+        &props,
+        0,
+        &mut insts,
+        center,
+        BRUSH_RADIUS,
+        BRUSH_DENSITY,
+        true,
+        TEST_SEED_A,
+    );
     assert!(insts.is_empty(), "prop_index 以外の種が消し残った");
 }
 
@@ -845,8 +1022,15 @@ fn brush_erase_on_empty_reports_no_change() {
     let props = always_prop(BRUSH_DENSITY);
     let mut insts: Vec<ScatterInstance> = Vec::new();
     let changed = scatter_brush(
-        &field, &props, 0, &mut insts, [0.0, TEST_GROUND_HEIGHT, 0.0],
-        BRUSH_RADIUS, BRUSH_DENSITY, true, TEST_SEED_A,
+        &field,
+        &props,
+        0,
+        &mut insts,
+        [0.0, TEST_GROUND_HEIGHT, 0.0],
+        BRUSH_RADIUS,
+        BRUSH_DENSITY,
+        true,
+        TEST_SEED_A,
     );
     assert!(!changed, "空リストの消去が変化ありと報告された");
 }
@@ -860,13 +1044,32 @@ fn brush_min_spacing_rejects_stacking() {
     let center = [0.0, TEST_GROUND_HEIGHT, 0.0];
     let mut insts = Vec::new();
 
-    scatter_brush(&field, &props, 0, &mut insts, center, BRUSH_RADIUS, BRUSH_DENSITY, false, TEST_SEED_A);
+    scatter_brush(
+        &field,
+        &props,
+        0,
+        &mut insts,
+        center,
+        BRUSH_RADIUS,
+        BRUSH_DENSITY,
+        false,
+        TEST_SEED_A,
+    );
     let after_first = insts.len();
     assert!(after_first > 0, "1 回目で何も生えていない");
 
     // まったく同じストロークを繰り返す → 全候補が最小間隔に引っかかる。
-    let changed =
-        scatter_brush(&field, &props, 0, &mut insts, center, BRUSH_RADIUS, BRUSH_DENSITY, false, TEST_SEED_A);
+    let changed = scatter_brush(
+        &field,
+        &props,
+        0,
+        &mut insts,
+        center,
+        BRUSH_RADIUS,
+        BRUSH_DENSITY,
+        false,
+        TEST_SEED_A,
+    );
     assert!(!changed, "同一ストロークの重ね塗りで追加が発生した");
     assert_eq!(insts.len(), after_first, "重ね塗りで本数が増えた");
 }
@@ -880,8 +1083,15 @@ fn brush_result_satisfies_min_spacing() {
     let props = always_prop(BRUSH_DENSITY);
     let mut insts = Vec::new();
     scatter_brush(
-        &field, &props, 0, &mut insts, [0.0, TEST_GROUND_HEIGHT, 0.0],
-        BRUSH_RADIUS, BRUSH_DENSITY, false, TEST_SEED_A,
+        &field,
+        &props,
+        0,
+        &mut insts,
+        [0.0, TEST_GROUND_HEIGHT, 0.0],
+        BRUSH_RADIUS,
+        BRUSH_DENSITY,
+        false,
+        TEST_SEED_A,
     );
     let min_spacing = MIN_INSTANCE_SPACING_FACTOR / BRUSH_DENSITY.sqrt();
     for i in 0..insts.len() {
@@ -889,7 +1099,10 @@ fn brush_result_satisfies_min_spacing() {
             let dx = insts[i].pos[0] - insts[j].pos[0];
             let dz = insts[i].pos[2] - insts[j].pos[2];
             let d = (dx * dx + dz * dz).sqrt();
-            assert!(d >= min_spacing - RADIUS_EPS, "最小間隔 {min_spacing} 未満の対がある: {d}");
+            assert!(
+                d >= min_spacing - RADIUS_EPS,
+                "最小間隔 {min_spacing} 未満の対がある: {d}"
+            );
         }
     }
 }
@@ -902,8 +1115,15 @@ fn brush_with_non_positive_radius_does_nothing() {
     let props = always_prop(BRUSH_DENSITY);
     let mut insts = vec![instance([0.0, TEST_GROUND_HEIGHT, 0.0], 0, 1)];
     let changed = scatter_brush(
-        &field, &props, 0, &mut insts, [0.0, TEST_GROUND_HEIGHT, 0.0],
-        0.0, BRUSH_DENSITY, true, TEST_SEED_A,
+        &field,
+        &props,
+        0,
+        &mut insts,
+        [0.0, TEST_GROUND_HEIGHT, 0.0],
+        0.0,
+        BRUSH_DENSITY,
+        true,
+        TEST_SEED_A,
     );
     assert!(!changed);
     assert_eq!(insts.len(), 1, "半径 0 の消去で個体が消えた");
@@ -960,8 +1180,12 @@ fn restick_keeps_order_of_survivors() {
         instance([1.0, TEST_GROUND_HEIGHT + 100.0, 0.0], 0, 20),
         instance([2.0, TEST_GROUND_HEIGHT, 0.0], 0, 30),
     ];
-    let removed =
-        restick_instances(&TestField::flat(TEST_GROUND_HEIGHT), &props, &mut insts, RESTICK_SEARCH);
+    let removed = restick_instances(
+        &TestField::flat(TEST_GROUND_HEIGHT),
+        &props,
+        &mut insts,
+        RESTICK_SEARCH,
+    );
     assert_eq!(removed, 1);
     let seeds: Vec<u32> = insts.iter().map(|i| i.seed).collect();
     assert_eq!(seeds, vec![10, 30], "生存個体の順序が保たれていない");
@@ -976,8 +1200,12 @@ fn restick_removes_orphan_prop_ids() {
         instance([0.0, TEST_GROUND_HEIGHT, 0.0], 0, 1),
         instance([1.0, TEST_GROUND_HEIGHT, 0.0], 5, 2), // 存在しない添字
     ];
-    let removed =
-        restick_instances(&TestField::flat(TEST_GROUND_HEIGHT), &props, &mut insts, RESTICK_SEARCH);
+    let removed = restick_instances(
+        &TestField::flat(TEST_GROUND_HEIGHT),
+        &props,
+        &mut insts,
+        RESTICK_SEARCH,
+    );
     assert_eq!(removed, 1);
     assert_eq!(insts.len(), 1);
     assert_eq!(insts[0].prop_id, 0);
@@ -994,5 +1222,8 @@ fn restick_result_survives_tscatter_roundtrip() {
 
     let coord = ChunkCoord::new(0, 0, 0);
     let (got, _) = read_chunk(&write_chunk(&insts, coord)).expect("読めること");
-    assert!(bit_identical(&insts, &got), "再接地結果の往復がビット一致しない");
+    assert!(
+        bit_identical(&insts, &got),
+        "再接地結果の往復がビット一致しない"
+    );
 }

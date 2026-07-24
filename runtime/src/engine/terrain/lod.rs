@@ -37,7 +37,7 @@
 
 use super::chunk_data::TerrainChunkData;
 use super::layers::BlendSlots;
-use super::marching_cubes::{generate_standalone, TerrainMesh, TerrainVertexEdge};
+use super::marching_cubes::{TerrainMesh, TerrainVertexEdge, generate_standalone};
 use super::settings::TerrainSettings;
 
 // ─── LOD 段の定義（データドリブン・マジックナンバー禁止） ─────────────────────
@@ -161,16 +161,15 @@ fn add_boundary_skirt(mesh: &mut TerrainMesh, extent: f32, skirt_depth: f32, eps
     // 4 つの側面の (「面上か」を判定する関数, その面の外向き水平法線)。
     //   axis: 0=x, 2=z。value: 0.0 か extent。
     let faces: [(usize, f32, [f32; 3]); 4] = [
-        (0, 0.0, [-1.0, 0.0, 0.0]),    // x=0     面（外向き -X）
-        (0, extent, [1.0, 0.0, 0.0]),  // x=extent 面（外向き +X）
-        (2, 0.0, [0.0, 0.0, -1.0]),    // z=0     面（外向き -Z）
-        (2, extent, [0.0, 0.0, 1.0]),  // z=extent 面（外向き +Z）
+        (0, 0.0, [-1.0, 0.0, 0.0]),   // x=0     面（外向き -X）
+        (0, extent, [1.0, 0.0, 0.0]), // x=extent 面（外向き +X）
+        (2, 0.0, [0.0, 0.0, -1.0]),   // z=0     面（外向き -Z）
+        (2, extent, [0.0, 0.0, 1.0]), // z=extent 面（外向き +Z）
     ];
 
     // 頂点が指定面に載っているか。
-    let on_face = |pos: [f32; 3], axis: usize, value: f32| -> bool {
-        (pos[axis] - value).abs() <= eps
-    };
+    let on_face =
+        |pos: [f32; 3], axis: usize, value: f32| -> bool { (pos[axis] - value).abs() <= eps };
 
     // MC 出力の三角形は今後スカートを足すぶんだけ増えるので、辺の走査は
     // 「元の三角形数」に固定してから行う（スカート自身の辺を再検出しないため）。
@@ -218,9 +217,21 @@ fn push_skirt_quad(
     // ダミー値で埋める（長さだけ positions と揃える）。
     let paint_a = mesh.paint.get(top_a as usize).copied().unwrap_or_default();
     let paint_b = mesh.paint.get(top_b as usize).copied().unwrap_or_default();
-    let amount_a = mesh.paint_amount.get(top_a as usize).copied().unwrap_or(0.0);
-    let amount_b = mesh.paint_amount.get(top_b as usize).copied().unwrap_or(0.0);
-    let dummy_edge = TerrainVertexEdge { lo: [0, 0, 0], axis: 0, t: 0.0 };
+    let amount_a = mesh
+        .paint_amount
+        .get(top_a as usize)
+        .copied()
+        .unwrap_or(0.0);
+    let amount_b = mesh
+        .paint_amount
+        .get(top_b as usize)
+        .copied()
+        .unwrap_or(0.0);
+    let dummy_edge = TerrainVertexEdge {
+        lo: [0, 0, 0],
+        axis: 0,
+        t: 0.0,
+    };
 
     let idx_ba = mesh.positions.len() as u32;
     mesh.positions.push(ba);
@@ -301,13 +312,20 @@ mod tests {
         let chunk = sphere_chunk(&settings);
 
         let full = generate_standalone(&chunk, &settings).triangle_count();
-        let lod1 = generate_lod_mesh(&chunk, &settings, 2).unwrap().triangle_count();
-        let lod2 = generate_lod_mesh(&chunk, &settings, 4).unwrap().triangle_count();
+        let lod1 = generate_lod_mesh(&chunk, &settings, 2)
+            .unwrap()
+            .triangle_count();
+        let lod2 = generate_lod_mesh(&chunk, &settings, 4)
+            .unwrap()
+            .triangle_count();
 
         assert!(full > 0, "フルメッシュが空");
         // 球は境界を横切らないためスカートは 0。純粋に間引き効果だけを見る。
         assert!(lod1 < full, "LOD1 がフルより減っていない: {lod1} vs {full}");
-        assert!(lod2 < lod1, "LOD2 が LOD1 より減っていない: {lod2} vs {lod1}");
+        assert!(
+            lod2 < lod1,
+            "LOD2 が LOD1 より減っていない: {lod2} vs {lod1}"
+        );
         // おおよそ面積比（1/4・1/16）に乗る。係数は緩めに取り、桁が合うことだけ固定する。
         assert!(
             (lod1 as f32) < (full as f32) * 0.5,

@@ -27,14 +27,14 @@
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
-    pub view_proj:  [[f32; 4]; 4],
-    pub view:       [[f32; 4]; 4],
+    pub view_proj: [[f32; 4]; 4],
+    pub view: [[f32; 4]; 4],
     /// ワールド空間でのカメラ位置（スペキュラ計算用）
-    pub position:   [f32; 3],
-    pub _pad:       f32,
+    pub position: [f32; 3],
+    pub _pad: f32,
     /// ビューポートの解像度（ピクセル）。ギズモ太線計算に使用。
     pub resolution: [f32; 2],
-    pub _pad2:      [f32; 2],
+    pub _pad2: [f32; 2],
     /// 逆 ViewProjection 行列（NDC → ワールド座標の復元用）。
     ///
     /// Phase D3（G-Buffer デファード化）のライティングパス（deferred_lighting.wgsl）が、
@@ -54,8 +54,15 @@ impl CameraUniform {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ];
-        Self { view_proj: id, view: id, position: [0.0; 3], _pad: 0.0,
-               resolution: [1280.0, 720.0], _pad2: [0.0; 2], inv_view_proj: id }
+        Self {
+            view_proj: id,
+            view: id,
+            position: [0.0; 3],
+            _pad: 0.0,
+            resolution: [1280.0, 720.0],
+            _pad2: [0.0; 2],
+            inv_view_proj: id,
+        }
     }
 }
 
@@ -72,7 +79,7 @@ impl CameraUniform {
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ModelUniform {
     /// モデル行列（ローカル空間→ワールド空間）
-    pub model:         [[f32; 4]; 4],
+    pub model: [[f32; 4]; 4],
     /// 法線変換行列 = transpose(inverse(model)) の 3x3 部分を 4x4 に拡張
     pub normal_matrix: [[f32; 4]; 4],
 }
@@ -85,13 +92,19 @@ impl ModelUniform {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ];
-        Self { model: id, normal_matrix: id }
+        Self {
+            model: id,
+            normal_matrix: id,
+        }
     }
 
     /// モデル行列から生成する（法線行列は自動計算）。
     pub fn from_matrix(model: [[f32; 4]; 4]) -> Self {
         let nm = normal_matrix_from_model(&model);
-        Self { model, normal_matrix: nm }
+        Self {
+            model,
+            normal_matrix: nm,
+        }
     }
 }
 
@@ -101,16 +114,31 @@ fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     let (d, e, f) = (m[1][0], m[1][1], m[1][2]);
     let (g, h, i) = (m[2][0], m[2][1], m[2][2]);
 
-    let det = a*(e*i - f*h) - b*(d*i - f*g) + c*(d*h - e*g);
+    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
     if det.abs() < 1e-6 {
         return *m; // 特異行列フォールバック
     }
     let inv = 1.0 / det;
 
     [
-        [ (e*i-f*h)*inv, -(d*i-f*g)*inv,  (d*h-e*g)*inv, 0.0],
-        [-(b*i-c*h)*inv,  (a*i-c*g)*inv, -(a*h-b*g)*inv, 0.0],
-        [ (b*f-c*e)*inv, -(a*f-c*d)*inv,  (a*e-b*d)*inv, 0.0],
+        [
+            (e * i - f * h) * inv,
+            -(d * i - f * g) * inv,
+            (d * h - e * g) * inv,
+            0.0,
+        ],
+        [
+            -(b * i - c * h) * inv,
+            (a * i - c * g) * inv,
+            -(a * h - b * g) * inv,
+            0.0,
+        ],
+        [
+            (b * f - c * e) * inv,
+            -(a * f - c * d) * inv,
+            (a * e - b * d) * inv,
+            0.0,
+        ],
         [0.0, 0.0, 0.0, 1.0],
     ]
 }
@@ -140,33 +168,33 @@ fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MaterialUniform {
-    pub base_color_factor:  [f32; 4],
-    pub metallic_factor:    f32,
-    pub roughness_factor:   f32,
+    pub base_color_factor: [f32; 4],
+    pub metallic_factor: f32,
+    pub roughness_factor: f32,
     /// Mask モードのカットオフ値（0.0 の場合は破棄なし）
-    pub alpha_cutoff:       f32,
+    pub alpha_cutoff: f32,
     pub has_base_color_tex: u32,
-    pub emissive_factor:    [f32; 3],
-    pub has_normal_tex:     u32,
-    pub has_mr_tex:         u32,
-    pub has_occlusion_tex:  u32,
-    pub has_emissive_tex:   u32,
+    pub emissive_factor: [f32; 3],
+    pub has_normal_tex: u32,
+    pub has_mr_tex: u32,
+    pub has_occlusion_tex: u32,
+    pub has_emissive_tex: u32,
     /// 屈折率（IOR, Phase RT-Translucency）。旧 _pad（offset 60）を転用。
     /// RT-Translucency 有効時、Blend 半透明のスクリーンスペース屈折で使う（1.0=屈折なし）。
-    pub ior:                f32,
+    pub ior: f32,
     /// 透過率（transmission, 0..1。ガラス表現）。アルファ（被覆）と分離した透け具合。
     /// 0.0=従来動作（後方互換）。半透明フラグメントの合成でフレネル配分に使う。
-    pub transmission:       f32,
+    pub transmission: f32,
     /// MR テクスチャ無視トグル（旧 _pad0, offset 68 を転用）。0=無視しない（従来の乗算）、
     /// 1=無視（metallic/roughness factor をそのまま実効値にする）。surface_gather.wgsl の
     /// MR 採取 1 箇所が参照する（forward / G-Buffer 共通の合流点）。
-    pub mr_tex_ignore:      u32,
+    pub mr_tex_ignore: u32,
     /// 拡散透過（diffuse_transmission, 0..1。葉・布・紙の逆光透け）。旧 _pad1（offset 72）を転用。
     /// 0.0=従来動作（後方互換）。lighting_eval.wgsl の逆光項（radiance×back×dt×albedo/PI）で使う。
     /// Surface.diffuse_transmission 経由で forward / G-Buffer（RT2.b）双方に届く。
     pub diffuse_transmission: f32,
     /// std140 の 16 バイトアラインへ構造体サイズを揃えるパディング（GPU では未使用）。
-    pub _pad2:              f32,
+    pub _pad2: f32,
 }
 
 // ── スキニング用ジョイント行列 (Group 3, Binding 0) ───────────
@@ -188,7 +216,9 @@ impl JointUniform {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ];
-        Self { matrices: [id; 128] }
+        Self {
+            matrices: [id; 128],
+        }
     }
 }
 
@@ -207,9 +237,9 @@ impl JointUniform {
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuCullData {
     pub aabb_min: [f32; 3],
-    pub _pad0:    f32,
+    pub _pad0: f32,
     pub aabb_max: [f32; 3],
-    pub _pad1:    f32,
+    pub _pad1: f32,
 }
 
 /// CPU から `indirect_cmds_buf` へ書き込む DrawIndexedIndirect コマンド。
@@ -225,10 +255,10 @@ pub struct GpuCullData {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct DrawIndexedIndirectCmd {
-    pub index_count:    u32,
+    pub index_count: u32,
     pub instance_count: u32,
-    pub first_index:    u32,
-    pub base_vertex:    i32,
+    pub first_index: u32,
+    pub base_vertex: i32,
     pub first_instance: u32,
 }
 
@@ -239,7 +269,7 @@ pub struct DrawIndexedIndirectCmd {
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ColorVertex {
     pub position: [f32; 3],
-    pub color:    [f32; 4],
+    pub color: [f32; 4],
 }
 
 /// ギズモ太線描画用頂点。
@@ -259,12 +289,11 @@ pub struct ColorVertex {
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GizmoVertex {
     pub pos_a: [f32; 3],
-    pub t:     f32,
+    pub t: f32,
     pub pos_b: [f32; 3],
-    pub side:  f32,
+    pub side: f32,
     pub color: [f32; 4],
 }
-
 
 // ============================================================
 //  レイアウト検証テスト
@@ -286,19 +315,42 @@ mod layout_tests {
     /// との対応が崩れ、GPU が誤ったバイトを読む（静かな描画バグ）。
     #[test]
     fn material_uniform_layout_is_80_bytes() {
-        assert_eq!(std::mem::size_of::<MaterialUniform>(), 80, "MaterialUniform は 80 バイト");
+        assert_eq!(
+            std::mem::size_of::<MaterialUniform>(),
+            80,
+            "MaterialUniform は 80 バイト"
+        );
         // 代表オフセットの検証（base アドレスからのバイト差）。
         let m = MaterialUniform {
-            base_color_factor: [0.0; 4], metallic_factor: 0.0, roughness_factor: 0.0,
-            alpha_cutoff: 0.0, has_base_color_tex: 0, emissive_factor: [0.0; 3],
-            has_normal_tex: 0, has_mr_tex: 0, has_occlusion_tex: 0, has_emissive_tex: 0,
-            ior: 0.0, transmission: 0.0, mr_tex_ignore: 0, diffuse_transmission: 0.0, _pad2: 0.0,
+            base_color_factor: [0.0; 4],
+            metallic_factor: 0.0,
+            roughness_factor: 0.0,
+            alpha_cutoff: 0.0,
+            has_base_color_tex: 0,
+            emissive_factor: [0.0; 3],
+            has_normal_tex: 0,
+            has_mr_tex: 0,
+            has_occlusion_tex: 0,
+            has_emissive_tex: 0,
+            ior: 0.0,
+            transmission: 0.0,
+            mr_tex_ignore: 0,
+            diffuse_transmission: 0.0,
+            _pad2: 0.0,
         };
         let base = &m as *const _ as usize;
         let off = |p: *const f32| p as usize - base;
-        assert_eq!(off(&m.ior),          60, "ior は offset 60");
+        assert_eq!(off(&m.ior), 60, "ior は offset 60");
         assert_eq!(off(&m.transmission), 64, "transmission は offset 64");
-        assert_eq!(&m.mr_tex_ignore as *const u32 as usize - base, 68, "mr_tex_ignore は offset 68");
-        assert_eq!(off(&m.diffuse_transmission), 72, "diffuse_transmission は offset 72");
+        assert_eq!(
+            &m.mr_tex_ignore as *const u32 as usize - base,
+            68,
+            "mr_tex_ignore は offset 68"
+        );
+        assert_eq!(
+            off(&m.diffuse_transmission),
+            72,
+            "diffuse_transmission は offset 72"
+        );
     }
 }

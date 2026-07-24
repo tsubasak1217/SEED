@@ -1,5 +1,5 @@
 use std::fmt;
-use std::ops::{Add, AddAssign, Sub, SubAssign, Mul, Neg};
+use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
 use super::vector3::Vector3;
 use super::vector4::Vector4;
@@ -45,17 +45,31 @@ impl<T: Copy> Mat4x4<T> {
     #[allow(clippy::too_many_arguments)]
     #[inline]
     pub fn new(
-        m00: T, m01: T, m02: T, m03: T,
-        m10: T, m11: T, m12: T, m13: T,
-        m20: T, m21: T, m22: T, m23: T,
-        m30: T, m31: T, m32: T, m33: T,
+        m00: T,
+        m01: T,
+        m02: T,
+        m03: T,
+        m10: T,
+        m11: T,
+        m12: T,
+        m13: T,
+        m20: T,
+        m21: T,
+        m22: T,
+        m23: T,
+        m30: T,
+        m31: T,
+        m32: T,
+        m33: T,
     ) -> Self {
-        Self { data: [
-            [m00, m01, m02, m03],
-            [m10, m11, m12, m13],
-            [m20, m21, m22, m23],
-            [m30, m31, m32, m33],
-        ]}
+        Self {
+            data: [
+                [m00, m01, m02, m03],
+                [m10, m11, m12, m13],
+                [m20, m21, m22, m23],
+                [m30, m31, m32, m33],
+            ],
+        }
     }
 }
 
@@ -63,7 +77,9 @@ impl<T: Default + Copy> Mat4x4<T> {
     /// 零行列（全成分 0）を生成する。
     #[inline]
     pub fn zero() -> Self {
-        Self { data: [[T::default(); 4]; 4] }
+        Self {
+            data: [[T::default(); 4]; 4],
+        }
     }
 }
 
@@ -79,10 +95,7 @@ impl Mat4x4<f32> {
     #[inline]
     pub fn identity() -> Self {
         Self::new(
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         )
     }
 }
@@ -93,12 +106,25 @@ impl Mat4x4<f32> {
 impl<T: Add<Output = T> + Copy> Add for Mat4x4<T> {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
-        let a = &self.data; let b = &rhs.data;
+        let a = &self.data;
+        let b = &rhs.data;
         Self::new(
-            a[0][0]+b[0][0], a[0][1]+b[0][1], a[0][2]+b[0][2], a[0][3]+b[0][3],
-            a[1][0]+b[1][0], a[1][1]+b[1][1], a[1][2]+b[1][2], a[1][3]+b[1][3],
-            a[2][0]+b[2][0], a[2][1]+b[2][1], a[2][2]+b[2][2], a[2][3]+b[2][3],
-            a[3][0]+b[3][0], a[3][1]+b[3][1], a[3][2]+b[3][2], a[3][3]+b[3][3],
+            a[0][0] + b[0][0],
+            a[0][1] + b[0][1],
+            a[0][2] + b[0][2],
+            a[0][3] + b[0][3],
+            a[1][0] + b[1][0],
+            a[1][1] + b[1][1],
+            a[1][2] + b[1][2],
+            a[1][3] + b[1][3],
+            a[2][0] + b[2][0],
+            a[2][1] + b[2][1],
+            a[2][2] + b[2][2],
+            a[2][3] + b[2][3],
+            a[3][0] + b[3][0],
+            a[3][1] + b[3][1],
+            a[3][2] + b[3][2],
+            a[3][3] + b[3][3],
         )
     }
 }
@@ -106,7 +132,11 @@ impl<T: Add<Output = T> + Copy> Add for Mat4x4<T> {
 /// `A += B`
 impl<T: AddAssign + Copy> AddAssign for Mat4x4<T> {
     fn add_assign(&mut self, rhs: Self) {
-        for r in 0..4 { for c in 0..4 { self.data[r][c] += rhs.data[r][c]; } }
+        for r in 0..4 {
+            for c in 0..4 {
+                self.data[r][c] += rhs.data[r][c];
+            }
+        }
     }
 }
 
@@ -114,12 +144,25 @@ impl<T: AddAssign + Copy> AddAssign for Mat4x4<T> {
 impl<T: Sub<Output = T> + Copy> Sub for Mat4x4<T> {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
-        let a = &self.data; let b = &rhs.data;
+        let a = &self.data;
+        let b = &rhs.data;
         Self::new(
-            a[0][0]-b[0][0], a[0][1]-b[0][1], a[0][2]-b[0][2], a[0][3]-b[0][3],
-            a[1][0]-b[1][0], a[1][1]-b[1][1], a[1][2]-b[1][2], a[1][3]-b[1][3],
-            a[2][0]-b[2][0], a[2][1]-b[2][1], a[2][2]-b[2][2], a[2][3]-b[2][3],
-            a[3][0]-b[3][0], a[3][1]-b[3][1], a[3][2]-b[3][2], a[3][3]-b[3][3],
+            a[0][0] - b[0][0],
+            a[0][1] - b[0][1],
+            a[0][2] - b[0][2],
+            a[0][3] - b[0][3],
+            a[1][0] - b[1][0],
+            a[1][1] - b[1][1],
+            a[1][2] - b[1][2],
+            a[1][3] - b[1][3],
+            a[2][0] - b[2][0],
+            a[2][1] - b[2][1],
+            a[2][2] - b[2][2],
+            a[2][3] - b[2][3],
+            a[3][0] - b[3][0],
+            a[3][1] - b[3][1],
+            a[3][2] - b[3][2],
+            a[3][3] - b[3][3],
         )
     }
 }
@@ -127,7 +170,11 @@ impl<T: Sub<Output = T> + Copy> Sub for Mat4x4<T> {
 /// `A -= B`
 impl<T: SubAssign + Copy> SubAssign for Mat4x4<T> {
     fn sub_assign(&mut self, rhs: Self) {
-        for r in 0..4 { for c in 0..4 { self.data[r][c] -= rhs.data[r][c]; } }
+        for r in 0..4 {
+            for c in 0..4 {
+                self.data[r][c] -= rhs.data[r][c];
+            }
+        }
     }
 }
 
@@ -137,10 +184,8 @@ impl<T: Neg<Output = T> + Copy> Neg for Mat4x4<T> {
     fn neg(self) -> Self {
         let m = &self.data;
         Self::new(
-            -m[0][0], -m[0][1], -m[0][2], -m[0][3],
-            -m[1][0], -m[1][1], -m[1][2], -m[1][3],
-            -m[2][0], -m[2][1], -m[2][2], -m[2][3],
-            -m[3][0], -m[3][1], -m[3][2], -m[3][3],
+            -m[0][0], -m[0][1], -m[0][2], -m[0][3], -m[1][0], -m[1][1], -m[1][2], -m[1][3],
+            -m[2][0], -m[2][1], -m[2][2], -m[2][3], -m[3][0], -m[3][1], -m[3][2], -m[3][3],
         )
     }
 }
@@ -151,12 +196,15 @@ impl<T: Neg<Output = T> + Copy> Neg for Mat4x4<T> {
 impl<T: Mul<Output = T> + Add<Output = T> + Copy> Mul<Mat4x4<T>> for Mat4x4<T> {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
-        let a = &self.data; let b = &rhs.data;
+        let a = &self.data;
+        let b = &rhs.data;
         let mut out = [[a[0][0]; 4]; 4];
         for i in 0..4 {
             for j in 0..4 {
                 let mut sum = a[i][0] * b[0][j];
-                for k in 1..4 { sum = sum + a[i][k] * b[k][j]; }
+                for k in 1..4 {
+                    sum = sum + a[i][k] * b[k][j];
+                }
                 out[i][j] = sum;
             }
         }
@@ -172,10 +220,10 @@ impl<T: Mul<Output = T> + Add<Output = T> + Copy> Mul<Vector4<T>> for Mat4x4<T> 
     fn mul(self, v: Vector4<T>) -> Vector4<T> {
         let m = &self.data;
         Vector4::new(
-            m[0][0]*v.x + m[0][1]*v.y + m[0][2]*v.z + m[0][3]*v.w,
-            m[1][0]*v.x + m[1][1]*v.y + m[1][2]*v.z + m[1][3]*v.w,
-            m[2][0]*v.x + m[2][1]*v.y + m[2][2]*v.z + m[2][3]*v.w,
-            m[3][0]*v.x + m[3][1]*v.y + m[3][2]*v.z + m[3][3]*v.w,
+            m[0][0] * v.x + m[0][1] * v.y + m[0][2] * v.z + m[0][3] * v.w,
+            m[1][0] * v.x + m[1][1] * v.y + m[1][2] * v.z + m[1][3] * v.w,
+            m[2][0] * v.x + m[2][1] * v.y + m[2][2] * v.z + m[2][3] * v.w,
+            m[3][0] * v.x + m[3][1] * v.y + m[3][2] * v.z + m[3][3] * v.w,
         )
     }
 }
@@ -192,10 +240,8 @@ impl Mat4x4<f32> {
     pub fn transpose(self) -> Self {
         let m = &self.data;
         Self::new(
-            m[0][0], m[1][0], m[2][0], m[3][0],
-            m[0][1], m[1][1], m[2][1], m[3][1],
-            m[0][2], m[1][2], m[2][2], m[3][2],
-            m[0][3], m[1][3], m[2][3], m[3][3],
+            m[0][0], m[1][0], m[2][0], m[3][0], m[0][1], m[1][1], m[2][1], m[3][1], m[0][2],
+            m[1][2], m[2][2], m[3][2], m[0][3], m[1][3], m[2][3], m[3][3],
         )
     }
 
@@ -206,18 +252,22 @@ impl Mat4x4<f32> {
         let mut s = [[0.0f32; 3]; 3];
         let mut si = 0;
         for i in 0..4 {
-            if i == row { continue; }
+            if i == row {
+                continue;
+            }
             let mut sj = 0;
             for j in 0..4 {
-                if j == col { continue; }
+                if j == col {
+                    continue;
+                }
                 s[si][sj] = m[i][j];
                 sj += 1;
             }
             si += 1;
         }
-        s[0][0]*(s[1][1]*s[2][2] - s[1][2]*s[2][1])
-      - s[0][1]*(s[1][0]*s[2][2] - s[1][2]*s[2][0])
-      + s[0][2]*(s[1][0]*s[2][1] - s[1][1]*s[2][0])
+        s[0][0] * (s[1][1] * s[2][2] - s[1][2] * s[2][1])
+            - s[0][1] * (s[1][0] * s[2][2] - s[1][2] * s[2][0])
+            + s[0][2] * (s[1][0] * s[2][1] - s[1][1] * s[2][0])
     }
 
     /// 行列式 (determinant) を返す。
@@ -238,7 +288,9 @@ impl Mat4x4<f32> {
     /// 余因子行列の転置（随伴行列）を行列式で割って求める。
     pub fn inverse(self) -> Option<Self> {
         let det = self.determinant();
-        if det.abs() < f32::EPSILON { return None; }
+        if det.abs() < f32::EPSILON {
+            return None;
+        }
         let inv = 1.0 / det;
         let m = &self.data;
         let mut out = [[0.0f32; 4]; 4];
@@ -269,10 +321,7 @@ impl Mat4x4<f32> {
     #[inline]
     pub fn translation(tx: f32, ty: f32, tz: f32) -> Self {
         Self::new(
-            1.0, 0.0, 0.0, tx,
-            0.0, 1.0, 0.0, ty,
-            0.0, 0.0, 1.0, tz,
-            0.0, 0.0, 0.0, 1.0,
+            1.0, 0.0, 0.0, tx, 0.0, 1.0, 0.0, ty, 0.0, 0.0, 1.0, tz, 0.0, 0.0, 0.0, 1.0,
         )
     }
 
@@ -287,10 +336,7 @@ impl Mat4x4<f32> {
     #[inline]
     pub fn scale(sx: f32, sy: f32, sz: f32) -> Self {
         Self::new(
-             sx, 0.0, 0.0, 0.0,
-            0.0,  sy, 0.0, 0.0,
-            0.0, 0.0,  sz, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            sx, 0.0, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 0.0, sz, 0.0, 0.0, 0.0, 0.0, 1.0,
         )
     }
 
@@ -308,10 +354,7 @@ impl Mat4x4<f32> {
     pub fn rotation_x(angle_rad: f32) -> Self {
         let (s, c) = angle_rad.sin_cos();
         Self::new(
-            1.0, 0.0, 0.0, 0.0,
-            0.0,   c,   s, 0.0,
-            0.0,  -s,   c, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, c, s, 0.0, 0.0, -s, c, 0.0, 0.0, 0.0, 0.0, 1.0,
         )
     }
 
@@ -329,10 +372,7 @@ impl Mat4x4<f32> {
     pub fn rotation_y(angle_rad: f32) -> Self {
         let (s, c) = angle_rad.sin_cos();
         Self::new(
-              c, 0.0,  -s, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-              s, 0.0,   c, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            c, 0.0, -s, 0.0, 0.0, 1.0, 0.0, 0.0, s, 0.0, c, 0.0, 0.0, 0.0, 0.0, 1.0,
         )
     }
 
@@ -350,10 +390,7 @@ impl Mat4x4<f32> {
     pub fn rotation_z(angle_rad: f32) -> Self {
         let (s, c) = angle_rad.sin_cos();
         Self::new(
-              c,  -s, 0.0, 0.0,
-              s,   c, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            c, -s, 0.0, 0.0, s, c, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         )
     }
 
@@ -382,10 +419,22 @@ impl Mat4x4<f32> {
         let f = 1.0 / (fov_y_rad * 0.5).tan();
         let range_inv = 1.0 / (far - near);
         Self::new(
-            f / aspect, 0.0, 0.0,                    0.0,
-            0.0,          f, 0.0,                    0.0,
-            0.0,        0.0, far * range_inv,        -near * far * range_inv,
-            0.0,        0.0, 1.0,                    0.0,
+            f / aspect,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            f,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            far * range_inv,
+            -near * far * range_inv,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
         )
     }
 
@@ -404,18 +453,33 @@ impl Mat4x4<f32> {
     /// | 0         0        0           1           |
     /// ```
     pub fn orthographic_lh(
-        left: f32, right: f32,
-        bottom: f32, top: f32,
-        near: f32, far: f32,
+        left: f32,
+        right: f32,
+        bottom: f32,
+        top: f32,
+        near: f32,
+        far: f32,
     ) -> Self {
-        let rcp_width  = 1.0 / (right - left);
+        let rcp_width = 1.0 / (right - left);
         let rcp_height = 1.0 / (top - bottom);
-        let rcp_depth  = 1.0 / (far - near);
+        let rcp_depth = 1.0 / (far - near);
         Self::new(
-            2.0 * rcp_width,  0.0,               0.0,          -(right + left)  * rcp_width,
-            0.0,              2.0 * rcp_height,  0.0,          -(top   + bottom) * rcp_height,
-            0.0,              0.0,               rcp_depth,    -near * rcp_depth,
-            0.0,              0.0,               0.0,           1.0,
+            2.0 * rcp_width,
+            0.0,
+            0.0,
+            -(right + left) * rcp_width,
+            0.0,
+            2.0 * rcp_height,
+            0.0,
+            -(top + bottom) * rcp_height,
+            0.0,
+            0.0,
+            rcp_depth,
+            -near * rcp_depth,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
         )
     }
 
@@ -437,15 +501,27 @@ impl Mat4x4<f32> {
     /// 生成される行列は「ワールド空間 → カメラ空間」の変換を表す。
     pub fn look_at_lh(eye: Vector3<f32>, center: Vector3<f32>, up: Vector3<f32>) -> Self {
         let forward = (center - eye).normalize();
-        let right   = up.cross(forward).normalize();
+        let right = up.cross(forward).normalize();
         let up_corr = forward.cross(right);
 
         // 回転部分の転置（逆回転）+ 平行移動部分の内積
         Self::new(
-            right.x,   right.y,   right.z,   -right.dot(eye),
-            up_corr.x, up_corr.y, up_corr.z, -up_corr.dot(eye),
-            forward.x, forward.y, forward.z, -forward.dot(eye),
-            0.0,       0.0,       0.0,        1.0,
+            right.x,
+            right.y,
+            right.z,
+            -right.dot(eye),
+            up_corr.x,
+            up_corr.y,
+            up_corr.z,
+            -up_corr.dot(eye),
+            forward.x,
+            forward.y,
+            forward.z,
+            -forward.dot(eye),
+            0.0,
+            0.0,
+            0.0,
+            1.0,
         )
     }
 }
@@ -454,9 +530,25 @@ impl Mat4x4<f32> {
 
 impl<T: fmt::Display> fmt::Display for Mat4x4<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "[ {:.4},  {:.4},  {:.4},  {:.4} ]", self.data[0][0], self.data[0][1], self.data[0][2], self.data[0][3])?;
-        writeln!(f, "[ {:.4},  {:.4},  {:.4},  {:.4} ]", self.data[1][0], self.data[1][1], self.data[1][2], self.data[1][3])?;
-        writeln!(f, "[ {:.4},  {:.4},  {:.4},  {:.4} ]", self.data[2][0], self.data[2][1], self.data[2][2], self.data[2][3])?;
-        write!(f,   "[ {:.4},  {:.4},  {:.4},  {:.4} ]", self.data[3][0], self.data[3][1], self.data[3][2], self.data[3][3])
+        writeln!(
+            f,
+            "[ {:.4},  {:.4},  {:.4},  {:.4} ]",
+            self.data[0][0], self.data[0][1], self.data[0][2], self.data[0][3]
+        )?;
+        writeln!(
+            f,
+            "[ {:.4},  {:.4},  {:.4},  {:.4} ]",
+            self.data[1][0], self.data[1][1], self.data[1][2], self.data[1][3]
+        )?;
+        writeln!(
+            f,
+            "[ {:.4},  {:.4},  {:.4},  {:.4} ]",
+            self.data[2][0], self.data[2][1], self.data[2][2], self.data[2][3]
+        )?;
+        write!(
+            f,
+            "[ {:.4},  {:.4},  {:.4},  {:.4} ]",
+            self.data[3][0], self.data[3][1], self.data[3][2], self.data[3][3]
+        )
     }
 }

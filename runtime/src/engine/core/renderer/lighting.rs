@@ -117,40 +117,40 @@ pub const LIGHT_KIND_RECT: u32 = 3;
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuLight {
     /// 光の色（リニア RGB）。強度は color とは別に intensity で持つ。
-    pub color:            [f32; 3],
+    pub color: [f32; 3],
     /// 光の強度（color に乗算する係数）。
-    pub intensity:        f32,
+    pub intensity: f32,
     /// ワールド位置（point/spot/rect で使用。directional では未使用）。
-    pub position:         [f32; 3],
+    pub position: [f32; 3],
     /// 減衰距離（point/spot。この距離付近で消灯）。
-    pub range:            f32,
+    pub range: f32,
     /// 照射方向（光が進む向き＝Transform::forward()）。
     /// シェーダは L = -direction（面から光源への向き）として使う。
-    pub direction:        [f32; 3],
+    pub direction: [f32; 3],
     /// 種別コード（LIGHT_KIND_*）。
-    pub kind:             u32,
+    pub kind: u32,
     /// スポット内側コーンの cos（この cos より大きい＝内側は全光量）。
-    pub inner_cos:        f32,
+    pub inner_cos: f32,
     /// スポット外側コーンの cos（この cos で 0 まで減衰）。
-    pub outer_cos:        f32,
+    pub outer_cos: f32,
     /// rect の半幅（rect_right 方向）。
-    pub rect_half_width:  f32,
+    pub rect_half_width: f32,
     /// rect の半高（rect_up 方向）。
     pub rect_half_height: f32,
     /// rect の右方向ベクトル（面の横軸、正規化）。
-    pub rect_right:       [f32; 3],
+    pub rect_right: [f32; 3],
     /// 影スロット（Phase R2）。-1 = 影なし。
     /// 方向光: 0 = CSM 有効（影付き方向光は最大 1 灯）。
     /// スポット: 0..MAX_SHADOW_SPOTS-1 = スポットシャドウ配列のレイヤ番号。
     /// シェーダ（shadow.wgsl / shader_fragment.wgsl）が f32→i32 で判定する。
-    pub shadow_index:     f32,
+    pub shadow_index: f32,
     /// rect の上方向ベクトル（面の縦軸、正規化）。
-    pub rect_up:          [f32; 3],
+    pub rect_up: [f32; 3],
     /// ソフト影の見込み半径（Phase R8 ソフトシャドウ）。0 = ハードシャドウ。
     /// directional: tan(角径) の無次元スロープ（collect_gpu_lights で度→tan 変換済み）。
     /// point/spot/rect: 光源のワールド半径（シェーダで radius/距離＝見込み角に換算）。
     /// 旧レイアウトの _pad1（offset 92）を再利用するため 92 のオフセットは不変。
-    pub soft_radius:      f32,
+    pub soft_radius: f32,
     /// 疑似バウンス（間接光近似）の強度。0.0 = 無効（既定）。
     /// シェーダ（lighting_eval.wgsl）が「無方向・影非適用・幾何ゲート非適用の淡い光を
     /// 距離減衰つきで撒く」項の係数に使う。directional では常に 0（対象外）。
@@ -161,12 +161,14 @@ pub struct GpuLight {
     /// WGSL 側 light_common.wgsl の GpuLight.shadow_mask_slot（offset 100）と一致させること。
     pub shadow_mask_slot: f32,
     /// 16 バイト境界（array stride 112）へ揃えるためのパディング（未使用, offset 104/108）。
-    pub _pad_bounce:      [f32; 2],
+    pub _pad_bounce: [f32; 2],
 }
 
 impl GpuLight {
     /// ゼロ値（未使用スロットの埋め草）。
-    pub fn zeroed() -> Self { bytemuck::Zeroable::zeroed() }
+    pub fn zeroed() -> Self {
+        bytemuck::Zeroable::zeroed()
+    }
 
     /// 平行光を構築する。
     ///
@@ -175,21 +177,21 @@ impl GpuLight {
         Self {
             color,
             intensity,
-            position:         [0.0; 3],
-            range:            0.0,
-            direction:        normalize(direction),
-            kind:             LIGHT_KIND_DIRECTIONAL,
-            inner_cos:        0.0,
-            outer_cos:        0.0,
-            rect_half_width:  0.0,
+            position: [0.0; 3],
+            range: 0.0,
+            direction: normalize(direction),
+            kind: LIGHT_KIND_DIRECTIONAL,
+            inner_cos: 0.0,
+            outer_cos: 0.0,
+            rect_half_width: 0.0,
             rect_half_height: 0.0,
-            rect_right:       [0.0; 3],
-            shadow_index:     -1.0,
-            rect_up:          [0.0; 3],
-            soft_radius:      0.0,
+            rect_right: [0.0; 3],
+            shadow_index: -1.0,
+            rect_up: [0.0; 3],
+            soft_radius: 0.0,
             bounce_intensity: 0.0,
             shadow_mask_slot: -1.0,
-            _pad_bounce:      [0.0; 2],
+            _pad_bounce: [0.0; 2],
         }
     }
 
@@ -199,20 +201,20 @@ impl GpuLight {
             color,
             intensity,
             position,
-            range:            range.max(1e-3),
-            direction:        [0.0, 0.0, 1.0],
-            kind:             LIGHT_KIND_POINT,
-            inner_cos:        0.0,
-            outer_cos:        0.0,
-            rect_half_width:  0.0,
+            range: range.max(1e-3),
+            direction: [0.0, 0.0, 1.0],
+            kind: LIGHT_KIND_POINT,
+            inner_cos: 0.0,
+            outer_cos: 0.0,
+            rect_half_width: 0.0,
             rect_half_height: 0.0,
-            rect_right:       [0.0; 3],
-            shadow_index:     -1.0,
-            rect_up:          [0.0; 3],
-            soft_radius:      0.0,
+            rect_right: [0.0; 3],
+            shadow_index: -1.0,
+            rect_up: [0.0; 3],
+            soft_radius: 0.0,
             bounce_intensity: 0.0,
             shadow_mask_slot: -1.0,
-            _pad_bounce:      [0.0; 2],
+            _pad_bounce: [0.0; 2],
         }
     }
 
@@ -221,11 +223,11 @@ impl GpuLight {
     /// `inner_deg`/`outer_deg` は半角（コーン中心軸からの角度）で、
     /// inner ≤ outer を保証して cos に変換する。
     pub fn spot(
-        position:  [f32; 3],
+        position: [f32; 3],
         direction: [f32; 3],
-        color:     [f32; 3],
+        color: [f32; 3],
         intensity: f32,
-        range:     f32,
+        range: f32,
         inner_deg: f32,
         outer_deg: f32,
     ) -> Self {
@@ -236,20 +238,20 @@ impl GpuLight {
             color,
             intensity,
             position,
-            range:            range.max(1e-3),
-            direction:        normalize(direction),
-            kind:             LIGHT_KIND_SPOT,
-            inner_cos:        inner.to_radians().cos(),
-            outer_cos:        outer.to_radians().cos(),
-            rect_half_width:  0.0,
+            range: range.max(1e-3),
+            direction: normalize(direction),
+            kind: LIGHT_KIND_SPOT,
+            inner_cos: inner.to_radians().cos(),
+            outer_cos: outer.to_radians().cos(),
+            rect_half_width: 0.0,
             rect_half_height: 0.0,
-            rect_right:       [0.0; 3],
-            shadow_index:     -1.0,
-            rect_up:          [0.0; 3],
-            soft_radius:      0.0,
+            rect_right: [0.0; 3],
+            shadow_index: -1.0,
+            rect_up: [0.0; 3],
+            soft_radius: 0.0,
             bounce_intensity: 0.0,
             shadow_mask_slot: -1.0,
-            _pad_bounce:      [0.0; 2],
+            _pad_bounce: [0.0; 2],
         }
     }
 
@@ -257,34 +259,34 @@ impl GpuLight {
     ///
     /// `direction` は面の法線（光が進む向き）、`right`/`up` は面の横・縦軸。
     pub fn rect(
-        position:  [f32; 3],
+        position: [f32; 3],
         direction: [f32; 3],
-        right:     [f32; 3],
-        up:        [f32; 3],
-        color:     [f32; 3],
+        right: [f32; 3],
+        up: [f32; 3],
+        color: [f32; 3],
         intensity: f32,
-        range:     f32,
-        width:     f32,
-        height:    f32,
+        range: f32,
+        width: f32,
+        height: f32,
     ) -> Self {
         Self {
             color,
             intensity,
             position,
-            range:            range.max(1e-3),
-            direction:        normalize(direction),
-            kind:             LIGHT_KIND_RECT,
-            inner_cos:        0.0,
-            outer_cos:        0.0,
-            rect_half_width:  (width * 0.5).max(1e-4),
+            range: range.max(1e-3),
+            direction: normalize(direction),
+            kind: LIGHT_KIND_RECT,
+            inner_cos: 0.0,
+            outer_cos: 0.0,
+            rect_half_width: (width * 0.5).max(1e-4),
             rect_half_height: (height * 0.5).max(1e-4),
-            rect_right:       normalize(right),
-            shadow_index:     -1.0,
-            rect_up:          normalize(up),
-            soft_radius:      0.0,
+            rect_right: normalize(right),
+            shadow_index: -1.0,
+            rect_up: normalize(up),
+            soft_radius: 0.0,
             bounce_intensity: 0.0,
             shadow_mask_slot: -1.0,
-            _pad_bounce:      [0.0; 2],
+            _pad_bounce: [0.0; 2],
         }
     }
 }
@@ -292,7 +294,11 @@ impl GpuLight {
 /// ベクトルを正規化する（長さ 0 は [0,0,1] にフォールバック）。
 fn normalize(v: [f32; 3]) -> [f32; 3] {
     let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if len < 1e-6 { [0.0, 0.0, 1.0] } else { [v[0] / len, v[1] / len, v[2] / len] }
+    if len < 1e-6 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [v[0] / len, v[1] / len, v[2] / len]
+    }
 }
 
 // ─── RT-Translucency ビットマスク（LightMeta.translucency_rt）─────
@@ -332,7 +338,7 @@ pub const TRANSLUCENCY_RT_WBOIT: u32 = 4;
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LightMeta {
     /// 有効なライト数（シェーダはこの数だけループする）。
-    pub count:      u32,
+    pub count: u32,
     /// インラインレイトレ影の有効フラグ（Phase R8, 0=無効/1=有効）。
     /// RT 対応 GPU でのみ RT パイプラインが読む。有効時は全ライト種で遮蔽レイを飛ばし、
     /// 無効時（および RT 非対応パイプライン）は従来のシャドウマップ経路を使う。
@@ -341,7 +347,7 @@ pub struct LightMeta {
     /// 0 以外のとき evaluate_lighting はライティングを行わずアルベド＋エミッシブを返す。
     /// メインカメラ用 LightMeta にのみ非 0 を書き込み、プレビュー用は常に 0（＝Lit）にすることで、
     /// アンリット／ワイヤをエディタのシーンビュー（デバッグカメラ）だけに限定する。
-    pub view_mode:  u32,
+    pub view_mode: u32,
     /// RT-Translucency（高品質半透明）のビットマスク（Phase RT-Translucency）。旧 `_pad`（offset 12）を転用。
     /// - bit0（`TRANSLUCENCY_RT_COLORED_SHADOW`=1）: 色付き影。translucency==Rt のフレームで立つ。
     ///   RT 影シェーダ（rt_shadow_on.wgsl）が半透明レイヤーへの第 2 遮蔽クエリでガラスの透過色を影に乗せる。
@@ -369,7 +375,7 @@ pub struct LightBuffer {
     lights_buffer: wgpu::Buffer,
     /// **メインカメラ用** LightMeta（uniform）。view_mode に実際の表示モードが入り得る。
     /// メインカメラで描く全パス（不透明・距離ソート透明・WBOIT・RT・ギズモアイコン）が読む。
-    meta_buffer_main:    wgpu::Buffer,
+    meta_buffer_main: wgpu::Buffer,
     /// **カメラプレビュー用** LightMeta（uniform）。view_mode は常に 0（＝Lit）。
     /// count / rt_shadows / ambient は main と同値を書くが、view_mode だけは 0 に固定することで、
     /// エディタのシーンビューがアンリット／ワイヤでもプレビュー小窓は常にライティング表示になる。
@@ -415,29 +421,29 @@ impl LightBuffer {
     /// - `shadow_preview`: カメラプレビュー基準の CSM を持つシャドウ資源（binding 2〜5）。
     /// - `clusters`:       クラスタ資源（binding 7〜9 のグリッド・インデックス・パラメータを供給）。
     pub fn new(
-        device:         &wgpu::Device,
-        bgl:            &wgpu::BindGroupLayout,
-        shadow_main:    &ShadowResources,
+        device: &wgpu::Device,
+        bgl: &wgpu::BindGroupLayout,
+        shadow_main: &ShadowResources,
         shadow_preview: &ShadowResources,
-        clusters:       &super::clustered::ClusterResources,
-        gi:             &super::ddgi::GiResources,
+        clusters: &super::clustered::ClusterResources,
+        gi: &super::ddgi::GiResources,
     ) -> Self {
         // storage 配列は最初から MAX_LIGHTS 分ゼロ確保する（実行時サイズ変更を避ける）。
         let init_lights = vec![GpuLight::zeroed(); MAX_LIGHTS];
         let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("Lights Storage Buffer"),
+            label: Some("Lights Storage Buffer"),
             contents: bytemuck::cast_slice(&init_lights),
-            usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         // メインカメラ用・プレビュー用の 2 本の LightMeta を確保する。
         // 初期値は両方 view_mode=0（Lit）。以降 update() で毎フレーム書き換える。
         let init_meta = LightMeta {
-            count:             0,
-            rt_shadows:        0,
-            view_mode:         0,
-            translucency_rt:   0,
-            ambient_color:     DEFAULT_AMBIENT_COLOR,
+            count: 0,
+            rt_shadows: 0,
+            view_mode: 0,
+            translucency_rt: 0,
+            ambient_color: DEFAULT_AMBIENT_COLOR,
             ambient_intensity: DEFAULT_AMBIENT_INTENSITY,
         };
         // STORAGE 用途も付与する: RT 反射（バインドレス B2）の group3 は binding_array を含み、
@@ -446,14 +452,18 @@ impl LightBuffer {
         // vec3 が 16B 整列で std140/std430 一致＝値は不変）。他パスの uniform バインドは
         // 用途のスーパーセットなので不変（両用途を持つバッファは uniform でも storage でもバインド可）。
         let meta_buffer_main = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("Light Meta Uniform (main camera)"),
+            label: Some("Light Meta Uniform (main camera)"),
             contents: bytemuck::bytes_of(&init_meta),
-            usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::UNIFORM
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST,
         });
         let meta_buffer_preview = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("Light Meta Uniform (camera preview, view_mode=0 固定)"),
+            label: Some("Light Meta Uniform (camera preview, view_mode=0 固定)"),
             contents: bytemuck::bytes_of(&init_meta),
-            usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::UNIFORM
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST,
         });
 
         // group 4 複合 BG（ライト binding 0/1 ＋ シャドウ binding 2〜5 ＋ クラスタ binding 7〜9）。
@@ -465,25 +475,68 @@ impl LightBuffer {
         // それ以外（ライト配列・メタ・スポット深度・サンプラー・クラスタバッファ本体）は共有する。
         // meta 引数はパスごとに差し替える（main = meta_buffer_main / preview = meta_buffer_preview）。
         // これにより view_mode（アンリット／ワイヤ）をメインカメラのパスだけに効かせられる。
-        let make_bg = |label: &str, shadow: &ShadowResources, params: &wgpu::Buffer, meta: &wgpu::Buffer, gi_params: &wgpu::Buffer| {
+        let make_bg = |label: &str,
+                       shadow: &ShadowResources,
+                       params: &wgpu::Buffer,
+                       meta: &wgpu::Buffer,
+                       gi_params: &wgpu::Buffer| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label:   Some(label),
-                layout:  bgl,
+                label: Some(label),
+                layout: bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: lights_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: meta.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view) },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view) },
-                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&shadow.sampler) },
-                    wgpu::BindGroupEntry { binding: 5, resource: shadow.ubo.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 7, resource: clusters.grid_buffer().as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 8, resource: clusters.indices_buffer().as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 9, resource: params.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: lights_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: meta.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&shadow.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: shadow.ubo.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: clusters.grid_buffer().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: clusters.indices_buffer().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: params.as_entire_binding(),
+                    },
                     // DDGI（Phase RT-GI）: GiParams（binding10）＋放射輝度/可視性アトラス（11/12）＋サンプラ（13）。
-                    wgpu::BindGroupEntry { binding: 10, resource: gi_params.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(gi.irradiance_view()) },
-                    wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(gi.visibility_view()) },
-                    wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(gi.sampler()) },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: gi_params.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 11,
+                        resource: wgpu::BindingResource::TextureView(gi.irradiance_view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: wgpu::BindingResource::TextureView(gi.visibility_view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 13,
+                        resource: wgpu::BindingResource::Sampler(gi.sampler()),
+                    },
                 ],
             })
         };
@@ -502,7 +555,13 @@ impl LightBuffer {
             gi.params_disabled_buffer(),
         );
 
-        Self { lights_buffer, meta_buffer_main, meta_buffer_preview, bind_group_main, bind_group_preview }
+        Self {
+            lights_buffer,
+            meta_buffer_main,
+            meta_buffer_preview,
+            bind_group_main,
+            bind_group_preview,
+        }
     }
 
     /// そのパス（＝そのカメラ）で bind すべき group 4 複合 BindGroup を返す。
@@ -512,16 +571,20 @@ impl LightBuffer {
     /// RT 影パイプラインのメインパスだけは TLAS 入りの別 BG（`create_rt_bind_group`）を使う。
     pub fn bind_group(&self, pass: LightingPass) -> &wgpu::BindGroup {
         match pass {
-            LightingPass::MainCamera    => &self.bind_group_main,
+            LightingPass::MainCamera => &self.bind_group_main,
             LightingPass::CameraPreview => &self.bind_group_preview,
         }
     }
 
     /// ライト storage buffer への参照（クラスタ構築 compute の BindGroup 生成に使う）。
-    pub fn lights_buffer(&self) -> &wgpu::Buffer { &self.lights_buffer }
+    pub fn lights_buffer(&self) -> &wgpu::Buffer {
+        &self.lights_buffer
+    }
 
     /// メインカメラ用 LightMeta uniform への参照（GI compute の binding2 に使う）。
-    pub fn meta_main_buffer(&self) -> &wgpu::Buffer { &self.meta_buffer_main }
+    pub fn meta_main_buffer(&self) -> &wgpu::Buffer {
+        &self.meta_buffer_main
+    }
 
     /// 有効ライト配列を GPU へアップロードする（MAX_LIGHTS を超える分は切り捨て）。
     ///
@@ -540,21 +603,25 @@ impl LightBuffer {
     ///   フラグメントの `ambient = ambient_color * ambient_intensity * albedo * ao`。
     pub fn update(
         &self,
-        queue:             &wgpu::Queue,
-        lights:            &[GpuLight],
-        rt_shadows:        bool,
-        view_mode:         u32,
-        translucency_rt:   bool,
-        ambient_color:     [f32; 3],
+        queue: &wgpu::Queue,
+        lights: &[GpuLight],
+        rt_shadows: bool,
+        view_mode: u32,
+        translucency_rt: bool,
+        ambient_color: [f32; 3],
         ambient_intensity: f32,
     ) {
         let count = lights.len().min(MAX_LIGHTS);
         if count > 0 {
-            queue.write_buffer(&self.lights_buffer, 0, bytemuck::cast_slice(&lights[..count]));
+            queue.write_buffer(
+                &self.lights_buffer,
+                0,
+                bytemuck::cast_slice(&lights[..count]),
+            );
         }
         // メインカメラ用: view_mode をそのまま反映（アンリット／ワイヤが効く）。
         let meta_main = LightMeta {
-            count:      count as u32,
+            count: count as u32,
             rt_shadows: if rt_shadows { 1 } else { 0 },
             view_mode,
             translucency_rt: if translucency_rt { 1 } else { 0 },
@@ -564,8 +631,16 @@ impl LightBuffer {
         queue.write_buffer(&self.meta_buffer_main, 0, bytemuck::bytes_of(&meta_main));
         // プレビュー用: view_mode を 0（Lit）に固定。RT-Translucency もプレビューでは無効
         //   （プレビュー透明は距離ソートのみ・屈折用の背景 RT / 専用 BG を持たないため）。
-        let meta_preview = LightMeta { view_mode: 0, translucency_rt: 0, ..meta_main };
-        queue.write_buffer(&self.meta_buffer_preview, 0, bytemuck::bytes_of(&meta_preview));
+        let meta_preview = LightMeta {
+            view_mode: 0,
+            translucency_rt: 0,
+            ..meta_main
+        };
+        queue.write_buffer(
+            &self.meta_buffer_preview,
+            0,
+            bytemuck::bytes_of(&meta_preview),
+        );
     }
 
     /// RT 影用の group 4 複合 BindGroup を生成する（Phase R8, RT 対応時のみ）。
@@ -582,37 +657,82 @@ impl LightBuffer {
     /// binding4 で使うのと同一バッファ（rt_shadow.rs 所有）。RT 影を使わないフレームでも bind は無害。
     pub fn create_rt_bind_group(
         &self,
-        device:        &wgpu::Device,
+        device: &wgpu::Device,
         rt_lights_bgl: &wgpu::BindGroupLayout,
-        shadow:        &ShadowResources,
-        clusters:      &super::clustered::ClusterResources,
-        gi:            &super::ddgi::GiResources,
-        tlas:          &wgpu::Tlas,
-        rt_albedo:     &wgpu::Buffer,
+        shadow: &ShadowResources,
+        clusters: &super::clustered::ClusterResources,
+        gi: &super::ddgi::GiResources,
+        tlas: &wgpu::Tlas,
+        rt_albedo: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Lights+Shadow+Cluster+TLAS BG (group 4, RT)"),
-            layout:  rt_lights_bgl,
+            label: Some("Lights+Shadow+Cluster+TLAS BG (group 4, RT)"),
+            layout: rt_lights_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.lights_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.lights_buffer.as_entire_binding(),
+                },
                 // RT パイプラインはメインカメラのパス専用のため、メインカメラ用 LightMeta を使う
                 // （view_mode がアンリット時はフラグメントが早期リターンし、RT レイは飛ばさない）。
-                wgpu::BindGroupEntry { binding: 1, resource: self.meta_buffer_main.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&shadow.sampler) },
-                wgpu::BindGroupEntry { binding: 5, resource: shadow.ubo.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::AccelerationStructure(tlas) },
-                wgpu::BindGroupEntry { binding: 7, resource: clusters.grid_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 8, resource: clusters.indices_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 9, resource: clusters.params_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.meta_buffer_main.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&shadow.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: shadow.ubo.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::AccelerationStructure(tlas),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: clusters.grid_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: clusters.indices_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: clusters.params_buffer().as_entire_binding(),
+                },
                 // DDGI（Phase RT-GI）。RT パスはメインカメラ専用のためライブ GiParams を差す。
-                wgpu::BindGroupEntry { binding: 10, resource: gi.params_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(gi.irradiance_view()) },
-                wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(gi.visibility_view()) },
-                wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(gi.sampler()) },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: gi.params_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::TextureView(gi.irradiance_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: wgpu::BindingResource::TextureView(gi.visibility_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: wgpu::BindingResource::Sampler(gi.sampler()),
+                },
                 // 平均アルベド storage（Phase RT-Translucency）: 色付き影が半透明ヒットで透過色を引く。
-                wgpu::BindGroupEntry { binding: 14, resource: rt_albedo.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 14,
+                    resource: rt_albedo.as_entire_binding(),
+                },
             ],
         })
     }
@@ -632,13 +752,13 @@ impl LightBuffer {
     #[allow(clippy::too_many_arguments)]
     pub fn create_transparent_bind_group(
         &self,
-        device:          &wgpu::Device,
+        device: &wgpu::Device,
         transparent_bgl: &wgpu::BindGroupLayout,
-        shadow:          &ShadowResources,
-        clusters:        &super::clustered::ClusterResources,
-        gi:              &super::ddgi::GiResources,
-        pass:            LightingPass,
-        refract_view:    &wgpu::TextureView,
+        shadow: &ShadowResources,
+        clusters: &super::clustered::ClusterResources,
+        gi: &super::ddgi::GiResources,
+        pass: LightingPass,
+        refract_view: &wgpu::TextureView,
         refract_sampler: &wgpu::Sampler,
     ) -> wgpu::BindGroup {
         // カメラ固有資源（メタ・クラスタパラメータ・GI パラメータ）をパスで選ぶ。
@@ -657,25 +777,70 @@ impl LightBuffer {
             ),
         };
         device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Lights+Shadow+Cluster+Refract BG (group 4, transparent)"),
-            layout:  transparent_bgl,
+            label: Some("Lights+Shadow+Cluster+Refract BG (group 4, transparent)"),
+            layout: transparent_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.lights_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: meta.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&shadow.sampler) },
-                wgpu::BindGroupEntry { binding: 5, resource: shadow.ubo.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: clusters.grid_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 8, resource: clusters.indices_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 9, resource: cluster_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 10, resource: gi_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(gi.irradiance_view()) },
-                wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(gi.visibility_view()) },
-                wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(gi.sampler()) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.lights_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: meta.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&shadow.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: shadow.ubo.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: clusters.grid_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: clusters.indices_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: cluster_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: gi_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::TextureView(gi.irradiance_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: wgpu::BindingResource::TextureView(gi.visibility_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: wgpu::BindingResource::Sampler(gi.sampler()),
+                },
                 // 屈折の背景（Phase RT-Translucency）: scene_hdr のコピー or ダミー 1x1。
-                wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::TextureView(refract_view) },
-                wgpu::BindGroupEntry { binding: 16, resource: wgpu::BindingResource::Sampler(refract_sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: wgpu::BindingResource::TextureView(refract_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 16,
+                    resource: wgpu::BindingResource::Sampler(refract_sampler),
+                },
             ],
         })
     }
@@ -699,50 +864,110 @@ impl LightBuffer {
     #[allow(clippy::too_many_arguments)]
     pub fn create_transparent_rt_bind_group(
         &self,
-        device:          &wgpu::Device,
+        device: &wgpu::Device,
         transparent_rt_bgl: &wgpu::BindGroupLayout,
-        shadow:          &ShadowResources,
-        clusters:        &super::clustered::ClusterResources,
-        gi:              &super::ddgi::GiResources,
-        tlas:            &wgpu::Tlas,
-        rt_albedo:       &wgpu::Buffer,
-        refract_view:    &wgpu::TextureView,
+        shadow: &ShadowResources,
+        clusters: &super::clustered::ClusterResources,
+        gi: &super::ddgi::GiResources,
+        tlas: &wgpu::Tlas,
+        rt_albedo: &wgpu::Buffer,
+        refract_view: &wgpu::TextureView,
         refract_sampler: &wgpu::Sampler,
         bindless_records: &wgpu::Buffer,
-        bindless_index:   &wgpu::Buffer,
-        bindless_normal:  &wgpu::Buffer,
+        bindless_index: &wgpu::Buffer,
+        bindless_normal: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Lights+Shadow+Cluster+TLAS+Albedo+Refract BG (group 4, transparent RT)"),
-            layout:  transparent_rt_bgl,
+            label: Some("Lights+Shadow+Cluster+TLAS+Albedo+Refract BG (group 4, transparent RT)"),
+            layout: transparent_rt_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0,  resource: self.lights_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.lights_buffer.as_entire_binding(),
+                },
                 // RT 屈折はメインカメラ専用のためメイン LightMeta を差す（アンビエントのフォールバックにも使う）。
-                wgpu::BindGroupEntry { binding: 1,  resource: self.meta_buffer_main.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2,  resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view) },
-                wgpu::BindGroupEntry { binding: 3,  resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view) },
-                wgpu::BindGroupEntry { binding: 4,  resource: wgpu::BindingResource::Sampler(&shadow.sampler) },
-                wgpu::BindGroupEntry { binding: 5,  resource: shadow.ubo.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.meta_buffer_main.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&shadow.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: shadow.ubo.as_entire_binding(),
+                },
                 // 屈折レイの TLAS（refract_rt.wgsl binding6）。
-                wgpu::BindGroupEntry { binding: 6,  resource: wgpu::BindingResource::AccelerationStructure(tlas) },
-                wgpu::BindGroupEntry { binding: 7,  resource: clusters.grid_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 8,  resource: clusters.indices_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 9,  resource: clusters.params_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::AccelerationStructure(tlas),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: clusters.grid_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: clusters.indices_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: clusters.params_buffer().as_entire_binding(),
+                },
                 // DDGI（ミス／画面外ヒットのフォールバック照度）。メインカメラ＝ライブ GiParams。
-                wgpu::BindGroupEntry { binding: 10, resource: gi.params_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(gi.irradiance_view()) },
-                wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(gi.visibility_view()) },
-                wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(gi.sampler()) },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: gi.params_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::TextureView(gi.irradiance_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: wgpu::BindingResource::TextureView(gi.visibility_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: wgpu::BindingResource::Sampler(gi.sampler()),
+                },
                 // 平均アルベド storage（界面の透過色付け。refract_rt.wgsl binding14）。
-                wgpu::BindGroupEntry { binding: 14, resource: rt_albedo.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 14,
+                    resource: rt_albedo.as_entire_binding(),
+                },
                 // 屈折の背景（不透明 scene_hdr のコピー・ピラミッド）。
-                wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::TextureView(refract_view) },
-                wgpu::BindGroupEntry { binding: 16, resource: wgpu::BindingResource::Sampler(refract_sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: wgpu::BindingResource::TextureView(refract_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 16,
+                    resource: wgpu::BindingResource::Sampler(refract_sampler),
+                },
                 // 界面ごとの本物の再屈折用（refract_rt.wgsl binding17/18/19）: インスタンステーブル／
                 // インデックス メガバッファ／法線メガバッファ（すべて BindlessResources 所有の storage）。
-                wgpu::BindGroupEntry { binding: 17, resource: bindless_records.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 18, resource: bindless_index.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 19, resource: bindless_normal.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 17,
+                    resource: bindless_records.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 18,
+                    resource: bindless_index.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 19,
+                    resource: bindless_normal.as_entire_binding(),
+                },
             ],
         })
     }
@@ -756,16 +981,20 @@ impl LightBuffer {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
-    use std::mem::{size_of, offset_of};
+    use std::mem::{offset_of, size_of};
 
     /// GpuLight は 112 バイト（array stride も 112）。soft_radius は旧 _pad1 の offset 92 を再利用し、
     /// bounce_intensity は 96→112 拡張で offset 96 に追加（以降 12 バイトはパディング）。
     #[test]
     fn gpu_light_layout() {
-        assert_eq!(size_of::<GpuLight>(), 112, "GpuLight は 112 バイト（WGSL stride と一致）");
-        assert_eq!(offset_of!(GpuLight, shadow_index),     76);
-        assert_eq!(offset_of!(GpuLight, rect_up),          80);
-        assert_eq!(offset_of!(GpuLight, soft_radius),      92);
+        assert_eq!(
+            size_of::<GpuLight>(),
+            112,
+            "GpuLight は 112 バイト（WGSL stride と一致）"
+        );
+        assert_eq!(offset_of!(GpuLight, shadow_index), 76);
+        assert_eq!(offset_of!(GpuLight, rect_up), 80);
+        assert_eq!(offset_of!(GpuLight, soft_radius), 92);
         assert_eq!(offset_of!(GpuLight, bounce_intensity), 96);
         assert_eq!(offset_of!(GpuLight, shadow_mask_slot), 100);
     }
@@ -775,11 +1004,15 @@ mod layout_tests {
     /// WGSL 側 light_common.wgsl の LightMeta（count/rt_shadows/view_mode/_pad2/ambient_*）と一致。
     #[test]
     fn light_meta_layout() {
-        assert_eq!(size_of::<LightMeta>(), 32, "LightMeta は 32 バイト（WGSL uniform と一致）");
-        assert_eq!(offset_of!(LightMeta, count),             0);
-        assert_eq!(offset_of!(LightMeta, rt_shadows),        4);
-        assert_eq!(offset_of!(LightMeta, view_mode),         8);
-        assert_eq!(offset_of!(LightMeta, ambient_color),     16);
+        assert_eq!(
+            size_of::<LightMeta>(),
+            32,
+            "LightMeta は 32 バイト（WGSL uniform と一致）"
+        );
+        assert_eq!(offset_of!(LightMeta, count), 0);
+        assert_eq!(offset_of!(LightMeta, rt_shadows), 4);
+        assert_eq!(offset_of!(LightMeta, view_mode), 8);
+        assert_eq!(offset_of!(LightMeta, ambient_color), 16);
         assert_eq!(offset_of!(LightMeta, ambient_intensity), 28);
     }
 
@@ -807,15 +1040,20 @@ mod layout_tests {
 
         // GpuLight 型を名前で探し、naga の Layouter に storage バッファ規則で
         // サイズ（= array stride の元）を計算させる。
-        let (handle, _) = module.types.iter()
+        let (handle, _) = module
+            .types
+            .iter()
             .find(|(_, t)| t.name.as_deref() == Some("GpuLight"))
             .expect("WGSL に struct GpuLight が見つかりません");
         let mut layouter = naga::proc::Layouter::default();
-        layouter.update(module.to_ctx()).expect("naga Layouter の計算に失敗");
+        layouter
+            .update(module.to_ctx())
+            .expect("naga Layouter の計算に失敗");
         let wgsl_size = layouter[handle].size as usize;
 
         assert_eq!(
-            wgsl_size, size_of::<GpuLight>(),
+            wgsl_size,
+            size_of::<GpuLight>(),
             "WGSL の GpuLight サイズ（naga 計算）が Rust と一致しません。\
              vec3 パディング等の align 16 押し出しを疑うこと\
              （スカラー f32 ×3 で詰めるのが正しい）"
@@ -834,18 +1072,21 @@ mod layout_tests {
         );
         let module = naga::front::wgsl::parse_str(&src)
             .expect("cluster_common + ddgi_common + light_common の parse に失敗");
-        let (handle, _) = module.types.iter()
+        let (handle, _) = module
+            .types
+            .iter()
             .find(|(_, t)| t.name.as_deref() == Some("LightMeta"))
             .expect("WGSL に struct LightMeta が見つかりません");
         let mut layouter = naga::proc::Layouter::default();
-        layouter.update(module.to_ctx()).expect("naga Layouter の計算に失敗");
+        layouter
+            .update(module.to_ctx())
+            .expect("naga Layouter の計算に失敗");
         let wgsl_size = layouter[handle].size as usize;
         assert_eq!(
-            wgsl_size, size_of::<LightMeta>(),
+            wgsl_size,
+            size_of::<LightMeta>(),
             "WGSL の LightMeta サイズ（naga 計算）が Rust と一致しません（translucency_rt の追加で\
              オフセットがズレていないか確認すること）"
         );
     }
 }
-
-

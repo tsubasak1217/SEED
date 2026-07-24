@@ -1,12 +1,12 @@
-pub mod model;
 pub mod asset_cache;
 mod gltf_loader;
+pub mod model;
 mod obj_loader;
 
 pub use model::*;
 
-use std::path::Path;
 use std::fmt;
+use std::path::Path;
 use std::time::Instant;
 
 // ============================================================
@@ -20,7 +20,7 @@ pub(crate) mod gen_timing {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// LOD インデックス生成（meshopt simplify）の累積ナノ秒。
-    static LOD_NANOS:     AtomicU64 = AtomicU64::new(0);
+    static LOD_NANOS: AtomicU64 = AtomicU64::new(0);
     /// メッシュレット分割＋境界計算（meshopt build/bounds）の累積ナノ秒。
     static MESHLET_NANOS: AtomicU64 = AtomicU64::new(0);
 
@@ -35,7 +35,7 @@ pub(crate) mod gen_timing {
     /// 累積値を (lod_ms, meshlet_ms) で取り出してリセットする（モデル 1 体分の内訳）。
     pub fn take_ms() -> (f64, f64) {
         let lod = LOD_NANOS.swap(0, Ordering::Relaxed) as f64 / 1.0e6;
-        let ml  = MESHLET_NANOS.swap(0, Ordering::Relaxed) as f64 / 1.0e6;
+        let ml = MESHLET_NANOS.swap(0, Ordering::Relaxed) as f64 / 1.0e6;
         (lod, ml)
     }
 }
@@ -57,8 +57,8 @@ pub enum LoadError {
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LoadError::Io(s)                => write!(f, "IO error: {}", s),
-            LoadError::Parse(s)             => write!(f, "Parse error: {}", s),
+            LoadError::Io(s) => write!(f, "IO error: {}", s),
+            LoadError::Parse(s) => write!(f, "Parse error: {}", s),
             LoadError::UnsupportedFormat(s) => write!(f, "Unsupported format: {}", s),
         }
     }
@@ -100,14 +100,18 @@ pub fn load_model(path: &Path) -> Result<Model, LoadError> {
     let t_parse = Instant::now();
     let mut model = match ext.as_str() {
         "gltf" | "glb" => gltf_loader::load(path)?,
-        "obj"           => obj_loader::load(path)?,
-        "fbx" => return Err(LoadError::UnsupportedFormat(
-            "FBX は未対応です。Blender で glTF 形式にエクスポートしてください。".to_string(),
-        )),
-        other => return Err(LoadError::UnsupportedFormat(format!(
-            "`.{}` は対応していない形式です。gltf / glb / obj を使用してください。",
-            other,
-        ))),
+        "obj" => obj_loader::load(path)?,
+        "fbx" => {
+            return Err(LoadError::UnsupportedFormat(
+                "FBX は未対応です。Blender で glTF 形式にエクスポートしてください。".to_string(),
+            ));
+        }
+        other => {
+            return Err(LoadError::UnsupportedFormat(format!(
+                "`.{}` は対応していない形式です。gltf / glb / obj を使用してください。",
+                other,
+            )));
+        }
     };
     let parse_ms = t_parse.elapsed().as_secs_f64() * 1000.0;
     // parse 内で累積された LOD 生成・メッシュレット分割の内訳（このモデル 1 体分）。
@@ -130,8 +134,14 @@ pub fn load_model(path: &Path) -> Result<Model, LoadError> {
 
     eprintln!(
         "[SEED cache] 初回ロード: {} | parse {:.1}ms (内 lod={:.1}ms meshlet={:.1}ms) + tex処理 {:.1}ms ({} KiB, bc={}) + 書出 {:.1}ms",
-        path.display(), parse_ms, lod_ms, meshlet_ms, tex_ms, src_bytes / 1024,
-        asset_cache::bc_supported(), store_ms,
+        path.display(),
+        parse_ms,
+        lod_ms,
+        meshlet_ms,
+        tex_ms,
+        src_bytes / 1024,
+        asset_cache::bc_supported(),
+        store_ms,
     );
 
     Ok(model)

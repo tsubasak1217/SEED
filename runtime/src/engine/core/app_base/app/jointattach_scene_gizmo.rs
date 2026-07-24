@@ -32,17 +32,29 @@ const AXIS_COLOR_Z: [f32; 4] = [0.35, 0.55, 1.0, 0.95];
 // ── ベクトルヘルパー ──────────────────────────────────────────
 
 #[inline]
-fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] { [a[0] + b[0], a[1] + b[1], a[2] + b[2]] }
+fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
 #[inline]
-fn scale3(v: [f32; 3], s: f32) -> [f32; 3] { [v[0] * s, v[1] * s, v[2] * s] }
+fn scale3(v: [f32; 3], s: f32) -> [f32; 3] {
+    [v[0] * s, v[1] * s, v[2] * s]
+}
 #[inline]
 fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 #[inline]
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
     let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if len < 1e-6 { [0.0, 0.0, 1.0] } else { [v[0] / len, v[1] / len, v[2] / len] }
+    if len < 1e-6 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [v[0] / len, v[1] / len, v[2] / len]
+    }
 }
 
 // ── 公開 API ──────────────────────────────────────────────────
@@ -52,38 +64,45 @@ fn normalize3(v: [f32; 3]) -> [f32; 3] {
 ///
 /// バッチが空（JointAttach なし・非選択）の場合は None を返す。
 pub fn build_selected_jointattach_gizmo_batch(
-    actors:       &[Actor],
-    world:        &World,
-    wl:           u32,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
     selected_dfs: Option<usize>,
-    device:       &wgpu::Device,
+    device: &wgpu::Device,
 ) -> Option<GpuLineBatch> {
     let dfs = selected_dfs? as u32;
     let mut lb = LineBatch::new();
     let mut counter = 0u32;
     add_gizmo_for_dfs(actors, world, wl, dfs, &mut counter, &mut lb);
-    if lb.is_empty() { None } else { Some(lb.build(device)) }
+    if lb.is_empty() {
+        None
+    } else {
+        Some(lb.build(device))
+    }
 }
 
 /// DFS 走査して対象アクターが JointAttach を持てば軸ギズモを追加する。
 fn add_gizmo_for_dfs(
-    actors:  &[Actor],
-    world:   &World,
-    wl:      u32,
-    dfs:     u32,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
+    dfs: u32,
     counter: &mut u32,
-    lb:      &mut LineBatch,
+    lb: &mut LineBatch,
 ) -> bool {
     for actor in actors {
-        if actor.world_line != wl { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
         let current = *counter;
         *counter += 1;
 
         if current == dfs {
             // JointAttach スロットを持つときのみ、自アクターの Transform 基準で軸を描く
-            let has_attach = actor.slots().iter().any(|s|
+            let has_attach = actor.slots().iter().any(|s| {
                 s.kind == ComponentKind::JointAttach
-                && world.get::<JointAttachComponent>(s.entity).is_some());
+                    && world.get::<JointAttachComponent>(s.entity).is_some()
+            });
             if has_attach {
                 if let Some(tf) = world.get::<Transform>(actor.entity) {
                     add_axes(lb, tf);
@@ -103,13 +122,13 @@ fn add_gizmo_for_dfs(
 fn add_axes(lb: &mut LineBatch, tf: &Transform) {
     let pos = tf.position;
     // Transform の基底ベクトル（スケール無視の純方向）。
-    let fwd   = normalize3(tf.forward());          // +Z
-    let up    = normalize3(tf.up());               // +Y
-    let right = normalize3(cross3(fwd, up));       // +X（左手 → forward×up）
+    let fwd = normalize3(tf.forward()); // +Z
+    let up = normalize3(tf.up()); // +Y
+    let right = normalize3(cross3(fwd, up)); // +X（左手 → forward×up）
     // up を直交化し直す。
-    let up_o  = normalize3(cross3(right, fwd));
+    let up_o = normalize3(cross3(right, fwd));
 
     lb.add_line(pos, add3(pos, scale3(right, AXIS_LEN)), AXIS_COLOR_X);
-    lb.add_line(pos, add3(pos, scale3(up_o,  AXIS_LEN)), AXIS_COLOR_Y);
-    lb.add_line(pos, add3(pos, scale3(fwd,   AXIS_LEN)), AXIS_COLOR_Z);
+    lb.add_line(pos, add3(pos, scale3(up_o, AXIS_LEN)), AXIS_COLOR_Y);
+    lb.add_line(pos, add3(pos, scale3(fwd, AXIS_LEN)), AXIS_COLOR_Z);
 }

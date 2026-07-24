@@ -376,7 +376,8 @@ pub fn scatter_chunk_by_rules(
         for cz in 0..cells {
             for cx in 0..cells {
                 let cell_index = (cz * cells + cx) as usize;
-                let mut rng = ScatterRng::new(hash_seed(global_seed, coord, prop_index, cell_index));
+                let mut rng =
+                    ScatterRng::new(hash_seed(global_seed, coord, prop_index, cell_index));
 
                 // ─── セル内のジッタ位置に候補点を置く ───
                 let jx = rng.next_f32();
@@ -391,9 +392,9 @@ pub fn scatter_chunk_by_rules(
 
                 // ─── ルール評価（斜度・高度・レイヤ重み）───
                 let slope = slope_degrees(normal);
-                let probability =
-                    prop.rule
-                        .evaluate(slope, hit[1], &|layer| field.layer_weight_at(hit, layer));
+                let probability = prop
+                    .rule
+                    .evaluate(slope, hit[1], &|layer| field.layer_weight_at(hit, layer));
 
                 // ─── 確率判定。next_f32 は [0,1) なので probability=1 は必ず通る ───
                 if !(rng.next_f32() < probability) {
@@ -414,7 +415,11 @@ pub fn scatter_chunk_by_rules(
 /// `ceil(sqrt(density) * extent)` を取り、上限でクランプする。
 fn grid_cells_per_axis(density: f32, extent: f32) -> u32 {
     // NaN / 負値は最小密度に落とす（clamp は NaN でパニックするため先に潰す）。
-    let d = if density.is_finite() && density > 0.0 { density } else { MIN_EFFECTIVE_DENSITY };
+    let d = if density.is_finite() && density > 0.0 {
+        density
+    } else {
+        MIN_EFFECTIVE_DENSITY
+    };
     let raw = (d.sqrt() * extent).ceil();
     // f32 → u32 の飽和変換（負値は 0、巨大値は u32::MAX）。
     (raw as u32).clamp(1, MAX_SCATTER_GRID_PER_AXIS)
@@ -442,7 +447,11 @@ fn make_instance(
     let scale = rng.next_range(sp.scale_min, sp.scale_max);
 
     // ─── 基準軸: 地表法線に沿わせるか、常に真上か ───
-    let base = if sp.align_to_normal { surface_normal } else { NORMAL_FALLBACK_UP };
+    let base = if sp.align_to_normal {
+        surface_normal
+    } else {
+        NORMAL_FALLBACK_UP
+    };
 
     // ─── ランダム傾き（基準軸から tilt_max_deg までランダムに倒す）───
     let tilt_amount = rng.next_f32();
@@ -589,8 +598,11 @@ pub fn scatter_brush(
     let y_bottom = center[1] - radius;
 
     // ─── 最小間隔（目標密度の平均点間隔 × 係数）───
-    let effective_density =
-        if density.is_finite() && density > 0.0 { density } else { MIN_EFFECTIVE_DENSITY };
+    let effective_density = if density.is_finite() && density > 0.0 {
+        density
+    } else {
+        MIN_EFFECTIVE_DENSITY
+    };
     let min_spacing = MIN_INSTANCE_SPACING_FACTOR / effective_density.sqrt();
     let min_spacing_sq = min_spacing * min_spacing;
 

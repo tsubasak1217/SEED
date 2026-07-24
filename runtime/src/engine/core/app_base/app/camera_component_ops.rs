@@ -9,7 +9,7 @@
 //  - handle_set_camera_clear_color: クリアカラー（RGBA）の更新
 // ============================================================
 
-use crate::engine::components::{ComponentKind, CameraComponent, ScalingMode, CameraProjection};
+use crate::engine::components::{CameraComponent, CameraProjection, ComponentKind, ScalingMode};
 
 use super::{App, find_actor_by_dfs};
 
@@ -33,7 +33,9 @@ impl App {
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// CameraComponent の near clip を更新する。
@@ -55,7 +57,9 @@ impl App {
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// CameraComponent の far clip を更新する。
@@ -77,7 +81,9 @@ impl App {
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// CameraComponent の is_main フラグを更新する。
@@ -106,7 +112,9 @@ impl App {
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// CameraComponent のスケーリングモードを更新する。
@@ -132,7 +140,9 @@ impl App {
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// CameraComponent の投影方式（透視 / 正射）を更新する。
@@ -158,7 +168,9 @@ impl App {
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// CameraComponent の正射投影の縦描画範囲（ワールド単位・全高）を更新する。
@@ -184,7 +196,9 @@ impl App {
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// CameraComponent のターゲット解像度を更新する（スケーリングモードのベースサイズ）。
@@ -207,12 +221,14 @@ impl App {
         if let Some(entity) = slot_entity {
             let Some(scene) = &mut self.scene else { return };
             if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
-                cc.target_width  = width.max(1);
+                cc.target_width = width.max(1);
                 cc.target_height = height.max(1);
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// CameraComponent の帯カラーを更新する（LetterBox / PillarBox 時の帯色、RGBA 正規化値 0.0〜1.0）。
@@ -220,7 +236,10 @@ impl App {
         &mut self,
         actor_dfs_id: u32,
         slot_idx: u32,
-        r: f32, g: f32, b: f32, a: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
     ) {
         let wl = self.active_world_line;
         let slot_entity = {
@@ -238,7 +257,9 @@ impl App {
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// CameraComponent のクリアカラーを更新する（RGBA 正規化値 0.0〜1.0）。
@@ -246,7 +267,10 @@ impl App {
         &mut self,
         actor_dfs_id: u32,
         slot_idx: u32,
-        r: f32, g: f32, b: f32, a: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
     ) {
         let wl = self.active_world_line;
         let slot_entity = {
@@ -264,6 +288,8 @@ impl App {
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 }

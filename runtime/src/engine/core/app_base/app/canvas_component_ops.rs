@@ -11,16 +11,14 @@
 // ============================================================
 
 use crate::engine::components::{
-    ComponentKind, CanvasComponent, CanvasTransform, SpriteComponent, Collider2dComponent,
-    CanvasDrawZone,
+    CanvasComponent, CanvasDrawZone, CanvasTransform, Collider2dComponent, ComponentKind,
+    SpriteComponent,
 };
-use crate::engine::structs::objects::Actor;
 use crate::engine::core::app_base::undo::ActorTreeSnapshotCommand;
+use crate::engine::structs::objects::Actor;
 
 use super::{
-    App,
-    find_actor_by_dfs, find_actor_by_dfs_mut,
-    actor_subtree_size, find_parent_canvas_info,
+    App, actor_subtree_size, find_actor_by_dfs, find_actor_by_dfs_mut, find_parent_canvas_info,
 };
 
 impl App {
@@ -38,12 +36,14 @@ impl App {
     ///      限り Canvas を追加してから子 Actor2D を作成する（従来動作を維持）。
     pub(super) fn handle_add_canvas_child_component(
         &mut self,
-        actor_dfs_id:   u32,
+        actor_dfs_id: u32,
         component_type: &str,
-        slot_name:      &str,
-        args:           &str,
+        slot_name: &str,
+        args: &str,
     ) {
-        if self.scene.is_none() { return; }
+        if self.scene.is_none() {
+            return;
+        }
         let wl = self.active_world_line;
 
         // 対象アクターが Canvas を持つか確認
@@ -93,9 +93,9 @@ impl App {
     /// アクターツリーが変更されるため ActorTreeSnapshotCommand で Undo を記録する。
     fn spawn_canvas_child_with_component(
         &mut self,
-        parent_dfs_id:  u32,
+        parent_dfs_id: u32,
         component_type: &str,
-        slot_name:      &str,
+        slot_name: &str,
     ) {
         let wl = self.active_world_line;
         let before_actors = self.snapshot_actors_for_wl(wl);
@@ -126,7 +126,9 @@ impl App {
             let mut child = Actor::new_2d(child_entity, slot_name);
             child.world_line = wl;
             let mut c = 0u32;
-            if let Some(parent) = find_actor_by_dfs_mut(&mut scene.actors, wl, parent_dfs_id, &mut c) {
+            if let Some(parent) =
+                find_actor_by_dfs_mut(&mut scene.actors, wl, parent_dfs_id, &mut c)
+            {
                 parent.add_child(child);
                 true
             } else {
@@ -134,7 +136,9 @@ impl App {
                 false
             }
         };
-        if !child_added { return; }
+        if !child_added {
+            return;
+        }
 
         // 新規子の DFS id = 親 DFS id + 追加前の親サブツリーサイズ
         let child_dfs_id = parent_dfs_id + parent_size_before;
@@ -153,14 +157,20 @@ impl App {
         // 3D Canvas（親が Actor3D）の場合は、子 Actor2D の gizmo は 3D 親の世界変換を
         // 考慮していないため、親を選択状態のまま維持して混乱を防ぐ。
         // 2D Canvas の場合は従来通り子を選択して編集しやすくする。
-        let select_dfs = if is_parent_3d { parent_dfs_id } else { child_dfs_id };
-        self.actor_virtual_selected_idx      = Some(select_dfs as usize);
-        self.selected_actor_dfs_ids          = vec![select_dfs as usize];
+        let select_dfs = if is_parent_3d {
+            parent_dfs_id
+        } else {
+            child_dfs_id
+        };
+        self.actor_virtual_selected_idx = Some(select_dfs as usize);
+        self.selected_actor_dfs_ids = vec![select_dfs as usize];
         self.selected_instances.clear();
         self.send_selected();
         self.send_hierarchy();
         self.send_actor_components(select_dfs, 0);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// 対象アクターに Canvas を追加し、さらに子 Actor2D を生成してコンポーネントを追加する。
@@ -169,9 +179,9 @@ impl App {
     /// アクターツリーとコンポーネントの両方が変わるため ActorTreeSnapshotCommand で記録する。
     fn add_canvas_then_child_with_component(
         &mut self,
-        actor_dfs_id:   u32,
+        actor_dfs_id: u32,
         component_type: &str,
-        slot_name:      &str,
+        slot_name: &str,
     ) {
         let wl = self.active_world_line;
         let before_actors = self.snapshot_actors_for_wl(wl);
@@ -191,16 +201,24 @@ impl App {
             // 3D キャンバス: デフォルト解像度 640×360、自動スケール無効
             // 2D キャンバス: 従来通り 1920×1080、自動スケール有効
             let cc = if is_actor_3d {
-                CanvasComponent { width: 640.0, height: 360.0, auto_scale: false, ..CanvasComponent::default() }
+                CanvasComponent {
+                    width: 640.0,
+                    height: 360.0,
+                    auto_scale: false,
+                    ..CanvasComponent::default()
+                }
             } else {
                 CanvasComponent::default()
             };
             let slot_entity = scene.world.spawn();
             scene.world.insert(slot_entity, cc);
             let mut c = 0u32;
-            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c)
+            {
                 actor.add_slot_typed::<CanvasComponent>(
-                    "Canvas".to_string(), ComponentKind::Canvas, slot_entity,
+                    "Canvas".to_string(),
+                    ComponentKind::Canvas,
+                    slot_entity,
                 );
             } else {
                 scene.world.despawn(slot_entity);
@@ -232,7 +250,8 @@ impl App {
             let mut child = Actor::new_2d(child_entity, slot_name);
             child.world_line = wl;
             let mut c = 0u32;
-            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c)
+            {
                 actor.add_child(child);
                 true
             } else {
@@ -240,7 +259,9 @@ impl App {
                 false
             }
         };
-        if !child_added { return; }
+        if !child_added {
+            return;
+        }
 
         let child_dfs_id = actor_dfs_id + parent_size;
 
@@ -257,14 +278,20 @@ impl App {
         // 選択状態を更新してエディタへ通知する。
         // 3D Canvas の場合は親アクターを選択維持（子 Actor2D の gizmo は親の世界変換を
         // 未考慮のため、親を選択して gizmo による移動を正常にする）。
-        let select_dfs = if is_actor_3d { actor_dfs_id } else { child_dfs_id };
-        self.actor_virtual_selected_idx      = Some(select_dfs as usize);
-        self.selected_actor_dfs_ids          = vec![select_dfs as usize];
+        let select_dfs = if is_actor_3d {
+            actor_dfs_id
+        } else {
+            child_dfs_id
+        };
+        self.actor_virtual_selected_idx = Some(select_dfs as usize);
+        self.selected_actor_dfs_ids = vec![select_dfs as usize];
         self.selected_instances.clear();
         self.send_selected();
         self.send_hierarchy();
         self.send_actor_components(select_dfs, 0);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// 指定アクターの指定スロットに Canvas 2D コンポーネントを挿入する内部ヘルパー。
@@ -274,10 +301,10 @@ impl App {
     /// Canvas 上に新しいコンポーネント種別を追加する場合はここに case を追加する。
     fn insert_canvas_component_slot(
         &mut self,
-        wl:             u32,
-        actor_dfs_id:   u32,
+        wl: u32,
+        actor_dfs_id: u32,
         component_type: &str,
-        slot_name:      &str,
+        slot_name: &str,
     ) {
         match component_type {
             "SpriteComponent" => {
@@ -285,9 +312,13 @@ impl App {
                 let slot_entity = scene.world.spawn();
                 scene.world.insert(slot_entity, SpriteComponent::default());
                 let mut c = 0u32;
-                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                if let Some(actor) =
+                    find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c)
+                {
                     actor.add_slot_typed::<SpriteComponent>(
-                        slot_name.to_string(), ComponentKind::Sprite, slot_entity,
+                        slot_name.to_string(),
+                        ComponentKind::Sprite,
+                        slot_entity,
                     );
                 } else {
                     scene.world.despawn(slot_entity);
@@ -296,11 +327,17 @@ impl App {
             "Collider2dComponent" => {
                 let scene = self.scene.as_mut().unwrap();
                 let slot_entity = scene.world.spawn();
-                scene.world.insert(slot_entity, Collider2dComponent::default());
+                scene
+                    .world
+                    .insert(slot_entity, Collider2dComponent::default());
                 let mut c = 0u32;
-                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                if let Some(actor) =
+                    find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c)
+                {
                     actor.add_slot_typed::<Collider2dComponent>(
-                        slot_name.to_string(), ComponentKind::Collider2d, slot_entity,
+                        slot_name.to_string(),
+                        ComponentKind::Collider2d,
+                        slot_entity,
                     );
                 } else {
                     scene.world.despawn(slot_entity);
@@ -338,11 +375,18 @@ impl App {
             //   よいが、ここでは新旧テクスチャに紐づくものを含め安全側で mtime 差により自然再焼きされる。）
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// SpriteComponent のポストエフェクト（.postfx）参照パスを更新する（空文字列で無効化）。
-    pub(super) fn handle_set_sprite_postfx(&mut self, actor_dfs_id: u32, slot_idx: u32, path: &str) {
+    pub(super) fn handle_set_sprite_postfx(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx: u32,
+        path: &str,
+    ) {
         let wl = self.active_world_line;
         let slot_entity = {
             let Some(scene) = &self.scene else { return };
@@ -365,7 +409,9 @@ impl App {
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// SpriteComponent のカラーを更新する（RGBA 正規化値）。
@@ -373,7 +419,10 @@ impl App {
         &mut self,
         actor_dfs_id: u32,
         slot_idx: u32,
-        r: f32, g: f32, b: f32, a: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
     ) {
         let wl = self.active_world_line;
         let slot_entity = {
@@ -391,7 +440,9 @@ impl App {
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// SpriteComponent のサイズを更新する（キャンバスユニット）。
@@ -414,21 +465,18 @@ impl App {
         if let Some(entity) = slot_entity {
             let Some(scene) = &mut self.scene else { return };
             if let Some(sc) = scene.world.get_mut::<SpriteComponent>(entity) {
-                sc.width  = width;
+                sc.width = width;
                 sc.height = height;
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// SpriteComponent の描画優先度レイヤーを更新する（大きいほど手前・同値は DFS 順）。
-    pub(super) fn handle_set_sprite_layer(
-        &mut self,
-        actor_dfs_id: u32,
-        slot_idx:     u32,
-        layer:        i32,
-    ) {
+    pub(super) fn handle_set_sprite_layer(&mut self, actor_dfs_id: u32, slot_idx: u32, layer: i32) {
         let wl = self.active_world_line;
         let slot_entity = {
             let Some(scene) = &self.scene else { return };
@@ -445,7 +493,9 @@ impl App {
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     // ── CanvasComponent プロパティ設定 ────────────────────────────
@@ -457,8 +507,8 @@ impl App {
     pub(super) fn handle_set_canvas_draw_zone(
         &mut self,
         actor_dfs_id: u32,
-        slot_idx:     u32,
-        zone:         &str,
+        slot_idx: u32,
+        zone: &str,
     ) {
         let wl = self.active_world_line;
         let slot_entity = {
@@ -481,7 +531,9 @@ impl App {
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// CanvasTransform の anchor を更新する。
@@ -492,16 +544,16 @@ impl App {
         let wl = self.active_world_line;
         let Some(scene) = &mut self.scene else { return };
         let mut c = 0u32;
-        let actor = match find_actor_by_dfs_mut(
-            &mut scene.actors, wl, actor_dfs_id, &mut c,
-        ) {
+        let actor = match find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
             Some(a) => a,
-            None    => return,
+            None => return,
         };
         if let Some(ct) = scene.world.get_mut::<CanvasTransform>(actor.entity) {
             ct.anchor = [ax.clamp(0.0, 1.0), ay.clamp(0.0, 1.0)];
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 }

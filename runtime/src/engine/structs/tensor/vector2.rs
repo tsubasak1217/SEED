@@ -1,11 +1,6 @@
 use std::fmt;
 use std::ops::{
-    Add, AddAssign,
-    Sub, SubAssign,
-    Mul, MulAssign,
-    Div, DivAssign,
-    Neg,
-    Index, IndexMut,
+    Add, AddAssign, Div, DivAssign, Index, IndexMut, Mul, MulAssign, Neg, Sub, SubAssign,
 };
 
 /// 2 次元ベクトル。
@@ -51,7 +46,10 @@ impl<T: Default + Copy> Vector2<T> {
     /// 零ベクトル (0, 0) を生成する。
     #[inline]
     pub fn zero() -> Self {
-        Self { x: T::default(), y: T::default() }
+        Self {
+            x: T::default(),
+            y: T::default(),
+        }
     }
 }
 

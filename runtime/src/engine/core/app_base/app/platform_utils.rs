@@ -23,9 +23,16 @@ pub(super) fn camera_grab_start(hwnd: isize) -> Option<(i32, i32)> {
         };
 
         let mut pt = POINT { x: 0, y: 0 };
-        if GetCursorPos(&mut pt) == 0 { return None; }
+        if GetCursorPos(&mut pt) == 0 {
+            return None;
+        }
 
-        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         GetWindowRect(hwnd as _, &mut rect);
         ClipCursor(&rect);
 
@@ -69,7 +76,12 @@ pub(super) fn apply_window_clamp(hwnd: isize) {
     unsafe {
         use windows_sys::Win32::Foundation::RECT;
         use windows_sys::Win32::UI::WindowsAndMessaging::{ClipCursor, GetWindowRect};
-        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         GetWindowRect(hwnd as _, &mut rect);
         ClipCursor(&rect);
     }
@@ -95,7 +107,12 @@ pub(super) fn warp_cursor_to_local(hwnd: isize, lx: i32, ly: i32) {
     unsafe {
         use windows_sys::Win32::Foundation::RECT;
         use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, SetCursorPos};
-        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         if GetWindowRect(hwnd as _, &mut rect) != 0 {
             SetCursorPos(rect.left + lx, rect.top + ly);
         }

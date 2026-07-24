@@ -72,23 +72,41 @@ pub const MAX_PARTICLE_TEXTURES: usize = 8;
 // マジックナンバー禁止のため、非ゼロ既定値はすべて関数に切り出す。
 
 /// max_particles の既定値（GPU パーティクルプールの初期サイズ）。
-fn default_max_particles() -> u32 { 1024 }
+fn default_max_particles() -> u32 {
+    1024
+}
 /// emit_interval（放出間隔・秒）の既定値（0.05 秒＝20 回/秒）。
-fn default_emit_interval() -> f32 { 0.05 }
+fn default_emit_interval() -> f32 {
+    0.05
+}
 /// particles_per_emit（1 回の emit で放出する個数）の既定値。
-fn default_particles_per_emit() -> u32 { 1 }
+fn default_particles_per_emit() -> u32 {
+    1
+}
 /// lifetime（寿命 min/max・秒）の既定値。
-fn default_lifetime() -> [f32; 2] { [1.0, 2.0] }
+fn default_lifetime() -> [f32; 2] {
+    [1.0, 2.0]
+}
 /// initial_speed（初速 min/max）の既定値。
-fn default_initial_speed() -> [f32; 2] { [1.0, 3.0] }
+fn default_initial_speed() -> [f32; 2] {
+    [1.0, 3.0]
+}
 /// direction_local（ローカル放出方向）の既定値（+Y 上向き）。
-fn default_direction_local() -> [f32; 3] { [0.0, 1.0, 0.0] }
+fn default_direction_local() -> [f32; 3] {
+    [0.0, 1.0, 0.0]
+}
 /// gravity（重力加速度）の既定値（-Y 方向、地球重力相当）。
-fn default_gravity() -> [f32; 3] { [0.0, -9.8, 0.0] }
+fn default_gravity() -> [f32; 3] {
+    [0.0, -9.8, 0.0]
+}
 /// size_range（全体サイズ倍率 min/max）の既定値。
-fn default_size_range() -> [f32; 2] { [1.0, 1.0] }
+fn default_size_range() -> [f32; 2] {
+    [1.0, 1.0]
+}
 /// playing（Play 開始時に放出を開始するか）の既定値（true）。
-fn default_playing() -> bool { true }
+fn default_playing() -> bool {
+    true
+}
 
 // ─── ParticleBlend ────────────────────────────────────────────
 
@@ -123,18 +141,20 @@ pub enum ParticleBlend {
 
 impl Default for ParticleBlend {
     /// blend 省略時の既定は Add（加算）。
-    fn default() -> Self { ParticleBlend::Add }
+    fn default() -> Self {
+        ParticleBlend::Add
+    }
 }
 
 impl ParticleBlend {
     /// 描画パイプライン選択に使う種別コード（pipeline.rs のブレンド配列順と一致）。
     pub fn to_code(self) -> usize {
         match self {
-            ParticleBlend::None   => 0,
+            ParticleBlend::None => 0,
             ParticleBlend::Normal => 1,
-            ParticleBlend::Add    => 2,
-            ParticleBlend::Sub    => 3,
-            ParticleBlend::Mul    => 4,
+            ParticleBlend::Add => 2,
+            ParticleBlend::Sub => 3,
+            ParticleBlend::Mul => 4,
             ParticleBlend::Screen => 5,
         }
     }
@@ -143,24 +163,24 @@ impl ParticleBlend {
     /// 旧名（additive / alpha）も互換受理する。
     pub fn from_str_opt(s: &str) -> Option<Self> {
         match s {
-            "none"            => Some(ParticleBlend::None),
-            "normal" | "alpha"    => Some(ParticleBlend::Normal),
-            "add"    | "additive" => Some(ParticleBlend::Add),
-            "sub"             => Some(ParticleBlend::Sub),
-            "mul"             => Some(ParticleBlend::Mul),
-            "screen"          => Some(ParticleBlend::Screen),
-            _                 => None,
+            "none" => Some(ParticleBlend::None),
+            "normal" | "alpha" => Some(ParticleBlend::Normal),
+            "add" | "additive" => Some(ParticleBlend::Add),
+            "sub" => Some(ParticleBlend::Sub),
+            "mul" => Some(ParticleBlend::Mul),
+            "screen" => Some(ParticleBlend::Screen),
+            _ => None,
         }
     }
 
     /// インスペクタへ送る種別文字列。
     pub fn as_str(self) -> &'static str {
         match self {
-            ParticleBlend::None   => "none",
+            ParticleBlend::None => "none",
             ParticleBlend::Normal => "normal",
-            ParticleBlend::Add    => "add",
-            ParticleBlend::Sub    => "sub",
-            ParticleBlend::Mul    => "mul",
+            ParticleBlend::Add => "add",
+            ParticleBlend::Sub => "sub",
+            ParticleBlend::Mul => "mul",
             ParticleBlend::Screen => "screen",
         }
     }
@@ -183,7 +203,9 @@ pub enum ParticleSimSpace {
 
 impl Default for ParticleSimSpace {
     /// sim_space 省略時の既定は world。
-    fn default() -> Self { ParticleSimSpace::World }
+    fn default() -> Self {
+        ParticleSimSpace::World
+    }
 }
 
 impl ParticleSimSpace {
@@ -201,7 +223,7 @@ impl ParticleSimSpace {
         match s {
             "world" => Some(ParticleSimSpace::World),
             "local" => Some(ParticleSimSpace::Local),
-            _       => None,
+            _ => None,
         }
     }
 
@@ -249,7 +271,9 @@ pub enum ParticleShape {
 }
 
 impl Default for ParticleShape {
-    fn default() -> Self { ParticleShape::Pixel }
+    fn default() -> Self {
+        ParticleShape::Pixel
+    }
 }
 
 impl ParticleShape {
@@ -257,10 +281,10 @@ impl ParticleShape {
     /// Model は組込みメッシュではないため実行時のロード結果で扱う（ここでは 4）。
     pub fn to_code(&self) -> u32 {
         match self {
-            ParticleShape::Pixel  => 0,
+            ParticleShape::Pixel => 0,
             ParticleShape::Sphere => 1,
-            ParticleShape::Box    => 2,
-            ParticleShape::Plane  => 3,
+            ParticleShape::Box => 2,
+            ParticleShape::Plane => 3,
             ParticleShape::Model { .. } => 4,
         }
     }
@@ -268,10 +292,10 @@ impl ParticleShape {
     /// IPC のドロップダウン Tag 文字列。
     pub fn as_str(&self) -> &'static str {
         match self {
-            ParticleShape::Pixel  => "pixel",
+            ParticleShape::Pixel => "pixel",
             ParticleShape::Sphere => "sphere",
-            ParticleShape::Box    => "box",
-            ParticleShape::Plane  => "plane",
+            ParticleShape::Box => "box",
+            ParticleShape::Plane => "plane",
             ParticleShape::Model { .. } => "model",
         }
     }
@@ -283,10 +307,12 @@ impl ParticleShape {
         match tag {
             "pixel" | "point" => Some(ParticleShape::Pixel),
             "sphere" => Some(ParticleShape::Sphere),
-            "box"    => Some(ParticleShape::Box),
-            "plane"  => Some(ParticleShape::Plane),
-            "model"  => Some(ParticleShape::Model { path: keep_path.to_string() }),
-            _        => None,
+            "box" => Some(ParticleShape::Box),
+            "plane" => Some(ParticleShape::Plane),
+            "model" => Some(ParticleShape::Model {
+                path: keep_path.to_string(),
+            }),
+            _ => None,
         }
     }
 
@@ -326,14 +352,16 @@ pub enum SpawnVolume {
 }
 
 impl Default for SpawnVolume {
-    fn default() -> Self { SpawnVolume::Point }
+    fn default() -> Self {
+        SpawnVolume::Point
+    }
 }
 
 impl SpawnVolume {
     /// GPU compute のスポーン体積分岐コード（sim シェーダの定数と一致させる）。
     pub fn to_code(&self) -> u32 {
         match self {
-            SpawnVolume::Point     => 0,
+            SpawnVolume::Point => 0,
             SpawnVolume::Box { .. } => 1,
             SpawnVolume::Sphere { .. } => 2,
         }
@@ -342,7 +370,7 @@ impl SpawnVolume {
     /// IPC のドロップダウン Tag 文字列。
     pub fn as_str(&self) -> &'static str {
         match self {
-            SpawnVolume::Point     => "point",
+            SpawnVolume::Point => "point",
             SpawnVolume::Box { .. } => "box",
             SpawnVolume::Sphere { .. } => "sphere",
         }
@@ -351,10 +379,14 @@ impl SpawnVolume {
     /// IPC の Tag 文字列から体積を作る（パラメータは既存値を引き継ぐ）。
     pub fn from_tag(tag: &str, keep_half: [f32; 3], keep_radius: f32) -> Option<Self> {
         match tag {
-            "point"  => Some(SpawnVolume::Point),
-            "box"    => Some(SpawnVolume::Box { half_extents: keep_half }),
-            "sphere" => Some(SpawnVolume::Sphere { radius: keep_radius }),
-            _        => None,
+            "point" => Some(SpawnVolume::Point),
+            "box" => Some(SpawnVolume::Box {
+                half_extents: keep_half,
+            }),
+            "sphere" => Some(SpawnVolume::Sphere {
+                radius: keep_radius,
+            }),
+            _ => None,
         }
     }
 
@@ -399,15 +431,17 @@ pub enum EmitMode {
 }
 
 impl Default for EmitMode {
-    fn default() -> Self { EmitMode::Loop }
+    fn default() -> Self {
+        EmitMode::Loop
+    }
 }
 
 impl EmitMode {
     /// IPC のドロップダウン Tag 文字列。
     pub fn as_str(&self) -> &'static str {
         match self {
-            EmitMode::Loop      => "loop",
-            EmitMode::Once      => "once",
+            EmitMode::Loop => "loop",
+            EmitMode::Once => "once",
             EmitMode::Count { .. } => "count",
         }
     }
@@ -415,10 +449,10 @@ impl EmitMode {
     /// IPC の Tag 文字列から作る（Count の total は既存値を引き継ぐ）。
     pub fn from_tag(tag: &str, keep_total: u32) -> Option<Self> {
         match tag {
-            "loop"  => Some(EmitMode::Loop),
-            "once"  => Some(EmitMode::Once),
+            "loop" => Some(EmitMode::Loop),
+            "once" => Some(EmitMode::Once),
             "count" => Some(EmitMode::Count { total: keep_total }),
-            _       => None,
+            _ => None,
         }
     }
 
@@ -466,7 +500,11 @@ pub struct CurveKey {
 impl CurveKey {
     /// 線形補間キーを作る（interp=Linear）。
     pub fn new(t: f32, v: f32) -> Self {
-        Self { t, v, interp: CurveInterp::Linear }
+        Self {
+            t,
+            v,
+            interp: CurveInterp::Linear,
+        }
     }
 }
 
@@ -490,12 +528,16 @@ fn catmull_rom(p0: f32, p1: f32, p2: f32, p3: f32, f: f32) -> f32 {
 impl CurveChannel {
     /// 定数チャンネル（両端 [0,v]..[1,v]）を作る。
     pub fn constant(v: f32) -> Self {
-        Self { keys: vec![CurveKey::new(0.0, v), CurveKey::new(1.0, v)] }
+        Self {
+            keys: vec![CurveKey::new(0.0, v), CurveKey::new(1.0, v)],
+        }
     }
 
     /// 2 キー（t=0 が a、t=1 が b）の線形チャンネルを作る。
     pub fn linear(a: f32, b: f32) -> Self {
-        Self { keys: vec![CurveKey::new(0.0, a), CurveKey::new(1.0, b)] }
+        Self {
+            keys: vec![CurveKey::new(0.0, a), CurveKey::new(1.0, b)],
+        }
     }
 
     /// 正規化寿命 t での値を、各キーの補間タイプで評価する。
@@ -505,21 +547,29 @@ impl CurveChannel {
     /// - セグメント [k0, k1] の補間は k0.interp（Linear / Smooth / Step）で決まる。
     pub fn eval(&self, t: f32) -> f32 {
         let keys = &self.keys;
-        if keys.is_empty() { return 0.0; }
-        if t <= keys[0].t { return keys[0].v; }
+        if keys.is_empty() {
+            return 0.0;
+        }
+        if t <= keys[0].t {
+            return keys[0].v;
+        }
         let last = keys.len() - 1;
-        if t >= keys[last].t { return keys[last].v; }
+        if t >= keys[last].t {
+            return keys[last].v;
+        }
         // t を含む区間 [k, k+1] を線形探索（キー数は少数前提）。
         for w in 0..last {
             let k0 = keys[w];
             let k1 = keys[w + 1];
             if t >= k0.t && t <= k1.t {
                 let span = k1.t - k0.t;
-                if span <= f32::EPSILON { return k0.v; }
+                if span <= f32::EPSILON {
+                    return k0.v;
+                }
                 let f = (t - k0.t) / span;
                 return match k0.interp {
                     // ステップ: 次キー時刻まで k0 の値を保持。
-                    CurveInterp::Step   => k0.v,
+                    CurveInterp::Step => k0.v,
                     // 線形。
                     CurveInterp::Linear => k0.v + (k1.v - k0.v) * f,
                     // Catmull-Rom: 両隣のキー（端は自身でクランプ）で接線を作る。
@@ -549,7 +599,9 @@ pub struct ParamCurve {
 impl ParamCurve {
     /// 全チャンネル定数のカーブ（1 チャンネル）。速度/回転の既定に使う。
     pub fn constant1(v: f32) -> Self {
-        Self { channels: vec![CurveChannel::constant(v)] }
+        Self {
+            channels: vec![CurveChannel::constant(v)],
+        }
     }
 
     /// t での各成分値を vec4 で返す（存在しないチャンネルは 0.0）。
@@ -571,7 +623,11 @@ impl ParamCurve {
         let n = samples.max(1);
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
-            let t = if n == 1 { 0.0 } else { i as f32 / (n - 1) as f32 };
+            let t = if n == 1 {
+                0.0
+            } else {
+                i as f32 / (n - 1) as f32
+            };
             out.push(self.sample(t));
         }
         out
@@ -589,7 +645,11 @@ fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let min = r.min(g).min(b);
     let delta = max - min;
     let v = max;
-    let s = if max <= f32::EPSILON { 0.0 } else { delta / max };
+    let s = if max <= f32::EPSILON {
+        0.0
+    } else {
+        delta / max
+    };
     let h = if delta <= f32::EPSILON {
         0.0
     } else if max == r {
@@ -610,9 +670,9 @@ fn rgba_pair_to_hsva_curve(start: [f32; 4], end: [f32; 4]) -> ParamCurve {
     let (h1, s1, v1) = rgb_to_hsv(end[0], end[1], end[2]);
     ParamCurve {
         channels: vec![
-            CurveChannel::linear(h0, h1),         // H
-            CurveChannel::linear(s0, s1),         // S
-            CurveChannel::linear(v0, v1),         // V
+            CurveChannel::linear(h0, h1),           // H
+            CurveChannel::linear(s0, s1),           // S
+            CurveChannel::linear(v0, v1),           // V
             CurveChannel::linear(start[3], end[3]), // A
         ],
     }
@@ -621,23 +681,29 @@ fn rgba_pair_to_hsva_curve(start: [f32; 4], end: [f32; 4]) -> ParamCurve {
 // ─── 既定カーブ ───────────────────────────────────────────────
 
 /// speed_curve の既定（定数 1.0）。
-fn default_speed_curve() -> ParamCurve { ParamCurve::constant1(1.0) }
+fn default_speed_curve() -> ParamCurve {
+    ParamCurve::constant1(1.0)
+}
 /// rot_speed_curve の既定（定数 1.0）。
-fn default_rot_speed_curve() -> ParamCurve { ParamCurve::constant1(1.0) }
+fn default_rot_speed_curve() -> ParamCurve {
+    ParamCurve::constant1(1.0)
+}
 /// 1 本の白フェードアウト色カーブ（HSVA：H=0, S=0, V=1、A は 1→0）。
 /// 旧既定（start=白不透明 / end=白透明）と同等の見た目。
 fn white_fade_color_curve() -> ParamCurve {
     ParamCurve {
         channels: vec![
-            CurveChannel::constant(0.0), // H
-            CurveChannel::constant(0.0), // S
-            CurveChannel::constant(1.0), // V
+            CurveChannel::constant(0.0),    // H
+            CurveChannel::constant(0.0),    // S
+            CurveChannel::constant(1.0),    // V
             CurveChannel::linear(1.0, 0.0), // A（フェードアウト）
         ],
     }
 }
 /// color_curves の既定（白フェードアウト 1 本）。最低 1 本を保証する。
-fn default_color_curves() -> Vec<ParamCurve> { vec![white_fade_color_curve()] }
+fn default_color_curves() -> Vec<ParamCurve> {
+    vec![white_fade_color_curve()]
+}
 /// scale_curve の既定（xyz とも 1→0 で縮小消滅。旧 end_size_scale=0 と同等）。
 fn default_scale_curve() -> ParamCurve {
     ParamCurve {
@@ -651,7 +717,9 @@ fn default_scale_curve() -> ParamCurve {
 
 /// color_curves が空なら白フェード 1 本で補完する（最低 1 本を強制）。
 fn ensure_nonempty_colors(mut v: Vec<ParamCurve>) -> Vec<ParamCurve> {
-    if v.is_empty() { v.push(white_fade_color_curve()); }
+    if v.is_empty() {
+        v.push(white_fade_color_curve());
+    }
     v
 }
 
@@ -733,31 +801,31 @@ pub struct ParticleEmitterComponentData {
 impl Default for ParticleEmitterComponentData {
     fn default() -> Self {
         Self {
-            max_particles:       default_max_particles(),
-            shape:               ParticleShape::default(),
-            spawn_volume:        SpawnVolume::default(),
-            emit_mode:           EmitMode::default(),
-            initial_delay:       0.0,
-            prewarm_time:        0.0,
-            emit_interval:       default_emit_interval(),
-            particles_per_emit:  default_particles_per_emit(),
-            lifetime:            default_lifetime(),
-            initial_speed:       default_initial_speed(),
-            direction_local:     default_direction_local(),
-            direction_randomness:0.0,
-            gravity:             default_gravity(),
-            drag:                0.0,
-            rot_speed_range:     [0.0, 0.0],
+            max_particles: default_max_particles(),
+            shape: ParticleShape::default(),
+            spawn_volume: SpawnVolume::default(),
+            emit_mode: EmitMode::default(),
+            initial_delay: 0.0,
+            prewarm_time: 0.0,
+            emit_interval: default_emit_interval(),
+            particles_per_emit: default_particles_per_emit(),
+            lifetime: default_lifetime(),
+            initial_speed: default_initial_speed(),
+            direction_local: default_direction_local(),
+            direction_randomness: 0.0,
+            gravity: default_gravity(),
+            drag: 0.0,
+            rot_speed_range: [0.0, 0.0],
             initial_rotation_range: [0.0, 0.0],
-            size_range:          default_size_range(),
-            speed_curve:         default_speed_curve(),
-            rot_speed_curve:     default_rot_speed_curve(),
-            scale_curve:         default_scale_curve(),
-            color_curves:        default_color_curves(),
-            texture_paths:       Vec::new(),
-            blend:               ParticleBlend::default(),
-            sim_space:           ParticleSimSpace::default(),
-            playing:             default_playing(),
+            size_range: default_size_range(),
+            speed_curve: default_speed_curve(),
+            rot_speed_curve: default_rot_speed_curve(),
+            scale_curve: default_scale_curve(),
+            color_curves: default_color_curves(),
+            texture_paths: Vec::new(),
+            blend: ParticleBlend::default(),
+            sim_space: ParticleSimSpace::default(),
+            playing: default_playing(),
         }
     }
 }
@@ -771,47 +839,84 @@ impl Default for ParticleEmitterComponentData {
 #[derive(Deserialize)]
 struct ParticleEmitterComponentRaw {
     // 共通・維持フィールド
-    #[serde(default)] max_particles:   Option<u32>,
-    #[serde(default)] lifetime:        Option<[f32; 2]>,
-    #[serde(default)] initial_speed:   Option<[f32; 2]>,
-    #[serde(default)] direction_local: Option<[f32; 3]>,
-    #[serde(default)] gravity:         Option<[f32; 3]>,
-    #[serde(default)] drag:            Option<f32>,
-    #[serde(default)] blend:           Option<ParticleBlend>,
-    #[serde(default)] sim_space:       Option<ParticleSimSpace>,
-    #[serde(default)] playing:         Option<bool>,
+    #[serde(default)]
+    max_particles: Option<u32>,
+    #[serde(default)]
+    lifetime: Option<[f32; 2]>,
+    #[serde(default)]
+    initial_speed: Option<[f32; 2]>,
+    #[serde(default)]
+    direction_local: Option<[f32; 3]>,
+    #[serde(default)]
+    gravity: Option<[f32; 3]>,
+    #[serde(default)]
+    drag: Option<f32>,
+    #[serde(default)]
+    blend: Option<ParticleBlend>,
+    #[serde(default)]
+    sim_space: Option<ParticleSimSpace>,
+    #[serde(default)]
+    playing: Option<bool>,
 
     // 新フィールド
-    #[serde(default)] shape:               Option<ParticleShape>,
-    #[serde(default)] spawn_volume:        Option<SpawnVolume>,
-    #[serde(default)] emit_mode:           Option<EmitMode>,
-    #[serde(default)] initial_delay:       Option<f32>,
-    #[serde(default)] prewarm_time:        Option<f32>,
-    #[serde(default)] emit_interval:       Option<f32>,
-    #[serde(default)] particles_per_emit:  Option<u32>,
-    #[serde(default)] direction_randomness:Option<f32>,
-    #[serde(default)] rot_speed_range:     Option<[f32; 2]>,
-    #[serde(default)] initial_rotation_range: Option<[f32; 2]>,
-    #[serde(default)] size_range:          Option<[f32; 2]>,
-    #[serde(default)] speed_curve:         Option<ParamCurve>,
-    #[serde(default)] rot_speed_curve:     Option<ParamCurve>,
-    #[serde(default)] scale_curve:         Option<ParamCurve>,
-    #[serde(default)] color_curves:        Option<Vec<ParamCurve>>,
-    #[serde(default)] texture_paths:       Option<Vec<String>>,
+    #[serde(default)]
+    shape: Option<ParticleShape>,
+    #[serde(default)]
+    spawn_volume: Option<SpawnVolume>,
+    #[serde(default)]
+    emit_mode: Option<EmitMode>,
+    #[serde(default)]
+    initial_delay: Option<f32>,
+    #[serde(default)]
+    prewarm_time: Option<f32>,
+    #[serde(default)]
+    emit_interval: Option<f32>,
+    #[serde(default)]
+    particles_per_emit: Option<u32>,
+    #[serde(default)]
+    direction_randomness: Option<f32>,
+    #[serde(default)]
+    rot_speed_range: Option<[f32; 2]>,
+    #[serde(default)]
+    initial_rotation_range: Option<[f32; 2]>,
+    #[serde(default)]
+    size_range: Option<[f32; 2]>,
+    #[serde(default)]
+    speed_curve: Option<ParamCurve>,
+    #[serde(default)]
+    rot_speed_curve: Option<ParamCurve>,
+    #[serde(default)]
+    scale_curve: Option<ParamCurve>,
+    #[serde(default)]
+    color_curves: Option<Vec<ParamCurve>>,
+    #[serde(default)]
+    texture_paths: Option<Vec<String>>,
 
     // 旧フィールド（互換変換用）
-    #[serde(default)] color_curve:         Option<ParamCurve>,
-    #[serde(default)] random_color_curves: Option<Vec<ParamCurve>>,
-    #[serde(default)] texture_path:        Option<String>,
-    #[serde(default)] emit_rate:        Option<f32>,
-    #[serde(default)] spread_angle_deg: Option<f32>,
-    #[serde(default)] start_size:       Option<[f32; 2]>,
-    #[serde(default)] end_size_scale:   Option<f32>,
-    #[serde(default)] start_color:      Option<[f32; 4]>,
-    #[serde(default)] end_color:        Option<[f32; 4]>,
-    #[serde(default)] loop_emit:        Option<bool>,
+    #[serde(default)]
+    color_curve: Option<ParamCurve>,
+    #[serde(default)]
+    random_color_curves: Option<Vec<ParamCurve>>,
+    #[serde(default)]
+    texture_path: Option<String>,
+    #[serde(default)]
+    emit_rate: Option<f32>,
+    #[serde(default)]
+    spread_angle_deg: Option<f32>,
+    #[serde(default)]
+    start_size: Option<[f32; 2]>,
+    #[serde(default)]
+    end_size_scale: Option<f32>,
+    #[serde(default)]
+    start_color: Option<[f32; 4]>,
+    #[serde(default)]
+    end_color: Option<[f32; 4]>,
+    #[serde(default)]
+    loop_emit: Option<bool>,
     // burst（旧・Play 開始時一括放出数）は明確に対応する新概念が無いため変換で破棄する。
-    #[serde(default)] #[allow(dead_code)] burst: Option<u32>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    burst: Option<u32>,
 }
 
 impl From<ParticleEmitterComponentRaw> for ParticleEmitterComponentData {
@@ -821,105 +926,107 @@ impl From<ParticleEmitterComponentRaw> for ParticleEmitterComponentData {
 
         // emit_interval / particles_per_emit: 新優先。無ければ旧 emit_rate から
         // interval=1/rate（rate>0）, per_emit=1 へ変換。
-        let emit_interval = r.emit_interval.unwrap_or_else(|| {
-            match r.emit_rate {
-                Some(rate) if rate > 0.0 => 1.0 / rate,
-                _ => def.emit_interval,
-            }
+        let emit_interval = r.emit_interval.unwrap_or_else(|| match r.emit_rate {
+            Some(rate) if rate > 0.0 => 1.0 / rate,
+            _ => def.emit_interval,
         });
         let particles_per_emit = r.particles_per_emit.unwrap_or_else(|| {
-            if r.emit_rate.is_some() { 1 } else { def.particles_per_emit }
+            if r.emit_rate.is_some() {
+                1
+            } else {
+                def.particles_per_emit
+            }
         });
 
         // emit_mode: 新優先。無ければ旧 loop_emit（true→Loop / false→Once）。
-        let emit_mode = r.emit_mode.unwrap_or_else(|| {
-            match r.loop_emit {
-                Some(true)  => EmitMode::Loop,
-                Some(false) => EmitMode::Once,
-                None        => def.emit_mode,
-            }
+        let emit_mode = r.emit_mode.unwrap_or_else(|| match r.loop_emit {
+            Some(true) => EmitMode::Loop,
+            Some(false) => EmitMode::Once,
+            None => def.emit_mode,
         });
 
         // direction_randomness: 新優先。無ければ旧 spread_angle_deg/180。
-        let direction_randomness = r.direction_randomness.unwrap_or_else(|| {
-            match r.spread_angle_deg {
-                Some(s) => (s / DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG).clamp(0.0, 1.0),
-                None => def.direction_randomness,
-            }
-        });
+        let direction_randomness =
+            r.direction_randomness
+                .unwrap_or_else(|| match r.spread_angle_deg {
+                    Some(s) => (s / DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG).clamp(0.0, 1.0),
+                    None => def.direction_randomness,
+                });
 
         // size_range: 新優先。無ければ旧 start_size（乱数開始サイズを全体倍率へ転用）。
-        let size_range = r.size_range.unwrap_or_else(|| {
-            r.start_size.unwrap_or(def.size_range)
-        });
+        let size_range = r
+            .size_range
+            .unwrap_or_else(|| r.start_size.unwrap_or(def.size_range));
 
         // color_curves: 新優先。無ければ旧 color_curve（単体）＋ random_color_curves を
         // 1 本のリストへ統合する。旧 start_color/end_color しか無ければ HSVA 2 キーへ。
         // どれも無ければ既定（白フェード 1 本）。最終的に最低 1 本を保証する。
         let color_curves = ensure_nonempty_colors(r.color_curves.unwrap_or_else(|| {
             let mut list: Vec<ParamCurve> = Vec::new();
-            if let Some(c) = r.color_curve.clone() { list.push(c); }
-            if let Some(mut rc) = r.random_color_curves.clone() { list.append(&mut rc); }
+            if let Some(c) = r.color_curve.clone() {
+                list.push(c);
+            }
+            if let Some(mut rc) = r.random_color_curves.clone() {
+                list.append(&mut rc);
+            }
             if list.is_empty() {
                 match (r.start_color, r.end_color) {
                     (Some(s), Some(e)) => list.push(rgba_pair_to_hsva_curve(s, e)),
-                    (Some(s), None)    => list.push(rgba_pair_to_hsva_curve(s, s)),
-                    (None, Some(e))    => list.push(rgba_pair_to_hsva_curve(e, e)),
-                    (None, None)       => {}
+                    (Some(s), None) => list.push(rgba_pair_to_hsva_curve(s, s)),
+                    (None, Some(e)) => list.push(rgba_pair_to_hsva_curve(e, e)),
+                    (None, None) => {}
                 }
             }
             list
         }));
 
         // texture_paths: 新優先。無ければ旧 texture_path（単体、空文字は無視）をリスト化。
-        let texture_paths = r.texture_paths.unwrap_or_else(|| {
-            match r.texture_path {
-                Some(p) if !p.is_empty() => vec![p],
-                _ => def.texture_paths.clone(),
-            }
+        let texture_paths = r.texture_paths.unwrap_or_else(|| match r.texture_path {
+            Some(p) if !p.is_empty() => vec![p],
+            _ => def.texture_paths.clone(),
         });
 
         // scale_curve: 新優先。無ければ旧 end_size_scale から 1→end_size_scale（xyz）。
         // （旧 start_size は size_range に移したので、ここは寿命内の倍率変化のみ扱う）
-        let scale_curve = r.scale_curve.unwrap_or_else(|| {
-            match r.end_size_scale {
-                Some(es) => ParamCurve {
-                    channels: vec![
-                        CurveChannel::linear(1.0, es),
-                        CurveChannel::linear(1.0, es),
-                        CurveChannel::linear(1.0, es),
-                    ],
-                },
-                None => def.scale_curve.clone(),
-            }
+        let scale_curve = r.scale_curve.unwrap_or_else(|| match r.end_size_scale {
+            Some(es) => ParamCurve {
+                channels: vec![
+                    CurveChannel::linear(1.0, es),
+                    CurveChannel::linear(1.0, es),
+                    CurveChannel::linear(1.0, es),
+                ],
+            },
+            None => def.scale_curve.clone(),
         });
 
         Self {
-            max_particles:       r.max_particles.unwrap_or(def.max_particles),
-            shape:               r.shape.unwrap_or(def.shape),
-            spawn_volume:        r.spawn_volume.unwrap_or(def.spawn_volume),
+            max_particles: r.max_particles.unwrap_or(def.max_particles),
+            shape: r.shape.unwrap_or(def.shape),
+            spawn_volume: r.spawn_volume.unwrap_or(def.spawn_volume),
             emit_mode,
-            initial_delay:       r.initial_delay.unwrap_or(def.initial_delay),
-            prewarm_time:        r.prewarm_time.unwrap_or(def.prewarm_time),
+            initial_delay: r.initial_delay.unwrap_or(def.initial_delay),
+            prewarm_time: r.prewarm_time.unwrap_or(def.prewarm_time),
             emit_interval,
             particles_per_emit,
-            lifetime:            r.lifetime.unwrap_or(def.lifetime),
-            initial_speed:       r.initial_speed.unwrap_or(def.initial_speed),
-            direction_local:     r.direction_local.unwrap_or(def.direction_local),
+            lifetime: r.lifetime.unwrap_or(def.lifetime),
+            initial_speed: r.initial_speed.unwrap_or(def.initial_speed),
+            direction_local: r.direction_local.unwrap_or(def.direction_local),
             direction_randomness,
-            gravity:             r.gravity.unwrap_or(def.gravity),
-            drag:                r.drag.unwrap_or(def.drag),
-            rot_speed_range:     r.rot_speed_range.unwrap_or(def.rot_speed_range),
-            initial_rotation_range: r.initial_rotation_range.unwrap_or(def.initial_rotation_range),
+            gravity: r.gravity.unwrap_or(def.gravity),
+            drag: r.drag.unwrap_or(def.drag),
+            rot_speed_range: r.rot_speed_range.unwrap_or(def.rot_speed_range),
+            initial_rotation_range: r
+                .initial_rotation_range
+                .unwrap_or(def.initial_rotation_range),
             size_range,
-            speed_curve:         r.speed_curve.unwrap_or(def.speed_curve),
-            rot_speed_curve:     r.rot_speed_curve.unwrap_or(def.rot_speed_curve),
+            speed_curve: r.speed_curve.unwrap_or(def.speed_curve),
+            rot_speed_curve: r.rot_speed_curve.unwrap_or(def.rot_speed_curve),
             scale_curve,
             color_curves,
             texture_paths,
-            blend:               r.blend.unwrap_or(def.blend),
-            sim_space:           r.sim_space.unwrap_or(def.sim_space),
-            playing:             r.playing.unwrap_or(def.playing),
+            blend: r.blend.unwrap_or(def.blend),
+            sim_space: r.sim_space.unwrap_or(def.sim_space),
+            playing: r.playing.unwrap_or(def.playing),
         }
     }
 }
@@ -933,107 +1040,107 @@ impl From<ParticleEmitterComponentRaw> for ParticleEmitterComponentData {
 /// 別管理する。揮発状態（pending_burst / curve_generation）以外は Data と同一構成。
 #[derive(Clone, Debug)]
 pub struct ParticleEmitterComponent {
-    pub max_particles:        u32,
-    pub shape:                ParticleShape,
-    pub spawn_volume:         SpawnVolume,
-    pub emit_mode:            EmitMode,
-    pub initial_delay:        f32,
-    pub prewarm_time:         f32,
-    pub emit_interval:        f32,
-    pub particles_per_emit:   u32,
-    pub lifetime:             [f32; 2],
-    pub initial_speed:        [f32; 2],
-    pub direction_local:      [f32; 3],
+    pub max_particles: u32,
+    pub shape: ParticleShape,
+    pub spawn_volume: SpawnVolume,
+    pub emit_mode: EmitMode,
+    pub initial_delay: f32,
+    pub prewarm_time: f32,
+    pub emit_interval: f32,
+    pub particles_per_emit: u32,
+    pub lifetime: [f32; 2],
+    pub initial_speed: [f32; 2],
+    pub direction_local: [f32; 3],
     pub direction_randomness: f32,
-    pub gravity:              [f32; 3],
-    pub drag:                 f32,
-    pub rot_speed_range:      [f32; 2],
+    pub gravity: [f32; 3],
+    pub drag: f32,
+    pub rot_speed_range: [f32; 2],
     pub initial_rotation_range: [f32; 2],
-    pub size_range:           [f32; 2],
-    pub speed_curve:          ParamCurve,
-    pub rot_speed_curve:      ParamCurve,
-    pub scale_curve:          ParamCurve,
-    pub color_curves:         Vec<ParamCurve>,
-    pub texture_paths:        Vec<String>,
-    pub blend:                ParticleBlend,
-    pub sim_space:            ParticleSimSpace,
-    pub playing:              bool,
+    pub size_range: [f32; 2],
+    pub speed_curve: ParamCurve,
+    pub rot_speed_curve: ParamCurve,
+    pub scale_curve: ParamCurve,
+    pub color_curves: Vec<ParamCurve>,
+    pub texture_paths: Vec<String>,
+    pub blend: ParticleBlend,
+    pub sim_space: ParticleSimSpace,
+    pub playing: bool,
     /// スクリプト Burst(n) が積む「即時放出リクエスト数」（ランタイム専用・非シリアライズ）。
     ///
     /// スクリプト API（host_api）が加算し、GPU パーティクルシステムが毎フレーム
     /// 消費してゼロに戻す。シーン保存（to_data）には含めない。
-    pub pending_burst:        u32,
+    pub pending_burst: u32,
     /// カーブ差し替え世代カウンタ（ランタイム専用・非シリアライズ）。
     ///
     /// IPC でカーブを差し替えた際にインクリメントし、レンダラが前回焼いた世代と
     /// 比較して LUT 再焼きを判定する（カーブ変更時のみ再焼き）。
-    pub curve_generation:     u64,
+    pub curve_generation: u64,
 }
 
 impl ParticleEmitterComponent {
     /// シリアライズ用データからコンポーネントを構築する。
     pub fn from_data(data: ParticleEmitterComponentData) -> Self {
         Self {
-            max_particles:        data.max_particles,
-            shape:                data.shape,
-            spawn_volume:         data.spawn_volume,
-            emit_mode:            data.emit_mode,
-            initial_delay:        data.initial_delay,
-            prewarm_time:         data.prewarm_time,
-            emit_interval:        data.emit_interval,
-            particles_per_emit:   data.particles_per_emit,
-            lifetime:             data.lifetime,
-            initial_speed:        data.initial_speed,
-            direction_local:      data.direction_local,
+            max_particles: data.max_particles,
+            shape: data.shape,
+            spawn_volume: data.spawn_volume,
+            emit_mode: data.emit_mode,
+            initial_delay: data.initial_delay,
+            prewarm_time: data.prewarm_time,
+            emit_interval: data.emit_interval,
+            particles_per_emit: data.particles_per_emit,
+            lifetime: data.lifetime,
+            initial_speed: data.initial_speed,
+            direction_local: data.direction_local,
             direction_randomness: data.direction_randomness,
-            gravity:              data.gravity,
-            drag:                 data.drag,
-            rot_speed_range:      data.rot_speed_range,
+            gravity: data.gravity,
+            drag: data.drag,
+            rot_speed_range: data.rot_speed_range,
             initial_rotation_range: data.initial_rotation_range,
-            size_range:           data.size_range,
-            speed_curve:          data.speed_curve,
-            rot_speed_curve:      data.rot_speed_curve,
-            scale_curve:          data.scale_curve,
+            size_range: data.size_range,
+            speed_curve: data.speed_curve,
+            rot_speed_curve: data.rot_speed_curve,
+            scale_curve: data.scale_curve,
             // 最低 1 本を保証（データ側でも保証されるが二重に守る）。
-            color_curves:         ensure_nonempty_colors(data.color_curves),
-            texture_paths:        data.texture_paths,
-            blend:                data.blend,
-            sim_space:            data.sim_space,
-            playing:              data.playing,
+            color_curves: ensure_nonempty_colors(data.color_curves),
+            texture_paths: data.texture_paths,
+            blend: data.blend,
+            sim_space: data.sim_space,
+            playing: data.playing,
             // ランタイム専用（非シリアライズ）は常に初期値から始める。
-            pending_burst:        0,
-            curve_generation:     0,
+            pending_burst: 0,
+            curve_generation: 0,
         }
     }
 
     /// シリアライズ用データへ変換する。
     pub fn to_data(&self) -> ParticleEmitterComponentData {
         ParticleEmitterComponentData {
-            max_particles:        self.max_particles,
-            shape:                self.shape.clone(),
-            spawn_volume:         self.spawn_volume,
-            emit_mode:            self.emit_mode,
-            initial_delay:        self.initial_delay,
-            prewarm_time:         self.prewarm_time,
-            emit_interval:        self.emit_interval,
-            particles_per_emit:   self.particles_per_emit,
-            lifetime:             self.lifetime,
-            initial_speed:        self.initial_speed,
-            direction_local:      self.direction_local,
+            max_particles: self.max_particles,
+            shape: self.shape.clone(),
+            spawn_volume: self.spawn_volume,
+            emit_mode: self.emit_mode,
+            initial_delay: self.initial_delay,
+            prewarm_time: self.prewarm_time,
+            emit_interval: self.emit_interval,
+            particles_per_emit: self.particles_per_emit,
+            lifetime: self.lifetime,
+            initial_speed: self.initial_speed,
+            direction_local: self.direction_local,
             direction_randomness: self.direction_randomness,
-            gravity:              self.gravity,
-            drag:                 self.drag,
-            rot_speed_range:      self.rot_speed_range,
+            gravity: self.gravity,
+            drag: self.drag,
+            rot_speed_range: self.rot_speed_range,
             initial_rotation_range: self.initial_rotation_range,
-            size_range:           self.size_range,
-            speed_curve:          self.speed_curve.clone(),
-            rot_speed_curve:      self.rot_speed_curve.clone(),
-            scale_curve:          self.scale_curve.clone(),
-            color_curves:         self.color_curves.clone(),
-            texture_paths:        self.texture_paths.clone(),
-            blend:                self.blend,
-            sim_space:            self.sim_space,
-            playing:              self.playing,
+            size_range: self.size_range,
+            speed_curve: self.speed_curve.clone(),
+            rot_speed_curve: self.rot_speed_curve.clone(),
+            scale_curve: self.scale_curve.clone(),
+            color_curves: self.color_curves.clone(),
+            texture_paths: self.texture_paths.clone(),
+            blend: self.blend,
+            sim_space: self.sim_space,
+            playing: self.playing,
         }
     }
 
@@ -1045,7 +1152,9 @@ impl ParticleEmitterComponent {
 }
 
 impl Default for ParticleEmitterComponent {
-    fn default() -> Self { Self::from_data(ParticleEmitterComponentData::default()) }
+    fn default() -> Self {
+        Self::from_data(ParticleEmitterComponentData::default())
+    }
 }
 
 impl Component for ParticleEmitterComponent {}
@@ -1063,55 +1172,64 @@ mod tests {
             serde_json::from_str("{}").expect("空 JSON のデシリアライズに失敗");
         let def = ParticleEmitterComponentData::default();
 
-        assert_eq!(data.max_particles,       def.max_particles);
-        assert_eq!(data.shape,               def.shape);
-        assert_eq!(data.spawn_volume,        def.spawn_volume);
-        assert_eq!(data.emit_mode,           def.emit_mode);
-        assert_eq!(data.emit_interval,       def.emit_interval);
-        assert_eq!(data.particles_per_emit,  def.particles_per_emit);
-        assert_eq!(data.lifetime,            def.lifetime);
-        assert_eq!(data.direction_randomness,def.direction_randomness);
+        assert_eq!(data.max_particles, def.max_particles);
+        assert_eq!(data.shape, def.shape);
+        assert_eq!(data.spawn_volume, def.spawn_volume);
+        assert_eq!(data.emit_mode, def.emit_mode);
+        assert_eq!(data.emit_interval, def.emit_interval);
+        assert_eq!(data.particles_per_emit, def.particles_per_emit);
+        assert_eq!(data.lifetime, def.lifetime);
+        assert_eq!(data.direction_randomness, def.direction_randomness);
         assert_eq!(data.initial_rotation_range, def.initial_rotation_range);
-        assert_eq!(data.size_range,          def.size_range);
-        assert_eq!(data.speed_curve,         def.speed_curve);
-        assert_eq!(data.scale_curve,         def.scale_curve);
+        assert_eq!(data.size_range, def.size_range);
+        assert_eq!(data.speed_curve, def.speed_curve);
+        assert_eq!(data.scale_curve, def.scale_curve);
         // 既定は白フェード 1 本。
-        assert_eq!(data.color_curves.len(),  1);
+        assert_eq!(data.color_curves.len(), 1);
         assert!(data.texture_paths.is_empty());
-        assert_eq!(data.blend,               def.blend);
-        assert_eq!(data.blend,               ParticleBlend::Add);
-        assert_eq!(data.playing,             def.playing);
+        assert_eq!(data.blend, def.blend);
+        assert_eq!(data.blend, ParticleBlend::Add);
+        assert_eq!(data.playing, def.playing);
     }
 
     /// 新スキーマの from_data → serialize → deserialize → to_data ラウンドトリップ。
     #[test]
     fn roundtrip_preserves_values() {
         let original = ParticleEmitterComponentData {
-            max_particles:       4096,
-            shape:               ParticleShape::Model { path: "assets://fx/star.glb".into() },
-            spawn_volume:        SpawnVolume::Box { half_extents: [1.0, 2.0, 3.0] },
-            emit_mode:           EmitMode::Count { total: 500 },
-            initial_delay:       0.5,
-            prewarm_time:        2.0,
-            emit_interval:       0.02,
-            particles_per_emit:  4,
-            lifetime:            [0.5, 4.0],
-            initial_speed:       [2.0, 5.0],
-            direction_local:     [1.0, 0.0, 0.0],
-            direction_randomness:0.25,
-            gravity:             [0.0, -1.0, 0.0],
-            drag:                0.25,
-            rot_speed_range:     [-90.0, 90.0],
+            max_particles: 4096,
+            shape: ParticleShape::Model {
+                path: "assets://fx/star.glb".into(),
+            },
+            spawn_volume: SpawnVolume::Box {
+                half_extents: [1.0, 2.0, 3.0],
+            },
+            emit_mode: EmitMode::Count { total: 500 },
+            initial_delay: 0.5,
+            prewarm_time: 2.0,
+            emit_interval: 0.02,
+            particles_per_emit: 4,
+            lifetime: [0.5, 4.0],
+            initial_speed: [2.0, 5.0],
+            direction_local: [1.0, 0.0, 0.0],
+            direction_randomness: 0.25,
+            gravity: [0.0, -1.0, 0.0],
+            drag: 0.25,
+            rot_speed_range: [-90.0, 90.0],
             initial_rotation_range: [-45.0, 45.0],
-            size_range:          [0.5, 2.0],
-            speed_curve:         ParamCurve::constant1(1.5),
-            rot_speed_curve:     ParamCurve { channels: vec![CurveChannel::linear(0.0, 2.0)] },
-            scale_curve:         default_scale_curve(),
-            color_curves:        vec![white_fade_color_curve(), ParamCurve::constant1(0.3)],
-            texture_paths:       vec!["assets://fx/spark.png".to_string(), "assets://fx/spark2.png".to_string()],
-            blend:               ParticleBlend::Screen,
-            sim_space:           ParticleSimSpace::Local,
-            playing:             false,
+            size_range: [0.5, 2.0],
+            speed_curve: ParamCurve::constant1(1.5),
+            rot_speed_curve: ParamCurve {
+                channels: vec![CurveChannel::linear(0.0, 2.0)],
+            },
+            scale_curve: default_scale_curve(),
+            color_curves: vec![white_fade_color_curve(), ParamCurve::constant1(0.3)],
+            texture_paths: vec![
+                "assets://fx/spark.png".to_string(),
+                "assets://fx/spark2.png".to_string(),
+            ],
+            blend: ParticleBlend::Screen,
+            sim_space: ParticleSimSpace::Local,
+            playing: false,
         };
 
         let component = ParticleEmitterComponent::from_data(original.clone());
@@ -1120,31 +1238,34 @@ mod tests {
         let restored: ParticleEmitterComponentData =
             serde_json::from_str(&json).expect("デシリアライズに失敗");
 
-        assert_eq!(restored.max_particles,       original.max_particles);
-        assert_eq!(restored.shape,               original.shape);
-        assert_eq!(restored.spawn_volume,        original.spawn_volume);
-        assert_eq!(restored.emit_mode,           original.emit_mode);
-        assert_eq!(restored.initial_delay,       original.initial_delay);
-        assert_eq!(restored.prewarm_time,        original.prewarm_time);
-        assert_eq!(restored.emit_interval,       original.emit_interval);
-        assert_eq!(restored.particles_per_emit,  original.particles_per_emit);
-        assert_eq!(restored.lifetime,            original.lifetime);
-        assert_eq!(restored.initial_speed,       original.initial_speed);
-        assert_eq!(restored.direction_local,     original.direction_local);
-        assert_eq!(restored.direction_randomness,original.direction_randomness);
-        assert_eq!(restored.gravity,             original.gravity);
-        assert_eq!(restored.drag,                original.drag);
-        assert_eq!(restored.rot_speed_range,     original.rot_speed_range);
-        assert_eq!(restored.initial_rotation_range, original.initial_rotation_range);
-        assert_eq!(restored.size_range,          original.size_range);
-        assert_eq!(restored.speed_curve,         original.speed_curve);
-        assert_eq!(restored.rot_speed_curve,     original.rot_speed_curve);
-        assert_eq!(restored.scale_curve,         original.scale_curve);
-        assert_eq!(restored.color_curves,        original.color_curves);
-        assert_eq!(restored.texture_paths,       original.texture_paths);
-        assert_eq!(restored.blend,               original.blend);
-        assert_eq!(restored.sim_space,           original.sim_space);
-        assert_eq!(restored.playing,             original.playing);
+        assert_eq!(restored.max_particles, original.max_particles);
+        assert_eq!(restored.shape, original.shape);
+        assert_eq!(restored.spawn_volume, original.spawn_volume);
+        assert_eq!(restored.emit_mode, original.emit_mode);
+        assert_eq!(restored.initial_delay, original.initial_delay);
+        assert_eq!(restored.prewarm_time, original.prewarm_time);
+        assert_eq!(restored.emit_interval, original.emit_interval);
+        assert_eq!(restored.particles_per_emit, original.particles_per_emit);
+        assert_eq!(restored.lifetime, original.lifetime);
+        assert_eq!(restored.initial_speed, original.initial_speed);
+        assert_eq!(restored.direction_local, original.direction_local);
+        assert_eq!(restored.direction_randomness, original.direction_randomness);
+        assert_eq!(restored.gravity, original.gravity);
+        assert_eq!(restored.drag, original.drag);
+        assert_eq!(restored.rot_speed_range, original.rot_speed_range);
+        assert_eq!(
+            restored.initial_rotation_range,
+            original.initial_rotation_range
+        );
+        assert_eq!(restored.size_range, original.size_range);
+        assert_eq!(restored.speed_curve, original.speed_curve);
+        assert_eq!(restored.rot_speed_curve, original.rot_speed_curve);
+        assert_eq!(restored.scale_curve, original.scale_curve);
+        assert_eq!(restored.color_curves, original.color_curves);
+        assert_eq!(restored.texture_paths, original.texture_paths);
+        assert_eq!(restored.blend, original.blend);
+        assert_eq!(restored.sim_space, original.sim_space);
+        assert_eq!(restored.playing, original.playing);
     }
 
     /// 旧スキーマ（emit_rate / spread_angle_deg / start_size / end_size_scale /
@@ -1179,12 +1300,18 @@ mod tests {
             serde_json::from_str(legacy).expect("旧 .scene の互換読込に失敗");
 
         // emit_rate 200 → interval 1/200 = 0.005, per_emit 1。
-        assert!((data.emit_interval - 0.005).abs() < 1e-6, "emit_interval 変換");
+        assert!(
+            (data.emit_interval - 0.005).abs() < 1e-6,
+            "emit_interval 変換"
+        );
         assert_eq!(data.particles_per_emit, 1);
         // loop_emit=false → Once。
         assert_eq!(data.emit_mode, EmitMode::Once);
         // spread 90 → randomness 0.5。
-        assert!((data.direction_randomness - 0.5).abs() < 1e-6, "randomness 変換");
+        assert!(
+            (data.direction_randomness - 0.5).abs() < 1e-6,
+            "randomness 変換"
+        );
         // start_size → size_range。
         assert_eq!(data.size_range, [0.2, 0.4]);
         // 旧 point → 新 Pixel。
@@ -1204,12 +1331,15 @@ mod tests {
         assert_eq!(cc.channels.len(), 4);
         let a0 = cc.channels[3].eval(0.0);
         let a1 = cc.channels[3].eval(1.0);
-        assert!((a0 - 1.0).abs() < 1e-6 && a1.abs() < 1e-6, "アルファのフェード");
+        assert!(
+            (a0 - 1.0).abs() < 1e-6 && a1.abs() < 1e-6,
+            "アルファのフェード"
+        );
         // 赤(H≈0)→青(H≈0.667) の色相補間。
         let h0 = cc.channels[0].eval(0.0);
         let h1 = cc.channels[0].eval(1.0);
         assert!(h0.abs() < 1e-4, "start H は赤(0)");
-        assert!((h1 - 2.0/3.0).abs() < 1e-3, "end H は青(0.667)");
+        assert!((h1 - 2.0 / 3.0).abs() < 1e-3, "end H は青(0.667)");
         // scale_curve は 1→0.5（end_size_scale）。
         assert_eq!(data.scale_curve.channels.len(), 3);
         assert!((data.scale_curve.channels[0].eval(1.0) - 0.5).abs() < 1e-6);
@@ -1237,13 +1367,12 @@ mod tests {
     /// ParamCurve::eval の端点クランプと線形補間。
     #[test]
     fn curve_eval_clamps_and_lerps() {
-        let ch = CurveChannel { keys: vec![
-            CurveKey::new(0.2, 1.0),
-            CurveKey::new(0.8, 3.0),
-        ]};
-        assert_eq!(ch.eval(0.0), 1.0);  // 端点クランプ（左）
-        assert_eq!(ch.eval(1.0), 3.0);  // 端点クランプ（右）
-        assert_eq!(ch.eval(0.5), 2.0);  // 中点線形
+        let ch = CurveChannel {
+            keys: vec![CurveKey::new(0.2, 1.0), CurveKey::new(0.8, 3.0)],
+        };
+        assert_eq!(ch.eval(0.0), 1.0); // 端点クランプ（左）
+        assert_eq!(ch.eval(1.0), 3.0); // 端点クランプ（右）
+        assert_eq!(ch.eval(0.5), 2.0); // 中点線形
         assert!(ch.eval(0.2) == 1.0 && ch.eval(0.8) == 3.0);
     }
 
@@ -1251,20 +1380,44 @@ mod tests {
     #[test]
     fn curve_interp_step_and_smooth() {
         // Step: k0 の値を次キー時刻まで保持。
-        let step = CurveChannel { keys: vec![
-            CurveKey { t: 0.0, v: 1.0, interp: CurveInterp::Step },
-            CurveKey { t: 1.0, v: 5.0, interp: CurveInterp::Linear },
-        ]};
+        let step = CurveChannel {
+            keys: vec![
+                CurveKey {
+                    t: 0.0,
+                    v: 1.0,
+                    interp: CurveInterp::Step,
+                },
+                CurveKey {
+                    t: 1.0,
+                    v: 5.0,
+                    interp: CurveInterp::Linear,
+                },
+            ],
+        };
         assert_eq!(step.eval(0.5), 1.0, "Step は次キーまで k0 の値");
         assert_eq!(step.eval(0.99), 1.0);
         assert_eq!(step.eval(1.0), 5.0);
 
         // Smooth: 端点は通過し、内部は Catmull-Rom。3 キー等間隔で中点は補間される。
-        let smooth = CurveChannel { keys: vec![
-            CurveKey { t: 0.0, v: 0.0, interp: CurveInterp::Smooth },
-            CurveKey { t: 0.5, v: 1.0, interp: CurveInterp::Smooth },
-            CurveKey { t: 1.0, v: 0.0, interp: CurveInterp::Smooth },
-        ]};
+        let smooth = CurveChannel {
+            keys: vec![
+                CurveKey {
+                    t: 0.0,
+                    v: 0.0,
+                    interp: CurveInterp::Smooth,
+                },
+                CurveKey {
+                    t: 0.5,
+                    v: 1.0,
+                    interp: CurveInterp::Smooth,
+                },
+                CurveKey {
+                    t: 1.0,
+                    v: 0.0,
+                    interp: CurveInterp::Smooth,
+                },
+            ],
+        };
         // キー点は正確に通過する。
         assert!((smooth.eval(0.0) - 0.0).abs() < 1e-6);
         assert!((smooth.eval(0.5) - 1.0).abs() < 1e-6);
@@ -1283,7 +1436,9 @@ mod tests {
     /// bake_lut のサイズと端点。
     #[test]
     fn bake_lut_size_and_endpoints() {
-        let c = ParamCurve { channels: vec![CurveChannel::linear(0.0, 1.0)] };
+        let c = ParamCurve {
+            channels: vec![CurveChannel::linear(0.0, 1.0)],
+        };
         let lut = c.bake_lut(CURVE_LUT_SAMPLES);
         assert_eq!(lut.len(), CURVE_LUT_SAMPLES);
         assert!((lut[0][0] - 0.0).abs() < 1e-6);

@@ -1,4 +1,4 @@
-use crate::engine::structs::tensor::{Vector3, Mat3x3};
+use crate::engine::structs::tensor::{Mat3x3, Vector3};
 
 /// 向きを持つバウンディングボックス (Oriented Bounding Box)。
 ///
@@ -25,15 +25,34 @@ impl Obb {
             center,
             half_size,
             axes: [
-                Vector3::new(rotation.data[0][0], rotation.data[1][0], rotation.data[2][0]).normalize(),
-                Vector3::new(rotation.data[0][1], rotation.data[1][1], rotation.data[2][1]).normalize(),
-                Vector3::new(rotation.data[0][2], rotation.data[1][2], rotation.data[2][2]).normalize(),
+                Vector3::new(
+                    rotation.data[0][0],
+                    rotation.data[1][0],
+                    rotation.data[2][0],
+                )
+                .normalize(),
+                Vector3::new(
+                    rotation.data[0][1],
+                    rotation.data[1][1],
+                    rotation.data[2][1],
+                )
+                .normalize(),
+                Vector3::new(
+                    rotation.data[0][2],
+                    rotation.data[1][2],
+                    rotation.data[2][2],
+                )
+                .normalize(),
             ],
         }
     }
 
     /// 中心と軸から OBB を生成する（軸は正規化されると仮定）。
-    pub fn from_axes(center: Vector3<f32>, half_size: Vector3<f32>, axes: [Vector3<f32>; 3]) -> Self {
+    pub fn from_axes(
+        center: Vector3<f32>,
+        half_size: Vector3<f32>,
+        axes: [Vector3<f32>; 3],
+    ) -> Self {
         Self {
             center,
             half_size,

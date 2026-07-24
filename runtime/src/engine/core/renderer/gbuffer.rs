@@ -23,10 +23,10 @@
 //  構築と同じ既存慣例＝wgpu の BindGroupLayout 構造的等価性に依拠する）。
 // ============================================================
 
-use crate::engine::core::loader::model::{CullFace, CULL_FACE_VARIANTS};
-use super::pipeline::{get_shader_source, CullPipelineSet, MeshPipeline, SkinnedMeshPipeline};
-use super::pipeline_config::vertex_buffer_layout;
 use super::gpu_resources::{GpuModel, InstancedModelBatch, NUM_LODS};
+use super::pipeline::{CullPipelineSet, MeshPipeline, SkinnedMeshPipeline, get_shader_source};
+use super::pipeline_config::vertex_buffer_layout;
+use crate::engine::core::loader::model::{CULL_FACE_VARIANTS, CullFace};
 // 地形レイヤのブレンドスロット数（＝パレット長。Terrain T2b）。
 use crate::engine::terrain::layers::TERRAIN_BLEND_SLOTS;
 
@@ -80,7 +80,7 @@ fn gbuffer_shader_sources(vertex_source: &'static str) -> [&'static str; 5] {
 fn gbuffer_color_targets() -> [Option<wgpu::ColorTargetState>; 4] {
     let target = |format: wgpu::TextureFormat| wgpu::ColorTargetState {
         format,
-        blend:      None,
+        blend: None,
         write_mask: wgpu::ColorWrites::ALL,
     };
     [
@@ -102,7 +102,7 @@ fn gbuffer_color_targets() -> [Option<wgpu::ColorTargetState>; 4] {
 /// 1 つの連結ソースから cull_mode だけを差し替えて 3 本ビルドする。
 pub struct GBufferPipelines {
     /// スタティックメッシュ用（レイアウト: group0=camera, 1=model, 2=material）。
-    pub mesh:    CullPipelineSet,
+    pub mesh: CullPipelineSet,
     /// スキンメッシュ用（レイアウト: group0=camera, 1=model, 2=material, 3=joints）。
     pub skinned: CullPipelineSet,
     /// 地形レイヤブレンド用（レイアウト: group0=camera, 1=model, 2=material, 3=terrain layers）。
@@ -118,11 +118,11 @@ impl GBufferPipelines {
     /// `mesh_pipeline` / `skinned_pipeline` から group0〜2（＋joints）の BGL を借りて
     /// パイプラインレイアウトを組む（新規リフレクションはしない。モジュール冒頭のコメント参照）。
     pub fn new(
-        device:            &wgpu::Device,
-        mesh_pipeline:     &MeshPipeline,
-        skinned_pipeline:  &SkinnedMeshPipeline,
-        df:                wgpu::TextureFormat,
-        cache:             Option<&wgpu::PipelineCache>,
+        device: &wgpu::Device,
+        mesh_pipeline: &MeshPipeline,
+        skinned_pipeline: &SkinnedMeshPipeline,
+        df: wgpu::TextureFormat,
+        cache: Option<&wgpu::PipelineCache>,
     ) -> Self {
         let static_bgls: Vec<&wgpu::BindGroupLayout> = vec![
             &mesh_pipeline.camera_bgl,
@@ -138,7 +138,10 @@ impl GBufferPipelines {
 
         let mesh: CullPipelineSet = std::array::from_fn(|i| {
             build_gbuffer_pipeline(
-                device, df, cache, &static_bgls,
+                device,
+                df,
+                cache,
+                &static_bgls,
                 &gbuffer_shader_sources("shader_static_vertex.wgsl"),
                 &["mesh_vertex"],
                 "gbuffer_mesh",
@@ -147,7 +150,10 @@ impl GBufferPipelines {
         });
         let skinned: CullPipelineSet = std::array::from_fn(|i| {
             build_gbuffer_pipeline(
-                device, df, cache, &skinned_bgls,
+                device,
+                df,
+                cache,
+                &skinned_bgls,
                 &gbuffer_shader_sources("shader_skinned_vertex.wgsl"),
                 &["mesh_vertex", "skin_vertex"],
                 "gbuffer_skinned",
@@ -158,16 +164,29 @@ impl GBufferPipelines {
         // ── 地形レイヤブレンド用（group3 にレイヤ定義を差す）──
         //   MRT カラーターゲットは通常の G-Buffer と完全に同一（同じ 4 枚へ焼く）。
         let terrain = super::terrain_gbuffer::TerrainGBufferPipelines::new(
-            device, mesh_pipeline, df, cache, &gbuffer_color_targets(),
+            device,
+            mesh_pipeline,
+            df,
+            cache,
+            &gbuffer_color_targets(),
         );
 
         // ── プロシージャル草（group1 に草インスタンスを差す）──
         //   MRT カラーターゲットは通常の G-Buffer と完全に同一（同じ 4 枚へ焼く）。
         let grass = super::grass_gbuffer::GrassGBufferPipeline::new(
-            device, mesh_pipeline, df, cache, &gbuffer_color_targets(),
+            device,
+            mesh_pipeline,
+            df,
+            cache,
+            &gbuffer_color_targets(),
         );
 
-        Self { mesh, skinned, terrain, grass }
+        Self {
+            mesh,
+            skinned,
+            terrain,
+            grass,
+        }
     }
 }
 
@@ -176,38 +195,41 @@ impl GBufferPipelines {
 /// 対応しないため MRT はここで直接組む）。
 #[allow(clippy::too_many_arguments)]
 fn build_gbuffer_pipeline(
-    device:         &wgpu::Device,
-    df:             wgpu::TextureFormat,
-    cache:          Option<&wgpu::PipelineCache>,
-    bgls:           &[&wgpu::BindGroupLayout],
+    device: &wgpu::Device,
+    df: wgpu::TextureFormat,
+    cache: Option<&wgpu::PipelineCache>,
+    bgls: &[&wgpu::BindGroupLayout],
     shader_sources: &[&str],
-    vertex_slots:   &[&str],
-    label_base:     &str,
-    cull_face:      CullFace,
+    vertex_slots: &[&str],
+    label_base: &str,
+    cull_face: CullFace,
 ) -> wgpu::RenderPipeline {
     let label = format!("{label_base}_cull_{}", cull_face.as_str());
     let label = label.as_str();
 
     // ── シェーダモジュール（ソース連結）─────────────────────────
-    let combined: String = shader_sources.iter()
+    let combined: String = shader_sources
+        .iter()
         .map(|n| get_shader_source(n))
         .collect::<Vec<_>>()
         .join("\n");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label:  Some(label),
+        label: Some(label),
         source: wgpu::ShaderSource::Wgsl(combined.into()),
     });
 
     // ── パイプラインレイアウト（BGL を再利用）───────────────────
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label:                Some(label),
-        bind_group_layouts:   bgls,
+        label: Some(label),
+        bind_group_layouts: bgls,
         push_constant_ranges: &[],
     });
 
     // ── 頂点バッファレイアウト ──────────────────────────────────
-    let vbuffers: Vec<wgpu::VertexBufferLayout<'static>> =
-        vertex_slots.iter().map(|n| vertex_buffer_layout(n)).collect();
+    let vbuffers: Vec<wgpu::VertexBufferLayout<'static>> = vertex_slots
+        .iter()
+        .map(|n| vertex_buffer_layout(n))
+        .collect();
 
     // ── 4 枚の MRT カラーターゲット ─────────────────────────────
     let targets = gbuffer_color_targets();
@@ -216,41 +238,41 @@ fn build_gbuffer_pipeline(
     // 後続の透明／ギズモパスがこの深度を Load して整合させるため、フォワードと
     // 同じ規約（depth_write=true, compare=Less）にする。
     let depth_stencil = wgpu::DepthStencilState {
-        format:              df,
+        format: df,
         depth_write_enabled: true,
-        depth_compare:       wgpu::CompareFunction::Less,
-        stencil:             wgpu::StencilState::default(),
-        bias:                wgpu::DepthBiasState::default(),
+        depth_compare: wgpu::CompareFunction::Less,
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
     };
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label:  Some(label),
+        label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module:              &shader,
-            entry_point:         Some("vs_main"),
-            buffers:             &vbuffers,
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &vbuffers,
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module:              &shader,
-            entry_point:         Some("fs_gbuffer"),
-            targets:             &targets,
+            module: &shader,
+            entry_point: Some("fs_gbuffer"),
+            targets: &targets,
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState {
-            topology:   wgpu::PrimitiveTopology::TriangleList,
+            topology: wgpu::PrimitiveTopology::TriangleList,
             front_face: wgpu::FrontFace::Ccw,
-            cull_mode:  match cull_face {
-                CullFace::Back  => Some(wgpu::Face::Back),
+            cull_mode: match cull_face {
+                CullFace::Back => Some(wgpu::Face::Back),
                 CullFace::Front => Some(wgpu::Face::Front),
-                CullFace::None  => None,
+                CullFace::None => None,
             },
             ..Default::default()
         },
         depth_stencil: Some(depth_stencil),
-        multisample:   wgpu::MultisampleState::default(),
-        multiview:     None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
         cache,
     })
 }
@@ -274,10 +296,10 @@ fn build_gbuffer_pipeline(
 #[allow(dead_code)]
 pub fn draw_gbuffer_indirect<'pass>(
     render_pass: &mut wgpu::RenderPass<'pass>,
-    gpu_model:   &'pass GpuModel,
-    batch:       &'pass InstancedModelBatch,
-    camera_bg:   &'pass wgpu::BindGroup,
-    pipelines:   &'pass GBufferPipelines,
+    gpu_model: &'pass GpuModel,
+    batch: &'pass InstancedModelBatch,
+    camera_bg: &'pass wgpu::BindGroup,
+    pipelines: &'pass GBufferPipelines,
     // GPU メッシュレットカリング（第1弾）を LOD0 で使うか。model_drawer.rs の
     // draw_model_indirect と同じ条件（LOD0・非スキンのみ対象、他は自動フォールバック）。
     meshlet_cull: bool,
@@ -290,17 +312,21 @@ pub fn draw_gbuffer_indirect<'pass>(
     // プリミティブのマテリアルが持つパレットで引き当てる。
     terrain_layers: Option<&'pass super::terrain_gbuffer::TerrainLayerResources>,
 ) {
-    if batch.n_prims == 0 { return; }
+    if batch.n_prims == 0 {
+        return;
+    }
 
     for lod in 0..NUM_LODS {
         let visible = batch.lod_visible_counts[lod];
-        if visible == 0 { continue; }
+        if visible == 0 {
+            continue;
+        }
 
-        let mut cur_skinned: Option<bool>                   = None;
-        let mut cur_cull:    Option<CullFace>               = None;
+        let mut cur_skinned: Option<bool> = None;
+        let mut cur_cull: Option<CullFace> = None;
         let mut cur_mat_ptr: Option<*const wgpu::BindGroup> = None;
         // 直前のドローが地形パイプラインだったか（パイプライン切り替え判定に使う）。
-        let mut cur_terrain: Option<bool>                   = None;
+        let mut cur_terrain: Option<bool> = None;
         // 直前に group3 へバインドした地形パレット（Terrain T2b）。
         // パレットが変わると group3 のバインドグループも変わるため再バインドが要る。
         let mut cur_palette: Option<[u32; TERRAIN_BLEND_SLOTS]> = None;
@@ -308,8 +334,9 @@ pub fn draw_gbuffer_indirect<'pass>(
         let joint_bg = batch.joint_vs_bg(lod);
 
         for (draw_idx, draw) in batch.node_prim_list.iter().enumerate() {
-            let Some((_, model_bg)) = batch.lod_node_data[lod][draw.node_idx].as_ref()
-                else { continue };
+            let Some((_, model_bg)) = batch.lod_node_data[lod][draw.node_idx].as_ref() else {
+                continue;
+            };
 
             // 半透明は Forward パスの担当（transparency.rs）。
             if gpu_model.primitive_alpha_mode(draw.material_idx)
@@ -319,9 +346,10 @@ pub fn draw_gbuffer_indirect<'pass>(
             }
 
             let gpu_mesh = &gpu_model.meshes[draw.mesh_idx];
-            let prim     = &gpu_mesh.primitives[draw.prim_idx];
+            let prim = &gpu_mesh.primitives[draw.prim_idx];
 
-            let mat_bg: &wgpu::BindGroup = draw.material_idx
+            let mat_bg: &wgpu::BindGroup = draw
+                .material_idx
                 .and_then(|mi| gpu_model.materials.get(mi))
                 .map(|m| &m.bind_group)
                 .unwrap_or(&gpu_model.default_material.bind_group);
@@ -372,7 +400,7 @@ pub fn draw_gbuffer_indirect<'pass>(
                 }
                 render_pass.set_bind_group(0, camera_bg, &[]);
                 cur_skinned = Some(draw.is_skinned);
-                cur_cull    = Some(cull);
+                cur_cull = Some(cull);
                 cur_terrain = Some(is_terrain);
                 cur_mat_ptr = None;
             }
@@ -390,18 +418,19 @@ pub fn draw_gbuffer_indirect<'pass>(
             // ── 頂点バッファ ───────────────────────────────────────
             render_pass.set_vertex_buffer(0, prim.vertex_buffer.slice(..));
             if draw.is_skinned {
-                render_pass.set_vertex_buffer(1, prim.skin_vertex_buffer.as_ref().unwrap().slice(..));
+                render_pass
+                    .set_vertex_buffer(1, prim.skin_vertex_buffer.as_ref().unwrap().slice(..));
             }
 
             // ── メッシュレット間接描画（LOD0 のみ、非スキンのみ）────────
             if meshlet_cull && lod == 0 && !draw.is_skinned {
-                if let (Some(mi_buf), Some((cmd_buf, count_buf, capacity))) =
-                    (prim.meshlet_index_buffer.as_ref(), batch.meshlet_draw(draw_idx))
-                {
+                if let (Some(mi_buf), Some((cmd_buf, count_buf, capacity))) = (
+                    prim.meshlet_index_buffer.as_ref(),
+                    batch.meshlet_draw(draw_idx),
+                ) {
                     render_pass.set_index_buffer(mi_buf.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.multi_draw_indexed_indirect_count(
-                        cmd_buf, 0, count_buf, 0, capacity,
-                    );
+                    render_pass
+                        .multi_draw_indexed_indirect_count(cmd_buf, 0, count_buf, 0, capacity);
                     continue;
                 }
             }
@@ -423,16 +452,19 @@ mod tests {
     /// 連結順は gbuffer_shader_sources() と一致させること。
     #[test]
     fn gbuffer_shaders_parse_and_validate() {
-        let common   = include_str!("shaders/shader_common.wgsl");
+        let common = include_str!("shaders/shader_common.wgsl");
         let static_v = include_str!("shaders/shader_static_vertex.wgsl");
-        let skin_v   = include_str!("shaders/shader_skinned_vertex.wgsl");
-        let surf     = include_str!("shaders/surface.wgsl");
-        let gather   = include_str!("shaders/surface_gather.wgsl");
-        let gwrite   = include_str!("shaders/gbuffer_write.wgsl");
+        let skin_v = include_str!("shaders/shader_skinned_vertex.wgsl");
+        let surf = include_str!("shaders/surface.wgsl");
+        let gather = include_str!("shaders/surface_gather.wgsl");
+        let gwrite = include_str!("shaders/gbuffer_write.wgsl");
 
         let variants: [(&str, Vec<&str>); 2] = [
-            ("gbuffer_mesh",    vec![common, static_v, surf, gather, gwrite]),
-            ("gbuffer_skinned", vec![common, skin_v,   surf, gather, gwrite]),
+            ("gbuffer_mesh", vec![common, static_v, surf, gather, gwrite]),
+            (
+                "gbuffer_skinned",
+                vec![common, skin_v, surf, gather, gwrite],
+            ),
         ];
 
         for (name, parts) in variants {
@@ -455,7 +487,16 @@ mod tests {
     #[test]
     fn gbuffer_format_constants_cover_four_render_targets() {
         use super::{GBUFFER0_FORMAT, GBUFFER1_FORMAT, GBUFFER2_FORMAT, GBUFFER3_FORMAT};
-        let formats = [GBUFFER0_FORMAT, GBUFFER1_FORMAT, GBUFFER2_FORMAT, GBUFFER3_FORMAT];
-        assert_eq!(formats.len(), 4, "G-Buffer の MRT 出力数は 4 枚で確定（gbuffer_write.wgsl 参照）");
+        let formats = [
+            GBUFFER0_FORMAT,
+            GBUFFER1_FORMAT,
+            GBUFFER2_FORMAT,
+            GBUFFER3_FORMAT,
+        ];
+        assert_eq!(
+            formats.len(),
+            4,
+            "G-Buffer の MRT 出力数は 4 枚で確定（gbuffer_write.wgsl 参照）"
+        );
     }
 }

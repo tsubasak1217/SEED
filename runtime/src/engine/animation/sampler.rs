@@ -24,7 +24,9 @@ use super::clip::{AnimValue, Interp, Track};
 /// - 区間の補間種別は「区間開始キー（k0）の interp」で決まる。
 pub fn sample_track(track: &Track, time: f32) -> Option<AnimValue> {
     let keys = &track.keys;
-    if keys.is_empty() { return None; }
+    if keys.is_empty() {
+        return None;
+    }
 
     // 範囲外クランプ（先頭以前・末尾以降は端の値を保持）
     if time <= keys[0].time {
@@ -67,7 +69,9 @@ pub fn sample_track(track: &Track, time: f32) -> Option<AnimValue> {
             let m0 = out_tangent(track, i, n);
             // 入りタンジェント（k1）: 同上
             let m1 = in_tangent(track, i + 1, n);
-            (0..n).map(|j| hermite(c0[j], m0[j], c1[j], m1[j], dt, t)).collect()
+            (0..n)
+                .map(|j| hermite(c0[j], m0[j], c1[j], m1[j], dt, t))
+                .collect()
         }
     };
 
@@ -77,7 +81,9 @@ pub fn sample_track(track: &Track, time: f32) -> Option<AnimValue> {
 // ─── 補間プリミティブ ────────────────────────────────────────
 
 /// 線形補間。
-fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
 
 /// 3 次エルミート補間。
 ///
@@ -130,15 +136,23 @@ fn auto_tangent(track: &Track, idx: usize, n: usize) -> Vec<f32> {
     let next = keys[next_i].value.to_components();
     let dt = keys[next_i].time - keys[prev_i].time;
 
-    (0..n).map(|j| {
-        if dt.abs() <= f32::EPSILON {
-            0.0
-        } else {
-            let a = prev.get(j).copied().unwrap_or_else(|| cur.get(j).copied().unwrap_or(0.0));
-            let b = next.get(j).copied().unwrap_or_else(|| cur.get(j).copied().unwrap_or(0.0));
-            (b - a) / dt
-        }
-    }).collect()
+    (0..n)
+        .map(|j| {
+            if dt.abs() <= f32::EPSILON {
+                0.0
+            } else {
+                let a = prev
+                    .get(j)
+                    .copied()
+                    .unwrap_or_else(|| cur.get(j).copied().unwrap_or(0.0));
+                let b = next
+                    .get(j)
+                    .copied()
+                    .unwrap_or_else(|| cur.get(j).copied().unwrap_or(0.0));
+                (b - a) / dt
+            }
+        })
+        .collect()
 }
 
 /// 成分列を長さ n に整える（不足は 0.0 で補い、超過は切り詰める）。

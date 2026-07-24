@@ -34,7 +34,7 @@
 // ============================================================
 
 use super::deferred::DeferredLightingPipelines;
-use super::imos_blur::{ImosBlur, IMOS_BLUR_FORMAT};
+use super::imos_blur::{IMOS_BLUR_FORMAT, ImosBlur};
 use super::pipeline::get_shader_source;
 
 // ─── 定数 ────────────────────────────────────────────────────
@@ -76,15 +76,20 @@ pub struct AoParams {
     /// AO 寄与の全体倍率（ao_intensity ノブ）。
     pub intensity: f32,
     /// AO の世界単位半径（SSAO=サンプル球半径 / RT=レイ tmax）。方式ごとの定数を書く。
-    pub radius:    f32,
-    pub _pad0:     f32,
-    pub _pad1:     f32,
+    pub radius: f32,
+    pub _pad0: f32,
+    pub _pad1: f32,
 }
 
 impl AoParams {
     /// intensity/radius から UBO 値を作る。
     pub fn new(intensity: f32, radius: f32) -> Self {
-        Self { intensity, radius, _pad0: 0.0, _pad1: 0.0 }
+        Self {
+            intensity,
+            radius,
+            _pad0: 0.0,
+            _pad1: 0.0,
+        }
     }
 }
 
@@ -96,24 +101,24 @@ impl AoParams {
 /// サイズ追従が要るため AoTargets（App 側）が別に持つ。
 pub struct AoPipelines {
     /// SSAO パイプライン（RAY_QUERY 不要・常に構築）。
-    pub ssao:          wgpu::RenderPipeline,
+    pub ssao: wgpu::RenderPipeline,
     /// RT-AO パイプライン（RAY_QUERY 必須・RT 対応 GPU でのみ Some）。
-    pub rt:            Option<wgpu::RenderPipeline>,
+    pub rt: Option<wgpu::RenderPipeline>,
     /// group2: AoParams のレイアウト。
-    pub params_bgl:    wgpu::BindGroupLayout,
+    pub params_bgl: wgpu::BindGroupLayout,
     /// group3: RT-AO の TLAS レイアウト（RT 用）。
-    pub rt_bgl:        wgpu::BindGroupLayout,
+    pub rt_bgl: wgpu::BindGroupLayout,
     /// AoParams UBO（毎フレーム intensity/radius を書き込む）。
     pub params_buffer: wgpu::Buffer,
     /// いもす法ブラー基盤（ao_raw → ao_a/ao_b を均す）。
-    pub imos:          ImosBlur,
+    pub imos: ImosBlur,
     /// 半解像度 AO をフル解像度へバイリニアアップサンプルするための Filtering サンプラー。
     pub linear_sampler: wgpu::Sampler,
     /// AO=Off 時・AO 生成パスの t_ao スロット用の白 1x1（R=1＝AO 無効果）。永続。
     #[allow(dead_code)]
-    white_tex:         wgpu::Texture,
+    white_tex: wgpu::Texture,
     /// 白 1x1 のビュー（deferred / reflection の group1 binding6 へ Off 時に渡す）。
-    pub white_view:    wgpu::TextureView,
+    pub white_view: wgpu::TextureView,
 }
 
 impl AoPipelines {
@@ -123,19 +128,21 @@ impl AoPipelines {
     ///                group1 の 0..5 のみ宣言するため subset として合法）。
     /// - `queue`    : 白 1x1 の初期化書き込みに使う（Rgba16Float, R=1）。
     pub fn new(
-        device:   &wgpu::Device,
-        queue:    &wgpu::Queue,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
         deferred: &DeferredLightingPipelines,
-        cache:    Option<&wgpu::PipelineCache>,
+        cache: Option<&wgpu::PipelineCache>,
     ) -> Self {
         // group2: AoParams uniform（binding0）。
         let params_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("AO Params BGL (group2)"),
             entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false, min_binding_size: None,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
                 },
                 count: None,
             }],
@@ -144,26 +151,38 @@ impl AoPipelines {
         let rt_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("AO RT BGL (group3)"),
             entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::AccelerationStructure { vertex_return: false },
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::AccelerationStructure {
+                    vertex_return: false,
+                },
                 count: None,
             }],
         });
 
         // SSAO パイプライン（group0..2, blend なし＝ao_raw を上書き）。
         let ssao = build_ao_pipeline(
-            device, cache,
+            device,
+            cache,
             &[&deferred.camera_bgl, &deferred.gbuffer_bgl, &params_bgl],
             &["ao_common.wgsl", "ao_ssao.wgsl"],
-            "fs_ssao", "ao_ssao",
+            "fs_ssao",
+            "ao_ssao",
         );
         // RT-AO パイプライン（group0..3, RT 対応 GPU のみ）。
         let rt = if super::rt_shadow::rt_shadows_supported() {
             Some(build_ao_pipeline(
-                device, cache,
-                &[&deferred.camera_bgl, &deferred.gbuffer_bgl, &params_bgl, &rt_bgl],
+                device,
+                cache,
+                &[
+                    &deferred.camera_bgl,
+                    &deferred.gbuffer_bgl,
+                    &params_bgl,
+                    &rt_bgl,
+                ],
                 &["ao_common.wgsl", "ao_rt.wgsl"],
-                "fs_rt", "ao_rt",
+                "fs_rt",
+                "ao_rt",
             ))
         } else {
             None
@@ -172,7 +191,7 @@ impl AoPipelines {
         // AoParams UBO（毎フレーム write_params で更新）。
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("AO Params UBO"),
-            size:  std::mem::size_of::<AoParams>() as u64,
+            size: std::mem::size_of::<AoParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -194,8 +213,13 @@ impl AoPipelines {
         // Rgba16Float = 4×f16。R=1.0 の f16 は 0x3C00（LE: 00 3C）。A も 1.0 にする。
         let white_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("AO White 1x1"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: AO_FORMAT,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
@@ -206,18 +230,37 @@ impl AoPipelines {
         queue.write_texture(
             white_tex.as_image_copy(),
             &white_px,
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(8), rows_per_image: Some(1) },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(8),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
         let white_view = white_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-        Self { ssao, rt, params_bgl, rt_bgl, params_buffer, imos, linear_sampler, white_tex, white_view }
+        Self {
+            ssao,
+            rt,
+            params_bgl,
+            rt_bgl,
+            params_buffer,
+            imos,
+            linear_sampler,
+            white_tex,
+            white_view,
+        }
     }
 
     /// intensity/radius を AoParams UBO へ書き込む（毎フレーム AO パス直前に呼ぶ）。
     pub fn write_params(&self, queue: &wgpu::Queue, intensity: f32, radius: f32) {
         queue.write_buffer(
-            &self.params_buffer, 0,
+            &self.params_buffer,
+            0,
             bytemuck::bytes_of(&AoParams::new(intensity, radius)),
         );
     }
@@ -228,7 +271,8 @@ impl AoPipelines {
             label: Some("AO Params BG"),
             layout: &self.params_bgl,
             entries: &[wgpu::BindGroupEntry {
-                binding: 0, resource: self.params_buffer.as_entire_binding(),
+                binding: 0,
+                resource: self.params_buffer.as_entire_binding(),
             }],
         })
     }
@@ -239,7 +283,8 @@ impl AoPipelines {
             label: Some("AO RT BG"),
             layout: &self.rt_bgl,
             entries: &[wgpu::BindGroupEntry {
-                binding: 0, resource: wgpu::BindingResource::AccelerationStructure(tlas),
+                binding: 0,
+                resource: wgpu::BindingResource::AccelerationStructure(tlas),
             }],
         })
     }
@@ -247,15 +292,20 @@ impl AoPipelines {
     /// ao_raw → (ao_a/ao_b ping-pong) をいもす法でブラーする。結果は必ず ao_b に残る。
     pub fn blur(
         &self,
-        device:  &wgpu::Device,
+        device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         targets: &AoTargets,
     ) {
         self.imos.record(
-            device, encoder,
-            targets.raw_view(), targets.a_view(), targets.b_view(),
-            targets.width() as i32, targets.height() as i32,
-            AO_BLUR_RADIUS, AO_BLUR_ITERATIONS,
+            device,
+            encoder,
+            targets.raw_view(),
+            targets.a_view(),
+            targets.b_view(),
+            targets.width() as i32,
+            targets.height() as i32,
+            AO_BLUR_RADIUS,
+            AO_BLUR_ITERATIONS,
         );
     }
 }
@@ -263,49 +313,50 @@ impl AoPipelines {
 /// AO フルスクリーンパイプラインを 1 本構築する（reflection.rs の build_reflection_pipeline 相当）。
 /// 深度なし・単一カラーターゲット（AO_FORMAT）・blend なし。頂点は ao_common.wgsl の vs_fullscreen。
 fn build_ao_pipeline(
-    device:         &wgpu::Device,
-    cache:          Option<&wgpu::PipelineCache>,
-    bgls:           &[&wgpu::BindGroupLayout],
+    device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
+    bgls: &[&wgpu::BindGroupLayout],
     shader_sources: &[&str],
-    fs_entry:       &str,
-    label:          &str,
+    fs_entry: &str,
+    label: &str,
 ) -> wgpu::RenderPipeline {
-    let combined: String = shader_sources.iter()
+    let combined: String = shader_sources
+        .iter()
         .map(|n| get_shader_source(n))
         .collect::<Vec<_>>()
         .join("\n");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label:  Some(label),
+        label: Some(label),
         source: wgpu::ShaderSource::Wgsl(combined.into()),
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label:                Some(label),
-        bind_group_layouts:   bgls,
+        label: Some(label),
+        bind_group_layouts: bgls,
         push_constant_ranges: &[],
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label:  Some(label),
+        label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module:              &shader,
-            entry_point:         Some("vs_fullscreen"),
-            buffers:             &[],
+            module: &shader,
+            entry_point: Some("vs_fullscreen"),
+            buffers: &[],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module:              &shader,
-            entry_point:         Some(fs_entry),
-            targets:             &[Some(wgpu::ColorTargetState {
-                format:     AO_FORMAT,
-                blend:      None,
+            module: &shader,
+            entry_point: Some(fs_entry),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: AO_FORMAT,
+                blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: Default::default(),
         }),
-        primitive:     wgpu::PrimitiveState::default(),
+        primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
-        multisample:   wgpu::MultisampleState::default(),
-        multiview:     None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
         cache,
     })
 }
@@ -321,22 +372,30 @@ pub struct AoTargets {
     /// AO 生成パスの出力（RENDER_ATTACHMENT|TEXTURE_BINDING）。
     raw: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// いもすブラー ping-pong その 1（STORAGE_BINDING|TEXTURE_BINDING）。
-    a:   Option<(wgpu::Texture, wgpu::TextureView)>,
+    a: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// いもすブラー ping-pong その 2（同上）。最終 AO はここに残る。
-    b:   Option<(wgpu::Texture, wgpu::TextureView)>,
+    b: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// 確保済み半解像度サイズ（不一致で再確保）。
-    hw:  u32,
-    hh:  u32,
+    hw: u32,
+    hh: u32,
 }
 
 impl Default for AoTargets {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AoTargets {
     /// 空の（未確保の）ターゲット群を生成する（device 不要・eager 構築可）。
     pub fn new() -> Self {
-        Self { raw: None, a: None, b: None, hw: 0, hh: 0 }
+        Self {
+            raw: None,
+            a: None,
+            b: None,
+            hw: 0,
+            hh: 0,
+        }
     }
 
     /// 半解像度サイズへ追従する。既存が同サイズなら何もしない（RtPool.ensure の流儀）。
@@ -349,7 +408,10 @@ impl AoTargets {
         }
         // ao_raw: 生成パスのレンダー出力＋ブラー入力。
         let raw = make_tex(
-            device, "ao_raw", hw, hh,
+            device,
+            "ao_raw",
+            hw,
+            hh,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         );
         // ao_a / ao_b: いもすブラーの storage ping-pong（write）＋次段/サンプル入力。
@@ -364,13 +426,21 @@ impl AoTargets {
     }
 
     /// 確保済み半解像度幅。
-    pub fn width(&self) -> u32 { self.hw }
+    pub fn width(&self) -> u32 {
+        self.hw
+    }
     /// 確保済み半解像度高さ。
-    pub fn height(&self) -> u32 { self.hh }
+    pub fn height(&self) -> u32 {
+        self.hh
+    }
 
     /// ao_raw のビュー（ensure 済みであること）。
     pub fn raw_view(&self) -> &wgpu::TextureView {
-        &self.raw.as_ref().expect("AoTargets: ensure 未実行（raw）").1
+        &self
+            .raw
+            .as_ref()
+            .expect("AoTargets: ensure 未実行（raw）")
+            .1
     }
     /// ao_a のビュー（ensure 済みであること）。
     pub fn a_view(&self) -> &wgpu::TextureView {
@@ -385,15 +455,20 @@ impl AoTargets {
 /// AO テクスチャ 1 枚を確保する（AO_FORMAT 固定・指定 usage）。
 fn make_tex(
     device: &wgpu::Device,
-    label:  &str,
-    w:      u32,
-    h:      u32,
-    usage:  wgpu::TextureUsages,
+    label: &str,
+    w: u32,
+    h: u32,
+    usage: wgpu::TextureUsages,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: AO_FORMAT,
         usage,
@@ -420,26 +495,32 @@ mod tests {
     #[test]
     fn ao_ssao_shader_parses() {
         let common = include_str!("shaders/ao_common.wgsl");
-        let ssao   = include_str!("shaders/ao_ssao.wgsl");
+        let ssao = include_str!("shaders/ao_ssao.wgsl");
         let src = [common, ssao].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[ao_ssao] WGSL parse 失敗: {e:?}"));
         let mut v = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty());
-        v.validate(&module).unwrap_or_else(|e| panic!("[ao_ssao] validate 失敗: {e:?}"));
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        );
+        v.validate(&module)
+            .unwrap_or_else(|e| panic!("[ao_ssao] validate 失敗: {e:?}"));
     }
 
     /// RT-AO 連結（ao_common + ao_rt, RAY_QUERY 必須）を naga で parse + validate する。
     #[test]
     fn ao_rt_shader_parses() {
         let common = include_str!("shaders/ao_common.wgsl");
-        let rt     = include_str!("shaders/ao_rt.wgsl");
+        let rt = include_str!("shaders/ao_rt.wgsl");
         let src = [common, rt].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[ao_rt] WGSL parse 失敗: {e:?}"));
         let mut v = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(), naga::valid::Capabilities::RAY_QUERY);
-        v.validate(&module).unwrap_or_else(|e| panic!("[ao_rt] validate 失敗: {e:?}"));
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::RAY_QUERY,
+        );
+        v.validate(&module)
+            .unwrap_or_else(|e| panic!("[ao_rt] validate 失敗: {e:?}"));
     }
 
     /// AoParams のワールド半径定数が方式ごとに正の有限値であること（マジックナンバー回帰防止）。
@@ -447,6 +528,9 @@ mod tests {
     fn ao_world_radii_are_positive() {
         assert!(AO_SSAO_WORLD_RADIUS > 0.0 && AO_SSAO_WORLD_RADIUS.is_finite());
         assert!(AO_RTAO_WORLD_RADIUS > 0.0 && AO_RTAO_WORLD_RADIUS.is_finite());
-        assert_eq!(AO_FORMAT, IMOS_BLUR_FORMAT, "AO と imos の storage フォーマットは一致必須");
+        assert_eq!(
+            AO_FORMAT, IMOS_BLUR_FORMAT,
+            "AO と imos の storage フォーマットは一致必須"
+        );
     }
 }

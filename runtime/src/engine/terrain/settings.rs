@@ -61,13 +61,27 @@ pub const MAX_TOTAL_CHUNKS: usize = 4096;
 
 // ─── serde default 用の関数 ──────────────────────────────────────────────────
 
-fn default_voxel_size() -> f32 { DEFAULT_VOXEL_SIZE }
-fn default_chunk_cells() -> u32 { DEFAULT_CHUNK_CELLS }
-fn default_iso_level() -> f32 { DEFAULT_ISO_LEVEL }
-fn default_ground_chunks_x() -> u32 { DEFAULT_GROUND_CHUNKS_X }
-fn default_ground_chunks_z() -> u32 { DEFAULT_GROUND_CHUNKS_Z }
-fn default_ground_chunk_y_min() -> i32 { DEFAULT_GROUND_CHUNK_Y_MIN }
-fn default_ground_chunk_y_max() -> i32 { DEFAULT_GROUND_CHUNK_Y_MAX }
+fn default_voxel_size() -> f32 {
+    DEFAULT_VOXEL_SIZE
+}
+fn default_chunk_cells() -> u32 {
+    DEFAULT_CHUNK_CELLS
+}
+fn default_iso_level() -> f32 {
+    DEFAULT_ISO_LEVEL
+}
+fn default_ground_chunks_x() -> u32 {
+    DEFAULT_GROUND_CHUNKS_X
+}
+fn default_ground_chunks_z() -> u32 {
+    DEFAULT_GROUND_CHUNKS_Z
+}
+fn default_ground_chunk_y_min() -> i32 {
+    DEFAULT_GROUND_CHUNK_Y_MIN
+}
+fn default_ground_chunk_y_max() -> i32 {
+    DEFAULT_GROUND_CHUNK_Y_MAX
+}
 
 /// 密度クランプの既定値。
 /// 1 チャンク分の広がり（voxel_size * chunk_cells = 0.5 * 32 = 16.0 m）を上限とする。
@@ -155,7 +169,11 @@ impl TerrainSettings {
         self.ground_chunks_z = chunks_z.clamp(MIN_GROUND_CHUNKS, MAX_GROUND_CHUNKS);
         self.chunk_cells = chunk_cells.clamp(MIN_CHUNK_CELLS, MAX_CHUNK_CELLS);
         // NaN は clamp がパニックするため、先に有限性を検査して既定値へ落とす。
-        let vs = if voxel_size.is_finite() { voxel_size } else { DEFAULT_VOXEL_SIZE };
+        let vs = if voxel_size.is_finite() {
+            voxel_size
+        } else {
+            DEFAULT_VOXEL_SIZE
+        };
         self.voxel_size = vs.clamp(MIN_VOXEL_SIZE, MAX_VOXEL_SIZE);
         // 派生値（1 チャンク分の広がり）を作り直す。
         self.density_clamp = self.chunk_extent();

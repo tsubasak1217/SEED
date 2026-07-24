@@ -6,9 +6,9 @@
 //                   ConstantUpdate → LateUpdate → Render → EndFrame。
 // ============================================================
 
-use crate::engine::core::clock::FrameContext;
-use super::world::World;
 use super::system::System;
+use super::world::World;
+use crate::engine::core::clock::FrameContext;
 
 // ─── Phase ────────────────────────────────────────────────────────────────────
 
@@ -28,7 +28,15 @@ pub enum Phase {
 /// 全フェーズを実行順に返すユーティリティ。
 pub fn all_phases() -> [Phase; 7] {
     use Phase::*;
-    [BeginFrame, EarlyUpdate, Update, ConstantUpdate, LateUpdate, Render, EndFrame]
+    [
+        BeginFrame,
+        EarlyUpdate,
+        Update,
+        ConstantUpdate,
+        LateUpdate,
+        Render,
+        EndFrame,
+    ]
 }
 
 // ─── Schedule ─────────────────────────────────────────────────────────────────
@@ -66,5 +74,7 @@ impl Schedule {
 }
 
 impl Default for Schedule {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

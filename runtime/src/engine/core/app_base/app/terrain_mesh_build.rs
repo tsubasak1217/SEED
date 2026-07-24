@@ -40,8 +40,8 @@ use crate::engine::core::loader::model::{
     CullFace, Material, Mesh, Model, ModelNode, Primitive, Vertex,
 };
 use crate::engine::terrain::layers::{
-    blend_rule_and_paint_all, blend_rule_and_paint_all_into, select_top_slots, BlendSlots,
-    TerrainLayerSet, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS,
+    BlendSlots, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS, TerrainLayerSet, blend_rule_and_paint_all,
+    blend_rule_and_paint_all_into, select_top_slots,
 };
 use crate::engine::terrain::marching_cubes::TerrainMesh;
 
@@ -93,10 +93,10 @@ pub fn terrain_mesh_to_model(
             position: *pos,
             normal,
             tangent: DEFAULT_TANGENT,
-            uv0:     DEFAULT_UV,
-            uv1:     DEFAULT_UV,
+            uv0: DEFAULT_UV,
+            uv1: DEFAULT_UV,
             // 頂点カラー = パレット内スロット重み（RGBA = palette[0..3] の各層）。
-            color:   colors[i],
+            color: colors[i],
         });
     }
 
@@ -115,12 +115,12 @@ pub fn terrain_mesh_to_model(
 ///
 /// 戻り値は (頂点カラー列, チャンクパレット)。頂点カラーは positions と同じ長さ。
 pub fn compute_layer_colors(
-    positions:    &[[f32; 3]],
-    normals:      &[[f32; 3]],
-    paint:        &[BlendSlots],
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    paint: &[BlendSlots],
     paint_amount: &[f32],
     world_origin: [f32; 3],
-    layers:       &TerrainLayerSet,
+    layers: &TerrainLayerSet,
 ) -> (Vec<[f32; 4]>, [u32; TERRAIN_BLEND_SLOTS]) {
     // レイヤ定義数（密重みベクトルの次元）。0 層はあり得ないが防御的に 1 を下限とする。
     let layer_count = layers.layers.len().max(1);
@@ -130,7 +130,7 @@ pub fn compute_layer_colors(
     //   レイヤ重みの密ベクトルは最大でも TERRAIN_MAX_LAYERS 次元なので、
     //   スタック上の固定長配列で足りる。ここを Vec 確保にすると 64³ チャンクで
     //   8 万回以上の malloc/free が走り、頂点カラー計算がホットパス化する。
-    let mut rule_buf  = [0.0f32; TERRAIN_MAX_LAYERS];
+    let mut rule_buf = [0.0f32; TERRAIN_MAX_LAYERS];
     let mut blend_buf = [0.0f32; TERRAIN_MAX_LAYERS];
 
     // レイヤ定義数（＝密重みベクトルの実際の次元。layer_count と違い下限 1 を課さない）。
@@ -162,7 +162,10 @@ pub fn compute_layer_colors(
         let w: &[f32] = if use_scratch {
             layers.rule_weights_all_into(normal[1], world_y, &mut rule_buf);
             blend_rule_and_paint_all_into(
-                &rule_buf[..rule_len], &paint_slots, vertex_paint_amount, &mut blend_buf,
+                &rule_buf[..rule_len],
+                &paint_slots,
+                vertex_paint_amount,
+                &mut blend_buf,
             );
             &blend_buf[..rule_len]
         } else {
@@ -254,10 +257,10 @@ pub fn compute_layer_colors(
 /// 長さが食い違う場合は `None` を返す（呼び出し側はフル再メッシュへフォールバックする）。
 pub fn rebuild_terrain_model_with_colors(
     src_vertices: &[Vertex],
-    indices:      &[u32],
-    name:         &str,
-    colors:       &[[f32; 4]],
-    palette:      [u32; TERRAIN_BLEND_SLOTS],
+    indices: &[u32],
+    name: &str,
+    colors: &[[f32; 4]],
+    palette: [u32; TERRAIN_BLEND_SLOTS],
 ) -> Option<Model> {
     if src_vertices.len() != colors.len() {
         return None;
@@ -277,39 +280,39 @@ pub fn rebuild_terrain_model_with_colors(
 /// 独立した関心事なので、`terrain_mesh_to_model` から分離してある。
 fn build_terrain_model(
     vertices: Vec<Vertex>,
-    indices:  Vec<u32>,
-    name:     &str,
-    palette:  [u32; TERRAIN_BLEND_SLOTS],
+    indices: Vec<u32>,
+    name: &str,
+    palette: [u32; TERRAIN_BLEND_SLOTS],
 ) -> (Model, [u32; TERRAIN_BLEND_SLOTS]) {
     // ─── 1 プリミティブ（1 マテリアル）を構築する ───
     //   skin_vertices は必ず空（地形はスキニング非対応）。LOD・メッシュレットも未生成。
     let primitive = Primitive {
         vertices,
-        skin_vertices:     Vec::new(),
+        skin_vertices: Vec::new(),
         indices,
-        material_index:    Some(0),
-        lod_indices:       Vec::new(),
-        meshlets:          Vec::new(),
-        meshlet_vertices:  Vec::new(),
+        material_index: Some(0),
+        lod_indices: Vec::new(),
+        meshlets: Vec::new(),
+        meshlet_vertices: Vec::new(),
         meshlet_triangles: Vec::new(),
     };
 
     let engine_mesh = Mesh {
-        name:       name.to_string(),
+        name: name.to_string(),
         primitives: vec![primitive],
     };
 
     // ─── 単一ノード（恒等ローカル変換・mesh_index=0）を構築する ───
     let node = ModelNode {
-        name:         name.to_string(),
+        name: name.to_string(),
         local_matrix: ModelNode::identity_matrix(),
-        translation:  [0.0, 0.0, 0.0],
-        rotation:     [0.0, 0.0, 0.0, 1.0],
-        scale:        [1.0, 1.0, 1.0],
-        mesh_index:   Some(0),
-        skin_index:   None,
-        children:     Vec::new(),
-        parent:       None,
+        translation: [0.0, 0.0, 0.0],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        scale: [1.0, 1.0, 1.0],
+        mesh_index: Some(0),
+        skin_index: None,
+        children: Vec::new(),
+        parent: None,
     };
 
     // ─── 地形マテリアル（レイヤブレンド＋通常の背面カリング）───
@@ -344,14 +347,14 @@ fn build_terrain_model(
 
     // ─── 最小構成の Model（テクスチャ・アニメ・スキンなし・地形マテリアル 1 枚）───
     let model = Model {
-        name:       name.to_string(),
-        nodes:      vec![node],
+        name: name.to_string(),
+        nodes: vec![node],
         root_nodes: vec![0],
-        meshes:     vec![engine_mesh],
-        materials:  vec![material],
-        textures:   Vec::new(),
+        meshes: vec![engine_mesh],
+        materials: vec![material],
+        textures: Vec::new(),
         animations: Vec::new(),
-        skins:      Vec::new(),
+        skins: Vec::new(),
     };
 
     (model, palette)
@@ -379,10 +382,10 @@ mod tests {
         paint.index = [layer, 0, 0, 0];
         paint.weight = [1.0, 0.0, 0.0, 0.0];
         TerrainMesh {
-            positions:    vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
-            normals:      vec![[0.0, 1.0, 0.0]; 3],
-            indices:      vec![0, 1, 2],
-            paint:        vec![paint; 3],
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            normals: vec![[0.0, 1.0, 0.0]; 3],
+            indices: vec![0, 1, 2],
+            paint: vec![paint; 3],
             paint_amount: vec![1.0; 3],
             // 由来辺（edges）はペイント差分更新でしか使わないので、ここでは空で良い。
             ..Default::default()
@@ -395,8 +398,8 @@ mod tests {
     /// シェーダは `weight[slot]` を `layers[palette[slot]]` へ適用するだけなので、
     /// CPU 側でも同じ加算をすれば描画結果のレイヤ配分を検証できる。
     fn resolve_layer_weights(
-        color:       [f32; 4],
-        palette:     [u32; TERRAIN_BLEND_SLOTS],
+        color: [f32; 4],
+        palette: [u32; TERRAIN_BLEND_SLOTS],
         layer_count: usize,
     ) -> Vec<f32> {
         let mut out = vec![0.0f32; layer_count];
@@ -422,7 +425,10 @@ mod tests {
     fn flat_layer_set(n: usize) -> TerrainLayerSet {
         TerrainLayerSet {
             layers: (0..n)
-                .map(|i| TerrainLayer { name: format!("layer{i}"), ..TerrainLayer::default() })
+                .map(|i| TerrainLayer {
+                    name: format!("layer{i}"),
+                    ..TerrainLayer::default()
+                })
                 .collect(),
         }
     }
@@ -440,8 +446,7 @@ mod tests {
         // 各レイヤを塗ったチャンクを 1 つずつ作り、復元結果を突き合わせる。
         for painted in 0..layer_count as u32 {
             let mesh = painted_mesh(painted);
-            let (model, palette) =
-                terrain_mesh_to_model(&mesh, "chunk", TEST_ORIGIN, &layers);
+            let (model, palette) = terrain_mesh_to_model(&mesh, "chunk", TEST_ORIGIN, &layers);
 
             // ① パレットはマテリアルへ載っていること（これが抜けると描画側が恒等になる）。
             assert_eq!(
@@ -479,14 +484,22 @@ mod tests {
         let mesh = painted_mesh(PAINTED);
         let (model, palette) = terrain_mesh_to_model(&mesh, "chunk", TEST_ORIGIN, &layers);
 
-        assert_ne!(palette, [0, 1, 2, 3], "非恒等パレットが生じていない（前提の崩れ）");
-        assert_eq!(palette[0], PAINTED, "最重要スロットは塗ったレイヤであるべき");
+        assert_ne!(
+            palette,
+            [0, 1, 2, 3],
+            "非恒等パレットが生じていない（前提の崩れ）"
+        );
+        assert_eq!(
+            palette[0], PAINTED,
+            "最重要スロットは塗ったレイヤであるべき"
+        );
 
         let color = model.meshes[0].primitives[0].vertices[0].color;
         // 恒等パレットで解決すると（＝バグ時の描画）別レイヤになる。
         let wrong = resolve_layer_weights(color, [0, 1, 2, 3], layer_count);
         assert_ne!(
-            dominant_layer(&wrong), PAINTED as usize,
+            dominant_layer(&wrong),
+            PAINTED as usize,
             "恒等パレットでも正しく出てしまうと、この回帰テストは何も守れていない"
         );
     }
@@ -497,16 +510,23 @@ mod tests {
         let layers = TerrainLayerSet::default();
         let layer_count = layers.layers.len();
 
-        let (model_a, pal_a) =
-            terrain_mesh_to_model(&painted_mesh(0), "a", TEST_ORIGIN, &layers);
-        let (model_b, pal_b) =
-            terrain_mesh_to_model(&painted_mesh(2), "b", TEST_ORIGIN, &layers);
-        assert_ne!(pal_a, pal_b, "別レイヤを塗ったチャンクは別パレットになるはず");
+        let (model_a, pal_a) = terrain_mesh_to_model(&painted_mesh(0), "a", TEST_ORIGIN, &layers);
+        let (model_b, pal_b) = terrain_mesh_to_model(&painted_mesh(2), "b", TEST_ORIGIN, &layers);
+        assert_ne!(
+            pal_a, pal_b,
+            "別レイヤを塗ったチャンクは別パレットになるはず"
+        );
 
         let res_a = resolve_layer_weights(
-            model_a.meshes[0].primitives[0].vertices[0].color, pal_a, layer_count);
+            model_a.meshes[0].primitives[0].vertices[0].color,
+            pal_a,
+            layer_count,
+        );
         let res_b = resolve_layer_weights(
-            model_b.meshes[0].primitives[0].vertices[0].color, pal_b, layer_count);
+            model_b.meshes[0].primitives[0].vertices[0].color,
+            pal_b,
+            layer_count,
+        );
 
         assert_eq!(dominant_layer(&res_a), 0);
         assert_eq!(dominant_layer(&res_b), 2);
@@ -546,13 +566,20 @@ mod tests {
 
             // ② 頂点カラーが 1 ビット違わず一致すること。
             let verts = &model.meshes[0].primitives[0].vertices;
-            assert_eq!(colors.len(), verts.len(), "レイヤ {painted}: 頂点数が不一致");
+            assert_eq!(
+                colors.len(),
+                verts.len(),
+                "レイヤ {painted}: 頂点数が不一致"
+            );
             for (i, (c, v)) in colors.iter().zip(verts.iter()).enumerate() {
                 for k in 0..TERRAIN_BLEND_SLOTS {
                     assert_eq!(
-                        c[k].to_bits(), v.color[k].to_bits(),
+                        c[k].to_bits(),
+                        v.color[k].to_bits(),
                         "レイヤ {painted}: 頂点 {i} スロット {k} の色がビット不一致 \
-                         ({} vs {})", c[k], v.color[k]
+                         ({} vs {})",
+                        c[k],
+                        v.color[k]
                     );
                 }
             }
@@ -568,7 +595,7 @@ mod tests {
     // ============================================================
 
     use crate::engine::terrain::marching_cubes::{generate_standalone, interp_vertex_paint};
-    use crate::engine::terrain::paint::{apply_paint, PaintField};
+    use crate::engine::terrain::paint::{PaintField, apply_paint};
     use crate::engine::terrain::{
         BlendSlots as TerrainBlendSlots, ChunkCoord, SphereBrush, TerrainChunkData, TerrainSettings,
     };
@@ -595,7 +622,7 @@ mod tests {
     /// そのままローカル添字になる。範囲外は「未ペイント」を返し、書き込みは無視する。
     struct SingleChunkPaintField<'a> {
         settings: &'a TerrainSettings,
-        chunk:    &'a mut TerrainChunkData,
+        chunk: &'a mut TerrainChunkData,
     }
 
     impl<'a> SingleChunkPaintField<'a> {
@@ -615,12 +642,20 @@ mod tests {
         }
         fn read_paint_global(&self, gx: i32, gy: i32, gz: i32) -> (TerrainBlendSlots, f32) {
             match self.local(gx, gy, gz) {
-                Some((x, y, z)) => (self.chunk.paint_slots(x, y, z), self.chunk.paint_amount(x, y, z)),
+                Some((x, y, z)) => (
+                    self.chunk.paint_slots(x, y, z),
+                    self.chunk.paint_amount(x, y, z),
+                ),
                 None => (TerrainBlendSlots::default(), 0.0),
             }
         }
         fn write_paint_global(
-            &mut self, gx: i32, gy: i32, gz: i32, slots: &TerrainBlendSlots, amount: f32,
+            &mut self,
+            gx: i32,
+            gy: i32,
+            gz: i32,
+            slots: &TerrainBlendSlots,
+            amount: f32,
         ) {
             if let Some((x, y, z)) = self.local(gx, gy, gz) {
                 self.chunk.set_paint_slots(x, y, z, slots);
@@ -662,18 +697,27 @@ mod tests {
     /// 関数呼び出しであり、違いは「位置・法線を CPU モデルから取るか TerrainMesh から
     /// 取るか」だけ（どちらも同じ値）。
     fn fast_path_colors(
-        chunk:        &TerrainChunkData,
-        edges:        &[crate::engine::terrain::TerrainVertexEdge],
-        positions:    &[[f32; 3]],
-        normals:      &[[f32; 3]],
+        chunk: &TerrainChunkData,
+        edges: &[crate::engine::terrain::TerrainVertexEdge],
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
         world_origin: [f32; 3],
-        layers:       &TerrainLayerSet,
+        layers: &TerrainLayerSet,
     ) -> (Vec<[f32; 4]>, [u32; TERRAIN_BLEND_SLOTS]) {
-        let interpolated: Vec<(BlendSlots, f32)> =
-            edges.iter().map(|e| interp_vertex_paint(chunk, e)).collect();
+        let interpolated: Vec<(BlendSlots, f32)> = edges
+            .iter()
+            .map(|e| interp_vertex_paint(chunk, e))
+            .collect();
         let paint: Vec<BlendSlots> = interpolated.iter().map(|p| p.0).collect();
         let paint_amount: Vec<f32> = interpolated.iter().map(|p| p.1).collect();
-        compute_layer_colors(positions, normals, &paint, &paint_amount, world_origin, layers)
+        compute_layer_colors(
+            positions,
+            normals,
+            &paint,
+            &paint_amount,
+            world_origin,
+            layers,
+        )
     }
 
     /// 【この最適化の正しさの中核】
@@ -692,13 +736,20 @@ mod tests {
         // ── (a) ペイント前のフル生成。由来辺をここで保存しておく（＝ランタイムのキャッシュ相当）──
         let mut chunk = sphere_chunk(&settings);
         let mesh_before = generate_standalone(&chunk, &settings);
-        assert!(!mesh_before.positions.is_empty(), "球メッシュが空（前提の崩れ）");
+        assert!(
+            !mesh_before.positions.is_empty(),
+            "球メッシュが空（前提の崩れ）"
+        );
         let edges = mesh_before.edges.clone();
         let positions = mesh_before.positions.clone();
         let normals = mesh_before.normals.clone();
         let (colors_before, palette_before) = compute_layer_colors(
-            &positions, &normals, &mesh_before.paint, &mesh_before.paint_amount,
-            world_origin, &layers,
+            &positions,
+            &normals,
+            &mesh_before.paint,
+            &mesh_before.paint_amount,
+            world_origin,
+            &layers,
         );
 
         // ── ペイントを当てる（密度は変えず、スプラット場だけが書き換わる）──
@@ -706,14 +757,24 @@ mod tests {
         //   ブラシ中心は球「面」上の点にする。球の中心に置くと半径 4 のブラシが
         //   半径 5 の球面へ届かず、頂点が 1 つも塗られない（＝テストが空回りする）。
         let brush = SphereBrush {
-            center:   [SPHERE_CENTER[0] + SPHERE_RADIUS, SPHERE_CENTER[1], SPHERE_CENTER[2]],
-            radius:   TEST_PAINT_RADIUS,
+            center: [
+                SPHERE_CENTER[0] + SPHERE_RADIUS,
+                SPHERE_CENTER[1],
+                SPHERE_CENTER[2],
+            ],
+            radius: TEST_PAINT_RADIUS,
             strength: TEST_PAINT_STRENGTH,
         };
         {
-            let mut field = SingleChunkPaintField { settings: &settings, chunk: &mut chunk };
+            let mut field = SingleChunkPaintField {
+                settings: &settings,
+                chunk: &mut chunk,
+            };
             let affected = apply_paint(&mut field, &brush, 1, TEST_BRUSH_DT);
-            assert!(!affected.is_empty(), "ペイントが 1 サンプルにも当たっていない（前提の崩れ）");
+            assert!(
+                !affected.is_empty(),
+                "ペイントが 1 サンプルにも当たっていない（前提の崩れ）"
+            );
         }
 
         // ── (b) 高速パス: 保存しておいた由来辺から再構築 ──
@@ -728,12 +789,16 @@ mod tests {
 
         // ── 前提: ペイントで形状は変わっていない（＝高速パスが成立する条件）──
         assert_eq!(
-            mesh_after.positions.len(), positions.len(),
+            mesh_after.positions.len(),
+            positions.len(),
             "ペイントで頂点数が変わった（密度を触っている＝高速パスの前提が崩れている）"
         );
 
         // ── ① パレットが一致すること ──
-        assert_eq!(palette_fast, palette_full, "高速パスとフル再生成でパレットが不一致");
+        assert_eq!(
+            palette_fast, palette_full,
+            "高速パスとフル再生成でパレットが不一致"
+        );
         // このケースはパレット不変（＝フォールバックしない）であることも確認する。
         assert_eq!(
             palette_fast, palette_before,
@@ -743,7 +808,10 @@ mod tests {
         // ── ② ペイントが実際に色を変えていること（テストが形骸化していない担保）──
         //   ここが変わらないなら「何も塗れていない」ので、下の一致比較は無意味になる。
         assert!(
-            colors_fast.iter().zip(colors_before.iter()).any(|(a, b)| a != b),
+            colors_fast
+                .iter()
+                .zip(colors_before.iter())
+                .any(|(a, b)| a != b),
             "ペイント前後で頂点カラーが 1 つも変わっていない（テストが何も守れていない）"
         );
 
@@ -752,8 +820,11 @@ mod tests {
         for (i, (c, v)) in colors_fast.iter().zip(verts_full.iter()).enumerate() {
             for k in 0..TERRAIN_BLEND_SLOTS {
                 assert_eq!(
-                    c[k].to_bits(), v.color[k].to_bits(),
-                    "頂点 {i} スロット {k} の色がビット不一致 ({} vs {})", c[k], v.color[k]
+                    c[k].to_bits(),
+                    v.color[k].to_bits(),
+                    "頂点 {i} スロット {k} の色がビット不一致 ({} vs {})",
+                    c[k],
+                    v.color[k]
                 );
             }
         }
@@ -778,8 +849,12 @@ mod tests {
         let positions = mesh_before.positions.clone();
         let normals = mesh_before.normals.clone();
         let (_c0, palette_before) = compute_layer_colors(
-            &positions, &normals, &mesh_before.paint, &mesh_before.paint_amount,
-            world_origin, &layers,
+            &positions,
+            &normals,
+            &mesh_before.paint,
+            &mesh_before.paint_amount,
+            world_origin,
+            &layers,
         );
         assert!(
             !palette_before.contains(&TEST_NEW_LAYER),
@@ -788,14 +863,20 @@ mod tests {
 
         // ── まだ使われていないレイヤを、球全体を覆う大きなブラシで強く塗る ──
         let brush = SphereBrush {
-            center:   SPHERE_CENTER,
-            radius:   SPHERE_RADIUS * 2.0,
+            center: SPHERE_CENTER,
+            radius: SPHERE_RADIUS * 2.0,
             strength: TEST_PAINT_STRENGTH,
         };
         {
-            let mut field = SingleChunkPaintField { settings: &settings, chunk: &mut chunk };
+            let mut field = SingleChunkPaintField {
+                settings: &settings,
+                chunk: &mut chunk,
+            };
             let affected = apply_paint(&mut field, &brush, TEST_NEW_LAYER, TEST_BRUSH_DT);
-            assert!(!affected.is_empty(), "ペイントが当たっていない（前提の崩れ）");
+            assert!(
+                !affected.is_empty(),
+                "ペイントが当たっていない（前提の崩れ）"
+            );
         }
 
         // ── 高速パスの再構築が返すパレットが変わっている＝フォールバック条件が発火する ──
@@ -827,13 +908,20 @@ mod tests {
             .map(|i| [i as f32, 0.25, 0.5, 0.75])
             .collect();
         let rebuilt = rebuild_terrain_model_with_colors(
-            &src.vertices, &src.indices, "chunk", &new_colors, palette,
+            &src.vertices,
+            &src.indices,
+            "chunk",
+            &new_colors,
+            palette,
         )
         .expect("長さが一致しているのに None が返った");
 
         let dst = &rebuilt.meshes[0].primitives[0];
         assert_eq!(dst.indices, src.indices, "インデックスが変わった");
-        assert_eq!(rebuilt.materials[0].terrain_palette, palette, "パレットが変わった");
+        assert_eq!(
+            rebuilt.materials[0].terrain_palette, palette,
+            "パレットが変わった"
+        );
         for (i, (a, b)) in src.vertices.iter().zip(dst.vertices.iter()).enumerate() {
             assert_eq!(a.position, b.position, "頂点 {i} の位置が変わった");
             assert_eq!(a.normal, b.normal, "頂点 {i} の法線が変わった");
@@ -843,7 +931,11 @@ mod tests {
         // 長さ不一致は None（呼び出し側はフル再メッシュへフォールバックする）。
         assert!(
             rebuild_terrain_model_with_colors(
-                &src.vertices, &src.indices, "chunk", &new_colors[..1], palette,
+                &src.vertices,
+                &src.indices,
+                "chunk",
+                &new_colors[..1],
+                palette,
             )
             .is_none(),
             "長さ不一致を検出できていない"
@@ -861,13 +953,13 @@ mod tests {
 
         // レイヤ 1 を 25%・レイヤ 0 を 75% で塗る（重複計上が起きれば比率が崩れる）。
         let mut paint = BlendSlots::default();
-        paint.index  = [0, 1, 0, 0];
+        paint.index = [0, 1, 0, 0];
         paint.weight = [0.75, 0.25, 0.0, 0.0];
         let mesh = TerrainMesh {
-            positions:    vec![[0.0, 0.0, 0.0]; 3],
-            normals:      vec![[0.0, 1.0, 0.0]; 3],
-            indices:      vec![0, 1, 2],
-            paint:        vec![paint; 3],
+            positions: vec![[0.0, 0.0, 0.0]; 3],
+            normals: vec![[0.0, 1.0, 0.0]; 3],
+            indices: vec![0, 1, 2],
+            paint: vec![paint; 3],
             paint_amount: vec![1.0; 3],
             ..Default::default()
         };
@@ -878,9 +970,18 @@ mod tests {
 
         // 総和は 1（エネルギー保存）。
         let sum: f32 = resolved.iter().sum();
-        assert!((sum - 1.0).abs() < EPS, "重みの総和が 1 でない: {resolved:?}");
+        assert!(
+            (sum - 1.0).abs() < EPS,
+            "重みの総和が 1 でない: {resolved:?}"
+        );
         // 比率は塗ったとおり（重複計上があればレイヤ 0 が 0.9 前後まで膨らむ）。
-        assert!((resolved[0] - 0.75).abs() < EPS, "レイヤ 0 の比率が崩れた: {resolved:?}");
-        assert!((resolved[1] - 0.25).abs() < EPS, "レイヤ 1 の比率が崩れた: {resolved:?}");
+        assert!(
+            (resolved[0] - 0.75).abs() < EPS,
+            "レイヤ 0 の比率が崩れた: {resolved:?}"
+        );
+        assert!(
+            (resolved[1] - 0.25).abs() < EPS,
+            "レイヤ 1 の比率が崩れた: {resolved:?}"
+        );
     }
 }

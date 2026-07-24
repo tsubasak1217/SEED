@@ -1,11 +1,6 @@
 use std::fmt;
 use std::ops::{
-    Add, AddAssign,
-    Sub, SubAssign,
-    Mul, MulAssign,
-    Div, DivAssign,
-    Neg,
-    Index, IndexMut,
+    Add, AddAssign, Div, DivAssign, Index, IndexMut, Mul, MulAssign, Neg, Sub, SubAssign,
 };
 
 use super::vector3::Vector3;
@@ -59,7 +54,12 @@ impl<T: Default + Copy> Vector4<T> {
     /// 零ベクトル (0, 0, 0, 0) を生成する。
     #[inline]
     pub fn zero() -> Self {
-        Self { x: T::default(), y: T::default(), z: T::default(), w: T::default() }
+        Self {
+            x: T::default(),
+            y: T::default(),
+            z: T::default(),
+            w: T::default(),
+        }
     }
 }
 
@@ -70,7 +70,12 @@ impl<T: Add<Output = T> + Copy> Add for Vector4<T> {
     type Output = Self;
     #[inline]
     fn add(self, rhs: Self) -> Self {
-        Self::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z, self.w + rhs.w)
+        Self::new(
+            self.x + rhs.x,
+            self.y + rhs.y,
+            self.z + rhs.z,
+            self.w + rhs.w,
+        )
     }
 }
 
@@ -90,7 +95,12 @@ impl<T: Sub<Output = T> + Copy> Sub for Vector4<T> {
     type Output = Self;
     #[inline]
     fn sub(self, rhs: Self) -> Self {
-        Self::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z, self.w - rhs.w)
+        Self::new(
+            self.x - rhs.x,
+            self.y - rhs.y,
+            self.z - rhs.z,
+            self.w - rhs.w,
+        )
     }
 }
 

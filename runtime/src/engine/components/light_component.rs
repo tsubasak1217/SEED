@@ -28,28 +28,46 @@ use crate::engine::ecs::Component;
 // マジックナンバー禁止のため、非ゼロ既定値はすべて関数に切り出す。
 
 /// color の既定値（白）。
-fn default_color() -> [f32; 3] { [1.0, 1.0, 1.0] }
+fn default_color() -> [f32; 3] {
+    [1.0, 1.0, 1.0]
+}
 /// intensity の既定値。旧ハードコード方向光の輝度 vec3(3.0) に相当。
-fn default_intensity() -> f32 { 3.0 }
+fn default_intensity() -> f32 {
+    3.0
+}
 /// range（point/spot の減衰距離）の既定値。
-fn default_range() -> f32 { 10.0 }
+fn default_range() -> f32 {
+    10.0
+}
 /// spot 内側コーン角（度）の既定値。
-fn default_inner_angle_deg() -> f32 { 25.0 }
+fn default_inner_angle_deg() -> f32 {
+    25.0
+}
 /// spot 外側コーン角（度）の既定値。
-fn default_outer_angle_deg() -> f32 { 35.0 }
+fn default_outer_angle_deg() -> f32 {
+    35.0
+}
 /// rect（エリアライト）の幅の既定値。
-fn default_rect_width() -> f32 { 1.0 }
+fn default_rect_width() -> f32 {
+    1.0
+}
 /// rect（エリアライト）の高さの既定値。
-fn default_rect_height() -> f32 { 1.0 }
+fn default_rect_height() -> f32 {
+    1.0
+}
 /// cast_shadows の既定値（true）。R2 のシャドウで使用（R1 では保存のみ）。
-fn default_cast_shadows() -> bool { true }
+fn default_cast_shadows() -> bool {
+    true
+}
 /// ソフト影の見込み半径の既定値（Phase R8 ソフトシャドウ）。
 ///
 /// 意味は種別で異なる（GpuLight へ変換する light_ops.rs 側で解釈）:
 ///   - directional: 光源の角径（度）。既定 0.25 は太陽の実角径に近く、影が「わずかに柔らかく」なる。
 ///   - point/spot/rect: 光源のワールド半径。0.25 単位程度の面光源として扱う。
 /// 0 にするとハードシャドウ（遮蔽レイ 1 本）になる。RT 影が有効なときのみ効果がある。
-fn default_soft_radius() -> f32 { 0.25 }
+fn default_soft_radius() -> f32 {
+    0.25
+}
 
 // ─── LightKind ───────────────────────────────────────────────
 
@@ -77,7 +95,9 @@ pub enum LightKind {
 
 impl Default for LightKind {
     /// kind 省略時の既定は directional（後方互換：旧ハードコード光は方向光だった）。
-    fn default() -> Self { LightKind::Directional }
+    fn default() -> Self {
+        LightKind::Directional
+    }
 }
 
 impl LightKind {
@@ -87,9 +107,9 @@ impl LightKind {
     pub fn to_code(self) -> u32 {
         match self {
             LightKind::Directional => 0,
-            LightKind::Point       => 1,
-            LightKind::Spot        => 2,
-            LightKind::Rect        => 3,
+            LightKind::Point => 1,
+            LightKind::Spot => 2,
+            LightKind::Rect => 3,
         }
     }
 
@@ -97,10 +117,10 @@ impl LightKind {
     pub fn from_str_opt(s: &str) -> Option<Self> {
         match s {
             "directional" => Some(LightKind::Directional),
-            "point"       => Some(LightKind::Point),
-            "spot"        => Some(LightKind::Spot),
-            "rect"        => Some(LightKind::Rect),
-            _             => None,
+            "point" => Some(LightKind::Point),
+            "spot" => Some(LightKind::Spot),
+            "rect" => Some(LightKind::Rect),
+            _ => None,
         }
     }
 
@@ -108,9 +128,9 @@ impl LightKind {
     pub fn as_str(self) -> &'static str {
         match self {
             LightKind::Directional => "directional",
-            LightKind::Point       => "point",
-            LightKind::Spot        => "spot",
-            LightKind::Rect        => "rect",
+            LightKind::Point => "point",
+            LightKind::Spot => "spot",
+            LightKind::Rect => "rect",
         }
     }
 }
@@ -165,16 +185,16 @@ pub struct LightComponentData {
 impl Default for LightComponentData {
     fn default() -> Self {
         Self {
-            kind:            LightKind::default(),
-            color:           default_color(),
-            intensity:       default_intensity(),
-            range:           default_range(),
+            kind: LightKind::default(),
+            color: default_color(),
+            intensity: default_intensity(),
+            range: default_range(),
             inner_angle_deg: default_inner_angle_deg(),
             outer_angle_deg: default_outer_angle_deg(),
-            rect_width:      default_rect_width(),
-            rect_height:     default_rect_height(),
-            cast_shadows:     default_cast_shadows(),
-            soft_radius:      default_soft_radius(),
+            rect_width: default_rect_width(),
+            rect_height: default_rect_height(),
+            cast_shadows: default_cast_shadows(),
+            soft_radius: default_soft_radius(),
             bounce_intensity: 0.0,
         }
     }
@@ -188,16 +208,16 @@ impl Default for LightComponentData {
 /// レンダラが毎フレーム解決する。揮発状態は持たない（Data と同一構成）。
 #[derive(Clone, Debug)]
 pub struct LightComponent {
-    pub kind:            LightKind,
-    pub color:           [f32; 3],
-    pub intensity:       f32,
-    pub range:           f32,
+    pub kind: LightKind,
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub range: f32,
     pub inner_angle_deg: f32,
     pub outer_angle_deg: f32,
-    pub rect_width:      f32,
-    pub rect_height:     f32,
-    pub cast_shadows:    bool,
-    pub soft_radius:     f32,
+    pub rect_width: f32,
+    pub rect_height: f32,
+    pub cast_shadows: bool,
+    pub soft_radius: f32,
     pub bounce_intensity: f32,
 }
 
@@ -205,16 +225,16 @@ impl LightComponent {
     /// シリアライズ用データからコンポーネントを構築する。
     pub fn from_data(data: LightComponentData) -> Self {
         Self {
-            kind:            data.kind,
-            color:           data.color,
-            intensity:       data.intensity,
-            range:           data.range,
+            kind: data.kind,
+            color: data.color,
+            intensity: data.intensity,
+            range: data.range,
             inner_angle_deg: data.inner_angle_deg,
             outer_angle_deg: data.outer_angle_deg,
-            rect_width:      data.rect_width,
-            rect_height:     data.rect_height,
-            cast_shadows:     data.cast_shadows,
-            soft_radius:      data.soft_radius,
+            rect_width: data.rect_width,
+            rect_height: data.rect_height,
+            cast_shadows: data.cast_shadows,
+            soft_radius: data.soft_radius,
             bounce_intensity: data.bounce_intensity,
         }
     }
@@ -222,23 +242,25 @@ impl LightComponent {
     /// シリアライズ用データへ変換する。
     pub fn to_data(&self) -> LightComponentData {
         LightComponentData {
-            kind:            self.kind,
-            color:           self.color,
-            intensity:       self.intensity,
-            range:           self.range,
+            kind: self.kind,
+            color: self.color,
+            intensity: self.intensity,
+            range: self.range,
             inner_angle_deg: self.inner_angle_deg,
             outer_angle_deg: self.outer_angle_deg,
-            rect_width:      self.rect_width,
-            rect_height:     self.rect_height,
-            cast_shadows:     self.cast_shadows,
-            soft_radius:      self.soft_radius,
+            rect_width: self.rect_width,
+            rect_height: self.rect_height,
+            cast_shadows: self.cast_shadows,
+            soft_radius: self.soft_radius,
             bounce_intensity: self.bounce_intensity,
         }
     }
 }
 
 impl Default for LightComponent {
-    fn default() -> Self { Self::from_data(LightComponentData::default()) }
+    fn default() -> Self {
+        Self::from_data(LightComponentData::default())
+    }
 }
 
 impl Component for LightComponent {}

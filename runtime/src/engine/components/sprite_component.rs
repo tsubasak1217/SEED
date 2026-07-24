@@ -12,8 +12,8 @@
 //  - Canvas の子アクターを選択して追加 → 選択アクターに直接追加
 // ============================================================
 
-use serde::{Deserialize, Serialize};
 use crate::engine::ecs::Component;
+use serde::{Deserialize, Serialize};
 
 // ─── SpriteComponentData ─────────────────────────────────────────────────────
 
@@ -76,11 +76,11 @@ impl SpriteComponent {
     pub fn to_data(&self) -> SpriteComponentData {
         SpriteComponentData {
             texture_path: self.texture_path.clone(),
-            color:        self.color,
-            width:        self.width,
-            height:       self.height,
-            layer:        self.layer,
-            postfx_path:  self.postfx_path.clone(),
+            color: self.color,
+            width: self.width,
+            height: self.height,
+            layer: self.layer,
+            postfx_path: self.postfx_path.clone(),
         }
     }
 }
@@ -90,11 +90,11 @@ impl Default for SpriteComponent {
         // デフォルトは白色・100×100 キャンバスユニット・テクスチャなし・レイヤー 0
         Self {
             texture_path: String::new(),
-            color:        [1.0, 1.0, 1.0, 1.0],
-            width:        100.0,
-            height:       100.0,
-            layer:        0,
-            postfx_path:  String::new(),
+            color: [1.0, 1.0, 1.0, 1.0],
+            width: 100.0,
+            height: 100.0,
+            layer: 0,
+            postfx_path: String::new(),
         }
     }
 }

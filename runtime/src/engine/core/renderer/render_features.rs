@@ -23,7 +23,7 @@
 //    一切触らずに TLAS が構築されるようになる。
 // ============================================================
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 // ============================================================
 //  機能ごとのモード enum（serde 互換・文字列表現は小文字）
@@ -42,7 +42,9 @@ pub enum ShadowMode {
 }
 
 impl Default for ShadowMode {
-    fn default() -> Self { ShadowMode::ShadowMap }
+    fn default() -> Self {
+        ShadowMode::ShadowMap
+    }
 }
 
 /// GI（間接光）の方式。現行の GiSettings.enabled（bool）を置換する。
@@ -60,7 +62,9 @@ pub enum GiMode {
 }
 
 impl Default for GiMode {
-    fn default() -> Self { GiMode::Flat }
+    fn default() -> Self {
+        GiMode::Flat
+    }
 }
 
 /// 反射の方式。**実体は未実装**（フレームワークのみ）。
@@ -77,7 +81,9 @@ pub enum ReflectionMode {
 }
 
 impl Default for ReflectionMode {
-    fn default() -> Self { ReflectionMode::Off }
+    fn default() -> Self {
+        ReflectionMode::Off
+    }
 }
 
 /// AO の方式。既定 Off ＝追加 AO なし（マテリアル AO のみ）。
@@ -95,7 +101,9 @@ pub enum AoMode {
 }
 
 impl Default for AoMode {
-    fn default() -> Self { AoMode::Off }
+    fn default() -> Self {
+        AoMode::Off
+    }
 }
 
 /// 半透明の描画方式。既定 Raster ＝現行の WBOIT/距離ソート経路。
@@ -111,7 +119,9 @@ pub enum TranslucencyMode {
 }
 
 impl Default for TranslucencyMode {
-    fn default() -> Self { TranslucencyMode::Raster }
+    fn default() -> Self {
+        TranslucencyMode::Raster
+    }
 }
 
 // ============================================================
@@ -168,17 +178,17 @@ impl RenderFeatures {
             //   （反射・AO と同様に resolve は rt_supported しか受けないため deferred ゲートは持たない）。
             gi: match self.gi {
                 GiMode::Rt if rt_supported => GiMode::Rt,
-                GiMode::Rt                 => GiMode::Ssgi, // RT 非対応→SSGI 降格
-                GiMode::Ssgi               => GiMode::Ssgi,
-                GiMode::Flat               => GiMode::Flat,
+                GiMode::Rt => GiMode::Ssgi, // RT 非対応→SSGI 降格
+                GiMode::Ssgi => GiMode::Ssgi,
+                GiMode::Flat => GiMode::Flat,
             },
             // 反射: RT 対応時のみ Rt を通す。RT 非対応で Rt 要求時は SSR へ降格
             //   （SSR は GPU 非依存のため代替として常に使える）。Ssr は Ssr、Off は Off。
             reflection: match self.reflection {
                 ReflectionMode::Rt if rt_supported => ReflectionMode::Rt,
-                ReflectionMode::Rt                 => ReflectionMode::Ssr,
-                ReflectionMode::Ssr                => ReflectionMode::Ssr,
-                ReflectionMode::Off                => ReflectionMode::Off,
+                ReflectionMode::Rt => ReflectionMode::Ssr,
+                ReflectionMode::Ssr => ReflectionMode::Ssr,
+                ReflectionMode::Off => ReflectionMode::Off,
             },
             // AO: RT 対応時のみ Rt を通す。RT 非対応で Rt 要求時は SSAO へ降格
             //   （SSAO は GPU 非依存のため代替として常に使える）。Ssao は Ssao、Off は Off。
@@ -187,9 +197,9 @@ impl RenderFeatures {
             //   deferred ゲートは frame_renderer 側 reflection_effective で行っている）。
             ao: match self.ao {
                 AoMode::Rt if rt_supported => AoMode::Rt,
-                AoMode::Rt                 => AoMode::Ssao,  // RT 非対応→SSAO 降格
-                AoMode::Ssao               => AoMode::Ssao,
-                AoMode::Off                => AoMode::Off,
+                AoMode::Rt => AoMode::Ssao, // RT 非対応→SSAO 降格
+                AoMode::Ssao => AoMode::Ssao,
+                AoMode::Off => AoMode::Off,
             },
             // 半透明: RT 対応時のみ Rt を通す。RT 非対応で Rt 要求時は Raster へ降格。
             //   Rt = 高品質半透明（色付き影[RT]＋屈折[SS]）のパッケージ。色付き影は RT 前提
@@ -213,32 +223,47 @@ impl RenderFeatures {
     pub fn log_line(&self, rt_supported: bool) -> String {
         let r = self.resolve(rt_supported);
         // GI は実装済み（DDGI/SSGI/フラット）。RT 要求が RT 非対応で SSGI へ降格したときのみ注記する。
-        let gi_note    = if self.gi == GiMode::Rt && r.gi == GiMode::Ssgi {
+        let gi_note = if self.gi == GiMode::Rt && r.gi == GiMode::Ssgi {
             "(rt非対応→ssgi)"
-        } else { "" };
+        } else {
+            ""
+        };
         // 反射は実装済み（SSR/RT）。RT 要求が RT 非対応で SSR へ降格したときのみ注記する。
-        let refl_note  = if self.reflection == ReflectionMode::Rt && r.reflection == ReflectionMode::Ssr {
-            "(rt非対応→ssr)"
-        } else { "" };
+        let refl_note =
+            if self.reflection == ReflectionMode::Rt && r.reflection == ReflectionMode::Ssr {
+                "(rt非対応→ssr)"
+            } else {
+                ""
+            };
         // AO は実装済み（SSAO/RT）。RT 要求が RT 非対応で SSAO へ降格したときのみ注記する。
-        let ao_note    = if self.ao == AoMode::Rt && r.ao == AoMode::Ssao {
+        let ao_note = if self.ao == AoMode::Rt && r.ao == AoMode::Ssao {
             "(rt非対応→ssao)"
-        } else { "" };
+        } else {
+            ""
+        };
         // 半透明は実装済み（Rt = 色付き影[RT]＋屈折[SS]）。RT 非対応で Raster へ降格したときは
         // (rt非対応→raster) を付す。Rt が通っても影が RT でない（shadow!=rt）ときは、シャドウマップが
         // 二値で色を持てないため色付き影は不発＝屈折のみ有効になる旨を注記する。
-        let trans_note = if self.translucency == TranslucencyMode::Rt && r.translucency == TranslucencyMode::Raster {
+        let trans_note = if self.translucency == TranslucencyMode::Rt
+            && r.translucency == TranslucencyMode::Raster
+        {
             "(rt非対応→raster)"
         } else if r.translucency == TranslucencyMode::Rt && r.shadow != ShadowMode::Rt {
             "(影=rt時のみ色付き影/屈折のみ)"
-        } else { "" };
+        } else {
+            ""
+        };
         format!(
             "shadow={} gi={}{} reflection={}{} ao={}{} translucency={}{}",
             mode_str_shadow(r.shadow),
-            mode_str_gi(r.gi), gi_note,
-            mode_str_reflection(r.reflection), refl_note,
-            mode_str_ao(r.ao), ao_note,
-            mode_str_translucency(r.translucency), trans_note,
+            mode_str_gi(r.gi),
+            gi_note,
+            mode_str_reflection(r.reflection),
+            refl_note,
+            mode_str_ao(r.ao),
+            ao_note,
+            mode_str_translucency(r.translucency),
+            trans_note,
         )
     }
 }
@@ -266,10 +291,14 @@ pub struct ResolvedFeatures {
 
 impl ResolvedFeatures {
     /// この実効モードでインラインレイトレ影を使うか。
-    pub fn rt_shadow(&self) -> bool { self.shadow == ShadowMode::Rt }
+    pub fn rt_shadow(&self) -> bool {
+        self.shadow == ShadowMode::Rt
+    }
 
     /// この実効モードで DDGI（レイトレ GI）を使うか。
-    pub fn rt_gi(&self) -> bool { self.gi == GiMode::Rt }
+    pub fn rt_gi(&self) -> bool {
+        self.gi == GiMode::Rt
+    }
 
     /// TLAS（レイトレ加速構造）を構築する必要があるか。
     ///
@@ -287,19 +316,37 @@ impl ResolvedFeatures {
 
 // ─── ログ用の小文字文字列化（serde の表現と一致させる）──────────
 fn mode_str_shadow(m: ShadowMode) -> &'static str {
-    match m { ShadowMode::Rt => "rt", ShadowMode::ShadowMap => "shadowmap" }
+    match m {
+        ShadowMode::Rt => "rt",
+        ShadowMode::ShadowMap => "shadowmap",
+    }
 }
 fn mode_str_gi(m: GiMode) -> &'static str {
-    match m { GiMode::Rt => "rt", GiMode::Ssgi => "ssgi", GiMode::Flat => "flat" }
+    match m {
+        GiMode::Rt => "rt",
+        GiMode::Ssgi => "ssgi",
+        GiMode::Flat => "flat",
+    }
 }
 fn mode_str_reflection(m: ReflectionMode) -> &'static str {
-    match m { ReflectionMode::Rt => "rt", ReflectionMode::Ssr => "ssr", ReflectionMode::Off => "off" }
+    match m {
+        ReflectionMode::Rt => "rt",
+        ReflectionMode::Ssr => "ssr",
+        ReflectionMode::Off => "off",
+    }
 }
 fn mode_str_ao(m: AoMode) -> &'static str {
-    match m { AoMode::Rt => "rt", AoMode::Ssao => "ssao", AoMode::Off => "off" }
+    match m {
+        AoMode::Rt => "rt",
+        AoMode::Ssao => "ssao",
+        AoMode::Off => "off",
+    }
 }
 fn mode_str_translucency(m: TranslucencyMode) -> &'static str {
-    match m { TranslucencyMode::Rt => "rt", TranslucencyMode::Raster => "raster" }
+    match m {
+        TranslucencyMode::Rt => "rt",
+        TranslucencyMode::Raster => "raster",
+    }
 }
 
 // ============================================================
@@ -412,43 +459,83 @@ mod tests {
     /// 反射の降格表（Off/Ssr/Rt × rt対応/非対応 → 実効）。
     #[test]
     fn resolve_reflection_downgrade_table() {
-        let mk = |m: ReflectionMode| RenderFeatures { reflection: m, ..Default::default() };
+        let mk = |m: ReflectionMode| RenderFeatures {
+            reflection: m,
+            ..Default::default()
+        };
         // Off はどちらでも Off。
-        assert_eq!(mk(ReflectionMode::Off).resolve(false).reflection, ReflectionMode::Off);
-        assert_eq!(mk(ReflectionMode::Off).resolve(true).reflection,  ReflectionMode::Off);
+        assert_eq!(
+            mk(ReflectionMode::Off).resolve(false).reflection,
+            ReflectionMode::Off
+        );
+        assert_eq!(
+            mk(ReflectionMode::Off).resolve(true).reflection,
+            ReflectionMode::Off
+        );
         // Ssr は GPU 非依存で常に Ssr。
-        assert_eq!(mk(ReflectionMode::Ssr).resolve(false).reflection, ReflectionMode::Ssr);
-        assert_eq!(mk(ReflectionMode::Ssr).resolve(true).reflection,  ReflectionMode::Ssr);
+        assert_eq!(
+            mk(ReflectionMode::Ssr).resolve(false).reflection,
+            ReflectionMode::Ssr
+        );
+        assert_eq!(
+            mk(ReflectionMode::Ssr).resolve(true).reflection,
+            ReflectionMode::Ssr
+        );
         // Rt は対応時 Rt / 非対応時 Ssr へ降格。
-        assert_eq!(mk(ReflectionMode::Rt).resolve(false).reflection,  ReflectionMode::Ssr);
-        assert_eq!(mk(ReflectionMode::Rt).resolve(true).reflection,   ReflectionMode::Rt);
+        assert_eq!(
+            mk(ReflectionMode::Rt).resolve(false).reflection,
+            ReflectionMode::Ssr
+        );
+        assert_eq!(
+            mk(ReflectionMode::Rt).resolve(true).reflection,
+            ReflectionMode::Rt
+        );
         // Ssr は TLAS 不要・Rt のみ TLAS 要求。
         assert!(!mk(ReflectionMode::Ssr).resolve(true).needs_tlas());
         assert!(mk(ReflectionMode::Rt).resolve(true).needs_tlas());
         // log_line: Rt 非対応降格時のみ注記、それ以外は素の実効値。
-        assert!(mk(ReflectionMode::Rt).log_line(false).contains("reflection=ssr(rt非対応→ssr)"));
-        assert!(mk(ReflectionMode::Rt).log_line(true).contains("reflection=rt"));
-        assert!(!mk(ReflectionMode::Ssr).log_line(true).contains("(rt非対応→ssr)"));
+        assert!(
+            mk(ReflectionMode::Rt)
+                .log_line(false)
+                .contains("reflection=ssr(rt非対応→ssr)")
+        );
+        assert!(
+            mk(ReflectionMode::Rt)
+                .log_line(true)
+                .contains("reflection=rt")
+        );
+        assert!(
+            !mk(ReflectionMode::Ssr)
+                .log_line(true)
+                .contains("(rt非対応→ssr)")
+        );
     }
 
     /// AO の降格表（Off/Ssao/Rt × rt対応/非対応 → 実効）。反射の手本と同型。
     #[test]
     fn resolve_ao_downgrade_table() {
-        let mk = |m: AoMode| RenderFeatures { ao: m, ..Default::default() };
+        let mk = |m: AoMode| RenderFeatures {
+            ao: m,
+            ..Default::default()
+        };
         // Off はどちらでも Off。
         assert_eq!(mk(AoMode::Off).resolve(false).ao, AoMode::Off);
-        assert_eq!(mk(AoMode::Off).resolve(true).ao,  AoMode::Off);
+        assert_eq!(mk(AoMode::Off).resolve(true).ao, AoMode::Off);
         // Ssao は GPU 非依存で常に Ssao。
         assert_eq!(mk(AoMode::Ssao).resolve(false).ao, AoMode::Ssao);
-        assert_eq!(mk(AoMode::Ssao).resolve(true).ao,  AoMode::Ssao);
+        assert_eq!(mk(AoMode::Ssao).resolve(true).ao, AoMode::Ssao);
         // Rt は対応時 Rt / 非対応時 Ssao へ降格。
-        assert_eq!(mk(AoMode::Rt).resolve(false).ao,  AoMode::Ssao);
-        assert_eq!(mk(AoMode::Rt).resolve(true).ao,   AoMode::Rt);
+        assert_eq!(mk(AoMode::Rt).resolve(false).ao, AoMode::Ssao);
+        assert_eq!(mk(AoMode::Rt).resolve(true).ao, AoMode::Rt);
         // Ssao は TLAS 不要・Rt のみ TLAS 要求。
         assert!(!mk(AoMode::Ssao).resolve(true).needs_tlas());
         assert!(mk(AoMode::Rt).resolve(true).needs_tlas());
         // log_line: Rt 非対応降格時のみ注記、それ以外は素の実効値。
-        assert!(mk(AoMode::Rt).log_line(false).contains("ao=ssao(rt非対応→ssao)"));
+        assert!(
+            mk(AoMode::Rt)
+                .log_line(false)
+                .contains("ao=ssao(rt非対応→ssao)")
+        );
         assert!(mk(AoMode::Rt).log_line(true).contains("ao=rt"));
         assert!(!mk(AoMode::Ssao).log_line(true).contains("(rt非対応→ssao)"));
     }
@@ -456,21 +543,28 @@ mod tests {
     /// GI の降格表（Flat/Ssgi/Rt × rt対応/非対応 → 実効）。反射・AO の手本と同型。
     #[test]
     fn resolve_gi_downgrade_table() {
-        let mk = |m: GiMode| RenderFeatures { gi: m, ..Default::default() };
+        let mk = |m: GiMode| RenderFeatures {
+            gi: m,
+            ..Default::default()
+        };
         // Flat はどちらでも Flat。
         assert_eq!(mk(GiMode::Flat).resolve(false).gi, GiMode::Flat);
-        assert_eq!(mk(GiMode::Flat).resolve(true).gi,  GiMode::Flat);
+        assert_eq!(mk(GiMode::Flat).resolve(true).gi, GiMode::Flat);
         // Ssgi は GPU 非依存で常に Ssgi（deferred ゲートは frame_renderer 側）。
         assert_eq!(mk(GiMode::Ssgi).resolve(false).gi, GiMode::Ssgi);
-        assert_eq!(mk(GiMode::Ssgi).resolve(true).gi,  GiMode::Ssgi);
+        assert_eq!(mk(GiMode::Ssgi).resolve(true).gi, GiMode::Ssgi);
         // Rt は対応時 Rt / 非対応時 Ssgi へ降格。
-        assert_eq!(mk(GiMode::Rt).resolve(false).gi,  GiMode::Ssgi);
-        assert_eq!(mk(GiMode::Rt).resolve(true).gi,   GiMode::Rt);
+        assert_eq!(mk(GiMode::Rt).resolve(false).gi, GiMode::Ssgi);
+        assert_eq!(mk(GiMode::Rt).resolve(true).gi, GiMode::Rt);
         // Ssgi は TLAS 不要・Rt のみ TLAS 要求。
         assert!(!mk(GiMode::Ssgi).resolve(true).needs_tlas());
         assert!(mk(GiMode::Rt).resolve(true).needs_tlas());
         // log_line: Rt 非対応降格時のみ注記、それ以外は素の実効値。
-        assert!(mk(GiMode::Rt).log_line(false).contains("gi=ssgi(rt非対応→ssgi)"));
+        assert!(
+            mk(GiMode::Rt)
+                .log_line(false)
+                .contains("gi=ssgi(rt非対応→ssgi)")
+        );
         assert!(mk(GiMode::Rt).log_line(true).contains("gi=rt"));
         assert!(!mk(GiMode::Ssgi).log_line(true).contains("(rt非対応→ssgi)"));
     }
@@ -500,19 +594,42 @@ mod tests {
     /// 半透明の降格表（Raster/Rt × rt対応/非対応 → 実効）。反射・AO・GI の手本と同型。
     #[test]
     fn resolve_translucency_downgrade_table() {
-        let mk = |m: TranslucencyMode| RenderFeatures { translucency: m, ..Default::default() };
+        let mk = |m: TranslucencyMode| RenderFeatures {
+            translucency: m,
+            ..Default::default()
+        };
         // Raster はどちらでも Raster。
-        assert_eq!(mk(TranslucencyMode::Raster).resolve(false).translucency, TranslucencyMode::Raster);
-        assert_eq!(mk(TranslucencyMode::Raster).resolve(true).translucency,  TranslucencyMode::Raster);
+        assert_eq!(
+            mk(TranslucencyMode::Raster).resolve(false).translucency,
+            TranslucencyMode::Raster
+        );
+        assert_eq!(
+            mk(TranslucencyMode::Raster).resolve(true).translucency,
+            TranslucencyMode::Raster
+        );
         // Rt は対応時 Rt / 非対応時 Raster へ降格（色付き影が RT 前提のため）。
-        assert_eq!(mk(TranslucencyMode::Rt).resolve(false).translucency, TranslucencyMode::Raster);
-        assert_eq!(mk(TranslucencyMode::Rt).resolve(true).translucency,  TranslucencyMode::Rt);
+        assert_eq!(
+            mk(TranslucencyMode::Rt).resolve(false).translucency,
+            TranslucencyMode::Raster
+        );
+        assert_eq!(
+            mk(TranslucencyMode::Rt).resolve(true).translucency,
+            TranslucencyMode::Rt
+        );
         // Raster は TLAS 不要・Rt のみ TLAS 要求。
         assert!(!mk(TranslucencyMode::Raster).resolve(true).needs_tlas());
         assert!(mk(TranslucencyMode::Rt).resolve(true).needs_tlas());
         // log_line: Rt 非対応降格時は (rt非対応→raster)。対応時は素の translucency=rt を含む
         //   （既定 shadow=shadowmap なので色付き影は不発＝屈折のみ注記が付くが translucency=rt は部分一致する）。
-        assert!(mk(TranslucencyMode::Rt).log_line(false).contains("translucency=raster(rt非対応→raster)"));
-        assert!(mk(TranslucencyMode::Rt).log_line(true).contains("translucency=rt"));
+        assert!(
+            mk(TranslucencyMode::Rt)
+                .log_line(false)
+                .contains("translucency=raster(rt非対応→raster)")
+        );
+        assert!(
+            mk(TranslucencyMode::Rt)
+                .log_line(true)
+                .contains("translucency=rt")
+        );
     }
 }

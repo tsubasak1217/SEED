@@ -17,15 +17,19 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::ecs::Component;
 use crate::engine::animation::AnimationClip;
+use crate::engine::ecs::Component;
 
 // ─── デフォルト値関数 ─────────────────────────────────────────
 
 /// speed の既定値（等倍）。
-fn default_speed() -> f32 { 1.0 }
+fn default_speed() -> f32 {
+    1.0
+}
 /// play_on_start の既定値（true = Play 開始時に自動再生）。
-fn default_play_on_start() -> bool { true }
+fn default_play_on_start() -> bool {
+    true
+}
 
 // ─── AnimClipKind / AnimClipLoop ─────────────────────────────
 
@@ -47,7 +51,9 @@ pub enum AnimClipKind {
 
 impl Default for AnimClipKind {
     /// kind 省略時の既定は keyframe（旧シーン後方互換）。
-    fn default() -> Self { AnimClipKind::Keyframe }
+    fn default() -> Self {
+        AnimClipKind::Keyframe
+    }
 }
 
 /// Model クリップのループ種別。
@@ -65,7 +71,9 @@ pub enum AnimClipLoop {
 
 impl Default for AnimClipLoop {
     /// loop_mode 省略時の既定は loop（Model アニメは繰り返し再生が自然）。
-    fn default() -> Self { AnimClipLoop::Loop }
+    fn default() -> Self {
+        AnimClipLoop::Loop
+    }
 }
 
 // ─── AnimClipRef ─────────────────────────────────────────────
@@ -117,10 +125,10 @@ pub struct AnimatorComponentData {
 impl Default for AnimatorComponentData {
     fn default() -> Self {
         Self {
-            clips:         Vec::new(),
-            default_clip:  String::new(),
+            clips: Vec::new(),
+            default_clip: String::new(),
             play_on_start: default_play_on_start(),
-            speed:         default_speed(),
+            speed: default_speed(),
         }
     }
 }
@@ -159,31 +167,33 @@ impl AnimatorComponent {
     /// シリアライズ用データからコンポーネントを構築する。
     pub fn from_data(data: AnimatorComponentData) -> Self {
         Self {
-            clips:         data.clips,
-            default_clip:  data.default_clip,
+            clips: data.clips,
+            default_clip: data.default_clip,
             play_on_start: data.play_on_start,
-            speed:         data.speed,
-            current_clip:  None,
-            time:          0.0,
-            playing:       false,
-            initialized:   false,
-            cache:         HashMap::new(),
+            speed: data.speed,
+            current_clip: None,
+            time: 0.0,
+            playing: false,
+            initialized: false,
+            cache: HashMap::new(),
         }
     }
 
     /// シリアライズ用データへ変換する（揮発状態は保存しない）。
     pub fn to_data(&self) -> AnimatorComponentData {
         AnimatorComponentData {
-            clips:         self.clips.clone(),
-            default_clip:  self.default_clip.clone(),
+            clips: self.clips.clone(),
+            default_clip: self.default_clip.clone(),
             play_on_start: self.play_on_start,
-            speed:         self.speed,
+            speed: self.speed,
         }
     }
 }
 
 impl Default for AnimatorComponent {
-    fn default() -> Self { Self::from_data(AnimatorComponentData::default()) }
+    fn default() -> Self {
+        Self::from_data(AnimatorComponentData::default())
+    }
 }
 
 impl Component for AnimatorComponent {}

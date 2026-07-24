@@ -21,9 +21,9 @@
 //  - every_frame=true はキャッシュを毎フレーム焼き直す（既定 false = 1 回焼いてキャッシュ）。
 // ============================================================
 
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use serde::Deserialize;
 
 // ─── デフォルト値関数（マジックナンバー禁止のため名前付き）─────────────
 
@@ -32,7 +32,9 @@ pub const DEFAULT_BLUR_RADIUS: f32 = 4.0;
 /// vignette 強度の既定。
 pub const DEFAULT_VIGNETTE_STRENGTH: f32 = 0.5;
 /// tint 色の既定（恒等＝白）。
-fn def_white4() -> [f32; 4] { [1.0, 1.0, 1.0, 1.0] }
+fn def_white4() -> [f32; 4] {
+    [1.0, 1.0, 1.0, 1.0]
+}
 
 // ============================================================
 //  PostfxEffect — 個々のエフェクト（解決済み）
@@ -89,19 +91,31 @@ impl PostfxAsset {
             let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
             match ty.to_ascii_lowercase().as_str() {
                 "blur" => {
-                    let radius = v.get("radius").and_then(|x| x.as_f64())
-                        .map(|x| x as f32).unwrap_or(DEFAULT_BLUR_RADIUS);
-                    effects.push(PostfxEffect::Blur { radius: radius.max(0.0) });
+                    let radius = v
+                        .get("radius")
+                        .and_then(|x| x.as_f64())
+                        .map(|x| x as f32)
+                        .unwrap_or(DEFAULT_BLUR_RADIUS);
+                    effects.push(PostfxEffect::Blur {
+                        radius: radius.max(0.0),
+                    });
                 }
                 "vignette" => {
-                    let strength = v.get("strength").and_then(|x| x.as_f64())
-                        .map(|x| x as f32).unwrap_or(DEFAULT_VIGNETTE_STRENGTH);
-                    let mask = v.get("mask").and_then(|x| x.as_str())
-                        .unwrap_or("").to_string();
+                    let strength = v
+                        .get("strength")
+                        .and_then(|x| x.as_f64())
+                        .map(|x| x as f32)
+                        .unwrap_or(DEFAULT_VIGNETTE_STRENGTH);
+                    let mask = v
+                        .get("mask")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     effects.push(PostfxEffect::Vignette { strength, mask });
                 }
                 "tint" => {
-                    let color = v.get("color")
+                    let color = v
+                        .get("color")
                         .and_then(|c| serde_json::from_value::<[f32; 4]>(c.clone()).ok())
                         .unwrap_or_else(def_white4);
                     effects.push(PostfxEffect::Tint { color });
@@ -111,7 +125,10 @@ impl PostfxAsset {
                 }
             }
         }
-        Ok(Self { every_frame: raw.every_frame, effects })
+        Ok(Self {
+            every_frame: raw.every_frame,
+            effects,
+        })
     }
 }
 
@@ -153,14 +170,14 @@ pub fn load(path: &str) -> Option<Arc<PostfxAsset>> {
     }
 
     let text = match crate::engine::asset_fs::read_string(path) {
-        Ok(t)  => t,
+        Ok(t) => t,
         Err(e) => {
             eprintln!("[SEED postfx] .postfx 読み込み失敗: path={path:?} err={e}");
             return None;
         }
     };
     let asset = match PostfxAsset::from_json(&text) {
-        Ok(a)  => a,
+        Ok(a) => a,
         Err(e) => {
             eprintln!("[SEED postfx] .postfx パース失敗: path={path:?} err={e}");
             return None;

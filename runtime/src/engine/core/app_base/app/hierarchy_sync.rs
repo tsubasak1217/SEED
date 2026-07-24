@@ -9,20 +9,19 @@ use crate::engine::components::ModelComponent;
 use crate::engine::structs::tensor::Mat4x4;
 use crate::engine::structs::transforms::Quaternion;
 
-use super::{App, collect_actor_nodes, build_hierarchy_json};
+use super::{App, build_hierarchy_json, collect_actor_nodes};
 
 impl App {
     /// ヒエラルキーを JSON にシリアライズしてエディタへ送信する（実装本体）。
     pub(super) fn do_send_hierarchy(&self) {
-        let Some(ipc)   = &self.ipc   else { return };
+        let Some(ipc) = &self.ipc else { return };
         let Some(scene) = &self.scene else { return };
 
         let wl = self.active_world_line;
-        let roots: Vec<_> = scene.actors.iter()
-            .filter(|a| a.world_line == wl)
-            .collect();
+        let roots: Vec<_> = scene.actors.iter().filter(|a| a.world_line == wl).collect();
 
-        let mut nodes: Vec<(u32, String, Option<u32>, bool, bool, bool, bool, bool, bool)> = Vec::new();
+        let mut nodes: Vec<(u32, String, Option<u32>, bool, bool, bool, bool, bool, bool)> =
+            Vec::new();
         let mut counter = 0u32;
         for root in &roots {
             // is_vp（ビューポート所属）はトップレベルルートが Actor2D かで決まり、
@@ -51,14 +50,19 @@ impl App {
 
     /// アクターデータを JSON でエディタへ送信する。
     pub(super) fn send_actor_data(&self, idx: u32) {
-        let Some(ipc)   = &self.ipc   else { return };
+        let Some(ipc) = &self.ipc else { return };
         let Some(scene) = &self.scene else { return };
 
         // 仮想アクターノード（ModelComponent なし）のケース
         if self.active_world_line != 0 && idx >= 999_000_000 {
             let actor_idx = (idx - 999_000_000) as usize;
             let wl = self.active_world_line;
-            if let Some(actor) = scene.actors.iter().filter(|a| a.world_line == wl).nth(actor_idx) {
+            if let Some(actor) = scene
+                .actors
+                .iter()
+                .filter(|a| a.world_line == wl)
+                .nth(actor_idx)
+            {
                 let name = serde_json::to_string(&actor.name).unwrap_or_default();
                 let json = format!(
                     r#"{{"id":{idx},"name":{name},"transform":{{"px":0.0,"py":0.0,"pz":0.0,"ex":0.0,"ey":0.0,"ez":0.0,"sx":1.0,"sy":1.0,"sz":1.0}},"model_path":null}}"#
@@ -68,37 +72,57 @@ impl App {
             return;
         }
 
-        let Some(mc) = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line) else { return };
+        let Some(mc) = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line)
+        else {
+            return;
+        };
 
         let i = idx as usize;
-        if i >= mc.instance_mats.len() { return; }
+        if i >= mc.instance_mats.len() {
+            return;
+        }
 
-        let mat  = mc.instance_mats[i];
+        let mat = mc.instance_mats[i];
         let meta = &mc.instance_meta[i];
 
         // 位置: 第 4 列
         let (px, py, pz) = (mat[0][3], mat[1][3], mat[2][3]);
 
         // スケール: 各列ベクトルの長さ
-        let scale_x = (mat[0][0]*mat[0][0] + mat[1][0]*mat[1][0] + mat[2][0]*mat[2][0]).sqrt();
-        let scale_y = (mat[0][1]*mat[0][1] + mat[1][1]*mat[1][1] + mat[2][1]*mat[2][1]).sqrt();
-        let scale_z = (mat[0][2]*mat[0][2] + mat[1][2]*mat[1][2] + mat[2][2]*mat[2][2]).sqrt();
+        let scale_x =
+            (mat[0][0] * mat[0][0] + mat[1][0] * mat[1][0] + mat[2][0] * mat[2][0]).sqrt();
+        let scale_y =
+            (mat[0][1] * mat[0][1] + mat[1][1] * mat[1][1] + mat[2][1] * mat[2][1]).sqrt();
+        let scale_z =
+            (mat[0][2] * mat[0][2] + mat[1][2] * mat[1][2] + mat[2][2] * mat[2][2]).sqrt();
 
         // 正規化された純回転行列を構築し Shepperd 法でクォータニオン → YXZ オイラー角
         let inv_x = if scale_x > 1e-10 { 1.0 / scale_x } else { 0.0 };
         let inv_y = if scale_y > 1e-10 { 1.0 / scale_y } else { 0.0 };
         let inv_z = if scale_z > 1e-10 { 1.0 / scale_z } else { 0.0 };
         let rot_mat = Mat4x4::new(
-            mat[0][0]*inv_x, mat[0][1]*inv_y, mat[0][2]*inv_z, 0.0,
-            mat[1][0]*inv_x, mat[1][1]*inv_y, mat[1][2]*inv_z, 0.0,
-            mat[2][0]*inv_x, mat[2][1]*inv_y, mat[2][2]*inv_z, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            mat[0][0] * inv_x,
+            mat[0][1] * inv_y,
+            mat[0][2] * inv_z,
+            0.0,
+            mat[1][0] * inv_x,
+            mat[1][1] * inv_y,
+            mat[1][2] * inv_z,
+            0.0,
+            mat[2][0] * inv_x,
+            mat[2][1] * inv_y,
+            mat[2][2] * inv_z,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
         );
-        let euler  = Quaternion::from_matrix(&rot_mat).to_euler();
+        let euler = Quaternion::from_matrix(&rot_mat).to_euler();
         const DEG: f32 = 180.0 / std::f32::consts::PI;
         let (ex, ey, ez) = (euler.x * DEG, euler.y * DEG, euler.z * DEG);
 
-        let name       = serde_json::to_string(&meta.name).unwrap_or_default();
+        let name = serde_json::to_string(&meta.name).unwrap_or_default();
         let model_path = serde_json::to_string(&mc.source_path).unwrap_or_default();
 
         let json = format!(
@@ -111,15 +135,27 @@ impl App {
     pub(super) fn send_world_line_info(&self) {
         let Some(ipc) = &self.ipc else { return };
         let wl = self.active_world_line;
-        let actor_name = self.scene.as_ref()
+        let actor_name = self
+            .scene
+            .as_ref()
             .and_then(|s| s.actors.iter().find(|a| a.world_line == wl))
             .map(|a| a.name.clone())
-            .unwrap_or_else(|| if wl == 0 { "Scene".to_string() } else { "<none>".to_string() });
-        let inst_count = self.scene.as_ref()
+            .unwrap_or_else(|| {
+                if wl == 0 {
+                    "Scene".to_string()
+                } else {
+                    "<none>".to_string()
+                }
+            });
+        let inst_count = self
+            .scene
+            .as_ref()
             .and_then(|s| s.find_component_in_world_line::<ModelComponent>(wl))
             .map(|mc| mc.instance_mats.len())
             .unwrap_or(0);
-        ipc.send(&format!("WORLD_LINE_INFO:WL:{wl} | Actor:{actor_name} | Instances:{inst_count}"));
+        ipc.send(&format!(
+            "WORLD_LINE_INFO:WL:{wl} | Actor:{actor_name} | Instances:{inst_count}"
+        ));
     }
 
     /// 現在の選択インスタンスをエディタへ通知する。
@@ -127,9 +163,12 @@ impl App {
         let Some(ipc) = &self.ipc else { return };
         // マルチ選択: selected_actor_dfs_ids が 2 件以上の場合は SELECTED_MULTI で全仮想 ID を送る
         if self.selected_actor_dfs_ids.len() > 1 {
-            let ids = self.selected_actor_dfs_ids.iter()
+            let ids = self
+                .selected_actor_dfs_ids
+                .iter()
                 .map(|&dfs| (999_000_000u64 + dfs as u64).to_string())
-                .collect::<Vec<_>>().join(",");
+                .collect::<Vec<_>>()
+                .join(",");
             ipc.send(&format!("SELECTED_MULTI:{ids}"));
             return;
         }

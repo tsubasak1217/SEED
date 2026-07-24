@@ -11,9 +11,9 @@
 //  エディタへ送信する。
 // ============================================================
 
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
 use crate::engine::ecs::storage::Component;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 // ============================================================
 //  PluginComponent
@@ -35,7 +35,10 @@ pub struct PluginComponent {
 impl PluginComponent {
     /// 指定プラグイン名で空のコンポーネントを生成する。
     pub fn new(plugin_name: impl Into<String>) -> Self {
-        Self { plugin_name: plugin_name.into(), fields: HashMap::new() }
+        Self {
+            plugin_name: plugin_name.into(),
+            fields: HashMap::new(),
+        }
     }
 
     /// フィールド値を取得する。未設定の場合は提供されたデフォルト値を返す。

@@ -39,9 +39,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::deferred::DeferredLightingPipelines;
 use super::imos_blur::IMOS_BLUR_FORMAT;
-use super::shadow_mask_bilateral::ShadowMaskBilateral;
 use super::lighting::GpuLight;
 use super::pipeline::get_shader_source;
+use super::shadow_mask_bilateral::ShadowMaskBilateral;
 
 // ─── 定数 ────────────────────────────────────────────────────
 
@@ -90,10 +90,10 @@ pub struct ShadowMaskParams {
     /// スロット 0..3 が評価するライトの u_lights グローバルインデックス（count 未満のみ有効）。
     pub indices: [u32; 4],
     /// 選定されたソフト影ライト数（0..RT_SHADOW_MASK_LIGHTS）。
-    pub count:   u32,
-    pub _pad0:   u32,
-    pub _pad1:   u32,
-    pub _pad2:   u32,
+    pub count: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+    pub _pad2: u32,
 }
 
 impl ShadowMaskParams {
@@ -102,7 +102,13 @@ impl ShadowMaskParams {
         let mut indices = [0u32; RT_SHADOW_MASK_LIGHTS as usize];
         let count = selection.len().min(RT_SHADOW_MASK_LIGHTS as usize);
         indices[..count].copy_from_slice(&selection[..count]);
-        Self { indices, count: count as u32, _pad0: 0, _pad1: 0, _pad2: 0 }
+        Self {
+            indices,
+            count: count as u32,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
+        }
     }
 }
 
@@ -115,21 +121,22 @@ impl ShadowMaskParams {
 /// この経路は色付き tint を中心決定的評価へ縮退させるため色斑点ノイズは出ないが、tint のペナンブラ勾配は
 /// マスク経路より劣る（初回のみ超過警告を出す）。ハード影（soft_radius=0）は対象外（元々ノイズが無い）。
 pub fn select_shadow_mask_lights(lights: &[GpuLight]) -> Vec<u32> {
-    let mut cand: Vec<u32> = lights.iter().enumerate()
+    let mut cand: Vec<u32> = lights
+        .iter()
+        .enumerate()
         .filter(|(_, l)| l.soft_radius > 0.0)
         .map(|(i, _)| i as u32)
         .collect();
     // intensity 降順。sort_by は安定ソートなので同 intensity は元の並び順を保つ。
     cand.sort_by(|&a, &b| {
-        lights[b as usize].intensity
+        lights[b as usize]
+            .intensity
             .partial_cmp(&lights[a as usize].intensity)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let total = cand.len();
     cand.truncate(RT_SHADOW_MASK_LIGHTS as usize);
-    if total > RT_SHADOW_MASK_LIGHTS as usize
-        && !OVERFLOW_WARNED.swap(true, Ordering::Relaxed)
-    {
+    if total > RT_SHADOW_MASK_LIGHTS as usize && !OVERFLOW_WARNED.swap(true, Ordering::Relaxed) {
         eprintln!(
             "[SEED RT] ソフト影ライトが {total} 灯あり、RT シャドウマスク上限 {} を超過しました。\
              intensity 上位 {} 灯のみデノイズマスク経路（滑らかな半影）になり、残りは従来の\
@@ -157,17 +164,17 @@ pub fn assign_shadow_mask_slots(lights: &mut [GpuLight]) -> Vec<u32> {
 pub struct ShadowMaskPipelines {
     /// マスク生成パイプライン（RAY_QUERY 必須・4 カラーターゲット MRT。各 .rgb=透過率／.a=深度同梱）。
     /// 従来（平均アルベド）経路。非バインドレス GPU／縮退時に使う。
-    pub mask:          wgpu::RenderPipeline,
+    pub mask: wgpu::RenderPipeline,
     /// バインドレス色付き影バリアント（B3。RT 対応 かつ バインドレス対応 GPU でのみ Some）。
     /// group3 に色付き影のバインドレス資源を bind し、ヒット点テクスチャ実サンプル＋Mask アルファ抜きで
     /// マスク .rgb（透過率）を染める。frame_renderer が bindless 対応時にこちらを使う。
     pub mask_bindless: Option<wgpu::RenderPipeline>,
     /// group2: ShadowMaskParams のレイアウト。
-    pub params_bgl:    wgpu::BindGroupLayout,
+    pub params_bgl: wgpu::BindGroupLayout,
     /// ShadowMaskParams UBO（毎フレーム選定インデックスを書き込む）。
     pub params_buffer: wgpu::Buffer,
     /// 影マスク専用 separable バイラテラルブラー基盤（深度エッジ保持。各レイヤ mask_raw→mask_a→mask_b）。
-    pub bilateral:     ShadowMaskBilateral,
+    pub bilateral: ShadowMaskBilateral,
 }
 
 impl ShadowMaskPipelines {
@@ -176,19 +183,21 @@ impl ShadowMaskPipelines {
     /// - `deferred`      : group0/1/3（camera/gbuffer/gap）の BGL を借用する（等価性担保）。
     /// - `rt_lights_bgl` : group4（ライト＋シャドウ＋TLAS＋平均アルベド複合）。RtMeshPipelines.lights_bgl。
     pub fn new(
-        device:        &wgpu::Device,
-        deferred:      &DeferredLightingPipelines,
+        device: &wgpu::Device,
+        deferred: &DeferredLightingPipelines,
         rt_lights_bgl: &wgpu::BindGroupLayout,
-        cache:         Option<&wgpu::PipelineCache>,
+        cache: Option<&wgpu::PipelineCache>,
     ) -> Self {
         // group2: ShadowMaskParams uniform（binding0）。
         let params_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shadow Mask Params BGL (group2)"),
             entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false, min_binding_size: None,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
                 },
                 count: None,
             }],
@@ -198,46 +207,64 @@ impl ShadowMaskPipelines {
         // 各レイヤの .rgb=透過率, .a=half-res ビュー空間深度（バイラテラルブラーの深度ガイド）を同梱する
         //（別 R32Float アタッチメントは 32B+4B=36B で max_color_attachment_bytes_per_sample=32 超過のため不可）。
         let color_target = wgpu::ColorTargetState {
-            format: SHADOW_MASK_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL,
+            format: SHADOW_MASK_FORMAT,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
         };
         let targets = [
-            Some(color_target.clone()), Some(color_target.clone()),
-            Some(color_target.clone()), Some(color_target),
+            Some(color_target.clone()),
+            Some(color_target.clone()),
+            Some(color_target.clone()),
+            Some(color_target),
         ];
 
         // マスク生成パイプラインを 1 本組むヘルパー（連結ソース＋group3 BGL を差し替えて 2 変種を作る）。
         // group レイアウト: [camera, gbuffer, params, group3, lights+TLAS]。
         //   avg      : group3 = deferred の空 gap（描画時 empty_bg3）。
         //   bindless : group3 = 色付き影バインドレス BGL（描画時 create_colored_shadow_bind_group）。
-        let build_mask = |label: &str, sources: &[&str], group3_bgl: &wgpu::BindGroupLayout| -> wgpu::RenderPipeline {
-            let combined: String = sources.iter().map(|n| get_shader_source(n)).collect::<Vec<_>>().join("\n");
+        let build_mask = |label: &str,
+                          sources: &[&str],
+                          group3_bgl: &wgpu::BindGroupLayout|
+         -> wgpu::RenderPipeline {
+            let combined: String = sources
+                .iter()
+                .map(|n| get_shader_source(n))
+                .collect::<Vec<_>>()
+                .join("\n");
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label:  Some(label),
+                label: Some(label),
                 source: wgpu::ShaderSource::Wgsl(combined.into()),
             });
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
                 bind_group_layouts: &[
-                    &deferred.camera_bgl, &deferred.gbuffer_bgl, &params_bgl,
-                    group3_bgl, rt_lights_bgl,
+                    &deferred.camera_bgl,
+                    &deferred.gbuffer_bgl,
+                    &params_bgl,
+                    group3_bgl,
+                    rt_lights_bgl,
                 ],
                 push_constant_ranges: &[],
             });
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label:  Some(label),
+                label: Some(label),
                 layout: Some(&layout),
                 vertex: wgpu::VertexState {
-                    module: &shader, entry_point: Some("vs_fullscreen"),
-                    buffers: &[], compilation_options: Default::default(),
+                    module: &shader,
+                    entry_point: Some("vs_fullscreen"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader, entry_point: Some("fs_mask"),
-                    targets: &targets, compilation_options: Default::default(),
+                    module: &shader,
+                    entry_point: Some("fs_mask"),
+                    targets: &targets,
+                    compilation_options: Default::default(),
                 }),
-                primitive:     wgpu::PrimitiveState::default(),
+                primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
-                multisample:   wgpu::MultisampleState::default(),
-                multiview:     None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
                 cache,
             })
         };
@@ -246,8 +273,14 @@ impl ShadowMaskPipelines {
         // group3 は deferred の空 gap（描画時 empty_bg3）。
         let mask = build_mask(
             "shadow_mask",
-            &["cluster_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl",
-              "rt_shadow_on.wgsl", "rt_shadow_tint_avg.wgsl", "shadow_mask.wgsl"],
+            &[
+                "cluster_common.wgsl",
+                "ddgi_common.wgsl",
+                "light_common.wgsl",
+                "rt_shadow_on.wgsl",
+                "rt_shadow_tint_avg.wgsl",
+                "shadow_mask.wgsl",
+            ],
             &deferred.gap_bgl3,
         );
 
@@ -257,26 +290,43 @@ impl ShadowMaskPipelines {
         let mask_bindless = deferred.colored_shadow_bgl.as_ref().map(|cs_bgl| {
             build_mask(
                 "shadow_mask_bindless",
-                &["cluster_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl",
-                  "rt_shadow_on.wgsl", "bindless_common.wgsl", "rt_shadow_tint_bindless.wgsl", "shadow_mask.wgsl"],
+                &[
+                    "cluster_common.wgsl",
+                    "ddgi_common.wgsl",
+                    "light_common.wgsl",
+                    "rt_shadow_on.wgsl",
+                    "bindless_common.wgsl",
+                    "rt_shadow_tint_bindless.wgsl",
+                    "shadow_mask.wgsl",
+                ],
                 cs_bgl,
             )
         });
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Shadow Mask Params UBO"),
-            size:  std::mem::size_of::<ShadowMaskParams>() as u64,
+            size: std::mem::size_of::<ShadowMaskParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let bilateral = ShadowMaskBilateral::new(device, cache);
 
-        Self { mask, mask_bindless, params_bgl, params_buffer, bilateral }
+        Self {
+            mask,
+            mask_bindless,
+            params_bgl,
+            params_buffer,
+            bilateral,
+        }
     }
 
     /// 選定インデックス列（スロット順）を ShadowMaskParams UBO へ書き込む（毎フレーム パス直前）。
     pub fn write_params(&self, queue: &wgpu::Queue, selection: &[u32]) {
-        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&ShadowMaskParams::new(selection)));
+        queue.write_buffer(
+            &self.params_buffer,
+            0,
+            bytemuck::bytes_of(&ShadowMaskParams::new(selection)),
+        );
     }
 
     /// group2（ShadowMaskParams）の BindGroup を生成する。
@@ -285,7 +335,8 @@ impl ShadowMaskPipelines {
             label: Some("Shadow Mask Params BG"),
             layout: &self.params_bgl,
             entries: &[wgpu::BindGroupEntry {
-                binding: 0, resource: self.params_buffer.as_entire_binding(),
+                binding: 0,
+                resource: self.params_buffer.as_entire_binding(),
             }],
         })
     }
@@ -294,12 +345,21 @@ impl ShadowMaskPipelines {
     /// 結果は必ず mask_b。深度ガイドは各レイヤ自身の .a（マスク生成時に同梱した half-res ビュー空間 z）を
     /// 読み、深度エッジを跨ぐ影値の混合（＝カーテンのフチのハロー）を断つ。texture_2d_array に対し
     /// レイヤごとの 2D ビューで RT_SHADOW_MASK_LIGHTS 回掛ける（バイラテラルは単層 2D 前提のため）。
-    pub fn blur(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, targets: &ShadowMaskTargets) {
+    pub fn blur(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        targets: &ShadowMaskTargets,
+    ) {
         for layer in 0..RT_SHADOW_MASK_LIGHTS as usize {
             self.bilateral.record_layer(
-                device, encoder,
-                targets.raw_layer_view(layer), targets.a_layer_view(layer), targets.b_layer_view(layer),
-                targets.width() as i32, targets.height() as i32,
+                device,
+                encoder,
+                targets.raw_layer_view(layer),
+                targets.a_layer_view(layer),
+                targets.b_layer_view(layer),
+                targets.width() as i32,
+                targets.height() as i32,
                 SHADOW_MASK_BLUR_RADIUS,
             );
         }
@@ -311,9 +371,9 @@ impl ShadowMaskPipelines {
 /// レイヤ配列テクスチャ 1 枚＋そのビュー群（レイヤごとの 2D ビュー＋全レイヤ D2Array ビュー）。
 struct LayeredTex {
     #[allow(dead_code)]
-    tex:         wgpu::Texture,
+    tex: wgpu::Texture,
     /// 全レイヤをまとめた D2Array ビュー（サンプル用。deferred の binding10 に渡す）。
-    array_view:  wgpu::TextureView,
+    array_view: wgpu::TextureView,
     /// レイヤごとの単層 2D ビュー（MRT アタッチメント／いもす法ブラーの単層入出力）。
     layer_views: Vec<wgpu::TextureView>,
 }
@@ -323,21 +383,29 @@ struct LayeredTex {
 /// STORAGE_BINDING を要するため RtPool には載せられず本構造体が専有する（AoTargets の 4 レイヤ版）。
 /// ブラー後の最終マスクは各レイヤとも mask_b に残る（ShadowMaskPipelines::blur の不変条件）。
 pub struct ShadowMaskTargets {
-    raw:   Option<LayeredTex>,
-    a:     Option<LayeredTex>,
-    b:     Option<LayeredTex>,
-    hw:    u32,
-    hh:    u32,
+    raw: Option<LayeredTex>,
+    a: Option<LayeredTex>,
+    b: Option<LayeredTex>,
+    hw: u32,
+    hh: u32,
 }
 
 impl Default for ShadowMaskTargets {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ShadowMaskTargets {
     /// 空の（未確保の）ターゲット群を生成する（device 不要・eager 構築可）。
     pub fn new() -> Self {
-        Self { raw: None, a: None, b: None, hw: 0, hh: 0 }
+        Self {
+            raw: None,
+            a: None,
+            b: None,
+            hw: 0,
+            hh: 0,
+        }
     }
 
     /// 半解像度サイズへ追従する。既存が同サイズなら何もしない（AoTargets.ensure の流儀）。
@@ -349,7 +417,10 @@ impl ShadowMaskTargets {
         }
         // mask_raw: 生成パスの MRT 出力＋ブラー入力（.a に view_z 同梱）。
         let raw = make_layered(
-            device, "shadow_mask_raw", hw, hh,
+            device,
+            "shadow_mask_raw",
+            hw,
+            hh,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         );
         // mask_a / mask_b: バイラテラルブラーの storage ping-pong（write）＋次段/サンプル入力。
@@ -364,35 +435,66 @@ impl ShadowMaskTargets {
     }
 
     /// 確保済み半解像度幅。
-    pub fn width(&self) -> u32 { self.hw }
+    pub fn width(&self) -> u32 {
+        self.hw
+    }
     /// 確保済み半解像度高さ。
-    pub fn height(&self) -> u32 { self.hh }
+    pub fn height(&self) -> u32 {
+        self.hh
+    }
 
     /// mask_raw のレイヤ layer の 2D ビュー（MRT アタッチメント／ブラー入力）。
     pub fn raw_layer_view(&self, layer: usize) -> &wgpu::TextureView {
-        &self.raw.as_ref().expect("ShadowMaskTargets: ensure 未実行（raw）").layer_views[layer]
+        &self
+            .raw
+            .as_ref()
+            .expect("ShadowMaskTargets: ensure 未実行（raw）")
+            .layer_views[layer]
     }
     /// mask_a のレイヤ layer の 2D ビュー（ブラー ping）。
     pub fn a_layer_view(&self, layer: usize) -> &wgpu::TextureView {
-        &self.a.as_ref().expect("ShadowMaskTargets: ensure 未実行（a）").layer_views[layer]
+        &self
+            .a
+            .as_ref()
+            .expect("ShadowMaskTargets: ensure 未実行（a）")
+            .layer_views[layer]
     }
     /// mask_b のレイヤ layer の 2D ビュー（ブラー ping。結果はここに残る）。
     pub fn b_layer_view(&self, layer: usize) -> &wgpu::TextureView {
-        &self.b.as_ref().expect("ShadowMaskTargets: ensure 未実行（b）").layer_views[layer]
+        &self
+            .b
+            .as_ref()
+            .expect("ShadowMaskTargets: ensure 未実行（b）")
+            .layer_views[layer]
     }
     /// mask_b の全レイヤ D2Array ビュー＝ブラー後の最終マスク（deferred の binding10 へ渡す）。
     pub fn b_array_view(&self) -> &wgpu::TextureView {
-        &self.b.as_ref().expect("ShadowMaskTargets: ensure 未実行（b array）").array_view
+        &self
+            .b
+            .as_ref()
+            .expect("ShadowMaskTargets: ensure 未実行（b array）")
+            .array_view
     }
 }
 
 /// RT_SHADOW_MASK_LIGHTS レイヤの配列テクスチャ 1 枚を確保し、レイヤ 2D ビュー＋D2Array ビューを作る。
-fn make_layered(device: &wgpu::Device, label: &str, w: u32, h: u32, usage: wgpu::TextureUsages) -> LayeredTex {
+fn make_layered(
+    device: &wgpu::Device,
+    label: &str,
+    w: u32,
+    h: u32,
+    usage: wgpu::TextureUsages,
+) -> LayeredTex {
     let layers = RT_SHADOW_MASK_LIGHTS;
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: layers },
-        mip_level_count: 1, sample_count: 1,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: layers,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: SHADOW_MASK_FORMAT,
         usage,
@@ -405,16 +507,22 @@ fn make_layered(device: &wgpu::Device, label: &str, w: u32, h: u32, usage: wgpu:
         ..Default::default()
     });
     // レイヤごとの単層 2D ビュー（MRT アタッチメント／storage 単層入出力）。
-    let layer_views = (0..layers).map(|l| {
-        tex.create_view(&wgpu::TextureViewDescriptor {
-            label: Some(label),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            base_array_layer: l,
-            array_layer_count: Some(1),
-            ..Default::default()
+    let layer_views = (0..layers)
+        .map(|l| {
+            tex.create_view(&wgpu::TextureViewDescriptor {
+                label: Some(label),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                base_array_layer: l,
+                array_layer_count: Some(1),
+                ..Default::default()
+            })
         })
-    }).collect();
-    LayeredTex { tex, array_view, layer_views }
+        .collect();
+    LayeredTex {
+        tex,
+        array_view,
+        layer_views,
+    }
 }
 
 // ============================================================
@@ -428,7 +536,10 @@ mod tests {
     #[test]
     fn shadow_mask_params_is_32_bytes() {
         assert_eq!(std::mem::size_of::<ShadowMaskParams>(), 32);
-        assert_eq!(SHADOW_MASK_FORMAT, IMOS_BLUR_FORMAT, "マスクと imos の storage フォーマットは一致必須");
+        assert_eq!(
+            SHADOW_MASK_FORMAT, IMOS_BLUR_FORMAT,
+            "マスクと imos の storage フォーマットは一致必須"
+        );
     }
 
     /// WGSL 側 ShadowMaskParams（naga 計算サイズ）が Rust の size_of と一致すること（回帰ガード）。
@@ -442,15 +553,23 @@ mod tests {
             include_str!("shaders/rt_shadow_on.wgsl"),
             include_str!("shaders/rt_shadow_tint_avg.wgsl"),
             include_str!("shaders/shadow_mask.wgsl"),
-        ].join("\n");
+        ]
+        .join("\n");
         let module = naga::front::wgsl::parse_str(&src).expect("shadow_mask 連結の parse に失敗");
-        let (handle, _) = module.types.iter()
+        let (handle, _) = module
+            .types
+            .iter()
             .find(|(_, t)| t.name.as_deref() == Some("ShadowMaskParams"))
             .expect("WGSL に struct ShadowMaskParams が見つかりません");
         let mut layouter = naga::proc::Layouter::default();
-        layouter.update(module.to_ctx()).expect("naga Layouter の計算に失敗");
-        assert_eq!(layouter[handle].size as usize, std::mem::size_of::<ShadowMaskParams>(),
-            "WGSL の ShadowMaskParams サイズが Rust と一致しません");
+        layouter
+            .update(module.to_ctx())
+            .expect("naga Layouter の計算に失敗");
+        assert_eq!(
+            layouter[handle].size as usize,
+            std::mem::size_of::<ShadowMaskParams>(),
+            "WGSL の ShadowMaskParams サイズが Rust と一致しません"
+        );
     }
 
     /// マスク生成連結（cluster+ddgi+light+rt_on+shadow_mask, RAY_QUERY 必須）を naga で parse + validate。
@@ -463,12 +582,16 @@ mod tests {
             include_str!("shaders/rt_shadow_on.wgsl"),
             include_str!("shaders/rt_shadow_tint_avg.wgsl"),
             include_str!("shaders/shadow_mask.wgsl"),
-        ].join("\n");
+        ]
+        .join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[shadow_mask] WGSL parse 失敗: {e:?}"));
         let mut v = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(), naga::valid::Capabilities::RAY_QUERY);
-        v.validate(&module).unwrap_or_else(|e| panic!("[shadow_mask] validate 失敗: {e:?}"));
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::RAY_QUERY,
+        );
+        v.validate(&module)
+            .unwrap_or_else(|e| panic!("[shadow_mask] validate 失敗: {e:?}"));
     }
 
     /// バインドレス色付き影マスク（B3）: rt_shadow_tint_bindless.wgsl を連結し、group3 の
@@ -486,13 +609,15 @@ mod tests {
             include_str!("shaders/bindless_common.wgsl"),
             include_str!("shaders/rt_shadow_tint_bindless.wgsl"),
             include_str!("shaders/shadow_mask.wgsl"),
-        ].join("\n");
+        ]
+        .join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[shadow_mask bindless] WGSL parse 失敗: {e:?}"));
         let caps = naga::valid::Capabilities::RAY_QUERY
             | naga::valid::Capabilities::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
         let mut v = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps);
-        v.validate(&module).unwrap_or_else(|e| panic!("[shadow_mask bindless] validate 失敗: {e:?}"));
+        v.validate(&module)
+            .unwrap_or_else(|e| panic!("[shadow_mask bindless] validate 失敗: {e:?}"));
     }
 
     /// RT_SHADOW_MASK_LIGHTS（Rust）＝ SHADOW_MASK_LAYERS（shadow_mask.wgsl）＝
@@ -500,16 +625,37 @@ mod tests {
     #[test]
     fn shadow_mask_layer_count_matches_wgsl() {
         let parse_u32 = |src: &str, name: &str| -> u32 {
-            let decl = src.lines().map(str::trim)
+            let decl = src
+                .lines()
+                .map(str::trim)
                 .find(|l| l.starts_with(&format!("const {name}")))
                 .unwrap_or_else(|| panic!("WGSL に const {name} が見つかりません"));
-            decl.split('=').nth(1).unwrap().trim().trim_end_matches(';').trim().trim_end_matches('u')
-                .parse::<u32>().unwrap_or_else(|_| panic!("const {name} が u32 として解釈できません"))
+            decl.split('=')
+                .nth(1)
+                .unwrap()
+                .trim()
+                .trim_end_matches(';')
+                .trim()
+                .trim_end_matches('u')
+                .parse::<u32>()
+                .unwrap_or_else(|_| panic!("const {name} が u32 として解釈できません"))
         };
-        let mask_layers = parse_u32(include_str!("shaders/shadow_mask.wgsl"), "SHADOW_MASK_LAYERS");
-        let surf_slots  = parse_u32(include_str!("shaders/surface.wgsl"), "SURFACE_SHADOW_MASK_SLOTS");
-        assert_eq!(mask_layers, RT_SHADOW_MASK_LIGHTS, "shadow_mask.wgsl SHADOW_MASK_LAYERS と Rust 不一致");
-        assert_eq!(surf_slots,  RT_SHADOW_MASK_LIGHTS, "surface.wgsl SURFACE_SHADOW_MASK_SLOTS と Rust 不一致");
+        let mask_layers = parse_u32(
+            include_str!("shaders/shadow_mask.wgsl"),
+            "SHADOW_MASK_LAYERS",
+        );
+        let surf_slots = parse_u32(
+            include_str!("shaders/surface.wgsl"),
+            "SURFACE_SHADOW_MASK_SLOTS",
+        );
+        assert_eq!(
+            mask_layers, RT_SHADOW_MASK_LIGHTS,
+            "shadow_mask.wgsl SHADOW_MASK_LAYERS と Rust 不一致"
+        );
+        assert_eq!(
+            surf_slots, RT_SHADOW_MASK_LIGHTS,
+            "surface.wgsl SURFACE_SHADOW_MASK_SLOTS と Rust 不一致"
+        );
     }
 
     /// テスト用のソフト影ライト（soft_radius/intensity 指定）。
@@ -531,7 +677,11 @@ mod tests {
         ];
         let sel = select_shadow_mask_lights(&lights);
         // intensity 降順: idx2(9) > idx3(7) > idx0(5)。idx1 はハードで除外。
-        assert_eq!(sel, vec![2, 3, 0], "期待は [2,3,0]（intensity 降順・ハード除外）");
+        assert_eq!(
+            sel,
+            vec![2, 3, 0],
+            "期待は [2,3,0]（intensity 降順・ハード除外）"
+        );
     }
 
     /// 4 灯上限: 5 灯のソフト影から上位 4 灯（intensity 降順）だけ選ぶ。
@@ -550,14 +700,14 @@ mod tests {
     #[test]
     fn assign_writes_slots() {
         let mut lights = vec![
-            soft_light(5.0, 0.1),   // idx0
-            soft_light(9.0, 0.2),   // idx1
-            soft_light(0.0, 0.0),   // idx2 ハード（既定 -1 のまま）
+            soft_light(5.0, 0.1), // idx0
+            soft_light(9.0, 0.2), // idx1
+            soft_light(0.0, 0.0), // idx2 ハード（既定 -1 のまま）
         ];
         // 既定の -1 を確認（GpuLight::point は shadow_mask_slot=-1）。
         assert_eq!(lights[2].shadow_mask_slot, -1.0);
         let sel = assign_shadow_mask_slots(&mut lights);
-        assert_eq!(sel, vec![1, 0]);           // intensity 降順: idx1(9) → slot0, idx0(5) → slot1
+        assert_eq!(sel, vec![1, 0]); // intensity 降順: idx1(9) → slot0, idx0(5) → slot1
         assert_eq!(lights[1].shadow_mask_slot, 0.0);
         assert_eq!(lights[0].shadow_mask_slot, 1.0);
         assert_eq!(lights[2].shadow_mask_slot, -1.0); // ハードは非対象のまま

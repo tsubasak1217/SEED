@@ -1,5 +1,5 @@
-pub mod camera;
 pub mod actor;
+pub mod camera;
 
-pub use camera::{BaseCamera, CameraProjection, DebugCamera};
 pub use actor::Actor;
+pub use camera::{BaseCamera, CameraProjection, DebugCamera};

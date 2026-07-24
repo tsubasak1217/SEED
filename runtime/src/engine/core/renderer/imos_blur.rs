@@ -40,13 +40,13 @@ pub const IMOS_BLUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Flo
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ImosBlurParams {
     /// ボックス半径（画素。>=0）。
-    pub radius:     i32,
+    pub radius: i32,
     /// 走査方向（1=水平 / 0=垂直）。
     pub horizontal: u32,
     /// 対象テクスチャ幅（画素）。
-    pub width:      i32,
+    pub width: i32,
     /// 対象テクスチャ高さ（画素）。
-    pub height:     i32,
+    pub height: i32,
 }
 
 /// いもす法ボックスブラーのコンピュートパイプライン一式（再利用可能）。
@@ -54,48 +54,48 @@ pub struct ImosBlur {
     /// blur_cs コンピュートパイプライン。
     pipeline: wgpu::ComputePipeline,
     /// group0 レイアウト（0=params UBO / 1=入力 texture / 2=出力 storage=IMOS_BLUR_FORMAT）。
-    bgl:      wgpu::BindGroupLayout,
+    bgl: wgpu::BindGroupLayout,
 }
 
 impl ImosBlur {
     /// いもすブラーのコンピュートパイプラインを構築する（postfx の BlurPipeline::new が手本）。
     pub fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("Imos Blur Shader"),
+            label: Some("Imos Blur Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/imos_blur.wgsl").into()),
         });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label:   Some("Imos Blur BGL"),
+            label: Some("Imos Blur BGL"),
             entries: &[
                 // binding 0: params UBO
                 wgpu::BindGroupLayoutEntry {
-                    binding:    0,
+                    binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
-                        ty:                 wgpu::BufferBindingType::Uniform,
+                        ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size:   None,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
                 // binding 1: 入力テクスチャ（textureLoad。filterable=true＝Rgba16Float は filterable）
                 wgpu::BindGroupLayoutEntry {
-                    binding:    1,
+                    binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
-                        sample_type:    wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled:   false,
+                        multisampled: false,
                     },
                     count: None,
                 },
                 // binding 2: 出力 storage テクスチャ（write, IMOS_BLUR_FORMAT=Rgba16Float）
                 wgpu::BindGroupLayoutEntry {
-                    binding:    2,
+                    binding: 2,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
-                        access:         wgpu::StorageTextureAccess::WriteOnly,
-                        format:         IMOS_BLUR_FORMAT,
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: IMOS_BLUR_FORMAT,
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
@@ -103,15 +103,15 @@ impl ImosBlur {
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:                Some("Imos Blur Layout"),
-            bind_group_layouts:   &[&bgl],
+            label: Some("Imos Blur Layout"),
+            bind_group_layouts: &[&bgl],
             push_constant_ranges: &[],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               Some("Imos Blur Pipeline"),
-            layout:              Some(&layout),
-            module:              &shader,
-            entry_point:         Some("blur_cs"),
+            label: Some("Imos Blur Pipeline"),
+            layout: Some(&layout),
+            module: &shader,
+            entry_point: Some("blur_cs"),
             compilation_options: Default::default(),
             cache,
         });
@@ -133,20 +133,20 @@ impl ImosBlur {
     #[allow(clippy::too_many_arguments)]
     pub fn record(
         &self,
-        device:     &wgpu::Device,
-        encoder:    &mut wgpu::CommandEncoder,
-        src:        &wgpu::TextureView,
-        t0:         &wgpu::TextureView,
-        t1:         &wgpu::TextureView,
-        width:      i32,
-        height:     i32,
-        radius:     i32,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        src: &wgpu::TextureView,
+        t0: &wgpu::TextureView,
+        t1: &wgpu::TextureView,
+        width: i32,
+        height: i32,
+        radius: i32,
         iterations: u32,
     ) {
-        let iters = iterations.max(1);       // 0 は無意味。最低 1 反復（=H,V の 2 サブパス）。
-        let total = 2 * iters;               // 常に偶数 → 最終出力は t1（不変条件）。
+        let iters = iterations.max(1); // 0 は無意味。最低 1 反復（=H,V の 2 サブパス）。
+        let total = 2 * iters; // 常に偶数 → 最終出力は t1（不変条件）。
         for k in 0..total {
-            let even       = k % 2 == 0;
+            let even = k % 2 == 0;
             let horizontal = if even { 1u32 } else { 0u32 };
             let out: &wgpu::TextureView = if even { t0 } else { t1 };
             // 入力: 先頭は src、以降は 1 つ前のサブパスの出力（parity で交互）。
@@ -166,39 +166,53 @@ impl ImosBlur {
     #[allow(clippy::too_many_arguments)]
     fn subpass(
         &self,
-        device:     &wgpu::Device,
-        encoder:    &mut wgpu::CommandEncoder,
-        src:        &wgpu::TextureView,
-        dst:        &wgpu::TextureView,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        src: &wgpu::TextureView,
+        dst: &wgpu::TextureView,
         horizontal: u32,
-        width:      i32,
-        height:     i32,
-        radius:     i32,
+        width: i32,
+        height: i32,
+        radius: i32,
     ) {
         use wgpu::util::DeviceExt;
-        let params = ImosBlurParams { radius, horizontal, width, height };
+        let params = ImosBlurParams {
+            radius,
+            horizontal,
+            width,
+            height,
+        };
         let ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("Imos Blur Params"),
+            label: Some("Imos Blur Params"),
             contents: bytemuck::bytes_of(&params),
-            usage:    wgpu::BufferUsages::UNIFORM,
+            usage: wgpu::BufferUsages::UNIFORM,
         });
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Imos Blur BG"),
-            layout:  &self.bgl,
+            label: Some("Imos Blur BG"),
+            layout: &self.bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: ubo.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(dst) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: ubo.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(src),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(dst),
+                },
             ],
         });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label:            Some("Imos Blur Pass"),
+            label: Some("Imos Blur Pass"),
             timestamp_writes: None,
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bg, &[]);
         // 走査線本数（水平=行数=高さ / 垂直=列数=幅）を 64 スレッド/ワークグループで割る。
-        let count  = if horizontal == 1 { height } else { width };
+        let count = if horizontal == 1 { height } else { width };
         let groups = ((count.max(0) as u32) + 63) / 64;
         pass.dispatch_workgroups(groups.max(1), 1, 1);
     }
@@ -255,8 +269,12 @@ mod tests {
             let a = imos_running_box_1d(&v1d, r);
             let b = naive_box_1d(&v1d, r);
             for i in 0..a.len() {
-                assert!((a[i] - b[i]).abs() < 1e-4,
-                    "1D r={r} i={i}: imos={} naive={}", a[i], b[i]);
+                assert!(
+                    (a[i] - b[i]).abs() < 1e-4,
+                    "1D r={r} i={i}: imos={} naive={}",
+                    a[i],
+                    b[i]
+                );
             }
         }
 
@@ -273,8 +291,12 @@ mod tests {
                 let a = imos_running_box_1d(row, r);
                 let b = naive_box_1d(row, r);
                 for i in 0..4 {
-                    assert!((a[i] - b[i]).abs() < 1e-4,
-                        "2D r={r} i={i}: imos={} naive={}", a[i], b[i]);
+                    assert!(
+                        (a[i] - b[i]).abs() < 1e-4,
+                        "2D r={r} i={i}: imos={} naive={}",
+                        a[i],
+                        b[i]
+                    );
                 }
             }
         }
@@ -293,7 +315,9 @@ mod tests {
         let module = naga::front::wgsl::parse_str(src)
             .unwrap_or_else(|e| panic!("[imos_blur] WGSL parse 失敗: {e:?}"));
         let mut v = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty());
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        );
         v.validate(&module)
             .unwrap_or_else(|e| panic!("[imos_blur] WGSL validate 失敗: {e:?}"));
     }

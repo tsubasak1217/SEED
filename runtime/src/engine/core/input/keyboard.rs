@@ -46,16 +46,34 @@ impl KeyboardState {
     // ─── クエリ ────────────────────────────────────────────────
 
     /// キーが押されている間 true（C++: IsPressKey）
-    #[inline] pub fn is_press(&self, key: KeyCode) -> bool   { self.held.contains(&key) }
+    #[inline]
+    pub fn is_press(&self, key: KeyCode) -> bool {
+        self.held.contains(&key)
+    }
     /// キーが押された瞬間のみ true（C++: IsTriggerKey）
-    #[inline] pub fn is_trigger(&self, key: KeyCode) -> bool { self.just_pressed.contains(&key) }
+    #[inline]
+    pub fn is_trigger(&self, key: KeyCode) -> bool {
+        self.just_pressed.contains(&key)
+    }
     /// キーが離された瞬間のみ true（C++: IsReleaseKey）
-    #[inline] pub fn is_release(&self, key: KeyCode) -> bool { self.just_released.contains(&key) }
+    #[inline]
+    pub fn is_release(&self, key: KeyCode) -> bool {
+        self.just_released.contains(&key)
+    }
 
     /// いずれかのキーが押されている（C++: IsPressAnyKey）
-    #[inline] pub fn is_press_any(&self) -> bool   { !self.held.is_empty() }
+    #[inline]
+    pub fn is_press_any(&self) -> bool {
+        !self.held.is_empty()
+    }
     /// いずれかのキーが押された瞬間（C++: IsTriggerAnyKey）
-    #[inline] pub fn is_trigger_any(&self) -> bool { !self.just_pressed.is_empty() }
+    #[inline]
+    pub fn is_trigger_any(&self) -> bool {
+        !self.just_pressed.is_empty()
+    }
     /// いずれかのキーが離された瞬間（C++: IsReleaseAnyKey）
-    #[inline] pub fn is_release_any(&self) -> bool { !self.just_released.is_empty() }
+    #[inline]
+    pub fn is_release_any(&self) -> bool {
+        !self.just_released.is_empty()
+    }
 }

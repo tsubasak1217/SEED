@@ -12,8 +12,8 @@
 //   その両者を跨ぐ処理は App 側でしか行えないため）。
 // ============================================================
 
-use crate::engine::structs::objects::Actor;
 use super::clip::LoopMode;
+use crate::engine::structs::objects::Actor;
 
 /// 再生時刻を loop_mode に応じて [0, duration] 範囲のサンプル時刻へ正規化する。
 ///
@@ -60,7 +60,9 @@ pub fn resolve_actor_path<'a>(root: &'a Actor, path: &str) -> Option<&'a Actor> 
     }
     let mut cur = root;
     for seg in path.split('/') {
-        if seg.is_empty() { continue; }
+        if seg.is_empty() {
+            continue;
+        }
         cur = cur.children().iter().find(|c| c.name == seg)?;
     }
     Some(cur)

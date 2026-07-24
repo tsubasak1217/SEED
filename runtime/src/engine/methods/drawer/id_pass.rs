@@ -12,7 +12,7 @@
 
 use super::{
     gpu_resources::{GpuModel, InstancedModelBatch, NUM_LODS},
-    pipeline::{DrawPipelines, CanvasIdUniform},
+    pipeline::{CanvasIdUniform, DrawPipelines},
 };
 use crate::engine::core::loader::model::CullFace;
 
@@ -30,22 +30,26 @@ const ROW_ALIGNMENT: u64 = 256;
 /// ID パスのピッキングと、ドラッグ&ドロップ時のワールド座標取得を
 /// 1 テクスチャで兼ねる。
 pub struct IdBuffer {
-    pub texture:      wgpu::Texture,
-    pub view:         wgpu::TextureView,
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
     pub readback_buf: wgpu::Buffer,
-    pub width:        u32,
-    pub height:       u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl IdBuffer {
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("World Pos ID Buffer Texture"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
-            sample_count:    1,
-            dimension:       wgpu::TextureDimension::D2,
-            format:          wgpu::TextureFormat::Rgba32Float,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
@@ -53,13 +57,19 @@ impl IdBuffer {
 
         // 1ピクセル = 16 bytes。bytes_per_row は 256 の倍数が必要なので 256 で確保。
         let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label:              Some("World Pos ID Readback Buffer"),
-            size:               ROW_ALIGNMENT,
-            usage:              wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            label: Some("World Pos ID Readback Buffer"),
+            size: ROW_ALIGNMENT,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
 
-        Self { texture, view, readback_buf, width, height }
+        Self {
+            texture,
+            view,
+            readback_buf,
+            width,
+            height,
+        }
     }
 
     /// GPU サブミット済みのコピーコマンド実行後に呼び出す。
@@ -74,9 +84,9 @@ impl IdBuffer {
         let data = buf_slice.get_mapped_range();
 
         // RGBA 各 4 bytes = 合計 16 bytes
-        let x  = f32::from_ne_bytes(data[0..4].try_into().unwrap());
-        let y  = f32::from_ne_bytes(data[4..8].try_into().unwrap());
-        let z  = f32::from_ne_bytes(data[8..12].try_into().unwrap());
+        let x = f32::from_ne_bytes(data[0..4].try_into().unwrap());
+        let y = f32::from_ne_bytes(data[4..8].try_into().unwrap());
+        let z = f32::from_ne_bytes(data[8..12].try_into().unwrap());
         // A チャンネルは bitcast<f32>(u32) で書き込まれているためビット変換で復元
         let id = u32::from_ne_bytes(data[12..16].try_into().unwrap());
 
@@ -110,16 +120,18 @@ impl IdBuffer {
 /// - `ws_camera_bg`: WS 用カメラ BG（perspective または 2D ortho）
 /// - `ss_camera_bg`: SS 用 2D ortho カメラ BG（None なら SS アイテムは描画しない）
 pub fn draw_canvas_id_items<'pass>(
-    render_pass:  &mut wgpu::RenderPass<'pass>,
-    pipelines:    &'pass DrawPipelines,
+    render_pass: &mut wgpu::RenderPass<'pass>,
+    pipelines: &'pass DrawPipelines,
     ws_camera_bg: &'pass wgpu::BindGroup,
     ss_camera_bg: Option<&'pass wgpu::BindGroup>,
-    ws_items:     &'pass [(wgpu::Buffer, wgpu::BindGroup)],
-    ws_tex_bgs:   &[&'pass wgpu::BindGroup],
-    ss_items:     &'pass [(wgpu::Buffer, wgpu::BindGroup)],
-    ss_tex_bgs:   &[&'pass wgpu::BindGroup],
+    ws_items: &'pass [(wgpu::Buffer, wgpu::BindGroup)],
+    ws_tex_bgs: &[&'pass wgpu::BindGroup],
+    ss_items: &'pass [(wgpu::Buffer, wgpu::BindGroup)],
+    ss_tex_bgs: &[&'pass wgpu::BindGroup],
 ) {
-    if ws_items.is_empty() && ss_items.is_empty() { return; }
+    if ws_items.is_empty() && ss_items.is_empty() {
+        return;
+    }
 
     render_pass.set_pipeline(&pipelines.canvas_id.pipeline);
     // スプライトパイプラインのユニットクワッド頂点バッファを共有する
@@ -167,13 +179,15 @@ pub fn draw_canvas_id_items<'pass>(
 /// - `camera_bg`: 描画に使うカメラ BG（WS または SS ortho）
 pub fn draw_collider_pick_items<'pass>(
     render_pass: &mut wgpu::RenderPass<'pass>,
-    pipelines:   &'pass DrawPipelines,
-    camera_bg:   &'pass wgpu::BindGroup,
-    items:       &'pass [(wgpu::Buffer, wgpu::BindGroup)],
-    tex_bgs:     &[&'pass wgpu::BindGroup],
-    with_depth:  bool,
+    pipelines: &'pass DrawPipelines,
+    camera_bg: &'pass wgpu::BindGroup,
+    items: &'pass [(wgpu::Buffer, wgpu::BindGroup)],
+    tex_bgs: &[&'pass wgpu::BindGroup],
+    with_depth: bool,
 ) {
-    if items.is_empty() { return; }
+    if items.is_empty() {
+        return;
+    }
 
     // 深度対応バリアント（LessEqual + 書き込み）または通常（Always）を選択する
     let pipeline = if with_depth {
@@ -196,23 +210,27 @@ pub fn draw_collider_pick_items<'pass>(
 ///
 /// render pass 外で呼び出し、pass ライフタイム中リソースを保持する。
 pub fn prepare_canvas_id_bg(
-    device:    &wgpu::Device,
+    device: &wgpu::Device,
     pipelines: &DrawPipelines,
-    model:     [[f32; 4]; 4],
-    actor_id:  u32,
+    model: [[f32; 4]; 4],
+    actor_id: u32,
 ) -> (wgpu::Buffer, wgpu::BindGroup) {
     use wgpu::util::DeviceExt;
-    let uniform = CanvasIdUniform { model, actor_id, _pad: [0; 3] };
+    let uniform = CanvasIdUniform {
+        model,
+        actor_id,
+        _pad: [0; 3],
+    };
     let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label:    Some("CanvasId Uniform Buf"),
+        label: Some("CanvasId Uniform Buf"),
         contents: bytemuck::bytes_of(&uniform),
-        usage:    wgpu::BufferUsages::UNIFORM,
+        usage: wgpu::BufferUsages::UNIFORM,
     });
     let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label:   Some("CanvasId BG"),
-        layout:  &pipelines.canvas_id.canvas_id_bgl,
+        label: Some("CanvasId BG"),
+        layout: &pipelines.canvas_id.canvas_id_bgl,
         entries: &[wgpu::BindGroupEntry {
-            binding:  0,
+            binding: 0,
             resource: buf.as_entire_binding(),
         }],
     });
@@ -228,31 +246,36 @@ pub fn prepare_canvas_id_bg(
 /// メインレンダーパスの後に呼び出す（深度テストで同等の可視性を再現する）。
 pub fn draw_id_pass<'pass>(
     render_pass: &mut wgpu::RenderPass<'pass>,
-    gpu_model:   &'pass GpuModel,
-    batch:       &'pass InstancedModelBatch,
-    camera_bg:   &'pass wgpu::BindGroup,
-    pipelines:   &'pass DrawPipelines,
-    id_base_bg:  &'pass wgpu::BindGroup,
+    gpu_model: &'pass GpuModel,
+    batch: &'pass InstancedModelBatch,
+    camera_bg: &'pass wgpu::BindGroup,
+    pipelines: &'pass DrawPipelines,
+    id_base_bg: &'pass wgpu::BindGroup,
 ) {
-    if batch.n_prims == 0 { return; }
+    if batch.n_prims == 0 {
+        return;
+    }
 
     for lod in 0..NUM_LODS {
         let visible = batch.lod_visible_counts[lod];
-        if visible == 0 { continue; }
+        if visible == 0 {
+            continue;
+        }
 
         let joint_bg = batch.joint_vs_bg(lod);
-        let mut cur_skinned: Option<bool>     = None;
+        let mut cur_skinned: Option<bool> = None;
         // 現在バインド中のカリング面。node_prim_list は (is_skinned, cull_face, material_idx)
         // 順にソート済みのため、同じカリング面が連続する区間では set_pipeline を省略できる。
         // メインパス（model_drawer.rs）と同じ選択ロジックで、マテリアルのカリング面に追従する。
-        let mut cur_cull:    Option<CullFace> = None;
+        let mut cur_cull: Option<CullFace> = None;
 
         for draw in &batch.node_prim_list {
-            let Some((_, model_bg)) = batch.lod_node_data[lod][draw.node_idx].as_ref()
-                else { continue };
+            let Some((_, model_bg)) = batch.lod_node_data[lod][draw.node_idx].as_ref() else {
+                continue;
+            };
 
             let gpu_mesh = &gpu_model.meshes[draw.mesh_idx];
-            let prim     = &gpu_mesh.primitives[draw.prim_idx];
+            let prim = &gpu_mesh.primitives[draw.prim_idx];
 
             // このプリミティブのマテリアルの実効カリング面（オーバーライド適用後）。
             let cull = gpu_model.primitive_cull_face(draw.material_idx);
@@ -274,14 +297,15 @@ pub fn draw_id_pass<'pass>(
                 render_pass.set_bind_group(2, &batch.lod_id_bgs[lod], &[]);
                 render_pass.set_bind_group(4, id_base_bg, &[]);
                 cur_skinned = Some(draw.is_skinned);
-                cur_cull    = Some(cull);
+                cur_cull = Some(cull);
             }
 
             render_pass.set_bind_group(1, model_bg, &[]);
 
             render_pass.set_vertex_buffer(0, prim.vertex_buffer.slice(..));
             if draw.is_skinned {
-                render_pass.set_vertex_buffer(1, prim.skin_vertex_buffer.as_ref().unwrap().slice(..));
+                render_pass
+                    .set_vertex_buffer(1, prim.skin_vertex_buffer.as_ref().unwrap().slice(..));
             }
 
             let (idx_buf, idx_count) = prim.get_lod_index_buffer(lod);

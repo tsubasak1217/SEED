@@ -13,52 +13,52 @@
 // ============================================================
 
 // ── サブモジュール ──────────────────────────────────────────
-mod drag_state;
-mod ipc_handler;
-mod hierarchy_sync;
-mod clipboard;
 mod actor_ops;
-mod canvas_edit_ops;
 mod ai_ops;
-mod component_ops;
-mod canvas_component_ops;
+mod animation_ops;
+mod app_init;
+mod audio_ops;
 mod camera_component_ops;
-mod physics_component_ops;
-mod physics2d_ops;
-mod physics2d_component_ops;
-mod transform_ops;
 mod camera_ops;
-mod gizmo_handler;
-mod pick_2d;
-mod canvas_drop;
-mod render;
-mod frame_renderer;
+pub(crate) mod camera_scene_gizmo;
 mod canvas_collect;
+mod canvas_component_ops;
+mod canvas_drop;
+mod canvas_edit_ops;
+mod clipboard;
 mod collider2d_wireframe;
 mod collider3d_pick;
-mod app_init;
-mod event_handler;
+mod component_ops;
 mod drag_handler;
-mod physics_ops;
-mod physics_timeline;
-mod tab_physics;
-mod script_scene_ops;
-mod audio_ops;
-mod animation_ops;
-pub(crate) mod light_ops;
-pub(crate) mod skybox_ops;
-pub(crate) mod particle_ops;
-pub(crate) mod light_scene_gizmo;
+mod drag_state;
+mod event_handler;
+mod frame_renderer;
+mod gizmo_handler;
+mod hierarchy_sync;
+mod ipc_handler;
 pub(crate) mod jointattach_ops;
 pub(crate) mod jointattach_scene_gizmo;
-pub(crate) mod skybox_scene_gizmo;
+pub(crate) mod light_ops;
+pub(crate) mod light_scene_gizmo;
+pub(crate) mod particle_ops;
 pub(crate) mod particle_scene_gizmo;
+mod physics2d_component_ops;
+mod physics2d_ops;
+mod physics_component_ops;
+mod physics_ops;
+mod physics_timeline;
+mod pick_2d;
 mod prefab_ops;
-pub(crate) mod camera_scene_gizmo;
-pub(super) mod terrain_ops;
+mod render;
+mod script_scene_ops;
+pub(crate) mod skybox_ops;
+pub(crate) mod skybox_scene_gizmo;
+mod tab_physics;
 pub(crate) mod terrain_mesh_build;
+pub(super) mod terrain_ops;
 /// 地形プロップ散布（草・木）のエンジン統合層（散布データ ⇄ ECS/GPU/IPC の橋渡し）。
 pub(super) mod terrain_scatter_ops;
+mod transform_ops;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────
 use std::collections::{HashMap, HashSet};
@@ -68,19 +68,16 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 
 // ── エンジン内部モジュール ───────────────────────────────────
+use crate::engine::components::{CanvasTransform, Transform as ActorTransform};
+use crate::engine::core::app_base::ipc::{GizmoSpace, IpcClient, ToolMode};
+use crate::engine::core::app_base::scene::{CanvasCameraData, DebugCameraData, Scene};
+use crate::engine::core::app_base::undo::UndoHistory;
 use crate::engine::core::clock::Clock;
 use crate::engine::core::input::Input;
 use crate::engine::core::renderer::Renderer;
-use crate::engine::core::app_base::ipc::{IpcClient, ToolMode, GizmoSpace};
-use crate::engine::core::app_base::scene::{Scene, DebugCameraData, CanvasCameraData};
-use crate::engine::methods::drawer::{DrawContext, CameraBuffer, IdBuffer, InstancedModelBatch};
-use crate::engine::methods::gizmo_interact::GizmoPart;
-use crate::engine::core::app_base::undo::UndoHistory;
 use crate::engine::core::scripting::ScriptingHost;
-use crate::engine::components::{
-    Transform as ActorTransform,
-    CanvasTransform,
-};
+use crate::engine::methods::drawer::{CameraBuffer, DrawContext, IdBuffer, InstancedModelBatch};
+use crate::engine::methods::gizmo_interact::GizmoPart;
 use crate::engine::structs::objects::DebugCamera;
 use crate::engine::structs::objects::actor::ActorData;
 use crate::engine::structs::objects::camera::debug_camera::CameraInput;
@@ -116,17 +113,17 @@ struct CameraPreviewResources {
     /// オフスクリーンカラーテクスチャ（プレビューのレンダーターゲット）
     color_texture: wgpu::Texture,
     /// カラーテクスチャのビュー（レンダーターゲット兼サンプリング用）
-    color_view:    wgpu::TextureView,
+    color_view: wgpu::TextureView,
     /// オフスクリーン深度テクスチャ
     depth_texture: wgpu::Texture,
     /// 深度テクスチャのビュー
-    depth_view:    wgpu::TextureView,
+    depth_view: wgpu::TextureView,
     /// ブリット用テクスチャバインドグループ（Group 1: テクスチャ + サンプラー）
-    blit_tex_bg:   wgpu::BindGroup,
+    blit_tex_bg: wgpu::BindGroup,
     /// ブリット矩形ユニフォームバッファ（NDC 座標、毎フレーム更新）
     blit_rect_buf: wgpu::Buffer,
     /// ブリット矩形バインドグループ（Group 0）
-    blit_rect_bg:  wgpu::BindGroup,
+    blit_rect_bg: wgpu::BindGroup,
 }
 
 impl CameraPreviewResources {
@@ -136,7 +133,7 @@ impl CameraPreviewResources {
     fn new(
         device: &wgpu::Device,
         blit_pipeline: &crate::engine::methods::drawer::CameraPreviewBlitPipeline,
-        width:  u32,
+        width: u32,
         height: u32,
     ) -> Self {
         // オフスクリーンカラーテクスチャ（HDR: Rgba16Float）。
@@ -145,53 +142,61 @@ impl CameraPreviewResources {
         // メインシーンのパイプラインは HDR_FORMAT でビルドされるため、プレビューの
         // レンダーターゲットも同フォーマットに揃える必要がある。
         let color_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label:           Some("Camera Preview Color"),
-            size:            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            label: Some("Camera Preview Color"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
-            sample_count:    1,
-            dimension:       wgpu::TextureDimension::D2,
-            format:          crate::engine::core::renderer::HDR_FORMAT,
-            usage:           wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats:    &[],
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::engine::core::renderer::HDR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
         });
         let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // オフスクリーン深度テクスチャ
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label:           Some("Camera Preview Depth"),
-            size:            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            label: Some("Camera Preview Depth"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
-            sample_count:    1,
-            dimension:       wgpu::TextureDimension::D2,
-            format:          wgpu::TextureFormat::Depth24PlusStencil8,
-            usage:           wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats:    &[],
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth24PlusStencil8,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
         });
         let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // サンプラー（線形フィルタリング）
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label:          Some("Camera Preview Sampler"),
+            label: Some("Camera Preview Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter:     wgpu::FilterMode::Linear,
-            min_filter:     wgpu::FilterMode::Linear,
-            mipmap_filter:  wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
 
         // ブリット用テクスチャバインドグループ (Group 1)
         let blit_tex_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Camera Preview Blit Tex BG"),
-            layout:  &blit_pipeline.tex_bgl,
+            label: Some("Camera Preview Blit Tex BG"),
+            layout: &blit_pipeline.tex_bgl,
             entries: &[
                 wgpu::BindGroupEntry {
-                    binding:  0,
+                    binding: 0,
                     resource: wgpu::BindingResource::TextureView(&color_view),
                 },
                 wgpu::BindGroupEntry {
-                    binding:  1,
+                    binding: 1,
                     resource: wgpu::BindingResource::Sampler(&sampler),
                 },
             ],
@@ -199,25 +204,28 @@ impl CameraPreviewResources {
 
         // ブリット矩形ユニフォームバッファ (Group 0)
         let blit_rect_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label:              Some("Camera Preview Blit Rect"),
-            size:               BLIT_RECT_BUFFER_SIZE,
-            usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            label: Some("Camera Preview Blit Rect"),
+            size: BLIT_RECT_BUFFER_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let blit_rect_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Camera Preview Blit Rect BG"),
-            layout:  &blit_pipeline.rect_bgl,
+            label: Some("Camera Preview Blit Rect BG"),
+            layout: &blit_pipeline.rect_bgl,
             entries: &[wgpu::BindGroupEntry {
-                binding:  0,
+                binding: 0,
                 resource: blit_rect_buf.as_entire_binding(),
             }],
         });
 
         Self {
-            color_texture, color_view,
-            depth_texture, depth_view,
+            color_texture,
+            color_view,
+            depth_texture,
+            depth_view,
             blit_tex_bg,
-            blit_rect_buf, blit_rect_bg,
+            blit_rect_buf,
+            blit_rect_bg,
         }
     }
 
@@ -226,25 +234,25 @@ impl CameraPreviewResources {
     /// プレビューはビューポート右下に配置される（マージン: 8 px）。
     fn update_blit_rect(
         &self,
-        queue:    &wgpu::Queue,
-        vp_w:     f32,
-        vp_h:     f32,
-        prev_w:   f32,
-        prev_h:   f32,
+        queue: &wgpu::Queue,
+        vp_w: f32,
+        vp_h: f32,
+        prev_w: f32,
+        prev_h: f32,
     ) {
         // プレビュー右下マージン（px）
         const MARGIN: f32 = 8.0;
 
         let sx0 = vp_w - prev_w - MARGIN;
         let sx1 = vp_w - MARGIN;
-        let sy0 = vp_h - prev_h - MARGIN;  // 上端（screen Y が小さい）
-        let sy1 = vp_h - MARGIN;           // 下端
+        let sy0 = vp_h - prev_h - MARGIN; // 上端（screen Y が小さい）
+        let sy1 = vp_h - MARGIN; // 下端
 
         // NDC 変換（x: [-1,1], y: [-1,1]）
         let nx0 = 2.0 * sx0 / vp_w - 1.0;
         let nx1 = 2.0 * sx1 / vp_w - 1.0;
-        let ny0 = 1.0 - 2.0 * sy1 / vp_h;  // 下端 NDC y
-        let ny1 = 1.0 - 2.0 * sy0 / vp_h;  // 上端 NDC y
+        let ny0 = 1.0 - 2.0 * sy1 / vp_h; // 下端 NDC y
+        let ny1 = 1.0 - 2.0 * sy0 / vp_h; // 上端 NDC y
 
         let rect: [f32; 4] = [nx0, ny0, nx1, ny1];
         queue.write_buffer(&self.blit_rect_buf, 0, bytemuck::cast_slice(&rect));
@@ -265,9 +273,9 @@ pub(crate) struct CameraGizmoResources {
     /// カメラ.glb の GPU モデル（頂点・マテリアルデータ）。
     pub gpu_model: crate::engine::methods::drawer::GpuModel,
     /// インスタンスバッチ（最大 capacity インスタンスを保持）。
-    pub batch:     crate::engine::methods::drawer::InstancedModelBatch,
+    pub batch: crate::engine::methods::drawer::InstancedModelBatch,
     /// 現在のバッチ容量。アクター数がこれを超えると再生成する。
-    pub capacity:  usize,
+    pub capacity: usize,
 }
 
 // ============================================================
@@ -283,9 +291,9 @@ struct SharedModelData {
     /// batch.update() に必要な CPU モデル（Arc で参照コスト=ゼロ）
     cpu_model: std::sync::Arc<crate::engine::core::loader::model::Model>,
     /// 統合インスタンスバッチ（全アクターの行列・スキンデータを保持）
-    batch:     InstancedModelBatch,
+    batch: InstancedModelBatch,
     /// バッチの割り当て済みインスタンス上限（超えたら再生成する）
-    capacity:  usize,
+    capacity: usize,
     /// ID パス用ベースオフセット=0 のバインドグループ。
     /// lod_id_buffers には絶対 ID を書き込むため base=0 で識別可能。
     id_zero_bg: (wgpu::Buffer, wgpu::BindGroup),
@@ -306,12 +314,12 @@ struct SharedModelData {
 
 /// MC インスタンスのコピー&ペースト単位。
 struct ClipboardItem {
-    name:         String,
-    mat:          [[f32; 4]; 4],
+    name: String,
+    mat: [[f32; 4]; 4],
     /// clipboard 配列内でのローカル親インデックス（None = ペースト時ルート）
     local_parent: Option<usize>,
     /// コピー元の安定アニメーション位相シード（ペースト時にそのまま引き継ぐ）
-    anim_seed:    u32,
+    anim_seed: u32,
 }
 
 // ============================================================
@@ -365,15 +373,15 @@ pub struct CanvasEditSession {
 
 /// App::new / App::run への引数。
 pub struct LaunchArgs {
-    pub parent_hwnd:      Option<isize>,
+    pub parent_hwnd: Option<isize>,
     /// 親プロセス（エディタ）のプロセス ID。
     /// 設定時は親が終了したタイミングで自プロセスも自動終了する。
-    pub parent_pid:       Option<u32>,
-    pub mode:             RuntimeMode,
-    pub pipe_name:        Option<String>,
+    pub parent_pid: Option<u32>,
+    pub mode: RuntimeMode,
+    pub pipe_name: Option<String>,
     /// アセットルートディレクトリの絶対パス（Play / パッケージモードで使用）。
     /// None の場合は実行ファイルの隣に assets/ or assets.pak があると仮定する。
-    pub assets_root:      Option<String>,
+    pub assets_root: Option<String>,
     /// エディタリソースディレクトリの絶対パス（Edit モードで使用）。
     /// カメラギズモ等エディタ専用モデルのパス解決に使用する。
     pub editor_resources: Option<String>,
@@ -390,8 +398,15 @@ pub struct LaunchArgs {
 
 /// インスペクターフィールドのドラッグ中状態（EndTransformDrag で Undo 1 コマンド化）。
 enum InspectorTransformDrag {
-    Instance   { idx: u32, old_mat: [[f32; 4]; 4] },
-    Actor      { wl: u32, dfs_id: u32, old_tf: ActorTransform },
+    Instance {
+        idx: u32,
+        old_mat: [[f32; 4]; 4],
+    },
+    Actor {
+        wl: u32,
+        dfs_id: u32,
+        old_tf: ActorTransform,
+    },
     /// actor edit モード + ModelComponent あり: 全インスタンスと actor.transform の事前スナップショット
     ActorGroup {
         dfs_id: u32,
@@ -401,7 +416,11 @@ enum InspectorTransformDrag {
         child_old_states: Vec<(u32, ActorTransform, [[f32; 4]; 4])>,
     },
     /// 2D キャンバスアクターの CanvasTransform ドラッグ
-    CanvasActor { wl: u32, dfs_id: u32, old_ct: CanvasTransform },
+    CanvasActor {
+        wl: u32,
+        dfs_id: u32,
+        old_ct: CanvasTransform,
+    },
 }
 
 // ============================================================
@@ -413,17 +432,17 @@ enum InspectorTransformDrag {
 /// 補間は Quaternion Slerp で行い、完了時に target_yaw/pitch を直接代入する。
 pub(super) struct CameraSnapAnim {
     /// 補間開始時の回転クォータニオン
-    pub start_rot:    crate::engine::structs::transforms::Quaternion,
+    pub start_rot: crate::engine::structs::transforms::Quaternion,
     /// 補間目標の回転クォータニオン
-    pub target_rot:   crate::engine::structs::transforms::Quaternion,
+    pub target_rot: crate::engine::structs::transforms::Quaternion,
     /// 完了時に camera.yaw に直接代入する正確な値（ラジアン）
-    pub target_yaw:   f32,
+    pub target_yaw: f32,
     /// 完了時に camera.pitch に直接代入する正確な値（ラジアン）
     pub target_pitch: f32,
     /// アニメーション継続時間（秒）
     pub duration: f32,
     /// 経過時間（秒）
-    pub elapsed:  f32,
+    pub elapsed: f32,
 }
 
 // ============================================================
@@ -433,11 +452,11 @@ pub(super) struct CameraSnapAnim {
 /// エンジンのメインアプリケーション。
 /// ECS ワールド・レンダラー・カメラ・IPC クライアントを統括する。
 pub struct App {
-    window:         Option<Arc<Window>>,
-    renderer:       Option<Renderer>,
-    input:          Input,
+    window: Option<Arc<Window>>,
+    renderer: Option<Renderer>,
+    input: Input,
     /// スクリプト Audio API 用のオーディオマネージャ（初回コマンド時に遅延初期化）
-    audio:          Option<crate::engine::core::audio::AudioManager>,
+    audio: Option<crate::engine::core::audio::AudioManager>,
     /// シーンレジストリ: シーンマネージャ登録名 → assets:// パス
     /// （project_settings.json の "scenes" 配列から起動時に読み込む）。
     /// スクリプトの SEED.Scene.Load / Transition が名前解決に使う。
@@ -445,22 +464,22 @@ pub struct App {
     /// スクリプトの Scene.Load で事前読み込みされたシーン
     /// （(解決済みパス, シーン, デバッグカメラ)。Transition 時に消費される）。
     preloaded_scene: Option<(String, Scene, Option<DebugCameraData>)>,
-    cam_input:      CameraInput,
-    camera:         DebugCamera,
-    clock:          Clock,
-    draw_ctx:       Option<DrawContext>,
-    scene:          Option<Scene>,
-    camera_buf:     Option<CameraBuffer>,
+    cam_input: CameraInput,
+    camera: DebugCamera,
+    clock: Clock,
+    draw_ctx: Option<DrawContext>,
+    scene: Option<Scene>,
+    camera_buf: Option<CameraBuffer>,
     /// シーンのスクリーンスペースキャンバスオーバーレイ専用カメラバッファ。
     /// 3D メインカメラの上に 2D キャンバス要素を重ねるために使う（シーンSS専用）。
     /// アクター編集タブは camera_buf 自体が 2D なので不要。
     canvas_overlay_camera_buf: Option<CameraBuffer>,
     scripting_host: Option<Arc<ScriptingHost>>,
 
-    parent_hwnd:  Option<isize>,
-    mode:         RuntimeMode,
-    ipc:          Option<IpcClient>,
-    paused:       bool,
+    parent_hwnd: Option<isize>,
+    mode: RuntimeMode,
+    ipc: Option<IpcClient>,
+    paused: bool,
     /// AI 実行中にレンダリングを停止して GPU リソースを LLM に解放するフラグ。
     /// PAUSE_RENDER / RESUME_RENDER IPC コマンドで切り替える。
     render_paused: bool,
@@ -469,7 +488,7 @@ pub struct App {
     /// 暴走ループ（毎秒数千フレーム）を防ぐために使う。
     window_focused: bool,
     /// アセットルートのパス（Playモード・パッケージモードでのシーン自動ロードに使用）。
-    assets_root:  Option<String>,
+    assets_root: Option<String>,
     /// エディタリソースディレクトリ（カメラギズモモデル等の読み込みに使用）。
     editor_resources: Option<String>,
     /// Play モードで読み込むシーンパス。None なら project_settings.json の start_scene を使う。
@@ -486,32 +505,32 @@ pub struct App {
 
     // ── ピッキング / ギズモ ──────────────────────────────────
     /// Actor 選択用 ID バッファ（Edit/Pause モードのみ使用）。
-    id_buffer:          Option<IdBuffer>,
+    id_buffer: Option<IdBuffer>,
     /// 現在選択中のインスタンスインデックス（複数選択対応）。
     selected_instances: Vec<u32>,
     /// LMB クリック時のビューポートピクセル座標（次フレームで処理）。
-    pending_pick:       Option<(u32, u32)>,
+    pending_pick: Option<(u32, u32)>,
     /// 2D ピックの巡回選択状態（同一地点の連続クリックで次候補へ回すため）。
     /// (直前クリックのスクリーン座標, 優先度順の候補 DFS リスト, 現在選択インデックス)。
-    pick_2d_cycle:      Option<([f32; 2], Vec<usize>, usize)>,
+    pick_2d_cycle: Option<([f32; 2], Vec<usize>, usize)>,
     /// 直前フレームのカーソル座標（ビューポートローカル）。
-    last_cursor_pos:    Option<(f32, f32)>,
+    last_cursor_pos: Option<(f32, f32)>,
     /// ギズモ描画用の単位行列モデルバッファ。
-    line_model_buf:     Option<(wgpu::Buffer, wgpu::BindGroup)>,
+    line_model_buf: Option<(wgpu::Buffer, wgpu::BindGroup)>,
     /// 現在のエディタツールモード。
-    tool_mode:          ToolMode,
+    tool_mode: ToolMode,
     /// ギズモ座標系モード（World / Local）。デフォルトは World（従来の挙動）。
-    gizmo_space:        GizmoSpace,
+    gizmo_space: GizmoSpace,
     /// LMB ドラッグに関連する全状態（ギズモドラッグ・矩形選択・入力状態）。
-    drag:               drag_state::DragState,
+    drag: drag_state::DragState,
     /// マウスホバー中のギズモパーツ（ハイライト表示用）。
     hovered_gizmo_part: Option<GizmoPart>,
     /// Undo/Redo 履歴。
-    undo_history:       UndoHistory,
+    undo_history: UndoHistory,
     /// Ctrl キーが押されているか。
-    ctrl_held:          bool,
+    ctrl_held: bool,
     /// ヒエラルキー更新が保留中（スロットリング用）。
-    hierarchy_dirty:     bool,
+    hierarchy_dirty: bool,
     /// 最後にヒエラルキーを送信した時刻（スロットリング用）。
     last_hierarchy_send: Option<std::time::Instant>,
     /// コピー&ペースト用クリップボード（アクター編集モード: MC インスタンス単位）。
@@ -753,7 +772,6 @@ pub struct App {
     pub(super) edit_physics_with_rigidbody: bool,
 
     // ─── 編集時物理タイムライン ───────────────────────────────────────────────
-
     /// タイムラインが停止中かどうか。true = 停止、false = 再生中。
     /// edit_physics_enabled が true になった時点で true に初期化される。
     pub(super) edit_physics_paused: bool,
@@ -811,7 +829,10 @@ pub struct App {
 
     /// 3D キャンバスごとの 2D 物理スレッド（canvas root の Entity → PhysicsThread2d）。
     /// 各 3D キャンバスは他のキャンバスと物理が干渉しないよう独立したスレッドを持つ。
-    pub(super) canvas_3d_physics: std::collections::HashMap<crate::engine::ecs::Entity, crate::engine::physics::PhysicsThread2d>,
+    pub(super) canvas_3d_physics: std::collections::HashMap<
+        crate::engine::ecs::Entity,
+        crate::engine::physics::PhysicsThread2d,
+    >,
 
     /// 編集時の 2D 物理シミュレーション有効フラグ。
     /// true のとき Edit モードでも 2D 物理スレッドを起動して衝突検出を行う。
@@ -846,24 +867,28 @@ pub struct App {
     // ビュータブ（3Dシーン/2Dシーン）・アクター編集タブ（world_line）ごとに、
     // 物理タイムライン状態と Dynamic ボディの速度を退避し、タブ復帰時に
     // 位置（ECS で保持）＋速度（下記キャッシュ）で「続き」から再開できるようにする。
-
     /// タブ（TabKey）→ 退避した物理状態。タブ離脱時に挿入し、復帰時に取り出す。
-    pub(super) tab_physics: std::collections::HashMap<tab_physics::TabKey, tab_physics::TabPhysicsState>,
+    pub(super) tab_physics:
+        std::collections::HashMap<tab_physics::TabKey, tab_physics::TabPhysicsState>,
 
     /// 直近フレームの 3D Dynamic ボディ速度キャッシュ（ECS Entity → (linvel, angvel)）。
     /// update_physics が結果ストリームから毎フレーム更新し、タブ離脱時に退避する。
-    pub(super) current_vel_cache_3d: std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 3], [f32; 3])>,
+    pub(super) current_vel_cache_3d:
+        std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 3], [f32; 3])>,
 
     /// 直近フレームの 2D Dynamic ボディ速度キャッシュ（ECS Entity → (linvel, angvel スカラー)）。
-    pub(super) current_vel_cache_2d: std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 2], f32)>,
+    pub(super) current_vel_cache_2d:
+        std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 2], f32)>,
 
     /// タブ復帰時に「次の start_physics で初速として積む速度」（一回性）。
     /// Some のときだけ collect_physics_objects が該当 Entity の初速を上書きする。
     /// start 直後に None へ戻すことで、他の多数の start_physics 呼び出しは初速なしを保つ。
-    pub(super) pending_restore_vel_3d: Option<std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 3], [f32; 3])>>,
+    pub(super) pending_restore_vel_3d:
+        Option<std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 3], [f32; 3])>>,
 
     /// タブ復帰時に「次の start_physics_2d で初速として積む速度」（一回性、2D 版）。
-    pub(super) pending_restore_vel_2d: Option<std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 2], f32)>>,
+    pub(super) pending_restore_vel_2d:
+        Option<std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 2], f32)>>,
 
     /// プロジェクト設定（project_settings.json）のウィンドウ解像度キャッシュ (幅, 高さ)。
     /// handle_resumed で一度だけ読み込み、以降は再読込しない。
@@ -883,7 +908,14 @@ pub struct App {
     /// 各トラックの (相対アクターパス, 束縛, プレビュー適用前の値)。
     /// ANIM_PREVIEW_STOP 受信時にここから取り出して書き戻し、プレビュー中に
     /// 触れたプロパティを元の状態へ完全復元する。
-    pub(super) anim_preview_saved: HashMap<u32, Vec<(String, crate::engine::animation::PropBinding, crate::engine::animation::AnimValue)>>,
+    pub(super) anim_preview_saved: HashMap<
+        u32,
+        Vec<(
+            String,
+            crate::engine::animation::PropBinding,
+            crate::engine::animation::AnimValue,
+        )>,
+    >,
 
     // ── ジョイントアタッチ（ソケット）───────────────────────────────
     /// JointAttachComponent のジョイント名解決失敗を「1 回だけ」警告するための既出集合。
@@ -909,7 +941,9 @@ impl App {
         // 親が終了した際に自プロセスも自動終了するバックグラウンドスレッドが起動する。
         crate::engine::core::parent_guard::watch(args.parent_pid);
 
-        let ipc = args.pipe_name.as_deref()
+        let ipc = args
+            .pipe_name
+            .as_deref()
             .and_then(|name| IpcClient::connect(name).ok());
 
         let dll_path = ScriptingHost::resolve_dll_path();
@@ -922,7 +956,7 @@ impl App {
                     host.install_host_api();
                     Some(host)
                 }
-                Err(_)   => None,
+                Err(_) => None,
             }
         } else {
             None
@@ -941,135 +975,135 @@ impl App {
         }
 
         Self {
-            window:         None,
-            renderer:       None,
-            input:          Input::new(),
-            audio:          None,
+            window: None,
+            renderer: None,
+            input: Input::new(),
+            audio: None,
             scene_registry: HashMap::new(),
             preloaded_scene: None,
-            cam_input:      CameraInput::default(),
-            camera:         DebugCamera::default(),
-            clock:          Clock::new(),
-            draw_ctx:       None,
-            scene:          None,
-            camera_buf:     None,
+            cam_input: CameraInput::default(),
+            camera: DebugCamera::default(),
+            clock: Clock::new(),
+            draw_ctx: None,
+            scene: None,
+            camera_buf: None,
             canvas_overlay_camera_buf: None,
             scripting_host,
-            parent_hwnd:  args.parent_hwnd,
-            mode:         args.mode,
+            parent_hwnd: args.parent_hwnd,
+            mode: args.mode,
             ipc,
-            paused:        false,
+            paused: false,
             render_paused: false,
             window_focused: true,
-            assets_root:      args.assets_root,
+            assets_root: args.assets_root,
             editor_resources: args.editor_resources,
-            scene_path:       args.scene_path,
+            scene_path: args.scene_path,
             cam_grab_screen_pos: None,
             mmb_grab_screen_pos: None,
             play_clamp: false,
-            id_buffer:          None,
+            id_buffer: None,
             selected_instances: Vec::new(),
-            pending_pick:       None,
-            pick_2d_cycle:      None,
-            last_cursor_pos:    None,
-            line_model_buf:     None,
-            tool_mode:          ToolMode::Select,
-            gizmo_space:        GizmoSpace::World,
-            drag:               drag_state::DragState::new(),
+            pending_pick: None,
+            pick_2d_cycle: None,
+            last_cursor_pos: None,
+            line_model_buf: None,
+            tool_mode: ToolMode::Select,
+            gizmo_space: GizmoSpace::World,
+            drag: drag_state::DragState::new(),
             hovered_gizmo_part: None,
-            undo_history:       UndoHistory::new(),
-            ctrl_held:          false,
-            hierarchy_dirty:     false,
+            undo_history: UndoHistory::new(),
+            ctrl_held: false,
+            hierarchy_dirty: false,
             last_hierarchy_send: None,
-            clipboard:           Vec::new(),
-            actor_clipboard:     Vec::new(),
-            rmb_press_pos:          None,
-            rmb_moved:              false,
-            pause_cam_pivot:        None,
+            clipboard: Vec::new(),
+            actor_clipboard: Vec::new(),
+            rmb_press_pos: None,
+            rmb_moved: false,
+            pause_cam_pivot: None,
             pause_cam_warp_pending: 0,
-            first_frame_sent:       false,
-            axis_gizmo:            None,
-            icon_overlay:          None,
-            fps_display:           0.0,
-            fps_frame_count:       0,
-            fps_frame_start:       std::time::Instant::now(),
-            show_grid:       true,
-            render_features:    crate::engine::core::renderer::RenderFeatures::default(),
+            first_frame_sent: false,
+            axis_gizmo: None,
+            icon_overlay: None,
+            fps_display: 0.0,
+            fps_frame_count: 0,
+            fps_frame_start: std::time::Instant::now(),
+            show_grid: true,
+            render_features: crate::engine::core::renderer::RenderFeatures::default(),
             features_log_state: None,
             show_axis_gizmo: true,
             axis_gizmo_hovered: None,
-            camera_snap_anim:   None,
-            actor_virtual_selected_idx:      None,
-            selected_actor_dfs_ids:          Vec::new(),
+            camera_snap_anim: None,
+            actor_virtual_selected_idx: None,
+            selected_actor_dfs_ids: Vec::new(),
             actor_virtual_selected_slot_idx: 0,
-            inspector_transform_drag:     None,
-            edit_physics_enabled:        false,
+            inspector_transform_drag: None,
+            edit_physics_enabled: false,
             edit_physics_with_rigidbody: false,
-            edit_physics_paused:          true,
-            edit_physics_at_latest:       true,
-            edit_physics_snapshots:       Vec::new(),
-            edit_physics_current_frame:   0,
-            edit_physics_sim_time:        0.0,
+            edit_physics_paused: true,
+            edit_physics_at_latest: true,
+            edit_physics_snapshots: Vec::new(),
+            edit_physics_current_frame: 0,
+            edit_physics_sim_time: 0.0,
             edit_physics_no_change_count: 0,
-            edit_physics_warmup_frames:   0,
-            edit_physics_in_playback:     false,
+            edit_physics_warmup_frames: 0,
+            edit_physics_in_playback: false,
             // Play 起動時に --play-collider-draw=1 が渡された場合は即有効化する
-            play_collider_draw:          args.play_collider_draw,
-            active_collision_dfs_ids:     std::collections::HashSet::new(),
-            dragging_physics_entity_id:   None,
+            play_collider_draw: args.play_collider_draw,
+            active_collision_dfs_ids: std::collections::HashSet::new(),
+            dragging_physics_entity_id: None,
             drag_collider_last_valid_pos: None,
             active_world_line: 0,
             saved_cameras: HashMap::new(),
-            canvas_world_lines:    HashSet::new(),
+            canvas_world_lines: HashSet::new(),
             actor_edit_canvas_wls: HashSet::new(),
-            canvas_cameras:        HashMap::new(),
-            canvas_edit_sessions:  HashMap::new(),
+            canvas_cameras: HashMap::new(),
+            canvas_edit_sessions: HashMap::new(),
             canvas_screen_space_overlay: false,
-            edit_view_mode:              EditViewMode::View3D,
-            rt_pool:                     crate::engine::core::renderer::RtPool::new(),
-            refract_pyramid:             crate::engine::core::renderer::RefractPyramid::new(),
-            ao_targets:                  crate::engine::core::renderer::AoTargets::new(),
-            ssgi_targets:                crate::engine::core::renderer::SsgiTargets::new(),
-            shadow_mask_targets:         crate::engine::core::renderer::ShadowMaskTargets::new(),
-            ssgi_warmed:                 false,
-            particle_system:             crate::engine::core::renderer::ParticleSystem::new(),
-            skybox_system:               crate::engine::core::renderer::SkyboxSystem::new(),
-            hiz:                         None,
-            hiz_prev_keys:               Vec::new(),
-            hiz_need_map:                false,
-            post_vignette_enabled:       false,
-            post_fx:                     crate::engine::core::renderer::PostFxSettings::default(),
-            scene_view_mode:             crate::engine::core::renderer::SceneViewMode::default(),
-            ambient_color:               crate::engine::core::renderer::DEFAULT_AMBIENT_COLOR,
-            ambient_intensity:           crate::engine::core::renderer::DEFAULT_AMBIENT_INTENSITY,
-            camera_preview:              None,
-            camera_preview_target_size:  None,
-            camera_gizmo:                None,
-            light_gizmo:                 None,
-            particle_gizmo:              None,
-            shared_model_batches:    HashMap::new(),
-            last_camera_pos:         [0.0; 3],
-            batch_absent_frames:     HashMap::new(),
-            pending_drop:            None,
+            edit_view_mode: EditViewMode::View3D,
+            rt_pool: crate::engine::core::renderer::RtPool::new(),
+            refract_pyramid: crate::engine::core::renderer::RefractPyramid::new(),
+            ao_targets: crate::engine::core::renderer::AoTargets::new(),
+            ssgi_targets: crate::engine::core::renderer::SsgiTargets::new(),
+            shadow_mask_targets: crate::engine::core::renderer::ShadowMaskTargets::new(),
+            ssgi_warmed: false,
+            particle_system: crate::engine::core::renderer::ParticleSystem::new(),
+            skybox_system: crate::engine::core::renderer::SkyboxSystem::new(),
+            hiz: None,
+            hiz_prev_keys: Vec::new(),
+            hiz_need_map: false,
+            post_vignette_enabled: false,
+            post_fx: crate::engine::core::renderer::PostFxSettings::default(),
+            scene_view_mode: crate::engine::core::renderer::SceneViewMode::default(),
+            ambient_color: crate::engine::core::renderer::DEFAULT_AMBIENT_COLOR,
+            ambient_intensity: crate::engine::core::renderer::DEFAULT_AMBIENT_INTENSITY,
+            camera_preview: None,
+            camera_preview_target_size: None,
+            camera_gizmo: None,
+            light_gizmo: None,
+            particle_gizmo: None,
+            shared_model_batches: HashMap::new(),
+            last_camera_pos: [0.0; 3],
+            batch_absent_frames: HashMap::new(),
+            pending_drop: None,
             pending_drop_hover: None,
-            drop_preview_pos:   None,
+            drop_preview_pos: None,
             drag_hover_canvas_entity: None,
             context_menu_screen_pos: None,
-            pending_add_actor:  None,
-            plugin_registry:  crate::engine::plugin::registry::PluginRegistry::empty(),
-            physics_thread:   None,
-            physics_thread_2d:           None,
-            canvas_3d_physics:           std::collections::HashMap::new(),
-            edit_physics_2d_enabled:     false,
+            pending_add_actor: None,
+            plugin_registry: crate::engine::plugin::registry::PluginRegistry::empty(),
+            physics_thread: None,
+            physics_thread_2d: None,
+            canvas_3d_physics: std::collections::HashMap::new(),
+            edit_physics_2d_enabled: false,
             edit_physics_2d_with_rigidbody: false,
             active_collision_2d_dfs_ids: std::collections::HashSet::new(),
             dragging_physics_2d_entity_id: None,
             drag_collider_last_valid_pos_2d: None,
             last_physics_2d_viewport: None,
             // タブごと物理状態保持（続きから再開）
-            tab_physics:            std::collections::HashMap::new(),
-            current_vel_cache_3d:   std::collections::HashMap::new(),
-            current_vel_cache_2d:   std::collections::HashMap::new(),
+            tab_physics: std::collections::HashMap::new(),
+            current_vel_cache_3d: std::collections::HashMap::new(),
+            current_vel_cache_2d: std::collections::HashMap::new(),
             pending_restore_vel_3d: None,
             pending_restore_vel_2d: None,
             // handle_resumed で project_settings.json から上書きされる
@@ -1077,21 +1111,22 @@ impl App {
             anim_preview_cache: HashMap::new(),
             anim_preview_saved: HashMap::new(),
             joint_attach_warned: std::collections::HashSet::new(),
-            terrain:             terrain_ops::TerrainState::default(),
+            terrain: terrain_ops::TerrainState::default(),
         }
     }
 
     /// エントリポイント。EventLoop を生成して実行する。
     pub fn run(args: LaunchArgs) {
-        let event_loop: EventLoop<()> =
-            EventLoop::new().expect("Failed to create event loop");
+        let event_loop: EventLoop<()> = EventLoop::new().expect("Failed to create event loop");
         event_loop.set_control_flow(ControlFlow::Poll);
         let mut app = App::new(args);
         event_loop.run_app(&mut app).expect("Failed to run app");
     }
 
     /// エディタ埋め込みモードかどうかを返す。
-    fn is_embedded(&self) -> bool { self.parent_hwnd.is_some() }
+    fn is_embedded(&self) -> bool {
+        self.parent_hwnd.is_some()
+    }
 
     // ── Edit ビューモード判定ヘルパー ─────────────────────────────
 
@@ -1118,8 +1153,7 @@ impl App {
     /// ビューポート（wl==0 の Edit View2D = edit_view_is_2d）とは別条件だが、
     /// D&D ドロップ配置ではどちらも 2D 経路（handle_drop_actor_2d）へ流す。
     pub(super) fn is_2d_edit_tab(&self) -> bool {
-        self.active_world_line != 0
-            && self.actor_edit_canvas_wls.contains(&self.active_world_line)
+        self.active_world_line != 0 && self.actor_edit_canvas_wls.contains(&self.active_world_line)
     }
 
     /// 現在のビューポートが「3D シーンビューでスクリーンスペースキャンバスを
@@ -1162,16 +1196,30 @@ impl App {
             use windows_sys::Win32::Foundation::RECT;
             use windows_sys::Win32::UI::WindowsAndMessaging::{GetClientRect, GetParent};
             let hwnd = self.window_hwnd();
-            if hwnd == 0 { return None; }
+            if hwnd == 0 {
+                return None;
+            }
             unsafe {
                 let parent = GetParent(hwnd as _);
-                if parent.is_null() { return None; }
-                let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-                if GetClientRect(parent, &mut rect) == 0 { return None; }
-                let w = (rect.right  - rect.left) as u32;
-                let h = (rect.bottom - rect.top)  as u32;
+                if parent.is_null() {
+                    return None;
+                }
+                let mut rect = RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                };
+                if GetClientRect(parent, &mut rect) == 0 {
+                    return None;
+                }
+                let w = (rect.right - rect.left) as u32;
+                let h = (rect.bottom - rect.top) as u32;
                 if w > 0 && h > 0 {
-                    return Some(winit::dpi::PhysicalSize { width: w, height: h });
+                    return Some(winit::dpi::PhysicalSize {
+                        width: w,
+                        height: h,
+                    });
                 }
             }
         }
@@ -1185,29 +1233,23 @@ impl App {
 
 mod actor_utils;
 mod platform_utils;
-mod slot_ops;
 mod script_ops;
+mod slot_ops;
 
 // actor_utils / platform_utils の関数を親名前空間に再エクスポートする。
 // サブモジュール（render.rs 等）は既存の `use super::fn_name` のまま使用可能。
 use actor_utils::{
-    collect_actor_nodes, build_hierarchy_json,
-    find_actor_by_dfs, find_actor_by_dfs_mut,
-    canvas_anchor_offset_for_dfs, collect_canvas_actors_in_rect,
-    collect_transform_only_in_rect,
-    collect_mcs_in_world_line,
-    remove_actor_by_dfs, actor_subtree_size, find_parent_canvas_info,
-    find_actor_root_info,
-    collect_entities_for_wl, despawn_actor_recursive,
-    count_actor_dfs_nodes, extract_actor_by_dfs, extract_actor_by_entity,
-    selection_centroid, world_to_screen,
-    collect_child_actor_mc_starts, collect_child_actor_old_states,
-    apply_delta_to_actor_children, apply_delta_to_actor_subtree,
-    find_parent_actor_of_dfs, get_3d_canvas_world_mat,
-    extract_actor_by_dfs_with_origin, find_actor_by_entity_mut,
+    actor_subtree_size, apply_delta_to_actor_children, apply_delta_to_actor_subtree,
+    build_hierarchy_json, canvas_anchor_offset_for_dfs, collect_actor_nodes,
+    collect_canvas_actors_in_rect, collect_child_actor_mc_starts, collect_child_actor_old_states,
+    collect_entities_for_wl, collect_mcs_in_world_line, collect_transform_only_in_rect,
+    count_actor_dfs_nodes, despawn_actor_recursive, extract_actor_by_dfs,
+    extract_actor_by_dfs_with_origin, extract_actor_by_entity, find_actor_by_dfs,
+    find_actor_by_dfs_mut, find_actor_by_entity_mut, find_actor_root_info,
+    find_parent_actor_of_dfs, find_parent_canvas_info, get_3d_canvas_world_mat,
+    remove_actor_by_dfs, selection_centroid, world_to_screen,
 };
 use platform_utils::{
-    camera_grab_start, camera_grab_end, apply_window_clamp, release_window_clamp,
-    warp_cursor_to_local, mmb_grab_start, mmb_grab_end,
+    apply_window_clamp, camera_grab_end, camera_grab_start, mmb_grab_end, mmb_grab_start,
+    release_window_clamp, warp_cursor_to_local,
 };
-

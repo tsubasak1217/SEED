@@ -38,12 +38,12 @@
 use std::collections::HashMap;
 use std::f32::consts::PI;
 
-use crate::engine::components::{ColliderShape2dData, ComponentKind};
-use crate::engine::ecs::Entity;
-use crate::engine::structs::objects::actor::Actor;
-use crate::engine::core::app_base::scene::Scene;
-use crate::engine::methods::drawer::LineBatch;
 use super::actor_utils::get_3d_canvas_world_mat;
+use crate::engine::components::{ColliderShape2dData, ComponentKind};
+use crate::engine::core::app_base::scene::Scene;
+use crate::engine::ecs::Entity;
+use crate::engine::methods::drawer::LineBatch;
+use crate::engine::structs::objects::actor::Actor;
 
 // ─── 選択強調（2D / 3D コライダー共通）──────────────────────────────────────
 
@@ -106,16 +106,16 @@ fn capsule_half_segments() -> usize {
 /// 形状は中心・回転・スケールを正準空間で適用したうえで `map` を各点に通す。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_collider2d_wireframe<F>(
-    lb:         &mut LineBatch,
-    shape:      &ColliderShape2dData,
-    center:     [f32; 2],
-    rot_rad:    f32,
-    scale:      [f32; 2],
-    eff_sx:     f32,
-    eff_sy:     f32,
-    color:      [f32; 4],
+    lb: &mut LineBatch,
+    shape: &ColliderShape2dData,
+    center: [f32; 2],
+    rot_rad: f32,
+    scale: [f32; 2],
+    eff_sx: f32,
+    eff_sy: f32,
+    color: [f32; 4],
     map_y_sign: f32,
-    map:        F,
+    map: F,
 ) where
     F: Fn([f32; 2]) -> [f32; 3],
 {
@@ -136,9 +136,9 @@ pub(super) fn emit_collider2d_wireframe<F>(
             let hx = half_extents[0] * scale[0].abs() * eff_sx;
             let hy = half_extents[1] * scale[1].abs() * eff_sy;
             let c0 = place(-hx, -hy);
-            let c1 = place( hx, -hy);
-            let c2 = place( hx,  hy);
-            let c3 = place(-hx,  hy);
+            let c1 = place(hx, -hy);
+            let c2 = place(hx, hy);
+            let c3 = place(-hx, hy);
             lb.add_line(c0, c1, color);
             lb.add_line(c1, c2, color);
             lb.add_line(c2, c3, color);
@@ -160,22 +160,25 @@ pub(super) fn emit_collider2d_wireframe<F>(
         }
 
         // ── カプセル（長軸 Y・回転あり）──────────────────────────────────
-        ColliderShape2dData::Capsule { radius, half_height } => {
-            let r  = radius * scale[0].abs().max(scale[1].abs()) * eff_sx.max(eff_sy);
+        ColliderShape2dData::Capsule {
+            radius,
+            half_height,
+        } => {
+            let r = radius * scale[0].abs().max(scale[1].abs()) * eff_sx.max(eff_sy);
             let hh = half_height * scale[1].abs() * eff_sy;
-            let n  = capsule_half_segments();
+            let n = capsule_half_segments();
 
             // 円筒部の両脇 2 本（接線）
-            lb.add_line(place(-r,  hh), place(-r, -hh), color);
-            lb.add_line(place( r,  hh), place( r, -hh), color);
+            lb.add_line(place(-r, hh), place(-r, -hh), color);
+            lb.add_line(place(r, hh), place(r, -hh), color);
 
             // 上端半円（Y+ 方向）
             for i in 0..n {
                 let t0 = PI * i as f32 / n as f32;
                 let t1 = PI * (i + 1) as f32 / n as f32;
                 lb.add_line(
-                    place(-r * t0.sin(),  hh + r * t0.cos()),
-                    place(-r * t1.sin(),  hh + r * t1.cos()),
+                    place(-r * t0.sin(), hh + r * t0.cos()),
+                    place(-r * t1.sin(), hh + r * t1.cos()),
                     color,
                 );
             }
@@ -184,8 +187,8 @@ pub(super) fn emit_collider2d_wireframe<F>(
                 let t0 = PI * i as f32 / n as f32;
                 let t1 = PI * (i + 1) as f32 / n as f32;
                 lb.add_line(
-                    place( r * t0.sin(), -hh - r * t0.cos()),
-                    place( r * t1.sin(), -hh - r * t1.cos()),
+                    place(r * t0.sin(), -hh - r * t0.cos()),
+                    place(r * t1.sin(), -hh - r * t1.cos()),
                     color,
                 );
             }
@@ -194,13 +197,16 @@ pub(super) fn emit_collider2d_wireframe<F>(
         // ── 凸包（頂点へ scale・eff を非等方に適用）──────────────────────────
         ColliderShape2dData::ConvexHull { vertices } => {
             let n = vertices.len();
-            if n < 2 { return; }
+            if n < 2 {
+                return;
+            }
             // 頂点ごとに scale を乗算 → 回転 → eff_sx/eff_sy を非等方に適用 → 中心へ平行移動。
             // 従来コードと同じく eff_sx/eff_sy は回転後の各軸へ掛ける。
             // 【注意】凸包は従来コードが回転を y_sign 反転していなかったため、
             // place（map_y_sign 乗算あり）を使わず、この専用パス（乗算なし）のまま
             // map へ通すことで従来の頂点列と厳密に一致する。
-            let world_verts: Vec<[f32; 3]> = vertices.iter()
+            let world_verts: Vec<[f32; 3]> = vertices
+                .iter()
                 .map(|&[vx, vy]| {
                     let svx = vx * scale[0];
                     let svy = vy * scale[1];
@@ -239,14 +245,14 @@ pub(super) fn emit_collider2d_wireframe<F>(
 /// - `None`: 面を構成できない場合（頂点数不足の凸包など）。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collider2d_pick_quad_model<F>(
-    shape:      &ColliderShape2dData,
-    center:     [f32; 2],
-    rot_rad:    f32,
-    scale:      [f32; 2],
-    eff_sx:     f32,
-    eff_sy:     f32,
+    shape: &ColliderShape2dData,
+    center: [f32; 2],
+    rot_rad: f32,
+    scale: [f32; 2],
+    eff_sx: f32,
+    eff_sy: f32,
     map_y_sign: f32,
-    map:        F,
+    map: F,
 ) -> Option<[[f32; 4]; 4]>
 where
     F: Fn([f32; 2]) -> [f32; 3],
@@ -264,7 +270,7 @@ where
         [
             [ex[0], ex[1], ex[2], 0.0],
             [ey[0], ey[1], ey[2], 0.0],
-            [0.0,   0.0,   1.0,   0.0],
+            [0.0, 0.0, 1.0, 0.0],
             [c00[0], c00[1], c00[2], 1.0],
         ]
     };
@@ -285,10 +291,13 @@ where
                     let r = radius * scale[0].abs().max(scale[1].abs()) * eff_sx.max(eff_sy);
                     (r, r)
                 }
-                ColliderShape2dData::Capsule { radius, half_height } => {
-                    let r  = radius * scale[0].abs().max(scale[1].abs()) * eff_sx.max(eff_sy);
+                ColliderShape2dData::Capsule {
+                    radius,
+                    half_height,
+                } => {
+                    let r = radius * scale[0].abs().max(scale[1].abs()) * eff_sx.max(eff_sy);
                     let hh = half_height * scale[1].abs() * eff_sy;
-                    (r, hh + r)   // 長軸 Y のカプセルはキャップ込みで hh+r
+                    (r, hh + r) // 長軸 Y のカプセルはキャップ込みで hh+r
                 }
                 _ => unreachable!(),
             };
@@ -298,27 +307,33 @@ where
                 map([cx + cos * lx - sin * ly, cy + sin * lx + cos * ly])
             };
             let c00 = place(-hx, -hy);
-            let c10 = place( hx, -hy);
-            let c01 = place(-hx,  hy);
+            let c10 = place(hx, -hy);
+            let c01 = place(-hx, hy);
             Some(model_from_corners(c00, c10, c01))
         }
 
         // ── 凸包: 変換後頂点のキャンバス空間 AABB を外接クワッドとする ─────────────
         // 凸包は emit と同じく eff を回転後の各軸へ非等方に適用し、map_y_sign は用いない。
         ColliderShape2dData::ConvexHull { vertices } => {
-            if vertices.len() < 2 { return None; }
+            if vertices.len() < 2 {
+                return None;
+            }
             let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
             let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
             for &[vx, vy] in vertices.iter() {
                 let svx = vx * scale[0];
                 let svy = vy * scale[1];
-                let rwx = (cos * svx - sin * svy) * eff_sx;   // 中心相対のキャンバス空間 X
-                let rwy = (sin * svx + cos * svy) * eff_sy;   // 中心相対のキャンバス空間 Y
-                min_x = min_x.min(rwx); max_x = max_x.max(rwx);
-                min_y = min_y.min(rwy); max_y = max_y.max(rwy);
+                let rwx = (cos * svx - sin * svy) * eff_sx; // 中心相対のキャンバス空間 X
+                let rwy = (sin * svx + cos * svy) * eff_sy; // 中心相対のキャンバス空間 Y
+                min_x = min_x.min(rwx);
+                max_x = max_x.max(rwx);
+                min_y = min_y.min(rwy);
+                max_y = max_y.max(rwy);
             }
             // 退化（面積 0）は面ピッキング不可としてスキップする。
-            if !(max_x > min_x && max_y > min_y) { return None; }
+            if !(max_x > min_x && max_y > min_y) {
+                return None;
+            }
             let c00 = map([cx + min_x, cy + min_y]);
             let c10 = map([cx + max_x, cy + min_y]);
             let c01 = map([cx + min_x, cy + max_y]);
@@ -350,18 +365,24 @@ where
 /// # 戻り値
 /// - `HashMap<Entity, [[f32;4];4]>`: Actor2D エンティティ → 所属 3D キャンバスの canvas_to_world。
 pub(super) fn build_3d_canvas_collider_descendant_map(
-    scene:      &Scene,
+    scene: &Scene,
     world_line: u32,
 ) -> HashMap<Entity, [[f32; 4]; 4]> {
     let mut map: HashMap<Entity, [[f32; 4]; 4]> = HashMap::new();
 
     // トップレベルアクターのうち Actor3D + CanvasComponent をルートとして走査する。
     for actor in scene.actors.iter() {
-        if actor.world_line != world_line { continue; }
+        if actor.world_line != world_line {
+            continue;
+        }
         // 非アクティブアクターは（配下スプライト同様）描画対象外。
-        if !actor.active { continue; }
+        if !actor.active {
+            continue;
+        }
         // 3D キャンバスでなければスキップ（Actor2D / CanvasComponent なしは None）。
-        let Some(ctw) = get_3d_canvas_world_mat(actor, &scene.world) else { continue };
+        let Some(ctw) = get_3d_canvas_world_mat(actor, &scene.world) else {
+            continue;
+        };
 
         // このルート配下の全 Actor2D 子孫を ctw へ対応付ける。
         collect_canvas_descendants(&actor.children, &ctw, &mut map);
@@ -377,17 +398,24 @@ pub(super) fn build_3d_canvas_collider_descendant_map(
 /// そのサブツリーはスプライト描画パスの対象外であるため走査を打ち切る。
 fn collect_canvas_descendants(
     actors: &[Actor],
-    ctw:    &[[f32; 4]; 4],
-    map:    &mut HashMap<Entity, [[f32; 4]; 4]>,
+    ctw: &[[f32; 4]; 4],
+    map: &mut HashMap<Entity, [[f32; 4]; 4]>,
 ) {
     for child in actors.iter() {
         // 非アクティブサブツリーは描画されないため対応付けない。
-        if !child.active { continue; }
+        if !child.active {
+            continue;
+        }
 
         // ネストした 3D キャンバスはスプライト描画パスの対象外 → サブツリーを除外。
         let is_nested_3d_canvas = !child.is_2d()
-            && child.slots().iter().any(|s| s.kind == ComponentKind::Canvas);
-        if is_nested_3d_canvas { continue; }
+            && child
+                .slots()
+                .iter()
+                .any(|s| s.kind == ComponentKind::Canvas);
+        if is_nested_3d_canvas {
+            continue;
+        }
 
         // Actor2D なら対応付ける（Collider2d の有無はここでは問わない。
         // 実際の描画判定は呼び出し側が collider_slot_entity で行う）。

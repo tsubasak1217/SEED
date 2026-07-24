@@ -31,7 +31,7 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use super::pipeline::{get_shader_source, MeshPipeline};
+use super::pipeline::{MeshPipeline, get_shader_source};
 
 // ============================================================
 //  形状定数（WGSL grass_gbuffer.wgsl と一致必須）
@@ -59,7 +59,7 @@ pub const GRASS_MAX_VERTS_PER_BLADE: u32 =
 
 /// group1 のバインディング番号。WGSL 側 @binding と一致必須。
 const BINDING_INSTANCES: u32 = 0;
-const BINDING_UNIFORM:   u32 = 1;
+const BINDING_UNIFORM: u32 = 1;
 
 /// `GrassInstanceGpu` の想定バイト数（std430。テストで固定する）。
 const GRASS_INSTANCE_BYTES: usize = 48;
@@ -109,17 +109,17 @@ const GRASS_MIN_CAPACITY: usize = 1;
 #[derive(Clone, Copy, Pod, Zeroable, Debug, Default)]
 pub struct GrassInstanceGpu {
     /// 株の根元のワールド座標。
-    pub pos:    [f32; 3],
+    pub pos: [f32; 3],
     /// 平面の向き（Y 軸まわり、ラジアン）。
-    pub yaw:    f32,
+    pub yaw: f32,
     /// 生えている面の法線（ワールド）。草の「上方向」になる。
     pub normal: [f32; 3],
     /// 株ごとの大きさ倍率（高さ・幅の双方に掛かる）。
-    pub scale:  f32,
+    pub scale: f32,
     /// 株ごとの疑似乱数の種（風の位相・色ゆらぎに使う）。
-    pub seed:   u32,
+    pub seed: u32,
     /// 16 バイト境界へ揃えるためのパディング（GPU では未使用）。
-    pub _pad:   [u32; 3],
+    pub _pad: [u32; 3],
 }
 
 /// 草の種別ごとの見た目・風パラメータ（GPU uniform）。
@@ -131,34 +131,34 @@ pub struct GrassUniformGpu {
     /// 根元の色（リニア）。
     pub color_bottom: [f32; 3],
     /// 根元の葉幅（ワールド単位）。
-    pub width:        f32,
+    pub width: f32,
     /// 穂先の色（リニア）。
-    pub color_top:    [f32; 3],
+    pub color_top: [f32; 3],
     /// 葉の長さ（ワールド単位。instance.scale が掛かる）。
-    pub height:       f32,
+    pub height: f32,
 
     // ── 風 ──
     /// 基本揺れの振幅（曲げ角のラジアン相当）。
-    pub wind_strength:  f32,
+    pub wind_strength: f32,
     /// 基本揺れの時間周波数。
-    pub wind_speed:     f32,
+    pub wind_speed: f32,
     /// 位置による位相差の空間周波数（大きいほど細かい波が走る）。
     pub wind_frequency: f32,
     /// 突風の振幅。
-    pub gust_strength:  f32,
+    pub gust_strength: f32,
     /// 突風の時間周波数（`wind_speed` より低くすること）。
-    pub gust_speed:     f32,
+    pub gust_speed: f32,
     /// 経過時間（秒）。`update_time` がここだけを毎フレーム書き換える。
-    pub time:           f32,
+    pub time: f32,
     /// 風とは無関係な静的な垂れ（曲げ角のラジアン相当）。
-    pub bend:           f32,
+    pub bend: f32,
     /// G-Buffer へ書く roughness。
-    pub roughness:      f32,
+    pub roughness: f32,
 
     /// 実際に使う縦分割数（1..=`GRASS_MAX_SEGMENTS`。シェーダ側でも clamp する）。
-    pub segments:         u32,
+    pub segments: u32,
     /// 実際に使う平面枚数（1 または 2）。
-    pub cross_planes:     u32,
+    pub cross_planes: u32,
     /// 穂先アルファカットアウトの閾値。0 以下でカットアウト無効。
     pub tip_alpha_cutoff: f32,
     /// 陰影用法線を地表法線へ寄せる割合（0..1）。
@@ -170,7 +170,7 @@ pub struct GrassUniformGpu {
     ///
     /// 本フィールドは **旧 `_pad` を潰して置いた**ものであり、構造体サイズは
     /// 80 バイトのまま変わらない（`time` のバイトオフセットにも影響しない）。
-    pub normal_up_blend:  f32,
+    pub normal_up_blend: f32,
 }
 
 // ============================================================
@@ -196,10 +196,10 @@ impl GrassGBufferPipeline {
     /// wgpu の BindGroupLayout 構造的等価性に依拠する既存慣例）。
     /// `color_targets` には `gbuffer_color_targets()` の 4 枚をそのまま渡すこと。
     pub fn new(
-        device:        &wgpu::Device,
+        device: &wgpu::Device,
         mesh_pipeline: &MeshPipeline,
-        df:            wgpu::TextureFormat,
-        cache:         Option<&wgpu::PipelineCache>,
+        df: wgpu::TextureFormat,
+        cache: Option<&wgpu::PipelineCache>,
         color_targets: &[Option<wgpu::ColorTargetState>],
     ) -> Self {
         const LABEL: &str = "grass_gbuffer";
@@ -210,7 +210,7 @@ impl GrassGBufferPipeline {
         //   grass_gbuffer.wgsl は shader_common.wgsl を取り込まず CameraUniform を
         //   自前宣言している（deferred_lighting.wgsl と同じ先例）。
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some(LABEL),
+            label: Some(LABEL),
             source: wgpu::ShaderSource::Wgsl(get_shader_source(GRASS_SHADER_NAME).into()),
         });
 
@@ -224,40 +224,40 @@ impl GrassGBufferPipeline {
         // ── 深度: 通常の G-Buffer パスと同一（Less・書き込みあり）──
         //   草は不透明（アルファはカットアウトのみ）なので深度書き込みして問題ない。
         let depth_stencil = wgpu::DepthStencilState {
-            format:              df,
+            format: df,
             depth_write_enabled: true,
-            depth_compare:       wgpu::CompareFunction::Less,
-            stencil:             wgpu::StencilState::default(),
-            bias:                wgpu::DepthBiasState::default(),
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
         };
 
         let pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label:  Some(LABEL),
+            label: Some(LABEL),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
-                module:      &shader,
+                module: &shader,
                 entry_point: Some("vs_grass"),
                 // 頂点バッファなし（すべて vertex_index から生成する）。
-                buffers:             &[],
+                buffers: &[],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module:              &shader,
-                entry_point:         Some("fs_grass"),
-                targets:             color_targets,
+                module: &shader,
+                entry_point: Some("fs_grass"),
+                targets: color_targets,
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology:   wgpu::PrimitiveTopology::TriangleList,
+                topology: wgpu::PrimitiveTopology::TriangleList,
                 front_face: wgpu::FrontFace::Ccw,
                 // 草の葉は板ポリなので両面描画する（cull None）。
                 // 裏面の法線はフラグメントシェーダが front_facing で反転する。
-                cull_mode:  None,
+                cull_mode: None,
                 ..Default::default()
             },
             depth_stencil: Some(depth_stencil),
-            multisample:   wgpu::MultisampleState::default(),
-            multiview:     None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
             cache,
         });
 
@@ -279,23 +279,23 @@ fn create_instance_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLa
         entries: &[
             // インスタンス配列（read-only storage）。可変長なので uniform ではなく storage。
             wgpu::BindGroupLayoutEntry {
-                binding:    BINDING_INSTANCES,
+                binding: BINDING_INSTANCES,
                 visibility: wgpu::ShaderStages::VERTEX,
                 ty: wgpu::BindingType::Buffer {
-                    ty:                 wgpu::BufferBindingType::Storage { read_only: true },
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
-                    min_binding_size:   None,
+                    min_binding_size: None,
                 },
                 count: None,
             },
             // 見た目・風パラメータ（uniform）。
             wgpu::BindGroupLayoutEntry {
-                binding:    BINDING_UNIFORM,
+                binding: BINDING_UNIFORM,
                 visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
-                    ty:                 wgpu::BufferBindingType::Uniform,
+                    ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size:   None,
+                    min_binding_size: None,
                 },
                 count: None,
             },
@@ -351,8 +351,8 @@ pub fn max_grass_instances(device: &wgpu::Device) -> usize {
 /// 戻り値は切り捨てた本数（0 なら無切り捨て）。
 pub fn clamp_instances_and_spans(
     instances: &mut Vec<GrassInstanceGpu>,
-    spans:     &mut Vec<GrassChunkSpan>,
-    max:       usize,
+    spans: &mut Vec<GrassChunkSpan>,
+    max: usize,
 ) -> usize {
     if instances.len() <= max {
         return 0;
@@ -381,7 +381,7 @@ pub fn clamp_instances_and_spans(
 
 /// `GrassInstanceBuffer::new` 用の最終防衛クランプ（device 上限から max を求めて切り詰める）。
 fn clamp_new_instances<'a>(
-    device:    &wgpu::Device,
+    device: &wgpu::Device,
     instances: &'a [GrassInstanceGpu],
 ) -> &'a [GrassInstanceGpu] {
     clamp_update_instances(instances, max_grass_instances(device))
@@ -394,7 +394,9 @@ fn clamp_update_instances(instances: &[GrassInstanceGpu], max: usize) -> &[Grass
         eprintln!(
             "[SEED grass] 草インスタンス {} 本が単一 storage バインド上限 {} 本を超過。\
              {} 本へクランプして描画します（パニック回避）。",
-            instances.len(), max, max
+            instances.len(),
+            max,
+            max
         );
         &instances[..max]
     } else {
@@ -453,10 +455,10 @@ impl GrassInstanceBuffer {
     /// `instances` が空でもパニックしない（ダミー 1 要素を確保し `count = 0` にする。
     /// wgpu はサイズ 0 のバッファ生成でパニックするため）。
     pub fn new(
-        device:   &wgpu::Device,
+        device: &wgpu::Device,
         pipeline: &GrassGBufferPipeline,
         instances: &[GrassInstanceGpu],
-        uniform:   GrassUniformGpu,
+        uniform: GrassUniformGpu,
     ) -> Self {
         // 最終防衛: 単一バインド上限を超える本数はここで切り詰める。通常は呼び出し側
         // （rebuild_grass_gpu）が span と併せて既に切り詰めているので発火しないが、
@@ -465,9 +467,9 @@ impl GrassInstanceBuffer {
         let (buffer, capacity) = create_instance_buffer(device, instances);
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("grass_uniform"),
+            label: Some("grass_uniform"),
             contents: bytemuck::bytes_of(&uniform),
-            usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         let bind_group = create_instance_bind_group(device, pipeline, &buffer, &uniform_buffer);
@@ -510,11 +512,11 @@ impl GrassInstanceBuffer {
     ///   再確保（＝drop＝poll）の発生頻度そのものを構造的に下げている。
     pub fn update(
         &mut self,
-        device:    &wgpu::Device,
-        queue:     &wgpu::Queue,
-        pipeline:  &GrassGBufferPipeline,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &GrassGBufferPipeline,
         instances: &[GrassInstanceGpu],
-        uniform:   GrassUniformGpu,
+        uniform: GrassUniformGpu,
     ) {
         // ── パラメータは常に全上書き（80 バイトなので分岐する価値がない）──
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -538,7 +540,7 @@ impl GrassInstanceBuffer {
             // ↓ この 2 つの代入で旧バインドグループと旧バッファが drop される。
             self.bind_group =
                 create_instance_bind_group(device, pipeline, &buffer, &self.uniform_buffer);
-            self.buffer   = buffer;
+            self.buffer = buffer;
             self.capacity = new_capacity;
             // 旧バッファの後片付けを確定させる（散布モデル rebuild と同一の安全手順）。
             let _ = device.poll(wgpu::PollType::Wait);
@@ -575,16 +577,20 @@ impl GrassInstanceBuffer {
 /// wgpu はサイズ 0 のバッファ生成でパニックするため、空配列のときは
 /// ゼロ初期化したダミー 1 要素を確保する（`count` 側が 0 なので描画には使われない）。
 fn create_instance_buffer(
-    device:    &wgpu::Device,
+    device: &wgpu::Device,
     instances: &[GrassInstanceGpu],
 ) -> (wgpu::Buffer, usize) {
     let dummy: [GrassInstanceGpu; GRASS_EMPTY_DUMMY_ELEMENTS] = Default::default();
-    let data: &[GrassInstanceGpu] = if instances.is_empty() { &dummy } else { instances };
+    let data: &[GrassInstanceGpu] = if instances.is_empty() {
+        &dummy
+    } else {
+        instances
+    };
 
     let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label:    Some("grass_instances"),
+        label: Some("grass_instances"),
         contents: bytemuck::cast_slice(data),
-        usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
     (buffer, data.len())
 }
@@ -598,30 +604,30 @@ fn create_instance_buffer(
 fn create_sized_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     let cap = capacity.max(GRASS_MIN_CAPACITY);
     device.create_buffer(&wgpu::BufferDescriptor {
-        label:              Some("grass_instances"),
-        size:               (cap * std::mem::size_of::<GrassInstanceGpu>()) as wgpu::BufferAddress,
-        usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        label: Some("grass_instances"),
+        size: (cap * std::mem::size_of::<GrassInstanceGpu>()) as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
 }
 
 /// group1 のバインドグループを作る。
 fn create_instance_bind_group(
-    device:   &wgpu::Device,
+    device: &wgpu::Device,
     pipeline: &GrassGBufferPipeline,
     instances: &wgpu::Buffer,
-    uniform:   &wgpu::Buffer,
+    uniform: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label:  Some("grass_instance_bg"),
+        label: Some("grass_instance_bg"),
         layout: &pipeline.instance_bgl,
         entries: &[
             wgpu::BindGroupEntry {
-                binding:  BINDING_INSTANCES,
+                binding: BINDING_INSTANCES,
                 resource: instances.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
-                binding:  BINDING_UNIFORM,
+                binding: BINDING_UNIFORM,
                 resource: uniform.as_entire_binding(),
             },
         ],
@@ -640,9 +646,9 @@ fn create_instance_bind_group(
 /// 呼び出し側は本関数の前に G-Buffer レンダーパスを開始しておくこと
 /// （深度・MRT 4 枚は通常の G-Buffer パスと共通）。
 pub fn draw_grass<'pass>(
-    rp:        &mut wgpu::RenderPass<'pass>,
-    pipeline:  &'pass GrassGBufferPipeline,
-    buf:       &'pass GrassInstanceBuffer,
+    rp: &mut wgpu::RenderPass<'pass>,
+    pipeline: &'pass GrassGBufferPipeline,
+    buf: &'pass GrassInstanceBuffer,
     camera_bg: &'pass wgpu::BindGroup,
 ) {
     // 0 本のときは何もしない（インスタンス数 0 の draw は無駄なだけでなく、
@@ -680,15 +686,15 @@ pub fn draw_grass<'pass>(
 /// 戻り値は**実際に描画したインスタンス本数**（カリング＋密度減衰後）。呼び出し側が
 /// `buf.count()`（全本数）と比べて削減量を計測ログへ出すために返す（決定的な数値）。
 pub fn draw_grass_culled<'pass>(
-    rp:               &mut wgpu::RenderPass<'pass>,
-    pipeline:         &'pass GrassGBufferPipeline,
-    buf:              &'pass GrassInstanceBuffer,
-    camera_bg:        &'pass wgpu::BindGroup,
-    planes:           &[[f32; 4]; 6],
-    camera_pos:       [f32; 3],
+    rp: &mut wgpu::RenderPass<'pass>,
+    pipeline: &'pass GrassGBufferPipeline,
+    buf: &'pass GrassInstanceBuffer,
+    camera_bg: &'pass wgpu::BindGroup,
+    planes: &[[f32; 4]; 6],
+    camera_pos: [f32; 3],
     cull_distance_sq: f32,
-    decay_near_sq:    f32,
-    decay_mid_sq:     f32,
+    decay_near_sq: f32,
+    decay_mid_sq: f32,
 ) -> u32 {
     if buf.count == 0 {
         return 0;
@@ -706,7 +712,7 @@ pub fn draw_grass_culled<'pass>(
     // 可視チャンクの連続区間を貯めて、途切れたところで 1 回 draw する。
     // run_end は「実際に描く上端」＝ `first + kept` を積む（間引きぶんは含めない）。
     let mut run_start: u32 = 0;
-    let mut run_end:   u32 = 0; // 半開区間 [run_start, run_end)
+    let mut run_end: u32 = 0; // 半開区間 [run_start, run_end)
     let mut run_open = false;
     // 実際に描いた本数（カリング＋密度減衰後）。計測ログ用に返す。
     let mut drawn: u32 = 0;
@@ -715,17 +721,19 @@ pub fn draw_grass_culled<'pass>(
         if span.count == 0 {
             continue;
         }
-        let dist_sq = super::gpu_resources::aabb_distance_sq(
-            span.aabb_min, span.aabb_max, camera_pos,
-        );
-        let visible = !super::gpu_resources::aabb_outside_frustum(
-            planes, span.aabb_min, span.aabb_max,
-        ) && dist_sq <= cull_distance_sq;
+        let dist_sq =
+            super::gpu_resources::aabb_distance_sq(span.aabb_min, span.aabb_max, camera_pos);
+        let visible =
+            !super::gpu_resources::aabb_outside_frustum(planes, span.aabb_min, span.aabb_max)
+                && dist_sq <= cull_distance_sq;
 
         // 遠景密度減衰: 可視チャンクは距離に応じて先頭 kept 本だけ描く。
         let kept = if visible {
             super::gpu_resources::density_kept_count(
-                span.count, dist_sq, decay_near_sq, decay_mid_sq,
+                span.count,
+                dist_sq,
+                decay_near_sq,
+                decay_mid_sq,
             )
         } else {
             0
@@ -743,8 +751,8 @@ pub fn draw_grass_culled<'pass>(
                     rp.draw(0..GRASS_MAX_VERTS_PER_BLADE, run_start..run_end);
                 }
                 run_start = span.first;
-                run_end   = draw_end;
-                run_open  = true;
+                run_end = draw_end;
+                run_open = true;
             }
         } else if run_open {
             // 不可視 or 全間引きで区切り → 溜まっていた区間を描いて閉じる。
@@ -814,7 +822,11 @@ mod tests {
     #[test]
     fn grass_uniform_is_16byte_aligned() {
         let size = std::mem::size_of::<GrassUniformGpu>();
-        assert_eq!(size % 16, 0, "GrassUniformGpu は 16 の倍数バイトであること（実測 {size}）");
+        assert_eq!(
+            size % 16,
+            0,
+            "GrassUniformGpu は 16 の倍数バイトであること（実測 {size}）"
+        );
     }
 
     /// `update_time` が書き換えるオフセットが実際の `time` フィールド位置と一致すること。
@@ -873,8 +885,18 @@ mod tests {
     fn clamp_is_noop_when_within_limit() {
         let mut inst = vec![GrassInstanceGpu::default(); 10];
         let mut spans = vec![
-            GrassChunkSpan { aabb_min: [0.0; 3], aabb_max: [0.0; 3], first: 0, count: 5 },
-            GrassChunkSpan { aabb_min: [0.0; 3], aabb_max: [0.0; 3], first: 5, count: 5 },
+            GrassChunkSpan {
+                aabb_min: [0.0; 3],
+                aabb_max: [0.0; 3],
+                first: 0,
+                count: 5,
+            },
+            GrassChunkSpan {
+                aabb_min: [0.0; 3],
+                aabb_max: [0.0; 3],
+                first: 5,
+                count: 5,
+            },
         ];
         let dropped = clamp_instances_and_spans(&mut inst, &mut spans, 100);
         assert_eq!(dropped, 0);
@@ -890,9 +912,24 @@ mod tests {
         // 3 チャンク（各 4 本）＝12 本を、max=7 へ切り詰める。
         let mut inst = vec![GrassInstanceGpu::default(); 12];
         let mut spans = vec![
-            GrassChunkSpan { aabb_min: [0.0; 3], aabb_max: [0.0; 3], first: 0, count: 4 },
-            GrassChunkSpan { aabb_min: [0.0; 3], aabb_max: [0.0; 3], first: 4, count: 4 }, // 4..8 が 7 を跨ぐ
-            GrassChunkSpan { aabb_min: [0.0; 3], aabb_max: [0.0; 3], first: 8, count: 4 }, // 全範囲外
+            GrassChunkSpan {
+                aabb_min: [0.0; 3],
+                aabb_max: [0.0; 3],
+                first: 0,
+                count: 4,
+            },
+            GrassChunkSpan {
+                aabb_min: [0.0; 3],
+                aabb_max: [0.0; 3],
+                first: 4,
+                count: 4,
+            }, // 4..8 が 7 を跨ぐ
+            GrassChunkSpan {
+                aabb_min: [0.0; 3],
+                aabb_max: [0.0; 3],
+                first: 8,
+                count: 4,
+            }, // 全範囲外
         ];
         let dropped = clamp_instances_and_spans(&mut inst, &mut spans, 7);
         assert_eq!(dropped, 5, "12 - 7 = 5 本を捨てる");

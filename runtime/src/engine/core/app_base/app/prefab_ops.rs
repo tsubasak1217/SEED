@@ -25,17 +25,17 @@
 
 use std::sync::Arc;
 
-use crate::engine::ecs::World;
-use crate::engine::structs::objects::Actor;
-use crate::engine::structs::objects::actor::ActorData;
-use crate::engine::components::{Transform, CanvasTransform};
-use crate::engine::methods::drawer::DrawContext;
-use crate::engine::core::scripting::ScriptingHost;
+use crate::engine::components::{CanvasTransform, Transform};
 use crate::engine::core::app_base::scene::build_actor;
 use crate::engine::core::app_base::undo::ActorTreeSnapshotCommand;
-use crate::engine::methods::gizmo_interact::{mat4x4_mul, mat4x4_inv};
+use crate::engine::core::scripting::ScriptingHost;
+use crate::engine::ecs::World;
+use crate::engine::methods::drawer::DrawContext;
+use crate::engine::methods::gizmo_interact::{mat4x4_inv, mat4x4_mul};
+use crate::engine::structs::objects::Actor;
+use crate::engine::structs::objects::actor::ActorData;
 
-use super::{App, despawn_actor_recursive, find_actor_by_dfs_mut, apply_delta_to_actor_subtree};
+use super::{App, apply_delta_to_actor_subtree, despawn_actor_recursive, find_actor_by_dfs_mut};
 
 /// スケールが実質 0（逆行列が特異）とみなす閾値。
 /// handle_set_actor_transform（transform_ops.rs）の特異判定と同じ値を使用する。
@@ -67,7 +67,9 @@ impl App {
         let before_actors = self.snapshot_actors_for_wl(0);
 
         let changed = self.run_prefab_reinstantiation(0, Some(&vpath));
-        if !changed { return; }
+        if !changed {
+            return;
+        }
 
         // 再展開後のツリーをスナップショットし、1 操作として Undo 履歴へ記録する。
         // （snapshot は to_data 経由で prefab_source を含むため、Undo/Redo で
@@ -86,7 +88,9 @@ impl App {
         if let Some(dfs) = self.actor_virtual_selected_idx {
             self.send_actor_components(dfs as u32, self.actor_virtual_selected_slot_idx);
         }
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// プレハブ参照リンクを解除する（右クリックメニュー「リンク解除」用）。
@@ -96,7 +100,9 @@ impl App {
     /// Undo 可能・エディタ通知あり。
     pub(super) fn handle_unlink_prefab(&mut self, actor_dfs: u32) {
         let wl = self.active_world_line;
-        if self.scene.is_none() { return; }
+        if self.scene.is_none() {
+            return;
+        }
 
         let before_actors = self.snapshot_actors_for_wl(wl);
         let mut did = false;
@@ -111,7 +117,9 @@ impl App {
             }
         }
         // 対象がプレハブインスタンスでなければ何もしない
-        if !did { return; }
+        if !did {
+            return;
+        }
 
         let after_actors = self.snapshot_actors_for_wl(wl);
         self.undo_history.record(Box::new(ActorTreeSnapshotCommand {
@@ -124,7 +132,9 @@ impl App {
         if let Some(dfs) = self.actor_virtual_selected_idx {
             self.send_actor_components(dfs as u32, self.actor_virtual_selected_slot_idx);
         }
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
     }
 
     /// world_line=`wl` のプレハブインスタンスを再展開する共通処理。
@@ -134,7 +144,9 @@ impl App {
     /// `filter` が None なら全プレハブ、Some(p) なら prefab_source==p のみを対象とする。
     /// 戻り値は「1 件以上再展開したか」。
     fn run_prefab_reinstantiation(&mut self, wl: u32, filter: Option<&str>) -> bool {
-        if self.draw_ctx.is_none() || self.scene.is_none() { return false; }
+        if self.draw_ctx.is_none() || self.scene.is_none() {
+            return false;
+        }
         let host = self.scripting_host.clone();
 
         // scene を取り出して draw_ctx との同時借用を回避する
@@ -143,8 +155,14 @@ impl App {
         {
             let ctx = self.draw_ctx.as_ref().unwrap();
             reinstantiate_prefabs_in_actors(
-                &mut scene.actors, &mut scene.world, ctx, host.as_ref(),
-                wl, true, filter, &mut changed,
+                &mut scene.actors,
+                &mut scene.world,
+                ctx,
+                host.as_ref(),
+                wl,
+                true,
+                filter,
+                &mut changed,
             );
         }
         self.scene = Some(scene);
@@ -174,13 +192,13 @@ impl App {
 /// プレハブでない通常アクターの配下にネストされたプレハブインスタンスは、子へ再帰して探す。
 #[allow(clippy::too_many_arguments)]
 fn reinstantiate_prefabs_in_actors(
-    actors:  &mut Vec<Actor>,
-    world:   &mut World,
-    ctx:     &DrawContext,
-    host:    Option<&Arc<ScriptingHost>>,
-    wl:      u32,
-    is_top:  bool,
-    filter:  Option<&str>,
+    actors: &mut Vec<Actor>,
+    world: &mut World,
+    ctx: &DrawContext,
+    host: Option<&Arc<ScriptingHost>>,
+    wl: u32,
+    is_top: bool,
+    filter: Option<&str>,
     changed: &mut bool,
 ) {
     let mut i = 0;
@@ -195,8 +213,8 @@ fn reinstantiate_prefabs_in_actors(
         let src_opt = actors[i].prefab_source.clone();
         let matched = match (&src_opt, filter) {
             (Some(src), Some(f)) => src == f,
-            (Some(_),   None)    => true,
-            _                    => false,
+            (Some(_), None) => true,
+            _ => false,
         };
 
         if matched {
@@ -213,8 +231,14 @@ fn reinstantiate_prefabs_in_actors(
         // プレハブでない通常アクター: 子ツリーを再帰的に探索する
         // （通常アクター配下にネストされたプレハブインスタンスに対応するため）。
         reinstantiate_prefabs_in_actors(
-            actors[i].children_mut(), world, ctx, host,
-            wl, false, filter, changed,
+            actors[i].children_mut(),
+            world,
+            ctx,
+            host,
+            wl,
+            false,
+            filter,
+            changed,
         );
         i += 1;
     }
@@ -227,11 +251,11 @@ fn reinstantiate_prefabs_in_actors(
 /// ファイル欠損・パース失敗・構築失敗・自己参照のいずれかの場合は再展開せず
 /// 旧インスタンスを維持する（＝リンク維持）。
 fn reinstantiate_single(
-    slot:    &mut Actor,
-    world:   &mut World,
-    ctx:     &DrawContext,
-    host:    Option<&Arc<ScriptingHost>>,
-    src:     &str,
+    slot: &mut Actor,
+    world: &mut World,
+    ctx: &DrawContext,
+    host: Option<&Arc<ScriptingHost>>,
+    src: &str,
     changed: &mut bool,
 ) {
     // ── 参照先ファイルを読み込む（assets:// 仮想パス／絶対パスのどちらも可）──
@@ -260,11 +284,11 @@ fn reinstantiate_single(
     }
 
     // ── 維持する値を退避する（ルート Transform/CanvasTransform・name・active・world_line）──
-    let keep_name   = slot.name.clone();
+    let keep_name = slot.name.clone();
     let keep_active = slot.active;
-    let keep_wl     = slot.world_line;
-    let keep_tf     = world.get::<Transform>(slot.entity).cloned();
-    let keep_ct     = world.get::<CanvasTransform>(slot.entity).cloned();
+    let keep_wl = slot.world_line;
+    let keep_tf = world.get::<Transform>(slot.entity).cloned();
+    let keep_ct = world.get::<CanvasTransform>(slot.entity).cloned();
 
     // ── ファイルからサブツリーを新規構築する（新規 entity を spawn）──
     // 先に構築し、成功してから旧インスタンスを despawn することで、構築失敗時に
@@ -281,8 +305,8 @@ fn reinstantiate_single(
     despawn_actor_recursive(slot, world);
 
     // ── 退避値を書き戻す ──
-    new_actor.name          = keep_name;
-    new_actor.active        = keep_active;
+    new_actor.name = keep_name;
+    new_actor.active = keep_active;
     new_actor.prefab_source = Some(src.to_string());
     new_actor.set_world_line_recursive(keep_wl);
     // ルート Transform を維持する。新アクターの種別に合わせて適切な型を挿入する
@@ -299,7 +323,10 @@ fn reinstantiate_single(
         // シーン側のルート Transform（keep）を書き戻すだけではメッシュ位置が追従しない
         // ため、ファイル側ルート Transform との差分 delta = M_keep * M_file^{-1} を
         // サブツリー全体（MC 行列・子 Transform）へ適用して見た目を整合させる。
-        let file_tf = world.get::<Transform>(new_actor.entity).cloned().unwrap_or_default();
+        let file_tf = world
+            .get::<Transform>(new_actor.entity)
+            .cloned()
+            .unwrap_or_default();
         world.insert(new_actor.entity, keep.clone());
         // keep == file_tf（通常はドロップ直後など未移動のケース）は delta が単位行列の
         // ため適用しない（浮動小数点誤差の累積蓄積を防ぐ）。

@@ -7,17 +7,17 @@
 //  外部から使う主要な型・トレイト・関数を再エクスポートする。
 // ============================================================
 
-pub mod settings;
+pub mod brush;
 pub mod chunk_coord;
 pub mod chunk_data;
-pub mod marching_cubes;
-pub mod lod;
-pub mod brush;
-pub mod tvox;
 pub mod heightmap;
 pub mod layers;
+pub mod lod;
+pub mod marching_cubes;
 pub mod paint;
 pub mod scatter;
+pub mod settings;
+pub mod tvox;
 
 #[cfg(test)]
 mod tests;
@@ -30,30 +30,32 @@ mod tests_layers;
 #[cfg(test)]
 mod bench;
 
-pub use settings::{
-    TerrainSettings, MAX_CHUNK_CELLS, MAX_GROUND_CHUNKS, MAX_TOTAL_CHUNKS, MAX_VOXEL_SIZE,
-    MIN_CHUNK_CELLS, MIN_GROUND_CHUNKS, MIN_VOXEL_SIZE,
-};
+pub use brush::{BrushOp, SampleField, SphereBrush, apply, chunks_in_brush_aabb};
 pub use chunk_coord::ChunkCoord;
 pub use chunk_data::TerrainChunkData;
-pub use marching_cubes::{
-    generate, generate_standalone, interp_vertex_paint, TerrainMesh, TerrainVertexEdge,
-};
-pub use lod::{generate_lod_mesh, lod_count, stride_for_lod, TERRAIN_LOD_STRIDES};
-pub use brush::{apply, chunks_in_brush_aabb, BrushOp, SampleField, SphereBrush};
-pub use tvox::{read_chunk, read_header, write_chunk, TvoxError, TvoxHeader, TVOX_MAGIC, TVOX_VERSION};
 pub use heightmap::HeightmapField;
 pub use layers::{
-    blend_rule_and_paint_all, expand_slots, select_top_slots, BlendSlots, DetileMode, LayerRule,
-    LayerWeights, TerrainLayer, TerrainLayerSet, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS,
+    BlendSlots, DetileMode, LayerRule, LayerWeights, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS,
+    TerrainLayer, TerrainLayerSet, blend_rule_and_paint_all, expand_slots, select_top_slots,
 };
-pub use paint::{apply_paint, PaintField};
+pub use lod::{TERRAIN_LOD_STRIDES, generate_lod_mesh, lod_count, stride_for_lod};
+pub use marching_cubes::{
+    TerrainMesh, TerrainVertexEdge, generate, generate_standalone, interp_vertex_paint,
+};
+pub use paint::{PaintField, apply_paint};
+pub use settings::{
+    MAX_CHUNK_CELLS, MAX_GROUND_CHUNKS, MAX_TOTAL_CHUNKS, MAX_VOXEL_SIZE, MIN_CHUNK_CELLS,
+    MIN_GROUND_CHUNKS, MIN_VOXEL_SIZE, TerrainSettings,
+};
+pub use tvox::{
+    TVOX_MAGIC, TVOX_VERSION, TvoxError, TvoxHeader, read_chunk, read_header, write_chunk,
+};
 // 散布（T3）。tvox の read_chunk / write_chunk と名前が衝突するため、
 // 関数は `scatter::` 経由で使う前提とし、ここでは型と定数のみ再エクスポートする。
 #[allow(unused_imports)]
 pub use scatter::{
-    GrassParams, LayerCondition, PropKind, ScatterField, ScatterInstance, ScatterParams,
-    ScatterRng, ScatterRule, TerrainProp, TerrainPropSet, TscatterError, TscatterHeader,
-    WindParams, GRASS_MAX_SEGMENTS, MAX_SCATTER_GRID_PER_AXIS, MIN_INSTANCE_SPACING_FACTOR,
-    TERRAIN_MAX_PROPS, TSCATTER_MAGIC, TSCATTER_VERSION,
+    GRASS_MAX_SEGMENTS, GrassParams, LayerCondition, MAX_SCATTER_GRID_PER_AXIS,
+    MIN_INSTANCE_SPACING_FACTOR, PropKind, ScatterField, ScatterInstance, ScatterParams,
+    ScatterRng, ScatterRule, TERRAIN_MAX_PROPS, TSCATTER_MAGIC, TSCATTER_VERSION, TerrainProp,
+    TerrainPropSet, TscatterError, TscatterHeader, WindParams,
 };

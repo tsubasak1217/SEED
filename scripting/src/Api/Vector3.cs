@@ -20,9 +20,11 @@ public readonly struct Vector3 : IEquatable<Vector3>
     public Vector3(float x, float y, float z) { this.x = x; this.y = y; this.z = z; }
     /// <summary>Z=0 として 2D ベクトルから生成する。</summary>
     public Vector3(float x, float y) : this(x, y, 0f) { }
+	//
+	public Vector3(Vector3 v) : this(v.x, v.y, v.z) { }
 
-    // ── 定義済みベクトル ─────────────────────────────────────
-    public static Vector3 Zero    => new(0f, 0f, 0f);
+	// ── 定義済みベクトル ─────────────────────────────────────
+	public static Vector3 Zero    => new(0f, 0f, 0f);
     public static Vector3 One     => new(1f, 1f, 1f);
     public static Vector3 Up      => new(0f, 1f, 0f);
     public static Vector3 Down    => new(0f, -1f, 0f);
@@ -48,7 +50,7 @@ public readonly struct Vector3 : IEquatable<Vector3>
 
     // ── 演算子 ──────────────────────────────────────────────
     public static Vector3 operator +(Vector3 a, Vector3 b) => new(a.x + b.x, a.y + b.y, a.z + b.z);
-    public static Vector3 operator -(Vector3 a, Vector3 b) => new(a.x - b.x, a.y - b.y, a.z - b.z);
+	public static Vector3 operator -(Vector3 a, Vector3 b) => new(a.x - b.x, a.y - b.y, a.z - b.z);
     public static Vector3 operator -(Vector3 a)            => new(-a.x, -a.y, -a.z);
     public static Vector3 operator *(Vector3 a, float s)   => new(a.x * s, a.y * s, a.z * s);
     public static Vector3 operator *(float s, Vector3 a)   => new(a.x * s, a.y * s, a.z * s);
@@ -56,9 +58,9 @@ public readonly struct Vector3 : IEquatable<Vector3>
     public static bool operator ==(Vector3 a, Vector3 b)   => a.Equals(b);
     public static bool operator !=(Vector3 a, Vector3 b)   => !a.Equals(b);
 
-    // ── 幾何関数 ────────────────────────────────────────────
-    /// <summary>内積。</summary>
-    public static float Dot(Vector3 a, Vector3 b) => a.x * b.x + a.y * b.y + a.z * b.z;
+	// ── 幾何関数 ────────────────────────────────────────────
+	/// <summary>内積。</summary>
+	public static float Dot(Vector3 a, Vector3 b) => a.x * b.x + a.y * b.y + a.z * b.z;
     /// <summary>外積（a×b。両者に垂直なベクトル）。</summary>
     public static Vector3 Cross(Vector3 a, Vector3 b)
         => new(a.y * b.z - a.z * b.y,

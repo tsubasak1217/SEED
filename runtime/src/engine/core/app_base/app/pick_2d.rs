@@ -19,13 +19,13 @@
 use std::collections::HashMap;
 
 use crate::engine::components::{
-    CanvasTransform, CanvasComponent, SpriteComponent, ComponentKind,
-    CanvasDrawZone, AspectRatioAxis, Transform,
+    AspectRatioAxis, CanvasComponent, CanvasDrawZone, CanvasTransform, ComponentKind,
+    SpriteComponent, Transform,
 };
 use crate::engine::core::app_base::undo::ActorDfsSelectionCommand;
-use crate::engine::structs::objects::Actor;
 use crate::engine::ecs::{Entity, World};
 use crate::engine::methods::gizmo_interact::{mat4x4_mul, screen_to_ray};
+use crate::engine::structs::objects::Actor;
 
 use super::App;
 use super::canvas_collect::{root_anchor_offset, skip_dfs_subtree};
@@ -46,11 +46,11 @@ enum PickKind2d {
 /// クリック点に当たった 2D ピック候補。優先度ソート用のメタ情報を持つ。
 struct PickCand2d {
     /// アクター DFS ID（選択に使用）
-    dfs:   usize,
+    dfs: usize,
     /// Sprite / Canvas 種別（Sprite 最優先）
-    kind:  PickKind2d,
+    kind: PickKind2d,
     /// 描画ゾーン（前面優先）
-    zone:  CanvasDrawZone,
+    zone: CanvasDrawZone,
     /// 階層の深さ（大きいほど子＝優先）
     depth: u32,
 }
@@ -62,18 +62,18 @@ impl App {
     /// Sprite が Canvas より優先され、重なり時は描画ゾーン→子優先の順で並ぶ。
     /// 同一地点を連続クリックすると次の候補へ巡回選択する。
     pub(super) fn pick_2d_canvas(&mut self, cx: f32, cy: f32) {
-        let wl       = self.active_world_line;
+        let wl = self.active_world_line;
         let win_size = self.window.as_ref().map(|w| w.inner_size());
-        let vp_w     = win_size.map_or(1280.0, |s| s.width  as f32);
-        let vp_h     = win_size.map_or(720.0,  |s| s.height as f32);
+        let vp_w = win_size.map_or(1280.0, |s| s.width as f32);
+        let vp_h = win_size.map_or(720.0, |s| s.height as f32);
 
         // スクリーン座標 → キャンバス空間（ortho）座標
         // 2D ortho カメラ: pan + NDC * half_size
-        let cam_2d   = self.canvas_cameras.get(&wl).cloned().unwrap_or_default();
-        let half_h   = cam_2d.ortho_half_h;
-        let half_w   = half_h * (vp_w / vp_h);
-        let ndx      = 2.0 * cx / vp_w - 1.0;
-        let ndy      = 2.0 * cy / vp_h - 1.0; // Y-down
+        let cam_2d = self.canvas_cameras.get(&wl).cloned().unwrap_or_default();
+        let half_h = cam_2d.ortho_half_h;
+        let half_w = half_h * (vp_w / vp_h);
+        let ndx = 2.0 * cx / vp_w - 1.0;
+        let ndy = 2.0 * cy / vp_h - 1.0; // Y-down
         let canvas_x = cam_2d.pan_x + ndx * half_w;
         let canvas_y = cam_2d.pan_y + ndy * half_h;
 
@@ -83,7 +83,7 @@ impl App {
         // シーンのビューポートタブ（2D シーンビュー）:
         //   ビューポート基準あり・自動解像度あり・design_space=edit_view_is_2d()。
         let is_actor_edit = self.actor_edit_canvas_wls.contains(&wl);
-        let design_space  = self.edit_view_is_2d();
+        let design_space = self.edit_view_is_2d();
 
         // 候補を収集する（scene を読み取り専用で借用して完結させる）
         let mut cands: Vec<PickCand2d> = Vec::new();
@@ -93,9 +93,8 @@ impl App {
             let (viewport_size, overrides, root_auto) = if is_actor_edit {
                 (None, HashMap::new(), HashMap::new())
             } else {
-                let (ov, ra) = self.build_ss_layout_maps(
-                    &scene.actors, &scene.world, wl, vp_w, vp_h, None,
-                );
+                let (ov, ra) =
+                    self.build_ss_layout_maps(&scene.actors, &scene.world, wl, vp_w, vp_h, None);
                 (Some([vp_w, vp_h]), ov, ra)
             };
 
@@ -107,11 +106,21 @@ impl App {
             ];
             let mut counter: u32 = 0;
             walk_pick_candidates_2d(
-                &scene.actors, &scene.world, wl,
-                canvas_x, canvas_y, &mut counter,
-                IDENTITY, [1.0, 1.0], None,
-                0, CanvasDrawZone::Foreground,
-                viewport_size, &overrides, &root_auto, design_space,
+                &scene.actors,
+                &scene.world,
+                wl,
+                canvas_x,
+                canvas_y,
+                &mut counter,
+                IDENTITY,
+                [1.0, 1.0],
+                None,
+                0,
+                CanvasDrawZone::Foreground,
+                viewport_size,
+                &overrides,
+                &root_auto,
+                design_space,
                 &mut cands,
             );
         }
@@ -159,7 +168,8 @@ impl App {
                 if self.selected_actor_dfs_ids.contains(&dfs_id) {
                     self.selected_actor_dfs_ids.retain(|&x| x != dfs_id);
                     if self.actor_virtual_selected_idx == Some(dfs_id) {
-                        self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
+                        self.actor_virtual_selected_idx =
+                            self.selected_actor_dfs_ids.last().copied();
                     }
                 } else {
                     self.selected_actor_dfs_ids.push(dfs_id);
@@ -168,7 +178,7 @@ impl App {
             } else {
                 // 通常クリック: 単一選択
                 self.actor_virtual_selected_idx = Some(dfs_id);
-                self.selected_actor_dfs_ids     = vec![dfs_id];
+                self.selected_actor_dfs_ids = vec![dfs_id];
             }
             self.selected_instances.clear();
             self.send_actor_components(dfs_id as u32, 0);
@@ -220,10 +230,18 @@ fn zone_rank(z: CanvasDrawZone) -> u8 {
 /// m[0][3], m[1][3] が平行移動成分、2×2 部分が回転×スケールを表す。
 /// 逆行列をクラメールの公式で解き、ローカル座標が範囲内か確認する。
 /// canvas_drop.rs のドロップ先キャンバスヒット判定でも共用するため pub(super)。
-pub(super) fn hit_test_rect_2d(px: f32, py: f32, m: &[[f32; 4]; 4], eff_w: f32, eff_h: f32) -> bool {
+pub(super) fn hit_test_rect_2d(
+    px: f32,
+    py: f32,
+    m: &[[f32; 4]; 4],
+    eff_w: f32,
+    eff_h: f32,
+) -> bool {
     // 2×2 回転スケール行列の行列式
     let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
-    if det.abs() < 1e-9 { return false; } // 面積 0 の退化矩形は無視する
+    if det.abs() < 1e-9 {
+        return false;
+    } // 面積 0 の退化矩形は無視する
     let dx = px - m[0][3];
     let dy = py - m[1][3];
     // クラメールの公式で逆変換
@@ -242,25 +260,27 @@ pub(super) fn hit_test_rect_2d(px: f32, py: f32, m: &[[f32; 4]; 4], eff_w: f32, 
 /// y_sign=1（ortho 空間）で計算する。
 #[allow(clippy::too_many_arguments)]
 fn walk_pick_candidates_2d(
-    actors:             &[Actor],
-    world:              &World,
-    wl:                 u32,
-    canvas_x:           f32,
-    canvas_y:           f32,
-    counter:            &mut u32,
-    parent_world_rs:    [[f32; 4]; 4],
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
+    canvas_x: f32,
+    canvas_y: f32,
+    counter: &mut u32,
+    parent_world_rs: [[f32; 4]; 4],
     parent_cumul_scale: [f32; 2],
     parent_canvas_size: Option<[f32; 2]>,
-    depth:              u32,
-    parent_zone:        CanvasDrawZone,
-    viewport_size:      Option<[f32; 2]>,
-    overrides:          &HashMap<Entity, [f32; 2]>,
-    root_auto_sizes:    &HashMap<Entity, [f32; 2]>,
-    design_space:       bool,
-    out:                &mut Vec<PickCand2d>,
+    depth: u32,
+    parent_zone: CanvasDrawZone,
+    viewport_size: Option<[f32; 2]>,
+    overrides: &HashMap<Entity, [f32; 2]>,
+    root_auto_sizes: &HashMap<Entity, [f32; 2]>,
+    design_space: bool,
+    out: &mut Vec<PickCand2d>,
 ) {
     for actor in actors {
-        if actor.world_line != wl { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
         let my_dfs = *counter as usize;
         *counter += 1;
 
@@ -280,10 +300,16 @@ fn walk_pick_candidates_2d(
         } else {
             None
         };
-        let ct = if root_auto.is_some() { CanvasTransform::default() } else { ct };
+        let ct = if root_auto.is_some() {
+            CanvasTransform::default()
+        } else {
+            ct
+        };
         // スケールモードはこのノード自身の CanvasTransform から読み取る
         let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
-            ct.scale_transform, ct.scale_size, ct.keep_aspect_ratio,
+            ct.scale_transform,
+            ct.scale_size,
+            ct.keep_aspect_ratio,
             matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
         );
 
@@ -301,27 +327,32 @@ fn walk_pick_candidates_2d(
                 (0.0, 0.0)
             }
         } else {
-            (parent_canvas_size.map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
-             parent_canvas_size.map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]))
+            (
+                parent_canvas_size.map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
+                parent_canvas_size.map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]),
+            )
         };
 
         let eff_pos = if sm_transform {
-            [ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
-             ct.position[1] * parent_cumul_scale[1] + anchor_off_y]
+            [
+                ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
+                ct.position[1] * parent_cumul_scale[1] + anchor_off_y,
+            ]
         } else {
-            [ct.position[0] + anchor_off_x,
-             ct.position[1] + anchor_off_y]
+            [ct.position[0] + anchor_off_x, ct.position[1] + anchor_off_y]
         };
         let eff_ct = CanvasTransform {
             position: eff_pos,
             rotation: ct.rotation,
-            scale:    ct.scale,
-            pivot:    ct.pivot,
-            anchor:   [0.0, 0.0],
+            scale: ct.scale,
+            pivot: ct.pivot,
+            anchor: [0.0, 0.0],
             ..ct.clone()
         };
 
-        let my_canvas = actor.slots().iter()
+        let my_canvas = actor
+            .slots()
+            .iter()
             .filter(|s| s.kind == ComponentKind::Canvas)
             .find_map(|s| world.get::<CanvasComponent>(s.entity));
 
@@ -333,28 +364,54 @@ fn walk_pick_candidates_2d(
         };
 
         // スケールモードに応じた有効サイズ係数（アスペクト比維持を考慮）
-        let size_sc_x = if sm_size { if keep_aspect && !is_width_axis { parent_cumul_scale[1] } else { parent_cumul_scale[0] } } else { 1.0 };
-        let size_sc_y = if sm_size { if keep_aspect && is_width_axis  { parent_cumul_scale[0] } else { parent_cumul_scale[1] } } else { 1.0 };
-        let (my_eff_w, my_eff_h) = my_canvas.map(|cc| {
-            let [bw, bh] = root_auto.unwrap_or([cc.width, cc.height]);
-            (bw * size_sc_x, bh * size_sc_y)
-        }).unwrap_or((1.0, 1.0));
+        let size_sc_x = if sm_size {
+            if keep_aspect && !is_width_axis {
+                parent_cumul_scale[1]
+            } else {
+                parent_cumul_scale[0]
+            }
+        } else {
+            1.0
+        };
+        let size_sc_y = if sm_size {
+            if keep_aspect && is_width_axis {
+                parent_cumul_scale[0]
+            } else {
+                parent_cumul_scale[1]
+            }
+        } else {
+            1.0
+        };
+        let (my_eff_w, my_eff_h) = my_canvas
+            .map(|cc| {
+                let [bw, bh] = root_auto.unwrap_or([cc.width, cc.height]);
+                (bw * size_sc_x, bh * size_sc_y)
+            })
+            .unwrap_or((1.0, 1.0));
 
         let self_world_rs = mat4x4_mul(
             parent_world_rs,
-            CanvasTransform { scale: [1.0, 1.0], ..eff_ct.clone() }
-                .to_mat4_sized(my_eff_w, my_eff_h),
+            CanvasTransform {
+                scale: [1.0, 1.0],
+                ..eff_ct.clone()
+            }
+            .to_mat4_sized(my_eff_w, my_eff_h),
         );
 
         // ── Sprite ヒット（最優先候補）────────────────────────────────────────
         for slot in actor.slots() {
             if slot.kind == ComponentKind::Sprite {
                 if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
-                    let eff_w = sc.width  * size_sc_x;
+                    let eff_w = sc.width * size_sc_x;
                     let eff_h = sc.height * size_sc_y;
                     let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(eff_w, eff_h));
                     if hit_test_rect_2d(canvas_x, canvas_y, &m, eff_w, eff_h) {
-                        out.push(PickCand2d { dfs: my_dfs, kind: PickKind2d::Sprite, zone: my_zone, depth });
+                        out.push(PickCand2d {
+                            dfs: my_dfs,
+                            kind: PickKind2d::Sprite,
+                            zone: my_zone,
+                            depth,
+                        });
                     }
                 }
             }
@@ -364,20 +421,26 @@ fn walk_pick_candidates_2d(
         if let Some(_cc) = my_canvas {
             let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(my_eff_w, my_eff_h));
             if hit_test_rect_2d(canvas_x, canvas_y, &m, my_eff_w, my_eff_h) {
-                out.push(PickCand2d { dfs: my_dfs, kind: PickKind2d::Canvas, zone: my_zone, depth });
+                out.push(PickCand2d {
+                    dfs: my_dfs,
+                    kind: PickKind2d::Canvas,
+                    zone: my_zone,
+                    depth,
+                });
             }
         }
 
         // ── 子への継承情報を計算して再帰する（collect_canvas_rects と同一）─────
         // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
-        let child_info = my_canvas.map(|cc| (
-            root_auto.unwrap_or([cc.width, cc.height]),
-            cc.auto_scale,
-        ));
+        let child_info =
+            my_canvas.map(|cc| (root_auto.unwrap_or([cc.width, cc.height]), cc.auto_scale));
         let child_canvas_size = child_info.map(|(sz, _)| sz);
         let auto_scale_factor = if parent_canvas_size.is_none() {
             if let (Some([vw, vh]), Some((_, true))) = (eff_viewport, child_info) {
-                [vw / my_eff_w.max(f32::EPSILON), vh / my_eff_h.max(f32::EPSILON)]
+                [
+                    vw / my_eff_w.max(f32::EPSILON),
+                    vh / my_eff_h.max(f32::EPSILON),
+                ]
             } else {
                 [1.0f32, 1.0]
             }
@@ -385,19 +448,33 @@ fn walk_pick_candidates_2d(
             [1.0f32, 1.0]
         };
         let child_cumul_scale = if sm_transform {
-            [parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
-             parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1]]
+            [
+                parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
+                parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1],
+            ]
         } else {
-            [ct.scale[0] * auto_scale_factor[0],
-             ct.scale[1] * auto_scale_factor[1]]
+            [
+                ct.scale[0] * auto_scale_factor[0],
+                ct.scale[1] * auto_scale_factor[1],
+            ]
         };
 
         walk_pick_candidates_2d(
-            &actor.children, world, wl,
-            canvas_x, canvas_y, counter,
-            self_world_rs, child_cumul_scale,
-            child_canvas_size, depth + 1, my_zone,
-            viewport_size, overrides, root_auto_sizes, design_space,
+            &actor.children,
+            world,
+            wl,
+            canvas_x,
+            canvas_y,
+            counter,
+            self_world_rs,
+            child_cumul_scale,
+            child_canvas_size,
+            depth + 1,
+            my_zone,
+            viewport_size,
+            overrides,
+            root_auto_sizes,
+            design_space,
             out,
         );
     }
@@ -413,19 +490,25 @@ impl App {
     /// レイ最近点のキャンバスを返す。重なり時の巡回は 2D 専用のためここでは行わない。
     pub(super) fn pick_3d_world_canvas(&self, cx: f32, cy: f32) -> Option<usize> {
         let scene = self.scene.as_ref()?;
-        let win   = self.window.as_ref().map(|w| w.inner_size());
-        let vp_w  = win.map_or(1280.0, |s| s.width  as f32);
-        let vp_h  = win.map_or(720.0,  |s| s.height as f32);
+        let win = self.window.as_ref().map(|w| w.inner_size());
+        let vp_w = win.map_or(1280.0, |s| s.width as f32);
+        let vp_h = win.map_or(720.0, |s| s.height as f32);
         let cam_v = self.camera.position();
-        let cam   = [cam_v.x, cam_v.y, cam_v.z];
-        let view  = self.camera.view_matrix();
-        let proj  = self.camera.projection_matrix();
+        let cam = [cam_v.x, cam_v.y, cam_v.z];
+        let view = self.camera.view_matrix();
+        let proj = self.camera.projection_matrix();
         let (r0, rd) = screen_to_ray(cx, cy, vp_w, vp_h, &view.data, &proj.data, cam);
 
         let mut counter = 0u32;
         let mut best: Option<(f32, usize)> = None; // (レイパラメータ t, DFS ID)
         walk_3d_canvas_pick(
-            &scene.actors, &scene.world, self.active_world_line, &mut counter, r0, rd, &mut best,
+            &scene.actors,
+            &scene.world,
+            self.active_world_line,
+            &mut counter,
+            r0,
+            rd,
+            &mut best,
         );
         best.map(|(_, dfs)| dfs)
     }
@@ -434,32 +517,40 @@ impl App {
 /// 3D ワールドキャンバス（Actor3D + CanvasComponent）の面とレイの交差を DFS 走査で調べ、
 /// レイ最近点のキャンバス DFS ID を `best` に記録する。
 fn walk_3d_canvas_pick(
-    actors:  &[Actor],
-    world:   &World,
-    wl:      u32,
+    actors: &[Actor],
+    world: &World,
+    wl: u32,
     counter: &mut u32,
-    r0:      [f32; 3],
-    rd:      [f32; 3],
-    best:    &mut Option<(f32, usize)>,
+    r0: [f32; 3],
+    rd: [f32; 3],
+    best: &mut Option<(f32, usize)>,
 ) {
     for actor in actors {
-        if actor.world_line != wl { continue; }
+        if actor.world_line != wl {
+            continue;
+        }
         let my_dfs = *counter as usize;
         *counter += 1;
 
         // Actor3D + CanvasComponent の面をテストする（描画と同一の canvas_to_world）
         if !actor.is_2d() {
-            let canvas_slot = actor.slots().iter().find(|s| s.kind == ComponentKind::Canvas);
+            let canvas_slot = actor
+                .slots()
+                .iter()
+                .find(|s| s.kind == ComponentKind::Canvas);
             if let (Some(cs), Some(tf)) = (canvas_slot, world.get::<Transform>(actor.entity)) {
                 if let Some(cc) = world.get::<CanvasComponent>(cs.entity) {
                     let cws = CANVAS_WORLD_SCALE;
                     let (px, py) = (cc.pivot[0], cc.pivot[1]);
-                    let ctw = mat4x4_mul(tf.to_mat4(), [
-                        [ cws,  0.0, 0.0, -px * cc.width  * cws],
-                        [ 0.0, -cws, 0.0,  py * cc.height * cws],
-                        [ 0.0,  0.0, 1.0,  0.0                 ],
-                        [ 0.0,  0.0, 0.0,  1.0                 ],
-                    ]);
+                    let ctw = mat4x4_mul(
+                        tf.to_mat4(),
+                        [
+                            [cws, 0.0, 0.0, -px * cc.width * cws],
+                            [0.0, -cws, 0.0, py * cc.height * cws],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ],
+                    );
                     if let Some(t) = ray_hit_canvas_quad(r0, rd, &ctw, cc.width, cc.height) {
                         if best.map_or(true, |(bt, _)| t < bt) {
                             *best = Some((t, my_dfs));
@@ -475,28 +566,50 @@ fn walk_3d_canvas_pick(
 
 /// レイ (r0, rd) と、行列 `ctw`（canvas_to_world）が定義するローカル矩形
 /// [0,w]×[0,h] 平面との交差レイパラメータ t を返す（ヒットなしは None）。
-fn ray_hit_canvas_quad(r0: [f32; 3], rd: [f32; 3], ctw: &[[f32; 4]; 4], w: f32, h: f32) -> Option<f32> {
-    let o  = [ctw[0][3], ctw[1][3], ctw[2][3]];         // 面の原点（ローカル [0,0]）
-    let xw = [ctw[0][0], ctw[1][0], ctw[2][0]];         // ローカル +x（1px）→ ワールドベクトル
-    let yw = [ctw[0][1], ctw[1][1], ctw[2][1]];         // ローカル +y（1px）→ ワールドベクトル
-    let n  = cross(xw, yw);                             // 面の法線
+fn ray_hit_canvas_quad(
+    r0: [f32; 3],
+    rd: [f32; 3],
+    ctw: &[[f32; 4]; 4],
+    w: f32,
+    h: f32,
+) -> Option<f32> {
+    let o = [ctw[0][3], ctw[1][3], ctw[2][3]]; // 面の原点（ローカル [0,0]）
+    let xw = [ctw[0][0], ctw[1][0], ctw[2][0]]; // ローカル +x（1px）→ ワールドベクトル
+    let yw = [ctw[0][1], ctw[1][1], ctw[2][1]]; // ローカル +y（1px）→ ワールドベクトル
+    let n = cross(xw, yw); // 面の法線
     let denom = dot(rd, n);
-    if denom.abs() < 1e-9 { return None; }              // レイが面と平行
+    if denom.abs() < 1e-9 {
+        return None;
+    } // レイが面と平行
     let t = dot(sub(o, r0), n) / denom;
-    if t <= 0.0 { return None; }                        // 面がカメラ後方
+    if t <= 0.0 {
+        return None;
+    } // 面がカメラ後方
     let p = [r0[0] + rd[0] * t, r0[1] + rd[1] * t, r0[2] + rd[2] * t];
     let l = sub(p, o);
     // xw ⊥ yw のためローカル px 座標は各軸への射影で求まる
     let lx = dot(l, xw) / dot(xw, xw).max(1e-12);
     let ly = dot(l, yw) / dot(yw, yw).max(1e-12);
-    if lx >= 0.0 && lx <= w && ly >= 0.0 && ly <= h { Some(t) } else { None }
+    if lx >= 0.0 && lx <= w && ly >= 0.0 && ly <= h {
+        Some(t)
+    } else {
+        None
+    }
 }
 
 #[inline]
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 { a[0]*b[0] + a[1]*b[1] + a[2]*b[2] }
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
 #[inline]
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] { [a[0]-b[0], a[1]-b[1], a[2]-b[2]] }
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
 #[inline]
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }

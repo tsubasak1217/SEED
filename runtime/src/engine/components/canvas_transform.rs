@@ -6,12 +6,14 @@
 //  3D の Transform に相当するが Z 軸方向の移動を持たない。
 // ============================================================
 
-use serde::{Deserialize, Serialize};
-use crate::engine::ecs::Component;
 use crate::engine::components::AspectRatioAxis;
+use crate::engine::ecs::Component;
+use serde::{Deserialize, Serialize};
 
 /// serde デフォルト用: true を返す（scale_transform / scale_size の既定値）。
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 /// 2D キャンバス空間のトランスフォーム。
 ///
@@ -68,7 +70,9 @@ pub struct CanvasTransform {
 impl CanvasTransform {
     pub fn new(position: [f32; 2], rotation: f32, scale: [f32; 2]) -> Self {
         Self {
-            position, rotation, scale,
+            position,
+            rotation,
+            scale,
             pivot: [0.0, 0.0],
             anchor: [0.0, 0.0],
             scale_transform: true,
@@ -100,10 +104,20 @@ impl CanvasTransform {
         // row0: [cos*sx,  -sin*sy,  0,  px - cos*sx*pvx + sin*sy*pvy]
         // row1: [sin*sx,   cos*sy,  0,  py - sin*sx*pvx - cos*sy*pvy]
         [
-            [cos * sx,  -sin * sy,  0.0,  px - cos * sx * pvx + sin * sy * pvy],
-            [sin * sx,   cos * sy,  0.0,  py - sin * sx * pvx - cos * sy * pvy],
-            [0.0,        0.0,       1.0,  0.0],
-            [0.0,        0.0,       0.0,  1.0],
+            [
+                cos * sx,
+                -sin * sy,
+                0.0,
+                px - cos * sx * pvx + sin * sy * pvy,
+            ],
+            [
+                sin * sx,
+                cos * sy,
+                0.0,
+                py - sin * sx * pvx - cos * sy * pvy,
+            ],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
         ]
     }
 
@@ -136,10 +150,20 @@ impl CanvasTransform {
         // ユニットクワッド(u,v)→スプライトサイズの変換を表す行優先行列。
         // 平行移動成分は to_mat4_sized と同じ（ピボット調整済み）。
         [
-            [cos * sx * width,  -sin * sy * height,  0.0,  px - cos * sx * pvx + sin * sy * pvy],
-            [sin * sx * width,   cos * sy * height,  0.0,  py - sin * sx * pvx - cos * sy * pvy],
-            [0.0,                0.0,                1.0,  0.0],
-            [0.0,                0.0,                0.0,  1.0],
+            [
+                cos * sx * width,
+                -sin * sy * height,
+                0.0,
+                px - cos * sx * pvx + sin * sy * pvy,
+            ],
+            [
+                sin * sx * width,
+                cos * sy * height,
+                0.0,
+                py - sin * sx * pvx - cos * sy * pvy,
+            ],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
         ]
     }
 }
@@ -149,11 +173,11 @@ impl Default for CanvasTransform {
         Self {
             position: [0.0, 0.0],
             rotation: 0.0,
-            scale:    [1.0, 1.0],
-            pivot:    [0.0, 0.0],
-            anchor:   [0.0, 0.0],
-            scale_transform:   true,
-            scale_size:        true,
+            scale: [1.0, 1.0],
+            pivot: [0.0, 0.0],
+            anchor: [0.0, 0.0],
+            scale_transform: true,
+            scale_size: true,
             keep_aspect_ratio: false,
             aspect_ratio_axis: AspectRatioAxis::Width,
         }

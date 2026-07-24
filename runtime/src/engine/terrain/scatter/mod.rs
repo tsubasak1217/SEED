@@ -18,9 +18,9 @@
 //    このトレイトを実装することで、本モジュールはチャンク管理を一切知らずに済む。
 // ============================================================
 
+pub mod generate;
 pub mod props;
 pub mod tscatter;
-pub mod generate;
 
 /// 散布レイヤ（T3）専用のユニットテスト（役割単位でファイル分割）。
 #[cfg(test)]
@@ -29,17 +29,17 @@ mod tests_scatter;
 // ─── 再エクスポート（本モジュールの公開 API）─────────────────────────────────
 // エンジン統合層（app/terrain_scatter_ops.rs）はサブモジュールを直接指さず、
 // 必ずここ経由で参照する（公開面を 1 か所に集約するため）。
+pub use generate::{
+    MAX_SCATTER_GRID_PER_AXIS, MIN_INSTANCE_SPACING_FACTOR, ScatterField, ScatterRng,
+    restick_instances, scatter_brush, scatter_chunk_by_rules,
+};
 pub use props::{
-    GrassParams, LayerCondition, PropKind, ScatterParams, ScatterRule, TerrainProp,
-    TerrainPropSet, GRASS_MAX_SEGMENTS, TERRAIN_MAX_PROPS, WindParams,
+    GRASS_MAX_SEGMENTS, GrassParams, LayerCondition, PropKind, ScatterParams, ScatterRule,
+    TERRAIN_MAX_PROPS, TerrainProp, TerrainPropSet, WindParams,
 };
 pub use tscatter::{
-    read_chunk, write_chunk, ScatterInstance, TscatterError, TscatterHeader,
-    TSCATTER_MAGIC, TSCATTER_VERSION,
-};
-pub use generate::{
-    restick_instances, scatter_brush, scatter_chunk_by_rules, ScatterField, ScatterRng,
-    MAX_SCATTER_GRID_PER_AXIS, MIN_INSTANCE_SPACING_FACTOR,
+    ScatterInstance, TSCATTER_MAGIC, TSCATTER_VERSION, TscatterError, TscatterHeader, read_chunk,
+    write_chunk,
 };
 
 // 以下 3 つは統合層 第1段の実行時経路からは呼ばれない（テストからのみ使う）。

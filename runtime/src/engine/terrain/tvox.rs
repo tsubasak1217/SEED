@@ -112,7 +112,11 @@ pub fn read_header(bytes: &[u8]) -> Result<TvoxHeader, TvoxError> {
         return Err(TvoxError::BadVersion);
     }
     Ok(TvoxHeader {
-        coord: ChunkCoord::new(read_i32_le(bytes, 8), read_i32_le(bytes, 12), read_i32_le(bytes, 16)),
+        coord: ChunkCoord::new(
+            read_i32_le(bytes, 8),
+            read_i32_le(bytes, 12),
+            read_i32_le(bytes, 16),
+        ),
         samples_per_axis: read_u32_le(bytes, 20),
         voxel_size: read_f32_le(bytes, 24),
     })
@@ -336,7 +340,11 @@ pub fn write_chunk_v2(
     let samples = chunk.samples_per_axis() as u32;
     let density = chunk.raw_density();
     let paint_amount = chunk.raw_paint_amount();
-    debug_assert_eq!(dense_weights.len(), density.len(), "v2 重み配列の長さ不一致");
+    debug_assert_eq!(
+        dense_weights.len(),
+        density.len(),
+        "v2 重み配列の長さ不一致"
+    );
 
     let mut out = Vec::with_capacity(HEADER_LEN_V2 + density.len() * 4);
     out.extend_from_slice(&TVOX_MAGIC);

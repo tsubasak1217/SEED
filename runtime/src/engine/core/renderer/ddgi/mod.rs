@@ -30,7 +30,7 @@ pub mod params;
 pub mod resources;
 
 pub use grid::GiGrid;
-pub use params::{GiParams, GI_MODE_FLAT, GI_MODE_DDGI, GI_MODE_SSGI};
+pub use params::{GI_MODE_DDGI, GI_MODE_FLAT, GI_MODE_SSGI, GiParams};
 pub use resources::GiResources;
 
 // ─── プローブ格子の既定寸法 ───────────────────────────────────
@@ -89,8 +89,8 @@ mod wgsl_tests {
     #[test]
     fn probe_update_shader_parses_and_validates() {
         let cluster = include_str!("../shaders/cluster_common.wgsl");
-        let common  = include_str!("../shaders/ddgi_common.wgsl");
-        let update  = include_str!("../shaders/ddgi_probe_update.wgsl");
+        let common = include_str!("../shaders/ddgi_common.wgsl");
+        let update = include_str!("../shaders/ddgi_probe_update.wgsl");
         let src = format!("{cluster}\n{common}\n{update}");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("ddgi_probe_update WGSL parse 失敗: {e:?}"));

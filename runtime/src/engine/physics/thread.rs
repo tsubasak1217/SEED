@@ -23,18 +23,16 @@
 // rapier3d のプレリュードをインポート（RigidBodySet, ColliderSet 等の物理型）
 use rapier3d::prelude::*;
 // nalgebra の UnitQuaternion は rapier3d プレリュードに含まれないため直接インポートする
+use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
 use nalgebra::UnitQuaternion;
 use std::collections::{HashMap, HashSet};
-use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
 use std::time::{Duration, Instant};
 
 // SEED 側の物理型（Rapier の CollisionEvent と名前が衝突するため別名でインポートする）
 use super::types::{
-    ColliderShape,
-    CollisionEvent as SeedCollisionEvent, CollisionPhase,
-    PhysicsCommand, PhysicsObject, PhysicsResult,
+    ColliderShape, CollisionEvent as SeedCollisionEvent, CollisionPhase, DEFAULT_GRAVITY,
+    PHYSICS_FIXED_STEP, PhysicsCommand, PhysicsObject, PhysicsResult,
     TriggerEvent as SeedTriggerEvent, TriggerPhase,
-    DEFAULT_GRAVITY, PHYSICS_FIXED_STEP,
 };
 
 // ─── スムーズドラッグ速度クランプ定数 ────────────────────────────────────────
@@ -77,7 +75,11 @@ impl PhysicsThread {
             run_physics_loop(cmd_rx, res_tx);
         });
 
-        PhysicsThread { cmd_tx, res_rx, handle: Some(handle) }
+        PhysicsThread {
+            cmd_tx,
+            res_rx,
+            handle: Some(handle),
+        }
     }
 
     /// コマンドを物理スレッドへ送信する。
@@ -99,8 +101,10 @@ impl PhysicsThread {
         let mut latest = None;
         loop {
             match self.res_rx.try_recv() {
-                Ok(result)                     => { latest = Some(result); }
-                Err(TryRecvError::Empty)        => break,
+                Ok(result) => {
+                    latest = Some(result);
+                }
+                Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
             }
         }
@@ -123,7 +127,7 @@ impl Drop for PhysicsThread {
 /// 物理ワールドに登録した 1 オブジェクトの Rapier ハンドル情報。
 struct PhysicsEntry {
     /// Rapier リジッドボディハンドル（Static の場合は None）
-    rb_handle:  Option<RigidBodyHandle>,
+    rb_handle: Option<RigidBodyHandle>,
     /// Rapier コライダーハンドル
     col_handle: ColliderHandle,
     /// Dynamic Rigidbody かどうか（Transform 結果送信の対象か）
@@ -146,11 +150,11 @@ struct PhysicsEntry {
 /// ドラッグ終了後に元の静的コライダーに戻すために使用する。
 #[derive(Clone)]
 struct StaticColliderData {
-    shape:       ColliderShape,
-    scale:       [f32; 3],
-    friction:    f32,
+    shape: ColliderShape,
+    scale: [f32; 3],
+    friction: f32,
     restitution: f32,
-    is_trigger:  bool,
+    is_trigger: bool,
 }
 
 // ─── メインループ ────────────────────────────────────────────────────────────
@@ -159,22 +163,19 @@ struct StaticColliderData {
 ///
 /// コマンドを処理し、固定タイムステップで Rapier シミュレーションを進め、
 /// 結果をメインスレッドへ送り続ける。`Stop` コマンドを受信したら終了する。
-fn run_physics_loop(
-    cmd_rx: Receiver<PhysicsCommand>,
-    res_tx: Sender<PhysicsResult>,
-) {
+fn run_physics_loop(cmd_rx: Receiver<PhysicsCommand>, res_tx: Sender<PhysicsResult>) {
     // ── Rapier 物理ワールドオブジェクト ──────────────────────────────────────
-    let mut rigid_body_set      = RigidBodySet::new();
-    let mut collider_set        = ColliderSet::new();
-    let mut physics_pipeline    = PhysicsPipeline::new();
-    let mut island_manager      = IslandManager::new();
-    let mut broad_phase         = DefaultBroadPhase::new();
-    let mut narrow_phase        = NarrowPhase::new();
-    let mut impulse_joint_set   = ImpulseJointSet::new();
+    let mut rigid_body_set = RigidBodySet::new();
+    let mut collider_set = ColliderSet::new();
+    let mut physics_pipeline = PhysicsPipeline::new();
+    let mut island_manager = IslandManager::new();
+    let mut broad_phase = DefaultBroadPhase::new();
+    let mut narrow_phase = NarrowPhase::new();
+    let mut impulse_joint_set = ImpulseJointSet::new();
     let mut multibody_joint_set = MultibodyJointSet::new();
-    let mut ccd_solver          = CCDSolver::new();
+    let mut ccd_solver = CCDSolver::new();
     // レイキャスト用クエリパイプライン（step のたびに自動更新される）
-    let mut query_pipeline      = QueryPipeline::new();
+    let mut query_pipeline = QueryPipeline::new();
 
     // 重力ベクトル（SetGravity コマンドで変更可能）
     let mut gravity = vector![DEFAULT_GRAVITY[0], DEFAULT_GRAVITY[1], DEFAULT_GRAVITY[2]];
@@ -184,12 +185,12 @@ fn run_physics_loop(
     integration_params.dt = PHYSICS_FIXED_STEP as Real;
 
     // ── entity_id ↔ Rapier ハンドル マッピング ──────────────────────────────
-    let mut entries:         HashMap<u64, PhysicsEntry>  = HashMap::new();
-    let mut col_to_entity:   HashMap<ColliderHandle, u64> = HashMap::new();
-    let mut trigger_set:     HashSet<u64>                 = HashSet::new();
+    let mut entries: HashMap<u64, PhysicsEntry> = HashMap::new();
+    let mut col_to_entity: HashMap<ColliderHandle, u64> = HashMap::new();
+    let mut trigger_set: HashSet<u64> = HashSet::new();
     // 継続中の衝突ペア（Stay/Exit 検出用。フレーム間で維持する）
-    let mut active_contacts: HashSet<(u64, u64)>          = HashSet::new();
-    let mut active_triggers: HashSet<(u64, u64)>          = HashSet::new();
+    let mut active_contacts: HashSet<(u64, u64)> = HashSet::new();
+    let mut active_triggers: HashSet<(u64, u64)> = HashSet::new();
 
     // ── スムーズドラッグ状態 ────────────────────────────────────────────────
     // SetBodyKinematic(is_kinematic=true, smooth=true) された「スムーズドラッグ中」
@@ -199,7 +200,7 @@ fn run_physics_loop(
     // 追従させる。これによりエディタフレームの目標ジャンプ（Δ）がそのまま
     // set_next_kinematic_position され「Δ/dt = 無制限の伝達速度」になるのを防ぐ。
     // （キーの有無がスムーズドラッグ中フラグを兼ねる）
-    let mut drag_targets:    HashMap<u64, Isometry<Real>> = HashMap::new();
+    let mut drag_targets: HashMap<u64, Isometry<Real>> = HashMap::new();
 
     // ── Rapier イベントコレクター ────────────────────────────────────────────
     // ChannelEventCollector は接触開始・終了イベントをチャンネル経由で提供する
@@ -219,42 +220,71 @@ fn run_physics_loop(
         // ── コマンド処理（全キューをフラッシュ）────────────────────────────
         loop {
             match cmd_rx.try_recv() {
-                Ok(PhysicsCommand::Stop)   => return,
-                Ok(PhysicsCommand::Pause)  => { paused = true; }
+                Ok(PhysicsCommand::Stop) => return,
+                Ok(PhysicsCommand::Pause) => {
+                    paused = true;
+                }
                 Ok(PhysicsCommand::Resume) => {
                     paused = false;
                     // Resume 直後にタイムステップをリセットして即座に次ステップを実行する
                     next_step = Instant::now();
                 }
-                Ok(PhysicsCommand::Raycast { origin, direction, max_distance, reply }) => {
+                Ok(PhysicsCommand::Raycast {
+                    origin,
+                    direction,
+                    max_distance,
+                    reply,
+                }) => {
                     // 同期レイキャスト問い合わせ（スクリプトの Physics.Raycast）。
                     // query_pipeline は step のたびに更新済み。
                     let hit = perform_raycast(
-                        &query_pipeline, &rigid_body_set, &collider_set, &col_to_entity,
-                        origin, direction, max_distance,
+                        &query_pipeline,
+                        &rigid_body_set,
+                        &collider_set,
+                        &col_to_entity,
+                        origin,
+                        direction,
+                        max_distance,
                     );
                     let _ = reply.send(hit);
                 }
-                Ok(PhysicsCommand::CheckKinematicOverlap { entity_id, position, rotation, reply }) => {
+                Ok(PhysicsCommand::CheckKinematicOverlap {
+                    entity_id,
+                    position,
+                    rotation,
+                    reply,
+                }) => {
                     // 同期オーバーラップ問い合わせ（編集時ドラッグの押し戻し判定）。
                     // Pause 中もコマンドドレインは回り続けるため必ず応答できる。
                     let overlapping = check_kinematic_overlap(
-                        &query_pipeline, &rigid_body_set, &collider_set,
-                        &entries, &trigger_set,
-                        entity_id, position, rotation,
+                        &query_pipeline,
+                        &rigid_body_set,
+                        &collider_set,
+                        &entries,
+                        &trigger_set,
+                        entity_id,
+                        position,
+                        rotation,
                     );
                     let _ = reply.send(overlapping);
                 }
                 Ok(cmd) => handle_command(
                     cmd,
-                    &mut rigid_body_set, &mut collider_set,
-                    &mut island_manager, &mut impulse_joint_set, &mut multibody_joint_set,
-                    &mut entries, &mut col_to_entity,
-                    &mut trigger_set, &mut active_contacts, &mut active_triggers,
-                    &mut gravity, &mut drag_targets,
+                    &mut rigid_body_set,
+                    &mut collider_set,
+                    &mut island_manager,
+                    &mut impulse_joint_set,
+                    &mut multibody_joint_set,
+                    &mut entries,
+                    &mut col_to_entity,
+                    &mut trigger_set,
+                    &mut active_contacts,
+                    &mut active_triggers,
+                    &mut gravity,
+                    &mut drag_targets,
                 ),
-                Err(TryRecvError::Empty)          => break,
-                Err(TryRecvError::Disconnected)   => return,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return,
             }
         }
 
@@ -276,7 +306,12 @@ fn run_physics_loop(
         // スムーズドラッグ: このステップの次目標位置を最大速度クランプ付きで更新する。
         // ステップ直前・かつ実際にステップを実行するタイミングでのみ前進させることで、
         // 1 ステップあたりの移動量（= 伝達速度 × dt）を確実に上限内に収める。
-        advance_smooth_drag_targets(&mut rigid_body_set, &entries, &drag_targets, PHYSICS_FIXED_STEP as Real);
+        advance_smooth_drag_targets(
+            &mut rigid_body_set,
+            &entries,
+            &drag_targets,
+            PHYSICS_FIXED_STEP as Real,
+        );
 
         physics_pipeline.step(
             &gravity,
@@ -290,7 +325,7 @@ fn run_physics_loop(
             &mut multibody_joint_set,
             &mut ccd_solver,
             Some(&mut query_pipeline), // レイキャスト用に毎ステップ更新する
-            &(),    // PhysicsHooks（デフォルト: フィルタリングなし）
+            &(),                       // PhysicsHooks（デフォルト: フィルタリングなし）
             &event_handler,
         );
 
@@ -321,12 +356,12 @@ fn run_physics_loop(
 /// entity_id（DFS 順 ID）へ逆引きする。ヒットなし・逆引き失敗は None。
 fn perform_raycast(
     query_pipeline: &QueryPipeline,
-    rb_set:         &RigidBodySet,
-    col_set:        &ColliderSet,
-    col_to_entity:  &HashMap<ColliderHandle, u64>,
-    origin:         [f32; 3],
-    direction:      [f32; 3],
-    max_distance:   f32,
+    rb_set: &RigidBodySet,
+    col_set: &ColliderSet,
+    col_to_entity: &HashMap<ColliderHandle, u64>,
+    origin: [f32; 3],
+    direction: [f32; 3],
+    max_distance: f32,
 ) -> Option<crate::engine::physics::types::RaycastHit> {
     let ray = Ray::new(
         point![origin[0], origin[1], origin[2]],
@@ -334,15 +369,20 @@ fn perform_raycast(
     );
     // solid=true: レイ始点がコライダー内部にある場合は距離 0 でヒットさせる
     let (handle, intersection) = query_pipeline.cast_ray_and_get_normal(
-        rb_set, col_set, &ray, max_distance, true, QueryFilter::default(),
+        rb_set,
+        col_set,
+        &ray,
+        max_distance,
+        true,
+        QueryFilter::default(),
     )?;
     let entity_id = *col_to_entity.get(&handle)?;
-    let point  = ray.point_at(intersection.time_of_impact);
+    let point = ray.point_at(intersection.time_of_impact);
     let normal = intersection.normal;
     Some(crate::engine::physics::types::RaycastHit {
         entity_id,
-        point:    [point.x, point.y, point.z],
-        normal:   [normal.x, normal.y, normal.z],
+        point: [point.x, point.y, point.z],
+        normal: [normal.x, normal.y, normal.z],
         distance: intersection.time_of_impact,
     })
 }
@@ -371,24 +411,30 @@ const DRAG_OVERLAP_PENETRATION_TOLERANCE: f32 = 0.005;
 ///   parry の contact クエリで正確な侵入深さを計測して許容値と比較する。
 fn check_kinematic_overlap(
     query_pipeline: &QueryPipeline,
-    rb_set:         &RigidBodySet,
-    col_set:        &ColliderSet,
-    entries:        &HashMap<u64, PhysicsEntry>,
-    trigger_set:    &HashSet<u64>,
-    entity_id:      u64,
-    position:       [f32; 3],
-    rotation:       [f32; 4],
+    rb_set: &RigidBodySet,
+    col_set: &ColliderSet,
+    entries: &HashMap<u64, PhysicsEntry>,
+    trigger_set: &HashSet<u64>,
+    entity_id: u64,
+    position: [f32; 3],
+    rotation: [f32; 4],
 ) -> bool {
     // トリガー（センサー）自身のドラッグは押し戻し対象外
-    if trigger_set.contains(&entity_id) { return false; }
-    let Some(entry)   = entries.get(&entity_id) else { return false };
-    let Some(own_col) = col_set.get(entry.col_handle) else { return false };
+    if trigger_set.contains(&entity_id) {
+        return false;
+    }
+    let Some(entry) = entries.get(&entity_id) else {
+        return false;
+    };
+    let Some(own_col) = col_set.get(entry.col_handle) else {
+        return false;
+    };
 
     // 提案位置でのコライダーポーズ = アクターワールド姿勢 × ローカルオフセット
-    let own_shape  = own_col.shared_shape().clone();
-    let o          = entry.col_offset;
+    let own_shape = own_col.shared_shape().clone();
+    let o = entry.col_offset;
     let offset_iso = Isometry::translation(o[0], o[1], o[2]);
-    let pose       = to_isometry(position, rotation) * offset_iso;
+    let pose = to_isometry(position, rotation) * offset_iso;
 
     // 自分自身・センサー・Dynamic ボディを候補から除外する
     let filter = QueryFilter {
@@ -400,13 +446,21 @@ fn check_kinematic_overlap(
     // 交差候補ごとに侵入深さを計測し、許容値を超えたら押し戻しが必要と判定する
     let mut blocking = false;
     query_pipeline.intersections_with_shape(
-        rb_set, col_set, &pose, &*own_shape, filter,
+        rb_set,
+        col_set,
+        &pose,
+        &*own_shape,
+        filter,
         |other_handle| {
             if let Some(other) = col_set.get(other_handle) {
                 // parry の contact クエリ（prediction=0: 交差時のみ Some）で深さを取得する。
                 // dist が負 = 侵入。許容値（静止接触の残留侵入ぶん）を超えたらブロッキング。
                 if let Ok(Some(contact)) = rapier3d::parry::query::contact(
-                    &pose, &*own_shape, other.position(), other.shape(), 0.0,
+                    &pose,
+                    &*own_shape,
+                    other.position(),
+                    other.shape(),
+                    0.0,
                 ) {
                     if contact.dist < -DRAG_OVERLAP_PENETRATION_TOLERANCE {
                         blocking = true;
@@ -431,20 +485,28 @@ fn check_kinematic_overlap(
 /// 目標に十分近づくと残差 = 移動量となり速度は自然にゼロへ収束するため、
 /// ドラッグ停止時に乗っているボディへ残る速度も小さく抑えられる。
 fn advance_smooth_drag_targets(
-    rb_set:       &mut RigidBodySet,
-    entries:      &HashMap<u64, PhysicsEntry>,
+    rb_set: &mut RigidBodySet,
+    entries: &HashMap<u64, PhysicsEntry>,
     drag_targets: &HashMap<u64, Isometry<Real>>,
-    dt:           Real,
+    dt: Real,
 ) {
-    let max_lin = MAX_DRAG_LINEAR_SPEED  * dt;
+    let max_lin = MAX_DRAG_LINEAR_SPEED * dt;
     let max_ang = MAX_DRAG_ANGULAR_SPEED * dt;
     for (entity_id, target) in drag_targets.iter() {
-        let Some(entry) = entries.get(entity_id) else { continue };
-        let Some(rb_h)  = entry.rb_handle else { continue };
-        let Some(rb)    = rb_set.get_mut(rb_h) else { continue };
-        if !rb.is_kinematic() { continue; }
+        let Some(entry) = entries.get(entity_id) else {
+            continue;
+        };
+        let Some(rb_h) = entry.rb_handle else {
+            continue;
+        };
+        let Some(rb) = rb_set.get_mut(rb_h) else {
+            continue;
+        };
+        if !rb.is_kinematic() {
+            continue;
+        }
         let current = *rb.position();
-        let next    = step_isometry_toward(&current, target, max_lin, max_ang);
+        let next = step_isometry_toward(&current, target, max_lin, max_ang);
         rb.set_next_kinematic_position(next);
     }
 }
@@ -453,13 +515,13 @@ fn advance_smooth_drag_targets(
 /// だけ進めた中間 Isometry を返す。どちらも上限未満なら target 側の値をそのまま使う。
 fn step_isometry_toward(
     current: &Isometry<Real>,
-    target:  &Isometry<Real>,
+    target: &Isometry<Real>,
     max_lin: Real,
     max_ang: Real,
 ) -> Isometry<Real> {
     // 並進クランプ
     let delta = target.translation.vector - current.translation.vector;
-    let dist  = delta.norm();
+    let dist = delta.norm();
     let new_trans = if dist > max_lin && dist > 1e-9 {
         current.translation.vector + delta * (max_lin / dist)
     } else {
@@ -482,26 +544,28 @@ fn step_isometry_toward(
 /// Stop 以外のコマンドを処理する（Stop は呼び出し元のマッチアームで処理済み）。
 #[allow(clippy::too_many_arguments)]
 fn handle_command(
-    cmd:               PhysicsCommand,
-    rb_set:            &mut RigidBodySet,
-    col_set:           &mut ColliderSet,
-    island_manager:    &mut IslandManager,
-    impulse_joints:    &mut ImpulseJointSet,
-    multibody_joints:  &mut MultibodyJointSet,
-    entries:           &mut HashMap<u64, PhysicsEntry>,
-    col_to_entity:     &mut HashMap<ColliderHandle, u64>,
-    trigger_set:       &mut HashSet<u64>,
-    active_contacts:   &mut HashSet<(u64, u64)>,
-    active_triggers:   &mut HashSet<(u64, u64)>,
-    gravity:           &mut nalgebra::Vector3<Real>,
-    drag_targets:      &mut HashMap<u64, Isometry<Real>>,
+    cmd: PhysicsCommand,
+    rb_set: &mut RigidBodySet,
+    col_set: &mut ColliderSet,
+    island_manager: &mut IslandManager,
+    impulse_joints: &mut ImpulseJointSet,
+    multibody_joints: &mut MultibodyJointSet,
+    entries: &mut HashMap<u64, PhysicsEntry>,
+    col_to_entity: &mut HashMap<ColliderHandle, u64>,
+    trigger_set: &mut HashSet<u64>,
+    active_contacts: &mut HashSet<(u64, u64)>,
+    active_triggers: &mut HashSet<(u64, u64)>,
+    gravity: &mut nalgebra::Vector3<Real>,
+    drag_targets: &mut HashMap<u64, Isometry<Real>>,
 ) {
     match cmd {
-        PhysicsCommand::Stop   => { /* 呼び出し元で処理済み */ }
-        PhysicsCommand::Pause  => { /* ループ側で処理済み */ }
+        PhysicsCommand::Stop => { /* 呼び出し元で処理済み */ }
+        PhysicsCommand::Pause => { /* ループ側で処理済み */ }
         PhysicsCommand::Resume => { /* ループ側で処理済み */ }
-        PhysicsCommand::Raycast { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
-        PhysicsCommand::CheckKinematicOverlap { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
+        PhysicsCommand::Raycast { .. } => { /* ループ側（コマンドドレイン）で処理済み */
+        }
+        PhysicsCommand::CheckKinematicOverlap { .. } => { /* ループ側（コマンドドレイン）で処理済み */
+        }
 
         PhysicsCommand::AddObject(obj) => {
             add_object(obj, rb_set, col_set, entries, col_to_entity, trigger_set);
@@ -518,7 +582,14 @@ fn handle_command(
 
                 if let Some(rb_h) = entry.rb_handle {
                     // RB ごと削除（アタッチされたコライダーも連動削除）
-                    rb_set.remove(rb_h, island_manager, col_set, impulse_joints, multibody_joints, true);
+                    rb_set.remove(
+                        rb_h,
+                        island_manager,
+                        col_set,
+                        impulse_joints,
+                        multibody_joints,
+                        true,
+                    );
                 } else {
                     // Static コライダーのみ削除
                     col_set.remove(entry.col_handle, island_manager, rb_set, false);
@@ -526,7 +597,11 @@ fn handle_command(
             }
         }
 
-        PhysicsCommand::UpdateKinematic { entity_id, position, rotation } => {
+        PhysicsCommand::UpdateKinematic {
+            entity_id,
+            position,
+            rotation,
+        } => {
             // スムーズドラッグ中のボディは即時反映せず「目標」だけ更新する。
             // 実際の前進（速度クランプ付き）はステップ直前の advance_smooth_drag_targets が行う。
             if let Some(target) = drag_targets.get_mut(&entity_id) {
@@ -547,7 +622,7 @@ fn handle_command(
                     // コライダー位置を直接更新することで Dynamic ボディを押しのけられるようにする。
                     // offset はアクターローカル空間の平行移動なのでワールド回転を適用して合成する。
                     if let Some(col) = col_set.get_mut(entry.col_handle) {
-                        let world_iso  = to_isometry(position, rotation);
+                        let world_iso = to_isometry(position, rotation);
                         let o = entry.col_offset;
                         let offset_iso = Isometry::from_parts(
                             Translation::new(o[0], o[1], o[2]),
@@ -559,7 +634,12 @@ fn handle_command(
             }
         }
 
-        PhysicsCommand::SetBodyKinematic { entity_id, is_kinematic, final_position, smooth } => {
+        PhysicsCommand::SetBodyKinematic {
+            entity_id,
+            is_kinematic,
+            final_position,
+            smooth,
+        } => {
             // Dynamic 復帰・kinematic 解除時はスムーズドラッグ登録を必ず解除する。
             // （最終目標は下で set_position するため、以降のクランプ追従は不要）
             if !is_kinematic {
@@ -589,16 +669,27 @@ fn handle_command(
                         let final_iso = if let Some((pos, rot)) = final_position {
                             to_isometry(pos, rot)
                         } else {
-                            rb_set.get(rb_h).map(|rb| *rb.position()).unwrap_or_else(Isometry::identity)
+                            rb_set
+                                .get(rb_h)
+                                .map(|rb| *rb.position())
+                                .unwrap_or_else(Isometry::identity)
                         };
 
                         // rb を削除する（アタッチされたコライダーも削除）
                         col_to_entity.remove(&entry.col_handle);
-                        rb_set.remove(rb_h, island_manager, col_set, impulse_joints, multibody_joints, true);
+                        rb_set.remove(
+                            rb_h,
+                            island_manager,
+                            col_set,
+                            impulse_joints,
+                            multibody_joints,
+                            true,
+                        );
 
                         if let Some(sd) = shape_data {
                             // ワールド位置 = rb位置 * offset
-                            let offset_iso = Isometry::translation(col_offset[0], col_offset[1], col_offset[2]);
+                            let offset_iso =
+                                Isometry::translation(col_offset[0], col_offset[1], col_offset[2]);
                             let col_world_pos = final_iso * offset_iso;
 
                             // standalone static コライダーを再作成する
@@ -668,12 +759,14 @@ fn handle_command(
 
                     if let Some(sd) = shape_data {
                         // 現在の standalone コライダー位置を取得する（= actor world + offset）
-                        let col_world_pos = col_set.get(entry.col_handle)
+                        let col_world_pos = col_set
+                            .get(entry.col_handle)
                             .map(|c| *c.position())
                             .unwrap_or_else(Isometry::identity);
 
                         // actor world 位置 = col_world_pos * offset^-1
-                        let offset_iso = Isometry::translation(col_offset[0], col_offset[1], col_offset[2]);
+                        let offset_iso =
+                            Isometry::translation(col_offset[0], col_offset[1], col_offset[2]);
                         let actor_world_pos = col_world_pos * offset_iso.inverse();
 
                         // 既存の standalone コライダーを削除する
@@ -762,21 +855,21 @@ fn handle_command(
 /// - Dynamic / Kinematic: RigidBody + アタッチされた Collider として登録
 /// - Static (`use_rigidbody = false`): Collider のみ（ワールド固定）として登録
 fn add_object(
-    obj:           PhysicsObject,
-    rb_set:        &mut RigidBodySet,
-    col_set:       &mut ColliderSet,
-    entries:       &mut HashMap<u64, PhysicsEntry>,
+    obj: PhysicsObject,
+    rb_set: &mut RigidBodySet,
+    col_set: &mut ColliderSet,
+    entries: &mut HashMap<u64, PhysicsEntry>,
     col_to_entity: &mut HashMap<ColliderHandle, u64>,
-    trigger_set:   &mut HashSet<u64>,
+    trigger_set: &mut HashSet<u64>,
 ) {
-    let world_iso  = to_isometry(obj.position, obj.rotation);
+    let world_iso = to_isometry(obj.position, obj.rotation);
     let offset_iso = Isometry::translation(
         obj.collider_offset[0],
         obj.collider_offset[1],
         obj.collider_offset[2],
     );
 
-    let friction    = obj.rigidbody.as_ref().map_or(0.5, |rb| rb.friction);
+    let friction = obj.rigidbody.as_ref().map_or(0.5, |rb| rb.friction);
     let restitution = obj.rigidbody.as_ref().map_or(0.3, |rb| rb.restitution);
 
     // ── リジッドボディ作成 ──────────────────────────────────────────────────
@@ -812,7 +905,11 @@ fn add_object(
     // ── コライダー作成・登録 ─────────────────────────────────────────────────
     // RB がある場合: コライダー位置はローカル空間（RB 位置が起点）
     // Static の場合: コライダー位置はワールド空間（アクタ位置 × オフセット）
-    let collider_pos = if rb_handle.is_some() { offset_iso } else { world_iso * offset_iso };
+    let collider_pos = if rb_handle.is_some() {
+        offset_iso
+    } else {
+        world_iso * offset_iso
+    };
 
     let collider = build_collider_shape(&obj.collider, &obj.scale)
         .position(collider_pos)
@@ -828,7 +925,7 @@ fn add_object(
 
     let col_handle = match rb_handle {
         Some(rb_h) => col_set.insert_with_parent(collider, rb_h, rb_set),
-        None       => col_set.insert(collider),
+        None => col_set.insert(collider),
     };
 
     let is_dynamic = obj.rigidbody.as_ref().map_or(false, |rb| !rb.is_kinematic);
@@ -837,11 +934,11 @@ fn add_object(
     // ドラッグ押し戻し機能で kinematic rb に変換→解放するときに使用する
     let col_shape_data = if rb_handle.is_none() {
         Some(StaticColliderData {
-            shape:       obj.collider.clone(),
-            scale:       obj.scale,
+            shape: obj.collider.clone(),
+            scale: obj.scale,
             friction,
             restitution,
-            is_trigger:  obj.is_trigger,
+            is_trigger: obj.is_trigger,
         })
     } else {
         None
@@ -852,14 +949,17 @@ fn add_object(
     }
 
     col_to_entity.insert(col_handle, obj.entity_id);
-    entries.insert(obj.entity_id, PhysicsEntry {
-        rb_handle,
-        col_handle,
-        is_dynamic,
-        col_offset: obj.collider_offset,
-        rb_created_for_drag: false,
-        col_shape_data,
-    });
+    entries.insert(
+        obj.entity_id,
+        PhysicsEntry {
+            rb_handle,
+            col_handle,
+            is_dynamic,
+            col_offset: obj.collider_offset,
+            rb_created_for_drag: false,
+            col_shape_data,
+        },
+    );
 }
 
 // ─── 結果収集 ────────────────────────────────────────────────────────────────
@@ -870,12 +970,12 @@ fn add_object(
 /// `narrow_phase` を直接クエリして、イベント未発火のケース（kinematic vs static）でも
 /// アクティブ接触エンティティを正確に検出する。
 fn collect_results(
-    rb_set:          &RigidBodySet,
-    narrow_phase:    &NarrowPhase,
-    entries:         &HashMap<u64, PhysicsEntry>,
-    col_evt_rx:      &Receiver<CollisionEvent>,
-    col_to_entity:   &HashMap<ColliderHandle, u64>,
-    trigger_set:     &HashSet<u64>,
+    rb_set: &RigidBodySet,
+    narrow_phase: &NarrowPhase,
+    entries: &HashMap<u64, PhysicsEntry>,
+    col_evt_rx: &Receiver<CollisionEvent>,
+    col_to_entity: &HashMap<ColliderHandle, u64>,
+    trigger_set: &HashSet<u64>,
     active_contacts: &mut HashSet<(u64, u64)>,
     active_triggers: &mut HashSet<(u64, u64)>,
 ) -> PhysicsResult {
@@ -884,22 +984,30 @@ fn collect_results(
     let mut transform_updates = Vec::new();
     // タブ退避（続きから再開）用に、全 Dynamic ボディの現在速度も収集する。
     let mut body_velocities: Vec<(u64, [f32; 3], [f32; 3])> = Vec::new();
-    let mut max_linear_speed:  f32 = 0.0;
+    let mut max_linear_speed: f32 = 0.0;
     let mut max_angular_speed: f32 = 0.0;
     for (entity_id, entry) in entries.iter() {
-        if !entry.is_dynamic { continue; }
-        let Some(rb_h) = entry.rb_handle else { continue };
-        let Some(rb)   = rb_set.get(rb_h) else { continue };
+        if !entry.is_dynamic {
+            continue;
+        }
+        let Some(rb_h) = entry.rb_handle else {
+            continue;
+        };
+        let Some(rb) = rb_set.get(rb_h) else { continue };
 
         let pos = rb.translation();
         let rot = rb.rotation().quaternion();
         // SEED 規約: クォータニオンは [x(i), y(j), z(k), w] の順
-        transform_updates.push((*entity_id, [pos.x, pos.y, pos.z], [rot.i, rot.j, rot.k, rot.w]));
+        transform_updates.push((
+            *entity_id,
+            [pos.x, pos.y, pos.z],
+            [rot.i, rot.j, rot.k, rot.w],
+        ));
 
         // 速度の大きさ（静止判定に使用）
         let linvel = rb.linvel();
         let angvel = rb.angvel();
-        max_linear_speed  = max_linear_speed.max(linvel.norm());
+        max_linear_speed = max_linear_speed.max(linvel.norm());
         max_angular_speed = max_angular_speed.max(angvel.norm());
 
         // 現在速度そのもの（タブ復帰時の初速復元に使用）
@@ -913,7 +1021,7 @@ fn collect_results(
     // ── 衝突イベント処理 ─────────────────────────────────────────────────────
     // Rapier は接触開始・終了時のみイベントを発火する（継続中はなし）
     let mut collision_events = Vec::new();
-    let mut trigger_events   = Vec::new();
+    let mut trigger_events = Vec::new();
 
     while let Ok(evt) = col_evt_rx.try_recv() {
         // CollisionEvent のバリアントから ColliderHandle を取得する
@@ -922,8 +1030,12 @@ fn collect_results(
             CollisionEvent::Stopped(h1, h2, _flags) => (h1, h2, false),
         };
 
-        let Some(ea) = col_to_entity.get(&h1).copied() else { continue };
-        let Some(eb) = col_to_entity.get(&h2).copied() else { continue };
+        let Some(ea) = col_to_entity.get(&h1).copied() else {
+            continue;
+        };
+        let Some(eb) = col_to_entity.get(&h2).copied() else {
+            continue;
+        };
 
         let is_ta = trigger_set.contains(&ea);
         let is_tb = trigger_set.contains(&eb);
@@ -933,14 +1045,18 @@ fn collect_results(
                 let (te, oe) = if is_ta { (ea, eb) } else { (eb, ea) };
                 if active_triggers.insert((te, oe)) {
                     trigger_events.push(SeedTriggerEvent {
-                        trigger_entity: te, other_entity: oe, phase: TriggerPhase::Enter,
+                        trigger_entity: te,
+                        other_entity: oe,
+                        phase: TriggerPhase::Enter,
                     });
                 }
             } else {
                 let key = if ea < eb { (ea, eb) } else { (eb, ea) };
                 if active_contacts.insert(key) {
                     collision_events.push(SeedCollisionEvent {
-                        entity_a: ea, entity_b: eb, phase: CollisionPhase::Enter,
+                        entity_a: ea,
+                        entity_b: eb,
+                        phase: CollisionPhase::Enter,
                     });
                 }
             }
@@ -950,14 +1066,18 @@ fn collect_results(
                 let (te, oe) = if is_ta { (ea, eb) } else { (eb, ea) };
                 if active_triggers.remove(&(te, oe)) {
                     trigger_events.push(SeedTriggerEvent {
-                        trigger_entity: te, other_entity: oe, phase: TriggerPhase::Exit,
+                        trigger_entity: te,
+                        other_entity: oe,
+                        phase: TriggerPhase::Exit,
                     });
                 }
             } else {
                 let key = if ea < eb { (ea, eb) } else { (eb, ea) };
                 if active_contacts.remove(&key) {
                     collision_events.push(SeedCollisionEvent {
-                        entity_a: ea, entity_b: eb, phase: CollisionPhase::Exit,
+                        entity_a: ea,
+                        entity_b: eb,
+                        phase: CollisionPhase::Exit,
                     });
                 }
             }
@@ -966,7 +1086,11 @@ fn collect_results(
 
     // Stay: 継続している衝突ペアに Stay イベントを毎ステップ送信する
     for &(ea, eb) in active_contacts.iter() {
-        collision_events.push(SeedCollisionEvent { entity_a: ea, entity_b: eb, phase: CollisionPhase::Stay });
+        collision_events.push(SeedCollisionEvent {
+            entity_a: ea,
+            entity_b: eb,
+            phase: CollisionPhase::Stay,
+        });
     }
 
     // ── NarrowPhase 直接クエリ ──────────────────────────────────────────────
@@ -975,11 +1099,19 @@ fn collect_results(
     // has_any_active_contact() = true のペアのみを対象にする。
     let mut active_contact_entity_ids: Vec<u64> = Vec::new();
     for pair in narrow_phase.contact_pairs() {
-        if !pair.has_any_active_contact { continue; }
-        let Some(ea) = col_to_entity.get(&pair.collider1).copied() else { continue };
-        let Some(eb) = col_to_entity.get(&pair.collider2).copied() else { continue };
+        if !pair.has_any_active_contact {
+            continue;
+        }
+        let Some(ea) = col_to_entity.get(&pair.collider1).copied() else {
+            continue;
+        };
+        let Some(eb) = col_to_entity.get(&pair.collider2).copied() else {
+            continue;
+        };
         // トリガーは除外する（トリガーは応答なしのため押し戻し不要）
-        if trigger_set.contains(&ea) || trigger_set.contains(&eb) { continue; }
+        if trigger_set.contains(&ea) || trigger_set.contains(&eb) {
+            continue;
+        }
         if !active_contact_entity_ids.contains(&ea) {
             active_contact_entity_ids.push(ea);
         }
@@ -994,14 +1126,22 @@ fn collect_results(
     // 毎フレームこの集合からエンティティ ID を収集してメインスレッドに送る必要がある。
     let mut active_trigger_entity_ids: Vec<u64> = Vec::new();
     for &(te, oe) in active_triggers.iter() {
-        if !active_trigger_entity_ids.contains(&te) { active_trigger_entity_ids.push(te); }
-        if !active_trigger_entity_ids.contains(&oe) { active_trigger_entity_ids.push(oe); }
+        if !active_trigger_entity_ids.contains(&te) {
+            active_trigger_entity_ids.push(te);
+        }
+        if !active_trigger_entity_ids.contains(&oe) {
+            active_trigger_entity_ids.push(oe);
+        }
     }
 
     PhysicsResult {
-        transform_updates, collision_events, trigger_events,
-        active_contact_entity_ids, active_trigger_entity_ids,
-        max_linear_speed, max_angular_speed,
+        transform_updates,
+        collision_events,
+        trigger_events,
+        active_contact_entity_ids,
+        active_trigger_entity_ids,
+        max_linear_speed,
+        max_angular_speed,
         body_velocities,
     }
 }
@@ -1025,12 +1165,24 @@ fn to_isometry(position: [f32; 3], rotation: [f32; 4]) -> Isometry<Real> {
 /// フリーズ軸設定を Rapier の `LockedAxes` ビットフラグに変換する。
 fn build_locked_axes(freeze_pos: [bool; 3], freeze_rot: [bool; 3]) -> LockedAxes {
     let mut locked = LockedAxes::empty();
-    if freeze_pos[0] { locked |= LockedAxes::TRANSLATION_LOCKED_X; }
-    if freeze_pos[1] { locked |= LockedAxes::TRANSLATION_LOCKED_Y; }
-    if freeze_pos[2] { locked |= LockedAxes::TRANSLATION_LOCKED_Z; }
-    if freeze_rot[0] { locked |= LockedAxes::ROTATION_LOCKED_X; }
-    if freeze_rot[1] { locked |= LockedAxes::ROTATION_LOCKED_Y; }
-    if freeze_rot[2] { locked |= LockedAxes::ROTATION_LOCKED_Z; }
+    if freeze_pos[0] {
+        locked |= LockedAxes::TRANSLATION_LOCKED_X;
+    }
+    if freeze_pos[1] {
+        locked |= LockedAxes::TRANSLATION_LOCKED_Y;
+    }
+    if freeze_pos[2] {
+        locked |= LockedAxes::TRANSLATION_LOCKED_Z;
+    }
+    if freeze_rot[0] {
+        locked |= LockedAxes::ROTATION_LOCKED_X;
+    }
+    if freeze_rot[1] {
+        locked |= LockedAxes::ROTATION_LOCKED_Y;
+    }
+    if freeze_rot[2] {
+        locked |= LockedAxes::ROTATION_LOCKED_Z;
+    }
     locked
 }
 
@@ -1039,22 +1191,31 @@ fn build_locked_axes(freeze_pos: [bool; 3], freeze_rot: [bool; 3]) -> LockedAxes
 /// `scale` を各頂点・半辺長に乗算してワールドスケールを反映する。
 fn build_collider_shape(shape: &ColliderShape, scale: &[f32; 3]) -> ColliderBuilder {
     match shape {
-        ColliderShape::Box { half_extents: [hx, hy, hz] } => {
-            ColliderBuilder::cuboid(hx * scale[0], hy * scale[1], hz * scale[2])
-        }
+        ColliderShape::Box {
+            half_extents: [hx, hy, hz],
+        } => ColliderBuilder::cuboid(hx * scale[0], hy * scale[1], hz * scale[2]),
         ColliderShape::Sphere { radius } => {
             // 球は均等スケールを前提として X 軸スケールを使用する
             ColliderBuilder::ball(*radius * scale[0])
         }
-        ColliderShape::Capsule { radius, half_height } => {
+        ColliderShape::Capsule {
+            radius,
+            half_height,
+        } => {
             // Rapier: capsule_y(half_height, radius) の引数順
             ColliderBuilder::capsule_y(*half_height * scale[1], *radius * scale[0])
         }
-        ColliderShape::Cylinder { radius, half_height } => {
+        ColliderShape::Cylinder {
+            radius,
+            half_height,
+        } => {
             // Rapier: cylinder(half_height, radius) — Y 軸が長軸
             ColliderBuilder::cylinder(*half_height * scale[1], *radius * scale[0])
         }
-        ColliderShape::Cone { radius, half_height } => {
+        ColliderShape::Cone {
+            radius,
+            half_height,
+        } => {
             // Rapier: cone(half_height, radius) — Y 軸が長軸、頂点が +Y 側
             ColliderBuilder::cone(*half_height * scale[1], *radius * scale[0])
         }
@@ -1076,7 +1237,10 @@ fn build_collider_shape(shape: &ColliderShape, scale: &[f32; 3]) -> ColliderBuil
                 .map(|&[x, y, z]| nalgebra::Point3::new(x * scale[0], y * scale[1], z * scale[2]))
                 .collect();
             let indices: Vec<[u32; 3]> = (0..triangles.len())
-                .map(|i| { let b = (i * 3) as u32; [b, b + 1, b + 2] })
+                .map(|i| {
+                    let b = (i * 3) as u32;
+                    [b, b + 1, b + 2]
+                })
                 .collect();
             // trimesh は rapier3d 0.22 で ColliderBuilder を直接返す（Result ではない）
             ColliderBuilder::trimesh(vertices, indices)
@@ -1115,26 +1279,26 @@ mod tests {
         let floor = ColliderShape::TriangleMeshIndexed {
             vertices: vec![
                 [-5.0, 0.0, -5.0],
-                [ 5.0, 0.0, -5.0],
-                [ 5.0, 0.0,  5.0],
-                [-5.0, 0.0,  5.0],
+                [5.0, 0.0, -5.0],
+                [5.0, 0.0, 5.0],
+                [-5.0, 0.0, 5.0],
             ],
             indices: vec![[0, 1, 2], [0, 2, 3]],
         };
 
         // ── Rapier ワールドを組む ──
-        let mut rb_set   = RigidBodySet::new();
-        let mut col_set  = ColliderSet::new();
+        let mut rb_set = RigidBodySet::new();
+        let mut col_set = ColliderSet::new();
         let mut pipeline = PhysicsPipeline::new();
-        let mut islands  = IslandManager::new();
-        let mut broad    = DefaultBroadPhase::new();
-        let mut narrow   = NarrowPhase::new();
-        let mut impulse  = ImpulseJointSet::new();
-        let mut multibody= MultibodyJointSet::new();
-        let mut ccd      = CCDSolver::new();
-        let mut query    = QueryPipeline::new();
+        let mut islands = IslandManager::new();
+        let mut broad = DefaultBroadPhase::new();
+        let mut narrow = NarrowPhase::new();
+        let mut impulse = ImpulseJointSet::new();
+        let mut multibody = MultibodyJointSet::new();
+        let mut ccd = CCDSolver::new();
+        let mut query = QueryPipeline::new();
         let gravity = vector![DEFAULT_GRAVITY[0], DEFAULT_GRAVITY[1], DEFAULT_GRAVITY[2]];
-        let mut params  = IntegrationParameters::default();
+        let mut params = IntegrationParameters::default();
         params.dt = PHYSICS_FIXED_STEP as Real;
 
         // 床：RigidBody 無しの Static コライダー（build_collider_shape の新バリアント経由）。
@@ -1154,11 +1318,19 @@ mod tests {
         // ── 固定 dt で十分な回数ステップする（落下＋静定に足りる 3 秒相当）──
         for _ in 0..180 {
             pipeline.step(
-                &gravity, &params,
-                &mut islands, &mut broad, &mut narrow,
-                &mut rb_set, &mut col_set,
-                &mut impulse, &mut multibody, &mut ccd,
-                Some(&mut query), &(), &(),
+                &gravity,
+                &params,
+                &mut islands,
+                &mut broad,
+                &mut narrow,
+                &mut rb_set,
+                &mut col_set,
+                &mut impulse,
+                &mut multibody,
+                &mut ccd,
+                Some(&mut query),
+                &(),
+                &(),
             );
         }
 
