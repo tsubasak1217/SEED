@@ -54,6 +54,124 @@ static PLAY_DIAG_ENABLED: std::sync::LazyLock<bool> =
 const PLAY_DIAG_FRAMES: u64 = 10;
 /// PLAY_DIAG 用の Play フレームカウンタ（mode==Play && !paused のフレームだけ加算）。
 static PLAY_DIAG_FRAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+// ── フレーム凍結ウォッチドッグ（[PLAY_WD] / [PLAY_HB]）─────────────────────────
+//
+// 埋め込みインプレース Play で「フレームループがフレーム0以降回らない（恒久凍結）」不具合の
+// **凍結地点をコードのどこか**を直接特定するための常設計器。原因確定後に撤去する前提。
+//
+// 仕組み:
+//   - handle_redraw_requested の主要ステージ通過ごとに FRAME_STAGE（AtomicU8）へ enum→u8 を書く。
+//   - フレーム完了ごとに LAST_FRAME_DONE_MS（起点 WD_EPOCH からの経過ms）を更新する。
+//   - 起動時に 1 本だけ spawn する監視スレッドが、フレーム完了が STUCK_THRESHOLD_MS を超えて
+//     止まっていれば [PLAY_WD] を WD_WARN_INTERVAL_MS 間隔で stderr に出す（最後に通過した
+//     ステージ名付き）。原子操作のみで軽量、Play/Edit 問わず常時動作。
+
+/// フレーム内の主要ステージ（凍結地点特定用）。u8 表現をウォッチドッグが読む。
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum FrameStage {
+    Idle             = 0,
+    FrameStart       = 1,
+    GamepadDone      = 2,
+    TerrainLodDone   = 3,
+    IpcDone          = 4,
+    PhysicsDone      = 5,
+    ScriptPhaseDone  = 6,
+    CharCtrlDone     = 7,
+    EncodeDone       = 8,
+    PresentDone      = 9,
+    StartPhysicsDone = 10,
+    FrameEnd         = 11,
+}
+
+/// ウォッチドッグ判定に使う定数（マジックナンバー回避）。
+/// フレーム完了がこの ms を超えて途絶えたら「凍結」とみなす。
+const WD_STUCK_THRESHOLD_MS: u64 = 2_000;
+/// 凍結中に [PLAY_WD] を再出力する間隔 [ms]。
+const WD_WARN_INTERVAL_MS: u64 = 5_000;
+/// 監視スレッドのポーリング周期 [ms]。
+const WD_POLL_INTERVAL_MS: u64 = 500;
+
+/// 現在通過中のフレームステージ（FrameStage as u8）。
+static FRAME_STAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// 最後にフレームが完了した時刻（WD_EPOCH からの経過 ms）。0 = 未完了。
+static LAST_FRAME_DONE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// ウォッチドッグ・ハートビートの共通時刻起点。
+static WD_EPOCH: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+/// 監視スレッドを 1 度だけ spawn するためのフラグ。
+static WD_SPAWNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// PLAY_HB（ハートビート）: 直近に出力した時刻（WD_EPOCH からの経過 ms）と Play フレーム番号。
+static PLAY_HB_LAST_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// ハートビートを強制出力する経過閾値 [ms]（前フレームからこの時間空いたら出す）。
+const PLAY_HB_GAP_MS: u64 = 1_000;
+/// ハートビートを定期出力するフレーム間隔。
+const PLAY_HB_EVERY: u64 = 60;
+
+/// FrameStage の u8 値を人間可読名へ写す（[PLAY_WD] 出力用）。
+fn frame_stage_name(v: u8) -> &'static str {
+    match v {
+        0  => "idle",
+        1  => "frame_start",
+        2  => "gamepad_done",
+        3  => "terrain_lod_done",
+        4  => "ipc_done",
+        5  => "update_physics_done",
+        6  => "script_run_phase_done",
+        7  => "sync_char_controllers_done",
+        8  => "encode_done",
+        9  => "present_done",
+        10 => "start_physics_done",
+        11 => "frame_end",
+        _  => "unknown",
+    }
+}
+
+/// 現在のフレームステージを記録する（原子ストアのみ・実質ゼロコスト）。
+#[inline]
+fn mark_frame_stage(s: FrameStage) {
+    FRAME_STAGE.store(s as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// フレーム凍結監視スレッドを 1 度だけ起動する（軽量・常時 ON）。
+/// フレーム完了が WD_STUCK_THRESHOLD_MS を超えて途絶えたら、最後に通過した
+/// ステージ名付きで [PLAY_WD] を WD_WARN_INTERVAL_MS 間隔で出力する。
+fn ensure_frame_watchdog() {
+    use std::sync::atomic::Ordering;
+    // 既に起動済みなら何もしない（CAS で 1 本に限定）。
+    if WD_SPAWNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    // 起点を確定し、初回完了時刻を「今」に置く（フレーム0末での凍結も検出できるよう、
+    // 0 のままにしない）。
+    let now0 = WD_EPOCH.elapsed().as_millis() as u64;
+    LAST_FRAME_DONE_MS.store(now0, Ordering::Relaxed);
+    std::thread::Builder::new()
+        .name("seed-frame-watchdog".into())
+        .spawn(|| {
+            let mut last_warn_ms: u64 = 0;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(WD_POLL_INTERVAL_MS));
+                let now  = WD_EPOCH.elapsed().as_millis() as u64;
+                let done = LAST_FRAME_DONE_MS.load(Ordering::Relaxed);
+                let gap  = now.saturating_sub(done);
+                if gap >= WD_STUCK_THRESHOLD_MS
+                    && now.saturating_sub(last_warn_ms) >= WD_WARN_INTERVAL_MS
+                {
+                    let stage = frame_stage_name(FRAME_STAGE.load(Ordering::Relaxed));
+                    eprintln!(
+                        "[PLAY_WD] stuck at stage={stage} elapsed={:.1}s \
+                         (フレームがこの地点で {:.1}s 完了していない)",
+                        gap as f64 / 1000.0, gap as f64 / 1000.0,
+                    );
+                    last_warn_ms = now;
+                }
+            }
+        })
+        .ok();
+}
 use crate::engine::components::{ColliderComponent, ColliderShapeData, ComponentKind};
 use crate::engine::components::{Collider2dComponent, CanvasTransform};
 use crate::engine::components::Transform as ActorTransform;
@@ -253,6 +371,18 @@ impl App {
         let dbg = dbg_frame < DEBUG_LOG_FRAMES;
         if dbg { eprintln!("[SEED FRAME {dbg_frame}] start  mode={:?}  paused={}", self.mode, self.paused); }
 
+        // フレーム凍結ウォッチドッグを初回に 1 度だけ起動する。
+        ensure_frame_watchdog();
+        // 「ループが生きている」信号: フレーム開始時刻を記録する。ここを毎回更新することで、
+        // handle_redraw_requested の途中で凍結すると次フレームの開始が来ず、この値が止まる
+        // →ウォッチドッグが「最後に通過したステージ」で凍結を検出する。早期 return 経路
+        // （render_paused / 最小化）は request_redraw で次フレームが即来るため誤検出しない。
+        LAST_FRAME_DONE_MS.store(
+            WD_EPOCH.elapsed().as_millis() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        mark_frame_stage(FrameStage::FrameStart);
+
         // ── 入力: ゲームパッドをポンプ＋スクリプトフレームカウンタを進める ──
         // キーボード/マウスは winit イベント駆動だが、パッド（gilrs）はここで能動ポンプする。
         // フレーム先頭で行うことで、以降のゲームロジックが今フレームのパッド状態を読める。
@@ -260,6 +390,7 @@ impl App {
         // 「新しいフレームか」を判定するために使う（同一フレーム内の複数クエリを一貫させる）。
         self.input.update_gamepad();
         crate::engine::core::scripting::advance_script_frame();
+        mark_frame_stage(FrameStage::GamepadDone);
 
         // レンダリング機能マトリクスの実効モードが変わっていれば [SEED FEATURES] を出す
         // （起動時・スタンドアロン時もここで拾う。IPC 切替は各ハンドラでも即ログ）。
@@ -269,6 +400,7 @@ impl App {
         // 変化ぶんだけ近い順に小分けで再メッシュする（遠いチャンクを低ポリ化して描画三角形を削減）。
         // 描画の借用が始まる前（フレーム先頭）で行うことで scene/draw_ctx の可変借用衝突を避ける。
         self.tick_terrain_lod();
+        mark_frame_stage(FrameStage::TerrainLodDone);
 
         // 地形スモーク（SEED_TERRAIN_SMOKE=1）専用: 描画開始後に 1 度だけ掘るステップ。
         // スモークが無効なら即 return する自己ゲート付きフックなので、通常実行では無害。
@@ -346,6 +478,7 @@ impl App {
         let _perf_t_ipc = std::time::Instant::now();
         self.process_ipc(event_loop);
         perf_ipc_ms = _perf_t_ipc.elapsed().as_secs_f64() * 1000.0;
+        mark_frame_stage(FrameStage::IpcDone);
         if dbg { eprintln!("[SEED FRAME {dbg_frame}] process_ipc done"); }
 
         // AI 実行中はレンダリングをスキップして GPU リソースを LLM に解放する。
@@ -437,6 +570,7 @@ impl App {
                 perf_physics2d_ms = _perf_t_phys2d.elapsed().as_secs_f64() * 1000.0;
             }
         }
+        mark_frame_stage(FrameStage::PhysicsDone);
 
         // ── 時間 ──────────────────────────────────────
         let time_running = self.mode == RuntimeMode::Play && !self.paused;
@@ -554,11 +688,13 @@ impl App {
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::LateUpdate, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] scene.render"); }
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Render, &ctx); }
+            mark_frame_stage(FrameStage::ScriptPhaseDone);
             // キャラクターコントローラーの ①希望位置送信（スクリプトが Transform に書いた値を
             // 物理へ非同期送信）＋ ②前フレーム分の補正結果を ECS へ反映（描画直前）を行う。
             // **必ずスクリプトフェーズ実行後・描画前**に呼ぶことで、この フレームでスクリプトが
             // 書いた希望位置を拾い、かつスクリプトの貫通直書きをクランプ済みの補正後位置で上書きする。
             self.sync_character_controllers();
+            mark_frame_stage(FrameStage::CharCtrlDone);
             // 入力・物理チャンネルの公開を解除する（フェーズ外でのアクセスを防ぐ）
             publish_input(None);
             publish_physics_sender(None);
@@ -6032,9 +6168,11 @@ impl App {
                         }
                     }
 
+                    mark_frame_stage(FrameStage::EncodeDone);
                     let _perf_t_finish = std::time::Instant::now();
                     frame.finish();
                     perf_finish_ms = _perf_t_finish.elapsed().as_secs_f64() * 1000.0;
+                    mark_frame_stage(FrameStage::PresentDone);
 
                     // ── Hi-Z: submit 後に読み戻しマップを予約する（1 フレーム遅延の要）──────
                     //   schedule_readback で staging へ写した可視性を、次フレームの
@@ -6443,8 +6581,32 @@ impl App {
                 self.start_physics_2d();
             }
         }
+        // start_physics（初回フレーム末: 地形コライダー再登録＋char_world ミラー322 trimesh
+        // QBVH 同期構築）は present より後に走る。ここを通過できずに凍結すると request_redraw に
+        // 到達せずループが恒久停止するため、通過を独立ステージとして記録する。
+        mark_frame_stage(FrameStage::StartPhysicsDone);
 
         if dbg { eprintln!("[SEED FRAME {dbg_frame}] end"); }
+
+        // ── フレーム凍結ウォッチドッグ / ハートビート ──────────────────────────
+        // request_redraw まで到達＝このフレームが完了。FrameEnd ステージを記録し、
+        // Play（非ポーズ）ではハートビートを出す（凍結の「直前まで回っていた」ことの証跡）。
+        {
+            use std::sync::atomic::Ordering;
+            mark_frame_stage(FrameStage::FrameEnd);
+            if *PLAY_DIAG_ENABLED && self.mode == RuntimeMode::Play && !self.paused {
+                let now_ms  = WD_EPOCH.elapsed().as_millis() as u64;
+                let n       = PLAY_DIAG_FRAME.load(Ordering::Relaxed);
+                let last_hb = PLAY_HB_LAST_MS.load(Ordering::Relaxed);
+                let gap     = now_ms.saturating_sub(last_hb);
+                // 60 フレーム毎 or 前フレームから 1 秒以上空いたら出す。
+                if n % PLAY_HB_EVERY == 0 || gap >= PLAY_HB_GAP_MS {
+                    eprintln!("[PLAY_HB] frame={n} gap={gap}ms");
+                    PLAY_HB_LAST_MS.store(now_ms, Ordering::Relaxed);
+                }
+            }
+        }
+
         // フォーカスが無い間はフレームレートを抑える（遮蔽時の present 即時リターンによる
         // 暴走ループと、それに伴う毎フレーム Debug.Log の氾濫を防ぐ）。
         self.pace_frame_if_unfocused(perf_t_total);
