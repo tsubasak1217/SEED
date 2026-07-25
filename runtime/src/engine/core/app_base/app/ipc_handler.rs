@@ -781,6 +781,32 @@ impl App {
                             } else if self.edit_physics_enabled || self.edit_physics_2d_enabled {
                                 self.init_physics_timeline();
                             }
+                            // ── Play モードでのシーン再ロード（常駐 Play プロセスの再利用）────
+                            // 上の物理再起動は Edit モード用フラグ（edit_physics_enabled 等）で
+                            // ゲートされており Play では発火しない。エディタが Play プロセスを
+                            // Kill せず常駐保持し、2 回目以降の Play で LOAD_SCENE を送って
+                            // シーンだけ差し替える高速起動を実現するため、Play モードでは
+                            // 「新規 Play 起動と同じ初期状態」へ明示的にリセットする。
+                            //
+                            //   1. 物理スレッドを停止する。frame_renderer の初回フレーム末尾の
+                            //      起動ロジックが physics_thread.is_none() を検出し、次フレームで
+                            //      新シーンのコライダーから物理ワールドを再構築する。
+                            //   2. ゲーム内時間（clock.anim_time）を 0 に戻す。スクリプトが読む
+                            //      Time.time / deltaTime を新規 Play と揃える。Clock::new() は
+                            //      debug_guard を false に戻すが、デバッガ再アタッチ時に
+                            //      DBG_GUARD IPC で再設定されるため問題ない。
+                            //   3. paused を解除する（保持中に PAUSE 相当を受けていた場合の保険）。
+                            //
+                            // パーティクル全解放（particle_system.clear_all）とスクリプト
+                            // インスタンス再生成（Scene::load が新規 C# インスタンスを生成し、
+                            // 旧インスタンスは旧シーンの Drop で破棄）は上の共通処理で
+                            // 実施済みのため、ここでは追加不要。
+                            if self.mode == RuntimeMode::Play {
+                                self.stop_physics();
+                                self.stop_physics_2d();
+                                self.clock = crate::engine::core::clock::Clock::new();
+                                self.paused = false;
+                            }
                             if let Some(ipc) = &self.ipc {
                                 ipc.send("SCENE_LOADED");
                                 let (pos, euler_x, euler_y, euler_z, fov, far, spd) = self.cam_state_tuple();

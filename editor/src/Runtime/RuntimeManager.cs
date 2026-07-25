@@ -29,13 +29,20 @@ public enum EditorState { Idle, Building, Edit, Play, Pause }
 ///   Edit  ──[Play]────────▶ Play   ← Edit ランタイムは非表示にして保持（GPU コンテキスト維持）
 ///   Play  ──[最小化検知]──▶ Pause  ← WinEventHook
 ///   Pause ──[Resume]──────▶ Play
-///   Play/Pause ──[Stop]───▶ Edit   ← Play を Kill → 保存 Edit を ShowWindow で即復元
-///   Play/Pause ──[閉じる]─▶ Edit   ← Play 自己終了 → 保存 Edit を ShowWindow で即復元
+///   Play/Pause ──[Stop]───▶ Edit   ← Play を非表示保持（Kill しない）→ 保存 Edit を ShowWindow で即復元
+///   Play/Pause ──[閉じる]─▶ Edit   ← Play 自己終了（Kill 済み）→ 保存 Edit を ShowWindow で即復元
 ///
 /// Edit ランタイムを Play 中も生かしておく理由:
 ///   デバッグビルドでは Play 終了→Edit 再起動時に GPU コンテキストの再初期化に
 ///   約 22 秒かかる（wgpu/DX12）。非表示にするだけなら GPU は維持されたまま
 ///   ShowWindow で即座に表示でき、ユーザーへの待機をゼロにできる。
+///
+/// Play ランタイムを Stop 後も生かしておく理由（常駐 Play）:
+///   新規 Play プロセスは毎回 GPU 初期化＋モデル再パースのコールドスタートで数十秒かかる。
+///   Stop 時に Kill せず PAUSE_RENDER で描画・シミュレーションを止めて非表示保持し、
+///   2 回目以降の Play では保持プロセスへ LOAD_SCENE を送ってシーンだけ差し替える
+///   （GPU・モデルキャッシュが温かいため数秒で再生できる）。保持プロセスがクラッシュ／
+///   終了していれば従来どおり新規起動へフォールバックする。初回 Play はコールドのまま。
 /// </summary>
 public sealed class RuntimeManager : IDisposable
 {
@@ -104,6 +111,14 @@ public sealed class RuntimeManager : IDisposable
     private Process?    _savedEditProcess;
     private PipeServer? _savedEditPipe;
     private IntPtr      _savedEditHwnd;
+
+    // Stop 後も Kill せず常駐保持する Play ランタイムのフィールド。
+    // 2 回目以降の Play では、この保持プロセスへ LOAD_SCENE を送ってシーンだけ差し替える
+    // ことで、GPU 初期化（約 22 秒）とモデル再パースのコールドスタートを回避する。
+    // 初回 Play・保持プロセスがクラッシュ/終了している場合は従来どおり新規起動する。
+    private Process?    _persistentPlayProcess;
+    private PipeServer? _persistentPlayPipe;
+    private IntPtr      _persistentPlayHwnd;
 
     // ── 公開プロパティ・イベント ────────────────────────────────
 
@@ -292,8 +307,12 @@ public sealed class RuntimeManager : IDisposable
     }
 
     /// <summary>
-    /// Play ボタン: Edit ランタイムをウィンドウ非表示にして保持し、Play ランタイムを起動する。
+    /// Play ボタン: Edit ランタイムをウィンドウ非表示にして保持し、Play ランタイムを開始する。
     /// プロセスを終了しないことで GPU コンテキストを維持し、Play 終了後に即復元できるようにする。
+    ///
+    /// Play ランタイムの起動は次の 2 通り:
+    ///   - 常駐 Play プロセスが生きていれば再利用（LOAD_SCENE でシーン差し替え・数秒）。
+    ///   - 初回 or 常駐消滅時は新規起動（コールドスタート・数十秒）。
     /// </summary>
     public async Task PlayAsync()
     {
@@ -314,12 +333,91 @@ public sealed class RuntimeManager : IDisposable
         if (_savedEditHwnd != IntPtr.Zero)
             Win32.ShowWindow(_savedEditHwnd, SW_HIDE);
 
-        // 現フィールドをリセット（LaunchAsync が Play 用に新規作成する）
+        // 現フィールドをリセット（再利用 / 新規起動が Play 用に設定する）
         _process     = null;
         _pipe        = null;
         _runtimeHwnd = IntPtr.Zero;
 
+        // ── 常駐 Play プロセスの再利用判定 ─────────────────────────────
+        // 保持プロセスが生きていて、かつ再ロードすべきシーンパスが確定している場合のみ
+        // 再利用する。PlayScenePath が null（「開始シーンからプレイ」時はエディタ側が
+        // 開始シーンの実パスを持たない）のときは LOAD_SCENE を送れないため新規起動する。
+        var canReuse = _persistentPlayProcess is { HasExited: false }
+                    && !string.IsNullOrEmpty(PlayScenePath);
+        if (canReuse)
+        {
+            EditorLog.Write("PlayAsync — 常駐 Play プロセスを再利用（LOAD_SCENE で高速再生）");
+            ReusePersistentPlayRuntime();
+            return;
+        }
+
+        // 保持プロセスが消滅していた（クラッシュ/終了）場合は破棄してから新規起動する
+        if (_persistentPlayProcess is not null)
+        {
+            EditorLog.Write("PlayAsync — 常駐 Play プロセスが消滅、または再ロード先シーン未確定。新規起動へフォールバック");
+            DisposePersistentPlayRuntime(killProcess: true);
+        }
+        else
+        {
+            EditorLog.Write("PlayAsync — 常駐 Play なし。新規起動（コールドスタート）");
+        }
+
         await LaunchAsync(editMode: false);
+    }
+
+    /// <summary>
+    /// 常駐保持していた Play ランタイムを再利用して再生を再開する。
+    /// RESUME_RENDER で描画・シミュレーションを再開し、LOAD_SCENE でシーンを差し替える
+    /// （ランタイム側 LOAD_SCENE の Play モード処理が物理再構築・パーティクル解放・
+    ///   スクリプト再生成・ゲーム内時間リセットを行う）。UI スレッドから呼ぶこと。
+    /// </summary>
+    private void ReusePersistentPlayRuntime()
+    {
+        EditorLog.Write($"ReusePersistentPlayRuntime — hwnd=0x{_persistentPlayHwnd:X}  scene={PlayScenePath}");
+
+        // フィールドを保持 Play から復元する
+        _process     = _persistentPlayProcess;
+        _pipe        = _persistentPlayPipe;
+        _runtimeHwnd = _persistentPlayHwnd;
+
+        _persistentPlayProcess = null;
+        _persistentPlayPipe    = null;
+        _persistentPlayHwnd    = IntPtr.Zero;
+
+        // イベントを再購読する（保持中は誤発火防止のため解除していた）
+        if (_process is not null)
+            _process.Exited += OnRuntimeExited;
+        if (_pipe is not null)
+            _pipe.MessageReceived += OnPipeMessage;
+
+        // 描画・シミュレーションを再開し、シーンを差し替える。
+        // RESUME_RENDER と LOAD_SCENE は同一フレームの process_ipc でまとめて処理される。
+        _pipe?.Send("RESUME_RENDER");
+        _pipe?.Send($"LOAD_SCENE:{PlayScenePath}");
+        // コライダー描画フラグを同期する（新規起動時の --play-collider-draw=1 に相当）
+        _pipe?.Send($"SET_PLAY_COLLIDER_DRAW:{(PlayColliderDraw ? 1 : 0)}");
+
+        // ウィンドウを再表示して前面化する
+        if (_runtimeHwnd != IntPtr.Zero)
+        {
+            Win32.ShowWindow(_runtimeHwnd, SW_SHOW);
+            Win32.SetForegroundWindow(_runtimeHwnd);
+        }
+
+        // クラッシュカウントをリセットする
+        _restartCount    = 0;
+        _intentionalStop = false;
+
+        // Play 状態へ遷移する（UI 更新・自動デバッガアタッチのトリガ）。
+        // 保持プロセスは同一 PID のため、デバッガは同 PID へ再アタッチされる。
+        ChangeState(EditorState.Play);
+        EditorLog.Write("ReusePersistentPlayRuntime — State changed to Play（常駐再利用）");
+
+        // 最小化検知フックを再設置する（新規 Play 起動時と同じ）
+        InstallMinimizeHook();
+
+        // HWND 依存の後処理（SyncViewportSettings・カーソルクランプ等）を再実行する
+        RuntimeHwndAvailable?.Invoke((nint)_runtimeHwnd);
     }
 
     /// <summary>最小化検知 or Pause ボタン: デバッグカメラに切替えて Viewport に埋め込む。</summary>
@@ -467,17 +565,103 @@ public sealed class RuntimeManager : IDisposable
         EditorLog.Write($"ResizeRuntimeToContainer — {w}x{h}");
     }
 
-    /// <summary>Stop ボタン: Play ランタイムを終了し Edit に戻る。</summary>
+    /// <summary>
+    /// Stop ボタン: Play ランタイムを Kill せず非表示保持（常駐）し、Edit に戻る。
+    /// 2 回目以降の Play で保持プロセスを再利用してコールドスタートを回避する。
+    /// </summary>
     public void Stop()
     {
         if (_state == EditorState.Pause) DetachRuntimeWindow();
-        KillRuntime(sendStop: true);
+
+        // Play ランタイムを Kill せず、描画停止＋非表示で常駐保持へ退避する
+        HidePlayRuntime();
 
         // 保存した Edit ランタイムが生きていれば即復元（GPU 再初期化なし）
         if (_savedEditProcess is not null && !_savedEditProcess.HasExited)
             RestoreEditRuntime();
         else
             _ = StartEditAsync(_viewportContainerHwnd);
+    }
+
+    // ── プライベート: Play ランタイム常駐保持 ─────────────────────
+
+    /// <summary>
+    /// 現在の Play ランタイムを Kill せず、レンダリング停止（PAUSE_RENDER）＋ウィンドウ非表示で
+    /// 常駐フィールドへ退避する。2 回目以降の Play で ReusePersistentPlayRuntime が再利用する。
+    ///
+    /// PAUSE_RENDER はランタイムの handle_redraw_requested を IPC 処理後に早期 return させ、
+    /// 描画・物理・スクリプト・時間更新をまとめて止める（GPU/CPU を解放）。IPC は処理され続けるため、
+    /// 再利用時の RESUME_RENDER / LOAD_SCENE を受け取れる。UI スレッドから呼ぶこと。
+    /// </summary>
+    private void HidePlayRuntime()
+    {
+        if (_process is null)
+        {
+            EditorLog.Write("HidePlayRuntime — Play プロセスが無いためスキップ");
+            return;
+        }
+
+        // 既に別の常駐 Play を保持していれば（通常は再利用時に消費済みで発生しないが保険）Kill する
+        if (_persistentPlayProcess is not null)
+        {
+            EditorLog.Write("HidePlayRuntime — 既存の常駐 Play が残存していたため破棄");
+            DisposePersistentPlayRuntime(killProcess: true);
+        }
+
+        UninstallMinimizeHook();
+
+        // 描画・シミュレーションを停止して GPU/CPU を解放する（AI 実行時と同じ PAUSE_RENDER 経路）
+        _pipe?.Send("PAUSE_RENDER");
+
+        // 保持中に終了・メッセージで誤動作しないようイベント購読を解除する
+        if (_process is not null)
+            _process.Exited -= OnRuntimeExited;
+        if (_pipe is not null)
+            _pipe.MessageReceived -= OnPipeMessage;
+
+        // ウィンドウを非表示にする（プロセスは維持）
+        if (_runtimeHwnd != IntPtr.Zero)
+            Win32.ShowWindow(_runtimeHwnd, SW_HIDE);
+
+        // 常駐フィールドへ退避する
+        _persistentPlayProcess = _process;
+        _persistentPlayPipe    = _pipe;
+        _persistentPlayHwnd    = _runtimeHwnd;
+
+        // 現フィールドをクリアする（RestoreEditRuntime が Edit を設定する）
+        _process     = null;
+        _pipe        = null;
+        _runtimeHwnd = IntPtr.Zero;
+
+        EditorLog.Write($"HidePlayRuntime — Play を常駐保持  hwnd=0x{_persistentPlayHwnd:X}  PID={_persistentPlayProcess?.Id}");
+    }
+
+    /// <summary>
+    /// 常駐保持している Play ランタイムを破棄する。
+    /// killProcess=true のときはプロセスも Kill する（フォールバック新規起動・エディタ終了時）。
+    /// </summary>
+    private void DisposePersistentPlayRuntime(bool killProcess)
+    {
+        if (_persistentPlayProcess is null) return;
+
+        if (killProcess && !_persistentPlayProcess.HasExited)
+        {
+            _persistentPlayPipe?.Send("STOP");
+            try
+            {
+                _persistentPlayProcess.Kill();
+                _persistentPlayProcess.WaitForExit(500);
+            }
+            catch (Exception ex)
+            {
+                EditorLog.Write($"DisposePersistentPlayRuntime — kill failed: {ex.Message}");
+            }
+        }
+        _persistentPlayPipe?.Dispose();
+        _persistentPlayProcess.Dispose();
+        _persistentPlayProcess = null;
+        _persistentPlayPipe    = null;
+        _persistentPlayHwnd    = IntPtr.Zero;
     }
 
     // ── プライベート: 残存プロセス終了 ──────────────────────────
@@ -1281,6 +1465,9 @@ public sealed class RuntimeManager : IDisposable
             _savedEditHwnd    = IntPtr.Zero;
         }
 
+        // 常駐保持している Play ランタイムも確実に終了させる（リーク防止）
+        DisposePersistentPlayRuntime(killProcess: true);
+
         _sourceWatcher?.Dispose();
     }
 
@@ -1321,6 +1508,9 @@ public sealed class RuntimeManager : IDisposable
 
         [DllImport("user32.dll")]
         internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        internal static extern bool SetForegroundWindow(IntPtr hWnd);
 
         [DllImport("user32.dll")]
         internal static extern bool SetWindowPos(
