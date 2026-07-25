@@ -43,6 +43,8 @@ mod physics_ops;
 mod physics_timeline;
 mod tab_physics;
 mod script_scene_ops;
+/// 埋め込みインプレース Play（フェーズ2）: ENTER_PLAY / EXIT_PLAY の状態遷移とアクター退避/復元。
+mod play_mode_ops;
 mod audio_ops;
 mod animation_ops;
 pub(crate) mod light_ops;
@@ -325,6 +327,33 @@ pub enum RuntimeMode {
     Edit,
     /// 通常ゲームプレイ・独立ウィンドウ
     Play,
+}
+
+// ============================================================
+//  PlaySnapshot — 埋め込みインプレース Play のアクター状態退避
+// ============================================================
+
+/// 埋め込み Play（ENTER_PLAY）開始時に取るシーンのトップレベルアクター状態のスナップショット。
+///
+/// 【設計】高速化の本体は「地形・散布・GPU リソースを作り直さない」こと。そのため
+/// スナップショットは **シーン世界線（world_line == 0）の非地形アクターのみ** を対象とし、
+/// 地形ルート（`TERRAIN_ROOT_NAME`）とアクター編集タブ（world_line > 0）のアクターは
+/// 「現物を保持（Keep）」して一切触らない。Play 中に地形は変化せず（スクリプトに地形編集
+/// API は無い）、編集タブはシミュレートされないため、保持で状態は保たれる。
+///
+/// トップレベルアクターの **並び順を保持** することで、復元後も DFS ID の対応
+/// （物理・スクリプトのイベント配信が依存）を Play 前と一致させる。
+pub struct PlaySnapshot {
+    /// Play 前のトップレベルアクター列（順序保持）。各要素が復元方法を持つ。
+    entries: Vec<PlaySnapshotEntry>,
+}
+
+/// トップレベルアクター 1 体分のスナップショット項目。
+enum PlaySnapshotEntry {
+    /// スナップショット対象（world_line == 0・非地形）。ActorData から再構築する。
+    Restore(ActorData),
+    /// 保持対象（地形ルート・world_line > 0）。ルート entity をキーに現物を退避して戻す。
+    Keep(crate::engine::ecs::Entity),
 }
 
 /// Edit モードのビューポート表示モード（エディタの「3Dシーン / 2Dシーン」タブに対応）。
@@ -903,6 +932,12 @@ pub struct App {
     /// 編集ダーティ集合）。シーン非依存の terrain ライブラリと ECS/GPU を橋渡しする。
     /// 詳細は terrain_ops::TerrainState を参照。
     pub(super) terrain: terrain_ops::TerrainState,
+
+    // ── 埋め込みインプレース Play（フェーズ2）─────────────────────
+    /// ENTER_PLAY 開始時に取るアクター状態のスナップショット（メモリ内・serde 不要）。
+    /// EXIT_PLAY でここから非地形アクターを再構築して編集状態へ復帰する。
+    /// None = 埋め込み Play 中でない（通常の Edit / ウィンドウ Play）。
+    pub(super) play_snapshot: Option<PlaySnapshot>,
 }
 
 /// プロジェクト設定が読めない場合のウィンドウ解像度既定値（Full HD）。
@@ -1086,6 +1121,7 @@ impl App {
             anim_preview_saved: HashMap::new(),
             joint_attach_warned: std::collections::HashSet::new(),
             terrain:             terrain_ops::TerrainState::default(),
+            play_snapshot:       None,
         }
     }
 

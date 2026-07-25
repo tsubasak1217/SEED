@@ -910,6 +910,14 @@
                                           Checked="OnPlayColliderDrawChanged"
                                           Unchecked="OnPlayColliderDrawChanged"
                                           ToolTip="Play中にコライダーのワイヤーフレームを描画します。衝突中は赤色で表示されます。"/>
+                                <CheckBox x:Name="ChkEmbeddedPlay"
+                                          Content="埋め込みインプレースPlay（高速・地形を再構築しない）"
+                                          Foreground="White"
+                                          IsChecked="False"
+                                          Margin="0,4,0,0"
+                                          Checked="OnEmbeddedPlayChanged"
+                                          Unchecked="OnEmbeddedPlayChanged"
+                                          ToolTip="オン時は別プロセスを起動せず、シーンパネルのランタイムをその場でPlay化します。地形・散布・GPUを作り直さないため即座に再生できます。オフ時は従来のウィンドウPlay。"/>
                             </StackPanel>
                         </Border>
                     </Popup>

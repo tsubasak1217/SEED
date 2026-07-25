@@ -260,6 +260,15 @@ pub enum IpcCommand {
     EndTransformDrag,
     /// シーンファイルのロード
     LoadScene(String),
+    /// 埋め込みインプレース Play 開始（フェーズ2）。
+    /// Edit ランタイムを再ロードせず、構築済みの地形・散布・GPU リソースを保持したまま
+    /// mode を Play へ切り替える。開始前に現アクター状態を ActorData へスナップショットし、
+    /// EXIT_PLAY で復元できるようにする。応答: `PLAY_ENTERED`。
+    EnterPlay,
+    /// 埋め込みインプレース Play 停止（フェーズ2）。
+    /// ENTER_PLAY で保持したスナップショットから非地形アクターを再構築し、mode を Edit へ戻す。
+    /// 地形・散布・GPU リソースには触れない。応答: `PLAY_EXITED`。
+    ExitPlay,
     /// デバッグカメラ状態要求
     GetCamState,
     /// デバッグカメラ位置・Euler XYZ 回転設定（度、YXZ 合成順）
@@ -1234,6 +1243,9 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         s if s.starts_with("LOAD_SCENE:") => {
                             Some(IpcCommand::LoadScene(s["LOAD_SCENE:".len()..].to_string()))
                         }
+                        // 埋め込みインプレース Play 開始/停止（フェーズ2、引数なし）
+                        "ENTER_PLAY"    => Some(IpcCommand::EnterPlay),
+                        "EXIT_PLAY"     => Some(IpcCommand::ExitPlay),
                         "GET_CAM_STATE" => Some(IpcCommand::GetCamState),
                         s if s.starts_with("CAM_TRANSFORM:") => {
                             // フォーマット: CAM_TRANSFORM:{px},{py},{pz},{euler_x},{euler_y},{euler_z}

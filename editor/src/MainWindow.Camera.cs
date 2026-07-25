@@ -17,6 +17,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using SEEDEditor.Native;
 using SEEDEditor.Runtime;
 
 namespace SEEDEditor;
@@ -765,7 +766,51 @@ public partial class MainWindow
             // 新しい Play プロセスへ自動アタッチする（スクリプトは Play 中のみ動くため）。
             if (state == EditorState.Play)
                 TryAutoAttachDebuggerOnPlay();
+
+            // 埋め込みインプレース Play の入力フォーカス制御。
+            // 埋め込み Play では同じ子 HWND がゲーム描画も担うため、キーボード入力を
+            // ランタイム側へ流すには OS フォーカスを子 HWND へ移す必要がある。
+            // Play 開始時に子へ SetFocus し、Edit 復帰時はエディタへ戻す。
+            if (_embeddedPlay)
+            {
+                if (state == EditorState.Play)      FocusRuntimeChild();
+                else if (state == EditorState.Edit) ReturnFocusToEditor();
+            }
         });
+    }
+
+    /// <summary>
+    /// 埋め込み Play 中に、ランタイムの子 HWND へ OS キーボードフォーカスを移す。
+    /// 子はエディタと別スレッド/別プロセスの winit ウィンドウのため、AttachThreadInput で
+    /// スレッド入力を結合してから SetFocus する（クロススレッド SetFocus の定石）。
+    /// ビューポートクリック時にも呼んで再フォーカスする。UI スレッドから呼ぶこと。
+    /// </summary>
+    private void FocusRuntimeChild()
+    {
+        var child = _runtimeManager?.RuntimeHwnd ?? 0;
+        if (child == 0) return;
+
+        var editorThread = NativeInterop.GetWindowThreadProcessId(
+            new System.Windows.Interop.WindowInteropHelper(this).Handle, out _);
+        var childThread  = NativeInterop.GetWindowThreadProcessId(child, out _);
+
+        if (editorThread != childThread)
+            NativeInterop.AttachThreadInput(editorThread, childThread, true);
+        NativeInterop.SetForegroundWindow(child);
+        NativeInterop.SetFocus(child);
+        if (editorThread != childThread)
+            NativeInterop.AttachThreadInput(editorThread, childThread, false);
+    }
+
+    /// <summary>埋め込み Play 停止時に、キーボードフォーカスをエディタ本体へ戻す。</summary>
+    private void ReturnFocusToEditor()
+    {
+        var editorHwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        if (editorHwnd != 0)
+        {
+            NativeInterop.SetForegroundWindow(editorHwnd);
+            Activate();
+        }
     }
 
     private void ApplyUiState(EditorState state)

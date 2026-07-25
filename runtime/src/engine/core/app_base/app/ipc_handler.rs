@@ -821,6 +821,14 @@ impl App {
                         None => {}
                     }
                 }
+                IpcCommand::EnterPlay => {
+                    // 埋め込みインプレース Play 開始（フェーズ2）。詳細は play_mode_ops.rs。
+                    self.enter_play();
+                }
+                IpcCommand::ExitPlay => {
+                    // 埋め込みインプレース Play 停止（フェーズ2）。詳細は play_mode_ops.rs。
+                    self.exit_play();
+                }
                 IpcCommand::OpenActor { path, world_line } => {
                     if self.draw_ctx.is_some() {
                         // カメラ状態を退避

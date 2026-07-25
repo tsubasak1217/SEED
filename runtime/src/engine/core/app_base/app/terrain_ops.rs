@@ -68,7 +68,7 @@ const TERRAIN_LAYERS_ASSET: &str = "assets://terrain/layers.json";
 const TERRAIN_LAYERS_PATH_ENV: &str = "SEED_TERRAIN_LAYERS";
 
 /// 地形ルートアクターの名前。
-const TERRAIN_ROOT_NAME: &str = "terrain";
+pub(super) const TERRAIN_ROOT_NAME: &str = "terrain";
 /// 各チャンクのメッシュを載せるアクターの名前。
 const TERRAIN_MESH_NAME: &str = "mesh";
 /// メッシュアクターの ModelComponent スロット名。
