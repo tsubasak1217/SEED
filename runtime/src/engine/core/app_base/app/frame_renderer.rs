@@ -4736,17 +4736,6 @@ impl App {
                         }
                         perf_draw_ms = _perf_t_draw.elapsed().as_secs_f64() * 1000.0;
 
-                        // ドロッププレビュー球体描画（ドラッグ中のみ）
-                        if let (Some(preview_batch), Some((_, line_bg))) =
-                            (&drop_preview_batch, &self.line_model_buf)
-                        {
-                            draw_gizmo_batch(
-                                &mut pass, preview_batch,
-                                &camera_buf.bind_group, line_bg,
-                                &draw_ctx.pipelines,
-                            );
-                        }
-
                         // グリッド描画（スプライト・選択矩形より先に描画）
                         // sprite/unlit パイプラインは depth_write=false かつ LessEqual のため、
                         // グリッドより後に描画することでグリッドの上に正しく重なる。
@@ -4755,17 +4744,6 @@ impl App {
                         {
                             draw_line_batch(
                                 &mut pass, grid_batch,
-                                &camera_buf.bind_group, line_bg,
-                                &draw_ctx.pipelines,
-                            );
-                        }
-
-                        // 地形ブラシ範囲プレビュー（ワイヤスフィア）描画。
-                        if let (Some(preview_batch), Some((_, line_bg))) =
-                            (&terrain_preview_batch, &self.line_model_buf)
-                        {
-                            draw_line_batch(
-                                &mut pass, preview_batch,
                                 &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );
@@ -4821,6 +4799,89 @@ impl App {
                                     &sprite_prepared_2d_fg,
                                 );
                             }
+                        }
+
+                        // ── メインパスを閉じる（不透明・スカイボックス・半透明ソート・スプライト
+                        //    本体まで描画完了）。以降のエディタオーバーレイ（ギズモ／軸／各種ライン・
+                        //    ワイヤー／アイコン／選択アウトライン等）は、WBOIT 合成のフルスクリーン
+                        //    no_depth クアッドに上書きされないよう、合成の「後」で別パスに描く。
+                        drop(pass);
+
+                        // ── WBOIT 透明描画（Phase R5, WBOIT 方式かつ透明物ありのとき）──────
+                        // メインパス drop 後・オーバーレイ前に、accum/reveal へ順序独立蓄積し、
+                        // フルスクリーン合成でシーン HDR へ重ねる。合成は no_depth クアッドのため、
+                        // オーバーレイより「前」に実行しないとギズモ／ワイヤー等を消してしまう
+                        //（本修正の要点：旧構成では合成がオーバーレイの後に走り上書きしていた）。
+                        // 無効時は一切実行しない。
+                        if tp_wboit {
+                            if let (Some(accum_view), Some(reveal_view)) =
+                                (wboit_accum_view, wboit_reveal_view)
+                            {
+                                {
+                                    let mut wpass = frame.begin_wboit_pass_to(accum_view, reveal_view);
+                                    // 距離ソートと同じ分岐: RT 屈折が使えるなら RT 版、そうでなければ SS 版。
+                                    if let (Some(rt_bg), Some(rt_tp)) = (
+                                        transparent_rt_bg_main.as_ref(),
+                                        draw_ctx.pipelines.transparent.rt.as_ref(),
+                                    ) {
+                                        crate::engine::core::renderer::transparency::draw_wboit_rt(
+                                            &mut wpass,
+                                            &transparent_models,
+                                            &camera_buf.bind_group,
+                                            rt_bg,
+                                            rt_tp,
+                                            saved_camera_pos,
+                                        );
+                                    } else {
+                                        crate::engine::core::renderer::transparency::draw_wboit(
+                                            &mut wpass,
+                                            &transparent_models,
+                                            &camera_buf.bind_group,
+                                            &transparent_bg_main,
+                                            &draw_ctx.pipelines.transparent,
+                                            saved_camera_pos,
+                                        );
+                                    }
+                                }
+                                // accum/reveal → シーン HDR へアルファブレンド合成（LoadOp::Load）。
+                                draw_ctx.pipelines.transparent.composite_wboit(
+                                    &draw_ctx.device,
+                                    frame.encoder_mut(),
+                                    hdr_view,
+                                    accum_view,
+                                    reveal_view,
+                                );
+                            }
+                        }
+
+                        // ── エディタオーバーレイパス（WBOIT 合成後・GPU パーティクル前）────
+                        // 深度 = 共有深度を Load（不透明深度でテストのみ・パイプライン側 depth_write=false
+                        // のため書込なし）／ステンシル = Clear(0)（選択アウトラインのマスク用に 0 初期化）／
+                        // カラー = Load（合成済み HDR を保持して重ねる）。これにより Always ギズモ／軸は
+                        // 半透明の上にも常に見え、LessEqual ワイヤは不透明に隠れつつ WBOIT 合成に消されない。
+                        // 以降このスコープの `pass` はオーバーレイパスを指す（メインパスは drop 済み）。
+                        let mut pass = frame.begin_overlay_pass_to(hdr_view);
+
+                        // ドロッププレビュー球体描画（ドラッグ中のみ）
+                        if let (Some(preview_batch), Some((_, line_bg))) =
+                            (&drop_preview_batch, &self.line_model_buf)
+                        {
+                            draw_gizmo_batch(
+                                &mut pass, preview_batch,
+                                &camera_buf.bind_group, line_bg,
+                                &draw_ctx.pipelines,
+                            );
+                        }
+
+                        // 地形ブラシ範囲プレビュー（ワイヤスフィア）描画。
+                        if let (Some(preview_batch), Some((_, line_bg))) =
+                            (&terrain_preview_batch, &self.line_model_buf)
+                        {
+                            draw_line_batch(
+                                &mut pass, preview_batch,
+                                &camera_buf.bind_group, line_bg,
+                                &draw_ctx.pipelines,
+                            );
                         }
 
                         // CanvasComponent 矩形アウトライン描画（グリッドより前面）
@@ -5151,7 +5212,7 @@ impl App {
                             io.draw(batch, &mut pass);
                         }
 
-                        // pass.drop() の時間を明示計測する。
+                        // オーバーレイパスの drop() 時間を計測する（旧構成のメインパス drop 計測を継承）。
                         // wgpu デバッグモードでは drop() 時に全コマンドの検証が走るため、
                         // 多数のアクターがある場合にここが大きなボトルネックになりうる。
                         let _perf_t_drop = std::time::Instant::now();
@@ -5159,51 +5220,8 @@ impl App {
                         perf_pass_drop_ms = _perf_t_drop.elapsed().as_secs_f64() * 1000.0;
                     }
 
+                    // メインパス〜WBOIT 合成〜オーバーレイパスまでの合計時間（本ブロック全体）。
                     perf_main_pass_ms = _perf_t_main.elapsed().as_secs_f64() * 1000.0;
-
-                    // ── WBOIT 透明描画（Phase R5, WBOIT 方式かつ透明物ありのとき）──────
-                    // メインパス drop 後・ブルーム前に、accum/reveal へ順序独立蓄積し、
-                    // フルスクリーン合成でシーン HDR へ重ねる。無効時は一切実行しない。
-                    if tp_wboit {
-                        if let (Some(accum_view), Some(reveal_view)) =
-                            (wboit_accum_view, wboit_reveal_view)
-                        {
-                            {
-                                let mut wpass = frame.begin_wboit_pass_to(accum_view, reveal_view);
-                                // 距離ソートと同じ分岐: RT 屈折が使えるなら RT 版、そうでなければ SS 版。
-                                if let (Some(rt_bg), Some(rt_tp)) = (
-                                    transparent_rt_bg_main.as_ref(),
-                                    draw_ctx.pipelines.transparent.rt.as_ref(),
-                                ) {
-                                    crate::engine::core::renderer::transparency::draw_wboit_rt(
-                                        &mut wpass,
-                                        &transparent_models,
-                                        &camera_buf.bind_group,
-                                        rt_bg,
-                                        rt_tp,
-                                        saved_camera_pos,
-                                    );
-                                } else {
-                                    crate::engine::core::renderer::transparency::draw_wboit(
-                                        &mut wpass,
-                                        &transparent_models,
-                                        &camera_buf.bind_group,
-                                        &transparent_bg_main,
-                                        &draw_ctx.pipelines.transparent,
-                                        saved_camera_pos,
-                                    );
-                                }
-                            }
-                            // accum/reveal → シーン HDR へアルファブレンド合成（LoadOp::Load）。
-                            draw_ctx.pipelines.transparent.composite_wboit(
-                                &draw_ctx.device,
-                                frame.encoder_mut(),
-                                hdr_view,
-                                accum_view,
-                                reveal_view,
-                            );
-                        }
-                    }
 
                     // ── GPU パーティクル描画（Phase RP）────────────────────────────
                     // メインパス／透明合成（距離ソートはメインパス内・WBOIT は上）が完了した後、
