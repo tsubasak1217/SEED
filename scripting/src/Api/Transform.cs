@@ -6,7 +6,7 @@ namespace SEED;
 ///
 /// プロパティへの代入は即座にゲーム世界へ反映される。回転は YXZ オイラー角（度）。
 /// </summary>
-public readonly struct Transform
+public readonly struct Transform : IComponentHandle<Transform>
 {
     /// <summary>この Transform が属するエンティティ。</summary>
     private readonly Entity _entity;
@@ -15,6 +15,10 @@ public readonly struct Transform
     private const string Comp = "Transform";
 
     internal Transform(Entity entity) { _entity = entity; }
+
+    // ── IComponentHandle 実装（GetComponent 経由でのみ使われる）──
+    static string IComponentHandle<Transform>.ComponentKindName => Comp;
+    static Transform IComponentHandle<Transform>.FromEntity(Entity slotEntity) => new(slotEntity);
 
     /// <summary>ワールド位置。</summary>
     public Vector3 Position

@@ -10,7 +10,7 @@ namespace SEED;
 /// Update 等のスクリプトライフサイクル内から呼ぶ限り通常は問題にならない）。
 /// 未登録のクリップ名を指定した場合は警告ログを出して無視する。
 /// </summary>
-public readonly struct Animator
+public readonly struct Animator : IComponentHandle<Animator>
 {
     /// <summary>この Animator が属するエンティティ。</summary>
     private readonly Entity _entity;
@@ -25,6 +25,10 @@ public readonly struct Animator
     private const int ActionResume = 3;
 
     internal Animator(Entity entity) { _entity = entity; }
+
+    // ── IComponentHandle 実装（GetComponent 経由でのみ使われる）──
+    static string IComponentHandle<Animator>.ComponentKindName => Comp;
+    static Animator IComponentHandle<Animator>.FromEntity(Entity slotEntity) => new(slotEntity);
 
     // ── 再生操作 ─────────────────────────────────────────────
 

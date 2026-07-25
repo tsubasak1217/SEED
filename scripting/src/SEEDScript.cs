@@ -22,8 +22,12 @@ public abstract class SEEDScript : IScriptComponent
     /// <summary>このスクリプトがアタッチされた GameObject。</summary>
     protected SEED.GameObject gameObject => new(_entity);
 
-    /// <summary>このスクリプトがアタッチされた GameObject の Transform（短縮）。</summary>
-    protected SEED.Transform transform => new(_entity);
+    /// <summary>
+    /// このスクリプトがアタッチされた GameObject の Transform（短縮）。
+    /// <c>gameObject.GetComponent&lt;Transform&gt;()</c> 経由で解決する（Transform は
+    /// アクタールート直付けのため、通常は必ず取得できる。万一未解決なら既定ハンドル）。
+    /// </summary>
+    protected SEED.Transform transform => gameObject.GetComponent<SEED.Transform>() ?? new(_entity);
 
     public virtual void BeginFrame(ref NativeFrameContext ctx)    {}
     public virtual void EarlyUpdate(ref NativeFrameContext ctx)   {}

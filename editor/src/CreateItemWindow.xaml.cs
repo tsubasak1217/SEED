@@ -115,6 +115,8 @@ public partial class CreateItemWindow : Window
                 //
                 // 使える API 例:
                 //   transform.Position / .Rotation / .Scale        … 自分の GameObject の Transform（get/set）
+                //   gameObject.GetComponent<SEED.Camera>()         … 他コンポーネント取得（T?。未アタッチは null）
+                //       例) if (gameObject.GetComponent<SEED.InputMap>() is { } input) { input.GetAction("Jump"); }
                 //   ctx.DeltaTime                                  … 前フレームからの経過秒
                 //   SEED.Mathf.Lerp / SEED.Vector3 / SEED.Random / SEED.Debug.Log … 数学・乱数・ログ
                 // 詳細は docs/scripting_api.md を参照。
