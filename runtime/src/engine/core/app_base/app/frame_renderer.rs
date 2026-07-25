@@ -1899,11 +1899,25 @@ impl App {
                         let preview_tp_models: Vec<(
                             &crate::engine::methods::drawer::GpuModel,
                             &crate::engine::methods::drawer::InstancedModelBatch,
-                        )> = self.shared_model_batches.iter()
-                            .filter_map(|(path, sd)| {
-                                gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
-                            })
-                            .collect();
+                        )> = {
+                            let mut models: Vec<(
+                                &crate::engine::methods::drawer::GpuModel,
+                                &crate::engine::methods::drawer::InstancedModelBatch,
+                            )> = self.shared_model_batches.iter()
+                                .filter_map(|(path, sd)| {
+                                    gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
+                                })
+                                .collect();
+                            // ── 地形散布モデル（kind=Model プロップ）の半透明プリミティブもプレビュー透明パスへ ──
+                            //   メインパス（transparent_models 収集, 3416〜3427）と同一ロジック。
+                            //   散布木の葉・小枝は glTF 上 alphaMode=BLEND であり、不透明ループでは
+                            //   スキップされるため、ここへ加えないとプレビューでも幹だけになり葉が消える。
+                            //   可視カリングは cull_and_update_scatter_models が毎フレーム更新済み。
+                            for res in self.terrain.scatter_models.values() {
+                                models.push((&res.gpu_model, &res.batch));
+                            }
+                            models
+                        };
                         let preview_has_tp =
                             crate::engine::core::renderer::transparency::has_transparent(
                                 &preview_tp_models,
@@ -1984,15 +1998,67 @@ impl App {
                             &draw_ctx.pipelines.transparent.refract_sampler,
                         );
 
+                        // ── プレビュー地形用の簡易マテリアル（黒落ち対策）─────────────
+                        //   地形マテリアルは metallic=1.0・テクスチャ無しで、本来 G-Buffer 専用の
+                        //   地形シェーダ（レイヤテクスチャ配列サンプル）で描かれる前提。カメラプレビューは
+                        //   フォワード＋クラスタ無効・IBL 無しのため、この地形マテリアルをそのまま使うと
+                        //   metallic=1 で拡散項が完全に消え（kD=(1-kS)*(1-metallic)=0）、roughness=1 の
+                        //   鏡面も環境反射が無く、可視成分がフラットアンビエント（既定 0.05）×アルベドだけの
+                        //   ほぼ黒になる。→ プレビューでは metallic=0/roughness=1 の簡易マテリアルへ差し替え、
+                        //   頂点カラー（レイヤ重み）×ベース色を拡散として見せる（レイヤ色は再現しないが
+                        //   地形の形状・陰影が見える）。テクスチャ無しのため defaults（白/フラット法線/黒）を使う。
+                        //   preview_pass より長生きさせるためパスの外で 1 個だけ生成する。
+                        let preview_terrain_mat = crate::engine::core::loader::model::Material {
+                            metallic_factor:  0.0,
+                            roughness_factor: 1.0,
+                            ..Default::default()
+                        };
+                        let preview_terrain_gpu_mat =
+                            crate::engine::core::renderer::gpu_resources::GpuMaterial::upload(
+                                &draw_ctx.device,
+                                &draw_ctx.queue,
+                                &preview_terrain_mat,
+                                &[],   // テクスチャスロット無し（全て defaults を使う）
+                                &[],
+                                &draw_ctx.pipelines.mesh.material_bgl,
+                                &draw_ctx.defaults,
+                            );
+
                         {
                             let mut preview_pass = frame.begin_offscreen_pass(
                                 &preview.color_view,
                                 &preview.depth_view,
                                 clear_col,
                             );
+
+                            // ── スカイボックス（天球）: クリア直後・不透明より先に描く ──────
+                            //   メインパス（Phase R9, begin_scene_pass 直後）と同じ位置づけ。
+                            //   skybox.wgsl の CameraLocked は球をカメラ位置（u_camera.position）へ
+                            //   平行移動して深度 far 固定で描くため、プレビューカメラの uniform を積んだ
+                            //   カメラ BG を渡すだけで平行移動除去（無限遠背景）が成立する。専用の行列
+                            //   引数は不要。GPU 同期（sync_gpu）はこのパスより前（フレーム冒頭）で完了済み。
+                            //   skybox の group0 は mesh カメラ BGL と構造的に等価のため preview_mesh_cam_buf
+                            //   をそのまま流用できる（スプライト描画が同じ BG を流用しているのと同じ）。
+                            if self.skybox_system.has_skyboxes() {
+                                self.skybox_system.draw(
+                                    &mut preview_pass,
+                                    &draw_ctx.pipelines.skybox,
+                                    &preview_mesh_cam_buf.bind_group,
+                                );
+                            }
+
                             // モデルを統合バッチで描画（per-MC バッチは使用しない）
                             for (path, sd) in &self.shared_model_batches {
                                 if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
+                                    // 地形チャンク（terrain:// スキーム）はプレビュー簡易マテリアルへ
+                                    // 差し替えて黒落ちを回避する。それ以外は従来どおり固有マテリアル。
+                                    let mat_ovr = if path.starts_with(
+                                        crate::engine::components::TERRAIN_SOURCE_SCHEME)
+                                    {
+                                        Some(&preview_terrain_gpu_mat.bind_group)
+                                    } else {
+                                        None
+                                    };
                                     // カメラプレビューは従来パイプライン（RT なし）で描画する。
                                     //
                                     // 【最重要】group 4 は必ず CameraPreview 側の BG を使う。
@@ -2007,8 +2073,28 @@ impl App {
                                         draw_ctx.light_buffer.bind_group(LightingPass::CameraPreview),
                                         // プレビュー小窓は常にライティング ON・塗り（ワイヤなし）。
                                         &draw_ctx.pipelines, None, false, false,
+                                        mat_ovr,
                                     );
                                 }
+                            }
+
+                            // ── 地形散布モデル（kind=Model プロップ）の不透明部を描画 ──────
+                            //   メインパス（G-Buffer 4061〜4071）と同じ集合。散布は通常マテリアル
+                            //   （terrain_layers=false）なのでマテリアル差し替えは不要（None）。
+                            //   幹などの Opaque プリミティブがここで描かれ、葉（Blend）は上で収集した
+                            //   preview_tp_models 経由で後段の透明パスが描く。可視カリングは
+                            //   cull_and_update_scatter_models が毎フレーム更新済み。
+                            //   ※ 草（grass）はプレビューには映らない（G-Buffer 専用パイプラインで
+                            //     単一カラー RT のフォワード小窓には構造的に描けないためスコープ外）。
+                            for res in self.terrain.scatter_models.values() {
+                                draw_model_indirect(
+                                    &mut preview_pass,
+                                    &res.gpu_model, &res.batch,
+                                    &preview_mesh_cam_buf.bind_group,
+                                    draw_ctx.light_buffer.bind_group(LightingPass::CameraPreview),
+                                    &draw_ctx.pipelines, None, false, false,
+                                    None,
+                                );
                             }
 
                             // ── 半透明の距離ソート描画（Phase R5）──────────────
@@ -4614,6 +4700,8 @@ impl App {
                                             &camera_buf.bind_group, scene_lights_bg,
                                             &draw_ctx.pipelines, rt_pipes, meshlet_active,
                                             scene_wireframe,
+                                            // メインパスはマテリアル差し替え無し（従来どおり）。
+                                            None,
                                         );
                                     }
                                 }
@@ -5151,6 +5239,7 @@ impl App {
                                     &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
                                     // エディタギズモアイコンはワイヤ化しない（従来どおり塗りで表示）。
                                     &draw_ctx.pipelines, None, false, false,
+                                    None,
                                 );
                             }
                         }
@@ -5162,6 +5251,7 @@ impl App {
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
                                     &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
                                     &draw_ctx.pipelines, None, false, false,
+                                    None,
                                 );
                             }
                         }
@@ -5173,6 +5263,7 @@ impl App {
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
                                     &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
                                     &draw_ctx.pipelines, None, false, false,
+                                    None,
                                 );
                             }
                         }
