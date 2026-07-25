@@ -17,17 +17,26 @@ public abstract class SEEDScript : IScriptComponent
     /// ScriptBridge が各ライフサイクル呼び出しの直前に呼ぶ。ユーザーは使わない。
     /// </summary>
     internal void BindEntity(uint index, uint generation)
-        => _entity = new SEED.Entity(index, generation);
+    {
+        _entity   = new SEED.Entity(index, generation);
+        // transform はフィールドとして束縛し直す（下記コメント参照）。
+        transform = new SEED.Transform(_entity);
+    }
 
     /// <summary>このスクリプトがアタッチされた GameObject。</summary>
     protected SEED.GameObject gameObject => new(_entity);
 
     /// <summary>
     /// このスクリプトがアタッチされた GameObject の Transform（短縮）。
-    /// <c>gameObject.GetComponent&lt;Transform&gt;()</c> 経由で解決する（Transform は
-    /// アクタールート直付けのため、通常は必ず取得できる。万一未解決なら既定ハンドル）。
+    ///
+    /// **プロパティではなくフィールド**であることが重要: C# は値型を返すプロパティの
+    /// 戻り値へのメンバ代入（<c>transform.Position += ...</c>）を CS1612 で禁止するが、
+    /// フィールドは「変数」なので合法になる（Position の setter は FFI 呼び出しで
+    /// 構造体自体を変更しないため、コピーで動作しても意味は変わらない）。
+    /// Transform はアクタールートの entity を包むだけのハンドルで、BindEntity で
+    /// エンティティと同時に束縛される。
     /// </summary>
-    protected SEED.Transform transform => gameObject.GetComponent<SEED.Transform>() ?? new(_entity);
+    protected SEED.Transform transform;
 
     public virtual void BeginFrame(ref NativeFrameContext ctx)    {}
     public virtual void EarlyUpdate(ref NativeFrameContext ctx)   {}
