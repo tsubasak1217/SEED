@@ -153,23 +153,56 @@ impl App {
     //  handle_set_collider_data。
 
     /// 物理オブジェクトを物理スレッドとキャラクター衝突ミラーの両方へ登録する。
+    ///
+    /// 【計測】`terrain.perf_collider_measuring` が true の間だけ、ミラー（QBVH 構築）と
+    ///   物理スレッド送信の所要時間を `terrain.perf_collider_mirror` / `_send` へ積む。
+    ///   地形コライダー再構築（`finalize_stroke_deferred`）のコスト内訳を分離計測するため。
+    ///   計測オフ時（既定）は分岐 1 つぶんで、実質ゼロコスト。
     pub(super) fn physics_add_object(&mut self, obj: PhysicsObject) {
+        let measuring = self.terrain.perf_collider_measuring;
         // 先にミラーへ反映（obj を借用）してからスレッドへムーブ送信する
         if let Some(cw) = &mut self.character_world {
-            cw.add_object(&obj);
+            if measuring {
+                let t = std::time::Instant::now();
+                cw.add_object(&obj);
+                self.terrain.perf_collider_mirror += t.elapsed();
+            } else {
+                cw.add_object(&obj);
+            }
         }
         if let Some(thread) = &self.physics_thread {
-            thread.send(PhysicsCommand::AddObject(obj));
+            if measuring {
+                let t = std::time::Instant::now();
+                thread.send(PhysicsCommand::AddObject(obj));
+                self.terrain.perf_collider_send += t.elapsed();
+            } else {
+                thread.send(PhysicsCommand::AddObject(obj));
+            }
         }
     }
 
     /// 物理オブジェクトを物理スレッドとキャラクター衝突ミラーの両方から削除する。
+    ///
+    /// 計測方針は `physics_add_object` と同じ（ミラー削除→mirror、送信→send へ積む）。
     pub(super) fn physics_remove_object(&mut self, entity_id: u64) {
+        let measuring = self.terrain.perf_collider_measuring;
         if let Some(cw) = &mut self.character_world {
-            cw.remove(entity_id);
+            if measuring {
+                let t = std::time::Instant::now();
+                cw.remove(entity_id);
+                self.terrain.perf_collider_mirror += t.elapsed();
+            } else {
+                cw.remove(entity_id);
+            }
         }
         if let Some(thread) = &self.physics_thread {
-            thread.send(PhysicsCommand::RemoveObject { entity_id });
+            if measuring {
+                let t = std::time::Instant::now();
+                thread.send(PhysicsCommand::RemoveObject { entity_id });
+                self.terrain.perf_collider_send += t.elapsed();
+            } else {
+                thread.send(PhysicsCommand::RemoveObject { entity_id });
+            }
         }
     }
 

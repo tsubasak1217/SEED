@@ -22,7 +22,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 
@@ -79,6 +79,18 @@ const TERRAIN_CHUNK_SLOT_NAME: &str = "chunk";
 /// クリック 1 回ぶんのブラシ適用時間（離散編集なので 1.0 秒相当）。
 const BRUSH_DT: f32 = 1.0;
 
+/// ストローク中の付随処理（コライダー再構築・散布再接地・RT BLAS prune）を、
+/// マウスアップを待たずに確定させる「無操作」猶予（ミリ秒）。
+///
+/// 【なぜ遅延するのか】
+///   これらの付随処理は 1 フレームあたり数〜十数 ms を要する（特にキャラコン衝突ミラーの
+///   trimesh QBVH 構築はメインスレッド同期）。ドラッグ中は毎フレーム remesh が走るため、
+///   付随処理を毎フレーム重ねるとストローク中のフレーム時間をこれらが支配してしまう。
+///   そこでストローク中はスキップして汚れチャンクを溜め、確定タイミングで一括適用する。
+/// 【確定タイミング】マウスアップ（stroke 非アクティブ化）か、最後のブラシ適用から
+///   この時間だけ操作が途切れたとき（＝ユーザがドラッグを止めて眺めている）、の早い方。
+const STROKE_IDLE_FLUSH_MS: u64 = 300;
+
 // ─── 地形編集の計測ログ（[PERF terrain]） ────────────────────────────────
 /// 計測ログを有効化する環境変数名。frame_renderer.rs の `[PERF]` ログと**同じ**変数を使い、
 /// 「SEED_PERF_LOG を付ければ全系統の PERF 行が出る」という既存の流儀を崩さない。
@@ -123,6 +135,18 @@ const TERRAIN_LOD_HYSTERESIS: f32 = 0.12;
 /// 1 フレームで処理する LOD 遷移（再メッシュ）の最大チャンク数。大量チャンクが同時に
 /// LOD を跨いでも 1 フレームで全再メッシュしてスパイクを出さないよう、近い順に小分けする。
 const TERRAIN_LOD_TRANSITIONS_PER_FRAME: usize = 8;
+
+/// ストローク遅延付随処理を「今」確定（一括適用）すべきかを判定する純粋関数。
+///
+/// - `deferred_empty`: 遅延チャンク集合が空なら確定するものが無い（常に false）。
+/// - `stroke_active`: マウスアップ済みなら（false）即確定してよい。
+/// - `idle_elapsed`: ストローク継続中でも、最後のブラシから一定時間途切れたら確定する。
+///
+/// 確定条件は「溜まったチャンクがある」かつ「マウスアップ済み **または** 無操作タイムアウト」。
+/// remesh_chunks を経由しない副作用の無い分岐判定なので、単体テストで網羅できるよう関数化する。
+fn should_finalize_stroke(deferred_empty: bool, stroke_active: bool, idle_elapsed: bool) -> bool {
+    !deferred_empty && (!stroke_active || idle_elapsed)
+}
 
 /// LOD 距離しきい値（env 上書き反映済み）。`(lod1, lod2)` を返す。
 fn terrain_lod_distances() -> (f32, f32) {
@@ -516,6 +540,25 @@ pub struct TerrainState {
     /// 現在のストローク中に初めて触れたチャンクの「編集前」スナップショット。
     /// ストローク確定（handle_terrain_stroke_end）時に TerrainEdit::before として消費される。
     pub stroke_before: HashMap<ChunkCoord, ChunkSnapshot>,
+    /// ストローク編集で汚れたが、付随処理（コライダー再構築・散布再接地・RT BLAS prune）を
+    /// **まだ適用していない**チャンク集合。
+    ///
+    /// ストローク中の flush は remesh（描画メッシュ／GPU 差し替え。これは必須）だけを行い、
+    /// 重い付随処理はここへ積んで先送りする。確定（`finalize_stroke_deferred`）で一括処理し
+    /// クリアする。集合なので同一チャンクの重複は自然に 1 回へ畳まれる。
+    /// 詳細な理由は `STROKE_IDLE_FLUSH_MS` のコメントを参照。
+    pub stroke_deferred_chunks: HashSet<ChunkCoord>,
+    /// 最後にブラシ（密度編集）を適用した時刻。無操作タイムアウト（`STROKE_IDLE_FLUSH_MS`）の
+    /// 判定に使う。`None` はストローク未開始または確定済み（付随処理を溜めていない状態）。
+    pub last_brush_apply: Option<Instant>,
+    /// コライダー再構築の計測中フラグ。`true` の間だけ `physics_add_object` /
+    /// `physics_remove_object` が「ミラー（QBVH 構築）」と「物理スレッド送信」の所要時間を
+    /// 下の 2 フィールドへ積む。既定 `false` で計測オフ時はゼロコスト。
+    pub perf_collider_measuring: bool,
+    /// 計測中に積算したキャラコン衝突ミラー（QBVH 構築等）の所要時間。
+    pub perf_collider_mirror: Duration,
+    /// 計測中に積算した物理スレッドへの Remove/Add 送信の所要時間。
+    pub perf_collider_send: Duration,
     /// 地形マテリアルレイヤ定義（assets/terrain/layers.json 由来。読めなければ既定セット）。
     /// 斜度／高度ルールの供給元であり、GPU のレイヤ uniform／テクスチャの元でもある。
     pub layers: TerrainLayerSet,
@@ -601,6 +644,11 @@ impl Default for TerrainState {
             brush_preview: None,
             stroke_active: false,
             stroke_before: HashMap::new(),
+            stroke_deferred_chunks: HashSet::new(),
+            last_brush_apply: None,
+            perf_collider_measuring: false,
+            perf_collider_mirror: Duration::ZERO,
+            perf_collider_send: Duration::ZERO,
             layers: TerrainLayerSet::default(),
             layer_resources: None,
             paint_layer: 0,
@@ -1525,7 +1573,7 @@ impl App {
         // 同一シーンで 2 回目以降の初期化／ハイトマップ再読込を行うと、チャンクの
         // batch_key（合成 source_path）が 1 回目と完全に一致する。ジオメトリ由来の
         // 派生キャッシュ（BLAS・統合バッチ）は前回のまま残るため、ここで破棄する。
-        self.invalidate_geometry_caches(&rebuilt_keys);
+        self.invalidate_geometry_caches(&rebuilt_keys, true);
 
         self.send_hierarchy();
         true
@@ -1623,7 +1671,7 @@ impl App {
         // ── ② 全チャンクを再メッシュ化する ──
         //   remesh_chunks が &mut self を取るため、対象座標は先に確定させておく。
         let coords: Vec<ChunkCoord> = self.terrain.chunk_slot_entity.keys().copied().collect();
-        self.remesh_chunks(&coords);
+        self.remesh_chunks(&coords, false);
 
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("TERRAIN_RELOAD_LAYERS_OK:{}", coords.len()));
@@ -1965,7 +2013,7 @@ impl App {
             }
         }
         let neighbor_list: Vec<ChunkCoord> = neighbors.into_iter().collect();
-        self.remesh_chunks(&neighbor_list);
+        self.remesh_chunks(&neighbor_list, false);
 
         self.send_hierarchy();
         eprintln!(
@@ -2189,6 +2237,7 @@ impl App {
         }
         let settings = self.terrain.settings.clone();
         let brush = SphereBrush { center, radius, strength };
+        let t_brush = Instant::now(); // brush_apply 全体（計測用）
 
         // ── ① undo 用ストローク開始（暗黙）＆ 編集前スナップショット ──
         //   ストローク開始は「stroke_active でない状態で最初の TERRAIN_BRUSH（＝本メソッド呼び出し）
@@ -2196,6 +2245,7 @@ impl App {
         //   ブラシ適用前に「このブラシが触りうるチャンク集合」（superset で可）の各既存チャンクを
         //   走査し、ストローク中でまだ控えていないものだけ現在の密度をスナップショットする
         //   （2 発目以降のブラシで上書きしてしまうと「ストローク開始時点」の密度でなくなるため）。
+        let t_snapshot = Instant::now();
         self.terrain.stroke_active = true;
         {
             let touch_candidates = terrain::brush::chunks_in_brush_aabb(&brush, &settings);
@@ -2209,8 +2259,11 @@ impl App {
                 }
             }
         }
+        let snapshot_ms = t_snapshot.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 
         // ── ② 球ブラシを密度場へ適用（settings と chunks を分割借用して FieldView を作る）──
+        //   ブラシは球内ボクセルを走査（レイマーチ相当）して密度を書き換える。
+        let t_raymarch = Instant::now();
         let affected: Vec<ChunkCoord> = {
             let terrain = &mut self.terrain;
             let mut view = FieldView {
@@ -2219,6 +2272,7 @@ impl App {
             };
             terrain::brush::apply(&mut view, &brush, op, BRUSH_DT)
         };
+        let raymarch_ms = t_raymarch.elapsed().as_secs_f64() * MILLIS_PER_SEC;
         if affected.is_empty() {
             return;
         }
@@ -2233,6 +2287,21 @@ impl App {
         //   届いたとき、まだ flush 前で dirty が空＝保存対象から漏れる。
         self.terrain.dirty.extend(affected.iter().copied());
         self.terrain.pending_remesh.extend(affected);
+
+        // ── ④ 無操作タイムアウト判定の基準時刻を更新する ──
+        //   ストローク中の付随処理はここでは走らせず遅延する（flush 側で蓄積）。
+        //   最後にブラシを当てた時刻を控えておき、一定時間操作が途切れたら
+        //   `flush_terrain_pending_remesh` が確定処理を起動する。
+        self.terrain.last_brush_apply = Some(Instant::now());
+
+        // ── 計測ログ（SEED_PERF_LOG 有効時のみ。既存 [PERF terrain] 書式に揃える）──
+        if *PERF_TERRAIN_LOG_ENABLED {
+            let brush_ms = t_brush.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            eprintln!(
+                "[PERF terrain] brush_apply={:.2}ms (raymarch={:.2}ms snapshot={:.2}ms)",
+                brush_ms, raymarch_ms, snapshot_ms
+            );
+        }
     }
 
     /// 保留中（`terrain.pending_remesh`）の再メッシュをまとめて 1 回で消化する。
@@ -2296,7 +2365,7 @@ impl App {
             }
             // 既存の VRAM 安全な再メッシュ機構をそのまま使う（gpu_model と instanced_batch を
             // 同時に作り直し、派生キャッシュ＝統合バッチ・BLAS も破棄される）。
-            self.remesh_chunks(&coords);
+            self.remesh_chunks(&coords, false);
         }
         } // if !*TERRAIN_LOD_DISABLED（遷移処理ここまで。以降の計測ログは on/off 共通）
 
@@ -2332,6 +2401,19 @@ impl App {
     }
 
     pub(super) fn flush_terrain_pending_remesh(&mut self) {
+        let t_flush = Instant::now();
+        // このフレームで何か実処理が起きたか（起きたフレームだけ flush 合計ログを出す）。
+        let mut did_work = false;
+
+        // ── ストローク進行中は付随処理を遅延する ──
+        //   ドラッグ中（stroke_active）は描画メッシュ（remesh）だけを毎フレーム更新し、
+        //   コライダー再構築・散布再接地・RT BLAS prune といった重い付随処理はスキップして
+        //   `stroke_deferred_chunks` へ溜める。これらは毎フレーム走らせるとストローク中の
+        //   フレーム時間を支配してしまうため（詳細は STROKE_IDLE_FLUSH_MS のコメント）。
+        //   ストロークが確定（マウスアップ／無操作タイムアウト）したときに一括で追従させる。
+        //   マウスアップ後の flush では stroke_active=false なので即時（従来どおり）実行される。
+        let deferring = self.terrain.stroke_active;
+
         // ── ① フル再メッシュ待ちを優先して消化する ──
         //   同一フレームで同じチャンクが `pending_remesh` と `pending_paint` の両方に
         //   入りうる（密度ブラシとペイントを混ぜたストローク）。フル再メッシュは
@@ -2348,15 +2430,24 @@ impl App {
             let mut coords: Vec<ChunkCoord> =
                 std::mem::take(&mut self.terrain.pending_remesh).into_iter().collect();
             coords.sort_by_key(|c| (c.x, c.y, c.z));
-            self.remesh_chunks(&coords);
-            // ── 密度編集で地面が動いた → 散布プロップを新しい地表へ貼り直す ──
-            //   ここは密度ブラシ由来の経路（pending_remesh）専用である。
-            //   ペイント高速パス（下の ②）では **意図的に呼ばない**：
-            //   ペイントは密度グリッドを一切変えないため頂点が動かず、
-            //   草が宙に浮くことも埋まることも構造的に起こり得ない。
-            //   一方でペイントは 1 ストロークで何十回も飛んでくるので、
-            //   そこで全インスタンスの柱探索を走らせると目に見えて重くなる。
-            self.restick_scatter_for_chunks(&coords);
+            // 描画メッシュ／GPU 差し替えは必須なので必ず行う。`deferring` のときは
+            // remesh_chunks 内でフェーズD（コライダー）と RT BLAS prune だけをスキップする
+            // （統合バッチ無効化は描画に必要なので毎回維持される）。
+            self.remesh_chunks(&coords, deferring);
+            if deferring {
+                // ── 付随処理は確定時にまとめて処理する。ここではチャンクを積むだけ ──
+                self.terrain.stroke_deferred_chunks.extend(coords.iter().copied());
+            } else {
+                // ── 即時経路（従来どおり）：密度編集で地面が動いた → 散布を貼り直す ──
+                //   ここは密度ブラシ由来の経路（pending_remesh）専用である。
+                //   ペイント高速パス（下の ②）では **意図的に呼ばない**：
+                //   ペイントは密度グリッドを一切変えないため頂点が動かず、
+                //   草が宙に浮くことも埋まることも構造的に起こり得ない。
+                //   一方でペイントは 1 ストロークで何十回も飛んでくるので、
+                //   そこで全インスタンスの柱探索を走らせると目に見えて重くなる。
+                self.restick_scatter_for_chunks(&coords);
+            }
+            did_work = true;
         }
 
         // ── ② 頂点カラーだけの更新待ちを消化する（ペイント高速パス）──
@@ -2366,7 +2457,112 @@ impl App {
                 std::mem::take(&mut self.terrain.pending_paint).into_iter().collect();
             coords.sort_by_key(|c| (c.x, c.y, c.z));
             self.apply_terrain_paint_colors(&coords);
+            did_work = true;
         }
+
+        // ── ③ ストローク確定判定 → 遅延していた付随処理を一括適用する ──
+        //   確定条件は「マウスアップ済み（stroke_active=false）」または
+        //   「最後のブラシ適用から STROKE_IDLE_FLUSH_MS 以上操作が途切れた（無操作）」の
+        //   早い方。無操作確定はストロークを止めて眺めているときにコライダー等を追従させる。
+        //   遅延チャンクが空なら何もしない（純粋なホバー・ペイントのみのフレーム）。
+        {
+            let idle_elapsed = self
+                .terrain
+                .last_brush_apply
+                .map(|t| t.elapsed() >= Duration::from_millis(STROKE_IDLE_FLUSH_MS))
+                .unwrap_or(false);
+            if should_finalize_stroke(
+                self.terrain.stroke_deferred_chunks.is_empty(),
+                self.terrain.stroke_active,
+                idle_elapsed,
+            ) {
+                self.finalize_stroke_deferred();
+                did_work = true;
+            }
+        }
+
+        // ── flush 全体の合計ログ（実処理が起きたフレームだけ。毎フレーム出すとスパムになる）──
+        if did_work && *PERF_TERRAIN_LOG_ENABLED {
+            let total_ms = t_flush.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            eprintln!("[PERF terrain] flush total={total_ms:.2}ms (deferring={deferring})");
+        }
+    }
+
+    /// ストローク中に遅延していた付随処理（コライダー再構築・散布再接地・RT BLAS prune）を
+    /// 蓄積チャンク集合に対してまとめて実行し、集合をクリアする。
+    ///
+    /// `flush_terrain_pending_remesh` の確定判定から呼ばれる（マウスアップ or 無操作タイムアウト）。
+    /// 描画メッシュ自体はストローク中も毎フレーム最新化されているため、ここで読む `mc.model` は
+    /// 常に確定時点の最新形状であり、そこからコライダー形状を写せる。
+    ///
+    /// 【許容する一瞬の遅れ（監督判断済み）】
+    ///   物理稼働中（Play/編集物理）にストロークすると、確定するまではコライダー・散布・RT 影が
+    ///   「1 つ前に確定した形状」のままになる。ストローク中の毎フレーム同期 QBVH 構築が
+    ///   フレーム時間を支配するのを避けるための意図的なトレードオフであり、確定時に必ず追従する。
+    fn finalize_stroke_deferred(&mut self) {
+        if self.terrain.stroke_deferred_chunks.is_empty() {
+            self.terrain.last_brush_apply = None;
+            return;
+        }
+        // 決定性のため座標でソートしてから処理する（HashSet 走査順は実行ごとに変わる）。
+        let mut coords: Vec<ChunkCoord> =
+            std::mem::take(&mut self.terrain.stroke_deferred_chunks).into_iter().collect();
+        coords.sort_by_key(|c| (c.x, c.y, c.z));
+
+        // ── ① フェーズD 物理コライダー再構築（物理稼働中のみ）──
+        //   ミラー（キャラコン衝突 QBVH 構築）と物理スレッド送信を分離計測する。
+        let t_col = Instant::now();
+        self.terrain.perf_collider_measuring = *PERF_TERRAIN_LOG_ENABLED;
+        self.terrain.perf_collider_mirror = Duration::ZERO;
+        self.terrain.perf_collider_send = Duration::ZERO;
+        if self.physics_thread.is_some() {
+            for &coord in &coords {
+                self.sync_terrain_chunk_collider(coord);
+            }
+        }
+        self.terrain.perf_collider_measuring = false;
+        if *PERF_TERRAIN_LOG_ENABLED {
+            let collider_ms = t_col.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            let mirror_ms = self.terrain.perf_collider_mirror.as_secs_f64() * MILLIS_PER_SEC;
+            let send_ms = self.terrain.perf_collider_send.as_secs_f64() * MILLIS_PER_SEC;
+            eprintln!(
+                "[PERF terrain] collider_rebuild={:.2}ms (mirror={:.2}ms send={:.2}ms) chunks={}",
+                collider_ms, mirror_ms, send_ms, coords.len()
+            );
+        }
+
+        // ── ② 散布再接地（触れたチャンクの散布インスタンスを新しい地表へ貼り直す）──
+        let t_rs = Instant::now();
+        let insts: usize =
+            coords.iter().filter_map(|c| self.terrain.scatter.get(c)).map(|v| v.len()).sum();
+        self.restick_scatter_for_chunks(&coords);
+        if *PERF_TERRAIN_LOG_ENABLED {
+            let restick_ms = t_rs.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            eprintln!(
+                "[PERF terrain] restick={:.2}ms insts={} chunks={}",
+                restick_ms, insts, coords.len()
+            );
+        }
+
+        // ── ③ RT BLAS prune（確定時にまとめて）──
+        //   統合バッチ側の無効化はストローク中も毎フレーム済ませてある（描画に必要なため）。
+        //   ここでは RT 加速構造の BLAS だけを、確定チャンクの batch_key（=source_path）で
+        //   prune する。次フレームに最新頂点で BLAS/TLAS が再構築され RT 影が追従する。
+        let mut keys: Vec<String> = Vec::with_capacity(coords.len());
+        if let Some(scene) = self.scene.as_ref() {
+            for &coord in &coords {
+                if let Some(&slot) = self.terrain.chunk_slot_entity.get(&coord) {
+                    if let Some(mc) = scene.world.get::<ModelComponent>(slot) {
+                        keys.push(mc.source_path.clone());
+                    }
+                }
+            }
+        }
+        // prune_rt=true：RT BLAS のみ prune（統合バッチ削除は毎フレーム済みなので実質再確認）。
+        self.invalidate_geometry_caches(&keys, true);
+
+        // 確定済み → 無操作タイムアウトの基準をリセットする。
+        self.terrain.last_brush_apply = None;
     }
 
     /// 指定チャンク群を再メッシュ化し、GPU リソースを VRAM 安全な手順で差し替える。
@@ -2395,7 +2591,14 @@ impl App {
     ///   守られていなかった。本実装では GPU アップロードをフェーズ C へ移し、
     ///   「CPU メッシュ生成 → 旧 drop → poll 1 回 → 新規アップロード」という順序にしたため、
     ///   VRAM ピークも実際に下がる（CPU 側のメッシュはシステムメモリなので二重に持ってよい）。
-    fn remesh_chunks(&mut self, coords: &[ChunkCoord]) {
+    ///
+    /// 【`defer_side_effects`】ストローク中のブラシ経路（`flush_terrain_pending_remesh`）から
+    ///   `true` で呼ばれる。`true` のときはフェーズD（物理コライダー再構築）と RT BLAS prune を
+    ///   スキップする（描画に必須な統合バッチ無効化は `true`/`false` に関わらず必ず実行）。
+    ///   スキップした付随処理はストローク確定時に `finalize_stroke_deferred` がまとめて追従する。
+    ///   ブラシ以外の全経路（undo/redo・チャンク追加・LOD 遷移・ペイントのフォールバック）は
+    ///   `false`（即時）で呼び、従来どおり挙動不変。
+    fn remesh_chunks(&mut self, coords: &[ChunkCoord], defer_side_effects: bool) {
         if self.draw_ctx.is_none() || coords.is_empty() {
             return;
         }
@@ -2512,7 +2715,9 @@ impl App {
         }
 
         // ── フェーズ C-3: ジオメトリ由来の派生キャッシュを破棄する（下記メソッドの説明を参照） ──
-        self.invalidate_geometry_caches(&swapped_keys);
+        //   統合バッチ無効化は描画に必須なので常に行う。RT BLAS prune は付随処理なので、
+        //   ストローク遅延中（defer_side_effects）はスキップし確定時にまとめて行う。
+        self.invalidate_geometry_caches(&swapped_keys, !defer_side_effects);
         let swap_ms = t_swap.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 
         // ── フェーズ D: 物理稼働中なら地形コライダーを追従再構成する ──
@@ -2520,7 +2725,13 @@ impl App {
         //   ジオメトリが変わったチャンクだけを Remove→Add で作り直す（掘り切って空に
         //   なったチャンクはコライダー削除、掘って表面が出たチャンクは新規登録される）。
         //   ペイントは形状不変なので `apply_terrain_paint_colors` 経由でここには来ない。
-        if self.physics_thread.is_some() {
+        //
+        //   【遅延】ストローク中（defer_side_effects=true）はスキップする。コライダーの
+        //   同期 QBVH 構築（キャラコンミラー）が毎フレームだとフレーム時間を支配するため。
+        //   スキップぶんはストローク確定時に `finalize_stroke_deferred` が追従する。
+        //   物理稼働中にストロークすると確定までコライダーが 1 つ前の形状のままになるが、
+        //   これは監督判断済みの許容トレードオフである。
+        if !defer_side_effects && self.physics_thread.is_some() {
             for &coord in coords {
                 self.sync_terrain_chunk_collider(coord);
             }
@@ -2921,7 +3132,7 @@ impl App {
 
         // ── ⑨ フォールバック対象はまとめてフル再メッシュへ回す ──
         if !fallback.is_empty() {
-            self.remesh_chunks(&fallback);
+            self.remesh_chunks(&fallback, false);
         }
 
         // ── 計測ログ（`[PERF terrain] remesh ...` と同じ流儀・同じゲート）──
@@ -2962,7 +3173,12 @@ impl App {
     ///   シーンを開き直すと直るのは、これらのキャッシュが起動/ロード時に空だからである。
     ///
     /// `keys` は差し替えたモデルの batch_key 一覧（空なら何もしない）。
-    fn invalidate_geometry_caches(&mut self, keys: &[String]) {
+    ///
+    /// 【`prune_rt`】RT 加速構造の BLAS を prune するかどうか。統合バッチ（①）は描画に必須なので
+    ///   常に破棄するが、RT BLAS（②）はストローク中は遅延したい。ストローク遅延経路は
+    ///   `prune_rt=false` で呼んで①だけを毎フレーム行い、確定時に `prune_rt=true` で②を追従させる。
+    ///   ブラシ以外の全経路は `prune_rt=true`（従来どおり両方破棄）。
+    fn invalidate_geometry_caches(&mut self, keys: &[String], prune_rt: bool) {
         if keys.is_empty() {
             return;
         }
@@ -2974,9 +3190,12 @@ impl App {
         }
         // ② RT 加速構造の BLAS キャッシュ（＋用途警告集合）を破棄する。
         //    RT 非対応 GPU では draw_ctx.rt_shadow が None のため何もしない。
-        if let Some(ctx) = self.draw_ctx.as_ref() {
-            if let Some(rt_cell) = ctx.rt_shadow.as_ref() {
-                rt_cell.borrow_mut().prune_source_paths(keys);
+        //    ストローク遅延中（prune_rt=false）はスキップし、確定時にまとめて prune する。
+        if prune_rt {
+            if let Some(ctx) = self.draw_ctx.as_ref() {
+                if let Some(rt_cell) = ctx.rt_shadow.as_ref() {
+                    rt_cell.borrow_mut().prune_source_paths(keys);
+                }
             }
         }
     }
@@ -2987,6 +3206,11 @@ impl App {
     /// 現在密度を after として集めて TerrainEdit を undo_stack へ push し、redo_stack をクリアする
     /// （新しい編集が確定したら、それより後の未来を指していた redo 履歴は無効になるため）。
     /// stroke_before が空（＝実質何も変化しないまま終わった）場合は単に stroke_active を戻すだけ。
+    ///
+    /// 【遅延付随処理の確定】ここで `stroke_active=false` にすると、直後に必ず呼ばれる
+    /// `flush_terrain_pending_remesh`（IPC ループ末尾で毎フレーム実行）の確定判定が真になり、
+    /// ストローク中に溜めたコライダー再構築・散布再接地・RT BLAS prune が一括適用される。
+    /// このメソッド自身は付随処理を起動しない（flush が最終形状で 1 回だけ行うのが正しい）。
     pub(super) fn handle_terrain_stroke_end(&mut self) {
         if !self.terrain.stroke_before.is_empty() {
             // before を丸ごと取り出す（以後 stroke_before は空に戻る）。
@@ -3028,7 +3252,7 @@ impl App {
                 touched.push(coord);
             }
         }
-        self.remesh_chunks(&touched);
+        self.remesh_chunks(&touched, false);
         // ── 密度を戻すと地面も戻るので、散布プロップを新しい地表へ貼り直す ──
         //   【散布そのものは undo されない（T3 第1段のスコープ外）】
         //   undo/redo スタックが持つのは密度とスプラットのスナップショットだけで、
@@ -3054,7 +3278,7 @@ impl App {
                 touched.push(coord);
             }
         }
-        self.remesh_chunks(&touched);
+        self.remesh_chunks(&touched, false);
         // undo と同じ理由で再接地する（散布自体は redo の対象外）。
         self.restick_scatter_for_chunks(&touched);
         self.terrain.undo_stack.push(edit);
@@ -3372,7 +3596,7 @@ impl App {
         }
         // 同一シーンを同一セッション中に再ロードすると batch_key が前回と一致するため、
         // ジオメトリ由来の派生キャッシュ（BLAS・統合バッチ）を破棄して作り直させる。
-        self.invalidate_geometry_caches(&loaded_keys);
+        self.invalidate_geometry_caches(&loaded_keys, true);
 
         // ── 計測ログ（[PERF terrain load]。SEED_PERF_LOG で有効化。ロードは 1 シーン 1 回なので毎回出す）──
         //   内訳: tvox I/O（フェーズ1）/ layers 読込 / MC 生成（並列）/ GPU アップロード / パレット登録。
@@ -4078,6 +4302,58 @@ const PHYS_SMOKE_BALL_SLOT_NAME: &str = "collider";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── ストローク遅延付随処理の確定判定（純粋ロジック）のテスト ──────────────
+
+    /// 遅延チャンクが空なら、どんな状態でも確定は起きない。
+    #[test]
+    fn finalize_never_when_deferred_empty() {
+        // (stroke_active, idle_elapsed) の全組み合わせで false であること。
+        for stroke_active in [false, true] {
+            for idle_elapsed in [false, true] {
+                assert!(
+                    !should_finalize_stroke(true, stroke_active, idle_elapsed),
+                    "empty 集合では確定しないはず (active={stroke_active}, idle={idle_elapsed})"
+                );
+            }
+        }
+    }
+
+    /// マウスアップ済み（stroke_active=false）かつ溜まっていれば、無操作でなくても確定する。
+    #[test]
+    fn finalize_on_mouse_up() {
+        assert!(should_finalize_stroke(false, false, false));
+        assert!(should_finalize_stroke(false, false, true));
+    }
+
+    /// ストローク継続中（stroke_active=true）は、無操作タイムアウトが来て初めて確定する。
+    /// ＝ドラッグ中は付随処理を遅延し、手が止まったら追従する、というブラシ経路の意図。
+    #[test]
+    fn defer_while_active_until_idle() {
+        // 継続中かつ操作継続中 → 遅延（確定しない）。
+        assert!(!should_finalize_stroke(false, true, false));
+        // 継続中でも無操作が続いたら確定する。
+        assert!(should_finalize_stroke(false, true, true));
+    }
+
+    /// 遅延集合が「蓄積 → 確定でクリア」されるロジック（HashSet の畳み込みと take）。
+    /// ブラシ経路のフレーム跨ぎで同じチャンクが何度積まれても 1 回に畳まれ、確定（take）で
+    /// 空になることを、`flush`/`finalize` が使うのと同じ集合操作で検証する。
+    #[test]
+    fn deferred_set_accumulates_and_clears() {
+        let mut deferred: HashSet<ChunkCoord> = HashSet::new();
+        let a = ChunkCoord::new(0, 0, 0);
+        let b = ChunkCoord::new(1, 0, 0);
+        // フレーム1: a,b を積む。
+        deferred.extend([a, b]);
+        // フレーム2: a を再度積む（同一ストロークで同じチャンクを触り続ける典型）。
+        deferred.extend([a]);
+        assert_eq!(deferred.len(), 2, "重複は 1 回に畳まれるはず");
+        // 確定: take で取り出すと集合は空になる（finalize_stroke_deferred と同じ操作）。
+        let taken: HashSet<ChunkCoord> = std::mem::take(&mut deferred);
+        assert_eq!(taken.len(), 2);
+        assert!(deferred.is_empty(), "確定後は遅延集合が空になるはず");
+    }
 
     /// テスト用の小さめ設定（33³ ではなく 9³ サンプルにして実行時間を抑える）。
     /// Y 範囲は 1 段だけにして、列挙件数の期待値を素直に数えられるようにする。
