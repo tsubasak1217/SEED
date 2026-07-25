@@ -17,7 +17,7 @@ use crate::engine::components::{
     ComponentKind, ColliderComponent, ColliderComponentData,
     Transform as ActorTransform,
 };
-use crate::engine::physics::{PhysicsCommand, PhysicsObject};
+use crate::engine::physics::PhysicsObject;
 use crate::engine::structs::tensor::Vector3 as SeedVec3;
 use crate::engine::structs::transforms::Quaternion as SeedQuat;
 
@@ -117,12 +117,11 @@ impl App {
                 })
             });
 
-            // 旧ボディ削除 → 新パラメータで再登録
-            if let Some(thread) = &self.physics_thread {
-                thread.send(PhysicsCommand::RemoveObject { entity_id });
-                if let Some(obj) = phys_obj {
-                    thread.send(PhysicsCommand::AddObject(obj));
-                }
+            // 旧ボディ削除 → 新パラメータで再登録（物理スレッドとキャラクター衝突ミラーの
+            // 両方へ集約ヘルパで反映する）。
+            self.physics_remove_object(entity_id);
+            if let Some(obj) = phys_obj {
+                self.physics_add_object(obj);
             }
         }
 

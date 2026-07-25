@@ -124,10 +124,10 @@ pub struct PhysicsObject {
     /// 衝突対象レイヤーマスク（0 = 全レイヤーと衝突）
     pub layer_mask:      u32,
     /// true ならキャラクターコントローラー。
-    /// スクリプトが Transform を書き換えた希望位置を、物理ステップ同期のタイミングで
-    /// KCC（KinematicCharacterController）が地形と衝突解決し、押し戻す対象になる。
-    /// 単純な kinematic 位置コピー（collect_kinematic_updates）からは除外され、
-    /// StepCharacter コマンドによる差分解決経路に一本化される。
+    /// スクリプトが Transform を書き換えた希望位置を、**メインスレッド常駐の衝突ミラー**
+    /// （`CharacterWorld`）が KCC で地形・他コライダーと衝突解決し、押し戻す対象になる。
+    /// 物理スレッド側のこのコライダーは ECS を追従する一方通行ミラーで、Raycast や他物体との
+    /// 衝突検出にのみ使われる（押し戻し解決はメインスレッドで完結する）。
     pub is_character_controller: bool,
 }
 
@@ -216,68 +216,12 @@ pub enum PhysicsCommand {
         /// 結果送信チャンネル（ヒットなし = None）
         reply:        crossbeam_channel::Sender<Option<RaycastHit>>,
     },
-    /// キャラクターコントローラーの「希望位置」を差分解決させる
-    /// （**非同期・投げっぱなし**・スクリプトフェーズ実行後にフレーム 1 回だけ送る）。
-    ///
-    /// スクリプトが Transform を書き換えた希望位置 `desired_position` と、物理側が保持する
-    /// 「前回解決済み位置」の差分を moveVector として `KinematicCharacterController::move_shape`
-    /// が地形・静的コライダーと衝突解決し、補正後位置（前回位置 + 補正移動量）を求めて
-    /// 前回位置（char_last_pos）を更新する。物理ワールドのコライダー姿勢も補正後位置へ同期する。
-    /// 補正後位置＋接地は**このコマンドを処理したその場**で専用チャンネル（char_res_tx →
-    /// メインの `PhysicsThread::drain_character_results`）へ即送信する（投げっぱなし）。
-    ///
-    /// 【なぜ非同期（reply なし）か】
-    ///   move_shape の実処理は実測 0.03ms と極めて速く計算負荷はゼロだが、以前の同期方式
-    ///   （reply を待つ ResolveCharacter）は grass 描画等の高負荷下で OS スケジューリング遅延に
-    ///   よる reply 配送待ち（実測 15〜200ms）がそのままメインスレッドの毎フレームブロックになり
-    ///   FPS を落としていた。ここではメインは希望位置を投げるだけで待たず、物理スレッドが解決した
-    ///   補正後位置を専用チャンネルへ送り、メインは非ブロック drain で受け取る。
-    ///
-    /// 【なぜ専用チャンネル（物理ステップ結果に相乗りさせない）か】
-    ///   本コマンドはコマンド即応ドレインで「到着の瞬間」に処理され char_last_pos を毎メイン
-    ///   フレーム進めるが、物理ステップは 60Hz。補正結果を 60Hz の PhysicsResult に相乗りさせると、
-    ///   メインが 60fps 超のときメインへ届く corrected が char_last_pos より数フレーム古くなり、
-    ///   古い値へ引き戻される（ラバーバンド・入力食い）。処理したその場で送れば corrected は常に
-    ///   その時点の char_last_pos と一致し、desired = corrected + move → motion = move で全速を保つ。
-    ///   反映は 1 フレーム遅れるが、KCC のクランプが効くためすり抜け（トンネリング）は起きない。
-    StepCharacter {
-        /// 対象アクターの DFS 順識別 ID（コライダー形状取得・自己除外・前回位置の保持に使う）
-        entity_id:         u64,
-        /// スクリプトが書き換えた希望ワールド位置 [x, y, z]
-        desired_position:  [f32; 3],
-        /// 対象アクターの現在ワールド回転 [x, y, z, w]（SEED 規約・シェイプ姿勢に使う）
-        rotation:          [f32; 4],
-    },
-    /// キャラクターコントローラーを瞬間移動させる（衝突無視・前回位置の強制リセット）。
-    ///
-    /// C# `Transform.Teleport(pos)` 用。物理側の「前回解決済み位置」を `position` に
-    /// 上書きし、コライダー位置も即座に反映する。前回位置＝希望位置となるため、
-    /// 次の StepCharacter で差分ゼロとなり押し戻されない。
-    /// is_character_controller でないアクターに対しては何もしない（位置設定は ECS 側で完結）。
-    TeleportCharacter {
-        /// 対象アクターの DFS 順識別 ID
-        entity_id: u64,
-        /// 瞬間移動先のワールド位置 [x, y, z]
-        position:  [f32; 3],
-        /// 対象アクターの現在ワールド回転 [x, y, z, w]（SEED 規約・コライダー姿勢に使う）
-        rotation:  [f32; 4],
-    },
+    // 【撤去】StepCharacter / TeleportCharacter は廃止した。
+    //   キャラクターの押し戻し解決はメインスレッド常駐の `CharacterWorld`（char_world.rs）で
+    //   その場完結させ、物理スレッドとのフィードバックループを排除した。物理側のキャラ
+    //   コライダーは通常の UpdateKinematic で ECS を一方通行追従するミラーになる。
     /// スレッドを停止する
     Stop,
-}
-
-// ─── キャラクターコントローラー結果 ──────────────────────────────────────────
-
-/// KCC 衝突解決の結果（衝突解決後の実効移動）。
-///
-/// `perform_character_move`（StepCharacter が使う内部関数）が壁ずり・段差・スロープを
-/// 解決した後の「実際に適用すべき移動量」と、移動後に接地しているかどうかを返す。
-/// 呼び出し側は 新位置 = 前回位置 + translation を求めて前回位置を更新する。
-pub struct CharacterMoveResult {
-    /// 衝突解決後の実効移動量 [x, y, z]（希望移動量とは異なり得る）
-    pub translation: [f32; 3],
-    /// 移動適用後に接地しているか（KCC の grounded をそのまま返す）
-    pub grounded:    bool,
 }
 
 // ─── 物理スレッド結果 ────────────────────────────────────────────────────────
@@ -308,11 +252,6 @@ pub struct PhysicsResult {
     /// タブごとの物理状態退避（続きから再開）で唯一失われる「速度」を復元するために使う。
     /// entity_id は DFS 順識別 ID（メインスレッド側で ECS Entity へ変換する）。
     pub body_velocities:   Vec<(u64, [f32; 3], [f32; 3])>,
-    // 【撤去】キャラクター補正後位置は「物理ステップ時（60Hz）」ではなく「StepCharacter を
-    // 処理したその場」で専用チャンネル（char_res_tx）からメインへ送るように変更した。
-    // ステップ結果に相乗りさせると、メインが 60fps 超で回るときにメインへ届く corrected が
-    // 物理側 char_last_pos より数フレーム古くなり、古い値への引き戻し（ラバーバンド・入力食い）が
-    // 起きたため。詳細は thread.rs の StepCharacter アーム／PhysicsThread::drain_character_results 参照。
 }
 
 // ─── 衝突イベント ────────────────────────────────────────────────────────────

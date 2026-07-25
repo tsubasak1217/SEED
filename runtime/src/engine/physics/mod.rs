@@ -3,7 +3,9 @@
 //
 //  【構成】
 //    types.rs   — 3D メインスレッド・物理スレッド間の共通型定義
+//    shape.rs   — ColliderShape → Rapier ビルダー変換（thread / char_world 共通部品）
 //    thread.rs  — Rapier3D を使用した 3D 物理スレッド実装
+//    char_world.rs — メインスレッド常駐のキャラクター衝突ミラー（KCC その場解決）
 //    types2d.rs — 2D メインスレッド・物理スレッド間の共通型定義
 //    thread2d.rs — Rapier2D を使用した 2D 物理スレッド実装
 //
@@ -12,9 +14,11 @@
 //    主要な型・定数をすべてこのモジュールから再エクスポートする。
 // ============================================================
 
-mod types;
+pub(crate) mod types;
 mod types2d;
+mod shape;
 pub mod thread;
+pub mod char_world;
 pub mod thread2d;
 
 // ── 3D 型・定数の再エクスポート ─────────────────────────────────────────────
@@ -31,11 +35,10 @@ pub use types::{
     TriggerEvent, TriggerPhase,
     // クエリ
     RaycastHit,
-    // キャラクターコントローラー
-    CharacterMoveResult,
 };
 
 pub use thread::PhysicsThread;
+pub use char_world::CharacterWorld;
 
 // ── 2D 型・定数の再エクスポート ─────────────────────────────────────────────
 
