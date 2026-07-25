@@ -468,8 +468,8 @@ impl App {
     ///   ② その希望位置を reply を持たない `StepCharacter` で物理スレッドへ **投げっぱなし（非ブロック）**
     ///      で送る。物理スレッドは前回解決済み位置との差分を KCC で衝突解決し、補正後位置＋接地を
     ///      **処理したその場**で専用チャンネルへ送る（メインは drain_character_results で受信）。
-    ///   ③ **その後**、前フレームに送った希望位置の解決結果（update_physics が退避した
-    ///      `self.pending_character_corrections`）を ECS へ反映し、接地を公開する。
+    ///   ③ **その後**、専用チャンネルに**新しく届いた**解決結果だけを ECS へ反映し、接地を公開する
+    ///      （古い pending の位置再適用はしない — 理由は③実装箇所のコメント参照）。
     ///
     /// 【なぜ「送信の後」に前フレーム分の補正を反映するのか】
     ///   ①は「スクリプトが今フレーム書いた希望位置」を拾う必要があるため、③（補正でその希望位置を
@@ -514,97 +514,107 @@ impl App {
             }
         }
 
-        // ── ③ 前フレームに送った希望位置の解決結果（退避済み）を ECS へ反映する ──
-        // 描画直前のこの反映で、スクリプトの貫通直書きをクランプ済みの補正後位置で上書きする。
+        // ── ③ 新着の解決結果だけを ECS へ反映する（古い pending の再適用はしない）──
+        // ②で送った分が同フレーム内に物理スレッドで処理済みなら（コマンド即応ドレインのため
+        // 健全時はそうなる）ここで新着として拾え、クランプ済みの補正後位置が描画に載る。
         //
-        // ③の直前に専用チャンネルを一度 drain して pending を最新化する。②で送った分が同フレーム内に
-        // 物理スレッドで処理済みなら（コマンド即応ドレインのため多くの場合そうなる）ここで拾えて、
-        // より新しい補正後位置を描画に反映できる。非ブロックなので害はない。
-        self.poll_character_results();
-        if self.pending_character_corrections.is_empty() { return; }
+        // 【なぜ「新着のみ」か（重要）】物理スレッドは grass 描画等の高負荷下で OS に数フレーム
+        // スケジュールされない（飢餓）ことがあり、その間に届いた StepCharacter をまとめて
+        // バースト処理する。飢餓中に古い pending を毎フレーム再適用すると、スクリプトの
+        // `+= move` の蓄積を毎フレーム同じ古い位置へリセットしてしまい、バースト解決時に
+        // 2 件目以降の motion が 0 になって「入力が食われる・引っ掛かる・同じ場所へ戻る」
+        // （実機ログで motion の微小振動として確認）。新着のみ適用なら飢餓中はスクリプトの
+        // 移動が蓄積され、物理が追いついた時にまとめて KCC 解決される（クランプが効くので
+        // すり抜けない・壁ずりの接線成分も蓄積されて滑る）。
+        let fresh = self.poll_character_results();
+
+        // 接地はモードに関わらず「最後に知った値」（pending）をスクリプトへ公開する。
+        // 位置と違い接地はフラグの再公開で蓄積を壊さないため、毎フレーム最新既知値でよい。
+        if !self.pending_character_corrections.is_empty() {
+            let dfs_to_entity = self.scene.as_ref()
+                .map(|s| build_dfs_entity_map_3d(s, self.active_world_line))
+                .unwrap_or_default();
+            let grounded_states: Vec<(crate::engine::ecs::Entity, bool)> =
+                self.pending_character_corrections.iter()
+                    .filter_map(|(id, _, g)| dfs_to_entity.get(id).map(|&e| (e, *g)))
+                    .collect();
+            crate::engine::core::scripting::host_api::publish_grounded_states(grounded_states);
+        }
+
+        if fresh.is_empty() { return; }
 
         // 編集時コライダーのみモードでは Transform を書き換えない（Play / edit+rigidbody 時のみ反映）。
         let should_apply_transforms = self.mode != RuntimeMode::Edit
             || self.edit_physics_with_rigidbody;
+        if !should_apply_transforms { return; }
 
-        // DFS ID → ECS Entity（接地公開に使う）。可変借用の前に immutable 借用で作る。
-        let dfs_to_entity = self.scene.as_ref()
-            .map(|s| build_dfs_entity_map_3d(s, self.active_world_line))
-            .unwrap_or_default();
         // ドラッグ中アクターは gizmo が位置を制御するため補正反映しない。
         let drag = self.dragging_physics_entity_id;
-
-        // pending を退避して self の可変借用（scene）と共存させる。
-        let pending = std::mem::take(&mut self.pending_character_corrections);
-        let mut grounded_states: Vec<(crate::engine::ecs::Entity, bool)> = Vec::new();
-        for (entity_id, corrected, grounded) in &pending {
-            // 接地はモードに関わらずスクリプトへ公開する（Physics.IsGrounded 用）。
-            if let Some(&ent) = dfs_to_entity.get(entity_id) {
-                grounded_states.push((ent, *grounded));
-            }
-            // ドラッグ中・編集時コライダーのみモードでは ECS の Transform を書き換えない。
-            if Some(*entity_id) == drag { continue; }
-            if !should_apply_transforms { continue; }
-            if let Some(scene) = &mut self.scene {
+        if let Some(scene) = &mut self.scene {
+            for (entity_id, corrected, _grounded) in &fresh {
+                if Some(*entity_id) == drag { continue; }
                 apply_character_transform(scene, self.active_world_line, *entity_id, *corrected);
             }
         }
-        // 次フレームも同じ補正を反映し続けられるよう、退避した pending を書き戻す
-        // （update_physics が新しい結果を受信するまで前回値を保持する）。
-        self.pending_character_corrections = pending;
-
-        // 接地状態をスクリプトへ公開する（描画直前の最新接地）。
-        crate::engine::core::scripting::host_api::publish_grounded_states(grounded_states);
     }
 
     // ─── キャラクター補正結果の取り込み（専用チャンネル・非ブロック）─────────────────
 
     /// キャラクター補正結果を専用チャンネルから**全件・非ブロック**で drain し、
-    /// エンティティごとに最新値を `self.pending_character_corrections` へマージする。
+    /// エンティティごとに最新値を `self.pending_character_corrections` へマージした上で、
+    /// **今回新しく届いた分（エンティティごとに最新値）だけ**を返す。
     ///
     /// 物理スレッドが StepCharacter を処理したその場で送るため、届く corrected は常に
-    /// 「その時点の char_last_pos」と一致する。同一 entity_id が複数届いた場合は到着順に
-    /// 上書きするため最後（最新）の値が残る。何も届かないフレームでは pending を変更せず前回値を
-    /// 保持する（update_physics／sync③ が前回の補正を反映し続ける）。
-    fn poll_character_results(&mut self) {
+    /// 「その時点の char_last_pos」と一致する。pending は「最後に知った補正・接地」の記録で、
+    /// 接地公開（Physics.IsGrounded）に使う。**ECS への位置反映は返り値（新着分）に対してのみ**
+    /// 行うこと — 古い pending を毎フレーム再適用すると、物理スレッドが描画負荷で飢餓状態のとき
+    /// スクリプトの蓄積移動を毎フレームリセットしてしまい、バースト処理時に 2 件目以降の motion が
+    /// 0 になって「入力が食われる・引っ掛かる・同じ場所へ戻る」（実機で確認）ため。
+    fn poll_character_results(&mut self) -> Vec<(u64, [f32; 3], bool)> {
         let drained = match &self.physics_thread {
             Some(thread) => thread.drain_character_results(),
-            None         => return,
+            None         => return Vec::new(),
         };
+        // エンティティごとに最新値へ集約する（到着順に上書き＝最後の値が残る）。
+        let mut fresh: Vec<(u64, [f32; 3], bool)> = Vec::new();
         for (entity_id, corrected, grounded) in drained {
+            match fresh.iter_mut().find(|(e, _, _)| *e == entity_id) {
+                Some(slot) => { slot.1 = corrected; slot.2 = grounded; }
+                None       => fresh.push((entity_id, corrected, grounded)),
+            }
             match self.pending_character_corrections.iter_mut().find(|(e, _, _)| *e == entity_id) {
                 Some(slot) => { slot.1 = corrected; slot.2 = grounded; }
                 None       => self.pending_character_corrections.push((entity_id, corrected, grounded)),
             }
         }
+        fresh
     }
 
-    /// update_physics 用: 専用チャンネルを drain して pending を最新化し、その最新の補正後位置を
-    /// ECS へ反映してスクリプトの `+= move` の基準位置を最新化する（二重反映の前半）。
+    /// update_physics 用: 専用チャンネルを drain し、**新着の補正後位置だけ**を ECS へ反映して
+    /// スクリプトの `+= move` の基準位置を最新化する。
     ///
-    /// これによりスクリプトが読む基準 = 物理側 char_last_pos と一致し、desired = corrected + move
-    /// → motion = move ちょうどとなって全速・壁ずりが保たれる。ここでの ECS 反映はスクリプトの
-    /// 貫通直書きで一旦上書きされるが、sync_character_controllers ③ が同じ pending を描画直前に
-    /// 再反映して貫通を防ぐ。接地公開は sync③ に一本化するためここでは行わない。
+    /// 新着があるとき: スクリプトが読む基準 = 物理側 char_last_pos と一致し、
+    /// desired = corrected + move → motion = move ちょうどとなって全速・壁ずりが保たれる。
+    /// 新着がないとき（物理スレッドが飢餓中）: ECS には触れず、スクリプトの移動を蓄積させる。
+    /// 物理が追いついた時にまとめて KCC 解決される（motion=蓄積分。クランプが効くので
+    /// すり抜けはしない）。古い pending の再適用は禁止（poll_character_results のコメント参照）。
+    /// 接地公開は sync③ に一本化するためここでは行わない。
     fn ingest_character_results(&mut self) {
-        self.poll_character_results();
+        let fresh = self.poll_character_results();
 
         // 編集時コライダーのみモードでは Transform を書き換えない（Play / edit+rigidbody 時のみ）。
         let should_apply_transforms = self.mode != RuntimeMode::Edit
             || self.edit_physics_with_rigidbody;
-        if !should_apply_transforms || self.pending_character_corrections.is_empty() { return; }
+        if !should_apply_transforms || fresh.is_empty() { return; }
 
         // ドラッグ中アクターは gizmo が位置を制御するため反映しない。
         let drag = self.dragging_physics_entity_id;
-        // pending を退避して self.scene の可変借用と共存させる（反映後に書き戻す）。
-        let pending = std::mem::take(&mut self.pending_character_corrections);
         if let Some(scene) = &mut self.scene {
-            for (entity_id, corrected, _grounded) in &pending {
+            for (entity_id, corrected, _grounded) in &fresh {
                 if Some(*entity_id) == drag { continue; }
                 apply_character_transform(scene, self.active_world_line, *entity_id, *corrected);
             }
         }
-        self.pending_character_corrections = pending;
     }
 
     // ─── ドラッグ中押し戻し（同期オーバーラップ判定）──────────────────────────
