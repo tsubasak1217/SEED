@@ -125,6 +125,10 @@ impl App {
         // モデルキャッシュ・レンダラ・shared_model_batches には一切触れていない。
         // これらは構築済みのまま Play に引き継がれる。
 
+        // 【一時・診断】ENTER_PLAY から一定時間、届いた WindowEvent 種別を [PLAY_EV] へ出力開始
+        // （RedrawRequested の配達が止まる直前に Focused/Occluded 等が来ていないかを見る）。
+        super::play_diag::begin_event_trace();
+
         if let Some(ipc) = &self.ipc { ipc.send("PLAY_ENTERED"); }
     }
 

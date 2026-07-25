@@ -45,6 +45,8 @@ mod tab_physics;
 mod script_scene_ops;
 /// 埋め込みインプレース Play（フェーズ2）: ENTER_PLAY / EXIT_PLAY の状態遷移とアクター退避/復元。
 mod play_mode_ops;
+/// 【一時】埋め込み Play の凍結/黒画面 診断計器（ウォッチドッグ・ステージ印・イベントトレース）。原因確定後に撤去。
+mod play_diag;
 mod audio_ops;
 mod animation_ops;
 pub(crate) mod light_ops;
