@@ -419,7 +419,10 @@ pub(crate) fn build_material_uniform(mat: &Material) -> MaterialUniform {
         // GPU へ渡す直前のこの 1 か所で強制的に 0.0 にする（= 既存シーンに保存済みの値も無視される）。
         // 再有効化するには DIFFUSE_TRANSMISSION_DISABLED を false にするだけでよい。
         diffuse_transmission: if DIFFUSE_TRANSMISSION_DISABLED { 0.0 } else { mat.diffuse_transmission },
-        _pad2:              0.0,
+        // 頂点カラー無視トグル（旧 _pad2 を転用, offset 76）。1=頂点カラー乗算をスキップ。
+        // カメラプレビューの地形簡易描画だけが true にする（terrain_mesh_build の頂点カラー＝
+        // レイヤ重みが RGB を汚しアルファをほぼ 0 にする問題の回避）。surface_gather.wgsl 参照。
+        ignore_vertex_color: mat.ignore_vertex_color as u32,
     }
 }
 

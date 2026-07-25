@@ -280,6 +280,9 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
             // MR テクスチャを無視するトグル。glTF ロード時は常に従来動作（false＝乗算）。
             // 有効化はエディタの Inspector（常時表示）または .mat / インライン上書きで行う。
             mr_tex_ignore:    false,
+            // 頂点カラー無視トグル。glTF ロード時は常に false（従来どおり頂点カラーを乗算）。
+            // true にするのはカメラプレビューの地形簡易マテリアルだけ（ランタイム生成）。
+            ignore_vertex_color: false,
             double_sided:     mat.double_sided(),
             // glTF の double_sided をカリング面へマップする（true → 両面描画＝カリング無し）。
             // これで Sponza のカーテン等、片面しか描かれず裏から見ると消えていたマテリアルが

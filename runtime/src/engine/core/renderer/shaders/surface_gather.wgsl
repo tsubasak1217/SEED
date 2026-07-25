@@ -90,7 +90,14 @@ fn gather_surface(in: VertexOutput, front_facing: bool) -> Surface {
     if u_material.has_base_color_tex != 0u {
         base_color *= textureSample(t_base_color, s_base_color, in.uv0);
     }
-    base_color *= in.color;
+    // 頂点カラーの畳み込み。ignore_vertex_color=1 のときはスキップする（カメラプレビューの
+    // 地形簡易描画専用）。地形メッシュの in.color はレイヤブレンド重み（RGB=成分別重み・
+    // アルファ＝スロット3重みで大抵 0）であり、そのまま乗算すると RGB がレイヤ重みで着色され、
+    // かつアルファがほぼ 0 になってプレビュー合成（AlphaBlending）で透けて消える。
+    // 通常マテリアル（既定 0）は従来どおり乗算するため挙動は完全に不変。
+    if u_material.ignore_vertex_color == 0u {
+        base_color *= in.color;
+    }
 
     // アルファテスト（Mask モード: alpha_cutoff > 0）。
     // GpuMaterial::upload により alpha_cutoff は Mask のときのみ正値、

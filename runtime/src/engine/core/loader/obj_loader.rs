@@ -118,6 +118,8 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
                 diffuse_transmission: 0.0,
                 // OBJ/MTL に MR テクスチャは無いためトグルは常に false（従来動作＝乗算）。
                 mr_tex_ignore:      false,
+                // 頂点カラー無視トグル。OBJ ロード時は常に false（従来どおり頂点カラーを乗算）。
+                ignore_vertex_color: false,
                 // OBJ/MTL には両面フラグが無いため常に背面カリング（従来挙動）。
                 double_sided:       false,
                 cull_face:          crate::engine::core::loader::model::CullFace::Back,

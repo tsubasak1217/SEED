@@ -62,8 +62,10 @@ struct MaterialUniform {
     // 拡散透過（diffuse_transmission, 0..1。葉・布・紙の逆光透け）。旧 _pad1（offset 72）を転用。
     // 0.0=従来動作。gather_surface が Surface.diffuse_transmission へ渡し lighting_eval の逆光項が使う。
     diffuse_transmission: f32,
-    // std140 で構造体サイズを 16 の倍数（80）へ揃えるパディング（未使用）。Rust uniforms::MaterialUniform と 1:1。
-    _pad2:              f32,
+    // 頂点カラー無視トグル（旧 _pad2, offset 76 を転用）。0=乗算（従来）、1=乗算スキップ。
+    // カメラプレビューの地形簡易描画専用。gather_surface のベースカラー採取が参照する。
+    // Rust uniforms::MaterialUniform（offset 76, u32）と 1:1。構造体サイズは 80 のまま。
+    ignore_vertex_color: u32,
 }
 @group(2) @binding(0)  var<uniform> u_material:          MaterialUniform;
 @group(2) @binding(1)  var          t_base_color:         texture_2d<f32>;

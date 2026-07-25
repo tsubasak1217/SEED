@@ -1998,19 +1998,29 @@ impl App {
                             &draw_ctx.pipelines.transparent.refract_sampler,
                         );
 
-                        // ── プレビュー地形用の簡易マテリアル（黒落ち対策）─────────────
+                        // ── プレビュー地形用の簡易マテリアル（不可視＋黒落ち対策）─────────────
                         //   地形マテリアルは metallic=1.0・テクスチャ無しで、本来 G-Buffer 専用の
                         //   地形シェーダ（レイヤテクスチャ配列サンプル）で描かれる前提。カメラプレビューは
-                        //   フォワード＋クラスタ無効・IBL 無しのため、この地形マテリアルをそのまま使うと
-                        //   metallic=1 で拡散項が完全に消え（kD=(1-kS)*(1-metallic)=0）、roughness=1 の
-                        //   鏡面も環境反射が無く、可視成分がフラットアンビエント（既定 0.05）×アルベドだけの
-                        //   ほぼ黒になる。→ プレビューでは metallic=0/roughness=1 の簡易マテリアルへ差し替え、
-                        //   頂点カラー（レイヤ重み）×ベース色を拡散として見せる（レイヤ色は再現しないが
-                        //   地形の形状・陰影が見える）。テクスチャ無しのため defaults（白/フラット法線/黒）を使う。
-                        //   preview_pass より長生きさせるためパスの外で 1 個だけ生成する。
+                        //   フォワード＋クラスタ無効・IBL 無しでこれをそのまま使うと 2 つの問題が起きる:
+                        //
+                        //   ① 不可視（今回の真因）: 地形メッシュの頂点カラーはレイヤブレンド重み
+                        //      （RGB=成分別重み・アルファ＝スロット3重みで大抵 0）で、フォワードシェーダの
+                        //      `base_color *= in.color` でアルファがほぼ 0 になる。プレビューは HDR RT を
+                        //      AlphaBlending でビューポートへブリットするため（camera_preview_blit.toml）、
+                        //      アルファ 0 の地形ピクセルは背後のメインシーンが透けて「地形が映らない」。
+                        //      → ignore_vertex_color=true で頂点カラー乗算をスキップし、アルファ 1・
+                        //        中立な白アルベドにする（＝合成で不透明になり、RGB もレイヤ重みで汚れない）。
+                        //   ② 黒落ち: metallic=1 だと拡散項が完全に消え（kD=(1-kS)*(1-metallic)=0）、
+                        //      roughness=1 の鏡面も環境反射が無く、ほぼ黒になる。
+                        //      → metallic=0/roughness=1 の簡易ライティングで形状・陰影を見せる。
+                        //
+                        //   レイヤの実色は再現しない簡易表示（形状・陰影のみ）。テクスチャ無しのため
+                        //   defaults（白/フラット法線/黒）を使う。preview_pass より長生きさせるため
+                        //   パスの外で 1 個だけ生成する。
                         let preview_terrain_mat = crate::engine::core::loader::model::Material {
-                            metallic_factor:  0.0,
-                            roughness_factor: 1.0,
+                            metallic_factor:     0.0,
+                            roughness_factor:    1.0,
+                            ignore_vertex_color: true,
                             ..Default::default()
                         };
                         let preview_terrain_gpu_mat =

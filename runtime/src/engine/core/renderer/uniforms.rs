@@ -136,7 +136,7 @@ fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 /// | 64        | transmission      |   4    |  ← ガラス表現（透過率）で追加
 /// | 68        | mr_tex_ignore     |   4    |  ← 旧 _pad0 を転用（MR テクスチャ無視トグル, 0/1）
 /// | 72        | diffuse_transmission | 4  |  ← 旧 _pad1 を転用（拡散透過＝葉/布の逆光透け, 0..1）
-/// | 76        | _pad2             |   4    |
+/// | 76        | ignore_vertex_color | 4   |  ← 旧 _pad2 を転用（頂点カラー乗算スキップ, 0/1）
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MaterialUniform {
@@ -165,8 +165,15 @@ pub struct MaterialUniform {
     /// 0.0=従来動作（後方互換）。lighting_eval.wgsl の逆光項（radiance×back×dt×albedo/PI）で使う。
     /// Surface.diffuse_transmission 経由で forward / G-Buffer（RT2.b）双方に届く。
     pub diffuse_transmission: f32,
-    /// std140 の 16 バイトアラインへ構造体サイズを揃えるパディング（GPU では未使用）。
-    pub _pad2:              f32,
+    /// 頂点カラー無視トグル（旧 _pad2, offset 76 を転用）。0=乗算する（従来動作）、
+    /// 1=頂点カラー（in.color）の乗算をスキップして base_color_factor（×テクスチャ）を
+    /// そのまま使う。カメラプレビューの地形描画専用: 地形メッシュの頂点カラーはレイヤ
+    /// ブレンド重み（成分ごとに 0..1・アルファ＝スロット3重みで大抵 0）であり、通常の
+    /// 頂点カラーとして乗算すると RGB がレイヤ重みで着色され、かつアルファがほぼ 0 になって
+    /// プレビュー合成（AlphaBlending ブリット）で透けて消える。1 にすると中立な白アルベド・
+    /// アルファ 1 の簡易表示になる。surface_gather.wgsl のベースカラー採取 1 箇所が参照する。
+    /// 旧レイアウトでは全ビット 0（_pad2=0.0）＝この値 0（無視しない）と一致し後方互換。
+    pub ignore_vertex_color: u32,
 }
 
 // ── スキニング用ジョイント行列 (Group 3, Binding 0) ───────────
@@ -292,7 +299,7 @@ mod layout_tests {
             base_color_factor: [0.0; 4], metallic_factor: 0.0, roughness_factor: 0.0,
             alpha_cutoff: 0.0, has_base_color_tex: 0, emissive_factor: [0.0; 3],
             has_normal_tex: 0, has_mr_tex: 0, has_occlusion_tex: 0, has_emissive_tex: 0,
-            ior: 0.0, transmission: 0.0, mr_tex_ignore: 0, diffuse_transmission: 0.0, _pad2: 0.0,
+            ior: 0.0, transmission: 0.0, mr_tex_ignore: 0, diffuse_transmission: 0.0, ignore_vertex_color: 0,
         };
         let base = &m as *const _ as usize;
         let off = |p: *const f32| p as usize - base;
@@ -300,5 +307,6 @@ mod layout_tests {
         assert_eq!(off(&m.transmission), 64, "transmission は offset 64");
         assert_eq!(&m.mr_tex_ignore as *const u32 as usize - base, 68, "mr_tex_ignore は offset 68");
         assert_eq!(off(&m.diffuse_transmission), 72, "diffuse_transmission は offset 72");
+        assert_eq!(&m.ignore_vertex_color as *const u32 as usize - base, 76, "ignore_vertex_color は offset 76");
     }
 }

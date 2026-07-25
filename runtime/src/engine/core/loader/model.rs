@@ -273,6 +273,26 @@ pub struct Material {
     #[serde(default)]
     pub mr_tex_ignore: bool,
 
+    // ─── 頂点カラー無視（カメラプレビュー地形の簡易描画専用）───
+    /// 頂点カラー（in.color）の乗算をスキップするトグル（既定 false）。
+    /// true のとき surface_gather.wgsl は `base_color *= in.color` を行わず、
+    /// base_color_factor（×ベースカラーテクスチャ）をそのまま使う。
+    ///
+    /// 【用途】カメラプレビューの地形メッシュ描画専用。地形メッシュの頂点カラーは
+    /// 「レイヤブレンド重み」（成分ごとに 0..1、アルファ＝スロット3の重みで大抵 0）であり、
+    /// 通常の頂点カラーとして乗算すると RGB がレイヤ重みで着色され（単層なら真っ赤等）、
+    /// さらにアルファがほぼ 0 になってプレビュー合成（AlphaBlending ブリット）で
+    /// 透けて消える＝「地形が映らない」不具合の直接原因になる。true にすると中立な
+    /// 白アルベド・アルファ 1 の簡易表示になり、metallic=0 の簡易マテリアルと組で
+    /// 形状・陰影が見える。
+    ///
+    /// 【serde(skip) の理由】terrain_layers と同じく、この値はランタイムが組み立てる
+    /// プレビュー用マテリアルだけが true にする実行時専用フラグで、bincode アセット
+    /// キャッシュへ焼く必要がない（焼くと CACHE_FORMAT_VERSION を上げねばならず既存
+    /// キャッシュが読めなくなる）。デシリアライズ時は Default（false）が入る。
+    #[serde(skip)]
+    pub ignore_vertex_color: bool,
+
     /// glTF 由来の両面フラグ（データ出所の記録用）。
     /// 描画で参照されるのは `cull_face` であり、ロード時に本フラグから初期化される
     /// （`cull_face_from_double_sided`）。
@@ -384,6 +404,7 @@ impl Default for Material {
             transmission:               0.0,
             diffuse_transmission:       0.0,
             mr_tex_ignore:              false,
+            ignore_vertex_color:        false,
             double_sided:               false,
             cull_face:                  CullFace::Back,
             avg_albedo:                 [1.0, 1.0, 1.0, 1.0],
