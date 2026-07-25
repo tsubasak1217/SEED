@@ -743,6 +743,13 @@ pub struct App {
     /// 編集時の物理シミュレーションが有効な場合は Edit モードでも起動する。
     pub(super) physics_thread: Option<crate::engine::physics::PhysicsThread>,
 
+    /// メインスレッド常駐のキャラクター衝突ミラー（`CharacterWorld`）。
+    /// 物理スレッドと同一形状のコライダー集合を保持し、キャラクターの押し戻しを
+    /// KCC でその場（同一スレッド・同一フレーム）解決する。物理スレッド起動中のみ Some。
+    /// （なぜメインスレッド解決なのか＝物理スレッド飢餓とフィードバックループの排除は
+    ///   char_world.rs 冒頭の設計解説を参照）
+    pub(super) character_world: Option<crate::engine::physics::CharacterWorld>,
+
     /// 編集時の物理シミュレーション有効フラグ。
     /// true のとき Edit モードでも物理スレッドを起動して衝突検出を行う。
     pub(super) edit_physics_enabled: bool,
@@ -856,20 +863,6 @@ pub struct App {
 
     /// 直近フレームの 2D Dynamic ボディ速度キャッシュ（ECS Entity → (linvel, angvel スカラー)）。
     pub(super) current_vel_cache_2d: std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 2], f32)>,
-
-    /// キャラクターコントローラーの「保留中の補正結果」: (entity_id, 補正後位置 [x,y,z], grounded)。
-    ///
-    /// 【非同期パイプラインの反映用・実行時のみ／シリアライズ対象外】
-    ///   物理スレッドが StepCharacter を処理したその場で専用チャンネルへ送る補正後位置を、
-    ///   メインが `PhysicsThread::drain_character_results` で非ブロック drain し、エンティティごとに
-    ///   最新値をここへマージする（poll_character_results）。何も届かないフレームは前回値を保持する。
-    ///
-    ///   反映は二重に行う:
-    ///     - update_physics（フレーム先頭・スクリプト前／ingest_character_results）: ECS へ反映して
-    ///       スクリプトの `+= move` の基準位置を最新化する（全速維持）。
-    ///     - sync_character_controllers ③（スクリプト後・描画直前）: 同じ pending を再反映して
-    ///       スクリプトの貫通直書きを上書きし、描画に貫通位置が出ないようにする（＋接地公開）。
-    pub(super) pending_character_corrections: Vec<(u64, [f32; 3], bool)>,
 
     /// タブ復帰時に「次の start_physics で初速として積む速度」（一回性）。
     /// Some のときだけ collect_physics_objects が該当 Entity の初速を上書きする。
@@ -1072,6 +1065,7 @@ impl App {
             pending_add_actor:  None,
             plugin_registry:  crate::engine::plugin::registry::PluginRegistry::empty(),
             physics_thread:   None,
+            character_world:  None,
             physics_thread_2d:           None,
             canvas_3d_physics:           std::collections::HashMap::new(),
             edit_physics_2d_enabled:     false,
@@ -1084,7 +1078,6 @@ impl App {
             tab_physics:            std::collections::HashMap::new(),
             current_vel_cache_3d:   std::collections::HashMap::new(),
             current_vel_cache_2d:   std::collections::HashMap::new(),
-            pending_character_corrections: Vec::new(),
             pending_restore_vel_3d: None,
             pending_restore_vel_2d: None,
             // handle_resumed で project_settings.json から上書きされる

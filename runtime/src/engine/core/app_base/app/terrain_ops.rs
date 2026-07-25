@@ -34,7 +34,7 @@ use crate::engine::components::{
 };
 use crate::engine::core::loader::model::Model;
 use crate::engine::methods::drawer::{DrawContext, GpuModel, InstancedModelBatch};
-use crate::engine::physics::{ColliderShape, PhysicsCommand, PhysicsObject};
+use crate::engine::physics::{ColliderShape, PhysicsObject};
 use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::{
     self, interp_vertex_paint, BlendSlots, BrushOp, ChunkCoord, PaintField, SampleField,
@@ -2618,9 +2618,8 @@ impl App {
             let (entity_id, position, shape, used_mc) = entry;
             if used_mc { n_mc += 1; } else { n_reused += 1; }
             let obj = terrain_collider_object(entity_id, position, shape);
-            if let Some(thread) = &self.physics_thread {
-                thread.send(PhysicsCommand::AddObject(obj));
-            }
+            // 物理スレッドとキャラクター衝突ミラーの両方へ集約ヘルパで登録する。
+            self.physics_add_object(obj);
         }
 
         // ── 計測ログ（MC 二重実行を撤廃できているか＝reused が支配的かを確認する）──
@@ -2647,9 +2646,8 @@ impl App {
         let settings = self.terrain.settings.clone();
         // 既存コライダーを一旦削除する（空チャンク化した場合もこれで消える）。
         if let Some(&old_id) = self.terrain.chunk_collider_ids.get(&coord) {
-            if let Some(thread) = &self.physics_thread {
-                thread.send(PhysicsCommand::RemoveObject { entity_id: old_id });
-            }
+            // 物理スレッドとキャラクター衝突ミラーの両方から削除する。
+            self.physics_remove_object(old_id);
         }
         // 新メッシュを構築。空（掘り切り・チャンク消滅）なら再登録しない。
         //
@@ -2684,9 +2682,8 @@ impl App {
         let entity_id = self.alloc_terrain_collider_id(coord);
         let position = coord.world_origin(&settings);
         let obj = terrain_collider_object(entity_id, position, shape);
-        if let Some(thread) = &self.physics_thread {
-            thread.send(PhysicsCommand::AddObject(obj));
-        }
+        // 物理スレッドとキャラクター衝突ミラーの両方へ集約ヘルパで登録する。
+        self.physics_add_object(obj);
     }
 
     /// チャンクの地形コライダー entity_id を取得する（未割り当てなら採番して記録する）。

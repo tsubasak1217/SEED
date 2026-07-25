@@ -54,6 +54,14 @@ thread_local! {
     /// ここへ積んで App がフレームのゲームロジック後に適用する（Unity の遅延 Destroy と同様）。
     static SCENE_COMMANDS: RefCell<Vec<ScriptSceneCommand>> = const { RefCell::new(Vec::new()) };
 
+    /// スクリプトが `Transform.Teleport` で発行したキャラクター瞬間移動のキュー。
+    /// 要素 = (DFS 順 entity_id, 移動先ワールド位置 [x,y,z], 回転 [x,y,z,w])。
+    /// キャラクター衝突ミラー（`CharacterWorld`）はメインスレッドの App が保持するため即時反映
+    /// できない。App がキャラ解決ステップ冒頭でこのキューを消費し、ミラー内キャラ位置を移動先へ
+    /// 直接セット（解決の基準 char_last_pos をリセット）する。さもないと motion が巨大になり
+    /// KCC が壁で堰き止めてテレポートが失敗する。ECS 位置設定は ffi_teleport が既に行う。
+    static CHARACTER_TELEPORTS: RefCell<Vec<(u64, [f32; 3], [f32; 4])>> = const { RefCell::new(Vec::new()) };
+
     /// ゲームロジック実行中だけ設定される Input への読み取り専用ポインタ。
     /// スクリプトの Input API（キー・マウス判定）が参照する。
     /// 入力イベントの処理はフレームロジック外（イベントハンドラ）で行われるため、
@@ -147,6 +155,12 @@ pub enum ScriptSceneCommand {
 /// App がフレームのゲームロジック後に呼び、順番に適用する。
 pub fn take_scene_commands() -> Vec<ScriptSceneCommand> {
     SCENE_COMMANDS.with(|q| std::mem::take(&mut *q.borrow_mut()))
+}
+
+/// 積まれたキャラクター瞬間移動を取り出す（キューは空になる）。
+/// App がキャラ解決ステップ冒頭で呼び、ミラー内キャラ位置を移動先へ直接セットする。
+pub fn take_character_teleports() -> Vec<(u64, [f32; 3], [f32; 4])> {
+    CHARACTER_TELEPORTS.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
 // ─── オーディオコマンド（遅延適用）──────────────────────────
@@ -1032,16 +1046,16 @@ unsafe extern "system" fn ffi_raycast(
 /// C# `Transform.Teleport(pos)` 用。idx/gen は対象アクターのルートエンティティ、
 /// pos は 3 要素のワールド位置。次を行う:
 ///   1. ECS Transform 位置を pos に設定する（集約関数経由で子アクタも追従）。
-///   2. 物理側の「前回解決済み位置」を pos に強制リセットする（TeleportCharacter）。
-///      これにより次の StepCharacter で差分ゼロとなり、瞬間移動先で押し戻されない。
+///   2. キャラクター衝突ミラー（`CharacterWorld`）の解決基準を pos へリセットするため、
+///      (entity_id, pos, rot) をテレポートキューへ積む。App がキャラ解決ステップ冒頭で消費し、
+///      ミラー内キャラ位置を移動先へ直接セットする。これにより次の解決で motion≈0 となり、
+///      移動先で押し戻されない（さもないと巨大 motion が壁で堰き止められテレポートが失敗する）。
 ///
-/// is_character_controller でないアクターでは単に位置設定のみ（物理側は無視する）。
+/// is_character_controller でないアクターではミラーが無視するため、実質位置設定のみになる。
 unsafe extern "system" fn ffi_teleport(
     idx: u32, generation: u32,
     pos: *const f32,
 ) -> i32 {
-    use crate::engine::physics::PhysicsCommand;
-
     if pos.is_null() { return 0; }
     let wptr = WORLD_PTR.with(|p| p.get());
     if wptr.is_null() { return 0; }
@@ -1065,16 +1079,13 @@ unsafe extern "system" fn ffi_teleport(
         }
     }
 
-    // 2. 物理側の前回位置を強制リセットする（キャラでなければ物理側で無視される）。
-    //    Actor ツリー未公開・物理未起動・DFS 逆引き失敗時は ECS 設定のみで完了扱い。
-    if let Some(tx) = PHYSICS_TX.with(|p| p.borrow().clone()) {
-        let actors_ptr = ACTORS_PTR.with(|p| p.get());
-        if !actors_ptr.is_null() {
-            if let Some(entity_id) = dfs_id_by_entity(&*actors_ptr, entity) {
-                let _ = tx.send(PhysicsCommand::TeleportCharacter {
-                    entity_id, position: new_pos, rotation,
-                });
-            }
+    // 2. キャラクター衝突ミラーの解決基準リセットをテレポートキューへ積む。
+    //    App がキャラ解決ステップ冒頭で消費する（キャラでなければミラーが無視する）。
+    //    Actor ツリー未公開・DFS 逆引き失敗時は ECS 設定のみで完了扱い。
+    let actors_ptr = ACTORS_PTR.with(|p| p.get());
+    if !actors_ptr.is_null() {
+        if let Some(entity_id) = dfs_id_by_entity(&*actors_ptr, entity) {
+            CHARACTER_TELEPORTS.with(|q| q.borrow_mut().push((entity_id, new_pos, rotation)));
         }
     }
     1
@@ -1082,8 +1093,8 @@ unsafe extern "system" fn ffi_teleport(
 
 /// キャラクターコントローラーの接地状態を返す。接地=1 / 非接地・未登録=0。
 ///
-/// C# `Physics.IsGrounded(actor)` 用。物理スレッドが StepCharacter で更新した grounded を
-/// メインスレッドがフレームごとに ECS Entity をキーに公開（publish_grounded_states）した
+/// C# `Physics.IsGrounded(actor)` 用。メインスレッド常駐の CharacterWorld が KCC 解決時に
+/// 求めた grounded を、フレームごとに ECS Entity をキーに公開（publish_grounded_states）した
 /// スナップショットを参照する。
 unsafe extern "system" fn ffi_is_grounded(idx: u32, generation: u32) -> i32 {
     let entity = Entity::from_raw(idx, generation);

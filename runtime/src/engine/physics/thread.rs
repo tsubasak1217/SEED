@@ -28,35 +28,16 @@ use std::collections::{HashMap, HashSet};
 use crossbeam_channel::{Receiver, Sender, TryRecvError, RecvTimeoutError, unbounded};
 use std::time::{Duration, Instant};
 
-// rapier3d の control モジュール（キャラクターコントローラー）は prelude に含まれないため直接インポートする
-use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
-
 // SEED 側の物理型（Rapier の CollisionEvent と名前が衝突するため別名でインポートする）
 use super::types::{
-    CharacterMoveResult,
     ColliderShape,
     CollisionEvent as SeedCollisionEvent, CollisionPhase,
     PhysicsCommand, PhysicsObject, PhysicsResult,
     TriggerEvent as SeedTriggerEvent, TriggerPhase,
     DEFAULT_GRAVITY, PHYSICS_FIXED_STEP,
 };
-
-// ─── キャラクターコントローラー診断ログ ──────────────────────────────────────
-//
-//  StepCharacter（キャラクター非同期解決）の切り分け用ログ。
-//  最初の N 回（CHAR_LOG_MAX_FRAMES）だけ stderr へ出す（件数上限で洪水防止）。
-
-/// キャラクター診断ログ（`[CharCtl]` 行）を出力するかどうか。
-/// 【実機確認のため一時的に常時 ON】ラバーバンド不具合の実機切り分け中のため、env の有無に関わらず
-/// 出力する（上限 CHAR_LOG_MAX_FRAMES=240 で洪水防止）。確認後に監督が env ゲートへ戻す。
-static CHAR_LOG_ENABLED: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| true || std::env::var_os("SEED_CHAR_LOG").is_some());
-
-/// これまでに出力した `[CharCtl]` 行の件数（洪水防止の上限判定に使う）。
-static CHAR_LOG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// `[CharCtl]` 行を出す最大件数（起動直後の切り分けに十分な数だけ出して以降は黙る）。
-const CHAR_LOG_MAX_FRAMES: u32 = 240;
+// コライダー形状・姿勢の変換は共通部品（shape.rs）を使う（char_world.rs と同一ロジック）。
+use super::shape::{build_collider_shape, to_isometry};
 
 /// Pause 中にコマンド到着を待つ最大ブロック時間。
 ///
@@ -65,64 +46,6 @@ const CHAR_LOG_MAX_FRAMES: u32 = 240;
 /// この値はタイムアウトの保険（万一の取りこぼし防止で定期的にドレインへ戻る周期）に過ぎず、
 /// コマンドが届けばそれより早く起きるため、体感の応答遅延には影響しない。
 const PAUSE_IDLE_TIMEOUT: Duration = Duration::from_millis(50);
-
-// ─── キャラクターコントローラー（KCC）パラメータ定数 ──────────────────────────
-//
-//  キャラクターコントローラー（StepCharacter による自動押し戻し）が使う KCC の設定値。
-//  rapier3d の既定値をベースに、SEED のメートル単位（1 unit = 1m）に合わせて
-//  段差・スロープ・スナップの各しきい値を絶対値で固定する（データドリブンに
-//  差し替えたくなったら将来コンポーネント化する想定で、まずは定数化する）。
-
-/// キャラクターと周囲の間に保つ微小な隙間（メートル・スキン幅）。
-/// 0 だと数値的に不安定になるため小さな正の値を絶対指定する（1cm）。
-const KCC_SKIN_OFFSET_M: Real = 0.01;
-
-/// 登れる最大スロープ角（度）。これを超える斜面は壁として扱い、登らず滑る。
-/// 45 度は rapier 既定（π/4）と同じで、一般的なキャラ移動の妥当値。
-const KCC_MAX_SLOPE_CLIMB_DEG: Real = 45.0;
-
-/// 自動で滑り落ち始める最小スロープ角（度）。これ未満の斜面には立てる。
-/// climb と同じ 45 度にし、「登れる限界＝立てる限界」で挙動を一貫させる。
-const KCC_MIN_SLOPE_SLIDE_DEG: Real = 45.0;
-
-/// 自動で乗り越えられる段差（階段）の最大高さ（メートル・絶対値）。
-/// 0.3m は一般的な階段 1 段ぶんに相当し、キャラが引っかからず登れる。
-const KCC_AUTOSTEP_MAX_HEIGHT_M: Real = 0.3;
-
-/// 段差を登った先に必要な最小の平地幅（メートル・絶対値）。
-/// これ未満の狭い足場には段差昇降しない（縁に爪先立ちして揺れるのを防ぐ）。
-const KCC_AUTOSTEP_MIN_WIDTH_M: Real = 0.05;
-
-/// 地面から足がこの距離以内なら接地状態へスナップする（メートル・絶対値）。
-/// 下り坂・階段を降りるときにキャラが浮かず地面に吸着する。0.3m は段差高さと同程度。
-const KCC_SNAP_TO_GROUND_M: Real = 0.3;
-
-/// SEED のキャラクターコントローラー設定を構築する。
-///
-/// 上記の KCC_* 定数から `KinematicCharacterController` を組み立てる純粋関数。
-/// 物理スレッド起動時に 1 度だけ生成し、StepCharacter コマンドで使い回す。
-fn make_character_controller() -> KinematicCharacterController {
-    KinematicCharacterController {
-        // 既定の上方向（+Y）・壁ずり有効はそのまま使う
-        up:     Vector::y_axis(),
-        slide:  true,
-        offset: CharacterLength::Absolute(KCC_SKIN_OFFSET_M),
-        // 段差の自動乗り越え（階段）を有効化する。
-        // ※ rapier のドキュメント上 autostep は計算コストが高い機能だが、
-        //   本 API は 1 フレーム 1 回の同期クエリのため許容範囲。段差昇降は要件。
-        autostep: Some(CharacterAutostep {
-            max_height:             CharacterLength::Absolute(KCC_AUTOSTEP_MAX_HEIGHT_M),
-            min_width:              CharacterLength::Absolute(KCC_AUTOSTEP_MIN_WIDTH_M),
-            // 動的ボディの上には段差昇降しない（意図しない乗り上げを防ぐ）
-            include_dynamic_bodies: false,
-        }),
-        max_slope_climb_angle: (KCC_MAX_SLOPE_CLIMB_DEG as Real).to_radians(),
-        min_slope_slide_angle: (KCC_MIN_SLOPE_SLIDE_DEG as Real).to_radians(),
-        snap_to_ground:        Some(CharacterLength::Absolute(KCC_SNAP_TO_GROUND_M)),
-        // すり抜け防止の法線ナッジは既定値
-        ..KinematicCharacterController::default()
-    }
-}
 
 // ─── スムーズドラッグ速度クランプ定数 ────────────────────────────────────────
 
@@ -150,12 +73,6 @@ pub struct PhysicsThread {
     cmd_tx: Sender<PhysicsCommand>,
     /// 結果受信チャンネル（物理スレッド → メイン）
     res_rx: Receiver<PhysicsResult>,
-    /// キャラクター補正結果の専用受信チャンネル（物理スレッド → メイン）。
-    /// (entity_id, 補正後位置 [x,y,z], grounded)。
-    /// StepCharacter を**処理したその場**で送られるため、届く corrected は常に処理直後の
-    /// char_last_pos と一致する（物理ステップ 60Hz の結果ストリームに相乗りさせると、メインが
-    /// 60fps 超のとき数フレーム古い corrected が届き、古い値への引き戻しが起きる問題を回避）。
-    char_res_rx: Receiver<(u64, [f32; 3], bool)>,
     /// スレッドハンドル（Drop 時に join する）
     handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -165,14 +82,12 @@ impl PhysicsThread {
     pub fn spawn() -> Self {
         let (cmd_tx, cmd_rx) = unbounded::<PhysicsCommand>();
         let (res_tx, res_rx) = unbounded::<PhysicsResult>();
-        // キャラクター補正結果の専用チャンネル（StepCharacter 処理時に即送信する）。
-        let (char_res_tx, char_res_rx) = unbounded::<(u64, [f32; 3], bool)>();
 
         let handle = std::thread::spawn(move || {
-            run_physics_loop(cmd_rx, res_tx, char_res_tx);
+            run_physics_loop(cmd_rx, res_tx);
         });
 
-        PhysicsThread { cmd_tx, res_rx, char_res_rx, handle: Some(handle) }
+        PhysicsThread { cmd_tx, res_rx, handle: Some(handle) }
     }
 
     /// コマンドを物理スレッドへ送信する。
@@ -200,24 +115,6 @@ impl PhysicsThread {
             }
         }
         latest
-    }
-
-    /// キャラクター補正結果を専用チャンネルから**全件・非ブロック**で取り出す。
-    ///
-    /// 各要素 = (entity_id, 補正後位置 [x,y,z], grounded)。物理スレッドが StepCharacter を
-    /// 処理したその場で送るため、届く値は常に「処理直後の char_last_pos」と一致する。
-    /// メインは同一 entity_id が複数含まれる場合、**最後（最新）の値だけ**を採用すればよい。
-    /// 溜まっている分を残さず drain することで、古い中間値がメインに残留しないようにする。
-    pub fn drain_character_results(&self) -> Vec<(u64, [f32; 3], bool)> {
-        let mut out = Vec::new();
-        loop {
-            match self.char_res_rx.try_recv() {
-                Ok(v)                           => out.push(v),
-                Err(TryRecvError::Empty)        => break,
-                Err(TryRecvError::Disconnected) => break,
-            }
-        }
-        out
     }
 }
 
@@ -251,13 +148,6 @@ struct PhysicsEntry {
     /// Static コライダーのドラッグ終了後の再生成に必要なデータ。
     /// rb_handle=None のときのみ Some になる。
     col_shape_data: Option<StaticColliderData>,
-    /// キャラクターコントローラーかどうか（StepCharacter による差分解決の対象か）。
-    is_character: bool,
-    /// キャラクターコントローラーの「前回解決済みワールド位置」[x, y, z]。
-    /// StepCharacter が (希望位置 - この値) を moveVector として解決し、補正後位置で更新する。
-    /// 初期値はコライダー登録時のアクターワールド位置。
-    /// （接地 grounded は解決したその場で専用チャンネルへ送るため entry には保持しない。）
-    char_last_pos: [f32; 3],
 }
 
 /// SetBodyKinematic によるコライダー再生成のためのデータ。
@@ -282,8 +172,6 @@ struct StaticColliderData {
 fn run_physics_loop(
     cmd_rx: Receiver<PhysicsCommand>,
     res_tx: Sender<PhysicsResult>,
-    // キャラクター補正結果の専用送信チャンネル（StepCharacter 処理時に即送信する）。
-    char_res_tx: Sender<(u64, [f32; 3], bool)>,
 ) {
     // ── Rapier 物理ワールドオブジェクト ──────────────────────────────────────
     let mut rigid_body_set      = RigidBodySet::new();
@@ -295,12 +183,8 @@ fn run_physics_loop(
     let mut impulse_joint_set   = ImpulseJointSet::new();
     let mut multibody_joint_set = MultibodyJointSet::new();
     let mut ccd_solver          = CCDSolver::new();
-    // レイキャスト・キャラクター移動用クエリパイプライン（step のたびに自動更新される）
+    // レイキャスト・クエリ用パイプライン（step のたびに自動更新される）
     let mut query_pipeline      = QueryPipeline::new();
-
-    // キャラクターコントローラー（StepCharacter の自動押し戻し用）。
-    // 定数から 1 度だけ生成して StepCharacter コマンドで使い回す（状態を持たない）。
-    let character_controller = make_character_controller();
 
     // 重力ベクトル（SetGravity コマンドで変更可能）
     let mut gravity = vector![DEFAULT_GRAVITY[0], DEFAULT_GRAVITY[1], DEFAULT_GRAVITY[2]];
@@ -376,111 +260,6 @@ fn run_physics_loop(
                     let _ = reply.send(hit);
                     false
                 }
-                PhysicsCommand::StepCharacter { entity_id, desired_position, rotation } => {
-                    // キャラクターコントローラーの差分解決（**非同期・投げっぱなし**）。
-                    // メインは希望位置を送るだけで待たない。ここで前回解決済み位置との差分を
-                    // KCC で衝突解決し、entry の char_last_pos（補正後位置）を更新すると同時に、
-                    // 物理ワールドのコライダー位置も補正後位置へ同期する。補正後位置＋接地は
-                    // この処理の末尾で専用チャンネル（char_res_tx）へ即送信する（下記参照）。
-                    //
-                    // 【なぜ非同期にするか】move_shape 自体は実測 0.03ms と極めて速いが、以前の同期
-                    // 方式（reply を待つ）は grass 描画等の高負荷下で OS スケジューリング遅延による
-                    // reply 配送待ち（15〜200ms）がそのままメインの毎フレームブロックになり FPS を
-                    // 落としていた。非同期化で待ちを消す。
-                    //
-                    // 【なぜ専用チャンネルで即送信するか】本コマンドは到着の瞬間に処理され
-                    // char_last_pos を毎メインフレーム進めるが、物理ステップは 60Hz。補正結果を
-                    // 60Hz の PhysicsResult に相乗りさせるとメイン（60fps 超）へ届く corrected が
-                    // char_last_pos より数フレーム古くなり、古い値へ引き戻される（ラバーバンド・入力食い）。
-                    // 処理したその場で送れば corrected は常にその時点の char_last_pos と一致する。
-                    //
-                    // 【最適化】クエリパイプラインの全更新（フリーコライダー＝地形の索引）は
-                    // コライダー変化時（AddObject/RemoveObject）にだけ query_dirty 経由で行う。
-                    // 地形は静的なので一度索引すれば十分で、step() の増分更新はフリーコライダーを
-                    // 落とさないため索引は保持される（毎フレーム update すると 322 トライメッシュの
-                    // 再構築で重くなるため避ける）。
-                    let diag = *CHAR_LOG_ENABLED
-                        && CHAR_LOG_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                            < CHAR_LOG_MAX_FRAMES;
-                    // 補正前の前回位置（motion 算出・ログ用）を退避する。
-                    let last_before = entries.get(&entity_id).map(|e| e.char_last_pos);
-
-                    let resolved = perform_character_step(
-                        &character_controller, &query_pipeline,
-                        &mut rigid_body_set, &mut collider_set, &mut entries,
-                        entity_id, desired_position, rotation,
-                        PHYSICS_FIXED_STEP as Real,
-                    );
-
-                    if diag {
-                        // Static コライダー（RigidBody を持たない＝地形・静的プロップ）の登録数。
-                        // 0 なら「地形が物理ワールドに無い」＝キャラが検出できないケース。
-                        let static_colliders = entries.values()
-                            .filter(|e| e.rb_handle.is_none() && !e.is_character)
-                            .count();
-                        let total_colliders = collider_set.len();
-                        // キャラ位置から真下(-Y)へレイを撃ち、地形表面までの距離を測る。
-                        //   Some(d)=直下 d[m] に地形あり（浮遊）／None=直下に地形なし（埋没/未検出）
-                        let down_hit: Option<f32> = last_before.and_then(|last| {
-                            let ray = Ray::new(
-                                point![last[0], last[1], last[2]],
-                                vector![0.0, -1.0, 0.0],
-                            );
-                            let filter = entries.get(&entity_id)
-                                .map(|e| QueryFilter::default().exclude_collider(e.col_handle))
-                                .unwrap_or_default();
-                            query_pipeline
-                                .cast_ray(&rigid_body_set, &collider_set, &ray, 500.0, true, filter)
-                                .map(|(_, toi)| toi)
-                        });
-                        match (last_before, resolved) {
-                            (Some(last), Some((corrected, grounded))) => {
-                                let motion = [
-                                    desired_position[0] - last[0],
-                                    desired_position[1] - last[1],
-                                    desired_position[2] - last[2],
-                                ];
-                                let applied = [
-                                    corrected[0] - last[0],
-                                    corrected[1] - last[1],
-                                    corrected[2] - last[2],
-                                ];
-                                eprintln!(
-                                    "[CharCtl] id={id} entry=found desired=({dx:.3},{dy:.3},{dz:.3}) \
-                                     last=({lx:.3},{ly:.3},{lz:.3}) motion=({mx:.3},{my:.3},{mz:.3}) \
-                                     kcc_move=({ax:.3},{ay:.3},{az:.3}) corrected=({cx:.3},{cy:.3},{cz:.3}) \
-                                     grounded={g} down_hit={dh:?} | colliders total={tc} static={sc}",
-                                    id = entity_id,
-                                    dx = desired_position[0], dy = desired_position[1], dz = desired_position[2],
-                                    lx = last[0], ly = last[1], lz = last[2],
-                                    mx = motion[0], my = motion[1], mz = motion[2],
-                                    ax = applied[0], ay = applied[1], az = applied[2],
-                                    cx = corrected[0], cy = corrected[1], cz = corrected[2],
-                                    g = grounded, dh = down_hit, tc = total_colliders, sc = static_colliders,
-                                );
-                            }
-                            _ => {
-                                eprintln!(
-                                    "[CharCtl] id={id} entry={found} 解決失敗（キャラ未登録/コライダー無し）\
-                                     desired=({dx:.3},{dy:.3},{dz:.3}) | colliders total={tc} static={sc}",
-                                    id = entity_id,
-                                    found = if last_before.is_some() { "found" } else { "MISSING" },
-                                    dx = desired_position[0], dy = desired_position[1], dz = desired_position[2],
-                                    tc = total_colliders, sc = static_colliders,
-                                );
-                            }
-                        }
-                    }
-
-                    // 補正後位置＋接地を「処理したその場」で専用チャンネルへ即送信する（投げっぱなし）。
-                    // ここで送ることで、メインへ届く corrected は常に処理直後の char_last_pos と一致し、
-                    // 物理ステップ（60Hz）に相乗りさせたときに生じる「メインが 60fps 超だと数フレーム
-                    // 古い corrected が届き、古い値へ引き戻される（ラバーバンド・入力食い）」問題を防ぐ。
-                    if let Some((corrected, grounded)) = resolved {
-                        let _ = char_res_tx.send((entity_id, corrected, grounded));
-                    }
-                    false
-                }
                 PhysicsCommand::CheckKinematicOverlap { entity_id, position, rotation, reply } => {
                     // 同期オーバーラップ問い合わせ（編集時ドラッグの押し戻し判定）。
                     // Pause 中もコマンドドレインは回り続けるため必ず応答できる。
@@ -508,9 +287,8 @@ fn run_physics_loop(
 
     // コライダー集合が変化したフレームだけ true。true のときクエリパイプラインを全更新して
     // 地形（親剛体を持たないフリーコライダー）を索引し直す。step() の増分更新はフリー
-    // コライダーを索引しないため、この明示更新が無いと move_shape が地形を検出できない。
-    // 毎フレーム更新は高コスト（322 トライメッシュの再構築で StepCharacter の解決が重くなる）
-    // なので、変化時のみに限定してステップ処理を軽く保つ。
+    // コライダーを索引しないため、この明示更新が無いと Raycast が地形を検出できない。
+    // 毎フレーム更新は高コスト（322 トライメッシュの再構築）なので、変化時のみに限定して軽く保つ。
     let mut query_dirty = true;
 
     loop {
@@ -526,7 +304,7 @@ fn run_physics_loop(
 
         // コライダー集合が変化した（AddObject/RemoveObject）フレームだけ、クエリパイプラインを
         // 全更新して地形（フリーコライダー）を索引し直す。それ以外のフレームでは更新しない
-        // （毎フレームの再構築で StepCharacter の解決やステップが重くなるのを防ぐ）。
+        // （毎フレームの再構築で Raycast クエリやステップが重くなるのを防ぐ）。
         if query_dirty {
             query_pipeline.update(&collider_set);
             query_dirty = false;
@@ -552,8 +330,8 @@ fn run_physics_loop(
         //   【なぜ sleep ではなく recv_timeout か（本改修の核心）】
         //   従来の `std::thread::sleep(≤1ms)` は Windows のタイマ粒度（約15.6ms）により
         //   実際には ~15ms 眠り、その間コマンドをドレインできないため、同期問い合わせ
-        //   （Raycast/CheckKinematicOverlap）の reply や StepCharacter（非同期）の処理が
-        //   最大 ~15ms 遅れていた。recv_timeout ならコマンド到着で即座に起きてその場で処理でき、
+        //   （Raycast/CheckKinematicOverlap）の reply が最大 ~15ms 遅れていた。
+        //   recv_timeout ならコマンド到着で即座に起きてその場で処理でき、
         //   健全時は <1ms で応答できる。到着が無ければ残り時間でタイムアウトしてステップへ進むため、
         //   物理ステップの精度・タイミング・順序は従来と一切変わらない。
         let now = Instant::now();
@@ -640,162 +418,6 @@ fn perform_raycast(
         normal:   [normal.x, normal.y, normal.z],
         distance: intersection.time_of_impact,
     })
-}
-
-// ─── キャラクターコントローラー移動 ──────────────────────────────────────────
-
-/// キャラクターコントローラーで希望移動量を衝突解決し、実効移動＋接地を返す。
-///
-/// StepCharacter（キャラクター自動押し戻し）の内部で使う。対象アクターの既存カプセルコライダー形状を
-/// KCC のシェイプに使い、地形・静的コライダーとの衝突を rapier の
-/// `move_shape` に解決させる（壁ずり・段差・スロープは KCC の標準機能）。
-///
-/// - 対象自身のコライダー／リジッドボディは自己衝突しないよう除外する。
-/// - センサー（トリガー）は応答なしのため除外する。
-/// - move_shape はクエリのみでコライダー位置を変更しない。実際の位置反映（ECS 更新）は
-///   呼び出し元 FFI が集約関数 `set_actor_world_transform` 経由で行う。
-///
-/// 対象 entity_id が未登録・コライダーが引けない場合は None を返す。
-#[allow(clippy::too_many_arguments)]
-fn perform_character_move(
-    kcc:            &KinematicCharacterController,
-    query_pipeline: &QueryPipeline,
-    rb_set:         &RigidBodySet,
-    col_set:        &ColliderSet,
-    entries:        &HashMap<u64, PhysicsEntry>,
-    entity_id:      u64,
-    position:       [f32; 3],
-    rotation:       [f32; 4],
-    motion:         [f32; 3],
-    dt:             Real,
-) -> Option<CharacterMoveResult> {
-    // 対象アクターのコライダーを解決し、その形状を KCC シェイプに使う
-    let entry = entries.get(&entity_id)?;
-    let col   = col_set.get(entry.col_handle)?;
-    let shape = col.shared_shape().clone();
-
-    // シェイプの基準姿勢 = アクターワールド姿勢 × コライダーローカルオフセット。
-    // motion はワールド空間の希望移動量なので姿勢に依存しない。
-    let o          = entry.col_offset;
-    let offset_iso = Isometry::translation(o[0], o[1], o[2]);
-    let char_pos   = to_isometry(position, rotation) * offset_iso;
-    let desired    = vector![motion[0], motion[1], motion[2]];
-
-    // 自己コライダー・自己 RB・センサーを衝突候補から除外する
-    let mut filter = QueryFilter::default()
-        .exclude_sensors()
-        .exclude_collider(entry.col_handle);
-    if let Some(rb_h) = entry.rb_handle {
-        filter = filter.exclude_rigid_body(rb_h);
-    }
-
-    // KCC に衝突解決を委ねる（イベントは使わないので空クロージャ）。
-    let movement = kcc.move_shape(
-        dt, rb_set, col_set, query_pipeline,
-        &*shape, &char_pos, desired, filter, |_| {},
-    );
-
-    let t = movement.translation;
-    Some(CharacterMoveResult {
-        translation: [t.x, t.y, t.z],
-        grounded:    movement.grounded,
-    })
-}
-
-// ─── キャラクターコントローラー差分ステップ ──────────────────────────────────
-
-/// キャラクターコントローラーの「希望位置」を前回解決済み位置との差分で衝突解決する。
-///
-/// StepCharacter コマンド（非同期解決）の実体。次を行う純粋手続き:
-///   1. moveVector = 希望位置 - 前回解決済み位置（char_last_pos）
-///   2. `perform_character_move` で KCC が地形・静的コライダーと衝突解決（壁ずり・段差・スロープ）
-///   3. 補正後位置 = 前回位置 + 補正移動量 を求め、char_last_pos を更新
-///   4. 物理ワールドのコライダー姿勢も補正後位置へ同期（他オブジェクトのクエリ整合）
-///
-/// 補正後位置と接地を `Some((corrected, grounded))` で返す。呼び出し側（StepCharacter アーム）は
-/// この値を専用チャンネル（char_res_tx）へ即送信し、メインは非ブロック drain で受け取る。
-/// 対象が未登録・キャラクター指定でない・コライダーが引けない場合は `None`（何もしない）。
-#[allow(clippy::too_many_arguments)]
-fn perform_character_step(
-    kcc:              &KinematicCharacterController,
-    query_pipeline:   &QueryPipeline,
-    rb_set:           &mut RigidBodySet,
-    col_set:          &mut ColliderSet,
-    entries:          &mut HashMap<u64, PhysicsEntry>,
-    entity_id:        u64,
-    desired_position: [f32; 3],
-    rotation:         [f32; 4],
-    dt:               Real,
-) -> Option<([f32; 3], bool)> {
-    // 前回解決済み位置とキャラクター判定を取得する（キャラでなければ何もしない）
-    let (last, is_char) = match entries.get(&entity_id) {
-        Some(e) => (e.char_last_pos, e.is_character),
-        None    => return None,
-    };
-    if !is_char { return None; }
-
-    // 希望移動量 = 希望位置 - 前回解決済み位置
-    let motion = [
-        desired_position[0] - last[0],
-        desired_position[1] - last[1],
-        desired_position[2] - last[2],
-    ];
-
-    // KCC 衝突解決（読み取り専用クエリ）。基準位置は前回解決済み位置。
-    // rb_set / col_set は &mut を immutable に自動再借用して渡す。
-    let res = perform_character_move(
-        kcc, query_pipeline, rb_set, col_set, entries,
-        entity_id, last, rotation, motion, dt,
-    )?;
-
-    // 補正後位置 = 前回位置 + 補正移動量
-    let corrected = [
-        last[0] + res.translation[0],
-        last[1] + res.translation[1],
-        last[2] + res.translation[2],
-    ];
-
-    // 前回位置を更新し、物理ワールドのコライダー姿勢も補正後位置へ同期する。
-    // 接地（grounded）は戻り値でそのまま返し、呼び出し側が専用チャンネルへ即送信する。
-    if let Some(entry) = entries.get_mut(&entity_id) {
-        entry.char_last_pos = corrected;
-        sync_character_collider_pose(rb_set, col_set, entry, corrected, rotation);
-    }
-    Some((corrected, res.grounded))
-}
-
-/// キャラクターコントローラーのコライダー姿勢を物理ワールドへ同期する。
-///
-/// - kinematic RigidBody を持つ場合: 次ステップの目標位置として set_next_kinematic_position。
-/// - Static コライダー（RB なし）の場合: コライダー位置を直接更新（ワールド姿勢 × ローカルオフセット）。
-/// - Dynamic の場合（保険）: 位置を直接セットする。
-///
-/// これにより、他オブジェクトのレイキャスト・衝突判定がキャラクターの補正後位置を参照できる。
-fn sync_character_collider_pose(
-    rb_set:   &mut RigidBodySet,
-    col_set:  &mut ColliderSet,
-    entry:    &PhysicsEntry,
-    position: [f32; 3],
-    rotation: [f32; 4],
-) {
-    let world_iso = to_isometry(position, rotation);
-    if let Some(rb_h) = entry.rb_handle {
-        if let Some(rb) = rb_set.get_mut(rb_h) {
-            if rb.is_kinematic() {
-                rb.set_next_kinematic_position(world_iso);
-            } else {
-                rb.set_position(world_iso, true);
-            }
-        }
-    } else if let Some(col) = col_set.get_mut(entry.col_handle) {
-        // Static コライダー: ワールド位置 = アクターワールド姿勢 × ローカルオフセット
-        let o = entry.col_offset;
-        let offset_iso = Isometry::from_parts(
-            Translation::new(o[0], o[1], o[2]),
-            UnitQuaternion::identity(),
-        );
-        col.set_position(world_iso * offset_iso);
-    }
 }
 
 // ─── ドラッグ押し戻し用オーバーラップ判定 ────────────────────────────────────
@@ -960,19 +582,7 @@ fn handle_command(
         PhysicsCommand::Pause  => { /* ループ側で処理済み */ }
         PhysicsCommand::Resume => { /* ループ側で処理済み */ }
         PhysicsCommand::Raycast { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
-        PhysicsCommand::StepCharacter { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
         PhysicsCommand::CheckKinematicOverlap { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
-
-        PhysicsCommand::TeleportCharacter { entity_id, position, rotation } => {
-            // キャラクターの瞬間移動（衝突無視）。前回解決済み位置を強制的に position へ上書きし、
-            // 次の StepCharacter で差分ゼロ（= 押し戻されない）にする。コライダー位置も即反映する。
-            if let Some(entry) = entries.get_mut(&entity_id) {
-                if entry.is_character {
-                    entry.char_last_pos = position;
-                    sync_character_collider_pose(rb_set, col_set, entry, position, rotation);
-                }
-            }
-        }
 
         PhysicsCommand::AddObject(obj) => {
             add_object(obj, rb_set, col_set, entries, col_to_entity, trigger_set);
@@ -1332,9 +942,6 @@ fn add_object(
         col_offset: obj.collider_offset,
         rb_created_for_drag: false,
         col_shape_data,
-        is_character: obj.is_character_controller,
-        // 前回解決済み位置の初期値 = 登録時のアクターワールド位置。
-        char_last_pos: obj.position,
     });
 }
 
@@ -1474,10 +1081,6 @@ fn collect_results(
         if !active_trigger_entity_ids.contains(&oe) { active_trigger_entity_ids.push(oe); }
     }
 
-    // 【撤去】キャラクター補正後位置・接地の収集は廃止した。StepCharacter を処理したその場で
-    // 専用チャンネル（char_res_tx）から送るようにしたため、ステップ結果に相乗りさせない
-    // （相乗りさせると 60fps 超のメインへ数フレーム古い corrected が届き引き戻しが起きる）。
-
     PhysicsResult {
         transform_updates, collision_events, trigger_events,
         active_contact_entity_ids, active_trigger_entity_ids,
@@ -1487,20 +1090,6 @@ fn collect_results(
 }
 
 // ─── 変換ユーティリティ ──────────────────────────────────────────────────────
-
-/// SEED の [x, y, z, w] クォータニオンと位置を Rapier の Isometry に変換する。
-fn to_isometry(position: [f32; 3], rotation: [f32; 4]) -> Isometry<Real> {
-    let translation = Translation::new(position[0], position[1], position[2]);
-    // nalgebra::Quaternion::new(w, i, j, k) — w が先頭
-    // SEED 規約: rotation = [x(i), y(j), z(k), w]
-    let nq = UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
-        rotation[3], // w
-        rotation[0], // i
-        rotation[1], // j
-        rotation[2], // k
-    ));
-    Isometry::from_parts(translation, nq)
-}
 
 /// フリーズ軸設定を Rapier の `LockedAxes` ビットフラグに変換する。
 fn build_locked_axes(freeze_pos: [bool; 3], freeze_rot: [bool; 3]) -> LockedAxes {
@@ -1512,66 +1101,6 @@ fn build_locked_axes(freeze_pos: [bool; 3], freeze_rot: [bool; 3]) -> LockedAxes
     if freeze_rot[1] { locked |= LockedAxes::ROTATION_LOCKED_Y; }
     if freeze_rot[2] { locked |= LockedAxes::ROTATION_LOCKED_Z; }
     locked
-}
-
-/// `ColliderShape` から Rapier の `ColliderBuilder` を構築する。
-///
-/// `scale` を各頂点・半辺長に乗算してワールドスケールを反映する。
-fn build_collider_shape(shape: &ColliderShape, scale: &[f32; 3]) -> ColliderBuilder {
-    match shape {
-        ColliderShape::Box { half_extents: [hx, hy, hz] } => {
-            ColliderBuilder::cuboid(hx * scale[0], hy * scale[1], hz * scale[2])
-        }
-        ColliderShape::Sphere { radius } => {
-            // 球は均等スケールを前提として X 軸スケールを使用する
-            ColliderBuilder::ball(*radius * scale[0])
-        }
-        ColliderShape::Capsule { radius, half_height } => {
-            // Rapier: capsule_y(half_height, radius) の引数順
-            ColliderBuilder::capsule_y(*half_height * scale[1], *radius * scale[0])
-        }
-        ColliderShape::Cylinder { radius, half_height } => {
-            // Rapier: cylinder(half_height, radius) — Y 軸が長軸
-            ColliderBuilder::cylinder(*half_height * scale[1], *radius * scale[0])
-        }
-        ColliderShape::Cone { radius, half_height } => {
-            // Rapier: cone(half_height, radius) — Y 軸が長軸、頂点が +Y 側
-            ColliderBuilder::cone(*half_height * scale[1], *radius * scale[0])
-        }
-        ColliderShape::ConvexHull { vertices } => {
-            let pts: Vec<nalgebra::Point3<Real>> = vertices
-                .iter()
-                .map(|&[x, y, z]| nalgebra::Point3::new(x * scale[0], y * scale[1], z * scale[2]))
-                .collect();
-            // convex_hull は Option<ColliderBuilder> を返す
-            ColliderBuilder::convex_hull(&pts).unwrap_or_else(|| {
-                eprintln!("[Physics] Warning: ConvexHull 生成失敗。代替 Ball を使用");
-                ColliderBuilder::ball(0.1)
-            })
-        }
-        ColliderShape::TriangleMesh { triangles } => {
-            let vertices: Vec<nalgebra::Point3<Real>> = triangles
-                .iter()
-                .flat_map(|tri| tri.iter())
-                .map(|&[x, y, z]| nalgebra::Point3::new(x * scale[0], y * scale[1], z * scale[2]))
-                .collect();
-            let indices: Vec<[u32; 3]> = (0..triangles.len())
-                .map(|i| { let b = (i * 3) as u32; [b, b + 1, b + 2] })
-                .collect();
-            // trimesh は rapier3d 0.22 で ColliderBuilder を直接返す（Result ではない）
-            ColliderBuilder::trimesh(vertices, indices)
-        }
-        ColliderShape::TriangleMeshIndexed { vertices, indices } => {
-            // 共有頂点をそのまま Point3 へ写し（ワールドスケール反映）、インデックスは複製する。
-            // 展開版と違い頂点を三角形ごとに複製しないため、地形のような大規模メッシュを
-            // 少ないメモリで登録できる。
-            let pts: Vec<nalgebra::Point3<Real>> = vertices
-                .iter()
-                .map(|&[x, y, z]| nalgebra::Point3::new(x * scale[0], y * scale[1], z * scale[2]))
-                .collect();
-            ColliderBuilder::trimesh(pts, indices.clone())
-        }
-    }
 }
 
 // ─── テスト ──────────────────────────────────────────────────────────────────
@@ -1650,234 +1179,6 @@ mod tests {
             y > 0.3 && y < 0.7,
             "球はトライメッシュ床の上（y≈{BALL_RADIUS}）で静止するはずが y={y} だった\
              （y が負なら床をすり抜けている＝コリジョン不成立）"
-        );
-    }
-
-    /// `make_character_controller` が定数どおりの KCC を構築することを検証する。
-    ///
-    /// マジックナンバーではなく KCC_* 定数から組み立てていること・単位（度→ラジアン）
-    /// 変換が正しいことを、外部依存なしで確認する回帰テスト。
-    #[test]
-    fn character_controller_uses_configured_constants() {
-        let kcc = make_character_controller();
-
-        // スロープ角は度→ラジアン変換されている
-        assert!((kcc.max_slope_climb_angle - (KCC_MAX_SLOPE_CLIMB_DEG as Real).to_radians()).abs() < 1e-6);
-        assert!((kcc.min_slope_slide_angle - (KCC_MIN_SLOPE_SLIDE_DEG as Real).to_radians()).abs() < 1e-6);
-
-        // スキン幅は絶対指定
-        assert!(matches!(kcc.offset, CharacterLength::Absolute(v) if (v - KCC_SKIN_OFFSET_M).abs() < 1e-6));
-
-        // 段差の自動乗り越えが有効で、絶対値の高さが設定されている
-        let step = kcc.autostep.expect("autostep が有効であること");
-        assert!(matches!(step.max_height, CharacterLength::Absolute(v) if (v - KCC_AUTOSTEP_MAX_HEIGHT_M).abs() < 1e-6));
-        assert!(!step.include_dynamic_bodies, "動的ボディの上には段差昇降しない設定");
-
-        // 接地スナップが有効
-        assert!(matches!(kcc.snap_to_ground, Some(CharacterLength::Absolute(v)) if (v - KCC_SNAP_TO_GROUND_M).abs() < 1e-6));
-    }
-
-    /// `make_character_controller` の KCC で、カプセルを床へ向けて下方向に動かしたとき、
-    /// 床をすり抜けず・接地判定が立つことを決定論的に検証する。
-    ///
-    /// スレッドを使わず `KinematicCharacterController::move_shape` を直接呼ぶため、
-    /// 時間・スケジューリングに依らず結果は一定。キャラクターコントローラーが依存する
-    /// KCC 統合経路（カプセルシェイプ → move_shape → 補正移動量＋grounded）の実効を
-    /// CI で担保する。
-    #[test]
-    fn character_move_is_blocked_by_floor_and_reports_grounded() {
-        // ── y=0 の平坦な床（共有頂点＋インデックスのトライメッシュ）──
-        let floor = ColliderShape::TriangleMeshIndexed {
-            vertices: vec![
-                [-5.0, 0.0, -5.0],
-                [ 5.0, 0.0, -5.0],
-                [ 5.0, 0.0,  5.0],
-                [-5.0, 0.0,  5.0],
-            ],
-            indices: vec![[0, 1, 2], [0, 2, 3]],
-        };
-
-        let mut rb_set  = RigidBodySet::new();
-        let mut col_set = ColliderSet::new();
-        let mut query   = QueryPipeline::new();
-
-        // 床：Static コライダー
-        let floor_col = build_collider_shape(&floor, &[1.0, 1.0, 1.0]).build();
-        col_set.insert(floor_col);
-
-        // キャラクター：半径 0.4・半高 0.5 のカプセル（Y 軸）。
-        // カプセルの下端 = 中心 - (半高 + 半径) = 中心 - 0.9。中心を 1.0m に置くと
-        // 下端は床（y=0）の 0.1m 上から始まる（＝床にめり込んでいない）。
-        const CAP_RADIUS:      Real = 0.4;
-        const CAP_HALF_HEIGHT: Real = 0.5;
-        const START_Y:         Real = 1.0;
-        let capsule = SharedShape::capsule_y(CAP_HALF_HEIGHT, CAP_RADIUS);
-        let char_pos = Isometry::translation(0.0, START_Y, 0.0);
-
-        // クエリパイプラインを床コライダーで更新する（move_shape が参照する）
-        query.update(&col_set);
-
-        let kcc = make_character_controller();
-        // 下向きに 1m 動かそうとする（重力分をスクリプトが含める想定の代役）
-        let movement = kcc.move_shape(
-            PHYSICS_FIXED_STEP as Real,
-            &rb_set, &col_set, &query,
-            &*capsule, &char_pos, vector![0.0, -1.0, 0.0],
-            QueryFilter::default().exclude_sensors(),
-            |_| {},
-        );
-
-        // 実効移動後の中心 Y
-        let result_y = START_Y + movement.translation.y;
-        // カプセル下端が床（y=0）を大きく割り込んでいない（すり抜けていない）。
-        //   下端 = result_y - (CAP_HALF_HEIGHT + CAP_RADIUS)。床上ならほぼ 0 以上。
-        let foot_y = result_y - (CAP_HALF_HEIGHT + CAP_RADIUS);
-        assert!(
-            foot_y > -0.05,
-            "カプセルが床をすり抜けた: foot_y={foot_y}（下向き移動が床で止まっていない）"
-        );
-        // 床に十分近い下向き移動なので接地判定が立つはず
-        assert!(
-            movement.grounded,
-            "床の直上へ下向き移動したのに grounded=false（接地判定が機能していない）"
-        );
-    }
-
-    /// `perform_character_step`（StepCharacter の実体）の差分解決を決定論的に検証する。
-    ///
-    /// キャラクター（カプセル）の「前回解決済み位置」を床の直上に置き、床を大きく貫く
-    /// 希望位置を与える。moveVector = 希望位置 - 前回位置 が KCC で床に衝突解決され、
-    /// entry.char_last_pos が床上へ押し戻される（希望位置まで沈まない）こと、接地判定が
-    /// 立つこと、前回位置が更新されることを確認する。スレッド非依存で `cargo test` に乗る。
-    #[test]
-    fn character_step_pushes_back_from_floor_and_updates_last_pos() {
-        // y=0 の平坦な床（共有頂点＋インデックスのトライメッシュ）
-        let floor = ColliderShape::TriangleMeshIndexed {
-            vertices: vec![
-                [-5.0, 0.0, -5.0],
-                [ 5.0, 0.0, -5.0],
-                [ 5.0, 0.0,  5.0],
-                [-5.0, 0.0,  5.0],
-            ],
-            indices: vec![[0, 1, 2], [0, 2, 3]],
-        };
-
-        let mut rb_set  = RigidBodySet::new();
-        let mut col_set = ColliderSet::new();
-        let mut query   = QueryPipeline::new();
-
-        // 床: Static コライダー
-        let floor_col = build_collider_shape(&floor, &[1.0, 1.0, 1.0]).build();
-        col_set.insert(floor_col);
-
-        // キャラクター: 半径 0.4・半高 0.5 のカプセル（Y 軸）を Static コライダーとして登録。
-        // 中心を前回位置 y=1.0 に置くと下端は床の 0.1m 上（＝床にめり込んでいない）。
-        const CAP_RADIUS:      Real = 0.4;
-        const CAP_HALF_HEIGHT: Real = 0.5;
-        const START_Y:         Real = 1.0;
-        let char_col = ColliderBuilder::capsule_y(CAP_HALF_HEIGHT, CAP_RADIUS)
-            .position(Isometry::translation(0.0, START_Y, 0.0))
-            .build();
-        let char_col_h = col_set.insert(char_col);
-
-        // クエリパイプラインを両コライダーで更新する（perform_character_move が参照する）
-        query.update(&col_set);
-
-        // entries に character エントリを 1 件登録する（entity_id=1）
-        const ENTITY_ID: u64 = 1;
-        let mut entries: HashMap<u64, PhysicsEntry> = HashMap::new();
-        entries.insert(ENTITY_ID, PhysicsEntry {
-            rb_handle:  None,
-            col_handle: char_col_h,
-            is_dynamic: false,
-            col_offset: [0.0, 0.0, 0.0],
-            rb_created_for_drag: false,
-            col_shape_data: None,
-            is_character:  true,
-            char_last_pos: [0.0, START_Y as f32, 0.0],
-        });
-
-        let kcc = make_character_controller();
-
-        // 希望位置: 床を大きく貫く y=-1.0（スクリプトが Transform に書いた値の代役）
-        let desired = [0.0, -1.0, 0.0];
-        let resolved = perform_character_step(
-            &kcc, &query, &mut rb_set, &mut col_set, &mut entries,
-            ENTITY_ID, desired, [0.0, 0.0, 0.0, 1.0], PHYSICS_FIXED_STEP as Real,
-        );
-
-        // 同期 reply 値（補正後位置＋接地）が返ること
-        let (corrected, grounded) = resolved.expect("キャラクター解決が Some を返すこと");
-        // entry の前回位置も同じ補正後位置へ更新されている
-        let entry = entries.get(&ENTITY_ID).unwrap();
-        assert_eq!(
-            entry.char_last_pos, corrected,
-            "entry.char_last_pos と reply の corrected が一致すること"
-        );
-        let corrected_y = corrected[1];
-
-        // 前回位置が更新されている（初期値 START_Y のままではない）
-        assert!(
-            (corrected_y - START_Y as f32).abs() > 1e-4 || corrected_y > desired[1] + 0.5,
-            "char_last_pos が更新されていない: {corrected_y}"
-        );
-        // 希望位置(y=-1.0)まで沈まず、床上へ押し戻されている
-        let foot_y = corrected_y - (CAP_HALF_HEIGHT as f32 + CAP_RADIUS as f32);
-        assert!(
-            foot_y > -0.05,
-            "床に押し戻されていない: foot_y={foot_y}（char_last_pos.y={corrected_y}）"
-        );
-        // 床へ向かって沈もうとしたので接地判定が立つ
-        assert!(
-            grounded,
-            "床へ押し付けたのに grounded=false（接地状態が返されていない）"
-        );
-    }
-
-    /// `perform_character_step` が「対象未登録」「キャラクター指定でない」で `None` を返し、
-    /// entry を書き換えないことを検証する。
-    ///
-    /// StepCharacter（非同期解決）で `None`（解決失敗）のときは entry.char_last_pos を
-    /// 書き換えず、専用チャンネルへも送らないため、メインは従来の補正後位置を保持し続ける
-    /// （＝暴れない）。その不変性の拠り所となる純粋部分（None を返す条件）を外部依存なしで固定する。
-    #[test]
-    fn character_step_returns_none_for_missing_or_non_character() {
-        let mut rb_set  = RigidBodySet::new();
-        let mut col_set = ColliderSet::new();
-        let query   = QueryPipeline::new();
-        let kcc     = make_character_controller();
-
-        // ── ① 未登録 entity_id: None を返す ──
-        let mut empty: HashMap<u64, PhysicsEntry> = HashMap::new();
-        let r = perform_character_step(
-            &kcc, &query, &mut rb_set, &mut col_set, &mut empty,
-            999, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], PHYSICS_FIXED_STEP as Real,
-        );
-        assert!(r.is_none(), "未登録 entity は None を返すべき");
-
-        // ── ② is_character=false の entry: None を返し、char_last_pos を書き換えない ──
-        const ID: u64 = 7;
-        const START: [f32; 3] = [1.0, 2.0, 3.0];
-        let col_h = col_set.insert(ColliderBuilder::ball(0.5).build());
-        let mut entries: HashMap<u64, PhysicsEntry> = HashMap::new();
-        entries.insert(ID, PhysicsEntry {
-            rb_handle:  None,
-            col_handle: col_h,
-            is_dynamic: false,
-            col_offset: [0.0, 0.0, 0.0],
-            rb_created_for_drag: false,
-            col_shape_data: None,
-            is_character:  false,      // ← キャラクターではない
-            char_last_pos: START,
-        });
-        let r = perform_character_step(
-            &kcc, &query, &mut rb_set, &mut col_set, &mut entries,
-            ID, [10.0, 10.0, 10.0], [0.0, 0.0, 0.0, 1.0], PHYSICS_FIXED_STEP as Real,
-        );
-        assert!(r.is_none(), "非キャラクター entity は None を返すべき");
-        assert_eq!(
-            entries.get(&ID).unwrap().char_last_pos, START,
-            "非キャラクターでは char_last_pos を書き換えないこと"
         );
     }
 }

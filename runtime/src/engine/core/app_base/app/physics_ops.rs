@@ -33,8 +33,9 @@ use crate::engine::structs::objects::actor::Actor;
 use crate::engine::structs::tensor::Vector3 as SeedVec3;
 use crate::engine::structs::transforms::Quaternion as SeedQuat;
 use crate::engine::physics::{
-    PhysicsThread, PhysicsCommand, PhysicsObject,
+    PhysicsThread, PhysicsCommand, PhysicsObject, CharacterWorld,
 };
+use crate::engine::physics::char_world::CHAR_PUSH_IMPULSE_SCALE;
 use crate::engine::core::app_base::scene::Scene;
 use super::{App, RuntimeMode, InspectorTransformDrag};
 
@@ -64,12 +65,11 @@ const OVERLAP_REPLY_TIMEOUT_MS: u64 = 4;
 static PHYS_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("SEED_PHYS_LOG").is_some());
 
-/// キャラクターコントローラー非同期解決の診断ログ（`[CharCtl]` 行）を出すか。
-/// 【実機確認のため一時的に常時 ON】ラバーバンド不具合の実機切り分け中のため env の有無に関わらず
-/// 出力する（洪水は CHAR_LOG_MAX_FRAMES で防ぐ）。確認後に監督が env ゲートへ戻す。
-/// 物理スレッド側（thread.rs）も同様に `[CharCtl]` 行を出し、キャラ解決を切り分ける。
+/// キャラクターコントローラー解決の診断ログ（`[CharCtl]` 行）を出すか。既定オフ。
+/// 切り分けたいときのみ環境変数 SEED_CHAR_LOG を設定して有効化する
+/// （毎フレーム eprintln! による stderr パイプ詰まりで FPS が落ちるのを防ぐため既定オフ）。
 static CHAR_LOG_ENABLED: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| true || std::env::var_os("SEED_CHAR_LOG").is_some());
+    std::sync::LazyLock::new(|| std::env::var_os("SEED_CHAR_LOG").is_some());
 
 /// これまでに出力した `[CharCtl]`（メイン側）行のフレーム数（洪水防止の上限判定に使う）。
 static CHAR_LOG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -113,16 +113,21 @@ impl App {
                     obj.rigidbody.as_ref().map_or(false, |rb| rb.is_kinematic));
             }
         }
+        // 物理スレッドとキャラクター衝突ミラーを先に確定してから、集約ヘルパ（physics_add_object）
+        // 経由で全オブジェクトをスレッドとミラーの**両方**へ登録する（送信箇所の一元化）。
+        self.physics_thread = Some(thread);
+        self.character_world = Some(CharacterWorld::new());
+
         for obj in objects {
-            thread.send(PhysicsCommand::AddObject(obj));
+            self.physics_add_object(obj);
         }
 
         // コライダーのみモードでは重力を無効化する
         if force_kinematic {
-            thread.send(PhysicsCommand::SetGravity { gravity: [0.0, 0.0, 0.0] });
+            if let Some(thread) = &self.physics_thread {
+                thread.send(PhysicsCommand::SetGravity { gravity: [0.0, 0.0, 0.0] });
+            }
         }
-
-        self.physics_thread = Some(thread);
 
         // 地形の静的トライメッシュコライダーを物理ワールドへ登録する。
         // 地形は ECS の ColliderComponent を持たない（terrain 側で内部管理する）ため、
@@ -135,6 +140,37 @@ impl App {
     /// Play モード停止時に物理スレッドを終了する（Drop で Stop 送信・join）。
     pub(super) fn stop_physics(&mut self) {
         self.physics_thread = None;
+        // キャラクター衝突ミラーも破棄する（物理起動中のみ有効）
+        self.character_world = None;
+    }
+
+    // ─── 物理オブジェクト登録の集約ヘルパ ────────────────────────────
+    //
+    //  物理スレッドへ AddObject/RemoveObject を送る**全箇所**をこの 2 メソッドへ集約する。
+    //  こうすることで、送信と同時にキャラクター衝突ミラー（CharacterWorld）へも必ず反映され、
+    //  「どこか 1 箇所で送信の取りこぼしがあり、その物体だけ押し戻されない」事故を防ぐ。
+    //  送信箇所: start_physics / register_all_terrain_colliders / sync_terrain_chunk_collider /
+    //  handle_set_collider_data。
+
+    /// 物理オブジェクトを物理スレッドとキャラクター衝突ミラーの両方へ登録する。
+    pub(super) fn physics_add_object(&mut self, obj: PhysicsObject) {
+        // 先にミラーへ反映（obj を借用）してからスレッドへムーブ送信する
+        if let Some(cw) = &mut self.character_world {
+            cw.add_object(&obj);
+        }
+        if let Some(thread) = &self.physics_thread {
+            thread.send(PhysicsCommand::AddObject(obj));
+        }
+    }
+
+    /// 物理オブジェクトを物理スレッドとキャラクター衝突ミラーの両方から削除する。
+    pub(super) fn physics_remove_object(&mut self, entity_id: u64) {
+        if let Some(cw) = &mut self.character_world {
+            cw.remove(entity_id);
+        }
+        if let Some(thread) = &self.physics_thread {
+            thread.send(PhysicsCommand::RemoveObject { entity_id });
+        }
     }
 
     // ─── 毎フレーム更新 ──────────────────────────────────────────
@@ -417,24 +453,9 @@ impl App {
             }
         }
 
-        // ── キャラクターコントローラー補正結果の取り込み（専用チャンネル・物理ステップと独立）──
-        //
-        // 【なぜ専用チャンネルを毎フレーム drain するのか（ラバーバンド/入力食いの根治）】
-        //   物理スレッドは StepCharacter を「コマンド到着の瞬間」に処理して char_last_pos を毎
-        //   メインフレーム進める。もし補正結果を物理ステップ（60Hz）の結果ストリームに相乗り
-        //   させると、メインが 60fps 超で回るとき、メインへ届く corrected は物理側 char_last_pos
-        //   より数フレーム古くなる。その古い corrected を毎フレーム ECS へ上書きすると、
-        //   desired = 古いcorrected + move に対し物理の基準 last はもっと先 → motion が
-        //   ゼロ/負になって入力が食われ、同じ場所へ引き戻される（ラバーバンド）。
-        //   そこで物理スレッドは StepCharacter を処理したその場で専用チャンネルへ corrected を
-        //   送り、メインはそれを毎フレーム非ブロック drain する。届く corrected は常に「その時点の
-        //   char_last_pos」と一致するため、desired_N = corrected_{N-1} + move → motion = move
-        //   ちょうどになり、全速・壁ずりが正しく復活する。
-        //
-        // 【二重反映は維持】ここ（フレーム先頭・スクリプト前）で ECS へ反映してスクリプトの
-        //   move 基準を最新化し、sync_character_controllers ③ が同じ pending を描画直前に再反映して
-        //   スクリプトの貫通直書きを上書きする。grounded の公開は sync③ に一本化する。
-        self.ingest_character_results();
+        // 【キャラクター補正の取り込みは撤去】キャラクターの押し戻し解決はメインスレッド常駐の
+        //   CharacterWorld（sync_character_controllers）でその場完結するようになったため、
+        //   物理スレッドからキャラ補正を受信する処理（旧 ingest_character_results）は不要になった。
 
         // ④ Kinematic Actor の Transform を物理スレッドへ送信する
         let Some(scene) = &self.scene else { return };
@@ -457,162 +478,121 @@ impl App {
         }
     }
 
-    // ─── キャラクターコントローラー（希望位置の送信＋前フレーム補正の反映・描画直前）──────
+    // ─── キャラクターコントローラー（メインスレッド衝突ミラーでその場解決）──────
 
-    /// キャラクターコントローラーについて **①今フレームの希望位置を送信し ②前フレームの補正結果を反映** する。
+    /// キャラクターコントローラーを、メインスレッド常駐の衝突ミラー（`CharacterWorld`）で
+    /// その場（同一スレッド・同一フレーム）押し戻し解決する。
     ///
     /// **必ずスクリプトフェーズ実行後・描画前**に呼ぶこと（frame_renderer のスクリプトフェーズ直後）。
-    /// 次の順序で行う:
-    ///   ① スクリプトが Transform に直書きした希望位置（＝現在の ECS 位置。地形を貫通しうる値）を
-    ///      キャラごとに収集する。
-    ///   ② その希望位置を reply を持たない `StepCharacter` で物理スレッドへ **投げっぱなし（非ブロック）**
-    ///      で送る。物理スレッドは前回解決済み位置との差分を KCC で衝突解決し、補正後位置＋接地を
-    ///      **処理したその場**で専用チャンネルへ送る（メインは drain_character_results で受信）。
-    ///   ③ **その後**、専用チャンネルに**新しく届いた**解決結果だけを ECS へ反映し、接地を公開する
-    ///      （古い pending の位置再適用はしない — 理由は③実装箇所のコメント参照）。
+    /// スクリプトが今フレーム書いた希望位置を拾い、KCC でクランプした補正後位置で ECS を上書きして
+    /// 描画に貫通位置が出ないようにする。物理スレッドとのフィードバックループを一切持たないため、
+    /// 物理スレッド飢餓時もラバーバンド・入力食いが起きない（設計解説は char_world.rs 冒頭）。
     ///
-    /// 【なぜ「送信の後」に前フレーム分の補正を反映するのか】
-    ///   ①は「スクリプトが今フレーム書いた希望位置」を拾う必要があるため、③（補正でその希望位置を
-    ///   上書きする）より前に行わなければならない。③を描画直前のこの位置で行うことで、スクリプトの
-    ///   貫通直書きをクランプ済みの補正後位置で上書きでき、描画に貫通位置が出ない。
-    ///
-    /// 【なぜ非同期（reply を待たない）か】
-    ///   以前は reply 付きの同期解決で補正後位置をその場受け取りしていたが、grass 描画等の高負荷下で
-    ///   reply 配送に OS スケジューリング遅延（実測 15〜200ms）が乗り、その同期ブロックがそのまま
-    ///   毎フレームの FPS 低下になっていた。move_shape 自体は 0.03ms と速く負荷ゼロなので、待ちを
-    ///   やめて反映を 1 フレーム遅らせる方が総合的に軽い。補正は 1 フレーム古いが、物理は
-    ///   char_last_pos を基準に毎フレーム move 差分を解決するのでキャラは動き、クランプが効くため
-    ///   すり抜け（トンネリング）は起きない。
+    /// 手順:
+    ///   0. テレポートキュー消費 → ミラー内キャラ位置を移動先へ直接セット（解決基準 char_last_pos リセット）。
+    ///   1. 動く物体（非キャラの kinematic/dynamic）のミラー位置を ECS の現在姿勢へ追従させる。
+    ///      （キャラ自身のミラー位置は解決の基準なのでここでは触らない — 触ると motion=0 に潰れる。）
+    ///   2. クエリパイプラインを更新する。
+    ///   3. 各キャラ: ECS の希望位置を KCC で解決 → 補正後位置を ECS へ反映（子孫伝播）。
+    ///   4. 接地状態を公開する（Physics.IsGrounded 用）。
+    ///   5. 補正後キャラ位置を物理スレッドへ一方通行で通知（UpdateKinematic・Raycast/他物体検出用）。
+    ///   6. 接触した dynamic へインパルスを送る（押せるようにする・投げっぱなし）。
     pub(super) fn sync_character_controllers(&mut self) {
-        if self.physics_thread.is_none() { return; }
+        if self.physics_thread.is_none() || self.character_world.is_none() { return; }
+        let wl = self.active_world_line;
 
-        // ── ① スクリプトが書いた希望位置（＝現在の ECS 位置）をキャラごとに収集する ──
-        // 補正の反映（③）より前に収集することで、スクリプトが今フレーム書いた希望位置を拾う。
-        let Some(scene) = &self.scene else { return };
-        let desired = collect_character_step_updates(scene, self.active_world_line);
+        // ── 0. テレポートキュー消費（ミラー内キャラの解決基準を移動先へ直接セット）──
+        let teleports = crate::engine::core::scripting::host_api::take_character_teleports();
+        if let Some(cw) = &mut self.character_world {
+            for (entity_id, pos, rot) in teleports {
+                cw.teleport_character(entity_id, pos, rot);
+            }
+        }
 
-        // 診断ログ（対象キャラ数）。SEED_CHAR_LOG 設定時のみ、最初の N 回だけ出す。
+        // ── 動く物体の現在姿勢 と キャラの希望位置 を ECS から収集する（scene 借用はここで閉じる）──
+        let (movers, desired) = match &self.scene {
+            Some(scene) => (
+                collect_dynamic_kinematic_transforms(scene, wl),
+                collect_character_step_updates(scene, wl),
+            ),
+            None => return,
+        };
+
+        // 診断ログ（対象キャラ数など）。SEED_CHAR_LOG 設定時のみ、最初の N 回だけ出す。
         let diag = *CHAR_LOG_ENABLED
             && CHAR_LOG_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 < CHAR_LOG_MAX_FRAMES;
-        if diag {
-            eprintln!(
-                "[CharCtl] sync: sent {} desired / apply {} pending (async)",
-                desired.len(), self.pending_character_corrections.len(),
-            );
-        }
 
-        // ── ② 各キャラの希望位置を物理スレッドへ投げる（reply 待ちなし）──
-        // 物理スレッドが衝突解決した補正後位置は次フレームの update_physics で受信・退避される。
-        if let Some(thread) = &self.physics_thread {
-            for (entity_id, desired_position, rotation) in desired {
-                thread.send(PhysicsCommand::StepCharacter {
-                    entity_id,
-                    desired_position,
-                    rotation,
-                });
+        let dt = crate::engine::physics::PHYSICS_FIXED_STEP as f32;
+
+        // ── 1〜3. ミラー位置追従 → クエリ更新 → 各キャラ解決（character_world を可変借用）──
+        let mut results:  Vec<(u64, [f32; 3], bool)> = Vec::new();
+        let mut impulses: Vec<(u64, [f32; 3])>       = Vec::new();
+        if let Some(cw) = &mut self.character_world {
+            for (id, pos, rot) in movers {
+                cw.set_position(id, pos, rot);
+            }
+            cw.update_query();
+            for (id, dpos, rot) in &desired {
+                if let Some(res) = cw.resolve_character(*id, *dpos, *rot, dt) {
+                    results.push((*id, res.corrected, res.grounded));
+                    // 接触 dynamic への押し出し（方向×速度）に実効質量係数を掛けてインパルス化する。
+                    for (hit_id, push) in res.dynamic_pushes {
+                        impulses.push((hit_id, [
+                            push[0] * CHAR_PUSH_IMPULSE_SCALE,
+                            push[1] * CHAR_PUSH_IMPULSE_SCALE,
+                            push[2] * CHAR_PUSH_IMPULSE_SCALE,
+                        ]));
+                    }
+                }
+            }
+            if diag {
+                eprintln!(
+                    "[CharCtl] chars={} resolved={} mirror_colliders={} impulses={}",
+                    desired.len(), results.len(), cw.collider_count(), impulses.len(),
+                );
             }
         }
 
-        // ── ③ 新着の解決結果だけを ECS へ反映する（古い pending の再適用はしない）──
-        // ②で送った分が同フレーム内に物理スレッドで処理済みなら（コマンド即応ドレインのため
-        // 健全時はそうなる）ここで新着として拾え、クランプ済みの補正後位置が描画に載る。
-        //
-        // 【なぜ「新着のみ」か（重要）】物理スレッドは grass 描画等の高負荷下で OS に数フレーム
-        // スケジュールされない（飢餓）ことがあり、その間に届いた StepCharacter をまとめて
-        // バースト処理する。飢餓中に古い pending を毎フレーム再適用すると、スクリプトの
-        // `+= move` の蓄積を毎フレーム同じ古い位置へリセットしてしまい、バースト解決時に
-        // 2 件目以降の motion が 0 になって「入力が食われる・引っ掛かる・同じ場所へ戻る」
-        // （実機ログで motion の微小振動として確認）。新着のみ適用なら飢餓中はスクリプトの
-        // 移動が蓄積され、物理が追いついた時にまとめて KCC 解決される（クランプが効くので
-        // すり抜けない・壁ずりの接線成分も蓄積されて滑る）。
-        let fresh = self.poll_character_results();
-
-        // 接地はモードに関わらず「最後に知った値」（pending）をスクリプトへ公開する。
-        // 位置と違い接地はフラグの再公開で蓄積を壊さないため、毎フレーム最新既知値でよい。
-        if !self.pending_character_corrections.is_empty() {
+        // ── 4. 接地状態を公開する（DFS ID → ECS Entity へ変換）──
+        if !results.is_empty() {
             let dfs_to_entity = self.scene.as_ref()
-                .map(|s| build_dfs_entity_map_3d(s, self.active_world_line))
+                .map(|s| build_dfs_entity_map_3d(s, wl))
                 .unwrap_or_default();
-            let grounded_states: Vec<(crate::engine::ecs::Entity, bool)> =
-                self.pending_character_corrections.iter()
-                    .filter_map(|(id, _, g)| dfs_to_entity.get(id).map(|&e| (e, *g)))
-                    .collect();
+            let grounded_states: Vec<(crate::engine::ecs::Entity, bool)> = results.iter()
+                .filter_map(|(id, _, g)| dfs_to_entity.get(id).map(|&e| (e, *g)))
+                .collect();
             crate::engine::core::scripting::host_api::publish_grounded_states(grounded_states);
         }
 
-        if fresh.is_empty() { return; }
-
-        // 編集時コライダーのみモードでは Transform を書き換えない（Play / edit+rigidbody 時のみ反映）。
-        let should_apply_transforms = self.mode != RuntimeMode::Edit
-            || self.edit_physics_with_rigidbody;
-        if !should_apply_transforms { return; }
-
-        // ドラッグ中アクターは gizmo が位置を制御するため補正反映しない。
-        let drag = self.dragging_physics_entity_id;
-        if let Some(scene) = &mut self.scene {
-            for (entity_id, corrected, _grounded) in &fresh {
-                if Some(*entity_id) == drag { continue; }
-                apply_character_transform(scene, self.active_world_line, *entity_id, *corrected);
-            }
-        }
-    }
-
-    // ─── キャラクター補正結果の取り込み（専用チャンネル・非ブロック）─────────────────
-
-    /// キャラクター補正結果を専用チャンネルから**全件・非ブロック**で drain し、
-    /// エンティティごとに最新値を `self.pending_character_corrections` へマージした上で、
-    /// **今回新しく届いた分（エンティティごとに最新値）だけ**を返す。
-    ///
-    /// 物理スレッドが StepCharacter を処理したその場で送るため、届く corrected は常に
-    /// 「その時点の char_last_pos」と一致する。pending は「最後に知った補正・接地」の記録で、
-    /// 接地公開（Physics.IsGrounded）に使う。**ECS への位置反映は返り値（新着分）に対してのみ**
-    /// 行うこと — 古い pending を毎フレーム再適用すると、物理スレッドが描画負荷で飢餓状態のとき
-    /// スクリプトの蓄積移動を毎フレームリセットしてしまい、バースト処理時に 2 件目以降の motion が
-    /// 0 になって「入力が食われる・引っ掛かる・同じ場所へ戻る」（実機で確認）ため。
-    fn poll_character_results(&mut self) -> Vec<(u64, [f32; 3], bool)> {
-        let drained = match &self.physics_thread {
-            Some(thread) => thread.drain_character_results(),
-            None         => return Vec::new(),
-        };
-        // エンティティごとに最新値へ集約する（到着順に上書き＝最後の値が残る）。
-        let mut fresh: Vec<(u64, [f32; 3], bool)> = Vec::new();
-        for (entity_id, corrected, grounded) in drained {
-            match fresh.iter_mut().find(|(e, _, _)| *e == entity_id) {
-                Some(slot) => { slot.1 = corrected; slot.2 = grounded; }
-                None       => fresh.push((entity_id, corrected, grounded)),
-            }
-            match self.pending_character_corrections.iter_mut().find(|(e, _, _)| *e == entity_id) {
-                Some(slot) => { slot.1 = corrected; slot.2 = grounded; }
-                None       => self.pending_character_corrections.push((entity_id, corrected, grounded)),
-            }
-        }
-        fresh
-    }
-
-    /// update_physics 用: 専用チャンネルを drain し、**新着の補正後位置だけ**を ECS へ反映して
-    /// スクリプトの `+= move` の基準位置を最新化する。
-    ///
-    /// 新着があるとき: スクリプトが読む基準 = 物理側 char_last_pos と一致し、
-    /// desired = corrected + move → motion = move ちょうどとなって全速・壁ずりが保たれる。
-    /// 新着がないとき（物理スレッドが飢餓中）: ECS には触れず、スクリプトの移動を蓄積させる。
-    /// 物理が追いついた時にまとめて KCC 解決される（motion=蓄積分。クランプが効くので
-    /// すり抜けはしない）。古い pending の再適用は禁止（poll_character_results のコメント参照）。
-    /// 接地公開は sync③ に一本化するためここでは行わない。
-    fn ingest_character_results(&mut self) {
-        let fresh = self.poll_character_results();
-
+        // ── 3(反映). 補正後位置を ECS へ書き戻す ──
         // 編集時コライダーのみモードでは Transform を書き換えない（Play / edit+rigidbody 時のみ）。
-        let should_apply_transforms = self.mode != RuntimeMode::Edit
-            || self.edit_physics_with_rigidbody;
-        if !should_apply_transforms || fresh.is_empty() { return; }
-
         // ドラッグ中アクターは gizmo が位置を制御するため反映しない。
+        let should_apply = self.mode != RuntimeMode::Edit || self.edit_physics_with_rigidbody;
         let drag = self.dragging_physics_entity_id;
-        if let Some(scene) = &mut self.scene {
-            for (entity_id, corrected, _grounded) in &fresh {
-                if Some(*entity_id) == drag { continue; }
-                apply_character_transform(scene, self.active_world_line, *entity_id, *corrected);
+        if should_apply {
+            if let Some(scene) = &mut self.scene {
+                for (id, corrected, _g) in &results {
+                    if Some(*id) == drag { continue; }
+                    apply_character_transform(scene, wl, *id, *corrected);
+                }
+            }
+        }
+
+        // ── 5. 補正後キャラ位置を物理スレッドへ一方通行で通知（Raycast・他物体検出用）＋
+        //      6. 接触 dynamic へインパルス送信（押せるようにする）──
+        if let Some(thread) = &self.physics_thread {
+            for (id, corrected, _g) in &results {
+                // 回転は今フレームの希望回転（collect_character_step_updates 収集値）を使う。
+                let rot = desired.iter().find(|(d, _, _)| d == id)
+                    .map(|(_, _, r)| *r)
+                    .unwrap_or([0.0, 0.0, 0.0, 1.0]);
+                thread.send(PhysicsCommand::UpdateKinematic {
+                    entity_id: *id, position: *corrected, rotation: rot,
+                });
+            }
+            for (hit_id, impulse) in &impulses {
+                thread.send(PhysicsCommand::ApplyImpulse { entity_id: *hit_id, impulse: *impulse });
             }
         }
     }
@@ -851,10 +831,54 @@ fn collect_kinematic_updates(
 
         let Some(collider_slot) = actor.slots().iter().find(|s| s.kind == ComponentKind::Collider) else { continue };
         let Some(collider) = scene.world.get::<ColliderComponent>(collider_slot.entity) else { continue };
-        // キャラクターコントローラーは単純位置コピーではなく StepCharacter（KCC 差分解決）経路に
-        // 一本化するため、ここでは対象外にする（二重に位置を動かさないため）。
+        // キャラクターコントローラーは、KCC でその場解決した補正後位置を
+        // sync_character_controllers 手順⑤ が UpdateKinematic で物理スレッドへ通知する。
+        // ここ（フレーム先頭・スクリプト前）で ECS の未解決位置を送ると二重に位置が動くため対象外。
         if collider.is_character_controller { continue; }
         if !collider.use_rigidbody || !collider.is_kinematic { continue; }
+
+        let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) else { continue };
+        let position = [tf.position[0], tf.position[1], tf.position[2]];
+        let rotation = euler_to_quat_arr(tf.rotation);
+
+        updates.push((dfs_id, position, rotation));
+    }
+    updates
+}
+
+/// 動く物体（非キャラの kinematic/dynamic 剛体を持つコライダー）の現在 Transform を DFS 順に収集する。
+///
+/// キャラクター衝突ミラー（`CharacterWorld`）の非キャラコライダー位置を毎フレーム ECS 姿勢へ
+/// 追従させるために使う。dynamic の ECS 位置は update_physics が物理結果から反映済み（最大 1
+/// フレーム前）。use_rigidbody を持たない静的プロップは移動しないため対象外（地形は ECS の
+/// ColliderComponent を持たないので元より含まれない）。collect_physics_objects と同一の DFS 順。
+fn collect_dynamic_kinematic_transforms(
+    scene:      &Scene,
+    world_line: u32,
+) -> Vec<(u64, [f32; 3], [f32; 4])> {
+    let mut updates     = Vec::new();
+    let mut dfs_counter = 0u32;
+
+    let mut stack: Vec<&Actor> = scene.actors.iter()
+        .filter(|a| a.world_line == world_line)
+        .rev()
+        .collect();
+
+    while let Some(actor) = stack.pop() {
+        dfs_counter += 1;
+        let dfs_id = dfs_counter as u64;
+
+        for child in actor.children.iter().rev() {
+            stack.push(child);
+        }
+
+        let Some(collider_slot) = actor.slots().iter()
+            .find(|s| s.kind == ComponentKind::Collider && s.enabled) else { continue };
+        let Some(collider) = scene.world.get::<ColliderComponent>(collider_slot.entity) else { continue };
+        // キャラ自身のミラー位置は解決の基準（char_last_pos）なので追従更新しない。
+        if collider.is_character_controller { continue; }
+        // 剛体を持たない静的プロップは動かないためミラー更新不要。
+        if !collider.use_rigidbody { continue; }
 
         let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) else { continue };
         let position = [tf.position[0], tf.position[1], tf.position[2]];
@@ -927,7 +951,7 @@ fn apply_physics_transform(
 ///
 /// collect_physics_objects と同一の DFS 順を使うことで entity_id が対応する。
 /// is_character_controller=true かつ有効な Collider スロットを持つアクターのみが対象。
-/// 収集した希望位置は StepCharacter として物理スレッドへ送られ、前回位置との差分が
+/// 収集した希望位置はメインスレッド常駐の CharacterWorld へ渡され、前回解決済み位置との差分が
 /// KCC で衝突解決される。
 fn collect_character_step_updates(
     scene:      &Scene,
