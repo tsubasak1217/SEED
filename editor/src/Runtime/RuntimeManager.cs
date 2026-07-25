@@ -132,6 +132,14 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     private bool _inEmbeddedPlay;
 
+    /// <summary>
+    /// 埋め込みインプレース Play セッション中かどうか（ENTER_PLAY 送信〜PLAY_EXITED/プロセス終了まで）。
+    /// UI 側の状態遷移処理（ApplyUiState 等）が「ビューポートホストを隠してよいか」の判定に使う。
+    /// チェックボックス値（EmbeddedPlay）ではなくセッション実態を返す点に注意
+    /// （Play 中にチェックを切り替えられても表示制御が破綻しないようにするため）。
+    /// </summary>
+    public bool InEmbeddedPlay => _inEmbeddedPlay;
+
     // ── 公開プロパティ・イベント ────────────────────────────────
 
     public EditorState State => _state;

@@ -857,7 +857,15 @@ public partial class MainWindow
                 BtnStop.IsEnabled        = true;
                 LblState.Text            = "▶ PLAY";
                 LblState.Foreground      = Brushes.LightSkyBlue;
-                ViewportDocumentContent.Visibility = Visibility.Hidden;
+                // ビューポートホストの表示制御:
+                // - ウィンドウ Play: ランタイムは別ウィンドウなのでホストを隠す（従来動作）
+                // - 埋め込みインプレース Play: この WPF 要素がランタイム子 HWND のホストそのもの。
+                //   Hidden にすると子 HWND ごと WS_VISIBLE が外れ、OS が WM_PAINT（＝winit の
+                //   RedrawRequested）の配達を停止して描画が永久に止まる（黒画面の原因）。
+                //   そのため埋め込み Play 中は必ず Visible を維持する。
+                ViewportDocumentContent.Visibility =
+                    (_runtimeManager?.InEmbeddedPlay ?? false) ? Visibility.Visible
+                                                               : Visibility.Hidden;
                 ViewportLoadingOverlay.Visibility  = Visibility.Collapsed;
                 break;
 
