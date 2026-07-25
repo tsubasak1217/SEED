@@ -41,137 +41,12 @@ const PERF_LOG_INTERVAL: u64 = 60;
 static PERF_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("SEED_PERF_LOG").is_some());
 
-/// 埋め込みインプレース Play の黒画面診断（[PLAY_DIAG] 行）を出力するか。
-/// 既定無効。環境変数 SEED_PLAY_DIAG を設定すると、Play（非ポーズ）フレームの先頭
-/// PLAY_DIAG_FRAMES 回だけ「解決したゲームカメラ位置・game_viewport/scissor 矩形・
-/// ウィンドウ inner_size・親クライアント矩形・scene_canvas_ss・主要 draw 件数」を eprintln する。
-/// 黒画面が『ビューポート矩形がレンダーターゲットと不整合』かを一発で切り分けるための計器。
-static PLAY_DIAG_ENABLED: std::sync::LazyLock<bool> =
-    // 【一時】黒画面切り分け中のため常時 ON（Play 先頭10フレームのみの出力で洪水しない）。
-    // env 変数はエディタ経由でランタイム子プロセスへ届かない事故が実際にあったため。原因確定後に env ゲートへ戻す。
-    std::sync::LazyLock::new(|| true || std::env::var_os("SEED_PLAY_DIAG").is_some());
-/// PLAY_DIAG を出力する Play フレーム数（先頭からこの回数だけ）。
-const PLAY_DIAG_FRAMES: u64 = 10;
-/// PLAY_DIAG 用の Play フレームカウンタ（mode==Play && !paused のフレームだけ加算）。
-static PLAY_DIAG_FRAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-// ── フレーム凍結ウォッチドッグ（[PLAY_WD] / [PLAY_HB]）─────────────────────────
-//
-// 埋め込みインプレース Play で「フレームループがフレーム0以降回らない（恒久凍結）」不具合の
-// **凍結地点をコードのどこか**を直接特定するための常設計器。原因確定後に撤去する前提。
-//
-// 仕組み:
-//   - handle_redraw_requested の主要ステージ通過ごとに FRAME_STAGE（AtomicU8）へ enum→u8 を書く。
-//   - フレーム完了ごとに LAST_FRAME_DONE_MS（起点 WD_EPOCH からの経過ms）を更新する。
-//   - 起動時に 1 本だけ spawn する監視スレッドが、フレーム完了が STUCK_THRESHOLD_MS を超えて
-//     止まっていれば [PLAY_WD] を WD_WARN_INTERVAL_MS 間隔で stderr に出す（最後に通過した
-//     ステージ名付き）。原子操作のみで軽量、Play/Edit 問わず常時動作。
-
-/// フレーム内の主要ステージ（凍結地点特定用）。u8 表現をウォッチドッグが読む。
-#[derive(Clone, Copy)]
-#[repr(u8)]
-enum FrameStage {
-    Idle             = 0,
-    FrameStart       = 1,
-    GamepadDone      = 2,
-    TerrainLodDone   = 3,
-    IpcDone          = 4,
-    PhysicsDone      = 5,
-    ScriptPhaseDone  = 6,
-    CharCtrlDone     = 7,
-    EncodeDone       = 8,
-    PresentDone      = 9,
-    StartPhysicsDone = 10,
-    FrameEnd         = 11,
-}
-
-/// ウォッチドッグ判定に使う定数（マジックナンバー回避）。
-/// フレーム完了がこの ms を超えて途絶えたら「凍結」とみなす。
-const WD_STUCK_THRESHOLD_MS: u64 = 2_000;
-/// 凍結中に [PLAY_WD] を再出力する間隔 [ms]。
-const WD_WARN_INTERVAL_MS: u64 = 5_000;
-/// 監視スレッドのポーリング周期 [ms]。
-const WD_POLL_INTERVAL_MS: u64 = 500;
-
-/// 現在通過中のフレームステージ（FrameStage as u8）。
-static FRAME_STAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-/// 最後にフレームが完了した時刻（WD_EPOCH からの経過 ms）。0 = 未完了。
-static LAST_FRAME_DONE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// ウォッチドッグ・ハートビートの共通時刻起点。
-static WD_EPOCH: std::sync::LazyLock<std::time::Instant> =
-    std::sync::LazyLock::new(std::time::Instant::now);
-/// 監視スレッドを 1 度だけ spawn するためのフラグ。
-static WD_SPAWNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// PLAY_HB（ハートビート）: 直近に出力した時刻（WD_EPOCH からの経過 ms）と Play フレーム番号。
-static PLAY_HB_LAST_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// ハートビートを強制出力する経過閾値 [ms]（前フレームからこの時間空いたら出す）。
-const PLAY_HB_GAP_MS: u64 = 1_000;
-/// ハートビートを定期出力するフレーム間隔。
-const PLAY_HB_EVERY: u64 = 60;
-
-/// FrameStage の u8 値を人間可読名へ写す（[PLAY_WD] 出力用）。
-fn frame_stage_name(v: u8) -> &'static str {
-    match v {
-        0  => "idle",
-        1  => "frame_start",
-        2  => "gamepad_done",
-        3  => "terrain_lod_done",
-        4  => "ipc_done",
-        5  => "update_physics_done",
-        6  => "script_run_phase_done",
-        7  => "sync_char_controllers_done",
-        8  => "encode_done",
-        9  => "present_done",
-        10 => "start_physics_done",
-        11 => "frame_end",
-        _  => "unknown",
-    }
-}
-
-/// 現在のフレームステージを記録する（原子ストアのみ・実質ゼロコスト）。
-#[inline]
-fn mark_frame_stage(s: FrameStage) {
-    FRAME_STAGE.store(s as u8, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// フレーム凍結監視スレッドを 1 度だけ起動する（軽量・常時 ON）。
-/// フレーム完了が WD_STUCK_THRESHOLD_MS を超えて途絶えたら、最後に通過した
-/// ステージ名付きで [PLAY_WD] を WD_WARN_INTERVAL_MS 間隔で出力する。
-fn ensure_frame_watchdog() {
-    use std::sync::atomic::Ordering;
-    // 既に起動済みなら何もしない（CAS で 1 本に限定）。
-    if WD_SPAWNED.swap(true, Ordering::Relaxed) {
-        return;
-    }
-    // 起点を確定し、初回完了時刻を「今」に置く（フレーム0末での凍結も検出できるよう、
-    // 0 のままにしない）。
-    let now0 = WD_EPOCH.elapsed().as_millis() as u64;
-    LAST_FRAME_DONE_MS.store(now0, Ordering::Relaxed);
-    std::thread::Builder::new()
-        .name("seed-frame-watchdog".into())
-        .spawn(|| {
-            let mut last_warn_ms: u64 = 0;
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(WD_POLL_INTERVAL_MS));
-                let now  = WD_EPOCH.elapsed().as_millis() as u64;
-                let done = LAST_FRAME_DONE_MS.load(Ordering::Relaxed);
-                let gap  = now.saturating_sub(done);
-                if gap >= WD_STUCK_THRESHOLD_MS
-                    && now.saturating_sub(last_warn_ms) >= WD_WARN_INTERVAL_MS
-                {
-                    let stage = frame_stage_name(FRAME_STAGE.load(Ordering::Relaxed));
-                    eprintln!(
-                        "[PLAY_WD] stuck at stage={stage} elapsed={:.1}s \
-                         (フレームがこの地点で {:.1}s 完了していない)",
-                        gap as f64 / 1000.0, gap as f64 / 1000.0,
-                    );
-                    last_warn_ms = now;
-                }
-            }
-        })
-        .ok();
-}
+// 埋め込み Play の凍結/黒画面 診断計器は play_diag モジュールへ集約（一時・原因確定後に撤去）。
+use super::play_diag::{
+    self, FrameStage, PLAY_DIAG_ENABLED, PLAY_DIAG_FRAME, PLAY_DIAG_FRAMES,
+    PLAY_HB_EVERY, PLAY_HB_GAP_MS, PLAY_HB_LAST_MS, WD_EPOCH,
+    ensure_frame_watchdog, mark_frame_stage,
+};
 use crate::engine::components::{ColliderComponent, ColliderShapeData, ComponentKind};
 use crate::engine::components::{Collider2dComponent, CanvasTransform};
 use crate::engine::components::Transform as ActorTransform;
@@ -373,14 +248,13 @@ impl App {
 
         // フレーム凍結ウォッチドッグを初回に 1 度だけ起動する。
         ensure_frame_watchdog();
-        // 「ループが生きている」信号: フレーム開始時刻を記録する。ここを毎回更新することで、
+        // 「ループが生きている」信号: フレーム開始を記録する。ここを毎回更新することで、
         // handle_redraw_requested の途中で凍結すると次フレームの開始が来ず、この値が止まる
         // →ウォッチドッグが「最後に通過したステージ」で凍結を検出する。早期 return 経路
         // （render_paused / 最小化）は request_redraw で次フレームが即来るため誤検出しない。
-        LAST_FRAME_DONE_MS.store(
-            WD_EPOCH.elapsed().as_millis() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        play_diag::note_frame_alive();
+        // ウォッチドッグ（別スレッド）が読むための状態フラグを公開する。
+        play_diag::publish_frame_flags(self.window_focused, self.render_paused, self.window_hwnd());
         mark_frame_stage(FrameStage::FrameStart);
 
         // ── 入力: ゲームパッドをポンプ＋スクリプトフレームカウンタを進める ──
