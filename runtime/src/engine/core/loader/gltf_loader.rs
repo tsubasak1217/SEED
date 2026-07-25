@@ -1,7 +1,7 @@
-use super::LoadError;
-use super::model::*;
-use gltf::animation::util::ReadOutputs;
 use std::path::Path;
+use gltf::animation::util::ReadOutputs;
+use super::model::*;
+use super::LoadError;
 
 // ============================================================
 //  エントリポイント
@@ -24,48 +24,35 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
         if path_str.starts_with(crate::engine::asset_fs::ASSETS_SCHEME) {
             let bytes = crate::engine::asset_fs::read_bytes(path_str)
                 .map_err(|e| LoadError::Io(format!("PAK read failed for {path_str}: {e}")))?;
-            let g = gltf::Gltf::from_slice(&bytes).map_err(|e| LoadError::Parse(e.to_string()))?;
+            let g = gltf::Gltf::from_slice(&bytes)
+                .map_err(|e| LoadError::Parse(e.to_string()))?;
             let buffers = gltf::import_buffers(&g.document, None, g.blob)
                 .map_err(|e| LoadError::Parse(e.to_string()))?;
             // 仮想ベースディレクトリ: "assets://dir/file.gltf" → "assets://dir"
             let vbase = path_str.rsplit_once('/').map(|(b, _)| b.to_string());
             (g.document, buffers, None, vbase)
         } else {
-            let g = gltf::Gltf::open(path).map_err(|e| LoadError::Parse(e.to_string()))?;
+            let g = gltf::Gltf::open(path)
+                .map_err(|e| LoadError::Parse(e.to_string()))?;
             let base = path.parent().map(|p| p.to_path_buf());
             let buffers = gltf::import_buffers(&g.document, base.as_deref(), g.blob)
                 .map_err(|e| LoadError::Parse(e.to_string()))?;
             (g.document, buffers, base, None)
         };
 
-    let name = path
-        .file_stem()
+    let name = path.file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unnamed")
         .to_string();
 
-    let textures = load_textures(
-        &document,
-        &buffers,
-        base_dir.as_deref(),
-        virtual_base.as_deref(),
-    );
-    let materials = load_materials(&document);
-    let meshes = load_meshes(&document, &buffers);
+    let textures   = load_textures(&document, &buffers, base_dir.as_deref(), virtual_base.as_deref());
+    let materials  = load_materials(&document);
+    let meshes     = load_meshes(&document, &buffers);
     let animations = load_animations(&document, &buffers);
-    let skins = load_skins(&document, &buffers);
+    let skins      = load_skins(&document, &buffers);
     let (nodes, root_nodes) = load_nodes(&document);
 
-    Ok(Model {
-        name,
-        nodes,
-        root_nodes,
-        meshes,
-        materials,
-        textures,
-        animations,
-        skins,
-    })
+    Ok(Model { name, nodes, root_nodes, meshes, materials, textures, animations, skins })
 }
 
 // ============================================================
@@ -73,9 +60,9 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
 // ============================================================
 
 fn load_textures(
-    document: &gltf::Document,
-    buffers: &[gltf::buffer::Data],
-    base_dir: Option<&Path>,
+    document:     &gltf::Document,
+    buffers:      &[gltf::buffer::Data],
+    base_dir:     Option<&Path>,
     virtual_base: Option<&str>,
 ) -> Vec<TextureData> {
     // ── 線形テクスチャインデックスの事前収集 ──────────────────────
@@ -90,14 +77,12 @@ fn load_textures(
     // スペキュラーが爆発的に明るくなる）。
     //
     // マテリアル定義を先読みし、各テクスチャの実際の用途を判定する。
-    let linear_indices: std::collections::HashSet<usize> = document
-        .materials()
+    let linear_indices: std::collections::HashSet<usize> = document.materials()
         .flat_map(|mat| {
             let pbr = mat.pbr_metallic_roughness();
             [
                 mat.normal_texture().map(|t| t.texture().index()),
-                pbr.metallic_roughness_texture()
-                    .map(|t| t.texture().index()),
+                pbr.metallic_roughness_texture().map(|t| t.texture().index()),
                 mat.occlusion_texture().map(|t| t.texture().index()),
             ]
             .into_iter()
@@ -105,39 +90,33 @@ fn load_textures(
         })
         .collect();
 
-    document
-        .textures()
-        .map(|tex| {
-            // 画像はデコードせず、供給元（バッファビュー/外部ファイル/data URI）を
-            // そのまま TextureSource に写し取る（遅延デコード）。
-            let source =
-                image_texture_source(&tex.source().source(), buffers, base_dir, virtual_base);
-            let sampler = tex.sampler();
+    document.textures().map(|tex| {
+        // 画像はデコードせず、供給元（バッファビュー/外部ファイル/data URI）を
+        // そのまま TextureSource に写し取る（遅延デコード）。
+        let source  = image_texture_source(&tex.source().source(), buffers, base_dir, virtual_base);
+        let sampler = tex.sampler();
 
-            // 用途に応じてフォーマットを切り替える
-            // linear=true  → Rgba8Unorm   （法線・MR・AO：線形データをそのまま使用）
-            // linear=false → Rgba8UnormSrgb（ベースカラー・エミッシブ：GPU が sRGB デコード）
-            let linear = linear_indices.contains(&tex.index());
+        // 用途に応じてフォーマットを切り替える
+        // linear=true  → Rgba8Unorm   （法線・MR・AO：線形データをそのまま使用）
+        // linear=false → Rgba8UnormSrgb（ベースカラー・エミッシブ：GPU が sRGB デコード）
+        let linear = linear_indices.contains(&tex.index());
 
-            TextureData {
-                name: tex.name().map(String::from),
-                source,
-                linear,
-                sampler: SamplerData {
-                    mag_filter: sampler
-                        .mag_filter()
-                        .map(conv_mag_filter)
-                        .unwrap_or(FilterMode::Linear),
-                    min_filter: sampler
-                        .min_filter()
-                        .map(conv_min_filter)
-                        .unwrap_or(FilterMode::LinearMipmapLinear),
-                    wrap_u: conv_wrap(sampler.wrap_s()),
-                    wrap_v: conv_wrap(sampler.wrap_t()),
-                },
-            }
-        })
-        .collect()
+        TextureData {
+            name:   tex.name().map(String::from),
+            source,
+            linear,
+            sampler: SamplerData {
+                mag_filter: sampler.mag_filter()
+                    .map(conv_mag_filter)
+                    .unwrap_or(FilterMode::Linear),
+                min_filter: sampler.min_filter()
+                    .map(conv_min_filter)
+                    .unwrap_or(FilterMode::LinearMipmapLinear),
+                wrap_u: conv_wrap(sampler.wrap_s()),
+                wrap_v: conv_wrap(sampler.wrap_t()),
+            },
+        }
+    }).collect()
 }
 
 /// glTF 画像の供給元を（デコードせずに）`TextureSource` へ変換する。
@@ -149,16 +128,16 @@ fn load_textures(
 /// RGBA 展開はここでは一切行わないため、パース段階のピークメモリは
 /// 「圧縮画像バイトの合計」（RGBA 展開の 1/10 前後）に抑えられる。
 fn image_texture_source(
-    source: &gltf::image::Source<'_>,
-    buffers: &[gltf::buffer::Data],
-    base_dir: Option<&Path>,
+    source:       &gltf::image::Source<'_>,
+    buffers:      &[gltf::buffer::Data],
+    base_dir:     Option<&Path>,
     virtual_base: Option<&str>,
 ) -> TextureSource {
     match source {
         // GLB 埋め込み: バッファビューの範囲をコピー（エンコード済みのまま）
         gltf::image::Source::View { view, .. } => {
             let start = view.offset();
-            let end = start + view.length();
+            let end   = start + view.length();
             let bytes = buffers
                 .get(view.buffer().index())
                 .and_then(|b| b.get(start..end))
@@ -195,9 +174,7 @@ fn decode_data_uri(uri: &str) -> Option<Vec<u8>> {
     let (head, payload) = rest.split_once(',')?;
     if head.ends_with(";base64") {
         use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD
-            .decode(payload)
-            .ok()
+        base64::engine::general_purpose::STANDARD.decode(payload).ok()
     } else {
         // 非 base64 data URI（パーセントエンコードされた生バイト）
         Some(urlencoding::decode_binary(payload.as_bytes()).into_owned())
@@ -207,28 +184,28 @@ fn decode_data_uri(uri: &str) -> Option<Vec<u8>> {
 fn conv_mag_filter(f: gltf::texture::MagFilter) -> FilterMode {
     match f {
         gltf::texture::MagFilter::Nearest => FilterMode::Nearest,
-        gltf::texture::MagFilter::Linear => FilterMode::Linear,
+        gltf::texture::MagFilter::Linear  => FilterMode::Linear,
     }
 }
 
 fn conv_min_filter(f: gltf::texture::MinFilter) -> FilterMode {
     use gltf::texture::MinFilter::*;
     match f {
-        Nearest => FilterMode::Nearest,
-        Linear => FilterMode::Linear,
+        Nearest              => FilterMode::Nearest,
+        Linear               => FilterMode::Linear,
         NearestMipmapNearest => FilterMode::NearestMipmapNearest,
-        LinearMipmapNearest => FilterMode::LinearMipmapNearest,
-        NearestMipmapLinear => FilterMode::NearestMipmapLinear,
-        LinearMipmapLinear => FilterMode::LinearMipmapLinear,
+        LinearMipmapNearest  => FilterMode::LinearMipmapNearest,
+        NearestMipmapLinear  => FilterMode::NearestMipmapLinear,
+        LinearMipmapLinear   => FilterMode::LinearMipmapLinear,
     }
 }
 
 fn conv_wrap(w: gltf::texture::WrappingMode) -> WrapMode {
     use gltf::texture::WrappingMode::*;
     match w {
-        ClampToEdge => WrapMode::ClampToEdge,
+        ClampToEdge    => WrapMode::ClampToEdge,
         MirroredRepeat => WrapMode::MirroredRepeat,
-        Repeat => WrapMode::Repeat,
+        Repeat         => WrapMode::Repeat,
     }
 }
 
@@ -237,95 +214,91 @@ fn conv_wrap(w: gltf::texture::WrappingMode) -> WrapMode {
 // ============================================================
 
 fn load_materials(document: &gltf::Document) -> Vec<Material> {
-    document
-        .materials()
-        .map(|mat| {
-            let pbr = mat.pbr_metallic_roughness();
+    document.materials().map(|mat| {
+        let pbr  = mat.pbr_metallic_roughness();
 
-            let base_color_factor = pbr.base_color_factor();
-            let base_color_texture = pbr.base_color_texture().map(|t| TextureInfo {
-                texture_index: t.texture().index(),
-                tex_coord_set: t.tex_coord(),
-            });
-            let metallic_roughness_texture =
-                pbr.metallic_roughness_texture().map(|t| TextureInfo {
-                    texture_index: t.texture().index(),
-                    tex_coord_set: t.tex_coord(),
-                });
-            let normal_texture = mat.normal_texture().map(|t| NormalTextureInfo {
-                texture_index: t.texture().index(),
-                tex_coord_set: t.tex_coord(),
-                scale: t.scale(),
-            });
-            let occlusion_texture = mat.occlusion_texture().map(|t| OcclusionTextureInfo {
-                texture_index: t.texture().index(),
-                tex_coord_set: t.tex_coord(),
-                strength: t.strength(),
-            });
-            let emissive_texture = mat.emissive_texture().map(|t| TextureInfo {
-                texture_index: t.texture().index(),
-                tex_coord_set: t.tex_coord(),
-            });
-            let alpha_mode = match mat.alpha_mode() {
-                gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
-                gltf::material::AlphaMode::Mask => AlphaMode::Mask,
-                gltf::material::AlphaMode::Blend => AlphaMode::Blend,
-            };
+        let base_color_factor = pbr.base_color_factor();
+        let base_color_texture = pbr.base_color_texture().map(|t| TextureInfo {
+            texture_index: t.texture().index(),
+            tex_coord_set: t.tex_coord(),
+        });
+        let metallic_roughness_texture = pbr.metallic_roughness_texture().map(|t| TextureInfo {
+            texture_index: t.texture().index(),
+            tex_coord_set: t.tex_coord(),
+        });
+        let normal_texture = mat.normal_texture().map(|t| NormalTextureInfo {
+            texture_index: t.texture().index(),
+            tex_coord_set: t.tex_coord(),
+            scale:         t.scale(),
+        });
+        let occlusion_texture = mat.occlusion_texture().map(|t| OcclusionTextureInfo {
+            texture_index: t.texture().index(),
+            tex_coord_set: t.tex_coord(),
+            strength:      t.strength(),
+        });
+        let emissive_texture = mat.emissive_texture().map(|t| TextureInfo {
+            texture_index: t.texture().index(),
+            tex_coord_set: t.tex_coord(),
+        });
+        let alpha_mode = match mat.alpha_mode() {
+            gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+            gltf::material::AlphaMode::Mask   => AlphaMode::Mask,
+            gltf::material::AlphaMode::Blend  => AlphaMode::Blend,
+        };
 
-            Material {
-                name: mat.name().unwrap_or("").to_string(),
-                base_color_factor,
-                base_color_texture,
-                metallic_factor: pbr.metallic_factor(),
-                roughness_factor: pbr.roughness_factor(),
-                metallic_roughness_texture,
-                normal_texture,
-                occlusion_texture,
-                emissive_factor: mat.emissive_factor(),
-                emissive_texture,
-                alpha_mode,
-                alpha_cutoff: mat.alpha_cutoff().unwrap_or(0.5),
-                // 屈折率（Phase RT-Translucency）。既定 1.0（屈折なし）。
-                // ※ 現行の gltf クレート（Cargo.toml version="1" が解決するバージョン）には
-                //   KHR_materials_ior 用の `Material::ior()` ヘルパが無いため、glTF からは読まず既定に倒す。
-                //   IOR はエディタの Inspector（Blend 時のみ表示）または .mat / インライン上書きで設定する。
-                //   仕様「KHR_materials_ior があれば読む。無ければ既定」の後段に従う。
-                ior: 1.0,
-                // 透過率（ガラス表現）。gltf クレートの KHR_materials_transmission 機能
-                // （runtime/Cargo.toml で features に追加済み）で transmission_factor を読む。
-                // 拡張が無いマテリアルは None → 0.0（透過なし＝従来動作）にフォールバックする。
-                transmission: mat
-                    .transmission()
-                    .map(|t| t.transmission_factor())
-                    .unwrap_or(0.0),
-                // 拡散透過（葉・布・紙の逆光透け）。既定 0.0（透過なし＝従来動作）。
-                // ※ 現行の gltf クレート（1.4.1）には KHR_materials_diffuse_transmission 用の
-                //   ヘルパ（Material::diffuse_transmission() / feature）が存在しないため、glTF からは
-                //   読まず既定に倒す。拡散透過はエディタの Inspector（「拡散透過」スライダー・常時表示）
-                //   または .mat / インライン上書きで設定する。仕様「拡張があれば読む。無ければ既定」の後段に従う。
-                diffuse_transmission: 0.0,
-                // MR テクスチャを無視するトグル。glTF ロード時は常に従来動作（false＝乗算）。
-                // 有効化はエディタの Inspector（常時表示）または .mat / インライン上書きで行う。
-                mr_tex_ignore: false,
-                double_sided: mat.double_sided(),
-                // glTF の double_sided をカリング面へマップする（true → 両面描画＝カリング無し）。
-                // これで Sponza のカーテン等、片面しか描かれず裏から見ると消えていたマテリアルが
-                // 正しく両面描画される。
-                cull_face: crate::engine::core::loader::model::cull_face_from_double_sided(
-                    mat.double_sided(),
-                ),
-                // 平均アルベド（Phase RT-GI）は既定（白）。ロード後 compute_material_avg_albedo が焼き直す。
-                avg_albedo: [1.0, 1.0, 1.0, 1.0],
-                // テクスチャ平均（factor 抜き）も既定（白）。同じく compute_material_avg_albedo が焼き直す。
-                base_color_tex_avg: [1.0, 1.0, 1.0],
-                // 地形レイヤブレンド（Terrain T2）。glTF/OBJ 由来のマテリアルは常に false
-                // （true を立てるのは地形メッシュを組む terrain_mesh_build.rs だけ）。
-                terrain_layers: false,
-                // 地形パレットは地形以外では未使用。恒等パレットで埋めておく。
-                terrain_palette: Material::default().terrain_palette,
-            }
-        })
-        .collect()
+        Material {
+            name: mat.name().unwrap_or("").to_string(),
+            base_color_factor,
+            base_color_texture,
+            metallic_factor:             pbr.metallic_factor(),
+            roughness_factor:            pbr.roughness_factor(),
+            metallic_roughness_texture,
+            normal_texture,
+            occlusion_texture,
+            emissive_factor:  mat.emissive_factor(),
+            emissive_texture,
+            alpha_mode,
+            alpha_cutoff: mat.alpha_cutoff().unwrap_or(0.5),
+            // 屈折率（Phase RT-Translucency）。既定 1.0（屈折なし）。
+            // ※ 現行の gltf クレート（Cargo.toml version="1" が解決するバージョン）には
+            //   KHR_materials_ior 用の `Material::ior()` ヘルパが無いため、glTF からは読まず既定に倒す。
+            //   IOR はエディタの Inspector（Blend 時のみ表示）または .mat / インライン上書きで設定する。
+            //   仕様「KHR_materials_ior があれば読む。無ければ既定」の後段に従う。
+            ior: 1.0,
+            // 透過率（ガラス表現）。gltf クレートの KHR_materials_transmission 機能
+            // （runtime/Cargo.toml で features に追加済み）で transmission_factor を読む。
+            // 拡張が無いマテリアルは None → 0.0（透過なし＝従来動作）にフォールバックする。
+            transmission:     mat.transmission()
+                .map(|t| t.transmission_factor())
+                .unwrap_or(0.0),
+            // 拡散透過（葉・布・紙の逆光透け）。既定 0.0（透過なし＝従来動作）。
+            // ※ 現行の gltf クレート（1.4.1）には KHR_materials_diffuse_transmission 用の
+            //   ヘルパ（Material::diffuse_transmission() / feature）が存在しないため、glTF からは
+            //   読まず既定に倒す。拡散透過はエディタの Inspector（「拡散透過」スライダー・常時表示）
+            //   または .mat / インライン上書きで設定する。仕様「拡張があれば読む。無ければ既定」の後段に従う。
+            diffuse_transmission: 0.0,
+            // MR テクスチャを無視するトグル。glTF ロード時は常に従来動作（false＝乗算）。
+            // 有効化はエディタの Inspector（常時表示）または .mat / インライン上書きで行う。
+            mr_tex_ignore:    false,
+            // 頂点カラー無視トグル。glTF ロード時は常に false（従来どおり頂点カラーを乗算）。
+            // true にするのはカメラプレビューの地形簡易マテリアルだけ（ランタイム生成）。
+            ignore_vertex_color: false,
+            double_sided:     mat.double_sided(),
+            // glTF の double_sided をカリング面へマップする（true → 両面描画＝カリング無し）。
+            // これで Sponza のカーテン等、片面しか描かれず裏から見ると消えていたマテリアルが
+            // 正しく両面描画される。
+            cull_face:        crate::engine::core::loader::model::cull_face_from_double_sided(mat.double_sided()),
+            // 平均アルベド（Phase RT-GI）は既定（白）。ロード後 compute_material_avg_albedo が焼き直す。
+            avg_albedo:       [1.0, 1.0, 1.0, 1.0],
+            // テクスチャ平均（factor 抜き）も既定（白）。同じく compute_material_avg_albedo が焼き直す。
+            base_color_tex_avg: [1.0, 1.0, 1.0],
+            // 地形レイヤブレンド（Terrain T2）。glTF/OBJ 由来のマテリアルは常に false
+            // （true を立てるのは地形メッシュを組む terrain_mesh_build.rs だけ）。
+            terrain_layers: false,
+            // 地形パレットは地形以外では未使用。恒等パレットで埋めておく。
+            terrain_palette: Material::default().terrain_palette,
+        }
+    }).collect()
 }
 
 // ============================================================
@@ -339,14 +312,10 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
 fn rh_to_lh_mat4(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
     let mut out = m;
     for j in 0..4usize {
-        if j != 2 {
-            out[2][j] = -m[2][j];
-        } // 行 2 を反転（[2][2] 除く）
+        if j != 2 { out[2][j] = -m[2][j]; }   // 行 2 を反転（[2][2] 除く）
     }
     for i in 0..4usize {
-        if i != 2 {
-            out[i][2] = -m[i][2];
-        } // 列 2 を反転（[2][2] 除く）
+        if i != 2 { out[i][2] = -m[i][2]; }   // 列 2 を反転（[2][2] 除く）
     }
     out
 }
@@ -364,24 +333,26 @@ fn rh_to_lh_quat(q: [f32; 4]) -> [f32; 4] {
 //  メッシュ
 // ============================================================
 
-fn load_meshes(document: &gltf::Document, buffers: &[gltf::buffer::Data]) -> Vec<Mesh> {
-    document
-        .meshes()
-        .map(|mesh| {
-            let primitives = mesh
-                .primitives()
-                .map(|prim| load_primitive(&prim, buffers))
-                .collect();
+fn load_meshes(
+    document: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+) -> Vec<Mesh> {
+    document.meshes().map(|mesh| {
+        let primitives = mesh.primitives().map(|prim| {
+            load_primitive(&prim, buffers)
+        }).collect();
 
-            Mesh {
-                name: mesh.name().unwrap_or("").to_string(),
-                primitives,
-            }
-        })
-        .collect()
+        Mesh {
+            name: mesh.name().unwrap_or("").to_string(),
+            primitives,
+        }
+    }).collect()
 }
 
-fn load_primitive(prim: &gltf::Primitive<'_>, buffers: &[gltf::buffer::Data]) -> Primitive {
+fn load_primitive(
+    prim: &gltf::Primitive<'_>,
+    buffers: &[gltf::buffer::Data],
+) -> Primitive {
     let reader = prim.reader(|b| Some(&*buffers[b.index()]));
 
     // ── 位置（必須）────────────────────────────────────────
@@ -428,21 +399,14 @@ fn load_primitive(prim: &gltf::Primitive<'_>, buffers: &[gltf::buffer::Data]) ->
     // ── 頂点構築 ───────────────────────────────────────────
     // RH→LH: 位置・法線・接線の Z 成分を反転し、左手座標系に変換する。
     // 接線の w（ビタンジェント符号）も反転（座標系の手性が変わるため）。
-    let vertices: Vec<Vertex> = (0..n)
-        .map(|i| Vertex {
-            position: [positions[i][0], positions[i][1], -positions[i][2]],
-            normal: [normals[i][0], normals[i][1], -normals[i][2]],
-            tangent: [
-                tangents[i][0],
-                tangents[i][1],
-                -tangents[i][2],
-                -tangents[i][3],
-            ],
-            uv0: uvs0[i],
-            uv1: uvs1[i],
-            color: colors[i],
-        })
-        .collect();
+    let vertices: Vec<Vertex> = (0..n).map(|i| Vertex {
+        position: [positions[i][0],  positions[i][1],  -positions[i][2]],
+        normal:   [normals[i][0],    normals[i][1],    -normals[i][2]],
+        tangent:  [tangents[i][0],   tangents[i][1],   -tangents[i][2], -tangents[i][3]],
+        uv0:      uvs0[i],
+        uv1:      uvs1[i],
+        color:    colors[i],
+    }).collect();
 
     // ── スキニング ─────────────────────────────────────────
     let joints: Vec<[u16; 4]> = reader
@@ -456,12 +420,10 @@ fn load_primitive(prim: &gltf::Primitive<'_>, buffers: &[gltf::buffer::Data]) ->
         .unwrap_or_default();
 
     let skin_vertices: Vec<SkinVertex> = if joints.len() == n {
-        (0..n)
-            .map(|i| SkinVertex {
-                joints: joints[i],
-                weights: weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]),
-            })
-            .collect()
+        (0..n).map(|i| SkinVertex {
+            joints:  joints[i],
+            weights: weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]),
+        }).collect()
     } else {
         Vec::new()
     };
@@ -537,22 +499,18 @@ const MESHLET_CONE_AXIS_SIGN: f32 = -1.0;
 /// スキンメッシュ（`skinned=true`）や分割不能・失敗時は全て空を返す
 /// （→ 従来の LOD0 描画経路が使われる）。
 pub(super) fn build_meshlets_for_primitive(
-    indices: &[u32],
+    indices:  &[u32],
     vertices: &[Vertex],
-    skinned: bool,
+    skinned:  bool,
 ) -> (Vec<MeshletDesc>, Vec<u32>, Vec<u8>) {
     use meshopt::VertexDataAdapter;
 
     let empty = (Vec::new(), Vec::new(), Vec::new());
 
     // スキンメッシュはロード時の静的境界が毎フレームの変形で無効になるため対象外。
-    if skinned {
-        return empty;
-    }
+    if skinned { return empty; }
     // 三角形が無い / 不正なインデックス数なら分割しない。
-    if indices.len() < 3 || indices.len() % 3 != 0 {
-        return empty;
-    }
+    if indices.len() < 3 || indices.len() % 3 != 0 { return empty; }
 
     // position は Vertex の先頭フィールド（offset 0, ストライド = size_of::<Vertex>()）。
     let adapter = match VertexDataAdapter::new(
@@ -572,14 +530,12 @@ pub(super) fn build_meshlets_for_primitive(
         MESHLET_MAX_TRIS,
         MESHLET_CONE_WEIGHT,
     );
-    if ms.meshlets.is_empty() {
-        return empty;
-    }
+    if ms.meshlets.is_empty() { return empty; }
 
     // 各メッシュレットの境界球・法線コーンを計算して記述子を組む。
     let mut descs = Vec::with_capacity(ms.len());
     for i in 0..ms.len() {
-        let raw = &ms.meshlets[i]; // ffi: vertex_offset / triangle_offset / vertex_count / triangle_count
+        let raw    = &ms.meshlets[i]; // ffi: vertex_offset / triangle_offset / vertex_count / triangle_count
         let bounds = meshopt::compute_meshlet_bounds(ms.get(i), &adapter);
 
         // 【コーン軸の符号補正】
@@ -594,12 +550,12 @@ pub(super) fn build_meshlets_for_primitive(
         ];
 
         descs.push(MeshletDesc {
-            vertex_offset: raw.vertex_offset,
+            vertex_offset:   raw.vertex_offset,
             triangle_offset: raw.triangle_offset,
-            vertex_count: raw.vertex_count,
-            triangle_count: raw.triangle_count,
-            center: bounds.center,
-            radius: bounds.radius,
+            vertex_count:    raw.vertex_count,
+            triangle_count:  raw.triangle_count,
+            center:      bounds.center,
+            radius:      bounds.radius,
             cone_axis,
             cone_cutoff: bounds.cone_cutoff,
         });
@@ -608,16 +564,8 @@ pub(super) fn build_meshlets_for_primitive(
     // build_meshlets の vertices/triangles は最悪ケース長（メッシュレット数×上限）で
     // 確保されるため、実使用範囲まで切り詰めてキャッシュサイズを抑える。
     // オフセットは切り詰め後も不変（先頭からの絶対位置のため）。
-    let used_v = descs
-        .iter()
-        .map(|d| (d.vertex_offset + d.vertex_count) as usize)
-        .max()
-        .unwrap_or(0);
-    let used_t = descs
-        .iter()
-        .map(|d| (d.triangle_offset + d.triangle_count * 3) as usize)
-        .max()
-        .unwrap_or(0);
+    let used_v = descs.iter().map(|d| (d.vertex_offset + d.vertex_count) as usize).max().unwrap_or(0);
+    let used_t = descs.iter().map(|d| (d.triangle_offset + d.triangle_count * 3) as usize).max().unwrap_or(0);
     let mut mv = ms.vertices;
     let mut mt = ms.triangles;
     mv.truncate(used_v);
@@ -639,18 +587,16 @@ pub(super) fn build_meshlets_for_primitive(
 /// 戻り値: `[LOD1_indices, LOD2_indices, LOD3_indices]`（簡略化できなかった段階で打ち切り）。
 /// 各 LOD の目標三角形数は元の 50 % / 25 % / 10 %。
 fn generate_lod_indices(indices: &[u32], vertices: &[super::model::Vertex]) -> Vec<Vec<u32>> {
-    use super::model::Vertex;
     use meshopt::VertexDataAdapter;
+    use super::model::Vertex;
 
     // 三角形が 4 枚未満なら LOD 生成不要
-    if indices.len() < 12 {
-        return vec![];
-    }
+    if indices.len() < 12 { return vec![]; }
 
     let adapter = match VertexDataAdapter::new(
         bytemuck::cast_slice::<Vertex, u8>(vertices),
         std::mem::size_of::<Vertex>(),
-        0, // position は Vertex の先頭フィールド (offset 0)
+        0,  // position は Vertex の先頭フィールド (offset 0)
     ) {
         Ok(a) => a,
         Err(_) => return vec![],
@@ -674,7 +620,7 @@ fn generate_lod_indices(indices: &[u32], vertices: &[super::model::Vertex]) -> V
             None,
         );
         if simplified.is_empty() || simplified.len() >= base_count {
-            break; // これ以上簡略化できなければ打ち切り
+            break;  // これ以上簡略化できなければ打ち切り
         }
         result.push(simplified);
     }
@@ -686,50 +632,41 @@ fn generate_lod_indices(indices: &[u32], vertices: &[super::model::Vertex]) -> V
 // ============================================================
 
 fn load_nodes(document: &gltf::Document) -> (Vec<ModelNode>, Vec<usize>) {
-    let mut nodes: Vec<ModelNode> = document
-        .nodes()
-        .map(|node| {
-            // glTF は列優先行列 → 行優先に転置、さらに RH→LH 変換（Z 軸反転）
-            let local_matrix = rh_to_lh_mat4(transpose_mat4(node.transform().matrix()));
+    let mut nodes: Vec<ModelNode> = document.nodes().map(|node| {
+        // glTF は列優先行列 → 行優先に転置、さらに RH→LH 変換（Z 軸反転）
+        let local_matrix = rh_to_lh_mat4(transpose_mat4(node.transform().matrix()));
 
-            // TRS を取得（アニメーション補間用）、RH→LH 変換を適用
-            let (translation, rotation, scale) = match node.transform() {
-                gltf::scene::Transform::Decomposed {
-                    translation,
-                    rotation,
-                    scale,
-                } => {
-                    // 平行移動 Z を反転、クォータニオン XY を反転
-                    let t_lh = [translation[0], translation[1], -translation[2]];
-                    let r_lh = rh_to_lh_quat(rotation);
-                    (t_lh, r_lh, scale)
-                }
-                gltf::scene::Transform::Matrix { .. } => {
-                    // matrix ノードは通常アニメーションされないため恒等値を使用
-                    (
-                        [0.0_f32, 0.0, 0.0],
-                        [0.0_f32, 0.0, 0.0, 1.0],
-                        [1.0_f32, 1.0, 1.0],
-                    )
-                }
-            };
-
-            ModelNode {
-                name: node.name().unwrap_or("").to_string(),
-                local_matrix,
-                translation,
-                rotation,
-                scale,
-                mesh_index: node.mesh().map(|m| m.index()),
-                skin_index: node.skin().map(|s| s.index()),
-                children: node.children().map(|c| c.index()).collect(),
-                parent: None, // 後で補完
+        // TRS を取得（アニメーション補間用）、RH→LH 変換を適用
+        let (translation, rotation, scale) = match node.transform() {
+            gltf::scene::Transform::Decomposed { translation, rotation, scale } => {
+                // 平行移動 Z を反転、クォータニオン XY を反転
+                let t_lh = [translation[0], translation[1], -translation[2]];
+                let r_lh = rh_to_lh_quat(rotation);
+                (t_lh, r_lh, scale)
             }
-        })
-        .collect();
+            gltf::scene::Transform::Matrix { .. } => {
+                // matrix ノードは通常アニメーションされないため恒等値を使用
+                ([0.0_f32, 0.0, 0.0], [0.0_f32, 0.0, 0.0, 1.0], [1.0_f32, 1.0, 1.0])
+            }
+        };
+
+        ModelNode {
+            name:         node.name().unwrap_or("").to_string(),
+            local_matrix,
+            translation,
+            rotation,
+            scale,
+            mesh_index:   node.mesh().map(|m| m.index()),
+            skin_index:   node.skin().map(|s| s.index()),
+            children:     node.children().map(|c| c.index()).collect(),
+            parent:       None, // 後で補完
+        }
+    }).collect();
 
     // 親インデックスを補完
-    let children_map: Vec<Vec<usize>> = nodes.iter().map(|n| n.children.clone()).collect();
+    let children_map: Vec<Vec<usize>> = nodes.iter()
+        .map(|n| n.children.clone())
+        .collect();
     for (parent_idx, children) in children_map.iter().enumerate() {
         for &child_idx in children {
             if let Some(n) = nodes.get_mut(child_idx) {
@@ -739,8 +676,7 @@ fn load_nodes(document: &gltf::Document) -> (Vec<ModelNode>, Vec<usize>) {
     }
 
     // ルートノード（親なし）を収集
-    let root_nodes: Vec<usize> = nodes
-        .iter()
+    let root_nodes: Vec<usize> = nodes.iter()
         .enumerate()
         .filter_map(|(i, n)| if n.parent.is_none() { Some(i) } else { None })
         .collect();
@@ -763,111 +699,105 @@ fn transpose_mat4(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 //  アニメーション
 // ============================================================
 
-fn load_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data]) -> Vec<Animation> {
-    document
-        .animations()
-        .map(|anim| {
-            let mut duration = 0.0_f32;
+fn load_animations(
+    document: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+) -> Vec<Animation> {
+    document.animations().map(|anim| {
+        let mut duration = 0.0_f32;
 
-            let channels = anim
-                .channels()
-                .filter_map(|ch| {
-                    let target = ch.target();
-                    let sampler = ch.sampler();
+        let channels = anim.channels().filter_map(|ch| {
+            let target = ch.target();
+            let sampler = ch.sampler();
 
-                    // utils feature では Channel に reader() が生えている
-                    let reader = ch.reader(|b: gltf::Buffer<'_>| Some(&*buffers[b.index()]));
+            // utils feature では Channel に reader() が生えている
+            let reader = ch.reader(|b: gltf::Buffer<'_>| Some(&*buffers[b.index()]));
 
-                    let timestamps: Vec<f32> = reader
-                        .read_inputs()
-                        .map(|it| it.collect::<Vec<f32>>())
-                        .unwrap_or_default();
+            let timestamps: Vec<f32> = reader
+                .read_inputs()
+                .map(|it| it.collect::<Vec<f32>>())
+                .unwrap_or_default();
 
-                    if let Some(&last) = timestamps.last() {
-                        duration = duration.max(last);
-                    }
-
-                    let interpolation = match sampler.interpolation() {
-                        gltf::animation::Interpolation::Linear => Interpolation::Linear,
-                        gltf::animation::Interpolation::Step => Interpolation::Step,
-                        gltf::animation::Interpolation::CubicSpline => Interpolation::CubicSpline,
-                    };
-
-                    // RH→LH 変換: 平行移動は Z 反転、回転はクォータニオン XY 反転
-                    let outputs = match reader.read_outputs()? {
-                        ReadOutputs::Translations(it) => AnimationOutputs::Translations(
-                            it.map(|t| [t[0], t[1], -t[2]]).collect(),
-                        ),
-                        ReadOutputs::Rotations(rot) => {
-                            AnimationOutputs::Rotations(rot.into_f32().map(rh_to_lh_quat).collect())
-                        }
-                        ReadOutputs::Scales(it) => AnimationOutputs::Scales(it.collect()),
-                        ReadOutputs::MorphTargetWeights(w) => {
-                            AnimationOutputs::MorphWeights(w.into_f32().collect())
-                        }
-                    };
-
-                    Some(AnimationChannel {
-                        target_node_index: target.node().index(),
-                        sampler: AnimationSampler {
-                            interpolation,
-                            timestamps,
-                            outputs,
-                        },
-                    })
-                })
-                .collect();
-
-            Animation {
-                name: anim.name().unwrap_or("").to_string(),
-                duration,
-                channels,
+            if let Some(&last) = timestamps.last() {
+                duration = duration.max(last);
             }
-        })
-        .collect()
+
+            let interpolation = match sampler.interpolation() {
+                gltf::animation::Interpolation::Linear      => Interpolation::Linear,
+                gltf::animation::Interpolation::Step        => Interpolation::Step,
+                gltf::animation::Interpolation::CubicSpline => Interpolation::CubicSpline,
+            };
+
+            // RH→LH 変換: 平行移動は Z 反転、回転はクォータニオン XY 反転
+            let outputs = match reader.read_outputs()? {
+                ReadOutputs::Translations(it) =>
+                    AnimationOutputs::Translations(
+                        it.map(|t| [t[0], t[1], -t[2]]).collect()
+                    ),
+                ReadOutputs::Rotations(rot) =>
+                    AnimationOutputs::Rotations(
+                        rot.into_f32().map(rh_to_lh_quat).collect()
+                    ),
+                ReadOutputs::Scales(it) =>
+                    AnimationOutputs::Scales(it.collect()),
+                ReadOutputs::MorphTargetWeights(w) =>
+                    AnimationOutputs::MorphWeights(w.into_f32().collect()),
+            };
+
+            Some(AnimationChannel {
+                target_node_index: target.node().index(),
+                sampler: AnimationSampler { interpolation, timestamps, outputs },
+            })
+        }).collect();
+
+        Animation {
+            name: anim.name().unwrap_or("").to_string(),
+            duration,
+            channels,
+        }
+    }).collect()
 }
 
 // ============================================================
 //  スキン
 // ============================================================
 
-fn load_skins(document: &gltf::Document, buffers: &[gltf::buffer::Data]) -> Vec<Skin> {
-    document
-        .skins()
-        .map(|skin| {
-            let joints: Vec<gltf::Node<'_>> = skin.joints().collect();
-            let reader = skin.reader(|b| Some(&*buffers[b.index()]));
+fn load_skins(
+    document: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+) -> Vec<Skin> {
+    document.skins().map(|skin| {
+        let joints: Vec<gltf::Node<'_>> = skin.joints().collect();
+        let reader = skin.reader(|b| Some(&*buffers[b.index()]));
 
-            // インバースバインド行列（列優先 → 行優先に転置、さらに RH→LH 変換）
-            let ibms: Vec<[[f32; 4]; 4]> = reader
-                .read_inverse_bind_matrices()
-                .map(|it| it.map(|m| rh_to_lh_mat4(transpose_mat4(m))).collect())
-                .unwrap_or_else(|| vec![ModelNode::identity_matrix(); joints.len()]);
+        // インバースバインド行列（列優先 → 行優先に転置、さらに RH→LH 変換）
+        let ibms: Vec<[[f32; 4]; 4]> = reader
+            .read_inverse_bind_matrices()
+            .map(|it| it.map(|m| rh_to_lh_mat4(transpose_mat4(m))).collect())
+            .unwrap_or_else(|| vec![ModelNode::identity_matrix(); joints.len()]);
 
-            // スキンのルートジョイント（skin.skeleton() で取得できる場合）
-            let root_node_index = skin.skeleton().map(|n| n.index());
+        // スキンのルートジョイント（skin.skeleton() で取得できる場合）
+        let root_node_index = skin.skeleton().map(|n| n.index());
 
-            let skin_joints: Vec<SkinJoint> = joints
-                .iter()
-                .enumerate()
-                .map(|(i, node)| SkinJoint {
-                    node_index: node.index(),
-                    name: node.name().unwrap_or("").to_string(),
-                    inverse_bind_matrix: ibms[i],
-                })
-                .collect();
-
-            // root_node_index → joints 配列内でのインデックスに変換
-            let root_joint = root_node_index
-                .and_then(|rni| skin_joints.iter().position(|j| j.node_index == rni));
-
-            Skin {
-                name: skin.name().unwrap_or("").to_string(),
-                joints: skin_joints,
-                root_joint,
+        let skin_joints: Vec<SkinJoint> = joints.iter().enumerate().map(|(i, node)| {
+            SkinJoint {
+                node_index:           node.index(),
+                name:                 node.name().unwrap_or("").to_string(),
+                inverse_bind_matrix:  ibms[i],
             }
-        })
-        .collect()
+        }).collect();
+
+        // root_node_index → joints 配列内でのインデックスに変換
+        let root_joint = root_node_index.and_then(|rni| {
+            skin_joints.iter().position(|j| j.node_index == rni)
+        });
+
+        Skin {
+            name: skin.name().unwrap_or("").to_string(),
+            joints: skin_joints,
+            root_joint,
+        }
+    }).collect()
 }
 
 // ============================================================
@@ -894,7 +824,7 @@ mod meshlet_tests {
             for x in 0..N {
                 vertices.push(Vertex {
                     position: [x as f32, 0.0, z as f32],
-                    normal: [0.0, 1.0, 0.0],
+                    normal:   [0.0, 1.0, 0.0],
                     ..Default::default()
                 });
             }
@@ -911,10 +841,7 @@ mod meshlet_tests {
 
         let (descs, mv, mt) = build_meshlets_for_primitive(&indices, &vertices, false);
         assert!(!descs.is_empty(), "メッシュレットが生成されること");
-        assert!(
-            descs.len() >= 2,
-            "上限超えで複数メッシュレットに分割されること"
-        );
+        assert!(descs.len() >= 2, "上限超えで複数メッシュレットに分割されること");
 
         // 三角形総数がメッシュレット三角形数の合計と一致する。
         let sum_tris: u32 = descs.iter().map(|d| d.triangle_count).sum();
@@ -945,20 +872,12 @@ mod meshlet_tests {
                 let dy = p[1] - d.center[1];
                 let dz = p[2] - d.center[2];
                 let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                assert!(
-                    dist <= d.radius + 1e-2,
-                    "頂点が境界球内: dist={dist} r={}",
-                    d.radius
-                );
+                assert!(dist <= d.radius + 1e-2, "頂点が境界球内: dist={dist} r={}", d.radius);
             }
 
             // 法線コーン軸は概ね単位ベクトル。
-            let al =
-                (d.cone_axis[0].powi(2) + d.cone_axis[1].powi(2) + d.cone_axis[2].powi(2)).sqrt();
-            assert!(
-                (al - 1.0).abs() < 1e-2 || al == 0.0,
-                "コーン軸が単位ベクトル: len={al}"
-            );
+            let al = (d.cone_axis[0].powi(2) + d.cone_axis[1].powi(2) + d.cone_axis[2].powi(2)).sqrt();
+            assert!((al - 1.0).abs() < 1e-2 || al == 0.0, "コーン軸が単位ベクトル: len={al}");
         }
     }
 
@@ -999,28 +918,18 @@ mod meshlet_tests {
         let mut idx: Vec<u32> = Vec::new();
         for i in 0..stacks {
             for j in 0..sectors {
-                idx.extend_from_slice(&[vid(i, j), vid(i, j + 1), vid(i + 1, j)]);
+                idx.extend_from_slice(&[vid(i, j),     vid(i, j + 1), vid(i + 1, j)]);
                 idx.extend_from_slice(&[vid(i, j + 1), vid(i + 1, j + 1), vid(i + 1, j)]);
             }
         }
 
         // ── バイナリバッファ（POSITION | NORMAL | INDICES）────
         let mut buf: Vec<u8> = Vec::new();
-        for p in &pos {
-            for c in p {
-                buf.extend_from_slice(&c.to_le_bytes());
-            }
-        }
+        for p in &pos { for c in p { buf.extend_from_slice(&c.to_le_bytes()); } }
         let n_off = buf.len();
-        for p in &nrm {
-            for c in p {
-                buf.extend_from_slice(&c.to_le_bytes());
-            }
-        }
+        for p in &nrm { for c in p { buf.extend_from_slice(&c.to_le_bytes()); } }
         let i_off = buf.len();
-        for v in &idx {
-            buf.extend_from_slice(&v.to_le_bytes());
-        }
+        for v in &idx { buf.extend_from_slice(&v.to_le_bytes()); }
 
         let pos_len = n_off;
         let nrm_len = i_off - n_off;
@@ -1029,10 +938,9 @@ mod meshlet_tests {
 
         // glTF 定数: 5126 = FLOAT, 5125 = UNSIGNED_INT
         const COMPONENT_TYPE_FLOAT: u32 = 5126;
-        const COMPONENT_TYPE_U32: u32 = 5125;
+        const COMPONENT_TYPE_U32:   u32 = 5125;
 
-        let json = format!(
-            r#"{{
+        let json = format!(r#"{{
   "asset": {{ "version": "2.0" }},
   "scene": 0,
   "scenes": [ {{ "nodes": [0] }} ],
@@ -1050,23 +958,15 @@ mod meshlet_tests {
   ],
   "buffers": [ {{ "byteLength": {tl}, "uri": "data:application/octet-stream;base64,{b64}" }} ]
 }}"#,
-            ct_f = COMPONENT_TYPE_FLOAT,
-            ct_u = COMPONENT_TYPE_U32,
-            nv = pos.len(),
-            ni = idx.len(),
-            pl = pos_len,
-            no = n_off,
-            nl = nrm_len,
-            io = i_off,
-            il = idx_len,
-            tl = buf.len(),
-            b64 = b64,
+            ct_f = COMPONENT_TYPE_FLOAT, ct_u = COMPONENT_TYPE_U32,
+            nv = pos.len(), ni = idx.len(),
+            pl = pos_len, no = n_off, nl = nrm_len, io = i_off, il = idx_len,
+            tl = buf.len(), b64 = b64,
         );
 
         // 複数テストが並行実行されるためファイル名は分割数で一意化する。
-        let path = std::env::temp_dir().join(format!(
-            "seed_meshlet_cone_test_sphere_{stacks}x{sectors}.gltf"
-        ));
+        let path = std::env::temp_dir()
+            .join(format!("seed_meshlet_cone_test_sphere_{stacks}x{sectors}.gltf"));
         std::fs::write(&path, json).expect("テスト用 .gltf の書き出しに成功すること");
         path
     }
@@ -1086,17 +986,17 @@ mod meshlet_tests {
     fn meshlet_cone_axis_agrees_with_authored_normals() {
         // 40×40 の UV 球（3200 三角形）→ 複数メッシュレットに分割され、
         // 各メッシュレットの法線が十分揃うので有効な（cutoff < 1）コーンが生成される。
-        const STACKS: usize = 40;
+        const STACKS:  usize = 40;
         const SECTORS: usize = 40;
-        let path = write_test_sphere_gltf(STACKS, SECTORS);
+        let path  = write_test_sphere_gltf(STACKS, SECTORS);
         let model = super::load(&path).expect("テスト用 .gltf のロードに成功すること");
 
-        let mut total = 0usize; // 判定対象メッシュレット数
-        let mut positive = 0usize; // dot(cone_axis, 平均法線) > 0 の個数
-        let mut valid_cone = 0usize; // cone_cutoff < 1（＝実際にコーン棄却が発火しうる）個数
-        let mut dot_sum = 0.0f64;
-        let mut dot_min = f32::INFINITY;
-        let mut dot_max = f32::NEG_INFINITY;
+        let mut total     = 0usize; // 判定対象メッシュレット数
+        let mut positive  = 0usize; // dot(cone_axis, 平均法線) > 0 の個数
+        let mut valid_cone= 0usize; // cone_cutoff < 1（＝実際にコーン棄却が発火しうる）個数
+        let mut dot_sum   = 0.0f64;
+        let mut dot_min   = f32::INFINITY;
+        let mut dot_max   = f32::NEG_INFINITY;
 
         for mesh in &model.meshes {
             for prim in &mesh.primitives {
@@ -1105,43 +1005,30 @@ mod meshlet_tests {
                     let mut acc = [0.0f32; 3];
                     for lv in 0..d.vertex_count as usize {
                         let orig = prim.meshlet_vertices[d.vertex_offset as usize + lv] as usize;
-                        let nv = prim.vertices[orig].normal;
-                        acc[0] += nv[0];
-                        acc[1] += nv[1];
-                        acc[2] += nv[2];
+                        let nv   = prim.vertices[orig].normal;
+                        acc[0] += nv[0]; acc[1] += nv[1]; acc[2] += nv[2];
                     }
                     let len = (acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]).sqrt();
-                    if len < 1e-3 {
-                        continue;
-                    } // 法線が打ち消し合う場合は判定不能なので除外
+                    if len < 1e-3 { continue; } // 法線が打ち消し合う場合は判定不能なので除外
 
                     let b = [acc[0] / len, acc[1] / len, acc[2] / len];
                     let a = d.cone_axis;
                     // 軸が退化（0 ベクトル＝コーン無効）なら判定対象外。
-                    if a[0] == 0.0 && a[1] == 0.0 && a[2] == 0.0 {
-                        continue;
-                    }
+                    if a[0] == 0.0 && a[1] == 0.0 && a[2] == 0.0 { continue; }
 
                     let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-                    total += 1;
+                    total   += 1;
                     dot_sum += dot as f64;
-                    if dot > 0.0 {
-                        positive += 1;
-                    }
-                    if d.cone_cutoff < 1.0 {
-                        valid_cone += 1;
-                    }
+                    if dot > 0.0 { positive += 1; }
+                    if d.cone_cutoff < 1.0 { valid_cone += 1; }
                     dot_min = dot_min.min(dot);
                     dot_max = dot_max.max(dot);
                 }
             }
         }
 
-        assert!(
-            total > 0,
-            "有効なコーン軸を持つメッシュレットが 1 つ以上あること"
-        );
-        let mean = dot_sum / total as f64;
+        assert!(total > 0, "有効なコーン軸を持つメッシュレットが 1 つ以上あること");
+        let mean      = dot_sum / total as f64;
         let pos_ratio = positive as f64 / total as f64;
         eprintln!(
             "[cone_axis stats] sphere{STACKS}x{SECTORS} meshlets={total} valid_cone={valid_cone} \
@@ -1150,10 +1037,7 @@ mod meshlet_tests {
         );
 
         // 符号補正が効いていれば全メッシュレットで内積が正になる（球なので明確に正）。
-        assert_eq!(
-            positive, total,
-            "全メッシュレットでコーン軸が頂点法線と同符号であること"
-        );
+        assert_eq!(positive, total, "全メッシュレットでコーン軸が頂点法線と同符号であること");
         assert!(mean > 0.5, "平均内積が明確に正であること: mean_dot={mean}");
         assert!(dot_min > 0.0, "最小内積も正であること: min={dot_min}");
     }
@@ -1167,9 +1051,9 @@ mod meshlet_tests {
     /// 「変換後の外積」は「変換後の法線」の逆符号になる。
     #[test]
     fn loader_rh_to_lh_flip_inverts_algebraic_face_normal() {
-        let path = write_test_sphere_gltf(8, 8);
+        let path  = write_test_sphere_gltf(8, 8);
         let model = super::load(&path).expect("テスト用 .gltf のロードに成功すること");
-        let prim = &model.meshes[0].primitives[0];
+        let prim  = &model.meshes[0].primitives[0];
 
         let mut checked = 0usize;
         for tri in prim.indices.chunks_exact(3) {
@@ -1187,17 +1071,12 @@ mod meshlet_tests {
                 e1[0] * e2[1] - e1[1] * e2[0],
             ];
             let cl = (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
-            if cl < 1e-6 {
-                continue;
-            } // 極付近の縮退三角形はスキップ
+            if cl < 1e-6 { continue; } // 極付近の縮退三角形はスキップ
 
             // 頂点法線（変換後 = エンジン空間での正しい外向き法線）。
             let n = prim.vertices[tri[0] as usize].normal;
             let dot = (cr[0] * n[0] + cr[1] * n[1] + cr[2] * n[2]) / cl;
-            assert!(
-                dot < 0.0,
-                "変換後の代数的外積は頂点法線と逆向きになる: dot={dot}"
-            );
+            assert!(dot < 0.0, "変換後の代数的外積は頂点法線と逆向きになる: dot={dot}");
             checked += 1;
         }
         assert!(checked > 0, "縮退でない三角形が存在すること");
@@ -1208,20 +1087,12 @@ mod meshlet_tests {
     fn skinned_and_degenerate_yield_no_meshlets() {
         let verts = vec![Vertex::default(); 3];
         let idx = vec![0u32, 1, 2];
-        assert!(
-            build_meshlets_for_primitive(&idx, &verts, true)
-                .0
-                .is_empty(),
-            "スキンは空"
-        );
-        assert!(
-            build_meshlets_for_primitive(&[], &verts, false)
-                .0
-                .is_empty(),
-            "三角形なしは空"
-        );
+        assert!(build_meshlets_for_primitive(&idx, &verts, true).0.is_empty(), "スキンは空");
+        assert!(build_meshlets_for_primitive(&[], &verts, false).0.is_empty(), "三角形なしは空");
     }
 }
+
+
 
 // ============================================================
 //  ユニットテスト
