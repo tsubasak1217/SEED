@@ -67,6 +67,13 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private bool _playFromStartScene = false;
     /// <summary>true のとき Play 中もコライダーのワイヤーフレームを描画する。</summary>
     private bool _playColliderDraw = false;
+    /// <summary>
+    /// true のとき「埋め込みインプレース Play」を使う（フェーズ2）。
+    /// 別プロセスを起動せず、シーンパネルの Edit ランタイムへ ENTER_PLAY を送って
+    /// その場で Play 化する。地形・散布・GPU リソースを作り直さないため即座に再生できる。
+    /// false（既定）は従来のウィンドウ Play（フェーズ1・別プロセス常駐）。
+    /// </summary>
+    private bool _embeddedPlay = false;
 
     // ── 編集時物理シミュレーション設定 ────────────────────────────
     /// <summary>編集モードで物理シミュレーションを動作させるかどうか。</summary>
@@ -480,6 +487,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // UI スレッドへマーシャリングし、既にアクティブなら何もしない（毎クリックの無駄処理を避ける）
         Dispatcher.BeginInvoke(() =>
         {
+            // 埋め込み Play 中のビューポートクリックは、キーボードフォーカスをランタイム子へ
+            // 戻す（エディタ UI へフォーカスが移ったあと再びゲーム操作に戻れるように）。
+            if (_embeddedPlay && _runtimeManager?.State == EditorState.Play)
+                FocusRuntimeChild();
+
             var doc = DockManager.Layout.Descendents()
                 .OfType<LayoutDocument>()
                 .FirstOrDefault(d => d.ContentId == "viewport");
@@ -615,8 +627,12 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                 }
             }
 
-            // Play 起動フラグを設定してから PlayAsync を呼ぶ
+            // Play 起動フラグを設定してから PlayAsync を呼ぶ。
+            // EmbeddedPlay=true のときは別プロセスを起動せず、現 Edit ランタイムへ
+            // ENTER_PLAY を送ってその場で Play 化する（地形・散布・GPU を保持）。
+            // なお _play_temp.scene への一時保存（上）は EmbeddedPlay でもクラッシュ保険として維持する。
             _runtimeManager.PlayColliderDraw = _playColliderDraw;
+            _runtimeManager.EmbeddedPlay     = _embeddedPlay;
             try { await _runtimeManager.PlayAsync(); }
             catch (Exception ex)
             {
@@ -662,6 +678,13 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     {
         _playFromStartScene = ChkPlayFromStartScene.IsChecked == true;
         EditorLog.Write($"PlayFromStartScene = {_playFromStartScene}");
+    }
+
+    /// <summary>「埋め込みインプレースPlay」チェックボックスの変化を受け取る。</summary>
+    private void OnEmbeddedPlayChanged(object sender, RoutedEventArgs e)
+    {
+        _embeddedPlay = ChkEmbeddedPlay.IsChecked == true;
+        EditorLog.Write($"EmbeddedPlay = {_embeddedPlay}");
     }
 
     /// <summary>

@@ -157,6 +157,15 @@ internal static class NativeInterop
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(nint hWnd);
 
     /// <summary>
+    /// 2 つのスレッドの入力処理機構を結合/分離する。埋め込み Play で別スレッド/別プロセスの
+    /// ランタイム子ウィンドウへ SetFocus を効かせるために、結合中にフォーカス移動を行う。
+    /// </summary>
+    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    /// <summary>指定ウィンドウへキーボードフォーカスを設定する（呼び出しスレッドのフォーカス）。</summary>
+    [DllImport("user32.dll")] public static extern nint SetFocus(nint hWnd);
+
+    /// <summary>
     /// ウィンドウの位置・サイズ・Z オーダーを変更する。
     /// SWP_ASYNCWINDOWPOS を付けると対象スレッドへ非同期でポストするため、
     /// 対象ウィンドウが応答不能（デバッガで凍結中など）でも呼び出し側はブロックしない。

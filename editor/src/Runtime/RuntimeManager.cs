@@ -120,6 +120,18 @@ public sealed class RuntimeManager : IDisposable
     private PipeServer? _persistentPlayPipe;
     private IntPtr      _persistentPlayHwnd;
 
+    /// <summary>
+    /// 埋め込みインプレース Play（フェーズ2）を使うかどうか。MainWindow が Play 開始前に設定する。
+    /// true のとき、PlayAsync は別プロセスを起動せず現 Edit ランタイムへ ENTER_PLAY を送る。
+    /// </summary>
+    public bool EmbeddedPlay { get; set; }
+
+    /// <summary>
+    /// 現在、埋め込みインプレース Play 中か（ENTER_PLAY 済みで EXIT_PLAY 前）。
+    /// Stop / OnRuntimeExited の分岐と、二重遷移防止に使う。
+    /// </summary>
+    private bool _inEmbeddedPlay;
+
     // ── 公開プロパティ・イベント ────────────────────────────────
 
     public EditorState State => _state;
@@ -316,6 +328,15 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public async Task PlayAsync()
     {
+        // ── 埋め込みインプレース Play（フェーズ2）─────────────────────────────
+        // 現 Edit ランタイムが生きていれば、別プロセスを起動せず ENTER_PLAY で
+        // その場で Play 化する。地形・散布・GPU リソースを作り直さないため即座に再生できる。
+        if (EmbeddedPlay && _process is { HasExited: false } && _state == EditorState.Edit)
+        {
+            EnterPlayEmbedded();
+            return;
+        }
+
         // Edit ランタイムをフィールドに保存（プロセスは生かしたまま）
         _savedEditProcess = _process;
         _savedEditPipe    = _pipe;
@@ -363,6 +384,37 @@ public sealed class RuntimeManager : IDisposable
         }
 
         await LaunchAsync(editMode: false);
+    }
+
+    /// <summary>
+    /// 埋め込みインプレース Play を開始する（フェーズ2）。
+    /// 現 Edit ランタイム（シーンパネルに埋め込み済み）へ ENTER_PLAY を送り、その場で
+    /// Play 化する。ウィンドウの付け替え・別プロセス起動・シーン再ロードは一切行わない。
+    /// 状態遷移（Edit→Play）は ENTER_PLAY への応答 PLAY_ENTERED を OnPipeMessage が受けて行う。
+    /// UI スレッドから呼ぶこと。
+    /// </summary>
+    private void EnterPlayEmbedded()
+    {
+        EditorLog.Write("EnterPlayEmbedded — ENTER_PLAY 送信（地形・散布・GPU を保持したまま Play 化）");
+        _inEmbeddedPlay = true;
+        // クラッシュ再起動カウンタはセッション単位でリセットしておく。
+        _restartCount = 0;
+        _pipe?.Send("ENTER_PLAY");
+        // コライダー描画フラグを同期する（ウィンドウ Play の --play-collider-draw=1 に相当）。
+        _pipe?.Send($"SET_PLAY_COLLIDER_DRAW:{(PlayColliderDraw ? 1 : 0)}");
+        // 状態遷移とフォーカスは PLAY_ENTERED 受信時に MainWindow 側で行う。
+    }
+
+    /// <summary>
+    /// 埋め込みインプレース Play を停止して Edit へ戻す（フェーズ2）。
+    /// ランタイムへ EXIT_PLAY を送るだけで、ウィンドウ操作・プロセス破棄は行わない。
+    /// 状態遷移（Play→Edit）は応答 PLAY_EXITED を OnPipeMessage が受けて行う。
+    /// </summary>
+    private void StopEmbeddedPlay()
+    {
+        EditorLog.Write("StopEmbeddedPlay — EXIT_PLAY 送信（アクター状態を復元して Edit 復帰）");
+        _pipe?.Send("EXIT_PLAY");
+        // _inEmbeddedPlay=false / ChangeState(Edit) は PLAY_EXITED 受信時に行う。
     }
 
     /// <summary>
@@ -571,6 +623,14 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public void Stop()
     {
+        // 埋め込みインプレース Play 中は EXIT_PLAY を送るだけで Edit へ戻る
+        // （ウィンドウ操作・プロセス保持は不要）。
+        if (_inEmbeddedPlay)
+        {
+            StopEmbeddedPlay();
+            return;
+        }
+
         if (_state == EditorState.Pause) DetachRuntimeWindow();
 
         // Play ランタイムを Kill せず、描画停止＋非表示で常駐保持へ退避する
@@ -882,6 +942,21 @@ public sealed class RuntimeManager : IDisposable
             EditorLog.Write("[Runtime→Editor] FIRST_FRAME — 最初の実フレーム描画完了");
             FirstFrameReady?.Invoke();
         }
+        else if (msg == "PLAY_ENTERED")
+        {
+            // 埋め込みインプレース Play 開始の応答。Edit→Play へ遷移する。
+            // 本コールバックはパイプ受信スレッドのため、ChangeState 経由の StateChanged
+            // ハンドラ（MainWindow）が Dispatcher で UI スレッドへマーシャルする。
+            EditorLog.Write("[Runtime→Editor] PLAY_ENTERED — 埋め込み Play 開始");
+            ChangeState(EditorState.Play);
+        }
+        else if (msg == "PLAY_EXITED")
+        {
+            // 埋め込みインプレース Play 停止の応答。Play→Edit へ遷移する。
+            EditorLog.Write("[Runtime→Editor] PLAY_EXITED — 埋め込み Play 停止、Edit 復帰");
+            _inEmbeddedPlay = false;
+            ChangeState(EditorState.Edit);
+        }
         else if (msg.StartsWith("HIERARCHY:", StringComparison.Ordinal))
         {
             var json = msg["HIERARCHY:".Length..];
@@ -1156,7 +1231,12 @@ public sealed class RuntimeManager : IDisposable
     private void OnRuntimeExited(object? sender, EventArgs e)
     {
         var exitCode = _process?.ExitCode ?? -1;
-        EditorLog.Write($"OnRuntimeExited — exitCode={exitCode}  intentional={_intentionalStop}  restartCount={_restartCount}");
+        EditorLog.Write($"OnRuntimeExited — exitCode={exitCode}  intentional={_intentionalStop}  restartCount={_restartCount}  embedded={_inEmbeddedPlay}");
+
+        // 埋め込み Play 中のクラッシュでは、Edit と Play が同一プロセスのため編集セッションも
+        // 道連れになる。フラグを畳んで通常のクラッシュ再起動フロー（下）へ委ねる。
+        // 再起動後は _play_temp.scene 保険で最新シーンが復元される（MainWindow が再ロード）。
+        _inEmbeddedPlay = false;
 
         // KillRuntime / Stop による意図的な終了は再起動もクラッシュ計上もしない
         if (_intentionalStop)
