@@ -28,12 +28,16 @@
 
 use std::cell::{Cell, RefCell};
 
+use std::collections::HashMap;
+
 use crate::engine::components::{
-    AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, ParticleEmitterComponent,
-    SpriteComponent, Transform,
+    AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, InputMapComponent,
+    ParticleEmitterComponent, SpriteComponent, Transform,
 };
+use crate::engine::core::input::action_map::ActionMap;
 use crate::engine::core::input::{Input, InputState};
 use crate::engine::ecs::{Entity, World};
+use crate::engine::structs::objects::actor::ComponentSlot;
 use crate::engine::structs::objects::Actor;
 
 use super::input_bridge;
@@ -253,6 +257,119 @@ fn actor_of_entity<'a>(entity: Entity) -> Option<&'a Actor> {
     // world（&mut World）とは別オブジェクトなのでエイリアス違反にはならない。
     let actors = unsafe { &*actors_ptr };
     find_actor(actors, entity)
+}
+
+// ─── コンポーネント種別文字列（GetComponent<T> の解決キー）────────
+//  C# ラッパーの ComponentKindName（= 従来の Comp 定数）と完全一致させること。
+//  Transform / CanvasTransform はアクターのルート entity 直付け、それ以外はスロット格納型。
+const KIND_TRANSFORM: &str = "Transform";
+const KIND_CANVAS_TRANSFORM: &str = "CanvasTransform";
+const KIND_SPRITE: &str = "Sprite";
+const KIND_CAMERA: &str = "Camera";
+const KIND_AUDIO: &str = "Audio";
+const KIND_ANIMATOR: &str = "Animator";
+const KIND_PARTICLE: &str = "ParticleEmitter";
+const KIND_INPUT_MAP: &str = "InputMap";
+
+/// スロットが指定コンポーネント種別（kind 文字列）の実体を持つかを判定する。
+///
+/// スロット専用 entity に対して各コンポーネント型を直引きして種別を確定する
+/// （`ComponentSlot::kind` に頼らず world 上の実データで判定するため、
+/// locate と同じ「実体があるか」の基準で一貫する）。
+fn slot_is_kind(world: &World, slot: &ComponentSlot, kind: &str) -> bool {
+    match kind {
+        KIND_SPRITE => world.get::<SpriteComponent>(slot.entity).is_some(),
+        KIND_CAMERA => world.get::<CameraComponent>(slot.entity).is_some(),
+        KIND_AUDIO => world.get::<AudioComponent>(slot.entity).is_some(),
+        KIND_ANIMATOR => world.get::<AnimatorComponent>(slot.entity).is_some(),
+        KIND_PARTICLE => world.get::<ParticleEmitterComponent>(slot.entity).is_some(),
+        KIND_INPUT_MAP => world.get::<InputMapComponent>(slot.entity).is_some(),
+        _ => false,
+    }
+}
+
+/// GetComponent<T> のスロット解決本体。
+///
+/// - Transform / CanvasTransform: アクタールート entity 直付け（0 番目のみ存在）。
+///   index / name は無視し、ルート entity 自身が該当コンポーネントを持つときだけ返す。
+/// - スロット格納型: ルート entity 一致のアクターを Actor ツリーから引き、
+///   kind でフィルタしたスロット群から、name 指定があれば名前一致、なければ index 番目
+///   （index<0 は 0 番目）を選び、そのスロット entity を返す。
+///
+/// 見つからなければ None。
+fn resolve_component_slot(
+    world: &World, root: Entity, kind: &str, name: Option<&str>, index: i32,
+) -> Option<Entity> {
+    // ── ルート直付け型（Transform / CanvasTransform）──
+    match kind {
+        KIND_TRANSFORM => return world.get::<Transform>(root).map(|_| root),
+        KIND_CANVAS_TRANSFORM => return world.get::<CanvasTransform>(root).map(|_| root),
+        _ => {}
+    }
+
+    // ── スロット格納型: Actor ツリーからルート一致アクターのスロットを走査 ──
+    let actor = actor_of_entity(root)?;
+    match name {
+        // 名前一致（かつ kind 一致）の最初のスロット
+        Some(n) => actor
+            .slots()
+            .iter()
+            .find(|s| s.name == n && slot_is_kind(world, s, kind))
+            .map(|s| s.entity),
+        // index 番目（kind 一致のみでフィルタ。index<0 は 0 番目）
+        None => {
+            let i = if index < 0 { 0 } else { index as usize };
+            actor
+                .slots()
+                .iter()
+                .filter(|s| slot_is_kind(world, s, kind))
+                .nth(i)
+                .map(|s| s.entity)
+        }
+    }
+}
+
+// ─── InputMap 評価キャッシュ ──────────────────────────────────
+
+thread_local! {
+    /// asset_path をキーにした .inputmap のパース結果キャッシュ。
+    ///
+    /// スクリプトは CLR メインスレッド専用（scripting/mod.rs）なので thread_local で足りる。
+    /// 初回アクセス時に asset_fs でファイルを読み込み・パースし、以降は再パースしない
+    /// （毎フレーム読むのは禁止方針）。asset_path が変わると別キーとして新規パースされる。
+    static INPUT_MAP_CACHE: RefCell<HashMap<String, ActionMap>> =
+        RefCell::new(HashMap::new());
+}
+
+/// asset_path から ActionMap をロードする（失敗時は空マップ＋警告）。
+fn load_action_map(asset_path: &str) -> ActionMap {
+    let normalized = crate::engine::asset_fs::normalize_asset_path(asset_path);
+    match crate::engine::asset_fs::read_string(&normalized) {
+        Ok(json) => ActionMap::parse(&json),
+        Err(e) => {
+            eprintln!("[SEED script] InputMap 読み込み失敗 '{asset_path}': {e}");
+            ActionMap::empty()
+        }
+    }
+}
+
+/// スロット entity の InputMapComponent を解決し、キャッシュ済み ActionMap で
+/// クロージャ f を実行する。InputMap 未アタッチ・asset_path 未設定なら None。
+fn with_action_map<R>(world: &World, slot: Entity, f: impl FnOnce(&ActionMap) -> R) -> Option<R> {
+    let ic = world.get::<InputMapComponent>(slot)?;
+    if ic.asset_path.is_empty() {
+        return None;
+    }
+    let key = ic.asset_path.clone();
+    INPUT_MAP_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        if !cache.contains_key(&key) {
+            let map = load_action_map(&key);
+            cache.insert(key.clone(), map);
+        }
+        // 直前に必ず挿入済みなので unwrap は安全
+        Some(f(cache.get(&key).unwrap()))
+    })
 }
 
 // ─── コンポーネントレジストリ ─────────────────────────────────
@@ -635,6 +752,7 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
         "Audio"           => locate::<AudioComponent>(world, entity).is_some(),
         "Animator"        => locate::<AnimatorComponent>(world, entity).is_some(),
         "ParticleEmitter" => locate::<ParticleEmitterComponent>(world, entity).is_some(),
+        "InputMap"        => locate::<InputMapComponent>(world, entity).is_some(),
         _ => false,
     }
 }
@@ -1317,6 +1435,108 @@ unsafe extern "system" fn ffi_particle_component(
     }
 }
 
+// ─── GetComponent<T> スロット解決 FFI ────────────────────────
+
+/// GetComponent<T> のスロット entity を解決する。見つかった=1 / なし=0。
+///
+/// actor_idx/gen はスクリプトの gameObject（アクタールート entity）。kind は
+/// C# ラッパーの ComponentKindName（"Transform"/"Camera"/"InputMap" …）。
+/// name_len>0 のときはスロット名一致、そうでなければ index 番目（index<0 は 0）を選ぶ。
+/// out_entity（[index, generation] の 2 要素）へ解決したスロット entity を書き込む。
+///
+/// Transform / CanvasTransform はアクタールート直付けのため、その entity 自身を返す
+/// （index / name は無視。0 番目のみ存在）。
+unsafe extern "system" fn ffi_resolve_component_slot(
+    actor_idx: u32, actor_gen: u32,
+    kind: *const u8, kind_len: i32,
+    name: *const u8, name_len: i32,
+    index: i32,
+    out_entity: *mut u32,
+) -> i32 {
+    let ptr = WORLD_PTR.with(|p| p.get());
+    if ptr.is_null() || out_entity.is_null() {
+        return 0;
+    }
+    let world = &*ptr;
+    let root = Entity::from_raw(actor_idx, actor_gen);
+    let kind_s = str_from(kind, kind_len);
+    // name_len<=0 は「名前指定なし（index で選ぶ）」を意味する
+    let name_opt = if name_len > 0 { Some(str_from(name, name_len)) } else { None };
+
+    match resolve_component_slot(world, root, kind_s, name_opt, index) {
+        Some(e) => {
+            *out_entity = e.index();
+            *out_entity.add(1) = e.generation();
+            1
+        }
+        None => 0,
+    }
+}
+
+// ─── InputMap 評価 FFI ───────────────────────────────────────
+
+/// InputMap の Bool アクションを評価する。真=1 / 偽・失敗=0。
+///
+/// slot_idx/gen は InputMapComponent のスロット entity（GetComponent<InputMap> で解決済み）。
+/// kind: 0=押している間 / 1=押した瞬間 / 2=離した瞬間（action_map の ACTION_KIND_*）。
+/// name/len はアクション名。
+unsafe extern "system" fn ffi_input_action(
+    slot_idx: u32, slot_gen: u32,
+    kind: i32,
+    name: *const u8, len: i32,
+) -> i32 {
+    let wptr = WORLD_PTR.with(|p| p.get());
+    let iptr = INPUT_PTR.with(|p| p.get());
+    if wptr.is_null() || iptr.is_null() {
+        return 0;
+    }
+    let world = &*wptr;
+    let input = &*iptr;
+    let slot = Entity::from_raw(slot_idx, slot_gen);
+    let name_s = str_from(name, len);
+
+    let hit = with_action_map(world, slot, |m| m.eval_bool(input, name_s, kind)).unwrap_or(false);
+    if hit { 1 } else { 0 }
+}
+
+/// InputMap の軸アクション（Axis1D / Vector2）を評価する。書き込んだ要素数を返す（失敗=0）。
+///
+/// slot_idx/gen は InputMapComponent のスロット entity。name/len はアクション名。
+/// out_len>=2 のときは Vector2（[x, y] の 2 要素）、それ以外は Axis1D（[x] の 1 要素）を書き込む。
+/// out は out_len 要素以上の容量を C# 側が保証する。
+unsafe extern "system" fn ffi_input_action_axis(
+    slot_idx: u32, slot_gen: u32,
+    name: *const u8, len: i32,
+    out: *mut f32, out_len: i32,
+) -> i32 {
+    if out.is_null() || out_len <= 0 {
+        return 0;
+    }
+    let wptr = WORLD_PTR.with(|p| p.get());
+    let iptr = INPUT_PTR.with(|p| p.get());
+    if wptr.is_null() || iptr.is_null() {
+        return 0;
+    }
+    let world = &*wptr;
+    let input = &*iptr;
+    let slot = Entity::from_raw(slot_idx, slot_gen);
+    let name_s = str_from(name, len);
+
+    // out_len で Vector2 / Axis1D を分岐（C# の GetVector2 / GetAxis の呼び分けに対応）
+    let written = with_action_map(world, slot, |m| {
+        if out_len >= 2 {
+            let v = m.eval_vector2(input, name_s);
+            *out = v[0];
+            *out.add(1) = v[1];
+            2
+        } else {
+            *out = m.eval_axis1d(input, name_s);
+            1
+        }
+    });
+    written.unwrap_or(0)
+}
+
 // ─── C# へ渡す関数ポインタ表 ─────────────────────────────────
 
 /// C# の #[StructLayout(Sequential)] ScriptHostApi と同一レイアウト。
@@ -1347,6 +1567,11 @@ pub struct ScriptHostApi {
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     teleport:           unsafe extern "system" fn(u32, u32, *const f32) -> i32,
     is_grounded:        unsafe extern "system" fn(u32, u32) -> i32,
+    // GetComponent<T> / InputMap 系（新カテゴリ API のため構造体末尾に追加。
+    // C# ScriptHost.cs も末尾に同順で追加すること）。
+    resolve_component_slot: unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, i32, *mut u32) -> i32,
+    input_action:           unsafe extern "system" fn(u32, u32, i32, *const u8, i32) -> i32,
+    input_action_axis:      unsafe extern "system" fn(u32, u32, *const u8, i32, *mut f32, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -1371,9 +1596,117 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     particle_component: ffi_particle_component,
     teleport:           ffi_teleport,
     is_grounded:        ffi_is_grounded,
+    resolve_component_slot: ffi_resolve_component_slot,
+    input_action:           ffi_input_action,
+    input_action_axis:      ffi_input_action_axis,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。
 pub fn host_api_ptr() -> *const ScriptHostApi {
     &HOST_API
+}
+
+// ============================================================
+//  ユニットテスト（GetComponent<T> のスロット解決）
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::components::ComponentKind;
+
+    /// スロット解決を検証するためのアクター＋World を組み立てる。
+    ///
+    /// ルート（root）に Transform を直付けし、Camera スロットを 2 つ
+    /// （"CamA" / "CamB"）と Sprite スロットを 1 つ追加する。
+    fn setup() -> (World, Actor) {
+        let mut world = World::new();
+
+        // ルート entity（Transform 直付け）
+        let root = world.spawn();
+        world.insert(root, Transform::default());
+        let mut actor = Actor::new(root, "Player");
+
+        // Camera スロット × 2（名前 CamA / CamB）
+        let cam_a = world.spawn();
+        world.insert(cam_a, CameraComponent::default());
+        actor.add_slot_typed::<CameraComponent>("CamA", ComponentKind::Camera, cam_a);
+
+        let cam_b = world.spawn();
+        world.insert(cam_b, CameraComponent::default());
+        actor.add_slot_typed::<CameraComponent>("CamB", ComponentKind::Camera, cam_b);
+
+        // Sprite スロット × 1
+        let spr = world.spawn();
+        world.insert(spr, SpriteComponent::default());
+        actor.add_slot_typed::<SpriteComponent>("Body", ComponentKind::Sprite, spr);
+
+        (world, actor)
+    }
+
+    /// Transform はルート直付け（entity 自身を返し、index/name は無視）。
+    #[test]
+    fn resolve_transform_returns_root() {
+        let (world, actor) = setup();
+        let root = actor.entity;
+        with_actors(&std::vec![actor], || {
+            // 0 番目・index 指定・name 指定いずれもルートを返す
+            assert_eq!(resolve_component_slot(&world, root, "Transform", None, 0), Some(root));
+            assert_eq!(resolve_component_slot(&world, root, "Transform", None, 5), Some(root));
+            assert_eq!(resolve_component_slot(&world, root, "Transform", Some("x"), -1), Some(root));
+        });
+    }
+
+    /// CanvasTransform を持たないアクターでは None（is {} パターンが null になる）。
+    #[test]
+    fn resolve_missing_canvas_transform_is_none() {
+        let (world, actor) = setup();
+        let root = actor.entity;
+        with_actors(&std::vec![actor], || {
+            assert_eq!(resolve_component_slot(&world, root, "CanvasTransform", None, 0), None);
+        });
+    }
+
+    /// index による Camera スロット選択（0 番目 = CamA, 1 番目 = CamB）。
+    #[test]
+    fn resolve_camera_by_index() {
+        let (world, actor) = setup();
+        let root = actor.entity;
+        let cam_a = actor.slots()[0].entity;
+        let cam_b = actor.slots()[1].entity;
+        with_actors(&std::vec![actor], || {
+            assert_eq!(resolve_component_slot(&world, root, "Camera", None, 0), Some(cam_a));
+            assert_eq!(resolve_component_slot(&world, root, "Camera", None, 1), Some(cam_b));
+            // index<0 は 0 番目扱い
+            assert_eq!(resolve_component_slot(&world, root, "Camera", None, -1), Some(cam_a));
+            // 範囲外は None
+            assert_eq!(resolve_component_slot(&world, root, "Camera", None, 2), None);
+        });
+    }
+
+    /// name による Camera スロット選択。
+    #[test]
+    fn resolve_camera_by_name() {
+        let (world, actor) = setup();
+        let root = actor.entity;
+        let cam_b = actor.slots()[1].entity;
+        with_actors(&std::vec![actor], || {
+            assert_eq!(resolve_component_slot(&world, root, "Camera", Some("CamB"), -1), Some(cam_b));
+            // 存在しない名前は None
+            assert_eq!(resolve_component_slot(&world, root, "Camera", Some("Nope"), -1), None);
+            // kind 不一致（Sprite スロット名 "Body" を Camera で引いても None）
+            assert_eq!(resolve_component_slot(&world, root, "Camera", Some("Body"), -1), None);
+        });
+    }
+
+    /// 別種スロット（Sprite）の 0 番目解決。
+    #[test]
+    fn resolve_sprite_slot() {
+        let (world, actor) = setup();
+        let root = actor.entity;
+        let spr = actor.slots()[2].entity;
+        with_actors(&std::vec![actor], || {
+            assert_eq!(resolve_component_slot(&world, root, "Sprite", None, 0), Some(spr));
+        });
+    }
 }

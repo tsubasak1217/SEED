@@ -7,7 +7,7 @@ namespace SEED;
 /// 2D キャンバス上のスプライト等の位置・回転・スケールを制御する（3D の Transform に相当）。
 /// プロパティへの代入は即座にゲーム世界へ反映される。
 /// </summary>
-public readonly struct CanvasTransform
+public readonly struct CanvasTransform : IComponentHandle<CanvasTransform>
 {
     /// <summary>この CanvasTransform が属するエンティティ。</summary>
     private readonly Entity _entity;
@@ -16,6 +16,10 @@ public readonly struct CanvasTransform
     private const string Comp = "CanvasTransform";
 
     internal CanvasTransform(Entity entity) { _entity = entity; }
+
+    // ── IComponentHandle 実装（GetComponent 経由でのみ使われる）──
+    static string IComponentHandle<CanvasTransform>.ComponentKindName => Comp;
+    static CanvasTransform IComponentHandle<CanvasTransform>.FromEntity(Entity slotEntity) => new(slotEntity);
 
     /// <summary>XY 平面上の位置（親 Canvas 基準の相対座標・ワールドユニット）。</summary>
     public Vector2 Position

@@ -7,7 +7,7 @@ namespace SEED;
 /// カメラの位置・向きは同じ GameObject の Transform（position / rotation）で制御する。
 /// プロパティへの代入は即座にゲーム世界へ反映される。
 /// </summary>
-public readonly struct Camera
+public readonly struct Camera : IComponentHandle<Camera>
 {
     /// <summary>この Camera が属するエンティティ。</summary>
     private readonly Entity _entity;
@@ -16,6 +16,10 @@ public readonly struct Camera
     private const string Comp = "Camera";
 
     internal Camera(Entity entity) { _entity = entity; }
+
+    // ── IComponentHandle 実装（GetComponent 経由でのみ使われる）──
+    static string IComponentHandle<Camera>.ComponentKindName => Comp;
+    static Camera IComponentHandle<Camera>.FromEntity(Entity slotEntity) => new(slotEntity);
 
     /// <summary>垂直視野角（度）。</summary>
     public float FieldOfView

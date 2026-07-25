@@ -9,7 +9,7 @@ namespace SEED;
 /// プロパティへの代入は即座に反映される（放出中のエミッタにも有効）。
 /// エミッタを持たないエンティティに対する読み取りは既定値、書き込みは無視される。
 /// </summary>
-public readonly struct ParticleEmitter
+public readonly struct ParticleEmitter : IComponentHandle<ParticleEmitter>
 {
     /// <summary>この ParticleEmitter が属するエンティティ。</summary>
     private readonly Entity _entity;
@@ -23,6 +23,10 @@ public readonly struct ParticleEmitter
     private const int ActionBurst = 2;
 
     internal ParticleEmitter(Entity entity) { _entity = entity; }
+
+    // ── IComponentHandle 実装（GetComponent 経由でのみ使われる）──
+    static string IComponentHandle<ParticleEmitter>.ComponentKindName => Comp;
+    static ParticleEmitter IComponentHandle<ParticleEmitter>.FromEntity(Entity slotEntity) => new(slotEntity);
 
     // ── 放出操作 ─────────────────────────────────────────────
 

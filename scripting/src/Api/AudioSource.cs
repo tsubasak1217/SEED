@@ -8,7 +8,7 @@ namespace SEED;
 /// Spatial = true にするとメインカメラとの距離で減衰し、方向に応じてパンが振られる。
 /// プロパティへの代入は即座に反映される（再生中の音源にも有効）。
 /// </summary>
-public readonly struct AudioSource
+public readonly struct AudioSource : IComponentHandle<AudioSource>
 {
     /// <summary>この AudioSource が属するエンティティ。</summary>
     private readonly Entity _entity;
@@ -22,6 +22,10 @@ public readonly struct AudioSource
     private const int ActionIsPlaying = 2;
 
     internal AudioSource(Entity entity) { _entity = entity; }
+
+    // ── IComponentHandle 実装（GetComponent 経由でのみ使われる）──
+    static string IComponentHandle<AudioSource>.ComponentKindName => Comp;
+    static AudioSource IComponentHandle<AudioSource>.FromEntity(Entity slotEntity) => new(slotEntity);
 
     // ── 再生操作 ─────────────────────────────────────────────
 

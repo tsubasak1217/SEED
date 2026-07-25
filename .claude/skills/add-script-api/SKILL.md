@@ -147,6 +147,10 @@ Rust の `match component` のキー（`"Rigidbody"`）と、C# ラッパーの 
 `private const string Comp`（**Rust 側キーと一致**）/ get/set は `ScriptHost.TryGet*/TrySet*` の薄い呼び出し /
 失敗時は妥当な既定値を返す。
 
+**重要**: ラッパーは `IComponentHandle<TSelf>` を実装する（`GetComponent<T>()` が解決するため）。
+`ComponentKindName`（= `Comp`）は Rust 側解決キーと完全一致させ、`FromEntity` はスロット entity から
+ハンドルを生成する。両メンバは**明示的インターフェース実装**にして public 表面を汚さない。
+
 ```csharp
 namespace SEED;
 
@@ -155,15 +159,19 @@ namespace SEED;
 /// Rust ランタイムのコンポーネントを FFI 経由で読み書きする薄いラッパー（値はエンジンが保持）。
 /// 剛体を持たないエンティティに対する読み取りは既定値、書き込みは無視される。
 /// </summary>
-public readonly struct Rigidbody
+public readonly struct Rigidbody : IComponentHandle<Rigidbody>
 {
-    /// <summary>この Rigidbody が属するエンティティ。</summary>
+    /// <summary>この Rigidbody が属するエンティティ（スロット entity）。</summary>
     private readonly Entity _entity;
 
     /// <summary>コンポーネント名（Rust 側レジストリのキーと一致必須）。</summary>
     private const string Comp = "Rigidbody";
 
     internal Rigidbody(Entity entity) { _entity = entity; }
+
+    // ── IComponentHandle 実装（GetComponent 経由でのみ使われる）──
+    static string IComponentHandle<Rigidbody>.ComponentKindName => Comp;
+    static Rigidbody IComponentHandle<Rigidbody>.FromEntity(Entity slotEntity) => new(slotEntity);
 
     /// <summary>速度（ワールド空間・単位/秒）。</summary>
     public Vector3 Velocity
@@ -185,14 +193,12 @@ public readonly struct Rigidbody
 `TryGetVec2/TrySetVec2`・`TryGetVec3/TrySetVec3`・`TryGetColor/TrySetColor`・`TryGetString/TrySetString`。
 これらは既にあるので新規追加不要（新しいデータ形状が必要なときだけ足す）。
 
-### 3-2. `GameObject.cs` にアクセサプロパティを追加
+### 3-2. `GameObject.cs` は触らない（`GetComponent<T>` が自動対応）
 
-**触るファイル**: `scripting/src/Api/GameObject.cs`。「コンポーネントアクセサ」領域へ、既存の `Sprite` 等に倣って 1 行。
-
-```csharp
-/// <summary>この GameObject の剛体。</summary>
-public Rigidbody Rigidbody => new(_entity);
-```
+ラッパーが `IComponentHandle<TSelf>` を実装していれば、`gameObject.GetComponent<Rigidbody>()` で
+そのまま取得できる（`GameObject.cs` にアクセサを足す必要はない）。ユーザーは
+`if (gameObject.GetComponent<Rigidbody>() is { } rb) { ... }` で使う。
+同種を複数スロット持つ場合は `GetComponent<Rigidbody>(index)` / `GetComponent<Rigidbody>("Name")`。
 
 **検証**: `dotnet build scripting/SEEDScripting.csproj`（手順 6 でまとめて実施）。
 
@@ -223,16 +229,18 @@ editor 側 `editor/src/Panels/ScriptEditor/InlineCompletion/ScriptApiReference.c
 ### Rigidbody（剛体・物理速度）
 
 ​```csharp
-var rb = gameObject.Rigidbody;
-rb.Velocity                // Vector3（get/set。ワールド空間・単位/秒）
-rb.UseGravity              // bool（get/set。重力の影響を受けるか）
+if (gameObject.GetComponent<Rigidbody>() is { } rb)
+{
+    rb.Velocity            // Vector3（get/set。ワールド空間・単位/秒）
+    rb.UseGravity          // bool（get/set。重力の影響を受けるか）
+}
 ​```
 ```
 
 ### 4-3. 第 7 節末尾「利用可能なコンポーネント一覧」表へ 1 行追加
 
 ```markdown
-| `Rigidbody` | `gameObject.Rigidbody` | 速度・重力フラグ |
+| `Rigidbody` | `gameObject.GetComponent<Rigidbody>()` | 速度・重力フラグ |
 ```
 
 汎用アクセスのみ（C# ラッパーなし）の場合も、名前指定で使えることを利用者へ伝えるため
@@ -296,7 +304,7 @@ dotnet build scripting/SEEDScripting.csproj
 ## 完了時に確認する成果物
 
 1. `runtime/src/engine/core/scripting/host_api.rs` — import + `read_floats`/`write_floats`(必要なら `read_string`/`write_string`) + `has_component` の分岐追加
-2. （型付きの場合）`scripting/src/Api/<Name>.cs` 新規 + `scripting/src/Api/GameObject.cs` のアクセサ追加
+2. （型付きの場合）`scripting/src/Api/<Name>.cs` 新規（`IComponentHandle<Name>` 実装）。`GameObject.cs` は触らない
 3. `docs/scripting_api.md` 第 7 節の H3 小節 + 一覧表の行
 4. `docs/scripting_api.html` の `<h3>`/`<div class="api">` + 一覧表 `<tr>` + `data-keywords`
 5. `cargo build` と `dotnet build scripting/SEEDScripting.csproj` が両方成功

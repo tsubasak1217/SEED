@@ -248,6 +248,84 @@ public static unsafe class ScriptHost
             return _api.HasComponent(e.Index, e.Generation, cp, cl) != 0;
     }
 
+    // ── GetComponent<T> スロット解決 ─────────────────────────────
+
+    /// <summary>
+    /// アクタールート entity から、指定種別コンポーネントのスロット entity を解決する。失敗時は false。
+    /// name 指定時（非 null・非空）はスロット名一致、そうでなければ index 番目（index&lt;0 は 0）を選ぶ。
+    /// Transform / CanvasTransform はルート直付けのためルート entity 自身を返す。
+    /// </summary>
+    public static bool TryResolveComponentSlot(
+        Entity actor, string kind, string? name, int index, out Entity slot)
+    {
+        slot = Entity.None;
+        if (!_available || _api.ResolveComponentSlot == null || !actor.IsValid) return false;
+
+        int kl = Encoding.UTF8.GetByteCount(kind);
+        Span<byte> kb = stackalloc byte[kl];
+        Encoding.UTF8.GetBytes(kind, kb);
+
+        // 名前指定なしは長さ 0 で渡す（Rust 側は name_len<=0 を index 選択とみなす）
+        int nl = string.IsNullOrEmpty(name) ? 0 : Encoding.UTF8.GetByteCount(name);
+        Span<byte> nb = nl > 0 ? stackalloc byte[nl] : default;
+        if (nl > 0) Encoding.UTF8.GetBytes(name!, nb);
+
+        uint* outBuf = stackalloc uint[2];
+        int ok;
+        fixed (byte* kp = kb)
+        fixed (byte* np = nb)
+            ok = _api.ResolveComponentSlot(actor.Index, actor.Generation, kp, kl, np, nl, index, outBuf);
+
+        if (ok == 0) return false;
+        slot = new Entity(outBuf[0], outBuf[1]);
+        return true;
+    }
+
+    // ── InputMap アクション評価 ───────────────────────────────────
+
+    /// <summary>
+    /// InputMap の Bool アクションを評価する（kind: 0=押下中/1=押した瞬間/2=離した瞬間）。
+    /// slot は InputMapComponent のスロット entity。
+    /// </summary>
+    public static bool InputAction(Entity slot, int kind, string name)
+    {
+        if (!_available || _api.InputAction == null || !slot.IsValid) return false;
+        name ??= "";
+        int nl = Encoding.UTF8.GetByteCount(name);
+        Span<byte> nb = nl > 0 ? stackalloc byte[nl] : default;
+        if (nl > 0) Encoding.UTF8.GetBytes(name, nb);
+        fixed (byte* np = nb)
+            return _api.InputAction(slot.Index, slot.Generation, kind, np, nl) != 0;
+    }
+
+    /// <summary>InputMap の Axis1D アクションを評価する（[-1,1]）。失敗時は 0。</summary>
+    public static float InputActionAxis1D(Entity slot, string name)
+    {
+        if (!_available || _api.InputActionAxis == null || !slot.IsValid) return 0f;
+        name ??= "";
+        int nl = Encoding.UTF8.GetByteCount(name);
+        Span<byte> nb = nl > 0 ? stackalloc byte[nl] : default;
+        if (nl > 0) Encoding.UTF8.GetBytes(name, nb);
+        float* buf = stackalloc float[1];
+        fixed (byte* np = nb)
+            return _api.InputActionAxis(slot.Index, slot.Generation, np, nl, buf, 1) == 1 ? buf[0] : 0f;
+    }
+
+    /// <summary>InputMap の Vector2 アクションを評価する。失敗時は Zero。</summary>
+    public static Vector2 InputActionVector2(Entity slot, string name)
+    {
+        if (!_available || _api.InputActionAxis == null || !slot.IsValid) return Vector2.Zero;
+        name ??= "";
+        int nl = Encoding.UTF8.GetByteCount(name);
+        Span<byte> nb = nl > 0 ? stackalloc byte[nl] : default;
+        if (nl > 0) Encoding.UTF8.GetBytes(name, nb);
+        float* buf = stackalloc float[2];
+        fixed (byte* np = nb)
+            return _api.InputActionAxis(slot.Index, slot.Generation, np, nl, buf, 2) == 2
+                ? new Vector2(buf[0], buf[1])
+                : Vector2.Zero;
+    }
+
     // ── シーン操作（Instantiate / Destroy / Find）────────────────
 
     /// <summary>
@@ -532,4 +610,10 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<uint, uint, float*, int> Teleport;
     /// <summary>(idx, gen) → 1/0（キャラクターの接地状態。Physics.IsGrounded）</summary>
     public delegate* unmanaged[Cdecl]<uint, uint, int> IsGrounded;
+    /// <summary>(actorIdx, actorGen, kind, kindLen, name, nameLen, index, out uint[2] slot) → 1/0（GetComponent&lt;T&gt; スロット解決）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, byte*, int, int, uint*, int> ResolveComponentSlot;
+    /// <summary>(slotIdx, slotGen, kind, name, nameLen) → 1/0（InputMap Bool アクション。kind: 0=press/1=down/2=up）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, int, byte*, int, int> InputAction;
+    /// <summary>(slotIdx, slotGen, name, nameLen, out float*, outLen) → 書き込んだ要素数（InputMap 軸アクション。outLen>=2 で Vector2）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, float*, int, int> InputActionAxis;
 }

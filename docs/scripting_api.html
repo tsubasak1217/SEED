@@ -442,23 +442,31 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 <!-- ════════════════ 7. GameObject ════════════════ -->
 <section id="sec-gameobject" data-keywords="GameObject gameObject アクター 生成 破棄 検索 Instantiate Destroy Find プレハブ">
   <h2>7. GameObject</h2>
-  <p class="section-note">スクリプトは自分がアタッチされた GameObject を <code>gameObject</code>、その Transform を <code>transform</code> で参照できます。コンポーネントアクセサは薄いハンドルで、代入は即座にゲーム世界へ反映。対象コンポーネントを持たない場合、読み取りは既定値・書き込みは無視されます。</p>
+  <p class="section-note">スクリプトは自分がアタッチされた GameObject を <code>gameObject</code>、その Transform を <code>transform</code>（短縮）で参照できます。コンポーネントは <code>gameObject.GetComponent&lt;T&gt;()</code> で取得します。戻り値は <code>T?</code>（Nullable）で、<b>未アタッチ・該当なしは null</b>。SEED のアクターは同種を複数スロット持て、スロットには名前があります。</p>
   <div class="api"><code class="sig">gameObject</code><span class="desc">GameObject: このスクリプトが乗るオブジェクト</span></div>
   <div class="api"><code class="sig">gameObject.IsValid</code><span class="desc">bool: 実体が有効か</span></div>
   <div class="api"><code class="sig">gameObject.HasComponent("Sprite")</code><span class="desc">bool: 指定名のコンポーネントを持つか</span></div>
-  <div class="api"><code class="sig">transform</code><span class="desc">Transform: <code>gameObject.Transform</code> の短縮</span></div>
-  <div class="api"><code class="sig">gameObject.Transform / .CanvasTransform / .Sprite / .Camera / .AudioSource / .Animator</code><span class="desc">各コンポーネントへのアクセサ（詳細は下の各コンポーネント節）</span></div>
+  <div class="api"><code class="sig">transform</code><span class="desc">Transform: <code>gameObject.GetComponent&lt;Transform&gt;()</code> の短縮</span></div>
+  <div class="api"><code class="sig">gameObject.GetComponent&lt;T&gt;()</code><span class="desc">T?: 0 番目のスロット（未アタッチは null）。T = Transform/CanvasTransform/Sprite/Camera/AudioSource/Animator/ParticleEmitter/InputMap</span></div>
+  <div class="api"><code class="sig">gameObject.GetComponent&lt;T&gt;(index)</code><span class="desc">T?: index 番目のスロット</span></div>
+  <div class="api"><code class="sig">gameObject.GetComponent&lt;T&gt;("Name")</code><span class="desc">T?: スロット名一致</span></div>
+<pre><span class="c">// null 合体・パターンで安全に使う（Unity と違い戻り値は Nullable）</span>
+<span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">Sprite</span>&gt;() <span class="k">is</span> { } sprite)
+{
+    sprite.Color = <span class="t">SEED.Color</span>.Red;
+}</pre>
 
   <h3>生成・破棄・検索（Instantiate / Destroy / Find）</h3>
   <div class="api"><code class="sig">GameObject.Instantiate("assets://actors/Bullet.actor")</code><span class="desc">.actor ファイル（プレハブ）からアクターを生成。戻り値に<b>同フレーム中に</b> Position 等を設定でき、その値が優先される</span></div>
   <div class="api"><code class="sig">obj.Destroy() / GameObject.Destroy(obj)</code><span class="desc">アクターを破棄（実際の破棄はフレーム末尾。Unity と同じ遅延モデル）</span></div>
   <div class="api"><code class="sig">GameObject.Find("Player")</code><span class="desc">アクターを名前で検索（ヒエラルキーの DFS 順で最初の一致）</span></div>
 <pre><span class="k">var</span> bullet = <span class="t">SEED.GameObject</span>.Instantiate(<span class="s">"assets://actors/Bullet.actor"</span>);
-bullet.Transform.Position = transform.Position;   <span class="c">// 生成直後に位置設定できる</span>
+<span class="k">if</span> (bullet.GetComponent&lt;<span class="t">Transform</span>&gt;() <span class="k">is</span> { } bt)   <span class="c">// 生成直後に位置設定できる</span>
+    bt.Position = transform.Position;
 <span class="k">if</span> (!bullet.IsValid) { <span class="c">/* 読み込み失敗 */</span> }
 
 <span class="k">var</span> player = <span class="t">SEED.GameObject</span>.Find(<span class="s">"Player"</span>);
-<span class="k">if</span> (player.IsValid) { player.Transform.Position = <span class="t">SEED.Vector3</span>.Zero; }</pre>
+<span class="k">if</span> (player.GetComponent&lt;<span class="t">Transform</span>&gt;() <span class="k">is</span> { } pt) { pt.Position = <span class="t">SEED.Vector3</span>.Zero; }</pre>
   <div class="warn">
     <b>2D アクター（Actor2D）の注意</b>: 構築時に Transform が CanvasTransform へ差し替わるため、生成直後の 3D Position 設定は反映されません。位置は翌フレーム以降に <code>CanvasTransform.Position</code> で設定してください。<br>
     破棄済み GameObject への読み取りは既定値、書き込みは無視されます（クラッシュしません）。<br>
@@ -467,7 +475,7 @@ bullet.Transform.Position = transform.Position;   <span class="c">// 生成直�
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="コンポーネント Transform CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter パーティクル エミッタ 放出 Burst アニメーション 一覧">
+<section id="sec-components" data-keywords="コンポーネント GetComponent Transform CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetAxis GetVector2 WASD パーティクル エミッタ 放出 Burst アニメーション 一覧">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -547,16 +555,37 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
   <div class="api"><code class="sig">ps.Drag</code><span class="desc">float（get/set。空気抵抗係数。負値は 0 にクランプ）</span></div>
   <div class="api"><code class="sig">ps.SpreadAngle</code><span class="desc">float（get/set。放出円錐の半頂角・度。0〜180 にクランプ）</span></div>
 
+  <h3 id="cmp-inputmap">InputMap（入力アクションマップ）</h3>
+  <p class="section-note">エディタの「コンポーネント追加 → 入力 → Input Map」で <code>.inputmap</code>（アクション名 → 物理入力）を割り当て、アクション名で入力を取得します。現状 <b>PC の Key / WASD バインディングのみ</b>評価（ゲームパッド等は基盤未実装のため無視）。</p>
+  <div class="api"><code class="sig">input.GetAction("Jump")</code><span class="desc">bool: アクションのキーを押している間</span></div>
+  <div class="api"><code class="sig">input.GetActionDown("Jump")</code><span class="desc">bool: 押した瞬間のフレームだけ</span></div>
+  <div class="api"><code class="sig">input.GetActionUp("Jump")</code><span class="desc">bool: 離した瞬間のフレームだけ</span></div>
+  <div class="api"><code class="sig">input.GetAxis("Steer")</code><span class="desc">float: Axis1D（[-1,1]。WASD 合成 or キー押下=1.0）</span></div>
+  <div class="api"><code class="sig">input.GetVector2("Move")</code><span class="desc">Vector2: Vector2（Horizontal→x, Vertical→y。各 [-1,1]）</span></div>
+<pre><span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">InputMap</span>&gt;() <span class="k">is</span> { } input)
+{
+    <span class="k">var</span> move = input.GetVector2(<span class="s">"Move"</span>);
+    transform.Position += <span class="k">new</span> <span class="t">SEED.Vector3</span>(move.x, 0f, move.y) * 5f * <span class="t">SEED.Time</span>.DeltaTime;
+    <span class="k">if</span> (input.GetActionDown(<span class="s">"Jump"</span>)) { <span class="c">/* ジャンプ */</span> }
+}</pre>
+  <div class="warn">
+    <b>WASD 合成軸</b>: Horizontal は D/→=+1・A/←=-1、Vertical は W/↑=+1・S/↓=-1（矢印キーも WASD と同時に有効）。<br>
+    キー名はエディタの選択肢（<code>Space</code> / <code>LeftShift</code> / <code>Q</code> / <code>Alpha0</code> / <code>Keypad0</code> / <code>UpArrow</code> …）に対応。マッピング不能な名前は無反応（ロード時に警告 1 回）。<br>
+    <code>.inputmap</code> は初回アクセス時に読み込み・キャッシュ（毎フレーム再読込しません。実行中のファイル編集は反映されません）。<br>
+    複数持ち: <code>gameObject.GetComponent&lt;InputMap&gt;(1)</code>（index）や <code>gameObject.GetComponent&lt;InputMap&gt;("Vehicle")</code>（名前）で選択。
+  </div>
+
   <h3>利用可能なコンポーネント一覧</h3>
   <table>
-    <tr><th>コンポーネント名</th><th>アクセサ</th><th>内容</th></tr>
-    <tr><td><code>Transform</code></td><td><code>gameObject.Transform</code> / <code>transform</code></td><td>3D 位置・回転・スケール</td></tr>
-    <tr><td><code>CanvasTransform</code></td><td><code>gameObject.CanvasTransform</code></td><td>2D キャンバス上の位置・回転・スケール・ピボット・アンカー</td></tr>
-    <tr><td><code>Sprite</code></td><td><code>gameObject.Sprite</code></td><td>テクスチャパス・色・サイズ・レイヤー</td></tr>
-    <tr><td><code>Camera</code></td><td><code>gameObject.Camera</code></td><td>FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度</td></tr>
-    <tr><td><code>Audio</code></td><td><code>gameObject.AudioSource</code></td><td>音源パス・音量・ループ・3D 減衰・パン + Play/Stop</td></tr>
-    <tr><td><code>Animator</code></td><td><code>gameObject.Animator</code></td><td>再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume</td></tr>
-    <tr><td><code>ParticleEmitter</code></td><td><code>gameObject.ParticleEmitter</code></td><td>放出レート・ループ・抵抗・拡散角 + Play/Stop/Burst</td></tr>
+    <tr><th>コンポーネント名</th><th>取得</th><th>内容</th></tr>
+    <tr><td><code>Transform</code></td><td><code>gameObject.GetComponent&lt;Transform&gt;()</code> / <code>transform</code></td><td>3D 位置・回転・スケール</td></tr>
+    <tr><td><code>CanvasTransform</code></td><td><code>gameObject.GetComponent&lt;CanvasTransform&gt;()</code></td><td>2D キャンバス上の位置・回転・スケール・ピボット・アンカー</td></tr>
+    <tr><td><code>Sprite</code></td><td><code>gameObject.GetComponent&lt;Sprite&gt;()</code></td><td>テクスチャパス・色・サイズ・レイヤー</td></tr>
+    <tr><td><code>Camera</code></td><td><code>gameObject.GetComponent&lt;Camera&gt;()</code></td><td>FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度</td></tr>
+    <tr><td><code>AudioSource</code></td><td><code>gameObject.GetComponent&lt;AudioSource&gt;()</code></td><td>音源パス・音量・ループ・3D 減衰・パン + Play/Stop</td></tr>
+    <tr><td><code>Animator</code></td><td><code>gameObject.GetComponent&lt;Animator&gt;()</code></td><td>再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume</td></tr>
+    <tr><td><code>ParticleEmitter</code></td><td><code>gameObject.GetComponent&lt;ParticleEmitter&gt;()</code></td><td>放出レート・ループ・抵抗・拡散角 + Play/Stop/Burst</td></tr>
+    <tr><td><code>InputMap</code></td><td><code>gameObject.GetComponent&lt;InputMap&gt;()</code></td><td>入力アクション評価（Bool / Axis1D / Vector2。PC の Key / WASD）</td></tr>
   </table>
   <p class="section-note">他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定です。</p>
 </section>

@@ -1,3 +1,4 @@
+pub mod action_map;
 pub mod keyboard;
 pub mod mouse;
 pub mod raw_input;

@@ -2,12 +2,12 @@ namespace SEED;
 
 /// <summary>
 /// スクリプトがアタッチされたゲームオブジェクト。所有エンティティを包み、
-/// そのコンポーネント（Transform / CanvasTransform / Sprite / Camera）への
-/// アクセスを提供する。
+/// そのコンポーネント（Transform / CanvasTransform / Sprite / Camera / AudioSource /
+/// Animator / ParticleEmitter / InputMap …）への <c>GetComponent&lt;T&gt;()</c> アクセスを提供する。
 ///
 /// スクリプトからは <c>SEEDScript.gameObject</c> / <c>SEEDScript.transform</c> で得る。
-/// アクセサは薄いハンドルなので、対象コンポーネントを持たないエンティティに対する
-/// 読み取りは既定値、書き込みは無視される（HasComponent で保持判定できる）。
+/// <c>GetComponent&lt;T&gt;()</c> は未アタッチなら null を返す（Nullable&lt;T&gt;）ので、
+/// <c>if (go.GetComponent&lt;Camera&gt;() is { } cam) { ... }</c> のように保持判定できる。
 /// </summary>
 public readonly struct GameObject
 {
@@ -22,28 +22,28 @@ public readonly struct GameObject
     /// <summary>有効なエンティティに束縛されているか。</summary>
     public bool IsValid => _entity.IsValid;
 
-    // ── コンポーネントアクセサ ───────────────────────────────
+    // ── コンポーネントアクセサ（GetComponent<T>）──────────────
+    //  対象コンポーネントのハンドル（Transform / Camera / AudioSource / Animator /
+    //  Sprite / CanvasTransform / ParticleEmitter / InputMap …）を型引数で取得する。
+    //  未アタッチ・該当なしは null（Nullable<T>）。
+    //    if (go.GetComponent<InputMap>() is { } im) { ... }
+    //  SEED のアクターは同種コンポーネントを複数スロット持て、スロットには名前がある。
 
-    /// <summary>この GameObject の 3D Transform。</summary>
-    public Transform Transform => new(_entity);
+    /// <summary>0 番目のスロットのコンポーネントを取得する。未アタッチなら null。</summary>
+    public T? GetComponent<T>() where T : struct, IComponentHandle<T>
+        => GetComponent<T>(0);
 
-    /// <summary>この GameObject の 2D キャンバストランスフォーム。</summary>
-    public CanvasTransform CanvasTransform => new(_entity);
+    /// <summary>index 番目のスロットのコンポーネントを取得する。該当なしは null。</summary>
+    public T? GetComponent<T>(int index) where T : struct, IComponentHandle<T>
+        => ScriptHost.TryResolveComponentSlot(_entity, T.ComponentKindName, null, index, out var slot)
+            ? T.FromEntity(slot)
+            : null;
 
-    /// <summary>この GameObject の 2D スプライト。</summary>
-    public Sprite Sprite => new(_entity);
-
-    /// <summary>この GameObject の 3D カメラ。</summary>
-    public Camera Camera => new(_entity);
-
-    /// <summary>この GameObject のオーディオソース。</summary>
-    public AudioSource AudioSource => new(_entity);
-
-    /// <summary>この GameObject のアニメーター（キーフレームアニメーション再生）。</summary>
-    public Animator Animator => new(_entity);
-
-    /// <summary>この GameObject のパーティクルエミッタ（GPU パーティクル放出源）。</summary>
-    public ParticleEmitter ParticleEmitter => new(_entity);
+    /// <summary>スロット名一致のコンポーネントを取得する。該当なしは null。</summary>
+    public T? GetComponent<T>(string name) where T : struct, IComponentHandle<T>
+        => ScriptHost.TryResolveComponentSlot(_entity, T.ComponentKindName, name, -1, out var slot)
+            ? T.FromEntity(slot)
+            : null;
 
     // ── 保持判定 ─────────────────────────────────────────────
 

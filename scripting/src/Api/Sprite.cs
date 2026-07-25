@@ -7,7 +7,7 @@ namespace SEED;
 /// プロパティへの代入は即座にゲーム世界へ反映される。
 /// スプライトを持たないエンティティに対する読み取りは既定値、書き込みは無視される。
 /// </summary>
-public readonly struct Sprite
+public readonly struct Sprite : IComponentHandle<Sprite>
 {
     /// <summary>この Sprite が属するエンティティ。</summary>
     private readonly Entity _entity;
@@ -16,6 +16,10 @@ public readonly struct Sprite
     private const string Comp = "Sprite";
 
     internal Sprite(Entity entity) { _entity = entity; }
+
+    // ── IComponentHandle 実装（GetComponent 経由でのみ使われる）──
+    static string IComponentHandle<Sprite>.ComponentKindName => Comp;
+    static Sprite IComponentHandle<Sprite>.FromEntity(Entity slotEntity) => new(slotEntity);
 
     /// <summary>テクスチャファイルパス（assets:// 仮想パス）。空文字列 = テクスチャなし（単色表示）。</summary>
     public string TexturePath

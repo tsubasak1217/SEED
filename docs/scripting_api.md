@@ -283,34 +283,45 @@ SEED.Audio.StopBgm();            // BGM を停止
 
 - 同じファイルはキャッシュされ、2 回目以降の再生でディスク読み込みは発生しません。
 - オーディオデバイスが無い環境では全操作が無音で無視されます（エラーになりません）。
-- アクターに紐づく音源（3D 距離減衰・パン対応）は **AudioComponent**（第 7 節の `gameObject.AudioSource`）を使ってください。こちらの静的 API はアクターに紐づかない BGM / 単発 SE 向けです。
+- アクターに紐づく音源（3D 距離減衰・パン対応）は **AudioComponent**（第 7 節の `gameObject.GetComponent<AudioSource>()`）を使ってください。こちらの静的 API はアクターに紐づかない BGM / 単発 SE 向けです。
 
 ---
 
-## 7. GameObject とコンポーネント（Transform / CanvasTransform / Sprite / Camera）
+## 7. GameObject とコンポーネント（GetComponent<T>）
 
-スクリプトは自分がアタッチされた GameObject を `gameObject`、その Transform を `transform` で参照できます。各コンポーネントアクセサは薄いハンドルで、プロパティへの代入は即座にゲーム世界へ反映されます。対象コンポーネントを持たないエンティティに対する読み取りは既定値、書き込みは無視されます（`HasComponent` で保持判定）。
+スクリプトは自分がアタッチされた GameObject を `gameObject`、その Transform を `transform`（短縮）で参照できます。コンポーネントは **`gameObject.GetComponent<T>()`** で型引数指定して取得します。戻り値は `T?`（`Nullable<T>`）で、**未アタッチ・該当なしは `null`** です。取得したハンドルは薄く、プロパティへの代入は即座にゲーム世界へ反映されます。
+
+SEED のアクターは**同種コンポーネントを複数スロット**持て、スロットには**名前**があります。`GetComponent` は 3 とおりの索引に対応します。
 
 ```csharp
-gameObject                    // GameObject: このスクリプトが乗るオブジェクト
-gameObject.IsValid            // bool: 実体が有効か
-gameObject.HasComponent("Sprite")   // bool: 指定名のコンポーネントを持つか
-transform                     // Transform: gameObject.Transform の短縮
+gameObject                            // GameObject: このスクリプトが乗るオブジェクト
+gameObject.IsValid                    // bool: 実体が有効か
+gameObject.HasComponent("Sprite")     // bool: 指定名のコンポーネントを持つか
+transform                             // Transform: gameObject.GetComponent<Transform>() の短縮
 
-gameObject.Transform          // 3D トランスフォーム
-gameObject.CanvasTransform    // 2D キャンバストランスフォーム
-gameObject.Sprite             // 2D スプライト
-gameObject.Camera             // 3D カメラ
-gameObject.AudioSource        // オーディオソース（AudioComponent）
-gameObject.Animator           // アニメーター（キーフレームアニメーション再生。AnimatorComponent）
+gameObject.GetComponent<T>()          // T?: 0 番目のスロット（未アタッチは null）
+gameObject.GetComponent<T>(1)         // T?: index 番目のスロット
+gameObject.GetComponent<T>("Weapon")  // T?: スロット名一致
+
+// null 合体・パターンで安全に使う（Unity の GetComponent とは戻り値が Nullable な点が異なる）
+if (gameObject.GetComponent<Sprite>() is { } sprite)
+{
+    sprite.Color = SEED.Color.Red;
+}
+
+// T に指定できる型: Transform / CanvasTransform / Sprite / Camera /
+//                   AudioSource / Animator / ParticleEmitter / InputMap
 ```
+
+> **重要**: `GetComponent<T>()` は未アタッチ時に `null` を返します。`is { } x` パターンか `?.` / `??` で受けてください（Unity と違い戻り値は `Nullable<T>` です）。`Transform` / `CanvasTransform` はアクターのルートに 1 つだけ存在し、`index` / `name` は無視されます。
 
 ### 生成・破棄・検索（Instantiate / Destroy / Find）
 
 ```csharp
 // .actor ファイル（プレハブ）からアクターを生成する（assets:// 仮想パス）
 var bullet = SEED.GameObject.Instantiate("assets://actors/Bullet.actor");
-bullet.Transform.Position = transform.Position;   // 生成直後に位置設定できる
+if (bullet.GetComponent<Transform>() is { } bt)   // 生成直後に位置設定できる
+    bt.Position = transform.Position;
 if (!bullet.IsValid) { /* 読み込み失敗 */ }
 
 // アクターを破棄する（実際の破棄はフレーム末尾。Unity の Destroy と同じ遅延モデル）
@@ -319,7 +330,7 @@ SEED.GameObject.Destroy(bullet);        // 静的版（同じ動作）
 
 // アクターを名前で検索する（ヒエラルキーの DFS 順で最初の一致）
 var player = SEED.GameObject.Find("Player");
-if (player.IsValid) { player.Transform.Position = SEED.Vector3.Zero; }
+if (player.GetComponent<Transform>() is { } pt) { pt.Position = SEED.Vector3.Zero; }
 ```
 
 - `Instantiate` の戻り値には**同フレーム中に** `Transform.Position` 等を設定でき、その値が優先されます（アクター本体の構築はフレーム末尾に行われます）。
@@ -355,13 +366,15 @@ transform.Position += SEED.Vector3.Up * SEED.Time.DeltaTime;
 ### CanvasTransform（2D キャンバス上の位置・回転・スケール）
 
 ```csharp
-var ct = gameObject.CanvasTransform;
-ct.Position                // Vector2（get/set。親 Canvas 基準の相対座標）
-ct.Rotation                // float（get/set。Z 軸周りの度）
-ct.Scale                   // Vector2（get/set）
-ct.Pivot                   // Vector2（get/set。回転・スケール基準点。正規化 [0,1]、(0.5,0.5)=中央）
-ct.Anchor                  // Vector2（get/set。親 Canvas 内の position 基準点。(0,0)=左上 (1,1)=右下）
-ct.ScreenPosition          // Vector2（get のみ。ウィンドウ左上原点のスクリーン座標・ピクセル）
+if (gameObject.GetComponent<CanvasTransform>() is { } ct)   // CanvasTransform?（未アタッチは null）
+{
+    ct.Position            // Vector2（get/set。親 Canvas 基準の相対座標）
+    ct.Rotation            // float（get/set。Z 軸周りの度）
+    ct.Scale               // Vector2（get/set）
+    ct.Pivot               // Vector2（get/set。回転・スケール基準点。正規化 [0,1]、(0.5,0.5)=中央）
+    ct.Anchor              // Vector2（get/set。親 Canvas 内の position 基準点。(0,0)=左上 (1,1)=右下）
+    ct.ScreenPosition      // Vector2（get のみ。ウィンドウ左上原点のスクリーン座標・ピクセル）
+}
 ```
 
 > `Position` は**親 Canvas 相対**の座標ですが、`ScreenPosition` はアンカー・スケールモード・親チェーンをすべて反映した**画面上の絶対位置**（ピボット点）を返します。SEED の 3D `Transform.Position` は元々ワールド絶対座標で、書き込み時に子孫へ差分が伝播します（上記「親子の追従」参照）。
@@ -369,17 +382,19 @@ ct.ScreenPosition          // Vector2（get のみ。ウィンドウ左上原点
 ### Sprite（2D スプライト表示）
 
 ```csharp
-var sprite = gameObject.Sprite;
-sprite.TexturePath         // string（get/set。assets:// 仮想パス。空文字=単色表示）
-sprite.Color               // Color（get/set。RGBA。テクスチャに乗算）
-sprite.Width               // float（get/set。キャンバスユニット）
-sprite.Height              // float（get/set）
-sprite.Size                // Vector2（get/set。Width/Height をまとめて）
-sprite.Layer               // int（get/set。描画優先度。大きいほど手前。既定 0。
+if (gameObject.GetComponent<Sprite>() is { } sprite)   // Sprite?（未アタッチは null）
+{
+    sprite.TexturePath     // string（get/set。assets:// 仮想パス。空文字=単色表示）
+    sprite.Color           // Color（get/set。RGBA。テクスチャに乗算）
+    sprite.Width           // float（get/set。キャンバスユニット）
+    sprite.Height          // float（get/set）
+    sprite.Size            // Vector2（get/set。Width/Height をまとめて）
+    sprite.Layer           // int（get/set。描画優先度。大きいほど手前。既定 0。
                            //     同値はヒエラルキー順。同一描画ゾーン内で比較される）
 
-// 例: 点滅させる
-sprite.Color = SEED.Color.White.WithAlpha(SEED.Mathf.PingPong(SEED.Time.ElapsedTime, 1f));
+    // 例: 点滅させる
+    sprite.Color = SEED.Color.White.WithAlpha(SEED.Mathf.PingPong(SEED.Time.ElapsedTime, 1f));
+}
 ```
 
 ### Camera（3D カメラ設定）
@@ -387,15 +402,17 @@ sprite.Color = SEED.Color.White.WithAlpha(SEED.Mathf.PingPong(SEED.Time.ElapsedT
 カメラの位置・向きは同じ GameObject の `transform` で動かします。
 
 ```csharp
-var cam = gameObject.Camera;
-cam.FieldOfView            // float（get/set。垂直視野角・度。透視投影時に使用）
-cam.Near / cam.Far         // float（get/set。クリップ距離）
-cam.IsMain                 // bool（get/set。Play モードのメインカメラか）
-cam.ClearColor             // Color（get/set。背景クリアカラー）
-cam.TargetWidth / cam.TargetHeight  // int（get/set。スケーリングのベース解像度）
-cam.BarColor               // Color（get/set。レターボックス帯の色）
-cam.Projection             // string（get/set。"perspective" / "orthographic"）
-cam.OrthoHeight            // float（get/set。正射投影時の縦の描画範囲・ワールド単位）
+if (gameObject.GetComponent<Camera>() is { } cam)   // Camera?（未アタッチは null）
+{
+    cam.FieldOfView        // float（get/set。垂直視野角・度。透視投影時に使用）
+    cam.Near / cam.Far     // float（get/set。クリップ距離）
+    cam.IsMain             // bool（get/set。Play モードのメインカメラか）
+    cam.ClearColor         // Color（get/set。背景クリアカラー）
+    cam.TargetWidth / cam.TargetHeight  // int（get/set。スケーリングのベース解像度）
+    cam.BarColor           // Color（get/set。レターボックス帯の色）
+    cam.Projection         // string（get/set。"perspective" / "orthographic"）
+    cam.OrthoHeight        // float（get/set。正射投影時の縦の描画範囲・ワールド単位）
+}
 ```
 
 - `Projection = "orthographic"` で平行投影（遠近感なし）。縦 `OrthoHeight`・横 `OrthoHeight × アスペクト比` の範囲を写します。透視投影時は `FieldOfView` を使用します。
@@ -405,19 +422,21 @@ cam.OrthoHeight            // float（get/set。正射投影時の縦の描画�
 エディタの「コンポーネント追加 → サウンド → Audio Source」で追加し、インスペクタで設定します。
 
 ```csharp
-var audio = gameObject.AudioSource;
-audio.Play();              // 設定された音源を再生（再生中なら鳴らし直し）
-audio.Stop();              // 停止
-audio.IsPlaying            // bool: 再生中か
+if (gameObject.GetComponent<AudioSource>() is { } audio)   // AudioSource?（未アタッチは null）
+{
+    audio.Play();          // 設定された音源を再生（再生中なら鳴らし直し）
+    audio.Stop();          // 停止
+    audio.IsPlaying        // bool: 再生中か
 
-audio.Path                 // string（get/set。assets:// 仮想パス）
-audio.Volume               // float（get/set。1.0=等倍。再生中も即反映）
-audio.Loop                 // bool（get/set。次回 Play 時に反映）
-audio.PlayOnStart          // bool（get/set。Play 開始時に自動再生）
-audio.Spatial              // bool（get/set。3D 空間再生 = メインカメラとの距離減衰 + 方向パン）
-audio.MinDistance          // float（get/set。減衰開始距離。これ以内は音量 100%）
-audio.MaxDistance          // float（get/set。無音距離。これ以遠は聞こえない）
-audio.Pan                  // float（get/set。-1=左 〜 1=右。Spatial=false 時のみ有効）
+    audio.Path             // string（get/set。assets:// 仮想パス）
+    audio.Volume           // float（get/set。1.0=等倍。再生中も即反映）
+    audio.Loop             // bool（get/set。次回 Play 時に反映）
+    audio.PlayOnStart      // bool（get/set。Play 開始時に自動再生）
+    audio.Spatial          // bool（get/set。3D 空間再生 = メインカメラとの距離減衰 + 方向パン）
+    audio.MinDistance      // float（get/set。減衰開始距離。これ以内は音量 100%）
+    audio.MaxDistance      // float（get/set。無音距離。これ以遠は聞こえない）
+    audio.Pan              // float（get/set。-1=左 〜 1=右。Spatial=false 時のみ有効）
+}
 ```
 
 - 距離減衰は線形（MinDistance 以内 100% → MaxDistance で 0%）。リスナーは `is_main` のメインカメラ。
@@ -428,17 +447,19 @@ audio.Pan                  // float（get/set。-1=左 〜 1=右。Spatial=false
 エディタの「コンポーネント追加 → アニメーター」で追加し、インスペクタで再生対象クリップ（`clips`）を登録します。実際のトラック評価・書き込みはエンジン側の AnimationSystem が毎フレーム自動で行うため、スクリプトからは再生の開始・停止・状態参照のみ行います。
 
 ```csharp
-var anim = gameObject.Animator;
-anim.Play("Walk");         // 指定クリップを先頭（time=0）から再生（速度は変更しない）
-anim.Play("Walk", 1.5f);   // 再生速度も同時に指定して再生
-anim.Stop();                // 停止して time=0 に戻す
-anim.Pause();                // 再生位置を保持したまま一時停止
-anim.Resume();               // 一時停止を再開（再生対象クリップが無ければ無視）
+if (gameObject.GetComponent<Animator>() is { } anim)   // Animator?（未アタッチは null）
+{
+    anim.Play("Walk");     // 指定クリップを先頭（time=0）から再生（速度は変更しない）
+    anim.Play("Walk", 1.5f); // 再生速度も同時に指定して再生
+    anim.Stop();           // 停止して time=0 に戻す
+    anim.Pause();          // 再生位置を保持したまま一時停止
+    anim.Resume();         // 一時停止を再開（再生対象クリップが無ければ無視）
 
-anim.IsPlaying              // bool（get のみ。再生中か）
-anim.CurrentClip            // string（get のみ。再生中のクリップ名。未再生は空文字）
-anim.Time                   // float（get/set。再生位置・秒。書き込みでシーク可能）
-anim.Speed                  // float（get/set。再生速度倍率。1.0=等倍、負値で逆再生）
+    anim.IsPlaying         // bool（get のみ。再生中か）
+    anim.CurrentClip       // string（get のみ。再生中のクリップ名。未再生は空文字）
+    anim.Time              // float（get/set。再生位置・秒。書き込みでシーク可能）
+    anim.Speed             // float（get/set。再生速度倍率。1.0=等倍、負値で逆再生）
+}
 ```
 
 - `Play` で指定するクリップ名は、そのアクターの Animator に登録済み（`clips` 一覧に存在し、既にロード済み）である必要があります。未登録・未ロードの名前を指定すると警告ログを出して無視されます（例外は発生しません）。
@@ -449,32 +470,62 @@ anim.Speed                  // float（get/set。再生速度倍率。1.0=等倍
 エディタの「コンポーネント追加 → パーティクルエミッタ」で追加し、インスペクタで放出パラメータ（レート・寿命・色・ブレンドなど）を設定します。放出位置・向きは同じ GameObject の `transform` が決めます。
 
 ```csharp
-var ps = gameObject.ParticleEmitter;
-ps.Play();                 // 放出を開始（playing = true）
-ps.Stop();                 // 放出を停止（既存パーティクルは寿命で消える）
-ps.Burst(50);              // 50 個を即時一括放出（継続放出とは独立）
-ps.IsPlaying               // bool（get のみ。放出中か。Playing の別名）
+if (gameObject.GetComponent<ParticleEmitter>() is { } ps)   // ParticleEmitter?（未アタッチは null）
+{
+    ps.Play();             // 放出を開始（playing = true）
+    ps.Stop();             // 放出を停止（既存パーティクルは寿命で消える）
+    ps.Burst(50);          // 50 個を即時一括放出（継続放出とは独立）
+    ps.IsPlaying           // bool（get のみ。放出中か。Playing の別名）
 
-ps.Playing                 // bool（get/set。放出中フラグ。Play()/Stop() と同じ切り替え）
-ps.EmitRate                // float（get/set。1 秒あたりの放出個数。負値は 0 にクランプ）
-ps.LoopEmit                // bool（get/set。寿命ループ放出するか）
-ps.Drag                    // float（get/set。空気抵抗係数。負値は 0 にクランプ）
-ps.SpreadAngle             // float（get/set。放出円錐の半頂角・度。0〜180 にクランプ）
+    ps.Playing             // bool（get/set。放出中フラグ。Play()/Stop() と同じ切り替え）
+    ps.EmitRate            // float（get/set。1 秒あたりの放出個数。負値は 0 にクランプ）
+    ps.LoopEmit            // bool（get/set。寿命ループ放出するか）
+    ps.Drag                // float（get/set。空気抵抗係数。負値は 0 にクランプ）
+    ps.SpreadAngle         // float（get/set。放出円錐の半頂角・度。0〜180 にクランプ）
+}
 ```
 
 - `Burst(n)` の放出リクエストは蓄積され、次フレームで GPU パーティクルシステムが消費します（`emit_rate` による継続放出とは別枠）。`n` が 0 以下なら何もしません。
 
+### InputMap（入力アクションマップ）
+
+エディタの「コンポーネント追加 → 入力 → Input Map」で追加し、`.inputmap`（アクション名 → 物理入力のマッピング）を割り当てます。アクション名で「押している/押した瞬間/離した瞬間」や軸値を取得します。現状 **PC プラットフォームの Key / WASD バインディングのみ**評価します（ゲームパッド・仮想入力は基盤未実装のため無視）。
+
+```csharp
+if (gameObject.GetComponent<InputMap>() is { } input)   // InputMap?（未アタッチは null）
+{
+    input.GetAction("Jump")        // bool: アクションのキーを押している間
+    input.GetActionDown("Jump")    // bool: 押した瞬間のフレームだけ
+    input.GetActionUp("Jump")      // bool: 離した瞬間のフレームだけ
+    input.GetAxis("Steer")         // float: Axis1D（[-1,1]。WASD 合成 or キー押下=1.0）
+    input.GetVector2("Move")       // Vector2: Vector2（Horizontal→x, Vertical→y。各 [-1,1]）
+
+    // 例: 入力マップで移動＋ジャンプ
+    var move = input.GetVector2("Move");
+    transform.Position += new SEED.Vector3(move.x, 0f, move.y) * 5f * SEED.Time.DeltaTime;
+    if (input.GetActionDown("Jump")) { /* ジャンプ */ }
+}
+```
+
+- **WASD 合成軸**: `Horizontal` は D/→ = +1・A/← = -1、`Vertical` は W/↑ = +1・S/↓ = -1（矢印キーも WASD と同時に有効。`Input.MoveAxis()` と同じ挙動）。
+- **キー名**はエディタの InputMap エディタの選択肢（`Space` / `LeftShift` / `Q` / `Alpha0` / `Keypad0` / `UpArrow` …）に対応します。マッピング不能な名前は無反応（ロード時に警告 1 回）。
+- `.inputmap` は初回アクセス時に読み込み・キャッシュされます（毎フレーム再読込しません）。実行中のファイル編集は反映されません。
+- **複数コンポーネントの索引例**: 同種を複数持つ場合は `gameObject.GetComponent<InputMap>(1)`（index）や `gameObject.GetComponent<InputMap>("Vehicle")`（スロット名）で選べます。
+
 ### 利用可能なコンポーネント一覧
 
-| コンポーネント名 | アクセサ | 内容 |
+| コンポーネント名 | 取得 | 内容 |
 |---|---|---|
-| `Transform` | `gameObject.Transform` / `transform` | 3D 位置・回転・スケール |
-| `CanvasTransform` | `gameObject.CanvasTransform` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー |
-| `Sprite` | `gameObject.Sprite` | テクスチャパス・色・サイズ・レイヤー |
-| `Camera` | `gameObject.Camera` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |
-| `Audio` | `gameObject.AudioSource` | 音源パス・音量・ループ・3D 減衰・パン + Play/Stop |
-| `Animator` | `gameObject.Animator` | 再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume |
-| `ParticleEmitter` | `gameObject.ParticleEmitter` | 放出レート・ループ・抵抗・拡散角 + Play/Stop/Burst |
+| `Transform` | `gameObject.GetComponent<Transform>()` / `transform` | 3D 位置・回転・スケール |
+| `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー |
+| `Sprite` | `gameObject.GetComponent<Sprite>()` | テクスチャパス・色・サイズ・レイヤー |
+| `Camera` | `gameObject.GetComponent<Camera>()` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |
+| `AudioSource` | `gameObject.GetComponent<AudioSource>()` | 音源パス・音量・ループ・3D 減衰・パン + Play/Stop |
+| `Animator` | `gameObject.GetComponent<Animator>()` | 再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume |
+| `ParticleEmitter` | `gameObject.GetComponent<ParticleEmitter>()` | 放出レート・ループ・抵抗・拡散角 + Play/Stop/Burst |
+| `InputMap` | `gameObject.GetComponent<InputMap>()` | 入力アクション評価（Bool / Axis1D / Vector2。PC の Key / WASD） |
+
+> **重要**: `GetComponent<T>()` は `T?` を返し、同種コンポーネントを複数スロット持てます。`GetComponent<T>()`＝0 番目、`GetComponent<T>(index)`＝index 番目、`GetComponent<T>("Name")`＝スロット名一致。
 
 他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定で、対応済みのものは本節に追記されます。
 
