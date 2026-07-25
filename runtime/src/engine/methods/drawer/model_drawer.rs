@@ -42,6 +42,14 @@ pub fn draw_model_indirect<'pass>(
     // （フラグメントは LightMeta.view_mode によりアンリット表示）へ自動フォールバックする。
     // 呼び出し側はワイヤ時に rt_pipes=None・メインカメラ用（非 RT）lights_bg を渡すこと。
     wireframe: bool,
+    // マテリアル（group 2）の差し替え。Some のとき、バッチ内の全プリミティブに対し
+    // 各プリミティブ固有のマテリアルではなくこの BindGroup を group 2 として使う。
+    // カメラプレビューの地形描画専用: 地形マテリアル（metallic=1・テクスチャ無し・G-Buffer
+    // 専用シェーダ前提）はフォワード＋IBL/クラスタ無しのプレビュー環境でほぼ黒落ちするため、
+    // metallic=0/roughness=1 の簡易マテリアルへ差し替えて頂点カラー×ベース色で可視化する。
+    // None（既定）のときは従来どおりプリミティブ固有マテリアルを使う（全既存呼び出しと一致）。
+    // 差し替え BindGroup は必ず mesh パイプラインの material_bgl と同一レイアウトで作ること。
+    material_override: Option<&'pass wgpu::BindGroup>,
 ) {
     if batch.n_prims == 0 { return; }
 
@@ -88,10 +96,15 @@ pub fn draw_model_indirect<'pass>(
             let gpu_mesh = &gpu_model.meshes[draw.mesh_idx];
             let prim     = &gpu_mesh.primitives[draw.prim_idx];
 
-            let mat_bg: &wgpu::BindGroup = draw.material_idx
-                .and_then(|mi| gpu_model.materials.get(mi))
-                .map(|m| &m.bind_group)
-                .unwrap_or(&gpu_model.default_material.bind_group);
+            // マテリアル差し替え（material_override）が指定されていればそれを最優先で使う。
+            // 指定が無ければ従来どおりプリミティブ固有→default_material の順で解決する。
+            let mat_bg: &wgpu::BindGroup = match material_override {
+                Some(bg) => bg,
+                None => draw.material_idx
+                    .and_then(|mi| gpu_model.materials.get(mi))
+                    .map(|m| &m.bind_group)
+                    .unwrap_or(&gpu_model.default_material.bind_group),
+            };
 
             // このプリミティブのマテリアルのカリング面（オーバーライド適用後の実効値）。
             let cull = gpu_model.primitive_cull_face(draw.material_idx);
