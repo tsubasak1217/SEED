@@ -40,6 +40,20 @@ const PERF_LOG_INTERVAL: u64 = 60;
 /// （常時出力するとエディタログが [PERF] 行で埋まり、スクリプト等の重要ログが埋没するため）
 static PERF_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("SEED_PERF_LOG").is_some());
+
+/// 埋め込みインプレース Play の黒画面診断（[PLAY_DIAG] 行）を出力するか。
+/// 既定無効。環境変数 SEED_PLAY_DIAG を設定すると、Play（非ポーズ）フレームの先頭
+/// PLAY_DIAG_FRAMES 回だけ「解決したゲームカメラ位置・game_viewport/scissor 矩形・
+/// ウィンドウ inner_size・親クライアント矩形・scene_canvas_ss・主要 draw 件数」を eprintln する。
+/// 黒画面が『ビューポート矩形がレンダーターゲットと不整合』かを一発で切り分けるための計器。
+static PLAY_DIAG_ENABLED: std::sync::LazyLock<bool> =
+    // 【一時】黒画面切り分け中のため常時 ON（Play 先頭10フレームのみの出力で洪水しない）。
+    // env 変数はエディタ経由でランタイム子プロセスへ届かない事故が実際にあったため。原因確定後に env ゲートへ戻す。
+    std::sync::LazyLock::new(|| true || std::env::var_os("SEED_PLAY_DIAG").is_some());
+/// PLAY_DIAG を出力する Play フレーム数（先頭からこの回数だけ）。
+const PLAY_DIAG_FRAMES: u64 = 10;
+/// PLAY_DIAG 用の Play フレームカウンタ（mode==Play && !paused のフレームだけ加算）。
+static PLAY_DIAG_FRAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 use crate::engine::components::{ColliderComponent, ColliderShapeData, ComponentKind};
 use crate::engine::components::{Collider2dComponent, CanvasTransform};
 use crate::engine::components::Transform as ActorTransform;
@@ -575,6 +589,12 @@ impl App {
         let my_hwnd = self.window_hwnd();
         let queue = self.draw_ctx.as_ref().map(|c| c.queue.clone());
 
+        // PLAY_DIAG 用: レンダーターゲット（on_resize は親クライアント矩形で offscreen/surface を
+        // サイズする, event_handler.rs:36-38）と game_viewport の元になる window.inner_size() が
+        // 埋め込みで一致しているかを後段で突き合わせるため、ここで親クライアント矩形を控える。
+        // scene の可変借用（下の if let）に入る前に取得する（借用衝突回避）。
+        let diag_parent_client = if *PLAY_DIAG_ENABLED { self.get_parent_client_size() } else { None };
+
         // Play モードのスケーリングモードに応じたビューポート矩形とクリアカラー。
         // カメラ選択ブロック内で上書きされ、メインレンダーパスで適用する。
         let win_w_f = window_size.map_or(1280.0_f32, |s| s.width  as f32);
@@ -723,6 +743,31 @@ impl App {
                 _pad2:          [0.0; 2],
                 inv_view_proj:  inv_view_proj.transpose().data,
             });
+
+            // ── 埋め込み Play 黒画面 診断（SEED_PLAY_DIAG）─────────────────────────
+            // Play（非ポーズ）フレームの先頭 PLAY_DIAG_FRAMES 回だけ、ゲームカメラ描画に
+            // 実際に渡る値を出力する。黒画面が「ビューポート矩形がレンダーターゲットと
+            // 不整合（win.inner_size ≠ 親クライアント＝offscreen サイズ）」で起きているかを
+            // 一発で切り分ける。矩形が (0,0,0,0) や画面外・極小、または inner_size と
+            // parent_client がズレていれば本因が確定する。
+            if *PLAY_DIAG_ENABLED && self.mode == RuntimeMode::Play && !self.paused {
+                let n = PLAY_DIAG_FRAME.fetch_add(1, Ordering::Relaxed);
+                if n < PLAY_DIAG_FRAMES {
+                    let (gx, gy, gw, gh) = game_viewport;
+                    let inner = window_size.map(|s| (s.width, s.height));
+                    let parent = diag_parent_client.map(|s| (s.width, s.height));
+                    let has_main = scene.find_main_camera().is_some();
+                    eprintln!(
+                        "[PLAY_DIAG {n}] main_cam_found={has_main} cam_pos=({:.2},{:.2},{:.2}) \
+                         game_viewport=(x{:.1} y{:.1} w{:.1} h{:.1}) res=[{:.0},{:.0}] \
+                         win_inner={inner:?} parent_client={parent:?} \
+                         scene_canvas_ss={scene_canvas_ss} use_screen_space={use_screen_space} \
+                         uses_bar_mode={uses_bar_mode} clear={:?}",
+                        cam_pos_arr[0], cam_pos_arr[1], cam_pos_arr[2],
+                        gx, gy, gw, gh, res[0], res[1], game_clear_color,
+                    );
+                }
+            }
 
             // シーンスクリーンスペース専用: 2D オルソオーバーレイカメラを更新する。
             // 3D メインカメラの上に 2D キャンバス要素を重ねて描画するために使う。
@@ -1494,6 +1539,21 @@ impl App {
                                  (nocull={terrain_cull_disabled})"
                             );
                         }
+                    }
+                    // PLAY_DIAG: Play 先頭数フレームで「ゲームカメラ視錐台で地形が何チャンク
+                    // 描画に残るか」を出す。0/N なら黒画面の原因は『ゲームカメラ視錐台で全地形が
+                    // カリングされている』側（カメラ向き・視錐台計算）。N/N 近くなら地形は描かれて
+                    // おり原因はビューポート／プレゼント側、と切り分けられる。
+                    if *PLAY_DIAG_ENABLED && self.mode == RuntimeMode::Play && !self.paused
+                        && PLAY_DIAG_FRAME.load(Ordering::Relaxed) <= PLAY_DIAG_FRAMES
+                        && terrain_chunk_total > 0
+                    {
+                        let drawn = terrain_chunk_total - terrain_culled.len() as u32;
+                        let mc_batches = self.shared_model_batches.len();
+                        eprintln!(
+                            "[PLAY_DIAG] terrain_drawn={drawn}/{terrain_chunk_total} \
+                             shared_model_batches={mc_batches} (nocull={terrain_cull_disabled})"
+                        );
                     }
 
                     // ── GPU メッシュレットカリング（第1弾）: 前処理＋ compute ディスパッチ ──

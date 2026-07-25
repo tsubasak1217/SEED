@@ -707,3 +707,92 @@ pub fn build_actor(
 
     Ok(actor)
 }
+
+// ============================================================
+//  テスト — find_main_camera の子アクタ解決
+//
+//  埋め込みインプレース Play の黒画面調査（fps-degradation）向け。
+//  実機構成「Actor / Player[Camera スロット] / ...」のように、メインカメラが
+//  トップレベルではなく**子アクタのスロット**に付いている場合でも、
+//  find_main_camera が DFS でそれを見つけ、そのアクタのワールド Transform を
+//  返すことを保証する回帰テスト。
+//
+//  【背景】Pause 時の sync_debug_camera_to_main_camera（この find_main_camera を
+//  使う）がゲームカメラ位置を正しく再現できている実機観察と整合し、
+//  「黒画面はカメラ解決失敗ではない」ことをヘッドレスで裏付ける。
+//  Transform はワールド空間保持（transform_sync.rs）のため、ここで返る位置は
+//  そのまま描画カメラ位置になる。
+// ============================================================
+#[cfg(test)]
+mod find_main_camera_tests {
+    use super::Scene;
+    use crate::engine::components::{CameraComponent, ComponentKind, Transform};
+    use crate::engine::structs::objects::Actor;
+
+    /// 指定ワールド位置の Transform をアクタ本体 entity に持たせる。
+    fn spawn_actor_at(scene: &mut Scene, name: &str, pos: [f32; 3]) -> Actor {
+        let e = scene.world.spawn();
+        let mut tf = Transform::default();
+        tf.position = pos;
+        scene.world.insert(e, tf);
+        Actor::new(e, name)
+    }
+
+    /// アクタへ is_main フラグ指定の Camera スロットを 1 つ追加する。
+    fn attach_main_camera(scene: &mut Scene, actor: &mut Actor, is_main: bool) {
+        let slot_e = scene.world.spawn();
+        let mut cc = CameraComponent::default();
+        cc.is_main = is_main;
+        scene.world.insert(slot_e, cc);
+        actor.add_slot_typed::<CameraComponent>("Camera", ComponentKind::Camera, slot_e);
+    }
+
+    /// メインカメラがトップレベルではなく子アクタのスロットに付いていても、
+    /// find_main_camera が DFS で解決し、その子アクタのワールド Transform を返す。
+    #[test]
+    fn resolves_main_camera_on_child_actor() {
+        let mut scene = Scene::new("t");
+
+        // Root（カメラ無し）> Player（is_main カメラ・既知のワールド位置）
+        let mut root   = spawn_actor_at(&mut scene, "Root", [0.0, 0.0, 0.0]);
+        let mut player = spawn_actor_at(&mut scene, "Player", [3.0, 4.0, 5.0]);
+        attach_main_camera(&mut scene, &mut player, true);
+        root.add_child(player);
+        scene.actors.push(root);
+
+        let found = scene.find_main_camera();
+        assert!(found.is_some(), "子アクタの is_main カメラが解決できていない");
+        let (tf, cd) = found.unwrap();
+        // 返る Transform は子アクタ Player のワールド位置そのもの。
+        assert_eq!(tf.position, [3.0, 4.0, 5.0], "子カメラのワールド位置が返っていない");
+        assert!(cd.is_main, "返った CameraComponentData が is_main でない");
+    }
+
+    /// is_main=false のカメラしか無い場合は None（メインカメラ扱いしない）。
+    #[test]
+    fn ignores_non_main_camera() {
+        let mut scene = Scene::new("t");
+        let mut player = spawn_actor_at(&mut scene, "Player", [1.0, 2.0, 3.0]);
+        attach_main_camera(&mut scene, &mut player, false);
+        scene.actors.push(player);
+
+        assert!(scene.find_main_camera().is_none(),
+                "is_main=false のカメラはメインカメラとして解決してはならない");
+    }
+
+    /// DFS 順で最初に見つかった is_main カメラを採用する（複数トップレベル）。
+    #[test]
+    fn returns_first_main_camera_in_dfs_order() {
+        let mut scene = Scene::new("t");
+
+        let mut a = spawn_actor_at(&mut scene, "A", [10.0, 0.0, 0.0]);
+        attach_main_camera(&mut scene, &mut a, true);
+        let mut b = spawn_actor_at(&mut scene, "B", [20.0, 0.0, 0.0]);
+        attach_main_camera(&mut scene, &mut b, true);
+        scene.actors.push(a);
+        scene.actors.push(b);
+
+        let (tf, _) = scene.find_main_camera().expect("メインカメラが見つからない");
+        assert_eq!(tf.position, [10.0, 0.0, 0.0], "DFS 先頭のメインカメラを返すべき");
+    }
+}
