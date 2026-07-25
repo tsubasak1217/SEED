@@ -890,6 +890,55 @@ impl<'r> RenderFrame<'r> {
         })
     }
 
+    /// エディタオーバーレイ（ギズモ・軸・各種ライン／ワイヤー・アイコン・選択アウトライン等）を
+    /// WBOIT 合成後の HDR へ重ねるためのパスを開始する。
+    ///
+    /// 背景: WBOIT 合成はフルスクリーンの `no_depth` クアッドでシーン HDR を上書き／減衰するため、
+    /// オーバーレイをメインパス内（＝合成より前）に描くと、半透明被覆のある画面座標で 3D 前後関係を
+    /// 無視して消されてしまう。これを避けるため、オーバーレイは合成の「後」に本パスで描く。
+    ///
+    /// - color  = `color_view`（シーン HDR）を `LoadOp::Load`（合成済み HDR を保持して上に重ねる）。
+    /// - depth  = メインパス共有の `depth_view` を `LoadOp::Load`（不透明深度を保持しテストのみ。
+    ///   パイプライン側 `depth_write=false` のため書き込みは行わない → `LessEqual` のワイヤは
+    ///   不透明に隠れ、`Always` のギズモ／軸は常に最前面に出る）。
+    /// - stencil = `LoadOp::Clear(0)`（選択アウトラインのステンシルマスク用に 0 初期化。
+    ///   深度とは独立に aspect ごとの ops を指定できるため、深度 Load ＋ ステンシル Clear が成立する）。
+    ///
+    /// WBOIT 合成後・GPU パーティクル前に呼ぶこと（HDR・トーンマップ前）。
+    pub fn begin_overlay_pass_to<'f>(
+        &'f mut self,
+        color_view: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Editor Overlay Pass (HDR)"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           color_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Load, // 不透明の深度を保持（テストのみ・書込なし）。
+                    store: wgpu::StoreOp::Store,
+                }),
+                // 選択アウトライン用にステンシルは 0 クリアする（深度とは独立）。
+                stencil_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
     /// WBOIT の accum/reveal ターゲットへ透明描画パスを開始する（Phase R5）。
     ///
     /// - color0 = accum : LoadOp::Clear(0,0,0,0)（加算蓄積の初期値）。
