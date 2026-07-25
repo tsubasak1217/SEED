@@ -21,7 +21,7 @@ pub mod host_api;
 pub mod input_bridge;
 pub use host_api::{
     with_world, with_actors, take_scene_commands, take_audio_commands,
-    publish_input, publish_physics_sender,
+    publish_input, publish_physics_sender, advance_script_frame,
     ScriptSceneCommand, ScriptAudioCommand,
 };
 

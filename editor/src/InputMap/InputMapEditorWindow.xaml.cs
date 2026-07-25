@@ -37,52 +37,55 @@ public partial class InputMapEditorWindow : Window
     private bool         _isDirty;
 
     // ── 静的データ定義 ───────────────────────────────────────
+    //  ランタイムは PC プラットフォームのみ評価するため、UI もプラットフォーム選択を
+    //  廃止し、生成するバインディングは常に Platform="PC" とする。
+    //  入力種別は Key / GamepadButton / GamepadAxis の 3 種。値の一覧は
+    //  Rust 側 action_map / gamepad の対応表と 1:1 で一致させる（ここが正典）。
 
-    private static readonly string[] Platforms    = ["PC", "Mobile", "PS5", "Switch"];
-    private static readonly string[] PcInputTypes = ["Key", "GamepadButton", "GamepadAxis", "WASD"];
-    private static readonly string[] MobInputTypes = ["VirtualButton", "VirtualStick"];
-    private static readonly string[] ConInputTypes = ["GamepadButton", "GamepadAxis"];
+    /// <summary>入力種別（Key / GamepadButton / GamepadAxis）。</summary>
+    private static readonly string[] InputTypes = ["Key", "GamepadButton", "GamepadAxis"];
 
-    /// <summary>プラットフォーム + 入力種別 → 選択可能な入力値の一覧。</summary>
-    private static readonly Dictionary<(string Platform, string InputType), string[]> InputValues = new()
+    private const string TypeKey  = "Key";
+    private const string TypeBtn  = "GamepadButton";
+    private const string TypeAxis = "GamepadAxis";
+    private const string PlatformPc = "PC";
+
+    /// <summary>Key の選択肢（Rust 側 key_from_name と一致）。</summary>
+    private static readonly string[] KeyValues = [
+        "Space", "Enter", "Tab", "Backspace", "Escape", "Delete",
+        "A","B","C","D","E","F","G","H","I","J","K","L","M",
+        "N","O","P","Q","R","S","T","U","V","W","X","Y","Z",
+        "Alpha0","Alpha1","Alpha2","Alpha3","Alpha4",
+        "Alpha5","Alpha6","Alpha7","Alpha8","Alpha9",
+        "F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12",
+        "UpArrow","DownArrow","LeftArrow","RightArrow",
+        "LeftShift","RightShift","LeftCtrl","RightCtrl","LeftAlt","RightAlt",
+        "Keypad0","Keypad1","Keypad2","Keypad3","Keypad4",
+        "Keypad5","Keypad6","Keypad7","Keypad8","Keypad9",
+    ];
+
+    /// <summary>GamepadButton の選択肢（Rust 側 PadButton::from_name と一致）。</summary>
+    private static readonly string[] GamepadButtons = [
+        "South","East","West","North",
+        "DPadUp","DPadDown","DPadLeft","DPadRight",
+        "LeftShoulder","RightShoulder",
+        "LeftStickPress","RightStickPress",
+        "Start","Select",
+    ];
+
+    /// <summary>GamepadAxis の選択肢（Rust 側 PadAxis::from_name と一致）。</summary>
+    private static readonly string[] GamepadAxes = [
+        "LeftStickX","LeftStickY","RightStickX","RightStickY",
+        "LeftTrigger","RightTrigger",
+    ];
+
+    /// <summary>入力種別ごとの値選択肢を返す。未知種別は空。</summary>
+    private static string[] ValuesForType(string inputType) => inputType switch
     {
-        [("PC", "Key")] = [
-            "Space", "Enter", "Tab", "Backspace", "Escape", "Delete",
-            "A","B","C","D","E","F","G","H","I","J","K","L","M",
-            "N","O","P","Q","R","S","T","U","V","W","X","Y","Z",
-            "Alpha0","Alpha1","Alpha2","Alpha3","Alpha4",
-            "Alpha5","Alpha6","Alpha7","Alpha8","Alpha9",
-            "F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12",
-            "UpArrow","DownArrow","LeftArrow","RightArrow",
-            "LeftShift","RightShift","LeftCtrl","RightCtrl","LeftAlt","RightAlt",
-            "Keypad0","Keypad1","Keypad2","Keypad3","Keypad4",
-            "Keypad5","Keypad6","Keypad7","Keypad8","Keypad9",
-        ],
-        [("PC", "GamepadButton")] = [
-            "South","North","East","West",
-            "L1","R1","L2","R2","L3","R3",
-            "Start","Select",
-            "DPadUp","DPadDown","DPadLeft","DPadRight",
-        ],
-        [("PC", "GamepadAxis")]  = ["LeftX","LeftY","RightX","RightY","L2","R2"],
-        [("PC", "WASD")]         = ["Horizontal","Vertical"],
-        // Mobile はカスタム名のため候補なし（自由入力）
-        [("Mobile", "VirtualButton")] = [],
-        [("Mobile", "VirtualStick")]  = [],
-        [("PS5", "GamepadButton")] = [
-            "Cross","Circle","Square","Triangle",
-            "L1","R1","L2","R2","L3","R3",
-            "DPadUp","DPadDown","DPadLeft","DPadRight",
-            "Options","Create","TouchPad",
-        ],
-        [("PS5", "GamepadAxis")]  = ["LeftX","LeftY","RightX","RightY","L2","R2"],
-        [("Switch", "GamepadButton")] = [
-            "A","B","X","Y",
-            "L","R","ZL","ZR","L3","R3",
-            "Plus","Minus",
-            "DPadUp","DPadDown","DPadLeft","DPadRight",
-        ],
-        [("Switch", "GamepadAxis")] = ["LeftX","LeftY","RightX","RightY","ZL","ZR"],
+        TypeKey  => KeyValues,
+        TypeBtn  => GamepadButtons,
+        TypeAxis => GamepadAxes,
+        _        => Array.Empty<string>(),
     };
 
     // ── コンストラクタ ───────────────────────────────────────
@@ -197,25 +200,33 @@ public partial class InputMapEditorWindow : Window
             _selectedAction.ValueType = Enum.TryParse<ActionValueType>(tag, out var vt)
                 ? vt : ActionValueType.Bool;
             _isDirty = true;
+            // 型に応じてバインディング編集レイアウトを切り替える。
+            RefreshBindingPane();
         }
     }
 
     // ── バインディング編集ペイン ─────────────────────────────
 
-    /// <summary>右ペインを再構築する（アクション未選択時は非表示）。</summary>
+    /// <summary>
+    /// 右ペインを再構築する（アクション未選択時は非表示）。
+    /// value_type に応じてバインディング編集レイアウトを切り替える:
+    ///   Bool   → 条件コンボ + フラットなバインド一覧。
+    ///   Axis1D → 正バインド / 負バインドの 2 グループ。
+    ///   Axis2D → 正規化チェック + 軸X(正/負) + 軸Y(正/負)。
+    /// </summary>
     private void RefreshBindingPane()
     {
         BindingStack.Children.Clear();
+        // 追加ボタンは各グループ内にインライン配置するため、静的フッターは常に非表示。
+        BindingFooter.Visibility = Visibility.Collapsed;
 
         if (_selectedAction is null)
         {
-            ActionHeader.Visibility  = Visibility.Collapsed;
-            BindingFooter.Visibility = Visibility.Collapsed;
+            ActionHeader.Visibility = Visibility.Collapsed;
             return;
         }
 
-        ActionHeader.Visibility  = Visibility.Visible;
-        BindingFooter.Visibility = Visibility.Visible;
+        ActionHeader.Visibility = Visibility.Visible;
 
         // アクション名 TextBox を更新（TextChanged を一時停止してプログラム書き込み）
         TbActionName.TextChanged -= OnActionNameChanged;
@@ -236,186 +247,255 @@ public partial class InputMapEditorWindow : Window
         }
         CbValueType.SelectionChanged += OnValueTypeChanged;
 
-        // カラムヘッダー行
-        BindingStack.Children.Add(BuildBindingHeaderRow());
-
-        // バインディング行
-        for (int i = 0; i < _selectedAction.Bindings.Count; i++)
-            BindingStack.Children.Add(BuildBindingRow(_selectedAction.Bindings[i], i));
-    }
-
-    /// <summary>バインディング一覧のカラムヘッダー行を構築する。</summary>
-    private static UIElement BuildBindingHeaderRow()
-    {
-        var grid = BuildBindingGrid();
-        void AddHeader(int col, string text)
+        // 値型に応じてレイアウトを構築する。
+        switch (_selectedAction.ValueType)
         {
-            var tb = new TextBlock
-            {
-                Text              = text,
-                Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
-                FontSize          = 10,
-                FontWeight        = FontWeights.Bold,
-                Margin            = new Thickness(8, 0, 4, 0),
-                VerticalAlignment = VerticalAlignment.Center,
-            };
-            Grid.SetColumn(tb, col);
-            grid.Children.Add(tb);
+            case ActionValueType.Bool:
+                BindingStack.Children.Add(BuildConditionRow(_selectedAction));
+                BindingStack.Children.Add(BuildBindingGroup("バインド", _selectedAction.EnsureBindings()));
+                break;
+
+            case ActionValueType.Axis1D:
+                BindingStack.Children.Add(BuildBindingGroup("正バインド", _selectedAction.EnsurePositive()));
+                BindingStack.Children.Add(BuildBindingGroup("負バインド", _selectedAction.EnsureNegative()));
+                break;
+
+            case ActionValueType.Axis2D:
+                BindingStack.Children.Add(BuildNormalizeRow(_selectedAction));
+                BindingStack.Children.Add(BuildAxisHeader("軸 X"));
+                BindingStack.Children.Add(BuildBindingGroup("正バインド", _selectedAction.EnsureX().EnsurePositive(), indent: true));
+                BindingStack.Children.Add(BuildBindingGroup("負バインド", _selectedAction.EnsureX().EnsureNegative(), indent: true));
+                BindingStack.Children.Add(BuildAxisHeader("軸 Y"));
+                BindingStack.Children.Add(BuildBindingGroup("正バインド", _selectedAction.EnsureY().EnsurePositive(), indent: true));
+                BindingStack.Children.Add(BuildBindingGroup("負バインド", _selectedAction.EnsureY().EnsureNegative(), indent: true));
+                break;
         }
-        AddHeader(0, "プラットフォーム");
-        AddHeader(1, "入力種別");
-        AddHeader(2, "入力値（検索可）");
-
-        return new Border
-        {
-            Background      = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)),
-            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)),
-            BorderThickness = new Thickness(0, 0, 0, 1),
-            Padding         = new Thickness(0, 4, 0, 4),
-            Child           = grid,
-        };
     }
 
-    /// <summary>バインディング 1 行分の UI を構築する。</summary>
-    private UIElement BuildBindingRow(InputBinding binding, int rowIdx)
-    {
-        var grid = BuildBindingGrid();
+    // ── 見出し・条件・正規化 UI ───────────────────────────────
 
-        // ── プラットフォーム ComboBox ───────────────────────
-        var cbPlatform = BuildDarkComboBox();
-        foreach (var p in Platforms) cbPlatform.Items.Add(p);
-        cbPlatform.SelectedItem = Platforms.Contains(binding.Platform)
-            ? binding.Platform : Platforms[0];
+    private static readonly Brush LabelBrush = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
+    private static readonly Brush AxisHeaderBrush = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB));
+
+    /// <summary>Bool アクションの条件（Trigger/Press/Release）コンボ行を構築する。</summary>
+    private UIElement BuildConditionRow(InputAction action)
+    {
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 10, 8, 6) };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "条件",
+            Foreground = LabelBrush,
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0),
+        });
+
+        var cb = BuildCombo(editable: false);
+        cb.Width = 180;
+        foreach (var name in Enum.GetNames<ActionCondition>()) cb.Items.Add(name);
+        cb.SelectedItem = (action.Condition ?? ActionCondition.Press).ToString();
+        cb.SelectionChanged += (_, _) =>
+        {
+            if (cb.SelectedItem is string s && Enum.TryParse<ActionCondition>(s, out var c))
+            {
+                action.Condition = c;
+                _isDirty = true;
+            }
+        };
+        panel.Children.Add(cb);
+        return panel;
+    }
+
+    /// <summary>Axis2D の「正規化するか」チェック行を構築する。</summary>
+    private UIElement BuildNormalizeRow(InputAction action)
+    {
+        var chk = new CheckBox
+        {
+            Content = "正規化する（長さ>1 のとき単位長へ。斜め入力が 0.707 になる）",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            IsChecked = action.Normalize ?? false,
+            Margin = new Thickness(12, 10, 8, 6),
+            FontSize = 11,
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+        chk.Checked   += (_, _) => { action.Normalize = true;  _isDirty = true; };
+        chk.Unchecked += (_, _) => { action.Normalize = false; _isDirty = true; };
+        return chk;
+    }
+
+    /// <summary>「軸 X」「軸 Y」の見出しを構築する。</summary>
+    private static UIElement BuildAxisHeader(string text) => new Border
+    {
+        Background = new SolidColorBrush(Color.FromRgb(0x22, 0x22, 0x22)),
+        Padding = new Thickness(12, 6, 8, 6),
+        Margin = new Thickness(0, 4, 0, 0),
+        Child = new TextBlock
+        {
+            Text = text,
+            Foreground = AxisHeaderBrush,
+            FontSize = 12,
+            FontWeight = FontWeights.Bold,
+        },
+    };
+
+    // ── バインドグループ（見出し + 行 + 追加ボタン）───────────
+
+    /// <summary>
+    /// 1 グループ（見出し + バインド行 + 「バインドを追加」ボタン）の UI を構築する。
+    /// list は編集対象の実体リスト（追加/削除がそのまま反映される）。
+    /// </summary>
+    private UIElement BuildBindingGroup(string title, List<InputBinding> list, bool indent = false)
+    {
+        var outer = new StackPanel { Margin = new Thickness(indent ? 24 : 12, 6, 8, 4) };
+
+        // グループ見出し
+        outer.Children.Add(new TextBlock
+        {
+            Text = title,
+            Foreground = LabelBrush,
+            FontSize = 10,
+            FontWeight = FontWeights.Bold,
+            Margin = new Thickness(0, 0, 0, 2),
+        });
+
+        // 各バインド行
+        for (int i = 0; i < list.Count; i++)
+            outer.Children.Add(BuildBindingRow(list[i], list));
+
+        // 追加ボタン
+        var add = new Button
+        {
+            Content = "+ バインドを追加",
+            Style = (Style)FindResource("ActionBtn"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        add.Click += (_, _) =>
+        {
+            list.Add(new InputBinding { Platform = PlatformPc, InputType = TypeKey, Value = "" });
+            _isDirty = true;
+            RefreshBindingPane();
+        };
+        outer.Children.Add(add);
+        return outer;
+    }
+
+    /// <summary>
+    /// バインド 1 行分の UI を構築する。
+    /// 行 = [入力種別コンボ][入力値コンボ][deadZone 数値(アナログのみ)][削除]。
+    /// owningList は削除時にこの binding を取り除く対象リスト。
+    /// </summary>
+    private UIElement BuildBindingRow(InputBinding binding, List<InputBinding> owningList)
+    {
+        // ランタイムは PC のみ評価。UI 生成分は常に PC に固定する。
+        binding.Platform = PlatformPc;
+
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });       // 入力種別
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // 入力値
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(80) });        // deadZone
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });        // 削除
 
         // ── 入力種別 ComboBox ───────────────────────────────
-        var cbInputType = BuildDarkComboBox();
-        PopulateInputTypes(cbInputType, binding.Platform, binding.InputType);
+        var cbType = BuildCombo(editable: false);
+        foreach (var t in InputTypes) cbType.Items.Add(t);
+        cbType.SelectedItem = InputTypes.Contains(binding.InputType) ? binding.InputType : InputTypes[0];
 
         // ── 入力値 ComboBox（検索付き）─────────────────────
         var cbValue = BuildValueComboBox(binding);
 
-        // ── プラットフォーム変更 ────────────────────────────
-        // binding.Platform と同値の場合は初期設定時のイベントをスキップする
-        cbPlatform.SelectionChanged += (_, _) =>
+        // ── deadZone 入力欄（GamepadAxis のときだけ表示）────
+        var tbDead = new TextBox
         {
-            var p = cbPlatform.SelectedItem?.ToString() ?? "PC";
-            if (binding.Platform == p) return;
-            binding.Platform = p;
-            _isDirty = true;
-            // 入力種別の選択肢とバインディングペインを再構築する
-            Dispatcher.BeginInvoke(new Action(RefreshBindingPane));
+            Text = binding.DeadZone?.ToString("0.###") ?? "",
+            FontSize = 11,
+            Height = 24,
+            Margin = new Thickness(4, 2, 4, 2),
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xDC, 0xDC, 0xDC)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
+            CaretBrush = new SolidColorBrush(Color.FromRgb(0xDC, 0xDC, 0xDC)),
+            ToolTip = "デッドゾーン（0〜1・省略時 0.2）",
+            Visibility = binding.InputType == TypeAxis ? Visibility.Visible : Visibility.Collapsed,
+        };
+        tbDead.TextChanged += (_, _) =>
+        {
+            var s = tbDead.Text.Trim();
+            if (string.IsNullOrEmpty(s)) { binding.DeadZone = null; _isDirty = true; return; }
+            if (float.TryParse(s, out var f)) { binding.DeadZone = f; _isDirty = true; }
         };
 
-        // ── 入力種別変更 ────────────────────────────────────
-        cbInputType.SelectionChanged += (_, _) =>
+        // ── 入力種別変更: 値候補と deadZone 表示を切り替えるため再描画 ──
+        cbType.SelectionChanged += (_, _) =>
         {
-            var t = cbInputType.SelectedItem?.ToString() ?? "";
+            var t = cbType.SelectedItem?.ToString() ?? TypeKey;
             if (binding.InputType == t) return;
             binding.InputType = t;
+            // 種別が変わると値候補が変わるので値をクリアして選び直しやすくする。
+            binding.Value = "";
+            // GamepadAxis 以外に切り替えたら deadZone は無意味なのでクリアする。
+            if (t != TypeAxis) binding.DeadZone = null;
             _isDirty = true;
-            // 入力値の選択肢を再構築するためペインを再描画する
             Dispatcher.BeginInvoke(new Action(RefreshBindingPane));
         };
 
         // ── 削除ボタン ───────────────────────────────────────
         var btnRemove = new Button
         {
-            Content         = "✕",
-            Width           = 28,
-            Height          = 24,
-            Background      = Brushes.Transparent,
-            Foreground      = new SolidColorBrush(Color.FromRgb(0xAA, 0x44, 0x44)),
+            Content = "✕",
+            Width = 28,
+            Height = 24,
+            Background = Brushes.Transparent,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0x44, 0x44)),
             BorderThickness = new Thickness(0),
-            FontSize        = 11,
-            Cursor          = Cursors.Hand,
-            Margin          = new Thickness(4, 2, 4, 2),
+            FontSize = 11,
+            Cursor = Cursors.Hand,
+            Margin = new Thickness(4, 2, 4, 2),
             VerticalAlignment = VerticalAlignment.Center,
         };
         btnRemove.Click += (_, _) =>
         {
-            _selectedAction?.Bindings.Remove(binding);
+            owningList.Remove(binding);
             _isDirty = true;
             RefreshBindingPane();
         };
 
-        Grid.SetColumn(cbPlatform,  0);
-        Grid.SetColumn(cbInputType, 1);
-        Grid.SetColumn(cbValue,     2);
-        Grid.SetColumn(btnRemove,   3);
-        grid.Children.Add(cbPlatform);
-        grid.Children.Add(cbInputType);
+        Grid.SetColumn(cbType, 0);
+        Grid.SetColumn(cbValue, 1);
+        Grid.SetColumn(tbDead, 2);
+        Grid.SetColumn(btnRemove, 3);
+        grid.Children.Add(cbType);
         grid.Children.Add(cbValue);
+        grid.Children.Add(tbDead);
         grid.Children.Add(btnRemove);
-
-        var bg = rowIdx % 2 == 0
-            ? new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E))
-            : new SolidColorBrush(Color.FromRgb(0x22, 0x22, 0x22));
 
         return new Border
         {
-            Background      = bg,
-            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A)),
+            Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A)),
             BorderThickness = new Thickness(0, 0, 0, 1),
-            Child           = grid,
+            Margin = new Thickness(0, 1, 0, 1),
+            Child = grid,
         };
     }
-
-    /// <summary>バインディング行用の 4 列 Grid を生成する。</summary>
-    private static Grid BuildBindingGrid()
-    {
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(160) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
-        return grid;
-    }
-
-    /// <summary>入力種別 ComboBox の選択肢をプラットフォームに応じて設定する。</summary>
-    private static void PopulateInputTypes(ComboBox cb, string platform, string currentInputType)
-    {
-        var types = GetInputTypes(platform);
-        cb.Items.Clear();
-        foreach (var t in types) cb.Items.Add(t);
-        cb.SelectedItem = types.Contains(currentInputType) ? currentInputType : types.FirstOrDefault();
-    }
-
-    private static string[] GetInputTypes(string platform) => platform switch
-    {
-        "Mobile"           => MobInputTypes,
-        "PS5" or "Switch"  => ConInputTypes,
-        _                  => PcInputTypes,
-    };
 
     // ── 入力値 ComboBox（検索付き）──────────────────────────
 
     /// <summary>
     /// 検索付き入力値 ComboBox を構築する。
-    /// 選択肢は (platform, inputType) から決定し、テキスト入力でフィルタリングする。
-    /// Mobile など候補がない場合は自由入力のみとなる。
+    /// 選択肢は入力種別（Key/GamepadButton/GamepadAxis）から決定し、テキスト入力でフィルタする。
     /// </summary>
     private ComboBox BuildValueComboBox(InputBinding binding)
     {
-        var key       = (binding.Platform, binding.InputType);
-        var allValues = InputValues.TryGetValue(key, out var vals) ? vals : Array.Empty<string>();
+        var allValues = ValuesForType(binding.InputType);
 
-        var cb = new ComboBox
-        {
-            IsEditable          = true,
-            IsTextSearchEnabled = false,
-            StaysOpenOnEdit     = true,
-            // 配色（暗背景・白文字・編集用テキスト欄含む）はアプリ共通の
-            // ダークテーマ暗黙スタイル（App.xaml）に任せる
-            FontSize            = 11,
-            Height              = 24,
-            Margin              = new Thickness(4, 2, 4, 2),
-        };
+        var cb = BuildCombo(editable: true);
 
-        // 初期候補を追加してから Text をセット（Text セット後に TextChanged が発火しないよう順序を守る）
+        // 初期候補を追加してから Text をセット（順序を守る）
         foreach (var v in allValues) cb.Items.Add(v);
         cb.Text = binding.Value;
 
-        // ── テキスト変更時: 候補をフィルタリングしてドロップダウン表示 ──
         cb.AddHandler(TextBox.TextChangedEvent, new TextChangedEventHandler((_, _) =>
         {
             binding.Value = cb.Text;
@@ -429,15 +509,12 @@ public partial class InputMapEditorWindow : Window
             cb.Items.Clear();
             foreach (var v in filtered) cb.Items.Add(v);
 
-            // フィルタ候補がある場合はドロップダウンを開く
             if (filtered.Length > 0 && !string.IsNullOrEmpty(text) && !cb.IsDropDownOpen)
                 cb.IsDropDownOpen = true;
         }));
 
-        // ── ドロップダウン開閉: 全候補を表示 ──
         cb.DropDownOpened += (_, _) =>
         {
-            // テキストが空の場合は全候補を再表示する
             if (string.IsNullOrEmpty(cb.Text))
             {
                 cb.Items.Clear();
@@ -445,7 +522,6 @@ public partial class InputMapEditorWindow : Window
             }
         };
 
-        // ── 選択変更: binding へ反映 ──
         cb.SelectionChanged += (_, _) =>
         {
             if (cb.SelectedItem is string v)
@@ -460,25 +536,21 @@ public partial class InputMapEditorWindow : Window
 
     // ── ヘルパー ─────────────────────────────────────────────
 
-    /// <summary>バインディング行用の非編集 ComboBox を生成する。</summary>
-    private static ComboBox BuildDarkComboBox() => new()
+    /// <summary>
+    /// ダークテーマ ComboBox を生成する。
+    /// 配色（黒地・白文字。ドロップダウン Popup 内も含む）は App.xaml の暗黙 ComboBox
+    /// スタイルに委ねる（ローカルで色を上書きしない）。以前はローカルで Foreground=Black を
+    /// 指定していたため「灰色地に黒文字」で読めなかった。それを撤廃したのが本修正。
+    /// </summary>
+    private static ComboBox BuildCombo(bool editable) => new()
     {
-        Background      = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A)),
-        Foreground      = Brushes.Black,   // 選択値表示部は白地のため黒文字
-        BorderBrush     = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-        BorderThickness = new Thickness(1),
-        FontSize        = 11,
-        Height          = 24,
-        Margin          = new Thickness(4, 2, 4, 2),
+        IsEditable = editable,
+        IsTextSearchEnabled = false,
+        StaysOpenOnEdit = editable,
+        FontSize = 11,
+        Height = 24,
+        Margin = new Thickness(4, 2, 4, 2),
     };
-
-    private void OnAddBinding(object sender, RoutedEventArgs e)
-    {
-        if (_selectedAction is null) return;
-        _selectedAction.Bindings.Add(new InputBinding());
-        _isDirty = true;
-        RefreshBindingPane();
-    }
 
     // ── 保存 / キャンセル ────────────────────────────────────
 

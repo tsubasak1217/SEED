@@ -475,7 +475,7 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="コンポーネント GetComponent Transform CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetAxis GetVector2 WASD パーティクル エミッタ 放出 Burst アニメーション 一覧">
+<section id="sec-components" data-keywords="コンポーネント GetComponent Transform CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -556,21 +556,24 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
   <div class="api"><code class="sig">ps.SpreadAngle</code><span class="desc">float（get/set。放出円錐の半頂角・度。0〜180 にクランプ）</span></div>
 
   <h3 id="cmp-inputmap">InputMap（入力アクションマップ）</h3>
-  <p class="section-note">エディタの「コンポーネント追加 → 入力 → Input Map」で <code>.inputmap</code>（アクション名 → 物理入力）を割り当て、アクション名で入力を取得します。現状 <b>PC の Key / WASD バインディングのみ</b>評価（ゲームパッド等は基盤未実装のため無視）。</p>
-  <div class="api"><code class="sig">input.GetAction("Jump")</code><span class="desc">bool: アクションのキーを押している間</span></div>
-  <div class="api"><code class="sig">input.GetActionDown("Jump")</code><span class="desc">bool: 押した瞬間のフレームだけ</span></div>
-  <div class="api"><code class="sig">input.GetActionUp("Jump")</code><span class="desc">bool: 離した瞬間のフレームだけ</span></div>
-  <div class="api"><code class="sig">input.GetAxis("Steer")</code><span class="desc">float: Axis1D（[-1,1]。WASD 合成 or キー押下=1.0）</span></div>
-  <div class="api"><code class="sig">input.GetVector2("Move")</code><span class="desc">Vector2: Vector2（Horizontal→x, Vertical→y。各 [-1,1]）</span></div>
+  <p class="section-note">エディタの「コンポーネント追加 → 入力 → Input Map」で <code>.inputmap</code>（アクション名 → 物理入力）を割り当て、アクション名で入力を取得します。<b>キーボード（Key）に加えてゲームパッド（GamepadButton / GamepadAxis）</b>を評価します（PC）。</p>
+  <div class="api"><code class="sig">input.GetAction("Jump")</code><span class="desc">bool: 条件（Trigger/Press/Release）適用後の状態</span></div>
+  <div class="api"><code class="sig">input.GetActionStart("Jump")</code><span class="desc">bool: アクション成立の瞬間のフレームだけ</span></div>
+  <div class="api"><code class="sig">input.GetActionEnd("Jump")</code><span class="desc">bool: アクション終了の瞬間のフレームだけ</span></div>
+  <div class="api"><code class="sig">input.GetAxis("Steer")</code><span class="desc">float: Axis1D（[-1,1]。正/負バインドの合成）</span></div>
+  <div class="api"><code class="sig">input.GetVector2("Move")</code><span class="desc">Vector2: Axis2D（各 [-1,1]。x/y の正負合成。normalize 指定時は正規化）</span></div>
 <pre><span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">InputMap</span>&gt;() <span class="k">is</span> { } input)
 {
     <span class="k">var</span> move = input.GetVector2(<span class="s">"Move"</span>);
     transform.Position += <span class="k">new</span> <span class="t">SEED.Vector3</span>(move.x, 0f, move.y) * 5f * <span class="t">SEED.Time</span>.DeltaTime;
-    <span class="k">if</span> (input.GetActionDown(<span class="s">"Jump"</span>)) { <span class="c">/* ジャンプ */</span> }
+    <span class="k">if</span> (input.GetActionStart(<span class="s">"Jump"</span>)) { <span class="c">/* ジャンプ */</span> }
 }</pre>
   <div class="warn">
-    <b>WASD 合成軸</b>: Horizontal は D/→=+1・A/←=-1、Vertical は W/↑=+1・S/↓=-1（矢印キーも WASD と同時に有効）。<br>
+    <b>アクション条件（Bool）</b>: <code>.inputmap</code> の condition で Trigger（成立の瞬間）/ Press（押下中・既定）/ Release（離した瞬間）を選択。<code>GetAction</code> は条件適用後の状態、<code>GetActionStart</code>/<code>GetActionEnd</code> はその立ち上がり/立ち下がり。<br>
+    <b>軸</b>: 正バインド − 負バインドを合成して [-1,1] にクランプ。デジタル（Key/GamepadButton）は押下=1.0、アナログ（GamepadAxis）はデッドゾーン適用後の符号付き生値。スティックは正バインドに <code>LeftStickX</code> 等を 1 件で両方向をカバー。Axis2D は normalize で長さ&gt;1 のとき正規化（斜めが 0.707）。<br>
+    <b>ゲームパッド</b>: GamepadButton = South/East/West/North・DPad*・LeftShoulder/RightShoulder・LeftStickPress/RightStickPress・Start/Select。GamepadAxis = LeftStickX/Y・RightStickX/Y（-1..1）・LeftTrigger/RightTrigger（0..1）。GamepadAxis のみ <code>dead_zone</code>（既定 0.2）が有効。接続パッドは最初の 1 台のみ。<br>
     キー名はエディタの選択肢（<code>Space</code> / <code>LeftShift</code> / <code>Q</code> / <code>Alpha0</code> / <code>Keypad0</code> / <code>UpArrow</code> …）に対応。マッピング不能な名前は無反応（ロード時に警告 1 回）。<br>
+    <b>後方互換</b>: 旧 v1（version 欠落・WASD）も読み込め、内部で自動的に v2 へ移行（保存は常に v2）。<br>
     <code>.inputmap</code> は初回アクセス時に読み込み・キャッシュ（毎フレーム再読込しません。実行中のファイル編集は反映されません）。<br>
     複数持ち: <code>gameObject.GetComponent&lt;InputMap&gt;(1)</code>（index）や <code>gameObject.GetComponent&lt;InputMap&gt;("Vehicle")</code>（名前）で選択。
   </div>
@@ -585,7 +588,7 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><td><code>AudioSource</code></td><td><code>gameObject.GetComponent&lt;AudioSource&gt;()</code></td><td>音源パス・音量・ループ・3D 減衰・パン + Play/Stop</td></tr>
     <tr><td><code>Animator</code></td><td><code>gameObject.GetComponent&lt;Animator&gt;()</code></td><td>再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume</td></tr>
     <tr><td><code>ParticleEmitter</code></td><td><code>gameObject.GetComponent&lt;ParticleEmitter&gt;()</code></td><td>放出レート・ループ・抵抗・拡散角 + Play/Stop/Burst</td></tr>
-    <tr><td><code>InputMap</code></td><td><code>gameObject.GetComponent&lt;InputMap&gt;()</code></td><td>入力アクション評価（Bool / Axis1D / Vector2。PC の Key / WASD）</td></tr>
+    <tr><td><code>InputMap</code></td><td><code>gameObject.GetComponent&lt;InputMap&gt;()</code></td><td>入力アクション評価（Bool / Axis1D / Axis2D。Key / GamepadButton / GamepadAxis）</td></tr>
   </table>
   <p class="section-note">他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定です。</p>
 </section>

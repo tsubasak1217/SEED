@@ -9,12 +9,16 @@ namespace SEED;
 /// PC プラットフォームのバインディング（Key / WASD 合成軸）のみ評価する
 /// （ゲームパッド等の基盤は未実装）。
 ///
+/// アクションの Bool 判定は <b>condition（Trigger/Press/Release）</b>を .inputmap 側で設定し、
+/// <c>GetAction</c> が「条件適用後の状態」を返す。成立/終了の瞬間は <c>GetActionStart</c> /
+/// <c>GetActionEnd</c> で取得する。Key に加えて GamepadButton / GamepadAxis も評価する。
+///
 /// 取得は <c>gameObject.GetComponent&lt;InputMap&gt;()</c>。InputMap を持たない場合は null。
 /// <code>
 /// if (gameObject.GetComponent&lt;InputMap&gt;() is { } input)
 /// {
-///     if (input.GetActionDown("Jump")) Jump();
-///     var move = input.GetVector2("Move");
+///     if (input.GetActionStart("Jump")) Jump();   // アクション成立の瞬間
+///     var move = input.GetVector2("Move");         // Axis2D（各 [-1,1]）
 /// }
 /// </code>
 /// </summary>
@@ -26,10 +30,10 @@ public readonly struct InputMap : IComponentHandle<InputMap>
     /// <summary>コンポーネント種別名（Rust 側解決キーと一致必須）。</summary>
     private const string Comp = "InputMap";
 
-    // ── 判定種別（Rust 側 action_map の ACTION_KIND_* と一致させる）──
-    private const int KindPress = 0;   // 押している間
-    private const int KindDown = 1;    // 押した瞬間
-    private const int KindUp = 2;      // 離した瞬間
+    // ── アクション評価の種別（Rust 側 host_api の INPUT_ACTION_KIND_* と一致させる）──
+    private const int KindAction = 0;  // 条件適用後の状態
+    private const int KindStart = 1;   // アクション成立の瞬間
+    private const int KindEnd = 2;     // アクション終了の瞬間
 
     internal InputMap(Entity entity) { _entity = entity; }
 
@@ -39,20 +43,23 @@ public readonly struct InputMap : IComponentHandle<InputMap>
 
     // ── Bool アクション ──────────────────────────────────────
 
-    /// <summary>アクションに割り当てたキーを押している間 true（Bool アクション向け）。</summary>
-    public bool GetAction(string name) => ScriptHost.InputAction(_entity, KindPress, name);
+    /// <summary>
+    /// アクションの状態（.inputmap の condition 適用後）。
+    /// condition=Press なら押下中 true / Trigger なら成立フレームのみ / Release なら離したフレームのみ。
+    /// </summary>
+    public bool GetAction(string name) => ScriptHost.InputAction(_entity, KindAction, name);
 
-    /// <summary>アクションに割り当てたキーを押した瞬間のフレームだけ true。</summary>
-    public bool GetActionDown(string name) => ScriptHost.InputAction(_entity, KindDown, name);
+    /// <summary>アクションが成立した瞬間のフレームだけ true（条件適用後の立ち上がり）。</summary>
+    public bool GetActionStart(string name) => ScriptHost.InputAction(_entity, KindStart, name);
 
-    /// <summary>アクションに割り当てたキーを離した瞬間のフレームだけ true。</summary>
-    public bool GetActionUp(string name) => ScriptHost.InputAction(_entity, KindUp, name);
+    /// <summary>アクションが終了した瞬間のフレームだけ true（条件適用後の立ち下がり）。</summary>
+    public bool GetActionEnd(string name) => ScriptHost.InputAction(_entity, KindEnd, name);
 
     // ── 軸アクション ─────────────────────────────────────────
 
-    /// <summary>Axis1D アクションの値（[-1, 1]）。WASD 合成軸 or キー押下=1.0。</summary>
+    /// <summary>Axis1D アクションの値（[-1, 1]）。正/負バインドの合成。アナログはデッドゾーン適用。</summary>
     public float GetAxis(string name) => ScriptHost.InputActionAxis1D(_entity, name);
 
-    /// <summary>Vector2 アクションの値（各成分 [-1, 1]）。Horizontal→x, Vertical→y。</summary>
+    /// <summary>Axis2D アクションの値（各成分 [-1, 1]）。x/y の正負合成。normalize 指定時は正規化。</summary>
     public Vector2 GetVector2(string name) => ScriptHost.InputActionVector2(_entity, name);
 }

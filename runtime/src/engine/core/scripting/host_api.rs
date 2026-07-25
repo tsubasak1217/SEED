@@ -29,12 +29,13 @@
 use std::cell::{Cell, RefCell};
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::engine::components::{
     AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, InputMapComponent,
     ParticleEmitterComponent, SpriteComponent, Transform,
 };
-use crate::engine::core::input::action_map::ActionMap;
+use crate::engine::core::input::action_map::{ActionMap, ActionRuntime};
 use crate::engine::core::input::{Input, InputState};
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::actor::ComponentSlot;
@@ -339,6 +340,31 @@ thread_local! {
     /// （毎フレーム読むのは禁止方針）。asset_path が変わると別キーとして新規パースされる。
     static INPUT_MAP_CACHE: RefCell<HashMap<String, ActionMap>> =
         RefCell::new(HashMap::new());
+
+    /// asset_path をキーにしたアクション状態のフレーム履歴（Start/End・条件エッジ用）。
+    ///
+    /// ActionMap 自体はステートレスなので、条件（Trigger/Release）と Start/End の
+    /// 立ち上がり/立ち下がり検出に必要な「前フレーム状態」をここに持つ。
+    /// 同一 asset_path 内はアクション名ごとに独立して履歴を保持する。
+    static ACTION_RUNTIME_CACHE: RefCell<HashMap<String, ActionRuntime>> =
+        RefCell::new(HashMap::new());
+}
+
+/// グローバルフレームカウンタ。
+///
+/// アクション状態キャッシュが「新しいフレームか（履歴をシフトすべきか）」を判定するために使う。
+/// 同一フレーム内の複数クエリで一貫した結果を返すための単調増加スタンプ。
+/// frame_renderer が毎フレーム 1 回 `advance_script_frame()` を呼んで加算する。
+static SCRIPT_FRAME: AtomicU64 = AtomicU64::new(0);
+
+/// フレームカウンタを 1 進める（frame_renderer がフレーム先頭で 1 回呼ぶ）。
+pub fn advance_script_frame() {
+    SCRIPT_FRAME.fetch_add(1, Ordering::Relaxed);
+}
+
+/// 現在のフレーム番号を返す。
+fn current_script_frame() -> u64 {
+    SCRIPT_FRAME.load(Ordering::Relaxed)
 }
 
 /// asset_path から ActionMap をロードする（失敗時は空マップ＋警告）。
@@ -369,6 +395,37 @@ fn with_action_map<R>(world: &World, slot: Entity, f: impl FnOnce(&ActionMap) ->
         }
         // 直前に必ず挿入済みなので unwrap は安全
         Some(f(cache.get(&key).unwrap()))
+    })
+}
+
+/// スロット entity の InputMapComponent を解決し、キャッシュ済み ActionMap と
+/// asset_path 単位のフレーム履歴（ActionRuntime）を渡してクロージャ f を実行する。
+///
+/// 条件（Trigger/Release）や Start/End のエッジ検出には前フレーム状態が必要なため、
+/// map（不変）と runtime（可変・履歴）の両方を借用する。
+fn with_action_map_and_runtime<R>(
+    world: &World,
+    slot: Entity,
+    f: impl FnOnce(&ActionMap, &mut ActionRuntime) -> R,
+) -> Option<R> {
+    let ic = world.get::<InputMapComponent>(slot)?;
+    if ic.asset_path.is_empty() {
+        return None;
+    }
+    let key = ic.asset_path.clone();
+    INPUT_MAP_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        if !cache.contains_key(&key) {
+            let map = load_action_map(&key);
+            cache.insert(key.clone(), map);
+        }
+        let map = cache.get(&key).unwrap();
+        // 別 RefCell なので同時借用しても衝突しない。
+        ACTION_RUNTIME_CACHE.with(|rc| {
+            let mut runtimes = rc.borrow_mut();
+            let rt = runtimes.entry(key.clone()).or_default();
+            Some(f(map, rt))
+        })
     })
 }
 
@@ -1475,11 +1532,20 @@ unsafe extern "system" fn ffi_resolve_component_slot(
 
 // ─── InputMap 評価 FFI ───────────────────────────────────────
 
-/// InputMap の Bool アクションを評価する。真=1 / 偽・失敗=0。
+// InputMap アクション評価の kind（C# 側 InputMap.cs の定数と一致必須）。
+// 条件（Trigger/Press/Release）適用後のアクション状態に対する問い合わせ種別。
+const INPUT_ACTION_KIND_ACTION: i32 = 0; // GetAction: 条件適用後の bool
+const INPUT_ACTION_KIND_START: i32 = 1; // GetActionStart: アクション成立の瞬間
+const INPUT_ACTION_KIND_END: i32 = 2; // GetActionEnd: アクション終了の瞬間
+
+/// InputMap のアクションを評価する。真=1 / 偽・失敗=0。
 ///
 /// slot_idx/gen は InputMapComponent のスロット entity（GetComponent<InputMap> で解決済み）。
-/// kind: 0=押している間 / 1=押した瞬間 / 2=離した瞬間（action_map の ACTION_KIND_*）。
+/// kind: 0=action（条件適用後）/ 1=start（成立の瞬間）/ 2=end（終了の瞬間）。
 /// name/len はアクション名。
+///
+/// 条件（Trigger/Press/Release）と Start/End のエッジ検出にはフレーム履歴が要るため、
+/// asset_path 単位の ActionRuntime とグローバルフレーム番号を使う。
 unsafe extern "system" fn ffi_input_action(
     slot_idx: u32, slot_gen: u32,
     kind: i32,
@@ -1494,8 +1560,22 @@ unsafe extern "system" fn ffi_input_action(
     let input = &*iptr;
     let slot = Entity::from_raw(slot_idx, slot_gen);
     let name_s = str_from(name, len);
+    let frame = current_script_frame();
 
-    let hit = with_action_map(world, slot, |m| m.eval_bool(input, name_s, kind)).unwrap_or(false);
+    // input は KeyQuery と PadQuery の両方を実装する（キー＋パッド）。
+    let result = with_action_map_and_runtime(world, slot, |m, rt| {
+        m.eval_action(rt, input, input, name_s, frame)
+    });
+
+    let hit = match result {
+        Some(r) => match kind {
+            INPUT_ACTION_KIND_ACTION => r.action,
+            INPUT_ACTION_KIND_START => r.start,
+            INPUT_ACTION_KIND_END => r.end,
+            _ => false,
+        },
+        None => false,
+    };
     if hit { 1 } else { 0 }
 }
 
@@ -1522,15 +1602,16 @@ unsafe extern "system" fn ffi_input_action_axis(
     let slot = Entity::from_raw(slot_idx, slot_gen);
     let name_s = str_from(name, len);
 
-    // out_len で Vector2 / Axis1D を分岐（C# の GetVector2 / GetAxis の呼び分けに対応）
+    // out_len で Axis2D / Axis1D を分岐（C# の GetVector2 / GetAxis の呼び分けに対応）。
+    // input は KeyQuery と PadQuery の両方を実装する（キー＋パッド）。
     let written = with_action_map(world, slot, |m| {
         if out_len >= 2 {
-            let v = m.eval_vector2(input, name_s);
+            let v = m.eval_axis2d(input, input, name_s);
             *out = v[0];
             *out.add(1) = v[1];
             2
         } else {
-            *out = m.eval_axis1d(input, name_s);
+            *out = m.eval_axis1d(input, input, name_s);
             1
         }
     });

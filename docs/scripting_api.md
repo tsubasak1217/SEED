@@ -489,27 +489,30 @@ if (gameObject.GetComponent<ParticleEmitter>() is { } ps)   // ParticleEmitter?�
 
 ### InputMap（入力アクションマップ）
 
-エディタの「コンポーネント追加 → 入力 → Input Map」で追加し、`.inputmap`（アクション名 → 物理入力のマッピング）を割り当てます。アクション名で「押している/押した瞬間/離した瞬間」や軸値を取得します。現状 **PC プラットフォームの Key / WASD バインディングのみ**評価します（ゲームパッド・仮想入力は基盤未実装のため無視）。
+エディタの「コンポーネント追加 → 入力 → Input Map」で追加し、`.inputmap`（アクション名 → 物理入力のマッピング）を割り当てます。アクション名でアクション状態や軸値を取得します。**キーボード（Key）に加えてゲームパッド（GamepadButton / GamepadAxis）** を評価します（PC プラットフォーム）。
 
 ```csharp
 if (gameObject.GetComponent<InputMap>() is { } input)   // InputMap?（未アタッチは null）
 {
-    input.GetAction("Jump")        // bool: アクションのキーを押している間
-    input.GetActionDown("Jump")    // bool: 押した瞬間のフレームだけ
-    input.GetActionUp("Jump")      // bool: 離した瞬間のフレームだけ
-    input.GetAxis("Steer")         // float: Axis1D（[-1,1]。WASD 合成 or キー押下=1.0）
-    input.GetVector2("Move")       // Vector2: Vector2（Horizontal→x, Vertical→y。各 [-1,1]）
+    input.GetAction("Jump")        // bool: 条件（Trigger/Press/Release）適用後の状態
+    input.GetActionStart("Jump")   // bool: アクション成立の瞬間のフレームだけ
+    input.GetActionEnd("Jump")     // bool: アクション終了の瞬間のフレームだけ
+    input.GetAxis("Steer")         // float: Axis1D（[-1,1]。正/負バインドの合成）
+    input.GetVector2("Move")       // Vector2: Axis2D（各 [-1,1]。x/y の正負合成）
 
     // 例: 入力マップで移動＋ジャンプ
     var move = input.GetVector2("Move");
     transform.Position += new SEED.Vector3(move.x, 0f, move.y) * 5f * SEED.Time.DeltaTime;
-    if (input.GetActionDown("Jump")) { /* ジャンプ */ }
+    if (input.GetActionStart("Jump")) { /* ジャンプ */ }
 }
 ```
 
-- **WASD 合成軸**: `Horizontal` は D/→ = +1・A/← = -1、`Vertical` は W/↑ = +1・S/↓ = -1（矢印キーも WASD と同時に有効。`Input.MoveAxis()` と同じ挙動）。
-- **キー名**はエディタの InputMap エディタの選択肢（`Space` / `LeftShift` / `Q` / `Alpha0` / `Keypad0` / `UpArrow` …）に対応します。マッピング不能な名前は無反応（ロード時に警告 1 回）。
+- **アクション条件（Bool）**: `.inputmap` の condition で `Trigger`（成立した瞬間）/`Press`（押下中・既定）/`Release`（離した瞬間）を選びます。`GetAction` はこの条件適用後の状態を返します。`GetActionStart`/`GetActionEnd` は条件適用後の値の立ち上がり/立ち下がりです。
+- **軸（Axis1D / Axis2D）**: `正バインド − 負バインド` を合成して `[-1,1]` にクランプします。デジタル（Key/GamepadButton）は押下で 1.0、アナログ（GamepadAxis スティック）はデッドゾーン適用後の符号付き生値です。スティックは各軸の正バインドに `LeftStickX` 等を 1 件置けば両方向をカバーします。Axis2D は `normalize` を有効にすると長さ>1 のとき正規化され、斜めキーボードが 0.707 になります。
+- **ゲームパッド**: GamepadButton は `South`/`East`/`West`/`North`・`DPadUp/Down/Left/Right`・`LeftShoulder`(LB)/`RightShoulder`(RB)・`LeftStickPress`(L3)/`RightStickPress`(R3)・`Start`/`Select`。GamepadAxis は `LeftStickX`/`LeftStickY`/`RightStickX`/`RightStickY`（-1..1）・`LeftTrigger`/`RightTrigger`（0..1）。GamepadAxis のみ `dead_zone`（既定 0.2）が有効です。接続パッドは最初の 1 台のみ対応します。
+- **キー名**はエディタの選択肢（`Space` / `LeftShift` / `Q` / `Alpha0` / `Keypad0` / `UpArrow` …）に対応します。マッピング不能な名前は無反応（ロード時に警告 1 回）。
 - `.inputmap` は初回アクセス時に読み込み・キャッシュされます（毎フレーム再読込しません）。実行中のファイル編集は反映されません。
+- **後方互換**: 旧 v1 形式（version 欠落・WASD バインディング）も読み込め、内部で自動的に v2 へ移行します（エディタの保存は常に v2）。
 - **複数コンポーネントの索引例**: 同種を複数持つ場合は `gameObject.GetComponent<InputMap>(1)`（index）や `gameObject.GetComponent<InputMap>("Vehicle")`（スロット名）で選べます。
 
 ### 利用可能なコンポーネント一覧
@@ -523,7 +526,7 @@ if (gameObject.GetComponent<InputMap>() is { } input)   // InputMap?（未アタ
 | `AudioSource` | `gameObject.GetComponent<AudioSource>()` | 音源パス・音量・ループ・3D 減衰・パン + Play/Stop |
 | `Animator` | `gameObject.GetComponent<Animator>()` | 再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume |
 | `ParticleEmitter` | `gameObject.GetComponent<ParticleEmitter>()` | 放出レート・ループ・抵抗・拡散角 + Play/Stop/Burst |
-| `InputMap` | `gameObject.GetComponent<InputMap>()` | 入力アクション評価（Bool / Axis1D / Vector2。PC の Key / WASD） |
+| `InputMap` | `gameObject.GetComponent<InputMap>()` | 入力アクション評価（Bool / Axis1D / Axis2D。Key / GamepadButton / GamepadAxis） |
 
 > **重要**: `GetComponent<T>()` は `T?` を返し、同種コンポーネントを複数スロット持てます。`GetComponent<T>()`＝0 番目、`GetComponent<T>(index)`＝index 番目、`GetComponent<T>("Name")`＝スロット名一致。
 
