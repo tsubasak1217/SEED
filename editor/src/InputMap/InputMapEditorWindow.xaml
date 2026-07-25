@@ -144,7 +144,7 @@
                                   SelectionChanged="OnValueTypeChanged">
                             <ComboBoxItem Content="Bool（ボタン）"   Tag="Bool"/>
                             <ComboBoxItem Content="Axis1D（1D 軸）"  Tag="Axis1D"/>
-                            <ComboBoxItem Content="Vector2（2D 軸）" Tag="Vector2"/>
+                            <ComboBoxItem Content="Axis2D（2D 軸）"  Tag="Axis2D"/>
                         </ComboBox>
                     </Grid>
                 </Border>
@@ -154,15 +154,11 @@
                     <StackPanel x:Name="BindingStack"/>
                 </ScrollViewer>
 
-                <!-- バインディング追加ボタン -->
-                <Border Grid.Row="2" Background="#252525" Padding="12,8"
-                        BorderBrush="#333333" BorderThickness="0,1,0,0"
-                        x:Name="BindingFooter" Visibility="Collapsed">
-                    <Button Content="+ バインディング追加"
-                            Style="{StaticResource ActionBtn}"
-                            HorizontalAlignment="Left"
-                            Click="OnAddBinding"/>
-                </Border>
+                <!-- 旧: 静的なバインディング追加ボタン。現在は各バインドグループ内へ
+                     インラインで「+ バインドを追加」を配置するため常に非表示（要素は
+                     RefreshBindingPane が Visibility 参照するため残す）。 -->
+                <Border Grid.Row="2" Background="#252525"
+                        x:Name="BindingFooter" Visibility="Collapsed"/>
             </Grid>
         </Grid>
 

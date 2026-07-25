@@ -1,9 +1,12 @@
 pub mod action_map;
+pub mod gamepad;
 pub mod keyboard;
 pub mod mouse;
 pub mod raw_input;
 
 pub use raw_input::RawInput;
+
+use gamepad::GamepadState;
 
 use winit::dpi::PhysicalPosition;
 use winit::event::{MouseButton, MouseScrollDelta};
@@ -63,6 +66,8 @@ pub enum InputState {
 pub struct Input {
     keyboard: KeyboardState,
     mouse: MouseState,
+    /// ゲームパッド状態（gilrs バックエンド）。毎フレーム `update_gamepad` でポンプする。
+    gamepad: GamepadState,
     is_active: bool,
 }
 
@@ -71,7 +76,21 @@ impl Input {
         Self {
             keyboard: KeyboardState::new(),
             mouse: MouseState::new(),
+            gamepad: GamepadState::new(),
             is_active: true,
+        }
+    }
+
+    /// ゲームパッド状態への参照（action_map の PadQuery 評価用）。
+    pub fn gamepad(&self) -> &GamepadState {
+        &self.gamepad
+    }
+
+    /// 毎フレーム先頭で呼ぶ。gilrs イベントをポンプしてパッド状態を更新する。
+    /// キーボード/マウスは winit イベント駆動だが、パッドはここで能動ポンプする。
+    pub fn update_gamepad(&mut self) {
+        if self.is_active {
+            self.gamepad.update();
         }
     }
 
@@ -123,6 +142,7 @@ impl Input {
     pub fn end_frame(&mut self) {
         self.keyboard.end_frame();
         self.mouse.end_frame();
+        self.gamepad.end_frame();
     }
 
     // ─── キーボード API ────────────────────────────────────────

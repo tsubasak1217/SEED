@@ -284,7 +284,8 @@ public static unsafe class ScriptHost
     // ── InputMap アクション評価 ───────────────────────────────────
 
     /// <summary>
-    /// InputMap の Bool アクションを評価する（kind: 0=押下中/1=押した瞬間/2=離した瞬間）。
+    /// InputMap のアクションを評価する（kind: 0=action（条件適用後）/1=start（成立の瞬間）/2=end（終了の瞬間））。
+    /// kind は Rust 側 host_api の INPUT_ACTION_KIND_* と一致させること。
     /// slot は InputMapComponent のスロット entity。
     /// </summary>
     public static bool InputAction(Entity slot, int kind, string name)

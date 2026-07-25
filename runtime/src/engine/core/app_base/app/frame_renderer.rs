@@ -239,6 +239,14 @@ impl App {
         let dbg = dbg_frame < DEBUG_LOG_FRAMES;
         if dbg { eprintln!("[SEED FRAME {dbg_frame}] start  mode={:?}  paused={}", self.mode, self.paused); }
 
+        // ── 入力: ゲームパッドをポンプ＋スクリプトフレームカウンタを進める ──
+        // キーボード/マウスは winit イベント駆動だが、パッド（gilrs）はここで能動ポンプする。
+        // フレーム先頭で行うことで、以降のゲームロジックが今フレームのパッド状態を読める。
+        // フレームカウンタは InputMap のアクション状態キャッシュ（Start/End・条件エッジ）が
+        // 「新しいフレームか」を判定するために使う（同一フレーム内の複数クエリを一貫させる）。
+        self.input.update_gamepad();
+        crate::engine::core::scripting::advance_script_frame();
+
         // レンダリング機能マトリクスの実効モードが変わっていれば [SEED FEATURES] を出す
         // （起動時・スタンドアロン時もここで拾う。IPC 切替は各ハンドラでも即ログ）。
         self.log_render_features_if_changed();

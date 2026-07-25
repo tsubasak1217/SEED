@@ -41,6 +41,9 @@ rapier2d           = { version = "0.22", features = ["simd-stable"] }
 crossbeam-channel  = "0.5"
 # オーディオ再生（スクリプト Audio API 用。wav / ogg / mp3 / flac をデコード可能）
 rodio              = "0.20"
+# ゲームパッド入力（.inputmap の GamepadButton / GamepadAxis 評価基盤）。
+# クロスプラットフォームのパッド抽象。毎フレーム next_event() でイベントをポンプする。
+gilrs              = "0.11"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Pipes", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Media"] }
