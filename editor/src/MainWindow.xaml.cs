@@ -43,6 +43,14 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private bool _clampInPlay                  = false;
     private bool _isDragging                   = false;
     private bool _ctrlHeld                     = false;
+    /// <summary>
+    /// 直近の CTRL_DOWN をランタイムへ IPC 転送済みかどうか。
+    /// CTRL_DOWN はビューポートにフォーカスがある時のみ転送するが、転送後に
+    /// フォーカスが外れた（スクリプトエディタへ移動した）状態で Ctrl を離すと
+    /// CTRL_UP が送られずランタイム側で Ctrl が押しっぱなし扱いになる。これを防ぐため
+    /// 「転送した DOWN には必ず UP を送る」ようにこのフラグで対応付ける。
+    /// </summary>
+    private bool _ctrlFwd                       = false;
     private bool _deleteDialogOpen             = false;
     private bool _viewportSettingsInitialized  = false;
 
@@ -68,12 +76,14 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     /// <summary>true のとき Play 中もコライダーのワイヤーフレームを描画する。</summary>
     private bool _playColliderDraw = false;
     /// <summary>
-    /// true のとき「埋め込みインプレース Play」を使う（フェーズ2）。
+    /// true のとき「埋め込みインプレース Play」を使う（既定）。
     /// 別プロセスを起動せず、シーンパネルの Edit ランタイムへ ENTER_PLAY を送って
     /// その場で Play 化する。地形・散布・GPU リソースを作り直さないため即座に再生できる。
-    /// false（既定）は従来のウィンドウ Play（フェーズ1・別プロセス常駐）。
+    /// false のときは従来のウィンドウ Play（別プロセス常駐）。
+    /// 実際の値は起動時に EditorPreferences.WindowPlay（永続化設定）から
+    /// 「埋め込み = !WindowPlay」として復元する。
     /// </summary>
-    private bool _embeddedPlay = false;
+    private bool _embeddedPlay = true;
 
     // ── 編集時物理シミュレーション設定 ────────────────────────────
     /// <summary>編集モードで物理シミュレーションを動作させるかどうか。</summary>
@@ -363,6 +373,12 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelScriptEditor.InitSettings(SettingsDir);
         // エディタ全体の環境設定（タッチパッドスクロール係数など）を読み込む
         EditorPreferences.Init(SettingsDir);
+        // Play 実行方式を永続化設定から復元する。既定は埋め込み（WindowPlay=false）。
+        // 埋め込み = !WindowPlay。チェックボックスにも反映する（IsChecked 変更で
+        // OnWindowPlayChanged が発火しても同値の再保存になるだけで問題ない）。
+        _embeddedPlay = !EditorPreferences.Instance.WindowPlay;
+        if (ChkWindowPlay != null)
+            ChkWindowPlay.IsChecked = EditorPreferences.Instance.WindowPlay;
         // 「タブ」「エラー一覧」パネルを生成してスクリプトエディタに接続する
         _openDocsPanel  = new OpenDocumentsPanel(PanelScriptEditor);
         _errorListPanel = new ErrorListPanel(PanelScriptEditor);
@@ -680,11 +696,20 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         EditorLog.Write($"PlayFromStartScene = {_playFromStartScene}");
     }
 
-    /// <summary>「埋め込みインプレースPlay」チェックボックスの変化を受け取る。</summary>
-    private void OnEmbeddedPlayChanged(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// 「ウィンドウを出してプレイ（別プロセス）」チェックボックスの変化を受け取る。
+    /// チェック = ウィンドウ Play（別プロセス）、非チェック（既定）= 埋め込みインプレース Play。
+    /// 設定は EditorPreferences.WindowPlay として永続化する。
+    /// </summary>
+    private void OnWindowPlayChanged(object sender, RoutedEventArgs e)
     {
-        _embeddedPlay = ChkEmbeddedPlay.IsChecked == true;
-        EditorLog.Write($"EmbeddedPlay = {_embeddedPlay}");
+        bool windowPlay = ChkWindowPlay.IsChecked == true;
+        // 埋め込みは「ウィンドウ Play」の反転。
+        _embeddedPlay = !windowPlay;
+        // エディタ設定ファイル（editor/settings/editor_preferences.json）へ永続化する。
+        EditorPreferences.Instance.WindowPlay = windowPlay;
+        EditorPreferences.Save();
+        EditorLog.Write($"WindowPlay = {windowPlay}  (EmbeddedPlay = {_embeddedPlay})");
     }
 
     /// <summary>
