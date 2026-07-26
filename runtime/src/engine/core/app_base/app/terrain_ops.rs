@@ -34,7 +34,8 @@ use crate::engine::components::{
 };
 use crate::engine::core::loader::model::Model;
 use crate::engine::methods::drawer::{DrawContext, GpuModel, InstancedModelBatch};
-use crate::engine::physics::{ColliderShape, PhysicsObject};
+use crate::engine::physics::{ColliderShape, PhysicsObject, CharacterWorld};
+use crate::engine::physics::char_world::PrebuiltMirrorCollider;
 use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::{
     self, interp_vertex_paint, BlendSlots, BrushOp, ChunkCoord, PaintField, SampleField,
@@ -2803,14 +2804,22 @@ impl App {
             jobs.push((entity_id, position, coord, model));
         }
 
-        // ── ② コライダー形状をチャンク間並列で構築する（純粋処理・self を触らない）──
-        //   Model 再利用は memcpy 相当で軽いが、MC フォールバックが混ざると重くなるため
-        //   一律に rayon で並列化しておく。`par_iter().map().collect::<Vec<_>>()` は入力順を
-        //   保存するため、送信順（＝id 割り当て順）は決定的。
+        // ── ② コライダー形状＋ミラー用 Rapier コライダー（QBVH 込み）をチャンク間並列で構築する ──
+        //   【Play 開始凍結の主因対策】従来は形状（SEED `ColliderShape`）だけを並列構築し、
+        //   支配的に重い Rapier トライメッシュ QBVH 構築（`CharacterWorld::build_collider`）は
+        //   ③ の直列ループ内（`physics_add_object`→`cw.add_object`）でメインスレッドを占有していた。
+        //   地形 322 チャンクぶんの QBVH 直列構築が物理起動時（Play 初回フレーム末）に数秒の凍結を
+        //   生む。そこで QBVH 構築もこの並列パスへ移し、③ は「軽い挿入＋スレッド送信」だけにする。
+        //   ミラーは③完了時点で従来どおり完全構築されるため、KCC の正しさには影響しない。
+        //
+        //   Model 再利用は memcpy 相当で軽いが、MC フォールバックが混ざると重くなるため一律に
+        //   rayon で並列化する。`par_iter().map().collect::<Vec<_>>()` は入力順を保存するため、
+        //   送信順（＝id 割り当て順）は決定的。
         let chunks = &self.terrain.chunks;
         let mut n_reused = 0usize; // 描画メッシュ再利用でコライダーを作った数
         let mut n_mc = 0usize; // MC フォールバックで作った数
-        let built: Vec<Option<(u64, [f32; 3], ColliderShape, bool)>> = jobs
+        // (物理スレッド送信用 PhysicsObject, ミラー用構築済みコライダー, MC フォールバックだったか)
+        let built: Vec<Option<(PhysicsObject, PrebuiltMirrorCollider, bool)>> = jobs
             .par_iter()
             .map(|(id, pos, coord, model)| {
                 // bool = 「MC フォールバックだったか」（計測用の内訳集計に使う）。
@@ -2820,22 +2829,33 @@ impl App {
                     // フォールバック: 描画メッシュが無いチャンクだけ MC で作る。
                     None => (build_chunk_collider_shape(chunks, &settings, *coord)?, true),
                 };
-                Some((*id, *pos, shape, used_mc))
+                let obj = terrain_collider_object(*id, *pos, shape);
+                // ここで Rapier トライメッシュ QBVH を並列構築する（従来はメインスレッド直列だった）。
+                // 地形は trigger ではないため build_collider は必ず Some を返す。
+                let pre = CharacterWorld::build_collider(&obj)?;
+                Some((obj, pre, used_mc))
             })
             .collect();
 
-        // ── ③ 物理ワールドへ登録する（シリアル送信）──
+        // ── ③ 物理ワールドへ登録する（直列。ミラー挿入＋スレッド送信の軽処理のみ）──
         for entry in built.into_iter().flatten() {
-            let (entity_id, position, shape, used_mc) = entry;
+            let (obj, pre, used_mc) = entry;
             if used_mc { n_mc += 1; } else { n_reused += 1; }
-            let obj = terrain_collider_object(entity_id, position, shape);
-            // 物理スレッドとキャラクター衝突ミラーの両方へ集約ヘルパで登録する。
-            self.physics_add_object(obj);
+            // 物理スレッドとキャラクター衝突ミラーの両方へ集約ヘルパで登録する（並列構築済みコライダー版）。
+            self.physics_add_prebuilt(obj, pre);
         }
 
-        // ── 計測ログ（MC 二重実行を撤廃できているか＝reused が支配的かを確認する）──
+        // ── 計測ログ ──
+        //   [FPS_PHASE]: Play 開始直後の凍結（0fps 区間）の主因である地形コライダー登録の所要時間を、
+        //   before/after 比較できるよう **常時 1 行**（1 Play 起動につき 1 回・1/秒未満）で出す。
+        //   並列 QBVH 化の効果はこの total_ms の低下で確認できる。
+        let total_ms = t_total.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+        eprintln!(
+            "[FPS_PHASE] terrain_collider_register total={:.1}ms chunks={} (reused_mesh={} mc_fallback={}) mirror_qbvh=parallel",
+            total_ms, n_reused + n_mc, n_reused, n_mc
+        );
+        // 詳細内訳が要るときのプロファイル用（従来ログは SEED_PERF_LOG ゲートのまま残す）。
         if *PERF_TERRAIN_PHYS_LOG_ENABLED {
-            let total_ms = t_total.elapsed().as_secs_f64() * MILLIS_PER_SEC;
             eprintln!(
                 "[PERF terrain phys] register colliders total={:.2}ms registered={} (reused_mesh={} mc_fallback={})",
                 total_ms, n_reused + n_mc, n_reused, n_mc
