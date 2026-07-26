@@ -120,6 +120,22 @@ impl App {
         }
     }
 
+    /// Play 開始時の地形 LOD 事前収束が基準にするカメラ位置を返す。
+    ///
+    /// Play モードの描画は「シーンの `is_main` カメラ」を使うため、事前収束もそのワールド位置を
+    /// 基準にする。シーンにメインカメラが無い（未配置）場合は、直近フレームで描画に使った
+    /// カメラ位置 `last_camera_pos` にフォールバックする（新規プロセスの初回は原点 `[0,0,0]`）。
+    ///
+    /// `converge_terrain_lod_blocking` の呼び出し側（ウィンドウ Play のロードフェーズ・
+    /// 埋め込み ENTER_PLAY）から使う。
+    pub(super) fn play_converge_camera_pos(&self) -> [f32; 3] {
+        self.scene
+            .as_ref()
+            .and_then(|s| s.find_main_camera())
+            .map(|(tf, _)| tf.position)
+            .unwrap_or(self.last_camera_pos)
+    }
+
     /// 軸ギズモドットのクリックに応じてカメラ回転スナップアニメーションを開始する。
     ///
     /// カメラ位置は変えず yaw / pitch のみ Slerp で補間する。

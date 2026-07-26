@@ -2491,6 +2491,79 @@ impl App {
         }
     }
 
+    /// Play 開始直前に、指定カメラ位置基準で全チャンクの目標 LOD を **1 回でまとめて** 収束させる
+    /// （ブロッキング）。
+    ///
+    /// 【目的】通常の毎フレーム LOD 収束 `tick_terrain_lod` は時間バジェット制
+    /// （`TERRAIN_LOD_BUDGET_MS`）で 1 フレームあたりごく少数のチャンクしか再メッシュしないため、
+    /// Play 開始時にメインカメラ位置へ視点が飛んで数百チャンクの目標 LOD が一斉に跨ぐと、
+    /// backlog が解消するまで約 20 秒間 8〜10fps に律速される（実測）。この関数は Play 開始の
+    /// **最初の描画フレームより前**に呼び、変化する全チャンクを一括再メッシュして backlog を
+    /// ゼロにすることで、「Play 開始直後からぬるっと動ける」状態を作る（起動時間は増える）。
+    ///
+    /// 【1 回呼びにする理由（速度の要点）】`remesh_chunks` は呼び出しごとに GPU アイドル待ち
+    /// `device.poll(Wait)` を 1 回払う（フェーズ B）。フェーズ 0 の CPU メッシュ生成は
+    /// `par_iter()` によりチャンク間で rayon 並列に走るため、全チャンクを 1 リストで渡せば
+    /// poll バリアが 1 回で済み、メッシュ生成の並列度も全チャンクに効く。毎フレーム
+    /// `TERRAIN_LOD_BATCH`（=2）ずつ分割してバリアを何百回も払う `tick_terrain_lod` 経路より
+    /// 総時間が大幅に短くなる。
+    ///
+    /// 【カメラ位置】呼び出し側が Play のメインカメラ位置を渡す（見つからなければ
+    /// `last_camera_pos` フォールバック）。LOD の距離しきい値・ヒステリシスは通常経路と同一
+    /// （`desired_lod_for_distance`）なので、収束結果は毎フレーム収束の最終形と一致する。
+    ///
+    /// 所要時間は `[FPS_PHASE] terrain_lod pre-converge total=Xms chunks=N` で常時ログする。
+    pub(super) fn converge_terrain_lod_blocking(&mut self, cam_pos: [f32; 3]) {
+        // 地形無し・GPU 無しなら何もしない。
+        if self.draw_ctx.is_none() || self.terrain.chunk_slot_entity.is_empty() {
+            return;
+        }
+        // LOD 無効（before 計測）時は収束処理を丸ごと飛ばす（全チャンク LOD0 のまま）。
+        if *TERRAIN_LOD_DISABLED {
+            return;
+        }
+
+        let settings = self.terrain.settings.clone();
+        let extent = settings.chunk_extent();
+        let (d1, d2) = terrain_lod_distances();
+        let max_lod = (terrain::lod_count().saturating_sub(1)) as u8;
+
+        let t_total = Instant::now(); // 事前収束の総所要時間計測の起点
+
+        // ── 各チャンクの目標 LOD を求め、現在 LOD と異なるものだけ集める ──
+        //   同時に目標 LOD を `chunk_lod` へ確定しておく（remesh_chunks フェーズ0 がこの値を読む）。
+        let mut coords: Vec<ChunkCoord> = Vec::new();
+        for &coord in self.terrain.chunk_slot_entity.keys() {
+            let origin = coord.world_origin(&settings);
+            let min = origin;
+            let max = [origin[0] + extent, origin[1] + extent, origin[2] + extent];
+            let dist_sq =
+                crate::engine::core::renderer::gpu_resources::aabb_distance_sq(min, max, cam_pos);
+            let dist = dist_sq.sqrt();
+            let current = self.terrain.chunk_lod.get(&coord).copied().unwrap_or(0);
+            let desired = desired_lod_for_distance(current, dist, d1, d2).min(max_lod);
+            if desired != current {
+                self.terrain.chunk_lod.insert(coord, desired);
+                coords.push(coord);
+            }
+        }
+
+        let n = coords.len(); // 事前収束で再メッシュするチャンク数（ログ用）
+        if n > 0 {
+            // 決定性のため座標順にソートしてから、1 回の呼び出しでまとめて再メッシュする。
+            //   （HashMap 走査順は実行ごとに変わる。GPU コマンド列・ログを再現可能にするため）。
+            coords.sort_by_key(|c| (c.x, c.y, c.z));
+            // 【本命】バジェット分割せず全チャンクを 1 回で処理する。defer_side_effects=false で
+            //   従来どおりコライダー追従・RT prune も即時に行う（Play 開始時は物理未起動なので
+            //   コライダー追従は no-op、統合バッチ無効化・BLAS prune は必要ぶんだけ走る）。
+            self.remesh_chunks(&coords, false);
+        }
+
+        // ── 所要時間ログ（常時 ON）──
+        let total_ms = t_total.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+        eprintln!("[FPS_PHASE] terrain_lod pre-converge total={total_ms:.0}ms chunks={n}");
+    }
+
     pub(super) fn flush_terrain_pending_remesh(&mut self) {
         let t_flush = Instant::now();
         // このフレームで何か実処理が起きたか（起きたフレームだけ flush 合計ログを出す）。
