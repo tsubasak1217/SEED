@@ -1216,6 +1216,52 @@ impl<'r> RenderFrame<'r> {
         })
     }
 
+    /// G-Buffer 書き込みパスを **外部深度ビュー** へ向けて開始する（カメラプレビュー用・案A）。
+    ///
+    /// `begin_gbuffer_pass_to` と挙動は同一（4 枚 MRT を Clear(0)・深度を Clear(1.0)/
+    /// ステンシル Clear(0)）だが、深度アタッチメントを共有サーフェス深度ではなく呼び出し側
+    /// 指定のビュー（プレビュー専用の小さな深度テクスチャ）へ差し替える。
+    /// プレビューはメインパスとは別解像度・別深度のミニ G-Buffer へ焼くため、共有深度を使う
+    /// `begin_gbuffer_pass_to` は流用できない（サイズ不一致・メインパスとの取り合いが起きる）。
+    pub fn begin_gbuffer_pass_to_depth<'f>(
+        &'f mut self,
+        g0: &'f wgpu::TextureView,
+        g1: &'f wgpu::TextureView,
+        g2: &'f wgpu::TextureView,
+        g3: &'f wgpu::TextureView,
+        depth_view: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        let mrt_clear = wgpu::Operations {
+            load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+            store: wgpu::StoreOp::Store,
+        };
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("GBuffer Pass (Camera Preview)"),
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment { view: g0, resolve_target: None, ops: mrt_clear }),
+                Some(wgpu::RenderPassColorAttachment { view: g1, resolve_target: None, ops: mrt_clear }),
+                Some(wgpu::RenderPassColorAttachment { view: g2, resolve_target: None, ops: mrt_clear }),
+                Some(wgpu::RenderPassColorAttachment { view: g3, resolve_target: None, ops: mrt_clear }),
+            ],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
     /// G-Buffer からライティングを復元するフルスクリーンパスを開始する（HDR シーンへ出力）。
     ///
     /// - color = `hdr` を LoadOp::Clear(clear)（背景色でクリアしてからフルスクリーン三角形で
@@ -1586,6 +1632,44 @@ impl<'r> RenderFrame<'r> {
             }),
             occlusion_query_set: None,
             timestamp_writes: None,
+        })
+    }
+
+    /// オフスクリーンテクスチャへ **Load**（クリアせず保持）で描画パスを開始する。
+    ///
+    /// カメラプレビューのミニデファード（案A）で、フルスクリーン・ライティングが焼いた
+    /// カラー（`color_view`）と、G-Buffer パスが書いた深度（`depth_view`）を保持したまま、
+    /// フォワード要素（スカイボックス・半透明・3D スプライト）を上に重ねるためのパス。
+    /// 深度は Load（G-Buffer 深度で遮蔽テスト＋スカイボックス等は書き込みあり）。
+    /// ステンシルは使わない（プレビューはアウトライン非対象）ため ops を持たせない。
+    pub fn begin_offscreen_load_pass<'f>(
+        &'f mut self,
+        color_view: &'f wgpu::TextureView,
+        depth_view: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Offscreen Pass (Camera Preview, Load)"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           color_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
         })
     }
 

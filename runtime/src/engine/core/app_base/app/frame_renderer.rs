@@ -2085,57 +2085,155 @@ impl App {
                             &draw_ctx.pipelines.transparent.refract_sampler,
                         );
 
-                        // ── プレビュー地形用の簡易マテリアル（不可視＋黒落ち対策）─────────────
-                        //   地形マテリアルは metallic=1.0・テクスチャ無しで、本来 G-Buffer 専用の
-                        //   地形シェーダ（レイヤテクスチャ配列サンプル）で描かれる前提。カメラプレビューは
-                        //   フォワード＋クラスタ無効・IBL 無しでこれをそのまま使うと 2 つの問題が起きる:
+                        // ══════════════════════════════════════════════════════════
+                        //  案A: カメラプレビューを「本番と同じ Deferred（G-Buffer→ライティング）」で描く。
+                        //  （旧実装＝フォワード小窓＋白プレースホルダ地形は撤去）
                         //
-                        //   ① 不可視（今回の真因）: 地形メッシュの頂点カラーはレイヤブレンド重み
-                        //      （RGB=成分別重み・アルファ＝スロット3重みで大抵 0）で、フォワードシェーダの
-                        //      `base_color *= in.color` でアルファがほぼ 0 になる。プレビューは HDR RT を
-                        //      AlphaBlending でビューポートへブリットするため（camera_preview_blit.toml）、
-                        //      アルファ 0 の地形ピクセルは背後のメインシーンが透けて「地形が映らない」。
-                        //      → ignore_vertex_color=true で頂点カラー乗算をスキップし、アルファ 1・
-                        //        中立な白アルベドにする（＝合成で不透明になり、RGB もレイヤ重みで汚れない）。
-                        //   ② 黒落ち: metallic=1 だと拡散項が完全に消え（kD=(1-kS)*(1-metallic)=0）、
-                        //      roughness=1 の鏡面も環境反射が無く、ほぼ黒になる。
-                        //      → metallic=0/roughness=1 の簡易ライティングで形状・陰影を見せる。
+                        //  なぜ Deferred か:
+                        //   ・地形のレイヤブレンド（terrain_gbuffer_write.wgsl の triplanar）と草
+                        //     （grass_gbuffer.wgsl）は **G-Buffer MRT へ焼くパイプラインでしか描けない**。
+                        //     フォワード小窓では構造的に描けず、旧実装は地形を白い簡易材質で誤魔化し、
+                        //     草は非表示だった。
+                        //   ・プレビュー専用の小さな G-Buffer 4 枚＋深度（preview.gbuffer_*）へ本番と同一の
+                        //     draw_gbuffer_indirect / draw_grass で焼き、deferred.pipeline（rt_off）で
+                        //     ライティング復元する。見た目の一致が構造的に保証され、白プレースホルダも
+                        //     material_override も不要になる。
+                        //   ・出力アルファは deferred_lighting.wgsl が 1.0 固定で書くため、ブリットの
+                        //     AlphaBlending でも地形が透けない（旧不具合＝頂点カラーα透過の構造的解消）。
                         //
-                        //   レイヤの実色は再現しない簡易表示（形状・陰影のみ）。テクスチャ無しのため
-                        //   defaults（白/フラット法線/黒）を使う。preview_pass より長生きさせるため
-                        //   パスの外で 1 個だけ生成する。
-                        let preview_terrain_mat = crate::engine::core::loader::model::Material {
-                            metallic_factor:     0.0,
-                            roughness_factor:    1.0,
-                            ignore_vertex_color: true,
-                            ..Default::default()
-                        };
-                        let preview_terrain_gpu_mat =
-                            crate::engine::core::renderer::gpu_resources::GpuMaterial::upload(
+                        //  プレビューは簡易経路のため AO / SSGI / RT 影 / シャドウマスクは無効
+                        //  （ダミーを渡す）。ライト group4 は CameraPreview 側（クラスタ無効・プレビュー CSM）。
+                        // ══════════════════════════════════════════════════════════
+
+                        // プレビューカメラのフラスタム平面（草のチャンクカリング用）。
+                        // メインの saved_frustum_planes は別カメラのため使わない。
+                        //   【重要】extract_frustum_planes は行優先の数値行列（Mat4x4::data）を要求する。
+                        //   cam_uniform.view_proj は GPU アップロード用に転置済み（列優先）のため使えない。
+                        //   メインパス（saved_frustum_planes = extract_frustum_planes(&view_proj.data)）と
+                        //   同様に、転置前の proj*view を組み直して渡す。
+                        let preview_view_proj =
+                            cam_data.proj_matrix(preview_aspect) * cam_data.view_matrix();
+                        let preview_planes = extract_frustum_planes(&preview_view_proj.data);
+                        let preview_cam_pos = cam_uniform.position;
+
+                        // ── プレビュー G-Buffer 入力 BindGroup（deferred group1）───────────────
+                        //   AO=Off→白（ao=1.0） / SSGI 無効→ダミー / シャドウマスク非対象→ダミー白。
+                        //   深度は DepthOnly aspect ビュー（texture_depth_2d でサンプル）。
+                        let preview_gbuffer_bg =
+                            crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
                                 &draw_ctx.device,
-                                &draw_ctx.queue,
-                                &preview_terrain_mat,
-                                &[],   // テクスチャスロット無し（全て defaults を使う）
-                                &[],
-                                &draw_ctx.pipelines.mesh.material_bgl,
-                                &draw_ctx.defaults,
+                                &draw_ctx.pipelines.deferred.gbuffer_bgl,
+                                &preview.gbuffer_views[0], &preview.gbuffer_views[1],
+                                &preview.gbuffer_views[2], &preview.gbuffer_views[3],
+                                &preview.depth_sample_view,
+                                &draw_ctx.pipelines.deferred.gbuffer_sampler,
+                                &draw_ctx.pipelines.ao.white_view,
+                                &draw_ctx.pipelines.ao.linear_sampler,
+                                &draw_ctx.pipelines.ssgi.dummy_view,
+                                &draw_ctx.pipelines.ssgi.linear_sampler,
+                                &draw_ctx.pipelines.deferred.mask_dummy_view,
+                                &draw_ctx.pipelines.deferred.mask_sampler,
                             );
 
+                        // ── A. G-Buffer パス: 不透明ジオメトリをプレビュー G-Buffer 4 枚＋深度へ焼く ──
                         {
-                            let mut preview_pass = frame.begin_offscreen_pass(
+                            let mut gpass = frame.begin_gbuffer_pass_to_depth(
+                                &preview.gbuffer_views[0], &preview.gbuffer_views[1],
+                                &preview.gbuffer_views[2], &preview.gbuffer_views[3],
+                                &preview.depth_view,
+                            );
+
+                            // 統合バッチ（地形チャンク＋通常モデル）。地形は layer_resources を渡すことで
+                            // 本番と同一の地形レイヤブレンドパイプライン（triplanar）へ振り分けられる。
+                            // メッシュレットカリングは使わない（間接コマンドはメインカメラ基準で詰められる
+                            // ため。draw_gbuffer_indirect は false で CPU カリング済み draw へフォールバック）。
+                            for (path, sd) in &self.shared_model_batches {
+                                if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
+                                    crate::engine::core::renderer::gbuffer::draw_gbuffer_indirect(
+                                        &mut gpass, gpu, &sd.batch,
+                                        &preview_mesh_cam_buf.bind_group,
+                                        &draw_ctx.pipelines.gbuffer,
+                                        false,
+                                        self.terrain.layer_resources.as_ref(),
+                                    );
+                                }
+                            }
+
+                            // ── 草（procedural grass）を G-Buffer へ焼く ──
+                            //   本番と同じ grass パイプライン。43 万本規模を全描画しないよう、プレビュー
+                            //   カメラのフラスタム＋距離＋密度減衰でチャンクカリングする（メインと同一定数）。
+                            //   時刻はプレビューを自己完結させるためここで更新する（メインが forward モードで
+                            //   草を描かないフレームでも、プレビューは正しい風で草を描ける）。
+                            let grass_cull_dist = *super::terrain_scatter_ops::GRASS_CULL_DISTANCE;
+                            let grass_cull_sq = grass_cull_dist * grass_cull_dist;
+                            let grass_decay_near = *super::terrain_scatter_ops::GRASS_DECAY_NEAR;
+                            let grass_decay_mid = *super::terrain_scatter_ops::GRASS_DECAY_MID;
+                            let grass_decay_near_sq = grass_decay_near * grass_decay_near;
+                            let grass_decay_mid_sq = grass_decay_mid * grass_decay_mid;
+                            for buf in self.terrain.grass_buffers.values() {
+                                buf.update_time(&draw_ctx.queue, ctx.anim_time);
+                                crate::engine::core::renderer::grass_gbuffer::draw_grass_culled(
+                                    &mut gpass,
+                                    &draw_ctx.pipelines.gbuffer.grass,
+                                    buf,
+                                    &preview_mesh_cam_buf.bind_group,
+                                    &preview_planes,
+                                    preview_cam_pos,
+                                    grass_cull_sq,
+                                    grass_decay_near_sq,
+                                    grass_decay_mid_sq,
+                                );
+                            }
+
+                            // ── 散布モデル（kind=Model プロップ）の不透明部を焼く ──
+                            //   草と違い実メッシュなので通常の deferred メッシュ経路（terrain_layers=None）。
+                            //   葉（Blend）は後段のフォワード透明パスが preview_tp_models 経由で描く。
+                            for res in self.terrain.scatter_models.values() {
+                                crate::engine::core::renderer::gbuffer::draw_gbuffer_indirect(
+                                    &mut gpass,
+                                    &res.gpu_model, &res.batch,
+                                    &preview_mesh_cam_buf.bind_group,
+                                    &draw_ctx.pipelines.gbuffer,
+                                    false,
+                                    None,
+                                );
+                            }
+                        }
+
+                        // ── B. フルスクリーン・ライティングパス: G-Buffer → HDR プレビューカラー ──
+                        //   deferred.pipeline（rt_off）＋ CameraPreview ライト BG（クラスタ無効・プレビュー
+                        //   CSM・view_mode=Lit 固定）。背景（深度>=1）はシェーダが discard し clear_col が残る
+                        //   （スカイボックスは次の C で上書き）。group0 の mesh カメラ BGL は deferred カメラ
+                        //   BGL と構造的に等価（メイン camera_buf も同一 BGL を deferred.pipeline に bind 済み）。
+                        {
+                            let mut lpass = frame.begin_deferred_lighting_pass_to(
+                                &preview.color_view, clear_col,
+                            );
+                            lpass.set_pipeline(&draw_ctx.pipelines.deferred.pipeline);
+                            lpass.set_bind_group(0, &preview_mesh_cam_buf.bind_group, &[]);
+                            lpass.set_bind_group(1, &preview_gbuffer_bg, &[]);
+                            lpass.set_bind_group(2, &draw_ctx.pipelines.deferred.empty_bg2, &[]);
+                            lpass.set_bind_group(3, &draw_ctx.pipelines.deferred.empty_bg3, &[]);
+                            lpass.set_bind_group(
+                                4,
+                                draw_ctx.light_buffer.bind_group(LightingPass::CameraPreview),
+                                &[],
+                            );
+                            lpass.draw(0..3, 0..1);
+                        }
+
+                        // ── C. フォワード上書きパス（Load）: スカイボックス・半透明・3D スプライト ──
+                        //   B のライティング結果（カラー）と A の深度を保持したまま重ねる。メインパスの
+                        //   begin_scene_pass_load_to と同じ位置づけ。
+                        {
+                            let mut preview_pass = frame.begin_offscreen_load_pass(
                                 &preview.color_view,
                                 &preview.depth_view,
-                                clear_col,
                             );
 
-                            // ── スカイボックス（天球）: クリア直後・不透明より先に描く ──────
-                            //   メインパス（Phase R9, begin_scene_pass 直後）と同じ位置づけ。
-                            //   skybox.wgsl の CameraLocked は球をカメラ位置（u_camera.position）へ
-                            //   平行移動して深度 far 固定で描くため、プレビューカメラの uniform を積んだ
-                            //   カメラ BG を渡すだけで平行移動除去（無限遠背景）が成立する。専用の行列
-                            //   引数は不要。GPU 同期（sync_gpu）はこのパスより前（フレーム冒頭）で完了済み。
-                            //   skybox の group0 は mesh カメラ BGL と構造的に等価のため preview_mesh_cam_buf
-                            //   をそのまま流用できる（スプライト描画が同じ BG を流用しているのと同じ）。
+                            // スカイボックス（天球・深度 far 固定）。深度 Load のため地形の手前には出ない。
+                            //   skybox.wgsl の CameraLocked は球をカメラ位置へ平行移動して描くため、
+                            //   プレビューカメラ uniform を積んだ mesh カメラ BG を渡すだけで無限遠背景が成立。
                             if self.skybox_system.has_skyboxes() {
                                 self.skybox_system.draw(
                                     &mut preview_pass,
@@ -2144,66 +2242,9 @@ impl App {
                                 );
                             }
 
-                            // モデルを統合バッチで描画（per-MC バッチは使用しない）
-                            for (path, sd) in &self.shared_model_batches {
-                                if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
-                                    // 地形チャンク（terrain:// スキーム）はプレビュー簡易マテリアルへ
-                                    // 差し替えて黒落ちを回避する。それ以外は従来どおり固有マテリアル。
-                                    let mat_ovr = if path.starts_with(
-                                        crate::engine::components::TERRAIN_SOURCE_SCHEME)
-                                    {
-                                        Some(&preview_terrain_gpu_mat.bind_group)
-                                    } else {
-                                        None
-                                    };
-                                    // カメラプレビューは従来パイプライン（RT なし）で描画する。
-                                    //
-                                    // 【最重要】group 4 は必ず CameraPreview 側の BG を使う。
-                                    // この BG だけがカメラ固有資源をプレビュー用に差し替えてある:
-                                    //   - ClusterParams.enabled=0（クラスタは near/far/fov/ビューポート
-                                    //     依存＝カメラ固有。メインカメラ基準のクラスタを適用すると
-                                    //     ライトが落ちて暗くなる／別の場所のライトが乗る）
-                                    //   - CSM = プレビューカメラ基準（上でこのパス直前に描いた深度）
-                                    draw_model_indirect(
-                                        &mut preview_pass, gpu, &sd.batch,
-                                        &preview_mesh_cam_buf.bind_group,
-                                        draw_ctx.light_buffer.bind_group(LightingPass::CameraPreview),
-                                        // プレビュー小窓は常にライティング ON・塗り（ワイヤなし）。
-                                        &draw_ctx.pipelines, None, false, false,
-                                        mat_ovr,
-                                    );
-                                }
-                            }
-
-                            // ── 地形散布モデル（kind=Model プロップ）の不透明部を描画 ──────
-                            //   メインパス（G-Buffer 4061〜4071）と同じ集合。散布は通常マテリアル
-                            //   （terrain_layers=false）なのでマテリアル差し替えは不要（None）。
-                            //   幹などの Opaque プリミティブがここで描かれ、葉（Blend）は上で収集した
-                            //   preview_tp_models 経由で後段の透明パスが描く。可視カリングは
-                            //   cull_and_update_scatter_models が毎フレーム更新済み。
-                            //   ※ 草（grass）はプレビューには映らない（G-Buffer 専用パイプラインで
-                            //     単一カラー RT のフォワード小窓には構造的に描けないためスコープ外）。
-                            for res in self.terrain.scatter_models.values() {
-                                draw_model_indirect(
-                                    &mut preview_pass,
-                                    &res.gpu_model, &res.batch,
-                                    &preview_mesh_cam_buf.bind_group,
-                                    draw_ctx.light_buffer.bind_group(LightingPass::CameraPreview),
-                                    &draw_ctx.pipelines, None, false, false,
-                                    None,
-                                );
-                            }
-
-                            // ── 半透明の距離ソート描画（Phase R5）──────────────
-                            // プレビューはグローバルの透明方式設定にかかわらず常に距離ソート
-                            // を使う（WBOIT はプレビューごとの accum/reveal RT と合成パスが
-                            // 必要でコストに見合わないため。R8 でプレビューが RT パイプライン
-                            // を使わないのと同じ「プレビューは簡易経路」の方針）。
-                            // ソートの距離基準はプレビューカメラのワールド位置（cam_uniform.position）。
-                            // メインカメラの saved_camera_pos は別カメラのため使わない。
-                            // カリングはメイン視錐台とプレビュー視錐台の OR のため、
-                            // lod_compact_insts にはプレビュー可視インスタンスが含まれている。
-                            // group 4 は上の不透明描画と同じく CameraPreview 側を使う（別カメラのため）。
+                            // ── 半透明の距離ソート描画（Phase R5）──
+                            //   距離基準はプレビューカメラのワールド位置（cam_uniform.position）。
+                            //   group4 は CameraPreview 側（別カメラのため）。
                             if preview_has_tp {
                                 crate::engine::core::renderer::transparency::draw_sorted(
                                     &mut preview_pass,
@@ -2215,8 +2256,7 @@ impl App {
                                 );
                             }
 
-                            // 3D Canvas スプライトをプレビューカメラで描画する
-                            // SpritePipeline は mesh と同一カメラ BGL のため preview_mesh_cam_buf を流用する
+                            // 3D Canvas スプライトをプレビューカメラで描画する。
                             if !preview_sprite_3d.is_empty() {
                                 draw_sprite_batches(
                                     &mut preview_pass,

@@ -123,8 +123,26 @@ struct CameraPreviewResources {
     color_view:    wgpu::TextureView,
     /// オフスクリーン深度テクスチャ
     depth_texture: wgpu::Texture,
-    /// 深度テクスチャのビュー
+    /// 深度テクスチャのビュー（All aspect: レンダーアタッチメント用）
     depth_view:    wgpu::TextureView,
+    /// 深度テクスチャの DepthOnly aspect ビュー。
+    ///
+    /// デファードのライティングパス（案A: ミニデファード）が深度を `texture_depth_2d`
+    /// としてサンプルするために使う。Depth24PlusStencil8 はステンシル面を持つため、
+    /// サンプルには DepthOnly aspect ビューが必須（メイン深度テクスチャの
+    /// `depth_only_view` と同じ役割・同じ理由）。
+    depth_sample_view: wgpu::TextureView,
+    /// プレビュー専用 G-Buffer 4 枚（案A: ミニデファード）。
+    ///
+    /// カメラプレビューを「本番と同じ Deferred（G-Buffer → ライティング）」で描くための
+    /// 小さな G-Buffer 一式。地形のレイヤブレンド（terrain_gbuffer_write.wgsl）と草
+    /// （grass_gbuffer.wgsl）は G-Buffer MRT へ焼くパイプラインでしか描けないため、
+    /// フォワード小窓ではなくここへ焼いてからフルスクリーン・ライティングで復元する。
+    /// テクスチャ本体は所有し続ける必要があるため（ビューは借用）フィールドで保持する。
+    /// フォーマット・命名はメイン G-Buffer（renderer/gbuffer.rs の GBUFFER*_FORMAT）と一致。
+    gbuffer_textures: [wgpu::Texture; 4],
+    /// G-Buffer 4 枚のビュー（レンダーターゲット兼サンプリング用）。
+    gbuffer_views:    [wgpu::TextureView; 4],
     /// ブリット用テクスチャバインドグループ（Group 1: テクスチャ + サンプラー）
     blit_tex_bg:   wgpu::BindGroup,
     /// ブリット矩形ユニフォームバッファ（NDC 座標、毎フレーム更新）
@@ -160,7 +178,10 @@ impl CameraPreviewResources {
         });
         let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // オフスクリーン深度テクスチャ
+        // オフスクリーン深度テクスチャ。
+        //   案A（ミニデファード）でデファードのライティングパスが深度をテクスチャとして
+        //   サンプルするため、RENDER_ATTACHMENT に加えて TEXTURE_BINDING を付与する
+        //   （メイン深度テクスチャ DepthTexture と同じ用途構成）。
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
             label:           Some("Camera Preview Depth"),
             size:            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -168,10 +189,46 @@ impl CameraPreviewResources {
             sample_count:    1,
             dimension:       wgpu::TextureDimension::D2,
             format:          wgpu::TextureFormat::Depth24PlusStencil8,
-            usage:           wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage:           wgpu::TextureUsages::RENDER_ATTACHMENT
+                           | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats:    &[],
         });
+        // All aspect: レンダーパスの depth_stencil_attachment 用（深度＋ステンシル）。
         let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // DepthOnly aspect: デファードライティングが texture_depth_2d としてサンプルする用。
+        let depth_sample_view = depth_texture.create_view(&wgpu::TextureViewDescriptor {
+            aspect: wgpu::TextureAspect::DepthOnly,
+            ..Default::default()
+        });
+
+        // プレビュー専用 G-Buffer 4 枚（案A: ミニデファード）。
+        //   フォーマットはメイン G-Buffer（renderer/gbuffer.rs の GBUFFER*_FORMAT）と一致必須。
+        //   RENDER_ATTACHMENT（G-Buffer パスの MRT 出力先）＋ TEXTURE_BINDING（ライティング
+        //   パスが textureLoad で読む）を付与する。プレビュー解像度は小さい（高さ固定・
+        //   幅アスペクト比）ため、4 枚合わせても VRAM は数 MB に収まる。
+        use crate::engine::core::renderer::gbuffer::{
+            GBUFFER0_FORMAT, GBUFFER1_FORMAT, GBUFFER2_FORMAT, GBUFFER3_FORMAT,
+        };
+        let gbuffer_formats = [GBUFFER0_FORMAT, GBUFFER1_FORMAT, GBUFFER2_FORMAT, GBUFFER3_FORMAT];
+        // テクスチャ本体（所有し続ける）とビュー（借用）を同順で 4 枚ぶん生成する。
+        let g_tex_view: [(wgpu::Texture, wgpu::TextureView); 4] = std::array::from_fn(|i| {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label:           Some("Camera Preview GBuffer"),
+                size:            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count:    1,
+                dimension:       wgpu::TextureDimension::D2,
+                format:          gbuffer_formats[i],
+                usage:           wgpu::TextureUsages::RENDER_ATTACHMENT
+                               | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats:    &[],
+            });
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            (tex, view)
+        });
+        let [(gt0, gv0), (gt1, gv1), (gt2, gv2), (gt3, gv3)] = g_tex_view;
+        let gbuffer_textures = [gt0, gt1, gt2, gt3];
+        let gbuffer_views    = [gv0, gv1, gv2, gv3];
 
         // サンプラー（線形フィルタリング）
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -219,7 +276,8 @@ impl CameraPreviewResources {
 
         Self {
             color_texture, color_view,
-            depth_texture, depth_view,
+            depth_texture, depth_view, depth_sample_view,
+            gbuffer_textures, gbuffer_views,
             blit_tex_bg,
             blit_rect_buf, blit_rect_bg,
         }
