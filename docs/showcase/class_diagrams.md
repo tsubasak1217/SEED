@@ -137,7 +137,7 @@ classDiagram
     Actor ..> ActorData : to_data / build_actor
     ActorData *-- "N" ActorData : 再帰
     SceneData *-- "N" ActorData
-    note for ComponentSlot "スロットごとに専用 Entity を spawn。\n同型コンポーネントの多重アタッチを実現"
+    note for ComponentSlot "スロットごとに専用 Entity を spawn し、同型コンポーネントの多重アタッチを実現"
 ```
 
 ---
@@ -594,5 +594,5 @@ classDiagram
     App --> RuntimeMode
     App *-- PlaySnapshot : Option
     PlaySnapshot *-- "N" PlaySnapshotEntry
-    note for PlaySnapshotEntry "非対称戦略:\n地形+GPU資源は Keep(触らない)\nシーンアクターのみ Restore\n→ 地形再構築 約17秒 + BLAS/草 約17秒 をスキップ"
+    note for PlaySnapshotEntry "非対称戦略: 地形+GPU資源は Keep(触らない)、シーンアクターのみ Restore。地形再構築 約17秒 + BLAS/草 約17秒 をスキップ"
 ```
