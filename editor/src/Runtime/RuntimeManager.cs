@@ -15,7 +15,10 @@ namespace SEEDEditor.Runtime;
 //  EditorState
 // ============================================================
 
-public enum EditorState { Idle, Building, Edit, Play, Pause }
+// Launching: Play ボタン押下後、Play ランタイムの起動シーケンス（プロセス起動〜
+//            ウィンドウ／パイプ準備）が進行中の過渡状態。この間に Stop を押せるよう
+//            にする（起動キャンセル用）とともに、Play ボタンの再入をブロックする。
+public enum EditorState { Idle, Building, Launching, Edit, Play, Pause }
 
 // ============================================================
 //  RuntimeManager
@@ -131,6 +134,23 @@ public sealed class RuntimeManager : IDisposable
     /// Stop / OnRuntimeExited の分岐と、二重遷移防止に使う。
     /// </summary>
     private bool _inEmbeddedPlay;
+
+    /// <summary>
+    /// Play 起動シーケンス（プロセス起動〜Play 遷移、または ENTER_PLAY〜PLAY_ENTERED）が
+    /// 進行中かどうか。次の 2 つの不具合対策に使う:
+    ///   - 不具合2（プロセス単一性）: PlayAsync 入口の再入ガード。起動処理中に再度呼ばれても
+    ///     早期 return して 2 つ目のランタイムプロセスを起動しない（実行ボタン連打対策）。
+    ///   - 不具合1（起動中 Stop）: Stop が起動中かどうかを判定し、起動をキャンセルするために使う。
+    /// UI スレッドからのみ読み書きするため lock 不要（PlayAsync/Stop はともに UI スレッド）。
+    /// </summary>
+    private bool _isLaunching;
+
+    /// <summary>
+    /// ウィンドウ Play の起動シーケンス（LaunchAsync）をキャンセルするためのトークンソース。
+    /// 起動中に Stop が押されたら Cancel し、LaunchAsync 内の await（クラッシュ検知待機・
+    /// パイプ接続待機）を中断させて Play への遷移を止め、起動途中のプロセスを終了させる。
+    /// </summary>
+    private CancellationTokenSource? _launchCts;
 
     /// <summary>
     /// 埋め込みインプレース Play セッション中かどうか（ENTER_PLAY 送信〜PLAY_EXITED/プロセス終了まで）。
@@ -336,62 +356,97 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public async Task PlayAsync()
     {
+        // ── 再入防止ガード（不具合2: Play ランタイムプロセスの単一性保証）──────────
+        // 実行ボタンの連打・イベントの多重発火で PlayAsync が重ねて呼ばれても、
+        // 2 つ目のランタイムプロセスを起動しないように早期 return する。
+        //   ・_isLaunching: 起動シーケンス進行中（ウィンドウ Play / 埋め込み Play 共通）
+        //   ・_state Play/Pause: 既に Play プロセスが生存しており再生中
+        // 本質的なガードは（UI 側の連打対策に依存せず）ここ RuntimeManager 側に置く。
+        if (_isLaunching)
+        {
+            EditorLog.Write("PlayAsync — 既に起動処理中のため無視（多重起動防止）");
+            return;
+        }
+        if (_state == EditorState.Play || _state == EditorState.Pause)
+        {
+            EditorLog.Write($"PlayAsync — 既に {_state} 中のため無視（多重起動防止）");
+            return;
+        }
+
         // ── 埋め込みインプレース Play（フェーズ2）─────────────────────────────
         // 現 Edit ランタイムが生きていれば、別プロセスを起動せず ENTER_PLAY で
         // その場で Play 化する。地形・散布・GPU リソースを作り直さないため即座に再生できる。
+        // EnterPlayEmbedded が _isLaunching を立て、PLAY_ENTERED 受信時に降ろす。
         if (EmbeddedPlay && _process is { HasExited: false } && _state == EditorState.Edit)
         {
             EnterPlayEmbedded();
             return;
         }
 
-        // Edit ランタイムをフィールドに保存（プロセスは生かしたまま）
-        _savedEditProcess = _process;
-        _savedEditPipe    = _pipe;
-        _savedEditHwnd    = _runtimeHwnd;
+        // ── ここから先はウィンドウ Play（別プロセス起動 or 常駐再利用）─────────────
+        // 起動シーケンス開始を宣言する。以降 Stop されたらこのフラグ / トークンで検知する。
+        _isLaunching = true;
+        _launchCts?.Dispose();
+        _launchCts = new CancellationTokenSource();
+        var launchToken = _launchCts.Token;
 
-        // Play 中に Edit プロセスが終了しても OnRuntimeExited が誤発火しないよう購読解除
-        if (_savedEditProcess is not null)
-            _savedEditProcess.Exited -= OnRuntimeExited;
-
-        // Edit パイプのメッセージも一時停止
-        if (_savedEditPipe is not null)
-            _savedEditPipe.MessageReceived -= OnPipeMessage;
-
-        // Edit ウィンドウを非表示（プロセスは維持）
-        if (_savedEditHwnd != IntPtr.Zero)
-            Win32.ShowWindow(_savedEditHwnd, SW_HIDE);
-
-        // 現フィールドをリセット（再利用 / 新規起動が Play 用に設定する）
-        _process     = null;
-        _pipe        = null;
-        _runtimeHwnd = IntPtr.Zero;
-
-        // ── 常駐 Play プロセスの再利用判定 ─────────────────────────────
-        // 保持プロセスが生きていて、かつ再ロードすべきシーンパスが確定している場合のみ
-        // 再利用する。PlayScenePath が null（「開始シーンからプレイ」時はエディタ側が
-        // 開始シーンの実パスを持たない）のときは LOAD_SCENE を送れないため新規起動する。
-        var canReuse = _persistentPlayProcess is { HasExited: false }
-                    && !string.IsNullOrEmpty(PlayScenePath);
-        if (canReuse)
+        try
         {
-            EditorLog.Write("PlayAsync — 常駐 Play プロセスを再利用（LOAD_SCENE で高速再生）");
-            ReusePersistentPlayRuntime();
-            return;
-        }
+            // Edit ランタイムをフィールドに保存（プロセスは生かしたまま）
+            _savedEditProcess = _process;
+            _savedEditPipe    = _pipe;
+            _savedEditHwnd    = _runtimeHwnd;
 
-        // 保持プロセスが消滅していた（クラッシュ/終了）場合は破棄してから新規起動する
-        if (_persistentPlayProcess is not null)
-        {
-            EditorLog.Write("PlayAsync — 常駐 Play プロセスが消滅、または再ロード先シーン未確定。新規起動へフォールバック");
-            DisposePersistentPlayRuntime(killProcess: true);
-        }
-        else
-        {
-            EditorLog.Write("PlayAsync — 常駐 Play なし。新規起動（コールドスタート）");
-        }
+            // Play 中に Edit プロセスが終了しても OnRuntimeExited が誤発火しないよう購読解除
+            if (_savedEditProcess is not null)
+                _savedEditProcess.Exited -= OnRuntimeExited;
 
-        await LaunchAsync(editMode: false);
+            // Edit パイプのメッセージも一時停止
+            if (_savedEditPipe is not null)
+                _savedEditPipe.MessageReceived -= OnPipeMessage;
+
+            // Edit ウィンドウを非表示（プロセスは維持）
+            if (_savedEditHwnd != IntPtr.Zero)
+                Win32.ShowWindow(_savedEditHwnd, SW_HIDE);
+
+            // 現フィールドをリセット（再利用 / 新規起動が Play 用に設定する）
+            _process     = null;
+            _pipe        = null;
+            _runtimeHwnd = IntPtr.Zero;
+
+            // ── 常駐 Play プロセスの再利用判定 ─────────────────────────────
+            // 保持プロセスが生きていて、かつ再ロードすべきシーンパスが確定している場合のみ
+            // 再利用する。PlayScenePath が null（「開始シーンからプレイ」時はエディタ側が
+            // 開始シーンの実パスを持たない）のときは LOAD_SCENE を送れないため新規起動する。
+            var canReuse = _persistentPlayProcess is { HasExited: false }
+                        && !string.IsNullOrEmpty(PlayScenePath);
+            if (canReuse)
+            {
+                EditorLog.Write("PlayAsync — 常駐 Play プロセスを再利用（LOAD_SCENE で高速再生）");
+                ReusePersistentPlayRuntime();
+                return;
+            }
+
+            // 保持プロセスが消滅していた（クラッシュ/終了）場合は破棄してから新規起動する
+            if (_persistentPlayProcess is not null)
+            {
+                EditorLog.Write("PlayAsync — 常駐 Play プロセスが消滅、または再ロード先シーン未確定。新規起動へフォールバック");
+                DisposePersistentPlayRuntime(killProcess: true);
+            }
+            else
+            {
+                EditorLog.Write("PlayAsync — 常駐 Play なし。新規起動（コールドスタート）");
+            }
+
+            await LaunchAsync(editMode: false, launchToken);
+        }
+        finally
+        {
+            // 起動シーケンス終了（成功・キャンセル・失敗いずれも）でフラグを必ず降ろす。
+            // これによりクラッシュ即時終了で例外が飛んでもガードが解除され、次の Play が可能になる。
+            // 埋め込み Play はこの経路を通らない（別ライフサイクル: PLAY_ENTERED で降ろす）。
+            _isLaunching = false;
+        }
     }
 
     /// <summary>
@@ -404,6 +459,9 @@ public sealed class RuntimeManager : IDisposable
     private void EnterPlayEmbedded()
     {
         EditorLog.Write("EnterPlayEmbedded — ENTER_PLAY 送信（地形・散布・GPU を保持したまま Play 化）");
+        // ENTER_PLAY の二重送信を防ぐ（不具合2）。PLAY_ENTERED 受信まで起動中とみなし、
+        // PlayAsync 入口の _isLaunching ガードで再入をブロックする。
+        _isLaunching    = true;
         _inEmbeddedPlay = true;
         // クラッシュ再起動カウンタはセッション単位でリセットしておく。
         _restartCount = 0;
@@ -632,10 +690,23 @@ public sealed class RuntimeManager : IDisposable
     public void Stop()
     {
         // 埋め込みインプレース Play 中は EXIT_PLAY を送るだけで Edit へ戻る
-        // （ウィンドウ操作・プロセス保持は不要）。
+        // （ウィンドウ操作・プロセス保持は不要）。ENTER_PLAY 直後（PLAY_ENTERED 前）でも
+        // ランタイムは IPC を順に処理するため、EXIT_PLAY 送信で Edit へ確実に戻る。
         if (_inEmbeddedPlay)
         {
             StopEmbeddedPlay();
+            return;
+        }
+
+        // ── 起動シーケンス中の Stop（不具合1）───────────────────────────────
+        // ウィンドウ Play の起動途中（プロセス起動〜Play 遷移前）に Stop が押された場合、
+        // 起動をキャンセルする。実際の後始末（起動途中プロセスの終了・Edit 復帰）は、
+        // キャンセルにより中断した LaunchAsync のキャンセルハンドラ（AbortLaunchAndRestoreEdit）
+        // が UI スレッド上で行う。ここではキャンセル通知だけ行い二重処理を避ける。
+        if (_isLaunching)
+        {
+            EditorLog.Write("Stop — 起動シーケンス中に Stop。起動をキャンセルして Edit へ戻す");
+            _launchCts?.Cancel();
             return;
         }
 
@@ -837,7 +908,13 @@ public sealed class RuntimeManager : IDisposable
 
     // ── プライベート: 起動 ─────────────────────────────────────
 
-    private async Task LaunchAsync(bool editMode)
+    /// <param name="editMode">true=Edit ランタイム起動 / false=Play ランタイム起動。</param>
+    /// <param name="launchToken">
+    /// Play 起動シーケンスのキャンセルトークン（不具合1）。起動中に Stop が押されると Cancel され、
+    /// クラッシュ検知待機・パイプ接続待機の await を中断させて Play 遷移を止める。
+    /// Edit 起動（editMode=true）では default（キャンセル不可）で呼ばれる。
+    /// </param>
+    private async Task LaunchAsync(bool editMode, CancellationToken launchToken = default)
     {
         EditorLog.Write($"LaunchAsync start — editMode={editMode}");
 
@@ -884,6 +961,11 @@ public sealed class RuntimeManager : IDisposable
 
         EditorLog.Write($"Process started — PID={_process.Id}");
 
+        // Play 起動時は Launching 状態へ遷移する（不具合1・不具合2）。
+        // これにより UI は起動中を表示し、Stop ボタンを押せる（起動キャンセル可能）状態にする。
+        // Edit 起動時は従来どおり最後にまとめて Edit へ遷移するため、ここでは変更しない。
+        if (!editMode) ChangeState(EditorState.Launching);
+
         _process.ErrorDataReceived += (_, e) =>
         {
             if (e.Data != null)
@@ -904,34 +986,71 @@ public sealed class RuntimeManager : IDisposable
 
         _pipe.MessageReceived += OnPipeMessage;
 
-        // 起動直後クラッシュを検知
-        EditorLog.Write("Waiting 500ms for crash detection...");
-        await Task.Delay(500);
-        if (_process.HasExited)
-        {
-            var msg = stderr.Length > 0 ? stderr.ToString() : "(no stderr output)";
-            throw new InvalidOperationException($"Runtime crashed immediately (exit code {_process.ExitCode}):\n{msg}");
-        }
-        // 正常起動できたのでクラッシュカウントをリセット
-        _restartCount    = 0;
-        _intentionalStop = false;
-        EditorLog.Write("Process still alive — waiting for pipe connection (10s timeout)...");
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        // ── 起動シーケンスの待機（クラッシュ検知 → パイプ接続）───────────────
+        // launchToken が Cancel されると（起動中に Stop）、以下の await が
+        // OperationCanceledException で中断し、下の catch で Edit へ復帰する（不具合1）。
         try
         {
-            await _pipe.WaitForConnectionAsync(cts.Token);
-            EditorLog.Write("Pipe connected");
+            // 起動直後クラッシュを検知
+            EditorLog.Write("Waiting 500ms for crash detection...");
+            await Task.Delay(500, launchToken);
+            if (_process.HasExited)
+            {
+                var msg = stderr.Length > 0 ? stderr.ToString() : "(no stderr output)";
+                throw new InvalidOperationException($"Runtime crashed immediately (exit code {_process.ExitCode}):\n{msg}");
+            }
+            // 正常起動できたのでクラッシュカウントをリセット
+            _restartCount    = 0;
+            _intentionalStop = false;
+            EditorLog.Write("Process still alive — waiting for pipe connection (10s timeout)...");
+
+            // launchToken（Stop によるキャンセル）と 10 秒タイムアウトを結合したトークンで待機する。
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(launchToken);
+            cts.CancelAfter(TimeSpan.FromSeconds(10));
+            try
+            {
+                await _pipe.WaitForConnectionAsync(cts.Token);
+                EditorLog.Write("Pipe connected");
+            }
+            catch (Exception ex) when (!launchToken.IsCancellationRequested)
+            {
+                // タイムアウト等（Stop 由来のキャンセルは除く）。HWND なしで続行する従来動作。
+                EditorLog.Write($"Pipe connection timeout/error: {ex.Message}  (continuing without HWND)");
+            }
+
+            // パイプ接続待ちの間に Stop されていた場合はここで確実に中断する。
+            launchToken.ThrowIfCancellationRequested();
         }
-        catch (Exception ex)
+        catch (OperationCanceledException) when (!editMode && launchToken.IsCancellationRequested)
         {
-            EditorLog.Write($"Pipe connection timeout/error: {ex.Message}  (continuing without HWND)");
+            // 起動中に Stop が押された（不具合1）。起動途中プロセスを終了し Edit へ復帰する。
+            EditorLog.Write("LaunchAsync — 起動シーケンスがキャンセルされた（起動中 Stop）。プロセス終了・Edit 復帰");
+            AbortLaunchAndRestoreEdit();
+            return;
         }
 
         ChangeState(editMode ? EditorState.Edit : EditorState.Play);
         EditorLog.Write($"State changed to {(editMode ? "Edit" : "Play")}");
 
         if (!editMode) InstallMinimizeHook();
+    }
+
+    /// <summary>
+    /// 起動シーケンス中に Stop が押されたときの後始末（不具合1）。UI スレッドから呼ぶこと。
+    /// 起動途中の Play プロセスは READY 前で HWND 未確定のため常駐保持（非表示化）できない。
+    /// 確実に Kill し、保存しておいた Edit ランタイムを即復元する（無ければ通常再起動）。
+    /// </summary>
+    private void AbortLaunchAndRestoreEdit()
+    {
+        // 起動途中プロセスを終了する（KillRuntime が _process.Exited 購読解除・pipe 破棄・Kill を実施）。
+        // sendStop=false: READY 前でランタイムの IPC 受信が未確立の可能性があるため STOP は送らない。
+        KillRuntime(sendStop: false);
+
+        // 保存した Edit ランタイムが生きていれば即復元（GPU 再初期化なし）、無ければ通常再起動。
+        if (_savedEditProcess is not null && !_savedEditProcess.HasExited)
+            RestoreEditRuntime();
+        else
+            _ = StartEditAsync(_viewportContainerHwnd);
     }
 
     // ── プライベート: IPC メッセージ処理 ──────────────────────
@@ -956,12 +1075,16 @@ public sealed class RuntimeManager : IDisposable
             // 本コールバックはパイプ受信スレッドのため、ChangeState 経由の StateChanged
             // ハンドラ（MainWindow）が Dispatcher で UI スレッドへマーシャルする。
             EditorLog.Write("[Runtime→Editor] PLAY_ENTERED — 埋め込み Play 開始");
+            // 埋め込み Play の起動シーケンス完了。再入ガードを解除する（不具合2）。
+            _isLaunching = false;
             ChangeState(EditorState.Play);
         }
         else if (msg == "PLAY_EXITED")
         {
             // 埋め込みインプレース Play 停止の応答。Play→Edit へ遷移する。
             EditorLog.Write("[Runtime→Editor] PLAY_EXITED — 埋め込み Play 停止、Edit 復帰");
+            // PLAY_ENTERED が届く前に Stop された場合の保険としてここでも解除する。
+            _isLaunching    = false;
             _inEmbeddedPlay = false;
             ChangeState(EditorState.Edit);
         }
@@ -1245,6 +1368,8 @@ public sealed class RuntimeManager : IDisposable
         // 道連れになる。フラグを畳んで通常のクラッシュ再起動フロー（下）へ委ねる。
         // 再起動後は _play_temp.scene 保険で最新シーンが復元される（MainWindow が再ロード）。
         _inEmbeddedPlay = false;
+        // プロセスが落ちた以上、起動シーケンスは継続不能。再入ガードを解除する（不具合2の保険）。
+        _isLaunching = false;
 
         // KillRuntime / Stop による意図的な終了は再起動もクラッシュ計上もしない
         if (_intentionalStop)
@@ -1555,6 +1680,10 @@ public sealed class RuntimeManager : IDisposable
 
         // 常駐保持している Play ランタイムも確実に終了させる（リーク防止）
         DisposePersistentPlayRuntime(killProcess: true);
+
+        // 起動シーケンスのキャンセルソースを破棄する
+        _launchCts?.Dispose();
+        _launchCts = null;
 
         _sourceWatcher?.Dispose();
     }
