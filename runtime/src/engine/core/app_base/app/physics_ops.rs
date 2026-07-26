@@ -88,6 +88,10 @@ impl App {
     /// Edit モード (edit_physics_with_rigidbody=true):
     ///   通常と同様（重力・ダイナミクスあり）。
     pub(super) fn start_physics(&mut self) {
+        // Play 初回フレーム末に走るこの関数は、地形 322 トライメッシュのコライダー構築を含み、
+        // Play 開始直後の 0fps 凍結の主因になりうる。before/after を実機 1 回で比較できるよう、
+        // 全体所要を常時 1 行（1 Play 起動につき 1 回）で出す（[FPS_PHASE]）。
+        let t_start_physics = std::time::Instant::now();
         let Some(scene) = &self.scene else { return };
 
         // 編集時コライダーのみモード: 全ボディを kinematic 扱い
@@ -132,7 +136,14 @@ impl App {
         // 地形の静的トライメッシュコライダーを物理ワールドへ登録する。
         // 地形は ECS の ColliderComponent を持たない（terrain 側で内部管理する）ため、
         // 通常アクターの収集（collect_physics_objects）とは別経路でここから登録する。
+        // （内部で [FPS_PHASE] terrain_collider_register を出す）
         self.register_all_terrain_colliders();
+
+        // 物理起動全体の所要（地形登録＋通常アクター登録＋スレッド起動）を常時 1 行で出す。
+        eprintln!(
+            "[FPS_PHASE] start_physics total={:.1}ms",
+            t_start_physics.elapsed().as_secs_f64() * 1000.0
+        );
     }
 
     // ─── 停止 ────────────────────────────────────────────────────
@@ -178,6 +189,31 @@ impl App {
             } else {
                 thread.send(PhysicsCommand::AddObject(obj));
             }
+        }
+    }
+
+    /// 事前並列構築したミラーコライダーを、物理スレッドとキャラクター衝突ミラーの両方へ登録する。
+    ///
+    /// `physics_add_object` と同じ「送信＝ミラー反映」の一体化を保つが、ミラー側の重い QBVH 構築は
+    /// 呼び出し側が rayon で並列に済ませて `pre`（`PrebuiltMirrorCollider`）で渡す点だけが異なる。
+    /// 地形 322 チャンクの一括登録（`register_all_terrain_colliders`）で、QBVH 構築のメインスレッド
+    /// 直列占有（Play 開始直後の凍結の主因）を排除するために使う。
+    ///
+    /// `obj`（物理スレッドへ送る値）と `pre`（ミラーへ挿入する構築済みコライダー）は同一 entity の
+    /// 同一形状から作られている前提。両者を必ずセットで反映することで、`physics_add_object` と同様に
+    /// 「片方だけ登録され押し戻しがズレる」事故を防ぐ。
+    pub(super) fn physics_add_prebuilt(
+        &mut self,
+        obj: PhysicsObject,
+        pre: crate::engine::physics::char_world::PrebuiltMirrorCollider,
+    ) {
+        // 先にミラーへ差し込む（軽い挿入のみ。重い構築は呼び出し側で並列済み）
+        if let Some(cw) = &mut self.character_world {
+            cw.insert_prebuilt(obj.entity_id, pre);
+        }
+        // 物理スレッドへは従来どおり PhysicsObject をムーブ送信する（スレッド側が自前で QBVH 構築）
+        if let Some(thread) = &self.physics_thread {
+            thread.send(PhysicsCommand::AddObject(obj));
         }
     }
 

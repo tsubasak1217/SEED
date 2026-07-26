@@ -123,6 +123,35 @@ struct MirrorEntry {
     char_last_pos: Option<[f32; 3]>,
 }
 
+// ─── 事前構築ミラーコライダー（並列構築用）────────────────────────────────────
+
+/// `CharacterWorld::build_collider` が返す、**まだミラーへ挿入していない**構築済みコライダー。
+///
+/// 【なぜ分離するか（性能）】
+///   ミラーコライダーの実体構築で支配的に重いのは、地形トライメッシュの Rapier 内部
+///   QBVH 構築（`ColliderBuilder::trimesh`）である。`add_object` はこれを `&mut self` の
+///   直列ループ内で行うため、地形 322 チャンクを登録する `register_all_terrain_colliders`
+///   では 322 個ぶんの QBVH 構築がメインスレッドを直列に占有し、Play 開始直後（物理起動）に
+///   数秒の凍結を生む。
+///
+///   そこで「QBVH を含む純粋な構築」を `&self` 不要の関連関数 `build_collider` に切り出し、
+///   `Send` なこの型で受け渡せるようにする。呼び出し側は rayon で **並列に** 構築してから、
+///   `insert_prebuilt` で **直列に** ミラーへ差し込む（挿入自体は HashMap 追加＋ハンドル採番の
+///   軽処理）。これによりミラーは従来どおり「first resolve より前に完全構築される」ため、
+///   KCC の正しさ（構築途中でキャラが素通りする等）には一切影響しない。純粋に構築の並列化のみ。
+pub(crate) struct PrebuiltMirrorCollider {
+    /// 構築済み Rapier コライダー（QBVH 込み）。ワールド姿勢 × オフセットを反映済み。
+    collider:     Collider,
+    /// キャラクターコントローラーか（押し戻し解決の対象か）。
+    is_character: bool,
+    /// 元オブジェクトが Dynamic 剛体か（キャラ接触時にインパルスを送る対象か）。
+    is_dynamic:   bool,
+    /// コライダーの Actor Transform からのローカルオフセット [x, y, z]。
+    offset:       [f32; 3],
+    /// 登録時のワールド位置（キャラなら `char_last_pos` の初期値に使う）。
+    initial_pos:  [f32; 3],
+}
+
 // ─── 解決結果 ────────────────────────────────────────────────────────────────
 
 /// `resolve_character` の解決結果。
@@ -181,34 +210,65 @@ impl CharacterWorld {
     /// 登録する（毎フレーム `set_position` で ECS 姿勢へ追従させる）。
     /// 同一 entity_id が既に登録済みなら一旦削除してから入れ直す（再登録の取りこぼし防止）。
     pub fn add_object(&mut self, obj: &PhysicsObject) {
+        // 純粋構築（QBVH 込み）→ 直列挿入の 2 段に分けて呼ぶ。
+        // センサー（trigger）は build_collider が None を返すため、既存を消すだけにする。
+        match Self::build_collider(obj) {
+            Some(pre) => self.insert_prebuilt(obj.entity_id, pre),
+            // trigger へ切り替わった再登録に備え、既存があれば消す
+            None      => self.remove(obj.entity_id),
+        }
+    }
+
+    /// `PhysicsObject` からミラー用コライダー（QBVH 込み）を**純粋に**構築する（`&self` 不要）。
+    ///
+    /// センサー（`is_trigger`）は衝突応答なし＝押し戻し対象外なので `None` を返す。
+    /// 返り値 `PrebuiltMirrorCollider` は `Send` なので、地形 322 チャンクのような大量登録では
+    /// rayon で **並列に** この関数を回してから `insert_prebuilt` で直列に差し込める
+    /// （支配的コストの QBVH 構築を並列化するため）。`add_object` の内部実装でもある。
+    pub fn build_collider(obj: &PhysicsObject) -> Option<PrebuiltMirrorCollider> {
         // センサーはミラーに入れない
         if obj.is_trigger {
-            // 既存があれば消す（trigger へ切り替わった再登録に備える）
-            self.remove(obj.entity_id);
-            return;
+            return None;
         }
-        // 同一 id の再登録: 先に消す
-        self.remove(obj.entity_id);
-
         let world_iso  = to_isometry(obj.position, obj.rotation);
         let offset_iso = Isometry::translation(
             obj.collider_offset[0], obj.collider_offset[1], obj.collider_offset[2],
         );
+        // ここで Rapier トライメッシュの内部 QBVH が構築される（地形登録時の支配的コスト）。
         let collider = build_collider_shape(&obj.collider, &obj.scale)
             .position(world_iso * offset_iso)
             .build();
-        let handle = self.collider_set.insert(collider);
-
         let is_dynamic = obj.rigidbody.as_ref().map_or(false, |rb| !rb.is_kinematic);
-
-        self.col_to_entity.insert(handle, obj.entity_id);
-        self.entities.insert(obj.entity_id, MirrorEntry {
-            handle,
+        Some(PrebuiltMirrorCollider {
+            collider,
             is_character: obj.is_character_controller,
             is_dynamic,
-            offset:       obj.collider_offset,
+            offset:      obj.collider_offset,
+            initial_pos: obj.position,
+        })
+    }
+
+    /// 構築済みミラーコライダー（`build_collider` の結果）を entity_id 指定で挿入する。
+    ///
+    /// 同一 id が既に登録済みなら先に削除してから入れ直す（再登録の取りこぼし防止）。
+    /// 挿入自体は ColliderSet へのハンドル採番＋2 つの HashMap 追加のみで軽い（重い QBVH 構築は
+    /// `build_collider` 側で済んでいる）。並列構築 → 直列挿入という使い方を想定した公開点。
+    pub fn insert_prebuilt(&mut self, entity_id: u64, pre: PrebuiltMirrorCollider) {
+        // 同一 id の再登録: 先に消す
+        self.remove(entity_id);
+
+        let is_character = pre.is_character;
+        let initial_pos  = pre.initial_pos;
+        let handle = self.collider_set.insert(pre.collider);
+
+        self.col_to_entity.insert(handle, entity_id);
+        self.entities.insert(entity_id, MirrorEntry {
+            handle,
+            is_character,
+            is_dynamic: pre.is_dynamic,
+            offset:     pre.offset,
             // キャラは登録時のワールド位置を前回解決済み位置の初期値にする。
-            char_last_pos: if obj.is_character_controller { Some(obj.position) } else { None },
+            char_last_pos: if is_character { Some(initial_pos) } else { None },
         });
     }
 
