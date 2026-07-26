@@ -37,6 +37,16 @@ public sealed class EditorPreferences
     [JsonPropertyName("scene_tab_auto_switch")]
     public bool SceneTabAutoSwitch { get; set; } = true;
 
+    /// <summary>
+    /// Play 実行時に別プロセスのウィンドウを出してプレイするかどうか。
+    /// 既定は false（＝埋め込みインプレース Play。別プロセスを起動せず、シーンパネルの
+    /// Edit ランタイムをその場で Play 化するため即座に再生できる）。
+    /// true にすると従来の別ウィンドウ Play（別プロセス）になる。
+    /// UI 上の「ウィンドウを出してプレイ」チェックボックスと 1 対 1 に対応する。
+    /// </summary>
+    [JsonPropertyName("window_play")]
+    public bool WindowPlay { get; set; } = false;
+
     // ── シングルトン・永続化 ──────────────────────────────────
 
     /// <summary>読み込み済みの環境設定（Init 前は既定値）。</summary>
