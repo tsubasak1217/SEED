@@ -415,6 +415,7 @@ impl Default for Material {
     }
 }
 
+/// マテリアルのアルファ処理方式（glTF `alphaMode` 準拠）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AlphaMode {
     /// 完全不透明
@@ -535,6 +536,7 @@ pub struct TextureInfo {
     pub tex_coord_set: u32,
 }
 
+/// 法線マップテクスチャ参照（`TextureInfo` に強度スケールを加えたもの）。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NormalTextureInfo {
     pub texture_index: usize,
@@ -543,6 +545,7 @@ pub struct NormalTextureInfo {
     pub scale: f32,
 }
 
+/// アンビエントオクルージョンテクスチャ参照（`TextureInfo` に強度を加えたもの）。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OcclusionTextureInfo {
     pub texture_index: usize,
@@ -555,6 +558,7 @@ pub struct OcclusionTextureInfo {
 //  テクスチャ
 // ============================================================
 
+/// 1 枚のテクスチャ（名前・ピクセル供給元・サンプラー設定）。`Model::textures` の要素。
 #[derive(Serialize, Deserialize)]
 pub struct TextureData {
     pub name:    Option<String>,
@@ -654,6 +658,7 @@ impl CachedTexFormat {
     }
 }
 
+/// テクスチャのサンプリング設定（フィルタ・ラップモード）。
 #[derive(Serialize, Deserialize)]
 pub struct SamplerData {
     pub mag_filter: FilterMode,
@@ -673,6 +678,7 @@ impl Default for SamplerData {
     }
 }
 
+/// テクスチャサンプリングのフィルタ方式（glTF サンプラー準拠）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilterMode {
     Nearest,
@@ -683,6 +689,7 @@ pub enum FilterMode {
     LinearMipmapLinear,
 }
 
+/// テクスチャ座標が [0,1] 範囲外のときのラップ方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WrapMode {
     Repeat,
@@ -711,6 +718,7 @@ pub struct AnimationChannel {
     pub sampler:           AnimationSampler,
 }
 
+/// アニメーションチャンネルの補間器。タイムスタンプ列と出力値列、補間方式を持つ。
 #[derive(Serialize, Deserialize)]
 pub struct AnimationSampler {
     pub interpolation: Interpolation,
@@ -719,6 +727,7 @@ pub struct AnimationSampler {
     pub outputs:    AnimationOutputs,
 }
 
+/// アニメーションキーフレーム間の補間方式（glTF `interpolation` 準拠）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Interpolation {
     Linear,
@@ -727,6 +736,7 @@ pub enum Interpolation {
     CubicSpline,
 }
 
+/// アニメーションチャンネルが駆動する対象プロパティごとの出力値列。
 #[derive(Serialize, Deserialize)]
 pub enum AnimationOutputs {
     Translations(Vec<[f32; 3]>),

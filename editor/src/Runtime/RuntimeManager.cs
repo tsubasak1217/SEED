@@ -1836,6 +1836,7 @@ public sealed class RuntimeManager : IDisposable
             IntPtr hWnd, IntPtr hWndInsertAfter,
             int x, int y, int cx, int cy, uint uFlags);
 
+        /// <summary>Win32 矩形構造体。</summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct RECT { public int Left, Top, Right, Bottom; }
     }

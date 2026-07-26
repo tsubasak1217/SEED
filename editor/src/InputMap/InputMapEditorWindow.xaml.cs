@@ -23,6 +23,11 @@ using Microsoft.Win32;
 
 namespace SEEDEditor.InputMap;
 
+/// <summary>
+/// InputMap アセット（.inputmap）を編集するウィンドウ。
+/// 左ペインでアクション一覧を選択し、右ペインで value_type に応じたバインディング
+/// （Bool/Axis1D/Axis2D）を編集する。保存時は InputMapData.SaveTo を呼び出す。
+/// </summary>
 public partial class InputMapEditorWindow : Window
 {
     [DllImport("dwmapi.dll")]

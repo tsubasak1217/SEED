@@ -47,6 +47,7 @@ public static class NumericDragBehavior
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int nIndex);
 
+    /// <summary>Win32 GetCursorPos/SetCursorPos とやり取りするための物理スクリーン座標構造体。</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct Win32Point { public int X, Y; }
 

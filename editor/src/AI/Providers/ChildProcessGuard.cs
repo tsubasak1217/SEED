@@ -73,6 +73,10 @@ internal static class ChildProcessGuard
 
     // ── 構造体 ───────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// ジョブオブジェクトの基本制限情報を表す Win32 構造体。
+    /// このクラスでは LimitFlags のみ使用し、JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE を設定する。
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
     {
@@ -87,6 +91,11 @@ internal static class ChildProcessGuard
         public uint    SchedulingClass;
     }
 
+    /// <summary>
+    /// ジョブオブジェクトの I/O カウンタを表す Win32 構造体。
+    /// JOBOBJECT_EXTENDED_LIMIT_INFORMATION のメモリレイアウトを満たすために存在し、
+    /// このクラスでは値を参照しない。
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct IO_COUNTERS
     {
@@ -98,6 +107,11 @@ internal static class ChildProcessGuard
         public ulong OtherTransferCount;
     }
 
+    /// <summary>
+    /// ジョブオブジェクトの拡張制限情報を表す Win32 構造体。
+    /// SetInformationJobObject に渡され、BasicLimitInformation.LimitFlags で
+    /// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE を有効化するために使用する。
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
     {

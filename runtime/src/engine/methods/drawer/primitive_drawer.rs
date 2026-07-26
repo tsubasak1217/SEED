@@ -52,6 +52,10 @@ fn highlight_fill(c: Color) -> Color {
 //  LineBatch — デバッグ線バッチ（LineList）
 // ============================================================
 
+/// デバッグ線バッチ（LineList）。
+///
+/// AABB・球体・レイ等のデバッグ形状を `ColorVertex`（位置+色）の頂点列として蓄積し、
+/// `build` で GPU バッファ（`GpuLineBatch`）へアップロードして `draw_line_batch` で描画する。
 #[derive(Default)]
 pub struct LineBatch {
     vertices: Vec<ColorVertex>,

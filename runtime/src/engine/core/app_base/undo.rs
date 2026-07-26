@@ -22,6 +22,7 @@ use crate::engine::structs::objects::actor::{ActorData, ComponentSlotData};
 //  Command トレイト
 // ============================================================
 
+/// Undo/Redo 可能な単一操作を表す抽象。UndoHistory の past/future スタックに積まれる。
 pub trait Command {
     fn execute(&mut self, scene: &mut Scene);
     fn undo(&mut self, scene: &mut Scene);
@@ -53,6 +54,8 @@ pub trait Command {
 
 const MAX_HISTORY: usize = 100;
 
+/// Undo/Redo 履歴本体。実行済みコマンドの past スタックと、Undo 済みコマンドの
+/// future スタックを管理し、Command トレイトを介して Scene への再適用を仲介する。
 pub struct UndoHistory {
     past:   Vec<Box<dyn Command>>,
     future: Vec<Box<dyn Command>>,
@@ -198,6 +201,7 @@ impl Command for SceneSnapshotCommand {
 //  TransformCommand — インスタンス変換行列の変更
 // ============================================================
 
+/// 単一 MC インスタンスの変換行列変更を Undo/Redo するコマンド。
 pub struct TransformCommand {
     pub instance_idx: u32,
     pub old_mat:      [[f32; 4]; 4],
@@ -217,6 +221,7 @@ impl Command for TransformCommand {
 //  MultiTransformCommand — 複数インスタンスの一括変換（複数選択ドラッグ用）
 // ============================================================
 
+/// 複数 MC インスタンスの変換行列を一括で Undo/Redo するコマンド（複数選択ドラッグ用）。
 pub struct MultiTransformCommand {
     /// (instance_idx, old_mat, new_mat)
     pub transforms: Vec<(u32, [[f32; 4]; 4], [[f32; 4]; 4])>,
@@ -235,6 +240,7 @@ impl Command for MultiTransformCommand {
 //  SelectionCommand — 選択状態の変更
 // ============================================================
 
+/// 選択状態（選択中インスタンス集合）の変更を Undo/Redo するコマンド。
 pub struct SelectionCommand {
     pub before: Vec<u32>,
     pub after:  Vec<u32>,
@@ -403,6 +409,7 @@ impl Command for ActorDfsSelectionCommand {
 //  ActorTransformCommand — アクター自身の Transform 変更
 // ============================================================
 
+/// アクター自身の Transform（位置・回転・スケール）変更を Undo/Redo するコマンド。
 pub struct ActorTransformCommand {
     pub world_line:    u32,
     pub dfs_id:        u32,
@@ -427,6 +434,8 @@ impl Command for ActorTransformCommand {
 //  instance_mats と actor transform を同時に undo/redo する。
 // ============================================================
 
+/// actor edit モードでのアクター一括移動（アクター Transform ＋ 配下 MC インスタンス
+/// ＋子孫アクターの変換）をまとめて Undo/Redo するコマンド。
 pub struct ActorGroupTransformCommand {
     pub wl:         u32,
     pub dfs_id:     u32,
@@ -580,6 +589,7 @@ fn find_mc_entity_in_children(actor: &Actor, dfs_id: u32, c: &mut u32) -> Option
 //  CanvasTransformCommand — 2D アクターの CanvasTransform 変更
 // ============================================================
 
+/// 2D アクターの CanvasTransform（位置・回転・スケール）変更を Undo/Redo するコマンド。
 pub struct CanvasTransformCommand {
     pub world_line: u32,
     pub dfs_id:     u32,

@@ -24,6 +24,14 @@ using static SEEDEditor.Native.NativeInterop;
 
 namespace SEEDEditor;
 
+/// <summary>
+/// SEED エディタのメインウィンドウ（partial class の本体・起動処理担当）。
+/// 実行ファイル/アセット/設定パスの解決、AvalonDock レイアウトの保存・復元、
+/// ウィンドウ初期化とダークタイトルバー適用、Play/Stop の開始・終了処理、
+/// Visual Studio デバッガアタッチとブレークポイント連携、フリーズフレーム
+/// プレビュー、スクリプトエディタ用ドッキングパネルの確保を担う。
+/// その他の責務（カメラ・地形・物理など）は同名 partial の各ファイルに分割されている。
+/// </summary>
 public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 {
     /// ProjectPanel が DoDragDrop 後にビューポートドロップを転送するためのインターフェース。

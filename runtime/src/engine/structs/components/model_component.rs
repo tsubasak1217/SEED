@@ -17,6 +17,9 @@ fn default_next_group_id() -> u32 { GROUP_ID_BASE }
 //  InstanceMeta — インスタンスごとのメタデータ
 // ============================================================
 
+/// インスタンス（`ModelComponent.instance_mats` の各要素）に紐づくメタデータ。
+///
+/// 表示名・親子関係（ヒエラルキー）・アニメーション位相シードを保持する。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct InstanceMeta {
     pub name:   String,
@@ -37,6 +40,10 @@ impl InstanceMeta {
 //  GroupMeta — グループフォルダのメタデータ（描画なし）
 // ============================================================
 
+/// インスタンスをまとめる「グループフォルダ」のメタデータ（それ自体は描画されない）。
+///
+/// エディタのインスタンス一覧で整理用フォルダとして表示され、`id` は
+/// `InstanceMeta.parent` / `GroupMeta.parent` から `GROUP_ID_BASE` 以上の値で参照される。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct GroupMeta {
     pub id:     u32,
@@ -48,6 +55,10 @@ pub struct GroupMeta {
 //  ModelComponentData — シリアライズ用
 // ============================================================
 
+/// `ModelComponent` のシリアライズ用データ（JSON 保存・Undo スナップショット）。
+///
+/// GPU リソース（`gpu_model` / `instanced_batch`）は持たず、ロード元パスと
+/// インスタンス行列・メタデータ・グループ情報のみを保持する。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ModelComponentData {
     pub model_path: String,
@@ -65,6 +76,11 @@ pub struct ModelComponentData {
 //  ModelComponent
 // ============================================================
 
+/// モデル（メッシュ）とそのインスタンス群を保持する ECS コンポーネント。
+///
+/// CPU 側の `Model`・GPU アップロード済みの `GpuModel`・インスタンシング描画用の
+/// `InstancedModelBatch` を束ね、`instance_mats`/`instance_meta` でインスタンスごとの
+/// 変換行列・親子関係・アニメーション位相を管理する。`model` が None の間は空コンポーネント。
 pub struct ModelComponent {
     pub source_path:     String,
     /// モデルが未設定の場合は None（空コンポーネント状態）

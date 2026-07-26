@@ -13,6 +13,10 @@ use crate::engine::ecs::Component;
 
 // ─── Transform ────────────────────────────────────────────────────────────────
 
+/// Actor のワールド空間トランスフォーム（位置・回転・スケール）を保持するコンポーネント。
+///
+/// 回転は YXZ オイラー角（度）で表現する。`to_mat4()` / `from_mat4()` で
+/// レンダリング系（行列表現）との相互変換を行う。
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
 pub struct Transform {
     #[serde(default)]

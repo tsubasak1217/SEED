@@ -44,6 +44,7 @@ pub(crate) mod gen_timing {
 //  エラー型
 // ============================================================
 
+/// `load_model` が返すエラー種別。
 #[derive(Debug)]
 pub enum LoadError {
     /// ファイルが見つからない・読めない

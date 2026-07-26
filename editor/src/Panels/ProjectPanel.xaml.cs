@@ -15,6 +15,11 @@ using SEEDEditor;
 
 namespace SEEDEditor.Panels;
 
+/// <summary>
+/// プロジェクトのアセットフォルダをエクスプローラー風に表示・操作するドッキングパネル。
+/// ファイル/フォルダの一覧表示、ドラッグ&amp;ドロップ、リネーム・削除（ごみ箱送り）、
+/// 新規作成、ダブルクリックでの各種エディタ起動などを担当する。
+/// </summary>
 public partial class ProjectPanel : UserControl
 {
     // ── P/Invoke (ごみ箱へ送る) ──────────────────────────────────
@@ -22,6 +27,10 @@ public partial class ProjectPanel : UserControl
     [DllImport("shell32.dll", CharSet = CharSet.Auto)]
     private static extern int SHFileOperation(ref SHFILEOPSTRUCT op);
 
+    /// <summary>
+    /// Win32 SHFileOperation API のパラメータ構造体。ファイル削除を「ごみ箱へ送る」形で
+    /// 実行する（FOF_ALLOWUNDO）ために使用する P/Invoke 用マーシャリング型。
+    /// </summary>
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
     private struct SHFILEOPSTRUCT
     {

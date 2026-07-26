@@ -36,6 +36,7 @@ use crate::engine::structs::objects::actor::ActorData;
 //  SceneError — シーン読み書き時のエラー型
 // ============================================================
 
+/// シーンファイルの読み込み・保存時に発生しうるエラー。
 #[derive(Debug)]
 pub enum SceneError {
     Io(std::io::Error),
@@ -62,6 +63,7 @@ impl From<LoadError>         for SceneError { fn from(e: LoadError)          -> 
 //  DebugCameraData — デバッグカメラの保存データ
 // ============================================================
 
+/// Edit モードのデバッグ用フリーカメラの保存データ（位置・向き・FOV・移動速度）。
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DebugCameraData {
     pub position: [f32; 3],
@@ -107,6 +109,8 @@ impl Default for CanvasCameraData {
 //  SceneData — シーンファイルのデシリアライズ用内部型
 // ============================================================
 
+/// シーンファイル（.scene の JSON）の直列化・逆直列化用データ型。
+/// Scene::save / Scene::load がこの型を介してディスクとやり取りする。
 #[derive(Serialize, Deserialize)]
 struct SceneData {
     name:   String,

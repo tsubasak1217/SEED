@@ -46,6 +46,7 @@ const LABEL_SIZE : f32 = 15.0;
 
 // ── 軸定義 ───────────────────────────────────────────────────
 
+/// 1軸ぶんの静的定義（ビュー行列上の列インデックス・正負端の色・ラベル文字）。
 struct AxisDef {
     /// ビュー行列の列インデックス（0=X, 1=Y, 2=Z）
     col:       usize,
@@ -62,6 +63,7 @@ const AXES: [AxisDef; 3] = [
 
 // ── 頂点型 ────────────────────────────────────────────────────
 
+/// 軸ギズモの線・ドット描画に使う頂点（スクリーン位置とRGBA色）。
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct AxisGizmoVertex {
@@ -71,6 +73,7 @@ pub struct AxisGizmoVertex {
 
 // ── AxisGizmoPipeline ────────────────────────────────────────
 
+/// 軸ギズモのライン・ドット形状を描画する wgpu パイプライン。
 pub struct AxisGizmoPipeline {
     pub pipeline: wgpu::RenderPipeline,
 }
@@ -156,6 +159,7 @@ impl AxisGizmoPipeline {
 
 // ── GpuAxisGizmoBatch ─────────────────────────────────────────
 
+/// `AxisGizmo::build` が構築する、GPU に転送済みの1フレーム分の描画データ。
 pub struct GpuAxisGizmoBatch {
     pub geo_buf:   wgpu::Buffer,
     pub geo_count: u32,
@@ -164,6 +168,7 @@ pub struct GpuAxisGizmoBatch {
 
 // ── AxisGizmo ─────────────────────────────────────────────────
 
+/// Blender 風のビューポート軸ギズモ本体。パイプラインとラベル描画用のフォントシステムを保持する。
 pub struct AxisGizmo {
     pub pipeline:    AxisGizmoPipeline,
     pub font_system: FontSystem,
@@ -270,6 +275,7 @@ impl AxisGizmo {
         let ups      = [up.x,      up.y,      up.z     ];
         let forwards = [forward.x, forward.y, forward.z];
 
+        /// ソート用に生成する、軸の正負1端ぶんのスクリーン座標・奥行き情報。
         struct Endpoint {
             tip_x:  f32,
             tip_y:  f32,

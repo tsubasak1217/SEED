@@ -8,6 +8,10 @@ using System.Windows.Media;
 
 namespace SEEDEditor.Panels;
 
+/// <summary>
+/// Inspector 等でファイルパス参照 UI（ラベル・パス表示・ドラッグ&amp;ドロップ・参照ボタン）を
+/// 組み立てる静的ヘルパー。ドロップ受付は指定拡張子のみに制限する。
+/// </summary>
 internal static class FileRefBuilder
 {
     /// <summary>

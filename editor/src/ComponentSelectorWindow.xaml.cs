@@ -12,6 +12,11 @@ using SEEDEditor.Runtime;
 
 namespace SEEDEditor;
 
+/// <summary>
+/// アクターにアタッチする ECS コンポーネントをカテゴリ一覧から選択・検索して追加するダイアログ。
+/// 静的カテゴリリストとロード済みプラグイン一覧から動的に「プラグイン」カテゴリを生成し、
+/// 選択したコンポーネント種別・名前でランタイムへ ADD_COMPONENT コマンドを送信する。
+/// </summary>
 public partial class ComponentSelectorWindow : Window
 {
     [DllImport("dwmapi.dll")]
@@ -42,6 +47,7 @@ public partial class ComponentSelectorWindow : Window
         Actor2D,
     }
 
+    /// <summary>コンポーネント選択リストの1エントリ（型ID・表示名・説明・対応アクター種別）。</summary>
     private record ComponentEntry(string TypeId, string Label, string Description, ActorTarget Target = ActorTarget.Common);
 
     private static readonly List<(string Category, List<ComponentEntry> Items)> Categories = new()

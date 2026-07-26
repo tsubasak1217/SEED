@@ -7,6 +7,10 @@ using System.Windows.Interop;
 
 namespace SEEDEditor;
 
+/// <summary>
+/// プロジェクトブラウザから新規アイテム（3D/2D Actor、スクリプト等）を作成するダイアログ。
+/// 選択された種類に応じてテンプレート内容のファイルを対象フォルダに生成し、<see cref="ItemCreated"/> で通知する。
+/// </summary>
 public partial class CreateItemWindow : Window
 {
     [DllImport("dwmapi.dll")]

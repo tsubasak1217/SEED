@@ -30,6 +30,11 @@ using Microsoft.Win32;
 
 namespace SEEDEditor.Packaging;
 
+/// <summary>
+/// パッケージ化ウィンドウ。左ペインでターゲットプラットフォームを選択し、
+/// 右ペインでプラットフォーム別のビルド設定を編集、ビルドボタンで cargo build を
+/// 実行して実行ファイル・アセット（assets.pak）を出力フォルダへ書き出す。
+/// </summary>
 public partial class PackagingWindow : Window
 {
     [DllImport("dwmapi.dll")]

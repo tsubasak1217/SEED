@@ -8,6 +8,11 @@ using System.Windows.Media;
 
 namespace SEEDEditor.Scripting;
 
+/// <summary>
+/// ScriptFieldInfo の一覧から、インスペクタに表示する WPF コントロール群を動的生成する。
+/// float/int/bool/string の基本型は編集可能な行を、[Range] 付きはスライダーを、
+/// [Serializable] ネストクラスは折りたたみ Expander を、その他は読み取り専用表示を作る。
+/// </summary>
 public static class ScriptInspectorBuilder
 {
     private static readonly SolidColorBrush BrushLabel  = new(Color.FromRgb(0x88, 0x88, 0x88));
