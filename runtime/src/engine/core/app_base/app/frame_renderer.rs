@@ -148,7 +148,7 @@ fn compute_stale_batch_prune(
 use super::canvas_collect::{
     collect_sprite_items, collect_canvas_rects, collect_canvas_id_items,
     collect_3d_canvas_child_id_items, sprite_world_corners,
-    compute_game_viewport, build_ss_layout_maps_free,
+    compute_game_viewport, clamp_viewport_to_target, build_ss_layout_maps_free,
 };
 
 /// カメラプレビューのテクスチャ幅（ピクセル）。
@@ -607,8 +607,22 @@ impl App {
 
         // Play モードのスケーリングモードに応じたビューポート矩形とクリアカラー。
         // カメラ選択ブロック内で上書きされ、メインレンダーパスで適用する。
-        let win_w_f = window_size.map_or(1280.0_f32, |s| s.width  as f32);
-        let win_h_f = window_size.map_or(720.0_f32,  |s| s.height as f32);
+        //
+        // 【重要】ビューポート／スケーリング計算の基準は「実レンダーターゲットサイズ」であり
+        // window.inner_size() ではない。埋め込み Play では on_resize が
+        // get_parent_client_size()（親コンテナのクライアント矩形）で surface/offscreen を
+        // サイズしており（event_handler.rs:36-38）、子ウィンドウの inner_size はホスト側の
+        // 都合で親クライアントと一致しないことがある。inner_size を基準にすると
+        //   (1) カメラのスケーリング設定（レターボックス等）が実描画領域とズレて無視されたように見える
+        //   (2) リサイズ中に game_viewport が実ターゲットからはみ出し set_viewport でパニックする
+        // という 2 つの不具合が起きる。そこで on_resize と同じ導出
+        // （get_parent_client_size().or(window_size)）で実ターゲットサイズを求め、これを
+        // 射影アスペクト・ビューポート・スケーリング計算の共通基準にする。
+        // スタンドアロン（ウィンドウ Play 等）では親が無く None → window_size に落ちるため
+        // 従来と同一挙動になる（後退なし）。
+        let render_target_size = self.get_parent_client_size().or(window_size);
+        let win_w_f = render_target_size.map_or(1280.0_f32, |s| s.width  as f32);
+        let win_h_f = render_target_size.map_or(720.0_f32,  |s| s.height as f32);
 
         // NOTE: オブジェクト単位の視錐台カリングは撤去したため、Edit モードのカメラプレビュー用
         //       OR カリング視錐台（旧 preview_frustum）も不要になった。メッシュレットカリングは
@@ -738,7 +752,10 @@ impl App {
                 saved_shadow_cam = Some((view, n, f, fo, a));
             }
 
-            let res = window_size.map_or([1280.0, 720.0], |s| {
+            // カメラ解像度ユニフォームも実レンダーターゲット基準に揃える
+            // （デファードのライティングパスが深度→ワールド座標復元に resolution を使うため、
+            //  ビューポート基準（win_w_f/win_h_f）と食い違うと復元がズレる）。
+            let res = render_target_size.map_or([1280.0, 720.0], |s| {
                 [s.width as f32, s.height as f32]
             });
             // 逆 ViewProjection（デファードのライティングパスが深度→ワールド座標復元に使う）。
@@ -4034,6 +4051,32 @@ impl App {
                             }
                         }
 
+                        // ── Play ビューポートの実サーフェスへの集約クランプ（set_viewport 安全化）──
+                        // ここまでの game_viewport は win_w_f/win_h_f（＝on_resize が surface を
+                        // configure した基準サイズ＝親クライアント矩形）から計算している。
+                        // ただしスワップチェーンは configure の要求サイズを実ウィンドウの
+                        // currentExtent へクランプすることがあり（mod.rs begin_frame 参照）、
+                        // リサイズ直後の 1 フレームは実サーフェス（frame.surface_size()）と食い違う。
+                        // この食い違いのまま set_viewport すると wgpu バリデーションがパニックし、
+                        // 続けて未 present の SurfaceTexture 破棄で二次パニック→プロセス abort する。
+                        // そこで実サーフェスサイズへ **一度だけ** クランプし、以降の全 set_viewport
+                        // 箇所（G-Buffer/ライティング/反射/メイン/逐次屈折）を一括で安全化する
+                        // （対症の if 散乱ではなくこの 1 点に集約）。
+                        // 縮退（幅/高さ 1px 未満）時は play_viewport_ok=false とし、各 Play 描画で
+                        // set_viewport をスキップさせる（そのフレームはターゲット全面のデフォルト
+                        // ビューポートで描く。リサイズ最中の一過性フレームのため実害はない）。
+                        let (rt_surf_w, rt_surf_h) = frame.surface_size();
+                        let play_viewport_ok = if self.mode == RuntimeMode::Play && !self.paused {
+                            match clamp_viewport_to_target(
+                                game_viewport, rt_surf_w as f32, rt_surf_h as f32,
+                            ) {
+                                Some(clamped) => { game_viewport = clamped; true }
+                                None          => false,
+                            }
+                        } else {
+                            true
+                        };
+
                         // ── Clustered Lighting: クラスタ構築 compute（Phase C1）─────────
                         // メインカメラの視錐台を 16×9×24 の 3D フロクセルへ分割し、各クラスタへ
                         // 影響する局所ライト（point/spot/rect）のインデックスを集める。
@@ -4131,7 +4174,7 @@ impl App {
                                 let mut gpass = frame.begin_gbuffer_pass_to(g0, g1, g2, g3);
                                 // Play時はメインパスと同じ viewport/scissor をG-Bufferにも適用する
                                 // （レターボックス帯の外にジオメトリを焼かないため）。
-                                if self.mode == RuntimeMode::Play && !self.paused {
+                                if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
                                     let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                                     gpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
                                     gpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
@@ -4446,7 +4489,7 @@ impl App {
                                     mask_result_view, mask_sampler,
                                 );
                                 let mut lpass = frame.begin_deferred_lighting_pass_to(hdr_view, clear_color);
-                                if self.mode == RuntimeMode::Play && !self.paused {
+                                if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
                                     let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                                     lpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
                                     lpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
@@ -4615,7 +4658,7 @@ impl App {
                             // A. 反射パス（RT_REFLECTION へ Clear0）。
                             {
                                 let mut rpass = frame.begin_reflection_pass_to(refl_view);
-                                if self.mode == RuntimeMode::Play && !self.paused {
+                                if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
                                     let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                                     rpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
                                     rpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
@@ -4637,7 +4680,7 @@ impl App {
                             {
                                 let composite_bg = refl.create_composite_bg(&draw_ctx.device, refl_view);
                                 let mut cpass = frame.begin_reflection_composite_pass_to(hdr_view);
-                                if self.mode == RuntimeMode::Play && !self.paused {
+                                if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
                                     let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                                     cpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
                                     cpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
@@ -4687,7 +4730,7 @@ impl App {
                         // LetterBox / PillarBox 時: ビューポート設定前に帯エリアを帯カラーで塗る。
                         // LoadOp::Clear はサーフェス全体をクリアするため、ゲーム以外のエリアを
                         // BarFillPipeline で上書きすることで正しい帯カラーを適用する。
-                        if self.mode == RuntimeMode::Play && !self.paused && uses_bar_mode {
+                        if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok && uses_bar_mode {
                             let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                             // ピクセル座標 → NDC 変換
                             // ndc_x(px) = px / win_w * 2 - 1
@@ -4724,7 +4767,7 @@ impl App {
                         // Play モード: スケーリングモードに応じてビューポートを設定する。
                         // LetterBox/PillarBox では set_scissor_rect によって黒帯へのはみ出しをクリップする。
                         // VertMinus/HorPlus/FullScale は全画面ビューポートのままなので実質ノーオペレーション。
-                        if self.mode == RuntimeMode::Play && !self.paused {
+                        if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
                             let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                             pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
                             pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
@@ -4861,7 +4904,7 @@ impl App {
                                     // 初回の屈折アイテムはその背景を再利用して余計な再グラブを避ける。
                                     let mut dirty = false;
                                     let mut seq_pass = frame.begin_scene_pass_load_to(hdr_view);
-                                    if self.mode == RuntimeMode::Play && !self.paused {
+                                    if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
                                         let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                                         seq_pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
                                         seq_pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
@@ -4877,7 +4920,7 @@ impl App {
                                                 &draw_ctx.device, frame.encoder_mut(), scene_hdr_tex,
                                             );
                                             seq_pass = frame.begin_scene_pass_load_to(hdr_view);
-                                            if self.mode == RuntimeMode::Play && !self.paused {
+                                            if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
                                                 let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                                                 seq_pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
                                                 seq_pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
@@ -4895,7 +4938,7 @@ impl App {
                                 }
                                 // メインパスを Load で再開し、以降のオーバーレイ描画へ戻る（レイヤリング維持）。
                                 pass = frame.begin_scene_pass_load_to(hdr_view);
-                                if self.mode == RuntimeMode::Play && !self.paused {
+                                if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
                                     let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                                     pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
                                     pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);

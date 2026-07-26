@@ -1632,6 +1632,48 @@ pub(super) fn compute_game_viewport(
     }
 }
 
+/// ゲームビューポート矩形を実レンダーターゲットサイズへクランプする（set_viewport 安全化）。
+///
+/// wgpu の `RenderPass::set_viewport` は、矩形の原点・サイズがレンダーターゲット外、
+/// または幅・高さが 0 以下だとバリデーションエラーでパニックする。さらにパニックが
+/// 巻き戻る際に未 present の `SurfaceTexture` 破棄で二次パニック（プロセス abort）を
+/// 誘発する。埋め込み Play ではリサイズ中に「window.inner_size() 由来で計算した
+/// game_viewport」と「スワップチェーンが currentExtent へクランプした実サーフェス
+/// サイズ」が 1 フレームだけ食い違い、これが起きる。
+///
+/// 本関数は set_viewport を呼ぶ全箇所の最終防衛線として、矩形を `[0, target]` の範囲へ
+/// クランプする。
+///
+/// # 引数
+/// - `vp`:       クランプ対象のビューポート矩形 `(x, y, w, h)`（ピクセル）。
+/// - `target_w`: 実レンダーターゲットの幅（ピクセル）。
+/// - `target_h`: 実レンダーターゲットの高さ（ピクセル）。
+///
+/// # 戻り値
+/// - `Some((x, y, w, h))`: クランプ後の有効な矩形（幅・高さともに 1px 以上）。
+/// - `None`:               クランプ結果が縮退（幅または高さ 1px 未満）した場合。
+///                         呼び出し側はそのフレームのビューポート設定をスキップする。
+pub(super) fn clamp_viewport_to_target(
+    vp:       (f32, f32, f32, f32),
+    target_w: f32,
+    target_h: f32,
+) -> Option<(f32, f32, f32, f32)> {
+    let (x, y, w, h) = vp;
+    // 原点は [0, target] に収め、右下端（x+w, y+h）も同様に収める。
+    // その差分を新しい幅・高さとすることで、はみ出し分を確実に切り落とす。
+    let x0 = x.clamp(0.0, target_w);
+    let y0 = y.clamp(0.0, target_h);
+    let x1 = (x + w).clamp(0.0, target_w);
+    let y1 = (y + h).clamp(0.0, target_h);
+    let cw = x1 - x0;
+    let ch = y1 - y0;
+    // 1px 未満は wgpu が拒否する（かつ描画しても不可視）ため、縮退として弾く。
+    if cw < 1.0 || ch < 1.0 {
+        return None;
+    }
+    Some((x0, y0, cw, ch))
+}
+
 /// DFS でアクター名と指定スロット名の CameraComponent を持つ最初のアクターを返す。
 ///
 /// `CanvasViewportRef::Camera { actor_name, slot_name }` の参照解決に使用する。
