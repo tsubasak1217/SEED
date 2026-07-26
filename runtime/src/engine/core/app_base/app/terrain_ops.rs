@@ -133,9 +133,37 @@ const TERRAIN_LOD_DISABLED_ENV: &str = "SEED_TERRAIN_LOD_DISABLED";
 /// LOD 遷移の「ばたつき」を防ぐヒステリシス幅（しきい値に対する割合）。
 /// 粗くするのはしきい値×(1+H) を超えたとき、細かくするのは×(1−H) を下回ったとき。
 const TERRAIN_LOD_HYSTERESIS: f32 = 0.12;
-/// 1 フレームで処理する LOD 遷移（再メッシュ）の最大チャンク数。大量チャンクが同時に
-/// LOD を跨いでも 1 フレームで全再メッシュしてスパイクを出さないよう、近い順に小分けする。
+/// 1 フレームで処理する LOD 遷移（再メッシュ）の最大チャンク数（件数側のハード上限ガード）。
+///
+/// 主制約は下の時間バジェット（`TERRAIN_LOD_BUDGET_MS`）だが、万一 remesh が極端に軽く済む
+/// フレーム（既にウォームなチャンクばかり等）で際限なく処理して他工程を圧迫しないよう、
+/// 件数側の安全上限も併置する。通常はバジェットが先に効くため、この上限はまず発火しない。
 const TERRAIN_LOD_TRANSITIONS_PER_FRAME: usize = 8;
+
+/// LOD 再メッシュに 1 フレームで費やしてよい時間の上限（ms）。
+///
+/// 【配分根拠】目標フレーム 30fps（≒ 33.3ms/フレーム）の約 2 割（6ms）を地形 LOD の収束へ
+/// 割く。残り約 8 割を描画・物理・スクリプト等へ残すことで、Play 開始直後にカメラがメイン
+/// カメラ位置へ飛んで大量チャンクの目標 LOD が一斉に跨ぐ場面でも、フレーム時間の暴走
+/// （実測: フレーム先頭で 250〜360ms を LOD 再メッシュに消費し約 3fps へ張り付く）を防ぐ。
+/// バジェットを超えたぶんの遷移は次フレームへ繰り越し、数フレーム〜数秒かけて滑らかに収束する。
+///
+/// 【1 チャンクがバジェットより重い場合】1 チャンクの再メッシュが数十 ms に達しバジェット単独で
+/// 超過することもあるが、その場合でも「最低 1 バッチは必ず処理」する前進保証（下の処理ループ）
+/// により飢餓せず収束する。バジェットは「軽いフレームで詰め込みすぎない上限」として働く。
+const TERRAIN_LOD_BUDGET_MS: f64 = 6.0;
+
+/// LOD 再メッシュを小分けする 1 バッチあたりのチャンク数（時間計測の粒度）。
+///
+/// `remesh_chunks` は 1 呼び出しごとに固定オーバーヘッドを払う。支配的なのは GPU アイドル待ち
+/// `device.poll(Wait)`（フェーズ B の全遅延破棄確定）で、これは 1 呼び出しに 1 回のバリアである。
+/// ほかに settings/layers のクローンや派生キャッシュ invalidate（統合バッチ HashMap 除去＋
+/// BLAS prune）も呼び出し単位で走る。invalidate 自体は HashMap 除去中心で軽いが、poll バリアは
+/// 呼び出し回数ぶん積み上がるため、1 チャンクずつではなく **2 チャンクずつ**まとめて呼び、
+/// 呼び出し回数（＝poll バリア回数）を半減させつつ CPU メッシュ生成の rayon 並列も 2 way 効かせる。
+/// 一方でバッチを大きくすると「最低保証で必ず処理する 1 バッチ」の下限時間も増え、重チャンク時の
+/// FPS 下限を損なうため、下限保護とオーバーヘッド償却の折衷として小さめの 2 に留める。
+const TERRAIN_LOD_BATCH: usize = 2;
 
 /// ストローク遅延付随処理を「今」確定（一括適用）すべきかを判定する純粋関数。
 ///
@@ -2358,15 +2386,77 @@ impl App {
         if !changes.is_empty() {
             // 近いチャンクほど見た目への影響が大きいので、近い順に優先して処理する。
             changes.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-            let mut coords: Vec<ChunkCoord> = Vec::new();
-            for (_dist, coord, desired) in changes.into_iter().take(TERRAIN_LOD_TRANSITIONS_PER_FRAME) {
-                // 先に目標 LOD を確定してから再メッシュする（remesh_chunks がこの値を読む）。
-                self.terrain.chunk_lod.insert(coord, desired);
-                coords.push(coord);
+
+            // ── 時間バジェット制で LOD 再メッシュを小分けする ──
+            //   遷移候補（近い順に整列済み）を `TERRAIN_LOD_BATCH` チャンクずつ小バッチで
+            //   `remesh_chunks` へ渡し、1 バッチ処理するごとに累積経過時間を測る。
+            //   `TERRAIN_LOD_BUDGET_MS` を超えたら残りは次フレームへ繰り越して打ち切る。
+            //   これにより Play 開始直後の一斉遷移でもフレーム時間の上限を約束できる。
+            let total_pending = changes.len(); // このフレームの遷移候補総数（backlog 算出用）
+            let budget = Duration::from_secs_f64(TERRAIN_LOD_BUDGET_MS / MILLIS_PER_SEC);
+            let t_budget = Instant::now(); // バジェット計測の起点
+            let mut processed = 0usize; // このフレームで実際に再メッシュしたチャンク数
+
+            // 近い順に並んだ候補を先頭から小バッチへ切り出して逐次処理する。
+            let mut iter = changes.into_iter();
+            loop {
+                // このバッチぶんの座標を最大 `TERRAIN_LOD_BATCH` 件、かつ件数側の
+                // ハード上限（`TERRAIN_LOD_TRANSITIONS_PER_FRAME`）を超えない範囲で集める。
+                let mut coords: Vec<ChunkCoord> = Vec::with_capacity(TERRAIN_LOD_BATCH);
+                while coords.len() < TERRAIN_LOD_BATCH
+                    && processed + coords.len() < TERRAIN_LOD_TRANSITIONS_PER_FRAME
+                {
+                    let Some((_dist, coord, desired)) = iter.next() else {
+                        break; // 候補を出し切った
+                    };
+                    // 先に目標 LOD を確定してから再メッシュする（remesh_chunks がこの値を読む）。
+                    self.terrain.chunk_lod.insert(coord, desired);
+                    coords.push(coord);
+                }
+                if coords.is_empty() {
+                    break; // 候補を出し切った / 件数ハード上限に到達した
+                }
+                // 既存の VRAM 安全な再メッシュ機構をそのまま使う（gpu_model と instanced_batch を
+                // 同時に作り直し、派生キャッシュ＝統合バッチ・BLAS も破棄される）。
+                self.remesh_chunks(&coords, false);
+                processed += coords.len();
+
+                // ── バジェット判定は必ず「1 バッチ処理したあと」に行う ──
+                //   こうすることで、1 チャンクがバジェットより重いフレームでも最低 1 バッチは
+                //   必ず前進する（飢餓防止）。超過していれば残りは次フレームへ繰り越す。
+                if t_budget.elapsed() >= budget {
+                    break;
+                }
             }
-            // 既存の VRAM 安全な再メッシュ機構をそのまま使う（gpu_model と instanced_batch を
-            // 同時に作り直し、派生キャッシュ＝統合バッチ・BLAS も破棄される）。
-            self.remesh_chunks(&coords, false);
+
+            // ── 効果測定ログ（低頻度・常時 ON）──
+            //   打ち切りで積み残し（backlog）が出ているフレームを 1 秒に 1 回まで間引いて出し、
+            //   加えて積み残しが解消した瞬間（backlog>0 → 0 の立ち下がり 1 回）も出して収束点を
+            //   可視化する。毎フレームは出さない。
+            let done_ms = t_budget.elapsed().as_secs_f64() * MILLIS_PER_SEC; // このフレームの LOD 消費時間
+            let backlog = total_pending - processed; // 次フレームへ繰り越した候補数
+            {
+                use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+                // ログ間引きの基準時刻（プロセス開始からの経過 ms を測る原点）。
+                static LOG_EPOCH: std::sync::LazyLock<Instant> =
+                    std::sync::LazyLock::new(Instant::now);
+                // 最後にログを出した時刻（LOG_EPOCH からの経過 ms）。
+                static LAST_LOG_MS: AtomicU64 = AtomicU64::new(0);
+                // 直前フレームで積み残しがあったか（backlog>0 → 0 の立ち下がりを 1 回だけ出す）。
+                static HAD_BACKLOG: AtomicBool = AtomicBool::new(false);
+                // ログ最小間隔（ms）。毎フレーム出さないための間引き幅（1 秒に 1 回）。
+                const LOG_INTERVAL_MS: u64 = 1000;
+
+                let now_ms = LOG_EPOCH.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+                let had = HAD_BACKLOG.swap(backlog > 0, Ordering::Relaxed);
+                let cleared = had && backlog == 0; // 積み残しがこのフレームで解消した
+                let last = LAST_LOG_MS.load(Ordering::Relaxed);
+                let interval_ok = (now_ms as u64).saturating_sub(last) >= LOG_INTERVAL_MS;
+                if (backlog > 0 && interval_ok) || cleared {
+                    LAST_LOG_MS.store(now_ms as u64, Ordering::Relaxed);
+                    eprintln!("[FPS_PHASE] terrain_lod backlog={backlog} done_ms={done_ms:.1}");
+                }
+            }
         }
         } // if !*TERRAIN_LOD_DISABLED（遷移処理ここまで。以降の計測ログは on/off 共通）
 
