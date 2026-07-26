@@ -5030,6 +5030,23 @@ impl App {
                             {
                                 {
                                     let mut wpass = frame.begin_wboit_pass_to(accum_view, reveal_view);
+                                    // ── Play レターボックス時のビューポート適用（半透明ズレ修正）──
+                                    // accum/reveal RT は hdr と同じ実サーフェス全面サイズ（surf_w×surf_h）。
+                                    // 不透明メインパスは game_viewport（ゲーム領域）へ set_viewport して描くため、
+                                    // 同一の射影行列でも幾何がレターボックス領域に収まる。ところが WBOIT の
+                                    // 蓄積パスはこれまでビューポート未適用で、透明幾何が accum 全面（ウィンドウ
+                                    // 全体基準）に描かれていた。合成（composite_wboit）は accum を 1:1 テクセル
+                                    // 対応でフルスクリーン三角形サンプルするため、そのズレがそのまま hdr に載り、
+                                    // 「半透明だけ全面基準でズレる」という不具合になっていた。
+                                    // ここで不透明メインパスと同一の game_viewport を set_viewport+set_scissor_rect
+                                    // することで、透明幾何も accum のゲーム領域に描かれ、opaque と一致する。
+                                    // scissor は帯（レターボックス黒帯）への透明フラグメントのはみ出しを防ぐ
+                                    //（帯へ漏れると合成 discard を逃れて黒帯上に半透明が滲む）。他の 9 箇所と同一条件。
+                                    if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
+                                        let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                        wpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                        wpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                                    }
                                     // 距離ソートと同じ分岐: RT 屈折が使えるなら RT 版、そうでなければ SS 版。
                                     if let (Some(rt_bg), Some(rt_tp)) = (
                                         transparent_rt_bg_main.as_ref(),
@@ -5055,6 +5072,15 @@ impl App {
                                     }
                                 }
                                 // accum/reveal → シーン HDR へアルファブレンド合成（LoadOp::Load）。
+                                // 【Play レターボックスでも合成側はビューポート不要（意図的にフルスクリーン）】
+                                // composite はフルスクリーン三角形で accum/reveal を uv=0..1（=テクスチャ全面）
+                                // へ 1:1 テクセル対応サンプルするため、蓄積側に game_viewport を適用済みなら
+                                // 透明内容は accum のゲーム領域にあり、そのまま hdr の同じゲーム領域へ載る。
+                                // 帯（レターボックス）領域は accum=Clear(0)/reveal=Clear(1) のままなので、
+                                // 背景濾過パスは reveal.a≈1 で discard、自色加算パスは accum.a≈0 で discard し、
+                                // hdr の帯は触られない。ここで viewport を set すると uv↔画面の対応が崩れ
+                                //（ゲーム領域内で uv が 0..1 に張り直され accum 全面を縮約）二重スケールになるため、
+                                // 合成には敢えて viewport/scissor を掛けない。
                                 draw_ctx.pipelines.transparent.composite_wboit(
                                     &draw_ctx.device,
                                     frame.encoder_mut(),
@@ -5444,7 +5470,27 @@ impl App {
                     // エミッタ 0 個ならパス自体を開かない（追加コストゼロ）。
                     // TODO: Alpha ブレンドのエミッタ単位粗ソート（現状は登録順）。indirect draw count 化。
                     if self.particle_system.has_emitters() {
+                        // ── Play レターボックス時のビューポート適用（半透明/不透明と一致させる）──
+                        // GPU パーティクルは 3D メインカメラ（camera_buf）で hdr_view（実サーフェス全面）
+                        // へ直接描くため、ビューポート未適用だとレターボックス時に全面基準へズレる
+                        //（WBOIT 半透明メッシュと同一症状）。不透明メインパスと同じ game_viewport を適用する。
+                        // ここは play_viewport_ok を宣言した内側ブロック（メインパス）を抜けた外側スコープで、
+                        // play_viewport_ok は参照できない。そこでクランプ済みの game_viewport（外側可変変数に
+                        // 永続）を実サーフェスへ再クランプして安全性を再確認する（clamp は冪等で、
+                        // 元が縮退なら None を返し当該フレームはスキップ＝メインパスの挙動と一致）。
+                        // 借用順の都合上、ppass が frame を可変借用する前に surface_size を取得しておく。
+                        let particle_vp = if self.mode == RuntimeMode::Play && !self.paused {
+                            let (psw, psh) = frame.surface_size();
+                            clamp_viewport_to_target(game_viewport, psw as f32, psh as f32)
+                        } else {
+                            // Edit モードは常にターゲット全面（ビューポート非適用）。エディタ描画へ影響なし。
+                            None
+                        };
                         let mut ppass = frame.begin_particle_pass_to(hdr_view);
+                        if let Some((vp_x, vp_y, vp_w, vp_h)) = particle_vp {
+                            ppass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                            ppass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                        }
                         self.particle_system.draw(
                             &mut ppass,
                             &draw_ctx.pipelines.particles,
