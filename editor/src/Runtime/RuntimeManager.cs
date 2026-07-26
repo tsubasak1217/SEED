@@ -153,6 +153,23 @@ public sealed class RuntimeManager : IDisposable
     private CancellationTokenSource? _launchCts;
 
     /// <summary>
+    /// ウィンドウ Play の「ウィンドウ準備完了（READY:hwnd 受信）」を待つための完了ソース（方針A）。
+    ///
+    /// ウィンドウ Play のランタイムは GPU 初期化＋シーンロード（数十秒かかりうる）を終えてから
+    /// ウィンドウを set_visible し、その直後に READY:{hwnd} を送ってくる。一方パイプ接続は
+    /// その前（約 500ms）に成立するため、従来はパイプ接続時点で Play へ遷移していた。すると
+    /// _runtimeHwnd 未確定のまま Play になり、ロード中に Stop すると常駐保持経路で SW_HIDE が
+    /// 空振りし、ロード完了後にランタイムが自前でウィンドウを表示して「応答なし白画面」が残った。
+    ///
+    /// これを避けるため Play 遷移を READY 受信まで遅延し、その間は Launching を維持する。
+    /// LaunchAsync がこの TCS を await し、OnPipeMessage の READY 受信で TrySetResult(true)、
+    /// READY 前にプロセスが終了した場合は OnRuntimeExited が TrySetResult(false) で解く。
+    /// ウィンドウ Play の起動シーケンス中のみ非 null。パイプ受信スレッド／UI スレッド双方から
+    /// TrySetResult されるため TCS の Try 系のみ使用する。
+    /// </summary>
+    private TaskCompletionSource<bool>? _playWindowReadyTcs;
+
+    /// <summary>
     /// 埋め込みインプレース Play セッション中かどうか（ENTER_PLAY 送信〜PLAY_EXITED/プロセス終了まで）。
     /// UI 側の状態遷移処理（ApplyUiState 等）が「ビューポートホストを隠してよいか」の判定に使う。
     /// チェックボックス値（EmbeddedPlay）ではなくセッション実態を返す点に注意
@@ -740,6 +757,19 @@ public sealed class RuntimeManager : IDisposable
             return;
         }
 
+        // ── 不変条件ガード（方針B の安全網）─────────────────────────────
+        // 常駐保持は「ウィンドウが出現済み（_runtimeHwnd 確定）」を前提とする。SW_HIDE で
+        // ウィンドウを隠せてはじめて安全に非表示保持できるからである。方針A により通常は
+        // Play 状態＝READY 受信済み＝hwnd 確定のため本分岐には入らないが、万一 hwnd 未確定で
+        // ここへ来た場合、非表示化できないまま保持するとロード完了後にランタイムが自前で
+        // ウィンドウを表示して「応答なし白画面」が残る。よって保持せず即 Kill してリークを防ぐ。
+        if (_runtimeHwnd == IntPtr.Zero)
+        {
+            EditorLog.Write("HidePlayRuntime — hwnd 未確定のため常駐保持せず即 Kill（白画面ゾンビ防止）");
+            KillRuntime(sendStop: false);
+            return;
+        }
+
         // 既に別の常駐 Play を保持していれば（通常は再利用時に消費済みで発生しないが保険）Kill する
         if (_persistentPlayProcess is not null)
         {
@@ -1005,11 +1035,13 @@ public sealed class RuntimeManager : IDisposable
             EditorLog.Write("Process still alive — waiting for pipe connection (10s timeout)...");
 
             // launchToken（Stop によるキャンセル）と 10 秒タイムアウトを結合したトークンで待機する。
+            bool pipeConnected = false;
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(launchToken);
             cts.CancelAfter(TimeSpan.FromSeconds(10));
             try
             {
                 await _pipe.WaitForConnectionAsync(cts.Token);
+                pipeConnected = true;
                 EditorLog.Write("Pipe connected");
             }
             catch (Exception ex) when (!launchToken.IsCancellationRequested)
@@ -1020,6 +1052,45 @@ public sealed class RuntimeManager : IDisposable
 
             // パイプ接続待ちの間に Stop されていた場合はここで確実に中断する。
             launchToken.ThrowIfCancellationRequested();
+
+            // ── 方針A: Play はウィンドウ準備完了（READY:hwnd）まで遅延する ─────────────
+            // ウィンドウ Play のランタイムはロード完了後にウィンドウを表示して READY:{hwnd} を
+            // 送る。パイプ接続（約 500ms）ではなく READY を待って Play へ遷移することで、
+            // _runtimeHwnd を必ず確定させてから Play にする。これにより、ロード中の Stop は
+            // Play ではなく Launching 中の Stop（_isLaunching=true）として扱われ、キャンセル機構
+            // （AbortLaunchAndRestoreEdit → Kill）が起動途中プロセスを確実に終了させる。
+            // → 「Stop 後にロード完了したランタイムが自前でウィンドウを表示して応答なし白画面」を根絶する。
+            //
+            // パイプが接続できなかった場合（10 秒タイムアウト）は READY も来ないため待たずに続行する
+            // （従来どおり HWND なしで Play へ遷移する。この分岐は異常系のフォールバック）。
+            if (!editMode && pipeConnected)
+            {
+                var readyTcs = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _playWindowReadyTcs = readyTcs;
+                // Stop（launchToken）でこの待機をキャンセルする。プロセスが READY 前に終了した
+                // 場合は OnRuntimeExited が TrySetResult(false) で解く。
+                using var readyReg = launchToken.Register(
+                    () => readyTcs.TrySetCanceled(launchToken));
+                try
+                {
+                    EditorLog.Write("LaunchAsync — パイプ接続完了。READY(ウィンドウ準備完了)を待機して Play へ遷移する");
+                    var windowReady = await readyTcs.Task;
+                    if (!windowReady)
+                    {
+                        // READY を待っている間にプロセスが終了した（クラッシュ等）。
+                        // 後始末（Edit 復元 or 再起動）は OnRuntimeExited が実施済みのため、
+                        // ここでは Play へ遷移せず終了する。
+                        EditorLog.Write("LaunchAsync — READY 前にプロセスが終了。Play 遷移を中止");
+                        return;
+                    }
+                    EditorLog.Write("LaunchAsync — READY 受信。Play へ遷移する");
+                }
+                finally
+                {
+                    _playWindowReadyTcs = null;
+                }
+            }
         }
         catch (OperationCanceledException) when (!editMode && launchToken.IsCancellationRequested)
         {
@@ -1063,6 +1134,10 @@ public sealed class RuntimeManager : IDisposable
             _runtimeHwnd = (IntPtr)hwnd;
             EditorLog.Write($"[Runtime→Editor] READY  hwnd=0x{hwnd:X}");
             RuntimeHwndAvailable?.Invoke((nint)hwnd);
+            // 方針A: ウィンドウ Play の起動シーケンスが READY を待っている場合、ここで解禁して
+            // LaunchAsync に Play 遷移を再開させる（_runtimeHwnd 確定後に Play へ遷移させる）。
+            // Play 起動中以外（Edit 起動・常駐再利用・Edit 復元経由の READY）では null のため無害。
+            _playWindowReadyTcs?.TrySetResult(true);
         }
         else if (msg == "FIRST_FRAME")
         {
@@ -1370,6 +1445,9 @@ public sealed class RuntimeManager : IDisposable
         _inEmbeddedPlay = false;
         // プロセスが落ちた以上、起動シーケンスは継続不能。再入ガードを解除する（不具合2の保険）。
         _isLaunching = false;
+        // 方針A: READY(ウィンドウ準備完了)待機中にプロセスが終了した場合は、待機を false で解いて
+        // LaunchAsync の Play 遷移を中止させる（後始末は本メソッドが継続する）。
+        _playWindowReadyTcs?.TrySetResult(false);
 
         // KillRuntime / Stop による意図的な終了は再起動もクラッシュ計上もしない
         if (_intentionalStop)
@@ -1623,10 +1701,20 @@ public sealed class RuntimeManager : IDisposable
             // Kill 前に購読解除 — Kill 後に Exited が発火して OnRuntimeExited が
             // 新 _pipe を Dispose するレースコンディションを防ぐ。
             _process.Exited -= OnRuntimeExited;
-            if (!_process.HasExited)
+            try
             {
-                _process.Kill();
-                _process.WaitForExit(500);
+                if (!_process.HasExited)
+                {
+                    _process.Kill();
+                    _process.WaitForExit(500);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Kill が失敗（アクセス拒否・既終了レース等）してもプロセス参照は破棄まで進める。
+                // 例外を握り潰さないと Dispose の後続（保存 Edit／常駐 Play の Kill）が
+                // スキップされてプロセスがリークする（エディタ終了後の SEED.exe 残留の原因）。
+                EditorLog.Write($"KillRuntime — kill failed: {ex.Message}");
             }
             _process.Dispose();
         }
@@ -1660,26 +1748,40 @@ public sealed class RuntimeManager : IDisposable
 
     public void Dispose()
     {
-        KillRuntime();
+        // エディタ終了時は、管理下の全ランタイムプロセス（通常 _process・保存 Edit・常駐 Play）を
+        // 確実に終了させ、エディタを閉じた後に SEED.exe が残留しないようにする。
+        // 各終了処理は独立した try/catch で囲み、いずれかが例外を投げても残りのプロセス終了が
+        // スキップされない（＝リークしない）ようにする。
 
-        // 保存した Edit ランタイムも終了させる（Play 中にウィンドウを閉じた場合など）
-        if (_savedEditProcess is not null)
+        // ① 現在アクティブなランタイム（Play 中なら Play、Edit 中なら Edit）を終了する。
+        try { KillRuntime(); }
+        catch (Exception ex) { EditorLog.Write($"Dispose — KillRuntime failed: {ex.Message}"); }
+
+        // ② Play 中に非表示保持していた Edit ランタイムを終了する（Play 中にウィンドウを閉じた場合など）。
+        try
         {
-            if (!_savedEditProcess.HasExited)
+            if (_savedEditProcess is not null)
             {
-                _savedEditPipe?.Send("STOP");
-                _savedEditPipe?.Dispose();
-                try { _savedEditProcess.Kill(); _savedEditProcess.WaitForExit(500); }
-                catch (Exception ex) { EditorLog.Write($"Dispose — saved Edit kill failed: {ex.Message}"); }
+                if (!_savedEditProcess.HasExited)
+                {
+                    _savedEditPipe?.Send("STOP");
+                    _savedEditPipe?.Dispose();
+                    try { _savedEditProcess.Kill(); _savedEditProcess.WaitForExit(500); }
+                    catch (Exception ex) { EditorLog.Write($"Dispose — saved Edit kill failed: {ex.Message}"); }
+                }
+                _savedEditProcess.Dispose();
+                _savedEditProcess = null;
+                _savedEditPipe    = null;
+                _savedEditHwnd    = IntPtr.Zero;
             }
-            _savedEditProcess.Dispose();
-            _savedEditProcess = null;
-            _savedEditPipe    = null;
-            _savedEditHwnd    = IntPtr.Zero;
         }
+        catch (Exception ex) { EditorLog.Write($"Dispose — saved Edit cleanup failed: {ex.Message}"); }
 
-        // 常駐保持している Play ランタイムも確実に終了させる（リーク防止）
-        DisposePersistentPlayRuntime(killProcess: true);
+        // ③ Stop 後も Kill せず常駐保持していた Play ランタイムを確実に終了する（リーク防止）。
+        //    ①②③ を独立 try/catch にしたことで、どれか 1 つの Kill が失敗しても他は必ず実行され、
+        //    管理下の全プロセスが終了する（本来は各ランタイムの --parent-pid 監視も保険になる）。
+        try { DisposePersistentPlayRuntime(killProcess: true); }
+        catch (Exception ex) { EditorLog.Write($"Dispose — persistent Play cleanup failed: {ex.Message}"); }
 
         // 起動シーケンスのキャンセルソースを破棄する
         _launchCts?.Dispose();
