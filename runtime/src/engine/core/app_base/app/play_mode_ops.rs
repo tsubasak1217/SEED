@@ -25,6 +25,7 @@
 // ============================================================
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
@@ -157,6 +158,11 @@ impl App {
 
         let snapshot = self.play_snapshot.take();
 
+        // 【計測】Stop→Edit 復帰の所要時間内訳。ユーザー報告「復帰が遅い」の主因
+        //   （アクター再構築 vs 編集物理再起動＝地形コライダー再登録）を実機 1 回で切り分けるため、
+        //   常時 ON の [FPS_PHASE] exit_play 行を末尾に出す。各区間を Instant で個別計測する。
+        let t_total = Instant::now();
+
         // ── 1) 物理・パーティクル・オーディオを停止/解放 ─────────────────────
         // スクリプトインスタンスは下のアクター破棄（ScriptComponent Drop）で解放される。
         self.stop_physics();
@@ -167,11 +173,13 @@ impl App {
         // ── 2) アクターツリーを復元 ─────────────────────────────────────
         // スナップショットが無い（ウィンドウ Play 等、想定外経路）場合はアクター復元を
         // スキップし、mode だけ戻す。
+        let t_restore = Instant::now();
         if let (Some(snapshot), true) =
             (snapshot, self.draw_ctx.is_some() && self.scene.is_some())
         {
             self.restore_actors_from_snapshot(snapshot);
         }
+        let restore_ms = t_restore.elapsed().as_secs_f64() * 1000.0;
 
         // ── 3) 編集状態へ復帰 ───────────────────────────────────────────
         self.mode = RuntimeMode::Edit;
@@ -193,6 +201,10 @@ impl App {
 
         // 物理タイムラインをリセットし、編集時物理が有効なら初期状態で再起動する
         // （LOAD_SCENE の Edit 復帰処理と同一手順）。
+        //   【計測注意】edit_physics_enabled のとき start_physics 内で register_all_terrain_colliders が
+        //   走り、地形 322 チャンク分の再登録に数秒かかりうる（別途 [FPS_PHASE] start_physics 行で内訳が出る）。
+        //   これが exit_play の主因か否かを下の physics_ms で切り分ける。
+        let t_phys = Instant::now();
         self.reset_physics_timeline();
         if self.edit_physics_enabled {
             self.stop_physics();
@@ -207,9 +219,22 @@ impl App {
         } else if self.edit_physics_enabled || self.edit_physics_2d_enabled {
             self.init_physics_timeline();
         }
+        let physics_ms = t_phys.elapsed().as_secs_f64() * 1000.0;
 
         self.send_selected();
         self.send_hierarchy();
+
+        // ── 復帰所要時間の内訳ログ（常時 ON・Stop 1 回につき 1 行）──
+        //   total   : exit_play 全体（EXIT_PLAY 受信からアクター/物理復元完了まで）。
+        //   restore : スナップショットからのアクター再構築（build_actor の GPU 再アップロード含む）。
+        //   physics : 編集物理の再起動（有効時は地形コライダー再登録が支配的になりうる）。
+        //   なお EXIT_PLAY 送信〜本行までの体感遅延には、コマンドが次フレームで処理されるまでの
+        //   キュー待ち（直前フレームが LOD スパイク中なら最大そのフレーム時間）も加わる。
+        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+        eprintln!(
+            "[FPS_PHASE] exit_play total={total_ms:.1}ms restore={restore_ms:.1}ms physics={physics_ms:.1}ms edit_phys={}",
+            self.edit_physics_enabled
+        );
 
         if let Some(ipc) = &self.ipc { ipc.send("PLAY_EXITED"); }
     }
