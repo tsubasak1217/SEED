@@ -746,6 +746,15 @@ impl App {
                             // 地形チャンク（TerrainChunkComponent 付き）を .tvox から復元し、
                             // terrain:// ガードで model=None のまま読まれた ModelComponent を埋める。
                             self.rebuild_terrain_after_load();
+                            // Play モード（常駐 Play プロセス再利用の LOAD_SCENE）: 地形 LOD を
+                            // メインカメラ位置で事前収束させる。ウィンドウ Play 新規起動
+                            // （app_init.rs load_play_scene）・埋め込み ENTER_PLAY
+                            // （play_mode_ops.rs enter_play）と同じ扱いで、Play 開始直後の
+                            // 一斉 LOD 遷移による低 fps 張り付きを防ぐ。Edit のロードは従来どおり。
+                            if self.mode == RuntimeMode::Play {
+                                let cam_pos = self.play_converge_camera_pos();
+                                self.converge_terrain_lod_blocking(cam_pos);
+                            }
                             self.undo_history = crate::engine::core::app_base::undo::UndoHistory::new();
                             if let Some(cam) = cam_data {
                                 self.apply_camera_data(&cam);

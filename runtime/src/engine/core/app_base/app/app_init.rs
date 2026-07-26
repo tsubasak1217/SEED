@@ -499,6 +499,14 @@ impl App {
                 // 地形チャンク（TerrainChunkComponent 付き）を .tvox から復元し、
                 // terrain:// ガードで model=None のまま読まれた ModelComponent を埋める。
                 self.rebuild_terrain_after_load();
+
+                // ── Play 開始前の地形 LOD 事前収束（ウィンドウ Play 経路）──────────────
+                // ここは READY 送信・ウィンドウ表示より前のロードフェーズ。メインカメラ位置基準で
+                // 全チャンクの目標 LOD を 1 回でまとめて再メッシュし、最初の描画フレームで
+                // backlog をゼロにする。これにより Play 開始直後の毎フレーム分割収束
+                // （約 20 秒間 8〜10fps）を回避し、起動時間へ前倒しする。
+                let cam_pos = self.play_converge_camera_pos();
+                self.converge_terrain_lod_blocking(cam_pos);
             }
             Some(Err(e)) => { eprintln!("[SEED INIT] load_play_scene FAILED: {e}"); }
             None => {}

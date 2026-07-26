@@ -125,6 +125,15 @@ impl App {
         // モデルキャッシュ・レンダラ・shared_model_batches には一切触れていない。
         // これらは構築済みのまま Play に引き継がれる。
 
+        // ── Play 開始前の地形 LOD 事前収束（埋め込みインプレース Play 経路）──────────
+        // Edit ランタイムをその場で Play 化するため、Edit のデバッグカメラ位置基準で組まれた
+        // チャンク LOD がそのまま残っている。Play ではメインカメラへ視点が飛ぶため、そのまま
+        // 描画に入ると初回以降の毎フレーム分割収束（tick_terrain_lod）で数百チャンクが一斉に
+        // 遷移し約 20 秒間 8〜10fps に律速される。ここでメインカメラ位置基準の目標 LOD を
+        // 1 回でまとめて再メッシュし、Play の最初の描画フレーム前に backlog をゼロにする。
+        let cam_pos = self.play_converge_camera_pos();
+        self.converge_terrain_lod_blocking(cam_pos);
+
         // 【一時・診断】ENTER_PLAY から一定時間、届いた WindowEvent 種別を [PLAY_EV] へ出力開始
         // （RedrawRequested の配達が止まる直前に Focused/Occluded 等が来ていないかを見る）。
         super::play_diag::begin_event_trace();
