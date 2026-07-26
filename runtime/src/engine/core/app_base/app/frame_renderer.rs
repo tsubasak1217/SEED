@@ -270,6 +270,12 @@ impl App {
         // （起動時・スタンドアロン時もここで拾う。IPC 切替は各ハンドラでも即ログ）。
         self.log_render_features_if_changed();
 
+        // LOD 遷移で遅延退役した旧チャンク GPU リソースを解放する（移動時スパイク対策の後片付け）。
+        //   必ず begin_frame（描画コマンド記録＝snatch read lock 取得）より前で呼ぶ。ここで
+        //   完了済み旧リソースを drop → poll(Poll) で遅延破棄を確定することで、フレーム末尾の
+        //   queue.submit() が遅延破棄を処理して snatch lock 再帰パニックする経路を踏まない。
+        self.process_terrain_gpu_retire();
+
         // チャンク単位 地形 LOD: 前フレームのカメラ位置で各チャンクの目標 LOD を選び、
         // 変化ぶんだけ近い順に小分けで再メッシュする（遠いチャンクを低ポリ化して描画三角形を削減）。
         // 描画の借用が始まる前（フレーム先頭）で行うことで scene/draw_ctx の可変借用衝突を避ける。

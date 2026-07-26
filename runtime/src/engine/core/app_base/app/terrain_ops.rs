@@ -165,6 +165,29 @@ const TERRAIN_LOD_BUDGET_MS: f64 = 6.0;
 /// FPS 下限を損なうため、下限保護とオーバーヘッド償却の折衷として小さめの 2 に留める。
 const TERRAIN_LOD_BATCH: usize = 2;
 
+/// LOD 遷移で差し替えた旧チャンク GPU リソース（`GpuModel`／`InstancedModelBatch`）を、
+/// その場で drop せず「退役キュー」で保持するフレーム数。
+///
+/// 【なぜ即 drop + `poll(Wait)` を避けるのか — 移動時スパイクの真因】
+///   `remesh_chunks` の従来経路は「旧 GpuModel を drop → `device.poll(Wait)`」で解放を
+///   同期確定していた。この `poll(Wait)` は GPU が **全 in-flight 提出を完了** するまで
+///   ブロックするため、ゲーム中（GPU が重い RT 影・反射を処理中）は 1 回で 80〜130ms 停止する
+///   （実測: Play 開始前＝GPU アイドル時の一括収束は 564 チャンクでも 502ms＝0.9ms/chunk なのに、
+///    ゲーム中の 2 チャンク遷移で done_ms≈100ms。差はメッシュ生成ではなく poll バリアの GPU 待ち）。
+///   `poll(Wait)` 自体は「in-flight リソースを drop した際の遅延破棄を、フレーム末尾の
+///   `queue.submit()`（snatch read lock 保持）が処理して write lock 再帰でパニックする」のを
+///   防ぐための安全点フラッシュである（詳細は grass_gbuffer.rs `update` のコメント参照）。
+///
+/// 【本方式（遅延退役）】旧リソースを即 drop せず本数フレーム保持する。保持している間に
+///   そのリソースを参照した提出は GPU 上で完了する（in-flight 深度＝スワップチェーン画像数で
+///   上限されるので、時間ではなく **提出深度** で決まる。よって数フレームで十分）。完了後に
+///   フレーム先頭（read lock 非保持の安全点）で drop → 非ブロッキングの `poll(Poll)` で遅延破棄を
+///   確定する。これによりゲーム中でも LOD 遷移フレームが数 ms で済み、スパイクが消える。
+///
+/// 【値の根拠】ダブル／トリプルバッファ＋present キュー深度（通常 2〜3）に安全余裕を持たせて 4。
+/// これは時間ではなく提出深度に対する余裕なので、低 FPS でも panic 安全側に働く。
+const TERRAIN_GPU_RETIRE_FRAMES: u64 = 4;
+
 /// ストローク遅延付随処理を「今」確定（一括適用）すべきかを判定する純粋関数。
 ///
 /// - `deferred_empty`: 遅延チャンク集合が空なら確定するものが無い（常に false）。
@@ -649,6 +672,18 @@ pub struct TerrainState {
     /// アクター DFS の entity_id 空間（1 始まり・アクター数ぶん）と絶対に衝突しない
     /// 高位ベース（`TERRAIN_COLLIDER_ENTITY_BASE`）から採番する。
     pub next_terrain_collider_id: u64,
+
+    // ─── LOD 遷移 GPU リソースの遅延退役（移動時スパイク対策）─────────────────
+    /// LOD 遷移で差し替えた旧チャンク GPU リソースの退役キュー。
+    ///
+    /// `remesh_chunks(defer_gpu_release=true)`（＝毎フレームの `tick_terrain_lod` 経路）が、
+    /// 旧 `GpuModel`／`InstancedModelBatch` をその場で drop せずここへ積む。`process_terrain_gpu_retire`
+    /// がフレーム先頭（snatch read lock 非保持の安全点）で `TERRAIN_GPU_RETIRE_FRAMES` フレーム経過分を
+    /// drop → `poll(Poll)` で確定する。狙いは `poll(Wait)` の GPU 同期ストール（80〜130ms）の排除。
+    /// 各エントリは `(退役フレーム番号, 旧 GpuModel, 旧 InstancedModelBatch)`。
+    pub gpu_retire_queue: std::collections::VecDeque<(u64, Option<GpuModel>, Option<InstancedModelBatch>)>,
+    /// 遅延退役の判定に使う単調フレームカウンタ（`process_terrain_gpu_retire` が毎フレーム +1）。
+    pub gpu_retire_frame: u64,
 }
 
 /// 地形コライダー用 entity_id のベース値。
@@ -701,6 +736,11 @@ impl Default for TerrainState {
 
             chunk_collider_ids: HashMap::new(),
             next_terrain_collider_id: TERRAIN_COLLIDER_ENTITY_BASE,
+
+            // 遅延退役キューは空・フレーム 0 から始める。地形リセット（default 再生成）で
+            // 破棄されるが、そのタイミングでは対象 GpuModel は既に GPU 完了済みのため安全。
+            gpu_retire_queue: std::collections::VecDeque::new(),
+            gpu_retire_frame: 0,
         }
     }
 }
@@ -1700,7 +1740,7 @@ impl App {
         // ── ② 全チャンクを再メッシュ化する ──
         //   remesh_chunks が &mut self を取るため、対象座標は先に確定させておく。
         let coords: Vec<ChunkCoord> = self.terrain.chunk_slot_entity.keys().copied().collect();
-        self.remesh_chunks(&coords, false);
+        self.remesh_chunks(&coords, false, false);
 
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("TERRAIN_RELOAD_LAYERS_OK:{}", coords.len()));
@@ -2042,7 +2082,7 @@ impl App {
             }
         }
         let neighbor_list: Vec<ChunkCoord> = neighbors.into_iter().collect();
-        self.remesh_chunks(&neighbor_list, false);
+        self.remesh_chunks(&neighbor_list, false, false);
 
         self.send_hierarchy();
         eprintln!(
@@ -2418,7 +2458,9 @@ impl App {
                 }
                 // 既存の VRAM 安全な再メッシュ機構をそのまま使う（gpu_model と instanced_batch を
                 // 同時に作り直し、派生キャッシュ＝統合バッチ・BLAS も破棄される）。
-                self.remesh_chunks(&coords, false);
+                //   defer_gpu_release=true: 毎フレーム経路なので旧 GPU リソースは即 drop せず遅延退役し、
+                //   poll(Wait) の GPU 待ちストール（移動時 80〜130ms スパイクの真因）を張らない。
+                self.remesh_chunks(&coords, false, true);
                 processed += coords.len();
 
                 // ── バジェット判定は必ず「1 バッチ処理したあと」に行う ──
@@ -2556,7 +2598,9 @@ impl App {
             // 【本命】バジェット分割せず全チャンクを 1 回で処理する。defer_side_effects=false で
             //   従来どおりコライダー追従・RT prune も即時に行う（Play 開始時は物理未起動なので
             //   コライダー追従は no-op、統合バッチ無効化・BLAS prune は必要ぶんだけ走る）。
-            self.remesh_chunks(&coords, false);
+            //   defer_gpu_release=false: 一括収束は Play 開始前（GPU アイドル）なので poll(Wait) は軽く、
+            //   即時解放で VRAM ピークを抑える方が有利（数百チャンク分の旧リソースを溜めない）。
+            self.remesh_chunks(&coords, false, false);
         }
 
         // ── 所要時間ログ（常時 ON）──
@@ -2597,7 +2641,9 @@ impl App {
             // 描画メッシュ／GPU 差し替えは必須なので必ず行う。`deferring` のときは
             // remesh_chunks 内でフェーズD（コライダー）と RT BLAS prune だけをスキップする
             // （統合バッチ無効化は描画に必要なので毎回維持される）。
-            self.remesh_chunks(&coords, deferring);
+            //   defer_gpu_release=false: ブラシ経路は挙動不変（旧 GPU 即解放 + poll(Wait)）。
+            //   ブラシ中の poll ストールは本タスクの対象外（移動時 LOD スパイクとは別問題）。
+            self.remesh_chunks(&coords, deferring, false);
             if deferring {
                 // ── 付随処理は確定時にまとめて処理する。ここではチャンクを積むだけ ──
                 self.terrain.stroke_deferred_chunks.extend(coords.iter().copied());
@@ -2760,9 +2806,16 @@ impl App {
     ///   `true` で呼ばれる。`true` のときはフェーズD（物理コライダー再構築）と RT BLAS prune を
     ///   スキップする（描画に必須な統合バッチ無効化は `true`/`false` に関わらず必ず実行）。
     ///   スキップした付随処理はストローク確定時に `finalize_stroke_deferred` がまとめて追従する。
-    ///   ブラシ以外の全経路（undo/redo・チャンク追加・LOD 遷移・ペイントのフォールバック）は
+    ///   ブラシ以外の全経路（undo/redo・チャンク追加・ペイントのフォールバック）は
     ///   `false`（即時）で呼び、従来どおり挙動不変。
-    fn remesh_chunks(&mut self, coords: &[ChunkCoord], defer_side_effects: bool) {
+    ///
+    /// 【`defer_gpu_release`】毎フレームの LOD 遷移経路（`tick_terrain_lod`）だけが `true` で呼ぶ。
+    ///   `true` のときフェーズ B の同期バリア `device.poll(Wait)` を張らず、旧 GpuModel／
+    ///   InstancedModelBatch を即 drop せず `gpu_retire_queue` へ退役させる（`process_terrain_gpu_retire`
+    ///   が数フレーム後に安全点で drop → `poll(Poll)`）。狙いは「LOD 遷移フレームが GPU 待ちで
+    ///   80〜130ms に落ちる（移動時スパイク）」の排除。`false`（ブラシ・undo/redo・チャンク追加・
+    ///   一括収束）では従来どおり即 drop + `poll(Wait)` で VRAM ピークを抑えつつ同期解放する。
+    fn remesh_chunks(&mut self, coords: &[ChunkCoord], defer_side_effects: bool, defer_gpu_release: bool) {
         if self.draw_ctx.is_none() || coords.is_empty() {
             return;
         }
@@ -2805,9 +2858,14 @@ impl App {
             cpu_models.iter().filter_map(|m| m.as_ref()).map(|(model, _, _)| model.as_ref()),
         );
 
-        // ── フェーズ A: 対象全チャンクの旧 GpuModel を drop する ──
+        // ── フェーズ A: 対象全チャンクの旧 GpuModel を手放す ──
         //   ここで手放すのはチャンク専有のリソースなので、他の描画には影響しない。
+        //   即時経路（defer_gpu_release=false）: `None` 代入で即 drop（下のフェーズ B で解放確定）。
+        //   遅延経路（true）: 即 drop せず退役キューへ move する（GPU 待ちバリアを避けるため）。
         let t_swap = Instant::now();
+        // 遅延退役で保持する旧リソース（true のときだけ積む）。旧 InstancedModelBatch は
+        // フェーズ C-2 で take するため、ここでは旧 GpuModel だけを先に集める。
+        let mut retired: Vec<(Option<GpuModel>, Option<InstancedModelBatch>)> = Vec::new();
         for (&coord, cpu) in coords.iter().zip(cpu_models.iter()) {
             // メッシュ生成に失敗した（チャンクが存在しない）ものは触らない。
             if cpu.is_none() {
@@ -2818,16 +2876,27 @@ impl App {
             };
             if let Some(scene) = self.scene.as_mut() {
                 if let Some(mc) = scene.world.get_mut::<ModelComponent>(slot_entity) {
-                    mc.gpu_model = None;
+                    if defer_gpu_release {
+                        // in-flight の旧リソースを即 drop すると遅延破棄がフレーム末尾の
+                        // submit（snatch read lock 保持）で処理され write lock 再帰でパニックする。
+                        // よって drop せず退役キューへ move し、数フレーム後の安全点で解放する。
+                        retired.push((mc.gpu_model.take(), None));
+                    } else {
+                        mc.gpu_model = None;
+                    }
                 }
             }
         }
 
         // ── フェーズ B: 遅延破棄をここで 1 回だけ確定させる（GPU アイドル待ち） ──
         //   wgpu 25 の poll API。ループ外に置くことがこの関数の最大の要点。
+        //   遅延退役経路（defer_gpu_release=true）ではここで drop していない（退役キューへ move 済み）ため、
+        //   確定すべき遅延破棄が無い。よって GPU 待ちバリアを張らない（＝移動時スパイクの排除）。
         let t_poll = Instant::now();
-        if let Some(ctx) = self.draw_ctx.as_ref() {
-            let _ = ctx.device.poll(wgpu::PollType::Wait);
+        if !defer_gpu_release {
+            if let Some(ctx) = self.draw_ctx.as_ref() {
+                let _ = ctx.device.poll(wgpu::PollType::Wait);
+            }
         }
         let poll_ms = t_poll.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 
@@ -2868,14 +2937,35 @@ impl App {
             if let Some(scene) = self.scene.as_mut() {
                 if let Some(mc) = scene.world.get_mut::<ModelComponent>(slot_entity) {
                     mc.model = Some(model);
-                    mc.gpu_model = gpu;
-                    mc.instanced_batch = batch;
+                    if defer_gpu_release {
+                        // 旧 GpuModel はフェーズ A で take 済み（mc.gpu_model は None）。
+                        // 旧 InstancedModelBatch も即 drop せず退役キューへ回す（旧 GpuModel と同じ理由）。
+                        let old_batch = std::mem::replace(&mut mc.instanced_batch, batch);
+                        mc.gpu_model = gpu;
+                        retired.push((None, old_batch));
+                    } else {
+                        mc.gpu_model = gpu;
+                        mc.instanced_batch = batch;
+                    }
                     // バッチ更新をマークする。
                     mc.mark_batch_dirty();
                     swapped_keys.push(mc.source_path.clone());
                 }
             }
             self.terrain.dirty.insert(coord);
+        }
+
+        // ── 遅延退役: 旧リソースを退役キューへ積む（現フレーム番号でタグ付け）──
+        //   即 drop しないことで GPU 待ちバリアを避ける。実際の解放は process_terrain_gpu_retire が
+        //   TERRAIN_GPU_RETIRE_FRAMES フレーム後の安全点で行う。
+        if defer_gpu_release && !retired.is_empty() {
+            let f = self.terrain.gpu_retire_frame;
+            for (g, b) in retired {
+                // 中身が両方 None のエントリは積まない（無駄な保持を避ける）。
+                if g.is_some() || b.is_some() {
+                    self.terrain.gpu_retire_queue.push_back((f, g, b));
+                }
+            }
         }
 
         // ── フェーズ C-3: ジオメトリ由来の派生キャッシュを破棄する（下記メソッドの説明を参照） ──
@@ -2910,6 +3000,57 @@ impl App {
                 "[PERF terrain] remesh chunks={} cpu_mesh={:.2}ms gpu_swap={:.2}ms poll_wait={:.2}ms total={:.2}ms",
                 coords.len(), cpu_ms, gpu_ms, poll_ms, total_ms
             );
+        }
+    }
+
+    /// LOD 遷移で遅延退役した旧チャンク GPU リソースを、安全点で解放する。
+    ///
+    /// 【呼び出し位置（最重要・snatch lock 安全）】必ずフレーム先頭（`handle_redraw_requested` の
+    ///   `begin_frame`＝描画コマンド記録より前）で呼ぶこと。この時点では wgpu の snatch **read** lock を
+    ///   誰も保持していないため、旧リソースを drop → `poll(Poll)` で遅延破棄を確定しても、フレーム末尾の
+    ///   `queue.submit()`（read lock 保持）が破棄を処理して write lock 再帰でパニックする経路を踏まない。
+    ///
+    /// 【処理】
+    ///   1. 退役フレームカウンタを +1 する。
+    ///   2. `TERRAIN_GPU_RETIRE_FRAMES` フレーム以上前に退役したリソースを drop する。これらを参照した
+    ///      GPU 提出は既に完了している（in-flight 深度はスワップチェーン画像数で上限されるため、
+    ///      数フレームで確実に完了）。よって drop は「完了済みリソースの解放」であり安全。
+    ///   3. `device.poll(PollType::Poll)` を **1 回だけ**（非ブロッキング）呼び、直前の drop で生じた
+    ///      遅延破棄を、read lock 非保持の今このタイミングで確定する。`Poll` は GPU 完了を待たないため
+    ///      ストールしない（＝`poll(Wait)` の 80〜130ms を払わない）。完了済みリソースなので確実に reap される。
+    ///
+    /// 【非ブロッキングで安全な理由】保持しているのは全て `TERRAIN_GPU_RETIRE_FRAMES` フレーム前以前の
+    ///   リソースなので、`poll(Poll)` の 1 パス（triage_suspected）で完了扱いとなり解放される。
+    ///   まだ完了していないリソースは drop 対象に含めないため、submit が処理して panic する遅延破棄は残らない。
+    pub(super) fn process_terrain_gpu_retire(&mut self) {
+        // 退役キューが空でもフレームカウンタは前進させる（次の退役の基準を正しく保つ）。
+        self.terrain.gpu_retire_frame = self.terrain.gpu_retire_frame.wrapping_add(1);
+        let now = self.terrain.gpu_retire_frame;
+
+        // GPU が無い（ヘッドレス等）なら解放しようがない。キューは通常空だが、念のため drop はする
+        //   （device が無ければ遅延破棄も submit も走らないので単純 drop で問題ない）。
+        let has_ctx = self.draw_ctx.is_some();
+
+        // 解放期限に達したエントリだけを先頭から取り出して drop する。
+        //   キューは push 順＝退役フレーム昇順なので、期限未到達に当たった時点で打ち切れる。
+        let mut released_any = false;
+        while let Some(&(retire_frame, _, _)) = self.terrain.gpu_retire_queue.front() {
+            // now - retire_frame >= TERRAIN_GPU_RETIRE_FRAMES で期限到達。
+            //   wrapping 前提だが u64 で現実に一周しないため単純減算でよい（安全側に飽和も付ける）。
+            if now.saturating_sub(retire_frame) < TERRAIN_GPU_RETIRE_FRAMES {
+                break;
+            }
+            // ここで front を取り出すと、タプル内の GpuModel / InstancedModelBatch が drop される。
+            let _dropped = self.terrain.gpu_retire_queue.pop_front();
+            released_any = true;
+        }
+
+        // drop で生じた遅延破棄を、read lock 非保持の今このタイミングで非ブロッキングに確定する。
+        //   何も解放していないフレームでは poll すら不要（無駄な maintain を避ける）。
+        if released_any && has_ctx {
+            if let Some(ctx) = self.draw_ctx.as_ref() {
+                let _ = ctx.device.poll(wgpu::PollType::Poll);
+            }
         }
     }
 
@@ -3315,7 +3456,7 @@ impl App {
 
         // ── ⑨ フォールバック対象はまとめてフル再メッシュへ回す ──
         if !fallback.is_empty() {
-            self.remesh_chunks(&fallback, false);
+            self.remesh_chunks(&fallback, false, false);
         }
 
         // ── 計測ログ（`[PERF terrain] remesh ...` と同じ流儀・同じゲート）──
@@ -3435,7 +3576,7 @@ impl App {
                 touched.push(coord);
             }
         }
-        self.remesh_chunks(&touched, false);
+        self.remesh_chunks(&touched, false, false);
         // ── 密度を戻すと地面も戻るので、散布プロップを新しい地表へ貼り直す ──
         //   【散布そのものは undo されない（T3 第1段のスコープ外）】
         //   undo/redo スタックが持つのは密度とスプラットのスナップショットだけで、
@@ -3461,7 +3602,7 @@ impl App {
                 touched.push(coord);
             }
         }
-        self.remesh_chunks(&touched, false);
+        self.remesh_chunks(&touched, false, false);
         // undo と同じ理由で再接地する（散布自体は redo の対象外）。
         self.restick_scatter_for_chunks(&touched);
         self.terrain.undo_stack.push(edit);
