@@ -29,6 +29,7 @@ static DEFAULT_FONT_BYTES: &[u8] =
 
 // ── FontMode ──────────────────────────────────────────────────
 
+/// グリフのラスタライズ方式。Bitmap は通常の輝度ビットマップ、Sdf は距離場（拡大縮小に強い）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FontMode {
     Bitmap,
@@ -43,6 +44,7 @@ impl Default for FontMode {
 
 // ── FontConfig ────────────────────────────────────────────────
 
+/// `FontSystem` の初期化パラメータ（描画モード・SDF設定・アトラスサイズ）。
 #[derive(Clone, Debug)]
 pub struct FontConfig {
     pub mode: FontMode,
@@ -157,6 +159,8 @@ pub struct GpuTextBatch {
 
 // ── FontSystem ────────────────────────────────────────────────
 
+/// フォント描画システムの本体。フォントデータ・グリフアトラス・描画パイプラインを保持し、
+/// `prepare_glyphs` でグリフを準備、`build_gpu_batch`/`draw_text_batch` でテキストを描画する。
 pub struct FontSystem {
     pub font: FontArc,
     pub config: FontConfig,

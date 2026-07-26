@@ -126,6 +126,7 @@ public sealed class ViewportHost : HwndHost
         [DllImport("user32.dll")]
         internal static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc proc, IntPtr lParam);
 
+        /// <summary>Win32 矩形構造体。</summary>
         [StructLayout(LayoutKind.Sequential)]
         internal struct RECT { public int Left, Top, Right, Bottom; }
 

@@ -18,6 +18,12 @@ using SEEDEditor.Scripting;
 
 namespace SEEDEditor.Panels;
 
+/// <summary>
+/// 選択中アクター／インスタンスのプロパティ・コンポーネントを表示編集するドッキングパネル。
+/// Rust ランタイムから届く ACTOR_COMPONENTS 等の JSON を基にアコーディオン形式の
+/// コンポーネントエディタを構築し、値変更・コンポーネント追加削除・複製・
+/// マテリアル編集・プレハブ参照操作などを SET_* / ADD_COMPONENT 等のコマンドとして送信する。
+/// </summary>
 public partial class InspectorPanel : UserControl
 {
     // ── Runtime connection ────────────────────────────────────

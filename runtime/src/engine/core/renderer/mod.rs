@@ -163,6 +163,11 @@ pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// wgpu の COPY_BYTES_PER_ROW_ALIGNMENT 要件 (256 バイト境界)。
 const COPY_ROW_ALIGNMENT: u32 = 256;
 
+/// メインパスの深度バッファ（Depth24PlusStencil8）。
+///
+/// レンダーアタッチメント用の All aspect ビューと、Hi-Z 等のテクスチャサンプリング用の
+/// DepthOnly aspect ビューの両方を保持する。`Renderer::resize` / `begin_frame` の
+/// サーフェスサイズ変化時に作り直される。
 struct DepthTexture {
     #[allow(dead_code)]
     texture: wgpu::Texture,

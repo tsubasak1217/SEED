@@ -17,6 +17,8 @@ use wgpu::util::DeviceExt;
 //  GPU 側データ構造
 // ============================================================
 
+/// GPU スキニング計算に渡す、1アニメーションチャンネル分の情報。
+/// 対象ノード・プロパティ種別（T/R/S）・タイムスタンプ/値バッファ内のオフセットと補間方式を保持する。
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuChannelInfo {
@@ -29,6 +31,8 @@ struct GpuChannelInfo {
     _pad: [u32; 2],
 }
 
+/// スキニング用コンピュートシェーダに渡す per-LOD パラメータ uniform。
+/// ノード数・ジョイント数・チャンネル数・可視インスタンス数を保持する。
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuSkinParams {

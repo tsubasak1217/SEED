@@ -18,6 +18,10 @@ use crate::engine::core::app_base::ipc::ToolMode;
 /// 正射: radius = ortho_half_h * RATIO で見た目の大きさが一致する。
 pub const GIZMO_SCREEN_RADIUS_RATIO: f32 = 0.233;
 
+/// 編集ギズモを構成するパーツの種別。
+///
+/// `hit_test_gizmo` 系のヒットテストが返し、`start_drag`/`update_drag` が
+/// どの軸・平面・ハンドルを操作中かの識別に使う。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GizmoPart {
     AxisX,

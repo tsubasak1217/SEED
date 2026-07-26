@@ -165,6 +165,10 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
 //  MeshPipeline — PBR スタティックメッシュ
 // ============================================================
 
+/// PBR スタティックメッシュ描画パイプライン一式。
+///
+/// カリング面（Back/Front/None）3 バリアント＋ワイヤーフレームバリアントと、
+/// group0〜4（camera/model/material/gap/lights+shadow）の BindGroupLayout を保持する。
 pub struct MeshPipeline {
     /// カリング面 3 種（Back / Front / None）のパイプライン。添字 = `CullFace::index()`。
     pub pipelines: CullPipelineSet,
@@ -254,6 +258,10 @@ impl MeshPipeline {
 //  SkinnedMeshPipeline — PBR スキンメッシュ
 // ============================================================
 
+/// PBR スキンメッシュ描画パイプライン一式。
+///
+/// `MeshPipeline` のスキン版。カリング面 3 バリアント＋ワイヤーフレームバリアントに加え、
+/// スキン頂点レイアウトと group3=joints の BindGroupLayout を保持する。
 pub struct SkinnedMeshPipeline {
     /// カリング面 3 種（Back / Front / None）のパイプライン。添字 = `CullFace::index()`。
     pub pipelines: CullPipelineSet,
@@ -392,6 +400,10 @@ impl RtMeshPipelines {
 //  UnlitPipeline — デバッグ描画（LineList）
 // ============================================================
 
+/// デバッグ描画（ライン・ギズモ）用のライトなしパイプライン一式。
+///
+/// 1px ライン（LineList）、ギズモ用の太線（TriangleList クアッド展開）、選択強調の太線、
+/// ソリッドギズモ三角形の 4 パイプラインを保持する。
 pub struct UnlitPipeline {
     pub pipeline: wgpu::RenderPipeline, // LineList, ColorVertex
     pub gizmo_line_pipeline: wgpu::RenderPipeline, // TriangleList, GizmoVertex (太線, depth=Always)
@@ -621,6 +633,10 @@ impl MeshletCullPipeline {
 //  SkinComputePipeline — GPU スキニング コンピュートパイプライン
 // ============================================================
 
+/// GPU スキニング（頂点ボーン変形）用のコンピュートパイプライン。
+///
+/// per_frame（joints storage + カウント uniform）・static（頂点属性群の read-only storage）・
+/// output（変形後頂点の read-write storage）の 3 つの BindGroupLayout を保持する。
 pub struct SkinComputePipeline {
     pub pipeline: wgpu::ComputePipeline,
     pub per_frame_bgl: wgpu::BindGroupLayout,
@@ -719,6 +735,10 @@ impl SkinComputePipeline {
 //  IdPassPipeline — Actor ID 書き込みパス
 // ============================================================
 
+/// Actor ID（ピッキング用オフスクリーンバッファ）書き込みパイプライン一式。
+///
+/// スタティック／スキンメッシュそれぞれのカリング面 3 バリアントと、
+/// group0〜4（camera/model/id_data/joint/id_base）の BindGroupLayout を保持する。
 pub struct IdPassPipeline {
     /// スタティックメッシュ用 ID 書き込みパイプライン（カリング面 3 種。添字 = `CullFace::index()`）。
     ///
@@ -806,6 +826,10 @@ const _: fn() = || {
 //  OutlinePipeline — バックフェース膨張法アウトライン
 // ============================================================
 
+/// バックフェース膨張法による選択アウトライン描画パイプライン一式。
+///
+/// メッシュ／スキンメッシュそれぞれに、ステンシル読み取り専用版（既に書かれたステンシル=1
+/// の内側を避けて描く）とステンシル書き込み版（選択インスタンス前面に 1 を書く）の 2 本を持つ。
 pub struct OutlinePipeline {
     pub mesh_pipeline: wgpu::RenderPipeline,
     pub skinned_pipeline: wgpu::RenderPipeline,
@@ -1601,6 +1625,11 @@ impl GiUpdatePipeline {
 /// パーティクルの合成モード数（None/Normal/Add/Sub/Mul/Screen。ParticleBlend::to_code と一致）。
 pub const PARTICLE_BLEND_COUNT: usize = 6;
 
+/// GPU パーティクル描画パイプライン一式（形状メッシュ×インスタンス）。
+///
+/// ブレンドモード（None/Normal/Add/Sub/Mul/Screen）× 形状（mesh/Pixel）ぶんの
+/// パイプラインと、group1（particles/params/lut）・group2（texture）の BindGroupLayout、
+/// テクスチャ未指定エミッタ用の既定白 BindGroup を保持する。
 pub struct ParticlePipelines {
     /// メッシュ形状（TriangleList）描画パイプライン。索引 = ParticleBlend::to_code()。
     pub mesh: [wgpu::RenderPipeline; PARTICLE_BLEND_COUNT],
@@ -1893,6 +1922,11 @@ impl ParticlePipelines {
     }
 }
 
+/// Renderer が保持する全描画パイプラインを 1 か所に束ねた集約構造体。
+///
+/// メッシュ／スキンメッシュ／RT 影／深度プリパス／シャドウ／ID パス／アウトライン／
+/// スプライト／パーティクル／スカイボックス／G-Buffer／デファード／反射／AO／SSGI／
+/// シャドウマスク等、起動時に一度だけ構築される全パイプラインを保持する。
 pub struct DrawPipelines {
     pub mesh: MeshPipeline,
     pub skinned_mesh: SkinnedMeshPipeline,

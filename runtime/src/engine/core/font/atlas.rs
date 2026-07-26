@@ -39,6 +39,7 @@ pub struct GlyphInfo {
 
 // ── Shelf ─────────────────────────────────────────────────────
 
+/// シェルフパッキングの1段。左から順にグリフを詰め、高さが足りなくなったら新しい段を作る。
 struct Shelf {
     y: u32,      // シェルフの Y 開始位置
     height: u32, // シェルフの高さ（最大グリフ高さ + パディング）
@@ -47,6 +48,10 @@ struct Shelf {
 
 // ── GlyphAtlas ────────────────────────────────────────────────
 
+/// 動的シェルフパッキングによるグリフアトラス。
+///
+/// グリフを CPU バッファへラスタライズしてキャッシュし、`upload_if_dirty` で
+/// R8Unorm の GPU テクスチャへまとめて転送する。
 pub struct GlyphAtlas {
     pub texture: wgpu::Texture,
     pub texture_view: wgpu::TextureView,

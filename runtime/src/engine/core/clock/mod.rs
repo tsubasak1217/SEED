@@ -112,6 +112,8 @@ impl Default for Clock {
 //  FixedDrain — drain_fixed() が返すイテレータ
 // ============================================================
 
+/// `Clock::drain_fixed` が返すイテレータ。`FIXED_DELTA` 分ずつアキュムレータを消費しながら
+/// ConstantUpdate 用の `FrameContext` を順次生成する。
 pub struct FixedDrain<'a> {
     clock: &'a mut Clock,
 }

@@ -1231,6 +1231,7 @@ impl App {
                     // 50 アクター × 1 モデルの場合は理論上 ~50 倍の高速化が見込まれる。
                     //
                     // ① MC を source_path でグループ化（CPU データのみ収集）
+                    /// 同一 source_path を持つ全 MC を 1 バッチへ統合するための集約先。
                     struct MergeInfo {
                         cpu_model: std::sync::Arc<crate::engine::core::loader::model::Model>,
                         mats:      Vec<[[f32; 4]; 4]>,

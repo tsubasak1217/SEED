@@ -21,6 +21,7 @@ pub struct TextVertex {
 
 // ── TextPipeline ──────────────────────────────────────────────
 
+/// テキスト描画用の wgpu パイプライン一式（レンダーパイプライン・バインドグループレイアウト・サンプラー）。
 pub struct TextPipeline {
     pub pipeline: wgpu::RenderPipeline,
     pub params_bgl: wgpu::BindGroupLayout,

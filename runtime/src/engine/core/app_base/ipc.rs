@@ -18,6 +18,7 @@ const PIPE_CONNECT_RETRY_MS: u64 = 100;
 //  ToolMode — エディタの左ツールバー選択状態
 // ============================================================
 
+/// エディタの左ツールバーで選択中のギズモ操作種別（選択/移動/回転/拡縮）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ToolMode {
     Select,
@@ -72,6 +73,8 @@ pub struct TerrainChunkConfig {
 //  IpcCommand — エディタから受け取るコマンド
 // ============================================================
 
+/// エディタ（Named Pipe サーバー）から受信するコマンド 1 件分。
+/// IPC 受信スレッドがテキストプロトコルをパースしてこの型に変換し、メインループへ渡す。
 pub enum IpcCommand {
     Pause,
     Resume,

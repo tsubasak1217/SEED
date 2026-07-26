@@ -5,6 +5,10 @@ using System.Windows.Threading;
 
 namespace SEEDEditor;
 
+/// <summary>
+/// SEED エディタの WPF アプリケーションエントリポイント。
+/// UI スレッド未処理例外・非 UI スレッド未処理例外・未観測タスク例外を捕捉し crash.log に書き出す。
+/// </summary>
 public partial class App : Application
 {
     public App()

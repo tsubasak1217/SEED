@@ -35,12 +35,15 @@ public sealed class FrozenFramePreview : IDisposable
     [DllImport("dwmapi.dll")]
     private static extern int DwmQueryThumbnailSourceSize(nint hThumbId, out Size size);
 
+    /// <summary>Win32 RECT 相当。DWM サムネイルの表示先・表示元矩形を表す。</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct Rect { public int Left, Top, Right, Bottom; }
 
+    /// <summary>Win32 SIZE 相当。DwmQueryThumbnailSourceSize で取得するソースサイズを表す。</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct Size { public int Cx, Cy; }
 
+    /// <summary>DWM_THUMBNAIL_PROPERTIES 相当。DwmUpdateThumbnailProperties へ渡す表示設定。</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct DwmThumbnailProperties
     {

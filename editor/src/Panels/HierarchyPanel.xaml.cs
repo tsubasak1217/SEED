@@ -17,6 +17,10 @@ namespace SEEDEditor.Panels;
 //  データモデル
 // ============================================================
 
+/// <summary>
+/// Hierarchy パネルのツリー表示用ノード。Rust 側から届く JSON（id/name/parent/is_group 等）を
+/// ParseHierarchy で変換して保持し、アイコン色分け・ドラッグ&amp;ドロップ可否判定・選択種別判定に使う。
+/// </summary>
 public class ActorNode
 {
     public int             Id       { get; set; }
@@ -59,6 +63,12 @@ public class ActorNode
 //  HierarchyPanel
 // ============================================================
 
+/// <summary>
+/// アクターツリー（Hierarchy）を表示・編集するドッキングパネル。
+/// Rust ランタイムから届く HierarchyUpdated/SelectionChanged 等を購読してツリーを再構築し、
+/// 選択・リネーム・ドラッグ&amp;ドロップによる親子付け替え・アクタ追加/削除/グループ化・
+/// プレハブ操作・アクタファイル化などの操作をコマンド文字列として RuntimeManager 経由で送信する。
+/// </summary>
 public partial class HierarchyPanel : UserControl
 {
     // ── 状態 ─────────────────────────────────────────────────

@@ -12,6 +12,11 @@ use std::collections::BTreeMap;
 //  PipelineConfig — TOML 設定構造体
 // ============================================================
 
+/// パイプライン定義 TOML（pipelines/*.toml）のデシリアライズ先。
+///
+/// シェーダー連結・頂点/フラグメントエントリ・頂点スロット・トポロジー/カリング/深度・
+/// カラーフォーマット/ブレンドなど、`RenderPipelineBuilder::build` がパイプライン生成に
+/// 使う設定一式を保持する。
 #[derive(serde::Deserialize)]
 pub struct PipelineConfig {
     /// 連結するシェーダーファイル名のリスト（順番に join）
@@ -92,6 +97,11 @@ fn default_write_mask() -> String {
 //  RenderPipelineBuilder
 // ============================================================
 
+/// `PipelineConfig`（TOML）から `wgpu::RenderPipeline` を組み立てるビルダー。
+///
+/// WGSL リフレクションで BindGroupLayout を自動決定しつつ、depth_write / cull_mode /
+/// polygon_mode / stencil をビルダーメソッドで上書きすることで、同一 TOML から
+/// 複数のパイプラインバリアント（例: 表裏カリング違い、塗り/ワイヤ違い）を生成できる。
 pub struct RenderPipelineBuilder<'d> {
     device: &'d wgpu::Device,
     cfg: PipelineConfig,

@@ -22,6 +22,11 @@ use std::collections::HashMap;
 
 // ─── World ────────────────────────────────────────────────────────────────────
 
+/// ECS の中央ストア。
+///
+/// Entity の生成・破棄、コンポーネントの挿入・削除・読み取り・型別クエリ、
+/// グローバルリソース（Resources）の保持を一手に担う。System は `&mut World` を
+/// 受け取ってコンポーネントを横断的に処理する。
 pub struct World {
     entities: Entities,
     /// TypeId → 型消去されたコンポーネントストレージ

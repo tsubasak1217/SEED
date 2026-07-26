@@ -76,6 +76,9 @@ impl DefaultTextures {
 //  GpuTexture
 // ============================================================
 
+/// アップロード済み GPU テクスチャ（テクスチャ本体 + ビュー + サンプラー）の三点セット。
+/// `upload_rgba8` / `upload_ready` / `load_from_file` の戻り値として生成され、
+/// `DefaultTextures` やマテリアルのテクスチャ参照など、テクスチャを扱う各所で使われる。
 pub struct GpuTexture {
     #[allow(dead_code)]
     pub texture: wgpu::Texture,
@@ -563,6 +566,9 @@ pub struct GpuMeshlet {
     pub cone_cutoff:  f32,   // offset 44
 }                            // size 48
 
+/// 1 プリミティブぶんの GPU 描画リソース。頂点/インデックスバッファ（LOD 別含む）・
+/// メッシュレットカリング用バッファ・バインドレス登録結果を保持する。
+/// `GpuPrimitive::upload` が CPU 側 `Primitive` から構築し、`GpuMesh::primitives` に格納される。
 pub struct GpuPrimitive {
     pub vertex_buffer:        wgpu::Buffer,
     /// 頂点数（RT 影 Phase R8: BLAS サイズ記述子で使用）。
@@ -833,6 +839,8 @@ fn compute_smooth_normals(
     }).collect()
 }
 
+/// 1 メッシュぶんの GPU 描画リソース。`GpuPrimitive` の集合を保持するだけの薄いラッパー
+/// （CPU 側 `Model.meshes` と 1:1 対応し、`GpuModel::upload` が構築する）。
 pub struct GpuMesh {
     pub primitives: Vec<GpuPrimitive>,
 }
@@ -849,6 +857,9 @@ pub enum InlineUpdateResult {
     NotApplicable,
 }
 
+/// モデル全体の GPU 描画リソース一式（メッシュ・マテリアル・アルベド/透過率/屈折率の
+/// マテリアル別配列・バインドレス割り当てなど）を束ねる、描画コードから参照される中心的な構造体。
+/// `GpuModel::upload` が CPU 側 `Model` から構築し、`draw_gbuffer_indirect` 等の描画関数が読む。
 pub struct GpuModel {
     pub meshes:           Vec<GpuMesh>,
     pub materials:        Vec<GpuMaterial>,

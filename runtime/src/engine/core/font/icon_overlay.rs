@@ -14,6 +14,7 @@ static ICON_BYTES: &[u8] =
 
 // ── 頂点型 ────────────────────────────────────────────────────
 
+/// アイコンオーバーレイのクワッド描画に使う頂点（NDC座標とUV）。
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct IconOverlayVertex {
@@ -23,6 +24,7 @@ pub struct IconOverlayVertex {
 
 // ── GpuIconOverlayBatch ──────────────────────────────────────
 
+/// `IconOverlay::build` が構築する、GPU に転送済みのアイコンオーバーレイ描画データ。
 pub struct GpuIconOverlayBatch {
     pub vertex_buf: wgpu::Buffer,
     pub vertex_count: u32,
@@ -30,6 +32,8 @@ pub struct GpuIconOverlayBatch {
 
 // ── IconOverlay ───────────────────────────────────────────────
 
+/// 選択アクターのワールド座標に location.png アイコンを表示するレンダラー。
+/// ピンの先端（底辺中央）が選択位置に対応する。
 pub struct IconOverlay {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,

@@ -23,6 +23,9 @@ type MapResult = Result<(), wgpu::BufferAsyncError>;
 //  ScreenInfo ユニフォーム（オクルージョンシェーダー用）
 // ============================================================
 
+/// オクルージョンテストシェーダーへ渡すスクリーン情報 uniform（binding 4）。
+///
+/// Hi-Z テクスチャの解像度とミップ数を GPU 側へ伝える。`resize` でサイズ変更時に更新される。
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ScreenInfo {
