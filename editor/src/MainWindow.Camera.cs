@@ -891,6 +891,20 @@ public partial class MainWindow
                 ViewportLoadingOverlay.Visibility = Visibility.Visible;
                 break;
 
+            case EditorState.Launching:
+                // Play ランタイム起動シーケンス進行中（プロセス起動〜Play 遷移前）。
+                // ・実行ボタンは無効化して連打による多重起動を UI 側でも防ぐ（不具合2）。
+                // ・Stop ボタンは有効化し、ウィンドウ出現前でも起動をキャンセルできるようにする（不具合1）。
+                BtnPlayPause.IsEnabled   = false;
+                BtnPlayPause.Background  = _brushPlay;
+                ImgPlayPause.Source      = _imgPlay;
+                BtnStop.IsEnabled        = true;
+                LblState.Text            = "▶ LAUNCHING...";
+                LblState.Foreground      = Brushes.LightSkyBlue;
+                TxtViewportStatus.Text            = "起動中...";
+                ViewportLoadingOverlay.Visibility = Visibility.Visible;
+                break;
+
             case EditorState.Idle:
                 BtnPlayPause.IsEnabled   = false;
                 BtnPlayPause.Background  = _brushPlay;
