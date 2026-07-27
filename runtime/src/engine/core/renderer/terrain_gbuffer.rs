@@ -335,10 +335,15 @@ pub struct TerrainGBufferPipelines {
 ///
 /// surface.wgsl / surface_gather.wgsl は連結しない（Surface を経由せず直接 MRT を作る）。
 /// naga 検証テストはこの並びと一致させること。
-pub fn terrain_gbuffer_shader_sources() -> [&'static str; 3] {
+pub fn terrain_gbuffer_shader_sources() -> [&'static str; 5] {
     [
         "shader_common.wgsl",
-        "shader_static_vertex.wgsl",
+        // 速度バッファ（モーションベクタ）: 純関数と group4 の前フレーム行列。
+        // 頂点シェーダより前に置く（vs_main が u_prev_instances を参照するため）。
+        "velocity_math.wgsl",
+        "velocity_common.wgsl",
+        // G-Buffer 専用の頂点シェーダ（フォワードと共有の shader_static_vertex ではない）。
+        "gbuffer_static_vertex.wgsl",
         "terrain_gbuffer_write.wgsl",
     ]
 }
@@ -347,13 +352,15 @@ impl TerrainGBufferPipelines {
     /// 地形 G-Buffer パイプラインを構築する。
     ///
     /// group0〜2 は `mesh_pipeline` の BGL を借りる（gbuffer.rs と同じ方針）。
-    /// group3 だけを本ファイルで新規に定義する。
+    /// group3 だけを本ファイルで新規に定義し、group4（速度用の前フレーム行列）は
+    /// `GBufferPipelines` から借りる（mesh / skinned / terrain で同一レイアウトを共有）。
     pub fn new(
         device:        &wgpu::Device,
         mesh_pipeline: &MeshPipeline,
         df:            wgpu::TextureFormat,
         cache:         Option<&wgpu::PipelineCache>,
         color_targets: &[Option<wgpu::ColorTargetState>],
+        prev_bgl:      &wgpu::BindGroupLayout,
     ) -> Self {
         let layer_bgl = create_layer_bind_group_layout(device);
 
@@ -362,6 +369,7 @@ impl TerrainGBufferPipelines {
             &mesh_pipeline.model_bgl,
             &mesh_pipeline.material_bgl,
             &layer_bgl,
+            prev_bgl,
         ];
 
         let pipes: CullPipelineSet = std::array::from_fn(|i| {
@@ -551,10 +559,12 @@ mod tests {
     #[test]
     fn terrain_gbuffer_shader_parses_and_validates() {
         let common   = include_str!("shaders/shader_common.wgsl");
-        let static_v = include_str!("shaders/shader_static_vertex.wgsl");
+        let vmath    = include_str!("shaders/velocity_math.wgsl");
+        let vcommon  = include_str!("shaders/velocity_common.wgsl");
+        let static_v = include_str!("shaders/gbuffer_static_vertex.wgsl");
         let terrain  = shader_src();
 
-        let src = [common, static_v, terrain].join("\n");
+        let src = [common, vmath, vcommon, static_v, terrain].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[terrain_gbuffer] WGSL parse 失敗: {e:?}"));
         let mut validator = naga::valid::Validator::new(

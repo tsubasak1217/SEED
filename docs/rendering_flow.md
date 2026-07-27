@@ -43,7 +43,7 @@ flowchart TD
     S4 --> G1
 
     subgraph GBUF["G-Buffer 段（deferred_active のみ）"]
-      G1["G-Buffer パス<br/>不透明のみ MRT x4 + 深度"] --> G2["Hi-Z ピラミッド + 遮蔽ディスパッチ<br/>opt-in・結果は次フレーム"]
+      G1["G-Buffer パス<br/>不透明のみ MRT x5（+速度）+ 深度"] --> G2["Hi-Z ピラミッド + 遮蔽ディスパッチ<br/>opt-in・結果は次フレーム"]
     end
 
     G2 --> L1
@@ -191,9 +191,9 @@ WBOIT 3 + オーバーレイ 1 + パーティクル 1 + ブルーム/トーン�
 
 | 項目 | 内容 |
 |---|---|
-| 目的 | **不透明 Lit ジオメトリのみ** を 4 枚の MRT ＋深度へ焼く |
-| 入出力 | 出力: `gbuffer0..3` + 共有深度 |
-| シェーダ | `gbuffer_write.wgsl`（メッシュ/スキン）、`terrain_gbuffer_write.wgsl`（地形 triplanar レイヤブレンド）、`grass_gbuffer.wgsl`（プロシージャル草） |
+| 目的 | **不透明 Lit ジオメトリのみ** を 5 枚の MRT ＋深度へ焼く |
+| 入出力 | 出力: `gbuffer0..3` + `gbuffer_velocity` + 共有深度 |
+| シェーダ | `gbuffer_write.wgsl`（メッシュ/スキン）、`terrain_gbuffer_write.wgsl`（地形 triplanar レイヤブレンド）、`grass_gbuffer.wgsl`（プロシージャル草）。頂点は G-Buffer 専用の `gbuffer_static_vertex.wgsl` / `gbuffer_skinned_vertex.wgsl`（フォワードと共有の `shader_*_vertex.wgsl` ではない）。速度の共有定義は `velocity_math.wgsl`（純関数）と `velocity_common.wgsl`（group4 の前フレーム行列） |
 | 実装 | `frame_renderer.rs:4221`（`begin_gbuffer_pass_to`）、パイプラインは `renderer/gbuffer.rs`、描画は `gbuffer::draw_gbuffer_indirect` |
 | ゲート | `deferred_active = post_fx.deferred && !edit_view_2d && !scene_wireframe && scene_is_lit`（`:3681`） |
 | Edit / Play | Play では `game_viewport` の viewport/scissor を適用（帯外にジオメトリを焼かない、`:4225-4230`）。Edit のワイヤーフレーム表示・2D シーンビューは `deferred_active=false` になりフォワードへ落ちる。`scene_is_lit` は Play では常に true、Edit ではシーンビュー表示モードに従う |
@@ -207,11 +207,67 @@ WBOIT 3 + オーバーレイ 1 + パーティクル 1 + ブルーム/トーン�
 | g1 | `GBUFFER1` | `Rgba16Float` | `xyz` = ワールド法線（シェーディング法線）、`w` = authored 法線フラグ（0＝深度復元 Ng を使う、1＝草・地形など信頼できる法線を使う） |
 | g2 | `GBUFFER2` | `Rgba8Unorm` | `r` = metallic、`g` = roughness、`b` = diffuse_transmission、`a` = **user_data**（マテリアルの汎用ユーザーデータ 0..1・8bit） |
 | g3 | `GBUFFER3` | `Rgba16Float` | `rgb` = emissive（HDR）、`w` = **surface_id**（下位 4bit = セマンティックタグ / 続く 2bit = シェーディングモデル ID） |
+| g4 | `GBUFFER_VELOCITY` | `Rg16Float` | `rg` = **スクリーンスペース速度**（モーションベクタ）。前フレーム→今フレームの移動量をビューポート正規化 UV で表す（ピクセル単位が要るならビューポートの幅・高さを掛ける）。定義の正典は `shaders/velocity_math.wgsl` の `compute_velocity_uv` |
 | depth | `DEPTH_FORMAT` | `Depth24PlusStencil8` | `depth_write_enabled: true` / `CompareFunction::Less`。ライティング側は `texture_depth_2d` を `textureLoad` のみで読み、`inv_view_proj` でワールド座標を復元 |
 
 - フォーマット定義: `renderer/gbuffer.rs:38-44`、深度は `renderer/mod.rs:132`、パイプラインの depth_stencil は `gbuffer.rs:215-224`
 - 書き込み側の権威: `shaders/gbuffer_write.wgsl`（`GBufferOut` / `fs_gbuffer`）
 - 読み出し側: `shaders/deferred_lighting.wgsl`（`GBUFFER_NORMAL_AUTHORED_THRESHOLD` で g1.w を分岐、g2.a / g3.a を `Surface` へ復元）
+
+#### g4（速度＝モーションベクタ）— 第2層の生成物
+
+将来の TAA / モーションブラー、および L3（合成アセット）の入力素材。
+**現時点で消費者はいない**（「正しく生成され、バインド可能である」ことまでが実装スコープ）。
+
+| 項目 | 内容 |
+|---|---|
+| 値 | `curr_uv - prev_uv`（ビューポート正規化 UV・符号付き・`±1.0` でクランプ） |
+| 生成方式 | **頂点再投影**。G-Buffer の頂点シェーダが今フレームのクリップ座標と「前フレーム行列で再投影したクリップ座標」の 2 本を渡し、フラグメントが透視除算して差を取る |
+| 静的ジオメトリ | 前フレームのインスタンス行列が今フレームと一致する（＝`prev_model == model`）ため、式が自動的に「カメラ由来の速度」へ縮退する。**深度からのフルスクリーン再投影パスは持たない** |
+| 動的オブジェクト | インスタンスごとの前フレームモデル行列（group4 の `PrevModelUniform`）で再投影する |
+| スキンメッシュ | **剛体ぶんのみ**（アクタの移動・回転）。ボーン変形ぶんは含まない。理由とコストは `gbuffer_skinned_vertex.wgsl` 冒頭を参照 |
+| 地形 / 草 | 静的扱い（カメラ由来のみ）。草の風の揺れは意図的に速度へ含めない（毎フレーム位相が変わる高周波変形で、含めると TAA の履歴が常に破棄される） |
+| カメラプレビュー | 速度不要。専用の捨て RT へ書き、プレビューカメラの uniform は `prev_view_proj = view_proj` 固定（＝値は恒等的に 0） |
+| デバッグ表示 | `SEED_DEBUG_VELOCITY=1` で疑似カラー可視化（灰色=速度0 / 赤・シアン=水平 / 緑・マゼンタ=垂直 / 青=飽和）。ブルーム／トーンマップ直前に全面上書きする |
+
+**「静的は深度から一括、動的は個別に」としなかった理由**: 動的オブジェクトは G-Buffer パスで
+個別に速度を書く必要がある。そこへ静的用のフルスクリーン再投影パスを足すと、
+「動的物が既に書いた画素を塗り潰さない」ためのマスク（ステンシル等）が要り、
+なおかつ同じ画素の速度を 2 度計算することになる。頂点再投影に一本化すれば
+静的・動的が同じ 1 式で完結し、追加パスもマスクも二重計算も発生しない。
+
+**速度が爆発しない設計（境界条件）**:
+
+| 状況 | 対処 | 実装 |
+|---|---|---|
+| 初回フレーム | `prev_view_proj = view_proj` / `prev_model = model` | `velocity_prev_view_proj: Option` の初期値 `None`、`InstancedModelBatch::velocity_reset` の初期値 `true` |
+| Play⇄Edit 切替・ポーズ切替・RT リサイズ・ワールドライン切替 | 連続性キー `(Play か, ポーズか, RT 幅, RT 高さ, ワールドライン)` の変化を検出して自動リセット | `frame_renderer.rs` の `velocity_key`。バッチ側へは `request_velocity_reset()` で伝播する |
+| シーンロード／シーン遷移 | 明示リセット | `App::request_velocity_reset()`（`self.scene = Some(..)` の直後で呼ぶ） |
+| カメラのテレポート | 同上（明示リセット） | 同上 |
+| インスタンス数の変化・バッチ再生成 | 前フレームキャッシュの長さ不一致で自動リセット | `InstancedModelBatch::update` の `prev_usable` 判定 |
+| 地形 LOD チャンク差し替え | **そもそも爆発しない**。差し替わるのはメッシュであってインスタンス行列ではなく、かつ本方式は「**今フレームの**頂点を前フレームの行列で再投影する」ため、前フレームの頂点位置を参照していない | 構造上 |
+| 散布モデル（草・プロップ）の可視リスト入れ替え | 静的なので毎フレーム `request_velocity_reset()`（prev=curr が厳密に正しい） | `terrain_scatter_ops.rs` |
+
+> **残存リスク**: 統合バッチのインスタンス列が「本数は同じまま並びだけ入れ替わる」ケース
+> （同一フレームでのアクタ追加と削除が相殺する等）は自動検出できず、1 フレームだけ
+> 誤った速度が出る。必要なら `App::request_velocity_reset()` を明示的に呼ぶこと。
+
+**コスト**:
+
+| 項目 | 増分 |
+|---|---|
+| VRAM（速度 RT） | 4 byte/px（1920×1080 で約 8.3 MB） |
+| VRAM（前フレーム行列バッファ） | 現行インスタンスバッファの **+50%**（1 エントリ 64 byte ＝ `ModelUniform` 128 byte の半分） |
+| 毎フレーム転送 | 同上 +50%（可視インスタンス × メッシュノード × 64 byte） |
+| CPU メモリ | 64 byte × インスタンス数 × メッシュノード数（前フレーム行列キャッシュ） |
+| 頂点→フラグメント補間 | 8 float（クリップ座標 2 本）。`VertexOutput` は共有なのでフォワード系にも乗る |
+| MRT byte cost | 32 → 36。**wgpu 既定の `max_color_attachment_bytes_per_sample`（32）を超える**ため、`renderer/mod.rs` がデバイス生成時にアダプタ実値（DX12/Vulkan では 8×16 = 128）へ引き上げている |
+
+> **注意（見落としやすい点）**: WebGPU の byte cost は チャンネル実サイズではなく
+> **フォーマットごとの固定表**で数え、4 チャンネル形式は 8bit でも 16bit でも一律 8。
+> つまり速度追加前の G-Buffer 4 枚だけで既に 8+8+8+8 = 32 と既定リミット丁度だった。
+> MRT を足す変更では必ずこのリミットを確認すること
+> （回帰ガード: `gbuffer.rs` の `gbuffer_mrt_byte_cost_matches_formats_and_requires_raised_limit`）。
 
 #### 情報系チャンネル（g2.a / g3.a）
 
@@ -502,7 +558,8 @@ RT 半透明パイプラインの構築条件は `transparency.rs:378`:
         ＋情報系: セマンティックタグ / シェーディングモデル ID / ユーザーデータ
               ↓
 第2層  中間バッファ生成   製法=エンジン（SS系/RT系を選択式、off なら作らない）
-        影マスク / GI / 反射 / AO / ID テクスチャ  ← 作られる物のリストは固定（第3層の入力契約）
+        影マスク / GI / 反射 / AO / ID テクスチャ / 速度（モーションベクタ）
+                                          ← 作られる物のリストは固定（第3層の入力契約）
               ↓
 第3層  画面の合成        標準合成=エンジン / 介入点= shade()・ポストプロセス
 ```
@@ -522,7 +579,8 @@ albedo・法線・metallic・roughness・diffuse_transmission・emissive・occlu
 格納先は G-Buffer の空きチャンネル（g2.a / g3.a）で、MRT は 4 枚のまま増えていない。
 
 **第2層（中間バッファ生成）** は、第1層とライトデータから
-影マスク / GI / 反射 / AO / **ID テクスチャ** という中間生成物を作る。製法（SS 系か RT 系か）は
+影マスク / GI / 反射 / AO / **ID テクスチャ** / **速度（モーションベクタ）** という
+中間生成物を作る。製法（SS 系か RT 系か）は
 機能マトリクス（`SET_POST_FX` features）で選択式・off なら生成しないが、
 **製法が変わっても「作られる物のリスト」は増えない**。この固定リストが第3層の
 安定した入力契約になっており、将来 SS 系↔RT 系を入れ替えても上下の層は無傷で残る。
@@ -544,6 +602,13 @@ albedo・法線・metallic・roughness・diffuse_transmission・emissive・occlu
 > 第1層のセマンティックタグ（追加パスも追加帯域もゼロ）を使う。ID テクスチャは
 > 「この 1 体だけ」という**個体の厳密な同定**が要るときにだけ使う。
 > コストは `SEED_PERF_LOG=1` の `[PERF]` 行の `id=` フィールドで実測できる。
+
+**速度バッファ（モーションベクタ）** は、他の第2層生成物と違い **ライトデータを必要としない**
+（第1層のジオメトリとカメラの前後フレーム行列だけで決まる）。そのため専用パスを持たず、
+G-Buffer 段の 5 枚目の MRT として第1層と同時に焼かれる。位置づけは第2層（第3層の入力契約に
+載る中間生成物）だが、生成コストは実質「MRT を 1 枚増やしただけ」である。
+消費者は将来の TAA / モーションブラー / L3 合成であり、**現時点では存在しない**
+（生成とバインド可能性までが整備済み。詳細は 2.9 の「g4（速度）」節）。
 
 **第3層（合成）** はエンジンの標準 Deferred ライティング
 （`deferred_lighting.wgsl` + `lighting_eval.wgsl` + クラスタ走査）が

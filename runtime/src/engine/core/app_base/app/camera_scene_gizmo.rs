@@ -441,6 +441,11 @@ pub fn build_camera_uniform(
         resolution:     res,
         _pad2:          [0.0; 2],
         inv_view_proj:  inv_view_proj.transpose().data,
+        // 速度バッファ（モーションベクタ）用の前フレーム ViewProjection。
+        // カメラプレビューのミニ G-Buffer は速度を必要としない（誰も読まない捨て RT へ書く）ため、
+        // ここは常に prev=curr にして「プレビューの速度は恒等的に 0」であることを保証する。
+        // プレビューカメラ用に前フレーム行列を追跡する仕組みは意図的に持たない。
+        prev_view_proj: view_proj.transpose().data,
     }
 }
 

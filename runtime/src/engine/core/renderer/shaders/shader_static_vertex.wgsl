@@ -23,7 +23,12 @@ fn vs_main(v: VertexInput, @builtin(instance_index) inst_idx: u32) -> VertexOutp
     let wbt        = normalize(cross(wn, wt) * v.tangent.w);
 
     var out: VertexOutput;
-    out.clip_pos     = u_camera.view_proj * world_pos4;
+    let clip         = u_camera.view_proj * world_pos4;
+    out.clip_pos     = clip;
+    // 速度用クリップ座標: フォワード経路は速度 MRT を持たないため prev = curr（速度 0）を入れる。
+    // 実際の前フレーム再投影は G-Buffer 専用の gbuffer_static_vertex.wgsl が行う。
+    out.curr_clip    = clip;
+    out.prev_clip    = clip;
     out.world_pos    = world_pos4.xyz;
     out.world_normal = wn;
     out.world_tan    = wt;

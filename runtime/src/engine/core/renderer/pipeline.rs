@@ -127,6 +127,17 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "tonemap_ops.wgsl"           => include_str!("shaders/tonemap_ops.wgsl"),
         "bar_fill.wgsl"              => include_str!("shaders/bar_fill.wgsl"),
         "skybox.wgsl"                => include_str!("shaders/skybox.wgsl"),
+        // 速度バッファ（モーションベクタ）。velocity_math.wgsl はバインディングを持たない
+        // 純関数のみ（草も連結する）、velocity_common.wgsl は group4 の前フレーム行列を
+        // 宣言する（G-Buffer のメッシュ／地形パイプラインのみ連結してよい）。
+        "velocity_math.wgsl"         => include_str!("shaders/velocity_math.wgsl"),
+        "velocity_common.wgsl"       => include_str!("shaders/velocity_common.wgsl"),
+        // G-Buffer 専用の頂点シェーダ（前フレーム行列で prev_clip を埋める版）。
+        // フォワードと共有の shader_static_vertex / shader_skinned_vertex とは別物。
+        "gbuffer_static_vertex.wgsl"  => include_str!("shaders/gbuffer_static_vertex.wgsl"),
+        "gbuffer_skinned_vertex.wgsl" => include_str!("shaders/gbuffer_skinned_vertex.wgsl"),
+        // 速度バッファのデバッグ可視化（SEED_DEBUG_VELOCITY=1）。
+        "velocity_debug.wgsl"        => include_str!("shaders/velocity_debug.wgsl"),
         // G-Buffer 書き込み（Phase D3: Deferred 化 Phase A）。
         "gbuffer_write.wgsl"         => include_str!("shaders/gbuffer_write.wgsl"),
         // 地形レイヤブレンド G-Buffer 書き込み（Terrain T2・terrain_gbuffer.rs が連結する）。
@@ -1678,6 +1689,9 @@ pub struct DrawPipelines {
     /// デファードのフルスクリーン・ライティング復元パイプライン一式（Phase D3 Phase A）。
     /// Phase A 時点ではフレームループへ未接続（Phase B で接続予定）。
     pub deferred:             super::deferred::DeferredLightingPipelines,
+    /// 速度バッファ（モーションベクタ）のデバッグ可視化パイプライン。
+    /// 環境変数 `SEED_DEBUG_VELOCITY=1` のときだけ Some（既定は None＝GPU 資源も描画も 0 コスト）。
+    pub velocity_debug:       Option<super::velocity_debug::VelocityDebugPipeline>,
     /// 反射（SSR / RT）フルスクリーンパス＋合成パイプライン一式（Phase D6）。
     /// Deferred 有効時のみ frame_renderer が使う（G-Buffer＋scene_hdr 入力→RT_REFLECTION→加算合成）。
     pub reflection:           super::reflection::ReflectionPipelines,
@@ -1760,6 +1774,17 @@ impl DrawPipelines {
         // デファードのフルスクリーン・ライティング復元（Phase D3 Phase A）。
         // sf（シーン HDR）へ出力する（PostPipeline 等と同じ HDR オフスクリーン規約）。
         let deferred              = super::deferred::DeferredLightingPipelines::new(device, queue, sf, df, cache);
+        // 速度バッファのデバッグ可視化。環境変数が立っているときだけ構築する
+        // （デバッグ専用の追加パスなので、既定では 1 バイトの GPU 資源も確保しない）。
+        let velocity_debug        = if *super::velocity_debug::VELOCITY_DEBUG_ENABLED {
+            eprintln!(
+                "[SEED renderer] {}=1: 速度バッファ（モーションベクタ）の可視化を有効化しました                  （灰色=速度0 / 赤・シアン=水平 / 緑・マゼンタ=垂直 / 青=飽和）",
+                super::velocity_debug::VELOCITY_DEBUG_ENV,
+            );
+            Some(super::velocity_debug::VelocityDebugPipeline::new(device, sf, cache))
+        } else {
+            None
+        };
         // 反射（Phase D6）。deferred の camera_bgl/gbuffer_bgl を借りて構築するため deferred の後に呼ぶ。
         // 出力先は sf（scene_hdr / RT_REFLECTION と同じ HDR）。
         let reflection            = super::reflection::ReflectionPipelines::new(device, &deferred, sf, cache);
@@ -1774,6 +1799,6 @@ impl DrawPipelines {
         let shadow_mask           = rt.as_ref().map(|r| {
             super::shadow_mask::ShadowMaskPipelines::new(device, &deferred, &r.lights_bgl, cache)
         });
-        Self { mesh, skinned_mesh, rt, unlit_line, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, reflection, ao, ssgi, shadow_mask }
+        Self { mesh, skinned_mesh, rt, unlit_line, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, velocity_debug, reflection, ao, ssgi, shadow_mask }
     }
 }

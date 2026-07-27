@@ -21,6 +21,12 @@ struct CameraUniform {
     //   自前の CameraUniform を宣言して使う。ここでは Rust 構造体との
     //   バイトレイアウト一致だけを保つために宣言している）。
     inv_view_proj:  mat4x4<f32>,
+    // **前フレームの** ViewProjection 行列（速度バッファ＝モーションベクタ用）。
+    // G-Buffer 用の頂点シェーダ（gbuffer_static_vertex / gbuffer_skinned_vertex）だけが
+    // 読む。フォワード系は宣言だけ持ち参照しない（Rust CameraUniform と 1:1 を保つため）。
+    // 初回フレーム／Play⇄Edit 切替／シーンロード直後は Rust 側が prev=curr を入れるため、
+    // ここが「前フレームでない値」になることは無い（速度爆発の防止は CPU 側で完結する）。
+    prev_view_proj: mat4x4<f32>,
 }
 @group(0) @binding(0) var<uniform> u_camera: CameraUniform;
 
@@ -139,6 +145,30 @@ struct VertexOutput {
     /// インスタンスごとに一定なので `flat` 補間（頂点間で値を混ぜてはならない）。
     /// G-Buffer 書き込みでのみ使う（フォワード系フラグメントは参照しない）。
     @location(7) @interpolate(flat) render_tag: f32,
+
+    // ─── 速度バッファ（モーションベクタ）用のクリップ座標 2 本 ───────────────
+    //
+    // 【なぜクリップ座標のまま渡すのか】
+    // スクリーン位置は「クリップ座標を w で割った NDC」であり、透視除算は **線形補間の
+    // 後に** 行わないと正しくならない（頂点段で割ってから補間すると遠近が歪む）。
+    // したがって頂点段では割らずにクリップ座標のまま渡し、フラグメント段で割る。
+    //
+    // 【なぜ curr も渡すのか（@builtin(position) では足りない理由）】
+    // フラグメントの `@builtin(position)` は**フレームバッファ画素座標**であり、
+    // `set_viewport`（Play のレターボックス帯）を適用すると NDC への逆変換に
+    // ビューポート矩形が要る。両方をクリップ座標で持てば差分は常に
+    // 「ビューポート正規化 UV の移動量」になり、ビューポート矩形に一切依存しない。
+    //
+    // 【コスト】フォワード系パイプラインもこの構造体を共有するため、速度を使わない
+    // 描画でも 8 float ぶんの補間が乗る（フォワードの頂点シェーダは prev=curr を入れる）。
+    // ビューポート矩形を CameraUniform へ足して 4 float に減らす案もあるが、
+    // 「全カメラ更新箇所で矩形を正しく入れる」という静かに壊れやすい依存を
+    // 増やす方が高くつくと判断し、自己完結するこちらを採った。
+    /// 今フレームのクリップ座標（`view_proj * world_pos`）。
+    @location(8) curr_clip: vec4<f32>,
+    /// 前フレームのクリップ座標（`prev_view_proj * prev_world_pos`）。
+    /// 速度を書かないパイプライン（フォワード）では `curr_clip` と同値（＝速度 0）。
+    @location(9) prev_clip: vec4<f32>,
 }
 
 // ─── PBR ヘルパー関数は pbr_common.wgsl へ移設 ───────────────

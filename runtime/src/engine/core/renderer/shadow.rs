@@ -366,6 +366,8 @@ fn view_proj_uniform(vp: &Mat4x4<f32>, size: f32) -> CameraUniform {
         resolution:     [size, size],
         _pad2:          [0.0, 0.0],
         inv_view_proj:  inv_vp.transpose().data,
+        // シャドウ深度カメラは速度バッファを持たない（深度しか書かない）ため prev=curr。
+        prev_view_proj: vp.transpose().data,
     }
 }
 

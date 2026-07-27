@@ -206,12 +206,21 @@ impl GrassGBufferPipeline {
 
         let instance_bgl = create_instance_bind_group_layout(device);
 
-        // ── シェーダモジュール（自己完結。連結しない）──
+        // ── シェーダモジュール（velocity_math.wgsl だけを前置連結）──
         //   grass_gbuffer.wgsl は shader_common.wgsl を取り込まず CameraUniform を
         //   自前宣言している（deferred_lighting.wgsl と同じ先例）。
+        //   速度バッファ（モーションベクタ）の計算式だけは velocity_math.wgsl と共有する
+        //   （**バインディングを持たない純関数だけのファイル**なので、連結しても草の
+        //    バインドグループ構成＝group0/1 は 1 ビットも変わらない。前フレームの
+        //    インスタンス行列を持つ velocity_common.wgsl は連結しない＝草は静的扱い）。
+        let combined: String = GRASS_SHADER_SOURCES.iter()
+            .map(|n| get_shader_source(n))
+            .collect::<Vec<_>>()
+            .join("
+");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label:  Some(LABEL),
-            source: wgpu::ShaderSource::Wgsl(get_shader_source(GRASS_SHADER_NAME).into()),
+            source: wgpu::ShaderSource::Wgsl(combined.into()),
         });
 
         // ── パイプラインレイアウト（group0 = 借用カメラ / group1 = 自前）──
@@ -267,6 +276,10 @@ impl GrassGBufferPipeline {
 
 /// 草シェーダの登録名（pipeline.rs::get_shader_source のキーと一致必須）。
 const GRASS_SHADER_NAME: &str = "grass_gbuffer.wgsl";
+
+/// 草パイプラインの連結ソース（naga 検証テストと一致させること）。
+/// velocity_math.wgsl はバインディングを持たない純関数のみのファイル。
+const GRASS_SHADER_SOURCES: [&str; 2] = ["velocity_math.wgsl", GRASS_SHADER_NAME];
 
 /// group1（草インスタンス）のバインドグループレイアウトを作る。
 ///
@@ -766,9 +779,13 @@ pub fn draw_grass_culled<'pass>(
 mod tests {
     use super::*;
 
-    /// 草シェーダのソース（自己完結。連結不要）。
-    fn shader_src() -> &'static str {
-        include_str!("shaders/grass_gbuffer.wgsl")
+    /// 草シェーダの連結ソース（GRASS_SHADER_SOURCES と同順）。
+    fn shader_src() -> String {
+        [
+            include_str!("shaders/velocity_math.wgsl"),
+            include_str!("shaders/grass_gbuffer.wgsl"),
+        ].join("
+")
     }
 
     /// 草 G-Buffer WGSL を naga で parse + validate する。
@@ -778,7 +795,7 @@ mod tests {
     #[test]
     fn grass_gbuffer_shader_parses_and_validates() {
         let src = shader_src();
-        let module = naga::front::wgsl::parse_str(src)
+        let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[grass_gbuffer] WGSL parse 失敗: {e:?}"));
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
@@ -794,8 +811,14 @@ mod tests {
     fn grass_shader_is_registered_in_resolver() {
         assert_eq!(
             get_shader_source(GRASS_SHADER_NAME),
-            shader_src(),
+            include_str!("shaders/grass_gbuffer.wgsl"),
             "pipeline.rs::get_shader_source に grass_gbuffer.wgsl が登録されていない"
+        );
+        // 速度計算の純関数ファイルも同じリゾルバから引けること。
+        assert_eq!(
+            get_shader_source("velocity_math.wgsl"),
+            include_str!("shaders/velocity_math.wgsl"),
+            "pipeline.rs::get_shader_source に velocity_math.wgsl が登録されていない"
         );
     }
 
