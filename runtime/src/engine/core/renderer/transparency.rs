@@ -189,6 +189,10 @@ fn resolve_shader(name: &str) -> &'static str {
         // 半透明パスも不透明パスと同一のライト評価（lighting_eval.wgsl）を共有する。
         "surface.wgsl"               => include_str!("shaders/surface.wgsl"),
         "surface_gather.wgsl"        => include_str!("shaders/surface_gather.wgsl"),
+        // シェーディング契約 v1（L3-a）。lighting_eval.wgsl の直前に必ず 2 本セットで連結する
+        // （pipeline.rs の同名リゾルバと同一エントリ。半透明パスも同じ契約を共有する）。
+        "shading_contract.wgsl"      => include_str!("shaders/shading_contract.wgsl"),
+        "shading_dispatch.wgsl"      => include_str!("shaders/shading_dispatch.wgsl"),
         "lighting_eval.wgsl"         => include_str!("shaders/lighting_eval.wgsl"),
         "shader_fragment.wgsl"       => include_str!("shaders/shader_fragment.wgsl"),
         "shader_wboit.wgsl"          => include_str!("shaders/shader_wboit.wgsl"),
@@ -309,6 +313,7 @@ impl TransparentPipelines {
             device, df, cache, &mesh_bgls,
             &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
               "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
+              "shading_contract.wgsl", "shading_dispatch.wgsl",
               "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "refract_ss.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex"],
             "wboit_mesh",
@@ -318,6 +323,7 @@ impl TransparentPipelines {
             device, df, cache, &skin_bgls,
             &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
               "shader_skinned_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
+              "shading_contract.wgsl", "shading_dispatch.wgsl",
               "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "refract_ss.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex", "skin_vertex"],
             "wboit_skinned",
@@ -508,6 +514,7 @@ impl TransparentRtPipelines {
             device, df, cache, &mesh_bgls,
             &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_on.wgsl", "rt_shadow_tint_avg.wgsl",
               "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
+              "shading_contract.wgsl", "shading_dispatch.wgsl",
               "lighting_eval.wgsl", "shader_fragment.wgsl", "bindless_common.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex"],
             "wboit_mesh_rt",
@@ -517,6 +524,7 @@ impl TransparentRtPipelines {
             device, df, cache, &skin_bgls,
             &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_on.wgsl", "rt_shadow_tint_avg.wgsl",
               "shader_skinned_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
+              "shading_contract.wgsl", "shading_dispatch.wgsl",
               "lighting_eval.wgsl", "shader_fragment.wgsl", "bindless_common.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex", "skin_vertex"],
             "wboit_skinned_rt",
@@ -952,6 +960,9 @@ mod tests {
         // PBR シェーディングの 3 段分割（Surface / 採取 / ライト評価）。
         let surf       = include_str!("shaders/surface.wgsl");
         let gather     = include_str!("shaders/surface_gather.wgsl");
+        // シェーディング契約 v1（型・標準ライブラリ）＋ 既定ディスパッチ（shade_surface）。
+        let sc         = include_str!("shaders/shading_contract.wgsl");
+        let sd         = include_str!("shaders/shading_dispatch.wgsl");
         let light_eval = include_str!("shaders/lighting_eval.wgsl");
         let frag       = include_str!("shaders/shader_fragment.wgsl");
         let wboit      = include_str!("shaders/shader_wboit.wgsl");
@@ -971,9 +982,9 @@ mod tests {
         // 距離ソート（fs_transparent_sorted）と WBOIT（fs_wboit）はいずれも refract_common＋refract_ss を
         // 含み、group4 に屈折背景（binding15/16）を宣言する superset レイアウトになる。
         let ss_variants: [(&str, Vec<&str>); 4] = [
-            ("sorted_mesh",           vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, refract, refract_ss, transp]),
-            ("wboit_mesh",            vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, refract, refract_ss, wboit]),
-            ("wboit_skinned",         vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_eval, frag, refract, refract_ss, wboit]),
+            ("sorted_mesh",           vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, sc, sd, light_eval, frag, refract, refract_ss, transp]),
+            ("wboit_mesh",            vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, sc, sd, light_eval, frag, refract, refract_ss, wboit]),
+            ("wboit_skinned",         vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, sc, sd, light_eval, frag, refract, refract_ss, wboit]),
             ("post_wboit_composite",  vec![fullscreen, composite]),
         ];
         for (name, parts) in ss_variants {
@@ -996,9 +1007,9 @@ mod tests {
         // 連結順は TOML・WBOIT ビルダー（rt_shadow_on, rt_shadow_tint_avg を shadow の直後）と一致させること。
         // acceleration_structure / rayQuery* を含むため RAY_QUERY capability が要る（empty では validate 失敗）。
         let rt_variants: [(&str, Vec<&str>); 3] = [
-            ("sorted_mesh_rt",  vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, static_v, surf, gather, light_eval, frag, bindless_c, refract, refract_rt, transp]),
-            ("wboit_mesh_rt",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, static_v, surf, gather, light_eval, frag, bindless_c, refract, refract_rt, wboit]),
-            ("wboit_skinned_rt",vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, skin_v,   surf, gather, light_eval, frag, bindless_c, refract, refract_rt, wboit]),
+            ("sorted_mesh_rt",  vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, static_v, surf, gather, sc, sd, light_eval, frag, bindless_c, refract, refract_rt, transp]),
+            ("wboit_mesh_rt",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, static_v, surf, gather, sc, sd, light_eval, frag, bindless_c, refract, refract_rt, wboit]),
+            ("wboit_skinned_rt",vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, skin_v,   surf, gather, sc, sd, light_eval, frag, bindless_c, refract, refract_rt, wboit]),
         ];
         for (name, parts) in rt_variants {
             let src = parts.join("\n");

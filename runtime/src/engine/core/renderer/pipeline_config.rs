@@ -126,6 +126,18 @@ impl<'d> RenderPipelineBuilder<'d> {
                depth_write_override: None, cull_mode_override: None, polygon_mode_override: None }
     }
 
+    /// シェーダ連結リスト（`shader_sources`）を上書きする。
+    ///
+    /// TOML はパイプライン設定（レイアウト・フォーマット・エントリポイント）の正典のまま、
+    /// **連結するソースの並びだけ**を差し替えたいときに使う。シェーディングアセット
+    /// （shading_asset.rs）が「標準リストの `shading_dispatch.wgsl` をアセット本体＋
+    /// 生成ディスパッチの 2 要素へ置換した並び」を渡すための唯一の口である。
+    /// 差し替え後の名前は `build_owned` の `resolve` が解決できる必要がある。
+    pub fn with_shader_sources(mut self, sources: Vec<String>) -> Self {
+        self.cfg.shader_sources = sources;
+        self
+    }
+
     /// depth_write を上書きする（TOML の depth_write より優先）。
     /// 同一 TOML から depth_write だけ異なるバリアントを構築する用途に使う。
     pub fn with_depth_write(mut self, enabled: bool) -> Self {
@@ -170,14 +182,36 @@ impl<'d> RenderPipelineBuilder<'d> {
         self
     }
 
-    /// パイプラインを構築して返す。
+    /// パイプラインを構築して返す（組み込みシェーダ用の簡便版）。
     ///
     /// `resolve` は shader_sources 中のファイル名を `&'static str` ソースに変換する関数。
     /// 返り値の `Vec<BindGroupLayout>` は group 番号順（0, 1, 2, ...）。
     /// pop() で末尾（最大グループ）から順に取り出せる。
+    ///
+    /// 実体は `build_owned` への委譲である。`&'static str` を返す `get_shader_source` を
+    /// 渡す既存の呼び出し（TOML 定義の全パイプライン）はこちらを使い続けてよい。
     pub fn build<F>(self, resolve: F) -> (wgpu::RenderPipeline, Vec<wgpu::BindGroupLayout>)
     where
         F: Fn(&str) -> &'static str,
+    {
+        // 所有文字列版へそのまま委譲する（1 パイプラインにつき 1 回だけの to_string なので
+        // 連結コスト（既に String へ join している）に対して無視できる）。
+        self.build_owned(|name| resolve(name).to_string())
+    }
+
+    /// パイプラインを構築して返す（**実行時生成ソース**にも対応する本体）。
+    ///
+    /// `build` との違いは `resolve` の返り値が `String` であること。これにより
+    /// 「実行時に読み込んだアセット WGSL」や「Rust が文字列生成した WGSL」を
+    /// シェーダ名に対応付けて差し込める（シェーディングアセット＝shading_asset.rs が使う）。
+    ///
+    /// ## 事前検証の責務は呼び出し側
+    /// 動的ソースは内容が保証されないため、`create_shader_module` に不正な WGSL を渡すと
+    /// デバイスロストを招く。**動的ソースを渡す呼び出し側は、本関数を呼ぶ前に
+    /// naga で parse + validate を通すこと**（shading_asset.rs はそうしている）。
+    pub fn build_owned<F>(self, resolve: F) -> (wgpu::RenderPipeline, Vec<wgpu::BindGroupLayout>)
+    where
+        F: Fn(&str) -> String,
     {
         let Self { device, cfg, surface_format, depth_format, stencil, cache, label,
                    depth_write_override, cull_mode_override, polygon_mode_override } = self;

@@ -21,6 +21,27 @@ use super::pipeline::get_shader_source;
 use super::pipeline_config::RenderPipelineBuilder;
 
 // ============================================================
+//  連結リストの単一の真実source（バインドレス変種のみ Rust 側に持つ）
+// ============================================================
+
+/// rt_bindless 変種のシェーダ連結順（**この配列が唯一の定義**）。
+///
+/// rt_off / rt_on 変種は `pipelines/deferred_lighting.toml` /
+/// `pipelines/deferred_lighting_rt.toml` の `shader_sources` が正典だが、バインドレス変種は
+/// TOML を持たず（group3 の binding_array を WGSL リフレクションで組めないため手動レイアウト）、
+/// 連結順を Rust 側に置くしかない。
+///
+/// シェーディングアセット（shading_asset.rs）は 3 変種すべての連結リストを
+/// 「TOML と本定数から機械的に取得し、`shading_dispatch.wgsl` の要素だけを差し替える」形で
+/// 導出する。したがって本配列を書き換えればアセット経路にも自動で反映される（二重管理しない）。
+pub const RT_BINDLESS_SHADER_SOURCES: &[&str] = &[
+    "cluster_common.wgsl", "pbr_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl",
+    "shadow.wgsl", "rt_shadow_on.wgsl", "bindless_common.wgsl", "rt_shadow_tint_bindless.wgsl",
+    "surface.wgsl", "shading_contract.wgsl", "shading_dispatch.wgsl",
+    "lighting_eval.wgsl", "deferred_lighting.wgsl",
+];
+
+// ============================================================
 //  DeferredLightingPipelines — フルスクリーン・ライティング復元パイプライン一式
 // ============================================================
 
@@ -142,12 +163,11 @@ impl DeferredLightingPipelines {
             let g4 = rt_group4_bgl.as_ref()
                 .expect("RT 対応時は rt_group4_bgl が必ず確定している");
             let cs_bgl = super::bindless::colored_shadow_bgl(device, super::bindless::bindless_capacity());
-            // 連結順（deferred.rs テスト deferred_lighting_shaders_parse_and_validate_rt_bindless と一致）。
-            let combined: String = [
-                "cluster_common.wgsl", "pbr_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl",
-                "shadow.wgsl", "rt_shadow_on.wgsl", "bindless_common.wgsl", "rt_shadow_tint_bindless.wgsl",
-                "surface.wgsl", "lighting_eval.wgsl", "deferred_lighting.wgsl",
-            ].iter().map(|n| get_shader_source(n)).collect::<Vec<_>>().join("\n");
+            // 連結順は RT_BINDLESS_SHADER_SOURCES が唯一の定義。
+            // （テスト deferred_lighting_shaders_parse_and_validate_rt_bindless は同じ順序を
+            //   include_str! で独立に書き下ろしており、順序がずれれば naga 検証で落ちる番人になる）。
+            let combined: String = RT_BINDLESS_SHADER_SOURCES
+                .iter().map(|n| get_shader_source(n)).collect::<Vec<_>>().join("\n");
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label:  Some("deferred_lighting_rt_bindless"),
                 source: wgpu::ShaderSource::Wgsl(combined.into()),
@@ -315,10 +335,13 @@ mod tests {
         let shadow   = include_str!("shaders/shadow.wgsl");
         let rt_off   = include_str!("shaders/rt_shadow_off.wgsl");
         let surf     = include_str!("shaders/surface.wgsl");
+        // シェーディング契約 v1（型・標準ライブラリ）＋ 既定ディスパッチ（shade_surface）。
+        let sc       = include_str!("shaders/shading_contract.wgsl");
+        let sd       = include_str!("shaders/shading_dispatch.wgsl");
         let light_ev = include_str!("shaders/lighting_eval.wgsl");
         let deferred = include_str!("shaders/deferred_lighting.wgsl");
 
-        let src = [cluster, pbr_c, ddgi_c, light_c, shadow, rt_off, surf, light_ev, deferred].join("\n");
+        let src = [cluster, pbr_c, ddgi_c, light_c, shadow, rt_off, surf, sc, sd, light_ev, deferred].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[deferred_lighting rt_off] WGSL parse 失敗: {e:?}"));
         let mut validator = naga::valid::Validator::new(
@@ -342,10 +365,13 @@ mod tests {
         let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
         let tint_avg = include_str!("shaders/rt_shadow_tint_avg.wgsl");
         let surf     = include_str!("shaders/surface.wgsl");
+        // シェーディング契約 v1（型・標準ライブラリ）＋ 既定ディスパッチ（shade_surface）。
+        let sc       = include_str!("shaders/shading_contract.wgsl");
+        let sd       = include_str!("shaders/shading_dispatch.wgsl");
         let light_ev = include_str!("shaders/lighting_eval.wgsl");
         let deferred = include_str!("shaders/deferred_lighting.wgsl");
 
-        let src = [cluster, pbr_c, ddgi_c, light_c, shadow, rt_on, tint_avg, surf, light_ev, deferred].join("\n");
+        let src = [cluster, pbr_c, ddgi_c, light_c, shadow, rt_on, tint_avg, surf, sc, sd, light_ev, deferred].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[deferred_lighting rt_on] WGSL parse 失敗: {e:?}"));
         let mut validator = naga::valid::Validator::new(
@@ -373,10 +399,13 @@ mod tests {
         let bindless  = include_str!("shaders/bindless_common.wgsl");
         let tint_bl   = include_str!("shaders/rt_shadow_tint_bindless.wgsl");
         let surf      = include_str!("shaders/surface.wgsl");
+        // シェーディング契約 v1（型・標準ライブラリ）＋ 既定ディスパッチ（shade_surface）。
+        let sc        = include_str!("shaders/shading_contract.wgsl");
+        let sd        = include_str!("shaders/shading_dispatch.wgsl");
         let light_ev  = include_str!("shaders/lighting_eval.wgsl");
         let deferred  = include_str!("shaders/deferred_lighting.wgsl");
 
-        let src = [cluster, pbr_c, ddgi_c, light_c, shadow, rt_on, bindless, tint_bl, surf, light_ev, deferred].join("\n");
+        let src = [cluster, pbr_c, ddgi_c, light_c, shadow, rt_on, bindless, tint_bl, surf, sc, sd, light_ev, deferred].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[deferred_lighting rt_bindless] WGSL parse 失敗: {e:?}"));
         // binding_array の非一様インデックス＋RAY_QUERY を要求（reflection_rt on と同じ）。
@@ -434,5 +463,70 @@ mod tests {
         let far = 10.0 + 10.0 * (frac * 10.0);
         assert!(depth_weight(10.0, far) < min_weight,
             "深度不連続テクセルの重み({}) < UPSAMPLE_MIN_WEIGHT({min_weight})", depth_weight(10.0, far));
+    }
+
+    // ========================================================
+    //  シェーディング契約 v1（L3-a）の回帰ガード
+    // ========================================================
+
+    /// シェーディング契約のバージョンが 1 であること。
+    ///
+    /// アセット側は先頭コメントに `// @shading_contract 1` を書く規約であり、この数値と
+    /// WGSL の `SHADING_CONTRACT_VERSION` が食い違うとローダの照合が意味を失う。
+    /// WGSL ソースから定数行を直接パースして固定する（上の
+    /// shadow_mask_upsample_depth_weight_boundaries と同じ流儀）。
+    #[test]
+    fn shading_contract_version_is_one() {
+        let src = include_str!("shaders/shading_contract.wgsl");
+        let line = src.lines().map(str::trim)
+            .find(|l| l.starts_with("const SHADING_CONTRACT_VERSION"))
+            .expect("shading_contract.wgsl に const SHADING_CONTRACT_VERSION が見つかりません");
+        let rhs = line.split('=').nth(1).expect("= の右辺がありません");
+        let num: String = rhs.trim().chars().take_while(|c| c.is_ascii_digit()).collect();
+        let version: u32 = num.parse()
+            .unwrap_or_else(|_| panic!("SHADING_CONTRACT_VERSION を u32 解釈できません: {num:?}"));
+        assert_eq!(version, 1, "契約バージョンは 1（上げるときはアセット側の @shading_contract も同時に更新）");
+        // 契約の宣言規約そのものもコメントとして残っていること（規約が消えると照合が形骸化する）。
+        assert!(src.contains("@shading_contract 1"),
+            "shading_contract.wgsl にアセット側の宣言規約（// @shading_contract 1）の説明が必要");
+    }
+
+    /// `shade_light` の定義が **shading_contract.wgsl にちょうど 1 つだけ**存在し、
+    /// 移設元の lighting_eval.wgsl には**残っていない**こと。
+    ///
+    /// 両方に定義が残ると連結時に「関数の二重定義」で全パイプラインが落ちる。naga 検証テスト
+    /// でも落ちるが、失敗メッセージが分かりにくいため、原因を名指しする番人としてここに置く。
+    #[test]
+    fn shade_light_is_defined_exactly_once_in_the_contract() {
+        let contract = include_str!("shaders/shading_contract.wgsl");
+        let eval     = include_str!("shaders/lighting_eval.wgsl");
+        // 定義の目印は行頭の `fn shade_light(`（呼び出しは必ず前置きがあるので行頭には来ない）。
+        let count_defs = |src: &str| src.lines().filter(|l| l.starts_with("fn shade_light(")).count();
+        assert_eq!(count_defs(contract), 1, "shade_light の定義は shading_contract.wgsl に 1 つだけ");
+        assert_eq!(count_defs(eval), 0, "shade_light の定義が lighting_eval.wgsl に残っている（二重定義になる）");
+        // 既定ディスパッチ（shade_surface）も 1 本だけ。アセット生成版と排他であることの土台。
+        let dispatch = include_str!("shaders/shading_dispatch.wgsl");
+        assert_eq!(
+            dispatch.lines().filter(|l| l.starts_with("fn shade_surface(")).count(), 1,
+            "shade_surface の定義は shading_dispatch.wgsl に 1 つだけ",
+        );
+    }
+
+    /// シェーディングモデル ID の値域（`SHADING_MODEL_MASK` 由来）を固定する。
+    ///
+    /// ID は G-Buffer RT3.a に SHADING_MODEL_BITS ビットで詰められるため 0..=3 の 4 値しかない。
+    /// 0 はエンジン標準 PBR で予約済み（アセットでは上書き不可）なので、**アセットが定義できる
+    /// モデル ID は 1..=3 の 3 枠**である。この前提でアセットのローダ・switch 生成を書くため、
+    /// ビット幅を広げたときに必ずここが落ちるようにしておく。
+    #[test]
+    fn user_definable_shading_model_ids_are_one_to_three() {
+        use crate::engine::core::renderer::surface_id::{
+            SHADING_MODEL_DEFAULT_PBR, SHADING_MODEL_MASK,
+        };
+        assert_eq!(SHADING_MODEL_DEFAULT_PBR, 0, "モデル 0 はエンジン標準 PBR で予約");
+        assert_eq!(SHADING_MODEL_MASK, 3, "モデル ID は 2bit＝0..3");
+        // アセットが名乗れる ID の集合（0 を除いた残り）。
+        let user_ids: Vec<u8> = (0..=SHADING_MODEL_MASK).filter(|id| *id != SHADING_MODEL_DEFAULT_PBR).collect();
+        assert_eq!(user_ids, vec![1, 2, 3], "アセット定義可能なモデル ID は 1..3 の 3 枠");
     }
 }

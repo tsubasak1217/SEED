@@ -19,6 +19,8 @@
 //   - shadow.wgsl               : sample_shadow_dir / sample_shadow_spot
 //   - rt_shadow_{on,off}.wgsl   : rt_shadow_enabled / rt_shadow_factor（連結で切替）
 //   - surface.wgsl              : Surface
+//   - shading_contract.wgsl     : ShadingSurface / LightSample / shade_model_0（契約 v1）
+//   - shading_dispatch.wgsl（またはアセット生成版） : shade_surface（モデル ID の振り分け）
 //
 // ## ステージ制約
 // 本ファイルは dpdx/dpdy を一切使わない（幾何法線は Surface に採取済みの値を使う）。
@@ -83,31 +85,9 @@ fn distance_attenuation(dist: f32, range: f32) -> f32 {
     return inv_sqr * window * window;
 }
 
-/// 1 ライト分の Cook-Torrance BRDF を評価して放射輝度を返す。
-///
-/// - `L`        : 面から光源への方向（正規化済み）
-/// - `radiance` : そのライトの実効放射輝度（color * intensity * 減衰）
-fn shade_light(
-    N: vec3<f32>, V: vec3<f32>, L: vec3<f32>,
-    albedo: vec3<f32>, F0: vec3<f32>, metallic: f32, roughness: f32,
-    radiance: vec3<f32>,
-) -> vec3<f32> {
-    let H   = normalize(V + L);
-    let ndl = max(dot(N, L), 0.0);
-    let ndv = max(dot(N, V), 0.0001);
-    let hdv = max(dot(H, V), 0.0);
-
-    let D = distribution_ggx(N, H, roughness);
-    let G = geometry_smith(N, V, L, roughness);
-    let F = fresnel_schlick(hdv, F0);
-
-    let kS = F;
-    let kD = (vec3<f32>(1.0) - kS) * (1.0 - metallic);
-
-    // 分母にクランプして除算ゼロを防止
-    let specular = D * G * F / max(4.0 * ndv * ndl, 0.001);
-    return (kD * albedo / PI + specular) * radiance * ndl;
-}
+// 1 ライト分の Cook-Torrance BRDF（旧 shade_light）は shading_contract.wgsl へ移設した
+// （L3-a 第 1 段）。バインディングを持たない純関数であり、シェーディング契約の「モデル 0」の
+// 実体そのものだからである。本ファイルは契約関数 shade_surface 経由でそれを呼ぶ。
 
 // ── ライト評価本体 ────────────────────────────────────────────
 
@@ -184,8 +164,29 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
     let albedo    = s.albedo;
     let metallic  = s.metallic;
     let roughness = s.roughness;
-    // 誘電体は F0 = 0.04、金属は albedo を F0 として使用
-    let F0 = mix(vec3<f32>(0.04), albedo, metallic);
+    // F0（誘電体 0.04／金属 albedo）の算出は shading_contract.wgsl の shade_model_0 が
+    // 同一式で行う（契約上、F0 はモデルごとの実装詳細であり契約フィールドではないため）。
+
+    // ── シェーディング契約の面情報（ShadingSurface）を 1 回だけ組み立てる ──────
+    // ライトに依存しない値しか含まないので、**ループの外**で 1 回作って使い回す
+    // （ループ内で作り直すと N 灯ぶんの無駄なコピーが出る）。
+    // 各フィールドは Surface からの素直な写しであり、値の加工は一切していない。
+    var sf: ShadingSurface;
+    sf.world_pos     = s.world_pos;
+    sf.normal        = N;
+    sf.geo_normal    = Ng;
+    sf.vertex_normal = Nv;
+    sf.view_dir      = V;
+    sf.base_color    = albedo;
+    sf.roughness     = roughness;
+    sf.metallic      = metallic;
+    sf.occlusion     = s.occlusion;
+    sf.emissive      = s.emissive;
+    sf.transmission  = s.diffuse_transmission;
+    sf.user_data     = s.user_data;
+    sf.render_tag    = s.render_tag;
+    sf.shading_model = s.shading_model;
+    sf.frag_coord    = s.frag_coord;
 
     // ── ライトループ（Clustered Lighting, Phase C1）────────────
     //
@@ -337,7 +338,32 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
         // 保証するため。アンビエント（下の ambient）とエミッシブ（s.emissive）にはこのゲートを
         // 掛けない（方向性がなく漏れではないため）。
         let geo_gate = select(0.0, 1.0, dot(Ng, L) > RT_GEO_SHADOW_MIN_COS);
-        Lo += geo_gate * shade_light(N, V, L, albedo, F0, metallic, roughness, radiance);
+
+        // ── シェーディング契約への受け渡し（L3-a 第 1 段）─────────────────
+        // このライト 1 灯ぶんを LightSample へ詰めて、契約関数 shade_surface に BRDF を委ねる。
+        // 面情報（sf）はループ外で組み立て済みなので、ここで作るのは LightSample だけ。
+        //   color            : 影を掛けた後の radiance（減衰・円錐・影を全て織り込んだ実効値）
+        //   color_unshadowed : 影を掛ける前の radiance_direct（逆光透けなど影を無視する表現用）
+        //
+        // ★ ID 0（標準 PBR）経路の同値性:
+        //   shade_surface（shading_dispatch.wgsl・アセット未連結時の既定）
+        //     → shade_model_0(sf, li)
+        //     → shade_light(N, V, L, albedo, mix(vec3(0.04), albedo, metallic),
+        //                   metallic, roughness, radiance)
+        //   であり、shade_light は旧実装を演算順序ごと無改変で移設したもの、F0 も旧
+        //   `mix(vec3<f32>(0.04), albedo, metallic)` と同一式である。**モデル 0 には
+        //   shading_nan_guard を掛けない**（ガードはユーザー実装 1..3 の返り値専用。
+        //   詳細は shading_dispatch.wgsl のコメント参照）ため、旧
+        //   `shade_light(N, V, L, albedo, F0, metallic, roughness, radiance)` と
+        //   ビット単位で同一の式が評価される。アセット指定時も default 腕は素通しなので、
+        //   ID 0 のピクセルはアセットの有無に関わらず常に既存と同じ値になる。
+        var li_sample: LightSample;
+        li_sample.direction        = L;
+        li_sample.color            = radiance;
+        li_sample.color_unshadowed = radiance_direct;
+        li_sample.distance         = light_dist;
+        li_sample.kind             = light.kind;
+        Lo += geo_gate * shade_surface(sf, li_sample);
 
         // ── 拡散透過（葉・布・紙の逆光透け, KHR_materials_diffuse_transmission 簡易版）──
         // 薄い面が「面の裏側にあるライト」の光を内部散乱で拾い、base_color で色付いて透ける表現。

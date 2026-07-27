@@ -12,7 +12,7 @@
 # TLAS(binding6)・平均アルベド(binding14) は rt_shadow_on が宣言し、refract_rt はそれを共用する
 # （両者が同名 rt_accel / rt_shadow_albedo を宣言すると重複定義になるため、refract_rt 側の宣言は撤去済み）。
 
-shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_on.wgsl", "rt_shadow_tint_avg.wgsl", "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl", "bindless_common.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_transparent.wgsl"]
+shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_on.wgsl", "rt_shadow_tint_avg.wgsl", "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "shading_contract.wgsl", "shading_dispatch.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl", "bindless_common.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_transparent.wgsl"]
 vertex_entry    = "vs_main"
 fragment_entry  = "fs_transparent_sorted"
 vertex_slots    = ["mesh_vertex"]

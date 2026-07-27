@@ -422,6 +422,8 @@ public partial class InspectorPanel : UserControl
         float CamBarCR = 0f, float CamBarCG = 0f, float CamBarCB = 0f, float CamBarCA = 1f,
         // 投影方式（"perspective" / "orthographic"）と正射投影の縦描画範囲（ワールド単位）
         string CamProjection = "perspective", float CamOrthoHeight = 10f,
+        // シェーディングアセット（.wgsl）参照。空文字列 = 未設定（シーン既定 → 組み込み標準 PBR）
+        string CamShadingAsset = "",
         // PluginComponent 用フィールド
         // plugin_fields は [{"key":...,"label":...,"kind":{...},"current_value":...,"tooltip":...},...] JSON
         string PluginName = "", string PluginFieldsJson = "",
@@ -744,6 +746,8 @@ public partial class InspectorPanel : UserControl
             var camBarCA       = comp.TryGetProperty("bar_ca", out var bcaj) ? bcaj.GetSingle() : 1f;
             var camProjection  = comp.TryGetProperty("projection",   out var cpj) ? cpj.GetString() ?? "perspective" : "perspective";
             var camOrthoHeight = comp.TryGetProperty("ortho_height", out var cohj) ? cohj.GetSingle() : 10f;
+            // CameraComponent 用: シェーディングアセット（.wgsl）のパス。空文字は未設定を意味する
+            var camShadingAsset = comp.TryGetProperty("shading_asset", out var csaj) ? csaj.GetString() ?? "" : "";
             // PluginComponent 用: プラグイン名とフィールド定義 JSON
             var pluginName       = comp.TryGetProperty("plugin_name",   out var pn)  ? pn.GetString()  ?? "" : "";
             var pluginFieldsJson = comp.TryGetProperty("plugin_fields",  out var pf)  ? pf.GetRawText()      : "[]";
@@ -874,6 +878,7 @@ public partial class InspectorPanel : UserControl
                 CamScalingMode: camScalingMode, CamTargetW: camTargetW, CamTargetH: camTargetH,
                 CamBarCR: camBarCR, CamBarCG: camBarCG, CamBarCB: camBarCB, CamBarCA: camBarCA,
                 CamProjection: camProjection, CamOrthoHeight: camOrthoHeight,
+                CamShadingAsset: camShadingAsset,
                 PluginName: pluginName, PluginFieldsJson: pluginFieldsJson,
                 ColliderDataJson: colliderDataJson, RigidbodyDataJson: rigidbodyDataJson,
                 ScriptFieldsJson: scriptFieldsJson,
@@ -1910,6 +1915,44 @@ public partial class InspectorPanel : UserControl
             if (scalingCombo.SelectedItem is ComboBoxItem item && item.Tag is string mode)
                 barRow.Visibility = IsBarMode(mode) ? Visibility.Visible : Visibility.Collapsed;
         };
+
+        // ── シェーディングアセット参照（.wgsl。テクスチャ参照と同じ FileRefBuilder + D&D の流儀）──
+        // 未設定のときはシーン既定 → 組み込み標準 PBR へフォールバックする。
+        // 空文字列 virtualPath を送るとランタイム側で未設定（None）に戻る。
+        var shadingRow = FileRefBuilder.Build(
+            "Shading", info.CamShadingAsset,
+            [".wgsl"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "シェーディングアセット（WGSL）を選択",
+                    Filter = "WGSL シェーダ|*.wgsl|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                // 絶対パスを仮想パスに変換してからランタイムへ送信する
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                _runtime?.SendToRuntime($"SET_CAMERA_SHADING_ASSET:{_currentActorId},{info.SlotIdx},{virtualPath}");
+            });
+        // FileRefBuilder は「解除」手段を持たないため、右クリックで未設定に戻せるようにする。
+        if (shadingRow is FrameworkElement shadingFe)
+        {
+            shadingFe.ToolTip = "このカメラの描画に使う WGSL シェーディングアセット。\n" +
+                                "未設定の場合はシーン既定 → 組み込み標準 PBR を使用します。\n" +
+                                "右クリックで指定を解除";
+            shadingFe.MouseRightButtonUp += (_, e) =>
+            {
+                if (_currentActorId < 0) return;
+                // 空パスを送ると未設定（None）に戻る
+                _runtime?.SendToRuntime($"SET_CAMERA_SHADING_ASSET:{_currentActorId},{info.SlotIdx},");
+                e.Handled = true;
+            };
+        }
+        sp.Children.Add(shadingRow);
 
         return sp;
     }

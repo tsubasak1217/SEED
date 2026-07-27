@@ -1061,6 +1061,9 @@ mod tests {
         // PBR シェーディングの 3 段分割（Surface / マテリアル採取 / ライト評価）。
         let surf     = include_str!("shaders/surface.wgsl");
         let gather   = include_str!("shaders/surface_gather.wgsl");
+        // シェーディング契約 v1（型・標準ライブラリ）＋ 既定ディスパッチ（shade_surface）。
+        let sc       = include_str!("shaders/shading_contract.wgsl");
+        let sd       = include_str!("shaders/shading_dispatch.wgsl");
         let light_ev = include_str!("shaders/lighting_eval.wgsl");
         let frag     = include_str!("shaders/shader_fragment.wgsl");
 
@@ -1074,12 +1077,12 @@ mod tests {
         let refract_ss = include_str!("shaders/refract_ss.wgsl");
 
         let variants: [(&str, Vec<&str>); 6] = [
-            ("mesh_rt",         vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg,  static_v, surf, gather, light_ev, frag]),
-            ("skinned_mesh_rt", vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg,  skin_v,   surf, gather, light_ev, frag]),
-            ("mesh",            vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag]),
-            ("skinned_mesh",    vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag]),
-            ("wboit_mesh",      vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag, refract, refract_ss, wboit]),
-            ("wboit_skinned",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag, refract, refract_ss, wboit]),
+            ("mesh_rt",         vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg,  static_v, surf, gather, sc, sd, light_ev, frag]),
+            ("skinned_mesh_rt", vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg,  skin_v,   surf, gather, sc, sd, light_ev, frag]),
+            ("mesh",            vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, sc, sd, light_ev, frag]),
+            ("skinned_mesh",    vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, sc, sd, light_ev, frag]),
+            ("wboit_mesh",      vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, sc, sd, light_ev, frag, refract, refract_ss, wboit]),
+            ("wboit_skinned",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, sc, sd, light_ev, frag, refract, refract_ss, wboit]),
         ];
 
         for (name, parts) in variants {

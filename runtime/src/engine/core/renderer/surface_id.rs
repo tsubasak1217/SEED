@@ -44,7 +44,9 @@ pub const SHADING_MODEL_BITS: u32 = 2;
 pub const SHADING_MODEL_MASK: u8 = (1u16 << SHADING_MODEL_BITS) as u8 - 1;
 /// パック時のシフト量（タグの直上に置く）。
 pub const SHADING_MODEL_SHIFT: u32 = RENDER_TAG_BITS;
-/// 既定のシェーディングモデル＝標準 PBR。現状これ以外は未実装（将来トゥーン等を割り当てる）。
+/// 既定のシェーディングモデル＝標準 PBR（エンジン実装・アセットでは上書き不可）。
+/// ID 1..3 は L3-a のシェーディングアセット（`renderer::shading_asset`）がユーザーの WGSL で
+/// 定義する枠で、未定義の ID はこの 0 へフォールバックする。
 pub const SHADING_MODEL_DEFAULT_PBR: u8 = 0;
 
 // ── パック結果 ───────────────────────────────────────────────

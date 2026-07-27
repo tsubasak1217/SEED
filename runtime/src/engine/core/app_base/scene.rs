@@ -116,6 +116,11 @@ struct SceneData {
     name:   String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     debug_camera: Option<DebugCameraData>,
+    /// シーン既定のシェーディングアセット（WGSL ファイル）のパス。
+    /// カメラ側が未指定のときのフォールバック先。None なら組み込み標準 PBR を使う。
+    /// パスは `assets://` 仮想パスまたは絶対パス（engine/asset_fs.rs の規約）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shading_asset: Option<String>,
     actors: Vec<ActorData>,
 }
 
@@ -133,6 +138,11 @@ pub struct Scene {
     /// ECS システムスケジューラ。フレームの各フェーズで run_phase() から実行される。
     /// エンジン標準システム（スクリプト駆動など）は Scene::new で登録される。
     pub schedule: Schedule,
+    /// シーン既定のシェーディングアセット（WGSL ファイル）のパス。
+    /// CameraComponent 側が未指定のときのフォールバック先。
+    /// None なら組み込み標準 PBR を使う。
+    /// パスは `assets://` 仮想パスまたは絶対パス（engine/asset_fs.rs の規約）。
+    pub shading_asset: Option<String>,
 }
 
 impl Scene {
@@ -140,7 +150,8 @@ impl Scene {
         // エンジン標準の ECS システム（ScriptSystem 等）を登録した Schedule を構築する
         let mut schedule = Schedule::new();
         crate::engine::systems::register_default_systems(&mut schedule);
-        Self { name: name.into(), world: World::new(), actors: Vec::new(), schedule }
+        // シェーディングアセットは既定で未設定（組み込み標準 PBR を使う）
+        Self { name: name.into(), world: World::new(), actors: Vec::new(), schedule, shading_asset: None }
     }
 
     pub fn add_actor(&mut self, actor: Actor) {
@@ -340,6 +351,8 @@ impl Scene {
         let data = SceneData {
             name:         self.name.clone(),
             debug_camera: Some(camera.clone()),
+            // シーン既定のシェーディングアセット（未設定なら None のまま出力を省略する）
+            shading_asset: self.shading_asset.clone(),
             actors:       self.actors.iter().map(|a| a.to_data(&self.world)).collect(),
         };
         let json = serde_json::to_string_pretty(&data)?;
@@ -400,6 +413,8 @@ impl Scene {
 
         let cam = data.debug_camera;
         let mut scene = Scene::new(data.name);
+        // シーン既定のシェーディングアセットを復元する（旧 .scene には無いので None のまま）
+        scene.shading_asset = data.shading_asset;
         for actor_data in data.actors {
             let actor = build_actor(actor_data, ctx, &mut scene.world, scripting_host, None)?;
             scene.actors.push(actor);
