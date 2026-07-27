@@ -20,9 +20,9 @@
 
 use super::gpu_resources::{GpuModel, InstancedModelBatch, NUM_LODS};
 use super::pipeline::CullPipelineSet;
-use super::pipeline_config::{parse_compare, vertex_buffer_layout};
+use super::pipeline_config::{vertex_buffer_layout, parse_compare};
 use super::post::PostPipeline;
-use crate::engine::core::loader::model::{AlphaMode, CULL_FACE_VARIANTS, CullFace};
+use crate::engine::core::loader::model::{AlphaMode, CullFace, CULL_FACE_VARIANTS};
 
 // ============================================================
 //  透明方式・RtPool ターゲット名・フォーマット定数
@@ -38,9 +38,7 @@ pub enum TransparencyMode {
 }
 
 impl Default for TransparencyMode {
-    fn default() -> Self {
-        TransparencyMode::DistanceSort
-    }
+    fn default() -> Self { TransparencyMode::DistanceSort }
 }
 
 impl TransparencyMode {
@@ -48,13 +46,13 @@ impl TransparencyMode {
     pub fn from_str(s: &str) -> Self {
         match s {
             "wboit" => TransparencyMode::Wboit,
-            _ => TransparencyMode::DistanceSort,
+            _       => TransparencyMode::DistanceSort,
         }
     }
     /// モード → 設定文字列（保存・ログ用）。
     pub fn as_str(&self) -> &'static str {
         match self {
-            TransparencyMode::Wboit => "wboit",
+            TransparencyMode::Wboit        => "wboit",
             TransparencyMode::DistanceSort => "sort",
         }
     }
@@ -64,12 +62,12 @@ impl TransparencyMode {
 // 旧 RtPool 単一 RT（RT_REFRACT_BG）は撤去（すりガラスのミップ生成に STORAGE が要り RtPool 非対応）。
 
 /// WBOIT の重み付き色蓄積ターゲット名（RtPool）。
-pub const RT_WBOIT_ACCUM: &str = "wboit_accum";
+pub const RT_WBOIT_ACCUM:  &str = "wboit_accum";
 /// WBOIT の透過率蓄積ターゲット名（RtPool）。
 pub const RT_WBOIT_REVEAL: &str = "wboit_reveal";
 
 /// accum ターゲットのフォーマット（HDR 色 × 重み）。
-pub const WBOIT_ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+pub const WBOIT_ACCUM_FORMAT:  wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// reveal ターゲットのフォーマット（色付き透過率の積）。
 /// 色付き透過率（per-channel transmittance）方式のため RGBA へ拡張:
 ///   rgb = Π T_frag（per-channel の背景透過率）、a = Π(1 - a)（スカラー予備）。
@@ -77,19 +75,9 @@ pub const WBOIT_ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16F
 pub const WBOIT_REVEAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// accum のクリア値（蓄積前は 0）。加算合成の初期値。
-const WBOIT_ACCUM_CLEAR: wgpu::Color = wgpu::Color {
-    r: 0.0,
-    g: 0.0,
-    b: 0.0,
-    a: 0.0,
-};
+const WBOIT_ACCUM_CLEAR:  wgpu::Color = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
 /// reveal のクリア値（透過率 1 = 何も遮っていない）。(Zero, OneMinusSrc) 合成の初期値。
-const WBOIT_REVEAL_CLEAR: wgpu::Color = wgpu::Color {
-    r: 1.0,
-    g: 1.0,
-    b: 1.0,
-    a: 1.0,
-};
+const WBOIT_REVEAL_CLEAR: wgpu::Color = wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
 
 // ============================================================
 //  TransparentItem — ソート／描画対象の 1 単位
@@ -98,21 +86,21 @@ const WBOIT_REVEAL_CLEAR: wgpu::Color = wgpu::Color {
 /// 透明描画 1 件（プリミティブ × インスタンス）。
 struct TransparentItem {
     /// `models` スライスへのインデックス。
-    model_idx: usize,
+    model_idx:   usize,
     /// `batch.lod_node_data[lod][node_idx]` 参照用。
-    node_idx: usize,
+    node_idx:    usize,
     /// `gpu.meshes[mesh_idx]` 参照用。
-    mesh_idx: usize,
+    mesh_idx:    usize,
     /// `mesh.primitives[prim_idx]` 参照用。
-    prim_idx: usize,
+    prim_idx:    usize,
     /// スキンメッシュか（パイプライン・頂点バッファ選択）。
-    is_skinned: bool,
+    is_skinned:  bool,
     /// LOD レベル。
-    lod: usize,
+    lod:         usize,
     /// この LOD のコンパクトインスタンス番号（first_instance に渡す）。
     compact_idx: u32,
     /// カメラからの距離二乗（背面→前面ソートのキー）。
-    dist_sq: f32,
+    dist_sq:     f32,
 }
 
 /// 描画対象の (GpuModel, Batch) ペアのスライス型エイリアス。
@@ -128,11 +116,11 @@ pub type TransparentModels<'a> = [(&'a GpuModel, &'a InstancedModelBatch)];
 /// （添字 = `CullFace::index()`）。半透明でも両面マテリアル（カーテン・葉など）は両面描画が要る。
 pub struct TransparentPipelines {
     /// 距離ソート用（不透明と同一シェーダ・BGL、ブレンド有効・深度書込なし）。
-    sorted_mesh: CullPipelineSet,
+    sorted_mesh:    CullPipelineSet,
     sorted_skinned: CullPipelineSet,
     /// WBOIT 用（デュアル MRT、fs_wboit）。
-    wboit_mesh: CullPipelineSet,
-    wboit_skinned: CullPipelineSet,
+    wboit_mesh:     CullPipelineSet,
+    wboit_skinned:  CullPipelineSet,
     /// group 3 の空 gap BindGroup（非スキン描画で必須セット）。
     mesh_empty_bg3: wgpu::BindGroup,
     /// WBOIT 合成 パス1: 背景濾過（scene *= Π T_frag。blend=WboitBgMultiply）。
@@ -166,11 +154,11 @@ pub struct TransparentPipelines {
 /// この superset に一致する BindGroup は `LightBuffer::create_transparent_rt_bind_group` が供給する。
 pub struct TransparentRtPipelines {
     /// 距離ソート用 RT（カリング面 3 バリアント）。
-    sorted_mesh: CullPipelineSet,
+    sorted_mesh:    CullPipelineSet,
     sorted_skinned: CullPipelineSet,
     /// WBOIT 用 RT（デュアル MRT、fs_wboit）。
-    wboit_mesh: CullPipelineSet,
-    wboit_skinned: CullPipelineSet,
+    wboit_mesh:     CullPipelineSet,
+    wboit_skinned:  CullPipelineSet,
     /// group3 の空 gap BindGroup（非スキン描画で必須セット。RT 版レイアウト由来）。
     mesh_empty_bg3: wgpu::BindGroup,
     /// RT 透明の group4 レイアウト（TLAS＋アルベド込みの superset）。RT 用複合 BG の生成に使う。
@@ -182,40 +170,44 @@ fn resolve_shader(name: &str) -> &'static str {
     match name {
         // Clustered Lighting の共有定義（定数・構造体・索引関数）。shader_common.wgsl の
         // group 4 binding 7〜9 がこの構造体を参照するため、必ず先に連結する（Phase C1）。
-        "cluster_common.wgsl" => include_str!("shaders/cluster_common.wgsl"),
-        "pbr_common.wgsl" => include_str!("shaders/pbr_common.wgsl"),
-        "shader_common.wgsl" => include_str!("shaders/shader_common.wgsl"),
+        "cluster_common.wgsl"        => include_str!("shaders/cluster_common.wgsl"),
+        "pbr_common.wgsl"            => include_str!("shaders/pbr_common.wgsl"),
+        "shader_common.wgsl"         => include_str!("shaders/shader_common.wgsl"),
         // ライト（GpuLight/LightMeta）＋クラスタ参照（Phase D3 Phase A で shader_common から分離）。
-        "ddgi_common.wgsl" => include_str!("shaders/ddgi_common.wgsl"),
-        "light_common.wgsl" => include_str!("shaders/light_common.wgsl"),
-        "shadow.wgsl" => include_str!("shaders/shadow.wgsl"),
-        "rt_shadow_off.wgsl" => include_str!("shaders/rt_shadow_off.wgsl"),
+        "ddgi_common.wgsl"           => include_str!("shaders/ddgi_common.wgsl"),
+        "light_common.wgsl"          => include_str!("shaders/light_common.wgsl"),
+        "shadow.wgsl"                => include_str!("shaders/shadow.wgsl"),
+        "rt_shadow_off.wgsl"         => include_str!("shaders/rt_shadow_off.wgsl"),
         // インライン RT 影（本体＋平均アルベド tint）。RT 屈折の透明パイプライン（実装 B）が連結し、
         // ガラス面も不透明面と同じインライン RT 影を受ける。TLAS(binding6)/平均アルベド(binding14) は
         // rt_shadow_on が宣言し、後続の refract_rt がそれを共用する（refract_rt 側の重複宣言は撤去済み）。
-        "rt_shadow_on.wgsl" => include_str!("shaders/rt_shadow_on.wgsl"),
-        "rt_shadow_tint_avg.wgsl" => include_str!("shaders/rt_shadow_tint_avg.wgsl"),
-        "shader_static_vertex.wgsl" => include_str!("shaders/shader_static_vertex.wgsl"),
+        "rt_shadow_on.wgsl"          => include_str!("shaders/rt_shadow_on.wgsl"),
+        "rt_shadow_tint_avg.wgsl"    => include_str!("shaders/rt_shadow_tint_avg.wgsl"),
+        "shader_static_vertex.wgsl"  => include_str!("shaders/shader_static_vertex.wgsl"),
         "shader_skinned_vertex.wgsl" => include_str!("shaders/shader_skinned_vertex.wgsl"),
         // PBR シェーディングの 3 段分割（Surface 定義／マテリアル採取／ライト評価）。
         // 半透明パスも不透明パスと同一のライト評価（lighting_eval.wgsl）を共有する。
-        "surface.wgsl" => include_str!("shaders/surface.wgsl"),
-        "surface_gather.wgsl" => include_str!("shaders/surface_gather.wgsl"),
-        "lighting_eval.wgsl" => include_str!("shaders/lighting_eval.wgsl"),
-        "shader_fragment.wgsl" => include_str!("shaders/shader_fragment.wgsl"),
-        "shader_wboit.wgsl" => include_str!("shaders/shader_wboit.wgsl"),
+        "surface.wgsl"               => include_str!("shaders/surface.wgsl"),
+        "surface_gather.wgsl"        => include_str!("shaders/surface_gather.wgsl"),
+        // シェーディング契約 v1（L3-a）。lighting_eval.wgsl の直前に必ず 2 本セットで連結する
+        // （pipeline.rs の同名リゾルバと同一エントリ。半透明パスも同じ契約を共有する）。
+        "shading_contract.wgsl"      => include_str!("shaders/shading_contract.wgsl"),
+        "shading_dispatch.wgsl"      => include_str!("shaders/shading_dispatch.wgsl"),
+        "lighting_eval.wgsl"         => include_str!("shaders/lighting_eval.wgsl"),
+        "shader_fragment.wgsl"       => include_str!("shaders/shader_fragment.wgsl"),
+        "shader_wboit.wgsl"          => include_str!("shaders/shader_wboit.wgsl"),
         // RT-Translucency（Phase RT-Translucency）: 屈折の共有ヘルパ（group4 binding15/16・
         // glass_composite）と背景取得 2 方式（SS フォールバック / RT 本物）、距離ソート専用フラグメント。
         // refract_ss / refract_rt は排他（refract_sample_bg を 1 本だけ供給する）。半透明パスにのみ連結する。
         // バインドレス基盤ミラー（BindlessInstanceRecord 定義＋八面体法線デコード＋GEOM フラグ）。
         // RT 屈折（refract_rt.wgsl）が界面法線復元に参照するため、その前に連結する。
-        "bindless_common.wgsl" => include_str!("shaders/bindless_common.wgsl"),
-        "refract_common.wgsl" => include_str!("shaders/refract_common.wgsl"),
-        "refract_ss.wgsl" => include_str!("shaders/refract_ss.wgsl"),
-        "refract_rt.wgsl" => include_str!("shaders/refract_rt.wgsl"),
-        "shader_transparent.wgsl" => include_str!("shaders/shader_transparent.wgsl"),
-        "fullscreen.wgsl" => include_str!("shaders/fullscreen.wgsl"),
-        "post_wboit_composite.wgsl" => include_str!("shaders/post_wboit_composite.wgsl"),
+        "bindless_common.wgsl"       => include_str!("shaders/bindless_common.wgsl"),
+        "refract_common.wgsl"        => include_str!("shaders/refract_common.wgsl"),
+        "refract_ss.wgsl"            => include_str!("shaders/refract_ss.wgsl"),
+        "refract_rt.wgsl"            => include_str!("shaders/refract_rt.wgsl"),
+        "shader_transparent.wgsl"    => include_str!("shaders/shader_transparent.wgsl"),
+        "fullscreen.wgsl"            => include_str!("shaders/fullscreen.wgsl"),
+        "post_wboit_composite.wgsl"  => include_str!("shaders/post_wboit_composite.wgsl"),
         other => panic!("unknown transparency shader source: {other}"),
     }
 }
@@ -233,12 +225,12 @@ fn wboit_color_targets() -> [Option<wgpu::ColorTargetState>; 2] {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
                 dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
+                operation:  wgpu::BlendOperation::Add,
             },
             alpha: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
                 dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
+                operation:  wgpu::BlendOperation::Add,
             },
         }),
         write_mask: wgpu::ColorWrites::ALL,
@@ -252,12 +244,12 @@ fn wboit_color_targets() -> [Option<wgpu::ColorTargetState>; 2] {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::Dst,
                 dst_factor: wgpu::BlendFactor::Zero,
-                operation: wgpu::BlendOperation::Add,
+                operation:  wgpu::BlendOperation::Add,
             },
             alpha: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::Dst,
                 dst_factor: wgpu::BlendFactor::Zero,
-                operation: wgpu::BlendOperation::Add,
+                operation:  wgpu::BlendOperation::Add,
             },
         }),
         write_mask: wgpu::ColorWrites::ALL,
@@ -272,9 +264,9 @@ impl TransparentPipelines {
     /// - `df` : 深度フォーマット（メインパスと共有する Depth24PlusStencil8）。
     pub fn new(
         device: &wgpu::Device,
-        sf: wgpu::TextureFormat,
-        df: wgpu::TextureFormat,
-        cache: Option<&wgpu::PipelineCache>,
+        sf:     wgpu::TextureFormat,
+        df:     wgpu::TextureFormat,
+        cache:  Option<&wgpu::PipelineCache>,
     ) -> Self {
         use super::pipeline_config::RenderPipelineBuilder;
 
@@ -282,37 +274,30 @@ impl TransparentPipelines {
         // 返り値 BGL は group 順 [camera, model, material, gap|joint, lights]。
         // WBOIT の手動レイアウトでも同じ BGL を再利用する。
         // カリング面 3 種のバリアントを、TOML の cull_mode を上書きして 1 ファイルから生成する。
-        let build_sorted =
-            |toml_src: &str, label_base: &str| -> (CullPipelineSet, Vec<wgpu::BindGroupLayout>) {
-                let mut bgls: Option<Vec<wgpu::BindGroupLayout>> = None;
-                let pipes: CullPipelineSet = std::array::from_fn(|i| {
-                    let face = CULL_FACE_VARIANTS[i];
-                    let label = format!("{label_base}_cull_{}", face.as_str());
-                    let (p, b) = RenderPipelineBuilder::new(device, toml_src, sf, df)
-                        .with_label(&label)
-                        .with_cull_mode(face.as_str())
-                        .with_cache(cache)
-                        .build(resolve_shader);
-                    if bgls.is_none() {
-                        bgls = Some(b);
-                    }
-                    p
-                });
-                (pipes, bgls.expect("transparent: BGL が生成されていない"))
-            };
-        let (sorted_mesh, mesh_bgls) = build_sorted(
-            include_str!("pipelines/transparent_mesh.toml"),
-            "transparent_mesh",
-        );
-        let (sorted_skinned, skin_bgls) = build_sorted(
-            include_str!("pipelines/transparent_skinned.toml"),
-            "transparent_skinned",
-        );
+        let build_sorted = |toml_src: &str, label_base: &str| -> (CullPipelineSet, Vec<wgpu::BindGroupLayout>) {
+            let mut bgls: Option<Vec<wgpu::BindGroupLayout>> = None;
+            let pipes: CullPipelineSet = std::array::from_fn(|i| {
+                let face  = CULL_FACE_VARIANTS[i];
+                let label = format!("{label_base}_cull_{}", face.as_str());
+                let (p, b) = RenderPipelineBuilder::new(device, toml_src, sf, df)
+                    .with_label(&label)
+                    .with_cull_mode(face.as_str())
+                    .with_cache(cache)
+                    .build(resolve_shader);
+                if bgls.is_none() { bgls = Some(b); }
+                p
+            });
+            (pipes, bgls.expect("transparent: BGL が生成されていない"))
+        };
+        let (sorted_mesh, mesh_bgls) =
+            build_sorted(include_str!("pipelines/transparent_mesh.toml"), "transparent_mesh");
+        let (sorted_skinned, skin_bgls) =
+            build_sorted(include_str!("pipelines/transparent_skinned.toml"), "transparent_skinned");
 
         // group 3 の空 gap BindGroup（mesh 用）。非スキン描画で必ず slot 3 にセットする。
         let mesh_empty_bg3 = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Transparent Empty BG (group 3)"),
-            layout: &mesh_bgls[3],
+            label:   Some("Transparent Empty BG (group 3)"),
+            layout:  &mesh_bgls[3],
             entries: &[],
         });
 
@@ -324,90 +309,46 @@ impl TransparentPipelines {
         // これで WBOIT の group4 BGL も距離ソートと同じ「lights + refract」の superset になり、
         // 両者で同一の透明用 group4 BindGroup（create_transparent_bind_group）を使い回せる。
         // WBOIT SS 版: 背景取得は refract_ss.wgsl（refract_common の後ろに連結）。
-        let wboit_mesh: CullPipelineSet = std::array::from_fn(|i| {
-            build_wboit_pipeline(
-                device,
-                df,
-                cache,
-                &mesh_bgls,
-                &[
-                    "cluster_common.wgsl",
-                    "pbr_common.wgsl",
-                    "shader_common.wgsl",
-                    "ddgi_common.wgsl",
-                    "light_common.wgsl",
-                    "shadow.wgsl",
-                    "rt_shadow_off.wgsl",
-                    "shader_static_vertex.wgsl",
-                    "surface.wgsl",
-                    "surface_gather.wgsl",
-                    "lighting_eval.wgsl",
-                    "shader_fragment.wgsl",
-                    "refract_common.wgsl",
-                    "refract_ss.wgsl",
-                    "shader_wboit.wgsl",
-                ],
-                &["mesh_vertex"],
-                "wboit_mesh",
-                CULL_FACE_VARIANTS[i],
-            )
-        });
-        let wboit_skinned: CullPipelineSet = std::array::from_fn(|i| {
-            build_wboit_pipeline(
-                device,
-                df,
-                cache,
-                &skin_bgls,
-                &[
-                    "cluster_common.wgsl",
-                    "pbr_common.wgsl",
-                    "shader_common.wgsl",
-                    "ddgi_common.wgsl",
-                    "light_common.wgsl",
-                    "shadow.wgsl",
-                    "rt_shadow_off.wgsl",
-                    "shader_skinned_vertex.wgsl",
-                    "surface.wgsl",
-                    "surface_gather.wgsl",
-                    "lighting_eval.wgsl",
-                    "shader_fragment.wgsl",
-                    "refract_common.wgsl",
-                    "refract_ss.wgsl",
-                    "shader_wboit.wgsl",
-                ],
-                &["mesh_vertex", "skin_vertex"],
-                "wboit_skinned",
-                CULL_FACE_VARIANTS[i],
-            )
-        });
+        let wboit_mesh: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
+            device, df, cache, &mesh_bgls,
+            &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
+              "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
+              "shading_contract.wgsl", "shading_dispatch.wgsl",
+              "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "refract_ss.wgsl", "shader_wboit.wgsl"],
+            &["mesh_vertex"],
+            "wboit_mesh",
+            CULL_FACE_VARIANTS[i],
+        ));
+        let wboit_skinned: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
+            device, df, cache, &skin_bgls,
+            &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
+              "shader_skinned_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
+              "shading_contract.wgsl", "shading_dispatch.wgsl",
+              "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "refract_ss.wgsl", "shader_wboit.wgsl"],
+            &["mesh_vertex", "skin_vertex"],
+            "wboit_skinned",
+            CULL_FACE_VARIANTS[i],
+        ));
 
         // ── WBOIT 合成パイプライン（色付き透過率＝2 パス）──
         // パス1: 背景濾過（scene *= Π T_frag）。パス2: 自色加算（final += avg*coverage）。
         // 両 TOML は同一シェーダ（post_wboit_composite.wgsl）を指し、リフレクションが
         // 両エントリの global（accum group0 + reveal group1）から同一 BGL を得る（BindGroup 共有）。
         let wboit_composite_bg = PostPipeline::from_toml(
-            device,
-            include_str!("pipelines/post_wboit_composite_bg.toml"),
-            sf,
-            cache,
-            resolve_shader,
+            device, include_str!("pipelines/post_wboit_composite_bg.toml"), sf, cache, resolve_shader,
         );
         let wboit_composite_self = PostPipeline::from_toml(
-            device,
-            include_str!("pipelines/post_wboit_composite_self.toml"),
-            sf,
-            cache,
-            resolve_shader,
+            device, include_str!("pipelines/post_wboit_composite_self.toml"), sf, cache, resolve_shader,
         );
 
         let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("WBOIT Composite Sampler"),
+            label:          Some("WBOIT Composite Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mag_filter:     wgpu::FilterMode::Nearest,
+            min_filter:     wgpu::FilterMode::Nearest,
+            mipmap_filter:  wgpu::FilterMode::Nearest,
             ..Default::default()
         });
 
@@ -419,13 +360,13 @@ impl TransparentPipelines {
         // すりガラスのミップチェーン（refract_pyramid）を roughness 連動でサンプルするため、
         // mipmap_filter=Linear にしてミップ間をトライリニア補間する（ミップ境界のジャンプを防ぐ）。
         let refract_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Refraction Background Sampler"),
+            label:          Some("Refraction Background Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mag_filter:     wgpu::FilterMode::Linear,
+            min_filter:     wgpu::FilterMode::Linear,
+            mipmap_filter:  wgpu::FilterMode::Linear,
             ..Default::default()
         });
         // 屈折オフ時に差すダミー背景（1x1）。透明パイプラインの group4 を常に満たすため。
@@ -440,18 +381,15 @@ impl TransparentPipelines {
         // 実体は BindlessResources が確保する＝バインドレス非対応 GPU では存在しないため、その場合は
         // RT 屈折パイプラインを作らず SS 屈折（refract_ss）へフォールバックする（実 GPU では RT 対応＝
         // ほぼ常にバインドレスも対応のため、実害は理論上のみ）。
-        let rt =
-            if super::rt_shadow::rt_shadows_supported() && super::bindless::bindless_supported() {
-                Some(TransparentRtPipelines::new(device, sf, df, cache))
-            } else {
-                None
-            };
+        let rt = if super::rt_shadow::rt_shadows_supported() && super::bindless::bindless_supported() {
+            Some(TransparentRtPipelines::new(device, sf, df, cache))
+        } else {
+            None
+        };
 
         Self {
-            sorted_mesh,
-            sorted_skinned,
-            wboit_mesh,
-            wboit_skinned,
+            sorted_mesh, sorted_skinned,
+            wboit_mesh, wboit_skinned,
             mesh_empty_bg3,
             wboit_composite_bg,
             wboit_composite_self,
@@ -464,9 +402,7 @@ impl TransparentPipelines {
     }
 
     /// 屈折オフ時のダミー背景ビュー（1x1）への参照。屈折用 RT が未確保のフレームで使う。
-    pub fn dummy_refract_view(&self) -> &wgpu::TextureView {
-        &self.dummy_refract_view
-    }
+    pub fn dummy_refract_view(&self) -> &wgpu::TextureView { &self.dummy_refract_view }
 
     /// WBOIT 合成（色付き透過率＝2 パス）: accum/reveal を読み、シーン HDR（`hdr_view`）へ
     ///   final = scene * Π T_frag + avg * coverage
@@ -479,57 +415,45 @@ impl TransparentPipelines {
     /// （両パイプラインが同一シェーダ由来で同一 BGL のため）。
     pub fn composite_wboit(
         &self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        hdr_view: &wgpu::TextureView,
-        accum_view: &wgpu::TextureView,
+        device:      &wgpu::Device,
+        encoder:     &mut wgpu::CommandEncoder,
+        hdr_view:    &wgpu::TextureView,
+        accum_view:  &wgpu::TextureView,
         reveal_view: &wgpu::TextureView,
     ) {
         // group 0: accum + サンプラー、group 1: reveal + サンプラー。両パス共通。
         // BGL は bg/self どちらのパイプラインでも同一（同一シェーダのリフレクション結果）なので
         // 片方（背景濾過パス）の bgls から作り、両パイプラインで使い回す。
         let bg0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("WBOIT Composite BG0 accum"),
-            layout: &self.wboit_composite_bg.bgls[0],
+            label:   Some("WBOIT Composite BG0 accum"),
+            layout:  &self.wboit_composite_bg.bgls[0],
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(accum_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.composite_sampler),
-                },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(accum_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.composite_sampler) },
             ],
         });
         let bg1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("WBOIT Composite BG1 reveal"),
-            layout: &self.wboit_composite_bg.bgls[1],
+            label:   Some("WBOIT Composite BG1 reveal"),
+            layout:  &self.wboit_composite_bg.bgls[1],
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(reveal_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.composite_sampler),
-                },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(reveal_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.composite_sampler) },
             ],
         });
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("WBOIT Composite"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: hdr_view,
+                view:           hdr_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load, // 既存シーン HDR を保持して重ねる。
+                    load:  wgpu::LoadOp::Load, // 既存シーン HDR を保持して重ねる。
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
+            occlusion_query_set:      None,
+            timestamp_writes:         None,
         });
         pass.set_bind_group(0, &bg0, &[]);
         pass.set_bind_group(1, &bg1, &[]);
@@ -550,118 +474,69 @@ impl TransparentRtPipelines {
     /// 得た group4 BGL（TLAS binding6＋アルベド binding14 を含む superset）を WBOIT RT でも再利用する。
     pub fn new(
         device: &wgpu::Device,
-        sf: wgpu::TextureFormat,
-        df: wgpu::TextureFormat,
-        cache: Option<&wgpu::PipelineCache>,
+        sf:     wgpu::TextureFormat,
+        df:     wgpu::TextureFormat,
+        cache:  Option<&wgpu::PipelineCache>,
     ) -> Self {
         use super::pipeline_config::RenderPipelineBuilder;
 
         // 距離ソート RT（TOML＋リフレクション）。カリング面 3 種を 1 ファイルから生成する。
-        let build_sorted_rt =
-            |toml_src: &str, label_base: &str| -> (CullPipelineSet, Vec<wgpu::BindGroupLayout>) {
-                let mut bgls: Option<Vec<wgpu::BindGroupLayout>> = None;
-                let pipes: CullPipelineSet = std::array::from_fn(|i| {
-                    let face = CULL_FACE_VARIANTS[i];
-                    let label = format!("{label_base}_cull_{}", face.as_str());
-                    let (p, b) = RenderPipelineBuilder::new(device, toml_src, sf, df)
-                        .with_label(&label)
-                        .with_cull_mode(face.as_str())
-                        .with_cache(cache)
-                        .build(resolve_shader);
-                    if bgls.is_none() {
-                        bgls = Some(b);
-                    }
-                    p
-                });
-                (pipes, bgls.expect("transparent RT: BGL が生成されていない"))
-            };
-        let (sorted_mesh, mesh_bgls) = build_sorted_rt(
-            include_str!("pipelines/transparent_mesh_rt.toml"),
-            "transparent_mesh_rt",
-        );
-        let (sorted_skinned, skin_bgls) = build_sorted_rt(
-            include_str!("pipelines/transparent_skinned_rt.toml"),
-            "transparent_skinned_rt",
-        );
+        let build_sorted_rt = |toml_src: &str, label_base: &str| -> (CullPipelineSet, Vec<wgpu::BindGroupLayout>) {
+            let mut bgls: Option<Vec<wgpu::BindGroupLayout>> = None;
+            let pipes: CullPipelineSet = std::array::from_fn(|i| {
+                let face  = CULL_FACE_VARIANTS[i];
+                let label = format!("{label_base}_cull_{}", face.as_str());
+                let (p, b) = RenderPipelineBuilder::new(device, toml_src, sf, df)
+                    .with_label(&label)
+                    .with_cull_mode(face.as_str())
+                    .with_cache(cache)
+                    .build(resolve_shader);
+                if bgls.is_none() { bgls = Some(b); }
+                p
+            });
+            (pipes, bgls.expect("transparent RT: BGL が生成されていない"))
+        };
+        let (sorted_mesh, mesh_bgls) =
+            build_sorted_rt(include_str!("pipelines/transparent_mesh_rt.toml"), "transparent_mesh_rt");
+        let (sorted_skinned, skin_bgls) =
+            build_sorted_rt(include_str!("pipelines/transparent_skinned_rt.toml"), "transparent_skinned_rt");
 
         // group3 空 gap BindGroup（mesh 用）。
         let mesh_empty_bg3 = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Transparent RT Empty BG (group 3)"),
-            layout: &mesh_bgls[3],
+            label:   Some("Transparent RT Empty BG (group 3)"),
+            layout:  &mesh_bgls[3],
             entries: &[],
         });
 
         // WBOIT RT（デュアル MRT・手動構築）。連結末尾に refract_rt.wgsl＋shader_wboit.wgsl を置く。
         // BGL は距離ソート RT のビルド結果（TLAS＋アルベド込み group4）を再利用する。
-        let wboit_mesh: CullPipelineSet = std::array::from_fn(|i| {
-            build_wboit_pipeline(
-                device,
-                df,
-                cache,
-                &mesh_bgls,
-                &[
-                    "cluster_common.wgsl",
-                    "pbr_common.wgsl",
-                    "shader_common.wgsl",
-                    "ddgi_common.wgsl",
-                    "light_common.wgsl",
-                    "shadow.wgsl",
-                    "rt_shadow_on.wgsl",
-                    "rt_shadow_tint_avg.wgsl",
-                    "shader_static_vertex.wgsl",
-                    "surface.wgsl",
-                    "surface_gather.wgsl",
-                    "lighting_eval.wgsl",
-                    "shader_fragment.wgsl",
-                    "bindless_common.wgsl",
-                    "refract_common.wgsl",
-                    "refract_rt.wgsl",
-                    "shader_wboit.wgsl",
-                ],
-                &["mesh_vertex"],
-                "wboit_mesh_rt",
-                CULL_FACE_VARIANTS[i],
-            )
-        });
-        let wboit_skinned: CullPipelineSet = std::array::from_fn(|i| {
-            build_wboit_pipeline(
-                device,
-                df,
-                cache,
-                &skin_bgls,
-                &[
-                    "cluster_common.wgsl",
-                    "pbr_common.wgsl",
-                    "shader_common.wgsl",
-                    "ddgi_common.wgsl",
-                    "light_common.wgsl",
-                    "shadow.wgsl",
-                    "rt_shadow_on.wgsl",
-                    "rt_shadow_tint_avg.wgsl",
-                    "shader_skinned_vertex.wgsl",
-                    "surface.wgsl",
-                    "surface_gather.wgsl",
-                    "lighting_eval.wgsl",
-                    "shader_fragment.wgsl",
-                    "bindless_common.wgsl",
-                    "refract_common.wgsl",
-                    "refract_rt.wgsl",
-                    "shader_wboit.wgsl",
-                ],
-                &["mesh_vertex", "skin_vertex"],
-                "wboit_skinned_rt",
-                CULL_FACE_VARIANTS[i],
-            )
-        });
+        let wboit_mesh: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
+            device, df, cache, &mesh_bgls,
+            &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_on.wgsl", "rt_shadow_tint_avg.wgsl",
+              "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
+              "shading_contract.wgsl", "shading_dispatch.wgsl",
+              "lighting_eval.wgsl", "shader_fragment.wgsl", "bindless_common.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_wboit.wgsl"],
+            &["mesh_vertex"],
+            "wboit_mesh_rt",
+            CULL_FACE_VARIANTS[i],
+        ));
+        let wboit_skinned: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
+            device, df, cache, &skin_bgls,
+            &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_on.wgsl", "rt_shadow_tint_avg.wgsl",
+              "shader_skinned_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
+              "shading_contract.wgsl", "shading_dispatch.wgsl",
+              "lighting_eval.wgsl", "shader_fragment.wgsl", "bindless_common.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_wboit.wgsl"],
+            &["mesh_vertex", "skin_vertex"],
+            "wboit_skinned_rt",
+            CULL_FACE_VARIANTS[i],
+        ));
 
         // group4 レイアウト（TLAS＋アルベド込み superset）は距離ソート RT のビルド結果を使う。
         let lights_bgl = mesh_bgls[4].clone();
 
         Self {
-            sorted_mesh,
-            sorted_skinned,
-            wboit_mesh,
-            wboit_skinned,
+            sorted_mesh, sorted_skinned,
+            wboit_mesh, wboit_skinned,
             mesh_empty_bg3,
             lights_bgl,
         }
@@ -675,85 +550,82 @@ impl TransparentRtPipelines {
 /// `cull_face` はこのバリアントのカリング面（Back / Front / None）。
 #[allow(clippy::too_many_arguments)]
 fn build_wboit_pipeline(
-    device: &wgpu::Device,
-    df: wgpu::TextureFormat,
-    cache: Option<&wgpu::PipelineCache>,
-    bgls: &[wgpu::BindGroupLayout],
+    device:         &wgpu::Device,
+    df:             wgpu::TextureFormat,
+    cache:          Option<&wgpu::PipelineCache>,
+    bgls:           &[wgpu::BindGroupLayout],
     shader_sources: &[&str],
-    vertex_slots: &[&str],
-    label_base: &str,
-    cull_face: CullFace,
+    vertex_slots:   &[&str],
+    label_base:     &str,
+    cull_face:      CullFace,
 ) -> wgpu::RenderPipeline {
     // バリアントを検証エラーで識別できるようラベルへカリング面を含める。
     let label = format!("{label_base}_cull_{}", cull_face.as_str());
     let label = label.as_str();
 
     // ── シェーダモジュール（ソース連結）─────────────────────────
-    let combined: String = shader_sources
-        .iter()
+    let combined: String = shader_sources.iter()
         .map(|n| resolve_shader(n))
         .collect::<Vec<_>>()
         .join("\n");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(label),
+        label:  Some(label),
         source: wgpu::ShaderSource::Wgsl(combined.into()),
     });
 
     // ── パイプラインレイアウト（BGL を再利用）───────────────────
     let bgl_refs: Vec<&wgpu::BindGroupLayout> = bgls.iter().collect();
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some(label),
-        bind_group_layouts: &bgl_refs,
+        label:                Some(label),
+        bind_group_layouts:   &bgl_refs,
         push_constant_ranges: &[],
     });
 
     // ── 頂点バッファレイアウト ──────────────────────────────────
-    let vbuffers: Vec<wgpu::VertexBufferLayout<'static>> = vertex_slots
-        .iter()
-        .map(|n| vertex_buffer_layout(n))
-        .collect();
+    let vbuffers: Vec<wgpu::VertexBufferLayout<'static>> =
+        vertex_slots.iter().map(|n| vertex_buffer_layout(n)).collect();
 
     // ── デュアルカラーターゲット（accum + reveal）───────────────
     let targets = wboit_color_targets();
 
     // ── 深度: LessEqual・書込なし（メインパスの不透明深度でテスト）──
     let depth_stencil = wgpu::DepthStencilState {
-        format: df,
+        format:              df,
         depth_write_enabled: false,
-        depth_compare: parse_compare("LessEqual"),
-        stencil: wgpu::StencilState::default(),
-        bias: wgpu::DepthBiasState::default(),
+        depth_compare:       parse_compare("LessEqual"),
+        stencil:             wgpu::StencilState::default(),
+        bias:                wgpu::DepthBiasState::default(),
     };
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
+        label:  Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            buffers: &vbuffers,
+            module:              &shader,
+            entry_point:         Some("vs_main"),
+            buffers:             &vbuffers,
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_wboit"),
-            targets: &targets,
+            module:              &shader,
+            entry_point:         Some("fs_wboit"),
+            targets:             &targets,
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
+            topology:   wgpu::PrimitiveTopology::TriangleList,
             front_face: wgpu::FrontFace::Ccw,
             // マテリアルのカリング面バリアント（None = 両面描画）。
-            cull_mode: match cull_face {
-                CullFace::Back => Some(wgpu::Face::Back),
+            cull_mode:  match cull_face {
+                CullFace::Back  => Some(wgpu::Face::Back),
                 CullFace::Front => Some(wgpu::Face::Front),
-                CullFace::None => None,
+                CullFace::None  => None,
             },
             ..Default::default()
         },
         depth_stencil: Some(depth_stencil),
-        multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multisample:   wgpu::MultisampleState::default(),
+        multiview:     None,
         cache,
     })
 }
@@ -771,13 +643,9 @@ fn build_wboit_pipeline(
 pub fn has_transparent(models: &TransparentModels) -> bool {
     for (gpu, batch) in models {
         for lod in 0..NUM_LODS {
-            if batch.lod_visible_counts[lod] == 0 {
-                continue;
-            }
+            if batch.lod_visible_counts[lod] == 0 { continue; }
             for draw in &batch.node_prim_list {
-                if gpu.primitive_alpha_mode(draw.material_idx) != AlphaMode::Blend {
-                    continue;
-                }
+                if gpu.primitive_alpha_mode(draw.material_idx) != AlphaMode::Blend { continue; }
                 if batch.lod_node_data[lod][draw.node_idx].is_some() {
                     return true;
                 }
@@ -794,27 +662,20 @@ fn gather_items(models: &TransparentModels, camera_pos: [f32; 3]) -> Vec<Transpa
     for (model_idx, (gpu, batch)) in models.iter().enumerate() {
         for lod in 0..NUM_LODS {
             let visible = batch.lod_visible_counts[lod];
-            if visible == 0 {
-                continue;
-            }
+            if visible == 0 { continue; }
 
             // この LOD のコンパクト→元インスタンス対応と距離を事前計算。
             let compacts = &batch.lod_compact_insts[lod];
             for draw in &batch.node_prim_list {
                 // Blend 以外は不透明パスが担当済み。
-                if gpu.primitive_alpha_mode(draw.material_idx) != AlphaMode::Blend {
-                    continue;
-                }
+                if gpu.primitive_alpha_mode(draw.material_idx) != AlphaMode::Blend { continue; }
                 // この LOD にノードデータが無ければスキップ。
-                if batch.lod_node_data[lod][draw.node_idx].is_none() {
-                    continue;
-                }
+                if batch.lod_node_data[lod][draw.node_idx].is_none() { continue; }
 
                 for compact_idx in 0..visible as usize {
                     let orig = compacts[compact_idx];
                     // インスタンス重心とカメラの距離二乗（ソートキー）。
-                    let dist_sq = batch
-                        .instance_centroid(orig)
+                    let dist_sq = batch.instance_centroid(orig)
                         .map(|c| {
                             let dx = c[0] - camera_pos[0];
                             let dy = c[1] - camera_pos[1];
@@ -824,10 +685,10 @@ fn gather_items(models: &TransparentModels, camera_pos: [f32; 3]) -> Vec<Transpa
                         .unwrap_or(0.0);
                     items.push(TransparentItem {
                         model_idx,
-                        node_idx: draw.node_idx,
-                        mesh_idx: draw.mesh_idx,
-                        prim_idx: draw.prim_idx,
-                        is_skinned: draw.is_skinned,
+                        node_idx:    draw.node_idx,
+                        mesh_idx:    draw.mesh_idx,
+                        prim_idx:    draw.prim_idx,
+                        is_skinned:  draw.is_skinned,
                         lod,
                         compact_idx: compact_idx as u32,
                         dist_sq,
@@ -846,32 +707,29 @@ fn gather_items(models: &TransparentModels, camera_pos: [f32; 3]) -> Vec<Transpa
 /// set_pipeline する従来どおりの挙動）。バリアント選択が増えても set_pipeline 回数は変わらない。
 #[allow(clippy::too_many_arguments)]
 fn draw_one<'p>(
-    pass: &mut wgpu::RenderPass<'p>,
-    item: &TransparentItem,
-    models: &'p TransparentModels<'p>,
-    camera_bg: &'p wgpu::BindGroup,
-    lights_bg: &'p wgpu::BindGroup,
+    pass:       &mut wgpu::RenderPass<'p>,
+    item:       &TransparentItem,
+    models:     &'p TransparentModels<'p>,
+    camera_bg:  &'p wgpu::BindGroup,
+    lights_bg:  &'p wgpu::BindGroup,
     mesh_pipes: &'p CullPipelineSet,
     skin_pipes: &'p CullPipelineSet,
-    empty_bg3: &'p wgpu::BindGroup,
+    empty_bg3:  &'p wgpu::BindGroup,
 ) {
     let (gpu, batch) = &models[item.model_idx];
-    let Some((_, model_bg)) = batch.lod_node_data[item.lod][item.node_idx].as_ref() else {
-        return;
-    };
+    let Some((_, model_bg)) = batch.lod_node_data[item.lod][item.node_idx].as_ref() else { return };
     let prim = &gpu.meshes[item.mesh_idx].primitives[item.prim_idx];
 
     // マテリアル BG（プリミティブの material_index、無ければ default）。
-    let mat_bg: &wgpu::BindGroup = prim
-        .material_index
+    let mat_bg: &wgpu::BindGroup = prim.material_index
         .and_then(|mi| gpu.materials.get(mi))
         .map(|m| &m.bind_group)
         .unwrap_or(&gpu.default_material.bind_group);
 
     // カリング面バリアントを選ぶ（両面マテリアルの半透明を裏面ごと描くため）。
-    let cull_idx = gpu.primitive_cull_face(prim.material_index).index();
-    let mesh_pipe = &mesh_pipes[cull_idx];
-    let skin_pipe = &skin_pipes[cull_idx];
+    let cull_idx   = gpu.primitive_cull_face(prim.material_index).index();
+    let mesh_pipe  = &mesh_pipes[cull_idx];
+    let skin_pipe  = &skin_pipes[cull_idx];
 
     if item.is_skinned {
         pass.set_pipeline(skin_pipe);
@@ -879,9 +737,7 @@ fn draw_one<'p>(
         pass.set_bind_group(1, model_bg, &[]);
         pass.set_bind_group(2, mat_bg, &[]);
         // group 3: GPU スキニングが書き込んだジョイント BG。
-        let jbg = batch
-            .joint_vs_bg(item.lod)
-            .unwrap_or(&gpu.identity_joints_bg);
+        let jbg = batch.joint_vs_bg(item.lod).unwrap_or(&gpu.identity_joints_bg);
         pass.set_bind_group(3, jbg, &[]);
     } else {
         pass.set_pipeline(mesh_pipe);
@@ -907,58 +763,40 @@ fn draw_one<'p>(
 /// 距離ソート方式で半透明を描画する（メインパス内、不透明描画の直後）。
 /// アイテムを背面→前面（dist_sq 降順）にソートして 1 インスタンスずつ描く。
 pub fn draw_sorted<'p>(
-    pass: &mut wgpu::RenderPass<'p>,
-    models: &'p TransparentModels<'p>,
-    camera_bg: &'p wgpu::BindGroup,
-    lights_bg: &'p wgpu::BindGroup,
-    tp: &'p TransparentPipelines,
+    pass:       &mut wgpu::RenderPass<'p>,
+    models:     &'p TransparentModels<'p>,
+    camera_bg:  &'p wgpu::BindGroup,
+    lights_bg:  &'p wgpu::BindGroup,
+    tp:         &'p TransparentPipelines,
     camera_pos: [f32; 3],
 ) {
     let mut items = gather_items(models, camera_pos);
-    if items.is_empty() {
-        return;
-    }
+    if items.is_empty() { return; }
     // 背面→前面（遠い順）。アルファブレンドは描画順に依存するため。
-    items.sort_by(|a, b| {
-        b.dist_sq
-            .partial_cmp(&a.dist_sq)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    items.sort_by(|a, b| b.dist_sq.partial_cmp(&a.dist_sq).unwrap_or(std::cmp::Ordering::Equal));
 
     for item in &items {
         draw_one(
-            pass,
-            item,
-            models,
-            camera_bg,
-            lights_bg,
-            &tp.sorted_mesh,
-            &tp.sorted_skinned,
-            &tp.mesh_empty_bg3,
+            pass, item, models, camera_bg, lights_bg,
+            &tp.sorted_mesh, &tp.sorted_skinned, &tp.mesh_empty_bg3,
         );
     }
 }
 
 /// WBOIT 方式で半透明を描画する（accum/reveal パス内）。順序非依存のためソート不要。
 pub fn draw_wboit<'p>(
-    pass: &mut wgpu::RenderPass<'p>,
-    models: &'p TransparentModels<'p>,
-    camera_bg: &'p wgpu::BindGroup,
-    lights_bg: &'p wgpu::BindGroup,
-    tp: &'p TransparentPipelines,
+    pass:       &mut wgpu::RenderPass<'p>,
+    models:     &'p TransparentModels<'p>,
+    camera_bg:  &'p wgpu::BindGroup,
+    lights_bg:  &'p wgpu::BindGroup,
+    tp:         &'p TransparentPipelines,
     camera_pos: [f32; 3],
 ) {
     let items = gather_items(models, camera_pos);
     for item in &items {
         draw_one(
-            pass,
-            item,
-            models,
-            camera_bg,
-            lights_bg,
-            &tp.wboit_mesh,
-            &tp.wboit_skinned,
-            &tp.mesh_empty_bg3,
+            pass, item, models, camera_bg, lights_bg,
+            &tp.wboit_mesh, &tp.wboit_skinned, &tp.mesh_empty_bg3,
         );
     }
 }
@@ -968,32 +806,20 @@ pub fn draw_wboit<'p>(
 /// `lights_bg` は `create_transparent_rt_bind_group` が作った RT superset BindGroup であること。
 /// 呼び出し側は translucency=Rt かつ `tp.rt` が Some のときだけ本関数を使う（gating は frame_renderer）。
 pub fn draw_sorted_rt<'p>(
-    pass: &mut wgpu::RenderPass<'p>,
-    models: &'p TransparentModels<'p>,
-    camera_bg: &'p wgpu::BindGroup,
-    lights_bg: &'p wgpu::BindGroup,
-    rt: &'p TransparentRtPipelines,
+    pass:       &mut wgpu::RenderPass<'p>,
+    models:     &'p TransparentModels<'p>,
+    camera_bg:  &'p wgpu::BindGroup,
+    lights_bg:  &'p wgpu::BindGroup,
+    rt:         &'p TransparentRtPipelines,
     camera_pos: [f32; 3],
 ) {
     let mut items = gather_items(models, camera_pos);
-    if items.is_empty() {
-        return;
-    }
-    items.sort_by(|a, b| {
-        b.dist_sq
-            .partial_cmp(&a.dist_sq)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    if items.is_empty() { return; }
+    items.sort_by(|a, b| b.dist_sq.partial_cmp(&a.dist_sq).unwrap_or(std::cmp::Ordering::Equal));
     for item in &items {
         draw_one(
-            pass,
-            item,
-            models,
-            camera_bg,
-            lights_bg,
-            &rt.sorted_mesh,
-            &rt.sorted_skinned,
-            &rt.mesh_empty_bg3,
+            pass, item, models, camera_bg, lights_bg,
+            &rt.sorted_mesh, &rt.sorted_skinned, &rt.mesh_empty_bg3,
         );
     }
 }
@@ -1001,24 +827,18 @@ pub fn draw_sorted_rt<'p>(
 /// WBOIT 方式で半透明を描画する（本物の RT 屈折バリアント）。
 /// SS 版 `draw_wboit` と同一だが、RT 用パイプライン集合を使う。gating は frame_renderer。
 pub fn draw_wboit_rt<'p>(
-    pass: &mut wgpu::RenderPass<'p>,
-    models: &'p TransparentModels<'p>,
-    camera_bg: &'p wgpu::BindGroup,
-    lights_bg: &'p wgpu::BindGroup,
-    rt: &'p TransparentRtPipelines,
+    pass:       &mut wgpu::RenderPass<'p>,
+    models:     &'p TransparentModels<'p>,
+    camera_bg:  &'p wgpu::BindGroup,
+    lights_bg:  &'p wgpu::BindGroup,
+    rt:         &'p TransparentRtPipelines,
     camera_pos: [f32; 3],
 ) {
     let items = gather_items(models, camera_pos);
     for item in &items {
         draw_one(
-            pass,
-            item,
-            models,
-            camera_bg,
-            lights_bg,
-            &rt.wboit_mesh,
-            &rt.wboit_skinned,
-            &rt.mesh_empty_bg3,
+            pass, item, models, camera_bg, lights_bg,
+            &rt.wboit_mesh, &rt.wboit_skinned, &rt.mesh_empty_bg3,
         );
     }
 }
@@ -1040,7 +860,7 @@ const REFRACT_IOR_EPSILON: f32 = 1.0e-4;
 /// 手前での再グラブは不要（＝連続する非屈折半透明は 1 パスにまとめられる）。
 pub struct SequentialItem {
     /// 描画対象（`draw_one` に渡す内部アイテム）。
-    item: TransparentItem,
+    item:         TransparentItem,
     /// 屈折背景をサンプルするマテリアルか（描画手前で最新背景が要るか）。
     pub refracts: bool,
 }
@@ -1050,28 +870,21 @@ pub struct SequentialItem {
 /// ソート規約は `draw_sorted` と同一（アルファブレンドの描画順依存を満たす）。屈折関与は GpuModel の
 /// `primitive_ior` / `primitive_transmission`（materials と同期した CPU ミラー）から純粋計算で決まる。
 pub fn plan_sorted_sequential(
-    models: &TransparentModels,
+    models:     &TransparentModels,
     camera_pos: [f32; 3],
 ) -> Vec<SequentialItem> {
     let mut items = gather_items(models, camera_pos);
     // 背面→前面（遠い順）。draw_sorted と同一のソートキー。
-    items.sort_by(|a, b| {
-        b.dist_sq
-            .partial_cmp(&a.dist_sq)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    items
-        .into_iter()
-        .map(|item| {
-            let (gpu, _) = &models[item.model_idx];
-            let prim = &gpu.meshes[item.mesh_idx].primitives[item.prim_idx];
-            let mi = prim.material_index;
-            // refract_common.wgsl の material_refracts と同一述語（屈折/透過するマテリアルか）。
-            let refracts = gpu.primitive_ior(mi) > 1.0 + REFRACT_IOR_EPSILON
-                || gpu.primitive_transmission(mi) > 0.0;
-            SequentialItem { item, refracts }
-        })
-        .collect()
+    items.sort_by(|a, b| b.dist_sq.partial_cmp(&a.dist_sq).unwrap_or(std::cmp::Ordering::Equal));
+    items.into_iter().map(|item| {
+        let (gpu, _) = &models[item.model_idx];
+        let prim = &gpu.meshes[item.mesh_idx].primitives[item.prim_idx];
+        let mi = prim.material_index;
+        // refract_common.wgsl の material_refracts と同一述語（屈折/透過するマテリアルか）。
+        let refracts = gpu.primitive_ior(mi) > 1.0 + REFRACT_IOR_EPSILON
+            || gpu.primitive_transmission(mi) > 0.0;
+        SequentialItem { item, refracts }
+    }).collect()
 }
 
 /// sequential grab 用: 1 アイテムを描画する（`draw_sorted` の 1 反復ぶんを外から駆動できるように分離）。
@@ -1080,35 +893,23 @@ pub fn plan_sorted_sequential(
 /// `draw_sorted_rt` と同じパイプライン選択）。frame_renderer が屈折アイテムの手前で背景を再グラブしつつ
 /// このメソッドをアイテム単位に呼ぶことで逐次グラブを実現する。
 pub fn draw_sequential_one<'p>(
-    pass: &mut wgpu::RenderPass<'p>,
-    sp: &'p SequentialItem,
-    models: &'p TransparentModels<'p>,
+    pass:      &mut wgpu::RenderPass<'p>,
+    sp:        &'p SequentialItem,
+    models:    &'p TransparentModels<'p>,
     camera_bg: &'p wgpu::BindGroup,
     lights_bg: &'p wgpu::BindGroup,
-    tp: &'p TransparentPipelines,
-    rt: Option<&'p TransparentRtPipelines>,
+    tp:        &'p TransparentPipelines,
+    rt:        Option<&'p TransparentRtPipelines>,
 ) {
     if let Some(rt) = rt {
         draw_one(
-            pass,
-            &sp.item,
-            models,
-            camera_bg,
-            lights_bg,
-            &rt.sorted_mesh,
-            &rt.sorted_skinned,
-            &rt.mesh_empty_bg3,
+            pass, &sp.item, models, camera_bg, lights_bg,
+            &rt.sorted_mesh, &rt.sorted_skinned, &rt.mesh_empty_bg3,
         );
     } else {
         draw_one(
-            pass,
-            &sp.item,
-            models,
-            camera_bg,
-            lights_bg,
-            &tp.sorted_mesh,
-            &tp.sorted_skinned,
-            &tp.mesh_empty_bg3,
+            pass, &sp.item, models, camera_bg, lights_bg,
+            &tp.sorted_mesh, &tp.sorted_skinned, &tp.mesh_empty_bg3,
         );
     }
 }
@@ -1118,19 +919,15 @@ pub fn draw_sequential_one<'p>(
 /// 常に満たすためだけに存在する。
 fn create_dummy_refract_view(device: &wgpu::Device) -> wgpu::TextureView {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Refraction Dummy 1x1"),
-        size: wgpu::Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
+        label:           Some("Refraction Dummy 1x1"),
+        size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
         mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
+        sample_count:    1,
+        dimension:       wgpu::TextureDimension::D2,
         // scene_hdr と同じ Rgba16Float（filterable float）。屈折用 RT のコピー元と揃える。
-        format: WBOIT_ACCUM_FORMAT,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
+        format:          WBOIT_ACCUM_FORMAT,
+        usage:           wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats:    &[],
     });
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
@@ -1146,64 +943,49 @@ mod tests {
     fn transparency_shaders_parse_and_validate() {
         // Clustered Lighting の共有定義（shader_common.wgsl の group4 binding7〜9 が
         // ClusterCell / ClusterParams を参照するため、必ず先に連結する）。
-        let cluster = include_str!("shaders/cluster_common.wgsl");
-        let common = include_str!("shaders/shader_common.wgsl");
-        let pbr_c = include_str!("shaders/pbr_common.wgsl");
-        let light_c = include_str!("shaders/light_common.wgsl");
-        let ddgi_c = include_str!("shaders/ddgi_common.wgsl");
-        let shadow = include_str!("shaders/shadow.wgsl");
-        let rt_off = include_str!("shaders/rt_shadow_off.wgsl");
+        let cluster    = include_str!("shaders/cluster_common.wgsl");
+        let common     = include_str!("shaders/shader_common.wgsl");
+        let pbr_c      = include_str!("shaders/pbr_common.wgsl");
+        let light_c    = include_str!("shaders/light_common.wgsl");
+        let ddgi_c     = include_str!("shaders/ddgi_common.wgsl");
+        let shadow     = include_str!("shaders/shadow.wgsl");
+        let rt_off     = include_str!("shaders/rt_shadow_off.wgsl");
         // 実装 B: RT 屈折の透明パイプラインはインライン RT 影（rt_shadow_on）＋平均アルベド tint
         // （rt_shadow_tint_avg）を連結する。TLAS(6)/平均アルベド(14) は rt_shadow_on が宣言し、
         // 後続 refract_rt がそれを共用する（refract_rt 側の重複宣言は撤去済み）。
-        let rt_on = include_str!("shaders/rt_shadow_on.wgsl");
-        let tint_avg = include_str!("shaders/rt_shadow_tint_avg.wgsl");
-        let static_v = include_str!("shaders/shader_static_vertex.wgsl");
-        let skin_v = include_str!("shaders/shader_skinned_vertex.wgsl");
+        let rt_on      = include_str!("shaders/rt_shadow_on.wgsl");
+        let tint_avg   = include_str!("shaders/rt_shadow_tint_avg.wgsl");
+        let static_v   = include_str!("shaders/shader_static_vertex.wgsl");
+        let skin_v     = include_str!("shaders/shader_skinned_vertex.wgsl");
         // PBR シェーディングの 3 段分割（Surface / 採取 / ライト評価）。
-        let surf = include_str!("shaders/surface.wgsl");
-        let gather = include_str!("shaders/surface_gather.wgsl");
+        let surf       = include_str!("shaders/surface.wgsl");
+        let gather     = include_str!("shaders/surface_gather.wgsl");
+        // シェーディング契約 v1（型・標準ライブラリ）＋ 既定ディスパッチ（shade_surface）。
+        let sc         = include_str!("shaders/shading_contract.wgsl");
+        let sd         = include_str!("shaders/shading_dispatch.wgsl");
         let light_eval = include_str!("shaders/lighting_eval.wgsl");
-        let frag = include_str!("shaders/shader_fragment.wgsl");
-        let wboit = include_str!("shaders/shader_wboit.wgsl");
+        let frag       = include_str!("shaders/shader_fragment.wgsl");
+        let wboit      = include_str!("shaders/shader_wboit.wgsl");
         // RT-Translucency: 屈折ヘルパ（group4 binding15/16・glass_composite）＋背景取得 2 方式
         // （SS フォールバック / RT 本物）＋距離ソート専用フラグメント。
-        let refract = include_str!("shaders/refract_common.wgsl");
+        let refract    = include_str!("shaders/refract_common.wgsl");
         let refract_ss = include_str!("shaders/refract_ss.wgsl");
         let refract_rt = include_str!("shaders/refract_rt.wgsl");
         // RT 屈折の界面法線復元が参照するバインドレス基盤ミラー（BindlessInstanceRecord＋八面体デコード）。
         let bindless_c = include_str!("shaders/bindless_common.wgsl");
-        let transp = include_str!("shaders/shader_transparent.wgsl");
+        let transp     = include_str!("shaders/shader_transparent.wgsl");
         let fullscreen = include_str!("shaders/fullscreen.wgsl");
-        let composite = include_str!("shaders/post_wboit_composite.wgsl");
+        let composite  = include_str!("shaders/post_wboit_composite.wgsl");
 
         // ── SS 版（非 RT・Capabilities::empty で validate）─────────────────────────
         // 連結順は transparency.rs のリゾルバ・TOML と一致させること。背景取得は refract_ss。
         // 距離ソート（fs_transparent_sorted）と WBOIT（fs_wboit）はいずれも refract_common＋refract_ss を
         // 含み、group4 に屈折背景（binding15/16）を宣言する superset レイアウトになる。
         let ss_variants: [(&str, Vec<&str>); 4] = [
-            (
-                "sorted_mesh",
-                vec![
-                    cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf,
-                    gather, light_eval, frag, refract, refract_ss, transp,
-                ],
-            ),
-            (
-                "wboit_mesh",
-                vec![
-                    cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf,
-                    gather, light_eval, frag, refract, refract_ss, wboit,
-                ],
-            ),
-            (
-                "wboit_skinned",
-                vec![
-                    cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v, surf, gather,
-                    light_eval, frag, refract, refract_ss, wboit,
-                ],
-            ),
-            ("post_wboit_composite", vec![fullscreen, composite]),
+            ("sorted_mesh",           vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, sc, sd, light_eval, frag, refract, refract_ss, transp]),
+            ("wboit_mesh",            vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, sc, sd, light_eval, frag, refract, refract_ss, wboit]),
+            ("wboit_skinned",         vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, sc, sd, light_eval, frag, refract, refract_ss, wboit]),
+            ("post_wboit_composite",  vec![fullscreen, composite]),
         ];
         for (name, parts) in ss_variants {
             let src = parts.join("\n");
@@ -1225,27 +1007,9 @@ mod tests {
         // 連結順は TOML・WBOIT ビルダー（rt_shadow_on, rt_shadow_tint_avg を shadow の直後）と一致させること。
         // acceleration_structure / rayQuery* を含むため RAY_QUERY capability が要る（empty では validate 失敗）。
         let rt_variants: [(&str, Vec<&str>); 3] = [
-            (
-                "sorted_mesh_rt",
-                vec![
-                    cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, static_v,
-                    surf, gather, light_eval, frag, bindless_c, refract, refract_rt, transp,
-                ],
-            ),
-            (
-                "wboit_mesh_rt",
-                vec![
-                    cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, static_v,
-                    surf, gather, light_eval, frag, bindless_c, refract, refract_rt, wboit,
-                ],
-            ),
-            (
-                "wboit_skinned_rt",
-                vec![
-                    cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, skin_v, surf,
-                    gather, light_eval, frag, bindless_c, refract, refract_rt, wboit,
-                ],
-            ),
+            ("sorted_mesh_rt",  vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, static_v, surf, gather, sc, sd, light_eval, frag, bindless_c, refract, refract_rt, transp]),
+            ("wboit_mesh_rt",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, static_v, surf, gather, sc, sd, light_eval, frag, bindless_c, refract, refract_rt, wboit]),
+            ("wboit_skinned_rt",vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, skin_v,   surf, gather, sc, sd, light_eval, frag, bindless_c, refract, refract_rt, wboit]),
         ];
         for (name, parts) in rt_variants {
             let src = parts.join("\n");
@@ -1267,28 +1031,18 @@ mod tests {
     fn refract_rt_constants_match_rust() {
         let rt_src = include_str!("shaders/refract_rt.wgsl");
         // 色付き影と同一のパック定数（rt_shadow.rs::SHADOW_PACK_QUANT=255 / SHADOW_PACK_RADIX=256）。
-        assert!(
-            rt_src.contains("const REFRACT_PACK_QUANT: f32 = 255.0;"),
-            "refract_rt の量子化段数は 255（rt_shadow.rs::SHADOW_PACK_QUANT と一致）"
-        );
-        assert!(
-            rt_src.contains("const REFRACT_PACK_RADIX: f32 = 256.0;"),
-            "refract_rt の基数は 256（rt_shadow.rs::SHADOW_PACK_RADIX と一致）"
-        );
+        assert!(rt_src.contains("const REFRACT_PACK_QUANT: f32 = 255.0;"),
+            "refract_rt の量子化段数は 255（rt_shadow.rs::SHADOW_PACK_QUANT と一致）");
+        assert!(rt_src.contains("const REFRACT_PACK_RADIX: f32 = 256.0;"),
+            "refract_rt の基数は 256（rt_shadow.rs::SHADOW_PACK_RADIX と一致）");
         // インスタンスカリングマスク（rt_shadow.rs::RT_MASK_OPAQUE=0x01 / RT_MASK_NON_OPAQUE=0x02）。
-        assert!(
-            rt_src.contains("const REFRACT_RT_MASK_OPAQUE: u32 = 0x01u;"),
-            "不透明マスクは 0x01（rt_shadow.rs::RT_MASK_OPAQUE と一致）"
-        );
-        assert!(
-            rt_src.contains("const REFRACT_RT_MASK_TRANSLUCENT: u32 = 0x02u;"),
-            "半透明マスクは 0x02（rt_shadow.rs::RT_MASK_NON_OPAQUE と一致）"
-        );
+        assert!(rt_src.contains("const REFRACT_RT_MASK_OPAQUE: u32 = 0x01u;"),
+            "不透明マスクは 0x01（rt_shadow.rs::RT_MASK_OPAQUE と一致）");
+        assert!(rt_src.contains("const REFRACT_RT_MASK_TRANSLUCENT: u32 = 0x02u;"),
+            "半透明マスクは 0x02（rt_shadow.rs::RT_MASK_NON_OPAQUE と一致）");
         // 界面トレースの上限は 4（コスト有界＝最大 4 界面 + 1 不透明 = 5 レイ/px）。
-        assert!(
-            rt_src.contains("const REFRACT_MAX_INTERFACES: u32 = 4u;"),
-            "界面トレース上限は 4（5 レイ/px の有界コスト）"
-        );
+        assert!(rt_src.contains("const REFRACT_MAX_INTERFACES: u32 = 4u;"),
+            "界面トレース上限は 4（5 レイ/px の有界コスト）");
     }
 
     /// grab-pass（屈折の背景置き換え合成）ゲートの判定表を検証する回帰テスト。
@@ -1307,27 +1061,19 @@ mod tests {
         // refract_common.wgsl の IOR_EPSILON と一致させること（下のソース照合で担保）。
         const IOR_EPSILON: f32 = 1.0e-4;
         // シェーダ本文の material_refracts と同一の述語（屈折/透過するマテリアルか）。
-        let material_refracts =
-            |ior: f32, transmission: f32| -> bool { ior > 1.0 + IOR_EPSILON || transmission > 0.0 };
+        let material_refracts = |ior: f32, transmission: f32| -> bool {
+            ior > 1.0 + IOR_EPSILON || transmission > 0.0
+        };
 
         // 素の Blend（ior==1, transmission==0）→ 屈折しない＝通常アルファブレンド経路。
-        assert!(
-            !material_refracts(1.0, 0.0),
-            "素の Blend は grab-pass に入らないこと"
-        );
+        assert!(!material_refracts(1.0, 0.0), "素の Blend は grab-pass に入らないこと");
         // 浮動小数の丸め（1.0 直近）も非屈折側へ吸収されること。
-        assert!(
-            !material_refracts(1.0 + IOR_EPSILON * 0.5, 0.0),
-            "ior≈1.0 は非屈折側"
-        );
+        assert!(!material_refracts(1.0 + IOR_EPSILON * 0.5, 0.0), "ior≈1.0 は非屈折側");
         // ガラス（ior>1）→ 屈折 grab-pass 経路。
         assert!(material_refracts(1.5, 0.0), "ior>1 は屈折経路");
         assert!(material_refracts(1.33, 0.0), "水(ior=1.33)も屈折経路");
         // 透過率>0（色付きガラス越し）→ ior==1 でも grab-pass 経路。
-        assert!(
-            material_refracts(1.0, 0.5),
-            "transmission>0 は屈折経路(ior=1でも)"
-        );
+        assert!(material_refracts(1.0, 0.5), "transmission>0 は屈折経路(ior=1でも)");
         assert!(material_refracts(1.5, 1.0), "ガラス＋全透過も屈折経路");
 
         // ミラーがシェーダ実体と乖離していないことを保証する（述語・定数の実在照合）。
@@ -1382,8 +1128,7 @@ mod tests {
     fn sequential_refract_predicate_matches_shader_gate() {
         // Rust ミラー定数が 1.0e-4 であること（refract_common.wgsl の IOR_EPSILON と一致）。
         assert_eq!(
-            super::REFRACT_IOR_EPSILON,
-            1.0e-4_f32,
+            super::REFRACT_IOR_EPSILON, 1.0e-4_f32,
             "REFRACT_IOR_EPSILON は refract_common.wgsl の IOR_EPSILON（1.0e-4）と一致すること",
         );
         let refract_src = include_str!("shaders/refract_common.wgsl");
@@ -1423,22 +1168,15 @@ mod tests {
     /// 同一層 N 枚なので avg（accum の重み平均 = premult/a_eff）= frag（重みに依らず一定）。
     /// `a_eff` は accum.a の重み（屈折ガラス=1.0・素の Blend=a）を明示的に渡す。
     fn composite_n(
-        n: u32,
-        scene: [f32; 3],
-        frag: [f32; 3],
-        a: f32,
-        tr: f32,
-        albedo: [f32; 3],
-        a_eff: f32,
+        n: u32, scene: [f32; 3], frag: [f32; 3],
+        a: f32, tr: f32, albedo: [f32; 3], a_eff: f32,
     ) -> [f32; 3] {
         let t = t_frag(a, tr, albedo);
         // reveal.rgb = Π T_frag、reveal.a = Π(1-a_eff)。クリア値 1 から N 回掛ける。
         let mut reveal_rgb = [1.0f32; 3];
         let mut reveal_a = 1.0f32;
         for _ in 0..n {
-            for i in 0..3 {
-                reveal_rgb[i] *= t[i];
-            }
+            for i in 0..3 { reveal_rgb[i] *= t[i]; }
             reveal_a *= 1.0 - a_eff;
         }
         // C = 1 - Π(1-a_eff)（スカラーのカバレッジ）。
@@ -1460,26 +1198,17 @@ mod tests {
     /// 透過の高い G/B で avg 重み (1-ΠT)≈0 となり scene（直進背景）が出ていた欠陥を対比で固定する。
     #[test]
     fn wboit_cyan_glass_bends_all_passing_channels() {
-        let scene = [0.2, 0.3, 0.4]; // 直進背景。
-        let avg = [0.7, 0.6, 0.5]; // 生の曲がった背景 bent_bg + 自色（tint 非乗算）。
-        let albedo = [0.0, 1.0, 1.0]; // シアン。
+        let scene = [0.2, 0.3, 0.4];      // 直進背景。
+        let avg   = [0.7, 0.6, 0.5];      // 生の曲がった背景 bent_bg + 自色（tint 非乗算）。
+        let albedo = [0.0, 1.0, 1.0];     // シアン。
         // a≈1 の屈折ガラス（a_eff=1 → C=1 → bent=avg）。
         let got = composite_n(1, scene, avg, 1.0, 1.0, albedo, 1.0);
         // T_cyan=(0,1,1)。final = avg × (0,1,1) = (0, avg.g, avg.b)。
         assert!((got[0] - 0.0).abs() < 1.0e-6, "赤は完全遮断（T_cyan.r=0）");
-        assert!(
-            (got[1] - avg[1]).abs() < 1.0e-6,
-            "緑は曲がった背景 avg.g（scene.g ではない＝前案の欠陥解消）"
-        );
-        assert!(
-            (got[2] - avg[2]).abs() < 1.0e-6,
-            "青は曲がった背景 avg.b（scene.b ではない）"
-        );
+        assert!((got[1] - avg[1]).abs() < 1.0e-6, "緑は曲がった背景 avg.g（scene.g ではない＝前案の欠陥解消）");
+        assert!((got[2] - avg[2]).abs() < 1.0e-6, "青は曲がった背景 avg.b（scene.b ではない）");
         // 前案なら final_g = scene.g*1 + avg.g*0 = scene.g だった（直進）。今は avg.g（曲がる）。
-        assert!(
-            (got[1] - scene[1]).abs() > 0.1,
-            "緑が直進 scene.g でないこと（前案との差）"
-        );
+        assert!((got[1] - scene[1]).abs() > 0.1, "緑が直進 scene.g でないこと（前案との差）");
     }
 
     /// 【性質2】純赤フィルタ（a=1, tr=1, albedo=(1,0,0)）は重ね数 N に依存しない＝「1赤+1赤≈1赤」。
@@ -1487,29 +1216,19 @@ mod tests {
     #[test]
     fn wboit_colored_pure_red_is_n_independent() {
         let scene = [0.3, 0.7, 0.2];
-        let avg = [0.8, 0.1, 0.1]; // 曲がった背景 + 自色。
-        let albedo = [1.0, 0.0, 0.0]; // 純赤フィルタ。
+        let avg   = [0.8, 0.1, 0.1];      // 曲がった背景 + 自色。
+        let albedo = [1.0, 0.0, 0.0];     // 純赤フィルタ。
         let base = composite_n(1, scene, avg, 1.0, 1.0, albedo, 1.0);
         for &n in &[2u32, 8, 64] {
             let got = composite_n(n, scene, avg, 1.0, 1.0, albedo, 1.0);
             for i in 0..3 {
-                assert!(
-                    (got[i] - base[i]).abs() < 1.0e-6,
-                    "純赤フィルタは N={n} でも N=1 と一致（飽和）(ch{i}: {} vs {})",
-                    got[i],
-                    base[i]
-                );
+                assert!((got[i] - base[i]).abs() < 1.0e-6,
+                    "純赤フィルタは N={n} でも N=1 と一致（飽和）(ch{i}: {} vs {})", got[i], base[i]);
             }
         }
         // T_red=(1,0,0), C=1 → final = avg × (1,0,0) = (avg.r, 0, 0)。
-        assert!(
-            (base[0] - avg[0]).abs() < 1.0e-6,
-            "赤は曲がった背景 avg.r（T_r=1 で素通り）"
-        );
-        assert!(
-            base[1].abs() < 1.0e-6 && base[2].abs() < 1.0e-6,
-            "緑青は完全遮断（T=0）"
-        );
+        assert!((base[0] - avg[0]).abs() < 1.0e-6, "赤は曲がった背景 avg.r（T_r=1 で素通り）");
+        assert!(base[1].abs() < 1.0e-6 && base[2].abs() < 1.0e-6, "緑青は完全遮断（T=0）");
     }
 
     /// 【性質3】半透明 a<1 のフェード（素の Blend, tr=0, a_eff=a）: 有界で加算的発散が無く、
@@ -1517,7 +1236,7 @@ mod tests {
     #[test]
     fn wboit_semi_alpha_fade_bounded_and_nonblack() {
         let scene = [1.0, 1.0, 1.0];
-        let avg = [0.2, 0.6, 0.9];
+        let avg   = [0.2, 0.6, 0.9];
         let a = 0.5f32;
         for &n in &[1u32, 2, 4, 16, 64] {
             // 素の Blend: tr=0, a_eff=a（屈折なし）。T=(1-a) スカラー。
@@ -1525,22 +1244,14 @@ mod tests {
             for i in 0..3 {
                 // 有界: [0, max(scene,avg)] に収まる（加算的発散なし）。
                 let hi = scene[i].max(avg[i]) + 1.0e-6;
-                assert!(
-                    got[i] >= -1.0e-6 && got[i] <= hi,
-                    "N={n} ch{i} 有界: {}",
-                    got[i]
-                );
+                assert!(got[i] >= -1.0e-6 && got[i] <= hi, "N={n} ch{i} 有界: {}", got[i]);
             }
         }
         // 深いスタック（ΠT≈0）でも自色 avg が最低可視度 FLOOR ぶん残る＝黒転しない。
         let deep = composite_n(64, scene, avg, a, 0.0, [0.0, 0.0, 0.0], a);
         for i in 0..3 {
-            assert!(
-                deep[i] >= avg[i] * WBOIT_SELF_MIN_FILTER * 0.9,
-                "深いスタックでも黒転しない（≈avg*FLOOR）: ch{i} {} >= {}",
-                deep[i],
-                avg[i] * WBOIT_SELF_MIN_FILTER * 0.9
-            );
+            assert!(deep[i] >= avg[i] * WBOIT_SELF_MIN_FILTER * 0.9,
+                "深いスタックでも黒転しない（≈avg*FLOOR）: ch{i} {} >= {}", deep[i], avg[i] * WBOIT_SELF_MIN_FILTER * 0.9);
         }
     }
 
@@ -1551,7 +1262,7 @@ mod tests {
     fn wboit_complementary_overlap_is_not_black() {
         let scene = [0.5, 0.5, 0.5];
         // 手前ガラスの見え（自色反射＋曲がった背景）。真っ黒でなく可視の色を持つ。
-        let avg = [0.3, 0.4, 0.5];
+        let avg   = [0.3, 0.4, 0.5];
         // シアン（T≈(0,0.8,0.9)）× 赤（T≈(1,0,0)）の重なり → ΠT ≈ (0,0,0)（補色で全遮断）。
         // composite_two_glass 相当を composite_n で近似できないため、ここは直接 ΠT≈0 を作る:
         // 2 枚のフィルタ積が全チャンネル 0 になるケースを、単一「全遮断」フィルタ (a=1,tr=0) で代表させる。
@@ -1559,12 +1270,8 @@ mod tests {
         // ΠT=(0,0,0)・C=1・lift=FLOOR → final = avg*FLOOR（背景 scene 項は ΠT=0 で 0）。
         for i in 0..3 {
             let expect = avg[i] * WBOIT_SELF_MIN_FILTER;
-            assert!(
-                (got[i] - expect).abs() < 1.0e-6,
-                "補色/全遮断の重なりは avg*FLOOR で下げ止まる（黒転しない）: ch{i} {} vs {}",
-                got[i],
-                expect
-            );
+            assert!((got[i] - expect).abs() < 1.0e-6,
+                "補色/全遮断の重なりは avg*FLOOR で下げ止まる（黒転しない）: ch{i} {} vs {}", got[i], expect);
             assert!(got[i] > 0.02, "ch{i} が黒（0）でないこと: {}", got[i]);
         }
     }
@@ -1577,10 +1284,7 @@ mod tests {
         // N=0（フラグメント 0 枚）: reveal.rgb=1, reveal.a=1 → C=0 → bent=scene → final=scene*1。
         let got = composite_n(0, scene, [9.9, 9.9, 9.9], 0.5, 1.0, [1.0, 0.0, 0.0], 1.0);
         for i in 0..3 {
-            assert!(
-                (got[i] - scene[i]).abs() < 1.0e-6,
-                "ガラス無しは scene 完全一致（ch{i}）"
-            );
+            assert!((got[i] - scene[i]).abs() < 1.0e-6, "ガラス無しは scene 完全一致（ch{i}）");
         }
     }
 
@@ -1591,9 +1295,7 @@ mod tests {
         // フラグメント: T_frag = clamp((1-a) + a*tr*albedo, [0,1])。
         let refract_src = include_str!("shaders/refract_common.wgsl");
         assert!(
-            refract_src.contains(
-                "clamp(vec3<f32>(1.0 - a) + a * tr * albedo, vec3<f32>(0.0), vec3<f32>(1.0))"
-            ),
+            refract_src.contains("clamp(vec3<f32>(1.0 - a) + a * tr * albedo, vec3<f32>(0.0), vec3<f32>(1.0))"),
             "glass_composite_wboit の T_frag 式が CPU ミラーと一致すること",
         );
         // フラグメントは「生の曲がった背景（tint 非乗算）」を焼き込む（色フィルタは ΠT が持つ）。
@@ -1662,18 +1364,15 @@ mod tests {
     /// 手前ガラスは深度重み wf が大きく avg を支配する（近距離ほど WBOIT 重みが大）。
     fn composite_two_glass(
         scene: [f32; 3],
-        premult_front: [f32; 3],
-        premult_back: [f32; 3],
-        wf: f32,
-        wb: f32,
-        t_front: [f32; 3],
-        t_back: [f32; 3],
+        premult_front: [f32; 3], premult_back: [f32; 3],
+        wf: f32, wb: f32,
+        t_front: [f32; 3], t_back: [f32; 3],
     ) -> [f32; 3] {
         let a_eff = 1.0f32; // 屈折ガラスは a_eff=1。
         let mut out = [0.0f32; 3];
         let accum_a = a_eff * (wf + wb);
         let reveal_a = (1.0 - a_eff) * (1.0 - a_eff); // =0（ガラス2枚）。
-        let coverage = 1.0 - reveal_a; // C=1。
+        let coverage = 1.0 - reveal_a;                // C=1。
         for i in 0..3 {
             let accum_rgb = premult_front[i] * wf + premult_back[i] * wb;
             let avg = accum_rgb / accum_a.max(1.0e-5);
@@ -1689,8 +1388,8 @@ mod tests {
     /// この振る舞いを固定して「修正が必要な条件」を明示する（＝直進背景フォールバックの動機）。
     #[test]
     fn wboit_two_glass_dark_bg_goes_black_reproduces_bug() {
-        let scene = [0.20, 0.60, 0.60]; // 背景（真後ろの不透明）。
-        let t_cyan = [0.0, 1.0, 0.98]; // シアンガラスの色フィルタ。
+        let scene = [0.20, 0.60, 0.60];       // 背景（真後ろの不透明）。
+        let t_cyan = [0.0, 1.0, 0.98];        // シアンガラスの色フィルタ。
         // 手前ガラス: RT ミスで bg≈0 → premult ≈ 自色（暗）のみ（raw1 = c + bg*(1-fr) の bg=0）。
         let front_dark = [0.02, 0.02, 0.02];
         // 後ガラス: bg 良好（少ない界面でヒット）。
@@ -1698,11 +1397,7 @@ mod tests {
         // 手前が深度重み支配（wf >> wb）。
         let got = composite_two_glass(scene, front_dark, back_ok, 100.0, 1.0, t_cyan, t_cyan);
         // 緑チャンネルは背景×フィルタ²（≈0.6）であるべきなのに、暗 bg のせいで ~0.02 に潰れる＝黒転。
-        assert!(
-            got[1] < 0.05,
-            "暗 bg フォールバックだと緑がほぼ黒に潰れる（根因の再現）: {}",
-            got[1]
-        );
+        assert!(got[1] < 0.05, "暗 bg フォールバックだと緑がほぼ黒に潰れる（根因の再現）: {}", got[1]);
     }
 
     /// 【修正の担保】不透明ミス時に「直進背景」を返すと、手前ガラスの premult に背景が乗るため
@@ -1724,19 +1419,12 @@ mod tests {
         // ΠT.g = 1*1 = 1。期待オーダー = 背景×フィルタ² 緑 = scene.g*ΠT.g = 0.6。
         let expect_order = scene[1] * (t_cyan[1] * t_cyan[1]);
         // 「背景×フィルタ² のオーダーから大きく暗転しない」= 少なくともその半分以上（黒ではない）。
-        assert!(
-            got[1] >= 0.5 * expect_order,
-            "直進背景フォールバックで緑が背景×フィルタ²の半分以上（黒転しない）: {} >= {}",
-            got[1],
-            0.5 * expect_order
-        );
+        assert!(got[1] >= 0.5 * expect_order,
+            "直進背景フォールバックで緑が背景×フィルタ²の半分以上（黒転しない）: {} >= {}", got[1], 0.5 * expect_order);
         // 赤は完全遮断（T_cyan.r=0）で 0＝これはシアンとして正しい（黒ではなく色遮断）。
         assert!(got[0].abs() < 1.0e-6, "赤はシアンフィルタで遮断（0）");
         // 有界（scene を超えて増えない）。
-        assert!(
-            got[1] <= scene[1] + 1.0e-6 && got[2] <= scene[2] + 1.0e-6,
-            "背景を超えて増えない"
-        );
+        assert!(got[1] <= scene[1] + 1.0e-6 && got[2] <= scene[2] + 1.0e-6, "背景を超えて増えない");
     }
 
     /// シェーダ実体照合: RT 屈折の不透明ミス／画面外フォールバックが「直進背景」になっていること。
@@ -1755,10 +1443,7 @@ mod tests {
         );
         // 不透明ミス／画面外の両経路が直進背景を使うこと。
         assert_eq!(
-            rt_src
-                .matches("refract_rt_fallback_straight(frag_xy, surf.roughness)")
-                .count(),
-            2,
+            rt_src.matches("refract_rt_fallback_straight(frag_xy, surf.roughness)").count(), 2,
             "不透明ミスと画面外ヒットの 2 経路とも直進背景フォールバックを使うこと",
         );
         // 旧 DDGI/アンビエントのフォールバック（暗転の原因）が屈折 RT から除かれていること。

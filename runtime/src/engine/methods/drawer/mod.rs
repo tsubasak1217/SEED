@@ -130,6 +130,17 @@ pub struct DrawContext {
     /// テクスチャ単位ポストプロセス（.postfx）の静的リソース一式。
     /// スプライトのポストエフェクト焼き込みで使うパイプライン・サンプラー・既定マスク。
     pub postfx:           PostfxContext,
+    /// シーン描画（HDR オフスクリーン）のカラーフォーマット。
+    /// シェーディングアセットのパイプラインを**実行時に**組むとき、組み込みの
+    /// deferred ライティングと同一のカラーターゲットで作るために保持する。
+    pub scene_format:     wgpu::TextureFormat,
+    /// 深度フォーマット。deferred ライティングは no_depth なので実際には使われないが、
+    /// `RenderPipelineBuilder::new` のシグネチャを満たすために保持する（組み込みと同値）。
+    pub depth_format:     wgpu::TextureFormat,
+    /// シェーディングアセット（.wgsl）のビルド結果キャッシュ（L3-a）。
+    /// アセット未指定のプロジェクトでは一切触られない（空のまま）。
+    /// `&self` 共有下でフレーム内から解決・ホットリロードするため内部可変を内包する。
+    pub shading_asset_cache: crate::engine::core::renderer::shading_asset::ShadingAssetCache,
     /// スプライトのポストエフェクト焼き込みキャッシュ（(texture_path, postfx_path) → 焼き込みテクスチャ）。
     /// `&self` 共有下でフレーム内から焼き込み・参照するため内部可変（RefCell）を内包する。
     pub sprite_postfx_cache: SpritePostfxCache,
@@ -234,6 +245,10 @@ impl DrawContext {
             gi,
             post,
             postfx,
+            scene_format,
+            depth_format,
+            shading_asset_cache:
+                crate::engine::core::renderer::shading_asset::ShadingAssetCache::new(),
             sprite_postfx_cache: SpritePostfxCache::new(),
             model_cache:      RefCell::new(HashMap::new()),
             sprite_tex_cache: RefCell::new(HashMap::new()),

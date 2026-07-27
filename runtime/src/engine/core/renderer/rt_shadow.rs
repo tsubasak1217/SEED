@@ -32,15 +32,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use wgpu::{
     AccelerationStructureFlags, AccelerationStructureGeometryFlags,
-    AccelerationStructureUpdateMode, BlasBuildEntry, BlasGeometries, BlasGeometrySizeDescriptors,
-    BlasTriangleGeometry, BlasTriangleGeometrySizeDescriptor, CreateBlasDescriptor,
-    CreateTlasDescriptor, TlasInstance, TlasPackage,
+    AccelerationStructureUpdateMode, BlasBuildEntry, BlasGeometries,
+    BlasGeometrySizeDescriptors, BlasTriangleGeometry, BlasTriangleGeometrySizeDescriptor,
+    CreateBlasDescriptor, CreateTlasDescriptor, TlasInstance, TlasPackage,
 };
 
-use super::bindless::{
-    BINDLESS_DUMMY_TEX_INDEX, BINDLESS_FLAG_ELIGIBLE, BINDLESS_FLAG_GEOM, BINDLESS_FLAG_MASK,
-    BindlessInstanceRecord, BindlessResources,
-};
+use super::bindless::{BindlessResources, BindlessInstanceRecord, BINDLESS_FLAG_ELIGIBLE, BINDLESS_FLAG_MASK, BINDLESS_FLAG_GEOM, BINDLESS_DUMMY_TEX_INDEX};
 use super::gpu_resources::{GpuModel, GpuPrimitive, InstancedModelBatch};
 use super::lighting::LightBuffer;
 use super::shadow::ShadowResources;
@@ -180,17 +177,13 @@ fn pack_shadow_alpha_transmission(alpha: f32, transmission: f32) -> f32 {
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct BlasKey {
     source_path: String,
-    mesh_idx: usize,
-    prim_idx: usize,
+    mesh_idx:    usize,
+    prim_idx:    usize,
 }
 
 impl BlasKey {
     fn new(source_path: &str, mesh_idx: usize, prim_idx: usize) -> Self {
-        Self {
-            source_path: source_path.to_string(),
-            mesh_idx,
-            prim_idx,
-        }
+        Self { source_path: source_path.to_string(), mesh_idx, prim_idx }
     }
 }
 
@@ -203,7 +196,7 @@ pub struct RtShadowResources {
     /// 起動時 1 回生成で使い回せる。
     tlas_package: TlasPackage,
     /// BLAS キャッシュ（キー = source_path+mesh+prim, 非スキンのみ）。初回のみ構築。
-    blas_cache: HashMap<BlasKey, wgpu::Blas>,
+    blas_cache:   HashMap<BlasKey, wgpu::Blas>,
     /// group 4 複合 BindGroup（ライト binding0/1 ＋ シャドウ binding2〜5 ＋ TLAS binding6）。
     /// mesh_rt / skinned_mesh_rt パイプラインの描画で bind する。
     /// この BindGroup を実際に bind するのは RT 影オン時のみ。オン時は毎フレーム
@@ -250,19 +243,19 @@ impl RtShadowResources {
     /// - `light_buffer`:  ライトバッファ（binding 0/1 を供給）。
     /// - `clusters`:      クラスタ資源（binding 7〜9 を供給。Phase C1）。
     pub fn new(
-        device: &wgpu::Device,
+        device:        &wgpu::Device,
         rt_lights_bgl: &wgpu::BindGroupLayout,
-        shadow: &ShadowResources,
-        light_buffer: &LightBuffer,
-        clusters: &super::clustered::ClusterResources,
-        gi: &super::ddgi::GiResources,
+        shadow:        &ShadowResources,
+        light_buffer:  &LightBuffer,
+        clusters:      &super::clustered::ClusterResources,
+        gi:            &super::ddgi::GiResources,
     ) -> Self {
         // TLAS を生成する。フラグは高速ビルド優先（毎フレーム再構築のため）。
         let tlas = device.create_tlas(&CreateTlasDescriptor {
-            label: Some("RT Shadow TLAS"),
+            label:         Some("RT Shadow TLAS"),
             max_instances: MAX_RT_INSTANCES,
-            flags: AccelerationStructureFlags::PREFER_FAST_BUILD,
-            update_mode: AccelerationStructureUpdateMode::Build,
+            flags:         AccelerationStructureFlags::PREFER_FAST_BUILD,
+            update_mode:   AccelerationStructureUpdateMode::Build,
         });
 
         // 平均アルベド storage（Phase RT-GI）。容量 = MAX_RT_INSTANCES × vec4<f32>（16B）。
@@ -270,9 +263,9 @@ impl RtShadowResources {
         // 詰める。GI compute の binding4 と、色付き影（rt_shadow_on.wgsl の group4 binding14）の両方が読む。
         // BindGroup 生成前に作る（create_rt_bind_group が binding14 として参照するため）。
         let albedo_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("RT Instance Avg Albedo"),
-            size: (MAX_RT_INSTANCES as u64) * 16,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            label:              Some("RT Instance Avg Albedo"),
+            size:               (MAX_RT_INSTANCES as u64) * 16,
+            usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -282,13 +275,7 @@ impl RtShadowResources {
         // TlasPackage へ move しても有効であり、再ビルドで内容が更新されても使い回せる。
         // 平均アルベド storage（binding14）も同時に bind し、半透明レイヤーの色付き影に使う。
         let bind_group = light_buffer.create_rt_bind_group(
-            device,
-            rt_lights_bgl,
-            shadow,
-            clusters,
-            gi,
-            &tlas,
-            &albedo_buffer,
+            device, rt_lights_bgl, shadow, clusters, gi, &tlas, &albedo_buffer,
         );
 
         let tlas_package = TlasPackage::new(tlas);
@@ -307,14 +294,10 @@ impl RtShadowResources {
     }
 
     /// GI compute 用の TLAS 参照（RtShadowResources と共有する加速構造）。
-    pub fn tlas(&self) -> &wgpu::Tlas {
-        self.tlas_package.tlas()
-    }
+    pub fn tlas(&self) -> &wgpu::Tlas { self.tlas_package.tlas() }
 
     /// TLAS インスタンス順の平均アルベド storage への参照（GI compute の binding4 に使う）。
-    pub fn albedo_buffer(&self) -> &wgpu::Buffer {
-        &self.albedo_buffer
-    }
+    pub fn albedo_buffer(&self) -> &wgpu::Buffer { &self.albedo_buffer }
 
     /// 解放された統合バッチキー（batch_key）に紐づく BLAS キャッシュと警告集合を追従解放する。
     ///
@@ -330,15 +313,11 @@ impl RtShadowResources {
     ///
     /// 返り値: 解放した BLAS エントリ数（ログ表示用）。
     pub fn prune_source_paths(&mut self, freed_keys: &[String]) -> usize {
-        if freed_keys.is_empty() {
-            return 0;
-        }
+        if freed_keys.is_empty() { return 0; }
         let before = self.blas_cache.len();
-        self.blas_cache
-            .retain(|k, _| !freed_keys.iter().any(|f| k.source_path == *f));
+        self.blas_cache.retain(|k, _| !freed_keys.iter().any(|f| k.source_path == *f));
         // 警告集合（BLAS_INPUT 用途不足）も同じキーで掃除し、無限成長を防ぐ。
-        self.warned_usage
-            .retain(|k| !freed_keys.iter().any(|f| k.source_path == *f));
+        self.warned_usage.retain(|k| !freed_keys.iter().any(|f| k.source_path == *f));
         before - self.blas_cache.len()
     }
 
@@ -353,8 +332,8 @@ impl RtShadowResources {
     /// 新規 BLAS のビルドと TLAS ビルドを 1 回の呼び出しにまとめる。
     pub fn prepare_and_build(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        device:  &wgpu::Device,
+        queue:   &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         casters: &[(&str, &GpuModel, &InstancedModelBatch)],
         // バインドレス（B2）: 対応 GPU でのみ Some。TLAS 詰め直しと同順（custom_data 順）で
@@ -370,17 +349,11 @@ impl RtShadowResources {
                 for (prim_idx, prim) in mesh.primitives.iter().enumerate() {
                     // スキン用頂点を持つプリミティブは v1 対象外
                     // （静止時姿勢の頂点で BLAS を作っても変形後と一致しないため）。
-                    if prim.skin_vertex_buffer.is_some() {
-                        continue;
-                    }
+                    if prim.skin_vertex_buffer.is_some() { continue; }
                     let key = BlasKey::new(path, mesh_idx, prim_idx);
-                    if self.blas_cache.contains_key(&key) {
-                        continue;
-                    }
+                    if self.blas_cache.contains_key(&key) { continue; }
                     // 同一フレーム内で同一キーが複数キャスターに現れる場合の重複追加も防ぐ。
-                    if to_build.iter().any(|(k, _)| *k == key) {
-                        continue;
-                    }
+                    if to_build.iter().any(|(k, _)| *k == key) { continue; }
                     // ── 防御チェック: BLAS 入力バッファの用途検証 ──────────
                     // 頂点/インデックスバッファに BLAS_INPUT 用途が無いまま
                     // build_acceleration_structures へ渡すと wgpu の検証パニックで
@@ -388,14 +361,8 @@ impl RtShadowResources {
                     // 生成経路の見落とし・将来の新経路追加に備えてここで検証し、
                     // 不足時は警告ログ＋そのプリミティブをスキップ（RT 影を落とさない
                     // だけの縮退動作）にする。パニックはさせない。
-                    let vb_ok = prim
-                        .vertex_buffer
-                        .usage()
-                        .contains(wgpu::BufferUsages::BLAS_INPUT);
-                    let ib_ok = prim
-                        .index_buffer
-                        .usage()
-                        .contains(wgpu::BufferUsages::BLAS_INPUT);
+                    let vb_ok = prim.vertex_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT);
+                    let ib_ok = prim.index_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT);
                     if !vb_ok || !ib_ok {
                         // 同一プリミティブの警告は 1 回だけ（毎フレーム呼ばれるため）。
                         if self.warned_usage.insert(key.clone()) {
@@ -428,8 +395,7 @@ impl RtShadowResources {
             eprintln!(
                 "[SEED RT] BLAS 分割ビルド: このフレーム {} 件を構築、残り {} 件は後続フレームへ繰り越し\
                 （一斉再構築による GPU 過負荷／デバイスロストの回避）",
-                to_build.len(),
-                blas_backlog
+                to_build.len(), blas_backlog
             );
         }
 
@@ -477,9 +443,7 @@ impl RtShadowResources {
                     // シグネチャが不変のまま静止スキップが発火し、GPU 上の albedo_buffer が古い値で
                     // 固定され、色付き影に編集が反映されない（＝実行時のアルファ/色/透過率変更が影に出ない）。
                     let alb = gpu.primitive_avg_albedo(material_idx);
-                    for v in &alb {
-                        hasher.write_u32(v.to_bits());
-                    }
+                    for v in &alb { hasher.write_u32(v.to_bits()); }
                     hasher.write_u32(gpu.primitive_transmission(material_idx).to_bits());
                     // バインドレス（B2）: instance_table は build 経路でしか再アップロードされない
                     // ため、レコードを左右する値（base_color_factor・albedo tex index・UV/index
@@ -487,30 +451,22 @@ impl RtShadowResources {
                     // マテリアルの in-place 編集（factor）や再登録でのオフセット変化が反映されない。
                     if bindless.is_some() {
                         let bcf = gpu.primitive_base_color_factor(material_idx);
-                        for v in &bcf {
-                            hasher.write_u32(v.to_bits());
-                        }
+                        for v in &bcf { hasher.write_u32(v.to_bits()); }
                         hasher.write_u32(gpu.primitive_bindless_albedo_tex_index(material_idx));
                         // B3: Mask 判別（instance_mask_for は Blend/Mask を同一 0x02 に潰すため、
                         // Mask フラグと alpha_cutoff はここで別途混ぜる。含めないと Blend⇔Mask 切替や
                         // カットオフ編集で instance_table が古いまま固定され、葉の形の影に反映されない）。
-                        let is_mask =
-                            matches!(gpu.primitive_alpha_mode(material_idx), AlphaMode::Mask);
+                        let is_mask = matches!(gpu.primitive_alpha_mode(material_idx), AlphaMode::Mask);
                         hasher.write_u8(is_mask as u8);
                         hasher.write_u32(gpu.primitive_alpha_cutoff(material_idx).to_bits());
-                        if let Some(gp) = gpu
-                            .meshes
-                            .get(mesh_idx)
-                            .and_then(|m| m.primitives.get(prim_idx))
-                        {
+                        if let Some(gp) = gpu.meshes.get(mesh_idx)
+                            .and_then(|m| m.primitives.get(prim_idx)) {
                             hasher.write_u32(gp.bindless_uv_offset);
                             hasher.write_u32(gp.bindless_index_offset);
                             hasher.write_u8(gp.bindless_eligible as u8);
                         }
                     }
-                    for v in &transform {
-                        hasher.write_u32(v.to_bits());
-                    }
+                    for v in &transform { hasher.write_u32(v.to_bits()); }
                 });
             }
             hasher.finish()
@@ -519,10 +475,7 @@ impl RtShadowResources {
         // 初回（last_tlas_sig=None）は必ず構築する。新規 BLAS があるフレームも必ず構築する。
         if !new_blas_built && self.last_tlas_sig == Some(new_sig) {
             // 静止フレーム: GPU 上の TLAS は前回のまま有効。CPU 詰め直し・GPU ビルドを共に省く。
-            return RtBuildStat {
-                built: false,
-                instances: self.last_inst_count,
-            };
+            return RtBuildStat { built: false, instances: self.last_inst_count };
         }
         self.last_tlas_sig = Some(new_sig);
 
@@ -530,21 +483,19 @@ impl RtShadowResources {
         // サイズ記述子はビルド呼び出しまで生存させる必要があるため Vec に確保する。
         let size_descs: Vec<BlasTriangleGeometrySizeDescriptor> =
             to_build.iter().map(|(_, p)| blas_size_desc(p)).collect();
-        let blas_entries: Vec<BlasBuildEntry> = to_build
-            .iter()
-            .enumerate()
+        let blas_entries: Vec<BlasBuildEntry> = to_build.iter().enumerate()
             .map(|(i, (key, prim))| {
                 let blas = self.blas_cache.get(key).unwrap();
                 BlasBuildEntry {
                     blas,
                     geometry: BlasGeometries::TriangleGeometries(vec![BlasTriangleGeometry {
-                        size: &size_descs[i],
-                        vertex_buffer: &prim.vertex_buffer,
-                        first_vertex: 0,
-                        vertex_stride: VERTEX_STRIDE,
-                        index_buffer: Some(&prim.index_buffer),
-                        first_index: Some(0),
-                        transform_buffer: None,
+                        size:                    &size_descs[i],
+                        vertex_buffer:           &prim.vertex_buffer,
+                        first_vertex:            0,
+                        vertex_stride:           VERTEX_STRIDE,
+                        index_buffer:            Some(&prim.index_buffer),
+                        first_index:             Some(0),
+                        transform_buffer:        None,
                         transform_buffer_offset: None,
                     }]),
                 }
@@ -557,7 +508,7 @@ impl RtShadowResources {
         // 法線ジオメトリ登録済み（BINDLESS_FLAG_GEOM 付与＝界面で実屈折できる）数を数える。
         // GEOM 付与率が低い＝法線メガバッファ枯渇等で glass が直進近似へ縮退している証跡になる。
         let mut translucent_total: usize = 0;
-        let mut translucent_geom: usize = 0;
+        let mut translucent_geom:  usize = 0;
         // 平均アルベド（Phase RT-GI）を TLAS インスタンスと同順（custom_data 順）で詰める。
         let mut albedos: Vec<[f32; 4]> = vec![[0.0f32; 4]; MAX_RT_INSTANCES as usize];
         // バインドレス（B2）: インスタンステーブルを同順で詰める（対応 GPU のみ確保）。
@@ -569,30 +520,22 @@ impl RtShadowResources {
         {
             // disjoint フィールド借用: blas_cache（不変）と tlas_package（可変）。
             let cache = &self.blas_cache;
-            let instances = self
-                .tlas_package
+            let instances = self.tlas_package
                 .get_mut_slice(0..MAX_RT_INSTANCES as usize)
                 .expect("TLAS スライス範囲は max_instances 以内");
-            for slot in instances.iter_mut() {
-                *slot = None;
-            }
+            for slot in instances.iter_mut() { *slot = None; }
 
             let mut overflow = false;
             for (path, gpu, batch) in casters {
                 batch.rt_enumerate(|mesh_idx, prim_idx, material_idx, transform| {
-                    if inst_count >= MAX_RT_INSTANCES as usize {
-                        overflow = true;
-                        return;
-                    }
+                    if inst_count >= MAX_RT_INSTANCES as usize { overflow = true; return; }
                     let key = BlasKey::new(path, mesh_idx, prim_idx);
                     if let Some(blas) = cache.get(&key) {
                         // custom_data はインスタンス番号（GI が平均アルベドを引くキーでもある）。
                         // mask は alpha_mode 由来（不透明のみ影レイから見える）。
                         let mask = instance_mask_for(gpu.primitive_alpha_mode(material_idx));
                         // 【診断】0x02（半透明）インスタンス総数を数える（GEOM 付与率の分母）。
-                        if mask == RT_MASK_NON_OPAQUE {
-                            translucent_total += 1;
-                        }
+                        if mask == RT_MASK_NON_OPAQUE { translucent_total += 1; }
                         // 平均アルベド（Phase RT-GI）を同じ index に詰める（custom_data と一致）。
                         // .rgb=平均アルベド（GI/反射のバウンス色。ddgi_probe_update / reflection_rt は .rgb のみ参照）。
                         // .a =RT 色付き影専用。α（base_color_factor.a）と transmission を固定小数でパックして相乗り。
@@ -611,64 +554,42 @@ impl RtShadowResources {
                         // どちらか欠ければ flags=0 で、ヒットシェーダは平均色（avg_albedo）へ縮退する。
                         if !records.is_empty() {
                             let tex_index = gpu.primitive_bindless_albedo_tex_index(material_idx);
-                            let geom = gpu
-                                .meshes
-                                .get(mesh_idx)
+                            let geom = gpu.meshes.get(mesh_idx)
                                 .and_then(|m| m.primitives.get(prim_idx))
-                                .map(|gp| {
-                                    (
-                                        gp.bindless_eligible,
-                                        gp.bindless_uv_offset,
-                                        gp.bindless_index_offset,
-                                        gp.bindless_normal_offset,
-                                    )
-                                })
+                                .map(|gp| (gp.bindless_eligible, gp.bindless_uv_offset,
+                                           gp.bindless_index_offset, gp.bindless_normal_offset))
                                 .unwrap_or((false, 0, 0, 0));
                             let geom_registered = geom.0; // UV/index/法線をメガバッファへ登録済みか。
                             let elig = geom_registered && tex_index != BINDLESS_DUMMY_TEX_INDEX;
                             // Mask マテリアル（アルファテスト）は色付き影の第 2 クエリでテクスチャ α を
                             // alpha_cutoff と比較して葉の形の影を落とす（B3）。flag を立て cutoff を積む。
-                            let is_mask =
-                                matches!(gpu.primitive_alpha_mode(material_idx), AlphaMode::Mask);
+                            let is_mask = matches!(gpu.primitive_alpha_mode(material_idx), AlphaMode::Mask);
                             let mut flags = if elig { BINDLESS_FLAG_ELIGIBLE } else { 0 };
-                            if is_mask {
-                                flags |= BINDLESS_FLAG_MASK;
-                            }
+                            if is_mask { flags |= BINDLESS_FLAG_MASK; }
                             // ジオメトリ（法線）登録済みなら GEOM を立てる（テクスチャ有無に依存しない）。
                             // RT 屈折の界面ごとの本物の再屈折はこのビットで法線復元可否を判定する。
-                            if geom_registered {
-                                flags |= BINDLESS_FLAG_GEOM;
-                            }
+                            if geom_registered { flags |= BINDLESS_FLAG_GEOM; }
                             // 【診断】0x02 のうち GEOM 付与済み（界面で実屈折できる）数を数える。
-                            if mask == RT_MASK_NON_OPAQUE && geom_registered {
-                                translucent_geom += 1;
-                            }
+                            if mask == RT_MASK_NON_OPAQUE && geom_registered { translucent_geom += 1; }
                             records[inst_count] = BindlessInstanceRecord {
-                                avg_albedo: alb, // 先頭 16B は既存 storage と同一（.a=パック済み）
+                                avg_albedo:        alb, // 先頭 16B は既存 storage と同一（.a=パック済み）
                                 base_color_factor: gpu.primitive_base_color_factor(material_idx),
-                                albedo_tex_index: tex_index,
-                                uv_offset: geom.1,
-                                index_offset: geom.2,
+                                albedo_tex_index:  tex_index,
+                                uv_offset:         geom.1,
+                                index_offset:      geom.2,
                                 flags,
                                 // Mask のときだけ有効な閾値（Blend では 0.0）。BINDLESS_FLAG_MASK が
                                 // 立っているインスタンスでのみシェーダが参照する。
-                                alpha_cutoff: if is_mask {
-                                    gpu.primitive_alpha_cutoff(material_idx)
-                                } else {
-                                    0.0
-                                },
-                                normal_offset: geom.3,
-                                _pad: [0; 2],
+                                alpha_cutoff:      if is_mask { gpu.primitive_alpha_cutoff(material_idx) } else { 0.0 },
+                                normal_offset:     geom.3,
+                                _pad:              [0; 2],
                             };
                         }
-                        instances[inst_count] =
-                            Some(TlasInstance::new(blas, transform, inst_count as u32, mask));
+                        instances[inst_count] = Some(TlasInstance::new(blas, transform, inst_count as u32, mask));
                         inst_count += 1;
                     }
                 });
-                if overflow {
-                    break;
-                }
+                if overflow { break; }
             }
 
             if overflow && !self.warned_overflow {
@@ -706,16 +627,10 @@ impl RtShadowResources {
             }
         }
 
-        encoder.build_acceleration_structures(
-            blas_entries.iter(),
-            std::iter::once(&self.tlas_package),
-        );
+        encoder.build_acceleration_structures(blas_entries.iter(), std::iter::once(&self.tlas_package));
 
         self.last_inst_count = inst_count as u32;
-        RtBuildStat {
-            built: true,
-            instances: inst_count as u32,
-        }
+        RtBuildStat { built: true, instances: inst_count as u32 }
     }
 }
 
@@ -737,10 +652,10 @@ impl RtShadowResources {
 fn blas_size_desc(prim: &GpuPrimitive) -> BlasTriangleGeometrySizeDescriptor {
     BlasTriangleGeometrySizeDescriptor {
         vertex_format: wgpu::VertexFormat::Float32x3,
-        vertex_count: prim.vertex_count,
-        index_format: Some(wgpu::IndexFormat::Uint32),
-        index_count: Some(prim.index_count),
-        flags: AccelerationStructureGeometryFlags::OPAQUE,
+        vertex_count:  prim.vertex_count,
+        index_format:  Some(wgpu::IndexFormat::Uint32),
+        index_count:   Some(prim.index_count),
+        flags:         AccelerationStructureGeometryFlags::OPAQUE,
     }
 }
 
@@ -750,14 +665,12 @@ fn create_blas_for_prim(device: &wgpu::Device, prim: &GpuPrimitive) -> wgpu::Bla
     let size = blas_size_desc(prim);
     device.create_blas(
         &CreateBlasDescriptor {
-            label: Some("RT Shadow BLAS"),
+            label:       Some("RT Shadow BLAS"),
             // 静的シーンジオメトリ向けに高速トレース優先（構築は初回のみ）。
-            flags: AccelerationStructureFlags::PREFER_FAST_TRACE,
+            flags:       AccelerationStructureFlags::PREFER_FAST_TRACE,
             update_mode: AccelerationStructureUpdateMode::Build,
         },
-        BlasGeometrySizeDescriptors::Triangles {
-            descriptors: vec![size],
-        },
+        BlasGeometrySizeDescriptors::Triangles { descriptors: vec![size] },
     )
 }
 
@@ -797,11 +710,9 @@ mod tests {
 
         // 16 進（0x..）／10 進の双方を受け付ける。
         let value = if let Some(hex) = rhs.strip_prefix("0x").or_else(|| rhs.strip_prefix("0X")) {
-            u8::from_str_radix(hex, 16)
-                .expect("RT_SHADOW_CULL_MASK が u8 の 16 進として解釈できません")
+            u8::from_str_radix(hex, 16).expect("RT_SHADOW_CULL_MASK が u8 の 16 進として解釈できません")
         } else {
-            rhs.parse::<u8>()
-                .expect("RT_SHADOW_CULL_MASK が u8 として解釈できません")
+            rhs.parse::<u8>().expect("RT_SHADOW_CULL_MASK が u8 として解釈できません")
         };
 
         assert_eq!(
@@ -811,8 +722,7 @@ mod tests {
         );
         // 不透明ビットと非不透明ビットが重なっていない（AND=0）ことも保証する。
         assert_eq!(
-            RT_MASK_OPAQUE & RT_MASK_NON_OPAQUE,
-            0,
+            RT_MASK_OPAQUE & RT_MASK_NON_OPAQUE, 0,
             "RT_MASK_OPAQUE と RT_MASK_NON_OPAQUE のビットが重複しています（マスク分離が機能しません）"
         );
 
@@ -824,20 +734,12 @@ mod tests {
             .find(|l| l.starts_with("const RT_TRANSLUCENT_CULL_MASK"))
             .expect("rt_shadow_on.wgsl に const RT_TRANSLUCENT_CULL_MASK の宣言が見つかりません");
         let trhs = tdecl
-            .split('=')
-            .nth(1)
-            .expect("RT_TRANSLUCENT_CULL_MASK の宣言に '=' がありません")
-            .trim()
-            .trim_end_matches(';')
-            .trim()
-            .trim_end_matches('u');
-        let tvalue = if let Some(hex) = trhs.strip_prefix("0x").or_else(|| trhs.strip_prefix("0X"))
-        {
-            u8::from_str_radix(hex, 16)
-                .expect("RT_TRANSLUCENT_CULL_MASK が u8 の 16 進として解釈できません")
+            .split('=').nth(1).expect("RT_TRANSLUCENT_CULL_MASK の宣言に '=' がありません")
+            .trim().trim_end_matches(';').trim().trim_end_matches('u');
+        let tvalue = if let Some(hex) = trhs.strip_prefix("0x").or_else(|| trhs.strip_prefix("0X")) {
+            u8::from_str_radix(hex, 16).expect("RT_TRANSLUCENT_CULL_MASK が u8 の 16 進として解釈できません")
         } else {
-            trhs.parse::<u8>()
-                .expect("RT_TRANSLUCENT_CULL_MASK が u8 として解釈できません")
+            trhs.parse::<u8>().expect("RT_TRANSLUCENT_CULL_MASK が u8 として解釈できません")
         };
         assert_eq!(
             tvalue, RT_MASK_NON_OPAQUE,
@@ -888,10 +790,10 @@ mod tests {
     ///   リフト機構が復活していないことをソースレベルで縛る（下の assert 参照）。
     #[test]
     fn wgsl_soft_shadow_constants_are_consistent() {
-        let rt_on = include_str!("shaders/rt_shadow_on.wgsl");
+        let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
         // RT_SHADOW_MAX_CONE_RADIUS は light_common.wgsl へ移設（Phase RT-Shadow-Denoise。
         // インライン影とマスク生成が共有するため）。ここも移設先から読む。
-        let light_c = include_str!("shaders/light_common.wgsl");
+        let light_c  = include_str!("shaders/light_common.wgsl");
 
         let max_cone: f32 = wgsl_const_literal(light_c, "RT_SHADOW_MAX_CONE_RADIUS")
             .parse()
@@ -961,8 +863,7 @@ mod tests {
         // とき、面を貫くはずのレイが手前へ折り返されて空へ逃げ、「照らされている」と誤判定される
         // （＝点描状の光漏れ）。地平線より下のサンプルは起こさず 0（遮蔽）として数えること。
         assert!(
-            !rt_on.contains("RT_SHADOW_GEO_HORIZON_MIN_COS")
-                && !rt_on.contains("lift_above_horizon"),
+            !rt_on.contains("RT_SHADOW_GEO_HORIZON_MIN_COS") && !rt_on.contains("lift_above_horizon"),
             "rt_shadow_on.wgsl に地平線リフト機構が復活しています。\
              サンプル方向を Ng で起こすと薄い面で光漏れが再発します。\
              地平線より下（dot(nv,dir) <= 0）のサンプルは 0（遮蔽）として母数に数えること"
@@ -1034,7 +935,7 @@ mod tests {
         // B3 で rt_trace_translucent_tint はコア（rt_shadow_on.wgsl）から tint バリアント 2 本へ分離した
         // （平均アルベド版／バインドレス版）。両方でループ静的上限が CENTER で縛られていること。
         let tint_avg = include_str!("shaders/rt_shadow_tint_avg.wgsl");
-        let tint_bl = include_str!("shaders/rt_shadow_tint_bindless.wgsl");
+        let tint_bl  = include_str!("shaders/rt_shadow_tint_bindless.wgsl");
         assert!(
             tint_avg.contains("i < RT_TRANSLUCENT_MAX_HITS_CENTER"),
             "rt_shadow_tint_avg.wgsl の rt_trace_translucent_tint のループ静的上限は\
@@ -1051,12 +952,12 @@ mod tests {
     #[test]
     fn only_opaque_is_shadow_occluder() {
         assert_eq!(instance_mask_for(AlphaMode::Opaque), RT_MASK_OPAQUE);
-        assert_eq!(instance_mask_for(AlphaMode::Blend), RT_MASK_NON_OPAQUE);
-        assert_eq!(instance_mask_for(AlphaMode::Mask), RT_MASK_NON_OPAQUE);
+        assert_eq!(instance_mask_for(AlphaMode::Blend),  RT_MASK_NON_OPAQUE);
+        assert_eq!(instance_mask_for(AlphaMode::Mask),   RT_MASK_NON_OPAQUE);
         // 影レイ（cull_mask = RT_MASK_OPAQUE）から見えるのは不透明だけ。
         assert_ne!(instance_mask_for(AlphaMode::Opaque) & RT_MASK_OPAQUE, 0);
-        assert_eq!(instance_mask_for(AlphaMode::Blend) & RT_MASK_OPAQUE, 0);
-        assert_eq!(instance_mask_for(AlphaMode::Mask) & RT_MASK_OPAQUE, 0);
+        assert_eq!(instance_mask_for(AlphaMode::Blend)  & RT_MASK_OPAQUE, 0);
+        assert_eq!(instance_mask_for(AlphaMode::Mask)   & RT_MASK_OPAQUE, 0);
     }
 
     /// 色付き影の α×transmission パッキングの往復と、透過率 T の式の真理値表を固定する。
@@ -1073,19 +974,13 @@ mod tests {
 
         // ── 1. WGSL 定数と Rust 定数の一致（ズレるとデコードが破綻し色付き影が壊れる）──
         let wq: f32 = wgsl_const_literal(rt_on, "SHADOW_PACK_QUANT")
-            .parse()
-            .expect("SHADOW_PACK_QUANT が f32 として解釈できません");
+            .parse().expect("SHADOW_PACK_QUANT が f32 として解釈できません");
         let wr: f32 = wgsl_const_literal(rt_on, "SHADOW_PACK_RADIX")
-            .parse()
-            .expect("SHADOW_PACK_RADIX が f32 として解釈できません");
-        assert_eq!(
-            wq, SHADOW_PACK_QUANT,
-            "WGSL の SHADOW_PACK_QUANT({wq}) と Rust の {SHADOW_PACK_QUANT} が一致していません"
-        );
-        assert_eq!(
-            wr, SHADOW_PACK_RADIX,
-            "WGSL の SHADOW_PACK_RADIX({wr}) と Rust の {SHADOW_PACK_RADIX} が一致していません"
-        );
+            .parse().expect("SHADOW_PACK_RADIX が f32 として解釈できません");
+        assert_eq!(wq, SHADOW_PACK_QUANT,
+            "WGSL の SHADOW_PACK_QUANT({wq}) と Rust の {SHADOW_PACK_QUANT} が一致していません");
+        assert_eq!(wr, SHADOW_PACK_RADIX,
+            "WGSL の SHADOW_PACK_RADIX({wr}) と Rust の {SHADOW_PACK_RADIX} が一致していません");
 
         // WGSL の rt_trace_translucent_tint と同じ算術でデコードする（floor(.a/RADIX) / 残余）。
         let unpack = |packed: f32| -> (f32, f32) {
@@ -1103,10 +998,8 @@ mod tests {
         };
         let approx3 = |got: [f32; 3], want: [f32; 3]| {
             for k in 0..3 {
-                assert!(
-                    (got[k] - want[k]).abs() <= 1e-5,
-                    "T の成分[{k}] が想定と一致しません: got={got:?} want={want:?}"
-                );
+                assert!((got[k] - want[k]).abs() <= 1e-5,
+                    "T の成分[{k}] が想定と一致しません: got={got:?} want={want:?}");
             }
         };
 
@@ -1120,31 +1013,25 @@ mod tests {
                     "パック値 {packed} が f32 整数域（0..=65535）外です（往復桁落ちの恐れ）"
                 );
                 let (da, dt) = unpack(packed);
-                assert!(
-                    (da - alpha).abs() <= tol,
-                    "α の往復誤差過大: in={alpha} out={da}"
-                );
-                assert!(
-                    (dt - tr).abs() <= tol,
-                    "transmission の往復誤差過大: in={tr} out={dt}"
-                );
+                assert!((da - alpha).abs() <= tol, "α の往復誤差過大: in={alpha} out={da}");
+                assert!((dt - tr).abs() <= tol, "transmission の往復誤差過大: in={tr} out={dt}");
             }
         }
 
         // ── 3. 透過率 T の真理値表（albedo=赤 [1,0,0]。色ガラスの代表）──
         let red = [1.0f32, 0.0, 0.0];
         // 式そのもの（連続値）。
-        approx3(transmittance(red, 1.0, 1.0), red); // α=1,tr=1 → アルベド色（色ガラス）
-        approx3(transmittance(red, 1.0, 0.0), [0.0, 0.0, 0.0]); // α=1,tr=0 → 0（暗い影・挙動変更点）
-        approx3(transmittance(red, 0.0, 0.5), [1.0, 1.0, 1.0]); // α=0 → 1（影なし・tr 無関係）
-        approx3(transmittance(red, 0.5, 1.0), [1.0, 0.5, 0.5]); // 中間: 0.5 + 0.5·red
-        approx3(transmittance(red, 1.0, 0.5), [0.5, 0.0, 0.0]); // 中間: 0.5·red
+        approx3(transmittance(red, 1.0, 1.0), red);              // α=1,tr=1 → アルベド色（色ガラス）
+        approx3(transmittance(red, 1.0, 0.0), [0.0, 0.0, 0.0]);  // α=1,tr=0 → 0（暗い影・挙動変更点）
+        approx3(transmittance(red, 0.0, 0.5), [1.0, 1.0, 1.0]);  // α=0 → 1（影なし・tr 無関係）
+        approx3(transmittance(red, 0.5, 1.0), [1.0, 0.5, 0.5]);  // 中間: 0.5 + 0.5·red
+        approx3(transmittance(red, 1.0, 0.5), [0.5, 0.0, 0.0]);  // 中間: 0.5·red
 
         // 実運用パス（pack → decode → T）の end-to-end 真理値表（量子化後も端点が保たれる）。
         for &(alpha, tr, want) in &[
             (1.0f32, 1.0f32, red),
-            (1.0, 0.0, [0.0, 0.0, 0.0]),
-            (0.0, 0.5, [1.0, 1.0, 1.0]),
+            (1.0,    0.0,    [0.0, 0.0, 0.0]),
+            (0.0,    0.5,    [1.0, 1.0, 1.0]),
         ] {
             let (a, t) = unpack(pack_shadow_alpha_transmission(alpha, tr));
             approx3(transmittance(red, a, t), want);
@@ -1158,77 +1045,44 @@ mod tests {
         // クラスタ共有定義（定数・構造体・索引関数）。shader_common.wgsl の group 4
         // binding 7〜9 が ClusterCell / ClusterParams を参照するため、**必ず先に**連結する
         // （pipelines/*.toml の shader_sources と同じ順序）。
-        let cluster = include_str!("shaders/cluster_common.wgsl");
-        let common = include_str!("shaders/shader_common.wgsl");
-        let pbr_c = include_str!("shaders/pbr_common.wgsl");
-        let ddgi_c = include_str!("shaders/ddgi_common.wgsl");
-        let light_c = include_str!("shaders/light_common.wgsl");
-        let shadow = include_str!("shaders/shadow.wgsl");
-        let rt_on = include_str!("shaders/rt_shadow_on.wgsl");
-        let rt_off = include_str!("shaders/rt_shadow_off.wgsl");
+        let cluster  = include_str!("shaders/cluster_common.wgsl");
+        let common   = include_str!("shaders/shader_common.wgsl");
+        let pbr_c    = include_str!("shaders/pbr_common.wgsl");
+        let ddgi_c   = include_str!("shaders/ddgi_common.wgsl");
+        let light_c  = include_str!("shaders/light_common.wgsl");
+        let shadow   = include_str!("shaders/shadow.wgsl");
+        let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
+        let rt_off   = include_str!("shaders/rt_shadow_off.wgsl");
         // 色付き影の透過色 tint（B3）: rt_shadow_on コアが呼ぶ rt_trace_translucent_tint を供給。
         // rt_on を含む連結には必ず tint バリアントを 1 本並べること（未定義参照で validate が落ちる）。
         let tint_avg = include_str!("shaders/rt_shadow_tint_avg.wgsl");
         let static_v = include_str!("shaders/shader_static_vertex.wgsl");
-        let skin_v = include_str!("shaders/shader_skinned_vertex.wgsl");
+        let skin_v   = include_str!("shaders/shader_skinned_vertex.wgsl");
         // PBR シェーディングの 3 段分割（Surface / マテリアル採取 / ライト評価）。
-        let surf = include_str!("shaders/surface.wgsl");
-        let gather = include_str!("shaders/surface_gather.wgsl");
+        let surf     = include_str!("shaders/surface.wgsl");
+        let gather   = include_str!("shaders/surface_gather.wgsl");
+        // シェーディング契約 v1（型・標準ライブラリ）＋ 既定ディスパッチ（shade_surface）。
+        let sc       = include_str!("shaders/shading_contract.wgsl");
+        let sd       = include_str!("shaders/shading_dispatch.wgsl");
         let light_ev = include_str!("shaders/lighting_eval.wgsl");
-        let frag = include_str!("shaders/shader_fragment.wgsl");
+        let frag     = include_str!("shaders/shader_fragment.wgsl");
 
         // WBOIT（半透明）バリアントも同じライト評価を共有するため併せて検証する
         // （transparency.rs が同じ連結でパイプラインを構築している）。
         // RT-Translucency: WBOIT は屈折ヘルパ refract_common.wgsl（group4 binding15/16・glass_composite）と、
         // 背景取得の SS 実装 refract_ss.wgsl（glass_composite が呼ぶ refract_sample_bg を供給）を含む。
         // 本物の RT 屈折（refract_rt.wgsl）バリアントは transparency.rs 側の naga テストが検証する。
-        let wboit = include_str!("shaders/shader_wboit.wgsl");
-        let refract = include_str!("shaders/refract_common.wgsl");
+        let wboit      = include_str!("shaders/shader_wboit.wgsl");
+        let refract    = include_str!("shaders/refract_common.wgsl");
         let refract_ss = include_str!("shaders/refract_ss.wgsl");
 
         let variants: [(&str, Vec<&str>); 6] = [
-            (
-                "mesh_rt",
-                vec![
-                    cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, static_v,
-                    surf, gather, light_ev, frag,
-                ],
-            ),
-            (
-                "skinned_mesh_rt",
-                vec![
-                    cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, skin_v, surf,
-                    gather, light_ev, frag,
-                ],
-            ),
-            (
-                "mesh",
-                vec![
-                    cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf,
-                    gather, light_ev, frag,
-                ],
-            ),
-            (
-                "skinned_mesh",
-                vec![
-                    cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v, surf, gather,
-                    light_ev, frag,
-                ],
-            ),
-            (
-                "wboit_mesh",
-                vec![
-                    cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf,
-                    gather, light_ev, frag, refract, refract_ss, wboit,
-                ],
-            ),
-            (
-                "wboit_skinned",
-                vec![
-                    cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v, surf, gather,
-                    light_ev, frag, refract, refract_ss, wboit,
-                ],
-            ),
+            ("mesh_rt",         vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg,  static_v, surf, gather, sc, sd, light_ev, frag]),
+            ("skinned_mesh_rt", vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg,  skin_v,   surf, gather, sc, sd, light_ev, frag]),
+            ("mesh",            vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, sc, sd, light_ev, frag]),
+            ("skinned_mesh",    vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, sc, sd, light_ev, frag]),
+            ("wboit_mesh",      vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, sc, sd, light_ev, frag, refract, refract_ss, wboit]),
+            ("wboit_skinned",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, sc, sd, light_ev, frag, refract, refract_ss, wboit]),
         ];
 
         for (name, parts) in variants {

@@ -106,6 +106,13 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         // マテリアル採取（surface_gather）とライト評価（lighting_eval）を別ファイルにしている。
         "surface.wgsl"               => include_str!("shaders/surface.wgsl"),
         "surface_gather.wgsl"        => include_str!("shaders/surface_gather.wgsl"),
+        // シェーディング契約 v1（L3-a）: ShadingSurface / LightSample / 標準ライブラリ /
+        // モデル 0（shade_light・shade_model_0）。バインディングを持たない純定義のため、
+        // lighting_eval.wgsl を連結する**すべての**パスに必ず一緒に連結すること。
+        "shading_contract.wgsl"      => include_str!("shaders/shading_contract.wgsl"),
+        // 契約関数 shade_surface の既定実装（アセット未指定時＝モデル 0 固定）。
+        // アセット指定時は Rust が生成した同名関数がこれの代わりに連結される。
+        "shading_dispatch.wgsl"      => include_str!("shaders/shading_dispatch.wgsl"),
         "lighting_eval.wgsl"         => include_str!("shaders/lighting_eval.wgsl"),
         "shader_fragment.wgsl"       => include_str!("shaders/shader_fragment.wgsl"),
         "shadow.wgsl"                => include_str!("shaders/shadow.wgsl"),

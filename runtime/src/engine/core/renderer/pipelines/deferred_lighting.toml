@@ -6,7 +6,7 @@
 # group2（マテリアル）を一切要求しない（deferred_lighting.wgsl が group0/1 を自前で宣言する）。
 # 深度は G-Buffer 側で書き込み済みのテクスチャをサンプルするだけなので、本パス自体は
 # 深度アタッチメントを持たない（no_depth = true）。
-shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "surface.wgsl", "lighting_eval.wgsl", "deferred_lighting.wgsl"]
+shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "surface.wgsl", "shading_contract.wgsl", "shading_dispatch.wgsl", "lighting_eval.wgsl", "deferred_lighting.wgsl"]
 vertex_entry    = "vs_fullscreen"
 fragment_entry  = "fs_deferred"
 vertex_slots    = []

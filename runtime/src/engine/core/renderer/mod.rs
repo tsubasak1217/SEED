@@ -35,6 +35,9 @@ pub(crate) mod gbuffer;
 /// G-Buffer の空きチャンネルへ詰める「サーフェス識別情報」のビット規約
 /// （セマンティックタグ／シェーディングモデル ID／ユーザーデータ）。
 pub mod surface_id;
+/// シェーディングアセット（1 本のユーザー WGSL）のロード・検証・パイプライン生成（L3-a 第 2 段）。
+/// 未指定時は一切通らない（従来の連結・従来のパイプラインがそのまま使われる）。
+pub mod shading_asset;
 /// 地形レイヤブレンド用 G-Buffer パイプライン（Terrain T2）。
 pub(crate) mod terrain_gbuffer;
 

@@ -160,6 +160,11 @@ pub struct CameraComponentData {
     /// 正射投影時の縦方向の描画範囲（ワールド単位・全高）。透視時は未使用。
     #[serde(default = "default_ortho_height")]
     pub ortho_height: f32,
+    /// このカメラで描画するときに使うシェーディングアセット（WGSL ファイル）のパス。
+    /// None のときはシーン既定 → 組み込み標準 PBR へフォールバックする。
+    /// パスは `assets://` 仮想パスまたは絶対パス（engine/asset_fs.rs の規約）。
+    #[serde(default)]
+    pub shading_asset: Option<String>,
 }
 
 impl Default for CameraComponentData {
@@ -176,6 +181,8 @@ impl Default for CameraComponentData {
             bar_color: default_bar_color(),
             projection: CameraProjection::default(),
             ortho_height: default_ortho_height(),
+            // 既定は未指定（シーン既定 → 組み込み標準 PBR にフォールバックする）
+            shading_asset: None,
         }
     }
 }
@@ -210,6 +217,10 @@ pub struct CameraComponent {
     pub projection: CameraProjection,
     /// 正射投影時の縦方向の描画範囲（ワールド単位・全高）
     pub ortho_height: f32,
+    /// このカメラで描画するときに使うシェーディングアセット（WGSL ファイル）のパス。
+    /// None のときはシーン既定 → 組み込み標準 PBR へフォールバックする。
+    /// パスは `assets://` 仮想パスまたは絶対パス（engine/asset_fs.rs の規約）。
+    pub shading_asset: Option<String>,
 }
 
 impl CameraComponent {
@@ -227,6 +238,7 @@ impl CameraComponent {
             bar_color: data.bar_color,
             projection: data.projection,
             ortho_height: data.ortho_height,
+            shading_asset: data.shading_asset,
         }
     }
 
@@ -244,6 +256,7 @@ impl CameraComponent {
             bar_color: self.bar_color,
             projection: self.projection,
             ortho_height: self.ortho_height,
+            shading_asset: self.shading_asset.clone(),
         }
     }
 }

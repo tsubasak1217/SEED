@@ -652,6 +652,13 @@ impl App {
         // （カメラ由来の速度＝prev_view_proj と、インスタンス由来の速度＝prev_model の
         //  **両方**をリセットしないと、Play 開始時にアクタだけが巨大な速度を吐く）。
         let mut velocity_reset_frame: bool = false;
+        // シェーディングアセット（L3-a）のフォールバック連鎖の第 1 段: メインカメラ指定。
+        // カメラ選択ブロック（Play モードで is_main カメラを DFS 探索する箇所）で拾い、
+        // 描画ブロックの deferred ライティングパスで使う。ここで控えるのは、同じ DFS を
+        // フレーム内で 2 度走らせないため（アクタ数が多い地形シーンで効く）。
+        // Edit モード・Play ポーズ中はデバッグカメラを使うため None のまま
+        // （＝Scene 指定へフォールバックする）。
+        let mut main_camera_shading_asset: Option<String> = None;
 
         if let (Some(scene), Some(camera_buf), Some(queue)) =
             (&mut self.scene, &self.camera_buf, queue)
@@ -684,6 +691,9 @@ impl App {
                 // Play モード（非ポーズ時）: is_main=true の CameraComponent を探す
                 // スケーリングモードに応じたビューポート矩形・射影アスペクト比・実効 FOV を計算する
                 let game_cam = scene.find_main_camera().map(|(tf, cd)| {
+                    // シェーディングアセット（L3-a）: メインカメラの指定を控える。
+                    // ここでしか CameraComponentData に触れないため、この場で拾うのが最も安い。
+                    main_camera_shading_asset = cd.shading_asset.clone();
                     let (vp_x, vp_y, vp_w, vp_h, proj_aspect, fov_y_rad) = compute_game_viewport(
                         &cd.scaling_mode, win_w_f, win_h_f,
                         cd.target_width, cd.target_height, cd.fov_y_deg,
@@ -4684,6 +4694,30 @@ impl App {
                             //    G-Buffer デバッグ表示中は上の可視化パスが代わりを務めるためスキップする
                             //    （ライティング結果を描いてから上書きするのは純粋な無駄）。
                             if !gbuffer_debug_active {
+                                // ── シェーディングアセット（L3-a）の解決 ────────────────
+                                // フォールバック連鎖:
+                                //   Play  : メインカメラの shading_asset → Scene.shading_asset → None
+                                //   Edit  : Scene.shading_asset → None（デバッグカメラ含むメインビュー）
+                                // どこにも指定が無ければ `None` となり、以降は**従来どおり**
+                                // draw_ctx.pipelines.deferred.* をそのまま使う（新経路に一切入らない）。
+                                let shading_asset_path: Option<&str> = main_camera_shading_asset
+                                    .as_deref()
+                                    .or_else(|| scene.shading_asset.as_deref());
+                                // ホットリロードは Edit モードのみ。Play 中は開始時点のパイプラインを
+                                // 使い続ける（フレーム中のシェーダ再コンパイルによるスパイクを避ける）。
+                                let allow_hot_reload = self.mode == RuntimeMode::Edit;
+                                let shading_pipes = shading_asset_path.and_then(|p| {
+                                    crate::engine::core::renderer::shading_asset::resolve(
+                                        &draw_ctx.device,
+                                        &draw_ctx.pipelines.deferred,
+                                        &draw_ctx.shading_asset_cache,
+                                        p,
+                                        draw_ctx.scene_format,
+                                        draw_ctx.depth_format,
+                                        allow_hot_reload,
+                                    )
+                                });
+
                                 let gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
                                     &draw_ctx.device, &draw_ctx.pipelines.deferred.gbuffer_bgl,
                                     g0, g1, g2, g3,
@@ -4721,12 +4755,26 @@ impl App {
                                 let use_bindless_lit = lit_use_rt
                                     && colored_shadow_bg.is_some()
                                     && draw_ctx.pipelines.deferred.rt_bindless.is_some();
-                                let lit_pipe = if use_bindless_lit {
-                                    draw_ctx.pipelines.deferred.rt_bindless.as_ref().unwrap()
-                                } else if lit_use_rt {
-                                    draw_ctx.pipelines.deferred.rt.as_ref().unwrap()
-                                } else {
-                                    &draw_ctx.pipelines.deferred.pipeline
+                                // シェーディングアセットが解決できていれば、上と同じ判定
+                                // （use_bindless_lit / lit_use_rt）に対応するバリアントを選ぶ。
+                                // そのバリアントが無い（RT 非対応・当該バリアントのビルド失敗）
+                                // 場合は None になり、直後の match で従来の組み込みへ落ちる。
+                                let asset_pipe: Option<&wgpu::RenderPipeline> =
+                                    shading_pipes.as_ref().and_then(|ap| {
+                                        if use_bindless_lit      { ap.rt_bindless.as_ref() }
+                                        else if lit_use_rt       { ap.rt.as_ref() }
+                                        else                     { Some(&ap.pipeline) }
+                                    });
+                                let lit_pipe = match asset_pipe {
+                                    Some(p) => p,
+                                    // ── 従来経路（アセット未指定・解決失敗時はここだけを通る）──
+                                    None if use_bindless_lit => {
+                                        draw_ctx.pipelines.deferred.rt_bindless.as_ref().unwrap()
+                                    }
+                                    None if lit_use_rt => {
+                                        draw_ctx.pipelines.deferred.rt.as_ref().unwrap()
+                                    }
+                                    None => &draw_ctx.pipelines.deferred.pipeline,
                                 };
                                 let lit_lights_bg: &wgpu::BindGroup = if lit_use_rt {
                                     scene_lights_bg
@@ -4746,6 +4794,20 @@ impl App {
                                 lpass.set_bind_group(3, lit_g3, &[]);
                                 lpass.set_bind_group(4, lit_lights_bg, &[]);
                                 lpass.draw(0..3, 0..1);
+                                // ここで lpass を drop（レンダーパス終了）してから通知を流す。
+                                drop(lpass);
+
+                                // ── シェーディングアセットのエラー／警告通知 ─────────────
+                                // レンダラーからは IPC を送れないため、キャッシュがキューに積んだ
+                                // 人間可読メッセージをここで drain してエディタへ流す
+                                // （既存の LOAD_ERROR: プレフィクスの流儀に合わせる）。
+                                // 同一メッセージの連投はキャッシュ側で抑止済み。
+                                for msg in draw_ctx.shading_asset_cache.drain_errors() {
+                                    eprintln!("[SEED shading_asset] {msg}");
+                                    if let Some(ipc) = &self.ipc {
+                                        ipc.send(&format!("LOAD_ERROR:{msg}"));
+                                    }
+                                }
                             }
 
                         }

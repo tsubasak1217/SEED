@@ -1190,6 +1190,22 @@ impl App {
                 IpcCommand::SetCameraComponentOrthoHeight { actor_dfs_id, slot_idx, value } => {
                     self.handle_set_camera_ortho_height(actor_dfs_id, slot_idx, value);
                 }
+                IpcCommand::SetCameraComponentShadingAsset { actor_dfs_id, slot_idx, path } => {
+                    let p = path.clone();
+                    self.handle_set_camera_shading_asset(actor_dfs_id, slot_idx, &p);
+                }
+                IpcCommand::SetSceneShadingAsset { path } => {
+                    // シーン既定のシェーディングアセットを更新する（空文字は未設定＝None）
+                    let trimmed = path.trim();
+                    if let Some(scene) = self.scene.as_mut() {
+                        scene.shading_asset = if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_string())
+                        };
+                        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                    }
+                }
                 IpcCommand::SetActorActive { dfs_id, active } => {
                     // アクターのアクティブ切替（Unity の SetActive 相当）。
                     // 子孫への影響（実効アクティブ）は各収集処理が親の active を

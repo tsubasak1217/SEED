@@ -204,8 +204,10 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // ── 情報系チャンネル（第 2 層の生成物として合成が読む素材）─────────────
     // RT2.a = マテリアルの汎用ユーザーデータ（0..1、8bit 量子化済み）。
     // RT3.a = セマンティックタグ | シェーディングモデル ID のパック値（無損失）。
-    // ライティング自体はこれらを使わない（現状 shading_model は常に DefaultPBR）が、
-    // Surface に載せておくことで将来の合成／モデル分岐がここ 1 か所から引ける。
+    // このうち shading_model は **L3-a（シェーディングアセット）で実際に消費される**:
+    // lighting_eval.wgsl が Surface → ShadingSurface へ写し、契約関数 shade_surface の
+    // switch キーとして ID 1..3 をユーザー実装へ振り分ける（ID 0 はエンジン標準 PBR）。
+    // render_tag / user_data はどのライティング経路も参照しない（アセットが任意に読む素材）。
     let user_data  = g2.a;
     let surface_id = unpack_surface_id(g3.a);
 
@@ -255,7 +257,8 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // 拡散透過（RT2.b から復元）。逆光透け項は forward と同一の evaluate_lighting で効く。
     s.diffuse_transmission = diffuse_transmission;
     s.emissive      = emissive;
-    // 情報系（RT2.a / RT3.a から復元）。ライト評価は参照しない。
+    // 情報系（RT2.a / RT3.a から復元）。shading_model はシェーディングモデルの振り分けに
+    // 使われる（L3-a）。render_tag / user_data はライト評価からは参照されない。
     s.user_data     = user_data;
     s.render_tag    = surface_id.x;
     s.shading_model = surface_id.y;

@@ -477,6 +477,14 @@ pub enum IpcCommand {
     /// CameraComponent の正射投影の縦描画範囲（ワールド単位・全高）を設定する
     /// フォーマット: SET_CAMERA_ORTHO_HEIGHT:{actor_dfs_id},{slot_idx},{value}
     SetCameraComponentOrthoHeight { actor_dfs_id: u32, slot_idx: u32, value: f32 },
+    /// CameraComponent のシェーディングアセット（WGSL ファイル）のパスを設定する
+    /// フォーマット: SET_CAMERA_SHADING_ASSET:{actor_dfs_id},{slot_idx},{path}
+    /// path は assets:// 仮想パスまたは絶対パス。空文字は未設定（None）を意味する。
+    SetCameraComponentShadingAsset { actor_dfs_id: u32, slot_idx: u32, path: String },
+    /// シーン既定のシェーディングアセット（WGSL ファイル）のパスを設定する
+    /// フォーマット: SET_SCENE_SHADING_ASSET:{path}
+    /// path は assets:// 仮想パスまたは絶対パス。空文字は未設定（None）を意味する。
+    SetSceneShadingAsset { path: String },
     /// アクターのアクティブ切替（Unity の SetActive 相当）。
     /// フォーマット: SET_ACTOR_ACTIVE:{dfs_id},{0|1}
     SetActorActive { dfs_id: u32, active: bool },
@@ -1780,6 +1788,21 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 .map(|(a, sl, v)| IpcCommand::SetCameraComponentOrthoHeight {
                                     actor_dfs_id: a, slot_idx: sl, value: v,
                                 })
+                        }
+                        s if s.starts_with("SET_CAMERA_SHADING_ASSET:") => {
+                            // フォーマット: SET_CAMERA_SHADING_ASSET:{actor_dfs_id},{slot_idx},{path}
+                            // path はカンマを含まない前提（SET_INPUTMAP_PATH と同流儀）
+                            parse2u_tail(&s["SET_CAMERA_SHADING_ASSET:".len()..])
+                                .map(|(a, sl, path)| IpcCommand::SetCameraComponentShadingAsset {
+                                    actor_dfs_id: a, slot_idx: sl, path: path.trim().to_string(),
+                                })
+                        }
+                        s if s.starts_with("SET_SCENE_SHADING_ASSET:") => {
+                            // フォーマット: SET_SCENE_SHADING_ASSET:{path}
+                            // 空文字は未設定（None）を意味する
+                            Some(IpcCommand::SetSceneShadingAsset {
+                                path: s["SET_SCENE_SHADING_ASSET:".len()..].trim().to_string(),
+                            })
                         }
                         s if s.starts_with("SET_COLLIDER_DATA:") => {
                             // フォーマット: SET_COLLIDER_DATA:{actor_dfs_id},{slot_idx},{json}

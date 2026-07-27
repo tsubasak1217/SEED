@@ -201,6 +201,41 @@ impl App {
         }
     }
 
+    /// CameraComponent のシェーディングアセット（WGSL ファイル）のパスを更新する。
+    ///
+    /// 空文字・空白のみのパスは「未設定（None）」として扱い、
+    /// シーン既定 → 組み込み標準 PBR へのフォールバックに戻す。
+    pub(super) fn handle_set_camera_shading_asset(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx: u32,
+        path: &str,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Camera)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
+                // 空文字・空白のみは未設定（None）として保存する
+                let trimmed = path.trim();
+                cc.shading_asset = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                };
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
     /// CameraComponent のターゲット解像度を更新する（スケーリングモードのベースサイズ）。
     pub(super) fn handle_set_camera_target_size(
         &mut self,
