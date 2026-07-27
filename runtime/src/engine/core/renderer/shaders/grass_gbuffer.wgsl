@@ -572,7 +572,10 @@ fn fs_grass(
     o.normal     = vec4<f32>(out_n, GRASS_NORMAL_AUTHORED_FLAG);
     // metallic は常に 0（草は誘電体）。roughness は uniform 指定。
     // b = diffuse_transmission は 0（葉の逆光透けは将来拡張）。
+    // a = user_data（汎用ユーザーデータ）は 0（草はマテリアル uniform を持たない）。
     o.mr         = vec4<f32>(0.0, clamp(u_grass.roughness, 0.0, 1.0), 0.0, 0.0);
+    // .a = surface_id（セマンティックタグ | シェーディングモデル ID）。
+    // 草はアクタではなくタグを持たず、シェーディングも DefaultPBR なのでパック値 0 が正しい。
     o.emissive   = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     return o;
 }

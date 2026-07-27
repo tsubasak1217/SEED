@@ -205,14 +205,36 @@ WBOIT 3 + オーバーレイ 1 + パーティクル 1 + ブルーム/トーン�
 |---|---|---|---|
 | g0 | `GBUFFER0` | `Rgba8Unorm` | `rgb` = albedo（リニア）、`a` = occlusion |
 | g1 | `GBUFFER1` | `Rgba16Float` | `xyz` = ワールド法線（シェーディング法線）、`w` = authored 法線フラグ（0＝深度復元 Ng を使う、1＝草・地形など信頼できる法線を使う） |
-| g2 | `GBUFFER2` | `Rgba8Unorm` | `r` = metallic、`g` = roughness、`b` = diffuse_transmission、`a` = 予約（常に 0） |
-| g3 | `GBUFFER3` | `Rgba16Float` | `rgb` = emissive（HDR）、`w` = 0（未使用） |
+| g2 | `GBUFFER2` | `Rgba8Unorm` | `r` = metallic、`g` = roughness、`b` = diffuse_transmission、`a` = **user_data**（マテリアルの汎用ユーザーデータ 0..1・8bit） |
+| g3 | `GBUFFER3` | `Rgba16Float` | `rgb` = emissive（HDR）、`w` = **surface_id**（下位 4bit = セマンティックタグ / 続く 2bit = シェーディングモデル ID） |
 | depth | `DEPTH_FORMAT` | `Depth24PlusStencil8` | `depth_write_enabled: true` / `CompareFunction::Less`。ライティング側は `texture_depth_2d` を `textureLoad` のみで読み、`inv_view_proj` でワールド座標を復元 |
 
 - フォーマット定義: `renderer/gbuffer.rs:38-44`、深度は `renderer/mod.rs:132`、パイプラインの depth_stencil は `gbuffer.rs:215-224`
-- 書き込み側の権威: `shaders/gbuffer_write.wgsl:31-58`（`GBufferOut` / `fs_gbuffer`）
-- 読み出し側: `shaders/deferred_lighting.wgsl:196-231`（`GBUFFER_NORMAL_AUTHORED_THRESHOLD` で g1.w を分岐）
-- 注意: `gbuffer.rs:10-13` の冒頭コメントは g1.w / g2.b を「予約」と書いているが、これは古い注記である。実際の意味は `gbuffer_write.wgsl` 側のコメントが正しい。
+- 書き込み側の権威: `shaders/gbuffer_write.wgsl`（`GBufferOut` / `fs_gbuffer`）
+- 読み出し側: `shaders/deferred_lighting.wgsl`（`GBUFFER_NORMAL_AUTHORED_THRESHOLD` で g1.w を分岐、g2.a / g3.a を `Surface` へ復元）
+
+#### 情報系チャンネル（g2.a / g3.a）
+
+「表面の物性」ではなく「この点は何なのか」を運ぶチャンネル。ライティングは一切参照せず、
+合成（第3層）が読むための素材として第1層が申告する。
+
+| 値 | 宣言場所 | 粒度 | 格納先 | 精度 |
+|---|---|---|---|---|
+| `render_tag`（セマンティックタグ） | `ModelComponent::render_tag`（`.scene` に保存） | **アクタ単位** | g3.a の下位 4bit | 16 種（0 = タグ無し） |
+| `shading_model`（シェーディングモデル ID） | `Material::shading_model`（`.smdl`/`.mat` に保存） | マテリアル単位 | g3.a の続く 2bit | 4 種（0 = DefaultPBR。現状これのみ実装） |
+| `user_data`（汎用ユーザーデータ） | `Material::user_data`（同上） | マテリアル単位 | g2.a | 8bit＝1/255 刻み（0..1） |
+
+- ビット規約の単一の真実source: `renderer/surface_id.rs`（Rust）と `shaders/surface.wgsl` の
+  `pack_surface_id` / `unpack_surface_id`（WGSL）。両者の一致は `surface_id.rs` のユニットテストが固定する。
+- `g3.a` は `Rgba16Float`。half float は整数 2048 まで誤差ゼロで表現できるため、パック値（最大 63）は
+  **完全に無損失**で往復する。使用は 6bit のみで、無損失域の残り 5bit が将来用に空いている。
+- **新規 MRT を足していない**。棚卸しの結果 g2.a / g3.a が唯一の完全な空きチャンネルであり、
+  そこへ詰めたので G-Buffer の帯域増加はゼロ・既存チャンネルの精度低下もゼロ。
+- `render_tag` の配管は `ModelUniform.normal_matrix` の **4 列目**（法線変換は常に `w=0` の
+  ベクトルに掛かるため数学的に寄与しない 16 byte）を「インスタンス拡張スロット」として転用する。
+  `ModelUniform` は 128 byte のまま＝全インスタンス×全ノードの毎フレーム転送量は 1 byte も増えていない。
+- 地形（`terrain_gbuffer_write.wgsl`）・草（`grass_gbuffer.wgsl`）は両チャンネルに 0 を書く
+  （＝タグ無し・DefaultPBR・user_data 0。既定値と一致するので合成側の分岐は不要）。
 
 ### 2.10 Hi-Z オクルージョン（opt-in）
 
@@ -477,9 +499,10 @@ RT 半透明パイプラインの構築条件は `transparency.rs:378`:
 ```
 第1層  G-Buffer         枠=エンジン / 中身=ユーザー（マテリアル）
         色・法線・粗さ・金属度・自己発光（＋深度は自動）
+        ＋情報系: セマンティックタグ / シェーディングモデル ID / ユーザーデータ
               ↓
 第2層  中間バッファ生成   製法=エンジン（SS系/RT系を選択式、off なら作らない）
-        影マスク / GI / 反射 / AO      ← 作られる物のリストは固定（第3層の入力契約）
+        影マスク / GI / 反射 / AO / ID テクスチャ  ← 作られる物のリストは固定（第3層の入力契約）
               ↓
 第3層  画面の合成        標準合成=エンジン / 介入点= shade()・ポストプロセス
 ```
@@ -491,11 +514,36 @@ albedo・法線・metallic・roughness・diffuse_transmission・emissive・occlu
 （4 枚の MRT にライティング結果を焼く箇所はコード上に存在しない）。
 スロットの定義と保証がエンジンの仕事、各ピクセルに何を書くかがユーザー（マテリアル）の自由。
 
+第1層はさらに **「この点は何なのか」の自己申告**（情報系チャンネル）も運ぶ:
+セマンティックタグ（アクタ単位・「敵」「インタラクト可能」等）、シェーディングモデル ID
+（マテリアル単位・将来のトゥーン分岐用）、ユーザーデータ（マテリアル単位の自由 0..1 回線）。
+いずれも物性ではなく**意味**であり、ライティングは参照しない。合成（第3層）が
+「敵だけ縁取る」「濡れているところだけ暗くする」といった判断に使うための素材である。
+格納先は G-Buffer の空きチャンネル（g2.a / g3.a）で、MRT は 4 枚のまま増えていない。
+
 **第2層（中間バッファ生成）** は、第1層とライトデータから
-影マスク / GI / 反射 / AO という中間生成物を作る。製法（SS 系か RT 系か）は
+影マスク / GI / 反射 / AO / **ID テクスチャ** という中間生成物を作る。製法（SS 系か RT 系か）は
 機能マトリクス（`SET_POST_FX` features）で選択式・off なら生成しないが、
 **製法が変わっても「作られる物のリスト」は増えない**。この固定リストが第3層の
 安定した入力契約になっており、将来 SS 系↔RT 系を入れ替えても上下の層は無傷で残る。
+
+**ID テクスチャ**（`Rgba32Float`・ライティング段と同解像度・`methods/drawer/id_pass.rs`）は
+元来エディタのピッキング専用だったものを、合成が読める中間バッファへ昇格させたもの。
+`rgb` = ワールド座標、`a` = `bitcast<f32>(actor_instance_id + 1)`（0 = 背景）で、規約は
+ピッキングと完全に共通（変更していない）。`TEXTURE_BINDING` を付与済みで、
+`IdBuffer::bind_group_layout()` / `create_bind_group()` からシェーダへ差せる。
+
+生成タイミングと使い分けは以下:
+
+| 状況 | ID パスを描くか | 理由 |
+|---|---|---|
+| Edit / Pause | 毎フレーム描く（従来どおり） | ピッキング・D&D のワールド座標取得が依存している |
+| Play | **既定でスキップ**。`SEED_ID_PASS_IN_PLAY` を設定したときのみ毎フレーム描く | 全不透明ジオメトリをフル解像度でもう一度描く専用パス（16 byte/px）で、深度プリパス 1 本ぶんのコストがかかる |
+
+> **使い分けの指針**: 「敵だけ」「インタラクト可能だけ」のような**種別**で足りるなら
+> 第1層のセマンティックタグ（追加パスも追加帯域もゼロ）を使う。ID テクスチャは
+> 「この 1 体だけ」という**個体の厳密な同定**が要るときにだけ使う。
+> コストは `SEED_PERF_LOG=1` の `[PERF]` 行の `id=` フィールドで実測できる。
 
 **第3層（合成）** はエンジンの標準 Deferred ライティング
 （`deferred_lighting.wgsl` + `lighting_eval.wgsl` + クラスタ走査）が
@@ -510,6 +558,11 @@ albedo・法線・metallic・roughness・diffuse_transmission・emissive・occlu
 合成シェーダを固定バインディング契約の WGSL アセットとして差し替え可能にする構想がある:
 
 - 段階 L3-a: `shade()`（1ライト分の応答式）のみをアセット化（契約が最小）
+  - 前提となる素材は整備済み（第1層の情報系チャンネル＋第2層の ID テクスチャ）。
+  - **未解決**: ID パスは現在フレーム最終盤（present コピーの後・`finish()` の直前）で描かれるため、
+    同一フレームの合成からは読めない。L3 で ID を合成入力として使うなら、ID パスを
+    G-Buffer 段の直後（深度が確定した位置）へ移す必要がある。移動はピック結果の
+    描画順に影響し得るため、L3-a の着手時に単独の変更として行うこと。
 - 段階 L3-b: 合成パス全体（G-Buffer＋第2層バッファ＋ライトデータ → HDR 1枚）をアセット化
 - 成立条件: エンジン提供の WGSL 標準ライブラリ（クラスタ内ライト走査・影/GI サンプル関数）、
   コンパイル失敗時の組み込み標準へのフォールバック、バインディング契約のバージョン管理

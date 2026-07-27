@@ -293,6 +293,32 @@ pub struct Material {
     #[serde(skip)]
     pub ignore_vertex_color: bool,
 
+    // ─── 汎用ユーザーデータ回線（G-Buffer RT2.a）───────────────
+    /// マテリアルが自由な意味で使える 0..1 の 1 チャンネル（既定 0.0）。
+    ///
+    /// エンジンは意味を一切定めない。濡れ具合・ダメージ量・経年劣化・氷結度など、
+    /// タイトル側が「合成（第 3 層）でこの値をどう解釈するか」を決める汎用回線である。
+    /// G-Buffer RT2.a（Rgba8Unorm）へ焼かれるため実効精度は 8bit（1/255 刻み）。
+    ///
+    /// 【なぜ serde(skip) にしないか】terrain_layers 等と違い、この値は**作者が設定して
+    /// 保存する**データであり、glTF/OBJ 由来のマテリアルにも .mat にも載り得る。
+    /// 実行時に組み立て直せないので、アセットキャッシュ（.smdl）にも焼く必要がある。
+    /// そのため CACHE_FORMAT_VERSION を v15 へ上げて旧キャッシュを無効化する
+    /// （bincode は自己記述型でないため #[serde(default)] だけでは旧キャッシュを読めない）。
+    #[serde(default)]
+    pub user_data: f32,
+
+    // ─── シェーディングモデル ID（G-Buffer RT3.a）───────────────
+    /// このマテリアルのシェーディングモデル（既定 0 = DefaultPBR）。
+    ///
+    /// ライティング／合成をマテリアル種別で分岐させるための識別子。現状は DefaultPBR
+    /// のみが実装されており、将来トゥーン・異方性ヘア等を 1/2/3 に割り当てる。
+    /// 有効ビット幅は `renderer::surface_id::SHADING_MODEL_BITS`（2bit = 4 種）で、
+    /// G-Buffer へ書く直前に同モジュールのマスクで切り詰められる。
+    /// キャッシュに焼く理由は `user_data` と同じ（v15）。
+    #[serde(default)]
+    pub shading_model: u8,
+
     /// glTF 由来の両面フラグ（データ出所の記録用）。
     /// 描画で参照されるのは `cull_face` であり、ロード時に本フラグから初期化される
     /// （`cull_face_from_double_sided`）。
@@ -405,6 +431,9 @@ impl Default for Material {
             diffuse_transmission:       0.0,
             mr_tex_ignore:              false,
             ignore_vertex_color:        false,
+            // 汎用ユーザーデータは 0（未設定）、シェーディングモデルは DefaultPBR。
+            user_data:                  0.0,
+            shading_model:              crate::engine::core::renderer::surface_id::SHADING_MODEL_DEFAULT_PBR,
             double_sided:               false,
             cull_face:                  CullFace::Back,
             avg_albedo:                 [1.0, 1.0, 1.0, 1.0],

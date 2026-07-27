@@ -171,5 +171,12 @@ fn gather_surface(in: VertexOutput, front_facing: bool) -> Surface {
     s.occlusion  = ao;
     // clip_pos はフラグメントステージではフレームバッファ座標（ピクセル単位）。
     s.frag_coord = in.clip_pos.xy;
+
+    // ── 情報系（ライティングには使わず、G-Buffer 経由で合成へ渡す素材）────────
+    // アクタ単位のタグは補間属性（flat）から、マテリアル単位の 2 値は uniform から採る。
+    // ここが forward / G-Buffer 双方が通る唯一の採取点である（値解釈のズレ防止）。
+    s.render_tag    = u32(round(max(in.render_tag, 0.0))) & RENDER_TAG_MASK;
+    s.shading_model = u_material.shading_model & SHADING_MODEL_MASK;
+    s.user_data     = clamp(u_material.user_data, 0.0, 1.0);
     return s;
 }

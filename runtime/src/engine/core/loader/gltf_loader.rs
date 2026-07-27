@@ -283,6 +283,9 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
             // 頂点カラー無視トグル。glTF ロード時は常に false（従来どおり頂点カラーを乗算）。
             // true にするのはカメラプレビューの地形簡易マテリアルだけ（ランタイム生成）。
             ignore_vertex_color: false,
+            // 情報系（glTF は対応する標準拡張を持たないため既定値。.mat / インライン編集で設定する）。
+            user_data:           0.0,
+            shading_model:       crate::engine::core::renderer::surface_id::SHADING_MODEL_DEFAULT_PBR,
             double_sided:     mat.double_sided(),
             // glTF の double_sided をカリング面へマップする（true → 両面描画＝カリング無し）。
             // これで Sponza のカーテン等、片面しか描かれず裏から見ると消えていたマテリアルが

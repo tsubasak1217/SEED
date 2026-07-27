@@ -201,6 +201,13 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // 拡散透過（葉・布・紙の逆光透け）は RT2.b に焼かれている（gbuffer_write.wgsl）。
     let diffuse_transmission = g2.b;
     let emissive  = g3.rgb;
+    // ── 情報系チャンネル（第 2 層の生成物として合成が読む素材）─────────────
+    // RT2.a = マテリアルの汎用ユーザーデータ（0..1、8bit 量子化済み）。
+    // RT3.a = セマンティックタグ | シェーディングモデル ID のパック値（無損失）。
+    // ライティング自体はこれらを使わない（現状 shading_model は常に DefaultPBR）が、
+    // Surface に載せておくことで将来の合成／モデル分岐がここ 1 か所から引ける。
+    let user_data  = g2.a;
+    let surface_id = unpack_surface_id(g3.a);
 
     // ── 4) 幾何法線 Ng の復元 ───────────────────────────────────
     // G-Buffer には焼いていないため、復元したワールド座標の画面微分から作る
@@ -248,6 +255,10 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // 拡散透過（RT2.b から復元）。逆光透け項は forward と同一の evaluate_lighting で効く。
     s.diffuse_transmission = diffuse_transmission;
     s.emissive      = emissive;
+    // 情報系（RT2.a / RT3.a から復元）。ライト評価は参照しない。
+    s.user_data     = user_data;
+    s.render_tag    = surface_id.x;
+    s.shading_model = surface_id.y;
     // AO 乗算: 半解像度 AO をフル解像度 UV（frag.xy/resolution）でバイリニアサンプルし
     // occlusion に掛ける。これにより AO はアンビエント（evaluate_gi_ambient）・DDGI・
     // 疑似バウンス項にのみ効く（直接光は lighting_eval.wgsl の shade_light が occlusion を

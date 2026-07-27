@@ -7,10 +7,22 @@
 //  本ファイル（Phase A）はパイプライン構築と描画ヘルパーの用意までに留める。
 //
 //  ## G-Buffer レイアウト（gbuffer_write.wgsl のコメントと同一。正典はシェーダ側）
-//    RT0 Rgba8Unorm  : albedo.rgb + occlusion.a
-//    RT1 Rgba16Float : world normal.xyz + 0
-//    RT2 Rgba8Unorm  : metallic.r + roughness.g + 予約(b,a)
-//    RT3 Rgba16Float : emissive.rgb(HDR) + 0
+//
+//  | RT | フォーマット   | .r/.g/.b            | .a (.w)                        | 空き |
+//  |----|---------------|---------------------|--------------------------------|------|
+//  | 0  | Rgba8Unorm    | albedo（リニア）     | occlusion                      | なし |
+//  | 1  | Rgba16Float   | world normal N.xyz  | authored 法線フラグ（0/1）      | なし |
+//  | 2  | Rgba8Unorm    | metallic / roughness / diffuse_transmission | user_data（0..1） | なし |
+//  | 3  | Rgba16Float   | emissive（HDR）      | surface_id（tag 4bit｜モデル 2bit）| 上位ビット |
+//
+//  【この表の履歴】かつてここには「RT1.w = 0」「RT2 の b,a は予約」と書かれていたが、
+//  実際には RT1.w は authored 法線フラグ（草／地形が 1 を立て、deferred_lighting が
+//  幾何法線の代わりに N を使う判定に用いる）、RT2.b は diffuse_transmission として
+//  既に使用されていた。シェーダ側（正典）に合わせて修正済み。
+//
+//  RT2.a / RT3.a の情報系チャンネルのビット規約は `renderer::surface_id`（Rust）と
+//  `surface.wgsl` の `pack_surface_id`（WGSL）が対で持つ。RT3.a は 6bit しか使って
+//  いないため、half float が無損失で扱える 11bit のうち残り 5bit が将来用に空いている。
 //
 //  ## パイプラインレイアウトの再利用方針
 //  gbuffer_write.wgsl は shader_common.wgsl（group0 カメラ／group1 モデル／group2 マテリアル）
@@ -36,11 +48,15 @@ use crate::engine::terrain::layers::TERRAIN_BLEND_SLOTS;
 
 /// RT0: albedo(rgb) + occlusion(a)。8bit で十分な精度（アルベドは知覚的量子化で足りる）。
 pub const GBUFFER0_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-/// RT1: world normal(xyz)。法線は符号付き単位ベクトルのため Float フォーマットが必要。
+/// RT1: world normal(xyz) + authored 法線フラグ(w)。
+/// 法線は符号付き単位ベクトルのため Float フォーマットが必要。
 pub const GBUFFER1_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// RT2: metallic(r) + roughness(g) + 予約(b, a)。仕様上 [0,1] に収まるため 8bit で十分。
+/// RT2: metallic(r) + roughness(g) + diffuse_transmission(b) + user_data(a)。
+/// いずれも仕様上 [0,1] に収まるため 8bit（1/255 刻み）で十分。
 pub const GBUFFER2_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-/// RT3: emissive(rgb, HDR)。1.0 を超える値を取り得るため Float フォーマットが必要。
+/// RT3: emissive(rgb, HDR) + surface_id(a)。
+/// emissive は 1.0 を超える値を取り得るため Float フォーマットが必要。
+/// .a のパック整数（0..63）は half float の無損失整数域（〜2048）に収まる。
 pub const GBUFFER3_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// G-Buffer 各 RT の RtPool 登録名（post::rt_pool.rs の命名流儀＝小文字スネークケースに合わせる）。

@@ -31,5 +31,8 @@ fn vs_main(v: VertexInput, @builtin(instance_index) inst_idx: u32) -> VertexOutp
     out.uv0          = v.uv0;
     out.uv1          = v.uv1;
     out.color        = v.color;
+    // アクタ単位のセマンティックタグ（インスタンス拡張スロット＝normal_matrix の 4 列目）。
+    // 行列演算には一切影響しない領域から読み出し、flat 補間でフラグメントへ運ぶ。
+    out.render_tag   = instance_render_tag(u_model);
     return out;
 }

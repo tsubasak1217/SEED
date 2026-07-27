@@ -1240,6 +1240,10 @@ impl App {
                         time_overrides: Vec<Option<f32>>,
                         /// 統合インスタンス i の絶対 ID（元 MC の id_base + 元インスタンス idx）
                         abs_ids:   Vec<u32>,
+                        /// 統合インスタンス i のセマンティックタグ（0..15。0 = タグ無し）。
+                        /// `ModelComponent::render_tag` 由来で、同一 MC の全インスタンスに同じ値を複製する
+                        /// （タグはアクタ単位の属性であり、インスタンス個別には持たせない）。
+                        render_tags: Vec<u8>,
                     }
                     // (dfs_id, slot_i) → (source_path, merged_start, n_instances)
                     // アウトライン描画時に統合バッチ内のインスタンス範囲を特定するために使う。
@@ -1270,6 +1274,7 @@ impl App {
                                     mats:      Vec::new(),
                                     time_overrides: Vec::new(),
                                     abs_ids:   Vec::new(),
+                                    render_tags: Vec::new(),
                                 });
                             // この MC が Animator 駆動中なら権威時刻を、そうでなければ None を
                             // 全インスタンス分複製する（インスタンスは同一アニメを共有再生する）。
@@ -1286,6 +1291,8 @@ impl App {
                                 e.time_overrides.push(mc_time_override);
                                 // abs_id = MC の id_base + このインスタンスのオフセット
                                 e.abs_ids.push(id_base + inst_i as u32);
+                                // タグは MC 単位の属性なので、この MC の全インスタンスへ同値を複製する。
+                                e.render_tags.push(amc.render_tag);
                             }
                         }
                         map
@@ -1347,6 +1354,8 @@ impl App {
                                     &draw_ctx.queue,
                                     cpu_model,
                                     &info.mats,
+                                    // セマンティックタグ（統合インスタンス順・MC 単位の値を複製済み）。
+                                    &info.render_tags,
                                     saved_camera_pos,
                                 );
                                 // lod_id_buffers を絶対 ID で上書きする
@@ -1795,6 +1804,8 @@ impl App {
                                     &draw_ctx.queue,
                                     &gizmo.cpu_model,
                                     &transforms,
+                                    // ギズモはアクタではなくタグを持たない（全インスタンス 0 扱い）。
+                                    &[],
                                     cpo,
                                 );
                             }
@@ -5698,8 +5709,15 @@ impl App {
                         }
                     }
 
-                    // ── ID パス（Edit/Pause のみ）──────────
-                    if in_editor {
+                    // ── ID パス ────────────────────────────────────────────────
+                    // Edit / Pause 中は常に描く（ピッキング・D&D のワールド座標取得が依存）。
+                    // Play 中は既定でスキップし、`SEED_ID_PASS_IN_PLAY` が設定されたときだけ
+                    // 毎フレーム描いて合成（第 3 層）が読める per-actor マスクを供給する。
+                    // 判断根拠と使い分けの指針は id_pass.rs の ID_PASS_IN_PLAY コメントを参照。
+                    // コストは [PERF] 行の `id=` フィールドで計測できる（SEED_PERF_LOG=1）。
+                    let draw_id_pass_this_frame = in_editor
+                        || crate::engine::methods::drawer::id_pass::id_pass_enabled_in_play();
+                    if draw_id_pass_this_frame {
                         if let Some(id_buf) = &self.id_buffer {
                             let _perf_t_id = std::time::Instant::now();
                             {

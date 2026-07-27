@@ -58,5 +58,11 @@ fn vs_main(v: VertexInput, @builtin(instance_index) inst_idx: u32) -> VertexOutp
     out.uv0          = v.uv0;
     out.uv1          = v.uv1;
     out.color        = v.color;
+    // アクタ単位のセマンティックタグ（インスタンス拡張スロット＝normal_matrix の 4 列目）。
+    // スキンの場合も法線変換は `normal_matrix * (skin * vec4(n, 0.0))` の形であり、
+    // `skin` はアフィン行列（アップロード規約上 col_i.w = 0 for i<3）なので内側の結果も
+    // 必ず w=0 になる。よって normal_matrix の 4 列目（拡張スロット）は結果に寄与せず、
+    // タグを載せてもスキン法線は 1 ビットも変わらない。
+    out.render_tag   = instance_render_tag(u_model);
     return out;
 }

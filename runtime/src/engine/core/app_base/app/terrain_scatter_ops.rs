@@ -32,19 +32,19 @@ use std::collections::HashMap;
 // ルール散布のチャンク並列化に使う（terrain_ops.rs の再メッシュ並列化と同じ流儀）。
 use rayon::prelude::*;
 
+use super::terrain_ops::{find_owner, sample_density_world, TerrainState};
 use super::App;
-use super::terrain_ops::{TerrainState, find_owner, sample_density_world};
 use crate::engine::core::renderer::grass_gbuffer::{
     GrassChunkSpan, GrassInstanceBuffer, GrassInstanceGpu, GrassUniformGpu,
 };
 use crate::engine::terrain::chunk_coord::ChunkCoord;
 use crate::engine::terrain::chunk_data::TerrainChunkData;
-use crate::engine::terrain::layers::{TerrainLayerSet, blend_rule_and_paint_all};
+use crate::engine::terrain::layers::{blend_rule_and_paint_all, TerrainLayerSet};
 // 散布データ層は mod.rs の再エクスポート（＝モジュールの公開 API）経由で参照する。
 // 各サブモジュールを直接指さないのは、公開 API を 1 か所に集約しておくためである。
 use crate::engine::terrain::scatter::{
-    PropKind, ScatterField, ScatterInstance, TerrainProp, TerrainPropSet, read_chunk,
-    restick_instances, scatter_brush, scatter_chunk_by_rules, write_chunk,
+    read_chunk, restick_instances, scatter_brush, scatter_chunk_by_rules, write_chunk,
+    PropKind, ScatterField, ScatterInstance, TerrainProp, TerrainPropSet,
 };
 use crate::engine::terrain::settings::TerrainSettings;
 // kind=Model 散布プロップのロード・GPU 化・インスタンス描画に使う既存 API。
@@ -147,13 +147,11 @@ fn cull_distance_env(var: &str, default: f32) -> f32 {
 /// 草の距離カリング閾値（メートル）。`SEED_GRASS_CULL_DIST` で上書き可。
 ///
 /// 描画側（frame_renderer の草ドロー）も同じ閾値を使うため公開する。
-pub(super) static GRASS_CULL_DISTANCE: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| {
-    cull_distance_env("SEED_GRASS_CULL_DIST", GRASS_CULL_DISTANCE_DEFAULT)
-});
+pub(super) static GRASS_CULL_DISTANCE: std::sync::LazyLock<f32> =
+    std::sync::LazyLock::new(|| cull_distance_env("SEED_GRASS_CULL_DIST", GRASS_CULL_DISTANCE_DEFAULT));
 /// 散布モデルの距離カリング閾値（メートル）。`SEED_MODEL_CULL_DIST` で上書き可。
-static SCATTER_MODEL_CULL_DISTANCE: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| {
-    cull_distance_env("SEED_MODEL_CULL_DIST", SCATTER_MODEL_CULL_DISTANCE_DEFAULT)
-});
+static SCATTER_MODEL_CULL_DISTANCE: std::sync::LazyLock<f32> =
+    std::sync::LazyLock::new(|| cull_distance_env("SEED_MODEL_CULL_DIST", SCATTER_MODEL_CULL_DISTANCE_DEFAULT));
 
 // ─── 遠景密度減衰（植生 LOD 第1段）─────────────────────────────────────────────
 //
@@ -178,9 +176,8 @@ const SCATTER_MODEL_DECAY_MID_DEFAULT: f32 = 130.0;
 
 /// 草の密度減衰・近距離帯上端（メートル）。`SEED_GRASS_DECAY_NEAR` で上書き可。
 /// 描画側（frame_renderer の草ドロー）が二乗して使うため公開する。
-pub(super) static GRASS_DECAY_NEAR: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| {
-    cull_distance_env("SEED_GRASS_DECAY_NEAR", GRASS_DECAY_NEAR_DEFAULT)
-});
+pub(super) static GRASS_DECAY_NEAR: std::sync::LazyLock<f32> =
+    std::sync::LazyLock::new(|| cull_distance_env("SEED_GRASS_DECAY_NEAR", GRASS_DECAY_NEAR_DEFAULT));
 /// 草の密度減衰・中距離帯上端（メートル）。`SEED_GRASS_DECAY_MID` で上書き可。
 pub(super) static GRASS_DECAY_MID: std::sync::LazyLock<f32> =
     std::sync::LazyLock::new(|| cull_distance_env("SEED_GRASS_DECAY_MID", GRASS_DECAY_MID_DEFAULT));
@@ -220,7 +217,8 @@ const SCATTER_MODEL_MARGIN_UP: f32 = 16.0;
 /// 散布プロップ定義の読み込み失敗を警告するのは 1 回だけにするためのフラグ。
 ///
 /// props.json が無い環境で毎フレーム／毎コマンド警告が出るとログが埋まるため。
-static PROPS_LOAD_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static PROPS_LOAD_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// 草 GPU 再構築のログを出すかどうか（terrain_ops.rs の PERF ゲートと同じ環境変数）。
 /// 草描画の間引き計測ログ（frame_renderer）でも参照するため公開する。
@@ -258,10 +256,7 @@ const TERRAIN_CHUNK_CULL_DISTANCE_DEFAULT: f32 = 4000.0;
 /// 地形チャンク単位カリングの距離閾値（メートル）。`SEED_TERRAIN_CULL_DIST` で上書き可。
 pub(super) static TERRAIN_CHUNK_CULL_DISTANCE: std::sync::LazyLock<f32> =
     std::sync::LazyLock::new(|| {
-        cull_distance_env(
-            "SEED_TERRAIN_CULL_DIST",
-            TERRAIN_CHUNK_CULL_DISTANCE_DEFAULT,
-        )
+        cull_distance_env("SEED_TERRAIN_CULL_DIST", TERRAIN_CHUNK_CULL_DISTANCE_DEFAULT)
     });
 
 /// 地形チャンク単位カリングを無効化するデバッグスイッチ（before/after の fps 比較計測用）。
@@ -284,7 +279,9 @@ pub(super) static TERRAIN_CULL_DISABLED: std::sync::LazyLock<bool> =
 /// まず opt-in で実機検証し、問題なければ既定 ON を検討する。判定自体は保守側（AABB が
 /// 少しでも見える／カメラ背後／フラスタム外なら必ず描く）で、静止画では偽陽性ゼロ。
 pub(super) static HIZ_OCCLUSION_ENABLED: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| matches!(std::env::var("SEED_OCCLUSION_CULL").as_deref(), Ok("1")));
+    std::sync::LazyLock::new(|| {
+        matches!(std::env::var("SEED_OCCLUSION_CULL").as_deref(), Ok("1"))
+    });
 
 /// 散布モデル（kind=Model プロップ）の GPU メッシュレットカリングを有効にするか。
 /// 既定 ON。環境変数 `SEED_SCATTER_MESHLET=0` で無効化できる（無効時は G-Buffer を
@@ -339,11 +336,7 @@ impl<'a> TerrainScatterField<'a> {
         settings: &'a TerrainSettings,
         layers: &'a TerrainLayerSet,
     ) -> Self {
-        Self {
-            chunks,
-            settings,
-            layers,
-        }
+        Self { chunks, settings, layers }
     }
 
     /// `TerrainState` からアダプタを作る便宜コンストラクタ。
@@ -519,10 +512,9 @@ impl ScatterField for TerrainScatterField<'_> {
         let cells = self.settings.chunk_cells as i32;
 
         let (paint_slots, paint_amount) = match find_owner(self.chunks, cells, gx, gy, gz) {
-            Some((chunk, lx, ly, lz)) => (
-                chunk.paint_slots(lx, ly, lz),
-                chunk.paint_amount(lx, ly, lz),
-            ),
+            Some((chunk, lx, ly, lz)) => {
+                (chunk.paint_slots(lx, ly, lz), chunk.paint_amount(lx, ly, lz))
+            }
             // 地形外にはペイントが存在しない＝ルール重みがそのまま通る。
             None => (Default::default(), 0.0),
         };
@@ -588,12 +580,12 @@ fn chunk_world_aabb(
 /// 持つため、バッファに入った時点でどのプロップかは確定している）。
 pub(super) fn scatter_instance_to_gpu(inst: &ScatterInstance) -> GrassInstanceGpu {
     GrassInstanceGpu {
-        pos: inst.pos,
-        yaw: inst.yaw,
+        pos:    inst.pos,
+        yaw:    inst.yaw,
         normal: inst.normal,
-        scale: inst.scale,
-        seed: inst.seed,
-        _pad: [0; 3],
+        scale:  inst.scale,
+        seed:   inst.seed,
+        _pad:   [0; 3],
     }
 }
 
@@ -607,26 +599,26 @@ pub(super) fn grass_uniform_from_prop(prop: &TerrainProp) -> GrassUniformGpu {
     let w = &prop.wind;
     GrassUniformGpu {
         color_bottom: g.color_bottom,
-        width: g.width,
-        color_top: g.color_top,
-        height: g.height,
+        width:        g.width,
+        color_top:    g.color_top,
+        height:       g.height,
 
-        wind_strength: w.strength,
-        wind_speed: w.speed,
+        wind_strength:  w.strength,
+        wind_speed:     w.speed,
         wind_frequency: w.frequency,
-        gust_strength: w.gust_strength,
-        gust_speed: w.gust_speed,
-        time: 0.0,
-        bend: g.bend,
-        roughness: g.roughness,
+        gust_strength:  w.gust_strength,
+        gust_speed:     w.gust_speed,
+        time:           0.0,
+        bend:           g.bend,
+        roughness:      g.roughness,
 
-        segments: g.clamped_segments(),
+        segments:         g.clamped_segments(),
         // WGSL 側は 1 or 2 の枚数として読むので bool を枚数へ展開する。
-        cross_planes: if g.cross_planes { 2 } else { 1 },
+        cross_planes:     if g.cross_planes { 2 } else { 1 },
         tip_alpha_cutoff: g.tip_alpha_cutoff,
         // 法線の地表寄せ量。不正値（NaN・範囲外）が props.json に書かれても
         // シェーダ側の mix が壊れないよう、ここで 0..1 へ丸めておく。
-        normal_up_blend: g.normal_up_blend.clamp(0.0, 1.0),
+        normal_up_blend:  g.normal_up_blend.clamp(0.0, 1.0),
     }
 }
 
@@ -795,10 +787,7 @@ fn gather_scatter_model_chunks(
                 .or_default()
                 .entry(coord)
                 .or_default()
-                .push((
-                    scatter_thin_key(inst.seed),
-                    scatter_instance_to_model_matrix(inst),
-                ));
+                .push((scatter_thin_key(inst.seed), scatter_instance_to_model_matrix(inst)));
         }
     }
 
@@ -811,10 +800,7 @@ fn gather_scatter_model_chunks(
             .into_iter()
             .map(|coord| {
                 let (aabb_min, aabb_max) = chunk_world_aabb(
-                    settings,
-                    coord,
-                    SCATTER_MODEL_MARGIN_HORIZ,
-                    SCATTER_MODEL_MARGIN_UP,
+                    settings, coord, SCATTER_MODEL_MARGIN_HORIZ, SCATTER_MODEL_MARGIN_UP,
                 );
                 // チャンク内をハッシュキー順へ並べ替え、行列だけを取り出す。
                 //   これで span.mats の任意プレフィクスが空間的に均一なサブセットになり、
@@ -827,11 +813,7 @@ fn gather_scatter_model_chunks(
                         .then(a.1[2][3].total_cmp(&b.1[2][3]))
                 });
                 let mats = keyed.into_iter().map(|(_, m)| m).collect();
-                ScatterModelChunkSpan {
-                    aabb_min,
-                    aabb_max,
-                    mats,
-                }
+                ScatterModelChunkSpan { aabb_min, aabb_max, mats }
             })
             .collect();
         by_prop.insert(prop_index, spans);
@@ -851,7 +833,8 @@ fn load_scatter_model(
     // アセット相対 → 仮想パス → 実パス（ギズモ／ECS モデルと同じ解決規約）。
     let virtual_path = crate::engine::asset_fs::normalize_asset_path(model_path);
     let abs = crate::engine::asset_fs::resolve(&virtual_path);
-    let model = load_model(&abs).map_err(|e| format!("{e:?} (resolved: {})", abs.display()))?;
+    let model = load_model(&abs)
+        .map_err(|e| format!("{e:?} (resolved: {})", abs.display()))?;
     // GpuModel は DrawContext が device/queue/pipelines/defaults を保持しているので
     // モデルだけ渡せば構築できる（ECS の ModelComponent ロードと同じ入口）。
     let gpu_model = ctx.upload_model(&model);
@@ -980,9 +963,7 @@ impl App {
         let prop_indices = self.resolve_scatter_prop_indices(&prop_id);
         if prop_indices.is_empty() {
             if let Some(ipc) = &self.ipc {
-                ipc.send(&format!(
-                    "TERRAIN_SCATTER_ERROR:unknown prop_id '{prop_id}'"
-                ));
+                ipc.send(&format!("TERRAIN_SCATTER_ERROR:unknown prop_id '{prop_id}'"));
             }
             return;
         }
@@ -1098,9 +1079,7 @@ impl App {
             None if erase => 0,
             None => {
                 if let Some(ipc) = &self.ipc {
-                    ipc.send(&format!(
-                        "TERRAIN_SCATTER_ERROR:unknown prop_id '{prop_id}'"
-                    ));
+                    ipc.send(&format!("TERRAIN_SCATTER_ERROR:unknown prop_id '{prop_id}'"));
                 }
                 return;
             }
@@ -1353,9 +1332,7 @@ impl App {
         let mut by_prop: HashMap<usize, (Vec<GrassInstanceGpu>, Vec<GrassChunkSpan>)> =
             HashMap::new();
         for &coord in &coords {
-            let Some(instances) = self.terrain.scatter.get(&coord) else {
-                continue;
-            };
+            let Some(instances) = self.terrain.scatter.get(&coord) else { continue };
             let (aabb_min, aabb_max) =
                 chunk_world_aabb(&settings, coord, GRASS_MARGIN_HORIZ, GRASS_MARGIN_UP);
             // このチャンクで各プロップ用に開いた span の添字（entry.1 内）。
@@ -1431,8 +1408,7 @@ impl App {
         //   超えるとバインドグループ生成でパニックする。16×16 高密度散布で 1 プロップが
         //   約 400 万本（≒192MB）に達しクラッシュしていた。本数と span をここで頭打ちに
         //   して、確保するバッファが上限を超えないことを構造的に保証する。
-        let max_instances =
-            crate::engine::core::renderer::grass_gbuffer::max_grass_instances(device);
+        let max_instances = crate::engine::core::renderer::grass_gbuffer::max_grass_instances(device);
 
         let mut total = 0usize;
         for (prop_index, (instances, spans)) in &mut by_prop {
@@ -1444,9 +1420,7 @@ impl App {
             // 上限超過ぶんを切り詰める（span も同時に整合させる）。切り捨てはチャンク座標
             // ソートの末尾から起きる。切り捨てが発生したら 1 プロップ分の内訳を警告する。
             let dropped = crate::engine::core::renderer::grass_gbuffer::clamp_instances_and_spans(
-                instances,
-                spans,
-                max_instances,
+                instances, spans, max_instances,
             );
             if dropped > 0 {
                 eprintln!(
@@ -1539,10 +1513,8 @@ impl TerrainState {
         //   そこで drop 直後に poll(Wait) を挟み、read lock を誰も持っていないこの時点で
         //   遅延破棄を確定させる（slot_ops.rs / terrain_ops.rs の GpuModel 差し替えと同じ安全手順）。
         let scatter_models_before_retain = self.scatter_models.len();
-        self.scatter_models
-            .retain(|k, _| mats_by_prop.contains_key(k));
-        self.scatter_model_failed
-            .retain(|k, _| mats_by_prop.contains_key(k));
+        self.scatter_models.retain(|k, _| mats_by_prop.contains_key(k));
+        self.scatter_model_failed.retain(|k, _| mats_by_prop.contains_key(k));
         if self.scatter_models.len() != scatter_models_before_retain {
             let _ = ctx.device.poll(wgpu::PollType::Wait);
         }
@@ -1553,9 +1525,7 @@ impl TerrainState {
         let mut total = 0usize;
         for (prop_index, spans) in mats_by_prop {
             let mat_count: usize = spans.iter().map(|s| s.mats.len()).sum();
-            let Some(prop) = self.props.props.get(prop_index) else {
-                continue;
-            };
+            let Some(prop) = self.props.props.get(prop_index) else { continue };
             let want_path = match prop.model_path.as_deref() {
                 Some(p) if !p.is_empty() => p.to_string(),
                 _ => continue,
@@ -1612,8 +1582,7 @@ impl TerrainState {
                              （このプロップは描画をスキップします）",
                             prop.id, want_path, err
                         );
-                        self.scatter_model_failed
-                            .insert(prop_index, want_path.clone());
+                        self.scatter_model_failed.insert(prop_index, want_path.clone());
                         continue;
                     }
                 }
@@ -1726,8 +1695,8 @@ impl TerrainState {
             // 可視ぶんだけをアップロード（dirty 化してワールド行列を再計算させる）。
             // visible が空なら update 内部で全 LOD カウントが 0 になり、何も描かれない。
             res.batch.mark_dirty();
-            res.batch
-                .update(&ctx.queue, &res.cpu_model, &visible, camera_pos);
+            // 散布オブジェクトはアクタ単位のタグを持たない（全インスタンス 0 扱い）。
+            res.batch.update(&ctx.queue, &res.cpu_model, &visible, &[], camera_pos);
         }
         // 計測ログ（SEED_PERF_TERRAIN 有効時のみ・毎フレームだと五月蝿いので間引く）。
         if *PERF_TERRAIN_LOG_ENABLED && dbg_total > 0 {
@@ -1759,7 +1728,11 @@ fn warn_props_once(message: &str) {
 /// 球の AABB をチャンク格子へ写して全数挙げる（保守的＝取りこぼさない）。
 /// 触れないチャンクが少し混ざるのは無害で、逆に取りこぼすと
 /// ブラシがチャンク境界を跨いだときに草が片側にしか出ない。
-fn chunks_in_sphere(settings: &TerrainSettings, center: [f32; 3], radius: f32) -> Vec<ChunkCoord> {
+fn chunks_in_sphere(
+    settings: &TerrainSettings,
+    center: [f32; 3],
+    radius: f32,
+) -> Vec<ChunkCoord> {
     let extent = settings.chunk_extent();
     if !(extent > 0.0) || !(radius >= 0.0) {
         return Vec::new();
@@ -1792,7 +1765,7 @@ fn chunks_in_sphere(settings: &TerrainSettings, center: [f32; 3], radius: f32) -
 mod tests {
     use super::*;
     // テストからのみ使うデータ層 API（実行時経路では使わないので上位では import しない）。
-    use crate::engine::terrain::scatter::{GRASS_MAX_SEGMENTS, surface_hit_down};
+    use crate::engine::terrain::scatter::{surface_hit_down, GRASS_MAX_SEGMENTS};
 
     /// テスト用の地形設定（extent = 0.5 * 32 = 16.0 m）。
     fn test_settings() -> TerrainSettings {
@@ -1809,10 +1782,7 @@ mod tests {
         let extent = s.chunk_extent();
 
         // ─── 原点はチャンク 0 ───
-        assert_eq!(
-            owning_chunk_coord(&s, [0.0, 0.0, 0.0]),
-            ChunkCoord::new(0, 0, 0)
-        );
+        assert_eq!(owning_chunk_coord(&s, [0.0, 0.0, 0.0]), ChunkCoord::new(0, 0, 0));
 
         // ─── 境界ちょうど（extent）は「次のチャンクの下端」＝ 1 ───
         //   区間は [c*extent, (c+1)*extent) の半開区間である。
@@ -1854,12 +1824,12 @@ mod tests {
     #[test]
     fn scatter_instance_converts_to_gpu_losslessly() {
         let inst = ScatterInstance {
-            pos: [1.5, -2.25, 3.75],
-            normal: [0.0, 0.6, 0.8],
-            yaw: 1.25,
-            scale: 0.875,
+            pos:     [1.5, -2.25, 3.75],
+            normal:  [0.0, 0.6, 0.8],
+            yaw:     1.25,
+            scale:   0.875,
             prop_id: 7,
-            seed: 0xDEAD_BEEF,
+            seed:    0xDEAD_BEEF,
         };
         let gpu = scatter_instance_to_gpu(&inst);
 
@@ -1892,22 +1862,14 @@ mod tests {
 
         // 草プロップは Grass 種別で、目視できる大きさであること。
         let (_, grass) = set.find_by_id("grass_field").unwrap();
-        assert_eq!(
-            grass.kind,
-            PropKind::Grass,
-            "grass_field は kind=grass であること"
-        );
+        assert_eq!(grass.kind, PropKind::Grass, "grass_field は kind=grass であること");
         assert!(grass.grass.height > 0.0, "草の高さが 0 以下");
         assert!(grass.grass.width > 0.0, "草の幅が 0 以下");
         assert!(grass.scatter.density > 0.0, "草の散布密度が 0 以下");
 
         // 木プロップは Model 種別であること（第2段の描画対象）。
         let (_, tree) = set.find_by_id("tree_pine").unwrap();
-        assert_eq!(
-            tree.kind,
-            PropKind::Model,
-            "tree_pine は kind=model であること"
-        );
+        assert_eq!(tree.kind, PropKind::Model, "tree_pine は kind=model であること");
     }
 
     /// 出荷する props.json のレイヤ条件が layers.json に実在するレイヤを指すこと。
@@ -1926,8 +1888,7 @@ mod tests {
                 assert!(
                     layers.layers.iter().any(|l| l.name == cond.layer),
                     "props.json のプロップ '{}' が未定義のレイヤ '{}' を参照している",
-                    prop.id,
-                    cond.layer
+                    prop.id, cond.layer
                 );
             }
         }
@@ -2072,8 +2033,7 @@ mod tests {
             .expect("平坦な地面で接地点が取れないのはテストの前提崩れ");
         assert!(
             (hit[1] - original_ground).abs() < vs,
-            "接地点が想定の地面高さから離れている: {} vs {original_ground}",
-            hit[1]
+            "接地点が想定の地面高さから離れている: {} vs {original_ground}", hit[1]
         );
 
         let props = TerrainPropSet::default();
@@ -2093,7 +2053,9 @@ mod tests {
         let lowered_field = TerrainScatterField::new(&lowered, &settings, &layers);
 
         let y_search = RESTICK_Y_SEARCH_VOXELS * vs;
-        let removed = restick_instances(&lowered_field, &props, &mut instances, y_search);
+        let removed = restick_instances(
+            &lowered_field, &props, &mut instances, y_search,
+        );
 
         assert_eq!(removed, 0, "地面はまだあるので削除されてはいけない");
         assert_eq!(instances.len(), 1, "インスタンスが消えた");
@@ -2119,7 +2081,9 @@ mod tests {
         );
         let empty_field = TerrainScatterField::new(&empty_chunks, &settings, &layers);
 
-        let removed = restick_instances(&empty_field, &props, &mut instances, y_search);
+        let removed = restick_instances(
+            &empty_field, &props, &mut instances, y_search,
+        );
         assert_eq!(removed, 1, "足元の地面が消えたインスタンスは削除されること");
         assert!(instances.is_empty(), "宙に浮いた草が残っている");
     }
@@ -2169,9 +2133,9 @@ mod tests {
             // 対角線上と、境界ちょうど（voxel/chunk 境界）を明示的に混ぜる。
             for &(x, y, z) in &[
                 [p, p * 0.5 + 1.0, -p],
-                [p, extent, p], // y がチャンク境界ちょうど
-                [extent, p, p], // x がチャンク境界ちょうど
-                [p, p, 0.0],    // z=0 境界
+                [p, extent, p],           // y がチャンク境界ちょうど
+                [extent, p, p],           // x がチャンク境界ちょうど
+                [p, p, 0.0],              // z=0 境界
             ]
             .map(|a| (a[0], a[1], a[2]))
             {
@@ -2221,9 +2185,10 @@ mod tests {
         let layers = TerrainLayerSet::default();
 
         // ─── 出荷 props.json をそのまま使う（実機の密度で測る）───
-        let props =
-            TerrainPropSet::from_json_str(include_str!("../../../../../assets/terrain/props.json"))
-                .expect("props.json parse");
+        let props = TerrainPropSet::from_json_str(include_str!(
+            "../../../../../assets/terrain/props.json"
+        ))
+        .expect("props.json parse");
         let prop_indices: Vec<usize> = (0..props.active_count()).collect();
 
         // ─── 48 チャンク（XZ 8×6・単一 Y 層）に起伏地面を張る ───
@@ -2270,7 +2235,9 @@ mod tests {
         let t = Instant::now();
         let par_total: usize = coords
             .par_iter()
-            .map(|&coord| scatter_chunk_by_rules(&field, &props, &prop_indices, coord, seed).len())
+            .map(|&coord| {
+                scatter_chunk_by_rules(&field, &props, &prop_indices, coord, seed).len()
+            })
             .sum();
         let par_ms = t.elapsed().as_secs_f64() * 1000.0;
 
@@ -2283,10 +2250,7 @@ mod tests {
             serial_ms / par_ms.max(0.001),
             serial_ms * 1000.0 / serial_total.max(1) as f64,
         );
-        assert_eq!(
-            serial_total, par_total,
-            "並列と直列で本数が食い違う（決定性違反）"
-        );
+        assert_eq!(serial_total, par_total, "並列と直列で本数が食い違う（決定性違反）");
     }
 
     /// 草 uniform がプロップ定義の値をそのまま運ぶこと。
@@ -2307,21 +2271,15 @@ mod tests {
         assert_eq!(u.height, 0.4);
         assert_eq!(u.cross_planes, 2, "cross_planes=true は 2 枚");
         assert_eq!(
-            u.segments, GRASS_MAX_SEGMENTS,
+            u.segments,
+            GRASS_MAX_SEGMENTS,
             "segments は GRASS_MAX_SEGMENTS へ clamp されること"
         );
         assert_eq!(u.wind_strength, 0.5);
-        assert_eq!(
-            u.time, 0.0,
-            "time は 0 初期化（毎フレーム update_time が入れる）"
-        );
+        assert_eq!(u.time, 0.0, "time は 0 初期化（毎フレーム update_time が入れる）");
 
         prop.grass.cross_planes = false;
-        assert_eq!(
-            grass_uniform_from_prop(&prop).cross_planes,
-            1,
-            "false は 1 枚"
-        );
+        assert_eq!(grass_uniform_from_prop(&prop).cross_planes, 1, "false は 1 枚");
     }
 
     // ============================================================
@@ -2340,10 +2298,7 @@ mod tests {
         let (x, y, z) = (col(m, 0), col(m, 1), col(m, 2));
         for (v, name) in [(x, "x"), (y, "y"), (z, "z")] {
             let len = dot3(v, v).sqrt();
-            assert!(
-                (len - scale).abs() < 1.0e-5,
-                "基底 {name} の長さ {len} != {scale}"
-            );
+            assert!((len - scale).abs() < 1.0e-5, "基底 {name} の長さ {len} != {scale}");
         }
         assert!(dot3(x, y).abs() < 1.0e-5, "x·y が非直交");
         assert!(dot3(y, z).abs() < 1.0e-5, "y·z が非直交");
@@ -2373,23 +2328,14 @@ mod tests {
         };
         let m = scatter_instance_to_model_matrix(&inst);
         // 平行移動は各行の col=3。
-        assert_eq!(
-            [m[0][3], m[1][3], m[2][3]],
-            [1.0, 2.0, 3.0],
-            "平行移動が pos と不一致"
-        );
+        assert_eq!([m[0][3], m[1][3], m[2][3]], [1.0, 2.0, 3.0], "平行移動が pos と不一致");
         assert_eq!(m[3], [0.0, 0.0, 0.0, 1.0], "最下行が [0,0,0,1] でない");
         // up 列（col=1）は +Y。
         let up = col(&m, 1);
-        assert!(
-            up[0].abs() < 1.0e-6 && (up[1] - 1.0).abs() < 1.0e-6 && up[2].abs() < 1.0e-6,
-            "up={up:?}"
-        );
+        assert!(up[0].abs() < 1.0e-6 && (up[1] - 1.0).abs() < 1.0e-6 && up[2].abs() < 1.0e-6,
+            "up={up:?}");
         assert_basis_orthonormal(&m, 1.0);
-        assert!(
-            basis_determinant(&m) > 0.0,
-            "右手系でない（鏡映が入っている）"
-        );
+        assert!(basis_determinant(&m) > 0.0, "右手系でない（鏡映が入っている）");
     }
 
     /// 一様スケールが全基底に等しく掛かること（平行移動には掛からない）。
@@ -2425,12 +2371,7 @@ mod tests {
         let m = scatter_instance_to_model_matrix(&inst);
         let up = col(&m, 1);
         for i in 0..3 {
-            assert!(
-                (up[i] - n[i]).abs() < 1.0e-5,
-                "up[{i}]={} != normal[{i}]={}",
-                up[i],
-                n[i]
-            );
+            assert!((up[i] - n[i]).abs() < 1.0e-5, "up[{i}]={} != normal[{i}]={}", up[i], n[i]);
         }
         assert_basis_orthonormal(&m, 1.0);
         assert!(basis_determinant(&m) > 0.0, "右手系でない");
@@ -2455,10 +2396,7 @@ mod tests {
         let m0 = scatter_instance_to_model_matrix(&base);
         let r0 = col(&m0, 0);
         // 直立時、右ベクトルは水平面内（up ⟂）にある。
-        assert!(
-            r0[1].abs() < 1.0e-5,
-            "直立時の右ベクトルが水平でない: {r0:?}"
-        );
+        assert!(r0[1].abs() < 1.0e-5, "直立時の右ベクトルが水平でない: {r0:?}");
 
         let mut rot = base;
         rot.yaw = FRAC_PI_2;
@@ -2468,15 +2406,9 @@ mod tests {
         assert!((up[1] - 1.0).abs() < 1.0e-5, "yaw で up が動いた: {up:?}");
         // right は up 軸まわりに 90° 回るので、元の right と直交する。
         let r1 = col(&m1, 0);
-        assert!(
-            dot3(r0, r1).abs() < 1.0e-5,
-            "yaw=90° で右ベクトルが 90° 回っていない: {r0:?} -> {r1:?}"
-        );
+        assert!(dot3(r0, r1).abs() < 1.0e-5, "yaw=90° で右ベクトルが 90° 回っていない: {r0:?} -> {r1:?}");
         // 90° 回っても水平面内（up ⟂）を保つ。
-        assert!(
-            r1[1].abs() < 1.0e-5,
-            "回転後の右ベクトルが水平から外れた: {r1:?}"
-        );
+        assert!(r1[1].abs() < 1.0e-5, "回転後の右ベクトルが水平から外れた: {r1:?}");
     }
 
     /// 縮退した法線（0 ベクトル）でも真上へフォールバックし、破綻しないこと。
@@ -2492,10 +2424,7 @@ mod tests {
         };
         let m = scatter_instance_to_model_matrix(&inst);
         let up = col(&m, 1);
-        assert!(
-            (up[1] - 1.0).abs() < 1.0e-6,
-            "縮退法線は真上へフォールバックすること: {up:?}"
-        );
+        assert!((up[1] - 1.0).abs() < 1.0e-6, "縮退法線は真上へフォールバックすること: {up:?}");
         assert_basis_orthonormal(&m, 1.0);
     }
 
@@ -2506,11 +2435,7 @@ mod tests {
     fn gather_selects_only_model_props_with_path() {
         let props = TerrainPropSet {
             props: vec![
-                TerrainProp {
-                    id: "g".into(),
-                    kind: PropKind::Grass,
-                    ..TerrainProp::default()
-                },
+                TerrainProp { id: "g".into(), kind: PropKind::Grass, ..TerrainProp::default() },
                 TerrainProp {
                     id: "m1".into(),
                     kind: PropKind::Model,
@@ -2546,11 +2471,7 @@ mod tests {
         let spans = by.get(&1).expect("prop 1 の span 列");
         let total: usize = spans.iter().map(|s| s.mats.len()).sum();
         assert_eq!(total, 3, "prop 1 は全チャンク合計 3 本");
-        assert_eq!(
-            spans.len(),
-            2,
-            "prop 1 は 2 チャンクに分かれる（span 2 個）"
-        );
+        assert_eq!(spans.len(), 2, "prop 1 は 2 チャンクに分かれる（span 2 個）");
         assert!(!by.contains_key(&0), "草プロップは除外されること");
         assert!(!by.contains_key(&2), "model_path 無しは除外されること");
         assert!(!by.contains_key(&9), "孤児 prop_id は除外されること");
@@ -2560,14 +2481,9 @@ mod tests {
         assert_eq!(spans[1].mats.len(), 1, "次 span は chunk(1,0,0) の 1 本");
         // chunk(0,0,0) の AABB はマージン込みで原点側に負のはみ出しを持つ。
         let e = settings.chunk_extent();
-        assert!(
-            spans[0].aabb_min[0] < 0.0,
-            "AABB は margin ぶん負側へ広がる"
-        );
-        assert!(
-            spans[1].aabb_min[0] >= e - SCATTER_MODEL_MARGIN_HORIZ - 1.0,
-            "chunk(1,0,0) の AABB は x 方向へ 1 チャンクぶんずれる"
-        );
+        assert!(spans[0].aabb_min[0] < 0.0, "AABB は margin ぶん負側へ広がる");
+        assert!(spans[1].aabb_min[0] >= e - SCATTER_MODEL_MARGIN_HORIZ - 1.0,
+            "chunk(1,0,0) の AABB は x 方向へ 1 チャンクぶんずれる");
     }
 
     // ============================================================
@@ -2583,19 +2499,12 @@ mod tests {
     fn scatter_thin_key_is_deterministic_and_spreads() {
         // 同じ入力は常に同じ出力。
         for s in [0u32, 1, 2, 100, 0xDEAD_BEEF, u32::MAX] {
-            assert_eq!(
-                scatter_thin_key(s),
-                scatter_thin_key(s),
-                "seed={s} が非決定的"
-            );
+            assert_eq!(scatter_thin_key(s), scatter_thin_key(s), "seed={s} が非決定的");
         }
         // 連番 seed でも出力は単調増加にならない（撹拌が効いている）＝生成順に戻らない。
         let keys: Vec<u32> = (0..64u32).map(scatter_thin_key).collect();
         let is_sorted = keys.windows(2).all(|w| w[0] <= w[1]);
-        assert!(
-            !is_sorted,
-            "連番 seed のハッシュが単調（撹拌が効いていない）"
-        );
+        assert!(!is_sorted, "連番 seed のハッシュが単調（撹拌が効いていない）");
         // 衝突が起きていない（64 個の連番が全て相異なる）。
         let uniq: std::collections::HashSet<u32> = keys.iter().copied().collect();
         assert_eq!(uniq.len(), keys.len(), "連番 seed でハッシュ衝突が発生");
@@ -2627,13 +2536,7 @@ mod tests {
             seed,
         };
         // 同一チャンク内に 5 本。seed をわざとバラバラに与える。
-        let base = [
-            mk(1.0, 40),
-            mk(2.0, 7),
-            mk(3.0, 900),
-            mk(4.0, 3),
-            mk(5.0, 128),
-        ];
+        let base = [mk(1.0, 40), mk(2.0, 7), mk(3.0, 900), mk(4.0, 3), mk(5.0, 128)];
 
         // 入力順を変えた 2 つの scatter を作る。
         let mut a: HashMap<ChunkCoord, Vec<ScatterInstance>> = HashMap::new();
@@ -2649,16 +2552,11 @@ mod tests {
         let mb = &gb.get(&0).unwrap()[0].mats;
         assert_eq!(ma.len(), 5);
         // 入力順に関わらず並びが一致する＝決定的。
-        assert_eq!(
-            ma, mb,
-            "入力順で span.mats の並びが変わった（ちらつきの原因）"
-        );
+        assert_eq!(ma, mb, "入力順で span.mats の並びが変わった（ちらつきの原因）");
 
         // 並びが seed のハッシュ順であること（先頭 = 最小ハッシュの個体の x 平行移動）。
-        let mut expected: Vec<(u32, f32)> = base
-            .iter()
-            .map(|i| (scatter_thin_key(i.seed), i.pos[0]))
-            .collect();
+        let mut expected: Vec<(u32, f32)> =
+            base.iter().map(|i| (scatter_thin_key(i.seed), i.pos[0])).collect();
         expected.sort_by(|p, q| p.0.cmp(&q.0));
         for (k, (_, x)) in expected.iter().enumerate() {
             assert_eq!(ma[k][0][3], *x, "{k} 番目の個体がハッシュ順に並んでいない");
