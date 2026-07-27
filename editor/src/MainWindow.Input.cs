@@ -117,10 +117,15 @@ public partial class MainWindow
         bool isDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
         bool isUp   = wParam == WM_KEYUP   || wParam == WM_SYSKEYUP;
 
-        // (2) シーンビューポート（ランタイム埋め込みパネル）にフォーカスがあるか。
-        //     スクリプトエディタ/インスペクタ等の WPF コントロールにフォーカスがある
-        //     間は false になり、シーン操作・カメラ移動をランタイムへ転送しない。
-        bool viewportFocused = IsSceneViewportFocused();
+        // (2) テキスト編集コントロールにフォーカスが「無い」こと。
+        //     【重要な前提】埋め込みランタイムの子 HWND はクリックしてもキーボード
+        //     フォーカスを取らない（取らないからこそ本フックで転送している）。そのため
+        //     「ビューポートにフォーカスがあるか」を正の条件にすると恒久的に偽になり、
+        //     カメラキーが一切効かなくなる（実際に起きたリグレッション）。
+        //     正しいゲートは負の条件 —— スクリプトエディタ(AvalonEdit)・インスペクタ等の
+        //     テキスト入力にフォーカスがある間だけ転送を止め、それ以外（＝前面判定を
+        //     通過済みのエディタ操作中）は転送を許可する。
+        bool viewportFocused = !IsTextInputFocused();
 
         // Ctrl キー追跡 + Rust へ転送。
         // 追跡（_ctrlHeld）はフォーカスに関係なく常に行い、下の Ctrl+C 等の分岐で使う。
@@ -279,17 +284,25 @@ public partial class MainWindow
     /// 本メソッドは低レベルキーボードフックのコールバック（エディタ UI スレッド上で実行される）
     /// から同期的に呼ばれる前提。
     /// </summary>
-    private bool IsSceneViewportFocused()
+    /// <summary>
+    /// テキスト入力コントロールに WPF キーボードフォーカスがあるかを判定する。
+    /// true の間はシーン操作系ショートカット・カメラキーをランタイムへ転送しない
+    /// （スクリプトエディタでの Ctrl+C/V や WASD 入力がシーンを操作しないようにする）。
+    ///
+    /// 【設計メモ】埋め込みランタイムの子 HWND はキーボードフォーカスを取らないため、
+    /// 「ビューポートにフォーカスがあるか」という正の条件は成立し得ない。
+    /// テキスト編集中だけ止める負の条件でゲートするのが本フックの正しい形。
+    /// </summary>
+    private static bool IsTextInputFocused()
     {
         var focused = Keyboard.FocusedElement;
-        // WPF コントロールにフォーカスが無い = ランタイム子 HWND 等、WPF 管理外へフォーカスが
-        // 移っている状態。呼び出し側で前面をエディタ/ランタイムに限定済みのため、これは
-        // シーンビューポートにフォーカスがあるとみなす。
-        if (focused is null) return true;
-        // HwndHost（ビューポートホスト）自身がフォーカス要素のケース。
-        if (_viewportHost != null && ReferenceEquals(focused, _viewportHost)) return true;
-        // それ以外（スクリプトエディタ/インスペクタ/プロジェクト等の WPF コントロール）。
-        return false;
+        if (focused is null) return false;
+        // 標準のテキスト入力（TextBox/RichTextBox 系・パスワード欄）
+        if (focused is System.Windows.Controls.Primitives.TextBoxBase) return true;
+        if (focused is System.Windows.Controls.PasswordBox) return true;
+        // スクリプトエディタ（AvalonEdit）の入力面は TextArea という独自要素のため型名で判定する
+        var typeName = focused.GetType().FullName ?? string.Empty;
+        return typeName.Contains("AvalonEdit", StringComparison.Ordinal);
     }
 
     private bool IsCamInputActive()
