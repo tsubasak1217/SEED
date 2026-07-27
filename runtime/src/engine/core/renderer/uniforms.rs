@@ -103,15 +103,31 @@ pub struct ModelUniform {
 }
 
 impl ModelUniform {
+    /// 恒等変換のモデル uniform。
+    ///
+    /// **`model` と `normal_matrix` で 4 列目の意味が異なるため、同じ配列を共有してはならない。**
+    /// - `model` は WGSL 側で `m * vec4(pos, 1.0)` と点（w=1）に掛けられる純粋な変換行列で、
+    ///   4 列目は平行移動列。恒等行列としては `[0,0,0,1]` でなければならない。
+    ///   ここを `[0,0,0,0]` にすると変換結果の w が 0 になり、点が「無限遠の方向ベクトル」に
+    ///   化けて、カメラの平行移動が効かない（=画面に張り付く）描画になる。
+    /// - `normal_matrix` は必ず w=0 の方向ベクトルに掛けられるため 4 列目は死に領域で、
+    ///   インスタンス拡張スロット（`INSTANCE_EXTRAS_COLUMN`）として 0 初期化する
+    ///   （タグ無し＝`RENDER_TAG_NONE` と一致）。
     pub fn identity() -> Self {
-        let id = [
-            [1.0, 0.0, 0.0, 0.0f32],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            // 拡張スロットは常にゼロ初期化（タグ無し＝RENDER_TAG_NONE と一致）。
-            [0.0, 0.0, 0.0, 0.0],
-        ];
-        Self { model: id, normal_matrix: id }
+        Self {
+            model: [
+                [1.0, 0.0, 0.0, 0.0f32],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0], // 平行移動列（w=1 必須）
+            ],
+            normal_matrix: [
+                [1.0, 0.0, 0.0, 0.0f32],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0], // インスタンス拡張スロット（既定ゼロ）
+            ],
+        }
     }
 
     /// モデル行列から生成する（法線行列は自動計算・拡張スロットはゼロ）。
@@ -440,5 +456,56 @@ mod layout_tests {
             u.normal_matrix[INSTANCE_EXTRAS_COLUMN][INSTANCE_EXTRAS_ROW_RENDER_TAG],
             super::super::surface_id::RENDER_TAG_MASK as f32
         );
+    }
+
+    /// `ModelUniform::identity()` の **model 行列** が真の恒等行列であること。
+    ///
+    /// 【この回帰テストが守るもの】
+    /// `identity()` は unlit_line パイプラインの「恒等モデル bind group」
+    /// （`create_identity_model_bg_for_unlit`）の中身であり、グリッド・コライダー枠・
+    /// カメラ錐台など**全てのワールド固定ラインギズモ**がこの 1 個のバッファを共有する。
+    /// WGSL 側（gizmo_line.wgsl）は `vp * m * vec4(pos, 1.0)` と点（w=1）に掛けるため、
+    /// 平行移動列 m[3] が `[0,0,0,1]` でないと変換結果の w が 0 になり、
+    /// 全頂点が「無限遠の方向ベクトル」に化けてカメラの平行移動が効かなくなる。
+    /// 拡張スロット（normal_matrix の 4 列目）のゼロ初期化を model 側へ巻き添えで
+    /// 適用してしまった過去の不具合を再発させないために固定する。
+    #[test]
+    fn identity_model_matrix_is_a_true_identity() {
+        let u = ModelUniform::identity();
+        assert_eq!(
+            u.model,
+            [
+                [1.0, 0.0, 0.0, 0.0f32],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            "model は真の恒等行列でなければならない（m[3][3]=1）"
+        );
+        // 一方、normal_matrix の 4 列目は拡張スロットなのでゼロ。
+        assert_eq!(
+            u.normal_matrix[INSTANCE_EXTRAS_COLUMN],
+            [0.0, 0.0, 0.0, 0.0],
+            "normal_matrix の拡張スロット列はゼロ初期化"
+        );
+    }
+
+    /// 恒等モデル行列で点（w=1）を変換しても、位置と w が保存されること。
+    ///
+    /// GPU 側の `m * vec4(pos, 1.0)`（列優先 mat4x4）を CPU で再現して検証する。
+    /// w が 1 のまま返らない行列は、続く view_proj で平行移動列が無効化され、
+    /// 「カメラを動かしても画面上で動かない線」という症状になる。
+    #[test]
+    fn identity_model_preserves_points_and_w() {
+        let m = ModelUniform::identity().model;
+        let p = [12.5f32, -3.25, 7.0, 1.0];
+
+        // 列優先での m * p（m[col][row] レイアウト）。
+        let mut out = [0.0f32; 4];
+        for row in 0..4 {
+            out[row] = (0..4).map(|col| m[col][row] * p[col]).sum();
+        }
+
+        assert_eq!(out, p, "恒等行列は点をそのまま返す（w も 1 のまま）");
     }
 }
