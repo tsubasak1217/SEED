@@ -41,6 +41,8 @@ pub fn draw_model_indirect<'pass>(
     // ワイヤ用パイプラインは非 RT・非対応 GPU では None のため、その場合は通常の塗り
     // （フラグメントは LightMeta.view_mode によりアンリット表示）へ自動フォールバックする。
     // 呼び出し側はワイヤ時に rt_pipes=None・メインカメラ用（非 RT）lights_bg を渡すこと。
+    // true のときは半透明（Blend）プリミティブもこのパスで線として描く（透明パスは
+    // 呼び出し側で停止させること。詳細は下の Blend スキップ判定のコメント参照）。
     wireframe: bool,
     // マテリアル（group 2）の差し替え。Some のとき、バッチ内の全プリミティブに対し
     // 各プリミティブ固有のマテリアルではなくこの BindGroup を group 2 として使う。
@@ -87,8 +89,16 @@ pub fn draw_model_indirect<'pass>(
             // 半透明（Blend）プリミティブは不透明パスでは描かず、透明パス
             // （transparency.rs）へ委ねる（Phase R5）。Opaque/Mask のみここで描画する。
             // 全 Opaque シーンでは Blend が存在しないため挙動は従来と完全一致。
-            if gpu_model.primitive_alpha_mode(draw.material_idx)
-                == crate::engine::core::loader::model::AlphaMode::Blend
+            //
+            // 【例外】ワイヤーフレーム表示中（wireframe==true）は Blend もここで描く。
+            // ワイヤは「不透明な線」であり、半透明だけ別経路（距離ソート／WBOIT）で
+            // 通常の塗りのまま描くと「不透明は線・半透明は塗り」の混在表示になる
+            // （呼び出し側の frame_renderer が同じ条件で透明パスを丸ごと止めており、
+            //   ここで描かないと半透明メッシュが消える）。線には前後ブレンドが無いため
+            // ソートも不要で、不透明と同一のワイヤ用パイプラインへそのまま合流できる。
+            if !wireframe
+                && gpu_model.primitive_alpha_mode(draw.material_idx)
+                    == crate::engine::core::loader::model::AlphaMode::Blend
             {
                 continue;
             }

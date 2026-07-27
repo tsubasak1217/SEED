@@ -1038,8 +1038,12 @@
                                                     <ComboBoxItem Content="ライティングOFF" Tag="unlit"/>
                                                     <ComboBoxItem Content="ワイヤーフレーム" Tag="wireframe"/>
                                                     <!-- 以下は G-Buffer デバッグ表示（Deferred 有効時のみ意味を持つ）。
-                                                         区切り線は IsEnabled=False にして選択不可にする（選択されると
-                                                         SelectedItem が ComboBoxItem でなくなり lit へフォールバックするため）。 -->
+                                                         区切り線は IsEnabled=False にして矢印キー移動の対象から外す（選択されると
+                                                         SelectedItem が ComboBoxItem でなくなり lit へフォールバックするため）。
+                                                         なお IsEnabled=False だけでは WPF のテキスト検索（typeahead）は防げず、
+                                                         "S" キー（カメラ後退）でこの Separator が選ばれて表示モードが lit へ
+                                                         戻る不具合があった。現在は App.xaml の暗黙スタイルが適用する
+                                                         Controls/ComboBoxKeyGuard がキーボード経由の選択変更ごと抑止している。 -->
                                                     <Separator IsEnabled="False"/>
                                                     <ComboBoxItem Content="G-Buffer: ベースカラー"   Tag="gbuffer_base_color"/>
                                                     <ComboBoxItem Content="G-Buffer: オクルージョン" Tag="gbuffer_occlusion"/>
