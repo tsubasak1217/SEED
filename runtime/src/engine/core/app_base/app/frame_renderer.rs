@@ -647,6 +647,11 @@ impl App {
         // (view 行列, near, far, fov_y[rad], aspect)。CSM のカスケード分割・視錐台計算に使う。
         // 2D オルソ・正射カメラ時は None（方向光 CSM は透視カメラ前提のため影を落とさない）。
         let mut saved_shadow_cam: Option<(Mat4x4<f32>, f32, f32, f32, f32)> = None;
+        // 速度バッファ（モーションベクタ）: このフレームは前フレームとの連続性が切れているか。
+        // カメラ更新ブロックで確定し、統合バッチ更新ブロックが各バッチへ伝播する
+        // （カメラ由来の速度＝prev_view_proj と、インスタンス由来の速度＝prev_model の
+        //  **両方**をリセットしないと、Play 開始時にアクタだけが巨大な速度を吐く）。
+        let mut velocity_reset_frame: bool = false;
 
         if let (Some(scene), Some(camera_buf), Some(queue)) =
             (&mut self.scene, &self.camera_buf, queue)
@@ -767,6 +772,38 @@ impl App {
             // 逆 ViewProjection（デファードのライティングパスが深度→ワールド座標復元に使う）。
             // 特異行列（逆行列なし）の場合は単位行列へフォールバックする（パニックさせない）。
             let inv_view_proj = view_proj.inverse().unwrap_or_else(Mat4x4::identity);
+
+            // ── 速度バッファ（モーションベクタ）用の前フレーム ViewProjection ─────────
+            //   「前フレームが存在し、かつ前フレームと連続している」ときだけ実際の前フレーム
+            //   行列を積む。そうでないフレームは prev = curr（＝静的ジオメトリの速度が
+            //   厳密に 0）にする。**速度爆発を防ぐ関門はここ 1 箇所に集約している**。
+            //
+            //   連続性キー: (Play か, ポーズ中か, RT 幅, RT 高さ)。
+            //     - Play⇄Edit / ポーズ切替 … カメラがゲームカメラ⇄デバッグカメラへ飛ぶ
+            //     - RT サイズ変化           … 速度 RT が作り直され履歴が無効になる
+            //   シーンロード・カメラテレポートは `velocity_reset_requested` で別途扱う。
+            let velocity_key = (
+                self.mode == RuntimeMode::Play,
+                self.paused,
+                render_target_size.map_or(0, |s| s.width),
+                render_target_size.map_or(0, |s| s.height),
+                // ワールドライン（タブ）切替はシーンの総入れ替えに等しい。
+                self.active_world_line,
+            );
+            let velocity_continuous = !self.velocity_reset_requested
+                && self.velocity_prev_key == Some(velocity_key);
+            self.velocity_reset_requested = false;
+            self.velocity_prev_key = Some(velocity_key);
+            let prev_view_proj = if velocity_continuous {
+                self.velocity_prev_view_proj.unwrap_or(view_proj)
+            } else {
+                view_proj
+            };
+            // 次フレームのために今フレームの行列を控える。
+            self.velocity_prev_view_proj = Some(view_proj);
+            // 統合バッチ側（インスタンスごとの前フレーム行列）へ伝播するためのフラグ。
+            velocity_reset_frame = !velocity_continuous;
+
             camera_buf.update(&queue, &CameraUniform {
                 view_proj:      view_proj.transpose().data,
                 view:           view.transpose().data,
@@ -775,6 +812,7 @@ impl App {
                 resolution:     res,
                 _pad2:          [0.0; 2],
                 inv_view_proj:  inv_view_proj.transpose().data,
+                prev_view_proj: prev_view_proj.transpose().data,
             });
 
             // ── 埋め込み Play 黒画面 診断（SEED_PLAY_DIAG）─────────────────────────
@@ -830,6 +868,8 @@ impl App {
                         resolution:     [vp_w, vp_h],
                         _pad2:          [0.0; 2],
                         inv_view_proj:  cvp_inv.transpose().data,
+                        // 2D オルソオーバーレイは G-Buffer（速度）を持たないので prev=curr（速度 0）。
+                        prev_view_proj: cvp.transpose().data,
                     });
                 }
             }
@@ -1350,6 +1390,10 @@ impl App {
                                 // Animator 駆動の権威時刻を反映する（非駆動インスタンスは静止）。
                                 batch.set_anim_time_overrides(&info.time_overrides);
                                 batch.mark_dirty();
+                                // 速度バッファ: フレーム間の連続性が切れたフレーム
+                                // （Play⇄Edit 切替・ポーズ切替・RT リサイズ）は
+                                // 前フレーム行列を使わせない（prev=curr ⇒ 速度 0）。
+                                if velocity_reset_frame { batch.request_velocity_reset(); }
                                 batch.update(
                                     &draw_ctx.queue,
                                     cpu_model,
@@ -2158,6 +2202,9 @@ impl App {
                             let mut gpass = frame.begin_gbuffer_pass_to_depth(
                                 &preview.gbuffer_views[0], &preview.gbuffer_views[1],
                                 &preview.gbuffer_views[2], &preview.gbuffer_views[3],
+                                // RT4（速度）はプレビュー専用の捨て先へ書く（誰も読まない）。
+                                // プレビューカメラの uniform は prev=curr なので値は恒等的に 0。
+                                &preview.velocity_view,
                                 &preview.depth_view,
                             );
 
@@ -3788,6 +3835,16 @@ impl App {
                             surf_w, surf_h,
                             crate::engine::core::renderer::gbuffer::GBUFFER3_FORMAT,
                         );
+                        // RT4: 速度（モーションベクタ）。Rg16Float = 4 byte/px。
+                        // 消費者（TAA / モーションブラー）はまだ存在しないが、
+                        // deferred が有効なフレームでは常に生成しておく
+                        // （第2層の生成物として「常にバインド可能」であることが契約）。
+                        self.rt_pool.ensure(
+                            &draw_ctx.device,
+                            crate::engine::core::renderer::gbuffer::GBUFFER_VELOCITY_RT_NAME,
+                            surf_w, surf_h,
+                            crate::engine::core::renderer::gbuffer::GBUFFER_VELOCITY_FORMAT,
+                        );
                     }
                     // AO（Phase D4）半解像度テクスチャ（ao_raw/ao_a/ao_b）。deferred 有効かつ
                     // AO モードが Off でないときのみ確保（Off 時は 0 コスト）。STORAGE 用途のため
@@ -3904,15 +3961,17 @@ impl App {
                     };
                     // G-Buffer 4 枚ぶんのビュー（deferred_active のときのみ Some）。
                     // ensure を全て済ませてから view を取る（&mut → & の借用切り替え、既存の WBOIT と同じ規約）。
-                    let (g0v, g1v, g2v, g3v) = if deferred_active {
+                    let (g0v, g1v, g2v, g3v, gvel) = if deferred_active {
                         (
                             Some(self.rt_pool.view(crate::engine::core::renderer::gbuffer::GBUFFER0_RT_NAME)),
                             Some(self.rt_pool.view(crate::engine::core::renderer::gbuffer::GBUFFER1_RT_NAME)),
                             Some(self.rt_pool.view(crate::engine::core::renderer::gbuffer::GBUFFER2_RT_NAME)),
                             Some(self.rt_pool.view(crate::engine::core::renderer::gbuffer::GBUFFER3_RT_NAME)),
+                            // RT4: 速度（モーションベクタ）。
+                            Some(self.rt_pool.view(crate::engine::core::renderer::gbuffer::GBUFFER_VELOCITY_RT_NAME)),
                         )
                     } else {
-                        (None, None, None, None)
+                        (None, None, None, None, None)
                     };
                     let inter_view = if vignette_on {
                         Some(self.rt_pool.view(crate::engine::core::renderer::RT_POST_INTER))
@@ -4219,17 +4278,18 @@ impl App {
                         // Load で再開し、半透明・スカイボックス・ギズモ等のフォワード要素だけを重ねる。
                         if deferred_active {
                             // g0v..g3v は deferred_active のときのみ Some（RT ensure 済みのため必ず値がある）。
-                            let (g0, g1, g2, g3) = (
+                            let (g0, g1, g2, g3, gv) = (
                                 g0v.expect("gbuffer0 view must exist when deferred_active"),
                                 g1v.expect("gbuffer1 view must exist when deferred_active"),
                                 g2v.expect("gbuffer2 view must exist when deferred_active"),
                                 g3v.expect("gbuffer3 view must exist when deferred_active"),
+                                gvel.expect("gbuffer velocity view must exist when deferred_active"),
                             );
 
                             // A. G-Buffer パス: 不透明ジオメトリのみを 4 枚の MRT + 深度へ焼く。
                             //    2D シーンビューは deferred_active=false になるため edit_view_2d 分岐は不要。
                             {
-                                let mut gpass = frame.begin_gbuffer_pass_to(g0, g1, g2, g3);
+                                let mut gpass = frame.begin_gbuffer_pass_to(g0, g1, g2, g3, gv);
                                 // Play時はメインパスと同じ viewport/scissor をG-Bufferにも適用する
                                 // （レターボックス帯の外にジオメトリを焼かないため）。
                                 if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
@@ -4599,6 +4659,7 @@ impl App {
                                 lpass.set_bind_group(4, lit_lights_bg, &[]);
                                 lpass.draw(0..3, 0..1);
                             }
+
                         }
 
                         // ── SSGI 生成パス（Phase SSGI, 1 フレーム遅延）────────────────
@@ -5554,6 +5615,37 @@ impl App {
                             &draw_ctx.pipelines.particles,
                             &camera_buf.bind_group,
                         );
+                    }
+
+                    // ── 速度バッファのデバッグ可視化（SEED_DEBUG_VELOCITY=1 のときだけ）──
+                    //
+                    //   速度 RT（G-Buffer の RT4）を疑似カラーでシーン HDR へ **上書き** する。
+                    //   環境変数が未設定なら pipelines.velocity_debug が None なので完全に 0 コスト。
+                    //   色の読み方は shaders/velocity_debug.wgsl の冒頭コメントが正典
+                    //   （灰色=速度0 / 赤・シアン=水平 / 緑・マゼンタ=垂直 / 青=飽和）。
+                    //
+                    //   【なぜこの位置なのか】ライティング直後に置くと、後続の SSGI・反射合成・
+                    //   半透明・スカイボックス・ギズモが可視化の上へ描き込んでしまい、
+                    //   「速度が 0 なのか他の描画で塗り潰されたのか」が判別できなくなる。
+                    //   HDR への書き込みが全て終わった **ブルーム／トーンマップの直前** へ置けば、
+                    //   画面は速度の疑似カラーだけになる（トーンマップは通るので Unlit 表示と
+                    //   同様にやや暗くなるが、色相＝符号と方向の判別には影響しない）。
+                    if let (Some(vd), Some(vel_view)) =
+                        (draw_ctx.pipelines.velocity_debug.as_ref(), gvel)
+                    {
+                        let vd_bg = vd.create_bind_group(&draw_ctx.device, vel_view);
+                        // Clear で開くが、フルスクリーン三角形が全画素を上書きするため
+                        // クリア色は見えない（Load 専用のパスヘルパーを足さずに済ませる）。
+                        //   ビューポート（Play のレターボックス帯）は適用しない。
+                        //   ブルーム／トーンマップと同じく RT 全面を対象にするため、帯の部分も
+                        //   速度 0（灰色）で塗られる。デバッグ表示なので帯色より
+                        //   「全面が同じ規約で読める」ことを優先している。
+                        let mut vpass = frame.begin_deferred_lighting_pass_to(
+                            hdr_view, wgpu::Color::BLACK,
+                        );
+                        vpass.set_pipeline(&vd.pipeline);
+                        vpass.set_bind_group(0, &vd_bg, &[]);
+                        vpass.draw(0..3, 0..1);
                     }
 
                     // ── ブルーム（Phase R4, 有効時のみ）───────────────────────────

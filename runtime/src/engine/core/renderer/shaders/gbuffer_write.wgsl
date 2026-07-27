@@ -6,11 +6,24 @@
 // 4 枚の MRT（マルチレンダーターゲット）へ焼くだけの薄いフラグメントエントリ。
 // ライティングは一切行わない（それは deferred_lighting.wgsl の責務）。
 //
-// ## G-Buffer レイアウト（確定・帯域概算 24 byte/px + 深度。**このファイルが正典**）
+// ## G-Buffer レイアウト（確定・帯域概算 28 byte/px 実転送 + 深度。**このファイルが正典**）
 //   RT0 Rgba8Unorm  : albedo.rgb（リニア） + occlusion(.a)                       ← 空き無し
 //   RT1 Rgba16Float : world normal N.xyz（法線マップ適用後） + authored 法線フラグ(.w)
 //   RT2 Rgba8Unorm  : metallic(.r) + roughness(.g) + diffuse_transmission(.b) + user_data(.a)
 //   RT3 Rgba16Float : emissive.rgb（HDR） + surface_id(.w)                        ← tag|shading model
+//   RT4 Rg16Float   : スクリーンスペース速度（.rg = 前フレーム→今フレームの UV 移動量）
+//
+// ## RT4（速度 = モーションベクタ）— 第2層の生成物
+//   TAA / モーションブラー / L3（合成アセット）の入力素材。**本フェーズでは消費者はいない**
+//   （正しく生成され、bind 可能であることまでがスコープ）。
+//   ・値の定義・符号・クランプの正典は velocity_common.wgsl（compute_velocity_uv）。
+//   ・Rg16Float（実転送 4 byte/px）を選んだ理由: 必要な成分は 2 つだけであり、
+//     WebGPU の byte cost 表（4 チャンネル形式は一律 8・Rg16Float は 4）でも最小になるため。
+//   ・**リミットの注意**: byte cost 表では速度追加前の 4 枚だけで 8+8+8+8 = 32 と
+//     wgpu 既定の `max_color_attachment_bytes_per_sample`（32）にちょうど張り付いている。
+//     速度を足すと 36 になるため、renderer/mod.rs がデバイス生成時にこの上限を
+//     アダプタ実値（DX12/Vulkan では 8×16 = 128）へ引き上げている。
+//   ・アタッチメント枚数は 4→5 で、既定リミット `max_color_attachments = 8` の内側。
 //
 // ## RT1.w（authored 法線フラグ）
 //   0 = 通常メッシュ（ライティングパスは深度復元の幾何法線 Ng を使う）
@@ -41,7 +54,7 @@
 // を必要としないため。連結すると使わない group 4 バインディングが要求されてしまう）。
 // ============================================================
 
-/// G-Buffer 4 枚ぶんの MRT 出力。@location の並びは上記レイアウト表と一致させること。
+/// G-Buffer 5 枚ぶんの MRT 出力。@location の並びは上記レイアウト表と一致させること。
 struct GBufferOut {
     /// RT0: albedo(rgb) + occlusion(a)
     @location(0) albedo_occ: vec4<f32>,
@@ -51,6 +64,9 @@ struct GBufferOut {
     @location(2) mr:         vec4<f32>,
     /// RT3: emissive(rgb, HDR) + surface_id(w = tag|shading model のパック値)
     @location(3) emissive:   vec4<f32>,
+    /// RT4: スクリーンスペース速度（前フレーム→今フレームの UV 移動量）。
+    /// 定義の正典は velocity_common.wgsl（`compute_velocity_uv`）。
+    @location(4) velocity:   vec2<f32>,
 }
 
 /// G-Buffer ジオメトリパスのフラグメントエントリ。
@@ -70,5 +86,8 @@ fn fs_gbuffer(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> GB
     o.mr         = vec4<f32>(s.metallic, s.roughness, s.diffuse_transmission, s.user_data);
     // .w にセマンティックタグ＋シェーディングモデル ID のパック値を焼く（無損失）。
     o.emissive   = vec4<f32>(s.emissive, pack_surface_id(s.render_tag, s.shading_model));
+    // スクリーンスペース速度。頂点段で作った 2 本のクリップ座標をここで透視除算して差を取る
+    // （除算を頂点段で行うと補間が遠近的に歪むため、必ずフラグメント段で行う）。
+    o.velocity   = compute_velocity_uv(in.curr_clip, in.prev_clip);
     return o;
 }

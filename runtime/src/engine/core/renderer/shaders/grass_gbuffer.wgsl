@@ -142,16 +142,21 @@ const GRASS_HASH_INV_MAX: f32 = 4294967295.0;
 // ============================================================
 
 /// ビュー×プロジェクション行列一式。
-/// 草が実際に使うのは view_proj のみだが、**レイアウト一致のため全フィールドを宣言する**
-/// （借用している MeshPipeline の camera BGL は 224 バイトのバッファを差してくる）。
+/// 草が実際に使うのは view_proj と prev_view_proj（速度バッファ用）のみだが、
+/// **レイアウト一致のため全フィールドを宣言する**
+/// （借用している MeshPipeline の camera BGL は 288 バイトのバッファを差してくる）。
 struct CameraUniform {
-    view_proj:     mat4x4<f32>,   // offset   0
-    view:          mat4x4<f32>,   // offset  64
-    position:      vec3<f32>,     // offset 128
-    _pad:          f32,           // offset 140
-    resolution:    vec2<f32>,     // offset 144
-    _pad2:         vec2<f32>,     // offset 152
-    inv_view_proj: mat4x4<f32>,   // offset 160（計 224）
+    view_proj:      mat4x4<f32>,   // offset   0
+    view:           mat4x4<f32>,   // offset  64
+    position:       vec3<f32>,     // offset 128
+    _pad:           f32,           // offset 140
+    resolution:     vec2<f32>,     // offset 144
+    _pad2:          vec2<f32>,     // offset 152
+    inv_view_proj:  mat4x4<f32>,   // offset 160
+    // 前フレームの ViewProjection（速度バッファ用）。草は静的扱いなので
+    // 「今フレームのワールド座標を前フレームのカメラで再投影する」だけでよく、
+    // 前フレームのインスタンス行列（velocity_common.wgsl の group 4）は要らない。
+    prev_view_proj: mat4x4<f32>,   // offset 224（計 288）
 }
 @group(0) @binding(0) var<uniform> u_camera: CameraUniform;
 
@@ -323,6 +328,16 @@ struct GrassVsOut {
     @location(3) side_t:         f32,
     /// 株ごとの明度ゆらぎ係数（1.0 中心）。
     @location(4) tint:           f32,
+    /// 今フレームのクリップ座標（速度バッファ用。透視除算はフラグメント段で行う）。
+    @location(6) curr_clip:      vec4<f32>,
+    /// 前フレームのクリップ座標（速度バッファ用）。
+    ///
+    /// 草は「静的ジオメトリ扱い」なので、**今フレームのワールド座標**を
+    /// 前フレームのカメラ行列で再投影しただけの値を入れる。風の揺れによる
+    /// 頂点移動ぶんは意図的に速度へ含めない（風は毎フレーム位相が変わる
+    /// 高周波の変形で、これを速度に含めると TAA の履歴が常に破棄されて
+    /// 逆にちらつく。地形・草を静的扱いにする方針は rendering_flow.md 参照）。
+    @location(7) prev_clip:      vec4<f32>,
     /// この株が生えている地表の法線（＝株のローカル up・正規化済み）。
     ///
     /// インスタンス単位の定数であり葉の頂点ごとには変化しないが、
@@ -355,6 +370,10 @@ fn grass_degenerate_vertex() -> GrassVsOut {
     out.side_t         = 0.0;
     out.tint           = 1.0;
     out.ground_normal  = GRASS_WORLD_UP;
+    // 縮退頂点はラスタライズされない（面積 0）が、構造体の全フィールドを
+    // 埋めておく（未初期化を残さない＝WGSL の規約と読み手の安全のため）。
+    out.curr_clip      = out.clip_position;
+    out.prev_clip      = out.clip_position;
     return out;
 }
 
@@ -470,7 +489,11 @@ fn vs_grass(
     let world_normal = cross(side, tangent);
 
     var out: GrassVsOut;
-    out.clip_position  = u_camera.view_proj * vec4<f32>(world_pos, 1.0);
+    let world_pos4     = vec4<f32>(world_pos, 1.0);
+    out.clip_position  = u_camera.view_proj * world_pos4;
+    // 速度バッファ用のクリップ座標 2 本（草は静的扱い＝カメラ由来の速度のみ）。
+    out.curr_clip      = out.clip_position;
+    out.prev_clip      = u_camera.prev_view_proj * world_pos4;
     out.world_position = world_pos;
     out.world_normal   = world_normal;
     out.height_t       = height_t;
@@ -485,7 +508,7 @@ fn vs_grass(
 }
 
 // ============================================================
-//  フラグメントシェーダ（MRT 4 枚）
+//  フラグメントシェーダ（MRT 5 枚）
 // ============================================================
 
 /// 草の G-Buffer 出力（gbuffer_write.wgsl の GBufferOut と同一レイアウト）。
@@ -494,6 +517,8 @@ struct GrassGBufferOut {
     @location(1) normal:     vec4<f32>,
     @location(2) mr:         vec4<f32>,
     @location(3) emissive:   vec4<f32>,
+    /// RT4: スクリーンスペース速度（前フレーム→今フレームの UV 移動量）。
+    @location(4) velocity:   vec2<f32>,
 }
 
 @fragment
@@ -577,5 +602,7 @@ fn fs_grass(
     // .a = surface_id（セマンティックタグ | シェーディングモデル ID）。
     // 草はアクタではなくタグを持たず、シェーディングも DefaultPBR なのでパック値 0 が正しい。
     o.emissive   = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    // スクリーンスペース速度（velocity_math.wgsl の定義に従う）。
+    o.velocity   = compute_velocity_uv(in.curr_clip, in.prev_clip);
     return o;
 }

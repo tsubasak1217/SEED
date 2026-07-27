@@ -167,6 +167,16 @@ struct TerrainGBufferOut {
     @location(1) normal:     vec4<f32>,
     @location(2) mr:         vec4<f32>,
     @location(3) emissive:   vec4<f32>,
+    /// RT4: スクリーンスペース速度（前フレーム→今フレームの UV 移動量）。
+    /// 地形は静的なので実質「カメラ由来の速度」だけが乗る。頂点シェーダは
+    /// gbuffer_static_vertex.wgsl を共有しており、地形チャンクのインスタンス行列は
+    /// 前フレームと同一なので `prev_model == model` に自動的に縮退する。
+    ///
+    /// 【LOD チャンク差し替え時の挙動】地形 LOD の入れ替えはメッシュ（頂点／インデックス）の
+    /// 差し替えであってインスタンス行列は変わらない。しかも本方式は「**今フレームの**頂点を
+    /// 前フレームのカメラで再投影する」ため、差し替えフレームでも値はカメラ由来の速度に
+    /// なるだけで爆発しない（前フレームの頂点位置を参照していないことが効いている）。
+    @location(4) velocity:   vec2<f32>,
 }
 
 // ============================================================
@@ -545,5 +555,7 @@ fn fs_terrain_gbuffer(
     // 地形はアクタではなくタグを持たず、シェーディングも DefaultPBR なのでパック値 0 が正しい
     // （gbuffer_write.wgsl の pack_surface_id(RENDER_TAG_NONE, SHADING_MODEL_DEFAULT_PBR) と同値）。
     o.emissive   = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    // スクリーンスペース速度（velocity_common.wgsl の定義に従う）。
+    o.velocity   = compute_velocity_uv(in.curr_clip, in.prev_clip);
     return o;
 }

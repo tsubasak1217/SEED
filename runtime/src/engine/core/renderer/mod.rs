@@ -46,6 +46,8 @@ pub(crate) mod screenshot;
 pub(crate) mod terrain_layer_textures;
 /// フルスクリーン・ライティングパイプライン（G-Buffer 復元, Phase D3 Deferred Phase A）
 pub(crate) mod deferred;
+// 速度バッファ（モーションベクタ）のデバッグ可視化（SEED_DEBUG_VELOCITY=1 のときだけ構築）。
+pub(crate) mod velocity_debug;
 /// 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）
 pub(crate) mod reflection;
 /// いもす法（累積和）単一チャンネル分離ボックスブラー基盤（Phase D4。AO で初適用・SSGI へ転用可）
@@ -115,6 +117,7 @@ pub use batch2d::{SpriteBatcher, SpriteInstance, SpriteBatch, SpriteBatchList,
                   SPRITE_INSTANCE_SIZE, draw_sprite_batches, draw_sprite_outline_batches};
 pub use postfx::{PostfxContext, SpritePostfxCache};
 pub use view_mode::{SceneViewMode, set_wireframe_supported, wireframe_supported};
+pub use velocity_debug::{VelocityDebugPipeline, VELOCITY_DEBUG_ENABLED};
 pub use render_features::{RenderFeatures, ResolvedFeatures, ShadowMode, GiMode,
                           ReflectionMode, AoMode, TranslucencyMode};
 
@@ -361,6 +364,22 @@ impl Renderer {
             eprintln!("[SEED VIEWMODE] ワイヤーフレーム: 非対応 → ワイヤ選択時は Unlit 表示にフォールバック");
         }
 
+        // G-Buffer の MRT 帯域（速度バッファ追加で 5 枚 = 36 byte/sample）。
+        // アダプタが申告した上限をそのまま要求する（申告値は定義上必ず通る）。
+        // 万一 G-Buffer が要求する量に届かないアダプタなら、パイプライン生成時に
+        // 検証エラーで落ちるより先にここで原因を明示しておく。
+        let color_attachment_bytes_limit = adapter_limits.max_color_attachment_bytes_per_sample;
+        if color_attachment_bytes_limit < gbuffer::GBUFFER_BYTES_PER_SAMPLE {
+            eprintln!(
+                "[SEED renderer] 警告: このアダプタの max_color_attachment_bytes_per_sample = {} は \
+                 G-Buffer（MRT {} 枚 = {} byte/sample）に不足しています。\
+                 G-Buffer パイプラインの生成に失敗する可能性があります。",
+                color_attachment_bytes_limit,
+                gbuffer::GBUFFER_ATTACHMENT_COUNT,
+                gbuffer::GBUFFER_BYTES_PER_SAMPLE,
+            );
+        }
+
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label:             None,
@@ -385,6 +404,26 @@ impl Renderer {
                 required_limits:   wgpu::Limits {
                     max_storage_buffers_per_shader_stage: 12,
                     max_bind_groups: 5,
+                    // ── G-Buffer MRT 5 枚（速度バッファ追加）に必要なカラーアタッチメント帯域 ──
+                    //
+                    // 【なぜ既定値のままでは足りないのか】
+                    // WebGPU 仕様の「1 サンプルあたりのカラーアタッチメント byte cost」は
+                    // チャンネル実サイズではなく **フォーマットごとの固定表** で決まり、
+                    // 4 チャンネル形式は 8bit でも 16bit でも一律 8 byte として数える
+                    // （Rgba8Unorm=8 / Rgba16Float=8 / Rg16Float=4）。
+                    // 速度 RT を足す前の G-Buffer 4 枚だけで既に 8+8+8+8 = **32 byte**、
+                    // つまり既定リミット `max_color_attachment_bytes_per_sample = 32` に
+                    // **ちょうど張り付いていた**。速度（Rg16Float=4）を足すと 36 になり、
+                    // 既定のままでは `create_render_pipeline` が検証エラーで落ちる。
+                    //
+                    // 【引き上げが安全な理由】この上限はアダプタ実測ではなく
+                    // 「max_color_attachments × 16」で導出される（wgpu-hal の DX12 / Vulkan は
+                    // どちらもこの式）。既に `Limits::default()` で max_color_attachments = 8 を
+                    // 要求済みなので、実効上限は 8×16 = 128 になり 36 は余裕で内側に入る。
+                    // それでも念のためアダプタ実値でクランプし、要求値がアダプタ上限を
+                    // 超えてデバイス生成が失敗することを構造的に避ける
+                    // （アダプタが申告した値は定義上必ず要求できる）。
+                    max_color_attachment_bytes_per_sample: color_attachment_bytes_limit,
                     // バインドレス対応時のみ、テクスチャ配列に必要なリミットをアダプタ上限内で引き上げる。
                     // 既定（sampled=16, binding_array 要素=0）のままでは容量分の配列を宣言できない。
                     // 非対応時は既定値のまま（＝従来と完全に同一）。
@@ -1042,19 +1081,24 @@ impl<'r> RenderFrame<'r> {
 
     // ── デファード（G-Buffer + フルスクリーン・ライティング）パス（Phase D3 Deferred Phase B）───
 
-    /// G-Buffer 書き込みパスを開始する（4 枚の MRT + 深度）。
+    /// G-Buffer 書き込みパスを開始する（5 枚の MRT + 深度）。
     ///
     /// 各 RT は LoadOp::Clear(0,0,0,0)（不透明ジオメトリで上書きするため加算合成は行わない。
     /// クリア値 0 は「ジオメトリが存在しない画素＝背景」を意味し、ライティングパス側は
     /// 深度 >= 1.0（背景）を discard することで区別する。gbuffer_write.wgsl 側のクリア規約と一致）。
     /// 深度は `begin_scene_pass_to` と同じ規約（Clear(1.0) / ステンシル Clear(0)）で新規に確保し直す
     /// （デファードのフレームでは本パスが「深度を最初に書く」パスになるため）。
+    ///
+    /// `velocity`（RT4・速度＝モーションベクタ）のクリア値 0 は「移動量ゼロ」を意味し、
+    /// ジオメトリが無い背景画素の値としてそのまま正しい（背景は動かない）。
+    /// レターボックス帯のように viewport 外で描画されない画素も 0 のまま残る。
     pub fn begin_gbuffer_pass_to<'f>(
         &'f mut self,
         g0: &'f wgpu::TextureView,
         g1: &'f wgpu::TextureView,
         g2: &'f wgpu::TextureView,
         g3: &'f wgpu::TextureView,
+        velocity: &'f wgpu::TextureView,
     ) -> wgpu::RenderPass<'f>
     where
         'r: 'f,
@@ -1070,6 +1114,7 @@ impl<'r> RenderFrame<'r> {
                 Some(wgpu::RenderPassColorAttachment { view: g1, resolve_target: None, ops: mrt_clear }),
                 Some(wgpu::RenderPassColorAttachment { view: g2, resolve_target: None, ops: mrt_clear }),
                 Some(wgpu::RenderPassColorAttachment { view: g3, resolve_target: None, ops: mrt_clear }),
+                Some(wgpu::RenderPassColorAttachment { view: velocity, resolve_target: None, ops: mrt_clear }),
             ],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: self.depth_view,
@@ -1094,12 +1139,23 @@ impl<'r> RenderFrame<'r> {
     /// 指定のビュー（プレビュー専用の小さな深度テクスチャ）へ差し替える。
     /// プレビューはメインパスとは別解像度・別深度のミニ G-Buffer へ焼くため、共有深度を使う
     /// `begin_gbuffer_pass_to` は流用できない（サイズ不一致・メインパスとの取り合いが起きる）。
+    ///
+    /// ## 速度 RT（RT4）はプレビューでは「捨てる先」である
+    /// カメラプレビューは TAA もモーションブラーも掛けない小窓であり、速度を必要としない。
+    /// しかし G-Buffer パイプラインは本番と**同一のもの**（＝カラーターゲット 5 枚）を
+    /// 共有しているため、アタッチメント数を減らすことはできない
+    /// （減らすには 4 ターゲット版のパイプラインを全バリアント複製する必要があり、
+    ///   パイプライン数が倍になる。プレビューは小解像度なので捨て RT の方が圧倒的に安い）。
+    /// そこでプレビュー専用の小さな速度テクスチャへ書き、**誰も読まない**。
+    /// さらにプレビューカメラの `CameraUniform` は `prev_view_proj = view_proj`
+    /// （＝カメラ由来の速度が常に 0）で更新するため、実質的に無効化されている。
     pub fn begin_gbuffer_pass_to_depth<'f>(
         &'f mut self,
         g0: &'f wgpu::TextureView,
         g1: &'f wgpu::TextureView,
         g2: &'f wgpu::TextureView,
         g3: &'f wgpu::TextureView,
+        velocity: &'f wgpu::TextureView,
         depth_view: &'f wgpu::TextureView,
     ) -> wgpu::RenderPass<'f>
     where
@@ -1116,6 +1172,7 @@ impl<'r> RenderFrame<'r> {
                 Some(wgpu::RenderPassColorAttachment { view: g1, resolve_target: None, ops: mrt_clear }),
                 Some(wgpu::RenderPassColorAttachment { view: g2, resolve_target: None, ops: mrt_clear }),
                 Some(wgpu::RenderPassColorAttachment { view: g3, resolve_target: None, ops: mrt_clear }),
+                Some(wgpu::RenderPassColorAttachment { view: velocity, resolve_target: None, ops: mrt_clear }),
             ],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth_view,

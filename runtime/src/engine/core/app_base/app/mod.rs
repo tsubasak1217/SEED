@@ -143,6 +143,16 @@ struct CameraPreviewResources {
     gbuffer_textures: [wgpu::Texture; 4],
     /// G-Buffer 4 枚のビュー（レンダーターゲット兼サンプリング用）。
     gbuffer_views:    [wgpu::TextureView; 4],
+    /// プレビュー専用の速度 RT（G-Buffer の RT4）。**誰も読まない捨て先**。
+    ///
+    /// プレビューは TAA もモーションブラーも掛けないので速度は不要だが、
+    /// G-Buffer パイプラインを本番と共有している以上カラーターゲット 5 枚ぶんの
+    /// アタッチメントが要る（詳細は `begin_gbuffer_pass_to_depth` のコメント）。
+    /// 加えてプレビューカメラの uniform は `prev_view_proj = view_proj` で更新するため、
+    /// ここへ書かれる値はカメラ由来ぶんが常に 0（＝実質無効化されている）。
+    velocity_texture: wgpu::Texture,
+    /// 速度 RT のビュー（レンダーターゲット用）。
+    velocity_view:    wgpu::TextureView,
     /// ブリット用テクスチャバインドグループ（Group 1: テクスチャ + サンプラー）
     blit_tex_bg:   wgpu::BindGroup,
     /// ブリット矩形ユニフォームバッファ（NDC 座標、毎フレーム更新）
@@ -230,6 +240,20 @@ impl CameraPreviewResources {
         let gbuffer_textures = [gt0, gt1, gt2, gt3];
         let gbuffer_views    = [gv0, gv1, gv2, gv3];
 
+        // プレビュー専用の速度 RT（G-Buffer の RT4 = MRT 5 枚目）。捨て先なので
+        // TEXTURE_BINDING は付けない（誰もサンプルしない＝ドライバに意図を明示する）。
+        let velocity_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("Camera Preview GBuffer Velocity (discarded)"),
+            size:            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          crate::engine::core::renderer::gbuffer::GBUFFER_VELOCITY_FORMAT,
+            usage:           wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats:    &[],
+        });
+        let velocity_view = velocity_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         // サンプラー（線形フィルタリング）
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label:          Some("Camera Preview Sampler"),
@@ -278,6 +302,7 @@ impl CameraPreviewResources {
             color_texture, color_view,
             depth_texture, depth_view, depth_sample_view,
             gbuffer_textures, gbuffer_views,
+            velocity_texture, velocity_view,
             blit_tex_bg,
             blit_rect_buf, blit_rect_bg,
         }
@@ -711,6 +736,29 @@ pub struct App {
     /// GiParams を enabled=false でフラットに倒す（初回・リサイズ直後・SSGI 有効化直後の 1 フレーム）。
     /// SsgiTargets::ensure の再確保通知と「前フレームも SSGI が active だったか」で更新する。
     ssgi_warmed: bool,
+    /// **前フレームの** ViewProjection 行列（速度バッファ＝モーションベクタ用）。
+    ///
+    /// `None` は「前フレームが存在しない／連続していない」ことを表し、そのフレームは
+    /// `prev_view_proj = view_proj` を積む（＝静的ジオメトリの速度が厳密に 0 になる）。
+    ///
+    /// ## `None` へ落とす（＝速度をリセットする）条件（要件: 速度を爆発させない）
+    /// 1. 初回フレーム（初期値が `None`）
+    /// 2. Play⇄Edit の切替・ポーズ状態の変化（カメラがデバッグカメラ⇄ゲームカメラで飛ぶ）
+    /// 3. シーンロード／ワールドライン切替（`request_velocity_reset` 経由）
+    /// 4. カメラのテレポート（同上。スクリプト等が明示的に要求する）
+    /// 5. レンダーターゲットのリサイズ（速度 RT が作り直され履歴が無効になる）
+    ///
+    /// 2 と 5 は本フィールドと対の `velocity_prev_key` による自動検出、
+    /// 3 と 4 は `velocity_reset_requested` フラグで扱う。
+    velocity_prev_view_proj: Option<crate::engine::structs::tensor::Mat4x4<f32>>,
+    /// 前フレームの「速度の連続性キー」
+    /// = (Play か, ポーズ中か, RT 幅, RT 高さ, ワールドライン)。
+    /// これが変化したフレームは前フレームとの連続性が無いとみなして速度をリセットする。
+    velocity_prev_key: Option<(bool, bool, u32, u32, u32)>,
+    /// 次フレームで速度をリセットする明示要求（シーンロード・カメラテレポート）。
+    /// 立っているフレームで `velocity_prev_view_proj` を `None` へ落として消費する。
+    velocity_reset_requested: bool,
+
     /// GPU パーティクルシステム（Phase RP）。エミッタごとの GPU バッファ・CPU 状態を保持する。
     /// rt_pool と同じく eager 構築（デバイス不要。GPU パイプラインは DrawContext.pipelines が持つ）。
     /// 毎フレーム collect_and_consume（CPU）→ sync_gpu/dispatch/draw（GPU）で更新・描画する。
@@ -1151,6 +1199,10 @@ impl App {
             particle_gizmo:              None,
             shared_model_batches:    HashMap::new(),
             last_camera_pos:         [0.0; 3],
+            // 速度バッファ: 起動直後は前フレームが無い ⇒ 初回は prev=curr（速度 0）。
+            velocity_prev_view_proj:  None,
+            velocity_prev_key:        None,
+            velocity_reset_requested: false,
             batch_absent_frames:     HashMap::new(),
             pending_drop:            None,
             pending_drop_hover: None,
@@ -1208,6 +1260,24 @@ impl App {
     ///
     /// true のとき: 3D シーン描画を抑制し、スクリーンスペースキャンバスを
     /// WYSIWYG レイアウトで表示、カメラは 2D パン・ズームに切り替わる。
+    /// 次フレームの速度バッファ（モーションベクタ）をリセットする（＝速度を全面 0 にする）。
+    ///
+    /// ## いつ呼ぶか
+    /// 「前フレームの画面と今フレームの画面が連続していない」操作の直後:
+    /// - シーンのロード／差し替え（`self.scene = Some(..)` を伴う遷移）
+    /// - カメラのテレポート（位置・向きの瞬間移動）
+    ///
+    /// Play⇄Edit 切替・ポーズ切替・レンダーターゲットのリサイズ・ワールドライン切替は
+    /// `velocity_prev_key` の変化として **自動検出** されるため、呼ぶ必要はない。
+    ///
+    /// ## 呼ばないとどうなるか
+    /// カメラや物体が 1 フレームで画面の端から端まで飛んだことになり、速度バッファに
+    /// 巨大な値が入る。消費者（将来の TAA・モーションブラー）がそれを信じると、
+    /// 画面全体が流れる／履歴が総崩れになる。生成側で潰すのが正しい層である。
+    pub(super) fn request_velocity_reset(&mut self) {
+        self.velocity_reset_requested = true;
+    }
+
     pub(super) fn edit_view_is_2d(&self) -> bool {
         self.mode == RuntimeMode::Edit
             && self.edit_view_mode == EditViewMode::View2D

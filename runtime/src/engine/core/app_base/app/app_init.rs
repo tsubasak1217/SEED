@@ -562,6 +562,9 @@ impl App {
                     self.canvas_world_lines.remove(&0);
                 }
                 self.scene = Some(new_scene);
+                // 速度バッファ（モーションベクタ）: シーンが総入れ替わるため
+                // 前フレームとの連続性が無い。次フレームは prev=curr（速度 0）にする。
+                self.request_velocity_reset();
                 // 地形チャンク（TerrainChunkComponent 付き）を .tvox から復元し、
                 // terrain:// ガードで model=None のまま読まれた ModelComponent を埋める。
                 self.rebuild_terrain_after_load();

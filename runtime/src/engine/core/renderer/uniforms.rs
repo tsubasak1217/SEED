@@ -13,17 +13,18 @@
 
 /// カメラのビュー×プロジェクション行列一式。
 ///
-/// WGSL レイアウト（計 224 bytes, Phase D3: G-Buffer デファード化 Phase A で末尾に
-/// inv_view_proj を追加。160→224 bytes）:
-/// | オフセット | フィールド     | サイズ |
-/// |-----------|---------------|--------|
-/// |   0       | view_proj     |  64    |
-/// |  64       | view          |  64    |
-/// | 128       | position      |  12    |
-/// | 140       | _pad          |   4    |
-/// | 144       | resolution    |   8    |
-/// | 152       | _pad2         |   8    |
-/// | 160       | inv_view_proj |  64    |
+/// WGSL レイアウト（計 288 bytes。Phase D3: G-Buffer デファード化 Phase A で
+/// inv_view_proj（160→224）、速度バッファ（第2層）で prev_view_proj（224→288）を追加）:
+/// | オフセット | フィールド      | サイズ |
+/// |-----------|----------------|--------|
+/// |   0       | view_proj      |  64    |
+/// |  64       | view           |  64    |
+/// | 128       | position       |  12    |
+/// | 140       | _pad           |   4    |
+/// | 144       | resolution     |   8    |
+/// | 152       | _pad2          |   8    |
+/// | 160       | inv_view_proj  |  64    |
+/// | 224       | prev_view_proj |  64    |
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
@@ -44,6 +45,21 @@ pub struct CameraUniform {
     /// フォールバックする（パニックさせない。Mat4x4::inverse() -> Option<Self> 参照）。
     /// 値は他のフィールドと同じ規約（列優先アップロード＝ `.transpose().data`）。
     pub inv_view_proj: [[f32; 4]; 4],
+
+    /// **前フレームの** ViewProjection 行列（速度バッファ＝モーションベクタ生成用）。
+    ///
+    /// G-Buffer の頂点シェーダが「今フレームのワールド座標を **前フレームの** カメラで
+    /// 再投影した位置」を求めるのに使う。今フレームのクリップ座標との差がそのまま
+    /// スクリーンスペースの移動量（モーションベクタ）になる。
+    ///
+    /// 【境界条件】初回フレーム・Play⇄Edit 切替・シーンロード直後・カメラテレポート時は
+    /// **前フレームが存在しない／連続でない** ため、呼び出し側が `prev_view_proj = view_proj`
+    /// を入れる（＝静的ジオメトリの速度が厳密に 0 になる）。この「prev=curr 初期化」が
+    /// 速度爆発を防ぐ単一の仕組みであり、シェーダ側には一切の分岐を置かない。
+    /// 実装は `frame_renderer.rs` の `velocity_prev_view_proj`（`Option` の None＝リセット）。
+    ///
+    /// 値は他のフィールドと同じ規約（列優先アップロード＝ `.transpose().data`）。
+    pub prev_view_proj: [[f32; 4]; 4],
 }
 
 impl CameraUniform {
@@ -55,7 +71,9 @@ impl CameraUniform {
             [0.0, 0.0, 0.0, 1.0],
         ];
         Self { view_proj: id, view: id, position: [0.0; 3], _pad: 0.0,
-               resolution: [1280.0, 720.0], _pad2: [0.0; 2], inv_view_proj: id }
+               resolution: [1280.0, 720.0], _pad2: [0.0; 2], inv_view_proj: id,
+               // 前フレーム行列は「prev=curr」で初期化する（速度 0）。
+               prev_view_proj: id }
     }
 }
 
@@ -177,6 +195,60 @@ fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
         // 4 列目 = インスタンス拡張スロット（既定ゼロ）。法線変換には寄与しない。
         [0.0, 0.0, 0.0, 0.0],
     ]
+}
+
+// ── 前フレームのモデル変換 (G-Buffer パス専用 Group 4, Binding 0) ──────────
+
+/// **前フレームの**モデル行列（速度バッファ＝モーションベクタ生成用）。
+///
+/// WGSL レイアウト（計 64 bytes・`shaders/velocity_common.wgsl` の `PrevModelUniform` と一致必須）:
+/// | オフセット | フィールド   | サイズ |
+/// |-----------|-------------|--------|
+/// |   0       | prev_model  |  64    |
+///
+/// ## なぜ `ModelUniform` を拡張せず別バッファにするのか（設計判断）
+/// `ModelUniform`（128 byte）は 6 個の WGSL ファイルが再宣言する ABI であり、かつ
+/// **全インスタンス × 全メッシュノードぶんが毎フレーム GPU へ転送される**。ここへ
+/// `prev_model` を足すと 128→192 byte（+50%）になり、速度を一切必要としないパス
+/// （深度プリパス・ID パス・アウトライン・シャドウ・フォワード）まで巻き添えで
+/// 帯域が増える。`normal_matrix` の 4 列目（インスタンス拡張スロット）は 16 byte しか
+/// 空いておらず 4x4 行列は入らない。
+///
+/// そこで **G-Buffer パスだけが bind する group 4 の別ストレージバッファ**に分離した。
+/// 1 エントリ 64 byte（`ModelUniform` の半分）で済み、レイアウト変更も他パスへの
+/// 波及もゼロになる。配列添字は現行インスタンスバッファと**完全に同じ compact 添字**
+/// （`@builtin(instance_index)`）であり、`InstancedModelBatch::update` が同一ループで
+/// 両方を同順に詰めることで対応付けを構造的に保証する
+/// （LOD バケットの入れ替わりでスロットがズレる＝速度爆発を原理的に起こさない）。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct PrevModelUniform {
+    /// 前フレームのモデル行列（ローカル空間→ワールド空間・列優先）。
+    ///
+    /// 「前フレームが無い」場合（初回・新規可視・バッチ再生成・LOD チャンク差し替え）は
+    /// **今フレームと同じ行列**が入る（＝そのインスタンスの速度はカメラ由来ぶんのみになり、
+    /// 決して爆発しない）。この初期化規約は `InstancedModelBatch::update` が担う。
+    pub prev_model: [[f32; 4]; 4],
+}
+
+impl PrevModelUniform {
+    /// 恒等変換の前フレーム行列（`ModelUniform::identity().model` と同一＝真の恒等行列）。
+    pub fn identity() -> Self {
+        Self {
+            prev_model: [
+                [1.0, 0.0, 0.0, 0.0f32],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0], // 平行移動列（w=1 必須）
+            ],
+        }
+    }
+
+    /// 現行の `ModelUniform` から「前フレーム＝今フレーム」の値を作る（速度 0 の初期化）。
+    #[inline]
+    pub fn from_current(m: &ModelUniform) -> Self {
+        Self { prev_model: m.model }
+    }
 }
 
 // ── マテリアル (Group 2, Binding 0) ──────────────────────────
@@ -377,12 +449,40 @@ pub struct GizmoVertex {
 mod layout_tests {
     use super::*;
 
-    /// CameraUniform が Rust/WGSL 双方で 224 バイト（160→224, inv_view_proj 追加分 +64）
-    /// であることを固定する。ズレると shader_common.wgsl / deferred_lighting.wgsl の
+    /// CameraUniform が Rust/WGSL 双方で 288 バイト（160→224 で inv_view_proj、
+    /// 224→288 で prev_view_proj を追加）であることを固定する。ズレると
+    /// shader_common.wgsl / deferred_lighting.wgsl / grass_gbuffer.wgsl の
     /// CameraUniform 定義との対応が崩れ、GPU が誤ったバイトを読む（静かな描画バグ）。
     #[test]
-    fn camera_uniform_size_is_224_bytes() {
-        assert_eq!(std::mem::size_of::<CameraUniform>(), 224);
+    fn camera_uniform_size_is_288_bytes() {
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 288);
+        // prev_view_proj は末尾 64 バイト（offset 224）。
+        let c = CameraUniform::identity();
+        let base = &c as *const _ as usize;
+        assert_eq!(&c.prev_view_proj as *const _ as usize - base, 224,
+                   "prev_view_proj は offset 224");
+    }
+
+    /// PrevModelUniform が 64 バイト（mat4x4 ちょうど）であること。
+    /// velocity_common.wgsl の `array<PrevModelUniform>` はこのストライドで読む。
+    #[test]
+    fn prev_model_uniform_size_is_64_bytes() {
+        assert_eq!(std::mem::size_of::<PrevModelUniform>(), 64, "PrevModelUniform は 64 バイト");
+    }
+
+    /// `PrevModelUniform::from_current` が model 行列をそのまま複製し、
+    /// 「前フレーム＝今フレーム（速度 0）」の初期化になること。
+    #[test]
+    fn prev_model_from_current_copies_model_matrix() {
+        let m = ModelUniform::from_matrix([
+            [2.0, 0.0, 0.0, 0.0f32],
+            [0.0, 3.0, 0.0, 0.0],
+            [0.0, 0.0, 4.0, 0.0],
+            [5.0, 6.0, 7.0, 1.0],
+        ]);
+        assert_eq!(PrevModelUniform::from_current(&m).prev_model, m.model);
+        // 恒等の平行移動列は w=1（ModelUniform::identity と同じ規約）。
+        assert_eq!(PrevModelUniform::identity().prev_model[3], [0.0, 0.0, 0.0, 1.0]);
     }
 
     /// MaterialUniform が Rust/WGSL 双方で 96 バイト（ガラス表現で 64→80、情報系 2 値の追加で

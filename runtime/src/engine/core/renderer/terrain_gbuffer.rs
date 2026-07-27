@@ -36,10 +36,10 @@ use std::collections::HashMap;
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::engine::core::loader::model::{CULL_FACE_VARIANTS, CullFace, Model};
-use crate::engine::terrain::layers::{TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS, TerrainLayerSet};
+use crate::engine::core::loader::model::{CullFace, Model, CULL_FACE_VARIANTS};
+use crate::engine::terrain::layers::{TerrainLayerSet, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS};
 
-use super::pipeline::{CullPipelineSet, MeshPipeline, get_shader_source};
+use super::pipeline::{get_shader_source, CullPipelineSet, MeshPipeline};
 use super::terrain_layer_textures::TerrainLayerTextureArrays;
 
 // ─── 調整用定数（マジックナンバー禁止）──────────────────────────────────────
@@ -65,11 +65,11 @@ const UNDEFINED_LAYER_UV_SCALE: f32 = 1.0;
 pub const IDENTITY_PALETTE: [u32; TERRAIN_BLEND_SLOTS] = [0, 1, 2, 3];
 
 /// group3（地形レイヤ）のバインディング番号。WGSL 側の @binding と一致必須。
-const BINDING_UNIFORM: u32 = 0;
-const BINDING_SAMPLER: u32 = 1;
-const BINDING_TEXTURE_BASE: u32 = 2;
-const BINDING_TEXTURE_NORMAL: u32 = 3;
-const BINDING_TEXTURE_ROUGH: u32 = 4;
+const BINDING_UNIFORM:          u32 = 0;
+const BINDING_SAMPLER:          u32 = 1;
+const BINDING_TEXTURE_BASE:     u32 = 2;
+const BINDING_TEXTURE_NORMAL:   u32 = 3;
+const BINDING_TEXTURE_ROUGH:    u32 = 4;
 
 // ============================================================
 //  GPU uniform レイアウト（WGSL TerrainLayerUniform と一致必須）
@@ -112,21 +112,16 @@ struct TerrainLayerUniformGpu {
 fn build_layer_params(set: &TerrainLayerSet) -> [TerrainLayerParamsGpu; TERRAIN_MAX_LAYERS] {
     let mut layers = [TerrainLayerParamsGpu {
         base_color: [0.0, 0.0, 0.0, LAYER_NO_TEXTURE],
-        surface: [
-            0.0,
-            UNDEFINED_LAYER_ROUGHNESS,
-            UNDEFINED_LAYER_UV_SCALE,
-            0.0,
-        ],
-        extra: [LAYER_NO_TEXTURE, LAYER_NO_TEXTURE, 0.0, 0.0],
+        surface:    [0.0, UNDEFINED_LAYER_ROUGHNESS, UNDEFINED_LAYER_UV_SCALE, 0.0],
+        extra:      [LAYER_NO_TEXTURE, LAYER_NO_TEXTURE, 0.0, 0.0],
     }; TERRAIN_MAX_LAYERS];
 
     for (i, l) in set.layers.iter().take(TERRAIN_MAX_LAYERS).enumerate() {
         // テクスチャの有無フラグ。シェーダはこれで「単色レイヤ」へ分岐する
         // （＝テクスチャ未指定でも T2 までと同じ絵になる＝後方互換）。
-        let has_base = has_texture_flag(l.base_color_texture.is_some());
+        let has_base   = has_texture_flag(l.base_color_texture.is_some());
         let has_normal = has_texture_flag(l.normal_texture.is_some());
-        let has_rough = has_texture_flag(l.roughness_texture.is_some());
+        let has_rough  = has_texture_flag(l.roughness_texture.is_some());
 
         layers[i] = TerrainLayerParamsGpu {
             base_color: [l.base_color[0], l.base_color[1], l.base_color[2], has_base],
@@ -147,11 +142,7 @@ fn build_layer_params(set: &TerrainLayerSet) -> [TerrainLayerParamsGpu; TERRAIN_
 /// テクスチャ有無の bool を uniform 値（0.0 / 1.0）へ変換する。
 #[inline]
 fn has_texture_flag(present: bool) -> f32 {
-    if present {
-        LAYER_HAS_TEXTURE
-    } else {
-        LAYER_NO_TEXTURE
-    }
+    if present { LAYER_HAS_TEXTURE } else { LAYER_NO_TEXTURE }
 }
 
 // ============================================================
@@ -189,16 +180,16 @@ impl TerrainLayerResources {
     /// （フォールバック先が常に存在することを型ではなく構築順で保証する）。
     pub fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue:  &wgpu::Queue,
         layout: &wgpu::BindGroupLayout,
-        set: &TerrainLayerSet,
+        set:    &TerrainLayerSet,
     ) -> Self {
         let mut me = Self {
-            layer_params: build_layer_params(set),
+            layer_params:       build_layer_params(set),
             active_layer_count: set.layers.len().min(TERRAIN_MAX_LAYERS) as u32,
-            textures: TerrainLayerTextureArrays::new(device, queue, set),
-            sampler: create_layer_sampler(device),
-            bind_groups: HashMap::new(),
+            textures:           TerrainLayerTextureArrays::new(device, queue, set),
+            sampler:            create_layer_sampler(device),
+            bind_groups:        HashMap::new(),
         };
         me.ensure_palette(device, layout, IDENTITY_PALETTE);
         me
@@ -207,8 +198,8 @@ impl TerrainLayerResources {
     /// 指定パレットのバインドグループを（無ければ）作る。冪等。
     pub fn ensure_palette(
         &mut self,
-        device: &wgpu::Device,
-        layout: &wgpu::BindGroupLayout,
+        device:  &wgpu::Device,
+        layout:  &wgpu::BindGroupLayout,
         palette: [u32; TERRAIN_BLEND_SLOTS],
     ) {
         if self.bind_groups.contains_key(&palette) {
@@ -217,9 +208,9 @@ impl TerrainLayerResources {
         // ─── パレットぶんの uniform バッファ（レイヤ配列は同一内容の複製）───
         //   1 パレット 800B 程度なので、パレット種類数（高々数十）ぶん持っても問題ない。
         let uniform = TerrainLayerUniformGpu {
-            layers: self.layer_params,
+            layers:  self.layer_params,
             palette: clamp_palette(palette, self.active_layer_count),
-            params: [
+            params:  [
                 DEFAULT_TRIPLANAR_SHARPNESS,
                 self.active_layer_count as f32,
                 0.0,
@@ -227,9 +218,9 @@ impl TerrainLayerResources {
             ],
         };
         let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("terrain_layer_uniform"),
+            label:    Some("terrain_layer_uniform"),
             contents: bytemuck::bytes_of(&uniform),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -237,23 +228,23 @@ impl TerrainLayerResources {
             layout,
             entries: &[
                 wgpu::BindGroupEntry {
-                    binding: BINDING_UNIFORM,
+                    binding:  BINDING_UNIFORM,
                     resource: ubuf.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
-                    binding: BINDING_SAMPLER,
+                    binding:  BINDING_SAMPLER,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
                 wgpu::BindGroupEntry {
-                    binding: BINDING_TEXTURE_BASE,
+                    binding:  BINDING_TEXTURE_BASE,
                     resource: wgpu::BindingResource::TextureView(&self.textures.base_color),
                 },
                 wgpu::BindGroupEntry {
-                    binding: BINDING_TEXTURE_NORMAL,
+                    binding:  BINDING_TEXTURE_NORMAL,
                     resource: wgpu::BindingResource::TextureView(&self.textures.normal),
                 },
                 wgpu::BindGroupEntry {
-                    binding: BINDING_TEXTURE_ROUGH,
+                    binding:  BINDING_TEXTURE_ROUGH,
                     resource: wgpu::BindingResource::TextureView(&self.textures.roughness),
                 },
             ],
@@ -268,7 +259,7 @@ impl TerrainLayerResources {
         &mut self,
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
-        model: &Model,
+        model:  &Model,
     ) {
         for mat in &model.materials {
             if mat.terrain_layers {
@@ -296,7 +287,10 @@ impl TerrainLayerResources {
 /// 配列テクスチャは定義レイヤ数ぶんしか確保していない（VRAM 節約のため）ので、
 /// 上限を定数側に取ると存在しない配列レイヤを `textureSampleGrad` してしまう。
 /// 例: 2 層構成に恒等パレット [0,1,2,3] が来ると 2,3 が範囲外になる。
-fn clamp_palette(p: [u32; TERRAIN_BLEND_SLOTS], layer_count: u32) -> [u32; TERRAIN_BLEND_SLOTS] {
+fn clamp_palette(
+    p:           [u32; TERRAIN_BLEND_SLOTS],
+    layer_count: u32,
+) -> [u32; TERRAIN_BLEND_SLOTS] {
     // 0 層はあり得ない（空 layers.json は既定セットへフォールバックする）が、
     // アンダーフローを避けるため 1 を下限に取る。
     let max = layer_count.clamp(1, TERRAIN_MAX_LAYERS as u32) - 1;
@@ -310,13 +304,13 @@ fn clamp_palette(p: [u32; TERRAIN_BLEND_SLOTS], layer_count: u32) -> [u32; TERRA
 /// 併用しても効くが、レイヤ数 × タップ数が多いので既定（1＝無効）に留める。
 fn create_layer_sampler(device: &wgpu::Device) -> wgpu::Sampler {
     device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("terrain_layer_sampler"),
+        label:          Some("terrain_layer_sampler"),
         address_mode_u: wgpu::AddressMode::Repeat,
         address_mode_v: wgpu::AddressMode::Repeat,
         address_mode_w: wgpu::AddressMode::Repeat,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Linear,
+        mag_filter:     wgpu::FilterMode::Linear,
+        min_filter:     wgpu::FilterMode::Linear,
+        mipmap_filter:  wgpu::FilterMode::Linear,
         ..Default::default()
     })
 }
@@ -341,10 +335,15 @@ pub struct TerrainGBufferPipelines {
 ///
 /// surface.wgsl / surface_gather.wgsl は連結しない（Surface を経由せず直接 MRT を作る）。
 /// naga 検証テストはこの並びと一致させること。
-pub fn terrain_gbuffer_shader_sources() -> [&'static str; 3] {
+pub fn terrain_gbuffer_shader_sources() -> [&'static str; 5] {
     [
         "shader_common.wgsl",
-        "shader_static_vertex.wgsl",
+        // 速度バッファ（モーションベクタ）: 純関数と group4 の前フレーム行列。
+        // 頂点シェーダより前に置く（vs_main が u_prev_instances を参照するため）。
+        "velocity_math.wgsl",
+        "velocity_common.wgsl",
+        // G-Buffer 専用の頂点シェーダ（フォワードと共有の shader_static_vertex ではない）。
+        "gbuffer_static_vertex.wgsl",
         "terrain_gbuffer_write.wgsl",
     ]
 }
@@ -353,13 +352,15 @@ impl TerrainGBufferPipelines {
     /// 地形 G-Buffer パイプラインを構築する。
     ///
     /// group0〜2 は `mesh_pipeline` の BGL を借りる（gbuffer.rs と同じ方針）。
-    /// group3 だけを本ファイルで新規に定義する。
+    /// group3 だけを本ファイルで新規に定義し、group4（速度用の前フレーム行列）は
+    /// `GBufferPipelines` から借りる（mesh / skinned / terrain で同一レイアウトを共有）。
     pub fn new(
-        device: &wgpu::Device,
+        device:        &wgpu::Device,
         mesh_pipeline: &MeshPipeline,
-        df: wgpu::TextureFormat,
-        cache: Option<&wgpu::PipelineCache>,
+        df:            wgpu::TextureFormat,
+        cache:         Option<&wgpu::PipelineCache>,
         color_targets: &[Option<wgpu::ColorTargetState>],
+        prev_bgl:      &wgpu::BindGroupLayout,
     ) -> Self {
         let layer_bgl = create_layer_bind_group_layout(device);
 
@@ -368,16 +369,12 @@ impl TerrainGBufferPipelines {
             &mesh_pipeline.model_bgl,
             &mesh_pipeline.material_bgl,
             &layer_bgl,
+            prev_bgl,
         ];
 
         let pipes: CullPipelineSet = std::array::from_fn(|i| {
             build_terrain_gbuffer_pipeline(
-                device,
-                df,
-                cache,
-                &bgls,
-                color_targets,
-                CULL_FACE_VARIANTS[i],
+                device, df, cache, &bgls, color_targets, CULL_FACE_VARIANTS[i],
             )
         });
 
@@ -396,9 +393,9 @@ fn create_layer_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayou
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            sample_type:    wgpu::TextureSampleType::Float { filterable: true },
             view_dimension: wgpu::TextureViewDimension::D2Array,
-            multisampled: false,
+            multisampled:   false,
         },
         count: None,
     };
@@ -408,21 +405,21 @@ fn create_layer_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayou
         entries: &[
             // uniform（レイヤパラメータ + パレット）
             wgpu::BindGroupLayoutEntry {
-                binding: BINDING_UNIFORM,
+                binding:    BINDING_UNIFORM,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
+                    ty:                 wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: None,
+                    min_binding_size:   None,
                 },
                 count: None,
             },
             // サンプラ（全レイヤ共通・リピート＋トライリニア）
             wgpu::BindGroupLayoutEntry {
-                binding: BINDING_SAMPLER,
+                binding:    BINDING_SAMPLER,
                 visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
+                ty:         wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count:      None,
             },
             array_texture(BINDING_TEXTURE_BASE),
             array_texture(BINDING_TEXTURE_NORMAL),
@@ -433,12 +430,12 @@ fn create_layer_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayou
 
 /// 地形 G-Buffer パイプラインを 1 本構築する（手動 MRT。gbuffer.rs と同じ手法）。
 fn build_terrain_gbuffer_pipeline(
-    device: &wgpu::Device,
-    df: wgpu::TextureFormat,
-    cache: Option<&wgpu::PipelineCache>,
-    bgls: &[&wgpu::BindGroupLayout],
+    device:        &wgpu::Device,
+    df:            wgpu::TextureFormat,
+    cache:         Option<&wgpu::PipelineCache>,
+    bgls:          &[&wgpu::BindGroupLayout],
     color_targets: &[Option<wgpu::ColorTargetState>],
-    cull_face: CullFace,
+    cull_face:     CullFace,
 ) -> wgpu::RenderPipeline {
     let label = format!("terrain_gbuffer_cull_{}", cull_face.as_str());
     let label = label.as_str();
@@ -450,14 +447,14 @@ fn build_terrain_gbuffer_pipeline(
         .collect::<Vec<_>>()
         .join("\n");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(label),
+        label:  Some(label),
         source: wgpu::ShaderSource::Wgsl(combined.into()),
     });
 
     // ── パイプラインレイアウト（group0〜2 は借用・group3 は自前）──
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some(label),
-        bind_group_layouts: bgls,
+        label:                Some(label),
+        bind_group_layouts:   bgls,
         push_constant_ranges: &[],
     });
 
@@ -466,41 +463,41 @@ fn build_terrain_gbuffer_pipeline(
 
     // ── 深度: 通常の G-Buffer パスと同一（Less・書き込みあり）──
     let depth_stencil = wgpu::DepthStencilState {
-        format: df,
+        format:              df,
         depth_write_enabled: true,
-        depth_compare: wgpu::CompareFunction::Less,
-        stencil: wgpu::StencilState::default(),
-        bias: wgpu::DepthBiasState::default(),
+        depth_compare:       wgpu::CompareFunction::Less,
+        stencil:             wgpu::StencilState::default(),
+        bias:                wgpu::DepthBiasState::default(),
     };
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
+        label:  Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            buffers: &vbuffers,
+            module:              &shader,
+            entry_point:         Some("vs_main"),
+            buffers:             &vbuffers,
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_terrain_gbuffer"),
-            targets: color_targets,
+            module:              &shader,
+            entry_point:         Some("fs_terrain_gbuffer"),
+            targets:             color_targets,
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
+            topology:   wgpu::PrimitiveTopology::TriangleList,
             front_face: wgpu::FrontFace::Ccw,
-            cull_mode: match cull_face {
-                CullFace::Back => Some(wgpu::Face::Back),
+            cull_mode:  match cull_face {
+                CullFace::Back  => Some(wgpu::Face::Back),
                 CullFace::Front => Some(wgpu::Face::Front),
-                CullFace::None => None,
+                CullFace::None  => None,
             },
             ..Default::default()
         },
         depth_stencil: Some(depth_stencil),
-        multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multisample:   wgpu::MultisampleState::default(),
+        multiview:     None,
         cache,
     })
 }
@@ -561,11 +558,13 @@ mod tests {
     /// 連結順は terrain_gbuffer_shader_sources() と一致させること。
     #[test]
     fn terrain_gbuffer_shader_parses_and_validates() {
-        let common = include_str!("shaders/shader_common.wgsl");
-        let static_v = include_str!("shaders/shader_static_vertex.wgsl");
-        let terrain = shader_src();
+        let common   = include_str!("shaders/shader_common.wgsl");
+        let vmath    = include_str!("shaders/velocity_math.wgsl");
+        let vcommon  = include_str!("shaders/velocity_common.wgsl");
+        let static_v = include_str!("shaders/gbuffer_static_vertex.wgsl");
+        let terrain  = shader_src();
 
-        let src = [common, static_v, terrain].join("\n");
+        let src = [common, vmath, vcommon, static_v, terrain].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[terrain_gbuffer] WGSL parse 失敗: {e:?}"));
         let mut validator = naga::valid::Validator::new(
@@ -598,9 +597,9 @@ mod tests {
     fn detile_mode_codes_match_shader() {
         let src = shader_src();
         for (mode, name) in [
-            (DetileMode::None, "DETILE_MODE_NONE"),
+            (DetileMode::None,       "DETILE_MODE_NONE"),
             (DetileMode::Stochastic, "DETILE_MODE_STOCHASTIC"),
-            (DetileMode::Macro, "DETILE_MODE_MACRO"),
+            (DetileMode::Macro,      "DETILE_MODE_MACRO"),
         ] {
             let expected = format!("const {name}: u32 = {}u;", mode.to_gpu_code());
             assert!(
@@ -619,10 +618,7 @@ mod tests {
 
         // uniform = 48 × 16 層 + palette(vec4<u32>=16) + params(vec4=16)。
         const EXPECTED_BYTES: usize = PARAMS_BYTES * TERRAIN_MAX_LAYERS + 16 + 16;
-        assert_eq!(
-            std::mem::size_of::<TerrainLayerUniformGpu>(),
-            EXPECTED_BYTES
-        );
+        assert_eq!(std::mem::size_of::<TerrainLayerUniformGpu>(), EXPECTED_BYTES);
 
         // uniform バッファは 16 バイト境界（WGSL uniform address space の要求）。
         assert_eq!(EXPECTED_BYTES % 16, 0);
@@ -646,7 +642,10 @@ mod tests {
         const SUM_TOLERANCE: f32 = 1.0e-4;
 
         for _ in 0..SAMPLES {
-            let uv = [(next() - 0.5) * UV_RANGE, (next() - 0.5) * UV_RANGE];
+            let uv = [
+                (next() - 0.5) * UV_RANGE,
+                (next() - 0.5) * UV_RANGE,
+            ];
             let (w, cells) = hex_triangle_grid(uv);
             let sum = w[0] + w[1] + w[2];
             assert!(

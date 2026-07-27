@@ -6,8 +6,8 @@ use crate::engine::core::loader::model::{
     FilterMode, WrapMode, Material, AlphaMode, CullFace, CachedTexFormat, TextureInfo,
     NormalTextureInfo, OcclusionTextureInfo,
 };
-use super::uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
-                      GpuCullData, GizmoVertex};
+use super::uniforms::{CameraUniform, ModelUniform, PrevModelUniform, MaterialUniform, JointUniform,
+                      ColorVertex, GpuCullData, GizmoVertex};
 use super::skin_system::SkinComputeSystem;
 use super::pipeline::{SkinComputePipeline, MeshletCullPipeline};
 use super::material_asset;
@@ -1618,6 +1618,35 @@ pub struct InstancedModelBatch {
     /// lod_node_data[lod][node_idx] = (storage_buffer, bind_group)。
     /// メッシュを持たないノードは None。
     pub lod_node_data:      Vec<Vec<Option<(wgpu::Buffer, wgpu::BindGroup)>>>,
+
+    /// **速度バッファ（モーションベクタ）用**: lod_node_prev[lod][node_idx]
+    /// = (前フレーム行列の storage_buffer, group4 bind_group)。
+    ///
+    /// `lod_node_data` と **完全に同じ形**（同じ添字・同じ None パターン）で作られ、
+    /// `update()` が同一ループで両者へ同順に書き込む。したがって
+    /// `@builtin(instance_index)` の同じ値が「今フレームの行列」と「前フレームの行列」の
+    /// **同一インスタンス**を指すことが構造的に保証される
+    /// （LOD バケットの入れ替わりでスロットがズレる＝速度爆発が原理的に起きない）。
+    ///
+    /// 1 エントリ 64 byte（`PrevModelUniform`）で `ModelUniform` の半分。
+    /// メモリ増分は現行インスタンスバッファの +50%、毎フレームの転送量も +50%。
+    lod_node_prev:          Vec<Vec<Option<(wgpu::Buffer, wgpu::BindGroup)>>>,
+
+    /// 前フレーム行列バッファが用意できていないノード用のフォールバック BindGroup。
+    /// 恒等行列 1 件だけを持つ（速度はカメラ由来ぶんへ縮退する）。
+    /// group4 未バインドでの描画パニックを構造的に防ぐための保険。
+    pub identity_prev_bg:   wgpu::BindGroup,
+
+    /// 「前フレームのワールド行列」CPU キャッシュ: flat[inst_idx * n_mesh_nodes + pos]。
+    /// `world_mats_cache` と同じ添字体系。`update()` の末尾で今フレームぶんを複製する。
+    prev_models:            Vec<[[f32; 4]; 4]>,
+
+    /// 次の `update()` で「前フレーム＝今フレーム」を強制するか（速度リセット）。
+    ///
+    /// Play⇄Edit 切替・シーンロード直後・カメラテレポートなど、フレーム間の連続性が
+    /// 切れたときに外部から立てる。立っているフレームは全インスタンスの速度が
+    /// カメラ由来ぶんも含めて 0 になり、爆発した速度が 1 フレームも出ない。
+    velocity_reset:         bool,
     pub num_instances:      u32,
     /// 各 LOD の直前フレーム可視インスタンス数（draw_indexed の instance_count に使用）
     pub lod_visible_counts: [u32; NUM_LODS],
@@ -1758,6 +1787,9 @@ impl InstancedModelBatch {
         skin_pipeline: &SkinComputePipeline,
         joint_bgl:     &wgpu::BindGroupLayout,
         id_data_bgl:   &wgpu::BindGroupLayout,
+        // 速度バッファ用: G-Buffer パスの group4（前フレームのインスタンス行列）レイアウト。
+        // `renderer::gbuffer::GBufferPipelines::prev_instances_bgl`。
+        prev_bgl:      &wgpu::BindGroupLayout,
         num_instances: u32,
         // GPU メッシュレットカリング用のスロット（コマンド／カウント／パラメータバッファ）を
         // このバッチに確保するか。true = 確保する（アクターの共有メッシュバッチ）。
@@ -1850,6 +1882,51 @@ impl InstancedModelBatch {
                 }).collect()
             })
             .collect();
+
+        // ── 速度バッファ用: 前フレーム行列バッファ + group4 bind group ──────────
+        //   lod_node_data と完全に同じ形（同じ添字・同じ None パターン）で作る。
+        //   1 エントリ 64 byte（PrevModelUniform）＝ ModelUniform の半分。
+        let prev_stride   = std::mem::size_of::<PrevModelUniform>() as u64;
+        let prev_buf_size = (prev_stride * n as u64).max(16);
+        let lod_node_prev: Vec<Vec<Option<(wgpu::Buffer, wgpu::BindGroup)>>> = (0..NUM_LODS)
+            .map(|lod| {
+                model.nodes.iter().enumerate().map(|(i, node)| {
+                    if node.mesh_index.is_none() { return None; }
+                    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                        label:              Some(&format!("Node[{i}] LOD[{lod}] Prev Instance Buffer")),
+                        size:               prev_buf_size,
+                        usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label:   None,
+                        layout:  prev_bgl,
+                        entries: &[wgpu::BindGroupEntry {
+                            binding:  0,
+                            resource: buf.as_entire_binding(),
+                        }],
+                    });
+                    Some((buf, bg))
+                }).collect()
+            })
+            .collect();
+
+        // 前フレーム行列が無いノード用のフォールバック（恒等行列 1 件）。
+        // 実際には lod_node_prev が lod_node_data と同形なので使われないが、
+        // 「group4 未バインドで描画してパニック」を構造的に不可能にするための保険。
+        let identity_prev_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("Identity Prev Instance Buffer"),
+            contents: bytemuck::bytes_of(&PrevModelUniform::identity()),
+            usage:    wgpu::BufferUsages::STORAGE,
+        });
+        let identity_prev_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Identity Prev Instance BG"),
+            layout:  prev_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding:  0,
+                resource: identity_prev_buf.as_entire_binding(),
+            }],
+        });
 
         // ── モデル AABB（ローカル空間）──────────────────────────
         let (model_aabb_min, model_aabb_max) = compute_model_aabb(model);
@@ -1950,6 +2027,11 @@ impl InstancedModelBatch {
         Self {
             meshlet_cull,
             lod_node_data,
+            lod_node_prev,
+            identity_prev_bg,
+            prev_models: Vec::new(),
+            // 生成直後は前フレームが存在しない ⇒ 初回 update は prev=curr（速度 0）。
+            velocity_reset: true,
             num_instances,
             lod_visible_counts: [0; NUM_LODS],
             mesh_node_indices,
@@ -2172,6 +2254,9 @@ impl InstancedModelBatch {
             self.dirty = false;
             self.world_mats_cache.clear();
             self.world_aabbs.clear();
+            // 前フレームキャッシュも捨てる。次に中身が入ったフレームは
+            // 長さ不一致で prev=curr 初期化（速度 0）に落ちる。
+            self.prev_models.clear();
             for lod in 0..NUM_LODS {
                 self.lod_visible_counts[lod] = 0;
                 self.lod_compact_insts[lod].clear();
@@ -2218,6 +2303,18 @@ impl InstancedModelBatch {
         let mut compact: Vec<Vec<Vec<ModelUniform>>> = (0..NUM_LODS)
             .map(|_| (0..n_mesh_nodes).map(|_| Vec::with_capacity(n_instances / NUM_LODS + 1)).collect())
             .collect();
+        // 速度バッファ用: 前フレーム行列を **現行行列とまったく同じ順序** で詰める箱。
+        let mut compact_prev: Vec<Vec<Vec<PrevModelUniform>>> = (0..NUM_LODS)
+            .map(|_| (0..n_mesh_nodes).map(|_| Vec::with_capacity(n_instances / NUM_LODS + 1)).collect())
+            .collect();
+
+        // 前フレームキャッシュを「使ってよいか」の単一判定。
+        //   - velocity_reset : 外部からのリセット要求（Play⇄Edit・シーンロード・テレポート）
+        //   - 長さ不一致     : 初回 / インスタンス数変化 / バッチ再生成（LOD チャンク差し替え）
+        // どちらかに該当したら prev=curr（速度 0）へ落とす。**これが速度爆発を防ぐ唯一の関門**。
+        let prev_usable = !self.velocity_reset
+            && self.prev_models.len() == n_instances * n_mesh_nodes;
+        self.velocity_reset = false;
 
         for (inst_idx, aabb) in self.world_aabbs.iter().enumerate() {
             let cx = (aabb.aabb_min[0] + aabb.aabb_max[0]) * 0.5;
@@ -2235,7 +2332,15 @@ impl InstancedModelBatch {
 
             lod_visible_insts[lod].push(inst_idx);
             for pos in 0..n_mesh_nodes {
-                compact[lod][pos].push(self.world_mats_cache[inst_idx * n_mesh_nodes + pos]);
+                let cache_idx = inst_idx * n_mesh_nodes + pos;
+                let cur = self.world_mats_cache[cache_idx];
+                compact[lod][pos].push(cur);
+                // 同じループ・同じ push 順で前フレーム行列を詰める（＝スロット対応の構造的保証）。
+                compact_prev[lod][pos].push(if prev_usable {
+                    PrevModelUniform { prev_model: self.prev_models[cache_idx] }
+                } else {
+                    PrevModelUniform::from_current(&cur)
+                });
             }
         }
 
@@ -2254,6 +2359,10 @@ impl InstancedModelBatch {
                     if let Some((buf, _)) = &self.lod_node_data[lod][node_idx] {
                         queue.write_buffer(buf, 0, bytemuck::cast_slice(&compact[lod][pos]));
                     }
+                    // 速度バッファ用: 前フレーム行列を同じスロット順でアップロードする。
+                    if let Some((buf, _)) = &self.lod_node_prev[lod][node_idx] {
+                        queue.write_buffer(buf, 0, bytemuck::cast_slice(&compact_prev[lod][pos]));
+                    }
                 }
 
                 // ID パス用: 元インスタンスインデックスをアップロード
@@ -2271,6 +2380,33 @@ impl InstancedModelBatch {
                 );
             }
         }
+
+        // ── ④ 次フレームのための「前フレーム行列」スナップショット（速度バッファ用）──
+        //   world_mats_cache と同じ添字（inst * n_mesh_nodes + pos）で model 行列だけを複製する。
+        //   ここは **compact ではなく元インスタンス添字** なので、次フレームに LOD バケットが
+        //   どう入れ替わっても正しいインスタンスの前フレーム行列が引ける。
+        //   CPU メモリ増分は 64 byte × インスタンス数 × メッシュノード数。
+        self.prev_models.clear();
+        self.prev_models.reserve(self.world_mats_cache.len());
+        self.prev_models.extend(self.world_mats_cache.iter().map(|m| m.model));
+    }
+
+    // ── 速度バッファ（モーションベクタ）用アクセサ ──────────────────────
+
+    /// 指定 (LOD, ノード) の「前フレームのインスタンス行列」バインドグループ（group4）。
+    /// メッシュを持たないノードでは None（`lod_node_data` と同じ None パターン）。
+    pub fn prev_instances_bg(&self, lod: usize, node_idx: usize) -> Option<&wgpu::BindGroup> {
+        self.lod_node_prev.get(lod)?.get(node_idx)?.as_ref().map(|(_, bg)| bg)
+    }
+
+    /// 次の `update()` で「前フレーム＝今フレーム」を強制する（速度リセット）。
+    ///
+    /// フレーム間の連続性が切れる操作の直後に呼ぶこと:
+    /// Play⇄Edit 切替 / シーンロード / カメラのテレポート / インスタンス列の総入れ替え。
+    /// 呼ばなくても「インスタンス数が変わった」場合は自動でリセット扱いになるが、
+    /// **数が同じまま中身だけ入れ替わった**場合は自動検出できないため明示的に呼ぶ。
+    pub fn request_velocity_reset(&mut self) {
+        self.velocity_reset = true;
     }
 
     /// 指定インスタンスが現在フレームで可視な場合、その LOD と compact index を返す。

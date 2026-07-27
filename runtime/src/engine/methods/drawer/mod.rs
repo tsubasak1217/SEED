@@ -328,6 +328,8 @@ impl DrawContext {
             &self.pipelines.skin_compute,
             &self.pipelines.skinned_mesh.joint_bgl,
             &self.pipelines.id_pass.id_data_bgl,
+            // 速度バッファ（モーションベクタ）用: G-Buffer パスの group4 レイアウト。
+            &self.pipelines.gbuffer.prev_instances_bgl,
             num_instances,
             enable_meshlet_cull,
         )

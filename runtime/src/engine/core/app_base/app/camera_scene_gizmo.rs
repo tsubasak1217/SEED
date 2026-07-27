@@ -18,13 +18,14 @@
 
 use std::f32::consts::PI;
 
-use crate::engine::components::{
-    CameraComponent, CameraProjection, ComponentKind, Transform as ActorTransform,
-};
 use crate::engine::ecs::World;
-use crate::engine::methods::drawer::{CameraUniform, GizmoBatch, LineBatch};
 use crate::engine::structs::objects::Actor;
-use crate::engine::structs::tensor::{Mat4x4, Vector3};
+use crate::engine::structs::tensor::{Vector3, Mat4x4};
+use crate::engine::components::{
+    ComponentKind, CameraComponent, CameraProjection,
+    Transform as ActorTransform,
+};
+use crate::engine::methods::drawer::{GizmoBatch, LineBatch, CameraUniform};
 use crate::engine::structs::utils::Color;
 
 // ── カメラアイコン寸法定数（ローカル座標）────────────────────────────────────
@@ -108,9 +109,7 @@ fn scale3(v: [f32; 3], s: f32) -> [f32; 3] {
 #[inline]
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
     let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if len < 1e-6 {
-        return [0.0; 3];
-    }
+    if len < 1e-6 { return [0.0; 3]; }
     [v[0] / len, v[1] / len, v[2] / len]
 }
 
@@ -120,18 +119,17 @@ fn icon_matrix(tf: &ActorTransform) -> [[f32; 4]; 4] {
     ActorTransform {
         position: tf.position,
         rotation: tf.rotation,
-        scale: [CAMERA_ICON_SCALE, CAMERA_ICON_SCALE, CAMERA_ICON_SCALE],
-    }
-    .to_mat4()
+        scale:    [CAMERA_ICON_SCALE, CAMERA_ICON_SCALE, CAMERA_ICON_SCALE],
+    }.to_mat4()
 }
 
 /// ローカル空間の AABB ボックスを変換してソリッド三角形を GizmoBatch に追加する。
 /// `cull_mode = "None"` のため面の向きは問わない。
 fn add_box_world(
     batch: &mut GizmoBatch,
-    mat: &[[f32; 4]; 4],
-    min: [f32; 3],
-    max: [f32; 3],
+    mat:   &[[f32; 4]; 4],
+    min:   [f32; 3],
+    max:   [f32; 3],
     color: Color,
 ) {
     let [x0, y0, z0] = min;
@@ -139,25 +137,19 @@ fn add_box_world(
 
     // 8 コーナー（ローカル空間→ワールド空間に変換）
     let lv = [
-        [x0, y0, z0],
-        [x1, y0, z0],
-        [x1, y1, z0],
-        [x0, y1, z0], // 0-3: -Z 面
-        [x0, y0, z1],
-        [x1, y0, z1],
-        [x1, y1, z1],
-        [x0, y1, z1], // 4-7: +Z 面
+        [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],  // 0-3: -Z 面
+        [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1],  // 4-7: +Z 面
     ];
     let v: [_; 8] = std::array::from_fn(|i| transform_pt(mat, lv[i]));
 
     // 6 面を CCW 三角形 2 枚で描画
     let faces: [(usize, usize, usize, usize); 6] = [
-        (4, 5, 6, 7), // +Z 面（前面）
-        (1, 0, 3, 2), // -Z 面（背面）
-        (5, 1, 2, 6), // +X 面（右）
-        (0, 4, 7, 3), // -X 面（左）
-        (3, 7, 6, 2), // +Y 面（上）
-        (4, 0, 1, 5), // -Y 面（下）
+        (4, 5, 6, 7),  // +Z 面（前面）
+        (1, 0, 3, 2),  // -Z 面（背面）
+        (5, 1, 2, 6),  // +X 面（右）
+        (0, 4, 7, 3),  // -X 面（左）
+        (3, 7, 6, 2),  // +Y 面（上）
+        (4, 0, 1, 5),  // -Y 面（下）
     ];
     for (a, b, c, d) in faces {
         batch.add_solid_tri(v[a], v[b], v[c], color);
@@ -171,13 +163,13 @@ fn add_box_world(
 /// - `radius`: 円半径
 /// - `segs`: 多角形の辺数（推奨 8）
 fn add_cylinder_world(
-    batch: &mut GizmoBatch,
-    mat: &[[f32; 4]; 4],
-    z0: f32,
-    z1: f32,
+    batch:  &mut GizmoBatch,
+    mat:    &[[f32; 4]; 4],
+    z0:     f32,
+    z1:     f32,
     radius: f32,
-    segs: usize,
-    color: Color,
+    segs:   usize,
+    color:  Color,
 ) {
     let n = segs.max(3);
     for i in 0..n {
@@ -190,7 +182,7 @@ fn add_cylinder_world(
         let b1 = transform_pt(mat, [radius * c1, radius * s1, z0]);
         let f0 = transform_pt(mat, [radius * c0, radius * s0, z1]);
         let f1 = transform_pt(mat, [radius * c1, radius * s1, z1]);
-        let fc = transform_pt(mat, [0.0, 0.0, z1]); // 前面中心
+        let fc = transform_pt(mat, [0.0, 0.0, z1]);  // 前面中心
 
         // 側面 quad（2 三角形）
         batch.add_solid_tri(b0, b1, f1, color);
@@ -214,22 +206,16 @@ fn add_camera_icon(batch: &mut GizmoBatch, tf: &ActorTransform) {
 
     // ① ボディボックス
     add_box_world(
-        batch,
-        &mat,
+        batch, &mat,
         [-BODY_HW, -BODY_HH, -BODY_HD],
-        [BODY_HW, BODY_HH, BODY_HD],
+        [BODY_HW,   BODY_HH,  BODY_HD],
         CAM_BODY_COLOR,
     );
 
     // ② レンズ円柱（前面に突出）
     add_cylinder_world(
-        batch,
-        &mat,
-        LENS_Z0,
-        LENS_Z1,
-        LENS_R,
-        LENS_SEGS,
-        CAM_LENS_COLOR,
+        batch, &mat,
+        LENS_Z0, LENS_Z1, LENS_R, LENS_SEGS, CAM_LENS_COLOR,
     );
 
     // ③ レンズ前面（ガラス面：濃い青みグレー）
@@ -237,22 +223,21 @@ fn add_camera_icon(batch: &mut GizmoBatch, tf: &ActorTransform) {
 
     // ④ ビューファインダー（上部の小さな突起）
     add_box_world(
-        batch,
-        &mat,
-        [-VF_HW, VF_Y0, VF_Z0],
-        [VF_HW, VF_Y1, VF_Z1],
+        batch, &mat,
+        [-VF_HW,  VF_Y0, VF_Z0],
+        [ VF_HW,  VF_Y1, VF_Z1],
         CAM_BODY_COLOR,
     );
 }
 
 /// レンズ前端の円形キャップ（前面ディスク）を追加する。
 fn add_cylinder_cap(
-    batch: &mut GizmoBatch,
-    mat: &[[f32; 4]; 4],
-    z: f32,
+    batch:  &mut GizmoBatch,
+    mat:    &[[f32; 4]; 4],
+    z:      f32,
     radius: f32,
-    segs: usize,
-    color: Color,
+    segs:   usize,
+    color:  Color,
 ) {
     let n = segs.max(3);
     let center = transform_pt(mat, [0.0, 0.0, z]);
@@ -283,10 +268,10 @@ fn add_cylinder_cap(
 /// - `wl`     : 対象の世界線番号
 pub fn collect_camera_actor_matrices(
     actors: &[Actor],
-    world: &World,
-    wl: u32,
+    world:  &World,
+    wl:     u32,
 ) -> Vec<(usize, [[f32; 4]; 4])> {
-    let mut result = Vec::new();
+    let mut result  = Vec::new();
     let mut counter = 0usize;
     collect_camera_matrices_recursive(actors, world, wl, &mut counter, &mut result);
     result
@@ -304,17 +289,13 @@ pub fn collect_camera_actor_matrices(
 /// バッチが空の場合は `None` を返す。
 pub fn build_camera_icon_batch(
     actors: &[Actor],
-    world: &World,
-    wl: u32,
+    world:  &World,
+    wl:     u32,
     device: &wgpu::Device,
 ) -> Option<crate::engine::methods::drawer::GpuGizmoBatch> {
     let mut batch = GizmoBatch::new();
     collect_camera_icons_recursive(actors, world, wl, &mut batch);
-    if batch.is_empty() {
-        None
-    } else {
-        Some(batch.build(device))
-    }
+    if batch.is_empty() { None } else { Some(batch.build(device)) }
 }
 
 /// フラスタム可視化と CameraUniform 構築に必要なカメラパラメータをまとめた型。
@@ -323,15 +304,15 @@ pub struct SelectedCameraData {
     pub transform: ActorTransform,
     /// カメラコンポーネントのパラメータ。
     pub fov_y_deg: f32,
-    pub near: f32,
-    pub far: f32,
+    pub near:      f32,
+    pub far:       f32,
     pub clear_color: [f32; 4],
     /// ゲームのターゲット解像度（横）。フラスタムおよびプレビューのアスペクト比算出に使用。
-    pub target_width: u32,
+    pub target_width:  u32,
     /// ゲームのターゲット解像度（縦）。フラスタムおよびプレビューのアスペクト比算出に使用。
     pub target_height: u32,
     /// 投影方式（透視 / 正射）。
-    pub projection: CameraProjection,
+    pub projection:   CameraProjection,
     /// 正射投影時の縦方向の描画範囲（ワールド単位・全高）。
     pub ortho_height: f32,
 }
@@ -352,7 +333,7 @@ impl SelectedCameraData {
     /// クランプ済みのニア・ファー（射影行列と CSM のカスケード分割で共通利用する）。
     fn clamped_near_far(&self) -> (f32, f32) {
         let near = self.near.max(MIN_NEAR);
-        let far = self.far.max(near + MIN_DEPTH_RANGE);
+        let far  = self.far.max(near + MIN_DEPTH_RANGE);
         (near, far)
     }
 
@@ -362,7 +343,7 @@ impl SelectedCameraData {
         let [px, py, pz] = tf.position;
         let [fx, fy, fz] = tf.forward();
         let [ux, uy, uz] = tf.up();
-        let pos = Vector3::new(px, py, pz);
+        let pos    = Vector3::new(px, py, pz);
         let target = pos + Vector3::new(fx, fy, fz);
         let up_vec = Vector3::new(ux, uy, uz);
         Mat4x4::look_at_lh(pos, target, up_vec)
@@ -395,13 +376,7 @@ impl SelectedCameraData {
         match self.projection {
             CameraProjection::Perspective => {
                 let (near, far) = self.clamped_near_far();
-                Some((
-                    self.view_matrix(),
-                    near,
-                    far,
-                    self.fov_y_deg.to_radians(),
-                    aspect,
-                ))
+                Some((self.view_matrix(), near, far, self.fov_y_deg.to_radians(), aspect))
             }
             CameraProjection::Orthographic => None,
         }
@@ -416,9 +391,9 @@ impl SelectedCameraData {
 /// - `wl`              : 対象の世界線番号
 /// - `selected_dfs_id` : 選択中アクターの DFS 番号（None の場合は None を返す）
 pub fn get_selected_camera_data(
-    actors: &[Actor],
-    world: &World,
-    wl: u32,
+    actors:          &[Actor],
+    world:           &World,
+    wl:              u32,
     selected_dfs_id: Option<usize>,
 ) -> Option<SelectedCameraData> {
     let dfs_id = selected_dfs_id? as u32;
@@ -432,24 +407,21 @@ pub fn get_selected_camera_data(
 /// アスペクト比は cam_data.target_aspect() から自動導出する（エディタビューポートに依存しない）。
 pub fn build_camera_frustum_batch(
     cam_data: &SelectedCameraData,
-    device: &wgpu::Device,
+    device:   &wgpu::Device,
 ) -> Option<crate::engine::methods::drawer::GpuLineBatch> {
     let mut lb = LineBatch::new();
     add_camera_frustum(&mut lb, cam_data);
-    if lb.is_empty() {
-        None
-    } else {
-        Some(lb.build(device))
-    }
+    if lb.is_empty() { None } else { Some(lb.build(device)) }
 }
+
 
 /// 選択中カメラの CameraUniform を構築する（カメラプレビューレンダー用）。
 ///
 /// - `res`: ビューポート解像度 [width, height]（ギズモ太線計算に使用）
 pub fn build_camera_uniform(
     cam_data: &SelectedCameraData,
-    aspect: f32,
-    res: [f32; 2],
+    aspect:   f32,
+    res:      [f32; 2],
 ) -> CameraUniform {
     let [px, py, pz] = cam_data.transform.position;
 
@@ -462,13 +434,18 @@ pub fn build_camera_uniform(
     // 特異行列（逆行列なし）の場合は単位行列へフォールバックする（パニックさせない）。
     let inv_view_proj = view_proj.inverse().unwrap_or_else(Mat4x4::identity);
     CameraUniform {
-        view_proj: view_proj.transpose().data,
-        view: view.transpose().data,
-        position: [px, py, pz],
-        _pad: 0.0,
-        resolution: res,
-        _pad2: [0.0; 2],
-        inv_view_proj: inv_view_proj.transpose().data,
+        view_proj:      view_proj.transpose().data,
+        view:           view.transpose().data,
+        position:       [px, py, pz],
+        _pad:           0.0,
+        resolution:     res,
+        _pad2:          [0.0; 2],
+        inv_view_proj:  inv_view_proj.transpose().data,
+        // 速度バッファ（モーションベクタ）用の前フレーム ViewProjection。
+        // カメラプレビューのミニ G-Buffer は速度を必要としない（誰も読まない捨て RT へ書く）ため、
+        // ここは常に prev=curr にして「プレビューの速度は恒等的に 0」であることを保証する。
+        // プレビューカメラ用に前フレーム行列を追跡する仕組みは意図的に持たない。
+        prev_view_proj: view_proj.transpose().data,
     }
 }
 
@@ -481,16 +458,14 @@ pub fn build_camera_uniform(
 /// DFS カウンタはすべての world_line 一致アクターを数えるため、
 /// CameraComponent 非保持アクターもカウントのみ行う。
 fn collect_camera_matrices_recursive(
-    actors: &[Actor],
-    world: &World,
-    wl: u32,
+    actors:  &[Actor],
+    world:   &World,
+    wl:      u32,
     counter: &mut usize,
-    result: &mut Vec<(usize, [[f32; 4]; 4])>,
+    result:  &mut Vec<(usize, [[f32; 4]; 4])>,
 ) {
     for actor in actors {
-        if actor.world_line != wl {
-            continue;
-        }
+        if actor.world_line != wl { continue; }
         let dfs_id = *counter;
         *counter += 1;
 
@@ -512,14 +487,12 @@ fn collect_camera_matrices_recursive(
 /// アクターツリーを DFS 走査してカメラアイコンを収集する。
 fn collect_camera_icons_recursive(
     actors: &[Actor],
-    world: &World,
-    wl: u32,
-    batch: &mut GizmoBatch,
+    world:  &World,
+    wl:     u32,
+    batch:  &mut GizmoBatch,
 ) {
     for actor in actors {
-        if actor.world_line != wl {
-            continue;
-        }
+        if actor.world_line != wl { continue; }
         // CameraComponent の有無を確認する
         if actor.has_kind(ComponentKind::Camera) {
             if let Some(cam_entity) = actor.first_slot_entity_of_kind(ComponentKind::Camera) {
@@ -538,10 +511,10 @@ fn collect_camera_icons_recursive(
 
 /// DFS 番号でアクターを特定し、CameraComponent を持つ場合の情報を返す。
 fn find_camera_actor(
-    actors: &[Actor],
-    world: &World,
-    wl: u32,
-    dfs_id: u32,
+    actors:  &[Actor],
+    world:   &World,
+    wl:      u32,
+    dfs_id:  u32,
     counter: &mut u32,
 ) -> Option<SelectedCameraData> {
     for actor in actors {
@@ -557,14 +530,14 @@ fn find_camera_actor(
                 if let Some(cam) = world.get::<CameraComponent>(cam_entity) {
                     if let Some(tf) = world.get::<ActorTransform>(actor.entity) {
                         return Some(SelectedCameraData {
-                            transform: tf.clone(),
-                            fov_y_deg: cam.fov_y_deg,
-                            near: cam.near,
-                            far: cam.far,
-                            clear_color: cam.clear_color,
-                            target_width: cam.target_width,
+                            transform:    tf.clone(),
+                            fov_y_deg:    cam.fov_y_deg,
+                            near:         cam.near,
+                            far:          cam.far,
+                            clear_color:  cam.clear_color,
+                            target_width:  cam.target_width,
                             target_height: cam.target_height,
-                            projection: cam.projection,
+                            projection:   cam.projection,
                             ortho_height: cam.ortho_height,
                         });
                     }
@@ -584,11 +557,11 @@ fn find_camera_actor(
 /// 選択中カメラのフラスタムラインを LineBatch に追加する。
 /// アスペクト比は cam.target_aspect() から自動導出する。
 fn add_camera_frustum(lb: &mut LineBatch, cam: &SelectedCameraData) {
-    let aspect = cam.target_aspect();
-    let tf = &cam.transform;
-    let pos = tf.position;
-    let fwd = normalize3(tf.forward());
-    let up_raw = normalize3(tf.up());
+    let aspect  = cam.target_aspect();
+    let tf      = &cam.transform;
+    let pos     = tf.position;
+    let fwd     = normalize3(tf.forward());
+    let up_raw  = normalize3(tf.up());
 
     // right ベクトル（外積: fwd × up）
     let right = normalize3([
@@ -604,8 +577,8 @@ fn add_camera_frustum(lb: &mut LineBatch, cam: &SelectedCameraData) {
         right[0] * fwd[1] - right[1] * fwd[0],
     ]);
 
-    let near = cam.near.max(0.01);
-    let far = cam.far.min(MAX_FRUSTUM_FAR).max(near + 0.1);
+    let near     = cam.near.max(0.01);
+    let far      = cam.far.min(MAX_FRUSTUM_FAR).max(near + 0.1);
 
     // near / far 平面の半サイズ。
     // 透視: 距離に比例して広がる（角錐）。正射: 距離に依らず一定（直方体）。
@@ -629,14 +602,14 @@ fn add_camera_frustum(lb: &mut LineBatch, cam: &SelectedCameraData) {
     // near: TL=0, TR=1, BR=2, BL=3
     // far:  TL=4, TR=5, BR=6, BL=7
     let corners = [
-        add3(add3(nc, scale3(up, nh)), scale3(right, -nw)), // 0 near TL
-        add3(add3(nc, scale3(up, nh)), scale3(right, nw)),  // 1 near TR
-        add3(add3(nc, scale3(up, -nh)), scale3(right, nw)), // 2 near BR
-        add3(add3(nc, scale3(up, -nh)), scale3(right, -nw)), // 3 near BL
-        add3(add3(fc, scale3(up, fh)), scale3(right, -fw)), // 4 far TL
-        add3(add3(fc, scale3(up, fh)), scale3(right, fw)),  // 5 far TR
-        add3(add3(fc, scale3(up, -fh)), scale3(right, fw)), // 6 far BR
-        add3(add3(fc, scale3(up, -fh)), scale3(right, -fw)), // 7 far BL
+        add3(add3(nc, scale3(up,  nh)), scale3(right, -nw)),  // 0 near TL
+        add3(add3(nc, scale3(up,  nh)), scale3(right,  nw)),  // 1 near TR
+        add3(add3(nc, scale3(up, -nh)), scale3(right,  nw)),  // 2 near BR
+        add3(add3(nc, scale3(up, -nh)), scale3(right, -nw)),  // 3 near BL
+        add3(add3(fc, scale3(up,  fh)), scale3(right, -fw)),  // 4 far TL
+        add3(add3(fc, scale3(up,  fh)), scale3(right,  fw)),  // 5 far TR
+        add3(add3(fc, scale3(up, -fh)), scale3(right,  fw)),  // 6 far BR
+        add3(add3(fc, scale3(up, -fh)), scale3(right, -fw)),  // 7 far BL
     ];
 
     let c = FRUSTUM_COLOR;
