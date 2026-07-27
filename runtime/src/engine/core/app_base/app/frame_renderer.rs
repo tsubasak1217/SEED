@@ -3707,6 +3707,16 @@ impl App {
                     // G-Buffer デバッグ表示中か（後段パスのスキップ判定に使う）。
                     let gbuffer_debug_active = gbuffer_debug_channel.is_some();
 
+                    // ── シーンビュー「ワイヤーフレーム」モードか ─────────────────
+                    // Edit モード（＝エディタのシーンビュー）かつ表示モードが Wireframe かつ
+                    // GPU が POLYGON_MODE_LINE 対応のときだけ true。Play・非対応 GPU では false。
+                    // 【ここで前倒し計算する理由】半透明の描画要否（has_tp）と G-Buffer RT の
+                    // 確保要否（deferred_active）の両方がこのフラグに依存するため、透明収集より
+                    // 前に確定させる必要がある。依存するのは self のフィールドのみでフレーム内不変。
+                    let scene_wireframe = self.mode == RuntimeMode::Edit
+                        && self.scene_view_mode.is_wireframe()
+                        && crate::engine::core::renderer::wireframe_supported();
+
                     // ── 透明描画の対象収集（Phase R5）─────────────────────
                     // Blend マテリアルを持つバッチを (GpuModel, Batch) ペアで集める。
                     // 2D シーンビューは 3D を描かないため対象外。has_tp が false のときは
@@ -3743,24 +3753,28 @@ impl App {
                     // G-Buffer デバッグ表示中は半透明を一切描かない（生値の上に半透明が重なると
                     // 「G-Buffer に入っている値」が読めなくなるため）。has_tp を落とすことで
                     // 距離ソート／WBOIT／屈折背景ピラミッドの確保・パスがまとめてスキップされる。
+                    //
+                    // ワイヤーフレーム表示中も同様に「透明パス」は走らせない。半透明は
+                    // 不透明フォワードパス（draw_model_indirect）側でワイヤ用パイプラインに
+                    // 合流させ、不透明と同じ線として描く（model_drawer.rs の wireframe 引数）。
+                    // ここを落とさないと「不透明だけ線・半透明は通常の塗りのまま」という
+                    // 混在表示になる（本修正の対象不具合）。ワイヤは不透明な線であり
+                    // 前後関係のブレンドが無いため、距離ソート／WBOIT は不要。
                     let has_tp = crate::engine::core::renderer::transparency::has_transparent(
                         &transparent_models,
-                    ) && !gbuffer_debug_active;
+                    ) && !gbuffer_debug_active && !scene_wireframe;
                     let tp_sorted = has_tp
                         && transparency_mode == crate::engine::core::renderer::TransparencyMode::DistanceSort;
                     let tp_wboit = has_tp
                         && transparency_mode == crate::engine::core::renderer::TransparencyMode::Wboit;
 
                     // ── デファード（G-Buffer + フルスクリーン・ライティング）経路にするか（Phase D3 Deferred Phase B）
-                    // G-Buffer RT の確保要否をこの時点で判定する必要があるため、メインパス直前の
-                    // scene_wireframe（後段で use_rt／メインパスにも使う）より前に前倒しで計算する（同じ self フィールドの
-                    // みに依存するため、フレーム内で値が変わることはない）。
+                    // G-Buffer RT の確保要否をこの時点で判定する必要があるため、メインパス直前で
+                    // 使う値（use_rt／メインパスの scene_wireframe 等）より前に前倒しで計算する。
                     // デファードはメインカメラの不透明・Lit のみが対象。unlit／ワイヤーフレーム／
                     // 2D シーンビューは常にフォワード（従来経路）で描く（G-Buffer 書き込みは Lit 専用
                     // パスであり、gbuffer.rs の draw_gbuffer_indirect コメント参照）。
-                    let scene_wireframe = self.mode == RuntimeMode::Edit
-                        && self.scene_view_mode.is_wireframe()
-                        && crate::engine::core::renderer::wireframe_supported();
+                    // scene_wireframe は透明収集より前（gbuffer_debug_active の直後）で算出済み。
                     // scene_is_lit: Play 中・非 Edit は常に Lit 扱い（scene_view_mode_code と同じ規約、
                     // 972-980 行目参照）。Edit 中はシーンビューの表示モードに従う。
                     let scene_is_lit = self.mode != RuntimeMode::Edit || self.scene_view_mode.is_lit();
