@@ -160,7 +160,7 @@ impl App {
     /// インスペクタからの ModelComponent フィールド更新（SET_MODEL_FIELD IPC）。
     ///
     /// LightComponent の handle_set_light_field と同流儀。
-    /// key: cast_shadows（現状はこれのみ。将来のフィールド追加もこの関数に集約する）。
+    /// key: cast_shadows / render_tag（将来のフィールド追加もこの関数に集約する）。
     /// 不正な key・value は無視する。
     pub(super) fn handle_set_model_field(
         &mut self,
@@ -187,6 +187,13 @@ impl App {
 
         match key {
             "cast_shadows" => mc.cast_shadows = value == "1" || value == "true",
+            // セマンティックタグ（G-Buffer RT3.a へ 4bit で焼かれる描画用タグ）。
+            // 数値としてパースできない値は無視し、パースできた場合も有効ビット幅で
+            // マスクして隣のビット（シェーディングモデル域）を侵食しないようにする。
+            "render_tag" => {
+                let Ok(v) = value.trim().parse::<u8>() else { return };
+                mc.render_tag = v & crate::engine::core::renderer::surface_id::RENDER_TAG_MASK;
+            }
             _ => return,
         }
 

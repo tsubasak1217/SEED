@@ -456,6 +456,10 @@ public partial class InspectorPanel : UserControl
         float LightBounceIntensity = 0f,
         // ModelComponent 用フィールド（影を落とすか。シャドウマップレンダリングで使用）
         bool ModelCastShadows = true,
+        // ModelComponent 用フィールド（セマンティックな描画タグ。0 = タグ無し）。
+        // 合成/演出でグループ指定に使うため G-Buffer へ焼かれる値で、
+        // 有効範囲は ModelRenderTagMin..ModelRenderTagMax（ランタイムの RENDER_TAG_BITS と一致）。
+        int ModelRenderTag = 0,
         // JointAttachComponent 用フィールド（追従先ジョイント名・親モデルのジョイント一覧・
         // 位置/回転(YXZオイラー角・度)/スケールのオフセット）。
         // Joints が空/null の場合は「親アクターに Model がありません」の警告を表示する。
@@ -681,6 +685,11 @@ public partial class InspectorPanel : UserControl
             var modelPath = comp.TryGetProperty("model_path", out var mp) ? mp.GetString() ?? "" : "";
             // ModelComponent 用: 影を落とすか（シャドウマップレンダリングで使用。既定 true）
             var modelCastShadows = comp.TryGetProperty("cast_shadows", out var mcs) ? ReadJsonBool(mcs, true) : true;
+            // ModelComponent 用: セマンティックな描画タグ（0 = タグ無し）。
+            // 旧ランタイム／旧シーンではキーが欠落しうるため、その場合は既定 0 とする。
+            var modelRenderTag = comp.TryGetProperty("render_tag", out var mrt) && mrt.TryGetInt32(out var mrtv)
+                ? Math.Clamp(mrtv, ModelRenderTagMin, ModelRenderTagMax)
+                : ModelRenderTagMin;
             // CanvasComponent 用: 幅・高さ・スケールモード
             var width          = comp.TryGetProperty("width",           out var wd)  ? wd.GetSingle()  : 0f;
             var height         = comp.TryGetProperty("height",          out var ht)  ? ht.GetSingle()  : 0f;
@@ -883,6 +892,7 @@ public partial class InspectorPanel : UserControl
                 LightSoftRadius: lightSoftRadius,
                 LightBounceIntensity: lightBounce,
                 ModelCastShadows: modelCastShadows,
+                ModelRenderTag: modelRenderTag,
                 JointName: jaJointName, Joints: jaJoints,
                 JaOffPX: jaOffPX, JaOffPY: jaOffPY, JaOffPZ: jaOffPZ,
                 JaOffEX: jaOffEX, JaOffEY: jaOffEY, JaOffEZ: jaOffEZ,
@@ -2821,6 +2831,20 @@ public partial class InspectorPanel : UserControl
         return sp;
     }
 
+    // ── ModelComponent レンダータグ（セマンティックタグ）───────────
+    //
+    // ランタイム側 `renderer::surface_id::RENDER_TAG_BITS`（= 4bit）と一致させること。
+    // 範囲外の値を送ってもランタイムがマスクするが、UI 側でも同じ範囲にクランプして
+    // 「入力した値と実際に焼かれる値」がズレないようにする。
+
+    /// <summary>レンダータグの最小値（0 = タグ無し）。</summary>
+    private const int ModelRenderTagMin = 0;
+    /// <summary>レンダータグの最大値（ランタイムの RENDER_TAG_BITS=4 に対応する 15）。</summary>
+    private const int ModelRenderTagMax = 15;
+    /// <summary>レンダータグ入力欄のツールチップ（用途の説明）。</summary>
+    private const string ModelRenderTagTooltip =
+        "合成/演出でグループ指定に使う描画タグ（0=なし）。第3層アセットから読める";
+
     private UIElement BuildModelSlotContent(SlotInfo info)
     {
         var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
@@ -2843,6 +2867,29 @@ public partial class InspectorPanel : UserControl
         shadowCheck.Unchecked += (_, _) => _runtime?.SendToRuntime($"SET_MODEL_FIELD:{_currentActorId},{info.SlotIdx},cast_shadows,0");
         shadowRow.Children.Add(shadowCheck);
         sp.Children.Add(shadowRow);
+
+        // ── レンダータグ（セマンティックタグ）─────────────────────
+        // 整数入力（ModelRenderTagMin..ModelRenderTagMax）。SpriteComponent の「レイヤー」行と
+        // 同じ「数値行 + 整数丸め + コミット時送信」パターンで作る。
+        var rowTag = BuildLabeledNumberRow("レンダータグ", info.ModelRenderTag, "F0");
+        rowTag.textBox.ToolTip = ModelRenderTagTooltip;
+        sp.Children.Add(rowTag.element);
+
+        // レンダータグ変更を送信するローカル関数（整数へ丸めて範囲クランプする）
+        void CommitRenderTag()
+        {
+            if (_currentActorId < 0) return;
+            if (!float.TryParse(rowTag.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var tf)) return;
+            // 数値ドラッグ等で小数が入っても整数へ丸め、有効範囲へクランプしてから送信する
+            var tag = Math.Clamp((int)MathF.Round(tf), ModelRenderTagMin, ModelRenderTagMax);
+            // クランプ結果を UI にも書き戻し、表示と実際に送った値を一致させる
+            rowTag.textBox.Text = tag.ToString(CultureInfo.InvariantCulture);
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_MODEL_FIELD:{_currentActorId},{info.SlotIdx},render_tag,{tag}"));
+        }
+        rowTag.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitRenderTag(); e.Handled = true; } };
+        rowTag.textBox.LostFocus += (_, _) => CommitRenderTag();
+        NumericDragBehavior.SetOnDrag(rowTag.textBox, CommitRenderTag);
 
         // ── マテリアル一覧（Phase R7: .mat マテリアル＋マルチマテリアル編集） ──────
         // materials 配列が無い/空の場合は後方互換のため何も表示しない。
