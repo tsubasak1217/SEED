@@ -333,8 +333,8 @@ pub enum IpcCommand {
     /// ModelComponent のモデルパスを後から設定する
     /// フォーマット: SET_MODEL_PATH:{actor_dfs_id},{slot_idx},{path}
     SetModelPath { actor_dfs_id: u32, slot_idx: u32, path: String },
-    /// ModelComponent のフィールドを更新する（key: cast_shadows。LightComponent の
-    /// SetLightField と同流儀）
+    /// ModelComponent のフィールドを更新する（key: cast_shadows / render_tag。
+    /// LightComponent の SetLightField と同流儀）
     /// フォーマット: SET_MODEL_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
     SetModelField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// マテリアルスロットのオーバーライドを設定/解除する（Phase R7: .mat マテリアル＋

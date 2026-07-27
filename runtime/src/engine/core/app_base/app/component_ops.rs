@@ -313,10 +313,13 @@ impl App {
                         .unwrap_or_default();
                     let joints_json = serde_json::to_string(&joints).unwrap_or_else(|_| "[]".to_string());
 
-                    // 影を落とすかをインスペクター用に送信する（LightComponent.cast_shadows と同一慣例）
+                    // 影を落とすか／セマンティックタグをインスペクター用に送信する
+                    // （cast_shadows は LightComponent.cast_shadows と同一慣例。
+                    //   render_tag は 0..RENDER_TAG_MASK の整数で、0 = タグ無し）。
                     ("ModelComponent", format!(
-                        r#","model_path":{path_json},"animations":{anims_json},"materials":{materials_json},"joints":{joints_json},"cast_shadows":{}"#,
+                        r#","model_path":{path_json},"animations":{anims_json},"materials":{materials_json},"joints":{joints_json},"cast_shadows":{},"render_tag":{}"#,
                         d.cast_shadows as u8,
+                        d.render_tag,
                     ))
                 }
                 ComponentData::ScriptComponent(d) => {
