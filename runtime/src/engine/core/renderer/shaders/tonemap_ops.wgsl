@@ -14,7 +14,11 @@
 // ─── 演算子 ID（CPU 側 TonemapOperator と一致させること）───────────
 /// 輝度ベース Reinhard（現行の見た目を維持する既定演算子）。
 const TONEMAP_REINHARD_LUMA: u32 = 0u;
-// 将来追加予定: TONEMAP_ACES = 1u, TONEMAP_UNCHARTED2 = 2u ...（R4 以降）
+/// 素通し（トーンマップ無し）。デバッグ表示（G-Buffer 可視化）で
+/// 「G-Buffer に入っている値そのもの」を画面へ出すために使う。
+/// 通常の描画では使わない（Reinhard が既定）。
+const TONEMAP_NONE: u32 = 1u;
+// 将来追加予定: TONEMAP_ACES = 2u, TONEMAP_UNCHARTED2 = 3u ...（R4 以降）
 
 // ─── 演算子実装 ────────────────────────────────────────────────
 
@@ -31,6 +35,10 @@ fn tonemap_reinhard_luma(hdr: vec3<f32>) -> vec3<f32> {
 /// 演算子ディスパッチ。op に応じてトーンマップを適用する。
 /// 未知の op は既定（Reinhard）にフォールバックする。
 fn tonemap_apply(hdr: vec3<f32>, op: u32) -> vec3<f32> {
-    // 現状は Reinhard のみ実装。将来は switch で演算子を分岐する。
+    // TONEMAP_NONE は入力をそのまま返す（デバッグ表示用の素通し）。
+    // それ以外（未知の op を含む）は既定の Reinhard へ倒す。
+    if (op == TONEMAP_NONE) {
+        return hdr;
+    }
     return tonemap_reinhard_luma(hdr);
 }

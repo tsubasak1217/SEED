@@ -48,6 +48,8 @@ pub(crate) mod terrain_layer_textures;
 pub(crate) mod deferred;
 // 速度バッファ（モーションベクタ）のデバッグ可視化（SEED_DEBUG_VELOCITY=1 のときだけ構築）。
 pub(crate) mod velocity_debug;
+/// G-Buffer 各チャンネルのデバッグ可視化（シーンビュー表示モード「G-Buffer: 〜」）。
+pub(crate) mod gbuffer_debug;
 /// 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）
 pub(crate) mod reflection;
 /// いもす法（累積和）単一チャンネル分離ボックスブラー基盤（Phase D4。AO で初適用・SSGI へ転用可）
@@ -109,15 +111,16 @@ pub use shadow_mask_bilateral::{ShadowMaskBilateral, ShadowMaskBilateralParams};
 pub use post::{RtPool, PostContext, VignetteParams, VignetteStage,
                PostFxSettings, BloomParams, BloomPipelines,
                DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_INTENSITY,
-               RT_SCENE_HDR, RT_POST_INTER, RT_LDR, GiSettings};
+               RT_SCENE_HDR, RT_POST_INTER, RT_LDR, GiSettings, TonemapOperator};
 pub use transparency::{TransparencyMode, TransparentPipelines,
                        RT_WBOIT_ACCUM, RT_WBOIT_REVEAL,
                        WBOIT_ACCUM_FORMAT, WBOIT_REVEAL_FORMAT};
 pub use batch2d::{SpriteBatcher, SpriteInstance, SpriteBatch, SpriteBatchList,
                   SPRITE_INSTANCE_SIZE, draw_sprite_batches, draw_sprite_outline_batches};
 pub use postfx::{PostfxContext, SpritePostfxCache};
-pub use view_mode::{SceneViewMode, set_wireframe_supported, wireframe_supported};
+pub use view_mode::{SceneViewMode, GBufferDebugChannel, set_wireframe_supported, wireframe_supported};
 pub use velocity_debug::{VelocityDebugPipeline, VELOCITY_DEBUG_ENABLED};
+pub use gbuffer_debug::GBufferDebugPipeline;
 pub use render_features::{RenderFeatures, ResolvedFeatures, ShadowMode, GiMode,
                           ReflectionMode, AoMode, TranslucencyMode};
 
@@ -1435,8 +1438,9 @@ impl<'r> RenderFrame<'r> {
         hdr_view: &wgpu::TextureView,
         ldr_view: &wgpu::TextureView,
         vignette: Option<VignetteStage<'_>>,
+        operator: post::TonemapOperator,
     ) {
-        post.run(device, &mut self.encoder, hdr_view, ldr_view, vignette);
+        post.run(device, &mut self.encoder, hdr_view, ldr_view, vignette, operator);
     }
 
     /// LDR 中間（＋オーバーレイ）をスワップチェーンへ書き出す最終段（FXAA or コピー, Phase R4）。

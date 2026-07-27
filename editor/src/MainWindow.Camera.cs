@@ -117,7 +117,10 @@ public partial class MainWindow
         bool deferred = ChkDeferred?.IsChecked != false;
         // RT屈折の逐次グラブ。null（未初期化）時は既定 false（重いオプションのため）。
         bool refractSequentialGrab = ChkRefractSeqGrab?.IsChecked == true;
-        // シーンビュー表示モード（"lit" / "unlit" / "wireframe"）。未選択・null 時は既定の "lit"。
+        // シーンビュー表示モード（"lit" / "unlit" / "wireframe" / "gbuffer_*"）。
+        // "gbuffer_*" は G-Buffer デバッグ表示（ランタイム view_mode.rs の
+        // GBUFFER_DEBUG_CHANNEL_TABLE が正典）。区切り線（Separator）が選ばれた場合は
+        // SelectedItem が ComboBoxItem にならないため既定の "lit" へフォールバックする。
         string viewMode = (CmbViewMode?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string
                           ?? DefaultViewMode;
         // GI 強度（DDGI の数値パラメータ）。null（未初期化）時は既定 1.0。

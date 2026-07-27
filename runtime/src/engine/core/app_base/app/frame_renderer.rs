@@ -3682,6 +3682,31 @@ impl App {
                     //   hdr_view/inter_view はメインパスのブロック外でも参照するため、ここで宣言する。
                     let (surf_w, surf_h) = frame.surface_size();
 
+                    // ── G-Buffer デバッグ表示（シーンビュー表示モード「G-Buffer: 〜」）──────
+                    //
+                    // エディタのシーンビューで G-Buffer の 1 チャンネルを生値のまま見るモード。
+                    // 【設計の要点】unlit/wireframe と同じ仕組み（SceneViewMode::is_lit()==false）に
+                    // 乗せると deferred_active が落ちてフォワードへ切り替わり、**可視化したい
+                    // G-Buffer が生成されなくなる**（自己矛盾）。そこで G-Buffer 系モードは
+                    // is_lit()==true を返してデファードを維持し、デファード・ライティングの
+                    // フルスクリーンパスだけを可視化パス（gbuffer_debug.wgsl）へ差し替える。
+                    //
+                    // 有効条件は「Edit モード（＝シーンビュー）」かつ「デファードが設定 ON」かつ
+                    // 「2D シーンビューでない」。Play・カメラプレビュー小窓には一切効かせない
+                    // （プレビューは別 LightMeta／別パスなので構造上も混ざらない）。
+                    // ここで前倒し計算するのは、後段の透明収集・各種 RT 確保の要否判定へ
+                    // このフラグを配るため（依存するのは self のフィールドのみでフレーム内不変）。
+                    let gbuffer_debug_channel = if self.mode == RuntimeMode::Edit
+                        && self.post_fx.deferred
+                        && !edit_view_2d
+                    {
+                        self.scene_view_mode.gbuffer_debug_channel()
+                    } else {
+                        None
+                    };
+                    // G-Buffer デバッグ表示中か（後段パスのスキップ判定に使う）。
+                    let gbuffer_debug_active = gbuffer_debug_channel.is_some();
+
                     // ── 透明描画の対象収集（Phase R5）─────────────────────
                     // Blend マテリアルを持つバッチを (GpuModel, Batch) ペアで集める。
                     // 2D シーンビューは 3D を描かないため対象外。has_tp が false のときは
@@ -3715,9 +3740,12 @@ impl App {
                         }
                         models
                     };
+                    // G-Buffer デバッグ表示中は半透明を一切描かない（生値の上に半透明が重なると
+                    // 「G-Buffer に入っている値」が読めなくなるため）。has_tp を落とすことで
+                    // 距離ソート／WBOIT／屈折背景ピラミッドの確保・パスがまとめてスキップされる。
                     let has_tp = crate::engine::core::renderer::transparency::has_transparent(
                         &transparent_models,
-                    );
+                    ) && !gbuffer_debug_active;
                     let tp_sorted = has_tp
                         && transparency_mode == crate::engine::core::renderer::TransparencyMode::DistanceSort;
                     let tp_wboit = has_tp
@@ -3740,7 +3768,8 @@ impl App {
                         && !edit_view_2d && !scene_wireframe && scene_is_lit;
                     // 反射（Phase D6）: deferred 有効時のみ・resolved の実効反射モード。
                     // フォワード（deferred 無効）時は反射パスを一切走らせない（Off）。
-                    let reflection_effective = if deferred_active {
+                    // G-Buffer デバッグ表示中は反射合成も行わない（HDR へ加算されると生値が濁る）。
+                    let reflection_effective = if deferred_active && !gbuffer_debug_active {
                         resolved_features.reflection
                     } else {
                         crate::engine::core::renderer::ReflectionMode::Off
@@ -3748,7 +3777,9 @@ impl App {
                     // AO（Phase D4）: deferred 有効時のみ・resolved の実効 AO モード。
                     // フォワード（deferred 無効）時は AO パスを一切走らせない（Off）。
                     // deferred ゲートはここで行う（render_features::resolve は RT 降格のみ担当）。
-                    let ao_effective = if deferred_active {
+                    // G-Buffer デバッグ表示中は AO を走らせない（AO はライティングへの入力であり、
+                    // 可視化パスは AO を読まないので計算するだけ無駄）。
+                    let ao_effective = if deferred_active && !gbuffer_debug_active {
                         resolved_features.ao
                     } else {
                         crate::engine::core::renderer::AoMode::Off
@@ -3756,12 +3787,18 @@ impl App {
                     // SSGI（Phase SSGI）: deferred 有効かつ実効 GI モードが Ssgi のときのみ走る独立パス。
                     // フォワード（deferred 無効）時は SSGI を一切走らせず GI はフラットへ倒れる
                     //（Ssgi→Flat の deferred ゲート。render_features::resolve は RT 降格のみ担当）。
+                    // G-Buffer デバッグ表示中は SSGI も走らせない（同上。scene_hdr は可視化色で
+                    // 上書きされるため、そこから焼いた GI は次フレームの汚染源にしかならない）。
                     let ssgi_active = deferred_active
+                        && !gbuffer_debug_active
                         && resolved_features.gi == crate::engine::core::renderer::GiMode::Ssgi;
 
-                    let vignette_on = self.post_vignette_enabled;
+                    // G-Buffer デバッグ表示中はビネットも掛けない（画面端が暗くなると
+                    // 「チャンネル値が小さい」のか「ビネットで暗い」のか区別できなくなる）。
+                    let vignette_on = self.post_vignette_enabled && !gbuffer_debug_active;
                     // Phase R4: ブルーム／FXAA 設定（フレーム内で不変のためコピーしておく）。
-                    let bloom_on = self.post_fx.bloom_enabled;
+                    // G-Buffer デバッグ表示中はブルームを掛けない（高輝度が滲むと生値が読めない）。
+                    let bloom_on = self.post_fx.bloom_enabled && !gbuffer_debug_active;
                     let fxaa_on  = self.post_fx.fxaa_enabled;
                     self.rt_pool.ensure(
                         &draw_ctx.device,
@@ -3861,7 +3898,9 @@ impl App {
                     // deferred 有効かつ RT 影オンかつソフト影ライト選定ありかつ RT 対応 GPU
                     // （shadow_mask パイプライン存在）のときだけ確保・生成する（それ以外は 0 コスト）。
                     // このとき scene_lights_bg は RT 複合 BG（TLAS 入り）になる（use_rt=rt_on）。
+                    // G-Buffer デバッグ表示中はシャドウマスクも生成しない（ライティング専用の入力）。
                     let shadow_mask_active = deferred_active
+                        && !gbuffer_debug_active
                         && rt_on
                         && !shadow_mask_selection.is_empty()
                         && draw_ctx.pipelines.shadow_mask.is_some();
@@ -4594,8 +4633,43 @@ impl App {
                                 &draw_ctx.pipelines.deferred.mask_dummy_view
                             };
                             let mask_sampler = &draw_ctx.pipelines.deferred.mask_sampler;
+                            // B'. G-Buffer デバッグ可視化パス（シーンビュー表示モード「G-Buffer: 〜」）。
+                            //
+                            //   ライティングの代わりに、G-Buffer の 1 チャンネルをそのまま HDR へ書く。
+                            //   deferred_active は維持しているので G-Buffer は通常どおり焼かれており、
+                            //   ここで見えている値は本番ライティングが読む値と完全に同一である。
+                            //   チャンネルは uniform（GBufferDebugParams.channel）で切り替えるため、
+                            //   モードを増やしてもパイプラインは 1 本のまま。
+                            //   near/far は現行のデバッグカメラ設定（深度の線形化に使う）。
+                            if let Some(debug_channel) = gbuffer_debug_channel {
+                                let gd = &draw_ctx.pipelines.gbuffer_debug;
+                                gd.write_params(
+                                    &draw_ctx.queue,
+                                    debug_channel,
+                                    self.camera.base.projection.near,
+                                    self.camera.base.projection.far,
+                                );
+                                let gd_bg = gd.create_bind_group(
+                                    &draw_ctx.device,
+                                    g0, g1, g2, g3,
+                                    frame.depth_only_view(),
+                                    // 速度 RT（RT4）。deferred_active のとき必ず確保済み。
+                                    gvel.expect("gbuffer velocity view must exist when deferred_active"),
+                                );
+                                // Clear で開くが、フルスクリーン三角形が全画素を上書きするためクリア色は見えない。
+                                // ビューポートは設定しない（Edit モード専用機能であり、Play のレターボックス
+                                // 帯という概念が無いため。RT 全面が同じ規約で読める方を優先）。
+                                let mut dpass = frame.begin_deferred_lighting_pass_to(
+                                    hdr_view, wgpu::Color::BLACK,
+                                );
+                                dpass.set_pipeline(&gd.pipeline);
+                                dpass.set_bind_group(0, &gd_bg, &[]);
+                                dpass.draw(0..3, 0..1);
+                            }
                             // B. G-Buffer BindGroup 生成 + フルスクリーン・ライティングパス。
-                            {
+                            //    G-Buffer デバッグ表示中は上の可視化パスが代わりを務めるためスキップする
+                            //    （ライティング結果を描いてから上書きするのは純粋な無駄）。
+                            if !gbuffer_debug_active {
                                 let gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
                                     &draw_ctx.device, &draw_ctx.pipelines.deferred.gbuffer_bgl,
                                     g0, g1, g2, g3,
@@ -4897,7 +4971,10 @@ impl App {
                         // 通常深度で実体として描く。以降の 3D ワールド／不透明がその上に重なる。
                         // Play のビューポート／シザー適用後に描くことで黒帯へのはみ出しを防ぐ。
                         // 2D シーンビュー（edit_view_2d）では天球を描かない。
-                        if !edit_view_2d && self.skybox_system.has_skyboxes() {
+                        // G-Buffer デバッグ表示中は天球も描かない。背景ピクセルには G-Buffer が
+                        // 無い（＝可視化パスが黒で塗る）ため、そこへ天球を描くと「値の無い領域」と
+                        // 「値のある領域」の境界が分からなくなる。
+                        if !edit_view_2d && !gbuffer_debug_active && self.skybox_system.has_skyboxes() {
                             self.skybox_system.draw(
                                 &mut pass,
                                 &draw_ctx.pipelines.skybox,
@@ -5588,7 +5665,9 @@ impl App {
                     // color=hdr_view を LoadOp::Load、深度は共有深度を Load（テストのみ・書込なし）。
                     // エミッタ 0 個ならパス自体を開かない（追加コストゼロ）。
                     // TODO: Alpha ブレンドのエミッタ単位粗ソート（現状は登録順）。indirect draw count 化。
-                    if self.particle_system.has_emitters() {
+                    // G-Buffer デバッグ表示中は GPU パーティクルも描かない（半透明と同じ理由で、
+                    // 生値の上に加算・アルファ合成されると G-Buffer の値が読めなくなる）。
+                    if self.particle_system.has_emitters() && !gbuffer_debug_active {
                         // ── Play レターボックス時のビューポート適用（半透明/不透明と一致させる）──
                         // GPU パーティクルは 3D メインカメラ（camera_buf）で hdr_view（実サーフェス全面）
                         // へ直接描くため、ビューポート未適用だとレターボックス時に全面基準へズレる
@@ -5681,8 +5760,17 @@ impl App {
                                 mask: None,
                             }
                         });
+                        // G-Buffer デバッグ表示中はトーンマップを素通し（TonemapOperator::None）にする。
+                        // Reinhard を通すと 0..1 の値（ラフネス等）が一律に暗くなり、
+                        // 画面の明度からチャンネル値を読み取れなくなるため。
+                        let tonemap_operator = if gbuffer_debug_active {
+                            crate::engine::core::renderer::TonemapOperator::None
+                        } else {
+                            crate::engine::core::renderer::TonemapOperator::ReinhardLuma
+                        };
                         frame.tonemap_to_ldr(
                             &draw_ctx.post, &draw_ctx.device, hdr_view, ldr_view, vignette_stage,
+                            tonemap_operator,
                         );
                     }
 

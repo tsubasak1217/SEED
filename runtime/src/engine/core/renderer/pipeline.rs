@@ -138,6 +138,8 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "gbuffer_skinned_vertex.wgsl" => include_str!("shaders/gbuffer_skinned_vertex.wgsl"),
         // 速度バッファのデバッグ可視化（SEED_DEBUG_VELOCITY=1）。
         "velocity_debug.wgsl"        => include_str!("shaders/velocity_debug.wgsl"),
+        // G-Buffer 各チャンネルのデバッグ可視化（シーンビュー表示モード「G-Buffer: 〜」）。
+        "gbuffer_debug.wgsl"         => include_str!("shaders/gbuffer_debug.wgsl"),
         // G-Buffer 書き込み（Phase D3: Deferred 化 Phase A）。
         "gbuffer_write.wgsl"         => include_str!("shaders/gbuffer_write.wgsl"),
         // 地形レイヤブレンド G-Buffer 書き込み（Terrain T2・terrain_gbuffer.rs が連結する）。
@@ -1692,6 +1694,10 @@ pub struct DrawPipelines {
     /// 速度バッファ（モーションベクタ）のデバッグ可視化パイプライン。
     /// 環境変数 `SEED_DEBUG_VELOCITY=1` のときだけ Some（既定は None＝GPU 資源も描画も 0 コスト）。
     pub velocity_debug:       Option<super::velocity_debug::VelocityDebugPipeline>,
+    /// G-Buffer 各チャンネルのデバッグ可視化パイプライン（シーンビュー表示モード「G-Buffer: 〜」）。
+    /// 環境変数ゲートは持たず常時構築する（エディタのコンボから任意に選べる正規機能のため）。
+    /// パイプライン 1 本＋UBO 1 個だけで、モードは uniform の enum 値で切り替える。
+    pub gbuffer_debug:        super::gbuffer_debug::GBufferDebugPipeline,
     /// 反射（SSR / RT）フルスクリーンパス＋合成パイプライン一式（Phase D6）。
     /// Deferred 有効時のみ frame_renderer が使う（G-Buffer＋scene_hdr 入力→RT_REFLECTION→加算合成）。
     pub reflection:           super::reflection::ReflectionPipelines,
@@ -1785,6 +1791,9 @@ impl DrawPipelines {
         } else {
             None
         };
+        // G-Buffer デバッグ可視化。出力先は sf（シーン HDR）。BGL は自前で持つため
+        // 他パイプラインへの依存は無い（構築順は任意）。
+        let gbuffer_debug         = super::gbuffer_debug::GBufferDebugPipeline::new(device, sf, cache);
         // 反射（Phase D6）。deferred の camera_bgl/gbuffer_bgl を借りて構築するため deferred の後に呼ぶ。
         // 出力先は sf（scene_hdr / RT_REFLECTION と同じ HDR）。
         let reflection            = super::reflection::ReflectionPipelines::new(device, &deferred, sf, cache);
@@ -1799,6 +1808,6 @@ impl DrawPipelines {
         let shadow_mask           = rt.as_ref().map(|r| {
             super::shadow_mask::ShadowMaskPipelines::new(device, &deferred, &r.lights_bgl, cache)
         });
-        Self { mesh, skinned_mesh, rt, unlit_line, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, velocity_debug, reflection, ao, ssgi, shadow_mask }
+        Self { mesh, skinned_mesh, rt, unlit_line, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, velocity_debug, gbuffer_debug, reflection, ao, ssgi, shadow_mask }
     }
 }
