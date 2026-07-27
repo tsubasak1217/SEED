@@ -182,6 +182,9 @@ struct FxaaParams {
 pub enum TonemapOperator {
     /// 輝度ベース Reinhard（現行の見た目を維持する既定）。
     ReinhardLuma = 0,
+    /// 素通し（トーンマップ無し）。G-Buffer デバッグ表示で、G-Buffer の値を
+    /// 加工せずそのまま画面へ出すために使う。通常描画では使わない。
+    None = 1,
 }
 
 /// トーンマップパラメータ UBO（WGSL TonemapParams と #[repr(C)] 一致）。
@@ -391,6 +394,9 @@ impl PostContext {
     ///
     /// `final_view` は通常スワップチェーンの sRGB ビュー（トーンマップ出力のリニア色を
     /// GPU が自動で sRGB エンコードする）。
+    ///
+    /// `operator` はトーンマップ演算子。通常は `TonemapOperator::ReinhardLuma`、
+    /// G-Buffer デバッグ表示時は `TonemapOperator::None`（素通し）を渡す。
     pub fn run(
         &self,
         device:     &wgpu::Device,
@@ -398,6 +404,7 @@ impl PostContext {
         hdr_view:   &wgpu::TextureView,
         final_view: &wgpu::TextureView,
         vignette:   Option<VignetteStage<'_>>,
+        operator:   TonemapOperator,
     ) {
         // ── 前段: ビネット（任意）。hdr → HDR 中間 ─────────────
         let tonemap_input: &wgpu::TextureView = if let Some(v) = &vignette {
@@ -412,7 +419,7 @@ impl PostContext {
         };
 
         // ── 最終段: トーンマップ。入力 → 最終ターゲット ─────────
-        let tm = TonemapParams::default();
+        let tm = TonemapParams { operator: operator as u32, ..TonemapParams::default() };
         run_post_stage(
             device, encoder, &self.tonemap,
             tonemap_input, None, &self.white_view, &self.sampler,
