@@ -350,6 +350,7 @@ mod batch_key_tests {
                 base_color: Some(c),
                 metallic: None, roughness: None, emissive: None,
                 alpha_mode: None, alpha_cutoff: None, ior: None, transmission: None, diffuse_transmission: None, mr_tex_ignore: None, cull_face: None,
+                shading_model: None,
             },
         }
     }
@@ -404,7 +405,7 @@ mod batch_key_tests {
 //  テスト（material_overrides の serde ラウンドトリップ）
 //
 //  シーン保存→ロードで material_overrides の全フィールド
-//  （ior / transmission / cull_face / mr_tex_ignore 含む）が
+//  （ior / transmission / cull_face / mr_tex_ignore / shading_model 含む）が
 //  往復することを保証する回帰テスト。`.scene` は ModelComponentData を
 //  そのまま JSON 化する（scene.rs の SceneData 経由）ため、
 //  ここで ModelComponentData の JSON 往復を検証すれば保存経路全体を代表できる。
@@ -446,6 +447,8 @@ mod override_serde_tests {
                         diffuse_transmission: Some(0.35),
                         mr_tex_ignore: Some(true),
                         cull_face:     Some("none".to_string()),
+                        // シェーディングモデル（0..3）。既定 0 と区別できる非既定値を入れて往復を検証する。
+                        shading_model: Some(2),
                     },
                 },
                 // MatAsset: パスが往復すること。
@@ -474,6 +477,7 @@ mod override_serde_tests {
             MaterialOverrideKind::Inline {
                 base_color, metallic, roughness, emissive,
                 alpha_mode, alpha_cutoff, ior, transmission, diffuse_transmission, mr_tex_ignore, cull_face,
+                shading_model,
             } => {
                 assert_eq!(*base_color, Some([0.1, 0.2, 0.3, 0.4]));
                 assert_eq!(*metallic, Some(0.55));
@@ -486,6 +490,7 @@ mod override_serde_tests {
                 assert_eq!(*diffuse_transmission, Some(0.35));
                 assert_eq!(*mr_tex_ignore, Some(true));
                 assert_eq!(cull_face.as_deref(), Some("none"));
+                assert_eq!(*shading_model, Some(2), "シェーディングモデルが往復すること");
             }
             _ => panic!("slot 0 は Inline であること"),
         }

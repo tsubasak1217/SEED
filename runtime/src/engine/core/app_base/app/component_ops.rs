@@ -42,7 +42,7 @@ fn alpha_mode_str(mode: crate::engine::core::loader::model::AlphaMode) -> &'stat
 ///
 /// 各要素は `{"slot":i,"name":..,"mode":"embedded"|"mat"|"inline","base_color":[..],
 /// "metallic":..,"roughness":..,"emissive":[..],"alpha_mode":"..","alpha_cutoff":..,
-/// "cull_face":"back"|"front"|"none","path":".."}`。
+/// "cull_face":"back"|"front"|"none","shading_model":0..3,"path":".."}`。
 /// - `mode` は該当スロットに `material_overrides` があるかどうかで決まる。
 /// - factor/alpha 系フィールドは常に「現在の実効値」（オーバーライド適用後。無ければ glTF 埋込値）。
 /// - `path` は MatAsset オーバーライドのときのみ非空。
@@ -50,6 +50,7 @@ fn alpha_mode_str(mode: crate::engine::core::loader::model::AlphaMode) -> &'stat
 fn build_materials_json(mc: Option<&ModelComponent>) -> String {
     use crate::engine::components::MaterialOverrideKind;
     use crate::engine::core::renderer::material_asset;
+    use crate::engine::core::renderer::surface_id::SHADING_MODEL_MASK;
 
     let Some(mc)    = mc else { return "[]".to_string() };
     let Some(model) = mc.model.as_ref() else { return "[]".to_string() };
@@ -69,6 +70,8 @@ fn build_materials_json(mc: Option<&ModelComponent>) -> String {
         let mut mr_tex_ignore = mat.mr_tex_ignore;
         // カリング面はインスペクタ表示・送信ともに小文字文字列（"back"|"front"|"none"）で扱う。
         let mut cull_face    = mat.cull_face.as_str().to_ascii_lowercase();
+        // シェーディングモデル ID（0=標準 PBR / 1..3=.smdl の shade_model_N）。
+        let mut shading_model = mat.shading_model;
         let mut path         = String::new();
         let mut mode         = "embedded";
 
@@ -77,6 +80,7 @@ fn build_materials_json(mc: Option<&ModelComponent>) -> String {
                 MaterialOverrideKind::Inline {
                     base_color: bc, metallic: mt, roughness: rg, emissive: em,
                     alpha_mode: am, alpha_cutoff: ac, ior: ir, transmission: tr, diffuse_transmission: dt, mr_tex_ignore: mi, cull_face: cf,
+                    shading_model: sm,
                 } => {
                     mode = "inline";
                     if let Some(v) = bc { base_color   = *v; }
@@ -90,6 +94,8 @@ fn build_materials_json(mc: Option<&ModelComponent>) -> String {
                     if let Some(v) = dt { diffuse_transmission = *v; }
                     if let Some(v) = mi { mr_tex_ignore = *v; }
                     if let Some(v) = cf { cull_face    = v.to_ascii_lowercase(); }
+                    // 実効 2bit へマスクして返す（ランタイムの焼き込みと同じ値域にそろえる）。
+                    if let Some(v) = sm { shading_model = *v & SHADING_MODEL_MASK; }
                 }
                 MaterialOverrideKind::MatAsset { path: p } => {
                     mode = "mat";
@@ -108,6 +114,7 @@ fn build_materials_json(mc: Option<&ModelComponent>) -> String {
                         diffuse_transmission = asset.diffuse_transmission;
                         mr_tex_ignore = asset.mr_tex_ignore;
                         cull_face    = asset.cull_face.to_ascii_lowercase();
+                        shading_model = asset.shading_model & SHADING_MODEL_MASK;
                     }
                 }
             }
@@ -116,7 +123,7 @@ fn build_materials_json(mc: Option<&ModelComponent>) -> String {
         let name_json = serde_json::to_string(&mat.name).unwrap_or_default();
         let path_json = serde_json::to_string(&path).unwrap_or_default();
         items.push(format!(
-            r#"{{"slot":{i},"name":{name_json},"mode":"{mode}","base_color":[{:.4},{:.4},{:.4},{:.4}],"metallic":{:.4},"roughness":{:.4},"emissive":[{:.4},{:.4},{:.4}],"alpha_mode":"{alpha_mode}","alpha_cutoff":{:.4},"ior":{:.4},"transmission":{:.4},"diffuse_transmission":{:.4},"mr_tex_ignore":{mr_tex_ignore},"cull_face":"{cull_face}","path":{path_json}}}"#,
+            r#"{{"slot":{i},"name":{name_json},"mode":"{mode}","base_color":[{:.4},{:.4},{:.4},{:.4}],"metallic":{:.4},"roughness":{:.4},"emissive":[{:.4},{:.4},{:.4}],"alpha_mode":"{alpha_mode}","alpha_cutoff":{:.4},"ior":{:.4},"transmission":{:.4},"diffuse_transmission":{:.4},"mr_tex_ignore":{mr_tex_ignore},"cull_face":"{cull_face}","shading_model":{shading_model},"path":{path_json}}}"#,
             base_color[0], base_color[1], base_color[2], base_color[3],
             metallic, roughness,
             emissive[0], emissive[1], emissive[2],

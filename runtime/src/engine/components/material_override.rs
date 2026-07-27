@@ -77,6 +77,12 @@ pub enum MaterialOverrideKind {
         /// `None` なら埋込マテリアルの値（glTF の double_sided 由来）を維持する。
         #[serde(default)]
         cull_face: Option<String>,
+        /// シェーディングモデル ID（Phase L3-a）。実効 2bit（`SHADING_MODEL_MASK`）で 0..3。
+        /// 0 = 標準 PBR、1..3 = カメラのシェーディングアセット（.smdl）で定義した `shade_model_N`。
+        /// G-Buffer の surface_id へパックされ、ライティングの分岐に使われる。
+        /// `None` なら埋込マテリアルの値（glTF/OBJ ローダは常に 0）を維持する。
+        #[serde(default)]
+        shading_model: Option<u8>,
     },
 }
 

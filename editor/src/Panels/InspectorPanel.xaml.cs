@@ -2956,7 +2956,8 @@ public partial class InspectorPanel : UserControl
         float R, float G, float B, float A,
         float Metallic, float Roughness,
         float ER, float EG, float EB,
-        string AlphaMode, float AlphaCutoff, float Ior, float Transmission, float DiffuseTransmission, bool MrTexIgnore, string CullFace, string Path);
+        string AlphaMode, float AlphaCutoff, float Ior, float Transmission, float DiffuseTransmission, bool MrTexIgnore, string CullFace,
+        int ShadingModel, string Path);
 
     /// <summary>
     /// SET_MATERIAL_OVERRIDE の "kind":"mat_asset" 送信用 JSON ペイロード（System.Text.Json でシリアライズ）。
@@ -2991,6 +2992,11 @@ public partial class InspectorPanel : UserControl
         public bool mr_tex_ignore { get; set; } = false;
         /// <summary>カリング面 "back" | "front" | "none"。ランタイム側は大小文字非依存・不明値は Back 扱い。</summary>
         public string cull_face { get; set; } = CullFaceValues[0];
+        /// <summary>
+        /// シェーディングモデル ID（Phase L3-a）。0=標準 PBR、1..3=カメラのシェーディングアセットで
+        /// 定義した shade_model_N。ランタイム側は実効 2bit（0..3）へマスクして G-Buffer へパックする。
+        /// </summary>
+        public int shading_model { get; set; } = ShadingModelDefaultPbr;
     }
 
     /// <summary>
@@ -3000,6 +3006,24 @@ public partial class InspectorPanel : UserControl
     /// </summary>
     private static readonly string[] CullFaceValues = ["back", "front", "none"];
     private static readonly string[] CullFaceLabels = ["Back", "Front", "None"];
+
+    /// <summary>
+    /// シェーディングモデルの既定値（標準 PBR）。ランタイムの
+    /// <c>surface_id::SHADING_MODEL_DEFAULT_PBR</c> と一致させること。
+    /// </summary>
+    private const int ShadingModelDefaultPbr = 0;
+
+    /// <summary>
+    /// シェーディングモデルの選択肢ラベル。添字がそのまま送信値（0..3）になる前提で使うため、
+    /// ランタイムの実効ビット幅（surface_id::SHADING_MODEL_BITS = 2bit）と要素数を一致させること
+    /// （マジックナンバー禁止のため、ここを唯一の定義元とする）。
+    /// </summary>
+    private static readonly string[] ShadingModelLabels =
+        ["0: 標準PBR", "1: アセット定義1", "2: アセット定義2", "3: アセット定義3"];
+
+    /// <summary>シェーディングモデル コンボのツールチップ（インスペクタ表示用の説明文）。</summary>
+    private const string ShadingModelTooltip =
+        "ライティングの応答式。0=標準PBR、1〜3=カメラのシェーディングアセットで定義した shade_model_N（未定義なら標準）";
 
     /// <summary>
     /// 現在のアクターが持つ、指定 Model スロット（info.SlotIdx）の materials 配列を
@@ -3063,10 +3087,16 @@ public partial class InspectorPanel : UserControl
                     var mrTexIgnore  = m.TryGetProperty("mr_tex_ignore", out var mi) && mi.ValueKind == JsonValueKind.True;
                     // cull_face キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 "back" にフォールバックする。
                     var cullFace    = m.TryGetProperty("cull_face",    out var cf) ? cf.GetString() ?? CullFaceValues[0] : CullFaceValues[0];
+                    // shading_model キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう
+                    // 既定 0（標準 PBR）にフォールバックする。範囲外の値も選択肢数でクランプする。
+                    var shadingModel = m.TryGetProperty("shading_model", out var sm) && sm.TryGetInt32(out var smv)
+                        ? Math.Clamp(smv, 0, ShadingModelLabels.Length - 1)
+                        : ShadingModelDefaultPbr;
                     var path        = m.TryGetProperty("path",        out var mp) ? mp.GetString() ?? ""       : "";
 
                     result.Add(new MaterialSlotData(slot, name, mode, r, g, b, a, metallic, roughness,
-                        er, eg, eb, alphaMode, alphaCutoff, ior, transmission, diffuseTransmission, mrTexIgnore, cullFace, path));
+                        er, eg, eb, alphaMode, alphaCutoff, ior, transmission, diffuseTransmission, mrTexIgnore, cullFace,
+                        shadingModel, path));
                 }
                 return result;
             }
@@ -3246,6 +3276,7 @@ public partial class InspectorPanel : UserControl
         float curDiffuseTransmission = mat.DiffuseTransmission;
         bool curMrTexIgnore = mat.MrTexIgnore;
         string curCullFace = mat.CullFace;
+        int curShadingModel = mat.ShadingModel;
 
         var inlinePanel = new StackPanel { Visibility = mat.Mode == "inline" ? Visibility.Visible : Visibility.Collapsed };
 
@@ -3266,6 +3297,7 @@ public partial class InspectorPanel : UserControl
                 diffuse_transmission = curDiffuseTransmission,
                 mr_tex_ignore = curMrTexIgnore,
                 cull_face    = curCullFace,
+                shading_model = curShadingModel,
             };
             var json = JsonSerializer.Serialize(payload);
             _runtime?.SendToRuntime($"SET_MATERIAL_OVERRIDE:{_currentActorId},{info.SlotIdx},{mat.Slot},{json}");
@@ -3442,6 +3474,31 @@ public partial class InspectorPanel : UserControl
         };
         cullFaceRow.Children.Add(cullFaceCombo);
         inlinePanel.Children.Add(cullFaceRow);
+
+        // シェーディングモデル ドロップダウン（0=標準PBR / 1..3=シェーディングアセット定義, Phase L3-a）。
+        // 値は G-Buffer の surface_id へパックされ、ライティングの shade_model_N 分岐を選ぶ。
+        // カリング面と同じく送信経路はインライン上書き（SET_MATERIAL_OVERRIDE:"inline"）しか無いため、
+        // 他のインライン項目と同じ inlinePanel 内に置く。
+        var shadingModelRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        shadingModelRow.Children.Add(new TextBlock
+        {
+            Text = "シェーディングモデル", Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = ShadingModelTooltip,
+        });
+        var shadingModelCombo = new ComboBox { Width = 100, FontSize = 11, ToolTip = ShadingModelTooltip };
+        foreach (var lbl in ShadingModelLabels) shadingModelCombo.Items.Add(lbl);
+        // 範囲外（旧データ・不正値）は先頭 = 標準 PBR にフォールバック（ランタイムの 2bit マスクと同じ安全側）。
+        shadingModelCombo.SelectedIndex = curShadingModel >= 0 && curShadingModel < ShadingModelLabels.Length
+            ? curShadingModel : ShadingModelDefaultPbr;
+        shadingModelCombo.SelectionChanged += (_, _) =>
+        {
+            if (shadingModelCombo.SelectedIndex < 0) return;
+            curShadingModel = shadingModelCombo.SelectedIndex; // 添字＝送信値（0..3）
+            SendInline();
+        };
+        shadingModelRow.Children.Add(shadingModelCombo);
+        inlinePanel.Children.Add(shadingModelRow);
 
         content.Children.Add(inlinePanel);
 
