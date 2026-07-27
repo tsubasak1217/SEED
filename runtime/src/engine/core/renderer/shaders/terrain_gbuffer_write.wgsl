@@ -539,7 +539,11 @@ fn fs_terrain_gbuffer(
     o.albedo_occ = vec4<f32>(albedo, 1.0);
     // RT1.w=1: authored 法線フラグ（地形の信頼できる法線を geo_gate に使わせる）。
     o.normal     = vec4<f32>(out_n, TERRAIN_NORMAL_AUTHORED_FLAG);
+    // .a = user_data（汎用ユーザーデータ）。地形はレイヤ定義側に相当する概念を持たないため 0。
     o.mr         = vec4<f32>(metallic, clamp(roughness, TERRAIN_ROUGHNESS_MIN, 1.0), 0.0, 0.0);
+    // .a = surface_id（セマンティックタグ | シェーディングモデル ID）。
+    // 地形はアクタではなくタグを持たず、シェーディングも DefaultPBR なのでパック値 0 が正しい
+    // （gbuffer_write.wgsl の pack_surface_id(RENDER_TAG_NONE, SHADING_MODEL_DEFAULT_PBR) と同値）。
     o.emissive   = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     return o;
 }

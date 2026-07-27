@@ -426,6 +426,14 @@ pub(crate) fn build_material_uniform(mat: &Material) -> MaterialUniform {
         // カメラプレビューの地形簡易描画だけが true にする（terrain_mesh_build の頂点カラー＝
         // レイヤ重みが RGB を汚しアルファをほぼ 0 にする問題の回避）。surface_gather.wgsl 参照。
         ignore_vertex_color: mat.ignore_vertex_color as u32,
+        // 汎用ユーザーデータ（offset 80）。G-Buffer RT2.a（8bit）へ焼かれるため、
+        // ここで [0,1] にクランプして「保存値の範囲外」が量子化で巻き付かないようにする。
+        user_data:          mat.user_data.clamp(0.0, 1.0),
+        // シェーディングモデル ID（offset 84）。RT3.a のビット枠（2bit）へ収まるよう
+        // 単一の真実source（renderer::surface_id）のマスクで切り詰める。
+        shading_model:      (mat.shading_model & super::surface_id::SHADING_MODEL_MASK) as u32,
+        _pad3:              0,
+        _pad4:              0,
     }
 }
 
@@ -1658,6 +1666,15 @@ pub struct InstancedModelBatch {
     /// 毎フレーム `set_anim_time_overrides` で更新する。
     pub anim_time_overrides: Vec<Option<f32>>,
 
+    /// インスタンスごとのセマンティックタグ（元インスタンスインデックス順・0 = タグ無し）。
+    /// `ModelComponent::render_tag` を統合バッチのインスタンス順に並べたもので、
+    /// `ModelUniform` のインスタンス拡張スロットへ焼き込むために保持する。
+    ///
+    /// 【なぜ保持するのか】ワールド行列キャッシュ（`world_mats_cache`）は `dirty` のときしか
+    /// 再計算されない。タグだけが変わった（アクタは動いていない）場合も焼き直しが要るため、
+    /// `update()` は前フレームのタグ列と比較して差分があれば `dirty` を立てる。
+    render_tags: Vec<u8>,
+
     // ── GPU メッシュレットカリング（第1弾）─────────────────────
     /// `node_prim_list`（ソート後）と同順・同長。メッシュレットを持つ非スキンプリミティブに
     /// 対してのみ Some。LOD0 の間接描画用リソース（コマンド/カウント/パラメータバッファ）と
@@ -1950,6 +1967,8 @@ impl InstancedModelBatch {
             lod_compact_insts: vec![Vec::new(); NUM_LODS],
             dirty: true,
             anim_time_overrides: Vec::new(),
+            // タグ列は初回 update() で埋まる（空 = 全インスタンス タグ無し扱い）。
+            render_tags:         Vec::new(),
         }
     }
 
@@ -2109,16 +2128,46 @@ impl InstancedModelBatch {
     /// NOTE: オブジェクト単位の視錐台カリングは廃止した（画面端ポッピング・チャンク消えの
     ///       誤棄却を根絶するため）。可視範囲の間引きはメッシュレットカリング側のみが担う。
     ///       全インスタンスを常に「可視」として LOD 振り分け・アップロードする。
+    ///
+    /// `render_tags` は各インスタンスのセマンティックタグ（`root_transforms` と同順・同長）。
+    /// 長さが合わない／空のときは全インスタンスをタグ無し（0）として扱う
+    /// （タグを持たない呼び出し元＝ギズモ・地形散布などが `&[]` を渡せるようにするため）。
     pub fn update(
         &mut self,
         queue:           &wgpu::Queue,
         model:           &Model,
         root_transforms: &[[[f32; 4]; 4]],
+        render_tags:     &[u8],
         camera_pos:      [f32; 3],
     ) {
         let n_instances  = root_transforms.len();
         let n_mesh_nodes = self.n_mesh_nodes;
         if n_mesh_nodes == 0 { return; }
+
+        // ── タグ列の同期 ────────────────────────────────────────────
+        // 長さ不一致（タグを渡さない呼び出し元）は全インスタンス 0 に正規化する。
+        // 前フレームと値が変わっていたら、行列が動いていなくてもワールド行列キャッシュへ
+        // 焼き直す必要があるため dirty を立てる（拡張スロットはキャッシュ内に載っているため）。
+        //
+        // 毎フレーム通る経路なので、まず**確保なしで一致判定**し、変化したときだけ
+        // 新しい Vec を作る（定常状態ではヒープ確保ゼロ）。
+        const TAG_NONE: u8 = crate::engine::core::renderer::surface_id::RENDER_TAG_NONE;
+        let tags_unchanged = if render_tags.len() == n_instances {
+            self.render_tags == render_tags
+        } else {
+            // 呼び出し元がタグを渡していない ⇒ 全インスタンス タグ無しが期待値。
+            self.render_tags.len() == n_instances
+                && self.render_tags.iter().all(|&t| t == TAG_NONE)
+        };
+        if !tags_unchanged {
+            self.render_tags = if render_tags.len() == n_instances {
+                render_tags.to_vec()
+            } else {
+                vec![TAG_NONE; n_instances]
+            };
+            self.dirty = true;
+        }
+
         if n_instances == 0 {
             self.dirty = false;
             self.world_mats_cache.clear();
@@ -2137,12 +2186,16 @@ impl InstancedModelBatch {
             let mut flat = vec![ModelUniform::identity(); n_instances * n_mesh_nodes];
             let node_pos_map = &self.node_pos_map;
             let root_nodes   = &model.root_nodes;
+            let tags         = &self.render_tags;
 
+            // チャンク = 1 インスタンスぶんの全メッシュノード。タグはインスタンス単位なので
+            // 変換行列（root_transforms）と同じ粒度で zip して渡す。
             flat.par_chunks_mut(n_mesh_nodes)
                 .zip(root_transforms.par_iter())
-                .for_each(|(chunk, root_t)| {
+                .zip(tags.par_iter())
+                .for_each(|((chunk, root_t), &tag)| {
                     for &root_node in root_nodes {
-                        fill_chunk(model, root_node, root_t, node_pos_map, chunk);
+                        fill_chunk(model, root_node, root_t, node_pos_map, tag, chunk);
                     }
                 });
             self.world_mats_cache = flat;
@@ -2333,12 +2386,16 @@ fn model_uniform_to_tlas_transform(model: &[[f32; 4]; 4]) -> [f32; 12] {
 }
 
 /// インスタンス 1 件分のシーングラフをトラバースし、
-/// メッシュノードのワールド行列をチャンクの対応列に書き込む。
+/// メッシュノードのワールド行列（＋インスタンス拡張スロット）をチャンクの対応列に書き込む。
+///
+/// `render_tag` はこのインスタンスのセマンティックタグ。同一インスタンスの全メッシュノードへ
+/// 同じ値を焼く（タグはアクタ＝インスタンス単位の属性であり、ノード単位ではないため）。
 fn fill_chunk(
     model:        &Model,
     node_idx:     usize,
     parent_mat:   &[[f32; 4]; 4],
     node_pos_map: &[Option<usize>],
+    render_tag:   u8,
     chunk:        &mut [ModelUniform],
 ) {
     let node  = &model.nodes[node_idx];
@@ -2347,12 +2404,15 @@ fn fill_chunk(
     if node.mesh_index.is_some() {
         if let Some(pos) = node_pos_map[node_idx] {
             let world_t = transpose4x4(&world);
-            chunk[pos]  = ModelUniform::from_matrix(world_t);
+            let mut u   = ModelUniform::from_matrix(world_t);
+            // 法線行列の 4 列目（法線変換に寄与しない拡張スロット）へタグを載せる。
+            u.set_render_tag(render_tag);
+            chunk[pos]  = u;
         }
     }
 
     for &child in &node.children {
-        fill_chunk(model, child, &world, node_pos_map, chunk);
+        fill_chunk(model, child, &world, node_pos_map, render_tag, chunk);
     }
 }
 

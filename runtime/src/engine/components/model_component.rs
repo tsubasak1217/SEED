@@ -105,6 +105,10 @@ pub struct ModelComponentData {
     /// 旧 .scene にはフィールドが存在しないため、欠落時は空 Vec（=オーバーライド無し）にフォールバックする。
     #[serde(default)]
     pub material_overrides: Vec<MaterialOverride>,
+    /// セマンティックタグ（0..15。0 = タグ無し）。
+    /// 旧 .scene にはフィールドが無いため欠落時は 0（＝タグ無し・従来と完全に同じ描画）。
+    #[serde(default)]
+    pub render_tag: u8,
 }
 
 // ─── ModelAnimDrive ─────────────────────────────────────────────────────────
@@ -151,6 +155,20 @@ pub struct ModelComponent {
     /// GpuModel 構築時にこの内容が `apply_overrides` で焼き込まれる。
     /// `batch_key()` の署名計算にも使われる（インスタンスバッチのマージキー）。
     pub material_overrides: Vec<MaterialOverride>,
+    /// このアクタ（モデル）のセマンティックタグ（0..15。0 = タグ無し）。
+    ///
+    /// 「このアクタは敵」「インタラクト可能」といった**意味**を描画側へ伝えるための値で、
+    /// G-Buffer RT3.a へ 4bit で焼かれ、将来の合成（第 3 層）が 1 ピクセル単位で引ける。
+    /// ID バッファ（per-actor の厳密なマスク）より粗いが、読み戻しもテクスチャ追加も不要で
+    /// 「敵だけ縁取る」「インタラクト可能物だけ光らせる」といった用途はこれで足りる。
+    ///
+    /// 配管経路: 本フィールド → 統合バッチの `render_tags` → `ModelUniform` の
+    /// インスタンス拡張スロット（normal_matrix 4 列目）→ VertexOutput（flat）→ RT3.a。
+    /// タグはアクタ（MC）単位で、その MC の全インスタンスに同じ値が複製される。
+    ///
+    /// 有効ビット幅は `renderer::surface_id::RENDER_TAG_BITS`。範囲外の値は
+    /// GPU へ渡す直前にマスクされる（隣のビットを侵食しない）。
+    pub render_tag:      u8,
     /// この MC を一意に識別する揮発 ID（非シリアライズ）。
     /// インラインオーバーライドを持つ MC の `batch_key()` に使い、値編集でキーが変わらない
     /// 「安定バッチキー」を実現する（詳細は `next_batch_instance_id` のコメント参照）。
@@ -172,6 +190,8 @@ impl ModelComponent {
             anim_drive:      None,
             cast_shadows:    true,
             material_overrides: Vec::new(),
+            // タグ無し（既定）。0 は「未設定」を表す予約値。
+            render_tag:      crate::engine::core::renderer::surface_id::RENDER_TAG_NONE,
             batch_instance_id: next_batch_instance_id(),
         }
     }
@@ -298,6 +318,7 @@ impl ModelComponent {
             next_group_id: self.next_group_id,
             cast_shadows:  self.cast_shadows,
             material_overrides: self.material_overrides.clone(),
+            render_tag:    self.render_tag,
         }
     }
 }
@@ -408,6 +429,7 @@ mod override_serde_tests {
             groups:        vec![],
             next_group_id: GROUP_ID_BASE,
             cast_shadows:  true,
+            render_tag:    3,
             material_overrides: vec![
                 // インライン: 全フィールドを非 None で埋める（往復漏れの検出のため）。
                 MaterialOverride {

@@ -61,19 +61,44 @@ impl CameraUniform {
 
 // ── モデル変換 (Group 1, Binding 0) ──────────────────────────
 
-/// ノードのモデル変換行列 + 法線行列。
+/// `normal_matrix` のうち「インスタンス拡張スロット」に転用する列の添字。
 ///
-/// WGSL レイアウト（計 128 bytes）:
+/// 【なぜ 4 列目が空いているのか】
+/// 法線変換は必ず方向ベクトル（w=0）に対して行われる:
+///   `normal_matrix * vec4(n, 0.0)` = col0*n.x + col1*n.y + col2*n.z + col3***0.0**
+/// つまり 4 列目は数学的に結果へ一切寄与しない。実際、`normal_matrix` を参照する
+/// 全 WGSL（shader_static_vertex / shader_skinned_vertex / outline / meshlet_cull）は
+/// 例外なく w=0 のベクトルを掛けており、4 列目を読む箇所は存在しない。
+///
+/// 【なぜここへ詰めるのか】
+/// `ModelUniform` は 6 個の WGSL ファイルで再宣言され、かつ全インスタンス × 全メッシュノード
+/// ぶんが毎フレーム GPU へ転送される（描画帯域の主要因の 1 つ）。フィールドを 1 つ足すと
+/// 128→144 byte（+12.5%）の帯域増と 6 ファイルのレイアウト同期が必要になる。
+/// 既に「常にゼロが掛かる」死に領域が 16 byte あるので、そこを**名前付きの規約**として
+/// 転用すれば帯域増加ゼロ・レイアウト変更ゼロで per-instance データを追加できる。
+pub const INSTANCE_EXTRAS_COLUMN: usize = 3;
+
+/// インスタンス拡張スロット内で `render_tag`（セマンティックタグ）を置く行。
+/// WGSL 側は `u_model.normal_matrix[3][0]` で読む（shader_common.wgsl の定数と一致必須）。
+pub const INSTANCE_EXTRAS_ROW_RENDER_TAG: usize = 0;
+
+/// ノードのモデル変換行列 + 法線行列（＋インスタンス拡張スロット）。
+///
+/// WGSL レイアウト（計 128 bytes・不変）:
 /// | オフセット | フィールド     | サイズ |
 /// |-----------|---------------|--------|
 /// |   0       | model         |  64    |
-/// |  64       | normal_matrix |  64    |
+/// |  64       | normal_matrix |  64    |  ← うち末尾 16 byte（4 列目）は拡張スロット
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ModelUniform {
     /// モデル行列（ローカル空間→ワールド空間）
     pub model:         [[f32; 4]; 4],
-    /// 法線変換行列 = transpose(inverse(model)) の 3x3 部分を 4x4 に拡張
+    /// 法線変換行列 = transpose(inverse(model)) の 3x3 部分を 4x4 に拡張。
+    ///
+    /// **4 列目（`INSTANCE_EXTRAS_COLUMN`）は法線変換には使われない拡張スロット**であり、
+    /// per-instance の付随データを載せる（現在は行 0 に `render_tag`）。
+    /// 書き込みは `set_render_tag` 経由に限ること（生で触らない）。
     pub normal_matrix: [[f32; 4]; 4],
 }
 
@@ -83,19 +108,33 @@ impl ModelUniform {
             [1.0, 0.0, 0.0, 0.0f32],
             [0.0, 1.0, 0.0, 0.0],
             [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
+            // 拡張スロットは常にゼロ初期化（タグ無し＝RENDER_TAG_NONE と一致）。
+            [0.0, 0.0, 0.0, 0.0],
         ];
         Self { model: id, normal_matrix: id }
     }
 
-    /// モデル行列から生成する（法線行列は自動計算）。
+    /// モデル行列から生成する（法線行列は自動計算・拡張スロットはゼロ）。
     pub fn from_matrix(model: [[f32; 4]; 4]) -> Self {
         let nm = normal_matrix_from_model(&model);
         Self { model, normal_matrix: nm }
     }
+
+    /// インスタンス拡張スロットへセマンティックタグ（`render_tag`）を書き込む。
+    ///
+    /// 値は「整数を素直に float 化したもの」。頂点シェーダが `@interpolate(flat)` で
+    /// フラグメントへ渡し、G-Buffer 書き込み時に `pack_surface_id` でパックされる。
+    #[inline]
+    pub fn set_render_tag(&mut self, render_tag: u8) {
+        self.normal_matrix[INSTANCE_EXTRAS_COLUMN][INSTANCE_EXTRAS_ROW_RENDER_TAG] =
+            (render_tag & super::surface_id::RENDER_TAG_MASK) as f32;
+    }
 }
 
 /// 法線変換行列 = cofactor(M_3x3) / det = transpose(inverse(M_3x3))
+///
+/// 戻り値の 4 列目は必ずゼロで返す（インスタンス拡張スロットの初期状態）。
+/// 特異行列フォールバックでも 3x3 部分だけをコピーし、4 列目は汚さない。
 fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     let (a, b, c) = (m[0][0], m[0][1], m[0][2]);
     let (d, e, f) = (m[1][0], m[1][1], m[1][2]);
@@ -103,7 +142,15 @@ fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 
     let det = a*(e*i - f*h) - b*(d*i - f*g) + c*(d*h - e*g);
     if det.abs() < 1e-6 {
-        return *m; // 特異行列フォールバック
+        // 特異行列フォールバック: 元の 3x3 をそのまま使う（従来動作）。
+        // ただし 4 列目は拡張スロットなので、元行列の平行移動列を持ち込まずゼロで返す
+        // （法線変換は w=0 で行われるため、この違いは法線の計算結果に影響しない）。
+        return [
+            [m[0][0], m[0][1], m[0][2], m[0][3]],
+            [m[1][0], m[1][1], m[1][2], m[1][3]],
+            [m[2][0], m[2][1], m[2][2], m[2][3]],
+            [0.0, 0.0, 0.0, 0.0],
+        ];
     }
     let inv = 1.0 / det;
 
@@ -111,7 +158,8 @@ fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
         [ (e*i-f*h)*inv, -(d*i-f*g)*inv,  (d*h-e*g)*inv, 0.0],
         [-(b*i-c*h)*inv,  (a*i-c*g)*inv, -(a*h-b*g)*inv, 0.0],
         [ (b*f-c*e)*inv, -(a*f-c*d)*inv,  (a*e-b*d)*inv, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
+        // 4 列目 = インスタンス拡張スロット（既定ゼロ）。法線変換には寄与しない。
+        [0.0, 0.0, 0.0, 0.0],
     ]
 }
 
@@ -119,7 +167,7 @@ fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 
 /// PBR マテリアルパラメータ。
 ///
-/// WGSL レイアウト（計 80 bytes。ガラス表現で transmission を追加し 64→80 へ拡張）:
+/// WGSL レイアウト（計 96 bytes。ガラス表現で 64→80、サーフェス情報系で 80→96 へ拡張）:
 /// | オフセット | フィールド         | サイズ |
 /// |-----------|-------------------|--------|
 /// |  0        | base_color_factor |  16    |
@@ -137,6 +185,18 @@ fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 /// | 68        | mr_tex_ignore     |   4    |  ← 旧 _pad0 を転用（MR テクスチャ無視トグル, 0/1）
 /// | 72        | diffuse_transmission | 4  |  ← 旧 _pad1 を転用（拡散透過＝葉/布の逆光透け, 0..1）
 /// | 76        | ignore_vertex_color | 4   |  ← 旧 _pad2 を転用（頂点カラー乗算スキップ, 0/1）
+/// | 80        | user_data         |   4    |  ← 汎用ユーザーデータ回線（0..1, G-Buffer RT2.a へ）
+/// | 84        | shading_model     |   4    |  ← シェーディングモデル ID（0=DefaultPBR, RT3.a へ）
+/// | 88        | _pad3             |   4    |  ← 予約（16 byte 境界合わせ。次の追加はここを転用する）
+/// | 92        | _pad4             |   4    |  ← 予約（同上）
+///
+/// 【80→96 へ増えた理由と影響】
+/// 旧レイアウトは 80 byte を 1 バイトも余さず使い切っており（過去 4 回の追加は全て
+/// _pad の転用で吸収してきた）、これ以上フィールドを足す余地が無かった。
+/// uniform 構造体のサイズは 16 の倍数である必要があるため 80→96 とし、
+/// 同時に将来のための予備 8 byte（_pad3/_pad4）を確保した。
+/// マテリアル uniform は**マテリアルごとに 1 個**しか存在しない（インスタンス数に比例しない）ため、
+/// 16 byte の増加はメモリ・帯域ともに実質無視できる。
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MaterialUniform {
@@ -174,6 +234,27 @@ pub struct MaterialUniform {
     /// アルファ 1 の簡易表示になる。surface_gather.wgsl のベースカラー採取 1 箇所が参照する。
     /// 旧レイアウトでは全ビット 0（_pad2=0.0）＝この値 0（無視しない）と一致し後方互換。
     pub ignore_vertex_color: u32,
+
+    /// 汎用ユーザーデータ回線（0..1, offset 80）。
+    ///
+    /// エンジンは意味を一切定めない「自由回線」で、マテリアルが濡れ具合・ダメージ量・
+    /// 経年劣化など好きな意味を載せられる。G-Buffer RT2.a（Rgba8Unorm＝8bit）へ焼かれ、
+    /// 将来の合成（第 3 層）が `Surface.user_data` として読む。
+    /// 既定 0.0＝旧データ・未設定マテリアルと一致（後方互換）。
+    pub user_data:          f32,
+
+    /// シェーディングモデル ID（offset 84）。0 = DefaultPBR（現状これのみ実装）。
+    ///
+    /// 将来のトゥーン／異方性ヘア等をライティング段で分岐させるための識別子。
+    /// G-Buffer RT3.a へ `render_tag` と一緒にビットパックされる
+    /// （規約は renderer::surface_id）。既定 0＝DefaultPBR。
+    pub shading_model:      u32,
+
+    /// 予約（16 byte 境界合わせ）。次にマテリアルへ値を足すときはここを転用し、
+    /// 構造体サイズを 96 のまま維持すること。
+    pub _pad3:              u32,
+    /// 予約（同上）。
+    pub _pad4:              u32,
 }
 
 // ── スキニング用ジョイント行列 (Group 3, Binding 0) ───────────
@@ -288,18 +369,20 @@ mod layout_tests {
         assert_eq!(std::mem::size_of::<CameraUniform>(), 224);
     }
 
-    /// MaterialUniform が Rust/WGSL 双方で 80 バイト（ガラス表現で 64→80 へ拡張）であることと、
-    /// 主要フィールドのオフセットを固定する。ズレると shader_common.wgsl の MaterialUniform 定義
-    /// との対応が崩れ、GPU が誤ったバイトを読む（静かな描画バグ）。
+    /// MaterialUniform が Rust/WGSL 双方で 96 バイト（ガラス表現で 64→80、情報系 2 値の追加で
+    /// 80→96 へ拡張）であることと、主要フィールドのオフセットを固定する。ズレると
+    /// shader_common.wgsl の MaterialUniform 定義との対応が崩れ、GPU が誤ったバイトを読む
+    /// （静かな描画バグ）。
     #[test]
-    fn material_uniform_layout_is_80_bytes() {
-        assert_eq!(std::mem::size_of::<MaterialUniform>(), 80, "MaterialUniform は 80 バイト");
+    fn material_uniform_layout_is_96_bytes() {
+        assert_eq!(std::mem::size_of::<MaterialUniform>(), 96, "MaterialUniform は 96 バイト");
         // 代表オフセットの検証（base アドレスからのバイト差）。
         let m = MaterialUniform {
             base_color_factor: [0.0; 4], metallic_factor: 0.0, roughness_factor: 0.0,
             alpha_cutoff: 0.0, has_base_color_tex: 0, emissive_factor: [0.0; 3],
             has_normal_tex: 0, has_mr_tex: 0, has_occlusion_tex: 0, has_emissive_tex: 0,
-            ior: 0.0, transmission: 0.0, mr_tex_ignore: 0, diffuse_transmission: 0.0, ignore_vertex_color: 0,
+            ior: 0.0, transmission: 0.0, mr_tex_ignore: 0, diffuse_transmission: 0.0,
+            ignore_vertex_color: 0, user_data: 0.0, shading_model: 0, _pad3: 0, _pad4: 0,
         };
         let base = &m as *const _ as usize;
         let off = |p: *const f32| p as usize - base;
@@ -308,5 +391,54 @@ mod layout_tests {
         assert_eq!(&m.mr_tex_ignore as *const u32 as usize - base, 68, "mr_tex_ignore は offset 68");
         assert_eq!(off(&m.diffuse_transmission), 72, "diffuse_transmission は offset 72");
         assert_eq!(&m.ignore_vertex_color as *const u32 as usize - base, 76, "ignore_vertex_color は offset 76");
+        assert_eq!(off(&m.user_data),    80, "user_data は offset 80");
+        assert_eq!(&m.shading_model as *const u32 as usize - base, 84, "shading_model は offset 84");
+    }
+
+    /// ModelUniform が 128 バイトのままであること（インスタンス拡張スロットは
+    /// normal_matrix の 4 列目を転用しており、サイズを一切変えていない）。
+    /// このサイズは 6 個の WGSL ファイルが再宣言している ABI であり、崩すと
+    /// 全パスがバッファをズレて読む（静かな描画バグ）。
+    #[test]
+    fn model_uniform_size_is_128_bytes() {
+        assert_eq!(std::mem::size_of::<ModelUniform>(), 128, "ModelUniform は 128 バイト");
+    }
+
+    /// `set_render_tag` が拡張スロット（4 列目・行 0）にだけ書き、
+    /// 法線変換に使う 0..2 列を一切壊さないこと。
+    #[test]
+    fn set_render_tag_touches_only_the_extras_slot() {
+        let model = [
+            [2.0, 0.0, 0.0, 0.0f32],
+            [0.0, 3.0, 0.0, 0.0],
+            [0.0, 0.0, 4.0, 0.0],
+            [5.0, 6.0, 7.0, 1.0],
+        ];
+        let before = ModelUniform::from_matrix(model);
+        let mut after = before;
+        after.set_render_tag(9);
+
+        // 法線変換に使う 0..2 列は不変。
+        for col in 0..INSTANCE_EXTRAS_COLUMN {
+            assert_eq!(before.normal_matrix[col], after.normal_matrix[col], "col {col} が変化した");
+        }
+        // モデル行列も不変。
+        assert_eq!(before.model, after.model);
+        // 拡張スロットの該当行だけにタグが入る。
+        assert_eq!(
+            after.normal_matrix[INSTANCE_EXTRAS_COLUMN][INSTANCE_EXTRAS_ROW_RENDER_TAG],
+            9.0
+        );
+    }
+
+    /// タグはビット幅（4bit）でマスクされ、範囲外の値でも隣の情報を侵食しないこと。
+    #[test]
+    fn set_render_tag_masks_out_of_range_values() {
+        let mut u = ModelUniform::identity();
+        u.set_render_tag(0xFF);
+        assert_eq!(
+            u.normal_matrix[INSTANCE_EXTRAS_COLUMN][INSTANCE_EXTRAS_ROW_RENDER_TAG],
+            super::super::surface_id::RENDER_TAG_MASK as f32
+        );
     }
 }

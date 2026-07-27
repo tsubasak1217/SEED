@@ -32,7 +32,25 @@ struct CameraUniform {
 
 struct ModelUniform {
     model:         mat4x4<f32>,
+    // 法線変換行列。**4 列目は法線変換に寄与しない「インスタンス拡張スロット」**。
+    // 法線変換は常に `normal_matrix * vec4(n, 0.0)` の形で行われるため、
+    // col3 には常に 0.0 が掛かる＝数学的に死んでいる 16 byte である。
+    // ここへ per-instance の付随データ（現在は render_tag）を載せることで、
+    // ModelUniform のサイズ（128B・全インスタンス×全ノードぶん毎フレーム転送）を
+    // 増やさずに情報を追加している。Rust 側 uniforms::INSTANCE_EXTRAS_COLUMN と一致必須。
     normal_matrix: mat4x4<f32>,
+}
+
+/// インスタンス拡張スロットの列添字（Rust uniforms::INSTANCE_EXTRAS_COLUMN と一致必須）。
+const INSTANCE_EXTRAS_COLUMN: i32 = 3;
+/// 拡張スロット内で render_tag（セマンティックタグ）が入る行
+/// （Rust uniforms::INSTANCE_EXTRAS_ROW_RENDER_TAG と一致必須）。
+const INSTANCE_EXTRAS_ROW_RENDER_TAG: i32 = 0;
+
+/// インスタンス拡張スロットから render_tag を取り出す（0..15 の整数を float で保持）。
+/// 頂点シェーダだけが呼び、結果を VertexOutput.render_tag へ flat 補間で流す。
+fn instance_render_tag(m: ModelUniform) -> f32 {
+    return m.normal_matrix[INSTANCE_EXTRAS_COLUMN][INSTANCE_EXTRAS_ROW_RENDER_TAG];
 }
 /// ノードごとのワールド行列配列（全インスタンス分）。
 /// @builtin(instance_index) は DrawIndexedIndirect.first_instance を通じて
@@ -64,8 +82,19 @@ struct MaterialUniform {
     diffuse_transmission: f32,
     // 頂点カラー無視トグル（旧 _pad2, offset 76 を転用）。0=乗算（従来）、1=乗算スキップ。
     // カメラプレビューの地形簡易描画専用。gather_surface のベースカラー採取が参照する。
-    // Rust uniforms::MaterialUniform（offset 76, u32）と 1:1。構造体サイズは 80 のまま。
+    // Rust uniforms::MaterialUniform（offset 76, u32）と 1:1。
     ignore_vertex_color: u32,
+    // 汎用ユーザーデータ回線（offset 80, 0..1）。エンジンは意味を定めない自由回線で、
+    // 濡れ・ダメージ・経年劣化などをマテリアルが好きに載せる。G-Buffer RT2.a へ焼かれる。
+    // 既定 0.0＝旧データと一致（後方互換）。
+    user_data:          f32,
+    // シェーディングモデル ID（offset 84）。0 = DefaultPBR（現状これのみ）。
+    // render_tag と一緒に G-Buffer RT3.a へビットパックされる（pack_surface_id 参照）。
+    shading_model:      u32,
+    // 予約（offset 88 / 92）。構造体サイズを 96（16 の倍数）に保つためのパディング。
+    // 次にマテリアルへ値を足すときはここを転用してサイズを維持すること。
+    _pad3:              u32,
+    _pad4:              u32,
 }
 @group(2) @binding(0)  var<uniform> u_material:          MaterialUniform;
 @group(2) @binding(1)  var          t_base_color:         texture_2d<f32>;
@@ -105,6 +134,11 @@ struct VertexOutput {
     @location(4)       uv0:          vec2<f32>,
     @location(5)       uv1:          vec2<f32>,
     @location(6)       color:        vec4<f32>,
+    /// アクタ単位のセマンティックタグ（0..15 の整数を float で保持。0 = タグ無し）。
+    /// インスタンス拡張スロット（ModelUniform.normal_matrix の 4 列目）由来で、
+    /// インスタンスごとに一定なので `flat` 補間（頂点間で値を混ぜてはならない）。
+    /// G-Buffer 書き込みでのみ使う（フォワード系フラグメントは参照しない）。
+    @location(7) @interpolate(flat) render_tag: f32,
 }
 
 // ─── PBR ヘルパー関数は pbr_common.wgsl へ移設 ───────────────

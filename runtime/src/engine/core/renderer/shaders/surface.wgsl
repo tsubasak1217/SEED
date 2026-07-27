@@ -31,6 +31,41 @@
 /// （rt_shadow.rs のユニットテストが 3 者の一致を担保する）。
 const SURFACE_SHADOW_MASK_SLOTS: u32 = 4u;
 
+// ── サーフェス識別情報のビット規約（Rust renderer::surface_id と一致必須）────
+//
+// セマンティックタグ（4bit）とシェーディングモデル ID（2bit）を 1 個の float へ
+// パックして G-Buffer RT3.a（Rgba16Float）へ焼く。half float は整数 2048 まで
+// 誤差ゼロで表現できるため、最大値 63 のパック値は完全に無損失で往復する。
+// 値の意味・格納先の設計理由は Rust 側 surface_id.rs のモジュールコメントを正典とする。
+
+/// セマンティックタグのビット幅（Rust RENDER_TAG_BITS と一致必須）。
+const RENDER_TAG_BITS: u32 = 4u;
+/// セマンティックタグの値マスク。
+const RENDER_TAG_MASK: u32 = 15u;
+/// シェーディングモデル ID の値マスク（シフト前）。
+const SHADING_MODEL_MASK: u32 = 3u;
+/// シェーディングモデル ID のシフト量（タグの直上）。
+const SHADING_MODEL_SHIFT: u32 = RENDER_TAG_BITS;
+/// 既定のシェーディングモデル＝標準 PBR。
+const SHADING_MODEL_DEFAULT_PBR: u32 = 0u;
+
+/// render_tag と shading_model を G-Buffer RT3.a 用の 1 個の float へパックする。
+/// マスクを掛けるので範囲外の入力でもビットが隣へ漏れない。
+fn pack_surface_id(render_tag: u32, shading_model: u32) -> f32 {
+    let tag = render_tag & RENDER_TAG_MASK;
+    let sm  = (shading_model & SHADING_MODEL_MASK) << SHADING_MODEL_SHIFT;
+    return f32(tag | sm);
+}
+
+/// `pack_surface_id` の逆変換。x = render_tag / y = shading_model。
+/// half float の丸めに備えて round してから整数化する。
+fn unpack_surface_id(packed: f32) -> vec2<u32> {
+    let v   = u32(round(max(packed, 0.0)));
+    let tag = v & RENDER_TAG_MASK;
+    let sm  = (v >> SHADING_MODEL_SHIFT) & SHADING_MODEL_MASK;
+    return vec2<u32>(tag, sm);
+}
+
 /// シェーディングに必要な面の情報一式。
 ///
 /// ライト評価（evaluate_lighting）はこの構造体**だけ**を入力とする。
@@ -138,4 +173,23 @@ struct Surface {
     /// evaluate_lighting は shadow_mask_valid<=0 のときマスク対象ライトでもインライン rt_shadow_factor へ
     /// フォールバックする（マスクは deferred の全画面パスでしか焼けないため。screen_gi.a と同じ流儀）。
     shadow_mask_valid: f32,
+
+    // ─── 情報系（ライティングには使わず、合成＝第 3 層のための素材）─────────
+
+    /// アクタ単位のセマンティックタグ（0..15。0 = タグ無し）。
+    /// 「このアクタは敵」「インタラクト可能」といった**意味**を 1 ピクセル単位で
+    /// 引けるようにするための値。ジオメトリパスでは VertexOutput.render_tag 由来、
+    /// ライティングパスでは G-Buffer RT3.a のアンパック由来。
+    /// G-Buffer に載らないパス（フォワード半透明）ではゼロ初期化のまま＝タグ無し。
+    render_tag:  u32,
+
+    /// シェーディングモデル ID（0 = DefaultPBR）。マテリアル単位。
+    /// 将来トゥーン等をライティング段で分岐させるための識別子で、現状は常に 0。
+    /// 格納先は render_tag と同じ RT3.a（ビットパック）。
+    shading_model: u32,
+
+    /// 汎用ユーザーデータ（0..1）。マテリアルが自由な意味を載せる回線
+    /// （濡れ・ダメージ・経年劣化など。エンジンは意味を定めない）。
+    /// G-Buffer では RT2.a（Rgba8Unorm＝8bit・1/255 刻み）に焼く。
+    user_data:   f32,
 }

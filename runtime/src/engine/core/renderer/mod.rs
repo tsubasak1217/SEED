@@ -32,6 +32,9 @@ pub mod postfx;
 pub(crate) mod view_mode;
 /// G-Buffer リソース＋MRT ジオメトリパイプライン（Phase D3 Deferred Phase A）
 pub(crate) mod gbuffer;
+/// G-Buffer の空きチャンネルへ詰める「サーフェス識別情報」のビット規約
+/// （セマンティックタグ／シェーディングモデル ID／ユーザーデータ）。
+pub mod surface_id;
 /// 地形レイヤブレンド用 G-Buffer パイプライン（Terrain T2）。
 pub(crate) mod terrain_gbuffer;
 

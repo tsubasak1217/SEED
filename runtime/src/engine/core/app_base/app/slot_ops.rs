@@ -479,6 +479,8 @@ impl App {
                         anim_drive:      None,
                         cast_shadows,
                         material_overrides: mc_data.material_overrides,
+                        // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
+                        render_tag:      mc_data.render_tag,
                         batch_instance_id: crate::engine::components::next_batch_instance_id(),
                     }
                 } else {
@@ -517,6 +519,8 @@ impl App {
                         anim_drive:      None,
                         cast_shadows,
                         material_overrides: mc_data.material_overrides,
+                        // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
+                        render_tag:      mc_data.render_tag,
                         batch_instance_id: crate::engine::components::next_batch_instance_id(),
                     }
                 };
@@ -796,6 +800,8 @@ impl App {
                             anim_drive:      None,
                             cast_shadows,
                             material_overrides: mc_data.material_overrides,
+                            // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
+                            render_tag:      mc_data.render_tag,
                             batch_instance_id: crate::engine::components::next_batch_instance_id(),
                         }
                     } else {
@@ -830,6 +836,8 @@ impl App {
                             anim_drive:      None,
                             cast_shadows,
                             material_overrides: mc_data.material_overrides,
+                            // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
+                            render_tag:      mc_data.render_tag,
                             batch_instance_id: crate::engine::components::next_batch_instance_id(),
                         }
                     };

@@ -120,6 +120,9 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
                 mr_tex_ignore:      false,
                 // 頂点カラー無視トグル。OBJ ロード時は常に false（従来どおり頂点カラーを乗算）。
                 ignore_vertex_color: false,
+                // 情報系（OBJ/MTL は対応する記述を持たないため既定値）。
+                user_data:           0.0,
+                shading_model:       crate::engine::core::renderer::surface_id::SHADING_MODEL_DEFAULT_PBR,
                 // OBJ/MTL には両面フラグが無いため常に背面カリング（従来挙動）。
                 double_sided:       false,
                 cull_face:          crate::engine::core::loader::model::CullFace::Back,

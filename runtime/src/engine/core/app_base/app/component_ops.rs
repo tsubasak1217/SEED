@@ -189,6 +189,8 @@ impl App {
                     anim_drive:      None,
                     cast_shadows:    true,
                     material_overrides: Vec::new(),
+                    // 新規追加アクタはタグ無しから始まる。
+                    render_tag:      crate::engine::core::renderer::surface_id::RENDER_TAG_NONE,
                     batch_instance_id: crate::engine::components::next_batch_instance_id(),
                 };
 
@@ -655,6 +657,8 @@ impl App {
                         anim_drive:      None,
                         cast_shadows:    true,
                         material_overrides: Vec::new(),
+                        // 新規追加アクタはタグ無しから始まる。
+                        render_tag:      crate::engine::core::renderer::surface_id::RENDER_TAG_NONE,
                         batch_instance_id: crate::engine::components::next_batch_instance_id(),
                     }
                 };

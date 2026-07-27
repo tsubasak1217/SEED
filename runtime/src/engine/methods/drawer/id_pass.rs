@@ -8,6 +8,24 @@
 //    A: bitcast<f32>(instance_id)  ※ 0 = 背景
 //
 //  ピッキング (A チャンネル) とD&Dワールド座標 (RGB) を1枚で共有する。
+//
+//  ## 合成（3 層モデルの第 2 層）への昇格
+//  本テクスチャは元来「エディタのピッキング専用・1 ピクセルだけ読み戻す」用途だったが、
+//  合成段が per-actor の厳密なマスク（例: 特定アクタだけを縁取る／別処理する）を必要とする
+//  ケースのために、**シェーダからサンプルできる中間バッファ**へ昇格させた。
+//    - `TextureUsages::TEXTURE_BINDING` を追加（これが無いとバインドできない）。
+//    - `bind_group_layout()` / `create_bind_group()` で `texture_2d<f32>` として差せる。
+//    - 解像度はウィンドウ実効サイズ＝ライティング段（HDR オフスクリーン）と同一なので、
+//      ピクセル座標をそのまま共有できる（textureLoad で 1:1 に引ける）。
+//
+//  ## 使い分けの指針（重要）
+//  ID テクスチャは Rgba32Float・フル解像度＝**16 byte/px** と高価で、しかも全ジオメトリを
+//  もう一度描き直す専用パスを要する。以下の順に検討すること:
+//    1. 「敵だけ」「インタラクト可能だけ」のような**種別**で足りる → G-Buffer のセマンティック
+//       タグ（RT3.a の 4bit。追加パスも追加帯域もゼロ）を使う。
+//    2. 「この 1 体だけ」のような**個体の厳密な同定**が要る → ID テクスチャを使う。
+//  そのため Play 中の毎フレーム描画は既定で無効とし、必要なタイトルだけが
+//  `SEED_ID_PASS_IN_PLAY` で有効化する（`id_pass_enabled_in_play` 参照）。
 // ============================================================
 
 use super::{
@@ -20,6 +38,25 @@ use crate::engine::core::loader::model::CullFace;
 const BYTES_PER_PIXEL: usize = 16;
 // wgpu の CopyTextureToBuffer で要求される bytes_per_row の最小アライメント
 const ROW_ALIGNMENT: u64 = 256;
+
+/// ID テクスチャのフォーマット。RGB にワールド座標（実数）、A に ID をビットパターンとして
+/// 積むため 32bit float が必要（16bit half では ID の 32bit ビット列を保持できない）。
+const ID_BUFFER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+
+/// Play 中も ID パスを毎フレーム描くかどうか（環境変数 `SEED_ID_PASS_IN_PLAY` で有効化）。
+///
+/// 【既定を OFF にした理由】ID パスは全不透明ジオメトリをフル解像度でもう一度描く専用パスで、
+/// コストは深度プリパス 1 本ぶんに相当する。現時点で Play 中にこの結果を消費する機能は
+/// 存在せず（合成＝第 3 層は未実装）、既定 ON にすると「誰も読まない 16 byte/px のパス」を
+/// 全タイトルに常時課すことになる。実測は `SEED_PERF_LOG=1` の `[PERF] ... id=` フィールドで
+/// 行えるので、必要になったタイトルだけがこの環境変数で有効化する方針とした。
+/// Edit / Pause 中は従来どおり常に描画される（ピッキングが依存しているため）。
+static ID_PASS_IN_PLAY: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("SEED_ID_PASS_IN_PLAY").is_some());
+
+/// Play 中（非 Edit・非 Pause）に ID パスを描くべきか。
+#[inline]
+pub fn id_pass_enabled_in_play() -> bool { *ID_PASS_IN_PLAY }
 
 // ============================================================
 //  WorldPosIdBuffer — Rgba32Float テクスチャ + CPU リードバックバッファ
@@ -45,8 +82,13 @@ impl IdBuffer {
             mip_level_count: 1,
             sample_count:    1,
             dimension:       wgpu::TextureDimension::D2,
-            format:          wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            format:          ID_BUFFER_FORMAT,
+            // TEXTURE_BINDING: 合成（第 3 層）がシェーダから per-actor マスクとして読むために必要。
+            // これが無いと bind group へ差せず「合成入力」になり得ない（描いて読み戻すだけの
+            // ピッキング専用テクスチャのままになる）。
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                 | wgpu::TextureUsages::COPY_SRC
+                 | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -60,6 +102,45 @@ impl IdBuffer {
         });
 
         Self { texture, view, readback_buf, width, height }
+    }
+
+    /// 合成パスが ID テクスチャをサンプルするための BindGroupLayout を作る。
+    ///
+    /// WGSL 側は `var t_id: texture_2d<f32>` として宣言し、`textureLoad(t_id, pix, 0)` で引く
+    /// （ライティング段と同解像度なのでピクセル座標をそのまま共有できる）。
+    /// フィルタリングは意味を持たない（ID は補間してはならない離散値）ため sampler は持たせない。
+    pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Id Texture BGL"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding:    0,
+                visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    // Rgba32Float は filterable ではないため NonFiltering 相当の
+                    // `sample_type: Float { filterable: false }` を指定する（textureLoad 専用）。
+                    sample_type:    wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled:   false,
+                },
+                count: None,
+            }],
+        })
+    }
+
+    /// `bind_group_layout()` で作ったレイアウトに本テクスチャを差した BindGroup を作る。
+    pub fn create_bind_group(
+        &self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:  Some("Id Texture BG"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding:  0,
+                resource: wgpu::BindingResource::TextureView(&self.view),
+            }],
+        })
     }
 
     /// GPU サブミット済みのコピーコマンド実行後に呼び出す。

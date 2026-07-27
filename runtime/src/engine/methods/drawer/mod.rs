@@ -4,7 +4,7 @@
 // ここでは draw_* 関数群と DrawContext（高レベル API）のみを公開する。
 
 mod model_drawer;
-mod id_pass;
+pub mod id_pass;
 mod outline;
 mod primitive_drawer;
 mod sprite_drawer;

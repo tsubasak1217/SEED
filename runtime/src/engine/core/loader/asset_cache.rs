@@ -88,7 +88,14 @@ use super::model::{
 /// v14: `Material` に拡散透過（`diffuse_transmission`＝葉・布・紙の逆光透け, 0..1）を追加。
 ///     KHR_materials_diffuse_transmission 相当の簡易版で、ガラスの鏡面透過とは別の内部散乱。
 ///     bincode のバイナリ表現が変わるため旧 v13 を無効化して再生成させる。
-pub const CACHE_FORMAT_VERSION: u32 = 14;
+/// v15: `Material` に情報系 2 フィールドを追加。
+///     - `user_data`（0..1 の汎用ユーザーデータ回線。濡れ・ダメージ等をマテリアルが自由に載せる）
+///     - `shading_model`（シェーディングモデル ID。0=DefaultPBR、将来トゥーン等）
+///     いずれも G-Buffer の空きチャンネル（RT2.a / RT3.a）へ焼かれ、将来の合成が読む素材となる。
+///     terrain_layers / ignore_vertex_color のような「ランタイム組み立て専用フラグ」と違い、
+///     作者が設定して保存するデータなので `#[serde(skip)]` にはできない（キャッシュに焼く）。
+///     bincode のバイナリ表現が変わるため旧 v14 を無効化して再生成させる。
+pub const CACHE_FORMAT_VERSION: u32 = 15;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";
@@ -1042,8 +1049,16 @@ mod tests {
     #[test]
     fn material_bincode_layout_is_pinned() {
         // 既定値の Material をシリアライズしたバイト長。
-        // CACHE_FORMAT_VERSION 14 時点の表現を固定する。
-        const MATERIAL_BINCODE_LEN: usize = 110;
+        // CACHE_FORMAT_VERSION 15 時点の表現を固定する。
+        //
+        // v14（110 byte）からの差分 +5 byte の内訳:
+        //   +4 : user_data（f32・汎用ユーザーデータ回線）
+        //   +1 : shading_model（u8・シェーディングモデル ID）
+        // どちらも「作者が設定して保存する」データであり、terrain_layers のような
+        // ランタイム組み立て専用フラグではないため #[serde(skip)] は選べない。
+        // 上記の手順 2 に従い CACHE_FORMAT_VERSION を 14→15 へ上げた
+        // （旧キャッシュはヘッダ段階で無効化され、安全に再生成される）。
+        const MATERIAL_BINCODE_LEN: usize = 115;
 
         let mat = Material::default();
         let bytes = bincode::serialize(&mat).expect("Material のシリアライズに失敗");

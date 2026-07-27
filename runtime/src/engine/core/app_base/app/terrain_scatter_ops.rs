@@ -1695,7 +1695,8 @@ impl TerrainState {
             // 可視ぶんだけをアップロード（dirty 化してワールド行列を再計算させる）。
             // visible が空なら update 内部で全 LOD カウントが 0 になり、何も描かれない。
             res.batch.mark_dirty();
-            res.batch.update(&ctx.queue, &res.cpu_model, &visible, camera_pos);
+            // 散布オブジェクトはアクタ単位のタグを持たない（全インスタンス 0 扱い）。
+            res.batch.update(&ctx.queue, &res.cpu_model, &visible, &[], camera_pos);
         }
         // 計測ログ（SEED_PERF_TERRAIN 有効時のみ・毎フレームだと五月蝿いので間引く）。
         if *PERF_TERRAIN_LOG_ENABLED && dbg_total > 0 {
