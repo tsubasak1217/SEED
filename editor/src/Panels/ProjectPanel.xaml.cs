@@ -1083,6 +1083,7 @@ public partial class ProjectPanel : UserControl
           "transmission": 0.0,
           "diffuse_transmission": 0.0,
           "mr_tex_ignore": false,
+          "shading_model": 0,
           "textures": { "albedo": "", "normal": "", "metallic_roughness": "", "occlusion": "", "emissive": "" }
         }
         """;

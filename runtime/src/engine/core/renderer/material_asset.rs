@@ -82,6 +82,12 @@ pub struct MaterialAsset {
     /// `#[serde(default)]` により、本キーを持たない既存 .mat は従来どおり背面カリングになる。
     #[serde(default = "def_cull_face")]
     pub cull_face: String,
+    /// シェーディングモデル ID（Phase L3-a）。実効 2bit で 0..3（既定 0＝標準 PBR）。
+    /// 1..3 はカメラのシェーディングアセット（.smdl）で定義した `shade_model_N` を指し、
+    /// 未定義なら標準 PBR にフォールバックする。
+    /// `#[serde(default)]` により、本キーを持たない既存 .mat は従来どおり標準 PBR になる。
+    #[serde(default)]
+    pub shading_model: u8,
     #[serde(default)]
     pub textures: MatTextures,
 }
@@ -119,6 +125,8 @@ pub fn default_mat_json() -> String {
         diffuse_transmission: def_zero(),
         mr_tex_ignore: false,
         cull_face:    def_cull_face(),
+        // 新規 .mat は標準 PBR（0）から始める。
+        shading_model: crate::engine::core::renderer::surface_id::SHADING_MODEL_DEFAULT_PBR,
         textures:     MatTextures::default(),
     };
     // pretty JSON（人手編集・diff レビューのしやすさを優先）

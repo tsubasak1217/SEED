@@ -448,7 +448,7 @@ pub(crate) fn build_material_uniform(mat: &Material) -> MaterialUniform {
 /// `None` のフィールドは `base`（埋込値）をそのまま維持する。
 pub(crate) fn bake_inline_material(base: &Material, kind: &MaterialOverrideKind) -> Option<Material> {
     let MaterialOverrideKind::Inline {
-        base_color, metallic, roughness, emissive, alpha_mode, alpha_cutoff, ior, transmission, diffuse_transmission, mr_tex_ignore, cull_face,
+        base_color, metallic, roughness, emissive, alpha_mode, alpha_cutoff, ior, transmission, diffuse_transmission, mr_tex_ignore, cull_face, shading_model,
     } = kind else {
         return None;
     };
@@ -469,6 +469,10 @@ pub(crate) fn bake_inline_material(base: &Material, kind: &MaterialOverrideKind)
     if let Some(v) = mr_tex_ignore { eff.mr_tex_ignore    = *v; }
     // カリング面の上書き（None なら埋込値＝glTF double_sided 由来を維持）。
     if let Some(v) = cull_face    { eff.cull_face         = material_asset::parse_cull_face(v); }
+    // シェーディングモデル ID の上書き（None なら埋込値を維持）。
+    // 実効ビット幅は 2bit のため、範囲外の値を渡されても G-Buffer のパックと同じマスクで
+    // 丸めておく（ここで正規化しておけば build_material_uniform / pack_surface_id と常に一致する）。
+    if let Some(v) = shading_model { eff.shading_model    = *v & super::surface_id::SHADING_MODEL_MASK; }
     // テクスチャ参照は維持（texture_index は元モデルのテクスチャ列を指したまま）。
     Some(eff)
 }
@@ -1233,6 +1237,9 @@ impl GpuModel {
                         mr_tex_ignore:     asset.mr_tex_ignore,
                         // .mat が持つカリング面をそのまま適用する（キー欠落時は serde 既定の "back"）。
                         cull_face:         material_asset::parse_cull_face(&asset.cull_face),
+                        // .mat が持つシェーディングモデル ID を適用する（キー欠落時は serde 既定の 0＝標準 PBR）。
+                        // 実効 2bit へマスクして G-Buffer のパックと同じ値域に正規化する。
+                        shading_model:     asset.shading_model & super::surface_id::SHADING_MODEL_MASK,
                         ..Material::default()
                     };
 
@@ -2953,13 +2960,14 @@ mod inline_bake_tests {
         base_color: Option<[f32; 4]>, metallic: Option<f32>, roughness: Option<f32>,
         emissive: Option<[f32; 3]>, alpha_mode: Option<&str>, alpha_cutoff: Option<f32>,
         ior: Option<f32>, transmission: Option<f32>, diffuse_transmission: Option<f32>,
-        mr_tex_ignore: Option<bool>, cull_face: Option<&str>,
+        mr_tex_ignore: Option<bool>, cull_face: Option<&str>, shading_model: Option<u8>,
     ) -> MaterialOverrideKind {
         MaterialOverrideKind::Inline {
             base_color, metallic, roughness, emissive,
             alpha_mode: alpha_mode.map(|s| s.to_string()),
             alpha_cutoff, ior, transmission, diffuse_transmission, mr_tex_ignore,
             cull_face: cull_face.map(|s| s.to_string()),
+            shading_model,
         }
     }
 
@@ -2973,7 +2981,7 @@ mod inline_bake_tests {
 
         let kind = inline(
             Some([0.2, 0.4, 0.6, 0.8]), Some(0.3), Some(0.7),
-            Some([1.0, 0.0, 0.0]), None, None, Some(1.5), Some(0.9), Some(0.6), Some(true), Some("none"),
+            Some([1.0, 0.0, 0.0]), None, None, Some(1.5), Some(0.9), Some(0.6), Some(true), Some("none"), Some(3),
         );
         let eff = bake_inline_material(&base, &kind).expect("Inline は Some を返す");
         assert_eq!(eff.base_color_factor, [0.2, 0.4, 0.6, 0.8]);
@@ -2985,8 +2993,38 @@ mod inline_bake_tests {
         assert_eq!(eff.diffuse_transmission, 0.6, "diffuse_transmission=Some(0.6) が反映されること");
         assert!(eff.mr_tex_ignore, "mr_tex_ignore=Some(true) が反映されること");
         assert_eq!(eff.cull_face, CullFace::None);
+        assert_eq!(eff.shading_model, 3, "shading_model=Some(3) が反映されること");
         // alpha_mode は None なので埋込（既定）を維持する。
         assert_eq!(eff.alpha_mode, base.alpha_mode);
+    }
+
+    /// シェーディングモデル（Phase L3-a）のインライン上書きが uniform まで届く。
+    ///
+    /// - `None` は埋込値を維持する（既存シーンの挙動不変）。
+    /// - `Some(v)` は実効 2bit へマスクされたうえで `MaterialUniform.shading_model` に載る
+    ///   （G-Buffer の `pack_surface_id` と同じ値域）。
+    #[test]
+    fn shading_model_override_reaches_uniform() {
+        use crate::engine::core::renderer::surface_id::SHADING_MODEL_MASK;
+
+        // ① None → 埋込値を維持（ここでは埋込を 2 に設定して「0 へ潰れない」ことを見る）。
+        let mut base = Material::default();
+        base.shading_model = 2;
+        let keep = inline(None, None, None, None, None, None, None, None, None, None, None, None);
+        let eff_keep = bake_inline_material(&base, &keep).unwrap();
+        assert_eq!(eff_keep.shading_model, 2, "None は埋込値を維持すること");
+        assert_eq!(build_material_uniform(&eff_keep).shading_model, 2);
+
+        // ② Some(1) → 上書きされ uniform へ届く。
+        let set = inline(None, None, None, None, None, None, None, None, None, None, None, Some(1));
+        let eff_set = bake_inline_material(&base, &set).unwrap();
+        assert_eq!(build_material_uniform(&eff_set).shading_model, 1);
+
+        // ③ 範囲外の値は 2bit マスクで丸める（不正入力でも surface_id のパック結果と一致させる）。
+        let over = inline(None, None, None, None, None, None, None, None, None, None, None, Some(0xFF));
+        let eff_over = bake_inline_material(&base, &over).unwrap();
+        assert_eq!(eff_over.shading_model, SHADING_MODEL_MASK, "2bit へマスクされること");
+        assert_eq!(build_material_uniform(&eff_over).shading_model, SHADING_MODEL_MASK as u32);
     }
 
     /// in-place 経路とフル経路は同じ `MaterialUniform` を生む。
@@ -2999,7 +3037,7 @@ mod inline_bake_tests {
         let base = Material::default();
         let kind = inline(
             Some([0.1, 0.2, 0.3, 1.0]), Some(0.9), Some(0.1),
-            Some([0.0, 0.5, 0.0]), Some("mask"), Some(0.5), Some(1.33), Some(0.6), Some(0.4), Some(true), Some("front"),
+            Some([0.0, 0.5, 0.0]), Some("mask"), Some(0.5), Some(1.33), Some(0.6), Some(0.4), Some(true), Some("front"), Some(1),
         );
         // フル経路の uniform（GpuMaterial::upload 相当）。
         let eff_full = bake_inline_material(&base, &kind).unwrap();
@@ -3019,11 +3057,11 @@ mod inline_bake_tests {
     fn alpha_cutoff_only_applies_in_mask_mode() {
         let base = Material::default();
         // Opaque（alpha_mode 未指定）＋ cutoff 指定 → uniform では 0.0。
-        let opaque = inline(None, None, None, None, None, Some(0.5), None, None, None, None, None);
+        let opaque = inline(None, None, None, None, None, Some(0.5), None, None, None, None, None, None);
         let eff_o = bake_inline_material(&base, &opaque).unwrap();
         assert_eq!(build_material_uniform(&eff_o).alpha_cutoff, 0.0);
         // Mask ＋ cutoff 指定 → uniform に反映。
-        let mask = inline(None, None, None, None, Some("mask"), Some(0.5), None, None, None, None, None);
+        let mask = inline(None, None, None, None, Some("mask"), Some(0.5), None, None, None, None, None, None);
         let eff_m = bake_inline_material(&base, &mask).unwrap();
         assert_eq!(eff_m.alpha_mode, AlphaMode::Mask);
         assert_eq!(build_material_uniform(&eff_m).alpha_cutoff, 0.5);
@@ -3046,7 +3084,7 @@ mod inline_bake_tests {
     fn mr_tex_ignore_true_sets_flag_and_preserves_factors() {
         let base = Material::default();
         // metallic=0.2 / roughness=0.9 を factor に、mr_tex_ignore=true を指定。
-        let kind = inline(None, Some(0.2), Some(0.9), None, None, None, None, None, None, Some(true), None);
+        let kind = inline(None, Some(0.2), Some(0.9), None, None, None, None, None, None, Some(true), None, None);
         let eff = bake_inline_material(&base, &kind).unwrap();
         let uni = build_material_uniform(&eff);
         assert_eq!(uni.mr_tex_ignore, 1, "mr_tex_ignore=true は uniform で 1");
