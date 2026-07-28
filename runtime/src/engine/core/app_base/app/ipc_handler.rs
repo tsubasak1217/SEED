@@ -678,7 +678,11 @@ impl App {
                     self.apply_camera_euler(px, py, pz, euler_x, euler_y, euler_z);
                 }
                 IpcCommand::SetCameraSpeed(speed) => {
-                    self.camera.move_speed = speed.clamp(0.1, 500.0);
+                    // クランプ範囲はシーン設定の適用（apply_scene_settings）と共用の定数を使う
+                    self.camera.move_speed = speed.clamp(
+                        super::app_init::CAM_SPEED_MIN,
+                        super::app_init::CAM_SPEED_MAX,
+                    );
                 }
                 IpcCommand::LoadScene(path) => {
                     // アクター編集中なら現在のカメラを退避してからシーンモードに切り替える
@@ -760,6 +764,17 @@ impl App {
                             self.undo_history = crate::engine::core::app_base::undo::UndoHistory::new();
                             if let Some(cam) = cam_data {
                                 self.apply_camera_data(&cam);
+                            }
+                            // シーン単位のビューポート／レンダリング設定を適用する。
+                            // 起動時に読んだ project_settings.json（load_graphics_settings）の値を
+                            // ここで上書きする。settings 節を持たない旧 .scene では None のため
+                            // project 設定がそのまま残る（フォールバック）。
+                            //
+                            // apply_camera_data の「後」に置くこと。apply_camera_data は
+                            // debug_camera 節の fov/far/speed でカメラを上書きするため、先に
+                            // 適用するとシーン設定側の値が潰される（load_play_scene も同じ順序）。
+                            if let Some(s) = self.scene.as_ref().and_then(|sc| sc.settings.clone()) {
+                                self.apply_scene_settings(&s);
                             }
                             self.send_selected();
                             self.send_hierarchy();
@@ -1204,6 +1219,30 @@ impl App {
                             Some(trimmed.to_string())
                         };
                         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                    }
+                }
+                IpcCommand::SetSceneSettings { json } => {
+                    // シーン単位のビューポート／レンダリング設定（.scene の settings 節）を更新する。
+                    //
+                    // ── ここで設定をランタイムへ「適用しない」理由 ──────────────────
+                    // エディタは値を変更した時点で既存の個別 IPC（SET_POST_FX / VIEWPORT_FOV /
+                    // SHOW_GRID / SET_AMBIENT 等）を送ってライブ適用済みである。ここで
+                    // apply_scene_settings を再実行すると二重適用になるうえ、本スキーマに
+                    // 含まれない view_mode（シーンビュー表示モード。セッション限りの非永続設定）が
+                    // 既定値で潰されてしまう。よってこのコマンドは「保存用データの格納」のみ行う。
+                    // 実際の適用はシーンロード時（load_play_scene / LOAD_SCENE）だけで行う。
+                    match serde_json::from_str::<
+                        crate::engine::core::app_base::scene_settings::SceneSettingsData,
+                    >(&json) {
+                        Ok(parsed) => {
+                            if let Some(scene) = self.scene.as_mut() {
+                                scene.settings = Some(parsed);
+                                if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[SEED IPC] SET_SCENE_SETTINGS の JSON 解析に失敗（無視）: {e}");
+                        }
                     }
                 }
                 IpcCommand::SetActorActive { dfs_id, active } => {

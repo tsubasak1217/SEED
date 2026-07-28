@@ -1,446 +1,405 @@
 // ============================================================
-//  MainWindow.Camera.cs — ビューポートオプションとカメラ制御
+//  MainWindow.Camera.cs — シーン設定とデバッグカメラ制御
 //
 //  担当:
-//   - ビューポートオプションポップアップ（FOV・Far・グリッド・速度など）
-//   - スライダー横の数値入力フィールド
-//   - カメラ Transform 手動入力
-//   - カメラ状態受信と UI 同期
+//   - シーン設定ウィンドウ（旧ビューポートオプションポップアップ）の開閉と変更通知の受け口
+//   - シーン設定（SceneSettingsData）からランタイムへのライブ反映 IPC 送信
+//   - シーン設定の .scene への永続化要求（SET_SCENE_SETTINGS）
+//   - デバッグカメラの 2D/3D 切り替えとギズモ座標系トグル
+//   - カメラ状態（CAM_STATE）受信と表示同期
 //   - 全カメラキーのリリース
 //   - エディタ状態変化への UI 反応（ボタン・ラベル・FPS など）
+//
+//  設計方針:
+//   ランタイムへの IPC 送信はこのファイル（MainWindow）へ集約する。シーン設定ウィンドウは
+//   値を SceneSettingsData へ書いてコールバックで種別を通知するだけで、IPC は送らない。
 // ============================================================
 
 using System;
+using System.Globalization;
 using System.IO;
-using System.Text.Json.Nodes;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Input;
 using System.Windows.Media;
 using SEEDEditor.Native;
 using SEEDEditor.Runtime;
+using SEEDEditor.SceneSettings;
 
 namespace SEEDEditor;
 
 public partial class MainWindow
 {
-    // ── Viewport オプション ──────────────────────────────────────
+    // ── シーン設定の状態 ─────────────────────────────────────────
 
-    /// <summary>ビューポート設定の初期化完了フラグ。false 中はイベントハンドラを無視する。</summary>
-    private bool _updatingControls = false;
+    /// <summary>
+    /// 現在のシーンのビューポート／レンダリング／編集時物理設定。
+    /// 保存先は .scene ファイル（settings 節）で、書き込みはランタイムが行う
+    /// （エディタは SET_SCENE_SETTINGS で内容を渡すだけ）。
+    /// </summary>
+    private SceneSettingsData _sceneSettings = new();
 
-    /// <summary>ポップアップをアイコン右上に配置するコールバック。</summary>
-    public System.Windows.Controls.Primitives.CustomPopupPlacement[]
-        OnViewportPopupPlacement(Size popupSize, Size targetSize, Point offset)
-    {
-        // ボタン右端・ボタン下端にポップアップ底面を揃えて上方向へ展開
-        double x = targetSize.Width + 4;
-        double y = targetSize.Height - popupSize.Height;
-        return [new(new Point(x, y), System.Windows.Controls.Primitives.PopupPrimaryAxis.Vertical)];
-    }
-
-    private void OnViewportOptions(object sender, RoutedEventArgs e)
-    {
-        bool opening = !ViewportOptionsPopup.IsOpen;
-        ViewportOptionsPopup.IsOpen = opening;
-        if (opening && _runtimeManager?.State == EditorState.Edit)
-            _runtimeManager.SendToRuntime("GET_CAM_STATE");
-    }
-
-    private void OnFovChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (!_viewportSettingsInitialized || _updatingControls) return;
-        var v = (int)SldFov.Value;
-        _updatingControls = true;
-        TbFovInput.Text = v.ToString();
-        _updatingControls = false;
-        _runtimeManager?.SendToRuntime($"VIEWPORT_FOV:{v}");
-    }
-
-    private void OnFarChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (!_viewportSettingsInitialized || _updatingControls) return;
-        var v = (int)SldFar.Value;
-        _updatingControls = true;
-        TbFarInput.Text = v.ToString();
-        _updatingControls = false;
-        _runtimeManager?.SendToRuntime($"VIEWPORT_FAR:{v}");
-    }
-
-    private void OnShowGridChanged(object sender, RoutedEventArgs e)
-    {
-        if (!_viewportSettingsInitialized) return;
-        _runtimeManager?.SendToRuntime($"SHOW_GRID:{(ChkShowGrid.IsChecked == true ? "1" : "0")}");
-    }
-
-    private void OnShowAxisGizmoChanged(object sender, RoutedEventArgs e)
-    {
-        if (!_viewportSettingsInitialized) return;
-        _runtimeManager?.SendToRuntime($"SHOW_AXIS_GIZMO:{(ChkShowAxisGizmo.IsChecked == true ? "1" : "0")}");
-    }
-
-    // ── ポストプロセス（Bloom / FXAA / 透明描画） ───────────────────────────
-
-    /// <summary>ブルーム強度のデフォルト値。見た目を変えない後方互換のため 0.6 とする。</summary>
-    private const double DefaultBloomIntensity = 0.6;
-    /// <summary>GI 強度のデフォルト値（Phase RT-GI）。SET_POST_FX の "gi_intensity" フィールドに使う。</summary>
-    private const double DefaultGiIntensity = 1.0;
-    /// <summary>反射強度のデフォルト値。SET_POST_FX の "reflection_intensity" フィールドに使う。</summary>
-    private const double DefaultReflectionIntensity = 1.0;
-    /// <summary>AO 強度のデフォルト値（Phase D4）。SET_POST_FX の "ao_intensity" フィールドに使う。</summary>
-    private const double DefaultAoIntensity = 1.0;
-
-    /// <summary>透明描画方式のデフォルト値（距離ソート）。SET_POST_FX の "transparency" フィールドに使う。</summary>
-    private const string DefaultTransparencyMode = "sort";
-
-    /// <summary>シーンビュー表示モードのデフォルト値（ライティングON）。SET_POST_FX の "view_mode" フィールドに使う。</summary>
+    /// <summary>シーンビュー表示モードの既定値（ライティングON）。</summary>
     private const string DefaultViewMode = "lit";
 
     /// <summary>
-    /// ポストプロセス設定（Bloom 有効/強度・FXAA 有効・透明描画方式）をまとめて 1 つの JSON にして
-    /// ランタイムへ送信する共通処理。CheckBox・Slider・ComboBox いずれの変更イベントからも
-    /// この関数を呼び出すことで、送信フォーマット（SET_POST_FX:{json}）を一箇所に集約する。
+    /// シーンビュー表示モード（SET_POST_FX の "view_mode" フィールド）。
+    /// G-Buffer デバッグ表示のままシーンへ保存されると事故になるため、
+    /// シーン設定には含めずセッション限りでここに保持する（毎起動 "lit" から始まる）。
+    /// </summary>
+    private string _viewMode = DefaultViewMode;
+
+    /// <summary>デバッグカメラ位置（X, Y, Z）。CAM_TRANSFORM / CAM_STATE で同期する。</summary>
+    private float[] _debugCamPosition = { 0f, 2f, -10f };
+
+    /// <summary>デバッグカメラ回転（オイラー角 X, Y, Z）。</summary>
+    private float[] _debugCamEuler = { 0f, 0f, 0f };
+
+    /// <summary>開いているシーン設定ウィンドウ（多重起動防止用。閉じたら null）。</summary>
+    private SceneSettingsWindow? _sceneSettingsWindow;
+
+    /// <summary>project_settings.json のファイル名（旧設定からのフォールバック読み込み元）。</summary>
+    private const string ProjectSettingsFileName = "project_settings.json";
+
+    // ── シーン設定ウィンドウ ─────────────────────────────────────
+
+    /// <summary>
+    /// ビューポート左下の歯車ボタン: シーン設定ウィンドウをモーダレスで開く。
+    /// 既に開いている場合はアクティブ化するだけ（多重起動防止。プロジェクト設定と同じ流儀）。
+    /// 開いた時点のカメラ状態を表示へ反映するため、Edit 中は GET_CAM_STATE を送る。
+    /// </summary>
+    private void OnViewportOptions(object sender, RoutedEventArgs e)
+    {
+        if (_sceneSettingsWindow is not null)
+        {
+            _sceneSettingsWindow.Activate();
+        }
+        else
+        {
+            var win = new SceneSettingsWindow(
+                _sceneSettings,
+                AssetsPath,
+                SceneSettingsData.LoadSceneShadingAsset(_currentScenePath),
+                _viewMode,
+                _debugCamPosition,
+                _debugCamEuler)
+            {
+                // Owner 指定によりエディタ本体より常に前面に表示される（モーダレスでも維持）
+                Owner = this,
+            };
+            win.SettingChanged      += OnSceneSettingChanged;
+            win.ShadingAssetChanged += OnSceneShadingAssetChanged;
+            win.Closed              += (_, _) => _sceneSettingsWindow = null;
+            _sceneSettingsWindow = win;
+            win.Show();
+        }
+
+        if (_runtimeManager?.State == EditorState.Edit)
+            _runtimeManager.SendToRuntime("GET_CAM_STATE");
+    }
+
+    /// <summary>
+    /// シーン設定ウィンドウからの変更通知。種別に応じてライブ反映 IPC を送り、
+    /// 最後に .scene への永続化（SET_SCENE_SETTINGS）を要求する。
+    ///
+    /// 例外は 2 つ:
+    ///  - CameraTransform: カメラの位置・回転はシーン設定（settings 節）ではなく
+    ///    .scene の debug_camera 節が持つため、CAM_TRANSFORM だけを送る。
+    ///  - ViewMode: セッション限りの非永続設定のため SET_POST_FX だけを送る。
+    /// </summary>
+    private void OnSceneSettingChanged(SceneSettingsChangeKind kind)
+    {
+        switch (kind)
+        {
+            case SceneSettingsChangeKind.Fov:
+                SendViewportFov();
+                break;
+
+            case SceneSettingsChangeKind.Far:
+                SendViewportFar();
+                break;
+
+            case SceneSettingsChangeKind.CameraSpeed:
+                SendCameraSpeed();
+                break;
+
+            case SceneSettingsChangeKind.ShowGrid:
+                SendShowGrid();
+                break;
+
+            case SceneSettingsChangeKind.ShowAxisGizmo:
+                SendShowAxisGizmo();
+                break;
+
+            case SceneSettingsChangeKind.Ortho2d:
+                ApplyEditorCam2D();
+                break;
+
+            case SceneSettingsChangeKind.CameraTransform:
+                // ウィンドウ側が保持する入力値を取り込んで送信する（永続化はしない）
+                PullCameraTransformFromWindow();
+                SendCameraTransform();
+                return;
+
+            case SceneSettingsChangeKind.DebugCameraAll:
+                PullCameraTransformFromWindow();
+                SendViewportFov();
+                SendViewportFar();
+                SendCameraSpeed();
+                SendShowGrid();
+                SendShowAxisGizmo();
+                ApplyEditorCam2D();
+                SendCameraTransform();
+                break;
+
+            case SceneSettingsChangeKind.Rendering:
+                SendPostFx();
+                break;
+
+            case SceneSettingsChangeKind.Ambient:
+                SendAmbient();
+                break;
+
+            case SceneSettingsChangeKind.ViewMode:
+                // 表示モードは非永続。ウィンドウの現在値を取り込んで再送するだけ。
+                if (_sceneSettingsWindow is not null) _viewMode = _sceneSettingsWindow.ViewMode;
+                SendPostFx();
+                return;
+
+            case SceneSettingsChangeKind.RenderingAll:
+                if (_sceneSettingsWindow is not null) _viewMode = _sceneSettingsWindow.ViewMode;
+                SendPostFx();
+                SendAmbient();
+                break;
+
+            case SceneSettingsChangeKind.Physics:
+            case SceneSettingsChangeKind.PhysicsAll:
+                ApplyEditPhysicsFromSettings();
+                break;
+        }
+
+        SendSceneSettings();
+    }
+
+    /// <summary>
+    /// シーン設定ウィンドウの「シーンのシェーダー」欄が変更されたときの処理。
+    /// この項目だけは .scene のトップレベル "shading_asset" に保存されるため、
+    /// SET_SCENE_SETTINGS ではなく専用コマンドで送る（空文字列で解除）。
+    /// </summary>
+    private void OnSceneShadingAssetChanged(string virtualPath)
+    {
+        _runtimeManager?.SendToRuntime($"SET_SCENE_SHADING_ASSET:{virtualPath}");
+    }
+
+    /// <summary>シーン設定ウィンドウが持つカメラ位置・回転の入力値を MainWindow 側へ取り込む。</summary>
+    private void PullCameraTransformFromWindow()
+    {
+        if (_sceneSettingsWindow is null) return;
+        _debugCamPosition = (float[])_sceneSettingsWindow.CameraPosition.Clone();
+        _debugCamEuler    = (float[])_sceneSettingsWindow.CameraEuler.Clone();
+    }
+
+    // ── 個別設定のライブ反映 IPC ─────────────────────────────────
+    //  送信フォーマットはランタイム側の受信パーサと 1:1 対応するため変更しないこと。
+
+    /// <summary>デバッグカメラの画角をランタイムへ送信する。</summary>
+    private void SendViewportFov()
+    {
+        if (!_viewportSettingsInitialized) return;
+        _runtimeManager?.SendToRuntime($"VIEWPORT_FOV:{(int)_sceneSettings.DebugCamera.Fov}");
+    }
+
+    /// <summary>デバッグカメラの描画距離をランタイムへ送信する。</summary>
+    private void SendViewportFar()
+    {
+        if (!_viewportSettingsInitialized) return;
+        _runtimeManager?.SendToRuntime($"VIEWPORT_FAR:{(int)_sceneSettings.DebugCamera.Far}");
+    }
+
+    /// <summary>デバッグカメラの移動速度をランタイムへ送信する。</summary>
+    private void SendCameraSpeed()
+    {
+        if (!_viewportSettingsInitialized) return;
+        var speed = Math.Round(_sceneSettings.DebugCamera.Speed, 2);
+        _runtimeManager?.SendToRuntime($"CAM_SPEED:{speed.ToString(CultureInfo.InvariantCulture)}");
+    }
+
+    /// <summary>グリッド表示の有無をランタイムへ送信する。</summary>
+    private void SendShowGrid()
+    {
+        if (!_viewportSettingsInitialized) return;
+        _runtimeManager?.SendToRuntime($"SHOW_GRID:{(_sceneSettings.DebugCamera.ShowGrid ? "1" : "0")}");
+    }
+
+    /// <summary>軸ギズモ表示の有無をランタイムへ送信する。</summary>
+    private void SendShowAxisGizmo()
+    {
+        if (!_viewportSettingsInitialized) return;
+        _runtimeManager?.SendToRuntime(
+            $"SHOW_AXIS_GIZMO:{(_sceneSettings.DebugCamera.ShowAxisGizmo ? "1" : "0")}");
+    }
+
+    /// <summary>デバッグカメラの位置・回転をランタイムへ送信する。</summary>
+    private void SendCameraTransform()
+    {
+        if (!_viewportSettingsInitialized) return;
+        var ci = CultureInfo.InvariantCulture;
+        _runtimeManager?.SendToRuntime(
+            $"CAM_TRANSFORM:{_debugCamPosition[0].ToString(ci)},{_debugCamPosition[1].ToString(ci)},{_debugCamPosition[2].ToString(ci)}," +
+            $"{_debugCamEuler[0].ToString(ci)},{_debugCamEuler[1].ToString(ci)},{_debugCamEuler[2].ToString(ci)}");
+    }
+
+    /// <summary>
+    /// ポストプロセス設定（Bloom / FXAA / Deferred / 各強度 / 機能マトリクス / 透明描画 /
+    /// 表示モード）を 1 つの JSON にまとめてランタイムへ送信する。
+    /// 送信フォーマット（SET_POST_FX:{json}）はランタイムのパーサと一致させること。
     /// </summary>
     private void SendPostFx()
     {
         if (!_viewportSettingsInitialized) return;
 
-        // XAML 初期化中に ValueChanged/Checked/SelectionChanged が発火した場合に備え、
-        // 各コントロールの null チェックを行いデフォルト値へフォールバックする。
-        bool bloom = ChkBloom?.IsChecked == true;
-        bool fxaa  = ChkFxaa?.IsChecked == true;
-        double intensity = SldBloomIntensity?.Value ?? DefaultBloomIntensity;
-        // CmbTransparency の選択アイテムの Tag（"sort" / "wboit"）を読み取る。未選択・null の場合は既定の距離ソート。
-        string transparency = (CmbTransparency?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string
-                               ?? DefaultTransparencyMode;
-        // Deferred レンダリング（G-Buffer + フルスクリーン・ライティング）。null（未初期化）時は既定 true。
-        bool deferred = ChkDeferred?.IsChecked != false;
-        // RT屈折の逐次グラブ。null（未初期化）時は既定 false（重いオプションのため）。
-        bool refractSequentialGrab = ChkRefractSeqGrab?.IsChecked == true;
-        // シーンビュー表示モード（"lit" / "unlit" / "wireframe" / "gbuffer_*"）。
-        // "gbuffer_*" は G-Buffer デバッグ表示（ランタイム view_mode.rs の
-        // GBUFFER_DEBUG_CHANNEL_TABLE が正典）。区切り線（Separator）が選ばれた場合は
-        // SelectedItem が ComboBoxItem にならないため既定の "lit" へフォールバックする。
-        string viewMode = (CmbViewMode?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string
-                          ?? DefaultViewMode;
-        // GI 強度（DDGI の数値パラメータ）。null（未初期化）時は既定 1.0。
-        double giIntensity = SldGiIntensity?.Value ?? DefaultGiIntensity;
-        // 反射強度（SSR/RT 反射の数値パラメータ）。null（未初期化）時は既定 1.0。
-        double reflectionIntensity = SldReflectionIntensity?.Value ?? DefaultReflectionIntensity;
-        // AO 強度（SSAO/RT-AO の数値パラメータ, Phase D4）。null（未初期化）時は既定 1.0。
-        double aoIntensity = SldAoIntensity?.Value ?? DefaultAoIntensity;
-        // レンダリング機能マトリクス（影/GI/反射/AO/半透明）。各コンボの Tag（小文字モード文字列）を読む。
-        // 未初期化・null 時は現状維持の既定へフォールバックする（GI のみ現状維持のため既定 "rt"）。
-        // 「（未実装）」の ssr/ssao/rt を選んでもランタイム側で従来動作へフォールバックする。
-        string shadow       = (CmbShadow?.SelectedItem       as System.Windows.Controls.ComboBoxItem)?.Tag as string ?? "shadowmap";
-        string giMode       = (CmbGi?.SelectedItem           as System.Windows.Controls.ComboBoxItem)?.Tag as string ?? "rt";
-        string reflection   = (CmbReflection?.SelectedItem   as System.Windows.Controls.ComboBoxItem)?.Tag as string ?? "off";
-        string ao           = (CmbAo?.SelectedItem           as System.Windows.Controls.ComboBoxItem)?.Tag as string ?? "off";
-        string translucency = (CmbTranslucency?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string ?? "raster";
+        var r  = _sceneSettings.Rendering;
+        var ci = CultureInfo.InvariantCulture;
 
-        var ci = System.Globalization.CultureInfo.InvariantCulture;
         // 新キー "features"（機能マトリクス）。旧キー gi_enabled は features.gi へ移行したため送らない。
-        string features = $"\"features\":{{\"shadow\":\"{shadow}\",\"gi\":\"{giMode}\",\"reflection\":\"{reflection}\",\"ao\":\"{ao}\",\"translucency\":\"{translucency}\"}}";
+        string features =
+            $"\"features\":{{\"shadow\":\"{r.Features.Shadow}\",\"gi\":\"{r.Features.Gi}\"," +
+            $"\"reflection\":\"{r.Features.Reflection}\",\"ao\":\"{r.Features.Ao}\"," +
+            $"\"translucency\":\"{r.Features.Translucency}\"}}";
+
         // メッシュレットカリングは常時有効化したため "meshlet_cull" キーは送信しない（ランタイム側で常時 ON）。
-        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(ci)},\"transparency\":\"{transparency}\",\"deferred\":{(deferred ? "true" : "false")},\"refract_sequential_grab\":{(refractSequentialGrab ? "true" : "false")},\"view_mode\":\"{viewMode}\",\"gi_intensity\":{giIntensity.ToString(ci)},\"reflection_intensity\":{reflectionIntensity.ToString(ci)},\"ao_intensity\":{aoIntensity.ToString(ci)},{features}}}";
+        string json =
+            $"{{\"bloom\":{Bool(r.Bloom)},\"fxaa\":{Bool(r.Fxaa)}," +
+            $"\"bloom_intensity\":{r.BloomIntensity.ToString(ci)}," +
+            $"\"transparency\":\"{r.Transparency}\",\"deferred\":{Bool(r.Deferred)}," +
+            $"\"refract_sequential_grab\":{Bool(r.RefractSequentialGrab)}," +
+            $"\"view_mode\":\"{_viewMode}\"," +
+            $"\"gi_intensity\":{r.GiIntensity.ToString(ci)}," +
+            $"\"reflection_intensity\":{r.ReflectionIntensity.ToString(ci)}," +
+            $"\"ao_intensity\":{r.AoIntensity.ToString(ci)},{features}}}";
+
         _runtimeManager?.SendToRuntime($"SET_POST_FX:{json}");
-
-        // ビューポート設定を project_settings.json へ永続化する（次回起動時に UI とランタイムの
-        // load_graphics_settings が同じ値を復元できるようにする）。view_mode はセッション限りの
-        // 表示モードのため永続化しない。既存の他キー（start_scene / scenes / plugins 等）は保全する。
-        PersistViewportSettings(
-            bloom, fxaa, intensity, transparency, deferred, refractSequentialGrab,
-            giIntensity, reflectionIntensity, aoIntensity,
-            shadow, giMode, reflection, ao, translucency);
     }
 
-    /// <summary>
-    /// ビューポート設定（ポストFX・機能マトリクス・各強度）を project_settings.json へ書き戻す。
-    /// ランタイムの load_graphics_settings が読むキー名と 1 対 1 で対応させる。
-    /// 既存 JSON をノードとして読み、対象キーだけを差し替えて書き戻すため、
-    /// このメソッドが関知しない他キー（game_name / start_scene / scenes / plugins / ambient_* 等）は保全される。
-    /// </summary>
-    private void PersistViewportSettings(
-        bool bloom, bool fxaa, double bloomIntensity, string transparency,
-        bool deferred, bool refractSequentialGrab,
-        double giIntensity, double reflectionIntensity, double aoIntensity,
-        string shadow, string giMode, string reflection, string ao, string translucency)
-    {
-        try
-        {
-            var path = Path.Combine(AssetsPath, "project_settings.json");
-
-            // 既存ファイルをノードとして読み込む（無ければ空オブジェクトから始める）。
-            JsonObject root;
-            if (File.Exists(path))
-            {
-                var existing = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
-                root = existing ?? new JsonObject();
-            }
-            else
-            {
-                root = new JsonObject();
-            }
-
-            // スカラー系（ランタイム load_graphics_settings のキー名に一致させる）。
-            root["bloom"]                = bloom;
-            root["fxaa"]                 = fxaa;
-            root["bloom_intensity"]      = bloomIntensity;
-            root["transparency"]         = transparency;
-            // メッシュレットカリングは常時有効化したため "meshlet_cull" は書き込まない
-            //（旧キーが残っていてもランタイムは無視する）。
-            root["deferred"]             = deferred;
-            root["refract_sequential_grab"] = refractSequentialGrab;
-            root["gi_intensity"]         = giIntensity;
-            root["reflection_intensity"] = reflectionIntensity;
-            root["ao_intensity"]         = aoIntensity;
-
-            // 機能マトリクス（features オブジェクト）。ランタイムは RenderFeatures として読む。
-            root["features"] = new JsonObject
-            {
-                ["shadow"]       = shadow,
-                ["gi"]           = giMode,
-                ["reflection"]   = reflection,
-                ["ao"]           = ao,
-                ["translucency"] = translucency,
-            };
-
-            var opts = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(path, root.ToJsonString(opts));
-        }
-        catch (Exception ex)
-        {
-            // 永続化失敗は致命的でない（ライブ設定は IPC 済み）。ログのみ残して継続する。
-            EditorLog.Write($"PersistViewportSettings — 失敗: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// 起動時に project_settings.json からビューポート設定を読み、ツールバー UI（コンボ/スライダー/
-    /// チェック）を初期化する。これを行わないと SyncViewportSettings → SendPostFx が UI の既定値を
-    /// ランタイムへ送り、ランタイムが load_graphics_settings で読んだ設定を上書きしてしまう
-    /// （＝毎起動で既定値へ戻る不具合）。UI 設定中は _updatingControls / 未初期化フラグで
-    /// イベントの再送・永続化を抑制する。view_mode はセッション限りのため復元しない。
-    /// </summary>
-    private void LoadViewportSettingsIntoUi()
-    {
-        var path = Path.Combine(AssetsPath, "project_settings.json");
-        if (!File.Exists(path)) return;
-
-        JsonObject? root;
-        try
-        {
-            root = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
-        }
-        catch (Exception ex)
-        {
-            EditorLog.Write($"LoadViewportSettingsIntoUi — パース失敗: {ex.Message}");
-            return;
-        }
-        if (root is null) return;
-
-        // 初期化中はイベントハンドラ（SendPostFx/永続化）を完全に抑制する。
-        bool prevInit = _viewportSettingsInitialized;
-        _viewportSettingsInitialized = false;
-        _updatingControls = true;
-        try
-        {
-            if (root["bloom"] is JsonNode b && ChkBloom != null)
-                ChkBloom.IsChecked = b.GetValue<bool>();
-            if (root["fxaa"] is JsonNode f && ChkFxaa != null)
-                ChkFxaa.IsChecked = f.GetValue<bool>();
-            if (root["bloom_intensity"] is JsonNode bi && SldBloomIntensity != null)
-                SldBloomIntensity.Value = bi.GetValue<double>();
-            // "meshlet_cull" は廃止（常時有効）。旧プロジェクトに残っていても復元しない。
-            if (root["deferred"] is JsonNode df && ChkDeferred != null)
-                ChkDeferred.IsChecked = df.GetValue<bool>();
-            // キー無し（既存プロジェクト）は既定 false のため未設定のままでよい。
-            if (root["refract_sequential_grab"] is JsonNode rsg && ChkRefractSeqGrab != null)
-                ChkRefractSeqGrab.IsChecked = rsg.GetValue<bool>();
-            if (root["gi_intensity"] is JsonNode gi && SldGiIntensity != null)
-                SldGiIntensity.Value = gi.GetValue<double>();
-            if (root["reflection_intensity"] is JsonNode ri && SldReflectionIntensity != null)
-                SldReflectionIntensity.Value = ri.GetValue<double>();
-            if (root["ao_intensity"] is JsonNode ai && SldAoIntensity != null)
-                SldAoIntensity.Value = ai.GetValue<double>();
-            if (root["transparency"] is JsonNode tr)
-                SelectComboByTag(CmbTransparency, tr.GetValue<string>());
-
-            // 機能マトリクス（features オブジェクト）→ 各コンボを Tag で選択する。
-            if (root["features"] is JsonObject fv)
-            {
-                if (fv["shadow"]       is JsonNode s)  SelectComboByTag(CmbShadow,       s.GetValue<string>());
-                if (fv["gi"]           is JsonNode g)  SelectComboByTag(CmbGi,           g.GetValue<string>());
-                if (fv["reflection"]   is JsonNode rf) SelectComboByTag(CmbReflection,   rf.GetValue<string>());
-                if (fv["ao"]           is JsonNode a)  SelectComboByTag(CmbAo,           a.GetValue<string>());
-                if (fv["translucency"] is JsonNode t)  SelectComboByTag(CmbTranslucency, t.GetValue<string>());
-            }
-            else if (root["rt_shadows"] is JsonNode rts)
-            {
-                // 旧フォーマット互換: features が無く legacy rt_shadows のみを持つ project_settings.json
-                // では、ランタイムの load_graphics_settings と同じく rt_shadows で影方式を決める。
-                // これを行わないと、features 未書き込みの既存プロジェクトで初回起動時に影コンボが
-                // XAML 既定（shadowmap）になり、SyncViewportSettings が rt_shadows=true を潰してしまう。
-                SelectComboByTag(CmbShadow, rts.GetValue<bool>() ? "rt" : "shadowmap");
-            }
-
-            // 復元した CmbTransparency / CmbTranslucency の組み合わせに応じて
-            // 屈折の逐次グラブのチェック可否を確定する。
-            UpdateRefractSeqGrabEnabled();
-        }
-        catch (Exception ex)
-        {
-            EditorLog.Write($"LoadViewportSettingsIntoUi — 適用失敗: {ex.Message}");
-        }
-        finally
-        {
-            _updatingControls = false;
-            _viewportSettingsInitialized = prevInit;
-        }
-    }
-
-    /// <summary>
-    /// 「屈折の逐次グラブ」チェックボックスの有効/無効を、透明描画方式（距離ソート/WBOIT）と
-    /// 半透明モード（レイトレ/ラスタ）の組み合わせから確定する。このオプションは
-    /// 「距離ソート」かつ「半透明=レイトレ」のときにのみ意味を持つ（ガラスを1つ描くたびに
-    /// 屈折背景を再取得し、ガラス越しの別ガラスを映すため）。それ以外の組み合わせでは
-    /// グレーアウトしてチェック操作自体を禁止する。
-    /// XAML 初期化順の都合で InitializeComponent 前に呼ばれる可能性があるため null チェックする。
-    /// </summary>
-    private void UpdateRefractSeqGrabEnabled()
-    {
-        if (ChkRefractSeqGrab == null) return;
-        string? transparency = (CmbTransparency?.SelectedItem as ComboBoxItem)?.Tag as string;
-        string? translucency = (CmbTranslucency?.SelectedItem as ComboBoxItem)?.Tag as string;
-        ChkRefractSeqGrab.IsEnabled = transparency == "sort" && translucency == "rt";
-    }
-
-    /// <summary>ComboBox から Tag が一致する ComboBoxItem を選択する（見つからなければ無変更）。</summary>
-    private static void SelectComboByTag(ComboBox? combo, string? tag)
-    {
-        if (combo == null || tag == null) return;
-        foreach (var obj in combo.Items)
-        {
-            if (obj is ComboBoxItem item && (item.Tag as string) == tag)
-            {
-                combo.SelectedItem = item;
-                return;
-            }
-        }
-    }
-
-    /// <summary>ChkBloom / ChkFxaa の Checked/Unchecked から呼ばれる共通ハンドラ。</summary>
-    private void OnPostFxChanged(object sender, RoutedEventArgs e)
-    {
-        SendPostFx();
-    }
-
-    /// <summary>SldBloomIntensity の ValueChanged から呼ばれる薄いハンドラ（Slider は戻り値の型が異なるため分離）。</summary>
-    private void OnPostFxSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (_updatingControls) return;
-        SendPostFx();
-    }
-
-    /// <summary>CmbTransparency の SelectionChanged から呼ばれるハンドラ。透明描画方式の変更をランタイムへ送信する。</summary>
-    private void OnTransparencyChanged(object sender, SelectionChangedEventArgs e)
-    {
-        UpdateRefractSeqGrabEnabled();
-        if (_updatingControls) return;
-        SendPostFx();
-    }
-
-    /// <summary>CmbViewMode の SelectionChanged から呼ばれるハンドラ。シーンビュー表示モードの変更をランタイムへ送信する。</summary>
-    private void OnViewModeChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_updatingControls) return;
-        SendPostFx();
-    }
-
-    /// <summary>
-    /// レンダリング機能コンボ（影/GI/反射/AO/半透明）の SelectionChanged 共通ハンドラ。
-    /// いずれのモード変更も SendPostFx で "features" として一括送信する。
-    /// </summary>
-    private void OnRenderFeatureChanged(object sender, SelectionChangedEventArgs e)
-    {
-        UpdateRefractSeqGrabEnabled();
-        if (_updatingControls) return;
-        SendPostFx();
-    }
-
-    // ── 環境光（アンビエント） ───────────────────────────────────
-
-    /// <summary>環境光の色（リニア RGB）。既定は白。ランタイム側の DEFAULT_AMBIENT_COLOR と一致させる。</summary>
-    private float _ambientR = 1f, _ambientG = 1f, _ambientB = 1f;
+    /// <summary>bool を JSON のリテラル文字列へ変換する（SET_POST_FX 組み立て用）。</summary>
+    private static string Bool(bool value) => value ? "true" : "false";
 
     /// <summary>
     /// 環境光（アンビエント）の色・強度をランタイムへ送信する（SET_AMBIENT:{r},{g},{b},{intensity}）。
-    /// 色はリニア RGB。強度 0 で完全な暗闇になる。UI 変更時のみ送信し、起動時は
-    /// project_settings.json のランタイム側読込値を尊重する（ここからは自動送信しない）。
+    /// 色はリニア RGB。強度 0 で完全な暗闇になる。
     /// </summary>
     private void SendAmbient()
     {
         if (!_viewportSettingsInitialized) return;
-        double intensity = SldAmbientIntensity?.Value ?? 0.05;
-        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        var r  = _sceneSettings.Rendering;
+        var ci = CultureInfo.InvariantCulture;
         _runtimeManager?.SendToRuntime(
-            $"SET_AMBIENT:{_ambientR.ToString(ci)},{_ambientG.ToString(ci)},{_ambientB.ToString(ci)},{intensity.ToString(ci)}");
+            $"SET_AMBIENT:{r.AmbientColor[0].ToString(ci)},{r.AmbientColor[1].ToString(ci)}," +
+            $"{r.AmbientColor[2].ToString(ci)},{r.AmbientIntensity.ToString(ci)}");
     }
 
-    /// <summary>環境光カラースウォッチのクリック: カラーピッカーを開いて色を選び、ランタイムへ送信する。</summary>
-    private void OnAmbientColorClicked(object sender, MouseButtonEventArgs e)
+    /// <summary>
+    /// 現在のシーン設定を .scene へ保存させる（ランタイムが settings 節へ書き込み、
+    /// SCENE_MODIFIED を返してエディタのダーティ表示が更新される）。
+    /// JSON は改行を含まない圧縮形式で送る（IPC は 1 コマンド 1 行のため）。
+    /// </summary>
+    private void SendSceneSettings()
     {
-        // ライト色と同様にアルファは持たない（a=1 固定）。入出力はリニア RGB。
-        var result = ColorPickerWindow.ShowDialog(Window.GetWindow(this), _ambientR, _ambientG, _ambientB, 1f);
-        if (result is null) return;
-        (_ambientR, _ambientG, _ambientB, _) = result.Value;
-        UpdateAmbientSwatch();
+        if (!_viewportSettingsInitialized) return;
+        _runtimeManager?.SendToRuntime($"SET_SCENE_SETTINGS:{_sceneSettings.ToCompactJsonString()}");
+    }
+
+    // ── シーン設定のロードと再同期 ───────────────────────────────
+
+    /// <summary>
+    /// 現在開いているシーンのシーン設定を読み込み、エディタ側の状態へ反映する。
+    /// .scene に settings 節が無い旧シーンでは project_settings.json のルートキーから
+    /// レンダリング設定をフォールバック生成する（読むだけで書き戻しはしない）。
+    /// </summary>
+    private void LoadSceneSettingsForCurrentScene()
+    {
+        _sceneSettings = SceneSettingsData.LoadForScene(
+            _currentScenePath, Path.Combine(AssetsPath, ProjectSettingsFileName));
+
+        // 編集時物理・2D トグルなど、UI 側にミラーしている状態を新しい設定に合わせる
+        MirrorEditPhysicsFlags();
+        RefreshPhysicsTimelineVisibility();
+        Update2DCamToggleVisual();
+
+        // 設定ウィンドウが開いていれば表示を差し替える
+        _sceneSettingsWindow?.SetData(
+            _sceneSettings,
+            SceneSettingsData.LoadSceneShadingAsset(_currentScenePath),
+            _debugCamPosition,
+            _debugCamEuler);
+    }
+
+    /// <summary>
+    /// ランタイム接続時（および Play→Edit 復帰時）に、シーン設定の全項目を再送する。
+    /// ランタイムプロセスは新規起動のたびに既定値で始まるため、ここで完全に同期し直す。
+    /// なお SET_SCENE_SETTINGS はここでは送らない（保存済みの値を送り返すだけで
+    /// シーンをダーティにしてしまうため）。
+    /// </summary>
+    private void SyncViewportSettings()
+    {
+        _viewportSettingsInitialized = true;
+
+        SendViewportFov();
+        SendViewportFar();
+        SendShowGrid();
+        SendShowAxisGizmo();
+        SendCameraSpeed();
+        // 2D（正射投影）の状態も再送する（ランタイムは透視投影で起動するため）
+        _runtimeManager?.SendToRuntime(
+            $"EDITOR_CAM_ORTHO:{(_sceneSettings.DebugCamera.Ortho2d ? "1" : "0")}");
+        // ポストプロセス設定・環境光を再同期する
+        SendPostFx();
         SendAmbient();
-    }
 
-    /// <summary>SldAmbientIntensity の ValueChanged から呼ばれるハンドラ（環境光強度）。</summary>
-    private void OnAmbientSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (_updatingControls) return;
-        SendAmbient();
-    }
-
-    /// <summary>環境光カラースウォッチの背景を現在のリニア色から更新する（リニア→sRGB 表示）。</summary>
-    private void UpdateAmbientSwatch()
-    {
-        if (AmbientColorSwatch == null) return;
-        AmbientColorSwatch.Background = new SolidColorBrush(Color.FromRgb(
-            LinearToSrgbByte(_ambientR), LinearToSrgbByte(_ambientG), LinearToSrgbByte(_ambientB)));
-    }
-
-    /// <summary>リニア RGB 成分（0..1）を sRGB の 8bit 値へ変換する（スウォッチ表示用）。</summary>
-    private static byte LinearToSrgbByte(float c)
-    {
-        c = Math.Clamp(c, 0f, 1f);
-        // sRGB 伝達関数（IEC 61966-2-1）。ColorPickerWindow の LinearToSrgb と同一。
-        double s = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.Pow(c, 1.0 / 2.4) - 0.055;
-        return (byte)Math.Clamp((int)Math.Round(s * 255.0), 0, 255);
+        // 編集時物理設定は Edit runtime にのみ送信する（Play runtime へ送ると物理スレッドが停止する）
+        if (_runtimeManager?.State == EditorState.Edit)
+        {
+            // 現在のシーンタブ（ワールド/ビューポート）のビューモードを同期する。
+            // 起動時・ランタイム再接続時・Play→Edit 復帰時のいずれもここを通るため、
+            // ランタイムのビューモードが常にタブ UI と一致する。
+            SendCurrentEditView();
+            // Edit ランタイムのカメラ移動キー状態を強制リセットする。
+            // Play 切替中に届かなかった CAM_KEY_UP でキーがスタックしていると
+            // 「RMB 押下だけでカメラが移動」「軸スナップが即キャンセル」になるため、
+            // Edit 復帰・再同期のたびにクリーンな状態から始める。
+            _runtimeManager?.SendToRuntime("CAM_KEYS_CLEAR");
+            // 編集時物理は 2D/3D 統合コマンド 1 本で再同期する（2D/3D 常に同値）。
+            SendEditPhysicsAll();
+            // ギズモ座標系（World/Local）もランタイム再接続時に再同期する
+            // （ランタイム側は新規プロセスごとに GizmoSpace::World で初期化されるため）。
+            _runtimeManager?.SendToRuntime(_gizmoLocalSpace ? "GIZMO_SPACE:LOCAL" : "GIZMO_SPACE:WORLD");
+        }
+        // コライダー描画は Play/Edit 両方で送信する
+        _runtimeManager?.SendToRuntime($"SET_PLAY_COLLIDER_DRAW:{(_playColliderDraw ? 1 : 0)}");
     }
 
     // ── デバッグカメラ 2D（正射投影）トグル ────────────────────────
 
-    /// <summary>デバッグカメラが 2D（正射投影）モードなら true。</summary>
-    private bool _editorCam2D = false;
-
     /// <summary>
-    /// エディタのデバッグカメラの投影方式（2D＝正射 / 3D＝透視）を設定する。
-    /// タブバー右端の「2D」ボタンとビューポート設定のチェックボックスの両方から
-    /// 呼ばれる共通処理。視点は維持したまま、ランタイム側で 0.3 秒かけて補間される。
+    /// デバッグカメラの投影方式（2D＝正射 / 3D＝透視）を設定する。
+    /// タブバー右端の「2D」ボタンから呼ばれる。視点は維持したまま、
+    /// ランタイム側で 0.3 秒かけて補間される。
     /// </summary>
     private void SetEditorCam2D(bool on)
     {
-        _editorCam2D = on;
-        _runtimeManager?.SendToRuntime($"EDITOR_CAM_ORTHO:{(on ? "1" : "0")}");
+        _sceneSettings.DebugCamera.Ortho2d = on;
+        ApplyEditorCam2D();
+        // 設定ウィンドウが開いていれば表示も追従させる
+        _sceneSettingsWindow?.RefreshDisplay();
+        SendSceneSettings();
+    }
 
-        // UI を同期する（チェックボックス変更イベントの再帰送信は _updatingControls で抑制）
-        _updatingControls = true;
-        ChkEditorCamOrtho.IsChecked = on;
-        _updatingControls = false;
+    /// <summary>
+    /// 現在のシーン設定にある 2D フラグをランタイムとトグルボタンの見た目へ反映する
+    /// （永続化はここでは行わない。呼び出し側が必要に応じて SendSceneSettings する）。
+    /// </summary>
+    private void ApplyEditorCam2D()
+    {
+        _runtimeManager?.SendToRuntime(
+            $"EDITOR_CAM_ORTHO:{(_sceneSettings.DebugCamera.Ortho2d ? "1" : "0")}");
         Update2DCamToggleVisual();
     }
 
@@ -448,7 +407,7 @@ public partial class MainWindow
     private void Update2DCamToggleVisual()
     {
         if (Btn2DCamToggle == null) return;
-        if (_editorCam2D)
+        if (_sceneSettings.DebugCamera.Ortho2d)
         {
             // アクティブ: タブのアクセントと同じオレンジで強調する
             Btn2DCamToggle.Background  = new SolidColorBrush(Color.FromRgb(0xE8, 0x78, 0x20));
@@ -465,16 +424,7 @@ public partial class MainWindow
 
     /// <summary>タブバー右端「2D」ボタン: 押すたびに 2D⇄3D をトグルする。</summary>
     private void On2DCamToggleClicked(object sender, RoutedEventArgs e)
-        => SetEditorCam2D(!_editorCam2D);
-
-    /// <summary>
-    /// ビューポート設定の「2D（正射投影）」チェックボックス変更ハンドラ。
-    /// </summary>
-    private void OnEditorCamOrthoChanged(object sender, RoutedEventArgs e)
-    {
-        if (!_viewportSettingsInitialized || _updatingControls) return;
-        SetEditorCam2D(ChkEditorCamOrtho.IsChecked == true);
-    }
+        => SetEditorCam2D(!_sceneSettings.DebugCamera.Ortho2d);
 
     // ── ギズモ座標系（World / Local）トグル ────────────────────────
 
@@ -522,230 +472,48 @@ public partial class MainWindow
     private void OnGizmoSpaceToggleClicked(object sender, RoutedEventArgs e)
         => SetGizmoSpace(!_gizmoLocalSpace);
 
-    /// キャンバス表示モード切り替え（スクリーンスペース / ワールドスペース）
-    private void OnCanvasScreenSpaceChanged(object sender, RoutedEventArgs e)
-    {
-        if (!_viewportSettingsInitialized) return;
-        _runtimeManager?.SendToRuntime($"CANVAS_SS_OVERLAY:{(ChkCanvasScreenSpace.IsChecked == true ? "1" : "0")}");
-    }
-
-    private void OnCamSpeedChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (!_viewportSettingsInitialized || _updatingControls) return;
-        var v = Math.Round(SldCamSpeed.Value, 2);
-        _updatingControls = true;
-        TbSpeedInput.Text = $"{v:F1}";
-        _updatingControls = false;
-        _runtimeManager?.SendToRuntime($"CAM_SPEED:{v.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-    }
-
-    // ── スライダー横の数値入力 ────────────────────────────────────
-
-    private void OnSliderNumKeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key == Key.Enter && sender is TextBox tb)
-        {
-            ApplySliderTextInput(tb);
-            e.Handled = true;
-        }
-    }
-
-    private void OnSliderNumLostFocus(object sender, RoutedEventArgs e)
-    {
-        if (sender is TextBox tb) ApplySliderTextInput(tb);
-    }
-
-    private void ApplySliderTextInput(TextBox tb)
-    {
-        if (_updatingControls || !_viewportSettingsInitialized) return;
-        var ic = System.Globalization.CultureInfo.InvariantCulture;
-        if (!double.TryParse(tb.Text, System.Globalization.NumberStyles.Float, ic, out var v)) return;
-
-        if (tb == TbFovInput)
-        {
-            v = Math.Clamp(v, SldFov.Minimum, SldFov.Maximum);
-            var vi = (int)v;
-            _updatingControls = true;
-            SldFov.Value = vi;
-            tb.Text = vi.ToString();
-            _updatingControls = false;
-            _runtimeManager?.SendToRuntime($"VIEWPORT_FOV:{vi}");
-        }
-        else if (tb == TbFarInput)
-        {
-            v = Math.Clamp(v, SldFar.Minimum, SldFar.Maximum);
-            var vi = (int)v;
-            _updatingControls = true;
-            SldFar.Value = vi;
-            tb.Text = vi.ToString();
-            _updatingControls = false;
-            _runtimeManager?.SendToRuntime($"VIEWPORT_FAR:{vi}");
-        }
-        else if (tb == TbSpeedInput)
-        {
-            v = Math.Clamp(v, SldCamSpeed.Minimum, SldCamSpeed.Maximum);
-            _updatingControls = true;
-            SldCamSpeed.Value = v;
-            tb.Text = $"{v:F1}";
-            _updatingControls = false;
-            _runtimeManager?.SendToRuntime($"CAM_SPEED:{v.ToString(ic)}");
-        }
-    }
-
-    // ── カメラ Transform 入力 ─────────────────────────────────────
-
-    private void OnCamFieldKeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key == Key.Enter) CommitCamTransform();
-    }
-
-    private void OnCamFieldLostFocus(object sender, RoutedEventArgs e)
-    {
-        CommitCamTransform();
-    }
-
-    private void CommitCamTransform()
-    {
-        if (!_viewportSettingsInitialized) return;
-        var ic = System.Globalization.CultureInfo.InvariantCulture;
-        var ns = System.Globalization.NumberStyles.Float;
-        if (!float.TryParse(TbCamPx.Text,  ns, ic, out float px)) return;
-        if (!float.TryParse(TbCamPy.Text,  ns, ic, out float py)) return;
-        if (!float.TryParse(TbCamPz.Text,  ns, ic, out float pz)) return;
-        if (!float.TryParse(TbCamEuX.Text, ns, ic, out float ex)) return;
-        if (!float.TryParse(TbCamEuY.Text, ns, ic, out float ey)) return;
-        if (!float.TryParse(TbCamEuZ.Text, ns, ic, out float ez)) return;
-        _runtimeManager?.SendToRuntime(
-            $"CAM_TRANSFORM:{px.ToString(ic)},{py.ToString(ic)},{pz.ToString(ic)},{ex.ToString(ic)},{ey.ToString(ic)},{ez.ToString(ic)}");
-    }
-
     // ── カメラ状態受信 ────────────────────────────────────────────
 
+    /// <summary>
+    /// ランタイムからのカメラ状態通知（CAM_STATE）を取り込む。
+    /// 位置・回転・画角・描画距離・速度をエディタ側の状態へ反映し、
+    /// シーン設定ウィンドウが開いていれば表示も更新する。
+    ///
+    /// ここでは SET_SCENE_SETTINGS を送らない。カメラを動かすたびにシーンが
+    /// ダーティになってしまうため（保存はユーザーの明示操作に任せる）。
+    /// また送り返しのループを防ぐため、ライブ反映 IPC の再送も行わない。
+    /// </summary>
     private void OnCameraStateReceived(string payload)
     {
         // CAM_STATE:{px},{py},{pz},{euler_x},{euler_y},{euler_z},{fov_deg},{far},{speed}
+        const int expectedFieldCount = 9;
         var parts = payload.Split(',');
-        if (parts.Length < 9) return;
-        var ic = System.Globalization.CultureInfo.InvariantCulture;
-        var ns = System.Globalization.NumberStyles.Float;
-        if (!float.TryParse(parts[0], ns, ic, out float px))    return;
-        if (!float.TryParse(parts[1], ns, ic, out float py))    return;
-        if (!float.TryParse(parts[2], ns, ic, out float pz))    return;
-        if (!float.TryParse(parts[3], ns, ic, out float ex))    return;
-        if (!float.TryParse(parts[4], ns, ic, out float ey))    return;
-        if (!float.TryParse(parts[5], ns, ic, out float ez))    return;
-        if (!float.TryParse(parts[6], ns, ic, out float fov))   return;
-        if (!float.TryParse(parts[7], ns, ic, out float far))   return;
-        if (!float.TryParse(parts[8], ns, ic, out float speed)) return;
+        if (parts.Length < expectedFieldCount) return;
+
+        var ci = CultureInfo.InvariantCulture;
+        var ns = NumberStyles.Float;
+        var values = new float[expectedFieldCount];
+        for (int i = 0; i < expectedFieldCount; i++)
+        {
+            if (!float.TryParse(parts[i], ns, ci, out values[i])) return;
+        }
 
         Dispatcher.InvokeAsync(() =>
         {
-            bool prev = _viewportSettingsInitialized;
-            _viewportSettingsInitialized = false;
-            _updatingControls = true;
-            TbCamPx.Text  = Fmt(px);
-            TbCamPy.Text  = Fmt(py);
-            TbCamPz.Text  = Fmt(pz);
-            TbCamEuX.Text = Fmt(ex);
-            TbCamEuY.Text = Fmt(ey);
-            TbCamEuZ.Text = Fmt(ez);
-            var fovC   = Math.Clamp(fov,   SldFov.Minimum,      SldFov.Maximum);
-            var farC   = Math.Clamp(far,   SldFar.Minimum,      SldFar.Maximum);
-            var spdC   = Math.Clamp(speed, SldCamSpeed.Minimum, SldCamSpeed.Maximum);
-            SldFov.Value      = fovC;   TbFovInput.Text   = ((int)fovC).ToString();
-            SldFar.Value      = farC;   TbFarInput.Text   = ((int)farC).ToString();
-            SldCamSpeed.Value = spdC;   TbSpeedInput.Text = $"{spdC:F1}";
-            _updatingControls = false;
-            _viewportSettingsInitialized = prev;
+            _debugCamPosition = new[] { values[0], values[1], values[2] };
+            _debugCamEuler    = new[] { values[3], values[4], values[5] };
+
+            var cam = _sceneSettings.DebugCamera;
+            cam.Fov   = values[6];
+            cam.Far   = values[7];
+            cam.Speed = values[8];
+
+            // 表示のみ更新する（ウィンドウ側は抑制フラグを立てて更新するため通知は発火しない）
+            _sceneSettingsWindow?.UpdateCameraTransform(_debugCamPosition, _debugCamEuler);
         });
     }
 
-    private static string Fmt(float v) =>
-        v.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
-
-    private void OnResetViewportSettings(object sender, RoutedEventArgs e)
-    {
-        _updatingControls = true;
-        SldFov.Value      = 45;   TbFovInput.Text   = "45";
-        SldFar.Value      = 1000; TbFarInput.Text   = "1000";
-        SldCamSpeed.Value = 5;    TbSpeedInput.Text = "5.0";
-        _updatingControls = false;
-        ChkShowGrid.IsChecked          = true;
-        ChkShowAxisGizmo.IsChecked     = true;
-        ChkCanvasScreenSpace.IsChecked = false;
-        // ポストプロセス設定も既定値（Bloom/FXAA 無効・強度 0.6・透明描画は距離ソート）へリセットする
-        _updatingControls = true;
-        ChkBloom.IsChecked           = false;
-        ChkFxaa.IsChecked            = false;
-        SldBloomIntensity.Value      = DefaultBloomIntensity;
-        if (ChkRefractSeqGrab != null) ChkRefractSeqGrab.IsChecked = false;
-        if (CmbTransparency != null) CmbTransparency.SelectedIndex = 0;
-        // メッシュレットカリングは常時有効化したため UI リセット対象から除外（チェックボックス撤去済み）。
-        // シーンビュー表示モードは既定「ライティングON」（index 0）へリセットする。
-        if (CmbViewMode != null) CmbViewMode.SelectedIndex = 0;
-        // レンダリング機能マトリクスを既定（現状維持）へリセットする。
-        //   影=シャドウマップ / GI=DDGI（現状維持のため index 1）/ 反射=なし / AO=なし / 半透明=ラスタ。
-        if (CmbShadow != null)       CmbShadow.SelectedIndex = 0;
-        if (CmbGi != null)           CmbGi.SelectedIndex = 1;
-        if (CmbReflection != null)   CmbReflection.SelectedIndex = 0;
-        if (CmbAo != null)           CmbAo.SelectedIndex = 0;
-        if (CmbTranslucency != null) CmbTranslucency.SelectedIndex = 0;
-        if (SldGiIntensity != null)  SldGiIntensity.Value = DefaultGiIntensity;
-        if (SldReflectionIntensity != null) SldReflectionIntensity.Value = DefaultReflectionIntensity;
-        if (SldAoIntensity != null) SldAoIntensity.Value = DefaultAoIntensity;
-        UpdateRefractSeqGrabEnabled();
-        _updatingControls = false;
-        if (_viewportSettingsInitialized)
-        {
-            _runtimeManager?.SendToRuntime("VIEWPORT_FOV:45");
-            _runtimeManager?.SendToRuntime("VIEWPORT_FAR:1000");
-            _runtimeManager?.SendToRuntime("CAM_SPEED:5");
-            _runtimeManager?.SendToRuntime("CANVAS_SS_OVERLAY:0");
-            SendPostFx();
-        }
-        TbCamPx.Text = "0"; TbCamPy.Text = "2"; TbCamPz.Text = "-10";
-        TbCamEuX.Text = "0"; TbCamEuY.Text = "0"; TbCamEuZ.Text = "0";
-        CommitCamTransform();
-    }
-
-    private void SyncViewportSettings()
-    {
-        _viewportSettingsInitialized = true;
-        var fov = (int)SldFov.Value;
-        TbFovInput.Text = fov.ToString();
-        _runtimeManager?.SendToRuntime($"VIEWPORT_FOV:{fov}");
-        var far = (int)SldFar.Value;
-        TbFarInput.Text = far.ToString();
-        _runtimeManager?.SendToRuntime($"VIEWPORT_FAR:{far}");
-        _runtimeManager?.SendToRuntime($"SHOW_GRID:{(ChkShowGrid.IsChecked == true ? "1" : "0")}");
-        _runtimeManager?.SendToRuntime($"SHOW_AXIS_GIZMO:{(ChkShowAxisGizmo.IsChecked == true ? "1" : "0")}");
-        var spd = Math.Round(SldCamSpeed.Value, 2);
-        TbSpeedInput.Text = $"{spd:F1}";
-        _runtimeManager?.SendToRuntime($"CAM_SPEED:{spd.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-        // ポストプロセス設定（Bloom/FXAA）を再同期する
-        SendPostFx();
-        // 編集時物理設定は Edit runtime にのみ送信する（Play runtime へ送ると物理スレッドが停止する）
-        if (_runtimeManager?.State == EditorState.Edit)
-        {
-            // 現在のシーンタブ（ワールド/ビューポート）のビューモードを同期する。
-            // 起動時・ランタイム再接続時・Play→Edit 復帰時のいずれもここを通るため、
-            // ランタイムのビューモードが常にタブ UI と一致する。
-            SendCurrentEditView();
-            // Edit ランタイムのカメラ移動キー状態を強制リセットする。
-            // Play 切替中に届かなかった CAM_KEY_UP でキーがスタックしていると
-            // 「RMB 押下だけでカメラが移動」「軸スナップが即キャンセル」になるため、
-            // Edit 復帰・再同期のたびにクリーンな状態から始める。
-            _runtimeManager?.SendToRuntime("CAM_KEYS_CLEAR");
-            // 編集時物理は 2D/3D 統合コマンド 1 本で再同期する（2D/3D 常に同値）。
-            _runtimeManager?.SendToRuntime(
-                $"SET_EDIT_PHYSICS_ALL:{(_editPhysicsEnabled ? 1 : 0)},{(_editPhysicsWithRigidbody ? 1 : 0)}");
-            // ギズモ座標系（World/Local）もランタイム再接続時に再同期する
-            // （ランタイム側は新規プロセスごとに GizmoSpace::World で初期化されるため）。
-            _runtimeManager?.SendToRuntime(_gizmoLocalSpace ? "GIZMO_SPACE:LOCAL" : "GIZMO_SPACE:WORLD");
-        }
-        // コライダー描画は Play/Edit 両方で送信する
-        _runtimeManager?.SendToRuntime($"SET_PLAY_COLLIDER_DRAW:{(_playColliderDraw ? 1 : 0)}");
-    }
+    // ── カメラキー ────────────────────────────────────────────────
 
     private void ReleaseAllCamKeys()
     {

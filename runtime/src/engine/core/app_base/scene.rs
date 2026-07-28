@@ -31,6 +31,7 @@ use crate::engine::components::{
 };
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::ActorData;
+use crate::engine::core::app_base::scene_settings::SceneSettingsData;
 
 // ============================================================
 //  SceneError — シーン読み書き時のエラー型
@@ -121,6 +122,11 @@ struct SceneData {
     /// パスは `assets://` 仮想パスまたは絶対パス（engine/asset_fs.rs の規約）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shading_asset: Option<String>,
+    /// シーン単位のビューポート／レンダリング設定（`scene_settings::SceneSettingsData`）。
+    /// 旧 `.scene` にはこのキーが無いため None のまま読める。None のときは出力時もキーごと省略し、
+    /// project_settings.json 側の設定（`App::load_graphics_settings`）がそのまま効く。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    settings: Option<SceneSettingsData>,
     actors: Vec<ActorData>,
 }
 
@@ -143,6 +149,10 @@ pub struct Scene {
     /// None なら組み込み標準 PBR を使う。
     /// パスは `assets://` 仮想パスまたは絶対パス（engine/asset_fs.rs の規約）。
     pub shading_asset: Option<String>,
+    /// シーン単位のビューポート／レンダリング設定（`.scene` の `settings` 節）。
+    /// None は「このシーンには設定が無い」＝旧シーン。その場合は起動時に読んだ
+    /// project_settings.json の設定がそのまま使われる（フォールバック）。
+    pub settings: Option<SceneSettingsData>,
 }
 
 impl Scene {
@@ -151,7 +161,8 @@ impl Scene {
         let mut schedule = Schedule::new();
         crate::engine::systems::register_default_systems(&mut schedule);
         // シェーディングアセットは既定で未設定（組み込み標準 PBR を使う）
-        Self { name: name.into(), world: World::new(), actors: Vec::new(), schedule, shading_asset: None }
+        // シーン設定は既定で未設定（project_settings.json 側の設定が使われる）
+        Self { name: name.into(), world: World::new(), actors: Vec::new(), schedule, shading_asset: None, settings: None }
     }
 
     pub fn add_actor(&mut self, actor: Actor) {
@@ -353,6 +364,8 @@ impl Scene {
             debug_camera: Some(camera.clone()),
             // シーン既定のシェーディングアセット（未設定なら None のまま出力を省略する）
             shading_asset: self.shading_asset.clone(),
+            // シーン単位のビューポート／レンダリング設定（未設定なら None のまま出力を省略する）
+            settings:      self.settings.clone(),
             actors:       self.actors.iter().map(|a| a.to_data(&self.world)).collect(),
         };
         let json = serde_json::to_string_pretty(&data)?;
@@ -415,6 +428,10 @@ impl Scene {
         let mut scene = Scene::new(data.name);
         // シーン既定のシェーディングアセットを復元する（旧 .scene には無いので None のまま）
         scene.shading_asset = data.shading_asset;
+        // シーン単位のビューポート／レンダリング設定を復元する（旧 .scene には無いので None のまま）。
+        // 実際の適用は呼び出し側（App::load_play_scene / IPC LOAD_SCENE ハンドラ）が
+        // App::apply_scene_settings で行う。
+        scene.settings = data.settings;
         for actor_data in data.actors {
             let actor = build_actor(actor_data, ctx, &mut scene.world, scripting_host, None)?;
             scene.actors.push(actor);
