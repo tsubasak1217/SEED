@@ -475,7 +475,10 @@ impl App {
         //   Edit / ポーズ中   … 壁時計 `ambient_time`。**編集中も止まらない**。
         // これにより水面の波と L3 シェーディングアセットの時間応答が Edit 中も動く。
         // 切替時に位相は跳ぶが、波・時間応答は位相の連続性を必要としないため許容する。
-        // 草・風（GrassUniform.time）は従来どおり anim_time のままで、ここには含めない。
+        // 草・風（GrassUniform.time）と水面・L3 アセットが共通で使うシェーダ時間。
+        // Play 中はゲーム内時間（スクリプトの SEED.Time.ElapsedTime と同位相）、
+        // Edit・ポーズ中は壁時計（ambient_time）で進み続ける（ユーザー要望:
+        // 編集中も波・風が動いて見えること）。
         let shader_time = if time_running { ctx.anim_time } else { ctx.ambient_time };
         let in_editor = self.mode == RuntimeMode::Edit || self.paused;
         // ── Edit ビューモード（3Dシーン / 2Dシーンタブ）判定 ─────────────────
@@ -845,7 +848,7 @@ impl App {
                 // シェーダ時間（L3 シェーディング契約 `ShadingSurface.time` と水面の波の供給元）。
                 // Play（非ポーズ）はゲーム内時間 = スクリプトの SEED.Time.ElapsedTime と同位相、
                 // Edit・ポーズ中は壁時計（ambient_time）で進み続ける。詳細は `shader_time` の定義箇所。
-                // 草の揺れ（GrassUniform.time）は従来どおり anim_time 駆動で、こことは別系統。
+                // 草の揺れ（GrassUniform.time）も同じ shader_time 駆動（Edit中も風が動く）。
                 time:           shader_time,
                 resolution:     res,
                 _pad2:          [0.0; 2],
@@ -1323,7 +1326,7 @@ impl App {
                     //
                     // 【Edit でも動く】減衰も速度算出も `ctx.delta_time`（壁時計）で駆動するため、
                     //  Edit 中にアクタをドラッグしても草が反応し、離せば数秒で元へ戻る。
-                    //  草の風（GrassUniform.time = anim_time）とは独立した時間源である。
+                    //  草の風（GrassUniform.time = shader_time）とは独立した時間源である。
                     //
                     // 【遅延構築】草バッファもソースも無いフレームでは構築すらしない
                     //  （場テクスチャ 4MB とコンピュートパイプラインの常駐コストを回避）。
@@ -2349,7 +2352,7 @@ impl App {
                             let interaction_bg = self.interaction_field.as_ref()
                                 .map(|f| f.sample_bind_group());
                             for buf in self.terrain.grass_buffers.values() {
-                                buf.update_time(&draw_ctx.queue, ctx.anim_time);
+                                buf.update_time(&draw_ctx.queue, shader_time);
                                 // 場が未構築（草バッファが空のはずのフレーム）なら草も描かない。
                                 let Some(field_bg) = interaction_bg else { continue };
                                 crate::engine::core::renderer::grass_gbuffer::draw_grass_culled(
@@ -4524,7 +4527,7 @@ impl App {
                                 let interaction_bg = self.interaction_field.as_ref()
                                     .map(|f| f.sample_bind_group());
                                 for buf in self.terrain.grass_buffers.values() {
-                                    buf.update_time(&draw_ctx.queue, ctx.anim_time);
+                                    buf.update_time(&draw_ctx.queue, shader_time);
                                     grass_total += buf.count();
                                     // 場が未構築なら草も描かない（構造上ここへは来ない安全弁）。
                                     let Some(field_bg) = interaction_bg else { continue };
