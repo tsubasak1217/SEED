@@ -1014,6 +1014,56 @@
                                                     <ComboBoxItem Content="common"  Tag="common"/>
                                                     <ComboBoxItem Content="terrain" Tag="terrain"/>
                                                 </ComboBox>
+                                                <!-- 右端固定: シーンビュー表示モード（通常3種 ＋ G-Buffer デバッグ表示）。
+                                                     シーン設定ウィンドウ（歯車ボタン）へ一度移したが、切り替え頻度が高く
+                                                     2手以内で触れる必要があるため、ツールバー上へ直接戻した項目。
+
+                                                     エディタのシーンビュー（デバッグカメラ）だけに効き、ゲームカメラの
+                                                     プレビュー小窓・Play の見た目には影響しない（ランタイム側でゲート）。
+                                                     Tag は SET_POST_FX の "view_mode" フィールド値をそのまま保持する。
+                                                     セッション内のみ有効（永続化なし）＝既定は毎起動「ライティングON」。
+                                                     .scene の settings 節にもランタイム側スキーマにも含めない
+                                                     （G-Buffer デバッグ表示のまま保存される事故を防ぐため）。
+
+                                                     「G-Buffer: 〜」は Deferred の G-Buffer を生値のまま表示するデバッグ用。
+                                                     ランタイム側は Deferred を維持したままライティングパスだけを可視化パスへ
+                                                     差し替える（unlit のように Deferred を落とすと G-Buffer 自体が焼かれず
+                                                     矛盾するため）。Tag 文字列はランタイムの view_mode.rs の
+                                                     GBUFFER_DEBUG_CHANNEL_TABLE と 1:1 で一致させること。 -->
+                                                <ComboBox x:Name="CmbViewMode"
+                                                          DockPanel.Dock="Right"
+                                                          Width="190" Height="22"
+                                                          Margin="4,3"
+                                                          FontSize="11"
+                                                          VerticalAlignment="Center"
+                                                          SelectedIndex="0"
+                                                          ToolTip="シーンビューの表示モード（G-Bufferデバッグ表示を含む）"
+                                                          SelectionChanged="OnViewModeChanged">
+                                                    <ComboBoxItem Content="ライティングON" Tag="lit"/>
+                                                    <ComboBoxItem Content="ライティングOFF" Tag="unlit"/>
+                                                    <ComboBoxItem Content="ワイヤーフレーム" Tag="wireframe"/>
+                                                    <!-- 以下は G-Buffer デバッグ表示（Deferred 有効時のみ意味を持つ）。
+                                                         区切り線は IsEnabled=False にして矢印キー移動の対象から外す（選択されると
+                                                         SelectedItem が ComboBoxItem でなくなり lit へフォールバックするため）。
+                                                         なお IsEnabled=False だけでは WPF のテキスト検索（typeahead）は防げず、
+                                                         "S" キー（カメラ後退）でこの Separator が選ばれて表示モードが lit へ
+                                                         戻る不具合があった。現在は App.xaml の ComboBox 暗黙スタイルが適用する
+                                                         Controls/ComboBoxKeyGuard がキーボード経由の選択変更ごと抑止している
+                                                         （このツールバー上のコンボにも暗黙スタイル経由で自動適用される）。 -->
+                                                    <Separator IsEnabled="False"/>
+                                                    <ComboBoxItem Content="G-Buffer: ベースカラー"   Tag="gbuffer_base_color"/>
+                                                    <ComboBoxItem Content="G-Buffer: オクルージョン" Tag="gbuffer_occlusion"/>
+                                                    <ComboBoxItem Content="G-Buffer: 法線"           Tag="gbuffer_normal"/>
+                                                    <ComboBoxItem Content="G-Buffer: ラフネス"       Tag="gbuffer_roughness"/>
+                                                    <ComboBoxItem Content="G-Buffer: メタリック"     Tag="gbuffer_metallic"/>
+                                                    <ComboBoxItem Content="G-Buffer: 透過"           Tag="gbuffer_transmission"/>
+                                                    <ComboBoxItem Content="G-Buffer: エミッシブ"     Tag="gbuffer_emissive"/>
+                                                    <ComboBoxItem Content="G-Buffer: 深度"           Tag="gbuffer_depth"/>
+                                                    <ComboBoxItem Content="G-Buffer: 速度"           Tag="gbuffer_velocity"/>
+                                                    <ComboBoxItem Content="G-Buffer: レンダータグ"   Tag="gbuffer_render_tag"/>
+                                                    <ComboBoxItem Content="G-Buffer: ユーザーデータ" Tag="gbuffer_user_data"/>
+                                                </ComboBox>
+
                                                 <!-- 右端固定: デバッグカメラ 2D(正射)⇄3D(透視) トグル -->
                                                 <Button x:Name="Btn2DCamToggle"
                                                         DockPanel.Dock="Right"

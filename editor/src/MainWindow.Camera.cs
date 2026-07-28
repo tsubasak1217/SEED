@@ -37,15 +37,11 @@ public partial class MainWindow
     /// </summary>
     private SceneSettingsData _sceneSettings = new();
 
-    /// <summary>シーンビュー表示モードの既定値（ライティングON）。</summary>
-    private const string DefaultViewMode = "lit";
-
     /// <summary>
-    /// シーンビュー表示モード（SET_POST_FX の "view_mode" フィールド）。
-    /// G-Buffer デバッグ表示のままシーンへ保存されると事故になるため、
-    /// シーン設定には含めずセッション限りでここに保持する（毎起動 "lit" から始まる）。
+    /// シーンビュー表示モードの既定値（ライティングON）。
+    /// ツールバーの CmbViewMode が未初期化・非 ComboBoxItem 選択のときのフォールバック。
     /// </summary>
-    private string _viewMode = DefaultViewMode;
+    private const string DefaultViewMode = "lit";
 
     /// <summary>デバッグカメラ位置（X, Y, Z）。CAM_TRANSFORM / CAM_STATE で同期する。</summary>
     private float[] _debugCamPosition = { 0f, 2f, -10f };
@@ -78,7 +74,6 @@ public partial class MainWindow
                 _sceneSettings,
                 AssetsPath,
                 SceneSettingsData.LoadSceneShadingAsset(_currentScenePath),
-                _viewMode,
                 _debugCamPosition,
                 _debugCamEuler)
             {
@@ -100,10 +95,12 @@ public partial class MainWindow
     /// シーン設定ウィンドウからの変更通知。種別に応じてライブ反映 IPC を送り、
     /// 最後に .scene への永続化（SET_SCENE_SETTINGS）を要求する。
     ///
-    /// 例外は 2 つ:
+    /// 例外は 1 つ:
     ///  - CameraTransform: カメラの位置・回転はシーン設定（settings 節）ではなく
     ///    .scene の debug_camera 節が持つため、CAM_TRANSFORM だけを送る。
-    ///  - ViewMode: セッション限りの非永続設定のため SET_POST_FX だけを送る。
+    ///
+    /// なおシーンビュー表示モード（view_mode）はこのウィンドウの管轄外で、
+    /// ツールバーの CmbViewMode が直接持つ（OnViewModeChanged → SendPostFx）。
     /// </summary>
     private void OnSceneSettingChanged(SceneSettingsChangeKind kind)
     {
@@ -158,14 +155,7 @@ public partial class MainWindow
                 SendAmbient();
                 break;
 
-            case SceneSettingsChangeKind.ViewMode:
-                // 表示モードは非永続。ウィンドウの現在値を取り込んで再送するだけ。
-                if (_sceneSettingsWindow is not null) _viewMode = _sceneSettingsWindow.ViewMode;
-                SendPostFx();
-                return;
-
             case SceneSettingsChangeKind.RenderingAll:
-                if (_sceneSettingsWindow is not null) _viewMode = _sceneSettingsWindow.ViewMode;
                 SendPostFx();
                 SendAmbient();
                 break;
@@ -259,6 +249,14 @@ public partial class MainWindow
         var r  = _sceneSettings.Rendering;
         var ci = CultureInfo.InvariantCulture;
 
+        // シーンビュー表示モード（"lit" / "unlit" / "wireframe" / "gbuffer_*"）。
+        // ツールバーの CmbViewMode の選択項目 Tag をそのまま送る。シーン設定には含めない
+        // 非永続項目のため、ここが唯一の取得元。Separator など ComboBoxItem 以外が
+        // 選択された場合・XAML 初期化中で null の場合は既定（ライティングON）へフォールバックする。
+        string viewMode =
+            (CmbViewMode?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string
+            ?? DefaultViewMode;
+
         // 新キー "features"（機能マトリクス）。旧キー gi_enabled は features.gi へ移行したため送らない。
         string features =
             $"\"features\":{{\"shadow\":\"{r.Features.Shadow}\",\"gi\":\"{r.Features.Gi}\"," +
@@ -271,12 +269,25 @@ public partial class MainWindow
             $"\"bloom_intensity\":{r.BloomIntensity.ToString(ci)}," +
             $"\"transparency\":\"{r.Transparency}\",\"deferred\":{Bool(r.Deferred)}," +
             $"\"refract_sequential_grab\":{Bool(r.RefractSequentialGrab)}," +
-            $"\"view_mode\":\"{_viewMode}\"," +
+            $"\"view_mode\":\"{viewMode}\"," +
             $"\"gi_intensity\":{r.GiIntensity.ToString(ci)}," +
             $"\"reflection_intensity\":{r.ReflectionIntensity.ToString(ci)}," +
             $"\"ao_intensity\":{r.AoIntensity.ToString(ci)},{features}}}";
 
         _runtimeManager?.SendToRuntime($"SET_POST_FX:{json}");
+    }
+
+    /// <summary>
+    /// ツールバーのシーンビュー表示モードコンボ（CmbViewMode）の選択変更ハンドラ。
+    /// 表示モードは非永続（.scene にもランタイム側スキーマにも保存しない）ため、
+    /// SET_POST_FX の再送のみを行い SET_SCENE_SETTINGS は送らない
+    /// （＝この操作でシーンがダーティにならない）。
+    /// ランタイム未接続（_viewportSettingsInitialized == false）のときは
+    /// SendPostFx 側のガードで何も送られず、接続時に SyncViewportSettings で再送される。
+    /// </summary>
+    private void OnViewModeChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        SendPostFx();
     }
 
     /// <summary>bool を JSON のリテラル文字列へ変換する（SET_POST_FX 組み立て用）。</summary>
