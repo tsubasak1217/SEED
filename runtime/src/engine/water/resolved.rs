@@ -51,6 +51,10 @@ pub struct WaterVisualParams {
     pub reflection_color: [f32; 3],
     /// 屈折 UV の最大歪み（画面比）
     pub refraction_distortion: f32,
+    /// 波紋・航跡（インタラクションフィールド）の法線摂動スケール（Phase I2）
+    pub ripple_strength: f32,
+    /// 波紋フォームが出る波高しきい値（m 相当。Phase I2）
+    pub ripple_foam_threshold: f32,
 }
 
 impl WaterVisualParams {
@@ -71,6 +75,8 @@ impl WaterVisualParams {
             fresnel_strength:      c.fresnel_strength,
             reflection_color:      c.reflection_color,
             refraction_distortion: c.refraction_distortion,
+            ripple_strength:       c.ripple_strength,
+            ripple_foam_threshold: c.ripple_foam_threshold,
         }
     }
 }

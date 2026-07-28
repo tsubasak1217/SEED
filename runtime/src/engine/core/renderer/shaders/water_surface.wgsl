@@ -31,12 +31,24 @@
 //  頂点変位は行わず（W1）、フラグメントで **解析的サイン波の微分から法線のみ**を合成する。
 //  法線マップ画像などのテクスチャアセットには一切依存しない。
 //
+//  ## 波紋・航跡（Phase I2）
+//  インタラクションフィールド（`interaction_field.wgsl` が更新するカメラ追従の俯瞰テクスチャ）の
+//  `.z`（波の高さ）を group2 でサンプルし、
+//    ・その **勾配**を解析波の勾配へ足して法線を摂動させる（＝波紋の輪・航跡の筋）
+//    ・**高さの絶対値**がしきい値を超えた所へ既存の岸フォームと同じ `foam_color` を乗せる
+//      （＝航跡の白い泡）
+//  場は書き手（InteractionSource）と完全に分離されており、本シェーダは **読むだけ**。
+//  場の窓（64m）の外は影響ゼロ。
+//
 //  ## バインディング規約
 //    group 0: カメラ（CameraUniform, binding 0）
 //    group 1: binding0 = 水パラメータ配列（storage, read）
 //             binding1 = シーンカラーのグラブ（屈折の背景）
 //             binding2 = そのサンプラー（線形・ClampToEdge）
 //             binding3 = シーン深度（DepthOnly ビュー。textureLoad のみ）
+//    group 2: binding0 = インタラクションフィールド（波紋。Rgba16Float）
+//             binding1 = そのサンプラー（線形・ClampToEdge）
+//             binding2 = 場のパラメータ UBO（窓原点・窓幅の逆数・テクセルサイズ）
 // ============================================================
 
 // ─── Group 0: カメラ ─────────────────────────────────────────
@@ -86,7 +98,8 @@ struct WaterParams {
     reflection_color: vec4<f32>,
     /// x = 波の振幅／y = 空間周波数（1/m）／z = スクロール速度／w = 屈折 UV の最大歪み（画面比）
     wave:             vec4<f32>,
-    /// x = フレネル指数／y = フレネル寄与率／z,w = 未使用
+    /// x = フレネル指数／y = フレネル寄与率／
+    /// z = 波紋の法線摂動スケール（I2）／w = 波紋フォームの波高しきい値（I2）
     fresnel:          vec4<f32>,
     /// x = ピッキング用 raw アクタ ID（本シェーダでは未使用。ID パス `water_id.wgsl` が読む）。
     /// 配列ストライドを Rust 側 `WaterParams` と一致させるため宣言だけしておく。
@@ -97,6 +110,46 @@ struct WaterParams {
 @group(1) @binding(1) var t_scene: texture_2d<f32>;
 @group(1) @binding(2) var s_scene: sampler;
 @group(1) @binding(3) var t_depth: texture_depth_2d;
+
+// ─── Group 2: インタラクションフィールド（波紋・航跡。Phase I2）────
+
+/// 場の更新／消費で共有するパラメータ UBO。
+///
+/// Rust `InteractionFieldUniformGpu` および `interaction_field.wgsl` /
+/// `grass_gbuffer.wgsl` の同名構造体と **フィールド順まで一致必須**
+/// （4 箇所を同時に直すこと。テスト `interaction_uniform_fields_match_grass_shader` が照合する）。
+struct InteractionFieldUniform {
+    /// 今フレームの窓のワールド XZ 最小（テクセル単位にスナップ済み）。
+    origin_xz:      vec2<f32>,
+    /// 前フレームの窓のワールド XZ 最小（更新パスのみ使用）。
+    prev_origin_xz: vec2<f32>,
+    /// 1 テクセルのワールドサイズ（m）。**波紋の勾配を取る幅として使う。**
+    texel_size:     f32,
+    /// 窓の一辺の逆数（1/m）。ワールド XZ → [0,1] UV 変換に使う。
+    inv_extent:     f32,
+    /// 減衰係数（更新パスのみ使用）。
+    decay:          f32,
+    /// 場の一辺の解像度（更新パスのみ使用）。
+    resolution:     u32,
+    /// 有効なソース数（更新パスのみ使用）。
+    source_count:   u32,
+    /// 速度 1 m/s あたりの草の曲げ角（草のみ使用）。
+    bend_per_speed: f32,
+    /// 草の曲げ角の上限（草のみ使用）。
+    max_bend:       f32,
+    /// 波の伝播係数（更新パスのみ使用）。
+    wave_k:         f32,
+    /// 波の減衰係数（更新パスのみ使用）。
+    wave_damp:      f32,
+    /// 波の慣性項の dt 正規化係数（更新パスのみ使用）。
+    wave_inertia:   f32,
+    /// パディング（未使用）。
+    _pad1:          f32,
+    _pad2:          f32,
+}
+@group(2) @binding(0) var  t_interaction:     texture_2d<f32>;
+@group(2) @binding(1) var  s_interaction:     sampler;
+@group(2) @binding(2) var<uniform> u_interaction: InteractionFieldUniform;
 
 // ─── 定数（マジックナンバー禁止のため全て命名する）───────────
 
@@ -115,6 +168,23 @@ const WATER_SKY_THICKNESS: f32 = 1.0e4;
 
 /// ゼロ除算回避の下限値（吸収距離・フォーム幅など、ユーザ入力が 0 になり得るもの）。
 const WATER_EPSILON: f32 = 1.0e-4;
+
+/// 波紋の勾配を水面法線へ足すときの基準倍率（無次元）。
+///
+/// 場の波高（m 相当）の勾配は「1 テクセル(0.125m)あたりの高さ差 / 距離」であり、
+/// そのまま足すと弱すぎる。ユーザ調整値 `ripple_strength`(=1 が標準) に掛かる係数として、
+/// 「走ったときの航跡が解析波と同程度に見える」倍率を定数化する。
+const WATER_RIPPLE_NORMAL_SCALE: f32 = 6.0;
+
+/// 波紋フォームが「しきい値超過ぶん」で完全に白くなるまでの幅（しきい値に対する倍率）。
+///
+/// しきい値ちょうどで泡が突然出るとバンド状の縁が見えるため、
+/// しきい値の 1 倍ぶんかけて滑らかに立ち上げる。
+const WATER_RIPPLE_FOAM_RAMP: f32 = 1.0;
+
+/// 波紋フォームの最大濃度（0..1）。既存の岸フォーム（foam_intensity）と重ねても
+/// 白飛びしないよう、単体では 1.0 まで行かせない。
+const WATER_RIPPLE_FOAM_MAX: f32 = 0.85;
 
 /// 屈折 UV の有効範囲（画面外を舐めないようにクランプする）。
 const WATER_UV_MIN: f32 = 0.0;
@@ -190,12 +260,13 @@ fn wave_speed_mul(i: u32) -> f32 {
     return WAVE_SPEED_MUL_3;
 }
 
-/// 解析的サイン波の重ね合わせから水面法線（ワールド空間・上向き基準）を求める。
+/// 解析的サイン波の重ね合わせによる水面高さ場の **勾配** (∂h/∂x, ∂h/∂z) を求める。
 ///
-/// 高さ場 h(p) = Σ_k A_k * sin(dot(d_k, p) * f_k + t * s_k) に対し、
-/// ∂h/∂x, ∂h/∂z を解析微分（cos）で求め、N = normalize(-∂h/∂x, 1, -∂h/∂z) とする。
-/// 頂点変位は行わないので、これは「法線だけの波」＝ W1 の意図した表現である。
-fn water_wave_normal(p: vec2<f32>, amplitude: f32, scale: f32, speed: f32, t: f32) -> vec3<f32> {
+/// 高さ場 h(p) = Σ_k A_k * sin(dot(d_k, p) * f_k + t * s_k) の解析微分（cos）。
+/// 法線ではなく勾配を返すのは、**波紋（I2）の勾配と足し合わせてから 1 回だけ
+/// 正規化する**ため（法線を 2 つ作って混ぜるより、勾配の加算の方が物理的に正しい：
+/// 高さ場の重ね合わせ = 勾配の重ね合わせ）。
+fn water_wave_gradient(p: vec2<f32>, amplitude: f32, scale: f32, speed: f32, t: f32) -> vec2<f32> {
     var grad = vec2<f32>(0.0, 0.0);
     for (var i: u32 = 0u; i < WAVE_LAYER_COUNT; i = i + 1u) {
         let dir   = wave_dir(i);
@@ -205,7 +276,39 @@ fn water_wave_normal(p: vec2<f32>, amplitude: f32, scale: f32, speed: f32, t: f3
         // d/dp [ A sin(dot(d,p) f + ...) ] = A f cos(...) * d
         grad = grad + dir * (amp * freq * cos(phase));
     }
+    return grad;
+}
+
+/// 高さ場の勾配から水面法線（ワールド空間・上向き基準）を作る。
+/// N = normalize(-∂h/∂x, 1, -∂h/∂z)。頂点変位は行わないので「法線だけの波」。
+fn water_normal_from_gradient(grad: vec2<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(-grad.x, 1.0, -grad.y));
+}
+
+/// インタラクションフィールドの波の高さ（`.z`）を、ワールド XZ でサンプルする。
+///
+/// **窓の外は必ず 0**（＝波紋の影響なし）。ClampToEdge サンプラーのままだと窓の縁の値が
+/// 外側へ無限に引き伸ばされ、水域全体が縁の波紋で染まる（草側と同じ扱い）。
+fn water_ripple_height(world_xz: vec2<f32>) -> f32 {
+    let uv = (world_xz - u_interaction.origin_xz) * u_interaction.inv_extent;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return 0.0;
+    }
+    return textureSampleLevel(t_interaction, s_interaction, uv, 0.0).z;
+}
+
+/// 波紋の高さ場の勾配 (∂h/∂x, ∂h/∂z) を中央差分で求める（ワールド m あたり）。
+///
+/// 場はテクセル 0.125m の離散データなので解析微分できない。1 テクセル離れた
+/// 2 点の差を 2 テクセル幅で割る中央差分が、ノイズに強く実装も最小。
+/// 4 タップぶんのサンプルコストは、水面フラグメントに対して十分安い。
+fn water_ripple_gradient(world_xz: vec2<f32>) -> vec2<f32> {
+    let d = max(u_interaction.texel_size, WATER_EPSILON);
+    let hx1 = water_ripple_height(world_xz + vec2<f32>(d, 0.0));
+    let hx0 = water_ripple_height(world_xz - vec2<f32>(d, 0.0));
+    let hz1 = water_ripple_height(world_xz + vec2<f32>(0.0, d));
+    let hz0 = water_ripple_height(world_xz - vec2<f32>(0.0, d));
+    return vec2<f32>(hx1 - hx0, hz1 - hz0) / (2.0 * d);
 }
 
 /// フラグメント座標（フレームバッファ画素）＋深度からワールド座標を復元する。
@@ -270,13 +373,19 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
     let p = u_water[in.idx];
 
     // ① 波法線（ワールド空間、上向き基準）
-    let n = water_wave_normal(
+    //    解析波の勾配 ＋ 波紋（インタラクションフィールド）の勾配を足してから 1 回正規化する。
+    //    波紋強度 0（既定を 0 にした水）では第 2 項が完全に消え、W1 と 1 ビットも変わらない。
+    let ripple_h    = water_ripple_height(in.world_pos.xz);
+    let ripple_grad = water_ripple_gradient(in.world_pos.xz)
+                    * (p.fresnel.z * WATER_RIPPLE_NORMAL_SCALE);
+    let grad = water_wave_gradient(
         in.world_pos.xz,
         p.wave.x,           // amplitude
         p.wave.y,           // scale
         p.wave.z,           // speed
         u_camera.time,
-    );
+    ) + ripple_grad;
+    let n = water_normal_from_gradient(grad);
 
     // ② 手動深度テスト（深度アタッチメントを持たないため自前で行う）
     //    シーン深度が水面フラグメントより手前なら、水は不透明物に隠れている。
@@ -324,6 +433,17 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
     let foam_width = max(p.foam_color.a, WATER_EPSILON);
     let foam       = (1.0 - smoothstep(0.0, foam_width, thickness)) * p.reflection_color.a;
     color          = color + p.foam_color.rgb * foam;
+
+    // ⑦' 航跡フォーム（Phase I2）: 波紋の高さがしきい値を超えた所へ白い泡を乗せる。
+    //     岸フォームと **同じ foam_color** を流用する（水ごとの泡の色は 1 つ、という設計）。
+    //     走る・飛び込むと出て、歩く程度では出ないしきい値が既定。
+    let ripple_threshold = max(p.fresnel.w, WATER_EPSILON);
+    let ripple_foam = smoothstep(
+        ripple_threshold,
+        ripple_threshold * (1.0 + WATER_RIPPLE_FOAM_RAMP),
+        abs(ripple_h),
+    ) * WATER_RIPPLE_FOAM_MAX * clamp(p.fresnel.z, 0.0, 1.0);
+    color = color + p.foam_color.rgb * ripple_foam;
 
     // ⑧ フレネル: 浅い角度ほど反射色へ寄せる。
     let view_dir = normalize(u_camera.position - in.world_pos);

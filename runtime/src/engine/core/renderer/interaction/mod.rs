@@ -30,9 +30,12 @@
 //  再マップがバイリニアでなく整数 `textureLoad` で済み、カメラ移動で場がにじまない
 //  （＝草がカメラを動かすだけでちらつくのを構造的に防ぐ）。
 //
-//  ## 将来（I2 / I3）
-//  ・I2（水の波紋）: 本テクスチャの `.z` を波エネルギーとして使う。フォーマットも
-//    パス構成もバインドも変えずに、シェーダのスタンプ節と水面側の読み取りを足すだけ。
+//  ## 波の伝播（I2 で追加）
+//  `.z` = 現在の波高 / `.w` = 1 フレーム前の波高 として、同じ 1 ディスパッチ内で
+//  波動方程式（明示スキーム）を解く。**別 ping-pong は増やさない**（詳細は
+//  `shaders/interaction_field.wgsl` の「波の伝播」節）。
+//
+//  ## 将来（I3）
 //  ・I3（雪泥の轍）: **本テクスチャは使わない。**「永続変形」は地形チャンクに
 //    紐づく別の蓄積テクスチャであり（寿命が違う＝場を分けるのが設計の要）、
 //    本モジュールとは独立に追加する。
@@ -66,11 +69,40 @@ pub const INTERACTION_FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R
 /// 草が踏み分けられてゆっくり起き上がる、という見た目の要求そのもの。
 pub const INTERACTION_FIELD_DECAY_TAU_SECS: f32 = 1.0;
 
+/// 波（`.z`/`.w`）の減衰の時定数 τ（秒）。1 フレームの減衰係数は exp(-dt/τ)。
+///
+/// 速度場（τ=1s）より長く残す。水面の波紋は「通り過ぎた後もしばらく輪が広がって
+/// 消えていく」のが自然であり、草の踏み分けより寿命が長い現象のため。
+pub const INTERACTION_WAVE_DECAY_TAU_SECS: f32 = 1.5;
+
+/// 波の伝播速度（m/s）。波紋の輪が広がる速さそのもの。
+///
+/// 現実の重力波は波長依存だが、本実装は単一速度の波動方程式なので 1 値で表す。
+/// 4m/s は「人が歩く速さの約 3 倍で輪が広がる」＝池に石を落としたときの体感に近い。
+pub const INTERACTION_WAVE_SPEED_MPS: f32 = 4.0;
+
+/// 明示スキームのクーラン数の 2 乗の上限（安定条件）。
+///
+/// 2 次元の波動方程式を陽解法で解く場合、(c·dt/dx)² ≤ 1/2 を超えると発散する。
+/// dt（＝フレーム時間）は制御できないので、係数側をこの値で飽和させる。
+/// 飽和が起きる（約 42fps 未満）と波の広がりがフレームレートに応じて遅くなるが、
+/// **発散して水面が真っ白に壊れるより遥かに良い**という判断。
+pub const INTERACTION_WAVE_MAX_COURANT_SQ: f32 = 0.5;
+
+/// 波の慣性項に掛ける dt 比の上限。
+///
+/// フレームが 1 回大きく詰まった直後（dt が急増）に比が跳ねると、
+/// 「前フレームの変位を何倍にも引き伸ばす」ことになり波が暴れる。
+/// 2 倍までなら見た目に破綻せず、フレーム時間の通常の揺らぎは吸収できる。
+pub const INTERACTION_WAVE_MAX_INERTIA_RATIO: f32 = 2.0;
+
 /// ソースが 1 個も無い状態がこの秒数続いたら、場を完全に消してディスパッチを止める。
 ///
-/// 5τ ＝ 残り 0.7% で目視不能。ここで最後に 1 回「減衰係数 0」で書き潰し、
+/// 5τ ＝ 残り 0.7% で目視不能。**波の τ（速度場より長い）を基準に取る**こと。
+/// 速度場基準にすると、まだ見えている波紋の途中でディスパッチが止まり、
+/// 波が凍りついたまま残る。ここで最後に 1 回「減衰係数 0」で書き潰し、
 /// 以降はディスパッチ自体を行わない（＝ソースを置かないシーンの GPU コストは 0）。
-pub const INTERACTION_FIELD_SETTLE_SECS: f32 = INTERACTION_FIELD_DECAY_TAU_SECS * 5.0;
+pub const INTERACTION_FIELD_SETTLE_SECS: f32 = INTERACTION_WAVE_DECAY_TAU_SECS * 5.0;
 
 /// 1 フレームに場へ焼けるソースの最大数。
 ///
@@ -122,7 +154,7 @@ const BINDING_SAMPLE_UNIFORM: u32 = 2;
 
 /// 場の更新／消費で共有するパラメータ UBO。
 ///
-/// WGSL `InteractionFieldUniform` と一致必須（48 バイト）。
+/// WGSL `InteractionFieldUniform` と一致必須（64 バイト）。
 /// **同じ構造体を interaction_field.wgsl と grass_gbuffer.wgsl の 2 箇所が宣言する**
 /// ため、並びを変えたら 3 箇所同時に直すこと（テストが文字列で照合する）。
 #[repr(C)]
@@ -146,8 +178,20 @@ pub struct InteractionFieldUniformGpu {
     pub bend_per_speed: f32,
     /// 草の曲げ角の上限（rad）。消費側のみ使用。
     pub max_bend:       f32,
+    /// 波の伝播係数 (c·dt/dx)²（無次元。CFL 上限で飽和済み）。更新パスのみ使用。
+    pub wave_k:         f32,
+    /// 波の減衰係数 exp(-dt/τ_wave)。更新パスのみ使用。
+    pub wave_damp:      f32,
+    /// 波の慣性項の係数（= 今フレーム dt / 前フレーム dt。上限で飽和）。更新パスのみ使用。
+    ///
+    /// 明示スキームが持つ「1 ステップ前との差分」は **前フレームの dt に紐づく変位**である。
+    /// 可変フレームレートでこれをそのまま使うと、dt が急に伸び縮みした瞬間に
+    /// 波へエネルギーが出入りする（dt=0 のフレームでは 2h−h_prev が線形に発散する）。
+    /// dt 比で正規化することで、フレーム時間が揺れても波の挙動が変わらない。
+    pub wave_inertia:   f32,
     /// 16 バイト境界へ揃えるためのパディング（未使用）。
-    pub _pad:           f32,
+    pub _pad1:          f32,
+    pub _pad2:          f32,
 }
 
 /// インタラクションソース 1 個（GPU）。WGSL `InteractionSourceGpu` と一致必須（32 バイト）。
@@ -162,8 +206,11 @@ pub struct InteractionSourceGpu {
     pub radius:   f32,
     /// 書き込みの強さ（0..1）。
     pub strength: f32,
+    /// 水面へ注入する波の振幅（m 相当。0 = 注入しない）。
+    /// CPU 側（`engine::interaction::water_wave`）が水ボリュームと照合して決めた値。
+    pub wave_amp: f32,
     /// 16 バイト境界へ揃えるためのパディング（未使用）。
-    pub _pad:     [f32; 2],
+    pub _pad:     f32,
 }
 
 // ============================================================
@@ -235,12 +282,26 @@ pub struct InteractionFieldRenderer {
     uniform_buf: wgpu::Buffer,
     /// ソース配列（storage。容量は `INTERACTION_MAX_SOURCES` 固定）。
     sources_buf: wgpu::Buffer,
+    /// 場テクスチャのビュー 2 枚（添字 = テクスチャ番号）。
+    ///
+    /// **消費側が自前の BindGroup を作れるように保持している。**
+    /// 草は共有レイアウト（`create_field_sample_bind_group_layout`）で作った
+    /// `sample_bind_groups` をそのまま使えるが、水面パスはパイプラインを
+    /// WGSL リフレクション（`RenderPipelineBuilder`）で組むため、BGL の可視性が
+    /// 共有レイアウトと構造的に一致しない（リフレクションは uniform を
+    /// VERTEX_FRAGMENT 可視にする）。そこで水面側は**リフレクション由来の BGL で
+    /// 自前の BindGroup を作る**方式にし、そのために生リソースを公開する。
+    views: [wgpu::TextureView; 2],
+    /// 場のサンプラー（線形・ClampToEdge）。消費側の BindGroup 生成に使う。
+    sampler: wgpu::Sampler,
     /// 最新の場を保持しているテクスチャの番号（0 or 1）。
     current: usize,
     /// 前回ディスパッチ時の窓原点（再マップの基準）。
     prev_origin_xz: [f32; 2],
     /// ソースが 1 個も無い状態が続いた秒数。
     idle_secs: f32,
+    /// 前回ディスパッチ時の dt（秒）。波の慣性項を dt 比で正規化するために持つ。
+    prev_delta_secs: f32,
     /// 場を完全に消し終えてディスパッチを止めている状態か。
     settled: bool,
     /// ソース数が上限を超えた警告を出したか（ログ氾濫防止のため 1 回だけ）。
@@ -376,9 +437,13 @@ impl InteractionFieldRenderer {
             sample_bind_groups,
             uniform_buf,
             sources_buf,
+            views: [view0, view1],
+            sampler,
             current: 0,
             prev_origin_xz: [0.0, 0.0],
             idle_secs: 0.0,
+            // 初回は「前フレームも同じ dt だった」とみなす（比 = 1 ＝ 素の明示スキーム）。
+            prev_delta_secs: 0.0,
             settled: true,
             warned_overflow: false,
         }
@@ -390,6 +455,23 @@ impl InteractionFieldRenderer {
     /// テクスチャが返る）。消費側は「場が無いフレーム」を分岐で扱わなくてよい。
     pub fn sample_bind_group(&self) -> &wgpu::BindGroup {
         &self.sample_bind_groups[self.current]
+    }
+
+    /// 最新の場テクスチャのビュー（消費側が自前 BindGroup を作るため）。
+    ///
+    /// **常に有効**（場が消えていてもゼロで埋まったテクスチャが返る）。
+    pub fn field_view(&self) -> &wgpu::TextureView {
+        &self.views[self.current]
+    }
+
+    /// 場のサンプラー（線形・ClampToEdge）。
+    pub fn field_sampler(&self) -> &wgpu::Sampler {
+        &self.sampler
+    }
+
+    /// 場のパラメータ UBO（窓原点・窓幅の逆数・テクセルサイズを消費側が読む）。
+    pub fn field_uniform_buffer(&self) -> &wgpu::Buffer {
+        &self.uniform_buf
     }
 
     /// このフレームの場を更新する（コマンドは `encoder` へ記録される）。
@@ -453,13 +535,33 @@ impl InteractionFieldRenderer {
                     vel_xz:   s.velocity_xz,
                     radius:   s.radius,
                     strength: s.strength,
-                    _pad:     [0.0, 0.0],
+                    wave_amp: s.wave_amplitude,
+                    _pad:     0.0,
                 })
                 .collect();
             queue.write_buffer(&self.sources_buf, 0, bytemuck::cast_slice(&gpu));
         }
 
-        // ── ⑤ パラメータ UBO ──
+        // ── ⑤ 波の伝播係数（明示スキーム）──
+        //   k = (c·dt/dx)²。CFL 上限で飽和させて発散を防ぐ（飽和時は波が遅くなるだけ）。
+        //   dt は壁時計なので、ウィンドウのドラッグ等で巨大な dt が来ても
+        //   飽和のおかげで場が壊れない。
+        let dt = delta_secs.max(0.0);
+        let courant = INTERACTION_WAVE_SPEED_MPS * dt / INTERACTION_FIELD_TEXEL_SIZE;
+        let wave_k = (courant * courant).min(INTERACTION_WAVE_MAX_COURANT_SQ);
+        // 波の減衰（decay と同じく指数）。decay=0（場の消去）のフレームは
+        // シェーダ側が全チャンネルを 0 で書き潰すので、ここでの値は使われない。
+        let wave_damp = (-dt / INTERACTION_WAVE_DECAY_TAU_SECS).exp();
+        // 慣性項の dt 正規化。前フレームが無い／0 のときは 1（素の明示スキーム）。
+        // dt が急増したフレームで比が跳ねると逆に暴れるため、上限で飽和させる。
+        let wave_inertia = if self.prev_delta_secs > 0.0 {
+            (dt / self.prev_delta_secs).min(INTERACTION_WAVE_MAX_INERTIA_RATIO)
+        } else {
+            1.0
+        };
+        self.prev_delta_secs = dt;
+
+        // ── ⑥ パラメータ UBO ──
         let uniform = InteractionFieldUniformGpu {
             origin_xz,
             prev_origin_xz: self.prev_origin_xz,
@@ -470,11 +572,15 @@ impl InteractionFieldRenderer {
             source_count:   count as u32,
             bend_per_speed: INTERACTION_GRASS_BEND_PER_SPEED,
             max_bend:       INTERACTION_GRASS_MAX_BEND,
-            _pad:           0.0,
+            wave_k,
+            wave_damp,
+            wave_inertia,
+            _pad1:          0.0,
+            _pad2:          0.0,
         };
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniform));
 
-        // ── ⑥ ディスパッチ（読み = current / 書き = 反対側）──
+        // ── ⑦ ディスパッチ（読み = current / 書き = 反対側）──
         let dst = 1 - self.current;
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -487,7 +593,7 @@ impl InteractionFieldRenderer {
             pass.dispatch_workgroups(groups, groups, 1);
         }
 
-        // ── ⑦ 状態を進める（以降 sample_bind_group は今書いた側を返す）──
+        // ── ⑧ 状態を進める（以降 sample_bind_group は今書いた側を返す）──
         self.current        = dst;
         self.prev_origin_xz = origin_xz;
         true
@@ -606,18 +712,43 @@ mod tests {
     #[test]
     fn uniform_is_expected_size() {
         let size = std::mem::size_of::<InteractionFieldUniformGpu>();
-        assert_eq!(size, 48, "InteractionFieldUniformGpu は 48 バイト（WGSL と一致必須）");
+        assert_eq!(size, 64, "InteractionFieldUniformGpu は 64 バイト（WGSL と一致必須）");
         assert_eq!(size % 16, 0, "uniform は 16 の倍数バイトであること");
     }
 
-    /// ソース構造体は std430 の 32 バイトであること
+    /// 波の伝播係数は CFL 安定条件（(c·dt/dx)² ≤ 1/2）を **どんな dt でも** 超えないこと。
+    /// ここが破れると波が発散し、水面が一瞬で真っ白に壊れる（最重要の不変条件）。
+    #[test]
+    fn wave_courant_never_exceeds_stability_limit() {
+        // 240fps から 1fps（ウィンドウドラッグ等の巨大 dt）まで舐める。
+        for &dt in &[1.0 / 240.0, 1.0 / 60.0, 1.0 / 30.0, 0.1, 1.0, 10.0] {
+            let courant = INTERACTION_WAVE_SPEED_MPS * dt / INTERACTION_FIELD_TEXEL_SIZE;
+            let k = (courant * courant).min(INTERACTION_WAVE_MAX_COURANT_SQ);
+            assert!(k <= INTERACTION_WAVE_MAX_COURANT_SQ, "dt={dt} で CFL 上限を超えた");
+        }
+        // 一般的な 60fps では飽和せず、実時間どおりの波速で伝播すること。
+        let dt60 = 1.0 / 60.0;
+        let c60 = INTERACTION_WAVE_SPEED_MPS * dt60 / INTERACTION_FIELD_TEXEL_SIZE;
+        assert!(c60 * c60 < INTERACTION_WAVE_MAX_COURANT_SQ,
+            "60fps で飽和してはいけない（波の速さがフレームレート依存になる）");
+    }
+
+    /// 場の休止判定は「波の τ」基準であること（速度場の τ で切ると波紋が凍って残る）。
+    #[test]
+    fn settle_time_covers_wave_decay() {
+        assert!(INTERACTION_FIELD_SETTLE_SECS >= INTERACTION_WAVE_DECAY_TAU_SECS * 5.0);
+        assert!(INTERACTION_FIELD_SETTLE_SECS >= INTERACTION_FIELD_DECAY_TAU_SECS * 5.0);
+    }
+
+    /// ソース構造体は std430 の 32 バイトであること（波振幅を足しても変わらない）
     /// （ズレると GPU が隣のソースのデータを読む＝静かな描画バグ）。
     #[test]
     fn source_is_32_bytes() {
         assert_eq!(std::mem::size_of::<InteractionSourceGpu>(), 32);
     }
 
-    /// UBO のフィールド並びが「Rust / 更新シェーダ / 草シェーダ」の 3 箇所で一致すること。
+    /// UBO のフィールド並びが「Rust / 更新シェーダ / 草シェーダ / 水面シェーダ」の
+    /// 4 箇所で一致すること。
     /// ここがズレると、草が窓原点を誤読して場をまったく別の場所からサンプルする。
     #[test]
     fn interaction_uniform_fields_match_grass_shader() {
@@ -638,9 +769,12 @@ mod tests {
         }
         let update = field_names(field_shader());
         let grass  = field_names(include_str!("../shaders/grass_gbuffer.wgsl"));
+        let water  = field_names(include_str!("../shaders/water_surface.wgsl"));
         assert_eq!(update, grass,
             "interaction_field.wgsl と grass_gbuffer.wgsl の InteractionFieldUniform が不一致");
-        assert_eq!(update.len(), 10, "Rust 側 InteractionFieldUniformGpu と本数を揃えること");
+        assert_eq!(update, water,
+            "interaction_field.wgsl と water_surface.wgsl の InteractionFieldUniform が不一致");
+        assert_eq!(update.len(), 14, "Rust 側 InteractionFieldUniformGpu と本数を揃えること");
     }
 
     /// 窓原点はテクセル単位にスナップされ、カメラ中心を包むこと。

@@ -1338,9 +1338,20 @@ impl App {
                             &scene.actors, &scene.world, self.active_world_line,
                         );
                         // ② 前フレーム位置との差分から速度（m/s）を確定させる。
-                        let moving = self.interaction_velocity.update(&sources, ctx.delta_time);
+                        let mut moving = self.interaction_velocity.update(&sources, ctx.delta_time);
+                        // ②' 水面付近のソースへ波の注入量を割り当てる（Phase I2）。
+                        //     「水域内かつ水面±半径」にいるソースだけが波を立てる。
+                        //     Y の照合は俯瞰 2D の場では原理的にできないため、焼く前に CPU で決める。
+                        crate::engine::interaction::apply_water_wave_injection(
+                            &mut moving, &water_volumes,
+                        );
                         // ③ 必要になった時点で GPU リソースを構築する。
-                        let need_field = !moving.is_empty() || !self.terrain.grass_buffers.is_empty();
+                        //    水ボリュームがあるフレームも構築対象に含める（Phase I2）。
+                        //    水面パスは group2 で場を読むため、**水があるなら場は必ず在る**方が
+                        //    描画側の分岐が減る（フォールバックは最後の保険として残す）。
+                        let need_field = !moving.is_empty()
+                            || !self.terrain.grass_buffers.is_empty()
+                            || !water_volumes.is_empty();
                         if need_field && self.interaction_field.is_none() {
                             self.interaction_field = Some(
                                 crate::engine::core::renderer::InteractionFieldRenderer::new(
@@ -5574,6 +5585,8 @@ impl App {
                                 // 「raw = canvas_id_offset + アクタ DFS + 1」でデコード側の
                                 // キャンバス選択分岐（DFS からアクタを引く経路）に相乗りする。
                                 canvas_id_offset,
+                                // 波紋・航跡の場（Phase I2）。上の I1 節で更新済みのものを読む。
+                                self.interaction_field.as_ref(),
                             );
                             // ID パス（後段）で水面クアッドを描いてよいかを伝える。
                             water_pick_ready = water_ready;

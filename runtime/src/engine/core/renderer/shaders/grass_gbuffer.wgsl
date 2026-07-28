@@ -265,8 +265,15 @@ struct InteractionFieldUniform {
     bend_per_speed: f32,
     /// インタラクションによる曲げ角の上限（rad）。
     max_bend:       f32,
+    /// 波の伝播係数（更新パスのみ使用。草は見ない）。
+    wave_k:         f32,
+    /// 波の減衰係数（更新パスのみ使用。草は見ない）。
+    wave_damp:      f32,
+    /// 波の慣性項の dt 正規化係数（更新パスのみ使用。草は見ない）。
+    wave_inertia:   f32,
     /// パディング（未使用）。
-    _pad:           f32,
+    _pad1:          f32,
+    _pad2:          f32,
 }
 @group(2) @binding(0) var  u_interaction_tex:     texture_2d<f32>;
 @group(2) @binding(1) var  u_interaction_sampler: sampler;
@@ -289,7 +296,7 @@ fn grass_interaction_velocity(world_xz: vec2<f32>) -> vec2<f32> {
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
         return vec2<f32>(0.0);
     }
-    // .xy = XZ 速度ベクトル場。.zw は I2（波エネルギー）用の予約チャンネルで、草は見ない。
+    // .xy = XZ 速度ベクトル場。.z/.w は I2 の波の高さ（現在／1 フレーム前）で、草は見ない。
     return textureSampleLevel(u_interaction_tex, u_interaction_sampler, uv, 0.0).xy;
 }
 

@@ -64,6 +64,15 @@ fn default_fresnel_strength() -> f32 { 1.0 }
 fn default_reflection_color() -> [f32; 3] { [0.35, 0.50, 0.62] }
 /// refraction_distortion の既定値（屈折 UV の最大歪み。画面比）。
 fn default_refraction_distortion() -> f32 { 0.03 }
+/// ripple_strength の既定値（波紋の法線摂動スケール。1.0 = 標準）。
+///
+/// インタラクションフィールドの波高勾配を水面法線へ足す際の倍率。
+/// 0 にすると波紋・航跡の表示だけを切れる（場の計算自体は他の消費者と共有のため止まらない）。
+fn default_ripple_strength() -> f32 { 1.0 }
+/// ripple_foam_threshold の既定値（この波高（m 相当）を超えた所に航跡の泡が出る）。
+///
+/// 歩行が立てる波（振幅 0.03 前後）では泡が出ず、走り・飛び込みで出る値。
+fn default_ripple_foam_threshold() -> f32 { 0.05 }
 
 // ─── WaterVolumeKind ─────────────────────────────────────────
 
@@ -172,6 +181,12 @@ pub struct WaterVolumeComponentData {
     /// 屈折 UV の最大歪み（画面比）
     #[serde(default = "default_refraction_distortion")]
     pub refraction_distortion: f32,
+    /// 波紋・航跡（インタラクションフィールド）の法線摂動スケール（Phase I2）
+    #[serde(default = "default_ripple_strength")]
+    pub ripple_strength: f32,
+    /// 波紋フォームが出る波高しきい値（m 相当。Phase I2）
+    #[serde(default = "default_ripple_foam_threshold")]
+    pub ripple_foam_threshold: f32,
 }
 
 impl Default for WaterVolumeComponentData {
@@ -195,6 +210,8 @@ impl Default for WaterVolumeComponentData {
             fresnel_strength:      default_fresnel_strength(),
             reflection_color:      default_reflection_color(),
             refraction_distortion: default_refraction_distortion(),
+            ripple_strength:       default_ripple_strength(),
+            ripple_foam_threshold: default_ripple_foam_threshold(),
         }
     }
 }
@@ -244,6 +261,10 @@ pub struct WaterVolumeComponent {
     pub reflection_color: [f32; 3],
     /// 屈折 UV の最大歪み（画面比）
     pub refraction_distortion: f32,
+    /// 波紋・航跡の法線摂動スケール（Phase I2）
+    pub ripple_strength: f32,
+    /// 波紋フォームが出る波高しきい値（m 相当。Phase I2）
+    pub ripple_foam_threshold: f32,
 }
 
 impl WaterVolumeComponent {
@@ -268,6 +289,8 @@ impl WaterVolumeComponent {
             fresnel_strength:      data.fresnel_strength,
             reflection_color:      data.reflection_color,
             refraction_distortion: data.refraction_distortion,
+            ripple_strength:       data.ripple_strength,
+            ripple_foam_threshold: data.ripple_foam_threshold,
         }
     }
 
@@ -292,6 +315,8 @@ impl WaterVolumeComponent {
             fresnel_strength:      self.fresnel_strength,
             reflection_color:      self.reflection_color,
             refraction_distortion: self.refraction_distortion,
+            ripple_strength:       self.ripple_strength,
+            ripple_foam_threshold: self.ripple_foam_threshold,
         }
     }
 }
@@ -348,6 +373,8 @@ mod tests {
         assert_eq!(d.fresnel_strength, def.fresnel_strength);
         assert_eq!(d.reflection_color, def.reflection_color);
         assert_eq!(d.refraction_distortion, def.refraction_distortion);
+        assert_eq!(d.ripple_strength, def.ripple_strength);
+        assert_eq!(d.ripple_foam_threshold, def.ripple_foam_threshold);
     }
 
     /// kind は文字列としてシリアライズされること（C# 側の期待に合わせる）。
@@ -379,6 +406,8 @@ mod tests {
             fresnel_strength: 0.6,
             reflection_color: [0.11, 0.22, 0.33],
             refraction_distortion: 0.07,
+            ripple_strength: 1.5,
+            ripple_foam_threshold: 0.2,
         };
         let back = WaterVolumeComponent::from_data(src.clone()).to_data();
         assert_eq!(back.kind, src.kind);
@@ -399,5 +428,7 @@ mod tests {
         assert_eq!(back.fresnel_strength, src.fresnel_strength);
         assert_eq!(back.reflection_color, src.reflection_color);
         assert_eq!(back.refraction_distortion, src.refraction_distortion);
+        assert_eq!(back.ripple_strength, src.ripple_strength);
+        assert_eq!(back.ripple_foam_threshold, src.ripple_foam_threshold);
     }
 }

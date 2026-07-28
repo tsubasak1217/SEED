@@ -38,7 +38,8 @@ impl App {
     /// key: kind / surface_height / region_half_extents / ocean_extent /
     ///      shallow_color / deep_color / absorption_distance / surface_opacity /
     ///      foam_color / foam_width / foam_intensity / wave_amplitude / wave_scale /
-    ///      wave_speed / fresnel_power / fresnel_strength / reflection_color /
+    ///      wave_speed / ripple_strength / ripple_foam_threshold /
+    ///      fresnel_power / fresnel_strength / reflection_color /
     ///      refraction_distortion。
     /// ベクタ系（region_half_extents / *_color）は "x,y,z" 形式。
     /// 不正な key・value は無視する（インスペクタへの再送信も行わない）。
@@ -143,6 +144,17 @@ impl App {
             "refraction_distortion" => {
                 if let Ok(v) = value.parse::<f32>() {
                     w.refraction_distortion = v.max(NON_NEGATIVE_MIN);
+                }
+            }
+            // ── 波紋・航跡（Phase I2）────────────────────────────────
+            "ripple_strength" => {
+                // 負値は法線を逆向きに歪めるだけで意味を持たないため 0 で下限を切る。
+                if let Ok(v) = value.parse::<f32>() { w.ripple_strength = v.max(NON_NEGATIVE_MIN); }
+            }
+            "ripple_foam_threshold" => {
+                // 0 だと静水面まで泡だらけになるため、描画側と同じ下限で締める。
+                if let Ok(v) = value.parse::<f32>() {
+                    w.ripple_foam_threshold = v.max(NON_NEGATIVE_MIN);
                 }
             }
             _ => return,

@@ -440,6 +440,10 @@ public partial class InspectorPanel : UserControl
     private const float WaterReflectBDefault = 0.62f;
     /// <summary>屈折の歪み量の既定値。</summary>
     private const float WaterRefractionDistortionDefault = 0.03f;
+    /// <summary>波紋・航跡（インタラクションフィールド）の法線摂動スケールの既定値。</summary>
+    private const float WaterRippleStrengthDefault = 1f;
+    /// <summary>波紋フォームが出る波高しきい値の既定値（m 相当）。</summary>
+    private const float WaterRippleFoamThresholdDefault = 0.05f;
     /// <summary>水の各色はアルファを持たないため、カラーピッカーへ渡す固定アルファ。</summary>
     private const float WaterColorAlpha = 1f;
 
@@ -612,6 +616,9 @@ public partial class InspectorPanel : UserControl
         float WaterReflectG = WaterReflectGDefault,
         float WaterReflectB = WaterReflectBDefault,
         float WaterRefractionDistortion = WaterRefractionDistortionDefault,
+        // 波紋・航跡（Phase I2）: 法線摂動スケール・フォームしきい値
+        float WaterRippleStrength = WaterRippleStrengthDefault,
+        float WaterRippleFoamThreshold = WaterRippleFoamThresholdDefault,
         // ── InteractionSourceComponent 用フィールド（Phase I1）──
         // 影響半径・強さ・有効フラグ。既定値は Rust 側 InteractionSourceComponentData と一致。
         float InteractionRadius = InteractionRadiusDefault,
@@ -998,6 +1005,9 @@ public partial class InspectorPanel : UserControl
             var waterReflectG     = comp.TryGetProperty("reflect_g",        out var wrg)  ? wrg.GetSingle() : WaterReflectGDefault;
             var waterReflectB     = comp.TryGetProperty("reflect_b",        out var wrb)  ? wrb.GetSingle() : WaterReflectBDefault;
             var waterRefractDist  = comp.TryGetProperty("refraction_distortion", out var wrd) ? wrd.GetSingle() : WaterRefractionDistortionDefault;
+            // 波紋・航跡（Phase I2）。旧シーン（フィールド欠落）でも既定値で表示できる。
+            var waterRippleStr    = comp.TryGetProperty("ripple_strength", out var wrs) ? wrs.GetSingle() : WaterRippleStrengthDefault;
+            var waterRippleFoamTh = comp.TryGetProperty("ripple_foam_threshold", out var wrft) ? wrft.GetSingle() : WaterRippleFoamThresholdDefault;
             // InteractionSourceComponent 用（Phase I1）: 半径・強さ・有効フラグ。
             // 欠落時は Rust 側既定値と一致する定数へフォールバックする。
             var interactRadius   = comp.TryGetProperty("radius",   out var isr) ? isr.GetSingle()  : InteractionRadiusDefault;
@@ -1086,6 +1096,8 @@ public partial class InspectorPanel : UserControl
                 WaterFresnelPower: waterFresnelPow, WaterFresnelStrength: waterFresnelStr,
                 WaterReflectR: waterReflectR, WaterReflectG: waterReflectG, WaterReflectB: waterReflectB,
                 WaterRefractionDistortion: waterRefractDist,
+                WaterRippleStrength: waterRippleStr,
+                WaterRippleFoamThreshold: waterRippleFoamTh,
                 // InteractionSourceComponent 用フィールド
                 InteractionRadius: interactRadius, InteractionStrength: interactStrength,
                 InteractionEnabled: interactEnabled);
@@ -4694,6 +4706,16 @@ public partial class InspectorPanel : UserControl
         AddFloatRow(waveSp, "波のスケール", info.WaterWaveScale,     "wave_scale",     "F3");
         AddFloatRow(waveSp, "波の速度",     info.WaterWaveSpeed,     "wave_speed",     "F3");
         sp.Children.Add(waveSection);
+
+        // ── 波紋・航跡セクション（Phase I2）─────────────────────
+        // InteractionSource を持つアクタが水面付近を動くと立つ波紋の見え方を調整する。
+        // 波の伝播速度・減衰はエンジン定数（全水域で共通の物理）なので UI には出さない。
+        var rippleSection = BuildSection("波紋・航跡");
+        var rippleSp      = (StackPanel)rippleSection.Child;
+        AddFloatRow(rippleSp, "波紋の強さ",     info.WaterRippleStrength,     "ripple_strength",       "F2");
+        AddFloatRow(rippleSp, "泡のしきい値",   info.WaterRippleFoamThreshold, "ripple_foam_threshold", "F3");
+        rippleSp.Children.Add(MakeHint("動くアクタに InteractionSource を付けると、水面付近で波紋と航跡の泡が出ます。"));
+        sp.Children.Add(rippleSection);
 
         // ── 反射・屈折セクション ───────────────────────────────
         var reflectSection = BuildSection("反射・屈折");
