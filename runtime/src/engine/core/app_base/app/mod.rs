@@ -582,6 +582,15 @@ pub struct App {
     /// フォーカスが無い間はフレームレートを抑え、遮蔽時の present 即時リターンによる
     /// 暴走ループ（毎秒数千フレーム）を防ぐために使う。
     window_focused: bool,
+    /// 最後にフレーム処理（handle_redraw_requested）へ入った時刻。
+    /// 埋め込みウィンドウが他タブの裏へ隠れると OS が WM_PAINT を配送しなくなり
+    /// RedrawRequested が途絶える（＝フレームループ停止）。その間も IPC を処理するため、
+    /// about_to_wait 側がこの時刻からの経過でフレーム途絶を判定する。
+    last_frame_at: std::time::Instant,
+    /// 最後に about_to_wait 側から IPC をポンプした時刻。
+    /// ControlFlow::Poll で about_to_wait は毎秒数十万回呼ばれるため、
+    /// 時間ゲートで実際のポンプ頻度を抑えるのに使う。
+    last_ipc_pump_at: std::time::Instant,
     /// アセットルートのパス（Playモード・パッケージモードでのシーン自動ロードに使用）。
     assets_root:  Option<String>,
     /// エディタリソースディレクトリ（カメラギズモモデル等の読み込みに使用）。
@@ -1111,6 +1120,9 @@ impl App {
             paused:        false,
             render_paused: false,
             window_focused: true,
+            // フレーム途絶判定・IPC ポンプの時間ゲートの起点（初回は「今」から数える）。
+            last_frame_at:    std::time::Instant::now(),
+            last_ipc_pump_at: std::time::Instant::now(),
             assets_root:      args.assets_root,
             editor_resources: args.editor_resources,
             scene_path:       args.scene_path,

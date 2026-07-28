@@ -253,6 +253,10 @@ impl App {
         // →ウォッチドッグが「最後に通過したステージ」で凍結を検出する。早期 return 経路
         // （render_paused / 最小化）は request_redraw で次フレームが即来るため誤検出しない。
         play_diag::note_frame_alive();
+        // フレームが回っていることを about_to_wait 側へ知らせる時刻印。
+        // これが更新され続けている間は about_to_wait の IPC ポンプは不発になり、
+        // 従来どおりフレーム内 process_ipc だけが IPC を処理する。
+        self.last_frame_at = std::time::Instant::now();
         // ウォッチドッグ（別スレッド）が読むための状態フラグを公開する。
         play_diag::publish_frame_flags(self.window_focused, self.render_paused, self.window_hwnd());
         mark_frame_stage(FrameStage::FrameStart);

@@ -18,7 +18,69 @@ use super::{
     release_window_clamp,
 };
 
+// ── フレーム途絶中の IPC ポンプ（about_to_wait 経路）のチューニング定数 ──────────
+//
+// 【背景】埋め込みランタイムの子ウィンドウがエディタの別ドキュメントタブ（例: .wgsl の
+// スクリプトエディタ）の裏へ隠れると、OS は WM_PAINT を配送しなくなり winit の
+// RedrawRequested が止まる。IPC の処理はフレーム内（handle_redraw_requested →
+// process_ipc）でしか走らないため、この間に届いた VALIDATE_WGSL 等が
+// キューに積まれたまま処理されず、エディタ側が応答タイムアウトする。
+// そこで about_to_wait（イベントループは回っている）から IPC だけをポンプする。
+
+/// 「フレームループが止まっている」とみなす、最終フレームからの無更新時間 [ms]。
+/// 通常描画中（60FPS = 約 16ms 間隔）では決して超えないため、
+/// 表示中は about_to_wait 側のポンプが自然に不発になる値を選ぶ。
+const IPC_PUMP_FRAME_STALL_MS: u64 = 100;
+
+/// フレーム途絶中に IPC をポンプする最小間隔 [ms]。
+/// ControlFlow::Poll のため about_to_wait は毎秒数十万回呼ばれる。
+/// 時間ゲートを入れて、およそ 60Hz 相当までポンプ頻度を落とす。
+const IPC_PUMP_INTERVAL_MS: u64 = 16;
+
 impl App {
+    /// フレームループが止まっている間だけ、イベントループ側から IPC を処理する。
+    ///
+    /// winit の `about_to_wait` から毎周呼ばれる。以下をすべて満たすときだけ
+    /// `process_ipc` を 1 回走らせる:
+    ///   1. ウィンドウ・レンダラーが初期化済み（`resumed` 完了後）であること。
+    ///      未初期化のまま IPC ハンドラを走らせると、描画資源前提のハンドラが壊れる。
+    ///   2. 最後のフレームから `IPC_PUMP_FRAME_STALL_MS` 以上経過していること
+    ///      （＝ RedrawRequested が配送されていない＝描画が止まっている）。
+    ///   3. 前回のポンプから `IPC_PUMP_INTERVAL_MS` 以上経過していること（スピン抑制）。
+    ///
+    /// 処理後に `request_redraw` を 1 回出しておく。非表示中は配送されないため無害だが、
+    /// 表示が復帰した瞬間に最新状態で再描画されるようにする効果がある。
+    /// ただし IPC で `Stop` を受けて `event_loop.exit()` 済みの場合は要求しない。
+    pub(super) fn pump_ipc_while_frames_stalled(&mut self, event_loop: &ActiveEventLoop) {
+        // 1. 初期化前は何もしない（resumed 前に about_to_wait が来る場合がある）。
+        if self.window.is_none() || self.renderer.is_none() {
+            return;
+        }
+
+        // 2. フレームがまだ回っているなら通常経路（フレーム内 process_ipc）に任せる。
+        let stalled_ms = self.last_frame_at.elapsed().as_millis() as u64;
+        if stalled_ms < IPC_PUMP_FRAME_STALL_MS {
+            return;
+        }
+
+        // 3. スピン抑制の時間ゲート。
+        if (self.last_ipc_pump_at.elapsed().as_millis() as u64) < IPC_PUMP_INTERVAL_MS {
+            return;
+        }
+        self.last_ipc_pump_at = std::time::Instant::now();
+
+        // 描画に依存しないコマンド（WGSL 検証・各種 SET・保存要求等）をここで消化する。
+        self.process_ipc(event_loop);
+
+        // 表示復帰時に最新状態で描かれるよう再描画を要求する（非表示中は配送されず無害）。
+        if !event_loop.exiting() {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+    }
+
+
     /// IPC コマンドをすべて収集してから順に処理する。
     ///
     /// &self.ipc の不変借用を処理ループ内に持ち込まないことで、
