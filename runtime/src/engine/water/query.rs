@@ -12,10 +12,16 @@
 //             水中判定は「XZ が AABB 内」かつ「y <= surface_y」かつ
 //             「y >= AABB 下端」。水面高さは XZ が AABB 内なら Y を問わず返す
 //             （水面の上に居ても「その真下に水がある」ことは分かるべきなため）。
-//    Spline … W4 で実装。常に無視する（collect 側でも除外している）。
+//    Spline … 川（W4）。折れ線リボン（`RiverPath`）までの **XZ 最短距離が半幅以内**で、
+//             かつ Y が「その地点の補間水面 Y」から下へ深さぶんの帯に入っていれば水中。
+//             水面高さは幅内なら Y を問わず「補間水面 Y」を返す（Region と同じ規約）。
 //
 //  複数の水が重なる場合、水面高さは最も高いものを採用する
 //  （プールの上に大洋がある等でも「最初にぶつかる水面」が返る）。
+//
+//  【流速（W4）】
+//  流速を持つのは川だけである。川の帯の中では「その地点の接線方向 × flow_speed」を返す。
+//  複数の川が重なる場合は、**中心線に最も近い川**の流速を採る（最も強く影響する川が勝つ）。
 // ============================================================
 
 use super::resolved::ResolvedWaterVolume;
@@ -23,8 +29,16 @@ use crate::engine::components::water_volume_component::WaterVolumeKind;
 
 // ─── 定数 ────────────────────────────────────────────────────
 
-/// W1 の流速（川スプライン未実装のため常にゼロ）。W4 で実装する。
+/// 水（川）が無い場所の流速。
 const ZERO_FLOW: [f32; 3] = [0.0, 0.0, 0.0];
+
+/// 流速が効く水面より上のマージン（m）。
+///
+/// 水面ちょうどに浮いている物体（浮力で水面に張り付いた船・プレイヤー）は、
+/// 数値誤差で水面のわずか上に居ることがある。そこで流されなくなると
+/// 「水面に浮くと急に止まる」という致命的な違和感になるため、
+/// 水面から上へこの分だけは流速を効かせる。
+const RIVER_FLOW_ABOVE_SURFACE_M: f32 = 0.25;
 
 // ─── WaterQuery ──────────────────────────────────────────────
 
@@ -66,12 +80,35 @@ impl<'a> WaterQuery<'a> {
         best
     }
 
-    /// この点の流速。W1 では常に [0,0,0]（W4 の川スプラインで実装）。
+    /// この点の流速（m/s。ワールド空間）。
     ///
-    /// 引数 `point` は W4 でスプライン上の最近傍を求めるために使う。
-    /// W1 では未使用だが、呼び出し側の API を W4 で変えずに済ませるため既に受け取る。
-    pub fn flow_at(&self, _point: [f32; 3]) -> [f32; 3] {
-        ZERO_FLOW
+    /// 流速を持つのは川（`WaterVolumeKind::Spline`）だけで、Ocean / Region は常にゼロ。
+    /// 川の帯（幅内・水面から下へ深さぶん＋水面上のわずかなマージン）に入っていれば、
+    /// その地点の**下流方向（3D 単位ベクトル）× flow_speed** を返す。
+    ///
+    /// 川が複数重なる場合は、**中心線に最も近い川**の流速を採る
+    /// （合成すると打ち消し合って「合流点で止まる」不自然が出るため、最寄りが勝つ）。
+    pub fn flow_at(&self, point: [f32; 3]) -> [f32; 3] {
+        let mut best_distance = f32::INFINITY;
+        let mut best_flow     = ZERO_FLOW;
+        for v in self.volumes {
+            let Some(river) = v.river.as_ref() else { continue };
+            let s = river.nearest(point);
+            // 幅の外は流されない。
+            if s.distance_xz > river.half_width { continue; }
+            // 深さ方向の帯: 水面 + マージン 〜 水面 − 深さ。
+            if point[1] > s.surface_y + RIVER_FLOW_ABOVE_SURFACE_M { continue; }
+            if point[1] < s.surface_y - river.depth { continue; }
+            if s.distance_xz < best_distance {
+                best_distance = s.distance_xz;
+                best_flow = [
+                    s.direction[0] * river.flow_speed,
+                    s.direction[1] * river.flow_speed,
+                    s.direction[2] * river.flow_speed,
+                ];
+            }
+        }
+        best_flow
     }
 }
 
@@ -79,7 +116,7 @@ impl<'a> WaterQuery<'a> {
 
 /// 点の XZ がボリュームの水平範囲に入っているか。
 ///
-/// Ocean は XZ 無限なので常に true。Spline は未実装なので常に false。
+/// Ocean は XZ 無限なので常に true。川は折れ線までの距離で判定する。
 fn volume_contains_xz(v: &ResolvedWaterVolume, point: [f32; 3]) -> bool {
     match v.kind {
         WaterVolumeKind::Ocean => true,
@@ -88,8 +125,12 @@ fn volume_contains_xz(v: &ResolvedWaterVolume, point: [f32; 3]) -> bool {
             let dz = point[2] - v.center[2];
             dx.abs() <= v.half_extents[0] && dz.abs() <= v.half_extents[2]
         }
-        // W4 で実装。それまでは問い合わせ対象外。
-        WaterVolumeKind::Spline => false,
+        // 川（W4）: 折れ線までの XZ 最短距離が半幅以内なら内側。
+        // 折れ線が無い（制御点不足の）川は水域として存在しない。
+        WaterVolumeKind::Spline => match v.river.as_ref() {
+            Some(river) => river.nearest(point).distance_xz <= river.half_width,
+            None => false,
+        },
     }
 }
 
@@ -104,13 +145,27 @@ fn volume_contains(v: &ResolvedWaterVolume, point: [f32; 3]) -> bool {
             let bottom_y = v.center[1] - v.half_extents[1];
             point[1] <= v.surface_y && point[1] >= bottom_y
         }
-        WaterVolumeKind::Spline => false,
+        // 川（W4）: 幅内、かつ「その地点の補間水面 Y」から下へ深さぶんの帯に入っていること。
+        // 水面 Y が地点ごとに違う（川は下る）ため、Region と違って公称 surface_y は使えない。
+        WaterVolumeKind::Spline => {
+            let Some(river) = v.river.as_ref() else { return false };
+            let s = river.nearest(point);
+            s.distance_xz <= river.half_width
+                && point[1] <= s.surface_y
+                && point[1] >= s.surface_y - river.depth
+        }
     }
 }
 
 /// 点の XZ における、このボリュームの水面高さ。範囲外なら None。
 /// Y 座標は問わない（水面の上に居ても真下の水面は返る）。
 fn volume_surface_at_xz(v: &ResolvedWaterVolume, point: [f32; 3]) -> Option<f32> {
+    // 川は地点ごとに水面 Y が違うので、折れ線から補間した値を返す。
+    if v.kind == WaterVolumeKind::Spline {
+        let river = v.river.as_ref()?;
+        let s = river.nearest(point);
+        return if s.distance_xz <= river.half_width { Some(s.surface_y) } else { None };
+    }
     if volume_contains_xz(v, point) { Some(v.surface_y) } else { None }
 }
 
@@ -157,6 +212,8 @@ mod tests {
             visual: dummy_visual(),
             // 問い合わせ（水中判定）はピッキング ID を使わないのでダミー
             actor_dfs_id: 0,
+            // Ocean / Region は川を持たない
+            river: None,
         }
     }
 
@@ -171,11 +228,13 @@ mod tests {
             visual: dummy_visual(),
             // 問い合わせ（水中判定）はピッキング ID を使わないのでダミー
             actor_dfs_id: 0,
+            // Ocean / Region は川を持たない
+            river: None,
         }
     }
 
-    /// Spline（W4 未実装）を作る。常に無視されることの確認用。
-    fn spline() -> ResolvedWaterVolume {
+    /// 折れ線を持たない Spline（制御点不足の川）を作る。無視されることの確認用。
+    fn spline_without_path() -> ResolvedWaterVolume {
         ResolvedWaterVolume {
             kind: WaterVolumeKind::Spline,
             surface_y: 100.0,
@@ -185,7 +244,38 @@ mod tests {
             visual: dummy_visual(),
             // 問い合わせ（水中判定）はピッキング ID を使わないのでダミー
             actor_dfs_id: 0,
+            river: None,
         }
+    }
+
+    /// 川（W4）を作る。制御点はワールド座標で与える。
+    fn river(
+        points:     &[[f32; 3]],
+        width:      f32,
+        flow_speed: f32,
+        depth:      f32,
+    ) -> ResolvedWaterVolume {
+        ResolvedWaterVolume {
+            kind: WaterVolumeKind::Spline,
+            // 公称水面 Y（川では使われない。実際の水面は折れ線から補間される）
+            surface_y: points[0][1],
+            center: [0.0; 3],
+            half_extents: [0.0, depth, 0.0],
+            ocean_extent: 0.0,
+            visual: dummy_visual(),
+            actor_dfs_id: 0,
+            river: crate::engine::water::RiverPath::build(points, width, flow_speed, depth),
+        }
+    }
+
+    /// テスト用の川の既定値（幅 4m・流速 2m/s・深さ 3m）。
+    const RIVER_W: f32 = 4.0;
+    const RIVER_S: f32 = 2.0;
+    const RIVER_D: f32 = 3.0;
+
+    /// X 軸方向にまっすぐ流れる水平な川（原点 → +X 20m、水面 Y = 0）。
+    fn straight_river() -> ResolvedWaterVolume {
+        river(&[[0.0, 0.0, 0.0], [20.0, 0.0, 0.0]], RIVER_W, RIVER_S, RIVER_D)
     }
 
     // ── Ocean ────────────────────────────────────────────────
@@ -314,24 +404,117 @@ mod tests {
         assert!(!q.is_underwater([0.0, -100.0, 0.0]));
     }
 
-    /// Spline は W4 未実装のため、問い合わせでは常に無視される。
+    /// 折れ線を持たない Spline（制御点不足）は問い合わせで常に無視される。
     #[test]
-    fn spline_is_always_ignored() {
-        let vols = [spline()];
+    fn spline_without_path_is_ignored() {
+        let vols = [spline_without_path()];
         let q = WaterQuery::new(&vols);
         assert!(!q.is_underwater([0.0, 0.0, 0.0]));
         assert_eq!(q.surface_height_at([0.0, 0.0, 0.0]), None);
+        assert_eq!(q.flow_at([0.0, 0.0, 0.0]), [0.0, 0.0, 0.0]);
     }
 
-    /// flow_at は W1 では常にゼロ（水があってもなくても）。
+    // ── 川（Phase W4）────────────────────────────────────────
+
+    /// 川の帯の中は水中、幅の外は水中でない。
     #[test]
-    fn flow_is_always_zero_in_w1() {
+    fn river_inside_and_outside_width() {
+        let vols = [straight_river()];
+        let q = WaterQuery::new(&vols);
+        assert!(q.is_underwater([10.0, -0.5, 0.0]), "中心線の水面下は水中");
+        assert!(!q.is_underwater([10.0, -0.5, 5.0]), "幅の外は水中でない");
+    }
+
+    /// 幅境界ちょうど（距離 == 半幅）は内側として扱う（Region の XZ 境界と同じ規約）。
+    #[test]
+    fn river_width_boundary_is_inside() {
+        let vols = [straight_river()];
+        let q = WaterQuery::new(&vols);
+        let half = RIVER_W * 0.5;
+        assert!(q.is_underwater([10.0, 0.0, half]), "半幅ちょうどは内側");
+        assert!(!q.is_underwater([10.0, 0.0, half + 0.01]), "半幅を超えたら外側");
+    }
+
+    /// 川の水面より上は水中でなく、深さより下（＝川底より下）も水中でない。
+    #[test]
+    fn river_depth_band() {
+        let vols = [straight_river()];
+        let q = WaterQuery::new(&vols);
+        assert!(q.is_underwater([10.0, 0.0, 0.0]), "水面ちょうどは水中");
+        assert!(!q.is_underwater([10.0, 0.01, 0.0]), "水面より上は水中でない");
+        assert!(q.is_underwater([10.0, -RIVER_D, 0.0]), "深さちょうどは水中");
+        assert!(!q.is_underwater([10.0, -RIVER_D - 0.01, 0.0]), "川底より下は水中でない");
+    }
+
+    /// 川の水面高さは制御点の Y の補間（下る川の途中では中間の高さ）。
+    #[test]
+    fn river_surface_height_interpolates_and_ignores_y() {
+        let vols = [river(&[[0.0, 10.0, 0.0], [20.0, 0.0, 0.0]], RIVER_W, RIVER_S, RIVER_D)];
+        let q = WaterQuery::new(&vols);
+        let mid = q.surface_height_at([10.0, 1000.0, 0.0]).expect("幅内なら Y を問わず返る");
+        assert!((mid - 5.0).abs() < 0.3, "中間地点の水面はおよそ 5（実際 {mid}）");
+        assert_eq!(q.surface_height_at([10.0, 0.0, 50.0]), None, "幅の外は None");
+    }
+
+    /// 川の中では下流方向へ流速が返る。幅の外・空の水域ではゼロ。
+    #[test]
+    fn river_flow_points_downstream() {
+        let vols = [straight_river()];
+        let q = WaterQuery::new(&vols);
+        let f = q.flow_at([10.0, -1.0, 0.0]);
+        assert!((f[0] - RIVER_S).abs() < 1e-3, "+X へ流速 {RIVER_S}（実際 {}）", f[0]);
+        assert!(f[1].abs() < 1e-3 && f[2].abs() < 1e-3, "水平な直線川では XZ 以外は 0");
+
+        assert_eq!(q.flow_at([10.0, -1.0, 5.0]), ZERO_FLOW, "幅の外は流れない");
+        assert_eq!(q.flow_at([10.0, -100.0, 0.0]), ZERO_FLOW, "川底より下は流れない");
+    }
+
+    /// 水面のわずか上（浮いている物体）は流される — 数値誤差で急停止しないこと。
+    #[test]
+    fn river_flow_applies_slightly_above_surface() {
+        let vols = [straight_river()];
+        let q = WaterQuery::new(&vols);
+        let just_above = q.flow_at([10.0, RIVER_FLOW_ABOVE_SURFACE_M * 0.5, 0.0]);
+        assert!(just_above[0] > 0.0, "水面すぐ上は流される");
+        let far_above = q.flow_at([10.0, RIVER_FLOW_ABOVE_SURFACE_M + 1.0, 0.0]);
+        assert_eq!(far_above, ZERO_FLOW, "水面から離れた空中は流されない");
+    }
+
+    /// 下る川の流速は 3D（Y 成分を持つ）で、大きさが flow_speed になる。
+    #[test]
+    fn river_flow_is_three_dimensional_and_normalized() {
+        let vols = [river(&[[0.0, 10.0, 0.0], [20.0, 0.0, 0.0]], RIVER_W, RIVER_S, RIVER_D)];
+        let q = WaterQuery::new(&vols);
+        // 中間地点の水面あたり（水面 Y ≒ 5）
+        let f = q.flow_at([10.0, 4.0, 0.0]);
+        let len = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt();
+        assert!((len - RIVER_S).abs() < 1e-2, "流速の大きさは flow_speed（実際 {len}）");
+        assert!(f[1] < 0.0, "下る川なので Y は負");
+    }
+
+    /// Ocean / Region は流速を持たない（川だけが流れる）。
+    #[test]
+    fn non_river_volumes_have_no_flow() {
         let vols = [ocean(5.0), region([0.0, 0.0, 0.0], [10.0, 5.0, 10.0], 2.0)];
         let q = WaterQuery::new(&vols);
-        assert_eq!(q.flow_at([0.0, 0.0, 0.0]), [0.0, 0.0, 0.0]);
-        assert_eq!(q.flow_at([123.0, -45.0, 6.0]), [0.0, 0.0, 0.0]);
+        assert_eq!(q.flow_at([0.0, 0.0, 0.0]), ZERO_FLOW);
+        assert_eq!(q.flow_at([123.0, -45.0, 6.0]), ZERO_FLOW);
 
         let empty: [ResolvedWaterVolume; 0] = [];
-        assert_eq!(WaterQuery::new(&empty).flow_at([0.0, 0.0, 0.0]), [0.0, 0.0, 0.0]);
+        assert_eq!(WaterQuery::new(&empty).flow_at([0.0, 0.0, 0.0]), ZERO_FLOW);
+    }
+
+    /// 川が 2 本重なる場合は、中心線に近い方の流速が採られる（打ち消し合わない）。
+    #[test]
+    fn overlapping_rivers_use_nearest_centerline() {
+        // +X へ流れる川（中心 z=0）と、+Z へ流れる川（中心 x=8）。点 (8, 0, 1) は
+        // 後者の中心線から 0m、前者の中心線から 1m。
+        let vols = [
+            straight_river(),
+            river(&[[8.0, 0.0, -10.0], [8.0, 0.0, 10.0]], RIVER_W, RIVER_S, RIVER_D),
+        ];
+        let q = WaterQuery::new(&vols);
+        let f = q.flow_at([8.0, -0.5, 1.0]);
+        assert!(f[2] > 0.0 && f[0].abs() < 1e-3, "近い方（+Z の川）の流速が採られる");
     }
 }

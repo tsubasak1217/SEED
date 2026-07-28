@@ -15,6 +15,25 @@ use crate::engine::components::water_volume_component::WaterVolumeKind;
 /// ストレージバッファはこの容量まで自動で伸びる。
 pub const WATER_MAX_VOLUMES: usize = 64;
 
+/// 1 ドローで描ける最大**インスタンス**数（Phase W4）。
+///
+/// W1〜W1.5 では「1 水ボリューム = 1 インスタンス」だったが、川（Spline）は
+/// 折れ線の 1 分割ごとに 1 インスタンス（リボンのクアッド 1 枚）を消費するため、
+/// ボリューム数とインスタンス数が一致しなくなった。
+/// 上限は「水域 64 個 ＋ 川の分割（最大 256）を数本」を賄える値にしてある
+/// （1 インスタンス = `WaterParams` 224 バイトなので 1024 個でも 224KB）。
+pub const WATER_MAX_INSTANCES: usize = 1024;
+
+/// インスタンス種別（`WaterParams::center.w`）: 軸平行クアッド（Ocean / Region）。
+pub const WATER_INSTANCE_QUAD: f32 = 0.0;
+
+/// インスタンス種別（`WaterParams::center.w`）: 川リボンの 1 分割（Phase W4）。
+///
+/// 頂点シェーダはこの値を見て、`center ± half_extent` の矩形ではなく
+/// `river_p0/river_p1/river_normal` から作る四角形（＝リボンの 1 コマ）を生成する。
+/// **`water_surface.wgsl` / `water_id.wgsl` の `WATER_INSTANCE_RIVER` と一致必須。**
+pub const WATER_INSTANCE_RIVER: f32 = 1.0;
+
 /// 水面クアッド 1 枚を描くための頂点数（三角形 2 枚 = 6 頂点）。
 /// 頂点バッファを持たず `draw(0..この値, 0..N)` で描くため、WGSL 側の
 /// `WATER_QUAD_VERTEX_COUNT`（water_surface.wgsl / water_id.wgsl）と一致させること。
@@ -48,7 +67,8 @@ pub const SHORE_WAVE_PERIOD_MIN: f32 = 1.0 / 60.0;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct WaterParams {
-    /// xyz = 水面クアッド中心のワールド座標（y = 水面 Y）／w = 未使用
+    /// xyz = 水面クアッド中心のワールド座標（y = 水面 Y）／
+    /// **w = インスタンス種別**（`WATER_INSTANCE_QUAD` / `WATER_INSTANCE_RIVER`。Phase W4）
     pub center: [f32; 4],
     /// x,z = クアッドの片側半径（m）／y,w = 未使用
     pub half_extent: [f32; 4],
@@ -85,6 +105,17 @@ pub struct WaterParams {
     /// （＝岸波を描かない）。f32 に入れているのは vec4 を分割せずに済ませるためで、
     /// シェーダ側は `w < 0` の判定と `i32(w)` のレイヤ添字化だけを行う。
     pub shore_field: [f32; 4],
+    /// 川リボン 1 分割の上流側ノード（Phase W4）。
+    /// xyz = ワールド座標（y = その地点の水面 Y）／w = リボンの半幅（m）
+    pub river_p0: [f32; 4],
+    /// 川リボン 1 分割の下流側ノード（Phase W4）。
+    /// xyz = ワールド座標／w = 流速（m/s。水面模様を下流へ流す速さ）
+    pub river_p1: [f32; 4],
+    /// 川リボンの断面法線（Phase W4）。
+    /// x,y = 上流ノードの法線（XZ。**マイター補正込みなので長さは 1 とは限らない**）／
+    /// z,w = 下流ノードの法線（同上）。
+    /// リボンの 4 隅は `p0 ± n0 * 半幅` と `p1 ± n1 * 半幅` で決まる。
+    pub river_normal: [f32; 4],
 }
 
 /// ショアフィールドを持たない水域を表すレイヤ番号（負値）。
@@ -127,7 +158,7 @@ impl WaterParams {
         };
         let vis = &v.visual;
         Self {
-            center:      [cx, v.surface_y, cz, 0.0],
+            center:      [cx, v.surface_y, cz, WATER_INSTANCE_QUAD],
             half_extent: [hx, 0.0, hz, 0.0],
             shallow_color: [
                 vis.shallow_color[0], vis.shallow_color[1], vis.shallow_color[2],
@@ -174,7 +205,46 @@ impl WaterParams {
                 ],
                 None => [0.0, 0.0, 0.0, SHORE_LAYER_NONE],
             },
+            // クアッド（Ocean / Region）は川のフィールドを使わない。
+            river_p0:     [0.0; 4],
+            river_p1:     [0.0; 4],
+            river_normal: [0.0; 4],
         }
+    }
+
+    /// 川リボンの 1 分割ぶんの GPU パラメータを作る（Phase W4）。
+    ///
+    /// 見た目パラメータ・ピッキング ID は水域全体で共通なので `from_resolved` を
+    /// そのまま使い、形状（クアッド → リボンの 1 コマ）と流れの情報だけを差し替える。
+    /// こうしておくと「川だけ色の扱いが違う」といった分岐が生まれない。
+    ///
+    /// `a` / `b` は折れ線の隣り合う 2 ノード（上流 → 下流）。
+    ///
+    /// ショアフィールド（岸波）は川では焼かれないため常に無効化する
+    /// （`engine::water::shore` 側でも川は対象外にしてある）。
+    pub fn from_river_segment(
+        v:          &ResolvedWaterVolume,
+        a:          &crate::engine::water::RiverNode,
+        b:          &crate::engine::water::RiverNode,
+        half_width: f32,
+        flow_speed: f32,
+        id_base:    u32,
+    ) -> Self {
+        // カメラ位置は Ocean のクアッド追従にしか使われないので、川では任意でよい。
+        let mut p = Self::from_resolved(v, [0.0; 3], id_base, None);
+        // 中心は「分割の中点」。フラグメントでは使わないが、デバッグ表示や
+        // 将来のソートで意味のある値が入っている方が安全。
+        p.center = [
+            (a.pos[0] + b.pos[0]) * 0.5,
+            (a.pos[1] + b.pos[1]) * 0.5,
+            (a.pos[2] + b.pos[2]) * 0.5,
+            WATER_INSTANCE_RIVER,
+        ];
+        p.half_extent   = [half_width, 0.0, half_width, 0.0];
+        p.river_p0      = [a.pos[0], a.pos[1], a.pos[2], half_width];
+        p.river_p1      = [b.pos[0], b.pos[1], b.pos[2], flow_speed];
+        p.river_normal  = [a.normal[0], a.normal[1], b.normal[0], b.normal[1]];
+        p
     }
 }
 
@@ -191,8 +261,8 @@ mod tests {
     fn water_params_layout_is_std430_safe() {
         assert_eq!(std::mem::size_of::<WaterParams>() % 16, 0,
             "WaterParams のサイズは 16 の倍数であること（std430 の配列ストライド）");
-        assert_eq!(std::mem::size_of::<WaterParams>(), 11 * 16,
-            "WaterParams は vec4 11 本ぶん（176 バイト）であること。\
+        assert_eq!(std::mem::size_of::<WaterParams>(), 14 * 16,
+            "WaterParams は vec4 14 本ぶん（224 バイト）であること。\
              WGSL 側 struct WaterParams（water_surface.wgsl / water_id.wgsl）と同期すること");
         assert_eq!(std::mem::align_of::<WaterParams>(), 4,
             "repr(C) の [f32;4] 配列なので Rust 側アラインは 4（バイト列は 16 の倍数長で連続する）");
@@ -214,7 +284,7 @@ mod tests {
         let ocean = ResolvedWaterVolume {
             kind: WaterVolumeKind::Ocean, surface_y: 3.0,
             center: [0.0; 3], half_extents: [0.0; 3], ocean_extent: 500.0, visual,
-            actor_dfs_id: 0,
+            actor_dfs_id: 0, river: None,
         };
         let p = WaterParams::from_resolved(&ocean, [10.0, 5.0, -20.0], 0, None);
         assert_eq!(p.center, [10.0, 3.0, -20.0, 0.0]);
@@ -223,7 +293,7 @@ mod tests {
         let region = ResolvedWaterVolume {
             kind: WaterVolumeKind::Region, surface_y: 2.0,
             center: [1.0, 0.0, 2.0], half_extents: [4.0, 1.0, 6.0], ocean_extent: 500.0, visual,
-            actor_dfs_id: 0,
+            actor_dfs_id: 0, river: None,
         };
         let q = WaterParams::from_resolved(&region, [10.0, 5.0, -20.0], 0, None);
         assert_eq!(q.center, [1.0, 2.0, 2.0, 0.0]);
@@ -247,7 +317,7 @@ mod tests {
         let v = ResolvedWaterVolume {
             kind: WaterVolumeKind::Region, surface_y: 0.0,
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
-            actor_dfs_id: 0,
+            actor_dfs_id: 0, river: None,
         };
         let p = WaterParams::from_resolved(&v, [0.0; 3], 0, None);
         assert_eq!(p.fresnel, [2.0, 0.5, 1.25, 0.08], "x,y=フレネル / z,w=波紋");
@@ -292,7 +362,7 @@ mod tests {
         let v = ResolvedWaterVolume {
             kind: WaterVolumeKind::Region, surface_y: 0.0,
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
-            actor_dfs_id: 7,
+            actor_dfs_id: 7, river: None,
         };
         let p = WaterParams::from_resolved(&v, [0.0; 3], 100, None);
         assert_eq!(p.actor_id[0], 108, "id_base(100) + DFS(7) + 1");

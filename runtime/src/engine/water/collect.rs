@@ -9,7 +9,7 @@
 //    ・world_line が一致しないルートは対象外
 //    ・active=false のアクターはサブツリーごとスキップ（祖先の非アクティブも伝播）
 //    ・enabled=false のスロットはスキップ
-//    ・Spline（W4 未実装）はスキップ
+//    ・Spline（川）で制御点が 2 点未満のものはスキップ（折れ線が作れないため）
 //
 //  【W1 の制限】アクタのワールド行列は Transform.position のみ使う
 //  （Transform はワールド空間）。**回転は無視する ＝ Region は軸平行 AABB。**
@@ -80,9 +80,11 @@ fn collect_in_actor(
             // 無効スロットは描画・問い合わせともに対象外
             if slot.kind != ComponentKind::WaterVolume || !slot.enabled { continue; }
             let Some(wv) = world.get::<WaterVolumeComponent>(slot.entity) else { continue };
-            // Spline は W4 で実装。それまでは収集しない（下流が誤って参照しないように）。
-            if wv.kind == WaterVolumeKind::Spline { continue; }
-            out.push(ResolvedWaterVolume::from_component(wv, pos, dfs_id));
+            let resolved = ResolvedWaterVolume::from_component(wv, pos, dfs_id);
+            // 川（Spline。W4）は制御点が 2 点未満だと折れ線が作れず、
+            // 描画も問い合わせも定義できない。収集しない（下流が誤って参照しないように）。
+            if wv.kind == WaterVolumeKind::Spline && resolved.river.is_none() { continue; }
+            out.push(resolved);
         }
     }
 
@@ -117,6 +119,17 @@ mod tests {
             pos:  [f32; 3],
             kind: WaterVolumeKind,
         ) -> Actor {
+            self.make_water_actor_with(pos, kind, |_| {})
+        }
+
+        /// 上と同じだが、生成した WaterVolumeComponent を `edit` で追加設定できる
+        /// （川の制御点など、種別ごとの追加パラメータを与えるため）。
+        fn make_water_actor_with(
+            &mut self,
+            pos:  [f32; 3],
+            kind: WaterVolumeKind,
+            edit: impl FnOnce(&mut WaterVolumeComponent),
+        ) -> Actor {
             let entity = self.world.spawn();
             let mut tf = Transform::default();
             tf.position = pos;
@@ -126,6 +139,7 @@ mod tests {
             let slot_entity = self.world.spawn();
             let mut wv = WaterVolumeComponent::default();
             wv.kind = kind;
+            edit(&mut wv);
             self.world.insert(slot_entity, wv);
             actor.add_slot_typed::<WaterVolumeComponent>(
                 "WaterVolumeComponent", ComponentKind::WaterVolume, slot_entity);
@@ -203,14 +217,30 @@ mod tests {
         assert!(s.collect().is_empty());
     }
 
-    /// Spline（W4 未実装）は収集されない。
+    /// 制御点の無い Spline（＝川として成立していない）は収集されない。
     #[test]
-    fn skips_spline_kind() {
+    fn skips_spline_without_control_points() {
         let mut s = TestScene::new();
         let a = s.make_water_actor([0.0, 0.0, 0.0], WaterVolumeKind::Spline);
         s.actors.push(a);
 
         assert!(s.collect().is_empty());
+    }
+
+    /// 制御点が 2 点以上ある Spline（川）は収集され、折れ線を持つ。
+    #[test]
+    fn collects_spline_with_control_points() {
+        let mut s = TestScene::new();
+        let a = s.make_water_actor_with(
+            [0.0, 0.0, 0.0],
+            WaterVolumeKind::Spline,
+            |w| w.spline_points = vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+        );
+        s.actors.push(a);
+
+        let vols = s.collect();
+        assert_eq!(vols.len(), 1);
+        assert!(vols[0].river.is_some(), "川の折れ線が構築されている");
     }
 
     /// world_line が一致しないルートは対象外。

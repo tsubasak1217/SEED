@@ -39,7 +39,9 @@
 
 pub mod params;
 
-pub use params::{WaterParams, WATER_MAX_VOLUMES, WATER_QUAD_VERTEX_COUNT};
+pub use params::{
+    WaterParams, WATER_MAX_INSTANCES, WATER_MAX_VOLUMES, WATER_QUAD_VERTEX_COUNT,
+};
 
 use std::collections::HashMap;
 
@@ -405,12 +407,44 @@ impl WaterRenderer {
         //    パラメータ生成より先に行う（レイヤ番号を確定させてから params へ詰めるため）。
         self.sync_shore_fields(device, queue, shore);
 
-        // ── パラメータ配列を作ってアップロード ──
-        let gpu: Vec<WaterParams> = volumes[..count]
-            .iter()
-            .map(|v| WaterParams::from_resolved(
-                v, camera_pos, id_base, shore.get(v.actor_dfs_id)))
-            .collect();
+        // ── パラメータ配列（＝描画インスタンス列）を作ってアップロード ──
+        //    W1〜W1.5 は「1 水ボリューム = 1 インスタンス」だったが、
+        //    川（W4）は折れ線の 1 分割ごとに 1 インスタンス（リボンのクアッド）を出す。
+        //    どちらも同じ配列・同じドローに混ざるので、パスもシェーダも 1 本のまま。
+        let mut gpu: Vec<WaterParams> = Vec::with_capacity(count);
+        for v in &volumes[..count] {
+            match v.river.as_ref() {
+                // 川: 折れ線の隣り合うノード対ごとにリボンの 1 コマを積む。
+                Some(river) => {
+                    for w in river.nodes.windows(2) {
+                        if gpu.len() >= WATER_MAX_INSTANCES { break; }
+                        gpu.push(WaterParams::from_river_segment(
+                            v, &w[0], &w[1], river.half_width, river.flow_speed, id_base));
+                    }
+                }
+                // Ocean / Region: 従来どおり 1 個の軸平行クアッド。
+                None => {
+                    if gpu.len() >= WATER_MAX_INSTANCES { break; }
+                    gpu.push(WaterParams::from_resolved(
+                        v, camera_pos, id_base, shore.get(v.actor_dfs_id)));
+                }
+            }
+            if gpu.len() >= WATER_MAX_INSTANCES {
+                if !self.warned_overflow {
+                    self.warned_overflow = true;
+                    eprintln!(
+                        "[water] 描画インスタンスが上限 {WATER_MAX_INSTANCES} 個に達したため \
+                         以降を切り捨てます（川の分割が多すぎる可能性があります）",
+                    );
+                }
+                break;
+            }
+        }
+        // 川の制御点が足りない等で 1 インスタンスも出なければ、描くものが無い。
+        if gpu.is_empty() {
+            return false;
+        }
+        let count = gpu.len();
 
         if self.params_buf.is_none() || self.params_capacity < count {
             let capacity = count.max(1);
@@ -662,8 +696,29 @@ mod tests {
         let id      = field_names(include_str!("../shaders/water_id.wgsl"));
         assert_eq!(surface, id,
             "water_surface.wgsl と water_id.wgsl の WaterParams フィールド順が食い違っている");
-        assert_eq!(surface.len(), 11,
-            "Rust 側 WaterParams（vec4 11 本）と本数を揃えること");
+        assert_eq!(surface.len(), 14,
+            "Rust 側 WaterParams（vec4 14 本）と本数を揃えること");
+    }
+
+    /// 川（Phase W4）の描画経路が両シェーダに生きていること。
+    ///
+    /// リボン生成が落ちても「川が平らなクアッドとして描かれる」だけで
+    /// コンパイルは通ってしまうため、文字列で押さえる。
+    #[test]
+    fn water_shaders_implement_river_ribbon() {
+        let surface = include_str!("../shaders/water_surface.wgsl");
+        let id      = include_str!("../shaders/water_id.wgsl");
+        assert!(surface.contains("fn water_river_vertex("),
+            "水面シェーダのリボン頂点生成が消えている");
+        assert!(id.contains("fn water_id_river_vertex("),
+            "ID パスのリボン頂点生成が消えている（＝川がクリックできなくなる）");
+        // 流れ（2 位相ブレンド）の消費経路
+        assert!(surface.contains("fn water_flow_offsets("), "流れの位相オフセットが消えている");
+        assert!(surface.contains("water_flow_wave_gradient(p, world_xz, t)"),
+            "合成勾配が流れ付きの解析波を使っていない");
+        // インスタンス種別のしきい値は両シェーダで一致していること
+        assert!(surface.contains("const WATER_INSTANCE_RIVER_MIN: f32 = 0.5;"));
+        assert!(id.contains("const WATER_INSTANCE_RIVER_MIN: f32 = 0.5;"));
     }
 
     /// 水面シェーダが岸波（Phase W1.5）を実装していること。

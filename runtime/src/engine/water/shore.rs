@@ -263,9 +263,13 @@ impl ShoreFieldSet {
 
         // ── ① 岸波を使う水域だけを、レイヤ上限まで拾う ──
         //     strength <= 0 の水域は焼かない（＝ユーザが切れば CPU コストも 0）。
+        //     川（Spline。W4）も焼かない。岸波は「岸へ寄せるうねり」であって
+        //     川面に出すものではなく、川の窓は AABB では表せない（細長い折れ線）ため、
+        //     Region 用の正方窓を当てると無関係な広域を焼くだけになる。
         let targets: Vec<&ResolvedWaterVolume> = volumes
             .iter()
-            .filter(|v| v.visual.shore_wave_strength > 0.0)
+            .filter(|v| v.visual.shore_wave_strength > 0.0
+                && v.kind != WaterVolumeKind::Spline)
             .take(SHORE_FIELD_MAX_LAYERS)
             .collect();
 
