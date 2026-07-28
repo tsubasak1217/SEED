@@ -33,10 +33,28 @@
 //  ラプラシアンの 4 近傍も同じ読み側テクスチャから取れる（＝**追加のテクスチャも
 //  追加のディスパッチも不要**。速度場 .xy と完全に同居できる）。
 //
-//  時間刻みは可変 dt をそのまま使わず、係数 `wave_k = (c·dt/dx)²` を CPU 側で
-//  CFL 上限（1/2）に飽和させて渡す（`INTERACTION_WAVE_MAX_COURANT_SQ`）。
-//  これにより低フレームレートでも発散せず、通常のフレームレート域では
-//  波の広がる速さが実時間に一致する。
+//  ## 時間刻みは「固定」である（可変 dt 禁止。発散事故の再発防止）
+//  波動方程式の陽解法は **時間刻みが一定であること**を前提にした 2 段階差分である。
+//  可変 dt を「前フレームとの dt 比」で補正する方式（旧実装）は原理的に破綻する:
+//  モード解析すると特性方程式は g² − damp·(1 + inertia − kλ)·g + damp·inertia = 0 となり、
+//  2 根の積が damp·inertia になる。すなわち inertia > 1/damp のフレームでは
+//  必ず |g| > 1 の根が生じ、フレーム時間が揺れる（エディタでは常態）たびに
+//  波へエネルギーが注入されて発散する。
+//
+//  そこで本実装は **固定刻み `WAVE_FIXED_DT`（Rust 側 1/60 秒）のサブステップ方式**を採る。
+//  実経過時間は CPU 側のアキュムレータに積まれ、固定刻み単位で本シェーダが
+//  1 フレームあたり最大 `INTERACTION_WAVE_MAX_SUBSTEPS` 回ディスパッチされる。
+//  結果、`wave_k = (c·WAVE_FIXED_DT/dx)²` と `wave_damp = exp(-WAVE_FIXED_DT/τ)` は
+//  **フレームレートに一切依存しない定数**になり、2D の von Neumann 安定限界
+//  k ≤ 1/2 に対して余裕（k = 0.25）を持ったまま常に安定する。
+//
+//  ## 2 つのエントリポイント（サブステップの構成）
+//  ・`cs_interaction_field`         … 1 回目のサブステップ。
+//        再マップ（カメラ移動）＋ 速度場の減衰 ＋ 波 1 ステップ ＋ ソースのスタンプ。
+//  ・`cs_interaction_wave_substep`  … 2 回目以降のサブステップ。**波 1 ステップのみ。**
+//        再マップは「カメラ移動 1 回ぶん」しか存在しないので 1 フレームに 1 回だけが正しく、
+//        速度場の減衰も実 dt ぶんを 1 回目にまとめて掛けるのが正しい（1 次減衰なので
+//        可変 dt でも安定）。ソースのスタンプも同じ理由で 1 回目だけ。
 //
 //  窓の外は h=0 として扱う（＝窓の縁で波が消える）。カメラが動いて新しく入ってきた
 //  帯に「以前からあった波」を捏造しないための当然の帰結であり、64m の窓の縁は
@@ -74,8 +92,8 @@ const INTERACTION_FIELD_MAX_SPEED: f32 = 20.0;
 const INTERACTION_WAVE_EPSILON: f32 = 1.0e-5;
 
 /// 波の高さの絶対値の上限（m 相当）。
-/// 明示スキームは条件付き安定であり、CPU 側で CFL 飽和を掛けていても
-/// 複数ソースの重なりや極端な dt 変動で局所的に跳ねうる。最後の安全弁として締める。
+/// 固定刻み化で理論上は安定だが、ソースのスタンプは境界条件の強制なので
+/// 複数ソースの重なりで局所的に跳ねうる。最後の安全弁として締める。
 const INTERACTION_WAVE_MAX_HEIGHT: f32 = 1.0;
 
 /// 前フレーム値をこの絶対値未満まで減衰したら 0 に落とす閾値（m/s）。
@@ -112,13 +130,12 @@ struct InteractionFieldUniform {
     bend_per_speed: f32,
     /// 草の曲げ角の上限（rad）。**消費側（草）のみが使う。**
     max_bend:       f32,
-    /// 波の伝播係数 (c·dt/dx)²（無次元。CFL 上限で飽和済み）。**更新パスのみ使う。**
+    /// 波の伝播係数 (c·WAVE_FIXED_DT/dx)²（無次元・**定数**）。**更新パスのみ使う。**
     wave_k:         f32,
-    /// 波の減衰係数 exp(-dt/tau_wave)。**更新パスのみ使う。**
+    /// 1 サブステップぶんの波の減衰係数 exp(-WAVE_FIXED_DT/tau_wave)（**定数**）。**更新パスのみ使う。**
     wave_damp:      f32,
-    /// 波の慣性項の dt 正規化係数（今フレーム dt / 前フレーム dt。飽和済み）。**更新パスのみ使う。**
-    wave_inertia:   f32,
     /// 16 バイト境界へ揃えるためのパディング（未使用）。
+    _pad0:          f32,
     _pad1:          f32,
     _pad2:          f32,
 }
@@ -155,15 +172,16 @@ struct InteractionSourceGpu {
 //  ユーティリティ
 // ============================================================
 
-/// 前フレームの場から、今フレームのテクセルに対応する値を読む（窓ズレの再マップ）。
+/// 読み側の場から、今フレームのテクセルに対応する値を読む（窓ズレの再マップ込み）。
 ///
-/// 窓の原点は両フレームともテクセル単位にスナップされているため、差は整数テクセル。
-/// 窓の外（前フレームには存在しなかった領域）は 0 を返す＝新しく入ってきた帯は
+/// `shift` は「今フレームのテクセル座標 → 読み側のテクセル座標」への整数オフセット。
+/// 1 回目のサブステップでは `interaction_remap_shift()`（カメラ移動ぶん）、
+/// 2 回目以降のサブステップでは 0（同一フレーム内なのでズレは無い）を渡す。
+///
+/// 窓の外（読み側には存在しなかった領域）は 0 を返す＝新しく入ってきた帯は
 /// 「場が無かった」ことになり、草が突然倒れることがない。
-fn interaction_load_previous(coord: vec2<i32>, res: i32) -> vec4<f32> {
-    // 窓原点の差を整数テクセル数へ（スナップ済みなので丸め誤差は ±0.5 テクセル未満）。
-    let shift = interaction_remap_shift();
-    let prev  = coord + shift;
+fn interaction_load_shifted(coord: vec2<i32>, shift: vec2<i32>, res: i32) -> vec4<f32> {
+    let prev = coord + shift;
     if (prev.x < 0 || prev.y < 0 || prev.x >= res || prev.y >= res) {
         return vec4<f32>(0.0);
     }
@@ -179,16 +197,47 @@ fn interaction_remap_shift() -> vec2<i32> {
     return vec2<i32>(i32(round(shift_f.x)), i32(round(shift_f.y)));
 }
 
-/// 前フレームの場の **波の高さ h_t（.z）だけ**を、整数オフセット付きで読む。
+/// 読み側の場の **波の高さ h_t（.z）だけ**を、近傍オフセット＋再マップ付きで読む。
 ///
-/// ラプラシアンの 4 近傍サンプル用。窓の外（前フレームに存在しなかった領域）は 0＝
+/// ラプラシアンの 4 近傍サンプル用。窓の外（読み側に存在しなかった領域）は 0＝
 /// 「そこに波は無かった」とみなす（窓の縁で波が消える。冒頭コメント参照）。
-fn interaction_load_prev_height(coord: vec2<i32>, offset: vec2<i32>, res: i32) -> f32 {
-    let prev = coord + offset + interaction_remap_shift();
+fn interaction_load_height(coord: vec2<i32>, offset: vec2<i32>, shift: vec2<i32>, res: i32) -> f32 {
+    let prev = coord + offset + shift;
     if (prev.x < 0 || prev.y < 0 || prev.x >= res || prev.y >= res) {
         return 0.0;
     }
     return textureLoad(src_field, prev, 0).z;
+}
+
+/// 波を **固定刻み 1 サブステップぶん**進める（教科書形の陽解法）。
+///
+///   h_next = damp_sub · ( 2·h_now − h_prev + k_fixed·∇²h_now )
+///
+/// `wave_k` / `wave_damp` はどちらも固定刻み由来の**定数**（uniform 経由で受け取るだけで、
+/// フレーム時間には依存しない）。慣性項の dt 比補正は行わない — 行うと発散する
+/// （理由は冒頭コメント「時間刻みは固定である」節）。
+fn interaction_wave_step(h_now: f32, h_prev: f32, lap: f32) -> f32 {
+    return (2.0 * h_now - h_prev + u_field.wave_k * lap) * u_field.wave_damp;
+}
+
+/// 読み側から 4 近傍のラプラシアン（5 点ステンシル）を取る。
+///
+/// テクセル間隔で正規化する必要はない（k = (c·dt/dx)² に dx が畳み込まれているため）。
+fn interaction_laplacian(coord: vec2<i32>, shift: vec2<i32>, res: i32, h_now: f32) -> f32 {
+    return interaction_load_height(coord, vec2<i32>( 1,  0), shift, res)
+         + interaction_load_height(coord, vec2<i32>(-1,  0), shift, res)
+         + interaction_load_height(coord, vec2<i32>( 0,  1), shift, res)
+         + interaction_load_height(coord, vec2<i32>( 0, -1), shift, res)
+         - 4.0 * h_now;
+}
+
+/// 波の書き出し前の共通処理（安全弁の飽和と、消えかけの値の切り捨て）。
+fn interaction_finalize_height(h_next_in: f32, h_now: f32) -> f32 {
+    var h_next = clamp(h_next_in, -INTERACTION_WAVE_MAX_HEIGHT, INTERACTION_WAVE_MAX_HEIGHT);
+    if (abs(h_next) < INTERACTION_WAVE_EPSILON && abs(h_now) < INTERACTION_WAVE_EPSILON) {
+        h_next = 0.0;
+    }
+    return h_next;
 }
 
 /// ソース 1 個の影響の重み（0..1）を返す。半径外は 0。
@@ -206,8 +255,11 @@ fn interaction_stamp_weight(world_xz: vec2<f32>, src: InteractionSourceGpu) -> f
 //  コンピュートエントリ
 // ============================================================
 
-/// 場を 1 ディスパッチで更新する
-/// （再マップ → 速度場の減衰 → 波の伝播 → 全ソースのスタンプ）。
+/// **1 回目のサブステップ**: 場をフルに更新する
+/// （再マップ → 速度場の減衰 → 波を固定刻み 1 ステップ → 全ソースのスタンプ）。
+///
+/// 1 フレームにつき必ず 1 回だけ実行される（波のサブステップが 2 回以上必要なら、
+/// 2 回目以降は `cs_interaction_wave_substep` が続けて実行される）。
 @compute @workgroup_size(INTERACTION_FIELD_WORKGROUP_SIZE, INTERACTION_FIELD_WORKGROUP_SIZE, 1)
 fn cs_interaction_field(@builtin(global_invocation_id) gid: vec3<u32>) {
     let res = u_field.resolution;
@@ -233,7 +285,10 @@ fn cs_interaction_field(@builtin(global_invocation_id) gid: vec3<u32>) {
                  + (vec2<f32>(f32(gid.x), f32(gid.y)) + vec2<f32>(0.5)) * u_field.texel_size;
 
     // ── ② 前フレームの値を再マップして読む ──
-    let prev = interaction_load_previous(coord, res_i);
+    //   カメラ移動ぶんの整数テクセルオフセット。**1 フレームに 1 回だけ**適用する
+    //   （2 回目以降のサブステップは同一フレーム内なのでズレが無い）。
+    let shift = interaction_remap_shift();
+    let prev  = interaction_load_shifted(coord, shift, res_i);
 
     // ── ③ 速度場（.xy）: 指数減衰 ──
     var vel = prev.xy * u_field.decay;
@@ -242,23 +297,11 @@ fn cs_interaction_field(@builtin(global_invocation_id) gid: vec3<u32>) {
         vel = vec2<f32>(0.0, 0.0);
     }
 
-    // ── ④ 波（.z = h_t / .w = h_(t-1)）: 波動方程式を 1 ステップ進める ──
-    //   h_(t+1) = ( h_t + (h_t − h_(t−1))·inertia + k·∇²h_t ) · damp
-    //   括弧内の第 2 項が標準形の「2h_t − h_(t−1)」にあたる慣性（速度）項で、
-    //   `inertia` は可変フレームレート補正（= 今 dt / 前 dt）。inertia=1 なら教科書どおりの
-    //   明示スキームで、dt=0 のフレームでは 0 になり値が凍る（線形発散しない）。
-    //   ∇²h は 5 点ステンシル（4 近傍の和 − 4×中心）。テクセル間隔で正規化する必要は
-    //   ない（k = (c·dt/dx)² に dx が畳み込まれているため）。
+    // ── ④ 波（.z = h_t / .w = h_(t-1)）: 固定刻みで 1 サブステップ進める ──
     let h_now  = prev.z;
     let h_prev = prev.w;
-    let lap = interaction_load_prev_height(coord, vec2<i32>( 1,  0), res_i)
-            + interaction_load_prev_height(coord, vec2<i32>(-1,  0), res_i)
-            + interaction_load_prev_height(coord, vec2<i32>( 0,  1), res_i)
-            + interaction_load_prev_height(coord, vec2<i32>( 0, -1), res_i)
-            - 4.0 * h_now;
-    var h_next = (h_now
-                + (h_now - h_prev) * u_field.wave_inertia
-                + u_field.wave_k * lap) * u_field.wave_damp;
+    let lap    = interaction_laplacian(coord, shift, res_i, h_now);
+    var h_next = interaction_wave_step(h_now, h_prev, lap);
 
     // ── ⑤ 各ソースを焼き込む ──
     //   【速度】加算ではなく「重み付きの上書き（mix）」であることが重要。
@@ -287,10 +330,35 @@ fn cs_interaction_field(@builtin(global_invocation_id) gid: vec3<u32>) {
         vel = vel * (INTERACTION_FIELD_MAX_SPEED / speed);
     }
     //   波: 明示スキームの最後の安全弁（上限）と、消えかけの値の切り捨て。
-    h_next = clamp(h_next, -INTERACTION_WAVE_MAX_HEIGHT, INTERACTION_WAVE_MAX_HEIGHT);
-    if (abs(h_next) < INTERACTION_WAVE_EPSILON && abs(h_now) < INTERACTION_WAVE_EPSILON) {
-        h_next = 0.0;
-    }
-    // .w には「今フレームの h」を入れて世代を 1 つ進める。
+    h_next = interaction_finalize_height(h_next, h_now);
+    // .w には「今サブステップの h」を入れて世代を 1 つ進める。
     textureStore(dst_field, coord, vec4<f32>(vel, h_next, h_now));
+}
+
+/// **2 回目以降のサブステップ**: 波だけを固定刻み 1 ステップ進める。
+///
+/// 再マップ・速度場の減衰・ソースのスタンプは **一切行わない**
+/// （どれも「1 フレームに 1 回」が正しい処理であり、1 回目で済んでいる）。
+/// 速度場 `.xy` は読んだ値をそのまま書き写す（ping-pong で書き先が入れ替わるため、
+/// 何もしないと速度場が 1 サブステップ前の内容に巻き戻ってしまう）。
+@compute @workgroup_size(INTERACTION_FIELD_WORKGROUP_SIZE, INTERACTION_FIELD_WORKGROUP_SIZE, 1)
+fn cs_interaction_wave_substep(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let res = u_field.resolution;
+    if (gid.x >= res || gid.y >= res) {
+        return;
+    }
+    let coord = vec2<i32>(i32(gid.x), i32(gid.y));
+    let res_i = i32(res);
+
+    // 同一フレーム内なので窓のズレは無い（再マップオフセット 0）。
+    let no_shift = vec2<i32>(0, 0);
+    let prev     = interaction_load_shifted(coord, no_shift, res_i);
+
+    let h_now  = prev.z;
+    let h_prev = prev.w;
+    let lap    = interaction_laplacian(coord, no_shift, res_i, h_now);
+    let h_next = interaction_finalize_height(
+        interaction_wave_step(h_now, h_prev, lap), h_now);
+
+    textureStore(dst_field, coord, vec4<f32>(prev.xy, h_next, h_now));
 }

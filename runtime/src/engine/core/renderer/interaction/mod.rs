@@ -78,23 +78,47 @@ pub const INTERACTION_WAVE_DECAY_TAU_SECS: f32 = 1.5;
 /// 波の伝播速度（m/s）。波紋の輪が広がる速さそのもの。
 ///
 /// 現実の重力波は波長依存だが、本実装は単一速度の波動方程式なので 1 値で表す。
-/// 4m/s は「人が歩く速さの約 3 倍で輪が広がる」＝池に石を落としたときの体感に近い。
-pub const INTERACTION_WAVE_SPEED_MPS: f32 = 4.0;
+/// 「人が歩く速さの約 3 倍で輪が広がる」＝池に石を落としたときの体感に近い値を狙う。
+///
+/// 3.75m/s という半端な値は **固定刻み 1/60 秒で k = 0.25 ちょうどになる**ように
+/// 選んだもの（3.75 × (1/60) / 0.125 = 0.5、その 2 乗が 0.25）。
+/// 2D の安定限界 k ≤ 1/2 のちょうど半分＝十分な余裕があり、
+/// 見た目の伝播速度は旧値（4.0m/s）から 6% 遅くなるだけで体感差は無い。
+pub const INTERACTION_WAVE_SPEED_MPS: f32 = 3.75;
 
-/// 明示スキームのクーラン数の 2 乗の上限（安定条件）。
+/// 波を進める **固定タイムステップ**（秒）。
+///
+/// 波動方程式の陽解法は「刻みが一定」であることを前提にした 2 段階差分であり、
+/// 可変 dt を dt 比で補正する方式は原理的に発散する（詳細は
+/// `shaders/interaction_field.wgsl` の「時間刻みは固定である」節）。
+/// 実経過時間はアキュムレータに積み、この刻み単位でサブステップとして消化する。
+/// 1/60 秒は「標準的な表示リフレッシュで 1 フレーム＝1 サブステップ」になる値。
+pub const INTERACTION_WAVE_FIXED_DT_SECS: f32 = 1.0 / 60.0;
+
+/// 1 フレームに実行する波のサブステップ数の上限。
+///
+/// 低フレームレート時に「遅い → サブステップが増える → もっと遅い」の
+/// スパイラルへ落ちるのを断ち切るための上限。超過ぶんの時間は**捨てる**。
+/// 捨てた場合の挙動は「波が実時間よりゆっくり進む」であり、安全側に倒れる。
+/// 4 回＝15fps までは実時間どおりに追従できる。
+pub const INTERACTION_WAVE_MAX_SUBSTEPS: u32 = 4;
+
+/// 明示スキームのクーラン数の 2 乗の安定限界。
 ///
 /// 2 次元の波動方程式を陽解法で解く場合、(c·dt/dx)² ≤ 1/2 を超えると発散する。
-/// dt（＝フレーム時間）は制御できないので、係数側をこの値で飽和させる。
-/// 飽和が起きる（約 42fps 未満）と波の広がりがフレームレートに応じて遅くなるが、
-/// **発散して水面が真っ白に壊れるより遥かに良い**という判断。
+/// 固定刻み化により `INTERACTION_WAVE_K` はコンパイル時定数になったので、
+/// この定数は「飽和のための上限」ではなく**テストが検証する不変条件の基準値**である。
 pub const INTERACTION_WAVE_MAX_COURANT_SQ: f32 = 0.5;
 
-/// 波の慣性項に掛ける dt 比の上限。
+/// 波のクーラン数 c·dt_fixed/dx（無次元・コンパイル時定数）。
+pub const INTERACTION_WAVE_COURANT: f32 =
+    INTERACTION_WAVE_SPEED_MPS * INTERACTION_WAVE_FIXED_DT_SECS / INTERACTION_FIELD_TEXEL_SIZE;
+
+/// 波の伝播係数 k = (c·dt_fixed/dx)²（無次元・コンパイル時定数）。
 ///
-/// フレームが 1 回大きく詰まった直後（dt が急増）に比が跳ねると、
-/// 「前フレームの変位を何倍にも引き伸ばす」ことになり波が暴れる。
-/// 2 倍までなら見た目に破綻せず、フレーム時間の通常の揺らぎは吸収できる。
-pub const INTERACTION_WAVE_MAX_INERTIA_RATIO: f32 = 2.0;
+/// フレーム時間に一切依存しないため、**どんなフレームレートでも安定条件
+/// k ≤ `INTERACTION_WAVE_MAX_COURANT_SQ` が保たれる**（テストで固定）。
+pub const INTERACTION_WAVE_K: f32 = INTERACTION_WAVE_COURANT * INTERACTION_WAVE_COURANT;
 
 /// ソースが 1 個も無い状態がこの秒数続いたら、場を完全に消してディスパッチを止める。
 ///
@@ -129,6 +153,36 @@ pub const INTERACTION_GRASS_MAX_BEND: f32 = 1.396_263_4;
 /// 1 テクセルのワールドサイズ（m）。
 pub const INTERACTION_FIELD_TEXEL_SIZE: f32 =
     INTERACTION_FIELD_EXTENT_M / INTERACTION_FIELD_RESOLUTION as f32;
+
+/// 1 サブステップぶんの波の減衰係数 exp(-dt_fixed/τ_wave)。
+///
+/// 固定刻みなので値は常に一定（フレームレートに依存しない）。
+/// `f32::exp` が const fn でないため定数ではなく関数として置く（実質定数）。
+pub fn interaction_wave_damp_per_substep() -> f32 {
+    (-INTERACTION_WAVE_FIXED_DT_SECS / INTERACTION_WAVE_DECAY_TAU_SECS).exp()
+}
+
+/// 実経過時間から「今フレームに実行する波のサブステップ数」と
+/// 「次フレームへ繰り越すアキュムレータ残量（秒）」を決める。
+///
+/// - `accum_secs`: 前フレームまでの繰越 ＋ 今フレームの経過時間（秒）。
+/// - 戻り値: (サブステップ数, 繰越残量)。
+///
+/// 上限 `INTERACTION_WAVE_MAX_SUBSTEPS` を超える要求が来た場合は、
+/// **超過ぶんの時間を捨てて繰越を 0 にする**（死のスパイラル防止。冒頭の定数コメント参照）。
+/// GPU を触らない純粋関数なのでユニットテストで直接検証できる。
+pub fn interaction_wave_substeps(accum_secs: f32) -> (u32, f32) {
+    if accum_secs < INTERACTION_WAVE_FIXED_DT_SECS {
+        // 1 サブステップに満たない ＝ 場を進めない（繰り越すだけ）。
+        return (0, accum_secs.max(0.0));
+    }
+    let wanted = (accum_secs / INTERACTION_WAVE_FIXED_DT_SECS) as u32;
+    if wanted > INTERACTION_WAVE_MAX_SUBSTEPS {
+        (INTERACTION_WAVE_MAX_SUBSTEPS, 0.0)
+    } else {
+        (wanted, accum_secs - wanted as f32 * INTERACTION_WAVE_FIXED_DT_SECS)
+    }
+}
 
 // ─── バインディング番号（WGSL @binding と一致必須）───────────────
 
@@ -178,18 +232,12 @@ pub struct InteractionFieldUniformGpu {
     pub bend_per_speed: f32,
     /// 草の曲げ角の上限（rad）。消費側のみ使用。
     pub max_bend:       f32,
-    /// 波の伝播係数 (c·dt/dx)²（無次元。CFL 上限で飽和済み）。更新パスのみ使用。
+    /// 波の伝播係数 k = (c·dt_fixed/dx)²（無次元・**定数** `INTERACTION_WAVE_K`）。更新パスのみ使用。
     pub wave_k:         f32,
-    /// 波の減衰係数 exp(-dt/τ_wave)。更新パスのみ使用。
+    /// 1 サブステップぶんの波の減衰係数 exp(-dt_fixed/τ_wave)（**定数**）。更新パスのみ使用。
     pub wave_damp:      f32,
-    /// 波の慣性項の係数（= 今フレーム dt / 前フレーム dt。上限で飽和）。更新パスのみ使用。
-    ///
-    /// 明示スキームが持つ「1 ステップ前との差分」は **前フレームの dt に紐づく変位**である。
-    /// 可変フレームレートでこれをそのまま使うと、dt が急に伸び縮みした瞬間に
-    /// 波へエネルギーが出入りする（dt=0 のフレームでは 2h−h_prev が線形に発散する）。
-    /// dt 比で正規化することで、フレーム時間が揺れても波の挙動が変わらない。
-    pub wave_inertia:   f32,
     /// 16 バイト境界へ揃えるためのパディング（未使用）。
+    pub _pad0:          f32,
     pub _pad1:          f32,
     pub _pad2:          f32,
 }
@@ -272,8 +320,17 @@ pub fn create_field_sample_bind_group_layout(
 
 /// 瞬発インタラクションフィールドの GPU リソースと更新手続き。
 pub struct InteractionFieldRenderer {
-    /// 場の更新コンピュートパイプライン。
+    /// 1 回目のサブステップ用パイプライン
+    /// （再マップ＋速度場の減衰＋波 1 ステップ＋ソースのスタンプ）。
     pipeline: wgpu::ComputePipeline,
+    /// 2 回目以降のサブステップ用パイプライン（波 1 ステップのみ）。
+    ///
+    /// **なぜ uniform のフラグではなくエントリポイントを分けるのか**:
+    /// `queue.write_buffer` はコマンドバッファの送信前にまとめて適用されるため、
+    /// 同一フレーム内で 1 本の UBO を「サブステップごとに書き換える」ことはできない
+    /// （最後の書き込みが全ディスパッチに効いてしまう）。
+    /// パイプラインを分ければ UBO は 1 回書くだけで済む。
+    substep_pipeline: wgpu::ComputePipeline,
     /// 更新パス group0 の BindGroup（添字 = **書き込み先**テクスチャの番号）。
     update_bind_groups: [wgpu::BindGroup; 2],
     /// 消費側 BindGroup（添字 = **最新の場**を保持するテクスチャの番号）。
@@ -300,8 +357,14 @@ pub struct InteractionFieldRenderer {
     prev_origin_xz: [f32; 2],
     /// ソースが 1 個も無い状態が続いた秒数。
     idle_secs: f32,
-    /// 前回ディスパッチ時の dt（秒）。波の慣性項を dt 比で正規化するために持つ。
-    prev_delta_secs: f32,
+    /// 波の固定刻みアキュムレータ（秒）。実経過時間を積み、固定刻み単位で消化する。
+    wave_accum_secs: f32,
+    /// まだ減衰へ反映していない実経過時間（秒）。
+    ///
+    /// サブステップ 0 回のフレーム（dt が固定刻み未満）はディスパッチ自体を行わないため、
+    /// その間の経過時間をここへ溜め、次にディスパッチするフレームでまとめて
+    /// `exp(-Σdt/τ)` として掛ける。こうしないと「速度場が実時間より遅く減衰する」。
+    pending_decay_secs: f32,
     /// 場を完全に消し終えてディスパッチを止めている状態か。
     settled: bool,
     /// ソース数が上限を超えた警告を出したか（ログ氾濫防止のため 1 回だけ）。
@@ -364,14 +427,21 @@ impl InteractionFieldRenderer {
             bind_group_layouts:   &[&update_bgl],
             push_constant_ranges: &[],
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               Some("interaction_field_update"),
-            layout:              Some(&layout),
-            module:              &shader,
-            entry_point:         Some("cs_interaction_field"),
-            compilation_options: Default::default(),
-            cache,
-        });
+        // 1 回目（フル更新）と 2 回目以降（波のみ）で 2 本作る。
+        // バインドグループのレイアウトは同一なので、BindGroup はそのまま使い回せる。
+        let make_pipeline = |label: &str, entry: &str| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label:               Some(label),
+                layout:              Some(&layout),
+                module:              &shader,
+                entry_point:         Some(entry),
+                compilation_options: Default::default(),
+                cache,
+            })
+        };
+        let pipeline = make_pipeline("interaction_field_update", "cs_interaction_field");
+        let substep_pipeline =
+            make_pipeline("interaction_field_wave_substep", "cs_interaction_wave_substep");
 
         // ── 更新 BindGroup（添字 = 書き込み先。読み元はもう一方）──
         let make_update_bg = |dst: &wgpu::TextureView, src: &wgpu::TextureView, label: &str| {
@@ -433,6 +503,7 @@ impl InteractionFieldRenderer {
         // prev との差が大きくなるが、読み側テクスチャはゼロ初期化なので実害はない。
         Self {
             pipeline,
+            substep_pipeline,
             update_bind_groups,
             sample_bind_groups,
             uniform_buf,
@@ -442,8 +513,8 @@ impl InteractionFieldRenderer {
             current: 0,
             prev_origin_xz: [0.0, 0.0],
             idle_secs: 0.0,
-            // 初回は「前フレームも同じ dt だった」とみなす（比 = 1 ＝ 素の明示スキーム）。
-            prev_delta_secs: 0.0,
+            wave_accum_secs: 0.0,
+            pending_decay_secs: 0.0,
             settled: true,
             warned_overflow: false,
         }
@@ -482,6 +553,8 @@ impl InteractionFieldRenderer {
     ///
     /// 戻り値は「実際にディスパッチしたか」。ソースが無い状態が
     /// `INTERACTION_FIELD_SETTLE_SECS` 続いた後は false を返し、GPU コストが 0 になる。
+    /// また、経過時間が波の固定刻みに満たないフレームも false を返す
+    /// （場を進めない＝ ping-pong もしない。消費側は前フレームと同じテクスチャを読む）。
     pub fn update(
         &mut self,
         queue:      &wgpu::Queue,
@@ -502,22 +575,48 @@ impl InteractionFieldRenderer {
             return false;
         }
 
-        // ── ② 窓の原点をテクセル単位へスナップする ──
+        // ── ② 経過時間を積む（波の固定刻み用と、速度場の減衰用）──
+        let dt = delta_secs.max(0.0);
+        self.wave_accum_secs    += dt;
+        self.pending_decay_secs += dt;
+
+        // ── ③ 今フレームに実行する波のサブステップ数を決める ──
+        //   固定刻み単位で消化し、余りは次フレームへ繰り越す（上限超過ぶんは捨てる）。
+        let (substeps, carry) = interaction_wave_substeps(self.wave_accum_secs);
+        // 消化ぶんを引いた残量を確定させる（以降どの経路を通っても繰越は正しい）。
+        self.wave_accum_secs  = carry;
+
+        // ── ④ 場の消去フレームか判定する ──
+        //   ソースが無いまま SETTLE を超えたら、最後に 1 回だけ「減衰 0」で書き潰し、
+        //   以降はディスパッチしない。消去は波のサブステップ数と無関係に必ず 1 回実行する。
+        let clearing = self.idle_secs > INTERACTION_FIELD_SETTLE_SECS;
+
+        // ── ⑤ サブステップ 0 回のフレームは場を進めない ──
+        //   経過時間が固定刻みに満たない（高フレームレート）ケース。
+        //   ping-pong もしないため `current` は据え置きで、消費側は前フレームと
+        //   同じテクスチャを読む。窓原点・減衰の未反映ぶんは繰り越されるので、
+        //   次にディスパッチするフレームでまとめて正しく処理される。
+        if !clearing && substeps == 0 {
+            return false;
+        }
+
+        // ── ⑥ 窓の原点をテクセル単位へスナップする ──
         //   スナップしないと、カメラ移動のたびに場が半テクセルずれて再マップが
         //   バイリニアになり、草が微妙に揺れてちらつく。
         let origin_xz = snap_window_origin(camera_pos);
 
-        // ── ③ 減衰係数 ──
-        //   ソースが無いまま SETTLE を超えたら、最後に 1 回だけ「減衰 0」で書き潰し、
-        //   以降はディスパッチしない。
-        let decay = if self.idle_secs > INTERACTION_FIELD_SETTLE_SECS {
+        // ── ⑦ 速度場の減衰係数 ──
+        //   1 次減衰なので可変 dt でも安定＝**実経過時間ぶんをまとめて 1 回**掛ける
+        //   （波と違い、サブステップに分ける必要がない）。
+        let decay = if clearing {
             self.settled = true;
             0.0
         } else {
-            (-delta_secs.max(0.0) / INTERACTION_FIELD_DECAY_TAU_SECS).exp()
+            (-self.pending_decay_secs / INTERACTION_FIELD_DECAY_TAU_SECS).exp()
         };
+        self.pending_decay_secs = 0.0;
 
-        // ── ④ ソース配列をアップロード（上限で切り捨て）──
+        // ── ⑧ ソース配列をアップロード（上限で切り捨て）──
         let count = sources.len().min(INTERACTION_MAX_SOURCES);
         if sources.len() > INTERACTION_MAX_SOURCES && !self.warned_overflow {
             self.warned_overflow = true;
@@ -542,26 +641,9 @@ impl InteractionFieldRenderer {
             queue.write_buffer(&self.sources_buf, 0, bytemuck::cast_slice(&gpu));
         }
 
-        // ── ⑤ 波の伝播係数（明示スキーム）──
-        //   k = (c·dt/dx)²。CFL 上限で飽和させて発散を防ぐ（飽和時は波が遅くなるだけ）。
-        //   dt は壁時計なので、ウィンドウのドラッグ等で巨大な dt が来ても
-        //   飽和のおかげで場が壊れない。
-        let dt = delta_secs.max(0.0);
-        let courant = INTERACTION_WAVE_SPEED_MPS * dt / INTERACTION_FIELD_TEXEL_SIZE;
-        let wave_k = (courant * courant).min(INTERACTION_WAVE_MAX_COURANT_SQ);
-        // 波の減衰（decay と同じく指数）。decay=0（場の消去）のフレームは
-        // シェーダ側が全チャンネルを 0 で書き潰すので、ここでの値は使われない。
-        let wave_damp = (-dt / INTERACTION_WAVE_DECAY_TAU_SECS).exp();
-        // 慣性項の dt 正規化。前フレームが無い／0 のときは 1（素の明示スキーム）。
-        // dt が急増したフレームで比が跳ねると逆に暴れるため、上限で飽和させる。
-        let wave_inertia = if self.prev_delta_secs > 0.0 {
-            (dt / self.prev_delta_secs).min(INTERACTION_WAVE_MAX_INERTIA_RATIO)
-        } else {
-            1.0
-        };
-        self.prev_delta_secs = dt;
-
-        // ── ⑥ パラメータ UBO ──
+        // ── ⑨ パラメータ UBO ──
+        //   波の係数はどちらも固定刻み由来の定数＝フレーム時間に依存しない
+        //   （＝どんな fps でも CFL 条件が破れない。これが発散事故の恒久対策）。
         let uniform = InteractionFieldUniformGpu {
             origin_xz,
             prev_origin_xz: self.prev_origin_xz,
@@ -572,29 +654,42 @@ impl InteractionFieldRenderer {
             source_count:   count as u32,
             bend_per_speed: INTERACTION_GRASS_BEND_PER_SPEED,
             max_bend:       INTERACTION_GRASS_MAX_BEND,
-            wave_k,
-            wave_damp,
-            wave_inertia,
+            wave_k:         INTERACTION_WAVE_K,
+            wave_damp:      interaction_wave_damp_per_substep(),
+            _pad0:          0.0,
             _pad1:          0.0,
             _pad2:          0.0,
         };
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniform));
 
-        // ── ⑦ ディスパッチ（読み = current / 書き = 反対側）──
-        let dst = 1 - self.current;
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label:            Some("Interaction Field Update"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.update_bind_groups[dst], &[]);
-            let groups = workgroup_count(INTERACTION_FIELD_RESOLUTION);
-            pass.dispatch_workgroups(groups, groups, 1);
+        // ── ⑩ ディスパッチ（読み = current / 書き = 反対側を ping-pong）──
+        //   消去フレームは 1 回だけ（全チャンネル 0 で書き潰す）。
+        //   通常フレームは「1 回目 = フル更新 → 2 回目以降 = 波のみ」を substeps 回。
+        //   **サブステップごとに別のコンピュートパスへ分ける**のが要点:
+        //   同一パス内で同じテクスチャを読み書きすると同期が保証されないため、
+        //   パスの境界をバリアとして使う（wgpu がパス間に自動で挿入する）。
+        let passes = if clearing { 1 } else { substeps };
+        let groups = workgroup_count(INTERACTION_FIELD_RESOLUTION);
+        for step in 0..passes {
+            let dst = 1 - self.current;
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label:            Some("Interaction Field Update"),
+                    timestamp_writes: None,
+                });
+                if step == 0 {
+                    pass.set_pipeline(&self.pipeline);
+                } else {
+                    pass.set_pipeline(&self.substep_pipeline);
+                }
+                pass.set_bind_group(0, &self.update_bind_groups[dst], &[]);
+                pass.dispatch_workgroups(groups, groups, 1);
+            }
+            // 次のサブステップは今書いた側を読む。
+            self.current = dst;
         }
 
-        // ── ⑧ 状態を進める（以降 sample_bind_group は今書いた側を返す）──
-        self.current        = dst;
+        // ── ⑪ 状態を進める（以降 sample_bind_group は最後に書いた側を返す）──
         self.prev_origin_xz = origin_xz;
         true
     }
@@ -716,21 +811,99 @@ mod tests {
         assert_eq!(size % 16, 0, "uniform は 16 の倍数バイトであること");
     }
 
-    /// 波の伝播係数は CFL 安定条件（(c·dt/dx)² ≤ 1/2）を **どんな dt でも** 超えないこと。
-    /// ここが破れると波が発散し、水面が一瞬で真っ白に壊れる（最重要の不変条件）。
+    /// 波の伝播係数は **コンパイル時定数**であり、CFL 安定条件（k ≤ 1/2）に
+    /// 十分な余裕を持って収まること（最重要の不変条件）。
+    ///
+    /// 固定刻み化により k は dt に依存しなくなったため、検証は 1 点で足りる。
+    /// ここが破れると波が発散し、水面が一瞬で真っ白に壊れる。
     #[test]
-    fn wave_courant_never_exceeds_stability_limit() {
-        // 240fps から 1fps（ウィンドウドラッグ等の巨大 dt）まで舐める。
-        for &dt in &[1.0 / 240.0, 1.0 / 60.0, 1.0 / 30.0, 0.1, 1.0, 10.0] {
-            let courant = INTERACTION_WAVE_SPEED_MPS * dt / INTERACTION_FIELD_TEXEL_SIZE;
-            let k = (courant * courant).min(INTERACTION_WAVE_MAX_COURANT_SQ);
-            assert!(k <= INTERACTION_WAVE_MAX_COURANT_SQ, "dt={dt} で CFL 上限を超えた");
+    fn wave_k_is_constant_and_within_stability_limit() {
+        // 安定限界そのもの。
+        assert!(
+            INTERACTION_WAVE_K < INTERACTION_WAVE_MAX_COURANT_SQ,
+            "k={INTERACTION_WAVE_K} が CFL 上限 {INTERACTION_WAVE_MAX_COURANT_SQ} を超えた"
+        );
+        // 設計値（限界の半分 = 0.25）から外れていないこと。
+        // ここを緩めるなら波速 c と固定刻みを再検討すること。
+        assert!(
+            (INTERACTION_WAVE_K - 0.25).abs() < 1e-4,
+            "k は 0.25（安定限界の半分）である設計。実際は {INTERACTION_WAVE_K}"
+        );
+        // 減衰は 1 サブステップぶんの指数減衰＝ 0 < damp < 1。
+        let damp = interaction_wave_damp_per_substep();
+        assert!(damp > 0.0 && damp < 1.0, "damp={damp} が (0,1) の外");
+        // 特性方程式 g² − damp·(2 − kλ)·g + damp = 0 の根の積は damp < 1 ＝
+        // 全モードが減衰する（旧実装の inertia 方式ではここが damp·inertia > 1 になり得た）。
+        assert!(damp < 1.0, "根の積 = damp が 1 以上だとエネルギーが増える");
+    }
+
+    /// アキュムレータは「固定刻み単位で消化し、余りを繰り越す」こと。
+    /// ここが崩れると波が実時間とズレる（速すぎ／遅すぎ）。
+    #[test]
+    fn wave_substeps_consume_fixed_dt_and_carry_remainder() {
+        let dt = INTERACTION_WAVE_FIXED_DT_SECS;
+        // 刻み未満 → 0 回。時間は丸ごと繰り越す（捨てない）。
+        let (n, carry) = interaction_wave_substeps(dt * 0.4);
+        assert_eq!(n, 0);
+        assert!((carry - dt * 0.4).abs() < 1e-7, "繰越が失われた: {carry}");
+        // ちょうど 1 刻み → 1 回、繰越ほぼ 0。
+        let (n, carry) = interaction_wave_substeps(dt);
+        assert_eq!(n, 1);
+        assert!(carry.abs() < 1e-6, "繰越={carry}");
+        // 1.5 刻み → 1 回、0.5 刻みを繰り越す。
+        let (n, carry) = interaction_wave_substeps(dt * 1.5);
+        assert_eq!(n, 1);
+        assert!((carry - dt * 0.5).abs() < 1e-6, "繰越={carry}");
+        // 30fps 相当（2 刻み）→ 2 回。
+        let (n, _) = interaction_wave_substeps(dt * 2.0);
+        assert_eq!(n, 2);
+    }
+
+    /// 低フレームレートでもサブステップ数は上限で頭打ちになり、超過時間は捨てること
+    /// （「遅い→サブステップ増→もっと遅い」のスパイラルを断つ）。
+    #[test]
+    fn wave_substeps_are_capped_and_drop_excess_time() {
+        let dt = INTERACTION_WAVE_FIXED_DT_SECS;
+        // 1fps 相当・ウィンドウドラッグ等の巨大 dt。
+        for &secs in &[dt * 10.0, 1.0, 10.0] {
+            let (n, carry) = interaction_wave_substeps(secs);
+            assert_eq!(n, INTERACTION_WAVE_MAX_SUBSTEPS, "secs={secs} で上限を超えた");
+            assert_eq!(carry, 0.0, "超過ぶんの時間は捨てること（secs={secs}）");
         }
-        // 一般的な 60fps では飽和せず、実時間どおりの波速で伝播すること。
-        let dt60 = 1.0 / 60.0;
-        let c60 = INTERACTION_WAVE_SPEED_MPS * dt60 / INTERACTION_FIELD_TEXEL_SIZE;
-        assert!(c60 * c60 < INTERACTION_WAVE_MAX_COURANT_SQ,
-            "60fps で飽和してはいけない（波の速さがフレームレート依存になる）");
+        // ちょうど上限ぶんは捨てない。
+        let (n, carry) = interaction_wave_substeps(dt * INTERACTION_WAVE_MAX_SUBSTEPS as f32);
+        assert_eq!(n, INTERACTION_WAVE_MAX_SUBSTEPS);
+        assert!(carry.abs() < 1e-5, "繰越={carry}");
+    }
+
+    /// 60fps で回している限り、実時間と波の進む時間が一致すること
+    /// （1 フレーム = 1 サブステップ。累積ドリフトが無い）。
+    #[test]
+    fn wave_time_tracks_real_time_at_60fps() {
+        let frame = 1.0 / 60.0_f32;
+        let mut accum = 0.0_f32;
+        let mut total_steps = 0_u32;
+        const FRAMES: u32 = 600; // 10 秒ぶん
+        for _ in 0..FRAMES {
+            accum += frame;
+            let (n, carry) = interaction_wave_substeps(accum);
+            total_steps += n;
+            accum = carry;
+        }
+        // 浮動小数の丸めで ±1 ステップはあり得るので許容する。
+        let diff = (total_steps as i64 - FRAMES as i64).abs();
+        assert!(diff <= 1, "10 秒で {total_steps} ステップ（期待 {FRAMES}±1）");
+    }
+
+    /// 更新シェーダに 2 つのエントリポイント（フル更新／波のみ）が存在すること。
+    /// パイプライン生成はここで名前を取り違えても実行時まで気づけないため固定する。
+    #[test]
+    fn shader_declares_both_substep_entry_points() {
+        let src = field_shader();
+        assert!(src.contains("fn cs_interaction_field("), "1 回目用エントリが無い");
+        assert!(src.contains("fn cs_interaction_wave_substep("), "サブステップ用エントリが無い");
+        // 発散原因だった慣性項が完全に消えていること（再発防止）。
+        assert!(!src.contains("wave_inertia"), "wave_inertia が残っている（発散の再発）");
     }
 
     /// 場の休止判定は「波の τ」基準であること（速度場の τ で切ると波紋が凍って残る）。

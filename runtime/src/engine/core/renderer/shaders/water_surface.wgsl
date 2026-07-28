@@ -139,11 +139,10 @@ struct InteractionFieldUniform {
     max_bend:       f32,
     /// 波の伝播係数（更新パスのみ使用）。
     wave_k:         f32,
-    /// 波の減衰係数（更新パスのみ使用）。
+    /// 1 サブステップぶんの波の減衰係数（更新パスのみ使用）。
     wave_damp:      f32,
-    /// 波の慣性項の dt 正規化係数（更新パスのみ使用）。
-    wave_inertia:   f32,
     /// パディング（未使用）。
+    _pad0:          f32,
     _pad1:          f32,
     _pad2:          f32,
 }
