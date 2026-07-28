@@ -277,13 +277,15 @@ WBOIT 3 + オーバーレイ 1 + パーティクル 1 + ブルーム/トーン�
 > **更新（L3-a 実装済み）**: このうち `shading_model` は**実際に第3層で消費されるようになった**。
 > deferred ライティングの `lighting_eval.wgsl` が `ShadingSurface.shading_model` を
 > 契約関数 `shade_surface` の `switch` キーとして使い、ID 1..3 をシェーディングアセットの
-> ユーザー実装へ振り分ける（詳細は `docs/shading_asset.md`）。`render_tag` / `user_data` は
+> ユーザー実装へ振り分ける（詳細は `docs/shading_asset.md`）。**ID 0 もアセットが
+> `shade_default` を定義していればそちらへ回る**ため、この値を設定していないマテリアル
+> （＝ほぼ全て。地形・草を含む）もアセットの影響下に入る。`render_tag` / `user_data` は
 > 依然どのライティング経路からも参照されず、アセット側が任意に読める素材にとどまる。
 
 | 値 | 宣言場所 | 粒度 | 格納先 | 精度 |
 |---|---|---|---|---|
 | `render_tag`（セマンティックタグ） | `ModelComponent::render_tag`（`.scene` に保存） | **アクタ単位** | g3.a の下位 4bit | 16 種（0 = タグ無し） |
-| `shading_model`（シェーディングモデル ID） | `Material::shading_model`（`.smdl`/`.mat` に保存） | マテリアル単位 | g3.a の続く 2bit | 4 種（0 = DefaultPBR＝エンジン標準。1..3 はシェーディングアセットが定義） |
+| `shading_model`（シェーディングモデル ID） | `Material::shading_model`（`.smdl`/`.mat` に保存） | マテリアル単位 | g3.a の続く 2bit | 4 種（0 = 既定。アセットの `shade_default` が無ければエンジン標準 PBR、あればそちら。1..3 はシェーディングアセットが例外用に定義） |
 | `user_data`（汎用ユーザーデータ） | `Material::user_data`（同上） | マテリアル単位 | g2.a | 8bit＝1/255 刻み（0..1） |
 
 - ビット規約の単一の真実source: `renderer/surface_id.rs`（Rust）と `shaders/surface.wgsl` の
@@ -579,7 +581,9 @@ albedo・法線・metallic・roughness・diffuse_transmission・emissive・occlu
 
 第1層はさらに **「この点は何なのか」の自己申告**（情報系チャンネル）も運ぶ:
 セマンティックタグ（アクタ単位・「敵」「インタラクト可能」等）、シェーディングモデル ID
-（マテリアル単位・トゥーン等の分岐用。**L3-a で第3層が実際に消費するようになった**）、
+（マテリアル単位・「このマテリアルだけ別の光応答式にする」例外指定用。
+**L3-a で第3層が実際に消費するようになった**。全体の画作りは ID を使わず
+アセットの `shade_default` が担う）、
 ユーザーデータ（マテリアル単位の自由 0..1 回線）。
 いずれも物性ではなく**意味**である。合成（第3層）が
 「敵だけ縁取る」「濡れているところだけ暗くする」といった判断に使うための素材である。
@@ -638,10 +642,19 @@ G-Buffer 段の 5 枚目の MRT として第1層と同時に焼かれる。位�
 - **契約 v1**（`shaders/shading_contract.wgsl`）。アセット先頭に `// @shading_contract 1` を宣言する。
   エンジンが渡すのは `ShadingSurface`（面の情報）と `LightSample`（減衰・円錐・影を織り込み済みの
   1 灯ぶんの放射輝度）の 2 つだけで、バインディングは一切見えない。
-- ユーザーが書けるのは `shade_model_1` / `shade_model_2` / `shade_model_3`。
-  **ID 0 はエンジン標準 PBR で上書き不可**、未定義 ID は 0 へフォールバックする
-  （Rust が `switch` ディスパッチを生成: `renderer/shading_asset.rs:227`）。
-  ユーザー実装の返り値にだけ `shading_nan_guard` が自動で掛かる（ID 0 には掛からない）。
+- **基本の使い方は「アセットを差すだけ」**。アセットが `fn shade_default(sf, li)` を定義していれば、
+  シェーディングモデル ID 0 の全表面（地形・草・`shading_model` 未設定の全マテリアル）が
+  その実装で描かれる。マテリアル側の設定は不要で、これが「カメラ／シーンにアセットを 1 枚差せば
+  全体の画作りが変わる」ための経路である。
+- `shade_model_1` / `shade_model_2` / `shade_model_3` は**例外オブジェクトだけを上書き**するための
+  追加枠（マテリアルの `shading_model` が 1..3 の面にだけ効く）。
+- **フォールバック先はアセットの内容で決まる**（Rust が `switch` ディスパッチを生成:
+  `renderer/shading_asset.rs:273`）。`shade_default` があれば ID 0 と未定義 ID 1..3 はそこへ、
+  無ければ従来どおり `shade_model_0`（エンジン標準 PBR）へ落ちる。
+  `shade_model_0` そのものは差し替えられない（アセットからは呼べる）。
+- ユーザー実装（`shade_default` と `shade_model_1..3`）の返り値にだけ `shading_nan_guard` が
+  自動で掛かる。`shade_model_0` へ落ちる経路には掛からない
+  ＝ **`shade_default` を書かない既存アセットは、生成コードごと従来と完全同値**。
 - 割り当ては `CameraComponent.shading_asset` → `Scene.shading_asset` → 組み込み標準の順で解決する
   （`frame_renderer.rs:4697-4719`）。Edit のメインビューはカメラ段を飛ばしてシーン既定から。
 - **ホットリロード**は Edit モードのみ・mtime ポーリング間隔 `SHADING_ASSET_POLL_INTERVAL_SECS = 1.0` 秒。
@@ -660,9 +673,12 @@ G-Buffer 段の 5 枚目の MRT として第1層と同時に焼かれる。位�
   合成入力として使わなかったため移動していない**。L3-b で ID を合成入力にするなら、ID パスを
   G-Buffer 段の直後（深度が確定した位置）へ移す必要がある。移動はピック結果の描画順に
   影響し得るため、そのときに単独の変更として行うこと。
-- **ユーザー定義可能な ID は 1..3 の 3 枠が上限**。G-Buffer RT3.a のシェーディングモデル領域が
+- **例外用の ID は 1..3 の 3 枠が上限**。G-Buffer RT3.a のシェーディングモデル領域が
   2bit（`surface_id.rs` の `SHADING_MODEL_BITS`）であることに由来する。
+  全体の既定を差し替える `shade_default` は ID を消費しないため、この上限に影響しない。
 - マテリアルの `shading_model` フィールドを編集するエディタ UI は無い（`.mat` / `.smdl` 側の値のみ）。
+  ただし `shade_default` を使う限りマテリアルを触る必要が無いので、UI が無いことが問題になるのは
+  「例外オブジェクトを作りたいとき」だけである。
 
 ### 将来構想: 段階 L3-b（compose のアセット化・未実装）
 
