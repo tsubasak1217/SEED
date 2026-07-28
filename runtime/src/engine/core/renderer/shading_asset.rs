@@ -428,6 +428,10 @@ pub struct ShadingAssetPipelines {
     pub rt:          Option<wgpu::RenderPipeline>,
     /// RT 影＋バインドレス色付き影バリアント。
     pub rt_bindless: Option<wgpu::RenderPipeline>,
+    /// このアセットが実装しているシェーディングモデル（インデックス 0 = モデル ID 1）。
+    /// 診断ログ（`[SHADING] loaded ... models=`）で「どのモデル ID が有効になったか」を
+    /// 一目で分かるようにするために保持する。描画判定には使わない。
+    pub models:      [bool; USER_MODEL_SLOTS],
 }
 
 /// 1 変種ぶんの連結ソースを組み立てて naga 検証する。
@@ -574,8 +578,17 @@ impl ShadingAssetPipelines {
             None
         };
 
-        Ok(Self { pipeline, rt, rt_bindless })
+        Ok(Self { pipeline, rt, rt_bindless, models: found })
     }
+}
+
+/// 検出済みモデル配列を診断ログ用のラベルにする（例: `1,3` / `なし`）。
+pub fn models_label(models: &[bool; USER_MODEL_SLOTS]) -> String {
+    let ids: Vec<String> = models.iter().enumerate()
+        .filter(|(_, defined)| **defined)
+        .map(|(slot, _)| (USER_MODEL_ID_MIN + slot as u8).to_string())
+        .collect();
+    if ids.is_empty() { "なし".to_string() } else { ids.join(",") }
 }
 
 /// シェーダ名 → ソースの解決関数を作る（アセット本体・生成ディスパッチ・組み込みの 3 分岐）。
@@ -672,6 +685,13 @@ pub struct ShadingAssetCache {
     errors:     RefCell<Vec<String>>,
     /// 直近に積んだメッセージ（同じものを連続で積まないための番人）。
     last_error: RefCell<Option<String>>,
+    /// 直近に出力した `[SHADING]` 診断行（チャンネル名 → 前回の行）。
+    ///
+    /// `resolve` も描画側の採用ログも毎フレーム呼ばれるため、同一内容の行を出し続けない
+    /// よう「前回と同じ行なら出力しない」で間引く。チャンネルを分けるのは、
+    /// 「ロード結果（load）」と「実際に採用したバリアント（apply）」が交互に上書きし合って
+    /// 毎フレーム出力になるのを防ぐため。
+    last_report: RefCell<HashMap<&'static str, String>>,
 }
 
 impl Default for ShadingAssetCache {
@@ -684,9 +704,22 @@ impl ShadingAssetCache {
         Self {
             built:      RefCell::new(HashMap::new()),
             paths:      RefCell::new(HashMap::new()),
-            errors:     RefCell::new(Vec::new()),
-            last_error: RefCell::new(None),
+            errors:      RefCell::new(Vec::new()),
+            last_error:  RefCell::new(None),
+            last_report: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// `[SHADING]` 診断行を出力する（前回と同一内容なら出力しない）。
+    ///
+    /// 呼び出しは `resolve` の各 return 直前に集約してあり、
+    /// 「アセットが読めたか」「どのモデル ID が有効か」「どのバリアントが作れたか」を
+    /// 1 行で表す。エラー通知（`LOAD_ERROR:` へ流す `errors` キュー）とは独立で、
+    /// **成功時も必ず出る**のがこの行の役割（＝無反応の切り分けに使える）。
+    pub fn report(&self, channel: &'static str, line: String) {
+        if self.last_report.borrow().get(&channel) == Some(&line) { return }
+        eprintln!("{line}");
+        self.last_report.borrow_mut().insert(channel, line);
     }
 
     /// エラー／警告を 1 件積む（直前と同一内容なら積まない）。
@@ -725,6 +758,44 @@ impl ShadingAssetCache {
 ///
 /// - `allow_hot_reload` : Edit モードのみ true。Play 中は開始時点のパイプラインを使い続ける。
 pub fn resolve(
+    device:           &wgpu::Device,
+    deferred:         &DeferredLightingPipelines,
+    cache:            &ShadingAssetCache,
+    asset_path:       &str,
+    out_format:       wgpu::TextureFormat,
+    depth_format:     wgpu::TextureFormat,
+    allow_hot_reload: bool,
+) -> Option<Arc<ShadingAssetPipelines>> {
+    let result = resolve_inner(
+        device, deferred, cache, asset_path, out_format, depth_format, allow_hot_reload,
+    );
+    // ── 診断ログ（常時 ON・変化時のみ）───────────────────────
+    // 「アセットを設定したのに見た目が変わらない」を切り分けるための 1 行。
+    // resolve は毎フレーム呼ばれるので、ここに行が出ていれば少なくとも
+    // 「シーン/カメラのアセット指定は描画側へ届いている」ことが確定する。
+    let line = match &result {
+        Some(p) => format!(
+            "[SHADING] loaded path={asset_path} models={} variants=rt_off{}{}",
+            models_label(&p.models),
+            if p.rt.is_some()          { "+rt" }          else { "" },
+            if p.rt_bindless.is_some() { "+rt_bindless" } else { "" },
+        ),
+        None => format!(
+            "[SHADING] failed path={asset_path} \
+             （組み込み標準シェーディングへフォールバック。詳細は [SEED shading_asset] 行）"
+        ),
+    };
+    cache.report(REPORT_CHANNEL_LOAD, line);
+    result
+}
+
+/// `[SHADING]` 診断行のチャンネル: アセットのロード結果。
+pub const REPORT_CHANNEL_LOAD:  &str = "load";
+/// `[SHADING]` 診断行のチャンネル: 実際に採用したパイプライン（描画側から報告）。
+pub const REPORT_CHANNEL_APPLY: &str = "apply";
+
+/// `resolve` の本体（診断ログを挟まない素の解決処理）。
+fn resolve_inner(
     device:           &wgpu::Device,
     deferred:         &DeferredLightingPipelines,
     cache:            &ShadingAssetCache,

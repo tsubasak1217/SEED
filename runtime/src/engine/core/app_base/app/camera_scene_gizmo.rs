@@ -446,6 +446,9 @@ pub fn build_camera_uniform(
         // ここは常に prev=curr にして「プレビューの速度は恒等的に 0」であることを保証する。
         // プレビューカメラ用に前フレーム行列を追跡する仕組みは意図的に持たない。
         prev_view_proj: view_proj.transpose().data,
+        // カメラプレビューは専用 RT 全面へ描き set_viewport を使わない（黒帯なし）。
+        // よってビューポート矩形＝プレビュー RT 全面。
+        viewport:       [0.0, 0.0, res[0], res[1]],
     }
 }
 

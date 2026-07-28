@@ -28,6 +28,12 @@ struct CameraUniform {
     resolution:     vec2<f32>,
     _pad2:          vec2<f32>,
     inv_view_proj:  mat4x4<f32>,
+    /// 速度バッファ用の前フレーム ViewProjection（本パスでは未使用。オフセット合わせ）。
+    prev_view_proj: mat4x4<f32>,
+    /// フレームバッファ基準のビューポート矩形 (x, y, w, h)。
+    /// **NDC はこの矩形へ写像される**ため、深度→ワールド復元・ワールド→UV 射影の
+    /// 双方でこの矩形を使う（Play のレターボックス時に RT 全面で正規化すると座標がズレる）。
+    viewport:       vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> u_camera: CameraUniform;
 
@@ -73,9 +79,30 @@ fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> SsgiVsOut {
     return out;
 }
 
+// ─── RT 全面基準 UV ⇄ ビューポート相対 UV ─────────────────────────────
+//
+// フルスクリーン三角形の UV とテクスチャのアドレッシングはレンダーターゲット全面（0..1）
+// 基準だが、NDC `[-1,1]` が写像されるのは **ビューポート矩形だけ**（Play のレターボックス／
+// ピラーボックスで set_viewport する矩形）。NDC を作る／NDC から UV を作る箇所は必ず
+// この 2 関数を通すこと。Edit モード・黒帯なしでは viewport = (0,0,RT幅,RT高さ) となり、
+// どちらも恒等変換＝従来式と完全に同値になる。
+fn ssgi_vp_uv(uv_rt: vec2<f32>) -> vec2<f32> {
+    // RT の実寸は textureDimensions から取る（uniform の resolution はウィンドウ側の
+    // 要求サイズで、リサイズ中の 1 フレームだけスワップチェーン実寸と食い違いうるため。
+    // 既存の ssgi_full_pix と同じ流儀）。
+    let pix = uv_rt * vec2<f32>(textureDimensions(t_gbuffer0));
+    return (pix - u_camera.viewport.xy) / max(u_camera.viewport.zw, vec2<f32>(1.0, 1.0));
+}
+fn ssgi_rt_uv(uv_vp: vec2<f32>) -> vec2<f32> {
+    let pix = u_camera.viewport.xy + uv_vp * u_camera.viewport.zw;
+    return pix / max(vec2<f32>(textureDimensions(t_gbuffer0)), vec2<f32>(1.0, 1.0));
+}
+
 // ─── 深度→ワールド復元（reflection_world_pos / ao_world_pos と同式）───
+// `uv` は RT 全面基準。NDC 化はビューポート相対で行う。
 fn ssgi_world_pos(uv: vec2<f32>, depth: f32) -> vec3<f32> {
-    let ndc  = vec3<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth);
+    let uv_vp = ssgi_vp_uv(uv);
+    let ndc  = vec3<f32>(uv_vp.x * 2.0 - 1.0, 1.0 - uv_vp.y * 2.0, depth);
     let clip = u_camera.inv_view_proj * vec4<f32>(ndc, 1.0);
     return clip.xyz / clip.w;
 }

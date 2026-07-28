@@ -2616,6 +2616,20 @@ impl CameraBuffer {
     pub fn update(&self, queue: &wgpu::Queue, uniform: &CameraUniform) {
         queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(uniform));
     }
+
+    /// ビューポート矩形（`CameraUniform.viewport`）だけを後から上書きする。
+    ///
+    /// Play のビューポートは「実サーフェスサイズへのクランプ」がカメラ行列の確定より
+    /// **後**（`frame.surface_size()` が取れてから）になるため、確定値をこの部分書き込みで
+    /// 反映する。`queue.write_buffer` はコマンドバッファのサブミットより前に実行されるので、
+    /// このフレームの全パスが同じ矩形を見る。
+    pub fn update_viewport(&self, queue: &wgpu::Queue, viewport: [f32; 4]) {
+        queue.write_buffer(
+            &self.buffer,
+            crate::engine::core::renderer::uniforms::CAMERA_UNIFORM_VIEWPORT_OFFSET,
+            bytemuck::cast_slice(&viewport),
+        );
+    }
 }
 
 // ============================================================
