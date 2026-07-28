@@ -262,6 +262,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private ViewportOleDropTarget? _viewportDropTarget;
     private Window?                _vpDragOverlay;
     private RuntimeManager?        _runtimeManager;
+    /// <summary>
+    /// .wgsl タブのライブ検証サービス（ランタイムへ VALIDATE_WGSL を依頼し WGSL_DIAG を相関）。
+    /// スクリプトエディタへデリゲートとして注入するため、寿命をウィンドウ側で保持する。
+    /// </summary>
+    private WgslValidationService? _wgslValidation;
     /// <summary>内蔵デバッガ（netcoredbg/DAP）のセッション。アタッチ中のみ非 null。</summary>
     private SEEDEditor.Debugger.ScriptDebugSession? _debugSession;
     /// <summary>
@@ -449,6 +454,15 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             PanelInspector.InvalidateScriptTypeCache(path);
             _runtimeManager?.SendToRuntime("RELOAD_SCRIPTS");
         };
+        // スクリプトエディタ: .wgsl タブのライブ検証をランタイム経由で行えるようにする。
+        // パネル側は「ソースを渡すと診断が返る関数」しか知らない（IPC はサービスが担当）。
+        if (_runtimeManager is not null)
+        {
+            var wgslValidation = new WgslValidationService(_runtimeManager);
+            _wgslValidation = wgslValidation;
+            PanelScriptEditor.WgslValidator = source => wgslValidation.ValidateAsync(source);
+        }
+
         // 実行中にブレークポイントを設置・解除したら、その場でデバッガへ反映する
         // （デバッグセッションが有効なときのみ）。
         PanelScriptEditor.BreakpointsChanged += OnBreakpointsChanged;

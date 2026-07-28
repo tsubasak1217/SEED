@@ -57,6 +57,30 @@ pub const SHADING_CONTRACT_VERSION: u32 = 1;
 /// 例: `// @shading_contract 1`
 const CONTRACT_MARKER: &str = "@shading_contract";
 
+// ── エディタへ返す診断の `variant` 識別子（ワイヤ契約） ──────────────
+// `WGSL_DIAG:` レスポンスの JSON にそのまま載る文字列。エディタ側が
+// 「どの変種で落ちたか」を判別するキーなので、表示文言のつもりで変更しないこと。
+/// RT 非対応・RT オフ変種。
+const VARIANT_NAME_RT_OFF: &str = "rt_off";
+/// RT 影あり変種。
+const VARIANT_NAME_RT_ON: &str = "rt_on";
+/// RT 影＋バインドレス変種。
+const VARIANT_NAME_RT_BINDLESS: &str = "rt_bindless";
+/// 変種の検証以前（契約バージョンの照合）で弾かれたことを表す識別子。
+const VARIANT_NAME_CONTRACT: &str = "contract";
+
+/// 契約バージョン診断が指す行番号（1 始まり）。
+///
+/// 契約宣言 `// @shading_contract N` はアセット先頭コメントに書く規約なので、
+/// 「宣言が無い／版が違う」の指摘は常に先頭行へ寄せる。
+const CONTRACT_DIAG_LINE: usize = 1;
+
+/// インメモリ検証で使うアセット名（naga のエラー表示にしか現れないダミー）。
+///
+/// エディタの未保存バッファを検証するため実ファイルパスが無い。名前は WGSL 本文には
+/// 現れず、`format_error` も通さないので診断メッセージには載らない。
+const IN_MEMORY_ASSET_NAME: &str = "<editor-buffer>";
+
 /// アセットが定義できるシェーディングモデル ID の下限。
 /// 0 はエンジン標準 PBR（`SHADING_MODEL_DEFAULT_PBR`）で予約されているため 1 から。
 const USER_MODEL_ID_MIN: u8 = SHADING_MODEL_DEFAULT_PBR + 1;
@@ -334,6 +358,18 @@ impl Variant {
         cfg.shader_sources
     }
 
+    /// エディタへ返す診断の `variant` フィールドに載せる識別子。
+    ///
+    /// **エディタとのワイヤ契約**であり、`WGSL_DIAG:` レスポンスの JSON にそのまま入る。
+    /// 表示文言ではないので翻訳・変更をしないこと（エディタ側が変種名で分岐する）。
+    fn wire_name(self) -> &'static str {
+        match self {
+            Variant::RtOff      => VARIANT_NAME_RT_OFF,
+            Variant::RtOn       => VARIANT_NAME_RT_ON,
+            Variant::RtBindless => VARIANT_NAME_RT_BINDLESS,
+        }
+    }
+
     /// naga 検証に必要なケイパビリティ。
     /// 正典は deferred.rs の同名テスト群（rt_on=RAY_QUERY / rt_bindless=+非一様インデックス）。
     fn capabilities(self) -> naga::valid::Capabilities {
@@ -462,6 +498,131 @@ fn format_error(
 }
 
 // ============================================================
+//  契約バージョン診断の文言（build / インメモリ検証で共有）
+// ============================================================
+
+/// 契約バージョン不一致のメッセージ本体（パス接頭辞を含まない）。
+///
+/// `ShadingAssetPipelines::build` はこの前に `"{asset_path}:-: "` を付けて返し、
+/// インメモリ検証（`validate_asset_source`）は接頭辞なしでそのまま返す。
+/// 文言を 1 箇所に集約するのは、ファイル経由とエディタ経由で同じ誤りに対して
+/// 違う説明が出る事態を防ぐため。
+fn contract_mismatch_message(declared: u32) -> String {
+    format!(
+        "契約バージョン不一致（アセット宣言 {declared} / エンジン \
+         {SHADING_CONTRACT_VERSION}）。`// @shading_contract {SHADING_CONTRACT_VERSION}` \
+         に更新し、契約の変更点に追随してください"
+    )
+}
+
+/// 契約バージョン宣言が無い場合のメッセージ本体（パス接頭辞を含まない）。
+fn contract_missing_message() -> String {
+    format!(
+        "`// @shading_contract {SHADING_CONTRACT_VERSION}` の宣言が \
+         ありません（v{SHADING_CONTRACT_VERSION} とみなして読み込みました）"
+    )
+}
+
+// ============================================================
+//  1-2b. インメモリ検証（エディタの未保存バッファ用）
+// ============================================================
+
+/// エディタへ返す WGSL 診断 1 件。
+///
+/// `WGSL_DIAG:` IPC レスポンスの JSON 配列要素そのもの。フィールド名は
+/// **エディタとのワイヤ契約**なので、rename やフィールド追加は両側同時に行うこと。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WgslDiagnostic {
+    /// 人間可読のエラーメッセージ（日本語の補足を含む場合がある）。
+    pub message: String,
+    /// アセットソース内の 1 始まり行番号。
+    /// アセット外（エンジン側連結コード）や行不明の場合は `None`。
+    pub line: Option<usize>,
+    /// 検出された変種（`rt_off` / `rt_on` / `rt_bindless`）。
+    /// 変種検証以前（契約バージョン照合）で弾かれた場合は `contract`。
+    pub variant: String,
+}
+
+/// 変種検証のエラーを 1 件の診断へ変換する。
+///
+/// 行番号は `map_reported_line` で連結ソース基準からアセット基準へ写す。
+/// アセット外で検出された場合は行を返さず（エディタ側で行にマーカーを置けないため）、
+/// 代わりに「どこで落ちたのか」をメッセージで明示する。
+fn diagnostic_from_variant_error(
+    variant:          Variant,
+    msg:              &str,
+    reported_line:    Option<usize>,
+    asset_start_line: usize,
+    asset_lines:      usize,
+) -> WgslDiagnostic {
+    let mapped = reported_line.map(|l| map_reported_line(l, asset_start_line, asset_lines));
+    let (line, message) = match mapped {
+        // アセット本体の中 → そのままエディタの行へ写せる。
+        Some(MappedLine::InAsset(l)) => (Some(l), msg.to_string()),
+        // アセット外 → 連結ソース上の行番号は編集画面と対応しないので行は返さない。
+        Some(MappedLine::OutsideAsset(l)) => (
+            None,
+            format!("アセット外（エンジン側連結コード）で検出されました（連結 {variant:?} の {l} 行目）: {msg}"),
+        ),
+        // naga が行を返さなかった（モジュール全体に関わるエラー等）。
+        None => (None, msg.to_string()),
+    };
+    WgslDiagnostic { message, line, variant: variant.wire_name().to_string() }
+}
+
+/// シェーディングアセットのソースを、**ファイル保存も GPU デバイスも使わずに**検証する。
+///
+/// エディタの未保存バッファをそのまま受け取り、`ShadingAssetPipelines::build` と同じ
+/// 前処理（契約照合 → モデル検出 → ディスパッチ生成 → 3 変種の連結 → naga 検証）を
+/// 通して診断を返す。パイプライン生成だけを行わないため wgpu デバイスに依存しない。
+///
+/// 返り値は **0 件または 1 件**。最初に失敗した変種のエラーだけを返す
+/// （後続変種のエラーは前段の失敗の派生であることが多く、並べても情報が増えないため）。
+/// 成功時は空 Vec。
+pub fn validate_asset_source(asset_src: &str) -> Vec<WgslDiagnostic> {
+    // ── 1. 契約バージョンの照合 ───────────────────────────
+    // 判定条件と文言は `build` と共有する。ただし `build` が「宣言なし＝警告として通す」
+    // のに対し、こちらは編集中の作者へ直接返す診断なので宣言なしも 1 件として返して終える
+    // （エディタ側の契約: 変種以前のエラーは variant="contract"）。
+    match parse_contract_version(asset_src) {
+        Some(v) if v != SHADING_CONTRACT_VERSION => {
+            return vec![WgslDiagnostic {
+                message: contract_mismatch_message(v),
+                line:    Some(CONTRACT_DIAG_LINE),
+                variant: VARIANT_NAME_CONTRACT.to_string(),
+            }];
+        }
+        Some(_) => {}
+        None => {
+            return vec![WgslDiagnostic {
+                message: contract_missing_message(),
+                line:    Some(CONTRACT_DIAG_LINE),
+                variant: VARIANT_NAME_CONTRACT.to_string(),
+            }];
+        }
+    }
+
+    // ── 2. モデル検出とディスパッチ生成 ───────────────────
+    // 実装が 1 つも無いのは「エラー」ではない（全表面が標準 PBR で描かれるだけ）ので
+    // 診断にはしない。build 側でも警告扱いである。
+    let found     = detect_shade_models(asset_src);
+    let generated = generate_dispatch(&found);
+    let lines     = asset_line_count(asset_src);
+
+    // ── 3. 3 変種を順に検証し、最初の失敗で打ち切る ────────
+    for variant in [Variant::RtOff, Variant::RtOn, Variant::RtBindless] {
+        if let Err((msg, line, start)) =
+            prepare_variant(variant, IN_MEMORY_ASSET_NAME, asset_src, &generated)
+        {
+            return vec![diagnostic_from_variant_error(variant, &msg, line, start, lines)];
+        }
+    }
+
+    // ── 4. 全変種成功 ─────────────────────────────────────
+    Vec::new()
+}
+
+// ============================================================
 //  1-3. パイプライン構築
 // ============================================================
 
@@ -542,19 +703,13 @@ impl ShadingAssetPipelines {
         // ── 契約バージョンの照合 ──────────────────────────────
         match parse_contract_version(asset_src) {
             Some(v) if v != SHADING_CONTRACT_VERSION => {
-                return Err(format!(
-                    "{asset_path}:-: 契約バージョン不一致（アセット宣言 {v} / エンジン \
-                     {SHADING_CONTRACT_VERSION}）。`// @shading_contract {SHADING_CONTRACT_VERSION}` \
-                     に更新し、契約の変更点に追随してください"
-                ));
+                // 文言はインメモリ検証と共有する（ファイル経由／エディタ経由で説明を揃える）。
+                return Err(format!("{asset_path}:-: {}", contract_mismatch_message(v)));
             }
             Some(_) => {}
             None => {
                 // 宣言が無い場合は v1 とみなして通す（警告扱い）。
-                warnings.push(format!(
-                    "{asset_path}:-: `// @shading_contract {SHADING_CONTRACT_VERSION}` の宣言が \
-                     ありません（v{SHADING_CONTRACT_VERSION} とみなして読み込みました）"
-                ));
+                warnings.push(format!("{asset_path}:-: {}", contract_missing_message()));
             }
         }
 
@@ -1299,6 +1454,76 @@ fn caller(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return shade_defau
         assert_eq!(parse_contract_version(TOON_ASSET), Some(1));
         assert_eq!(parse_contract_version("fn shade_model_1() {}"), None);
         assert_eq!(parse_contract_version("// @shading_contract 42\n"), Some(42));
+    }
+
+    // ── 6. インメモリ検証（エディタの未保存バッファ） ───────
+
+    /// 正常なアセット（サンプルのトゥーン）は診断ゼロで通ること。
+    #[test]
+    fn validate_asset_source_accepts_valid_asset() {
+        let diags = validate_asset_source(TOON_ASSET);
+        assert!(diags.is_empty(), "正常なアセットで診断が出た: {diags:?}");
+    }
+
+    /// 構文エラーを仕込むと、アセット内の**その行**を指す診断が 1 件返ること。
+    ///
+    /// 行番号がアセット基準（連結ソース基準ではない）へ写っていることが要点。
+    /// エディタは返ってきた行にそのままマーカーを置くため、ここがずれると
+    /// 「関係ない行に赤線が出る」という最も混乱する壊れ方になる。
+    #[test]
+    fn validate_asset_source_reports_asset_line_for_syntax_error() {
+        // 1 行目に契約宣言、4 行目に構文エラー（`retur` は未知の識別子）。
+        let broken = "// @shading_contract 1\n\
+                      fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {\n\
+                      \x20   let c = sf.base_color * li.color;\n\
+                      \x20   retur c;\n\
+                      }\n";
+        let diags = validate_asset_source(broken);
+        assert_eq!(diags.len(), 1, "診断は 1 件だけ返る: {diags:?}");
+        assert_eq!(diags[0].line, Some(4), "アセット内 4 行目を指すこと: {:?}", diags[0]);
+        assert_eq!(diags[0].variant, VARIANT_NAME_RT_OFF,
+            "最初に検証する変種で落ちること: {:?}", diags[0]);
+        assert!(!diags[0].message.is_empty());
+    }
+
+    /// 契約バージョン宣言が無いアセットは variant="contract" の診断 1 件で終わること。
+    #[test]
+    fn validate_asset_source_reports_missing_contract() {
+        let no_contract = "fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {\n\
+                           \x20   return sf.base_color * li.color;\n\
+                           }\n";
+        let diags = validate_asset_source(no_contract);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].variant, VARIANT_NAME_CONTRACT);
+        assert_eq!(diags[0].line, Some(CONTRACT_DIAG_LINE));
+        assert!(diags[0].message.contains(CONTRACT_MARKER),
+            "宣言の書き方を示すこと: {}", diags[0].message);
+    }
+
+    /// 契約バージョンが食い違うアセットも variant="contract" で弾かれること。
+    #[test]
+    fn validate_asset_source_reports_contract_version_mismatch() {
+        let future = format!("// @shading_contract {}\n{}",
+            SHADING_CONTRACT_VERSION + 1,
+            "fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> \
+             { return sf.base_color * li.color; }\n");
+        let diags = validate_asset_source(&future);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].variant, VARIANT_NAME_CONTRACT);
+        assert!(diags[0].message.contains("不一致"), "{}", diags[0].message);
+    }
+
+    /// 診断の JSON 形（エディタとのワイヤ契約）が `message` / `line` / `variant` であること。
+    #[test]
+    fn wgsl_diagnostic_serializes_to_wire_shape() {
+        let d = WgslDiagnostic {
+            message: "err".to_string(), line: Some(7), variant: VARIANT_NAME_RT_ON.to_string(),
+        };
+        let json = serde_json::to_string(&d).expect("シリアライズできること");
+        assert_eq!(json, r#"{"message":"err","line":7,"variant":"rt_on"}"#);
+        let d_null = WgslDiagnostic { line: None, ..d };
+        let json_null = serde_json::to_string(&d_null).expect("シリアライズできること");
+        assert!(json_null.contains(r#""line":null"#), "行不明は null になること: {json_null}");
     }
 
     /// 標準連結リストの差し替えが「shading_dispatch.wgsl の位置」で行われること。

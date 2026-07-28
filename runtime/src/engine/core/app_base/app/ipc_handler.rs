@@ -1221,6 +1221,10 @@ impl App {
                         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
                     }
                 }
+                IpcCommand::ValidateWgsl { request_id, source } => {
+                    // シェーディングアセットの未保存 WGSL を検証して診断を返す（保存・GPU 不要）。
+                    self.handle_validate_wgsl(request_id, &source);
+                }
                 IpcCommand::SetSceneSettings { json } => {
                     // シーン単位のビューポート／レンダリング設定（.scene の settings 節）を更新する。
                     //
