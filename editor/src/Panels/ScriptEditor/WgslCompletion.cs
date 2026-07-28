@@ -244,6 +244,44 @@ public static class WgslCompletion
         ("determinant",  "determinant(m)",                "行列式"),
     };
 
+    /// <summary>
+    /// 「既に別の分類で着色済み」とみなす予約語の集合
+    /// （言語キーワード・型・組み込み関数・契約シンボル）。
+    ///
+    /// <see cref="WgslSemanticAnalyzer"/> が識別子を着色するとき、この集合の語は
+    /// 除外する。Wgsl.xshd（字句ハイライト）が塗った色を後段のカラーライザが
+    /// 上書きしてしまうのを防ぐためで、xshd 側の色を常に優先させる意図。
+    ///
+    /// 構造体フィールド名（<see cref="SurfaceFields"/> 等）は含めない。
+    /// "normal" や "distance" のようにローカル変数名としてもごく普通に使われる語であり、
+    /// 予約すると本来着色したいローカル変数が塗られなくなるため。
+    /// </summary>
+    public static IReadOnlySet<string> ReservedWords { get; } = BuildReservedWords();
+
+    /// <summary>予約語集合を構築する（辞書定義から重複なく集める）。</summary>
+    private static IReadOnlySet<string> BuildReservedWords()
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+
+        // 単純な識別子だけを採用する（"vec3<f32>" のような具体化済み型名は
+        // 識別子トークンとして現れないため除外してよい）。
+        void AddIfIdentifier(string name)
+        {
+            if (name.Length == 0) return;
+            foreach (var ch in name)
+                if (ch != '_' && !char.IsLetterOrDigit(ch)) return;
+            set.Add(name);
+        }
+
+        foreach (var k in Keywords)          AddIfIdentifier(k);
+        foreach (var t in Types)             AddIfIdentifier(t);
+        foreach (var f in BuiltinFunctions)  AddIfIdentifier(f.Name);
+        foreach (var f in ContractFunctions) AddIfIdentifier(f.Name);
+        foreach (var c in ContractConstants) AddIfIdentifier(c.Name);
+        foreach (var s in ShadeSnippets)     AddIfIdentifier(s.Name);
+        return set;
+    }
+
     // ── 文脈解決用の正規表現 ────────────────────────────────
 
     /// <summary>キャレット直前が「識別子 + '.'（+ 入力途中の識別子）」かを判定する。</summary>

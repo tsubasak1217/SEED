@@ -229,7 +229,7 @@ public sealed class ScriptEditorSettingsWindow : Window
                 var current = _settings.Colors.TryGetValue(entry.Key, out var c) && !string.IsNullOrWhiteSpace(c)
                     ? c
                     : entry.DefaultHex;
-                panel.Children.Add(ColorRow(entry.Label, current, out var getter));
+                panel.Children.Add(ColorRow(entry.Label, current, entry.DefaultHex, out var getter));
                 colorGetters[entry.Key]  = getter;
                 _colorDefaults[entry.Key] = entry.DefaultHex;
             }
@@ -403,7 +403,19 @@ public sealed class ScriptEditorSettingsWindow : Window
         return row;
     }
 
-    private UIElement ColorRow(string label, string hex, out Func<string> getter)
+    /// <summary>
+    /// 配色 1 項目の行（ラベル・スウォッチ・16 進入力・リセット）を生成する。
+    ///
+    /// リセットボタンはその項目だけを既定色へ戻す。既定色と同じ値のときは
+    /// 押しても意味が無いので無効化する（非表示にすると行ごとに幅が揃わず
+    /// 目線が乱れるため、表示は保ったまま淡色化する）。
+    /// エディタへの反映は既存経路どおり OK 押下（Applied イベント）で行われる。
+    /// </summary>
+    /// <param name="label">項目名。</param>
+    /// <param name="hex">初期表示する色（保存済みのカスタム値、無ければ既定色）。</param>
+    /// <param name="defaultHex">この項目の既定色（リセット先）。</param>
+    /// <param name="getter">入力欄の現在値を取り出す関数。</param>
+    private UIElement ColorRow(string label, string hex, string defaultHex, out Func<string> getter)
     {
         var preview = new Border
         {
@@ -417,8 +429,17 @@ public sealed class ScriptEditorSettingsWindow : Window
             Text = hex, Width = 90, Background = FieldBg, Foreground = Text, CaretBrush = Text,
             BorderBrush = Border2, BorderThickness = new Thickness(1), Padding = new Thickness(3, 1, 3, 1),
         };
-        // テキスト変更でプレビューを追従させる
-        tb.TextChanged += (_, _) => preview.Background = HexToBrush(tb.Text, ((SolidColorBrush)preview.Background).Color);
+        // その項目だけを既定色へ戻すボタン（既定色と同値のときは無効）
+        var resetBtn = MakeSmallButton(ResetButtonLabel, $"この項目を既定色 {defaultHex} に戻す");
+        resetBtn.Click += (_, _) => tb.Text = defaultHex; // TextChanged がプレビューと有効状態へ波及
+        resetBtn.IsEnabled = !SameColor(hex, defaultHex);
+
+        // テキスト変更でプレビューとリセットボタンの有効状態を追従させる
+        tb.TextChanged += (_, _) =>
+        {
+            preview.Background = HexToBrush(tb.Text, ((SolidColorBrush)preview.Background).Color);
+            resetBtn.IsEnabled = !SameColor(tb.Text, defaultHex);
+        };
         // スウォッチをクリックしたらカラーピッカーを開き、選んだ色をテキストへ反映する
         preview.MouseLeftButtonDown += (_, _) =>
         {
@@ -433,8 +454,42 @@ public sealed class ScriptEditorSettingsWindow : Window
         row.Children.Add(new TextBlock { Text = label, Foreground = Text, Width = 120, VerticalAlignment = VerticalAlignment.Center });
         row.Children.Add(preview);
         row.Children.Add(tb);
+        row.Children.Add(resetBtn);
         return row;
     }
+
+    /// <summary>
+    /// 2 つの色文字列が同じ色を指すか（"#rrggbb" と "#RRGGBB" のような表記揺れを吸収する）。
+    /// どちらかが色として解釈できない場合は文字列比較にフォールバックする。
+    /// </summary>
+    private static bool SameColor(string a, string b)
+    {
+        try { return (Color)ColorConverter.ConvertFromString(a) == (Color)ColorConverter.ConvertFromString(b); }
+        catch { return string.Equals(a?.Trim(), b?.Trim(), StringComparison.OrdinalIgnoreCase); }
+    }
+
+    /// <summary>配色行のリセットボタンの表示文字。</summary>
+    private const string ResetButtonLabel = "リセット";
+    /// <summary>配色行のリセットボタンの最小幅（px）。行内に収める小型ボタン。</summary>
+    private const double SmallButtonMinWidth = 56;
+    /// <summary>配色行のリセットボタンのフォントサイズ。</summary>
+    private const double SmallButtonFontSize = 11;
+
+    /// <summary>
+    /// 行内に収める小型ボタンを生成する（配色行のリセット用）。
+    /// 見た目は <see cref="MakeButton"/> と同じダークテンプレートを使い、寸法だけ小さくする。
+    /// </summary>
+    private static Button MakeSmallButton(string content, string toolTip) => new()
+    {
+        Content = content, MinWidth = SmallButtonMinWidth, Margin = new Thickness(6, 0, 0, 0),
+        Padding = new Thickness(6, 1, 6, 1), FontSize = SmallButtonFontSize,
+        Foreground = Text, Background = FieldBg, BorderBrush = Border2,
+        BorderThickness = new Thickness(1),
+        VerticalAlignment = VerticalAlignment.Center,
+        Cursor = System.Windows.Input.Cursors.Hand,
+        ToolTip = toolTip,
+        Template = (ControlTemplate)System.Windows.Markup.XamlReader.Parse(DarkButtonTemplateXaml),
+    };
 
     private static Button MakeButton(string content) => new()
     {

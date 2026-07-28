@@ -64,14 +64,10 @@ public static class ScriptEditorColorSchema
         return list;
     }
 
-    /// <summary>WGSL の色設定項目（既定色は Wgsl.xshd の Color 定義そのもの）。</summary>
-    private static IReadOnlyList<ColorSettingEntry> WgslEntries()
-    {
-        var defaults = WgslColorScheme.DefaultColors();
-        var list = new List<ColorSettingEntry>();
-        foreach (var e in WgslColorScheme.Entries)
-            if (defaults.TryGetValue(e.Key, out var d))
-                list.Add(new ColorSettingEntry(e.Label, e.Key, d));
-        return list;
-    }
+    /// <summary>
+    /// WGSL の色設定項目。
+    /// 字句分類の既定色は Wgsl.xshd の Color 定義そのもの、
+    /// 意味解析分類（ローカル変数・引数）の既定色は WgslColorScheme の定数。
+    /// </summary>
+    private static IReadOnlyList<ColorSettingEntry> WgslEntries() => WgslColorScheme.SettingEntries();
 }

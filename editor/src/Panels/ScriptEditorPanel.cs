@@ -730,7 +730,7 @@ public class ScriptEditorPanel : UserControl
             foreach (var doc in _docs)
             {
                 ApplySettingsToEditor(doc.Editor);
-                _ = RunSemanticColorizeAsync(doc);
+                RefreshSemanticColoring(doc);
                 doc.Editor.TextArea.TextView.Redraw();
             }
         };
@@ -1005,10 +1005,12 @@ public class ScriptEditorPanel : UserControl
                 _ = RunDiagnosticsAsync(doc);
                 _ = RunSemanticColorizeAsync(doc);
             }
-            // シェーダー（.wgsl）はランタイムへ検証を依頼し、返った診断を波線表示する
+            // シェーダー（.wgsl）はランタイムへ検証を依頼し、返った診断を波線表示する。
+            // 併せてローカル変数・引数の着色（軽量セマンティック）も更新する。
             else if (doc.Language == EditorLanguage.Wgsl)
             {
                 _ = RunWgslDiagnosticsAsync(doc);
+                RunWgslSemanticColorize(doc);
             }
             // 未保存なら内容を退避、保存済みなら退避を消す（クラッシュ復元用）
             UpdateRecovery(doc);
@@ -1079,6 +1081,9 @@ public class ScriptEditorPanel : UserControl
         {
             _ = RunWgslDiagnosticsAsync(doc);
         }
+        // ローカル変数・引数の着色は読み取り専用タブ（エンジン同梱シェーダー）でも行う。
+        // 参照目的で開いた .wgsl こそ色分けの価値が高いため。
+        if (doc.Language == EditorLanguage.Wgsl) RunWgslSemanticColorize(doc);
     }
 
     /// <summary>現在アクティブなドキュメントを保存する。</summary>
@@ -1402,20 +1407,24 @@ public class ScriptEditorPanel : UserControl
         ["parameter name"]        = ScriptEditorSettings.SemKeys.Parameter, // 引数
     };
 
-    // 分類種別 → ブラシのキャッシュ（設定色を反映済み）。設定変更時にクリアされる。
+    // 配色キー → ブラシのキャッシュ（設定色を反映済み）。設定変更時にクリアされる。
     private readonly Dictionary<string, Brush> _semanticBrushCache = new();
 
-    /// <summary>分類種別に対応するブラシを返す（対象外なら null）。設定色があれば優先する。</summary>
-    private Brush? SemanticBrush(string classification)
+    /// <summary>
+    /// 配色キーに対応するブラシを返す（色が決まらなければ null）。
+    /// 設定値を最優先し、無ければ既定色へフォールバックする。
+    /// C# / WGSL いずれのセマンティック着色からも共通で使う。
+    /// </summary>
+    /// <param name="key">配色キー（C# は SemKeys、WGSL は "wgsl." 接頭辞付き）。</param>
+    /// <param name="defaultHex">設定に無い場合の既定色を返す関数（キャッシュヒット時は呼ばれない）。</param>
+    private Brush? ColorBrush(string key, Func<string?> defaultHex)
     {
-        if (_semanticBrushCache.TryGetValue(classification, out var cached)) return cached;
-        if (!SemanticKeyMap.TryGetValue(classification, out var key)) return null;
+        if (_semanticBrushCache.TryGetValue(key, out var cached)) return cached;
 
-        // 論理キーに対応する色を設定から取得。無ければ既定配色にフォールバック。
         string? hex = null;
         _settings?.Colors.TryGetValue(key, out hex);
-        if (hex is null) ScriptEditorSettings.DefaultColors().TryGetValue(key, out hex);
-        if (hex is null) return null;
+        if (string.IsNullOrWhiteSpace(hex)) hex = defaultHex();
+        if (string.IsNullOrWhiteSpace(hex)) return null;
 
         Color color;
         try { color = (Color)ColorConverter.ConvertFromString(hex); }
@@ -1423,9 +1432,66 @@ public class ScriptEditorPanel : UserControl
 
         var brush = new SolidColorBrush(color);
         brush.Freeze();
-        _semanticBrushCache[classification] = brush;
+        _semanticBrushCache[key] = brush;
         return brush;
     }
+
+    /// <summary>Roslyn の分類種別に対応するブラシを返す（対象外なら null）。</summary>
+    private Brush? SemanticBrush(string classification)
+    {
+        if (!SemanticKeyMap.TryGetValue(classification, out var key)) return null;
+        return ColorBrush(key, () =>
+            ScriptEditorSettings.DefaultColors().TryGetValue(key, out var d) ? d : null);
+    }
+
+    /// <summary>
+    /// 言語に応じたセマンティック着色を実行する。
+    /// C# は Roslyn の分類、WGSL は軽量セマンティック解析を使う。
+    /// 呼び出し側が言語を意識しなくて済むようにするための振り分け口。
+    /// </summary>
+    private void RefreshSemanticColoring(DocTab doc)
+    {
+        if (doc.IsCSharp)                            _ = RunSemanticColorizeAsync(doc);
+        else if (doc.Language == EditorLanguage.Wgsl) RunWgslSemanticColorize(doc);
+    }
+
+    /// <summary>
+    /// WGSL のローカル変数・引数を着色する（軽量セマンティック解析）。
+    ///
+    /// 正規表現ハイライト（Wgsl.xshd）は識別子の役割を区別できないため、
+    /// <see cref="WgslSemanticAnalyzer"/> が抽出した宣言名の出現箇所を後段で塗り分ける。
+    /// 解析は文書全体の 1 パス走査だけで済む軽い処理なので、Roslyn 側と違い
+    /// 非同期化せず同期で実行する（デバウンス済みのタイマーから呼ばれる）。
+    /// </summary>
+    private void RunWgslSemanticColorize(DocTab doc)
+    {
+        // 巨大ファイルでは全文走査＋全再描画が重いので着色しない（C# 側と同じ方針）
+        if (doc.Editor.Document.TextLength > SemanticMaxTextLength)
+        {
+            doc.Semantic.Clear();
+            doc.Editor.TextArea.TextView.Redraw();
+            return;
+        }
+
+        // 分類ごとのブラシ（設定色 →（無ければ）WgslColorScheme の既定色）
+        var localBrush = ColorBrush(WgslColorScheme.KeyLocal,     () => WgslDefaultHex(WgslColorScheme.KeyLocal));
+        var paramBrush = ColorBrush(WgslColorScheme.KeyParameter, () => WgslDefaultHex(WgslColorScheme.KeyParameter));
+
+        var spans = new List<SemanticColorizer.Span>();
+        foreach (var s in WgslSemanticAnalyzer.Analyze(doc.Editor.Text))
+        {
+            var brush = s.Kind == WgslSemanticKind.Parameter ? paramBrush : localBrush;
+            if (brush is null) continue;
+            spans.Add(new SemanticColorizer.Span(s.Offset, s.Length, brush));
+        }
+
+        doc.Semantic.SetSpans(spans);
+        doc.Editor.TextArea.TextView.Redraw();
+    }
+
+    /// <summary>WGSL 配色キーの既定色を返す（未定義なら null）。</summary>
+    private static string? WgslDefaultHex(string key)
+        => WgslColorScheme.DefaultColors().TryGetValue(key, out var hex) ? hex : null;
 
     /// <summary>
     /// Roslyn のセマンティック分類を計算し、型名・メソッド名などを着色する。
