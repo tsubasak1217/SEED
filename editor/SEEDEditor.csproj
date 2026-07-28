@@ -60,6 +60,15 @@
     <Resource Include="resources\images\**\*.png"/>
   </ItemGroup>
 
+  <!-- スクリプトエディタの追加シンタックスハイライト定義（AvalonEdit xshd）。 -->
+  <!-- 既定のリソース名はディレクトリ構成に依存して長くなるため、コード側        -->
+  <!-- （WgslHighlighting.ResourceName）と一致する短い LogicalName を明示する。  -->
+  <ItemGroup>
+    <EmbeddedResource Include="src\Panels\ScriptEditor\Syntax\Wgsl.xshd">
+      <LogicalName>SEEDEditor.Wgsl.xshd</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- スクリプト API リファレンス（AI インライン補完の正典）を出力ディレクトリへコピーし、 -->
   <!-- 実行時に ScriptApiReference が確実に読み込めるようにする。                          -->
   <ItemGroup>

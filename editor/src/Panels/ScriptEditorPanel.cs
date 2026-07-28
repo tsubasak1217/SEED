@@ -89,6 +89,12 @@ public class ScriptEditorPanel : UserControl
         public required HighlightRenderer SearchHi;       // 検索一致ハイライト（オレンジ）
         public required OverviewRuler     Ruler;          // 右側の概観ルーラー
         public required SemanticColorizer Semantic;      // 型名・メソッド名などの意味的着色
+        /// <summary>
+        /// このドキュメントの言語種別（拡張子から確定）。
+        /// C# 専用機能（IntelliSense・Roslyn 診断・デバッグ・コード整形・保存後コンパイル）の
+        /// 有効/無効はすべてこの値で分岐する。
+        /// </summary>
+        public required EditorLanguage Language;
         public InlineCompletionController? Inline;        // AI インライン補完（Copilot 風・任意）
         public QuickInfoPopup? QuickInfo;                 // VS 風のシンボル情報ホバー（QuickInfo）
         public List<ScriptDiagnostic> Diagnostics = new();
@@ -104,6 +110,12 @@ public class ScriptEditorPanel : UserControl
         public BreakpointMargin? BpMargin;
         /// <summary>デバッガ停止行の赤背景ハイライト。</summary>
         public DebugLineHighlighter? DebugLine;
+
+        /// <summary>
+        /// C# の意味解析（IntelliSense・診断・整形・デバッグ）を適用するドキュメントか。
+        /// シェーダー（.wgsl）は構文着色と保存のみのため false になる。
+        /// </summary>
+        public bool IsCSharp => Language == EditorLanguage.CSharp;
     }
 
     private readonly List<DocTab> _docs = new();
@@ -166,7 +178,7 @@ public class ScriptEditorPanel : UserControl
         // ファイルが 1 つも開かれていないときの案内表示
         _emptyHint = new TextBlock
         {
-            Text                = "プロジェクトパネルで .cs ファイルをダブルクリックすると、ここで編集できます",
+            Text                = "プロジェクトパネルで .cs / .wgsl ファイルをダブルクリックすると、ここで編集できます",
             Foreground          = BrushDim,
             FontSize            = 12,
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -814,7 +826,13 @@ public class ScriptEditorPanel : UserControl
             return;
         }
 
-        var editor = CreateEditor(text);
+        // 拡張子から言語種別を確定する。以降の機能分岐（補完・診断・デバッグ・保存後処理）は
+        // すべてこの値を見て行う。
+        var language = EditorLanguages.FromPath(full);
+        // C# 専用機能を有効化するか（.wgsl は構文着色と保存のみ）
+        bool isCSharp = language == EditorLanguage.CSharp;
+
+        var editor = CreateEditor(text, language);
 
         // 診断（波線）用マーカーサービスを TextView に登録する
         var markers = new TextMarkerService(editor.Document);
@@ -861,48 +879,56 @@ public class ScriptEditorPanel : UserControl
             SearchHi    = searchHi,
             Ruler       = ruler,
             Semantic    = semantic,
+            Language    = language,
             IsReadOnly  = readOnly,
         };
 
-        // ブレークポイント用ガター（行番号の左）。クリックでトグルし、変更を永続化する。
-        // 保存済みのブレークポイント行があれば復元する。
-        var breaks = new BreakpointSet(editor.Document, _breakpointStore?.Get(full));
-        var bpMargin = new BreakpointMargin(breaks, () =>
+        // ── デバッグ関連 UI（C# スクリプト専用）──────────────────────
+        // シェーディングアセット（.wgsl）は C# デバッガ（netcoredbg）の対象外なので、
+        // ブレークポイントガター・停止行ハイライト・変数ホバーをいずれも生成しない。
+        // 生成しなければ GetBreakpoints() 等（Breaks != null で絞り込み）にも現れない。
+        if (isCSharp)
         {
-            _breakpointStore?.Set(full, breaks.Lines());
-            _breakpointStore?.Save();
-            // デバッグセッション中の実行時トグルを即座に反映させるため通知する。
-            BreakpointsChanged?.Invoke(full, breaks.Lines());
-        });
-        editor.TextArea.LeftMargins.Insert(0, bpMargin);
-        doc.Breaks   = breaks;
-        doc.BpMargin = bpMargin;
+            // ブレークポイント用ガター（行番号の左）。クリックでトグルし、変更を永続化する。
+            // 保存済みのブレークポイント行があれば復元する。
+            var breaks = new BreakpointSet(editor.Document, _breakpointStore?.Get(full));
+            var bpMargin = new BreakpointMargin(breaks, () =>
+            {
+                _breakpointStore?.Set(full, breaks.Lines());
+                _breakpointStore?.Save();
+                // デバッグセッション中の実行時トグルを即座に反映させるため通知する。
+                BreakpointsChanged?.Invoke(full, breaks.Lines());
+            });
+            editor.TextArea.LeftMargins.Insert(0, bpMargin);
+            doc.Breaks   = breaks;
+            doc.BpMargin = bpMargin;
 
-        // デバッガ停止行の赤背景ハイライト（TextView 背景レンダラー）。
-        var debugLine = new DebugLineHighlighter();
-        editor.TextArea.TextView.BackgroundRenderers.Add(debugLine);
-        doc.DebugLine = debugLine;
+            // デバッガ停止行の赤背景ハイライト（TextView 背景レンダラー）。
+            var debugLine = new DebugLineHighlighter();
+            editor.TextArea.TextView.BackgroundRenderers.Add(debugLine);
+            doc.DebugLine = debugLine;
 
-        // デバッガ停止中の変数ホバー表示。停止中（DebugEvaluator 設定時）のみ動作する。
-        editor.TextArea.TextView.MouseHover        += (_, ev) => OnDebugHover(editor, ev);
-        editor.TextArea.TextView.MouseHoverStopped += (_, _)  => OnDebugHoverStopped();
+            // デバッガ停止中の変数ホバー表示。停止中（DebugEvaluator 設定時）のみ動作する。
+            editor.TextArea.TextView.MouseHover        += (_, ev) => OnDebugHover(editor, ev);
+            editor.TextArea.TextView.MouseHoverStopped += (_, _)  => OnDebugHoverStopped();
 
-        // VS 風の QuickInfo（シンボル情報ホバー）。Roslyn の意味解析でシグネチャ・
-        // 種別・XML doc の summary を表示する。
-        // デバッグ停止中（一時停止中）でも QuickInfo は動作させる（VS と同じ挙動）。
-        // ただし変数ホバーが値ポップアップを表示している間は重なるため抑止し、
-        // 補完ウィンドウ表示中も出さない。
-        // 読み取り専用タブはワークスペース外のため Document が null になり自然に無効化される。
-        doc.QuickInfo = new QuickInfoPopup(
-            editor,
-            getDocument:   () => _workspace?.GetDocument(doc.FilePath),
-            isSuppressed:  () => (_debugHover?.IsOpen ?? false) || _completionWindow is not null,
-            // 赤波線（診断マーカー）のメッセージも QuickInfo に統合表示する
-            getDiagnostic: offset => doc.Markers.GetMarkersAtOffset(offset).FirstOrDefault()?.ToolTip,
-            // エディタの配色設定でシグネチャを構文色分けする
-            colors: _settings.Colors);
-        // QuickInfo が（非同期解析の完了後に）開いたら、先に出ていた旧診断ツールチップを閉じる
-        doc.QuickInfo.Opened += HideDiagnosticToolTip;
+            // VS 風の QuickInfo（シンボル情報ホバー）。Roslyn の意味解析でシグネチャ・
+            // 種別・XML doc の summary を表示する。
+            // デバッグ停止中（一時停止中）でも QuickInfo は動作させる（VS と同じ挙動）。
+            // ただし変数ホバーが値ポップアップを表示している間は重なるため抑止し、
+            // 補完ウィンドウ表示中も出さない。
+            // 読み取り専用タブはワークスペース外のため Document が null になり自然に無効化される。
+            doc.QuickInfo = new QuickInfoPopup(
+                editor,
+                getDocument:   () => _workspace?.GetDocument(doc.FilePath),
+                isSuppressed:  () => (_debugHover?.IsOpen ?? false) || _completionWindow is not null,
+                // 赤波線（診断マーカー）のメッセージも QuickInfo に統合表示する
+                getDiagnostic: offset => doc.Markers.GetMarkersAtOffset(offset).FirstOrDefault()?.ToolTip,
+                // エディタの配色設定でシグネチャを構文色分けする
+                colors: _settings.Colors);
+            // QuickInfo が（非同期解析の完了後に）開いたら、先に出ていた旧診断ツールチップを閉じる
+            doc.QuickInfo.Opened += HideDiagnosticToolTip;
+        }
 
         // 編集のたびにダーティ化し、ワークスペースへ反映し、診断を予約する。
         // 読み取り専用タブ（エンジン API のソース）はユーザーのワークスペースへ登録しない
@@ -911,7 +937,9 @@ public class ScriptEditorPanel : UserControl
         {
             if (doc.IsReadOnly) return;
             SetDirty(doc, true);
-            _workspace?.UpsertText(doc.FilePath, editor.Text);
+            // シェーダー（.wgsl）は C# ワークスペースへ入れない（Roslyn の解析対象外）。
+            if (doc.IsCSharp) _workspace?.UpsertText(doc.FilePath, editor.Text);
+            // タイマー自体はシェーダーでも回す（未保存内容のクラッシュ復元退避に使うため）。
             diagTimer.Stop();
             diagTimer.Start();
         };
@@ -921,12 +949,17 @@ public class ScriptEditorPanel : UserControl
         // OnEditorKeyDown 側で解決済み（ウィンドウ表示中は Tab=IntelliSense 確定、
         // 非表示時のみ Tab=ゴースト確定）。よって抑止はしない（常に false）。
         // 読み取り専用（エンジン側ソース等）では AI インライン補完も無効化する。
-        doc.Inline = new InlineCompletionController(
-            editor,
-            GetInlineProvider(),
-            isEnabled:     () => _settings.InlineCompletionEnabled && !readOnly,
-            isSuppressed:  () => false,
-            isAutoTrigger: () => !_settings.InlineCompletionManualOnly);
+        // シェーディングアセット（.wgsl）はプロンプト・API リファレンスともに C# 前提の
+        // 実装のため、そもそもコントローラを生成せず無効化する。
+        if (isCSharp)
+        {
+            doc.Inline = new InlineCompletionController(
+                editor,
+                GetInlineProvider(),
+                isEnabled:     () => _settings.InlineCompletionEnabled && !readOnly,
+                isSuppressed:  () => false,
+                isAutoTrigger: () => !_settings.InlineCompletionManualOnly);
+        }
 
         // IntelliSense: 文字入力に応じて補完ウィンドウを開く
         editor.TextArea.TextEntered += (_, e) => OnTextEntered(doc, e.Text);
@@ -935,8 +968,12 @@ public class ScriptEditorPanel : UserControl
         diagTimer.Tick += (_, _) =>
         {
             diagTimer.Stop();
-            _ = RunDiagnosticsAsync(doc);
-            _ = RunSemanticColorizeAsync(doc);
+            // Roslyn 診断・セマンティック着色は C# のみ（シェーダーは正規表現ハイライトのみ）
+            if (doc.IsCSharp)
+            {
+                _ = RunDiagnosticsAsync(doc);
+                _ = RunSemanticColorizeAsync(doc);
+            }
             // 未保存なら内容を退避、保存済みなら退避を消す（クラッシュ復元用）
             UpdateRecovery(doc);
         };
@@ -981,7 +1018,8 @@ public class ScriptEditorPanel : UserControl
 
         // ワークスペースに最新テキストを反映する（開いた瞬間の内容で同期）。
         // 読み取り専用（エンジン API のソース）はユーザーのワークスペースへ入れない。
-        if (!readOnly)
+        // シェーダー（.wgsl）も C# ではないので入れない。
+        if (!readOnly && isCSharp)
             _workspace?.UpsertText(full, text);
 
         _docs.Add(doc);
@@ -989,8 +1027,8 @@ public class ScriptEditorPanel : UserControl
         UpdateEditability();
         ActivateDoc(doc);
         // 初回の診断・セマンティック着色を実行する（読み取り専用はワークスペース外なので不要）。
-        // 構文ハイライト（正規表現ベース）は読み取り専用でもそのまま効く。
-        if (!readOnly)
+        // 構文ハイライト（正規表現ベース）は読み取り専用・シェーダーでもそのまま効く。
+        if (!readOnly && isCSharp)
         {
             _ = RunDiagnosticsAsync(doc);
             _ = RunSemanticColorizeAsync(doc);
@@ -1466,6 +1504,8 @@ public class ScriptEditorPanel : UserControl
     /// <summary>入力文字に応じて補完ウィンドウを起動する。</summary>
     private async void OnTextEntered(DocTab doc, string enteredText)
     {
+        // C# 以外（シェーダー）は Roslyn ベースの補完対象外
+        if (!doc.IsCSharp) return;
         if (_workspace is null || enteredText.Length == 0) return;
 
         char c = enteredText[0];
@@ -1602,6 +1642,10 @@ public class ScriptEditorPanel : UserControl
             doc.Inline?.RequestNow();
             return;
         }
+
+        // ここから先は Roslyn の意味解析を使う C# 専用機能。
+        // シェーダー（.wgsl）では既定動作に委ねる（Ctrl+Space・F12 とも何もしない）。
+        if (!doc.IsCSharp) return;
 
         // Ctrl+Space: 補完を手動起動
         if (e.Key == Key.Space && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
@@ -1932,6 +1976,8 @@ public class ScriptEditorPanel : UserControl
     private async Task ShowCompletionAsync(DocTab doc)
     {
         if (_workspace is null) return;
+        // C# 以外（シェーダー）は Roslyn ベースの補完対象外。
+        if (!doc.IsCSharp) return;
         // 読み取り専用（エンジン側ソース等）では編集しないので予測変換も出さない。
         if (doc.IsReadOnly || doc.Editor.IsReadOnly) return;
         // 最新テキストをワークスペースへ反映してから解析する
@@ -2171,6 +2217,15 @@ public class ScriptEditorPanel : UserControl
     /// <summary>現在のエディタの内容を Roslyn Formatter で整形する。</summary>
     private void FormatCurrent()
     {
+        // Roslyn の C# フォーマッタを使うため、C# ドキュメント以外では実行しない。
+        // シェーダー（.wgsl）に適用するとコードが壊れるので明示的に弾く。
+        if (_activeDoc is null || !_activeDoc.IsCSharp)
+        {
+            if (_activeDoc is not null)
+                EditorLog.Write("コード整形は C# スクリプト専用です（シェーダーには適用しません）");
+            return;
+        }
+
         var editor = CurrentEditor();
         if (editor is null || editor.IsReadOnly) return;
         try
@@ -2253,6 +2308,18 @@ public class ScriptEditorPanel : UserControl
             return;
         }
         SetDirty(doc, false);
+
+        // ── シェーディングアセット（.wgsl）の保存 ──────────────────
+        // ファイルへ書き出すだけで完了する。ランタイム側が mtime ポーリングで
+        // シェーダーをホットリロードするため、エディタからの通知は不要。
+        // C# 用の保存後処理（Roslyn コンパイル・全体検証・RELOAD_SCRIPTS 要求）は
+        // シェーダーには無意味かつ有害（スクリプトの不要な再ロード）なので走らせない。
+        if (!doc.IsCSharp)
+        {
+            _recovery?.Remove(doc.FilePath);
+            EditorLog.Write($"シェーダーを保存しました [{Path.GetFileName(doc.FilePath)}]");
+            return;
+        }
 
         // 編集で移動したブレークポイント位置を保存時に永続化する（行番号が最新になる）
         if (_breakpointStore is not null && doc.Breaks is not null)
@@ -2340,8 +2407,11 @@ public class ScriptEditorPanel : UserControl
 
     // ── UI 生成 ──────────────────────────────────────────────
 
-    /// <summary>ダークテーマ調整済みの AvalonEdit エディタを生成する。</summary>
-    private static TextEditor CreateEditor(string text)
+    /// <summary>
+    /// ダークテーマ調整済みの AvalonEdit エディタを生成する。
+    /// 構文ハイライトは言語種別に応じて切り替える（C# / WGSL）。
+    /// </summary>
+    private static TextEditor CreateEditor(string text, EditorLanguage language)
     {
         var editor = new TextEditor
         {
@@ -2356,7 +2426,11 @@ public class ScriptEditorPanel : UserControl
             VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
             Options = { ConvertTabsToSpaces = true, IndentationSize = 4 },
         };
-        editor.SyntaxHighlighting = BuildDarkCSharpHighlighting();
+        editor.SyntaxHighlighting = language switch
+        {
+            EditorLanguage.Wgsl => WgslHighlighting.Get(),
+            _                   => BuildDarkCSharpHighlighting(),
+        };
         editor.TextArea.Caret.CaretBrush = BrushText;
         editor.TextArea.SelectionBrush   = new SolidColorBrush(Color.FromArgb(0x66, 0x33, 0x99, 0xFF));
         return editor;

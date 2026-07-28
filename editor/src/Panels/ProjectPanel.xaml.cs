@@ -12,6 +12,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using SEEDEditor;
+using SEEDEditor.Panels.ScriptEditor;
 
 namespace SEEDEditor.Panels;
 
@@ -149,7 +150,10 @@ public partial class ProjectPanel : UserControl
     /// <summary>.inputmap ファイルがダブルクリックされたときに発火する（フルパス）。</summary>
     public event Action<string>? InputMapFileOpened;
 
-    /// <summary>.cs ファイルがダブルクリックされたときに発火する（フルパス）。内蔵スクリプトエディタで開く。</summary>
+    /// <summary>
+    /// スクリプトエディタで編集できるファイル（.cs / .wgsl）がダブルクリックされたときに
+    /// 発火する（フルパス）。内蔵スクリプトエディタのタブで開く。
+    /// </summary>
     public event Action<string>? ScriptFileOpened;
     /// <summary>.anim ファイルがダブルクリックされた（絶対パス）。AnimationTimelinePanel での編集起動用。</summary>
     public event Action<string>? AnimFileOpened;
@@ -547,9 +551,11 @@ public partial class ProjectPanel : UserControl
                 else if (entry is FileInfo imFile &&
                          imFile.Extension.Equals(".inputmap", StringComparison.OrdinalIgnoreCase))
                     InputMapFileOpened?.Invoke(imFile.FullName);
-                else if (entry is FileInfo csFile &&
-                         csFile.Extension.Equals(".cs", StringComparison.OrdinalIgnoreCase))
-                    ScriptFileOpened?.Invoke(csFile.FullName);
+                else if (entry is FileInfo scriptFile &&
+                         EditorLanguages.IsEditableExtension(scriptFile.Extension))
+                    // .cs（C# スクリプト）と .wgsl（シェーディングアセット）は
+                    // どちらも内蔵スクリプトエディタのタブで開く。
+                    ScriptFileOpened?.Invoke(scriptFile.FullName);
                 else if (entry is FileInfo animFile &&
                          animFile.Extension.Equals(".anim", StringComparison.OrdinalIgnoreCase))
                     AnimFileOpened?.Invoke(animFile.FullName);
