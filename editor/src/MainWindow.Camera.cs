@@ -667,6 +667,13 @@ public partial class MainWindow
             if (state == EditorState.Play)
                 TryAutoAttachDebuggerOnPlay();
 
+            // ランタイムが Edit で立ち上がった（＝IPC が繋がった）タイミングで、
+            // 既に開いている .wgsl タブを検証し直す。
+            // ファイルを開いた時点でランタイム未接続だと検証依頼が捨てられ、
+            // 「一文字打つまで赤下線が出ない」状態になるため、接続を契機に追いつかせる。
+            if (state == EditorState.Edit)
+                PanelScriptEditor.RevalidateWgslDocuments();
+
             // 埋め込みインプレース Play の入力フォーカス制御。
             // 埋め込み Play では同じ子 HWND がゲーム描画も担うため、キーボード入力を
             // ランタイム側へ流すには OS フォーカスを子 HWND へ移す必要がある。

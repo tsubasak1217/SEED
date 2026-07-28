@@ -32,6 +32,12 @@ public sealed class ScriptEditorSettingsWindow : Window
     /// <summary>Groq モデル一覧の取得状況表示（自動取得と手動取得で共有）。</summary>
     private TextBlock? _groqFetchStatus;
 
+    /// <summary>
+    /// 配色キー → 既定色。色欄に不正な文字列が入力されたときの差し戻し先として使う
+    /// （BuildColorPanel が配色スキーマから埋める）。
+    /// </summary>
+    private readonly System.Collections.Generic.Dictionary<string, string> _colorDefaults = new();
+
     /// <summary>OK で保存されたときに発火する（更新後の設定）。</summary>
     public event Action<ScriptEditorSettings>? Applied;
 
@@ -111,8 +117,15 @@ public sealed class ScriptEditorSettingsWindow : Window
             _settings.GroqApiKey = groqKeyGetter().Trim();
             var groqModel = ((groqModelCombo.SelectedItem as string) ?? "").Trim();
             if (groqModel.Length > 0) _settings.GroqModel = groqModel;
-            foreach (var (_, key) in ScriptEditorSettings.ColorEntries)
-                _settings.Colors[key] = NormalizeHex(colorGetters[key](), _settings.Colors[key]);
+            // 配色（C# / WGSL とも同じ辞書へ、言語プレフィックス付きキーで保存する）。
+            // 不正な色文字列は「従来値 →（無ければ）既定色」へ差し戻す。
+            foreach (var (key, getter) in colorGetters)
+            {
+                var fallback = _settings.Colors.TryGetValue(key, out var prev) && !string.IsNullOrWhiteSpace(prev)
+                    ? prev
+                    : _colorDefaults.TryGetValue(key, out var def) ? def : ScriptEditorColorSchema.FallbackHex;
+                _settings.Colors[key] = NormalizeHex(getter(), fallback);
+            }
             Applied?.Invoke(_settings);
             DialogResult = true;
             Close();
@@ -185,7 +198,14 @@ public sealed class ScriptEditorSettingsWindow : Window
         return panel;
     }
 
-    /// <summary>「色設定」カテゴリ（各構文要素の配色）の内容パネルを構築する。</summary>
+    /// <summary>
+    /// 「色設定」カテゴリ（各構文要素の配色）の内容パネルを構築する。
+    ///
+    /// 言語ごとにセクション見出し（C# / WGSL）で区切って並べる。
+    /// 並べる項目・既定色は <see cref="ScriptEditorColorSchema"/> から取得するデータ駆動で、
+    /// 言語や分類が増えてもこのメソッドの修正は不要。
+    /// </summary>
+    /// <param name="colorGetters">キー → 入力欄の現在値を取り出す関数（OK 押下時に使用）。</param>
     private StackPanel BuildColorPanel(out System.Collections.Generic.Dictionary<string, Func<string>> colorGetters)
     {
         var panel = new StackPanel();
@@ -197,11 +217,22 @@ public sealed class ScriptEditorSettingsWindow : Window
         });
 
         colorGetters = new System.Collections.Generic.Dictionary<string, Func<string>>();
-        foreach (var (label, key) in ScriptEditorSettings.ColorEntries)
+        foreach (var section in ScriptEditorColorSchema.Sections())
         {
-            var current = _settings.Colors.TryGetValue(key, out var c) ? c : "#DCDCDC";
-            panel.Children.Add(ColorRow(label, current, out var getter));
-            colorGetters[key] = getter;
+            // 項目が 1 つも無いセクション（例: xshd 読み込み失敗時の WGSL）は見出しごと省く
+            if (section.Entries.Count == 0) continue;
+
+            panel.Children.Add(Section(section.Label));
+            foreach (var entry in section.Entries)
+            {
+                // 保存済みの色があればそれを、無ければスキーマの既定色を初期表示にする
+                var current = _settings.Colors.TryGetValue(entry.Key, out var c) && !string.IsNullOrWhiteSpace(c)
+                    ? c
+                    : entry.DefaultHex;
+                panel.Children.Add(ColorRow(entry.Label, current, out var getter));
+                colorGetters[entry.Key]  = getter;
+                _colorDefaults[entry.Key] = entry.DefaultHex;
+            }
         }
         return panel;
     }

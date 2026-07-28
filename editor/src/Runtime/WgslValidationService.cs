@@ -64,7 +64,7 @@ public sealed class WgslValidationService : IDisposable
     /// <returns>診断一覧（空 = エラー無し）。検証不可なら null。</returns>
     public async Task<IReadOnlyList<WgslDiagnostic>?> ValidateAsync(string source)
     {
-        // 送信できない状況（Play/Pause 中・パイプ未接続）は「検証不可」とし、エラー扱いしない。
+        // 送信できない状況（ランタイム未起動・パイプ未接続）は「検証不可」とし、エラー扱いしない。
         long requestId = Interlocked.Increment(ref _nextRequestId);
         var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         _pending[requestId] = tcs;
@@ -79,9 +79,19 @@ public sealed class WgslValidationService : IDisposable
         {
             // 応答待ち（タイムアウト付き）。時間切れなら検証不可として扱う。
             var completed = await Task.WhenAny(tcs.Task, Task.Delay(RequestTimeout)).ConfigureAwait(false);
-            if (completed != tcs.Task) return null;
+            if (completed != tcs.Task)
+            {
+                // 応答が来ない＝ランタイム側で捨てられている可能性が高い。切り分けのため必ず残す。
+                SEEDEditor.EditorLog.Write($"[WGSL] 検証応答タイムアウト id={requestId}（{RequestTimeout.TotalSeconds}秒）");
+                return null;
+            }
 
-            return ParseDiagnostics(await tcs.Task.ConfigureAwait(false));
+            var diagnostics = ParseDiagnostics(await tcs.Task.ConfigureAwait(false));
+            // 「何件返ってきたか」を必ず追える形で残す（0 件＝エラー無しと、解釈失敗を区別する）。
+            SEEDEditor.EditorLog.Write(diagnostics is null
+                ? $"[WGSL] 検証応答の解釈に失敗 id={requestId}（表示は据え置き）"
+                : $"[WGSL] 検証応答 id={requestId} — 診断 {diagnostics.Count} 件");
+            return diagnostics;
         }
         finally
         {
