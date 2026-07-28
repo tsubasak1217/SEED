@@ -140,6 +140,9 @@ mod tests {
             refraction_distortion: 0.0,
             ripple_strength: 0.0,
             ripple_foam_threshold: 0.0,
+            // 岸波（W1.5）はテスト用のダミーなので全て 0（＝岸波を出さない）。
+            shore_wave_strength: 0.0, shore_wave_length: 0.0,
+            shore_wave_period: 0.0, shore_wave_foam: 0.0,
         }
     }
 

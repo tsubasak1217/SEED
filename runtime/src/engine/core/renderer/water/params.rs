@@ -26,6 +26,19 @@ pub const WATER_QUAD_VERTEX_COUNT: u32 = 6;
 /// 水面が真っ白になる。目視できないほど小さい正値で下限を切る。
 pub const RIPPLE_FOAM_THRESHOLD_MIN: f32 = 1.0e-4;
 
+/// 岸波の波長の下限（m）。
+///
+/// 位相は「岸距離 / 波長」なので 0 を許すと位相が発散し、
+/// 1 テクセル内で無限に振動する（＝画面がノイズで埋まる）。
+/// 目視で 1 波長を識別できる最小値として 10cm を下限にする。
+pub const SHORE_WAVE_LENGTH_MIN: f32 = 0.1;
+
+/// 岸波の周期の下限（秒）。
+///
+/// 0 だと時間項が発散する。フレーム時間より短い周期は
+/// エイリアシングにしかならないので 1/60 秒相当を下限にする。
+pub const SHORE_WAVE_PERIOD_MIN: f32 = 1.0 / 60.0;
+
 /// 水ボリューム 1 個ぶんの GPU パラメータ。
 ///
 /// **全フィールドを vec4 相当（`[f32; 4]`）で構成している**。
@@ -53,8 +66,8 @@ pub struct WaterParams {
     /// z = 波紋の法線摂動スケール（Phase I2）／w = 波紋フォームの波高しきい値（Phase I2）
     ///
     /// **z,w は W1 では未使用の余剰スロットだった。**I2 の 2 パラメータをここへ同居させることで、
-    /// `WaterParams` の配列ストライド（vec4 9 本＝144 バイト）も WGSL 側の struct 宣言も
-    /// 一切変えずに済む（レイアウト同期事故の余地を作らない）。
+    /// I2 時点では配列ストライドも WGSL 側の struct 宣言も一切変えずに済んだ
+    /// （W1.5 の岸波は空きスロットが尽きたため、末尾へ vec4 を 2 本追加している）。
     pub fresnel: [f32; 4],
     /// x = ピッキング用の raw アクタ ID（`id_base + DFS + 1`。0 = 背景）／y,z,w = 未使用
     ///
@@ -62,7 +75,23 @@ pub struct WaterParams {
     /// 使わないが、パラメータ配列を 1 本に保つ（収集もアップロードも 1 回で済む）ため
     /// 同じ構造体に持たせている。**WGSL 側の両シェーダと順序を同期すること。**
     pub actor_id: [u32; 4],
+    /// 岸波の調整値（Phase W1.5）。
+    /// x = 強さ（0 で完全無効）／y = うねりの波長（m）／z = うねりの周期（秒）／w = 泡量（0..1）
+    pub shore: [f32; 4],
+    /// 岸波のショアフィールド窓（Phase W1.5）。
+    ///
+    /// x,y = 窓のワールド XZ 最小／z = 窓一辺の逆数（1/m。ワールド XZ → [0,1] UV）／
+    /// **w = 配列テクスチャのレイヤ番号。負値は「この水域にショアフィールドが無い」**
+    /// （＝岸波を描かない）。f32 に入れているのは vec4 を分割せずに済ませるためで、
+    /// シェーダ側は `w < 0` の判定と `i32(w)` のレイヤ添字化だけを行う。
+    pub shore_field: [f32; 4],
 }
+
+/// ショアフィールドを持たない水域を表すレイヤ番号（負値）。
+///
+/// シェーダはこの値を見て岸波の計算そのものをスキップする
+/// （テクスチャサンプルも行わないので、岸波を使わない水は W1/I2 と完全に同じコスト）。
+pub const SHORE_LAYER_NONE: f32 = -1.0;
 
 impl WaterParams {
     /// `ResolvedWaterVolume` から GPU パラメータを作る。
@@ -75,10 +104,15 @@ impl WaterParams {
     /// 書き込む raw ID は他のピック対象と同じ規約 `id_base + DFS + 1`（0 = 背景）とし、
     /// デコード側の「キャンバスアクター選択」分岐（`global - canvas_id_offset` を
     /// DFS インデックスとして解決する経路）にそのまま乗る。
+    ///
+    /// `shore` はこの水域に対して焼かれたショアフィールド（Phase W1.5）。
+    /// `None`（＝まだ焼けていない・岸波を切っている）なら
+    /// レイヤ番号 `SHORE_LAYER_NONE` を入れ、シェーダは岸波を完全に無視する。
     pub fn from_resolved(
         v:          &ResolvedWaterVolume,
         camera_pos: [f32; 3],
         id_base:    u32,
+        shore:      Option<&crate::engine::water::ShoreFieldEntry>,
     ) -> Self {
         // Ocean は「カメラ追従の巨大クアッド」、Region は「AABB 上面の矩形」。
         let (cx, cz, hx, hz) = match v.kind {
@@ -123,6 +157,23 @@ impl WaterParams {
             ],
             // raw ID = ベース + DFS + 1（+1 は「0 = 背景」を空けるための ID パス共通規約）
             actor_id: [id_base + v.actor_dfs_id + 1, 0, 0, 0],
+            shore: [
+                // 負の強さは波を逆位相にするだけで意味を持たないため 0 で下限を切る。
+                vis.shore_wave_strength.max(0.0),
+                // 波長・周期 0 は位相が発散するので下限を切る（＝実質無効になる小ささ）。
+                vis.shore_wave_length.max(SHORE_WAVE_LENGTH_MIN),
+                vis.shore_wave_period.max(SHORE_WAVE_PERIOD_MIN),
+                vis.shore_wave_foam.clamp(0.0, 1.0),
+            ],
+            shore_field: match shore {
+                Some(f) => [
+                    f.origin_xz[0], f.origin_xz[1],
+                    // 一辺の逆数。0 除算は焼き側で起きない前提だが念のため守る。
+                    if f.extent_m > 0.0 { 1.0 / f.extent_m } else { 0.0 },
+                    f.layer as f32,
+                ],
+                None => [0.0, 0.0, 0.0, SHORE_LAYER_NONE],
+            },
         }
     }
 }
@@ -140,8 +191,8 @@ mod tests {
     fn water_params_layout_is_std430_safe() {
         assert_eq!(std::mem::size_of::<WaterParams>() % 16, 0,
             "WaterParams のサイズは 16 の倍数であること（std430 の配列ストライド）");
-        assert_eq!(std::mem::size_of::<WaterParams>(), 9 * 16,
-            "WaterParams は vec4 9 本ぶん（144 バイト）であること。\
+        assert_eq!(std::mem::size_of::<WaterParams>(), 11 * 16,
+            "WaterParams は vec4 11 本ぶん（176 バイト）であること。\
              WGSL 側 struct WaterParams（water_surface.wgsl / water_id.wgsl）と同期すること");
         assert_eq!(std::mem::align_of::<WaterParams>(), 4,
             "repr(C) の [f32;4] 配列なので Rust 側アラインは 4（バイト列は 16 の倍数長で連続する）");
@@ -157,13 +208,15 @@ mod tests {
             wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
+            shore_wave_strength: 0.0, shore_wave_length: 12.0,
+            shore_wave_period: 4.0, shore_wave_foam: 0.8,
         };
         let ocean = ResolvedWaterVolume {
             kind: WaterVolumeKind::Ocean, surface_y: 3.0,
             center: [0.0; 3], half_extents: [0.0; 3], ocean_extent: 500.0, visual,
             actor_dfs_id: 0,
         };
-        let p = WaterParams::from_resolved(&ocean, [10.0, 5.0, -20.0], 0);
+        let p = WaterParams::from_resolved(&ocean, [10.0, 5.0, -20.0], 0, None);
         assert_eq!(p.center, [10.0, 3.0, -20.0, 0.0]);
         assert_eq!(p.half_extent, [500.0, 0.0, 500.0, 0.0]);
 
@@ -172,7 +225,7 @@ mod tests {
             center: [1.0, 0.0, 2.0], half_extents: [4.0, 1.0, 6.0], ocean_extent: 500.0, visual,
             actor_dfs_id: 0,
         };
-        let q = WaterParams::from_resolved(&region, [10.0, 5.0, -20.0], 0);
+        let q = WaterParams::from_resolved(&region, [10.0, 5.0, -20.0], 0, None);
         assert_eq!(q.center, [1.0, 2.0, 2.0, 0.0]);
         assert_eq!(q.half_extent, [4.0, 0.0, 6.0, 0.0]);
     }
@@ -188,13 +241,15 @@ mod tests {
             wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, fresnel_power: 2.0,
             fresnel_strength: 0.5, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.25, ripple_foam_threshold: 0.08,
+            shore_wave_strength: 0.0, shore_wave_length: 12.0,
+            shore_wave_period: 4.0, shore_wave_foam: 0.8,
         };
         let v = ResolvedWaterVolume {
             kind: WaterVolumeKind::Region, surface_y: 0.0,
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
             actor_dfs_id: 0,
         };
-        let p = WaterParams::from_resolved(&v, [0.0; 3], 0);
+        let p = WaterParams::from_resolved(&v, [0.0; 3], 0, None);
         assert_eq!(p.fresnel, [2.0, 0.5, 1.25, 0.08], "x,y=フレネル / z,w=波紋");
 
         // 負のスケールと 0 のしきい値は下限で切られる。
@@ -202,7 +257,7 @@ mod tests {
         bad.ripple_strength = -3.0;
         bad.ripple_foam_threshold = 0.0;
         let vb = ResolvedWaterVolume { visual: bad, ..v };
-        let q = WaterParams::from_resolved(&vb, [0.0; 3], 0);
+        let q = WaterParams::from_resolved(&vb, [0.0; 3], 0, None);
         assert_eq!(q.fresnel[2], 0.0, "負の摂動スケールは 0 に切る");
         assert_eq!(q.fresnel[3], RIPPLE_FOAM_THRESHOLD_MIN, "しきい値 0 は下限へ");
     }
@@ -231,13 +286,15 @@ mod tests {
             wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
+            shore_wave_strength: 0.0, shore_wave_length: 12.0,
+            shore_wave_period: 4.0, shore_wave_foam: 0.8,
         };
         let v = ResolvedWaterVolume {
             kind: WaterVolumeKind::Region, surface_y: 0.0,
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
             actor_dfs_id: 7,
         };
-        let p = WaterParams::from_resolved(&v, [0.0; 3], 100);
+        let p = WaterParams::from_resolved(&v, [0.0; 3], 100, None);
         assert_eq!(p.actor_id[0], 108, "id_base(100) + DFS(7) + 1");
     }
 }

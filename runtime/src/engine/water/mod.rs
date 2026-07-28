@@ -27,7 +27,12 @@
 pub mod resolved;
 pub mod query;
 pub mod collect;
+pub mod shore;
 
 pub use resolved::{ResolvedWaterVolume, WaterVisualParams};
 pub use query::WaterQuery;
 pub use collect::collect_water_volumes;
+pub use shore::{
+    ShoreFieldEntry, ShoreFieldSet, ShoreTerrainBounds,
+    SHORE_FIELD_MAX_LAYERS, SHORE_FIELD_RESOLUTION,
+};

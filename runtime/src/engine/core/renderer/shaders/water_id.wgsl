@@ -55,6 +55,10 @@ struct WaterParams {
     fresnel:          vec4<f32>,
     /// x = ピッキング用 raw アクタ ID（id_base + DFS + 1。0 = 背景）
     actor_id:         vec4<u32>,
+    /// 岸波の調整値（Phase W1.5。本シェーダは読まないが配列ストライドのため宣言する）
+    shore:            vec4<f32>,
+    /// 岸波のショアフィールド窓（Phase W1.5。同上）
+    shore_field:      vec4<f32>,
 }
 @group(1) @binding(0) var<storage, read> u_water: array<WaterParams>;
 

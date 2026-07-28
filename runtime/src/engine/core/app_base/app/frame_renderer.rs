@@ -135,6 +135,40 @@ fn compute_stale_batch_prune(
 }
 
 // ============================================================
+//  terrain_world_bounds — 地形チャンクの実在範囲（Phase W1.5）
+// ============================================================
+
+/// 地形チャンクが実在するワールド AABB を求める。チャンクが 0 個なら `None`。
+///
+/// 岸波のショアフィールド（`engine::water::shore`）のカラム走査を早期棄却するために使う。
+/// チャンクは常にワールド原点基準の固定格子（`ChunkCoord::world_origin`）に乗っており、
+/// アクタの Transform でオフセット／スケールされることは無いので、
+/// チャンク座標だけから範囲が確定する。
+fn terrain_world_bounds(
+    terrain: &super::terrain_ops::TerrainState,
+) -> Option<crate::engine::water::ShoreTerrainBounds> {
+    if terrain.chunks.is_empty() {
+        return None;
+    }
+    let extent = terrain.settings.chunk_extent();
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for coord in terrain.chunks.keys() {
+        let o = coord.world_origin(&terrain.settings);
+        for axis in 0..3 {
+            min[axis] = min[axis].min(o[axis]);
+            max[axis] = max[axis].max(o[axis] + extent);
+        }
+    }
+    Some(crate::engine::water::ShoreTerrainBounds {
+        min_xz: [min[0], min[2]],
+        max_xz: [max[0], max[2]],
+        min_y:  min[1],
+        max_y:  max[1],
+    })
+}
+
+// ============================================================
 //  compute_game_viewport — スケーリングモード別ビューポート計算
 // ============================================================
 
@@ -1317,6 +1351,36 @@ impl App {
                         crate::engine::water::collect_water_volumes(
                             &scene.actors, &scene.world, self.active_world_line,
                         );
+                    // ── 岸波のショアフィールド更新（Phase W1.5）────────────────────────
+                    //
+                    // 【何をするか】水域ごとに「水深・符号付き岸距離・岸方向」の俯瞰 2D を
+                    //  CPU で焼き、水面シェーダが 1 サンプルで岸波を作れる状態にする。
+                    //
+                    // 【毎フレームは焼かない】`update` は署名（地形編集バージョン・水面 Y・
+                    //  窓・Ocean のカメラ位置）を比べるだけで、実際のベイクは
+                    //  「署名が変わってから数百 ms 静まった最初のフレーム」1 回だけ走る。
+                    //  ブラシのドラッグ中に数百 ms のベイクが挟まらないのが狙い。
+                    //  岸波を切っている（strength=0）水域は署名すら作られず、コストは 0。
+                    //
+                    // 【地形の読み方】散布プロップの接地判定と同一のサンプラ
+                    //  （`TerrainScatterField` → `sample_density_world`）を使う。別実装にすると
+                    //  「草は生えているのに岸波が陸へ乗る」ずれが出る。
+                    {
+                        // 地形チャンクの実在範囲（AABB）。カラム走査の早期棄却に使う。
+                        // 地形が 1 チャンクも無ければ `None`＝岸が定義できないので焼かない。
+                        let shore_bounds = terrain_world_bounds(&self.terrain);
+                        let shore_field_view =
+                            super::terrain_scatter_ops::TerrainScatterField::from_state(&self.terrain);
+                        self.water_shore_fields.update(
+                            &water_volumes,
+                            [saved_camera_pos[0], saved_camera_pos[2]],
+                            &shore_field_view,
+                            shore_bounds,
+                            self.terrain_edit_version,
+                            std::time::Instant::now(),
+                        );
+                    }
+
                     // ── 瞬発インタラクションフィールドの更新（Phase I1）────────────────
                     //
                     // 【なぜここか】草は「カメラプレビュー」と「メインパス」の両方で描かれ、
@@ -5587,6 +5651,8 @@ impl App {
                                 canvas_id_offset,
                                 // 波紋・航跡の場（Phase I2）。上の I1 節で更新済みのものを読む。
                                 self.interaction_field.as_ref(),
+                                // 岸波のショアフィールド（Phase W1.5）。上の W1.5 節で更新済み。
+                                &self.water_shore_fields,
                             );
                             // ID パス（後段）で水面クアッドを描いてよいかを伝える。
                             water_pick_ready = water_ready;

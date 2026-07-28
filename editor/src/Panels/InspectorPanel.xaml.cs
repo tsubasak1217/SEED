@@ -444,6 +444,14 @@ public partial class InspectorPanel : UserControl
     private const float WaterRippleStrengthDefault = 1f;
     /// <summary>波紋フォームが出る波高しきい値の既定値（m 相当）。</summary>
     private const float WaterRippleFoamThresholdDefault = 0.05f;
+    /// <summary>岸波（Phase W1.5）の強さの既定値。</summary>
+    private const float WaterShoreStrengthDefault = 1f;
+    /// <summary>岸波（Phase W1.5）のうねりの波長の既定値（m）。</summary>
+    private const float WaterShoreLengthDefault = 12f;
+    /// <summary>岸波（Phase W1.5）のうねりの周期の既定値（秒）。</summary>
+    private const float WaterShorePeriodDefault = 4f;
+    /// <summary>岸波（Phase W1.5）の泡量の既定値（0..1）。</summary>
+    private const float WaterShoreFoamDefault = 0.8f;
     /// <summary>水の各色はアルファを持たないため、カラーピッカーへ渡す固定アルファ。</summary>
     private const float WaterColorAlpha = 1f;
 
@@ -619,6 +627,11 @@ public partial class InspectorPanel : UserControl
         // 波紋・航跡（Phase I2）: 法線摂動スケール・フォームしきい値
         float WaterRippleStrength = WaterRippleStrengthDefault,
         float WaterRippleFoamThreshold = WaterRippleFoamThresholdDefault,
+        // 岸波（Phase W1.5）: 岸に寄せるうねりの強さ・波長・周期・泡量
+        float WaterShoreStrength = WaterShoreStrengthDefault,
+        float WaterShoreLength = WaterShoreLengthDefault,
+        float WaterShorePeriod = WaterShorePeriodDefault,
+        float WaterShoreFoam = WaterShoreFoamDefault,
         // ── InteractionSourceComponent 用フィールド（Phase I1）──
         // 影響半径・強さ・有効フラグ。既定値は Rust 側 InteractionSourceComponentData と一致。
         float InteractionRadius = InteractionRadiusDefault,
@@ -1008,6 +1021,11 @@ public partial class InspectorPanel : UserControl
             // 波紋・航跡（Phase I2）。旧シーン（フィールド欠落）でも既定値で表示できる。
             var waterRippleStr    = comp.TryGetProperty("ripple_strength", out var wrs) ? wrs.GetSingle() : WaterRippleStrengthDefault;
             var waterRippleFoamTh = comp.TryGetProperty("ripple_foam_threshold", out var wrft) ? wrft.GetSingle() : WaterRippleFoamThresholdDefault;
+            // 岸波（Phase W1.5）。旧シーン（フィールド欠落）でも既定値で表示できる。
+            var waterShoreStr    = comp.TryGetProperty("shore_wave_strength", out var wss) ? wss.GetSingle() : WaterShoreStrengthDefault;
+            var waterShoreLen    = comp.TryGetProperty("shore_wave_length",   out var wsl) ? wsl.GetSingle() : WaterShoreLengthDefault;
+            var waterShorePeriod = comp.TryGetProperty("shore_wave_period",   out var wsp) ? wsp.GetSingle() : WaterShorePeriodDefault;
+            var waterShoreFoam   = comp.TryGetProperty("shore_wave_foam",     out var wsf) ? wsf.GetSingle() : WaterShoreFoamDefault;
             // InteractionSourceComponent 用（Phase I1）: 半径・強さ・有効フラグ。
             // 欠落時は Rust 側既定値と一致する定数へフォールバックする。
             var interactRadius   = comp.TryGetProperty("radius",   out var isr) ? isr.GetSingle()  : InteractionRadiusDefault;
@@ -1098,6 +1116,8 @@ public partial class InspectorPanel : UserControl
                 WaterRefractionDistortion: waterRefractDist,
                 WaterRippleStrength: waterRippleStr,
                 WaterRippleFoamThreshold: waterRippleFoamTh,
+                WaterShoreStrength: waterShoreStr, WaterShoreLength: waterShoreLen,
+                WaterShorePeriod: waterShorePeriod, WaterShoreFoam: waterShoreFoam,
                 // InteractionSourceComponent 用フィールド
                 InteractionRadius: interactRadius, InteractionStrength: interactStrength,
                 InteractionEnabled: interactEnabled);
@@ -4716,6 +4736,16 @@ public partial class InspectorPanel : UserControl
         AddFloatRow(rippleSp, "泡のしきい値",   info.WaterRippleFoamThreshold, "ripple_foam_threshold", "F3");
         rippleSp.Children.Add(MakeHint("動くアクタに InteractionSource を付けると、水面付近で波紋と航跡の泡が出ます。"));
         sp.Children.Add(rippleSection);
+
+        // ── 岸波セクション（Phase W1.5）─────────────────────────
+        // 岸に向かって寄せるうねり（強さ・波長・周期）と、そのうねりが生む泡量を調整する。
+        var shoreSection = BuildSection("岸波");
+        var shoreSp       = (StackPanel)shoreSection.Child;
+        AddFloatRow(shoreSp, "岸波の強さ",     info.WaterShoreStrength, "shore_wave_strength", "F2");
+        AddFloatRow(shoreSp, "うねりの波長(m)", info.WaterShoreLength,   "shore_wave_length",   "F2");
+        AddFloatRow(shoreSp, "うねりの周期(s)", info.WaterShorePeriod,   "shore_wave_period",   "F2");
+        AddFloatRow(shoreSp, "岸波の泡量",     info.WaterShoreFoam,     "shore_wave_foam",     "F2");
+        sp.Children.Add(shoreSection);
 
         // ── 反射・屈折セクション ───────────────────────────────
         var reflectSection = BuildSection("反射・屈折");

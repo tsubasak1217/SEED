@@ -55,6 +55,14 @@ pub struct WaterVisualParams {
     pub ripple_strength: f32,
     /// 波紋フォームが出る波高しきい値（m 相当。Phase I2）
     pub ripple_foam_threshold: f32,
+    /// 岸波の強さ（0 で完全無効。Phase W1.5）
+    pub shore_wave_strength: f32,
+    /// 岸へ寄せるうねりの波長（m。Phase W1.5）
+    pub shore_wave_length: f32,
+    /// 岸へ寄せるうねりの周期（秒。Phase W1.5）
+    pub shore_wave_period: f32,
+    /// 砕け波・打ち上げの泡量（0..1。Phase W1.5）
+    pub shore_wave_foam: f32,
 }
 
 impl WaterVisualParams {
@@ -77,6 +85,10 @@ impl WaterVisualParams {
             refraction_distortion: c.refraction_distortion,
             ripple_strength:       c.ripple_strength,
             ripple_foam_threshold: c.ripple_foam_threshold,
+            shore_wave_strength:   c.shore_wave_strength,
+            shore_wave_length:     c.shore_wave_length,
+            shore_wave_period:     c.shore_wave_period,
+            shore_wave_foam:       c.shore_wave_foam,
         }
     }
 }

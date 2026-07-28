@@ -41,8 +41,24 @@ pub mod params;
 
 pub use params::{WaterParams, WATER_MAX_VOLUMES, WATER_QUAD_VERTEX_COUNT};
 
-use crate::engine::water::ResolvedWaterVolume;
+use std::collections::HashMap;
+
+use crate::engine::water::{
+    ResolvedWaterVolume, ShoreFieldSet, SHORE_FIELD_MAX_LAYERS, SHORE_FIELD_RESOLUTION,
+};
 use super::{DEPTH_FORMAT, pipeline_config::RenderPipelineBuilder};
+
+/// ショアフィールド配列テクスチャのフォーマット（Phase W1.5）。
+///
+/// インタラクションフィールドと同じ Rgba16Float。理由も同じで、
+/// **フィルタ可能な浮動小数フォーマットが core WebGPU ではこれ**だから
+/// （Rgba32Float はオプション機能 `float32-filterable` を要求する）。
+/// 岸波は距離場をバイリニア補間して位相を作るので、フィルタ不可だと
+/// テクセル境界で位相が段付き、縞が見える。
+///
+/// 精度: f16 は 256m 付近で刻み 0.25m だが、岸波の振幅は沖で 0 へ落ちるため
+/// 精度が要るのは岸近傍（数 m）だけで、そこでは刻みが 1mm 未満になる。
+pub const SHORE_FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// 水面描画に必要な GPU リソース一式と描画手続き。
 pub struct WaterRenderer {
@@ -86,6 +102,22 @@ pub struct WaterRenderer {
     id_bind_group: Option<wgpu::BindGroup>,
     /// このフレームで描くインスタンス数（= 水ボリューム数、上限クランプ後）。
     instance_count: u32,
+
+    // ─── ショアフィールド（岸波。Phase W1.5）─────────────────────
+    /// 水域ごとの岸情報を積んだ配列テクスチャ（レイヤ = 水域）。
+    /// **岸波を使う水域が 1 つも無いフレームでは確保しない**（VRAM もアップロードも 0）。
+    shore_tex: Option<wgpu::Texture>,
+    /// 上のビュー（BindGroup 用）。
+    shore_view: Option<wgpu::TextureView>,
+    /// 岸波が無いフレーム用のフォールバック（1×1×1 のゼロ配列テクスチャ）のビュー。
+    /// パラメータ側のレイヤ番号が負なのでシェーダは触らないが、
+    /// BindGroup には常に何かを挿す必要があるため常備する。
+    fallback_shore_view: wgpu::TextureView,
+    /// ショアフィールド用サンプラー（線形・ClampToEdge）。
+    shore_sampler: wgpu::Sampler,
+    /// レイヤ番号 → 最後にアップロードした revision。
+    /// `ShoreFieldSet` 側の revision と一致していればアップロードを飛ばす。
+    shore_uploaded: HashMap<u32, u64>,
     /// 上限超過の警告を出したか（毎フレームのログ氾濫を防ぐため 1 回だけ出す）。
     warned_overflow: bool,
 }
@@ -169,6 +201,35 @@ impl WaterRenderer {
         assert!(id_bgls.len() >= 2, "water_id.wgsl は group0(カメラ)/group1(水パラメータ) を宣言すること");
         let id_params_bgl = id_bgls.remove(1);
 
+        // ── ショアフィールドが無いフレーム用のフォールバック（Phase W1.5）──
+        // 1×1×1 のゼロ配列テクスチャ。パラメータのレイヤ番号が負のときシェーダは
+        // サンプルしないので中身は問われないが、BindGroup には必ず何か要る。
+        let fallback_shore = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("Water Shore Fallback"),
+            size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          SHORE_FIELD_FORMAT,
+            usage:           wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats:    &[],
+        });
+        let fallback_shore_view = fallback_shore.create_view(&wgpu::TextureViewDescriptor {
+            label:      Some("Water Shore Fallback View"),
+            dimension:  Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let shore_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label:          Some("Water Shore Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter:     wgpu::FilterMode::Linear,
+            min_filter:     wgpu::FilterMode::Linear,
+            mipmap_filter:  wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label:          Some("Water Scene Grab Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -201,6 +262,90 @@ impl WaterRenderer {
             id_bind_group:    None,
             instance_count:   0,
             warned_overflow:  false,
+            shore_tex:        None,
+            shore_view:       None,
+            fallback_shore_view,
+            shore_sampler,
+            shore_uploaded:   HashMap::new(),
+        }
+    }
+
+    /// ショアフィールド（Phase W1.5）を GPU の配列テクスチャへ反映する。
+    ///
+    /// 焼き直された（revision が変わった）レイヤだけを `write_texture` する。
+    /// 岸波を使う水域が 1 つも無ければテクスチャの確保すら行わない。
+    fn sync_shore_fields(
+        &mut self,
+        device: &wgpu::Device,
+        queue:  &wgpu::Queue,
+        shore:  &ShoreFieldSet,
+    ) {
+        if shore.is_empty() {
+            // 岸波を使う水域が消えたらテクスチャごと解放する（4MB を握り続けない）。
+            self.shore_tex = None;
+            self.shore_view = None;
+            self.shore_uploaded.clear();
+            return;
+        }
+        // ── 配列テクスチャの遅延確保（レイヤ数は上限固定。増減で作り直さない）──
+        let res = SHORE_FIELD_RESOLUTION as u32;
+        if self.shore_tex.is_none() {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label:           Some("Water Shore Field"),
+                size: wgpu::Extent3d {
+                    width:                 res,
+                    height:                res,
+                    depth_or_array_layers: SHORE_FIELD_MAX_LAYERS as u32,
+                },
+                mip_level_count: 1,
+                sample_count:    1,
+                dimension:       wgpu::TextureDimension::D2,
+                format:          SHORE_FIELD_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats:    &[],
+            });
+            self.shore_view = Some(tex.create_view(&wgpu::TextureViewDescriptor {
+                label:     Some("Water Shore Field View"),
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            }));
+            self.shore_tex = Some(tex);
+            // 新しいテクスチャは中身が未定義なので、アップロード済み記録を捨てて焼き直す。
+            self.shore_uploaded.clear();
+        }
+        let tex = self.shore_tex.as_ref().expect("water: shore texture 未確保");
+
+        // ── 変化したレイヤだけアップロード ──
+        //    f32×4 → f16×4 へ詰め替える（フィルタ可能フォーマットの制約。上の定数コメント参照）。
+        for (_id, entry) in shore.iter() {
+            if self.shore_uploaded.get(&entry.layer) == Some(&entry.revision) {
+                continue;
+            }
+            let mut halfs: Vec<half::f16> = Vec::with_capacity(entry.texels.len() * 4);
+            for t in &entry.texels {
+                halfs.push(half::f16::from_f32(t[0]));
+                halfs.push(half::f16::from_f32(t[1]));
+                halfs.push(half::f16::from_f32(t[2]));
+                halfs.push(half::f16::from_f32(t[3]));
+            }
+            /// Rgba16Float の 1 テクセルのバイト数（4 チャネル × f16）。
+            const SHORE_TEXEL_BYTES: u32 = 8;
+            queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture:   tex,
+                    mip_level: 0,
+                    origin:    wgpu::Origin3d { x: 0, y: 0, z: entry.layer },
+                    aspect:    wgpu::TextureAspect::All,
+                },
+                bytemuck::cast_slice(&halfs),
+                wgpu::ImageDataLayout {
+                    offset:         0,
+                    bytes_per_row:  Some(res * SHORE_TEXEL_BYTES),
+                    rows_per_image: Some(res),
+                },
+                wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 },
+            );
+            self.shore_uploaded.insert(entry.layer, entry.revision);
         }
     }
 
@@ -220,6 +365,9 @@ impl WaterRenderer {
     /// `field` は波紋を書くインタラクションフィールド（Phase I2）。`None` の
     /// フレームはゼロのフォールバックがバインドされ、波紋の寄与が完全に消える
     /// （水面の見た目は W1 と同一になる）。
+    ///
+    /// `shore` は岸波のショアフィールド集合（Phase W1.5）。焼かれていない水域は
+    /// パラメータのレイヤ番号が負になり、シェーダが岸波を完全にスキップする。
     #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
@@ -232,6 +380,7 @@ impl WaterRenderer {
         depth_view: &wgpu::TextureView,
         id_base:    u32,
         field:      Option<&super::interaction::InteractionFieldRenderer>,
+        shore:      &ShoreFieldSet,
     ) -> bool {
         self.instance_count         = 0;
         self.frame_bind_group       = None;
@@ -252,10 +401,15 @@ impl WaterRenderer {
             );
         }
 
+        // ── ショアフィールド（岸波。Phase W1.5）を GPU へ反映する ──
+        //    パラメータ生成より先に行う（レイヤ番号を確定させてから params へ詰めるため）。
+        self.sync_shore_fields(device, queue, shore);
+
         // ── パラメータ配列を作ってアップロード ──
         let gpu: Vec<WaterParams> = volumes[..count]
             .iter()
-            .map(|v| WaterParams::from_resolved(v, camera_pos, id_base))
+            .map(|v| WaterParams::from_resolved(
+                v, camera_pos, id_base, shore.get(v.actor_dfs_id)))
             .collect();
 
         if self.params_buf.is_none() || self.params_capacity < count {
@@ -302,6 +456,16 @@ impl WaterRenderer {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(grab_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(depth_view) },
+                // ショアフィールド（Phase W1.5）。未確保のフレームは 1×1 のフォールバック。
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(
+                        self.shore_view.as_ref().unwrap_or(&self.fallback_shore_view)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.shore_sampler),
+                },
             ],
         }));
 
@@ -498,7 +662,38 @@ mod tests {
         let id      = field_names(include_str!("../shaders/water_id.wgsl"));
         assert_eq!(surface, id,
             "water_surface.wgsl と water_id.wgsl の WaterParams フィールド順が食い違っている");
-        assert_eq!(surface.len(), 9,
-            "Rust 側 WaterParams（vec4 9 本）と本数を揃えること");
+        assert_eq!(surface.len(), 11,
+            "Rust 側 WaterParams（vec4 11 本）と本数を揃えること");
+    }
+
+    /// 水面シェーダが岸波（Phase W1.5）を実装していること。
+    ///
+    /// リファクタで group1 の配列テクスチャや合成関数が落ちても、静かに
+    /// 「岸波が出ない」になるだけで気づけないため、文字列で押さえる。
+    #[test]
+    fn water_shader_implements_shore_waves() {
+        let src = include_str!("../shaders/water_surface.wgsl");
+        assert!(src.contains("@group(1) @binding(4) var t_shore: texture_2d_array<f32>;"),
+            "ショアフィールド（group1 binding4）の宣言が消えている");
+        assert!(src.contains("fn water_shore_height("),
+            "岸波の高さ関数が消えている（W5.1 が頂点段で呼ぶ前提の関数）");
+        assert!(src.contains("fn water_shore_gradient("), "岸波の勾配関数が消えている");
+        assert!(src.contains("fn water_shore_foam("),     "砕け泡・打ち上げが消えている");
+    }
+
+    /// **W5.1（頂点変位）の合流点**である合成高さ／勾配関数が存在すること。
+    ///
+    /// この 2 つは「フラグメントの法線と頂点変位が同じ高さ場を見る」ための唯一の窓口であり、
+    /// 個別ソースを直接足す実装へ戻すと W5.1 で必ず食い違う。契約として固定する。
+    #[test]
+    fn water_shader_exposes_combined_height_field() {
+        let src = include_str!("../shaders/water_surface.wgsl");
+        assert!(src.contains("fn water_surface_height(p: WaterParams, world_xz: vec2<f32>, t: f32) -> f32"),
+            "合成高さ関数（W5.1 が頂点段で呼ぶ）のシグネチャが変わっている");
+        assert!(src.contains("fn water_surface_gradient(p: WaterParams, world_xz: vec2<f32>, t: f32) -> vec2<f32>"),
+            "合成勾配関数のシグネチャが変わっている");
+        // フラグメントは必ず合成関数経由で勾配を得ること（個別ソースの直接加算に戻さない）。
+        assert!(src.contains("water_surface_gradient(p, in.world_pos.xz, u_camera.time)"),
+            "fs_water が合成勾配関数を使っていない");
     }
 }

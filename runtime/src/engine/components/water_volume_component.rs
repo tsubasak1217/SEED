@@ -74,6 +74,26 @@ fn default_ripple_strength() -> f32 { 1.0 }
 /// 歩行が立てる波（振幅 0.03 前後）では泡が出ず、走り・飛び込みで出る値。
 fn default_ripple_foam_threshold() -> f32 { 0.05 }
 
+// ─── 岸波（ショアフィールド。Phase W1.5）の既定値 ────────────
+//
+// 既定は「Ocean に付ければそのまま浜へ寄せる波が出る」値にしてある。
+// 岸波は地形の水深から作られるため、地形の無いシーン・水深が深いだけの水域では
+// これらの値でも一切現れない（＝既定が有効でも見た目が壊れることはない）。
+
+/// shore_wave_strength の既定値（1.0 = 標準）。**0 で完全無効（W1 と同一出力）**。
+fn default_shore_wave_strength() -> f32 { 1.0 }
+/// shore_wave_length の既定値（うねりの波長 m）。
+///
+/// 浜へ寄せるうねりとして自然に見える長さ。短くすると細かいさざ波、
+/// 長くすると外洋の大きなうねりになる。
+fn default_shore_wave_length() -> f32 { 12.0 }
+/// shore_wave_period の既定値（うねりが 1 波長進む周期 秒）。
+///
+/// 波長 12m / 周期 4s ＝ 位相速度 3m/s。実際の浜のうねりに近い速さ。
+fn default_shore_wave_period() -> f32 { 4.0 }
+/// shore_wave_foam の既定値（砕け波・打ち上げの泡量 0..1）。
+fn default_shore_wave_foam() -> f32 { 0.8 }
+
 // ─── WaterVolumeKind ─────────────────────────────────────────
 
 /// 水ボリュームの種別。
@@ -187,6 +207,18 @@ pub struct WaterVolumeComponentData {
     /// 波紋フォームが出る波高しきい値（m 相当。Phase I2）
     #[serde(default = "default_ripple_foam_threshold")]
     pub ripple_foam_threshold: f32,
+    /// 岸波（ショアフィールド）の強さ。**0 で完全無効**（Phase W1.5）
+    #[serde(default = "default_shore_wave_strength")]
+    pub shore_wave_strength: f32,
+    /// 岸へ寄せるうねりの波長（m。Phase W1.5）
+    #[serde(default = "default_shore_wave_length")]
+    pub shore_wave_length: f32,
+    /// 岸へ寄せるうねりの周期（秒。Phase W1.5）
+    #[serde(default = "default_shore_wave_period")]
+    pub shore_wave_period: f32,
+    /// 砕け波・打ち上げの泡量（0..1。Phase W1.5）
+    #[serde(default = "default_shore_wave_foam")]
+    pub shore_wave_foam: f32,
 }
 
 impl Default for WaterVolumeComponentData {
@@ -212,6 +244,10 @@ impl Default for WaterVolumeComponentData {
             refraction_distortion: default_refraction_distortion(),
             ripple_strength:       default_ripple_strength(),
             ripple_foam_threshold: default_ripple_foam_threshold(),
+            shore_wave_strength:   default_shore_wave_strength(),
+            shore_wave_length:     default_shore_wave_length(),
+            shore_wave_period:     default_shore_wave_period(),
+            shore_wave_foam:       default_shore_wave_foam(),
         }
     }
 }
@@ -265,6 +301,14 @@ pub struct WaterVolumeComponent {
     pub ripple_strength: f32,
     /// 波紋フォームが出る波高しきい値（m 相当。Phase I2）
     pub ripple_foam_threshold: f32,
+    /// 岸波の強さ（0 で完全無効。Phase W1.5）
+    pub shore_wave_strength: f32,
+    /// 岸へ寄せるうねりの波長（m。Phase W1.5）
+    pub shore_wave_length: f32,
+    /// 岸へ寄せるうねりの周期（秒。Phase W1.5）
+    pub shore_wave_period: f32,
+    /// 砕け波・打ち上げの泡量（0..1。Phase W1.5）
+    pub shore_wave_foam: f32,
 }
 
 impl WaterVolumeComponent {
@@ -291,6 +335,10 @@ impl WaterVolumeComponent {
             refraction_distortion: data.refraction_distortion,
             ripple_strength:       data.ripple_strength,
             ripple_foam_threshold: data.ripple_foam_threshold,
+            shore_wave_strength:   data.shore_wave_strength,
+            shore_wave_length:     data.shore_wave_length,
+            shore_wave_period:     data.shore_wave_period,
+            shore_wave_foam:       data.shore_wave_foam,
         }
     }
 
@@ -317,6 +365,10 @@ impl WaterVolumeComponent {
             refraction_distortion: self.refraction_distortion,
             ripple_strength:       self.ripple_strength,
             ripple_foam_threshold: self.ripple_foam_threshold,
+            shore_wave_strength:   self.shore_wave_strength,
+            shore_wave_length:     self.shore_wave_length,
+            shore_wave_period:     self.shore_wave_period,
+            shore_wave_foam:       self.shore_wave_foam,
         }
     }
 }
@@ -375,6 +427,10 @@ mod tests {
         assert_eq!(d.refraction_distortion, def.refraction_distortion);
         assert_eq!(d.ripple_strength, def.ripple_strength);
         assert_eq!(d.ripple_foam_threshold, def.ripple_foam_threshold);
+        assert_eq!(d.shore_wave_strength, def.shore_wave_strength);
+        assert_eq!(d.shore_wave_length, def.shore_wave_length);
+        assert_eq!(d.shore_wave_period, def.shore_wave_period);
+        assert_eq!(d.shore_wave_foam, def.shore_wave_foam);
     }
 
     /// kind は文字列としてシリアライズされること（C# 側の期待に合わせる）。
@@ -408,6 +464,10 @@ mod tests {
             refraction_distortion: 0.07,
             ripple_strength: 1.5,
             ripple_foam_threshold: 0.2,
+            shore_wave_strength: 0.75,
+            shore_wave_length: 9.5,
+            shore_wave_period: 3.25,
+            shore_wave_foam: 0.4,
         };
         let back = WaterVolumeComponent::from_data(src.clone()).to_data();
         assert_eq!(back.kind, src.kind);
@@ -430,5 +490,9 @@ mod tests {
         assert_eq!(back.refraction_distortion, src.refraction_distortion);
         assert_eq!(back.ripple_strength, src.ripple_strength);
         assert_eq!(back.ripple_foam_threshold, src.ripple_foam_threshold);
+        assert_eq!(back.shore_wave_strength, src.shore_wave_strength);
+        assert_eq!(back.shore_wave_length, src.shore_wave_length);
+        assert_eq!(back.shore_wave_period, src.shore_wave_period);
+        assert_eq!(back.shore_wave_foam, src.shore_wave_foam);
     }
 }
