@@ -15,10 +15,10 @@ public enum SceneSettingsChangeKind
     Far,
     /// <summary>デバッグカメラの移動速度。</summary>
     CameraSpeed,
-    /// <summary>グリッド表示の ON/OFF。</summary>
-    ShowGrid,
-    /// <summary>軸ガイド表示の ON/OFF。</summary>
-    ShowAxisGizmo,
+    // グリッド表示 / 軸ガイド表示はこの enum に含めない。
+    // シーンパネル上部のトグルボタン（BtnGridToggle / BtnAxisGizmoToggle）が直接
+    // SHOW_GRID / SHOW_AXIS_GIZMO を送るセッション限りの非永続項目であり、
+    // シーン設定ウィンドウの管轄外のため。
     /// <summary>2D（正射投影）モードの ON/OFF。</summary>
     Ortho2d,
     /// <summary>デバッグカメラの位置・回転（シーン設定には含まれず CAM_TRANSFORM のみ送る）。</summary>

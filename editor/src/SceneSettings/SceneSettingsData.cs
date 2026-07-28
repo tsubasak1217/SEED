@@ -27,10 +27,6 @@ public sealed class DebugCameraSettings
     public const double DefaultFar = 1000.0;
     /// <summary>カメラ移動速度の既定値。</summary>
     public const double DefaultSpeed = 5.0;
-    /// <summary>グリッド表示の既定値。</summary>
-    public const bool DefaultShowGrid = true;
-    /// <summary>軸ギズモ表示の既定値。</summary>
-    public const bool DefaultShowAxisGizmo = true;
     /// <summary>2D（正射投影）モードの既定値。</summary>
     public const bool DefaultOrtho2d = false;
 
@@ -40,10 +36,10 @@ public sealed class DebugCameraSettings
     public double Far { get; set; } = DefaultFar;
     /// <summary>カメラ移動速度。IPC CAM_SPEED に対応する。</summary>
     public double Speed { get; set; } = DefaultSpeed;
-    /// <summary>グリッド描画の有無。IPC SHOW_GRID に対応する。</summary>
-    public bool ShowGrid { get; set; } = DefaultShowGrid;
-    /// <summary>画面隅の軸ギズモ表示の有無。IPC SHOW_AXIS_GIZMO に対応する。</summary>
-    public bool ShowAxisGizmo { get; set; } = DefaultShowAxisGizmo;
+    // グリッド描画 / 軸ギズモ表示（SHOW_GRID / SHOW_AXIS_GIZMO）はこの節に含めない。
+    // シーンパネル上部のトグルが持つセッション限りの非永続項目であり、
+    // .scene の settings 節にもランタイム側スキーマにも保存しない（起動時は常に ON）。
+
     /// <summary>2D（正射投影）モードかどうか。IPC EDITOR_CAM_ORTHO に対応する。</summary>
     public bool Ortho2d { get; set; } = DefaultOrtho2d;
 
@@ -53,16 +49,13 @@ public sealed class DebugCameraSettings
         Fov           = DefaultFov;
         Far           = DefaultFar;
         Speed         = DefaultSpeed;
-        ShowGrid      = DefaultShowGrid;
-        ShowAxisGizmo = DefaultShowAxisGizmo;
         Ortho2d       = DefaultOrtho2d;
     }
 
     /// <summary>同じ値を持つ新しいインスタンスを返す（変更前の値を退避する用途）。</summary>
     public DebugCameraSettings Clone() => new()
     {
-        Fov = Fov, Far = Far, Speed = Speed,
-        ShowGrid = ShowGrid, ShowAxisGizmo = ShowAxisGizmo, Ortho2d = Ortho2d,
+        Fov = Fov, Far = Far, Speed = Speed, Ortho2d = Ortho2d,
     };
 
     /// <summary>JSON ノードから値を読み込む（キーが無い項目は現在値を維持する）。</summary>
@@ -71,8 +64,6 @@ public sealed class DebugCameraSettings
         Fov           = SceneSettingsJson.ReadDouble(node, "fov",             Fov);
         Far           = SceneSettingsJson.ReadDouble(node, "far",             Far);
         Speed         = SceneSettingsJson.ReadDouble(node, "speed",           Speed);
-        ShowGrid      = SceneSettingsJson.ReadBool  (node, "show_grid",       ShowGrid);
-        ShowAxisGizmo = SceneSettingsJson.ReadBool  (node, "show_axis_gizmo", ShowAxisGizmo);
         Ortho2d       = SceneSettingsJson.ReadBool  (node, "ortho_2d",        Ortho2d);
     }
 
@@ -82,8 +73,6 @@ public sealed class DebugCameraSettings
         ["fov"]             = Fov,
         ["far"]             = Far,
         ["speed"]           = Speed,
-        ["show_grid"]       = ShowGrid,
-        ["show_axis_gizmo"] = ShowAxisGizmo,
         ["ortho_2d"]        = Ortho2d,
     };
 }

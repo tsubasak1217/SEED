@@ -158,6 +158,9 @@ internal static class SceneSettingsControls
             IsChecked = get(),
             FontSize  = FontSizeBody,
             ToolTip   = tooltip,
+            // WPF 既定の CheckBox 前景色は黒（SystemColors.ControlTextBrush）で、
+            // ダーク背景（#1E1E1E）に同化して読めなくなる。行ラベルと同じ明色を明示する。
+            Foreground = BrushLabel,
             Margin    = new Thickness(indent, RowVerticalMargin, 0, RowVerticalMargin),
         };
 

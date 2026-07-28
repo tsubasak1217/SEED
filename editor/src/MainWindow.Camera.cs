@@ -49,6 +49,22 @@ public partial class MainWindow
     /// <summary>デバッグカメラ回転（オイラー角 X, Y, Z）。</summary>
     private float[] _debugCamEuler = { 0f, 0f, 0f };
 
+    /// <summary>グリッド表示 / 軸ガイド表示の既定値（起動時は常に表示）。</summary>
+    private const bool DefaultShowGuide = true;
+
+    /// <summary>
+    /// シーンビューの地面グリッドを表示するか（IPC SHOW_GRID に対応）。
+    /// シーンパネル上部のトグルが持つセッション限りの状態で、.scene には保存しない
+    /// （切り替え頻度が高く、シーンをダーティにすべき設定ではないため）。
+    /// </summary>
+    private bool _showGrid = DefaultShowGuide;
+
+    /// <summary>
+    /// 画面隅の XYZ 軸ギズモを表示するか（IPC SHOW_AXIS_GIZMO に対応）。
+    /// _showGrid と同じくセッション限りの非永続状態。
+    /// </summary>
+    private bool _showAxisGizmo = DefaultShowGuide;
+
     /// <summary>開いているシーン設定ウィンドウ（多重起動防止用。閉じたら null）。</summary>
     private SceneSettingsWindow? _sceneSettingsWindow;
 
@@ -118,14 +134,6 @@ public partial class MainWindow
                 SendCameraSpeed();
                 break;
 
-            case SceneSettingsChangeKind.ShowGrid:
-                SendShowGrid();
-                break;
-
-            case SceneSettingsChangeKind.ShowAxisGizmo:
-                SendShowAxisGizmo();
-                break;
-
             case SceneSettingsChangeKind.Ortho2d:
                 ApplyEditorCam2D();
                 break;
@@ -141,8 +149,6 @@ public partial class MainWindow
                 SendViewportFov();
                 SendViewportFar();
                 SendCameraSpeed();
-                SendShowGrid();
-                SendShowAxisGizmo();
                 ApplyEditorCam2D();
                 SendCameraTransform();
                 break;
@@ -216,15 +222,14 @@ public partial class MainWindow
     private void SendShowGrid()
     {
         if (!_viewportSettingsInitialized) return;
-        _runtimeManager?.SendToRuntime($"SHOW_GRID:{(_sceneSettings.DebugCamera.ShowGrid ? "1" : "0")}");
+        _runtimeManager?.SendToRuntime($"SHOW_GRID:{(_showGrid ? "1" : "0")}");
     }
 
     /// <summary>軸ギズモ表示の有無をランタイムへ送信する。</summary>
     private void SendShowAxisGizmo()
     {
         if (!_viewportSettingsInitialized) return;
-        _runtimeManager?.SendToRuntime(
-            $"SHOW_AXIS_GIZMO:{(_sceneSettings.DebugCamera.ShowAxisGizmo ? "1" : "0")}");
+        _runtimeManager?.SendToRuntime($"SHOW_AXIS_GIZMO:{(_showAxisGizmo ? "1" : "0")}");
     }
 
     /// <summary>デバッグカメラの位置・回転をランタイムへ送信する。</summary>
@@ -414,28 +419,68 @@ public partial class MainWindow
         Update2DCamToggleVisual();
     }
 
+    // ── シーンパネル上部トグルボタンの共通見た目 ──────────────────
+
+    /// <summary>トグルボタンのアクティブ時の背景・枠線色（タブのアクセントと同じオレンジ）。</summary>
+    private static readonly SolidColorBrush ToggleActiveBrush   = new(Color.FromRgb(0xE8, 0x78, 0x20));
+    /// <summary>トグルボタンの非アクティブ時の背景色。</summary>
+    private static readonly SolidColorBrush ToggleInactiveBg     = new(Color.FromRgb(0x3A, 0x3A, 0x3A));
+    /// <summary>トグルボタンの非アクティブ時の枠線色。</summary>
+    private static readonly SolidColorBrush ToggleInactiveBorder = new(Color.FromRgb(0x55, 0x55, 0x55));
+    /// <summary>トグルボタンの非アクティブ時の文字色。</summary>
+    private static readonly SolidColorBrush ToggleInactiveFg     = new(Color.FromRgb(0xCC, 0xCC, 0xCC));
+
+    /// <summary>
+    /// シーンパネル上部のトグルボタン（2D / World-Local / グリッド / 軸）の見た目を
+    /// ON/OFF 状態に合わせて更新する共通処理。ON はオレンジで強調する。
+    /// </summary>
+    /// <param name="button">対象ボタン（XAML 初期化前は null になり得る）。</param>
+    /// <param name="active">ON なら true。</param>
+    private static void ApplyToggleVisual(System.Windows.Controls.Button? button, bool active)
+    {
+        if (button == null) return;
+        button.Background  = active ? ToggleActiveBrush : ToggleInactiveBg;
+        button.BorderBrush = active ? ToggleActiveBrush : ToggleInactiveBorder;
+        button.Foreground  = active ? Brushes.White     : ToggleInactiveFg;
+    }
+
     /// <summary>タブバー右端「2D」ボタンの見た目をトグル状態に合わせて更新する。</summary>
     private void Update2DCamToggleVisual()
-    {
-        if (Btn2DCamToggle == null) return;
-        if (_sceneSettings.DebugCamera.Ortho2d)
-        {
-            // アクティブ: タブのアクセントと同じオレンジで強調する
-            Btn2DCamToggle.Background  = new SolidColorBrush(Color.FromRgb(0xE8, 0x78, 0x20));
-            Btn2DCamToggle.BorderBrush = new SolidColorBrush(Color.FromRgb(0xE8, 0x78, 0x20));
-            Btn2DCamToggle.Foreground  = Brushes.White;
-        }
-        else
-        {
-            Btn2DCamToggle.Background  = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A));
-            Btn2DCamToggle.BorderBrush = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55));
-            Btn2DCamToggle.Foreground  = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
-        }
-    }
+        => ApplyToggleVisual(Btn2DCamToggle, _sceneSettings.DebugCamera.Ortho2d);
 
     /// <summary>タブバー右端「2D」ボタン: 押すたびに 2D⇄3D をトグルする。</summary>
     private void On2DCamToggleClicked(object sender, RoutedEventArgs e)
         => SetEditorCam2D(!_sceneSettings.DebugCamera.Ortho2d);
+
+    // ── グリッド表示 / 軸ガイド表示トグル ──────────────────────────
+
+    /// <summary>
+    /// シーンパネル上部「グリッド」ボタン: 地面グリッドの表示を切り替える。
+    /// セッション限りの状態のため .scene へは保存しない（SET_SCENE_SETTINGS を送らない）。
+    /// </summary>
+    private void OnGridToggleClicked(object sender, RoutedEventArgs e)
+    {
+        _showGrid = !_showGrid;
+        SendShowGrid();
+        UpdateGridToggleVisual();
+    }
+
+    /// <summary>
+    /// シーンパネル上部「軸」ボタン: 画面隅の XYZ 軸ギズモの表示を切り替える。
+    /// グリッドと同じくセッション限りの非永続項目。
+    /// </summary>
+    private void OnAxisGizmoToggleClicked(object sender, RoutedEventArgs e)
+    {
+        _showAxisGizmo = !_showAxisGizmo;
+        SendShowAxisGizmo();
+        UpdateAxisGizmoToggleVisual();
+    }
+
+    /// <summary>「グリッド」トグルボタンの見た目を現在の状態に合わせて更新する。</summary>
+    private void UpdateGridToggleVisual() => ApplyToggleVisual(BtnGridToggle, _showGrid);
+
+    /// <summary>「軸」トグルボタンの見た目を現在の状態に合わせて更新する。</summary>
+    private void UpdateAxisGizmoToggleVisual() => ApplyToggleVisual(BtnAxisGizmoToggle, _showAxisGizmo);
 
     // ── ギズモ座標系（World / Local）トグル ────────────────────────
 
@@ -462,21 +507,9 @@ public partial class MainWindow
     private void UpdateGizmoSpaceToggleVisual()
     {
         if (BtnGizmoSpaceToggle == null) return;
-        if (_gizmoLocalSpace)
-        {
-            // アクティブ（Local）: Btn2DCamToggle と同じオレンジで強調する
-            BtnGizmoSpaceToggle.Content     = "Local";
-            BtnGizmoSpaceToggle.Background  = new SolidColorBrush(Color.FromRgb(0xE8, 0x78, 0x20));
-            BtnGizmoSpaceToggle.BorderBrush = new SolidColorBrush(Color.FromRgb(0xE8, 0x78, 0x20));
-            BtnGizmoSpaceToggle.Foreground  = Brushes.White;
-        }
-        else
-        {
-            BtnGizmoSpaceToggle.Content     = "World";
-            BtnGizmoSpaceToggle.Background  = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A));
-            BtnGizmoSpaceToggle.BorderBrush = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55));
-            BtnGizmoSpaceToggle.Foreground  = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
-        }
+        // ラベルだけはこのボタン固有（World / Local の二値表示）
+        BtnGizmoSpaceToggle.Content = _gizmoLocalSpace ? "Local" : "World";
+        ApplyToggleVisual(BtnGizmoSpaceToggle, _gizmoLocalSpace);
     }
 
     /// <summary>タブバー「World/Local」ボタン: 押すたびに World⇄Local をトグルする。</summary>
