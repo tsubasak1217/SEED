@@ -47,6 +47,20 @@ public sealed class EditorPreferences
     [JsonPropertyName("window_play")]
     public bool WindowPlay { get; set; } = false;
 
+    /// <summary>
+    /// Play 実行中もシェーディングアセット（.wgsl）のホットリロードを行うかどうか。既定はオン。
+    ///
+    /// オンのとき、Play 中に .wgsl を保存すると約 1 秒以内に再コンパイルされて反映される
+    /// （保存したフレームだけパイプライン再構築のヒッチが出るが、再生を止めずに画作りを
+    /// 詰められる）。あわせて Play 中も WGSL のライブ検証（赤下線）が有効になる。
+    /// オフにすると従来どおり Play 開始時点のパイプラインを使い続け、検証も送らない。
+    ///
+    /// ランタイムへは <c>SET_PLAY_SHADER_HOT_RELOAD:{0|1}</c> で同期する。
+    /// UI 上の「Play中もシェーダをホットリロード」チェックボックスと 1 対 1 に対応する。
+    /// </summary>
+    [JsonPropertyName("play_shader_hot_reload")]
+    public bool PlayShaderHotReload { get; set; } = true;
+
     // ── シングルトン・永続化 ──────────────────────────────────
 
     /// <summary>読み込み済みの環境設定（Init 前は既定値）。</summary>

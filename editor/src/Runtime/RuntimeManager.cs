@@ -638,7 +638,12 @@ public sealed class RuntimeManager : IDisposable
             LogWgslValidationSkipped($"パイプ未接続（state={_state}）");
             return false;
         }
-        if (_state == EditorState.Play)
+        // Play 中は既定では検証しない（naga 検証がランタイムのメインスレッドで走り、
+        // 再生中のフレーム時間を削るため）。ただしエディタ設定
+        // 「Play中もシェーダをホットリロード」がオンなら、Play 中も編集→保存で
+        // 即反映させる運用なので、赤下線が出ないと保存してから壊れたと気づくことになる。
+        // ホットリロードを許した以上、検証のコストも許容する。
+        if (_state == EditorState.Play && !EditorPreferences.Instance.PlayShaderHotReload)
         {
             LogWgslValidationSkipped("Play 中（再生フレームを削らないため検証しない）");
             return false;

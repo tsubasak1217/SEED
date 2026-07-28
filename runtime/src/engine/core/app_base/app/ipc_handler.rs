@@ -1495,6 +1495,12 @@ impl App {
                     // 実行時コライダー描画フラグを更新する
                     self.play_collider_draw = v;
                 }
+                IpcCommand::SetPlayShaderHotReload(v) => {
+                    // Play 中のシェーディングアセット・ホットリロード可否を更新する。
+                    // Edit モードのホットリロードはこのフラグに関係なく常に有効なので、
+                    // ここで false にしても Edit 中の編集フローには影響しない。
+                    self.play_shader_hot_reload = v;
+                }
 
                 // ── 2D 物理シミュレーション設定 ──────────────────────────────
                 IpcCommand::SetEditPhysics2d { enabled, with_rigidbody } => {

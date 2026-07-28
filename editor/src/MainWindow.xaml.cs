@@ -417,6 +417,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _embeddedPlay = !EditorPreferences.Instance.WindowPlay;
         if (ChkWindowPlay != null)
             ChkWindowPlay.IsChecked = EditorPreferences.Instance.WindowPlay;
+        // Play 中シェーダホットリロードの設定を復元する（既定オン）。
+        // ここではランタイム未起動なので IPC は送らない。実際の同期は
+        // ランタイム接続時の SyncViewportSettings が行う。
+        if (ChkPlayShaderHotReload != null)
+            ChkPlayShaderHotReload.IsChecked = EditorPreferences.Instance.PlayShaderHotReload;
         // 「タブ」「エラー一覧」パネルを生成してスクリプトエディタに接続する
         _openDocsPanel  = new OpenDocumentsPanel(PanelScriptEditor);
         _errorListPanel = new ErrorListPanel(PanelScriptEditor);
@@ -608,12 +613,21 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     ///
     /// LayoutDocument は固定参照ではなくレイアウトから ContentId で都度解決するため、
     /// ドッキング/フローティングのどちらの状態でも正しく対象を取得できる。
+    ///
+    /// 併せて、テキスト入力（スクリプトエディタ等）に残ったキーボードフォーカスを外す。
+    /// 子 HWND へのクリックは WPF の入力ルートを通らないため、これを行わないと
+    /// キャレットが残ったままになり、カメラキー（WASD 等）が文字入力になってしまう。
     /// </summary>
     private void OnViewportPointerPressed(object? sender, EventArgs e)
     {
         // UI スレッドへマーシャリングし、既にアクティブなら何もしない（毎クリックの無駄処理を避ける）
         Dispatcher.BeginInvoke(() =>
         {
+            // テキスト入力に残ったキーボードフォーカスを外す（パネルのアクティブ化より先に行う）。
+            // 下の「既にアクティブなら return」より前に置くこと。ビューポートパネルが
+            // 既にアクティブな状態でもテキスト入力がフォーカスを保持し得るため。
+            ClearTextInputFocusForViewportClick();
+
             // 埋め込み Play 中のビューポートクリックは、キーボードフォーカスをランタイム子へ
             // 戻す（エディタ UI へフォーカスが移ったあと再びゲーム操作に戻れるように）。
             if (_embeddedPlay && _runtimeManager?.State == EditorState.Play)
@@ -825,6 +839,35 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         EditorPreferences.Instance.WindowPlay = windowPlay;
         EditorPreferences.Save();
         EditorLog.Write($"WindowPlay = {windowPlay}  (EmbeddedPlay = {_embeddedPlay})");
+    }
+
+    /// <summary>
+    /// 「Play中もシェーダをホットリロード」チェックボックスの変化を受け取る。
+    ///
+    /// 設定は EditorPreferences.PlayShaderHotReload として永続化し、同時に
+    /// 稼働中のランタイムへ SET_PLAY_SHADER_HOT_RELOAD を送って即座に反映する
+    /// （Play 中に切り替えてもその場で効く）。ランタイム未接続なら送信は捨てられるが、
+    /// 次回接続時の SyncViewportSettings で改めて同期されるので取りこぼしは無い。
+    /// </summary>
+    private void OnPlayShaderHotReloadChanged(object sender, RoutedEventArgs e)
+    {
+        bool on = ChkPlayShaderHotReload.IsChecked == true;
+        // エディタ設定ファイル（editor/settings/editor_preferences.json）へ永続化する。
+        EditorPreferences.Instance.PlayShaderHotReload = on;
+        EditorPreferences.Save();
+        // 稼働中のランタイムへ即時反映する。
+        SendPlayShaderHotReload();
+        EditorLog.Write($"PlayShaderHotReload = {on}");
+    }
+
+    /// <summary>
+    /// 現在の「Play中シェーダホットリロード」設定をランタイムへ送信する。
+    /// 設定変更時と、ランタイム接続時の再同期（SyncViewportSettings）から呼ばれる。
+    /// </summary>
+    private void SendPlayShaderHotReload()
+    {
+        _runtimeManager?.SendToRuntime(
+            $"SET_PLAY_SHADER_HOT_RELOAD:{(EditorPreferences.Instance.PlayShaderHotReload ? 1 : 0)}");
     }
 
     /// <summary>

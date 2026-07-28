@@ -971,7 +971,9 @@ impl ShadingAssetCache {
 /// 返り値 `None` は「アセットを使えない」の意味で、呼び出し側は組み込み標準
 /// （`DrawContext::pipelines.deferred.*`）へフォールバックすること。
 ///
-/// - `allow_hot_reload` : Edit モードのみ true。Play 中は開始時点のパイプラインを使い続ける。
+/// - `allow_hot_reload` : Edit モードは常に true。Play 中はエディタ設定
+///   `play_shader_hot_reload`（既定 ON）に従う。false のときは開始時点の
+///   パイプラインを使い続ける（再コンパイルによるヒッチが一切起きない）。
 pub fn resolve(
     device:           &wgpu::Device,
     deferred:         &DeferredLightingPipelines,
@@ -1033,7 +1035,8 @@ fn resolve_inner(
         // 初回は必ず読む。
         None => true,
         Some((due, prev_mtime, _)) => {
-            // Play 中（allow_hot_reload=false）は一切読み直さない。
+            // ホットリロード禁止（allow_hot_reload=false）のときは一切読み直さない。
+            // ＝ Play 中でエディタ設定 `play_shader_hot_reload` が OFF のケース。
             if !allow_hot_reload {
                 false
             } else if !due {
