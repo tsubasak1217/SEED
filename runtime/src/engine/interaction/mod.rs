@@ -22,7 +22,10 @@ pub mod collect;
 pub mod resolved;
 /// フレーム間の位置差分から速度を求めるトラッカー。
 pub mod velocity;
+/// 水面付近のソースへ波の注入量を割り当てる（Phase I2）。
+pub mod water_wave;
 
 pub use collect::collect_interaction_sources;
 pub use resolved::{source_key, ResolvedInteractionSource};
 pub use velocity::{InteractionSourceVelocityTracker, MovingInteractionSource};
+pub use water_wave::apply_water_wave_injection;

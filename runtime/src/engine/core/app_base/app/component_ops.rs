@@ -429,7 +429,7 @@ impl App {
                     // kind は文字列（"Ocean"/"Region"/"Spline"）としてエスケープして送る。
                     let kind_json = serde_json::to_string(d.kind.as_str()).unwrap_or_default();
                     ("WaterVolumeComponent", format!(
-                        r#","kind":{kind_json},"surface_height":{:.4},"region_hx":{:.4},"region_hy":{:.4},"region_hz":{:.4},"ocean_extent":{:.4},"shallow_r":{:.4},"shallow_g":{:.4},"shallow_b":{:.4},"deep_r":{:.4},"deep_g":{:.4},"deep_b":{:.4},"absorption_distance":{:.4},"surface_opacity":{:.4},"foam_r":{:.4},"foam_g":{:.4},"foam_b":{:.4},"foam_width":{:.4},"foam_intensity":{:.4},"wave_amplitude":{:.4},"wave_scale":{:.4},"wave_speed":{:.4},"fresnel_power":{:.4},"fresnel_strength":{:.4},"reflect_r":{:.4},"reflect_g":{:.4},"reflect_b":{:.4},"refraction_distortion":{:.4}"#,
+                        r#","kind":{kind_json},"surface_height":{:.4},"region_hx":{:.4},"region_hy":{:.4},"region_hz":{:.4},"ocean_extent":{:.4},"shallow_r":{:.4},"shallow_g":{:.4},"shallow_b":{:.4},"deep_r":{:.4},"deep_g":{:.4},"deep_b":{:.4},"absorption_distance":{:.4},"surface_opacity":{:.4},"foam_r":{:.4},"foam_g":{:.4},"foam_b":{:.4},"foam_width":{:.4},"foam_intensity":{:.4},"wave_amplitude":{:.4},"wave_scale":{:.4},"wave_speed":{:.4},"fresnel_power":{:.4},"fresnel_strength":{:.4},"reflect_r":{:.4},"reflect_g":{:.4},"reflect_b":{:.4},"refraction_distortion":{:.4},"ripple_strength":{:.4},"ripple_foam_threshold":{:.4}"#,
                         d.surface_height,
                         d.region_half_extents[0], d.region_half_extents[1], d.region_half_extents[2],
                         d.ocean_extent,
@@ -447,6 +447,8 @@ impl App {
                         d.fresnel_strength,
                         d.reflection_color[0], d.reflection_color[1], d.reflection_color[2],
                         d.refraction_distortion,
+                        d.ripple_strength,
+                        d.ripple_foam_threshold,
                     ))
                 }
                 ComponentData::AnimatorComponent(d) => {

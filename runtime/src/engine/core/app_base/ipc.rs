@@ -382,7 +382,8 @@ pub enum IpcCommand {
     /// WaterVolumeComponent のフィールドを更新する（water_ops.rs が処理）。
     /// key: kind / surface_height / region_half_extents / ocean_extent / shallow_color /
     ///      deep_color / absorption_distance / surface_opacity / foam_color / foam_width /
-    ///      foam_intensity / wave_amplitude / wave_scale / wave_speed / fresnel_power /
+    ///      foam_intensity / wave_amplitude / wave_scale / wave_speed /
+    ///      ripple_strength / ripple_foam_threshold / fresnel_power /
     ///      fresnel_strength / reflection_color / refraction_distortion。
     /// ベクタ系（region_half_extents / *_color）の value は "x,y,z" 形式。
     SetWaterField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },

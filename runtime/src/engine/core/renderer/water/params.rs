@@ -20,6 +20,12 @@ pub const WATER_MAX_VOLUMES: usize = 64;
 /// `WATER_QUAD_VERTEX_COUNT`（water_surface.wgsl / water_id.wgsl）と一致させること。
 pub const WATER_QUAD_VERTEX_COUNT: u32 = 6;
 
+/// 波紋フォームしきい値の下限（m 相当）。
+///
+/// 0 を許すと「波高 0 の静水面まで泡だらけ」になり、ユーザが値を 0 にした瞬間に
+/// 水面が真っ白になる。目視できないほど小さい正値で下限を切る。
+pub const RIPPLE_FOAM_THRESHOLD_MIN: f32 = 1.0e-4;
+
 /// 水ボリューム 1 個ぶんの GPU パラメータ。
 ///
 /// **全フィールドを vec4 相当（`[f32; 4]`）で構成している**。
@@ -43,7 +49,12 @@ pub struct WaterParams {
     pub reflection_color: [f32; 4],
     /// x = 波振幅／y = 波の空間周波数／z = 波速度／w = 屈折歪み
     pub wave: [f32; 4],
-    /// x = フレネル指数／y = フレネル寄与率／z,w = 未使用
+    /// x = フレネル指数／y = フレネル寄与率／
+    /// z = 波紋の法線摂動スケール（Phase I2）／w = 波紋フォームの波高しきい値（Phase I2）
+    ///
+    /// **z,w は W1 では未使用の余剰スロットだった。**I2 の 2 パラメータをここへ同居させることで、
+    /// `WaterParams` の配列ストライド（vec4 9 本＝144 バイト）も WGSL 側の struct 宣言も
+    /// 一切変えずに済む（レイアウト同期事故の余地を作らない）。
     pub fresnel: [f32; 4],
     /// x = ピッキング用の raw アクタ ID（`id_base + DFS + 1`。0 = 背景）／y,z,w = 未使用
     ///
@@ -103,7 +114,13 @@ impl WaterParams {
             wave: [
                 vis.wave_amplitude, vis.wave_scale, vis.wave_speed, vis.refraction_distortion,
             ],
-            fresnel: [vis.fresnel_power, vis.fresnel_strength, 0.0, 0.0],
+            fresnel: [
+                vis.fresnel_power, vis.fresnel_strength,
+                // 負の摂動スケールは法線を逆向きに歪めるだけで意味を持たないため 0 で下限を切る。
+                vis.ripple_strength.max(0.0),
+                // しきい値 0 は「常にフォーム全開」を意味してしまうので下限を切る。
+                vis.ripple_foam_threshold.max(RIPPLE_FOAM_THRESHOLD_MIN),
+            ],
             // raw ID = ベース + DFS + 1（+1 は「0 = 背景」を空けるための ID パス共通規約）
             actor_id: [id_base + v.actor_dfs_id + 1, 0, 0, 0],
         }
@@ -139,6 +156,7 @@ mod tests {
             surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
             wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
+            ripple_strength: 1.0, ripple_foam_threshold: 0.1,
         };
         let ocean = ResolvedWaterVolume {
             kind: WaterVolumeKind::Ocean, surface_y: 3.0,
@@ -159,6 +177,50 @@ mod tests {
         assert_eq!(q.half_extent, [4.0, 0.0, 6.0, 0.0]);
     }
 
+    /// 波紋パラメータは fresnel.zw へ詰められ、危険な値は下限で切られること（Phase I2）。
+    /// ここがズレると水面が真っ白（しきい値 0）または無反応（負スケール）になる。
+    #[test]
+    fn ripple_params_are_packed_into_fresnel_zw_with_guards() {
+        use crate::engine::water::WaterVisualParams;
+        let visual = WaterVisualParams {
+            shallow_color: [0.0; 3], deep_color: [0.0; 3], absorption_distance: 1.0,
+            surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
+            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, fresnel_power: 2.0,
+            fresnel_strength: 0.5, reflection_color: [0.0; 3], refraction_distortion: 0.0,
+            ripple_strength: 1.25, ripple_foam_threshold: 0.08,
+        };
+        let v = ResolvedWaterVolume {
+            kind: WaterVolumeKind::Region, surface_y: 0.0,
+            center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
+            actor_dfs_id: 0,
+        };
+        let p = WaterParams::from_resolved(&v, [0.0; 3], 0);
+        assert_eq!(p.fresnel, [2.0, 0.5, 1.25, 0.08], "x,y=フレネル / z,w=波紋");
+
+        // 負のスケールと 0 のしきい値は下限で切られる。
+        let mut bad = visual;
+        bad.ripple_strength = -3.0;
+        bad.ripple_foam_threshold = 0.0;
+        let vb = ResolvedWaterVolume { visual: bad, ..v };
+        let q = WaterParams::from_resolved(&vb, [0.0; 3], 0);
+        assert_eq!(q.fresnel[2], 0.0, "負の摂動スケールは 0 に切る");
+        assert_eq!(q.fresnel[3], RIPPLE_FOAM_THRESHOLD_MIN, "しきい値 0 は下限へ");
+    }
+
+    /// 水面シェーダが波紋の場を実際に消費していること（Phase I2 の消費経路の生存確認）。
+    /// リファクタで group2 の宣言やサンプル関数が落ちても、静かに「波紋が出ない」に
+    /// なるだけで誰も気づかないため、文字列で押さえる。
+    #[test]
+    fn water_shader_consumes_interaction_field() {
+        let src = include_str!("../shaders/water_surface.wgsl");
+        assert!(src.contains("@group(2) @binding(0) var  t_interaction:"),
+            "水面シェーダが波紋の場（group2）を宣言していない");
+        assert!(src.contains("fn water_ripple_gradient("),
+            "波紋の勾配（法線摂動）が消えている");
+        assert!(src.contains("ripple_foam"),
+            "航跡フォームが消えている");
+    }
+
     /// ピッキング用 raw ID は `id_base + DFS + 1`（0 = 背景を空ける共通規約）。
     #[test]
     fn actor_id_follows_id_pass_convention() {
@@ -168,6 +230,7 @@ mod tests {
             surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
             wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
+            ripple_strength: 1.0, ripple_foam_threshold: 0.1,
         };
         let v = ResolvedWaterVolume {
             kind: WaterVolumeKind::Region, surface_y: 0.0,

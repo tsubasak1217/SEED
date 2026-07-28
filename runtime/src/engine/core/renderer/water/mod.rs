@@ -17,6 +17,20 @@
 //  遮蔽判定（手動深度テスト）と水の厚み復元をシェーダ内で行う。
 //  詳細は `shaders/water_surface.wgsl` の冒頭コメントを参照。
 //
+//  ## 波紋（Phase I2）
+//  インタラクションフィールド（`renderer::interaction`）を group2 で読む。
+//  **BindGroup は本モジュールが毎フレーム自前で作る**（場テクスチャは ping-pong で
+//  毎フレーム入れ替わるため、そもそも作り直しが要る）。草のように
+//  `create_field_sample_bind_group_layout` の共有レイアウトを使わないのは、
+//  水面パイプラインが WGSL リフレクション（`RenderPipelineBuilder`）で組まれ、
+//  リフレクションが uniform を VERTEX_FRAGMENT 可視にするため共有レイアウトと
+//  構造的に一致しないから。**リフレクションが返した BGL をそのまま使う**のが正解で、
+//  レイアウト定義の二重管理も起きない。
+//
+//  場がまだ構築されていないフレーム（水はあるがインタラクションソースも草も無い等）に
+//  備えて、1×1 のゼロテクスチャとゼロ UBO のフォールバックを常時持つ。
+//  ゼロ UBO は `inv_extent = 0` になるので、波紋サンプルは常に窓外扱い＝影響ゼロになる。
+//
 //  ## 屈折の背景（自前グラブ）
 //  `RefractPyramid` はブラーミップ鎖まで作るため水面には過剰。
 //  ここでは「シーン HDR をフル解像度 1 ミップへコピーするだけ」の専用テクスチャを持つ。
@@ -36,6 +50,12 @@ pub struct WaterRenderer {
     pipeline: wgpu::RenderPipeline,
     /// group1（パラメータ配列＋背景＋サンプラー＋深度）の BindGroupLayout。
     params_bgl: wgpu::BindGroupLayout,
+    /// group2（インタラクションフィールド）の BindGroupLayout（リフレクション由来）。
+    field_bgl: wgpu::BindGroupLayout,
+    /// 場が無いフレーム用のフォールバック（1×1 ゼロテクスチャ）のビュー。
+    fallback_field_view: wgpu::TextureView,
+    /// フォールバック用のゼロ UBO（`inv_extent = 0` ＝ 常に窓外＝波紋ゼロ）。
+    fallback_field_uniform: wgpu::Buffer,
     /// ID パス用パイプライン（同じクアッドを ID バッファへ描く。エディタのピッキング）。
     id_pipeline: wgpu::RenderPipeline,
     /// ID パス group1（パラメータ配列のみ）の BindGroupLayout。
@@ -59,6 +79,8 @@ pub struct WaterRenderer {
 
     /// このフレームの group1 BindGroup（深度ビューがフレーム依存のため毎フレーム作り直す）。
     frame_bind_group: Option<wgpu::BindGroup>,
+    /// このフレームの group2 BindGroup（波紋の場。ping-pong で毎フレーム変わる）。
+    frame_field_bind_group: Option<wgpu::BindGroup>,
     /// このフレームの ID パス group1 BindGroup（パラメータバッファのみ）。
     /// バッファは容量拡張で作り直され得るので、`frame_bind_group` と同じく毎フレーム作る。
     id_bind_group: Option<wgpu::BindGroup>,
@@ -94,9 +116,37 @@ impl WaterRenderer {
                 other => panic!("water: unknown shader source: {other}"),
             }
         });
-        // bgls は group 番号順（0 = カメラ, 1 = 水リソース）。group1 だけを保持する。
-        assert!(bgls.len() >= 2, "water_surface.wgsl は group0(カメラ)/group1(水リソース) を宣言すること");
+        // bgls は group 番号順（0 = カメラ, 1 = 水リソース, 2 = インタラクションフィールド）。
+        // group1 と group2 を保持する（**remove は添字がずれるので大きい方から取る**）。
+        assert!(bgls.len() >= 3,
+            "water_surface.wgsl は group0(カメラ)/group1(水リソース)/group2(波紋の場) を宣言すること");
+        let field_bgl  = bgls.remove(2);
         let params_bgl = bgls.remove(1);
+
+        // ── 波紋の場が無いフレーム用のフォールバック ──────────────────
+        // 1×1 のゼロテクスチャ（場と同じ Rgba16Float）とゼロ UBO。
+        // ゼロ UBO は inv_extent = 0 なので、波紋サンプルの UV は常に 0 に潰れ、
+        // 高さも勾配も 0＝W1 と同じ見た目になる（分岐を増やさずに無効化できる）。
+        let fallback_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("Water Ripple Fallback"),
+            size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          super::interaction::INTERACTION_FIELD_FORMAT,
+            usage:           wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats:    &[],
+        });
+        let fallback_field_view = fallback_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let fallback_field_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Water Ripple Fallback Uniform"),
+            size:  std::mem::size_of::<super::interaction::InteractionFieldUniformGpu>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            // 内容を明示的にゼロで埋めるため map 済みで作る（未初期化メモリを読ませない）。
+            mapped_at_creation: true,
+        });
+        fallback_field_uniform.slice(..).get_mapped_range_mut().fill(0u8);
+        fallback_field_uniform.unmap();
 
         // ── ID パス用パイプライン（エディタのピッキング）─────────────────────
         // 同じクアッド生成・同じパラメータバッファを使い、出力先だけが ID バッファ。
@@ -133,6 +183,9 @@ impl WaterRenderer {
         Self {
             pipeline,
             params_bgl,
+            field_bgl,
+            fallback_field_view,
+            fallback_field_uniform,
             id_pipeline,
             id_params_bgl,
             sampler,
@@ -144,6 +197,7 @@ impl WaterRenderer {
             grab_width:       0,
             grab_height:      0,
             frame_bind_group: None,
+            frame_field_bind_group: None,
             id_bind_group:    None,
             instance_count:   0,
             warned_overflow:  false,
@@ -162,6 +216,10 @@ impl WaterRenderer {
     /// `id_base` はエディタのピッキング ID 空間のベースオフセット（`canvas_id_offset`）。
     /// ここでアップロードするパラメータに raw アクタ ID を埋めておき、後段の ID パス
     /// （`draw_id`）がそのまま書き出す。
+    ///
+    /// `field` は波紋を書くインタラクションフィールド（Phase I2）。`None` の
+    /// フレームはゼロのフォールバックがバインドされ、波紋の寄与が完全に消える
+    /// （水面の見た目は W1 と同一になる）。
     #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
@@ -173,10 +231,12 @@ impl WaterRenderer {
         height:     u32,
         depth_view: &wgpu::TextureView,
         id_base:    u32,
+        field:      Option<&super::interaction::InteractionFieldRenderer>,
     ) -> bool {
-        self.instance_count   = 0;
-        self.frame_bind_group = None;
-        self.id_bind_group    = None;
+        self.instance_count         = 0;
+        self.frame_bind_group       = None;
+        self.frame_field_bind_group = None;
+        self.id_bind_group          = None;
         if volumes.is_empty() {
             return false;
         }
@@ -245,6 +305,30 @@ impl WaterRenderer {
             ],
         }));
 
+        // ── group2 BindGroup（波紋の場。ping-pong で毎フレーム入れ替わる）──────
+        // 場が未構築のフレームはゼロのフォールバックを挿し、シェーダ側の分岐を増やさない。
+        let (field_view, field_sampler_ref, field_uniform) = match field {
+            Some(f) => (f.field_view(), Some(f.field_sampler()), f.field_uniform_buffer()),
+            None    => (&self.fallback_field_view, None, &self.fallback_field_uniform),
+        };
+        let fallback_sampler = &self.sampler;
+        self.frame_field_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Water Ripple Field BG"),
+            layout:  &self.field_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0, resource: wgpu::BindingResource::TextureView(field_view) },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    // 場のサンプラーが無いときは屈折背景用（線形・ClampToEdge）を流用する。
+                    // どちらも同じフィルタ設定なので、見た目にも検証上も等価。
+                    resource: wgpu::BindingResource::Sampler(
+                        field_sampler_ref.unwrap_or(fallback_sampler)) },
+                wgpu::BindGroupEntry {
+                    binding: 2, resource: field_uniform.as_entire_binding() },
+            ],
+        }));
+
         // ── ID パス用 group1（パラメータ配列のみ）─────────────────────────
         // ID パスは Edit / ポーズ中しか描かれないが、BindGroup 生成は 1 バインディングだけで
         // 極めて軽いため、描くかどうかを判定せずここで作っておく（呼び出し側の分岐を増やさない）。
@@ -291,12 +375,14 @@ impl WaterRenderer {
     /// `prepare` が `true` を返したフレームでのみ呼ぶこと。
     pub fn draw<'p>(&'p self, pass: &mut wgpu::RenderPass<'p>, camera_bg: &'p wgpu::BindGroup) {
         let Some(bg) = self.frame_bind_group.as_ref() else { return; };
+        let Some(field_bg) = self.frame_field_bind_group.as_ref() else { return; };
         if self.instance_count == 0 {
             return;
         }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, camera_bg, &[]);
         pass.set_bind_group(1, bg, &[]);
+        pass.set_bind_group(2, field_bg, &[]);
         // 頂点バッファ無し: 6 頂点 × N インスタンス（= 水ボリューム数）。
         pass.draw(0..WATER_QUAD_VERTEX_COUNT, 0..self.instance_count);
     }

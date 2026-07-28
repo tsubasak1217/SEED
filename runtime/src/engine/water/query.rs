@@ -138,6 +138,8 @@ mod tests {
             fresnel_strength: 0.0,
             reflection_color: [0.0; 3],
             refraction_distortion: 0.0,
+            ripple_strength: 0.0,
+            ripple_foam_threshold: 0.0,
         }
     }
 

@@ -22,15 +22,26 @@ use super::resolved::ResolvedInteractionSource;
 pub struct MovingInteractionSource {
     /// ワールド座標。
     pub world_pos: [f32; 3],
-    /// ワールド XZ 速度（m/s）。場へ焼かれる値そのもの。
+    /// ワールド XZ 速度（m/s）。場の `.xy`（速度場）へ焼かれる値そのもの。
     ///
-    /// Y 速度は瞬発場に含めない。場は俯瞰（XZ 平面）テクスチャであり、消費側
-    /// （草の曲げ・水の波紋）が必要とするのは水平方向の押し出しだけのため。
+    /// 場は俯瞰（XZ 平面）テクスチャなので、速度場としてはこの水平成分だけを持つ。
     pub velocity_xz: [f32; 2],
+    /// ワールド Y 速度（m/s。上向きが正）。**Phase I2 で追加。**
+    ///
+    /// 速度場（`.xy`）には焼かれない。水面への波エネルギー注入
+    /// （`water_wave::apply_water_wave_injection`）が「飛び込み」を
+    /// 水平移動より強く扱うためだけに使う。
+    pub velocity_y: f32,
     /// 影響半径（m）。
     pub radius: f32,
     /// 書き込みの強さ（0..1）。
     pub strength: f32,
+    /// 水面へ注入する波の振幅（m 相当。0 = 注入しない）。**Phase I2 で追加。**
+    ///
+    /// トラッカーは常に 0 を入れる（速度算出はエンジンの水事情を知らない）。
+    /// 値を確定させるのは `interaction::water_wave::apply_water_wave_injection` で、
+    /// 「このソースが水面付近にいるか」を `ResolvedWaterVolume` と照合して決める。
+    pub wave_amplitude: f32,
 }
 
 /// フレーム間の位置差分からインタラクションソースの速度を求めるトラッカー。
@@ -85,20 +96,26 @@ impl InteractionSourceVelocityTracker {
 
         for s in sources {
             // 前フレーム位置が無い（初出）＝速度 0。
-            let velocity_xz = match self.prev_positions.get(&s.key) {
+            let (velocity_xz, velocity_y) = match self.prev_positions.get(&s.key) {
                 Some(prev) => {
                     let vx = (s.world_pos[0] - prev[0]) * inv_dt;
                     let vz = (s.world_pos[2] - prev[2]) * inv_dt;
-                    clamp_speed([vx, vz], INTERACTION_MAX_SPEED)
+                    // 垂直成分も同じ上限で飽和させる（落下・テレポートの暴走値を断つ）。
+                    let vy = ((s.world_pos[1] - prev[1]) * inv_dt)
+                        .clamp(-INTERACTION_MAX_SPEED, INTERACTION_MAX_SPEED);
+                    (clamp_speed([vx, vz], INTERACTION_MAX_SPEED), vy)
                 }
-                None => [0.0, 0.0],
+                None => ([0.0, 0.0], 0.0),
             };
             self.next_positions.insert(s.key, s.world_pos);
             out.push(MovingInteractionSource {
                 world_pos: s.world_pos,
                 velocity_xz,
+                velocity_y,
                 radius:    s.radius,
                 strength:  s.strength,
+                // 波の注入量は水ボリュームとの照合が要るため、ここでは決めない（0 = 注入なし）。
+                wave_amplitude: 0.0,
             });
         }
 
@@ -153,6 +170,28 @@ mod tests {
         t.update(&[src(1, [0.0, 0.0, 0.0])], 0.5);
         let out = t.update(&[src(1, [1.0, 99.0, 2.0])], 0.5);
         assert_eq!(out[0].velocity_xz, [2.0, 4.0], "dt=0.5 なので差分の 2 倍");
+    }
+
+    /// 垂直速度も差分から求まり、上限で飽和する（Phase I2 の飛び込み判定用）。
+    #[test]
+    fn vertical_velocity_is_tracked_and_clamped() {
+        let mut t = InteractionSourceVelocityTracker::new();
+        t.update(&[src(1, [0.0, 10.0, 0.0])], 1.0);
+        // 1 秒で 3m 落下 → -3m/s。
+        let out = t.update(&[src(1, [0.0, 7.0, 0.0])], 1.0);
+        assert_eq!(out[0].velocity_y, -3.0);
+        // 上限を超える落下は飽和する（符号は保つ）。
+        let out2 = t.update(&[src(1, [0.0, -1000.0, 0.0])], 1.0);
+        assert_eq!(out2[0].velocity_y, -INTERACTION_MAX_SPEED);
+    }
+
+    /// トラッカーは波の注入量を決めない（常に 0＝注入なしで返す）。
+    #[test]
+    fn tracker_does_not_decide_wave_amplitude() {
+        let mut t = InteractionSourceVelocityTracker::new();
+        t.update(&[src(1, [0.0, 0.0, 0.0])], 1.0);
+        let out = t.update(&[src(1, [5.0, 0.0, 0.0])], 1.0);
+        assert_eq!(out[0].wave_amplitude, 0.0);
     }
 
     /// dt=0 でも無限大にならない（下限で飽和する）。
