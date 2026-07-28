@@ -475,6 +475,10 @@ public partial class MainWindow
         }
         // コライダー描画は Play/Edit 両方で送信する
         _runtimeManager?.SendToRuntime($"SET_PLAY_COLLIDER_DRAW:{(_playColliderDraw ? 1 : 0)}");
+        // Play 中シェーダホットリロード設定も Play/Edit 両方で送信する。
+        // ランタイムは既定 ON で起動するため、OFF 設定のユーザーにとってはこの再送が
+        // 唯一の同期経路になる（別プロセス Play の新規起動も必ずここを通る）。
+        SendPlayShaderHotReload();
     }
 
     // ── デバッグカメラ 2D（正射投影）トグル ────────────────────────

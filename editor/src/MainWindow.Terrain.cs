@@ -306,6 +306,16 @@ public partial class MainWindow
                 case WM_LBUTTONDOWN:
                     if (IsMouseOverViewportHwnd())
                     {
+                        // ビューポートをクリックした以上、スクリプトエディタ等のテキスト入力に
+                        // 残ったキーボードフォーカスは外す（外さないとキャレットが残り、
+                        // カメラキー WASD が文字入力になる）。
+                        // 通常はランタイム子 HWND への到達で WM_PARENTNOTIFY が出て
+                        // OnViewportPointerPressed が処理するが、terrain モードの左押下は
+                        // 直後の return 1 でここが握りつぶすため子へ届かない。だからここで補う。
+                        // 低レベルフック内から WPF のフォーカス API を直接叩かないよう
+                        // ディスパッチャ経由で実行する。
+                        Dispatcher.BeginInvoke(ClearTextInputFocusForViewportClick);
+
                         _terrainStroking = true;
                         _terrainBrushThrottle.Restart();
                         SendTerrainBrushAtCursor();

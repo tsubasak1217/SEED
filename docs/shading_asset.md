@@ -32,7 +32,8 @@
   このプロップだけ写実的にしたい）。
 - エンジンが渡すのは「面の情報（`ShadingSurface`）」と「そのライト 1 灯の実効放射輝度（`LightSample`）」の
   2 つだけで、バインディング（uniform / texture / storage）は一切見えない。
-- Edit モードならファイルを保存するだけで再コンパイルされる（ホットリロード）。
+- ファイルを保存するだけで再コンパイルされる（ホットリロード）。Edit は常時、
+  Play 中もエディタ設定「Play中もシェーダをホットリロード」（既定オン）で有効。9 章参照。
 
 ### できないこと
 
@@ -490,7 +491,7 @@ fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
 4. （任意）**例外を作る**: 標準 PBR のままにしたいモデルのマテリアルだけ `shading_model` を
    1 にする。`.mat` / `.smdl` の `shading_model` フィールドを編集する（**現状エディタ UI は無い**
    ― 10 章参照）。そのマテリアルだけ `shade_model_1`（＝標準 PBR）で描かれる。
-5. **ホットリロードの確認**（Edit モードのみ）: エンジンを動かしたまま `toon.wgsl` の
+5. **ホットリロードの確認**（Edit は常時、Play も既定オンで可）: エンジンを動かしたまま `toon.wgsl` の
    `TOON_DIFFUSE_STEPS` を `2.0` などへ書き換えて保存する。約 1 秒以内に階調数が変わる。
    わざと構文エラーを入れて保存すれば、画面が壊れずに標準 PBR へ戻り、
    エディタへエラーが通知されることも確認できる。
@@ -547,13 +548,30 @@ naga が返すのは**連結ソース基準**の行番号なので、そのま�
 
 | 項目 | 内容 |
 |---|---|
-| 対象モード | **Edit モードのみ**（`allow_hot_reload = self.mode == RuntimeMode::Edit`, `frame_renderer.rs:4708`） |
-| ポーリング間隔 | `SHADING_ASSET_POLL_INTERVAL_SECS: f64 = 1.0`（秒。`shading_asset.rs:87`） |
+| 対象モード | **Edit は常に有効。Play はエディタ設定に従う（既定 ON）**（`allow_hot_reload = self.mode == RuntimeMode::Edit \|\| self.play_shader_hot_reload`, `frame_renderer.rs`） |
+| ポーリング間隔 | `SHADING_ASSET_POLL_INTERVAL_SECS: f64 = 1.0`（秒。`shading_asset.rs`） |
 | 判定 | 前回ポーリングから間隔が経過し、かつ `asset_fs::mtime` が前回と変化しているときだけ読み直す |
-| Play 中 | **一切リロードしない**。開始時点のパイプラインを使い続ける（フレーム中のシェーダ再コンパイルによるスパイクを避けるため） |
+| 監視対象パス | そのモードで実際に描画に使われている解決結果（Play = メインカメラの `shading_asset` → シーン既定、Edit = シーン既定）。Edit と Play で参照アセットが違っても、追従するのは常に「今描いている方」 |
 
-初回（そのパスを一度も見ていないとき）は必ず読む。これは Play 中でも同じで、
+初回（そのパスを一度も見ていないとき）は必ず読む。設定に関係なく Play 中でも同じで、
 Play 開始後に初めて解決されるパスは 1 回だけ読み込み＋ビルドされる。
+
+### Play 中のホットリロード設定
+
+エディタのツールバー「Play 設定」ポップアップにある
+**「Play中もシェーダをホットリロード」** チェックボックスで切り替える。
+設定は `editor/settings/editor_preferences.json` の `play_shader_hot_reload`
+（bool・**既定 true**）へ永続化され、IPC `SET_PLAY_SHADER_HOT_RELOAD:{0|1}` で
+ランタイムへ同期される（設定変更時に即送信、ランタイム接続時は
+`SyncViewportSettings` から再送）。
+
+| 設定 | Play 中の挙動 |
+|---|---|
+| **ON（既定）** | `.wgsl` を保存すると約 1 秒以内に再コンパイルされて反映される。保存を検知したフレームだけパイプライン再構築のヒッチが出る（保存時のみ・定常負荷は mtime ポーリングのみ）。あわせて Play 中も WGSL のライブ検証（赤下線）が有効になる |
+| **OFF** | 従来どおり。Play 開始時点のパイプラインを使い続け、`.wgsl` を保存しても反映されない。WGSL のライブ検証も Play 中は送らない（naga 検証が再生フレームを削るため） |
+
+失敗時の扱いは Edit と同じで、**直前の状態が維持される**（壊れた `.wgsl` を保存しても
+画面は壊れず、エラーがエディタへ通知される）。8 章参照。
 
 ---
 

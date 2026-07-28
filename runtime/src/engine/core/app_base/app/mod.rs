@@ -942,6 +942,13 @@ pub struct App {
     /// true のとき Play モードでもコライダーワイヤーフレームを描画する。
     pub(super) play_collider_draw: bool,
 
+    /// Play 中のシェーディングアセット（.wgsl）ホットリロード可否フラグ。
+    /// true のとき Play 実行中でも `.wgsl` の mtime ポーリング＋再コンパイルを許可する。
+    /// エディタ設定 `play_shader_hot_reload`（既定 ON）から `SET_PLAY_SHADER_HOT_RELOAD`
+    /// で同期される。ランタイム単体起動（エディタ非接続）でも既定 ON で動く。
+    /// Edit モードのホットリロードはこのフラグとは無関係に常に有効。
+    pub(super) play_shader_hot_reload: bool,
+
     /// 現在フレームで衝突中のエンティティ DFS ID セット。
     /// 物理スレッドの衝突イベント（Enter/Stay）から毎フレーム更新され、
     /// コライダーワイヤーフレームの色変更に使用する。
@@ -1177,6 +1184,10 @@ impl App {
             edit_physics_in_playback:     false,
             // Play 起動時に --play-collider-draw=1 が渡された場合は即有効化する
             play_collider_draw:          args.play_collider_draw,
+            // Play 中シェーダホットリロードは既定 ON（エディタ設定の既定値と一致させる）。
+            // エディタ接続時は SyncViewportSettings から SET_PLAY_SHADER_HOT_RELOAD が届いて
+            // ユーザー設定で上書きされる。
+            play_shader_hot_reload:       true,
             active_collision_dfs_ids:     std::collections::HashSet::new(),
             dragging_physics_entity_id:   None,
             drag_collider_last_valid_pos: None,

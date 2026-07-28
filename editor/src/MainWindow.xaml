@@ -918,6 +918,14 @@
                                           Checked="OnWindowPlayChanged"
                                           Unchecked="OnWindowPlayChanged"
                                           ToolTip="オン時は別プロセスの独立ウィンドウでPlayします。オフ（既定）時は別プロセスを起動せず、シーンパネルのランタイムをその場でPlay化します（埋め込みインプレースPlay）。地形・散布・GPUを作り直さないため即座に再生できます。"/>
+                                <CheckBox x:Name="ChkPlayShaderHotReload"
+                                          Content="Play中もシェーダをホットリロード"
+                                          Foreground="White"
+                                          IsChecked="True"
+                                          Margin="0,4,0,0"
+                                          Checked="OnPlayShaderHotReloadChanged"
+                                          Unchecked="OnPlayShaderHotReloadChanged"
+                                          ToolTip="オン（既定）時は、Play中に .wgsl シェーディングアセットを保存すると約1秒以内に再コンパイルされて反映されます（保存したフレームだけヒッチします）。Play中の WGSL 赤下線検証も有効になります。オフにするとPlay開始時点のシェーダを使い続けます。"/>
                             </StackPanel>
                         </Border>
                     </Popup>

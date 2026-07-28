@@ -4737,9 +4737,17 @@ impl App {
                                 let shading_asset_path: Option<&str> = main_camera_shading_asset
                                     .as_deref()
                                     .or_else(|| scene.shading_asset.as_deref());
-                                // ホットリロードは Edit モードのみ。Play 中は開始時点のパイプラインを
-                                // 使い続ける（フレーム中のシェーダ再コンパイルによるスパイクを避ける）。
-                                let allow_hot_reload = self.mode == RuntimeMode::Edit;
+                                // ホットリロードの可否:
+                                //   - Edit モード : 常に有効（従来どおり）。
+                                //   - Play モード : エディタ設定 `play_shader_hot_reload`（既定 ON）に従う。
+                                // ポーリング対象は直上で解決した `shading_asset_path` そのものなので、
+                                // Play ではメインカメラの shading_asset、Edit ではシーン既定と、
+                                // 「そのモードで実際に描画に使われているアセット」が監視される
+                                // （Edit と Play で参照アセットが違っても正しい方が追従する）。
+                                // 保存を検知したフレームだけパイプライン再コンパイルのヒッチが出るが、
+                                // 再生を止めずに画作りを詰められる利点を優先する。
+                                let allow_hot_reload =
+                                    self.mode == RuntimeMode::Edit || self.play_shader_hot_reload;
                                 let shading_pipes = shading_asset_path.and_then(|p| {
                                     crate::engine::core::renderer::shading_asset::resolve(
                                         &draw_ctx.device,

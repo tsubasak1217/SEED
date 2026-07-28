@@ -305,6 +305,50 @@ public partial class MainWindow
         return typeName.Contains("AvalonEdit", StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 埋め込みランタイム（ビューポート内の子 HWND）がクリックされたときに、
+    /// テキスト入力（スクリプトエディタ／インスペクタ等）に残っている WPF の
+    /// キーボードフォーカスを外す。
+    ///
+    /// 【なぜ必要か】埋め込みランタイムは別プロセスの子 HWND であり、そこへのクリックは
+    /// WPF の入力ルートを一切通らない。そのため直前までスクリプトエディタ(AvalonEdit)に
+    /// フォーカスがあると <see cref="Keyboard.FocusedElement"/> はその TextArea のまま残る。
+    /// すると <see cref="IsTextInputFocused"/> が true を返し続け、
+    /// 低レベルキーボードフックはカメラキー(WASD 等)をランタイムへ転送しない一方、
+    /// キー自体は WPF 経由でスクリプトエディタへ届いて文字入力になってしまう
+    /// （＝ビューポートをクリックしたのにカメラが動かず、代わりに文字が打たれる不具合）。
+    /// クリックを検知できるのは <see cref="Viewport.ViewportHost"/> が拾う
+    /// WM_PARENTNOTIFY のみなので、それを契機にここでフォーカスを能動的に解除する。
+    ///
+    /// 【フォーカスの外し先】どこにも移さず null にする。
+    /// <see cref="IsTextInputFocused"/> は FocusedElement が null なら false を返すため、
+    /// これでカメラキー転送が復活する。またフォーカスを失った AvalonEdit は
+    /// LostKeyboardFocus を受けてキャレット表示を消す。
+    /// ビューポートの子 HWND 自体は WPF 管理外でありフォーカス先にできない
+    /// （FocusedElement が null という状態こそが「ビューポート操作中」の正常形）。
+    ///
+    /// テキスト入力にフォーカスが無い場合は何もしない（他パネルの選択状態を壊さないため）。
+    /// UI スレッドから呼ぶこと。
+    /// </summary>
+    private void ClearTextInputFocusForViewportClick()
+    {
+        if (!IsTextInputFocused()) return;
+
+        // 論理フォーカスも解除する。キーボードフォーカスだけを消すと、
+        // ウィンドウ再アクティブ化やパネル切り替えの際に FocusScope の記憶から
+        // テキスト入力へフォーカスが戻り、同じ症状が再発するため。
+        if (Keyboard.FocusedElement is DependencyObject focused)
+        {
+            var scope = FocusManager.GetFocusScope(focused);
+            if (scope is not null) FocusManager.SetFocusedElement(scope, null);
+        }
+
+        // WPF のキーボードフォーカスを外す（FocusedElement = null）。
+        Keyboard.ClearFocus();
+
+        EditorLog.Write("ClearTextInputFocusForViewportClick — ビューポートクリックによりテキスト入力のフォーカスを解除");
+    }
+
     private bool IsCamInputActive()
     {
         var state = _runtimeManager?.State;

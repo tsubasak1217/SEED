@@ -593,6 +593,13 @@ pub enum IpcCommand {
     /// フォーマット: SET_PLAY_COLLIDER_DRAW:{0|1}
     SetPlayColliderDraw(bool),
 
+    /// Play 中のシェーディングアセット（.wgsl）ホットリロード設定。
+    /// true のとき Play 実行中でも `.wgsl` の mtime ポーリングとパイプライン
+    /// 再コンパイルを許可する（保存した瞬間だけヒッチする代わりに、
+    /// 再生を止めずに画作りを詰められる）。既定は ON。
+    /// フォーマット: SET_PLAY_SHADER_HOT_RELOAD:{0|1}
+    SetPlayShaderHotReload(bool),
+
     // ─── 編集時物理タイムライン ─────────────────────────────────────────────
     /// 再生/停止トグル。
     /// フォーマット: EDIT_PHYSICS_PLAY_PAUSE
@@ -2048,6 +2055,11 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         }
                         "SET_PLAY_COLLIDER_DRAW:1" => Some(IpcCommand::SetPlayColliderDraw(true)),
                         "SET_PLAY_COLLIDER_DRAW:0" => Some(IpcCommand::SetPlayColliderDraw(false)),
+
+                        // Play 中のシェーディングアセット・ホットリロードの ON/OFF。
+                        // エディタ設定（editor_preferences.json の play_shader_hot_reload）と 1 対 1。
+                        "SET_PLAY_SHADER_HOT_RELOAD:1" => Some(IpcCommand::SetPlayShaderHotReload(true)),
+                        "SET_PLAY_SHADER_HOT_RELOAD:0" => Some(IpcCommand::SetPlayShaderHotReload(false)),
 
                         s if s.starts_with("SET_ANIMATOR_CLIPS:") => {
                             // フォーマット: SET_ANIMATOR_CLIPS:{actor_dfs_id},{slot_idx},{json}
