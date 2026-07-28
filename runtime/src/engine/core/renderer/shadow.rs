@@ -362,7 +362,9 @@ fn view_proj_uniform(vp: &Mat4x4<f32>, size: f32) -> CameraUniform {
         view_proj:      vp.transpose().data,
         view:           Mat4x4::identity().data,
         position:       [0.0, 0.0, 0.0],
-        _pad:           0.0,
+        // シャドウ深度パスは深度しか書かずライティング（＝ShadingSurface）を作らないので、
+        // 時間フィールドは参照されない。0.0 固定でよい。
+        time:           0.0,
         resolution:     [size, size],
         _pad2:          [0.0, 0.0],
         inv_view_proj:  inv_vp.transpose().data,

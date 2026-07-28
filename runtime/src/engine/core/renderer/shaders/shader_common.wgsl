@@ -8,7 +8,11 @@ struct CameraUniform {
     view_proj:      mat4x4<f32>,
     view:           mat4x4<f32>,
     position:       vec3<f32>,
-    _pad:           f32,
+    /// ゲーム内累計時間（秒）。旧 `_pad`（vec3 のアライン規則で必ず生じる 4 byte の
+    /// 死に領域）を W0 で転用したもの。`ShadingSurface.time` の供給元であり、
+    /// フォワード経路の lighting_eval.wgsl がここから読んで契約へ写す。
+    /// Play 非ポーズ時のみ進む（草の揺れ・スクリプトの SEED.Time.ElapsedTime と同一値）。
+    time:           f32,
     // 以下、Rust 側 uniforms::CameraUniform と完全一致させるための末尾フィールド。
     // mesh/skinned のフラグメントは resolution/inv_view_proj を参照しないため未使用のまま
     // でよいが、宣言を欠くと（G-Buffer デファードパスが独自に持つ同名構造体との）

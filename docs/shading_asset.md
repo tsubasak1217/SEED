@@ -32,6 +32,9 @@
   このプロップだけ写実的にしたい）。
 - エンジンが渡すのは「面の情報（`ShadingSurface`）」と「そのライト 1 灯の実効放射輝度（`LightSample`）」の
   2 つだけで、バインディング（uniform / texture / storage）は一切見えない。
+- **時間で動く光応答が書ける**。`ShadingSurface.time`（ゲーム内累計秒）で脈動する発光・
+  流れる縞・明滅などをアセットだけで表現できる（7.5 節）。ただし `time` が進むのは
+  **Play かつ非ポーズのとき**だけで、Edit モードでは静止する。
 - ファイルを保存するだけで再コンパイルされる（ホットリロード）。Edit は常時、
   Play 中もエディタ設定「Play中もシェーダをホットリロード」（既定オン）で有効。9 章参照。
 
@@ -103,9 +106,13 @@ assets://shading/toon.wgsl:-: 契約バージョン不一致（アセット宣�
 
 ### 3.1 `ShadingSurface`（面の情報）
 
-`shading_contract.wgsl:58-106`。`Surface`（エンジン内部構造体）からの**素直な写し**であり、
-写し替えは `lighting_eval.wgsl:174-189` が行う。**ライトに依存しない値だけ**を含み、
-ライトループの外で 1 回だけ組み立てられる。
+`shading_contract.wgsl` の `struct ShadingSurface`。ほぼ全フィールドが `Surface`
+（エンジン内部構造体）からの**素直な写し**であり、写し替えは `lighting_eval.wgsl` の
+`evaluate_lighting` が行う。**ライトに依存しない値だけ**を含み、ライトループの外で
+1 回だけ組み立てられる。
+
+唯一の例外が `time` で、これはピクセルごとの属性ではなくフレーム全体で 1 つの値なので、
+`Surface`（G-Buffer）を経由せずカメラ uniform（`u_camera.time`）から直接読んで詰めている。
 
 | フィールド | 型 | 意味 | 注意（座標系・単位） |
 |---|---|---|---|
@@ -124,6 +131,7 @@ assets://shading/toon.wgsl:-: 契約バージョン不一致（アセット宣�
 | `render_tag` | `u32` | アクタ単位のセマンティックタグ | 0..15。0＝タグ無し。G-Buffer RT3.a の下位 4bit |
 | `shading_model` | `u32` | シェーディングモデル ID | 0..3。0＝エンジン標準 PBR。ディスパッチの分岐キー |
 | `frag_coord` | `vec2<f32>` | フラグメント座標 | `@builtin(position).xy`＝ピクセル座標。ディザ・ハッチング・ノイズの種 |
+| `time` | `f32` | ゲーム内累計時間（秒） | アニメーションする光応答（脈動・流れる縞・明滅）の唯一の時間入力。**Play かつ非ポーズのときだけ進む**（Edit・ポーズでは静止、Play 開始とシーン再ロードで 0 に戻る）。スクリプトの `SEED.Time.ElapsedTime`・草の揺れと**同一の値**。→ 7.5 節に例 |
 
 > `Surface` の内部フィールド（`shadow_mask` / `shadow_mask_valid` / `screen_gi` / `alpha`）は
 > **契約に含まれない**。影は `LightSample.color` に織り込み済み、SSGI はアンビエント項専用、
@@ -495,6 +503,44 @@ fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
    `TOON_DIFFUSE_STEPS` を `2.0` などへ書き換えて保存する。約 1 秒以内に階調数が変わる。
    わざと構文エラーを入れて保存すれば、画面が壊れずに標準 PBR へ戻り、
    エディタへエラーが通知されることも確認できる。
+
+---
+
+### 7.5 時間を使う例（脈動する発光）
+
+`sf.time`（ゲーム内累計秒）を使うと、アセットだけでアニメーションする光応答が書ける。
+下は「画面全体の明るさがゆっくり脈動する」最小例で、実体はこれだけである:
+
+```wgsl
+// @shading_contract 1
+const PULSE_SPEED: f32 = 3.0;   // 脈動の速さ（ラジアン/秒）
+const PULSE_DEPTH: f32 = 0.5;   // 脈動の深さ（0=一定, 1=完全に消える）
+
+fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
+    let pulse = 1.0 - PULSE_DEPTH * (0.5 - 0.5 * cos(sf.time * PULSE_SPEED));
+    return shade_model_0(sf, li) * pulse;   // 標準 PBR の結果を時間で変調する
+}
+```
+
+`sf.world_pos` と組み合わせれば「流れる縞」になる（位相に位置を足すだけ）:
+
+```wgsl
+let stripe = 0.5 + 0.5 * sin(sf.world_pos.y * 4.0 - sf.time * 2.0);
+```
+
+**注意点**（どれも `time` の性質から来る）:
+
+- **Edit モードでは止まる。** `time` は Play かつ非ポーズのときだけ進む
+  （エンジン全体のアニメーション時刻の規約。草の揺れと同じ挙動）。
+  Edit のメインビューでホットリロードしながら書くと、**式は即時反映されるが動きは止まって見える**。
+  動きを確認するには Play する。
+- **`shade_default` は画面全体に効く。** 特定のオブジェクトだけ脈動させたいときは
+  `shade_model_1`（マテリアルの `shading_model = 1`）に書く。
+- **エミッシブを足してはならない。** `sf.emissive` はエンジンがライト評価の最後に加算するため、
+  「発光を脈動させる」つもりでアセットが `sf.emissive` を返り値に足すと二重加算になる。
+  上の例のように**反射項の側を変調**するか、`sf.base_color` を使って自前の項を組む。
+- **長時間 Play で位相分解能が落ちる。** `time` は f32 秒なので絶対値が大きくなると
+  `sin()` の刻みが粗くなる。速い模様は速度係数を小さく保つか、`sf.time % 周期` を取ってから使う。
 
 ---
 

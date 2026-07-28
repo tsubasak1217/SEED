@@ -21,7 +21,7 @@
 /// |   0       | view_proj      |  64    |
 /// |  64       | view           |  64    |
 /// | 128       | position       |  12    |
-/// | 140       | _pad           |   4    |
+/// | 140       | time           |   4    |  ← 旧 _pad（W0 で転用。サイズ不変）
 /// | 144       | resolution     |   8    |
 /// | 152       | _pad2          |   8    |
 /// | 160       | inv_view_proj  |  64    |
@@ -34,7 +34,22 @@ pub struct CameraUniform {
     pub view:       [[f32; 4]; 4],
     /// ワールド空間でのカメラ位置（スペキュラ計算用）
     pub position:   [f32; 3],
-    pub _pad:       f32,
+    /// ゲーム内累計時間（秒）。`Clock::anim_time`（＝ スクリプトの `SEED.Time.ElapsedTime`）。
+    ///
+    /// 【なぜここか】L3 シェーディング契約の `ShadingSurface.time`（`shading_contract.wgsl`）へ
+    /// 供給するための時間入力。ライティング段（フォワード = `shader_common.wgsl` /
+    /// デファード = `deferred_lighting.wgsl`）が既にバインドしている唯一の共通 uniform が
+    /// `CameraUniform` であり、`position: vec3` の直後には WGSL の 16 byte アライン規則により
+    /// **必ず 4 byte の死に領域**が生じる。そこを名前付きの規約として転用したので、
+    /// バッファサイズ（304 byte）もバインドグループレイアウトも一切変わらない
+    /// （`ModelUniform.normal_matrix` 4 列目の転用と同じ考え方）。
+    ///
+    /// 【進む条件】Play かつ非ポーズのときだけ進む（Edit・ポーズでは停止）。
+    /// エンジン全体のアニメーション時刻の規約に従う（草の揺れと同一の値）。
+    ///
+    /// 【書き込み側】メインカメラは `frame_renderer.rs` が `ctx.anim_time` を入れる。
+    /// シャドウ・ギズモなど**ライティングを行わないパス**のカメラは 0.0 でよい。
+    pub time:       f32,
     /// ビューポートの解像度（ピクセル）。ギズモ太線計算に使用。
     pub resolution: [f32; 2],
     pub _pad2:      [f32; 2],
@@ -97,7 +112,7 @@ impl CameraUniform {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ];
-        Self { view_proj: id, view: id, position: [0.0; 3], _pad: 0.0,
+        Self { view_proj: id, view: id, position: [0.0; 3], time: 0.0,
                resolution: [1280.0, 720.0], _pad2: [0.0; 2], inv_view_proj: id,
                // 前フレーム行列は「prev=curr」で初期化する（速度 0）。
                prev_view_proj: id,

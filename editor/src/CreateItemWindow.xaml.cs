@@ -315,6 +315,8 @@ public partial class CreateItemWindow : Window
             //  sf.base_color    … アルベド（リニア）
             //  sf.roughness / sf.metallic / sf.occlusion    … 物性
             //  sf.frag_coord    … ピクセル座標（ディザ・ハッチングの種）
+            //  sf.time          … ゲーム内累計秒（脈動・流れる縞などのアニメーション用）
+            //                     ※ Play かつ非ポーズのときだけ進む（Edit では静止する）
             //  li.direction     … 表面→光源方向 L
             //  li.color         … 実効放射輝度（影・減衰込み）
             //  li.color_unshadowed / li.distance / li.kind  … 影抜き放射輝度・距離・ライト種別

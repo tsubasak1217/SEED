@@ -115,6 +115,8 @@ public static class WgslCompletion
         ("render_tag",    "u32",       "アクタ単位のセマンティックタグ（0..15）"),
         ("shading_model", "u32",       "シェーディングモデル ID（0..3）"),
         ("frag_coord",    "vec2<f32>", "フラグメント座標（ピクセル座標）"),
+        // W0 で契約 v1 へ末尾追加した時間フィールド。Play かつ非ポーズのときだけ進む。
+        ("time",          "f32",       "ゲーム内累計時間（秒）。Play中のみ進む（Edit・ポーズでは静止）"),
     };
 
     /// <summary>LightSample のフィールド（フィールド名, 型, 日本語説明）。</summary>

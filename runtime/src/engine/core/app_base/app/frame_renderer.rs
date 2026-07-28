@@ -824,7 +824,10 @@ impl App {
                 view_proj:      view_proj.transpose().data,
                 view:           view.transpose().data,
                 position:       cam_pos_arr,
-                _pad:           0.0,
+                // ゲーム内累計時間（L3 シェーディング契約 `ShadingSurface.time` の供給元）。
+                // 草の揺れ（GrassUniform.time）・スクリプトの SEED.Time.ElapsedTime と
+                // **同一の値**を渡す。独自の時計は持たない（Edit・ポーズでは止まる）。
+                time:           ctx.anim_time,
                 resolution:     res,
                 _pad2:          [0.0; 2],
                 inv_view_proj:  inv_view_proj.transpose().data,
@@ -889,7 +892,9 @@ impl App {
                         view_proj:      cvp.transpose().data,
                         view:           cv.transpose().data,
                         position:       [0.0, 0.0, -100.0],
-                        _pad:           0.0,
+                        // 2D キャンバスオーバーレイもメインカメラと同じ時刻を配る
+                        // （時間はフレーム全体で 1 つの値であり、カメラごとに変える理由がない）。
+                        time:           ctx.anim_time,
                         resolution:     [vp_w, vp_h],
                         _pad2:          [0.0; 2],
                         inv_view_proj:  cvp_inv.transpose().data,
@@ -1986,7 +1991,7 @@ impl App {
                         // プロジェクション行列もテクスチャのアスペクト比に合わせる
                         let preview_aspect = cam_data.target_aspect();
                         let cam_uniform = camera_scene_gizmo::build_camera_uniform(
-                            cam_data, preview_aspect, res,
+                            cam_data, preview_aspect, res, ctx.anim_time,
                         );
                         // プレビュー用一時カメラバッファを生成する
                         let preview_cam_buf = CameraBuffer::new(
