@@ -39,6 +39,37 @@ public class Mover : SEEDScript
 
 > 無修飾で書きたい場合は、そのスクリプトの先頭に自分で `using SEED;` を足してください。ただし `System.Random` など標準ライブラリと型名が衝突することがあり、その解決（`SEED.Random` と明示するなど）は利用者側の責任になります。`using` はファイル単位で閉じるため、他のスクリプトには影響しません。
 
+### インスペクタ公開の属性（`SEEDEditor.Scripting` 名前空間）
+
+フィールドやクラスに付ける属性。すべて `using SEEDEditor.Scripting;`（テンプレートに含まれる）だけで使えます。
+
+| 属性 | 付ける先 | 効果 |
+|------|----------|------|
+| `[SerializeField]` | フィールド | インスペクタに公開する。`Label = "表示名"` / `Tooltip = "説明"` を名前付き引数で指定できる（省略時のラベルはフィールド名を整形したもの） |
+| `[Header("見出し")]` | フィールド | そのフィールドの直前に見出し行を挿入する |
+| `[Tooltip("説明")]` | フィールド | マウスオーバー時の説明。`[SerializeField(Tooltip = ...)]` より**独立した `[Tooltip]` が優先**される |
+| `[Range(min, max)]` | フィールド | 数値フィールドをスライダー表示にする（float / int） |
+| `[RequireComponent(typeof(OtherScript))]` / `[RequireComponent("Camera")]` | クラス | アタッチ時に不足コンポーネントを**自動追加**する。型指定＝他スクリプト（型名から `.cs` を探す）、文字列指定＝ネイティブコンポーネント名 |
+| `[DisallowMultipleComponent]` | クラス | 同一アクターに同じスクリプトを 2 つ以上付けられなくする（追加操作が警告で中止される） |
+
+```csharp
+[RequireComponent("Camera")]
+[DisallowMultipleComponent]
+public class CameraShake : SEEDScript
+{
+    [Header("揺れ")]
+    [SerializeField(Label = "強さ")]
+    [Range(0f, 5f)]
+    private float amplitude = 1.0f;
+
+    [SerializeField]
+    [Tooltip("1 秒あたりの振動回数")]
+    private float frequency = 8.0f;
+}
+```
+
+- `[Serializable]` を付けたクラス／構造体型のフィールドに `[SerializeField]` を付けると、インスペクタで**子フィールドが再帰的に展開**されます（入れ子の上限は 8 段）。
+
 ---
 
 ## 2. ライフサイクル関数
@@ -98,7 +129,7 @@ Debug.LogError("失敗");         // エラー
 ## 4. Mathf（数学ユーティリティ・float 中心）
 
 ```csharp
-Mathf.PI, Mathf.Deg2Rad, Mathf.Rad2Deg, Mathf.Epsilon, Mathf.Infinity
+Mathf.PI, Mathf.Deg2Rad, Mathf.Rad2Deg, Mathf.Epsilon, Mathf.Infinity, Mathf.NegativeInfinity
 
 Mathf.Sin(x) Mathf.Cos(x) Mathf.Tan(x) Mathf.Asin(x) Mathf.Acos(x) Mathf.Atan(x) Mathf.Atan2(y, x)
 Mathf.Sqrt(x) Mathf.Pow(x, p) Mathf.Exp(x) Mathf.Log(x) Mathf.Log(x, b) Mathf.Log10(x)
@@ -112,6 +143,9 @@ Mathf.Repeat(t, length) Mathf.PingPong(t, length) Mathf.SmoothStep(from, to, t)
 Mathf.Approximately(a, b)   // 浮動小数の等価比較（== の代わりに使う）
 ```
 
+- `Abs` / `Min` / `Max` / `Clamp` には **int 版のオーバーロード**もあります（`Mathf.Clamp(i, 0, 9)` は int を返す）。
+- `Mathf.Epsilon` は `1e-6f`（.NET の `float.Epsilon` とは別物）。`Approximately` はこれを基準に相対誤差で比較します（許容差 = `max(Epsilon × max(|a|,|b|), Epsilon × 8)`）。
+
 ---
 
 ## 5. Vector2 / Vector3 / Quaternion（不変値型）
@@ -120,6 +154,7 @@ Mathf.Approximately(a, b)   // 浮動小数の等価比較（== の代わりに�
 
 ```csharp
 new Vector3(x, y, z)
+new Vector3(x, y)      // z = 0
 Vector3.Zero Vector3.One Vector3.Up Vector3.Down Vector3.Left Vector3.Right Vector3.Forward Vector3.Back
 
 v.x v.y v.z
@@ -132,7 +167,7 @@ Vector3.Lerp(a, b, t) Vector3.MoveTowards(cur, target, maxDelta) Vector3.Angle(a
 Vector3.Min(a, b) Vector3.Max(a, b)
 ```
 
-`Vector2` も同様（`x, y` と `Zero/One/Up/Down/Left/Right`、`Dot/Distance/Scale/Lerp/Min/Max`）。
+`Vector2` も同様（`x, y` と `Zero/One/Up/Down/Left/Right`、`Magnitude/SqrMagnitude/Normalized`、`Dot/Distance/Scale/Lerp/Min/Max`）。ただし `Cross` / `MoveTowards` / `Angle` は **Vector3 のみ**です。
 
 ### Quaternion（回転）
 
@@ -244,7 +279,7 @@ Collider インスペクタの「**キャラクターコントローラー**」�
 // キャラクター移動: Transform.Position を希望位置へ書くだけ。地形にめり込めば押し戻される。
 float velocityY = 0f; // フィールドとして保持する
 
-void Update()
+public override void Update(ref NativeFrameContext ctx)
 {
     // 重力はエンジンが自動適用しないので自前で積分する
     velocityY += -9.81f * SEED.Time.DeltaTime;
@@ -315,6 +350,8 @@ if (gameObject.GetComponent<Sprite>() is { } sprite)
 
 > **重要**: `GetComponent<T>()` は未アタッチ時に `null` を返します。`is { } x` パターンか `?.` / `??` で受けてください（Unity と違い戻り値は `Nullable<T>` です）。`Transform` / `CanvasTransform` はアクターのルートに 1 つだけ存在し、`index` / `name` は無視されます。
 
+> **`HasComponent(name)` の名前**: 受け付ける文字列は `Transform` / `CanvasTransform` / `Sprite` / `Camera` / **`Audio`**（AudioSource ではなく `Audio`）/ `Animator` / `ParticleEmitter` / `InputMap` の 8 つで、それ以外は常に false です。型で判定できる場面では `GetComponent<T>() is { }` のほうが安全です。
+
 ### 生成・破棄・検索（Instantiate / Destroy / Find）
 
 ```csharp
@@ -336,7 +373,7 @@ if (player.GetComponent<Transform>() is { } pt) { pt.Position = SEED.Vector3.Zer
 - `Instantiate` の戻り値には**同フレーム中に** `Transform.Position` 等を設定でき、その値が優先されます（アクター本体の構築はフレーム末尾に行われます）。
 - **2D アクター（Actor2D）の注意**: 構築時に Transform が CanvasTransform へ差し替わるため、生成直後の 3D Position 設定は反映されません。位置は翌フレーム以降に `CanvasTransform.Position` で設定してください。
 - 破棄済み GameObject への読み取りは既定値、書き込みは無視されます（クラッシュしません）。
-- 現時点の制限: Play 開始後に生成・破棄したアクターの**物理コライダーは物理スレッドに反映されません**（物理イベント API 実装時に対応予定）。
+- 現時点の制限: Play 開始後に生成・破棄したアクターの**物理コライダーは物理スレッドに反映されません**。コライダーの収集は Play 開始時（およびシーン遷移時）の一括処理で、`Instantiate` / `Destroy` は物理側の追加・除去を行わないためです。衝突・トリガーの**イベント通知**自体は実装済みですが（第 2 節）、実行時に生成したアクターはその対象になりません。
 
 ### Transform（3D 位置・回転・スケール）
 
@@ -560,7 +597,7 @@ SEED.Scene.Transition("result");
 コンポーネントを増やしたら、以下を行うことで **自動的にスクリプト・AI 補完から使える** ようになります。
 
 1. **Rust 側レジストリへ登録**: `runtime/src/engine/core/scripting/host_api.rs` の `read_floats` / `write_floats`（文字列フィールドがあれば `read_string` / `write_string` も）と `has_component` に、コンポーネント名の分岐を 1 つずつ追加する（`Sprite` の例に倣う）。数値は float 配列（f32=1 要素 / Vector2=2 / Vector3=3 / RGBA=4、bool は 0/1、整数は f32 変換）で受け渡す。
-2. **C# 側ラッパー（任意）**: 型付きで扱いたい場合は `scripting/src/Api/` に薄いラッパー（`Sprite.cs` に倣う）を足し、`GameObject.cs` にアクセサプロパティを追加する。汎用アクセス（`ScriptHost.TryGetFloats` などの名前指定）だけで良ければ不要。
+2. **C# 側ラッパー（任意）**: 型付きで扱いたい場合は `scripting/src/Api/` に薄いラッパー（`Sprite.cs` に倣う）を足す。`readonly struct` として `IComponentHandle<T>` を実装し、`ComponentKindName`（Rust 側の分岐キーと完全一致させる）と `FromEntity(slotEntity)` を明示実装すれば、**`GameObject.cs` への追記は不要**（`GetComponent<T>()` が汎用に解決する。名前ごとのアクセサプロパティ方式は廃止済み）。汎用アクセス（`ScriptHost.TryGetFloats` などの名前指定）だけで良ければラッパー自体が不要。
 3. **本ファイル（`docs/scripting_api.md`）の第 7 節に追記**: これを忘れると AI 補完がその API を知りません。
 
 この 3 点は `.claude/CLAUDE.md` にも運用ルールとして明記されています。
