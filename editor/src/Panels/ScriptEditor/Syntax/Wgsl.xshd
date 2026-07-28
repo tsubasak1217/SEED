@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WGSL（WebGPU Shading Language）用のシンタックスハイライト定義。
+
+  AvalonEdit の xshd v2 形式（2008 名前空間）で記述する。
+  配色はエディタ全体のダークテーマ（VS Dark 準拠）に合わせている。
+
+  ルールの評価順について:
+    AvalonEdit のハイライトエンジンは「文書内でより手前にマッチしたもの」を優先し、
+    同一位置でマッチが競合した場合は「この XML 内で先に書かれたルール」が勝つ。
+    そのため、キーワード・型名を関数呼び出しルールより先に記述して
+    「if (」の "if" が関数名として着色されるのを防いでいる。
+-->
+<SyntaxDefinition name="WGSL"
+                  xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+
+  <!-- ── 配色定義（VS ダークテーマ準拠）────────────────────────── -->
+  <!-- コメント（緑） -->
+  <Color name="Comment"        foreground="#6A9955" />
+  <!-- 属性 @group / @binding / @vertex など（WGSL 専用色・シアン系） -->
+  <Color name="Attribute"      foreground="#4EC9B0" />
+  <!-- 制御構文キーワード（紫） -->
+  <Color name="ControlKeyword" foreground="#C586C0" />
+  <!-- 宣言キーワード fn / let / var / struct など（青） -->
+  <Color name="Declaration"    foreground="#569CD6" />
+  <!-- 組み込み型 f32 / vec4 / texture_2d など（水色） -->
+  <Color name="TypeKeyword"    foreground="#4FC1FF" />
+  <!-- 真偽値リテラル（青） -->
+  <Color name="BoolLiteral"    foreground="#569CD6" />
+  <!-- 数値リテラル（薄緑） -->
+  <Color name="NumberLiteral"  foreground="#B5CEA8" />
+  <!-- 関数呼び出し・関数宣言名（薄黄） -->
+  <Color name="FunctionCall"   foreground="#DCDCAA" />
+
+  <RuleSet ignoreCase="false">
+
+    <!-- ── コメント ───────────────────────────────────────────── -->
+    <!-- 行コメント: 行末まで（end 省略で行末終端になる） -->
+    <Span color="Comment" begin="//" />
+    <!-- ブロックコメント: /* ... */（複数行にまたがる） -->
+    <Span color="Comment" multiline="true" begin="/\*" end="\*/" />
+
+    <!-- ── 属性（WGSL 固有。@ から始まる識別子）───────────────── -->
+    <!-- @group / @binding / @vertex / @fragment / @compute /        -->
+    <!-- @builtin / @location / @workgroup_size / @interpolate など  -->
+    <Rule color="Attribute">@[A-Za-z_][A-Za-z0-9_]*</Rule>
+
+    <!-- ── 宣言キーワード ─────────────────────────────────────── -->
+    <Keywords color="Declaration">
+      <Word>fn</Word>
+      <Word>let</Word>
+      <Word>var</Word>
+      <Word>const</Word>
+      <Word>struct</Word>
+      <Word>alias</Word>
+      <Word>override</Word>
+      <Word>enable</Word>
+      <Word>requires</Word>
+      <Word>diagnostic</Word>
+    </Keywords>
+
+    <!-- ── 制御構文キーワード ─────────────────────────────────── -->
+    <Keywords color="ControlKeyword">
+      <Word>return</Word>
+      <Word>if</Word>
+      <Word>else</Word>
+      <Word>for</Word>
+      <Word>while</Word>
+      <Word>loop</Word>
+      <Word>switch</Word>
+      <Word>case</Word>
+      <Word>default</Word>
+      <Word>break</Word>
+      <Word>continue</Word>
+      <Word>continuing</Word>
+      <Word>discard</Word>
+    </Keywords>
+
+    <!-- ── 真偽値リテラル ─────────────────────────────────────── -->
+    <Keywords color="BoolLiteral">
+      <Word>true</Word>
+      <Word>false</Word>
+    </Keywords>
+
+    <!-- ── 組み込み型（単語で列挙できるもの）──────────────────── -->
+    <Keywords color="TypeKeyword">
+      <Word>bool</Word>
+      <Word>f16</Word>
+      <Word>f32</Word>
+      <Word>i32</Word>
+      <Word>u32</Word>
+      <Word>vec2</Word>
+      <Word>vec3</Word>
+      <Word>vec4</Word>
+      <Word>array</Word>
+      <Word>atomic</Word>
+      <Word>ptr</Word>
+      <Word>sampler</Word>
+      <Word>sampler_comparison</Word>
+      <!-- アドレス空間・アクセスモード（型指定の一部として現れる） -->
+      <Word>function</Word>
+      <Word>private</Word>
+      <Word>workgroup</Word>
+      <Word>uniform</Word>
+      <Word>storage</Word>
+      <Word>read</Word>
+      <Word>write</Word>
+      <Word>read_write</Word>
+    </Keywords>
+
+    <!-- ── 行列型 mat2x2 〜 mat4x4（正規表現でまとめて着色）────── -->
+    <Rule color="TypeKeyword">\bmat[2-4]x[2-4]\b</Rule>
+
+    <!-- ── テクスチャ型 texture_2d / texture_storage_2d_array 等 ── -->
+    <Rule color="TypeKeyword">\btexture_[A-Za-z0-9_]+\b</Rule>
+
+    <!-- ── 数値リテラル ───────────────────────────────────────── -->
+    <!-- 16 進 → 小数（指数付き） → 整数 の順に評価する。            -->
+    <!-- 末尾のサフィックス f / h / i / u も含めて 1 トークン扱い。  -->
+    <!-- 空白・改行を含めるとハイライトエンジンの正規表現解釈が実装依存になるため 1 行で書く。 -->
+    <Rule color="NumberLiteral">\b0[xX][0-9a-fA-F]+[iuhf]?|(\b[0-9]+\.[0-9]*|\.[0-9]+|\b[0-9]+)([eE][+-]?[0-9]+)?[fhiu]?</Rule>
+
+    <!-- ── 関数呼び出し・関数宣言名（直後に「(」が来る識別子）──── -->
+    <!-- キーワードより後に置くことで「if (」等が誤着色されない。   -->
+    <Rule color="FunctionCall">\b[A-Za-z_][A-Za-z0-9_]*(?=\s*\()</Rule>
+
+  </RuleSet>
+</SyntaxDefinition>
