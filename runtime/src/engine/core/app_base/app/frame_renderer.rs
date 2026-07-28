@@ -337,6 +337,9 @@ impl App {
         let mut perf_tlas_insts:    u32 = 0;
         // メインレンダーパス全体（begin〜pass drop）にかかった時間 [ms]
         let mut perf_main_pass_ms:  f64 = 0.0;
+        // 水面描画（Phase W1: prepare + 屈折背景グラブ + 水面パス記録）にかかった CPU 時間 [ms]。
+        // 水ボリュームが 0 個のフレームは一切実行されないため常に 0。
+        let mut perf_water_ms:      f64 = 0.0;
         // pass.drop() だけにかかった時間 [ms]（wgpu デバッグ検証オーバーヘッドの指標）
         let mut perf_pass_drop_ms:  f64 = 0.0;
         // frame.finish()（encoder.finish + queue.submit + surface.present）にかかった時間 [ms]
@@ -1287,6 +1290,14 @@ impl App {
                     // タプル: (id_base, dfs_id, slot_i, &ModelComponent)
                     let all_mcs: Vec<(u32, u32, usize, &ModelComponent)> =
                         collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line);
+
+                    // 水ボリューム収集（Phase W1）: WaterVolumeComponent を持つアクタを
+                    // ワールド空間の中間表現（ResolvedWaterVolume）へ解決する。所有 Vec を返すので
+                    // scene の借用は残らない。描画は WBOIT 合成後の専用パスで行う（下記 [WATER]）。
+                    let water_volumes: Vec<crate::engine::water::ResolvedWaterVolume> =
+                        crate::engine::water::collect_water_volumes(
+                            &scene.actors, &scene.world, self.active_world_line,
+                        );
                     // 後方互換: 単一 MC として使う箇所用（シーン編集モード or 先頭 MC）
                     let _mc = all_mcs.first().map(|&(_, _, _, mc)| mc);
                     // 選択中アクターの MC（アウトライン・アイコン用）
@@ -5431,6 +5442,74 @@ impl App {
                             }
                         }
 
+                        // ── 水面パス（Phase W1。WBOIT 合成後・エディタオーバーレイ前）──────
+                        // 【なぜこの位置か】
+                        //  ・メインパス（不透明＋スカイボックス＋距離ソート半透明）と WBOIT 合成の
+                        //    「後」に置くことで、距離ソート／WBOIT どちらのモードでも同じ経路になる
+                        //    （水は WBOIT の対象外とし、常に自前パスでソート描画する）。
+                        //  ・屈折の背景グラブを直前に取るため、スカイボックス・既存半透明が全て
+                        //    背景に含まれる（＝屈折の背景として正しい）。
+                        //  ・エディタオーバーレイ（ギズモ／軸／ワイヤ）より前なので、ギズモは水面の上に出る。
+                        //
+                        // 【深度】水面パスは深度アタッチメントを持たない（begin_water_pass_to）。
+                        //  共有深度は他パスで書き込み可能としてアタッチされており、同一パスで
+                        //  アタッチメント兼サンプルにするとエイリアシングになるため、DepthOnly ビューを
+                        //  サンプルテクスチャとして渡し、シェーダ内で手動深度テスト（遮蔽 → discard）と
+                        //  水の厚み復元を行う。水面は元々深度を書かないので通常の Z テストと等価。
+                        //
+                        // 【ゲート】2D 編集ビュー・ワイヤーフレーム表示・G-Buffer デバッグ表示中は描かない。
+                        //  Play / Edit の両方で描く（水はゲーム世界の一部であり編集中も見えるべきため）。
+                        //  水ボリュームが 0 個のフレームは prepare が false を返し、テクスチャ確保も
+                        //  グラブコピーもパス開始も一切行わない（コスト 0）。
+                        //
+                        // 【カメラプレビューには出さない】カメラプレビュー（別 RT への簡易描画）は
+                        //  屈折グラブ・深度サンプルの専用リソースを持たず、W1 のスコープ外とする。
+                        let water_gate = !edit_view_2d && !scene_wireframe && !gbuffer_debug_active
+                            && !water_volumes.is_empty();
+                        if water_gate {
+                            let perf_t_water = std::time::Instant::now();
+                            // 遅延構築（App::new は device 確立前に走るためここで初期化する）。
+                            // パイプラインキャッシュは遅延構築のため None（一度きりの構築コストのみ）。
+                            if self.water_renderer.is_none() {
+                                self.water_renderer = Some(
+                                    crate::engine::core::renderer::WaterRenderer::new(
+                                        &draw_ctx.device,
+                                        crate::engine::core::renderer::HDR_FORMAT,
+                                        None,
+                                    ),
+                                );
+                            }
+                            let depth_sample_view = frame.depth_only_view_r();
+                            let water = self.water_renderer.as_mut()
+                                .expect("water_renderer は直前に構築済み");
+                            let water_ready = water.prepare(
+                                &draw_ctx.device, &draw_ctx.queue,
+                                &water_volumes, saved_camera_pos,
+                                surf_w, surf_h, depth_sample_view,
+                            );
+                            if water_ready {
+                                // ① 屈折背景のグラブ（シーン HDR → 専用 1 ミップテクスチャ）。
+                                //    レンダーパス外・水面パス直前に 1 回だけコピーする。
+                                let scene_hdr = self.rt_pool
+                                    .texture(crate::engine::core::renderer::RT_SCENE_HDR);
+                                let water = self.water_renderer.as_ref()
+                                    .expect("water_renderer は直前に構築済み");
+                                water.record_grab(frame.encoder_mut(), scene_hdr);
+
+                                // ② 水面パス（color=hdr を Load・深度アタッチメント無し）。
+                                let mut wpass = frame.begin_water_pass_to(hdr_view);
+                                // Play レターボックス時は他パスと同一のゲームビューポートを適用する
+                                //（帯へのはみ出し防止＋不透明幾何との位置一致。他 10 箇所と同一条件）。
+                                if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
+                                    let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                    wpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                    wpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                                }
+                                water.draw(&mut wpass, &camera_buf.bind_group);
+                            }
+                            perf_water_ms = perf_t_water.elapsed().as_secs_f64() * 1000.0;
+                        }
+
                         // ── エディタオーバーレイパス（WBOIT 合成後・GPU パーティクル前）────
                         // 深度 = 共有深度を Load（不透明深度でテストのみ・パイプライン側 depth_write=false
                         // のため書込なし）／ステンシル = Clear(0)（選択アウトラインのマスク用に 0 初期化）／
@@ -6563,6 +6642,7 @@ impl App {
                             - perf_begin_frame_ms - perf_ipc_ms - perf_batch_ms - perf_merge_ms
                             - perf_skin_ms - perf_main_pass_ms - perf_id_ms
                             - perf_grid_ms - perf_collider_ms - perf_finish_ms - perf_grass_ms
+                            - perf_water_ms
                             - phys_total_ms).max(0.0);
                         eprintln!(
                             "[PERF f={perf_idx}] MC={perf_mc_count} skin_MC={perf_skin_mc_count} dispatches={perf_skin_dispatches} \
@@ -6576,6 +6656,7 @@ impl App {
                              meshlet={perf_meshlet_considered}考慮 \
                              id={perf_id_ms:.3}ms grid={perf_grid_ms:.3}ms collider={perf_collider_ms:.3}ms \
                              grass={perf_grass_ms:.3}ms grass_inst={} \
+                             water={perf_water_ms:.3}ms \
                              anim_t={:.3}s \
                              finish={perf_finish_ms:.3}ms other={other_ms:.3}ms",
                             if perf_tlas_built { "build" } else { "skip" },

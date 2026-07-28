@@ -10,3 +10,5 @@ pub mod physics;
 pub mod systems;
 pub mod animation;
 pub mod terrain;
+/// 水システム（Phase W）: 水ボリュームのワールド解決と問い合わせ API
+pub mod water;

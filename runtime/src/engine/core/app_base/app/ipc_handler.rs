@@ -1169,6 +1169,9 @@ impl App {
                 IpcCommand::SetLightField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_light_field(actor_dfs_id, slot_idx, &key, &value);
                 }
+                IpcCommand::SetWaterField { actor_dfs_id, slot_idx, key, value } => {
+                    self.handle_set_water_field(actor_dfs_id, slot_idx, &key, &value);
+                }
                 IpcCommand::SetJointAttachField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_jointattach_field(actor_dfs_id, slot_idx, &key, &value);
                 }

@@ -30,6 +30,8 @@ pub mod particle_emitter_component;
 pub mod material_override;
 /// 地形チャンク（ボクセル地形の 1 チャンク識別＋.tvox 永続化リンク・内部管理用）
 pub mod terrain_component;
+/// 水ボリューム（Phase W: 大洋 / 直方体水塊 / 川スプライン(W4) の定義）
+pub mod water_volume_component;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -58,6 +60,7 @@ pub use animator_component::{AnimatorComponent, AnimatorComponentData, AnimClipR
 pub use light_component::{LightComponent, LightComponentData, LightKind};
 pub use jointattach_component::{JointAttachComponent, JointAttachComponentData};
 pub use skybox_component::{SkyboxComponent, SkyboxComponentData, SkyboxMode};
+pub use water_volume_component::{WaterVolumeComponent, WaterVolumeComponentData, WaterVolumeKind};
 pub use particle_emitter_component::{
     ParticleEmitterComponent, ParticleEmitterComponentData,
     ParticleBlend, ParticleSimSpace, ParticleShape, SpawnVolume, EmitMode,
@@ -111,6 +114,8 @@ pub enum ComponentKind {
     Skybox,
     /// 地形チャンク（ボクセル地形の 1 チャンク・内部管理用。ユーザー追加不可）
     TerrainChunk,
+    /// 水ボリューム（大洋 / 直方体水塊 / 川スプライン(W4)）
+    WaterVolume,
 }
 
 impl ComponentKind {
@@ -134,6 +139,7 @@ impl ComponentKind {
             Self::ParticleEmitter => "ParticleEmitterComponent",
             Self::Skybox      => "SkyboxComponent",
             Self::TerrainChunk => "TerrainChunkComponent",
+            Self::WaterVolume => "WaterVolumeComponent",
         }
     }
 }
@@ -174,4 +180,6 @@ pub enum ComponentData {
     SkyboxComponent(SkyboxComponentData),
     /// 地形チャンク（ボクセル地形の 1 チャンク識別＋.tvox リンク・内部管理用）
     TerrainChunkComponent(TerrainChunkComponentData),
+    /// 水ボリューム（大洋 / 直方体水塊 / 川スプライン(W4)）
+    WaterVolumeComponent(WaterVolumeComponentData),
 }

@@ -43,6 +43,9 @@ pub(crate) mod terrain_gbuffer;
 
 /// プロシージャル草の GPU インスタンシング パイプライン（G-Buffer 書き込み）。
 pub(crate) mod grass_gbuffer;
+
+/// 水面描画パス（Phase W1）。`engine::water` が解決した水ボリュームを 1 ドローで描く。
+pub mod water;
 /// 提示フレームの PNG 書き出し（環境変数ゲートの常設デバッグフック）。
 pub(crate) mod screenshot;
 /// 地形レイヤテクスチャ配列（texture_2d_array）の構築（Terrain T2b）。
@@ -101,6 +104,7 @@ pub use bindless::{BindlessResources, BindlessInstanceRecord, BindlessModelAlloc
                    BINDLESS_MAX_TEXTURES, BINDLESS_DUMMY_TEX_INDEX, BINDLESS_FLAG_ELIGIBLE,
                    set_bindless_supported, bindless_supported, bindless_capacity};
 pub use refract_pyramid::{RefractPyramid, REFRACT_MIP_COUNT};
+pub use water::{WaterRenderer, WaterParams, WATER_MAX_VOLUMES};
 pub use reflection::{ReflectionPipelines, ReflectionParams,
                      RT_REFLECTION_NAME, REFLECTION_FORMAT, DEFAULT_REFLECTION_INTENSITY};
 pub use imos_blur::{ImosBlur, ImosBlurParams, IMOS_BLUR_FORMAT};
@@ -989,6 +993,45 @@ impl<'r> RenderFrame<'r> {
             }),
             occlusion_query_set: None,
             timestamp_writes:    None,
+        })
+    }
+
+    /// 水面描画パスを開始する（Phase W1。WBOIT 合成後・エディタオーバーレイ前）。
+    ///
+    /// - color = `hdr`（シーン HDR）を `LoadOp::Load`（既存の描画結果を保持し、水面を上に描く）。
+    /// - depth = **アタッチメントを持たない**（`depth_stencil_attachment: None`）。
+    ///
+    /// 【なぜ深度アタッチメントを持たないか】
+    /// 共有深度テクスチャは他パスで書き込み可能としてアタッチされており、同一パス内で
+    /// 「アタッチメント」と「サンプルテクスチャ」に同時バインドするとエイリアシングになる。
+    /// 水面シェーダは深度を **サンプル** して手動深度テスト（遮蔽 → discard）と
+    /// 水の厚み復元を行うため、アタッチメントを外してサンプル専用にする。
+    /// 水面は元々深度を書かないので、通常の Z テストと挙動は等価。
+    ///
+    /// 【なぜこの位置か】WBOIT 合成の後に置くことで、距離ソート／WBOIT どちらのモードでも
+    /// 同じ経路になり、かつ屈折の背景グラブに既存半透明・スカイボックスが含まれる。
+    /// エディタオーバーレイ（ギズモ等）より前なので、ギズモは水面の上に出る。
+    pub fn begin_water_pass_to<'f>(
+        &'f mut self,
+        hdr: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Water Surface Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           hdr,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            // 深度は group1 のサンプルテクスチャとして読む（上記コメント参照）。
+            depth_stencil_attachment: None,
+            occlusion_query_set:      None,
+            timestamp_writes:         None,
         })
     }
 

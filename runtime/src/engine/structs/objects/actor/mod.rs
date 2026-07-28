@@ -391,6 +391,11 @@ impl Actor {
                     world.get::<crate::engine::components::AudioComponent>(slot.entity)
                         .map(|ac| ComponentData::AudioComponent(ac.to_data()))
                 }
+                ComponentKind::WaterVolume => {
+                    // 水ボリュームコンポーネントをシリアライズ用データに変換する
+                    world.get::<crate::engine::components::WaterVolumeComponent>(slot.entity)
+                        .map(|wv| ComponentData::WaterVolumeComponent(wv.to_data()))
+                }
                 ComponentKind::Animator => {
                     world.get::<crate::engine::components::AnimatorComponent>(slot.entity)
                         .map(|an| ComponentData::AnimatorComponent(an.to_data()))

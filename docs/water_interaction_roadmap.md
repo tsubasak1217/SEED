@@ -25,6 +25,11 @@
 
 この3点を最初から正式 API にしておくこと。描画都合の暫定実装にすると遊泳・水中敵AI・酸素ゲージ等で作り直しになる。
 
+> **実装済み（W1）**: 正式 API は `runtime/src/engine/water/query.rs` の `WaterQuery`
+> （`is_underwater` / `surface_height_at` / `flow_at`）。描画はこの API とは独立に
+> `ResolvedWaterVolume`（`water/resolved.rs`）だけを見る。遊泳・浮力・水中ポストは
+> **`WaterQuery` のみ**を呼ぶこと。
+
 ### 1.2 浸水（建物への流れ込み）— 連通ボリューム方式（水位グラフ）
 
 ```
@@ -87,9 +92,50 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
 
 - **W0: L3 契約に時間を追加**（小）— `ShadingSurface` 等へ `time` を後方互換追加。
   水とは独立に「アニメーションする光応答」がアセットで書けるようになる
-- **W1: WaterVolume＋平面水面描画** — コンポーネント＋問い合わせ3点API＋
-  水面メッシュ1枚（法線マップスクロール波・深度差の吸収色と岸フォーム・フレネル・
-  既存の逐次グラブ屈折を流用）。半透明パスの一員として描く（Deferred 無改造）
+- **W1: WaterVolume＋平面水面描画** — ✅ **実装済み（2026-07-28）**
+  コンポーネント＋問い合わせ3点API＋水面クアッド1ドロー（プロシージャル波・深度差の吸収色と
+  岸フォーム・フレネル・専用グラブ屈折）。Deferred 無改造。
+
+  **実装参照**
+
+  | 役割 | 場所 |
+  |---|---|
+  | コンポーネント | `runtime/src/engine/components/water_volume_component.rs`（`WaterVolumeKind::{Ocean,Region,Spline}` / `WaterVolumeComponentData`） |
+  | 問い合わせ3点API（正典） | `runtime/src/engine/water/query.rs` の `WaterQuery::{is_underwater, surface_height_at, flow_at}` |
+  | ワールド解決の中間表現 | `runtime/src/engine/water/resolved.rs` の `ResolvedWaterVolume` / `WaterVisualParams` |
+  | シーン走査 | `runtime/src/engine/water/collect.rs` の `collect_water_volumes()` |
+  | IPC フィールド編集 | `runtime/src/engine/core/app_base/app/water_ops.rs`（`SET_WATER_FIELD:`） |
+  | 描画 | `runtime/src/engine/core/renderer/water/`（`WaterRenderer`）＋ `shaders/water_surface.wgsl` ＋ `pipelines/water_surface.toml` |
+  | パス挿入 | `app/frame_renderer.rs`（メインパス drop → WBOIT 合成 → **水面パス** → オーバーレイ）。`RenderFrame::begin_water_pass_to` |
+  | エディタ UI | `editor/src/Panels/InspectorPanel.xaml.cs` の `BuildWaterVolumeSlotContent` / `ComponentSelectorWindow.xaml.cs`「環境」カテゴリ |
+
+  **W1 で確定した設計判断**
+
+  - 水面高さ: **Ocean = ワールドY絶対値 / Region = アクタ原点からの相対Y**（海面レベルはワールド定数、
+    池はアクタを動かすと追従するのが直感的なため）。Region の領域はアクタ位置中心の軸平行 AABB
+    （**アクタ回転は W1 では無視**）。
+  - メッシュ: 頂点バッファを持たず、頂点シェーダが `vertex_index`(0..6) と `instance_index` から
+    クアッドを生成。**全水ボリュームを `draw(0..6, 0..N)` の 1 ドローで描く**（上限 `WATER_MAX_VOLUMES=64`）。
+    Ocean はカメラ XZ 追従で `ocean_extent`（既定 2000m）半径。頂点変位は行わず法線のみの波。
+  - 波は**サイン波4層の解析微分による法線合成**。法線マップ等の**テクスチャアセットに一切依存しない**。
+  - 深度: 半透明パスの group4 に深度が無く、共有深度は書き込み可能状態でアタッチされていて同時サンプル
+    できないため、**水面パスは深度アタッチメントを持たず**（`no_depth`）、DepthOnly ビューを
+    サンプルバインドして `textureLoad` →「シーン深度 < 水面深度なら `discard`」の**手動深度テスト**を行う。
+    同じサンプルから水の厚みも復元し、吸収色・岸フォームに使い回す。
+  - 屈折: `RefractPyramid` のブラーミップ鎖は水面には過剰なので流用せず、「シーンHDRをコピーして読む」
+    方式だけを流用して**専用の1ミップグラブ**を新設（水ボリュームが0個のフレームはコピーもパスも行わない）。
+    メインパス・WBOIT 合成の後にグラブするため、背景にスカイボックスと既存半透明が含まれる。
+  - WBOIT との両立: 水は **WBOIT の対象外**とし、常に自前パスでソート描画。距離ソート／WBOIT
+    どちらのモードでも経路が同一になる。
+  - Play / Edit 両方で描画（Play のレターボックスは他パスと同一条件で `set_viewport`/`set_scissor_rect`）。
+    **カメラプレビューには描かない**（W1 スコープ外）。
+  - `[PERF]` に `water=`（グラブ＋水面パスの CPU 時間）を追加。
+
+  **W1 の既知の制限**（後続フェーズで解消）
+
+  - 水面パスは既存の半透明の**後**に描くため、水より手前にある半透明オブジェクトが水に上書きされる。
+  - `flow_at()` は常にゼロ（W4 の川スプラインで実装）。`WaterVolumeKind::Spline` は enum のみで未実装。
+  - 水位は静的（W2.5 の水位グラフで時変化に一般化）。
 - **W2: 水中表現** — カメラ水中判定→フルスクリーンポスト（青緑フォグ＋ゆらぎ）
 - **W2.5: 水位グラフ** — ボリューム＋リンク＋連通計算（§1.2）。W1の水位を時変化に一般化
 - **W3: 遊泳** — KCC に遊泳ステート（浮力込み沈降・全方向移動・水面スナップ）、
