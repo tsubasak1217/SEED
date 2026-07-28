@@ -411,6 +411,14 @@ impl App {
                         d.min_distance, d.max_distance, d.pan,
                     ))
                 }
+                ComponentData::InteractionSourceComponent(d) => {
+                    // インタラクションソース: 半径・強さ・有効フラグをインスペクタへ送る。
+                    // bool は JSON の true/false としてそのまま出す（C# 側で bool 解釈）。
+                    ("InteractionSourceComponent", format!(
+                        r#","radius":{:.4},"strength":{:.4},"enabled":{}"#,
+                        d.radius, d.strength, d.enabled,
+                    ))
+                }
                 ComponentData::WaterVolumeComponent(d) => {
                     // 水ボリューム: 種別・水面高さ・範囲・見た目パラメータ一式を
                     // インスペクター用に送信する（種別ごとに関連フィールドのみ UI 側で表示する）。
@@ -852,6 +860,37 @@ impl App {
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<AudioComponent>(name, ComponentKind::Audio, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "InteractionSourceComponent" => {
+                // デフォルト（半径 1m・強さ 1・有効）の InteractionSourceComponent を追加する。
+                // 付けたその場で動かせば草が反応する（追加後の設定作業を要しない既定値）。
+                use crate::engine::components::InteractionSourceComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, InteractionSourceComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<InteractionSourceComponent>(
+                            name, ComponentKind::InteractionSource, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

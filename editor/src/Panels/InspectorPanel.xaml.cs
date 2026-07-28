@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -443,6 +443,16 @@ public partial class InspectorPanel : UserControl
     /// <summary>水の各色はアルファを持たないため、カラーピッカーへ渡す固定アルファ。</summary>
     private const float WaterColorAlpha = 1f;
 
+    // ── InteractionSourceComponent の既定値（Phase I1）────────
+    // Rust 側 InteractionSourceComponentData の既定値と厳密に一致させること。
+
+    /// <summary>影響半径の既定値（m）。人型キャラの足元が草を踏み分ける幅。</summary>
+    private const float InteractionRadiusDefault = 1f;
+    /// <summary>書き込みの強さの既定値（0..1）。</summary>
+    private const float InteractionStrengthDefault = 1f;
+    /// <summary>有効フラグの既定値。</summary>
+    private const bool InteractionEnabledDefault = true;
+
     /// <summary>コンポーネントスロット 1 件分の情報。TypeId ごとに追加フィールドを持つ。</summary>
     private record SlotInfo(int SlotIdx, string Name, string TypeId, string ModelPath,
         float Width = 0f, float Height = 0f,
@@ -601,7 +611,12 @@ public partial class InspectorPanel : UserControl
         float WaterReflectR = WaterReflectRDefault,
         float WaterReflectG = WaterReflectGDefault,
         float WaterReflectB = WaterReflectBDefault,
-        float WaterRefractionDistortion = WaterRefractionDistortionDefault);
+        float WaterRefractionDistortion = WaterRefractionDistortionDefault,
+        // ── InteractionSourceComponent 用フィールド（Phase I1）──
+        // 影響半径・強さ・有効フラグ。既定値は Rust 側 InteractionSourceComponentData と一致。
+        float InteractionRadius = InteractionRadiusDefault,
+        float InteractionStrength = InteractionStrengthDefault,
+        bool InteractionEnabled = InteractionEnabledDefault);
 
     private List<SlotInfo> _slotInfos = new();
 
@@ -983,6 +998,11 @@ public partial class InspectorPanel : UserControl
             var waterReflectG     = comp.TryGetProperty("reflect_g",        out var wrg)  ? wrg.GetSingle() : WaterReflectGDefault;
             var waterReflectB     = comp.TryGetProperty("reflect_b",        out var wrb)  ? wrb.GetSingle() : WaterReflectBDefault;
             var waterRefractDist  = comp.TryGetProperty("refraction_distortion", out var wrd) ? wrd.GetSingle() : WaterRefractionDistortionDefault;
+            // InteractionSourceComponent 用（Phase I1）: 半径・強さ・有効フラグ。
+            // 欠落時は Rust 側既定値と一致する定数へフォールバックする。
+            var interactRadius   = comp.TryGetProperty("radius",   out var isr) ? isr.GetSingle()  : InteractionRadiusDefault;
+            var interactStrength = comp.TryGetProperty("strength", out var iss) ? iss.GetSingle()  : InteractionStrengthDefault;
+            var interactEnabled  = comp.TryGetProperty("enabled",  out var ise) ? ise.GetBoolean() : InteractionEnabledDefault;
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 AutoScale: autoScale,
@@ -1063,7 +1083,10 @@ public partial class InspectorPanel : UserControl
                 WaterWaveAmplitude: waterWaveAmp, WaterWaveScale: waterWaveScale, WaterWaveSpeed: waterWaveSpeed,
                 WaterFresnelPower: waterFresnelPow, WaterFresnelStrength: waterFresnelStr,
                 WaterReflectR: waterReflectR, WaterReflectG: waterReflectG, WaterReflectB: waterReflectB,
-                WaterRefractionDistortion: waterRefractDist);
+                WaterRefractionDistortion: waterRefractDist,
+                // InteractionSourceComponent 用フィールド
+                InteractionRadius: interactRadius, InteractionStrength: interactStrength,
+                InteractionEnabled: interactEnabled);
             _slotInfos.Add(info);
 
             // アコーディオンにパラメータ編集エリアを追加（ヘッダーがリネーム・削除・複製・選択を兼ねる）
@@ -1132,6 +1155,7 @@ public partial class InspectorPanel : UserControl
         "JointAttachComponent" => Color.FromRgb(0x30, 0x10, 0x2C), // 暗マゼンタ（ジョイントアタッチ。ライトと区別しやすい色）
         "SkyboxComponent"     => Color.FromRgb(0x10, 0x1C, 0x38), // 暗青（スカイボックス）
         "WaterVolumeComponent" => Color.FromRgb(0x0E, 0x2A, 0x3A), // 暗い青（水）
+        "InteractionSourceComponent" => Color.FromRgb(0x18, 0x30, 0x18), // 暗い緑（草・環境への干渉）
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
     };
@@ -1153,6 +1177,7 @@ public partial class InspectorPanel : UserControl
         "JointAttachComponent" => "JointAttach",
         "SkyboxComponent"     => "Skybox",
         "WaterVolumeComponent" => "Water Volume",
+        "InteractionSourceComponent" => "Interaction Source",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                     => typeId,
@@ -1378,6 +1403,7 @@ public partial class InspectorPanel : UserControl
             "SkyboxComponent"    => BuildSkyboxSlotContent(info),
             "ParticleEmitterComponent" => BuildParticleSlotContent(info),
             "WaterVolumeComponent" => BuildWaterVolumeSlotContent(info),
+            "InteractionSourceComponent" => BuildInteractionSourceSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
             "Collider2dComponent" => BuildCollider2dSlotContent(info),
@@ -4697,6 +4723,64 @@ public partial class InspectorPanel : UserControl
             }
         };
 
+        return sp;
+    }
+
+    /// <summary>
+    /// InteractionSourceComponent のインスペクター UI を構築して返す（Phase I1）。
+    /// 「インタラクション」セクション 1 つだけの最小構成で、変更時は
+    /// SET_INTERACTION_FIELD:{actor},{slot},{key},{value} を送信する。
+    /// 位置と速度はアクタの Transform から自動で解決されるため、UI には現れない
+    /// （＝アクタを動かすだけで草が反応する。docs/water_interaction_roadmap.md §1.3）。
+    /// </summary>
+    private UIElement BuildInteractionSourceSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // フィールド変更をランタイムへ送信するローカル関数。
+        void SendField(string key, string value)
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_INTERACTION_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
+        }
+
+        // 数値入力行（Enter / フォーカス喪失 / ドラッグ操作で確定送信）。
+        void AddFloatRow(StackPanel parent, string label, float value, string key, string format)
+        {
+            var row = BuildLabeledNumberRow(label, value, format);
+            parent.Children.Add(row.element);
+            void Commit()
+            {
+                if (!float.TryParse(row.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+                SendField(key, v.ToString(CultureInfo.InvariantCulture));
+            }
+            row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
+            row.textBox.LostFocus += (_, _) => Commit();
+            NumericDragBehavior.SetOnDrag(row.textBox, Commit);
+        }
+
+        var section = BuildSection("インタラクション");
+        var body    = (StackPanel)section.Child;
+
+        // 有効フラグ（ゲームロジックから一時的に場への書き込みを止めるためのデータ側スイッチ）。
+        body.Children.Add(BuildCheckRow("有効", info.InteractionEnabled,
+            v => SendField("enabled", v ? "true" : "false")));
+        // 影響半径（m）。この半径内の草が押し倒される。
+        AddFloatRow(body, "影響半径(m)", info.InteractionRadius,   "radius",   "F2");
+        // 書き込みの強さ（0..1）。0 で無効、1 で速度をそのまま場へ書く。
+        AddFloatRow(body, "強さ(0-1)",   info.InteractionStrength, "strength", "F2");
+
+        body.Children.Add(new TextBlock
+        {
+            Text         = "移動速度は Transform の変化から自動算出されます（速度の指定は不要）。"
+                         + "止まると数秒で草が元に戻ります。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 4, 0, 2),
+        });
+
+        sp.Children.Add(section);
         return sp;
     }
 

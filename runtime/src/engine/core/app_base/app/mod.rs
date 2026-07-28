@@ -50,6 +50,8 @@ mod play_diag;
 mod audio_ops;
 /// 水ボリューム（WaterVolumeComponent）のインスペクタ更新（SET_WATER_FIELD）
 mod water_ops;
+/// インタラクションソース（InteractionSourceComponent）のインスペクタ更新（SET_INTERACTION_FIELD）
+mod interaction_ops;
 mod animation_ops;
 pub(crate) mod light_ops;
 pub(crate) mod skybox_ops;
@@ -739,6 +741,19 @@ pub struct App {
     /// 水ボリュームが存在するフレームで初めて構築され、以後使い回される
     /// （水を置かないプロジェクトではパイプラインすら作られない＝起動コスト 0）。
     water_renderer: Option<crate::engine::core::renderer::WaterRenderer>,
+    /// 瞬発インタラクションフィールド（Phase I1）の GPU リソース一式。
+    ///
+    /// 動く `InteractionSource` の速度をワールド俯瞰テクスチャへ焼き、草・（将来の）水面が
+    /// 頂点/フラグメント段で読む。`Option` なのは構築に `wgpu::Device` が要るため
+    /// （`water_renderer` と同じ遅延構築方式）。
+    /// **草を描くフレーム、またはソースが 1 個でもあるフレーム**で初めて構築される
+    /// （草もソースも無いプロジェクトでは 4MB のテクスチャすら確保されない）。
+    interaction_field: Option<crate::engine::core::renderer::InteractionFieldRenderer>,
+    /// インタラクションソースの速度算出（前フレーム位置の保持）。
+    ///
+    /// GPU リソースを持たないので `Option` にせず常設する。シーン切替時は
+    /// `clear()` を呼んで位置履歴を捨てること（不連続な巨大速度の防止）。
+    interaction_velocity: crate::engine::interaction::InteractionSourceVelocityTracker,
     /// AO（SSAO / RT-AO, Phase D4）の半解像度テクスチャ群（ao_raw / ao_a / ao_b）。
     /// STORAGE_BINDING を要するため RtPool には載せられず本フィールドが専有する。
     /// 毎フレーム ensure で半解像度サイズに追従する（AO 生成パイプラインは DrawContext.pipelines.ao）。
@@ -1213,6 +1228,9 @@ impl App {
             refract_pyramid:             crate::engine::core::renderer::RefractPyramid::new(),
             // 水面レンダラは device 確立後（初めて水ボリュームを描くフレーム）に遅延構築する。
             water_renderer:              None,
+            // インタラクションフィールドは device 確立後（草かソースが現れるフレーム）に遅延構築する。
+            interaction_field:           None,
+            interaction_velocity:        crate::engine::interaction::InteractionSourceVelocityTracker::new(),
             ao_targets:                  crate::engine::core::renderer::AoTargets::new(),
             ssgi_targets:                crate::engine::core::renderer::SsgiTargets::new(),
             shadow_mask_targets:         crate::engine::core::renderer::ShadowMaskTargets::new(),

@@ -340,6 +340,9 @@ impl App {
         // 水面描画（Phase W1: prepare + 屈折背景グラブ + 水面パス記録）にかかった CPU 時間 [ms]。
         // 水ボリュームが 0 個のフレームは一切実行されないため常に 0。
         let mut perf_water_ms:      f64 = 0.0;
+        // 瞬発インタラクションフィールド更新（Phase I1: 収集 + 速度算出 + コンピュート記録）に
+        // かかった CPU 時間 [ms]。草もソースも無いフレームは一切実行されないため常に 0。
+        let mut perf_interact_ms:   f64 = 0.0;
         // 水面を ID パス（ピッキング）にも描けるか。
         // 水面パスの `prepare` が成功したフレームだけ true になり、後段の ID パスが参照する
         // （prepare 未実行＝パラメータ未アップロードの状態で ID 描画すると不正な ID を書く）。
@@ -1311,6 +1314,50 @@ impl App {
                         crate::engine::water::collect_water_volumes(
                             &scene.actors, &scene.world, self.active_world_line,
                         );
+                    // ── 瞬発インタラクションフィールドの更新（Phase I1）────────────────
+                    //
+                    // 【なぜここか】草は「カメラプレビュー」と「メインパス」の両方で描かれ、
+                    //  どちらも場を頂点段でサンプルする。両者より前（＝どのレンダーパスも
+                    //  始まっていないこの位置）でコンピュートを記録すれば、1 回の更新で
+                    //  両方が同じ場を読める。
+                    //
+                    // 【Edit でも動く】減衰も速度算出も `ctx.delta_time`（壁時計）で駆動するため、
+                    //  Edit 中にアクタをドラッグしても草が反応し、離せば数秒で元へ戻る。
+                    //  草の風（GrassUniform.time = anim_time）とは独立した時間源である。
+                    //
+                    // 【遅延構築】草バッファもソースも無いフレームでは構築すらしない
+                    //  （場テクスチャ 4MB とコンピュートパイプラインの常駐コストを回避）。
+                    //  草バッファがあるなら必ず構築される＝描画側は場の不在を考えなくてよい。
+                    {
+                        let perf_t_interact = std::time::Instant::now();
+                        // ① シーンから書き手を集めてワールド解決する。
+                        let sources = crate::engine::interaction::collect_interaction_sources(
+                            &scene.actors, &scene.world, self.active_world_line,
+                        );
+                        // ② 前フレーム位置との差分から速度（m/s）を確定させる。
+                        let moving = self.interaction_velocity.update(&sources, ctx.delta_time);
+                        // ③ 必要になった時点で GPU リソースを構築する。
+                        let need_field = !moving.is_empty() || !self.terrain.grass_buffers.is_empty();
+                        if need_field && self.interaction_field.is_none() {
+                            self.interaction_field = Some(
+                                crate::engine::core::renderer::InteractionFieldRenderer::new(
+                                    &draw_ctx.device, None,
+                                ),
+                            );
+                        }
+                        // ④ 場を 1 ディスパッチで更新する（再マップ → 減衰 → スタンプ）。
+                        if let Some(field) = self.interaction_field.as_mut() {
+                            field.update(
+                                &draw_ctx.queue,
+                                frame.encoder_mut(),
+                                &moving,
+                                saved_camera_pos,
+                                ctx.delta_time,
+                            );
+                        }
+                        perf_interact_ms = perf_t_interact.elapsed().as_secs_f64() * 1000.0;
+                    }
+
                     // 後方互換: 単一 MC として使う箇所用（シーン編集モード or 先頭 MC）
                     let _mc = all_mcs.first().map(|&(_, _, _, mc)| mc);
                     // 選択中アクターの MC（アウトライン・アイコン用）
@@ -2293,13 +2340,24 @@ impl App {
                             let grass_decay_mid = *super::terrain_scatter_ops::GRASS_DECAY_MID;
                             let grass_decay_near_sq = grass_decay_near * grass_decay_near;
                             let grass_decay_mid_sq = grass_decay_mid * grass_decay_mid;
+                            // インタラクションフィールドの group2。
+                            // 【設計判断】プレビューにも**本物の場をそのまま**バインドする
+                            //  （ダミー 0 テクスチャを別途持たない）。場はメインカメラ追従の窓なので、
+                            //  プレビューカメラがその窓の外を映していれば草は自然に無反応になる
+                            //  （サンプル範囲外 = 0）。同じ場所を映していれば主画面と同じ挙動になり、
+                            //  むしろ整合が取れる。専用リソースが不要でコードも分岐しない。
+                            let interaction_bg = self.interaction_field.as_ref()
+                                .map(|f| f.sample_bind_group());
                             for buf in self.terrain.grass_buffers.values() {
                                 buf.update_time(&draw_ctx.queue, ctx.anim_time);
+                                // 場が未構築（草バッファが空のはずのフレーム）なら草も描かない。
+                                let Some(field_bg) = interaction_bg else { continue };
                                 crate::engine::core::renderer::grass_gbuffer::draw_grass_culled(
                                     &mut gpass,
                                     &draw_ctx.pipelines.gbuffer.grass,
                                     buf,
                                     &preview_mesh_cam_buf.bind_group,
+                                    field_bg,
                                     &preview_planes,
                                     preview_cam_pos,
                                     grass_cull_sq,
@@ -4461,15 +4519,22 @@ impl App {
                                 // 遠景密度減衰の削減量を決定的に計測する（SEED_PERF_TERRAIN 有効時）。
                                 let mut grass_drawn: u32 = 0;
                                 let mut grass_total: u32 = 0;
+                                // インタラクションフィールドの group2（Phase I1）。
+                                // 草バッファが 1 つでもあれば必ず構築済み（フレーム冒頭の遅延構築）。
+                                let interaction_bg = self.interaction_field.as_ref()
+                                    .map(|f| f.sample_bind_group());
                                 for buf in self.terrain.grass_buffers.values() {
                                     buf.update_time(&draw_ctx.queue, ctx.anim_time);
                                     grass_total += buf.count();
+                                    // 場が未構築なら草も描かない（構造上ここへは来ない安全弁）。
+                                    let Some(field_bg) = interaction_bg else { continue };
                                     if grass_nocull {
                                         crate::engine::core::renderer::grass_gbuffer::draw_grass(
                                             &mut gpass,
                                             &draw_ctx.pipelines.gbuffer.grass,
                                             buf,
                                             &camera_buf.bind_group,
+                                            field_bg,
                                         );
                                         grass_drawn += buf.count();
                                     } else {
@@ -4478,6 +4543,7 @@ impl App {
                                             &draw_ctx.pipelines.gbuffer.grass,
                                             buf,
                                             &camera_buf.bind_group,
+                                            field_bg,
                                             &saved_frustum_planes,
                                             saved_camera_pos,
                                             grass_cull_sq,
@@ -6681,7 +6747,7 @@ impl App {
                             - perf_begin_frame_ms - perf_ipc_ms - perf_batch_ms - perf_merge_ms
                             - perf_skin_ms - perf_main_pass_ms - perf_id_ms
                             - perf_grid_ms - perf_collider_ms - perf_finish_ms - perf_grass_ms
-                            - perf_water_ms
+                            - perf_water_ms - perf_interact_ms
                             - phys_total_ms).max(0.0);
                         eprintln!(
                             "[PERF f={perf_idx}] MC={perf_mc_count} skin_MC={perf_skin_mc_count} dispatches={perf_skin_dispatches} \
@@ -6695,7 +6761,7 @@ impl App {
                              meshlet={perf_meshlet_considered}考慮 \
                              id={perf_id_ms:.3}ms grid={perf_grid_ms:.3}ms collider={perf_collider_ms:.3}ms \
                              grass={perf_grass_ms:.3}ms grass_inst={} \
-                             water={perf_water_ms:.3}ms \
+                             water={perf_water_ms:.3}ms interact={perf_interact_ms:.3}ms \
                              anim_t={:.3}s \
                              finish={perf_finish_ms:.3}ms other={other_ms:.3}ms",
                             if perf_tlas_built { "build" } else { "skip" },

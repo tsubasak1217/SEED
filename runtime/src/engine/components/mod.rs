@@ -32,6 +32,8 @@ pub mod material_override;
 pub mod terrain_component;
 /// 水ボリューム（Phase W: 大洋 / 直方体水塊 / 川スプライン(W4) の定義）
 pub mod water_volume_component;
+/// インタラクションソース（Phase I1: 動く物が草・水・雪泥の共有場へ書き込む宣言）
+pub mod interaction_source_component;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -61,6 +63,7 @@ pub use light_component::{LightComponent, LightComponentData, LightKind};
 pub use jointattach_component::{JointAttachComponent, JointAttachComponentData};
 pub use skybox_component::{SkyboxComponent, SkyboxComponentData, SkyboxMode};
 pub use water_volume_component::{WaterVolumeComponent, WaterVolumeComponentData, WaterVolumeKind};
+pub use interaction_source_component::{InteractionSourceComponent, InteractionSourceComponentData};
 pub use particle_emitter_component::{
     ParticleEmitterComponent, ParticleEmitterComponentData,
     ParticleBlend, ParticleSimSpace, ParticleShape, SpawnVolume, EmitMode,
@@ -116,6 +119,8 @@ pub enum ComponentKind {
     TerrainChunk,
     /// 水ボリューム（大洋 / 直方体水塊 / 川スプライン(W4)）
     WaterVolume,
+    /// インタラクションソース（動く物 → 瞬発場への書き手。草の揺れ・水の波紋を駆動）
+    InteractionSource,
 }
 
 impl ComponentKind {
@@ -140,6 +145,7 @@ impl ComponentKind {
             Self::Skybox      => "SkyboxComponent",
             Self::TerrainChunk => "TerrainChunkComponent",
             Self::WaterVolume => "WaterVolumeComponent",
+            Self::InteractionSource => "InteractionSourceComponent",
         }
     }
 }
@@ -182,4 +188,6 @@ pub enum ComponentData {
     TerrainChunkComponent(TerrainChunkComponentData),
     /// 水ボリューム（大洋 / 直方体水塊 / 川スプライン(W4)）
     WaterVolumeComponent(WaterVolumeComponentData),
+    /// インタラクションソース（瞬発場への書き手）
+    InteractionSourceComponent(InteractionSourceComponentData),
 }

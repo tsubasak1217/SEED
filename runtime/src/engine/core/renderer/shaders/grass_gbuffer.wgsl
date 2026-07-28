@@ -22,6 +22,16 @@
 //   group 0 binding 0: uniform CameraUniform            （MeshPipeline の camera BGL を借用）
 //   group 1 binding 0: storage(read) array<GrassInstance>（1 要素 = 草 1 株）
 //   group 1 binding 1: uniform GrassUniform             （見た目・風のパラメータ）
+//   group 2 binding 0: texture_2d<f32>                  （瞬発インタラクションフィールド）
+//   group 2 binding 1: sampler                          （同上・線形/ClampToEdge）
+//   group 2 binding 2: uniform InteractionFieldUniform  （場の窓と曲げ係数）
+//
+// ## インタラクションフィールドの消費（Phase I1）
+// group2 の速度場（ワールド俯瞰・カメラ追従の小窓）を **頂点段で** サンプルし、
+// 草を速度方向へ曲げる（＝踏み分け・薙ぎ倒し）。場の窓の外では影響ゼロ。
+// 場を書くのは `InteractionSource` コンポーネントだけで、本シェーダは
+// **読むだけ**（書き手と読み手の分離＝ロードマップ §1.3 の設計）。
+// 詳細は `renderer/interaction/mod.rs` と `shaders/interaction_field.wgsl`。
 //
 // ## G-Buffer レイアウト（gbuffer_write.wgsl と同一。正典はそちら）
 //   RT0 Rgba8Unorm  : albedo.rgb + occlusion.a
@@ -229,8 +239,59 @@ struct GrassUniform {
 @group(1) @binding(1) var<uniform> u_grass: GrassUniform;
 
 // ============================================================
+//  Group 2: 瞬発インタラクションフィールド（Phase I1・読むだけ）
+// ============================================================
+
+/// 場の窓と消費パラメータ。
+/// Rust `InteractionFieldUniformGpu` および `interaction_field.wgsl` の
+/// 同名構造体と **フィールド順まで一致必須**（3 箇所を同時に直すこと。
+/// テスト `interaction_uniform_fields_match_grass_shader` が照合する）。
+struct InteractionFieldUniform {
+    /// 今フレームの窓のワールド XZ 最小（テクセル単位にスナップ済み）。
+    origin_xz:      vec2<f32>,
+    /// 前フレームの窓のワールド XZ 最小（更新パスのみ使用）。
+    prev_origin_xz: vec2<f32>,
+    /// 1 テクセルのワールドサイズ（m。更新パスのみ使用）。
+    texel_size:     f32,
+    /// 窓の一辺の逆数（1/m）。ワールド XZ → [0,1] UV 変換に使う。
+    inv_extent:     f32,
+    /// 減衰係数（更新パスのみ使用）。
+    decay:          f32,
+    /// 場の一辺の解像度（更新パスのみ使用）。
+    resolution:     u32,
+    /// 有効なソース数（更新パスのみ使用）。
+    source_count:   u32,
+    /// 速度 1 m/s あたりの曲げ角（rad·s/m）。
+    bend_per_speed: f32,
+    /// インタラクションによる曲げ角の上限（rad）。
+    max_bend:       f32,
+    /// パディング（未使用）。
+    _pad:           f32,
+}
+@group(2) @binding(0) var  u_interaction_tex:     texture_2d<f32>;
+@group(2) @binding(1) var  u_interaction_sampler: sampler;
+@group(2) @binding(2) var<uniform> u_interaction: InteractionFieldUniform;
+
+// ============================================================
 //  ユーティリティ
 // ============================================================
+
+/// 株の根元のワールド XZ で瞬発場をサンプルし、ワールド XZ 速度（m/s）を返す。
+///
+/// **窓の外は必ずゼロ**（＝場の影響なし）。ClampToEdge サンプラーのままだと
+/// 窓の縁の値が外側へ無限に引き伸ばされ、遠方の草まで倒れてしまうため、
+/// UV 範囲を明示的に判定して弾く。
+///
+/// 頂点段からのサンプルなので `textureSampleLevel`（明示 LOD）を使う
+/// （頂点シェーダでは暗黙微分が使えず `textureSample` は呼べない）。
+fn grass_interaction_velocity(world_xz: vec2<f32>) -> vec2<f32> {
+    let uv = (world_xz - u_interaction.origin_xz) * u_interaction.inv_extent;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return vec2<f32>(0.0);
+    }
+    // .xy = XZ 速度ベクトル場。.zw は I2（波エネルギー）用の予約チャンネルで、草は見ない。
+    return textureSampleLevel(u_interaction_tex, u_interaction_sampler, uv, 0.0).xy;
+}
 
 /// u32 の種を [0,1) の f32 へ写す整数ハッシュ（xorshift-multiply）。
 /// sin ベースのハッシュと違い、大きな seed でも精度が落ちない。
@@ -429,8 +490,44 @@ fn vs_grass(
              * u_grass.gust_strength;
 
     //   静的な垂れ（bend）を足し、飽和させる（草が裏返る／地面へ潜るのを防ぐ）。
-    let theta_max = clamp(sway + gust + u_grass.bend,
-                          -GRASS_MAX_BEND_ANGLE, GRASS_MAX_BEND_ANGLE);
+    //   ここまでが**風だけ**の曲げ角（符号あり。+ が forward 方向）。
+    let theta_wind = clamp(sway + gust + u_grass.bend,
+                           -GRASS_MAX_BEND_ANGLE, GRASS_MAX_BEND_ANGLE);
+
+    // ── 5b. インタラクションフィールドとの合成（Phase I1）──────────────────
+    //
+    //   ## 何をするか
+    //   瞬発場から「この株の足元を通った物体の速度」を読み、その向きへ草を倒す。
+    //   曲げ角は速度の大きさに比例（`bend_per_speed`）し、`max_bend` で飽和する。
+    //
+    //   ## 風との合成方法（設計判断）
+    //   風は「forward 方向へ theta_wind だけ曲げる」、インタラクションは
+    //   「push 方向へ theta_interact だけ曲げる」。方向が違うのでスカラー加算はできない。
+    //   そこで **曲げを「向き × 角度」のベクトルとして足す**:
+    //       bend_vec  = forward * theta_wind + push * theta_interact
+    //       曲げ方向  = normalize(bend_vec) / 曲げ角 = length(bend_vec)
+    //   これは風の挙動の厳密な一般化である（インタラクション 0 のとき
+    //   bend_dir = ±forward・theta = |theta_wind| となり、cos が偶関数・sin が奇関数
+    //   であることから従来の tangent 式と完全に一致する＝**風を壊さない**）。
+    //
+    //   ## 葉の面（side）は回さない
+    //   `side`（葉幅の方向）は yaw 由来のまま据え置く。曲げ方向だけを変えるので、
+    //   物体が通過した瞬間に葉が回転してパチンと切り替わることがない。
+    let interact_vel   = grass_interaction_velocity(inst.pos.xz);
+    let interact_speed = length(interact_vel);
+    var bend_vec = forward * theta_wind;
+    if (interact_speed > GRASS_VEC_EPSILON) {
+        //   ワールド XZ の押し方向を、株の up に直交する成分へ落とす。
+        //   斜面では XZ 方向がそのままだと地面へめり込む向きを含むため。
+        let push_world = vec3<f32>(interact_vel.x, 0.0, interact_vel.y) / interact_speed;
+        let push       = grass_safe_normalize(push_world - up * dot(push_world, up), forward);
+        let theta_interact = min(interact_speed * u_interaction.bend_per_speed,
+                                 u_interaction.max_bend);
+        bend_vec = bend_vec + push * theta_interact;
+    }
+    //   合成後の曲げ方向と曲げ角（角度は必ず 0 以上。向きが符号を担う）。
+    let bend_dir  = grass_safe_normalize(bend_vec, forward);
+    let theta_max = min(length(bend_vec), GRASS_MAX_BEND_ANGLE);
 
     // ── 6. 葉の芯線を「弧長保存」で積分する ──
     //   ## なぜ単純な X オフセットではないのか
@@ -459,14 +556,15 @@ fn vs_grass(
         // 中点則: セグメント i の中央での接線を、その区間の代表方向とする。
         let s_mid = (f32(i) + 0.5) / f32(seg_count);
         let th    = grass_bend_angle(theta_max, s_mid);
-        let tangent_mid = up * cos(th) + forward * sin(th);
+        //   曲げ方向は風＋インタラクションの合成方向（bend_dir）。
+        let tangent_mid = up * cos(th) + bend_dir * sin(th);
         center = center + tangent_mid * ds;
     }
 
     //   この行の高さパラメータと接線（法線の再計算に使う）。
     let height_t = f32(row) / f32(seg_count);
     let theta_r  = grass_bend_angle(theta_max, height_t);
-    let tangent  = up * cos(theta_r) + forward * sin(theta_r);
+    let tangent  = up * cos(theta_r) + bend_dir * sin(theta_r);
 
     // ── 7. 幅方向へ広げる（根元 → 穂先でテーパー）──
     //   幅にも scale を掛ける。高さだけ伸ばすと株ごとに葉の縦横比が変わって
@@ -483,10 +581,13 @@ fn vs_grass(
 
     // ── 8. 曲げ後の法線を作り直す ──
     //   葉面は「side（幅方向・曲げても不変）」と「tangent（曲げ後の芯線方向）」が張る平面。
-    //   したがって面法線は cross(side, tangent)。side ⊥ tangent（tangent は up-forward
-    //   平面内、side はその平面に直交）なので外積は常に単位長で、正規化不要かつ非退化。
-    //   風で tangent が回れば法線も一緒に回る＝揺れに応じてライティングが変化する。
-    let world_normal = cross(side, tangent);
+    //   したがって面法線は cross(side, tangent)。
+    //   風だけのときは tangent が up-forward 平面内にあり side はその平面に直交するため
+    //   外積は単位長だったが、**インタラクションの曲げ方向は side と直交とは限らない**
+    //   （任意のワールド方向へ倒れる）。外積が単位長でなくなるので正規化する。
+    //   曲げ方向が side と平行な退化ケース（真横へ倒れる）では外積がゼロ長になるため、
+    //   up へフォールバックする（黒く落ちるより上向きの方が破綻が小さい）。
+    let world_normal = grass_safe_normalize(cross(side, tangent), up);
 
     var out: GrassVsOut;
     let world_pos4     = vec4<f32>(world_pos, 1.0);

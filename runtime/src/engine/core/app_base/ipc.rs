@@ -386,6 +386,9 @@ pub enum IpcCommand {
     ///      fresnel_strength / reflection_color / refraction_distortion。
     /// ベクタ系（region_half_extents / *_color）の value は "x,y,z" 形式。
     SetWaterField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// InteractionSourceComponent のフィールドを更新する（interaction_ops.rs が処理）。
+    /// key: radius / strength / enabled。value は数値または "true"/"false"。
+    SetInteractionField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// JointAttachComponent のフィールドを更新する
     /// （key: joint_name / offset_pos / offset_rot / offset_scale。offset_* は "x,y,z" 形式）
     SetJointAttachField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
@@ -1592,6 +1595,18 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             parse2u_tail(&s["SET_WATER_FIELD:".len()..]).and_then(|(a, sl, tail)| {
                                 let (key, value) = tail.split_once(',')?;
                                 Some(IpcCommand::SetWaterField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
+                        }
+                        s if s.starts_with("SET_INTERACTION_FIELD:") => {
+                            // フォーマット: SET_INTERACTION_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+                            // value に "," は含まれない（スカラーと bool のみ）が、
+                            // 将来のベクタ系フィールド追加に備えて水と同じ tail 方式で切る。
+                            parse2u_tail(&s["SET_INTERACTION_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetInteractionField {
                                     actor_dfs_id: a, slot_idx: sl,
                                     key: key.to_string(), value: value.to_string(),
                                 })

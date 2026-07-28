@@ -673,6 +673,13 @@ pub fn build_actor(
                 world.insert(slot_entity, WaterVolumeComponent::from_data(wv_data));
                 actor.add_slot_typed::<WaterVolumeComponent>(slot_name, ComponentKind::WaterVolume, slot_entity);
             }
+            ComponentData::InteractionSourceComponent(is_data) => {
+                // インタラクションソースを ECS ワールドに挿入してスロットを登録する
+                use crate::engine::components::InteractionSourceComponent;
+                world.insert(slot_entity, InteractionSourceComponent::from_data(&is_data));
+                actor.add_slot_typed::<InteractionSourceComponent>(
+                    slot_name, ComponentKind::InteractionSource, slot_entity);
+            }
             ComponentData::AnimatorComponent(an_data) => {
                 // アニメーターコンポーネントを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::AnimatorComponent;

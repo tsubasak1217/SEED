@@ -795,6 +795,10 @@ impl App {
                             // 孤児（エミッタ消滅後も寿命まで生き残る粒子群）が旧シーンから
                             // 新シーンへ持ち越されないようにする。
                             self.particle_system.clear_all();
+                            // インタラクションソースの位置履歴も捨てる（Phase I1）。
+                            // 残したままシーンが入れ替わると「旧シーンの位置 → 新シーンの位置」の
+                            // 巨大な速度が 1 フレームだけ場へ焼かれ、草が一斉になぎ倒される。
+                            self.interaction_velocity.clear();
                             self.selected_instances.clear();
                             self.actor_virtual_selected_idx = None;
                             self.actor_virtual_selected_slot_idx = 0;
@@ -1171,6 +1175,9 @@ impl App {
                 }
                 IpcCommand::SetWaterField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_water_field(actor_dfs_id, slot_idx, &key, &value);
+                }
+                IpcCommand::SetInteractionField { actor_dfs_id, slot_idx, key, value } => {
+                    self.handle_set_interaction_field(actor_dfs_id, slot_idx, &key, &value);
                 }
                 IpcCommand::SetJointAttachField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_jointattach_field(actor_dfs_id, slot_idx, &key, &value);

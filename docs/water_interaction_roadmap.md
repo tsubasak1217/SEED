@@ -164,7 +164,74 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
 
 ### インタラクション系（I）
 
-- **I1: InteractionSource＋瞬発場＋草の揺れ** — 最小で最も見栄えのする組み合わせ
+- **I1: InteractionSource＋瞬発場＋草の揺れ** — ✅ **実装済み（2026-07-28）**
+  書き手コンポーネント＋カメラ追従の瞬発場（コンピュート 1 パス）＋草の頂点段での消費。
+
+  **実装参照**
+
+  | 役割 | 場所 |
+  |---|---|
+  | コンポーネント | `runtime/src/engine/components/interaction_source_component.rs`（`InteractionSourceComponentData`: 半径 / 強さ / 有効） |
+  | シーン走査 | `runtime/src/engine/interaction/collect.rs` の `collect_interaction_sources()` |
+  | ワールド解決の中間表現 | `runtime/src/engine/interaction/resolved.rs` の `ResolvedInteractionSource` / `source_key()` |
+  | 速度算出（前フレーム位置の保持） | `runtime/src/engine/interaction/velocity.rs` の `InteractionSourceVelocityTracker` |
+  | 場（GPU リソース＋更新） | `runtime/src/engine/core/renderer/interaction/mod.rs` の `InteractionFieldRenderer` ＋ `shaders/interaction_field.wgsl` |
+  | 消費（草） | `shaders/grass_gbuffer.wgsl` の `grass_interaction_velocity()` と vs_grass 節 5b（group2） |
+  | パス挿入 | `app/frame_renderer.rs`（水ボリューム収集の直後・**カメラプレビューとメインパスの両方より前**にコンピュートを記録） |
+  | IPC フィールド編集 | `runtime/src/engine/core/app_base/app/interaction_ops.rs`（`SET_INTERACTION_FIELD:`） |
+  | エディタ UI | `editor/src/Panels/InspectorPanel.xaml.cs` の `BuildInteractionSourceSlotContent` / `ComponentSelectorWindow.xaml.cs`「環境」カテゴリ |
+
+  **I1 で確定した設計判断**
+
+  - **場の形**: 一辺 64m（`INTERACTION_FIELD_EXTENT_M`）× 512px（`INTERACTION_FIELD_RESOLUTION`）
+    ＝ 0.125m/テクセル。フォーマットは **Rgba16Float**（`rg16float` は core WebGPU の
+    storage フォーマットに無いため。imos_blur の R16Float と同じ事情）。
+    **`.xy` = ワールド XZ 速度場（I1）／`.z` = 波エネルギー予約（I2）／`.w` = 予約**。
+    I2 は更新シェーダのスタンプ節に `.z` を足すだけでよく、フォーマット・バインド・
+    パス構成は変えなくてよい。
+  - **更新はコンピュート 1 パス**。「減衰パス → スタンプパス」に分けるとスタンプが
+    read-modify-write を要求し、rgba16float の `read_write` storage が core で使えないため
+    どのみち ping-pong が要る。ならば 1 パスで「前フレーム読み → 再マップ → 減衰 →
+    全ソース合成 → 書き」までやり切る方が単純かつ速い（バリア・クリア不要）。
+    ソース上限 `INTERACTION_MAX_SOURCES=64`。
+  - **カメラ追従はテクセル単位スナップ**（`snap_window_origin`）。窓原点を
+    `floor(v/texel)*texel` へ丸めるので前フレームとの差は必ず整数テクセルになり、
+    再マップは整数 `textureLoad` で済む（バイリニアのにじみ＝カメラ移動でのちらつきが
+    構造的に起きない）。窓外の再マップ読みは 0＝新しく入ってきた帯に場は無い。
+  - **スタンプは加算ではなく重み付き上書き**（`mix(場, 速度, w)`, `w = falloff² × strength`）。
+    加算だと同じ場所で動き続けるソースの寄与が毎フレーム積み上がり `1/(1-decay)` 倍
+    （60fps で数十倍）に発散する。mix なら場はそのソースの速度へ収束する。
+  - **減衰**は指数（τ=1s、`INTERACTION_FIELD_DECAY_TAU_SECS`）で「通り過ぎて約 3 秒で復元」。
+    ソースが 0 個の状態が 5τ 続いたら最後に 1 回「減衰 0」で書き潰し、
+    以降ディスパッチしない（**ソースを置かないシーンの GPU コストは 0**）。
+    場テクスチャ自体も「草バッファかソースが存在するフレーム」まで確保しない。
+  - **速度はコンポーネントが宣言しない**。`Transform` のフレーム間差分から
+    `InteractionSourceVelocityTracker` が算出する（駆動元が物理／スクリプト／アニメ／
+    手動ドラッグのいずれでも等しく機能する）。初出フレームは速度 0、テレポートは
+    `INTERACTION_MAX_SPEED=20m/s` で飽和。シーン切替・Play 開始/終了では履歴を `clear()`。
+  - **草の曲げは風との「ベクトル合成」**。風 `forward × θ_wind` とインタラクション
+    `push × θ_interact` をベクトルとして足し、合成方向へ弧長保存の曲げを行う。
+    インタラクション 0 のとき従来式と厳密に一致する（cos が偶関数・sin が奇関数）ため
+    **既存の風を 1 ビットも壊さない**。葉面の向き（`side`）は yaw のまま据え置き、
+    通過の瞬間に葉が回転してパチンと切り替わるのを避ける。曲げ方向が `side` と
+    平行になり得るので、法線 `cross(side, tangent)` は正規化する（従来は単位長保証だった）。
+  - **Edit でも動く**。減衰も速度算出も `ctx.delta_time`（壁時計）で駆動するため、
+    Edit 中にアクタをドラッグしても草が反応し、離せば数秒で戻る。
+    草の風（`GrassUniform.time = anim_time`）とは独立した時間源である。
+  - **カメラプレビューにも本物の場をそのままバインドする**（ダミー 0 テクスチャを持たない）。
+    場はメインカメラ追従の窓なので、プレビューが窓の外を映していれば
+    サンプル範囲外＝0 で自然に無反応になり、同じ場所を映していれば主画面と一致する。
+  - 草パイプラインの **group2** に場を追加。BGL は
+    `renderer::interaction::create_field_sample_bind_group_layout()` を草側・場側の
+    双方が呼び、wgpu の BindGroupLayout 構造的等価性でバインドする（カメラ BGL 借用と同じ慣例）。
+  - `[PERF]` に `interact=`（収集＋速度算出＋コンピュート記録の CPU 時間）を追加。
+
+  **I1 の既知の制限**（後続フェーズで解消）
+
+  - 場は **XZ 速度のみ**。波エネルギー（`.z`）は誰も書かない（I2）。
+  - 消費側は草だけ。水面の波紋は I2、雪泥の轍（永続変形）は I3。
+  - 窓（64m）の外に出た草は影響を受けない。広域の轍表現は I3 の永続変形の担当。
+  - 影響半径は円のみ（向きを持たない）。車両のような細長い接地形状は未対応。
 - **I2: 水の波紋** — W1 完了後、瞬発場の波エネルギーを水面の法線摂動として消費
 - **I3: 雪・泥の轍** — 永続変形テクスチャ＋地形シェーダの変位・レイヤ露出（最重量）
 
