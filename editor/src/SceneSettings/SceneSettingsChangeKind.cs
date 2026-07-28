@@ -30,8 +30,9 @@ public enum SceneSettingsChangeKind
     Rendering,
     /// <summary>環境光の色・強度。</summary>
     Ambient,
-    /// <summary>シーンビュー表示モード（view_mode）。セッション限りで永続化しない。</summary>
-    ViewMode,
+    // シーンビュー表示モード（view_mode）はこの enum に含めない。
+    // ツールバーの CmbViewMode が直接 SET_POST_FX を再送する非永続項目であり、
+    // シーン設定ウィンドウの管轄外のため。
     /// <summary>レンダリングカテゴリを既定値へ戻した（全項目を再送する）。</summary>
     RenderingAll,
 

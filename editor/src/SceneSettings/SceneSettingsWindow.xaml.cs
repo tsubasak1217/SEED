@@ -134,31 +134,9 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
         ("レイトレ（色付き影＋屈折）", "rt"),
     };
 
-    /// <summary>
-    /// シーンビュー表示モードの選択肢。
-    /// エディタのシーンビュー（デバッグカメラ）だけに効き、ゲームカメラのプレビュー小窓・
-    /// Play の見た目には影響しない（ランタイム側でゲート）。
-    /// 「G-Buffer: 〜」は Deferred の G-Buffer を生値のまま表示するデバッグ用で、
-    /// ランタイムは Deferred を維持したままライティングパスだけを可視化パスへ差し替える。
-    /// Tag 文字列はランタイムの view_mode.rs の GBUFFER_DEBUG_CHANNEL_TABLE と 1:1 で一致させること。
-    /// </summary>
-    private static readonly (string Label, string Tag)[] ViewModeItems =
-    {
-        ("ライティングON",           "lit"),
-        ("ライティングOFF",          "unlit"),
-        ("ワイヤーフレーム",         "wireframe"),
-        ("G-Buffer: ベースカラー",   "gbuffer_base_color"),
-        ("G-Buffer: オクルージョン", "gbuffer_occlusion"),
-        ("G-Buffer: 法線",           "gbuffer_normal"),
-        ("G-Buffer: ラフネス",       "gbuffer_roughness"),
-        ("G-Buffer: メタリック",     "gbuffer_metallic"),
-        ("G-Buffer: 透過",           "gbuffer_transmission"),
-        ("G-Buffer: エミッシブ",     "gbuffer_emissive"),
-        ("G-Buffer: 深度",           "gbuffer_depth"),
-        ("G-Buffer: 速度",           "gbuffer_velocity"),
-        ("G-Buffer: レンダータグ",   "gbuffer_render_tag"),
-        ("G-Buffer: ユーザーデータ", "gbuffer_user_data"),
-    };
+    // シーンビュー表示モード（view_mode）の選択肢はこのウィンドウには置かない。
+    // 切り替え頻度が高いためツールバーの CmbViewMode（MainWindow.xaml）が直接持つ。
+    // 非永続項目であり .scene の settings 節にもランタイム側スキーマにも含めない。
 
     // ── スライダーの範囲定数（旧ビューポートオプションと同値）──
 
@@ -183,9 +161,6 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
 
     /// <summary>シーン既定シェーディングアセットの仮想パス（未設定なら null）。</summary>
     private string? _shadingAssetPath;
-
-    /// <summary>シーンビュー表示モード（セッション限り・非永続）。</summary>
-    private string _viewMode;
 
     /// <summary>デバッグカメラの位置（X, Y, Z）。シーン設定ではなく CAM_TRANSFORM で扱う。</summary>
     private float[] _cameraPosition;
@@ -240,9 +215,6 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
 
     // ── 公開プロパティ ────────────────────────────────────────
 
-    /// <summary>シーンビュー表示モード（"lit" / "unlit" / "wireframe" / "gbuffer_*"）。</summary>
-    public string ViewMode => _viewMode;
-
     /// <summary>デバッグカメラ位置（X, Y, Z）。</summary>
     public float[] CameraPosition => _cameraPosition;
 
@@ -257,18 +229,16 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
     /// <param name="data">編集対象のシーン設定（MainWindow と共有する参照をそのまま渡す）。</param>
     /// <param name="assetsPath">アセットディレクトリの絶対パス。</param>
     /// <param name="shadingAssetPath">シーン既定シェーディングアセットの仮想パス（未設定なら null）。</param>
-    /// <param name="viewMode">現在のシーンビュー表示モード。</param>
     /// <param name="cameraPosition">デバッグカメラ位置（X, Y, Z）。</param>
     /// <param name="cameraEuler">デバッグカメラ回転（オイラー角 X, Y, Z）。</param>
     public SceneSettingsWindow(
         SceneSettingsData data, string assetsPath, string? shadingAssetPath,
-        string viewMode, float[] cameraPosition, float[] cameraEuler)
+        float[] cameraPosition, float[] cameraEuler)
     {
         InitializeComponent();
         _data             = data;
         _assetsPath       = assetsPath;
         _shadingAssetPath = shadingAssetPath;
-        _viewMode         = viewMode;
         _cameraPosition   = (float[])cameraPosition.Clone();
         _cameraEuler      = (float[])cameraEuler.Clone();
 
@@ -691,20 +661,6 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
             v  => _data.Rendering.Transparency = v,
             () => { NotifyRendering(); UpdateRefractSeqGrabEnabled(); }, out _));
 
-        // ── シーンビュー表示モード（セッション限り・非永続）──
-        panel.Children.Add(SceneSettingsControls.SectionHeader("シーンビュー表示モード"));
-        panel.Children.Add(SceneSettingsControls.HintText(
-            "シーンビュー（デバッグカメラ）の表示モードを切り替えます。\n" +
-            "ゲームカメラのプレビュー小窓・Play の見た目には影響しません。\n" +
-            "「G-Buffer: 〜」は Deferred の G-Buffer を生値のまま表示するデバッグ用です。\n" +
-            "この設定はシーンには保存されません（毎回「ライティングON」で開始します）。"));
-
-        panel.Children.Add(SceneSettingsControls.ComboRow(
-            this, "表示モード", ViewModeItems, null,
-            () => _viewMode,
-            v  => _viewMode = v,
-            () => SettingChanged?.Invoke(SceneSettingsChangeKind.ViewMode), out _));
-
         // ── シーンのシェーダー（.scene のトップレベル shading_asset）──
         panel.Children.Add(SceneSettingsControls.SectionHeader("シーンのシェーダー"));
         panel.Children.Add(SceneSettingsControls.HintText(
@@ -717,10 +673,10 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
         panel.Children.Add(SceneSettingsControls.ResetButton(() =>
         {
             _data.Rendering.ResetToDefault();
-            // 表示モードもこのカテゴリの項目なので既定（ライティングON）へ戻す。
+            // シーンビュー表示モードはこのウィンドウの管轄外（ツールバーの CmbViewMode が持つ
+            // セッション限りの項目）なので、リセット対象に含めない。
             // シーンのシェーダーはシーンのアセット参照であり「設定の既定値」ではないため、
             // 誤って参照を失わないようリセット対象に含めない（× ボタンで明示的に解除する）。
-            _viewMode = ViewModeItems[0].Tag;
             RefreshDisplay();
             UpdateRefractSeqGrabEnabled();
             SettingChanged?.Invoke(SceneSettingsChangeKind.RenderingAll);
