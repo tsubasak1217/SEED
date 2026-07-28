@@ -387,6 +387,62 @@ public partial class InspectorPanel : UserControl
 
     // ── Actor edit mode: component list ──────────────────────
 
+    // ── WaterVolumeComponent の既定値 ─────────────────────────
+    // Rust 側 WaterVolumeComponentData の既定値と厳密に一致させること。
+    // SlotInfo のフィールド既定値と ACTOR_COMPONENTS 受信時のフォールバックの
+    // 両方から参照するため、リテラルの二重管理を避けて定数化している。
+
+    /// <summary>水領域の種別既定値（"Ocean" / "Region" / "Spline"）。</summary>
+    private const string WaterKindDefault = "Region";
+    /// <summary>水面高さの既定値（Ocean=ワールド Y / Region=アクタ相対 Y）。</summary>
+    private const float WaterSurfaceHeightDefault = 0f;
+    /// <summary>Region 種別の領域半径 X の既定値（m）。</summary>
+    private const float WaterRegionHalfXDefault = 10f;
+    /// <summary>Region 種別の領域半径 Y の既定値（m）。</summary>
+    private const float WaterRegionHalfYDefault = 5f;
+    /// <summary>Region 種別の領域半径 Z の既定値（m）。</summary>
+    private const float WaterRegionHalfZDefault = 10f;
+    /// <summary>Ocean 種別の水面描画半径の既定値（m）。</summary>
+    private const float WaterOceanExtentDefault = 2000f;
+    /// <summary>浅場の色（リニア RGB）の既定値。</summary>
+    private const float WaterShallowRDefault = 0.10f;
+    private const float WaterShallowGDefault = 0.45f;
+    private const float WaterShallowBDefault = 0.42f;
+    /// <summary>深場の色（リニア RGB）の既定値。</summary>
+    private const float WaterDeepRDefault = 0.01f;
+    private const float WaterDeepGDefault = 0.06f;
+    private const float WaterDeepBDefault = 0.12f;
+    /// <summary>浅場色から深場色へ遷移しきる吸収距離の既定値（m）。</summary>
+    private const float WaterAbsorptionDistanceDefault = 8f;
+    /// <summary>水面の最大不透明度の既定値。</summary>
+    private const float WaterSurfaceOpacityDefault = 0.92f;
+    /// <summary>岸のフォーム色（リニア RGB）の既定値。</summary>
+    private const float WaterFoamRDefault = 1f;
+    private const float WaterFoamGDefault = 1f;
+    private const float WaterFoamBDefault = 1f;
+    /// <summary>フォーム帯の幅の既定値（m）。</summary>
+    private const float WaterFoamWidthDefault = 0.35f;
+    /// <summary>フォームの強度の既定値。</summary>
+    private const float WaterFoamIntensityDefault = 0.8f;
+    /// <summary>波の高さ（振幅）の既定値。</summary>
+    private const float WaterWaveAmplitudeDefault = 0.06f;
+    /// <summary>波のノイズスケールの既定値。</summary>
+    private const float WaterWaveScaleDefault = 0.12f;
+    /// <summary>波のスクロール速度の既定値。</summary>
+    private const float WaterWaveSpeedDefault = 0.6f;
+    /// <summary>フレネル指数の既定値。</summary>
+    private const float WaterFresnelPowerDefault = 5f;
+    /// <summary>フレネル強度の既定値。</summary>
+    private const float WaterFresnelStrengthDefault = 1f;
+    /// <summary>反射色（リニア RGB）の既定値。</summary>
+    private const float WaterReflectRDefault = 0.35f;
+    private const float WaterReflectGDefault = 0.50f;
+    private const float WaterReflectBDefault = 0.62f;
+    /// <summary>屈折の歪み量の既定値。</summary>
+    private const float WaterRefractionDistortionDefault = 0.03f;
+    /// <summary>水の各色はアルファを持たないため、カラーピッカーへ渡す固定アルファ。</summary>
+    private const float WaterColorAlpha = 1f;
+
     /// <summary>コンポーネントスロット 1 件分の情報。TypeId ごとに追加フィールドを持つ。</summary>
     private record SlotInfo(int SlotIdx, string Name, string TypeId, string ModelPath,
         float Width = 0f, float Height = 0f,
@@ -508,7 +564,44 @@ public partial class InspectorPanel : UserControl
         // 色カーブ配列（4ch HSVA ParamCurve の JSON 配列。必ず 1 要素以上）。
         string PeColorCurvesJson = "[]",
         // テクスチャパス配列（JSON 文字列配列。空可、最大 8）。
-        string PeTexturePathsJson = "[]");
+        string PeTexturePathsJson = "[]",
+        // ── WaterVolumeComponent 用フィールド ──────────────────
+        // 種別・水面高さ・領域サイズ・色・透明度・フォーム・波・反射/屈折。
+        // 既定値は Rust 側 WaterVolumeComponentData と一致させる（受信欠落時のフォールバックにも使用）。
+        string WaterKind = WaterKindDefault,
+        float WaterSurfaceHeight = WaterSurfaceHeightDefault,
+        // Region 種別の領域半径（アクタ中心からの XYZ 半径。Ocean/Spline では未使用）
+        float WaterRegionHX = WaterRegionHalfXDefault,
+        float WaterRegionHY = WaterRegionHalfYDefault,
+        float WaterRegionHZ = WaterRegionHalfZDefault,
+        // Ocean 種別の水面描画半径（m。Region/Spline では未使用）
+        float WaterOceanExtent = WaterOceanExtentDefault,
+        // 浅場・深場の色（リニア RGB）と吸収距離・最大不透明度
+        float WaterShallowR = WaterShallowRDefault,
+        float WaterShallowG = WaterShallowGDefault,
+        float WaterShallowB = WaterShallowBDefault,
+        float WaterDeepR = WaterDeepRDefault,
+        float WaterDeepG = WaterDeepGDefault,
+        float WaterDeepB = WaterDeepBDefault,
+        float WaterAbsorptionDistance = WaterAbsorptionDistanceDefault,
+        float WaterSurfaceOpacity = WaterSurfaceOpacityDefault,
+        // 岸のフォーム（色・幅・強度）
+        float WaterFoamR = WaterFoamRDefault,
+        float WaterFoamG = WaterFoamGDefault,
+        float WaterFoamB = WaterFoamBDefault,
+        float WaterFoamWidth = WaterFoamWidthDefault,
+        float WaterFoamIntensity = WaterFoamIntensityDefault,
+        // 波（振幅・スケール・速度）
+        float WaterWaveAmplitude = WaterWaveAmplitudeDefault,
+        float WaterWaveScale = WaterWaveScaleDefault,
+        float WaterWaveSpeed = WaterWaveSpeedDefault,
+        // 反射・屈折（フレネル指数/強度・反射色・屈折の歪み）
+        float WaterFresnelPower = WaterFresnelPowerDefault,
+        float WaterFresnelStrength = WaterFresnelStrengthDefault,
+        float WaterReflectR = WaterReflectRDefault,
+        float WaterReflectG = WaterReflectGDefault,
+        float WaterReflectB = WaterReflectBDefault,
+        float WaterRefractionDistortion = WaterRefractionDistortionDefault);
 
     private List<SlotInfo> _slotInfos = new();
 
@@ -860,6 +953,36 @@ public partial class InspectorPanel : UserControl
             var peColorCurvesJson        = comp.TryGetProperty("color_curves",        out var pccv) ? pccv.GetRawText() : "[]";
             // テクスチャパス配列（JSON 文字列配列）。欠落時は空配列。
             var peTexturePathsJson       = comp.TryGetProperty("texture_paths",       out var ptps) ? ptps.GetRawText() : "[]";
+            // WaterVolumeComponent 用: 種別・水面高さ・領域サイズ・色・透明度・フォーム・波・反射/屈折。
+            // 種別のみ文字列で、それ以外はすべて float。欠落時は Rust 側既定値と一致する定数へフォールバックする。
+            var waterKind         = comp.TryGetProperty("kind",             out var wkd)  ? wkd.GetString() ?? WaterKindDefault : WaterKindDefault;
+            var waterSurfaceH     = comp.TryGetProperty("surface_height",   out var wsh)  ? wsh.GetSingle() : WaterSurfaceHeightDefault;
+            var waterRegionHX     = comp.TryGetProperty("region_hx",        out var wrhx) ? wrhx.GetSingle() : WaterRegionHalfXDefault;
+            var waterRegionHY     = comp.TryGetProperty("region_hy",        out var wrhy) ? wrhy.GetSingle() : WaterRegionHalfYDefault;
+            var waterRegionHZ     = comp.TryGetProperty("region_hz",        out var wrhz) ? wrhz.GetSingle() : WaterRegionHalfZDefault;
+            var waterOceanExtent  = comp.TryGetProperty("ocean_extent",     out var woe)  ? woe.GetSingle() : WaterOceanExtentDefault;
+            var waterShallowR     = comp.TryGetProperty("shallow_r",        out var wsr)  ? wsr.GetSingle() : WaterShallowRDefault;
+            var waterShallowG     = comp.TryGetProperty("shallow_g",        out var wsg)  ? wsg.GetSingle() : WaterShallowGDefault;
+            var waterShallowB     = comp.TryGetProperty("shallow_b",        out var wsb)  ? wsb.GetSingle() : WaterShallowBDefault;
+            var waterDeepR        = comp.TryGetProperty("deep_r",           out var wdr)  ? wdr.GetSingle() : WaterDeepRDefault;
+            var waterDeepG        = comp.TryGetProperty("deep_g",           out var wdg)  ? wdg.GetSingle() : WaterDeepGDefault;
+            var waterDeepB        = comp.TryGetProperty("deep_b",           out var wdb)  ? wdb.GetSingle() : WaterDeepBDefault;
+            var waterAbsorption   = comp.TryGetProperty("absorption_distance", out var wab) ? wab.GetSingle() : WaterAbsorptionDistanceDefault;
+            var waterOpacity      = comp.TryGetProperty("surface_opacity",  out var wso)  ? wso.GetSingle() : WaterSurfaceOpacityDefault;
+            var waterFoamR        = comp.TryGetProperty("foam_r",           out var wfr)  ? wfr.GetSingle() : WaterFoamRDefault;
+            var waterFoamG        = comp.TryGetProperty("foam_g",           out var wfg)  ? wfg.GetSingle() : WaterFoamGDefault;
+            var waterFoamB        = comp.TryGetProperty("foam_b",           out var wfb)  ? wfb.GetSingle() : WaterFoamBDefault;
+            var waterFoamWidth    = comp.TryGetProperty("foam_width",       out var wfw)  ? wfw.GetSingle() : WaterFoamWidthDefault;
+            var waterFoamIntensity = comp.TryGetProperty("foam_intensity",  out var wfi)  ? wfi.GetSingle() : WaterFoamIntensityDefault;
+            var waterWaveAmp      = comp.TryGetProperty("wave_amplitude",   out var wwa)  ? wwa.GetSingle() : WaterWaveAmplitudeDefault;
+            var waterWaveScale    = comp.TryGetProperty("wave_scale",       out var wws)  ? wws.GetSingle() : WaterWaveScaleDefault;
+            var waterWaveSpeed    = comp.TryGetProperty("wave_speed",       out var wwsp) ? wwsp.GetSingle() : WaterWaveSpeedDefault;
+            var waterFresnelPow   = comp.TryGetProperty("fresnel_power",    out var wfp)  ? wfp.GetSingle() : WaterFresnelPowerDefault;
+            var waterFresnelStr   = comp.TryGetProperty("fresnel_strength", out var wfs)  ? wfs.GetSingle() : WaterFresnelStrengthDefault;
+            var waterReflectR     = comp.TryGetProperty("reflect_r",        out var wrr)  ? wrr.GetSingle() : WaterReflectRDefault;
+            var waterReflectG     = comp.TryGetProperty("reflect_g",        out var wrg)  ? wrg.GetSingle() : WaterReflectGDefault;
+            var waterReflectB     = comp.TryGetProperty("reflect_b",        out var wrb)  ? wrb.GetSingle() : WaterReflectBDefault;
+            var waterRefractDist  = comp.TryGetProperty("refraction_distortion", out var wrd) ? wrd.GetSingle() : WaterRefractionDistortionDefault;
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 AutoScale: autoScale,
@@ -927,7 +1050,20 @@ public partial class InspectorPanel : UserControl
                 PeSpeedCurveJson: peSpeedCurveJson, PeRotSpeedCurveJson: peRotSpeedCurveJson,
                 PeScaleCurveJson: peScaleCurveJson,
                 PeColorCurvesJson: peColorCurvesJson,
-                PeTexturePathsJson: peTexturePathsJson);
+                PeTexturePathsJson: peTexturePathsJson,
+                // WaterVolumeComponent 用フィールド
+                WaterKind: waterKind, WaterSurfaceHeight: waterSurfaceH,
+                WaterRegionHX: waterRegionHX, WaterRegionHY: waterRegionHY, WaterRegionHZ: waterRegionHZ,
+                WaterOceanExtent: waterOceanExtent,
+                WaterShallowR: waterShallowR, WaterShallowG: waterShallowG, WaterShallowB: waterShallowB,
+                WaterDeepR: waterDeepR, WaterDeepG: waterDeepG, WaterDeepB: waterDeepB,
+                WaterAbsorptionDistance: waterAbsorption, WaterSurfaceOpacity: waterOpacity,
+                WaterFoamR: waterFoamR, WaterFoamG: waterFoamG, WaterFoamB: waterFoamB,
+                WaterFoamWidth: waterFoamWidth, WaterFoamIntensity: waterFoamIntensity,
+                WaterWaveAmplitude: waterWaveAmp, WaterWaveScale: waterWaveScale, WaterWaveSpeed: waterWaveSpeed,
+                WaterFresnelPower: waterFresnelPow, WaterFresnelStrength: waterFresnelStr,
+                WaterReflectR: waterReflectR, WaterReflectG: waterReflectG, WaterReflectB: waterReflectB,
+                WaterRefractionDistortion: waterRefractDist);
             _slotInfos.Add(info);
 
             // アコーディオンにパラメータ編集エリアを追加（ヘッダーがリネーム・削除・複製・選択を兼ねる）
@@ -995,6 +1131,7 @@ public partial class InspectorPanel : UserControl
         "LightComponent"      => Color.FromRgb(0x3A, 0x32, 0x10), // 暗黄橙（ライト）
         "JointAttachComponent" => Color.FromRgb(0x30, 0x10, 0x2C), // 暗マゼンタ（ジョイントアタッチ。ライトと区別しやすい色）
         "SkyboxComponent"     => Color.FromRgb(0x10, 0x1C, 0x38), // 暗青（スカイボックス）
+        "WaterVolumeComponent" => Color.FromRgb(0x0E, 0x2A, 0x3A), // 暗い青（水）
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
     };
@@ -1015,6 +1152,7 @@ public partial class InspectorPanel : UserControl
         "LightComponent"      => "Light",
         "JointAttachComponent" => "JointAttach",
         "SkyboxComponent"     => "Skybox",
+        "WaterVolumeComponent" => "Water Volume",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                     => typeId,
@@ -1239,6 +1377,7 @@ public partial class InspectorPanel : UserControl
             "JointAttachComponent" => BuildJointAttachSlotContent(info),
             "SkyboxComponent"    => BuildSkyboxSlotContent(info),
             "ParticleEmitterComponent" => BuildParticleSlotContent(info),
+            "WaterVolumeComponent" => BuildWaterVolumeSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
             "Collider2dComponent" => BuildCollider2dSlotContent(info),
@@ -4362,6 +4501,193 @@ public partial class InspectorPanel : UserControl
             bounceRow.Visibility = (isPoint || isSpot || isRect) ? Visibility.Visible : Visibility.Collapsed;
         }
         UpdateKindVisibility(info.LightKind);
+        kindCombo.SelectionChanged += (_, _) =>
+        {
+            if (kindCombo.SelectedItem is ComboBoxItem item && item.Tag is string kind)
+            {
+                SendField("kind", kind);
+                UpdateKindVisibility(kind);
+            }
+        };
+
+        return sp;
+    }
+
+    /// <summary>
+    /// WaterVolumeComponent のインスペクター UI を構築して返す。
+    /// 「領域」「色と透明度」「岸のフォーム」「波」「反射・屈折」の 5 セクションで構成し、
+    /// 変更時は SET_WATER_FIELD:{actor},{slot},{key},{value} を送信する。
+    /// 種別（Ocean/Region/Spline）に応じて、その種別で意味を持たない行は非表示にする
+    /// （Ocean のとき領域半径を隠し、Region のとき海の描画半径を隠す）。
+    /// </summary>
+    private UIElement BuildWaterVolumeSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // フィールド変更をランタイムへ送信するローカル関数。
+        // key はフィールド表の SET_WATER_FIELD キー名（受信 JSON のキーとは別体系）。
+        void SendField(string key, string value)
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_WATER_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
+        }
+
+        // ── 共通ヘルパ ─────────────────────────────────────────
+
+        // 数値入力行を親セクションへ追加し、Enter / フォーカス喪失 / ドラッグ操作で値を送信する。
+        // 表示切替に使えるよう生成した行要素を返す。
+        UIElement AddFloatRow(StackPanel parent, string label, float value, string key, string format)
+        {
+            var row = BuildLabeledNumberRow(label, value, format);
+            parent.Children.Add(row.element);
+            void Commit()
+            {
+                if (!float.TryParse(row.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+                SendField(key, v.ToString(CultureInfo.InvariantCulture));
+            }
+            row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
+            row.textBox.LostFocus += (_, _) => Commit();
+            NumericDragBehavior.SetOnDrag(row.textBox, Commit);
+            return row.element;
+        }
+
+        // 色（リニア RGB）行を親セクションへ追加する。水の色はアルファを持たないため
+        // カラーピッカーへは a=1 固定で渡し、送信は "r,g,b" のカンマ区切り 3 値とする。
+        void AddColorRow(StackPanel parent, string label, float r, float g, float b, string key)
+        {
+            float curR = r, curG = g, curB = b;
+            var (swatch, setColor) = BuildColorSwatch(curR, curG, curB, WaterColorAlpha);
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+            row.Children.Add(new TextBlock
+            {
+                Text = label, Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+            });
+            row.Children.Add(swatch);
+            swatch.MouseLeftButtonDown += (_, _) =>
+            {
+                var result = ColorPickerWindow.ShowDialog(Window.GetWindow(this), curR, curG, curB, WaterColorAlpha);
+                if (result is null) return;
+                (curR, curG, curB, _) = result.Value;
+                setColor(curR, curG, curB, WaterColorAlpha);
+                SendField(key, FormattableString.Invariant($"{curR},{curG},{curB}"));
+            };
+            parent.Children.Add(row);
+        }
+
+        // 補足説明を薄い色で表示する行を生成して返す（表示切替に使うため要素を返す）。
+        TextBlock MakeHint(string text) => new()
+        {
+            Text         = text,
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 2, 0, 2),
+        };
+
+        // ── 領域セクション ─────────────────────────────────────
+        var regionSection = BuildSection("領域");
+        var regionSp      = (StackPanel)regionSection.Child;
+
+        // 種別ドロップダウン（Ocean / Region / Spline）。値は Rust 側の種別文字列と一致させる。
+        var kinds = new[]
+        {
+            ("Ocean",  "海 (Ocean)"),
+            ("Region", "領域 (Region)"),
+            ("Spline", "スプライン (Spline)"),
+        };
+        var kindRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        kindRow.Children.Add(new TextBlock
+        {
+            Text = "種類", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var kindCombo = new ComboBox { Width = 170, FontSize = 11, Margin = new Thickness(4, 0, 0, 0) };
+        foreach (var (val, label) in kinds)
+            kindCombo.Items.Add(new ComboBoxItem { Content = label, Tag = val });
+        var curKindIdx = Array.FindIndex(kinds, t => t.Item1 == info.WaterKind);
+        // 未知の種別が来た場合は既定種別（Region）の位置へフォールバックする。
+        kindCombo.SelectedIndex = curKindIdx >= 0
+            ? curKindIdx
+            : Array.FindIndex(kinds, t => t.Item1 == WaterKindDefault);
+        kindRow.Children.Add(kindCombo);
+        regionSp.Children.Add(kindRow);
+
+        // Spline は未実装のため、選択時のみ注意書きを表示する。
+        var splineHint = MakeHint("スプラインは W4 で実装予定（未実装）です。現状は描画されません。");
+        regionSp.Children.Add(splineHint);
+
+        // 水面高さ（Ocean=ワールド Y / Region=アクタ相対 Y）。全種別で共通。
+        AddFloatRow(regionSp, "水面高さ", info.WaterSurfaceHeight, "surface_height", "F2");
+
+        // 領域半径 XYZ（Region 専用）。3 つのテキストボックスいずれの確定でも 3 値まとめて送信する。
+        var extentsRow = BuildXYZRowSimple("領域半径 XYZ", info.WaterRegionHX, info.WaterRegionHY, info.WaterRegionHZ);
+        regionSp.Children.Add(extentsRow.element);
+        void CommitExtents()
+        {
+            if (!float.TryParse(extentsRow.tx.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var hx)) return;
+            if (!float.TryParse(extentsRow.ty.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var hy)) return;
+            if (!float.TryParse(extentsRow.tz.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var hz)) return;
+            SendField("region_half_extents", FormattableString.Invariant($"{hx},{hy},{hz}"));
+        }
+        foreach (var tb in new[] { extentsRow.tx, extentsRow.ty, extentsRow.tz })
+        {
+            tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitExtents(); e.Handled = true; } };
+            tb.LostFocus += (_, _) => CommitExtents();
+            NumericDragBehavior.SetOnDrag(tb, CommitExtents);
+        }
+
+        // 海の描画半径（Ocean 専用）。
+        var oceanExtentRow = AddFloatRow(regionSp, "海の描画半径(m)", info.WaterOceanExtent, "ocean_extent", "F1");
+
+        sp.Children.Add(regionSection);
+
+        // ── 色と透明度セクション ───────────────────────────────
+        var colorSection = BuildSection("色と透明度");
+        var colorSp      = (StackPanel)colorSection.Child;
+        AddColorRow(colorSp, "浅場の色", info.WaterShallowR, info.WaterShallowG, info.WaterShallowB, "shallow_color");
+        AddColorRow(colorSp, "深場の色", info.WaterDeepR,    info.WaterDeepG,    info.WaterDeepB,    "deep_color");
+        AddFloatRow(colorSp, "吸収距離(m)",   info.WaterAbsorptionDistance, "absorption_distance", "F2");
+        AddFloatRow(colorSp, "最大不透明度", info.WaterSurfaceOpacity,     "surface_opacity",     "F2");
+        sp.Children.Add(colorSection);
+
+        // ── 岸のフォームセクション ─────────────────────────────
+        var foamSection = BuildSection("岸のフォーム");
+        var foamSp      = (StackPanel)foamSection.Child;
+        AddColorRow(foamSp, "フォーム色", info.WaterFoamR, info.WaterFoamG, info.WaterFoamB, "foam_color");
+        AddFloatRow(foamSp, "フォーム幅(m)", info.WaterFoamWidth,     "foam_width",     "F2");
+        AddFloatRow(foamSp, "フォーム強度",  info.WaterFoamIntensity, "foam_intensity", "F2");
+        sp.Children.Add(foamSection);
+
+        // ── 波セクション ───────────────────────────────────────
+        var waveSection = BuildSection("波");
+        var waveSp      = (StackPanel)waveSection.Child;
+        AddFloatRow(waveSp, "波の強さ",     info.WaterWaveAmplitude, "wave_amplitude", "F3");
+        AddFloatRow(waveSp, "波のスケール", info.WaterWaveScale,     "wave_scale",     "F3");
+        AddFloatRow(waveSp, "波の速度",     info.WaterWaveSpeed,     "wave_speed",     "F3");
+        sp.Children.Add(waveSection);
+
+        // ── 反射・屈折セクション ───────────────────────────────
+        var reflectSection = BuildSection("反射・屈折");
+        var reflectSp      = (StackPanel)reflectSection.Child;
+        AddFloatRow(reflectSp, "フレネル指数", info.WaterFresnelPower,    "fresnel_power",    "F2");
+        AddFloatRow(reflectSp, "フレネル強度", info.WaterFresnelStrength, "fresnel_strength", "F2");
+        AddColorRow(reflectSp, "反射色", info.WaterReflectR, info.WaterReflectG, info.WaterReflectB, "reflection_color");
+        AddFloatRow(reflectSp, "屈折の歪み", info.WaterRefractionDistortion, "refraction_distortion", "F3");
+        sp.Children.Add(reflectSection);
+
+        // ── 種別に応じた行の表示切替 ───────────────────────────
+        // Ocean: 海の描画半径のみ / Region: 領域半径のみ / Spline: どちらも持たず注意書きのみ。
+        void UpdateKindVisibility(string kind)
+        {
+            bool isOcean  = kind == "Ocean";
+            bool isRegion = kind == "Region";
+            bool isSpline = kind == "Spline";
+            extentsRow.element.Visibility  = isRegion ? Visibility.Visible : Visibility.Collapsed;
+            oceanExtentRow.Visibility      = isOcean  ? Visibility.Visible : Visibility.Collapsed;
+            splineHint.Visibility          = isSpline ? Visibility.Visible : Visibility.Collapsed;
+        }
+        UpdateKindVisibility(info.WaterKind);
         kindCombo.SelectionChanged += (_, _) =>
         {
             if (kindCombo.SelectedItem is ComboBoxItem item && item.Tag is string kind)

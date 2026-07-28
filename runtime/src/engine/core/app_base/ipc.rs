@@ -379,6 +379,13 @@ pub enum IpcCommand {
     /// LightComponent のフィールドを更新する
     /// （key: kind/color/intensity/range/inner_angle/outer_angle/rect_width/rect_height/cast_shadows）
     SetLightField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// WaterVolumeComponent のフィールドを更新する（water_ops.rs が処理）。
+    /// key: kind / surface_height / region_half_extents / ocean_extent / shallow_color /
+    ///      deep_color / absorption_distance / surface_opacity / foam_color / foam_width /
+    ///      foam_intensity / wave_amplitude / wave_scale / wave_speed / fresnel_power /
+    ///      fresnel_strength / reflection_color / refraction_distortion。
+    /// ベクタ系（region_half_extents / *_color）の value は "x,y,z" 形式。
+    SetWaterField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// JointAttachComponent のフィールドを更新する
     /// （key: joint_name / offset_pos / offset_rot / offset_scale。offset_* は "x,y,z" 形式）
     SetJointAttachField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
@@ -1573,6 +1580,18 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             parse2u_tail(&s["SET_LIGHT_FIELD:".len()..]).and_then(|(a, sl, tail)| {
                                 let (key, value) = tail.split_once(',')?;
                                 Some(IpcCommand::SetLightField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
+                        }
+                        s if s.starts_with("SET_WATER_FIELD:") => {
+                            // フォーマット: SET_WATER_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+                            // value に "," を含む（region_half_extents / *_color は "x,y,z"）ため
+                            // 最初の "," までを key とし、tail 全体を value にする。
+                            parse2u_tail(&s["SET_WATER_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetWaterField {
                                     actor_dfs_id: a, slot_idx: sl,
                                     key: key.to_string(), value: value.to_string(),
                                 })

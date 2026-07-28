@@ -1,0 +1,28 @@
+# water_surface.toml — 水面描画パス（Phase W1）
+#
+# 頂点バッファを一切使わず（vertex_slots = []）、draw(0..6, 0..N) の 1 ドローで
+# 全水ボリュームのクアッドを描く。頂点は vertex_index、パラメータは instance_index から引く。
+#
+# no_depth = true: 深度アタッチメントを持たない。共有深度テクスチャは他パスで書き込み可能として
+# アタッチされており、同一パスでアタッチメント兼サンプルにするとエイリアシングになるため、
+# 深度は group1 の t_depth（DepthOnly ビュー）としてサンプルし、シェーダ内で手動深度テストを行う。
+# 水面は元々深度を書かないので挙動は通常の Z テストと等価。
+#
+# cull_mode = "None": 水中視点（W2）で水面を裏側からも見るため、両面を描く。
+#
+# blend = "Replace": 屈折の背景をシェーダ内で合成済み（alpha=1 を出力）なので、
+# ブレンドは行わず上書きする。
+shader_sources  = ["water_surface.wgsl"]
+vertex_entry    = "vs_water"
+fragment_entry  = "fs_water"
+vertex_slots    = []
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+no_depth        = true
+
+color_format    = "surface"
+blend           = "Replace"
+write_mask      = "all"

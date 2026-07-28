@@ -48,6 +48,8 @@ mod play_mode_ops;
 /// 【一時】埋め込み Play の凍結/黒画面 診断計器（ウォッチドッグ・ステージ印・イベントトレース）。原因確定後に撤去。
 mod play_diag;
 mod audio_ops;
+/// 水ボリューム（WaterVolumeComponent）のインスペクタ更新（SET_WATER_FIELD）
+mod water_ops;
 mod animation_ops;
 pub(crate) mod light_ops;
 pub(crate) mod skybox_ops;
@@ -729,6 +731,14 @@ pub struct App {
     /// 半透明ありのフレームで、不透明シーン HDR のミップ（下位ほど強くぼかし）を作る。
     /// 半透明フラグメントが roughness からミップレベルを選んで「すりガラス」を表現する。
     refract_pyramid: crate::engine::core::renderer::RefractPyramid,
+    /// 水面描画パス（Phase W1）のリソース一式。`engine::water` が解決した水ボリュームを
+    /// 1 ドローで描き、屈折の背景グラブ・波法線・吸収・岸フォーム・フレネルを合成する。
+    ///
+    /// `Option` なのは、パイプライン構築に `wgpu::Device` が要る一方 `App::new` は
+    /// デバイス確立前に呼ばれるため（`hiz` と同じ遅延構築方式）。
+    /// 水ボリュームが存在するフレームで初めて構築され、以後使い回される
+    /// （水を置かないプロジェクトではパイプラインすら作られない＝起動コスト 0）。
+    water_renderer: Option<crate::engine::core::renderer::WaterRenderer>,
     /// AO（SSAO / RT-AO, Phase D4）の半解像度テクスチャ群（ao_raw / ao_a / ao_b）。
     /// STORAGE_BINDING を要するため RtPool には載せられず本フィールドが専有する。
     /// 毎フレーム ensure で半解像度サイズに追従する（AO 生成パイプラインは DrawContext.pipelines.ao）。
@@ -1201,6 +1211,8 @@ impl App {
             edit_view_mode:              EditViewMode::View3D,
             rt_pool:                     crate::engine::core::renderer::RtPool::new(),
             refract_pyramid:             crate::engine::core::renderer::RefractPyramid::new(),
+            // 水面レンダラは device 確立後（初めて水ボリュームを描くフレーム）に遅延構築する。
+            water_renderer:              None,
             ao_targets:                  crate::engine::core::renderer::AoTargets::new(),
             ssgi_targets:                crate::engine::core::renderer::SsgiTargets::new(),
             shadow_mask_targets:         crate::engine::core::renderer::ShadowMaskTargets::new(),

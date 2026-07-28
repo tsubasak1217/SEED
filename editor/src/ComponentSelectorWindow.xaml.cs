@@ -57,6 +57,10 @@ public partial class ComponentSelectorWindow : Window
             new("ModelComponent", "Model", "3D モデルをアクタにアタッチ", ActorTarget.Actor3D),
             new("SkyboxComponent", "Skybox", "equirectangular（正距円筒）画像1枚を天球として描画。CameraLocked/WorldAnchored", ActorTarget.Actor3D),
         }),
+        ("環境", new()
+        {
+            new("WaterVolumeComponent", "Water Volume", "海・池などの水領域。水面描画と水中判定を提供", ActorTarget.Actor3D),
+        }),
         ("UI", new()
         {
             new("CanvasComponent", "Canvas", "UI 矩形領域をアクタにアタッチ（幅・高さ指定）。3D アクタにアタッチするとワールド空間に配置", ActorTarget.Common),
@@ -324,6 +328,7 @@ public partial class ComponentSelectorWindow : Window
         "LightComponent"      => "Light",
         "SkyboxComponent"     => "Skybox",
         "ParticleEmitterComponent" => "ParticleEmitter",
+        "WaterVolumeComponent"     => "Water",
         // Plugin:{name} → プラグイン名をデフォルト名とする
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                    => typeId,

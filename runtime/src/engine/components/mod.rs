@@ -8,65 +8,65 @@
 //    4. Actor::to_data() / build_actor() に対応処理を追加する
 // ============================================================
 
-pub mod animator_component;
-pub mod audio_component;
-pub mod camera_component;
-pub mod canvas_component;
+pub mod transform;
 pub mod canvas_transform;
-pub mod collider2d_component;
-pub mod collider_component;
+pub mod model_component;
+pub mod script_component;
+pub mod canvas_component;
+pub mod sprite_component;
 pub mod inputmap_component;
-pub mod jointattach_component;
+pub mod camera_component;
+pub mod plugin_component;
+pub mod collider_component;
+pub mod collider2d_component;
+pub mod rigidbody_component;
+pub mod audio_component;
+pub mod animator_component;
 pub mod light_component;
+pub mod jointattach_component;
+pub mod skybox_component;
+pub mod particle_emitter_component;
 /// マテリアルオーバーライド（Phase R7: .mat マテリアル＋マルチマテリアル編集）
 pub mod material_override;
-pub mod model_component;
-pub mod particle_emitter_component;
-pub mod plugin_component;
-pub mod rigidbody_component;
-pub mod script_component;
-pub mod skybox_component;
-pub mod sprite_component;
 /// 地形チャンク（ボクセル地形の 1 チャンク識別＋.tvox 永続化リンク・内部管理用）
 pub mod terrain_component;
-pub mod transform;
+/// 水ボリューム（Phase W: 大洋 / 直方体水塊 / 川スプライン(W4) の定義）
+pub mod water_volume_component;
 
-pub use camera_component::{CameraComponent, CameraComponentData, CameraProjection, ScalingMode};
-pub use canvas_component::{
-    AspectRatioAxis, CanvasComponent, CanvasComponentData, CanvasDrawZone, CanvasViewportRef,
-    GravityMode,
-};
-pub use canvas_transform::CanvasTransform;
-pub use collider_component::{ColliderComponent, ColliderComponentData, ColliderShapeData};
-pub use collider2d_component::{Collider2dComponent, Collider2dComponentData, ColliderShape2dData};
-pub use inputmap_component::{InputMapComponent, InputMapComponentData};
-pub use material_override::{MaterialOverride, MaterialOverrideKind, overrides_signature};
-pub use model_component::{
-    GROUP_ID_BASE, GroupMeta, InstanceMeta, ModelAnimDrive, ModelComponent, ModelComponentData,
-    next_batch_instance_id,
-};
-pub use plugin_component::{PluginComponent, PluginComponentData};
-pub use script_component::{PlaceholderScriptSlot, ScriptComponent, ScriptComponentData};
-pub use sprite_component::{SpriteComponent, SpriteComponentData};
 pub use transform::Transform;
+pub use canvas_transform::CanvasTransform;
+pub use model_component::{
+    ModelComponent, ModelComponentData, ModelAnimDrive,
+    InstanceMeta, GroupMeta, GROUP_ID_BASE, next_batch_instance_id,
+};
+pub use material_override::{MaterialOverride, MaterialOverrideKind, overrides_signature};
+pub use script_component::{
+    ScriptComponent, PlaceholderScriptSlot, ScriptComponentData,
+};
+pub use canvas_component::{CanvasComponent, CanvasComponentData, CanvasViewportRef, AspectRatioAxis, GravityMode, CanvasDrawZone};
+pub use sprite_component::{SpriteComponent, SpriteComponentData};
+pub use inputmap_component::{InputMapComponent, InputMapComponentData};
+pub use camera_component::{CameraComponent, CameraComponentData, ScalingMode, CameraProjection};
+pub use plugin_component::{PluginComponent, PluginComponentData};
+pub use collider_component::{ColliderComponent, ColliderComponentData, ColliderShapeData};
+pub use collider2d_component::{
+    Collider2dComponent, Collider2dComponentData, ColliderShape2dData,
+};
 // RigidbodyComponentData は旧フォーマットシーンの後方互換デシリアライズ専用
-pub use animator_component::{
-    AnimClipKind, AnimClipLoop, AnimClipRef, AnimatorComponent, AnimatorComponentData,
-};
-pub use audio_component::{AudioComponent, AudioComponentData};
-pub use jointattach_component::{JointAttachComponent, JointAttachComponentData};
-pub use light_component::{LightComponent, LightComponentData, LightKind};
-pub use particle_emitter_component::{
-    CURVE_LUT_SAMPLES, CurveChannel, CurveInterp, CurveKey,
-    DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG, EmitMode, MAX_PARTICLE_MODEL_VERTS,
-    MAX_PARTICLE_TEXTURES, MAX_PARTICLES_PER_EMITTER, ParamCurve, ParticleBlend,
-    ParticleEmitterComponent, ParticleEmitterComponentData, ParticleShape, ParticleSimSpace,
-    SpawnVolume,
-};
 pub use rigidbody_component::RigidbodyComponentData;
+pub use audio_component::{AudioComponent, AudioComponentData};
+pub use terrain_component::{TerrainChunkComponent, TerrainChunkComponentData, TERRAIN_SOURCE_SCHEME};
+pub use animator_component::{AnimatorComponent, AnimatorComponentData, AnimClipRef, AnimClipKind, AnimClipLoop};
+pub use light_component::{LightComponent, LightComponentData, LightKind};
+pub use jointattach_component::{JointAttachComponent, JointAttachComponentData};
 pub use skybox_component::{SkyboxComponent, SkyboxComponentData, SkyboxMode};
-pub use terrain_component::{
-    TERRAIN_SOURCE_SCHEME, TerrainChunkComponent, TerrainChunkComponentData,
+pub use water_volume_component::{WaterVolumeComponent, WaterVolumeComponentData, WaterVolumeKind};
+pub use particle_emitter_component::{
+    ParticleEmitterComponent, ParticleEmitterComponentData,
+    ParticleBlend, ParticleSimSpace, ParticleShape, SpawnVolume, EmitMode,
+    ParamCurve, CurveChannel, CurveKey, CurveInterp,
+    MAX_PARTICLES_PER_EMITTER, MAX_PARTICLE_MODEL_VERTS, CURVE_LUT_SAMPLES,
+    DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG, MAX_PARTICLE_TEXTURES,
 };
 
 use serde::{Deserialize, Serialize};
@@ -114,29 +114,32 @@ pub enum ComponentKind {
     Skybox,
     /// 地形チャンク（ボクセル地形の 1 チャンク・内部管理用。ユーザー追加不可）
     TerrainChunk,
+    /// 水ボリューム（大洋 / 直方体水塊 / 川スプライン(W4)）
+    WaterVolume,
 }
 
 impl ComponentKind {
     /// エディタ表示用の型名を返す。
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::Model => "ModelComponent",
-            Self::Script => "ScriptComponent",
+            Self::Model       => "ModelComponent",
+            Self::Script      => "ScriptComponent",
             Self::Placeholder => "ScriptComponent (placeholder)",
-            Self::Canvas => "CanvasComponent",
-            Self::Sprite => "SpriteComponent",
-            Self::InputMap => "InputMapComponent",
-            Self::Camera => "CameraComponent",
-            Self::Plugin => "PluginComponent",
-            Self::Collider => "ColliderComponent",
-            Self::Collider2d => "Collider2dComponent",
-            Self::Audio => "AudioComponent",
-            Self::Animator => "AnimatorComponent",
-            Self::Light => "LightComponent",
+            Self::Canvas      => "CanvasComponent",
+            Self::Sprite      => "SpriteComponent",
+            Self::InputMap    => "InputMapComponent",
+            Self::Camera      => "CameraComponent",
+            Self::Plugin      => "PluginComponent",
+            Self::Collider    => "ColliderComponent",
+            Self::Collider2d  => "Collider2dComponent",
+            Self::Audio       => "AudioComponent",
+            Self::Animator    => "AnimatorComponent",
+            Self::Light       => "LightComponent",
             Self::JointAttach => "JointAttachComponent",
             Self::ParticleEmitter => "ParticleEmitterComponent",
-            Self::Skybox => "SkyboxComponent",
+            Self::Skybox      => "SkyboxComponent",
             Self::TerrainChunk => "TerrainChunkComponent",
+            Self::WaterVolume => "WaterVolumeComponent",
         }
     }
 }
@@ -177,4 +180,6 @@ pub enum ComponentData {
     SkyboxComponent(SkyboxComponentData),
     /// 地形チャンク（ボクセル地形の 1 チャンク識別＋.tvox リンク・内部管理用）
     TerrainChunkComponent(TerrainChunkComponentData),
+    /// 水ボリューム（大洋 / 直方体水塊 / 川スプライン(W4)）
+    WaterVolumeComponent(WaterVolumeComponentData),
 }

@@ -479,6 +479,10 @@ impl App {
                         use crate::engine::components::TerrainChunkComponent;
                         scene.world.remove::<TerrainChunkComponent>(slot_entity);
                     }
+                    ComponentKind::WaterVolume => {
+                        use crate::engine::components::WaterVolumeComponent;
+                        scene.world.remove::<WaterVolumeComponent>(slot_entity);
+                    }
                 }
                 scene.world.despawn(slot_entity);
                 // アクターのスロットリストから削除
@@ -886,6 +890,17 @@ impl App {
                 } else {
                     scene.world.despawn(slot_entity);
                 }
+                true
+            }
+            ComponentData::WaterVolumeComponent(wv_data) => {
+                // 水ボリュームコンポーネントを複製する（新しいスロット専用エンティティへ挿入）
+                use crate::engine::components::WaterVolumeComponent;
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, WaterVolumeComponent::from_data(wv_data));
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<WaterVolumeComponent>(slot_data.name, ComponentKind::WaterVolume, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
                 true
             }
             ComponentData::AnimatorComponent(an_data) => {
@@ -1296,6 +1311,12 @@ impl App {
                         ComponentKind::Audio,
                         slot_entity,
                     ));
+                }
+                ComponentData::WaterVolumeComponent(wv_data) => {
+                    // 水ボリュームコンポーネントをスロット専用エンティティへ復元する
+                    use crate::engine::components::WaterVolumeComponent;
+                    scene.world.insert(slot_entity, WaterVolumeComponent::from_data(wv_data));
+                    new_slots.push(ComponentSlot::new::<WaterVolumeComponent>(slot_data.name, ComponentKind::WaterVolume, slot_entity));
                 }
                 ComponentData::AnimatorComponent(an_data) => {
                     use crate::engine::components::AnimatorComponent;

@@ -411,6 +411,32 @@ impl App {
                         d.min_distance, d.max_distance, d.pan,
                     ))
                 }
+                ComponentData::WaterVolumeComponent(d) => {
+                    // 水ボリューム: 種別・水面高さ・範囲・見た目パラメータ一式を
+                    // インスペクター用に送信する（種別ごとに関連フィールドのみ UI 側で表示する）。
+                    // kind は文字列（"Ocean"/"Region"/"Spline"）としてエスケープして送る。
+                    let kind_json = serde_json::to_string(d.kind.as_str()).unwrap_or_default();
+                    ("WaterVolumeComponent", format!(
+                        r#","kind":{kind_json},"surface_height":{:.4},"region_hx":{:.4},"region_hy":{:.4},"region_hz":{:.4},"ocean_extent":{:.4},"shallow_r":{:.4},"shallow_g":{:.4},"shallow_b":{:.4},"deep_r":{:.4},"deep_g":{:.4},"deep_b":{:.4},"absorption_distance":{:.4},"surface_opacity":{:.4},"foam_r":{:.4},"foam_g":{:.4},"foam_b":{:.4},"foam_width":{:.4},"foam_intensity":{:.4},"wave_amplitude":{:.4},"wave_scale":{:.4},"wave_speed":{:.4},"fresnel_power":{:.4},"fresnel_strength":{:.4},"reflect_r":{:.4},"reflect_g":{:.4},"reflect_b":{:.4},"refraction_distortion":{:.4}"#,
+                        d.surface_height,
+                        d.region_half_extents[0], d.region_half_extents[1], d.region_half_extents[2],
+                        d.ocean_extent,
+                        d.shallow_color[0], d.shallow_color[1], d.shallow_color[2],
+                        d.deep_color[0], d.deep_color[1], d.deep_color[2],
+                        d.absorption_distance,
+                        d.surface_opacity,
+                        d.foam_color[0], d.foam_color[1], d.foam_color[2],
+                        d.foam_width,
+                        d.foam_intensity,
+                        d.wave_amplitude,
+                        d.wave_scale,
+                        d.wave_speed,
+                        d.fresnel_power,
+                        d.fresnel_strength,
+                        d.reflection_color[0], d.reflection_color[1], d.reflection_color[2],
+                        d.refraction_distortion,
+                    ))
+                }
                 ComponentData::AnimatorComponent(d) => {
                     // アニメーター: クリップ一覧（name/path）・既定クリップ・自動再生・速度を
                     // インスペクター／タイムラインパネル用に送信する（P2 でクリップ編集 UI が消費する）。
@@ -826,6 +852,36 @@ impl App {
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<AudioComponent>(name, ComponentKind::Audio, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "WaterVolumeComponent" => {
+                // デフォルト（Region・既定サイズ）の WaterVolumeComponent をアクターに追加する。
+                // 種別・範囲・見た目はインスペクターから後で設定する。
+                use crate::engine::components::WaterVolumeComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, WaterVolumeComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<WaterVolumeComponent>(name, ComponentKind::WaterVolume, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);
