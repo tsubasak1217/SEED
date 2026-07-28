@@ -95,6 +95,10 @@ public partial class ProjectPanel : UserControl
     private bool    _isRenaming;
     private string? _pendingRenameFolder;
 
+    // 次回 RefreshFileGrid で選択状態にして可視域へ入れるファイル/フォルダの絶対パス。
+    // タブ切替時の選択復元と、参照フィールドからのジャンプ（RevealFile）で使う。
+    private string? _pendingSelectPath;
+
     // 再クリックリネーム用タイマー
     private Border?                                        _renamePendingTile;
     private System.Windows.Threading.DispatcherTimer?     _renameTimer;
@@ -163,6 +167,8 @@ public partial class ProjectPanel : UserControl
         _assetsRoot  = assetsPath;
         _currentPath = assetsPath;
         BuildFolderTree();
+        // タブ機構を初期化する（ルートフォルダを開いた 1 枚だけの状態から始める）
+        InitTabs(assetsPath);
         RefreshFileGrid();
         StartWatcher();
     }
@@ -179,11 +185,18 @@ public partial class ProjectPanel : UserControl
 
     // ── 新規作成ボタン ────────────────────────────────────────────
 
-    private void OnCreateClick(object sender, RoutedEventArgs e)
-    {
-        if (string.IsNullOrEmpty(_currentPath) || !Directory.Exists(_currentPath)) return;
+    private void OnCreateClick(object sender, RoutedEventArgs e) => OpenCreateItemWindow(_currentPath);
 
-        var win = new SEEDEditor.CreateItemWindow(_currentPath)
+    /// <summary>
+    /// 新規作成ウィンドウ（CreateItemWindow）を開く。作成先は引数のフォルダ。
+    /// ツールバーの「新規作成」ボタンと、右クリックメニューの「新規作成」の共通入口。
+    /// </summary>
+    /// <param name="targetDir">作成先フォルダの絶対パス。存在しない場合は何もしない。</param>
+    private void OpenCreateItemWindow(string targetDir)
+    {
+        if (string.IsNullOrEmpty(targetDir) || !Directory.Exists(targetDir)) return;
+
+        var win = new SEEDEditor.CreateItemWindow(targetDir)
         {
             Owner = Window.GetWindow(this),
         };
@@ -340,16 +353,27 @@ public partial class ProjectPanel : UserControl
     private void OnNodeExpanded(object sender, RoutedEventArgs e)
     {
         if (sender is not TreeViewItem item) return;
-        if (item.Items.Count == 1 && item.Items[0] is TreeViewItem { Tag: null, Header: null })
-        {
-            item.Items.Clear();
-            if (item.Tag is string path && Directory.Exists(path))
-            {
-                foreach (var sub in Directory.GetDirectories(path).OrderBy(p => p))
-                    item.Items.Add(BuildTreeNode(new DirectoryInfo(sub)));
-            }
-        }
+        MaterializeChildren(item);
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// 遅延生成ノード（ダミー 1 個だけを持つ TreeViewItem）の子を実体化する。
+    /// すでに実体化済み、または子を持たないノードでは何もしない。
+    /// 展開イベント経由（OnNodeExpanded）とタブ復元のプログラム展開（ExpandToFolder）の
+    /// 双方から呼ぶため、判定と生成をこの 1 箇所に集約している。
+    /// </summary>
+    private void MaterializeChildren(TreeViewItem item)
+    {
+        if (item.Items.Count != 1) return;
+        if (item.Items[0] is not TreeViewItem { Tag: null, Header: null }) return;
+
+        item.Items.Clear();
+        if (item.Tag is string path && Directory.Exists(path))
+        {
+            foreach (var sub in Directory.GetDirectories(path).OrderBy(p => p))
+                item.Items.Add(BuildTreeNode(new DirectoryInfo(sub)));
+        }
     }
 
     private static StackPanel BuildFolderHeader(string name, bool isRoot)
@@ -402,6 +426,23 @@ public partial class ProjectPanel : UserControl
 
         foreach (var file in Directory.GetFiles(_currentPath).OrderBy(p => p))
             FileGrid.Children.Add(BuildFileItem(new FileInfo(file)));
+
+        // タブ切替・ジャンプ要求で指定されたファイルを選択状態にして可視域へ入れる。
+        // 一度使ったら消費する（以降の再描画で選択が復活しないように）。
+        if (_pendingSelectPath != null)
+        {
+            var wanted = _pendingSelectPath;
+            _pendingSelectPath = null;
+            var target = FileGrid.Children.OfType<Border>()
+                .FirstOrDefault(b => b.Tag is string p && PathEquals(p, wanted));
+            if (target != null)
+            {
+                SelectSingle(target, ctrl: false, shift: false);
+                // レイアウト確定後でないと BringIntoView が正しい位置を計算できないため遅延実行する
+                Dispatcher.BeginInvoke(() => target.BringIntoView(),
+                    System.Windows.Threading.DispatcherPriority.Loaded);
+            }
+        }
 
         // 新規ファイル/フォルダ作成後のリネーム
         // _pendingRenameFolder はここでは消さない。StartRenameMode が実行されるまで
@@ -1045,9 +1086,11 @@ public partial class ProjectPanel : UserControl
     {
         var menu = new ContextMenu();
 
+        // 種類別の「新規○○」項目は新規作成ウィンドウ（CreateItemWindow）へ集約した。
+        // ここに残すのは、ウィンドウを介さず即座に作れる「新規フォルダ」と、
+        // ウィンドウを開く「新規作成」の 2 つだけ。
+        Add(menu, "新規作成",               null, () => OpenCreateItemWindow(_currentPath));
         Add(menu, "新規フォルダを作成",     null, CreateNewFolder);
-        Add(menu, "新規マテリアル",         null, CreateNewMaterial);
-        Add(menu, "新規ポストエフェクト",   null, CreateNewPostFX);
         menu.Items.Add(new Separator());
         Add(menu, "エクスプローラーで開く", null, () =>
             System.Diagnostics.Process.Start("explorer.exe", _currentPath));
@@ -1055,90 +1098,6 @@ public partial class ProjectPanel : UserControl
         menu.PlacementTarget = FileScrollViewer;
         menu.Placement       = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
         menu.IsOpen          = true;
-    }
-
-    /// <summary>
-    /// Phase R7: 現在表示中のフォルダに既定内容の .mat マテリアルファイルを新規作成する。
-    /// ファイル名は CreateNewFolder に倣い重複時に連番を付与する（NewMaterial.mat / NewMaterial_1.mat ...）。
-    /// UTF-8 (BOM なし) で書き込み、作成後にファイルグリッドを更新する。
-    /// </summary>
-    private void CreateNewMaterial()
-    {
-        const string baseName = "NewMaterial";
-        string name = $"{baseName}.mat";
-        string path = Path.Combine(_currentPath, name);
-        int n = 1;
-        while (File.Exists(path) || Directory.Exists(path))
-        {
-            name = $"{baseName}_{n++}.mat";
-            path = Path.Combine(_currentPath, name);
-        }
-
-        // 既定のマテリアル JSON（PBR: ベースカラー・メタリック・ラフネス・発光色・アルファ設定・テクスチャ参照）
-        const string defaultJson = """
-        {
-          "name": "NewMaterial",
-          "base_color": [1.0, 1.0, 1.0, 1.0],
-          "metallic": 1.0,
-          "roughness": 1.0,
-          "emissive": [0.0, 0.0, 0.0],
-          "alpha_mode": "opaque",
-          "alpha_cutoff": 0.5,
-          "cull_face": "back",
-          "ior": 1.0,
-          "transmission": 0.0,
-          "diffuse_transmission": 0.0,
-          "mr_tex_ignore": false,
-          "shading_model": 0,
-          "textures": { "albedo": "", "normal": "", "metallic_roughness": "", "occlusion": "", "emissive": "" }
-        }
-        """;
-        try
-        {
-            // BOM なし UTF-8 で書き込む（new UTF8Encoding(false) は BOM を付与しない）。
-            File.WriteAllText(path, defaultJson, new UTF8Encoding(false));
-            _pendingRenameFolder = path;
-            RefreshFileGrid();
-        }
-        catch { }
-    }
-
-    /// <summary>
-    /// テクスチャ単位ポストエフェクト機能: 現在表示中のフォルダに既定内容の .postfx ファイルを新規作成する。
-    /// ファイル名・連番付与・UTF-8(BOM なし)書き込み・作成後リネームは CreateNewMaterial と完全に同じ流儀。
-    /// 既定内容は Rust 側の PostFxAsset スキーマ（every_frame / effects[blur, vignette, tint]）と厳密一致させる。
-    /// </summary>
-    private void CreateNewPostFX()
-    {
-        const string baseName = "NewPostFX";
-        string name = $"{baseName}.postfx";
-        string path = Path.Combine(_currentPath, name);
-        int n = 1;
-        while (File.Exists(path) || Directory.Exists(path))
-        {
-            name = $"{baseName}_{n++}.postfx";
-            path = Path.Combine(_currentPath, name);
-        }
-
-        // 既定のポストエフェクト JSON（毎フレーム適用フラグ・エフェクトリスト: ぼかし・ビネット・色調）
-        const string defaultJson = """
-        {
-          "every_frame": false,
-          "effects": [
-            { "type": "blur", "radius": 4 },
-            { "type": "vignette", "strength": 0.3, "mask": "" },
-            { "type": "tint", "color": [1.0, 0.95, 0.9, 1.0] }
-          ]
-        }
-        """;
-        try
-        {
-            // BOM なし UTF-8 で書き込む（new UTF8Encoding(false) は BOM を付与しない）。
-            File.WriteAllText(path, defaultJson, new UTF8Encoding(false));
-            _pendingRenameFolder = path;
-            RefreshFileGrid();
-        }
-        catch { }
     }
 
     /// <summary>
@@ -1448,6 +1407,8 @@ public partial class ProjectPanel : UserControl
     {
         if (!Directory.Exists(path)) return;
         _currentPath = path;
+        // アクティブタブの「開いているフォルダ位置」を更新し、タブ名（フォルダ名）を追従させる
+        OnActiveFolderChanged(path);
         RefreshFileGrid();
         SyncTreeSelection(path);
     }
@@ -1495,7 +1456,11 @@ public partial class ProjectPanel : UserControl
     {
         Dispatcher.BeginInvoke(() =>
         {
+            // ツリーを作り直すと展開状態が失われるため、作り直す前に現在の展開集合を
+            // アクティブタブへ退避し、作り直した後で復元する。
+            CaptureActiveTabState();
             BuildFolderTree();
+            RestoreActiveTabTreeExpansion();
             if (!Directory.Exists(_currentPath)) _currentPath = _assetsRoot;
             // リネーム pending 中・リネーム実行中はグリッドを再構築しない。
             // FSW が StartRenameMode より先に実行されてタイルを破壊するのを防ぐ。

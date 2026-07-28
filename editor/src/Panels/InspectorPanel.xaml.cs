@@ -5451,8 +5451,15 @@ public partial class InspectorPanel : UserControl
             Margin          = new Thickness(0, 0, 0, 2),
             AllowDrop       = true,
             Child           = vpRefLabel,
-            ToolTip         = "シーンビューポートまたはヒエラルキーからカメラアクターをドロップして参照を設定",
+            Cursor          = Cursors.Hand,
+            ToolTip         = "シーンビューポートまたはヒエラルキーからカメラアクターをドロップして参照を設定\n"
+                            + "（ダブルクリックで Hierarchy の参照先アクタへジャンプ）",
         };
+
+        // アクタ参照フィールドのジャンプ動線:
+        // 名前部分のダブルクリックで Hierarchy の該当アクタへスクロールし、一定時間ハイライトする。
+        // 参照先はドロップで張り替わるため、ラベルの現在値から都度アクタ名を取り出す。
+        ActorRefJump.AttachDoubleClickReveal(vpDropZone, () => ExtractVpRefActorName(vpRefLabel.Text));
 
         // クリア（ウィンドウに戻す）ボタン
         var btnClearVp = new Button
@@ -5753,6 +5760,22 @@ public partial class InspectorPanel : UserControl
         _pendingVpRefCanvasSlotIdx = canvasSlotIdx;
         _pendingVpRefDisplayLabel  = displayLabel;
         _runtime.SendToRuntime($"GET_ACTOR_COMPONENTS:{droppedActorDfsId}");
+    }
+
+    /// <summary>
+    /// カメラ参照ラベルの「アクタ名」と「カメラスロット名」の区切り文字列。
+    /// 表示生成側（`$"{actorName} / {slotName}"`）と必ず同じものを使うこと。
+    /// </summary>
+    private const string VpRefLabelSeparator = " / ";
+
+    /// <summary>
+    /// カメラ参照ラベルの表示文字列（"アクタ名 / スロット名"）からアクタ名を取り出す。
+    /// 未設定表示（"（未設定）"）など区切りを含まない場合は null を返す。
+    /// </summary>
+    private static string? ExtractVpRefActorName(string labelText)
+    {
+        var idx = labelText.IndexOf(VpRefLabelSeparator, StringComparison.Ordinal);
+        return idx <= 0 ? null : labelText[..idx];
     }
 
     // ── CanvasViewportRef ドロップ解決用 pending フィールド ──────────────

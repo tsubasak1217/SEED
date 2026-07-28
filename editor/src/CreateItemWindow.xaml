@@ -103,6 +103,66 @@
                 </StackPanel>
             </Button>
 
+            <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateScene">
+                <StackPanel Orientation="Horizontal">
+                    <Image Source="pack://application:,,,/resources/icons/folderview/scene.png"
+                           Width="34" Height="34"
+                           Margin="0,0,14,0" VerticalAlignment="Center"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="Scene"
+                                   Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>
+                        <TextBlock Text="空のシーンファイル (.scene) を作成"
+                                   Foreground="#777777" FontSize="11" Margin="0,3,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+            </Button>
+
+            <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateMaterial">
+                <StackPanel Orientation="Horizontal">
+                    <Image Source="pack://application:,,,/resources/icons/folderview/image.png"
+                           Width="34" Height="34"
+                           Margin="0,0,14,0" VerticalAlignment="Center"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="Material"
+                                   Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>
+                        <TextBlock Text="既定 PBR のマテリアルファイル (.mat) を作成"
+                                   Foreground="#777777" FontSize="11" Margin="0,3,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+            </Button>
+
+            <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateShader">
+                <StackPanel Orientation="Horizontal">
+                    <Image Source="pack://application:,,,/resources/icons/folderview/script.png"
+                           Width="34" Height="34"
+                           Margin="0,0,14,0" VerticalAlignment="Center"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="Shader"
+                                   Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>
+                        <TextBlock Text="シェーディングアセット (.wgsl) を作成"
+                                   Foreground="#777777" FontSize="11" Margin="0,3,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+            </Button>
+
+            <Button Style="{StaticResource ItemRowStyle}" Click="OnCreatePostFX">
+                <StackPanel Orientation="Horizontal">
+                    <Image Source="pack://application:,,,/resources/icons/folderview/image.png"
+                           Width="34" Height="34"
+                           Margin="0,0,14,0" VerticalAlignment="Center"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="Post Effect"
+                                   Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>
+                        <TextBlock Text="ポストエフェクトファイル (.postfx) を作成"
+                                   Foreground="#777777" FontSize="11" Margin="0,3,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+            </Button>
+
         </StackPanel>
 
     </StackPanel>
