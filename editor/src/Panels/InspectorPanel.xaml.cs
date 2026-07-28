@@ -455,6 +455,22 @@ public partial class InspectorPanel : UserControl
     /// <summary>水の各色はアルファを持たないため、カラーピッカーへ渡す固定アルファ。</summary>
     private const float WaterColorAlpha = 1f;
 
+    // ── 川（スプライン水面、W4）の既定値 ───────────────────────
+    // kind == "Spline" のときのみ使用する。既定値は Rust 側 WaterVolumeComponentData と一致させる。
+
+    /// <summary>川幅の既定値（m）。</summary>
+    private const float WaterRiverWidthDefault = 4.0f;
+    /// <summary>流速の既定値（m/s）。</summary>
+    private const float WaterFlowSpeedDefault = 1.5f;
+    /// <summary>川の深さの既定値（m）。水面からこの深さまでが水中判定になる。</summary>
+    private const float WaterRiverDepthDefault = 2.0f;
+    /// <summary>地形スナップボタンのオフセット Y の既定値（m）。制御点 Y = 地形高さ + このオフセット。</summary>
+    private const float WaterSplineSnapOffsetYDefault = 0.2f;
+    /// <summary>川の描画に最低限必要な制御点数。これ未満では未描画になる旨の注意書きを出す。</summary>
+    private const int WaterSplineMinPointsForRender = 2;
+    /// <summary>制御点が 1 個のときに「制御点を追加」した際、直前点から Z 方向へずらす距離の既定値（m）。</summary>
+    private const float WaterSplineNewPointOffsetDefault = 2.0f;
+
     // ── InteractionSourceComponent の既定値（Phase I1）────────
     // Rust 側 InteractionSourceComponentData の既定値と厳密に一致させること。
 
@@ -632,6 +648,11 @@ public partial class InspectorPanel : UserControl
         float WaterShoreLength = WaterShoreLengthDefault,
         float WaterShorePeriod = WaterShorePeriodDefault,
         float WaterShoreFoam = WaterShoreFoamDefault,
+        // 川（スプライン、W4）: 川幅・流速・制御点リスト（アクタ相対 "x,y,z;x,y,z;..." 形式。無ければ空文字列）
+        float WaterRiverWidth = WaterRiverWidthDefault,
+        float WaterFlowSpeed = WaterFlowSpeedDefault,
+        float WaterRiverDepth = WaterRiverDepthDefault,
+        string WaterSplinePoints = "",
         // ── InteractionSourceComponent 用フィールド（Phase I1）──
         // 影響半径・強さ・有効フラグ。既定値は Rust 側 InteractionSourceComponentData と一致。
         float InteractionRadius = InteractionRadiusDefault,
@@ -1026,6 +1047,12 @@ public partial class InspectorPanel : UserControl
             var waterShoreLen    = comp.TryGetProperty("shore_wave_length",   out var wsl) ? wsl.GetSingle() : WaterShoreLengthDefault;
             var waterShorePeriod = comp.TryGetProperty("shore_wave_period",   out var wsp) ? wsp.GetSingle() : WaterShorePeriodDefault;
             var waterShoreFoam   = comp.TryGetProperty("shore_wave_foam",     out var wsf) ? wsf.GetSingle() : WaterShoreFoamDefault;
+            // 川（スプライン、W4）: 川幅・流速・制御点リスト。制御点は "x,y,z;x,y,z;..." の文字列（アクタ相対座標）で、
+            // 欠落/空文字列時は「制御点なし」として扱う（UI 側で 2 点未満の注意書きを出す）。
+            var waterRiverWidth   = comp.TryGetProperty("river_width",   out var wrw)  ? wrw.GetSingle()  : WaterRiverWidthDefault;
+            var waterFlowSpeed    = comp.TryGetProperty("flow_speed",    out var wflw) ? wflw.GetSingle() : WaterFlowSpeedDefault;
+            var waterRiverDepth   = comp.TryGetProperty("river_depth",   out var wrdp) ? wrdp.GetSingle() : WaterRiverDepthDefault;
+            var waterSplinePoints = comp.TryGetProperty("spline_points", out var wspl) ? wspl.GetString() ?? "" : "";
             // InteractionSourceComponent 用（Phase I1）: 半径・強さ・有効フラグ。
             // 欠落時は Rust 側既定値と一致する定数へフォールバックする。
             var interactRadius   = comp.TryGetProperty("radius",   out var isr) ? isr.GetSingle()  : InteractionRadiusDefault;
@@ -1118,6 +1145,9 @@ public partial class InspectorPanel : UserControl
                 WaterRippleFoamThreshold: waterRippleFoamTh,
                 WaterShoreStrength: waterShoreStr, WaterShoreLength: waterShoreLen,
                 WaterShorePeriod: waterShorePeriod, WaterShoreFoam: waterShoreFoam,
+                WaterRiverWidth: waterRiverWidth, WaterFlowSpeed: waterFlowSpeed,
+                WaterRiverDepth: waterRiverDepth,
+                WaterSplinePoints: waterSplinePoints,
                 // InteractionSourceComponent 用フィールド
                 InteractionRadius: interactRadius, InteractionStrength: interactStrength,
                 InteractionEnabled: interactEnabled);
@@ -4673,8 +4703,9 @@ public partial class InspectorPanel : UserControl
         kindRow.Children.Add(kindCombo);
         regionSp.Children.Add(kindRow);
 
-        // Spline は未実装のため、選択時のみ注意書きを表示する。
-        var splineHint = MakeHint("スプラインは W4 で実装予定（未実装）です。現状は描画されません。");
+        // Spline（川）選択時、詳細設定は下部の「川（スプライン）」セクションにまとめて表示するため、
+        // ここでは領域セクション内の他フィールド（半径系）が無関係であることを示す注意書きのみ出す。
+        var splineHint = MakeHint("スプライン（川）は下部の「川（スプライン）」セクションで制御点を編集します。");
         regionSp.Children.Add(splineHint);
 
         // 水面高さ（Ocean=ワールド Y / Region=アクタ相対 Y）。全種別で共通。
@@ -4756,8 +4787,157 @@ public partial class InspectorPanel : UserControl
         AddFloatRow(reflectSp, "屈折の歪み", info.WaterRefractionDistortion, "refraction_distortion", "F3");
         sp.Children.Add(reflectSection);
 
-        // ── 種別に応じた行の表示切替 ───────────────────────────
-        // Ocean: 海の描画半径のみ / Region: 領域半径のみ / Spline: どちらも持たず注意書きのみ。
+        // ── 川（スプライン）セクション（W4）─────────────────────
+        // kind == "Spline" のときのみ表示する。川幅・流速に加え、制御点（アクタ相対座標）の
+        // 追加/編集/削除と地形スナップを提供する。
+        var riverSection = BuildSection("川（スプライン）");
+        var riverSp      = (StackPanel)riverSection.Child;
+
+        AddFloatRow(riverSp, "川幅(m)",     info.WaterRiverWidth, "river_width", "F2");
+        AddFloatRow(riverSp, "流速(m/s)",   info.WaterFlowSpeed,  "flow_speed",  "F2");
+        AddFloatRow(riverSp, "川の深さ(m)", info.WaterRiverDepth, "river_depth", "F2");
+
+        // 制御点リスト本体（"x,y,z;x,y,z;..." を都度パースして保持し、編集のたびにリスト全体を送信する）。
+        var controlPoints = ParseSplinePoints(info.WaterSplinePoints);
+        var pointsPanel   = new StackPanel { Margin = new Thickness(0, 2, 0, 2) };
+        var pointsHint    = MakeHint($"制御点が{WaterSplineMinPointsForRender}点以上必要です（川は描画されません）");
+
+        // 制御点リスト全体を spline_points として送信するローカル関数。
+        void SendSplinePoints() => SendField("spline_points", SerializeSplinePoints(controlPoints));
+
+        // 制御点が既定点数を下回る間だけ注意書きを表示する。
+        void UpdatePointsHint() =>
+            pointsHint.Visibility = controlPoints.Count < WaterSplineMinPointsForRender
+                ? Visibility.Visible : Visibility.Collapsed;
+
+        // 制御点リスト UI を作り直すローカル関数（追加/削除のたびに全再構築する）。
+        void RebuildPoints()
+        {
+            pointsPanel.Children.Clear();
+            for (int i = 0; i < controlPoints.Count; i++)
+            {
+                int idx = i;
+                var rowGrid = new Grid { Margin = new Thickness(0, 1, 0, 1) };
+                rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                var (px, py, pz) = controlPoints[idx];
+                var xyzRow = BuildXYZRowSimple($"#{idx}", px, py, pz);
+                Grid.SetColumn(xyzRow.element, 0);
+                rowGrid.Children.Add(xyzRow.element);
+
+                // この制御点の X/Y/Z いずれかが確定したらリスト全体を送信する。
+                void CommitPoint()
+                {
+                    if (!float.TryParse(xyzRow.tx.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vx)) return;
+                    if (!float.TryParse(xyzRow.ty.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vy)) return;
+                    if (!float.TryParse(xyzRow.tz.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vz)) return;
+                    controlPoints[idx] = (vx, vy, vz);
+                    SendSplinePoints();
+                }
+                foreach (var tb in new[] { xyzRow.tx, xyzRow.ty, xyzRow.tz })
+                {
+                    tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitPoint(); e.Handled = true; } };
+                    tb.LostFocus += (_, _) => CommitPoint();
+                    NumericDragBehavior.SetOnDrag(tb, CommitPoint);
+                }
+
+                var delPointBtn = new Button
+                {
+                    Content = "削除", FontSize = 10, Width = 40, Height = 20,
+                    Margin = new Thickness(4, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+                };
+                delPointBtn.Click += (_, _) =>
+                {
+                    controlPoints.RemoveAt(idx);
+                    SendSplinePoints();
+                    RebuildPoints();
+                    UpdatePointsHint();
+                };
+                Grid.SetColumn(delPointBtn, 1);
+                rowGrid.Children.Add(delPointBtn);
+
+                pointsPanel.Children.Add(rowGrid);
+            }
+        }
+        RebuildPoints();
+        riverSp.Children.Add(pointsPanel);
+
+        // 「制御点を追加」ボタン。末尾に新しい制御点を挿入する初期位置は次の規則で決める:
+        // ・2点以上: 最後の点 + (最後の点 − 直前の点) の外挿位置（線の延長上）
+        // ・1点   : 最後の点から WaterSplineNewPointOffsetDefault だけ Z 方向へずらした位置
+        // ・0点   : 原点
+        (float x, float y, float z) ComputeNextControlPoint()
+        {
+            if (controlPoints.Count >= 2)
+            {
+                var last = controlPoints[^1];
+                var prev = controlPoints[^2];
+                return (last.x + (last.x - prev.x), last.y + (last.y - prev.y), last.z + (last.z - prev.z));
+            }
+            if (controlPoints.Count == 1)
+            {
+                var last = controlPoints[0];
+                return (last.x, last.y, last.z + WaterSplineNewPointOffsetDefault);
+            }
+            return (0f, 0f, 0f);
+        }
+        var addPointBtn = new Button
+        {
+            Content = "＋ 制御点を追加", FontSize = 11, Width = 150, Height = 22,
+            HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 2),
+        };
+        addPointBtn.Click += (_, _) =>
+        {
+            controlPoints.Add(ComputeNextControlPoint());
+            SendSplinePoints();
+            RebuildPoints();
+            UpdatePointsHint();
+        };
+        riverSp.Children.Add(addPointBtn);
+        riverSp.Children.Add(pointsHint);
+        UpdatePointsHint();
+
+        // 「制御点を地形へスナップ」ボタン。オフセット Y はボタンの隣に置き、押下時にのみ値を読む
+        // （spline_snap_terrain はランタイム側が処理してコンポーネントを送り返すため、C# 側で結果を反映する必要はない）。
+        var snapRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 2) };
+        var snapBtn = new Button
+        {
+            Content = "制御点を地形へスナップ", FontSize = 11, Height = 22,
+            Padding = new Thickness(6, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center,
+        };
+        snapRow.Children.Add(snapBtn);
+        snapRow.Children.Add(new TextBlock
+        {
+            Text = "オフセットY", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Margin = new Thickness(8, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center,
+        });
+        var snapOffsetBox = new TextBox
+        {
+            Text              = WaterSplineSnapOffsetYDefault.ToString("F2", CultureInfo.InvariantCulture),
+            Background        = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+            BorderThickness   = new Thickness(1),
+            FontSize          = 11,
+            Padding           = new Thickness(4, 1, 4, 1),
+            Width             = 60,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        NumericDragBehavior.SetEnabled(snapOffsetBox, true);
+        snapRow.Children.Add(snapOffsetBox);
+        snapBtn.Click += (_, _) =>
+        {
+            var offsetY = float.TryParse(snapOffsetBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
+                ? v : WaterSplineSnapOffsetYDefault;
+            SendField("spline_snap_terrain", offsetY.ToString(CultureInfo.InvariantCulture));
+        };
+        riverSp.Children.Add(snapRow);
+
+        sp.Children.Add(riverSection);
+
+        // ── 種別に応じた行・セクションの表示切替 ─────────────────
+        // Ocean: 海の描画半径のみ / Region: 領域半径のみ / Spline: 川セクションのみ。
         void UpdateKindVisibility(string kind)
         {
             bool isOcean  = kind == "Ocean";
@@ -4766,6 +4946,7 @@ public partial class InspectorPanel : UserControl
             extentsRow.element.Visibility  = isRegion ? Visibility.Visible : Visibility.Collapsed;
             oceanExtentRow.Visibility      = isOcean  ? Visibility.Visible : Visibility.Collapsed;
             splineHint.Visibility          = isSpline ? Visibility.Visible : Visibility.Collapsed;
+            riverSection.Visibility        = isSpline ? Visibility.Visible : Visibility.Collapsed;
         }
         UpdateKindVisibility(info.WaterKind);
         kindCombo.SelectionChanged += (_, _) =>
@@ -5586,6 +5767,30 @@ public partial class InspectorPanel : UserControl
             return new List<string>();
         }
     }
+
+    /// <summary>
+    /// WaterVolumeComponent の spline_points（"x,y,z;x,y,z;..." 形式・アクタ相対座標）を
+    /// 制御点リストへパースする。空文字列/不正な要素は無視する（壊れた1点を捨てても致命傷にならないため）。
+    /// </summary>
+    private static List<(float x, float y, float z)> ParseSplinePoints(string raw)
+    {
+        var points = new List<(float x, float y, float z)>();
+        if (string.IsNullOrWhiteSpace(raw)) return points;
+        foreach (var token in raw.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = token.Split(',');
+            if (parts.Length != 3) continue;
+            if (!float.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x)) continue;
+            if (!float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y)) continue;
+            if (!float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var z)) continue;
+            points.Add((x, y, z));
+        }
+        return points;
+    }
+
+    /// <summary>制御点リストを spline_points の送信形式（"x,y,z;x,y,z;..."）へ直列化する。空リスト = 空文字列。</summary>
+    private static string SerializeSplinePoints(List<(float x, float y, float z)> points) =>
+        string.Join(";", points.Select(p => FormattableString.Invariant($"{p.x},{p.y},{p.z}")));
 
     /// <summary>
     /// AudioComponent のインスペクター UI を構築して返す。

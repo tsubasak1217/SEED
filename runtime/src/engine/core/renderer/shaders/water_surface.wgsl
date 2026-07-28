@@ -7,10 +7,18 @@
 //  **このシェーダ内で最終合成**して HDR へ出力する。
 //
 //  ## 頂点バッファを持たない理由
-//  水面は常に軸平行の矩形（Ocean = カメラ追従の巨大クアッド／Region = AABB の上面）なので、
-//  頂点データは「中心 + 半径 + 水面 Y」から完全に決まる。よって頂点バッファは一切使わず、
-//  `@builtin(vertex_index)`(0..6) でクアッドの角を生成し、`@builtin(instance_index)` で
-//  ストレージバッファのパラメータ配列を引く。全水ボリュームが `draw(0..6, 0..N)` の 1 ドローで済む。
+//  水面のポリゴンは 1 インスタンス = 四角形 1 枚で、その 4 隅はパラメータから完全に決まる
+//  （Ocean = カメラ追従の巨大クアッド／Region = AABB の上面／**川 = リボンの 1 分割**）。
+//  よって頂点バッファは一切使わず、`@builtin(vertex_index)`(0..6) で角を生成し、
+//  `@builtin(instance_index)` でストレージバッファのパラメータ配列を引く。
+//  全水面が `draw(0..6, 0..N)` の 1 ドローで済む。
+//
+//  ## 川（Phase W4）
+//  `center.w`（インスタンス種別）が川なら、頂点は矩形ではなく
+//  「折れ線の隣り合う 2 ノード ± 断面法線 × 半幅」で作る（`water_river_vertex`）。
+//  各ノードの Y をそのまま使うので、下る川は傾いた面になる。
+//  さらに解析波のサンプル位置を上流へずらして**流れ**を作る（2 位相ブレンド。
+//  `water_flow_*` を参照）。色・吸収・泡・屈折の経路は Ocean / Region と完全に共通である。
 //
 //  ## 深度の扱い（アタッチメント無し＋手動深度テスト）
 //  本パスは **深度アタッチメントを一切持たない**（TOML の `no_depth = true`）。
@@ -127,6 +135,12 @@ struct WaterParams {
     /// x,y = 窓のワールド XZ 最小／z = 窓一辺の逆数（1/m）／
     /// **w = 配列テクスチャのレイヤ番号。負値 = この水域にショアフィールドが無い**
     shore_field:      vec4<f32>,
+    /// 川リボン 1 分割の上流ノード（Phase W4）。xyz = ワールド座標／w = リボンの半幅（m）
+    river_p0:         vec4<f32>,
+    /// 川リボン 1 分割の下流ノード（Phase W4）。xyz = ワールド座標／w = 流速（m/s）
+    river_p1:         vec4<f32>,
+    /// 川リボンの断面法線（Phase W4）。x,y = 上流ノード／z,w = 下流ノード（XZ・マイター込み）
+    river_normal:     vec4<f32>,
 }
 
 @group(1) @binding(0) var<storage, read> u_water: array<WaterParams>;
@@ -293,6 +307,25 @@ const SHORE_DIR_EPSILON: f32 = 1.0e-6;
 /// ショアフィールドが無い／窓外のときに返す水深・岸距離（m）。
 /// 十分深い＝岸波の振幅が 0 になる値であればよい。
 const SHORE_NO_FIELD_DEPTH: f32 = 1.0e4;
+
+// ─── 川（Phase W4）の定数 ────────────────────────────────────
+
+/// インスタンス種別のしきい値。`center.w` がこれ以上なら川リボンの 1 分割。
+/// Rust 側 `WATER_INSTANCE_QUAD`(0) / `WATER_INSTANCE_RIVER`(1) の中間値。
+const WATER_INSTANCE_RIVER_MIN: f32 = 0.5;
+
+/// 流れの 2 位相ブレンドの 1 位相の長さ（秒）。
+///
+/// 川面の模様は「流れに乗って下流へ運ばれる」＝サンプル位置を上流側へずらすことで作るが、
+/// ずらし量を無限に増やし続けると模様が永久に同じ形で平行移動するだけになり、
+/// 「水面が生まれ変わりながら流れる」感じが出ない。そこで **標準的なフローマップ手法**に従い、
+/// 半周期ずれた 2 つの位相を作って三角波でクロスフェードする。
+/// この値が短いほど模様の入れ替わりが速く（＝せわしなく）、長いほど平行移動に近づく。
+/// 4 秒は「流速 1.5m/s で 6m ぶん流れてから入れ替わる」程度で、川幅 4m に対して自然に見える。
+const WATER_FLOW_PHASE_PERIOD: f32 = 4.0;
+
+/// 2 位相ブレンドの位相差（周期比）。半周期ずらすのが標準。
+const WATER_FLOW_PHASE_OFFSET: f32 = 0.5;
 
 /// 波の層ごとの進行方向（XZ 平面。単位ベクトル）。
 const WAVE_DIR_0: vec2<f32> = vec2<f32>( 1.0,  0.0);
@@ -556,6 +589,91 @@ fn water_shore_foam(p: WaterParams, world_xz: vec2<f32>, t: f32) -> f32 {
 // 頂点段では group2（波紋の場）も group1（ショアフィールド）も
 // VERTEX_FRAGMENT 可視でバインドされているため、追加のバインド変更も要らない。
 
+// ─── 流れ（Phase W4）──────────────────────────────────────────
+//
+// 川インスタンスでは、解析波（W1）のサンプル位置を **上流側へずらす**ことで
+// 「水面模様が下流へ流れる」を作る。ずらし量は `流速 × 時間` だが、そのまま
+// 単調に増やすと模様が永久に平行移動するだけなので、半周期ずれた 2 位相を
+// 三角波でクロスフェードする（フローマップの標準手法。継ぎ目は原理的に出ない：
+// 各位相の重みは、そのずらし量が 0 に戻る瞬間にちょうど 1 になる）。
+//
+// **重要**: ブレンド重みは時間だけの関数で空間に依存しないため、
+// 「高さをブレンドしたもの」の空間微分は「勾配をブレンドしたもの」と厳密に一致する。
+// つまり法線（勾配）と W5.1 の頂点変位（高さ）は食い違わない。
+
+/// このインスタンスは川リボンの 1 分割か。
+fn water_is_river(p: WaterParams) -> bool {
+    return p.center.w >= WATER_INSTANCE_RIVER_MIN;
+}
+
+/// 川の流れの向き（XZ 単位ベクトル。上流 → 下流）。分割が縮退していればゼロ。
+fn water_flow_dir(p: WaterParams) -> vec2<f32> {
+    let d = vec2<f32>(p.river_p1.x - p.river_p0.x, p.river_p1.z - p.river_p0.z);
+    let len = length(d);
+    if (len < WATER_EPSILON) {
+        return vec2<f32>(0.0, 0.0);
+    }
+    return d / len;
+}
+
+/// 2 位相ブレンドの (位相0のずらし量, 位相1のずらし量, 位相0の重み)。
+///
+/// 戻り値の xy = 位相 0 のワールド XZ オフセット、zw は使わず、
+/// 重みは別関数で返す（WGSL に多値返却が無いため、必要な 3 つを vec4 に詰める）。
+/// x,y = 位相 0 のオフセット／z,w = 位相 1 のオフセット。
+fn water_flow_offsets(p: WaterParams, t: f32) -> vec4<f32> {
+    let dir   = water_flow_dir(p);
+    let speed = p.river_p1.w;
+    let phase = t / WATER_FLOW_PHASE_PERIOD;
+    let f0 = fract(phase);
+    let f1 = fract(phase + WATER_FLOW_PHASE_OFFSET);
+    let travel = speed * WATER_FLOW_PHASE_PERIOD;
+    let o0 = dir * (travel * f0);
+    let o1 = dir * (travel * f1);
+    return vec4<f32>(o0.x, o0.y, o1.x, o1.y);
+}
+
+/// クロスフェードの三角波（0..1）。
+///
+/// **重みの割り当てが本手法の要**である。ずらし量 `fract()` は一周ごとに
+/// 1 → 0 へ跳ぶので、**跳ぶ瞬間にその位相の重みが 0 でなければ継ぎ目が見える**。
+///   ・位相 0（`fract(phase)`）が跳ぶのは phase が整数のとき。そこで本関数は 1 を返す
+///     → よって位相 0 には **`1 - weight`** を掛ける（跳ぶ瞬間に 0 になる）
+///   ・位相 1（`fract(phase + 0.5)`）が跳ぶのは `fract(phase) = 0.5` のとき。
+///     そこで本関数は 0 を返す → よって位相 1 には **`weight`** を掛ける
+/// 逆に割り当てると、周期ごとに 2 回パターンが飛ぶ（実際にやると目に見える）。
+fn water_flow_weight(t: f32) -> f32 {
+    return abs(1.0 - 2.0 * fract(t / WATER_FLOW_PHASE_PERIOD));
+}
+
+/// 解析波の高さ（川なら流れに乗せた 2 位相ブレンド、それ以外は素の解析波）。
+fn water_flow_wave_height(p: WaterParams, world_xz: vec2<f32>, t: f32) -> f32 {
+    if (!water_is_river(p)) {
+        return water_wave_height(world_xz, p.wave.x, p.wave.y, p.wave.z, t);
+    }
+    let off = water_flow_offsets(p, t);
+    let w   = water_flow_weight(t);
+    // サンプル位置を **上流側へ**ずらす（＝模様が下流へ動いて見える）。
+    let h0 = water_wave_height(world_xz - off.xy, p.wave.x, p.wave.y, p.wave.z, t);
+    let h1 = water_wave_height(world_xz - off.zw, p.wave.x, p.wave.y, p.wave.z, t);
+    // mix(a, b, w) = a*(1-w) + b*w → 位相 0 に (1-w)、位相 1 に w。
+    // この対応でないと、ずらし量が巻き戻る瞬間にパターンが飛ぶ（water_flow_weight 参照）。
+    return mix(h0, h1, w);
+}
+
+/// 解析波の勾配（上と同じ 2 位相ブレンド。平行移動の微分は微分の平行移動）。
+fn water_flow_wave_gradient(p: WaterParams, world_xz: vec2<f32>, t: f32) -> vec2<f32> {
+    if (!water_is_river(p)) {
+        return water_wave_gradient(world_xz, p.wave.x, p.wave.y, p.wave.z, t);
+    }
+    let off = water_flow_offsets(p, t);
+    let w   = water_flow_weight(t);
+    let g0 = water_wave_gradient(world_xz - off.xy, p.wave.x, p.wave.y, p.wave.z, t);
+    let g1 = water_wave_gradient(world_xz - off.zw, p.wave.x, p.wave.y, p.wave.z, t);
+    // 高さ側とまったく同じ重み配分にすること（食い違うと法線と変位がずれる）。
+    return mix(g0, g1, w);
+}
+
 /// 波紋（I2）の高さ・勾配へ掛かるユーザ調整スケール。
 /// 高さと勾配の両方に同じ係数を掛けないと、法線と（W5.1 の）変位が食い違う。
 fn water_ripple_scale(p: WaterParams) -> f32 {
@@ -563,15 +681,17 @@ fn water_ripple_scale(p: WaterParams) -> f32 {
 }
 
 /// 合成された水面高さ（m）。3 ソースの高さ場の和。
+/// 解析波は川では流れに乗る（W4）。波紋・岸波はワールド固定のまま
+/// （波紋の移流は W4 では行わない。理由は本ファイル冒頭の「流れ」節を参照）。
 fn water_surface_height(p: WaterParams, world_xz: vec2<f32>, t: f32) -> f32 {
-    return water_wave_height(world_xz, p.wave.x, p.wave.y, p.wave.z, t)
+    return water_flow_wave_height(p, world_xz, t)
          + water_ripple_height(world_xz) * water_ripple_scale(p)
          + water_shore_height(p, world_xz, t);
 }
 
 /// 合成された水面高さ場の勾配 (∂h/∂x, ∂h/∂z)。`water_surface_height` の微分。
 fn water_surface_gradient(p: WaterParams, world_xz: vec2<f32>, t: f32) -> vec2<f32> {
-    return water_wave_gradient(world_xz, p.wave.x, p.wave.y, p.wave.z, t)
+    return water_flow_wave_gradient(p, world_xz, t)
          + water_ripple_gradient(world_xz) * water_ripple_scale(p)
          + water_shore_gradient(p, world_xz, t);
 }
@@ -607,8 +727,29 @@ struct WaterVsOut {
     @location(1) @interpolate(flat) idx: u32,
 }
 
-/// 頂点バッファ無しでクアッドを生成する。
-/// 中心・半径はインスタンスのパラメータから引く（Ocean はカメラ追従済みの中心が CPU から来る）。
+/// 川リボンの 1 分割ぶんの四角形を作る（Phase W4）。
+///
+/// 角オフセット `corner` の **y が上流/下流の選択**（−1 = 上流ノード p0／+1 = 下流ノード p1）、
+/// **x が左右**（±1）を意味する。各ノードのワールド Y をそのまま使うので、
+/// 下る川ではリボンが傾いた面になる。
+/// 法線はマイター補正込みなので、掛けるのは半幅だけでよい。
+/// **`water_id.wgsl` の同名関数と完全に同一の形状**にすること
+/// （見た目とピック形状が食い違うため）。
+fn water_river_vertex(p: WaterParams, corner: vec2<f32>) -> vec3<f32> {
+    let downstream = corner.y > 0.0;
+    let base = select(p.river_p0.xyz, p.river_p1.xyz, downstream);
+    let nrm  = select(p.river_normal.xy, p.river_normal.zw, downstream);
+    let hw   = p.river_p0.w;
+    return vec3<f32>(
+        base.x + nrm.x * corner.x * hw,
+        base.y,
+        base.z + nrm.y * corner.x * hw,
+    );
+}
+
+/// 頂点バッファ無しで水面のポリゴンを生成する。
+/// インスタンス種別（`center.w`）に応じて
+/// 「軸平行クアッド（Ocean / Region）」か「川リボンの 1 分割（W4）」を作る。
 @vertex
 fn vs_water(
     @builtin(vertex_index)   vi: u32,
@@ -616,11 +757,14 @@ fn vs_water(
 ) -> WaterVsOut {
     let p      = u_water[ii];
     let corner = water_quad_corner(vi % WATER_QUAD_VERTEX_COUNT);
-    let world  = vec3<f32>(
+    var world  = vec3<f32>(
         p.center.x + corner.x * p.half_extent.x,
         p.center.y,
         p.center.z + corner.y * p.half_extent.z,
     );
+    if (water_is_river(p)) {
+        world = water_river_vertex(p, corner);
+    }
 
     var out: WaterVsOut;
     out.clip      = u_camera.view_proj * vec4<f32>(world, 1.0);

@@ -59,6 +59,12 @@ struct WaterParams {
     shore:            vec4<f32>,
     /// 岸波のショアフィールド窓（Phase W1.5。同上）
     shore_field:      vec4<f32>,
+    /// 川リボン 1 分割の上流ノード（Phase W4）。xyz = ワールド座標／w = 半幅（m）
+    river_p0:         vec4<f32>,
+    /// 川リボン 1 分割の下流ノード（Phase W4）。xyz = ワールド座標／w = 流速（m/s。未使用）
+    river_p1:         vec4<f32>,
+    /// 川リボンの断面法線（Phase W4）。x,y = 上流ノード／z,w = 下流ノード
+    river_normal:     vec4<f32>,
 }
 @group(1) @binding(0) var<storage, read> u_water: array<WaterParams>;
 
@@ -66,6 +72,10 @@ struct WaterParams {
 
 /// クアッド 1 枚あたりの頂点数（三角形 2 枚 = 6 頂点）。
 const WATER_QUAD_VERTEX_COUNT: u32 = 6u;
+
+/// インスタンス種別のしきい値。`center.w` がこれ以上なら川リボンの 1 分割（Phase W4）。
+/// **water_surface.wgsl の同名定数・Rust 側 `WATER_INSTANCE_RIVER` と一致必須。**
+const WATER_INSTANCE_RIVER_MIN: f32 = 0.5;
 
 // ─── ヘルパー ────────────────────────────────────────────────
 
@@ -90,7 +100,22 @@ struct WaterIdVsOut {
     @location(1) @interpolate(flat) actor_id: u32,
 }
 
-/// 頂点バッファ無しでクアッドを生成する（water_surface.wgsl の vs_water と同一形状）。
+/// 川リボンの 1 分割ぶんの四角形を作る（Phase W4）。
+/// **water_surface.wgsl の `water_river_vertex` と完全に同一**にすること
+/// （見た目とピック形状が食い違うと「見えている水面をクリックできない」になる）。
+fn water_id_river_vertex(p: WaterParams, corner: vec2<f32>) -> vec3<f32> {
+    let downstream = corner.y > 0.0;
+    let base = select(p.river_p0.xyz, p.river_p1.xyz, downstream);
+    let nrm  = select(p.river_normal.xy, p.river_normal.zw, downstream);
+    let hw   = p.river_p0.w;
+    return vec3<f32>(
+        base.x + nrm.x * corner.x * hw,
+        base.y,
+        base.z + nrm.y * corner.x * hw,
+    );
+}
+
+/// 頂点バッファ無しで水面のポリゴンを生成する（water_surface.wgsl の vs_water と同一形状）。
 @vertex
 fn vs_water_id(
     @builtin(vertex_index)   vi: u32,
@@ -98,11 +123,15 @@ fn vs_water_id(
 ) -> WaterIdVsOut {
     let p      = u_water[ii];
     let corner = water_id_quad_corner(vi % WATER_QUAD_VERTEX_COUNT);
-    let world  = vec3<f32>(
+    var world  = vec3<f32>(
         p.center.x + corner.x * p.half_extent.x,
         p.center.y,
         p.center.z + corner.y * p.half_extent.z,
     );
+    // 川リボン（W4）は矩形ではなく、折れ線ノードから作る四角形になる。
+    if (p.center.w >= WATER_INSTANCE_RIVER_MIN) {
+        world = water_id_river_vertex(p, corner);
+    }
 
     var out: WaterIdVsOut;
     out.clip      = u_camera.view_proj * vec4<f32>(world, 1.0);

@@ -14,11 +14,15 @@
 //  【種別ごとの意味の差】
 //    Ocean  … XZ 無限の大洋。surface_height は「ワールド Y 絶対値」。
 //    Region … 直方体の水塊。surface_height は「アクタ原点からの相対 Y」。
-//    Spline … 川（W4 で実装予定）。現状は描画・問い合わせともに無視される。
+//    Spline … 川（W4）。`spline_points`（アクタ相対の制御点列）を Catmull-Rom で
+//             補間した曲線に沿って、幅 `river_width` のリボン水面を張る。
+//             水面 Y は制御点の Y を補間したもの（＝川は下る）。
+//             **制御点が 2 点未満なら描画・問い合わせとも無効。**
 //
 //  【流速について】
-//  W1 では流速フィールドを持たない（WaterQuery::flow_at は常にゼロを返す）。
-//  川スプラインの流速は W4 で追加する。
+//  流速を持つのは Spline（川）だけである（`flow_speed`）。
+//  `WaterQuery::flow_at` は川の接線方向 × `flow_speed` を返し、
+//  Ocean / Region では常にゼロを返す。
 //
 //  【シリアライズ】
 //  全フィールドに #[serde(default)]（非ゼロ既定は default fn）を付け、
@@ -94,6 +98,19 @@ fn default_shore_wave_period() -> f32 { 4.0 }
 /// shore_wave_foam の既定値（砕け波・打ち上げの泡量 0..1）。
 fn default_shore_wave_foam() -> f32 { 0.8 }
 
+// ─── 川（スプライン。Phase W4）の既定値 ──────────────────────
+//
+// 川は kind = Spline のときだけ使われる。制御点が 2 点未満なら
+// 描画・問い合わせとも完全に無効（既定は空なので、Spline に切り替えた
+// 直後は「まだ何も描かれない」＝壊れた見た目にならない）。
+
+/// river_width の既定値（川幅 m。リボンの全幅であって半幅ではない）。
+fn default_river_width() -> f32 { 4.0 }
+/// flow_speed の既定値（流速 m/s。ゆるやかな小川程度の速さ）。
+fn default_flow_speed() -> f32 { 1.5 }
+/// river_depth の既定値（川の深さ m。水面からこの深さまでが「川の中」）。
+fn default_river_depth() -> f32 { 2.0 }
+
 // ─── WaterVolumeKind ─────────────────────────────────────────
 
 /// 水ボリュームの種別。
@@ -102,7 +119,9 @@ fn default_shore_wave_foam() -> f32 { 0.8 }
 ///              描画クアッドはカメラに追従し、片側半径 `ocean_extent` で作られる。
 /// - `Region` : 直方体（軸平行 AABB）で区切った水塊。既定。
 ///              水面 Y は「アクタ原点 + `surface_height`」で決まる。
-/// - `Spline` : 川（スプライン水路）。**W4 で実装。現状は描画・問い合わせともに無視される。**
+/// - `Spline` : 川（スプライン水路。W4）。制御点列 `spline_points` を Catmull-Rom で
+///              補間した曲線に沿って、幅 `river_width` のリボン水面を張る。
+///              **制御点が 2 点未満なら描画・問い合わせとも無効。**
 ///
 /// serde は文字列（`"Ocean"` / `"Region"` / `"Spline"`）でシリアライズする。
 /// 旧シーン（kind 欠落）は `#[serde(default)]` により Region になる。
@@ -112,7 +131,7 @@ pub enum WaterVolumeKind {
     Ocean,
     /// 直方体で区切った水塊（既定）
     Region,
-    /// 川スプライン。**W4 で実装。現状は描画・問い合わせともに無視される。**
+    /// 川スプライン（W4）。制御点列に沿ったリボン水面。流速を持つ唯一の種別。
     Spline,
 }
 
@@ -219,6 +238,27 @@ pub struct WaterVolumeComponentData {
     /// 砕け波・打ち上げの泡量（0..1。Phase W1.5）
     #[serde(default = "default_shore_wave_foam")]
     pub shore_wave_foam: f32,
+    /// 川の制御点列（**アクタ相対**のローカル座標。Phase W4）。
+    ///
+    /// kind = Spline のときだけ使う。Catmull-Rom で滑らかに補間され、
+    /// その周りに幅 `river_width` のリボン（川面）が張られる。
+    /// **2 点未満なら川は成立しない**ものとして描画・問い合わせとも無効になる。
+    #[serde(default)]
+    pub spline_points: Vec<[f32; 3]>,
+    /// 川幅（m。Phase W4）。スプラインに沿って一定。
+    #[serde(default = "default_river_width")]
+    pub river_width: f32,
+    /// 流速（m/s。Phase W4）。`WaterQuery::flow_at` が返す速さであり、
+    /// 同時に水面模様が下流へ流れる速さでもある（見た目と挙動が同じ値を見る）。
+    #[serde(default = "default_flow_speed")]
+    pub flow_speed: f32,
+    /// 川の深さ（m。Phase W4）。水面からこの深さまでが「川の中」＝水中判定になる。
+    ///
+    /// Region の `region_half_extents.y` に相当するが、川は AABB を持たないため
+    /// 独立したフィールドにしてある（AABB 半径を流用すると、Spline では
+    /// インスペクタに出ない値が挙動を決める“隠れた結合”になる）。
+    #[serde(default = "default_river_depth")]
+    pub river_depth: f32,
 }
 
 impl Default for WaterVolumeComponentData {
@@ -248,6 +288,11 @@ impl Default for WaterVolumeComponentData {
             shore_wave_length:     default_shore_wave_length(),
             shore_wave_period:     default_shore_wave_period(),
             shore_wave_foam:       default_shore_wave_foam(),
+            // 川の制御点は既定で空（＝Spline に切り替えただけでは何も描かれない）。
+            spline_points:         Vec::new(),
+            river_width:           default_river_width(),
+            flow_speed:            default_flow_speed(),
+            river_depth:           default_river_depth(),
         }
     }
 }
@@ -309,6 +354,14 @@ pub struct WaterVolumeComponent {
     pub shore_wave_period: f32,
     /// 砕け波・打ち上げの泡量（0..1。Phase W1.5）
     pub shore_wave_foam: f32,
+    /// 川の制御点列（アクタ相対のローカル座標。2 点未満は無効。Phase W4）
+    pub spline_points: Vec<[f32; 3]>,
+    /// 川幅（m。Phase W4）
+    pub river_width: f32,
+    /// 流速（m/s。Phase W4）
+    pub flow_speed: f32,
+    /// 川の深さ（m。Phase W4）
+    pub river_depth: f32,
 }
 
 impl WaterVolumeComponent {
@@ -339,6 +392,10 @@ impl WaterVolumeComponent {
             shore_wave_length:     data.shore_wave_length,
             shore_wave_period:     data.shore_wave_period,
             shore_wave_foam:       data.shore_wave_foam,
+            spline_points:         data.spline_points,
+            river_width:           data.river_width,
+            flow_speed:            data.flow_speed,
+            river_depth:           data.river_depth,
         }
     }
 
@@ -369,6 +426,11 @@ impl WaterVolumeComponent {
             shore_wave_length:     self.shore_wave_length,
             shore_wave_period:     self.shore_wave_period,
             shore_wave_foam:       self.shore_wave_foam,
+            // 制御点列だけは所有権を渡せない（&self 受け）ため複製する。
+            spline_points:         self.spline_points.clone(),
+            river_width:           self.river_width,
+            flow_speed:            self.flow_speed,
+            river_depth:           self.river_depth,
         }
     }
 }
@@ -431,6 +493,11 @@ mod tests {
         assert_eq!(d.shore_wave_length, def.shore_wave_length);
         assert_eq!(d.shore_wave_period, def.shore_wave_period);
         assert_eq!(d.shore_wave_foam, def.shore_wave_foam);
+        // 川（W4）: 制御点は空・幅と流速は既定値
+        assert_eq!(d.spline_points, def.spline_points);
+        assert_eq!(d.river_width, def.river_width);
+        assert_eq!(d.flow_speed, def.flow_speed);
+        assert_eq!(d.river_depth, def.river_depth);
     }
 
     /// kind は文字列としてシリアライズされること（C# 側の期待に合わせる）。
@@ -468,6 +535,10 @@ mod tests {
             shore_wave_length: 9.5,
             shore_wave_period: 3.25,
             shore_wave_foam: 0.4,
+            spline_points: vec![[0.0, 0.0, 0.0], [1.0, -0.5, 4.0]],
+            river_width: 6.5,
+            flow_speed: 2.25,
+            river_depth: 1.75,
         };
         let back = WaterVolumeComponent::from_data(src.clone()).to_data();
         assert_eq!(back.kind, src.kind);
@@ -494,5 +565,9 @@ mod tests {
         assert_eq!(back.shore_wave_length, src.shore_wave_length);
         assert_eq!(back.shore_wave_period, src.shore_wave_period);
         assert_eq!(back.shore_wave_foam, src.shore_wave_foam);
+        assert_eq!(back.spline_points, src.spline_points);
+        assert_eq!(back.river_width, src.river_width);
+        assert_eq!(back.flow_speed, src.flow_speed);
+        assert_eq!(back.river_depth, src.river_depth);
     }
 }

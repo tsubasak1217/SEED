@@ -12,6 +12,7 @@
 use crate::engine::components::water_volume_component::{
     WaterVolumeComponent, WaterVolumeKind,
 };
+use super::spline::RiverPath;
 
 // ─── WaterVisualParams ───────────────────────────────────────
 
@@ -98,11 +99,18 @@ impl WaterVisualParams {
 /// ワールド空間に解決済みの水ボリューム 1 個。
 /// アクタの Transform と WaterVolumeComponent から作られ、描画・問い合わせの双方が
 /// この単一の中間表現だけを見る（描画都合の実装にしないための境界）。
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// **`Copy` ではない**（W4 の川が可変長の折れ線 `RiverPath` を持つため）。
+/// 毎フレーム 1 度だけ作られて配列で持ち回るだけなので、複製コストは問題にならない。
+#[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedWaterVolume {
-    /// 水ボリュームの種別（Spline は W4 実装のため、収集時点で除外される）
+    /// 水ボリュームの種別
     pub kind: WaterVolumeKind,
-    /// ワールド空間の水面 Y
+    /// ワールド空間の水面 Y。
+    ///
+    /// **Spline（川）では公称値**（アクタ原点 + surface_height）にすぎない。
+    /// 川の実際の水面 Y は地点ごとに変わるため、`river` の折れ線から求めること
+    /// （問い合わせ `WaterQuery` はそうしている）。
     pub surface_y: f32,
     /// Region: AABB 中心のワールド座標 / Ocean: 未使用(0)
     pub center: [f32; 3],
@@ -118,6 +126,11 @@ pub struct ResolvedWaterVolume {
     /// 採番規則は `collect_mcs_in_world_line` / キャンバスピックと**完全に同一**でなければ
     /// ならない（世界線のルート群を DFS し、非アクティブなアクタも数える）。
     pub actor_dfs_id: u32,
+    /// 川の折れ線リボン（**kind = Spline のときだけ Some**。Phase W4）。
+    ///
+    /// 制御点が 2 点未満の Spline は `None` になり、描画も問い合わせも行われない
+    /// （＝「川として成立していない水」は存在しないのと同じ扱い）。
+    pub river: Option<RiverPath>,
 }
 
 impl ResolvedWaterVolume {
@@ -144,6 +157,7 @@ impl ResolvedWaterVolume {
                 ocean_extent: c.ocean_extent,
                 visual:       WaterVisualParams::from_component(c),
                 actor_dfs_id,
+                river:        None,
             },
             // Region / Spline: アクタ位置を AABB 中心とし、水面 Y は
             // 「中心 Y + surface_height（相対）」で決まる。
@@ -154,6 +168,25 @@ impl ResolvedWaterVolume {
                     c.region_half_extents[1].abs(),
                     c.region_half_extents[2].abs(),
                 ];
+                // Spline（川。W4）のときだけ、制御点をワールド空間へ移して
+                // 折れ線リボンを構築する。制御点は **アクタ相対**なので
+                // 「アクタ位置 + 制御点」で世界へ出し、Y には Region と同じく
+                // surface_height（相対水位）を上乗せする
+                //（＝アクタを動かせば川ごと動き、surface_height で川全体の水位を上下できる）。
+                let river = if c.kind == WaterVolumeKind::Spline {
+                    let world: Vec<[f32; 3]> = c.spline_points.iter()
+                        .map(|p| [
+                            actor_pos[0] + p[0],
+                            actor_pos[1] + p[1] + c.surface_height,
+                            actor_pos[2] + p[2],
+                        ])
+                        .collect();
+                    // 水中とみなす厚みは川専用の river_depth（負値は 0 に丸める）。
+                    RiverPath::build(
+                        &world, c.river_width, c.flow_speed, c.river_depth.abs())
+                } else {
+                    None
+                };
                 Self {
                     kind:         c.kind,
                     surface_y:    actor_pos[1] + c.surface_height,
@@ -162,6 +195,7 @@ impl ResolvedWaterVolume {
                     ocean_extent: c.ocean_extent,
                     visual:       WaterVisualParams::from_component(c),
                     actor_dfs_id,
+                    river,
                 }
             }
         }
@@ -203,6 +237,46 @@ mod tests {
         c.region_half_extents = [-4.0, 2.0, -6.0];
         let r = ResolvedWaterVolume::from_component(&c, [0.0, 0.0, 0.0], 0);
         assert_eq!(r.half_extents, [4.0, 2.0, 6.0]);
+    }
+
+    /// Spline は制御点をワールド空間（アクタ位置 + 相対 + surface_height）へ移して
+    /// 折れ線リボンを構築する。
+    #[test]
+    fn spline_builds_river_in_world_space() {
+        let mut c = WaterVolumeComponent::default();
+        c.kind = WaterVolumeKind::Spline;
+        c.surface_height = 1.0;
+        c.spline_points = vec![[0.0, 0.0, 0.0], [10.0, -2.0, 0.0]];
+        let r = ResolvedWaterVolume::from_component(&c, [100.0, 50.0, -20.0], 0);
+        let river = r.river.as_ref().expect("制御点 2 点で川が成立する");
+        // 始点 = アクタ位置 + 制御点 + surface_height（Y のみ）
+        assert_eq!(river.nodes[0].pos, [100.0, 51.0, -20.0]);
+        let last = river.nodes.last().unwrap().pos;
+        assert!((last[0] - 110.0).abs() < 1e-4);
+        assert!((last[1] - 49.0).abs() < 1e-4, "下流は 2m 下る");
+    }
+
+    /// 制御点が 2 点未満の Spline は川を持たない（描画・問い合わせとも無効）。
+    #[test]
+    fn spline_without_enough_points_has_no_river() {
+        let mut c = WaterVolumeComponent::default();
+        c.kind = WaterVolumeKind::Spline;
+        c.spline_points = vec![[0.0, 0.0, 0.0]];
+        let r = ResolvedWaterVolume::from_component(&c, [0.0, 0.0, 0.0], 0);
+        assert!(r.river.is_none());
+    }
+
+    /// Ocean / Region は川を持たない。
+    #[test]
+    fn non_spline_kinds_have_no_river() {
+        for kind in [WaterVolumeKind::Ocean, WaterVolumeKind::Region] {
+            let mut c = WaterVolumeComponent::default();
+            c.kind = kind;
+            // 制御点があっても Spline 以外では無視される
+            c.spline_points = vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]];
+            let r = ResolvedWaterVolume::from_component(&c, [0.0, 0.0, 0.0], 0);
+            assert!(r.river.is_none(), "{kind:?} は川を持たない");
+        }
     }
 
     /// 見た目パラメータはそのままコピーされる。

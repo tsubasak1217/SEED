@@ -28,8 +28,13 @@ pub mod resolved;
 pub mod query;
 pub mod collect;
 pub mod shore;
+pub mod spline;
 
 pub use resolved::{ResolvedWaterVolume, WaterVisualParams};
+pub use spline::{
+    RiverNode, RiverPath, RiverSample,
+    RIVER_MAX_CONTROL_POINTS, RIVER_MAX_SEGMENTS, RIVER_MIN_CONTROL_POINTS, RIVER_WIDTH_MIN,
+};
 pub use query::WaterQuery;
 pub use collect::collect_water_volumes;
 pub use shore::{
