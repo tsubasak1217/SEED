@@ -1361,6 +1361,8 @@ mod actor_utils;
 mod platform_utils;
 mod slot_ops;
 mod script_ops;
+/// シェーディングアセット WGSL のインメモリ検証（エディタの未保存バッファ → 診断）。
+mod shading_validate_ops;
 
 // actor_utils / platform_utils の関数を親名前空間に再エクスポートする。
 // サブモジュール（render.rs 等）は既存の `use super::fn_name` のまま使用可能。

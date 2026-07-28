@@ -25,6 +25,7 @@ using SEEDEditor.AI.LocalLlm;
 using SEEDEditor.Debugger;
 using SEEDEditor.Panels.ScriptEditor;
 using SEEDEditor.Panels.ScriptEditor.InlineCompletion;
+using SEEDEditor.Runtime;
 using SEEDEditor.Scripting;
 
 namespace SEEDEditor.Panels;
@@ -55,6 +56,18 @@ public class ScriptEditorPanel : UserControl
     private const double MaxFontSize = 40.0;
     // 診断（エラー・警告）の再計算を遅延させるデバウンス時間
     private static readonly TimeSpan DiagnosticsDebounce = TimeSpan.FromMilliseconds(400);
+    // WGSL（シェーディングアセット）の検証をランタイムへ依頼するまでのデバウンス時間。
+    // 依頼のたびにランタイム側でシェーダーのコンパイルが走るため、C# の Roslyn 診断より長めに取る。
+    private static readonly TimeSpan WgslDiagnosticsDebounce = TimeSpan.FromMilliseconds(500);
+    // 診断波線の色（エラー=赤 / 警告=黄）。C# と WGSL で共通。
+    private static readonly Color DiagErrorMarkerColor   = Color.FromRgb(0xF4, 0x47, 0x47);
+    private static readonly Color DiagWarningMarkerColor = Color.FromRgb(0xD7, 0xBA, 0x36);
+    // WGSL 診断で行番号が不明・範囲外だったときに使うフォールバック行（1 行目）
+    private const int WgslFallbackLine = 1;
+    // WGSL 診断の下線開始桁（行頭）。列情報は契約に含まれないため常に行頭から引く。
+    private const int WgslDiagnosticColumn = 1;
+    // 空行に診断が付いたときの最小下線長（0 幅だと描画されないため）
+    private const int WgslMinMarkerLength = 1;
     // 選択単語ハイライトのデバウンス間隔（キャレット移動のたびの全文走査を避ける）
     private static readonly TimeSpan OccurrenceDebounce   = TimeSpan.FromMilliseconds(180);
     // これを超える文字数のファイルでは選択単語ハイライトを無効化する（巨大ファイルの操作性優先）
@@ -132,6 +145,20 @@ public class ScriptEditorPanel : UserControl
     public event Action? ShowErrorListRequested;
     /// <summary>ドキュメントがアクティブ表示されたときに発火（「タブ」パネルの自動表示用）。</summary>
     public event Action? DocumentActivated;
+
+    /// <summary>
+    /// WGSL シェーディングアセットの検証デリゲート（外部から注入）。
+    ///
+    /// 本パネルは IPC を直接知らず、「ソース文字列を渡すと診断が返る関数」としてのみ扱う
+    /// （実体は MainWindow が WgslValidationService を注入する）。
+    ///
+    /// 戻り値の扱い:
+    /// - 診断リスト（空を含む）: 検証できた。空なら「エラー無し」として波線を消す
+    /// - null（デリゲート自体が未設定 / null Task / Task の結果が null）: 検証不可
+    ///   （Play 中・パイプ未接続・タイムアウト）。この場合は既存の診断表示を **維持** する。
+    ///   Play 中に赤下線が一斉に消えると「直った」と誤認させるため、消さない方を選ぶ。
+    /// </summary>
+    public Func<string, Task<IReadOnlyList<WgslDiagnostic>?>?>? WgslValidator { get; set; }
 
     /// <summary>左下ステータスバーのエラー/警告カウント表示（常時表示）。</summary>
     private TextBlock _statusCounts = null!;
@@ -862,8 +889,12 @@ public class ScriptEditorPanel : UserControl
         content.Children.Add(editor);
         content.Children.Add(ruler);
 
-        // 診断の再計算を遅延実行するデバウンスタイマー
-        var diagTimer  = new DispatcherTimer { Interval = DiagnosticsDebounce };
+        // 診断の再計算を遅延実行するデバウンスタイマー。
+        // 間隔は言語ごとに変える（C#=ローカルの Roslyn 解析 / WGSL=ランタイムへの検証依頼）。
+        var diagTimer  = new DispatcherTimer
+        {
+            Interval = language == EditorLanguage.Wgsl ? WgslDiagnosticsDebounce : DiagnosticsDebounce,
+        };
         // 選択単語ハイライトのデバウンスタイマー
         var occurTimer = new DispatcherTimer { Interval = OccurrenceDebounce };
 
@@ -974,6 +1005,11 @@ public class ScriptEditorPanel : UserControl
                 _ = RunDiagnosticsAsync(doc);
                 _ = RunSemanticColorizeAsync(doc);
             }
+            // シェーダー（.wgsl）はランタイムへ検証を依頼し、返った診断を波線表示する
+            else if (doc.Language == EditorLanguage.Wgsl)
+            {
+                _ = RunWgslDiagnosticsAsync(doc);
+            }
             // 未保存なら内容を退避、保存済みなら退避を消す（クラッシュ復元用）
             UpdateRecovery(doc);
         };
@@ -1032,6 +1068,15 @@ public class ScriptEditorPanel : UserControl
         {
             _ = RunDiagnosticsAsync(doc);
             _ = RunSemanticColorizeAsync(doc);
+        }
+        // シェーダー（.wgsl）も開いた直後に一度検証する。
+        // 診断はテキスト変更のデバウンスタイマー起点のため、これが無いと
+        // 「壊れたアセットを開いても、一文字打つまで赤線が出ない」状態になる。
+        // ランタイム未接続・Play 中は検証側（RuntimeManager.SendValidateWgsl）が
+        // 送信を拒否して「検証不可」を返すため、ここで状態を判定する必要はない。
+        else if (!readOnly && doc.Language == EditorLanguage.Wgsl)
+        {
+            _ = RunWgslDiagnosticsAsync(doc);
         }
     }
 
@@ -1223,22 +1268,94 @@ public class ScriptEditorPanel : UserControl
         // テキストが解析後に変わっていたら破棄（次の Tick で再計算される）
         if (doc.Editor.Text != source) return;
 
+        // 波線の長さ（Roslyn のスパン長）を添えて共通の表示処理へ渡す
+        var marked = diags
+            .Select(d => new MarkedDiagnostic(
+                new ScriptDiagnostic(d.isError, d.id, d.body, d.line, d.col, d.span.Start, doc.FilePath),
+                d.span.Length))
+            .ToList();
+        ApplyDiagnostics(doc, marked);
+    }
+
+    /// <summary>
+    /// 波線表示用に「診断 1 件＋下線を引く長さ」を組にしたもの。
+    /// <see cref="ScriptDiagnostic"/> は開始オフセットしか持たないため、
+    /// 下線長だけを表示処理へ渡す目的でここに添える。
+    /// </summary>
+    private sealed record MarkedDiagnostic(ScriptDiagnostic Diagnostic, int Length);
+
+    /// <summary>
+    /// 診断結果をエディタへ反映する（言語非依存の共通処理）。
+    ///
+    /// 波線マーカーの張り替え → 診断一覧の差し替え → 再描画 → 概観ルーラー更新 →
+    /// エラー一覧パネル通知、の順で行う。C#（Roslyn）と WGSL（ランタイム検証）の
+    /// 両経路がこのメソッドを共有するため、見た目と更新順序は常に一致する。
+    /// </summary>
+    /// <param name="doc">対象ドキュメント。</param>
+    /// <param name="diags">表示する診断（空リストなら全消去）。</param>
+    private void ApplyDiagnostics(DocTab doc, IReadOnlyList<MarkedDiagnostic> diags)
+    {
         doc.Markers.RemoveAll();
         doc.Diagnostics.Clear();
-        foreach (var (span, id, body, isError, line, col) in diags)
+        foreach (var (diagnostic, length) in diags)
         {
-            var color = isError
-                ? Color.FromRgb(0xF4, 0x47, 0x47)   // 赤
-                : Color.FromRgb(0xD7, 0xBA, 0x36);   // 黄
-            var label = $"{(isError ? "エラー" : "警告")} {id}: {body}";
-            doc.Markers.Create(span.Start, Math.Max(span.Length, 1), color, label);
-            doc.Diagnostics.Add(new ScriptDiagnostic(isError, id, body, line, col, span.Start, doc.FilePath));
+            var color = diagnostic.IsError ? DiagErrorMarkerColor : DiagWarningMarkerColor;
+            var label = $"{(diagnostic.IsError ? "エラー" : "警告")} {diagnostic.Id}: {diagnostic.Message}";
+            doc.Markers.Create(diagnostic.Offset, Math.Max(length, 1), color, label);
+            doc.Diagnostics.Add(diagnostic);
         }
         doc.Editor.TextArea.TextView.Redraw();
 
         // 概観ルーラーのエラー/警告マークと、左下カウント・エラー一覧パネルを更新する
         RefreshRuler(doc);
         NotifyDiagnosticsChanged();
+    }
+
+    /// <summary>
+    /// WGSL シェーディングアセットの検証をランタイムへ依頼し、返った診断を波線表示する。
+    ///
+    /// 検証できなかった場合（デリゲート未設定・Play 中・パイプ未接続・タイムアウト）は
+    /// 何も表示更新しない（＝直前の診断表示をそのまま残す）。実行中に赤下線が消えると
+    /// 「エラーが直った」と誤認させるため、消すのではなく維持する方針とする。
+    /// </summary>
+    private async Task RunWgslDiagnosticsAsync(DocTab doc)
+    {
+        var validator = WgslValidator;
+        if (validator is null) return;
+
+        var source = doc.Editor.Text;
+        var request = validator(source);
+        if (request is null) return;            // 依頼自体が行えなかった（検証不可）
+
+        var diags = await request;
+        if (diags is null) return;              // 応答が得られなかった（検証不可）
+
+        // 依頼中にテキストが変わっていたら結果は古いので破棄（次の Tick で再依頼される）
+        if (doc.Editor.Text != source) return;
+
+        var document = doc.Editor.Document;
+        var marked   = new List<MarkedDiagnostic>(diags.Count);
+        foreach (var d in diags)
+        {
+            // 行番号の確定: null・範囲外はすべて 1 行目へフォールバックする
+            int lineNumber = d.Line is int line && line >= 1 && line <= document.LineCount
+                ? line
+                : WgslFallbackLine;
+            var docLine = document.GetLineByNumber(lineNumber);
+
+            // 下線は行頭から「トリム後の行末」まで引く（列情報が契約に無いため）
+            int offset     = document.GetOffset(lineNumber, WgslDiagnosticColumn);
+            var lineText   = document.GetText(docLine.Offset, docLine.Length);
+            int markerLen  = Math.Max(lineText.TrimEnd().Length, WgslMinMarkerLength);
+
+            // ID はホバー時に出所が分かる形にする（例: WGSL(rt_on)）
+            var id = string.IsNullOrEmpty(d.Variant) ? "WGSL" : $"WGSL({d.Variant})";
+            // ランタイム由来の診断は常にエラー扱い（警告の区分は契約に存在しない）
+            marked.Add(new MarkedDiagnostic(
+                new ScriptDiagnostic(true, id, d.Message, lineNumber, WgslDiagnosticColumn, offset, doc.FilePath),
+                markerLen));
+        }
+        ApplyDiagnostics(doc, marked);
     }
 
     // ── セマンティック着色（型名・メソッド名・フィールド名など）─────
@@ -1504,9 +1621,10 @@ public class ScriptEditorPanel : UserControl
     /// <summary>入力文字に応じて補完ウィンドウを起動する。</summary>
     private async void OnTextEntered(DocTab doc, string enteredText)
     {
-        // C# 以外（シェーダー）は Roslyn ベースの補完対象外
-        if (!doc.IsCSharp) return;
-        if (_workspace is null || enteredText.Length == 0) return;
+        if (enteredText.Length == 0) return;
+        // C# は Roslyn ベースの補完なのでワークスペース必須。
+        // WGSL は静的辞書ベース（Roslyn 非依存）なのでワークスペースが無くても動く。
+        if (doc.IsCSharp && _workspace is null) return;
 
         char c = enteredText[0];
 
@@ -1643,8 +1761,18 @@ public class ScriptEditorPanel : UserControl
             return;
         }
 
+        // Ctrl+Space（WGSL）: 静的辞書ベースの補完を手動起動する。
+        // Roslyn 専用機能を守る下のガードより前に置く必要がある。
+        if (doc.Language == EditorLanguage.Wgsl
+            && e.Key == Key.Space && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            e.Handled = true;
+            await ShowCompletionAsync(doc);
+            return;
+        }
+
         // ここから先は Roslyn の意味解析を使う C# 専用機能。
-        // シェーダー（.wgsl）では既定動作に委ねる（Ctrl+Space・F12 とも何もしない）。
+        // シェーダー（.wgsl）では既定動作に委ねる（F12 定義ジャンプ等は何もしない）。
         if (!doc.IsCSharp) return;
 
         // Ctrl+Space: 補完を手動起動
@@ -1975,16 +2103,8 @@ public class ScriptEditorPanel : UserControl
     /// <summary>現在のキャレット位置で補完候補を計算し、ウィンドウ表示する。</summary>
     private async Task ShowCompletionAsync(DocTab doc)
     {
-        if (_workspace is null) return;
-        // C# 以外（シェーダー）は Roslyn ベースの補完対象外。
-        if (!doc.IsCSharp) return;
         // 読み取り専用（エンジン側ソース等）では編集しないので予測変換も出さない。
         if (doc.IsReadOnly || doc.Editor.IsReadOnly) return;
-        // 最新テキストをワークスペースへ反映してから解析する
-        _workspace.UpsertText(doc.FilePath, doc.Editor.Text);
-
-        var document = _workspace.GetDocument(doc.FilePath);
-        if (document is null) return;
 
         var editor   = doc.Editor;
         int position = editor.CaretOffset;
@@ -1995,14 +2115,35 @@ public class ScriptEditorPanel : UserControl
         while (wordStart > 0 && IsIdentChar(text[wordStart - 1])) wordStart--;
         string prefix = text.Substring(wordStart, position - wordStart);
 
-        // 自作補完: スコープ内の実シンボル（変数・型・メソッド等）を取得する
-        var entries = await CustomCompletion.GetEntriesAsync(document, position, prefix.Length);
+        // 候補の生成は言語で分岐する（C#=Roslyn 意味解析 / WGSL=静的辞書）。
+        // ウィンドウ生成・配色・_completionWindow の管理は以降で共有する。
+        List<ICompletionData> items;
+        if (doc.IsCSharp)
+        {
+            if (_workspace is null) return;
+            // 最新テキストをワークスペースへ反映してから解析する
+            _workspace.UpsertText(doc.FilePath, text);
 
-        // キャレットが解析中に動いていたら破棄する
-        if (editor.CaretOffset != position) return;
+            var document = _workspace.GetDocument(doc.FilePath);
+            if (document is null) return;
+
+            // 自作補完: スコープ内の実シンボル（変数・型・メソッド等）を取得する
+            var entries = await CustomCompletion.GetEntriesAsync(document, position, prefix.Length);
+
+            // キャレットが解析中に動いていたら破棄する
+            if (editor.CaretOffset != position) return;
+
+            items = entries.Select(e => (ICompletionData)new SymbolCompletionData(e)).ToList();
+        }
+        else
+        {
+            // WGSL: 契約シンボル・言語シンボル・文書内識別子から同期的に組み立てる
+            var entries = WgslCompletion.GetEntries(text, position, prefix);
+            items = entries.Select(e => (ICompletionData)new WgslCompletionData(e)).ToList();
+        }
 
         // 予測できる候補が無ければ表示しない
-        if (entries.Count == 0)
+        if (items.Count == 0)
         {
             _completionWindow?.Close();
             return;
@@ -2023,8 +2164,8 @@ public class ScriptEditorPanel : UserControl
         // 入力済み文字による絞り込みを有効化する（追加入力・削除に追従）
         window.CompletionList.IsFiltering = true;
 
-        foreach (var entry in entries)
-            window.CompletionList.CompletionData.Add(new SymbolCompletionData(entry));
+        foreach (var item in items)
+            window.CompletionList.CompletionData.Add(item);
 
         // 入力済みプレフィックスで初期フィルタ・最良候補を選択する
         if (prefix.Length > 0)

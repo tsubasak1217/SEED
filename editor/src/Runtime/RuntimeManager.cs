@@ -312,6 +312,13 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public event Action<bool, string>? TerrainScatterCompleted;
 
+    /// <summary>
+    /// WGSL シェーディングアセットの検証結果通知（WGSL_DIAG:request_id,json_array）。
+    /// 第 1 引数 = 依頼時の request_id、第 2 引数 = 診断の JSON 配列文字列（成功時は "[]"）。
+    /// 相関・解釈は WgslValidationService が行う（本クラスは配送のみ）。
+    /// </summary>
+    public event Action<long, string>? WgslDiagnosticsReceived;
+
     // ── コンストラクタ ─────────────────────────────────────────
 
     public RuntimeManager(string runtimeExePath)
@@ -596,6 +603,34 @@ public sealed class RuntimeManager : IDisposable
         if (!noisy)
             EditorLog.Write($"[Editor→Runtime] {message[..Math.Min(80, message.Length)]}");
         _pipe?.Send(message);
+    }
+
+    /// <summary>
+    /// WGSL シェーディングアセットの検証をランタイムへ依頼する。
+    ///
+    /// 送信書式（Rust 側と合意済み・変更禁止）:
+    ///   <c>VALIDATE_WGSL:{request_id},{json_source}</c>
+    ///   json_source は JSON 文字列リテラル（前後のダブルクォート込み・改行は \n エスケープ）。
+    ///
+    /// 【送信しない条件】
+    /// - Edit モード以外（Play / Pause 中）: ランタイムは実行中のシェーダーで手一杯であり、
+    ///   検証用のパイプライン再構築を走らせない。
+    /// - パイプ未接続（起動前・再起動中）。
+    /// いずれも「エラー」ではなく「検証不可」であり、呼び出し側は診断を出さない。
+    /// </summary>
+    /// <param name="requestId">応答の相関に使う 10 進整数 ID。</param>
+    /// <param name="source">検証対象の WGSL ソース全文。</param>
+    /// <returns>送信できたら true、送信条件を満たさず送らなかったら false。</returns>
+    public bool SendValidateWgsl(long requestId, string source)
+    {
+        if (_pipe is null || !_pipe.IsConnected) return false;
+        if (_state != EditorState.Edit) return false;
+
+        // ソースは 1 行の IPC に載せるため JSON 文字列リテラル化する（改行・引用符を安全に運ぶ）。
+        var jsonSource = System.Text.Json.JsonSerializer.Serialize(source);
+        // 高頻度（入力デバウンスごと）に飛ぶうえ本文が巨大なため、EditorLog には出さない。
+        _pipe.Send($"VALIDATE_WGSL:{requestId},{jsonSource}");
+        return true;
     }
 
     /// <summary>
@@ -1162,6 +1197,19 @@ public sealed class RuntimeManager : IDisposable
             _isLaunching    = false;
             _inEmbeddedPlay = false;
             ChangeState(EditorState.Edit);
+        }
+        else if (msg.StartsWith("WGSL_DIAG:", StringComparison.Ordinal))
+        {
+            // 書式: WGSL_DIAG:{request_id},{json_array}
+            // request_id はカンマを含まない 10 進整数なので、最初のカンマまでで分割する
+            // （json_array 側にはカンマが含まれ得るため Split は使わない）。
+            var payload  = msg["WGSL_DIAG:".Length..];
+            int commaPos = payload.IndexOf(',');
+            if (commaPos > 0 && long.TryParse(payload[..commaPos], out var reqId))
+            {
+                var json = payload[(commaPos + 1)..];
+                WgslDiagnosticsReceived?.Invoke(reqId, json);
+            }
         }
         else if (msg.StartsWith("HIERARCHY:", StringComparison.Ordinal))
         {

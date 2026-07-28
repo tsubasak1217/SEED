@@ -485,6 +485,13 @@ pub enum IpcCommand {
     /// フォーマット: SET_SCENE_SHADING_ASSET:{path}
     /// path は assets:// 仮想パスまたは絶対パス。空文字は未設定（None）を意味する。
     SetSceneShadingAsset { path: String },
+    /// シェーディングアセットの WGSL ソースを、保存せずにインメモリ検証して診断を返す
+    /// フォーマット: VALIDATE_WGSL:{request_id},{json_source}
+    /// - request_id  : 10 進 u64。レスポンスと対応付けるための識別子（カンマを含まない）
+    /// - json_source : WGSL ソースの JSON 文字列リテラル（前後の `"` 込み・改行は `\n`）。
+    ///                 カンマ・改行を含むソースを 1 行に載せるための表現。
+    /// レスポンス: `WGSL_DIAG:{request_id},{json_array}`（診断オブジェクトの配列。成功時 `[]`）
+    ValidateWgsl { request_id: u64, source: String },
     /// シーン単位のビューポート／レンダリング設定（`.scene` の settings 節）を設定する
     /// フォーマット: SET_SCENE_SETTINGS:{json}
     /// json は `scene_settings::SceneSettingsData` の JSON 全体（カンマを含む）。
@@ -1807,6 +1814,26 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             Some(IpcCommand::SetSceneShadingAsset {
                                 path: s["SET_SCENE_SHADING_ASSET:".len()..].trim().to_string(),
                             })
+                        }
+                        s if s.starts_with("VALIDATE_WGSL:") => {
+                            // フォーマット: VALIDATE_WGSL:{request_id},{json_source}
+                            // json_source は JSON 文字列リテラル（カンマ・改行エスケープ済み）。
+                            // 内部のカンマは splitn(2) で後半に丸ごと残るため、最初のカンマだけで分ければよい。
+                            let rest = &s["VALIDATE_WGSL:".len()..];
+                            let mut it = rest.splitn(2, ',');
+                            match (it.next(), it.next()) {
+                                (Some(id_s), Some(json_src)) => {
+                                    // id が数値でない／ソースが JSON 文字列として壊れている場合は
+                                    // 応答先も内容も確定できないため、コマンドごと捨てる。
+                                    match (id_s.trim().parse::<u64>(),
+                                           serde_json::from_str::<String>(json_src)) {
+                                        (Ok(request_id), Ok(source)) =>
+                                            Some(IpcCommand::ValidateWgsl { request_id, source }),
+                                        _ => None,
+                                    }
+                                }
+                                _ => None,
+                            }
                         }
                         s if s.starts_with("SET_SCENE_SETTINGS:") => {
                             // フォーマット: SET_SCENE_SETTINGS:{json}
