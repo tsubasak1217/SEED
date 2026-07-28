@@ -38,10 +38,14 @@ pub fn collect_water_volumes(
     world_line: u32,
 ) -> Vec<ResolvedWaterVolume> {
     let mut out = Vec::new();
+    // DFS 連番カウンタ。ピッキングの ID 採番（キャンバス／MC と共有する
+    // 「アクタ DFS インデックス」）と一致させるため、収集をスキップしたアクタでも
+    // 必ず進める（下記 collect_in_actor を参照）。
+    let mut dfs_counter = 0u32;
     // ルートは world_line が一致するものだけを対象にする
     //（collect_mcs_in_world_line と同じフィルタ条件）
     for root in actors.iter().filter(|a| a.world_line == world_line) {
-        collect_in_actor(root, world, &mut out, true);
+        collect_in_actor(root, world, &mut out, &mut dfs_counter, true);
     }
     out
 }
@@ -49,13 +53,21 @@ pub fn collect_water_volumes(
 /// collect_water_volumes の再帰実装。
 ///
 /// `parent_active` は祖先のアクティブ状態。自身または祖先が active=false の
-/// アクターは、そのサブツリーごと収集対象から外す。
+/// アクターは水ボリュームを収集しない。
+///
+/// `dfs_counter` はアクタの DFS 連番（0 始まり）。**収集対象外のアクタでも必ず加算し、
+/// 非アクティブなサブツリーへも再帰する**。これは `collect_mcs_in_world_line` と
+/// キャンバスピックの採番規則に合わせるためで、ここでカウントを飛ばすと
+/// 水面クリックで「別のアクタ」が選択されるズレが起きる。
 fn collect_in_actor(
     actor:         &Actor,
     world:         &World,
     out:           &mut Vec<ResolvedWaterVolume>,
+    dfs_counter:   &mut u32,
     parent_active: bool,
 ) {
+    let dfs_id = *dfs_counter;
+    *dfs_counter += 1;
     let active = parent_active && actor.active;
 
     if active {
@@ -70,15 +82,14 @@ fn collect_in_actor(
             let Some(wv) = world.get::<WaterVolumeComponent>(slot.entity) else { continue };
             // Spline は W4 で実装。それまでは収集しない（下流が誤って参照しないように）。
             if wv.kind == WaterVolumeKind::Spline { continue; }
-            out.push(ResolvedWaterVolume::from_component(wv, pos));
+            out.push(ResolvedWaterVolume::from_component(wv, pos, dfs_id));
         }
     }
 
-    // 非アクティブなアクターは子孫も収集しない（サブツリーごとスキップ）
-    if active {
-        for child in actor.children() {
-            collect_in_actor(child, world, out, active);
-        }
+    // 子孫へは**常に**再帰する。非アクティブなサブツリーの水は収集されないが
+    //（active フラグが伝播するため）、DFS 連番だけは進める必要がある。
+    for child in actor.children() {
+        collect_in_actor(child, world, out, dfs_counter, active);
     }
 }
 
@@ -214,6 +225,50 @@ mod tests {
         assert!(collect_water_volumes(&s.actors, &s.world, 0).is_empty());
         // world_line 7 では収集される
         assert_eq!(collect_water_volumes(&s.actors, &s.world, 7).len(), 1);
+    }
+
+    /// DFS 連番は「親 → 子」の順で、水を持たないアクタも 1 つとして数える。
+    /// （ピッキングの ID 採番規則 = collect_mcs_in_world_line と一致させるため）
+    #[test]
+    fn assigns_dfs_id_counting_all_actors() {
+        let mut s = TestScene::new();
+        // ルート0: 水なし親（dfs 0）＋ 水を持つ子（dfs 1）
+        let child = s.make_water_actor([0.0, 1.0, 0.0], WaterVolumeKind::Region);
+        let parent_entity = s.world.spawn();
+        s.world.insert(parent_entity, Transform::default());
+        let mut parent = Actor::new(parent_entity, "parent");
+        parent.add_child(child);
+        s.actors.push(parent);
+        // ルート1: 水を持つアクタ（dfs 2）
+        let second = s.make_water_actor([0.0, 2.0, 0.0], WaterVolumeKind::Region);
+        s.actors.push(second);
+
+        let vols = s.collect();
+        assert_eq!(vols.len(), 2);
+        assert_eq!(vols[0].actor_dfs_id, 1, "水なし親を 1 つ数えた次が子");
+        assert_eq!(vols[1].actor_dfs_id, 2, "次のルートは兄弟サブツリー全体の後ろ");
+    }
+
+    /// 非アクティブなサブツリーも DFS 連番だけは消費する
+    /// （数え落とすと後続アクタの ID がズレて別アクタが選択されてしまう）。
+    #[test]
+    fn inactive_subtree_still_consumes_dfs_ids() {
+        let mut s = TestScene::new();
+        // ルート0: 非アクティブ親（dfs 0）＋ その子（dfs 1）。どちらも収集されない。
+        let hidden_child = s.make_water_actor([0.0, 0.0, 0.0], WaterVolumeKind::Region);
+        let parent_entity = s.world.spawn();
+        s.world.insert(parent_entity, Transform::default());
+        let mut parent = Actor::new(parent_entity, "inactive_parent");
+        parent.active = false;
+        parent.add_child(hidden_child);
+        s.actors.push(parent);
+        // ルート1: 収集される水アクタ（dfs 2）
+        let visible = s.make_water_actor([0.0, 3.0, 0.0], WaterVolumeKind::Region);
+        s.actors.push(visible);
+
+        let vols = s.collect();
+        assert_eq!(vols.len(), 1);
+        assert_eq!(vols[0].actor_dfs_id, 2);
     }
 
     /// Ocean はアクタ位置に依存せず、surface_height をワールド Y として使う。

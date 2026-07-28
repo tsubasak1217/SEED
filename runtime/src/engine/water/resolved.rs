@@ -94,16 +94,27 @@ pub struct ResolvedWaterVolume {
     pub ocean_extent: f32,
     /// 見た目パラメータ（そのままコピー）
     pub visual: WaterVisualParams,
+    /// この水ボリュームを持つアクタの DFS インデックス（0 始まり）。
+    ///
+    /// エディタのピッキング（ID パス）で「クリックされた水面 → アクタ」を引くために持つ。
+    /// 採番規則は `collect_mcs_in_world_line` / キャンバスピックと**完全に同一**でなければ
+    /// ならない（世界線のルート群を DFS し、非アクティブなアクタも数える）。
+    pub actor_dfs_id: u32,
 }
 
 impl ResolvedWaterVolume {
     /// アクタのワールド位置と WaterVolumeComponent からワールド空間表現を作る。
     ///
     /// `actor_pos` はアクタの Transform.position（Transform はワールド空間）。
+    /// `actor_dfs_id` はそのアクタの DFS インデックス（0 始まり。ピッキング用）。
     ///
     /// 【W1 の制限】アクタの回転は無視する（＝Region は常に軸平行 AABB）。
     /// 回転した水塊は W4 以降で対応する。
-    pub fn from_component(c: &WaterVolumeComponent, actor_pos: [f32; 3]) -> Self {
+    pub fn from_component(
+        c:            &WaterVolumeComponent,
+        actor_pos:    [f32; 3],
+        actor_dfs_id: u32,
+    ) -> Self {
         match c.kind {
             // Ocean: XZ 無限。水面 Y は surface_height をワールド絶対値として使う
             //（アクタ位置に依存しない ＝ アクタをどこへ置いても水面は動かない）。
@@ -114,6 +125,7 @@ impl ResolvedWaterVolume {
                 half_extents: [0.0, 0.0, 0.0],
                 ocean_extent: c.ocean_extent,
                 visual:       WaterVisualParams::from_component(c),
+                actor_dfs_id,
             },
             // Region / Spline: アクタ位置を AABB 中心とし、水面 Y は
             // 「中心 Y + surface_height（相対）」で決まる。
@@ -131,6 +143,7 @@ impl ResolvedWaterVolume {
                     half_extents: half,
                     ocean_extent: c.ocean_extent,
                     visual:       WaterVisualParams::from_component(c),
+                    actor_dfs_id,
                 }
             }
         }
@@ -149,7 +162,7 @@ mod tests {
         let mut c = WaterVolumeComponent::default();
         c.kind = WaterVolumeKind::Ocean;
         c.surface_height = 3.0;
-        let r = ResolvedWaterVolume::from_component(&c, [100.0, 50.0, -20.0]);
+        let r = ResolvedWaterVolume::from_component(&c, [100.0, 50.0, -20.0], 0);
         assert_eq!(r.surface_y, 3.0, "Ocean の水面 Y はアクタ Y に影響されない");
     }
 
@@ -159,7 +172,7 @@ mod tests {
         let mut c = WaterVolumeComponent::default();
         c.kind = WaterVolumeKind::Region;
         c.surface_height = 2.0;
-        let r = ResolvedWaterVolume::from_component(&c, [1.0, 10.0, 2.0]);
+        let r = ResolvedWaterVolume::from_component(&c, [1.0, 10.0, 2.0], 0);
         assert_eq!(r.surface_y, 12.0, "Region の水面 Y = アクタ Y + surface_height");
         assert_eq!(r.center, [1.0, 10.0, 2.0], "AABB 中心はアクタ位置");
     }
@@ -170,7 +183,7 @@ mod tests {
         let mut c = WaterVolumeComponent::default();
         c.kind = WaterVolumeKind::Region;
         c.region_half_extents = [-4.0, 2.0, -6.0];
-        let r = ResolvedWaterVolume::from_component(&c, [0.0, 0.0, 0.0]);
+        let r = ResolvedWaterVolume::from_component(&c, [0.0, 0.0, 0.0], 0);
         assert_eq!(r.half_extents, [4.0, 2.0, 6.0]);
     }
 
@@ -180,7 +193,7 @@ mod tests {
         let mut c = WaterVolumeComponent::default();
         c.shallow_color = [0.1, 0.2, 0.3];
         c.foam_intensity = 0.42;
-        let r = ResolvedWaterVolume::from_component(&c, [0.0, 0.0, 0.0]);
+        let r = ResolvedWaterVolume::from_component(&c, [0.0, 0.0, 0.0], 0);
         assert_eq!(r.visual.shallow_color, [0.1, 0.2, 0.3]);
         assert_eq!(r.visual.foam_intensity, 0.42);
     }

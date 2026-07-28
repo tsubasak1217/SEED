@@ -418,7 +418,8 @@ pub fn build_camera_frustum_batch(
 /// 選択中カメラの CameraUniform を構築する（カメラプレビューレンダー用）。
 ///
 /// - `res`: ビューポート解像度 [width, height]（ギズモ太線計算に使用）
-/// - `time`: ゲーム内累計時間（秒）。呼び出し側の `ctx.anim_time` をそのまま渡す。
+/// - `time`: シェーダ時間（秒）。呼び出し側の `shader_time`（Play 非ポーズ中は
+///   `ctx.anim_time`、Edit・ポーズ中は常時進む `ctx.ambient_time`）をそのまま渡す。
 ///   時間はフレーム全体で 1 つの値であり、カメラごとに変える理由がないため。
 ///   （プレビューのライティングは常に組み込み標準パイプラインを使うのでシェーディング
 ///    アセットは経由しないが、`ShadingSurface.time` 自体は組み込み側でも詰められる。

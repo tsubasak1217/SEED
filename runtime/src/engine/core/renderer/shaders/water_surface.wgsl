@@ -88,6 +88,9 @@ struct WaterParams {
     wave:             vec4<f32>,
     /// x = フレネル指数／y = フレネル寄与率／z,w = 未使用
     fresnel:          vec4<f32>,
+    /// x = ピッキング用 raw アクタ ID（本シェーダでは未使用。ID パス `water_id.wgsl` が読む）。
+    /// 配列ストライドを Rust 側 `WaterParams` と一致させるため宣言だけしておく。
+    actor_id:         vec4<u32>,
 }
 
 @group(1) @binding(0) var<storage, read> u_water: array<WaterParams>;
