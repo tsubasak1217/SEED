@@ -31,6 +31,10 @@
   <Color name="NumberLiteral"  foreground="#B5CEA8" />
   <!-- 関数呼び出し・関数宣言名（薄黄） -->
   <Color name="FunctionCall"   foreground="#DCDCAA" />
+  <!-- シェーディング契約の型 ShadingSurface / LightSample（ティール） -->
+  <Color name="ContractType"   foreground="#4EC9B0" />
+  <!-- シェーディング契約が提供するシンボル（関数・定数。金茶） -->
+  <Color name="ContractSymbol" foreground="#D7BA7D" />
 
   <RuleSet ignoreCase="false">
 
@@ -113,6 +117,58 @@
 
     <!-- ── テクスチャ型 texture_2d / texture_storage_2d_array 等 ── -->
     <Rule color="TypeKeyword">\btexture_[A-Za-z0-9_]+\b</Rule>
+
+    <!-- ── シェーディング契約のシンボル ───────────────────────── -->
+    <!--
+      正典:
+        runtime/src/engine/core/renderer/shaders/shading_contract.wgsl
+        （ディスパッチ側の shade_default / shade_model_1..3 は
+          runtime/src/engine/core/renderer/shading_asset.rs が生成する呼び出し規約）
+
+      同期のしかた:
+        契約側で型・関数・定数を増減したら、ここと
+        editor/src/Panels/ScriptEditor/WgslCompletion.cs（補完候補の写し）の
+        両方を必ず同時に更新する。片方だけ直すと「補完には出るが色が付かない」
+        （またはその逆）というズレが生じる。
+
+      ルール順の都合:
+        後ろにある「関数呼び出し」ルール（識別子 + "(" ）より前に置くこと。
+        後ろに置くと shading_saturate( などが先に関数呼び出し色で塗られ、
+        契約シンボル色が効かなくなる。
+    -->
+    <!-- 契約の型（構造体） -->
+    <Keywords color="ContractType">
+      <Word>ShadingSurface</Word>
+      <Word>LightSample</Word>
+    </Keywords>
+    <!-- 契約が提供する関数・上書き可能なシェーディング関数名 -->
+    <Keywords color="ContractSymbol">
+      <!-- 標準ライブラリ（shading_contract.wgsl） -->
+      <Word>shading_saturate</Word>
+      <Word>shading_saturate3</Word>
+      <Word>shading_nan_guard</Word>
+      <Word>shading_luminance</Word>
+      <Word>shading_linear_to_srgb</Word>
+      <Word>shading_srgb_to_linear</Word>
+      <Word>shading_posterize</Word>
+      <Word>shade_light</Word>
+      <Word>shade_model_0</Word>
+      <!-- pbr_common.wgsl 由来。契約からそのまま呼び出せる -->
+      <Word>distribution_ggx</Word>
+      <Word>geometry_smith</Word>
+      <Word>fresnel_schlick</Word>
+      <!-- アセット側が実装する上書き関数（呼び出し規約は shading_asset.rs） -->
+      <Word>shade_default</Word>
+      <Word>shade_model_1</Word>
+      <Word>shade_model_2</Word>
+      <Word>shade_model_3</Word>
+      <!-- 生成されるディスパッチ本体（アセットから呼ぶことは無いが読む機会がある） -->
+      <Word>shade_surface</Word>
+      <!-- 円周率（pbr_common.wgsl 由来の定数） -->
+      <Word>PI</Word>
+    </Keywords>
+    <!-- 契約の定数はすべて SHADING_ 接頭辞。個別列挙せず正規表現でまとめて拾う -->
+    <Rule color="ContractSymbol">\bSHADING_[A-Z0-9_]+\b</Rule>
 
     <!-- ── 数値リテラル ───────────────────────────────────────── -->
     <!-- 16 進 → 小数（指数付き） → 整数 の順に評価する。            -->

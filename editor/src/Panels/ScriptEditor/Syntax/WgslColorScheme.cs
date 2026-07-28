@@ -44,6 +44,8 @@ public static class WgslColorScheme
     private const string XshdBoolLiteral    = "BoolLiteral";
     private const string XshdNumberLiteral  = "NumberLiteral";
     private const string XshdFunctionCall   = "FunctionCall";
+    private const string XshdContractType   = "ContractType";
+    private const string XshdContractSymbol = "ContractSymbol";
 
     /// <summary>
     /// ユーザーが色設定できる WGSL 分類の一覧（表示順）。
@@ -59,13 +61,41 @@ public static class WgslColorScheme
         new Entry("真偽値リテラル",        KeyPrefix + "boolLiteral",    XshdBoolLiteral),
         new Entry("数値リテラル",          KeyPrefix + "number",         XshdNumberLiteral),
         new Entry("関数呼び出し",          KeyPrefix + "functionCall",   XshdFunctionCall),
+        new Entry("契約型 (ShadingSurface 等)", KeyPrefix + "contractType",   XshdContractType),
+        new Entry("契約シンボル (shading_* 等)", KeyPrefix + "contractSymbol", XshdContractSymbol),
+    };
+
+    // ── 意味解析（識別子）系の分類 ──────────────────────────────
+    // xshd（字句解析）はローカル変数と引数を区別できないため、
+    // WgslSemanticColorizer（DocumentColorizingTransformer）が後段で塗る。
+    // したがって xshd 側に対応する <Color> は存在せず、既定色はここが正典になる。
+
+    /// <summary>ローカル変数（関数内の let/var/const）の配色キー。</summary>
+    public const string KeyLocal = KeyPrefix + "local";
+    /// <summary>関数の仮引数の配色キー。</summary>
+    public const string KeyParameter = KeyPrefix + "parameter";
+
+    /// <summary>ローカル変数の既定色（VS ダークの変数色）。</summary>
+    private const string DefaultLocalHex = "#9CDCFE";
+    /// <summary>引数の既定色（ローカル変数と見分けが付くよう一段濃い水色）。</summary>
+    private const string DefaultParameterHex = "#7BC0E8";
+
+    /// <summary>
+    /// 意味解析ベースの分類（xshd に対応 Color を持たないもの）。
+    /// </summary>
+    public static IReadOnlyList<ColorSettingEntry> SemanticEntries { get; } = new[]
+    {
+        new ColorSettingEntry("ローカル変数", KeyLocal,     DefaultLocalHex),
+        new ColorSettingEntry("引数",         KeyParameter, DefaultParameterHex),
     };
 
     /// <summary>
-    /// 各キーの既定色（"#RRGGBB"）を返す。値は Wgsl.xshd に書かれた色そのもの。
+    /// 各キーの既定色（"#RRGGBB"）を返す。
+    /// 字句分類の値は Wgsl.xshd に書かれた色そのもの、意味解析分類の値は
+    /// <see cref="SemanticEntries"/> の定数。
     ///
     /// xshd の読み込みに失敗した場合、または xshd 側に対応する Color 定義が
-    /// 無い場合、そのキーは辞書に含まれない（呼び出し側は「設定できる項目が無い」
+    /// 無い場合、その字句分類キーは辞書に含まれない（呼び出し側は「設定できる項目が無い」
     /// として扱えばよい）。
     /// </summary>
     public static IReadOnlyDictionary<string, string> DefaultColors()
@@ -75,7 +105,26 @@ public static class WgslColorScheme
         foreach (var e in Entries)
             if (xshdDefaults.TryGetValue(e.XshdColorName, out var hex))
                 result[e.Key] = hex;
+        foreach (var e in SemanticEntries)
+            result[e.Key] = e.DefaultHex;
         return result;
+    }
+
+    /// <summary>
+    /// 設定 UI に並べる WGSL の全項目（字句分類 ＋ 意味解析分類）を返す。
+    /// 既定色が取得できない字句分類（xshd 読み込み失敗時）は除外される。
+    /// </summary>
+    public static IReadOnlyList<ColorSettingEntry> SettingEntries()
+    {
+        var defaults = DefaultColors();
+        var list = new List<ColorSettingEntry>();
+        foreach (var e in Entries)
+            if (defaults.TryGetValue(e.Key, out var hex))
+                list.Add(new ColorSettingEntry(e.Label, e.Key, hex));
+        // 意味解析分類は xshd に依存しないため常に並べる
+        foreach (var e in SemanticEntries)
+            list.Add(e);
+        return list;
     }
 
     /// <summary>
