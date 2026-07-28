@@ -1,0 +1,27 @@
+# water_id.toml — 水面の ID パス（エディタのピッキング）
+#
+# water_surface.toml と同じ「頂点バッファ無し・draw(0..6, 0..N)」のクアッド生成だが、
+# 出力先は ID バッファ（Rgba32Float）で、深度の扱いが異なる。
+#
+# 深度: ID パスはメインパスのシーン深度を Load したアタッチメントを持つため、
+#   手動深度テスト（water_surface 側の方式）ではなく通常のハードウェア深度テストを使う。
+#   depth_compare = "LessEqual" … 水面より手前の物体をクリックしたらそちらが選ばれる
+#   depth_write   = false        … 水面は深度を書かない（後続のギズモ ID 描画を汚さない）
+#
+# cull_mode = "None": 水面を裏側（水中）から見たときもピックできるようにする。
+shader_sources  = ["water_id.wgsl"]
+vertex_entry    = "vs_water_id"
+fragment_entry  = "fs_water_id"
+vertex_slots    = []
+num_bind_groups = 2
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+depth_write     = false
+depth_compare   = "LessEqual"
+
+color_format    = "Rgba32Float"
+blend           = "None"
+write_mask      = "all"

@@ -11,6 +11,14 @@ pub struct FrameContext {
     pub delta_time: f32,
     /// ゲーム内累計時間（Edit モードでは進まない）。
     pub anim_time:  f32,
+    /// 壁時計の累計時間（秒）。**モード・ポーズに関係なく毎フレーム進む**。
+    ///
+    /// ゲーム内時間（`anim_time`）と違い Edit / ポーズ中も止まらないため、
+    /// 「編集中でも動いていてほしい」見た目のアニメーション（水面の波、
+    /// L3 シェーディングアセットの時間応答）の駆動に使う。
+    /// ゲームロジック（スクリプトの `SEED.Time.ElapsedTime`）には使わないこと
+    /// ＝ ゲームの時間はあくまで `anim_time` が権威である。
+    pub ambient_time: f32,
 }
 
 // ============================================================
@@ -37,6 +45,13 @@ pub const DEBUG_PAUSE_THRESHOLD: f32 = 0.5;
 pub struct Clock {
     last_frame:        Instant,
     anim_time:         f32,
+    /// 壁時計の累計時間（秒）。`time_running` に関係なく毎フレーム加算する。
+    ///
+    /// **f64 で持つ理由**: エディタは何時間も起動しっぱなしになり得る。f32 は
+    /// 累計が大きくなるほど加算の刻みが丸められ、最終的に時間が進まなくなる
+    /// （典型的な累積時計の精度崩壊）。加算は f64 で行い、シェーダへ配る直前に
+    /// f32 へ落とす。
+    ambient_time:      f64,
     fixed_accumulator: f32,
     /// デバッグセッション（内蔵デバッガ）がアタッチ中かどうか。
     /// true の間だけ `DEBUG_PAUSE_THRESHOLD` によるブレークポイント停止ガードが働く。
@@ -49,6 +64,7 @@ impl Clock {
         Self {
             last_frame:        Instant::now(),
             anim_time:         0.0,
+            ambient_time:      0.0,
             fixed_accumulator: 0.0,
             debug_guard:       false,
         }
@@ -78,7 +94,16 @@ impl Clock {
             self.fixed_accumulator += delta_time;
         }
 
-        FrameContext { delta_time, anim_time: self.anim_time }
+        // 壁時計は常時進める（Edit・ポーズ・Play を問わない）。
+        // ブレークポイントガードで丸めた delta をそのまま使う点は anim_time と同じ
+        //（デバッガ停止中に見た目の時間だけ大きく飛ぶのを防ぐ）。
+        self.ambient_time += delta_time as f64;
+
+        FrameContext {
+            delta_time,
+            anim_time:    self.anim_time,
+            ambient_time: self.ambient_time as f32,
+        }
     }
 
     /// `FIXED_DELTA` 分ずつアキュムレータを消費するイテレータを返す。
@@ -93,6 +118,9 @@ impl Clock {
     }
 
     pub fn anim_time(&self) -> f32 { self.anim_time }
+
+    /// 壁時計の累計時間（秒）。モード・ポーズに関係なく進む。
+    pub fn ambient_time(&self) -> f32 { self.ambient_time as f32 }
 }
 
 impl Default for Clock {
@@ -116,8 +144,11 @@ impl Iterator for FixedDrain<'_> {
         if self.clock.fixed_accumulator >= FIXED_DELTA {
             self.clock.fixed_accumulator -= FIXED_DELTA;
             Some(FrameContext {
-                delta_time: FIXED_DELTA,
-                anim_time:  self.clock.anim_time,
+                delta_time:   FIXED_DELTA,
+                anim_time:    self.clock.anim_time,
+                // 固定ステップは「今フレームの壁時計」をそのまま配る
+                //（壁時計は固定ステップの回数では進まない）。
+                ambient_time: self.clock.ambient_time as f32,
             })
         } else {
             None

@@ -131,6 +131,26 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
     **カメラプレビューには描かない**（W1 スコープ外）。
   - `[PERF]` に `water=`（グラブ＋水面パスの CPU 時間）を追加。
 
+  **W1 フォローアップ（同フェーズ内で追加）**
+
+  - **水面のピッキング**: 同じクアッドを ID パスにも描く専用パイプライン
+    （`shaders/water_id.wgsl` ＋ `pipelines/water_id.toml`、`WaterRenderer::draw_id`）。
+    ID 値は他のアクタピックと同一規約 `canvas_id_offset + アクタDFS + 1` で、
+    デコード側のキャンバス選択分岐（DFS → アクタ）にそのまま乗る（デコード側の変更ゼロ）。
+    DFS 連番は `collect_water_volumes` が採番し、非アクティブなアクタも数える
+    （`collect_mcs_in_world_line` と完全一致させるため）。
+    深度整合は ID パスの深度アタッチメント（メインパスのシーン深度を Load）＋
+    `depth_compare = LessEqual` / `depth_write = false` に任せるので、
+    水面より手前の物体をクリックすればそちらが選ばれる。描画順はモデルの後・ギズモの前。
+    選択のアウトライン表示は水面には出ない（アウトラインはメッシュのステンシル経路のため。
+    選択自体とインスペクタ表示は成立する）。
+  - **Edit 中も波が動く**: `Clock::ambient_time`（モード・ポーズに関係なく進む壁時計、内部 f64）を追加し、
+    `CameraUniform.time` へ **Play 非ポーズ = `anim_time` / Edit・ポーズ = `ambient_time`** を配る
+    （メインカメラ・2D オルソオーバーレイ・カメラプレビューの 3 箇所とも同一）。
+    L3 シェーディングアセットの `ShadingSurface.time` も同じ値なので Edit 中に動く（`docs/shading_asset.md`）。
+    切替時に位相は跳ぶ（波・時間応答は位相の連続性を要さないため許容）。
+    草・風（`GrassUniform.time`）は従来どおり `anim_time` 駆動＝ Edit では静止のまま。
+
   **W1 の既知の制限**（後続フェーズで解消）
 
   - 水面パスは既存の半透明の**後**に描くため、水より手前にある半透明オブジェクトが水に上書きされる。

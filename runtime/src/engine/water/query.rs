@@ -150,6 +150,8 @@ mod tests {
             half_extents: [0.0; 3],
             ocean_extent: 1.0,
             visual: dummy_visual(),
+            // 問い合わせ（水中判定）はピッキング ID を使わないのでダミー
+            actor_dfs_id: 0,
         }
     }
 
@@ -162,6 +164,8 @@ mod tests {
             half_extents: half,
             ocean_extent: 0.0,
             visual: dummy_visual(),
+            // 問い合わせ（水中判定）はピッキング ID を使わないのでダミー
+            actor_dfs_id: 0,
         }
     }
 
@@ -174,6 +178,8 @@ mod tests {
             half_extents: [1000.0; 3],
             ocean_extent: 0.0,
             visual: dummy_visual(),
+            // 問い合わせ（水中判定）はピッキング ID を使わないのでダミー
+            actor_dfs_id: 0,
         }
     }
 

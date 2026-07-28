@@ -340,6 +340,10 @@ impl App {
         // 水面描画（Phase W1: prepare + 屈折背景グラブ + 水面パス記録）にかかった CPU 時間 [ms]。
         // 水ボリュームが 0 個のフレームは一切実行されないため常に 0。
         let mut perf_water_ms:      f64 = 0.0;
+        // 水面を ID パス（ピッキング）にも描けるか。
+        // 水面パスの `prepare` が成功したフレームだけ true になり、後段の ID パスが参照する
+        // （prepare 未実行＝パラメータ未アップロードの状態で ID 描画すると不正な ID を書く）。
+        let mut water_pick_ready = false;
         // pass.drop() だけにかかった時間 [ms]（wgpu デバッグ検証オーバーヘッドの指標）
         let mut perf_pass_drop_ms:  f64 = 0.0;
         // frame.finish()（encoder.finish + queue.submit + surface.present）にかかった時間 [ms]
@@ -462,6 +466,14 @@ impl App {
         // ── 時間 ──────────────────────────────────────
         let time_running = self.mode == RuntimeMode::Play && !self.paused;
         let ctx: FrameContext = self.clock.tick(time_running);
+        // ── シェーダへ配る時間（CameraUniform.time）─────────────────────────
+        //   Play（非ポーズ）  … ゲーム内時間 `anim_time`。スクリプトの
+        //                        SEED.Time.ElapsedTime と位相が揃う（従来仕様）。
+        //   Edit / ポーズ中   … 壁時計 `ambient_time`。**編集中も止まらない**。
+        // これにより水面の波と L3 シェーディングアセットの時間応答が Edit 中も動く。
+        // 切替時に位相は跳ぶが、波・時間応答は位相の連続性を必要としないため許容する。
+        // 草・風（GrassUniform.time）は従来どおり anim_time のままで、ここには含めない。
+        let shader_time = if time_running { ctx.anim_time } else { ctx.ambient_time };
         let in_editor = self.mode == RuntimeMode::Edit || self.paused;
         // ── Edit ビューモード（3Dシーン / 2Dシーンタブ）判定 ─────────────────
         // edit_view_2d: Edit モード + シーン世界線 + View2D。
@@ -827,10 +839,11 @@ impl App {
                 view_proj:      view_proj.transpose().data,
                 view:           view.transpose().data,
                 position:       cam_pos_arr,
-                // ゲーム内累計時間（L3 シェーディング契約 `ShadingSurface.time` の供給元）。
-                // 草の揺れ（GrassUniform.time）・スクリプトの SEED.Time.ElapsedTime と
-                // **同一の値**を渡す。独自の時計は持たない（Edit・ポーズでは止まる）。
-                time:           ctx.anim_time,
+                // シェーダ時間（L3 シェーディング契約 `ShadingSurface.time` と水面の波の供給元）。
+                // Play（非ポーズ）はゲーム内時間 = スクリプトの SEED.Time.ElapsedTime と同位相、
+                // Edit・ポーズ中は壁時計（ambient_time）で進み続ける。詳細は `shader_time` の定義箇所。
+                // 草の揺れ（GrassUniform.time）は従来どおり anim_time 駆動で、こことは別系統。
+                time:           shader_time,
                 resolution:     res,
                 _pad2:          [0.0; 2],
                 inv_view_proj:  inv_view_proj.transpose().data,
@@ -897,7 +910,7 @@ impl App {
                         position:       [0.0, 0.0, -100.0],
                         // 2D キャンバスオーバーレイもメインカメラと同じ時刻を配る
                         // （時間はフレーム全体で 1 つの値であり、カメラごとに変える理由がない）。
-                        time:           ctx.anim_time,
+                        time:           shader_time,
                         resolution:     [vp_w, vp_h],
                         _pad2:          [0.0; 2],
                         inv_view_proj:  cvp_inv.transpose().data,
@@ -2002,7 +2015,8 @@ impl App {
                         // プロジェクション行列もテクスチャのアスペクト比に合わせる
                         let preview_aspect = cam_data.target_aspect();
                         let cam_uniform = camera_scene_gizmo::build_camera_uniform(
-                            cam_data, preview_aspect, res, ctx.anim_time,
+                            // カメラプレビューもメインカメラと同じ切替（Edit 中は壁時計）に揃える。
+                            cam_data, preview_aspect, res, shader_time,
                         );
                         // プレビュー用一時カメラバッファを生成する
                         let preview_cam_buf = CameraBuffer::new(
@@ -5486,7 +5500,14 @@ impl App {
                                 &draw_ctx.device, &draw_ctx.queue,
                                 &water_volumes, saved_camera_pos,
                                 surf_w, surf_h, depth_sample_view,
+                                // ピッキング ID のベース（キャンバスアクターと同一 ID 空間）。
+                                // 水面には専用の ID 帯域を設けず、
+                                // 「raw = canvas_id_offset + アクタ DFS + 1」でデコード側の
+                                // キャンバス選択分岐（DFS からアクタを引く経路）に相乗りする。
+                                canvas_id_offset,
                             );
+                            // ID パス（後段）で水面クアッドを描いてよいかを伝える。
+                            water_pick_ready = water_ready;
                             if water_ready {
                                 // ① 屈折背景のグラブ（シーン HDR → 専用 1 ミップテクスチャ）。
                                 //    レンダーパス外・水面パス直前に 1 回だけコピーする。
@@ -6496,6 +6517,24 @@ impl App {
                                                 &sd.id_zero_bg.1,
                                             );
                                         }
+                                    }
+                                }
+
+                                // ── 水面 ID 描画（Phase W1 フォローアップ）─────────────
+                                // 水面クアッドを ID パスにも描き、Edit で水面をクリックしたら
+                                // WaterVolume を持つアクタが選択されるようにする。
+                                //   ・ID 値       : canvas_id_offset + アクタ DFS + 1（prepare で埋め込み済み）
+                                //   ・深度整合    : パイプライン側 LessEqual・深度書込なし。
+                                //                   手前の不透明物は ID パスの深度（メインパスのシーン深度を
+                                //                   Load 済み）で勝つため、水面より手前をクリックすれば
+                                //                   そちらが選択される。
+                                //   ・描画順      : 3D モデルの後（水中のモデルより水面を優先）／
+                                //                   ギズモアイコンの前（編集ハンドルを優先）。
+                                //   ・波の変位無し: W1 の波はフラグメント法線のみなので静的クアッドで一致する。
+                                // 2D 編集ビューでは水面自体を描かない（= water_pick_ready が false）。
+                                if water_pick_ready {
+                                    if let Some(water) = self.water_renderer.as_ref() {
+                                        water.draw_id(&mut id_pass, &camera_buf.bind_group);
                                     }
                                 }
 
