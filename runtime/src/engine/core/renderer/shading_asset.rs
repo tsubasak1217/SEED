@@ -19,9 +19,11 @@
 //      ファイル内容が変わるまで再試行しない（毎フレームの naga 検証を避ける）。
 //   3. **不正な WGSL を `device.create_shader_module` へ渡さない**。生成した連結ソースは
 //      必ず naga で parse + validate してからパイプラインを作る（デバイスロスト回避）。
-//   4. **モデル 0 の経路は既存と完全に同値**。生成する `shade_surface` の `default:` 腕は
-//      `shade_model_0` を素通しで返し、`shading_nan_guard` を掛けない
-//      （理由は shading_dispatch.wgsl のコメント参照）。
+//   4. **`shade_default` を定義しないアセットでは、モデル 0 の経路は既存と完全に同値**。
+//      生成する `shade_surface` の `default:` 腕は `shade_model_0` を素通しで返し、
+//      `shading_nan_guard` を掛けない（理由は shading_dispatch.wgsl のコメント参照）。
+//      アセットが `shade_default` を定義した場合のみ、この腕がユーザー実装（＋NaN ガード）に
+//      差し替わる。これは「アセットを差すだけで全体の画作りが変わる」ための明示的な選択である。
 //
 //  ## 依存
 //   - shading_contract.wgsl : 契約 v1（型・標準ライブラリ・shade_model_0）
@@ -63,6 +65,14 @@ const USER_MODEL_ID_MIN: u8 = SHADING_MODEL_DEFAULT_PBR + 1;
 const USER_MODEL_ID_MAX: u8 = SHADING_MODEL_MASK;
 /// アセットが定義できるモデルの枠数（= 1..=3 の 3 枠）。
 pub const USER_MODEL_SLOTS: usize = (USER_MODEL_ID_MAX - USER_MODEL_ID_MIN + 1) as usize;
+
+/// アセットが「全体の既定シェーディング」を差し替えるために定義できる関数名。
+///
+/// これを定義したアセットを 1 枚差すだけで、**シェーディングモデル ID 0 の全表面**
+/// （地形・草・`shading_model` 未設定の全マテリアル）がその実装で描かれる。
+/// マテリアル側の設定は一切不要で、`shade_model_1..3` は「例外オブジェクトだけを
+/// さらに上書きする」ための追加枠という位置づけになる。
+const SHADE_DEFAULT_FN_NAME: &str = "shade_default";
 
 /// 生成する `shade_surface` が定義される関数名。標準連結では
 /// `shading_dispatch.wgsl` が同名関数を持つため、その要素を差し替える形で連結する。
@@ -171,21 +181,49 @@ fn line_defines_fn(line: &str, fn_name: &str) -> bool {
     after.starts_with('(')
 }
 
-/// アセット本文から `shade_model_1` / `shade_model_2` / `shade_model_3` の**定義の有無**を検出する。
+/// アセットが定義しているシェーディング実装の集合（ディスパッチ生成の入力）。
 ///
-/// 返り値はインデックス 0 がモデル ID 1 に対応する `[bool; USER_MODEL_SLOTS]`。
+/// 「既定（`shade_default`）」と「ID 別の上書き（`shade_model_1..3`）」を 1 つにまとめて持つ。
+/// 2 つを別々の値で引き回さないのは、生成される `shade_surface` の形が
+/// **両方の組み合わせ**で決まるためである（`default:` 腕の落とし先が `has_default` で変わる）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ShadeModelSet {
+    /// `fn shade_default(...)` が定義されているか。
+    ///
+    /// `true` のとき、シェーディングモデル ID 0（地形・草・未設定マテリアルを含む全表面）と
+    /// 「アセットに実装の無い ID 1..3」がまとめてこの関数で描かれる。
+    /// `false` のときは従来どおりエンジン標準 PBR（`shade_model_0`）へ落ちる。
+    pub has_default: bool,
+    /// `fn shade_model_N(...)` の定義有無。インデックス 0 がモデル ID 1（`USER_MODEL_ID_MIN`）。
+    pub models: [bool; USER_MODEL_SLOTS],
+}
+
+impl ShadeModelSet {
+    /// 1 つも実装が見つかっていない（アセットとして実質空）かどうか。
+    pub fn is_empty(&self) -> bool {
+        !self.has_default && !self.models.iter().any(|f| *f)
+    }
+}
+
+/// アセット本文から `shade_default` / `shade_model_1..3` の**定義の有無**を検出する。
+///
 /// 厳密な WGSL パースは行わず、
 ///   1. コメント（行・ブロック）を除去し
-///   2. 「行頭 `fn` → 空白 → `shade_model_N` → 空白* → `(`」に一致する行を探す
+///   2. 「行頭 `fn` → 空白 → 関数名が完全一致 → 空白* → `(`」に一致する行を探す
 /// という 2 段で誤検出を実用上ゼロにしている（正規表現クレートは依存に無いため手書き）。
-pub fn detect_shade_models(asset_src: &str) -> [bool; USER_MODEL_SLOTS] {
+pub fn detect_shade_models(asset_src: &str) -> ShadeModelSet {
     let stripped = strip_comments(asset_src);
-    let mut found = [false; USER_MODEL_SLOTS];
+    let mut found = ShadeModelSet::default();
     for line in stripped.lines() {
+        // 既定シェーディング（全表面に効く）。
+        if line_defines_fn(line, SHADE_DEFAULT_FN_NAME) {
+            found.has_default = true;
+        }
+        // ID 別の上書き。
         for slot in 0..USER_MODEL_SLOTS {
             let id = USER_MODEL_ID_MIN + slot as u8;
             if line_defines_fn(line, &format!("shade_model_{id}")) {
-                found[slot] = true;
+                found.models[slot] = true;
             }
         }
     }
@@ -216,20 +254,28 @@ pub fn parse_contract_version(asset_src: &str) -> Option<u32> {
 
 /// 検出結果から契約関数 `shade_surface` の WGSL 実装を生成する。
 ///
-/// 定義されているモデルの `case` だけを出力し、それ以外はすべて `default:` ＝
-/// モデル 0（エンジン標準 PBR）へ落ちる。
+/// ## 生成される形
+/// - `case Nu:` は**アセットが実装した ID だけ**出力する（`shade_model_N` を呼ぶ）。
+/// - `default:` 腕は「実装の無い ID 1..3」と「ID 0（地形・草・未設定マテリアル）」の
+///   両方を受ける、唯一の落とし先である。その落とし先は 2 通り:
+///     - `has_default = true`  : `shade_default`（アセットの既定シェーディング）。
+///       **アセットを差すだけで全体の見た目が変わる**という要望に対応する経路で、
+///       未定義 ID のフォールバック先も「標準 PBR」ではなくこちらになる
+///       （アセットを差した意図＝全体の画作り、と解釈するため）。
+///     - `has_default = false` : `shade_model_0`（エンジン標準 PBR）。従来どおり。
 ///
 /// ## ガードの掛け方（設計要件）
-/// - `case 1u..3u`（**ユーザー実装**）: `shading_nan_guard` を掛ける。任意の式が書けるため
-///   NaN/Inf/負値がブルームやトーンマップを汚染しうる。
-/// - `default:`（**モデル 0**）: ガードを掛けない。「ID 0 の経路はアセット導入前と
-///   完全に同値」という L3-a の設計要件に疑いを残さないため（shading_dispatch.wgsl 参照）。
-pub fn generate_dispatch(found: &[bool; USER_MODEL_SLOTS]) -> String {
+/// - **ユーザー実装**（`shade_model_1..3` および `shade_default`）: `shading_nan_guard` を掛ける。
+///   任意の式が書けるため NaN/Inf/負値がブルームやトーンマップを汚染しうる。
+/// - **`shade_model_0` へ落ちる `default:` 腕**: ガードを掛けない。「`shade_default` を
+///   定義しないアセットでは ID 0 の経路がアセット導入前と完全に同値」という L3-a の
+///   設計要件に疑いを残さないため（shading_dispatch.wgsl 参照）。
+pub fn generate_dispatch(found: &ShadeModelSet) -> String {
     let mut s = String::new();
     s.push_str("// ── 自動生成（shading_asset.rs）。このコードは編集できません ──\n");
     s.push_str("fn shade_surface(sf: ShadingSurface, li: LightSample) -> vec3<f32> {\n");
     s.push_str("    switch sf.shading_model {\n");
-    for (slot, defined) in found.iter().enumerate() {
+    for (slot, defined) in found.models.iter().enumerate() {
         if !defined { continue }
         let id = USER_MODEL_ID_MIN + slot as u8;
         // ユーザー実装だけ NaN ガードを通す。
@@ -237,8 +283,15 @@ pub fn generate_dispatch(found: &[bool; USER_MODEL_SLOTS]) -> String {
             "        case {id}u: {{ return shading_nan_guard(shade_model_{id}(sf, li)); }}\n"
         ));
     }
-    // default はモデル 0 へ素通し（ガード無し＝既存経路と同値）。
-    s.push_str("        default: { return shade_model_0(sf, li); }\n");
+    if found.has_default {
+        // アセットの既定シェーディング＝ユーザー実装なのでガードを通す。
+        s.push_str(&format!(
+            "        default: {{ return shading_nan_guard({SHADE_DEFAULT_FN_NAME}(sf, li)); }}\n"
+        ));
+    } else {
+        // 従来どおりモデル 0 へ素通し（ガード無し＝既存経路と同値）。
+        s.push_str("        default: { return shade_model_0(sf, li); }\n");
+    }
     s.push_str("    }\n");
     s.push_str("}\n");
     s
@@ -428,10 +481,10 @@ pub struct ShadingAssetPipelines {
     pub rt:          Option<wgpu::RenderPipeline>,
     /// RT 影＋バインドレス色付き影バリアント。
     pub rt_bindless: Option<wgpu::RenderPipeline>,
-    /// このアセットが実装しているシェーディングモデル（インデックス 0 = モデル ID 1）。
-    /// 診断ログ（`[SHADING] loaded ... models=`）で「どのモデル ID が有効になったか」を
-    /// 一目で分かるようにするために保持する。描画判定には使わない。
-    pub models:      [bool; USER_MODEL_SLOTS],
+    /// このアセットが実装しているシェーディング（既定＋モデル ID 別）。
+    /// 診断ログ（`[SHADING] loaded ... models=`）で「既定が差し替わったか」「どのモデル ID が
+    /// 有効になったか」を一目で分かるようにするために保持する。描画判定には使わない。
+    pub models:      ShadeModelSet,
 }
 
 /// 1 変種ぶんの連結ソースを組み立てて naga 検証する。
@@ -507,10 +560,11 @@ impl ShadingAssetPipelines {
 
         // ── モデル検出とディスパッチ生成 ──────────────────────
         let found = detect_shade_models(asset_src);
-        if !found.iter().any(|f| *f) {
+        if found.is_empty() {
             warnings.push(format!(
-                "{asset_path}:-: shade_model_{USER_MODEL_ID_MIN}..{USER_MODEL_ID_MAX} の定義が \
-                 1 つも見つかりません（全マテリアルがエンジン標準 PBR で描画されます）"
+                "{asset_path}:-: {SHADE_DEFAULT_FN_NAME} / \
+                 shade_model_{USER_MODEL_ID_MIN}..{USER_MODEL_ID_MAX} の定義が 1 つも \
+                 見つかりません（全マテリアルがエンジン標準 PBR で描画されます）"
             ));
         }
         let generated = generate_dispatch(&found);
@@ -582,13 +636,19 @@ impl ShadingAssetPipelines {
     }
 }
 
-/// 検出済みモデル配列を診断ログ用のラベルにする（例: `1,3` / `なし`）。
-pub fn models_label(models: &[bool; USER_MODEL_SLOTS]) -> String {
-    let ids: Vec<String> = models.iter().enumerate()
+/// 検出済みシェーディング集合を診断ログ用のラベルにする。
+///
+/// 例: `shade_default,1,3` / `shade_default` / `1,3` / `なし`。
+/// 先頭の `shade_default` は「アセットが `shade_default` を定義した＝ ID 0 を含む全表面が
+/// アセット側の実装で描かれる」ことを表す。この 1 語の有無が
+/// 「差しただけで全体が変わるはずなのに変わらない」の切り分けに直結する。
+pub fn models_label(models: &ShadeModelSet) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if models.has_default { parts.push(SHADE_DEFAULT_FN_NAME.to_string()); }
+    parts.extend(models.models.iter().enumerate()
         .filter(|(_, defined)| **defined)
-        .map(|(slot, _)| (USER_MODEL_ID_MIN + slot as u8).to_string())
-        .collect();
-    if ids.is_empty() { "なし".to_string() } else { ids.join(",") }
+        .map(|(slot, _)| (USER_MODEL_ID_MIN + slot as u8).to_string()));
+    if parts.is_empty() { "なし".to_string() } else { parts.join(",") }
 }
 
 /// シェーダ名 → ソースの解決関数を作る（アセット本体・生成ディスパッチ・組み込みの 3 分岐）。
@@ -911,14 +971,20 @@ mod tests {
 
     /// テスト用のサンプル「トゥーン」シェーディングアセット。
     ///
-    /// 3 階調のセルシェーディング＋リムライトを `shade_model_1` として実装する。
+    /// 3 階調のセルシェーディング＋リムライトを **`shade_default`** として実装する
+    /// （＝カメラ／シーンに差すだけで地形・草を含む全体がトゥーンになる）。
+    /// 加えて「例外オブジェクトだけ標準 PBR に戻す」上書き例を `shade_model_1` で示す。
     /// docs のサンプルコードとしてもそのまま使える実用的な内容にしてある。
     const TOON_ASSET: &str = r#"// @shading_contract 1
 // ============================================================
-// toon.wgsl — 3 階調セルシェーディング + リムライト（シェーディングモデル 1）
+// toon.wgsl — 3 階調セルシェーディング + リムライト（全体の既定シェーディング）
 //
-// マテリアルの「シェーディングモデル」を 1 に設定したアクタだけがこの実装で描かれる。
-// 未設定（0）のアクタはエンジン標準 PBR のまま。
+// このファイルをカメラまたはシーンの「Shading」に差すだけで、シェーディングモデルを
+// 設定していない全表面（地形・草・全マテリアル）がトゥーンで描かれる。
+// マテリアル側の設定は不要。
+//
+// 例外的に「このモデルだけは標準 PBR のままにしたい」場合だけ、そのマテリアルの
+// シェーディングモデルを 1 にして shade_model_1（下部）で上書きする。
 // ============================================================
 
 /// 拡散光の階調数（3 階調＝影・中間・ハイライト）。
@@ -936,8 +1002,9 @@ const TOON_RIM_POWER: f32 = 3.0;
 /// リムライトの強さ。
 const TOON_RIM_STRENGTH: f32 = 0.35;
 
-/// シェーディングモデル 1: トゥーン。
-fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
+/// 全体の既定シェーディング: トゥーン。
+/// シェーディングモデルを設定していない全表面（ID 0）がこれで描かれる。
+fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
     let N = sf.normal;
     let V = sf.view_dir;
     let L = li.direction;
@@ -961,6 +1028,15 @@ fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
 
     // li.color は減衰・スポット円錐・影まで織り込み済み（再計算してはならない）。
     return (sf.base_color * diffuse_term + vec3<f32>(spec_term) + vec3<f32>(rim_term)) * li.color;
+}
+
+/// シェーディングモデル 1: 例外オブジェクト用の上書き。
+///
+/// 「世界はトゥーンだが、このプロップだけは写実的に見せたい」というときのための枠。
+/// マテリアルのシェーディングモデルを 1 にしたものだけがここへ来る。
+/// エンジン標準 PBR は shade_model_0 として呼べるので、そのまま素通しする。
+fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
+    return shade_model_0(sf, li);
 }
 "#;
 
@@ -993,7 +1069,12 @@ fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
 
     // ── 2. 関数存在検出 ────────────────────────────────────
 
-    /// 3 モデルすべてを定義したアセットを正しく検出する。
+    /// テスト用のヘルパ: 検出結果を組み立てる。
+    fn set(has_default: bool, models: [bool; USER_MODEL_SLOTS]) -> ShadeModelSet {
+        ShadeModelSet { has_default, models }
+    }
+
+    /// 3 モデルすべてを定義したアセットを正しく検出する（`shade_default` は無し）。
     #[test]
     fn detects_all_three_models() {
         let src = "\
@@ -1001,37 +1082,53 @@ fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec3
 fn shade_model_2 (sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec3<f32>(0.0); }
     fn shade_model_3(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec3<f32>(0.0); }
 ";
-        assert_eq!(detect_shade_models(src), [true, true, true]);
+        assert_eq!(detect_shade_models(src), set(false, [true, true, true]));
     }
 
-    /// 1 個だけ定義したアセットは、その 1 個だけ検出する。
+    /// サンプルアセットは `shade_default` とモデル 1 の 2 つだけを検出する。
     #[test]
     fn detects_only_defined_model() {
-        assert_eq!(detect_shade_models(TOON_ASSET), [true, false, false]);
+        assert_eq!(detect_shade_models(TOON_ASSET), set(true, [true, false, false]));
+    }
+
+    /// `shade_default` だけを定義したアセット（＝「差すだけで全体が変わる」最小形）を検出する。
+    #[test]
+    fn detects_shade_default_alone() {
+        let src = "\
+fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec3<f32>(0.0); }
+";
+        let found = detect_shade_models(src);
+        assert_eq!(found, set(true, [false, false, false]));
+        assert!(!found.is_empty(), "shade_default だけでも空扱いにしてはならない");
     }
 
     /// コメントアウトされた定義は検出しない（行コメント・ブロックコメントの両方）。
+    /// `shade_default` にも同じ規則が効くこと。
     #[test]
     fn commented_out_definitions_are_not_detected() {
         let src = "\
+// fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec3<f32>(0.0); }
 // fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec3<f32>(0.0); }
 /*
 fn shade_model_2(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec3<f32>(0.0); }
 */
 fn shade_model_3(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec3<f32>(0.0); }
 ";
-        assert_eq!(detect_shade_models(src), [false, false, true]);
+        assert_eq!(detect_shade_models(src), set(false, [false, false, true]));
     }
 
-    /// 識別子の一部・呼び出し・文字列は誤検出しない。
+    /// 識別子の一部・呼び出し・文字列は誤検出しない（`shade_default` も同様）。
     #[test]
     fn partial_identifiers_are_not_detected() {
         let src = "\
 fn my_shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec3<f32>(0.0); }
 fn helper(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return shade_model_2(sf, li); }
 fn shade_model_31(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec3<f32>(0.0); }
+fn my_shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec3<f32>(0.0); }
+fn shade_defaults(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec3<f32>(0.0); }
+fn caller(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return shade_default(sf, li); }
 ";
-        assert_eq!(detect_shade_models(src), [false, false, false]);
+        assert_eq!(detect_shade_models(src), set(false, [false, false, false]));
     }
 
     /// コメント除去で改行が保持されること（行番号写像の前提）。
@@ -1047,18 +1144,20 @@ fn shade_model_31(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec
     /// 検出されたモデルの case だけが出ること。
     #[test]
     fn dispatch_emits_only_detected_cases() {
-        let d = generate_dispatch(&[true, false, true]);
+        let d = generate_dispatch(&set(false, [true, false, true]));
         assert!(d.contains("case 1u:"), "モデル 1 の case が必要");
         assert!(!d.contains("case 2u:"), "未定義のモデル 2 の case は出さない");
         assert!(d.contains("case 3u:"), "モデル 3 の case が必要");
         assert!(d.contains("fn shade_surface(sf: ShadingSurface, li: LightSample) -> vec3<f32>"));
     }
 
-    /// `default:` は常にモデル 0 で、`shading_nan_guard` を掛けないこと（設計要件）。
+    /// `shade_default` を定義**しない**アセットでは、`default:` が常にモデル 0 で
+    /// `shading_nan_guard` を掛けないこと（既存経路との同値性という設計要件）。
     /// 逆にユーザー実装の case には必ずガードが掛かること。
     #[test]
     fn dispatch_default_is_model_zero_without_guard() {
-        for found in [[false; 3], [true, true, true], [false, true, false]] {
+        for models in [[false; 3], [true, true, true], [false, true, false]] {
+            let found = set(false, models);
             let d = generate_dispatch(&found);
             let default_line = d.lines().find(|l| l.trim_start().starts_with("default:"))
                 .expect("default 腕が必要");
@@ -1066,7 +1165,9 @@ fn shade_model_31(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec
                 "default はモデル 0 へ落ちること: {default_line}");
             assert!(!default_line.contains("shading_nan_guard"),
                 "default にガードを掛けてはならない（既存経路との同値性）: {default_line}");
-            for (slot, defined) in found.iter().enumerate() {
+            assert!(!d.contains(SHADE_DEFAULT_FN_NAME),
+                "shade_default 未定義のアセットで呼び出しを生成してはならない:\n{d}");
+            for (slot, defined) in models.iter().enumerate() {
                 if !defined { continue }
                 let id = USER_MODEL_ID_MIN + slot as u8;
                 let case_line = d.lines().find(|l| l.trim_start().starts_with(&format!("case {id}u:")))
@@ -1075,6 +1176,38 @@ fn shade_model_31(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec
                     "ユーザー実装にはガードが要る: {case_line}");
             }
         }
+    }
+
+    /// `shade_default` を定義したアセットでは、`default:` 腕が
+    /// `shading_nan_guard(shade_default(...))` になること（＝ ID 0 の全表面・
+    /// 未定義 ID 1..3 がまとめてアセット側の実装で描かれる）。
+    #[test]
+    fn dispatch_default_routes_to_shade_default_when_defined() {
+        for models in [[false; 3], [true, false, true]] {
+            let d = generate_dispatch(&set(true, models));
+            let default_line = d.lines().find(|l| l.trim_start().starts_with("default:"))
+                .expect("default 腕が必要");
+            assert!(default_line.contains("shading_nan_guard(shade_default(sf, li))"),
+                "default は shade_default へ落ち、ガードが掛かること: {default_line}");
+            assert!(!default_line.contains("shade_model_0"),
+                "shade_default があるとき標準 PBR へは落ちない: {default_line}");
+            // 未定義 ID の case は出さない（default 腕＝shade_default へ落ちる）。
+            for (slot, defined) in models.iter().enumerate() {
+                if *defined { continue }
+                let id = USER_MODEL_ID_MIN + slot as u8;
+                assert!(!d.contains(&format!("case {id}u:")),
+                    "未定義 ID {id} の case は出さない:\n{d}");
+            }
+        }
+    }
+
+    /// 診断ログ用ラベルに `shade_default` の有無が現れること。
+    #[test]
+    fn models_label_includes_shade_default() {
+        assert_eq!(models_label(&set(false, [false; 3])), "なし");
+        assert_eq!(models_label(&set(true,  [false; 3])), "shade_default");
+        assert_eq!(models_label(&set(false, [true, false, true])), "1,3");
+        assert_eq!(models_label(&set(true,  [true, false, true])), "shade_default,1,3");
     }
 
     // ── 4. 行番号写像 ──────────────────────────────────────
@@ -1140,8 +1273,12 @@ fn shade_model_31(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return vec
     #[test]
     fn toon_asset_passes_naga_validation_for_all_variants() {
         let found = detect_shade_models(TOON_ASSET);
-        assert_eq!(found, [true, false, false]);
+        assert_eq!(found, set(true, [true, false, false]));
         let generated = generate_dispatch(&found);
+        // 生成コードが「全体トゥーン（default→shade_default）＋例外だけ標準 PBR（case 1u）」に
+        // なっていること。連結が通るだけでなく、意図した振り分けであることまで固定する。
+        assert!(generated.contains("default: { return shading_nan_guard(shade_default(sf, li)); }"));
+        assert!(generated.contains("case 1u: { return shading_nan_guard(shade_model_1(sf, li)); }"));
         for variant in [Variant::RtOff, Variant::RtOn, Variant::RtBindless] {
             match prepare_variant(variant, "toon.wgsl", TOON_ASSET, &generated) {
                 Ok((_src, _names, start)) => {

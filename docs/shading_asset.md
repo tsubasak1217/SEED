@@ -1,7 +1,13 @@
 # シェーディングアセット（L3-a・契約 v1）
 
-ユーザーが書いた WGSL ファイル 1 枚で、**1 ライト分の光応答式**（`shade_model_N`）を差し替える仕組み。
+ユーザーが書いた WGSL ファイル 1 枚で、**1 ライト分の光応答式**を差し替える仕組み。
 レンダリングの 3 層モデル（`docs/rendering_flow.md` 5 章）における **第 3 層（合成）への介入点**である。
+
+**基本の使い方は「アセットを 1 枚差すだけ」**である。アセットに `shade_default` を書いておけば、
+カメラまたはシーンにそのファイルを指定した時点で、地形・草・マテリアル未設定を含む**画面全体**が
+その実装で描かれる。マテリアル側の設定は一切要らない。
+`shade_model_1` / `shade_model_2` / `shade_model_3` は、そこから**例外オブジェクトだけを
+さらに上書きする**ための追加枠という位置づけである。
 
 - 実装: `runtime/src/engine/core/renderer/shading_asset.rs`（ロード・検証・生成・キャッシュ）
 - 契約の正典: `runtime/src/engine/core/renderer/shaders/shading_contract.wgsl`
@@ -17,9 +23,13 @@
 
 ### できること
 
-- マテリアルの `shading_model` が 1 / 2 / 3 のピクセルについて、**1 ライト分の反射式**を自作の
-  WGSL 関数（`shade_model_1` / `shade_model_2` / `shade_model_3`）で置き換えられる。
-  トゥーン・セルシェーディング・異方性ハアなど「光への応答の仕方」を差し替える用途。
+- **`shade_default` を書けば、アセットを差すだけで画面全体の見た目が変わる**。
+  シェーディングモデルを設定していない全表面（＝ID 0。地形・草・既定マテリアルはすべてここ）が
+  この実装で描かれる。トゥーン調・平坦なライティング・独自の陰影づけなど「作品全体の画作り」を
+  1 ファイルで決める用途。
+- **例外だけをさらに上書きしたいとき**は、マテリアルの `shading_model` を 1 / 2 / 3 にして
+  `shade_model_1` / `shade_model_2` / `shade_model_3` を書く（例: 世界はトゥーンだが
+  このプロップだけ写実的にしたい）。
 - エンジンが渡すのは「面の情報（`ShadingSurface`）」と「そのライト 1 灯の実効放射輝度（`LightSample`）」の
   2 つだけで、バインディング（uniform / texture / storage）は一切見えない。
 - Edit モードならファイルを保存するだけで再コンパイルされる（ホットリロード）。
@@ -28,7 +38,10 @@
 
 - **compose（画面全体の組み立て）の差し替えは未対応**。ライトの走査・アンビエント・エミッシブ加算・
   影の適用・GI・反射の合成はエンジンが持つ。これは段階 **L3-b** の課題であり未実装。
-- シェーディングモデル ID 0（エンジン標準 PBR）は上書きできない。
+  差し替えられるのはあくまで「1 ライト分の光応答式」である。
+- エンジン標準 PBR そのもの（`shade_model_0`）は差し替えられない。ただし `shade_default` を
+  定義すれば ID 0 の表面が**そちらへ回る**ため、実質的に「全体の既定」は置き換えられる。
+  `shade_model_0` はアセットから呼べるので、標準 PBR を土台に足し引きするのも自由。
 - 半透明 / WBOIT / フォワードパス / カメラプレビュー小窓には効かない（10 章）。
 
 ---
@@ -38,10 +51,14 @@
 | 項目 | 値 | 定義場所 |
 |---|---|---|
 | 契約バージョン（WGSL） | `const SHADING_CONTRACT_VERSION: u32 = 1u` | `shading_contract.wgsl:39` |
-| 契約バージョン（Rust の写し） | `pub const SHADING_CONTRACT_VERSION: u32 = 1` | `shading_asset.rs:52` |
-| アセット側の宣言マーカー | `@shading_contract` | `shading_asset.rs:56`（`CONTRACT_MARKER`） |
+| 契約バージョン（Rust の写し） | `pub const SHADING_CONTRACT_VERSION: u32 = 1` | `shading_asset.rs:54` |
+| アセット側の宣言マーカー | `@shading_contract` | `shading_asset.rs:58`（`CONTRACT_MARKER`） |
 
-両者の一致はユニットテスト `rust_and_wgsl_contract_versions_match`（`shading_asset.rs:880`）が固定している。
+両者の一致はユニットテスト `rust_and_wgsl_contract_versions_match`（`shading_asset.rs:1050`）が固定している。
+
+> **`shade_default` の追加はバージョンを上げない**。既存アセット（`shade_model_1..3` だけを
+> 定義したもの）は生成コードも挙動も従来と 1 バイトも変わらないため、後方互換の純粋な追加である。
+> よって契約は **v1 のまま**であり、既存アセットの `// @shading_contract 1` は書き換え不要。
 
 ### 宣言の書き方
 
@@ -51,7 +68,7 @@
 // @shading_contract 1
 ```
 
-パーサ（`parse_contract_version`, `shading_asset.rs:201`）は
+パーサ（`parse_contract_version`, `shading_asset.rs:239`）は
 **コメント除去前の生ソースを 1 行ずつ走査し、`@shading_contract` を含む最初の行の直後の
 連続する ASCII 数字**を読む。したがって物理的にはファイルのどこに書いてもよいが、
 規約として先頭コメントに書くこと。
@@ -60,9 +77,9 @@
 
 | 状況 | 挙動 | 実装 |
 |---|---|---|
-| 宣言があり値が 1 | 通常どおり読み込む | `shading_asset.rs:484` |
-| 宣言があり値が 1 以外 | **読み込みを拒否**してエラーを返す。パイプラインは作られず組み込み標準へフォールバック | `shading_asset.rs:476-483` |
-| 宣言が無い | **v1 とみなして読み込む**。ただし警告メッセージをエディタへ通知する | `shading_asset.rs:485-491` |
+| 宣言があり値が 1 | 通常どおり読み込む | `shading_asset.rs:551` |
+| 宣言があり値が 1 以外 | **読み込みを拒否**してエラーを返す。パイプラインは作られず組み込み標準へフォールバック | `shading_asset.rs:543-550` |
+| 宣言が無い | **v1 とみなして読み込む**。ただし警告メッセージをエディタへ通知する | `shading_asset.rs:552-559` |
 
 不一致時のメッセージ例:
 
@@ -127,56 +144,66 @@ assets://shading/toon.wgsl:-: 契約バージョン不一致（アセット宣�
 
 ## 4. 書ける関数
 
-### シグネチャ
+### シグネチャ（契約 v1 が定めるアセット側の関数）
 
-```wgsl
-fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> { /* ... */ }
-fn shade_model_2(sf: ShadingSurface, li: LightSample) -> vec3<f32> { /* ... */ }
-fn shade_model_3(sf: ShadingSurface, li: LightSample) -> vec3<f32> { /* ... */ }
-```
+すべて任意（書かなかったものは単に無いものとして扱われる）。
+
+| 関数 | 効く範囲 | 位置づけ |
+|---|---|---|
+| `fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32>` | **シェーディングモデル ID 0 の全表面**（地形・草・`shading_model` を設定していない全マテリアル）＋ アセットに実装の無い ID 1..3 | **これが基本**。差すだけで全体の見た目が変わる |
+| `fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32>` | マテリアルの `shading_model = 1` の面だけ | 例外オブジェクト用の上書き |
+| `fn shade_model_2(...) -> vec3<f32>` | 同 `= 2` | 同上 |
+| `fn shade_model_3(...) -> vec3<f32>` | 同 `= 3` | 同上 |
 
 返すのは「そのライト 1 灯ぶんの直接光の寄与（リニア HDR 放射輝度）」。
 アンビエント・エミッシブ・幾何ゲート（`dot(Ng, L) <= 0` の遮断）はエンジンが外側で処理する。
 
 ### ID とマテリアルの対応
 
-| ID | 実装 | 上書き | 備考 |
-|---|---|---|---|
-| 0 | `shade_model_0`（エンジン標準 PBR・Cook-Torrance） | **不可** | `shading_contract.wgsl:274`。未定義 ID・ロード失敗時のフォールバック先 |
-| 1 | `shade_model_1`（アセット） | 可 | |
-| 2 | `shade_model_2`（アセット） | 可 | |
-| 3 | `shade_model_3`（アセット） | 可 | |
+| ID | `shade_default` を定義した場合 | 定義しない場合 |
+|---|---|---|
+| 0（既定・地形・草・未設定マテリアル） | **`shade_default`（アセット）** | `shade_model_0`（エンジン標準 PBR・Cook-Torrance。`shading_contract.wgsl:274`） |
+| 1 / 2 / 3（アセットに実装あり） | `shade_model_N`（アセット） | `shade_model_N`（アセット） |
+| 1 / 2 / 3（アセットに実装なし）・範囲外 | **`shade_default`（アセット）** | `shade_model_0` |
+
+未実装 ID のフォールバック先が `shade_default` になるのは、
+**「アセットを差した＝全体の画作りをアセットに任せた」という意図に合わせる**ためである
+（そこだけ標準 PBR に戻ると、設定漏れが「1 箇所だけ浮いた見た目」として現れてしまう）。
 
 ID はマテリアルの `shading_model` フィールド（`loader/model.rs:320`）で決まり、
 G-Buffer RT3.a に 2bit で焼かれる（正典 `renderer/surface_id.rs`。`SHADING_MODEL_BITS = 2` /
 `SHADING_MODEL_MASK = 0b11` / `SHADING_MODEL_SHIFT = RENDER_TAG_BITS = 4`）。
-**アセットに定義が無い ID・範囲外の ID は必ず `shade_model_0`（標準 PBR）へフォールバックする**
-（生成される `switch` の `default:` 腕）。
+
+**アセット自体が無い／ロードに失敗した場合は、いずれの ID も `shade_model_0` へ落ちる**
+（既定ディスパッチ `shading_dispatch.wgsl` が連結されるため）。画面が壊れないことの保証はここ。
 
 ### 関数の存在検出はソーステキストの走査で行う
 
-厳密な WGSL パースはしない（`detect_shade_models`, `shading_asset.rs:181`）。手順は 2 段:
+厳密な WGSL パースはしない（`detect_shade_models`, `shading_asset.rs:214`）。手順は 2 段:
 
 1. コメントを除去する（行コメント `//` とブロックコメント `/* */` の両方。**改行は保持**する ―
    除去後の行番号が元ソースと 1:1 対応することが、後段の行番号写像の前提）。
 2. 「**行頭**（空白のみ挟んでよい）→ `fn` → 空白 → 関数名が完全一致 → 空白* → `(`」に一致する行を探す
-   （`line_defines_fn`, `shading_asset.rs:162`）。
+   （`line_defines_fn`, `shading_asset.rs:172`）。対象は `shade_default` と `shade_model_1..3` の 4 名。
 
-この規約から導かれる挙動:
+検出結果は `ShadeModelSet { has_default: bool, models: [bool; 3] }`（`shading_asset.rs:190`）に入り、
+そのままディスパッチ生成の入力になる。
+
+この規約から導かれる挙動（`shade_default` にも同じ規則が効く）:
 
 | 書き方 | 検出 | 理由 |
 |---|---|---|
-| `fn shade_model_1(...)` | される | 規約どおり |
+| `fn shade_default(...)` / `fn shade_model_1(...)` | される | 規約どおり |
 | `    fn shade_model_3(...)`（インデント） | される | 行頭の空白は許容 |
 | `fn shade_model_2 (...)`（名前と `(` の間に空白） | される | 空白を挟んでよい |
-| `// fn shade_model_1(...)` | **されない** | コメント除去済み |
+| `// fn shade_default(...)` | **されない** | コメント除去済み |
 | `/* fn shade_model_2(...) */` | **されない** | 同上 |
-| `fn my_shade_model_1(...)` | されない | 名前の完全一致を要求 |
-| `fn shade_model_31(...)` | されない | 直後が空白か `(` であることを要求 |
-| `return shade_model_2(sf, li);`（呼び出し） | されない | 行頭 `fn` でない |
+| `fn my_shade_model_1(...)` / `fn my_shade_default(...)` | されない | 名前の完全一致を要求 |
+| `fn shade_model_31(...)` / `fn shade_defaults(...)` | されない | 直後が空白か `(` であることを要求 |
+| `return shade_default(sf, li);`（呼び出し） | されない | 行頭 `fn` でない |
 
-定義が 1 つも見つからない場合は**エラーにはならない**が、警告が通知され、全マテリアルが
-標準 PBR で描かれる（`shading_asset.rs:496-501`）。
+`shade_default` も `shade_model_1..3` も 1 つも見つからない場合は**エラーにはならない**が、
+警告が通知され、全マテリアルが標準 PBR で描かれる（`shading_asset.rs:563-569`）。
 
 ---
 
@@ -212,20 +239,26 @@ G-Buffer RT3.a に 2bit で焼かれる（正典 `renderer/surface_id.rs`。`SHA
 | `shading_srgb_to_linear(c: vec3<f32>) -> vec3<f32>` | 上の逆変換 |
 | `shading_posterize(x: f32, steps: f32) -> f32` | 階調量子化 `floor(x*steps)/steps`。`steps <= 0` は素通し（ゼロ除算・負段数の防御） |
 | `shade_light(N, V, L, albedo, F0, metallic, roughness, radiance) -> vec3<f32>` | 1 ライト分の Cook-Torrance BRDF。標準 PBR を土台に足したいときの基礎ブロック |
-| `shade_model_0(sf: ShadingSurface, li: LightSample) -> vec3<f32>` | エンジン標準 PBR（**上書き不可**）。アセットからは**呼べる**ので、標準 PBR に加算・混合するのが推奨形 |
+| `shade_model_0(sf: ShadingSurface, li: LightSample) -> vec3<f32>` | エンジン標準 PBR（この関数自体は差し替え不可）。アセットからは**呼べる**ので、標準 PBR に加算・混合したり、`shade_model_N` で「この 1 体だけ標準 PBR に戻す」のに使える |
 
 ### `shading_nan_guard` はユーザー実装にだけ自動で掛かる
 
-- **ID 1..3（ユーザー実装）の返り値には、エンジンが自動で `shading_nan_guard` を掛ける**。
-  生成コードが `return shading_nan_guard(shade_model_N(sf, li));` を出すため、アセット側で
+- **ユーザーが書いた実装（`shade_default` と `shade_model_1..3`）の返り値には、エンジンが
+  自動で `shading_nan_guard` を掛ける**。生成コードが
+  `return shading_nan_guard(shade_default(sf, li));` /
+  `return shading_nan_guard(shade_model_N(sf, li));` を出すため、アセット側で
   自分で呼ぶ必要はない（呼んでも恒等写像なので害は無い）。
   理由: アセットは任意の式を書けるため 0 除算・`log(0)`・`pow(負, 小数)` で NaN/±Inf が出うる。
   NaN が 1 ピクセルでもブルームのダウンサンプル平均に混ざると画面全体が壊れる。
-- **ID 0 には掛からない**。既定ディスパッチ（`shading_dispatch.wgsl:39`）も生成ディスパッチの
-  `default:` 腕（`shading_asset.rs:241`）も `shade_model_0(sf, li)` を素通しで返す。
+- **`shade_model_0` へ落ちる経路には掛からない**。既定ディスパッチ（`shading_dispatch.wgsl:46`）も、
+  `shade_default` を定義していないアセットの生成ディスパッチの `default:` 腕
+  （`shading_asset.rs:293`）も `shade_model_0(sf, li)` を素通しで返す。
   `shading_nan_guard` は上限クランプも行うため、極端な HDR スパイクでは値が変わり得る。
-  「ID 0 の経路はアセット導入前と完全に同値」という L3-a の設計要件に疑いを残さないための措置であり、
-  ユニットテスト `dispatch_default_is_model_zero_without_guard`（`shading_asset.rs:966`）が固定している。
+  「`shade_default` を定義しないアセットでは ID 0 の経路がアセット導入前と完全に同値」という
+  L3-a の設計要件に疑いを残さないための措置であり、ユニットテスト
+  `dispatch_default_is_model_zero_without_guard`（`shading_asset.rs:1158`）が固定している。
+  逆に `shade_default` を定義した場合にガードが掛かることは
+  `dispatch_default_routes_to_shade_default_when_defined`（`shading_asset.rs:1185`）が固定する。
 
 > **契約外だが実際には呼べるもの**: 連結順の都合で `pbr_common.wgsl`（`PI` / `distribution_ggx` /
 > `geometry_smith` / `fresnel_schlick`）はアセットより前に連結されるため、アセットから呼べてしまう。
@@ -291,17 +324,24 @@ Edit / ポーズ中はデバッグカメラで描くため `main_camera_shading_
 ## 7. トゥーンの実装例（フルコード）
 
 以下は `shading_asset.rs` のユニットテストが naga 検証にかけている実サンプル
-（`TOON_ASSET`, `shading_asset.rs:822-871`）そのものである。
+（`TOON_ASSET`, `shading_asset.rs:978-1041`）そのものである。
 3 変種すべて（rt_off / rt_on / rt_bindless）で検証に通ることをテスト
 `toon_asset_passes_naga_validation_for_all_variants` が保証している。
+
+**`shade_default` が主役**である点に注目すること。このファイルを差すだけで世界全体がトゥーンになり、
+末尾の `shade_model_1` は「例外的にこのオブジェクトだけ標準 PBR に戻す」ための上書きにすぎない。
 
 ```wgsl
 // @shading_contract 1
 // ============================================================
-// toon.wgsl — 3 階調セルシェーディング + リムライト（シェーディングモデル 1）
+// toon.wgsl — 3 階調セルシェーディング + リムライト（全体の既定シェーディング）
 //
-// マテリアルの「シェーディングモデル」を 1 に設定したアクタだけがこの実装で描かれる。
-// 未設定（0）のアクタはエンジン標準 PBR のまま。
+// このファイルをカメラまたはシーンの「Shading」に差すだけで、シェーディングモデルを
+// 設定していない全表面（地形・草・全マテリアル）がトゥーンで描かれる。
+// マテリアル側の設定は不要。
+//
+// 例外的に「このモデルだけは標準 PBR のままにしたい」場合だけ、そのマテリアルの
+// シェーディングモデルを 1 にして shade_model_1（下部）で上書きする。
 // ============================================================
 
 /// 拡散光の階調数（3 階調＝影・中間・ハイライト）。
@@ -319,8 +359,9 @@ const TOON_RIM_POWER: f32 = 3.0;
 /// リムライトの強さ。
 const TOON_RIM_STRENGTH: f32 = 0.35;
 
-/// シェーディングモデル 1: トゥーン。
-fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
+/// 全体の既定シェーディング: トゥーン。
+/// シェーディングモデルを設定していない全表面（ID 0）がこれで描かれる。
+fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
     let N = sf.normal;
     let V = sf.view_dir;
     let L = li.direction;
@@ -345,6 +386,15 @@ fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
     // li.color は減衰・スポット円錐・影まで織り込み済み（再計算してはならない）。
     return (sf.base_color * diffuse_term + vec3<f32>(spec_term) + vec3<f32>(rim_term)) * li.color;
 }
+
+/// シェーディングモデル 1: 例外オブジェクト用の上書き。
+///
+/// 「世界はトゥーンだが、このプロップだけは写実的に見せたい」というときのための枠。
+/// マテリアルのシェーディングモデルを 1 にしたものだけがここへ来る。
+/// エンジン標準 PBR は shade_model_0 として呼べるので、そのまま素通しする。
+fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
+    return shade_model_0(sf, li);
+}
 ```
 
 ### 試し方
@@ -355,10 +405,12 @@ fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
      「Shading」行にファイルを D&D（または参照ボタンで選択）。Play したときに効く。
    - **シーン既定に設定**: `.scene` のルートに `"shading_asset": "assets://shading/toon.wgsl"` を
      追記して読み込み直す（または `SET_SCENE_SHADING_ASSET` を直送）。Edit のメインビューでも効く。
-3. **対象マテリアルの `shading_model` を 1 にする**。`.mat` / `.smdl` の `shading_model` フィールドを
-   1 に設定する（**現状エディタ UI は無い** ― 10 章参照）。
-4. 見た目を確認する。`shading_model = 1` のマテリアルだけが 3 階調＋リムライトになり、
-   `shading_model = 0` のままのマテリアルは標準 PBR で描かれる。
+3. **これで完了**。マテリアルには何も触らなくてよい。地形・草を含む画面全体が
+   3 階調＋リムライトになる（`shade_default` が ID 0 の全表面を受けるため）。
+   stderr の `[SHADING] loaded path=... models=shade_default,1 ...` で有効化を確認できる。
+4. （任意）**例外を作る**: 標準 PBR のままにしたいモデルのマテリアルだけ `shading_model` を
+   1 にする。`.mat` / `.smdl` の `shading_model` フィールドを編集する（**現状エディタ UI は無い**
+   ― 10 章参照）。そのマテリアルだけ `shade_model_1`（＝標準 PBR）で描かれる。
 5. **ホットリロードの確認**（Edit モードのみ）: エンジンを動かしたまま `toon.wgsl` の
    `TOON_DIFFUSE_STEPS` を `2.0` などへ書き換えて保存する。約 1 秒以内に階調数が変わる。
    わざと構文エラーを入れて保存すれば、画面が壊れずに標準 PBR へ戻り、
@@ -371,7 +423,7 @@ fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
 ### 検証は naga で事前に行う
 
 生成した連結ソースは `device.create_shader_module` へ渡す**前**に必ず naga の parse + validate を
-通す（`validate_wgsl`, `shading_asset.rs:376`）。不正な WGSL をデバイスへ渡さないことで
+通す（`validate_wgsl`, `shading_asset.rs:429`）。不正な WGSL をデバイスへ渡さないことで
 デバイスロストを回避する設計上の不変条件（`shading_asset.rs:20-21`）。
 
 | 失敗箇所 | 結果 |
@@ -379,7 +431,7 @@ fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
 | rt_off 変種（必須）の検証失敗・契約バージョン不一致 | **アセット全体が失敗**。パイプラインを一切作らず、そのフレームから組み込み標準へフォールバック |
 | rt_on 変種のみ失敗 | `rt` フィールドが `None` になり、その変種を使う条件のときだけ組み込み標準へ落ちる。警告を通知 |
 | rt_bindless 変種のみ失敗 | 同上（`rt_bindless` が `None`） |
-| ファイルが読めない | エラー通知＋フォールバック。`mtime` が変わるまで再試行しない（`shading_asset.rs:764-775`） |
+| ファイルが読めない | エラー通知＋フォールバック。`mtime` が変わるまで再試行しない（`shading_asset.rs:905-918`） |
 
 **いずれの場合も画面は壊れない**（設計上の不変条件 2, `shading_asset.rs:17-19`）。
 
@@ -388,12 +440,12 @@ fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
 キャッシュが人間可読メッセージをキューへ積み、deferred ライティングパスの直後に
 `drain_errors()` して IPC `LOAD_ERROR:` プレフィクスでエディタへ送る
 （`frame_renderer.rs:4800-4810`）。同時に stderr へも `[SEED shading_asset] ...` として出る。
-同一メッセージの連投はキャッシュ側で抑止される（`push_message`, `shading_asset.rs:683`）。
+同一メッセージの連投はキャッシュ側で抑止される（`push_message`, `shading_asset.rs:786`）。
 
 ### 行番号はアセット内の行番号へ写像される
 
 naga が返すのは**連結ソース基準**の行番号なので、そのまま出すと 100 行以上ずれる。
-`map_reported_line`（`shading_asset.rs:358`）が連結時に記録したアセット開始行を使って写す。
+`map_reported_line`（`shading_asset.rs:411`）が連結時に記録したアセット開始行を使って写す。
 
 | 報告位置 | 表示形式 |
 |---|---|
@@ -401,14 +453,14 @@ naga が返すのは**連結ソース基準**の行番号なので、そのま�
 | アセット範囲外（エンジン標準ライブラリ側） | `{asset_path}:-: エンジン標準ライブラリ側（連結 {変種名} の {連結ソース上の行} 行目）でエラー: {メッセージ}` |
 | 行番号が取れない | `{asset_path}:-: {メッセージ}` |
 
-書式の実装は `format_error`（`shading_asset.rs:395`）。
+書式の実装は `format_error`（`shading_asset.rs:448`）。
 
 ### 失敗したアセットは内容が変わるまで再試行しない
 
 キャッシュの値は `Result<Arc<ShadingAssetPipelines>, String>` であり、`Err` エントリは
 「この内容ではビルドに失敗した」ことの記録として残る。同一内容ハッシュに対しては再ビルドしない
 （毎フレーム naga 検証が走るのを防ぐ）。失敗メッセージを保持しているのは、一度直してから
-また同じ壊し方に戻したときにも同じエラーを再通知できるようにするため（`shading_asset.rs:643-655`）。
+また同じ壊し方に戻したときにも同じエラーを再通知できるようにするため（`shading_asset.rs:726-737`）。
 
 ---
 
@@ -417,7 +469,7 @@ naga が返すのは**連結ソース基準**の行番号なので、そのま�
 | 項目 | 内容 |
 |---|---|
 | 対象モード | **Edit モードのみ**（`allow_hot_reload = self.mode == RuntimeMode::Edit`, `frame_renderer.rs:4708`） |
-| ポーリング間隔 | `SHADING_ASSET_POLL_INTERVAL_SECS: f64 = 1.0`（秒。`shading_asset.rs:77`） |
+| ポーリング間隔 | `SHADING_ASSET_POLL_INTERVAL_SECS: f64 = 1.0`（秒。`shading_asset.rs:87`） |
 | 判定 | 前回ポーリングから間隔が経過し、かつ `asset_fs::mtime` が前回と変化しているときだけ読み直す |
 | Play 中 | **一切リロードしない**。開始時点のパイプラインを使い続ける（フレーム中のシェーダ再コンパイルによるスパイクを避けるため） |
 
@@ -434,8 +486,8 @@ Play 開始後に初めて解決されるパスは 1 回だけ読み込み＋ビ
 | **カメラプレビュー小窓は常に組み込み標準** | プレビューのライティングパスは `draw_ctx.pipelines.deferred.pipeline` を直に使う（`frame_renderer.rs:2287`）。アセットは経由しない |
 | **deferred が無効なフレームには効かない** | `deferred_active = false`（Edit のワイヤーフレーム表示・2D シーンビュー・`post_fx.deferred` オフ）のときは deferred ライティングパス自体が走らないため、アセットは効かない |
 | **compose（画面全体の組み立て）は未対応** | ライト走査・アンビエント・影の適用・GI・反射の合成はエンジンが持つ。段階 **L3-b** の課題であり未実装 |
-| **ユーザー定義可能な ID は 1..3 の 3 枠のみ** | G-Buffer RT3.a に詰められるビット幅が 2bit（`SHADING_MODEL_BITS = 2`）だから。正典は `renderer/surface_id.rs`。枠数は `USER_MODEL_SLOTS = 3`（`shading_asset.rs:65`）で、ユニットテスト `user_model_id_range_is_derived_from_surface_id` が 1..3 を固定している |
-| **マテリアルの `shading_model` にエディタ UI が無い** | 実装確認: エディタ側に `shading_model` を編集する UI は存在しない（`editor/` 内に該当文字列なし）。`MaterialOverrideKind::Inline` にも `shading_model` フィールドは無い（`material_override.rs:46-80`）。現状の設定手段は `.mat` アセットまたはモデルキャッシュ（`.smdl`）に載る `Material::shading_model`（`loader/model.rs:320`）のみで、glTF / OBJ ローダは常に既定値 0 を入れる |
+| **例外用の ID は 1..3 の 3 枠のみ** | G-Buffer RT3.a に詰められるビット幅が 2bit（`SHADING_MODEL_BITS = 2`）だから。正典は `renderer/surface_id.rs`。枠数は `USER_MODEL_SLOTS = 3`（`shading_asset.rs:67`）で、ユニットテスト `user_model_id_range_is_derived_from_surface_id` が 1..3 を固定している。**全体の既定（`shade_default`）は ID を消費しない**ため、この制限は「例外を何種類作れるか」だけに掛かる |
+| **マテリアルの `shading_model` にエディタ UI が無い** | 実装確認: エディタ側に `shading_model` を編集する UI は存在しない（`editor/` 内に該当文字列なし）。`MaterialOverrideKind::Inline` にも `shading_model` フィールドは無い（`material_override.rs:46-80`）。現状の設定手段は `.mat` アセットまたはモデルキャッシュ（`.smdl`）に載る `Material::shading_model`（`loader/model.rs:320`）のみで、glTF / OBJ ローダは常に既定値 0 を入れる。**`shade_default` を使う限りこの制限には当たらない**（マテリアルを触らずに全体が変わる）ので、UI が無いことが問題になるのは「例外オブジェクトを作りたいとき」だけである |
 | **`user_data` / `render_tag` にも同様の制約** | `render_tag` は `ModelComponent::render_tag` として `.scene` に保存されるが、`user_data` はマテリアル側の値であり同じくエディタ UI を持たない |
 
 ---
@@ -445,7 +497,7 @@ Play 開始後に初めて解決されるパスは 1 回だけ読み込み＋ビ
 ### 11.1 連結順（実際の配列）
 
 標準リストの `"shading_dispatch.wgsl"` の位置を、**アセット本体＋生成ディスパッチの 2 要素**へ
-その場で置換する（`substitute_dispatch`, `shading_asset.rs:302`）。標準リストは
+その場で置換する（`substitute_dispatch`, `shading_asset.rs:355`）。標準リストは
 TOML / 定数から機械的に読み、**この配列をハードコードしない**（連結順の二重管理を避ける）。
 
 | 変種 | 標準リストの正典 | 連結順 |
@@ -456,26 +508,45 @@ TOML / 定数から機械的に読み、**この配列をハードコードし�
 
 置換後は太字の 1 要素が `[<アセットのパス>, "<generated shade_surface>"]` の 2 要素になる。
 `shade_surface` の定義は連結全体で常にちょうど 1 本（既定版と生成版は排他）。
-置換位置の正しさはテスト `dispatch_element_is_substituted_in_place`（`shading_asset.rs:1075`）が固定。
+置換位置の正しさはテスト `dispatch_element_is_substituted_in_place`（`shading_asset.rs:1306`）が固定。
 
-naga 検証のケイパビリティは変種ごとに異なる（`Variant::capabilities`, `shading_asset.rs:286`）:
+naga 検証のケイパビリティは変種ごとに異なる（`Variant::capabilities`, `shading_asset.rs:339`）:
 `RtOff` = なし / `RtOn` = `RAY_QUERY` / `RtBindless` = `RAY_QUERY` + 非一様インデックス。
 
 ### 11.2 キャッシュキー
 
-- `ShadingAssetCache.built` のキーは **アセット内容のハッシュ**（`content_hash`, `shading_asset.rs:84`。
+- `ShadingAssetCache.built` のキーは **アセット内容のハッシュ**（`content_hash`, `shading_asset.rs:94`。
   `std::collections::hash_map::DefaultHasher` ＝ SipHash-1-3）。暗号学的強度は不要で、
   「同一内容 → 同一キー」「異なる内容 → 実質衝突しない」だけを求める。
   内容ハッシュなので、**別パスに同じ内容を置いた場合はパイプラインを共有する**。
 - `ShadingAssetCache.paths` はパス → `PathState { last_poll, mtime, hash }`
-  （`shading_asset.rs:634-641`）。mtime が変わっていなければファイル読み込み自体をスキップする。
+  （`shading_asset.rs:717-724`）。mtime が変わっていなければファイル読み込み自体をスキップする。
 - キャッシュ本体は `DrawContext::shading_asset_cache`（`methods/drawer/mod.rs:143`）に置かれ、
   `&self` 共有のフレーム内から更新できるよう `RefCell` の内部可変で持つ。
 
 ### 11.3 生成される `shade_surface`
 
-`generate_dispatch`（`shading_asset.rs:227`）が出す WGSL。`shade_model_1` だけを定義した
-アセット（前掲のトゥーン）の場合、生成されるのは次のコードである。
+`generate_dispatch`（`shading_asset.rs:273`）が出す WGSL。入力は `detect_shade_models` が返す
+`ShadeModelSet { has_default, models }` の 1 値だけである。
+
+**`case Nu:` はアセットが実装した ID のぶんだけ**出力される（3 モデルすべてを定義すれば
+`case 1u:` / `case 2u:` / `case 3u:` の 3 腕が並ぶ）。**定義されていない ID の `case` は出力されない**。
+`default:` 腕は「実装の無い ID 1..3」と「ID 0（地形・草・未設定マテリアル）」の両方を受ける
+唯一の落とし先で、その内容だけが `has_default` で分岐する。
+
+前掲のトゥーン（`shade_default` ＋ `shade_model_1`）の場合:
+
+```wgsl
+// ── 自動生成（shading_asset.rs）。このコードは編集できません ──
+fn shade_surface(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
+    switch sf.shading_model {
+        case 1u: { return shading_nan_guard(shade_model_1(sf, li)); }
+        default: { return shading_nan_guard(shade_default(sf, li)); }
+    }
+}
+```
+
+`shade_default` を定義せず `shade_model_1` だけを書いたアセット（従来型）の場合:
 
 ```wgsl
 // ── 自動生成（shading_asset.rs）。このコードは編集できません ──
@@ -487,8 +558,8 @@ fn shade_surface(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
 }
 ```
 
-3 モデルすべてを定義した場合は `case 1u:` / `case 2u:` / `case 3u:` の 3 腕が並ぶ。
-**定義されていないモデルの `case` は出力されない**（＝`default:` へ落ちて標準 PBR になる）。
+後者は `shade_default` 導入**前**の生成結果と 1 文字も違わない。これが
+「既存アセットは挙動も生成コードも従来と同値」という不変条件の実体である。
 
 呼び出し側は `lighting_eval.wgsl:364` の 1 行:
 
