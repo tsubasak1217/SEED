@@ -374,6 +374,25 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelProject.ActorFileOpened    += OnActorFileOpened;
         PanelProject.InputMapFileOpened += OnInputMapFileOpened;
         PanelProject.ScriptFileOpened   += OnScriptFileOpened;
+        // 参照フィールド（FileRefBuilder）の名前部分ダブルクリック → プロジェクトパネルへジャンプ。
+        // パネルを前面に出したうえで、該当フォルダを新しいタブで開きファイルを選択状態にする。
+        SEEDEditor.Panels.FileRefBuilder.RevealInProjectRequested = path =>
+        {
+            ShowAnchorable("project");
+            PanelProject.RevealFile(path);
+        };
+        // アクタ参照フィールドのダブルクリック → Hierarchy の該当アクタへジャンプ＋一時ハイライト。
+        // 選択状態は変えない（選択変更イベントを発火させない）。
+        SEEDEditor.Panels.ActorRefJump.RevealActorByNameRequested = actorName =>
+        {
+            ShowAnchorable("hierarchy");
+            PanelHierarchy.RevealActorByName(actorName);
+        };
+        SEEDEditor.Panels.ActorRefJump.RevealActorByDfsIdRequested = dfsId =>
+        {
+            ShowAnchorable("hierarchy");
+            PanelHierarchy.RevealActor(dfsId);
+        };
         // .anim ファイルのダブルクリックでアニメーションタイムラインパネルを開いて読み込む
         PanelProject.AnimFileOpened     += path =>
         {

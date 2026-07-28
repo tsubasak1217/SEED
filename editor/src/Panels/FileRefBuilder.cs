@@ -14,6 +14,20 @@ namespace SEEDEditor.Panels;
 /// </summary>
 internal static class FileRefBuilder
 {
+    /// <summary>ダブルクリックと判定するクリック回数（WPF の ClickCount 比較用）。</summary>
+    private const int DoubleClickCount = 2;
+
+    /// <summary>
+    /// パス表示部（ファイル名が書かれた箱）がダブルクリックされたときに発火するフック。
+    /// 引数は <see cref="Build"/> に渡された currentPath そのもの
+    /// （`assets://` 仮想パス・絶対パスのどちらも有り得るため、受け手側で解決すること）。
+    ///
+    /// FileRefBuilder は静的ヘルパーでパネル参照を持たないため、
+    /// MainWindow の初期化時に ProjectPanel.RevealFile へ接続する形で結線する。
+    /// 未接続（null）のときダブルクリックは何もしない。
+    /// </summary>
+    public static Action<string>? RevealInProjectRequested;
+
     /// <summary>
     /// ラベル・パス表示・参照ボタン（＋任意でクリアボタン）をまとめたファイル参照行を生成する。
     /// acceptedExtensions に含まれる拡張子のファイルのみドロップを受け付ける。
@@ -62,8 +76,11 @@ internal static class FileRefBuilder
             CornerRadius    = new CornerRadius(2),
             Margin          = new Thickness(2, 0, 2, 0),
             AllowDrop       = true,
+            // 設定済みのときはダブルクリックでプロジェクトパネルへジャンプできるので、
+            // 手のひらカーソルで「押せる」ことを示す。
+            Cursor          = hasPath ? Cursors.Hand : null,
             ToolTip         = hasPath
-                ? currentPath
+                ? currentPath + "\n（ダブルクリックでプロジェクトパネルの該当フォルダを開く）"
                 : "Project パネルまたはエクスプローラーから " + string.Join(" / ", acceptedExtensions) + " をドロップ",
         };
 
@@ -88,6 +105,17 @@ internal static class FileRefBuilder
                 ? new SolidColorBrush(Color.FromRgb(0x44, 0xAA, 0x44))
                 : normalBorder;
         }
+
+        // ── ダブルクリック → プロジェクトパネルで該当ファイルを表示 ──
+        // 参照先が未設定のときは何もしない（存在チェックは受け手＝ProjectPanel 側で行う。
+        // ここでは仮想パスを絶対パスへ解決できないため）。
+        pathBox.MouseLeftButtonDown += (_, e) =>
+        {
+            if (e.ClickCount != DoubleClickCount) return;
+            if (!hasPath) return;
+            RevealInProjectRequested?.Invoke(currentPath!);
+            e.Handled = true;
+        };
 
         pathBox.DragEnter += (_, e) =>
         {
