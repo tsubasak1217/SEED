@@ -112,6 +112,10 @@ impl App {
 
         // ── 4) パーティクル全解放（前セッションの粒子を持ち越さない）──────────
         self.particle_system.clear_all();
+        // インタラクションソースの位置履歴も捨てる（Phase I1）。
+        // 残したままシーンが入れ替わると「旧シーンの位置 → 新シーンの位置」の
+        // 巨大な速度が 1 フレームだけ場へ焼かれ、草が一斉になぎ倒される。
+        self.interaction_velocity.clear();
 
         // ── 5) オーディオのコンポーネント音源リセット（play_on_start 再発火用）───
         if let Some(audio) = &mut self.audio { audio.reset_components(); }
@@ -168,6 +172,10 @@ impl App {
         self.stop_physics();
         self.stop_physics_2d();
         self.particle_system.clear_all();
+        // インタラクションソースの位置履歴も捨てる（Phase I1）。
+        // 残したままシーンが入れ替わると「旧シーンの位置 → 新シーンの位置」の
+        // 巨大な速度が 1 フレームだけ場へ焼かれ、草が一斉になぎ倒される。
+        self.interaction_velocity.clear();
         if let Some(audio) = &mut self.audio { audio.reset_components(); }
 
         // ── 2) アクターツリーを復元 ─────────────────────────────────────

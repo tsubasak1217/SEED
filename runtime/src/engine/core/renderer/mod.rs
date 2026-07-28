@@ -46,6 +46,9 @@ pub(crate) mod grass_gbuffer;
 
 /// 水面描画パス（Phase W1）。`engine::water` が解決した水ボリュームを 1 ドローで描く。
 pub mod water;
+
+/// 瞬発インタラクションフィールド（Phase I1）。動く物の速度をワールド俯瞰テクスチャへ焼く。
+pub mod interaction;
 /// 提示フレームの PNG 書き出し（環境変数ゲートの常設デバッグフック）。
 pub(crate) mod screenshot;
 /// 地形レイヤテクスチャ配列（texture_2d_array）の構築（Terrain T2b）。
@@ -105,6 +108,9 @@ pub use bindless::{BindlessResources, BindlessInstanceRecord, BindlessModelAlloc
                    set_bindless_supported, bindless_supported, bindless_capacity};
 pub use refract_pyramid::{RefractPyramid, REFRACT_MIP_COUNT};
 pub use water::{WaterRenderer, WaterParams, WATER_MAX_VOLUMES};
+pub use interaction::{InteractionFieldRenderer, InteractionFieldUniformGpu, InteractionSourceGpu,
+                      INTERACTION_FIELD_EXTENT_M, INTERACTION_FIELD_RESOLUTION,
+                      INTERACTION_FIELD_DECAY_TAU_SECS, INTERACTION_MAX_SOURCES};
 pub use reflection::{ReflectionPipelines, ReflectionParams,
                      RT_REFLECTION_NAME, REFLECTION_FORMAT, DEFAULT_REFLECTION_INTENSITY};
 pub use imos_blur::{ImosBlur, ImosBlurParams, IMOS_BLUR_FORMAT};

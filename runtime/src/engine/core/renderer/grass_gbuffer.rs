@@ -21,6 +21,11 @@
 //    group1 = 草インスタンス（本ファイルが定義する専用レイアウト）
 //      binding 0: storage(read) array<GrassInstance>
 //      binding 1: uniform       GrassUniform
+//    group2 = 瞬発インタラクションフィールド（Phase I1）
+//      renderer::interaction::create_field_sample_bind_group_layout が定義する共有レイアウト。
+//      BindGroup 本体は `InteractionFieldRenderer` が持ち、草は**読むだけ**。
+//      場は常に存在する（ソース 0 個でもゼロ埋めテクスチャが返る）ので、
+//      描画側は「場が無いフレーム」を分岐で扱わなくてよい。
 //
 //  ## 時刻の運び方（設計判断）
 //  風のアニメーションには経過時間が要るが、`CameraUniform` は 22 本のパイプラインが
@@ -205,6 +210,12 @@ impl GrassGBufferPipeline {
         const LABEL: &str = "grass_gbuffer";
 
         let instance_bgl = create_instance_bind_group_layout(device);
+        // group2（インタラクションフィールド）は共有レイアウト。BindGroup を持つ
+        // InteractionFieldRenderer 側も同じ関数で作るため、wgpu の BindGroupLayout
+        // 構造的等価性でそのままバインドできる（カメラ BGL 借用と同じ既存慣例）。
+        let interaction_bgl = super::interaction::create_field_sample_bind_group_layout(
+            device, wgpu::ShaderStages::VERTEX,
+        );
 
         // ── シェーダモジュール（velocity_math.wgsl だけを前置連結）──
         //   grass_gbuffer.wgsl は shader_common.wgsl を取り込まず CameraUniform を
@@ -226,7 +237,7 @@ impl GrassGBufferPipeline {
         // ── パイプラインレイアウト（group0 = 借用カメラ / group1 = 自前）──
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(LABEL),
-            bind_group_layouts: &[&mesh_pipeline.camera_bgl, &instance_bgl],
+            bind_group_layouts: &[&mesh_pipeline.camera_bgl, &instance_bgl, &interaction_bgl],
             push_constant_ranges: &[],
         });
 
@@ -652,11 +663,14 @@ fn create_instance_bind_group(
 ///
 /// 呼び出し側は本関数の前に G-Buffer レンダーパスを開始しておくこと
 /// （深度・MRT 4 枚は通常の G-Buffer パスと共通）。
+/// `field_bg` は瞬発インタラクションフィールドの group2
+/// （`InteractionFieldRenderer::sample_bind_group()`）。常に有効な BindGroup を渡すこと。
 pub fn draw_grass<'pass>(
     rp:        &mut wgpu::RenderPass<'pass>,
     pipeline:  &'pass GrassGBufferPipeline,
     buf:       &'pass GrassInstanceBuffer,
     camera_bg: &'pass wgpu::BindGroup,
+    field_bg:  &'pass wgpu::BindGroup,
 ) {
     // 0 本のときは何もしない（インスタンス数 0 の draw は無駄なだけでなく、
     // ダミー要素しか無いバッファを触ることになるため明示的に弾く）。
@@ -666,6 +680,7 @@ pub fn draw_grass<'pass>(
     rp.set_pipeline(&pipeline.pipe);
     rp.set_bind_group(0, camera_bg, &[]);
     rp.set_bind_group(1, &buf.bind_group, &[]);
+    rp.set_bind_group(2, field_bg, &[]);
     rp.draw(0..GRASS_MAX_VERTS_PER_BLADE, 0..buf.count);
 }
 
@@ -697,6 +712,8 @@ pub fn draw_grass_culled<'pass>(
     pipeline:         &'pass GrassGBufferPipeline,
     buf:              &'pass GrassInstanceBuffer,
     camera_bg:        &'pass wgpu::BindGroup,
+    // field_bg: 瞬発インタラクションフィールドの group2（常に有効な BindGroup を渡すこと）。
+    field_bg:         &'pass wgpu::BindGroup,
     planes:           &[[f32; 4]; 6],
     camera_pos:       [f32; 3],
     cull_distance_sq: f32,
@@ -708,13 +725,14 @@ pub fn draw_grass_culled<'pass>(
     }
     // スパン未設定 → 従来の全描画（カリング情報が無いので棄却できない）。
     if buf.spans.is_empty() {
-        draw_grass(rp, pipeline, buf, camera_bg);
+        draw_grass(rp, pipeline, buf, camera_bg, field_bg);
         return buf.count;
     }
 
     rp.set_pipeline(&pipeline.pipe);
     rp.set_bind_group(0, camera_bg, &[]);
     rp.set_bind_group(1, &buf.bind_group, &[]);
+    rp.set_bind_group(2, field_bg, &[]);
 
     // 可視チャンクの連続区間を貯めて、途切れたところで 1 回 draw する。
     // run_end は「実際に描く上端」＝ `first + kept` を積む（間引きぶんは含めない）。
