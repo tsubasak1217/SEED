@@ -1002,7 +1002,9 @@ public partial class InspectorPanel : UserControl
             // 欠落時は Rust 側既定値と一致する定数へフォールバックする。
             var interactRadius   = comp.TryGetProperty("radius",   out var isr) ? isr.GetSingle()  : InteractionRadiusDefault;
             var interactStrength = comp.TryGetProperty("strength", out var iss) ? iss.GetSingle()  : InteractionStrengthDefault;
-            var interactEnabled  = comp.TryGetProperty("enabled",  out var ise) ? ise.GetBoolean() : InteractionEnabledDefault;
+            // 【重要】キーは "source_enabled"。スロット共通の "enabled"(数値0/1)とキー重複
+            // させると GetProperty が数値側を返し GetBoolean() が例外になる（既往リグレッション）。
+            var interactEnabled  = comp.TryGetProperty("source_enabled", out var ise) ? ise.GetBoolean() : InteractionEnabledDefault;
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 AutoScale: autoScale,

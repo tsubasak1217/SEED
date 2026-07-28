@@ -413,9 +413,13 @@ impl App {
                 }
                 ComponentData::InteractionSourceComponent(d) => {
                     // インタラクションソース: 半径・強さ・有効フラグをインスペクタへ送る。
-                    // bool は JSON の true/false としてそのまま出す（C# 側で bool 解釈）。
+                    // 【重要】キー名は "source_enabled"。スロット共通ラッパが既に
+                    // "enabled"（数値 0/1、slot_data.enabled）を持つため、"enabled" で送ると
+                    // 同一 JSON オブジェクト内のキー重複になり、C# の GetProperty が数値側を
+                    // 返して GetBoolean() が例外 → インスペクタ全体が表示不能になる
+                    // （実際に起きたリグレッション）。
                     ("InteractionSourceComponent", format!(
-                        r#","radius":{:.4},"strength":{:.4},"enabled":{}"#,
+                        r#","radius":{:.4},"strength":{:.4},"source_enabled":{}"#,
                         d.radius, d.strength, d.enabled,
                     ))
                 }
