@@ -71,6 +71,21 @@ public partial class MainWindow
     /// <summary>project_settings.json のファイル名（旧設定からのフォールバック読み込み元）。</summary>
     private const string ProjectSettingsFileName = "project_settings.json";
 
+    // ── シーン設定変更時の自動保存 ───────────────────────────────
+
+    /// <summary>
+    /// シーン設定変更後、実際に .scene を保存するまでの待ち時間（ミリ秒）。
+    /// スライダーのドラッグ中は変更通知が毎フレーム飛ぶため、この時間だけ
+    /// 追加の変更が来なくなってから 1 回だけ保存する（＝最後の変更のみ保存）。
+    /// </summary>
+    private const int SceneSettingsAutoSaveDebounceMs = 500;
+
+    /// <summary>
+    /// シーン設定変更の自動保存デバウンス用タイマー。変更のたびに Stop → Start して
+    /// 期限を後ろへずらし、静止した時点で 1 度だけ Tick させる。
+    /// </summary>
+    private System.Windows.Threading.DispatcherTimer? _sceneSettingsAutoSaveTimer;
+
     // ── シーン設定ウィンドウ ─────────────────────────────────────
 
     /// <summary>
@@ -183,6 +198,73 @@ public partial class MainWindow
     private void OnSceneShadingAssetChanged(string virtualPath)
     {
         _runtimeManager?.SendToRuntime($"SET_SCENE_SHADING_ASSET:{virtualPath}");
+        // シェーダー変更も .scene への永続化対象なので自動保存を予約する
+        RequestSceneSettingsAutoSave();
+    }
+
+    /// <summary>
+    /// シーン設定の変更を .scene へ自動保存するよう予約する（デバウンス付き）。
+    ///
+    /// 目的:
+    ///   シーン設定ウィンドウでの変更は従来ダーティ化のみで、Ctrl+S を押すまで
+    ///   ファイルに書かれなかった。「変更したら常に保存されるように」という要望に対し、
+    ///   Ctrl+S と同じ保存経路（ExecuteSave → IPC SAVE_SCENE）を静かに実行する。
+    ///
+    /// 重要な副作用（仕様上避けられない）:
+    ///   SAVE_SCENE はシーン全体を書き出すため、ユーザーが未保存のままにしていた
+    ///   他の編集（アクターの移動・コンポーネント変更など）も同時に .scene へ保存される。
+    ///   シーン設定だけを部分保存する手段はランタイム側に存在しないため、
+    ///   この挙動は本要望を満たす限り不可避である。
+    ///
+    /// 自動保存をスキップする条件:
+    ///   - Edit モードでない（Play 中の設定変更は保存しない）
+    ///   - 新規シーンでファイルパスが未確定（_currentScenePath == null）
+    ///     → 保存先が無く、ダイアログを出すのは「静かな保存」に反するため従来どおりダーティ化のみ
+    ///   - アクター編集タブ / キャンバス編集タブが開いている（_activeActorPath != null）
+    ///     → 対象アクターが編集用世界線に居るため、そのまま SAVE_SCENE すると
+    ///       シーンが正しく書き出されない（DoQuickSave がタブを閉じてから保存しているのと同じ理由）。
+    ///       自動保存でタブを勝手に閉じるのは破壊的なので、ここでは保存を見送る。
+    /// </summary>
+    private void RequestSceneSettingsAutoSave()
+    {
+        // ランタイム未接続（初期化中の同期送信など）では保存しない
+        if (!_viewportSettingsInitialized) return;
+
+        // タイマーは初回のみ生成し、以降は Stop/Start で期限を延長する
+        if (_sceneSettingsAutoSaveTimer is null)
+        {
+            _sceneSettingsAutoSaveTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(SceneSettingsAutoSaveDebounceMs),
+            };
+            _sceneSettingsAutoSaveTimer.Tick += (_, _) =>
+            {
+                _sceneSettingsAutoSaveTimer!.Stop();
+                ExecuteSceneSettingsAutoSave();
+            };
+        }
+
+        // ドラッグ中の連続変更では毎回ここを通り、最後の変更から
+        // SceneSettingsAutoSaveDebounceMs 経過した 1 回だけが実際に保存される
+        _sceneSettingsAutoSaveTimer.Stop();
+        _sceneSettingsAutoSaveTimer.Start();
+    }
+
+    /// <summary>
+    /// デバウンス満了時の実保存。スキップ条件は RequestSceneSettingsAutoSave のコメント参照。
+    /// 予約時点と満了時点で状態（Play 開始・アクター編集開始など）が変わり得るため、
+    /// 判定はここ（実行直前）で行う。
+    /// </summary>
+    private void ExecuteSceneSettingsAutoSave()
+    {
+        if (_runtimeManager?.State != EditorState.Edit) return;
+        if (_activeActorPath != null) return;   // アクター／キャンバス編集中は見送り
+        if (_currentScenePath == null) return;  // 新規シーン（保存先未確定）は従来どおりダーティのみ
+
+        // Ctrl+S と同一経路。確認ダイアログは出ず、保存完了時に
+        // OnSaveCompleted がダーティ解除とトースト表示を行う。
+        ExecuteSave(_currentScenePath);
+        EditorLog.Write("ExecuteSceneSettingsAutoSave — シーン設定変更による自動保存");
     }
 
     /// <summary>シーン設定ウィンドウが持つカメラ位置・回転の入力値を MainWindow 側へ取り込む。</summary>
@@ -321,6 +403,9 @@ public partial class MainWindow
     {
         if (!_viewportSettingsInitialized) return;
         _runtimeManager?.SendToRuntime($"SET_SCENE_SETTINGS:{_sceneSettings.ToCompactJsonString()}");
+        // ランタイム側の scene.settings 更新後にファイルへ書き出す（IPC は順序保証のため
+        // SAVE_SCENE は必ずこの SET_SCENE_SETTINGS の後に処理される）。デバウンス付き。
+        RequestSceneSettingsAutoSave();
     }
 
     // ── シーン設定のロードと再同期 ───────────────────────────────
