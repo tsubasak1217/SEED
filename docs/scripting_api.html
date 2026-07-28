@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SEED スクリプト API リファレンス</title>
+<title>SEED スクリプト API リファレンス（C# / WGSL）</title>
 <!--
   ============================================================
   SEED スクリプト API リファレンス（検索機能付き HTML 版）
@@ -205,10 +205,10 @@
 <body>
 
 <header>
-  <h1><span class="badge">◆</span>SEED スクリプト API リファレンス</h1>
+  <h1><span class="badge">◆</span>SEED スクリプト API リファレンス <span style="color:var(--text-dim); font-weight:normal; font-size:13px;">（C# / WGSL）</span></h1>
   <div style="display:flex; align-items:center;">
     <input id="search" type="text"
-           placeholder="API を検索…（例: Lerp / 回転 / Raycast / スプライト）  [ / キーでフォーカス]"
+           placeholder="API を検索…（例: Lerp / 回転 / Raycast / スプライト / wgsl / シェーディング）  [ / キーでフォーカス]"
            autocomplete="off">
     <span id="hit-count"></span>
   </div>
@@ -226,16 +226,25 @@
     <a href="#sec-components">コンポーネント</a>
     <a href="#sec-scene">Scene</a>
     <a href="#sec-libs">ライブラリ</a>
+    <a href="#sec-shading">シェーディング (WGSL)</a>
   </nav>
 </header>
 
 <main>
 
 <div class="warn" style="margin-top:16px;">
+  <b>このページの範囲</b>: SEED には 2 種類のスクリプト対象があります。<b>①ゲームロジック（C#）</b>と
+  <b>②画面全体の光応答式（WGSL シェーディングアセット）</b>です。第 1〜9 節は C# の <code>SEEDScript</code> API、
+  <a href="#sec-shading">第 8 節「シェーディング (WGSL)」</a>は <code>.wgsl</code> ファイル 1 枚で
+  ライティングの見た目を差し替える別系統の API です。用途が異なるので混同しないでください。
+</div>
+
+<div class="warn">
   <b>重要</b>: SEED は Unity ではありません。<code>UnityEngine</code> / <code>MonoBehaviour</code> / <code>GetComponent</code> は存在しません。
   エンジン API（<code>Mathf</code> / <code>Vector3</code> / <code>Time</code> など）は <b><code>SEED</code> 名前空間</b>にあり、
   コードでは必ず <code>SEED.</code> を付けて呼び出します（例: <code>SEED.Random.Range(0, 10)</code>）。
-  本ページの一覧部分は簡潔さのため <code>SEED.</code> を省略しています。
+  本ページの一覧部分は簡潔さのため <code>SEED.</code> を省略しています（この節は C# の話です。WGSL は
+  <a href="#sec-shading">第 8 節</a>を参照）。
 </div>
 
 <!-- ════════════════ 1. 基本形 ════════════════ -->
@@ -634,6 +643,236 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
 <span class="c">// ... フェードアウト演出など ...</span>
 <span class="t">SEED.Scene</span>.Transition(<span class="s">"game"</span>);   <span class="c">// 即座に切り替わる</span></pre>
   <div class="warn">読み込みに失敗した場合は現在のシーンが維持されます（戻り値 true は「受理」であり成功保証ではない）。<b>Transition を呼んだフレームで発行した Instantiate / Destroy は破棄されます</b>。シーン遷移を決めたら、そのフレームではそれ以上シーン操作をしないでください。</div>
+</section>
+
+<!-- ════════════════ 8. シェーディングアセット (WGSL) ════════════════ -->
+<section id="sec-shading" data-keywords="wgsl WGSL シェーダー シェーダ シェーディング シェーディングアセット shading shade_default shade_model ShadingSurface LightSample 契約 契約バージョン shading_contract 光応答式 トゥーン toon BRDF ライティング 標準ライブラリ ホットリロード 画作り マテリアル">
+  <h2>8. シェーディングアセット（WGSL）</h2>
+  <p class="section-note">
+    C# スクリプトとは別系統の API です。ユーザーが書いた <b><code>.wgsl</code></b> ファイル 1 枚で、
+    <b>1 ライト分の光応答式</b>（BRDF）を差し替える仕組み。正典は <code>docs/shading_asset.md</code>
+    （実装: <code>runtime/src/engine/core/renderer/shading_asset.rs</code> / 契約の正典
+    <code>runtime/src/engine/core/renderer/shaders/shading_contract.wgsl</code>）。本節は
+    その要点をまとめたものです。食い違いがあれば md とソースが正しい。
+  </p>
+
+  <h3>概要</h3>
+  <p class="section-note">
+    <b><code>shade_default</code> を書けば、アセットを差すだけで画面全体の見た目が変わります</b>。
+    シェーディングモデルを設定していない全表面（＝ID 0。地形・草・既定マテリアルはすべてここ）が
+    この実装で描かれます。マテリアル側の設定は一切不要です。
+    <code>shade_model_1</code> / <code>shade_model_2</code> / <code>shade_model_3</code> は、
+    そこから<b>例外オブジェクトだけをさらに上書き</b>するための追加枠という位置づけです
+    （マテリアルの <code>shading_model</code> を 1〜3 にした面だけがそちらへ回ります）。
+  </p>
+  <div class="api"><code class="sig">fn shade_default(sf: ShadingSurface, li: LightSample) -&gt; vec3&lt;f32&gt;</code><span class="desc">全体の既定シェーディング。ID 0（地形・草・未設定マテリアル）＋未実装の例外 ID を受ける。これが基本</span></div>
+  <div class="api"><code class="sig">fn shade_model_1 / shade_model_2 / shade_model_3(sf, li) -&gt; vec3&lt;f32&gt;</code><span class="desc">マテリアルの <code>shading_model</code> が同値の面だけを上書きする例外枠</span></div>
+  <p class="section-note">
+    エンジンが渡すのは「面の情報（<code>ShadingSurface</code>）」と「そのライト 1 灯の実効放射輝度
+    （<code>LightSample</code>）」の 2 つだけで、バインディング（uniform / texture / storage）は
+    アセット側から一切見えません。関数はすべて任意（書かなかったものは無いものとして扱われます）。
+  </p>
+  <p class="section-note">
+    <b>できないこと</b>: compose（画面全体の組み立て＝ライト走査・アンビエント・エミッシブ加算・影の適用・GI・反射の合成）の差し替えは未対応（段階 L3-b、未実装）。
+    差し替えられるのはあくまで「1 ライト分の光応答式」。テクスチャの自前サンプリングは不可（下記）。
+    半透明 / WBOIT / フォワードパス / カメラプレビュー小窓には効きません。
+  </p>
+
+  <h3>契約 v1</h3>
+  <table>
+    <tr><th>項目</th><th>値</th></tr>
+    <tr><td>契約バージョン</td><td><code>SHADING_CONTRACT_VERSION = 1</code>（WGSL 側 <code>shading_contract.wgsl</code> ・Rust 側 <code>shading_asset.rs</code> の両方に定義。一致はユニットテストで固定）</td></tr>
+    <tr><td>アセット側の宣言</td><td>先頭コメントに <code>// @shading_contract 1</code> と書く（規約。パーサはコメント除去前の全行を走査するので物理的にはどこでもよい）</td></tr>
+  </table>
+  <table>
+    <tr><th>宣言の状態</th><th>挙動</th></tr>
+    <tr><td>宣言があり値が 1</td><td>通常どおり読み込む</td></tr>
+    <tr><td>宣言があり値が 1 以外</td><td><b>読み込みを拒否</b>しエラーを返す。パイプラインは作られず組み込み標準へフォールバック</td></tr>
+    <tr><td>宣言が無い</td><td><b>v1 とみなして</b>読み込む。ただし警告をエディタへ通知</td></tr>
+  </table>
+  <p class="section-note">
+    <code>shade_default</code> の追加は契約バージョンを<b>上げていません</b>（既存アセットは生成コード・挙動とも 1 バイトも変わらない後方互換の追加）。
+    バージョンを上げるのは <code>ShadingSurface</code> / <code>LightSample</code> のフィールド削除・改名・意味変更、または標準ライブラリ関数のシグネチャ変更のときだけです。
+  </p>
+
+  <h3>契約表: <code>ShadingSurface</code>（面の情報。ライトに依存しない値）</h3>
+  <table>
+    <tr><th>フィールド</th><th>型</th><th>意味 / 注意</th></tr>
+    <tr><td><code>world_pos</code></td><td><code>vec3&lt;f32&gt;</code></td><td>シェーディング点のワールド座標</td></tr>
+    <tr><td><code>normal</code></td><td><code>vec3&lt;f32&gt;</code></td><td>シェーディング法線 N。ワールド空間・正規化済み・法線マップ適用後・裏面反転済み。BRDF はこれを使う</td></tr>
+    <tr><td><code>geo_normal</code></td><td><code>vec3&lt;f32&gt;</code></td><td>幾何法線 Ng。三角形の面そのもの（フラット）。ファセット表現・輪郭判定用</td></tr>
+    <tr><td><code>vertex_normal</code></td><td><code>vec3&lt;f32&gt;</code></td><td>補間頂点法線 Nv。法線マップ適用前、三角形をまたいで滑らか</td></tr>
+    <tr><td><code>view_dir</code></td><td><code>vec3&lt;f32&gt;</code></td><td>表面→カメラ方向 V（正規化済み）</td></tr>
+    <tr><td><code>base_color</code></td><td><code>vec3&lt;f32&gt;</code></td><td>アルベド（リニア）。頂点カラー・ベースカラー係数は畳み込み済み</td></tr>
+    <tr><td><code>roughness</code></td><td><code>f32</code></td><td>ラフネス 0..1（clamp 済み）</td></tr>
+    <tr><td><code>metallic</code></td><td><code>f32</code></td><td>メタリック（0＝誘電体 / 1＝金属）</td></tr>
+    <tr><td><code>occlusion</code></td><td><code>f32</code></td><td>AO 0..1。エンジンは環境光項にのみ乗算（直接光には掛けない）</td></tr>
+    <tr><td><code>emissive</code></td><td><code>vec3&lt;f32&gt;</code></td><td>エミッシブ（リニア HDR）。<b>エンジンがライト評価の最後に加算する</b>（アセットが返す値に足してはならない）</td></tr>
+    <tr><td><code>transmission</code></td><td><code>f32</code></td><td>拡散透過（葉・布・紙の逆光透け）0..1</td></tr>
+    <tr><td><code>user_data</code></td><td><code>f32</code></td><td>マテリアルの自由回線 0..1（G-Buffer 8bit 由来）。意味はマテリアルが決める</td></tr>
+    <tr><td><code>render_tag</code></td><td><code>u32</code></td><td>アクタ単位のセマンティックタグ 0..15（0＝タグ無し）</td></tr>
+    <tr><td><code>shading_model</code></td><td><code>u32</code></td><td>シェーディングモデル ID 0..3（0＝エンジン標準 PBR）。ディスパッチの分岐キー</td></tr>
+    <tr><td><code>frag_coord</code></td><td><code>vec2&lt;f32&gt;</code></td><td><code>@builtin(position).xy</code>＝ピクセル座標。ディザ・ハッチング・ノイズの種</td></tr>
+  </table>
+  <p class="section-note">
+    <code>shadow_mask</code> / <code>screen_gi</code> / <code>alpha</code> など内部専用フィールドは契約に<b>含まれません</b>
+    （影は <code>LightSample.color</code> に織り込み済み、SSGI はアンビエント項専用、アルファは合成側でライティングと無関係なため）。
+  </p>
+
+  <h3>契約表: <code>LightSample</code>（1 ライト分の光）</h3>
+  <table>
+    <tr><th>フィールド</th><th>型</th><th>意味 / 注意</th></tr>
+    <tr><td><code>direction</code></td><td><code>vec3&lt;f32&gt;</code></td><td>表面→光源方向 L（正規化済み）</td></tr>
+    <tr><td><code>color</code></td><td><code>vec3&lt;f32&gt;</code></td><td>実効放射輝度。<code>色 × 強度 × 距離減衰 × スポット円錐（rect は前面判定） × 影係数</code> が<b>すべて織り込み済み</b>。再計算すると二重適用になる。通常はこれを使う</td></tr>
+    <tr><td><code>color_unshadowed</code></td><td><code>vec3&lt;f32&gt;</code></td><td>影を掛ける<b>前</b>の放射輝度（距離減衰・円錐は織り込み済み、影のみ除いた値）。逆光透けなど「影を無視したい」表現用</td></tr>
+    <tr><td><code>distance</code></td><td><code>f32</code></td><td>光源までの距離。平行光は大きな定数（距離フェードの分母に安全に使える）</td></tr>
+    <tr><td><code>kind</code></td><td><code>u32</code></td><td>ライト種別（0=directional / 1=point / 2=spot / 3=rect）</td></tr>
+  </table>
+  <p class="section-note">アセットがすべきことは「この放射輝度に対する BRDF（反射率）を掛けて返す」ことだけです。</p>
+
+  <h3>入力の実体（テクスチャはどこにある／影はどこにある）</h3>
+  <p class="section-note">
+    <b>テクスチャはアセットから直接触れません</b>。マテリアルのベースカラーテクスチャ・法線マップ・
+    ラフネス/メタリックマップは<b>第 1 層（G-Buffer 書き込み）で既にサンプリング済み</b>で、その結果が
+    <code>sf.base_color</code> / <code>sf.normal</code> / <code>sf.roughness</code> / <code>sf.metallic</code> /
+    <code>sf.occlusion</code> / <code>sf.emissive</code> として届きます。アセット側で <code>@group</code> /
+    <code>@binding</code> / <code>texture_2d&lt;f32&gt;</code> / <code>sampler</code> を宣言する使い方は
+    <b>サポートしていません</b>（供給経路が無く、naga 検証かパイプライン生成で失敗し組み込み標準へフォールバックします。画面は壊れません）。
+    模様を足したいときは、①画像で足す＝マテリアル側（第 1 層）でテクスチャを差す、②式で足す＝
+    <code>sf.world_pos</code> / <code>sf.frag_coord</code> / <code>sf.user_data</code> / <code>sf.render_tag</code>
+    を種にプロシージャルに作る、のいずれかを使ってください。
+  </p>
+  <p class="section-note">
+    <b>影は <code>li.color</code> に織り込み済み</b>です。通常は <code>li.color</code> を掛けるだけで正しく影も落ち、
+    <b>アセット側で影を再計算してはいけません</b>（二重適用になる）。「影の中だけ加工したい」場合は
+    <code>li.color_unshadowed</code> との比から影係数を復元します（<code>li.color = li.color_unshadowed × 影係数</code>）。
+  </p>
+<pre><span class="c">// 影係数の復元: 0 = 完全な影 / 1 = 影なし</span>
+<span class="k">let</span> lit_full    = shading_luminance(li.color_unshadowed);
+<span class="k">let</span> shadow      = select(shading_luminance(li.color) / lit_full, 1.0, lit_full &lt;= 0.0);
+
+<span class="c">// 影の中だけ青紫に寄せる（影なしの側は白＝素通し）</span>
+<span class="k">let</span> hard_shadow = step(0.5, shadow);
+<span class="k">let</span> shadow_tint = mix(vec3&lt;f32&gt;(0.4, 0.35, 0.6), vec3&lt;f32&gt;(1.0), hard_shadow);
+
+<span class="c">// 加工した影係数は li.color ではなく li.color_unshadowed に掛ける</span>
+<span class="c">// （li.color に掛けるとエンジンの影が二重に乗る）</span>
+<span class="k">let</span> radiance = li.color_unshadowed * shadow_tint;
+<span class="k">return</span> sf.base_color * shading_saturate(dot(sf.normal, li.direction)) * radiance;</pre>
+  <div class="warn"><code>select(f, t, cond)</code> の引数順は「偽の値・真の値・条件」です。復元は輝度（スカラー）ベースなので、色付き影（RT のカラードシャドウ）をチャンネルごとに扱いたい場合は <code>li.color / max(li.color_unshadowed, vec3&lt;f32&gt;(1e-6))</code> を使ってください。</div>
+
+  <h3>ID とマテリアルの対応</h3>
+  <table>
+    <tr><th>ID</th><th><code>shade_default</code> を定義した場合</th><th>定義しない場合</th></tr>
+    <tr><td>0（既定・地形・草・未設定マテリアル）</td><td><b><code>shade_default</code></b>（アセット）</td><td><code>shade_model_0</code>（エンジン標準 PBR）</td></tr>
+    <tr><td>1 / 2 / 3（アセットに実装あり）</td><td><code>shade_model_N</code>（アセット）</td><td><code>shade_model_N</code>（アセット）</td></tr>
+    <tr><td>1 / 2 / 3（実装なし）・範囲外</td><td><b><code>shade_default</code></b>（アセット）</td><td><code>shade_model_0</code></td></tr>
+  </table>
+  <p class="section-note">
+    ID はマテリアルの <code>shading_model</code> フィールドで決まります（現状エディタ UI は無く、
+    <code>.mat</code> / <code>.smdl</code> の直編集のみ）。<b>アセット自体が無い／ロードに失敗した場合は、
+    いずれの ID も <code>shade_model_0</code> へ落ちます</b>（画面が壊れないことの保証）。
+  </p>
+
+  <h3>標準ライブラリ（<code>shading_contract.wgsl</code> が提供）</h3>
+  <div class="api"><code class="sig">shading_saturate(x: f32) -&gt; f32</code><span class="desc">0..1 クランプ（スカラー）</span></div>
+  <div class="api"><code class="sig">shading_saturate3(v: vec3&lt;f32&gt;) -&gt; vec3&lt;f32&gt;</code><span class="desc">0..1 クランプ（成分ごと）</span></div>
+  <div class="api"><code class="sig">shading_nan_guard(c: vec3&lt;f32&gt;) -&gt; vec3&lt;f32&gt;</code><span class="desc">NaN/±Inf/負値 → 0、上限（65504）超過はクランプ。<b>ユーザー実装の返り値には自動で掛かる</b>ので通常は自分で呼ぶ必要なし</span></div>
+  <div class="api"><code class="sig">shading_luminance(c: vec3&lt;f32&gt;) -&gt; f32</code><span class="desc">Rec.709 の相対輝度</span></div>
+  <div class="api"><code class="sig">shading_linear_to_srgb(c: vec3&lt;f32&gt;) -&gt; vec3&lt;f32&gt;</code><span class="desc">リニア → sRGB。出力先はリニア HDR なので変換後は必ず戻すこと</span></div>
+  <div class="api"><code class="sig">shading_srgb_to_linear(c: vec3&lt;f32&gt;) -&gt; vec3&lt;f32&gt;</code><span class="desc">上の逆変換</span></div>
+  <div class="api"><code class="sig">shading_posterize(x: f32, steps: f32) -&gt; f32</code><span class="desc">階調量子化 <code>floor(x*steps)/steps</code>。<code>steps &lt;= 0</code> は素通し</span></div>
+  <div class="api"><code class="sig">shade_light(N, V, L, albedo, F0, metallic, roughness, radiance) -&gt; vec3&lt;f32&gt;</code><span class="desc">1 ライト分の Cook-Torrance BRDF。標準 PBR を土台に足したいときの基礎ブロック</span></div>
+  <div class="api"><code class="sig">shade_model_0(sf: ShadingSurface, li: LightSample) -&gt; vec3&lt;f32&gt;</code><span class="desc">エンジン標準 PBR（差し替え不可だがアセットから呼べる）。加算・混合や「この 1 体だけ標準 PBR に戻す」用途</span></div>
+  <p class="section-note">
+    <b>ユーザー実装（<code>shade_default</code> / <code>shade_model_1..3</code>）の返り値にはエンジンが自動で
+    <code>shading_nan_guard</code> を掛けます</b>。<code>shade_model_0</code> へ落ちる経路（アセット未指定時の既定ディスパッチ）にはガードが掛かりません（アセット導入前と完全に同値にするための設計）。
+  </p>
+
+  <h3>書けるもの / 書けないもの・ホットリロード・エラー時の挙動</h3>
+  <table>
+    <tr><th>項目</th><th>内容</th></tr>
+    <tr><td>書けるもの</td><td><code>shade_default</code> / <code>shade_model_1..3</code> の 4 関数（全部任意）。標準ライブラリ関数・定数の利用</td></tr>
+    <tr><td>書けないもの</td><td><code>@group</code> / <code>@binding</code> 宣言（テクスチャ・uniform 等）、compose（ライト走査・アンビエント・影適用・GI・反射合成）の差し替え、<code>shade_model_0</code> 自体の差し替え</td></tr>
+    <tr><td>ホットリロード</td><td><b>Edit モードのみ</b>。ポーリング間隔 1 秒。ファイル保存から約 1 秒以内に反映。<b>Play 中は一切リロードしない</b>（シェーダ再コンパイルによるスパイク回避）</td></tr>
+    <tr><td>検証</td><td>連結ソースは <code>device.create_shader_module</code> へ渡す前に必ず naga で parse + validate。不正な WGSL をデバイスへ渡さない</td></tr>
+    <tr><td>エラー時のフォールバック</td><td>検証失敗・契約バージョン不一致・ファイル読み込み失敗はいずれも<b>その場で組み込み標準 PBR へフォールバック</b>し、画面は壊れない。エラーはエディタへ <code>LOAD_ERROR:</code> として通知され、アセット内の行番号に写像される</td></tr>
+    <tr><td>エディタ表示</td><td>読み込み失敗時はエディタが該当アセット参照行を<b>赤下線</b>で示し、メッセージを表示する</td></tr>
+  </table>
+
+  <h3>設定方法</h3>
+  <div class="api"><code class="sig">CameraComponent.shading_asset: Option&lt;String&gt;</code><span class="desc">カメラごとの指定。インスペクタの Camera コンポーネント「Shading」行で .wgsl を D&amp;D／選択。右クリックで解除</span></div>
+  <div class="api"><code class="sig">Scene.shading_asset: Option&lt;String&gt;</code><span class="desc">シーン既定。<code>.scene</code> ルート直下の <code>"shading_asset"</code> キー（エディタ UI 無し。手編集か IPC で設定）</span></div>
+  <div class="api"><code class="sig">SET_CAMERA_SHADING_ASSET:{actor_dfs_id},{slot_idx},{path}</code><span class="desc">IPC: 指定アクタの Camera スロットの shading_asset を設定。path が空なら解除</span></div>
+  <div class="api"><code class="sig">SET_SCENE_SHADING_ASSET:{path}</code><span class="desc">IPC: シーン既定を設定。path が空なら解除</span></div>
+  <p class="section-note">
+    解決順（フォールバック連鎖）: <b>Play</b> はメインカメラの <code>shading_asset</code> → シーン既定 → 組み込み標準。
+    <b>Edit のメインビュー／Play ポーズ中</b>はシーン既定 → 組み込み標準（デバッグカメラで描くためカメラ指定は使われない）。
+  </p>
+
+  <h3>既知の制限</h3>
+  <p class="section-note">
+    半透明 / WBOIT / フォワードパスには効かない（常に標準ディスパッチが連結される）。カメラプレビュー小窓は常に組み込み標準。
+    deferred が無効なフレーム（Edit のワイヤーフレーム表示・2D シーンビュー・post_fx.deferred オフ）には効かない。
+    例外用の ID は 1..3 の 3 枠のみ（G-Buffer のビット幅制約。<code>shade_default</code> はこの枠を消費しない）。
+    マテリアルの <code>shading_model</code> にはエディタ UI が無い（<code>.mat</code> / <code>.smdl</code> の直編集のみ。
+    ただし <code>shade_default</code> だけを使う分にはマテリアルを一切触らないのでこの制限には当たらない）。
+  </p>
+
+  <h3>トゥーンの実装例（完全サンプル）</h3>
+  <p class="section-note">
+    <code>shade_default</code> が主役です。このファイルを差すだけで世界全体がトゥーンになり、
+    末尾の <code>shade_model_1</code> は「例外的にこのオブジェクトだけ標準 PBR に戻す」ための上書きです。
+  </p>
+<pre><span class="c">// @shading_contract 1</span>
+<span class="c">// toon.wgsl — 3 階調セルシェーディング + リムライト（全体の既定シェーディング）</span>
+<span class="c">// このファイルをカメラまたはシーンの「Shading」に差すだけで、シェーディングモデルを</span>
+<span class="c">// 設定していない全表面（地形・草・全マテリアル）がトゥーンで描かれる。マテリアル側の設定は不要。</span>
+
+<span class="k">const</span> TOON_DIFFUSE_STEPS: <span class="t">f32</span> = 3.0;      <span class="c">// 拡散光の階調数</span>
+<span class="k">const</span> TOON_SHADOW_FLOOR: <span class="t">f32</span> = 0.15;      <span class="c">// 最暗階調の下限</span>
+<span class="k">const</span> TOON_SPECULAR_THRESHOLD: <span class="t">f32</span> = 0.6; <span class="c">// スペキュラを 2 値化するしきい値</span>
+<span class="k">const</span> TOON_SPECULAR_STRENGTH: <span class="t">f32</span> = 0.7;
+<span class="k">const</span> TOON_SPECULAR_POWER: <span class="t">f32</span> = 48.0;
+<span class="k">const</span> TOON_RIM_POWER: <span class="t">f32</span> = 3.0;
+<span class="k">const</span> TOON_RIM_STRENGTH: <span class="t">f32</span> = 0.35;
+
+<span class="c">// 全体の既定シェーディング: トゥーン。ID 0（未設定表面）がこれで描かれる。</span>
+<span class="k">fn</span> shade_default(sf: <span class="t">ShadingSurface</span>, li: <span class="t">LightSample</span>) -&gt; vec3&lt;f32&gt; {
+    <span class="k">let</span> N = sf.normal;
+    <span class="k">let</span> V = sf.view_dir;
+    <span class="k">let</span> L = li.direction;
+
+    <span class="c">// ── 拡散: N・L を階調化する ──</span>
+    <span class="k">let</span> ndl  = shading_saturate(dot(N, L));
+    <span class="k">let</span> band = shading_posterize(ndl, TOON_DIFFUSE_STEPS) + 0.5 / TOON_DIFFUSE_STEPS;
+    <span class="k">let</span> diffuse_term = max(shading_saturate(band), TOON_SHADOW_FLOOR);
+
+    <span class="c">// ── スペキュラ: Blinn-Phong を 2 値化する ──</span>
+    <span class="k">let</span> H    = normalize(V + L);
+    <span class="k">let</span> ndh  = shading_saturate(dot(N, H));
+    <span class="k">let</span> spec = pow(ndh, TOON_SPECULAR_POWER);
+    <span class="k">let</span> spec_term = select(0.0, TOON_SPECULAR_STRENGTH, spec &gt; TOON_SPECULAR_THRESHOLD);
+
+    <span class="c">// ── リムライト: 視線に対して立っている面ほど明るく ──</span>
+    <span class="k">let</span> rim  = pow(1.0 - shading_saturate(dot(N, V)), TOON_RIM_POWER);
+    <span class="k">let</span> rim_term = rim * TOON_RIM_STRENGTH * ndl;
+
+    <span class="c">// li.color は減衰・スポット円錐・影まで織り込み済み（再計算してはならない）。</span>
+    <span class="k">return</span> (sf.base_color * diffuse_term + vec3&lt;f32&gt;(spec_term) + vec3&lt;f32&gt;(rim_term)) * li.color;
+}
+
+<span class="c">// シェーディングモデル 1: 例外オブジェクト用の上書き。標準 PBR をそのまま素通しする。</span>
+<span class="k">fn</span> shade_model_1(sf: <span class="t">ShadingSurface</span>, li: <span class="t">LightSample</span>) -&gt; vec3&lt;f32&gt; {
+    <span class="k">return</span> shade_model_0(sf, li);
+}</pre>
+  <p class="section-note">
+    試し方: 上のコードを <code>assets/shading/toon.wgsl</code> として保存し、カメラの「Shading」行に
+    D&amp;D するか、<code>.scene</code> の <code>"shading_asset"</code> に指定します。マテリアルには何も触らなくても、
+    地形・草を含む画面全体が 3 階調＋リムライトになります（stderr の
+    <code>[SHADING] loaded path=... models=shade_default,1 ...</code> で有効化を確認可能）。
+    Edit モードで動かしたまま <code>TOON_DIFFUSE_STEPS</code> を書き換えて保存すると約 1 秒で反映されます。
+  </p>
 </section>
 
 <!-- ════════════════ 9. ライブラリ ════════════════ -->
