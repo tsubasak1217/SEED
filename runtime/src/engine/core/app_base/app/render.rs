@@ -24,8 +24,14 @@ impl ApplicationHandler for App {
     /// ウォッチドッグ（別スレッド）が判定できる。凍結時に atw_ticks が増えていれば
     /// 「ループは回っているが RedrawRequested が配達されない(B)」、増分ゼロなら
     /// 「イベントループスレッド自体がブロック(A)」を切り分ける。
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    ///
+    /// 【恒久機能】ここからフレーム途絶中の IPC ポンプも行う。埋め込みウィンドウが
+    /// 他タブの裏に隠れると WM_PAINT（RedrawRequested）が配送されずフレームループが
+    /// 止まるが、IPC 処理はフレーム内でしか走らないため VALIDATE_WGSL 等が滞留して
+    /// エディタ側がタイムアウトする。描画が止まっている間だけ IPC を処理する。
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         super::play_diag::atw_tick();
+        self.pump_ipc_while_frames_stalled(event_loop);
     }
 
     /// ウィンドウイベントを処理する（キー入力・マウス・リサイズ・メインループ）。
