@@ -1521,6 +1521,8 @@ impl App {
         if self.draw_ctx.is_none() {
             return false;
         }
+        // 地形を丸ごと作り直す＝ショアフィールドは全面的に無効（Phase W1.5）。
+        self.terrain_edit_version += 1;
         // シーンが無ければ空シーンを作る（スモーク単独起動・地形専用編集を許容する）。
         if self.scene.is_none() {
             self.scene = Some(crate::engine::core::app_base::scene::Scene::new("terrain"));
@@ -2058,6 +2060,8 @@ impl App {
             // 追加直後は未保存なので、TERRAIN_SAVE の対象になるようダーティにする。
             self.terrain.dirty.insert(coord);
         }
+        // 地形の広がりが変わった＝ショアフィールドの焼き直し対象（Phase W1.5）。
+        self.terrain_edit_version += 1;
         // アクター構築まで成功したので、由来辺キャッシュを登録する
         // （これで追加チャンクも最初のペイントからマーチングキューブス無しで塗れる）。
         for (coord, edges) in prebuilt_edges {
@@ -2358,6 +2362,10 @@ impl App {
         //   届いたとき、まだ flush 前で dirty が空＝保存対象から漏れる。
         self.terrain.dirty.extend(affected.iter().copied());
         self.terrain.pending_remesh.extend(affected);
+        // 岸波のショアフィールド（Phase W1.5）へ「地形が変わった」を伝える。
+        // 実際の再ベイクはデバウンス付きで frame_renderer 側が行うので、
+        // ドラッグ中に数百 ms のベイクが挟まることはない。
+        self.terrain_edit_version += 1;
 
         // ── ④ 無操作タイムアウト判定の基準時刻を更新する ──
         //   ストローク中の付随処理はここでは走らせず遅延する（flush 側で蓄積）。
@@ -3588,6 +3596,8 @@ impl App {
         //   取り残される」という明確に壊れた見た目になるからである。
         //   再接地により「草は常に今の地面に載っている」という不変条件は保たれる。
         self.restick_scatter_for_chunks(&touched);
+        // 密度が戻った＝ショアフィールドの焼き直し対象（Phase W1.5）。
+        self.terrain_edit_version += 1;
         self.terrain.redo_stack.push(edit);
     }
 
@@ -3607,6 +3617,8 @@ impl App {
         self.remesh_chunks(&touched, false, false);
         // undo と同じ理由で再接地する（散布自体は redo の対象外）。
         self.restick_scatter_for_chunks(&touched);
+        // undo と同じ理由（Phase W1.5）。
+        self.terrain_edit_version += 1;
         self.terrain.undo_stack.push(edit);
     }
 
@@ -3671,6 +3683,9 @@ impl App {
         if self.draw_ctx.is_none() {
             return;
         }
+        // シーンロードで地形が丸ごと入れ替わる＝ショアフィールドは全面的に無効（Phase W1.5）。
+        // `TerrainState` はここで作り直されるためカウンタを持たせられず、App 側に置いてある。
+        self.terrain_edit_version += 1;
         // 地形状態をリセットしてシーン名を取り込む。
         self.terrain = TerrainState::default();
         let scene_name = match self.scene.as_ref() { Some(s) => s.name.clone(), None => return };

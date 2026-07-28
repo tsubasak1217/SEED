@@ -15,6 +15,11 @@ use crate::engine::components::water_volume_component::{
     WaterVolumeComponent, WaterVolumeKind,
 };
 use crate::engine::components::ComponentKind;
+// 岸波（W1.5）の下限は描画側（GPU パラメータ生成）と同じ定数を使う。
+// 二重定義すると「インスペクタでは通るが描画側で切られる」ずれが起きる。
+use crate::engine::core::renderer::water::params::{
+    SHORE_WAVE_LENGTH_MIN, SHORE_WAVE_PERIOD_MIN,
+};
 
 use super::App;
 
@@ -155,6 +160,30 @@ impl App {
                 // 0 だと静水面まで泡だらけになるため、描画側と同じ下限で締める。
                 if let Ok(v) = value.parse::<f32>() {
                     w.ripple_foam_threshold = v.max(NON_NEGATIVE_MIN);
+                }
+            }
+            // ── 岸波（Phase W1.5）──────────────────────────────────
+            "shore_wave_strength" => {
+                // 0 で完全無効（W1 と同一出力）。負値は波を逆位相にするだけなので 0 で切る。
+                if let Ok(v) = value.parse::<f32>() {
+                    w.shore_wave_strength = v.max(NON_NEGATIVE_MIN);
+                }
+            }
+            "shore_wave_length" => {
+                // 波長 0 は位相が発散する。描画側と同じ下限で締める。
+                if let Ok(v) = value.parse::<f32>() {
+                    w.shore_wave_length = v.max(SHORE_WAVE_LENGTH_MIN);
+                }
+            }
+            "shore_wave_period" => {
+                // 周期 0 も同様に発散する。
+                if let Ok(v) = value.parse::<f32>() {
+                    w.shore_wave_period = v.max(SHORE_WAVE_PERIOD_MIN);
+                }
+            }
+            "shore_wave_foam" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    w.shore_wave_foam = v.clamp(NORMALIZED_MIN, NORMALIZED_MAX);
                 }
             }
             _ => return,

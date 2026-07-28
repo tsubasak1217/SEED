@@ -741,6 +741,21 @@ pub struct App {
     /// 水ボリュームが存在するフレームで初めて構築され、以後使い回される
     /// （水を置かないプロジェクトではパイプラインすら作られない＝起動コスト 0）。
     water_renderer: Option<crate::engine::core::renderer::WaterRenderer>,
+    /// 岸波のショアフィールド（Phase W1.5）の CPU キャッシュ。
+    ///
+    /// 水域ごとに「水深・符号付き岸距離・岸方向」の俯瞰 2D を焼いて保持する。
+    /// GPU リソースを持たない純 CPU データなので `Option` にせず常設する
+    /// （岸波を使う水域が無ければ中身は空のまま＝メモリもコストも 0）。
+    /// ベイクは地形編集・水パラメータ変更・Ocean のカメラ移動を検知したときだけ、
+    /// 数百 ms のデバウンスを挟んで走る（毎フレームは焼かない）。
+    water_shore_fields: crate::engine::water::ShoreFieldSet,
+    /// 地形の**密度**が編集されるたびに進む単調カウンタ。
+    ///
+    /// ショアフィールドの再ベイク判定に使う。`TerrainState` ではなく `App` に置くのは、
+    /// シーン読み込み・地形作り直しで `TerrainState` が丸ごと差し替わる
+    /// （＝カウンタが 0 に戻り「変化していない」と誤判定する）ため。
+    /// LOD 遷移の再メッシュでは進めない（密度は変わっていないので焼き直す理由が無い）。
+    terrain_edit_version: u64,
     /// 瞬発インタラクションフィールド（Phase I1）の GPU リソース一式。
     ///
     /// 動く `InteractionSource` の速度をワールド俯瞰テクスチャへ焼き、草・（将来の）水面が
@@ -1228,6 +1243,9 @@ impl App {
             refract_pyramid:             crate::engine::core::renderer::RefractPyramid::new(),
             // 水面レンダラは device 確立後（初めて水ボリュームを描くフレーム）に遅延構築する。
             water_renderer:              None,
+            // ショアフィールドは CPU データのみ。空のキャッシュで開始する（Phase W1.5）。
+            water_shore_fields:          crate::engine::water::ShoreFieldSet::new(),
+            terrain_edit_version:        0,
             // インタラクションフィールドは device 確立後（草かソースが現れるフレーム）に遅延構築する。
             interaction_field:           None,
             interaction_velocity:        crate::engine::interaction::InteractionSourceVelocityTracker::new(),

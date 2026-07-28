@@ -40,12 +40,28 @@
 //  場は書き手（InteractionSource）と完全に分離されており、本シェーダは **読むだけ**。
 //  場の窓（64m）の外は影響ゼロ。
 //
+//  ## 岸波（Phase W1.5）
+//  水域ごとに CPU で焼いた **ショアフィールド**（俯瞰 2D。水深／符号付き岸距離／岸方向）を
+//  group1 の配列テクスチャからサンプルし、
+//    ・うねり帯 … 位相 =(岸距離/波長 + 時間/周期) の周期波。浅くなるほど成長し沖では 0
+//    ・砕け泡   … 振幅/水深がしきい値を超えた所へ既存 foam_color を乗せる
+//    ・打ち上げ … 岸線付近の薄い泡帯が周期で前後する
+//  を作る。流体シミュレーションは一切していない。ランタイムのコストは
+//  **テクスチャ 1 サンプル＋数式**だけで、フィールドの焼き直しは地形編集時のみ。
+//
+//  ## 合成された高さ場（W5.1 の合流点）
+//  解析波・波紋・岸波の 3 ソースは `water_surface_height` /
+//  `water_surface_gradient` に集約してある。W5.1（頂点変位の大波）は
+//  頂点シェーダから前者を呼ぶだけでフラグメントと同じ高さ場を共有できる。
+//
 //  ## バインディング規約
 //    group 0: カメラ（CameraUniform, binding 0）
 //    group 1: binding0 = 水パラメータ配列（storage, read）
 //             binding1 = シーンカラーのグラブ（屈折の背景）
 //             binding2 = そのサンプラー（線形・ClampToEdge）
 //             binding3 = シーン深度（DepthOnly ビュー。textureLoad のみ）
+//             binding4 = ショアフィールド配列（W1.5。Rgba16Float・水域ごとに 1 レイヤ）
+//             binding5 = そのサンプラー（線形・ClampToEdge）
 //    group 2: binding0 = インタラクションフィールド（波紋。Rgba16Float）
 //             binding1 = そのサンプラー（線形・ClampToEdge）
 //             binding2 = 場のパラメータ UBO（窓原点・窓幅の逆数・テクセルサイズ）
@@ -104,12 +120,23 @@ struct WaterParams {
     /// x = ピッキング用 raw アクタ ID（本シェーダでは未使用。ID パス `water_id.wgsl` が読む）。
     /// 配列ストライドを Rust 側 `WaterParams` と一致させるため宣言だけしておく。
     actor_id:         vec4<u32>,
+    /// 岸波（Phase W1.5）。
+    /// x = 強さ（0 で完全無効）／y = うねりの波長（m）／z = うねりの周期（秒）／w = 泡量（0..1）
+    shore:            vec4<f32>,
+    /// 岸波のショアフィールド窓（Phase W1.5）。
+    /// x,y = 窓のワールド XZ 最小／z = 窓一辺の逆数（1/m）／
+    /// **w = 配列テクスチャのレイヤ番号。負値 = この水域にショアフィールドが無い**
+    shore_field:      vec4<f32>,
 }
 
 @group(1) @binding(0) var<storage, read> u_water: array<WaterParams>;
 @group(1) @binding(1) var t_scene: texture_2d<f32>;
 @group(1) @binding(2) var s_scene: sampler;
 @group(1) @binding(3) var t_depth: texture_depth_2d;
+/// ショアフィールド（Phase W1.5）。水域ごとに 1 レイヤ。
+/// チャネル: x = 水深(m。負は陸) / y = 符号付き岸距離(m。正は沖) / zw = 岸方向(単位 XZ)
+@group(1) @binding(4) var t_shore: texture_2d_array<f32>;
+@group(1) @binding(5) var s_shore: sampler;
 
 // ─── Group 2: インタラクションフィールド（波紋・航跡。Phase I2）────
 
@@ -207,6 +234,66 @@ const WAVE_SPEED_MUL_1: f32 = 1.37;
 const WAVE_SPEED_MUL_2: f32 = 0.83;
 const WAVE_SPEED_MUL_3: f32 = 1.71;
 
+// ─── 岸波の定数（Phase W1.5。すべてエンジン側の固定値）───────
+//
+// ユーザが触るのは WaterVolumeComponent の 4 パラメータ（強さ・波長・周期・泡量）だけで、
+// 波形の性質を決める以下の比率はエンジンが持つ。
+
+/// 円周（2π）。位相計算で使う。
+const WATER_TAU: f32 = 6.28318530718;
+
+/// うねりの振幅を波長から決める比（無次元）。振幅 = 波長 × この値。
+///
+/// 実際の浜のうねりの波形勾配（波高/波長 ≒ 1/30〜1/15）に合わせてある。
+/// 波高を独立パラメータにしないのは、波長と切り離すと簡単に非物理な
+/// 「短い波長で巨大な波高」になり、法線が破綻するため。
+const SHORE_AMPLITUDE_TO_WAVELENGTH: f32 = 0.03;
+
+/// 深水とみなす水深の波長比（水深 > 波長 × この値 なら沖）。
+/// 線形波理論の深水条件 h > L/2 をそのまま採る。
+const SHORE_DEEPWATER_DEPTH_RATIO: f32 = 0.5;
+
+/// 浅水変形（shoaling）の利得上限（無次元）。
+/// Green の法則は h→0 で発散するので、目視で自然な範囲で頭打ちにする。
+const SHORE_MAX_SHOAL_GAIN: f32 = 2.5;
+
+/// 浅水変形の計算に使う水深の下限（m）。0 除算と発散の防止。
+const SHORE_MIN_DEPTH_M: f32 = 0.15;
+
+/// Green の法則の指数（振幅 ∝ 水深^(−1/4)）。
+const SHORE_SHOAL_EXPONENT: f32 = 0.25;
+
+/// 陸側で岸波を消しきるフェード幅（m）。水深 0 から −この値 の間で振幅 0 になる。
+const SHORE_LAND_FADE_M: f32 = 0.5;
+
+/// 砕波とみなす「振幅 / 水深」比。
+/// 実海岸の砕波指標（波高/水深 ≒ 0.78、振幅換算で約 0.39）よりやや高めに取り、
+/// 「ほんとうに浅い所だけが白くなる」ようにしてある。
+const SHORE_BREAK_RATIO: f32 = 0.55;
+
+/// 砕波泡がしきい値超過ぶんで最大濃度に達するまでの幅（しきい値に対する倍率）。
+const SHORE_BREAK_RAMP: f32 = 0.6;
+
+/// 打ち上げ（swash）の泡帯が岸線から前後する振れ幅（波長比）。
+const SHORE_SWASH_TRAVEL_RATIO: f32 = 0.35;
+
+/// 打ち上げの泡帯の厚み（波長比）。
+const SHORE_SWASH_BAND_RATIO: f32 = 0.12;
+
+/// 打ち上げの位相遅れ（周期比）。
+/// うねりが着岸してから泡が伸び上がるまでのずれ。0 だと「波の峰と泡が同時」で機械的に見える。
+const SHORE_SWASH_PHASE_LAG: f32 = 0.25;
+
+/// 岸波フォームの最大濃度（0..1）。既存の岸フォーム・航跡フォームと重ねても白飛びしない上限。
+const SHORE_FOAM_MAX: f32 = 0.9;
+
+/// 岸方向が「岸情報なし」（長さ 0）かを判定するしきい値（二乗長）。
+const SHORE_DIR_EPSILON: f32 = 1.0e-6;
+
+/// ショアフィールドが無い／窓外のときに返す水深・岸距離（m）。
+/// 十分深い＝岸波の振幅が 0 になる値であればよい。
+const SHORE_NO_FIELD_DEPTH: f32 = 1.0e4;
+
 /// 波の層ごとの進行方向（XZ 平面。単位ベクトル）。
 const WAVE_DIR_0: vec2<f32> = vec2<f32>( 1.0,  0.0);
 const WAVE_DIR_1: vec2<f32> = vec2<f32>( 0.0,  1.0);
@@ -278,6 +365,23 @@ fn water_wave_gradient(p: vec2<f32>, amplitude: f32, scale: f32, speed: f32, t: 
     return grad;
 }
 
+/// 解析的サイン波の重ね合わせによる水面高さ場の **高さ**（m）。
+///
+/// `water_wave_gradient` と同じ層構成の原関数（sin）。W5.1（頂点変位）が
+/// 頂点段で高さを必要とするため、勾配と対で持たせてある。
+/// フラグメントの法線計算では勾配のみを使うので、こちらは呼ばれない場合もある。
+fn water_wave_height(p: vec2<f32>, amplitude: f32, scale: f32, speed: f32, t: f32) -> f32 {
+    var h = 0.0;
+    for (var i: u32 = 0u; i < WAVE_LAYER_COUNT; i = i + 1u) {
+        let dir   = wave_dir(i);
+        let freq  = scale * wave_freq_mul(i);
+        let amp   = amplitude * wave_amp_mul(i);
+        let phase = dot(dir, p) * freq + t * speed * wave_speed_mul(i);
+        h = h + amp * sin(phase);
+    }
+    return h;
+}
+
 /// 高さ場の勾配から水面法線（ワールド空間・上向き基準）を作る。
 /// N = normalize(-∂h/∂x, 1, -∂h/∂z)。頂点変位は行わないので「法線だけの波」。
 fn water_normal_from_gradient(grad: vec2<f32>) -> vec3<f32> {
@@ -308,6 +412,168 @@ fn water_ripple_gradient(world_xz: vec2<f32>) -> vec2<f32> {
     let hz1 = water_ripple_height(world_xz + vec2<f32>(0.0, d));
     let hz0 = water_ripple_height(world_xz - vec2<f32>(0.0, d));
     return vec2<f32>(hx1 - hx0, hz1 - hz0) / (2.0 * d);
+}
+
+// ─── 岸波（ショアフィールド。Phase W1.5）───────────────────────
+//
+// 岸波は流体シミュレーションではなく、**「岸までの距離・岸の方向・水深」の場**
+// （ショアフィールド。CPU で焼いて `t_shore` に置いてある）から作る
+// プロシージャル波帯である。1 サンプル＋数式だけで、
+//   ・うねり帯 … 岸へ向かって進む周期波。浅くなるほど成長し、沖では消える
+//   ・砕け泡   … 振幅/水深がしきい値を超えた所を白くする
+//   ・打ち上げ … 岸線付近の薄い泡帯が周期で前後する
+// を出す。
+
+/// ショアフィールドの 1 サンプル。
+struct ShoreSample {
+    /// 水深（m）。**負は陸**。
+    depth:    f32,
+    /// 符号付き岸距離（m）。**正 = 沖（水側）／負 = 陸側**。
+    distance: f32,
+    /// 岸方向（単位 XZ。そのテクセルから最寄りの岸を指す）。
+    /// **長さ 0 は「岸情報なし」**（窓外・窓内に岸が無い）を意味する。
+    dir:      vec2<f32>,
+}
+
+/// ショアフィールドをワールド XZ でサンプルする。
+///
+/// レイヤ番号が負（＝この水域にフィールドが無い）か、窓の外なら
+/// 「十分深い沖・岸情報なし」を返す。**テクスチャサンプルも行わない**ので、
+/// 岸波を使わない水域のコストは W1/I2 と完全に同じになる。
+fn water_shore_sample(p: WaterParams, world_xz: vec2<f32>) -> ShoreSample {
+    var s: ShoreSample;
+    s.depth    = SHORE_NO_FIELD_DEPTH;
+    s.distance = SHORE_NO_FIELD_DEPTH;
+    s.dir      = vec2<f32>(0.0, 0.0);
+    if (p.shore_field.w < 0.0) {
+        return s;
+    }
+    let uv = (world_xz - p.shore_field.xy) * p.shore_field.z;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return s;
+    }
+    let t = textureSampleLevel(t_shore, s_shore, uv, i32(p.shore_field.w), 0.0);
+    s.depth    = t.x;
+    s.distance = t.y;
+    s.dir      = t.zw;
+    return s;
+}
+
+/// うねりの振幅（m）。浅水変形（shoaling）で岸に近づくほど成長し、沖と陸で 0 になる。
+///
+/// 包絡線は 3 つの積:
+///   ・`offshore` … 深水（h > L/2）で 0 へ落とす。外洋には岸波を出さない
+///   ・`shoal`    … Green の法則 A ∝ h^(−1/4)。浅くなるほど波が立ち上がる
+///   ・`land`     … 水深が負（陸）の側で 0 にする
+fn water_shore_amplitude(p: WaterParams, s: ShoreSample) -> f32 {
+    // 岸情報が無い（窓外・窓内に岸が無い）なら波は立てない。
+    if (dot(s.dir, s.dir) < SHORE_DIR_EPSILON || p.shore.x <= 0.0) {
+        return 0.0;
+    }
+    let wavelength = p.shore.y;
+    let base       = wavelength * SHORE_AMPLITUDE_TO_WAVELENGTH;
+    let deep       = wavelength * SHORE_DEEPWATER_DEPTH_RATIO;
+    let offshore   = 1.0 - smoothstep(0.0, deep, s.depth);
+    let shoal      = clamp(
+        pow(deep / max(s.depth, SHORE_MIN_DEPTH_M), SHORE_SHOAL_EXPONENT),
+        1.0, SHORE_MAX_SHOAL_GAIN,
+    );
+    let land = smoothstep(-SHORE_LAND_FADE_M, 0.0, s.depth);
+    return p.shore.x * base * offshore * shoal * land;
+}
+
+/// うねりの位相（ラジアン）。
+///
+/// 位相 = 2π ( 岸距離 / 波長 + 時間 / 周期 )
+///
+/// **時間項の符号**: 岸距離は「沖が正」なので、位相が一定の点（＝波の峰）が
+/// 岸へ進むには距離が時間とともに **減る** 必要がある。すなわち
+/// `距離/波長 + 時間/周期 = 一定` ⇒ `距離 = −波長×時間/周期 + 一定` となる
+/// **同符号**が正しい（差にすると波が沖へ逃げていく）。
+fn water_shore_phase(p: WaterParams, s: ShoreSample, t: f32) -> f32 {
+    return WATER_TAU * (s.distance / p.shore.y + t / p.shore.z);
+}
+
+/// 岸波の高さ（m）。**W5.1（頂点変位）はこの関数をそのまま頂点段で呼べる。**
+fn water_shore_height(p: WaterParams, world_xz: vec2<f32>, t: f32) -> f32 {
+    let s = water_shore_sample(p, world_xz);
+    return water_shore_amplitude(p, s) * sin(water_shore_phase(p, s, t));
+}
+
+/// 岸波の高さ場の勾配 (∂h/∂x, ∂h/∂z)。
+///
+/// 岸距離は距離関数なので `∇(岸距離)` は長さ 1・**岸から遠ざかる向き**、
+/// すなわち `−dir` である。したがって搬送波の微分は
+/// `A·cos(位相) · 2π/波長 · (−dir)` になる。
+/// 振幅（包絡線）の空間変化は波長スケールに比べてはるかに緩やかなので、
+/// その微分は無視する（＝包絡線を局所定数とみなす標準的な近似）。
+fn water_shore_gradient(p: WaterParams, world_xz: vec2<f32>, t: f32) -> vec2<f32> {
+    let s   = water_shore_sample(p, world_xz);
+    let amp = water_shore_amplitude(p, s);
+    if (amp <= 0.0) {
+        return vec2<f32>(0.0, 0.0);
+    }
+    let k = WATER_TAU / p.shore.y;
+    return (-s.dir) * (amp * k * cos(water_shore_phase(p, s, t)));
+}
+
+/// 岸波の泡（0..1）。砕け泡と打ち上げ（swash）の強い方を採る。
+fn water_shore_foam(p: WaterParams, world_xz: vec2<f32>, t: f32) -> f32 {
+    let s = water_shore_sample(p, world_xz);
+    if (dot(s.dir, s.dir) < SHORE_DIR_EPSILON || p.shore.x <= 0.0) {
+        return 0.0;
+    }
+
+    // ① 砕け泡: 振幅/水深 が砕波比を超えた所が白くなる。
+    //    波の峰（sin > 0）にだけ乗せることで、泡が帯として岸へ流れて見える。
+    let amp      = water_shore_amplitude(p, s);
+    let phase    = water_shore_phase(p, s, t);
+    let ratio    = amp / max(s.depth, SHORE_MIN_DEPTH_M);
+    let breaking = smoothstep(
+        SHORE_BREAK_RATIO, SHORE_BREAK_RATIO * (1.0 + SHORE_BREAK_RAMP), ratio);
+    let break_foam = breaking * clamp(sin(phase), 0.0, 1.0);
+
+    // ② 打ち上げ（swash）: 岸線（岸距離 0）付近の薄い泡帯が、周期で前後する。
+    //    うねりの峰から少し遅れて伸び上がるので位相遅れを入れる。
+    let travel = p.shore.y * SHORE_SWASH_TRAVEL_RATIO
+               * sin(WATER_TAU * (t / p.shore.z + SHORE_SWASH_PHASE_LAG));
+    let band   = p.shore.y * SHORE_SWASH_BAND_RATIO;
+    let swash  = 1.0 - smoothstep(0.0, band, abs(s.distance - travel));
+
+    return clamp(max(break_foam, swash) * p.shore.w * p.shore.x, 0.0, 1.0) * SHORE_FOAM_MAX;
+}
+
+// ─── 合成された水面の高さ場（**W5.1 の合流点**）─────────────────
+//
+// 水面の高さは「解析サイン波（W1）＋ 波紋・航跡（I2）＋ 岸波（W1.5）」の
+// **単純な重ね合わせ**である。高さ場の重ね合わせは勾配の重ね合わせと同値なので、
+// 法線は「勾配を全部足してから 1 回だけ正規化」で正しく求まる。
+//
+// **W5.1（頂点変位の大波）へ**: 頂点シェーダから `water_surface_height` を
+// そのまま呼べば、フラグメントの法線とまったく同じ高さ場で頂点を動かせる
+// （＝シルエットと陰影がズレない）。引数は WaterParams・ワールド XZ・時間だけで、
+// フラグメント固有の入力（深度・画面 UV）に一切依存しないよう分離してある。
+// 頂点段では group2（波紋の場）も group1（ショアフィールド）も
+// VERTEX_FRAGMENT 可視でバインドされているため、追加のバインド変更も要らない。
+
+/// 波紋（I2）の高さ・勾配へ掛かるユーザ調整スケール。
+/// 高さと勾配の両方に同じ係数を掛けないと、法線と（W5.1 の）変位が食い違う。
+fn water_ripple_scale(p: WaterParams) -> f32 {
+    return p.fresnel.z * WATER_RIPPLE_NORMAL_SCALE;
+}
+
+/// 合成された水面高さ（m）。3 ソースの高さ場の和。
+fn water_surface_height(p: WaterParams, world_xz: vec2<f32>, t: f32) -> f32 {
+    return water_wave_height(world_xz, p.wave.x, p.wave.y, p.wave.z, t)
+         + water_ripple_height(world_xz) * water_ripple_scale(p)
+         + water_shore_height(p, world_xz, t);
+}
+
+/// 合成された水面高さ場の勾配 (∂h/∂x, ∂h/∂z)。`water_surface_height` の微分。
+fn water_surface_gradient(p: WaterParams, world_xz: vec2<f32>, t: f32) -> vec2<f32> {
+    return water_wave_gradient(world_xz, p.wave.x, p.wave.y, p.wave.z, t)
+         + water_ripple_gradient(world_xz) * water_ripple_scale(p)
+         + water_shore_gradient(p, world_xz, t);
 }
 
 /// フラグメント座標（フレームバッファ画素）＋深度からワールド座標を復元する。
@@ -372,19 +638,13 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
     let p = u_water[in.idx];
 
     // ① 波法線（ワールド空間、上向き基準）
-    //    解析波の勾配 ＋ 波紋（インタラクションフィールド）の勾配を足してから 1 回正規化する。
-    //    波紋強度 0（既定を 0 にした水）では第 2 項が完全に消え、W1 と 1 ビットも変わらない。
-    let ripple_h    = water_ripple_height(in.world_pos.xz);
-    let ripple_grad = water_ripple_gradient(in.world_pos.xz)
-                    * (p.fresnel.z * WATER_RIPPLE_NORMAL_SCALE);
-    let grad = water_wave_gradient(
-        in.world_pos.xz,
-        p.wave.x,           // amplitude
-        p.wave.y,           // scale
-        p.wave.z,           // speed
-        u_camera.time,
-    ) + ripple_grad;
-    let n = water_normal_from_gradient(grad);
+    //    解析波（W1）・波紋（I2）・岸波（W1.5）の **勾配を合算してから 1 回だけ正規化**する。
+    //    高さ場の重ね合わせ = 勾配の重ね合わせ、という関係に乗った合成であり、
+    //    法線を 3 つ作って混ぜるより物理的に正しい。
+    //    波紋強度 0／岸波強度 0 の水では該当項が完全に消え、W1 と 1 ビットも変わらない。
+    let ripple_h = water_ripple_height(in.world_pos.xz);
+    let grad     = water_surface_gradient(p, in.world_pos.xz, u_camera.time);
+    let n        = water_normal_from_gradient(grad);
 
     // ② 手動深度テスト（深度アタッチメントを持たないため自前で行う）
     //    シーン深度が水面フラグメントより手前なら、水は不透明物に隠れている。
@@ -443,6 +703,12 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
         abs(ripple_h),
     ) * WATER_RIPPLE_FOAM_MAX * clamp(p.fresnel.z, 0.0, 1.0);
     color = color + p.foam_color.rgb * ripple_foam;
+
+    // ⑦'' 岸波の泡（Phase W1.5）: 砕け波の白帯と打ち上げ（swash）の泡。
+    //      ここも **同じ foam_color** を流用する（水ごとの泡の色は 1 つ、という設計）。
+    //      岸波強度 0・ショアフィールド無しの水では 0 が返り、W1/I2 と同一出力になる。
+    let shore_foam = water_shore_foam(p, in.world_pos.xz, u_camera.time);
+    color = color + p.foam_color.rgb * shore_foam;
 
     // ⑧ フレネル: 浅い角度ほど反射色へ寄せる。
     let view_dir = normalize(u_camera.position - in.world_pos);
