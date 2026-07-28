@@ -44,47 +44,35 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
 
     // ── カテゴリ定義 ─────────────────────────────────────────
 
-    /// <summary>小項目（右パネルに表示する設定パネル 1 枚）の定義。</summary>
-    private record SubItem(string Id, string Label);
+    /// <summary>カテゴリ（左ツリーの 1 行 = 右パネル 1 枚）の定義。</summary>
+    private record Category(string Id, string Label);
 
-    /// <summary>大項目の定義。SubItems リストで対応する小項目を管理する。</summary>
-    private record Category(string Id, string Label, List<SubItem> SubItems);
-
-    /// <summary>デバッグカメラ設定パネルの小項目 ID。</summary>
-    private const string SubItemDebugCamera = "debug_camera";
-    /// <summary>レンダリング設定パネルの小項目 ID。</summary>
-    private const string SubItemRendering = "rendering";
-    /// <summary>物理設定パネルの小項目 ID。</summary>
-    private const string SubItemPhysics = "physics";
+    /// <summary>デバッグカメラ設定パネルのカテゴリ ID。</summary>
+    private const string CategoryDebugCamera = "debug_camera";
+    /// <summary>レンダリング設定パネルのカテゴリ ID。</summary>
+    private const string CategoryRendering = "rendering";
+    /// <summary>物理設定パネルのカテゴリ ID。</summary>
+    private const string CategoryPhysics = "physics";
 
     /// <summary>
     /// カテゴリ定義テーブル。
-    /// 「1 カテゴリ = 1 パネル」とし、パネル末尾の「デフォルトに戻す」が
-    /// そのカテゴリだけを既定値へ戻す構成にしている。
+    /// 「1 カテゴリ = 1 パネル」で階層は 1 段のみ（小項目を持たない）。
+    /// カテゴリ数が少なく 1 カテゴリの内容もパネル 1 枚に収まるため、
+    /// 中間の小項目行はクリック数を増やすだけで意味が無い。
+    /// パネル末尾の「デフォルトに戻す」はそのカテゴリだけを既定値へ戻す。
     /// </summary>
     private static readonly List<Category> Categories = new()
     {
-        new("cat_debug_camera", "デバッグカメラ", new()
-        {
-            new(SubItemDebugCamera, "ビュー設定"),
-        }),
-        new("cat_rendering", "レンダリング", new()
-        {
-            new(SubItemRendering, "描画設定"),
-        }),
-        new("cat_physics", "物理", new()
-        {
-            new(SubItemPhysics, "編集時物理"),
-        }),
+        new(CategoryDebugCamera, "デバッグカメラ"),
+        new(CategoryRendering,   "レンダリング"),
+        new(CategoryPhysics,     "物理"),
     };
 
     // ── ブラシ定数（ProjectSettingsWindow と同一配色）──────────
 
     private static readonly SolidColorBrush BrushSelected   = new(Color.FromRgb(0x09, 0x4D, 0x80));
     private static readonly SolidColorBrush BrushHover      = new(Color.FromRgb(0x30, 0x30, 0x32));
-    private static readonly SolidColorBrush BrushCatHover   = new(Color.FromRgb(0x2E, 0x2E, 0x30));
     private static readonly SolidColorBrush BrushCategoryFg = new(Color.FromRgb(0xCC, 0xCC, 0xCC));
-    private static readonly SolidColorBrush BrushSubItemFg  = new(Color.FromRgb(0xAA, 0xAA, 0xAA));
     private static readonly SolidColorBrush BrushTransp     = Brushes.Transparent;
 
     // ── 選択肢テーブル（Tag は IPC 送信値そのもの）────────────
@@ -168,13 +156,10 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
     /// <summary>デバッグカメラの回転（オイラー角 X, Y, Z）。</summary>
     private float[] _cameraEuler;
 
-    /// <summary>現在展開中の大項目 ID セット（初期状態は全展開）。</summary>
-    private readonly HashSet<string> _expandedCategories = new();
+    /// <summary>現在選択中のカテゴリ ID。</summary>
+    private string _selectedCategoryId = CategoryDebugCamera;
 
-    /// <summary>現在選択中の小項目 ID。</summary>
-    private string _selectedSubItemId = SubItemDebugCamera;
-
-    /// <summary>現在ハイライト表示中の小項目 Border。</summary>
+    /// <summary>現在ハイライト表示中のカテゴリ行 Border。</summary>
     private Border? _selectedBorder;
 
     /// <summary>現在表示中パネルの「表示を現在値へ戻す」処理のリスト。</summary>
@@ -241,9 +226,6 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
         _shadingAssetPath = shadingAssetPath;
         _cameraPosition   = (float[])cameraPosition.Clone();
         _cameraEuler      = (float[])cameraEuler.Clone();
-
-        // カテゴリ数が少ないため既定で全展開する
-        foreach (var category in Categories) _expandedCategories.Add(category.Id);
     }
 
     // ── ウィンドウ初期化 ─────────────────────────────────────
@@ -256,7 +238,7 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
         DwmSetWindowAttribute(helper.Handle, DwmwaUseImmersiveDarkMode, ref dark, sizeof(int));
 
         BuildCategoryPanel();
-        SelectSubItem(_selectedSubItemId);
+        SelectCategory(_selectedCategoryId);
     }
 
     // ── 外部（MainWindow）からの表示更新 ─────────────────────
@@ -271,7 +253,7 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
         _shadingAssetPath = shadingAssetPath;
         _cameraPosition   = (float[])cameraPosition.Clone();
         _cameraEuler      = (float[])cameraEuler.Clone();
-        SelectSubItem(_selectedSubItemId);
+        SelectCategory(_selectedCategoryId);
     }
 
     /// <summary>
@@ -305,8 +287,8 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
     // ── 左パネル: カテゴリツリー構築 ────────────────────────
 
     /// <summary>
-    /// 左パネルのカテゴリツリーを再構築する。
-    /// Categories をデータソースとして大項目ヘッダーと小項目行を動的生成する。
+    /// 左パネルのカテゴリ一覧を再構築する。
+    /// Categories をデータソースとして、選択可能なカテゴリ行を 1 段だけ生成する。
     /// </summary>
     private void BuildCategoryPanel()
     {
@@ -315,78 +297,32 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
 
         foreach (var category in Categories)
         {
-            bool expanded = _expandedCategories.Contains(category.Id);
-            CategoryPanel.Children.Add(BuildCategoryHeader(category.Id, category.Label, expanded));
-
-            // 折りたたみ中は小項目を表示しない
-            if (!expanded) continue;
-
-            foreach (var sub in category.SubItems)
-            {
-                bool isSelected = sub.Id == _selectedSubItemId;
-                var subBorder   = BuildSubItemRow(sub.Id, sub.Label, isSelected);
-                CategoryPanel.Children.Add(subBorder);
-                if (isSelected) _selectedBorder = subBorder;
-            }
+            bool isSelected = category.Id == _selectedCategoryId;
+            var row = BuildCategoryRow(category.Id, category.Label, isSelected);
+            CategoryPanel.Children.Add(row);
+            if (isSelected) _selectedBorder = row;
         }
     }
 
-    /// <summary>大項目ヘッダー Border を生成する。クリックで展開/折りたたみを切り替える。</summary>
-    private Border BuildCategoryHeader(string categoryId, string label, bool expanded)
+    /// <summary>
+    /// カテゴリ行 Border を生成する。クリックで対応する設定パネルを右へ表示する。
+    /// 小項目を持たないため展開/折りたたみの概念は無い。
+    /// </summary>
+    private Border BuildCategoryRow(string categoryId, string label, bool isSelected)
     {
         var border = new Border
         {
             Padding    = new Thickness(12, 7, 8, 7),
             Cursor     = Cursors.Hand,
-            Background = BrushTransp,
+            Background = isSelected ? BrushSelected : BrushTransp,
         };
-
-        var content = new StackPanel { Orientation = Orientation.Horizontal };
-        content.Children.Add(new TextBlock
-        {
-            // ▼: 展開中, ▶: 折りたたみ中
-            Text              = expanded ? "▼" : "▶",
-            Foreground        = new SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77)),
-            FontSize          = 8,
-            Width             = 14,
-            VerticalAlignment = VerticalAlignment.Center,
-        });
-        content.Children.Add(new TextBlock
+        border.Child = new TextBlock
         {
             Text              = label,
             Foreground        = BrushCategoryFg,
             FontSize          = 12,
             FontWeight        = FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
-        });
-        border.Child = content;
-
-        border.MouseEnter += (_, _) => border.Background = BrushCatHover;
-        border.MouseLeave += (_, _) => border.Background = BrushTransp;
-        border.MouseLeftButtonDown += (_, _) =>
-        {
-            if (!_expandedCategories.Remove(categoryId))
-                _expandedCategories.Add(categoryId);
-            BuildCategoryPanel();
-        };
-
-        return border;
-    }
-
-    /// <summary>小項目行 Border を生成する。クリックで対応する設定パネルを表示する。</summary>
-    private Border BuildSubItemRow(string subItemId, string label, bool isSelected)
-    {
-        var border = new Border
-        {
-            Padding    = new Thickness(30, 5, 8, 5),
-            Cursor     = Cursors.Hand,
-            Background = isSelected ? BrushSelected : BrushTransp,
-        };
-        border.Child = new TextBlock
-        {
-            Text       = label,
-            Foreground = BrushSubItemFg,
-            FontSize   = 12,
         };
 
         border.MouseEnter += (_, _) =>
@@ -397,7 +333,7 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
         {
             if (border != _selectedBorder) border.Background = BrushTransp;
         };
-        border.MouseLeftButtonDown += (_, _) => SelectSubItem(subItemId);
+        border.MouseLeftButtonDown += (_, _) => SelectCategory(categoryId);
 
         return border;
     }
@@ -405,12 +341,12 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
     // ── 右パネル: 設定コンテンツ切り替え ────────────────────
 
     /// <summary>
-    /// 指定した小項目を選択状態にし、右パネルに対応する設定 UI を構築して表示する。
+    /// 指定したカテゴリを選択状態にし、右パネルに対応する設定 UI を構築して表示する。
     /// 変更は即時反映のため、パネル切り替え時に値を収集する必要はない。
     /// </summary>
-    private void SelectSubItem(string subItemId)
+    private void SelectCategory(string categoryId)
     {
-        _selectedSubItemId = subItemId;
+        _selectedCategoryId = categoryId;
 
         // 前パネルの表示更新処理は破棄する（コントロールごと作り直すため）
         _refreshActions.Clear();
@@ -419,11 +355,11 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
 
         BuildCategoryPanel();
 
-        SettingsContent.Content = subItemId switch
+        SettingsContent.Content = categoryId switch
         {
-            SubItemRendering => BuildRenderingPanel(),
-            SubItemPhysics   => BuildPhysicsPanel(),
-            _                => BuildDebugCameraPanel(),
+            CategoryRendering => BuildRenderingPanel(),
+            CategoryPhysics   => BuildPhysicsPanel(),
+            _                 => BuildDebugCameraPanel(),
         };
     }
 
@@ -475,17 +411,10 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
             v  => _data.DebugCamera.Ortho2d = v,
             () => SettingChanged?.Invoke(SceneSettingsChangeKind.Ortho2d)));
 
-        panel.Children.Add(SceneSettingsControls.Check(
-            this, "グリッド表示", "シーンビューの地面グリッドを表示します。",
-            () => _data.DebugCamera.ShowGrid,
-            v  => _data.DebugCamera.ShowGrid = v,
-            () => SettingChanged?.Invoke(SceneSettingsChangeKind.ShowGrid)));
-
-        panel.Children.Add(SceneSettingsControls.Check(
-            this, "軸ガイド表示", "画面隅の XYZ 軸ギズモを表示します。",
-            () => _data.DebugCamera.ShowAxisGizmo,
-            v  => _data.DebugCamera.ShowAxisGizmo = v,
-            () => SettingChanged?.Invoke(SceneSettingsChangeKind.ShowAxisGizmo)));
+        // グリッド表示 / 軸ガイド表示はここには置かない。
+        // 切り替え頻度が高いためシーンパネル上部のトグルボタン（BtnGridToggle /
+        // BtnAxisGizmoToggle）が直接持ち、セッション限りの非永続項目として扱う
+        // （.scene の settings 節にもランタイム側スキーマにも含めない）。
 
         // ── カメラ Transform（位置・回転）──
         panel.Children.Add(SceneSettingsControls.SectionHeader("カメラ Transform"));
@@ -729,14 +658,14 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
                 // 絶対パスを仮想パスへ変換してから通知する（ランタイムの asset_fs 規約）
                 _shadingAssetPath = VirtualPath.ToVirtual(path, _assetsPath);
                 ShadingAssetChanged?.Invoke(_shadingAssetPath);
-                SelectSubItem(_selectedSubItemId);   // 表示パスを更新するためパネルを作り直す
+                SelectCategory(_selectedCategoryId);   // 表示パスを更新するためパネルを作り直す
             },
             () =>
             {
                 // 空文字列を送るとランタイム側で未設定（None）へ戻る
                 _shadingAssetPath = null;
                 ShadingAssetChanged?.Invoke(string.Empty);
-                SelectSubItem(_selectedSubItemId);
+                SelectCategory(_selectedCategoryId);
             });
     }
 

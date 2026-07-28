@@ -34,11 +34,6 @@ fn default_camera_fov() -> f32 { DebugCameraData::default().fov_deg }
 fn default_camera_far() -> f32 { DebugCameraData::default().far }
 /// デバッグカメラ移動速度の既定値。
 fn default_camera_speed() -> f32 { DebugCameraData::default().speed }
-/// グリッド表示の既定値（表示する）。
-fn default_show_grid() -> bool { true }
-/// 軸ギズモ表示の既定値（表示する）。
-fn default_show_axis_gizmo() -> bool { true }
-
 /// ブルーム強度の既定値（`PostFxSettings` の既定と一致）。
 fn default_bloom_intensity() -> f32 { PostFxSettings::default().bloom_intensity }
 /// 透明描画方式の既定値（文字列表現。既定は距離ソート = "sort"）。
@@ -63,7 +58,11 @@ fn default_ambient_intensity() -> f32 { DEFAULT_AMBIENT_INTENSITY }
 /// シーンビュー（Edit モードのデバッグカメラ）に関する設定。
 ///
 /// カメラの「位置・向き」は従来どおり `.scene` の `debug_camera` 節が持つ。
-/// こちらは投影・表示補助（グリッド／軸ギズモ）といった**表示設定**のみを扱う。
+/// こちらは画角・描画距離・移動速度・投影方式といった**表示設定**のみを扱う。
+///
+/// なお **グリッド表示 / 軸ギズモ表示（`SHOW_GRID` / `SHOW_AXIS_GIZMO`）は
+/// 本スキーマに含めない**。`view_mode` と同じくセッション限りの非永続設定として、
+/// エディタのシーンパネル上部トグルが IPC で直接切り替える（起動時は常に表示）。
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DebugCameraSettings {
     /// 垂直画角（度）。
@@ -75,12 +74,6 @@ pub struct DebugCameraSettings {
     /// カメラ移動速度。
     #[serde(default = "default_camera_speed")]
     pub speed: f32,
-    /// グリッド描画の有無。
-    #[serde(default = "default_show_grid")]
-    pub show_grid: bool,
-    /// 画面隅の軸ギズモ表示の有無。
-    #[serde(default = "default_show_axis_gizmo")]
-    pub show_axis_gizmo: bool,
     /// 2D（正射投影）モードかどうか。true で正射投影。
     #[serde(default)]
     pub ortho_2d: bool,
@@ -92,8 +85,6 @@ impl Default for DebugCameraSettings {
             fov:             default_camera_fov(),
             far:             default_camera_far(),
             speed:           default_camera_speed(),
-            show_grid:       default_show_grid(),
-            show_axis_gizmo: default_show_axis_gizmo(),
             ortho_2d:        false,
         }
     }
@@ -229,8 +220,7 @@ mod tests {
     fn parses_full_editor_schema() {
         let json = r#"{
             "debug_camera": {
-                "fov": 60.0, "far": 500.0, "speed": 12.0,
-                "show_grid": false, "show_axis_gizmo": false, "ortho_2d": true
+                "fov": 60.0, "far": 500.0, "speed": 12.0, "ortho_2d": true
             },
             "rendering": {
                 "bloom": true, "bloom_intensity": 0.25, "fxaa": true,
@@ -245,7 +235,6 @@ mod tests {
         let s: SceneSettingsData = serde_json::from_str(json).expect("解析に失敗");
         assert_eq!(s.debug_camera.fov, 60.0);
         assert!(s.debug_camera.ortho_2d);
-        assert!(!s.debug_camera.show_grid);
         assert_eq!(s.rendering.transparency, "wboit");
         assert!(!s.rendering.deferred);
         assert_eq!(s.rendering.ambient_color, [0.1, 0.2, 0.3]);
@@ -264,8 +253,6 @@ mod tests {
         let s: SceneSettingsData = serde_json::from_str("{}").expect("空オブジェクトの解析に失敗");
         let d = SceneSettingsData::default();
         assert_eq!(s.debug_camera.fov, d.debug_camera.fov);
-        assert!(s.debug_camera.show_grid);
-        assert!(s.debug_camera.show_axis_gizmo);
         assert_eq!(s.rendering.transparency, d.rendering.transparency);
         assert_eq!(s.rendering.deferred, d.rendering.deferred);
         assert_eq!(s.rendering.ambient_intensity, DEFAULT_AMBIENT_INTENSITY);

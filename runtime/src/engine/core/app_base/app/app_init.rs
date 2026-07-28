@@ -463,14 +463,14 @@ impl App {
 
         // ── デバッグカメラ設定 ──────────────────────────────────
         // 各フィールドは対応する IPC ハンドラ（VIEWPORT_FOV / VIEWPORT_FAR / CAM_SPEED /
-        // SHOW_GRID / SHOW_AXIS_GIZMO / EDITOR_CAM_ORTHO）と同じ書き込み先・同じ変換を使う。
+        // EDITOR_CAM_ORTHO）と同じ書き込み先・同じ変換を使う。
+        // グリッド／軸ギズモ（show_grid / show_axis_gizmo）はシーン設定に含まれない
+        // セッション限りの項目のため、ここでは触らない（SHOW_GRID / SHOW_AXIS_GIZMO IPC のみ）。
         let c = &s.debug_camera;
         self.camera.base.projection.fov_y_rad = c.fov * std::f32::consts::PI / 180.0;
         self.camera.base.projection.far       = c.far;
         // 移動速度は IPC ハンドラと同じ範囲へクランプする
         self.camera.move_speed                = c.speed.clamp(CAM_SPEED_MIN, CAM_SPEED_MAX);
-        self.show_grid                        = c.show_grid;
-        self.show_axis_gizmo                  = c.show_axis_gizmo;
         // 正射投影切替は Edit モード限定（IPC ハンドラ SetEditorCameraOrtho と同じガード）。
         // Play モードのカメラはゲーム側のメインカメラが主役のため触らない。
         if self.mode == RuntimeMode::Edit {
