@@ -239,7 +239,7 @@
 </div>
 
 <!-- ════════════════ 1. 基本形 ════════════════ -->
-<section id="sec-basic" data-keywords="スクリプト 基本形 テンプレート SEEDScript SerializeField 継承 class">
+<section id="sec-basic" data-keywords="スクリプト 基本形 テンプレート SEEDScript SerializeField 継承 class インスペクタ 属性 Header Tooltip Range RequireComponent DisallowMultipleComponent Serializable">
   <h2>1. スクリプトの基本形</h2>
   <p class="section-note">C# で書き、<code>SEEDScript</code>（<code>SEEDEditor.Scripting</code> 名前空間）を継承します。</p>
 <pre><span class="k">using</span> SEEDEditor.Scripting;   <span class="c">// SEEDScript・[SerializeField]・NativeFrameContext</span>
@@ -259,6 +259,32 @@
   <div class="api"><code class="sig">[SerializeField]</code><span class="desc">フィールドをインスペクタに公開する属性。<code>Label</code> / <code>Tooltip</code> 指定可</span></div>
   <div class="api"><code class="sig">ref NativeFrameContext ctx</code><span class="desc"><code>ctx.DeltaTime</code>（前フレームからの経過秒）と <code>ctx.AnimTime</code>（累計時間）を持つ</span></div>
   <div class="warn">無修飾で書きたい場合はスクリプト先頭に自分で <code>using SEED;</code> を足します（<code>System.Random</code> 等との型名衝突は自己責任）。</div>
+
+  <h3>インスペクタ公開の属性（<code>SEEDEditor.Scripting</code> 名前空間）</h3>
+  <p class="section-note">フィールドやクラスに付ける属性。すべて <code>using SEEDEditor.Scripting;</code>（テンプレートに含まれる）だけで使えます。</p>
+  <table>
+    <tr><th>属性</th><th>付ける先</th><th>効果</th></tr>
+    <tr><td><code>[SerializeField]</code></td><td>フィールド</td><td>インスペクタに公開する。<code>Label = "表示名"</code> / <code>Tooltip = "説明"</code> を名前付き引数で指定できる（省略時のラベルはフィールド名を整形したもの）</td></tr>
+    <tr><td><code>[Header("見出し")]</code></td><td>フィールド</td><td>そのフィールドの直前に見出し行を挿入する</td></tr>
+    <tr><td><code>[Tooltip("説明")]</code></td><td>フィールド</td><td>マウスオーバー時の説明。<code>[SerializeField(Tooltip = ...)]</code> より<b>独立した <code>[Tooltip]</code> が優先</b>される</td></tr>
+    <tr><td><code>[Range(min, max)]</code></td><td>フィールド</td><td>数値フィールドをスライダー表示にする（float / int）</td></tr>
+    <tr><td><code>[RequireComponent(typeof(OtherScript))]</code> / <code>[RequireComponent("Camera")]</code></td><td>クラス</td><td>アタッチ時に不足コンポーネントを<b>自動追加</b>する。型指定＝他スクリプト（型名から <code>.cs</code> を探す）、文字列指定＝ネイティブコンポーネント名</td></tr>
+    <tr><td><code>[DisallowMultipleComponent]</code></td><td>クラス</td><td>同一アクターに同じスクリプトを 2 つ以上付けられなくする（追加操作が警告で中止される）</td></tr>
+  </table>
+<pre>[<span class="t">RequireComponent</span>(<span class="s">"Camera"</span>)]
+[<span class="t">DisallowMultipleComponent</span>]
+<span class="k">public class</span> <span class="t">CameraShake</span> : <span class="t">SEEDScript</span>
+{
+    [<span class="t">Header</span>(<span class="s">"揺れ"</span>)]
+    [<span class="t">SerializeField</span>(Label = <span class="s">"強さ"</span>)]
+    [<span class="t">Range</span>(0f, 5f)]
+    <span class="k">private float</span> amplitude = 1.0f;
+
+    [<span class="t">SerializeField</span>]
+    [<span class="t">Tooltip</span>(<span class="s">"1 秒あたりの振動回数"</span>)]
+    <span class="k">private float</span> frequency = 8.0f;
+}</pre>
+  <p class="section-note"><code>[Serializable]</code> を付けたクラス／構造体型のフィールドに <code>[SerializeField]</code> を付けると、インスペクタで<b>子フィールドが再帰的に展開</b>されます（入れ子の上限は 8 段）。</p>
 </section>
 
 <!-- ════════════════ 2. ライフサイクル ════════════════ -->
@@ -304,7 +330,7 @@
 <section id="sec-mathf" data-keywords="Mathf 数学 計算 三角関数 補間 クランプ">
   <h2>4. Mathf（数学ユーティリティ・float 中心）</h2>
   <h3>定数</h3>
-  <div class="api"><code class="sig">Mathf.PI / Deg2Rad / Rad2Deg / Epsilon / Infinity</code><span class="desc">円周率、度⇄ラジアン変換係数、微小値、無限大</span></div>
+  <div class="api"><code class="sig">Mathf.PI / Deg2Rad / Rad2Deg / Epsilon / Infinity / NegativeInfinity</code><span class="desc">円周率、度⇄ラジアン変換係数、微小値、正/負の無限大</span></div>
   <h3>三角関数・指数対数</h3>
   <div class="api"><code class="sig">Mathf.Sin(x) / Cos(x) / Tan(x)</code><span class="desc">三角関数（ラジアン）</span></div>
   <div class="api"><code class="sig">Mathf.Asin(x) / Acos(x) / Atan(x) / Atan2(y, x)</code><span class="desc">逆三角関数。Atan2 は象限を考慮した角度</span></div>
@@ -323,6 +349,8 @@
   <div class="api"><code class="sig">Mathf.Repeat(t, length) / PingPong(t, length)</code><span class="desc">ループ（0〜length）/ 往復（0→length→0）</span></div>
   <div class="api"><code class="sig">Mathf.SmoothStep(from, to, t)</code><span class="desc">滑らかなイーズイン・アウト補間</span></div>
   <div class="api"><code class="sig">Mathf.Approximately(a, b)</code><span class="desc">浮動小数の等価比較（<code>==</code> の代わりに使う）</span></div>
+  <p class="section-note"><code>Abs</code> / <code>Min</code> / <code>Max</code> / <code>Clamp</code> には <b>int 版のオーバーロード</b>もあります（<code>Mathf.Clamp(i, 0, 9)</code> は int を返す）。<br>
+  <code>Mathf.Epsilon</code> は <code>1e-6f</code>（.NET の <code>float.Epsilon</code> とは別物）。<code>Approximately</code> はこれを基準に相対誤差で比較します（許容差 = <code>max(Epsilon × max(|a|,|b|), Epsilon × 8)</code>）。</p>
 </section>
 
 <!-- ════════════════ 5. Vector / Quaternion / Color ════════════════ -->
@@ -331,6 +359,7 @@
 
   <h3>Vector3（位置・方向・スケール）</h3>
   <div class="api"><code class="sig">new Vector3(x, y, z)</code><span class="desc">コンストラクタ</span></div>
+  <div class="api"><code class="sig">new Vector3(x, y)</code><span class="desc">コンストラクタ（z = 0）</span></div>
   <div class="api"><code class="sig">Vector3.Zero / One / Up / Down / Left / Right / Forward / Back</code><span class="desc">定数ベクトル</span></div>
   <div class="api"><code class="sig">v.x / v.y / v.z</code><span class="desc">成分アクセス</span></div>
   <div class="api"><code class="sig">v.Magnitude / v.SqrMagnitude / v.Normalized</code><span class="desc">長さ / 長さの2乗 / 正規化ベクトル</span></div>
@@ -342,7 +371,7 @@
   <div class="api"><code class="sig">Vector3.Min(a, b) / Max(a, b)</code><span class="desc">成分ごとの最小 / 最大</span></div>
 
   <h3>Vector2</h3>
-  <div class="api"><code class="sig">Vector2 — x, y / Zero One Up Down Left Right / Dot Distance Scale Lerp Min Max</code><span class="desc">Vector3 と同様のメンバー構成（2 成分版）</span></div>
+  <div class="api"><code class="sig">Vector2 — x, y / Zero One Up Down Left Right / Magnitude SqrMagnitude Normalized / Dot Distance Scale Lerp Min Max</code><span class="desc">Vector3 と同様のメンバー構成（2 成分版）。ただし <code>Cross</code> / <code>MoveTowards</code> / <code>Angle</code> は <b>Vector3 のみ</b></span></div>
 
   <h3>Quaternion（回転）</h3>
   <div class="api"><code class="sig">Quaternion.Identity</code><span class="desc">無回転</span></div>
@@ -440,12 +469,13 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 </section>
 
 <!-- ════════════════ 7. GameObject ════════════════ -->
-<section id="sec-gameobject" data-keywords="GameObject gameObject アクター 生成 破棄 検索 Instantiate Destroy Find プレハブ">
+<section id="sec-gameobject" data-keywords="GameObject gameObject アクター 生成 破棄 検索 Instantiate Destroy Find プレハブ HasComponent">
   <h2>7. GameObject</h2>
   <p class="section-note">スクリプトは自分がアタッチされた GameObject を <code>gameObject</code>、その Transform を <code>transform</code>（短縮）で参照できます。コンポーネントは <code>gameObject.GetComponent&lt;T&gt;()</code> で取得します。戻り値は <code>T?</code>（Nullable）で、<b>未アタッチ・該当なしは null</b>。SEED のアクターは同種を複数スロット持て、スロットには名前があります。</p>
   <div class="api"><code class="sig">gameObject</code><span class="desc">GameObject: このスクリプトが乗るオブジェクト</span></div>
   <div class="api"><code class="sig">gameObject.IsValid</code><span class="desc">bool: 実体が有効か</span></div>
   <div class="api"><code class="sig">gameObject.HasComponent("Sprite")</code><span class="desc">bool: 指定名のコンポーネントを持つか</span></div>
+  <p class="section-note"><b><code>HasComponent(name)</code> の名前</b>: 受け付ける文字列は <code>Transform</code> / <code>CanvasTransform</code> / <code>Sprite</code> / <code>Camera</code> / <b><code>Audio</code></b>（AudioSource ではなく <code>Audio</code>）/ <code>Animator</code> / <code>ParticleEmitter</code> / <code>InputMap</code> の 8 つで、それ以外は常に false です。型で判定できる場面では <code>GetComponent&lt;T&gt;() is { }</code> のほうが安全です。</p>
   <div class="api"><code class="sig">transform</code><span class="desc">Transform: <code>gameObject.GetComponent&lt;Transform&gt;()</code> の短縮</span></div>
   <div class="api"><code class="sig">gameObject.GetComponent&lt;T&gt;()</code><span class="desc">T?: 0 番目のスロット（未アタッチは null）。T = Transform/CanvasTransform/Sprite/Camera/AudioSource/Animator/ParticleEmitter/InputMap</span></div>
   <div class="api"><code class="sig">gameObject.GetComponent&lt;T&gt;(index)</code><span class="desc">T?: index 番目のスロット</span></div>
@@ -470,7 +500,7 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
   <div class="warn">
     <b>2D アクター（Actor2D）の注意</b>: 構築時に Transform が CanvasTransform へ差し替わるため、生成直後の 3D Position 設定は反映されません。位置は翌フレーム以降に <code>CanvasTransform.Position</code> で設定してください。<br>
     破棄済み GameObject への読み取りは既定値、書き込みは無視されます（クラッシュしません）。<br>
-    現時点の制限: Play 開始後に生成・破棄したアクターの<b>物理コライダーは物理スレッドに反映されません</b>。
+    現時点の制限: Play 開始後に生成・破棄したアクターの<b>物理コライダーは物理スレッドに反映されません</b>。コライダーの収集は Play 開始時（およびシーン遷移時）の一括処理で、<code>Instantiate</code> / <code>Destroy</code> は物理側の追加・除去を行わないためです。衝突・トリガーの<b>イベント通知</b>自体は実装済みですが（第 2 節）、実行時に生成したアクターはその対象になりません。
   </div>
 </section>
 
