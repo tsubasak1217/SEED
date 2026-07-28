@@ -15,15 +15,21 @@ namespace SEEDEditor.Panels;
 internal static class FileRefBuilder
 {
     /// <summary>
-    /// ラベル・パス表示・参照ボタンをまとめたファイル参照行を生成する。
+    /// ラベル・パス表示・参照ボタン（＋任意でクリアボタン）をまとめたファイル参照行を生成する。
     /// acceptedExtensions に含まれる拡張子のファイルのみドロップを受け付ける。
     /// </summary>
+    /// <param name="onClear">
+    /// 非 null のとき、行末に「×」クリアボタンを表示し、押下時にこのデリゲートを呼ぶ
+    /// （参照を未設定へ戻す用途）。null のときクリアボタンは表示しない。
+    /// 既存の呼び出し側をそのままコンパイルできるよう省略可能引数にしている。
+    /// </param>
     public static UIElement Build(
         string label,
         string? currentPath,
         string[] acceptedExtensions,
         Func<string?> browseFn,
-        Action<string> onPathSet)
+        Action<string> onPathSet,
+        Action? onClear = null)
     {
         var hasPath = !string.IsNullOrEmpty(currentPath);
         var display = hasPath ? Path.GetFileName(currentPath) : "（未設定）";
@@ -31,6 +37,8 @@ internal static class FileRefBuilder
         var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        // クリアボタン用の列（onClear が null のときは幅 0 のまま使われない）
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         var lbl = new TextBlock
@@ -141,6 +149,31 @@ internal static class FileRefBuilder
         Grid.SetColumn(lbl,       0); grid.Children.Add(lbl);
         Grid.SetColumn(pathBox,   1); grid.Children.Add(pathBox);
         Grid.SetColumn(browseBtn, 2); grid.Children.Add(browseBtn);
+
+        // クリアボタン（指定があるときのみ）: 参照を未設定へ戻す
+        if (onClear != null)
+        {
+            var clearBtn = new Button
+            {
+                Content           = "×",
+                Background        = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)),
+                Foreground        = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)),
+                BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+                BorderThickness   = new Thickness(1),
+                FontSize          = 10,
+                Padding           = new Thickness(6, 2, 6, 2),
+                Margin            = new Thickness(2, 0, 0, 0),
+                Cursor            = Cursors.Hand,
+                VerticalAlignment = VerticalAlignment.Center,
+                Template          = BuildButtonTemplate(),
+                ToolTip           = "参照を解除する",
+                // 未設定のときは押しても意味がないため無効化する
+                IsEnabled         = hasPath,
+            };
+            clearBtn.Click += (_, _) => onClear();
+            Grid.SetColumn(clearBtn, 3); grid.Children.Add(clearBtn);
+        }
+
         return grid;
     }
 

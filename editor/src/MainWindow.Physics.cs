@@ -60,44 +60,32 @@ public partial class MainWindow
     // ── 編集時の物理シミュレーション ────────────────────────────────
 
     /// <summary>
-    /// "編集時の物理シミュレーション（2D/3D）" チェックボックスが変更されたときに呼ばれる。
-    /// 2D/3D は常に同値でミラーするため、2D 用フラグも 3D と同値に同期し、
-    /// 統合コマンド SET_EDIT_PHYSICS_ALL 1 本で Runtime に通知する。
+    /// シーン設定（_sceneSettings.Physics）の編集時物理フラグを、MainWindow が保持する
+    /// ミラーフィールドへ写す。2D/3D は常に同値のため 2D 用フラグも同じ値にする。
+    ///
+    /// 親（編集時物理）が OFF のときは子（RigidBody）も必ず OFF に落とす。
+    /// この規則は Rust 側の is_edit_physics_pushback_mode() と整合させるために必須。
     /// </summary>
-    private void OnEditPhysicsChanged(object sender, RoutedEventArgs e)
+    private void MirrorEditPhysicsFlags()
     {
-        _editPhysicsEnabled = ChkEditPhysics.IsChecked == true;
-        // RigidBody サブオプションの表示・非表示を切り替える
-        PnlEditPhysicsRigidbody.Visibility = _editPhysicsEnabled
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        // 無効化時は RigidBody チェックもリセットする
-        if (!_editPhysicsEnabled)
-        {
-            ChkEditPhysicsRigidbody.IsChecked = false;
-            _editPhysicsWithRigidbody = false;
-        }
+        _editPhysicsEnabled       = _sceneSettings.Physics.EditPhysics;
+        _editPhysicsWithRigidbody = _editPhysicsEnabled && _sceneSettings.Physics.EditPhysicsRigidbody;
+        // 設定側にも「親 OFF なら子 OFF」を反映して食い違いを残さない
+        _sceneSettings.Physics.EditPhysicsRigidbody = _editPhysicsWithRigidbody;
+
         // 2D フラグを 3D と同値へミラーする（常に一致させる）
         _editPhysics2dEnabled       = _editPhysicsEnabled;
         _editPhysics2dWithRigidbody = _editPhysicsWithRigidbody;
-        // タイムラインパネルの表示切替。
-        // 再生バー（タイムライン）は RigidBody 有効時（タイムラインモード）のみ表示する。
-        RefreshPhysicsTimelineVisibility();
-
-        SendEditPhysicsAll();
     }
 
     /// <summary>
-    /// "RigidBody" サブチェックボックスが変更されたときに呼ばれる。
-    /// フラグを更新し、2D 用フラグを同値へミラーし、統合コマンドで Runtime に通知する。
+    /// シーン設定の編集時物理をエディタ状態・ランタイムへ反映する。
+    /// シーン設定ウィンドウでの変更通知（SceneSettingsChangeKind.Physics）から呼ばれる。
+    /// タイムライン（再生バー）は RigidBody 有効時（タイムラインモード）のみ表示する。
     /// </summary>
-    private void OnEditPhysicsRigidbodyChanged(object sender, RoutedEventArgs e)
+    private void ApplyEditPhysicsFromSettings()
     {
-        _editPhysicsWithRigidbody = ChkEditPhysicsRigidbody.IsChecked == true;
-        // 2D フラグを 3D と同値へミラーする
-        _editPhysics2dEnabled       = _editPhysicsEnabled;
-        _editPhysics2dWithRigidbody = _editPhysicsWithRigidbody;
-        // RigidBody の有効／無効で再生バー（タイムライン）の表示を切り替える。
+        MirrorEditPhysicsFlags();
         RefreshPhysicsTimelineVisibility();
         SendEditPhysicsAll();
     }

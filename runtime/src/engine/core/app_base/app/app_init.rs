@@ -22,6 +22,11 @@ use super::{App, RuntimeMode};
 /// デバッグカメラの初期ワールド位置 [x, y, z]。
 const DEFAULT_CAMERA_POSITION: [f32; 3] = [0.0, 2.0, -10.0];
 
+/// デバッグカメラ移動速度の下限（IPC `CAM_SPEED:` とシーン設定で共用）。
+pub(crate) const CAM_SPEED_MIN: f32 = 0.1;
+/// デバッグカメラ移動速度の上限（IPC `CAM_SPEED:` とシーン設定で共用）。
+pub(crate) const CAM_SPEED_MAX: f32 = 500.0;
+
 impl App {
     /// ApplicationHandler::resumed の実装本体。
     ///
@@ -474,6 +479,62 @@ impl App {
         );
     }
 
+    /// シーン単位の設定（`.scene` の `settings` 節）を App の各フィールドへ適用する。
+    ///
+    /// 【適用順序】
+    /// 起動時はまず `load_graphics_settings()` が project_settings.json を読み、その後
+    /// シーンをロードして `settings` 節があれば本関数がそれを**上書き**する。
+    /// つまり project_settings.json は「settings 節を持たない旧 .scene のフォールバック」として
+    /// 残り続ける。この順序を崩すと旧シーンの見た目が変わるので入れ替えないこと。
+    ///
+    /// 【適用しないもの】
+    /// - `physics` 節（編集時物理）はエディタ専用。ランタイムは保存／復元のみ行う。
+    ///   Play では編集時物理は無関係で、適用すると物理スレッドの挙動を壊す。
+    /// - `post_fx` の view_mode 相当（`scene_view_mode`）はスキーマに含まれない
+    ///   セッション限りの設定のため一切触らない。
+    pub(super) fn apply_scene_settings(
+        &mut self,
+        s: &crate::engine::core::app_base::scene_settings::SceneSettingsData,
+    ) {
+        use crate::engine::core::renderer::TransparencyMode;
+
+        // ── レンダリング設定 ────────────────────────────────────
+        let r = &s.rendering;
+        self.post_fx.bloom_enabled           = r.bloom;
+        self.post_fx.bloom_intensity         = r.bloom_intensity;
+        self.post_fx.fxaa_enabled            = r.fxaa;
+        // 透明描画方式は文字列 → enum（未知の文字列は距離ソートへフォールバック）
+        self.post_fx.transparency            = TransparencyMode::from_str(&r.transparency);
+        self.post_fx.deferred                = r.deferred;
+        self.post_fx.refract_sequential_grab = r.refract_sequential_grab;
+        // GI は強度のみシーン設定で持つ（プローブ数等の詳細は project_settings.json 側の値を維持）
+        self.post_fx.gi.intensity            = r.gi_intensity;
+        self.post_fx.reflection_intensity    = r.reflection_intensity;
+        self.post_fx.ao_intensity            = r.ao_intensity;
+        // 描画機能マトリクス（影 / GI / 反射 / AO / 半透明）を丸ごと差し替える
+        self.render_features                 = r.features;
+        self.ambient_color                   = r.ambient_color;
+        self.ambient_intensity               = r.ambient_intensity;
+        // 実効モード（降格・未実装の注記込み）をログへ 1 行出す
+        self.log_render_features_if_changed();
+
+        // ── デバッグカメラ設定 ──────────────────────────────────
+        // 各フィールドは対応する IPC ハンドラ（VIEWPORT_FOV / VIEWPORT_FAR / CAM_SPEED /
+        // SHOW_GRID / SHOW_AXIS_GIZMO / EDITOR_CAM_ORTHO）と同じ書き込み先・同じ変換を使う。
+        let c = &s.debug_camera;
+        self.camera.base.projection.fov_y_rad = c.fov * std::f32::consts::PI / 180.0;
+        self.camera.base.projection.far       = c.far;
+        // 移動速度は IPC ハンドラと同じ範囲へクランプする
+        self.camera.move_speed                = c.speed.clamp(CAM_SPEED_MIN, CAM_SPEED_MAX);
+        self.show_grid                        = c.show_grid;
+        self.show_axis_gizmo                  = c.show_axis_gizmo;
+        // 正射投影切替は Edit モード限定（IPC ハンドラ SetEditorCameraOrtho と同じガード）。
+        // Play モードのカメラはゲーム側のメインカメラが主役のため触らない。
+        if self.mode == RuntimeMode::Edit {
+            self.camera.set_ortho(c.ortho_2d);
+        }
+    }
+
     /// render_features が前回ログ時から変わっていれば [SEED FEATURES] 行を 1 回出力する。
     /// 起動時・IPC 切替時の実効モード（降格・未実装の注記を含む）を可視化する集約点。
     pub(crate) fn log_render_features_if_changed(&mut self) {
@@ -562,6 +623,15 @@ impl App {
                     self.canvas_world_lines.remove(&0);
                 }
                 self.scene = Some(new_scene);
+                // シーン単位のビューポート／レンダリング設定を適用する。
+                // 起動時に読んだ project_settings.json（load_graphics_settings）の値を
+                // ここで上書きする＝スタンドアロン Play でもエディタと同じ見た目になる。
+                // settings 節を持たない旧 .scene では None のため project 設定がそのまま残る。
+                // 上の apply_camera_data（debug_camera 節で fov/far/speed を上書きする）より
+                // 「後」に置くこと。先に適用するとシーン設定側の値が潰される。
+                if let Some(s) = self.scene.as_ref().and_then(|sc| sc.settings.clone()) {
+                    self.apply_scene_settings(&s);
+                }
                 // 速度バッファ（モーションベクタ）: シーンが総入れ替わるため
                 // 前フレームとの連続性が無い。次フレームは prev=curr（速度 0）にする。
                 self.request_velocity_reset();

@@ -1937,13 +1937,20 @@ public partial class InspectorPanel : UserControl
                 // 絶対パスを仮想パスに変換してからランタイムへ送信する
                 var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
                 _runtime?.SendToRuntime($"SET_CAMERA_SHADING_ASSET:{_currentActorId},{info.SlotIdx},{virtualPath}");
+            },
+            // 行末の「×」ボタンで指定を解除する（空パス送信で未設定へ戻る）。
+            // 従来からある右クリック解除も残してある。
+            () =>
+            {
+                if (_currentActorId < 0) return;
+                _runtime?.SendToRuntime($"SET_CAMERA_SHADING_ASSET:{_currentActorId},{info.SlotIdx},");
             });
-        // FileRefBuilder は「解除」手段を持たないため、右クリックで未設定に戻せるようにする。
+        // クリアボタンに加え、従来どおり右クリックでも未設定に戻せるようにする。
         if (shadingRow is FrameworkElement shadingFe)
         {
             shadingFe.ToolTip = "このカメラの描画に使う WGSL シェーディングアセット。\n" +
                                 "未設定の場合はシーン既定 → 組み込み標準 PBR を使用します。\n" +
-                                "右クリックで指定を解除";
+                                "「×」ボタンまたは右クリックで指定を解除";
             shadingFe.MouseRightButtonUp += (_, e) =>
             {
                 if (_currentActorId < 0) return;

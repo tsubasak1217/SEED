@@ -375,6 +375,13 @@ public partial class MainWindow
         _isDirty = false;
         SEEDEditor.ProjectSettings.RecentProjectsManager.AddProject(path);
         SendNavCommand($"LOAD_SCENE:{path}");
+
+        // シーン設定（.scene の settings 節）を新しいシーンから読み直し、ランタイムへ全項目を再送する。
+        // LOAD_SCENE はランタイムへ非同期に届くが IPC の順序は保たれるため、
+        // 必ず LOAD_SCENE の「後」に送ってシーン側の初期値を上書きする。
+        LoadSceneSettingsForCurrentScene();
+        if (_viewportSettingsInitialized) SyncViewportSettings();
+
         UpdateTitle();
         EditorLog.Write($"LoadScene — LOAD_SCENE:{path}");
     }

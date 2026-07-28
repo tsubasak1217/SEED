@@ -485,6 +485,10 @@ pub enum IpcCommand {
     /// フォーマット: SET_SCENE_SHADING_ASSET:{path}
     /// path は assets:// 仮想パスまたは絶対パス。空文字は未設定（None）を意味する。
     SetSceneShadingAsset { path: String },
+    /// シーン単位のビューポート／レンダリング設定（`.scene` の settings 節）を設定する
+    /// フォーマット: SET_SCENE_SETTINGS:{json}
+    /// json は `scene_settings::SceneSettingsData` の JSON 全体（カンマを含む）。
+    SetSceneSettings { json: String },
     /// アクターのアクティブ切替（Unity の SetActive 相当）。
     /// フォーマット: SET_ACTOR_ACTIVE:{dfs_id},{0|1}
     SetActorActive { dfs_id: u32, active: bool },
@@ -1802,6 +1806,13 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             // 空文字は未設定（None）を意味する
                             Some(IpcCommand::SetSceneShadingAsset {
                                 path: s["SET_SCENE_SHADING_ASSET:".len()..].trim().to_string(),
+                            })
+                        }
+                        s if s.starts_with("SET_SCENE_SETTINGS:") => {
+                            // フォーマット: SET_SCENE_SETTINGS:{json}
+                            // json はカンマを含む JSON 全体のため、プレフィクス以降をそのまま渡す
+                            Some(IpcCommand::SetSceneSettings {
+                                json: s["SET_SCENE_SETTINGS:".len()..].to_string(),
                             })
                         }
                         s if s.starts_with("SET_COLLIDER_DATA:") => {

@@ -315,11 +315,12 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         ApplyDarkTitleBar();
         EditorLog.Write($"OnWindowLoaded — RuntimeExePath={RuntimeExePath}");
 
-        // ビューポート設定（ポストFX・機能マトリクス・各強度）を project_settings.json から
-        // ツールバー UI へ復元する。ランタイム接続（OnRuntimeHwndAvailable → SyncViewportSettings）
-        // より前に UI を正しい値にしておくことで、SyncViewportSettings が既定値で
-        // ランタイム設定を上書きするのを防ぐ。
-        LoadViewportSettingsIntoUi();
+        // シーン設定（デバッグカメラ・レンダリング・編集時物理）を読み込む。
+        // 起動直後はまだシーンを開いていないため、旧保存先である project_settings.json から
+        // レンダリング設定をフォールバック生成する（読むだけで書き戻しはしない）。
+        // ランタイム接続（OnRuntimeHwndAvailable → SyncViewportSettings）より前に
+        // 値を確定させておくことで、既定値でランタイム設定を上書きするのを防ぐ。
+        LoadSceneSettingsForCurrentScene();
 
         _runtimeManager = new RuntimeManager(RuntimeExePath)
         {
