@@ -613,24 +613,58 @@ public sealed class RuntimeManager : IDisposable
     ///   json_source は JSON 文字列リテラル（前後のダブルクォート込み・改行は \n エスケープ）。
     ///
     /// 【送信しない条件】
-    /// - Edit モード以外（Play / Pause 中）: ランタイムは実行中のシェーダーで手一杯であり、
-    ///   検証用のパイプライン再構築を走らせない。
-    /// - パイプ未接続（起動前・再起動中）。
-    /// いずれも「エラー」ではなく「検証不可」であり、呼び出し側は診断を出さない。
+    /// - パイプ未接続（ランタイム未起動・起動前・再起動中）。
+    /// - Play 中: 検証（naga）はランタイムのメインスレッドで走るため、
+    ///   再生中のフレーム時間を削ってしまう。Pause 中や起動シーケンス中は
+    ///   フレームを回していない／落としても影響が無いので許可する
+    ///   （以前は「Edit ちょうど」に限定していたため、Pause 中や
+    ///   Edit 遷移直前の検証まで捨てていた）。
+    /// 送らなかった場合は「エラー」ではなく「検証不可」であり、呼び出し側は診断を出さない。
+    ///
+    /// 【ログ】送信は入力デバウンス毎（最短 500ms 間隔）なので、本文は載せず
+    /// 「id とソース長」だけの 1 行に留める。送れなかった場合は理由が変わったときだけ
+    /// 記録する（未接続のまま編集し続けると毎回出てログが埋まるため）。
     /// </summary>
     /// <param name="requestId">応答の相関に使う 10 進整数 ID。</param>
     /// <param name="source">検証対象の WGSL ソース全文。</param>
     /// <returns>送信できたら true、送信条件を満たさず送らなかったら false。</returns>
     public bool SendValidateWgsl(long requestId, string source)
     {
-        if (_pipe is null || !_pipe.IsConnected) return false;
-        if (_state != EditorState.Edit) return false;
+        if (_pipe is null || !_pipe.IsConnected)
+        {
+            // 「ランタイムが起動していないので検証できない」ことを必ず追跡できるようにする。
+            // 実際、ビューポートタブが一度も前面に来ないまま起動するとランタイムが
+            // 立ち上がらず、ここで黙って捨てられていた（WGSL の赤下線が出ない原因）。
+            LogWgslValidationSkipped($"パイプ未接続（state={_state}）");
+            return false;
+        }
+        if (_state == EditorState.Play)
+        {
+            LogWgslValidationSkipped("Play 中（再生フレームを削らないため検証しない）");
+            return false;
+        }
 
+        _lastWgslSkipReason = null;
         // ソースは 1 行の IPC に載せるため JSON 文字列リテラル化する（改行・引用符を安全に運ぶ）。
         var jsonSource = System.Text.Json.JsonSerializer.Serialize(source);
-        // 高頻度（入力デバウンスごと）に飛ぶうえ本文が巨大なため、EditorLog には出さない。
+        EditorLog.Write($"[Editor→Runtime] VALIDATE_WGSL id={requestId} src={source.Length}文字 wire={jsonSource.Length}文字");
         _pipe.Send($"VALIDATE_WGSL:{requestId},{jsonSource}");
         return true;
+    }
+
+    /// <summary>直近に記録した「WGSL 検証を送れなかった理由」。同じ理由の連投を抑えるために保持する。</summary>
+    private string? _lastWgslSkipReason;
+
+    /// <summary>
+    /// WGSL 検証を送信できなかったことを記録する（同一理由が続く間は 1 回だけ）。
+    /// 入力のたびに呼ばれるため、無条件に書くとログが検証スキップで埋まってしまう。
+    /// </summary>
+    /// <param name="reason">送信できなかった理由（状態を含む短い説明）。</param>
+    private void LogWgslValidationSkipped(string reason)
+    {
+        if (_lastWgslSkipReason == reason) return;
+        _lastWgslSkipReason = reason;
+        EditorLog.Write($"[Editor→Runtime] VALIDATE_WGSL 送信せず — {reason}");
     }
 
     /// <summary>
@@ -1208,7 +1242,15 @@ public sealed class RuntimeManager : IDisposable
             if (commaPos > 0 && long.TryParse(payload[..commaPos], out var reqId))
             {
                 var json = payload[(commaPos + 1)..];
+                // 受信の事実は必ず残す（診断本文は長いので載せない）。件数は JSON を解釈する
+                // WgslValidationService 側で記録する。
+                EditorLog.Write($"[Runtime→Editor] WGSL_DIAG id={reqId} json={json.Length}文字");
                 WgslDiagnosticsReceived?.Invoke(reqId, json);
+            }
+            else
+            {
+                // 書式違反（相関できない応答）は握り潰さず記録する。
+                EditorLog.Write($"[Runtime→Editor] WGSL_DIAG 書式不正: {payload[..Math.Min(80, payload.Length)]}");
             }
         }
         else if (msg.StartsWith("HIERARCHY:", StringComparison.Ordinal))

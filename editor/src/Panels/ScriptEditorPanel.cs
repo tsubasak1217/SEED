@@ -1072,8 +1072,9 @@ public class ScriptEditorPanel : UserControl
         // シェーダー（.wgsl）も開いた直後に一度検証する。
         // 診断はテキスト変更のデバウンスタイマー起点のため、これが無いと
         // 「壊れたアセットを開いても、一文字打つまで赤線が出ない」状態になる。
-        // ランタイム未接続・Play 中は検証側（RuntimeManager.SendValidateWgsl）が
-        // 送信を拒否して「検証不可」を返すため、ここで状態を判定する必要はない。
+        // ランタイム未接続なら検証側（RuntimeManager.SendValidateWgsl）が送信を拒否して
+        // 「検証不可」を返すため、ここで状態を判定する必要はない。
+        // 未接続で捨てられた場合は、接続完了時に RevalidateWgslDocuments で追いつく。
         else if (!readOnly && doc.Language == EditorLanguage.Wgsl)
         {
             _ = RunWgslDiagnosticsAsync(doc);
@@ -1312,9 +1313,26 @@ public class ScriptEditorPanel : UserControl
     }
 
     /// <summary>
+    /// 開いている .wgsl タブをすべて検証し直す（ランタイム接続後の追いつき用）。
+    ///
+    /// ファイルを開いた時点でランタイムが未起動・未接続だと検証依頼は捨てられ、
+    /// 「一文字打つまで赤下線が出ない」状態になる。IPC が繋がった契機（Edit 遷移）で
+    /// 本メソッドを呼ぶことで、既に開いているシェーディングアセットへ診断を追いつかせる。
+    /// 読み取り専用タブは編集対象外なので検証しない。
+    /// </summary>
+    public void RevalidateWgslDocuments()
+    {
+        foreach (var doc in _docs)
+        {
+            if (doc.IsReadOnly || doc.Language != EditorLanguage.Wgsl) continue;
+            _ = RunWgslDiagnosticsAsync(doc);
+        }
+    }
+
+    /// <summary>
     /// WGSL シェーディングアセットの検証をランタイムへ依頼し、返った診断を波線表示する。
     ///
-    /// 検証できなかった場合（デリゲート未設定・Play 中・パイプ未接続・タイムアウト）は
+    /// 検証できなかった場合（デリゲート未設定・ランタイム未接続・タイムアウト）は
     /// 何も表示更新しない（＝直前の診断表示をそのまま残す）。実行中に赤下線が消えると
     /// 「エラーが直った」と誤認させるため、消すのではなく維持する方針とする。
     /// </summary>
@@ -2629,9 +2647,15 @@ public class ScriptEditorPanel : UserControl
     /// <summary>
     /// ユーザー設定の配色を共有ハイライト定義へ反映する。
     /// 定義は全エディタ共有のため、呼び出し後に各エディタを Redraw すれば即反映される。
+    ///
+    /// C# と WGSL では別のハイライト定義・別のキー体系（WGSL は "wgsl." 接頭辞）を使うため、
+    /// WGSL 側は専用の <see cref="WgslColorScheme"/> へ委譲する。
     /// </summary>
     private static void ApplyColorsToHighlighting(ScriptEditorSettings settings)
     {
+        // WGSL（.wgsl タブ）の配色を反映する
+        WgslColorScheme.Apply(settings.Colors);
+
         var def = BuildDarkCSharpHighlighting();
         if (def is null) return;
 

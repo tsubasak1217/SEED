@@ -533,7 +533,71 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         EnsureScriptEditorDocument();
         EnsureScriptSidePanels();
 
+        // レイアウト復元後、ビューポートを必ず一度実体化させてランタイムを起動する。
+        EnsureViewportRealizedAtStartup();
+
         EditorLog.Write("OnWindowLoaded — ViewportHost assigned, waiting for ContainerCreated");
+    }
+
+    /// <summary>
+    /// 起動直後に「シーン」タブを必ず一度前面へ出し、ランタイムの起動を保証する。
+    ///
+    /// 【なぜ必要か】ランタイム（SEED.exe）を起動するのは <see cref="OnContainerCreated"/> だけであり、
+    /// これは <see cref="ViewportHost"/>（HwndHost）が実際に描画されて Win32 の
+    /// コンテナウィンドウが生成された瞬間に発火する。「シーン」と「Script」は同じ
+    /// ドキュメントペインのタブなので、前回終了時に Script タブを選んでいると
+    /// layout.xml に <c>IsSelected="True"</c> が保存され、次回起動では
+    /// シーンタブが一度も描画されない → ContainerCreated が来ない →
+    /// **ランタイムが起動しないまま編集を続ける**ことになる。
+    /// この状態では IPC が一切繋がらないため、WGSL のライブ検証（VALIDATE_WGSL）も
+    /// 黙って捨てられ、赤下線が永久に出ない（本不具合の実際の原因）。
+    ///
+    /// 【やること】シーンタブが選択されていなければ一時的に選択し、コンテナ生成
+    /// （ContainerCreated）が済んだ時点で元のタブへ戻す。元のタブは
+    /// <see cref="_pendingTabRestore"/> に預ける。
+    /// </summary>
+    private void EnsureViewportRealizedAtStartup()
+    {
+        var viewportDoc = DockManager.Layout.Descendents()
+            .OfType<LayoutDocument>()
+            .FirstOrDefault(d => d.ContentId == "viewport");
+        // シーンタブが無い（レイアウト破損）／既に前面なら何もしない。
+        if (viewportDoc is null || viewportDoc.IsSelected) return;
+
+        // 復元先として、いま選択されているドキュメントを覚えておく。
+        _pendingTabRestore = DockManager.Layout.Descendents()
+            .OfType<LayoutDocument>()
+            .FirstOrDefault(d => d.IsSelected);
+
+        EditorLog.Write(
+            $"EnsureViewportRealizedAtStartup — シーンタブを一時的に前面化してランタイムを起動する"
+            + $"（復元先={_pendingTabRestore?.ContentId ?? "なし"}）");
+        viewportDoc.IsSelected = true;
+    }
+
+    /// <summary>
+    /// 起動時にシーンタブを一時的に前面化した際、コンテナ生成後に戻すべきタブ。
+    /// 戻したら null にする（戻す処理は 1 回きり）。
+    /// </summary>
+    private LayoutDocument? _pendingTabRestore;
+
+    /// <summary>
+    /// 起動時に一時前面化したシーンタブから、元のタブへ戻す。
+    /// コンテナ HWND の生成が済んだ後に呼ぶこと（生成前に戻すと実体化がやり直しになる）。
+    /// レイアウト処理の途中で選択を変えないよう、ディスパッチャ経由で次のフレームに実行する。
+    /// </summary>
+    private void RestorePendingTabSelection()
+    {
+        var target = _pendingTabRestore;
+        if (target is null) return;
+        _pendingTabRestore = null;
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            target.IsSelected = true;
+            target.IsActive   = true;
+            EditorLog.Write($"RestorePendingTabSelection — 元のタブ({target.ContentId})へ復帰");
+        });
     }
 
     /// <summary>
@@ -569,6 +633,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     {
         var hwnd = _viewportHost!.ContainerHwnd;
         EditorLog.Write($"OnContainerCreated — ContainerHwnd=0x{hwnd:X}");
+
+        // 起動時にシーンタブを一時前面化していた場合は、コンテナが生成できた今、
+        // ユーザーが前回開いていたタブ（例: Script）へ戻す。
+        RestorePendingTabSelection();
 
         // ContainerHwnd を OLE DropTarget として登録する。
         // HwndHost 上では WPF DragOver/Drop が発火しないため Win32 レベルで受け取る。

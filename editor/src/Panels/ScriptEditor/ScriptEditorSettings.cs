@@ -67,7 +67,13 @@ public sealed class ScriptEditorSettings
     }
 
     // ── 配色設定（16 進 RGB 文字列 "#RRGGBB"）──────────────────
-    /// <summary>構文要素名 → 色。キーは HighlightingColor 名または SemKeys の論理キー。</summary>
+    /// <summary>
+    /// 構文要素名 → 色。キーの体系は言語ごとに異なる:
+    ///   - C#   : HighlightingColor 名（"Comment" 等）または SemKeys の論理キー（接頭辞なし）。
+    ///   - WGSL : <see cref="WgslColorScheme.KeyPrefix"/>（"wgsl."）付きのキー。
+    /// C# 側のキーは既存ユーザー設定との互換のため変更してはならない。
+    /// 設定 UI に並ぶ項目の一覧は <see cref="ScriptEditorColorSchema"/> が持つ。
+    /// </summary>
     public Dictionary<string, string> Colors { get; set; } = DefaultColors();
 
     /// <summary>VS ダークテーマ準拠のデフォルト配色。</summary>
@@ -93,7 +99,11 @@ public sealed class ScriptEditorSettings
         [SemKeys.Parameter]       = "#9CDCFE", // 引数＝水色
     };
 
-    /// <summary>ユーザーが色設定できる構文要素の一覧（表示名, キー）。</summary>
+    /// <summary>
+    /// ユーザーが色設定できる <b>C#</b> 構文要素の一覧（表示名, キー）。
+    /// WGSL 側は <see cref="WgslColorScheme.Entries"/> にあり、
+    /// 両者は <see cref="ScriptEditorColorSchema"/> でセクションとして束ねられる。
+    /// </summary>
     public static IReadOnlyList<(string Label, string Key)> ColorEntries => new[]
     {
         // 正規表現ハイライト
@@ -136,10 +146,13 @@ public sealed class ScriptEditorSettings
             if (!File.Exists(path)) return new ScriptEditorSettings();
             var s = JsonSerializer.Deserialize<ScriptEditorSettings>(File.ReadAllText(path), JsonOpts);
             if (s is null) return new ScriptEditorSettings();
-            // 欠けている色キーはデフォルトで補完する
-            foreach (var (_, key) in ColorEntries)
-                if (!s.Colors.ContainsKey(key) && DefaultColors().TryGetValue(key, out var d))
-                    s.Colors[key] = d;
+            // 欠けている色キーはデフォルトで補完する。
+            // C# / WGSL 双方を配色スキーマから走査するため、言語が増えても修正不要。
+            // （WGSL の既定色は Wgsl.xshd から実行時に読み取られる）
+            foreach (var section in ScriptEditorColorSchema.Sections())
+                foreach (var entry in section.Entries)
+                    if (!s.Colors.ContainsKey(entry.Key))
+                        s.Colors[entry.Key] = entry.DefaultHex;
             return s;
         }
         catch
