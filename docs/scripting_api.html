@@ -713,7 +713,23 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><td><code>render_tag</code></td><td><code>u32</code></td><td>アクタ単位のセマンティックタグ 0..15（0＝タグ無し）</td></tr>
     <tr><td><code>shading_model</code></td><td><code>u32</code></td><td>シェーディングモデル ID 0..3（0＝エンジン標準 PBR）。ディスパッチの分岐キー</td></tr>
     <tr><td><code>frag_coord</code></td><td><code>vec2&lt;f32&gt;</code></td><td><code>@builtin(position).xy</code>＝ピクセル座標。ディザ・ハッチング・ノイズの種</td></tr>
+    <tr><td><code>time</code></td><td><code>f32</code></td><td>ゲーム内累計時間（秒）。脈動する発光・流れる縞などアニメーションする光応答の唯一の時間入力。<b>Play かつ非ポーズのときだけ進む</b>（Edit・ポーズでは静止、Play 開始とシーン再ロードで 0 に戻る）。スクリプトの <code>SEED.Time.ElapsedTime</code>・草の揺れと同一の値</td></tr>
   </table>
+  <p class="section-note">
+    <code>time</code> は契約 v1 への<b>末尾への純粋追加</b>です（既存アセットは無改造のまま動きます）。使用例:
+  </p>
+<pre><code>// @shading_contract 1
+const PULSE_SPEED: f32 = 3.0;   // 脈動の速さ（ラジアン/秒）
+const PULSE_DEPTH: f32 = 0.5;   // 脈動の深さ（0=一定, 1=完全に消える）
+
+fn shade_default(sf: ShadingSurface, li: LightSample) -&gt; vec3&lt;f32&gt; {
+    let pulse = 1.0 - PULSE_DEPTH * (0.5 - 0.5 * cos(sf.time * PULSE_SPEED));
+    return shade_model_0(sf, li) * pulse;   // 標準 PBR の結果を時間で変調する
+}</code></pre>
+  <p class="section-note">
+    発光を脈動させるつもりで <code>sf.emissive</code> を返り値に足してはいけません
+    （エンジンがライト評価の最後に加算するため二重加算になります）。上の例のように反射項の側を変調します。
+  </p>
   <p class="section-note">
     <code>shadow_mask</code> / <code>screen_gi</code> / <code>alpha</code> など内部専用フィールドは契約に<b>含まれません</b>
     （影は <code>LightSample.color</code> に織り込み済み、SSGI はアンビエント項専用、アルファは合成側でライティングと無関係なため）。

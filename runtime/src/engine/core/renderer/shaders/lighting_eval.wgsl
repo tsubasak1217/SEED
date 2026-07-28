@@ -187,6 +187,11 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
     sf.render_tag    = s.render_tag;
     sf.shading_model = s.shading_model;
     sf.frag_coord    = s.frag_coord;
+    // 唯一 Surface 由来でないフィールド。時間はピクセルごとの属性ではなく
+    // フレーム全体で 1 つの値なので、G-Buffer を経由せずカメラ uniform から直接読む
+    // （フォワードは shader_common.wgsl、デファードは deferred_lighting.wgsl が
+    //   宣言する同一レイアウトの u_camera。どちらの経路でも同じ値になる）。
+    sf.time          = u_camera.time;
 
     // ── ライトループ（Clustered Lighting, Phase C1）────────────
     //

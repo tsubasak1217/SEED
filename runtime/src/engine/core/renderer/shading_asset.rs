@@ -1451,6 +1451,46 @@ fn caller(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return shade_defau
         }
     }
 
+    /// `ShadingSurface.time`（W0 で契約 v1 へ末尾追加した時間フィールド）を実際に読む
+    /// アセットが、3 変種すべてで naga の parse + validate を通ること。
+    ///
+    /// このテストが守っているのは 2 点である:
+    ///   1. 契約に `time` が存在し、アセットから `sf.time` として参照できること
+    ///   2. `time` の供給元 `u_camera.time` が、デファード 3 変種の連結
+    ///      （CameraUniform は deferred_lighting.wgsl が宣言）で解決すること
+    ///
+    /// フォワード経路（CameraUniform は shader_common.wgsl が宣言）側の `u_camera.time` は、
+    /// 同じ lighting_eval.wgsl を連結する `transparency.rs` の
+    /// `transparency_shaders_parse_and_validate` が naga 検証で守っている
+    /// （どちらか一方の宣言だけを直すと、その経路のテストが落ちる）。
+    #[test]
+    fn time_using_asset_passes_naga_validation_for_all_variants() {
+        // 発光が sin で脈動するだけの最小アセット（docs のスニペットと同内容）。
+        const PULSE_ASSET: &str = r#"// @shading_contract 1
+const PULSE_SPEED: f32 = 3.0;   // 脈動の速さ（ラジアン/秒）
+const PULSE_DEPTH: f32 = 0.5;   // 脈動の深さ（0=一定, 1=完全に消える）
+
+fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
+    let pulse = 1.0 - PULSE_DEPTH * (0.5 - 0.5 * cos(sf.time * PULSE_SPEED));
+    return shade_model_0(sf, li) * pulse;
+}
+"#;
+        let found = detect_shade_models(PULSE_ASSET);
+        assert_eq!(found, set(true, [false, false, false]));
+        let generated = generate_dispatch(&found);
+        for variant in [Variant::RtOff, Variant::RtOn, Variant::RtBindless] {
+            if let Err((msg, line, start)) =
+                prepare_variant(variant, "pulse.wgsl", PULSE_ASSET, &generated)
+            {
+                panic!(
+                    "[{variant:?}] sf.time を使うアセットの検証に失敗: {}",
+                    format_error("pulse.wgsl", variant, &msg, line, start,
+                                 asset_line_count(PULSE_ASSET)),
+                );
+            }
+        }
+    }
+
     /// 契約バージョンの宣言を読めること／無い場合は None であること。
     #[test]
     fn contract_version_declaration_is_parsed() {

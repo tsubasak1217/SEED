@@ -36,7 +36,10 @@ struct CameraUniform {
     view_proj:      mat4x4<f32>,
     view:           mat4x4<f32>,
     position:       vec3<f32>,
-    _pad:           f32,
+    /// ゲーム内累計時間（秒）。旧 `_pad`（vec3 のアライン規則で必ず生じる 4 byte の
+    /// 死に領域）を W0 で転用したもの。`ShadingSurface.time` の供給元であり、
+    /// lighting_eval.wgsl がここから読んで契約へ写す。Play 非ポーズ時のみ進む。
+    time:           f32,
     resolution:     vec2<f32>,
     _pad2:          vec2<f32>,
     inv_view_proj:  mat4x4<f32>,

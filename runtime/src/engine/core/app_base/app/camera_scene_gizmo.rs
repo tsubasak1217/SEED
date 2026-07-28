@@ -418,10 +418,16 @@ pub fn build_camera_frustum_batch(
 /// 選択中カメラの CameraUniform を構築する（カメラプレビューレンダー用）。
 ///
 /// - `res`: ビューポート解像度 [width, height]（ギズモ太線計算に使用）
+/// - `time`: ゲーム内累計時間（秒）。呼び出し側の `ctx.anim_time` をそのまま渡す。
+///   時間はフレーム全体で 1 つの値であり、カメラごとに変える理由がないため。
+///   （プレビューのライティングは常に組み込み標準パイプラインを使うのでシェーディング
+///    アセットは経由しないが、`ShadingSurface.time` 自体は組み込み側でも詰められる。
+///    ここを 0.0 固定にすると「プレビューだけ時が止まっている」不整合が将来生まれる）
 pub fn build_camera_uniform(
     cam_data: &SelectedCameraData,
     aspect:   f32,
     res:      [f32; 2],
+    time:     f32,
 ) -> CameraUniform {
     let [px, py, pz] = cam_data.transform.position;
 
@@ -437,7 +443,7 @@ pub fn build_camera_uniform(
         view_proj:      view_proj.transpose().data,
         view:           view.transpose().data,
         position:       [px, py, pz],
-        _pad:           0.0,
+        time,
         resolution:     res,
         _pad2:          [0.0; 2],
         inv_view_proj:  inv_view_proj.transpose().data,
