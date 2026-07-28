@@ -61,6 +61,15 @@ public partial class ProjectPanel
     /// <summary>閉じるボタン「×」のフォントサイズ。</summary>
     private const double TabCloseFontSize = 11.0;
 
+    /// <summary>タブ列末尾に置く「新しいタブ」ボタン（＋）のフォントサイズ。閉じるボタンより一回り大きくして視認性を確保する。</summary>
+    private const double NewTabButtonFontSize = 13.0;
+
+    /// <summary>「新しいタブ」ボタンのツールチップ文言。</summary>
+    private const string NewTabButtonToolTip = "新しいタブ";
+
+    /// <summary>「新しいタブ」ボタンの左マージン（直前のタブとの間隔）。</summary>
+    private static readonly Thickness NewTabButtonMargin = new(4, 0, 0, 0);
+
     /// <summary>タブ角丸の半径。</summary>
     private static readonly CornerRadius TabCornerRadius = new(3, 3, 0, 0);
 
@@ -120,12 +129,53 @@ public partial class ProjectPanel
 
     // ── タブバーの構築 ────────────────────────────────────────────
 
-    /// <summary>タブバー（ツールバー左側の StackPanel）を現在の _tabs から作り直す。</summary>
+    /// <summary>タブバー（ツールバー左側の StackPanel）を現在の _tabs から作り直す。末尾に「新しいタブ」ボタンを添える。</summary>
     private void RebuildTabBar()
     {
         TabBar.Children.Clear();
         for (int i = 0; i < _tabs.Count; i++)
             TabBar.Children.Add(BuildTabChip(_tabs[i], isActive: i == _activeTabIndex));
+        TabBar.Children.Add(BuildNewTabButton());
+    }
+
+    /// <summary>
+    /// タブ列末尾に置く「＋」ボタンの見た目を組み立てる。
+    /// 閉じるボタン（×）と同系の軽量な描画（TextBlock＋クリックハンドラ）にして、
+    /// タブそのものと紛れないよう控えめなスタイルに留める。
+    /// StackPanel の子として TabBar 内に置くため、タブが増減してもタブ列の末尾に追従し、
+    /// タブバーの横スクロールにも自然に含まれる。
+    /// </summary>
+    private UIElement BuildNewTabButton()
+    {
+        var plus = new TextBlock
+        {
+            Text              = "+",
+            FontSize          = NewTabButtonFontSize,
+            Foreground        = TabCloseForeground,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+
+        var btn = new Border
+        {
+            Width           = 20,
+            Height          = 20,
+            CornerRadius    = TabCornerRadius,
+            Margin          = NewTabButtonMargin,
+            Cursor          = Cursors.Hand,
+            ToolTip         = NewTabButtonToolTip,
+            Background      = Brushes.Transparent,
+            Child           = plus,
+        };
+        btn.MouseEnter += (_, _) => btn.Background = TabInactiveBackground;
+        btn.MouseLeave += (_, _) => btn.Background = Brushes.Transparent;
+        btn.MouseLeftButtonDown += (_, e) =>
+        {
+            OpenNewTabAtRoot();
+            e.Handled = true;
+        };
+
+        return btn;
     }
 
     /// <summary>タブ 1 枚の見た目（フォルダ名＋閉じるボタン）を組み立てる。</summary>
@@ -275,6 +325,22 @@ public partial class ProjectPanel
         // 新規タブ: 現在のタブ状態を退避してから末尾に追加してアクティブ化する
         CaptureActiveTabState();
         _tabs.Add(new ProjectFolderTab { CurrentPath = folderPath, SelectedPath = selectPath });
+        _activeTabIndex = _tabs.Count - 1;
+        RebuildTabBar();
+        ApplyTabState(_tabs[_activeTabIndex]);
+    }
+
+    /// <summary>
+    /// タブ列の「＋」ボタンから呼ばれる。アセットルートを開く新規タブを常に新しく作ってアクティブ化する。
+    /// OpenFolderInTab の「同じ場所は既存タブをアクティブ化する」ルールの例外として、
+    /// ルートタブが既に存在していても構わず新規タブを積む。
+    /// </summary>
+    private void OpenNewTabAtRoot()
+    {
+        if (string.IsNullOrEmpty(_assetsRoot)) return;
+
+        CaptureActiveTabState();
+        _tabs.Add(new ProjectFolderTab { CurrentPath = _assetsRoot });
         _activeTabIndex = _tabs.Count - 1;
         RebuildTabBar();
         ApplyTabState(_tabs[_activeTabIndex]);
