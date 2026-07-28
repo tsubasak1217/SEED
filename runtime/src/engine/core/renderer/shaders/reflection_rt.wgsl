@@ -138,8 +138,12 @@ fn rt_refl_project(world_pos: vec3<f32>) -> RtReflProj {
         return r;
     }
     let ndc = clip.xyz / clip.w;
-    r.uv    = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-    r.valid = all(r.uv >= vec2<f32>(0.0, 0.0)) && all(r.uv <= vec2<f32>(1.0, 1.0));
+    // NDC → **ビューポート相対** UV。画面内判定はこちらで行う（黒帯の外は画面外）。
+    let uv_vp = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    r.valid = all(uv_vp >= vec2<f32>(0.0, 0.0)) && all(uv_vp <= vec2<f32>(1.0, 1.0));
+    // 返すのは **RT 全面基準** UV。深度・G-Buffer・scene_hdr はすべて RT 全面で
+    // 生成されるため、以降のサンプリングはこの規約で統一する。
+    r.uv = reflection_rt_uv(uv_vp);
     return r;
 }
 
@@ -273,7 +277,7 @@ fn fs_rt(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
 
-    let uv        = frag.xy / u_camera.resolution;
+    let uv        = frag.xy / vec2<f32>(textureDimensions(t_gbuffer0));
     let world_pos = reflection_world_pos(uv, depth);
     let N         = normalize(textureLoad(t_gbuffer1, pix, 0).xyz);
     let V         = normalize(u_camera.position - world_pos);
@@ -325,7 +329,7 @@ fn fs_rt(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         var reflected_screen = vec3<f32>(0.0, 0.0, 0.0);
         let proj = rt_refl_project(hit_pos);
         if proj.valid {
-            let spix   = vec2<i32>(proj.uv * u_camera.resolution);
+            let spix   = vec2<i32>(proj.uv * vec2<f32>(textureDimensions(t_gbuffer0)));
             let sdepth = textureLoad(t_depth, spix, 0);
             // 背景（深度 1.0）は面が無い＝一致対象外。手前に別の面があるケースも下の相対差で弾く。
             if sdepth < 1.0 {

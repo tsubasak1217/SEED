@@ -28,9 +28,10 @@
 
 // ─── Group 0: カメラ（shader_common.wgsl の CameraUniform と同一レイアウト）───
 //
-// Rust 側 uniforms::CameraUniform（224 bytes）と 1:1 対応させること。
+// Rust 側 uniforms::CameraUniform（304 bytes）と 1:1 対応させること。
 // 本パスが実際に使うのは position（視線ベクトル V の算出）と resolution・
-// inv_view_proj（深度→ワールド座標復元）のみだが、レイアウト一致のため全フィールドを宣言する。
+// inv_view_proj・viewport（深度→ワールド座標復元）のみだが、レイアウト一致のため
+// 全フィールドを宣言する。
 struct CameraUniform {
     view_proj:      mat4x4<f32>,
     view:           mat4x4<f32>,
@@ -39,6 +40,12 @@ struct CameraUniform {
     resolution:     vec2<f32>,
     _pad2:          vec2<f32>,
     inv_view_proj:  mat4x4<f32>,
+    /// 速度バッファ用の前フレーム ViewProjection（本パスでは未使用。オフセット合わせ）。
+    prev_view_proj: mat4x4<f32>,
+    /// フレームバッファ基準のビューポート矩形 (x, y, w, h)。
+    /// **NDC はこの矩形へ写像される**ため、深度→ワールド復元はこれで正規化する
+    /// （Play のレターボックス時に RT 全面で正規化すると座標が横滑りする）。
+    viewport:       vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> u_camera: CameraUniform;
 
@@ -143,6 +150,16 @@ const SHADOW_MASK_DEPTH_TOLERANCE_MIN: f32 = 0.05;
 /// だけを採用する（にじみゼロを優先。境界の細い特徴で多少のエイリアスが出るのは許容）。
 const SHADOW_MASK_UPSAMPLE_MIN_WEIGHT: f32 = 1e-4;
 
+// ─── フレームバッファ画素 → ビューポート相対 UV ───────────────────────
+//
+// `@builtin(position)` はフレームバッファ基準の画素座標だが、NDC `[-1,1]` が写像されるのは
+// **ビューポート矩形だけ**（Play のレターボックス／ピラーボックスで set_viewport する矩形）。
+// 深度から NDC を組み立てる箇所は必ずこの関数を通すこと。
+// Edit モード・黒帯なしでは viewport = (0, 0, RT幅, RT高さ) となり、従来式と完全に同値。
+fn deferred_vp_uv_from_pix(pix: vec2<f32>) -> vec2<f32> {
+    return (pix - u_camera.viewport.xy) / max(u_camera.viewport.zw, vec2<f32>(1.0, 1.0));
+}
+
 /// 半解像度マスクテクセル `hcoord` の「代表ビュー空間深度」を復元する。
 ///
 /// 深度を別テクスチャに焼かず（.a 同梱はいもす法ブラーが深度を混ぜて壊すため不可）、
@@ -160,7 +177,9 @@ fn mask_half_texel_view_z(hcoord: vec2<i32>, half_dims: vec2<f32>, full_dims: ve
     let fp   = clamp(uv * full_dims, vec2<f32>(0.0, 0.0), full_dims - vec2<f32>(1.0, 1.0));
     let d    = textureLoad(t_depth, vec2<i32>(fp), 0);
     // 深度→ワールド→ビュー空間 z（fs_deferred / shadow_mask.wgsl の mask_world_pos と同式・同カメラ）。
-    let ndc  = vec3<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d);
+    // NDC はビューポート矩形へ写像されるため、フル解像度画素をビューポート相対 UV へ直す。
+    let uv_vp = deferred_vp_uv_from_pix(fp);
+    let ndc  = vec3<f32>(uv_vp.x * 2.0 - 1.0, 1.0 - uv_vp.y * 2.0, d);
     let clip = u_camera.inv_view_proj * vec4<f32>(ndc, 1.0);
     let wp   = clip.xyz / clip.w;
     return (u_camera.view * vec4<f32>(wp, 1.0)).z;
@@ -177,8 +196,14 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // 備えて一貫した書き方にする）。
     let depth = textureLoad(t_depth, pix, 0);
 
+    // uv: RT 全面基準（AO / SSGI / シャドウマスクは RT 全面で生成されるため、
+    //     それらのサンプリングにはこちらを使う）。
     let uv  = frag.xy / u_camera.resolution;
-    let ndc = vec3<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth);
+    // ndc: ビューポート相対で正規化する（NDC はビューポート矩形にしか写像されない）。
+    //      Play のレターボックス時にここを RT 全面で割ると、復元ワールド座標が
+    //      水平方向へ数メートル滑り、RT 影のレイ原点が地形内部へ潜って黒く潰れる。
+    let uv_vp = deferred_vp_uv_from_pix(frag.xy);
+    let ndc = vec3<f32>(uv_vp.x * 2.0 - 1.0, 1.0 - uv_vp.y * 2.0, depth);
     let clip = u_camera.inv_view_proj * vec4<f32>(ndc, 1.0);
     let world_pos = clip.xyz / clip.w;
 

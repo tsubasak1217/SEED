@@ -13,8 +13,9 @@
 
 /// カメラのビュー×プロジェクション行列一式。
 ///
-/// WGSL レイアウト（計 288 bytes。Phase D3: G-Buffer デファード化 Phase A で
-/// inv_view_proj（160→224）、速度バッファ（第2層）で prev_view_proj（224→288）を追加）:
+/// WGSL レイアウト（計 304 bytes。Phase D3: G-Buffer デファード化 Phase A で
+/// inv_view_proj（160→224）、速度バッファ（第2層）で prev_view_proj（224→288）、
+/// Play レターボックス対応で viewport（288→304）を追加）:
 /// | オフセット | フィールド      | サイズ |
 /// |-----------|----------------|--------|
 /// |   0       | view_proj      |  64    |
@@ -25,6 +26,7 @@
 /// | 152       | _pad2          |   8    |
 /// | 160       | inv_view_proj  |  64    |
 /// | 224       | prev_view_proj |  64    |
+/// | 288       | viewport       |  16    |
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
@@ -60,7 +62,32 @@ pub struct CameraUniform {
     ///
     /// 値は他のフィールドと同じ規約（列優先アップロード＝ `.transpose().data`）。
     pub prev_view_proj: [[f32; 4]; 4],
+
+    /// **フレームバッファ基準**のビューポート矩形 `(x, y, width, height)`。
+    ///
+    /// Play のレターボックス／ピラーボックス時に `set_viewport` する矩形そのもの。
+    /// 黒帯が無い場合（Edit モード・スケーリング無し）は `(0, 0, RT幅, RT高さ)`。
+    ///
+    /// 【なぜ必要か】`@builtin(position)`（frag_coord）は**フレームバッファ画素座標**だが、
+    /// NDC `[-1,1]` が写像されるのは**ビューポート矩形だけ**である。したがって
+    /// 「深度 → NDC → ワールド座標」の復元では、frag_coord をレンダーターゲット全面ではなく
+    /// **この矩形**で正規化しなければならない。RT 全面で正規化すると、黒帯があるフレームで
+    /// 復元ワールド座標が水平方向へ数メートル滑り、RT 影のレイ原点が地形内部へ潜って
+    /// 画面が黒く塗り潰される（Play 限定の黒い染みの原因）。
+    ///
+    /// 【resolution との違い】`resolution` は RT 全面のサイズで、**テクスチャのアドレッシング**
+    /// （AO / SSGI / シャドウマスクは RT 全面で生成される）に使う。用途を混同しないこと。
+    ///
+    /// クラスタライティングが同じ理由で `ClusterParams` に矩形を持っているのと同じ規約
+    /// （`cluster_common.wgsl` のタイル境界の注記を参照）。
+    pub viewport: [f32; 4],
 }
+
+/// `CameraUniform.viewport` のバイトオフセット（部分書き込み用）。
+///
+/// ビューポート矩形は「実サーフェスへのクランプ」がカメラ行列の確定より後になるため、
+/// 確定後にこのオフセットだけを上書きする（`CameraBuffer::update_viewport`）。
+pub const CAMERA_UNIFORM_VIEWPORT_OFFSET: u64 = std::mem::offset_of!(CameraUniform, viewport) as u64;
 
 impl CameraUniform {
     pub fn identity() -> Self {
@@ -73,7 +100,9 @@ impl CameraUniform {
         Self { view_proj: id, view: id, position: [0.0; 3], _pad: 0.0,
                resolution: [1280.0, 720.0], _pad2: [0.0; 2], inv_view_proj: id,
                // 前フレーム行列は「prev=curr」で初期化する（速度 0）。
-               prev_view_proj: id }
+               prev_view_proj: id,
+               // ビューポート矩形の既定は「RT 全面」＝黒帯なし（従来挙動と同値）。
+               viewport: [0.0, 0.0, 1280.0, 720.0] }
     }
 }
 
@@ -449,13 +478,48 @@ pub struct GizmoVertex {
 mod layout_tests {
     use super::*;
 
-    /// CameraUniform が Rust/WGSL 双方で 288 バイト（160→224 で inv_view_proj、
-    /// 224→288 で prev_view_proj を追加）であることを固定する。ズレると
+    /// 深度→ワールド座標を復元する全シェーダが、ビューポート矩形を宣言していること。
+    ///
+    /// 【何を守っているか】NDC `[-1,1]` はレンダーターゲット全面ではなく **set_viewport した
+    /// 矩形**へ写像される。Play のレターボックス／ピラーボックスでこれを無視して
+    /// `frag_coord / resolution` で正規化すると、復元ワールド座標が水平方向へ数メートル
+    /// 滑り、RT 影のレイ原点が地形内部へ潜って画面が黒く塗り潰される。
+    /// CameraUniform を切り詰めて宣言し直す改変でこの規約が静かに外れるのを防ぐため、
+    /// 「viewport フィールドの宣言」と「素の resolution 正規化が残っていないこと」を固定する。
+    #[test]
+    fn world_pos_reconstruction_shaders_declare_viewport() {
+        // (シェーダ名, ソース) — 深度からワールド座標を復元するフルスクリーンパスのすべて。
+        let shaders: [(&str, &str); 5] = [
+            ("deferred_lighting.wgsl", include_str!("shaders/deferred_lighting.wgsl")),
+            ("shadow_mask.wgsl",       include_str!("shaders/shadow_mask.wgsl")),
+            ("ao_common.wgsl",         include_str!("shaders/ao_common.wgsl")),
+            ("ssgi_common.wgsl",       include_str!("shaders/ssgi_common.wgsl")),
+            ("reflection_common.wgsl", include_str!("shaders/reflection_common.wgsl")),
+        ];
+        for (name, src) in shaders {
+            assert!(
+                src.contains("viewport:"),
+                "{name} の CameraUniform に viewport が宣言されていない                 （深度→ワールド復元がレターボックスでズレる）"
+            );
+            // NDC は必ずビューポート相対 UV（uv_vp）から作ること。
+            // RT 全面基準の `uv` から直接 NDC を組み立てる旧式が残っていないかを見る
+            // （`uv` そのものは AO / SSGI / マスクのサンプリングに今も使うので存在してよい）。
+            assert!(
+                !src.contains("vec3<f32>(uv.x * 2.0 - 1.0"),
+                "{name} が RT 全面基準の uv から直接 NDC を作っている                 （ビューポート相対の uv_vp から作ること）"
+            );
+        }
+    }
+
+    /// CameraUniform が Rust/WGSL 双方で 304 バイト（160→224 で inv_view_proj、
+    /// 224→288 で prev_view_proj、288→304 で viewport を追加）であることを固定する。ズレると
     /// shader_common.wgsl / deferred_lighting.wgsl / grass_gbuffer.wgsl の
     /// CameraUniform 定義との対応が崩れ、GPU が誤ったバイトを読む（静かな描画バグ）。
     #[test]
-    fn camera_uniform_size_is_288_bytes() {
-        assert_eq!(std::mem::size_of::<CameraUniform>(), 288);
+    fn camera_uniform_size_is_304_bytes() {
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 304);
+        // viewport の位置も固定する（部分書き込みのオフセット規約）。
+        assert_eq!(CAMERA_UNIFORM_VIEWPORT_OFFSET, 288);
         // prev_view_proj は末尾 64 バイト（offset 224）。
         let c = CameraUniform::identity();
         let base = &c as *const _ as usize;

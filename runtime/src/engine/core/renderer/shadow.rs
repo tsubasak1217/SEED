@@ -368,6 +368,8 @@ fn view_proj_uniform(vp: &Mat4x4<f32>, size: f32) -> CameraUniform {
         inv_view_proj:  inv_vp.transpose().data,
         // シャドウ深度カメラは速度バッファを持たない（深度しか書かない）ため prev=curr。
         prev_view_proj: vp.transpose().data,
+        // シャドウマップは正方アトラス全面へ描く（set_viewport のオフセットは使わない）。
+        viewport:       [0.0, 0.0, size, size],
     }
 }
 

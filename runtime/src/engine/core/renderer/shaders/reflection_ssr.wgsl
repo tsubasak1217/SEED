@@ -42,8 +42,12 @@ fn ssr_project(world_pos: vec3<f32>) -> SsrProj {
         return r;
     }
     let ndc = clip.xyz / clip.w;
-    r.uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-    r.valid = all(r.uv >= vec2<f32>(0.0, 0.0)) && all(r.uv <= vec2<f32>(1.0, 1.0));
+    // NDC → **ビューポート相対** UV。画面内判定はこちらで行う（黒帯の外は画面外）。
+    let uv_vp = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    r.valid = all(uv_vp >= vec2<f32>(0.0, 0.0)) && all(uv_vp <= vec2<f32>(1.0, 1.0));
+    // 返すのは **RT 全面基準** UV。深度・G-Buffer・scene_hdr はすべて RT 全面で
+    // 生成されるため、以降のサンプリングはこの規約で統一する。
+    r.uv = reflection_rt_uv(uv_vp);
     return r;
 }
 
@@ -63,7 +67,7 @@ fn fs_ssr(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
 
-    let uv        = frag.xy / u_camera.resolution;
+    let uv        = frag.xy / vec2<f32>(textureDimensions(t_gbuffer0));
     let world_pos = reflection_world_pos(uv, depth);
     let N         = normalize(textureLoad(t_gbuffer1, pix, 0).xyz);
     let V         = normalize(u_camera.position - world_pos);
@@ -94,7 +98,7 @@ fn fs_ssr(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         if !proj.valid {
             break;
         }
-        let spix        = vec2<i32>(proj.uv * u_camera.resolution);
+        let spix        = vec2<i32>(proj.uv * vec2<f32>(textureDimensions(t_gbuffer0)));
         let scene_depth = textureLoad(t_depth, spix, 0);
         if scene_depth >= SSR_BG_DEPTH {
             prev_t = t;
@@ -122,7 +126,7 @@ fn fs_ssr(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
                     hi = mid;
                     continue;
                 }
-                let sdm = textureLoad(t_depth, vec2<i32>(pjm.uv * u_camera.resolution), 0);
+                let sdm = textureLoad(t_depth, vec2<i32>(pjm.uv * vec2<f32>(textureDimensions(t_gbuffer0))), 0);
                 let swm = reflection_world_pos(pjm.uv, sdm);
                 let dm  = ssr_view_z(pm) - ssr_view_z(swm);
                 if dm > 0.0 {

@@ -773,9 +773,11 @@ impl App {
                 saved_shadow_cam = Some((view, n, f, fo, a));
             }
 
-            // カメラ解像度ユニフォームも実レンダーターゲット基準に揃える
-            // （デファードのライティングパスが深度→ワールド座標復元に resolution を使うため、
-            //  ビューポート基準（win_w_f/win_h_f）と食い違うと復元がズレる）。
+            // カメラ解像度ユニフォームは実レンダーターゲット基準に揃える。
+            // resolution の用途は **テクスチャのアドレッシング**（AO / SSGI / シャドウマスクは
+            // RT 全面で生成されるため）であり、深度→ワールド座標の復元には使わない。
+            // 復元の正規化に使うのは下の `viewport`（NDC が写像される矩形）である
+            // ―― この 2 つを混同すると Play のレターボックス時に復元座標が横滑りする。
             let res = render_target_size.map_or([1280.0, 720.0], |s| {
                 [s.width as f32, s.height as f32]
             });
@@ -823,6 +825,15 @@ impl App {
                 _pad2:          [0.0; 2],
                 inv_view_proj:  inv_view_proj.transpose().data,
                 prev_view_proj: prev_view_proj.transpose().data,
+                // ビューポート矩形（深度→ワールド復元の正規化に使う。resolution とは別物）。
+                // Play（非ポーズ）は set_viewport するゲーム領域、それ以外は RT 全面。
+                // ここで入れるのは**クランプ前**の値で、実サーフェスへのクランプ確定後に
+                // update_viewport で上書きする（クランプは frame.surface_size() が要るため）。
+                viewport:       if self.mode == RuntimeMode::Play && !self.paused {
+                    [game_viewport.0, game_viewport.1, game_viewport.2, game_viewport.3]
+                } else {
+                    [0.0, 0.0, res[0], res[1]]
+                },
             });
 
             // ── 埋め込み Play 黒画面 診断（SEED_PLAY_DIAG）─────────────────────────
@@ -880,6 +891,9 @@ impl App {
                         inv_view_proj:  cvp_inv.transpose().data,
                         // 2D オルソオーバーレイは G-Buffer（速度）を持たないので prev=curr（速度 0）。
                         prev_view_proj: cvp.transpose().data,
+                        // 2D オルソオーバーレイは深度→ワールド復元を行わないが、
+                        // 規約どおり「描画対象全面」を入れておく（黒帯の概念が無い）。
+                        viewport:       [0.0, 0.0, vp_w, vp_h],
                     });
                 }
             }
@@ -4257,6 +4271,22 @@ impl App {
                             true
                         };
 
+                        // ── 確定したビューポート矩形をカメラ UBO へ反映（深度→ワールド復元用）──
+                        // NDC はビューポート矩形へ写像されるため、フルスクリーン再構成パス
+                        // （deferred ライティング / シャドウマスク / AO / SSGI / 反射）は
+                        // frag_coord をこの矩形で正規化しなければワールド座標が横滑りする。
+                        // クランプ後の値がここで初めて確定するため、この 1 点で上書きする。
+                        // play_viewport_ok=false のフレームは set_viewport 自体をスキップする
+                        // ＝ NDC が RT 全面へ写像されるので、矩形も RT 全面にしておく。
+                        {
+                            let vp = if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
+                                [game_viewport.0, game_viewport.1, game_viewport.2, game_viewport.3]
+                            } else {
+                                [0.0, 0.0, rt_surf_w as f32, rt_surf_h as f32]
+                            };
+                            camera_buf.update_viewport(&draw_ctx.queue, vp);
+                        }
+
                         // ── Clustered Lighting: クラスタ構築 compute（Phase C1）─────────
                         // メインカメラの視錐台を 16×9×24 の 3D フロクセルへ分割し、各クラスタへ
                         // 影響する局所ライト（point/spot/rect）のインデックスを集める。
@@ -4765,6 +4795,27 @@ impl App {
                                         else if lit_use_rt       { ap.rt.as_ref() }
                                         else                     { Some(&ap.pipeline) }
                                     });
+                                // ── 診断ログ（常時 ON・変化時のみ）─────────────────
+                                // 「ロードはできたが、そのバリアントが無くて組み込みへ落ちた」を
+                                // 見分けるための行。ロード側の [SHADING] loaded と対で読むこと。
+                                if let Some(p) = shading_asset_path {
+                                    let variant = if use_bindless_lit { "rt_bindless" }
+                                                  else if lit_use_rt  { "rt" }
+                                                  else                { "rt_off" };
+                                    let mode = if self.mode == RuntimeMode::Edit { "Edit" } else { "Play" };
+                                    let line = if asset_pipe.is_some() {
+                                        format!("[SHADING] applied mode={mode} path={p} variant={variant}")
+                                    } else {
+                                        format!(
+                                            "[SHADING] fallback mode={mode} path={p} variant={variant} \
+                                             （このバリアントのアセット版が無いため組み込み標準で描画）"
+                                        )
+                                    };
+                                    draw_ctx.shading_asset_cache.report(
+                                        crate::engine::core::renderer::shading_asset::REPORT_CHANNEL_APPLY,
+                                        line,
+                                    );
+                                }
                                 let lit_pipe = match asset_pipe {
                                     Some(p) => p,
                                     // ── 従来経路（アセット未指定・解決失敗時はここだけを通る）──

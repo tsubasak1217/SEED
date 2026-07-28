@@ -50,8 +50,12 @@ fn ssgi_project(world_pos: vec3<f32>) -> SsgiProj {
         return r;
     }
     let ndc = clip.xyz / clip.w;
-    r.uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-    r.valid = all(r.uv >= vec2<f32>(0.0, 0.0)) && all(r.uv <= vec2<f32>(1.0, 1.0));
+    // NDC → **ビューポート相対** UV。画面内判定はこちらで行う（黒帯の外は画面外）。
+    let uv_vp = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    r.valid = all(uv_vp >= vec2<f32>(0.0, 0.0)) && all(uv_vp <= vec2<f32>(1.0, 1.0));
+    // 返すのは **RT 全面基準** UV。深度・G-Buffer・scene_hdr はすべて RT 全面で
+    // 生成されるため、以降のサンプリングはこの規約で統一する。
+    r.uv = ssgi_rt_uv(uv_vp);
     return r;
 }
 
