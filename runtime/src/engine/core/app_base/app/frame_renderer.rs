@@ -1045,6 +1045,9 @@ impl App {
         // did_pick と同じスコープ・同じ寿命で持ち、GPU サブミット後の解決処理で参照する
         //（読み戻しバッファは 1 フレームに 1 回しか読めないため、用途の排他を表す）。
         let mut did_control_point_readback = false;
+        // 今フレームの ID バッファ読み戻しがコントロールポイントの**ホバー**
+        //（配置予定マーカー）のためだったか。ドロップ用フラグとは排他。
+        let mut did_control_point_hover_readback = false;
 
         // ピック結果デコード用 MC 情報 (base, dfs_id, slot_i, instance_count)
         let wl_mc_pick_infos: Vec<(u32, u32, usize, usize)> = {
@@ -6805,13 +6808,19 @@ impl App {
                             let cp_pos = self.pending_control_point_drop
                                 .as_ref()
                                 .map(|&(_, _, sx, sy)| (sx, sy));
+                            // コントロールポイントの配置予定マーカー用ホバー。
+                            // 実際の追加より優先度を下げ、アクタ追加・ピックより上に置く。
+                            // ドラッグ中はクリックもコンテキストメニューも起きないので、
+                            // 実質この 3 つが同時に立つことはない。
+                            let cp_hover_pos = self.pending_control_point_hover;
                             let add_actor_pos = self.pending_add_actor
                                 .as_ref()
                                 .and_then(|&(is_2d, _, _, sx, sy)| {
                                     // 2D アクターはスポーン位置不要なので readback しない
                                     if is_2d { None } else { Some((sx, sy)) }
                                 });
-                            let readback_pos = drop_pos.or(cp_pos).or(add_actor_pos).or(pick_pos);
+                            let readback_pos = drop_pos.or(cp_pos).or(cp_hover_pos)
+                                .or(add_actor_pos).or(pick_pos);
                             if let Some((px, py)) = readback_pos {
                                 let px = px.min(id_buf.width.saturating_sub(1));
                                 let py = py.min(id_buf.height.saturating_sub(1));
@@ -6820,7 +6829,11 @@ impl App {
                                 );
                                 // readback が drop/control_point/add_actor ではなく pick のためかを記録するフラグ
                                 did_pick = drop_pos.is_none() && cp_pos.is_none()
+                                    && cp_hover_pos.is_none()
                                     && add_actor_pos.is_none() && pick_pos.is_some();
+                                // ホバーが読み戻しを取れたか（上位 2 つが立っていないこと）。
+                                did_control_point_hover_readback =
+                                    drop_pos.is_none() && cp_pos.is_none() && cp_hover_pos.is_some();
                                 // readback がコントロールポイント D&D のためだったか。
                                 // did_pick とは**同時に true にならない**（＝読み戻しの二重消費が起きない）。
                                 did_control_point_readback = drop_pos.is_none() && cp_pos.is_some();
@@ -7231,10 +7244,43 @@ impl App {
                 // resolve_spawn_pos は流用しない: あちらは何にも当たらないとき
                 // 「カメラ前方 10m」へフォールバックしてしまい、
                 // 「空をドロップしたら何も起きない」という本機能の要件に反するため。
-                if let Some(hit) = self.resolve_control_point_drop_hit(gpu_hit, sx, sy) {
+                let hit = self.resolve_control_point_drop_hit(gpu_hit, sx, sy);
+                // 実機での切り分け用の 1 行（ドロップ時のみ・常時 ON）。
+                match hit {
+                    Some(h) => eprintln!(
+                        "[CTRL_POINT] drop request x={} y={} → hit=({:.3},{:.3},{:.3})",
+                        sx, sy, h[0], h[1], h[2]
+                    ),
+                    None => eprintln!("[CTRL_POINT] drop request x={} y={} → hit=none", sx, sy),
+                }
+                if let Some(hit) = hit {
                     self.handle_add_control_point_world(actor_dfs_id, slot_idx, hit);
                 }
                 // ヒットが 1 つも無ければ点を追加しない（＝空をドロップしても何も起きない）。
+                // 点が置かれた／置かれなかったに関わらず、残っているマーカーは消す。
+                self.control_point_drop_preview = None;
+            }
+        }
+
+        // ── コントロールポイント D&D の「配置予定マーカー」解決（GPU サブミット後）───
+        //
+        // ドロップと同じ `resolve_control_point_drop_hit` を使うので、
+        // 「マーカーが出た位置に必ず点が置かれる」ことが構造的に保証される。
+        // 読み戻しを他用途に取られたフレームでは**再キューせず捨てる**
+        //（次のホバーが 30Hz で飛んでくるため。古い座標で描くとマーカーが遅れて残る）。
+        if let Some((sx, sy)) = self.pending_control_point_hover.take() {
+            if self.edit_view_is_2d() || self.is_2d_edit_tab() {
+                // 2D ビューではパス（3D の概念）の着弾点を定義できないのでマーカーも出さない。
+                self.control_point_drop_preview = None;
+            } else if did_control_point_hover_readback {
+                let gpu_hit = if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
+                    id_buf.read_pixel(&draw_ctx.device).0
+                } else {
+                    None
+                };
+                // ヒット無し（空をドラッグ中）なら None のまま入れる ＝ マーカーを消す。
+                self.control_point_drop_preview =
+                    self.resolve_control_point_drop_hit(gpu_hit, sx, sy);
             }
         }
 
@@ -7249,7 +7295,8 @@ impl App {
                 // 読み戻しバッファにはそちらの座標が入っている。ここで読むと
                 // 「点を置いた位置にアクタが湧く」誤配置になるため、ピック時と同じく
                 // 解決を諦めて次フレームへ再キューする。
-                let readback_consumed = did_pick || did_control_point_readback;
+                let readback_consumed =
+                    did_pick || did_control_point_readback || did_control_point_hover_readback;
                 match self.resolve_spawn_pos(sx, sy, readback_consumed) {
                     // 再キューイング
                     None => self.pending_add_actor = Some((false, world_line, parent_dfs_id, sx, sy)),

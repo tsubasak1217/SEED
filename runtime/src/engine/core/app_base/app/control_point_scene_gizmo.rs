@@ -43,6 +43,17 @@ use crate::engine::structs::objects::Actor;
 const POINT_CUBE_COLOR: [f32; 4] = [1.0, 0.65, 0.20, 0.95];
 /// 選択中の制御点キューブの色（白。掴んでいる点が一目で分かるように）。
 const POINT_CUBE_SELECTED_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+/// D&D 中の「配置予定マーカー」の色（半透明の水色）。
+///
+/// 確定済みの点（オレンジ・白）と**色相で**区別する。アルファを落として
+/// 「まだ確定していない」ことを見た目でも伝える。
+const PREVIEW_CUBE_COLOR: [f32; 4] = [0.45, 0.85, 1.0, 0.55];
+
+/// 配置予定マーカーの大きさを、確定済みの点キューブの何倍にするか。
+///
+/// 少しだけ大きくして、既存の点に重なってもマーカーの輪郭が見えるようにする。
+const PREVIEW_CUBE_SCALE: f32 = 1.35;
+
 /// CatmullRom 区間の線色（シアン）。
 const SEGMENT_CATMULL_COLOR: [f32; 4] = [0.35, 0.90, 1.0, 0.90];
 /// Linear 区間の線色（緑）。
@@ -136,12 +147,20 @@ pub fn collect_paths_for_actor(
 pub fn build_control_point_lines(
     paths:         &[ResolvedPathSlot],
     selected:      Option<(u32, u32)>,
+    preview:       Option<[f32; 3]>,
     half_size_for: impl Fn([f32; 3]) -> f32,
 ) -> Option<LineBatch> {
     let mut lb = LineBatch::new();
     for path in paths {
         add_path_lines(&mut lb, &path.eval);
         add_path_cubes(&mut lb, path, selected, &half_size_for);
+    }
+    // D&D 中の配置予定マーカー（あれば最後に重ねる）。
+    // 点が 1 つも無いスロットへの初回ドロップでも出したいので、
+    // `paths` が空でもここだけは描く（＝ lb が空でなくなる）。
+    if let Some(center) = preview {
+        let half = cube_half_size(center, &half_size_for) * PREVIEW_CUBE_SCALE;
+        add_wire_cube(&mut lb, center, half, PREVIEW_CUBE_COLOR);
     }
     if lb.is_empty() { None } else { Some(lb) }
 }

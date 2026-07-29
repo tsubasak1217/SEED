@@ -5520,20 +5520,38 @@ public partial class InspectorPanel : UserControl
 
     /// <summary>
     /// 「制御点を追加」ボタンからビューポートへのドラッグ＆ドロップを開始する。
-    /// ビューポートは HwndHost のため WPF の Drop は発火せず DoDragDrop は
-    /// DragDropEffects.None を返す。ProjectPanel.BeginItemDrag と同じく、その戻り値と
-    /// カーソル位置からドロップ先を判定して ADD_CONTROL_POINT_AT_SCREEN を手動転送する。
     /// </summary>
+    /// <remarks>
+    /// ドロップの受け口はビューポート HWND に登録済みの OLE ドロップターゲット
+    /// （<c>MainWindow.ViewportOleDropTarget</c>）である。ここでは
+    /// <c>BeginControlPointDrag</c> で「どのアクタ・どのスロットへ足すのか」を登録してから
+    /// DoDragDrop を回すだけで、実際の座標確定と ADD_CONTROL_POINT_AT_SCREEN 送信は
+    /// ドロップターゲット側が行う（ドロップ座標が OLE から確定値として渡るため）。
+    ///
+    /// 旧実装は「HwndHost 上には OLE ターゲットが無い」という誤った前提で
+    /// DoDragDrop 復帰後の GetCursorPos に頼っており、実際にはドロップターゲットが
+    /// 制御点ペイロードを DROPEFFECT_NONE で拒否していたため点が追加されなかった。
+    /// 復帰後のカーソル位置は「離した位置」である保証も無い。
+    /// フォールバック（<c>TryAddControlPointAtCursor</c>）は残してあるが、
+    /// OLE 経路でドロップ済みの場合は二重追加にならないよう抑止される。
+    /// </remarks>
     private void BeginAddPointDrag(UIElement dragSource, int slotIdx)
     {
-        var mainWindow = Application.Current.MainWindow as MainWindow;
+        // 対象アクタ／メインウィンドウが不明な状態でドラッグを始めても着地点が無いので何もしない。
+        // パターン変数で受けることで以降 mainWindow は非 null として扱える
+        //（ラムダに捕捉される変数は null 解析が効かないため、宣言時点で確定させる）。
+        if (Application.Current.MainWindow is not MainWindow mainWindow) return;
+        if (_currentActorId < 0) return;
+
+        // ドロップターゲットへ「どのアクタ・どのスロットへ足すのか」を渡す。
+        mainWindow.BeginControlPointDrag(_currentActorId, slotIdx);
 
         // GiveFeedback でビューポートのハイライトとカーソルを制御する。
         // ビューポート上では OLE 既定の「no-drop」カーソルを抑制して通常カーソルにする。
         GiveFeedbackEventHandler giveFeedback = (_, args) =>
         {
-            bool overVp = mainWindow?.IsMouseOverViewportHwnd() ?? false;
-            mainWindow?.SetViewportDragHighlight(overVp);
+            bool overVp = mainWindow.IsMouseOverViewportHwnd();
+            mainWindow.SetViewportDragHighlight(overVp);
             if (overVp)
             {
                 args.UseDefaultCursors = false;
@@ -5556,18 +5574,18 @@ public partial class InspectorPanel : UserControl
         {
             while (!ct.IsCancellationRequested)
             {
-                bool overVp = mainWindow?.IsMouseOverViewportHwnd() ?? false;
-                mainWindow?.Dispatcher.BeginInvoke(() => mainWindow.SetViewportDragHighlight(overVp));
+                bool overVp = mainWindow.IsMouseOverViewportHwnd();
+                mainWindow.Dispatcher.BeginInvoke(() => mainWindow.SetViewportDragHighlight(overVp));
                 System.Threading.Thread.Sleep(ViewportHighlightPollIntervalMs);
             }
         }) { IsBackground = true };
         highlightThread.Start();
 
-        // データ本体は使わない（転送は DoDragDrop の戻り値経路で行う）。
-        // 形式名だけがビューポート以外へのドロップと区別するための識別子になる。
+        // データ本体は使わない。形式名だけが「これは制御点の追加ドラッグである」ことを
+        // ドロップターゲットへ伝える識別子になる（対象アクタ/スロットは MainWindow 側に登録済み）。
         dragSource.GiveFeedback += giveFeedback;
-        var data   = new DataObject("SEEDControlPointAdd", string.Empty);
-        var result = DragDrop.DoDragDrop(dragSource, data, DragDropEffects.Copy);
+        var data = new DataObject(MainWindow.ControlPointDragFormat, string.Empty);
+        DragDrop.DoDragDrop(dragSource, data, DragDropEffects.Copy);
         dragSource.GiveFeedback -= giveFeedback;
 
         cts.Cancel();
@@ -5575,17 +5593,18 @@ public partial class InspectorPanel : UserControl
 
         // ドラッグ終了後の後始末（ProjectPanel と同じ。OLE ループ後に残るキャプチャも解除する）。
         Mouse.OverrideCursor = null;
-        mainWindow?.SetViewportDragHighlight(false);
+        mainWindow.SetViewportDragHighlight(false);
         Mouse.Capture(null);
 
-        // ビューポート上でドロップされていたら、そのローカル座標でランタイムへ追加を依頼する。
-        // ヒット判定・ワールド座標算出はすべてランタイム側の責務（C# はワールド座標を扱わない）。
+        // ドラッグ状態を解除し、OLE 経路でドロップ済みかを受け取る。
         // 追加結果は Rust が ACTOR_COMPONENTS を送り返してリストへ反映されるので、
         // ここではダイアログ等を出さず即座に制御を返す（連続ドロップの UX を壊さないため）。
-        if (result != DragDropEffects.None) return;
-        if (_currentActorId < 0) return;
-        if (mainWindow != null && mainWindow.TryGetViewportCursorPos(out var vx, out var vy))
-            _runtime?.SendToRuntime($"ADD_CONTROL_POINT_AT_SCREEN:{_currentActorId},{slotIdx},{vx},{vy}");
+        bool droppedViaOle = mainWindow.EndControlPointDrag();
+        if (droppedViaOle) return;
+
+        // OLE のドロップが届かなかった場合のみ、カーソル位置から復元して送る。
+        // （ドロップターゲットの登録に失敗している環境などへの保険）
+        mainWindow.TryAddControlPointAtCursor(_currentActorId, slotIdx);
     }
 
     /// <summary>

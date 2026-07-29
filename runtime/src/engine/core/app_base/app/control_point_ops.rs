@@ -344,10 +344,20 @@ impl App {
     /// 描くものが無ければ None。
     pub(super) fn build_control_point_line_batch(&self) -> Option<LineBatch> {
         let paths = self.resolved_control_point_paths();
-        if paths.is_empty() { return None; }
+        // 配置予定マーカー（D&D 中のみ）。点キューブと同じ表示条件でだけ出す
+        //（Play 中や 2D ビューでマーカーだけが浮くのを防ぐ）。
+        let preview = if self.control_points_visible() {
+            self.control_point_drop_preview
+        } else {
+            None
+        };
+        // 点も線もマーカーも無ければ GPU バッファを作らない。
+        // ※ 点が 0 個のスロットへ初めてドロップする場合は paths が空でも
+        //    マーカーだけを描く必要があるため、`paths.is_empty()` 単独では打ち切れない。
+        if paths.is_empty() && preview.is_none() { return None; }
         let selected = self.selected_control_point.map(|s| (s.slot_idx, s.index));
         control_point_scene_gizmo::build_control_point_lines(
-            &paths, selected, |p| self.control_point_cube_half(p),
+            &paths, selected, preview, |p| self.control_point_cube_half(p),
         )
     }
 

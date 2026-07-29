@@ -937,6 +937,18 @@ pub struct App {
     /// 1 フレームに 1 回しか読み戻せないので、通常ドロップが読み戻しを使ったフレームでは
     /// 次フレームへ再キューされる。
     pending_control_point_drop: Option<(u32, u32, u32, u32)>,
+    /// CONTROL_POINT_DRAG_HOVER コマンドで設定する「配置予定位置の問い合わせ座標」。
+    /// タプル: (screen_x, screen_y)。
+    ///
+    /// ドロップ用キュー（`pending_control_point_drop`）と違い、読み戻しを他用途に
+    /// 取られたフレームでは**再キューせず捨てる**。ホバーは 30Hz で次が飛んでくるので
+    /// 取りこぼしても実害が無く、再キューすると古い座標のマーカーが残るためである。
+    pending_control_point_hover: Option<(u32, u32)>,
+    /// ドラッグ中の「配置予定マーカー」を描くワールド座標（解決済み）。
+    /// None は「今のカーソル位置には置けない（空をドラッグしている）」を意味し、
+    /// マーカーを描かないことでユーザーに伝える。
+    /// CONTROL_POINT_DRAG_END で必ず None に戻す。
+    control_point_drop_preview: Option<[f32; 3]>,
 
     // ── プラグインシステム ─────────────────────────────────────────
     /// ロード済みプラグインのレジストリ。
@@ -1303,6 +1315,8 @@ impl App {
             context_menu_screen_pos: None,
             pending_add_actor:  None,
             pending_control_point_drop: None,
+            pending_control_point_hover: None,
+            control_point_drop_preview: None,
             plugin_registry:  crate::engine::plugin::registry::PluginRegistry::empty(),
             physics_thread:   None,
             character_world:  None,
