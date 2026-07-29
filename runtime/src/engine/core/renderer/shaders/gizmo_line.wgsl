@@ -2,8 +2,11 @@
 // gizmo_line.wgsl — スクリーン空間太線ギズモ
 //
 // 各セグメントを 2 三角形（クワッド）に展開する。
-// GizmoVertex は (pos_a, t, pos_b, side, color) を持ち、
-// 頂点シェーダがスクリーン空間の垂直方向オフセットを計算する。
+// GizmoVertex は (pos_a, t, pos_b, side, color, thickness_px) を持ち、
+// 頂点シェーダがスクリーン空間の垂直方向オフセットを thickness_px ぶんだけ計算する。
+// 太さを頂点属性に持たせているのは、グリッド／コライダー枠／制御点の区間ラインなど
+// 用途ごとに違う太さの線を、同じ頂点バッファ・同じ 1 ドローコールへ混在させられるようにするため
+// （固定シェーダ定数だと呼び出し側で太さを出し分けられない）。
 // ============================================================
 
 struct CameraUniform {
@@ -23,19 +26,18 @@ struct ModelUniform {
 @group(1) @binding(0) var<uniform> u_model: ModelUniform;
 
 struct VertexInput {
-    @location(0) pos_a: vec3<f32>,
-    @location(1) t:     f32,        // 0.0 = pos_a 側, 1.0 = pos_b 側
-    @location(2) pos_b: vec3<f32>,
-    @location(3) side:  f32,        // -1.0 または +1.0
-    @location(4) color: vec4<f32>,
+    @location(0) pos_a:        vec3<f32>,
+    @location(1) t:             f32,        // 0.0 = pos_a 側, 1.0 = pos_b 側
+    @location(2) pos_b:        vec3<f32>,
+    @location(3) side:          f32,        // -1.0 または +1.0
+    @location(4) color:        vec4<f32>,
+    @location(5) thickness_px:  f32,        // 線の太さ（px）。CPU 側で線ごとに指定する。
 }
 
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0)       color:    vec4<f32>,
 }
-
-const THICKNESS_PX: f32 = 3.33;
 
 @vertex
 fn vs_main(v: VertexInput) -> VertexOutput {
@@ -58,7 +60,7 @@ fn vs_main(v: VertexInput) -> VertexOutput {
 
     // ピクセル単位のオフセット → NDC → クリップ空間
     let base_clip  = select(clip_a, clip_b, v.t > 0.5);
-    let ndc_offset = perp / (res * 0.5) * v.side * THICKNESS_PX * 0.5;
+    let ndc_offset = perp / (res * 0.5) * v.side * v.thickness_px * 0.5;
     let clip_offset = ndc_offset * base_clip.w;
 
     var out: VertexOutput;

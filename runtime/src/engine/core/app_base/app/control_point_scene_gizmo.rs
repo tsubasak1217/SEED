@@ -61,6 +61,15 @@ const SEGMENT_LINEAR_COLOR: [f32; 4] = [0.40, 1.0, 0.45, 0.90];
 /// Step 区間の線色（オレンジ。L 字で描く）。
 const SEGMENT_STEP_COLOR: [f32; 4] = [1.0, 0.55, 0.20, 0.90];
 
+/// 区間ライン（CatmullRom/Linear/Step の経路線）の太さ（px）。
+///
+/// 既定のギズモ太線（`DEFAULT_GIZMO_LINE_THICKNESS_PX` = 3.33px）だとグリッドや
+/// コライダー枠と見分けが付きにくく、経路として辿りたい線が埋もれる。約 2 倍の
+/// 太さにして「これがパスの実体」だと一目で分かるようにする。点のワイヤキューブ・
+/// 配置プレビューマーカーは編集ハンドルの輪郭であって経路そのものではないため、
+/// ここでは太くしない（`add_line`＝既定太さのまま）。
+const CONTROL_POINT_LINE_THICKNESS_PX: f32 = 7.0;
+
 /// 制御点キューブの半辺長を「そこに置いたギズモの見かけ半径」の何倍にするか。
 ///
 /// 移動ギズモより明確に小さくして、点キューブがギズモの軸ハンドルを
@@ -133,13 +142,37 @@ pub fn collect_paths_for_actor(
 
 // ─── 描画 ────────────────────────────────────────────────────
 
-/// 解決済みパス群から、点キューブ＋区間ラインの `LineBatch`（CPU 側）を組む。
+/// コントロールポイントギズモの CPU 側頂点を、太さの異なる 2 つの `LineBatch` に分けて持つもの。
+///
+/// 区間ライン（経路そのもの）だけを太く見せたいが、`LineBatch` は 1 バッチ＝
+/// 1 描画パイプライン（太線なら `build_thick` → 太線パイプライン、そうでなければ
+/// `build` → 1px ラインパイプライン）に対応するため、太さを混在させたい場合は
+/// バッチ自体を分ける必要がある。点キューブ・配置プレビューマーカーは
+/// 「編集ハンドルの輪郭」であって経路そのものではないため、`markers` 側（従来どおりの
+/// 細線）に残す。
+pub struct ControlPointGizmoLines {
+    /// 区間ライン（太線・`CONTROL_POINT_LINE_THICKNESS_PX`）。呼び出し側は
+    /// `LineBatch::build_thick` → 太線パイプラインで描画すること。
+    pub segment_lines: LineBatch,
+    /// 点のワイヤキューブ＋配置プレビューマーカー（従来どおりの細線）。呼び出し側は
+    /// `LineBatch::build` → 1px ラインパイプラインで描画すること。
+    pub markers: LineBatch,
+}
+
+impl ControlPointGizmoLines {
+    /// 区間ライン・マーカーのどちらも空かどうか。
+    pub fn is_empty(&self) -> bool {
+        self.segment_lines.is_empty() && self.markers.is_empty()
+    }
+}
+
+/// 解決済みパス群から、点キューブ＋区間ラインの CPU 側頂点を組む。
 ///
 /// - `selected`: 強調表示する点（スロット添字, 点添字）。無ければ全点を通常色で描く。
 /// - `half_size_for`: ある位置に置くキューブの半辺長を返す関数。
 ///   画面上の見かけの大きさを一定にするため、呼び出し側のカメラ都合に委ねている。
 ///
-/// GPU バッファ化（`LineBatch::build`）は呼び出し側で行う。
+/// GPU バッファ化（`LineBatch::build` / `build_thick`）は呼び出し側で行う。
 /// ここで `wgpu::Device` を要求しないのは、フレームループ側でレンダラを可変借用する
 /// 前にこのバッチを組む必要があるため（借用の都合を描画層へ持ち込まない）。
 ///
@@ -149,23 +182,26 @@ pub fn build_control_point_lines(
     selected:      Option<(u32, u32)>,
     preview:       Option<[f32; 3]>,
     half_size_for: impl Fn([f32; 3]) -> f32,
-) -> Option<LineBatch> {
-    let mut lb = LineBatch::new();
+) -> Option<ControlPointGizmoLines> {
+    let mut segment_lines = LineBatch::new();
+    let mut markers = LineBatch::new();
     for path in paths {
-        add_path_lines(&mut lb, &path.eval);
-        add_path_cubes(&mut lb, path, selected, &half_size_for);
+        add_path_lines(&mut segment_lines, &path.eval);
+        add_path_cubes(&mut markers, path, selected, &half_size_for);
     }
     // D&D 中の配置予定マーカー（あれば最後に重ねる）。
     // 点が 1 つも無いスロットへの初回ドロップでも出したいので、
-    // `paths` が空でもここだけは描く（＝ lb が空でなくなる）。
+    // `paths` が空でもここだけは描く（＝ markers が空でなくなる）。
     if let Some(center) = preview {
         let half = cube_half_size(center, &half_size_for) * PREVIEW_CUBE_SCALE;
-        add_wire_cube(&mut lb, center, half, PREVIEW_CUBE_COLOR);
+        add_wire_cube(&mut markers, center, half, PREVIEW_CUBE_COLOR);
     }
-    if lb.is_empty() { None } else { Some(lb) }
+    let out = ControlPointGizmoLines { segment_lines, markers };
+    if out.is_empty() { None } else { Some(out) }
 }
 
 /// 区間ラインを補間方法ごとに描き分けて追加する。
+/// 経路そのものを太線で見せたいので、太さ指定版 `add_line_thick` を使う。
 fn add_path_lines(lb: &mut LineBatch, eval: &PathEval) {
     let pts = eval.points();
     if pts.len() < 2 { return; }
@@ -177,8 +213,8 @@ fn add_path_lines(lb: &mut LineBatch, eval: &PathEval) {
                 let a = pts[i].position;
                 let b = pts[i + 1].position;
                 let corner = [b[0], a[1], b[2]];
-                lb.add_line(a, corner, SEGMENT_STEP_COLOR);
-                lb.add_line(corner, b, SEGMENT_STEP_COLOR);
+                lb.add_line_thick(a, corner, SEGMENT_STEP_COLOR, CONTROL_POINT_LINE_THICKNESS_PX);
+                lb.add_line_thick(corner, b, SEGMENT_STEP_COLOR, CONTROL_POINT_LINE_THICKNESS_PX);
             }
             // 直線・曲線は折れ線化した頂点列をそのまま繋ぐ
             //（Linear は分割されないので線分 1 本になる）。
@@ -190,7 +226,7 @@ fn add_path_lines(lb: &mut LineBatch, eval: &PathEval) {
                 };
                 let poly = eval.segment_polyline(i, PATH_DEFAULT_STEP_M);
                 for w in poly.windows(2) {
-                    lb.add_line(w[0], w[1], color);
+                    lb.add_line_thick(w[0], w[1], color, CONTROL_POINT_LINE_THICKNESS_PX);
                 }
             }
         }
