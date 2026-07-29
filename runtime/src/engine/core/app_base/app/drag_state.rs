@@ -11,8 +11,8 @@
 //    - 矩形選択状態と Undo 用事前スナップショット
 // ============================================================
 
-use crate::engine::components::{CanvasTransform, Transform as ActorTransform};
 use crate::engine::methods::gizmo_interact::GizmoDrag;
+use crate::engine::components::{Transform as ActorTransform, CanvasTransform};
 
 /// 子孫アクタ 1 件分のギズモドラッグ開始スナップショット。
 ///
@@ -43,6 +43,7 @@ pub(super) struct DragState {
     pub gizmo_drag: Option<GizmoDrag>,
 
     // ── ドラッグ開始スナップショット ────────────────────────────
+
     /// ドラッグ開始時の「ルート選択インスタンス」初期行列（親子フィルタ済み）。
     pub drag_root_starts: Vec<(u32, [[f32; 4]; 4])>,
     /// ドラッグ開始時の子孫インスタンス初期行列（ルート以外の追従対象）。
@@ -60,8 +61,19 @@ pub(super) struct DragState {
     pub actor_extra_mc_drag_starts: Vec<(usize, Vec<[[f32; 4]; 4]>)>,
     /// マルチ選択ギズモドラッグ時の非プライマリ選択アクター開始行列（dfs_id, start_mat）。
     pub multi_actor_drag_starts: Vec<(u32, [[f32; 4]; 4])>,
+    /// コントロールポイントのギズモドラッグ開始スナップショット。
+    ///
+    /// `Some` の間は**ギズモの対象がアクタではなく制御点 1 個**であり、
+    /// 上記のアクタ系スナップショットは一切使われない（収集もしない）。
+    pub control_point_drag: Option<super::control_point_ops::ControlPointDragStart>,
+    /// 押下時に制御点キューブを掴んだか。
+    ///
+    /// `true` の間は release 時の通常オブジェクトピックを抑止する
+    /// （抑止しないとアクタ選択が更新され、選んだばかりの点が即座に消える）。
+    pub control_point_picked: bool,
 
     // ── LMB 入力状態 ──────────────────────────────────────────
+
     /// LMB 押下中フラグ。
     pub lmb_held: bool,
     /// LMB 押下時のビューポート座標。
@@ -70,6 +82,7 @@ pub(super) struct DragState {
     pub ctrl_at_press: bool,
 
     // ── 矩形選択状態 ──────────────────────────────────────────
+
     /// 矩形選択ドラッグ中フラグ。
     pub rect_selecting: bool,
     /// 矩形選択開始時のインスタンス選択状態（Undo 記録用）。
@@ -84,21 +97,23 @@ impl DragState {
     /// すべてのフィールドをデフォルト値（ドラッグなし状態）で初期化する。
     pub fn new() -> Self {
         Self {
-            gizmo_drag: None,
-            drag_root_starts: Vec::new(),
-            drag_child_starts: Vec::new(),
-            actor_child_drag_starts: Vec::new(),
-            actor_transform_drag_start: None,
-            canvas_transform_drag_start: None,
-            actor_extra_mc_drag_starts: Vec::new(),
-            multi_actor_drag_starts: Vec::new(),
-            lmb_held: false,
-            lmb_press_pos: None,
-            ctrl_at_press: false,
-            rect_selecting: false,
-            selection_before_rect: Vec::new(),
-            selection_before_rect_dfs: Vec::new(),
-            selection_before_rect_primary: None,
+            gizmo_drag:                     None,
+            drag_root_starts:               Vec::new(),
+            drag_child_starts:              Vec::new(),
+            actor_child_drag_starts:        Vec::new(),
+            actor_transform_drag_start:     None,
+            canvas_transform_drag_start:    None,
+            actor_extra_mc_drag_starts:     Vec::new(),
+            multi_actor_drag_starts:        Vec::new(),
+            control_point_drag:             None,
+            control_point_picked:           false,
+            lmb_held:                       false,
+            lmb_press_pos:                  None,
+            ctrl_at_press:                  false,
+            rect_selecting:                 false,
+            selection_before_rect:          Vec::new(),
+            selection_before_rect_dfs:      Vec::new(),
+            selection_before_rect_primary:  None,
         }
     }
 }

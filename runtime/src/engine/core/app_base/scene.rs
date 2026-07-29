@@ -680,6 +680,13 @@ pub fn build_actor(
                 actor.add_slot_typed::<InteractionSourceComponent>(
                     slot_name, ComponentKind::InteractionSource, slot_entity);
             }
+            ComponentData::ControlPointComponent(cp_data) => {
+                // コントロールポイント（汎用パスの点列）を ECS ワールドに挿入してスロットを登録する
+                use crate::engine::components::ControlPointComponent;
+                world.insert(slot_entity, ControlPointComponent::from_data(&cp_data));
+                actor.add_slot_typed::<ControlPointComponent>(
+                    slot_name, ComponentKind::ControlPoint, slot_entity);
+            }
             ComponentData::AnimatorComponent(an_data) => {
                 // アニメーターコンポーネントを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::AnimatorComponent;

@@ -62,8 +62,10 @@ pub const RIVER_MIN_CONTROL_POINTS: usize = 2;
 /// マイター補正の上限倍率。急な折り返し（θ→180°）で 1/cos(θ/2) が発散するのを防ぐ。
 const RIVER_MITER_MAX: f32 = 2.0;
 
-/// Catmull-Rom のテンション係数（uniform Catmull-Rom の標準値 0.5）。
-const CATMULL_ROM_TENSION: f32 = 0.5;
+// Catmull-Rom の実装は汎用パス層（`engine::path::interp`）を正典として共有する。
+// 川と ControlPointComponent が別々の曲線式を持つと、同じ点列を渡しても
+// 「エディタで見える線」と「実際の川」がズレる。再輸出して既存の呼び出し名を保つ。
+pub use crate::engine::path::interp::catmull_rom;
 
 /// 川幅の下限（m）。0 幅のリボンは面積を持たず、判定も常に外れるため無意味。
 pub const RIVER_WIDTH_MIN: f32 = 0.01;
@@ -237,24 +239,6 @@ impl RiverPath {
 }
 
 // ─── 補間・ベクトルヘルパー ──────────────────────────────────
-
-/// Catmull-Rom スプライン（uniform, τ = `CATMULL_ROM_TENSION`）の 1 点評価。
-///
-/// `p1`〜`p2` の区間を `t` ∈ [0,1] で補間する。`p0` / `p3` は前後の制御点。
-pub fn catmull_rom(p0: [f32; 3], p1: [f32; 3], p2: [f32; 3], p3: [f32; 3], t: f32) -> [f32; 3] {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    let mut out = [0.0f32; 3];
-    for a in 0..3 {
-        // 標準形: 0.5 * (2P1 + (-P0+P2)t + (2P0-5P1+4P2-P3)t² + (-P0+3P1-3P2+P3)t³)
-        out[a] = CATMULL_ROM_TENSION
-            * (2.0 * p1[a]
-                + (-p0[a] + p2[a]) * t
-                + (2.0 * p0[a] - 5.0 * p1[a] + 4.0 * p2[a] - p3[a]) * t2
-                + (-p0[a] + 3.0 * p1[a] - 3.0 * p2[a] + p3[a]) * t3);
-    }
-    out
-}
 
 /// サンプル済み位置列から、接線とマイター法線を持つノード列を作る。
 ///

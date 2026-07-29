@@ -52,6 +52,10 @@ mod audio_ops;
 mod water_ops;
 /// インタラクションソース（InteractionSourceComponent）のインスペクタ更新（SET_INTERACTION_FIELD）
 mod interaction_ops;
+/// コントロールポイント（ControlPointComponent）の編集・点選択（SET_CONTROL_POINT*）
+pub(crate) mod control_point_ops;
+/// コントロールポイントのビューポート可視化（点キューブ＋区間ライン。Edit モード限定）
+pub(crate) mod control_point_scene_gizmo;
 mod animation_ops;
 pub(crate) mod light_ops;
 pub(crate) mod skybox_ops;
@@ -764,6 +768,11 @@ pub struct App {
     /// **草を描くフレーム、またはソースが 1 個でもあるフレーム**で初めて構築される
     /// （草もソースも無いプロジェクトでは 4MB のテクスチャすら確保されない）。
     interaction_field: Option<crate::engine::core::renderer::InteractionFieldRenderer>,
+    /// ビューポートで選択中のコントロールポイント（アクタ＋スロット＋点添字）。
+    ///
+    /// `Some` の間だけ**移動ギズモの対象がアクタ Transform からその点へ切り替わる**。
+    /// アクタ選択の変更・空クリック・シーン切替で解除する。
+    pub(crate) selected_control_point: Option<control_point_ops::SelectedControlPoint>,
     /// インタラクションソースの速度算出（前フレーム位置の保持）。
     ///
     /// GPU リソースを持たないので `Option` にせず常設する。シーン切替時は
@@ -1249,6 +1258,8 @@ impl App {
             // インタラクションフィールドは device 確立後（草かソースが現れるフレーム）に遅延構築する。
             interaction_field:           None,
             interaction_velocity:        crate::engine::interaction::InteractionSourceVelocityTracker::new(),
+            // コントロールポイントは未選択で開始する（ギズモは通常どおりアクタを対象にする）。
+            selected_control_point:      None,
             ao_targets:                  crate::engine::core::renderer::AoTargets::new(),
             ssgi_targets:                crate::engine::core::renderer::SsgiTargets::new(),
             shadow_mask_targets:         crate::engine::core::renderer::ShadowMaskTargets::new(),

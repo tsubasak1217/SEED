@@ -231,6 +231,12 @@ impl App {
     /// 選択中アクター/インスタンスのギズモ中心位置を返す共通ヘルパー。
     /// マルチ選択時は全選択アクターの重心を返す。
     pub(super) fn current_gizmo_pos(&self) -> Option<[f32; 3]> {
+        // コントロールポイントを選択中は、ギズモの対象をアクタからその点へ切り替える。
+        // ギズモ機構（ヒットテスト・ドラッグ計算）は「対象の位置」しか見ないので、
+        // 対象の差し替えはこの 1 箇所で完結する（書き戻し先の分岐は drag_handler 側）。
+        if let Some(cp_pos) = self.selected_control_point_world_pos() {
+            return Some(cp_pos);
+        }
         // マルチ選択: 全選択アクターの重心
         if !self.selected_actor_dfs_ids.is_empty() {
             return self.selected_actors_centroid();

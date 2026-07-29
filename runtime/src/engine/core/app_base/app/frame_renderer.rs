@@ -1098,6 +1098,13 @@ impl App {
         // キャンバス ID のベースオフセット（MC + 全ギズモアイコンの後）
         let canvas_id_offset: u32 = particle_gizmo_id_base + particle_gizmo_count;
 
+        // コントロールポイント（汎用パス）のギズモ頂点を組む。
+        // 選択中アクタの各制御点にワイヤキューブを、点間に補間方法ごとに描き分けた
+        // ラインを出す（Edit の 3D ビューのみ。表示条件は control_points_visible）。
+        // レンダラを可変借用する前に `&self` で組んでおき、GPU バッファ化だけを
+        // 描画ブロック内で行う（借用の衝突を避けるため）。
+        let control_point_lines = self.build_control_point_line_batch();
+
         // ── ライト収集（メッシュシェーディング用 GPU ライト配列）──────────────
         // シーンの Light スロットを Transform とともに収集する。Play/Edit 両方で反映。
         // ライトが 0 灯なら後方互換フォールバックの方向光が返る（暗転しない）。
@@ -2736,6 +2743,11 @@ impl App {
                             lb.build(&draw_ctx.device)
                         })
                     } else { None };
+
+                    // コントロールポイント（汎用パス）のギズモを GPU バッファ化する。
+                    // 頂点自体はレンダラ借用前に組んである（control_point_lines）。
+                    let control_point_batch = control_point_lines.as_ref()
+                        .map(|lb| lb.build(&draw_ctx.device));
 
                     // グリッド描画バッチ（エディタモード + show_grid のみ）
                     let _perf_t_grid = std::time::Instant::now();
@@ -5698,6 +5710,18 @@ impl App {
                             );
                         }
 
+                        // コントロールポイント（点キューブ＋区間ライン）描画。
+                        // 他のシーンギズモと同じライン経路に合流させる。
+                        if let (Some(cp_batch), Some((_, line_bg))) =
+                            (&control_point_batch, &self.line_model_buf)
+                        {
+                            draw_line_batch(
+                                &mut pass, cp_batch,
+                                &camera_buf.bind_group, line_bg,
+                                &draw_ctx.pipelines,
+                            );
+                        }
+
                         // 地形ブラシ範囲プレビュー（ワイヤスフィア）描画。
                         if let (Some(preview_batch), Some((_, line_bg))) =
                             (&terrain_preview_batch, &self.line_model_buf)
@@ -6933,6 +6957,10 @@ impl App {
         if did_pick {
             if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
                 let (_world_pos, raw) = id_buf.read_pixel(&draw_ctx.device);
+                // 通常のオブジェクトピックが走った時点で、コントロールポイントの選択は必ず解除する。
+                // 空クリックでもアクタ選択の変更でも「点はもう掴んでいない」が正しく、
+                // 解除しないと別アクタを選んだのに前のアクタの点にギズモが残る。
+                self.clear_control_point_selection();
                 // 選択変更前の状態を保存する（Undo 記録用）
                 let before_inst       = self.selected_instances.clone();
                 let before_dfs_ids    = self.selected_actor_dfs_ids.clone();

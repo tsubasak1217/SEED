@@ -34,6 +34,8 @@ pub mod terrain_component;
 pub mod water_volume_component;
 /// インタラクションソース（Phase I1: 動く物が草・水・雪泥の共有場へ書き込む宣言）
 pub mod interaction_source_component;
+/// コントロールポイント（汎用パス: 川・巡回ルート・カメラパスの共通土台）
+pub mod control_point_component;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -64,6 +66,10 @@ pub use jointattach_component::{JointAttachComponent, JointAttachComponentData};
 pub use skybox_component::{SkyboxComponent, SkyboxComponentData, SkyboxMode};
 pub use water_volume_component::{WaterVolumeComponent, WaterVolumeComponentData, WaterVolumeKind};
 pub use interaction_source_component::{InteractionSourceComponent, InteractionSourceComponentData};
+pub use control_point_component::{
+    ControlPoint, ControlPointComponent, ControlPointComponentData, ControlPointInterp,
+    DEFAULT_TIME_STEP as CONTROL_POINT_DEFAULT_TIME_STEP, MAX_CONTROL_POINTS,
+};
 pub use particle_emitter_component::{
     ParticleEmitterComponent, ParticleEmitterComponentData,
     ParticleBlend, ParticleSimSpace, ParticleShape, SpawnVolume, EmitMode,
@@ -121,6 +127,8 @@ pub enum ComponentKind {
     WaterVolume,
     /// インタラクションソース（動く物 → 瞬発場への書き手。草の揺れ・水の波紋を駆動）
     InteractionSource,
+    /// コントロールポイント（汎用パス。川・巡回ルート・カメラパスが共用する点列）
+    ControlPoint,
 }
 
 impl ComponentKind {
@@ -146,6 +154,7 @@ impl ComponentKind {
             Self::TerrainChunk => "TerrainChunkComponent",
             Self::WaterVolume => "WaterVolumeComponent",
             Self::InteractionSource => "InteractionSourceComponent",
+            Self::ControlPoint => "ControlPointComponent",
         }
     }
 }
@@ -190,4 +199,6 @@ pub enum ComponentData {
     WaterVolumeComponent(WaterVolumeComponentData),
     /// インタラクションソース（瞬発場への書き手）
     InteractionSourceComponent(InteractionSourceComponentData),
+    /// コントロールポイント（汎用パスの点列）
+    ControlPointComponent(ControlPointComponentData),
 }

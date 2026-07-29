@@ -66,6 +66,12 @@ impl App {
                 KeyCode::ControlLeft | KeyCode::ControlRight => {
                     self.ctrl_held = pressed;
                 }
+                KeyCode::Escape if pressed => {
+                    // Esc: コントロールポイントの選択を解除する
+                    //（アクタの選択は解除しない。点だけを手放して、
+                    //  移動ギズモを通常どおりアクタ Transform へ戻す）。
+                    self.clear_control_point_selection();
+                }
                 KeyCode::KeyZ if pressed && self.ctrl_held => {
                     // Ctrl+Z: Undo 実行
                     let result = if let Some(scene) = &mut self.scene {

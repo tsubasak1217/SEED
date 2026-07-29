@@ -1176,6 +1176,12 @@ impl App {
                 IpcCommand::SetWaterField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_water_field(actor_dfs_id, slot_idx, &key, &value);
                 }
+                IpcCommand::SetControlPoints { actor_dfs_id, slot_idx, json } => {
+                    self.handle_set_control_points(actor_dfs_id, slot_idx, &json);
+                }
+                IpcCommand::SetControlPointPos { actor_dfs_id, slot_idx, index, x, y, z } => {
+                    self.handle_set_control_point_pos(actor_dfs_id, slot_idx, index, [x, y, z]);
+                }
                 IpcCommand::SetInteractionField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_interaction_field(actor_dfs_id, slot_idx, &key, &value);
                 }
