@@ -1052,6 +1052,15 @@ fn collect_results(
         collision_events.push(SeedCollisionEvent { entity_a: ea, entity_b: eb, phase: CollisionPhase::Stay });
     }
 
+    // Stay: 重なりが継続しているトリガーペアにも Stay イベントを毎ステップ送信する
+    //（衝突側の Stay と同じ頻度規約。上の Enter/Exit 処理で active_triggers は
+    //  この時点で「現在重なっているペア」だけを保持している）
+    for &(te, oe) in active_triggers.iter() {
+        trigger_events.push(SeedTriggerEvent {
+            trigger_entity: te, other_entity: oe, phase: TriggerPhase::Stay,
+        });
+    }
+
     // ── NarrowPhase 直接クエリ ──────────────────────────────────────────────
     // CollisionEvent が発火しないケース（kinematic vs static 等）でも
     // 接触中エンティティを確実に収集する。

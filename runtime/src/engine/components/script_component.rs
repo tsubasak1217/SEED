@@ -51,6 +51,13 @@ pub struct ScriptComponent {
     /// false の間はライフサイクル関数・物理イベントが呼ばれない（Unity の enabled 相当）。
     /// Scene が毎フレーム（BeginFrame 前）に Actor ツリーから同期する。
     pub(crate) active: bool,
+    /// OnStart 済みフラグ。
+    ///
+    /// ScriptSystem が BeginFrame フェーズで「まだ false のスクリプト」に対して
+    /// OnStart を呼んでから true にする（＝初回 BeginFrame の直前に 1 回だけ）。
+    /// OnDestroy はこのフラグが true のときだけ呼ばれる（OnStart と 1 対 1 で対応させ、
+    /// 一度も動いていない編集モードのインスタンスでは発火させないため）。
+    pub(crate) started: bool,
 }
 
 impl ScriptComponent {
@@ -60,7 +67,13 @@ impl ScriptComponent {
         let bytes     = type_name.as_bytes();
         let handle    = unsafe { (host.create_fn)(bytes.as_ptr(), bytes.len() as i32) };
         if handle == 0 { return None; }
-        Some(Self { host, handle, type_name, fields: BTreeMap::new(), owner: None, active: true })
+        Some(Self {
+            host, handle, type_name,
+            fields:  BTreeMap::new(),
+            owner:   None,
+            active:  true,
+            started: false,
+        })
     }
 
     /// フィールド値付きでスクリプトを生成する（シーンロード・リロード時の復元用）。
@@ -130,6 +143,16 @@ impl ScriptComponent {
         unsafe { f(handle, &raw); }
     }
 
+    /// OnStart（初回ライフサイクル直前の 1 回限りの通知）を CLR 側で実行する。
+    ///
+    /// run_phase_raw と同じく World 借用を持たない呼び出し口。
+    /// ユーザー側 OnStart は引数を取らないが、gameObject / transform を束縛できるよう
+    /// 所有エンティティだけを渡す（未束縛時は u32::MAX = C# の Entity.None）。
+    pub fn run_on_start_raw(host: &ScriptingHost, handle: isize, owner: Option<Entity>) {
+        let (index, generation) = entity_to_raw(owner);
+        unsafe { (host.on_start_fn)(handle, index, generation); }
+    }
+
     /// 物理イベント（衝突・トリガー）をスクリプトへ通知する。
     ///
     /// kind は RawPhysicsEvent のコメント参照（0=ColEnter .. 4=TrigExit）。
@@ -143,10 +166,7 @@ impl ScriptComponent {
         other:      Option<Entity>,
     ) {
         use crate::engine::core::scripting::RawPhysicsEvent;
-        let (other_index, other_generation) = match other {
-            Some(e) => (e.index(), e.generation()),
-            None    => (u32::MAX, 0),
-        };
+        let (other_index, other_generation) = entity_to_raw(other);
         let raw = RawPhysicsEvent {
             kind,
             self_index:      self_owner.index(),
@@ -166,8 +186,35 @@ impl ScriptComponent {
     }
 }
 
+/// Option<Entity> を FFI 表現 (index, generation) へ変換する。
+/// None は index = u32::MAX（C# の Entity.None）で表す。
+fn entity_to_raw(entity: Option<Entity>) -> (u32, u32) {
+    match entity {
+        Some(e) => (e.index(), e.generation()),
+        None    => (u32::MAX, 0),
+    }
+}
+
 impl Drop for ScriptComponent {
+    /// スクリプトインスタンスの破棄。
+    ///
+    /// CLR ハンドルを解放する前に OnDestroy を 1 回だけ通知する。
+    /// Drop はあらゆる破棄経路（アクター破棄 / シーン遷移 / Play 終了 /
+    /// スクリプトのホットリロード）の共通の出口なので、ここに置くことで
+    /// 通知漏れが原理的に起きない。
+    ///
+    /// - OnStart 済み（started）のインスタンスにだけ通知する。編集モードで生成され
+    ///   一度も動いていないインスタンスでは発火しない（OnStart と 1 対 1 対応）。
+    /// - 通知中は World ポインタが公開されていない（Drop はフェーズ外で起きる）ため、
+    ///   OnDestroy 内からのシーンアクセスは既定値を返す。さらに再入ガードを張り、
+    ///   OnDestroy 内の Instantiate / Destroy は明示的に無視する。
     fn drop(&mut self) {
+        if self.started {
+            let (index, generation) = entity_to_raw(self.owner);
+            crate::engine::core::scripting::with_on_destroy_guard(|| {
+                unsafe { (self.host.on_destroy_fn)(self.handle, index, generation); }
+            });
+        }
         unsafe { (self.host.destroy_fn)(self.handle); }
     }
 }

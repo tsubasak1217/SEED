@@ -21,7 +21,7 @@ pub mod host_api;
 pub mod input_bridge;
 pub use host_api::{
     with_world, with_actors, take_scene_commands, take_audio_commands,
-    publish_input, publish_physics_sender, advance_script_frame,
+    publish_input, publish_physics_sender, advance_script_frame, with_on_destroy_guard,
     ScriptSceneCommand, ScriptAudioCommand,
 };
 
@@ -70,12 +70,13 @@ pub const PHYSICS_EVENT_COLLISION_STAY:  i32 = 1;
 pub const PHYSICS_EVENT_COLLISION_EXIT:  i32 = 2;
 pub const PHYSICS_EVENT_TRIGGER_ENTER:   i32 = 3;
 pub const PHYSICS_EVENT_TRIGGER_EXIT:    i32 = 4;
+pub const PHYSICS_EVENT_TRIGGER_STAY:    i32 = 5;
 
 /// C# 側 NativePhysicsEvent と同じメモリレイアウト（#[repr(C)]）。
 /// 物理イベント（衝突・トリガー）をスクリプトへ通知するときに渡す。
 ///
 /// kind: 0=CollisionEnter / 1=CollisionStay / 2=CollisionExit /
-///       3=TriggerEnter / 4=TriggerExit（C# 側 ScriptBridge と一致させる）
+///       3=TriggerEnter / 4=TriggerExit / 5=TriggerStay（C# 側 ScriptBridge と一致させる）
 #[repr(C)]
 pub(crate) struct RawPhysicsEvent {
     /// イベント種別（上記コメント参照）
@@ -92,6 +93,11 @@ pub(crate) struct RawPhysicsEvent {
 type CreateFn    = unsafe extern "system" fn(*const u8, i32) -> isize;
 type DestroyFn   = unsafe extern "system" fn(isize);
 type LifecycleFn = unsafe extern "system" fn(isize, *const RawFrameContext);
+/// フレームコンテキストを持たない 1 回限りのライフサイクル通知（OnStart / OnDestroy）。
+/// 引数は (ハンドル, 所有エンティティ index, 同 generation)。所有者未束縛時は index = u32::MAX。
+/// ユーザー側メソッドは引数を取らないが、gameObject / transform を束縛するために
+/// エンティティだけは C# へ渡す。
+type InstanceEventFn = unsafe extern "system" fn(isize, u32, u32);
 /// 物理イベント（衝突・トリガー）をスクリプトへ通知する。
 type PhysicsEventFn = unsafe extern "system" fn(isize, *const RawPhysicsEvent);
 /// アセットルート内の .cs を CLR 側でコンパイルする。戻り値はコンパイルされた型数（負値はエラー）。
@@ -113,6 +119,10 @@ pub struct ScriptingHost {
 
     pub create_fn:          CreateFn,
     pub destroy_fn:         DestroyFn,
+    /// 初回ライフサイクル（BeginFrame）の直前に 1 回だけ呼ぶ OnStart 通知
+    pub on_start_fn:        InstanceEventFn,
+    /// インスタンス破棄の直前に 1 回だけ呼ぶ OnDestroy 通知
+    pub on_destroy_fn:      InstanceEventFn,
     pub begin_frame_fn:     LifecycleFn,
     pub early_update_fn:    LifecycleFn,
     pub update_fn:          LifecycleFn,
@@ -166,6 +176,8 @@ impl ScriptingHost {
             _context:          context,
             create_fn:         get_fn!(fn(*const u8, i32) -> isize,           pdcstr!("CreateComponent")),
             destroy_fn:        get_fn!(fn(isize),                              pdcstr!("DestroyComponent")),
+            on_start_fn:       get_fn!(fn(isize, u32, u32),                    pdcstr!("OnStart")),
+            on_destroy_fn:     get_fn!(fn(isize, u32, u32),                    pdcstr!("OnDestroy")),
             begin_frame_fn:    get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("BeginFrame")),
             early_update_fn:   get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("EarlyUpdate")),
             update_fn:         get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("Update")),

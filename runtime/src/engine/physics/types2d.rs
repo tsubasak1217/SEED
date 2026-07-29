@@ -252,5 +252,7 @@ pub struct TriggerEvent2d {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TriggerPhase2d {
     Enter,
+    /// トリガー内に留まっている（毎物理ステップ）
+    Stay,
     Exit,
 }

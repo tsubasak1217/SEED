@@ -294,6 +294,8 @@ pub struct TriggerEvent {
 pub enum TriggerPhase {
     /// トリガーへ進入
     Enter,
+    /// トリガー内に留まっている（前ステップから継続して重なり中・毎物理ステップ）
+    Stay,
     /// トリガーから退出
     Exit,
 }

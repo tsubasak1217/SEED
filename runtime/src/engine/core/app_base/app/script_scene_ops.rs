@@ -20,7 +20,7 @@ use crate::engine::core::app_base::scene::Scene;
 use crate::engine::core::scripting::{
     take_scene_commands, with_actors, with_world, ScriptSceneCommand, ScriptingHost,
     PHYSICS_EVENT_COLLISION_ENTER, PHYSICS_EVENT_COLLISION_STAY, PHYSICS_EVENT_COLLISION_EXIT,
-    PHYSICS_EVENT_TRIGGER_ENTER, PHYSICS_EVENT_TRIGGER_EXIT,
+    PHYSICS_EVENT_TRIGGER_ENTER, PHYSICS_EVENT_TRIGGER_EXIT, PHYSICS_EVENT_TRIGGER_STAY,
 };
 use crate::engine::ecs::{Entity, World};
 use crate::engine::physics::{CollisionEvent, CollisionPhase, TriggerEvent, TriggerPhase};
@@ -266,26 +266,7 @@ impl App {
         collision_events: &[CollisionEvent],
         trigger_events:   &[TriggerEvent],
     ) {
-        // イベントを（自分 DFS, 相手 DFS, 種別）へ正規化する。
-        // 衝突・トリガーとも両方のアクターへ対称に通知する（Unity と同じ挙動）。
-        let mut pairs: Vec<(u64, u64, i32)> = Vec::new();
-        for ev in collision_events {
-            let kind = match ev.phase {
-                CollisionPhase::Enter => PHYSICS_EVENT_COLLISION_ENTER,
-                CollisionPhase::Stay  => PHYSICS_EVENT_COLLISION_STAY,
-                CollisionPhase::Exit  => PHYSICS_EVENT_COLLISION_EXIT,
-            };
-            pairs.push((ev.entity_a, ev.entity_b, kind));
-            pairs.push((ev.entity_b, ev.entity_a, kind));
-        }
-        for ev in trigger_events {
-            let kind = match ev.phase {
-                TriggerPhase::Enter => PHYSICS_EVENT_TRIGGER_ENTER,
-                TriggerPhase::Exit  => PHYSICS_EVENT_TRIGGER_EXIT,
-            };
-            pairs.push((ev.trigger_entity, ev.other_entity, kind));
-            pairs.push((ev.other_entity, ev.trigger_entity, kind));
-        }
+        let pairs = normalize_physics_pairs(collision_events, trigger_events);
         self.dispatch_physics_event_pairs(pairs);
     }
 
@@ -298,26 +279,7 @@ impl App {
         collision_events: &[crate::engine::physics::CollisionEvent2d],
         trigger_events:   &[crate::engine::physics::TriggerEvent2d],
     ) {
-        use crate::engine::physics::{CollisionPhase2d, TriggerPhase2d};
-
-        let mut pairs: Vec<(u64, u64, i32)> = Vec::new();
-        for ev in collision_events {
-            let kind = match ev.phase {
-                CollisionPhase2d::Enter => PHYSICS_EVENT_COLLISION_ENTER,
-                CollisionPhase2d::Stay  => PHYSICS_EVENT_COLLISION_STAY,
-                CollisionPhase2d::Exit  => PHYSICS_EVENT_COLLISION_EXIT,
-            };
-            pairs.push((ev.entity_a, ev.entity_b, kind));
-            pairs.push((ev.entity_b, ev.entity_a, kind));
-        }
-        for ev in trigger_events {
-            let kind = match ev.phase {
-                TriggerPhase2d::Enter => PHYSICS_EVENT_TRIGGER_ENTER,
-                TriggerPhase2d::Exit  => PHYSICS_EVENT_TRIGGER_EXIT,
-            };
-            pairs.push((ev.trigger_entity, ev.other_entity, kind));
-            pairs.push((ev.other_entity, ev.trigger_entity, kind));
-        }
+        let pairs = normalize_physics2d_pairs(collision_events, trigger_events);
         self.dispatch_physics_event_pairs(pairs);
     }
 
@@ -389,6 +351,85 @@ impl App {
     }
 }
 
+// ─── 物理イベントの正規化（種別変換＋対称配送）───────────────
+
+/// 3D 衝突フェーズをスクリプトへ渡すイベント種別へ変換する。
+fn collision_event_kind(phase: CollisionPhase) -> i32 {
+    match phase {
+        CollisionPhase::Enter => PHYSICS_EVENT_COLLISION_ENTER,
+        CollisionPhase::Stay  => PHYSICS_EVENT_COLLISION_STAY,
+        CollisionPhase::Exit  => PHYSICS_EVENT_COLLISION_EXIT,
+    }
+}
+
+/// 3D トリガーフェーズをスクリプトへ渡すイベント種別へ変換する。
+fn trigger_event_kind(phase: TriggerPhase) -> i32 {
+    match phase {
+        TriggerPhase::Enter => PHYSICS_EVENT_TRIGGER_ENTER,
+        TriggerPhase::Stay  => PHYSICS_EVENT_TRIGGER_STAY,
+        TriggerPhase::Exit  => PHYSICS_EVENT_TRIGGER_EXIT,
+    }
+}
+
+/// 2D 衝突フェーズをスクリプトへ渡すイベント種別へ変換する（3D と同一の種別を使う）。
+fn collision2d_event_kind(phase: crate::engine::physics::CollisionPhase2d) -> i32 {
+    use crate::engine::physics::CollisionPhase2d;
+    match phase {
+        CollisionPhase2d::Enter => PHYSICS_EVENT_COLLISION_ENTER,
+        CollisionPhase2d::Stay  => PHYSICS_EVENT_COLLISION_STAY,
+        CollisionPhase2d::Exit  => PHYSICS_EVENT_COLLISION_EXIT,
+    }
+}
+
+/// 2D トリガーフェーズをスクリプトへ渡すイベント種別へ変換する（3D と同一の種別を使う）。
+fn trigger2d_event_kind(phase: crate::engine::physics::TriggerPhase2d) -> i32 {
+    use crate::engine::physics::TriggerPhase2d;
+    match phase {
+        TriggerPhase2d::Enter => PHYSICS_EVENT_TRIGGER_ENTER,
+        TriggerPhase2d::Stay  => PHYSICS_EVENT_TRIGGER_STAY,
+        TriggerPhase2d::Exit  => PHYSICS_EVENT_TRIGGER_EXIT,
+    }
+}
+
+/// 3D 物理イベントを（自分 DFS, 相手 DFS, 種別）へ正規化する。
+/// 衝突・トリガーとも両方のアクターへ対称に通知する（Unity と同じ挙動）。
+fn normalize_physics_pairs(
+    collision_events: &[CollisionEvent],
+    trigger_events:   &[TriggerEvent],
+) -> Vec<(u64, u64, i32)> {
+    let mut pairs: Vec<(u64, u64, i32)> = Vec::new();
+    for ev in collision_events {
+        let kind = collision_event_kind(ev.phase);
+        pairs.push((ev.entity_a, ev.entity_b, kind));
+        pairs.push((ev.entity_b, ev.entity_a, kind));
+    }
+    for ev in trigger_events {
+        let kind = trigger_event_kind(ev.phase);
+        pairs.push((ev.trigger_entity, ev.other_entity, kind));
+        pairs.push((ev.other_entity, ev.trigger_entity, kind));
+    }
+    pairs
+}
+
+/// 2D 物理イベントを（自分 DFS, 相手 DFS, 種別）へ正規化する（3D と同一規約）。
+fn normalize_physics2d_pairs(
+    collision_events: &[crate::engine::physics::CollisionEvent2d],
+    trigger_events:   &[crate::engine::physics::TriggerEvent2d],
+) -> Vec<(u64, u64, i32)> {
+    let mut pairs: Vec<(u64, u64, i32)> = Vec::new();
+    for ev in collision_events {
+        let kind = collision2d_event_kind(ev.phase);
+        pairs.push((ev.entity_a, ev.entity_b, kind));
+        pairs.push((ev.entity_b, ev.entity_a, kind));
+    }
+    for ev in trigger_events {
+        let kind = trigger2d_event_kind(ev.phase);
+        pairs.push((ev.trigger_entity, ev.other_entity, kind));
+        pairs.push((ev.other_entity, ev.trigger_entity, kind));
+    }
+    pairs
+}
+
 // ─── DFS スクリプト対応表 ────────────────────────────────────
 
 /// DFS 順 ID → (アクターのルートエンティティ, スクリプト (host, handle) 群) の対応表を構築する。
@@ -434,4 +475,105 @@ fn build_dfs_script_map(
         walk(root, world, &mut counter, &mut map);
     }
     map
+}
+
+// ─── テスト ──────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::physics::{
+        CollisionEvent2d, CollisionPhase2d, TriggerEvent2d, TriggerPhase2d,
+    };
+
+    /// 物理イベント種別の定数が Rust / C# 双方で一意（重複なし）であること。
+    /// C# 側 ScriptBridge の PhysicsEvent* 定数と 1 対 1 対応する値なので、
+    /// 重複するとコールバックの取り違えが起きる。
+    #[test]
+    fn physics_event_kinds_are_unique() {
+        let kinds = [
+            PHYSICS_EVENT_COLLISION_ENTER,
+            PHYSICS_EVENT_COLLISION_STAY,
+            PHYSICS_EVENT_COLLISION_EXIT,
+            PHYSICS_EVENT_TRIGGER_ENTER,
+            PHYSICS_EVENT_TRIGGER_EXIT,
+            PHYSICS_EVENT_TRIGGER_STAY,
+        ];
+        let mut sorted = kinds.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), kinds.len(), "物理イベント種別の値が重複している");
+        // C# 側の定数値（0..5）と一致していること
+        assert_eq!(PHYSICS_EVENT_TRIGGER_STAY, 5);
+    }
+
+    /// フェーズ → イベント種別の変換が 3D / 2D で一致していること（Stay を含む）。
+    #[test]
+    fn phase_to_kind_matches_between_3d_and_2d() {
+        assert_eq!(collision_event_kind(CollisionPhase::Enter), collision2d_event_kind(CollisionPhase2d::Enter));
+        assert_eq!(collision_event_kind(CollisionPhase::Stay),  collision2d_event_kind(CollisionPhase2d::Stay));
+        assert_eq!(collision_event_kind(CollisionPhase::Exit),  collision2d_event_kind(CollisionPhase2d::Exit));
+        assert_eq!(trigger_event_kind(TriggerPhase::Enter), trigger2d_event_kind(TriggerPhase2d::Enter));
+        assert_eq!(trigger_event_kind(TriggerPhase::Stay),  trigger2d_event_kind(TriggerPhase2d::Stay));
+        assert_eq!(trigger_event_kind(TriggerPhase::Exit),  trigger2d_event_kind(TriggerPhase2d::Exit));
+        // Stay が Enter/Exit と混ざっていないこと
+        assert_eq!(trigger_event_kind(TriggerPhase::Stay), PHYSICS_EVENT_TRIGGER_STAY);
+    }
+
+    /// 3D トリガー Stay が双方向（トリガー側・相手側）へ対称に配送されること。
+    #[test]
+    fn trigger_stay_is_dispatched_symmetrically_3d() {
+        let triggers = vec![TriggerEvent {
+            trigger_entity: 7, other_entity: 12, phase: TriggerPhase::Stay,
+        }];
+        let pairs = normalize_physics_pairs(&[], &triggers);
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.contains(&(7, 12, PHYSICS_EVENT_TRIGGER_STAY)));
+        assert!(pairs.contains(&(12, 7, PHYSICS_EVENT_TRIGGER_STAY)));
+    }
+
+    /// 2D トリガー Stay も同様に双方向へ配送されること。
+    #[test]
+    fn trigger_stay_is_dispatched_symmetrically_2d() {
+        let triggers = vec![TriggerEvent2d {
+            trigger_entity: 3, other_entity: 4, phase: TriggerPhase2d::Stay,
+        }];
+        let pairs = normalize_physics2d_pairs(&[], &triggers);
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.contains(&(3, 4, PHYSICS_EVENT_TRIGGER_STAY)));
+        assert!(pairs.contains(&(4, 3, PHYSICS_EVENT_TRIGGER_STAY)));
+    }
+
+    /// 衝突とトリガーが混在しても、各イベントが 2 ペアずつ正しい種別で並ぶこと。
+    #[test]
+    fn mixed_events_are_normalized_with_correct_kinds() {
+        let collisions = vec![
+            CollisionEvent { entity_a: 1, entity_b: 2, phase: CollisionPhase::Stay },
+        ];
+        let triggers = vec![
+            TriggerEvent { trigger_entity: 5, other_entity: 6, phase: TriggerPhase::Enter },
+            TriggerEvent { trigger_entity: 5, other_entity: 6, phase: TriggerPhase::Stay },
+        ];
+        let pairs = normalize_physics_pairs(&collisions, &triggers);
+        assert_eq!(pairs.len(), 6, "イベント 3 件 × 双方向 = 6 ペア");
+        assert!(pairs.contains(&(1, 2, PHYSICS_EVENT_COLLISION_STAY)));
+        assert!(pairs.contains(&(2, 1, PHYSICS_EVENT_COLLISION_STAY)));
+        assert!(pairs.contains(&(5, 6, PHYSICS_EVENT_TRIGGER_ENTER)));
+        assert!(pairs.contains(&(6, 5, PHYSICS_EVENT_TRIGGER_STAY)));
+    }
+
+    /// 2D 混在ケース: 2D の衝突 Stay と トリガー Stay が同じ種別値で配送されること。
+    #[test]
+    fn mixed_events_are_normalized_2d() {
+        let collisions = vec![
+            CollisionEvent2d { entity_a: 8, entity_b: 9, phase: CollisionPhase2d::Exit },
+        ];
+        let triggers = vec![
+            TriggerEvent2d { trigger_entity: 10, other_entity: 11, phase: TriggerPhase2d::Stay },
+        ];
+        let pairs = normalize_physics2d_pairs(&collisions, &triggers);
+        assert_eq!(pairs.len(), 4);
+        assert!(pairs.contains(&(8, 9, PHYSICS_EVENT_COLLISION_EXIT)));
+        assert!(pairs.contains(&(10, 11, PHYSICS_EVENT_TRIGGER_STAY)));
+    }
 }
