@@ -59,6 +59,105 @@ public readonly struct Quaternion : IEquatable<Quaternion>
         return new Quaternion(a.x * s, a.y * s, a.z * s, Mathf.Cos(half));
     }
 
+    /// <summary>
+    /// 指定した方向を SEED の前方（+Z, <see cref="Vector3.Forward"/>）へ向ける回転を作る。
+    /// up はワールド上方向（<see cref="Vector3.Up"/>）を基準に、視線に垂直な向きへ直交化する。
+    ///
+    /// 縮退時の扱い（Unity の Quaternion.LookRotation と同等の方針）:
+    /// ・forward がほぼゼロ長 → 向きが定義できないため Identity（無回転）を返す。
+    /// ・forward が up とほぼ平行（真上/真下を向く場合）→ up との外積で right を作れないため、
+    ///   代替の上方向（forward が +Y 寄りなら Vector3.Back、-Y 寄りなら Vector3.Forward）を用いて
+    ///   right/up を作り直す。forward は常に Y 軸上のベクトルになる分岐なので、Z 軸方向の
+    ///   Forward/Back のどちらを使っても forward とは平行にならず、直交基底を安全に作れる。
+    /// </summary>
+    public static Quaternion LookRotation(Vector3 forward)
+    {
+        // forward がゼロ長 → 向きを定義できないので無回転を返す
+        float fwdLenSq = forward.SqrMagnitude;
+        if (fwdLenSq < Mathf.Epsilon) return Identity;
+
+        Vector3 fwd = forward.Normalized;
+        Vector3 up = Vector3.Up;
+
+        // forward と up がほぼ平行（|dot|が1に近い＝真上/真下を向く）場合は
+        // right = cross(up, fwd) がほぼゼロになり基底を作れない。代替 up に差し替える。
+        if (Mathf.Abs(Vector3.Dot(fwd, up)) > 0.999f)
+        {
+            up = fwd.y > 0f ? Vector3.Back : Vector3.Forward;
+        }
+
+        // 正規直交基底を構築: right は up と fwd の両方に垂直、newUp は fwd と right の両方に垂直
+        Vector3 right = Vector3.Cross(up, fwd).Normalized;
+        Vector3 newUp = Vector3.Cross(fwd, right);
+
+        return BasisToQuaternion(right, newUp, fwd);
+    }
+
+    /// <summary>
+    /// <see cref="LookRotation(Vector3)"/> に加え、視線軸（結果の forward）まわりに
+    /// rollDegrees 回転を合成する（カメラのロール／Z 回転に相当）。
+    /// 合成順は「まず視線を向け、その後ローカル Z 軸（視線軸）まわりに回す」ため
+    /// look * AngleAxis(roll, Vector3.Forward) の順（右側が先に適用される）で掛け合わせる。
+    /// </summary>
+    public static Quaternion LookRotation(Vector3 forward, float rollDegrees)
+    {
+        Quaternion look = LookRotation(forward);
+        Quaternion roll = AngleAxis(rollDegrees, Vector3.Forward);
+        return look * roll;
+    }
+
+    /// <summary>
+    /// 正規直交基底（right, up, forward）から回転行列を経由してクォータニオンへ変換する。
+    /// trace（対角成分の和）で分岐する数値安定な標準アルゴリズム（Shoemake 法）。
+    /// トレースが小さい（=対角成分が負に近い）場合に単純な公式を使うとゼロ除算に近づき
+    /// 精度が落ちるため、最大の対角成分に応じて 4 通りに分岐する。
+    /// </summary>
+    private static Quaternion BasisToQuaternion(Vector3 right, Vector3 up, Vector3 fwd)
+    {
+        // 列ベクトルが right/up/fwd の回転行列（m[行,列]）
+        float m00 = right.x, m01 = up.x, m02 = fwd.x;
+        float m10 = right.y, m11 = up.y, m12 = fwd.y;
+        float m20 = right.z, m21 = up.z, m22 = fwd.z;
+
+        float trace = m00 + m11 + m22;
+        if (trace > 0f)
+        {
+            float s = Mathf.Sqrt(trace + 1f) * 2f; // s = 4 * w
+            float w = 0.25f * s;
+            float x = (m21 - m12) / s;
+            float y = (m02 - m20) / s;
+            float z = (m10 - m01) / s;
+            return new Quaternion(x, y, z, w);
+        }
+        else if (m00 > m11 && m00 > m22)
+        {
+            float s = Mathf.Sqrt(1f + m00 - m11 - m22) * 2f; // s = 4 * x
+            float w = (m21 - m12) / s;
+            float x = 0.25f * s;
+            float y = (m01 + m10) / s;
+            float z = (m02 + m20) / s;
+            return new Quaternion(x, y, z, w);
+        }
+        else if (m11 > m22)
+        {
+            float s = Mathf.Sqrt(1f + m11 - m00 - m22) * 2f; // s = 4 * y
+            float w = (m02 - m20) / s;
+            float x = (m01 + m10) / s;
+            float y = 0.25f * s;
+            float z = (m12 + m21) / s;
+            return new Quaternion(x, y, z, w);
+        }
+        else
+        {
+            float s = Mathf.Sqrt(1f + m22 - m00 - m11) * 2f; // s = 4 * z
+            float w = (m10 - m01) / s;
+            float x = (m02 + m20) / s;
+            float y = (m12 + m21) / s;
+            float z = 0.25f * s;
+            return new Quaternion(x, y, z, w);
+        }
+    }
+
     // ── 合成・回転適用 ───────────────────────────────────────
     /// <summary>回転の合成（lhs の後に rhs… ではなく lhs*rhs は rhs を先に適用）。</summary>
     public static Quaternion operator *(Quaternion a, Quaternion b)

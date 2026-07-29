@@ -406,7 +406,7 @@
 </section>
 
 <!-- ════════════════ 5. Vector / Quaternion / Color ════════════════ -->
-<section id="sec-vector" data-keywords="Vector2 Vector3 Quaternion Color ベクトル 回転 色 カラー 値型">
+<section id="sec-vector" data-keywords="Vector2 Vector3 Quaternion Color ベクトル 回転 色 カラー 値型 LookRotation 視線 ロール roll">
   <h2>5. Vector2 / Vector3 / Quaternion / Color（不変値型）</h2>
 
   <h3>Vector3（位置・方向・スケール）</h3>
@@ -429,11 +429,13 @@
   <div class="api"><code class="sig">Quaternion.Identity</code><span class="desc">無回転</span></div>
   <div class="api"><code class="sig">Quaternion.Euler(xDeg, yDeg, zDeg) / Euler(vector3Degrees)</code><span class="desc">オイラー角（度）から生成。適用順は YXZ</span></div>
   <div class="api"><code class="sig">Quaternion.AngleAxis(angleDeg, axis)</code><span class="desc">軸周りの回転を生成</span></div>
+  <div class="api"><code class="sig">Quaternion.LookRotation(forward)</code><span class="desc">forward を +Z へ向ける回転を生成（up はワールド上基準）</span></div>
+  <div class="api"><code class="sig">Quaternion.LookRotation(forward, rollDeg)</code><span class="desc">上に加え、視線軸まわりに rollDeg 回転を合成</span></div>
   <div class="api"><code class="sig">q1 * q2</code><span class="desc">回転の合成</span></div>
   <div class="api"><code class="sig">q * vector3</code><span class="desc">ベクトルを回す</span></div>
   <div class="api"><code class="sig">q.EulerAngles</code><span class="desc">Vector3（度）へ変換（<code>Transform.Rotation</code> へ書き戻す用）</span></div>
   <div class="api"><code class="sig">q.Normalized</code><span class="desc">正規化クォータニオン</span></div>
-  <div class="warn">Transform の回転は <b>YXZ オイラー角（度）の Vector3</b> で表します。合成・補間したいときだけ Quaternion を使い、<code>q.EulerAngles</code> で Vector3 に戻します。</div>
+  <div class="warn">Transform の回転は <b>YXZ オイラー角（度）の Vector3</b> で表します。合成・補間したいときだけ Quaternion を使い、<code>q.EulerAngles</code> で Vector3 に戻します。<code>LookRotation</code> は forward がゼロ長なら Identity、forward が上下方向とほぼ平行なときは代替の上方向で基底を作り直します。</div>
 
   <h3>Color（RGBA カラー）</h3>
   <div class="api"><code class="sig">new Color(r, g, b) / new Color(r, g, b, a)</code><span class="desc">各成分 0.0〜1.0 の正規化 float。アルファ省略時は 1.0（不透明）</span></div>
