@@ -25,7 +25,6 @@ use crate::engine::components::control_point_component::{
 use crate::engine::components::{ComponentKind, Transform};
 use crate::engine::core::app_base::undo::ComponentSlotsSnapshotCommand;
 use crate::engine::ecs::Entity;
-use crate::engine::methods::drawer::LineBatch;
 use crate::engine::methods::gizmo_interact::mat4x4_inv;
 use crate::engine::structs::objects::actor::ComponentSlotData;
 
@@ -349,7 +348,7 @@ impl App {
     /// フレームループがレンダラを可変借用する**前**に呼ぶこと
     /// （`&self` しか使わないので、可変借用と同時には呼べない）。
     /// 描くものが無ければ None。
-    pub(super) fn build_control_point_line_batch(&self) -> Option<LineBatch> {
+    pub(super) fn build_control_point_line_batch(&self) -> Option<control_point_scene_gizmo::ControlPointGizmoLines> {
         let paths = self.resolved_control_point_paths();
         // 配置予定マーカー（D&D 中のみ）。点キューブと同じ表示条件でだけ出す
         //（Play 中や 2D ビューでマーカーだけが浮くのを防ぐ）。

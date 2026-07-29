@@ -13,7 +13,7 @@ use crate::engine::structs::primitives::{
 use crate::engine::structs::utils::Color;
 use crate::engine::methods::gizmo_interact::GizmoPart;
 use super::{
-    uniforms::{ColorVertex, GizmoVertex},
+    uniforms::{ColorVertex, GizmoVertex, DEFAULT_GIZMO_LINE_THICKNESS_PX},
     gpu_resources::{GpuLineBatch, GpuGizmoBatch},
     pipeline::DrawPipelines,
 };
@@ -56,15 +56,23 @@ fn highlight_fill(c: Color) -> Color {
 ///
 /// AABB・球体・レイ等のデバッグ形状を `ColorVertex`（位置+色）の頂点列として蓄積し、
 /// `build` で GPU バッファ（`GpuLineBatch`）へアップロードして `draw_line_batch` で描画する。
+///
+/// `thickness` は `build_thick` 専用の並行配列で、セグメント（`vertices` 2 個ぶん）ごとの
+/// 太さ（px）を保持する。`add_line` 系はすべてここを経由して積むため、
+/// `vertices.len() / 2 == thickness.len()` が常に成り立つ
+/// （`add_line`/`add_line_grad` は既定太さを、`add_line_thick` は指定太さを push する）。
+/// `build`（1px 固定の LineList パイプライン）は `thickness` を一切見ないため、
+/// 既存の呼び出し側（グリッド・コライダー枠等）の見た目には影響しない。
 #[derive(Default)]
 pub struct LineBatch {
-    vertices: Vec<ColorVertex>,
+    vertices:  Vec<ColorVertex>,
+    thickness: Vec<f32>,
 }
 
 impl LineBatch {
     pub fn new() -> Self { Self::default() }
 
-    pub fn clear(&mut self) { self.vertices.clear(); }
+    pub fn clear(&mut self) { self.vertices.clear(); self.thickness.clear(); }
 
     /// 描画頂点が 0 かどうかを返す（バッチが空かどうかの確認用）。
     pub fn is_empty(&self) -> bool { self.vertices.is_empty() }
@@ -84,28 +92,38 @@ impl LineBatch {
     /// 端数（奇数頂点）は無視する（LineBatch は常にペアで push されるため通常は発生しない）。
     pub fn build_thick(&self, device: &wgpu::Device) -> GpuGizmoBatch {
         let mut line_verts: Vec<GizmoVertex> = Vec::with_capacity(self.vertices.len() * 3);
-        for seg in self.vertices.chunks_exact(2) {
+        for (seg, &thickness_px) in self.vertices.chunks_exact(2).zip(self.thickness.iter()) {
             let pos_a = seg[0].position;
             let pos_b = seg[1].position;
             // 色はセグメント始点の色を採用する（LineBatch は 1 セグメント同色で push する）。
             let color = seg[0].color;
             // add_thick_line と同一の頂点並び（2 三角形 = 1 クワッド）。
-            let v = |t: f32, side: f32| GizmoVertex { pos_a, t, pos_b, side, color };
+            // 太さはセグメントごとに `thickness`（add_line 系が積んだ値）を使う。
+            let v = |t: f32, side: f32| GizmoVertex { pos_a, t, pos_b, side, color, thickness_px };
             line_verts.extend_from_slice(&[
                 v(0.0, -1.0), v(0.0,  1.0), v(1.0, -1.0),
                 v(1.0, -1.0), v(0.0,  1.0), v(1.0,  1.0),
             ]);
         }
-        // ソリッド三角形は持たない（太線のみ）。
+        // ソリッド三角形は持たない(太線のみ)。
         GpuGizmoBatch::new(device, &line_verts, &[])
     }
 
+    /// 既定太さ（`DEFAULT_GIZMO_LINE_THICKNESS_PX`）のラインを追加する。
+    /// 太さを指定したい場合は `add_line_thick` を使う。
     pub fn add_line(&mut self, start: [f32; 3], end: [f32; 3], color: [f32; 4]) {
-        self.vertices.push(ColorVertex { position: start, color });
-        self.vertices.push(ColorVertex { position: end,   color });
+        self.add_line_thick(start, end, color, DEFAULT_GIZMO_LINE_THICKNESS_PX);
     }
 
-    /// 両端点に異なる色を持つグラデーションラインを追加する。
+    /// 太さ（px）を指定してラインを追加する。`build_thick` で太線バッチ化したときのみ
+    /// この太さが反映される（`build`＝1px 固定の LineList パイプラインでは無視される）。
+    pub fn add_line_thick(&mut self, start: [f32; 3], end: [f32; 3], color: [f32; 4], thickness_px: f32) {
+        self.vertices.push(ColorVertex { position: start, color });
+        self.vertices.push(ColorVertex { position: end,   color });
+        self.thickness.push(thickness_px);
+    }
+
+    /// 両端点に異なる色を持つグラデーションラインを追加する（既定太さ）。
     /// 深度フェードなど、端点ごとに alpha を変えたい場合に使用する。
     /// GPU が頂点間を線形補間するため、ライン全体で自然なグラデーションになる。
     pub fn add_line_grad(
@@ -117,6 +135,7 @@ impl LineBatch {
     ) {
         self.vertices.push(ColorVertex { position: start, color: col_start });
         self.vertices.push(ColorVertex { position: end,   color: col_end });
+        self.thickness.push(DEFAULT_GIZMO_LINE_THICKNESS_PX);
     }
 
     pub fn add_line_prim(&mut self, line: &Line3, color: [f32; 4]) {
@@ -737,9 +756,13 @@ impl GizmoBatch {
 
     // ── 内部ヘルパー ──────────────────────────────────────────
 
+    /// 既定太さ（`DEFAULT_GIZMO_LINE_THICKNESS_PX`）の太線クワッドを追加する。
+    /// 移動ギズモの軸ハンドル等、既存の全呼び出し元がこの既定太さを使う
+    /// （見た目を変えないための後方互換の太さ）。
     fn add_thick_line(&mut self, pos_a: [f32; 3], pos_b: [f32; 3], color: Color) {
         let color = color.to_array();
-        let v = |t: f32, side: f32| GizmoVertex { pos_a, t, pos_b, side, color };
+        let thickness_px = DEFAULT_GIZMO_LINE_THICKNESS_PX;
+        let v = |t: f32, side: f32| GizmoVertex { pos_a, t, pos_b, side, color, thickness_px };
         self.line_verts.extend_from_slice(&[
             v(0.0, -1.0), v(0.0,  1.0), v(1.0, -1.0),
             v(1.0, -1.0), v(0.0,  1.0), v(1.0,  1.0),

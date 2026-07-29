@@ -610,13 +610,15 @@ pub fn vertex_buffer_layout(name: &str) -> wgpu::VertexBufferLayout<'static> {
     static POS3_ATTRS: &[VA] = &[
         VA { format: VF::Float32x3, offset: 0, shader_location: 0 },
     ];
-    // GizmoVertex: pos_a(0-11), t(12-15), pos_b(16-27), side(28-31), color(32-47)
+    // GizmoVertex: pos_a(0-11), t(12-15), pos_b(16-27), side(28-31), color(32-47),
+    // thickness_px(48-51)。線ごとの太さを持たせるための追加属性（location 5）。
     static GIZMO_ATTRS: &[VA] = &[
         VA { format: VF::Float32x3, offset: 0,  shader_location: 0 },
         VA { format: VF::Float32,   offset: 12, shader_location: 1 },
         VA { format: VF::Float32x3, offset: 16, shader_location: 2 },
         VA { format: VF::Float32,   offset: 28, shader_location: 3 },
         VA { format: VF::Float32x4, offset: 32, shader_location: 4 },
+        VA { format: VF::Float32,   offset: 48, shader_location: 5 },
     ];
     // SpriteVertex: position(0-7, vec2) + uv(8-15, vec2) = 16 bytes
     static SPRITE_ATTRS: &[VA] = &[
@@ -643,7 +645,7 @@ pub fn vertex_buffer_layout(name: &str) -> wgpu::VertexBufferLayout<'static> {
         "smooth_normal" => VertexBufferLayout { array_stride: 12, step_mode: VertexStepMode::Vertex, attributes: SMOOTH_NORMAL_ATTRS },
         "color_vertex"  => VertexBufferLayout { array_stride: 28, step_mode: VertexStepMode::Vertex, attributes: COLOR_ATTRS },
         "pos3"          => VertexBufferLayout { array_stride: 12, step_mode: VertexStepMode::Vertex, attributes: POS3_ATTRS },
-        "gizmo_vertex"  => VertexBufferLayout { array_stride: 48, step_mode: VertexStepMode::Vertex, attributes: GIZMO_ATTRS },
+        "gizmo_vertex"  => VertexBufferLayout { array_stride: 52, step_mode: VertexStepMode::Vertex, attributes: GIZMO_ATTRS },
         "sprite_vertex" => VertexBufferLayout { array_stride: 16, step_mode: VertexStepMode::Vertex, attributes: SPRITE_ATTRS },
         // 80 bytes / インスタンス・step_mode=Instance（Phase R6）
         "sprite_instance" => VertexBufferLayout { array_stride: 80, step_mode: VertexStepMode::Instance, attributes: SPRITE_INSTANCE_ATTRS },

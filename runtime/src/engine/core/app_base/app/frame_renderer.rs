@@ -2761,8 +2761,14 @@ impl App {
 
                     // コントロールポイント（汎用パス）のギズモを GPU バッファ化する。
                     // 頂点自体はレンダラ借用前に組んである（control_point_lines）。
+                    // 区間ライン（太線）と点キューブ／プレビューマーカー（従来の細線）で
+                    // パイプラインが異なるため、2 本の GPU バッファに分けてビルドする。
                     let control_point_batch = control_point_lines.as_ref()
-                        .map(|lb| lb.build(&draw_ctx.device));
+                        .filter(|b| !b.markers.is_empty())
+                        .map(|b| b.markers.build(&draw_ctx.device));
+                    let control_point_thick_batch = control_point_lines.as_ref()
+                        .filter(|b| !b.segment_lines.is_empty())
+                        .map(|b| b.segment_lines.build_thick(&draw_ctx.device));
 
                     // グリッド描画バッチ（エディタモード + show_grid のみ）
                     let _perf_t_grid = std::time::Instant::now();
@@ -5725,13 +5731,25 @@ impl App {
                             );
                         }
 
-                        // コントロールポイント（点キューブ＋区間ライン）描画。
-                        // 他のシーンギズモと同じライン経路に合流させる。
+                        // コントロールポイント（点キューブ＋配置プレビューマーカー）描画。
+                        // 他のシーンギズモと同じ 1px ライン経路に合流させる（従来どおりの細さ）。
                         if let (Some(cp_batch), Some((_, line_bg))) =
                             (&control_point_batch, &self.line_model_buf)
                         {
                             draw_line_batch(
                                 &mut pass, cp_batch,
+                                &camera_buf.bind_group, line_bg,
+                                &draw_ctx.pipelines,
+                            );
+                        }
+                        // コントロールポイントの区間ライン（太線）描画。
+                        // 経路そのものを太く見せるため、選択強調と同じ太線パイプライン
+                        // （深度 LessEqual＝可視物には隠れる）で描く。
+                        if let (Some(cp_thick_batch), Some((_, line_bg))) =
+                            (&control_point_thick_batch, &self.line_model_buf)
+                        {
+                            draw_thick_line_batch(
+                                &mut pass, cp_thick_batch,
                                 &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );

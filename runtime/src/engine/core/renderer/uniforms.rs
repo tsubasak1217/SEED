@@ -462,27 +462,37 @@ pub struct ColorVertex {
     pub color:    [f32; 4],
 }
 
+/// ギズモ太線の既定の太さ（px）。
+///
+/// `add_line` など「太さを指定しない」既存 API はこの値を `GizmoVertex::thickness_px` へ
+/// 詰める後方互換ラッパとして振る舞う。以前は `gizmo_line.wgsl` にシェーダ定数
+/// `THICKNESS_PX` として直書きされていたが、線ごとに太さを変えられるよう頂点属性へ
+/// 昇格したためこちらへ移設した（数値は据え置きで見た目は不変）。
+pub const DEFAULT_GIZMO_LINE_THICKNESS_PX: f32 = 3.33;
+
 /// ギズモ太線描画用頂点。
 ///
 /// 1 セグメントにつき 6 頂点（TriangleList で 2 三角形 = 1 クワッド）を生成する。
-/// 頂点シェーダがスクリーン空間の垂直オフセットを計算して線幅を付与する。
+/// 頂点シェーダがスクリーン空間の垂直オフセットを `thickness_px` ぶんだけ計算して線幅を付与する。
 ///
-/// WGSL レイアウト（計 48 bytes）:
-/// | オフセット | フィールド | サイズ |
-/// |-----------|-----------|--------|
-/// |   0       | pos_a     |  12    |
-/// |  12       | t         |   4    |  0.0=pos_a 側, 1.0=pos_b 側
-/// |  16       | pos_b     |  12    |
-/// |  28       | side      |   4    |  -1.0 or +1.0
-/// |  32       | color     |  16    |
+/// WGSL レイアウト（計 52 bytes）:
+/// | オフセット | フィールド    | サイズ |
+/// |-----------|--------------|--------|
+/// |   0       | pos_a        |  12    |
+/// |  12       | t            |   4    |  0.0=pos_a 側, 1.0=pos_b 側
+/// |  16       | pos_b        |  12    |
+/// |  28       | side         |   4    |  -1.0 or +1.0
+/// |  32       | color        |  16    |
+/// |  48       | thickness_px |   4    |  線の太さ（px）。既定は `DEFAULT_GIZMO_LINE_THICKNESS_PX`
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GizmoVertex {
-    pub pos_a: [f32; 3],
-    pub t:     f32,
-    pub pos_b: [f32; 3],
-    pub side:  f32,
-    pub color: [f32; 4],
+    pub pos_a:        [f32; 3],
+    pub t:             f32,
+    pub pos_b:        [f32; 3],
+    pub side:          f32,
+    pub color:        [f32; 4],
+    pub thickness_px:  f32,
 }
 
 
