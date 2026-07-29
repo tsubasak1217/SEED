@@ -5293,6 +5293,8 @@ public partial class InspectorPanel : UserControl
 
         // 受信 JSON を編集用モデルへ（パース失敗時は空リスト）。
         var points = ParseControlPoints(info.ControlPointsJson);
+        // 切り分け計器: セクションが実際に構築されたか（D&D 不発調査用・軽量なので常設）。
+        EditorLog.Write($"[CtrlPoint] セクション構築 slot={info.SlotIdx} points={points.Count}");
 
         // リスト全体を全置換で送信するローカル関数。
         void SendPoints()
@@ -5524,7 +5526,12 @@ public partial class InspectorPanel : UserControl
         // ドラッグ開始判定用の押下位置（クリックとドラッグを両立させるため、
         // システムの最小ドラッグ距離を超えて初めてドラッグとみなす）。
         Point? addBtnPressPos = null;
-        addPointBtn.PreviewMouseLeftButtonDown += (_, e) => addBtnPressPos = e.GetPosition(addPointBtn);
+        addPointBtn.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            addBtnPressPos = e.GetPosition(addPointBtn);
+            // 切り分け計器: 押下が本ハンドラへ届いているか（D&D 不発調査用・常設）。
+            EditorLog.Write("[CtrlPoint] 追加ボタン押下（ドラッグ待機）");
+        };
         addPointBtn.MouseMove += (_, e) =>
         {
             if (addBtnPressPos is not { } start) return;
