@@ -11,6 +11,12 @@
 //    ・enabled=false のスロットはスキップ
 //    ・Spline（川）で制御点が 2 点未満のものはスキップ（折れ線が作れないため）
 //
+//  【川の制御点の出どころ】同一アクタに有効な ControlPointComponent があれば、
+//  そちらを評価した折れ線を **WaterVolumeComponent.spline_points より優先**して使う。
+//  切替表:
+//    ControlPoint スロット無し / enabled=false / 点が 2 点未満 → spline_points
+//    上記以外                                                  → ControlPoint の点列
+//
 //  【W1 の制限】アクタのワールド行列は Transform.position のみ使う
 //  （Transform はワールド空間）。**回転は無視する ＝ Region は軸平行 AABB。**
 //  回転した水塊への対応は W4 以降。
@@ -19,8 +25,10 @@
 use crate::engine::components::water_volume_component::{
     WaterVolumeComponent, WaterVolumeKind,
 };
+use crate::engine::components::control_point_component::ControlPointComponent;
 use crate::engine::components::{ComponentKind, Transform};
 use crate::engine::ecs::World;
+use crate::engine::path::{PathEval, PATH_DEFAULT_STEP_M};
 use crate::engine::structs::objects::Actor;
 
 use super::resolved::ResolvedWaterVolume;
@@ -76,11 +84,31 @@ fn collect_in_actor(
             .map(|t| t.position)
             .unwrap_or(FALLBACK_ACTOR_POSITION);
 
+        // ── 同一アクタの ControlPointComponent を川の折れ線として先に評価する ──
+        //
+        // 「点を置く汎用コンポーネント（ControlPoint）」と「点を使う機能（川）」を
+        // 分離してあるので、川は**同じアクタに載っている点列**を探して使う。
+        // ここでは Transform の位置だけでなく**回転・スケールを含む完全な Transform**を
+        // 使う（`from_component` に渡す actor_pos が位置のみなのと異なる点）。
+        // アクタを回したら川も一緒に回るのが当然の挙動であり、PathEval がその変換を担う。
+        //
+        // enabled=false の ControlPoint スロットは**見つからなかった扱い**にする。
+        // これにより「制御点で編集する／従来の spline_points を使う」を
+        // スロットのトグル 1 つで切り替えられる（併用時の優先順位をユーザーが握れる）。
+        let control_polyline: Option<Vec<[f32; 3]>> = actor.slots().iter()
+            .find(|s| s.kind == ComponentKind::ControlPoint && s.enabled)
+            .and_then(|s| world.get::<ControlPointComponent>(s.entity))
+            .map(|cp| {
+                let tf = world.get::<Transform>(actor.entity).cloned().unwrap_or_default();
+                PathEval::from_points(&cp.points, &tf).sample_polyline(PATH_DEFAULT_STEP_M)
+            });
+
         for slot in actor.slots() {
             // 無効スロットは描画・問い合わせともに対象外
             if slot.kind != ComponentKind::WaterVolume || !slot.enabled { continue; }
             let Some(wv) = world.get::<WaterVolumeComponent>(slot.entity) else { continue };
-            let resolved = ResolvedWaterVolume::from_component(wv, pos, dfs_id);
+            let resolved = ResolvedWaterVolume::from_component_with_path(
+                wv, pos, dfs_id, control_polyline.as_deref());
             // 川（Spline。W4）は制御点が 2 点未満だと折れ線が作れず、
             // 描画も問い合わせも定義できない。収集しない（下流が誤って参照しないように）。
             if wv.kind == WaterVolumeKind::Spline && resolved.river.is_none() { continue; }
@@ -100,6 +128,7 @@ fn collect_in_actor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::components::control_point_component::ControlPoint;
 
     /// テスト用シーンビルダの戻り値: (World, ルートアクター列)
     struct TestScene {
@@ -150,6 +179,128 @@ mod tests {
         fn collect(&self) -> Vec<ResolvedWaterVolume> {
             collect_water_volumes(&self.actors, &self.world, 0)
         }
+
+        /// 既存アクターに ControlPointComponent スロットを 1 つ足す
+        ///（点はアクタ相対座標で与える）。川との統合テスト用。
+        fn add_control_points(
+            &mut self,
+            actor:   &mut Actor,
+            points:  &[[f32; 3]],
+            enabled: bool,
+        ) {
+            let slot_entity = self.world.spawn();
+            let comp = ControlPointComponent {
+                points: points.iter()
+                    .map(|&p| ControlPoint { position: p, ..Default::default() })
+                    .collect(),
+            };
+            self.world.insert(slot_entity, comp);
+            actor.add_slot_typed::<ControlPointComponent>(
+                "ControlPointComponent", ComponentKind::ControlPoint, slot_entity);
+            // 追加したスロット（＝末尾）の有効・無効を設定する
+            let last = actor.slots().len() - 1;
+            actor.slots_mut()[last].enabled = enabled;
+        }
+    }
+
+    /// テスト用: 直線の川になる spline_points（Z = 目印値）。
+    /// ControlPoint 側が採用されたかどうかを Z 座標だけで判別できるようにする。
+    const SPLINE_MARKER_Z: f32 = 777.0;
+
+    /// 同一アクタに ControlPointComponent があれば、spline_points ではなく
+    /// そちらから川が組まれること（優先度の契約）。
+    #[test]
+    fn river_prefers_control_points_over_spline_points() {
+        let mut s = TestScene::new();
+        let mut a = s.make_water_actor_with(
+            [0.0, 0.0, 0.0],
+            WaterVolumeKind::Spline,
+            |w| w.spline_points = vec![
+                [0.0, 0.0, SPLINE_MARKER_Z], [10.0, 0.0, SPLINE_MARKER_Z]],
+        );
+        s.add_control_points(&mut a, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], true);
+        s.actors.push(a);
+
+        let vols = s.collect();
+        assert_eq!(vols.len(), 1);
+        let river = vols[0].river.as_ref().expect("川が成立する");
+        assert_eq!(river.nodes[0].pos[2], 0.0, "spline_points の目印 Z が出たら誤り");
+    }
+
+    /// ControlPointComponent の点が 1 点以下なら川にならないので、
+    /// spline_points へフォールバックすること。
+    #[test]
+    fn river_falls_back_when_control_points_too_few() {
+        let mut s = TestScene::new();
+        let mut a = s.make_water_actor_with(
+            [0.0, 0.0, 0.0],
+            WaterVolumeKind::Spline,
+            |w| w.spline_points = vec![
+                [0.0, 0.0, SPLINE_MARKER_Z], [10.0, 0.0, SPLINE_MARKER_Z]],
+        );
+        s.add_control_points(&mut a, &[[0.0, 0.0, 0.0]], true);
+        s.actors.push(a);
+
+        let vols = s.collect();
+        assert_eq!(vols.len(), 1);
+        let river = vols[0].river.as_ref().expect("spline_points 側で川が成立する");
+        assert_eq!(river.nodes[0].pos[2], SPLINE_MARKER_Z, "spline_points が使われること");
+    }
+
+    /// ControlPoint スロットが enabled=false なら spline_points へフォールバックすること
+    ///（＝スロットのトグルで「どちらの点列を使うか」を切り替えられる）。
+    #[test]
+    fn river_falls_back_when_control_point_slot_disabled() {
+        let mut s = TestScene::new();
+        let mut a = s.make_water_actor_with(
+            [0.0, 0.0, 0.0],
+            WaterVolumeKind::Spline,
+            |w| w.spline_points = vec![
+                [0.0, 0.0, SPLINE_MARKER_Z], [10.0, 0.0, SPLINE_MARKER_Z]],
+        );
+        s.add_control_points(&mut a, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], false);
+        s.actors.push(a);
+
+        let vols = s.collect();
+        assert_eq!(vols.len(), 1);
+        let river = vols[0].river.as_ref().unwrap();
+        assert_eq!(river.nodes[0].pos[2], SPLINE_MARKER_Z, "無効スロットは無視されること");
+    }
+
+    /// ControlPoint 経路でも surface_height が Y に効くこと。
+    #[test]
+    fn river_from_control_points_applies_surface_height() {
+        let mut s = TestScene::new();
+        let mut a = s.make_water_actor_with(
+            [0.0, 0.0, 0.0],
+            WaterVolumeKind::Spline,
+            |w| w.surface_height = 3.0,
+        );
+        s.add_control_points(&mut a, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], true);
+        s.actors.push(a);
+
+        let vols = s.collect();
+        let river = vols[0].river.as_ref().unwrap();
+        assert_eq!(river.nodes[0].pos[1], 3.0, "制御点 Y(0) + surface_height(3)");
+    }
+
+    /// ControlPoint 経路でアクタ位置が二重に足されないこと。
+    /// PathEval が Transform を適用済みなので、resolved 側で足すと 200 になってしまう。
+    #[test]
+    fn river_from_control_points_does_not_double_apply_actor_position() {
+        let mut s = TestScene::new();
+        let mut a = s.make_water_actor_with(
+            [100.0, 0.0, 0.0],
+            WaterVolumeKind::Spline,
+            |_| {},
+        );
+        // ローカル (0,0,0) → ワールド (100,0,0) になるはず
+        s.add_control_points(&mut a, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], true);
+        s.actors.push(a);
+
+        let vols = s.collect();
+        let river = vols[0].river.as_ref().unwrap();
+        assert_eq!(river.nodes[0].pos[0], 100.0, "200 なら二重加算");
     }
 
     /// 通常のアクター 1 個から 1 ボリュームが収集される。

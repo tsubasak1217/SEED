@@ -1041,6 +1041,10 @@ impl App {
         // ピック要求を取り出す（描画ブロック内で使用）
         let pick_pos = self.pending_pick.take();
         let mut did_pick = false;
+        // 今フレームの ID バッファ読み戻しがコントロールポイント D&D のためだったか。
+        // did_pick と同じスコープ・同じ寿命で持ち、GPU サブミット後の解決処理で参照する
+        //（読み戻しバッファは 1 フレームに 1 回しか読めないため、用途の排他を表す）。
+        let mut did_control_point_readback = false;
 
         // ピック結果デコード用 MC 情報 (base, dfs_id, slot_i, instance_count)
         let wl_mc_pick_infos: Vec<(u32, u32, usize, usize)> = {
@@ -6787,25 +6791,39 @@ impl App {
                                 }
                             }
                             perf_id_ms = _perf_t_id.elapsed().as_secs_f64() * 1000.0;
-                            // readback 優先度: drop > add_actor > pick
+                            // readback 優先度: drop > control_point_drop > add_actor > pick
+                            //
+                            // コントロールポイント D&D を add_actor / pick より優先するのは、
+                            // どちらも「ユーザーがマウスを離した瞬間の 1 回きりの操作」であり、
+                            // 後回しにすると次フレームへ再キューされてカーソル位置と着弾点が
+                            // ずれる（間にカメラが動くと別の場所に点が置かれる）ため。
+                            // 通常ドロップ（drop）より下なのは、そちらが先に実装済みの
+                            // 優先度契約であり、同一フレームに両方が飛ぶことは実際上ないため。
                             let drop_pos = self.pending_drop
                                 .as_ref()
                                 .map(|&(_, sx, sy)| (sx, sy));
+                            let cp_pos = self.pending_control_point_drop
+                                .as_ref()
+                                .map(|&(_, _, sx, sy)| (sx, sy));
                             let add_actor_pos = self.pending_add_actor
                                 .as_ref()
                                 .and_then(|&(is_2d, _, _, sx, sy)| {
                                     // 2D アクターはスポーン位置不要なので readback しない
                                     if is_2d { None } else { Some((sx, sy)) }
                                 });
-                            let readback_pos = drop_pos.or(add_actor_pos).or(pick_pos);
+                            let readback_pos = drop_pos.or(cp_pos).or(add_actor_pos).or(pick_pos);
                             if let Some((px, py)) = readback_pos {
                                 let px = px.min(id_buf.width.saturating_sub(1));
                                 let py = py.min(id_buf.height.saturating_sub(1));
                                 frame.schedule_id_copy(
                                     &id_buf.texture, px, py, &id_buf.readback_buf,
                                 );
-                                // readback が drop/add_actor ではなく pick のためかを記録するフラグ
-                                did_pick = drop_pos.is_none() && add_actor_pos.is_none() && pick_pos.is_some();
+                                // readback が drop/control_point/add_actor ではなく pick のためかを記録するフラグ
+                                did_pick = drop_pos.is_none() && cp_pos.is_none()
+                                    && add_actor_pos.is_none() && pick_pos.is_some();
+                                // readback がコントロールポイント D&D のためだったか。
+                                // did_pick とは**同時に true にならない**（＝読み戻しの二重消費が起きない）。
+                                did_control_point_readback = drop_pos.is_none() && cp_pos.is_some();
                             }
                         }
                     }
@@ -7183,6 +7201,43 @@ impl App {
             }
         }
 
+        // ── コントロールポイントの D&D 着弾解決（GPU サブミット後）─────────────
+        //
+        // 配置順の理由: 通常ドロップ（pending_drop）の**直後**、アクタ追加（pending_add_actor）の
+        // **直前**に置く。readback の優先度が「drop > control_point > add_actor」なので、
+        // 消費順も同じにしておくと「先に読み戻しを予約した用途が先に読む」が一貫する。
+        if let Some((actor_dfs_id, slot_idx, sx, sy)) = self.pending_control_point_drop.take() {
+            if self.edit_view_is_2d() || self.is_2d_edit_tab() {
+                // 2D ビューではパス（3D の概念）の着弾点を定義できない。
+                // take 済みなのでそのまま破棄する（再キューすると永久にキューが残るため）。
+            } else if !did_control_point_readback {
+                // 今フレームは他用途（通常ドロップ）が読み戻しバッファを使ったので、
+                // 解決は次フレームへ回す。
+                self.pending_control_point_drop = Some((actor_dfs_id, slot_idx, sx, sy));
+            } else {
+                // ① メッシュ・水面: ID パスの RGB に焼かれたワールド座標を読む。
+                //    背景（id == 0）なら None。
+                //    did_control_point_readback が true のとき did_pick は必ず false
+                //    （優先度計算上、両者は排他）なので、後段のピック読み出しと
+                //    読み戻しバッファを奪い合うことはない。
+                let gpu_hit = if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
+                    id_buf.read_pixel(&draw_ctx.device).0
+                } else {
+                    None
+                };
+                // ② 地形は ID パスに描かれないため、CPU レイマーチで別途取る。
+                //    ①② のうちカメラに近い方を採る（詳細は resolve_control_point_drop_hit）。
+                //
+                // resolve_spawn_pos は流用しない: あちらは何にも当たらないとき
+                // 「カメラ前方 10m」へフォールバックしてしまい、
+                // 「空をドロップしたら何も起きない」という本機能の要件に反するため。
+                if let Some(hit) = self.resolve_control_point_drop_hit(gpu_hit, sx, sy) {
+                    self.handle_add_control_point_world(actor_dfs_id, slot_idx, hit);
+                }
+                // ヒットが 1 つも無ければ点を追加しない（＝空をドロップしても何も起きない）。
+            }
+        }
+
         // ── コンテキストメニュー経由のアクター追加（GPU サブミット後）─────────────
         // D&D と同じ IDバッファ読み取りでスポーン位置を確定する
         if let Some((is_2d, world_line, parent_dfs_id, sx, sy)) = self.pending_add_actor.take() {
@@ -7190,7 +7245,12 @@ impl App {
                 // 2D アクターはスポーン位置不要なので即座に追加する
                 self.handle_add_actor_2d(world_line, parent_dfs_id);
             } else {
-                match self.resolve_spawn_pos(sx, sy, did_pick) {
+                // コントロールポイント D&D が読み戻しを使ったフレームでは、
+                // 読み戻しバッファにはそちらの座標が入っている。ここで読むと
+                // 「点を置いた位置にアクタが湧く」誤配置になるため、ピック時と同じく
+                // 解決を諦めて次フレームへ再キューする。
+                let readback_consumed = did_pick || did_control_point_readback;
+                match self.resolve_spawn_pos(sx, sy, readback_consumed) {
                     // 再キューイング
                     None => self.pending_add_actor = Some((false, world_line, parent_dfs_id, sx, sy)),
                     Some(spawn_pos) => self.handle_add_actor(world_line, parent_dfs_id, Some(spawn_pos)),

@@ -398,6 +398,23 @@ pub enum IpcCommand {
     /// フォーマット: SET_CONTROL_POINT_POS:{actor_dfs_id},{slot_idx},{index},{x},{y},{z}
     /// ギズモのドラッグ中に毎フレーム飛ぶため、JSON 全置換より軽い専用経路を用意する。
     SetControlPointPos { actor_dfs_id: u32, slot_idx: u32, index: u32, x: f32, y: f32, z: f32 },
+    /// インスペクタの点リスト行クリックで、**ビューポート側の点選択を合わせる**
+    /// （control_point_ops.rs が処理）。
+    /// フォーマット: SELECT_CONTROL_POINT:{actor_dfs_id},{slot_idx},{index}
+    /// ランタイム → エディタの `CONTROL_POINT_SELECTED` と対になる逆方向の通知で、
+    /// 「リストで選ぶ」「ビューポートで選ぶ」のどちらからでも同じ点が選ばれる状態にする。
+    SelectControlPoint { actor_dfs_id: u32, slot_idx: u32, index: u32 },
+    /// エディタの「制御点を追加」ボタンをビューポートへ D&D したときの着弾点に点を足す
+    /// （control_point_ops.rs が処理）。
+    /// フォーマット: ADD_CONTROL_POINT_AT_SCREEN:{actor_dfs_id},{slot_idx},{screen_x},{screen_y}
+    ///
+    /// **なぜワールド座標ではなく画面座標を送るのか**:
+    /// 着弾点を求めるにはシーン形状（メッシュの ID バッファ・地形のボクセル密度場）が要り、
+    /// それらは**ランタイムにしか存在しない**。したがって C# 側でワールド座標を求めることは
+    /// 原理的に不可能で、画面座標だけを送り、ランタイムが
+    /// 「レイ解決 → アクタ相対へ変換 → 点を追加」まで一括で行う。
+    /// C# は一切ワールド座標を扱わない（座標系の二重管理を持ち込まないための設計）。
+    AddControlPointAtScreen { actor_dfs_id: u32, slot_idx: u32, screen_x: u32, screen_y: u32 },
     /// InteractionSourceComponent のフィールドを更新する（interaction_ops.rs が処理）。
     /// key: radius / strength / enabled。value は数値または "true"/"false"。
     SetInteractionField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
@@ -957,6 +974,34 @@ fn parse1u_tail(rest: &str) -> Option<(u32, &str)> {
 fn parse2u(rest: &str) -> Option<(u32, u32)> {
     let mut it = rest.splitn(2, ',');
     Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
+}
+
+/// `rest` から `u32, u32, u32` をカンマ区切りでパースして (a, b, c) を返す。
+///
+/// `parse3u_tail` は 4 フィールド目（tail）を必須とするため、
+/// 「u32 がちょうど 3 個で終わる」コマンドには使えない。こちらを使う。
+/// 個数が足りない・数値でない場合は None（半端なコマンドを実行しない）。
+#[inline]
+fn parse3u(rest: &str) -> Option<(u32, u32, u32)> {
+    let mut it = rest.split(',');
+    Some((
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim().parse().ok()?,
+    ))
+}
+
+/// `rest` から `u32, u32, u32, u32` をカンマ区切りでパースして (a, b, c, d) を返す。
+/// 個数が足りない・数値でない場合は None。
+#[inline]
+fn parse4u(rest: &str) -> Option<(u32, u32, u32, u32)> {
+    let mut it = rest.split(',');
+    Some((
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim().parse().ok()?,
+    ))
 }
 
 /// `rest` から `u32, u32, <tail>` をカンマ区切りでパースして (a, b, tail) を返す。
@@ -1634,6 +1679,25 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 Some(IpcCommand::SetControlPointPos {
                                     actor_dfs_id: a, slot_idx: sl, index: idx, x, y, z,
                                 })
+                            })
+                        }
+                        s if s.starts_with("SELECT_CONTROL_POINT:") => {
+                            // フォーマット: SELECT_CONTROL_POINT:{actor_dfs_id},{slot_idx},{index}
+                            // 3 個の u32 で終わる（tail が無い）ので parse3u を使う。
+                            parse3u(&s["SELECT_CONTROL_POINT:".len()..]).map(|(a, sl, idx)| {
+                                IpcCommand::SelectControlPoint {
+                                    actor_dfs_id: a, slot_idx: sl, index: idx,
+                                }
+                            })
+                        }
+                        s if s.starts_with("ADD_CONTROL_POINT_AT_SCREEN:") => {
+                            // フォーマット: ADD_CONTROL_POINT_AT_SCREEN:{actor_dfs_id},{slot_idx},{screen_x},{screen_y}
+                            // 座標は**ビューポート内のピクセル座標**（ワールド座標ではない。
+                            // 着弾点の解決はランタイム側の責務。IpcCommand の定義コメント参照）。
+                            parse4u(&s["ADD_CONTROL_POINT_AT_SCREEN:".len()..]).map(|(a, sl, sx, sy)| {
+                                IpcCommand::AddControlPointAtScreen {
+                                    actor_dfs_id: a, slot_idx: sl, screen_x: sx, screen_y: sy,
+                                }
                             })
                         }
                         s if s.starts_with("SET_INTERACTION_FIELD:") => {

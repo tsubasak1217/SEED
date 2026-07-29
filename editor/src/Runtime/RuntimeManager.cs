@@ -319,6 +319,16 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public event Action<long, string>? WgslDiagnosticsReceived;
 
+    /// <summary>
+    /// ビューポート上で ControlPoint の点が選択された通知
+    /// （CONTROL_POINT_SELECTED:{actorDfsId},{slotIdx},{index}）。
+    /// 引数は (actorDfsId, slotIdx, index)。インスペクタのリスト行ハイライトに使う。
+    /// </summary>
+    public event Action<int, int, int>? ControlPointSelected;
+
+    /// <summary>ControlPoint の点選択が解除された通知（CONTROL_POINT_DESELECTED）。</summary>
+    public event Action? ControlPointDeselected;
+
     // ── コンストラクタ ─────────────────────────────────────────
 
     public RuntimeManager(string runtimeExePath)
@@ -1403,6 +1413,28 @@ public sealed class RuntimeManager : IDisposable
             var json = msg["ACTOR_COMPONENTS:".Length..];
             EditorLog.Write($"[Runtime→Editor] ACTOR_COMPONENTS ({json.Length} chars)");
             ActorComponentsReceived?.Invoke(json);
+        }
+        else if (msg.StartsWith("CONTROL_POINT_SELECTED:", StringComparison.Ordinal))
+        {
+            // フォーマット: CONTROL_POINT_SELECTED:{actorDfsId},{slotIdx},{index}
+            // 3 要素すべてが int パースできた場合のみ通知する（壊れた行はログのみで無視）。
+            var payload = msg["CONTROL_POINT_SELECTED:".Length..];
+            var parts   = payload.Split(',');
+            if (parts.Length == 3
+                && int.TryParse(parts[0], out var cpActor)
+                && int.TryParse(parts[1], out var cpSlot)
+                && int.TryParse(parts[2], out var cpIndex))
+            {
+                ControlPointSelected?.Invoke(cpActor, cpSlot, cpIndex);
+            }
+            else
+            {
+                EditorLog.Write($"[Runtime→Editor] CONTROL_POINT_SELECTED 解析失敗: {payload}");
+            }
+        }
+        else if (msg == "CONTROL_POINT_DESELECTED")
+        {
+            ControlPointDeselected?.Invoke();
         }
         else if (msg == "STOPPED")
         {
