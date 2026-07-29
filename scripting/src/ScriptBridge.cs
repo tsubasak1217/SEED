@@ -52,6 +52,9 @@ public static unsafe class ScriptBridge
     public static void DestroyComponent(nint handlePtr)
     {
         if (handlePtr == 0) return;
+        // 例外抑制テーブルに残った当該ハンドルのエントリを掃除する
+        // （インスタンス破棄後もカウンタが残り続けるのを防ぐ）。
+        ForgetErrorState(handlePtr);
         GCHandle.FromIntPtr(handlePtr).Free();
     }
 
@@ -75,7 +78,8 @@ public static unsafe class ScriptBridge
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[SEEDScripting] OnStart failed: {ex}");
+            // FFI 境界を例外が越えると CLR がプロセスを落とすため、必ずここで握り潰す。
+            ReportScriptException(h, ScriptCallback.OnStart, ex);
         }
     }
 
@@ -95,7 +99,8 @@ public static unsafe class ScriptBridge
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[SEEDScripting] OnDestroy failed: {ex}");
+            // FFI 境界を例外が越えると CLR がプロセスを落とすため、必ずここで握り潰す。
+            ReportScriptException(h, ScriptCallback.OnDestroy, ex);
         }
     }
 
@@ -105,31 +110,61 @@ public static unsafe class ScriptBridge
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void BeginFrame(nint h, NativeFrameContext* ctx)
-    { Prepare(h, ctx)?.BeginFrame(ref *ctx); }
+    { InvokePhase(h, ctx, ScriptCallback.BeginFrame); }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void EarlyUpdate(nint h, NativeFrameContext* ctx)
-    { Prepare(h, ctx)?.EarlyUpdate(ref *ctx); }
+    { InvokePhase(h, ctx, ScriptCallback.EarlyUpdate); }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void Update(nint h, NativeFrameContext* ctx)
-    { Prepare(h, ctx)?.Update(ref *ctx); }
+    { InvokePhase(h, ctx, ScriptCallback.Update); }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void ConstantUpdate(nint h, NativeFrameContext* ctx)
-    { Prepare(h, ctx)?.ConstantUpdate(ref *ctx); }
+    { InvokePhase(h, ctx, ScriptCallback.ConstantUpdate); }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void LateUpdate(nint h, NativeFrameContext* ctx)
-    { Prepare(h, ctx)?.LateUpdate(ref *ctx); }
+    { InvokePhase(h, ctx, ScriptCallback.LateUpdate); }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void Render(nint h, NativeFrameContext* ctx)
-    { Prepare(h, ctx)?.Render(ref *ctx); }
+    { InvokePhase(h, ctx, ScriptCallback.Render); }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void EndFrame(nint h, NativeFrameContext* ctx)
-    { Prepare(h, ctx)?.EndFrame(ref *ctx); }
+    { InvokePhase(h, ctx, ScriptCallback.EndFrame); }
+
+    /// <summary>
+    /// フレームフェーズ呼び出しの共通実装。
+    /// Prepare（時間同期・エンティティ束縛）と該当フェーズの実行をまとめて
+    /// try/catch で保護する。ユーザースクリプトが例外を投げても FFI 境界を
+    /// 越えさせず、ログを出してそのフレームの当該呼び出しだけを中断する。
+    /// </summary>
+    private static void InvokePhase(nint h, NativeFrameContext* ctx, ScriptCallback phase)
+    {
+        try
+        {
+            var s = Prepare(h, ctx);
+            if (s is null) return;
+            switch (phase)
+            {
+                case ScriptCallback.BeginFrame:     s.BeginFrame(ref *ctx);     break;
+                case ScriptCallback.EarlyUpdate:    s.EarlyUpdate(ref *ctx);    break;
+                case ScriptCallback.Update:         s.Update(ref *ctx);         break;
+                case ScriptCallback.ConstantUpdate: s.ConstantUpdate(ref *ctx); break;
+                case ScriptCallback.LateUpdate:     s.LateUpdate(ref *ctx);     break;
+                case ScriptCallback.Render:         s.Render(ref *ctx);         break;
+                case ScriptCallback.EndFrame:       s.EndFrame(ref *ctx);       break;
+            }
+        }
+        catch (Exception ex)
+        {
+            // FFI 境界を例外が越えると CLR がプロセスを落とすため、必ずここで握り潰す。
+            ReportScriptException(h, phase, ex);
+        }
+    }
 
     /// <summary>
     /// フェーズ実行の直前準備。現在フレームの時間を SEED.Time へ同期し、
@@ -178,7 +213,8 @@ public static unsafe class ScriptBridge
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[SEEDScripting] OnPhysicsEvent failed: {ex}");
+            // FFI 境界を例外が越えると CLR がプロセスを落とすため、必ずここで握り潰す。
+            ReportScriptException(h, ScriptCallback.OnPhysicsEvent, ex);
         }
     }
 
@@ -195,6 +231,9 @@ public static unsafe class ScriptBridge
     {
         try
         {
+            // ホットリロードで全インスタンスが作り直されるため、
+            // 旧インスタンスに紐づく例外抑制状態はここで全消去する。
+            ClearAllErrorState();
             var root = Encoding.UTF8.GetString(rootPtr, rootLen);
             return ScriptAssemblyManager.CompileAndLoad(root);
         }
@@ -232,6 +271,140 @@ public static unsafe class ScriptBridge
         {
             Console.Error.WriteLine($"[SEEDScripting] SetFieldValue failed: {ex.Message}");
         }
+    }
+
+    // ─── スクリプト例外の捕捉とログ抑制 ───────────────────────
+    //
+    // 【背景】
+    // ScriptBridge の各メソッドは [UnmanagedCallersOnly] で Rust から直接呼ばれる
+    // FFI エントリポイントである。ここから例外が抜けると CLR は「Unhandled
+    // exception」としてプロセス全体を即座に終了させる（exitCode 0xC0000409 等）。
+    // ユーザースクリプトの単純なミス（Nullable の .Value など）でランタイムが
+    // 落ちるのを防ぐため、すべてのコールバックを try/catch で包み、
+    // ログを出したうえでゲームの実行は継続する。
+    //
+    // 【ログ抑制】
+    // 毎フレーム呼ばれるフェーズで例外が出続けると、全文スタックの出力だけで
+    // ログ・stderr パイプ・フレーム時間が破綻する。そこで
+    // （インスタンス × コールバック種別）ごとに発生回数を数え、
+    //   ・初回          … 定型 1 行 + 全文スタックトレース
+    //   ・2 回目以降    … ScriptErrorRepeatLogInterval 回ごとに 1 行サマリのみ
+    // とする。正常フレームでは一切テーブルに触れないため、
+    // 例外が起きていない限り追加コストはゼロである。
+
+    /// <summary>スクリプト呼び出し種別（ログの「メソッド名」として使う）。</summary>
+    private enum ScriptCallback
+    {
+        BeginFrame,
+        EarlyUpdate,
+        Update,
+        ConstantUpdate,
+        LateUpdate,
+        Render,
+        EndFrame,
+        OnStart,
+        OnDestroy,
+        OnPhysicsEvent,
+    }
+
+    /// <summary>
+    /// 同一インスタンス × 同一コールバックで例外が繰り返された場合に、
+    /// 何回に 1 回サマリ行を出すかの間隔。60fps 換算で約 5 秒に 1 行。
+    /// </summary>
+    private const int ScriptErrorRepeatLogInterval = 300;
+
+    /// <summary>ログ 1 行目の定型プレフィクス（エディタ側の検索キーを兼ねる）。</summary>
+    private const string ScriptErrorPrefix = "[SCRIPT ERROR]";
+
+    /// <summary>型名が解決できなかった場合に使う代替表記。</summary>
+    private const string UnknownScriptTypeName = "<unknown script>";
+
+    /// <summary>
+    /// （GCHandle 値, コールバック種別）ごとの累計例外回数。
+    /// インスタンス破棄（DestroyComponent）とホットリロード（CompileScripts）で掃除する。
+    /// </summary>
+    private static readonly System.Collections.Generic.Dictionary<(nint Handle, ScriptCallback Callback), int>
+        ScriptErrorCounts = new();
+
+    /// <summary>ScriptErrorCounts の排他用ロック（例外発生時のみ取得する）。</summary>
+    private static readonly object ScriptErrorLock = new();
+
+    /// <summary>掃除時の列挙に使うコールバック種別の一覧（毎回の配列生成を避けるためキャッシュ）。</summary>
+    private static readonly ScriptCallback[] AllScriptCallbacks = Enum.GetValues<ScriptCallback>();
+
+    /// <summary>
+    /// スクリプト由来の例外を stderr へ報告する（ランタイム経由でエディタログに載る）。
+    /// 初回は定型 1 行 + 全文スタック、以降は一定間隔でサマリ 1 行のみを出力する。
+    /// この関数自体は決して例外を送出しない（FFI 境界へ抜けさせないため）。
+    /// </summary>
+    private static void ReportScriptException(nint h, ScriptCallback callback, Exception ex)
+    {
+        try
+        {
+            // 累計回数を更新する（例外発生時にしか呼ばれないため、ここでのロックは実害がない）
+            int count;
+            lock (ScriptErrorLock)
+            {
+                var key = (h, callback);
+                count = ScriptErrorCounts.TryGetValue(key, out var prev) ? prev + 1 : 1;
+                ScriptErrorCounts[key] = count;
+            }
+
+            var typeName = SafeTypeName(h);
+
+            if (count == 1)
+            {
+                // 初回のみ全文を出す。1 行目はエディタログから拾いやすい定型フォーマット。
+                Console.Error.WriteLine($"{ScriptErrorPrefix} {typeName}.{callback}: {ex.Message}");
+                Console.Error.WriteLine(ex.ToString());
+                Console.Error.WriteLine(
+                    $"{ScriptErrorPrefix} 以降この例外は {ScriptErrorRepeatLogInterval} 回ごとに 1 行のみ通知します。");
+            }
+            else if (count % ScriptErrorRepeatLogInterval == 0)
+            {
+                // 繰り返し発生分はサマリ 1 行のみ（スタックは初回ログを参照させる）
+                Console.Error.WriteLine(
+                    $"{ScriptErrorPrefix} {typeName}.{callback}: 例外が継続中（累計 {count} 回・詳細は初回ログ参照）: {ex.Message}");
+            }
+        }
+        catch
+        {
+            // ログ出力自体の失敗（stderr 切断等）でプロセスを落とさない。
+            // ここで握り潰す以外に安全な選択肢はないため、意図的に無処理とする。
+        }
+    }
+
+    /// <summary>
+    /// GCHandle からスクリプトの型名を安全に取得する。
+    /// 解決できない場合（ハンドル無効・解放済み等）は代替表記を返し、例外は投げない。
+    /// </summary>
+    private static string SafeTypeName(nint h)
+    {
+        try
+        {
+            return Get(h)?.GetType().FullName ?? UnknownScriptTypeName;
+        }
+        catch
+        {
+            return UnknownScriptTypeName;
+        }
+    }
+
+    /// <summary>指定ハンドルに紐づく例外抑制状態をすべて破棄する。</summary>
+    private static void ForgetErrorState(nint h)
+    {
+        lock (ScriptErrorLock)
+        {
+            // 対象ハンドルのエントリのみ列挙して削除する（コールバック種別ごとに最大 1 件）
+            foreach (var callback in AllScriptCallbacks)
+                ScriptErrorCounts.Remove((h, callback));
+        }
+    }
+
+    /// <summary>例外抑制状態を全消去する（ホットリロード時）。</summary>
+    private static void ClearAllErrorState()
+    {
+        lock (ScriptErrorLock) ScriptErrorCounts.Clear();
     }
 
     // ─── 内部ヘルパー ─────────────────────────────────────────

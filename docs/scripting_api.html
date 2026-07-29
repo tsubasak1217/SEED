@@ -297,7 +297,7 @@
 </section>
 
 <!-- ════════════════ 2. ライフサイクル ════════════════ -->
-<section id="sec-lifecycle" data-keywords="ライフサイクル 更新 フレーム 物理イベント 衝突 コールバック OnStart OnDestroy 初期化 破棄 生成 OnTriggerStay トリガー">
+<section id="sec-lifecycle" data-keywords="ライフサイクル 更新 フレーム 物理イベント 衝突 コールバック OnStart OnDestroy 初期化 破棄 生成 OnTriggerStay トリガー 例外 エラー クラッシュ 落ちる SCRIPT ERROR NullReference 未処理例外 スタックトレース デバッガ">
   <h2>2. ライフサイクル関数</h2>
   <p class="section-note"><code>SEEDScript</code> を継承して override。1 フレーム内で以下の順に呼ばれます。不要なものは override 不要。</p>
   <div class="api"><code class="sig">BeginFrame(ref ctx)</code><span class="desc">フレーム開始時。入力取得や状態リセット向け</span></div>
@@ -348,6 +348,23 @@
         gameObject.Destroy();   <span class="c">// 自分を消す</span>
     }
 }</pre>
+
+  <h3>スクリプト例外の扱い</h3>
+  <p class="section-note">ライフサイクル関数・物理イベントコールバックの中で<b>未処理の例外</b>（<code>Nullable</code> の <code>.Value</code>、<code>NullReferenceException</code>、<code>IndexOutOfRangeException</code> など）が発生しても、<b>ランタイムプロセスは落ちません</b>。エンジンがすべてのコールバック境界で例外を捕捉します。</p>
+  <table>
+    <tr><th>項目</th><th>挙動</th></tr>
+    <tr><td>プロセス</td><td>継続する（強制終了しない）</td></tr>
+    <tr><td>ゲーム進行</td><td>継続する。中断されるのは<b>例外を出したスクリプトの、その 1 回の呼び出しだけ</b></td></tr>
+    <tr><td>ログ</td><td>エディタのログパネルに <code>[SCRIPT ERROR] {型名}.{関数名}: {メッセージ}</code> の 1 行と、続けてスタックトレースが出力される</td></tr>
+    <tr><td>繰り返し発生時</td><td>全文スタックは<b>初回のみ</b>。以降は 300 回に 1 回、累計回数付きの 1 行サマリのみ（毎フレーム全文を吐くとログが溢れるため）</td></tr>
+  </table>
+  <div class="warn"><b>例外を放置しないこと。</b> 落ちないのはあくまで安全網であり、正常動作ではありません。例外が出続けているスクリプトはその関数が毎フレーム途中で打ち切られているため、状態更新が飛んで挙動が壊れます。<code>[SCRIPT ERROR]</code> を見つけたら必ず原因を直してください。</div>
+<pre><span class="c">// NG: hitInfo が null のフレームで例外 → その BeginFrame は以降が実行されない</span>
+<span class="k">var</span> target = hitInfo.Value.Position;
+
+<span class="c">// OK: null を明示的に扱う</span>
+<span class="k">if</span> (hitInfo <span class="k">is</span> { } hit) { <span class="k">var</span> target = hit.Position; }</pre>
+  <p class="section-note">デバッガをアタッチしている場合でも<b>ブレークポイントは通常どおり機能します</b>。ただしエンジンが例外を捕捉するため「ユーザー未処理例外」での自動停止は発生しません。例外の発生箇所で止めたい場合は、デバッガ側の<b>例外ブレークポイント（first-chance）</b>を有効にしてください。</p>
 </section>
 
 <!-- ════════════════ 3. Time / Debug ════════════════ -->
