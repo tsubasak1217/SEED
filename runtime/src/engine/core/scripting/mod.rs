@@ -104,6 +104,12 @@ type PhysicsEventFn = unsafe extern "system" fn(isize, *const RawPhysicsEvent);
 type CompileFn   = unsafe extern "system" fn(*const u8, i32) -> i32;
 /// スクリプトインスタンスの [SerializeField] フィールドに文字列値を設定する。
 type SetFieldFn  = unsafe extern "system" fn(isize, *const u8, i32, *const u8, i32);
+/// 保留中の [SerializeField] 参照フィールド（アクター名／スロット名の文字列）を
+/// 実体ハンドルへ解決してスクリプトインスタンスへ注入する。
+///
+/// 解決には World と Actor ツリーが必要なため、**必ずスクリプトフェーズ実行中**
+/// （`with_world` / `with_actors` でポインタが公開されている間）に呼ぶこと。
+type ResolveRefsFn = unsafe extern "system" fn(isize);
 /// コンポーネントアクセス用の関数ポインタ表（HOST_API）を C# へ登録する。
 type RegisterHostApiFn = unsafe extern "system" fn(*const host_api::ScriptHostApi);
 
@@ -134,6 +140,8 @@ pub struct ScriptingHost {
     pub physics_event_fn:   PhysicsEventFn,
     pub(crate) compile_fn:   CompileFn,
     pub(crate) set_field_fn: SetFieldFn,
+    /// 保留中の参照フィールドを解決・注入する（OnStart 直前にフェーズ内で呼ぶ）
+    pub(crate) resolve_refs_fn: ResolveRefsFn,
     register_host_api_fn:    RegisterHostApiFn,
 }
 
@@ -188,6 +196,7 @@ impl ScriptingHost {
             physics_event_fn:  get_fn!(fn(isize, *const RawPhysicsEvent),      pdcstr!("OnPhysicsEvent")),
             compile_fn:        get_fn!(fn(*const u8, i32) -> i32,              pdcstr!("CompileScripts")),
             set_field_fn:      get_fn!(fn(isize, *const u8, i32, *const u8, i32), pdcstr!("SetFieldValue")),
+            resolve_refs_fn:   get_fn!(fn(isize),                              pdcstr!("ResolveReferenceFields")),
             register_host_api_fn: get_fn!(fn(*const host_api::ScriptHostApi),  pdcstr!("RegisterHostApi")),
         }))
     }

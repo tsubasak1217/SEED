@@ -294,6 +294,7 @@
     <span class="k">private float</span> frequency = 8.0f;
 }</pre>
   <p class="section-note"><code>[Serializable]</code> を付けたクラス／構造体型のフィールドに <code>[SerializeField]</code> を付けると、インスペクタで<b>子フィールドが再帰的に展開</b>されます（入れ子の上限は 8 段）。</p>
+  <p class="section-note"><code>GameObject</code> やコンポーネントハンドル型（<code>Transform</code> / <code>Camera</code> など）のフィールドに <code>[SerializeField]</code> を付けると、<b>他アクターへの参照フィールド</b>になります（Hierarchy から D&amp;D で設定）。詳細は第 7 節の「参照フィールド」を参照してください。</p>
 </section>
 
 <!-- ════════════════ 2. ライフサイクル ════════════════ -->
@@ -556,7 +557,7 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="コンポーネント GetComponent Transform CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧">
+<section id="sec-components" data-keywords="コンポーネント GetComponent Transform CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -672,6 +673,58 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><td><code>InputMap</code></td><td><code>gameObject.GetComponent&lt;InputMap&gt;()</code></td><td>入力アクション評価（Bool / Axis1D / Axis2D。Key / GamepadButton / GamepadAxis）</td></tr>
   </table>
   <p class="section-note">他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定です。</p>
+
+  <h3>参照フィールド（インスペクタで他アクターを差し込む）</h3>
+  <p class="section-note"><code>[SerializeField]</code> を <b><code>GameObject</code> やコンポーネントハンドル型</b>のフィールドに付けると、インスペクタ上で<b>他のアクターへの参照</b>として編集できます（Unity のオブジェクト参照フィールド相当）。</p>
+<pre><span class="k">using</span> SEEDEditor.Scripting;
+
+<span class="k">public class</span> <span class="t">FollowCamera</span> : <span class="t">SEEDScript</span>
+{
+    <span class="c">// 追従したい対象。Hierarchy からアクタ行をドロップして設定する</span>
+    [<span class="t">SerializeField</span>(Label = <span class="s">"追従対象"</span>)]
+    <span class="k">private</span> <span class="t">SEED.Transform</span> target;
+
+    <span class="c">// 未設定を許したい参照は Nullable で宣言する（null = 未設定）</span>
+    [<span class="t">SerializeField</span>(Label = <span class="s">"注視カメラ"</span>)]
+    <span class="k">private</span> <span class="t">SEED.Camera</span>? lookCamera;
+
+    [<span class="t">SerializeField</span>] <span class="k">private</span> <span class="t">SEED.Vector3</span> offset = <span class="k">new</span>(0f, 3f, -8f);
+
+    <span class="k">public override void</span> LateUpdate()
+    {
+        <span class="c">// 非 Nullable 宣言は「未設定でも null にはならない」ので IsValid で確かめる</span>
+        <span class="k">if</span> (!target.IsValid) <span class="k">return</span>;
+
+        transform.Position = target.Position + offset;
+
+        <span class="c">// Nullable 宣言は null チェック → さらに IsValid で生存確認</span>
+        <span class="k">if</span> (lookCamera <span class="k">is</span> { } cam &amp;&amp; cam.IsValid)
+            cam.FieldOfView = 60f;
+    }
+}</pre>
+  <table>
+    <tr><th>宣言</th><th>意味</th></tr>
+    <tr><td><code>SEED.GameObject</code> / <code>SEED.GameObject?</code></td><td>アクター本体への参照</td></tr>
+    <tr><td><code>SEED.Transform</code> / <code>SEED.CanvasTransform</code>（＋ <code>?</code>）</td><td>アクターのルートに直付けされた Transform 系への参照</td></tr>
+    <tr><td><code>SEED.Sprite</code> / <code>SEED.Camera</code> / <code>SEED.AudioSource</code> / <code>SEED.Animator</code> / <code>SEED.ParticleEmitter</code> / <code>SEED.InputMap</code>（＋ <code>?</code>）</td><td>アクター内の<b>コンポーネントスロット</b>への参照</td></tr>
+  </table>
+  <p class="section-note">参照フィールドは<b>常に参照（ハンドル）</b>です。「値としての Transform」は作れません。位置や回転を値で持ちたい場合は <code>SEED.Vector3</code> などを使ってください。</p>
+  <div class="warn">
+    <b>null と IsValid の使い分け</b><br>
+    <b>null は「未設定」だけを意味します</b>（Nullable <code>T?</code> 宣言のみ null になり得ます）。<br>
+    <b>IsValid は「参照先が今も生きているか」</b>で、未解決（アクタが見つからない）・破棄済みのどちらでも false になります。<br>
+    非 Nullable（<code>T</code>）で宣言した参照は未設定でも null にならず、<b>IsValid == false の無効ハンドル</b>になります。<br>
+    <code>IsValid</code> はライフサイクル関数の中でのみ意味のある値を返します（実行フェーズ外では常に false）。
+  </div>
+  <p class="section-note"><b>インスペクタでの設定</b>: ① フィールド行の参照ボックスへ <b>Hierarchy パネルからアクタ行を D&amp;D</b> ② その種別のスロットを複数持つアクターならスロット選択ダイアログが出る ③ <code>✕</code> ボタンで参照解除 ④ 参照ボックスの<b>ダブルクリック</b>で Hierarchy の参照先へジャンプ ⑤ 参照先がその種別を持たない場合は警告が出て設定されません。</p>
+  <div class="warn">
+    <b>保存形式と制約</b><br>
+    参照は<b>アクタ名</b>（コンポーネント参照は加えて<b>スロット名</b>）で保存されます（<code>Player</code> / <code>Player|MainCamera</code>）。未設定は空文字列です。<br>
+    したがって <b>アクタ名・スロット名を変更すると参照は切れます</b>（再設定が必要）。アクタ名に <code>|</code> は使えません。<br>
+    同名アクタが複数ある場合はヒエラルキーの DFS 順で<b>最初に見つかったもの</b>が使われます。<br>
+    <b>解決は一度きり</b>です。Play 開始時（および <code>Instantiate</code> 時）に、そのスクリプトの <b>OnStart より前</b>に解決・注入されます。実行中のアクタ名変更やアクタ生成には追従しません（実行中に探し直すなら <code>SEED.GameObject.Find(name)</code>）。<br>
+    解決に失敗しても例外にはならず、Nullable 宣言は <code>null</code>、非 Nullable 宣言は <code>IsValid == false</code> の無効ハンドルになります。
+  </div>
 </section>
 
 <!-- ════════════════ 7.5 Scene ════════════════ -->

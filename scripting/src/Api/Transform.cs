@@ -20,6 +20,18 @@ public readonly struct Transform : IComponentHandle<Transform>
     static string IComponentHandle<Transform>.ComponentKindName => Comp;
     static Transform IComponentHandle<Transform>.FromEntity(Entity slotEntity) => new(slotEntity);
 
+    // ── 参照の生存判定 ─────────────────────────────────
+
+    /// <summary>
+    /// この参照が生存しているか（指すエンティティが実在し Transform を保持しているか）。
+    ///
+    /// [SerializeField] の参照フィールドで「解決できたか／破棄されていないか」を
+    /// 判定するために使う。<b>null は「未設定」</b>（Nullable 宣言のみ）を意味し、
+    /// <b>IsValid == false は「未解決または破棄済み」</b>を意味する。
+    /// World が公開されていない場面（ライフサイクル外）でも false になる。
+    /// </summary>
+    public bool IsValid => ScriptHost.HasComponent(_entity, Comp);
+
     /// <summary>ワールド位置。</summary>
     public Vector3 Position
     {

@@ -276,17 +276,25 @@ public static class ScriptCompiler
         var (rangeMin, rangeMax) = ReadRange(f);
         var defValue             = owner is not null ? f.GetValue(owner) : null;
 
-        // [Serializable] なネストクラスなら子フィールドを再帰展開する
+        // 参照フィールド（GameObject / Transform / Camera … とその Nullable 版）か判定する。
+        // 判定の正典は SEED.ScriptReference（ランタイム側の注入処理と同じ実装を共有する）。
+        SEED.ScriptReference.ReferenceKind? reference =
+            SEED.ScriptReference.TryGetKind(f.FieldType, out var refKind) ? refKind : null;
+
+        // [Serializable] なネストクラスなら子フィールドを再帰展開する。
+        // 参照フィールドはハンドル構造体なので展開対象から除外する
+        // （ハンドルの内部 entity をインスペクタに晒さないため）。
         IReadOnlyList<ScriptFieldInfo>? children = null;
-        if (depth < MaxNestDepth && IsNestedSerializable(f.FieldType))
+        if (reference is null && depth < MaxNestDepth && IsNestedSerializable(f.FieldType))
             children = ExtractFields(f.FieldType, depth + 1);
 
         return new ScriptFieldInfo(f, label ?? PrettifyName(f.Name), tooltip, defValue)
         {
-            Header   = header,
-            RangeMin = rangeMin,
-            RangeMax = rangeMax,
-            Children = children,
+            Header    = header,
+            RangeMin  = rangeMin,
+            RangeMax  = rangeMax,
+            Children  = children,
+            Reference = reference,
         };
     }
 

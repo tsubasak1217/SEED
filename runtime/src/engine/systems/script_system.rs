@@ -16,6 +16,25 @@ use crate::engine::ecs::schedule::all_phases;
 use crate::engine::components::ScriptComponent;
 use crate::engine::core::scripting::{ScriptingHost, with_world};
 
+/// 1 スクリプト分の呼び出し情報（World の借用を解放した後に使う退避データ）。
+///
+/// クエリ結果をタプルで持ち回ると各要素の意味が読み取れなくなるため、
+/// 名前付きフィールドの構造体にしている。
+struct ScriptCall {
+    /// CLR ホスト（ライフサイクル関数ポインタ表）
+    host:   Arc<ScriptingHost>,
+    /// CLR 側スクリプトインスタンスの GCHandle
+    handle: isize,
+    /// スクリプトが乗るアクターのエンティティ（gameObject / transform の束縛用）
+    owner:  Option<Entity>,
+    /// ScriptComponent 自体が格納されているスロットエンティティ（フラグ更新用）
+    entity: Entity,
+    /// このフェーズで OnStart を先に呼ぶべきか（＝まだ OnStart 未実行）
+    needs_start: bool,
+    /// このフェーズで [SerializeField] 参照フィールドの解決を先に発行すべきか
+    needs_resolve: bool,
+}
+
 /// 全フェーズにスクリプト駆動システムを登録する。
 ///
 /// 各フェーズで World の全 ScriptComponent をクエリし、
@@ -38,16 +57,18 @@ pub fn register(schedule: &mut Schedule) {
             // 実効非アクティブ（アクターの active 継承が false またはスロット無効）の
             // スクリプトは呼び出し対象から外す（Scene::sync_script_owners が毎フレーム同期）。
             // needs_start = このフェーズで OnStart を先に呼ぶべきか（＝未 OnStart）。
-            let calls: Vec<(Arc<ScriptingHost>, isize, Option<Entity>, Entity, bool)> = world
+            // needs_resolve = 参照フィールドの解決を先に発行すべきか（＝refs_dirty）。
+            let calls: Vec<ScriptCall> = world
                 .query::<ScriptComponent>()
                 .filter(|(_entity, sc)| sc.active)
-                .map(|(entity, sc)| (
-                    Arc::clone(&sc.host),
-                    sc.handle,
-                    sc.owner,
+                .map(|(entity, sc)| ScriptCall {
+                    host:          Arc::clone(&sc.host),
+                    handle:        sc.handle,
+                    owner:         sc.owner,
                     entity,
-                    is_first_phase && !sc.started,
-                ))
+                    needs_start:   is_first_phase && !sc.started,
+                    needs_resolve: is_first_phase && sc.refs_dirty,
+                })
                 .collect();
             if calls.is_empty() { return; }
 
@@ -55,22 +76,29 @@ pub fn register(schedule: &mut Schedule) {
             //    この間 Rust 側は World への参照を保持しないため、アクセサからの
             //    可変アクセスが安全に行える。
             with_world(world, || {
-                for (host, handle, owner, _entity, needs_start) in &calls {
-                    // OnStart は必ずこのスクリプトの初回ライフサイクル呼び出しより前に走る
-                    if *needs_start {
-                        ScriptComponent::run_on_start_raw(host, *handle, *owner);
+                for c in &calls {
+                    // [SerializeField] の参照フィールドは World / Actor ツリーが
+                    // 公開されているこの区間でしか解決できない。OnStart より前に
+                    // 発行することで、ユーザーコードからは常に解決済みに見える。
+                    if c.needs_resolve {
+                        ScriptComponent::resolve_references_raw(&c.host, c.handle);
                     }
-                    ScriptComponent::run_phase_raw(host, *handle, *owner, phase, ctx);
+                    // OnStart は必ずこのスクリプトの初回ライフサイクル呼び出しより前に走る
+                    if c.needs_start {
+                        ScriptComponent::run_on_start_raw(&c.host, c.handle, c.owner);
+                    }
+                    ScriptComponent::run_phase_raw(&c.host, c.handle, c.owner, phase, ctx);
                 }
             });
 
-            // 3. OnStart 済みフラグを立てる（World 借用が戻ってから行う）。
-            //    フラグは Drop 時の OnDestroy 発火条件も兼ねる。
+            // 3. OnStart 済み / 参照解決済みフラグを立てる（World 借用が戻ってから行う）。
+            //    started は Drop 時の OnDestroy 発火条件も兼ねる。
             if is_first_phase {
-                for (_host, _handle, _owner, entity, needs_start) in &calls {
-                    if !*needs_start { continue; }
-                    if let Some(sc) = world.get_mut::<ScriptComponent>(*entity) {
-                        sc.started = true;
+                for c in &calls {
+                    if !c.needs_start && !c.needs_resolve { continue; }
+                    if let Some(sc) = world.get_mut::<ScriptComponent>(c.entity) {
+                        if c.needs_start   { sc.started    = true; }
+                        if c.needs_resolve { sc.refs_dirty = false; }
                     }
                 }
             }
