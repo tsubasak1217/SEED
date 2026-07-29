@@ -61,6 +61,16 @@ pub(super) struct DragState {
     pub actor_extra_mc_drag_starts: Vec<(usize, Vec<[[f32; 4]; 4]>)>,
     /// マルチ選択ギズモドラッグ時の非プライマリ選択アクター開始行列（dfs_id, start_mat）。
     pub multi_actor_drag_starts: Vec<(u32, [[f32; 4]; 4])>,
+    /// コントロールポイントのギズモドラッグ開始スナップショット。
+    ///
+    /// `Some` の間は**ギズモの対象がアクタではなく制御点 1 個**であり、
+    /// 上記のアクタ系スナップショットは一切使われない（収集もしない）。
+    pub control_point_drag: Option<super::control_point_ops::ControlPointDragStart>,
+    /// 押下時に制御点キューブを掴んだか。
+    ///
+    /// `true` の間は release 時の通常オブジェクトピックを抑止する
+    /// （抑止しないとアクタ選択が更新され、選んだばかりの点が即座に消える）。
+    pub control_point_picked: bool,
 
     // ── LMB 入力状態 ──────────────────────────────────────────
 
@@ -95,6 +105,8 @@ impl DragState {
             canvas_transform_drag_start:    None,
             actor_extra_mc_drag_starts:     Vec::new(),
             multi_actor_drag_starts:        Vec::new(),
+            control_point_drag:             None,
+            control_point_picked:           false,
             lmb_held:                       false,
             lmb_press_pos:                  None,
             ctrl_at_press:                  false,

@@ -401,6 +401,11 @@ impl Actor {
                     world.get::<crate::engine::components::InteractionSourceComponent>(slot.entity)
                         .map(|is| ComponentData::InteractionSourceComponent(is.to_data()))
                 }
+                ComponentKind::ControlPoint => {
+                    // コントロールポイント（汎用パスの点列）をシリアライズ用データに変換する
+                    world.get::<crate::engine::components::ControlPointComponent>(slot.entity)
+                        .map(|cp| ComponentData::ControlPointComponent(cp.to_data()))
+                }
                 ComponentKind::Animator => {
                     world.get::<crate::engine::components::AnimatorComponent>(slot.entity)
                         .map(|an| ComponentData::AnimatorComponent(an.to_data()))

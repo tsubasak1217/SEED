@@ -388,6 +388,16 @@ pub enum IpcCommand {
     ///      shore_wave_strength / shore_wave_length / shore_wave_period / shore_wave_foam（W1.5 岸波）。
     /// ベクタ系（region_half_extents / *_color）の value は "x,y,z" 形式。
     SetWaterField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// ControlPointComponent の点列を **JSON でまるごと置き換える**（control_point_ops.rs が処理）。
+    /// フォーマット: SET_CONTROL_POINTS:{actor_dfs_id},{slot_idx},{json}
+    /// json は `[{"position":[x,y,z],"rotation":[x,y,z],"time":t,"interp":"CatmullRom"},...]`。
+    /// 点の追加・削除・並べ替え・属性編集のいずれもこの 1 コマンドで来る
+    ///（水の spline_points と同じ「リスト全置換」流儀。差分プロトコルを作らない）。
+    SetControlPoints { actor_dfs_id: u32, slot_idx: u32, json: String },
+    /// ControlPointComponent の **1 点の位置だけ**を更新する（control_point_ops.rs が処理）。
+    /// フォーマット: SET_CONTROL_POINT_POS:{actor_dfs_id},{slot_idx},{index},{x},{y},{z}
+    /// ギズモのドラッグ中に毎フレーム飛ぶため、JSON 全置換より軽い専用経路を用意する。
+    SetControlPointPos { actor_dfs_id: u32, slot_idx: u32, index: u32, x: f32, y: f32, z: f32 },
     /// InteractionSourceComponent のフィールドを更新する（interaction_ops.rs が処理）。
     /// key: radius / strength / enabled。value は数値または "true"/"false"。
     SetInteractionField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
@@ -1599,6 +1609,30 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 Some(IpcCommand::SetWaterField {
                                     actor_dfs_id: a, slot_idx: sl,
                                     key: key.to_string(), value: value.to_string(),
+                                })
+                            })
+                        }
+                        s if s.starts_with("SET_CONTROL_POINTS:") => {
+                            // フォーマット: SET_CONTROL_POINTS:{actor_dfs_id},{slot_idx},{json}
+                            // json 内にカンマが多数あるため、先頭 2 フィールドだけを厳密に
+                            // 切り出して残り全部を json とする（parse2u_tail が splitn(3) で行う）。
+                            parse2u_tail(&s["SET_CONTROL_POINTS:".len()..]).map(|(a, sl, tail)| {
+                                IpcCommand::SetControlPoints {
+                                    actor_dfs_id: a, slot_idx: sl, json: tail.to_string(),
+                                }
+                            })
+                        }
+                        s if s.starts_with("SET_CONTROL_POINT_POS:") => {
+                            // フォーマット: SET_CONTROL_POINT_POS:{actor_dfs_id},{slot_idx},{index},{x},{y},{z}
+                            // 座標 3 つは tail をカンマで分割して取る。1 つでも欠けたら破棄する
+                            //（半端な座標で点を飛ばさない）。
+                            parse3u_tail(&s["SET_CONTROL_POINT_POS:".len()..]).and_then(|(a, sl, idx, tail)| {
+                                let mut it = tail.split(',');
+                                let x = it.next()?.trim().parse::<f32>().ok()?;
+                                let y = it.next()?.trim().parse::<f32>().ok()?;
+                                let z = it.next()?.trim().parse::<f32>().ok()?;
+                                Some(IpcCommand::SetControlPointPos {
+                                    actor_dfs_id: a, slot_idx: sl, index: idx, x, y, z,
                                 })
                             })
                         }

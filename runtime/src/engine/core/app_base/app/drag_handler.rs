@@ -94,8 +94,10 @@ impl App {
             }
         }
 
-        // 矩形選択の更新（LMB 押下中かつギズモドラッグなし）
-        if self.drag.lmb_held && self.drag.gizmo_drag.is_none() {
+        // 矩形選択の更新（LMB 押下中かつギズモドラッグなし）。
+        // 制御点キューブを掴んだ押下では矩形選択を始めない
+        //（点を選んだ直後の微細なカーソル移動でラバーバンドが出るのを防ぐ）。
+        if self.drag.lmb_held && self.drag.gizmo_drag.is_none() && !self.drag.control_point_picked {
             if let Some((px, py)) = self.drag.lmb_press_pos {
                 let dx = cx - px;
                 let dy = cy - py;
@@ -232,6 +234,18 @@ impl App {
                 Some(update_drag(drag, ro, rd))
             } else { None }
         } else { None };
+
+        // コントロールポイントのドラッグ中は、書き戻し先が「点 1 個」だけなので
+        // アクタ／キャンバス向けの巨大な書き戻しブロックへは一切入らない。
+        if self.drag.control_point_drag.is_some() {
+            if let (Some(new_mat), Some(start_mat)) =
+                (new_mat_opt, self.drag.gizmo_drag.as_ref().map(|d| d.start_mat))
+            {
+                let delta = mat4x4_mul(new_mat, mat4x4_inv(start_mat));
+                self.apply_control_point_drag(delta);
+            }
+            return;
+        }
 
         if let Some(new_mat) = new_mat_opt {
             if let Some(drag) = &self.drag.gizmo_drag {
@@ -536,6 +550,14 @@ impl App {
 
             // ギズモヒットを優先。外れた場合は release 時にピックまたは矩形選択。
             if let Some(drag) = self.try_gizmo_hit_and_start(cx, cy) {
+                // コントロールポイントを選択中は、ギズモの対象が「点 1 個」なので
+                // アクタ側の開始スナップショット（MC インスタンス・子孫・マルチ選択）は
+                // 一切集めない。集めてしまうと、点を動かしたつもりでアクタごと動く。
+                if self.selected_control_point.is_some() {
+                    self.begin_control_point_drag();
+                    self.drag.gizmo_drag = Some(drag);
+                    return;
+                }
                 let wl              = self.active_world_line;
                 let selected_dfs    = self.actor_virtual_selected_idx;
                 let selected_slot_i = self.actor_virtual_selected_slot_idx;
@@ -634,6 +656,10 @@ impl App {
                     }
                 }
                 self.drag.gizmo_drag = Some(drag);
+            } else if self.try_pick_control_point(cx, cy) {
+                // 制御点キューブを掴んだ。この後の release では通常のオブジェクトピックを
+                // 行わない（行うとアクタ選択が更新され、選んだばかりの点が消える）。
+                self.drag.control_point_picked = true;
             }
         }
     }
@@ -672,6 +698,7 @@ impl App {
             }
             self.drag.rect_selecting = false;
         } else if self.drag.gizmo_drag.is_none() && self.drag.lmb_press_pos.is_some()
+            && !self.drag.control_point_picked
             && (self.mode == RuntimeMode::Edit || self.paused)
         {
             if let Some((cx, cy)) = self.last_cursor_pos {
@@ -688,6 +715,20 @@ impl App {
             }
         }
         self.drag.lmb_press_pos = None;
+        // 押下時の「制御点キューブを掴んだ」フラグはここで必ず落とす
+        //（次のクリックへ持ち越すと通常のピックが永久に効かなくなる）。
+        self.drag.control_point_picked = false;
+
+        // コントロールポイントのドラッグ終了: Undo を 1 件だけ記録して抜ける。
+        // 以降のアクタ／キャンバス向け終了処理は、対象が違うので通らせない。
+        if self.finish_control_point_drag() {
+            self.drag.gizmo_drag = None;
+            // 通常経路の末尾と同じくホバーを再評価してから抜ける
+            //（掴んだ直後にギズモのハイライトが取り残されないように）。
+            self.hovered_gizmo_part = self.last_cursor_pos
+                .and_then(|(cx, cy)| self.compute_gizmo_hover(cx, cy));
+            return;
+        }
 
         // ドラッグで変化があれば Undo 履歴に一括記録
         let mut primary_recorded = false;
