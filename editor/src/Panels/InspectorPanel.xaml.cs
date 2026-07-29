@@ -5532,15 +5532,27 @@ public partial class InspectorPanel : UserControl
             // 切り分け計器: 押下が本ハンドラへ届いているか（D&D 不発調査用・常設）。
             EditorLog.Write("[CtrlPoint] 追加ボタン押下（ドラッグ待機）");
         };
-        addPointBtn.MouseMove += (_, e) =>
+        // 【重要】バブリングの MouseMove ではなくトンネリングの PreviewMouseMove を使う。
+        // 実機で「押下は届くのに MouseMove が一度も発火しない」現象を確認した
+        // （他のドラッグ系ハンドラが移動イベントを Handled にするとバブリング側の
+        //   通常ハンドラは抑止されるが、Preview はその影響を受けない）。
+        bool addBtnMoveProbeLogged = false;
+        addPointBtn.PreviewMouseMove += (_, e) =>
         {
             if (addBtnPressPos is not { } start) return;
+            // 切り分け計器: 押下後に移動イベントが届いているか（押下1回につき1行だけ）。
+            if (!addBtnMoveProbeLogged)
+            {
+                addBtnMoveProbeLogged = true;
+                EditorLog.Write("[CtrlPoint] 移動イベント受信（ドラッグ判定中）");
+            }
             if (e.LeftButton != MouseButtonState.Pressed) { addBtnPressPos = null; return; }
             if (!addPointBtn.IsEnabled) return;
             var cur = e.GetPosition(addPointBtn);
             if (Math.Abs(cur.X - start.X) < SystemParameters.MinimumHorizontalDragDistance
              && Math.Abs(cur.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
             addBtnPressPos = null;
+            addBtnMoveProbeLogged = false;
             BeginAddPointDrag(addPointBtn, info.SlotIdx);
         };
         addPointBtn.PreviewMouseLeftButtonUp += (_, _) => addBtnPressPos = null;
