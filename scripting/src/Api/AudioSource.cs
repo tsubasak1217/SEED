@@ -27,6 +27,18 @@ public readonly struct AudioSource : IComponentHandle<AudioSource>
     static string IComponentHandle<AudioSource>.ComponentKindName => Comp;
     static AudioSource IComponentHandle<AudioSource>.FromEntity(Entity slotEntity) => new(slotEntity);
 
+    // ── 参照の生存判定 ─────────────────────────────────
+
+    /// <summary>
+    /// この参照が生存しているか（指すエンティティが実在し AudioSource を保持しているか）。
+    ///
+    /// [SerializeField] の参照フィールドで「解決できたか／破棄されていないか」を
+    /// 判定するために使う。<b>null は「未設定」</b>（Nullable 宣言のみ）を意味し、
+    /// <b>IsValid == false は「未解決または破棄済み」</b>を意味する。
+    /// World が公開されていない場面（ライフサイクル外）でも false になる。
+    /// </summary>
+    public bool IsValid => ScriptHost.HasComponent(_entity, Comp);
+
     // ── 再生操作 ─────────────────────────────────────────────
 
     /// <summary>設定された音源を再生する（再生中なら最初から鳴らし直す）。フレーム末尾に適用。</summary>

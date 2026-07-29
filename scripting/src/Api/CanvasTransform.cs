@@ -21,6 +21,18 @@ public readonly struct CanvasTransform : IComponentHandle<CanvasTransform>
     static string IComponentHandle<CanvasTransform>.ComponentKindName => Comp;
     static CanvasTransform IComponentHandle<CanvasTransform>.FromEntity(Entity slotEntity) => new(slotEntity);
 
+    // ── 参照の生存判定 ─────────────────────────────────
+
+    /// <summary>
+    /// この参照が生存しているか（指すエンティティが実在し CanvasTransform を保持しているか）。
+    ///
+    /// [SerializeField] の参照フィールドで「解決できたか／破棄されていないか」を
+    /// 判定するために使う。<b>null は「未設定」</b>（Nullable 宣言のみ）を意味し、
+    /// <b>IsValid == false は「未解決または破棄済み」</b>を意味する。
+    /// World が公開されていない場面（ライフサイクル外）でも false になる。
+    /// </summary>
+    public bool IsValid => ScriptHost.HasComponent(_entity, Comp);
+
     /// <summary>XY 平面上の位置（親 Canvas 基準の相対座標・ワールドユニット）。</summary>
     public Vector2 Position
     {

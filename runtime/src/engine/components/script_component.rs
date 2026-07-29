@@ -58,6 +58,14 @@ pub struct ScriptComponent {
     /// OnDestroy はこのフラグが true のときだけ呼ばれる（OnStart と 1 対 1 で対応させ、
     /// 一度も動いていない編集モードのインスタンスでは発火させないため）。
     pub(crate) started: bool,
+    /// 参照フィールド（他アクター／他コンポーネントへのハンドル）の再解決が必要か。
+    ///
+    /// 参照フィールドは「アクター名（＋スロット名）」の文字列として保存されており、
+    /// 実体へ解決するには World と Actor ツリーが必要になる。それらはスクリプト
+    /// フェーズ実行中しか公開されないため、生成時・フィールド設定時にはこのフラグを
+    /// 立てるだけにしておき、ScriptSystem が BeginFrame（OnStart の直前）で
+    /// 解決を発行してからフラグを下ろす。
+    pub(crate) refs_dirty: bool,
 }
 
 impl ScriptComponent {
@@ -73,6 +81,8 @@ impl ScriptComponent {
             owner:   None,
             active:  true,
             started: false,
+            // 生成直後は必ず一度解決を通す（フィールド無しでも副作用は無い）
+            refs_dirty: true,
         })
     }
 
@@ -93,9 +103,14 @@ impl ScriptComponent {
     pub fn type_name(&self) -> &str { &self.type_name }
 
     /// [SerializeField] フィールドの値を設定し、CLR インスタンスにも即時反映する。
+    ///
+    /// 参照フィールドは CLR 側で保留キューに積まれるだけなので、
+    /// 再解決が必要であることを示す refs_dirty を立てておく
+    /// （次の BeginFrame で ScriptSystem が解決を発行する）。
     pub fn set_field(&mut self, name: &str, value: &str) {
         self.apply_field_ffi(name, value);
         self.fields.insert(name.to_string(), value.to_string());
+        self.refs_dirty = true;
     }
 
     /// CLR インスタンスへフィールド値を FFI 経由で書き込む（内部用）。
@@ -141,6 +156,19 @@ impl ScriptComponent {
             Phase::EndFrame       => host.end_frame_fn,
         };
         unsafe { f(handle, &raw); }
+    }
+
+    /// 保留中の [SerializeField] 参照フィールドを解決して CLR インスタンスへ注入する。
+    ///
+    /// 参照は「アクター名（＋スロット名）」の文字列で保存されており、解決には
+    /// World と Actor ツリーが必要になる。そのため **必ずスクリプトフェーズ実行中**
+    /// （`with_world` / `with_actors` でポインタが公開されている間）に呼ぶこと。
+    /// run_phase_raw と同じく World 借用を持たない呼び出し口である。
+    ///
+    /// ScriptSystem が BeginFrame で OnStart より前に発行するため、
+    /// ユーザーの OnStart / Update からは常に解決済みの参照が見える。
+    pub fn resolve_references_raw(host: &ScriptingHost, handle: isize) {
+        unsafe { (host.resolve_refs_fn)(handle); }
     }
 
     /// OnStart（初回ライフサイクル直前の 1 回限りの通知）を CLR 側で実行する。

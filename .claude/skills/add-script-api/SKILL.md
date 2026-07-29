@@ -173,6 +173,12 @@ public readonly struct Rigidbody : IComponentHandle<Rigidbody>
     static string IComponentHandle<Rigidbody>.ComponentKindName => Comp;
     static Rigidbody IComponentHandle<Rigidbody>.FromEntity(Entity slotEntity) => new(slotEntity);
 
+    /// <summary>
+    /// この参照が生存しているか（[SerializeField] 参照フィールド用の生存判定）。
+    /// 全ハンドル型で同じ実装にすること（他のハンドル型からコピーで可）。
+    /// </summary>
+    public bool IsValid => ScriptHost.HasComponent(_entity, Comp);
+
     /// <summary>速度（ワールド空間・単位/秒）。</summary>
     public Vector3 Velocity
     {
@@ -199,6 +205,25 @@ public readonly struct Rigidbody : IComponentHandle<Rigidbody>
 そのまま取得できる（`GameObject.cs` にアクセサを足す必要はない）。ユーザーは
 `if (gameObject.GetComponent<Rigidbody>() is { } rb) { ... }` で使う。
 同種を複数スロット持つ場合は `GetComponent<Rigidbody>(index)` / `GetComponent<Rigidbody>("Name")`。
+
+### 3-3. `[SerializeField]` 参照フィールドも自動対応（ただしスロット型は表 1 行が必要）
+
+`IComponentHandle<TSelf>` を実装したハンドル型は、`SEED.ScriptReference` が自動的に
+「参照フィールドにできる型」として認識する（`[SerializeField] SEED.Rigidbody target;` が
+インスペクタで D&D 参照フィールドになる）。`ScriptReference.cs` は触らない。
+
+ただし**スロット格納型**の場合だけ、エディタがドロップ先アクターのスロットを絞り込むために
+`editor/src/Scripting/ScriptReferenceCatalog.cs` の 2 つの表へ 1 行ずつ足す。
+
+```csharp
+// SlotComponentTypeByKind（種別名 → ACTOR_COMPONENTS の "type" 文字列）
+["Rigidbody"] = "RigidbodyComponent",
+// DisplayNameByKind（ダイアログ・ツールチップの表示名）
+["Rigidbody"] = "Rigidbody",
+```
+
+ルート直付け型（Transform 系）と `GameObject` はスロットを持たないため、
+`SlotComponentTypeByKind` には**足さない**（`DisplayNameByKind` のみ）。
 
 **検証**: `dotnet build scripting/SEEDScripting.csproj`（手順 6 でまとめて実施）。
 

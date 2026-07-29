@@ -361,6 +361,17 @@ public partial class InspectorPanel : UserControl
                 return;
             }
 
+            // スクリプトの参照フィールド解決待ちの場合も同様に、
+            // ドロップされたアクターの構成を参照設定処理へ転用する。
+            // ただし、ドロップとは無関係な ACTOR_COMPONENTS（選択更新など）を
+            // 取り違えないよう、応答の id が問い合わせた DFS ID と一致する場合に限る。
+            if (_pendingScriptRefActorDfsId >= 0 &&
+                TryGetActorComponentsId(json) == _pendingScriptRefActorDfsId)
+            {
+                ResolveScriptRefFromComponents(json);
+                return;
+            }
+
             try { BuildActorComponentList(json); }
             catch (Exception ex) { EditorLog.Write($"InspectorPanel: ACTOR_COMPONENTS parse error: {ex.Message}"); }
         });
@@ -7135,19 +7146,25 @@ public partial class InspectorPanel : UserControl
         else
         {
             // Camera が複数 → ポップアップで選択させる
-            ShowCameraSlotSelectionPopup(cameraSlots.Select(s => s.slotName).ToList(), Apply);
+            ShowComponentSlotSelectionPopup(
+                cameraSlots.Select(s => s.slotName).ToList(), "CameraComponent", Apply);
         }
     }
 
     /// <summary>
-    /// 複数 CameraComponent がある場合のスロット選択ポップアップを表示する。
+    /// 同一アクター内に同種コンポーネントが複数あるときのスロット選択ポップアップを表示する。
     /// 選択確定後に onSelected コールバックを呼ぶ。
+    /// キャンバスのカメラ参照とスクリプトの参照フィールドで共用する。
     /// </summary>
-    private void ShowCameraSlotSelectionPopup(List<string> slotNames, Action<string> onSelected)
+    /// <param name="slotNames">選択肢となるスロット名の一覧。</param>
+    /// <param name="kindLabel">コンポーネント種別の表示名（ダイアログ文言に使う）。</param>
+    /// <param name="onSelected">選択確定時のコールバック。</param>
+    private void ShowComponentSlotSelectionPopup(
+        List<string> slotNames, string kindLabel, Action<string> onSelected)
     {
         var dlg = new Window
         {
-            Title                 = "Camera スロットを選択",
+            Title                 = $"{kindLabel} スロットを選択",
             Width                 = 300,
             SizeToContent         = SizeToContent.Height,
             Owner                 = Window.GetWindow(this),
@@ -7160,7 +7177,7 @@ public partial class InspectorPanel : UserControl
 
         sp.Children.Add(new TextBlock
         {
-            Text         = "同一アクター内に複数の CameraComponent があります。\n参照するスロットを選択してください。",
+            Text         = $"同一アクター内に複数の {kindLabel} があります。\n参照するスロットを選択してください。",
             Foreground   = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
             FontSize     = 11,
             TextWrapping = TextWrapping.Wrap,
@@ -7342,8 +7359,181 @@ public partial class InspectorPanel : UserControl
         {
             if (_currentActorId < 0) return;
             _runtime?.SendToRuntime($"SET_SCRIPT_FIELD:{_currentActorId},{slotIdx},{name},{val}");
-        }));
+        }, ResolveScriptReferenceDrop));
         sp.Children.Add(fieldSection);
+    }
+
+    // ── スクリプト参照フィールドのドロップ解決 ───────────────────────
+    //
+    // 参照フィールド（[SerializeField] SEED.Transform target; など）へ Hierarchy から
+    // アクタ行をドロップしたときの解決フロー。
+    //   1. ドロップされたアクターの構成を GET_ACTOR_COMPONENTS で問い合わせる（非同期 IPC）
+    //   2. 応答（ACTOR_COMPONENTS）を ResolveScriptRefFromComponents が受けて、
+    //      フィールドの参照種別に合うスロットを抽出する
+    //   3. 0 件 → 警告 / 1 件 → 即確定 / 複数 → スロット選択ダイアログ
+    // 保存値の書式は SEED.ScriptReference（"アクタ名" / "アクタ名|スロット名"）。
+
+    /// <summary>参照ドロップ解決待ちのアクター DFS ID（-1 = 待機なし）。</summary>
+    private int _pendingScriptRefActorDfsId = -1;
+
+    /// <summary>参照ドロップ解決待ちのフィールド情報（種別判定用）。</summary>
+    private ScriptFieldInfo? _pendingScriptRefField;
+
+    /// <summary>参照ドロップ解決後に確定値を適用するコールバック。</summary>
+    private Action<string>? _pendingScriptRefApply;
+
+    /// <summary>
+    /// ドロップを受けた時点で選択されていたアクター（＝スクリプトの持ち主）の DFS ID。
+    /// 非同期応答が返るまでに選択が変わった場合、別アクターへ書き込まないための照合用。
+    /// </summary>
+    private int _pendingScriptRefOwnerActorId = -1;
+
+    /// <summary>
+    /// 参照フィールドへアクターがドロップされたときの入口
+    /// （<see cref="ScriptInspectorBuilder.ReferenceDropHandler"/> の実装）。
+    /// スロット構成が必要なのでランタイムへ問い合わせ、続きは応答受信時に行う。
+    /// </summary>
+    private void ResolveScriptReferenceDrop(
+        ScriptFieldInfo field, int droppedActorDfsId, Action<string> apply)
+    {
+        if (_runtime is null || _currentActorId < 0) return;
+
+        _pendingScriptRefActorDfsId   = droppedActorDfsId;
+        _pendingScriptRefOwnerActorId = _currentActorId;
+        _pendingScriptRefField        = field;
+        _pendingScriptRefApply        = apply;
+        _runtime.SendToRuntime($"GET_ACTOR_COMPONENTS:{droppedActorDfsId}");
+    }
+
+    /// <summary>
+    /// ACTOR_COMPONENTS 応答 JSON のアクター DFS ID（"id"）を取り出す。取得できなければ -1。
+    /// 非同期の問い合わせ結果を取り違えないための照合に使う。
+    /// </summary>
+    private static int TryGetActorComponentsId(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("id", out var idProp) && idProp.TryGetInt32(out var id)
+                ? id : -1;
+        }
+        catch { return -1; }
+    }
+
+    /// <summary>
+    /// GET_ACTOR_COMPONENTS の応答 JSON から、参照フィールドの種別に合うスロットを
+    /// 抽出して値を確定する（複数該当時はスロット選択ダイアログを出す）。
+    /// </summary>
+    private void ResolveScriptRefFromComponents(string json)
+    {
+        // pending をローカルへ退避してから即リセットする（再帰・取りこぼし防止）
+        var field = _pendingScriptRefField;
+        var apply = _pendingScriptRefApply;
+        var owner = _pendingScriptRefOwnerActorId;
+        _pendingScriptRefActorDfsId   = -1;
+        _pendingScriptRefOwnerActorId = -1;
+        _pendingScriptRefField        = null;
+        _pendingScriptRefApply        = null;
+
+        if (field?.Reference is not { } refKind || apply is null) return;
+
+        // 応答待ちの間に選択が変わっていたら、その UI・IPC 宛先はもう別のアクターを
+        // 指している。誤ったアクターへ書き込まないよう破棄する。
+        if (owner != _currentActorId) return;
+
+        string actorName;
+        bool   hasTransform;        // 3D の Transform を持つか
+        bool   hasCanvasTransform;  // 2D の CanvasTransform を持つか
+        var    slots = new List<string>();
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            actorName = root.TryGetProperty("name", out var np) ? np.GetString() ?? "" : "";
+            hasTransform       = root.TryGetProperty("transform", out _);
+            hasCanvasTransform = root.TryGetProperty("canvas_transform", out _);
+
+            // スロット格納型の場合のみ、該当する type のスロット名を集める
+            var wantType = ScriptReferenceCatalog.SlotComponentType(refKind.Kind);
+            if (wantType is not null && root.TryGetProperty("components", out var comps))
+            {
+                foreach (var comp in comps.EnumerateArray())
+                {
+                    var compType = comp.TryGetProperty("type", out var ct) ? ct.GetString() ?? "" : "";
+                    if (compType != wantType) continue;
+                    var slotIdx  = comp.TryGetProperty("slot", out var si) ? si.GetInt32() : 0;
+                    var slotName = comp.TryGetProperty("name", out var cn) ? cn.GetString() ?? "" : "";
+                    // スロット名が空の場合は名前で特定できないため index 表記にフォールバックする
+                    slots.Add(string.IsNullOrEmpty(slotName) ? $"{refKind.Kind}[{slotIdx}]" : slotName);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"InspectorPanel: スクリプト参照の解決に失敗: {ex.Message}");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(actorName))
+        {
+            MessageBox.Show("ドロップされたアクターの名前を取得できませんでした。",
+                "参照設定エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        // アクタ名に区切り文字が含まれると "アクタ名|スロット名" を復元できない
+        if (actorName.Contains(SEED.ScriptReference.SlotSeparator))
+        {
+            MessageBox.Show(
+                $"アクタ名に '{SEED.ScriptReference.SlotSeparator}' を含むアクターは参照できません。\n"
+                + "アクタ名を変更してください。",
+                "参照設定エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var kindLabel = ScriptReferenceCatalog.DisplayName(refKind.Kind);
+
+        // ── GameObject 参照: アクタ名だけで確定する ──
+        if (refKind.IsGameObject)
+        {
+            apply(SEED.ScriptReference.Format(actorName, null));
+            return;
+        }
+
+        // ── ルート直付け型（Transform / CanvasTransform）: 保持の有無だけ検証する ──
+        if (!ScriptReferenceCatalog.NeedsSlotSelection(refKind.Kind))
+        {
+            bool ok = refKind.Kind switch
+            {
+                "Transform"       => hasTransform,
+                "CanvasTransform" => hasCanvasTransform,
+                _                 => false,
+            };
+            if (!ok)
+            {
+                MessageBox.Show($"「{actorName}」は {kindLabel} を持っていません。",
+                    "参照設定エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            apply(SEED.ScriptReference.Format(actorName, null));
+            return;
+        }
+
+        // ── スロット格納型: 該当スロットを選ぶ ──
+        if (slots.Count == 0)
+        {
+            MessageBox.Show($"「{actorName}」は {kindLabel} を持っていません。",
+                "参照設定エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        if (slots.Count == 1)
+        {
+            apply(SEED.ScriptReference.Format(actorName, slots[0]));
+            return;
+        }
+        // 同種スロットが複数 → 選択ダイアログ（VP ref と同じ UI を流用）
+        ShowComponentSlotSelectionPopup(slots, kindLabel,
+            selected => apply(SEED.ScriptReference.Format(actorName, selected)));
     }
 
     /// <summary>script_fields JSON（{"name":"value",...}）を辞書に変換する。</summary>

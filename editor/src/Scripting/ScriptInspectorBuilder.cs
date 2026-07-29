@@ -22,16 +22,32 @@ public static class ScriptInspectorBuilder
     private static readonly SolidColorBrush BrushAccent = new(Color.FromRgb(0x55, 0xAA, 0xFF));
 
     /// <summary>
+    /// アクター行のドロップを受けて、参照フィールドの値を確定させる処理。
+    ///
+    /// インスペクタ側（IPC を持つ InspectorPanel）が実装する。ドロップされたアクターの
+    /// コンポーネント一覧を取得し、種別に合うスロットを特定（複数あれば選択させる）してから
+    /// <paramref name="apply"/> にシリアライズ値（"アクタ名" / "アクタ名|スロット名"）を渡す。
+    /// </summary>
+    /// <param name="field">対象の参照フィールド情報（種別の判定に使う）。</param>
+    /// <param name="droppedActorDfsId">ドロップされたアクターの DFS ID。</param>
+    /// <param name="apply">確定したシリアライズ値を適用するコールバック。</param>
+    public delegate void ReferenceDropHandler(
+        ScriptFieldInfo field, int droppedActorDfsId, Action<string> apply);
+
+    /// <summary>
     /// [SerializeField] フィールド一覧から WPF の StackPanel を生成する。
     /// onValueChanged: (fieldPath, newValueString)。ネストは "parent.child" のドットパス。
+    /// onReferenceDropped: 参照フィールドへのアクタードロップを解決するハンドラ
+    /// （null の場合、参照フィールドは表示のみでドロップを受け付けない）。
     /// </summary>
     public static StackPanel Build(
         IReadOnlyList<ScriptFieldInfo>      fields,
         IReadOnlyDictionary<string, string> currentValues,
-        Action<string, string>              onValueChanged)
+        Action<string, string>              onValueChanged,
+        ReferenceDropHandler?               onReferenceDropped = null)
     {
         var stack = new StackPanel();
-        BuildInto(stack, fields, currentValues, onValueChanged, prefix: "");
+        BuildInto(stack, fields, currentValues, onValueChanged, onReferenceDropped, prefix: "");
         return stack;
     }
 
@@ -41,6 +57,7 @@ public static class ScriptInspectorBuilder
         IReadOnlyList<ScriptFieldInfo>      fields,
         IReadOnlyDictionary<string, string> values,
         Action<string, string>              onChange,
+        ReferenceDropHandler?               onRefDrop,
         string                              prefix)
     {
         foreach (var field in fields)
@@ -54,22 +71,27 @@ public static class ScriptInspectorBuilder
             // [Serializable] ネストクラス → 折りたたみで子フィールドを再帰表示
             if (field.Children is not null)
             {
-                stack.Children.Add(BuildNestedFoldout(field, fullPath, values, onChange));
+                stack.Children.Add(BuildNestedFoldout(field, fullPath, values, onChange, onRefDrop));
                 continue;
             }
 
-            var row = BuildRow(field, fullPath, values, onChange);
+            var row = BuildRow(field, fullPath, values, onChange, onRefDrop);
             if (row is not null) stack.Children.Add(row);
         }
     }
 
     private static UIElement? BuildRow(
         ScriptFieldInfo field, string path,
-        IReadOnlyDictionary<string, string> values, Action<string, string> onChange)
+        IReadOnlyDictionary<string, string> values, Action<string, string> onChange,
+        ReferenceDropHandler? onRefDrop)
     {
         values.TryGetValue(path, out var raw);
         var t       = field.Field.FieldType;
         var onLeaf  = (Action<string>)(s => onChange(path, s));
+
+        // 参照フィールド（GameObject / Transform / Camera …）は専用の行を作る
+        if (field.Reference is { } refKind)
+            return BuildReferenceRow(field, refKind, raw, onLeaf, onRefDrop);
 
         if (t == typeof(float) || t == typeof(double))
         {
@@ -102,11 +124,12 @@ public static class ScriptInspectorBuilder
     /// <summary>[Serializable] ネストクラスを折りたたみ（Expander）で表示する。</summary>
     private static UIElement BuildNestedFoldout(
         ScriptFieldInfo field, string fullPath,
-        IReadOnlyDictionary<string, string> values, Action<string, string> onChange)
+        IReadOnlyDictionary<string, string> values, Action<string, string> onChange,
+        ReferenceDropHandler? onRefDrop)
     {
         var inner = new StackPanel { Margin = new Thickness(10, 2, 0, 2) };
         // 子は "親パス." を prefix にして再帰構築する
-        BuildInto(inner, field.Children!, values, onChange, prefix: fullPath + ".");
+        BuildInto(inner, field.Children!, values, onChange, onRefDrop, prefix: fullPath + ".");
 
         var expander = new Expander
         {
@@ -231,6 +254,156 @@ public static class ScriptInspectorBuilder
         tb.LostFocus += (_, _) => onChange(tb.Text);
         return MakeRow(field.Label, field.Tooltip, null, tb);
     }
+
+    // ── 参照フィールド行 ─────────────────────────────────────
+    //
+    // 「アクター（＋コンポーネントスロット）への参照」を 1 行で編集する UI。
+    //   ・現在の参照先を表示（未設定は「(未設定)」）
+    //   ・Hierarchy パネルからアクタ行を D&D して設定
+    //   ・✕ ボタンで参照解除
+    //   ・ダブルクリックで Hierarchy の該当アクタへジャンプ
+    // 同種スロットを複数持つアクターをドロップした場合は、ドロップ解決側
+    // （InspectorPanel）がスロット選択ダイアログを出してから値を確定させる。
+
+    /// <summary>未設定時に参照ラベルへ表示する文言。</summary>
+    private const string ReferenceUnsetText = "(未設定)";
+
+    /// <summary>参照ドロップゾーンの枠線色（他の参照 UI と同系統の青）。</summary>
+    private static readonly SolidColorBrush BrushRefBorder = new(Color.FromRgb(0x55, 0x77, 0x99));
+
+    /// <summary>未設定表示に使う淡色。</summary>
+    private static readonly SolidColorBrush BrushRefUnset = new(Color.FromRgb(0x77, 0x77, 0x77));
+
+    /// <summary>参照解除ボタンの文字色（他の破棄系ボタンと同じ赤系）。</summary>
+    private static readonly SolidColorBrush BrushRefClear = new(Color.FromRgb(0xAA, 0x55, 0x55));
+
+    /// <summary>
+    /// 参照フィールド 1 件分の行を生成する。
+    /// </summary>
+    /// <param name="field">フィールド情報（ラベル・ツールチップ用）。</param>
+    /// <param name="refKind">参照種別（GameObject / コンポーネント種別と Nullable 可否）。</param>
+    /// <param name="rawValue">現在のシリアライズ値（"アクタ名" / "アクタ名|スロット名" / 空）。</param>
+    /// <param name="onChange">値変更の通知（シリアライズ値をそのまま渡す）。</param>
+    /// <param name="onRefDrop">ドロップ解決ハンドラ。null ならドロップを受け付けない。</param>
+    private static UIElement BuildReferenceRow(
+        ScriptFieldInfo field, SEED.ScriptReference.ReferenceKind refKind,
+        string? rawValue, Action<string> onChange, ReferenceDropHandler? onRefDrop)
+    {
+        // 現在の参照先表示（"アクタ名" または "アクタ名 / スロット名"）
+        var display = SEED.ScriptReference.FormatDisplay(rawValue);
+        var label = new TextBlock
+        {
+            Text              = display ?? ReferenceUnsetText,
+            Foreground        = display is null ? BrushRefUnset : BrushText,
+            FontSize          = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming      = TextTrimming.CharacterEllipsis,
+        };
+
+        // 現在のシリアライズ値（ドロップ・クリアで書き換わるのでローカルに保持する）
+        var current = rawValue ?? SEED.ScriptReference.UnsetValue;
+
+        // 表示とローカル値をまとめて更新するローカル関数
+        void SetValue(string value)
+        {
+            current    = value;
+            var disp   = SEED.ScriptReference.FormatDisplay(value);
+            label.Text       = disp ?? ReferenceUnsetText;
+            label.Foreground = disp is null ? BrushRefUnset : BrushText;
+            onChange(value);
+        }
+
+        var kindLabel = ScriptReferenceCatalog.DisplayName(refKind.Kind);
+        var drop = new Border
+        {
+            BorderBrush     = BrushRefBorder,
+            BorderThickness = new Thickness(1),
+            Background      = BrushBg,
+            CornerRadius    = new CornerRadius(3),
+            Padding         = new Thickness(5, 2, 5, 2),
+            Margin          = new Thickness(2, 1, 0, 1),
+            AllowDrop       = onRefDrop is not null,
+            Child           = label,
+            Cursor          = Cursors.Hand,
+            ToolTip         = (field.Tooltip is null ? "" : field.Tooltip + "\n")
+                            + $"参照型: {kindLabel}\n"
+                            + "Hierarchy からアクタ行をドロップして参照を設定\n"
+                            + "ダブルクリックで Hierarchy の参照先へジャンプ"
+                            + (refKind.IsNullable
+                                ? "\n未設定のときスクリプトからは null になります"
+                                : "\n未設定のときスクリプトからは IsValid == false のハンドルになります"),
+        };
+
+        // ダブルクリックで Hierarchy の参照先アクタへジャンプする
+        // （参照は張り替わるので、現在値から都度アクタ名を取り出す）
+        SEEDEditor.Panels.ActorRefJump.AttachDoubleClickReveal(drop, () =>
+            SEED.ScriptReference.TryParse(current, out var actorName, out _) ? actorName : null);
+
+        if (onRefDrop is not null)
+        {
+            // HierarchyPanel は DoDragDrop を Move|Copy で呼ぶため、Move を返さないと
+            // Effects の AND が None になりドロップが成立しない（VP ref 実装と同じ理由）。
+            drop.DragOver += (_, e) =>
+            {
+                e.Effects = HasActorDragData(e) ? DragDropEffects.Move : DragDropEffects.None;
+                e.Handled = true;
+            };
+            drop.Drop += (_, e) =>
+            {
+                var dfsId = TryGetDraggedActorDfsId(e);
+                if (dfsId is null) return;
+                onRefDrop(field, dfsId.Value, SetValue);
+                e.Handled = true;
+            };
+        }
+
+        // 参照解除ボタン
+        var clear = new Button
+        {
+            Content         = "✕",
+            FontSize        = 10,
+            Width           = 20,
+            Foreground      = BrushRefClear,
+            Background      = BrushBg,
+            BorderBrush     = BrushBorder,
+            BorderThickness = new Thickness(1),
+            Margin          = new Thickness(3, 1, 0, 1),
+            ToolTip         = "参照を解除する",
+        };
+        clear.Click += (_, _) => SetValue(SEED.ScriptReference.UnsetValue);
+
+        // ドロップゾーン（伸縮）と解除ボタン（固定幅）を横並びにする
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(drop, 0);
+        Grid.SetColumn(clear, 1);
+        grid.Children.Add(drop);
+        grid.Children.Add(clear);
+
+        return MakeRow(field.Label, field.Tooltip, null, grid);
+    }
+
+    /// <summary>ドラッグデータにアクター参照（Hierarchy / シーンビュー）が含まれるか。</summary>
+    private static bool HasActorDragData(DragEventArgs e)
+        => e.Data.GetDataPresent(HierarchyActorDfsIdFormat)
+        || e.Data.GetDataPresent(SceneViewActorDfsIdFormat);
+
+    /// <summary>ドラッグデータからアクターの DFS ID を取り出す（無ければ null）。</summary>
+    private static int? TryGetDraggedActorDfsId(DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(HierarchyActorDfsIdFormat))
+            return e.Data.GetData(HierarchyActorDfsIdFormat) as int?;
+        if (e.Data.GetDataPresent(SceneViewActorDfsIdFormat))
+            return e.Data.GetData(SceneViewActorDfsIdFormat) as int?;
+        return null;
+    }
+
+    /// <summary>Hierarchy パネルが単一アクタードラッグ時に付加する DFS ID のデータ形式名。</summary>
+    private const string HierarchyActorDfsIdFormat = "HierarchyActorDfsId";
+
+    /// <summary>シーンビューからのアクタードラッグに付加される DFS ID のデータ形式名。</summary>
+    private const string SceneViewActorDfsIdFormat = "SceneViewActorDfsId";
 
     private static UIElement BuildReadOnlyRow(ScriptFieldInfo field)
     {

@@ -69,6 +69,7 @@ public class CameraShake : SEEDScript
 ```
 
 - `[Serializable]` を付けたクラス／構造体型のフィールドに `[SerializeField]` を付けると、インスペクタで**子フィールドが再帰的に展開**されます（入れ子の上限は 8 段）。
+- `GameObject` やコンポーネントハンドル型（`Transform` / `Camera` など）のフィールドに `[SerializeField]` を付けると、**他アクターへの参照フィールド**になります（Hierarchy から D&D で設定）。詳細は第 7 節の「参照フィールド」を参照してください。
 
 ---
 
@@ -645,6 +646,72 @@ if (gameObject.GetComponent<InputMap>() is { } input)   // InputMap?（未アタ
 > **重要**: `GetComponent<T>()` は `T?` を返し、同種コンポーネントを複数スロット持てます。`GetComponent<T>()`＝0 番目、`GetComponent<T>(index)`＝index 番目、`GetComponent<T>("Name")`＝スロット名一致。
 
 他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定で、対応済みのものは本節に追記されます。
+
+### 参照フィールド（インスペクタで他アクターを差し込む）
+
+`[SerializeField]` を **`GameObject` やコンポーネントハンドル型**のフィールドに付けると、インスペクタ上で**他のアクターへの参照**として編集できます。Unity の「オブジェクト参照フィールド」に相当します。
+
+```csharp
+using SEEDEditor.Scripting;
+
+public class FollowCamera : SEEDScript
+{
+    // 追従したい対象。Hierarchy からアクタ行をドロップして設定する
+    [SerializeField(Label = "追従対象")]
+    private SEED.Transform target;
+
+    // 未設定を許したい参照は Nullable で宣言する（null = 未設定）
+    [SerializeField(Label = "注視カメラ")]
+    private SEED.Camera? lookCamera;
+
+    [SerializeField] private SEED.Vector3 offset = new(0f, 3f, -8f);
+
+    public override void LateUpdate()
+    {
+        // 非 Nullable 宣言は「未設定でも null にはならない」ので IsValid で確かめる
+        if (!target.IsValid) return;
+
+        transform.Position = target.Position + offset;
+
+        // Nullable 宣言は null チェック → さらに IsValid で生存確認
+        if (lookCamera is { } cam && cam.IsValid)
+            cam.FieldOfView = 60f;
+    }
+}
+```
+
+**指定できる型**
+
+| 宣言 | 意味 |
+|---|---|
+| `SEED.GameObject` / `SEED.GameObject?` | アクター本体への参照 |
+| `SEED.Transform` / `SEED.CanvasTransform`（＋ `?`） | アクターのルートに直付けされた Transform 系への参照 |
+| `SEED.Sprite` / `SEED.Camera` / `SEED.AudioSource` / `SEED.Animator` / `SEED.ParticleEmitter` / `SEED.InputMap`（＋ `?`） | アクター内の**コンポーネントスロット**への参照 |
+
+> **重要**: 参照フィールドは**常に参照（ハンドル）**です（「値としての Transform」は作れません。値で持つなら `SEED.Vector3`）。**`null` は「未設定」のみ**を意味し Nullable（`T?`）宣言でしか起きません。**`IsValid` は「参照先が生きているか」**で、未解決・破棄済みのどちらでも `false` です。非 Nullable（`T`）宣言は未設定でも null にならず `IsValid == false` の無効ハンドルになります。参照は**アクタ名（＋スロット名）**で保存されるためリネームで切れ、解決は Play 開始時／Instantiate 時に **`OnStart` より前の一度きり**です。
+
+**`null` と `IsValid` の使い分け（重要）**
+
+- **`null` は「未設定」だけを意味します**。Nullable（`T?`）で宣言したフィールドのみ null になり得ます。
+- **`IsValid` は「参照先が今も生きているか」**を意味します。未解決（アクタが見つからない）・破棄済みのどちらでも `false` になります。
+- 非 Nullable（`T`）で宣言した参照は未設定でも null にならず、**`IsValid == false` の無効ハンドル**になります。
+- `IsValid` はライフサイクル関数の中でのみ意味のある値を返します（コンストラクタ等、エンジンの実行フェーズ外では常に `false`）。
+
+**インスペクタでの設定方法**
+
+1. スクリプトのフィールド行にある参照ボックスへ、**Hierarchy パネルからアクタ行をドラッグ＆ドロップ**します。
+2. ドロップしたアクターがその種別のスロットを**複数持つ**場合は、スロット選択ダイアログが出ます。
+3. `✕` ボタンで参照を解除します（未設定に戻ります）。
+4. 参照ボックスを**ダブルクリック**すると、Hierarchy の参照先アクタへジャンプします。
+5. 参照先がその種別を持っていない場合は警告が出て設定されません。
+
+**保存形式と制約**
+
+- 参照は**アクタ名**（コンポーネント参照は加えて**スロット名**）で保存されます（`Player` / `Player|MainCamera`）。未設定は空文字列です。
+- したがって **アクタ名やスロット名を変更すると参照は切れます**（再設定が必要）。アクタ名に `|` は使えません。
+- 同名アクタが複数ある場合は、ヒエラルキーの DFS 順で**最初に見つかったもの**が使われます。
+- **解決は一度きり**です。Play 開始時（および `Instantiate` されたアクターの生成時）に、そのスクリプトの **`OnStart` より前**に解決・注入されます。実行中のアクタ名変更やアクタ生成には追従しません。実行中に相手を探し直したい場合は `SEED.GameObject.Find(name)` を使ってください。
+- 解決に失敗した場合、Nullable 宣言なら `null`、非 Nullable 宣言なら `IsValid == false` の無効ハンドルになります（例外にはなりません）。
 
 ---
 

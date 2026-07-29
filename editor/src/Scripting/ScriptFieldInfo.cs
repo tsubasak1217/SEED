@@ -29,4 +29,10 @@ public record ScriptFieldInfo(
 
     /// <summary>[Serializable] ネストクラスの子フィールド。ネストでなければ null。</summary>
     public IReadOnlyList<ScriptFieldInfo>? Children { get; init; }
+
+    /// <summary>
+    /// 参照フィールド（GameObject / Transform / Camera … へのハンドル）の種別情報。
+    /// 参照フィールドでなければ null。判定は SEED.ScriptReference が正典。
+    /// </summary>
+    public SEED.ScriptReference.ReferenceKind? Reference { get; init; }
 }

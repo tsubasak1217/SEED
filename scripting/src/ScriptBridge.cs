@@ -55,6 +55,8 @@ public static unsafe class ScriptBridge
         // 例外抑制テーブルに残った当該ハンドルのエントリを掃除する
         // （インスタンス破棄後もカウンタが残り続けるのを防ぐ）。
         ForgetErrorState(handlePtr);
+        // 未解決のまま残った参照フィールドの保留エントリも掃除する
+        ForgetPendingReferences(handlePtr);
         GCHandle.FromIntPtr(handlePtr).Free();
     }
 
@@ -253,6 +255,12 @@ public static unsafe class ScriptBridge
     /// name にドット区切りパス（例 "stats.hp"）を渡すと、[Serializable] な
     /// ネストクラスのフィールドへ再帰的に設定する。途中のネストオブジェクトが
     /// null の場合は自動生成する。
+    ///
+    /// 参照フィールド（GameObject / Transform / Camera … とその Nullable 版）は
+    /// 解決に World と Actor ツリーが必要で、この呼び出し時点（シーンロード中・
+    /// IPC 処理中）ではまだ公開されていない。そのため値をそのまま解決せず
+    /// 保留キューへ積み、<see cref="ResolveReferenceFields"/> が
+    /// スクリプトの OnStart 直前（World 公開中）にまとめて解決・注入する。
     /// </summary>
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void SetFieldValue(nint h, byte* namePtr, int nameLen, byte* valPtr, int valLen)
@@ -265,6 +273,13 @@ public static unsafe class ScriptBridge
             var name  = Encoding.UTF8.GetString(namePtr, nameLen);
             var value = Encoding.UTF8.GetString(valPtr, valLen);
 
+            // 参照フィールドは即時解決できないので保留キューへ積む
+            if (IsReferenceFieldPath(target, name))
+            {
+                QueuePendingReference(h, name, value);
+                return;
+            }
+
             SetFieldByPath(target, name, value);
         }
         catch (Exception ex)
@@ -272,6 +287,100 @@ public static unsafe class ScriptBridge
             Console.Error.WriteLine($"[SEEDScripting] SetFieldValue failed: {ex.Message}");
         }
     }
+
+    // ─── 参照フィールドの遅延解決 ─────────────────────────────
+    //
+    // 【なぜ遅延するか】
+    // 参照フィールドはシーンに「アクター名（＋スロット名）」の文字列で保存される。
+    // これを実体（entity ハンドル）へ解決するには World と Actor ツリーが必要だが、
+    // それらはスクリプトのライフサイクルフェーズ実行中しか公開されない。
+    // ScriptComponent の生成（シーンロード / Instantiate / ホットリロード）や
+    // エディタからのフィールド編集はフェーズ外で起きるため、その場では解決できない。
+    //
+    // 【いつ解決するか】
+    // Rust の ScriptSystem が BeginFrame フェーズで、そのスクリプトの OnStart を
+    // 呼ぶ直前に ResolveReferenceFields を発行する（World / Actor ツリー公開中）。
+    // これにより「OnStart の時点では参照が既に注入されている」ことが保証される。
+
+    /// <summary>
+    /// 未解決の参照フィールド値（ハンドル → フィールドパス → シリアライズ値）。
+    ///
+    /// 同じパスへの再設定は上書きする（エディタでの張り替えに追従するため）。
+    /// スクリプトは CLR メインスレッド専用だが、辞書操作は破壊的なので lock で守る。
+    /// </summary>
+    private static readonly System.Collections.Generic.Dictionary<
+        nint, System.Collections.Generic.Dictionary<string, string>> PendingReferences = new();
+
+    /// <summary>PendingReferences の排他ロック。</summary>
+    private static readonly object PendingReferencesLock = new();
+
+    /// <summary>参照フィールド値を保留キューへ積む（同一パスは上書き）。</summary>
+    private static void QueuePendingReference(nint h, string path, string value)
+    {
+        lock (PendingReferencesLock)
+        {
+            if (!PendingReferences.TryGetValue(h, out var map))
+            {
+                map = new System.Collections.Generic.Dictionary<string, string>();
+                PendingReferences[h] = map;
+            }
+            map[path] = value;
+        }
+    }
+
+    /// <summary>指定ハンドルの保留エントリを破棄する（インスタンス破棄時）。</summary>
+    private static void ForgetPendingReferences(nint h)
+    {
+        lock (PendingReferencesLock) PendingReferences.Remove(h);
+    }
+
+    /// <summary>
+    /// 保留中の参照フィールドを解決してスクリプトインスタンスへ注入する。
+    ///
+    /// Rust の ScriptSystem が、World / Actor ツリーを公開したフェーズ内で
+    /// OnStart より前に呼ぶ。解決は一度きり（適用後は保留エントリを破棄する）で、
+    /// 実行中のアクター名変更には追従しない。
+    ///
+    /// 解決できなかった参照は、Nullable 宣言なら null（＝未設定）、
+    /// 非 Nullable 宣言なら無効ハンドル（IsValid == false）になる。
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static void ResolveReferenceFields(nint h)
+    {
+        try
+        {
+            var target = Get(h);
+            if (target is null) return;
+
+            // 保留エントリを取り出して即座に辞書から外す（解決は一度きり）
+            System.Collections.Generic.Dictionary<string, string>? map;
+            lock (PendingReferencesLock)
+            {
+                if (!PendingReferences.TryGetValue(h, out map)) return;
+                PendingReferences.Remove(h);
+            }
+
+            foreach (var (path, value) in map)
+            {
+                // ネスト途中のオブジェクトは必要なら生成してから末端へ書き込む
+                if (!TryResolveLeafField(target, path, createMissing: true, out var owner, out var leaf))
+                    continue;
+                leaf.SetValue(owner, SEED.ScriptReference.Resolve(leaf.FieldType, value));
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] ResolveReferenceFields failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 指定パスの末端フィールドが参照フィールド型かを判定する。
+    /// 途中のネストオブジェクトを生成せずに型だけを辿るため、判定に副作用がない。
+    /// </summary>
+    private static bool IsReferenceFieldPath(object root, string path)
+        => TryResolveLeafFieldType(root.GetType(), path, out var leafType)
+        && SEED.ScriptReference.TryGetKind(leafType, out _);
 
     // ─── スクリプト例外の捕捉とログ抑制 ───────────────────────
     //
@@ -421,49 +530,92 @@ public static unsafe class ScriptBridge
     /// </summary>
     private static void SetFieldByPath(object root, string path, string value)
     {
+        if (!TryResolveLeafField(root, path, createMissing: true, out var owner, out var leaf)) return;
+
+        var converted = ConvertValue(leaf.FieldType, value);
+        if (converted is null)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] unsupported field type: {leaf.FieldType.Name} ({leaf.Name})");
+            return;
+        }
+        leaf.SetValue(owner, converted);
+    }
+
+    /// <summary>
+    /// ドット区切りパスをたどり、末端フィールドとその所有オブジェクトを取得する。
+    ///
+    /// createMissing = true のとき、途中のネストオブジェクトが null なら生成して親へ設定する
+    /// （値を書き込む用途）。false のときは生成せず、null に当たった時点で失敗を返す。
+    /// </summary>
+    private static bool TryResolveLeafField(
+        object root, string path, bool createMissing,
+        out object owner, out System.Reflection.FieldInfo leaf)
+    {
+        owner = root;
+        leaf  = null!;
+
         var segments = path.Split('.');
         object current = root;
 
-        // 末端の 1 つ手前までネストオブジェクトをたどる（必要なら生成する）
+        // 末端の 1 つ手前までネストオブジェクトをたどる
         for (int i = 0; i < segments.Length - 1; i++)
         {
             var f = current.GetType().GetField(segments[i], FieldFlags);
             if (f is null)
             {
                 Console.Error.WriteLine($"[SEEDScripting] nested field not found: {current.GetType().Name}.{segments[i]}");
-                return;
+                return false;
             }
             var child = f.GetValue(current);
             if (child is null)
             {
+                if (!createMissing) return false;
                 // ネストオブジェクトが未生成なら生成して親へ設定する
                 child = Activator.CreateInstance(f.FieldType);
                 if (child is null)
                 {
                     Console.Error.WriteLine($"[SEEDScripting] cannot instantiate nested type: {f.FieldType.Name}");
-                    return;
+                    return false;
                 }
                 f.SetValue(current, child);
             }
             current = child;
         }
 
-        // 末端フィールドへ変換値を設定する
         var leafName = segments[^1];
-        var leaf = current.GetType().GetField(leafName, FieldFlags);
-        if (leaf is null)
+        var found = current.GetType().GetField(leafName, FieldFlags);
+        if (found is null)
         {
             Console.Error.WriteLine($"[SEEDScripting] field not found: {current.GetType().Name}.{leafName}");
-            return;
+            return false;
         }
 
-        var converted = ConvertValue(leaf.FieldType, value);
-        if (converted is null)
+        owner = current;
+        leaf  = found;
+        return true;
+    }
+
+    /// <summary>
+    /// ドット区切りパスの末端フィールド「型」だけを、インスタンスを介さずに辿る。
+    /// 参照フィールド判定（<see cref="IsReferenceFieldPath"/>）用で、副作用がない。
+    /// </summary>
+    private static bool TryResolveLeafFieldType(Type rootType, string path, out Type leafType)
+    {
+        leafType = null!;
+        var segments = path.Split('.');
+        var current  = rootType;
+
+        for (int i = 0; i < segments.Length - 1; i++)
         {
-            Console.Error.WriteLine($"[SEEDScripting] unsupported field type: {leaf.FieldType.Name} ({leafName})");
-            return;
+            var f = current.GetField(segments[i], FieldFlags);
+            if (f is null) return false;
+            current = f.FieldType;
         }
-        leaf.SetValue(current, converted);
+
+        var leaf = current.GetField(segments[^1], FieldFlags);
+        if (leaf is null) return false;
+        leafType = leaf.FieldType;
+        return true;
     }
 
     /// <summary>文字列値を対象フィールド型へ変換する（未対応型は null）。</summary>

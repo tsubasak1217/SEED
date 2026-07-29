@@ -30,6 +30,18 @@ public readonly struct Animator : IComponentHandle<Animator>
     static string IComponentHandle<Animator>.ComponentKindName => Comp;
     static Animator IComponentHandle<Animator>.FromEntity(Entity slotEntity) => new(slotEntity);
 
+    // ── 参照の生存判定 ─────────────────────────────────
+
+    /// <summary>
+    /// この参照が生存しているか（指すエンティティが実在し Animator を保持しているか）。
+    ///
+    /// [SerializeField] の参照フィールドで「解決できたか／破棄されていないか」を
+    /// 判定するために使う。<b>null は「未設定」</b>（Nullable 宣言のみ）を意味し、
+    /// <b>IsValid == false は「未解決または破棄済み」</b>を意味する。
+    /// World が公開されていない場面（ライフサイクル外）でも false になる。
+    /// </summary>
+    public bool IsValid => ScriptHost.HasComponent(_entity, Comp);
+
     // ── 再生操作 ─────────────────────────────────────────────
 
     /// <summary>指定クリップを先頭（time=0）から再生する。再生速度は変更しない。</summary>
