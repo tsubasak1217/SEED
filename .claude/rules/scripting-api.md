@@ -19,4 +19,10 @@ paths:
   および汎用アクセスに渡す文字列は大文字小文字まで完全一致必須。不一致だとコンパイルは通るのに実行時に無反応。
 - **API 変更後は `SEEDScripting.dll` の再ビルドが必要**。ソースを直しても `dotnet build scripting/SEEDScripting.csproj`
   を実行しないと、runtime が古い DLL をロードして「直したのに動かない」罠にはまる。
+- **新しいコンポーネントハンドル型は SerializeField 参照対応まで込みで完成**。`IComponentHandle<TSelf>` を
+  実装すれば参照フィールド化は自動だが、①**`IsValid` プロパティの実装**（`ScriptHost.HasComponent(_entity, Comp)`、
+  「null=未設定 / IsValid=生存」契約）と、②**スロット格納型のみ** `editor/src/Scripting/ScriptReferenceCatalog.cs`
+  の 2 表へ 1 行ずつ追加（種別名→"XxxComponent" 文字列と表示名）、の 2 点を忘れると
+  「参照は D&D できるのに生存判定できない／スロット絞り込みが出ない」半端な状態になる。
+  詳細は add-script-api Skill §3-3。
 - 詳細な追加・変更手順（レジストリ登録／ラッパー／docs 同期／両ビルド検証）は **add-script-api Skill** を使う。
