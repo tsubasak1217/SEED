@@ -114,6 +114,24 @@ public partial class MainWindow
     }
 
     /// <summary>
+    /// カーソルがビューポート HWND 上にある場合に、そのビューポートローカル座標
+    /// （物理ピクセル）を取得する。ビューポート外なら false を返し x/y は 0 になる。
+    /// </summary>
+    /// <remarks>
+    /// インスペクタの「制御点を追加」ボタンからのドラッグ＆ドロップ転送に使う。
+    /// ビューポートは HwndHost のため WPF の Drop が発火せず、DoDragDrop は
+    /// DragDropEffects.None を返す。その戻り値を見た呼び出し側がこのメソッドで
+    /// ドロップ位置を取得し、ADD_CONTROL_POINT_AT_SCREEN としてランタイムへ転送する。
+    /// </remarks>
+    public bool TryGetViewportCursorPos(out uint x, out uint y)
+    {
+        x = 0; y = 0;
+        if (!IsMouseOverViewportHwnd()) return false;
+        (x, y) = GetViewportLocalCursorPos();
+        return true;
+    }
+
+    /// <summary>
     /// ドラッグ中のカーソル位置をランタイムに送信する。
     /// GiveFeedback コールバックからカーソルがビューポート上にいる間呼び出す。
     /// </summary>

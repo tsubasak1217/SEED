@@ -65,6 +65,37 @@ public partial class InspectorPanel : UserControl
     private bool   _pendingDuplicateRename   = false;
     private string _pendingDuplicateBaseName = "";
 
+    // ── ControlPointComponent の状態（フェーズB）───────────────
+
+    /// <summary>
+    /// ビューポート側で選択中の制御点（actorDfsId, slotIdx, index）。未選択なら null。
+    /// Rust は制御点を編集するたびに ACTOR_COMPONENTS を再送してくるためインスペクタ UI は
+    /// 頻繁に作り直される。選択状態をこのフィールドに保持しておき、再構築後も
+    /// 該当行のハイライトを復元する。
+    /// </summary>
+    private (int actor, int slot, int index)? _selectedControlPoint;
+
+    /// <summary>
+    /// slotIdx → 制御点リストの行 Border（インデックス順）。ハイライト付け替えに使う。
+    /// RebuildPoints のたびに該当スロットのエントリを差し替える。
+    /// </summary>
+    private readonly Dictionary<int, List<Border>> _controlPointRows = new();
+
+    /// <summary>
+    /// 「spline_points からコントロールポイントへ移行」ボタン押下後に、
+    /// ADD_COMPONENT の結果として返ってくる ACTOR_COMPONENTS を待つための保留データ
+    /// （アクタ相対 XYZ の制御点列）。未保留なら null。
+    /// _pendingDuplicateRename と同じ「保留フラグ + 次回 BuildActorComponentList で処理」パターン。
+    /// </summary>
+    private List<(float x, float y, float z)>? _pendingSplineMigrationPoints;
+
+    /// <summary>
+    /// 上記移行の対象アクタ DFS ID（押下時の _currentActorId）。
+    /// 保留中に別のアクタを選択すると、そのアクタの ACTOR_COMPONENTS で移行が誤発火して
+    /// 無関係なアクタへ点列を書き込んでしまう。ID を照合して取り違えを防ぐ。
+    /// </summary>
+    private int _pendingSplineMigrationActorId = -1;
+
     // ── Script state ─────────────────────────────────────────
     private readonly Dictionary<string, Type> _scriptTypeCache = new();
     private string _lastComponentsJson = "";
@@ -154,12 +185,60 @@ public partial class InspectorPanel : UserControl
             _runtime.ActorDataReceived       -= OnActorDataReceived;
             _runtime.ActorComponentsReceived -= OnActorComponentsReceived;
             _runtime.PluginListReceived      -= OnPluginListReceived;
+            _runtime.ControlPointSelected    -= OnControlPointSelected;
+            _runtime.ControlPointDeselected  -= OnControlPointDeselected;
         }
         _runtime = runtime;
         _runtime.SelectionChanged        += OnSelectionChanged;
         _runtime.ActorDataReceived       += OnActorDataReceived;
         _runtime.ActorComponentsReceived += OnActorComponentsReceived;
         _runtime.PluginListReceived      += OnPluginListReceived;
+        _runtime.ControlPointSelected    += OnControlPointSelected;
+        _runtime.ControlPointDeselected  += OnControlPointDeselected;
+    }
+
+    /// <summary>
+    /// ビューポートで制御点が選択された通知を受け、対応するリスト行をハイライトする。
+    /// IPC はワーカースレッドから来るため Dispatcher へマーシャリングする。
+    /// </summary>
+    private void OnControlPointSelected(int actorDfsId, int slotIdx, int index)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            _selectedControlPoint = (actorDfsId, slotIdx, index);
+            RefreshControlPointRowHighlight();
+        });
+    }
+
+    /// <summary>ビューポートの制御点選択が解除された通知を受け、ハイライトを消す。</summary>
+    private void OnControlPointDeselected()
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            _selectedControlPoint = null;
+            RefreshControlPointRowHighlight();
+        });
+    }
+
+    /// <summary>
+    /// 制御点リストの各行の背景を _selectedControlPoint に合わせて塗り直す。
+    /// UI 再構築後（RebuildPoints 直後）にも呼び出して選択ハイライトを復元する。
+    /// </summary>
+    private void RefreshControlPointRowHighlight()
+    {
+        foreach (var (slotIdx, rows) in _controlPointRows)
+        {
+            for (int i = 0; i < rows.Count; i++)
+            {
+                bool selected = _selectedControlPoint is { } sel
+                             && sel.actor == _currentActorId
+                             && sel.slot  == slotIdx
+                             && sel.index == i;
+                rows[i].Background = selected
+                    ? new SolidColorBrush(ControlPointSelectedRowColor)
+                    : Brushes.Transparent;
+            }
+        }
     }
 
     /// <summary>PLUGIN_LIST メッセージを受信してプラグイン名リストを更新する。</summary>
@@ -481,6 +560,29 @@ public partial class InspectorPanel : UserControl
     /// <summary>有効フラグの既定値。</summary>
     private const bool InteractionEnabledDefault = true;
 
+    // ── ControlPointComponent（フェーズB）の定数 ───────────────
+    // 川・巡回ルート・カメラパスなど用途中立の「順序付き点列」を編集するための定数群。
+    // Rust 側 ControlPointComponent の定数と必ず一致させること。
+
+    /// <summary>1 コンポーネントが保持できる制御点の上限。Rust 側 MAX_CONTROL_POINTS と一致させること。</summary>
+    private const int ControlPointMaxCount = 256;
+    /// <summary>「制御点を追加」で末尾に点を足すときの time 増分。Rust 側 DEFAULT_TIME_STEP と一致させること。</summary>
+    private const float ControlPointTimeStepDefault = 1.0f;
+    /// <summary>新規制御点の既定補間方式。Rust 側 Interp の既定（CatmullRom）と一致させること。</summary>
+    private const string ControlPointInterpDefault = "CatmullRom";
+    /// <summary>制御点が 1 個のときに追加した点を直前点から Z 方向へずらす距離（m）。川セクションと同じ規則。</summary>
+    private const float ControlPointNewPointOffsetDefault = 2.0f;
+    /// <summary>ビューポートで選択中の制御点行の背景ハイライト色（アコーディオンの選択枠と同系の青）。</summary>
+    private static readonly Color ControlPointSelectedRowColor = Color.FromRgb(0x1A, 0x35, 0x55);
+    /// <summary>
+    /// 「制御点を追加」ボタンのドラッグ中にビューポートハイライトを更新するポーリング間隔（ms）。
+    /// DoDragDrop が UI スレッドをブロックする間 GiveFeedback がほぼ発火しないため、
+    /// 別スレッドからこの間隔で更新する（ProjectPanel のアイテムドラッグと同じ手法）。
+    /// </summary>
+    private const int ViewportHighlightPollIntervalMs = 30;
+    /// <summary>spline_points からの移行で生成する制御点の time 増分（0,1,2,... の連番にする）。</summary>
+    private const float SplineMigrationTimeStep = 1.0f;
+
     /// <summary>コンポーネントスロット 1 件分の情報。TypeId ごとに追加フィールドを持つ。</summary>
     private record SlotInfo(int SlotIdx, string Name, string TypeId, string ModelPath,
         float Width = 0f, float Height = 0f,
@@ -657,7 +759,12 @@ public partial class InspectorPanel : UserControl
         // 影響半径・強さ・有効フラグ。既定値は Rust 側 InteractionSourceComponentData と一致。
         float InteractionRadius = InteractionRadiusDefault,
         float InteractionStrength = InteractionStrengthDefault,
-        bool InteractionEnabled = InteractionEnabledDefault);
+        bool InteractionEnabled = InteractionEnabledDefault,
+        // ── ControlPointComponent 用フィールド（フェーズB）──────
+        // 制御点配列は「生 JSON 文字列」のまま保持する。1 点が position/rotation/time/interp の
+        // 4 属性を持つため、独自の区切り記法（"x,y,z;..." 等）を作るとエスケープと拡張で破綻する。
+        // PeColorCurvesJson と同じく JSON をそのまま往復させ、送信時も JSON 配列で全置換する。
+        string ControlPointsJson = "[]");
 
     private List<SlotInfo> _slotInfos = new();
 
@@ -708,6 +815,9 @@ public partial class InspectorPanel : UserControl
         var prevSlotIdxSet = _slotInfos.Select(s => s.SlotIdx).ToHashSet();
         AccordionStack.Children.Clear();
         _accordionHeaders.Clear();
+        // 制御点リストの行参照は UI ごと作り直されるので、ここで古い参照を捨てる
+        // （残すと破棄済みの Border を塗り続けることになる）。
+        _controlPointRows.Clear();
         ClearTransformRefs();
         _slotInfos.Clear();
         _slotEnabledMap.Clear();
@@ -1060,6 +1170,9 @@ public partial class InspectorPanel : UserControl
             // 【重要】キーは "source_enabled"。スロット共通の "enabled"(数値0/1)とキー重複
             // させると GetProperty が数値側を返し GetBoolean() が例外になる（既往リグレッション）。
             var interactEnabled  = comp.TryGetProperty("source_enabled", out var ise) ? ise.GetBoolean() : InteractionEnabledDefault;
+            // ControlPointComponent 用（フェーズB）: 制御点配列を生 JSON のまま保持する。
+            // 要素は {"position":[x,y,z],"rotation":[x,y,z],"time":t,"interp":"..."}。欠落時は空配列。
+            var controlPointsJson = comp.TryGetProperty("points", out var cpp) ? cpp.GetRawText() : "[]";
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 AutoScale: autoScale,
@@ -1150,7 +1263,9 @@ public partial class InspectorPanel : UserControl
                 WaterSplinePoints: waterSplinePoints,
                 // InteractionSourceComponent 用フィールド
                 InteractionRadius: interactRadius, InteractionStrength: interactStrength,
-                InteractionEnabled: interactEnabled);
+                InteractionEnabled: interactEnabled,
+                // ControlPointComponent 用フィールド
+                ControlPointsJson: controlPointsJson);
             _slotInfos.Add(info);
 
             // アコーディオンにパラメータ編集エリアを追加（ヘッダーがリネーム・削除・複製・選択を兼ねる）
@@ -1181,6 +1296,43 @@ public partial class InspectorPanel : UserControl
                     //   "Sprite Copy" != "Sprite(1)" なので RENAME_COMPONENT_SLOT が送られる。
                     () => StartComponentRename(newSlot.SlotIdx, newSlot.Name, defaultName),
                     System.Windows.Threading.DispatcherPriority.Loaded);
+            }
+        }
+
+        // 川の spline_points からの移行待ち: ADD_COMPONENT の結果として現れた
+        // ControlPointComponent スロットを見つけ、保留中の点列を変換して流し込む。
+        if (_pendingSplineMigrationPoints is { Count: > 0 } migrationPoints)
+        {
+            if (_pendingSplineMigrationActorId != _currentActorId)
+            {
+                // 保留中に別アクタへ選択が移った ＝ この ACTOR_COMPONENTS は移行対象ではない。
+                // 待ち続けても対象アクタへ戻ってくる保証が無いため、保留を破棄する
+                //（無関係なアクタの ControlPoint を上書きする事故を防ぐ）。
+                _pendingSplineMigrationPoints  = null;
+                _pendingSplineMigrationActorId = -1;
+            }
+            // **今回新しく現れた** ControlPointComponent スロットだけを対象にする。
+            // 単に「型が一致する最初のスロット」を選ぶと、押下前から ControlPoint が
+            // 付いていたアクタで既存の点列を破壊してしまう（_pendingDuplicateRename と
+            // 同じく prevSlotIdxSet で新旧を判別する）。
+            else if (_slotInfos.FirstOrDefault(
+                         s => s.TypeId == "ControlPointComponent" && !prevSlotIdxSet.Contains(s.SlotIdx))
+                     is { } cpSlot)
+            {
+                _pendingSplineMigrationPoints  = null;
+                _pendingSplineMigrationActorId = -1;
+                // spline_points はアクタ相対 XYZ のみを持つため、回転 = 0、
+                // time = 0,1,2,... の連番、補間 = 既定（CatmullRom）で埋める。
+                var converted = migrationPoints
+                    .Select((p, i) => new ControlPointEntry
+                    {
+                        X = p.x, Y = p.y, Z = p.z,
+                        Time   = i * SplineMigrationTimeStep,
+                        Interp = ControlPointInterpDefault,
+                    })
+                    .ToList();
+                _runtime?.SendToRuntime(
+                    $"SET_CONTROL_POINTS:{_currentActorId},{cpSlot.SlotIdx},{SerializeControlPoints(converted)}");
             }
         }
     }
@@ -1220,6 +1372,7 @@ public partial class InspectorPanel : UserControl
         "SkyboxComponent"     => Color.FromRgb(0x10, 0x1C, 0x38), // 暗青（スカイボックス）
         "WaterVolumeComponent" => Color.FromRgb(0x0E, 0x2A, 0x3A), // 暗い青（水）
         "InteractionSourceComponent" => Color.FromRgb(0x18, 0x30, 0x18), // 暗い緑（草・環境への干渉）
+        "ControlPointComponent" => Color.FromRgb(0x24, 0x1E, 0x38), // 暗い紫（汎用パス。水の暗青・草の暗緑と識別できる色）
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
     };
@@ -1242,6 +1395,7 @@ public partial class InspectorPanel : UserControl
         "SkyboxComponent"     => "Skybox",
         "WaterVolumeComponent" => "Water Volume",
         "InteractionSourceComponent" => "Interaction Source",
+        "ControlPointComponent" => "Control Point",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                     => typeId,
@@ -1468,6 +1622,7 @@ public partial class InspectorPanel : UserControl
             "ParticleEmitterComponent" => BuildParticleSlotContent(info),
             "WaterVolumeComponent" => BuildWaterVolumeSlotContent(info),
             "InteractionSourceComponent" => BuildInteractionSourceSlotContent(info),
+            "ControlPointComponent" => BuildControlPointSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
             "Collider2dComponent" => BuildCollider2dSlotContent(info),
@@ -4793,6 +4948,10 @@ public partial class InspectorPanel : UserControl
         var riverSection = BuildSection("川（スプライン）");
         var riverSp      = (StackPanel)riverSection.Child;
 
+        // ControlPointComponent（汎用パス）へ一本化していく過渡期のため、優先順位を明示する。
+        riverSp.Children.Add(MakeHint(
+            "同じアクタに ControlPoint コンポーネントがある場合はそちらが優先されます（下の制御点リストは使われません）。"));
+
         AddFloatRow(riverSp, "川幅(m)",     info.WaterRiverWidth, "river_width", "F2");
         AddFloatRow(riverSp, "流速(m/s)",   info.WaterFlowSpeed,  "flow_speed",  "F2");
         AddFloatRow(riverSp, "川の深さ(m)", info.WaterRiverDepth, "river_depth", "F2");
@@ -4934,6 +5093,31 @@ public partial class InspectorPanel : UserControl
         };
         riverSp.Children.Add(snapRow);
 
+        // ── spline_points → ControlPointComponent への移行 ──────
+        // ① ADD_COMPONENT で ControlPoint を足し、② その結果として返ってくる ACTOR_COMPONENTS で
+        // 現れた新スロットへ、現在の spline_points を変換して SET_CONTROL_POINTS で流し込む。
+        // ② の待ち合わせは _pendingDuplicateRename と同じ「保留 + 次回 BuildActorComponentList で処理」方式。
+        // spline_points 自体は削除しない（ControlPoint を外したときのフォールバックとして残置する）。
+        var migrateBtn = new Button
+        {
+            Content = "spline_points からコントロールポイントへ移行",
+            FontSize = 11, Height = 22, Padding = new Thickness(6, 0, 6, 0),
+            HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 6, 0, 2),
+            // 制御点が 0 個なら移すものが無いので押せない。
+            IsEnabled = controlPoints.Count > 0,
+        };
+        migrateBtn.Click += (_, _) =>
+        {
+            if (_currentActorId < 0 || controlPoints.Count == 0) return;
+            // 押下時点のスナップショットを保留に置き、コンポーネント追加を要求する。
+            _pendingSplineMigrationPoints  = new List<(float x, float y, float z)>(controlPoints);
+            _pendingSplineMigrationActorId = _currentActorId;
+            _runtime?.SendToRuntime($"ADD_COMPONENT:{_currentActorId},ControlPointComponent,ControlPoint,");
+        };
+        riverSp.Children.Add(migrateBtn);
+        riverSp.Children.Add(MakeHint(
+            "移行後も spline_points は残ります（ControlPoint を外したときのフォールバック）。"));
+
         sp.Children.Add(riverSection);
 
         // ── 種別に応じた行・セクションの表示切替 ─────────────────
@@ -4959,6 +5143,438 @@ public partial class InspectorPanel : UserControl
         };
 
         return sp;
+    }
+
+    // ── ControlPointComponent inspector（フェーズB）─────────────
+
+    /// <summary>
+    /// 制御点 1 点分の編集用モデル（可変）。
+    /// Rust 側 ControlPoint（position / rotation / time / interp）と 1 対 1 で対応する。
+    /// 行編集で頻繁に一部フィールドだけ書き換えるため record ではなく可変クラスにしている。
+    /// </summary>
+    private sealed class ControlPointEntry
+    {
+        /// <summary>位置（アクタ相対 XYZ）。</summary>
+        public float X, Y, Z;
+        /// <summary>回転（オイラー角 XYZ）。UI には出さないが JSON の往復では必ず保持する。</summary>
+        public float RX, RY, RZ;
+        /// <summary>この点に到達する時刻（秒相当。カメラパス等で使用）。</summary>
+        public float Time;
+        /// <summary>次の点までの補間方式（"Linear" / "CatmullRom" / "Step"）。</summary>
+        public string Interp = ControlPointInterpDefault;
+    }
+
+    /// <summary>
+    /// JSON 配列（[x,y,z]）を 3 成分へ読み出す。要素不足・数値以外は 0 として扱う
+    /// （旧データや壊れた点が混ざっていてもリスト全体を捨てないため）。
+    /// </summary>
+    private static (float x, float y, float z) ReadVec3(JsonElement arr)
+    {
+        var v = new float[3];
+        int n = Math.Min(v.Length, arr.GetArrayLength());
+        for (int i = 0; i < n; i++)
+            v[i] = arr[i].ValueKind == JsonValueKind.Number ? arr[i].GetSingle() : 0f;
+        return (v[0], v[1], v[2]);
+    }
+
+    /// <summary>
+    /// ControlPointComponent の points 配列（生 JSON）を編集用モデルへパースする。
+    /// 壊れた JSON・想定外の形が来てもインスペクタ全体を落とさないため、
+    /// 例外は握りつぶして空リスト（または解析できたところまで）を返す。
+    /// </summary>
+    private static List<ControlPointEntry> ParseControlPoints(string json)
+    {
+        var list = new List<ControlPointEntry>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) return list;
+            foreach (var el in doc.RootElement.EnumerateArray())
+            {
+                var e = new ControlPointEntry();
+                // position / rotation は 3 要素配列。欠落・要素不足でも既定 0 のまま進める。
+                if (el.TryGetProperty("position", out var pos) && pos.ValueKind == JsonValueKind.Array)
+                {
+                    var p = ReadVec3(pos);
+                    e.X = p.x; e.Y = p.y; e.Z = p.z;
+                }
+                if (el.TryGetProperty("rotation", out var rot) && rot.ValueKind == JsonValueKind.Array)
+                {
+                    var r = ReadVec3(rot);
+                    e.RX = r.x; e.RY = r.y; e.RZ = r.z;
+                }
+                if (el.TryGetProperty("time", out var t) && t.ValueKind == JsonValueKind.Number)
+                    e.Time = t.GetSingle();
+                if (el.TryGetProperty("interp", out var ip) && ip.ValueKind == JsonValueKind.String)
+                    e.Interp = ip.GetString() ?? ControlPointInterpDefault;
+                list.Add(e);
+            }
+        }
+        catch (JsonException)
+        {
+            // 壊れた JSON はここで捨てる（インスペクタの他セクションは表示を続ける）
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// 編集用モデルを SET_CONTROL_POINTS で送る JSON 配列文字列へ直列化する。
+    /// position / rotation / time / interp を必ず全部書き出す
+    /// （欠けると Rust 側 serde の default が効いて意図せず既定値に戻るため）。
+    /// 数値は CultureInfo.InvariantCulture 固定（ロケール依存の "1,5" を出さない）。
+    /// </summary>
+    private static string SerializeControlPoints(List<ControlPointEntry> points)
+    {
+        var items = points.Select(p => FormattableString.Invariant(
+            $"{{\"position\":[{p.X},{p.Y},{p.Z}],\"rotation\":[{p.RX},{p.RY},{p.RZ}],\"time\":{p.Time},\"interp\":\"{p.Interp}\"}}"));
+        return "[" + string.Join(",", items) + "]";
+    }
+
+    /// <summary>
+    /// ControlPointComponent のインスペクター UI を構築して返す（フェーズB）。
+    /// 「制御点」セクション 1 つで、点の追加・削除・位置/時刻/補間の編集を提供する。
+    /// 点の追加・削除・属性編集はすべて SET_CONTROL_POINTS による「リスト全置換」1 本で行う
+    /// （水の spline_points と同じ流儀。差分コマンドを増やさず順序ずれを起こさないため）。
+    /// </summary>
+    private UIElement BuildControlPointSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // 受信 JSON を編集用モデルへ（パース失敗時は空リスト）。
+        var points = ParseControlPoints(info.ControlPointsJson);
+
+        // リスト全体を全置換で送信するローカル関数。
+        void SendPoints()
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime(
+                $"SET_CONTROL_POINTS:{_currentActorId},{info.SlotIdx},{SerializeControlPoints(points)}");
+        }
+
+        // 補足説明を薄い色で表示する行を生成する（水セクションの MakeHint と同じ体裁）。
+        TextBlock MakeHint(string text) => new()
+        {
+            Text         = text,
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 2, 0, 2),
+        };
+
+        var section = BuildSection("制御点");
+        var body    = (StackPanel)section.Child;
+
+        // 点数表示と上限到達時の注意書き。
+        var countText   = MakeHint("");
+        var limitHint   = MakeHint($"制御点が上限（{ControlPointMaxCount} 点）に達しています。これ以上追加できません。");
+        var pointsPanel = new StackPanel { Margin = new Thickness(0, 2, 0, 2) };
+
+        // この UI が管理する行 Border（インデックス順）。選択ハイライトの塗り直しに使う。
+        var rowBorders = new List<Border>();
+        _controlPointRows[info.SlotIdx] = rowBorders;
+
+        body.Children.Add(countText);
+        body.Children.Add(pointsPanel);
+
+        // 追加ボタンは RebuildPoints から有効/無効を切り替えるため先に生成する。
+        var addPointBtn = new Button
+        {
+            Content = "＋ 制御点を追加", FontSize = 11, Width = 150, Height = 22,
+            HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 2),
+            ToolTip = "クリックで末尾に追加。ビューポートへドラッグ＆ドロップすると、落とした先の地形・メッシュ・水面上に追加します。",
+        };
+
+        // 点数表示・上限注意書き・追加ボタンの活性を現在の点数に合わせて更新する。
+        void UpdateCountUi()
+        {
+            countText.Text        = $"{points.Count} 点 / 上限 {ControlPointMaxCount} 点";
+            bool full             = points.Count >= ControlPointMaxCount;
+            limitHint.Visibility  = full ? Visibility.Visible : Visibility.Collapsed;
+            addPointBtn.IsEnabled = !full;
+        }
+
+        // 制御点リスト UI を全再構築するローカル関数（川セクションと同じ流儀）。
+        // 1 行の構成は「#index + 位置 XYZ + time + 補間 + 削除」。
+        // rotation は行に出さない: XYZ+time+interp+削除だけで既に横幅が窮屈で、
+        // 回転はカメラパス等で後から必要になる想定の属性のため。JSON の往復では必ず保持する。
+        void RebuildPoints()
+        {
+            pointsPanel.Children.Clear();
+            rowBorders.Clear();
+
+            for (int i = 0; i < points.Count; i++)
+            {
+                int idx   = i;
+                var entry = points[idx];
+
+                var rowGrid = new Grid();
+                rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // 位置 XYZ
+                rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // time
+                rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // 補間
+                rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // 削除
+
+                // ── 位置 XYZ（ラベル部が "#index" のインデックス表示を兼ねる）──
+                var xyzRow = BuildXYZRowSimple($"#{idx}", entry.X, entry.Y, entry.Z);
+                Grid.SetColumn(xyzRow.element, 0);
+                rowGrid.Children.Add(xyzRow.element);
+
+                void CommitPos()
+                {
+                    if (!float.TryParse(xyzRow.tx.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vx)) return;
+                    if (!float.TryParse(xyzRow.ty.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vy)) return;
+                    if (!float.TryParse(xyzRow.tz.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vz)) return;
+                    entry.X = vx; entry.Y = vy; entry.Z = vz;
+                    SendPoints();
+                }
+                foreach (var tb in new[] { xyzRow.tx, xyzRow.ty, xyzRow.tz })
+                {
+                    tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitPos(); e.Handled = true; } };
+                    tb.LostFocus += (_, _) => CommitPos();
+                    NumericDragBehavior.SetOnDrag(tb, CommitPos);
+                }
+
+                // ── time（小さな数値ボックス）──
+                var timeBox = new TextBox
+                {
+                    Text              = entry.Time.ToString("F2", CultureInfo.InvariantCulture),
+                    Background        = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+                    Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                    BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+                    BorderThickness   = new Thickness(1),
+                    FontSize          = 11,
+                    Padding           = new Thickness(4, 1, 4, 1),
+                    Width             = 46,
+                    Margin            = new Thickness(4, 0, 0, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    ToolTip           = "この点に到達する時刻",
+                };
+                NumericDragBehavior.SetEnabled(timeBox, true);
+                void CommitTime()
+                {
+                    if (!float.TryParse(timeBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vt)) return;
+                    entry.Time = vt;
+                    SendPoints();
+                }
+                timeBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitTime(); e.Handled = true; } };
+                timeBox.LostFocus += (_, _) => CommitTime();
+                NumericDragBehavior.SetOnDrag(timeBox, CommitTime);
+                Grid.SetColumn(timeBox, 1);
+                rowGrid.Children.Add(timeBox);
+
+                // ── 補間方式コンボ（Tag に Rust 側の文字列をそのまま入れる）──
+                var interpCombo = new ComboBox
+                {
+                    Width = 92, FontSize = 11,
+                    Margin = new Thickness(4, 0, 0, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    ToolTip = "次の点までの補間方式",
+                };
+                foreach (var (val, label) in ControlPointInterpChoices)
+                    interpCombo.Items.Add(new ComboBoxItem { Content = label, Tag = val });
+                var curInterpIdx = Array.FindIndex(ControlPointInterpChoices, t => t.value == entry.Interp);
+                // 未知の補間方式が来た場合は既定（CatmullRom）の位置へフォールバックする。
+                interpCombo.SelectedIndex = curInterpIdx >= 0
+                    ? curInterpIdx
+                    : Array.FindIndex(ControlPointInterpChoices, t => t.value == ControlPointInterpDefault);
+                interpCombo.SelectionChanged += (_, _) =>
+                {
+                    if (interpCombo.SelectedItem is not ComboBoxItem item || item.Tag is not string v) return;
+                    if (v == entry.Interp) return; // 初期選択・再構築時の空振り送信を避ける
+                    entry.Interp = v;
+                    SendPoints();
+                };
+                Grid.SetColumn(interpCombo, 2);
+                rowGrid.Children.Add(interpCombo);
+
+                // ── 削除ボタン ──
+                var delBtn = new Button
+                {
+                    Content = "削除", FontSize = 10, Width = 40, Height = 20,
+                    Margin = new Thickness(4, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+                };
+                delBtn.Click += (_, _) =>
+                {
+                    points.RemoveAt(idx);
+                    SendPoints();
+                    RebuildPoints();
+                    UpdateCountUi();
+                };
+                Grid.SetColumn(delBtn, 3);
+                rowGrid.Children.Add(delBtn);
+
+                // 行 Border（選択ハイライトの受け皿を兼ねる）。
+                var rowBorder = new Border
+                {
+                    Background   = Brushes.Transparent,
+                    CornerRadius = new CornerRadius(2),
+                    Padding      = new Thickness(2, 1, 2, 1),
+                    Margin       = new Thickness(0, 1, 0, 1),
+                    Child        = rowGrid,
+                    Cursor       = Cursors.Hand,
+                };
+                // 行クリック → ビューポート側の点を選択させる（リスト → ビューポートの逆方向同期）。
+                // TextBox / Button 上のクリックはそれらがイベントを処理するのでここへは来ない。
+                rowBorder.MouseLeftButtonDown += (_, _) =>
+                {
+                    if (_currentActorId < 0) return;
+                    _runtime?.SendToRuntime($"SELECT_CONTROL_POINT:{_currentActorId},{info.SlotIdx},{idx}");
+                };
+
+                rowBorders.Add(rowBorder);
+                pointsPanel.Children.Add(rowBorder);
+            }
+
+            // Rust は編集のたびに ACTOR_COMPONENTS を再送してくるため UI は頻繁に作り直される。
+            // 保持しておいた選択状態からハイライトを復元する。
+            RefreshControlPointRowHighlight();
+        }
+
+        RebuildPoints();
+        UpdateCountUi();
+
+        // ── 「＋ 制御点を追加」（クリック = 末尾追加 / ドラッグ = ビューポートへドロップ）──
+
+        // クリック追加時の初期位置。川セクションの ComputeNextControlPoint と同じ規則:
+        // ・2点以上: 最後の点 + (最後の点 − 直前の点) の外挿位置（線の延長上）
+        // ・1点   : 最後の点から ControlPointNewPointOffsetDefault だけ Z 方向へずらした位置
+        // ・0点   : 原点
+        (float x, float y, float z) ComputeNextControlPoint()
+        {
+            if (points.Count >= 2)
+            {
+                var last = points[^1];
+                var prev = points[^2];
+                return (last.X + (last.X - prev.X), last.Y + (last.Y - prev.Y), last.Z + (last.Z - prev.Z));
+            }
+            if (points.Count == 1)
+            {
+                var last = points[0];
+                return (last.X, last.Y, last.Z + ControlPointNewPointOffsetDefault);
+            }
+            return (0f, 0f, 0f);
+        }
+
+        addPointBtn.Click += (_, _) =>
+        {
+            if (points.Count >= ControlPointMaxCount) return;
+            var (nx, ny, nz) = ComputeNextControlPoint();
+            points.Add(new ControlPointEntry
+            {
+                X = nx, Y = ny, Z = nz,
+                // time は「最後の点の time + 既定ステップ」。0 点なら 0 から始める。
+                Time   = points.Count > 0 ? points[^1].Time + ControlPointTimeStepDefault : 0f,
+                Interp = ControlPointInterpDefault,
+            });
+            SendPoints();
+            RebuildPoints();
+            UpdateCountUi();
+        };
+
+        // ドラッグ開始判定用の押下位置（クリックとドラッグを両立させるため、
+        // システムの最小ドラッグ距離を超えて初めてドラッグとみなす）。
+        Point? addBtnPressPos = null;
+        addPointBtn.PreviewMouseLeftButtonDown += (_, e) => addBtnPressPos = e.GetPosition(addPointBtn);
+        addPointBtn.MouseMove += (_, e) =>
+        {
+            if (addBtnPressPos is not { } start) return;
+            if (e.LeftButton != MouseButtonState.Pressed) { addBtnPressPos = null; return; }
+            if (!addPointBtn.IsEnabled) return;
+            var cur = e.GetPosition(addPointBtn);
+            if (Math.Abs(cur.X - start.X) < SystemParameters.MinimumHorizontalDragDistance
+             && Math.Abs(cur.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+            addBtnPressPos = null;
+            BeginAddPointDrag(addPointBtn, info.SlotIdx);
+        };
+        addPointBtn.PreviewMouseLeftButtonUp += (_, _) => addBtnPressPos = null;
+
+        body.Children.Add(addPointBtn);
+        body.Children.Add(limitHint);
+        body.Children.Add(MakeHint(
+            "ボタンをビューポートへドラッグ＆ドロップすると、落とした先の地形・メッシュ・水面上に点を追加します（続けてドロップすれば連続で置けます）。"));
+        body.Children.Add(MakeHint(
+            "回転はこのリストには表示しませんが、保存・送信では保持されます（カメラパス等で使用）。"));
+
+        sp.Children.Add(section);
+        return sp;
+    }
+
+    /// <summary>制御点の補間方式の選択肢（送信値, 表示ラベル）。値は Rust 側 Interp の文字列と一致させること。</summary>
+    private static readonly (string value, string label)[] ControlPointInterpChoices =
+    {
+        ("Linear",     "直線 (Linear)"),
+        ("CatmullRom", "曲線 (CatmullRom)"),
+        ("Step",       "階段 (Step)"),
+    };
+
+    /// <summary>
+    /// 「制御点を追加」ボタンからビューポートへのドラッグ＆ドロップを開始する。
+    /// ビューポートは HwndHost のため WPF の Drop は発火せず DoDragDrop は
+    /// DragDropEffects.None を返す。ProjectPanel.BeginItemDrag と同じく、その戻り値と
+    /// カーソル位置からドロップ先を判定して ADD_CONTROL_POINT_AT_SCREEN を手動転送する。
+    /// </summary>
+    private void BeginAddPointDrag(UIElement dragSource, int slotIdx)
+    {
+        var mainWindow = Application.Current.MainWindow as MainWindow;
+
+        // GiveFeedback でビューポートのハイライトとカーソルを制御する。
+        // ビューポート上では OLE 既定の「no-drop」カーソルを抑制して通常カーソルにする。
+        GiveFeedbackEventHandler giveFeedback = (_, args) =>
+        {
+            bool overVp = mainWindow?.IsMouseOverViewportHwnd() ?? false;
+            mainWindow?.SetViewportDragHighlight(overVp);
+            if (overVp)
+            {
+                args.UseDefaultCursors = false;
+                Mouse.OverrideCursor   = null;
+                args.Handled           = true;
+            }
+            else
+            {
+                Mouse.OverrideCursor = null;
+            }
+        };
+
+        // DoDragDrop は UI スレッドをブロックし GiveFeedback がほぼ 1 回しか発火しないため、
+        // ハイライト更新はバックグラウンドスレッドから一定間隔でポーリングする。
+        // ※ ランタイムへのホバー通知（DRAG_HOVER）はここでは送らない。
+        //    あれはアクタのスポーンプレビュー球用で、制御点ドロップでは余計な球が出るだけのため。
+        using var cts = new System.Threading.CancellationTokenSource();
+        var ct = cts.Token;
+        var highlightThread = new System.Threading.Thread(() =>
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                bool overVp = mainWindow?.IsMouseOverViewportHwnd() ?? false;
+                mainWindow?.Dispatcher.BeginInvoke(() => mainWindow.SetViewportDragHighlight(overVp));
+                System.Threading.Thread.Sleep(ViewportHighlightPollIntervalMs);
+            }
+        }) { IsBackground = true };
+        highlightThread.Start();
+
+        // データ本体は使わない（転送は DoDragDrop の戻り値経路で行う）。
+        // 形式名だけがビューポート以外へのドロップと区別するための識別子になる。
+        dragSource.GiveFeedback += giveFeedback;
+        var data   = new DataObject("SEEDControlPointAdd", string.Empty);
+        var result = DragDrop.DoDragDrop(dragSource, data, DragDropEffects.Copy);
+        dragSource.GiveFeedback -= giveFeedback;
+
+        cts.Cancel();
+        highlightThread.Join(ViewportHighlightPollIntervalMs * 2);
+
+        // ドラッグ終了後の後始末（ProjectPanel と同じ。OLE ループ後に残るキャプチャも解除する）。
+        Mouse.OverrideCursor = null;
+        mainWindow?.SetViewportDragHighlight(false);
+        Mouse.Capture(null);
+
+        // ビューポート上でドロップされていたら、そのローカル座標でランタイムへ追加を依頼する。
+        // ヒット判定・ワールド座標算出はすべてランタイム側の責務（C# はワールド座標を扱わない）。
+        // 追加結果は Rust が ACTOR_COMPONENTS を送り返してリストへ反映されるので、
+        // ここではダイアログ等を出さず即座に制御を返す（連続ドロップの UX を壊さないため）。
+        if (result != DragDropEffects.None) return;
+        if (_currentActorId < 0) return;
+        if (mainWindow != null && mainWindow.TryGetViewportCursorPos(out var vx, out var vy))
+            _runtime?.SendToRuntime($"ADD_CONTROL_POINT_AT_SCREEN:{_currentActorId},{slotIdx},{vx},{vy}");
     }
 
     /// <summary>

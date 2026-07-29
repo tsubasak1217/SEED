@@ -148,6 +148,125 @@ impl App {
         true
     }
 
+    // ─── IPC: リスト行クリックによる点の選択 ─────────────────
+
+    /// インスペクタの点リストから選択された点を、ビューポート側の選択状態へ反映する
+    /// （SELECT_CONTROL_POINT IPC）。
+    ///
+    /// ランタイム → エディタの `CONTROL_POINT_SELECTED` と対になる逆方向の経路で、
+    /// 「リストで選ぶ」「ビューポートで点を掴む」のどちらからでも同じ点が選ばれる状態にする。
+    ///
+    /// 何もしない条件（＝存在しない点や、見えていない点にギズモを出さないためのガード）:
+    ///   ・スロットが ControlPointComponent でない（誤配）
+    ///   ・`index` が点列の長さの外
+    ///   ・**要求されたアクタが現在の選択アクタでない**
+    ///
+    /// 3 つ目が重要な理由: 点キューブの表示条件 `control_points_visible()` は
+    /// 「アクタが 1 つ選択されていること（`actor_virtual_selected_idx` が Some）」を要求し、
+    /// さらに `resolved_control_point_paths()` は**選択中アクタの点しか集めない**。
+    /// そのため別アクタの点を選択状態にすると、ビューポートに点キューブが 1 つも出ていない
+    /// のに移動ギズモだけが宙に浮く、という不整合な状態になる。ここで弾いておく。
+    pub(super) fn handle_select_control_point(&mut self, actor_dfs_id: u32, slot_idx: u32, index: u32) {
+        // 選択アクタと一致しない要求は無視する（上記の不整合防止）。
+        if self.actor_virtual_selected_idx != Some(actor_dfs_id as usize) { return; }
+
+        let Some(entity) = self.control_point_slot_entity(actor_dfs_id, slot_idx) else { return };
+        let Some(scene)  = self.scene.as_ref() else { return };
+        let Some(comp)   = scene.world.get::<ControlPointComponent>(entity) else { return };
+        // 点列の範囲外なら選択しない（存在しない点にギズモを出さない）。
+        if (index as usize) >= comp.points.len() { return; }
+
+        self.select_control_point(SelectedControlPoint { actor_dfs_id, slot_idx, index });
+    }
+
+    // ─── ビューポートへの D&D による点の追加 ─────────────────
+
+    /// 画面 D&D の着弾ワールド座標に制御点を 1 つ追加する
+    /// （ADD_CONTROL_POINT_AT_SCREEN の解決後に呼ばれる）。
+    ///
+    /// `world` は解決済みの**ワールド座標**。制御点はアクタ相対で保持する契約なので、
+    /// アクタのワールド行列の逆行列でローカルへ戻してから格納する。
+    ///
+    /// 何もしない条件:
+    ///   ・スロットが ControlPointComponent でない
+    ///   ・点数がすでに `MAX_CONTROL_POINTS` に達している（上限超過を弾く）
+    pub(super) fn handle_add_control_point_world(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        world:        [f32; 3],
+    ) {
+        use super::find_actor_by_dfs;
+
+        let Some(entity) = self.control_point_slot_entity(actor_dfs_id, slot_idx) else { return };
+
+        // アクタのワールド行列の逆行列（ワールド → アクタ相対）を先に作る。
+        // 可変借用の前に不変借用を終わらせるため、ここでブロックを閉じる。
+        let actor_inv = {
+            let Some(scene) = self.scene.as_ref() else { return };
+            let mut c = 0u32;
+            let Some(actor) = find_actor_by_dfs(
+                &scene.actors, self.active_world_line, actor_dfs_id, &mut c) else { return };
+            let tf = scene.world.get::<Transform>(actor.entity).cloned().unwrap_or_default();
+            mat4x4_inv(tf.to_mat4())
+        };
+        let local = transform_point(&actor_inv, world);
+
+        // Undo 用に「変更前」を先に取る（handle_set_control_points と同じ流儀）。
+        let wl = self.active_world_line;
+        let before_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+
+        // 追加後の点の添字（選択に使う）。可変借用の中で決めて外へ持ち出す。
+        let new_index = {
+            let Some(scene) = &mut self.scene else { return };
+            let Some(c) = scene.world.get_mut::<ControlPointComponent>(entity) else { return };
+            // 上限に達していたら追加しない（描画・ピッキングのコスト上限を守る）。
+            if !can_push_control_point(c.points.len()) { return; }
+            // 時刻は push の**前**に決める（push 後だと自分自身を「最後の点」として読んでしまう）。
+            let time = c.next_default_time();
+            c.points.push(ControlPoint { position: local, time, ..Default::default() });
+            (c.points.len() - 1) as u32
+        };
+
+        let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+        self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+            world_line: wl, actor_dfs_id, before_slots, after_slots,
+        }));
+        self.send_actor_components(actor_dfs_id, slot_idx as usize);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+
+        // 今置いた点を選択状態にする（連続ドロップでも「直前に置いた点」が分かるように）。
+        // ただし `handle_select_control_point` と同じ理由で、対象アクタが選択中でない場合は
+        // 選択しない（点キューブが出ていないのにギズモだけ出る不整合を防ぐ）。
+        if self.actor_virtual_selected_idx == Some(actor_dfs_id as usize) {
+            self.select_control_point(SelectedControlPoint {
+                actor_dfs_id, slot_idx, index: new_index,
+            });
+        }
+    }
+
+    /// 画面 D&D の着弾点を、GPU ピック結果と地形レイマーチ結果から 1 点に決める。
+    ///
+    /// - `gpu_hit`: ID パスの RGB に焼かれたワールド座標（メッシュ・水面。背景なら None）
+    /// - `(sx, sy)`: ビューポートのピクセル座標（地形レイマーチに使う）
+    ///
+    /// 地形は ID パスに描かれないため、GPU ピックだけでは地形の上に点を置けない。
+    /// 逆にメッシュは CPU レイマーチの対象外なので、**両方を試して近い方を採る**。
+    /// 比較はカメラからの距離の**二乗**で行う（順序が同じなので sqrt は不要）。
+    ///
+    /// どちらにも当たらなければ None を返す。呼び出し側はこの場合**点を追加しない**
+    /// （空をドロップしたら何も起きない、という直感的な挙動にするため）。
+    pub(super) fn resolve_control_point_drop_hit(
+        &self,
+        gpu_hit: Option<[f32; 3]>,
+        sx:      u32,
+        sy:      u32,
+    ) -> Option<[f32; 3]> {
+        let terrain_hit = self.terrain_raymarch_hit(sx as f32, sy as f32);
+        let cam_v = self.camera.position();
+        nearer_hit([cam_v.x, cam_v.y, cam_v.z], gpu_hit, terrain_hit)
+    }
+
     // ─── 点選択状態 ──────────────────────────────────────────
 
     /// 点を選択し、エディタへ通知する（`CONTROL_POINT_SELECTED:{actor},{slot},{index}`）。
@@ -368,6 +487,32 @@ fn transform_point(m: &[[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+/// 点をもう 1 つ追加できるか（現在の点数から判定する）。
+///
+/// 上限判定を関数として切り出しておくのは、`App` を組み立てられないテスト環境でも
+/// 「上限で止まる」という契約だけは検証できるようにするため。
+fn can_push_control_point(current_len: usize) -> bool {
+    current_len < MAX_CONTROL_POINTS
+}
+
+/// 2 つの候補ヒットのうち、`cam` に近い方を返す（両方 None なら None）。
+///
+/// 距離は**二乗**で比べる（平方根は単調増加なので大小関係が変わらず、計算が無駄）。
+/// 片方だけが Some ならそれをそのまま採る。
+fn nearer_hit(cam: [f32; 3], a: Option<[f32; 3]>, b: Option<[f32; 3]>) -> Option<[f32; 3]> {
+    /// カメラからの距離の二乗。
+    fn dist_sq(cam: [f32; 3], p: [f32; 3]) -> f32 {
+        let d = [p[0] - cam[0], p[1] - cam[1], p[2] - cam[2]];
+        d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+    }
+    match (a, b) {
+        (Some(pa), Some(pb)) => Some(if dist_sq(cam, pa) <= dist_sq(cam, pb) { pa } else { pb }),
+        (Some(pa), None)     => Some(pa),
+        (None,     Some(pb)) => Some(pb),
+        (None,     None)     => None,
+    }
+}
+
 // ─── ユニットテスト ──────────────────────────────────────────
 
 #[cfg(test)]
@@ -404,5 +549,49 @@ mod tests {
         for a in 0..3 {
             assert!((back[a] - local[a]).abs() < 1.0e-3, "往復すること: {back:?}");
         }
+    }
+
+    /// 上限に達するまでは追加でき、達したら追加できないこと（D&D 追加のコスト上限保証）。
+    #[test]
+    fn can_push_control_point_respects_limit() {
+        assert!(can_push_control_point(0));
+        assert!(can_push_control_point(MAX_CONTROL_POINTS - 1), "あと 1 個は入る");
+        assert!(!can_push_control_point(MAX_CONTROL_POINTS), "上限ちょうどで打ち止め");
+        assert!(!can_push_control_point(MAX_CONTROL_POINTS + 1), "壊れたデータでも増やさない");
+    }
+
+    /// 着弾点の候補が 2 つあるとき、カメラに近い方が採られること
+    ///（地形の手前にメッシュがあれば地形ではなくメッシュの上に点が乗る）。
+    #[test]
+    fn nearer_hit_picks_closest_to_camera() {
+        let cam  = [0.0, 0.0, 0.0];
+        let near = [0.0, 0.0, 5.0];
+        let far  = [0.0, 0.0, 50.0];
+        assert_eq!(nearer_hit(cam, Some(near), Some(far)), Some(near));
+        // 引数の順序を入れ替えても結果が変わらないこと
+        assert_eq!(nearer_hit(cam, Some(far), Some(near)), Some(near));
+    }
+
+    /// 候補が片方しか無い／両方無い場合の扱い。
+    #[test]
+    fn nearer_hit_handles_missing_candidates() {
+        let cam = [10.0, 20.0, 30.0];
+        let p   = [1.0, 2.0, 3.0];
+        assert_eq!(nearer_hit(cam, Some(p), None), Some(p), "GPU ヒットのみ");
+        assert_eq!(nearer_hit(cam, None, Some(p)), Some(p), "地形ヒットのみ");
+        // 何にも当たらなければ None（＝呼び出し側は点を追加しない）
+        assert_eq!(nearer_hit(cam, None, None), None);
+    }
+
+    /// カメラ位置が原点でなくても、カメラからの距離で比較されること
+    ///（ワールド原点からの距離で比べていたら通らない）。
+    #[test]
+    fn nearer_hit_measures_from_camera_not_origin() {
+        let cam = [100.0, 0.0, 0.0];
+        // ワールド原点には近いが、カメラからは遠い点
+        let near_origin = [0.0, 0.0, 0.0];
+        // ワールド原点からは遠いが、カメラのすぐ手前にある点
+        let near_camera = [95.0, 0.0, 0.0];
+        assert_eq!(nearer_hit(cam, Some(near_origin), Some(near_camera)), Some(near_camera));
     }
 }

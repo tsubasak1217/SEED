@@ -12,7 +12,7 @@
 use crate::engine::components::water_volume_component::{
     WaterVolumeComponent, WaterVolumeKind,
 };
-use super::spline::RiverPath;
+use super::spline::{RiverPath, RIVER_MIN_CONTROL_POINTS};
 
 // ─── WaterVisualParams ───────────────────────────────────────
 
@@ -146,6 +146,32 @@ impl ResolvedWaterVolume {
         actor_pos:    [f32; 3],
         actor_dfs_id: u32,
     ) -> Self {
+        Self::from_component_with_path(c, actor_pos, actor_dfs_id, None)
+    }
+
+    /// `from_component` に「外から差し込むワールド空間の折れ線」を足した版。
+    ///
+    /// `control_polyline` は **同一アクタの `ControlPointComponent` を評価した結果**
+    /// （`PathEval::sample_polyline`）を想定する。`Some` かつ 2 点以上のときは
+    /// `spline_points` を**完全に無視**して、こちらで川を組む。
+    /// 汎用パス（ControlPoint）が付いているなら、それがユーザーの編集した唯一の真実であり、
+    /// 2 つの点列を混ぜると「見えている線と流れる線が違う」状態を再び作ってしまうため。
+    ///
+    /// ## 座標系の注意（二重加算の禁止）
+    /// `control_polyline` は PathEval がアクタ Transform（位置・回転・スケール）を
+    /// 適用済みの**完全なワールド座標**である。したがって `spline_points` 経路のように
+    /// `actor_pos` を足してはならない（足すとアクタ位置が二重に効いて川が飛ぶ）。
+    /// 一方 `surface_height`（川全体の水位オフセット）は
+    /// インスペクタの「水面高さ」が川に効き続けるべきなので、**Y にだけ上乗せする**。
+    ///
+    /// `control_polyline` が `None` または 2 点未満のときは、従来どおり
+    /// `spline_points` から川を組む（フォールバック）。
+    pub fn from_component_with_path(
+        c:                &WaterVolumeComponent,
+        actor_pos:        [f32; 3],
+        actor_dfs_id:     u32,
+        control_polyline: Option<&[[f32; 3]]>,
+    ) -> Self {
         match c.kind {
             // Ocean: XZ 無限。水面 Y は surface_height をワールド絶対値として使う
             //（アクタ位置に依存しない ＝ アクタをどこへ置いても水面は動かない）。
@@ -174,13 +200,24 @@ impl ResolvedWaterVolume {
                 // surface_height（相対水位）を上乗せする
                 //（＝アクタを動かせば川ごと動き、surface_height で川全体の水位を上下できる）。
                 let river = if c.kind == WaterVolumeKind::Spline {
-                    let world: Vec<[f32; 3]> = c.spline_points.iter()
-                        .map(|p| [
-                            actor_pos[0] + p[0],
-                            actor_pos[1] + p[1] + c.surface_height,
-                            actor_pos[2] + p[2],
-                        ])
-                        .collect();
+                    // 折れ線の出どころは 2 通り。ControlPointComponent があればそちらが優先。
+                    let world: Vec<[f32; 3]> = match control_polyline {
+                        // ── ① ControlPoint 経路（優先）──
+                        // すでにワールド座標なのでアクタ位置は足さない（二重加算の禁止）。
+                        // surface_height だけは川全体の水位オフセットとして Y に上乗せする。
+                        Some(poly) if poly.len() >= RIVER_MIN_CONTROL_POINTS => poly.iter()
+                            .map(|p| [p[0], p[1] + c.surface_height, p[2]])
+                            .collect(),
+                        // ── ② spline_points 経路（フォールバック）──
+                        // こちらは**アクタ相対**なので、アクタ位置を足してワールドへ出す。
+                        _ => c.spline_points.iter()
+                            .map(|p| [
+                                actor_pos[0] + p[0],
+                                actor_pos[1] + p[1] + c.surface_height,
+                                actor_pos[2] + p[2],
+                            ])
+                            .collect(),
+                    };
                     // 水中とみなす厚みは川専用の river_depth（負値は 0 に丸める）。
                     RiverPath::build(
                         &world, c.river_width, c.flow_speed, c.river_depth.abs())
@@ -277,6 +314,67 @@ mod tests {
             let r = ResolvedWaterVolume::from_component(&c, [0.0, 0.0, 0.0], 0);
             assert!(r.river.is_none(), "{kind:?} は川を持たない");
         }
+    }
+
+    /// ControlPoint 由来の折れ線があれば spline_points を完全に無視すること（優先度）。
+    #[test]
+    fn control_polyline_overrides_spline_points() {
+        let mut c = WaterVolumeComponent::default();
+        c.kind = WaterVolumeKind::Spline;
+        // spline_points 側は Z = 999（採用されたらすぐ分かる値）
+        c.spline_points = vec![[0.0, 0.0, 999.0], [10.0, 0.0, 999.0]];
+        let poly = [[1.0, 2.0, 3.0], [11.0, 2.0, 3.0]];
+        let r = ResolvedWaterVolume::from_component_with_path(&c, [0.0, 0.0, 0.0], 0, Some(&poly));
+        let river = r.river.as_ref().expect("制御点 2 点で川が成立する");
+        assert_eq!(river.nodes[0].pos, [1.0, 2.0, 3.0], "ControlPoint の折れ線が使われること");
+    }
+
+    /// ControlPoint 経路でも surface_height が Y に上乗せされること
+    ///（インスペクタの「水面高さ」が川に効き続ける契約）。
+    #[test]
+    fn control_polyline_still_applies_surface_height() {
+        let mut c = WaterVolumeComponent::default();
+        c.kind = WaterVolumeKind::Spline;
+        c.surface_height = 5.0;
+        let poly = [[0.0, 1.0, 0.0], [10.0, 1.0, 0.0]];
+        let r = ResolvedWaterVolume::from_component_with_path(&c, [0.0, 0.0, 0.0], 0, Some(&poly));
+        let river = r.river.as_ref().unwrap();
+        assert_eq!(river.nodes[0].pos[1], 6.0, "折れ線の Y + surface_height");
+    }
+
+    /// ControlPoint 経路ではアクタ位置を足さないこと（PathEval が適用済みのため二重加算禁止）。
+    #[test]
+    fn control_polyline_does_not_add_actor_position_twice() {
+        let mut c = WaterVolumeComponent::default();
+        c.kind = WaterVolumeKind::Spline;
+        // 折れ線はすでにワールド座標（アクタ位置 100 を含んでいる）
+        let poly = [[100.0, 0.0, 0.0], [110.0, 0.0, 0.0]];
+        let r = ResolvedWaterVolume::from_component_with_path(&c, [100.0, 0.0, 0.0], 0, Some(&poly));
+        let river = r.river.as_ref().unwrap();
+        assert_eq!(river.nodes[0].pos[0], 100.0, "200 になっていたらアクタ位置の二重加算");
+    }
+
+    /// 折れ線が 2 点未満なら spline_points へフォールバックすること。
+    #[test]
+    fn short_control_polyline_falls_back_to_spline_points() {
+        let mut c = WaterVolumeComponent::default();
+        c.kind = WaterVolumeKind::Spline;
+        c.spline_points = vec![[0.0, 0.0, 7.0], [10.0, 0.0, 7.0]];
+        let poly = [[1.0, 2.0, 3.0]]; // 1 点だけ ＝ 川として成立しない
+        let r = ResolvedWaterVolume::from_component_with_path(&c, [0.0, 0.0, 0.0], 0, Some(&poly));
+        let river = r.river.as_ref().expect("spline_points 側で川が成立する");
+        assert_eq!(river.nodes[0].pos, [0.0, 0.0, 7.0], "spline_points が使われること");
+    }
+
+    /// `from_component` は折れ線なし版へ委譲する薄いラッパであること（既存挙動の不変）。
+    #[test]
+    fn from_component_matches_with_path_none() {
+        let mut c = WaterVolumeComponent::default();
+        c.kind = WaterVolumeKind::Spline;
+        c.spline_points = vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]];
+        let a = ResolvedWaterVolume::from_component(&c, [1.0, 2.0, 3.0], 4);
+        let b = ResolvedWaterVolume::from_component_with_path(&c, [1.0, 2.0, 3.0], 4, None);
+        assert_eq!(a, b);
     }
 
     /// 見た目パラメータはそのままコピーされる。

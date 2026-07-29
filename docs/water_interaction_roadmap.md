@@ -292,8 +292,9 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
   |---|---|
   | スプライン幾何（正典） | `runtime/src/engine/water/spline.rs` の `RiverPath::{build, nearest}` / `catmull_rom` |
   | コンポーネント | `components/water_volume_component.rs` の `spline_points` / `river_width` / `flow_speed` / `river_depth` |
-  | ワールド解決 | `water/resolved.rs` の `ResolvedWaterVolume::river`（**kind = Spline のときだけ Some**） |
-  | 収集 | `water/collect.rs`（制御点 2 点未満の Spline はスキップ） |
+  | ワールド解決 | `water/resolved.rs` の `ResolvedWaterVolume::river`（**kind = Spline のときだけ Some**）。点列の出どころ切替は `from_component_with_path` |
+  | 収集 | `water/collect.rs`（制御点 2 点未満の Spline はスキップ／ControlPointComponent の解決もここ） |
+  | 汎用パス基盤（点列の正典） | `runtime/src/engine/path/eval.rs` の `PathEval` — 詳細は `docs/control_points.md` |
   | 問い合わせ | `water/query.rs` の `flow_at` / `volume_contains` / `volume_surface_at_xz` の Spline 分岐 |
   | GPU パラメータ | `renderer/water/params.rs` の `WaterParams::from_river_segment`（vec4 を 3 本追加＝計 14 本）＋ `WATER_INSTANCE_QUAD/RIVER` / `WATER_MAX_INSTANCES` |
   | インスタンス生成 | `renderer/water/mod.rs` の `WaterRenderer::prepare`（川は 1 分割 = 1 インスタンス） |
@@ -339,16 +340,38 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
 
   | フィールド | 既定 | 意味 |
   |---|---|---|
-  | `spline_points` | 空 | 制御点列（**アクタ相対**）。2 点未満は描画・判定とも無効 |
+  | `spline_points` | 空 | 制御点列（**アクタ相対**）。2 点未満は描画・判定とも無効。**同一アクタに ControlPointComponent があるとそちらが優先され、この値は無視される**（`docs/control_points.md`） |
   | `river_width` | 4.0 | 川幅（m。全幅。リボンは一定幅） |
   | `flow_speed` | 1.5 | 流速（m/s）。`flow_at` の速さ＝模様が流れる速さ。負値で逆流 |
   | `river_depth` | 2.0 | 川の深さ（m）。水面からこの深さまでが水中判定 |
 
+  **W4 追補: ControlPointComponent との統合**（2026-07-29 実装）
+
+  川の形（点列）は、W4 固有の `spline_points` ではなく**汎用のコントロールポイント基盤**へ
+  移した。詳細と使い方は **`docs/control_points.md` が正典**。ここでは水側の接続点だけ記す。
+
+  - 同一アクタに `ControlPointComponent` があり、そのスロットが `enabled` で、
+    折れ線が 2 点以上あるとき、**`spline_points` を完全に無視して**そちらから `RiverPath` を組む。
+    それ以外（コンポーネント無し／スロット無効／点が足りない）は従来の `spline_points` へフォールバックする。
+  - `spline_points` は**削除していない**。ControlPoint を無効化・削除すればいつでも従来経路へ戻る。
+    インスペクタの川セクションには優先関係の注記と「spline_points からコントロールポイントへ移行」
+    ボタンを置いた（点列をコピーして ControlPointComponent を追加する）。
+  - **形だけが移り、川幅・流速・川の深さ・見た目・`surface_height` は WaterVolume 側に残る。**
+    `surface_height` は ControlPoint 経路でも Y に上乗せされるので、点を触らずに川全体の水位を上下できる。
+  - **座標系の落とし穴**: `PathEval::sample_polyline` が返す折れ線は**すでに完全なワールド座標**
+    （アクタの位置だけでなく回転・スケールも適用済み）。`spline_points` 経路のようにアクタ位置を
+    足すと二重加算になる。`ResolvedWaterVolume::from_component_with_path` が両経路の差を吸収し、
+    `water/collect.rs` がアクタの Transform 全体（位置＋回転＋スケール）で `PathEval` を構築する
+    ＝ **W4 の「アクタ位置しか見ない」制限は ControlPoint 経路では解消している**。
+  - 実装: `water/resolved.rs::from_component_with_path`（従来の `from_component` は
+    `control_polyline = None` を渡す薄いラッパへ後退）／ `water/collect.rs::collect_in_actor`。
+
   **W4 の既知の制限**（後続フェーズで解消）
 
-  - **ビューポートの 3D ギズモによる制御点編集は無い**（インスペクタの数値編集＋
-    地形スナップのみ）。ギズモ編集はギズモ系全体（ハンドル・ヒット判定・Undo）へ
-    手を入れる規模になるため W4 のスコープ外とした。
+  - ~~**ビューポートの 3D ギズモによる制御点編集は無い**~~ → **上記 ControlPoint 統合で解消。**
+    点はワイヤキューブとして描かれ、クリックで選択して移動ギズモで動かせる（Undo 対応）。
+    さらに「制御点を追加」ボタンをビューポートへ D&D すると、メッシュ・地形・水面への
+    レイキャスト着弾点に点が置かれる（＝数ドロップで地形に沿った川が引ける）。
   - **波紋（I2）の移流をしていない**。川の中で立った波紋はその場で減衰し、下流へは
     流されない。インタラクションフィールドは水域を知らない単一のカメラ追従窓であり、
     移流項を足すには「どのテクセルがどの川に属し、どちらへ流れるか」を場へ焼く必要がある

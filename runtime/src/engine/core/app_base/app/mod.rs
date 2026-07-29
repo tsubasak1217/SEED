@@ -927,6 +927,16 @@ pub struct App {
     /// pending_drop と同様に IDバッファ座標読み取り後にスポーン位置を確定する。
     /// タプル: (is_2d, world_line, parent_dfs_id, screen_x, screen_y)
     pending_add_actor: Option<(bool, u32, Option<u32>, u32, u32)>,
+    /// ADD_CONTROL_POINT_AT_SCREEN コマンドを受け取ったときに設定する。
+    /// 次フレームの ID パス後に着弾点のワールド座標を解決し、
+    /// アクタ相対へ変換してから制御点を末尾へ追加する。
+    /// タプル: (actor_dfs_id, slot_idx, screen_x, screen_y)
+    ///
+    /// pending_drop と同様に「IPC 受信時点では解決できない」ためのキューである
+    /// （ID バッファの読み戻しは GPU サブミット後のフレーム内でしか行えない）。
+    /// 1 フレームに 1 回しか読み戻せないので、通常ドロップが読み戻しを使ったフレームでは
+    /// 次フレームへ再キューされる。
+    pending_control_point_drop: Option<(u32, u32, u32, u32)>,
 
     // ── プラグインシステム ─────────────────────────────────────────
     /// ロード済みプラグインのレジストリ。
@@ -1292,6 +1302,7 @@ impl App {
             drag_hover_canvas_entity: None,
             context_menu_screen_pos: None,
             pending_add_actor:  None,
+            pending_control_point_drop: None,
             plugin_registry:  crate::engine::plugin::registry::PluginRegistry::empty(),
             physics_thread:   None,
             character_world:  None,

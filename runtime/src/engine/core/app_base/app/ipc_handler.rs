@@ -1182,6 +1182,14 @@ impl App {
                 IpcCommand::SetControlPointPos { actor_dfs_id, slot_idx, index, x, y, z } => {
                     self.handle_set_control_point_pos(actor_dfs_id, slot_idx, index, [x, y, z]);
                 }
+                IpcCommand::SelectControlPoint { actor_dfs_id, slot_idx, index } => {
+                    self.handle_select_control_point(actor_dfs_id, slot_idx, index);
+                }
+                IpcCommand::AddControlPointAtScreen { actor_dfs_id, slot_idx, screen_x, screen_y } => {
+                    // ID バッファの読み戻しはフレーム内（GPU サブミット後）でしか行えないため、
+                    // ここでは解決せずキューに積むだけにする（pending_drop と同じ「次フレームで解決」方式）。
+                    self.pending_control_point_drop = Some((actor_dfs_id, slot_idx, screen_x, screen_y));
+                }
                 IpcCommand::SetInteractionField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_interaction_field(actor_dfs_id, slot_idx, &key, &value);
                 }

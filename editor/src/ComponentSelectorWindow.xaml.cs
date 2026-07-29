@@ -76,6 +76,14 @@ public partial class ComponentSelectorWindow : Window
         {
             new("ParticleEmitterComponent", "Particle Emitter", "GPUパーティクルエミッタ。放出レート・寿命・色・サイズ補間などをデータドリブンに設定", ActorTarget.Actor3D),
         }),
+        // 「ツール」カテゴリ: シーン編集の道具として使う汎用コンポーネント。
+        // ControlPoint は川・巡回ルート・カメラフライスルーなど用途に依存しない
+        // 「順序付き点列」そのものを提供する土台なので、特定用途の「環境」ではなく
+        // 用途中立の「ツール」に置く（将来の同種コンポーネントもここへ集める）。
+        ("ツール", new()
+        {
+            new("ControlPointComponent", "Control Point", "シーン上に順序付きの点列を置く汎用パス。川・巡回ルート・カメラパスなどの共通土台", ActorTarget.Actor3D),
+        }),
         ("カメラ", new()
         {
             new("CameraComponent", "Camera", "Play モードで使用するゲームカメラ", ActorTarget.Actor3D),
@@ -331,6 +339,7 @@ public partial class ComponentSelectorWindow : Window
         "ParticleEmitterComponent" => "ParticleEmitter",
         "WaterVolumeComponent"     => "Water",
         "InteractionSourceComponent" => "Interaction",
+        "ControlPointComponent"      => "ControlPoint",
         // Plugin:{name} → プラグイン名をデフォルト名とする
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                    => typeId,
