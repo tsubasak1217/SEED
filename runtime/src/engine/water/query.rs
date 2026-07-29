@@ -264,7 +264,10 @@ mod tests {
             ocean_extent: 0.0,
             visual: dummy_visual(),
             actor_dfs_id: 0,
-            river: crate::engine::water::RiverPath::build(points, width, flow_speed, depth),
+            // 分割長は既定（2m 刻み）。問い合わせの検証に分割密度は本質的でない。
+            river: crate::engine::water::RiverPath::build(
+                points, width, flow_speed, depth,
+                crate::engine::water::spline::RIVER_SAMPLE_STEP_M),
         }
     }
 

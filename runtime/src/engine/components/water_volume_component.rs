@@ -110,6 +110,11 @@ fn default_river_width() -> f32 { 4.0 }
 fn default_flow_speed() -> f32 { 1.5 }
 /// river_depth の既定値（川の深さ m。水面からこの深さまでが「川の中」）。
 fn default_river_depth() -> f32 { 2.0 }
+/// river_segment_length の既定値（曲線長 何 m ごとに 1 分割するか）。
+///
+/// 従来の固定値（`RIVER_SAMPLE_STEP_M`）と同じ 2.0 にしてあるので、
+/// 旧 .scene を読み込んでも川の形は 1 頂点も変わらない。
+fn default_river_segment_length() -> f32 { 2.0 }
 
 // ─── WaterVolumeKind ─────────────────────────────────────────
 
@@ -259,6 +264,35 @@ pub struct WaterVolumeComponentData {
     /// インスペクタに出ない値が挙動を決める“隠れた結合”になる）。
     #[serde(default = "default_river_depth")]
     pub river_depth: f32,
+    /// 川の折れ線 1 分割ぶんの目標長（m。Phase W4.1）。小さいほど川が滑らかになる。
+    ///
+    /// 分割数は「曲線長 / この値」で決まる。下限は
+    /// `RIVER_SEGMENT_LENGTH_MIN`（0 や極小値で分割数が発散するのを防ぐ）。
+    /// 総分割数の上限 `RIVER_MAX_SEGMENTS` は据え置きなので、
+    /// **長い川ではこの値を小さくしても上限で頭打ちになり、自動的に粗くなる**。
+    #[serde(default = "default_river_segment_length")]
+    pub river_segment_length: f32,
+    /// 川の制御点を借りてくる**参照先アクタ名**（Phase W4.1）。
+    ///
+    /// 空文字列 = 参照なし。このとき川は従来どおり `spline_points` から組まれる。
+    /// 非空なら、その名前のアクタが持つ **0 番目の `ControlPointComponent`** を
+    /// 川の点列として使い、`spline_points` は完全に無視する
+    /// （点列の出どころが 2 つ同時に効くと「見えている線と流れる線が違う」ため）。
+    ///
+    /// ## なぜ「同一アクタの自動優先」をやめたのか
+    /// 以前は同じアクタに ControlPoint があれば黙って優先していたが、
+    /// 「どちらが効いているのか」がユーザーから見えず、コンポーネントを付けただけで
+    /// 川の形が変わる挙動になっていた。参照を明示させれば結線が UI に出る。
+    ///
+    /// ## 参照先は別アクタでもよい
+    /// 別アクタを指した場合、点列のワールド解決には**参照先アクタの Transform**を使う
+    /// （＝制御点を持つアクタを動かすと川が動く。水アクタを動かしても川は動かない）。
+    ///
+    /// ## 同名アクタ・複数スロット
+    /// 同名アクタが複数ある場合は DFS で最初に見つかったもの、
+    /// 1 アクタに ControlPoint スロットが複数ある場合は 0 番目を使う。
+    #[serde(default)]
+    pub control_point_ref: String,
 }
 
 impl Default for WaterVolumeComponentData {
@@ -293,6 +327,9 @@ impl Default for WaterVolumeComponentData {
             river_width:           default_river_width(),
             flow_speed:            default_flow_speed(),
             river_depth:           default_river_depth(),
+            river_segment_length:  default_river_segment_length(),
+            // 参照は既定で空（＝spline_points 経路。既存シーンの挙動そのまま）。
+            control_point_ref:     String::new(),
         }
     }
 }
@@ -362,6 +399,10 @@ pub struct WaterVolumeComponent {
     pub flow_speed: f32,
     /// 川の深さ（m。Phase W4）
     pub river_depth: f32,
+    /// 川の折れ線 1 分割ぶんの目標長（m。Phase W4.1）
+    pub river_segment_length: f32,
+    /// 川の制御点を借りる参照先アクタ名（空 = spline_points を使う。Phase W4.1）
+    pub control_point_ref: String,
 }
 
 impl WaterVolumeComponent {
@@ -396,6 +437,8 @@ impl WaterVolumeComponent {
             river_width:           data.river_width,
             flow_speed:            data.flow_speed,
             river_depth:           data.river_depth,
+            river_segment_length:  data.river_segment_length,
+            control_point_ref:     data.control_point_ref,
         }
     }
 
@@ -431,6 +474,9 @@ impl WaterVolumeComponent {
             river_width:           self.river_width,
             flow_speed:            self.flow_speed,
             river_depth:           self.river_depth,
+            river_segment_length:  self.river_segment_length,
+            // 参照名も所有権を渡せない（&self 受け）ため複製する。
+            control_point_ref:     self.control_point_ref.clone(),
         }
     }
 }
@@ -498,6 +544,11 @@ mod tests {
         assert_eq!(d.river_width, def.river_width);
         assert_eq!(d.flow_speed, def.flow_speed);
         assert_eq!(d.river_depth, def.river_depth);
+        // W4.1: 分割長は従来固定値と同じ 2.0、参照は空（＝旧 .scene の見た目が変わらない）
+        assert_eq!(d.river_segment_length, def.river_segment_length);
+        assert_eq!(d.river_segment_length, 2.0, "旧シーンの川の形が変わらない既定値であること");
+        assert_eq!(d.control_point_ref, def.control_point_ref);
+        assert!(d.control_point_ref.is_empty(), "参照は既定で未設定");
     }
 
     /// kind は文字列としてシリアライズされること（C# 側の期待に合わせる）。
@@ -539,6 +590,8 @@ mod tests {
             river_width: 6.5,
             flow_speed: 2.25,
             river_depth: 1.75,
+            river_segment_length: 0.75,
+            control_point_ref: "RiverPathActor".to_string(),
         };
         let back = WaterVolumeComponent::from_data(src.clone()).to_data();
         assert_eq!(back.kind, src.kind);
@@ -569,5 +622,7 @@ mod tests {
         assert_eq!(back.river_width, src.river_width);
         assert_eq!(back.flow_speed, src.flow_speed);
         assert_eq!(back.river_depth, src.river_depth);
+        assert_eq!(back.river_segment_length, src.river_segment_length);
+        assert_eq!(back.control_point_ref, src.control_point_ref);
     }
 }

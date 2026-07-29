@@ -96,6 +96,14 @@ public partial class InspectorPanel : UserControl
     /// </summary>
     private int _pendingSplineMigrationActorId = -1;
 
+    /// <summary>
+    /// 上記移行の要求元 WaterVolumeComponent スロット添字。
+    /// 移行完了時に、その水スロットの <c>control_point_ref</c> へ
+    /// 「このアクタ自身の名前」を書き込んで結線を完成させる（W4.1）。
+    /// 未保留なら -1。
+    /// </summary>
+    private int _pendingSplineMigrationWaterSlotIdx = -1;
+
     // ── Script state ─────────────────────────────────────────
     private readonly Dictionary<string, Type> _scriptTypeCache = new();
     private string _lastComponentsJson = "";
@@ -561,6 +569,18 @@ public partial class InspectorPanel : UserControl
     /// <summary>制御点が 1 個のときに「制御点を追加」した際、直前点から Z 方向へずらす距離の既定値（m）。</summary>
     private const float WaterSplineNewPointOffsetDefault = 2.0f;
 
+    // ── 川の分割数・制御点参照（W4.1）─────────────────────────
+    // Rust 側 WaterVolumeComponentData / spline.rs の定数と一致させること。
+
+    /// <summary>川の折れ線 1 分割ぶんの目標長の既定値（m）。Rust 側 default_river_segment_length と一致。</summary>
+    private const float WaterRiverSegmentLengthDefault = 2.0f;
+    /// <summary>川の分割長の下限（m）。Rust 側 RIVER_SEGMENT_LENGTH_MIN と一致させること。</summary>
+    private const float WaterRiverSegmentLengthMin = 0.25f;
+    /// <summary>川の総分割数の上限。Rust 側 RIVER_MAX_SEGMENTS と一致（案内文で使う）。</summary>
+    private const int WaterRiverMaxSegments = 256;
+    /// <summary>制御点参照が未設定のときにドロップゾーンへ出す文言。</summary>
+    private const string WaterControlPointRefUnsetText = "（未設定：spline_points を使用）";
+
     // ── InteractionSourceComponent の既定値（Phase I1）────────
     // Rust 側 InteractionSourceComponentData の既定値と厳密に一致させること。
 
@@ -766,6 +786,9 @@ public partial class InspectorPanel : UserControl
         float WaterFlowSpeed = WaterFlowSpeedDefault,
         float WaterRiverDepth = WaterRiverDepthDefault,
         string WaterSplinePoints = "",
+        // 川（W4.1）: 折れ線 1 分割ぶんの目標長（m）と、制御点を借りる参照先アクタ名（空 = 参照なし）
+        float WaterRiverSegmentLength = WaterRiverSegmentLengthDefault,
+        string WaterControlPointRef = "",
         // ── InteractionSourceComponent 用フィールド（Phase I1）──
         // 影響半径・強さ・有効フラグ。既定値は Rust 側 InteractionSourceComponentData と一致。
         float InteractionRadius = InteractionRadiusDefault,
@@ -783,12 +806,11 @@ public partial class InspectorPanel : UserControl
     private readonly Dictionary<int, bool> _slotEnabledMap = new();
 
     /// <summary>
-    /// 現在表示中のアクタが ControlPointComponent を持つかどうか。
-    /// BuildActorComponentList 内で components 配列全体を先読みして確定させる
-    /// （WaterVolumeComponent スロットの UI 構築は同じループの中で ControlPointComponent より
-    /// 先に走ることがあり、_slotInfos の逐次追加を見るだけでは判定タイミングに取りこぼしが出るため）。
+    /// 現在表示中のアクタの名前（ACTOR_COMPONENTS の "name"）。
+    /// 川の制御点参照（<c>control_point_ref</c>）は**アクタ名**で持つため、
+    /// 「このアクタに制御点を作って参照に設定」ボタンが自分自身の名前を書き込むのに使う。
     /// </summary>
-    private bool _currentActorHasControlPoint;
+    private string _currentActorName = "";
 
     /// <summary>
     /// ParticleEmitterComponent のカーブ行 Expander（速度/回転速度/スケール/色カーブ各要素）の
@@ -821,6 +843,9 @@ public partial class InspectorPanel : UserControl
 
         var name = root.TryGetProperty("name", out var np) ? np.GetString() ?? "" : "";
         ActorNameBlock.Text = string.IsNullOrEmpty(name) ? $"Actor #{_currentActorId}" : name;
+        // 川の制御点参照（W4.1）はアクタ「名」で持つため、表示中アクタの名前を控えておく
+        //（「このアクタに制御点を作って参照に設定」ボタンが自分自身の名前を書き込む）。
+        _currentActorName = name;
 
         // アクターのアクティブチェックボックス（Unity の SetActive 相当）を同期する。
         // イベント再帰（Checked → 送信 → 再受信 → Checked...）は抑止フラグで防ぐ。
@@ -955,11 +980,10 @@ public partial class InspectorPanel : UserControl
         var prevSlot = _selectedSlotIdx;
         _selectedSlotIdx = -1;
 
-        // ControlPointComponent の有無を components 配列全体から先に確定させる。
-        // WaterVolumeComponent の UI（川セクション）はこの値を見て、旧 spline_points 編集 UI を
-        // 隠すか出すかを決めるため、ループ内で該当スロットへ到達する前に必要となる。
-        _currentActorHasControlPoint = comps.EnumerateArray().Any(c =>
-            c.TryGetProperty("type", out var ctype) && ctype.GetString() == "ControlPointComponent");
+        // ※ W4.1 以前はここで「同一アクタに ControlPointComponent があるか」を先読みし、
+        //    川セクションの旧 spline_points UI を隠す判定に使っていた。制御点の参照は
+        //    control_point_ref による明示指定へ変わったため、その先読みは廃止した
+        //    （UI の出し分けは「参照が設定されているか」だけを見る）。
 
         foreach (var comp in comps.EnumerateArray())
         {
@@ -1188,6 +1212,9 @@ public partial class InspectorPanel : UserControl
             var waterFlowSpeed    = comp.TryGetProperty("flow_speed",    out var wflw) ? wflw.GetSingle() : WaterFlowSpeedDefault;
             var waterRiverDepth   = comp.TryGetProperty("river_depth",   out var wrdp) ? wrdp.GetSingle() : WaterRiverDepthDefault;
             var waterSplinePoints = comp.TryGetProperty("spline_points", out var wspl) ? wspl.GetString() ?? "" : "";
+            // 川（W4.1）: 分割長と制御点参照。どちらも旧ランタイム／旧シーンでは欠落しうるので既定値へ落とす。
+            var waterRiverSegLen  = comp.TryGetProperty("river_segment_length", out var wrsl) ? wrsl.GetSingle() : WaterRiverSegmentLengthDefault;
+            var waterCpRef        = comp.TryGetProperty("control_point_ref",    out var wcpr) ? wcpr.GetString() ?? "" : "";
             // InteractionSourceComponent 用（Phase I1）: 半径・強さ・有効フラグ。
             // 欠落時は Rust 側既定値と一致する定数へフォールバックする。
             var interactRadius   = comp.TryGetProperty("radius",   out var isr) ? isr.GetSingle()  : InteractionRadiusDefault;
@@ -1286,6 +1313,8 @@ public partial class InspectorPanel : UserControl
                 WaterRiverWidth: waterRiverWidth, WaterFlowSpeed: waterFlowSpeed,
                 WaterRiverDepth: waterRiverDepth,
                 WaterSplinePoints: waterSplinePoints,
+                WaterRiverSegmentLength: waterRiverSegLen,
+                WaterControlPointRef: waterCpRef,
                 // InteractionSourceComponent 用フィールド
                 InteractionRadius: interactRadius, InteractionStrength: interactStrength,
                 InteractionEnabled: interactEnabled,
@@ -1325,7 +1354,8 @@ public partial class InspectorPanel : UserControl
         }
 
         // 川の spline_points からの移行待ち: ADD_COMPONENT の結果として現れた
-        // ControlPointComponent スロットを見つけ、保留中の点列を変換して流し込む。
+        // ControlPointComponent スロットを見つけ、保留中の点列を変換して流し込み、
+        // 最後に水スロットの control_point_ref へ自分自身のアクタ名を書いて結線する（W4.1）。
         if (_pendingSplineMigrationPoints is { Count: > 0 } migrationPoints)
         {
             if (_pendingSplineMigrationActorId != _currentActorId)
@@ -1333,8 +1363,9 @@ public partial class InspectorPanel : UserControl
                 // 保留中に別アクタへ選択が移った ＝ この ACTOR_COMPONENTS は移行対象ではない。
                 // 待ち続けても対象アクタへ戻ってくる保証が無いため、保留を破棄する
                 //（無関係なアクタの ControlPoint を上書きする事故を防ぐ）。
-                _pendingSplineMigrationPoints  = null;
-                _pendingSplineMigrationActorId = -1;
+                _pendingSplineMigrationPoints        = null;
+                _pendingSplineMigrationActorId       = -1;
+                _pendingSplineMigrationWaterSlotIdx  = -1;
             }
             // **今回新しく現れた** ControlPointComponent スロットだけを対象にする。
             // 単に「型が一致する最初のスロット」を選ぶと、押下前から ControlPoint が
@@ -1344,9 +1375,11 @@ public partial class InspectorPanel : UserControl
                          s => s.TypeId == "ControlPointComponent" && !prevSlotIdxSet.Contains(s.SlotIdx))
                      is { } cpSlot)
             {
-                _pendingSplineMigrationPoints  = null;
-                _pendingSplineMigrationActorId = -1;
-                // spline_points はアクタ相対 XYZ のみを持つため、回転 = 0、
+                var waterSlotIdx = _pendingSplineMigrationWaterSlotIdx;
+                _pendingSplineMigrationPoints       = null;
+                _pendingSplineMigrationActorId      = -1;
+                _pendingSplineMigrationWaterSlotIdx = -1;
+                // spline_points はアクタ相対 XYZ のみを持つため、回転 = 0、スケール = 1、
                 // time = 0,1,2,... の連番、補間 = 既定（CatmullRom）で埋める。
                 var converted = migrationPoints
                     .Select((p, i) => new ControlPointEntry
@@ -1358,6 +1391,14 @@ public partial class InspectorPanel : UserControl
                     .ToList();
                 _runtime?.SendToRuntime(
                     $"SET_CONTROL_POINTS:{_currentActorId},{cpSlot.SlotIdx},{SerializeControlPoints(converted)}");
+                // 参照を張って初めて川が制御点を見る（W4.1 の明示参照方式）。
+                // アクタ名が空だと解決できないので、その場合は参照を設定しない
+                //（ユーザーがアクタ名を付けてから D&D で結線できる）。
+                if (waterSlotIdx >= 0 && !string.IsNullOrEmpty(_currentActorName))
+                {
+                    _runtime?.SendToRuntime(
+                        $"SET_WATER_FIELD:{_currentActorId},{waterSlotIdx},control_point_ref,{_currentActorName}");
+                }
             }
         }
     }
@@ -4784,6 +4825,26 @@ public partial class InspectorPanel : UserControl
     }
 
     /// <summary>
+    /// ドラッグデータから「アクタ名」を取り出す（取れなければ null）。
+    ///
+    /// HierarchyPanel は単一アクタのドラッグ時に DFS ID（"HierarchyActorDfsId"）と
+    /// 名前リスト（"HierarchyActorNames"）の両方を積んでいる。
+    /// 川の制御点参照は**名前**で持つので、名前が直接取れるこちらを使う
+    /// （SerializeField 参照のように GET_ACTOR_COMPONENTS の往復を挟まずに済み、
+    ///  ドロップした瞬間に UI が確定する）。
+    ///
+    /// 複数アクタのドラッグ（名前が 2 件以上）は曖昧なので受け付けない。
+    /// </summary>
+    private static string? TryGetDraggedActorName(DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent("HierarchyActorNames")) return null;
+        if (e.Data.GetData("HierarchyActorNames") is not List<string> names) return null;
+        if (names.Count != 1) return null;
+        var name = names[0];
+        return string.IsNullOrWhiteSpace(name) ? null : name;
+    }
+
+    /// <summary>
     /// WaterVolumeComponent のインスペクター UI を構築して返す。
     /// 「領域」「色と透明度」「岸のフォーム」「波」「反射・屈折」の 5 セクションで構成し、
     /// 変更時は SET_WATER_FIELD:{actor},{slot},{key},{value} を送信する。
@@ -4967,67 +5028,176 @@ public partial class InspectorPanel : UserControl
         AddFloatRow(reflectSp, "屈折の歪み", info.WaterRefractionDistortion, "refraction_distortion", "F3");
         sp.Children.Add(reflectSection);
 
-        // ── 川（スプライン）セクション（W4）─────────────────────
-        // kind == "Spline" のときのみ表示する。川幅・流速など水の実効パラメータに加え、
-        // 制御点（アクタ相対座標）の追加/編集/削除と地形スナップを提供する……のは
-        // ControlPointComponent 未追加のときだけ。
+        // ── 川（スプライン）セクション（W4 / 参照方式は W4.1）───────
+        // kind == "Spline" のときのみ表示する。川幅・流速・分割長といった実効パラメータに加え、
+        // 「制御点をどこから取るか」を決める**制御点参照**（control_point_ref）を提供する。
         //
-        // 制御点の編集経路は 2 つある: このセクションの spline_points（旧・クリック専用）と、
-        // 「制御点」セクションの ControlPointComponent（D&D 配置対応・推奨、BuildControlPointSlotContent）。
-        // ランタイムは ControlPointComponent があればそちらを優先して使うため、両方の
-        // 「＋ 制御点を追加」ボタンが並んで見えるとどちらを使うべきかユーザーが取り違える
-        // （実際に発生した混乱）。そのため同一アクタに ControlPointComponent が存在する場合は
-        // この spline_points 編集 UI（点リスト・追加ボタン・地形スナップ・移行ボタン）を丸ごと隠し、
-        // 案内テキスト 1 行だけ出す。判定は _currentActorHasControlPoint
-        // （BuildActorComponentList が components 配列全体から先読みして確定済み）を使う。
+        // 制御点の出どころは 2 通りで、**参照が設定されているかどうかだけ**で決まる:
+        //   ・参照あり → 参照先アクタの ControlPointComponent（D&D 配置対応・推奨）
+        //   ・参照なし → このセクションの spline_points（旧・リスト直接編集）
+        // W4.1 以前は「同一アクタに ControlPointComponent があれば自動優先」だったが、
+        // どちらが効いているか UI から判別できず混乱を生んだため廃止した。
+        // 参照が設定されている間は spline_points 編集 UI を丸ごと隠し、案内だけを出す
+        //（両方の「＋ 制御点を追加」が並んで見える取り違えを防ぐ）。
         var riverSection = BuildSection("川（スプライン）");
         var riverSp      = (StackPanel)riverSection.Child;
 
         // 制御点リスト本体（"x,y,z;x,y,z;..." を都度パースして保持し、編集のたびにリスト全体を送信する）。
-        // ControlPointComponent 優先時は UI に出さないが、移行ボタンの活性判定・スナップショットに
+        // 参照設定時は UI に出さないが、移行ボタンの活性判定・スナップショットに
         // 必要なため分岐に関わらずここでパースしておく。
         var controlPoints = ParseSplinePoints(info.WaterSplinePoints);
 
-        if (_currentActorHasControlPoint)
+        // ── 制御点参照（W4.1）─────────────────────────────────
+        // 現在の参照値。D&D／クリアで書き換わるのでローカルに保持する
+        //（SerializeField の参照 UI と同じ流儀。再構築を待たずに表示が追従する）。
+        var cpRef = info.WaterControlPointRef ?? "";
+
+        var refLabel = new TextBlock
         {
-            // ControlPointComponent が既にあるため、旧 spline_points 編集 UI は完全に隠す。
-            riverSp.Children.Add(MakeHint(
-                "制御点は上の「制御点」セクションで編集します（コントロールポイント優先で使用中）。"));
+            FontSize          = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming      = TextTrimming.CharacterEllipsis,
+        };
+        var refDropZone = new Border
+        {
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x77, 0x99)),
+            BorderThickness = new Thickness(1),
+            Background      = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
+            CornerRadius    = new CornerRadius(3),
+            Padding         = new Thickness(6, 3, 6, 3),
+            AllowDrop       = true,
+            Child           = refLabel,
+            Cursor          = Cursors.Hand,
+            ToolTip         = "Hierarchy からアクタをドロップして、その ControlPointComponent を川の制御点にする\n"
+                            + "（ダブルクリックで Hierarchy の参照先アクタへジャンプ）\n"
+                            + "未設定のあいだは spline_points が使われます。",
+        };
+        // 参照先アクタ名の行（ドロップゾーン＝伸縮 / 解除ボタン＝固定幅）
+        var refClearBtn = new Button
+        {
+            Content         = "✕",
+            FontSize        = 10,
+            Width           = 22,
+            Foreground      = new SolidColorBrush(Color.FromRgb(0xAA, 0x55, 0x55)),
+            Background      = new SolidColorBrush(Color.FromRgb(0x22, 0x22, 0x22)),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x44, 0x22, 0x22)),
+            BorderThickness = new Thickness(1),
+            Margin          = new Thickness(3, 0, 0, 0),
+            ToolTip         = "参照を解除する（spline_points に戻る）",
+        };
+        var refGrid = new Grid { Margin = new Thickness(0, 4, 0, 2) };
+        refGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        refGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        refGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var refCaption = new TextBlock
+        {
+            Text = "制御点の参照", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(refCaption, 0);
+        Grid.SetColumn(refDropZone, 1);
+        Grid.SetColumn(refClearBtn, 2);
+        refGrid.Children.Add(refCaption);
+        refGrid.Children.Add(refDropZone);
+        refGrid.Children.Add(refClearBtn);
+        riverSp.Children.Add(refGrid);
+
+        // 参照が設定されているときにだけ出す案内（spline_points UI の代わり）。
+        var refActiveHint = MakeHint(
+            "制御点は参照先アクタの ControlPointComponent で編集します（spline_points は使用されません）。");
+        riverSp.Children.Add(refActiveHint);
+
+        // 参照設定時に隠す旧 spline_points 編集 UI 一式の入れ物。
+        // 個々の要素ではなくこのパネル 1 つの可視性だけを切り替える。
+        var legacySplinePanel = new StackPanel();
+
+        // ダブルクリックで Hierarchy の参照先アクタへジャンプする
+        //（参照は張り替わるので、現在値から都度読む）。
+        ActorRefJump.AttachDoubleClickReveal(
+            refDropZone, () => string.IsNullOrEmpty(cpRef) ? null : cpRef);
+
+        // 参照の有無で「ラベル表示」「旧 UI の可視性」「案内の可視性」をまとめて更新する。
+        void UpdateControlPointRefUi()
+        {
+            bool hasRef = !string.IsNullOrEmpty(cpRef);
+            refLabel.Text       = hasRef ? cpRef : WaterControlPointRefUnsetText;
+            refLabel.Foreground = new SolidColorBrush(hasRef
+                ? Color.FromRgb(0xCC, 0xCC, 0xCC)
+                : Color.FromRgb(0x77, 0x77, 0x77));
+            refClearBtn.IsEnabled     = hasRef;
+            refActiveHint.Visibility  = hasRef ? Visibility.Visible : Visibility.Collapsed;
+            legacySplinePanel.Visibility = hasRef ? Visibility.Collapsed : Visibility.Visible;
         }
-        else
+
+        // 参照を張り替えてランタイムへ送る（空文字列 = 参照解除）。
+        void SetControlPointRef(string actorName)
         {
-            // ── spline_points → ControlPointComponent への移行ボタン ──────
+            cpRef = actorName ?? "";
+            SendField("control_point_ref", cpRef);
+            UpdateControlPointRefUi();
+        }
+
+        // D&D: HierarchyPanel は DoDragDrop を Move|Copy で呼ぶため、Move を返さないと
+        // Effects の AND が None になりドロップが成立しない（VP ref / SerializeField と同じ理由）。
+        refDropZone.DragOver += (_, e) =>
+        {
+            e.Effects = TryGetDraggedActorName(e) is not null
+                ? DragDropEffects.Move : DragDropEffects.None;
+            e.Handled = true;
+        };
+        refDropZone.Drop += (_, e) =>
+        {
+            if (_currentActorId < 0) return;
+            var droppedName = TryGetDraggedActorName(e);
+            if (string.IsNullOrEmpty(droppedName)) return;
+            SetControlPointRef(droppedName);
+            e.Handled = true;
+        };
+        refClearBtn.Click += (_, _) => SetControlPointRef("");
+
+        AddFloatRow(riverSp, "川幅(m)",     info.WaterRiverWidth, "river_width", "F2");
+        AddFloatRow(riverSp, "流速(m/s)",   info.WaterFlowSpeed,  "flow_speed",  "F2");
+        AddFloatRow(riverSp, "川の深さ(m)", info.WaterRiverDepth, "river_depth", "F2");
+        // 分割長（W4.1）: 小さいほど滑らかになるが、総分割数の上限があるので長い川では効かなくなる。
+        AddFloatRow(riverSp, "分割長(m)",   info.WaterRiverSegmentLength, "river_segment_length", "F2");
+        riverSp.Children.Add(MakeHint(
+            $"分割長は曲線長 何 m ごとに 1 分割するか（下限 {WaterRiverSegmentLengthMin:0.##}m）。"
+            + $"総分割数の上限は {WaterRiverMaxSegments} のため、長い川では設定より粗くなります。"));
+
+        riverSp.Children.Add(legacySplinePanel);
+
+        {
+            // ── このアクタに制御点を作って参照に設定するボタン（W4.1）──────
             // ① ADD_COMPONENT で ControlPoint を足し、② その結果として返ってくる ACTOR_COMPONENTS で
-            // 現れた新スロットへ、現在の spline_points を変換して SET_CONTROL_POINTS で流し込む。
-            // ② の待ち合わせは _pendingDuplicateRename と同じ「保留 + 次回 BuildActorComponentList で処理」方式。
-            // spline_points 自体は削除しない（ControlPoint を外したときのフォールバックとして残置する）。
-            // 移行を促したいので、ユーザーがまず目にするセクション先頭に置く。
+            // 現れた新スロットへ現在の spline_points を変換して SET_CONTROL_POINTS で流し込み、
+            // ③ 続けて control_point_ref に**このアクタ自身の名前**を書いて結線する。
+            // ② ③ の待ち合わせは _pendingDuplicateRename と同じ「保留 + 次回 BuildActorComponentList で処理」方式。
+            // spline_points 自体は削除しない（参照を外したときのフォールバックとして残置する）。
+            // 移行を促したいので、ユーザーがまず目にする位置に置く。
             var migrateBtn = new Button
             {
-                Content = "spline_points からコントロールポイントへ移行",
+                Content = "このアクタに制御点を作って参照に設定",
                 FontSize = 11, Height = 22, Padding = new Thickness(6, 0, 6, 0),
                 HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 2),
-                // 制御点が 0 個なら移すものが無いので押せない。
-                IsEnabled = controlPoints.Count > 0,
+                ToolTip = "ControlPointComponent を追加し、現在の spline_points を移して、"
+                        + "この水ボリュームの制御点参照に設定します。",
             };
             migrateBtn.Click += (_, _) =>
             {
                 if (_currentActorId < 0 || controlPoints.Count == 0) return;
                 // 押下時点のスナップショットを保留に置き、コンポーネント追加を要求する。
-                _pendingSplineMigrationPoints  = new List<(float x, float y, float z)>(controlPoints);
-                _pendingSplineMigrationActorId = _currentActorId;
+                _pendingSplineMigrationPoints       = new List<(float x, float y, float z)>(controlPoints);
+                _pendingSplineMigrationActorId      = _currentActorId;
+                _pendingSplineMigrationWaterSlotIdx = info.SlotIdx;
                 _runtime?.SendToRuntime($"ADD_COMPONENT:{_currentActorId},ControlPointComponent,ControlPoint,");
             };
-            riverSp.Children.Add(migrateBtn);
-            riverSp.Children.Add(MakeHint(
-                "移行後も spline_points は残ります（ControlPoint を外したときのフォールバック）。"));
+            // 制御点が 0 個なら移すものが無いので押せない。
+            migrateBtn.IsEnabled = controlPoints.Count > 0;
+            legacySplinePanel.Children.Add(migrateBtn);
+            legacySplinePanel.Children.Add(MakeHint(
+                "移行後も spline_points は残ります（参照を外したときのフォールバック）。"));
         }
 
-        AddFloatRow(riverSp, "川幅(m)",     info.WaterRiverWidth, "river_width", "F2");
-        AddFloatRow(riverSp, "流速(m/s)",   info.WaterFlowSpeed,  "flow_speed",  "F2");
-        AddFloatRow(riverSp, "川の深さ(m)", info.WaterRiverDepth, "river_depth", "F2");
-
-        if (!_currentActorHasControlPoint)
         {
             var pointsPanel = new StackPanel { Margin = new Thickness(0, 2, 0, 2) };
             var pointsHint  = MakeHint($"制御点が{WaterSplineMinPointsForRender}点以上必要です（川は描画されません）");
@@ -5091,7 +5261,7 @@ public partial class InspectorPanel : UserControl
                 }
             }
             RebuildPoints();
-            riverSp.Children.Add(pointsPanel);
+            legacySplinePanel.Children.Add(pointsPanel);
 
             // 「制御点を追加（リストに）」ボタン。末尾に新しい制御点を挿入する初期位置は次の規則で決める:
             // ・2点以上: 最後の点 + (最後の点 − 直前の点) の外挿位置（線の延長上）
@@ -5127,8 +5297,8 @@ public partial class InspectorPanel : UserControl
                 RebuildPoints();
                 UpdatePointsHint();
             };
-            riverSp.Children.Add(addPointBtn);
-            riverSp.Children.Add(pointsHint);
+            legacySplinePanel.Children.Add(addPointBtn);
+            legacySplinePanel.Children.Add(pointsHint);
             UpdatePointsHint();
 
             // 「制御点を地形へスナップ」ボタン。オフセット Y はボタンの隣に置き、押下時にのみ値を読む
@@ -5165,8 +5335,11 @@ public partial class InspectorPanel : UserControl
                     ? v : WaterSplineSnapOffsetYDefault;
                 SendField("spline_snap_terrain", offsetY.ToString(CultureInfo.InvariantCulture));
             };
-            riverSp.Children.Add(snapRow);
+            legacySplinePanel.Children.Add(snapRow);
         }
+
+        // 参照の有無に応じた初期表示（旧 spline_points UI の可視性もここで決まる）。
+        UpdateControlPointRefUi();
 
         sp.Children.Add(riverSection);
 
@@ -5206,8 +5379,14 @@ public partial class InspectorPanel : UserControl
     {
         /// <summary>位置（アクタ相対 XYZ）。</summary>
         public float X, Y, Z;
-        /// <summary>回転（オイラー角 XYZ）。UI には出さないが JSON の往復では必ず保持する。</summary>
+        /// <summary>回転（オイラー角 XYZ・度）。</summary>
         public float RX, RY, RZ;
+        /// <summary>
+        /// 拡縮（XYZ 倍率）。既定は等倍。
+        /// **0 で初期化してはいけない**（Rust 側の既定は 1 で、0 だとビューポートの
+        /// キューブが潰れて掴めなくなる）。
+        /// </summary>
+        public float SX = 1f, SY = 1f, SZ = 1f;
         /// <summary>この点に到達する時刻（秒相当。カメラパス等で使用）。</summary>
         public float Time;
         /// <summary>次の点までの補間方式（"Linear" / "CatmullRom" / "Step"）。</summary>
@@ -5254,6 +5433,14 @@ public partial class InspectorPanel : UserControl
                     var r = ReadVec3(rot);
                     e.RX = r.x; e.RY = r.y; e.RZ = r.z;
                 }
+                // scale は「キーが在るときだけ」読む。旧データ（scale 無し）で
+                // ReadVec3 の 0 埋めを採ると等倍が 0 倍になってしまうため、
+                // 既定値（1,1,1）はフィールド初期値のまま残す。
+                if (el.TryGetProperty("scale", out var scl) && scl.ValueKind == JsonValueKind.Array)
+                {
+                    var s = ReadVec3(scl);
+                    e.SX = s.x; e.SY = s.y; e.SZ = s.z;
+                }
                 if (el.TryGetProperty("time", out var t) && t.ValueKind == JsonValueKind.Number)
                     e.Time = t.GetSingle();
                 if (el.TryGetProperty("interp", out var ip) && ip.ValueKind == JsonValueKind.String)
@@ -5270,14 +5457,14 @@ public partial class InspectorPanel : UserControl
 
     /// <summary>
     /// 編集用モデルを SET_CONTROL_POINTS で送る JSON 配列文字列へ直列化する。
-    /// position / rotation / time / interp を必ず全部書き出す
+    /// position / rotation / scale / time / interp を必ず全部書き出す
     /// （欠けると Rust 側 serde の default が効いて意図せず既定値に戻るため）。
     /// 数値は CultureInfo.InvariantCulture 固定（ロケール依存の "1,5" を出さない）。
     /// </summary>
     private static string SerializeControlPoints(List<ControlPointEntry> points)
     {
         var items = points.Select(p => FormattableString.Invariant(
-            $"{{\"position\":[{p.X},{p.Y},{p.Z}],\"rotation\":[{p.RX},{p.RY},{p.RZ}],\"time\":{p.Time},\"interp\":\"{p.Interp}\"}}"));
+            $"{{\"position\":[{p.X},{p.Y},{p.Z}],\"rotation\":[{p.RX},{p.RY},{p.RZ}],\"scale\":[{p.SX},{p.SY},{p.SZ}],\"time\":{p.Time},\"interp\":\"{p.Interp}\"}}"));
         return "[" + string.Join(",", items) + "]";
     }
 
@@ -5347,9 +5534,13 @@ public partial class InspectorPanel : UserControl
         }
 
         // 制御点リスト UI を全再構築するローカル関数（川セクションと同じ流儀）。
-        // 1 行の構成は「#index + 位置 XYZ + time + 補間 + 削除」。
-        // rotation は行に出さない: XYZ+time+interp+削除だけで既に横幅が窮屈で、
-        // 回転はカメラパス等で後から必要になる想定の属性のため。JSON の往復では必ず保持する。
+        //
+        // 1 点は **2 段組み**で表示する:
+        //   上段: #index + 位置 XYZ + time + 補間 + 削除
+        //   下段: 回転 XYZ + スケール XYZ
+        // 位置・回転・スケール・time・補間を 1 行に詰めると、XYZ の入力欄だけで 9 個並び
+        // インスペクタ幅では判読も操作も成立しない。「点の同一性（#index）と最も使う位置」を
+        // 上段に置き、姿勢系を下段へ回すことで、上段だけ見れば従来と同じ操作感になる。
         void RebuildPoints()
         {
             pointsPanel.Children.Clear();
@@ -5455,6 +5646,54 @@ public partial class InspectorPanel : UserControl
                 Grid.SetColumn(delBtn, 3);
                 rowGrid.Children.Add(delBtn);
 
+                // ── 下段: 回転 XYZ ＋ スケール XYZ ──
+                // 2 つの XYZ 行を等幅の 2 カラムに並べる（どちらも 3 個の入力欄を持つため
+                // 幅を揃えないと桁が食い違って読みにくい）。
+                var attrGrid = new Grid { Margin = new Thickness(0, 1, 0, 0) };
+                attrGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                attrGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+                var rotRow = BuildXYZRowSimple("回転", entry.RX, entry.RY, entry.RZ);
+                Grid.SetColumn(rotRow.element, 0);
+                attrGrid.Children.Add(rotRow.element);
+                void CommitRot()
+                {
+                    if (!float.TryParse(rotRow.tx.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vx)) return;
+                    if (!float.TryParse(rotRow.ty.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vy)) return;
+                    if (!float.TryParse(rotRow.tz.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vz)) return;
+                    entry.RX = vx; entry.RY = vy; entry.RZ = vz;
+                    SendPoints();
+                }
+                foreach (var tb in new[] { rotRow.tx, rotRow.ty, rotRow.tz })
+                {
+                    tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitRot(); e.Handled = true; } };
+                    tb.LostFocus += (_, _) => CommitRot();
+                    NumericDragBehavior.SetOnDrag(tb, CommitRot);
+                }
+
+                var sclRow = BuildXYZRowSimple("スケール", entry.SX, entry.SY, entry.SZ);
+                Grid.SetColumn(sclRow.element, 1);
+                attrGrid.Children.Add(sclRow.element);
+                void CommitScale()
+                {
+                    if (!float.TryParse(sclRow.tx.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vx)) return;
+                    if (!float.TryParse(sclRow.ty.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vy)) return;
+                    if (!float.TryParse(sclRow.tz.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vz)) return;
+                    entry.SX = vx; entry.SY = vy; entry.SZ = vz;
+                    SendPoints();
+                }
+                foreach (var tb in new[] { sclRow.tx, sclRow.ty, sclRow.tz })
+                {
+                    tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitScale(); e.Handled = true; } };
+                    tb.LostFocus += (_, _) => CommitScale();
+                    NumericDragBehavior.SetOnDrag(tb, CommitScale);
+                }
+
+                // 上段・下段をまとめる（Border の Child は 1 つしか持てないため縦積み）。
+                var rowStack = new StackPanel();
+                rowStack.Children.Add(rowGrid);
+                rowStack.Children.Add(attrGrid);
+
                 // 行 Border（選択ハイライトの受け皿を兼ねる）。
                 var rowBorder = new Border
                 {
@@ -5462,7 +5701,7 @@ public partial class InspectorPanel : UserControl
                     CornerRadius = new CornerRadius(2),
                     Padding      = new Thickness(2, 1, 2, 1),
                     Margin       = new Thickness(0, 1, 0, 1),
-                    Child        = rowGrid,
+                    Child        = rowStack,
                     Cursor       = Cursors.Hand,
                 };
                 // 行クリック → ビューポート側の点を選択させる（リスト → ビューポートの逆方向同期）。

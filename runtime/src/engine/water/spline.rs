@@ -18,8 +18,11 @@
 //  端点は「1 つ外側の点を折り返して複製」する標準的な処理で扱う。
 //
 //  ## 分割密度
-//  折れ線の分割数は**曲線長から一定密度で決める**（`RIVER_SAMPLE_STEP_M` ごとに 1 分割）。
+//  折れ線の分割数は**曲線長から一定密度で決める**（`build` の `segment_length` ごとに 1 分割。
+//  既定は `RIVER_SAMPLE_STEP_M`、下限は `RIVER_SEGMENT_LENGTH_MIN`）。
 //  短い川に無駄な頂点を置かず、長い川でも上限 `RIVER_MAX_SEGMENTS` を超えない。
+//  **上限は刻み幅の設定に依らず据え置き**なので、長い川では設定を細かくしても
+//  比例配分で縮められ、自動的に粗くなる。
 //  1 分割 = 描画の 1 インスタンス（クアッド 1 枚）なので、この上限が
 //  そのまま「川 1 本あたりの最大ドローインスタンス数」になる。
 //
@@ -38,10 +41,20 @@
 
 // ─── 定数（マジックナンバー禁止）─────────────────────────────
 
-/// 折れ線 1 分割ぶんの目標長（m）。曲線長をこれで割った数が分割数になる。
+/// 折れ線 1 分割ぶんの目標長（m）の**既定値**。曲線長をこれで割った数が分割数になる。
 ///
 /// 川幅の既定 4m に対して十分細かく、かつ 100m の川でも 50 分割で収まる密度。
+/// 実際の値は `WaterVolumeComponent::river_segment_length` でボリュームごとに指定でき、
+/// この定数はその既定値（＝W4.1 以前の固定値）として残している。
 pub const RIVER_SAMPLE_STEP_M: f32 = 2.0;
+
+/// 分割長の下限（m）。
+///
+/// 0 や極小値を入れると分割数が発散し、上限 `RIVER_MAX_SEGMENTS` の比例縮小に
+/// 毎フレーム丸投げすることになる（無駄な計算をしてから捨てる形）。
+/// 川幅の下限が 0.01m であることを踏まえ、実用上これ以上細かくしても
+/// 見た目が変わらない値として 0.25m で切る。
+pub const RIVER_SEGMENT_LENGTH_MIN: f32 = 0.25;
 
 /// 川 1 本あたりの最大分割数（= 最大描画インスタンス数）。
 ///
@@ -122,13 +135,17 @@ impl RiverPath {
     /// - `width`: 川幅（m）。下限 `RIVER_WIDTH_MIN` で切る
     /// - `flow_speed`: 流速（m/s）
     /// - `depth`: 水中とみなす水面下の厚み（m）
+    /// - `segment_length`: 分割 1 つぶんの目標長（m）。下限 `RIVER_SEGMENT_LENGTH_MIN` で切る。
+    ///   **総分割数の上限 `RIVER_MAX_SEGMENTS` は据え置き**なので、長い川ではこの値を
+    ///   小さくしても上限で頭打ちになり、結果として自動的に粗くなる。
     ///
     /// 制御点が `RIVER_MIN_CONTROL_POINTS` 未満なら **None**（川は成立しない）。
     pub fn build(
-        points_world: &[[f32; 3]],
-        width:        f32,
-        flow_speed:   f32,
-        depth:        f32,
+        points_world:   &[[f32; 3]],
+        width:          f32,
+        flow_speed:     f32,
+        depth:          f32,
+        segment_length: f32,
     ) -> Option<Self> {
         if points_world.len() < RIVER_MIN_CONTROL_POINTS {
             return None;
@@ -139,11 +156,13 @@ impl RiverPath {
         // ── ① 各区間の分割数を「弦長 / 目標刻み」で決める ──
         //     弦長は曲線長の下限にすぎないが、制御点間隔が刻みより十分大きい
         //     通常の使い方では誤差は小さく、曲線長の数値積分を持ち込む価値は無い。
+        //     刻み幅はボリュームごとの設定値（下限で締める）。
+        let step = segment_length.max(RIVER_SEGMENT_LENGTH_MIN);
         let span_count = ctrl.len() - 1;
         let mut divisions: Vec<usize> = Vec::with_capacity(span_count);
         for i in 0..span_count {
             let chord = distance3(ctrl[i], ctrl[i + 1]);
-            let want  = (chord / RIVER_SAMPLE_STEP_M).ceil() as usize;
+            let want  = (chord / step).ceil() as usize;
             divisions.push(want.max(1));
         }
         // 総分割数が上限を超えるなら、区間ごとの分割数を比例配分で縮める
@@ -306,18 +325,20 @@ mod tests {
     const W: f32 = 4.0;
     const S: f32 = 1.5;
     const D: f32 = 5.0;
+    /// テスト用の分割長（既定と同じ 2m 刻み）。
+    const SEG: f32 = RIVER_SAMPLE_STEP_M;
 
     /// 制御点が 2 点未満なら川は成立しない（None）。
     #[test]
     fn build_rejects_fewer_than_two_points() {
-        assert!(RiverPath::build(&[], W, S, D).is_none(), "空の制御点");
-        assert!(RiverPath::build(&[[0.0, 0.0, 0.0]], W, S, D).is_none(), "1 点だけ");
+        assert!(RiverPath::build(&[], W, S, D, SEG).is_none(), "空の制御点");
+        assert!(RiverPath::build(&[[0.0, 0.0, 0.0]], W, S, D, SEG).is_none(), "1 点だけ");
     }
 
     /// 2 点あれば成立し、半幅は幅の半分になる。
     #[test]
     fn build_accepts_two_points() {
-        let path = RiverPath::build(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], W, S, D)
+        let path = RiverPath::build(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], W, S, D, SEG)
             .expect("2 点で川が成立すること");
         assert!(path.nodes.len() >= 2);
         assert_eq!(path.half_width, W * 0.5);
@@ -342,19 +363,49 @@ mod tests {
     /// 分割密度は曲線長に比例する（長い川ほどノードが多い）。
     #[test]
     fn division_density_scales_with_length() {
-        let short = RiverPath::build(&[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]], W, S, D).unwrap();
-        let long  = RiverPath::build(&[[0.0, 0.0, 0.0], [40.0, 0.0, 0.0]], W, S, D).unwrap();
+        let short = RiverPath::build(&[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]], W, S, D, SEG).unwrap();
+        let long  = RiverPath::build(&[[0.0, 0.0, 0.0], [40.0, 0.0, 0.0]], W, S, D, SEG).unwrap();
         assert!(long.segment_count() > short.segment_count());
         // 目標刻み 2m なので 4m は 2 分割、40m は 20 分割になるはず。
         assert_eq!(short.segment_count(), 2);
         assert_eq!(long.segment_count(), 20);
     }
 
+    /// 分割長を細かくすると分割数が増え、粗くすると減ること（W4.1 の設定値が効く契約）。
+    #[test]
+    fn segment_length_controls_division_count() {
+        let pts = [[0.0, 0.0, 0.0], [40.0, 0.0, 0.0]];
+        // 40m を 2m 刻み → 20 分割 / 4m 刻み → 10 分割 / 1m 刻み → 40 分割
+        assert_eq!(RiverPath::build(&pts, W, S, D, 2.0).unwrap().segment_count(), 20);
+        assert_eq!(RiverPath::build(&pts, W, S, D, 4.0).unwrap().segment_count(), 10);
+        assert_eq!(RiverPath::build(&pts, W, S, D, 1.0).unwrap().segment_count(), 40);
+    }
+
+    /// 分割長が 0 や負でも下限で切られ、分割数が発散しないこと。
+    #[test]
+    fn segment_length_is_clamped_to_lower_bound() {
+        let pts = [[0.0, 0.0, 0.0], [40.0, 0.0, 0.0]];
+        // 下限 0.25m 相当（40 / 0.25 = 160 分割）へ丸められること
+        let expected = (40.0 / RIVER_SEGMENT_LENGTH_MIN).ceil() as usize;
+        assert_eq!(RiverPath::build(&pts, W, S, D, 0.0).unwrap().segment_count(), expected);
+        assert_eq!(RiverPath::build(&pts, W, S, D, -5.0).unwrap().segment_count(), expected);
+    }
+
+    /// 分割長を細かくしても、総分割数の上限は据え置きで守られること
+    ///（＝長い川では設定を細かくしても自動的に粗くなる）。
+    #[test]
+    fn segment_length_still_respects_global_cap() {
+        let path = RiverPath::build(
+            &[[0.0, 0.0, 0.0], [100_000.0, 0.0, 0.0]], W, S, D, RIVER_SEGMENT_LENGTH_MIN).unwrap();
+        assert!(path.segment_count() <= RIVER_MAX_SEGMENTS,
+            "分割長を最小にしても上限 {} を超えないこと: {}", RIVER_MAX_SEGMENTS, path.segment_count());
+    }
+
     /// 分割数は上限を超えない（極端に長い川でも GPU 側の予算が破綻しない）。
     #[test]
     fn division_count_is_capped() {
         let path = RiverPath::build(
-            &[[0.0, 0.0, 0.0], [100_000.0, 0.0, 0.0]], W, S, D).unwrap();
+            &[[0.0, 0.0, 0.0], [100_000.0, 0.0, 0.0]], W, S, D, SEG).unwrap();
         assert!(path.segment_count() <= RIVER_MAX_SEGMENTS,
             "分割数 {} が上限 {} を超えた", path.segment_count(), RIVER_MAX_SEGMENTS);
     }
@@ -364,7 +415,7 @@ mod tests {
     #[test]
     fn control_points_are_capped() {
         let pts: Vec<[f32; 3]> = (0..500).map(|i| [i as f32 * 50.0, 0.0, 0.0]).collect();
-        let path = RiverPath::build(&pts, W, S, D).unwrap();
+        let path = RiverPath::build(&pts, W, S, D, SEG).unwrap();
         assert!(path.segment_count() <= RIVER_MAX_SEGMENTS);
     }
 
@@ -372,13 +423,13 @@ mod tests {
     #[test]
     fn degenerate_duplicate_points_are_rejected() {
         let p = [3.0, 1.0, -2.0];
-        assert!(RiverPath::build(&[p, p], W, S, D).is_none());
+        assert!(RiverPath::build(&[p, p], W, S, D, SEG).is_none());
     }
 
     /// 直線の川では、川の中心線上の点の距離が 0 になる。
     #[test]
     fn nearest_on_centerline_is_zero_distance() {
-        let path = RiverPath::build(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], W, S, D).unwrap();
+        let path = RiverPath::build(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], W, S, D, SEG).unwrap();
         let s = path.nearest([5.0, 0.0, 0.0]);
         assert!(s.distance_xz < 1e-4, "中心線上の距離は 0（実際 {}）", s.distance_xz);
     }
@@ -386,7 +437,7 @@ mod tests {
     /// 横方向の距離が正しく求まる（幅境界の判定に直結する）。
     #[test]
     fn nearest_measures_perpendicular_distance() {
-        let path = RiverPath::build(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], W, S, D).unwrap();
+        let path = RiverPath::build(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], W, S, D, SEG).unwrap();
         let s = path.nearest([5.0, 0.0, 3.0]);
         assert!((s.distance_xz - 3.0).abs() < 1e-4, "垂直距離 3m（実際 {}）", s.distance_xz);
     }
@@ -394,7 +445,7 @@ mod tests {
     /// 端点より外側の点は、端点までの距離になる（線分の外側へ外挿しない）。
     #[test]
     fn nearest_clamps_beyond_endpoints() {
-        let path = RiverPath::build(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], W, S, D).unwrap();
+        let path = RiverPath::build(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], W, S, D, SEG).unwrap();
         let s = path.nearest([14.0, 0.0, 0.0]);
         assert!((s.distance_xz - 4.0).abs() < 1e-4, "終端から 4m（実際 {}）", s.distance_xz);
     }
@@ -402,7 +453,7 @@ mod tests {
     /// 水面 Y は制御点の Y を補間する（＝川が下る）。
     #[test]
     fn surface_y_interpolates_between_points() {
-        let path = RiverPath::build(&[[0.0, 10.0, 0.0], [10.0, 0.0, 0.0]], W, S, D).unwrap();
+        let path = RiverPath::build(&[[0.0, 10.0, 0.0], [10.0, 0.0, 0.0]], W, S, D, SEG).unwrap();
         let s = path.nearest([5.0, 100.0, 0.0]);
         assert!((s.surface_y - 5.0).abs() < 0.2,
             "中間地点の水面 Y はおよそ 5（実際 {}）", s.surface_y);
@@ -414,7 +465,7 @@ mod tests {
     /// 流れの向きは上流→下流の 3D 単位ベクトル（下る川では Y が負）。
     #[test]
     fn direction_points_downstream_in_3d() {
-        let path = RiverPath::build(&[[0.0, 10.0, 0.0], [10.0, 0.0, 0.0]], W, S, D).unwrap();
+        let path = RiverPath::build(&[[0.0, 10.0, 0.0], [10.0, 0.0, 0.0]], W, S, D, SEG).unwrap();
         let d = path.nearest([5.0, 5.0, 0.0]).direction;
         assert!(d[0] > 0.0, "+X 方向へ流れる");
         assert!(d[1] < 0.0, "下る川なので Y は負");
@@ -426,7 +477,7 @@ mod tests {
     #[test]
     fn node_normal_is_perpendicular_to_tangent() {
         let path = RiverPath::build(
-            &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [20.0, 0.0, 10.0]], W, S, D).unwrap();
+            &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [20.0, 0.0, 10.0]], W, S, D, SEG).unwrap();
         for n in &path.nodes {
             let dot = n.normal[0] * n.tangent[0] + n.normal[1] * n.tangent[1];
             assert!(dot.abs() < 1e-4, "法線と接線が直交していない（内積 {dot}）");
@@ -438,7 +489,7 @@ mod tests {
     fn miter_is_clamped() {
         // ほぼ 180° 折り返す制御点列
         let path = RiverPath::build(
-            &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.1, 0.0, 0.1]], W, S, D).unwrap();
+            &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.1, 0.0, 0.1]], W, S, D, SEG).unwrap();
         for n in &path.nodes {
             let len = (n.normal[0] * n.normal[0] + n.normal[1] * n.normal[1]).sqrt();
             assert!(len <= RIVER_MITER_MAX + 1e-3,
@@ -449,7 +500,7 @@ mod tests {
     /// 幅 0 を渡しても下限で切られる（面積 0 のリボンを作らない）。
     #[test]
     fn width_has_a_lower_bound() {
-        let path = RiverPath::build(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], 0.0, S, D).unwrap();
+        let path = RiverPath::build(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], 0.0, S, D, SEG).unwrap();
         assert!(path.half_width >= RIVER_WIDTH_MIN * 0.5);
     }
 }

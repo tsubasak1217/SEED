@@ -21,7 +21,7 @@ use crate::engine::core::renderer::water::params::{
     SHORE_WAVE_LENGTH_MIN, SHORE_WAVE_PERIOD_MIN,
 };
 // 川幅の下限も同じ理由でエンジン層（スプライン幾何）の定数を共有する。
-use crate::engine::water::RIVER_WIDTH_MIN;
+use crate::engine::water::{RIVER_SEGMENT_LENGTH_MIN, RIVER_WIDTH_MIN};
 
 use super::App;
 
@@ -54,7 +54,8 @@ impl App {
     ///      fresnel_power / fresnel_strength / reflection_color /
     ///      refraction_distortion / shore_wave_*（W1.5）/
     ///      river_width / flow_speed / river_depth / spline_points /
-    ///      spline_snap_terrain（W4）。
+    ///      spline_snap_terrain（W4）/
+    ///      river_segment_length / control_point_ref（W4.1）。
     /// ベクタ系（region_half_extents / *_color）は "x,y,z" 形式。
     /// 川の制御点 `spline_points` は "x,y,z;x,y,z;..." で**リスト全体**を置き換える。
     /// `spline_snap_terrain` は値をオフセット Y（m）として制御点を地形へ落とす。
@@ -228,6 +229,19 @@ impl App {
                 // 深さ 0 は「水面だけで中身の無い川」になり水中判定が成立しないが、
                 // それ自体は破綻ではない（＝流されるだけの薄い水）。負値だけ弾く。
                 if let Ok(v) = value.parse::<f32>() { w.river_depth = v.max(NON_NEGATIVE_MIN); }
+            }
+            "river_segment_length" => {
+                // 分割 1 つぶんの目標長（m。W4.1）。0 や負値で分割数が発散しないよう下限で締める。
+                if let Ok(v) = value.parse::<f32>() {
+                    w.river_segment_length = v.max(RIVER_SEGMENT_LENGTH_MIN);
+                }
+            }
+            "control_point_ref" => {
+                // 参照先アクタ名（W4.1）。空文字列 = 参照解除（spline_points 経路へ戻る）。
+                // 存在しない名前でも**そのまま保存する**（保存 → アクタ生成の順で
+                // 組み立てる作業を許すため。解決できない間は spline_points が使われる）。
+                // 前後の空白だけは落とす（D&D と手入力で差が出ないように）。
+                w.control_point_ref = value.trim().to_string();
             }
             "spline_points" => {
                 // **リスト全体の置き換え**（追加・削除・編集のいずれもこの 1 キーで来る）。

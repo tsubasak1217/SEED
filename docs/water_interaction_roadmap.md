@@ -291,16 +291,16 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
   | 役割 | 場所 |
   |---|---|
   | スプライン幾何（正典） | `runtime/src/engine/water/spline.rs` の `RiverPath::{build, nearest}` / `catmull_rom` |
-  | コンポーネント | `components/water_volume_component.rs` の `spline_points` / `river_width` / `flow_speed` / `river_depth` |
+  | コンポーネント | `components/water_volume_component.rs` の `spline_points` / `river_width` / `flow_speed` / `river_depth` / `river_segment_length` / `control_point_ref` |
   | ワールド解決 | `water/resolved.rs` の `ResolvedWaterVolume::river`（**kind = Spline のときだけ Some**）。点列の出どころ切替は `from_component_with_path` |
-  | 収集 | `water/collect.rs`（制御点 2 点未満の Spline はスキップ／ControlPointComponent の解決もここ） |
+  | 収集 | `water/collect.rs`（制御点 2 点未満の Spline はスキップ／`control_point_ref` の名前解決もここ: `find_actor_by_name` / `resolve_control_polyline`） |
   | 汎用パス基盤（点列の正典） | `runtime/src/engine/path/eval.rs` の `PathEval` — 詳細は `docs/control_points.md` |
   | 問い合わせ | `water/query.rs` の `flow_at` / `volume_contains` / `volume_surface_at_xz` の Spline 分岐 |
   | GPU パラメータ | `renderer/water/params.rs` の `WaterParams::from_river_segment`（vec4 を 3 本追加＝計 14 本）＋ `WATER_INSTANCE_QUAD/RIVER` / `WATER_MAX_INSTANCES` |
   | インスタンス生成 | `renderer/water/mod.rs` の `WaterRenderer::prepare`（川は 1 分割 = 1 インスタンス） |
   | 描画（リボン頂点・流れ） | `shaders/water_surface.wgsl` の `water_river_vertex` / `water_flow_offsets` / `water_flow_wave_{height,gradient}` |
   | ピッキング | `shaders/water_id.wgsl` の `water_id_river_vertex`（水面 ID 経路をそのまま拡張） |
-  | IPC フィールド編集・地形スナップ | `app/water_ops.rs`（`river_width` / `flow_speed` / `river_depth` / `spline_points` / `spline_snap_terrain`）＋ `App::snap_water_spline_to_terrain` |
+  | IPC フィールド編集・地形スナップ | `app/water_ops.rs`（`river_width` / `flow_speed` / `river_depth` / `spline_points` / `spline_snap_terrain` / `river_segment_length` / `control_point_ref`）＋ `App::snap_water_spline_to_terrain` |
   | エディタ UI | `editor/src/Panels/InspectorPanel.xaml.cs` の `BuildWaterVolumeSlotContent`「川（スプライン）」セクション |
 
   **W4 で確定した設計判断**
@@ -308,10 +308,14 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
   - **補間は Catmull-Rom**（uniform, τ=0.5）。制御点を必ず通り、ベジェのような
     追加ハンドルが要らないため「点を置くだけで滑らかな川になる」エディタ体験に最も素直。
     端点は 1 つ外側の点を折り返して複製する標準処理。
-  - **分割は曲線長からの一定密度**（`RIVER_SAMPLE_STEP_M = 2m` ごとに 1 分割、
+  - **分割は曲線長からの一定密度**（既定 `RIVER_SAMPLE_STEP_M = 2m` ごとに 1 分割、
     上限 `RIVER_MAX_SEGMENTS = 256`）。上限超過時は区間ごとに比例配分で縮める
     （各区間は最低 1 分割）。制御点も `RIVER_MAX_CONTROL_POINTS = 64` で上限を切り、
     「1 区間 = 最低 1 分割」と分割上限が矛盾しないようにしてある。
+    **W4.1 で刻み幅をボリュームごとに設定可能にした**（`river_segment_length`。既定 2.0m ＝
+    従来の固定値と同一なので旧シーンの形は 1 頂点も変わらない。下限
+    `RIVER_SEGMENT_LENGTH_MIN = 0.25m`）。**総分割数の上限は据え置き**なので、
+    長い川では設定を細かくしても上限で頭打ちになり自動的に粗くなる。
   - **描画は既存のインスタンス描画へ合流させた**。頂点バッファは持たないまま、
     `WaterParams` に「インスタンス種別」（`center.w`）を持たせ、頂点シェーダが
     `center ± half_extent` の矩形か、`river_p0/p1 ± 法線 × 半幅` のリボン 1 コマかを選ぶ。
@@ -340,31 +344,44 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
 
   | フィールド | 既定 | 意味 |
   |---|---|---|
-  | `spline_points` | 空 | 制御点列（**アクタ相対**）。2 点未満は描画・判定とも無効。**同一アクタに ControlPointComponent があるとそちらが優先され、この値は無視される**（`docs/control_points.md`） |
+  | `spline_points` | 空 | 制御点列（**アクタ相対**）。2 点未満は描画・判定とも無効。**`control_point_ref` が設定されているときは完全に無視される**（`docs/control_points.md`） |
   | `river_width` | 4.0 | 川幅（m。全幅。リボンは一定幅） |
   | `flow_speed` | 1.5 | 流速（m/s）。`flow_at` の速さ＝模様が流れる速さ。負値で逆流 |
   | `river_depth` | 2.0 | 川の深さ（m）。水面からこの深さまでが水中判定 |
+  | `river_segment_length` | 2.0 | 折れ線 1 分割ぶんの目標長（m。W4.1）。下限 0.25。総分割数の上限 256 は据え置き |
+  | `control_point_ref` | 空 | 制御点を借りる**参照先アクタ名**（W4.1）。空 = `spline_points` を使う |
 
-  **W4 追補: ControlPointComponent との統合**（2026-07-29 実装）
+  **W4.1: ControlPointComponent との統合（明示参照方式）**（2026-07-29 実装・同日改訂）
 
   川の形（点列）は、W4 固有の `spline_points` ではなく**汎用のコントロールポイント基盤**へ
-  移した。詳細と使い方は **`docs/control_points.md` が正典**。ここでは水側の接続点だけ記す。
+  移せる。詳細と使い方は **`docs/control_points.md` が正典**。ここでは水側の接続点だけ記す。
 
-  - 同一アクタに `ControlPointComponent` があり、そのスロットが `enabled` で、
+  - 使う／使わないは `WaterVolumeComponent.control_point_ref`（**参照先アクタ名**・既定は空）で
+    **明示的に指定する**。参照が解決でき、そのアクタの 0 番目の有効な `ControlPointComponent` の
     折れ線が 2 点以上あるとき、**`spline_points` を完全に無視して**そちらから `RiverPath` を組む。
-    それ以外（コンポーネント無し／スロット無効／点が足りない）は従来の `spline_points` へフォールバックする。
-  - `spline_points` は**削除していない**。ControlPoint を無効化・削除すればいつでも従来経路へ戻る。
-    インスペクタの川セクションには優先関係の注記と「spline_points からコントロールポイントへ移行」
-    ボタンを置いた（点列をコピーして ControlPointComponent を追加する）。
-  - **形だけが移り、川幅・流速・川の深さ・見た目・`surface_height` は WaterVolume 側に残る。**
-    `surface_height` は ControlPoint 経路でも Y に上乗せされるので、点を触らずに川全体の水位を上下できる。
+    それ以外（参照が空／アクタが見つからない／スロット無し・無効／点が足りない）は
+    従来の `spline_points` へフォールバックする。
+  - **初版の「同一アクタなら自動優先」は廃止した。**
+    どちらが効いているのか UI から判別できず、コンポーネントを足しただけで川の形が変わるため
+    （実際に混乱を生んだ）。既存シーンで自動優先に頼っていた川は参照の設定し直しが要る。
+  - **参照先は別アクタでもよい。** そのとき点列のワールド解決には**参照先アクタの Transform**
+    （位置＋回転＋スケール）を使う ＝ 制御点を持つアクタを動かすと川が動き、
+    水アクタを動かしても川は動かない。
+  - `spline_points` は**削除していない**。参照を外せばいつでも従来経路へ戻る。
+    インスペクタの川セクションには参照ボックス（Hierarchy から D&D・✕ で解除・
+    ダブルクリックで Hierarchy へジャンプ）と、
+    「このアクタに制御点を作って参照に設定」ボタンを置いた
+    （ControlPointComponent の追加 → `spline_points` の変換投入 → 参照の結線を 1 回で行う）。
+    参照が設定されているあいだ `spline_points` の編集 UI は丸ごと隠れる。
+  - **形だけが移り、川幅・流速・川の深さ・分割長・見た目・`surface_height` は WaterVolume 側に残る。**
+    `surface_height` は参照経路でも Y に上乗せされるので、点を触らずに川全体の水位を上下できる。
   - **座標系の落とし穴**: `PathEval::sample_polyline` が返す折れ線は**すでに完全なワールド座標**
     （アクタの位置だけでなく回転・スケールも適用済み）。`spline_points` 経路のようにアクタ位置を
-    足すと二重加算になる。`ResolvedWaterVolume::from_component_with_path` が両経路の差を吸収し、
-    `water/collect.rs` がアクタの Transform 全体（位置＋回転＋スケール）で `PathEval` を構築する
-    ＝ **W4 の「アクタ位置しか見ない」制限は ControlPoint 経路では解消している**。
-  - 実装: `water/resolved.rs::from_component_with_path`（従来の `from_component` は
-    `control_polyline = None` を渡す薄いラッパへ後退）／ `water/collect.rs::collect_in_actor`。
+    足すと二重加算になる。`ResolvedWaterVolume::from_component_with_path` が両経路の差を吸収する
+    ＝ **W4 の「アクタ位置しか見ない」制限は参照経路では解消している**。
+  - 実装: `water/collect.rs::{find_actor_by_name, resolve_control_polyline, collect_in_actor}`
+    （参照名の解決）／ `water/resolved.rs::from_component_with_path`（折れ線の適用。従来の
+    `from_component` は `control_polyline = None` を渡す薄いラッパ）。
 
   **W4 の既知の制限**（後続フェーズで解消）
 

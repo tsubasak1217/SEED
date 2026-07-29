@@ -63,6 +63,11 @@ pub struct ResolvedControlPoint {
     pub position: [f32; 3],
     /// ワールド姿勢（度・YXZ オイラー角。アクタ回転と合成済み）。
     pub rotation: [f32; 3],
+    /// ワールド拡縮（アクタスケール × 点スケール）。
+    ///
+    /// 川は位置しか使わないためこの値の影響を受けないが、
+    /// ビューポートのキューブ表示や、将来のカメラ／巡回の消費側が使う。
+    pub scale: [f32; 3],
     /// 時刻パラメータ（アクタ変換の影響を受けない）。
     pub time: f32,
     /// **この点から次の点へ**向かう区間の補間方法。
@@ -78,6 +83,8 @@ pub struct PathSample {
     pub position: [f32; 3],
     /// ワールド姿勢（度・YXZ オイラー角）。
     pub rotation: [f32; 3],
+    /// ワールド拡縮（軸ごと）。区間の補間方法に従って補間される。
+    pub scale: [f32; 3],
 }
 
 // ─── PathEval ─────────────────────────────────────────────────
@@ -97,17 +104,21 @@ impl PathEval {
     pub fn from_points(points: &[ControlPoint], actor: &Transform) -> Self {
         let actor_mat = actor.to_mat4();
         let resolved = points.iter().map(|p| {
-            // 点のローカル行列（スケールは掛けない ＝ 点は大きさを持たない）を作り、
-            // アクタ行列と合成してからワールドの位置・姿勢へ分解する。
+            // 点のローカル行列（位置・回転・**拡縮**）を作り、アクタ行列と合成してから
+            // ワールドの位置・姿勢・拡縮へ分解する。
+            //
+            // ※ スケールは点の**自分の原点まわり**に掛かるので、合成しても
+            //    点のワールド位置は変わらない（＝位置しか使わない消費側＝川は無影響）。
             let local = Transform {
                 position: p.position,
                 rotation: p.rotation,
-                scale:    [1.0, 1.0, 1.0],
+                scale:    p.scale,
             }.to_mat4();
             let world = Transform::from_mat4(&mat4x4_mul(actor_mat, local));
             ResolvedControlPoint {
                 position: world.position,
                 rotation: world.rotation,
+                scale:    world.scale,
                 time:     p.time,
                 interp:   p.interp,
             }
@@ -307,7 +318,7 @@ impl PathEval {
         let n = self.points.len();
         if n < PATH_MIN_POINTS_FOR_SEGMENT {
             let p = self.points[0];
-            return PathSample { position: p.position, rotation: p.rotation };
+            return PathSample { position: p.position, rotation: p.rotation, scale: p.scale };
         }
         let i  = index.min(n - PATH_MIN_POINTS_FOR_SEGMENT);
         let a  = self.points[i];
@@ -336,7 +347,15 @@ impl PathEval {
             _                        => lerp3(a.rotation, b.rotation, ut),
         };
 
-        PathSample { position, rotation }
+        // 拡縮は姿勢と同じ規則（Step は保持、それ以外は軸ごとの線形補間）で扱う。
+        // 対数補間（指数的なスケール変化）にしないのは、姿勢と挙動を揃えた方が
+        // 「点を 2 つ置いて間を見る」ときの予測が立つため。
+        let scale = match a.interp {
+            ControlPointInterp::Step => if ut >= 1.0 { b.scale } else { a.scale },
+            _                        => lerp3(a.scale, b.scale, ut),
+        };
+
+        PathSample { position, rotation, scale }
     }
 }
 
@@ -348,7 +367,7 @@ mod tests {
 
     /// テスト用: 位置と時刻と補間方法だけを指定して制御点を作る。
     fn cp(pos: [f32; 3], time: f32, interp: ControlPointInterp) -> ControlPoint {
-        ControlPoint { position: pos, rotation: [0.0; 3], time, interp }
+        ControlPoint { position: pos, rotation: [0.0; 3], scale: [1.0; 3], time, interp }
     }
 
     /// 単位変換（無回転・原点）のアクタ Transform。
@@ -570,6 +589,53 @@ mod tests {
         // 存在しない区間
         assert!(p.segment_polyline(2, PATH_DEFAULT_STEP_M).is_empty());
         assert!(p.segment_polyline(99, PATH_DEFAULT_STEP_M).is_empty());
+    }
+
+    /// 拡縮: 点の scale がアクタスケールと合成されてワールド拡縮になること。
+    /// **かつ、点のスケールは点の位置を動かさないこと**（川など位置のみ使う消費側への無影響の保証）。
+    #[test]
+    fn point_scale_composes_with_actor_and_does_not_move_position() {
+        let actor = Transform {
+            position: [10.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale:    [2.0, 2.0, 2.0],
+        };
+        let mut p = cp([3.0, 0.0, 0.0], 0.0, ControlPointInterp::Linear);
+        p.scale = [4.0, 1.0, 0.5];
+
+        // 比較用: 同じ点でスケールだけ等倍のもの
+        let plain = cp([3.0, 0.0, 0.0], 0.0, ControlPointInterp::Linear);
+
+        let scaled_eval = PathEval::from_points(&[p], &actor);
+        let plain_eval  = PathEval::from_points(&[plain], &actor);
+        let scaled = scaled_eval.points()[0];
+        let plain_r = plain_eval.points()[0];
+
+        // 位置はスケールの有無で変わらない（点は自分の原点まわりに拡縮するため）
+        for a in 0..3 {
+            assert!((scaled.position[a] - plain_r.position[a]).abs() < 1.0e-4,
+                "点スケールが位置を動かしてはいけない: {:?} vs {:?}", scaled.position, plain_r.position);
+        }
+        // ワールド拡縮 = アクタスケール × 点スケール
+        assert!((scaled.scale[0] - 8.0).abs() < 1.0e-3, "{:?}", scaled.scale);
+        assert!((scaled.scale[1] - 2.0).abs() < 1.0e-3, "{:?}", scaled.scale);
+        assert!((scaled.scale[2] - 1.0).abs() < 1.0e-3, "{:?}", scaled.scale);
+    }
+
+    /// 拡縮: Linear は軸ごとに線形補間され、Step は保持されること（姿勢と同じ規則）。
+    #[test]
+    fn scale_interpolates_per_segment_mode() {
+        let mut a = cp([0.0; 3], 0.0, ControlPointInterp::Linear);
+        a.scale = [1.0, 1.0, 1.0];
+        let mut b = cp([1.0, 0.0, 0.0], 1.0, ControlPointInterp::Linear);
+        b.scale = [3.0, 3.0, 3.0];
+        let p = PathEval::from_points(&[a, b], &identity_actor());
+        let s = p.sample_at_time(0.5).unwrap();
+        assert!((s.scale[0] - 2.0).abs() < 1.0e-3, "中間で 2 倍になること: {:?}", s.scale);
+
+        let mut a2 = a; a2.interp = ControlPointInterp::Step;
+        let p2 = PathEval::from_points(&[a2, b], &identity_actor());
+        assert!((p2.sample_at_time(0.5).unwrap().scale[0] - 1.0).abs() < 1.0e-3, "Step は保持");
     }
 
     /// 姿勢: Linear は軸ごとに線形補間され、Step は保持されること。
