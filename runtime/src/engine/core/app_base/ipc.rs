@@ -415,6 +415,19 @@ pub enum IpcCommand {
     /// 「レイ解決 → アクタ相対へ変換 → 点を追加」まで一括で行う。
     /// C# は一切ワールド座標を扱わない（座標系の二重管理を持ち込まないための設計）。
     AddControlPointAtScreen { actor_dfs_id: u32, slot_idx: u32, screen_x: u32, screen_y: u32 },
+    /// 「制御点を追加」ボタンのドラッグ中に、**カーソル位置の着弾予定点**を問い合わせる
+    /// （control_point_ops.rs / frame_renderer.rs が処理）。
+    /// フォーマット: CONTROL_POINT_DRAG_HOVER:{screen_x},{screen_y}
+    ///
+    /// 着弾解決はドロップ（`AddControlPointAtScreen`）と**同じ関数**を使い、
+    /// 結果を「配置予定マーカー」として描くだけで、点そのものは追加しない。
+    /// ヒットが無ければマーカーを消す（＝「ここには置けない」が見た目で分かる）。
+    /// エディタ側は 30Hz 程度に間引いて送る（毎フレームの ID 読み戻しを浪費しないため）。
+    ControlPointDragHover { screen_x: u32, screen_y: u32 },
+    /// 「制御点を追加」ボタンのドラッグが終わった / ビューポート外へ出たことの通知。
+    /// フォーマット: CONTROL_POINT_DRAG_END
+    /// 配置予定マーカーと未解決のホバー要求を破棄する。
+    ControlPointDragEnd,
     /// InteractionSourceComponent のフィールドを更新する（interaction_ops.rs が処理）。
     /// key: radius / strength / enabled。value は数値または "true"/"false"。
     SetInteractionField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
@@ -1700,6 +1713,14 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 }
                             })
                         }
+                        s if s.starts_with("CONTROL_POINT_DRAG_HOVER:") => {
+                            // フォーマット: CONTROL_POINT_DRAG_HOVER:{screen_x},{screen_y}
+                            // ドラッグ中の配置予定マーカー用。座標はビューポート内ピクセル。
+                            parse2u(&s["CONTROL_POINT_DRAG_HOVER:".len()..]).map(|(sx, sy)| {
+                                IpcCommand::ControlPointDragHover { screen_x: sx, screen_y: sy }
+                            })
+                        }
+                        s if s == "CONTROL_POINT_DRAG_END" => Some(IpcCommand::ControlPointDragEnd),
                         s if s.starts_with("SET_INTERACTION_FIELD:") => {
                             // フォーマット: SET_INTERACTION_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
                             // value に "," は含まれない（スカラーと bool のみ）が、

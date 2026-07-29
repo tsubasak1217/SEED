@@ -1189,6 +1189,22 @@ impl App {
                     // ID バッファの読み戻しはフレーム内（GPU サブミット後）でしか行えないため、
                     // ここでは解決せずキューに積むだけにする（pending_drop と同じ「次フレームで解決」方式）。
                     self.pending_control_point_drop = Some((actor_dfs_id, slot_idx, screen_x, screen_y));
+                    // 実機での切り分け用に常時 1 行だけ出す（ドロップ時のみなのでログは荒れない）。
+                    // 対になる着弾結果は frame_renderer.rs が `→ hit=` として出す。
+                    eprintln!(
+                        "[CTRL_POINT] drop request actor={} slot={} x={} y={}",
+                        actor_dfs_id, slot_idx, screen_x, screen_y
+                    );
+                }
+                IpcCommand::ControlPointDragHover { screen_x, screen_y } => {
+                    // 解決はフレームループ側（ID バッファ読み戻しが要るため）。
+                    // ここでは最新の 1 件だけを保持する（古い座標は捨てる）。
+                    self.pending_control_point_hover = Some((screen_x, screen_y));
+                }
+                IpcCommand::ControlPointDragEnd => {
+                    // 未解決の問い合わせと配置予定マーカーの両方を捨てる。
+                    self.pending_control_point_hover = None;
+                    self.control_point_drop_preview  = None;
                 }
                 IpcCommand::SetInteractionField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_interaction_field(actor_dfs_id, slot_idx, &key, &value);

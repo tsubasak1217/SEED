@@ -131,6 +131,94 @@ public partial class MainWindow
         return true;
     }
 
+    // ── 制御点（ControlPoint）の追加 D&D ────────────────────────
+    //
+    // 「＋ 制御点を追加」ボタンをビューポートへ D&D する操作の受け皿。
+    //
+    // 【なぜ OLE ドロップターゲット経由なのか（不具合の経緯）】
+    // ビューポートの ContainerHwnd は OnContainerCreated で RegisterDragDrop 済みであり、
+    // ドラッグ中の折衝はすべて ViewportOleDropTarget が行う。従来の実装は
+    // 「HwndHost 上には OLE ターゲットが無いので DoDragDrop は None を返す」という前提で、
+    // DoDragDrop から戻った**後**に GetCursorPos でドロップ位置を復元していた。
+    // しかし実際には ViewportOleDropTarget が .actor 以外のペイロードを
+    // DROPEFFECT_NONE で明示的に拒否するため IDropTarget::Drop が呼ばれず、
+    // かつ復帰後のカーソル位置は「マウスを離した位置」である保証が無い
+    //（OLE ループ終了までにカーソルが動いていれば別座標になる）。
+    // そこで制御点ペイロードも OLE ターゲットに正式に受理させ、
+    // Drop の引数として渡ってくる**確定したドロップ座標**を使う方式へ変更した。
+
+    /// <summary>制御点追加 D&D の識別に使う DataObject フォーマット名（C# 内部のみで完結する識別子）。</summary>
+    internal const string ControlPointDragFormat = "SEEDControlPointAdd";
+
+    /// <summary>ドラッグ中の配置予定マーカー要求（CONTROL_POINT_DRAG_HOVER）の最小送信間隔（ミリ秒）。</summary>
+    /// <remarks>
+    /// 約 30Hz。ランタイム側の解決は ID バッファ読み戻し（1 フレーム 1 回）を消費するため、
+    /// 毎マウスメッセージ送るとピック等と競合する。人間の目には 30Hz で十分追従して見える。
+    /// </remarks>
+    private const int ControlPointHoverIntervalMs = 33;
+
+    /// <summary>
+    /// 現在ドラッグ中の制御点追加操作の対象（アクター DFS ID, スロット添字）。
+    /// ドラッグ外では null。ドロップ座標は OLE ターゲット側が持つので座標は含めない。
+    /// </summary>
+    private (int actorId, int slotIdx)? _controlPointDragTarget;
+
+    /// <summary>OLE ドロップターゲットが ADD_CONTROL_POINT_AT_SCREEN を送信済みかどうか。</summary>
+    private bool _controlPointDropSent;
+
+    /// <summary>
+    /// 制御点追加 D&D の開始を登録する（InspectorPanel が DoDragDrop の直前に呼ぶ）。
+    /// </summary>
+    internal void BeginControlPointDrag(int actorId, int slotIdx)
+    {
+        _controlPointDragTarget = (actorId, slotIdx);
+        _controlPointDropSent   = false;
+        EditorLog.Write($"[CtrlPoint] ドラッグ開始 actor={actorId} slot={slotIdx}");
+    }
+
+    /// <summary>
+    /// 制御点追加 D&D の終了を登録する（InspectorPanel が DoDragDrop の直後に呼ぶ）。
+    /// 戻り値は「OLE 経路でドロップを送信済みか」で、false なら呼び出し側が
+    /// カーソル位置からのフォールバック送信を行う。
+    /// </summary>
+    internal bool EndControlPointDrag()
+    {
+        bool sent = _controlPointDropSent;
+        _controlPointDragTarget = null;
+        _controlPointDropSent   = false;
+        // マーカーが残らないよう、どの終わり方でも必ず END を送る（多重送信は無害）。
+        _runtimeManager?.SendToRuntime("CONTROL_POINT_DRAG_END");
+        EditorLog.Write($"[CtrlPoint] ドラッグ終了 oleDropSent={sent}");
+        return sent;
+    }
+
+    /// <summary>
+    /// 制御点の追加をランタイムへ依頼する（ビューポートローカル座標・物理ピクセル）。
+    /// ヒット判定とワールド座標算出はランタイムの責務（C# はワールド座標を扱わない）。
+    /// </summary>
+    private void SendAddControlPointAtScreen(int actorId, int slotIdx, uint x, uint y)
+    {
+        var msg = $"ADD_CONTROL_POINT_AT_SCREEN:{actorId},{slotIdx},{x},{y}";
+        EditorLog.Write($"[CtrlPoint] 送信: {msg}");
+        _runtimeManager?.SendToRuntime(msg);
+    }
+
+    /// <summary>
+    /// OLE 経路でドロップを取り逃がした場合のフォールバック送信
+    /// （InspectorPanel が DoDragDrop 復帰後に呼ぶ）。
+    /// カーソルがビューポート上に無ければ何もしない。
+    /// </summary>
+    internal void TryAddControlPointAtCursor(int actorId, int slotIdx)
+    {
+        if (!TryGetViewportCursorPos(out var vx, out var vy))
+        {
+            EditorLog.Write("[CtrlPoint] フォールバック: カーソルがビューポート外のため送信しない");
+            return;
+        }
+        EditorLog.Write("[CtrlPoint] フォールバック経路で送信（OLE ドロップ未発生）");
+        SendAddControlPointAtScreen(actorId, slotIdx, vx, vy);
+    }
+
     /// <summary>
     /// ドラッグ中のカーソル位置をランタイムに送信する。
     /// GiveFeedback コールバックからカーソルがビューポート上にいる間呼び出す。
@@ -239,11 +327,30 @@ public partial class MainWindow
         private readonly MainWindow _owner;
         /// <summary>現在ドラッグ中の .actor パスが存在するかどうか。</summary>
         private bool _isDraggingActors = false;
+        /// <summary>
+        /// 現在のドラッグが「制御点の追加」かどうか。
+        /// アクタードラッグとは**排他**で、こちらが true の間はアクタースポーン用の
+        /// DRAG_HOVER（プレビュー球）を一切送らない（余計な球が出るのを防ぐ）。
+        /// </summary>
+        private bool _isDraggingControlPoint = false;
+        /// <summary>制御点ホバー通知を最後に送った時刻（間引き用）。</summary>
+        private DateTime _lastControlPointHoverAt = DateTime.MinValue;
 
         public ViewportOleDropTarget(MainWindow owner) => _owner = owner;
 
         public int DragEnter(object pDataObj, uint grfKeyState, POINT pt, ref uint pdwEffect)
         {
+            // 制御点ドラッグを先に判定する（アクターより優先。両立はしない）。
+            _isDraggingControlPoint = IsControlPointDrag(pDataObj);
+            if (_isDraggingControlPoint)
+            {
+                _isDraggingActors = false;
+                pdwEffect = DROPEFFECT_COPY;
+                EditorLog.Write($"[OLE] DragEnter: 制御点ドラッグ pt=({pt.X},{pt.Y})");
+                SendControlPointHover(pt, force: true);
+                return S_OK;
+            }
+
             var actorPaths = GetActorPaths(pDataObj).ToList();
             _isDraggingActors = actorPaths.Any();
             pdwEffect = _isDraggingActors ? DROPEFFECT_COPY : DROPEFFECT_NONE;
@@ -257,7 +364,12 @@ public partial class MainWindow
         {
             // エフェクトを維持しつつホバー位置をランタイムに通知する。
             // pdwEffect を明示的に設定しないと OLE が DROPEFFECT_NONE と解釈することがある。
-            if (_isDraggingActors)
+            if (_isDraggingControlPoint)
+            {
+                pdwEffect = DROPEFFECT_COPY;
+                SendControlPointHover(pt, force: false);
+            }
+            else if (_isDraggingActors)
             {
                 pdwEffect = DROPEFFECT_COPY;
                 SendHover(pt);
@@ -265,14 +377,18 @@ public partial class MainWindow
             else
             {
                 pdwEffect = DROPEFFECT_NONE;
-                EditorLog.Write("[OLE] DragOver: _isDraggingActors=false, skipping hover");
             }
             return S_OK;
         }
 
         public int DragLeave()
         {
-            // ドラッグ離脱: プレビュー球体を消す
+            // ドラッグ離脱: プレビュー（球体 / 配置予定マーカー）を消す
+            if (_isDraggingControlPoint)
+            {
+                _isDraggingControlPoint = false;
+                _owner._runtimeManager?.SendToRuntime("CONTROL_POINT_DRAG_END");
+            }
             if (_isDraggingActors)
             {
                 _isDraggingActors = false;
@@ -283,18 +399,66 @@ public partial class MainWindow
 
         public int Drop(object pDataObj, uint grfKeyState, POINT pt, ref uint pdwEffect)
         {
+            // ── 制御点の追加ドロップ ──
+            if (_isDraggingControlPoint || IsControlPointDrag(pDataObj))
+            {
+                _isDraggingControlPoint = false;
+                var target = _owner._controlPointDragTarget;
+                // ドラッグ開始情報が無い（＝対象アクターが分からない）場合は何もしない。
+                if (target is not { } t)
+                {
+                    EditorLog.Write("[OLE] Drop: 制御点ドラッグだが対象未登録のため破棄");
+                    pdwEffect = DROPEFFECT_NONE;
+                    return S_OK;
+                }
+                var (cpX, cpY) = ToViewportLocal(pt);
+                _owner._controlPointDropSent = true;
+                // 送信は UI スレッドへ回さず即時に行う。OLE の Drop から戻った直後に
+                // InspectorPanel 側の後処理が走るため、そこで「送信済み」が見えている必要がある。
+                _owner._runtimeManager?.SendToRuntime("CONTROL_POINT_DRAG_END");
+                _owner.SendAddControlPointAtScreen(t.actorId, t.slotIdx, cpX, cpY);
+                pdwEffect = DROPEFFECT_COPY;
+                return S_OK;
+            }
+
+            // ── アクター / 画像のドロップ ──
             _isDraggingActors = false;
             var paths = GetActorPaths(pDataObj).ToList();
             if (paths.Count == 0) { pdwEffect = DROPEFFECT_NONE; return S_OK; }
 
-            // スクリーン座標をビューポートローカル座標に変換する
-            GetWindowRect(_owner._viewportHost!.ContainerHwnd, out var vpRect);
-            var localX = (uint)Math.Max(0, pt.X - vpRect.Left);
-            var localY = (uint)Math.Max(0, pt.Y - vpRect.Top);
+            var (localX, localY) = ToViewportLocal(pt);
 
             _owner.Dispatcher.BeginInvoke(() => _owner.HandleViewportDrop(paths, localX, localY));
             pdwEffect = DROPEFFECT_COPY;
             return S_OK;
+        }
+
+        /// <summary>スクリーン座標（物理ピクセル）をビューポートローカル座標へ変換する。</summary>
+        private (uint x, uint y) ToViewportLocal(POINT pt)
+        {
+            GetWindowRect(_owner._viewportHost!.ContainerHwnd, out var vpRect);
+            return ((uint)Math.Max(0, pt.X - vpRect.Left), (uint)Math.Max(0, pt.Y - vpRect.Top));
+        }
+
+        /// <summary>ドラッグ中のペイロードが「制御点の追加」かどうかを判定する。</summary>
+        private static bool IsControlPointDrag(object pDataObj)
+            => pDataObj is System.Windows.IDataObject data
+            && data.GetDataPresent(ControlPointDragFormat);
+
+        /// <summary>
+        /// 配置予定マーカー用のホバー座標を送信する（`ControlPointHoverIntervalMs` で間引く）。
+        /// </summary>
+        /// <param name="force">間引きを無視して必ず送るか（DragEnter 直後に使う）。</param>
+        private void SendControlPointHover(POINT pt, bool force)
+        {
+            if (_owner._viewportHost == null) return;
+            var now = DateTime.UtcNow;
+            if (!force && (now - _lastControlPointHoverAt).TotalMilliseconds < ControlPointHoverIntervalMs)
+                return;
+            _lastControlPointHoverAt = now;
+
+            var (x, y) = ToViewportLocal(pt);
+            _owner._runtimeManager?.SendToRuntime($"CONTROL_POINT_DRAG_HOVER:{x},{y}");
         }
 
         /// <summary>スクリーン座標をビューポートローカル座標に変換して DRAG_HOVER を送信する。</summary>
