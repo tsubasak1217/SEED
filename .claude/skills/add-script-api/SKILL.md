@@ -323,13 +323,17 @@ dotnet build scripting/SEEDScripting.csproj
 - **html の同期漏れ**: md だけ更新して `docs/scripting_api.html` を忘れる。API ガイドボタンから開く HTML が古くなる。
 - **FFI 構造体を不要に触った**: フィールド追加で `ScriptHostApi` / `HOST_API` / `ffi_*` を変更する必要はない。触っていたら設計を見直す。
 - **要素数ミスマッチ**: Vec3 フィールドに `take::<1>` を使う等。Rust 側 `take::<N>` の N と `put(out, &[..])` の要素数、C# 側 `TryGetVec3`(=3要素) 等を一致させる。
+- **参照フィールド対応の取りこぼし**: 新ハンドル型に `IsValid` を実装し忘れる／スロット格納型なのに
+  `ScriptReferenceCatalog.cs` への 2 行を忘れる（§3-3）。参照は D&D できるのに生存判定・スロット絞り込みが
+  効かない半端な状態になる。
 
 ---
 
 ## 完了時に確認する成果物
 
 1. `runtime/src/engine/core/scripting/host_api.rs` — import + `read_floats`/`write_floats`(必要なら `read_string`/`write_string`) + `has_component` の分岐追加
-2. （型付きの場合）`scripting/src/Api/<Name>.cs` 新規（`IComponentHandle<Name>` 実装）。`GameObject.cs` は触らない
+2. （型付きの場合）`scripting/src/Api/<Name>.cs` 新規（`IComponentHandle<Name>` 実装＋ **`IsValid` プロパティ必須**）。
+   スロット格納型は `editor/src/Scripting/ScriptReferenceCatalog.cs` の 2 表へ 1 行ずつ（§3-3）。`GameObject.cs` は触らない
 3. `docs/scripting_api.md` 第 7 節の H3 小節 + 一覧表の行
 4. `docs/scripting_api.html` の `<h3>`/`<div class="api">` + 一覧表 `<tr>` + `data-keywords`
 5. `cargo build` と `dotnet build scripting/SEEDScripting.csproj` が両方成功
