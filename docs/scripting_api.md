@@ -254,6 +254,8 @@ Quaternion.Identity
 Quaternion.Euler(xDeg, yDeg, zDeg)  // オイラー角（度）から。適用順は YXZ
 Quaternion.Euler(vector3Degrees)
 Quaternion.AngleAxis(angleDeg, axis)
+Quaternion.LookRotation(forward)              // forward を +Z へ向ける回転（up はワールド上基準）
+Quaternion.LookRotation(forward, rollDeg)     // 上に加え、視線軸まわりに rollDeg 回転
 
 q1 * q2          // 回転の合成
 q * vector3      // ベクトルを回す
@@ -262,6 +264,7 @@ q.Normalized
 ```
 
 > Transform の回転は **YXZ オイラー角（度）の Vector3** で表します。合成・補間したいときだけ Quaternion を使い、`q.EulerAngles` で Vector3 に戻します。
+> `LookRotation` は forward がゼロ長なら Identity、forward が上下方向とほぼ平行なときは代替の上方向で基底を作り直します（真上/真下を向いても破綻しません）。
 
 ### Color（RGBA カラー・不変値型）
 
