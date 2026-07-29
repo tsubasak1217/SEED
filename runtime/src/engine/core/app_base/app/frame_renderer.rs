@@ -986,7 +986,15 @@ impl App {
         }
 
         // ── ギズモ位置：全選択アクターの重心（マルチ選択対応） ──
-        let gizmo_pos = self.selected_actors_centroid()
+        //
+        // 【重要】ここは「ギズモを**描く**位置」であり、当たり判定とドラッグ計算が使う
+        // `current_gizmo_pos()` と**必ず同じ優先順位**でなければならない。
+        // 制御点選択（フェーズA）は当初 `current_gizmo_pos()` にだけ分岐を入れたため、
+        // 「点を掴んでも見た目のギズモはアクターの位置に居座り、当たり判定だけ点の位置にある」
+        // という状態になっていた（＝実機で「制御点にギズモが出ない」と報告された不具合の原因）。
+        // 判定側と同じく制御点を最優先にする。
+        let gizmo_pos = self.selected_control_point_world_pos()
+            .or_else(|| self.selected_actors_centroid())
             .or_else(|| self.actor_virtual_world_pos());
 
         // アクター仮想選択のワールド位置（レンダラー借用外で取得）

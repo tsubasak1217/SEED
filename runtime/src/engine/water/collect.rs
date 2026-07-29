@@ -11,11 +11,22 @@
 //    ・enabled=false のスロットはスキップ
 //    ・Spline（川）で制御点が 2 点未満のものはスキップ（折れ線が作れないため）
 //
-//  【川の制御点の出どころ】同一アクタに有効な ControlPointComponent があれば、
-//  そちらを評価した折れ線を **WaterVolumeComponent.spline_points より優先**して使う。
+//  【川の制御点の出どころ】**明示参照方式**（W4.1）。
+//  `WaterVolumeComponent.control_point_ref` にアクタ名を設定すると、そのアクタの
+//  0 番目の `ControlPointComponent` を評価した折れ線が川になる。
 //  切替表:
-//    ControlPoint スロット無し / enabled=false / 点が 2 点未満 → spline_points
-//    上記以外                                                  → ControlPoint の点列
+//    control_point_ref が空                                  → spline_points
+//    参照名のアクタが見つからない                            → spline_points
+//    見つかったが ControlPoint 無し / enabled=false / 2 点未満 → spline_points
+//    上記以外                                                → 参照先の ControlPoint の点列
+//
+//  **同一アクタの ControlPointComponent を自動優先する挙動は廃止した**（W4.1）。
+//  自動優先は「コンポーネントを足しただけで川の形が変わる」「どちらが効いているか
+//  UI から見えない」という二重の分かりにくさがあり、実際に混乱を生んだ。
+//
+//  参照先は**別アクタでもよい**。その場合、点列のワールド解決には
+//  **参照先アクタの Transform** を使う（点はそのアクタの相対座標なので当然）。
+//  ＝制御点を持つアクタを動かせば川が動き、水アクタを動かしても川は動かない。
 //
 //  【W1 の制限】アクタのワールド行列は Transform.position のみ使う
 //  （Transform はワールド空間）。**回転は無視する ＝ Region は軸平行 AABB。**
@@ -53,9 +64,57 @@ pub fn collect_water_volumes(
     // ルートは world_line が一致するものだけを対象にする
     //（collect_mcs_in_world_line と同じフィルタ条件）
     for root in actors.iter().filter(|a| a.world_line == world_line) {
-        collect_in_actor(root, world, &mut out, &mut dfs_counter, true);
+        collect_in_actor(root, actors, world, world_line, &mut out, &mut dfs_counter, true);
     }
     out
+}
+
+/// 指定世界線のアクタツリーを DFS で走査し、**名前が一致する最初のアクタ**を返す。
+///
+/// 同名アクタを禁止していないエンジンなので、一致が複数ありうる。
+/// 「DFS で最初に見つかったもの」という決定的な規則を明文化しておくことで、
+/// 参照が指す先がフレームごとに揺れないことを保証する
+/// （＝川が別の点列へ勝手に切り替わらない）。
+///
+/// 名前が空の要求は常に None（「未設定」を「名前が空のアクタ」に解決させない）。
+pub fn find_actor_by_name<'a>(
+    actors:     &'a [Actor],
+    world_line: u32,
+    name:       &str,
+) -> Option<&'a Actor> {
+    if name.is_empty() { return None; }
+    /// サブツリーを DFS して名前一致を探す。
+    fn dfs<'a>(actor: &'a Actor, name: &str) -> Option<&'a Actor> {
+        if actor.name == name { return Some(actor); }
+        actor.children().iter().find_map(|c| dfs(c, name))
+    }
+    actors.iter()
+        .filter(|a| a.world_line == world_line)
+        .find_map(|root| dfs(root, name))
+}
+
+/// `control_point_ref` を解決し、参照先の制御点列をワールド空間の折れ線にして返す。
+///
+/// 解決できない（参照が空・アクタが見つからない・ControlPoint スロットが無い／無効）
+/// 場合は None を返し、呼び出し側は `spline_points` へフォールバックする。
+///
+/// ワールド解決には**参照先アクタの Transform**（位置・回転・スケール）を使う。
+/// 水ボリューム側のアクタ Transform は一切関与しない。
+fn resolve_control_polyline(
+    actors:     &[Actor],
+    world:      &World,
+    world_line: u32,
+    ref_name:   &str,
+) -> Option<Vec<[f32; 3]>> {
+    let target = find_actor_by_name(actors, world_line, ref_name)?;
+    // 1 アクタに ControlPoint スロットが複数ある場合は **0 番目（最初の有効スロット）**を使う。
+    // 「何番目か」まで参照に持たせるとユーザーが指定すべき情報が増えるため、
+    // 当面はスロット単位の enabled トグルで選ばせる設計にしてある。
+    let slot = target.slots().iter()
+        .find(|s| s.kind == ComponentKind::ControlPoint && s.enabled)?;
+    let comp = world.get::<ControlPointComponent>(slot.entity)?;
+    let tf   = world.get::<Transform>(target.entity).cloned().unwrap_or_default();
+    Some(PathEval::from_points(&comp.points, &tf).sample_polyline(PATH_DEFAULT_STEP_M))
 }
 
 /// collect_water_volumes の再帰実装。
@@ -67,9 +126,14 @@ pub fn collect_water_volumes(
 /// 非アクティブなサブツリーへも再帰する**。これは `collect_mcs_in_world_line` と
 /// キャンバスピックの採番規則に合わせるためで、ここでカウントを飛ばすと
 /// 水面クリックで「別のアクタ」が選択されるズレが起きる。
+///
+/// `all_actors` は**世界線のルート一覧**（`control_point_ref` の名前解決に使う）。
+/// 参照先は自分の子孫とは限らないため、再帰の各段でツリー全体へ触れる必要がある。
 fn collect_in_actor(
     actor:         &Actor,
+    all_actors:    &[Actor],
     world:         &World,
+    world_line:    u32,
     out:           &mut Vec<ResolvedWaterVolume>,
     dfs_counter:   &mut u32,
     parent_active: bool,
@@ -84,29 +148,22 @@ fn collect_in_actor(
             .map(|t| t.position)
             .unwrap_or(FALLBACK_ACTOR_POSITION);
 
-        // ── 同一アクタの ControlPointComponent を川の折れ線として先に評価する ──
-        //
-        // 「点を置く汎用コンポーネント（ControlPoint）」と「点を使う機能（川）」を
-        // 分離してあるので、川は**同じアクタに載っている点列**を探して使う。
-        // ここでは Transform の位置だけでなく**回転・スケールを含む完全な Transform**を
-        // 使う（`from_component` に渡す actor_pos が位置のみなのと異なる点）。
-        // アクタを回したら川も一緒に回るのが当然の挙動であり、PathEval がその変換を担う。
-        //
-        // enabled=false の ControlPoint スロットは**見つからなかった扱い**にする。
-        // これにより「制御点で編集する／従来の spline_points を使う」を
-        // スロットのトグル 1 つで切り替えられる（併用時の優先順位をユーザーが握れる）。
-        let control_polyline: Option<Vec<[f32; 3]>> = actor.slots().iter()
-            .find(|s| s.kind == ComponentKind::ControlPoint && s.enabled)
-            .and_then(|s| world.get::<ControlPointComponent>(s.entity))
-            .map(|cp| {
-                let tf = world.get::<Transform>(actor.entity).cloned().unwrap_or_default();
-                PathEval::from_points(&cp.points, &tf).sample_polyline(PATH_DEFAULT_STEP_M)
-            });
-
         for slot in actor.slots() {
             // 無効スロットは描画・問い合わせともに対象外
             if slot.kind != ComponentKind::WaterVolume || !slot.enabled { continue; }
             let Some(wv) = world.get::<WaterVolumeComponent>(slot.entity) else { continue };
+
+            // ── 川の制御点の出どころ（W4.1: 明示参照方式）──────────
+            // 参照名が設定されているときだけ、その名前のアクタの ControlPointComponent を
+            // ワールド解決して折れ線にする。空 or 解決不能なら None（＝spline_points 経路）。
+            // **水ボリュームごと**に評価するのは、同じアクタに複数の川スロットが載って
+            // それぞれ別のパスを参照する構成を許すため。
+            let control_polyline: Option<Vec<[f32; 3]>> = if wv.kind == WaterVolumeKind::Spline {
+                resolve_control_polyline(all_actors, world, world_line, &wv.control_point_ref)
+            } else {
+                None
+            };
+
             let resolved = ResolvedWaterVolume::from_component_with_path(
                 wv, pos, dfs_id, control_polyline.as_deref());
             // 川（Spline。W4）は制御点が 2 点未満だと折れ線が作れず、
@@ -119,7 +176,7 @@ fn collect_in_actor(
     // 子孫へは**常に**再帰する。非アクティブなサブツリーの水は収集されないが
     //（active フラグが伝播するため）、DFS 連番だけは進める必要がある。
     for child in actor.children() {
-        collect_in_actor(child, world, out, dfs_counter, active);
+        collect_in_actor(child, all_actors, world, world_line, out, dfs_counter, active);
     }
 }
 
@@ -180,6 +237,23 @@ mod tests {
             collect_water_volumes(&self.actors, &self.world, 0)
         }
 
+        /// 指定名・指定位置に ControlPointComponent だけを持つアクターを作って返す
+        ///（川の参照先として使う。まだツリーへは追加しない）。
+        fn make_path_actor(
+            &mut self,
+            name:   &str,
+            pos:    [f32; 3],
+            points: &[[f32; 3]],
+        ) -> Actor {
+            let entity = self.world.spawn();
+            let mut tf = Transform::default();
+            tf.position = pos;
+            self.world.insert(entity, tf);
+            let mut actor = Actor::new(entity, name);
+            self.add_control_points(&mut actor, points, true);
+            actor
+        }
+
         /// 既存アクターに ControlPointComponent スロットを 1 つ足す
         ///（点はアクタ相対座標で与える）。川との統合テスト用。
         fn add_control_points(
@@ -207,10 +281,10 @@ mod tests {
     /// ControlPoint 側が採用されたかどうかを Z 座標だけで判別できるようにする。
     const SPLINE_MARKER_Z: f32 = 777.0;
 
-    /// 同一アクタに ControlPointComponent があれば、spline_points ではなく
-    /// そちらから川が組まれること（優先度の契約）。
+    /// **同一アクタの ControlPointComponent を自動優先しないこと**（W4.1 の主変更）。
+    /// 参照を設定していないので、点が同居していても spline_points が使われる。
     #[test]
-    fn river_prefers_control_points_over_spline_points() {
+    fn river_ignores_same_actor_control_points_without_ref() {
         let mut s = TestScene::new();
         let mut a = s.make_water_actor_with(
             [0.0, 0.0, 0.0],
@@ -224,75 +298,154 @@ mod tests {
         let vols = s.collect();
         assert_eq!(vols.len(), 1);
         let river = vols[0].river.as_ref().expect("川が成立する");
-        assert_eq!(river.nodes[0].pos[2], 0.0, "spline_points の目印 Z が出たら誤り");
+        assert_eq!(river.nodes[0].pos[2], SPLINE_MARKER_Z,
+            "参照未設定なら同居する ControlPoint は使われないこと");
     }
 
-    /// ControlPointComponent の点が 1 点以下なら川にならないので、
-    /// spline_points へフォールバックすること。
+    /// 参照名を**自分自身**に設定すると、そのアクタの ControlPoint が使われること。
     #[test]
-    fn river_falls_back_when_control_points_too_few() {
+    fn river_uses_control_points_when_ref_points_to_self() {
         let mut s = TestScene::new();
         let mut a = s.make_water_actor_with(
             [0.0, 0.0, 0.0],
             WaterVolumeKind::Spline,
-            |w| w.spline_points = vec![
-                [0.0, 0.0, SPLINE_MARKER_Z], [10.0, 0.0, SPLINE_MARKER_Z]],
+            |w| {
+                w.spline_points = vec![
+                    [0.0, 0.0, SPLINE_MARKER_Z], [10.0, 0.0, SPLINE_MARKER_Z]];
+                w.control_point_ref = "water".to_string();
+            },
         );
-        s.add_control_points(&mut a, &[[0.0, 0.0, 0.0]], true);
+        s.add_control_points(&mut a, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], true);
         s.actors.push(a);
 
         let vols = s.collect();
-        assert_eq!(vols.len(), 1);
+        let river = vols[0].river.as_ref().expect("川が成立する");
+        assert_eq!(river.nodes[0].pos[2], 0.0, "spline_points の目印 Z が出たら誤り");
+    }
+
+    /// 参照先が**別アクタ**でも解決でき、そのときのワールド解決には
+    /// **参照先アクタの Transform** が使われること（水アクタの位置は効かない）。
+    #[test]
+    fn river_resolves_ref_to_other_actor_with_that_actors_transform() {
+        let mut s = TestScene::new();
+        // 水アクタは X = 500（この位置が川に効いてはいけない）
+        let water = s.make_water_actor_with(
+            [500.0, 0.0, 0.0],
+            WaterVolumeKind::Spline,
+            |w| w.control_point_ref = "RiverPath".to_string(),
+        );
+        // パスアクタは X = 100。ローカル (0,0,0) → ワールド (100,0,0) になるはず。
+        let path = s.make_path_actor(
+            "RiverPath", [100.0, 0.0, 0.0], &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]);
+        s.actors.push(water);
+        s.actors.push(path);
+
+        let vols = s.collect();
+        let river = vols[0].river.as_ref().expect("別アクタ参照で川が成立する");
+        assert_eq!(river.nodes[0].pos[0], 100.0,
+            "参照先アクタの Transform が使われること（500 や 600 なら誤り）");
+    }
+
+    /// 参照名が解決できない（そんなアクタが居ない）ときは spline_points へ落ちること。
+    #[test]
+    fn river_falls_back_when_ref_actor_not_found() {
+        let mut s = TestScene::new();
+        let a = s.make_water_actor_with(
+            [0.0, 0.0, 0.0],
+            WaterVolumeKind::Spline,
+            |w| {
+                w.spline_points = vec![
+                    [0.0, 0.0, SPLINE_MARKER_Z], [10.0, 0.0, SPLINE_MARKER_Z]];
+                w.control_point_ref = "NoSuchActor".to_string();
+            },
+        );
+        s.actors.push(a);
+
+        let vols = s.collect();
+        let river = vols[0].river.as_ref().expect("spline_points 側で川が成立する");
+        assert_eq!(river.nodes[0].pos[2], SPLINE_MARKER_Z);
+    }
+
+    /// 参照先の点が 1 点以下なら川にならないので、spline_points へフォールバックすること。
+    #[test]
+    fn river_falls_back_when_referenced_points_too_few() {
+        let mut s = TestScene::new();
+        let a = s.make_water_actor_with(
+            [0.0, 0.0, 0.0],
+            WaterVolumeKind::Spline,
+            |w| {
+                w.spline_points = vec![
+                    [0.0, 0.0, SPLINE_MARKER_Z], [10.0, 0.0, SPLINE_MARKER_Z]];
+                w.control_point_ref = "RiverPath".to_string();
+            },
+        );
+        let path = s.make_path_actor("RiverPath", [0.0, 0.0, 0.0], &[[0.0, 0.0, 0.0]]);
+        s.actors.push(a);
+        s.actors.push(path);
+
+        let vols = s.collect();
         let river = vols[0].river.as_ref().expect("spline_points 側で川が成立する");
         assert_eq!(river.nodes[0].pos[2], SPLINE_MARKER_Z, "spline_points が使われること");
     }
 
-    /// ControlPoint スロットが enabled=false なら spline_points へフォールバックすること
-    ///（＝スロットのトグルで「どちらの点列を使うか」を切り替えられる）。
+    /// 参照先の ControlPoint スロットが enabled=false なら spline_points へ落ちること
+    ///（＝スロットのトグルで参照を一時的に切れる）。
     #[test]
-    fn river_falls_back_when_control_point_slot_disabled() {
+    fn river_falls_back_when_referenced_slot_disabled() {
         let mut s = TestScene::new();
-        let mut a = s.make_water_actor_with(
+        let a = s.make_water_actor_with(
             [0.0, 0.0, 0.0],
             WaterVolumeKind::Spline,
-            |w| w.spline_points = vec![
-                [0.0, 0.0, SPLINE_MARKER_Z], [10.0, 0.0, SPLINE_MARKER_Z]],
+            |w| {
+                w.spline_points = vec![
+                    [0.0, 0.0, SPLINE_MARKER_Z], [10.0, 0.0, SPLINE_MARKER_Z]];
+                w.control_point_ref = "RiverPath".to_string();
+            },
         );
-        s.add_control_points(&mut a, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], false);
+        // enabled = false で ControlPoint を持つパスアクタを組む
+        let path_entity = s.world.spawn();
+        s.world.insert(path_entity, Transform::default());
+        let mut path = Actor::new(path_entity, "RiverPath");
+        s.add_control_points(&mut path, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], false);
         s.actors.push(a);
+        s.actors.push(path);
 
         let vols = s.collect();
-        assert_eq!(vols.len(), 1);
         let river = vols[0].river.as_ref().unwrap();
         assert_eq!(river.nodes[0].pos[2], SPLINE_MARKER_Z, "無効スロットは無視されること");
     }
 
-    /// ControlPoint 経路でも surface_height が Y に効くこと。
+    /// 参照経路でも surface_height が Y に効くこと。
     #[test]
-    fn river_from_control_points_applies_surface_height() {
+    fn river_from_ref_applies_surface_height() {
         let mut s = TestScene::new();
-        let mut a = s.make_water_actor_with(
+        let a = s.make_water_actor_with(
             [0.0, 0.0, 0.0],
             WaterVolumeKind::Spline,
-            |w| w.surface_height = 3.0,
+            |w| {
+                w.surface_height    = 3.0;
+                w.control_point_ref = "RiverPath".to_string();
+            },
         );
-        s.add_control_points(&mut a, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], true);
+        let path = s.make_path_actor(
+            "RiverPath", [0.0, 0.0, 0.0], &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]);
         s.actors.push(a);
+        s.actors.push(path);
 
         let vols = s.collect();
         let river = vols[0].river.as_ref().unwrap();
         assert_eq!(river.nodes[0].pos[1], 3.0, "制御点 Y(0) + surface_height(3)");
     }
 
-    /// ControlPoint 経路でアクタ位置が二重に足されないこと。
+    /// 参照経路でアクタ位置が二重に足されないこと。
     /// PathEval が Transform を適用済みなので、resolved 側で足すと 200 になってしまう。
     #[test]
-    fn river_from_control_points_does_not_double_apply_actor_position() {
+    fn river_from_ref_does_not_double_apply_actor_position() {
         let mut s = TestScene::new();
         let mut a = s.make_water_actor_with(
             [100.0, 0.0, 0.0],
             WaterVolumeKind::Spline,
-            |_| {},
+            |w| w.control_point_ref = "water".to_string(),
         );
         // ローカル (0,0,0) → ワールド (100,0,0) になるはず
         s.add_control_points(&mut a, &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], true);
@@ -301,6 +454,26 @@ mod tests {
         let vols = s.collect();
         let river = vols[0].river.as_ref().unwrap();
         assert_eq!(river.nodes[0].pos[0], 100.0, "200 なら二重加算");
+    }
+
+    /// 参照先アクタは**子アクタでも**名前で見つかること（DFS 探索の契約）。
+    #[test]
+    fn find_actor_by_name_searches_descendants() {
+        let mut s = TestScene::new();
+        let child = s.make_path_actor("DeepPath", [0.0, 0.0, 0.0], &[[0.0; 3], [10.0, 0.0, 0.0]]);
+        let parent_entity = s.world.spawn();
+        s.world.insert(parent_entity, Transform::default());
+        let mut parent = Actor::new(parent_entity, "parent");
+        parent.add_child(child);
+        s.actors.push(parent);
+
+        assert!(find_actor_by_name(&s.actors, 0, "DeepPath").is_some(), "子孫まで探すこと");
+        assert!(find_actor_by_name(&s.actors, 0, "parent").is_some());
+        assert!(find_actor_by_name(&s.actors, 0, "missing").is_none());
+        // 空文字（未設定）は常に見つからない扱い
+        assert!(find_actor_by_name(&s.actors, 0, "").is_none());
+        // 世界線が違えば見つからない
+        assert!(find_actor_by_name(&s.actors, 7, "DeepPath").is_none());
     }
 
     /// 通常のアクター 1 個から 1 ボリュームが収集される。

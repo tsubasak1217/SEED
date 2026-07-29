@@ -272,6 +272,13 @@ impl App {
     /// 点を選択し、エディタへ通知する（`CONTROL_POINT_SELECTED:{actor},{slot},{index}`）。
     pub(super) fn select_control_point(&mut self, sel: SelectedControlPoint) {
         self.selected_control_point = Some(sel);
+        // 常設の計器: 「選択された点」と「そこにギズモを出せるか」を 1 行で残す。
+        // world=None なら点の解決に失敗している（＝ギズモは描かれない）。
+        // tool_mode=Select ではギズモそのものが生成されない仕様なので、
+        // 「選択されたのに何も出ない」ときの最有力候補として必ず出しておく。
+        println!("[CTRL_POINT] selected={},{},{} world={:?} tool_mode={:?}",
+            sel.actor_dfs_id, sel.slot_idx, sel.index,
+            self.selected_control_point_world_pos(), self.tool_mode);
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!(
                 "CONTROL_POINT_SELECTED:{},{},{}",
@@ -370,16 +377,36 @@ impl App {
     /// （掴んでいる点を動かす操作が、点の選び直しに奪われないようにするため）。
     pub(super) fn try_pick_control_point(&mut self, cx: f32, cy: f32) -> bool {
         let paths = self.resolved_control_point_paths();
-        if paths.is_empty() { return false; }
+        // ── 常設の計器（[CTRL_POINT]）──────────────────────────
+        // 「キューブをクリックしてもギズモが出ない」系の切り分けは、
+        //   ① そもそもピックが呼ばれているか（＝ギズモ軸ヒットに先取りされていないか）
+        //   ② 候補パスが集まっているか（表示条件・選択アクタ）
+        //   ③ レイが当たったか
+        //   ④ ギズモが描かれる条件（ツールモード）を満たすか
+        // の 4 段を 1 行ずつ見れば必ず特定できる。頻度はクリック 1 回につき 1 行なので
+        // 常設しても実害が無い（毎フレームのログは絶対に足さないこと）。
+        let visible    = self.control_points_visible();
+        let point_total: usize = paths.iter().map(|p| p.eval.len()).sum();
+        if paths.is_empty() {
+            println!("[CTRL_POINT] pick skip: visible={visible} paths=0 \
+                      (表示条件かアクタ選択、または ControlPoint スロットが無い)");
+            return false;
+        }
         let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) else { return false };
         let (ro, rd) = self.editor_3d_ray(cx, cy, ws.width as f32, ws.height as f32);
 
         let hit = control_point_scene_gizmo::pick_control_point(
             &paths, ro, rd, |p| self.control_point_cube_half(p),
         );
-        let Some(hit) = hit else { return false };
+        let Some(hit) = hit else {
+            println!("[CTRL_POINT] pick hit=none paths={} points={point_total} \
+                      cursor=({cx:.0},{cy:.0})", paths.len());
+            return false;
+        };
         let Some(dfs) = self.actor_virtual_selected_idx else { return false };
 
+        println!("[CTRL_POINT] pick hit=slot{} index{} dist={:.2} tool_mode={:?}",
+            hit.slot_idx, hit.index, hit.distance, self.tool_mode);
         self.select_control_point(SelectedControlPoint {
             actor_dfs_id: dfs as u32,
             slot_idx:     hit.slot_idx,

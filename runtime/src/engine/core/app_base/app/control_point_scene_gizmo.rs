@@ -198,6 +198,11 @@ fn add_path_lines(lb: &mut LineBatch, eval: &PathEval) {
 }
 
 /// 各制御点にワイヤキューブを追加する（選択中の点だけ色を変える）。
+///
+/// キューブは点の**ワールド姿勢と拡縮**（`ResolvedControlPoint`）で変形して描く。
+/// 見た目に出しておかないと、インスペクタで回転・スケールを触っても
+/// ビューポート上の何も変わらず「効いていないのでは」と誤解される。
+/// 基準の半辺長（画面上で一定の見かけの大きさ）に点のスケールを軸ごとに掛ける。
 fn add_path_cubes(
     lb:            &mut LineBatch,
     path:          &ResolvedPathSlot,
@@ -207,7 +212,8 @@ fn add_path_cubes(
     for (i, p) in path.eval.points().iter().enumerate() {
         let is_selected = selected == Some((path.slot_idx, i as u32));
         let color = if is_selected { POINT_CUBE_SELECTED_COLOR } else { POINT_CUBE_COLOR };
-        add_wire_cube(lb, p.position, cube_half_size(p.position, half_size_for), color);
+        let half  = cube_half_size(p.position, half_size_for);
+        add_oriented_wire_cube(lb, p.position, half, p.rotation, p.scale, color);
     }
 }
 
@@ -241,12 +247,66 @@ fn add_wire_cube(lb: &mut LineBatch, center: [f32; 3], half: f32, color: [f32; 4
     lb.add_line(v[2], v[6], color); lb.add_line(v[3], v[7], color);
 }
 
+/// 中心・基準半辺長・姿勢・拡縮から**変形したワイヤキューブ**（12 辺）を追加する。
+///
+/// 単位立方体の 8 頂点（±1）を「拡縮 → 回転 → 平行移動」の行列で写して結ぶ。
+/// 軸ごとの半辺長は `half * scale[axis]`（`half` は画面上の見かけを一定に保つ基準値）。
+///
+/// スケールが 0 や負でも行列は作れる（潰れた／裏返ったキューブとして素直に描画される）。
+/// これは「0 を入れた」ことがユーザーに見えるべきなので、ここでは補正しない。
+fn add_oriented_wire_cube(
+    lb:       &mut LineBatch,
+    center:   [f32; 3],
+    half:     f32,
+    rotation: [f32; 3],
+    scale:    [f32; 3],
+    color:    [f32; 4],
+) {
+    // 単位立方体の頂点（±1）を写す行列。スケールに基準半辺長を畳み込んでおく。
+    let m = Transform {
+        position: center,
+        rotation,
+        scale: [half * scale[0], half * scale[1], half * scale[2]],
+    }.to_mat4();
+
+    /// 行優先 4x4 行列で点（w = 1）を変換する。
+    fn xf(m: &[[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
+        [
+            m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
+            m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],
+            m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2] + m[2][3],
+        ]
+    }
+
+    // 頂点の並びは `add_wire_cube` と同じ（下面 0-3 / 上面 4-7）。
+    let unit = [
+        [-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [-1.0, 1.0, -1.0],
+        [-1.0, -1.0,  1.0], [1.0, -1.0,  1.0], [1.0, 1.0,  1.0], [-1.0, 1.0,  1.0],
+    ];
+    let v: Vec<[f32; 3]> = unit.iter().map(|&p| xf(&m, p)).collect();
+
+    // 下面 4 辺
+    lb.add_line(v[0], v[1], color); lb.add_line(v[1], v[2], color);
+    lb.add_line(v[2], v[3], color); lb.add_line(v[3], v[0], color);
+    // 上面 4 辺
+    lb.add_line(v[4], v[5], color); lb.add_line(v[5], v[6], color);
+    lb.add_line(v[6], v[7], color); lb.add_line(v[7], v[4], color);
+    // 垂直 4 辺
+    lb.add_line(v[0], v[4], color); lb.add_line(v[1], v[5], color);
+    lb.add_line(v[2], v[6], color); lb.add_line(v[3], v[7], color);
+}
+
 // ─── ピック ──────────────────────────────────────────────────
 
 /// レイに当たった制御点のうち、**最も手前のもの**を返す。
 ///
 /// 判定はキューブの軸平行 AABB（見た目より `POINT_PICK_TOLERANCE_SCALE` 倍だけ大きい）。
 /// レイ原点より後ろ（`t < 0`）の交差は採らない。
+///
+/// 描画は点の姿勢・拡縮で変形したキューブだが、**判定は軸平行のまま**にしてある
+/// （回転した OBB 判定を持ち込むほどの精度は要らない）。ただし拡縮で大きくした点が
+/// 掴めなくならないよう、判定の箱には**軸ごとのスケールの最大値**を掛けて広げる
+/// （縮めた点は基準サイズのまま = 掴みやすさを優先する）。
 pub fn pick_control_point(
     paths:         &[ResolvedPathSlot],
     ray_origin:    [f32; 3],
@@ -256,7 +316,9 @@ pub fn pick_control_point(
     let mut best: Option<ControlPointHit> = None;
     for path in paths {
         for (i, p) in path.eval.points().iter().enumerate() {
-            let half = cube_half_size(p.position, &half_size_for) * POINT_PICK_TOLERANCE_SCALE;
+            let half = cube_half_size(p.position, &half_size_for)
+                * POINT_PICK_TOLERANCE_SCALE
+                * pick_scale_factor(p.scale);
             let Some(t) = ray_aabb_distance(ray_origin, ray_dir, p.position, half) else { continue };
             if best.as_ref().map(|b| t < b.distance).unwrap_or(true) {
                 best = Some(ControlPointHit { slot_idx: path.slot_idx, index: i as u32, distance: t });
@@ -264,6 +326,14 @@ pub fn pick_control_point(
         }
     }
     best
+}
+
+/// 点のワールド拡縮から、ピック用の箱をどれだけ広げるかを返す（1 未満には縮めない）。
+///
+/// 軸ごとの絶対値の最大を採るのは、回転を無視した軸平行判定で
+/// 「どの向きに回っていても見た目のキューブを内包する」保守的な箱にするため。
+fn pick_scale_factor(scale: [f32; 3]) -> f32 {
+    scale[0].abs().max(scale[1].abs()).max(scale[2].abs()).max(1.0)
 }
 
 /// レイと「中心 `center`・半辺長 `half` の軸平行立方体」の交差距離（スラブ法）。
@@ -370,6 +440,16 @@ mod tests {
             eval: PathEval::from_points(&pts, &Transform::identity()),
         }];
         assert!(pick_control_point(&paths, [100.0, 100.0, -20.0], [0.0, 0.0, 1.0], |_| 1.0).is_none());
+    }
+
+    /// ピック用の拡大率は「軸ごとの最大スケール（下限 1）」であること。
+    /// 縮めた点でも基準サイズのまま掴め、拡大した点は見た目どおり掴めること。
+    #[test]
+    fn pick_scale_factor_never_shrinks_and_takes_max_axis() {
+        assert_eq!(pick_scale_factor([1.0, 1.0, 1.0]), 1.0);
+        assert_eq!(pick_scale_factor([0.1, 0.2, 0.3]), 1.0, "縮小しても判定は基準サイズ");
+        assert_eq!(pick_scale_factor([0.5, 4.0, 1.0]), 4.0, "最大軸を採る");
+        assert_eq!(pick_scale_factor([-5.0, 1.0, 1.0]), 5.0, "負スケールは絶対値で見る");
     }
 
     /// キューブの半辺長は下限で切られること（遠景で潰れない・近景で消えない）。

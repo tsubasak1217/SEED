@@ -67,6 +67,13 @@ pub const MAX_CONTROL_POINTS: usize = 256;
 /// `rotation` の既定値（度・YXZ 順）。無回転。
 fn default_rotation() -> [f32; 3] { [0.0, 0.0, 0.0] }
 
+/// `scale` の既定値（等倍）。
+///
+/// 0 埋めの `Default` に任せると「スケール 0 の点」になり、
+/// ビューポートのキューブが潰れて掴めなくなる（＝壊れた既定値）。
+/// 非ゼロ既定なので `#[serde(default = "...")]` で明示する。
+fn default_scale() -> [f32; 3] { [1.0, 1.0, 1.0] }
+
 /// `interp` の既定値。
 ///
 /// CatmullRom を既定にする理由は、川・カメラパス・巡回いずれでも
@@ -126,6 +133,16 @@ pub struct ControlPoint {
     /// 姿勢（度・YXZ 順）。カメラパスの向きや、巡回中の向き指定に使う。既定は無回転。
     #[serde(default = "default_rotation")]
     pub rotation: [f32; 3],
+    /// 拡縮（XYZ 倍率）。既定は等倍。
+    ///
+    /// **点そのものは大きさを持たない**が、点に紐づく「その地点でのスケール」を
+    /// 持たせておくと、カメラパスのズーム・巡回中のキャラサイズ・スポーン地点の
+    /// 生成スケールなどを点列だけで表現できる。
+    /// 川（`WaterVolumeComponent`）は位置しか使わないため、この値の影響を受けない。
+    /// ビューポートのワイヤキューブは rotation と併せてこの値で変形して描く
+    /// （＝設定値が見た目で分かる）。
+    #[serde(default = "default_scale")]
+    pub scale: [f32; 3],
     /// この点の時刻パラメータ。単位・原点は消費側に委ねる（ファイル冒頭コメント参照）。
     #[serde(default)]
     pub time: f32,
@@ -139,6 +156,7 @@ impl Default for ControlPoint {
         Self {
             position: [0.0, 0.0, 0.0],
             rotation: default_rotation(),
+            scale:    default_scale(),
             time:     0.0,
             interp:   default_interp(),
         }
@@ -204,13 +222,14 @@ impl Component for ControlPointComponent {}
 mod tests {
     use super::*;
 
-    /// 制御点の既定値が「原点・無回転・時刻 0・CatmullRom」であること
+    /// 制御点の既定値が「原点・無回転・等倍・時刻 0・CatmullRom」であること
     /// （インスペクタで点を足した直後の見え方の契約）。
     #[test]
     fn control_point_defaults_are_documented_values() {
         let p = ControlPoint::default();
         assert_eq!(p.position, [0.0, 0.0, 0.0]);
         assert_eq!(p.rotation, [0.0, 0.0, 0.0]);
+        assert_eq!(p.scale, [1.0, 1.0, 1.0], "既定は等倍（0 だとキューブが潰れる）");
         assert_eq!(p.time, 0.0);
         assert_eq!(p.interp, ControlPointInterp::CatmullRom);
     }
@@ -232,6 +251,7 @@ mod tests {
         assert_eq!(d.points.len(), 1);
         assert_eq!(d.points[0].position, [1.0, 2.0, 3.0]);
         assert_eq!(d.points[0].rotation, [0.0, 0.0, 0.0], "未指定は既定値");
+        assert_eq!(d.points[0].scale, [1.0, 1.0, 1.0], "**scale が無い旧 .scene でも等倍で復元される**");
         assert_eq!(d.points[0].time, 0.0);
         assert_eq!(d.points[0].interp, ControlPointInterp::CatmullRom, "未指定は CatmullRom");
     }
@@ -241,8 +261,8 @@ mod tests {
     fn data_round_trips() {
         let c = ControlPointComponent {
             points: vec![
-                ControlPoint { position: [1.0, 0.0, 0.0], rotation: [0.0, 90.0, 0.0], time: 0.0, interp: ControlPointInterp::Linear },
-                ControlPoint { position: [2.0, 1.0, 0.0], rotation: [0.0, 0.0, 0.0],  time: 1.5, interp: ControlPointInterp::Step },
+                ControlPoint { position: [1.0, 0.0, 0.0], rotation: [0.0, 90.0, 0.0], scale: [2.0, 1.0, 0.5], time: 0.0, interp: ControlPointInterp::Linear },
+                ControlPoint { position: [2.0, 1.0, 0.0], rotation: [0.0, 0.0, 0.0],  scale: [1.0, 1.0, 1.0], time: 1.5, interp: ControlPointInterp::Step },
             ],
         };
         let back = ControlPointComponent::from_data(&c.to_data());

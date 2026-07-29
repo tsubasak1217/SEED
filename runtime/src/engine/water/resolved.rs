@@ -151,11 +151,15 @@ impl ResolvedWaterVolume {
 
     /// `from_component` に「外から差し込むワールド空間の折れ線」を足した版。
     ///
-    /// `control_polyline` は **同一アクタの `ControlPointComponent` を評価した結果**
-    /// （`PathEval::sample_polyline`）を想定する。`Some` かつ 2 点以上のときは
-    /// `spline_points` を**完全に無視**して、こちらで川を組む。
-    /// 汎用パス（ControlPoint）が付いているなら、それがユーザーの編集した唯一の真実であり、
+    /// `control_polyline` は **`control_point_ref` で指定されたアクタの
+    /// `ControlPointComponent` を評価した結果**（`PathEval::sample_polyline`）を想定する。
+    /// `Some` かつ 2 点以上のときは `spline_points` を**完全に無視**して、こちらで川を組む。
+    /// 参照が明示されているなら、それがユーザーの指定した唯一の真実であり、
     /// 2 つの点列を混ぜると「見えている線と流れる線が違う」状態を再び作ってしまうため。
+    ///
+    /// **どちらの点列を使うかの判断は呼び出し側（`collect`）が行う**。
+    /// 本関数は「差し込まれた折れ線があるならそれを使う」だけで、
+    /// 参照名の解決やアクタ探索は一切知らない（描画層に検索を持ち込まないため）。
     ///
     /// ## 座標系の注意（二重加算の禁止）
     /// `control_polyline` は PathEval がアクタ Transform（位置・回転・スケール）を
@@ -219,8 +223,10 @@ impl ResolvedWaterVolume {
                             .collect(),
                     };
                     // 水中とみなす厚みは川専用の river_depth（負値は 0 に丸める）。
+                    // 分割密度はボリュームごとの river_segment_length（W4.1）。
                     RiverPath::build(
-                        &world, c.river_width, c.flow_speed, c.river_depth.abs())
+                        &world, c.river_width, c.flow_speed, c.river_depth.abs(),
+                        c.river_segment_length)
                 } else {
                     None
                 };

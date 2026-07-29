@@ -450,8 +450,12 @@ impl App {
                             .collect::<Vec<_>>()
                             .join(";")
                     ).unwrap_or_default();
+                    // 川の制御点参照（W4.1）は任意の文字列（アクタ名）なので
+                    // 必ず JSON エスケープして送る（名前に " や \ が入っても壊れないように）。
+                    let cp_ref_json = serde_json::to_string(&d.control_point_ref)
+                        .unwrap_or_else(|_| "\"\"".to_string());
                     ("WaterVolumeComponent", format!(
-                        r#","kind":{kind_json},"surface_height":{:.4},"region_hx":{:.4},"region_hy":{:.4},"region_hz":{:.4},"ocean_extent":{:.4},"shallow_r":{:.4},"shallow_g":{:.4},"shallow_b":{:.4},"deep_r":{:.4},"deep_g":{:.4},"deep_b":{:.4},"absorption_distance":{:.4},"surface_opacity":{:.4},"foam_r":{:.4},"foam_g":{:.4},"foam_b":{:.4},"foam_width":{:.4},"foam_intensity":{:.4},"wave_amplitude":{:.4},"wave_scale":{:.4},"wave_speed":{:.4},"fresnel_power":{:.4},"fresnel_strength":{:.4},"reflect_r":{:.4},"reflect_g":{:.4},"reflect_b":{:.4},"refraction_distortion":{:.4},"ripple_strength":{:.4},"ripple_foam_threshold":{:.4},"shore_wave_strength":{:.4},"shore_wave_length":{:.4},"shore_wave_period":{:.4},"shore_wave_foam":{:.4},"river_width":{:.4},"flow_speed":{:.4},"river_depth":{:.4},"spline_points":{spline_json}"#,
+                        r#","kind":{kind_json},"surface_height":{:.4},"region_hx":{:.4},"region_hy":{:.4},"region_hz":{:.4},"ocean_extent":{:.4},"shallow_r":{:.4},"shallow_g":{:.4},"shallow_b":{:.4},"deep_r":{:.4},"deep_g":{:.4},"deep_b":{:.4},"absorption_distance":{:.4},"surface_opacity":{:.4},"foam_r":{:.4},"foam_g":{:.4},"foam_b":{:.4},"foam_width":{:.4},"foam_intensity":{:.4},"wave_amplitude":{:.4},"wave_scale":{:.4},"wave_speed":{:.4},"fresnel_power":{:.4},"fresnel_strength":{:.4},"reflect_r":{:.4},"reflect_g":{:.4},"reflect_b":{:.4},"refraction_distortion":{:.4},"ripple_strength":{:.4},"ripple_foam_threshold":{:.4},"shore_wave_strength":{:.4},"shore_wave_length":{:.4},"shore_wave_period":{:.4},"shore_wave_foam":{:.4},"river_width":{:.4},"flow_speed":{:.4},"river_depth":{:.4},"river_segment_length":{:.4},"control_point_ref":{cp_ref_json},"spline_points":{spline_json}"#,
                         d.surface_height,
                         d.region_half_extents[0], d.region_half_extents[1], d.region_half_extents[2],
                         d.ocean_extent,
@@ -478,6 +482,7 @@ impl App {
                         d.river_width,
                         d.flow_speed,
                         d.river_depth,
+                        d.river_segment_length,
                     ))
                 }
                 ComponentData::AnimatorComponent(d) => {
