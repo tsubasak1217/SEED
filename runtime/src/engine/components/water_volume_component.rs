@@ -60,6 +60,8 @@ fn default_wave_amplitude() -> f32 { 0.06 }
 fn default_wave_scale() -> f32 { 0.12 }
 /// wave_speed の既定値（波のスクロール速度）。
 fn default_wave_speed() -> f32 { 0.6 }
+// wave_direction_deg の既定値は 0.0（＝+Z 方向へ進む）なので、
+// serde の型既定（f32 = 0.0）で足りる。専用の default 関数は置かない。
 /// fresnel_power の既定値（Schlick 近似の指数）。
 fn default_fresnel_power() -> f32 { 5.0 }
 /// fresnel_strength の既定値（フレネル反射の寄与率）。
@@ -213,6 +215,23 @@ pub struct WaterVolumeComponentData {
     /// 波のスクロール速度
     #[serde(default = "default_wave_speed")]
     pub wave_speed: f32,
+    /// 解析波（通常の波）の進行方位角（度。Phase W6.3）。
+    ///
+    /// ## 規約
+    /// ワールド XZ 平面上の方位角。**0 = +Z 方向へ進む**／
+    /// **正の角度で +X 側へ回る**（＝上から見て時計回り。90° で +X、180° で −Z）。
+    /// 内部の 6 層は**この角度でまとめて剛体回転**するだけで、
+    /// 層ごとの方向の散らばり（タイル感対策）はそのまま保たれる。
+    ///
+    /// ## 川との関係
+    /// 川（Spline）では水面模様が別途「流れ」で下流へ移流されるが、
+    /// 移流はサンプル座標の平行移動、この角度は波の伝播方向であり**互いに独立**である。
+    /// 両者は衝突しない（流れに直交する波は流されても位相が変わらない、
+    /// という物理的に妥当な見え方になる）。
+    ///
+    /// 既定 0.0。範囲の制限は設けない（360 を超える値も剰余として自然に働く）。
+    #[serde(default)]
+    pub wave_direction_deg: f32,
     /// フレネル指数（Schlick 近似の累乗。大きいほど正面が透ける）
     #[serde(default = "default_fresnel_power")]
     pub fresnel_power: f32,
@@ -312,6 +331,8 @@ impl Default for WaterVolumeComponentData {
             wave_amplitude:        default_wave_amplitude(),
             wave_scale:            default_wave_scale(),
             wave_speed:            default_wave_speed(),
+            // 方位角の既定は 0 度（＝+Z 方向へ進む）。
+            wave_direction_deg:    0.0,
             fresnel_power:         default_fresnel_power(),
             fresnel_strength:      default_fresnel_strength(),
             reflection_color:      default_reflection_color(),
@@ -371,6 +392,8 @@ pub struct WaterVolumeComponent {
     pub wave_scale: f32,
     /// 波のスクロール速度
     pub wave_speed: f32,
+    /// 解析波の進行方位角（度。0 = +Z、正で +X 側へ回る。Phase W6.3）
+    pub wave_direction_deg: f32,
     /// フレネル指数
     pub fresnel_power: f32,
     /// フレネル反射の寄与率（0..1）
@@ -423,6 +446,7 @@ impl WaterVolumeComponent {
             wave_amplitude:        data.wave_amplitude,
             wave_scale:            data.wave_scale,
             wave_speed:            data.wave_speed,
+            wave_direction_deg:    data.wave_direction_deg,
             fresnel_power:         data.fresnel_power,
             fresnel_strength:      data.fresnel_strength,
             reflection_color:      data.reflection_color,
@@ -459,6 +483,7 @@ impl WaterVolumeComponent {
             wave_amplitude:        self.wave_amplitude,
             wave_scale:            self.wave_scale,
             wave_speed:            self.wave_speed,
+            wave_direction_deg:    self.wave_direction_deg,
             fresnel_power:         self.fresnel_power,
             fresnel_strength:      self.fresnel_strength,
             reflection_color:      self.reflection_color,
@@ -529,6 +554,8 @@ mod tests {
         assert_eq!(d.wave_amplitude, def.wave_amplitude);
         assert_eq!(d.wave_scale, def.wave_scale);
         assert_eq!(d.wave_speed, def.wave_speed);
+        // 方位角の既定は 0 度（旧 .scene にフィールドが無くても見た目が変わらない）。
+        assert_eq!(d.wave_direction_deg, 0.0);
         assert_eq!(d.fresnel_power, def.fresnel_power);
         assert_eq!(d.fresnel_strength, def.fresnel_strength);
         assert_eq!(d.reflection_color, def.reflection_color);
@@ -576,6 +603,7 @@ mod tests {
             wave_amplitude: 0.75,
             wave_scale: 0.33,
             wave_speed: 2.5,
+            wave_direction_deg: 37.5,
             fresnel_power: 3.5,
             fresnel_strength: 0.6,
             reflection_color: [0.11, 0.22, 0.33],
@@ -608,6 +636,7 @@ mod tests {
         assert_eq!(back.wave_amplitude, src.wave_amplitude);
         assert_eq!(back.wave_scale, src.wave_scale);
         assert_eq!(back.wave_speed, src.wave_speed);
+        assert_eq!(back.wave_direction_deg, src.wave_direction_deg);
         assert_eq!(back.fresnel_power, src.fresnel_power);
         assert_eq!(back.fresnel_strength, src.fresnel_strength);
         assert_eq!(back.reflection_color, src.reflection_color);

@@ -189,6 +189,7 @@ mod tests {
             wave_amplitude: 0.0,
             wave_scale: 0.0,
             wave_speed: 0.0,
+            wave_direction_deg: 0.0,
             fresnel_power: 0.0,
             fresnel_strength: 0.0,
             reflection_color: [0.0; 3],

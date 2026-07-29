@@ -21,7 +21,7 @@ pub const WATER_MAX_VOLUMES: usize = 64;
 /// 折れ線の 1 分割ごとに 1 インスタンス（リボンのクアッド 1 枚）を消費するため、
 /// ボリューム数とインスタンス数が一致しなくなった。
 /// 上限は「水域 64 個 ＋ 川の分割（最大 256）を数本」を賄える値にしてある
-/// （1 インスタンス = `WaterParams` 224 バイトなので 1024 個でも 224KB）。
+/// （1 インスタンス = `WaterParams` 256 バイトなので 1024 個でも 256KB）。
 pub const WATER_MAX_INSTANCES: usize = 1024;
 
 /// インスタンス種別（`WaterParams::center.w`）: 軸平行クアッド（Ocean / Region）。
@@ -116,6 +116,19 @@ pub struct WaterParams {
     /// z,w = 下流ノードの法線（同上）。
     /// リボンの 4 隅は `p0 ± n0 * 半幅` と `p1 ± n1 * 半幅` で決まる。
     pub river_normal: [f32; 4],
+    /// 解析波の**全体回転**（Phase W6.3）。
+    /// x = cos(方位角)／y = sin(方位角)／z,w = 予約（0）。
+    ///
+    /// `wave_direction_deg` をここで cos/sin へ焼いておくのは、
+    /// 毎フラグメントで sin/cos を回さないため（値は水域単位の定数）。
+    pub wave_axis: [f32; 4],
+    /// 川リボン 1 分割の**関節タンジェント**（Phase W6.2）。
+    /// x,y = 上流ノード／z,w = 下流ノードの進行方向（XZ 単位ベクトル）。
+    ///
+    /// 区間の弦ではなく `RiverNode::tangent`（中央差分で平滑化済み）を渡すのが要点。
+    /// 隣接インスタンスは共有する関節で同一値を持つため、頂点間で補間すると
+    /// 流れの向きが区間境界で連続になり、リボンの継ぎ目が消える。
+    pub river_tangent: [f32; 4],
 }
 
 /// ショアフィールドを持たない水域を表すレイヤ番号（負値）。
@@ -205,10 +218,17 @@ impl WaterParams {
                 ],
                 None => [0.0, 0.0, 0.0, SHORE_LAYER_NONE],
             },
+            // 解析波の全体回転（Phase W6.3）。度 → ラジアン → cos/sin を CPU で焼く。
+            // z,w は予約（0）。
+            wave_axis: {
+                let rad = vis.wave_direction_deg.to_radians();
+                [rad.cos(), rad.sin(), 0.0, 0.0]
+            },
             // クアッド（Ocean / Region）は川のフィールドを使わない。
-            river_p0:     [0.0; 4],
-            river_p1:     [0.0; 4],
-            river_normal: [0.0; 4],
+            river_p0:      [0.0; 4],
+            river_p1:      [0.0; 4],
+            river_normal:  [0.0; 4],
+            river_tangent: [0.0; 4],
         }
     }
 
@@ -244,6 +264,10 @@ impl WaterParams {
         p.river_p0      = [a.pos[0], a.pos[1], a.pos[2], half_width];
         p.river_p1      = [b.pos[0], b.pos[1], b.pos[2], flow_speed];
         p.river_normal  = [a.normal[0], a.normal[1], b.normal[0], b.normal[1]];
+        // 関節タンジェント（Phase W6.2）。**弦ではなくノードの平滑化タンジェント**を渡す。
+        // 隣接する分割は共有する関節で同じ値を受け取るため、頂点間で補間した流れの向きが
+        // 区間境界で連続になり、水面模様の継ぎ目が消える。
+        p.river_tangent = [a.tangent[0], a.tangent[1], b.tangent[0], b.tangent[1]];
         p
     }
 }
@@ -261,8 +285,8 @@ mod tests {
     fn water_params_layout_is_std430_safe() {
         assert_eq!(std::mem::size_of::<WaterParams>() % 16, 0,
             "WaterParams のサイズは 16 の倍数であること（std430 の配列ストライド）");
-        assert_eq!(std::mem::size_of::<WaterParams>(), 14 * 16,
-            "WaterParams は vec4 14 本ぶん（224 バイト）であること。\
+        assert_eq!(std::mem::size_of::<WaterParams>(), 16 * 16,
+            "WaterParams は vec4 16 本ぶん（256 バイト）であること。\
              WGSL 側 struct WaterParams（water_surface.wgsl / water_id.wgsl）と同期すること");
         assert_eq!(std::mem::align_of::<WaterParams>(), 4,
             "repr(C) の [f32;4] 配列なので Rust 側アラインは 4（バイト列は 16 の倍数長で連続する）");
@@ -275,7 +299,7 @@ mod tests {
         let visual = WaterVisualParams {
             shallow_color: [0.0; 3], deep_color: [0.0; 3], absorption_distance: 1.0,
             surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
-            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, fresnel_power: 1.0,
+            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0, fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
             shore_wave_strength: 0.0, shore_wave_length: 12.0,
@@ -308,7 +332,7 @@ mod tests {
         let visual = WaterVisualParams {
             shallow_color: [0.0; 3], deep_color: [0.0; 3], absorption_distance: 1.0,
             surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
-            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, fresnel_power: 2.0,
+            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0, fresnel_power: 2.0,
             fresnel_strength: 0.5, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.25, ripple_foam_threshold: 0.08,
             shore_wave_strength: 0.0, shore_wave_length: 12.0,
@@ -332,6 +356,96 @@ mod tests {
         assert_eq!(q.fresnel[3], RIPPLE_FOAM_THRESHOLD_MIN, "しきい値 0 は下限へ");
     }
 
+    /// 波の方位角は cos/sin へ焼かれて `wave_axis` に入ること（Phase W6.3）。
+    ///
+    /// 規約（0 = +Z へ進む／正で +X 側へ回る）はシェーダ側の回転式と対で意味を持つ。
+    /// ここが壊れると「波の向きだけ 90 度ずれる」という気づきにくい不具合になる。
+    #[test]
+    fn wave_direction_is_baked_into_cos_sin_axis() {
+        use crate::engine::water::WaterVisualParams;
+        let visual = WaterVisualParams {
+            shallow_color: [0.0; 3], deep_color: [0.0; 3], absorption_distance: 1.0,
+            surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
+            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 90.0,
+            fresnel_power: 1.0,
+            fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
+            ripple_strength: 1.0, ripple_foam_threshold: 0.1,
+            shore_wave_strength: 0.0, shore_wave_length: 12.0,
+            shore_wave_period: 4.0, shore_wave_foam: 0.8,
+        };
+        let v = ResolvedWaterVolume {
+            kind: WaterVolumeKind::Region, surface_y: 0.0,
+            center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
+            actor_dfs_id: 0, river: None,
+        };
+        let p = WaterParams::from_resolved(&v, [0.0; 3], 0, None);
+        assert!(p.wave_axis[0].abs() < 1e-6, "cos(90°) ≒ 0（実際 {}）", p.wave_axis[0]);
+        assert!((p.wave_axis[1] - 1.0).abs() < 1e-6, "sin(90°) = 1（実際 {}）", p.wave_axis[1]);
+        assert_eq!([p.wave_axis[2], p.wave_axis[3]], [0.0, 0.0], "z,w は予約（0）");
+
+        // 既定 0 度は無回転（cos=1, sin=0）＝旧シーンの見た目がそのまま保たれる。
+        let mut zero = visual;
+        zero.wave_direction_deg = 0.0;
+        let q = WaterParams::from_resolved(&ResolvedWaterVolume { visual: zero, ..v }, [0.0; 3], 0, None);
+        assert_eq!([q.wave_axis[0], q.wave_axis[1]], [1.0, 0.0], "0 度は無回転");
+    }
+
+    /// 川リボンの関節タンジェントは**隣接インスタンスで一致**すること（Phase W6.2）。
+    ///
+    /// ここが弦（p1 − p0）に戻ると区間境界で流れの向きが跳び、
+    /// ポリゴンの継ぎ目が水面模様として見えるようになる。継ぎ目が消える根拠そのものなので、
+    /// 「共有する関節で同じ値が入る」を契約として固定する。
+    #[test]
+    fn river_tangents_are_shared_between_adjacent_segments() {
+        use crate::engine::water::{RiverPath, WaterVisualParams};
+        let visual = WaterVisualParams {
+            shallow_color: [0.0; 3], deep_color: [0.0; 3], absorption_distance: 1.0,
+            surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
+            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0,
+            fresnel_power: 1.0,
+            fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
+            ripple_strength: 1.0, ripple_foam_threshold: 0.1,
+            shore_wave_strength: 0.0, shore_wave_length: 12.0,
+            shore_wave_period: 4.0, shore_wave_foam: 0.8,
+        };
+        // わざと曲がって下る川（＝弦の向きが区間ごとに変わる形）。
+        let path = RiverPath::build(
+            &[[0.0, 4.0, 0.0], [10.0, 2.0, 4.0], [16.0, 0.0, 14.0]],
+            4.0, 1.5, 2.0, 2.0,
+        ).expect("川が成立すること");
+        let v = ResolvedWaterVolume {
+            kind: WaterVolumeKind::Spline, surface_y: 0.0,
+            center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
+            actor_dfs_id: 0, river: Some(path.clone()),
+        };
+        let segs: Vec<WaterParams> = path.nodes.windows(2)
+            .map(|w| WaterParams::from_river_segment(
+                &v, &w[0], &w[1], path.half_width, path.flow_speed, 0))
+            .collect();
+        assert!(segs.len() >= 3, "境界の検証には 3 分割以上ほしい（実際 {}）", segs.len());
+        for i in 1..segs.len() {
+            // 区間 i-1 の下流端タンジェント（zw）＝ 区間 i の上流端タンジェント（xy）。
+            assert_eq!(
+                [segs[i - 1].river_tangent[2], segs[i - 1].river_tangent[3]],
+                [segs[i].river_tangent[0], segs[i].river_tangent[1]],
+                "関節 {i} でタンジェントが不連続（＝区間境界に継ぎ目が出る）",
+            );
+        }
+        // 弦ではなく平滑化タンジェントであること（曲がった川では両者は必ず食い違う）。
+        let mid = &segs[segs.len() / 2];
+        let chord = [
+            mid.river_p1[0] - mid.river_p0[0],
+            mid.river_p1[2] - mid.river_p0[2],
+        ];
+        let chord_len = (chord[0] * chord[0] + chord[1] * chord[1]).sqrt();
+        let chord_dir = [chord[0] / chord_len, chord[1] / chord_len];
+        assert!(
+            (mid.river_tangent[0] - chord_dir[0]).abs() > 1e-4
+                || (mid.river_tangent[1] - chord_dir[1]).abs() > 1e-4,
+            "曲がった川なのに弦と一致している（＝弦を送ってしまっている）",
+        );
+    }
+
     /// 水面シェーダが波紋の場を実際に消費していること（Phase I2 の消費経路の生存確認）。
     /// リファクタで group2 の宣言やサンプル関数が落ちても、静かに「波紋が出ない」に
     /// なるだけで誰も気づかないため、文字列で押さえる。
@@ -353,7 +467,7 @@ mod tests {
         let visual = WaterVisualParams {
             shallow_color: [0.0; 3], deep_color: [0.0; 3], absorption_distance: 1.0,
             surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
-            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, fresnel_power: 1.0,
+            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0, fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
             shore_wave_strength: 0.0, shore_wave_length: 12.0,

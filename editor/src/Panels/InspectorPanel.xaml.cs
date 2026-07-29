@@ -528,6 +528,8 @@ public partial class InspectorPanel : UserControl
     private const float WaterWaveScaleDefault = 0.12f;
     /// <summary>波のスクロール速度の既定値。</summary>
     private const float WaterWaveSpeedDefault = 0.6f;
+    /// <summary>波の進行方位角（度）の既定値。0 = +Z 方向へ進む。</summary>
+    private const float WaterWaveDirectionDegDefault = 0f;
     /// <summary>フレネル指数の既定値。</summary>
     private const float WaterFresnelPowerDefault = 5f;
     /// <summary>フレネル強度の既定値。</summary>
@@ -766,6 +768,8 @@ public partial class InspectorPanel : UserControl
         float WaterWaveAmplitude = WaterWaveAmplitudeDefault,
         float WaterWaveScale = WaterWaveScaleDefault,
         float WaterWaveSpeed = WaterWaveSpeedDefault,
+        // 波の進行方位角（度）。0 = +Z へ進み、正の角度で +X 側へ回る（上から見て時計回り）。
+        float WaterWaveDirectionDeg = WaterWaveDirectionDegDefault,
         // 反射・屈折（フレネル指数/強度・反射色・屈折の歪み）
         float WaterFresnelPower = WaterFresnelPowerDefault,
         float WaterFresnelStrength = WaterFresnelStrengthDefault,
@@ -1192,6 +1196,7 @@ public partial class InspectorPanel : UserControl
             var waterWaveAmp      = comp.TryGetProperty("wave_amplitude",   out var wwa)  ? wwa.GetSingle() : WaterWaveAmplitudeDefault;
             var waterWaveScale    = comp.TryGetProperty("wave_scale",       out var wws)  ? wws.GetSingle() : WaterWaveScaleDefault;
             var waterWaveSpeed    = comp.TryGetProperty("wave_speed",       out var wwsp) ? wwsp.GetSingle() : WaterWaveSpeedDefault;
+            var waterWaveDir      = comp.TryGetProperty("wave_direction_deg", out var wwd) ? wwd.GetSingle() : WaterWaveDirectionDegDefault;
             var waterFresnelPow   = comp.TryGetProperty("fresnel_power",    out var wfp)  ? wfp.GetSingle() : WaterFresnelPowerDefault;
             var waterFresnelStr   = comp.TryGetProperty("fresnel_strength", out var wfs)  ? wfs.GetSingle() : WaterFresnelStrengthDefault;
             var waterReflectR     = comp.TryGetProperty("reflect_r",        out var wrr)  ? wrr.GetSingle() : WaterReflectRDefault;
@@ -1303,6 +1308,7 @@ public partial class InspectorPanel : UserControl
                 WaterFoamR: waterFoamR, WaterFoamG: waterFoamG, WaterFoamB: waterFoamB,
                 WaterFoamWidth: waterFoamWidth, WaterFoamIntensity: waterFoamIntensity,
                 WaterWaveAmplitude: waterWaveAmp, WaterWaveScale: waterWaveScale, WaterWaveSpeed: waterWaveSpeed,
+                WaterWaveDirectionDeg: waterWaveDir,
                 WaterFresnelPower: waterFresnelPow, WaterFresnelStrength: waterFresnelStr,
                 WaterReflectR: waterReflectR, WaterReflectG: waterReflectG, WaterReflectB: waterReflectB,
                 WaterRefractionDistortion: waterRefractDist,
@@ -4997,6 +5003,8 @@ public partial class InspectorPanel : UserControl
         AddFloatRow(waveSp, "波の強さ",     info.WaterWaveAmplitude, "wave_amplitude", "F3");
         AddFloatRow(waveSp, "波のスケール", info.WaterWaveScale,     "wave_scale",     "F3");
         AddFloatRow(waveSp, "波の速度",     info.WaterWaveSpeed,     "wave_speed",     "F3");
+        AddFloatRow(waveSp, "波の方向(度)", info.WaterWaveDirectionDeg, "wave_direction_deg", "F1");
+        waveSp.Children.Add(MakeHint("波の方向は方位角（度）です。0 = +Z 方向へ進み、正の角度で +X 側へ回ります（上から見て時計回り）。"));
         sp.Children.Add(waveSection);
 
         // ── 波紋・航跡セクション（Phase I2）─────────────────────
