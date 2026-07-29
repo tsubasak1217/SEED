@@ -44,6 +44,8 @@ pub struct WaterVisualParams {
     pub wave_scale: f32,
     /// 波のスクロール速度
     pub wave_speed: f32,
+    /// 解析波の進行方位角（度。0 = +Z、正で +X 側へ回る。Phase W6.3）
+    pub wave_direction_deg: f32,
     /// フレネル指数
     pub fresnel_power: f32,
     /// フレネル反射の寄与率（0..1）
@@ -80,6 +82,7 @@ impl WaterVisualParams {
             wave_amplitude:        c.wave_amplitude,
             wave_scale:            c.wave_scale,
             wave_speed:            c.wave_speed,
+            wave_direction_deg:    c.wave_direction_deg,
             fresnel_power:         c.fresnel_power,
             fresnel_strength:      c.fresnel_strength,
             reflection_color:      c.reflection_color,

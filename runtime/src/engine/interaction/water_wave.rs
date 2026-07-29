@@ -137,7 +137,8 @@ mod tests {
         WaterVisualParams {
             shallow_color: [0.0; 3], deep_color: [0.0; 3], absorption_distance: 0.0,
             surface_opacity: 0.0, foam_color: [0.0; 3], foam_width: 0.0, foam_intensity: 0.0,
-            wave_amplitude: 0.0, wave_scale: 0.0, wave_speed: 0.0, fresnel_power: 0.0,
+            wave_amplitude: 0.0, wave_scale: 0.0, wave_speed: 0.0, wave_direction_deg: 0.0,
+            fresnel_power: 0.0,
             fresnel_strength: 0.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 0.0, ripple_foam_threshold: 0.0,
             // 岸波（W1.5）はテスト用のダミーなので全て 0（＝岸波を出さない）。

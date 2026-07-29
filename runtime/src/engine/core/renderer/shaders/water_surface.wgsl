@@ -38,6 +38,9 @@
 //  ## 波
 //  頂点変位は行わず（W1）、フラグメントで **解析的サイン波の微分から法線のみ**を合成する。
 //  法線マップ画像などのテクスチャアセットには一切依存しない。
+//  波は 6 層の重ね合わせで、周波数比を無理数・方向を非対称に取り、さらに
+//  **低周波の空間包絡**で振幅を緩やかに変調してタイル感（繰り返しの視認）を消してある（W6.1）。
+//  一式は `wave_direction_deg`（`wave_axis`）でまとめて回転できる（W6.3）。
 //
 //  ## 波紋・航跡（Phase I2）
 //  インタラクションフィールド（`interaction_field.wgsl` が更新するカメラ追従の俯瞰テクスチャ）の
@@ -141,6 +144,20 @@ struct WaterParams {
     river_p1:         vec4<f32>,
     /// 川リボンの断面法線（Phase W4）。x,y = 上流ノード／z,w = 下流ノード（XZ・マイター込み）
     river_normal:     vec4<f32>,
+    /// 解析波の**全体回転**（Phase W6.3）。
+    /// x = cos(方位角)／y = sin(方位角)／z,w = 予約（0）。
+    /// 方位角は `WaterVolumeComponent::wave_direction_deg`（ワールド XZ 平面。**0 = +Z へ進む**、
+    /// 正の角度で +X 側へ回る＝上から見て時計回り）を CPU 側でラジアン化し、
+    /// 毎ピクセルの sin/cos を避けるため cos/sin を焼き込んだもの。
+    wave_axis:        vec4<f32>,
+    /// 川リボン 1 分割の**関節タンジェント**（Phase W6.2）。
+    /// x,y = 上流ノード／z,w = 下流ノードの進行方向（XZ 単位ベクトル）。
+    ///
+    /// **区間の弦（p1 - p0）ではなくノードごとの平滑化タンジェント**であることが要点。
+    /// 隣り合う 2 インスタンスは共有する関節でまったく同じ値を持つため、
+    /// これを頂点間で補間して流れの向きに使うと、区間境界で流れが跳ばない
+    /// （＝リボンの継ぎ目が見えなくなる。詳細は「流れ」節を参照）。
+    river_tangent:    vec4<f32>,
 }
 
 @group(1) @binding(0) var<storage, read> u_water: array<WaterParams>;
@@ -196,8 +213,12 @@ struct InteractionFieldUniform {
 /// クアッド 1 枚あたりの頂点数（三角形 2 枚 = 6 頂点）。
 const WATER_QUAD_VERTEX_COUNT: u32 = 6u;
 
-/// 重ね合わせるサイン波の層数。
-const WAVE_LAYER_COUNT: u32 = 4u;
+/// 重ね合わせるサイン波の層数（Phase W6.1 で 4 → 6）。
+///
+/// 層が少ないほど「同じ形の繰り返し」が目視で分かりやすい。6 層は
+/// 「タイル感が消える最小の層数」として選んだ値で、コスト増は 2 層ぶん
+/// （＝1 ピクセルあたり sin/cos 各 2 回）に収まる。
+const WAVE_LAYER_COUNT: u32 = 6u;
 
 /// 「シーン深度がここ以上なら遠クリップ（＝空／何も無い）」とみなす閾値。
 /// 深度は `Clear(1.0)` 起点・比較 LessEqual の通常 Z なので、1.0 近傍が空にあたる。
@@ -230,23 +251,109 @@ const WATER_RIPPLE_FOAM_MAX: f32 = 0.85;
 const WATER_UV_MIN: f32 = 0.0;
 const WATER_UV_MAX: f32 = 1.0;
 
-/// 波の層ごとの周波数倍率（互いに無理数比に近い値にしてタイル感を消す）。
+// ─── 解析波の層テーブル（Phase W6.1）────────────────────────────
+//
+// ## なぜ 6 層＋非対称な方向・無理数比の周波数なのか
+// サイン波の重ね合わせは、各層の**空間周期の最小公倍数**で必ず繰り返す。
+// 周波数比が有理数（2.0 や 1.5 のような小さい整数比）だと最小公倍数が短くなり、
+// 数十 m スケールで「同じ形」が目に見えて反復する。周波数比を無理数
+// （黄金比 φ、1+√2、3+√3 …）に取ると厳密な繰り返し周期が存在しなくなり、
+// さらに方向を等間隔・直交から外す（90°/180° の対称を避ける）ことで
+// 格子状の模様が出なくなる。
+//
+// ## 見た目の強さを変えないための正規化
+// タイル感対策で層を増やしても**体感の波の強さ（＝法線の傾き）は据え置く**。
+// 法線を決めるのは高さではなく勾配で、層ごとの寄与は A_k·f_k である。
+// ここで揃えるべきは単純和ではなく **二乗和（RMS）** である。位相が互いに独立なので
+// 実際に目に入る傾きは √(Σ(A·f)²/2) に比例し、単純和を保ったまま層を増やすと
+// 二乗和が減って波が平たくなってしまう（実際 4→6 層で RMS は約 2 割低下する）。
+// 旧 4 層の Σ(A·f)² は 1² + (0.5·2.13)² + (0.25·3.71)² + (0.125·5.29)² ≒ 3.43。
+// 新 6 層の振幅倍率は **この二乗和に一致するよう正規化**してある（実測 3.42）。
+// したがって `wave_amplitude` の既定値は変更不要である
+//（振幅そのものの和は 1.875 → 2.145 とやや増えるが、これは高さ側の話であり、
+//  W5.1 の頂点変位を入れる際に必要なら amplitude 側で調整すればよい）。
+
+/// 波の層ごとの進行方向（XZ 平面。単位ベクトル）。
+///
+/// **方位角の規約**: 0° = +Z へ進む／正の角度で +X 側へ回る（上から見て時計回り）。
+/// ベクトルは `(sin(方位角), cos(方位角))`。
+/// 方位角は 0/41/97/158/226/289° と**不等間隔**に取ってあり、
+/// 直交（90°）・逆向き（180°）の対称ペアを持たない。
+/// この一式は `wave_axis`（`wave_direction_deg`）で**剛体回転**する（相対分散は不変）。
+const WAVE_DIR_0: vec2<f32> = vec2<f32>( 0.00000,  1.00000); //   0°
+const WAVE_DIR_1: vec2<f32> = vec2<f32>( 0.65606,  0.75471); //  41°
+const WAVE_DIR_2: vec2<f32> = vec2<f32>( 0.99255, -0.12187); //  97°
+const WAVE_DIR_3: vec2<f32> = vec2<f32>( 0.37461, -0.92718); // 158°
+const WAVE_DIR_4: vec2<f32> = vec2<f32>(-0.71934, -0.69466); // 226°
+const WAVE_DIR_5: vec2<f32> = vec2<f32>(-0.94552,  0.32557); // 289°
+
+/// 波の層ごとの周波数倍率（**互いに無理数比**。有理数比だと繰り返し周期が生まれる）。
+/// 値は 1／φ／1+√2／(この 2 つの中間の無理数)／3+√3／φ⁴。
 const WAVE_FREQ_MUL_0: f32 = 1.0;
-const WAVE_FREQ_MUL_1: f32 = 2.13;
-const WAVE_FREQ_MUL_2: f32 = 3.71;
-const WAVE_FREQ_MUL_3: f32 = 5.29;
+const WAVE_FREQ_MUL_1: f32 = 1.618034;
+const WAVE_FREQ_MUL_2: f32 = 2.414214;
+const WAVE_FREQ_MUL_3: f32 = 3.302776;
+const WAVE_FREQ_MUL_4: f32 = 4.732051;
+const WAVE_FREQ_MUL_5: f32 = 6.854102;
 
-/// 波の層ごとの振幅倍率（高周波ほど小さく＝1/f 的なスペクトル）。
-const WAVE_AMP_MUL_0: f32 = 1.0;
-const WAVE_AMP_MUL_1: f32 = 0.5;
-const WAVE_AMP_MUL_2: f32 = 0.25;
-const WAVE_AMP_MUL_3: f32 = 0.125;
+/// 波の層ごとの振幅倍率（高周波ほど小さい ≒ f^-1.15 のスペクトル）。
+/// 上記のとおり Σ(振幅×周波数)² が旧 4 層と一致するよう正規化してある。
+const WAVE_AMP_MUL_0: f32 = 0.8670;
+const WAVE_AMP_MUL_1: f32 = 0.5008;
+const WAVE_AMP_MUL_2: f32 = 0.3167;
+const WAVE_AMP_MUL_3: f32 = 0.2182;
+const WAVE_AMP_MUL_4: f32 = 0.1462;
+const WAVE_AMP_MUL_5: f32 = 0.0958;
 
-/// 波の層ごとのスクロール速度倍率。
+/// 波の層ごとのスクロール速度倍率（時間方向にも周期が揃わないよう非整数比）。
 const WAVE_SPEED_MUL_0: f32 = 1.0;
-const WAVE_SPEED_MUL_1: f32 = 1.37;
-const WAVE_SPEED_MUL_2: f32 = 0.83;
-const WAVE_SPEED_MUL_3: f32 = 1.71;
+const WAVE_SPEED_MUL_1: f32 = 1.31;
+const WAVE_SPEED_MUL_2: f32 = 0.79;
+const WAVE_SPEED_MUL_3: f32 = 1.63;
+const WAVE_SPEED_MUL_4: f32 = 0.58;
+const WAVE_SPEED_MUL_5: f32 = 1.13;
+
+/// 波の層ごとの初期位相（ラジアン）。
+///
+/// 全層の位相が原点で揃っていると、原点付近に「全部の波の峰が重なる」目立つ点が生まれ、
+/// そこが模様の基準点として認識されてしまう。互いに素な適当な値でずらして散らす。
+const WAVE_PHASE_0: f32 = 0.0;
+const WAVE_PHASE_1: f32 = 1.7;
+const WAVE_PHASE_2: f32 = 3.4;
+const WAVE_PHASE_3: f32 = 5.1;
+const WAVE_PHASE_4: f32 = 2.2;
+const WAVE_PHASE_5: f32 = 4.9;
+
+// ─── 低周波の空間包絡（Phase W6.1）──────────────────────────────
+//
+// 層を増やして周波数比を無理数にしても、**局所的な波の「密度」は一様**なので、
+// 遠景では均質なテクスチャに見えて反復感が残る。実際の水面には
+// 「風の当たる帯」「凪いだ帯」といった数百 m スケールのむらがある。
+// そこで波長の数倍〜十数倍という**非常に低い周波数のサイン 2 本の積**で
+// 振幅を緩やかに変調し、周期性の手がかりを潰す。
+//
+// コストは dot 2・sin 2・積和 2 の合計 6 命令程度。
+// 包絡の空間変化は波長スケールに比べて桁違いに緩やかなので、
+// **勾配を取るときは包絡を局所定数とみなす**（岸波の包絡線と同じ標準的な近似）。
+// 高さ・勾配の双方に同じ係数を掛けるので、W5.1 の頂点変位とも食い違わない。
+
+/// 包絡の変調深さ（0 = 変調なし）。振幅は 1±この値の範囲で揺れる。
+/// 平均は 1 のまま（sin の積の期待値は 0）なので、**体感の波の強さは変わらない**。
+const WAVE_ENVELOPE_DEPTH: f32 = 0.35;
+
+/// 包絡サイン A/B の空間周波数（基本波数 `wave_scale` に対する比）。
+/// 既定 `wave_scale`=0.12 なら波長 ≒ 248m / 412m にあたり、基本波（≒52m）の 5〜8 倍。
+const WAVE_ENVELOPE_FREQ_A: f32 = 0.211;
+const WAVE_ENVELOPE_FREQ_B: f32 = 0.127;
+
+/// 包絡サイン A/B の向き（XZ 単位ベクトル。37° と 121°。直交させない）。
+const WAVE_ENVELOPE_DIR_A: vec2<f32> = vec2<f32>( 0.60182,  0.79864); //  37°
+const WAVE_ENVELOPE_DIR_B: vec2<f32> = vec2<f32>( 0.85717, -0.51504); // 121°
+
+/// 包絡サイン A/B のスクロール速度倍率（`wave_speed` に対する比）。
+/// 0 だと「むらの模様」がワールドに貼り付いて止まって見えるため、波よりずっと遅く流す。
+const WAVE_ENVELOPE_SPEED_A: f32 = 0.07;
+const WAVE_ENVELOPE_SPEED_B: f32 = 0.11;
 
 // ─── 岸波の定数（Phase W1.5。すべてエンジン側の固定値）───────
 //
@@ -327,12 +434,6 @@ const WATER_FLOW_PHASE_PERIOD: f32 = 4.0;
 /// 2 位相ブレンドの位相差（周期比）。半周期ずらすのが標準。
 const WATER_FLOW_PHASE_OFFSET: f32 = 0.5;
 
-/// 波の層ごとの進行方向（XZ 平面。単位ベクトル）。
-const WAVE_DIR_0: vec2<f32> = vec2<f32>( 1.0,  0.0);
-const WAVE_DIR_1: vec2<f32> = vec2<f32>( 0.0,  1.0);
-const WAVE_DIR_2: vec2<f32> = vec2<f32>( 0.70710678, 0.70710678);
-const WAVE_DIR_3: vec2<f32> = vec2<f32>(-0.70710678, 0.70710678);
-
 // ─── ヘルパー ────────────────────────────────────────────────
 
 /// クアッドの角オフセット（-1..1 の XZ）を頂点インデックスから生成する。
@@ -347,72 +448,105 @@ fn water_quad_corner(vi: u32) -> vec2<f32> {
     return vec2<f32>(-1.0, 1.0);
 }
 
-/// 波レイヤ i の進行方向。
-fn wave_dir(i: u32) -> vec2<f32> {
-    if (i == 0u) { return WAVE_DIR_0; }
-    if (i == 1u) { return WAVE_DIR_1; }
-    if (i == 2u) { return WAVE_DIR_2; }
-    return WAVE_DIR_3;
+/// 解析波 1 層ぶんのパラメータ（テーブルの 1 行）。
+///
+/// 4 本の if 連鎖（方向・周波数・振幅・速度）を 1 本にまとめるための束ね方。
+/// 層を増減するときに直す場所が 1 箇所で済む。
+struct WaveLayer {
+    /// 進行方向（XZ 単位ベクトル。**回転前のローカル基準**）
+    dir:       vec2<f32>,
+    /// 基本波数に対する周波数倍率
+    freq_mul:  f32,
+    /// 基本振幅に対する振幅倍率
+    amp_mul:   f32,
+    /// 基本速度に対するスクロール速度倍率
+    speed_mul: f32,
+    /// 初期位相（ラジアン）
+    phase:     f32,
 }
 
-/// 波レイヤ i の周波数倍率。
-fn wave_freq_mul(i: u32) -> f32 {
-    if (i == 0u) { return WAVE_FREQ_MUL_0; }
-    if (i == 1u) { return WAVE_FREQ_MUL_1; }
-    if (i == 2u) { return WAVE_FREQ_MUL_2; }
-    return WAVE_FREQ_MUL_3;
+/// 波レイヤ i のパラメータ一式。
+fn wave_layer(i: u32) -> WaveLayer {
+    if (i == 0u) { return WaveLayer(WAVE_DIR_0, WAVE_FREQ_MUL_0, WAVE_AMP_MUL_0, WAVE_SPEED_MUL_0, WAVE_PHASE_0); }
+    if (i == 1u) { return WaveLayer(WAVE_DIR_1, WAVE_FREQ_MUL_1, WAVE_AMP_MUL_1, WAVE_SPEED_MUL_1, WAVE_PHASE_1); }
+    if (i == 2u) { return WaveLayer(WAVE_DIR_2, WAVE_FREQ_MUL_2, WAVE_AMP_MUL_2, WAVE_SPEED_MUL_2, WAVE_PHASE_2); }
+    if (i == 3u) { return WaveLayer(WAVE_DIR_3, WAVE_FREQ_MUL_3, WAVE_AMP_MUL_3, WAVE_SPEED_MUL_3, WAVE_PHASE_3); }
+    if (i == 4u) { return WaveLayer(WAVE_DIR_4, WAVE_FREQ_MUL_4, WAVE_AMP_MUL_4, WAVE_SPEED_MUL_4, WAVE_PHASE_4); }
+    return WaveLayer(WAVE_DIR_5, WAVE_FREQ_MUL_5, WAVE_AMP_MUL_5, WAVE_SPEED_MUL_5, WAVE_PHASE_5);
 }
 
-/// 波レイヤ i の振幅倍率。
-fn wave_amp_mul(i: u32) -> f32 {
-    if (i == 0u) { return WAVE_AMP_MUL_0; }
-    if (i == 1u) { return WAVE_AMP_MUL_1; }
-    if (i == 2u) { return WAVE_AMP_MUL_2; }
-    return WAVE_AMP_MUL_3;
+/// 波の方位角ぶんだけ**サンプル位置を逆回転**する（Phase W6.3）。
+///
+/// 層ごとに方向ベクトルを回すと 6 回の回転が要るが、
+/// `dot(R d, p) = dot(d, R⁻¹ p)` なので **点を 1 回だけ逆回転すれば全層が回る**。
+/// `axis` は `WaterParams::wave_axis`（x = cosθ, y = sinθ）。
+fn water_wave_rotate_point(p: vec2<f32>, axis: vec2<f32>) -> vec2<f32> {
+    // R(−θ) p = ( x cosθ − z sinθ,  x sinθ + z cosθ )
+    return vec2<f32>(p.x * axis.x - p.y * axis.y, p.x * axis.y + p.y * axis.x);
 }
 
-/// 波レイヤ i の速度倍率。
-fn wave_speed_mul(i: u32) -> f32 {
-    if (i == 0u) { return WAVE_SPEED_MUL_0; }
-    if (i == 1u) { return WAVE_SPEED_MUL_1; }
-    if (i == 2u) { return WAVE_SPEED_MUL_2; }
-    return WAVE_SPEED_MUL_3;
+/// 逆回転した座標系で求めた勾配を、ワールド XZ の勾配へ戻す（Phase W6.3）。
+///
+/// 合成関数の微分則より ∇_p f(R⁻¹p) = (R⁻¹)ᵀ ∇f = R(θ) ∇f。
+fn water_wave_rotate_gradient(g: vec2<f32>, axis: vec2<f32>) -> vec2<f32> {
+    // R(θ) g = ( gx cosθ + gz sinθ,  −gx sinθ + gz cosθ )
+    return vec2<f32>(g.x * axis.x + g.y * axis.y, -g.x * axis.y + g.y * axis.x);
+}
+
+/// 低周波の空間包絡（Phase W6.1）。平均 1・振れ幅 ±`WAVE_ENVELOPE_DEPTH` の緩やかな振幅変調。
+///
+/// 引数 `p` は**逆回転済みの座標**（波と一緒に包絡も回るようにするため）。
+/// 高さ・勾配の双方へ同じ値を掛けること（片方だけだと法線と変位が食い違う）。
+fn water_wave_envelope(p: vec2<f32>, scale: f32, speed: f32, t: f32) -> f32 {
+    let a = sin(dot(WAVE_ENVELOPE_DIR_A, p) * scale * WAVE_ENVELOPE_FREQ_A
+              + t * speed * WAVE_ENVELOPE_SPEED_A);
+    let b = sin(dot(WAVE_ENVELOPE_DIR_B, p) * scale * WAVE_ENVELOPE_FREQ_B
+              + t * speed * WAVE_ENVELOPE_SPEED_B);
+    return 1.0 + WAVE_ENVELOPE_DEPTH * a * b;
 }
 
 /// 解析的サイン波の重ね合わせによる水面高さ場の **勾配** (∂h/∂x, ∂h/∂z) を求める。
 ///
-/// 高さ場 h(p) = Σ_k A_k * sin(dot(d_k, p) * f_k + t * s_k) の解析微分（cos）。
+/// 高さ場 h(p) = E(p) · Σ_k A_k · sin(dot(d_k, R⁻¹p) · f_k + t · s_k + φ_k) の解析微分（cos）。
+/// `E` は低周波の空間包絡で、その微分は無視する（局所定数近似。定数節を参照）。
 /// 法線ではなく勾配を返すのは、**波紋（I2）の勾配と足し合わせてから 1 回だけ
 /// 正規化する**ため（法線を 2 つ作って混ぜるより、勾配の加算の方が物理的に正しい：
 /// 高さ場の重ね合わせ = 勾配の重ね合わせ）。
-fn water_wave_gradient(p: vec2<f32>, amplitude: f32, scale: f32, speed: f32, t: f32) -> vec2<f32> {
+fn water_wave_gradient(
+    p: vec2<f32>, amplitude: f32, scale: f32, speed: f32, t: f32, axis: vec2<f32>,
+) -> vec2<f32> {
+    let q = water_wave_rotate_point(p, axis);
     var grad = vec2<f32>(0.0, 0.0);
     for (var i: u32 = 0u; i < WAVE_LAYER_COUNT; i = i + 1u) {
-        let dir   = wave_dir(i);
-        let freq  = scale * wave_freq_mul(i);
-        let amp   = amplitude * wave_amp_mul(i);
-        let phase = dot(dir, p) * freq + t * speed * wave_speed_mul(i);
+        let L     = wave_layer(i);
+        let freq  = scale * L.freq_mul;
+        let amp   = amplitude * L.amp_mul;
+        let phase = dot(L.dir, q) * freq + t * speed * L.speed_mul + L.phase;
         // d/dp [ A sin(dot(d,p) f + ...) ] = A f cos(...) * d
-        grad = grad + dir * (amp * freq * cos(phase));
+        grad = grad + L.dir * (amp * freq * cos(phase));
     }
-    return grad;
+    grad = grad * water_wave_envelope(q, scale, speed, t);
+    return water_wave_rotate_gradient(grad, axis);
 }
 
 /// 解析的サイン波の重ね合わせによる水面高さ場の **高さ**（m）。
 ///
-/// `water_wave_gradient` と同じ層構成の原関数（sin）。W5.1（頂点変位）が
+/// `water_wave_gradient` と同じ層構成・同じ包絡の原関数（sin）。W5.1（頂点変位）が
 /// 頂点段で高さを必要とするため、勾配と対で持たせてある。
 /// フラグメントの法線計算では勾配のみを使うので、こちらは呼ばれない場合もある。
-fn water_wave_height(p: vec2<f32>, amplitude: f32, scale: f32, speed: f32, t: f32) -> f32 {
+fn water_wave_height(
+    p: vec2<f32>, amplitude: f32, scale: f32, speed: f32, t: f32, axis: vec2<f32>,
+) -> f32 {
+    let q = water_wave_rotate_point(p, axis);
     var h = 0.0;
     for (var i: u32 = 0u; i < WAVE_LAYER_COUNT; i = i + 1u) {
-        let dir   = wave_dir(i);
-        let freq  = scale * wave_freq_mul(i);
-        let amp   = amplitude * wave_amp_mul(i);
-        let phase = dot(dir, p) * freq + t * speed * wave_speed_mul(i);
+        let L     = wave_layer(i);
+        let freq  = scale * L.freq_mul;
+        let amp   = amplitude * L.amp_mul;
+        let phase = dot(L.dir, q) * freq + t * speed * L.speed_mul + L.phase;
         h = h + amp * sin(phase);
     }
-    return h;
+    return h * water_wave_envelope(q, scale, speed, t);
 }
 
 /// 高さ場の勾配から水面法線（ワールド空間・上向き基準）を作る。
@@ -597,6 +731,14 @@ fn water_shore_foam(p: WaterParams, world_xz: vec2<f32>, t: f32) -> f32 {
 // 三角波でクロスフェードする（フローマップの標準手法。継ぎ目は原理的に出ない：
 // 各位相の重みは、そのずらし量が 0 に戻る瞬間にちょうど 1 になる）。
 //
+// **区間境界の継ぎ目について（W6.2）**: ずらしの向きは「区間の弦」ではなく
+// **関節ごとの平滑化タンジェント**（`river_tangent`）を頂点間で補間したものを使う。
+// 弦は区間ごとに折れるため、境界で流れの向きが跳んで水面模様が不連続になり、
+// マイターで重なる角の内側と併せて「ポリゴンの継ぎ目」として見えていた。
+// 関節タンジェントは隣接インスタンスが共有する関節で必ず一致するので、境界で連続になる。
+// これによりフラグメント段が読む値は **すべて水域単位か、関節で連続な補間値だけ**になり、
+// 区間境界に継ぎ目が出る余地が構造的に無くなる。
+//
 // **重要**: ブレンド重みは時間だけの関数で空間に依存しないため、
 // 「高さをブレンドしたもの」の空間微分は「勾配をブレンドしたもの」と厳密に一致する。
 // つまり法線（勾配）と W5.1 の頂点変位（高さ）は食い違わない。
@@ -606,8 +748,28 @@ fn water_is_river(p: WaterParams) -> bool {
     return p.center.w >= WATER_INSTANCE_RIVER_MIN;
 }
 
-/// 川の流れの向き（XZ 単位ベクトル。上流 → 下流）。分割が縮退していればゼロ。
-fn water_flow_dir(p: WaterParams) -> vec2<f32> {
+/// 解析波の回転軸（x = cosθ, y = sinθ）。ゼロなら無回転（1,0）として扱う。
+///
+/// 旧シーン・未設定のパラメータでゼロが入っていても波が消えないための保険。
+fn water_wave_axis(p: WaterParams) -> vec2<f32> {
+    if (dot(p.wave_axis.xy, p.wave_axis.xy) < WATER_EPSILON) {
+        return vec2<f32>(1.0, 0.0);
+    }
+    return p.wave_axis.xy;
+}
+
+/// 川の流れの向き（XZ 単位ベクトル。上流 → 下流）。
+///
+/// **区間の弦ではなく、頂点から補間されてきた関節タンジェント `hint` を使う**（Phase W6.2）。
+/// 弦（p1 − p0）は区間ごとに折れるため、区間境界で流れの向きが跳び、
+/// そこだけ水面模様が不連続になる（＝ポリゴンの継ぎ目が見える）。
+/// 関節タンジェントは隣接インスタンスで共有されるので、境界で必ず一致する。
+/// 補間の結果として長さが 1 を割るため、ここで正規化する。
+/// `hint` が縮退している（＝関節タンジェントが得られない）ときだけ弦へフォールバックする。
+fn water_flow_dir(p: WaterParams, hint: vec2<f32>) -> vec2<f32> {
+    if (dot(hint, hint) > WATER_EPSILON) {
+        return normalize(hint);
+    }
     let d = vec2<f32>(p.river_p1.x - p.river_p0.x, p.river_p1.z - p.river_p0.z);
     let len = length(d);
     if (len < WATER_EPSILON) {
@@ -621,8 +783,8 @@ fn water_flow_dir(p: WaterParams) -> vec2<f32> {
 /// 戻り値の xy = 位相 0 のワールド XZ オフセット、zw は使わず、
 /// 重みは別関数で返す（WGSL に多値返却が無いため、必要な 3 つを vec4 に詰める）。
 /// x,y = 位相 0 のオフセット／z,w = 位相 1 のオフセット。
-fn water_flow_offsets(p: WaterParams, t: f32) -> vec4<f32> {
-    let dir   = water_flow_dir(p);
+fn water_flow_offsets(p: WaterParams, flow_dir: vec2<f32>, t: f32) -> vec4<f32> {
+    let dir   = flow_dir;
     let speed = p.river_p1.w;
     let phase = t / WATER_FLOW_PHASE_PERIOD;
     let f0 = fract(phase);
@@ -647,29 +809,39 @@ fn water_flow_weight(t: f32) -> f32 {
 }
 
 /// 解析波の高さ（川なら流れに乗せた 2 位相ブレンド、それ以外は素の解析波）。
-fn water_flow_wave_height(p: WaterParams, world_xz: vec2<f32>, t: f32) -> f32 {
+///
+/// `flow_dir` は頂点から補間されてきた関節タンジェント（川以外では未使用）。
+fn water_flow_wave_height(
+    p: WaterParams, world_xz: vec2<f32>, flow_dir: vec2<f32>, t: f32,
+) -> f32 {
+    let axis = water_wave_axis(p);
     if (!water_is_river(p)) {
-        return water_wave_height(world_xz, p.wave.x, p.wave.y, p.wave.z, t);
+        return water_wave_height(world_xz, p.wave.x, p.wave.y, p.wave.z, t, axis);
     }
-    let off = water_flow_offsets(p, t);
+    let dir = water_flow_dir(p, flow_dir);
+    let off = water_flow_offsets(p, dir, t);
     let w   = water_flow_weight(t);
     // サンプル位置を **上流側へ**ずらす（＝模様が下流へ動いて見える）。
-    let h0 = water_wave_height(world_xz - off.xy, p.wave.x, p.wave.y, p.wave.z, t);
-    let h1 = water_wave_height(world_xz - off.zw, p.wave.x, p.wave.y, p.wave.z, t);
+    let h0 = water_wave_height(world_xz - off.xy, p.wave.x, p.wave.y, p.wave.z, t, axis);
+    let h1 = water_wave_height(world_xz - off.zw, p.wave.x, p.wave.y, p.wave.z, t, axis);
     // mix(a, b, w) = a*(1-w) + b*w → 位相 0 に (1-w)、位相 1 に w。
     // この対応でないと、ずらし量が巻き戻る瞬間にパターンが飛ぶ（water_flow_weight 参照）。
     return mix(h0, h1, w);
 }
 
 /// 解析波の勾配（上と同じ 2 位相ブレンド。平行移動の微分は微分の平行移動）。
-fn water_flow_wave_gradient(p: WaterParams, world_xz: vec2<f32>, t: f32) -> vec2<f32> {
+fn water_flow_wave_gradient(
+    p: WaterParams, world_xz: vec2<f32>, flow_dir: vec2<f32>, t: f32,
+) -> vec2<f32> {
+    let axis = water_wave_axis(p);
     if (!water_is_river(p)) {
-        return water_wave_gradient(world_xz, p.wave.x, p.wave.y, p.wave.z, t);
+        return water_wave_gradient(world_xz, p.wave.x, p.wave.y, p.wave.z, t, axis);
     }
-    let off = water_flow_offsets(p, t);
+    let dir = water_flow_dir(p, flow_dir);
+    let off = water_flow_offsets(p, dir, t);
     let w   = water_flow_weight(t);
-    let g0 = water_wave_gradient(world_xz - off.xy, p.wave.x, p.wave.y, p.wave.z, t);
-    let g1 = water_wave_gradient(world_xz - off.zw, p.wave.x, p.wave.y, p.wave.z, t);
+    let g0 = water_wave_gradient(world_xz - off.xy, p.wave.x, p.wave.y, p.wave.z, t, axis);
+    let g1 = water_wave_gradient(world_xz - off.zw, p.wave.x, p.wave.y, p.wave.z, t, axis);
     // 高さ側とまったく同じ重み配分にすること（食い違うと法線と変位がずれる）。
     return mix(g0, g1, w);
 }
@@ -683,15 +855,19 @@ fn water_ripple_scale(p: WaterParams) -> f32 {
 /// 合成された水面高さ（m）。3 ソースの高さ場の和。
 /// 解析波は川では流れに乗る（W4）。波紋・岸波はワールド固定のまま
 /// （波紋の移流は W4 では行わない。理由は本ファイル冒頭の「流れ」節を参照）。
-fn water_surface_height(p: WaterParams, world_xz: vec2<f32>, t: f32) -> f32 {
-    return water_flow_wave_height(p, world_xz, t)
+fn water_surface_height(
+    p: WaterParams, world_xz: vec2<f32>, flow_dir: vec2<f32>, t: f32,
+) -> f32 {
+    return water_flow_wave_height(p, world_xz, flow_dir, t)
          + water_ripple_height(world_xz) * water_ripple_scale(p)
          + water_shore_height(p, world_xz, t);
 }
 
 /// 合成された水面高さ場の勾配 (∂h/∂x, ∂h/∂z)。`water_surface_height` の微分。
-fn water_surface_gradient(p: WaterParams, world_xz: vec2<f32>, t: f32) -> vec2<f32> {
-    return water_flow_wave_gradient(p, world_xz, t)
+fn water_surface_gradient(
+    p: WaterParams, world_xz: vec2<f32>, flow_dir: vec2<f32>, t: f32,
+) -> vec2<f32> {
+    return water_flow_wave_gradient(p, world_xz, flow_dir, t)
          + water_ripple_gradient(world_xz) * water_ripple_scale(p)
          + water_shore_gradient(p, world_xz, t);
 }
@@ -725,6 +901,13 @@ struct WaterVsOut {
     @location(0)       world_pos: vec3<f32>,
     /// インスタンス番号（補間するとフラグメント間で混ざるため flat）
     @location(1) @interpolate(flat) idx: u32,
+    /// 川の流れの向き（XZ。**関節タンジェントを頂点間で補間したもの**。Phase W6.2）。
+    ///
+    /// **あえて flat にしない**のが要点である。上流端の 2 頂点には上流ノードの、
+    /// 下流端の 2 頂点には下流ノードのタンジェントを入れてあるので、
+    /// 隣り合うリボン区間は共有する関節でまったく同じ値を持ち、区間境界で連続になる。
+    /// 川以外のインスタンスではゼロ（未使用）。
+    @location(2) flow_dir: vec2<f32>,
 }
 
 /// 川リボンの 1 分割ぶんの四角形を作る（Phase W4）。
@@ -762,14 +945,19 @@ fn vs_water(
         p.center.y,
         p.center.z + corner.y * p.half_extent.z,
     );
+    // 川の流れの向きは「この頂点が属する関節」のタンジェント（Phase W6.2）。
+    // corner.y < 0 = 上流端 / > 0 = 下流端。川以外はゼロ（フラグメントで未使用）。
+    var flow = vec2<f32>(0.0, 0.0);
     if (water_is_river(p)) {
         world = water_river_vertex(p, corner);
+        flow  = select(p.river_tangent.xy, p.river_tangent.zw, corner.y > 0.0);
     }
 
     var out: WaterVsOut;
     out.clip      = u_camera.view_proj * vec4<f32>(world, 1.0);
     out.world_pos = world;
     out.idx       = ii;
+    out.flow_dir  = flow;
     return out;
 }
 
@@ -787,7 +975,7 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
     //    法線を 3 つ作って混ぜるより物理的に正しい。
     //    波紋強度 0／岸波強度 0 の水では該当項が完全に消え、W1 と 1 ビットも変わらない。
     let ripple_h = water_ripple_height(in.world_pos.xz);
-    let grad     = water_surface_gradient(p, in.world_pos.xz, u_camera.time);
+    let grad     = water_surface_gradient(p, in.world_pos.xz, in.flow_dir, u_camera.time);
     let n        = water_normal_from_gradient(grad);
 
     // ② 手動深度テスト（深度アタッチメントを持たないため自前で行う）

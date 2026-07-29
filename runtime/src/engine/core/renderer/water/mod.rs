@@ -696,8 +696,8 @@ mod tests {
         let id      = field_names(include_str!("../shaders/water_id.wgsl"));
         assert_eq!(surface, id,
             "water_surface.wgsl と water_id.wgsl の WaterParams フィールド順が食い違っている");
-        assert_eq!(surface.len(), 14,
-            "Rust 側 WaterParams（vec4 14 本）と本数を揃えること");
+        assert_eq!(surface.len(), 16,
+            "Rust 側 WaterParams（vec4 16 本）と本数を揃えること");
     }
 
     /// 川（Phase W4）の描画経路が両シェーダに生きていること。
@@ -714,11 +714,92 @@ mod tests {
             "ID パスのリボン頂点生成が消えている（＝川がクリックできなくなる）");
         // 流れ（2 位相ブレンド）の消費経路
         assert!(surface.contains("fn water_flow_offsets("), "流れの位相オフセットが消えている");
-        assert!(surface.contains("water_flow_wave_gradient(p, world_xz, t)"),
+        assert!(surface.contains("water_flow_wave_gradient(p, world_xz, flow_dir, t)"),
             "合成勾配が流れ付きの解析波を使っていない");
         // インスタンス種別のしきい値は両シェーダで一致していること
         assert!(surface.contains("const WATER_INSTANCE_RIVER_MIN: f32 = 0.5;"));
         assert!(id.contains("const WATER_INSTANCE_RIVER_MIN: f32 = 0.5;"));
+    }
+
+    /// 解析波のタイル感対策（Phase W6.1）が生きていること。
+    ///
+    /// 層数・包絡はどちらも「消しても絵は出る（ただし繰り返しが見える）」変更なので、
+    /// リファクタで静かに失われないよう契約として固定する。
+    #[test]
+    fn water_shader_breaks_wave_tiling() {
+        let src = include_str!("../shaders/water_surface.wgsl");
+        assert!(src.contains("const WAVE_LAYER_COUNT: u32 = 6u;"),
+            "解析波の層数が 6 でなくなっている（少ないと繰り返しが目視できる）");
+        assert!(src.contains("fn water_wave_envelope("),
+            "低周波の空間包絡が消えている（＝波の密度が一様になり反復感が戻る）");
+        // 包絡は高さ・勾配の両方へ同じ係数で掛かること（片方だけだと法線と変位が食い違う）。
+        assert!(src.contains("grad = grad * water_wave_envelope(q, scale, speed, t);"),
+            "勾配へ包絡が掛かっていない");
+        assert!(src.contains("return h * water_wave_envelope(q, scale, speed, t);"),
+            "高さへ包絡が掛かっていない");
+        // 周波数比は無理数（有理数比だと最小公倍数で必ず繰り返す）。
+        assert!(src.contains("const WAVE_FREQ_MUL_1: f32 = 1.618034;"),
+            "層の周波数比が無理数でなくなっている");
+    }
+
+    /// 解析波の**体感の強さ**が旧 4 層から変わっていないこと（Phase W6.1）。
+    ///
+    /// 層の増減や振幅倍率の手直しは「タイル感は消えたが波が強く／弱くなった」という
+    /// 見た目の退行を静かに起こす。位相が互いに独立なので、目に入る法線の傾きは
+    /// 各層の寄与 A·f の**二乗和**（RMS）に比例する。シェーダ定数から実測して固定する。
+    #[test]
+    fn wave_amplitude_normalization_is_preserved() {
+        /// WGSL ソースから `const <名前>: f32 = <値>;` を読む。
+        fn constant(src: &str, name: &str) -> f32 {
+            let needle = format!("const {name}: f32 = ");
+            let rest = src.split_once(&needle)
+                .unwrap_or_else(|| panic!("定数 {name} が見つからない")).1;
+            rest.split_once(';')
+                .expect("定数の終端 ; が無い").0
+                .trim().parse::<f32>()
+                .unwrap_or_else(|e| panic!("定数 {name} が数値として読めない: {e}"))
+        }
+        let src = include_str!("../shaders/water_surface.wgsl");
+        let mut sum_sq = 0.0f32;
+        for i in 0..6 {
+            let a = constant(src, &format!("WAVE_AMP_MUL_{i}"));
+            let f = constant(src, &format!("WAVE_FREQ_MUL_{i}"));
+            sum_sq += (a * f) * (a * f);
+        }
+        // 旧 4 層（振幅 1/0.5/0.25/0.125 × 周波数 1/2.13/3.71/5.29）の二乗和。
+        const LEGACY_SUM_SQ: f32 = 3.431_73;
+        let ratio = sum_sq / LEGACY_SUM_SQ;
+        assert!((ratio - 1.0).abs() < 0.02,
+            "波の体感強度が旧 4 層から {:.1}% ずれている（二乗和 {sum_sq} / 旧 {LEGACY_SUM_SQ}）",
+            (ratio - 1.0) * 100.0);
+    }
+
+    /// 波の方位角（Phase W6.3）の回転経路が生きていること。
+    #[test]
+    fn water_shader_rotates_waves_by_axis() {
+        let src = include_str!("../shaders/water_surface.wgsl");
+        assert!(src.contains("fn water_wave_rotate_point("),   "サンプル位置の逆回転が消えている");
+        assert!(src.contains("fn water_wave_rotate_gradient("), "勾配の戻し回転が消えている");
+        assert!(src.contains("fn water_wave_axis("),            "回転軸の取得が消えている");
+        // 勾配は必ず戻し回転を通すこと（通し忘れると法線だけ回らずに陰影が破綻する）。
+        assert!(src.contains("return water_wave_rotate_gradient(grad, axis);"),
+            "解析波の勾配がワールド系へ戻されていない");
+    }
+
+    /// 川の流れの向きが**関節タンジェントの補間値**であること（Phase W6.2）。
+    ///
+    /// 区間の弦へ戻すと、区間境界で流れが跳んでリボンの継ぎ目が見える。
+    /// 頂点出力が `flat` になっていないことも併せて押さえる（flat だと区間内で一定になり、
+    /// 隣接インスタンスと値が食い違って継ぎ目が復活する）。
+    #[test]
+    fn water_shader_uses_joint_tangent_for_flow() {
+        let src = include_str!("../shaders/water_surface.wgsl");
+        assert!(src.contains("@location(2) flow_dir: vec2<f32>,"),
+            "流れの向きの varying が無い（または flat になっている）");
+        assert!(src.contains("flow  = select(p.river_tangent.xy, p.river_tangent.zw, corner.y > 0.0);"),
+            "頂点が関節タンジェントを選んでいない");
+        assert!(src.contains("fn water_flow_dir(p: WaterParams, hint: vec2<f32>)"),
+            "流れの向きが補間値を受け取らない実装に戻っている");
     }
 
     /// 水面シェーダが岸波（Phase W1.5）を実装していること。
@@ -743,12 +824,14 @@ mod tests {
     #[test]
     fn water_shader_exposes_combined_height_field() {
         let src = include_str!("../shaders/water_surface.wgsl");
-        assert!(src.contains("fn water_surface_height(p: WaterParams, world_xz: vec2<f32>, t: f32) -> f32"),
+        assert!(src.contains("fn water_surface_height(")
+             && src.contains("p: WaterParams, world_xz: vec2<f32>, flow_dir: vec2<f32>, t: f32,"),
             "合成高さ関数（W5.1 が頂点段で呼ぶ）のシグネチャが変わっている");
-        assert!(src.contains("fn water_surface_gradient(p: WaterParams, world_xz: vec2<f32>, t: f32) -> vec2<f32>"),
+        assert!(src.contains("fn water_surface_gradient(")
+             && src.contains(") -> vec2<f32> {"),
             "合成勾配関数のシグネチャが変わっている");
         // フラグメントは必ず合成関数経由で勾配を得ること（個別ソースの直接加算に戻さない）。
-        assert!(src.contains("water_surface_gradient(p, in.world_pos.xz, u_camera.time)"),
+        assert!(src.contains("water_surface_gradient(p, in.world_pos.xz, in.flow_dir, u_camera.time)"),
             "fs_water が合成勾配関数を使っていない");
     }
 }

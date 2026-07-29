@@ -50,7 +50,7 @@ impl App {
     /// key: kind / surface_height / region_half_extents / ocean_extent /
     ///      shallow_color / deep_color / absorption_distance / surface_opacity /
     ///      foam_color / foam_width / foam_intensity / wave_amplitude / wave_scale /
-    ///      wave_speed / ripple_strength / ripple_foam_threshold /
+    ///      wave_speed / wave_direction_deg（W6.3）/ ripple_strength / ripple_foam_threshold /
     ///      fresnel_power / fresnel_strength / reflection_color /
     ///      refraction_distortion / shore_wave_*（W1.5）/
     ///      river_width / flow_speed / river_depth / spline_points /
@@ -162,6 +162,10 @@ impl App {
             "wave_speed" => {
                 // 逆流方向の波を許すため負値も受け付ける（速度は符号を持つ）。
                 if let Ok(v) = value.parse::<f32>() { w.wave_speed = v; }
+            }
+            "wave_direction_deg" => {
+                // 方位角（度）。負値・360 超もそのまま受け付ける（三角関数の周期性で自然に働く）。
+                if let Ok(v) = value.parse::<f32>() { w.wave_direction_deg = v; }
             }
             "fresnel_power" => {
                 if let Ok(v) = value.parse::<f32>() { w.fresnel_power = v.max(NON_NEGATIVE_MIN); }

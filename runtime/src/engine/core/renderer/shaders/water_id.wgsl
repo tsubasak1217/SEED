@@ -65,6 +65,10 @@ struct WaterParams {
     river_p1:         vec4<f32>,
     /// 川リボンの断面法線（Phase W4）。x,y = 上流ノード／z,w = 下流ノード
     river_normal:     vec4<f32>,
+    /// 解析波の全体回転（Phase W6.3。本シェーダは読まないが配列ストライドのため宣言する）
+    wave_axis:        vec4<f32>,
+    /// 川リボンの関節タンジェント（Phase W6.2。同上）
+    river_tangent:    vec4<f32>,
 }
 @group(1) @binding(0) var<storage, read> u_water: array<WaterParams>;
 
