@@ -783,6 +783,14 @@ public partial class InspectorPanel : UserControl
     private readonly Dictionary<int, bool> _slotEnabledMap = new();
 
     /// <summary>
+    /// 現在表示中のアクタが ControlPointComponent を持つかどうか。
+    /// BuildActorComponentList 内で components 配列全体を先読みして確定させる
+    /// （WaterVolumeComponent スロットの UI 構築は同じループの中で ControlPointComponent より
+    /// 先に走ることがあり、_slotInfos の逐次追加を見るだけでは判定タイミングに取りこぼしが出るため）。
+    /// </summary>
+    private bool _currentActorHasControlPoint;
+
+    /// <summary>
     /// ParticleEmitterComponent のカーブ行 Expander（速度/回転速度/スケール/色カーブ各要素）の
     /// 展開状態を「slotIdx:curveId[:index]」キーで保持する。
     /// Rust は SET_PARTICLE_FIELD/SET_PARTICLE_CURVE 送信のたびに ACTOR_COMPONENTS を再送してくる仕様
@@ -946,6 +954,12 @@ public partial class InspectorPanel : UserControl
         _componentSlotCount = comps.GetArrayLength();
         var prevSlot = _selectedSlotIdx;
         _selectedSlotIdx = -1;
+
+        // ControlPointComponent の有無を components 配列全体から先に確定させる。
+        // WaterVolumeComponent の UI（川セクション）はこの値を見て、旧 spline_points 編集 UI を
+        // 隠すか出すかを決めるため、ループ内で該当スロットへ到達する前に必要となる。
+        _currentActorHasControlPoint = comps.EnumerateArray().Any(c =>
+            c.TryGetProperty("type", out var ctype) && ctype.GetString() == "ControlPointComponent");
 
         foreach (var comp in comps.EnumerateArray())
         {
@@ -4954,180 +4968,205 @@ public partial class InspectorPanel : UserControl
         sp.Children.Add(reflectSection);
 
         // ── 川（スプライン）セクション（W4）─────────────────────
-        // kind == "Spline" のときのみ表示する。川幅・流速に加え、制御点（アクタ相対座標）の
-        // 追加/編集/削除と地形スナップを提供する。
+        // kind == "Spline" のときのみ表示する。川幅・流速など水の実効パラメータに加え、
+        // 制御点（アクタ相対座標）の追加/編集/削除と地形スナップを提供する……のは
+        // ControlPointComponent 未追加のときだけ。
+        //
+        // 制御点の編集経路は 2 つある: このセクションの spline_points（旧・クリック専用）と、
+        // 「制御点」セクションの ControlPointComponent（D&D 配置対応・推奨、BuildControlPointSlotContent）。
+        // ランタイムは ControlPointComponent があればそちらを優先して使うため、両方の
+        // 「＋ 制御点を追加」ボタンが並んで見えるとどちらを使うべきかユーザーが取り違える
+        // （実際に発生した混乱）。そのため同一アクタに ControlPointComponent が存在する場合は
+        // この spline_points 編集 UI（点リスト・追加ボタン・地形スナップ・移行ボタン）を丸ごと隠し、
+        // 案内テキスト 1 行だけ出す。判定は _currentActorHasControlPoint
+        // （BuildActorComponentList が components 配列全体から先読みして確定済み）を使う。
         var riverSection = BuildSection("川（スプライン）");
         var riverSp      = (StackPanel)riverSection.Child;
 
-        // ControlPointComponent（汎用パス）へ一本化していく過渡期のため、優先順位を明示する。
-        riverSp.Children.Add(MakeHint(
-            "同じアクタに ControlPoint コンポーネントがある場合はそちらが優先されます（下の制御点リストは使われません）。"));
+        // 制御点リスト本体（"x,y,z;x,y,z;..." を都度パースして保持し、編集のたびにリスト全体を送信する）。
+        // ControlPointComponent 優先時は UI に出さないが、移行ボタンの活性判定・スナップショットに
+        // 必要なため分岐に関わらずここでパースしておく。
+        var controlPoints = ParseSplinePoints(info.WaterSplinePoints);
+
+        if (_currentActorHasControlPoint)
+        {
+            // ControlPointComponent が既にあるため、旧 spline_points 編集 UI は完全に隠す。
+            riverSp.Children.Add(MakeHint(
+                "制御点は上の「制御点」セクションで編集します（コントロールポイント優先で使用中）。"));
+        }
+        else
+        {
+            // ── spline_points → ControlPointComponent への移行ボタン ──────
+            // ① ADD_COMPONENT で ControlPoint を足し、② その結果として返ってくる ACTOR_COMPONENTS で
+            // 現れた新スロットへ、現在の spline_points を変換して SET_CONTROL_POINTS で流し込む。
+            // ② の待ち合わせは _pendingDuplicateRename と同じ「保留 + 次回 BuildActorComponentList で処理」方式。
+            // spline_points 自体は削除しない（ControlPoint を外したときのフォールバックとして残置する）。
+            // 移行を促したいので、ユーザーがまず目にするセクション先頭に置く。
+            var migrateBtn = new Button
+            {
+                Content = "spline_points からコントロールポイントへ移行",
+                FontSize = 11, Height = 22, Padding = new Thickness(6, 0, 6, 0),
+                HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 2),
+                // 制御点が 0 個なら移すものが無いので押せない。
+                IsEnabled = controlPoints.Count > 0,
+            };
+            migrateBtn.Click += (_, _) =>
+            {
+                if (_currentActorId < 0 || controlPoints.Count == 0) return;
+                // 押下時点のスナップショットを保留に置き、コンポーネント追加を要求する。
+                _pendingSplineMigrationPoints  = new List<(float x, float y, float z)>(controlPoints);
+                _pendingSplineMigrationActorId = _currentActorId;
+                _runtime?.SendToRuntime($"ADD_COMPONENT:{_currentActorId},ControlPointComponent,ControlPoint,");
+            };
+            riverSp.Children.Add(migrateBtn);
+            riverSp.Children.Add(MakeHint(
+                "移行後も spline_points は残ります（ControlPoint を外したときのフォールバック）。"));
+        }
 
         AddFloatRow(riverSp, "川幅(m)",     info.WaterRiverWidth, "river_width", "F2");
         AddFloatRow(riverSp, "流速(m/s)",   info.WaterFlowSpeed,  "flow_speed",  "F2");
         AddFloatRow(riverSp, "川の深さ(m)", info.WaterRiverDepth, "river_depth", "F2");
 
-        // 制御点リスト本体（"x,y,z;x,y,z;..." を都度パースして保持し、編集のたびにリスト全体を送信する）。
-        var controlPoints = ParseSplinePoints(info.WaterSplinePoints);
-        var pointsPanel   = new StackPanel { Margin = new Thickness(0, 2, 0, 2) };
-        var pointsHint    = MakeHint($"制御点が{WaterSplineMinPointsForRender}点以上必要です（川は描画されません）");
-
-        // 制御点リスト全体を spline_points として送信するローカル関数。
-        void SendSplinePoints() => SendField("spline_points", SerializeSplinePoints(controlPoints));
-
-        // 制御点が既定点数を下回る間だけ注意書きを表示する。
-        void UpdatePointsHint() =>
-            pointsHint.Visibility = controlPoints.Count < WaterSplineMinPointsForRender
-                ? Visibility.Visible : Visibility.Collapsed;
-
-        // 制御点リスト UI を作り直すローカル関数（追加/削除のたびに全再構築する）。
-        void RebuildPoints()
+        if (!_currentActorHasControlPoint)
         {
-            pointsPanel.Children.Clear();
-            for (int i = 0; i < controlPoints.Count; i++)
+            var pointsPanel = new StackPanel { Margin = new Thickness(0, 2, 0, 2) };
+            var pointsHint  = MakeHint($"制御点が{WaterSplineMinPointsForRender}点以上必要です（川は描画されません）");
+
+            // 制御点リスト全体を spline_points として送信するローカル関数。
+            void SendSplinePoints() => SendField("spline_points", SerializeSplinePoints(controlPoints));
+
+            // 制御点が既定点数を下回る間だけ注意書きを表示する。
+            void UpdatePointsHint() =>
+                pointsHint.Visibility = controlPoints.Count < WaterSplineMinPointsForRender
+                    ? Visibility.Visible : Visibility.Collapsed;
+
+            // 制御点リスト UI を作り直すローカル関数（追加/削除のたびに全再構築する）。
+            void RebuildPoints()
             {
-                int idx = i;
-                var rowGrid = new Grid { Margin = new Thickness(0, 1, 0, 1) };
-                rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-                var (px, py, pz) = controlPoints[idx];
-                var xyzRow = BuildXYZRowSimple($"#{idx}", px, py, pz);
-                Grid.SetColumn(xyzRow.element, 0);
-                rowGrid.Children.Add(xyzRow.element);
-
-                // この制御点の X/Y/Z いずれかが確定したらリスト全体を送信する。
-                void CommitPoint()
+                pointsPanel.Children.Clear();
+                for (int i = 0; i < controlPoints.Count; i++)
                 {
-                    if (!float.TryParse(xyzRow.tx.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vx)) return;
-                    if (!float.TryParse(xyzRow.ty.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vy)) return;
-                    if (!float.TryParse(xyzRow.tz.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vz)) return;
-                    controlPoints[idx] = (vx, vy, vz);
-                    SendSplinePoints();
+                    int idx = i;
+                    var rowGrid = new Grid { Margin = new Thickness(0, 1, 0, 1) };
+                    rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                    rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                    var (px, py, pz) = controlPoints[idx];
+                    var xyzRow = BuildXYZRowSimple($"#{idx}", px, py, pz);
+                    Grid.SetColumn(xyzRow.element, 0);
+                    rowGrid.Children.Add(xyzRow.element);
+
+                    // この制御点の X/Y/Z いずれかが確定したらリスト全体を送信する。
+                    void CommitPoint()
+                    {
+                        if (!float.TryParse(xyzRow.tx.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vx)) return;
+                        if (!float.TryParse(xyzRow.ty.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vy)) return;
+                        if (!float.TryParse(xyzRow.tz.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vz)) return;
+                        controlPoints[idx] = (vx, vy, vz);
+                        SendSplinePoints();
+                    }
+                    foreach (var tb in new[] { xyzRow.tx, xyzRow.ty, xyzRow.tz })
+                    {
+                        tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitPoint(); e.Handled = true; } };
+                        tb.LostFocus += (_, _) => CommitPoint();
+                        NumericDragBehavior.SetOnDrag(tb, CommitPoint);
+                    }
+
+                    var delPointBtn = new Button
+                    {
+                        Content = "削除", FontSize = 10, Width = 40, Height = 20,
+                        Margin = new Thickness(4, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+                    };
+                    delPointBtn.Click += (_, _) =>
+                    {
+                        controlPoints.RemoveAt(idx);
+                        SendSplinePoints();
+                        RebuildPoints();
+                        UpdatePointsHint();
+                    };
+                    Grid.SetColumn(delPointBtn, 1);
+                    rowGrid.Children.Add(delPointBtn);
+
+                    pointsPanel.Children.Add(rowGrid);
                 }
-                foreach (var tb in new[] { xyzRow.tx, xyzRow.ty, xyzRow.tz })
-                {
-                    tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitPoint(); e.Handled = true; } };
-                    tb.LostFocus += (_, _) => CommitPoint();
-                    NumericDragBehavior.SetOnDrag(tb, CommitPoint);
-                }
-
-                var delPointBtn = new Button
-                {
-                    Content = "削除", FontSize = 10, Width = 40, Height = 20,
-                    Margin = new Thickness(4, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
-                };
-                delPointBtn.Click += (_, _) =>
-                {
-                    controlPoints.RemoveAt(idx);
-                    SendSplinePoints();
-                    RebuildPoints();
-                    UpdatePointsHint();
-                };
-                Grid.SetColumn(delPointBtn, 1);
-                rowGrid.Children.Add(delPointBtn);
-
-                pointsPanel.Children.Add(rowGrid);
             }
-        }
-        RebuildPoints();
-        riverSp.Children.Add(pointsPanel);
-
-        // 「制御点を追加」ボタン。末尾に新しい制御点を挿入する初期位置は次の規則で決める:
-        // ・2点以上: 最後の点 + (最後の点 − 直前の点) の外挿位置（線の延長上）
-        // ・1点   : 最後の点から WaterSplineNewPointOffsetDefault だけ Z 方向へずらした位置
-        // ・0点   : 原点
-        (float x, float y, float z) ComputeNextControlPoint()
-        {
-            if (controlPoints.Count >= 2)
-            {
-                var last = controlPoints[^1];
-                var prev = controlPoints[^2];
-                return (last.x + (last.x - prev.x), last.y + (last.y - prev.y), last.z + (last.z - prev.z));
-            }
-            if (controlPoints.Count == 1)
-            {
-                var last = controlPoints[0];
-                return (last.x, last.y, last.z + WaterSplineNewPointOffsetDefault);
-            }
-            return (0f, 0f, 0f);
-        }
-        var addPointBtn = new Button
-        {
-            Content = "＋ 制御点を追加", FontSize = 11, Width = 150, Height = 22,
-            HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 2),
-        };
-        addPointBtn.Click += (_, _) =>
-        {
-            controlPoints.Add(ComputeNextControlPoint());
-            SendSplinePoints();
             RebuildPoints();
+            riverSp.Children.Add(pointsPanel);
+
+            // 「制御点を追加（リストに）」ボタン。末尾に新しい制御点を挿入する初期位置は次の規則で決める:
+            // ・2点以上: 最後の点 + (最後の点 − 直前の点) の外挿位置（線の延長上）
+            // ・1点   : 最後の点から WaterSplineNewPointOffsetDefault だけ Z 方向へずらした位置
+            // ・0点   : 原点
+            (float x, float y, float z) ComputeNextControlPoint()
+            {
+                if (controlPoints.Count >= 2)
+                {
+                    var last = controlPoints[^1];
+                    var prev = controlPoints[^2];
+                    return (last.x + (last.x - prev.x), last.y + (last.y - prev.y), last.z + (last.z - prev.z));
+                }
+                if (controlPoints.Count == 1)
+                {
+                    var last = controlPoints[0];
+                    return (last.x, last.y, last.z + WaterSplineNewPointOffsetDefault);
+                }
+                return (0f, 0f, 0f);
+            }
+            var addPointBtn = new Button
+            {
+                // ラベルと Tooltip で「これはリスト直接編集用（クリック専用）」であり、
+                // D&D 配置は ControlPointComponent（推奨）側の機能であることを明示する。
+                Content = "＋ 制御点を追加（リストに）", FontSize = 11, Width = 170, Height = 22,
+                HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 2),
+                ToolTip = "ビューポートへの D&D 配置はコントロールポイントコンポーネント（推奨）で利用できます。",
+            };
+            addPointBtn.Click += (_, _) =>
+            {
+                controlPoints.Add(ComputeNextControlPoint());
+                SendSplinePoints();
+                RebuildPoints();
+                UpdatePointsHint();
+            };
+            riverSp.Children.Add(addPointBtn);
+            riverSp.Children.Add(pointsHint);
             UpdatePointsHint();
-        };
-        riverSp.Children.Add(addPointBtn);
-        riverSp.Children.Add(pointsHint);
-        UpdatePointsHint();
 
-        // 「制御点を地形へスナップ」ボタン。オフセット Y はボタンの隣に置き、押下時にのみ値を読む
-        // （spline_snap_terrain はランタイム側が処理してコンポーネントを送り返すため、C# 側で結果を反映する必要はない）。
-        var snapRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 2) };
-        var snapBtn = new Button
-        {
-            Content = "制御点を地形へスナップ", FontSize = 11, Height = 22,
-            Padding = new Thickness(6, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center,
-        };
-        snapRow.Children.Add(snapBtn);
-        snapRow.Children.Add(new TextBlock
-        {
-            Text = "オフセットY", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
-            FontSize = 11, Margin = new Thickness(8, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center,
-        });
-        var snapOffsetBox = new TextBox
-        {
-            Text              = WaterSplineSnapOffsetYDefault.ToString("F2", CultureInfo.InvariantCulture),
-            Background        = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
-            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-            BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-            BorderThickness   = new Thickness(1),
-            FontSize          = 11,
-            Padding           = new Thickness(4, 1, 4, 1),
-            Width             = 60,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        NumericDragBehavior.SetEnabled(snapOffsetBox, true);
-        snapRow.Children.Add(snapOffsetBox);
-        snapBtn.Click += (_, _) =>
-        {
-            var offsetY = float.TryParse(snapOffsetBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
-                ? v : WaterSplineSnapOffsetYDefault;
-            SendField("spline_snap_terrain", offsetY.ToString(CultureInfo.InvariantCulture));
-        };
-        riverSp.Children.Add(snapRow);
-
-        // ── spline_points → ControlPointComponent への移行 ──────
-        // ① ADD_COMPONENT で ControlPoint を足し、② その結果として返ってくる ACTOR_COMPONENTS で
-        // 現れた新スロットへ、現在の spline_points を変換して SET_CONTROL_POINTS で流し込む。
-        // ② の待ち合わせは _pendingDuplicateRename と同じ「保留 + 次回 BuildActorComponentList で処理」方式。
-        // spline_points 自体は削除しない（ControlPoint を外したときのフォールバックとして残置する）。
-        var migrateBtn = new Button
-        {
-            Content = "spline_points からコントロールポイントへ移行",
-            FontSize = 11, Height = 22, Padding = new Thickness(6, 0, 6, 0),
-            HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 6, 0, 2),
-            // 制御点が 0 個なら移すものが無いので押せない。
-            IsEnabled = controlPoints.Count > 0,
-        };
-        migrateBtn.Click += (_, _) =>
-        {
-            if (_currentActorId < 0 || controlPoints.Count == 0) return;
-            // 押下時点のスナップショットを保留に置き、コンポーネント追加を要求する。
-            _pendingSplineMigrationPoints  = new List<(float x, float y, float z)>(controlPoints);
-            _pendingSplineMigrationActorId = _currentActorId;
-            _runtime?.SendToRuntime($"ADD_COMPONENT:{_currentActorId},ControlPointComponent,ControlPoint,");
-        };
-        riverSp.Children.Add(migrateBtn);
-        riverSp.Children.Add(MakeHint(
-            "移行後も spline_points は残ります（ControlPoint を外したときのフォールバック）。"));
+            // 「制御点を地形へスナップ」ボタン。オフセット Y はボタンの隣に置き、押下時にのみ値を読む
+            // （spline_snap_terrain はランタイム側が処理してコンポーネントを送り返すため、C# 側で結果を反映する必要はない）。
+            var snapRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 2) };
+            var snapBtn = new Button
+            {
+                Content = "制御点を地形へスナップ", FontSize = 11, Height = 22,
+                Padding = new Thickness(6, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center,
+            };
+            snapRow.Children.Add(snapBtn);
+            snapRow.Children.Add(new TextBlock
+            {
+                Text = "オフセットY", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                FontSize = 11, Margin = new Thickness(8, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center,
+            });
+            var snapOffsetBox = new TextBox
+            {
+                Text              = WaterSplineSnapOffsetYDefault.ToString("F2", CultureInfo.InvariantCulture),
+                Background        = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+                Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+                BorderThickness   = new Thickness(1),
+                FontSize          = 11,
+                Padding           = new Thickness(4, 1, 4, 1),
+                Width             = 60,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            NumericDragBehavior.SetEnabled(snapOffsetBox, true);
+            snapRow.Children.Add(snapOffsetBox);
+            snapBtn.Click += (_, _) =>
+            {
+                var offsetY = float.TryParse(snapOffsetBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
+                    ? v : WaterSplineSnapOffsetYDefault;
+                SendField("spline_snap_terrain", offsetY.ToString(CultureInfo.InvariantCulture));
+            };
+            riverSp.Children.Add(snapRow);
+        }
 
         sp.Children.Add(riverSection);
 
