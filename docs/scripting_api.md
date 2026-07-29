@@ -88,6 +88,57 @@ public class CameraShake : SEEDScript
 
 不要な関数は override しなくて構いません。
 
+### 生成・破棄コールバック（OnStart / OnDestroy）
+
+フレームごとの更新とは別に、インスタンスの一生に 1 回ずつ呼ばれるコールバックがあります。**引数は取りません**。
+
+| 関数 | 呼ばれるタイミング |
+|------|--------------------|
+| `OnStart()`   | 有効化後、そのスクリプト自身の**最初の `BeginFrame` の直前**に 1 回だけ |
+| `OnDestroy()` | スクリプトインスタンスが破棄される直前に 1 回だけ |
+
+```csharp
+public class Enemy : SEEDScript
+{
+    private float _initialY;
+
+    public override void OnStart()
+    {
+        // 初期化はここ。gameObject / transform は利用可能
+        _initialY = transform.Position.y;
+        SEED.Debug.Log("Enemy 出現");
+    }
+
+    public override void OnDestroy()
+    {
+        // 後片付けはここ（シーンへのアクセスは行わないこと）
+        SEED.Debug.Log("Enemy 消滅");
+    }
+}
+```
+
+**`OnStart` の呼び出し規約**
+
+- 呼ばれるのは **Play モードのみ**（編集モードではスクリプトのライフサイクルは走りません）。
+- タイミングは「全スクリプトの `BeginFrame` 群より前にまとめて」ではなく、**スクリプトごとに、そのスクリプトの初回 `BeginFrame` の直前**です。したがって「A の OnStart → A の BeginFrame → B の OnStart → B の BeginFrame」の順になります。他スクリプトの `OnStart` 完了を前提にした処理は `BeginFrame` 以降で行ってください。
+- 対象は次の 2 つで、どちらも同じ規約です。
+  1. **Play 開始時**にシーンへ存在した全スクリプト → Play 開始後の最初のフレームの `BeginFrame` の直前。
+  2. **`GameObject.Instantiate` で動的生成**されたアクターのスクリプト → 生成が実際にシーンへ適用されるのは発行フレームのゲームロジック後なので、`OnStart` は**次のフレーム**の `BeginFrame` 直前になります（Unity の `Start` と同じ考え方）。
+- 一時的に無効化（アクター/スロットの非アクティブ化）していたスクリプトを再度有効化しても、`OnStart` が二度呼ばれることはありません（インスタンスにつき 1 回）。
+- `ctx`（`DeltaTime` 等）は渡されません。フレーム時間が必要な初期化は `BeginFrame` 側で行ってください。
+
+**`OnDestroy` の呼び出し規約**
+
+- 発火する破棄経路は次のすべてです。
+  1. アクターの破棄（`gameObject.Destroy()` / `GameObject.Destroy(...)`。実際の破棄はそのフレームのゲームロジック後に遅延適用され、その時点で呼ばれます）
+  2. シーン遷移・シーンリロード（旧シーンの全スクリプト）
+  3. Play の終了（シーン上の全スクリプト）
+  4. スクリプトのホットリロード（再コンパイルで旧インスタンスが捨てられるとき）
+- `OnStart` が一度も呼ばれていないインスタンスでは呼ばれません（`OnStart` と 1 対 1 で対応します）。
+- **同フレームの他コールバックとの関係**: `Destroy` は即時ではなく、`Render` フェーズまで走り終えた後の「シーン操作コマンド適用」で実行されます。したがって破棄を要求したフレームでは `BeginFrame`〜`Render` は**通常どおり最後まで実行**され、その直後に `OnDestroy` が呼ばれます。**そのフレームの `EndFrame` は呼ばれません**（`EndFrame` はフレーム末尾で走るため）。`EndFrame` の中で `Destroy` を呼んだ場合は `EndFrame` 実行直後（同フレーム末尾）に `OnDestroy` が呼ばれます。いずれの場合も `OnDestroy` の後にそのインスタンスへコールバック（ライフサイクル・物理イベントとも）が来ることはありません。
+- **破棄処理中に呼ばれるため、シーンへのアクセスは保証されません**。`OnDestroy` 内での `transform` の読み書き・`GameObject.Find` は既定値／無効な結果になります。位置などを使いたい場合は破棄を要求する前に控えておいてください。
+- **再入（OnDestroy 内での生成・破棄）は無視されます**。`GameObject.Instantiate` / `Destroy` は `OnDestroy` の実行中に限り受理されず、何も起きません（遅延実行もされません）。破棄の連鎖でシーンが不定状態になるのを防ぐための仕様です。
+
 ### 物理イベントコールバック
 
 自分のアクターのコライダー（ColliderComponent / Collider2dComponent）が他のコライダーと衝突・接触すると、以下が呼ばれます（3D / 2D 共通）。`other` は相手アクターの GameObject です（特定できない場合は `IsValid == false`）。
@@ -98,7 +149,10 @@ public class CameraShake : SEEDScript
 | `OnCollisionStay(SEED.GameObject other)`  | 衝突継続中（毎物理ステップ） |
 | `OnCollisionExit(SEED.GameObject other)`  | 衝突が終わったフレーム |
 | `OnTriggerEnter(SEED.GameObject other)`   | トリガーへの進入時（トリガー側・相手側の両方に通知） |
+| `OnTriggerStay(SEED.GameObject other)`    | トリガーに重なり続けている間（毎物理ステップ・同上） |
 | `OnTriggerExit(SEED.GameObject other)`    | トリガーからの退出時（同上） |
+
+`OnTriggerStay` は `OnCollisionStay` と同じ頻度規約で、重なりが続いている限り**毎物理ステップ**呼ばれます（フレームあたり複数回呼ばれうる点に注意）。`OnTriggerEnter` が発火したステップでは `Enter` と `Stay` の両方が届きます。
 
 ```csharp
 public class Coin : SEEDScript

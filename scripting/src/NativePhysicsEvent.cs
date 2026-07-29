@@ -7,7 +7,7 @@ namespace SEEDEditor.Scripting;
 /// フィールド順・型を runtime/.../scripting/mod.rs と必ず一致させること。
 ///
 /// Kind: 0=CollisionEnter / 1=CollisionStay / 2=CollisionExit /
-///       3=TriggerEnter / 4=TriggerExit（ScriptBridge の定数と一致）
+///       3=TriggerEnter / 4=TriggerExit / 5=TriggerStay（ScriptBridge の定数と一致）
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct NativePhysicsEvent

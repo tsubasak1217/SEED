@@ -55,6 +55,50 @@ public static unsafe class ScriptBridge
         GCHandle.FromIntPtr(handlePtr).Free();
     }
 
+    // ─── 生成・破棄コールバック ───────────────────────────────
+    // フレームコンテキストを持たない 1 回限りの通知。
+    // 引数は (ハンドル, 所有エンティティ index, 同 generation)。
+    // Rust 側 InstanceEventFn（scripting/mod.rs）とシグネチャを一致させること。
+
+    /// <summary>
+    /// スクリプトの初回ライフサイクル（BeginFrame）直前に 1 回だけ呼ばれる OnStart。
+    /// ScriptSystem（Rust）が BeginFrame フェーズでスクリプトごとに発行する。
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static void OnStart(nint h, uint entityIndex, uint entityGeneration)
+    {
+        try
+        {
+            if (Get(h) is not SEEDScript ss) return;
+            ss.BindEntity(entityIndex, entityGeneration);
+            ss.OnStart();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] OnStart failed: {ex}");
+        }
+    }
+
+    /// <summary>
+    /// スクリプトインスタンス破棄の直前に 1 回だけ呼ばれる OnDestroy。
+    /// Rust 側 ScriptComponent の Drop が（OnStart 済みの場合のみ）発行する。
+    /// この呼び出しの直後に DestroyComponent で GCHandle が解放される。
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static void OnDestroy(nint h, uint entityIndex, uint entityGeneration)
+    {
+        try
+        {
+            if (Get(h) is not SEEDScript ss) return;
+            ss.BindEntity(entityIndex, entityGeneration);
+            ss.OnDestroy();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] OnDestroy failed: {ex}");
+        }
+    }
+
     // ─── ライフサイクル ───────────────────────────────────────
     // 各フェーズの実行直前に、現在フレームの時間（SEED.Time）と所有エンティティ
     // （SEEDScript.gameObject/transform 用）をスクリプトへ束縛する（Prepare）。
@@ -107,6 +151,7 @@ public static unsafe class ScriptBridge
     private const int PhysicsEventCollisionExit  = 2;
     private const int PhysicsEventTriggerEnter   = 3;
     private const int PhysicsEventTriggerExit    = 4;
+    private const int PhysicsEventTriggerStay    = 5;
 
     /// <summary>
     /// 物理イベント（衝突・トリガー）をスクリプトへ通知する。
@@ -128,6 +173,7 @@ public static unsafe class ScriptBridge
                 case PhysicsEventCollisionExit:  ss.OnCollisionExit(other);  break;
                 case PhysicsEventTriggerEnter:   ss.OnTriggerEnter(other);   break;
                 case PhysicsEventTriggerExit:    ss.OnTriggerExit(other);    break;
+                case PhysicsEventTriggerStay:    ss.OnTriggerStay(other);    break;
             }
         }
         catch (Exception ex)

@@ -11,10 +11,10 @@
 
 use std::sync::Arc;
 
+use crate::engine::ecs::{Entity, FnSystem, Phase, Schedule};
+use crate::engine::ecs::schedule::all_phases;
 use crate::engine::components::ScriptComponent;
 use crate::engine::core::scripting::{ScriptingHost, with_world};
-use crate::engine::ecs::schedule::all_phases;
-use crate::engine::ecs::{Entity, FnSystem, Phase, Schedule};
 
 /// 全フェーズにスクリプト駆動システムを登録する。
 ///
@@ -28,43 +28,65 @@ use crate::engine::ecs::{Entity, FnSystem, Phase, Schedule};
 /// 競合を避ける。
 pub fn register(schedule: &mut Schedule) {
     for phase in all_phases() {
-        schedule.add_system(
-            phase,
-            FnSystem::new(system_name(phase), move |world, ctx| {
-                // 1. 実行に必要な情報を収集する（ここで World の不変借用は終わる）
-                // 実効非アクティブ（アクターの active 継承が false またはスロット無効）の
-                // スクリプトは呼び出し対象から外す（Scene::sync_script_owners が毎フレーム同期）。
-                let calls: Vec<(Arc<ScriptingHost>, isize, Option<Entity>)> = world
-                    .query::<ScriptComponent>()
-                    .filter(|(_entity, sc)| sc.active)
-                    .map(|(_entity, sc)| (Arc::clone(&sc.host), sc.handle, sc.owner))
-                    .collect();
-                if calls.is_empty() {
-                    return;
-                }
+        schedule.add_system(phase, FnSystem::new(system_name(phase), move |world, ctx| {
+            // OnStart は「フレーム最初のフェーズ = BeginFrame」でのみ判定する。
+            // 有効化されてから最初の BeginFrame の直前に、そのスクリプト自身の
+            // OnStart を 1 回だけ呼ぶ（スクリプト単位の直前呼び出し）。
+            let is_first_phase = phase == Phase::BeginFrame;
 
-                // 2. World ポインタを公開しつつ、収集済みハンドルへスクリプトを実行する。
-                //    この間 Rust 側は World への参照を保持しないため、アクセサからの
-                //    可変アクセスが安全に行える。
-                with_world(world, || {
-                    for (host, handle, owner) in &calls {
-                        ScriptComponent::run_phase_raw(host, *handle, *owner, phase, ctx);
+            // 1. 実行に必要な情報を収集する（ここで World の不変借用は終わる）
+            // 実効非アクティブ（アクターの active 継承が false またはスロット無効）の
+            // スクリプトは呼び出し対象から外す（Scene::sync_script_owners が毎フレーム同期）。
+            // needs_start = このフェーズで OnStart を先に呼ぶべきか（＝未 OnStart）。
+            let calls: Vec<(Arc<ScriptingHost>, isize, Option<Entity>, Entity, bool)> = world
+                .query::<ScriptComponent>()
+                .filter(|(_entity, sc)| sc.active)
+                .map(|(entity, sc)| (
+                    Arc::clone(&sc.host),
+                    sc.handle,
+                    sc.owner,
+                    entity,
+                    is_first_phase && !sc.started,
+                ))
+                .collect();
+            if calls.is_empty() { return; }
+
+            // 2. World ポインタを公開しつつ、収集済みハンドルへスクリプトを実行する。
+            //    この間 Rust 側は World への参照を保持しないため、アクセサからの
+            //    可変アクセスが安全に行える。
+            with_world(world, || {
+                for (host, handle, owner, _entity, needs_start) in &calls {
+                    // OnStart は必ずこのスクリプトの初回ライフサイクル呼び出しより前に走る
+                    if *needs_start {
+                        ScriptComponent::run_on_start_raw(host, *handle, *owner);
                     }
-                });
-            }),
-        );
+                    ScriptComponent::run_phase_raw(host, *handle, *owner, phase, ctx);
+                }
+            });
+
+            // 3. OnStart 済みフラグを立てる（World 借用が戻ってから行う）。
+            //    フラグは Drop 時の OnDestroy 発火条件も兼ねる。
+            if is_first_phase {
+                for (_host, _handle, _owner, entity, needs_start) in &calls {
+                    if !*needs_start { continue; }
+                    if let Some(sc) = world.get_mut::<ScriptComponent>(*entity) {
+                        sc.started = true;
+                    }
+                }
+            }
+        }));
     }
 }
 
 /// フェーズごとのシステム名（デバッグ・プロファイル表示用）。
 fn system_name(phase: Phase) -> &'static str {
     match phase {
-        Phase::BeginFrame => "script_begin_frame",
-        Phase::EarlyUpdate => "script_early_update",
-        Phase::Update => "script_update",
+        Phase::BeginFrame     => "script_begin_frame",
+        Phase::EarlyUpdate    => "script_early_update",
+        Phase::Update         => "script_update",
         Phase::ConstantUpdate => "script_constant_update",
-        Phase::LateUpdate => "script_late_update",
-        Phase::Render => "script_render",
-        Phase::EndFrame => "script_end_frame",
+        Phase::LateUpdate     => "script_late_update",
+        Phase::Render         => "script_render",
+        Phase::EndFrame       => "script_end_frame",
     }
 }

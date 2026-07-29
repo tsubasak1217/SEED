@@ -59,6 +59,14 @@ thread_local! {
     /// ここへ積んで App がフレームのゲームロジック後に適用する（Unity の遅延 Destroy と同様）。
     static SCENE_COMMANDS: RefCell<Vec<ScriptSceneCommand>> = const { RefCell::new(Vec::new()) };
 
+    /// OnDestroy 通知の実行中だけ true になる再入ガード。
+    ///
+    /// OnDestroy はインスタンス破棄の直前（＝アクターやシーンが解体されている最中）に
+    /// 呼ばれるため、そこから発行される Instantiate / Destroy は適用先が存在しない、
+    /// あるいは破棄処理と競合する。仕様として「OnDestroy 内の生成・破棄は無視する」と
+    /// 定め、このフラグが立っている間は該当 FFI を受理しない（戻り値 0 = 失敗）。
+    static IN_ON_DESTROY: Cell<bool> = const { Cell::new(false) };
+
     /// スクリプトが `Transform.Teleport` で発行したキャラクター瞬間移動のキュー。
     /// 要素 = (DFS 順 entity_id, 移動先ワールド位置 [x,y,z], 回転 [x,y,z,w])。
     /// キャラクター衝突ミラー（`CharacterWorld`）はメインスレッドの App が保持するため即時反映
@@ -109,6 +117,23 @@ pub fn with_actors<R>(actors: &Vec<Actor>, f: impl FnOnce() -> R) -> R {
     let result = f();
     ACTORS_PTR.with(|p| p.set(prev));
     result
+}
+
+/// OnDestroy 通知を再入ガード下で実行する。
+///
+/// ガード中は ffi_instantiate / ffi_destroy が受理されない（＝OnDestroy 内の
+/// GameObject.Instantiate / Destroy は無視される）。ネストしても正しく復元できるよう、
+/// 直前の値を保存して戻す。
+pub fn with_on_destroy_guard<R>(f: impl FnOnce() -> R) -> R {
+    let prev = IN_ON_DESTROY.with(|g| g.replace(true));
+    let result = f();
+    IN_ON_DESTROY.with(|g| g.set(prev));
+    result
+}
+
+/// OnDestroy 通知の実行中かどうか（シーン操作 FFI の受理判定に使う）。
+fn is_in_on_destroy() -> bool {
+    IN_ON_DESTROY.with(|g| g.get())
 }
 
 /// ゲームロジック開始前に Input への読み取り専用ポインタを公開する（None で解除）。
@@ -930,6 +955,8 @@ unsafe extern "system" fn ffi_instantiate(
     path: *const u8, path_len: i32,
     out: *mut u32,
 ) -> i32 {
+    // OnDestroy 内からの生成は仕様として無視する（適用先のアクター/シーンが解体中のため）
+    if is_in_on_destroy() { return 0; }
     let ptr = WORLD_PTR.with(|p| p.get());
     if ptr.is_null() || out.is_null() { return 0; }
     let path_str = str_from(path, path_len);
@@ -956,6 +983,8 @@ unsafe extern "system" fn ffi_instantiate(
 /// 実際の破棄はフレームのゲームロジック後に遅延適用される
 /// （実行中スクリプトの巻き添えを防ぐため。Unity の Destroy と同じ考え方）。
 unsafe extern "system" fn ffi_destroy(idx: u32, generation: u32) -> i32 {
+    // OnDestroy 内からの破棄要求は仕様として無視する（二重破棄・破棄処理との競合を防ぐ）
+    if is_in_on_destroy() { return 0; }
     let ptr = WORLD_PTR.with(|p| p.get());
     if ptr.is_null() { return 0; }
     let world = &*ptr;

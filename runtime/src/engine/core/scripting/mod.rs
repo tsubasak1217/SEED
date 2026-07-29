@@ -20,12 +20,15 @@ pub mod host_api;
 // スクリプト入力 API の ID ⇔ winit 型対応表
 pub mod input_bridge;
 pub use host_api::{
-    ScriptAudioCommand, ScriptSceneCommand, advance_script_frame, publish_input,
-    publish_physics_sender, take_audio_commands, take_scene_commands, with_actors, with_world,
+    with_world, with_actors, take_scene_commands, take_audio_commands,
+    publish_input, publish_physics_sender, advance_script_frame, with_on_destroy_guard,
+    ScriptSceneCommand, ScriptAudioCommand,
 };
 
 // ScriptComponent 等は engine::components から re-export する
-pub use crate::engine::components::{PlaceholderScriptSlot, ScriptComponent, ScriptComponentData};
+pub use crate::engine::components::{
+    ScriptComponent, PlaceholderScriptSlot, ScriptComponentData,
+};
 
 // ============================================================
 //  FFI 型定義
@@ -39,9 +42,9 @@ pub use crate::engine::components::{PlaceholderScriptSlot, ScriptComponent, Scri
 /// entity_index = u32::MAX（C# の Entity.None に対応）。
 #[repr(C)]
 pub(crate) struct RawFrameContext {
-    pub delta_time: f32,
-    pub anim_time: f32,
-    pub entity_index: u32,
+    pub delta_time:        f32,
+    pub anim_time:         f32,
+    pub entity_index:      u32,
     pub entity_generation: u32,
 }
 
@@ -50,11 +53,11 @@ impl RawFrameContext {
     pub fn new(ctx: &crate::engine::core::clock::FrameContext, owner: Option<Entity>) -> Self {
         let (entity_index, entity_generation) = match owner {
             Some(e) => (e.index(), e.generation()),
-            None => (u32::MAX, 0),
+            None    => (u32::MAX, 0),
         };
         Self {
             delta_time: ctx.delta_time,
-            anim_time: ctx.anim_time,
+            anim_time:  ctx.anim_time,
             entity_index,
             entity_generation,
         }
@@ -63,38 +66,44 @@ impl RawFrameContext {
 
 // ─── 物理イベント種別（C# 側 ScriptBridge の定数と一致させる）───
 pub const PHYSICS_EVENT_COLLISION_ENTER: i32 = 0;
-pub const PHYSICS_EVENT_COLLISION_STAY: i32 = 1;
-pub const PHYSICS_EVENT_COLLISION_EXIT: i32 = 2;
-pub const PHYSICS_EVENT_TRIGGER_ENTER: i32 = 3;
-pub const PHYSICS_EVENT_TRIGGER_EXIT: i32 = 4;
+pub const PHYSICS_EVENT_COLLISION_STAY:  i32 = 1;
+pub const PHYSICS_EVENT_COLLISION_EXIT:  i32 = 2;
+pub const PHYSICS_EVENT_TRIGGER_ENTER:   i32 = 3;
+pub const PHYSICS_EVENT_TRIGGER_EXIT:    i32 = 4;
+pub const PHYSICS_EVENT_TRIGGER_STAY:    i32 = 5;
 
 /// C# 側 NativePhysicsEvent と同じメモリレイアウト（#[repr(C)]）。
 /// 物理イベント（衝突・トリガー）をスクリプトへ通知するときに渡す。
 ///
 /// kind: 0=CollisionEnter / 1=CollisionStay / 2=CollisionExit /
-///       3=TriggerEnter / 4=TriggerExit（C# 側 ScriptBridge と一致させる）
+///       3=TriggerEnter / 4=TriggerExit / 5=TriggerStay（C# 側 ScriptBridge と一致させる）
 #[repr(C)]
 pub(crate) struct RawPhysicsEvent {
     /// イベント種別（上記コメント参照）
-    pub kind: i32,
+    pub kind:             i32,
     /// 通知先スクリプトが乗るアクターのエンティティ（gameObject の束縛用）
-    pub self_index: u32,
-    pub self_generation: u32,
+    pub self_index:       u32,
+    pub self_generation:  u32,
     /// 衝突相手アクターのエンティティ（u32::MAX = 不明）
-    pub other_index: u32,
+    pub other_index:      u32,
     pub other_generation: u32,
 }
 
 // Windows x64 では "system" == "C" (cdecl) — C# の CallConvCdecl と一致する。
-type CreateFn = unsafe extern "system" fn(*const u8, i32) -> isize;
-type DestroyFn = unsafe extern "system" fn(isize);
+type CreateFn    = unsafe extern "system" fn(*const u8, i32) -> isize;
+type DestroyFn   = unsafe extern "system" fn(isize);
 type LifecycleFn = unsafe extern "system" fn(isize, *const RawFrameContext);
+/// フレームコンテキストを持たない 1 回限りのライフサイクル通知（OnStart / OnDestroy）。
+/// 引数は (ハンドル, 所有エンティティ index, 同 generation)。所有者未束縛時は index = u32::MAX。
+/// ユーザー側メソッドは引数を取らないが、gameObject / transform を束縛するために
+/// エンティティだけは C# へ渡す。
+type InstanceEventFn = unsafe extern "system" fn(isize, u32, u32);
 /// 物理イベント（衝突・トリガー）をスクリプトへ通知する。
 type PhysicsEventFn = unsafe extern "system" fn(isize, *const RawPhysicsEvent);
 /// アセットルート内の .cs を CLR 側でコンパイルする。戻り値はコンパイルされた型数（負値はエラー）。
-type CompileFn = unsafe extern "system" fn(*const u8, i32) -> i32;
+type CompileFn   = unsafe extern "system" fn(*const u8, i32) -> i32;
 /// スクリプトインスタンスの [SerializeField] フィールドに文字列値を設定する。
-type SetFieldFn = unsafe extern "system" fn(isize, *const u8, i32, *const u8, i32);
+type SetFieldFn  = unsafe extern "system" fn(isize, *const u8, i32, *const u8, i32);
 /// コンポーネントアクセス用の関数ポインタ表（HOST_API）を C# へ登録する。
 type RegisterHostApiFn = unsafe extern "system" fn(*const host_api::ScriptHostApi);
 
@@ -104,23 +113,28 @@ type RegisterHostApiFn = unsafe extern "system" fn(*const host_api::ScriptHostAp
 
 pub struct ScriptingHost {
     // CLR が Drop されると全マネージドオブジェクトが無効になるため保持。
-    _context:
-        netcorehost::hostfxr::HostfxrContext<netcorehost::hostfxr::InitializedForRuntimeConfig>,
+    _context: netcorehost::hostfxr::HostfxrContext<
+        netcorehost::hostfxr::InitializedForRuntimeConfig,
+    >,
 
-    pub create_fn: CreateFn,
-    pub destroy_fn: DestroyFn,
-    pub begin_frame_fn: LifecycleFn,
-    pub early_update_fn: LifecycleFn,
-    pub update_fn: LifecycleFn,
+    pub create_fn:          CreateFn,
+    pub destroy_fn:         DestroyFn,
+    /// 初回ライフサイクル（BeginFrame）の直前に 1 回だけ呼ぶ OnStart 通知
+    pub on_start_fn:        InstanceEventFn,
+    /// インスタンス破棄の直前に 1 回だけ呼ぶ OnDestroy 通知
+    pub on_destroy_fn:      InstanceEventFn,
+    pub begin_frame_fn:     LifecycleFn,
+    pub early_update_fn:    LifecycleFn,
+    pub update_fn:          LifecycleFn,
     pub constant_update_fn: LifecycleFn,
-    pub late_update_fn: LifecycleFn,
-    pub render_fn: LifecycleFn,
-    pub end_frame_fn: LifecycleFn,
+    pub late_update_fn:     LifecycleFn,
+    pub render_fn:          LifecycleFn,
+    pub end_frame_fn:       LifecycleFn,
     /// 物理イベント（衝突・トリガー）通知
-    pub physics_event_fn: PhysicsEventFn,
-    pub(crate) compile_fn: CompileFn,
+    pub physics_event_fn:   PhysicsEventFn,
+    pub(crate) compile_fn:   CompileFn,
     pub(crate) set_field_fn: SetFieldFn,
-    register_host_api_fn: RegisterHostApiFn,
+    register_host_api_fn:    RegisterHostApiFn,
 }
 
 // CLR は単一プロセスに紐付き、常にメインスレッドからのみアクセスする。
@@ -141,11 +155,13 @@ impl ScriptingHost {
         let config_path = load_dll.with_extension("runtimeconfig.json");
 
         let hostfxr = nethost::load_hostfxr()?;
-        let context = hostfxr
-            .initialize_for_runtime_config(PdCString::from_os_str(config_path.as_os_str())?)?;
+        let context = hostfxr.initialize_for_runtime_config(
+            PdCString::from_os_str(config_path.as_os_str())?,
+        )?;
 
-        let loader = context
-            .get_delegate_loader_for_assembly(PdCString::from_os_str(load_dll.as_os_str())?)?;
+        let loader = context.get_delegate_loader_for_assembly(
+            PdCString::from_os_str(load_dll.as_os_str())?,
+        )?;
 
         macro_rules! get_fn {
             ($ty:ty, $method:expr) => {{
@@ -157,38 +173,29 @@ impl ScriptingHost {
         }
 
         Ok(Arc::new(Self {
-            _context: context,
-            create_fn: get_fn!(fn(*const u8, i32) -> isize, pdcstr!("CreateComponent")),
-            destroy_fn: get_fn!(fn(isize), pdcstr!("DestroyComponent")),
-            begin_frame_fn: get_fn!(fn(isize, *const RawFrameContext), pdcstr!("BeginFrame")),
-            early_update_fn: get_fn!(fn(isize, *const RawFrameContext), pdcstr!("EarlyUpdate")),
-            update_fn: get_fn!(fn(isize, *const RawFrameContext), pdcstr!("Update")),
-            constant_update_fn: get_fn!(
-                fn(isize, *const RawFrameContext),
-                pdcstr!("ConstantUpdate")
-            ),
-            late_update_fn: get_fn!(fn(isize, *const RawFrameContext), pdcstr!("LateUpdate")),
-            render_fn: get_fn!(fn(isize, *const RawFrameContext), pdcstr!("Render")),
-            end_frame_fn: get_fn!(fn(isize, *const RawFrameContext), pdcstr!("EndFrame")),
-            physics_event_fn: get_fn!(fn(isize, *const RawPhysicsEvent), pdcstr!("OnPhysicsEvent")),
-            compile_fn: get_fn!(fn(*const u8, i32) -> i32, pdcstr!("CompileScripts")),
-            set_field_fn: get_fn!(
-                fn(isize, *const u8, i32, *const u8, i32),
-                pdcstr!("SetFieldValue")
-            ),
-            register_host_api_fn: get_fn!(
-                fn(*const host_api::ScriptHostApi),
-                pdcstr!("RegisterHostApi")
-            ),
+            _context:          context,
+            create_fn:         get_fn!(fn(*const u8, i32) -> isize,           pdcstr!("CreateComponent")),
+            destroy_fn:        get_fn!(fn(isize),                              pdcstr!("DestroyComponent")),
+            on_start_fn:       get_fn!(fn(isize, u32, u32),                    pdcstr!("OnStart")),
+            on_destroy_fn:     get_fn!(fn(isize, u32, u32),                    pdcstr!("OnDestroy")),
+            begin_frame_fn:    get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("BeginFrame")),
+            early_update_fn:   get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("EarlyUpdate")),
+            update_fn:         get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("Update")),
+            constant_update_fn:get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("ConstantUpdate")),
+            late_update_fn:    get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("LateUpdate")),
+            render_fn:         get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("Render")),
+            end_frame_fn:      get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("EndFrame")),
+            physics_event_fn:  get_fn!(fn(isize, *const RawPhysicsEvent),      pdcstr!("OnPhysicsEvent")),
+            compile_fn:        get_fn!(fn(*const u8, i32) -> i32,              pdcstr!("CompileScripts")),
+            set_field_fn:      get_fn!(fn(isize, *const u8, i32, *const u8, i32), pdcstr!("SetFieldValue")),
+            register_host_api_fn: get_fn!(fn(*const host_api::ScriptHostApi),  pdcstr!("RegisterHostApi")),
         }))
     }
 
     /// コンポーネントアクセス用の関数ポインタ表（HOST_API）を C# へ登録する。
     /// CLR ロード後に一度だけ呼ぶ。これ以降 transform.Position などのアクセスが有効になる。
     pub fn install_host_api(&self) {
-        unsafe {
-            (self.register_host_api_fn)(host_api::host_api_ptr());
-        }
+        unsafe { (self.register_host_api_fn)(host_api::host_api_ptr()); }
     }
 
     /// DLL とその関連ファイル一式を、プロセス専用のテンポラリディレクトリへ
@@ -201,16 +208,10 @@ impl ScriptingHost {
         use std::fs;
 
         let src_dir = dll_path.parent().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "DLL の親ディレクトリが取得できません",
-            )
+            std::io::Error::new(std::io::ErrorKind::NotFound, "DLL の親ディレクトリが取得できません")
         })?;
         let file_name = dll_path.file_name().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "DLL ファイル名が取得できません",
-            )
+            std::io::Error::new(std::io::ErrorKind::NotFound, "DLL ファイル名が取得できません")
         })?;
 
         // プロセス ID 単位のシャドウディレクトリ（多重起動でも衝突しない）
@@ -225,9 +226,7 @@ impl ScriptingHost {
         // ソースディレクトリ直下の全ファイルをコピーする
         for entry in fs::read_dir(src_dir)? {
             let entry = entry?;
-            if !entry.file_type()?.is_file() {
-                continue;
-            }
+            if !entry.file_type()?.is_file() { continue; }
             let dst = shadow_dir.join(entry.file_name());
             fs::copy(entry.path(), dst)?;
         }

@@ -297,7 +297,7 @@
 </section>
 
 <!-- ════════════════ 2. ライフサイクル ════════════════ -->
-<section id="sec-lifecycle" data-keywords="ライフサイクル 更新 フレーム 物理イベント 衝突 コールバック">
+<section id="sec-lifecycle" data-keywords="ライフサイクル 更新 フレーム 物理イベント 衝突 コールバック OnStart OnDestroy 初期化 破棄 生成 OnTriggerStay トリガー">
   <h2>2. ライフサイクル関数</h2>
   <p class="section-note"><code>SEEDScript</code> を継承して override。1 フレーム内で以下の順に呼ばれます。不要なものは override 不要。</p>
   <div class="api"><code class="sig">BeginFrame(ref ctx)</code><span class="desc">フレーム開始時。入力取得や状態リセット向け</span></div>
@@ -308,13 +308,38 @@
   <div class="api"><code class="sig">Render(ref ctx)</code><span class="desc">描画フェーズ。描画に関わる処理向け</span></div>
   <div class="api"><code class="sig">EndFrame(ref ctx)</code><span class="desc">フレーム終了時。後片付けや状態確定向け</span></div>
 
+  <h3>生成・破棄コールバック（OnStart / OnDestroy）</h3>
+  <p class="section-note">インスタンスの一生に 1 回ずつ呼ばれます。<b>引数は取りません</b>（Play モードのみ）。</p>
+  <div class="api"><code class="sig">OnStart()</code><span class="desc">有効化後、そのスクリプト自身の最初の BeginFrame の直前に 1 回だけ</span></div>
+  <div class="api"><code class="sig">OnDestroy()</code><span class="desc">スクリプトインスタンスが破棄される直前に 1 回だけ</span></div>
+<pre><span class="k">public class</span> <span class="t">Enemy</span> : <span class="t">SEEDScript</span>
+{
+    <span class="k">private float</span> _initialY;
+
+    <span class="k">public override void</span> OnStart()
+    {
+        <span class="c">// 初期化はここ。gameObject / transform は利用可能</span>
+        _initialY = transform.Position.y;
+    }
+
+    <span class="k">public override void</span> OnDestroy()
+    {
+        <span class="c">// 後片付けはここ（シーンへのアクセスは行わないこと）</span>
+        <span class="t">SEED.Debug</span>.Log(<span class="s">"Enemy 消滅"</span>);
+    }
+}</pre>
+  <p class="section-note"><b>OnStart の規約</b>: 「全スクリプトの BeginFrame 群より前にまとめて」ではなく、<b>スクリプトごとに初回 BeginFrame の直前</b>に呼ばれます（A の OnStart → A の BeginFrame → B の OnStart → …）。Play 開始時の全スクリプトが対象で、<code>GameObject.Instantiate</code> で生成した場合は生成が適用される<b>次のフレーム</b>の BeginFrame 直前になります。無効化 → 再有効化しても 2 回目は呼ばれません。<code>ctx</code> は渡されないため、フレーム時間が要る初期化は BeginFrame で行ってください。</p>
+  <p class="section-note"><b>OnDestroy の規約</b>: アクター破棄（<code>gameObject.Destroy()</code>）／シーン遷移・リロード／Play 終了／スクリプトのホットリロードのすべてで呼ばれます（OnStart 済みのインスタンスのみ）。Destroy は即時ではなく <b>Render フェーズまで走り終えた後</b>に適用され、その直後に OnDestroy が呼ばれます（＝破棄要求フレームの BeginFrame〜Render は通常どおり実行され、<b>そのフレームの EndFrame は呼ばれません</b>。EndFrame 内で Destroy した場合は同フレーム末尾で呼ばれます）。OnDestroy 後にそのインスタンスへコールバックが来ることはありません。破棄処理中のため<b>シーンへのアクセスは保証されません</b>（transform の読み書き・Find は既定値）。また <b>OnDestroy 内の <code>Instantiate</code> / <code>Destroy</code> は無視されます</b>（遅延実行もされません）。</p>
+
   <h3>物理イベントコールバック（3D / 2D 共通）</h3>
   <p class="section-note">自分のコライダー（ColliderComponent / Collider2dComponent）が他コライダーと衝突・接触すると呼ばれます。<code>other</code> は相手アクター（特定できない場合 <code>IsValid == false</code>）。</p>
   <div class="api"><code class="sig">OnCollisionEnter(GameObject other)</code><span class="desc">衝突が始まったフレーム</span></div>
   <div class="api"><code class="sig">OnCollisionStay(GameObject other)</code><span class="desc">衝突継続中（毎物理ステップ）</span></div>
   <div class="api"><code class="sig">OnCollisionExit(GameObject other)</code><span class="desc">衝突が終わったフレーム</span></div>
   <div class="api"><code class="sig">OnTriggerEnter(GameObject other)</code><span class="desc">トリガーへの進入時（トリガー側・相手側の両方に通知）</span></div>
+  <div class="api"><code class="sig">OnTriggerStay(GameObject other)</code><span class="desc">トリガーに重なり続けている間（毎物理ステップ・同上）</span></div>
   <div class="api"><code class="sig">OnTriggerExit(GameObject other)</code><span class="desc">トリガーからの退出時（同上）</span></div>
+  <p class="section-note"><code>OnTriggerStay</code> は <code>OnCollisionStay</code> と同じ頻度規約で、重なりが続く限り<b>毎物理ステップ</b>呼ばれます（1 フレームに複数回呼ばれうる）。Enter が発火したステップでは Enter と Stay の両方が届きます。</p>
 <pre><span class="k">public class</span> <span class="t">Coin</span> : <span class="t">SEEDScript</span>
 {
     <span class="k">public override void</span> OnTriggerEnter(<span class="t">SEED.GameObject</span> other)

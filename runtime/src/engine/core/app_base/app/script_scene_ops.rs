@@ -18,9 +18,9 @@ use std::sync::Arc;
 use crate::engine::components::{ComponentKind, ModelComponent, ScriptComponent, Transform};
 use crate::engine::core::app_base::scene::Scene;
 use crate::engine::core::scripting::{
-    PHYSICS_EVENT_COLLISION_ENTER, PHYSICS_EVENT_COLLISION_EXIT, PHYSICS_EVENT_COLLISION_STAY,
-    PHYSICS_EVENT_TRIGGER_ENTER, PHYSICS_EVENT_TRIGGER_EXIT, ScriptSceneCommand, ScriptingHost,
-    take_scene_commands, with_actors, with_world,
+    take_scene_commands, with_actors, with_world, ScriptSceneCommand, ScriptingHost,
+    PHYSICS_EVENT_COLLISION_ENTER, PHYSICS_EVENT_COLLISION_STAY, PHYSICS_EVENT_COLLISION_EXIT,
+    PHYSICS_EVENT_TRIGGER_ENTER, PHYSICS_EVENT_TRIGGER_EXIT, PHYSICS_EVENT_TRIGGER_STAY,
 };
 use crate::engine::ecs::{Entity, World};
 use crate::engine::physics::{CollisionEvent, CollisionPhase, TriggerEvent, TriggerPhase};
@@ -35,9 +35,7 @@ impl App {
     /// コマンドが無ければ何もしない。適用後はエディタのヒエラルキー表示を同期する。
     pub(super) fn apply_script_scene_commands(&mut self) {
         let commands = take_scene_commands();
-        if commands.is_empty() {
-            return;
-        }
+        if commands.is_empty() { return; }
 
         // TransitionScene が含まれる場合はシーン遷移のみを実行し、他のコマンドは破棄する。
         // 旧ワールドで予約されたエンティティ (index, generation) が新ワールドの
@@ -85,7 +83,7 @@ impl App {
         // load_actor_into は draw_ctx と scene.world を同時に参照するため
         // ブロックスコープで借用ライフタイムを制限する
         let load_result = {
-            let ctx = self.draw_ctx.as_ref().unwrap();
+            let ctx   = self.draw_ctx.as_ref().unwrap();
             let scene = self.scene.as_mut().unwrap();
             Scene::load_actor_into(
                 std::path::Path::new(path),
@@ -107,15 +105,12 @@ impl App {
                     // 3D アクター: スクリプトが設定した（または identity の）現在の
                     // Transform からモデルの instance_mats を同期する。
                     // Transform だけでは GPU 描画に反映されないため（drop 配置と同じ処理）。
-                    let spawn_mat = scene
-                        .world
-                        .get::<Transform>(actor.entity)
+                    let spawn_mat = scene.world.get::<Transform>(actor.entity)
                         .map(|t| t.to_mat4());
                     if let Some(mat) = spawn_mat {
                         for slot in actor.slots() {
                             if slot.kind == ComponentKind::Model {
-                                if let Some(mc) = scene.world.get_mut::<ModelComponent>(slot.entity)
-                                {
+                                if let Some(mc) = scene.world.get_mut::<ModelComponent>(slot.entity) {
                                     for m in mc.instance_mats.iter_mut() {
                                         *m = mat;
                                     }
@@ -164,17 +159,11 @@ impl App {
     /// 遷移フレームのロード時間をなくす。保持できる事前読み込みは 1 つで、
     /// 直後の Transition で消費される（別のシーンを Preload すると置き換わる）。
     fn apply_script_preload_scene(&mut self, name_or_path: &str) {
-        if self.draw_ctx.is_none() {
-            return;
-        }
+        if self.draw_ctx.is_none() { return; }
         let path = self.resolve_scene_ref(name_or_path);
 
         // 同じシーンが事前読み込み済みなら何もしない
-        if self
-            .preloaded_scene
-            .as_ref()
-            .is_some_and(|(p, _, _)| *p == path)
-        {
+        if self.preloaded_scene.as_ref().is_some_and(|(p, _, _)| *p == path) {
             return;
         }
 
@@ -201,9 +190,7 @@ impl App {
     /// 物理スレッドの再起動（起動していた場合のみ）、キャンバス世界線の再判定を行う。
     /// パスは assets:// 仮想パスのまま Scene::load へ渡す（PAK モード対応）。
     fn apply_script_transition_scene(&mut self, name_or_path: &str) {
-        if self.draw_ctx.is_none() {
-            return;
-        }
+        if self.draw_ctx.is_none() { return; }
         let path = self.resolve_scene_ref(name_or_path);
 
         // 事前読み込み済みならそれを消費し、なければここで読み込む（自動 Load）
@@ -213,7 +200,7 @@ impl App {
                 // 別シーンの事前読み込みが残っていた場合は破棄する
                 drop(other);
                 let host = self.scripting_host.clone();
-                let ctx = self.draw_ctx.as_ref().unwrap();
+                let ctx  = self.draw_ctx.as_ref().unwrap();
                 match Scene::load(std::path::Path::new(&path), ctx, host.as_ref()) {
                     Ok((scene, cam)) => Some((scene, cam)),
                     Err(e) => {
@@ -223,12 +210,10 @@ impl App {
                 }
             }
         };
-        let Some((new_scene, cam_data)) = loaded else {
-            return;
-        };
+        let Some((new_scene, cam_data)) = loaded else { return };
 
         // 物理スレッドの起動状態を記録してから停止する（新シーンで再収集するため）
-        let had_physics = self.physics_thread.is_some();
+        let had_physics    = self.physics_thread.is_some();
         let had_physics_2d = self.physics_thread_2d.is_some();
         self.stop_physics();
         self.stop_physics_2d();
@@ -239,9 +224,7 @@ impl App {
         }
         // 2D アクターが含まれていれば WL 0 をキャンバス世界線として登録する
         fn has_any_2d_actor(actors: &[Actor]) -> bool {
-            actors
-                .iter()
-                .any(|a| a.is_2d() || has_any_2d_actor(a.children()))
+            actors.iter().any(|a| a.is_2d() || has_any_2d_actor(a.children()))
         }
         if has_any_2d_actor(&new_scene.actors) {
             self.canvas_world_lines.insert(0);
@@ -268,12 +251,8 @@ impl App {
         }
 
         // 物理を新シーンの内容で再起動する
-        if had_physics {
-            self.start_physics();
-        }
-        if had_physics_2d {
-            self.start_physics_2d();
-        }
+        if had_physics    { self.start_physics(); }
+        if had_physics_2d { self.start_physics_2d(); }
     }
 
     /// 物理イベント（衝突・トリガー）をスクリプトのコールバックへ配信する。
@@ -285,28 +264,9 @@ impl App {
     pub(super) fn dispatch_physics_events_to_scripts(
         &mut self,
         collision_events: &[CollisionEvent],
-        trigger_events: &[TriggerEvent],
+        trigger_events:   &[TriggerEvent],
     ) {
-        // イベントを（自分 DFS, 相手 DFS, 種別）へ正規化する。
-        // 衝突・トリガーとも両方のアクターへ対称に通知する（Unity と同じ挙動）。
-        let mut pairs: Vec<(u64, u64, i32)> = Vec::new();
-        for ev in collision_events {
-            let kind = match ev.phase {
-                CollisionPhase::Enter => PHYSICS_EVENT_COLLISION_ENTER,
-                CollisionPhase::Stay => PHYSICS_EVENT_COLLISION_STAY,
-                CollisionPhase::Exit => PHYSICS_EVENT_COLLISION_EXIT,
-            };
-            pairs.push((ev.entity_a, ev.entity_b, kind));
-            pairs.push((ev.entity_b, ev.entity_a, kind));
-        }
-        for ev in trigger_events {
-            let kind = match ev.phase {
-                TriggerPhase::Enter => PHYSICS_EVENT_TRIGGER_ENTER,
-                TriggerPhase::Exit => PHYSICS_EVENT_TRIGGER_EXIT,
-            };
-            pairs.push((ev.trigger_entity, ev.other_entity, kind));
-            pairs.push((ev.other_entity, ev.trigger_entity, kind));
-        }
+        let pairs = normalize_physics_pairs(collision_events, trigger_events);
         self.dispatch_physics_event_pairs(pairs);
     }
 
@@ -317,28 +277,9 @@ impl App {
     pub(super) fn dispatch_physics2d_events_to_scripts(
         &mut self,
         collision_events: &[crate::engine::physics::CollisionEvent2d],
-        trigger_events: &[crate::engine::physics::TriggerEvent2d],
+        trigger_events:   &[crate::engine::physics::TriggerEvent2d],
     ) {
-        use crate::engine::physics::{CollisionPhase2d, TriggerPhase2d};
-
-        let mut pairs: Vec<(u64, u64, i32)> = Vec::new();
-        for ev in collision_events {
-            let kind = match ev.phase {
-                CollisionPhase2d::Enter => PHYSICS_EVENT_COLLISION_ENTER,
-                CollisionPhase2d::Stay => PHYSICS_EVENT_COLLISION_STAY,
-                CollisionPhase2d::Exit => PHYSICS_EVENT_COLLISION_EXIT,
-            };
-            pairs.push((ev.entity_a, ev.entity_b, kind));
-            pairs.push((ev.entity_b, ev.entity_a, kind));
-        }
-        for ev in trigger_events {
-            let kind = match ev.phase {
-                TriggerPhase2d::Enter => PHYSICS_EVENT_TRIGGER_ENTER,
-                TriggerPhase2d::Exit => PHYSICS_EVENT_TRIGGER_EXIT,
-            };
-            pairs.push((ev.trigger_entity, ev.other_entity, kind));
-            pairs.push((ev.other_entity, ev.trigger_entity, kind));
-        }
+        let pairs = normalize_physics2d_pairs(collision_events, trigger_events);
         self.dispatch_physics_event_pairs(pairs);
     }
 
@@ -346,9 +287,7 @@ impl App {
     fn dispatch_physics_event_pairs(&mut self, pairs: Vec<(u64, u64, i32)>) {
         use crate::engine::core::scripting::{publish_input, publish_physics_sender};
 
-        if pairs.is_empty() {
-            return;
-        }
+        if pairs.is_empty() { return; }
         let wl = self.active_world_line;
 
         // コールバック内から Input / Physics.Raycast も使えるように公開する
@@ -368,12 +307,9 @@ impl App {
 
         // 実行する呼び出しへ展開する（ここで World の借用は不要になる）。
         // スクリプトを持たないアクター宛のイベントはスキップする。
-        let mut invocations: Vec<(Arc<ScriptingHost>, isize, i32, Entity, Option<Entity>)> =
-            Vec::new();
+        let mut invocations: Vec<(Arc<ScriptingHost>, isize, i32, Entity, Option<Entity>)> = Vec::new();
         for (self_id, other_id, kind) in pairs {
-            let Some((self_entity, handles)) = map.get(&self_id) else {
-                continue;
-            };
+            let Some((self_entity, handles)) = map.get(&self_id) else { continue };
             let other_entity = map.get(&other_id).map(|(e, _)| *e);
             for (host, handle) in handles {
                 invocations.push((Arc::clone(host), *handle, kind, *self_entity, other_entity));
@@ -386,9 +322,7 @@ impl App {
             with_actors(actors, || {
                 with_world(world, || {
                     for (host, handle, kind, self_e, other_e) in &invocations {
-                        ScriptComponent::run_physics_event_raw(
-                            host, *handle, *kind, *self_e, *other_e,
-                        );
+                        ScriptComponent::run_physics_event_raw(host, *handle, *kind, *self_e, *other_e);
                     }
                 });
             });
@@ -408,15 +342,92 @@ impl App {
     /// 注意: 物理スレッドのコライダーは Play 開始時に一括収集されるため、
     /// ここでは除去されない（物理イベント API 実装時に対応予定）。
     fn apply_script_destroy(&mut self, entity: Entity) {
-        let Some(scene) = self.scene.as_mut() else {
-            return;
-        };
+        let Some(scene) = self.scene.as_mut() else { return };
 
         match extract_actor_by_entity(&mut scene.actors, entity) {
             Some(actor) => despawn_actor_recursive(&actor, &mut scene.world),
-            None => scene.world.despawn(entity),
+            None        => scene.world.despawn(entity),
         }
     }
+}
+
+// ─── 物理イベントの正規化（種別変換＋対称配送）───────────────
+
+/// 3D 衝突フェーズをスクリプトへ渡すイベント種別へ変換する。
+fn collision_event_kind(phase: CollisionPhase) -> i32 {
+    match phase {
+        CollisionPhase::Enter => PHYSICS_EVENT_COLLISION_ENTER,
+        CollisionPhase::Stay  => PHYSICS_EVENT_COLLISION_STAY,
+        CollisionPhase::Exit  => PHYSICS_EVENT_COLLISION_EXIT,
+    }
+}
+
+/// 3D トリガーフェーズをスクリプトへ渡すイベント種別へ変換する。
+fn trigger_event_kind(phase: TriggerPhase) -> i32 {
+    match phase {
+        TriggerPhase::Enter => PHYSICS_EVENT_TRIGGER_ENTER,
+        TriggerPhase::Stay  => PHYSICS_EVENT_TRIGGER_STAY,
+        TriggerPhase::Exit  => PHYSICS_EVENT_TRIGGER_EXIT,
+    }
+}
+
+/// 2D 衝突フェーズをスクリプトへ渡すイベント種別へ変換する（3D と同一の種別を使う）。
+fn collision2d_event_kind(phase: crate::engine::physics::CollisionPhase2d) -> i32 {
+    use crate::engine::physics::CollisionPhase2d;
+    match phase {
+        CollisionPhase2d::Enter => PHYSICS_EVENT_COLLISION_ENTER,
+        CollisionPhase2d::Stay  => PHYSICS_EVENT_COLLISION_STAY,
+        CollisionPhase2d::Exit  => PHYSICS_EVENT_COLLISION_EXIT,
+    }
+}
+
+/// 2D トリガーフェーズをスクリプトへ渡すイベント種別へ変換する（3D と同一の種別を使う）。
+fn trigger2d_event_kind(phase: crate::engine::physics::TriggerPhase2d) -> i32 {
+    use crate::engine::physics::TriggerPhase2d;
+    match phase {
+        TriggerPhase2d::Enter => PHYSICS_EVENT_TRIGGER_ENTER,
+        TriggerPhase2d::Stay  => PHYSICS_EVENT_TRIGGER_STAY,
+        TriggerPhase2d::Exit  => PHYSICS_EVENT_TRIGGER_EXIT,
+    }
+}
+
+/// 3D 物理イベントを（自分 DFS, 相手 DFS, 種別）へ正規化する。
+/// 衝突・トリガーとも両方のアクターへ対称に通知する（Unity と同じ挙動）。
+fn normalize_physics_pairs(
+    collision_events: &[CollisionEvent],
+    trigger_events:   &[TriggerEvent],
+) -> Vec<(u64, u64, i32)> {
+    let mut pairs: Vec<(u64, u64, i32)> = Vec::new();
+    for ev in collision_events {
+        let kind = collision_event_kind(ev.phase);
+        pairs.push((ev.entity_a, ev.entity_b, kind));
+        pairs.push((ev.entity_b, ev.entity_a, kind));
+    }
+    for ev in trigger_events {
+        let kind = trigger_event_kind(ev.phase);
+        pairs.push((ev.trigger_entity, ev.other_entity, kind));
+        pairs.push((ev.other_entity, ev.trigger_entity, kind));
+    }
+    pairs
+}
+
+/// 2D 物理イベントを（自分 DFS, 相手 DFS, 種別）へ正規化する（3D と同一規約）。
+fn normalize_physics2d_pairs(
+    collision_events: &[crate::engine::physics::CollisionEvent2d],
+    trigger_events:   &[crate::engine::physics::TriggerEvent2d],
+) -> Vec<(u64, u64, i32)> {
+    let mut pairs: Vec<(u64, u64, i32)> = Vec::new();
+    for ev in collision_events {
+        let kind = collision2d_event_kind(ev.phase);
+        pairs.push((ev.entity_a, ev.entity_b, kind));
+        pairs.push((ev.entity_b, ev.entity_a, kind));
+    }
+    for ev in trigger_events {
+        let kind = trigger2d_event_kind(ev.phase);
+        pairs.push((ev.trigger_entity, ev.other_entity, kind));
+        pairs.push((ev.other_entity, ev.trigger_entity, kind));
+    }
+    pairs
 }
 
 // ─── DFS スクリプト対応表 ────────────────────────────────────
@@ -428,15 +439,15 @@ impl App {
 /// （ID は 1 始まり。コライダーの有無に関係なくカウントは進む）。
 fn build_dfs_script_map(
     actors: &[Actor],
-    world: &World,
-    wl: u32,
+    world:  &World,
+    wl:     u32,
 ) -> HashMap<u64, (Entity, Vec<(Arc<ScriptingHost>, isize)>)> {
     /// 再帰走査の実装（counter を進めながら map へ登録する）
     fn walk(
-        actor: &Actor,
-        world: &World,
+        actor:   &Actor,
+        world:   &World,
         counter: &mut u64,
-        map: &mut HashMap<u64, (Entity, Vec<(Arc<ScriptingHost>, isize)>)>,
+        map:     &mut HashMap<u64, (Entity, Vec<(Arc<ScriptingHost>, isize)>)>,
     ) {
         *counter += 1;
         // このアクターのスクリプトスロットから (host, handle) を収集する。
@@ -458,10 +469,111 @@ fn build_dfs_script_map(
         }
     }
 
-    let mut map = HashMap::new();
+    let mut map     = HashMap::new();
     let mut counter = 0u64;
     for root in actors.iter().filter(|a| a.world_line == wl) {
         walk(root, world, &mut counter, &mut map);
     }
     map
+}
+
+// ─── テスト ──────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::physics::{
+        CollisionEvent2d, CollisionPhase2d, TriggerEvent2d, TriggerPhase2d,
+    };
+
+    /// 物理イベント種別の定数が Rust / C# 双方で一意（重複なし）であること。
+    /// C# 側 ScriptBridge の PhysicsEvent* 定数と 1 対 1 対応する値なので、
+    /// 重複するとコールバックの取り違えが起きる。
+    #[test]
+    fn physics_event_kinds_are_unique() {
+        let kinds = [
+            PHYSICS_EVENT_COLLISION_ENTER,
+            PHYSICS_EVENT_COLLISION_STAY,
+            PHYSICS_EVENT_COLLISION_EXIT,
+            PHYSICS_EVENT_TRIGGER_ENTER,
+            PHYSICS_EVENT_TRIGGER_EXIT,
+            PHYSICS_EVENT_TRIGGER_STAY,
+        ];
+        let mut sorted = kinds.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), kinds.len(), "物理イベント種別の値が重複している");
+        // C# 側の定数値（0..5）と一致していること
+        assert_eq!(PHYSICS_EVENT_TRIGGER_STAY, 5);
+    }
+
+    /// フェーズ → イベント種別の変換が 3D / 2D で一致していること（Stay を含む）。
+    #[test]
+    fn phase_to_kind_matches_between_3d_and_2d() {
+        assert_eq!(collision_event_kind(CollisionPhase::Enter), collision2d_event_kind(CollisionPhase2d::Enter));
+        assert_eq!(collision_event_kind(CollisionPhase::Stay),  collision2d_event_kind(CollisionPhase2d::Stay));
+        assert_eq!(collision_event_kind(CollisionPhase::Exit),  collision2d_event_kind(CollisionPhase2d::Exit));
+        assert_eq!(trigger_event_kind(TriggerPhase::Enter), trigger2d_event_kind(TriggerPhase2d::Enter));
+        assert_eq!(trigger_event_kind(TriggerPhase::Stay),  trigger2d_event_kind(TriggerPhase2d::Stay));
+        assert_eq!(trigger_event_kind(TriggerPhase::Exit),  trigger2d_event_kind(TriggerPhase2d::Exit));
+        // Stay が Enter/Exit と混ざっていないこと
+        assert_eq!(trigger_event_kind(TriggerPhase::Stay), PHYSICS_EVENT_TRIGGER_STAY);
+    }
+
+    /// 3D トリガー Stay が双方向（トリガー側・相手側）へ対称に配送されること。
+    #[test]
+    fn trigger_stay_is_dispatched_symmetrically_3d() {
+        let triggers = vec![TriggerEvent {
+            trigger_entity: 7, other_entity: 12, phase: TriggerPhase::Stay,
+        }];
+        let pairs = normalize_physics_pairs(&[], &triggers);
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.contains(&(7, 12, PHYSICS_EVENT_TRIGGER_STAY)));
+        assert!(pairs.contains(&(12, 7, PHYSICS_EVENT_TRIGGER_STAY)));
+    }
+
+    /// 2D トリガー Stay も同様に双方向へ配送されること。
+    #[test]
+    fn trigger_stay_is_dispatched_symmetrically_2d() {
+        let triggers = vec![TriggerEvent2d {
+            trigger_entity: 3, other_entity: 4, phase: TriggerPhase2d::Stay,
+        }];
+        let pairs = normalize_physics2d_pairs(&[], &triggers);
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.contains(&(3, 4, PHYSICS_EVENT_TRIGGER_STAY)));
+        assert!(pairs.contains(&(4, 3, PHYSICS_EVENT_TRIGGER_STAY)));
+    }
+
+    /// 衝突とトリガーが混在しても、各イベントが 2 ペアずつ正しい種別で並ぶこと。
+    #[test]
+    fn mixed_events_are_normalized_with_correct_kinds() {
+        let collisions = vec![
+            CollisionEvent { entity_a: 1, entity_b: 2, phase: CollisionPhase::Stay },
+        ];
+        let triggers = vec![
+            TriggerEvent { trigger_entity: 5, other_entity: 6, phase: TriggerPhase::Enter },
+            TriggerEvent { trigger_entity: 5, other_entity: 6, phase: TriggerPhase::Stay },
+        ];
+        let pairs = normalize_physics_pairs(&collisions, &triggers);
+        assert_eq!(pairs.len(), 6, "イベント 3 件 × 双方向 = 6 ペア");
+        assert!(pairs.contains(&(1, 2, PHYSICS_EVENT_COLLISION_STAY)));
+        assert!(pairs.contains(&(2, 1, PHYSICS_EVENT_COLLISION_STAY)));
+        assert!(pairs.contains(&(5, 6, PHYSICS_EVENT_TRIGGER_ENTER)));
+        assert!(pairs.contains(&(6, 5, PHYSICS_EVENT_TRIGGER_STAY)));
+    }
+
+    /// 2D 混在ケース: 2D の衝突 Stay と トリガー Stay が同じ種別値で配送されること。
+    #[test]
+    fn mixed_events_are_normalized_2d() {
+        let collisions = vec![
+            CollisionEvent2d { entity_a: 8, entity_b: 9, phase: CollisionPhase2d::Exit },
+        ];
+        let triggers = vec![
+            TriggerEvent2d { trigger_entity: 10, other_entity: 11, phase: TriggerPhase2d::Stay },
+        ];
+        let pairs = normalize_physics2d_pairs(&collisions, &triggers);
+        assert_eq!(pairs.len(), 4);
+        assert!(pairs.contains(&(8, 9, PHYSICS_EVENT_COLLISION_EXIT)));
+        assert!(pairs.contains(&(10, 11, PHYSICS_EVENT_TRIGGER_STAY)));
+    }
 }

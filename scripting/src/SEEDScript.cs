@@ -38,6 +38,31 @@ public abstract class SEEDScript : IScriptComponent
     /// </summary>
     protected SEED.Transform transform;
 
+    // ── 生成・破棄コールバック ────────────────────────────────
+
+    /// <summary>
+    /// このスクリプトが有効化された後、最初のライフサイクル呼び出し（BeginFrame）
+    /// より前に 1 回だけ呼ばれる。初期化処理を書く場所。
+    ///
+    /// Play 開始時の全スクリプト、および Instantiate で動的生成されたスクリプトの
+    /// どちらも対象。フレーム時間（ctx）は渡されないので、DeltaTime 等が必要な場合は
+    /// <see cref="BeginFrame"/> を使う（<see cref="SEED.Time"/> は OnStart 内では
+    /// 前フレームの値のままである点に注意）。
+    /// gameObject / transform は束縛済みで利用できる。
+    /// </summary>
+    public virtual void OnStart() {}
+
+    /// <summary>
+    /// このスクリプトインスタンスが破棄されるときに 1 回だけ呼ばれる。
+    /// 対象: アクターの破棄（GameObject.Destroy）／シーン遷移・リロード／Play 終了。
+    ///
+    /// 一度も OnStart が呼ばれていないインスタンス（編集モードで生成しただけ等）では
+    /// 呼ばれない。破棄処理中に呼ばれるため、シーンへのアクセス（transform の読み書き・
+    /// Find など）は保証されず、GameObject.Instantiate / Destroy は**無視**される。
+    /// スクリプト内部の後片付け（保存・購読解除など）に使うこと。
+    /// </summary>
+    public virtual void OnDestroy() {}
+
     public virtual void BeginFrame(ref NativeFrameContext ctx)    {}
     public virtual void EarlyUpdate(ref NativeFrameContext ctx)   {}
     public virtual void Update(ref NativeFrameContext ctx)        {}
@@ -59,6 +84,8 @@ public abstract class SEEDScript : IScriptComponent
     public virtual void OnCollisionExit(SEED.GameObject other)  {}
     /// <summary>トリガーコライダーへの進入時に呼ばれる（トリガー側・相手側の両方）。</summary>
     public virtual void OnTriggerEnter(SEED.GameObject other)   {}
+    /// <summary>トリガーコライダーに重なり続けている間、毎物理ステップ呼ばれる（トリガー側・相手側の両方）。</summary>
+    public virtual void OnTriggerStay(SEED.GameObject other)    {}
     /// <summary>トリガーコライダーからの退出時に呼ばれる（トリガー側・相手側の両方）。</summary>
     public virtual void OnTriggerExit(SEED.GameObject other)    {}
 }

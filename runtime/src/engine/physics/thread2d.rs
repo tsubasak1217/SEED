@@ -975,6 +975,13 @@ fn collect_results_2d(
         });
     }
 
+    // トリガーの重なり継続にも Stay イベントを毎ステップ送信する（3D と同一規約）
+    for &(te, oe) in active_triggers.iter() {
+        trigger_events.push(TriggerEvent2d {
+            trigger_entity: te, other_entity: oe, phase: TriggerPhase2d::Stay,
+        });
+    }
+
     // ── NarrowPhase 直接クエリ ──────────────────────────────────────────────
     let mut active_contact_entity_ids: Vec<u64> = Vec::new();
     for pair in narrow_phase.contact_pairs() {
