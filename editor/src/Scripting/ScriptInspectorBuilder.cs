@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using SEEDEditor.Controls;
 
 namespace SEEDEditor.Scripting;
 
@@ -39,15 +40,22 @@ public static class ScriptInspectorBuilder
     /// onValueChanged: (fieldPath, newValueString)。ネストは "parent.child" のドットパス。
     /// onReferenceDropped: 参照フィールドへのアクタードロップを解決するハンドラ
     /// （null の場合、参照フィールドは表示のみでドロップを受け付けない）。
+    /// expandStates / expandKeyPrefix: [Serializable] ネストの折りたたみ状態を
+    /// 呼び出し側（インスペクタ）が保持し、UI 再構築後に復元するためのストアとキー接頭辞。
+    /// 値を 1 つ編集するたびにパネルが作り直される呼び出し元では必ず渡すこと
+    /// （渡さないと編集の直後にネストが閉じてしまう）。
     /// </summary>
     public static StackPanel Build(
         IReadOnlyList<ScriptFieldInfo>      fields,
         IReadOnlyDictionary<string, string> currentValues,
         Action<string, string>              onValueChanged,
-        ReferenceDropHandler?               onReferenceDropped = null)
+        ReferenceDropHandler?               onReferenceDropped = null,
+        ExpandStateStore?                   expandStates       = null,
+        string                              expandKeyPrefix    = "")
     {
         var stack = new StackPanel();
-        BuildInto(stack, fields, currentValues, onValueChanged, onReferenceDropped, prefix: "");
+        BuildInto(stack, fields, currentValues, onValueChanged, onReferenceDropped, prefix: "",
+                  expandStates: expandStates, expandKeyPrefix: expandKeyPrefix);
         return stack;
     }
 
@@ -58,7 +66,9 @@ public static class ScriptInspectorBuilder
         IReadOnlyDictionary<string, string> values,
         Action<string, string>              onChange,
         ReferenceDropHandler?               onRefDrop,
-        string                              prefix)
+        string                              prefix,
+        ExpandStateStore?                   expandStates,
+        string                              expandKeyPrefix)
     {
         foreach (var field in fields)
         {
@@ -71,7 +81,8 @@ public static class ScriptInspectorBuilder
             // [Serializable] ネストクラス → 折りたたみで子フィールドを再帰表示
             if (field.Children is not null)
             {
-                stack.Children.Add(BuildNestedFoldout(field, fullPath, values, onChange, onRefDrop));
+                stack.Children.Add(BuildNestedFoldout(
+                    field, fullPath, values, onChange, onRefDrop, expandStates, expandKeyPrefix));
                 continue;
             }
 
@@ -125,21 +136,26 @@ public static class ScriptInspectorBuilder
     private static UIElement BuildNestedFoldout(
         ScriptFieldInfo field, string fullPath,
         IReadOnlyDictionary<string, string> values, Action<string, string> onChange,
-        ReferenceDropHandler? onRefDrop)
+        ReferenceDropHandler? onRefDrop,
+        ExpandStateStore? expandStates, string expandKeyPrefix)
     {
         var inner = new StackPanel { Margin = new Thickness(10, 2, 0, 2) };
         // 子は "親パス." を prefix にして再帰構築する
-        BuildInto(inner, field.Children!, values, onChange, onRefDrop, prefix: fullPath + ".");
+        BuildInto(inner, field.Children!, values, onChange, onRefDrop, prefix: fullPath + ".",
+                  expandStates: expandStates, expandKeyPrefix: expandKeyPrefix);
 
         var expander = new Expander
         {
-            Header     = field.Label,
+            // 既定は「開」。ストアを渡された場合は初期値も含めてストア側が決める。
             IsExpanded = true,
+            Header     = field.Label,
             Foreground = BrushText,
             Margin     = new Thickness(0, 2, 0, 2),
             Content    = inner,
             ToolTip    = field.Tooltip,
         };
+        // キーはフィールドのドットパス（構造上の識別子。ラベル変更や値編集で変わらない）。
+        expandStates?.Track(expander, expandKeyPrefix + fullPath, defaultExpanded: true);
         return expander;
     }
 

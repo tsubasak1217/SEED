@@ -34,6 +34,13 @@ public partial class ComponentSelectorWindow : Window
     private string? _selectedType;
     private Border? _selectedBorder;
 
+    /// <summary>
+    /// 現在表示中の「選択できる」アイテム行を上から順に保持したリスト（↑↓ キー移動用）。
+    /// BuildCategoryList のたびに作り直す。追加上限に達した行（disabled）は
+    /// 選択させても Enter で追加できないため含めない。
+    /// </summary>
+    private readonly List<(Border Row, ComponentEntry Entry)> _navigableRows = new();
+
     private readonly HashSet<string> _collapsedCategories = new();
 
     /// <summary>コンポーネントが対応するアクター種別。</summary>
@@ -165,6 +172,7 @@ public partial class ComponentSelectorWindow : Window
     {
         CategoryList.Children.Clear();
         _selectedBorder = null;
+        _navigableRows.Clear();
         var prevType = _selectedType;
 
         // 検索中はフラットリスト表示（カテゴリヘッダーなし）
@@ -198,6 +206,7 @@ public partial class ComponentSelectorWindow : Window
                     if (entry.TypeId == prevType) SelectRow(row, entry);
                 }
             }
+            SelectFirstRowIfNoneSelected();
             return;
         }
 
@@ -251,6 +260,20 @@ public partial class ComponentSelectorWindow : Window
                 if (entry.TypeId == prevType) SelectRow(row, entry);
             }
         }
+
+        SelectFirstRowIfNoneSelected();
+    }
+
+    /// <summary>
+    /// どの行も選択されていなければ先頭の選択可能行を選ぶ。
+    /// 「開いた直後から Enter で決定できる」「検索を絞ったら先頭候補が選ばれる」を担保する
+    /// （前回選択していた種別が絞り込みで消えた場合もここで拾い直す）。
+    /// </summary>
+    private void SelectFirstRowIfNoneSelected()
+    {
+        if (_selectedBorder is not null || _navigableRows.Count == 0) return;
+        var (row, entry) = _navigableRows[0];
+        SelectRow(row, entry);
     }
 
     private Border BuildItemRow(ComponentEntry entry)
@@ -299,6 +322,8 @@ public partial class ComponentSelectorWindow : Window
                 if (border != _selectedBorder) border.Background = Brushes.Transparent;
             };
             border.MouseLeftButtonDown += (_, _) => SelectRow(border, entry);
+            // ↑↓ キーでの移動対象に登録する（表示順＝リストの並び）。
+            _navigableRows.Add((border, entry));
         }
 
         return border;
@@ -352,29 +377,60 @@ public partial class ComponentSelectorWindow : Window
         BuildCategoryList(TxtSearch.Text.Trim());
     }
 
-    private void OnSearchKeyDown(object sender, KeyEventArgs e)
+    /// <summary>
+    /// ウィンドウ全体のキー入力で一覧を操作する。
+    /// ↑↓ で選択移動、Enter で追加を実行、Esc で閉じる。
+    ///
+    /// 検索ボックス・名前ボックスにフォーカスがあっても効くように PreviewKeyDown で受ける
+    /// （TextBox に矢印キーや Enter を取られる前に処理する）。文字入力は素通しするため、
+    /// 検索しながら ↑↓ で候補を選び Enter で追加する、という一連の操作がキーボードだけで完結する。
+    /// </summary>
+    private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Down)
+        switch (e.Key)
         {
-            // 最初のアイテムを選択
-            foreach (var child in CategoryList.Children)
-            {
-                if (child is Border b && b.Tag is ComponentEntry entry)
+            case Key.Down:
+                MoveSelection(+1);
+                e.Handled = true;
+                break;
+
+            case Key.Up:
+                MoveSelection(-1);
+                e.Handled = true;
+                break;
+
+            // Key.Enter は Key.Return と同一値（WPF の別名）なので 1 つだけ書く。
+            case Key.Return:
+                if (BtnConfirm.IsEnabled)
                 {
-                    SelectRow(b, entry);
-                    TbName.Focus();
+                    OnConfirm(sender, e);
                     e.Handled = true;
-                    break;
                 }
-            }
+                break;
+
+            case Key.Escape:
+                Close();
+                e.Handled = true;
+                break;
         }
-        else if (e.Key == Key.Escape) { Close(); e.Handled = true; }
     }
 
-    private void OnNameKeyDown(object sender, KeyEventArgs e)
+    /// <summary>
+    /// 選択を delta 行ぶん動かす（端で止まる。循環はしない）。
+    /// 未選択なら先頭（delta が負でも先頭）を選ぶ。移動先はスクロールして見える位置へ送る。
+    /// </summary>
+    private void MoveSelection(int delta)
     {
-        if (e.Key == Key.Return && BtnConfirm.IsEnabled) { OnConfirm(sender, e); e.Handled = true; }
-        else if (e.Key == Key.Escape) { Close(); e.Handled = true; }
+        if (_navigableRows.Count == 0) return;
+
+        int current = _selectedBorder is null
+            ? -1
+            : _navigableRows.FindIndex(r => ReferenceEquals(r.Row, _selectedBorder));
+        int next = current < 0 ? 0 : Math.Clamp(current + delta, 0, _navigableRows.Count - 1);
+
+        var (row, entry) = _navigableRows[next];
+        SelectRow(row, entry);
+        row.BringIntoView();
     }
 
     private void OnConfirm(object sender, RoutedEventArgs e)

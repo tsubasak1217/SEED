@@ -261,6 +261,25 @@ public partial class TerrainSettingsWindow : Window
         UpdateButtonStates();
     }
 
+    /// <summary>
+    /// レイヤ一覧の 1 行の表示文字列だけを差し替える（選択行は維持する）。
+    ///
+    /// ListBox.Items[i] への代入は「削除＋挿入」として扱われるため選択が外れ（SelectedIndex = -1）、
+    /// OnLayerSelectionChanged 経由でプロパティ欄が作り直されて編集中の TextBox が消えてしまう。
+    /// 再入ガード（_rebuilding）を立てて差し替え、選択を元の行へ戻すことでこれを防ぐ。
+    /// </summary>
+    private void ReplaceLayerListEntry(int index, string text)
+    {
+        if (index < 0 || index >= LstLayers.Items.Count) return;
+        // 差し替え前の選択をそのまま復元する（確定が LostFocus 経由の場合、
+        // 呼び出し時点の選択行が編集対象の行とは限らないため index では戻さない）。
+        int prevSelected = LstLayers.SelectedIndex;
+        _rebuilding = true;
+        LstLayers.Items[index]  = text;
+        LstLayers.SelectedIndex = prevSelected;
+        _rebuilding = false;
+    }
+
     /// <summary>レイヤ一覧・レイヤ選択コンボで共有する表示名フォーマット。</summary>
     public static string FormatLayerListEntry(int index, string name)
         => $"{index}: {(string.IsNullOrWhiteSpace(name) ? "(無名)" : name)}";
@@ -383,9 +402,11 @@ public partial class TerrainSettingsWindow : Window
         PanelLayerProperties.Children.Add(MakeTextRow("名前", layer.Name, v =>
         {
             layer.Name = v;
-            // 一覧の表示名を即座に追従させる（選択は維持する）。
-            int idx = LstLayers.SelectedIndex;
-            if (idx >= 0) LstLayers.Items[idx] = FormatLayerListEntry(idx, v);
+            // 一覧の表示名を追従させる（選択は維持する）。
+            // 確定は LostFocus でも起きるため、対象行は「選択行」ではなく
+            // 編集していたレイヤ自身の位置から引く（フォーカス移動先が別の行でもずれない）。
+            int idx = _doc.Layers.IndexOf(layer);
+            if (idx >= 0) ReplaceLayerListEntry(idx, FormatLayerListEntry(idx, v));
         }));
         PanelLayerProperties.Children.Add(MakeColorRow("ベースカラー", layer));
         PanelLayerProperties.Children.Add(MakeNumericRow("ラフネス", layer.Roughness,
@@ -569,12 +590,38 @@ public partial class TerrainSettingsWindow : Window
         return grid;
     }
 
-    /// <summary>文字列入力の行を作る（入力のたびに onChanged が呼ばれる）。</summary>
+    /// <summary>
+    /// 文字列入力の行を作る。確定は Enter キーと LostFocus のみ（インスペクタの数値行と同じ流儀）。
+    ///
+    /// TextChanged で確定していた頃は、レイヤ名／プロップ ID の入力 1 文字ごとに
+    /// onChanged → 一覧の表示名差し替え → 選択解除 → プロパティ欄の再構築 が走り、
+    /// TextBox 自体が作り直されてフォーカスと入力途中の状態が飛んでいた
+    /// （"tree" と打つのに 4 回開き直す症状の直接原因）。確定を遅らせることで、
+    /// 打っている間は UI に一切触らないようにする。
+    /// </summary>
     private static Grid MakeTextRow(string label, string value, Action<string> onChanged, string? tooltip = null)
     {
         var box = MakeStyledTextBox(value);
         box.HorizontalAlignment = HorizontalAlignment.Stretch;
-        box.TextChanged += (_, _) => onChanged(box.Text);
+
+        // 同じ値で二重に確定させない（Enter 確定 → そのままフォーカス移動で LostFocus が続くため）。
+        var committed = value;
+        void Commit()
+        {
+            if (string.Equals(box.Text, committed, StringComparison.Ordinal)) return;
+            committed = box.Text;
+            onChanged(committed);
+        }
+
+        box.KeyDown += (_, e) =>
+        {
+            if (e.Key is System.Windows.Input.Key.Return or System.Windows.Input.Key.Enter)
+            {
+                Commit();
+                e.Handled = true;
+            }
+        };
+        box.LostFocus += (_, _) => Commit();
         return MakeRow(label, box, tooltip);
     }
 
