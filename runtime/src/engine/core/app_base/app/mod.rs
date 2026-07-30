@@ -18,6 +18,7 @@ mod ipc_handler;
 mod hierarchy_sync;
 mod clipboard;
 mod actor_ops;
+mod rename_refs;
 mod canvas_edit_ops;
 mod ai_ops;
 mod component_ops;

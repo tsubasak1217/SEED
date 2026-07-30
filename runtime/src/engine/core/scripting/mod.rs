@@ -110,6 +110,10 @@ type SetFieldFn  = unsafe extern "system" fn(isize, *const u8, i32, *const u8, i
 /// 解決には World と Actor ツリーが必要なため、**必ずスクリプトフェーズ実行中**
 /// （`with_world` / `with_actors` でポインタが公開されている間）に呼ぶこと。
 type ResolveRefsFn = unsafe extern "system" fn(isize);
+/// 指定パスの [SerializeField] フィールドが参照フィールド型かを判定する。
+/// リフレクションのみで World へアクセスしないため、フェーズ外でも呼べる。
+/// 戻り値: 参照フィールドなら 1、それ以外は 0。
+type IsRefFieldFn = unsafe extern "system" fn(isize, *const u8, i32) -> i32;
 /// コンポーネントアクセス用の関数ポインタ表（HOST_API）を C# へ登録する。
 type RegisterHostApiFn = unsafe extern "system" fn(*const host_api::ScriptHostApi);
 
@@ -142,6 +146,8 @@ pub struct ScriptingHost {
     pub(crate) set_field_fn: SetFieldFn,
     /// 保留中の参照フィールドを解決・注入する（OnStart 直前にフェーズ内で呼ぶ）
     pub(crate) resolve_refs_fn: ResolveRefsFn,
+    /// フィールドが参照フィールド型かの判定（アクタリネーム時の参照追従で使用）
+    pub(crate) is_ref_field_fn: IsRefFieldFn,
     register_host_api_fn:    RegisterHostApiFn,
 }
 
@@ -197,6 +203,7 @@ impl ScriptingHost {
             compile_fn:        get_fn!(fn(*const u8, i32) -> i32,              pdcstr!("CompileScripts")),
             set_field_fn:      get_fn!(fn(isize, *const u8, i32, *const u8, i32), pdcstr!("SetFieldValue")),
             resolve_refs_fn:   get_fn!(fn(isize),                              pdcstr!("ResolveReferenceFields")),
+            is_ref_field_fn:   get_fn!(fn(isize, *const u8, i32) -> i32,       pdcstr!("IsReferenceField")),
             register_host_api_fn: get_fn!(fn(*const host_api::ScriptHostApi),  pdcstr!("RegisterHostApi")),
         }))
     }

@@ -691,7 +691,7 @@ public class FollowCamera : SEEDScript
 | `SEED.Transform` / `SEED.CanvasTransform`（＋ `?`） | アクターのルートに直付けされた Transform 系への参照 |
 | `SEED.Sprite` / `SEED.Camera` / `SEED.AudioSource` / `SEED.Animator` / `SEED.ParticleEmitter` / `SEED.InputMap`（＋ `?`） | アクター内の**コンポーネントスロット**への参照 |
 
-> **重要**: 参照フィールドは**常に参照（ハンドル）**です（「値としての Transform」は作れません。値で持つなら `SEED.Vector3`）。**`null` は「未設定」のみ**を意味し Nullable（`T?`）宣言でしか起きません。**`IsValid` は「参照先が生きているか」**で、未解決・破棄済みのどちらでも `false` です。非 Nullable（`T`）宣言は未設定でも null にならず `IsValid == false` の無効ハンドルになります。参照は**アクタ名（＋スロット名）**で保存されるためリネームで切れ、解決は Play 開始時／Instantiate 時に **`OnStart` より前の一度きり**です。
+> **重要**: 参照フィールドは**常に参照（ハンドル）**です（「値としての Transform」は作れません。値で持つなら `SEED.Vector3`）。**`null` は「未設定」のみ**を意味し Nullable（`T?`）宣言でしか起きません。**`IsValid` は「参照先が生きているか」**で、未解決・破棄済みのどちらでも `false` です。非 Nullable（`T`）宣言は未設定でも null にならず `IsValid == false` の無効ハンドルになります。参照は**アクタ名（＋スロット名）**で保存されますが、エディタでアクタをリネームすると**旧名一致の参照は自動で新名に追従**します（同名アクタが複数ある場合は旧名一致の参照がすべて書き換わる点に注意。コンパイルエラー中のスクリプトの参照は型判定できないため追従しません）。解決は Play 開始時／Instantiate 時に **`OnStart` より前の一度きり**です。
 
 **`null` と `IsValid` の使い分け（重要）**
 

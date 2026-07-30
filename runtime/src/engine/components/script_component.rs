@@ -113,6 +113,17 @@ impl ScriptComponent {
         self.refs_dirty = true;
     }
 
+    /// 指定パスのフィールドが参照フィールド型（GameObject / コンポーネントハンドル）かを
+    /// CLR 側のリフレクションで判定する。
+    ///
+    /// アクタリネーム時の参照追従（値が旧アクタ名に一致するフィールドの書き換え）で、
+    /// 「たまたま同じ文字列を持つプレーンな string フィールド」を誤書き換えしないための
+    /// 型ゲート。World へはアクセスしないため、スクリプトフェーズ外でも安全に呼べる。
+    pub fn is_reference_field(&self, name: &str) -> bool {
+        let n = name.as_bytes();
+        unsafe { (self.host.is_ref_field_fn)(self.handle, n.as_ptr(), n.len() as i32) != 0 }
+    }
+
     /// CLR インスタンスへフィールド値を FFI 経由で書き込む（内部用）。
     fn apply_field_ffi(&self, name: &str, value: &str) {
         let n = name.as_bytes();
