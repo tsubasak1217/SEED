@@ -56,6 +56,12 @@ public class ActorNode
     /// フォルダは同時に IsGroup=true でも届く（選択種別スキップ等の既存グループ挙動を流用するため）。
     /// </summary>
     public bool            IsFolder { get; set; }
+    /// <summary>
+    /// ツリー再構築をまたいでノードを同一視するための安定キー（ルートからの名前パス）。
+    /// Id は DFS 通し番号で並べ替え・複製によりズレるため、展開状態の退避／復元には
+    /// こちらを使う。値は <c>AssignStableKeys</c>（HierarchyPanel.Expansion.cs）が設定する。
+    /// </summary>
+    public string          StableKey { get; set; } = "";
     public List<ActorNode> Children { get; } = new();
 }
 
@@ -203,6 +209,8 @@ public partial class HierarchyPanel : UserControl
         InitializeComponent();
         ActorTree.PreviewKeyDown            += OnTreeKeyDown;
         ActorTree.PreviewMouseLeftButtonUp  += OnTreeMouseUp;
+        // ツリー再構築で展開状態が失われないよう、開閉を安定キーで追跡する
+        AttachExpansionTracking();
     }
 
     private void OnTreeKeyDown(object sender, KeyEventArgs e)
@@ -486,6 +494,8 @@ public partial class HierarchyPanel : UserControl
     private void RebuildTree(List<ActorNode> roots)
     {
         var filter = TxtSearch.Text.Trim();
+        // 再構築の前に安定キーを振り直す（展開状態の退避／復元キーになる）
+        AssignStableKeys(roots, ExpandKeyRootParent);
         ActorTree.Items.Clear();
         foreach (var root in roots)
         {
@@ -502,7 +512,14 @@ public partial class HierarchyPanel : UserControl
             node.Children.Count == 0)
             return null;
 
-        var item = new TreeViewItem { Tag = node, IsExpanded = true };
+        // 展開状態は安定キーで退避した折りたたみ集合から復元する（既定は展開）。
+        // 検索フィルタ中は閉じたグループ内の一致ノードが埋もれないよう強制的に全展開する。
+        bool forceExpandAll = !string.IsNullOrEmpty(filter);
+        var item = new TreeViewItem
+        {
+            Tag        = node,
+            IsExpanded = ShouldExpandOnBuild(node, forceExpandAll),
+        };
         item.Header   = BuildItemHeader(node);
         item.Selected += OnItemSelected;
 
@@ -1779,6 +1796,11 @@ public partial class HierarchyPanel : UserControl
 
             prevMovedItem = FindTreeItemById(ActorTree.Items, dragNode.Id);
         }
+
+        // ReparentInPlace で名前パスが変わったので安定キーを振り直す。
+        // これを忘れると、この直後にユーザーが開閉した状態を古いキーで記録してしまい、
+        // 次の HIERARCHY 受信時の復元がズレる。
+        RefreshStableKeys();
 
         _dropTarget   = null;
         _dropAsRoot   = false;
