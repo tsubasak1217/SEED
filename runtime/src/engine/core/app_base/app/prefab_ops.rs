@@ -78,6 +78,9 @@ impl App {
         // シーン未ロード・描画コンテキスト未初期化なら何もしない
         if self.scene.is_none() || self.draw_ctx.is_none() { return; }
 
+        // プレハブ内容が変わっている前提の操作なので、散布用キャッシュも捨てる
+        self.scatter_prefab_cache.clear();
+
         // Undo 用に再展開前の world_line=0 ツリーをスナップショットする
         let before_actors = self.snapshot_actors_for_wl(0);
 
@@ -122,6 +125,9 @@ impl App {
         // 保存パス（絶対）を assets:// 仮想パスへ換算して prefab_source と比較する
         let vpath = crate::engine::asset_fs::to_virtual(saved_abs_path);
 
+        // プレハブファイルが更新されたので、散布用キャッシュの該当エントリを捨てる
+        self.scatter_prefab_cache.remove(&vpath);
+
         // Undo 用に再展開前の world_line=0 ツリーをスナップショットする
         let before_actors = self.snapshot_actors_for_wl(0);
 
@@ -162,6 +168,9 @@ impl App {
         let wl = self.active_world_line;
         // シーン未ロード・描画コンテキスト未初期化なら何もしない
         if self.scene.is_none() || self.draw_ctx.is_none() { return; }
+
+        // プレハブ内容が変わっている前提の操作なので、散布用キャッシュも捨てる
+        self.scatter_prefab_cache.clear();
 
         // Undo 用に再展開前のツリーをスナップショットする
         let before_actors = self.snapshot_actors_for_wl(wl);
@@ -372,6 +381,16 @@ fn reinstantiate_prefabs_in_actors(
 /// 置換: 子ツリー・コンポーネント（ファイル内容で丸ごと差し替え）。
 /// ファイル欠損・パース失敗・構築失敗・自己参照のいずれかの場合は再展開せず
 /// 旧インスタンスを維持する（＝リンク維持）。
+/// プレハブ（.actor / .actor2d）ファイルを読み込んで ActorData へパースする共通処理。
+///
+/// プレハブ再展開（本ファイル）とアクタ散布（terrain_scatter_actor_ops.rs）が共用する。
+/// `asset_fs::read_string` が BOM 除去まで済ませるため、ここでは読み込みとパースのみ。
+pub(super) fn load_actor_data(src: &str) -> Result<ActorData, String> {
+    let raw = crate::engine::asset_fs::read_string(src)
+        .map_err(|e| format!("読み込み失敗: {e}"))?;
+    serde_json::from_str(&raw).map_err(|e| format!("パース失敗: {e}"))
+}
+
 fn reinstantiate_single(
     slot:    &mut Actor,
     world:   &mut World,
@@ -381,19 +400,11 @@ fn reinstantiate_single(
     changed: &mut bool,
 ) {
     // ── 参照先ファイルを読み込む（assets:// 仮想パス／絶対パスのどちらも可）──
-    let raw = match crate::engine::asset_fs::read_string(src) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("[Prefab] 参照先ファイルを読み込めません（リンク維持）: {src} err={e}");
-            return; // シーン保存値のまま
-        }
-    };
-    let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
-    let data: ActorData = match serde_json::from_str(json) {
+    let data: ActorData = match load_actor_data(src) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("[Prefab] 参照先ファイルのパースに失敗（リンク維持）: {src} err={e}");
-            return;
+            eprintln!("[Prefab] 参照先ファイルを読めません（リンク維持）: {src} {e}");
+            return; // シーン保存値のまま
         }
     };
 

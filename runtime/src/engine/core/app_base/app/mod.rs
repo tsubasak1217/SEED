@@ -698,6 +698,12 @@ pub struct App {
     actor_virtual_selected_slot_idx: usize,
     /// インスペクターフィールドドラッグ中の事前状態（Undo 1 コマンド化のために使用）。
     inspector_transform_drag: Option<InspectorTransformDrag>,
+    /// アクタ散布（kind=Actor プロップ）用のプレハブ ActorData キャッシュ。
+    /// ブラシ散布は 1 ストロークで何十回も飛んでくるため、同じ .actor ファイルの
+    /// 再読込・再パースを避ける。プレハブ内容が変わりうる操作（ルール再散布の開始・
+    /// プレハブ再展開系）でクリアする。
+    pub(super) scatter_prefab_cache: std::collections::HashMap<
+        String, crate::engine::structs::objects::actor::ActorData>,
 
     // ── 世界線システム ───────────────────────────────────────────
     /// 現在アクティブな世界線 (0=通常シーン, N=アクター編集タブ)。
@@ -1245,6 +1251,7 @@ impl App {
             selected_actor_dfs_ids:          Vec::new(),
             actor_virtual_selected_slot_idx: 0,
             inspector_transform_drag:     None,
+            scatter_prefab_cache:         std::collections::HashMap::new(),
             edit_physics_enabled:        false,
             edit_physics_with_rigidbody: false,
             edit_physics_paused:          true,

@@ -16,7 +16,9 @@ ECS の理念（**データ**＝コンポーネント／**ロジック**＝シ�
 - **`ComponentKind` に variant を追加したら、関連する全 match の腕を漏れなく更新する**。
   更新先: `display_name()` / `Actor::to_data_recursive()`（保存）/ `rebuild_actor_slots()`（読込）/
   `handle_remove_component_slot()` / `handle_duplicate_component()` / `handle_add_component_to_actor()` /
-  `send_actor_components()`。既存コンポーネント名（例 `AudioComponent`）で **grep して足すべき箇所を全部洗い出す**。
+  `send_actor_components()` / `rename_refs.rs` の `rewrite_refs_in_slots()`（アクタ名参照を持つ種別か判断して腕を足す。
+  こちらは網羅 match なのでコンパイルエラーで気付ける）。
+  既存コンポーネント名（例 `AudioComponent`）で **grep して足すべき箇所を全部洗い出す**。
   非網羅の match は `cargo build` が落として守ってくれるが、非 match の取りこぼしはコンパイルを通ってしまうので注意。
 - **スロット専用 `entity` を `spawn` してから `insert` する**。`actor.entity` へ直接 insert すると同型コンポーネントの
   複数持ちが壊れる。ルート直付けは Transform / CanvasTransform のみ。
