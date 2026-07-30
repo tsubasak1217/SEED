@@ -5371,6 +5371,107 @@ impl App {
                                     }
                                 }
                             }
+                            // ── 水面パス（Phase W7。不透明＋スカイボックスの後・半透明より前）──
+                            // 【なぜこの位置か（W1 の「WBOIT 合成後」から移動）】
+                            //  ・水面は blend=Replace（背景をシェーダ内で合成し alpha=1 を出す）で描くため、
+                            //    半透明の後に置くと **水面より手前の半透明オブジェクトまで上書き**していた
+                            //    （W1 の既知の制限）。順序を入れ替えるだけでこれは構造的に消える。
+                            //  ・水面を「半透明から見れば不透明な背景」として扱い、不透明・スカイボックスの
+                            //    直後に描く。以降の距離ソート半透明／WBOIT は通常のアルファブレンドで
+                            //    水面の上に重なり、前後関係が正しくなる。
+                            //  ・屈折の背景グラブも直前で取るため「不透明＋スカイボックス」だけを含む。
+                            //    半透明は屈折像・水中の見た目に映らなくなるが、半透明が丸ごと消える
+                            //    不具合より軽い副作用として受け入れる（docs の既知の制限に記載）。
+                            //  ・エディタオーバーレイ（ギズモ／軸／ワイヤ）より前なのは W1 と同じ。
+                            //
+                            // 【メインパスの分割】水面パスは深度アタッチメントを持てない（下記）ため
+                            //  独立したレンダーパスであり、ここでメインパスを一旦閉じ、水面を描いてから
+                            //  `begin_scene_pass_load_to`（カラー／深度／ステンシルすべて Load）で
+                            //  再開する。逐次グラブ（refract_sequential）が使うのと同じ再開手順である。
+                            //
+                            // 【深度】水面パスは深度アタッチメントを持たない（begin_water_pass_to）。
+                            //  共有深度は他パスで書き込み可能としてアタッチされており、同一パスで
+                            //  アタッチメント兼サンプルにするとエイリアシングになるため、DepthOnly ビューを
+                            //  サンプルテクスチャとして渡し、シェーダ内で手動深度テスト（遮蔽 → discard）と
+                            //  水の厚み復元を行う。水面は元々深度を書かないので通常の Z テストと等価。
+                            //  ※ 水面は深度を書かないので、**水面より奥にある半透明**は後続の半透明パスで
+                            //    深度テストを通り、水面の上に描かれてしまう（W2 で水中描画を入れる際に
+                            //    水面深度の書き込みと併せて解消する。docs の既知の制限を参照）。
+                            //
+                            // 【カメラプレビューには出さない】カメラプレビュー（別 RT への簡易描画）は
+                            //  屈折グラブ・深度サンプルの専用リソースを持たず、W1 のスコープ外とする。
+                            //
+                            // 【ゲート】2D 編集ビュー・ワイヤーフレーム表示・G-Buffer デバッグ表示中は
+                            //  水を描かない。水ボリュームが 0 個のフレームも同様で、この場合はメインパスの
+                            //  分割（閉じ／再開）自体を行わない＝完全にコスト 0 である。
+                            let water_gate = !edit_view_2d && !scene_wireframe && !gbuffer_debug_active
+                                && !water_volumes.is_empty();
+                            if water_gate {
+                                // 水面パスは別レンダーパスなので、ここでメインパスを一旦閉じる。
+                                drop(pass);
+                                let perf_t_water = std::time::Instant::now();
+                                // 遅延構築（App::new は device 確立前に走るためここで初期化する）。
+                                // パイプラインキャッシュは遅延構築のため None（一度きりの構築コストのみ）。
+                                if self.water_renderer.is_none() {
+                                    self.water_renderer = Some(
+                                        crate::engine::core::renderer::WaterRenderer::new(
+                                            &draw_ctx.device,
+                                            crate::engine::core::renderer::HDR_FORMAT,
+                                            None,
+                                        ),
+                                    );
+                                }
+                                let depth_sample_view = frame.depth_only_view_r();
+                                let water = self.water_renderer.as_mut()
+                                    .expect("water_renderer は直前に構築済み");
+                                let water_ready = water.prepare(
+                                    &draw_ctx.device, &draw_ctx.queue,
+                                    &water_volumes, saved_camera_pos,
+                                    surf_w, surf_h, depth_sample_view,
+                                    // ピッキング ID のベース（キャンバスアクターと同一 ID 空間）。
+                                    // 水面には専用の ID 帯域を設けず、
+                                    // 「raw = canvas_id_offset + アクタ DFS + 1」でデコード側の
+                                    // キャンバス選択分岐（DFS からアクタを引く経路）に相乗りする。
+                                    canvas_id_offset,
+                                    // 波紋・航跡の場（Phase I2）。上の I1 節で更新済みのものを読む。
+                                    self.interaction_field.as_ref(),
+                                    // 岸波のショアフィールド（Phase W1.5）。上の W1.5 節で更新済み。
+                                    &self.water_shore_fields,
+                                );
+                                // ID パス（後段）で水面クアッドを描いてよいかを伝える。
+                                water_pick_ready = water_ready;
+                                if water_ready {
+                                    // ① 屈折背景のグラブ（シーン HDR → 専用 1 ミップテクスチャ）。
+                                    //    レンダーパス外・水面パス直前に 1 回だけコピーする。
+                                    let scene_hdr = self.rt_pool
+                                        .texture(crate::engine::core::renderer::RT_SCENE_HDR);
+                                    let water = self.water_renderer.as_ref()
+                                        .expect("water_renderer は直前に構築済み");
+                                    water.record_grab(frame.encoder_mut(), scene_hdr);
+
+                                    // ② 水面パス（color=hdr を Load・深度アタッチメント無し）。
+                                    let mut wpass = frame.begin_water_pass_to(hdr_view);
+                                    // Play レターボックス時は他パスと同一のゲームビューポートを適用する
+                                    //（帯へのはみ出し防止＋不透明幾何との位置一致。他 10 箇所と同一条件）。
+                                    if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
+                                        let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                        wpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                        wpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                                    }
+                                    water.draw(&mut wpass, &camera_buf.bind_group);
+                                }
+                                perf_water_ms = perf_t_water.elapsed().as_secs_f64() * 1000.0;
+
+                                // メインパスを Load で再開する（以降の距離ソート半透明・
+                                // スプライト・オーバーレイはすべて水面の上に重なる）。
+                                pass = frame.begin_scene_pass_load_to(hdr_view);
+                                if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
+                                    let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                    pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                    pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                                }
+                            }
+
 
                             // ── 半透明の距離ソート描画（Phase R5）──────────────
                             // 不透明の直後・オーバーレイより前に、Blend プリミティブを
@@ -5631,85 +5732,6 @@ impl App {
                                     reveal_view,
                                 );
                             }
-                        }
-
-                        // ── 水面パス（Phase W1。WBOIT 合成後・エディタオーバーレイ前）──────
-                        // 【なぜこの位置か】
-                        //  ・メインパス（不透明＋スカイボックス＋距離ソート半透明）と WBOIT 合成の
-                        //    「後」に置くことで、距離ソート／WBOIT どちらのモードでも同じ経路になる
-                        //    （水は WBOIT の対象外とし、常に自前パスでソート描画する）。
-                        //  ・屈折の背景グラブを直前に取るため、スカイボックス・既存半透明が全て
-                        //    背景に含まれる（＝屈折の背景として正しい）。
-                        //  ・エディタオーバーレイ（ギズモ／軸／ワイヤ）より前なので、ギズモは水面の上に出る。
-                        //
-                        // 【深度】水面パスは深度アタッチメントを持たない（begin_water_pass_to）。
-                        //  共有深度は他パスで書き込み可能としてアタッチされており、同一パスで
-                        //  アタッチメント兼サンプルにするとエイリアシングになるため、DepthOnly ビューを
-                        //  サンプルテクスチャとして渡し、シェーダ内で手動深度テスト（遮蔽 → discard）と
-                        //  水の厚み復元を行う。水面は元々深度を書かないので通常の Z テストと等価。
-                        //
-                        // 【ゲート】2D 編集ビュー・ワイヤーフレーム表示・G-Buffer デバッグ表示中は描かない。
-                        //  Play / Edit の両方で描く（水はゲーム世界の一部であり編集中も見えるべきため）。
-                        //  水ボリュームが 0 個のフレームは prepare が false を返し、テクスチャ確保も
-                        //  グラブコピーもパス開始も一切行わない（コスト 0）。
-                        //
-                        // 【カメラプレビューには出さない】カメラプレビュー（別 RT への簡易描画）は
-                        //  屈折グラブ・深度サンプルの専用リソースを持たず、W1 のスコープ外とする。
-                        let water_gate = !edit_view_2d && !scene_wireframe && !gbuffer_debug_active
-                            && !water_volumes.is_empty();
-                        if water_gate {
-                            let perf_t_water = std::time::Instant::now();
-                            // 遅延構築（App::new は device 確立前に走るためここで初期化する）。
-                            // パイプラインキャッシュは遅延構築のため None（一度きりの構築コストのみ）。
-                            if self.water_renderer.is_none() {
-                                self.water_renderer = Some(
-                                    crate::engine::core::renderer::WaterRenderer::new(
-                                        &draw_ctx.device,
-                                        crate::engine::core::renderer::HDR_FORMAT,
-                                        None,
-                                    ),
-                                );
-                            }
-                            let depth_sample_view = frame.depth_only_view_r();
-                            let water = self.water_renderer.as_mut()
-                                .expect("water_renderer は直前に構築済み");
-                            let water_ready = water.prepare(
-                                &draw_ctx.device, &draw_ctx.queue,
-                                &water_volumes, saved_camera_pos,
-                                surf_w, surf_h, depth_sample_view,
-                                // ピッキング ID のベース（キャンバスアクターと同一 ID 空間）。
-                                // 水面には専用の ID 帯域を設けず、
-                                // 「raw = canvas_id_offset + アクタ DFS + 1」でデコード側の
-                                // キャンバス選択分岐（DFS からアクタを引く経路）に相乗りする。
-                                canvas_id_offset,
-                                // 波紋・航跡の場（Phase I2）。上の I1 節で更新済みのものを読む。
-                                self.interaction_field.as_ref(),
-                                // 岸波のショアフィールド（Phase W1.5）。上の W1.5 節で更新済み。
-                                &self.water_shore_fields,
-                            );
-                            // ID パス（後段）で水面クアッドを描いてよいかを伝える。
-                            water_pick_ready = water_ready;
-                            if water_ready {
-                                // ① 屈折背景のグラブ（シーン HDR → 専用 1 ミップテクスチャ）。
-                                //    レンダーパス外・水面パス直前に 1 回だけコピーする。
-                                let scene_hdr = self.rt_pool
-                                    .texture(crate::engine::core::renderer::RT_SCENE_HDR);
-                                let water = self.water_renderer.as_ref()
-                                    .expect("water_renderer は直前に構築済み");
-                                water.record_grab(frame.encoder_mut(), scene_hdr);
-
-                                // ② 水面パス（color=hdr を Load・深度アタッチメント無し）。
-                                let mut wpass = frame.begin_water_pass_to(hdr_view);
-                                // Play レターボックス時は他パスと同一のゲームビューポートを適用する
-                                //（帯へのはみ出し防止＋不透明幾何との位置一致。他 10 箇所と同一条件）。
-                                if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
-                                    let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
-                                    wpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
-                                    wpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
-                                }
-                                water.draw(&mut wpass, &camera_buf.bind_group);
-                            }
-                            perf_water_ms = perf_t_water.elapsed().as_secs_f64() * 1000.0;
                         }
 
                         // ── エディタオーバーレイパス（WBOIT 合成後・GPU パーティクル前）────

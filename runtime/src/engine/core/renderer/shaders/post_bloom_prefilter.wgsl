@@ -6,7 +6,7 @@
 //  （knee 幅の二次カーブ）でなだらかに立ち上げる（Unity / CoD と同系）。
 //
 //  連結順（post_bloom_prefilter.toml の shader_sources）:
-//    fullscreen.wgsl（頂点 fs_vs / FsOut）→ 本ファイル。
+//    fullscreen.wgsl（頂点 fs_vs / FsOut）→ postfx_common.wgsl（健全化）→ 本ファイル。
 //
 //  group 0: パラメータ UBO（しきい値・ニー幅）
 //  group 1: 入力 HDR テクスチャ + サンプラー
@@ -30,7 +30,12 @@ struct BloomPrefilterParams {
 
 @fragment
 fn bloom_prefilter_fs(in: FsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(t_in, s_in, in.uv).rgb;
+    // ── 入力の健全化（**必須**）──────────────────────────────
+    // シーン HDR に ±Inf / NaN が混じっていると、下の `contrib` が Inf/Inf = NaN になり、
+    // NaN がダウンサンプル 13-tap ／ アップサンプル tent でミップ鎖へ**矩形状に**拡散し、
+    // 合成後のトーンマップで「黒い四角」として画面に出る（HDR 天球の太陽が典型の混入源）。
+    // 有限域へ落としてからしきい値応答を計算する（postfx_common.wgsl）。
+    let c = postfx_sanitize_hdr(textureSample(t_in, s_in, in.uv).rgb);
     // 最大チャンネルを輝度指標に使う（色付き高輝度も拾う）。
     let br = max(c.r, max(c.g, c.b));
 

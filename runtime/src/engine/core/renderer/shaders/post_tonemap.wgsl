@@ -6,7 +6,8 @@
 //  各メッシュシェーダ内で個別に行っていた Reinhard をここへ一元化した（Phase R3）。
 //
 //  連結順（post_tonemap.toml の shader_sources）:
-//    fullscreen.wgsl（頂点 fs_vs / FsOut）→ tonemap_ops.wgsl（演算子）→ 本ファイル。
+//    fullscreen.wgsl（頂点 fs_vs / FsOut）→ postfx_common.wgsl（健全化）
+//    → tonemap_ops.wgsl（演算子）→ 本ファイル。
 //
 //  group 0: パラメータ UBO（演算子・露出）
 //  group 1: 入力 HDR テクスチャ + サンプラー
@@ -33,7 +34,11 @@ struct TonemapParams {
 
 @fragment
 fn tm_fs(in: FsOut) -> @location(0) vec4<f32> {
-    let hdr    = textureSample(t_hdr, s_hdr, in.uv).rgb * u_tm.exposure;
+    // 入力を健全化してから露出を掛ける（postfx_common.wgsl）。
+    // ここが LDR 出力への最後の関門であり、上流のどこかで生まれた ±Inf / NaN を
+    // そのままトーンマップ演算子へ入れると（Inf/Inf 等で）NaN になり、出力が
+    // 「黒い塗り潰し」になる。有限域に落としておけば必ず妥当な明色に飽和する。
+    let hdr    = postfx_sanitize_hdr(textureSample(t_hdr, s_hdr, in.uv).rgb) * u_tm.exposure;
     let mapped = tonemap_apply(hdr, u_tm.op);
     return vec4<f32>(mapped, 1.0);
 }

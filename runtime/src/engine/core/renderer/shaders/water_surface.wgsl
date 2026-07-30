@@ -20,6 +20,17 @@
 //  さらに解析波のサンプル位置を上流へずらして**流れ**を作る（2 位相ブレンド。
 //  `water_flow_*` を参照）。色・吸収・泡・屈折の経路は Ocean / Region と完全に共通である。
 //
+//  ## 水中から見上げた水面（Phase W7）
+//  カメラが水面より下にあるフラグメントは「水面の裏側」を見ている。パイプラインは
+//  `cull_mode = None` なので裏面もラスタライズされており、修正が要るのは合成側だけである。
+//    ・**厚み 0（素通し）**にする … 水面の向こう側は空気であって水ではないので、シーン深度
+//      から求めた距離を厚みとして使ってはいけない（最大厚み扱いになり深場の色で
+//      塗り潰され、外の景色が見えなくなる）。視線が通った水の減衰は水中ポスト（W2）の担当。
+//    ・**法線を反転**して視線側へ向け、フレネルをそのまま評価する（水中では浅い角度ほど
+//      水面が鏡になる＝全反射の粗い代用になる）。
+//    ・**泡を出さない** … 泡は水面の上に浮くものであり、かつ厚み 0 では岸フォームが
+//      「水深 0」と誤判定されて全面が白くなるため。
+//
 //  ## 深度の扱い（アタッチメント無し＋手動深度テスト）
 //  本パスは **深度アタッチメントを一切持たない**（TOML の `no_depth = true`）。
 //  理由: 共有深度テクスチャは他パスで「書き込み可能」としてアタッチされており、
@@ -964,7 +975,7 @@ fn vs_water(
 // ─── フラグメントシェーダ ────────────────────────────────────
 
 /// 水面 1 フラグメントを合成する。処理順は
-/// 波法線 → 手動深度テスト → 厚み復元 → 吸収 → 屈折 → 岸フォーム → フレネル → 合成。
+/// 波法線 → 水中判定 → 手動深度テスト → 厚み復元 → 吸収 → 屈折 → 岸フォーム → フレネル → 合成。
 @fragment
 fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
     let p = u_water[in.idx];
@@ -976,7 +987,18 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
     //    波紋強度 0／岸波強度 0 の水では該当項が完全に消え、W1 と 1 ビットも変わらない。
     let ripple_h = water_ripple_height(in.world_pos.xz);
     let grad     = water_surface_gradient(p, in.world_pos.xz, in.flow_dir, u_camera.time);
-    let n        = water_normal_from_gradient(grad);
+    let n_up     = water_normal_from_gradient(grad);
+
+    // ①' 水中判定（Phase W7）
+    //     カメラがこのフラグメントの水面高さより **下** にあるなら、見えているのは
+    //     水面の裏側（＝水中から見上げている）。パイプラインは `cull_mode = None` なので
+    //     裏面もラスタライズされており、必要なのは「合成の向き」を反転することだけである。
+    //     判定に `in.world_pos.y` を使うのは、それが実際にラスタライズされた面の高さそのもので
+    //     あり（W1 は頂点変位しないので幾何面 = 水面平面）、傾いた川の面でも正しく効くため。
+    let underwater = u_camera.position.y < in.world_pos.y;
+    //     視線側を向く法線。水中では上向き法線を反転して使う（フレネル・屈折の歪み方向とも
+    //     整合させるため、以降は一貫してこの `n` だけを使う）。
+    let n = select(n_up, -n_up, underwater);
 
     // ② 手動深度テスト（深度アタッチメントを持たないため自前で行う）
     //    シーン深度が水面フラグメントより手前なら、水は不透明物に隠れている。
@@ -987,7 +1009,15 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
 
     // ③ 水の厚み（水面点 → 水底/背景点までの距離）
     var thickness: f32;
-    if (scene_depth >= WATER_SKY_DEPTH_THRESHOLD) {
+    if (underwater) {
+        // 水中から見上げている場合、水面の「向こう側」は水ではなく **外の空気／空** であり、
+        // シーン深度から求まる距離は水の厚みではない（そのまま使うと最大厚み扱いになり、
+        // 深場の色で塗り潰されて外の景色が一切見えなくなる＝本修正前の不具合）。
+        // 視線が通った水の量は「カメラ → 水面点」の距離だが、その減衰は水中ポスト（W2）の
+        // 担当であり本パスでは扱わない。よって厚み 0 として **素通し**にする
+        //（absorb=1 → opacity=0 → 背景グラブ＝水上の景色がそのまま出る）。
+        thickness = 0.0;
+    } else if (scene_depth >= WATER_SKY_DEPTH_THRESHOLD) {
         // 背景が空（無限遠）＝ 水底が無い。最大厚みとして扱い、深場の色へ収束させる。
         thickness = WATER_SKY_THICKNESS;
     } else {
@@ -1020,9 +1050,17 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
     let opacity = clamp(p.deep_color.a, 0.0, 1.0) * (1.0 - absorb);
     var color   = mix(background, tint, opacity);
 
-    // ⑦ 岸フォーム: 水深が foam_width 未満の帯に滑らかに乗せる。
+    // ⑦ 泡の全体ゲート（Phase W7）
+    //    泡（岸フォーム・航跡・砕け波）はいずれも **水面の上側に浮くもの**なので、
+    //    水中から見上げているときは載せない。特に岸フォームは thickness=0（素通し）だと
+    //    「水深 0 = 岸際」と誤判定されて画面全面が白く塗られてしまうため、この
+    //    ゲートは水中視点における必須の抑制である。
+    let foam_gate = select(1.0, 0.0, underwater);
+
+    // ⑦-a 岸フォーム: 水深が foam_width 未満の帯に滑らかに乗せる。
     let foam_width = max(p.foam_color.a, WATER_EPSILON);
-    let foam       = (1.0 - smoothstep(0.0, foam_width, thickness)) * p.reflection_color.a;
+    let foam       = (1.0 - smoothstep(0.0, foam_width, thickness))
+                   * p.reflection_color.a * foam_gate;
     color          = color + p.foam_color.rgb * foam;
 
     // ⑦' 航跡フォーム（Phase I2）: 波紋の高さがしきい値を超えた所へ白い泡を乗せる。
@@ -1033,16 +1071,20 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
         ripple_threshold,
         ripple_threshold * (1.0 + WATER_RIPPLE_FOAM_RAMP),
         abs(ripple_h),
-    ) * WATER_RIPPLE_FOAM_MAX * clamp(p.fresnel.z, 0.0, 1.0);
+    ) * WATER_RIPPLE_FOAM_MAX * clamp(p.fresnel.z, 0.0, 1.0) * foam_gate;
     color = color + p.foam_color.rgb * ripple_foam;
 
     // ⑦'' 岸波の泡（Phase W1.5）: 砕け波の白帯と打ち上げ（swash）の泡。
     //      ここも **同じ foam_color** を流用する（水ごとの泡の色は 1 つ、という設計）。
     //      岸波強度 0・ショアフィールド無しの水では 0 が返り、W1/I2 と同一出力になる。
-    let shore_foam = water_shore_foam(p, in.world_pos.xz, u_camera.time);
+    let shore_foam = water_shore_foam(p, in.world_pos.xz, u_camera.time) * foam_gate;
     color = color + p.foam_color.rgb * shore_foam;
 
     // ⑧ フレネル: 浅い角度ほど反射色へ寄せる。
+    //    `n` は視線側を向く法線（水中では下向き）なので、この 1 本の式が
+    //    水上＝空の反射、水中＝水面の内側での反射（全反射の粗い代用）の両方を兼ねる。
+    //    水中で浅い角度になるほど reflection_color へ寄るため、真上付近は外が見え、
+    //    水平方向へ向くほど水面が鏡のように見える、という向きの正しい応答になる。
     let view_dir = normalize(u_camera.position - in.world_pos);
     let fresnel  = clamp(
         p.fresnel.y * pow(1.0 - clamp(dot(n, view_dir), 0.0, 1.0), max(p.fresnel.x, WATER_EPSILON)),

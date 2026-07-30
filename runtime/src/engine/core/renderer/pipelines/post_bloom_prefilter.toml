@@ -2,7 +2,7 @@
 # シーン HDR から高輝度成分を抽出してブルーム mip0（半解像度・HDR）へ出力する。
 # 出力フォーマットは PostPipeline 構築時に渡す HDR フォーマット（Rgba16Float）へ解決される。
 
-shader_sources = ["fullscreen.wgsl", "post_bloom_prefilter.wgsl"]
+shader_sources = ["fullscreen.wgsl", "postfx_common.wgsl", "post_bloom_prefilter.wgsl"]
 vertex_entry   = "fs_vs"
 fragment_entry = "bloom_prefilter_fs"
 vertex_slots   = []
