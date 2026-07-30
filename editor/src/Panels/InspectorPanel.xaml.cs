@@ -816,17 +816,42 @@ public partial class InspectorPanel : UserControl
     /// </summary>
     private string _currentActorName = "";
 
+    // ── 折りたたみセクションの展開状態（再構築ごしの復元）──────────
+    //
+    // Rust は SET_* 系（SET_MATERIAL_OVERRIDE / SET_PARTICLE_FIELD / SET_SCRIPT_FIELD 等）を
+    // 受けるたびに ACTOR_COMPONENTS を再送してくる仕様（OnActorComponentsReceived 参照）。
+    // その結果 BuildActorComponentList がインスペクタ内の全セクションを作り直すため、
+    // Expander / 自前アコーディオンは IsExpanded 初期値の新インスタンスへ置き換わり、
+    // 「値を編集した瞬間に開いていたヘッダーが閉じる」症状になる（イベントバブリングではなく
+    // UI 全体再構築による状態消失）。ControlPoint 行ハイライトの復元（_controlPointRows）と
+    // 同じ「状態を退避して再構築後に復元する」方式を ExpandStateStore で汎用化して使う。
+
     /// <summary>
-    /// ParticleEmitterComponent のカーブ行 Expander（速度/回転速度/スケール/色カーブ各要素）の
-    /// 展開状態を「slotIdx:curveId[:index]」キーで保持する。
-    /// Rust は SET_PARTICLE_FIELD/SET_PARTICLE_CURVE 送信のたびに ACTOR_COMPONENTS を再送してくる仕様
-    /// （OnActorComponentsReceived 参照）ため、カーブ編集の確定（ダブルクリック追加/削除/Enter確定等）の
-    /// 直後に BuildActorComponentList が全 Expander を作り直してしまう。その際 IsExpanded=false の新規
-    /// Expander に置き換わって「編集した瞬間に閉じる」ように見える不具合の直接原因はこれ（イベント
-    /// バブリングではなく UI 全体再構築による状態消失）。このセットに開閉状態を退避し、再構築時に
-    /// 復元することで解決する。
+    /// インスペクタ内の全折りたたみセクションの展開状態。キーの体系は下記の Prefix 定数を参照。
+    /// スコープはアクタ単位（BuildActorComponentList でアクタ ID を宣言し、切替時に自動破棄）。
     /// </summary>
-    private readonly HashSet<string> _expandedParticleCurveRows = new();
+    private readonly ExpandStateStore _expandStates = new();
+
+    /// <summary>展開状態スコープのキー接頭辞（アクタ単位で状態を分離する）。</summary>
+    private const string ExpandScopeActorPrefix = "actor:";
+
+    /// <summary>コンポーネントアコーディオン（スロット単位）のキー接頭辞。後続はスロット添字。</summary>
+    private const string ExpandKeyComponentPrefix = "component:";
+
+    /// <summary>スロットに属さない固定セクション（基本情報など）のキー接頭辞。後続は見出し名。</summary>
+    private const string ExpandKeySectionPrefix = "section:";
+
+    /// <summary>マテリアル一覧まとめヘッダーのキー接頭辞。後続はモデルスロット添字。</summary>
+    private const string ExpandKeyMaterialsPrefix = "materials:";
+
+    /// <summary>マテリアル 1 スロットの Expander のキー接頭辞。後続は「モデルスロット添字:マテリアルスロット番号」。</summary>
+    private const string ExpandKeyMaterialSlotPrefix = "material_slot:";
+
+    /// <summary>パーティクルのカーブ行 Expander のキー接頭辞。後続は「スロット添字:カーブID[:要素添字]」。</summary>
+    private const string ExpandKeyParticleCurvePrefix = "particle_curve:";
+
+    /// <summary>スクリプトの [Serializable] ネスト Expander のキー接頭辞。後続は「スロット添字:フィールドのドットパス」。</summary>
+    private const string ExpandKeyScriptFieldPrefix = "script_field:";
     /// <summary>アクターのアクティブチェックボックス更新中の再帰イベント抑止。</summary>
     private bool _updatingActorActive;
 
@@ -841,6 +866,11 @@ public partial class InspectorPanel : UserControl
     private void BuildActorComponentList(string json)
     {
         _lastComponentsJson = json;
+
+        // 折りたたみセクションの展開状態はアクタ単位で保持する。
+        // 同一アクタの再構築（値編集による ACTOR_COMPONENTS 再送）では状態が維持され、
+        // 別アクタへ切り替わったタイミングでのみ破棄される。
+        _expandStates.BeginScope(ExpandScopeActorPrefix + _currentActorId);
 
         using var doc  = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -1482,8 +1512,6 @@ public partial class InspectorPanel : UserControl
     /// </summary>
     private StackPanel BuildAccordionSection(string title, string typeId, UIElement content, int slotIdx)
     {
-        var isExpanded = true;
-
         // ── コンテナ（ヘッダー + コンテンツ）────────────────────
         var container = new StackPanel { Tag = slotIdx };
 
@@ -1625,6 +1653,20 @@ public partial class InspectorPanel : UserControl
             Child           = content,
         };
 
+        // ── 開閉状態（値編集による UI 再構築をまたいで復元する）──────
+        // キーはスロット添字（構造上の識別子）を優先する。コンポーネント名は
+        // リネームで変わるため、名前をキーにすると開閉状態が失われてしまう。
+        // スロットを持たない固定セクション（基本情報など）は見出し名で識別する。
+        var expandKey = slotIdx >= 0
+            ? ExpandKeyComponentPrefix + slotIdx
+            : ExpandKeySectionPrefix + title;
+        // 既定は「開」（従来挙動を維持。コンポーネントは開いた状態で見せる）。
+        var toggle = _expandStates.TrackCustom(expandKey, defaultExpanded: true, expanded =>
+        {
+            contentWrapper.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+            arrow.Text                = expanded ? "▼" : "▶";
+        });
+
         // ヘッダークリックで開閉トグル + コンポーネントスロットなら選択も更新する。
         // ダブルクリック（e.ClickCount==2）の場合は直前の1クリック目で走った開閉トグルを
         // 打ち消してからリネームを開始する（開閉とリネームが同時発火しないようにするため）。
@@ -1632,9 +1674,7 @@ public partial class InspectorPanel : UserControl
         {
             if (isComponentSlot && e.ClickCount == 2)
             {
-                isExpanded = !isExpanded;
-                contentWrapper.Visibility = isExpanded ? Visibility.Visible : Visibility.Collapsed;
-                arrow.Text = isExpanded ? "▼" : "▶";
+                toggle.Toggle();
                 StartComponentRename(slotIdx, title);
                 e.Handled = true;
                 return;
@@ -1646,9 +1686,7 @@ public partial class InspectorPanel : UserControl
                 RefreshAccordionSelection();
             }
 
-            isExpanded = !isExpanded;
-            contentWrapper.Visibility = isExpanded ? Visibility.Visible : Visibility.Collapsed;
-            arrow.Text = isExpanded ? "▼" : "▶";
+            toggle.Toggle();
         };
 
         // 右クリックで削除・複製・リネーム・コピー/貼り付けの操作メニューを表示する
@@ -3593,8 +3631,6 @@ public partial class InspectorPanel : UserControl
             slotsPanel.Children.Add(expander);
         }
 
-        var isGroupExpanded = false; // 既定「閉」
-
         // ── まとめヘッダー（コンポーネントアコーディオンの見た目に寄せる: 矢印 + タイトル）──
         var header = new Border
         {
@@ -3645,17 +3681,21 @@ public partial class InspectorPanel : UserControl
 
         header.Child = headerGrid;
 
-        void SetGroupExpanded(bool expand)
-        {
-            isGroupExpanded = expand;
-            slotsPanel.Visibility = expand ? Visibility.Visible : Visibility.Collapsed;
-            arrow.Text = expand ? "▼" : "▶";
-        }
+        // まとめヘッダーの開閉状態も値編集による UI 再構築をまたいで復元する
+        // （マテリアル値を 1 つ触るたびに一覧全体が閉じてしまうのを防ぐ）。
+        // キーは所有モデルスロットの添字（一覧はスロットごとに 1 つだけ存在する）。
+        // 既定は「閉」（スロット数が多いと Inspector が縦に伸び過ぎるため）。
+        var groupToggle = _expandStates.TrackCustom(
+            ExpandKeyMaterialsPrefix + info.SlotIdx, defaultExpanded: false, expanded =>
+            {
+                slotsPanel.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+                arrow.Text            = expanded ? "▼" : "▶";
+            });
 
         header.MouseLeftButtonDown += (_, e) =>
         {
             e.Handled = true;
-            SetGroupExpanded(!isGroupExpanded);
+            groupToggle.Toggle();
         };
 
         // 「すべて展開/折りたたみ」: 配下スロットの個別 Expander を一括操作する。
@@ -3663,7 +3703,7 @@ public partial class InspectorPanel : UserControl
         bulkToggleBtn.MouseLeftButtonDown += (_, e) =>
         {
             e.Handled = true; // ヘッダーの開閉トグルへ伝播させない
-            if (!isGroupExpanded) SetGroupExpanded(true);
+            if (!groupToggle.IsExpanded) groupToggle.Set(true);
             var expandAll = slotExpanders.Any(x => !x.IsExpanded);
             foreach (var x in slotExpanders) x.IsExpanded = expandAll;
             bulkToggleBtn.Text = expandAll ? "すべて折りたたみ" : "すべて展開";
@@ -4000,12 +4040,20 @@ public partial class InspectorPanel : UserControl
             Text = $"#{mat.Slot} {(string.IsNullOrEmpty(mat.Name) ? "(無名)" : mat.Name)}  [{ModeLabel(mat.Mode)}]",
             FontSize = 11, Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
         };
-        return new Expander
+        var slotExpander = new Expander
         {
-            Header = header, IsExpanded = false, Content = content,
+            Header = header, Content = content,
             Margin = new Thickness(0, 2, 0, 2),
             Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
         };
+        // マテリアル値の編集は SET_MATERIAL_OVERRIDE → ACTOR_COMPONENTS 再送 →
+        // インスペクタ全再構築を招くため、開閉状態を退避して復元する
+        // （これを入れないと 1 項目編集するたびにスロットが閉じる）。
+        // キーは「モデルスロット添字 + マテリアルスロット番号」（どちらも構造上の識別子で、
+        // マテリアル名やモードが変わっても不変）。既定は「閉」（従来挙動）。
+        _expandStates.Track(slotExpander,
+            $"{ExpandKeyMaterialSlotPrefix}{info.SlotIdx}:{mat.Slot}", defaultExpanded: false);
+        return slotExpander;
     }
 
     /// <summary>
@@ -6454,10 +6502,10 @@ public partial class InspectorPanel : UserControl
 
         // 折りたたみカーブ行（ラベル＋ミニプレビュー＋展開でエディタ）を作るローカル関数。
         // channelCount はパース失敗時のフォールバック用チャンネル数（speed/rot_speed=1、scale=3）。
-        // expandKey は _expandedParticleCurveRows での展開状態の永続化キー
+        // expandKey は _expandStates での展開状態の永続化キー
         // （Rust が SET_PARTICLE_FIELD/CURVE のたびに ACTOR_COMPONENTS を再送し、その結果
         //   このパネル全体が再構築されて Expander が作り直される仕様のため、素の IsExpanded 初期値
-        //   だけでは編集直後に閉じたように見えてしまう。詳細は _expandedParticleCurveRows のコメント）。
+        //   だけでは編集直後に閉じたように見えてしまう。詳細は _expandStates のコメント）。
         Expander BuildCurveRow(string label, string curveId, string json, bool isHsva, int channelCount, string expandKey)
         {
             var curve  = ParamCurve.FromJson(json) ?? ParamCurve.DefaultWithChannels(channelCount);
@@ -6487,11 +6535,9 @@ public partial class InspectorPanel : UserControl
             var expander = new Expander
             {
                 Header = header, Content = editor,
-                IsExpanded = _expandedParticleCurveRows.Contains(expandKey),
                 Margin = new Thickness(0, 1, 0, 1),
             };
-            expander.Expanded  += (_, _) => _expandedParticleCurveRows.Add(expandKey);
-            expander.Collapsed += (_, _) => _expandedParticleCurveRows.Remove(expandKey);
+            _expandStates.Track(expander, ExpandKeyParticleCurvePrefix + expandKey, defaultExpanded: false);
             return expander;
         }
 
@@ -6555,7 +6601,8 @@ public partial class InspectorPanel : UserControl
                 {
                     if (colorCurves.Count <= 1) return;
                     colorCurves.RemoveAt(idx);
-                    _expandedParticleCurveRows.Remove(expandKey);
+                    // 削除した要素のキーを消す（残すと添字が繰り上がった別要素へ状態が漏れる）。
+                    _expandStates.Remove(ExpandKeyParticleCurvePrefix + expandKey);
                     SendColorCurves();
                     RebuildColorCurves();
                 };
@@ -6564,11 +6611,9 @@ public partial class InspectorPanel : UserControl
                 var expander = new Expander
                 {
                     Header = header, Content = editor,
-                    IsExpanded = _expandedParticleCurveRows.Contains(expandKey),
                     Margin = new Thickness(0, 1, 0, 1),
                 };
-                expander.Expanded  += (_, _) => _expandedParticleCurveRows.Add(expandKey);
-                expander.Collapsed += (_, _) => _expandedParticleCurveRows.Remove(expandKey);
+                _expandStates.Track(expander, ExpandKeyParticleCurvePrefix + expandKey, defaultExpanded: false);
                 colorPanel.Children.Add(expander);
             }
         }
@@ -7683,7 +7728,12 @@ public partial class InspectorPanel : UserControl
         {
             if (_currentActorId < 0) return;
             _runtime?.SendToRuntime($"SET_SCRIPT_FIELD:{_currentActorId},{slotIdx},{name},{val}");
-        }, ResolveScriptReferenceDrop));
+        }, ResolveScriptReferenceDrop,
+        // [Serializable] ネストの折りたたみ状態を再構築ごしに復元する
+        // （SET_SCRIPT_FIELD のたびに ACTOR_COMPONENTS が再送されてこの UI は作り直される）。
+        // キーは「スロット添字 + フィールドのドットパス」。
+        expandStates: _expandStates,
+        expandKeyPrefix: $"{ExpandKeyScriptFieldPrefix}{slotIdx}:"));
         sp.Children.Add(fieldSection);
     }
 

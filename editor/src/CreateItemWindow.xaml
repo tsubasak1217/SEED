@@ -10,7 +10,8 @@
         ShowInTaskbar="False"
         WindowStartupLocation="CenterScreen"
         Background="#1E1E1E"
-        Loaded="OnLoaded">
+        Loaded="OnLoaded"
+        PreviewKeyDown="OnWindowPreviewKeyDown">
 
     <Window.Resources>
         <Style x:Key="ItemRowStyle" TargetType="Button">
@@ -20,11 +21,16 @@
             <Setter Property="HorizontalContentAlignment" Value="Left"/>
             <Setter Property="Cursor"                     Value="Hand"/>
             <Setter Property="Padding"                    Value="0"/>
+            <!-- キーボード選択の見た目は下の IsKeyboardFocused トリガーで表現するため、
+                 WPF 既定の点線フォーカス枠は消す（二重表示を避ける）。 -->
+            <Setter Property="FocusVisualStyle"            Value="{x:Null}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="Bd"
                                 Background="{TemplateBinding Background}"
+                                BorderBrush="Transparent"
+                                BorderThickness="1"
                                 CornerRadius="4"
                                 Margin="5,2,5,2"
                                 Padding="14,10">
@@ -32,6 +38,13 @@
                                               VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
+                            <!-- 上下キーでの選択（キーボードフォーカス）を明示する。
+                                 ホバーと同じ配色 + 枠線で「Enter で決定される行」を示す。 -->
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Bd" Property="Background"  Value="#2A4A6A"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#5599DD"/>
+                                <Setter Property="Foreground"                  Value="White"/>
+                            </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Bd" Property="Background" Value="#2A4A6A"/>
                                 <Setter Property="Foreground"                 Value="White"/>
@@ -55,8 +68,8 @@
                        Foreground="#888888" FontSize="12"/>
         </Border>
 
-        <!-- アイテム一覧 -->
-        <StackPanel Margin="0,6,0,10">
+        <!-- アイテム一覧（上下キーでの選択対象。コードから子 Button を順に辿る） -->
+        <StackPanel x:Name="ItemsPanel" Margin="0,6,0,10">
 
             <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateActor3D">
                 <StackPanel Orientation="Horizontal">

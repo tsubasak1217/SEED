@@ -247,14 +247,14 @@ public partial class TerrainSettingsWindow
         PanelPropProperties.Children.Add(MakeTextRow("ID", prop.Id, v =>
         {
             prop.Id = v;
-            RefreshPropListEntryText();
+            RefreshPropListEntryText(prop);
         }, "散布インスタンスと IPC（再散布・ブラシ）が参照する安定キー。変更すると散布済みの対応が切れる。"));
         PanelPropProperties.Children.Add(MakeHint(
             "ID は散布インスタンスと IPC（再散布・ブラシ）が参照する安定キー。変更すると散布済みの対応が切れる。"));
         PanelPropProperties.Children.Add(MakeTextRow("名前", prop.Name, v =>
         {
             prop.Name = v;
-            RefreshPropListEntryText();
+            RefreshPropListEntryText(prop);
         }, "一覧表示用の名前。散布結果そのものには影響しない。"));
         PanelPropProperties.Children.Add(MakeDisplayComboRow("種別",
             TerrainPropDefaults.Kinds, TerrainPropDefaults.KindDisplayNames, prop.Kind,
@@ -483,12 +483,29 @@ public partial class TerrainSettingsWindow
         PanelPropProperties.Children.Add(btnAdd);
     }
 
-    /// <summary>選択行の一覧表示名だけを更新する（選択は維持する）。</summary>
-    private void RefreshPropListEntryText()
+    /// <summary>
+    /// 選択行の一覧表示名だけを更新する（選択は維持する）。
+    ///
+    /// ListBox.Items[i] への代入は「削除＋挿入」として扱われるため選択が外れ（SelectedIndex = -1）、
+    /// OnPropSelectionChanged 経由で RebuildPropPropertyPanel が走り、
+    /// SelectedProp が null になってプロパティ欄が空になってしまう
+    /// （ID／名前を 1 文字打つたびに編集欄が消える症状の直接原因）。
+    /// 再入ガード（_rebuildingProps）を立てて差し替え、選択を元の行へ戻すことでこれを防ぐ。
+    /// </summary>
+    /// <param name="prop">
+    /// 表示名を更新したいプロップ。確定は LostFocus でも起きるため、対象行は「選択行」ではなく
+    /// 編集していたプロップ自身の位置から引く（フォーカス移動先が別の行でもずれない）。
+    /// </param>
+    private void RefreshPropListEntryText(TerrainPropEdit prop)
     {
-        int idx = LstProps.SelectedIndex;
-        if (idx < 0 || idx >= _props.Props.Count) return;
-        LstProps.Items[idx] = FormatPropListEntry(idx, _props.Props[idx].Name, _props.Props[idx].Id);
+        int idx = _props.Props.IndexOf(prop);
+        if (idx < 0 || idx >= LstProps.Items.Count) return;
+        // 差し替え前の選択をそのまま復元する。
+        int prevSelected = LstProps.SelectedIndex;
+        _rebuildingProps = true;
+        LstProps.Items[idx]    = FormatPropListEntry(idx, prop.Name, prop.Id);
+        LstProps.SelectedIndex = prevSelected;
+        _rebuildingProps = false;
     }
 
     // ── 行生成ヘルパ（散布タブ専用）──────────────────────────

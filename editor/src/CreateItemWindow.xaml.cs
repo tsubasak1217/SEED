@@ -1,8 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Interop;
 
 namespace SEEDEditor;
@@ -33,6 +37,81 @@ public partial class CreateItemWindow : Window
         var helper = new WindowInteropHelper(this);
         int dark = 1;
         DwmSetWindowAttribute(helper.Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
+
+        // 開いた直後から上下キー・Enter で操作できるよう、先頭の項目を選択状態にする。
+        FocusItem(0);
+    }
+
+    // ── キーボード操作（↑↓ で選択・Enter で決定・Esc で閉じる）────
+
+    /// <summary>アイテム一覧（ItemsPanel の子）から選択可能な Button だけを順序どおりに取り出す。</summary>
+    private List<Button> ItemButtons()
+    {
+        var list = new List<Button>();
+        foreach (var child in ItemsPanel.Children)
+            if (child is Button b && b.IsEnabled) list.Add(b);
+        return list;
+    }
+
+    /// <summary>現在キーボードフォーカスのある項目の添字（無ければ -1）。</summary>
+    private int FocusedItemIndex()
+    {
+        var items = ItemButtons();
+        for (int i = 0; i < items.Count; i++)
+            if (items[i].IsKeyboardFocusWithin) return i;
+        return -1;
+    }
+
+    /// <summary>
+    /// 指定添字の項目へキーボードフォーカスを移す（選択状態の見た目はスタイルの
+    /// IsKeyboardFocused トリガーが担当する）。範囲外は端で丸める（循環はしない）。
+    /// </summary>
+    private void FocusItem(int index)
+    {
+        var items = ItemButtons();
+        if (items.Count == 0) return;
+        items[Math.Clamp(index, 0, items.Count - 1)].Focus();
+    }
+
+    /// <summary>
+    /// ウィンドウ全体のキー入力を受けて一覧を操作する。
+    /// ↑↓ で選択移動、Enter で選択中の項目を実行（＝Click を発火）、Esc で閉じる。
+    /// PreviewKeyDown で受けるのは、フォーカス先のコントロールに矢印キーを取られないようにするため。
+    /// </summary>
+    private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case Key.Down:
+                FocusItem(FocusedItemIndex() + 1);
+                e.Handled = true;
+                break;
+
+            case Key.Up:
+                // 未選択（-1）から ↑ は先頭を選ぶ（-1 - 1 = -2 → クランプで 0）。
+                FocusItem(FocusedItemIndex() - 1);
+                e.Handled = true;
+                break;
+
+            // Key.Enter は Key.Return と同一値（WPF の別名）なので 1 つだけ書く。
+            case Key.Return:
+            {
+                var items = ItemButtons();
+                int idx   = FocusedItemIndex();
+                if (idx >= 0 && idx < items.Count)
+                {
+                    // Click を明示的に発火する（Button の既定の Enter 処理に依存しない）。
+                    items[idx].RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                    e.Handled = true;
+                }
+                break;
+            }
+
+            case Key.Escape:
+                Close();
+                e.Handled = true;
+                break;
+        }
     }
 
     // ── 共通ヘルパー ──────────────────────────────────────────────

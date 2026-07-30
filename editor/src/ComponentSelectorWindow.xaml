@@ -9,7 +9,8 @@
         ShowInTaskbar="False"
         WindowStartupLocation="CenterOwner"
         Background="#1E1E1E"
-        Loaded="OnLoaded">
+        Loaded="OnLoaded"
+        PreviewKeyDown="OnWindowPreviewKeyDown">
 
     <Window.Resources>
         <Style x:Key="DarkTextBox" TargetType="TextBox">
@@ -107,8 +108,7 @@
                              CaretBrush="White"
                              BorderThickness="0"
                              FontSize="12"
-                             TextChanged="OnSearchChanged"
-                             KeyDown="OnSearchKeyDown">
+                             TextChanged="OnSearchChanged">
                         <TextBox.Template>
                             <ControlTemplate TargetType="TextBox">
                                 <ScrollViewer x:Name="PART_ContentHost"
@@ -132,9 +132,10 @@
 
         <!-- 名前フィールド -->
         <Grid Grid.Row="3" Margin="8,5,8,4">
+            <!-- キー操作（Enter で追加・Esc で閉じる・↑↓ で一覧選択）は
+                 ウィンドウの PreviewKeyDown に集約しているため個別ハンドラは持たない。 -->
             <TextBox x:Name="TbName"
-                     Style="{StaticResource DarkTextBox}"
-                     KeyDown="OnNameKeyDown"/>
+                     Style="{StaticResource DarkTextBox}"/>
         </Grid>
 
         <!-- ボタン行（右寄せ） -->
