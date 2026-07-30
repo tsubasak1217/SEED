@@ -3,7 +3,7 @@
 # color_format = "surface" は、PostPipeline 構築時に渡す出力フォーマット（トーンマップは
 # スワップチェーンフォーマット）へ解決される。深度は使わない（no_depth）。
 
-shader_sources = ["fullscreen.wgsl", "tonemap_ops.wgsl", "post_tonemap.wgsl"]
+shader_sources = ["fullscreen.wgsl", "postfx_common.wgsl", "tonemap_ops.wgsl", "post_tonemap.wgsl"]
 vertex_entry   = "fs_vs"
 fragment_entry = "tm_fs"
 vertex_slots   = []

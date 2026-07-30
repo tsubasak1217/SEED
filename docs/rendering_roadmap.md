@@ -581,6 +581,24 @@ equirectangular（正距円筒）画像 1 枚を天球として描画する。EC
   配置ワイヤ球ギズモ（`skybox_scene_gizmo.rs`, light_scene_gizmo 流儀）。
 - **検証**: `skybox.rs` の layout_tests（SkyboxUniform=96B・UV 球本数）＋shader_tests（naga parse+validate）。
   cargo build/test・dotnet build いずれも 0 エラー。
+- **不具合修正（2026-07-30）: 天頂付近に出る「黒い四角」**
+  - **原因**: HDR パノラマ（.hdr の RGBE / .exr）の太陽ディスクは f32 で 1e5〜1e6 級になり、
+    `f16::from_f32` へそのまま渡すと **+Inf**（f16 の有限最大は 65504）になって
+    `Rgba16Float` の天球テクスチャに Inf が焼かれていた。Inf は
+    ブルームのしきい値抽出で `contrib = max(...)/max(br,ε)` が **Inf/Inf = NaN** になり、
+    NaN がダウンサンプル 13-tap ／ アップサンプル tent で**ミップ鎖へ矩形状に拡散**、
+    合成後のトーンマップが NaN を出力して**黒い矩形ブロック**として見える
+    （黒が「四角」になるのはブルームのフィルタ footprint が矩形だからである）。
+    球メッシュ・equirect の極（v=acos(y)/π）側には穴も特異点も無い（極は縮退三角形で閉じており
+    `cull_mode = None`）。
+  - **修正**: ①`skybox.rs` の `to_finite_f16()` で **NaN→0 / ±Inf・域外→±65504** に落とし、
+    テクスチャへ非有限値を一切焼かない（クランプが起きたら警告ログを出す）。
+    ②発生源が他（発光マテリアル・強い点光源など）でも同じ災害になるため、
+    新設 `shaders/postfx_common.wgsl` の `postfx_sanitize_hdr()` を
+    **ブルームのプレフィルタとトーンマップの入口**に入れて構造的に断つ。
+  - **検証**: `naive_f16_conversion_overflows_to_infinity`（前提＝1e6 は Inf になる）／
+    `to_finite_f16_removes_non_finite`／`decode_hdr_never_yields_non_finite`（本番デコード経路で
+    Inf/NaN が出ないこと）。
 - **TODO**: キューブマップ 6 枚対応・真の HDR(.hdr float)ロード（現状 8bit×intensity）・
   CameraLocked のアクター回転による天球オリエンテーション（現状は無回転）・IBL 環境照明への流用。
 

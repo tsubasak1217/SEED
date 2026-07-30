@@ -244,6 +244,8 @@ pub struct VignetteStage<'a> {
 fn resolve_post_shader(name: &str) -> &'static str {
     match name {
         "fullscreen.wgsl"    => include_str!("../shaders/fullscreen.wgsl"),
+        // ポスト共通ヘルパー（HDR の非有限値の健全化）。バインディング無しなのでどこにでも連結できる。
+        "postfx_common.wgsl" => include_str!("../shaders/postfx_common.wgsl"),
         "tonemap_ops.wgsl"   => include_str!("../shaders/tonemap_ops.wgsl"),
         "post_tonemap.wgsl"  => include_str!("../shaders/post_tonemap.wgsl"),
         "post_vignette.wgsl" => include_str!("../shaders/post_vignette.wgsl"),
@@ -440,6 +442,8 @@ mod tests {
     #[test]
     fn post_shaders_parse_and_validate() {
         let fullscreen = include_str!("../shaders/fullscreen.wgsl");
+        // ポスト共通ヘルパー（非有限値の健全化）。トーンマップとブルームプレフィルタが使う。
+        let pf_common  = include_str!("../shaders/postfx_common.wgsl");
         let tm_ops     = include_str!("../shaders/tonemap_ops.wgsl");
         let tonemap    = include_str!("../shaders/post_tonemap.wgsl");
         let vignette   = include_str!("../shaders/post_vignette.wgsl");
@@ -450,9 +454,9 @@ mod tests {
         let fxaa       = include_str!("../shaders/post_fxaa.wgsl");
 
         let variants: [(&str, Vec<&str>); 6] = [
-            ("post_tonemap",          vec![fullscreen, tm_ops, tonemap]),
+            ("post_tonemap",          vec![fullscreen, pf_common, tm_ops, tonemap]),
             ("post_vignette",         vec![fullscreen, vignette]),
-            ("post_bloom_prefilter",  vec![fullscreen, bloom_pf]),
+            ("post_bloom_prefilter",  vec![fullscreen, pf_common, bloom_pf]),
             ("post_bloom_down",       vec![fullscreen, bloom_dn]),
             ("post_bloom_up",         vec![fullscreen, bloom_up]),
             ("post_fxaa",             vec![fullscreen, fxaa]),

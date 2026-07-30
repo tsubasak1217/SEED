@@ -47,6 +47,19 @@ const SPHERE_SECTORS: u32 = 48;
 /// UV 球の半径（単位球）。CameraLocked は far 固定・WorldAnchored は model でスケールされる。
 const SPHERE_RADIUS: f32 = 1.0;
 
+/// f16（half）で表現できる最大の**有限**値。
+///
+/// HDR パノラマ（.hdr の RGBE / .exr）は太陽ディスクに 1e5〜1e6 級の値を持つことが珍しくない。
+/// これを `f16::from_f32` へそのまま渡すと IEEE 754 の丸めで **+Inf** になり、
+/// Rgba16Float の天球テクスチャに Inf が焼かれる。Inf は
+///   ブルームのしきい値抽出（`post_bloom_prefilter.wgsl` の `Inf/Inf`）→ **NaN**
+///   → ダウンサンプル 13-tap ／ アップサンプル tent でミップ鎖に拡散
+///   → 合成後のトーンマップで NaN → 出力 0（＝**黒い矩形ブロック**）
+/// という経路で「空の高輝度部（太陽）の周りに黒い四角が出る」不具合になる。
+/// 拡散が矩形になるのはブルームのフィルタ footprint が矩形であるため。
+/// テクスチャへ Inf / NaN を一切入れないよう、この値でクランプする。
+const HDR_TEXEL_MAX_FINITE: f32 = 65504.0;
+
 // ─── SkyboxUniform（uniform, 96 バイト）───────────────────────
 
 /// スカイボックスの描画パラメータ uniform（skybox.wgsl の SkyboxUniform と一致）。
@@ -546,6 +559,12 @@ fn load_equirect_texture_hdr(
 ///
 /// image クレート（hdr / exr feature）が Radiance HDR / OpenEXR を自動判別して float デコードする。
 /// RGB(f32) を Rgba(f16) へ変換する（アルファは常に 1.0）。
+///
+/// 【非有限値の除去】f32 → f16 は表現域が狭い（有限最大 65504）ため、太陽ディスク等の
+/// 巨大値は素朴に変換すると +Inf になる。Inf はブルーム経路で NaN へ化けて画面に
+/// 黒い矩形ブロックを作るので（`HDR_TEXEL_MAX_FINITE` のコメント参照）、
+/// ここで有限値へクランプし、クランプが起きた場合は 1 回だけ警告ログを出す
+/// （アセット側の輝度が過大であることを利用者が気づけるようにするため）。
 fn decode_hdr_rgba16f(bytes: &[u8]) -> Option<(u32, u32, Vec<half::f16>)> {
     // フォーマットは image 側でマジックバイトから自動判別（.hdr=RGBE / .exr=OpenEXR）。
     let img = image::load_from_memory(bytes).ok()?;
@@ -553,13 +572,38 @@ fn decode_hdr_rgba16f(bytes: &[u8]) -> Option<(u32, u32, Vec<half::f16>)> {
     let (w, h) = rgb.dimensions();
     let mut texels: Vec<half::f16> = Vec::with_capacity((w as usize * h as usize) * 4);
     let one = half::f16::from_f32(1.0);
+    // f16 の有限域を超えた（＝クランプした）チャンネル数。診断ログ用。
+    let mut clamped_channels: usize = 0;
     for px in rgb.pixels() {
-        texels.push(half::f16::from_f32(px[0]));
-        texels.push(half::f16::from_f32(px[1]));
-        texels.push(half::f16::from_f32(px[2]));
+        for c in 0..3 {
+            let (t, clamped) = to_finite_f16(px[c]);
+            if clamped { clamped_channels += 1; }
+            texels.push(t);
+        }
         texels.push(one); // アルファ（天球は不透明）。
     }
+    if clamped_channels > 0 {
+        eprintln!(
+            "[SEED skybox] HDR の輝度が f16 の有限域（{HDR_TEXEL_MAX_FINITE}）を超えていたため \
+             {clamped_channels} チャンネルをクランプしました（Inf/NaN をテクスチャへ焼くと \
+             ブルーム経路で NaN になり黒い矩形が出るため）。"
+        );
+    }
     Some((w, h, texels))
+}
+
+/// f32 を「必ず有限な」f16 へ変換する。返り値の bool はクランプ／置換が起きたか。
+///
+/// - NaN            → 0.0（そのまま焼くと下流の全パスが NaN 汚染される）
+/// - ±Inf・域外の値 → ±`HDR_TEXEL_MAX_FINITE`（f16 の有限最大）
+/// - それ以外       → 通常の f16 変換（丸めで Inf になった場合も有限へ引き戻す）
+fn to_finite_f16(v: f32) -> (half::f16, bool) {
+    if v.is_nan() {
+        return (half::f16::ZERO, true);
+    }
+    let clamped = v.clamp(-HDR_TEXEL_MAX_FINITE, HDR_TEXEL_MAX_FINITE);
+    // f32 側で域内に収めているので from_f32 の丸めで Inf にはならない。
+    (half::f16::from_f32(clamped), clamped != v)
 }
 
 /// シーンを DFS 走査してスカイボックスを収集する（CameraLocked は 1 つのみ）。
@@ -766,6 +810,71 @@ mod layout_tests {
         // 1.0 超が保持されていること（クランプされていない）が最重要。
         assert!(b > 3.5, "B は 1.0 超（≈4.0）を保持すべきだが {b}");
         assert!((a - 1.0).abs() < 1e-3, "アルファは 1.0 固定だが {a}");
+    }
+
+    /// 素朴な `f16::from_f32` が太陽級の輝度で Inf になること＝この修正の前提を固定する。
+    ///
+    /// 前提が崩れた（half クレートが飽和変換に変わった等）ら、この assert が落ちて
+    /// クランプの意図が古くなったことに気づける。
+    #[test]
+    fn naive_f16_conversion_overflows_to_infinity() {
+        // 太陽ディスクの HDR 値としてありふれた 1e6。
+        assert!(half::f16::from_f32(1.0e6).is_infinite(),
+            "f16 は 1e6 を表現できず Inf になる前提");
+        assert!(half::f16::from_f32(HDR_TEXEL_MAX_FINITE).is_finite(),
+            "有限最大は f16 で有限のまま");
+    }
+
+    /// `to_finite_f16` が Inf / NaN / 域外値を必ず有限へ落とすこと。
+    #[test]
+    fn to_finite_f16_removes_non_finite() {
+        // 域外の巨大値 → 有限最大へクランプ（クランプ発生を報告する）。
+        let (t, clamped) = to_finite_f16(1.0e6);
+        assert!(t.is_finite() && clamped, "1e6 は有限最大へクランプされる");
+        assert!((t.to_f32() - HDR_TEXEL_MAX_FINITE).abs() < 1.0, "有限最大になる");
+
+        // +Inf → 有限最大。
+        let (t, clamped) = to_finite_f16(f32::INFINITY);
+        assert!(t.is_finite() && clamped, "+Inf は有限最大へ");
+        assert!(t.to_f32() > 0.0);
+
+        // -Inf → 負の有限最大。
+        let (t, clamped) = to_finite_f16(f32::NEG_INFINITY);
+        assert!(t.is_finite() && clamped, "-Inf は負の有限最大へ");
+        assert!(t.to_f32() < 0.0);
+
+        // NaN → 0（下流の NaN 汚染を断つ）。
+        let (t, clamped) = to_finite_f16(f32::NAN);
+        assert!(!t.is_nan() && t.to_f32() == 0.0 && clamped, "NaN は 0 に置換される");
+
+        // 通常値はクランプ扱いにしない（無用な警告ログを出さないため）。
+        let (t, clamped) = to_finite_f16(4.0);
+        assert!(!clamped, "域内の値はクランプ扱いしない");
+        assert!((t.to_f32() - 4.0).abs() < 1e-3);
+    }
+
+    /// HDR デコード全体（本番経路）で Inf が 1 つも出ないこと。
+    ///
+    /// RGBE は指数部で 1e6 級を表現できるため、デコード直後は f32 で巨大値になる。
+    /// そこから f16 へ落とす段でクランプが効いていることを実データで確認する。
+    #[test]
+    fn decode_hdr_never_yields_non_finite() {
+        use image::codecs::hdr::HdrEncoder;
+        use image::Rgb;
+
+        // 太陽ディスク相当の巨大輝度（f16 の有限域を大きく超える）。
+        const W: usize = 2;
+        const H: usize = 1;
+        let pixels = vec![Rgb([1.0e6f32, 5.0e5, 1.0e5]); W * H];
+
+        let mut buf: Vec<u8> = Vec::new();
+        HdrEncoder::new(&mut buf).encode(&pixels, W, H).expect("HDR エンコード成功");
+
+        let (_, _, texels) = decode_hdr_rgba16f(&buf).expect("HDR デコード成功");
+        assert!(texels.iter().all(|t| t.is_finite()),
+            "デコード結果に Inf/NaN が含まれてはならない（ブルームで黒矩形になる）");
+        // 有限域の上限まではきちんと保持していること（単純に 1.0 へ潰していない）。
+        assert!(texels[0].to_f32() > 1.0e4, "高輝度は有限最大付近まで保持する");
     }
 }
 

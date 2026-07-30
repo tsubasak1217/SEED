@@ -834,4 +834,43 @@ mod tests {
         assert!(src.contains("water_surface_gradient(p, in.world_pos.xz, in.flow_dir, u_camera.time)"),
             "fs_water が合成勾配関数を使っていない");
     }
+
+    /// **水中から見上げた水面**（Phase W7）の合成が実装されていること。
+    ///
+    /// 3 点（水中判定・法線反転・厚み 0 の素通し・泡の抑制）はどれ 1 つ欠けても
+    /// 「水中から外が見えない」「水中で全面が白い泡になる」に戻るため、契約として固定する。
+    #[test]
+    fn water_shader_handles_underwater_view() {
+        let src = include_str!("../shaders/water_surface.wgsl");
+        assert!(src.contains("let underwater = u_camera.position.y < in.world_pos.y;"),
+            "水中判定（カメラが水面より下か）が消えている");
+        assert!(src.contains("let n = select(n_up, -n_up, underwater);"),
+            "視線側を向く法線の反転が消えている（フレネルが逆向きに効かなくなる）");
+        assert!(src.contains("if (underwater) {") && src.contains("thickness = 0.0;"),
+            "水中では厚み 0（素通し）にする分岐が消えている＝外の景色が見えなくなる");
+        assert!(src.contains("let foam_gate = select(1.0, 0.0, underwater);"),
+            "泡の抑制ゲートが消えている＝水中で岸フォームが全面に出る");
+    }
+
+    /// **水面パスは半透明より前**に記録されること（Phase W7）。
+    ///
+    /// 水面は `blend = Replace`（背景をシェーダ内で合成し alpha=1 を出す）で描くため、
+    /// 半透明の後に描くと「水面より手前の半透明」を上書きして消してしまう。
+    /// パスの順序はコードの並びだけが根拠なので、ここで文字列の出現順として固定する。
+    #[test]
+    fn water_pass_is_recorded_before_transparency() {
+        let src = include_str!("../../app_base/app/frame_renderer.rs");
+        let water = src.find("// ── 水面パス（Phase W7")
+            .expect("水面パスの節が見つからない（コメント見出しを変えたら本テストも更新する）");
+        // 距離ソート半透明の節は「カメラプレビュー」と「メインパス」の 2 箇所にある。
+        // 水面を描くのはメインパスだけなので、**最後の出現**（メインパス側）と比較する。
+        let sorted = src.rfind("// ── 半透明の距離ソート描画（Phase R5）")
+            .expect("距離ソート半透明の節が見つからない");
+        let wboit = src.find("// ── WBOIT 透明描画（Phase R5")
+            .expect("WBOIT の節が見つからない");
+        assert!(water < sorted,
+            "水面パスが距離ソート半透明より後にある（手前の半透明を上書きしてしまう）");
+        assert!(water < wboit,
+            "水面パスが WBOIT 合成より後にある（手前の半透明を上書きしてしまう）");
+    }
 }
