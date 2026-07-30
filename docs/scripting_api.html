@@ -722,7 +722,7 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
   <div class="warn">
     <b>保存形式と制約</b><br>
     参照は<b>アクタ名</b>（コンポーネント参照は加えて<b>スロット名</b>）で保存されます（<code>Player</code> / <code>Player|MainCamera</code>）。未設定は空文字列です。<br>
-    したがって <b>アクタ名・スロット名を変更すると参照は切れます</b>（再設定が必要）。アクタ名に <code>|</code> は使えません。<br>
+    エディタでアクタをリネームした場合、<b>旧名一致の参照は自動で新名に追従します</b>（同名アクタが複数ある場合は旧名一致の参照がすべて書き換わります。コンパイルエラー中のスクリプトの参照は型判定できないため追従しません）。<b>スロット名の変更は追従しない</b>ため再設定が必要です。アクタ名に <code>|</code> は使えません。<br>
     同名アクタが複数ある場合はヒエラルキーの DFS 順で<b>最初に見つかったもの</b>が使われます。<br>
     <b>解決は一度きり</b>です。Play 開始時（および <code>Instantiate</code> 時）に、そのスクリプトの <b>OnStart より前</b>に解決・注入されます。実行中のアクタ名変更やアクタ生成には追従しません（実行中に探し直すなら <code>SEED.GameObject.Find(name)</code>）。<br>
     解決に失敗しても例外にはならず、Nullable 宣言は <code>null</code>、非 Nullable 宣言は <code>IsValid == false</code> の無効ハンドルになります。

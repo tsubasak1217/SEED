@@ -906,14 +906,54 @@ impl App {
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
-    /// アクター名を変更する。
+    /// アクター名を変更し、旧名を指すアクタ名参照（スクリプトの SerializeField 参照 /
+    /// 川の control_point_ref / キャンバスのカメラ参照）を新名へ追従させる。
+    ///
+    /// リネームと参照書き換えは 1 つの ActorTreeSnapshotCommand として Undo 履歴に
+    /// 記録する（Undo で「名前だけ戻り参照は新名のまま」になる不整合を防ぐ）。
     pub(super) fn handle_rename_actor(&mut self, dfs_id: u32, name: &str) {
-        let Some(scene) = &mut self.scene else { return };
         let wl = self.active_world_line;
-        let mut c = 0u32;
-        if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
-            actor.name = name.to_string();
+
+        // 旧名を取得し、変化が無ければ何もしない
+        let old_name = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c) else { return };
+            actor.name.clone()
+        };
+        if old_name == name { return; }
+
+        let before_actors = self.snapshot_actors_for_wl(wl);
+
+        // 1. リネーム本体
+        {
+            let scene = self.scene.as_mut().unwrap();
+            let mut c = 0u32;
+            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
+                actor.name = name.to_string();
+            }
         }
+
+        // 2. 旧名を指す参照を新名へ書き換える（rename_refs.rs）
+        let changed = self.propagate_actor_rename(wl, &old_name, name);
+
+        // 3. リネーム＋参照書き換えをまとめて Undo 履歴へ記録する
+        let after_actors = self.snapshot_actors_for_wl(wl);
+        self.undo_history.record(Box::new(ActorTreeSnapshotCommand {
+            world_line: wl,
+            before_actors,
+            after_actors,
+        }));
+
+        // 4. インスペクタ表示中のアクタの参照が書き換わった場合は表示を更新する
+        //    （選択外アクタへ送るとインスペクタが選択と無関係な内容に置き換わるため、
+        //      選択中アクタに限定して再送する）
+        if let Some(sel) = self.actor_virtual_selected_idx {
+            if changed.contains(&(sel as u32)) {
+                self.send_actor_components(sel as u32, self.actor_virtual_selected_slot_idx);
+            }
+        }
+
         self.send_hierarchy();
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }

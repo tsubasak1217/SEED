@@ -375,6 +375,34 @@ public static unsafe class ScriptBridge
     }
 
     /// <summary>
+    /// 指定パスの末端フィールドが参照フィールド型かを Rust 側から問い合わせる FFI。
+    ///
+    /// アクタのリネーム時、ランタイムは「値が旧アクタ名に一致するフィールド」を
+    /// 新名へ書き換える候補にするが、プレーンな文字列フィールドがたまたま
+    /// アクタ名と同じ値を持つ場合に誤って書き換えてはならない。
+    /// この FFI で「本当に参照フィールドか」を型情報（リフレクション）で確定させる。
+    /// World / Actor ツリーへはアクセスしないため、フェーズ外で呼んでも安全。
+    ///
+    /// 戻り値: 参照フィールドなら 1、それ以外（不明・エラー含む）は 0。
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int IsReferenceField(nint h, byte* namePtr, int nameLen)
+    {
+        try
+        {
+            var target = Get(h);
+            if (target is null) return 0;
+            var name = Encoding.UTF8.GetString(namePtr, nameLen);
+            return IsReferenceFieldPath(target, name) ? 1 : 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] IsReferenceField failed: {ex.Message}");
+            return 0;
+        }
+    }
+
+    /// <summary>
     /// 指定パスの末端フィールドが参照フィールド型かを判定する。
     /// 途中のネストオブジェクトを生成せずに型だけを辿るため、判定に副作用がない。
     /// </summary>
