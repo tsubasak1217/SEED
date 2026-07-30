@@ -35,14 +35,17 @@ internal static class TerrainPropDefaults
     /// <summary>プロップ種別 "model"（外部モデルアセット）。Rust PropKind::Model の serde 表現。</summary>
     public const string KindModel = "model";
 
+    /// <summary>プロップ種別 "actor"（プレハブから実アクタを生成）。Rust PropKind::Actor の serde 表現。</summary>
+    public const string KindActor = "actor";
+
     /// <summary>プロップ種別の既定値（Rust の <c>#[default] Grass</c> と一致）。</summary>
     public const string Kind = KindGrass;
 
     /// <summary>プロップ種別の選択肢（順序は UI の表示順。値は JSON へ書く小文字表記）。</summary>
-    public static readonly string[] Kinds = { KindGrass, KindModel };
+    public static readonly string[] Kinds = { KindGrass, KindModel, KindActor };
 
     /// <summary>プロップ種別の日本語表示名（<see cref="Kinds"/> と同じ並び）。</summary>
-    public static readonly string[] KindDisplayNames = { "草", "モデル" };
+    public static readonly string[] KindDisplayNames = { "草", "モデル", "アクタ（プレハブ）" };
 
     // ── 草パラメータ（GrassParams）────────────────────────────
 

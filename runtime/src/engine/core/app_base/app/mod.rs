@@ -19,6 +19,7 @@ mod hierarchy_sync;
 mod clipboard;
 mod actor_ops;
 mod rename_refs;
+mod terrain_scatter_actor_ops;
 mod canvas_edit_ops;
 mod ai_ops;
 mod component_ops;

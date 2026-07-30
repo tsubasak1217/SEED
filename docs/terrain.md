@@ -1140,6 +1140,8 @@ terrain ツールバー右端の **「⚙ 設定」** ボタンで開く**独立
 ブラシで手描き修正できるようにする機能。**草（`kind=grass`）は手続き生成 GPU インスタンシングで、
 モデル（`kind=model`・木/岩など）は実アセットを ECS 非依存の専用インスタンシング経路で、
 いずれも deferred G-Buffer に描画される**（第2段で model 描画を実装。§15.9）。
+第 3 の種別 **アクタ（`kind=actor`）** は GPU インスタンスではなくプレハブから
+シーンの実アクタを生成する（コライダー・スクリプトが動く。§15.13）。
 
 ### 15.1 モジュール構成
 
@@ -1152,6 +1154,7 @@ terrain ツールバー右端の **「⚙ 設定」** ボタンで開く**独立
 | `runtime/src/engine/terrain/scatter/generate.rs` | 決定的なルール自動散布・ブラシ散布・地形編集後の再接地アルゴリズム（`ScatterField` トレイト越しに密度・レイヤ重みへアクセス） |
 | `runtime/src/engine/terrain/scatter/tests_scatter.rs` | 散布レイヤ専用のユニットテスト |
 | `runtime/src/engine/core/app_base/app/terrain_scatter_ops.rs` | エンジン統合層。`TerrainScatterField`（`ScatterField` の実装）・IPC ハンドラ・`.tscatter` 保存/読込・再接地の呼び出し・草 GPU バッファ再構築 |
+| `runtime/src/engine/core/app_base/app/terrain_scatter_actor_ops.rs` | アクタ散布（`kind=actor`）の統合層。散布インスタンスの横取り・プレハブからのアクタ生成・消去ブラシ対応（§15.11） |
 | `runtime/src/engine/core/renderer/grass_gbuffer.rs` + `shaders/grass_gbuffer.wgsl` | 草のプロシージャル GPU インスタンシング描画パイプライン |
 
 密度・レイヤブレンドと責務を分けた理由は `terrain_ops.rs` が既に密度編集・ペイント・メッシュ化で
@@ -1909,6 +1912,36 @@ Problem 1 を悪化させないため据え置いた。
 **Before/After（同一構図・全景・debug スモーク `SEED_TERRAIN_SMOKE`）**: 修正前は遠景の草が
 まばらな黒い点の散乱に見えるが、修正後は草が均一なマットとして埋まり、サブピクセルの点滅・
 ジャギが目に見えて減る。近接構図は葉が近くて既に十分太いためほぼ同一（＝意図どおり遠景のみ改善）。
+
+### 15.13 アクタ散布（`kind=actor`・プレハブから実アクタを生成）
+
+散布プロップの第 3 の種別。散布点に GPU インスタンスではなく**シーンの実アクタ**
+（コライダー付きモデル・アイテム・スクリプト持ちオブジェクト等）をプレハブ（.actor）から生成する。
+実装は `terrain_scatter_actor_ops.rs`（統合層）。
+
+**設計の要点（第 1 段の割り切り）**:
+
+- **散布点は `.tscatter` に保存しない**。ルール散布・ブラシ散布の生成直後に
+  `kind=actor` のインスタンスを横取り（`partition_actor_instances`）してアクタ生成へ回し、
+  生成されたアクタが `.scene` に永続化される（二重生成を構造的に防ぐ）。
+- 生成アクタは Hierarchy の専用グループフォルダ **「散布アクタ」** 配下に入る。
+  フォルダ・生成アクタは `ActorData.scatter_prop_id`（フォルダは `__scatter_group__`、
+  アクタは生成元プロップ ID）で識別する。手動配置のアクタは常に None。
+- 生成アクタは `prefab_source` を持つ**通常のプレハブインスタンス**になるため、
+  プレハブ本体を編集して「全プレハブ更新」を掛ければ散布済みアクタにも反映される。
+- **ルール散布 = 敷き直し**（そのプロップの既存生成アクタを全消しして再生成。Undo 可能）。
+  **ブラシ散布 = 追加**、**消去ブラシ = 半径内の全散布アクタを削除**
+  （草・モデルの意味論と同じ。ブラシ経路は高頻度のため Undo 記録しない）。
+- 配置は prefab_ops と同じ **delta = M_new · M_file⁻¹ をサブツリーへ適用**する方式
+  （プレハブファイルはルート基準・ワールド空間行列で保存されているため）。
+  yaw は Transform の Y 回転（度）へ加算、scale はプレハブ自身のスケールへ乗算。
+- 上限 `SCATTER_ACTOR_MAX_PER_PROP = 2048` 件/プロップ。超過は生成せず件数を警告ログへ
+  （黙って切らない）。アクタは ECS エンティティ・物理・ヒエラルキー行を伴うため
+  草（数万本）と同じ規模では扱えない。
+- **地形編集後の再接地（restick）は対象外**。地形を変えたら再散布で追従する。
+
+エディタ側は種別コンボに「アクタ（プレハブ）」を追加し、`prefab_path`（.actor）を
+FileRefBuilder で参照設定する（`TerrainPropsDocument.PrefabPath` / props.json の `"prefab_path"`）。
 
 ## 16. 物理コリジョン（Static 三角形メッシュコライダー）
 

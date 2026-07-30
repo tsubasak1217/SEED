@@ -136,6 +136,12 @@ pub struct ActorData {
     /// 旧 `.scene` との互換性のため省略可（省略時 None）、None のときは書き出さない。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefab_source: Option<String>,
+    /// 地形散布（kind=Actor プロップ）で自動生成されたアクタのマーカー。
+    /// 値は生成元プロップの ID（散布グループフォルダ自身は専用マーカー値を持つ）。
+    /// 再散布時に「このプロップ由来の既存生成アクタ」を特定して置き換えるために使う。
+    /// 手動配置のアクタは常に None。旧 `.scene` との互換のため省略可（省略時 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scatter_prop_id: Option<String>,
 }
 
 /// actor_kind が Actor3D（デフォルト）の場合は JSON に書き出さない。
@@ -183,6 +189,9 @@ pub struct Actor {
     /// **インスタンスのルートのみ Some**（子アクターは常に None）。
     /// build_actor で ActorData から復元し、to_data で書き戻す。
     pub prefab_source: Option<String>,
+    /// 地形散布（kind=Actor プロップ）による自動生成マーカー。ActorData の同名フィールドと対応。
+    /// 値は生成元プロップ ID。手動配置のアクタは常に None。
+    pub scatter_prop_id: Option<String>,
     /// フォルダノードフラグ（整理専用ノード）。true のとき Transform を持たず、
     /// 子のワールド変換に影響しない（描画・物理・スクリプトから透過）。
     /// ActorData の同名フィールドと往復する。地形ルート／チャンクの器などに使う。
@@ -201,6 +210,7 @@ impl Actor {
             children:   Vec::new(),
             active:     true,
             prefab_source: None,
+            scatter_prop_id: None,
             is_folder:  false,
             slots:      Vec::new(),
         }
@@ -216,6 +226,7 @@ impl Actor {
             children:   Vec::new(),
             active:     true,
             prefab_source: None,
+            scatter_prop_id: None,
             is_folder:  false,
             slots:      Vec::new(),
         }
@@ -234,6 +245,7 @@ impl Actor {
             children:   Vec::new(),
             active:     true,
             prefab_source: None,
+            scatter_prop_id: None,
             is_folder:  true,
             slots:      Vec::new(),
         }
@@ -451,6 +463,8 @@ impl Actor {
             active:           self.active,
             // プレハブ参照リンクを往復させる（ルートのみ Some、子は None）。
             prefab_source:    self.prefab_source.clone(),
+            // 散布自動生成マーカーを往復させる（手動配置は None）。
+            scatter_prop_id:  self.scatter_prop_id.clone(),
         }
     }
 
@@ -492,6 +506,7 @@ mod folder_tests {
             children:         Vec::new(),
             active:           true,
             prefab_source:    None,
+            scatter_prop_id:  None,
         };
 
         // is_folder=true は出力され、往復で保持される。
