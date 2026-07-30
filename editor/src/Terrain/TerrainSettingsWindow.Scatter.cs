@@ -264,13 +264,25 @@ public partial class TerrainSettingsWindow
                 prop.Kind = v;
                 // 種別で表示項目そのものが変わるためパネルごと作り直す。
                 RebuildPropPropertyPanel();
-            }, "草＝数値から手続き生成（メッシュ不要）。モデル＝glTF/OBJ の実アセットを配置する。"));
+            }, "草＝数値から手続き生成（メッシュ不要）。モデル＝glTF/OBJ の実アセットを配置する。" +
+               "アクタ＝プレハブ(.actor)から実アクタを生成する（コライダー・スクリプトも動く）。"));
 
         // ── モデル（kind=model のときのみ）──
         if (prop.IsModel)
         {
             PanelPropProperties.Children.Add(MakeSectionHeader("モデル"));
             PanelPropProperties.Children.Add(MakeModelPathRow(prop));
+        }
+
+        // ── アクタ（kind=actor のときのみ）──
+        if (prop.IsActor)
+        {
+            PanelPropProperties.Children.Add(MakeSectionHeader("アクタ（プレハブ）"));
+            PanelPropProperties.Children.Add(MakeHint(
+                "散布点にプレハブ（.actor）から実アクタを生成する。コライダー付きモデルや" +
+                "アイテムの配置に使う。生成アクタは Hierarchy の「散布アクタ」フォルダに入り、" +
+                "シーンに保存される。ルール再散布はこのプロップの生成済みアクタを敷き直す。"));
+            PanelPropProperties.Children.Add(MakePrefabPathRow(prop));
         }
 
         // ── 草パラメータ（kind=grass のときのみ）──
@@ -620,6 +632,49 @@ public partial class TerrainSettingsWindow
             fe.MouseRightButtonUp += (_, e) =>
             {
                 prop.ModelPath = null;
+                RebuildPropPropertyPanel();
+                e.Handled = true;
+            };
+        }
+        return row;
+    }
+
+    /// <summary>
+    /// プレハブ参照の行を作る（kind=actor のときのみ表示される）。
+    /// モデル行と同じ FileRefBuilder 流儀（選択→assets 相対化・右クリックで解除）。
+    /// </summary>
+    private UIElement MakePrefabPathRow(TerrainPropEdit prop)
+    {
+        // 散布アクタの生成元はアクタファイル（プレハブ）のみを受け付ける。
+        string[] acceptedExtensions = { ".actor" };
+
+        var row = FileRefBuilder.Build(
+            "プレハブ",
+            prop.PrefabPath,
+            acceptedExtensions,
+            browseFn: () =>
+            {
+                var dlg = new Microsoft.Win32.OpenFileDialog
+                {
+                    Title            = "プレハブ（.actor）を選択",
+                    Filter           = "アクタファイル|*.actor",
+                    InitialDirectory = Directory.Exists(_assetsRoot) ? _assetsRoot : Environment.CurrentDirectory,
+                };
+                return dlg.ShowDialog(this) == true ? dlg.FileName : null;
+            },
+            onPathSet: path =>
+            {
+                prop.PrefabPath = ToAssetRelativePath(path);
+                RebuildPropPropertyPanel();
+            });
+
+        // FileRefBuilder は「解除」手段を持たないため、右クリックでクリアできるようにする。
+        if (row is FrameworkElement fe)
+        {
+            fe.ToolTip = (fe.ToolTip as string) ?? "右クリックでプレハブ指定を解除";
+            fe.MouseRightButtonUp += (_, e) =>
+            {
+                prop.PrefabPath = null;
                 RebuildPropPropertyPanel();
                 e.Handled = true;
             };

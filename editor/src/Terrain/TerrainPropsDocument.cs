@@ -572,8 +572,9 @@ internal sealed class TerrainPropEdit
 
     private const string KeyId        = "id";
     private const string KeyName      = "name";
-    private const string KeyKind      = "kind";
-    private const string KeyModelPath = "model_path";
+    private const string KeyKind       = "kind";
+    private const string KeyModelPath  = "model_path";
+    private const string KeyPrefabPath = "prefab_path";
     private const string KeyGrass     = "grass";
     private const string KeyWind      = "wind";
     private const string KeyScatter   = "scatter";
@@ -594,6 +595,9 @@ internal sealed class TerrainPropEdit
     /// <summary>モデルアセットのアセット相対パス（kind=model のときのみ意味を持つ。未設定は null）。</summary>
     public string? ModelPath { get; set; }
 
+    /// <summary>プレハブ（.actor）のアセット相対パス（kind=actor のときのみ意味を持つ。未設定は null）。</summary>
+    public string? PrefabPath { get; set; }
+
     /// <summary>草の形状パラメータ。</summary>
     public GrassParamsEdit Grass { get; }
 
@@ -612,6 +616,9 @@ internal sealed class TerrainPropEdit
     /// <summary>種別が「モデル」かどうか（UI の条件付き表示に使う）。</summary>
     public bool IsModel => string.Equals(Kind, TerrainPropDefaults.KindModel, StringComparison.Ordinal);
 
+    /// <summary>種別が「アクタ（プレハブ）」かどうか（UI の条件付き表示に使う）。</summary>
+    public bool IsActor => string.Equals(Kind, TerrainPropDefaults.KindActor, StringComparison.Ordinal);
+
     /// <summary>既存の JSON オブジェクトから編集状態を復元する。</summary>
     /// <param name="source">props[] の 1 要素（親から切り離された複製であること）。</param>
     private TerrainPropEdit(JsonObject source)
@@ -620,8 +627,9 @@ internal sealed class TerrainPropEdit
 
         Id        = TerrainPropJson.ReadString(source, KeyId)   ?? "";
         Name      = TerrainPropJson.ReadString(source, KeyName) ?? "";
-        Kind      = NormalizeKind(TerrainPropJson.ReadString(source, KeyKind));
-        ModelPath = TerrainPropJson.ReadString(source, KeyModelPath);
+        Kind       = NormalizeKind(TerrainPropJson.ReadString(source, KeyKind));
+        ModelPath  = TerrainPropJson.ReadString(source, KeyModelPath);
+        PrefabPath = TerrainPropJson.ReadString(source, KeyPrefabPath);
 
         Grass   = new GrassParamsEdit  (source, KeyGrass);
         Wind    = new WindParamsEdit   (source, KeyWind);
@@ -682,8 +690,9 @@ internal sealed class TerrainPropEdit
 
         // kind は PropKind の serde 表現（小文字）で書く。既定（grass）かつ元から無ければ省略。
         TerrainPropJson.SetEnumOrOmit(_source, KeyKind, Kind, TerrainPropDefaults.Kind);
-        // model_path は未設定なら "" ではなく JSON null（Rust は Option<String>）。
+        // model_path / prefab_path は未設定なら "" ではなく JSON null（Rust は Option<String>）。
         TerrainPropJson.SetOptionalStringOrOmit(_source, KeyModelPath, ModelPath);
+        TerrainPropJson.SetOptionalStringOrOmit(_source, KeyPrefabPath, PrefabPath);
 
         Grass  .WriteBack(_source, KeyGrass);
         Wind   .WriteBack(_source, KeyWind);

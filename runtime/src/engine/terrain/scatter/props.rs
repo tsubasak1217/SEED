@@ -270,6 +270,11 @@ pub enum PropKind {
     Grass,
     /// 外部モデルアセット（木・岩など）。`model_path` を参照する。
     Model,
+    /// プレハブから生成する**アクタ**（コライダー付きモデル・アイテム等）。
+    /// `prefab_path` を参照する。GPU インスタンスではなくシーンの実アクタとして
+    /// 生成されるため、散布点は .tscatter には保存されず、生成されたアクタが
+    /// .scene に永続化される（統合層 terrain_scatter_ops.rs 参照）。
+    Actor,
 }
 
 // ============================================================
@@ -585,6 +590,9 @@ pub struct TerrainProp {
     /// モデルアセットの相対パス（`kind = Model` のときのみ意味を持つ）。
     #[serde(default)]
     pub model_path: Option<String>,
+    /// プレハブ（.actor ファイル）のアセット相対パス（`kind = Actor` のときのみ意味を持つ）。
+    #[serde(default)]
+    pub prefab_path: Option<String>,
     /// 草の形状パラメータ（`kind = Grass` のときのみ意味を持つ）。
     #[serde(default)]
     pub grass: GrassParams,
@@ -610,6 +618,7 @@ impl Default for TerrainProp {
             name: String::new(),
             kind: PropKind::Grass,
             model_path: None,
+            prefab_path: None,
             grass: GrassParams::default(),
             wind: WindParams::default(),
             scatter: ScatterParams::default(),

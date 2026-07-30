@@ -1011,8 +1011,30 @@ impl App {
         let generated_count: usize = generated.iter().map(|(_, v)| v.len()).sum();
         let t_writeback_start = std::time::Instant::now();
 
+        // ─── kind=Actor プロップのインスタンスを横取りしてアクタ生成へ回す ───
+        //   アクタ散布は .tscatter / GPU 描画に載せず、シーンの実アクタとして
+        //   永続化する（terrain_scatter_actor_ops.rs）。ルール散布なので
+        //   既存生成アクタを全消しして敷き直す（replace = true）。
+        let mut generated = generated;
+        let mut actor_instances = {
+            let mut lists: Vec<&mut Vec<ScatterInstance>> =
+                generated.iter_mut().map(|(_, v)| v).collect();
+            self.extract_actor_scatter_instances(&mut lists)
+        };
+        // ルール対象の kind=Actor プロップは生成 0 件でも「敷き直し」対象に含める
+        // （既存生成アクタの全消しだけが走るケース。ルールが何も撒かない設定でも
+        //   古い散布結果が残らないようにする）。
+        for &idx in &prop_indices {
+            let is_actor = self.terrain.props.props.get(idx)
+                .is_some_and(|p| p.kind == PropKind::Actor);
+            if is_actor && !actor_instances.iter().any(|(i, _)| *i == idx) {
+                actor_instances.push((idx, Vec::new()));
+            }
+        }
+        let spawned_actors = self.apply_actor_scatter(actor_instances, true);
+
         // ─── 書き戻し: 対象プロップの旧インスタンスを捨てて新しいものを足す ───
-        let mut total = 0usize;
+        let mut total = spawned_actors;
         for (coord, fresh) in generated {
             let slot = self.terrain.scatter.entry(coord).or_default();
             // 対象プロップぶんだけを取り除く（他プロップは温存）。
@@ -1143,6 +1165,23 @@ impl App {
                 self.terrain.scatter_seed,
             )
         };
+
+        // ─── ③′ kind=Actor プロップのぶんを横取りしてアクタ生成へ回す ───
+        //   ブラシ経路は「追加」なので replace = false（既存生成アクタは温存）。
+        //   消去ブラシは半径内の全散布アクタを削除する（草・モデルの
+        //   「半径内の全プロップを消す」意味論と同じ）。
+        let mut work = work;
+        {
+            // work はチャンク仕分け前のフラットな作業配列（既存＋新規が混在）。
+            // 既存に kind=Actor は構造的に含まれない（.tscatter へ保存しないため）ので、
+            // ここで抜けるのはこのブラシで新規に撒かれたぶんだけである。
+            let mut lists: Vec<&mut Vec<ScatterInstance>> = vec![&mut work];
+            let actor_instances = self.extract_actor_scatter_instances(&mut lists);
+            self.apply_actor_scatter(actor_instances, false);
+        }
+        if erase {
+            self.erase_scatter_actors_in_radius(center, radius);
+        }
 
         // ─── ④ 位置に基づいて所有チャンクへ仕分け直す ───
         //   触れたチャンクは中身が空でもエントリを作っておく。

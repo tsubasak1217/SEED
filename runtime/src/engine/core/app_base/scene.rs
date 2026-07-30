@@ -504,6 +504,9 @@ pub fn build_actor(
     // プレハブ参照リンクを復元する（インスタンスのルートのみ Some、子は None）。
     // シーンロード時の再展開・ライブ反映の対象判定に使用する。
     actor.prefab_source = data.prefab_source;
+    // 地形散布の自動生成マーカーを復元する（手動配置は None）。
+    // 再散布時に既存生成アクタを特定して置き換えるために使用する。
+    actor.scatter_prop_id = data.scatter_prop_id;
 
     for slot in data.components {
         let slot_name = slot.name.clone();
