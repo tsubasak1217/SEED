@@ -1015,26 +1015,24 @@ impl App {
         //   アクタ散布は .tscatter / GPU 描画に載せず、シーンの実アクタとして
         //   永続化する（terrain_scatter_actor_ops.rs）。ルール散布なので
         //   既存生成アクタを全消しして敷き直す（replace = true）。
+        //   prop_indices を渡すことで、対象の kind=Actor プロップは生成 0 件でも
+        //   「敷き直し」（全消しのみ）の対象に含まれる。
+        //   プレハブは編集されている可能性があるため、キャッシュを捨てて読み直す
+        //   （props.json を毎回読み直すのと同じ理由）。
+        self.scatter_prefab_cache.clear();
         let mut generated = generated;
-        let mut actor_instances = {
+        let actor_instances = {
             let mut lists: Vec<&mut Vec<ScatterInstance>> =
                 generated.iter_mut().map(|(_, v)| v).collect();
-            self.extract_actor_scatter_instances(&mut lists)
+            self.extract_actor_scatter_instances(&mut lists, &prop_indices)
         };
-        // ルール対象の kind=Actor プロップは生成 0 件でも「敷き直し」対象に含める
-        // （既存生成アクタの全消しだけが走るケース。ルールが何も撒かない設定でも
-        //   古い散布結果が残らないようにする）。
-        for &idx in &prop_indices {
-            let is_actor = self.terrain.props.props.get(idx)
-                .is_some_and(|p| p.kind == PropKind::Actor);
-            if is_actor && !actor_instances.iter().any(|(i, _)| *i == idx) {
-                actor_instances.push((idx, Vec::new()));
-            }
-        }
         let spawned_actors = self.apply_actor_scatter(actor_instances, true);
 
         // ─── 書き戻し: 対象プロップの旧インスタンスを捨てて新しいものを足す ───
-        let mut total = spawned_actors;
+        // total は「.tscatter に載る草・モデルのインスタンス総数」。
+        // 生成した散布アクタ数（spawned_actors）とは単位が違うため別に持ち、
+        // エディタへの OK 通知でのみ合算する（表示上の総配置数として）。
+        let mut total = 0usize;
         for (coord, fresh) in generated {
             let slot = self.terrain.scatter.entry(coord).or_default();
             // 対象プロップぶんだけを取り除く（他プロップは温存）。
@@ -1051,13 +1049,14 @@ impl App {
             let chunk_count = coords.len();
             eprintln!(
                 "[PERF terrain] scatter rules: gen={gen_ms:.1}ms writeback={writeback_ms:.1}ms \
-                 chunks={chunk_count} props={} generated={generated_count} total_after={total}",
+                 chunks={chunk_count} props={} generated={generated_count} total_after={total} \
+                 spawned_actors={spawned_actors}",
                 prop_indices.len()
             );
         }
 
         if let Some(ipc) = &self.ipc {
-            ipc.send(&format!("TERRAIN_SCATTER_OK:{total}"));
+            ipc.send(&format!("TERRAIN_SCATTER_OK:{}", total + spawned_actors));
         }
     }
 
@@ -1175,8 +1174,9 @@ impl App {
             // work はチャンク仕分け前のフラットな作業配列（既存＋新規が混在）。
             // 既存に kind=Actor は構造的に含まれない（.tscatter へ保存しないため）ので、
             // ここで抜けるのはこのブラシで新規に撒かれたぶんだけである。
+            // ブラシは「追加」なので敷き直し対象（第 2 引数）は無し。
             let mut lists: Vec<&mut Vec<ScatterInstance>> = vec![&mut work];
-            let actor_instances = self.extract_actor_scatter_instances(&mut lists);
+            let actor_instances = self.extract_actor_scatter_instances(&mut lists, &[]);
             self.apply_actor_scatter(actor_instances, false);
         }
         if erase {

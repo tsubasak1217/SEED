@@ -998,8 +998,7 @@ impl App {
         let before_actors = self.snapshot_actors_for_wl(wl);
 
         // 1. リネーム本体
-        {
-            let scene = self.scene.as_mut().unwrap();
+        if let Some(scene) = self.scene.as_mut() {
             let mut c = 0u32;
             if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
                 actor.name = name.to_string();

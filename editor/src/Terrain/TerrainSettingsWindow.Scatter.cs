@@ -597,84 +597,69 @@ public partial class TerrainSettingsWindow
 
     /// <summary>
     /// モデルアセット参照の行を作る（kind=model のときのみ表示される）。
-    /// レイヤタブのテクスチャ行と同じく FileRefBuilder を使い、
-    /// 選ばれた絶対パスを assets ルート基準の相対パスへ変換して保存する。
+    /// 対応拡張子はランタイムのモデルローダが読めるものに合わせる。
     /// </summary>
     private UIElement MakeModelPathRow(TerrainPropEdit prop)
-    {
-        // 対応拡張子はランタイムのモデルローダが読めるものに合わせる。
-        string[] acceptedExtensions = { ".gltf", ".glb", ".obj" };
-
-        var row = FileRefBuilder.Build(
-            "モデル",
-            prop.ModelPath,
-            acceptedExtensions,
-            browseFn: () =>
-            {
-                var dlg = new Microsoft.Win32.OpenFileDialog
-                {
-                    Title            = "モデルを選択",
-                    Filter           = "モデルファイル|*.gltf;*.glb;*.obj",
-                    InitialDirectory = Directory.Exists(_assetsRoot) ? _assetsRoot : Environment.CurrentDirectory,
-                };
-                return dlg.ShowDialog(this) == true ? dlg.FileName : null;
-            },
-            onPathSet: path =>
-            {
-                prop.ModelPath = ToAssetRelativePath(path);
-                RebuildPropPropertyPanel();
-            });
-
-        // FileRefBuilder は「解除」手段を持たないため、右クリックでクリアできるようにする。
-        if (row is FrameworkElement fe)
-        {
-            fe.ToolTip = (fe.ToolTip as string) ?? "右クリックでモデル指定を解除";
-            fe.MouseRightButtonUp += (_, e) =>
-            {
-                prop.ModelPath = null;
-                RebuildPropPropertyPanel();
-                e.Handled = true;
-            };
-        }
-        return row;
-    }
+        => MakeAssetRefRow(
+            label:       "モデル",
+            current:     prop.ModelPath,
+            extensions:  new[] { ".gltf", ".glb", ".obj" },
+            dialogTitle: "モデルを選択",
+            filter:      "モデルファイル|*.gltf;*.glb;*.obj",
+            clearHint:   "右クリックでモデル指定を解除",
+            setPath:     path => prop.ModelPath = path);
 
     /// <summary>
     /// プレハブ参照の行を作る（kind=actor のときのみ表示される）。
-    /// モデル行と同じ FileRefBuilder 流儀（選択→assets 相対化・右クリックで解除）。
+    /// 散布アクタの生成元はアクタファイル（プレハブ）のみを受け付ける。
     /// </summary>
     private UIElement MakePrefabPathRow(TerrainPropEdit prop)
-    {
-        // 散布アクタの生成元はアクタファイル（プレハブ）のみを受け付ける。
-        string[] acceptedExtensions = { ".actor" };
+        => MakeAssetRefRow(
+            label:       "プレハブ",
+            current:     prop.PrefabPath,
+            extensions:  new[] { ".actor" },
+            dialogTitle: "プレハブ（.actor）を選択",
+            filter:      "アクタファイル|*.actor",
+            clearHint:   "右クリックでプレハブ指定を解除",
+            setPath:     path => prop.PrefabPath = path);
 
+    /// <summary>
+    /// アセットファイル参照行の共通実装（モデル行・プレハブ行が委譲する）。
+    /// レイヤタブのテクスチャ行と同じく FileRefBuilder を使い、
+    /// 選ばれた絶対パスを assets ルート基準の相対パスへ変換して保存する。
+    /// </summary>
+    /// <param name="setPath">相対化済みパス（解除時は null）をプロパティへ書き戻すセッター。</param>
+    private UIElement MakeAssetRefRow(
+        string label, string? current, string[] extensions,
+        string dialogTitle, string filter, string clearHint, Action<string?> setPath)
+    {
         var row = FileRefBuilder.Build(
-            "プレハブ",
-            prop.PrefabPath,
-            acceptedExtensions,
+            label,
+            current,
+            extensions,
             browseFn: () =>
             {
                 var dlg = new Microsoft.Win32.OpenFileDialog
                 {
-                    Title            = "プレハブ（.actor）を選択",
-                    Filter           = "アクタファイル|*.actor",
+                    Title            = dialogTitle,
+                    Filter           = filter,
                     InitialDirectory = Directory.Exists(_assetsRoot) ? _assetsRoot : Environment.CurrentDirectory,
                 };
                 return dlg.ShowDialog(this) == true ? dlg.FileName : null;
             },
             onPathSet: path =>
             {
-                prop.PrefabPath = ToAssetRelativePath(path);
+                setPath(ToAssetRelativePath(path));
                 RebuildPropPropertyPanel();
             });
 
         // FileRefBuilder は「解除」手段を持たないため、右クリックでクリアできるようにする。
         if (row is FrameworkElement fe)
         {
-            fe.ToolTip = (fe.ToolTip as string) ?? "右クリックでプレハブ指定を解除";
+            fe.ToolTip = (fe.ToolTip as string) ?? clearHint;
             fe.MouseRightButtonUp += (_, e) =>
             {
-                prop.PrefabPath = null;
+                setPath(null);
                 RebuildPropPropertyPanel();
                 e.Handled = true;
             };

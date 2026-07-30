@@ -50,19 +50,28 @@ impl App {
         let Some(scene) = self.scene.as_mut() else { return Vec::new() };
         // actors（不変借用）と world（可変借用）は Scene の別フィールドなので
         // 同時に借用できる（分割借用）。
-        let actors = &scene.actors;
-        let world  = &mut scene.world;
-
-        let mut changed = Vec::new();
-        let mut counter = 0u32;
-        for actor in actors.iter() {
-            // DFS ID の採番規約は find_actor_by_dfs（actor_utils.rs）と完全一致させる:
-            // 対象世界線のアクタのみ数え、preorder（自分 → 子孫）で 1 ずつ進める。
-            if actor.world_line != wl { continue; }
-            rewrite_refs_in_subtree(actor, world, old_name, new_name, &mut counter, &mut changed);
-        }
-        changed
+        propagate_in_actors(&scene.actors, &mut scene.world, wl, old_name, new_name)
     }
+}
+
+/// 世界線 `wl` の全アクタを走査し、旧名一致の参照を新名へ書き換える実体。
+/// テストからも同じ入口を通す（本番と検証で走査・採番ロジックを共有するため）。
+fn propagate_in_actors(
+    actors:   &[Actor],
+    world:    &mut World,
+    wl:       u32,
+    old_name: &str,
+    new_name: &str,
+) -> Vec<u32> {
+    let mut changed = Vec::new();
+    let mut counter = 0u32;
+    for actor in actors.iter() {
+        // DFS ID の採番規約は find_actor_by_dfs（actor_utils.rs）と完全一致させる:
+        // 対象世界線のアクタのみ数え、preorder（自分 → 子孫）で 1 ずつ進める。
+        if actor.world_line != wl { continue; }
+        rewrite_refs_in_subtree(actor, world, old_name, new_name, &mut counter, &mut changed);
+    }
+    changed
 }
 
 /// アクタ 1 本分のサブツリーを preorder 走査し、各スロットの参照を書き換える。
@@ -101,22 +110,21 @@ fn rewrite_refs_in_slots(
         match slot.kind {
             // ── 川の制御点参照（値は "アクタ名" のみ） ──────────────
             ComponentKind::WaterVolume => {
-                if let Some(w) = world.get_mut::<WaterVolumeComponent>(slot.entity) {
-                    if w.control_point_ref == old_name {
-                        w.control_point_ref = new_name.to_string();
-                        any = true;
-                    }
+                if let Some(w) = world.get_mut::<WaterVolumeComponent>(slot.entity)
+                    && w.control_point_ref == old_name
+                {
+                    w.control_point_ref = new_name.to_string();
+                    any = true;
                 }
             }
             // ── キャンバスの基準カメラ参照（アクタ名＋スロット名） ──
             ComponentKind::Canvas => {
-                if let Some(c) = world.get_mut::<CanvasComponent>(slot.entity) {
-                    if let CanvasViewportRef::Camera { actor_name, .. } = &mut c.viewport_ref {
-                        if actor_name == old_name {
-                            *actor_name = new_name.to_string();
-                            any = true;
-                        }
-                    }
+                if let Some(c) = world.get_mut::<CanvasComponent>(slot.entity)
+                    && let CanvasViewportRef::Camera { actor_name, .. } = &mut c.viewport_ref
+                    && actor_name == old_name
+                {
+                    *actor_name = new_name.to_string();
+                    any = true;
                 }
             }
             // ── スクリプトの [SerializeField] 参照フィールド ────────
@@ -126,7 +134,28 @@ fn rewrite_refs_in_slots(
                     any |= rewrite_script_reference_fields(sc, old_name, new_name);
                 }
             }
-            _ => {}
+            // ── アクタ名参照を持たない種別（明示列挙） ──────────────
+            // ワイルドカード（`_`）にしないのは意図的:
+            // ComponentKind へ variant を追加したときにここがコンパイルエラーになり、
+            // 「新種別はアクタ名参照を持つか？」の判断を強制するため
+            // （.claude/rules/ecs-components.md の match 更新先リスト参照）。
+            ComponentKind::Model
+            | ComponentKind::Placeholder
+            | ComponentKind::Sprite
+            | ComponentKind::InputMap
+            | ComponentKind::Camera
+            | ComponentKind::Plugin
+            | ComponentKind::Collider
+            | ComponentKind::Collider2d
+            | ComponentKind::Audio
+            | ComponentKind::Animator
+            | ComponentKind::Light
+            | ComponentKind::JointAttach
+            | ComponentKind::ParticleEmitter
+            | ComponentKind::Skybox
+            | ComponentKind::TerrainChunk
+            | ComponentKind::InteractionSource
+            | ComponentKind::ControlPoint => {}
         }
     }
 
@@ -225,17 +254,10 @@ mod tests {
                 "CanvasComponent", ComponentKind::Canvas, slot_entity);
         }
 
-        /// 世界線 wl のアクタへ propagate 相当の走査を直接実行する
-        ///（App を組み立てずにモジュール内部関数を検証するため）。
+        /// 本番と同じ入口（propagate_in_actors）を App 抜きで実行する。
+        /// 走査・DFS 採番ロジックを本番と共有し、実装が壊れたらテストも落ちるようにする。
         fn propagate(&mut self, wl: u32, old: &str, new: &str) -> Vec<u32> {
-            let mut changed = Vec::new();
-            let mut counter = 0u32;
-            for actor in &self.actors {
-                if actor.world_line != wl { continue; }
-                rewrite_refs_in_subtree(
-                    actor, &mut self.world, old, new, &mut counter, &mut changed);
-            }
-            changed
+            propagate_in_actors(&self.actors, &mut self.world, wl, old, new)
         }
 
         /// アクタの WaterVolume スロット（先頭）の control_point_ref を読む。

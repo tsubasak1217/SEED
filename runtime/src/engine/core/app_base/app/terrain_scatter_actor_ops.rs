@@ -29,15 +29,18 @@
 //  散布済みアクタにも内容が反映される（既存機構への相乗り）。
 // ============================================================
 
+use std::collections::BTreeMap;
+
 use crate::engine::components::Transform;
 use crate::engine::core::app_base::scene::build_actor;
 use crate::engine::core::app_base::undo::ActorTreeSnapshotCommand;
-use crate::engine::methods::gizmo_interact::{mat4x4_inv, mat4x4_mul};
-use crate::engine::structs::objects::actor::ActorData;
+use crate::engine::core::transform_sync::set_actor_world_transform;
+use crate::engine::ecs::World;
 use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::scatter::{PropKind, ScatterInstance, TerrainPropSet};
 
-use super::{apply_delta_to_actor_subtree, despawn_actor_recursive, App};
+use super::prefab_ops::load_actor_data;
+use super::{despawn_actor_recursive, App};
 
 // ============================================================
 //  定数（マジックナンバー禁止）
@@ -51,26 +54,26 @@ const SCATTER_ACTOR_GROUP_NAME: &str = "散布アクタ";
 const SCATTER_ACTOR_GROUP_MARKER: &str = "__scatter_group__";
 
 /// 1 プロップあたりの散布アクタ数の上限。
-/// アクタは GPU インスタンスと違い ECS エンティティ・物理コライダー・
-/// ヒエラルキー行を伴うため、草（数万本）と同じ規模では扱えない。
-const SCATTER_ACTOR_MAX_PER_PROP: usize = 2048;
-
-/// プレハブ側ルートスケールが実質 0（逆行列が特異）とみなす閾値。
-/// prefab_ops.rs / transform_ops.rs の特異判定と同じ値を使用する。
-const SINGULAR_SCALE_EPS: f32 = 1e-7;
+/// アクタは ECS エンティティ・物理コライダー・ヒエラルキー行を伴い、さらに現状は
+/// アクタごとにモデルの GPU バッファが複製される（GpuModel の共有キャッシュが無い）
+/// ため、VRAM を考慮して控えめに抑える。共有キャッシュ導入後に引き上げを検討する。
+const SCATTER_ACTOR_MAX_PER_PROP: usize = 512;
 
 impl App {
     /// 生成済みインスタンス列から kind=Actor プロップのぶんを抜き取り、
     /// プロップ添字ごとにまとめて返す。残った列（草・モデル）は呼び出し元が
     /// 従来どおり .tscatter / GPU 描画へ回す。
     ///
-    /// `lists` はチャンクごと・フラットのどちらの生成結果でも渡せるよう
-    /// 「インスタンス配列の可変参照の列」を取る。
+    /// `rescatter_indices` に含まれる kind=Actor プロップは、抜き取り結果が
+    /// 0 件でも空エントリとして返す（ルール散布の「敷き直し」で、ルールが
+    /// 何も撒かない設定でも既存生成アクタの全消しだけは走らせるため）。
+    /// ブラシ経路など敷き直しが不要な呼び出しでは空スライスを渡す。
     pub(super) fn extract_actor_scatter_instances(
         &self,
         lists: &mut [&mut Vec<ScatterInstance>],
+        rescatter_indices: &[usize],
     ) -> Vec<(usize, Vec<ScatterInstance>)> {
-        partition_actor_instances(&self.terrain.props, lists)
+        partition_actor_instances(&self.terrain.props, lists, rescatter_indices)
     }
 
     /// kind=Actor プロップの散布インスタンスをシーンの実アクタとして生成する。
@@ -86,52 +89,31 @@ impl App {
         per_prop: Vec<(usize, Vec<ScatterInstance>)>,
         replace: bool,
     ) -> usize {
-        if per_prop.is_empty() {
+        if per_prop.is_empty() || self.draw_ctx.is_none() {
             return 0;
         }
-        if self.draw_ctx.is_none() || self.scene.is_none() {
-            return 0;
-        }
-        let wl = self.active_world_line;
 
-        // 必要なプロップ情報（ID・プレハブパス）を先に複製しておく
-        //（scene を take している間も terrain へ触れるが、混同を避けるため）。
-        let prop_info: Vec<(usize, String, Option<String>)> = per_prop
-            .iter()
-            .map(|(idx, _)| {
-                let p = &self.terrain.props.props[*idx];
-                (*idx, p.id.clone(), p.prefab_path.clone())
+        // プロップ情報（ID・プレハブパス）を添字から引いて 1 パスで束ねる
+        let jobs: Vec<(String, Option<String>, Vec<ScatterInstance>)> = per_prop
+            .into_iter()
+            .map(|(idx, insts)| {
+                let p = &self.terrain.props.props[idx];
+                (p.id.clone(), p.prefab_path.clone(), insts)
             })
             .collect();
 
         // ルール散布のみ Undo 記録する（前スナップショット）
-        let before_actors = if replace { Some(self.snapshot_actors_for_wl(wl)) } else { None };
+        let wl = self.active_world_line;
+        let before_actors = replace.then(|| self.snapshot_actors_for_wl(wl));
 
         let host = self.scripting_host.clone();
-        let mut scene = self.scene.take().unwrap();
+        let Some(mut scene) = self.scene.take() else { return 0 };
         let mut spawned_total = 0usize;
         {
             let ctx = self.draw_ctx.as_ref().unwrap();
+            let group_idx = ensure_scatter_group(&mut scene, wl);
 
-            // ── グループフォルダを見つける／無ければ作る ──
-            let group_idx = match scene.actors.iter().position(|a| {
-                a.world_line == wl
-                    && a.scatter_prop_id.as_deref() == Some(SCATTER_ACTOR_GROUP_MARKER)
-            }) {
-                Some(i) => i,
-                None => {
-                    let entity = scene.world.spawn();
-                    let mut folder = Actor::new_folder(entity, SCATTER_ACTOR_GROUP_NAME);
-                    folder.world_line = wl;
-                    folder.scatter_prop_id = Some(SCATTER_ACTOR_GROUP_MARKER.to_string());
-                    scene.actors.push(folder);
-                    scene.actors.len() - 1
-                }
-            };
-
-            for ((_, instances), (_, prop_id, prefab_path)) in
-                per_prop.into_iter().zip(prop_info.into_iter())
-            {
+            for (prop_id, prefab_path, instances) in jobs {
                 // ── プレハブパス未設定は生成できない ──
                 let Some(prefab_path) = prefab_path.filter(|p| !p.is_empty()) else {
                     let msg = format!(
@@ -141,41 +123,38 @@ impl App {
                     continue;
                 };
 
-                // ── プレハブファイルを 1 回だけ読む ──
-                let data: ActorData = match crate::engine::asset_fs::read_string(&prefab_path)
-                    .map_err(|e| e.to_string())
-                    .and_then(|raw| {
-                        let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
-                        serde_json::from_str(json).map_err(|e| e.to_string())
-                    }) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        let msg = format!(
-                            "TERRAIN_SCATTER_ERROR:プレハブ読み込み失敗 '{prefab_path}' ({e})"
-                        );
-                        eprintln!("[ScatterActor] {msg}");
-                        if let Some(ipc) = &self.ipc { ipc.send(&msg); }
-                        continue;
+                // ── プレハブを読む（キャッシュ経由。ブラシ 1 ストロークで
+                //    何十回も呼ばれるため、同じファイルの再読込・再パースを避ける）──
+                let data = if let Some(d) = self.scatter_prefab_cache.get(&prefab_path) {
+                    d.clone()
+                } else {
+                    match load_actor_data(&prefab_path) {
+                        Ok(d) => {
+                            self.scatter_prefab_cache.insert(prefab_path.clone(), d.clone());
+                            d
+                        }
+                        Err(e) => {
+                            let msg = format!(
+                                "TERRAIN_SCATTER_ERROR:プレハブ読み込み失敗 '{prefab_path}' ({e})"
+                            );
+                            eprintln!("[ScatterActor] {msg}");
+                            if let Some(ipc) = &self.ipc { ipc.send(&msg); }
+                            continue;
+                        }
                     }
                 };
 
-                let group = &mut scene.actors[group_idx];
-
                 // ── ルール散布: このプロップの既存生成アクタを全消しする ──
                 if replace {
-                    let children = group.children_mut();
-                    let mut i = 0;
-                    while i < children.len() {
-                        if children[i].scatter_prop_id.as_deref() == Some(prop_id.as_str()) {
-                            let removed = children.remove(i);
-                            despawn_actor_recursive(&removed, &mut scene.world);
-                        } else {
-                            i += 1;
-                        }
-                    }
+                    remove_scatter_children_where(
+                        &mut scene.actors[group_idx],
+                        &mut scene.world,
+                        |a| a.scatter_prop_id.as_deref() == Some(prop_id.as_str()),
+                    );
                 }
 
                 // ── 上限判定（既存 + 新規）。超過ぶんは黙って切らずログへ ──
+                let group = &scene.actors[group_idx];
                 let existing = group
                     .children()
                     .iter()
@@ -200,7 +179,8 @@ impl App {
                                 eprintln!(
                                     "[ScatterActor] プレハブ構築失敗 '{prefab_path}' err={e}"
                                 );
-                                break; // 同じデータで繰り返し失敗するため打ち切る
+                                // 同じデータで繰り返し失敗するため、このプロップは打ち切る
+                                break;
                             }
                         };
 
@@ -212,33 +192,20 @@ impl App {
                     // ── ルート Transform を散布点へ移す ──
                     // プレハブファイルは「ルート位置基準」でメッシュ行列・子 Transform を
                     // ワールド空間で持つため、ルートだけ書き換えても見た目が動かない。
-                    // prefab_ops.rs の再展開と同じく delta = M_new * M_file^{-1} を
-                    // サブツリー全体へ適用して整合させる。
-                    let file_tf = scene
+                    // 差分行列のサブツリー適用（特異スケールのガード込み）は
+                    // transform_sync の集約関数に任せる。Undo 記録は不要なので
+                    // child_dfs_start は 0、戻り値の変更記録は捨てる。
+                    let mut target = scene
                         .world
                         .get::<Transform>(new_actor.entity)
                         .cloned()
                         .unwrap_or_default();
-                    let mut target = file_tf.clone();
                     target.position = inst.pos;
                     // 散布インスタンスの yaw（ラジアン）を YXZ オイラーの Y（度）へ加算
                     target.rotation[1] += inst.yaw.to_degrees();
                     // スケール倍率はプレハブ自身のスケールへ乗算する
                     for s in &mut target.scale { *s *= inst.scale; }
-
-                    scene.world.insert(new_actor.entity, target.clone());
-                    let singular =
-                        file_tf.scale.iter().any(|&s| s.abs() < SINGULAR_SCALE_EPS);
-                    if singular {
-                        eprintln!(
-                            "[ScatterActor] プレハブ側ルートスケールが 0 のため行列補正をスキップ: \
-                             {prefab_path}"
-                        );
-                    } else {
-                        let delta =
-                            mat4x4_mul(target.to_mat4(), mat4x4_inv(file_tf.to_mat4()));
-                        apply_delta_to_actor_subtree(&mut new_actor, &mut scene.world, delta);
-                    }
+                    let _ = set_actor_world_transform(&new_actor, &mut scene.world, target, 0);
 
                     scene.actors[group_idx].children_mut().push(new_actor);
                     spawned_total += 1;
@@ -274,39 +241,38 @@ impl App {
     ) -> bool {
         let wl = self.active_world_line;
         let Some(scene) = self.scene.as_mut() else { return false };
+        let Some(group_idx) = find_scatter_group(&scene.actors, wl) else { return false };
 
-        let Some(group) = scene.actors.iter_mut().find(|a| {
-            a.world_line == wl
-                && a.scatter_prop_id.as_deref() == Some(SCATTER_ACTOR_GROUP_MARKER)
-        }) else {
-            return false;
-        };
-
+        // 判定（World の不変借用）と削除（World の可変借用）を分けるため、
+        // 先に「半径内にいる散布アクタ」の entity 集合を作ってから削除する。
+        // グループ直下は全て散布生成アクタ（マーカー保持）だが、ユーザーが手動で
+        // 移入したアクタを巻き込まないようマーカーの有無も確認する。
         let r2 = radius * radius;
-        let mut removed_any = false;
-        let children = group.children_mut();
-        let mut i = 0;
-        while i < children.len() {
-            // グループ直下は全て散布生成アクタ（マーカー保持）だが、ユーザーが手動で
-            // 移入したアクタを巻き込まないようマーカーの有無も確認する。
-            let is_scatter = children[i].scatter_prop_id.is_some();
-            let pos = scene
-                .world
-                .get::<Transform>(children[i].entity)
-                .map(|t| t.position);
-            let hit = is_scatter
-                && pos.is_some_and(|p| {
-                    let d = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
+        let hits: std::collections::HashSet<_> = scene.actors[group_idx]
+            .children()
+            .iter()
+            .filter(|a| a.scatter_prop_id.is_some())
+            .filter(|a| {
+                scene.world.get::<Transform>(a.entity).is_some_and(|t| {
+                    let d = [
+                        t.position[0] - center[0],
+                        t.position[1] - center[1],
+                        t.position[2] - center[2],
+                    ];
                     d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= r2
-                });
-            if hit {
-                let removed = children.remove(i);
-                despawn_actor_recursive(&removed, &mut scene.world);
-                removed_any = true;
-            } else {
-                i += 1;
-            }
+                })
+            })
+            .map(|a| a.entity)
+            .collect();
+        if hits.is_empty() {
+            return false;
         }
+
+        let removed_any = remove_scatter_children_where(
+            &mut scene.actors[group_idx],
+            &mut scene.world,
+            |a| hits.contains(&a.entity),
+        );
 
         if removed_any {
             self.send_hierarchy();
@@ -316,54 +282,109 @@ impl App {
     }
 }
 
-/// 生成済みインスタンス列から kind=Actor プロップのぶんを抜き取り、
-/// プロップ添字ごとにまとめて返す（純粋関数。App 非依存でテスト可能）。
+// ============================================================
+//  グループフォルダと子削除のヘルパ（述語・規約を 1 箇所に集約）
+// ============================================================
+
+/// 散布グループフォルダ（世界線 wl・マーカー付き）のルート添字を探す。
+fn find_scatter_group(actors: &[Actor], wl: u32) -> Option<usize> {
+    actors.iter().position(|a| {
+        a.world_line == wl
+            && a.scatter_prop_id.as_deref() == Some(SCATTER_ACTOR_GROUP_MARKER)
+    })
+}
+
+/// 散布グループフォルダを探し、無ければシーンルートへ作ってその添字を返す。
+fn ensure_scatter_group(scene: &mut crate::engine::core::app_base::scene::Scene, wl: u32) -> usize {
+    if let Some(idx) = find_scatter_group(&scene.actors, wl) {
+        return idx;
+    }
+    let entity = scene.world.spawn();
+    let mut folder = Actor::new_folder(entity, SCATTER_ACTOR_GROUP_NAME);
+    folder.world_line = wl;
+    folder.scatter_prop_id = Some(SCATTER_ACTOR_GROUP_MARKER.to_string());
+    scene.actors.push(folder);
+    scene.actors.len() - 1
+}
+
+/// グループ直下の子のうち述語が真のものを despawn して取り除く。
+/// 1 件でも取り除いたら true。
 ///
-/// 抜かれた側の各 `lists` 要素には草・モデルのインスタンスだけが残る。
+/// `Vec::remove` の逐次シフト（O(n²)）を避けるため、1 パスの振り分けで実装する。
+fn remove_scatter_children_where(
+    group: &mut Actor,
+    world: &mut World,
+    pred: impl Fn(&Actor) -> bool,
+) -> bool {
+    let children = group.children_mut();
+    let before = children.len();
+    let mut kept = Vec::with_capacity(before);
+    for child in children.drain(..) {
+        if pred(&child) {
+            despawn_actor_recursive(&child, world);
+        } else {
+            kept.push(child);
+        }
+    }
+    *children = kept;
+    children.len() != before
+}
+
+// ============================================================
+//  インスタンスの分配（純粋関数。App 非依存でテスト可能）
+// ============================================================
+
+/// 生成済みインスタンス列から kind=Actor プロップのぶんを抜き取り、
+/// プロップ添字ごとにまとめて返す。抜かれた側の各 `lists` 要素には
+/// 草・モデルのインスタンスだけが残る。
+///
+/// `rescatter_indices` に含まれる kind=Actor プロップは 0 件でも空エントリで返す
+/// （「敷き直し」の全消しだけを走らせるため）。それ以外の空エントリは返さない。
 fn partition_actor_instances(
     props: &TerrainPropSet,
     lists: &mut [&mut Vec<ScatterInstance>],
+    rescatter_indices: &[usize],
 ) -> Vec<(usize, Vec<ScatterInstance>)> {
-    // kind=Actor のプロップ添字集合（この判定は props 定義のみに依存する）
-    let actor_props: Vec<usize> = props
+    // プロップ添字 → kind=Actor かどうかの判定表
+    let is_actor: Vec<bool> = props
         .props
         .iter()
-        .enumerate()
-        .filter(|(_, p)| p.kind == PropKind::Actor)
-        .map(|(i, _)| i)
+        .map(|p| p.kind == PropKind::Actor)
         .collect();
-    if actor_props.is_empty() {
+    if !is_actor.iter().any(|&b| b) {
         return Vec::new();
     }
 
-    // プロップ添字 → 抜き取ったインスタンス列
-    let mut per_prop: Vec<(usize, Vec<ScatterInstance>)> =
-        actor_props.iter().map(|&i| (i, Vec::new())).collect();
+    // 敷き直し対象の kind=Actor プロップは空バケツを先に用意しておく
+    // （BTreeMap なので結果は常に添字昇順）。
+    let mut buckets: BTreeMap<usize, Vec<ScatterInstance>> = rescatter_indices
+        .iter()
+        .copied()
+        .filter(|&i| is_actor.get(i).copied().unwrap_or(false))
+        .map(|i| (i, Vec::new()))
+        .collect();
 
     for list in lists.iter_mut() {
         let mut kept = Vec::with_capacity(list.len());
         for inst in list.drain(..) {
-            match per_prop
-                .iter_mut()
-                .find(|(idx, _)| *idx == inst.prop_id as usize)
-            {
-                Some((_, bucket)) => bucket.push(inst),
-                None => kept.push(inst),
+            let idx = inst.prop_id as usize;
+            if is_actor.get(idx).copied().unwrap_or(false) {
+                buckets.entry(idx).or_default().push(inst);
+            } else {
+                kept.push(inst);
             }
         }
         **list = kept;
     }
 
-    // 1 件も無いプロップは落とす
-    per_prop.retain(|(_, v)| !v.is_empty());
-    per_prop
+    buckets.into_iter().collect()
 }
 
 // ============================================================
 //  テスト
 //
 //  アクタ生成そのもの（apply_actor_scatter）は DrawContext / GPU を要するため
-//  単体テストでは扱えない（実機確認手順は docs/terrain 系メモ参照）。
+//  単体テストでは扱えない（実機確認手順は docs/terrain.md §15.13 参照）。
 //  ここでは App 非依存の分配ロジックを検証する。
 // ============================================================
 #[cfg(test)]
@@ -402,7 +423,7 @@ mod tests {
         let mut list = vec![inst(0), inst(1), inst(2), inst(1)];
         let mut lists: Vec<&mut Vec<ScatterInstance>> = vec![&mut list];
 
-        let per_prop = partition_actor_instances(&props, &mut lists);
+        let per_prop = partition_actor_instances(&props, &mut lists, &[]);
 
         assert_eq!(per_prop.len(), 1, "actor プロップは 1 種");
         assert_eq!(per_prop[0].0, 1, "抜かれたのは添字 1（item）");
@@ -420,7 +441,7 @@ mod tests {
         let mut list = vec![inst(0), inst(0)];
         let mut lists: Vec<&mut Vec<ScatterInstance>> = vec![&mut list];
 
-        let per_prop = partition_actor_instances(&props, &mut lists);
+        let per_prop = partition_actor_instances(&props, &mut lists, &[]);
 
         assert!(per_prop.is_empty());
         assert_eq!(list.len(), 2, "リストは無傷であること");
@@ -434,10 +455,26 @@ mod tests {
         let mut b = vec![inst(2), inst(1), inst(1)];
         let mut lists: Vec<&mut Vec<ScatterInstance>> = vec![&mut a, &mut b];
 
-        let per_prop = partition_actor_instances(&props, &mut lists);
+        let per_prop = partition_actor_instances(&props, &mut lists, &[]);
 
         assert_eq!(per_prop[0].1.len(), 3, "両リスト合計 3 件が抜かれる");
         assert_eq!(a.len(), 1);
         assert_eq!(b.len(), 1);
+    }
+
+    /// 敷き直し対象（rescatter_indices）の actor プロップは、生成 0 件でも
+    /// 空エントリで返り、actor 以外の添字は無視されること。
+    #[test]
+    fn partition_keeps_empty_entry_for_rescatter_targets() {
+        let props = props_with_actor();
+        let mut list: Vec<ScatterInstance> = Vec::new();
+        let mut lists: Vec<&mut Vec<ScatterInstance>> = vec![&mut list];
+
+        // 添字 1 = actor（空でも返る）、添字 0 = grass（無視される）
+        let per_prop = partition_actor_instances(&props, &mut lists, &[0, 1]);
+
+        assert_eq!(per_prop.len(), 1);
+        assert_eq!(per_prop[0].0, 1, "actor 添字だけが敷き直し対象になる");
+        assert!(per_prop[0].1.is_empty(), "生成 0 件でも空エントリで返る");
     }
 }
