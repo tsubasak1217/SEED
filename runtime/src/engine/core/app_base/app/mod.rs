@@ -1482,7 +1482,7 @@ use actor_utils::{
     remove_actor_by_dfs, actor_subtree_size, find_parent_canvas_info,
     find_actor_root_info,
     collect_entities_for_wl, despawn_actor_recursive,
-    count_actor_dfs_nodes, extract_actor_by_dfs, extract_actor_by_entity,
+    insert_actors_after_dfs, extract_actor_by_dfs, extract_actor_by_entity,
     selection_centroid, world_to_screen,
     collect_child_actor_drag_starts, collect_child_actor_old_states,
     apply_delta_to_actor_children, apply_delta_to_actor_subtree,

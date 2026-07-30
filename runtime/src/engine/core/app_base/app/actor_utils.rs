@@ -571,16 +571,76 @@ pub(super) fn despawn_actor_recursive(actor: &Actor, world: &mut World) {
 }
 
 // ============================================================
-//  DFS ノード数計算・取り出し
+//  DFS 挿入・取り出し
 // ============================================================
 
-/// アクター 1 本の DFS ノード数（自身 + 全子孫）を count に加算する。
-/// do_paste でペースト後の新規 DFS id を求めるために使用する。
-pub(super) fn count_actor_dfs_nodes(actor: &Actor, count: &mut usize) {
-    *count += 1;
-    for child in actor.children() {
-        count_actor_dfs_nodes(child, count);
+/// DFS id で指定したアンカーアクターの「兄弟としてすぐ後ろ」へ、新しいアクター群をまとめて挿入する。
+///
+/// ペースト（＝複製）を「複製元の直下（兄弟として一つ下）」へ入れるために使用する。
+/// アンカーがトップレベルなら `actors` へ、子アクターなら親の `children` へ挿入する。
+///
+/// # 引数
+/// - `actors`     … シーンのトップレベルアクター配列（複数世界線が混在する）
+/// - `wl`         … 対象世界線（トップレベルのみこのフィルタが効く。DFS 規則は find_actor_by_dfs と同一）
+/// - `anchor_dfs` … 挿入基準となるアクターの DFS id
+/// - `new_actors` … 挿入するアクター群。**挿入に成功したときのみ** drain して空になる
+///
+/// # 戻り値
+/// 挿入された先頭アクターの DFS id。アンカーが見つからなければ `None`（`new_actors` は無変更）。
+/// アンカーのサブツリー直後に入るため `anchor_dfs + アンカーのサブツリーノード数` に等しい。
+pub(super) fn insert_actors_after_dfs(
+    actors:     &mut Vec<Actor>,
+    wl:         u32,
+    anchor_dfs: u32,
+    new_actors: &mut Vec<Actor>,
+) -> Option<u32> {
+    let mut counter = 0u32;
+    let mut i = 0;
+    while i < actors.len() {
+        if actors[i].world_line != wl { i += 1; continue; }
+        if counter == anchor_dfs {
+            // トップレベルで一致: アンカーのサブツリー直後の DFS id が新規先頭になる
+            let base  = anchor_dfs + actor_subtree_size(&actors[i]);
+            let items = new_actors.drain(..).collect::<Vec<_>>();
+            actors.splice(i + 1 .. i + 1, items);
+            return Some(base);
+        }
+        counter += 1;
+        if let Some(base) =
+            insert_actors_after_dfs_children(&mut actors[i], anchor_dfs, &mut counter, new_actors)
+        {
+            return Some(base);
+        }
+        i += 1;
     }
+    None
+}
+
+/// insert_actors_after_dfs の再帰実装（子ノード用）。
+fn insert_actors_after_dfs_children(
+    parent:     &mut Actor,
+    anchor_dfs: u32,
+    counter:    &mut u32,
+    new_actors: &mut Vec<Actor>,
+) -> Option<u32> {
+    let mut i = 0;
+    while i < parent.children().len() {
+        if *counter == anchor_dfs {
+            // 子として一致: 同じ親の children 内でアンカーの直後へ挿入する（＝兄弟として一つ下）
+            let base  = anchor_dfs + actor_subtree_size(&parent.children()[i]);
+            let items = new_actors.drain(..).collect::<Vec<_>>();
+            parent.children_mut().splice(i + 1 .. i + 1, items);
+            return Some(base);
+        }
+        *counter += 1;
+        if let Some(base) = insert_actors_after_dfs_children(
+            &mut parent.children_mut()[i], anchor_dfs, counter, new_actors,
+        ) {
+            return Some(base);
+        }
+        i += 1;
+    }
+    None
 }
 
 /// DFS id でアクターをツリーから取り出して out へ格納する。
