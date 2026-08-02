@@ -942,7 +942,8 @@ mod tests {
         }
         let update = field_names(field_shader());
         let grass  = field_names(include_str!("../shaders/grass_gbuffer.wgsl"));
-        let water  = field_names(include_str!("../shaders/water_surface.wgsl"));
+        // 水面側の宣言は Phase W5.1 で共有モジュール（頂点段からも読む）へ移った。
+        let water  = field_names(include_str!("../shaders/water_height_field.wgsl"));
         assert_eq!(update, grass,
             "interaction_field.wgsl と grass_gbuffer.wgsl の InteractionFieldUniform が不一致");
         assert_eq!(update, water,

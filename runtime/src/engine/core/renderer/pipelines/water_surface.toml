@@ -12,10 +12,17 @@
 #
 # blend = "Replace": 屈折の背景をシェーダ内で合成済み（alpha=1 を出力）なので、
 # ブレンドは行わず上書きする。
-shader_sources  = ["water_surface.wgsl"]
+# shader_sources: 形状・高さ場の共有モジュールを **先に** 連結する
+# （WGSL は宣言前の識別子を参照できないため順序は固定）。
+shader_sources  = ["water_height_field.wgsl", "water_surface.wgsl"]
 vertex_entry    = "vs_water"
 fragment_entry  = "fs_water"
 vertex_slots    = []
+# 頂点変位（Phase W5.1）で group1 のショアフィールドと group2 の波紋の場を
+# **頂点シェーダから**サンプルする。リフレクションは既定でテクスチャ・サンプラーを
+# FRAGMENT 可視にするため、ここで VERTEX 可視にすべき group を明示する
+# （指定を忘れると「頂点段から見えない binding」でパイプライン生成が失敗する）。
+vertex_visible_groups = [1, 2]
 
 topology        = "TriangleList"
 cull_mode       = "None"

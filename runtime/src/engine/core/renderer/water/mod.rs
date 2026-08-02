@@ -3,13 +3,21 @@
 //
 //  ## 役割（単一責任）
 //  エンジン層が解決した `ResolvedWaterVolume` の配列を受け取り、
-//  「1 ドローで全水面クアッドを描く」ためのリソース（ストレージバッファ・
-//  屈折背景グラブ・BindGroup・パイプライン）を管理して描画する。
+//  水面を描くためのリソース（ストレージバッファ・屈折背景グラブ・
+//  BindGroup・パイプライン）を管理して描画する。
 //
 //  ## メッシュを持たない
-//  水面は常に軸平行の矩形なので、頂点バッファは一切持たない。
-//  `draw(0..6, 0..N)` の 1 ドローで N 個の水ボリュームを描き、
-//  頂点位置は `vertex_index`、パラメータは `instance_index` からシェーダが引く。
+//  水面の形状はパラメータから完全に決まるので、頂点バッファは一切持たない。
+//  頂点位置は `vertex_index`（格子セルと角）、パラメータは `instance_index` から
+//  シェーダが引く。形状生成の実体は `shaders/water_height_field.wgsl` にあり、
+//  水面パスと ID パスが**同じ関数**を呼ぶ（Phase W5.1）。
+//
+//  ## 2 バケット・2 ドロー（Phase W5.1）
+//  頂点変位のために 1 インスタンスを格子へ分割した結果、1 インスタンスあたりの
+//  頂点数がクアッド（Ocean/Region）と川リボンで桁違いになった。
+//  1 ドローに頂点数は 1 つしか指定できないため、パラメータ配列を
+//  **[クアッド…, 川…] の順**に並べ、`instance_index` のレンジを分けて 2 回描く。
+//  分割数の決め方（頂点予算・放射状ワープ）は `tessellation.rs` が正典。
 //
 //  ## 深度
 //  本パスは深度アタッチメントを持たず（TOML `no_depth = true`）、
@@ -38,9 +46,10 @@
 // ============================================================
 
 pub mod params;
+pub mod tessellation;
 
 pub use params::{
-    WaterParams, WATER_MAX_INSTANCES, WATER_MAX_VOLUMES, WATER_QUAD_VERTEX_COUNT,
+    WaterParams, WATER_CELL_VERTEX_COUNT, WATER_MAX_INSTANCES, WATER_MAX_VOLUMES,
 };
 
 use std::collections::HashMap;
@@ -62,6 +71,21 @@ use super::{DEPTH_FORMAT, pipeline_config::RenderPipelineBuilder};
 /// 精度が要るのは岸近傍（数 m）だけで、そこでは刻みが 1mm 未満になる。
 pub const SHORE_FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// 水シェーダのソース解決（パイプライン生成とテストが共有する唯一の窓口）。
+///
+/// 形状・高さ場は `water_height_field.wgsl` に切り出してあり、
+/// 水面パスと ID パスの両方がこれを**先頭に**連結する（Phase W5.1）。
+/// 連結順は TOML の `shader_sources` が正典で、WGSL は宣言前の識別子を
+/// 参照できないため共有モジュールが必ず先でなければならない。
+fn resolve_water_shader(name: &str) -> &'static str {
+    match name {
+        "water_height_field.wgsl" => include_str!("../shaders/water_height_field.wgsl"),
+        "water_surface.wgsl"      => include_str!("../shaders/water_surface.wgsl"),
+        "water_id.wgsl"           => include_str!("../shaders/water_id.wgsl"),
+        other => panic!("water: unknown shader source: {other}"),
+    }
+}
+
 /// 水面描画に必要な GPU リソース一式と描画手続き。
 pub struct WaterRenderer {
     /// 水面パイプライン（頂点バッファ無し・深度アタッチメント無し）。
@@ -74,10 +98,15 @@ pub struct WaterRenderer {
     fallback_field_view: wgpu::TextureView,
     /// フォールバック用のゼロ UBO（`inv_extent = 0` ＝ 常に窓外＝波紋ゼロ）。
     fallback_field_uniform: wgpu::Buffer,
-    /// ID パス用パイプライン（同じクアッドを ID バッファへ描く。エディタのピッキング）。
+    /// ID パス用パイプライン（同じ格子を ID バッファへ描く。エディタのピッキング）。
     id_pipeline: wgpu::RenderPipeline,
-    /// ID パス group1（パラメータ配列のみ）の BindGroupLayout。
+    /// ID パス group1（パラメータ配列＋ショアフィールド）の BindGroupLayout。
+    ///
+    /// **水面パスの group1 とは別物**である。ID パスは屈折の背景・シーン深度
+    /// （binding1〜3）を宣言しないため、リフレクションが返す BGL の構成が違う。
     id_params_bgl: wgpu::BindGroupLayout,
+    /// ID パス group2（波紋の場）の BindGroupLayout（頂点変位で読む。Phase W5.1）。
+    id_field_bgl: wgpu::BindGroupLayout,
     /// 屈折背景サンプラー（線形・ClampToEdge）。
     sampler: wgpu::Sampler,
     /// 屈折背景グラブのフォーマット（シーン HDR と一致必須。copy_texture_to_texture の要件）。
@@ -99,11 +128,27 @@ pub struct WaterRenderer {
     frame_bind_group: Option<wgpu::BindGroup>,
     /// このフレームの group2 BindGroup（波紋の場。ping-pong で毎フレーム変わる）。
     frame_field_bind_group: Option<wgpu::BindGroup>,
-    /// このフレームの ID パス group1 BindGroup（パラメータバッファのみ）。
+    /// このフレームの ID パス group1 BindGroup（パラメータ＋ショアフィールド）。
     /// バッファは容量拡張で作り直され得るので、`frame_bind_group` と同じく毎フレーム作る。
     id_bind_group: Option<wgpu::BindGroup>,
-    /// このフレームで描くインスタンス数（= 水ボリューム数、上限クランプ後）。
-    instance_count: u32,
+    /// このフレームの ID パス group2 BindGroup（波紋の場。ping-pong で毎フレーム変わる）。
+    id_field_bind_group: Option<wgpu::BindGroup>,
+
+    // ─── このフレームの描画バケット（Phase W5.1）────────────────
+    //
+    // 格子分割を入れたことで「1 インスタンスの頂点数」がクアッドと川で大きく違う。
+    // 1 ドローに頂点数は 1 つしか指定できないため、**パラメータ配列を
+    // [クアッド…, 川…] の順に並べ、2 回に分けて描く**。
+    // 混ぜたまま最大値で描くと、川のインスタンス（数百本になり得る）まで
+    // クアッドぶんの頂点を空回しすることになる。
+    /// クアッド（Ocean / Region）インスタンス数。配列の先頭から連続。
+    quad_count: u32,
+    /// 川リボンのインスタンス数。配列の `quad_count` 番目から連続。
+    river_count: u32,
+    /// クアッド 1 インスタンスの頂点数（格子の分割数から決まる）。
+    quad_vertex_count: u32,
+    /// 川リボン 1 インスタンスの頂点数。
+    river_vertex_count: u32,
 
     // ─── ショアフィールド（岸波。Phase W1.5）─────────────────────
     /// 水域ごとの岸情報を積んだ配列テクスチャ（レイヤ = 水域）。
@@ -134,8 +179,8 @@ impl WaterRenderer {
         hdr_format: wgpu::TextureFormat,
         cache:      Option<&wgpu::PipelineCache>,
     ) -> Self {
-        // 自己完結のシェーダリゾルバ（連結は water_surface.wgsl 1 本のみ。
-        // shader_common.wgsl は連結しない＝マテリアル group を要求しないため）。
+        // 連結は「共有モジュール + 水面本体」の 2 本（TOML の shader_sources が正典）。
+        // shader_common.wgsl は連結しない＝マテリアル group を要求しないため。
         let (pipeline, mut bgls) = RenderPipelineBuilder::new(
             device,
             include_str!("../pipelines/water_surface.toml"),
@@ -144,12 +189,7 @@ impl WaterRenderer {
         )
         .with_label("Water Surface")
         .with_cache(cache)
-        .build(|name: &str| -> &'static str {
-            match name {
-                "water_surface.wgsl" => include_str!("../shaders/water_surface.wgsl"),
-                other => panic!("water: unknown shader source: {other}"),
-            }
-        });
+        .build(resolve_water_shader);
         // bgls は group 番号順（0 = カメラ, 1 = 水リソース, 2 = インタラクションフィールド）。
         // group1 と group2 を保持する（**remove は添字がずれるので大きい方から取る**）。
         assert!(bgls.len() >= 3,
@@ -194,13 +234,11 @@ impl WaterRenderer {
         )
         .with_label("Water Id")
         .with_cache(cache)
-        .build(|name: &str| -> &'static str {
-            match name {
-                "water_id.wgsl" => include_str!("../shaders/water_id.wgsl"),
-                other => panic!("water: unknown shader source: {other}"),
-            }
-        });
-        assert!(id_bgls.len() >= 2, "water_id.wgsl は group0(カメラ)/group1(水パラメータ) を宣言すること");
+        .build(resolve_water_shader);
+        assert!(id_bgls.len() >= 3,
+            "water_id.wgsl は group0(カメラ)/group1(水パラメータ＋岸波)/group2(波紋の場) を宣言すること");
+        // **remove は添字がずれるので大きい方から取る**（水面パス側と同じ理由）。
+        let id_field_bgl  = id_bgls.remove(2);
         let id_params_bgl = id_bgls.remove(1);
 
         // ── ショアフィールドが無いフレーム用のフォールバック（Phase W1.5）──
@@ -251,6 +289,7 @@ impl WaterRenderer {
             fallback_field_uniform,
             id_pipeline,
             id_params_bgl,
+            id_field_bgl,
             sampler,
             hdr_format,
             params_buf:       None,
@@ -262,7 +301,11 @@ impl WaterRenderer {
             frame_bind_group: None,
             frame_field_bind_group: None,
             id_bind_group:    None,
-            instance_count:   0,
+            id_field_bind_group: None,
+            quad_count:         0,
+            river_count:        0,
+            quad_vertex_count:  0,
+            river_vertex_count: 0,
             warned_overflow:  false,
             shore_tex:        None,
             shore_view:       None,
@@ -384,10 +427,14 @@ impl WaterRenderer {
         field:      Option<&super::interaction::InteractionFieldRenderer>,
         shore:      &ShoreFieldSet,
     ) -> bool {
-        self.instance_count         = 0;
+        self.quad_count             = 0;
+        self.river_count            = 0;
+        self.quad_vertex_count      = 0;
+        self.river_vertex_count     = 0;
         self.frame_bind_group       = None;
         self.frame_field_bind_group = None;
         self.id_bind_group          = None;
+        self.id_field_bind_group    = None;
         if volumes.is_empty() {
             return false;
         }
@@ -410,26 +457,43 @@ impl WaterRenderer {
         // ── パラメータ配列（＝描画インスタンス列）を作ってアップロード ──
         //    W1〜W1.5 は「1 水ボリューム = 1 インスタンス」だったが、
         //    川（W4）は折れ線の 1 分割ごとに 1 インスタンス（リボンのクアッド）を出す。
-        //    どちらも同じ配列・同じドローに混ざるので、パスもシェーダも 1 本のまま。
-        let mut gpu: Vec<WaterParams> = Vec::with_capacity(count);
+        //
+        //    **Phase W5.1 以降はクアッドと川を別バケットへ分ける**。格子分割によって
+        //    1 インスタンスの頂点数が両者で桁違いになり、1 ドローの頂点数（1 つだけ）を
+        //    共有できなくなったためである。配列は [クアッド…, 川…] の順に連結し、
+        //    2 回のドローが `instance_index` のレンジで自分のぶんだけを描く。
+        let mut quads:  Vec<WaterParams> = Vec::with_capacity(count);
+        let mut rivers: Vec<WaterParams> = Vec::new();
+        // 各バケットが「欲しがる」分割数（後で頂点予算へ収める）。
+        let mut quad_div_want  = 1u32;
+        let mut river_div_want = (1u32, 1u32);
         for v in &volumes[..count] {
             match v.river.as_ref() {
                 // 川: 折れ線の隣り合うノード対ごとにリボンの 1 コマを積む。
                 Some(river) => {
                     for w in river.nodes.windows(2) {
-                        if gpu.len() >= WATER_MAX_INSTANCES { break; }
-                        gpu.push(WaterParams::from_river_segment(
+                        if quads.len() + rivers.len() >= WATER_MAX_INSTANCES { break; }
+                        rivers.push(WaterParams::from_river_segment(
                             v, &w[0], &w[1], river.half_width, river.flow_speed, id_base));
+                        // 幅方向は半幅から、長さ方向は区間の実長から刻み数を決める。
+                        let seg_len = distance_xyz(w[0].pos, w[1].pos);
+                        let want = tessellation::river_desired_divisions(river.half_width, seg_len);
+                        river_div_want = (river_div_want.0.max(want.0), river_div_want.1.max(want.1));
                     }
                 }
-                // Ocean / Region: 従来どおり 1 個の軸平行クアッド。
+                // Ocean / Region: 1 個の軸平行クアッド（を格子へ刻んだもの）。
                 None => {
-                    if gpu.len() >= WATER_MAX_INSTANCES { break; }
-                    gpu.push(WaterParams::from_resolved(
-                        v, camera_pos, id_base, shore.get(v.actor_dfs_id)));
+                    if quads.len() + rivers.len() >= WATER_MAX_INSTANCES { break; }
+                    let p = WaterParams::from_resolved(
+                        v, camera_pos, id_base, shore.get(v.actor_dfs_id));
+                    quad_div_want = quad_div_want.max(tessellation::quad_desired_divisions(
+                        matches!(v.kind, crate::engine::components::water_volume_component::WaterVolumeKind::Ocean),
+                        p.half_extent[0].max(p.half_extent[2]),
+                    ));
+                    quads.push(p);
                 }
             }
-            if gpu.len() >= WATER_MAX_INSTANCES {
+            if quads.len() + rivers.len() >= WATER_MAX_INSTANCES {
                 if !self.warned_overflow {
                     self.warned_overflow = true;
                     eprintln!(
@@ -441,9 +505,29 @@ impl WaterRenderer {
             }
         }
         // 川の制御点が足りない等で 1 インスタンスも出なければ、描くものが無い。
-        if gpu.is_empty() {
+        if quads.is_empty() && rivers.is_empty() {
             return false;
         }
+
+        // ── 格子分割数を頂点予算へ収めて全インスタンスへ焼き込む（Phase W5.1）──
+        //    バケット内は同じ分割数でなければならない（1 ドローの頂点数は 1 つだけ）。
+        let quad_div = tessellation::fit_quad_divisions(quad_div_want, quads.len());
+        for p in quads.iter_mut() {
+            p.set_grid_divisions(quad_div, quad_div);
+        }
+        let (river_div_a, river_div_l) =
+            tessellation::fit_river_divisions(river_div_want, rivers.len());
+        for p in rivers.iter_mut() {
+            p.set_grid_divisions(river_div_a, river_div_l);
+        }
+        self.quad_count         = quads.len()  as u32;
+        self.river_count        = rivers.len() as u32;
+        self.quad_vertex_count  = tessellation::grid_vertex_count(quad_div, quad_div);
+        self.river_vertex_count = tessellation::grid_vertex_count(river_div_a, river_div_l);
+
+        // 2 バケットを 1 本の配列へ連結する（先頭 quad_count 個がクアッド）。
+        let mut gpu = quads;
+        gpu.extend(rivers);
         let count = gpu.len();
 
         if self.params_buf.is_none() || self.params_capacity < count {
@@ -527,18 +611,46 @@ impl WaterRenderer {
             ],
         }));
 
-        // ── ID パス用 group1（パラメータ配列のみ）─────────────────────────
-        // ID パスは Edit / ポーズ中しか描かれないが、BindGroup 生成は 1 バインディングだけで
-        // 極めて軽いため、描くかどうかを判定せずここで作っておく（呼び出し側の分岐を増やさない）。
+        // ── ID パス用 group1／group2 ─────────────────────────────────────
+        // Phase W5.1 で ID パスも頂点変位を掛けるようになったため、岸波（group1
+        // binding4/5）と波紋の場（group2）を**頂点段から**読む。水面パスと同じ
+        // リソースを挿すが、**レイアウトは別物**（ID パスは屈折の背景・深度を宣言しない）
+        // なので BindGroup も別に作る必要がある。
+        // ID パスは Edit / ポーズ中しか描かれないが、生成コストは無視できるので
+        // 描くかどうかを判定せずここで作っておく（呼び出し側の分岐を増やさない）。
         self.id_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("Water Id Params BG"),
             layout:  &self.id_params_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(
+                        self.shore_view.as_ref().unwrap_or(&self.fallback_shore_view)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.shore_sampler),
+                },
+            ],
+        }));
+        self.id_field_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Water Id Ripple Field BG"),
+            layout:  &self.id_field_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0, resource: wgpu::BindingResource::TextureView(field_view) },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(
+                        field_sampler_ref.unwrap_or(fallback_sampler)) },
+                wgpu::BindGroupEntry {
+                    binding: 2, resource: field_uniform.as_entire_binding() },
             ],
         }));
 
-        self.instance_count = count as u32;
+        debug_assert_eq!(count, (self.quad_count + self.river_count) as usize,
+            "パラメータ配列の長さとバケットのインスタンス数が食い違っている");
         true
     }
 
@@ -569,20 +681,36 @@ impl WaterRenderer {
         );
     }
 
-    /// 水面パス内で全水ボリュームを 1 ドローで描く。
+    /// クアッドバケットと川バケットを 2 ドローで描く（両パス共通の手続き）。
+    ///
+    /// 頂点バッファは無く、1 インスタンスあたりの頂点数は格子の分割数で決まる。
+    /// 川はクアッドより桁違いに少ない頂点数なので、**バケットごとに頂点数を変えて**
+    /// 描かないと、川のインスタンス数ぶんだけ無駄な頂点シェーダ起動が積み上がる。
+    ///
+    /// `instance_index` は firstInstance を含む絶対値なので、川バケットの
+    /// レンジ `quad_count..` はそのままパラメータ配列の添字として使える。
+    fn draw_buckets(&self, pass: &mut wgpu::RenderPass<'_>) {
+        if self.quad_count > 0 && self.quad_vertex_count > 0 {
+            pass.draw(0..self.quad_vertex_count, 0..self.quad_count);
+        }
+        if self.river_count > 0 && self.river_vertex_count > 0 {
+            pass.draw(
+                0..self.river_vertex_count,
+                self.quad_count..(self.quad_count + self.river_count),
+            );
+        }
+    }
+
+    /// 水面パス内で全水ボリュームを描く。
     /// `prepare` が `true` を返したフレームでのみ呼ぶこと。
     pub fn draw<'p>(&'p self, pass: &mut wgpu::RenderPass<'p>, camera_bg: &'p wgpu::BindGroup) {
         let Some(bg) = self.frame_bind_group.as_ref() else { return; };
         let Some(field_bg) = self.frame_field_bind_group.as_ref() else { return; };
-        if self.instance_count == 0 {
-            return;
-        }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, camera_bg, &[]);
         pass.set_bind_group(1, bg, &[]);
         pass.set_bind_group(2, field_bg, &[]);
-        // 頂点バッファ無し: 6 頂点 × N インスタンス（= 水ボリューム数）。
-        pass.draw(0..WATER_QUAD_VERTEX_COUNT, 0..self.instance_count);
+        self.draw_buckets(pass);
     }
 
     /// ID パス内で全水面クアッドを 1 ドローで描く（エディタのピッキング用）。
@@ -595,14 +723,20 @@ impl WaterRenderer {
     /// 「水面より手前の物体をクリックしたらそちらが選択される」は描画順に依存しない。
     pub fn draw_id<'p>(&'p self, pass: &mut wgpu::RenderPass<'p>, camera_bg: &'p wgpu::BindGroup) {
         let Some(bg) = self.id_bind_group.as_ref() else { return; };
-        if self.instance_count == 0 {
-            return;
-        }
+        let Some(field_bg) = self.id_field_bind_group.as_ref() else { return; };
         pass.set_pipeline(&self.id_pipeline);
         pass.set_bind_group(0, camera_bg, &[]);
         pass.set_bind_group(1, bg, &[]);
-        pass.draw(0..WATER_QUAD_VERTEX_COUNT, 0..self.instance_count);
+        // 頂点変位（Phase W5.1）で波紋の場も頂点段から読むため、group2 が要る。
+        pass.set_bind_group(2, field_bg, &[]);
+        self.draw_buckets(pass);
     }
+}
+
+/// 2 点間のワールド距離（川リボン 1 区間の実長を求めるための小道具）。
+fn distance_xyz(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let (dx, dy, dz) = (b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 // ============================================================
@@ -610,12 +744,34 @@ impl WaterRenderer {
 // ============================================================
 #[cfg(test)]
 mod tests {
-    /// 水面シェーダを naga で parse + validate する（GPU デバイス不要）。
-    /// TOML の shader_sources は water_surface.wgsl 単体なので、連結順の考慮は不要。
+    use super::resolve_water_shader;
+
+    /// TOML の `shader_sources` 順に連結した「実際にコンパイルされる WGSL」を返す。
+    ///
+    /// Phase W5.1 で形状・高さ場を `water_height_field.wgsl` へ切り出したため、
+    /// **1 ファイルだけを検証しても意味が無くなった**（片方だけ見ると宣言が欠けて見える）。
+    /// 連結順の正典は TOML なので、テストもそこから組み立てる。
+    fn joined(toml_src: &str) -> String {
+        let cfg: crate::engine::core::renderer::pipeline_config::PipelineConfig =
+            toml::from_str(toml_src).expect("パイプライン TOML が読めない");
+        cfg.shader_sources.iter()
+            .map(|n| resolve_water_shader(n))
+            .collect::<Vec<_>>()
+            .join("
+")
+    }
+
+    /// 水面パスへ実際に渡される WGSL（共有モジュール＋水面本体）。
+    fn surface_src() -> String { joined(include_str!("../pipelines/water_surface.toml")) }
+
+    /// ID パスへ実際に渡される WGSL（共有モジュール＋ID 本体）。
+    fn id_src() -> String { joined(include_str!("../pipelines/water_id.toml")) }
+
+    /// 水面シェーダ（連結後）を naga で parse + validate する（GPU デバイス不要）。
     #[test]
     fn water_surface_shader_parses_and_validates() {
-        let src = include_str!("../shaders/water_surface.wgsl");
-        let module = naga::front::wgsl::parse_str(src)
+        let src = surface_src();
+        let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("water_surface.wgsl WGSL parse 失敗: {e:?}"));
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
@@ -631,7 +787,7 @@ mod tests {
     #[test]
     fn water_surface_toml_entries_match_shader() {
         let toml_src = include_str!("../pipelines/water_surface.toml");
-        let wgsl_src = include_str!("../shaders/water_surface.wgsl");
+        let wgsl_src = surface_src();
         assert!(toml_src.contains("vertex_entry    = \"vs_water\""));
         assert!(toml_src.contains("fragment_entry  = \"fs_water\""));
         assert!(wgsl_src.contains("fn vs_water("));
@@ -643,8 +799,8 @@ mod tests {
     /// 水面 ID パスシェーダを naga で parse + validate する（GPU デバイス不要）。
     #[test]
     fn water_id_shader_parses_and_validates() {
-        let src = include_str!("../shaders/water_id.wgsl");
-        let module = naga::front::wgsl::parse_str(src)
+        let src = id_src();
+        let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("water_id.wgsl WGSL parse 失敗: {e:?}"));
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
@@ -659,7 +815,7 @@ mod tests {
     #[test]
     fn water_id_toml_entries_match_shader() {
         let toml_src = include_str!("../pipelines/water_id.toml");
-        let wgsl_src = include_str!("../shaders/water_id.wgsl");
+        let wgsl_src = id_src();
         assert!(toml_src.contains("vertex_entry    = \"vs_water_id\""));
         assert!(toml_src.contains("fragment_entry  = \"fs_water_id\""));
         assert!(wgsl_src.contains("fn vs_water_id("));
@@ -673,7 +829,13 @@ mod tests {
     }
 
     /// 2 つの水シェーダの `WaterParams` は同一レイアウトでなければならない
-    /// （同じストレージバッファを別々の struct 宣言で読むため、ズレると全パラメータが壊れる）。
+    /// （同じストレージバッファを読むため、ズレると全パラメータが壊れる）。
+    ///
+    /// Phase W5.1 で宣言そのものを共有モジュールへ 1 本化したので、両者が
+    /// 一致するのは**構造上あたりまえ**になった。それでも残してあるのは
+    /// 「片方のシェーダが独自の `WaterParams` を再宣言する」退行を検出するため
+    /// （再宣言すると連結時に重複定義でコンパイルが落ちるか、あるいは
+    ///   共有モジュールを外して片方だけ独自定義に戻すという形で静かに壊れる）。
     #[test]
     fn water_params_struct_fields_match_between_shaders() {
         /// WGSL ソースから `struct WaterParams { ... }` のフィールド名列を抜き出す。
@@ -692,8 +854,8 @@ mod tests {
                 .filter_map(|l| l.split_once(':').map(|(n, _)| n.trim().to_string()))
                 .collect()
         }
-        let surface = field_names(include_str!("../shaders/water_surface.wgsl"));
-        let id      = field_names(include_str!("../shaders/water_id.wgsl"));
+        let surface = field_names(&surface_src());
+        let id      = field_names(&id_src());
         assert_eq!(surface, id,
             "water_surface.wgsl と water_id.wgsl の WaterParams フィールド順が食い違っている");
         assert_eq!(surface.len(), 16,
@@ -706,11 +868,11 @@ mod tests {
     /// コンパイルは通ってしまうため、文字列で押さえる。
     #[test]
     fn water_shaders_implement_river_ribbon() {
-        let surface = include_str!("../shaders/water_surface.wgsl");
-        let id      = include_str!("../shaders/water_id.wgsl");
+        let surface = surface_src();
+        let id      = id_src();
         assert!(surface.contains("fn water_river_vertex("),
             "水面シェーダのリボン頂点生成が消えている");
-        assert!(id.contains("fn water_id_river_vertex("),
+        assert!(id.contains("fn water_river_vertex("),
             "ID パスのリボン頂点生成が消えている（＝川がクリックできなくなる）");
         // 流れ（2 位相ブレンド）の消費経路
         assert!(surface.contains("fn water_flow_offsets("), "流れの位相オフセットが消えている");
@@ -727,7 +889,7 @@ mod tests {
     /// リファクタで静かに失われないよう契約として固定する。
     #[test]
     fn water_shader_breaks_wave_tiling() {
-        let src = include_str!("../shaders/water_surface.wgsl");
+        let src = surface_src();
         assert!(src.contains("const WAVE_LAYER_COUNT: u32 = 6u;"),
             "解析波の層数が 6 でなくなっている（少ないと繰り返しが目視できる）");
         assert!(src.contains("fn water_wave_envelope("),
@@ -759,11 +921,11 @@ mod tests {
                 .trim().parse::<f32>()
                 .unwrap_or_else(|e| panic!("定数 {name} が数値として読めない: {e}"))
         }
-        let src = include_str!("../shaders/water_surface.wgsl");
+        let src = surface_src();
         let mut sum_sq = 0.0f32;
         for i in 0..6 {
-            let a = constant(src, &format!("WAVE_AMP_MUL_{i}"));
-            let f = constant(src, &format!("WAVE_FREQ_MUL_{i}"));
+            let a = constant(&src, &format!("WAVE_AMP_MUL_{i}"));
+            let f = constant(&src, &format!("WAVE_FREQ_MUL_{i}"));
             sum_sq += (a * f) * (a * f);
         }
         // 旧 4 層（振幅 1/0.5/0.25/0.125 × 周波数 1/2.13/3.71/5.29）の二乗和。
@@ -777,7 +939,7 @@ mod tests {
     /// 波の方位角（Phase W6.3）の回転経路が生きていること。
     #[test]
     fn water_shader_rotates_waves_by_axis() {
-        let src = include_str!("../shaders/water_surface.wgsl");
+        let src = surface_src();
         assert!(src.contains("fn water_wave_rotate_point("),   "サンプル位置の逆回転が消えている");
         assert!(src.contains("fn water_wave_rotate_gradient("), "勾配の戻し回転が消えている");
         assert!(src.contains("fn water_wave_axis("),            "回転軸の取得が消えている");
@@ -793,11 +955,14 @@ mod tests {
     /// 隣接インスタンスと値が食い違って継ぎ目が復活する）。
     #[test]
     fn water_shader_uses_joint_tangent_for_flow() {
-        let src = include_str!("../shaders/water_surface.wgsl");
+        let src = surface_src();
         assert!(src.contains("@location(2) flow_dir: vec2<f32>,"),
             "流れの向きの varying が無い（または flat になっている）");
-        assert!(src.contains("flow  = select(p.river_tangent.xy, p.river_tangent.zw, corner.y > 0.0);"),
-            "頂点が関節タンジェントを選んでいない");
+        // Phase W5.1 で幅／長さ方向へ格子分割したため、端点の select から
+        // **区間内の線形補間（mix）** へ変わった。上流端 s=0・下流端 s=1 で
+        // 従来と同じ値になるので、隣接インスタンスが関節で一致する性質は保たれる。
+        assert!(src.contains("v.flow_dir = mix(p.river_tangent.xy, p.river_tangent.zw, s);"),
+            "頂点が関節タンジェントを補間していない");
         assert!(src.contains("fn water_flow_dir(p: WaterParams, hint: vec2<f32>)"),
             "流れの向きが補間値を受け取らない実装に戻っている");
     }
@@ -808,7 +973,7 @@ mod tests {
     /// 「岸波が出ない」になるだけで気づけないため、文字列で押さえる。
     #[test]
     fn water_shader_implements_shore_waves() {
-        let src = include_str!("../shaders/water_surface.wgsl");
+        let src = surface_src();
         assert!(src.contains("@group(1) @binding(4) var t_shore: texture_2d_array<f32>;"),
             "ショアフィールド（group1 binding4）の宣言が消えている");
         assert!(src.contains("fn water_shore_height("),
@@ -823,7 +988,7 @@ mod tests {
     /// 個別ソースを直接足す実装へ戻すと W5.1 で必ず食い違う。契約として固定する。
     #[test]
     fn water_shader_exposes_combined_height_field() {
-        let src = include_str!("../shaders/water_surface.wgsl");
+        let src = surface_src();
         assert!(src.contains("fn water_surface_height(")
              && src.contains("p: WaterParams, world_xz: vec2<f32>, flow_dir: vec2<f32>, t: f32,"),
             "合成高さ関数（W5.1 が頂点段で呼ぶ）のシグネチャが変わっている");
@@ -841,7 +1006,7 @@ mod tests {
     /// 「水中から外が見えない」「水中で全面が白い泡になる」に戻るため、契約として固定する。
     #[test]
     fn water_shader_handles_underwater_view() {
-        let src = include_str!("../shaders/water_surface.wgsl");
+        let src = surface_src();
         assert!(src.contains("let underwater = u_camera.position.y < in.world_pos.y;"),
             "水中判定（カメラが水面より下か）が消えている");
         assert!(src.contains("let n = select(n_up, -n_up, underwater);"),
@@ -872,5 +1037,114 @@ mod tests {
             "水面パスが距離ソート半透明より後にある（手前の半透明を上書きしてしまう）");
         assert!(water < wboit,
             "水面パスが WBOIT 合成より後にある（手前の半透明を上書きしてしまう）");
+    }
+
+    // ─── Phase W5.1（頂点変位の大波）の契約 ────────────────────────
+
+    /// **両パスが同一の頂点生成関数を呼ぶ**こと。
+    ///
+    /// ここが崩れると「見えている波をクリックできない」（ID パスだけ平面のまま）
+    /// という、実行しないと気づけない不具合になる。
+    #[test]
+    fn both_passes_share_the_same_vertex_generator() {
+        let surface = surface_src();
+        let id      = id_src();
+        // 実体は共有モジュールに 1 つだけ存在すること。
+        assert_eq!(surface.matches("fn water_grid_vertex(").count(), 1,
+            "頂点生成関数が複数定義されている（＝二重実装が復活している）");
+        assert_eq!(id.matches("fn water_grid_vertex(").count(), 1);
+        // 両パスの頂点シェーダがそれを呼ぶこと。
+        assert!(surface.contains("let v = water_grid_vertex(p, vi, u_camera.time);"),
+            "vs_water が共有の頂点生成を呼んでいない");
+        assert!(id.contains("let v = water_grid_vertex(p, vi, u_camera.time);"),
+            "vs_water_id が共有の頂点生成を呼んでいない（ピック形状が平面に戻る）");
+        // 変位は合成高さ場（W1.5 で用意した合流点）を通すこと。
+        assert!(surface.contains("water_surface_height(p, v.world.xz, v.flow_dir, t) * gain"),
+            "頂点変位が合成高さ場を使っていない（法線と食い違う）");
+    }
+
+    /// 頂点段のテクスチャサンプルが成立する構成であること。
+    ///
+    /// ① 頂点シェーダには暗黙 LOD が無いので、サンプルは必ず `textureSampleLevel`。
+    /// ② リフレクションは既定でテクスチャを FRAGMENT 可視にするため、
+    ///    TOML で group1/2 を VERTEX 可視へ広げていないとパイプライン生成が落ちる。
+    #[test]
+    fn vertex_stage_texture_access_is_declared() {
+        for toml_src in [
+            include_str!("../pipelines/water_surface.toml"),
+            include_str!("../pipelines/water_id.toml"),
+        ] {
+            assert!(toml_src.contains("vertex_visible_groups = [1, 2]"),
+                "頂点段から読む group が VERTEX 可視になっていない（パイプライン生成が失敗する）");
+            assert!(toml_src.contains("water_height_field.wgsl"),
+                "形状・高さ場の共有モジュールが連結されていない");
+        }
+        let shared = resolve_water_shader("water_height_field.wgsl");
+        assert!(!shared.contains("textureSample("),
+            "頂点段では暗黙 LOD のサンプル（textureSample）を使えない");
+        assert!(shared.contains("textureSampleLevel(t_interaction")
+             && shared.contains("textureSampleLevel(t_shore"),
+            "波紋・岸波のサンプルが明示 LOD でなくなっている");
+    }
+
+    /// 格子の分割定数が Rust 側と WGSL 側で一致していること。
+    ///
+    /// 片方だけ変えると「格子の一部が描かれない」「近傍だけ極端に細かい」という
+    /// 見た目の破綻になるが、コンパイルは通ってしまうため文字列で押さえる。
+    #[test]
+    fn grid_constants_match_between_rust_and_wgsl() {
+        use super::tessellation::*;
+        let shared = resolve_water_shader("water_height_field.wgsl");
+        assert!(shared.contains(&format!(
+            "const WATER_CELL_VERTEX_COUNT: u32 = {WATER_CELL_VERTEX_COUNT}u;")),
+            "セルあたり頂点数が食い違っている");
+        assert!(shared.contains(&format!(
+            "const WATER_GRID_WARP_NEAR: f32 = {WATER_GRID_WARP_NEAR:?};")),
+            "放射状ワープの線形係数が食い違っている");
+        assert!(shared.contains(&format!(
+            "const WATER_GRID_WARP_EXP: f32 = {WATER_GRID_WARP_EXP:?};")),
+            "放射状ワープの指数が食い違っている");
+        // 格子パラメータは整数演算から作ること（亀裂が出ない根拠。tessellation.rs 参照）。
+        assert!(shared.contains("let line = vec2<f32>(f32(ix) + c.x, f32(iz) + c.y);"),
+            "格子頂点が「セル添字＋角」の整数演算で作られていない（亀裂の原因になる）");
+    }
+
+    /// 遠景では頂点変位が 0 へ落ちること（＝格子が粗い所は従来どおり平面）。
+    ///
+    /// これが無いと、カメラ追従の巨大セルが波の中を泳いで水面全体がちらつく。
+    #[test]
+    fn displacement_is_gated_by_grid_resolution() {
+        let shared = resolve_water_shader("water_height_field.wgsl");
+        assert!(shared.contains("fn water_displacement_gain("),
+            "変位ゲートが消えている（遠景の巨大セルがちらつく）");
+        assert!(shared.contains("let gain = water_displacement_gain(cell, p.wave.y);"),
+            "頂点生成がゲートを通していない");
+    }
+
+    /// **GPU 実機でのパイプライン生成**が通ること（`--ignored` で実行する検証用）。
+    ///
+    /// naga の静的検証（上のテスト群）は WGSL の妥当性しか見ない。**バインドの
+    /// ステージ可視性**（`vertex_visible_groups` を入れ忘れると
+    /// 「頂点段から見えない binding を使っている」でパイプライン生成が落ちる）は
+    /// wgpu が実機のデバイス上でしか検証しないため、ここだけは実 GPU が要る。
+    /// CI や GPU 無しの環境で落ちないよう既定では走らせない。
+    ///
+    /// 実行: `cargo test water::tests::water_pipelines_build_on_gpu -- --ignored --nocapture`
+    #[test]
+    #[ignore = "実 GPU が必要。--ignored で実行する"]
+    fn water_pipelines_build_on_gpu() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(
+            &wgpu::RequestAdapterOptions::default())) else {
+            eprintln!("[water] GPU アダプタが見つからないため検証をスキップ");
+            return;
+        };
+        let (device, _queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor::default()))
+            .expect("デバイス生成に失敗");
+        // 生成そのものが検証（失敗すれば wgpu がパニック／エラーを出す）。
+        let _renderer = super::WaterRenderer::new(
+            &device, wgpu::TextureFormat::Rgba16Float, None);
+        let _ = device.poll(wgpu::PollType::Wait);
     }
 }
