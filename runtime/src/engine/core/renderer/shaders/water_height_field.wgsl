@@ -84,6 +84,11 @@ struct WaterParams {
     /// 川リボン 1 分割の**関節タンジェント**（Phase W6.2）。
     /// x,y = 上流ノード／z,w = 下流ノードの進行方向（XZ 単位ベクトル）。
     river_tangent:    vec4<f32>,
+    /// 水中コースティクス（Phase W5.3）。
+    /// x = 強度（0 で完全無効）／y = パターンの細かさ倍率／z = 深度フェード距離(m)／w = 予約(0)。
+    /// **読むのはコースティクス生成パス（`caustics.wgsl`）だけ**だが、水域パラメータ配列を
+    /// 1 本に保つためレイアウトはここ（共有モジュール）で宣言する。
+    caustics:         vec4<f32>,
 }
 
 @group(1) @binding(0) var<storage, read> u_water: array<WaterParams>;

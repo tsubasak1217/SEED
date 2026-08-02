@@ -298,6 +298,14 @@ pub fn create_gbuffer_bind_group(
     // 0..5 のみ宣言する（subset 合法）ため、それらの呼び出しでは deferred.mask_dummy_view/mask_sampler を渡す。
     mask_view:    &wgpu::TextureView,
     mask_sampler: &wgpu::Sampler,
+    // ── 水中コースティクス入力（Phase W5.3）: deferred_lighting.wgsl の group1 binding12 ──
+    // binding 12 = フル解像度 1ch（R16Float）の集光係数。**サンプラーは無い**（textureLoad で 1:1）。
+    // 機能 OFF のフレーム（水域なし・deferred 以外・G-Buffer デバッグ中）は
+    // CausticsPipelines::dummy_view（1x1 黒）を渡す。範囲外 textureLoad は WGSL 仕様で
+    // ゼロを返すため、全画面が caustics=0＝増幅なしになる。
+    // AO/シャドウマスク/SSGI/反射パスは group1 を 0..5 のみ宣言する（subset 合法）ため、
+    // それらの呼び出しでも同じダミーを渡してよい。
+    caustics_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label:  Some("Deferred GBuffer BG (group 1)"),
@@ -315,6 +323,7 @@ pub fn create_gbuffer_bind_group(
             wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(ssgi_sampler) },
             wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(mask_view) },
             wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::Sampler(mask_sampler) },
+            wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(caustics_view) },
         ],
     })
 }
@@ -415,6 +424,36 @@ mod tests {
         validator
             .validate(&module)
             .unwrap_or_else(|e| panic!("[deferred_lighting rt_bindless] WGSL validate 失敗: {e:?}"));
+    }
+
+    /// 水中コースティクス（Phase W5.3）の**消費経路**が生きていること。
+    ///
+    /// この配線はどこか 1 箇所が落ちても「コースティクスが出ない」だけでコンパイルは通る
+    /// （水域を置かないと目視でも気づけない）ため、3 点を文字列で押さえる:
+    ///   ① deferred が group1 binding12 を宣言している（Rust 側の entries と対）
+    ///   ② Surface に受け皿がある（フォワードはゼロ初期化＝無効、が成立する前提）
+    ///   ③ ライト評価が平行光の直達だけを増幅している（影の中で光らない根拠）
+    #[test]
+    fn caustics_consumption_path_is_wired() {
+        let deferred = include_str!("shaders/deferred_lighting.wgsl");
+        assert!(deferred.contains("@group(1) @binding(12) var t_caustics: texture_2d<f32>;"),
+            "deferred_lighting.wgsl の t_caustics（group1 binding12）宣言が消えている");
+        // サンプラーは足さない設計（フル解像度 1:1 の textureLoad）。
+        assert!(deferred.contains("s.caustics      = textureLoad(t_caustics, pix, 0).r;"),
+            "deferred が Surface.caustics を設定していない");
+
+        let surface = include_str!("shaders/surface.wgsl");
+        assert!(surface.contains("caustics: f32,"),
+            "surface.wgsl の Surface に caustics フィールドが無い");
+
+        let eval = include_str!("shaders/lighting_eval.wgsl");
+        assert!(eval.contains("if light.kind == LIGHT_KIND_DIRECTIONAL && s.caustics > 0.0 {"),
+            "平行光限定のコースティクス増幅が消えている");
+        assert!(eval.contains("radiance = radiance * (1.0 + s.caustics);"),
+            "増幅式が変わっている（影適用後の radiance に掛けるのが要件）");
+        // 逆光透け用の radiance_direct には掛けないこと（影を無視する項に集光を足さない）。
+        assert!(!eval.contains("radiance_direct = radiance_direct * (1.0 + s.caustics)"),
+            "radiance_direct にコースティクスを掛けてはいけない");
     }
 
     /// RT ソフト影マスクの「深度考慮アップサンプル（joint bilateral）」の深度重みの境界性質を検証する。

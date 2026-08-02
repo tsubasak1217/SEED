@@ -139,6 +139,13 @@ pub struct WaterParams {
     /// 隣接インスタンスは共有する関節で同一値を持つため、頂点間で補間すると
     /// 流れの向きが区間境界で連続になり、リボンの継ぎ目が消える。
     pub river_tangent: [f32; 4],
+    /// 水中コースティクス（Phase W5.3）。
+    /// x = 強度（0 で完全無効）／y = パターンの細かさ倍率／z = 深度フェード距離(m)／w = 予約(0)
+    ///
+    /// 消費するのは**コースティクス生成パスだけ**（`caustics.wgsl`）で、水面パス・ID パスは
+    /// 読まない。それでも同じ配列に持たせているのは、水域パラメータの収集・アップロードを
+    /// 1 本に保つため（`actor_id` を ID パス専用に同居させているのと同じ理由）。
+    pub caustics: [f32; 4],
 }
 
 /// ショアフィールドを持たない水域を表すレイヤ番号（負値）。
@@ -250,6 +257,18 @@ impl WaterParams {
             river_p1:      [0.0; 4],
             river_normal:  [0.0; 4],
             river_tangent: [0.0; 4],
+            // 水中コースティクス（Phase W5.3）。コンポーネントの値をそのまま写す。
+            //   x = 強度（負値は「逆位相の集光」という意味を持たないので 0 で下限を切る）
+            //   y = 細かさ倍率（0 以下だと差分ステップが発散するのでシェーダ側でも下限を切るが、
+            //       ここでも負値を潰しておく）
+            //   z = 深度フェード距離（同上。0 は「即座に消える」ではなく 0 除算になるため）
+            //   w = 予約（0）
+            caustics: [
+                vis.caustics_intensity.max(0.0),
+                vis.caustics_scale.max(0.0),
+                vis.caustics_depth_fade.max(0.0),
+                0.0,
+            ],
         }
     }
 
@@ -323,9 +342,10 @@ mod tests {
     fn water_params_layout_is_std430_safe() {
         assert_eq!(std::mem::size_of::<WaterParams>() % 16, 0,
             "WaterParams のサイズは 16 の倍数であること（std430 の配列ストライド）");
-        assert_eq!(std::mem::size_of::<WaterParams>(), 16 * 16,
-            "WaterParams は vec4 16 本ぶん（256 バイト）であること。\
-             WGSL 側 struct WaterParams（water_surface.wgsl / water_id.wgsl）と同期すること");
+        // Phase W5.3（水中コースティクス）で vec4 を 1 本足したので 17 本＝272 バイト。
+        assert_eq!(std::mem::size_of::<WaterParams>(), 16 * 17,
+            "WaterParams は vec4 17 本ぶん（272 バイト）であること。\
+             WGSL 側 struct WaterParams（water_height_field.wgsl）と同期すること");
         assert_eq!(std::mem::align_of::<WaterParams>(), 4,
             "repr(C) の [f32;4] 配列なので Rust 側アラインは 4（バイト列は 16 の倍数長で連続する）");
     }
@@ -340,6 +360,8 @@ mod tests {
             wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0, fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
+            // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
+            caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
             shore_wave_strength: 0.0, shore_wave_length: 12.0,
             shore_wave_period: 4.0, shore_wave_foam: 0.8,
         };
@@ -377,6 +399,8 @@ mod tests {
             wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0, fresnel_power: 2.0,
             fresnel_strength: 0.5, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.25, ripple_foam_threshold: 0.08,
+            // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
+            caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
             shore_wave_strength: 0.0, shore_wave_length: 12.0,
             shore_wave_period: 4.0, shore_wave_foam: 0.8,
         };
@@ -412,6 +436,8 @@ mod tests {
             fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
+            // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
+            caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
             shore_wave_strength: 0.0, shore_wave_length: 12.0,
             shore_wave_period: 4.0, shore_wave_foam: 0.8,
         };
@@ -448,6 +474,8 @@ mod tests {
             fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
+            // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
+            caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
             shore_wave_strength: 0.0, shore_wave_length: 12.0,
             shore_wave_period: 4.0, shore_wave_foam: 0.8,
         };
@@ -516,6 +544,8 @@ mod tests {
             wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0, fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
+            // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
+            caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
             shore_wave_strength: 0.0, shore_wave_length: 12.0,
             shore_wave_period: 4.0, shore_wave_foam: 0.8,
         };

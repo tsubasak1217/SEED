@@ -47,6 +47,10 @@ pub(crate) mod grass_gbuffer;
 /// 水面描画パス（Phase W1）。`engine::water` が解決した水ボリュームを 1 ドローで描く。
 pub mod water;
 
+/// 水中コースティクス生成パス（Phase W5.3）。深度から復元した水中ピクセルの集光係数を焼く。
+/// 生成物は deferred ライティングが `Surface.caustics` として読む（平行光の直達を増幅）。
+pub mod caustics;
+
 /// 瞬発インタラクションフィールド（Phase I1）。動く物の速度をワールド俯瞰テクスチャへ焼く。
 pub mod interaction;
 /// 提示フレームの PNG 書き出し（環境変数ゲートの常設デバッグフック）。
@@ -108,6 +112,7 @@ pub use bindless::{BindlessResources, BindlessInstanceRecord, BindlessModelAlloc
                    set_bindless_supported, bindless_supported, bindless_capacity};
 pub use refract_pyramid::{RefractPyramid, REFRACT_MIP_COUNT};
 pub use water::{WaterRenderer, WaterParams, WATER_MAX_VOLUMES};
+pub use caustics::CausticsTargets;
 pub use interaction::{InteractionFieldRenderer, InteractionFieldUniformGpu, InteractionSourceGpu,
                       INTERACTION_FIELD_EXTENT_M, INTERACTION_FIELD_RESOLUTION,
                       INTERACTION_FIELD_DECAY_TAU_SECS, INTERACTION_MAX_SOURCES};
@@ -1339,6 +1344,38 @@ impl<'r> RenderFrame<'r> {
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load:  wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    // ── 水中コースティクス生成パス（Phase W5.3）────────────────────
+
+    /// フル解像度のコースティクスターゲットへ生成パスを開始する。
+    ///
+    /// - color = `caustics` を **LoadOp::Clear(0.0)**。0 ＝「集光の寄与なし」であり、
+    ///   水中でないピクセル（フラグメントが `discard` する所）はこの値のまま残る。
+    ///   したがってクリア値は保険ではなく **意味のある既定値**である。
+    /// - depth = None（フルスクリーン三角形。共有深度は group3 のサンプルテクスチャとして読む。
+    ///   同一パスでアタッチメント兼サンプルにすると read/write 競合になるため）。
+    pub fn begin_caustics_pass_to<'f>(
+        &'f mut self,
+        caustics: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Water Caustics Generation Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           caustics,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
                     store: wgpu::StoreOp::Store,
                 },
             })],

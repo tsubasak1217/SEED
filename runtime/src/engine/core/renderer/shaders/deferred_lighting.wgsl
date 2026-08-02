@@ -90,6 +90,13 @@ struct CameraUniform {
 // バインディングから自動導出される（pipeline_config::reflect_bgls）ため、削除すると create_gbuffer_bind_group
 // が供給する binding 11 とレイアウトが食い違う。将来 binding を整理するなら Rust 側も同時に直すこと。
 @group(1) @binding(11) var s_shadow_mask: sampler;
+// ── 水中コースティクス入力（Phase W5.3）: フル解像度 1ch（R16Float）────────────────
+// コースティクス生成パス（caustics.wgsl）が焼いた集光係数。**フル解像度で 1:1 対応**なので
+// サンプラーは追加せず `textureLoad` で読む（バイリニア補間は輝線をにじませるだけで益がない）。
+// 機能 OFF のフレームは 1x1 のダミー（黒）がバインドされるが、**WGSL 仕様では範囲外の
+// textureLoad はゼロを返す**ため、1x1 でも全画面が caustics=0（＝増幅なし）になる。
+// つまり「無効時に何を挿すか」でシェーダ側の分岐を増やす必要がない。
+@group(1) @binding(12) var t_caustics: texture_2d<f32>;
 
 // ─── フルスクリーン三角形の頂点定数 ───────────────────────────
 //
@@ -303,6 +310,9 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // ダミーがバインドされていても無害。1 フレーム遅延方式（前フレームの HDR から計算した結果）。
     let ssgi = textureSampleLevel(t_ssgi, s_ssgi, uv, 0.0).rgb;
     s.screen_gi     = vec4<f32>(ssgi, 1.0);
+    // 水中コースティクス（Phase W5.3）。フル解像度 1:1 なので textureLoad で直接引く。
+    // 機能 OFF のダミー 1x1 では範囲外ロード＝0 が返り、増幅なしになる（上の宣言コメント参照）。
+    s.caustics      = textureLoad(t_caustics, pix, 0).r;
 
     // ── RT ソフト影マスク（Phase RT-Shadow-Denoise）: 深度考慮アップサンプル（joint bilateral）──
     // 従来は半解像度 4 レイヤを s_shadow_mask（Filtering）でそのままバイリニア拡大していたが、

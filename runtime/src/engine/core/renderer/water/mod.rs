@@ -77,7 +77,10 @@ pub const SHORE_FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16F
 /// 水面パスと ID パスの両方がこれを**先頭に**連結する（Phase W5.1）。
 /// 連結順は TOML の `shader_sources` が正典で、WGSL は宣言前の識別子を
 /// 参照できないため共有モジュールが必ず先でなければならない。
-fn resolve_water_shader(name: &str) -> &'static str {
+/// （`pub(super)`）コースティクス生成パス（Phase W5.3）も同じ高さ場モジュールを連結するため、
+/// renderer モジュール内から参照できるようにしてある。**実体はここが唯一**で、
+/// `caustics.rs` のリゾルバは `water_height_field.wgsl` をここへ委譲する。
+pub(super) fn resolve_water_shader(name: &str) -> &'static str {
     match name {
         "water_height_field.wgsl" => include_str!("../shaders/water_height_field.wgsl"),
         "water_surface.wgsl"      => include_str!("../shaders/water_surface.wgsl"),
@@ -654,6 +657,56 @@ impl WaterRenderer {
         true
     }
 
+    // ── 他パスへのリソース公開（Phase W5.3）────────────────────────
+    //
+    // コースティクス生成パス（`renderer::caustics`）は、水面パスと**同じ高さ場**を
+    // 評価するために group1/group2 の中身（水パラメータ配列・ショアフィールド・波紋の場）を
+    // 必要とする。ただし **BindGroup オブジェクトそのものは使い回せない**:
+    // パイプラインごとに WGSL リフレクションが返す BindGroupLayout が違う（宣言している
+    // binding の集合が違う）ため、レイアウト非互換で bind に失敗する。
+    // ID パスが既に同じ理由で専用の BindGroup を作っているのと同じ事情である。
+    // よって「リソースだけを公開し、BindGroup は各パスが自分のレイアウトで組む」。
+    // 公開の流儀は `InteractionFieldRenderer` のアクセサ（`field_view()` 等）に合わせる。
+
+    /// 水パラメータのストレージバッファ（`prepare` が `true` を返したフレームでのみ `Some`）。
+    pub fn params_buffer(&self) -> Option<&wgpu::Buffer> {
+        self.params_buf.as_ref()
+    }
+
+    /// ショアフィールド配列テクスチャのビュー（未確保のフレームは 1×1 のフォールバック）。
+    pub fn shore_texture_view(&self) -> &wgpu::TextureView {
+        self.shore_view.as_ref().unwrap_or(&self.fallback_shore_view)
+    }
+
+    /// ショアフィールド用サンプラー（線形・ClampToEdge）。
+    pub fn shore_sampler(&self) -> &wgpu::Sampler {
+        &self.shore_sampler
+    }
+
+    /// 汎用フォールバックサンプラー（線形・ClampToEdge）。
+    /// 波紋の場が未構築のフレームで group2 のサンプラースロットを埋めるために使う。
+    pub fn fallback_sampler(&self) -> &wgpu::Sampler {
+        &self.sampler
+    }
+
+    /// 波紋の場が無いフレーム用の 1×1 ゼロテクスチャのビュー。
+    pub fn fallback_field_view(&self) -> &wgpu::TextureView {
+        &self.fallback_field_view
+    }
+
+    /// 波紋の場が無いフレーム用のゼロ UBO（`inv_extent = 0` ＝ 常に窓外＝波紋ゼロ）。
+    pub fn fallback_field_uniform(&self) -> &wgpu::Buffer {
+        &self.fallback_field_uniform
+    }
+
+    /// このフレームのクアッド（Ocean / Region）インスタンス数。
+    ///
+    /// パラメータ配列は `[クアッド…, 川…]` の順なので、コースティクスの水域探索は
+    /// **先頭からこの個数だけ**を走査すればよい（川リボンは対象外）。
+    pub fn quad_count(&self) -> u32 {
+        self.quad_count
+    }
+
     /// シーン HDR を屈折背景グラブへコピーする（水面パスの **直前・レンダーパス外**で呼ぶ）。
     ///
     /// メインパス・WBOIT 合成の後に呼ぶことで、スカイボックスも既存半透明も
@@ -858,8 +911,32 @@ mod tests {
         let id      = field_names(&id_src());
         assert_eq!(surface, id,
             "water_surface.wgsl と water_id.wgsl の WaterParams フィールド順が食い違っている");
-        assert_eq!(surface.len(), 16,
-            "Rust 側 WaterParams（vec4 16 本）と本数を揃えること");
+        // Phase W5.3（水中コースティクス）で `caustics` を足して 17 本になった。
+        assert_eq!(surface.len(), 17,
+            "Rust 側 WaterParams（vec4 17 本）と本数を揃えること");
+    }
+
+    /// WGSL 側 `WaterParams` の **naga 実測サイズ**が Rust 側と一致すること。
+    ///
+    /// フィールド名の一致（上のテスト）だけでは、型を取り違えた／vec3 を混ぜたといった
+    /// 「名前は同じだがオフセットがずれる」退行を検出できない。ストレージバッファは
+    /// 配列ストライドがずれた瞬間に**全水域のパラメータが総崩れ**になるため、
+    /// バイト数そのものを契約として固定する（Phase W5.3 で `caustics` を足した際に追加）。
+    #[test]
+    fn wgsl_water_params_size_matches_rust() {
+        let src = resolve_water_shader("water_height_field.wgsl");
+        let module = naga::front::wgsl::parse_str(src)
+            .expect("water_height_field.wgsl の parse に失敗");
+        let (handle, _) = module.types.iter()
+            .find(|(_, t)| t.name.as_deref() == Some("WaterParams"))
+            .expect("WGSL に struct WaterParams が見つかりません");
+        let mut layouter = naga::proc::Layouter::default();
+        layouter.update(module.to_ctx()).expect("naga Layouter の計算に失敗");
+        assert_eq!(
+            layouter[handle].size as usize,
+            std::mem::size_of::<super::WaterParams>(),
+            "WGSL の WaterParams サイズが Rust 側と一致しません（配列ストライドが壊れる）",
+        );
     }
 
     /// 川（Phase W4）の描画経路が両シェーダに生きていること。
