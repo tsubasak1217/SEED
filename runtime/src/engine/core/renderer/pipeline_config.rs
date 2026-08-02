@@ -31,6 +31,17 @@ pub struct PipelineConfig {
     /// 値より大きい group 番号は無視され、宣言されていない group は空 BGL で埋める。
     pub num_bind_groups: Option<u32>,
 
+    /// **テクスチャ・サンプラーを頂点シェーダからも可視にする** bind group 番号のリスト。
+    ///
+    /// リフレクションは既定でテクスチャ・サンプラーを FRAGMENT 可視だけにする
+    /// （大多数のパスは頂点段でテクスチャを読まないため、可視性を絞る方が
+    ///   ステージごとのバインド数リミットに優しい）。頂点シェーダから
+    /// `textureSampleLevel` する頂点変位系のパス（水面の Phase W5.1 など）は、
+    /// ここに group 番号を挙げて VERTEX 可視を足すこと。
+    /// **挙げ忘れると「頂点段から見えない binding を使っている」でパイプライン生成が失敗する。**
+    #[serde(default)]
+    pub vertex_visible_groups: Vec<u32>,
+
     #[serde(default = "default_topology")]
     pub topology:   String,  // "TriangleList" | "LineList" | "TriangleStrip"
     #[serde(default = "default_cull")]
@@ -228,7 +239,7 @@ impl<'d> RenderPipelineBuilder<'d> {
         // （シェーダモジュール作成より先に行う。グループ数がデバイスリミットを
         //   超えている場合、wgpu は create_shader_module 時点でパニックするため、
         //   その前に原因が分かるメッセージで検証する）
-        let mut reflected = reflect_bgls(device, &combined);
+        let mut reflected = reflect_bgls(device, &combined, &cfg.vertex_visible_groups);
 
         let num_groups = cfg.num_bind_groups.unwrap_or_else(|| {
             reflected.keys().max().copied().map_or(0, |m| m + 1)
@@ -419,9 +430,14 @@ impl<'d> RenderPipelineBuilder<'d> {
 /// WGSL ソースを naga で解析し、各 bind group のレイアウトを返す。
 ///
 /// バッファ類は `VERTEX_FRAGMENT` 可視、テクスチャ・サンプラーは `FRAGMENT` 可視とする。
+///
+/// `vertex_visible_groups` に挙げた group のテクスチャ・サンプラーだけは
+/// `VERTEX_FRAGMENT` へ広げる（頂点シェーダからサンプルするパス用。TOML 側の
+/// `vertex_visible_groups` を参照）。
 fn reflect_bgls(
-    device: &wgpu::Device,
-    src:    &str,
+    device:                &wgpu::Device,
+    src:                   &str,
+    vertex_visible_groups: &[u32],
 ) -> BTreeMap<u32, wgpu::BindGroupLayout> {
     let module = naga::front::wgsl::parse_str(src)
         .unwrap_or_else(|e| panic!("WGSL parse failed: {e:?}"));
@@ -433,8 +449,14 @@ fn reflect_bgls(
 
         let ty = &module.types[var.ty];
 
-        let Some((wgpu_ty, visibility)) = to_binding_type(&ty.inner, var.space)
+        let Some((wgpu_ty, mut visibility)) = to_binding_type(&ty.inner, var.space)
             else { continue };
+
+        // 頂点段からサンプルする group は VERTEX 可視を足す（既定は FRAGMENT のみ）。
+        // 可視性を広げるだけなので、フラグメント側の挙動は一切変わらない。
+        if vertex_visible_groups.contains(&rb.group) {
+            visibility |= wgpu::ShaderStages::VERTEX;
+        }
 
         groups.entry(rb.group).or_default().push(wgpu::BindGroupLayoutEntry {
             binding:    rb.binding,

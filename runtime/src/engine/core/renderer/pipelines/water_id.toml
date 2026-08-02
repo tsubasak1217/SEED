@@ -9,11 +9,16 @@
 #   depth_write   = false        … 水面は深度を書かない（後続のギズモ ID 描画を汚さない）
 #
 # cull_mode = "None": 水面を裏側（水中）から見たときもピックできるようにする。
-shader_sources  = ["water_id.wgsl"]
+# shader_sources: 水面パスとまったく同じ形状・高さ場モジュールを連結する
+# （＝見えている波とクリックできる波が食い違わない。Phase W5.1）。
+shader_sources  = ["water_height_field.wgsl", "water_id.wgsl"]
 vertex_entry    = "vs_water_id"
 fragment_entry  = "fs_water_id"
 vertex_slots    = []
-num_bind_groups = 2
+# group2（波紋の場）まで使う（共有モジュールが宣言している）。
+num_bind_groups = 3
+# 頂点変位で group1/2 のテクスチャを頂点段から読む（water_surface.toml と同じ理由）。
+vertex_visible_groups = [1, 2]
 
 topology        = "TriangleList"
 cull_mode       = "None"

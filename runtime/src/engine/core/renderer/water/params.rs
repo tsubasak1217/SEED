@@ -9,6 +9,7 @@
 
 use crate::engine::water::ResolvedWaterVolume;
 use crate::engine::components::water_volume_component::WaterVolumeKind;
+use super::tessellation::{WATER_GRID_WARP_OFF, WATER_GRID_WARP_ON};
 
 /// 1 ドローで描ける水ボリュームの最大数。
 /// これを超えた分は切り捨てる（描画順の先頭から採用）。
@@ -34,10 +35,12 @@ pub const WATER_INSTANCE_QUAD: f32 = 0.0;
 /// **`water_surface.wgsl` / `water_id.wgsl` の `WATER_INSTANCE_RIVER` と一致必須。**
 pub const WATER_INSTANCE_RIVER: f32 = 1.0;
 
-/// 水面クアッド 1 枚を描くための頂点数（三角形 2 枚 = 6 頂点）。
-/// 頂点バッファを持たず `draw(0..この値, 0..N)` で描くため、WGSL 側の
-/// `WATER_QUAD_VERTEX_COUNT`（water_surface.wgsl / water_id.wgsl）と一致させること。
-pub const WATER_QUAD_VERTEX_COUNT: u32 = 6;
+/// 水面の格子セル 1 枚を描くための頂点数（三角形 2 枚 = 6 頂点）。
+///
+/// Phase W5.1 以前は「1 インスタンス = 1 クアッド = 6 頂点」だったが、頂点変位のために
+/// 1 インスタンスを格子へ分割したので、この値は**セル 1 枚あたり**の意味になった。
+/// 実際の描画頂点数は `tessellation::grid_vertex_count` が返す。
+pub use super::tessellation::WATER_CELL_VERTEX_COUNT;
 
 /// 波紋フォームしきい値の下限（m 相当）。
 ///
@@ -70,7 +73,13 @@ pub struct WaterParams {
     /// xyz = 水面クアッド中心のワールド座標（y = 水面 Y）／
     /// **w = インスタンス種別**（`WATER_INSTANCE_QUAD` / `WATER_INSTANCE_RIVER`。Phase W4）
     pub center: [f32; 4],
-    /// x,z = クアッドの片側半径（m）／y,w = 未使用
+    /// x,z = クアッドの片側半径（m）／
+    /// **y,w = 格子の分割数（Phase W5.1。y = X 方向／w = Z 方向。川では y = 幅方向／w = 長さ方向）**
+    ///
+    /// W5.1 以前は y,w が未使用の余剰スロットだったので、分割数をここへ同居させることで
+    /// 配列ストライド（vec4 16 本）も WGSL 側の struct 宣言も変えずに済んでいる。
+    /// 値は `set_grid_divisions` で描画直前に書き込む（バケット全体の頂点予算に
+    /// 依存するため、`from_resolved` の時点では確定しない）。
     pub half_extent: [f32; 4],
     /// rgb = 浅場の色／a = 吸収距離（m）
     pub shallow_color: [f32; 4],
@@ -116,8 +125,9 @@ pub struct WaterParams {
     /// z,w = 下流ノードの法線（同上）。
     /// リボンの 4 隅は `p0 ± n0 * 半幅` と `p1 ± n1 * 半幅` で決まる。
     pub river_normal: [f32; 4],
-    /// 解析波の**全体回転**（Phase W6.3）。
-    /// x = cos(方位角)／y = sin(方位角)／z,w = 予約（0）。
+    /// 解析波の**全体回転**（Phase W6.3）＋ 格子の放射状ワープフラグ（Phase W5.1）。
+    /// x = cos(方位角)／y = sin(方位角)／
+    /// **z = 放射状ワープの有効フラグ（`WATER_GRID_WARP_ON` = Ocean のみ）**／w = 予約（0）。
     ///
     /// `wave_direction_deg` をここで cos/sin へ焼いておくのは、
     /// 毎フラグメントで sin/cos を回さないため（値は水域単位の定数）。
@@ -170,9 +180,12 @@ impl WaterParams {
             ),
         };
         let vis = &v.visual;
+        // 格子分割数（half_extent.y/.w）は「バケット全体の頂点予算」で決まるため、
+        // ここでは 1 分割（＝W5.1 以前と同じ 1 枚クアッド）を入れておき、
+        // 描画直前に `set_grid_divisions` で上書きする。
         Self {
             center:      [cx, v.surface_y, cz, WATER_INSTANCE_QUAD],
-            half_extent: [hx, 0.0, hz, 0.0],
+            half_extent: [hx, 1.0, hz, 1.0],
             shallow_color: [
                 vis.shallow_color[0], vis.shallow_color[1], vis.shallow_color[2],
                 vis.absorption_distance,
@@ -219,10 +232,18 @@ impl WaterParams {
                 None => [0.0, 0.0, 0.0, SHORE_LAYER_NONE],
             },
             // 解析波の全体回転（Phase W6.3）。度 → ラジアン → cos/sin を CPU で焼く。
-            // z,w は予約（0）。
+            // z = 格子の放射状ワープフラグ（Phase W5.1）。**Ocean だけ有効**にする:
+            //   Ocean は「カメラ追従の巨大クアッド」なので一様分割では近傍が粗すぎるが、
+            //   Region / 川は面積相応の一様分割で足りるうえ、ワープを掛けると
+            //   水域の中央だけ異様に細かくなって頂点が無駄になる。
+            // w は予約（0）。
             wave_axis: {
                 let rad = vis.wave_direction_deg.to_radians();
-                [rad.cos(), rad.sin(), 0.0, 0.0]
+                let warp = match v.kind {
+                    WaterVolumeKind::Ocean => WATER_GRID_WARP_ON,
+                    _                      => WATER_GRID_WARP_OFF,
+                };
+                [rad.cos(), rad.sin(), warp, 0.0]
             },
             // クアッド（Ocean / Region）は川のフィールドを使わない。
             river_p0:      [0.0; 4],
@@ -260,7 +281,8 @@ impl WaterParams {
             (a.pos[2] + b.pos[2]) * 0.5,
             WATER_INSTANCE_RIVER,
         ];
-        p.half_extent   = [half_width, 0.0, half_width, 0.0];
+        // y,w（格子分割数）は `set_grid_divisions` が後から上書きする。
+        p.half_extent   = [half_width, 1.0, half_width, 1.0];
         p.river_p0      = [a.pos[0], a.pos[1], a.pos[2], half_width];
         p.river_p1      = [b.pos[0], b.pos[1], b.pos[2], flow_speed];
         p.river_normal  = [a.normal[0], a.normal[1], b.normal[0], b.normal[1]];
@@ -269,6 +291,22 @@ impl WaterParams {
         // 区間境界で連続になり、水面模様の継ぎ目が消える。
         p.river_tangent = [a.tangent[0], a.tangent[1], b.tangent[0], b.tangent[1]];
         p
+    }
+
+    /// 格子の分割数を書き込む（Phase W5.1）。
+    ///
+    /// クアッドなら (X 方向, Z 方向)、川なら (幅方向, 長さ方向)。
+    /// 同じバケット（1 ドロー）のインスタンスには**必ず同じ値**を入れること。
+    /// 1 ドローの頂点数は 1 つしか指定できないので、値が食い違うと
+    /// 「頂点が足りないインスタンス」＝格子の一部が描かれない、が起きる。
+    pub fn set_grid_divisions(&mut self, div_x: u32, div_z: u32) {
+        self.half_extent[1] = div_x.max(1) as f32;
+        self.half_extent[3] = div_z.max(1) as f32;
+    }
+
+    /// このインスタンスの格子分割数（`set_grid_divisions` で書いた値）。
+    pub fn grid_divisions(&self) -> (u32, u32) {
+        (self.half_extent[1] as u32, self.half_extent[3] as u32)
     }
 }
 
@@ -312,7 +350,10 @@ mod tests {
         };
         let p = WaterParams::from_resolved(&ocean, [10.0, 5.0, -20.0], 0, None);
         assert_eq!(p.center, [10.0, 3.0, -20.0, 0.0]);
-        assert_eq!(p.half_extent, [500.0, 0.0, 500.0, 0.0]);
+        // y,w は格子分割数のスロット（Phase W5.1。既定は 1 分割で、描画直前に上書きされる）。
+        assert_eq!(p.half_extent, [500.0, 1.0, 500.0, 1.0]);
+        // Ocean だけ放射状ワープが有効になる（カメラ追従の巨大クアッドのため）。
+        assert_eq!(p.wave_axis[2], WATER_GRID_WARP_ON, "Ocean はワープ有効");
 
         let region = ResolvedWaterVolume {
             kind: WaterVolumeKind::Region, surface_y: 2.0,
@@ -321,7 +362,8 @@ mod tests {
         };
         let q = WaterParams::from_resolved(&region, [10.0, 5.0, -20.0], 0, None);
         assert_eq!(q.center, [1.0, 2.0, 2.0, 0.0]);
-        assert_eq!(q.half_extent, [4.0, 0.0, 6.0, 0.0]);
+        assert_eq!(q.half_extent, [4.0, 1.0, 6.0, 1.0]);
+        assert_eq!(q.wave_axis[2], WATER_GRID_WARP_OFF, "Region はワープ無効（一様分割）");
     }
 
     /// 波紋パラメータは fresnel.zw へ詰められ、危険な値は下限で切られること（Phase I2）。
@@ -381,7 +423,8 @@ mod tests {
         let p = WaterParams::from_resolved(&v, [0.0; 3], 0, None);
         assert!(p.wave_axis[0].abs() < 1e-6, "cos(90°) ≒ 0（実際 {}）", p.wave_axis[0]);
         assert!((p.wave_axis[1] - 1.0).abs() < 1e-6, "sin(90°) = 1（実際 {}）", p.wave_axis[1]);
-        assert_eq!([p.wave_axis[2], p.wave_axis[3]], [0.0, 0.0], "z,w は予約（0）");
+        // z = 放射状ワープフラグ（Region なので無効）／w は予約（0）。
+        assert_eq!([p.wave_axis[2], p.wave_axis[3]], [WATER_GRID_WARP_OFF, 0.0]);
 
         // 既定 0 度は無回転（cos=1, sin=0）＝旧シーンの見た目がそのまま保たれる。
         let mut zero = visual;
@@ -451,12 +494,15 @@ mod tests {
     /// なるだけで誰も気づかないため、文字列で押さえる。
     #[test]
     fn water_shader_consumes_interaction_field() {
-        let src = include_str!("../shaders/water_surface.wgsl");
+        // Phase W5.1 で「場のサンプル」は共有モジュールへ移った
+        // （頂点段からも読むため。連結後は水面パス・ID パスの両方に含まれる）。
+        let src = include_str!("../shaders/water_height_field.wgsl");
         assert!(src.contains("@group(2) @binding(0) var  t_interaction:"),
             "水面シェーダが波紋の場（group2）を宣言していない");
         assert!(src.contains("fn water_ripple_gradient("),
             "波紋の勾配（法線摂動）が消えている");
-        assert!(src.contains("ripple_foam"),
+        // 航跡フォームは「色の話」なので水面本体側に残っている。
+        assert!(include_str!("../shaders/water_surface.wgsl").contains("ripple_foam"),
             "航跡フォームが消えている");
     }
 
