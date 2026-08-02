@@ -93,8 +93,8 @@ const WATER_IOR: f32 = 1.333;
 /// 太陽光をほぼ鉛直入射と近似すると、水面の傾き（勾配）θ に対して屈折光線は
 /// スネルの法則より `θ − asin(sinθ / n) ≒ θ (1 − 1/n)` だけ傾く。
 /// したがって水深 d の点へ届く光が通った水面位置は、その点の真上から
-/// **勾配 × d × (1 − 1/n)** だけずれている。集光の計算はこのずらした位置で行う。
-/// 同じ係数が「傾きが水深ぶん進む間にどれだけ光線を寄せるか」＝収束ゲインにも掛かる。
+/// **勾配 × d × (1 − 1/n)** だけずれている。集光の計算はこのずらした位置で行う
+/// （収束ゲイン自体は振幅正規化の形状式へ置き換えたため、この係数は屈折オフセット専用）。
 const CAUSTICS_REFRACT_K: f32 = 1.0 - 1.0 / WATER_IOR;
 
 /// 細かさ倍率の下限（無次元）。0 以下だと差分ステップが発散するので切る。
@@ -115,6 +115,20 @@ const CAUSTICS_SHARPNESS: f32 = 2.5;
 
 /// 深度フェード距離の下限（m）。0 除算の防止。
 const CAUSTICS_DEPTH_FADE_MIN: f32 = 1.0e-2;
+
+/// 振幅正規化の下限（m）。
+///
+/// 集光係数は波の**形状**（振幅で正規化したラプラシアン）から作る。
+/// 解析波の振幅が 0 でも波紋・岸波が高さ場に残ることがあるため、
+/// 0 除算と過剰増幅をこの下限（5mm）で防ぐ。
+const CAUSTICS_AMP_MIN: f32 = 5.0e-3;
+
+/// 正規化後の集光形状に掛けるコントラスト係数（無次元）。
+///
+/// `focus = −∇²h · step² / 振幅` は「1 周期あたりの曲がり具合」を表す無次元量で、
+/// 波長がステップに対して長いほど小さくなる（波長 λ の正弦波で `(2π·step/λ)²`）。
+/// 既定ステップ 0.35m・数 m 級の波長で saturate 前に 0.3〜1.0 程度へ乗るよう 1.5 とした。
+const CAUSTICS_CONTRAST: f32 = 1.5;
 
 /// 出力ゲイン（無次元）。強度 1.0 のときに直達光を何倍まで増幅しうるかの目安。
 /// 消費側（`lighting_eval.wgsl`）は `radiance × (1 + caustics)` で使う。
@@ -236,10 +250,17 @@ fn fs_caustics(@builtin(position) frag: vec4<f32>) -> @location(0) f32 {
     let hzm = water_surface_height(p, sxz - vec2<f32>(0.0, sample_step), flow_dir, t);
     let lap = (hxp + hxm + hzp + hzm - 4.0 * h0) / (sample_step * sample_step);
 
-    // 収束ゲイン。負のラプラシアン（凸の峰）ほど強く集光する。
-    let focus = -lap * d * CAUSTICS_REFRACT_K;
+    // 集光の「形状」。負のラプラシアン（凸の峰）ほど強く集光する。
+    //
+    // 【物理式からの意図的な乖離】物理的な収束は `−∇²h · d · K` だが、この式は
+    // 振幅×深さに比例するため、現実的なパラメータ（振幅 1〜2cm・波長数 m の池）では
+    // ほぼゼロになり模様が見えない。ここでは**振幅とステップで正規化した無次元の形状**
+    // を使い、「模様の見えやすさ」を波の物理量から切り離す。強さはユーザーの
+    // caustics_intensity が一手に握る（深さの寄与はフェードのみに残す）。
+    let amp   = max(p.wave.x, CAUSTICS_AMP_MIN);
+    let focus = -lap * sample_step * sample_step / amp;
     // シャープ化（輝線を細く鋭く走らせるための定石）。負の側（発散＝影）は 0 に潰す。
-    let c = pow(saturate(focus), CAUSTICS_SHARPNESS);
+    let c = pow(saturate(focus * CAUSTICS_CONTRAST), CAUSTICS_SHARPNESS);
     // 深度フェード。実際の水中でも集光は数 m で拡散して消える。
     let fade = exp(-d / max(p.caustics.z, CAUSTICS_DEPTH_FADE_MIN));
 
