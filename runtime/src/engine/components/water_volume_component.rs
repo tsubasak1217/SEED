@@ -80,6 +80,29 @@ fn default_ripple_strength() -> f32 { 1.0 }
 /// 歩行が立てる波（振幅 0.03 前後）では泡が出ず、走り・飛び込みで出る値。
 fn default_ripple_foam_threshold() -> f32 { 0.05 }
 
+// ─── 水中コースティクス（Phase W5.3）の既定値 ─────────────────
+//
+// コースティクス（集光模様）は「水面の高さ場のラプラシアン × 水深」から作る
+// 描画専用パラメータで、挙動（浮力・流れ・問い合わせ）には一切影響しない。
+// 既定は「水域を置けばそのまま水底に網目が走る」値にしてある。
+// **描画専用なのでインスペクタ UI・スクリプト API へは公開しない**
+//（見た目の微調整はシーン JSON を直接触るか、将来 UI を足すときにまとめて行う）。
+
+/// caustics_intensity の既定値（集光模様の強さ）。**0 で完全無効**。
+///
+/// 直達光に対する最大増幅率は `強度 × CAUSTICS_OUTPUT_GAIN`（caustics.wgsl）で、
+/// 0.6 は「水底が明らかに揺らいで見えるが白飛びしない」ところ。
+fn default_caustics_intensity() -> f32 { 0.6 }
+/// caustics_scale の既定値（模様の細かさ倍率。1.0 = 標準）。
+///
+/// 大きいほど差分ステップが小さくなり、高周波成分＝細かい網目を拾う。
+fn default_caustics_scale() -> f32 { 1.0 }
+/// caustics_depth_fade の既定値（水面からこの距離 m で模様がほぼ消える）。
+///
+/// 実際の水中でも集光は数 m で拡散して消えるため、深い水域の底まで
+/// 網目が届き続けないようにする指数フェードの距離定数。
+fn default_caustics_depth_fade() -> f32 { 6.0 }
+
 // ─── 岸波（ショアフィールド。Phase W1.5）の既定値 ────────────
 //
 // 既定は「Ocean に付ければそのまま浜へ寄せる波が出る」値にしてある。
@@ -250,6 +273,15 @@ pub struct WaterVolumeComponentData {
     /// 波紋フォームが出る波高しきい値（m 相当。Phase I2）
     #[serde(default = "default_ripple_foam_threshold")]
     pub ripple_foam_threshold: f32,
+    /// 水中コースティクス（集光模様）の強さ。**0 で完全無効**（Phase W5.3）
+    #[serde(default = "default_caustics_intensity")]
+    pub caustics_intensity: f32,
+    /// コースティクスの細かさ倍率（大きいほど細かい網目。Phase W5.3）
+    #[serde(default = "default_caustics_scale")]
+    pub caustics_scale: f32,
+    /// 水面からこの距離（m）進むとコースティクスがほぼ消える（Phase W5.3）
+    #[serde(default = "default_caustics_depth_fade")]
+    pub caustics_depth_fade: f32,
     /// 岸波（ショアフィールド）の強さ。**0 で完全無効**（Phase W1.5）
     #[serde(default = "default_shore_wave_strength")]
     pub shore_wave_strength: f32,
@@ -339,6 +371,10 @@ impl Default for WaterVolumeComponentData {
             refraction_distortion: default_refraction_distortion(),
             ripple_strength:       default_ripple_strength(),
             ripple_foam_threshold: default_ripple_foam_threshold(),
+            // 水中コースティクス（Phase W5.3。描画専用パラメータ）。
+            caustics_intensity:    default_caustics_intensity(),
+            caustics_scale:        default_caustics_scale(),
+            caustics_depth_fade:   default_caustics_depth_fade(),
             shore_wave_strength:   default_shore_wave_strength(),
             shore_wave_length:     default_shore_wave_length(),
             shore_wave_period:     default_shore_wave_period(),
@@ -406,6 +442,12 @@ pub struct WaterVolumeComponent {
     pub ripple_strength: f32,
     /// 波紋フォームが出る波高しきい値（m 相当。Phase I2）
     pub ripple_foam_threshold: f32,
+    /// 水中コースティクスの強さ（0 で完全無効。Phase W5.3）
+    pub caustics_intensity: f32,
+    /// コースティクスの細かさ倍率（Phase W5.3）
+    pub caustics_scale: f32,
+    /// コースティクスが消える水深（m。Phase W5.3）
+    pub caustics_depth_fade: f32,
     /// 岸波の強さ（0 で完全無効。Phase W1.5）
     pub shore_wave_strength: f32,
     /// 岸へ寄せるうねりの波長（m。Phase W1.5）
@@ -453,6 +495,9 @@ impl WaterVolumeComponent {
             refraction_distortion: data.refraction_distortion,
             ripple_strength:       data.ripple_strength,
             ripple_foam_threshold: data.ripple_foam_threshold,
+            caustics_intensity:    data.caustics_intensity,
+            caustics_scale:        data.caustics_scale,
+            caustics_depth_fade:   data.caustics_depth_fade,
             shore_wave_strength:   data.shore_wave_strength,
             shore_wave_length:     data.shore_wave_length,
             shore_wave_period:     data.shore_wave_period,
@@ -490,6 +535,9 @@ impl WaterVolumeComponent {
             refraction_distortion: self.refraction_distortion,
             ripple_strength:       self.ripple_strength,
             ripple_foam_threshold: self.ripple_foam_threshold,
+            caustics_intensity:    self.caustics_intensity,
+            caustics_scale:        self.caustics_scale,
+            caustics_depth_fade:   self.caustics_depth_fade,
             shore_wave_strength:   self.shore_wave_strength,
             shore_wave_length:     self.shore_wave_length,
             shore_wave_period:     self.shore_wave_period,
@@ -562,6 +610,14 @@ mod tests {
         assert_eq!(d.refraction_distortion, def.refraction_distortion);
         assert_eq!(d.ripple_strength, def.ripple_strength);
         assert_eq!(d.ripple_foam_threshold, def.ripple_foam_threshold);
+        // 水中コースティクス（Phase W5.3）。旧 .scene にフィールドが無くても
+        // 既定値（0.6 / 1.0 / 6.0）が入り、読み込みが失敗しないこと。
+        assert_eq!(d.caustics_intensity, def.caustics_intensity);
+        assert_eq!(d.caustics_scale, def.caustics_scale);
+        assert_eq!(d.caustics_depth_fade, def.caustics_depth_fade);
+        assert_eq!(d.caustics_intensity, 0.6);
+        assert_eq!(d.caustics_scale, 1.0);
+        assert_eq!(d.caustics_depth_fade, 6.0);
         assert_eq!(d.shore_wave_strength, def.shore_wave_strength);
         assert_eq!(d.shore_wave_length, def.shore_wave_length);
         assert_eq!(d.shore_wave_period, def.shore_wave_period);
@@ -610,6 +666,9 @@ mod tests {
             refraction_distortion: 0.07,
             ripple_strength: 1.5,
             ripple_foam_threshold: 0.2,
+            caustics_intensity: 0.35,
+            caustics_scale: 2.5,
+            caustics_depth_fade: 9.5,
             shore_wave_strength: 0.75,
             shore_wave_length: 9.5,
             shore_wave_period: 3.25,
@@ -643,6 +702,9 @@ mod tests {
         assert_eq!(back.refraction_distortion, src.refraction_distortion);
         assert_eq!(back.ripple_strength, src.ripple_strength);
         assert_eq!(back.ripple_foam_threshold, src.ripple_foam_threshold);
+        assert_eq!(back.caustics_intensity, src.caustics_intensity);
+        assert_eq!(back.caustics_scale, src.caustics_scale);
+        assert_eq!(back.caustics_depth_fade, src.caustics_depth_fade);
         assert_eq!(back.shore_wave_strength, src.shore_wave_strength);
         assert_eq!(back.shore_wave_length, src.shore_wave_length);
         assert_eq!(back.shore_wave_period, src.shore_wave_period);

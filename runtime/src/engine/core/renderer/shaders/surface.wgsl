@@ -167,6 +167,16 @@ struct Surface {
     /// light.shadow_mask_slot（>=0）が指すレイヤをここから引く（レイを飛ばさずデノイズ済み値を使う）。
     shadow_mask: array<vec4<f32>, SURFACE_SHADOW_MASK_SLOTS>,
 
+    /// 水中コースティクス係数（Phase W5.3）。deferred ライティングパスだけが設定する。
+    /// 0.0 = 水中でない／機能無効（フォワードは `var s: Surface;` のゼロ初期化で常に 0）。
+    ///
+    /// 意味は「このピクセルへ届く**平行光の直達成分**を何倍に増幅するか − 1」であり、
+    /// `lighting_eval.wgsl` が影を掛けた後の radiance へ `× (1 + caustics)` で効かせる。
+    /// 影の中では radiance が既に 0 に近いので自動的に光らない（＝影の中に模様が出ない）。
+    /// 供給元はコースティクス生成パス（`caustics.wgsl`）が焼いたフル解像度 1ch テクスチャで、
+    /// deferred が group1 binding12 から `textureLoad` で 1:1 に読む。
+    caustics: f32,
+
     /// shadow_mask が有効か。1.0=deferred が設定済み（マスク経路を使える）／0.0=無効。
     ///
     /// **フォワード／WBOIT パスはこのフィールドを設定しない**（`var s: Surface;` のゼロ初期化で 0.0）。

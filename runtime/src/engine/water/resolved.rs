@@ -58,6 +58,12 @@ pub struct WaterVisualParams {
     pub ripple_strength: f32,
     /// 波紋フォームが出る波高しきい値（m 相当。Phase I2）
     pub ripple_foam_threshold: f32,
+    /// 水中コースティクスの強さ（0 で完全無効。Phase W5.3）
+    pub caustics_intensity: f32,
+    /// コースティクスの細かさ倍率（Phase W5.3）
+    pub caustics_scale: f32,
+    /// コースティクスが消える水深（m。Phase W5.3）
+    pub caustics_depth_fade: f32,
     /// 岸波の強さ（0 で完全無効。Phase W1.5）
     pub shore_wave_strength: f32,
     /// 岸へ寄せるうねりの波長（m。Phase W1.5）
@@ -89,6 +95,9 @@ impl WaterVisualParams {
             refraction_distortion: c.refraction_distortion,
             ripple_strength:       c.ripple_strength,
             ripple_foam_threshold: c.ripple_foam_threshold,
+            caustics_intensity:    c.caustics_intensity,
+            caustics_scale:        c.caustics_scale,
+            caustics_depth_fade:   c.caustics_depth_fade,
             shore_wave_strength:   c.shore_wave_strength,
             shore_wave_length:     c.shore_wave_length,
             shore_wave_period:     c.shore_wave_period,

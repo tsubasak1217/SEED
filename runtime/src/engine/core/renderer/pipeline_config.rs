@@ -298,6 +298,9 @@ impl<'d> RenderPipelineBuilder<'d> {
             let format = match cfg.color_format.as_str() {
                 "R32Uint"     => wgpu::TextureFormat::R32Uint,
                 "Rgba32Float" => wgpu::TextureFormat::Rgba32Float,
+                // 1 チャネル HDR（水中コースティクスの集光係数。Phase W5.3）。
+                // 値域は 0..CAUSTICS_MAX_GAIN なので f16 の精度で十分足りる。
+                "R16Float"    => wgpu::TextureFormat::R16Float,
                 _             => surface_format,
             };
             let blend = match cfg.blend.as_str() {

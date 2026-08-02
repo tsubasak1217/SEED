@@ -170,6 +170,10 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "ssgi_common.wgsl"           => include_str!("shaders/ssgi_common.wgsl"),
         "ssgi_gen.wgsl"              => include_str!("shaders/ssgi_gen.wgsl"),
         "ao_rt.wgsl"                 => include_str!("shaders/ao_rt.wgsl"),
+        // 水中コースティクス生成パス（Phase W5.3）。連結相手の
+        // `water_height_field.wgsl` は water モジュールが正典なので、
+        // caustics.rs 側のリゾルバがそちらへ委譲する（二重管理を作らない）。
+        "caustics.wgsl"              => include_str!("shaders/caustics.wgsl"),
         // RT ソフト影マスク生成（Phase RT-Shadow-Denoise）。
         "shadow_mask.wgsl"           => include_str!("shaders/shadow_mask.wgsl"),
         other => panic!("unknown shader source: {other}"),
@@ -1719,6 +1723,11 @@ pub struct DrawPipelines {
     /// （group4 に TLAS を含む rt.lights_bgl を借用するため）。deferred 有効かつ RT 影オンかつソフト影
     /// ライトがあるときだけ frame_renderer が使う。
     pub shadow_mask:          Option<super::shadow_mask::ShadowMaskPipelines>,
+    /// 水中コースティクス生成パス（Phase W5.3）。deferred 有効かつ水域があるフレームだけ
+    /// frame_renderer が使う（G-Buffer 深度 → 水中判定 → 集光係数 → deferred の Surface.caustics）。
+    /// 常時構築するのは、機能 OFF 時に deferred の group1 binding12 を埋めるダミー 1x1 を
+    /// ここが持っているため（パイプライン自体の構築コストは起動時 1 回きり）。
+    pub caustics:             super::caustics::CausticsPipelines,
 }
 
 impl DrawPipelines {
@@ -1810,11 +1819,13 @@ impl DrawPipelines {
         // SSGI（Phase SSGI）。deferred の camera_bgl/gbuffer_bgl を借りるため deferred の後に呼ぶ。
         // ダミー 1x1 の初期化に queue を使う（SSGI 非使用時の t_ssgi スロット用）。
         let ssgi                  = super::ssgi::SsgiPipelines::new(device, queue, &deferred, cache);
+        // 水中コースティクス（Phase W5.3）。水面パスと同じ高さ場モジュールを連結する独立パス。
+        let caustics              = super::caustics::CausticsPipelines::new(device, queue, cache);
         // RT ソフト影マスク（Phase RT-Shadow-Denoise）。RT 対応 GPU（rt=Some）でのみ構築する
         // （group4 に TLAS を含む rt.lights_bgl を借用するため）。deferred の後に呼ぶ。
         let shadow_mask           = rt.as_ref().map(|r| {
             super::shadow_mask::ShadowMaskPipelines::new(device, &deferred, &r.lights_bgl, cache)
         });
-        Self { mesh, skinned_mesh, rt, unlit_line, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, velocity_debug, gbuffer_debug, reflection, ao, ssgi, shadow_mask }
+        Self { mesh, skinned_mesh, rt, unlit_line, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, velocity_debug, gbuffer_debug, reflection, ao, ssgi, shadow_mask, caustics }
     }
 }
