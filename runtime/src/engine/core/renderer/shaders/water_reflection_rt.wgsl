@@ -165,13 +165,8 @@ fn fs_water_reflection(in: WaterReflVsOut) -> @location(0) vec4<f32> {
 
     var reflected: vec3<f32>;
     if hit.kind == RAY_QUERY_INTERSECTION_NONE {
-        // ── ミス：まず「画面内に写っている空」を狙う（スカイボックスが映る唯一の経路）──
-        let sky = water_refl_screen_sky(desc.origin, s.r);
-        if sky.valid {
-            reflected = sky.color;
-        } else {
-            reflected = water_refl_env(s.world_pos, s.r);
-        }
+        // ── ミス：画面内の空 → 天球テクスチャ → GI の順で拾う（共通の窓口）──
+        reflected = water_refl_miss(desc.origin, s.world_pos, s.r);
     } else {
         let hit_pos = desc.origin + s.r * hit.t;
         // ヒット面の法線は持てない（頂点法線メガバッファは本パスにバインドしていない）ので、
@@ -212,7 +207,8 @@ fn fs_water_reflection(in: WaterReflVsOut) -> @location(0) vec4<f32> {
         }
     }
 
-    // A に強度を入れる（水面パスが `fresnel × a` で混ぜる）。
+    // 出力は **プリマルチプライド**（rgb = 反射色 × 強度 / a = 強度）。
+    // 詳細は `water_reflection_common.wgsl::water_refl_output` のコメントを参照。
     // パスが走らなかったフレームは RT がクリア値 0 のまま＝反射寄与ゼロになる。
-    return vec4<f32>(reflected, s.intensity);
+    return water_refl_output(reflected, s.intensity);
 }

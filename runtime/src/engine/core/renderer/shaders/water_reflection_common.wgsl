@@ -71,6 +71,35 @@ struct CameraUniform {
 @group(3) @binding(1) var s_water_scene: sampler;
 @group(3) @binding(2) var t_water_depth: texture_depth_2d;
 
+// ─── Group 3（続き）: スカイボックス（反射のミス経路用）─────────
+//
+// 【なぜグラブとは別にスカイボックス本体が要るのか】
+// レイが何にも当たらなかったとき（＝空へ抜けたとき）、まず「画面内に写っている空」を
+// 射影して拾う（`water_refl_screen_sky`）。しかし**反射方向の空が画面外にある**ことは
+// 頻繁に起きる（カメラが水面を見下ろしていれば、水面が映す空は画面の外＝カメラの背後側）。
+// その場合に GI プローブの平坦色へ落ちると、空が映るべき水面が「のっぺりした一色」になる。
+// そこで**天球テクスチャを直接サンプル**する経路を持たせる（`water_refl_skybox`）。
+// スカイボックスが 1 つも無いシーンでは `enabled = 0` のダミーが挿さり、従来どおり
+// GI プローブ／アンビエントへ落ちる（＝挙動は W5.2 当初と同一）。
+//
+// `WaterSkyUniform` は Rust 側 `water_reflection.rs::WaterSkyUniform`（64B）のミラー。
+// **skybox.wgsl の SkyboxUniform とは別物**（あちらは球メッシュの配置行列を持つ描画用。
+// こちらは「ワールド方向 → 天球ローカル方向」の逆回転と実効色だけを持つサンプル用）。
+struct WaterSkyUniform {
+    /// ワールド → 天球ローカルの逆回転行列 第 1 行（.xyz。.w は未使用）。
+    /// CameraLocked は単位行列（ワールド方向でそのままサンプルする）。
+    rot_inv_0: vec4<f32>,
+    /// 同 第 2 行。
+    rot_inv_1: vec4<f32>,
+    /// 同 第 3 行。
+    rot_inv_2: vec4<f32>,
+    /// rgb = tint × intensity（実効色の乗算項）／**a = 有効フラグ（0 でスカイボックス無し）**。
+    tint_enabled: vec4<f32>,
+}
+@group(3) @binding(3) var<uniform> wr_sky:   WaterSkyUniform;
+@group(3) @binding(4) var          t_water_sky: texture_2d<f32>;
+@group(3) @binding(5) var          s_water_sky: sampler;
+
 // ─── Group 4（共通部）: GI プローブとライトメタ ───────────────
 //
 // レイ／マーチが何にも当たらなかったときのフォールバック（環境光）に使う。
@@ -106,19 +135,46 @@ const WATER_REFL_SKY_DEPTH: f32 = 0.999999;
 /// 十分遠ければ値そのものに意味は無い（射影先が画面内かどうかだけが効く）。
 const WATER_REFL_SKY_DISTANCE_M: f32 = 5.0e3;
 
-/// 波のぼけ（`reflection_roughness`）で法線を傾ける最大量（正接方向の倍率）。
+/// 波のぼけ（`reflection_roughness`）でレイ方向を散らす最大量（正接方向の倍率）。
 ///
-/// 1 ピクセル 1 レイなので、粗さは「ぼけ」ではなく **散り**として出る。
-/// 0.2 は「水面が細かくざらついて反射像が滲む」ところで、これ以上大きくすると
-/// 反射がノイズにしか見えなくなる（＝上限として意味のある値）。
+/// 1 ピクセル 1 レイなので、粗さの「ぼけ」は
+///   ① **画面空間ノイズ**で隣接ピクセルのレイ方向を少しずつ散らす（本定数の担当）
+///   ② 反射 RT を粗さ比例の半径で**ぼかす**（`imos_blur` の分離ボックス。CPU 側が記録）
+/// の 2 段で作る。①だけでは粒状ノイズ、②だけでは「同じ像をぼかしただけ」で
+/// 粗い面のブレが出ない。両方でざらついた粗い水面の反射になる。
+///
+/// 0.2 は「反射像が乱れて見えるが元の像は判別できる」上限。
 const WATER_REFL_JITTER_MAX: f32 = 0.2;
 
-/// 粗さジッタのハッシュ格子の細かさ（セル/m）。
+/// Interleaved Gradient Noise（IGN）の係数。Jorge Jimenez, "Next Generation Post Processing
+/// in Call of Duty: Advanced Warfare"（SIGGRAPH 2014）が示した式そのままである。
 ///
-/// ワールド座標で決めるので、カメラが動いてもジッタ模様が画面内を這わない
-/// （＝スクリーン空間ハッシュにありがちなちらつきが出ない）。
-/// 4 セル/m は 25cm 角で、水面のさざ波と同じくらいの空間スケール。
-const WATER_REFL_JITTER_FREQ: f32 = 4.0;
+/// 【なぜワールド座標ハッシュをやめたのか（本フェーズの不具合修正）】
+/// 旧実装は「ワールド XZ を格子セルへ量子化してハッシュ」でレイを散らしていた。
+/// セル内では**まったく同じ方向へ**散るため、粗さを上げるほどセル境界が可視化され、
+/// 反射像が **格子状のパキパキした塊**になっていた（ユーザー報告の症状そのもの）。
+/// IGN は 1 ピクセルごとに値が変わる低不一致ノイズで、格子模様を作らず、
+/// かつボックスブラーとの相性がよい（近傍 N 画素の平均が滑らかな分布になる）。
+/// フレーム座標だけの関数なので時間で変動せず、静止画でちらつかない。
+const WATER_REFL_IGN_A: f32 = 0.06711056;
+const WATER_REFL_IGN_B: f32 = 0.00583715;
+const WATER_REFL_IGN_C: f32 = 52.9829189;
+
+/// 2 本目の IGN を取るための画面座標オフセット（画素）。
+/// 1 本目と相関しない値が要る（同じ式へ無理数的なオフセットを入れて位相をずらす）。
+const WATER_REFL_IGN_OFFSET: vec2<f32> = vec2<f32>(5.588238, 7.117382);
+
+/// 円周率まわり（equirectangular サンプリング用。他モジュールと名前が衝突しないよう接頭辞付き）。
+const WATER_REFL_INV_2PI: f32 = 0.15915494309189; // 1 / (2π)
+const WATER_REFL_INV_PI:  f32 = 0.31830988618379; // 1 / π
+const WATER_REFL_TAU:     f32 = 6.28318530717959; // 2π（ジッタ角の全周）
+
+/// スカイボックス有効フラグ（`wr_sky.tint_enabled.w`）の判定しきい値。
+const WATER_REFL_SKY_ENABLED_EPS: f32 = 0.5;
+
+/// プリマルチプライドの逆算（`rgb / a`）で 0 除算を避ける下限。
+/// 反射強度がこの値以下なら、そもそも反射寄与が見えないので色は使われない。
+const WATER_REFL_UNPREMULT_EPS: f32 = 1.0e-4;
 
 // ─── 頂点シェーダ ────────────────────────────────────────────
 
@@ -233,6 +289,70 @@ fn water_refl_screen_sky(origin: vec3<f32>, dir: vec3<f32>) -> WaterReflSky {
     return s;
 }
 
+/// **天球テクスチャを直接**サンプルする（画面外の空を映すための経路）。
+///
+/// スカイボックスが無いシーンでは `valid = false` を返し、呼び出し側が GI へ落ちる。
+/// equirectangular の UV 変換は `skybox.wgsl::fs_main` と**同一式**である
+/// （経度 = atan2(z, x)/2π + 0.5、緯度 = acos(y)/π。ミップ継ぎ目回避で level 0 固定）。
+/// これを揃えないと「画面内の空（グラブ経由）」と「画面外の空（本経路）」で
+/// 同じ方向なのに違う色が出て、水面に不連続な色の境目が走る。
+fn water_refl_skybox(dir: vec3<f32>) -> WaterReflSky {
+    var s: WaterReflSky;
+    s.color = vec3<f32>(0.0, 0.0, 0.0);
+    s.valid = false;
+    if wr_sky.tint_enabled.w < WATER_REFL_SKY_ENABLED_EPS {
+        return s; // このシーンにスカイボックスが無い（ダミーがバインドされている）。
+    }
+    // ワールド方向 → 天球ローカル方向（CameraLocked は単位行列なので実質そのまま）。
+    let d = normalize(vec3<f32>(
+        dot(wr_sky.rot_inv_0.xyz, dir),
+        dot(wr_sky.rot_inv_1.xyz, dir),
+        dot(wr_sky.rot_inv_2.xyz, dir),
+    ));
+    let u = atan2(d.z, d.x) * WATER_REFL_INV_2PI + 0.5;
+    let v = acos(clamp(d.y, -1.0, 1.0)) * WATER_REFL_INV_PI;
+    s.color = textureSampleLevel(t_water_sky, s_water_sky, vec2<f32>(u, v), 0.0).rgb
+            * wr_sky.tint_enabled.rgb;
+    s.valid = true;
+    return s;
+}
+
+/// レイが何にも当たらなかったときの色（**ミス経路の唯一の窓口**。RT / SSR 共通）。
+///
+/// 優先順位には理由がある:
+///   ① 画面内に写っている空（グラブ）… 本画面とまったく同じ色（Bloom 前の HDR）なので、
+///      水平線近くで「空と水面の反射」が完全に連続する。
+///   ② 天球テクスチャの直接サンプル … 反射方向の空が**画面外**のときの本命。
+///      これが無いと、見下ろし視点の水面（＝映る空はカメラの背後）が GI の平坦色になる。
+///   ③ GI プローブ／アンビエント … スカイボックスが無いシーンのフォールバック。
+fn water_refl_miss(origin: vec3<f32>, world_pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
+    let screen = water_refl_screen_sky(origin, dir);
+    if screen.valid {
+        return screen.color;
+    }
+    let sky = water_refl_skybox(dir);
+    if sky.valid {
+        return sky.color;
+    }
+    return water_refl_env(world_pos, dir);
+}
+
+// ─── 出力規約（両変種で共有）──────────────────────────────────
+
+/// 反射 RT への最終出力を作る（**プリマルチプライド**: rgb = 反射色 × 強度 / a = 強度）。
+///
+/// 【なぜプリマルチプライドなのか（粗さブラーの縁の黒滲み対策）】
+/// 反射 RT は「水面が描かれた画素」だけが書かれ、それ以外はクリア値 0（rgb=0, a=0）である
+/// （水面の外・不透明物に隠れた画素は `discard`）。粗さブラー（`imos_blur`）は
+/// 単純なボックス平均なので、**非プリマルチプライドの rgb をそのまま平均すると
+/// 「反射が無い＝黒」を巻き込み**、水際・岩や船のシルエットの周囲に暗い縁取りが出る。
+/// プリマルチプライド値を平均し、読み手（`water_surface.wgsl`）が `rgb / max(a, ε)` で
+/// 正規化すると、これは **α 重み付き平均**（＝反射のある画素だけの平均）になり縁取りが消える。
+/// ブラーを掛けないフレームでも `rgb/a` は元の色に厳密に戻るので、規約は 1 本で済む。
+fn water_refl_output(color: vec3<f32>, intensity: f32) -> vec4<f32> {
+    return vec4<f32>(color * intensity, intensity);
+}
+
 // ─── 水面フラグメントの下ごしらえ（両変種で共有）────────────────
 
 /// 反射計算に必要な水面 1 点の情報。
@@ -249,24 +369,38 @@ struct WaterReflSurface {
     occluded:  bool,
 }
 
-/// 粗さで法線を傾ける（波によるぼけ）。
+/// Interleaved Gradient Noise（0..1）。引数は**フレームバッファ画素座標**。
+fn water_refl_ign(px: vec2<f32>) -> f32 {
+    return fract(WATER_REFL_IGN_C
+        * fract(WATER_REFL_IGN_A * px.x + WATER_REFL_IGN_B * px.y));
+}
+
+/// 粗さで法線を傾ける（波によるぼけの①＝画面空間ノイズによるレイの散らし）。
 ///
-/// 1 ピクセル 1 レイなので多方向を平均できない。代わりに **ワールド座標のハッシュ**で
-/// 法線を接空間内にわずかに傾け、隣り合うピクセルが少しずつ違う方向を見るようにする
-/// （＝反射像が散って滲む）。ハッシュ格子はワールド固定なのでカメラが動いても模様が這わない。
-/// `roughness = 0` なら `n` をそのまま返す（＝完全な鏡面で、旧来の見た目に戻せる）。
-fn water_refl_jitter_normal(n: vec3<f32>, world_xz: vec2<f32>, roughness: f32) -> vec3<f32> {
+/// 1 ピクセル 1 レイなので、1 画素の中で多方向を平均することはできない。代わりに
+/// **画面空間の IGN** で法線を接空間内にわずかに傾け、隣り合うピクセルが少しずつ違う
+/// 方向を見るようにする。その「隣接ピクセルのばらつき」を後段のボックスブラー（②）が
+/// 平均することで、粗い面の反射ローブに相当するぼけになる。
+///
+/// 散らしは接空間の**円板一様サンプル**（角度＝IGN₁×2π、半径＝√IGN₂）にする。
+/// 2 チャンネルをそのまま直交方向へ足すと正方形状の偏りが出るためである。
+///
+/// `roughness = 0` なら `n` をそのまま返す（＝完全な鏡面。ブラーパスも CPU 側でスキップされ、
+/// 反射は 1 ピクセルの誤差もなく旧来の鏡面と一致する）。
+fn water_refl_jitter_normal(n: vec3<f32>, frag_px: vec2<f32>, roughness: f32) -> vec3<f32> {
     if roughness <= 0.0 {
         return n;
     }
-    let cell = vec2<i32>(floor(world_xz * WATER_REFL_JITTER_FREQ));
-    let h    = water_noise_hash2(cell); // −1..1 の 2 チャンネル
+    let a = water_refl_ign(frag_px);
+    let b_n = water_refl_ign(frag_px + WATER_REFL_IGN_OFFSET);
+    let ang = a * WATER_REFL_TAU; // 角度 0..2π
+    let rad = sqrt(b_n);          // 円板一様（面積比例）
     // 法線に直交する接空間の基底。水面法線はほぼ上向きなので +X 基準で安定する
     //（真横を向くことは無いため、外積が縮退する心配は無い）。
     let t = normalize(cross(n, vec3<f32>(1.0, 0.0, 0.0)) + vec3<f32>(0.0, 0.0, WATER_EPSILON));
-    let b = cross(n, t);
-    let k = clamp(roughness, 0.0, 1.0) * WATER_REFL_JITTER_MAX;
-    return normalize(n + (t * h.x + b * h.y) * k);
+    let bt = cross(n, t);
+    let k = clamp(roughness, 0.0, 1.0) * WATER_REFL_JITTER_MAX * rad;
+    return normalize(n + (t * cos(ang) + bt * sin(ang)) * k);
 }
 
 /// 水面フラグメントの共通の下ごしらえ（波法線・水中判定・手動深度テスト・反射方向）。
@@ -292,9 +426,9 @@ fn water_refl_surface(in: WaterReflVsOut) -> WaterReflSurface {
     let scene_depth = water_refl_load_depth(in.clip.xy);
     s.occluded      = scene_depth < in.clip.z;
 
-    // ③ 反射方向（粗さジッタ込み）。
+    // ③ 反射方向（粗さジッタ込み。ジッタは**画面空間**の IGN で散らす）。
     let v_dir = normalize(u_camera.position - in.world_pos);
-    let n_j   = water_refl_jitter_normal(n, in.world_pos.xz, p.reflection.y);
+    let n_j   = water_refl_jitter_normal(n, in.clip.xy, p.reflection.y);
     s.n       = n_j;
     s.r       = normalize(reflect(-v_dir, n_j));
     s.intensity = max(p.reflection.x, 0.0);

@@ -4260,6 +4260,35 @@ impl App {
                             crate::engine::core::renderer::WATER_REFLECTION_FORMAT,
                         );
                     }
+                    // ── 粗さブラー（Phase W5.2 品質改善）の半径とターゲット ──
+                    //
+                    // 【なぜ「可視ボリュームの最大粗さで一様半径」なのか（v1 の制限）】
+                    //  反射のぼけは本来ボリュームごと（＝画素ごと）に半径が違うべきだが、
+                    //  いもす法の分離ボックスは「走査線全体で同じ半径」を前提とする
+                    //  （ランニング和が窓幅一定でしか成立しない）。画素ごと半径にするには
+                    //  半径別に複数枚ぼかして合成する必要があり、v1 の価値に対して重い。
+                    //  そこで**このフレームに映る水域の最大粗さ**で一様にぼかす。
+                    //  粗さの違う水域が同時に映るときは、粗い方に引きずられてぼける。
+                    //
+                    // 反射強度 0 の水域は反射そのものが出ないので、粗さの集計から外す
+                    // （「反射を切った粗い池」が隣の鏡の池をぼかす、という理不尽を防ぐ）。
+                    let water_refl_max_roughness = if water_reflection_possible {
+                        water_volumes.iter()
+                            .filter(|v| v.visual.reflection_intensity > 0.0)
+                            .map(|v| v.visual.reflection_roughness.clamp(0.0, 1.0))
+                            .fold(0.0f32, f32::max)
+                    } else {
+                        0.0
+                    };
+                    let water_refl_blur_radius =
+                        crate::engine::core::renderer::water_reflection_blur_radius_px(
+                            water_refl_max_roughness, surf_h);
+                    // 半径 0（粗さ 0＝完全な鏡面）なら 1 バイトも確保しない。
+                    let water_refl_blur_active =
+                        water_reflection_possible && water_refl_blur_radius > 0;
+                    if water_refl_blur_active {
+                        self.water_reflection_blur_targets.ensure(&draw_ctx.device, surf_w, surf_h);
+                    }
                     // SSGI（Phase SSGI）半解像度テクスチャ（ssgi_raw/ssgi_a/ssgi_b）。SSGI 有効時のみ確保。
                     // ensure が再確保（初回・リサイズ）を返したら ssgi_b の前フレーム履歴が消えるため、
                     // この 1 フレームは未収束扱い（ssgi_warmed=false）にして GI をフラットに倒す。
@@ -4749,8 +4778,17 @@ impl App {
                                 // 水面反射 RT（Phase W5.2）。反射パスを走らせないフレームは
                                 // 黒 1x1 のダミーを挿す（**A=0＝反射寄与なし**が中立値なので、
                                 // 水面シェーダ側に「反射があるか」の分岐は要らない）。
-                                water_reflection_view
-                                    .unwrap_or(&draw_ctx.pipelines.water_reflection.dummy_view),
+                                //
+                                // 粗さブラーを掛けるフレームは、水面パスが読むのは
+                                // **ブラー結果（t1）**の方である（元の反射 RT ではない）。
+                                // ブラーの記録は反射パスの直後・水面パスの前に入るので、
+                                // ここでビューを焼き込んでおいて順序は満たされる。
+                                if water_refl_blur_active {
+                                    self.water_reflection_blur_targets.t1_view()
+                                } else {
+                                    water_reflection_view
+                                        .unwrap_or(&draw_ctx.pipelines.water_reflection.dummy_view)
+                                },
                             );
                             // ID パス（後段）で水面クアッドを描いてよいかを伝える。
                             // **この前倒しは ID パス（draw_id）より必ず前**である
@@ -5727,6 +5765,11 @@ impl App {
                                             draw_ctx.rt_shadow.as_ref().map(|c| c.borrow())
                                         } else { None };
                                         let use_rt = rt_ref.is_some();
+                                        // 反射のミス経路（画面外へ抜けたレイ）が映すスカイボックス。
+                                        // sync_gpu 済みのこのフレームの代表天球を取り、uniform を
+                                        // 先に書いてから BindGroup を作る（無ければ None＝GI へ落ちる）。
+                                        let sky_src = self.skybox_system.water_reflection_source();
+                                        wrp.update_sky(&draw_ctx.queue, sky_src.as_ref());
                                         // group1 は水パラメータが要る（prepare 済みなので必ず Some）。
                                         let params_bg =
                                             wrp.create_params_bg(&draw_ctx.device, water, use_rt);
@@ -5738,7 +5781,7 @@ impl App {
                                                 self.interaction_field.as_ref(), use_rt);
                                             let scene_bg = wrp.create_scene_bg(
                                                 &draw_ctx.device, grab_view,
-                                                frame.depth_only_view_r(), use_rt);
+                                                frame.depth_only_view_r(), sky_src.as_ref(), use_rt);
                                             let meta = draw_ctx.light_buffer.meta_main_buffer();
                                             let gi_bg = match rt_ref.as_ref() {
                                                 Some(r) => wrp.create_rt_gi_bg(
@@ -5760,6 +5803,20 @@ impl App {
                                             wrp.draw(
                                                 &mut rpass, water, &camera_buf.bind_group,
                                                 params_bg, &field_bg, &scene_bg, &gi_bg, use_rt);
+                                            // ①'' 粗さブラー（Phase W5.2 品質改善）。
+                                            //     レンダーパスを閉じてから compute を記録する
+                                            //     （同一エンコーダ内でパスは入れ子にできない）。
+                                            //     結果は t1 に残り、水面パスはそれを読む
+                                            //     （prepare でビューを焼き込み済み）。
+                                            //     粗さ 0 のフレームは radius=0 で何も記録されない
+                                            //     ＝完全な鏡面のまま（1 画素の差も出ない）。
+                                            drop(rpass);
+                                            if water_refl_blur_active {
+                                                wrp.blur(
+                                                    &draw_ctx.device, frame.encoder_mut(),
+                                                    wr_view, &self.water_reflection_blur_targets,
+                                                    water_refl_blur_radius);
+                                            }
                                         }
                                     }
 

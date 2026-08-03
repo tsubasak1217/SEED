@@ -656,13 +656,15 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
   |---|---|
   | 反射色の生成（**RT 変種・アルゴリズム本体**） | `shaders/water_reflection_rt.wgsl` の `fs_water_reflection`（TLAS へ 1 レイ → 画面内ヒットはグラブ採用 → 画面外は解析近似 → ミスは空/GI） |
   | 反射色の生成（**SSR 変種・RT 非対応 GPU 用**） | `shaders/water_reflection_ssr.wgsl` の `fs_water_reflection`（ワールド空間マーチ＋二分細分。出力規約は RT 版と同一） |
-  | 両変種の共通部（頂点段・座標変換・粗さジッタ・フォールバック） | `shaders/water_reflection_common.wgsl`（`vs_water_reflection` / `water_refl_surface` / `water_refl_screen_sky` / `water_refl_env`） |
+  | 両変種の共通部（頂点段・座標変換・粗さジッタ・ミス経路・出力規約） | `shaders/water_reflection_common.wgsl`（`vs_water_reflection` / `water_refl_surface` / `water_refl_miss` / `water_refl_screen_sky` / `water_refl_skybox` / `water_refl_env` / `water_refl_output`） |
+  | **粗さのぼかし（いもす法・分離ボックス）** | `renderer/water_reflection.rs` の `WaterReflectionPipelines::blur` ＋ `WaterReflectionBlurTargets`（フル解像度 ping-pong 2 枚。実体は共有の `imos_blur.rs` / `shaders/imos_blur.wgsl`） |
+  | **反射に映すスカイボックス（ミス経路）** | `renderer/skybox.rs` の `SkyboxSystem::water_reflection_source()` ＋ `sky_uniform_for_reflection()` → `water_reflection.rs` の `WaterSkyUniform` / `WaterSkySource`（group3 binding 3..5） |
   | 形状・波法線（**水面パスと共有・唯一の実体**） | `shaders/water_height_field.wgsl` の `water_grid_vertex()` / `water_surface_gradient()` |
   | パイプライン・BindGroup・ダミー | `renderer/water_reflection.rs` の `WaterReflectionPipelines`（RT は `Option`＝対応 GPU のみ） |
   | パイプライン定義（連結順・グループ数） | `renderer/pipelines/water_reflection_rt.toml` / `water_reflection_ssr.toml` |
   | レンダーパス開始（clear = 0＝反射なし） | `renderer/mod.rs` の `RenderFrame::begin_water_reflection_pass_to` |
   | 水面リソースの公開（グラブ・格子ドロー） | `renderer/water/mod.rs` の `grab_view()` / `draw_grid_buckets()` |
-  | 消費（水面パス側） | `shaders/water_surface.wgsl` の `@group(1) @binding(6) t_water_reflection` → `mix(color, reflection.rgb, fresnel * reflection.a)` |
+  | 消費（水面パス側） | `shaders/water_surface.wgsl` の `@group(1) @binding(6) t_water_reflection` → `mix(color, reflection.rgb / a, fresnel * reflection.a)`（**プリマルチプライドの割り戻し**） |
   | GPU パラメータ | `renderer/water/params.rs` の `WaterParams::reflection`（x=強度 / y=粗さ / z=予約 / **w=フォーム強度**。旧 `reflection_color` の枠を転用＝ストライド不変） |
   | コンポーネント（データドリブン） | `components/water_volume_component.rs` の `reflection_intensity` / `reflection_roughness` |
   | 中間表現の受け渡し | `water/resolved.rs` の `WaterVisualParams`（同名 2 フィールド） |
@@ -676,7 +678,7 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
   | フィールド | 既定 | 意味 |
   |---|---|---|
   | `reflection_intensity` | `1.0` | 反射の全体強度。**0 でこの水域の反射を完全に無効**（レイも飛ばさないのでコストも消える）。1 超は演出用 |
-  | `reflection_roughness` | `0.15` | 波による反射のぼけ。**0 で厳密な鏡面**。1 ピクセル 1 レイなので「ぼけ」ではなく散りとして出る |
+  | `reflection_roughness` | `0.15` | 波による反射のぼけ。**0 で厳密な鏡面**（ぼかしパスごとスキップ）。画面空間ノイズでレイを散らし、反射 RT を粗さ比例の半径でぼかす 2 段構成 |
 
   `reflection_color`（旧・簡易反射色）は**削除**。スクリプト API へは公開していない。
 
@@ -708,13 +710,38 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
     RT 版と完全に同一なので、水面パスはどちらが走ったかを区別しない。
     `acceleration_structure` を宣言したモジュールは非対応 GPU では生成自体が落ちるため、
     切り替えは**シェーダ内分岐ではなくパイプライン 2 本立て**で行う（D6 と同じ流儀）。
-  - **ミス時はまず「画面内に写っている空」を狙う**。水面反射で最も多いミスは
-    「レイが空へ抜けた」で、そこを GI の平均色で塗ると雲も夕焼けも映らない。
-    反射方向のはるか先を画面へ射影し、その画素が背景（遠クリップ）ならグラブ＝
-    **本物のスカイボックス色**を採る。画面外なら GI プローブ／フラットアンビエントへ落ちる。
-  - **粗さは法線ジッタで表現する**。1 ピクセル 1 レイでは多方向を平均できないため、
-    **ワールド座標のハッシュ**で法線をわずかに傾け、隣接ピクセルが少しずつ違う方向を
-    見るようにした。ハッシュ格子はワールド固定なので、カメラが動いても模様が画面内を這わない。
+  - **ミス経路は「画面内の空 → 天球テクスチャ → GI」の 3 段**（2026-08-04 改訂）。
+    水面反射で最も多いミスは「レイが空へ抜けた」で、そこを GI の平均色で塗ると
+    雲も夕焼けも映らない。
+    ① まず反射方向のはるか先を画面へ射影し、その画素が背景（遠クリップ）ならグラブ＝
+      **本画面とまったく同じ空の色**を採る（水平線付近で空と反射が連続する）。
+    ② 画面外なら **スカイボックス本体を equirectangular で直接サンプル**する。
+      見下ろし視点の水面が映す空はほぼ常に画面外なので、この経路が無いと
+      「空が映らず GI の平坦色になる」（当初実装の実バグ）。UV 変換式は `skybox.wgsl` と
+      同一にしてあり、①と②の境目で色が飛ばない。
+    ③ スカイボックスが無いシーンだけ GI プローブ／フラットアンビエントへ落ちる。
+    バインドは group3 へ 3 本追加した（uniform＋テクスチャ＋サンプラー）。
+    **バインドグループ数は 5 のまま**（グループ内の binding 追加なので上限に触れない）。
+    フラグメント段のサンプルドテクスチャは RT 変種で 7 枚（上限 16）。
+  - **粗さは「画面空間ノイズ＋後段ブラー」の 2 段で作る**（2026-08-04 改訂）。
+    当初は**ワールド座標ハッシュの法線ジッタ**だったが、ハッシュのセル内では同じ方向へ
+    散るため、粗さを上げるほど**セル境界が格子として可視化される**（反射像がパキパキした
+    塊になる実バグ）。現在は
+    ① 1 ピクセルごとに値が変わる **Interleaved Gradient Noise** でレイ方向を微小に散らし、
+    ② 反射 RT 全体を**粗さ比例の半径でぼかす**（`docs/rendering_roadmap.md`「ブラー系実装の
+      方針」に従い、エッジ保持が不要な低周波用途なので **いもす法の分離ボックス**を使う。
+      shadow_mask のようなバイラテラルは使わない）。
+    ①だけでは粒状ノイズ、②だけでは「同じ像をぼかしただけ」で粗い面のブレが出ない。
+    **粗さ 0 はブラーパスごとスキップ**するので、鏡面は 1 画素の誤差もなく保たれる。
+  - **反射 RT の出力はプリマルチプライド**（`rgb = 反射色 × 強度` / `a = 強度`）。
+    反射 RT は水面画素以外がクリア値 0 なので、非プリマルチプライドのまま平均すると
+    ぼかしが「反射なし＝黒」を巻き込み、**水際や遮蔽物のシルエット周りに黒い縁取り**が出る。
+    プリマルチプライド値をぼかし、水面パスが `rgb / max(a, ε)` で割り戻すと
+    これは **α 重み付き平均**になり縁取りが構造的に発生しない。ぼかさないフレームでは
+    割り戻しが厳密に元の色へ戻るので、規約は 1 本で済む。
+    このために共有の `imos_blur.wgsl` を `.rgb` → **`.rgba`** へ広げた
+    （ランニング和はチャンネル独立なので、AO＝`.r` / SSGI＝`.rgb` / 屈折ピラミッド＝`.rgb` の
+    既存 3 用途の結果はビット単位で不変）。
   - **バインドレス（B2）とガラス層の再トレースは入れていない**。前者は
     「binding_array と uniform は同一グループに同居できない」制約で GI の UBO と両立せず
     （グループは 5 で満杯）、後者は反射レイ 1 本あたり最大 4 本の追加レイが水面全面に
@@ -730,6 +757,28 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
     WaterVolume の `reflection_intensity`（0 で無効）だけで決まり、RT/SSR 変種は GPU 対応で自動選択。
   - **画面外ヒットのアルベドは平均色**（バインドレスを使わないため。上記設計判断参照）。
     画面内に見えているヒットは実レンダリング結果なので、面積の大半は正しい色になる。
+    平均色は「ベースカラーテクスチャのアルファ加重平均（リニア）× base_color_factor」で、
+    テクスチャの色味は**含まれている**（`asset_cache::compute_material_avg_albedo`、
+    キャッシュ v13 で `base_color_tex_avg` を別途保持）。
+    ただし **`.mat` アセットでマテリアルを差し替えた場合だけ**テクスチャ平均が反映されず、
+    「ベースカラー白＋テクスチャ」のモデルが**白い塊**として映っていた（2026-08-04 修正）。
+    `.mat` の実効マテリアルは `Material::default()` 起点でテクスチャ平均が白のままだったのが原因で、
+    差し替え時にテクスチャ 1 枚をデコードして平均色を焼くようにした
+    （`gpu_resources.rs::override_base_color_tex_avg`、パス単位でプロセス内キャッシュ）。
+    **この平均アルベド storage（`rt_shadow.rs::albedo_buffer`）は共有**なので、修正は
+    `.mat` を使っているマテリアルに限り以下すべての見た目に効く（＝そこだけ色が変わる）:
+    水面反射（本節）／D6 の RT 反射の画面外ヒット（`reflection_rt_hit_off.wgsl`）／
+    DDGI のバウンス色（`ddgi_probe_update.wgsl`）／RT 色付き影の色相（`rt_shadow_on.wgsl`）／
+    RT 屈折のガラス着色（`refract_rt.wgsl`）。
+  - **粗さブラーの半径は「このフレームに映る水域の最大粗さ」で一様**（v1 の制限）。
+    いもす法の分離ボックスは走査線全体で窓幅一定であることが前提なので、画素ごとに
+    半径を変えるには半径別に複数枚ぼかして合成する必要がある。粗さの違う水域が
+    同時に映るときは**粗い方に引きずられてぼける**（反射強度 0 の水域は集計から除外）。
+  - **反射に映るスカイボックスは代表 1 つ**。`CameraLocked` があればそれ、無ければ最初の
+    `WorldAnchored` を使う。複数の `WorldAnchored` 天球を厳密に映すにはレイと球の交差を
+    解く必要があり、ミス経路 1 サンプルの設計と釣り合わない。
+    `WorldAnchored` の逆回転は **回転＋一様スケール前提の近似**（model 行列の上三 3x3 の
+    各列を正規化して転置）で、せん断の入った行列では厳密ではない。
   - **反射に半透明オブジェクトは映らない**。グラブは「不透明＋スカイボックス」の時点の
     コピーであり、距離ソート半透明／WBOIT は水面パスより後に描かれるため
     （屈折の背景が半透明を含まないのと同じ制限）。
