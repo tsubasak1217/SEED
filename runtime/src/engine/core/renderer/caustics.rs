@@ -32,7 +32,7 @@ use super::pipeline_config::RenderPipelineBuilder;
 
 /// コースティクス結果テクスチャのフォーマット（1ch HDR）。
 /// **`pipelines/caustics.toml` の `color_format` と一致必須。**
-pub const CAUSTICS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
+pub const CAUSTICS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// 本パスのシェーダソース解決（パイプライン生成とテストが共有する唯一の窓口）。
 ///
@@ -143,8 +143,8 @@ impl CausticsPipelines {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats:    &[],
         });
-        /// R16Float 1 テクセルのバイト数（1 チャネル × f16）。
-        const CAUSTICS_TEXEL_BYTES: u32 = 2;
+        /// Rgba16Float 1 テクセルのバイト数（4 チャネル × f16）。
+        const CAUSTICS_TEXEL_BYTES: u32 = 8;
         let black: [u8; CAUSTICS_TEXEL_BYTES as usize] = [0u8; CAUSTICS_TEXEL_BYTES as usize];
         queue.write_texture(
             dummy_tex.as_image_copy(),
@@ -368,9 +368,9 @@ mod tests {
         assert!(wgsl_src.contains("fn fs_caustics("));
         // 深度アタッチメントを持たない（サンプルテクスチャとして読む）前提。
         assert!(toml_src.contains("no_depth        = true"));
-        // 出力は 1ch HDR。Rust 側 CAUSTICS_FORMAT と一致必須。
-        assert!(toml_src.contains("color_format    = \"R16Float\""));
-        assert_eq!(CAUSTICS_FORMAT, wgpu::TextureFormat::R16Float);
+        // 出力は水色着色済みの RGB HDR（A 未使用）。Rust 側 CAUSTICS_FORMAT と一致必須。
+        assert!(toml_src.contains("color_format    = \"Rgba16Float\""));
+        assert_eq!(CAUSTICS_FORMAT, wgpu::TextureFormat::Rgba16Float);
         // 高さ場の共有モジュールを必ず連結すること（独自波の新造を禁じる契約）。
         assert!(toml_src.contains("water_height_field.wgsl"),
             "高さ場の共有モジュールが連結されていない（＝独自波を作っている疑い）");

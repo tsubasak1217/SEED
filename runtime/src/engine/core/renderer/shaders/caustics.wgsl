@@ -180,7 +180,7 @@ fn caustics_world_from_depth(pix: vec2<f32>, depth: f32) -> vec3<f32> {
 // ─── コースティクス生成フラグメント ──────────────────────────
 
 @fragment
-fn fs_caustics(@builtin(position) frag: vec4<f32>) -> @location(0) f32 {
+fn fs_caustics(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let pix   = vec2<i32>(frag.xy);
     let depth = textureLoad(t_scene_depth, pix, 0);
     // 背景（空）は水中ではありえない。ターゲットのクリア値 0（＝寄与なし）を残す。
@@ -264,6 +264,17 @@ fn fs_caustics(@builtin(position) frag: vec4<f32>) -> @location(0) f32 {
     // 深度フェード。実際の水中でも集光は数 m で拡散して消える。
     let fade = exp(-d / max(p.caustics.z, CAUSTICS_DEPTH_FADE_MIN));
 
+    // ── ③ 水の色による着色 ────────────────────────────────────
+    //    水底へ届く光は水中を深さ d だけ通過して吸収されるので、水面シェーダーの
+    //    吸収則（water_surface.wgsl ④）と**同じ式**で浅場色→深場色へ寄せる。
+    //    同じ式を使うことで「水の色設定を変えれば模様の色も一緒に変わる」が
+    //    パラメータ追加なしで成立する。ライトの色・強さは消費側
+    //    （lighting_eval が直達光 radiance へ乗算）で自然に掛かる。
+    let absorb_dist = max(p.shallow_color.a, CAUSTICS_DEPTH_FADE_MIN);
+    let absorb      = exp(-d / absorb_dist);
+    let tint        = mix(p.deep_color.rgb, p.shallow_color.rgb, absorb);
+
     // 波が急峻なときは lap が跳ね上がって増幅率が発散しうるので、上限で止める。
-    return min(c * fade * p.caustics.x * CAUSTICS_OUTPUT_GAIN, CAUSTICS_MAX_GAIN);
+    let strength = min(c * fade * p.caustics.x * CAUSTICS_OUTPUT_GAIN, CAUSTICS_MAX_GAIN);
+    return vec4<f32>(tint * strength, 0.0);
 }
