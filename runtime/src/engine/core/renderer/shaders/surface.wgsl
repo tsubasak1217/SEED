@@ -167,16 +167,17 @@ struct Surface {
     /// light.shadow_mask_slot（>=0）が指すレイヤをここから引く（レイを飛ばさずデノイズ済み値を使う）。
     shadow_mask: array<vec4<f32>, SURFACE_SHADOW_MASK_SLOTS>,
 
-    /// 水中コースティクス係数（Phase W5.3）。deferred ライティングパスだけが設定する。
-    /// 0.0 = 水中でない／機能無効（フォワードは `var s: Surface;` のゼロ初期化で常に 0）。
+    /// 水中の直達光変調（Phase W5.3）。deferred ライティングパスだけが設定する。
     ///
-    /// 意味は「このピクセルへ届く**平行光の直達成分**を何倍に増幅するか − 1」であり、
-    /// `lighting_eval.wgsl` が影を掛けた後の radiance へ `× (1 + caustics)` で効かせる。
+    /// rgb = 水を通った**平行光の透過率**（色付きガラスと同じ乗算項。無色=1、
+    ///       深いほど浅場色→深場色へ沈む）、a = コースティクス集光強度（無次元）。
+    /// `lighting_eval.wgsl` が影を掛けた後の radiance へ `× rgb × (1 + a)` で効かせる。
     /// 影の中では radiance が既に 0 に近いので自動的に光らない（＝影の中に模様が出ない）。
-    /// 供給元はコースティクス生成パス（`caustics.wgsl`）が焼いたフル解像度 1ch テクスチャで、
-    /// deferred が group1 binding12 から `textureLoad` で 1:1 に読む。
-    /// 水色（浅場/深場の吸収則）で着色済みの集光寄与 RGB。
-    caustics: vec3<f32>,
+    /// 非水中ピクセルは中立値 (1,1,1,0)。**透過率は乗算項なので、フォワード系の
+    /// 採取点（surface_gather.wgsl）はゼロ初期化に頼らず必ず中立値を設定すること**。
+    /// 供給元はコースティクス生成パス（`caustics.wgsl`）が焼いたフル解像度 RGBA テクスチャで、
+    /// deferred が group1 binding12 から `textureLoad` で 1:1 に読む（全成分 0 は非水中の印）。
+    caustics: vec4<f32>,
 
     /// shadow_mask が有効か。1.0=deferred が設定済み（マスク経路を使える）／0.0=無効。
     ///

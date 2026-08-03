@@ -156,6 +156,10 @@ fn gather_surface(in: VertexOutput, front_facing: bool) -> Surface {
     // ── Surface へ詰める ──────────────────────────────────────
     // UV（uv0 / uv1）と接空間（world_tan / world_bitan）はここで役目を終えるため持ち越さない。
     var s: Surface;
+    // 水中の直達光変調は deferred 専用機能。透過率（rgb）は**乗算項**なので、
+    // ゼロ初期化のままだと直達光が全て消える。フォワードでは必ず中立値
+    // （透過率 1・集光 0 ＝ 無変化）を設定する。
+    s.caustics      = vec4<f32>(1.0, 1.0, 1.0, 0.0);
     s.world_pos     = in.world_pos;
     s.normal        = N;
     s.geo_normal    = Ng;
