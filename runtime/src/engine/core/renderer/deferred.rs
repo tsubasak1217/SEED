@@ -439,18 +439,25 @@ mod tests {
         assert!(deferred.contains("@group(1) @binding(12) var t_caustics: texture_2d<f32>;"),
             "deferred_lighting.wgsl の t_caustics（group1 binding12）宣言が消えている");
         // サンプラーは足さない設計（フル解像度 1:1 の textureLoad）。
-        assert!(deferred.contains("s.caustics      = textureLoad(t_caustics, pix, 0).rgb;"),
-            "deferred が Surface.caustics（水色着色済み RGB）を設定していない");
+        assert!(deferred.contains("let caustics_raw = textureLoad(t_caustics, pix, 0);"),
+            "deferred が t_caustics を読んでいない");
+        // 透過率は乗算項: 全成分 0（クリア値・ダミー・範囲外）を中立値へ写す守りが必須。
+        assert!(deferred.contains("vec4<f32>(1.0, 1.0, 1.0, 0.0)"),
+            "非水中ピクセルの中立値 (1,1,1,0) への写しが消えている（消えると画面が黒くなる）");
 
         let surface = include_str!("shaders/surface.wgsl");
-        assert!(surface.contains("caustics: vec3<f32>,"),
+        assert!(surface.contains("caustics: vec4<f32>,"),
             "surface.wgsl の Surface に caustics フィールドが無い");
 
         let eval = include_str!("shaders/lighting_eval.wgsl");
         assert!(eval.contains("if light.kind == LIGHT_KIND_DIRECTIONAL"),
             "平行光限定のコースティクス増幅が消えている");
-        assert!(eval.contains("radiance = radiance * (vec3<f32>(1.0) + s.caustics);"),
-            "増幅式が変わっている（影適用後の radiance にチャネルごとに掛けるのが要件）");
+        assert!(eval.contains("radiance = radiance * s.caustics.rgb * (1.0 + s.caustics.a);"),
+            "変調式が変わっている（影適用後の radiance へ 透過率×(1+集光) を掛けるのが要件）");
+        // フォワード採取点の中立値設定（乗算項なのでゼロ初期化では直達光が消える）。
+        let gather = include_str!("shaders/surface_gather.wgsl");
+        assert!(gather.contains("s.caustics      = vec4<f32>(1.0, 1.0, 1.0, 0.0);"),
+            "surface_gather の caustics 中立値設定が消えている（フォワードの直達光が黒くなる）");
         // 逆光透け用の radiance_direct には掛けないこと（影を無視する項に集光を足さない）。
         assert!(!eval.contains("radiance_direct = radiance_direct * (1.0 + s.caustics)"),
             "radiance_direct にコースティクスを掛けてはいけない");

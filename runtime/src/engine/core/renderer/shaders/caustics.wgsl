@@ -264,17 +264,23 @@ fn fs_caustics(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // 深度フェード。実際の水中でも集光は数 m で拡散して消える。
     let fade = exp(-d / max(p.caustics.z, CAUSTICS_DEPTH_FADE_MIN));
 
-    // ── ③ 水の色による着色 ────────────────────────────────────
+    // ── ③ 水を通った直達光の透過率（色付きガラスと同じ乗算項）────────
     //    水底へ届く光は水中を深さ d だけ通過して吸収されるので、水面シェーダーの
-    //    吸収則（water_surface.wgsl ④）と**同じ式**で浅場色→深場色へ寄せる。
-    //    同じ式を使うことで「水の色設定を変えれば模様の色も一緒に変わる」が
-    //    パラメータ追加なしで成立する。ライトの色・強さは消費側
+    //    吸収則（water_surface.wgsl ④）と**同じ式**で浅場色→深場色へ寄せた色を作り、
+    //    「無色（=1）からその色へ、吸収が進むほど寄る」透過率にする:
+    //      d = 0   → ほぼ vec3(1)（水面直下は染まらない）
+    //      d 大    → deep_color（深場は深場色に沈んだ光だけが届く）
+    //    同じ式を使うことで「水の色設定を変えれば光の色も一緒に変わる」が
+    //    パラメータ追加なしで成立する。ライトの色・強さ・影は消費側
     //    （lighting_eval が直達光 radiance へ乗算）で自然に掛かる。
-    let absorb_dist = max(p.shallow_color.a, CAUSTICS_DEPTH_FADE_MIN);
-    let absorb      = exp(-d / absorb_dist);
-    let tint        = mix(p.deep_color.rgb, p.shallow_color.rgb, absorb);
+    let absorb_dist  = max(p.shallow_color.a, CAUSTICS_DEPTH_FADE_MIN);
+    let absorb       = exp(-d / absorb_dist);
+    let tint         = mix(p.deep_color.rgb, p.shallow_color.rgb, absorb);
+    let transmission = mix(vec3<f32>(1.0), tint, 1.0 - absorb);
 
     // 波が急峻なときは lap が跳ね上がって増幅率が発散しうるので、上限で止める。
+    // 集光の輝きにも同じ透過率が掛かる（消費側で radiance × T × (1 + strength)）ため、
+    // ここでは無次元の強度だけを A へ格納する。
     let strength = min(c * fade * p.caustics.x * CAUSTICS_OUTPUT_GAIN, CAUSTICS_MAX_GAIN);
-    return vec4<f32>(tint * strength, 0.0);
+    return vec4<f32>(transmission, strength);
 }

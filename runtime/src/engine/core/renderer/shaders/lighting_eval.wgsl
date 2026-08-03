@@ -332,11 +332,11 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
         // 平行光（太陽）だけを対象に、水面の集光係数で直達光を増幅する。
         // radiance は既に影（RT/シャドウマップ）を掛けた後なので、影の中では自動的に光らない。
         // NdotL は下流の BRDF が掛けるため、面の向きも自然に反映される。
-        if light.kind == LIGHT_KIND_DIRECTIONAL
-            && max(s.caustics.r, max(s.caustics.g, s.caustics.b)) > 0.0 {
-            // 水色着色済みの集光寄与をチャネルごとに乗算する。
-            // radiance は光の色・強さ・影を含むため、ライト側の変化も自然に模様へ反映される。
-            radiance = radiance * (vec3<f32>(1.0) + s.caustics);
+        if light.kind == LIGHT_KIND_DIRECTIONAL {
+            // 水中の直達光変調: 透過率（rgb。色付きガラスと同じ乗算項）で光自体を
+            // 水の色に染め、集光強度（a）を上乗せする。非水中は中立値 (1,1,1,0) で無変化。
+            // radiance は光の色・強さ・影を含むため、ライト側の変化も自然に反映される。
+            radiance = radiance * s.caustics.rgb * (1.0 + s.caustics.a);
         }
 
         // ── 幾何法線による直接光の自己シャドウ・ゲート（光漏れの根絶）──────
