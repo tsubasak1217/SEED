@@ -559,7 +559,7 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="コンポーネント GetComponent Transform CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル">
+<section id="sec-components" data-keywords="コンポーネント GetComponent Transform CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -662,6 +662,31 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     複数持ち: <code>gameObject.GetComponent&lt;InputMap&gt;(1)</code>（index）や <code>gameObject.GetComponent&lt;InputMap&gt;("Vehicle")</code>（名前）で選択。
   </div>
 
+  <h3 id="cmp-water">WaterVolume / WaterLink（水位グラフ＝浸水・バルブ制御）</h3>
+  <p class="section-note">エディタで水域（Region）に「水位シミュレーション」を有効にし、その間に <code>WaterLink</code>（開口＝扉・窓・穴・バルブ）を置くと、Play 中に<b>水位差 × 開口面積 × 係数</b>で水が行き来します（連通ボリューム方式）。<b>バルブ開閉は <code>Openness</code> を書くだけ</b>です。</p>
+  <div class="api"><code class="sig">valve.Openness</code><span class="desc">float（get/set。0..1。<b>0 = バルブ全閉で水は 1 滴も通らない</b>）</span></div>
+  <div class="api"><code class="sig">valve.OpeningWidth</code><span class="desc">float（get/set。開口の幅 m）</span></div>
+  <div class="api"><code class="sig">valve.OpeningHeight</code><span class="desc">float（get/set。開口の高さ m）</span></div>
+  <div class="api"><code class="sig">valve.OpeningBottom</code><span class="desc">float（get/set。開口下端 Y。アクタ原点からの相対 m。低いほど早く水を通す）</span></div>
+  <div class="api"><code class="sig">valve.FlowCoefficient</code><span class="desc">float（get/set。流量係数 1/s。大きいほど速く釣り合う）</span></div>
+  <div class="api"><code class="sig">water.WaterLevel</code><span class="desc">float（<b>get のみ</b>。現在の水面 Y。ワールド絶対値）</span></div>
+  <div class="api"><code class="sig">water.SurfaceHeight</code><span class="desc">float（get/set。設定水位。Ocean=ワールド絶対 / Region=アクタ相対）</span></div>
+  <div class="api"><code class="sig">water.SimulateLevel</code><span class="desc">bool（get/set。水位グラフの対象にするか。Region のみ有効）</span></div>
+<pre><span class="c">// レバーを引いたらバルブ全閉</span>
+<span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">WaterLink</span>&gt;() <span class="k">is</span> { } valve)
+{
+    <span class="k">if</span> (input.GetActionStart(<span class="s">"Interact"</span>)) valve.Openness = 0f;
+}
+
+<span class="c">// 水位が 3m を超えたら脱出イベント</span>
+<span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">WaterVolume</span>&gt;() <span class="k">is</span> { } water)
+{
+    <span class="k">if</span> (water.WaterLevel &gt; 3f) { <span class="c">/* 脱出イベント */</span> }
+}</pre>
+  <div class="warn">
+    <b>重要</b>: <code>WaterVolume.WaterLevel</code> は<b>読み取り専用</b>です。直接代入できると体積保存が破れて水位グラフの前提が壊れるため、水を足す／抜く演出は <code>WaterLink.Openness</code> の開閉で表現します。<code>WaterLink</code> の接続先（volume_a / volume_b）も実行中は変更できません（インスペクタで設定）。
+  </div>
+
   <h3>利用可能なコンポーネント一覧</h3>
   <table>
     <tr><th>コンポーネント名</th><th>取得</th><th>内容</th></tr>
@@ -673,6 +698,8 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><td><code>Animator</code></td><td><code>gameObject.GetComponent&lt;Animator&gt;()</code></td><td>再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume</td></tr>
     <tr><td><code>ParticleEmitter</code></td><td><code>gameObject.GetComponent&lt;ParticleEmitter&gt;()</code></td><td>放出レート・ループ・抵抗・拡散角 + Play/Stop/Burst</td></tr>
     <tr><td><code>InputMap</code></td><td><code>gameObject.GetComponent&lt;InputMap&gt;()</code></td><td>入力アクション評価（Bool / Axis1D / Axis2D。Key / GamepadButton / GamepadAxis）</td></tr>
+    <tr><td><code>WaterVolume</code></td><td><code>gameObject.GetComponent&lt;WaterVolume&gt;()</code></td><td>現在水位（読み取り専用）・設定水位・水位シミュレーションの有効／無効</td></tr>
+    <tr><td><code>WaterLink</code></td><td><code>gameObject.GetComponent&lt;WaterLink&gt;()</code></td><td>水位グラフの開口。<b>開閉率（バルブ）</b>・開口寸法・流量係数</td></tr>
   </table>
   <p class="section-note">他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定です。</p>
 

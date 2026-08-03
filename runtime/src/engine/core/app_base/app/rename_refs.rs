@@ -2,11 +2,12 @@
 //  rename_refs.rs — アクタリネーム時の「アクタ名参照」追従更新
 //
 //  【背景】
-//  シーン内にはアクタを「名前の文字列」で参照する仕組みが 3 つある:
+//  シーン内にはアクタを「名前の文字列」で参照する仕組みが 4 つある:
 //    1. スクリプトの [SerializeField] 参照フィールド
 //       （ScriptComponent.fields、値は "アクタ名" または "アクタ名|スロット名"）
 //    2. WaterVolumeComponent.control_point_ref（川の制御点参照、値は "アクタ名"）
 //    3. CanvasViewportRef::Camera { actor_name, .. }（キャンバスの基準カメラ参照）
+//    4. WaterLinkComponent.volume_a / volume_b（水位グラフの接続先、値は "アクタ名"。W2.5）
 //  参照先アクタをリネームすると、これらの文字列が旧名のまま残り参照が切れる。
 //
 //  【方針】
@@ -28,7 +29,8 @@
 // ============================================================
 
 use crate::engine::components::{
-    CanvasComponent, CanvasViewportRef, ComponentKind, ScriptComponent, WaterVolumeComponent,
+    CanvasComponent, CanvasViewportRef, ComponentKind, ScriptComponent, WaterLinkComponent,
+    WaterVolumeComponent,
 };
 use crate::engine::ecs::World;
 use crate::engine::structs::objects::Actor;
@@ -115,6 +117,22 @@ fn rewrite_refs_in_slots(
                 {
                     w.control_point_ref = new_name.to_string();
                     any = true;
+                }
+            }
+            // ── 水位グラフの開口が指す 2 つの水域（値は "アクタ名" のみ。W2.5）──
+            // 参照が 2 本あるので**両方を独立にチェックする**
+            //（同じアクタを A と B の両方に指定することは無いが、
+            //   片方だけ書き換えて済ませると自己ループ化するバグになる）。
+            ComponentKind::WaterLink => {
+                if let Some(l) = world.get_mut::<WaterLinkComponent>(slot.entity) {
+                    if l.volume_a == old_name {
+                        l.volume_a = new_name.to_string();
+                        any = true;
+                    }
+                    if l.volume_b == old_name {
+                        l.volume_b = new_name.to_string();
+                        any = true;
+                    }
                 }
             }
             // ── キャンバスの基準カメラ参照（アクタ名＋スロット名） ──

@@ -32,6 +32,8 @@ pub mod material_override;
 pub mod terrain_component;
 /// 水ボリューム（Phase W: 大洋 / 直方体水塊 / 川スプライン(W4) の定義）
 pub mod water_volume_component;
+// 水位グラフのリンク（開口。Phase W2.5）
+pub mod water_link_component;
 /// インタラクションソース（Phase I1: 動く物が草・水・雪泥の共有場へ書き込む宣言）
 pub mod interaction_source_component;
 /// コントロールポイント（汎用パス: 川・巡回ルート・カメラパスの共通土台）
@@ -65,6 +67,7 @@ pub use light_component::{LightComponent, LightComponentData, LightKind};
 pub use jointattach_component::{JointAttachComponent, JointAttachComponentData};
 pub use skybox_component::{SkyboxComponent, SkyboxComponentData, SkyboxMode};
 pub use water_volume_component::{WaterVolumeComponent, WaterVolumeComponentData, WaterVolumeKind};
+pub use water_link_component::{WaterLinkComponent, WaterLinkComponentData};
 pub use interaction_source_component::{InteractionSourceComponent, InteractionSourceComponentData};
 pub use control_point_component::{
     ControlPoint, ControlPointComponent, ControlPointComponentData, ControlPointInterp,
@@ -125,6 +128,8 @@ pub enum ComponentKind {
     TerrainChunk,
     /// 水ボリューム（大洋 / 直方体水塊 / 川スプライン(W4)）
     WaterVolume,
+    /// 水位グラフのリンク＝開口（扉・窓・穴・バルブ。W2.5）
+    WaterLink,
     /// インタラクションソース（動く物 → 瞬発場への書き手。草の揺れ・水の波紋を駆動）
     InteractionSource,
     /// コントロールポイント（汎用パス。川・巡回ルート・カメラパスが共用する点列）
@@ -153,6 +158,7 @@ impl ComponentKind {
             Self::Skybox      => "SkyboxComponent",
             Self::TerrainChunk => "TerrainChunkComponent",
             Self::WaterVolume => "WaterVolumeComponent",
+            Self::WaterLink   => "WaterLinkComponent",
             Self::InteractionSource => "InteractionSourceComponent",
             Self::ControlPoint => "ControlPointComponent",
         }
@@ -197,6 +203,8 @@ pub enum ComponentData {
     TerrainChunkComponent(TerrainChunkComponentData),
     /// 水ボリューム（大洋 / 直方体水塊 / 川スプライン(W4)）
     WaterVolumeComponent(WaterVolumeComponentData),
+    /// 水位グラフのリンク＝開口（扉・窓・穴・バルブ。W2.5）
+    WaterLinkComponent(WaterLinkComponentData),
     /// インタラクションソース（瞬発場への書き手）
     InteractionSourceComponent(InteractionSourceComponentData),
     /// コントロールポイント（汎用パスの点列）

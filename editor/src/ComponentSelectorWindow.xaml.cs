@@ -67,6 +67,7 @@ public partial class ComponentSelectorWindow : Window
         ("環境", new()
         {
             new("WaterVolumeComponent", "Water Volume", "海・池などの水領域。水面描画と水中判定を提供", ActorTarget.Actor3D),
+            new("WaterLinkComponent", "Water Link", "2つの水域をつなぐ開口（扉・窓・穴・バルブ）。水位グラフで水が行き来する", ActorTarget.Actor3D),
             new("InteractionSourceComponent", "Interaction Source", "動く物に付ける。移動速度を共有フィールドへ焼き、草を押し倒す（将来は水の波紋・雪泥の轍も）", ActorTarget.Actor3D),
         }),
         ("UI", new()
@@ -363,6 +364,7 @@ public partial class ComponentSelectorWindow : Window
         "SkyboxComponent"     => "Skybox",
         "ParticleEmitterComponent" => "ParticleEmitter",
         "WaterVolumeComponent"     => "Water",
+        "WaterLinkComponent"       => "WaterLink",
         "InteractionSourceComponent" => "Interaction",
         "ControlPointComponent"      => "ControlPoint",
         // Plugin:{name} → プラグイン名をデフォルト名とする

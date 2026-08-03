@@ -1224,6 +1224,33 @@ impl App {
             }
         }
 
+        // ── 水位グラフの時間発展（Phase W2.5）────────────────────────
+        //
+        // 【何をするか】`simulate_level = true` の Region 水域をノード、
+        //  `WaterLinkComponent` を開口とする水位グラフを組み、固定 1/60 ステップで
+        //  「水位差 × 開口面積 × 係数」の水移動を進める。結果は
+        //  `WaterVolumeComponent.sim_level_y`（揮発）へ書き戻される。
+        //
+        // 【なぜここか】この下の `collect_water_volumes`（→ 描画・WaterQuery・岸波ベイク）
+        //  より前でなければならない。ここで水位を更新しておけば、
+        //  `ResolvedWaterVolume::surface_y` が現在水位を拾う 1 か所だけで
+        //  描画も問い合わせも自動的に追随する（下流に個別の分岐が要らない）。
+        //  また `&mut World` を要求するので、`self` を細かく借り続ける描画ブロックへ
+        //  入る前に済ませておく必要がある（スカイボックス収集と同じ理由）。
+        //
+        // 【Play 中のみ】水位はゲーム状態なので `time_running`（Play かつ非ポーズ）
+        //  でのみ進む。Play を抜けた最初のフレームで揮発水位が消え、
+        //  インスペクタで設定した静止水面へ戻る（波が Edit 中も動くのとは対照的）。
+        {
+            let awl = self.active_world_line;
+            let sim = &mut self.water_level_sim;
+            if let Some(scene) = self.scene.as_mut() {
+                sim.update(
+                    &scene.actors, &mut scene.world, awl, ctx.delta_time, time_running,
+                );
+            }
+        }
+
         // ── スカイボックス（天球）CPU 収集（Phase R9）──────────────
         // Skybox スロットを走査して描画対象を確定する（CameraLocked は最初の 1 つのみ）。
         // 読み取りのみ（&World）のため描画ブロック前にここで実施する。0 個なら以降即 return。
@@ -1431,6 +1458,24 @@ impl App {
                         crate::engine::interaction::apply_water_wave_injection(
                             &mut moving, &water_volumes,
                         );
+                        // ②'' 水位グラフ（W2.5）の流量を波源として追加する。
+                        //
+                        //  【なぜ apply_water_wave_injection の "後" か】
+                        //  あの関数は全ソースの `wave_amplitude` を上書きする
+                        //  （水面付近にいないソースを 0 に潰す）。先に足すと消されるし、
+                        //  そもそも流量由来の波は「ソースが水面付近にいるか」ではなく
+                        //  「開口をどれだけの水が通ったか」で決まるので、判定を通す意味が無い。
+                        //
+                        //  【ECS コンポーネントを経由しない理由】
+                        //  波源の実体はシーン上のアクタではなく「今フレームの流量」という
+                        //  計算結果である。`MovingInteractionSource` は公開フィールドのみの
+                        //  単純な値型なので、その場で組んで同じ配列へ流し込めば、
+                        //  以降の焼き込み（`InteractionFieldRenderer::update`）は
+                        //  コンポーネント由来のソースと 1 ミリも区別しない。
+                        for ev in self.water_level_sim.flow_events() {
+                            moving.push(
+                                crate::engine::interaction::flow_event_wave_source(ev));
+                        }
                         // ③ 必要になった時点で GPU リソースを構築する。
                         //    水ボリュームがあるフレームも構築対象に含める（Phase I2）。
                         //    水面パスは group2 で場を読むため、**水があるなら場は必ず在る**方が

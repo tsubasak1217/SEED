@@ -33,7 +33,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::engine::components::{
     AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, InputMapComponent,
-    ParticleEmitterComponent, SpriteComponent, Transform,
+    ParticleEmitterComponent, SpriteComponent, Transform, WaterLinkComponent,
+    WaterVolumeComponent,
 };
 use crate::engine::core::input::action_map::{ActionMap, ActionRuntime};
 use crate::engine::core::input::{Input, InputState};
@@ -584,6 +585,58 @@ fn read_floats(
                 _                  => None,
             }
         }
+        // ── 水位グラフの開口（Phase W2.5。スロット格納型: locate で解決）──
+        // バルブ開閉（openness）をスクリプトから制御するための公開。
+        // 接続先アクタ名（volume_a / volume_b）は**公開しない**
+        //（実行中に付け替えると水位グラフの同一性が壊れるため。壁の破壊は
+        //  スロットの有効・無効やコンポーネント追加で表現する）。
+        "WaterLink" => {
+            let e = locate::<WaterLinkComponent>(world, entity)?;
+            let l = world.get::<WaterLinkComponent>(e)?;
+            match field {
+                "openness"         => put(out, &[l.openness]),
+                "opening_width"    => put(out, &[l.opening_width]),
+                "opening_height"   => put(out, &[l.opening_height]),
+                "opening_bottom"   => put(out, &[l.opening_bottom]),
+                "flow_coefficient" => put(out, &[l.flow_coefficient]),
+                _                  => None,
+            }
+        }
+        // ── 水ボリューム（Phase W2.5。スロット格納型: locate で解決）──
+        // 水位グラフの読み書きに必要な最小限だけを公開する。
+        // 見た目パラメータ（色・波・泡）は演出設定であってゲームロジックが
+        // 触るものではないため、公開しない（インスペクタで編集する）。
+        "WaterVolume" => {
+            let e = locate::<WaterVolumeComponent>(world, entity)?;
+            let w = world.get::<WaterVolumeComponent>(e)?;
+            match field {
+                // 設定水位（Ocean = ワールド絶対 / Region = アクタ相対）。
+                "surface_height" => put(out, &[w.surface_height]),
+                // 水位グラフの対象フラグ。
+                "simulate_level" => put(out, &[if w.simulate_level { 1.0 } else { 0.0 }]),
+                // **現在の水面 Y（常にワールド絶対値）。読み取り専用。**
+                // 「水位が閾値を超えたら扉を閉める」といった判定に使う。
+                //
+                // 水位グラフが動いていればその現在水位をそのまま返す。
+                // 動いていない（静止水面の）ときは種別ごとの規約に合わせて
+                // ワールド Y へ直す ＝ Ocean は絶対値のまま / Region・Spline は
+                // アクタ Y を足す（`ResolvedWaterVolume` と同じ換算。
+                // ここで揃えておかないと「Play 前後で値の意味が変わる」ことになる）。
+                "water_level"    => {
+                    let level = w.sim_level_y.unwrap_or_else(|| {
+                        let base = if w.kind == crate::engine::components::WaterVolumeKind::Ocean {
+                            0.0
+                        } else {
+                            // アクタのルート entity（= 引数 entity）の Transform を見る。
+                            world.get::<Transform>(entity).map(|t| t.position[1]).unwrap_or(0.0)
+                        };
+                        base + w.surface_height
+                    });
+                    put(out, &[level])
+                }
+                _                => None,
+            }
+        }
         _ => None,
     }
 }
@@ -742,6 +795,48 @@ fn write_floats(
                 _                  => false,
             }
         }
+        // ── 水位グラフの開口（Phase W2.5。スロット格納型: locate で解決）──
+        // **バルブ開閉のための書き込み口**。openness を 0 にすれば水が止まり、
+        // 1 にすれば流れ出す（「レベルスクリプトがそのまま水の挙動になる」）。
+        // クランプ規則はインスペクタ（water_link_ops.rs）と同一にする
+        //（経路によって許される値が違うと、スクリプトで設定した値が
+        //  インスペクタを触った瞬間に変わる、というずれが起きる）。
+        "WaterLink" => {
+            let Some(e) = locate::<WaterLinkComponent>(world, entity) else { return false };
+            let Some(l) = world.get_mut::<WaterLinkComponent>(e) else { return false };
+            match field {
+                "openness"         => take::<1>(v)
+                    .map(|a| l.openness = a[0].clamp(0.0, 1.0)).is_some(),
+                "opening_width"    => take::<1>(v)
+                    .map(|a| l.opening_width = a[0].max(0.0)).is_some(),
+                "opening_height"   => take::<1>(v)
+                    .map(|a| l.opening_height = a[0].max(0.0)).is_some(),
+                "opening_bottom"   => take::<1>(v)
+                    .map(|a| l.opening_bottom = a[0]).is_some(),
+                "flow_coefficient" => take::<1>(v)
+                    .map(|a| l.flow_coefficient = a[0].max(0.0)).is_some(),
+                _                  => false,
+            }
+        }
+        // ── 水ボリューム（Phase W2.5。スロット格納型: locate で解決）──
+        // `water_level`（現在水位）は**読み取り専用**なのでここに分岐を書かない。
+        // 水位を直接書けてしまうと体積保存が破れ、水位グラフの前提が壊れる
+        //（水を足したい／抜きたい場合は surface_height を動かすのではなく、
+        //  リンクの開閉で表現するのが本方式の設計である）。
+        "WaterVolume" => {
+            let Some(e) = locate::<WaterVolumeComponent>(world, entity) else { return false };
+            let Some(w) = world.get_mut::<WaterVolumeComponent>(e) else { return false };
+            match field {
+                "surface_height" => take::<1>(v).map(|a| w.surface_height = a[0]).is_some(),
+                "simulate_level" => take::<1>(v).map(|a| {
+                    let on = a[0] != 0.0;
+                    w.simulate_level = on;
+                    // OFF にしたら揮発水位も消す（water_ops.rs と同一の規則）。
+                    if !on { w.sim_level_y = None; }
+                }).is_some(),
+                _                => false,
+            }
+        }
         _ => false,
     }
 }
@@ -835,6 +930,9 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
         "Animator"        => locate::<AnimatorComponent>(world, entity).is_some(),
         "ParticleEmitter" => locate::<ParticleEmitterComponent>(world, entity).is_some(),
         "InputMap"        => locate::<InputMapComponent>(world, entity).is_some(),
+        // 水位グラフ（Phase W2.5）
+        "WaterLink"       => locate::<WaterLinkComponent>(world, entity).is_some(),
+        "WaterVolume"     => locate::<WaterVolumeComponent>(world, entity).is_some(),
         _ => false,
     }
 }

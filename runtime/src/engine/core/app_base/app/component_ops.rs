@@ -455,7 +455,7 @@ impl App {
                     let cp_ref_json = serde_json::to_string(&d.control_point_ref)
                         .unwrap_or_else(|_| "\"\"".to_string());
                     ("WaterVolumeComponent", format!(
-                        r#","kind":{kind_json},"surface_height":{:.4},"region_hx":{:.4},"region_hy":{:.4},"region_hz":{:.4},"ocean_extent":{:.4},"shallow_r":{:.4},"shallow_g":{:.4},"shallow_b":{:.4},"deep_r":{:.4},"deep_g":{:.4},"deep_b":{:.4},"absorption_distance":{:.4},"surface_opacity":{:.4},"foam_r":{:.4},"foam_g":{:.4},"foam_b":{:.4},"foam_width":{:.4},"foam_intensity":{:.4},"wave_amplitude":{:.4},"wave_scale":{:.4},"wave_speed":{:.4},"wave_direction_deg":{:.4},"fresnel_power":{:.4},"fresnel_strength":{:.4},"reflect_r":{:.4},"reflect_g":{:.4},"reflect_b":{:.4},"refraction_distortion":{:.4},"ripple_strength":{:.4},"ripple_foam_threshold":{:.4},"shore_wave_strength":{:.4},"shore_wave_length":{:.4},"shore_wave_period":{:.4},"shore_wave_foam":{:.4},"river_width":{:.4},"flow_speed":{:.4},"river_depth":{:.4},"river_segment_length":{:.4},"control_point_ref":{cp_ref_json},"spline_points":{spline_json}"#,
+                        r#","kind":{kind_json},"surface_height":{:.4},"region_hx":{:.4},"region_hy":{:.4},"region_hz":{:.4},"ocean_extent":{:.4},"shallow_r":{:.4},"shallow_g":{:.4},"shallow_b":{:.4},"deep_r":{:.4},"deep_g":{:.4},"deep_b":{:.4},"absorption_distance":{:.4},"surface_opacity":{:.4},"foam_r":{:.4},"foam_g":{:.4},"foam_b":{:.4},"foam_width":{:.4},"foam_intensity":{:.4},"wave_amplitude":{:.4},"wave_scale":{:.4},"wave_speed":{:.4},"wave_direction_deg":{:.4},"fresnel_power":{:.4},"fresnel_strength":{:.4},"reflect_r":{:.4},"reflect_g":{:.4},"reflect_b":{:.4},"refraction_distortion":{:.4},"ripple_strength":{:.4},"ripple_foam_threshold":{:.4},"shore_wave_strength":{:.4},"shore_wave_length":{:.4},"shore_wave_period":{:.4},"shore_wave_foam":{:.4},"river_width":{:.4},"flow_speed":{:.4},"river_depth":{:.4},"river_segment_length":{:.4},"control_point_ref":{cp_ref_json},"simulate_level":{},"spline_points":{spline_json}"#,
                         d.surface_height,
                         d.region_half_extents[0], d.region_half_extents[1], d.region_half_extents[2],
                         d.ocean_extent,
@@ -484,6 +484,27 @@ impl App {
                         d.flow_speed,
                         d.river_depth,
                         d.river_segment_length,
+                        // 水位グラフの対象フラグ（W2.5）。C# 側はチェックボックスで扱うので
+                        // JSON の bool リテラル（true / false）としてそのまま出す。
+                        d.simulate_level,
+                    ))
+                }
+                ComponentData::WaterLinkComponent(d) => {
+                    // 水位グラフのリンク＝開口（W2.5）: 接続先 2 本のアクタ名と
+                    // 開口の寸法・開閉率・流量係数をインスペクター用に送信する。
+                    // アクタ名は任意文字列なので必ず JSON エスケープする
+                    // （名前に " や \ が入っても壊れないように）。
+                    let vol_a_json = serde_json::to_string(&d.volume_a)
+                        .unwrap_or_else(|_| "\"\"".to_string());
+                    let vol_b_json = serde_json::to_string(&d.volume_b)
+                        .unwrap_or_else(|_| "\"\"".to_string());
+                    ("WaterLinkComponent", format!(
+                        r#","volume_a":{vol_a_json},"volume_b":{vol_b_json},"opening_bottom":{:.4},"opening_height":{:.4},"opening_width":{:.4},"openness":{:.4},"flow_coefficient":{:.4}"#,
+                        d.opening_bottom,
+                        d.opening_height,
+                        d.opening_width,
+                        d.openness,
+                        d.flow_coefficient,
                     ))
                 }
                 ComponentData::AnimatorComponent(d) => {
@@ -993,6 +1014,36 @@ impl App {
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<WaterVolumeComponent>(name, ComponentKind::WaterVolume, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "WaterLinkComponent" => {
+                // デフォルト（未接続・全開の扉サイズ）の WaterLinkComponent を追加する（W2.5）。
+                // 接続先 2 本のアクタ名はインスペクタの参照ボックスへ D&D して設定する。
+                use crate::engine::components::WaterLinkComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, WaterLinkComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<WaterLinkComponent>(name, ComponentKind::WaterLink, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

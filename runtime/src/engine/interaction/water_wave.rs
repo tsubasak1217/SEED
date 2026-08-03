@@ -124,6 +124,54 @@ fn wave_amplitude_for(src: &MovingInteractionSource, query: &WaterQuery<'_>) -> 
     ((h_term + v_term) * src.strength.max(0.0)).min(WAVE_MAX_AMPLITUDE)
 }
 
+// ─── 水位グラフの流量 → 波源（Phase W2.5 の演出接続）───────────
+
+/// 流量 1m³/s あたりの波振幅（m 相当）。
+///
+/// 扉ごしに部屋が浸水するときの流量はおおむね 0.5〜5m³/s になる。
+/// 0.06 を掛けると 0.03〜0.3m ＝「歩行のさざ波〜飛び込みのドボン」と同じ帯へ入り、
+/// 既存の航跡・波紋と自然に混ざる（上限は共通の `WAVE_MAX_AMPLITUDE`）。
+const WAVE_AMPLITUDE_PER_FLOW: f32 = 0.06;
+
+/// 流量 1m³/s あたりの波源半径（m）。
+///
+/// 大量に流れ込むほど広い範囲の水面が波立つ、という直感に合わせる。
+/// 下限（`FLOW_WAVE_RADIUS_MIN`）を下回らないので、細い流れでも点にはならない。
+const FLOW_WAVE_RADIUS_PER_FLOW: f32 = 0.8;
+
+/// 流量由来の波源の最小半径（m）。閾値ちょうどの流れでもこの広さは波立つ。
+const FLOW_WAVE_RADIUS_MIN: f32 = 1.0;
+
+/// 流量由来の波源の最大半径（m）。場（俯瞰テクスチャ）の解像度に対して
+/// 大きすぎるスタンプは「面が持ち上がる」だけで波に見えないため上限を切る。
+const FLOW_WAVE_RADIUS_MAX: f32 = 8.0;
+
+/// 水位グラフの流量イベント 1 件を、インタラクションフィールドの波源へ変換する。
+///
+/// 開口の位置で水面を叩く「その場に留まる波源」を作る（速度場には寄与しない＝
+/// `velocity_xz` は 0）。草をなびかせる速度場と違い、流れ込みが与えたいのは
+/// **水面の波エネルギーだけ**だからである。
+///
+/// 呼び出し側（frame_renderer）は `apply_water_wave_injection` の**後**で
+/// この結果を配列へ足すこと（先に足すとあの関数に `wave_amplitude` を潰される）。
+pub fn flow_event_wave_source(
+    ev: &crate::engine::water::WaterFlowEvent,
+) -> MovingInteractionSource {
+    let flow = ev.flow.abs();
+    MovingInteractionSource {
+        world_pos:   ev.world_pos,
+        // 流れ込みは「その場で水面を叩く」現象なので速度場へは書かない。
+        velocity_xz: [0.0, 0.0],
+        velocity_y:  0.0,
+        radius:      (flow * FLOW_WAVE_RADIUS_PER_FLOW)
+            .clamp(FLOW_WAVE_RADIUS_MIN, FLOW_WAVE_RADIUS_MAX),
+        // 強さ（場への書き込み係数）は常に最大。「流れているのに薄い」を避ける。
+        strength:    1.0,
+        // 振幅は流量に比例させ、既存の波と同じ上限で飽和させる。
+        wave_amplitude: (flow * WAVE_AMPLITUDE_PER_FLOW).min(WAVE_MAX_AMPLITUDE),
+    }
+}
+
 // ─── ユニットテスト ──────────────────────────────────────────
 
 #[cfg(test)]
@@ -266,5 +314,33 @@ mod tests {
         s[0].strength = 0.0;
         apply_water_wave_injection(&mut s, &[pond()]);
         assert_eq!(s[0].wave_amplitude, 0.0);
+    }
+
+    // ── 水位グラフの流量 → 波源（Phase W2.5）──────────────────
+
+    /// 流量イベントは開口位置の波源になり、流量が大きいほど強く広くなること。
+    #[test]
+    fn flow_event_becomes_wave_source_scaled_by_flow() {
+        use crate::engine::water::WaterFlowEvent;
+        let weak   = flow_event_wave_source(&WaterFlowEvent {
+            world_pos: [1.0, 2.0, 3.0], flow: 0.1 });
+        let strong = flow_event_wave_source(&WaterFlowEvent {
+            world_pos: [1.0, 2.0, 3.0], flow: 3.0 });
+        assert_eq!(weak.world_pos, [1.0, 2.0, 3.0], "開口位置に置かれること");
+        assert!(strong.wave_amplitude > weak.wave_amplitude, "流量が大きいほど強い");
+        assert!(strong.radius > weak.radius, "流量が大きいほど広い");
+        // 流れ込みは速度場へは寄与しない（草をなびかせない）。
+        assert_eq!(weak.velocity_xz, [0.0, 0.0]);
+        assert_eq!(weak.velocity_y, 0.0);
+    }
+
+    /// 巨大流量でも振幅・半径が既存の上限で飽和すること（場の数値暴走の防止）。
+    #[test]
+    fn flow_event_saturates_at_limits() {
+        use crate::engine::water::WaterFlowEvent;
+        let huge = flow_event_wave_source(&WaterFlowEvent {
+            world_pos: [0.0; 3], flow: 10_000.0 });
+        assert_eq!(huge.wave_amplitude, WAVE_MAX_AMPLITUDE);
+        assert_eq!(huge.radius, FLOW_WAVE_RADIUS_MAX);
     }
 }

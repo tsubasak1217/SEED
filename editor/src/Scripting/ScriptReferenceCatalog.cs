@@ -28,6 +28,9 @@ internal static class ScriptReferenceCatalog
         ["Animator"]        = "AnimatorComponent",
         ["ParticleEmitter"] = "ParticleEmitterComponent",
         ["InputMap"]        = "InputMapComponent",
+        // 水位グラフ（Phase W2.5）
+        ["WaterVolume"]     = "WaterVolumeComponent",
+        ["WaterLink"]       = "WaterLinkComponent",
     };
 
     /// <summary>
@@ -45,6 +48,9 @@ internal static class ScriptReferenceCatalog
         ["Animator"]                          = "Animator",
         ["ParticleEmitter"]                   = "ParticleEmitter",
         ["InputMap"]                          = "InputMap",
+        // 水位グラフ（Phase W2.5）
+        ["WaterVolume"]                       = "WaterVolume（水域）",
+        ["WaterLink"]                         = "WaterLink（開口・バルブ）",
     };
 
     /// <summary>

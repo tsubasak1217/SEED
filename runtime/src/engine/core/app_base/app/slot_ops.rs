@@ -483,6 +483,11 @@ impl App {
                         use crate::engine::components::WaterVolumeComponent;
                         scene.world.remove::<WaterVolumeComponent>(slot_entity);
                     }
+                    ComponentKind::WaterLink => {
+                        // 水位グラフのリンク（開口。W2.5）
+                        use crate::engine::components::WaterLinkComponent;
+                        scene.world.remove::<WaterLinkComponent>(slot_entity);
+                    }
                     ComponentKind::InteractionSource => {
                         use crate::engine::components::InteractionSourceComponent;
                         scene.world.remove::<InteractionSourceComponent>(slot_entity);
@@ -935,6 +940,17 @@ impl App {
                 } else { scene.world.despawn(slot_entity); }
                 true
             }
+            ComponentData::WaterLinkComponent(wl_data) => {
+                // 水位グラフのリンク（開口。W2.5）を複製する
+                use crate::engine::components::WaterLinkComponent;
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, WaterLinkComponent::from_data(wl_data));
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<WaterLinkComponent>(slot_data.name, ComponentKind::WaterLink, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
+            }
             ComponentData::AnimatorComponent(an_data) => {
                 use crate::engine::components::AnimatorComponent;
                 let slot_entity = scene.world.spawn();
@@ -1363,6 +1379,13 @@ impl App {
                     use crate::engine::components::WaterVolumeComponent;
                     scene.world.insert(slot_entity, WaterVolumeComponent::from_data(wv_data));
                     new_slots.push(ComponentSlot::new::<WaterVolumeComponent>(slot_data.name, ComponentKind::WaterVolume, slot_entity));
+                }
+                ComponentData::WaterLinkComponent(wl_data) => {
+                    // 水位グラフのリンク（開口。W2.5）をスロット専用エンティティへ復元する
+                    use crate::engine::components::WaterLinkComponent;
+                    scene.world.insert(slot_entity, WaterLinkComponent::from_data(wl_data));
+                    new_slots.push(ComponentSlot::new::<WaterLinkComponent>(
+                        slot_data.name, ComponentKind::WaterLink, slot_entity));
                 }
                 ComponentData::AnimatorComponent(an_data) => {
                     use crate::engine::components::AnimatorComponent;

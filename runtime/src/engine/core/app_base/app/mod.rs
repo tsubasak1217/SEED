@@ -52,6 +52,8 @@ mod play_diag;
 mod audio_ops;
 /// 水ボリューム（WaterVolumeComponent）のインスペクタ更新（SET_WATER_FIELD）
 mod water_ops;
+/// 水位グラフのリンク（WaterLinkComponent）のインスペクタ更新（SET_WATER_LINK_FIELD。W2.5）
+mod water_link_ops;
 /// インタラクションソース（InteractionSourceComponent）のインスペクタ更新（SET_INTERACTION_FIELD）
 mod interaction_ops;
 /// コントロールポイント（ControlPointComponent）の編集・点選択（SET_CONTROL_POINT*）
@@ -761,6 +763,14 @@ pub struct App {
     /// ベイクは地形編集・水パラメータ変更・Ocean のカメラ移動を検知したときだけ、
     /// 数百 ms のデバウンスを挟んで走る（毎フレームは焼かない）。
     water_shore_fields: crate::engine::water::ShoreFieldSet,
+    /// 水位グラフ（Phase W2.5）の時間発展を担う状態。
+    ///
+    /// 保持するのは固定ステップのアキュムレータと直近フレームの流量イベントだけで、
+    /// 水位そのものは `WaterVolumeComponent.sim_level_y`（揮発フィールド）にある。
+    /// **Play かつ非ポーズのときだけ進み、Play を抜けると設定水位へ戻す**
+    /// （水位は演出ではなくゲーム状態なので、波と違い Edit 中は動かさない）。
+    /// GPU リソースを持たないので `Option` にせず常設する（対象水域が 0 ならコスト 0）。
+    water_level_sim: crate::engine::water::WaterLevelSim,
     /// 地形の**密度**が編集されるたびに進む単調カウンタ。
     ///
     /// ショアフィールドの再ベイク判定に使う。`TerrainState` ではなく `App` に置くのは、
@@ -1289,6 +1299,8 @@ impl App {
             water_renderer:              None,
             // ショアフィールドは CPU データのみ。空のキャッシュで開始する（Phase W1.5）。
             water_shore_fields:          crate::engine::water::ShoreFieldSet::new(),
+            // 水位グラフ（Phase W2.5）。Play を開始するまで何もしない。
+            water_level_sim:             crate::engine::water::WaterLevelSim::default(),
             terrain_edit_version:        0,
             // インタラクションフィールドは device 確立後（草かソースが現れるフレーム）に遅延構築する。
             interaction_field:           None,
