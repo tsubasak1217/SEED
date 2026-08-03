@@ -26,10 +26,18 @@
 //  本シェーダを色ブラー（SSGI 等）へ転用する場合、フォーマットは Rgba16Float のままで
 //  load/store を .r → .rgb（または vec4 全体）へ広げるだけでよい（フォーマット変更不要）。
 //
-//  入力: texture_2d<f32>（textureLoad で整数座標アクセス。サンプラー不要。.rgb を集計）
-//  出力: texture_storage_2d<rgba16float, write>（.rgb に平均、a は 0）
-//  ※ .rgb 集計へ広げ済み（SSGI カラー転用）。ランニング和はチャンネル独立なので、
-//    AO のように .r しか使わない用途では赤チャンネルの結果は以前と不変。
+//  入力: texture_2d<f32>（textureLoad で整数座標アクセス。サンプラー不要。**rgba 全部**を集計）
+//  出力: texture_storage_2d<rgba16float, write>（rgba それぞれの平均）
+//  ※ .r → .rgb（SSGI カラー転用）→ **.rgba**（水面反射のプリマルチプライドぼかし転用）と
+//    段階的に広げてある。ランニング和はチャンネル独立なので、
+//    .r しか読まない用途（AO）・.rgb しか読まない用途（SSGI）の結果は**ビット単位で不変**。
+//
+//  【なぜ α まで集計するのか（水面反射のぼかし, Phase W5.2）】
+//  水面反射 RT は「rgb = 反射色 × 強度（プリマルチプライド）／a = 強度」で、水面の無い画素は
+//  クリア値 0（rgb=0, a=0）である。プリマルチプライド値をそのままぼかし、読み手が
+//  `rgb / max(a, ε)` で正規化すると、**α で重み付けした平均**になる＝水面の縁や遮蔽物の
+//  シルエット周辺で「反射の無い黒（0）」を巻き込んで暗い縁取りが出る事故が構造的に起きない。
+//  そのためには α もぼかす必要がある（旧実装は a に 0 を書いていた）。
 // ============================================================
 
 /// いもすブラーパラメータ（CPU 側 ImosBlurParams と #[repr(C)] 一致・16B）。
@@ -47,23 +55,22 @@ struct ImosBlurParams {
 @group(0) @binding(1) var src: texture_2d<f32>;
 @group(0) @binding(2) var dst: texture_storage_2d<rgba16float, write>;
 
-/// 走査線 `line` 上の走査軸位置 `pos` の画素（.rgb）を読む（端はクランプ）。
+/// 走査線 `line` 上の走査軸位置 `pos` の画素（rgba 全部）を読む（端はクランプ）。
 /// postfx_blur.wgsl の load_px と同一の座標選択。
 ///
-/// 【カラー対応（SSGI 転用）】以前は .r だけを扱っていたが、カラー信号（SSGI 等）へ
-/// 転用するため .rgb（3 チャンネル）を集計するよう広げた。ランニング和は**チャンネルごとに
-/// 独立**なので、AO のように .r しか使わない用途では赤チャンネルの結果は以前と
-/// **ビット単位で不変**（AO の raw は g=b=0 のまま流れ、AO 側は .r のみ読むため影響なし）。
-fn load_rgb(line: i32, pos: i32, len: i32) -> vec3<f32> {
+/// 【チャンネル拡張の履歴】.r（AO）→ .rgb（SSGI カラー）→ **.rgba**（水面反射の
+/// プリマルチプライドぼかし）。ランニング和は**チャンネルごとに独立**なので、
+/// 既存用途（.r のみ／.rgb のみを読む）の結果は **ビット単位で不変**である。
+fn load_rgba(line: i32, pos: i32, len: i32) -> vec4<f32> {
     let c = clamp(pos, 0, len - 1);
     let coord = select(vec2<i32>(line, c), vec2<i32>(c, line), P.horizontal == 1u);
-    return textureLoad(src, coord, 0).rgb;
+    return textureLoad(src, coord, 0);
 }
 
-/// 走査線 `line` 上の走査軸位置 `pos` へ書き込む（.rgb に値、a は 0）。
-fn store_rgb(line: i32, pos: i32, val: vec3<f32>) {
+/// 走査線 `line` 上の走査軸位置 `pos` へ書き込む（rgba それぞれの平均）。
+fn store_rgba(line: i32, pos: i32, val: vec4<f32>) {
     let coord = select(vec2<i32>(line, pos), vec2<i32>(pos, line), P.horizontal == 1u);
-    textureStore(dst, coord, vec4<f32>(val, 0.0));
+    textureStore(dst, coord, val);
 }
 
 @compute @workgroup_size(64)
@@ -77,17 +84,17 @@ fn blur_cs(@builtin(global_invocation_id) gid: vec3<u32>) {
     let r    = max(P.radius, 0);
     let norm = 1.0 / f32(2 * r + 1); // postfx_blur.wgsl と同一の正規化 1/(2r+1)
 
-    // 位置 0 における窓 [-r, r] の初期総和（端はクランプ読み・rgb 各チャンネル独立）。
-    var sum = vec3<f32>(0.0);
+    // 位置 0 における窓 [-r, r] の初期総和（端はクランプ読み・rgba 各チャンネル独立）。
+    var sum = vec4<f32>(0.0);
     for (var k = -r; k <= r; k = k + 1) {
-        sum = sum + load_rgb(line, k, len);
+        sum = sum + load_rgba(line, k, len);
     }
 
     // 走査線を 1 画素ずつ進めながら平均を書き出し、窓をスライドする。
     // 窓を右（下）へ 1 進める: 新たに入る (i+r+1) を足し、外れる (i-r) を引く
     // （postfx_blur.wgsl と同一式: sum += load(i+r+1) - load(i-r)）。
     for (var i = 0; i < len; i = i + 1) {
-        store_rgb(line, i, sum * norm);
-        sum = sum + load_rgb(line, i + r + 1, len) - load_rgb(line, i - r, len);
+        store_rgba(line, i, sum * norm);
+        sum = sum + load_rgba(line, i + r + 1, len) - load_rgba(line, i - r, len);
     }
 }

@@ -710,6 +710,25 @@ pub fn compute_material_avg_albedo(model: &mut Model) {
     }
 }
 
+/// 単体のベースカラーテクスチャ（パス指定）のアルファ加重平均リニア色を返す。
+///
+/// ## 何のためにあるか（`.mat` オーバーライドの平均アルベド）
+/// `compute_material_avg_albedo` はモデルに埋め込まれた／モデルが参照するテクスチャを
+/// **ロード時に一括で**平均化してキャッシュへ焼く。しかし `.mat` アセットで
+/// マテリアルを丸ごと差し替える経路（`gpu_resources.rs::apply_overrides` の MatAsset）は
+/// モデルのキャッシュを通らないため、テクスチャ平均が「白」のまま残っていた。
+/// その結果 **ベースカラー白＋テクスチャ**のマテリアルは平均アルベドが白になり、
+/// RT 反射の画面外ヒット・DDGI のバウンス・色付き影がすべて「白い塊」になっていた。
+/// この関数はその経路のために、1 枚のテクスチャだけを平均化する窓口である。
+///
+/// 失敗（読めない・デコードできない形式）は `None`。呼び出し側は白（＝テクスチャ無し相当）へ落ちる。
+/// **プロセス内でのキャッシュは呼び出し側の責務**（同じ `.mat` が何度も適用されるため）。
+pub fn texture_avg_linear(path: &str) -> Option<[f32; 3]> {
+    let src = TextureSource::FilePath(std::path::PathBuf::from(path));
+    let (_, _, rgba) = decode_ref_rgba(&src)?;
+    Some(alpha_weighted_linear_avg(&rgba))
+}
+
 fn classify_textures(model: &Model) -> Vec<TextureUsage> {
     let n = model.textures.len();
     // None = 未参照。Some(usage) = 確定済み。

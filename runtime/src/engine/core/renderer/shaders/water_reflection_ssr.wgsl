@@ -107,15 +107,10 @@ fn fs_water_reflection(in: WaterReflVsOut) -> @location(0) vec4<f32> {
     if hit {
         reflected = textureSampleLevel(t_water_scene, s_water_scene, hit_uv, 0.0).rgb;
     } else {
-        // ミス：まず「画面内に写っている空」、無ければ GI プローブ／環境光。
-        let sky = water_refl_screen_sky(s.world_pos, s.r);
-        if sky.valid {
-            reflected = sky.color;
-        } else {
-            reflected = water_refl_env(s.world_pos, s.r);
-        }
+        // ミス：画面内の空 → 天球テクスチャ → GI プローブ／環境光（共通の窓口）。
+        reflected = water_refl_miss(s.world_pos, s.world_pos, s.r);
     }
 
-    // A に強度を入れる（規約は RT 変種と同一）。
-    return vec4<f32>(reflected, s.intensity);
+    // 出力は **プリマルチプライド**（規約は RT 変種と同一）。
+    return water_refl_output(reflected, s.intensity);
 }

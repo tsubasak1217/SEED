@@ -53,6 +53,31 @@ pub const RT_WATER_REFLECTION_NAME: &str = "water_reflection";
 /// **`pipelines/water_reflection_*.toml` の `color_format` と一致必須。**
 pub const WATER_REFLECTION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// 粗さ 1.0 のときのブラー半径（**画面高さに対する比**）。
+///
+/// 画素で直接決めると解像度によってぼけ具合が変わる（4K で急にシャープになる）ため、
+/// 画面高さ基準の比で持つ。0.015 は 1080p で 16 画素相当＝「反射像の輪郭は残るが
+/// 細部は溶ける」ところで、これ以上大きいと反射が単なる環境色に潰れる。
+pub const WATER_REFL_BLUR_MAX_RADIUS_RATIO: f32 = 0.015;
+
+/// 粗さブラーのいもす法反復回数（H→V で 1 回）。
+///
+/// ボックスフィルタ 3 回でガウシアンをよく近似できるが、水面反射は元がノイジー
+/// （1 画素 1 レイ＋IGN ジッタ）なので 2 回で十分に滑らかになる（1 回だと箱の角が残る）。
+pub const WATER_REFL_BLUR_ITERATIONS: u32 = 2;
+
+/// 粗さ（0..1）と画面高さから、いもす法ボックスブラーの半径（画素）を決める。
+///
+/// **0 を返したら呼び出し側はブラーパスごとスキップすること**（粗さ 0 ＝完全な鏡面という
+/// パラメータの意味を、1 画素の誤差もなく守るため）。
+pub fn water_reflection_blur_radius_px(roughness: f32, height: u32) -> i32 {
+    let r = roughness.clamp(0.0, 1.0);
+    if r <= 0.0 {
+        return 0;
+    }
+    (r * height as f32 * WATER_REFL_BLUR_MAX_RADIUS_RATIO).round() as i32
+}
+
 /// 本パスのシェーダソース解決（パイプライン生成とテストが共有する唯一の窓口）。
 ///
 /// 高さ場・水面共有モジュールの実体は water モジュールが持つので委譲する
@@ -62,6 +87,50 @@ fn resolve_water_reflection_shader(name: &str) -> &'static str {
         "water_height_field.wgsl" => super::water::resolve_water_shader(name),
         other                     => get_shader_source(other),
     }
+}
+
+// ============================================================
+//  スカイボックス連携（ミス経路で本物の空を映すための入力）
+// ============================================================
+
+/// 反射のミス経路が使うスカイボックス uniform（WGSL `WaterSkyUniform` と 1:1・64B）。
+///
+/// **`skybox.rs::SkyboxUniform`（描画用・96B）とは別物**である。あちらは球メッシュを
+/// 配置するための行列を持つが、こちらが要るのは「ワールド方向 → 天球ローカル方向」の
+/// 逆回転と実効色だけで、平行移動もスケールも意味を持たない。共有すると
+/// 「描画用の行列を反射がどう解釈するか」が暗黙の契約になるため、意味の違う 2 本に分けてある。
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WaterSkyUniform {
+    /// 逆回転行列の第 1 行（.xyz。.w はパディング）。
+    pub rot_inv_0: [f32; 4],
+    /// 同 第 2 行。
+    pub rot_inv_1: [f32; 4],
+    /// 同 第 3 行。
+    pub rot_inv_2: [f32; 4],
+    /// rgb = tint × intensity ／ **a = 有効フラグ（0 = スカイボックス無し）**。
+    pub tint_enabled: [f32; 4],
+}
+
+impl WaterSkyUniform {
+    /// スカイボックスが無いシーン用の中立値（`enabled = 0`）。
+    /// これが挿さっている限り WGSL 側は天球を一切サンプルせず、GI へフォールバックする。
+    pub fn disabled() -> Self {
+        Self {
+            rot_inv_0:    [1.0, 0.0, 0.0, 0.0],
+            rot_inv_1:    [0.0, 1.0, 0.0, 0.0],
+            rot_inv_2:    [0.0, 0.0, 1.0, 0.0],
+            tint_enabled: [0.0, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
+/// このフレームに反射へ映す代表スカイボックス（`SkyboxSystem` が組み立てて渡す）。
+pub struct WaterSkySource<'a> {
+    /// equirectangular 天球テクスチャのビュー（LDR sRGB / HDR f16 のどちらもあり得る）。
+    pub view: &'a wgpu::TextureView,
+    /// GPU へ書く uniform（逆回転＋実効色＋有効フラグ）。
+    pub uniform: WaterSkyUniform,
 }
 
 // ============================================================
@@ -92,6 +161,15 @@ pub struct WaterReflectionPipelines {
     rt_gi_bgl: Option<wgpu::BindGroupLayout>,
     /// グラブ・GI で共用するリニア clamp サンプラー。
     sampler: wgpu::Sampler,
+    /// 天球サンプラー（**経度方向は Repeat**）。equirectangular の u は 0/1 で巻き付くので、
+    /// clamp すると経度 0°（背後）の継ぎ目に縦線が出る。skybox.rs のサンプラーと同じ規約。
+    sky_sampler: wgpu::Sampler,
+    /// スカイボックス uniform（毎フレーム `update_sky` で書き換える 64B）。
+    sky_uniform: wgpu::Buffer,
+    /// 粗さブラー用のいもす法（分離ボックス）コンピュート一式。
+    /// SSGI と同じく**自前のインスタンスを持つ**（AO の物を借りると所有関係が分かりにくく、
+    /// パイプライン構築順の暗黙依存が生まれるため。実体は薄いパイプライン 1 本）。
+    imos: super::imos_blur::ImosBlur,
     /// 反射パスが走らないフレームに水面パスの反射スロットを埋めるダミー 1x1（黒・永続）。
     #[allow(dead_code)]
     dummy_tex: wgpu::Texture,
@@ -164,6 +242,28 @@ impl WaterReflectionPipelines {
             ..Default::default()
         });
 
+        // 天球用サンプラー（u=Repeat / v=Clamp）。skybox.rs の `sampler` と同じ規約で、
+        // 経度の巻き付きを Repeat に、天頂・天底のにじみ防止を Clamp に任せる。
+        let sky_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label:          Some("Water Reflection Sky Sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter:     wgpu::FilterMode::Linear,
+            min_filter:     wgpu::FilterMode::Linear,
+            mipmap_filter:  wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // スカイボックス uniform（既定は「無し」。スカイボックスのあるフレームだけ上書きされる）。
+        let sky_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label:              Some("Water Reflection Sky Uniform"),
+            size:               std::mem::size_of::<WaterSkyUniform>() as u64,
+            usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&sky_uniform, 0, bytemuck::bytes_of(&WaterSkyUniform::disabled()));
+
         // ── 機能 OFF 用のダミー 1x1（黒＝A も 0＝反射寄与ゼロ）──────
         let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
             label:           Some("Water Reflection Dummy 1x1"),
@@ -194,7 +294,9 @@ impl WaterReflectionPipelines {
             ssr, rt,
             ssr_params_bgl, ssr_field_bgl, ssr_scene_bgl, ssr_gi_bgl,
             rt_params_bgl, rt_field_bgl, rt_scene_bgl, rt_gi_bgl,
-            sampler, dummy_tex, dummy_view,
+            sampler, sky_sampler, sky_uniform,
+            imos: super::imos_blur::ImosBlur::new(device, cache),
+            dummy_tex, dummy_view,
         }
     }
 
@@ -263,17 +365,38 @@ impl WaterReflectionPipelines {
         })
     }
 
-    /// group3（シーンカラーのグラブ＋サンプラー＋シーン深度）の BindGroup を作る。
+    /// このフレームの代表スカイボックスを GPU へ反映する（`create_scene_bg` より前に呼ぶ）。
+    ///
+    /// `None` を渡すと「スカイボックス無し」（`enabled = 0`）を書き、反射のミス経路は
+    /// 従来どおり GI プローブ／アンビエントへ落ちる。
+    /// **uniform だけを更新する**（テクスチャの差し替えは `create_scene_bg` の引数側）。
+    pub fn update_sky(&self, queue: &wgpu::Queue, sky: Option<&WaterSkySource<'_>>) {
+        let u = match sky {
+            Some(s) => s.uniform,
+            None    => WaterSkyUniform::disabled(),
+        };
+        queue.write_buffer(&self.sky_uniform, 0, bytemuck::bytes_of(&u));
+    }
+
+    /// group3（シーンカラーのグラブ＋サンプラー＋シーン深度＋スカイボックス）の BindGroup を作る。
     ///
     /// `grab_view` は `WaterRenderer::grab_view()`（屈折の背景と同一テクスチャ）。
     /// `depth_view` は共有深度の **DepthOnly ビュー**（本パスは深度アタッチメントを持たない）。
+    /// `sky` はこのフレームの代表スカイボックス。`None` のときは**ダミー 1x1（黒）**を挿す
+    /// （uniform 側の `enabled = 0` でサンプル自体が起きないので、中身は何でもよいが
+    ///  バインドは必ず埋める必要がある＝レイアウトは常に同一）。
     pub fn create_scene_bg(
         &self,
         device:     &wgpu::Device,
         grab_view:  &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
+        sky:        Option<&WaterSkySource<'_>>,
         use_rt:     bool,
     ) -> wgpu::BindGroup {
+        let sky_view = match sky {
+            Some(s) => s.view,
+            None    => &self.dummy_view,
+        };
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("Water Reflection Scene BG (group 3)"),
             layout:  self.scene_bgl(use_rt),
@@ -281,6 +404,9 @@ impl WaterReflectionPipelines {
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(grab_view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(depth_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: self.sky_uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(sky_view) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sky_sampler) },
             ],
         })
     }
@@ -378,6 +504,34 @@ impl WaterReflectionPipelines {
         water.draw_grid_buckets(pass);
     }
 
+    /// 反射 RT を粗さに比例した半径でぼかす（**ブラー結果は `targets.t1_view()` に残る**）。
+    ///
+    /// 反射パス（レンダーパス）を閉じた後・水面パスの前に記録すること。
+    /// `radius_px <= 0`（粗さ 0）なら**何も記録しない**＝呼び出し側は元の反射 RT を
+    /// そのまま使うこと（完全な鏡面の保証）。
+    ///
+    /// ぼかしは「ワールド座標のジッタ」ではなく後段のフィルタで作る、という方針は
+    /// `docs/rendering_roadmap.md` の「ブラー系実装の方針」に従う
+    /// （エッジ保持が要らない低周波用途なので、バイラテラルではなく いもす法を使う）。
+    pub fn blur(
+        &self,
+        device:    &wgpu::Device,
+        encoder:   &mut wgpu::CommandEncoder,
+        src:       &wgpu::TextureView,
+        targets:   &WaterReflectionBlurTargets,
+        radius_px: i32,
+    ) {
+        if radius_px <= 0 || !targets.is_ready() {
+            return;
+        }
+        self.imos.record(
+            device, encoder,
+            src, targets.t0_view(), targets.t1_view(),
+            targets.width() as i32, targets.height() as i32,
+            radius_px, WATER_REFL_BLUR_ITERATIONS,
+        );
+    }
+
     // ── レイアウト選択（RT / SSR でパイプラインが違う＝BGL も別物）──
 
     fn params_bgl(&self, use_rt: bool) -> &wgpu::BindGroupLayout {
@@ -398,6 +552,95 @@ impl WaterReflectionPipelines {
             _               => &self.ssr_scene_bgl,
         }
     }
+}
+
+// ============================================================
+//  WaterReflectionBlurTargets（粗さブラーの ping-pong ターゲット）
+// ============================================================
+
+/// 粗さブラー（`imos_blur`）用のフル解像度 ping-pong テクスチャ 2 枚。
+///
+/// ## なぜ 2 枚要るのか
+/// いもす法ブラーは「入力 → t0（水平）→ t1（垂直）」を反復する構造で、
+/// 連続するサブパスの入出力が必ず別テクスチャでなければ storage の読み書き競合になる。
+/// 反復回数は常に偶数サブパスなので **結果は必ず `t1`** に残る（`ImosBlur::record` の不変条件）。
+///
+/// ## なぜ反射 RT 自身を書き戻さないのか
+/// 反射 RT は RENDER_ATTACHMENT で作られており、そこへ compute から storage 書きするには
+/// usage の追加が要る。加えて「元の（ぼかす前の）反射」を入力として保持したまま
+/// ping-pong する必要があるため、どのみち 2 枚は要る。
+///
+/// ## 確保条件
+/// **粗さが 0 より大きい水域があるフレームだけ**確保・実行する。粗さ 0（既定）のシーンでは
+/// 1 バイトも確保されず、コストは完全にゼロである。
+pub struct WaterReflectionBlurTargets {
+    /// ping-pong その 1（水平走査の出力）。
+    t0: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// ping-pong その 2（垂直走査の出力＝**最終結果**）。
+    t1: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// 確保済み幅・高さ（サイズ追従の判定用）。
+    width:  u32,
+    height: u32,
+}
+
+impl Default for WaterReflectionBlurTargets {
+    fn default() -> Self { Self::new() }
+}
+
+impl WaterReflectionBlurTargets {
+    /// 未確保の空ターゲットを作る（device 不要＝App::new から eager に持てる）。
+    pub fn new() -> Self {
+        Self { t0: None, t1: None, width: 0, height: 0 }
+    }
+
+    /// 指定サイズへ追従確保する（同サイズ確保済みなら何もしない。`SsgiTargets::ensure` の流儀）。
+    pub fn ensure(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        let w = width.max(1);
+        let h = height.max(1);
+        if self.t0.is_some() && self.width == w && self.height == h {
+            return;
+        }
+        self.t0 = Some(Self::make_tex(device, "water_reflection_blur0", w, h));
+        self.t1 = Some(Self::make_tex(device, "water_reflection_blur1", w, h));
+        self.width  = w;
+        self.height = h;
+    }
+
+    /// ブラー作業用テクスチャ 1 枚（storage 書き込み＋テクスチャ読み）。
+    fn make_tex(device: &wgpu::Device, label: &str, w: u32, h: u32)
+        -> (wgpu::Texture, wgpu::TextureView)
+    {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some(label),
+            size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            // いもすブラーの storage フォーマットと反射 RT のフォーマットは
+            // どちらも Rgba16Float（下のテストで固定）なので、そのまま流し込める。
+            format:          WATER_REFLECTION_FORMAT,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats:    &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        (tex, view)
+    }
+
+    /// 確保済みか（未確保ならブラーを記録してはならない）。
+    pub fn is_ready(&self) -> bool { self.t0.is_some() && self.t1.is_some() }
+
+    /// ping-pong その 1 のビュー（`ensure` 済みであること）。
+    pub fn t0_view(&self) -> &wgpu::TextureView {
+        &self.t0.as_ref().expect("WaterReflectionBlurTargets: ensure 未実行（t0）").1
+    }
+    /// ping-pong その 2＝**ブラー結果**のビュー（`ensure` 済みであること）。
+    pub fn t1_view(&self) -> &wgpu::TextureView {
+        &self.t1.as_ref().expect("WaterReflectionBlurTargets: ensure 未実行（t1）").1
+    }
+    /// 確保済み幅。
+    pub fn width(&self) -> u32 { self.width }
+    /// 確保済み高さ。
+    pub fn height(&self) -> u32 { self.height }
 }
 
 // ============================================================
@@ -505,15 +748,95 @@ mod tests {
             get_shader_source("water_reflection_rt.wgsl"),
             get_shader_source("water_reflection_ssr.wgsl"),
         ] {
-            assert!(src.contains("return vec4<f32>(reflected, s.intensity);"),
-                "反射色と強度の出力規約（rgb=色 / a=強度）が変わっている");
+            assert!(src.contains("return water_refl_output(reflected, s.intensity);"),
+                "反射色と強度の出力規約（プリマルチプライド rgb=色×強度 / a=強度）が変わっている");
             assert!(src.contains("if s.intensity <= 0.0 {"),
                 "強度 0 の早期リターン（レイを飛ばさない）が消えている");
         }
-        // 水面パス側は a を重みとして掛ける（0 なら従来どおり反射なしの水になる）。
-        assert!(super::super::water::resolve_water_shader("water_surface.wgsl")
-                .contains("fresnel * clamp(reflection.a, 0.0, 1.0)"),
+        // 共有の出力関数がプリマルチプライドであること（ブラーの α 重み付き平均の前提）。
+        assert!(get_shader_source("water_reflection_common.wgsl")
+                .contains("return vec4<f32>(color * intensity, intensity);"),
+            "出力がプリマルチプライドでない（ブラー時に水際が黒く滲む）");
+        // 水面パス側は a を重みとして掛け、色は a で割り戻す（0 なら反射なしの水）。
+        let surface = super::super::water::resolve_water_shader("water_surface.wgsl");
+        assert!(surface.contains("fresnel * clamp(reflection.a, 0.0, 1.0)"),
             "水面パスが反射強度（a）を重みとして使っていない");
+        assert!(surface.contains("reflection.rgb / max(reflection.a, WATER_REFL_UNPREMULT_MIN)"),
+            "水面パスがプリマルチプライドを割り戻していない（反射が強度倍に暗く／明るくなる）");
+    }
+
+    /// 粗さ 0 はブラーパスごとスキップされること（＝完全な鏡面の保証）。
+    #[test]
+    fn zero_roughness_skips_the_blur_pass() {
+        assert_eq!(water_reflection_blur_radius_px(0.0, 1080), 0,
+            "粗さ 0 でブラー半径が 0 でない（鏡面が保証できない）");
+        // 粗さ 1 は画面高さ比で決まる（解像度が変わってもぼけ具合が変わらないこと）。
+        assert_eq!(water_reflection_blur_radius_px(1.0, 1080), 16);
+        assert_eq!(water_reflection_blur_radius_px(1.0, 2160), 32);
+        // 負値・1 超はクランプされる（パラメータの外れ値でパスが壊れない）。
+        assert_eq!(water_reflection_blur_radius_px(-1.0, 1080), 0);
+        assert_eq!(water_reflection_blur_radius_px(5.0, 1080),
+                   water_reflection_blur_radius_px(1.0, 1080));
+    }
+
+    /// ブラーのストレージフォーマットが反射 RT と一致すること
+    /// （いもすブラーは storage テクスチャへ書くので、食い違うと BindGroup 生成で落ちる）。
+    #[test]
+    fn blur_storage_format_matches_the_reflection_rt() {
+        assert_eq!(WATER_REFLECTION_FORMAT,
+                   crate::engine::core::renderer::imos_blur::IMOS_BLUR_FORMAT,
+            "反射 RT といもすブラーの storage フォーマットが食い違っている");
+    }
+
+    /// いもすブラーが **α まで**平均すること（プリマルチプライド正規化の前提）。
+    ///
+    /// ここが `.rgb` だけに戻ると a=0 が書かれ、水面パスの `rgb / max(a, ε)` が
+    /// 全画素で 0 除算相当になり、粗さを上げた瞬間に反射が消える。
+    #[test]
+    fn imos_blur_averages_the_alpha_channel_too() {
+        // imos_blur.wgsl は `get_shader_source` のレジストリではなく imos_blur.rs が
+        // include_str! で直接抱える（パイプライン TOML を経由しない compute のため）。
+        let src = include_str!("shaders/imos_blur.wgsl");
+        assert!(src.contains("textureStore(dst, coord, val);"),
+            "いもすブラーが α を捨てている（水面反射のプリマルチプライド正規化が壊れる）");
+        assert!(src.contains("var sum = vec4<f32>(0.0);"),
+            "いもすブラーのランニング和が 4 チャンネルでない");
+    }
+
+    /// ミス経路が「画面内の空 → 天球テクスチャ → GI」の順であること（Phase W5.2 の空の映り込み）。
+    #[test]
+    fn miss_path_falls_back_to_the_real_skybox_before_gi() {
+        let common = get_shader_source("water_reflection_common.wgsl").replace("\r\n", "\n");
+        assert!(common.contains("fn water_refl_skybox("),
+            "天球テクスチャの直接サンプル経路が無い（画面外の空が GI の平坦色になる）");
+        // 順序: screen_sky → skybox → env。1 本の関数に閉じ込めて両変種で共有する。
+        let miss = common.split("fn water_refl_miss(").nth(1)
+            .expect("ミス経路の共通関数 water_refl_miss が無い");
+        let i_screen = miss.find("water_refl_screen_sky(").expect("画面内の空の経路が無い");
+        let i_sky    = miss.find("water_refl_skybox(").expect("天球サンプルの経路が無い");
+        let i_env    = miss.find("water_refl_env(").expect("GI フォールバックが無い");
+        assert!(i_screen < i_sky && i_sky < i_env,
+            "ミス経路の優先順位が「画面内の空 → 天球 → GI」でない");
+        // スカイボックスが無いシーンでは天球を触らない（有効フラグで分岐する）。
+        assert!(common.contains("if wr_sky.tint_enabled.w < WATER_REFL_SKY_ENABLED_EPS {"),
+            "スカイボックス有効フラグの判定が消えている（無いシーンでダミーを映してしまう）");
+        // 両変種がミス経路の共通窓口を使うこと（片方だけ空が映らない事故の防止）。
+        for name in ["water_reflection_rt.wgsl", "water_reflection_ssr.wgsl"] {
+            assert!(get_shader_source(name).contains("water_refl_miss("),
+                "{name} がミス経路の共通窓口を使っていない");
+        }
+    }
+
+    /// スカイボックス uniform の WGSL / Rust レイアウトが一致すること（64B・4 本の vec4）。
+    #[test]
+    fn water_sky_uniform_layout_matches_the_shader() {
+        assert_eq!(std::mem::size_of::<WaterSkyUniform>(), 64);
+        let common = get_shader_source("water_reflection_common.wgsl");
+        for field in ["rot_inv_0", "rot_inv_1", "rot_inv_2", "tint_enabled"] {
+            assert!(common.contains(field), "WGSL 側に {field} が無い（レイアウト不一致）");
+        }
+        // 無効値は enabled=0（＝天球を一切サンプルしない中立値）。
+        assert_eq!(WaterSkyUniform::disabled().tint_enabled[3], 0.0);
     }
 
     /// **GPU 実機でのパイプライン生成**が通ること（`--ignored` で実行する検証用）。
@@ -592,9 +915,23 @@ mod tests {
             aspect: wgpu::TextureAspect::DepthOnly,
             ..Default::default()
         });
+        // スカイボックス無し（ダミー 1x1 が挿さる）と有り（色テクスチャを天球に見立てる）の
+        // 両方で BindGroup を作れること。天球バインドは group3 へ後から足した分なので、
+        // ここが通ることが「binding 3..5 の種別（uniform / texture / sampler）が合っている」
+        // ことの実機側の証拠になる。
+        let sky = WaterSkySource { view: &color_view, uniform: WaterSkyUniform::disabled() };
         for use_rt in [false, has_rt] {
-            let _bg = pipelines.create_scene_bg(&device, &color_view, &depth_view, use_rt);
+            let _bg = pipelines.create_scene_bg(&device, &color_view, &depth_view, None, use_rt);
+            let _bg_sky =
+                pipelines.create_scene_bg(&device, &color_view, &depth_view, Some(&sky), use_rt);
         }
+        pipelines.update_sky(&queue, Some(&sky));
+        pipelines.update_sky(&queue, None);
+
+        // 粗さブラーのターゲットも実機で確保できること（storage usage の妥当性検証）。
+        let mut blur = WaterReflectionBlurTargets::new();
+        blur.ensure(&device, 8, 8);
+        assert!(blur.is_ready());
 
         let _ = device.poll(wgpu::PollType::Wait);
         super::super::rt_shadow::set_rt_shadows_supported(saved);

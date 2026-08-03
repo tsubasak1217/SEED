@@ -976,6 +976,35 @@ pub struct GpuModel {
 /// factor を掛ける前の `base_color_tex_avg`（compute_material_avg_albedo が焼く）に現 factor を掛け直す。
 /// これで表面色（base_color_texture × base_color_factor）と影の色相が一致する。
 /// （透過率 transmission の折り込みは呼び出し側 rt_shadow.rs が α/tr パックで行う）。
+/// `.mat` オーバーライドのベースカラーテクスチャ平均色（リニア RGB）を、**パス単位でキャッシュ**して返す。
+///
+/// テクスチャのデコード（4K PNG なら数十 ms）を毎回やり直さないためのプロセス内キャッシュ。
+/// `.mat` はインスペクタ操作で何度も再適用されるうえ、同じ `.mat` を多数のアクタが共有する。
+/// 読めない／未対応形式は白（＝テクスチャ無し相当）を返し、**失敗もキャッシュする**
+/// （毎フレーム失敗するパスを再デコードし続けないため）。
+fn override_base_color_tex_avg(path: &str) -> [f32; 3] {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    /// テクスチャが読めなかったときの平均色（テクスチャ無しと同じ扱い）。
+    const FALLBACK_WHITE: [f32; 3] = [1.0, 1.0, 1.0];
+
+    static CACHE: OnceLock<Mutex<HashMap<String, [f32; 3]>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    // ロックは短く保つ（デコード中は持たない）。競合した場合に 2 回デコードすることは
+    // あり得るが、結果は同じ値なので正しさに影響しない。
+    if let Ok(map) = cache.lock() {
+        if let Some(v) = map.get(path) {
+            return *v;
+        }
+    }
+    let avg = crate::engine::core::loader::asset_cache::texture_avg_linear(path)
+        .unwrap_or(FALLBACK_WHITE);
+    if let Ok(mut map) = cache.lock() {
+        map.insert(path.to_string(), avg);
+    }
+    avg
+}
+
 fn eff_avg_albedo(eff: &Material) -> [f32; 4] {
     // テクスチャ平均（factor 抜き）× 現在の base_color_factor.rgb ＝ 実効アルベドの色味。
     // テクスチャ無しマテリアルは base_color_tex_avg=[1,1,1] なので base_color_factor そのものになる。
@@ -1308,6 +1337,12 @@ impl GpuModel {
                     if !tex_path.albedo.is_empty() {
                         let idx = Self::upload_override_texture(device, queue, &tex_path.albedo, false, &mut self.textures);
                         eff.base_color_texture = Some(TextureInfo { texture_index: idx, tex_coord_set: OVERRIDE_TEX_COORD_SET });
+                        // 【平均アルベドの補正】`.mat` の実効マテリアルは `Material::default()` 起点なので
+                        // `base_color_tex_avg` が白のままである。それを放置すると
+                        // 「ベースカラー白 × テクスチャ」のマテリアルの平均アルベドが白になり、
+                        // RT 反射の画面外ヒット・DDGI のバウンス・色付き影が**白い塊**になる
+                        // （ユーザー報告の症状そのもの）。差し替えたテクスチャの平均色をここで焼く。
+                        eff.base_color_tex_avg = override_base_color_tex_avg(&tex_path.albedo);
                     }
                     if !tex_path.normal.is_empty() {
                         let idx = Self::upload_override_texture(device, queue, &tex_path.normal, true, &mut self.textures);
@@ -1336,8 +1371,9 @@ impl GpuModel {
                         device, queue, &eff, &model.textures, &self.textures, material_bgl, defaults,
                     );
                     self.materials[ovr.slot] = gpu_mat;
-                    // 平均アルベド（Phase RT-GI）。.mat の実効マテリアルには baked 平均が無いため
-                    // base_color_factor を折り込む（テクスチャ色味は反映されない近似。docs 参照）。
+                    // 平均アルベド（Phase RT-GI）。ベースカラーテクスチャの平均色は上の
+                    // `override_base_color_tex_avg` で `eff.base_color_tex_avg` へ焼いてあるので、
+                    // 埋込マテリアルとまったく同じ式（テクスチャ平均 × 現 factor）で求まる。
                     self.avg_albedos[ovr.slot] = eff_avg_albedo(&eff);
                     // 透過率（ガラス表現）も追従させる（RT 色付き影の引き当て用）。
                     self.transmissions[ovr.slot] = eff.transmission;

@@ -108,6 +108,11 @@ struct CameraUniform {
 /// 深度は `Clear(1.0)` 起点・比較 LessEqual の通常 Z なので、1.0 近傍が空にあたる。
 const WATER_SKY_DEPTH_THRESHOLD: f32 = 0.999999;
 
+/// 反射 RT のプリマルチプライド逆算（`rgb / a`）で 0 除算を避ける下限。
+/// `water_reflection_common.wgsl::WATER_REFL_UNPREMULT_EPS` と同値であること
+/// （反射強度がこの値以下なら混合重みも 0 なので、逆算値そのものは画に出ない）。
+const WATER_REFL_UNPREMULT_MIN: f32 = 1.0e-4;
+
 /// 空に対する水の厚み（m）。実際には背景が無限遠なので「十分深い」として扱う。
 const WATER_SKY_THICKNESS: f32 = 1.0e4;
 
@@ -296,12 +301,15 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
         0.0, 1.0,
     );
     // ⑧' 反射像（Phase W5.2）。**水面反射パスが焼いた本物の反射**をそのまま混ぜる。
-    //     rgb = 反射色（ハイブリッド RT ／ SSR フォールバック）、a = 反射強度。
+    //     規約は **プリマルチプライド**: rgb = 反射色 × 強度、a = 反射強度。
+    //     色は `rgb / a` で戻す。これは粗さブラー（いもす法ボックス）が掛かった RT でも
+    //     「反射のある画素だけの α 重み付き平均」になり、水際や遮蔽物のシルエット周りに
+    //     黒（反射なし＝0）が滲まないための規約である（詳細は water_reflection_common.wgsl）。
     //     反射パスが走らなかったフレーム・水域の強度 0・非対応 GPU はいずれも a = 0 になり、
     //     この式は `color` を素通しする＝反射なしの水（W5.2 以前の「反射色」も掛からない）。
-    //     旧実装の固定色 `reflection_color` はこの経路に置き換わって撤去済み。
     let reflection = textureLoad(t_water_reflection, vec2<i32>(in.clip.xy), 0);
-    color = mix(color, reflection.rgb, fresnel * clamp(reflection.a, 0.0, 1.0));
+    let refl_rgb   = reflection.rgb / max(reflection.a, WATER_REFL_UNPREMULT_MIN);
+    color = mix(color, refl_rgb, fresnel * clamp(reflection.a, 0.0, 1.0));
 
     // 背景を自前で合成済みなので、そのまま不透明（alpha=1）で書き出す（ブレンドは Replace）。
     return vec4<f32>(color, 1.0);

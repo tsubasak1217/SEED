@@ -30,9 +30,9 @@
 /// いもすブラーの作業/出力ストレージフォーマット。
 ///
 /// 単一チャンネル R16Float は core WebGPU の storage 非対応のため Rgba16Float を使う。
-/// WGSL 本体は .rgb（3 チャンネル）を集計するよう対応済み（SSGI カラーブラーで使用）。
-/// ランニング和はチャンネル独立のため、AO のように .r だけを使う用途では
-/// 赤チャンネルの結果は以前と不変（AO の raw は g=b=0 のまま流れる）。
+/// WGSL 本体は **rgba 全 4 チャンネル**を集計する（.r=AO / .rgb=SSGI カラー /
+/// .rgba=水面反射のプリマルチプライドぼかし）。ランニング和はチャンネル独立のため、
+/// .r だけ・.rgb だけを読む既存用途の結果は以前と**ビット単位で不変**である。
 pub const IMOS_BLUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// いもすブラーパラメータ UBO（WGSL imos_blur.wgsl の ImosBlurParams と #[repr(C)] 一致・16B）。

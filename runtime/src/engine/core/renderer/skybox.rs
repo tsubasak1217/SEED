@@ -233,6 +233,30 @@ impl SkyboxSystem {
         !self.frame.is_empty()
     }
 
+    /// 水面反射のミス経路（画面外へ抜けたレイ）が映す **代表スカイボックス** を返す。
+    ///
+    /// ## なぜ「代表 1 つ」なのか
+    /// 反射のミス経路は「このレイの先に何が見えるか」を 1 サンプルで答える経路であり、
+    /// 複数の天球を厳密に解くには結局レイと球の交差を解く必要がある（＝RT のやり直し）。
+    /// 背景として全天を覆うのは CameraLocked の 1 つだけ（`collect` が 1 つに制限している）
+    /// なので、**CameraLocked があればそれ**、無ければ最初の WorldAnchored を採用する。
+    /// 複数 WorldAnchored 天球の反射は W5.2 の対象外（docs の既知の制限）。
+    ///
+    /// `sync_gpu` の後に呼ぶこと（テクスチャのロードに失敗した記述は取り除かれている）。
+    pub fn water_reflection_source(&self)
+        -> Option<super::water_reflection::WaterSkySource<'_>>
+    {
+        // CameraLocked を優先し、無ければ先頭を使う。
+        let f = self.frame.iter().find(|f| matches!(f.mode, SkyboxMode::CameraLocked))
+            .or_else(|| self.frame.first())?;
+        // テクスチャは sync_gpu が tex_cache へ入れている（BindGroup と同じ実体）。
+        let view = self.tex_cache.get(&f.texture_path)?;
+        Some(super::water_reflection::WaterSkySource {
+            view,
+            uniform: sky_uniform_for_reflection(&f.uniform, f.mode),
+        })
+    }
+
     // ── フェーズ 1: 収集 ──────────────────────────────────────
 
     /// シーンを走査して描画対象を収集する（デバイス不要）。
@@ -385,6 +409,72 @@ impl SkyboxSystem {
 }
 
 // ─── フリー関数 ───────────────────────────────────────────────
+
+/// 描画用 `SkyboxUniform` から、水面反射用 `WaterSkyUniform`（逆回転＋実効色）を作る。
+///
+/// ## 何を変換しているのか
+/// 描画（`skybox.wgsl`）は球メッシュの**ローカル位置**をそのままサンプル方向に使うので、
+/// 天球テクスチャは球のローカル系にピン留めされている。反射側が持っているのは
+/// **ワールド方向**のレイなので、`ワールド → ローカル` の回転を先に掛ける必要がある。
+///
+/// - `CameraLocked`  … 球はカメラ位置へ平行移動されるだけで回転しない。
+///                     ローカル方向＝ワールド方向なので **単位行列**でよい。
+/// - `WorldAnchored` … アクターの回転で天球ごと回る。`model` の上三 3x3 の
+///                     **各列を正規化して転置**したものが逆回転になる
+///                     （回転＋一様スケールを前提とする近似。せん断が入った行列では
+///                      厳密ではないが、天球のスケールは向きに意味を持たない）。
+///
+/// `model` は `SkyboxUniform` の規約どおり**列優先（CPU 行優先を転置済み）**なので、
+/// `model[i][0..3]` がそのまま数学的な行列の第 i 列＝逆回転の第 i 行にあたる。
+fn sky_uniform_for_reflection(
+    u:    &SkyboxUniform,
+    mode: SkyboxMode,
+) -> crate::engine::core::renderer::water_reflection::WaterSkyUniform {
+    use crate::engine::core::renderer::water_reflection::WaterSkyUniform;
+
+    // 実効色（tint × intensity）。描画側 `fs_main` の `tex * tint * intensity` と同一。
+    let tint = [
+        u.tint[0] * u.intensity,
+        u.tint[1] * u.intensity,
+        u.tint[2] * u.intensity,
+    ];
+    // 有効フラグ（1.0）。この関数を呼ぶ時点で「映すスカイボックスがある」と確定している。
+    const SKY_ENABLED: f32 = 1.0;
+
+    let rows: [[f32; 4]; 3] = match mode {
+        SkyboxMode::CameraLocked => [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ],
+        SkyboxMode::WorldAnchored => {
+            let mut rows = [[0.0f32; 4]; 3];
+            for (i, row) in rows.iter_mut().enumerate() {
+                let c = [u.model[i][0], u.model[i][1], u.model[i][2]];
+                let len = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+                if len > f32::EPSILON {
+                    let inv = 1.0 / len;
+                    *row = [c[0] * inv, c[1] * inv, c[2] * inv, 0.0];
+                } else {
+                    // 退化（スケール 0 の行列）は単位行列の第 i 行へ落とす。
+                    // 0 行のままにするとシェーダ側の normalize(0) が NaN になり、
+                    // 天球サンプルが黒／未定義色になる（NaN は水面全体へ伝播する）。
+                    let mut e = [0.0f32; 4];
+                    e[i] = 1.0;
+                    *row = e;
+                }
+            }
+            rows
+        }
+    };
+
+    WaterSkyUniform {
+        rot_inv_0:    rows[0],
+        rot_inv_1:    rows[1],
+        rot_inv_2:    rows[2],
+        tint_enabled: [tint[0], tint[1], tint[2], SKY_ENABLED],
+    }
+}
 
 /// group1（skybox uniform + texture + sampler）の BindGroup を作る。
 fn create_skybox_bg(

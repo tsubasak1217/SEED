@@ -125,7 +125,11 @@ pub use reflection::{ReflectionPipelines, ReflectionParams,
                      RT_REFLECTION_NAME, REFLECTION_FORMAT, DEFAULT_REFLECTION_INTENSITY};
 // パイプライン本体（`WaterReflectionPipelines`）は `DrawPipelines::water_reflection` 経由でしか
 // 触らないので再エクスポートしない（型名を直接書く箇所が無い）。RT 名とフォーマットだけ公開する。
-pub use water_reflection::{RT_WATER_REFLECTION_NAME, WATER_REFLECTION_FORMAT};
+pub use water_reflection::{
+    RT_WATER_REFLECTION_NAME, WATER_REFLECTION_FORMAT,
+    WaterReflectionBlurTargets, WaterSkySource, WaterSkyUniform,
+    water_reflection_blur_radius_px, WATER_REFL_BLUR_ITERATIONS,
+};
 pub use imos_blur::{ImosBlur, ImosBlurParams, IMOS_BLUR_FORMAT};
 pub use ao::{AoPipelines, AoTargets, AoParams, AO_FORMAT, AO_RESOLUTION_DIVISOR,
              AO_SSAO_WORLD_RADIUS, AO_RTAO_WORLD_RADIUS, DEFAULT_AO_INTENSITY};
