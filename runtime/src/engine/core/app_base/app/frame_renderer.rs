@@ -4223,12 +4223,14 @@ impl App {
                         self.caustics_targets.ensure(&draw_ctx.device, surf_w, surf_h);
                     }
                     // 水面反射 RT（Phase W5.2）のフル解像度 HDR テクスチャ。
-                    // ゲートは既存の反射（D6）と揃える（deferred 有効・反射モードが Off でない）＋
-                    // 水域があるフレームのみ。水面パスは結果を **textureLoad で 1:1 に読む**ので
+                    // ゲートは「deferred 有効（既定 ON）＋水域があるフレーム」。
+                    // **D6 の全体反射モード（既定 Off）には連動させない** — 水面反射は
+                    // WaterVolume ごとの reflection_intensity（0 で無効）が独立のスイッチであり、
+                    // 全体モード頼みにすると既定設定で水面が一切反射しない罠になる
+                    //（実際にユーザーが「何も反射しない」を踏んだため切り離した）。
+                    // 水面パスは結果を **textureLoad で 1:1 に読む**ので
                     // 半解像度にはしない（補間で反射像が滲むうえ、波の高周波が失われる）。
-                    let water_reflection_possible =
-                        reflection_effective != crate::engine::core::renderer::ReflectionMode::Off
-                        && water_gate;
+                    let water_reflection_possible = deferred_active && water_gate;
                     if water_reflection_possible {
                         self.rt_pool.ensure(
                             &draw_ctx.device,
@@ -5675,12 +5677,12 @@ impl App {
                                     //  この前後関係は入れ替えられない類のものである。
                                     if let Some(wr_view) = water_reflection_view {
                                         let wrp = &draw_ctx.pipelines.water_reflection;
-                                        // RT 反射を使えるか: 反射モードが Rt かつ RT パイプラインが構築済み
+                                        // RT 変種を使えるか: RT パイプラインが構築済み
                                         // （＝RAY_QUERY 対応 GPU）かつ TLAS を借りられること。
+                                        // D6 の全体反射モードには連動させず GPU 対応だけで自動選択する
+                                        //（上の water_reflection_possible のコメント参照）。
                                         // どれか欠ければ SSR 変種へ落ちる（＝非対応 GPU でも反射は出る）。
-                                        let want_rt = reflection_effective
-                                            == crate::engine::core::renderer::ReflectionMode::Rt
-                                            && wrp.has_rt();
+                                        let want_rt = wrp.has_rt();
                                         let rt_ref = if want_rt {
                                             draw_ctx.rt_shadow.as_ref().map(|c| c.borrow())
                                         } else { None };
