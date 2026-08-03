@@ -621,6 +621,36 @@ pub struct GpuPrimitive {
     /// バインドレス対象か（UV・インデックス・法線の 3 者すべてをメガバッファへ登録できた）。
     /// false のとき B2 のヒットシェーダは従来の平均色へ縮退する。
     pub bindless_eligible:     bool,
+
+    /// このプリミティブの GPU リソース生成世代（`next_gpu_generation()` で採番）。
+    /// 同一キャッシュキーのまま実体が作り直されたことを検出するために使う
+    /// （RT スキン BLAS の BindGroup／サイズ記述子キャッシュの追従。上のモジュールコメント参照）。
+    pub generation:            u64,
+}
+
+// ─── GPU リソースの生成世代（キャッシュ追従用）────────────────────
+//
+// 【なぜ必要か】RT スキン BLAS（rt_skin_blas.rs）は「頂点バッファを掴んだ BindGroup」や
+// 「頂点数から算出した BLAS サイズ記述子」をキャッシュする。キャッシュキーは
+// batch_key（モデルパス由来）＋mesh/prim/inst だが、**同じキーのまま実体が作り直される**
+// 経路が存在する:
+//   - `frame_renderer` の統合バッチ再生成（capacity 不足 → 同じ path で insert）
+//   - `terrain_scatter_ops` の散布バッチ容量拡張（同じ prop の batch を差し替え）
+//   - 同一 batch_key でのモデル差し替え（GpuPrimitive ごと入れ替わる）
+// キー一致だけで再利用すると、古いバッファを掴んだ BindGroup が残り続けて
+// 「RT 上だけポーズが永久停止する」「頂点数が食い違って BLAS ビルドで検証パニック」
+// といった無言の破綻になる。そこで生成のたびに単調増加の世代番号を採番し、
+// **キャッシュ側は保存した世代と現在の世代を突き合わせて不一致なら作り直す**。
+// キーに混ぜるとキーが膨張し、古いエントリの解放も別途要るため、保存＋比較を採る。
+
+/// GPU リソース生成世代のグローバルカウンタ（プロセス内で単調増加）。
+static GPU_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// 次の生成世代を採番する。`GpuPrimitive::upload` と `SkinComputeSystem::new` が呼ぶ。
+///
+/// 0 は「未設定」を表す番兵として空けてある（初期値 1 から始める）。
+pub fn next_gpu_generation() -> u64 {
+    GPU_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl GpuPrimitive {
@@ -650,10 +680,19 @@ impl GpuPrimitive {
         //   COPY_DST があれば `queue.write_buffer` で該当バイト範囲だけを上書きでき、
         //   ペイント 1 回のコストを桁で下げられる（terrain_ops::apply_terrain_paint_colors）。
         //   COPY_DST 自体はバッファの配置・読み出し性能に影響せず、追加コストは無い。
+        //
+        // 【STORAGE を足す理由 — RT スキン BLAS（Phase RT-Skin）】
+        //   スキンメッシュは頂点シェーダが毎描画で変形するため「変形後頂点」が実体として
+        //   存在せず、そのままでは BLAS を作れない。skin_deform.wgsl の compute が
+        //   元頂点（Vertex）とスキン属性（SkinVertex）を **storage として読んで** 変形後
+        //   ローカル位置を別バッファへ書き出す。よって RT 対応時は両バッファに STORAGE が要る。
+        //   非スキンプリミティブの vertex_buffer にも一律で付けるのは、用途の分岐を
+        //   「RT 対応か否か」の 1 軸に保つため（STORAGE の追加自体に実行時コストは無い）。
         let rt = super::rt_shadow::rt_shadows_supported();
         let vertex_usage = if rt {
             wgpu::BufferUsages::VERTEX
                 | wgpu::BufferUsages::BLAS_INPUT
+                | wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
         } else {
             wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST
@@ -677,13 +716,22 @@ impl GpuPrimitive {
             usage:    wgpu::BufferUsages::VERTEX,
         });
 
+        // スキン属性（joints/weights）。RT 対応時は STORAGE を足す（skin_deform.wgsl が
+        // 生バイト列を u32 配列として読み、変形後ローカル位置を書き出すため）。
+        // BLAS_INPUT は不要（BLAS が読むのは compute の **出力** バッファであって、この
+        // 入力バッファではない）。
+        let skin_vertex_usage = if rt {
+            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE
+        } else {
+            wgpu::BufferUsages::VERTEX
+        };
         let skin_vertex_buffer = if prim.skin_vertices.is_empty() {
             None
         } else {
             Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label:    Some("Skin Vertex Buffer"),
                 contents: bytemuck::cast_slice::<SkinVertex, u8>(&prim.skin_vertices),
-                usage:    wgpu::BufferUsages::VERTEX,
+                usage:    skin_vertex_usage,
             }))
         };
 
@@ -734,6 +782,9 @@ impl GpuPrimitive {
             bindless_index_count:  0,
             bindless_normal_offset: 0,
             bindless_eligible:     false,
+            // 生成のたびに新しい世代を採番する。RT スキン BLAS のキャッシュはこの値で
+            // 「同じキーだが実体が別物」を検出して作り直す。
+            generation:            next_gpu_generation(),
         }
     }
 
@@ -1071,10 +1122,15 @@ impl GpuModel {
             let Some(gpu_mesh) = self.meshes.get_mut(mesh_i) else { break; };
             for (prim_i, prim) in mesh.primitives.iter().enumerate() {
                 let Some(gp) = gpu_mesh.primitives.get_mut(prim_i) else { break; };
-                // スキンメッシュは RT の BLAS 対象外（rt_shadow.rs が skin_vertex_buffer 有りを
-                // スキップ）＝インスタンステーブルに載らないため、メガバッファへ登録しない
-                // （UV/index 予算の浪費回避）。bindless_eligible は既定 false のまま。
-                if !prim.skin_vertices.is_empty() { continue; }
+                // 【Phase RT-Skin】スキンメッシュも登録する（従来はここで continue していた）。
+                //   - UV とインデックスは **ボーン変形で一切変わらない**（変わるのは位置と法線だけ）。
+                //     よってメガバッファへ登録すれば、RT 反射のヒット点で正しい UV を復元でき、
+                //     スキンキャラがテクスチャ付きで反射に映るようになる。
+                //   - 一方 **法線はバインドポーズのまま** で、変形後の実法線とは食い違う。
+                //     そのため rt_shadow.rs 側は、スキンインスタンスに `BINDLESS_FLAG_GEOM`
+                //     （＝法線復元可能を意味するビット）を立てない。ここで法線を登録するのは
+                //     `register_primitive_geometry` が UV/index/法線を 1 セットで扱う API だから
+                //     であり、登録した法線をスキンで読ませてはならない（読み手側で禁止する）。
                 // UV0 と法線を頂点順に抽出（メガバッファは頂点番号で引くため頂点順が必須）。
                 // 法線は八面体エンコード u32（4B/頂点）へ畳んで省メモリ化する（RT 屈折の界面法線復元用）。
                 let uvs: Vec<[f32; 2]> = prim.vertices.iter().map(|v| v.uv0).collect();
@@ -2507,6 +2563,70 @@ impl InstancedModelBatch {
                     draw.prim_idx,
                     draw.material_idx,
                     model_uniform_to_tlas_transform(&mu.model),
+                );
+            }
+        }
+    }
+
+    /// RT スキン BLAS 用（Phase RT-Skin）: 全インスタンス × 全 **スキン** メッシュノード
+    /// プリミティブを列挙する。`rt_enumerate`（非スキン）と対になる関数。
+    ///
+    /// コールバック引数:
+    ///   `(mesh_idx, prim_idx, material_idx, 3x4 行優先ワールド変換, inst_idx, lod, compact_idx)`
+    ///
+    /// - `lod` / `compact_idx` は「そのインスタンスのジョイント行列がどのバッファの
+    ///   どの位置にあるか」を指す。変形 compute はこの 2 値から
+    ///   `sk_jmats_lod{lod}` の `compact_idx * MAX_JOINTS` を読む。
+    ///   これは頂点シェーダが `@builtin(instance_index) * MAX_JOINTS` で読むのと
+    ///   まったく同じ位置である（`update()` が LOD ごとに compact 順で行列を詰めるため）。
+    /// - `transform` は非スキンとまったく同じく `world_mats_cache` 由来。VS が最後に
+    ///   掛ける `u_model.model` と同一行列なので、
+    ///   「ローカル BLAS（= skin * pos）× TLAS 変換（= world）」が VS の
+    ///   `u_model.model * (skin * pos)` と厳密に一致する。
+    /// - スキンシステムを持たないバッチ（`skin.is_none()`）は即 return する
+    ///   （ジョイント行列が存在せず、そもそもスキン描画も走らない）。
+    /// - 視錐台カリングは行われていないため、全インスタンスがいずれかの LOD に属する
+    ///   （＝画面外のスキンキャラも反射・影に映せる）。万一逆引きが見つからない
+    ///   インスタンスがあればスキップする（安全側）。
+    pub fn rt_enumerate_skinned<F: FnMut(usize, usize, Option<usize>, [f32; 12], usize, usize, u32)>(
+        &self,
+        mut f: F,
+    ) {
+        // スキンシステムが無いバッチは対象外。
+        if self.skin.is_none() { return; }
+        if self.world_mats_cache.is_empty() || self.n_mesh_nodes == 0 { return; }
+
+        let n_inst = self.num_instances as usize;
+
+        // ── inst_idx → (lod, compact_idx) の逆引きを 1 回だけ構築（O(1) 化）──
+        // `find_compact_index` は lod_compact_insts を線形探索するため、
+        // インスタンス数 × プリミティブ数の二重ループから呼ぶと O(N^2) になる。
+        // ここで 1 パスの逆引き表を作り、以降は添字アクセスで済ませる。
+        let mut inv: Vec<Option<(usize, u32)>> = vec![None; n_inst];
+        for (lod, insts) in self.lod_compact_insts.iter().enumerate() {
+            for (compact, &orig) in insts.iter().enumerate() {
+                if orig < n_inst {
+                    inv[orig] = Some((lod, compact as u32));
+                }
+            }
+        }
+
+        for inst in 0..n_inst {
+            let Some((lod, compact)) = inv[inst] else { continue };
+            for draw in &self.node_prim_list {
+                // スキンプリミティブのみを列挙する（非スキンは rt_enumerate が扱う）。
+                if !draw.is_skinned { continue; }
+                let Some(pos) = self.node_pos_map[draw.node_idx] else { continue };
+                let cache_idx = inst * self.n_mesh_nodes + pos;
+                let Some(mu) = self.world_mats_cache.get(cache_idx) else { continue };
+                f(
+                    draw.mesh_idx,
+                    draw.prim_idx,
+                    draw.material_idx,
+                    model_uniform_to_tlas_transform(&mu.model),
+                    inst,
+                    lod,
+                    compact,
                 );
             }
         }

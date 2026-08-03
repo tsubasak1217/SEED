@@ -629,6 +629,109 @@ impl SkinComputePipeline {
 }
 
 // ============================================================
+//  SkinDeformPipeline — RT 用「変形後ローカル頂点位置」書き出し compute
+// ============================================================
+
+/// スキンメッシュの変形後ローカル頂点位置を storage へ書き出す compute パイプライン。
+///
+/// 【役割】`SkinComputePipeline` はジョイント行列しか出力せず、頂点変形は頂点シェーダが
+/// 描画時に行う。レイトレーシングの BLAS は実体としての頂点バッファを要求するため、
+/// このパイプラインが VS と同じ式で変形後位置（ローカル空間）を書き出す。
+/// 出力バッファはそのまま BLAS の頂点入力になる（`rt_skin_blas.rs`）。
+///
+/// Group 0（`entry_bgl`）— エントリ（プリミティブ×インスタンス）ごとに 1 個作る:
+///   0 = params        (SkinDeformParams, uniform)
+///   1 = src_vertices  (array<u32>,       storage read)   … `Vertex` 生バイト列
+///   2 = src_skin      (array<u32>,       storage read)   … `SkinVertex` 生バイト列
+///   3 = out_positions (array<vec4<f32>>, storage rw)     … 変形後ローカル位置
+///
+/// Group 1（`joint_bgl`）— LOD ごとに 1 個作る:
+///   0 = joint_matrices (array<mat4x4<f32>>, storage read) … `sk_jmats_lodN`
+///
+/// 【なぜ joint_bgl を新設するのか】頂点シェーダ用の既存 joint BGL は
+/// `visibility = VERTEX` で作られており、そのまま compute パイプラインへ渡すと
+/// 「compute 段から見えない binding」でパイプライン生成が失敗する。既存 BGL の
+/// visibility を書き換えると描画側へ副作用が出るため、compute 専用を別に持つ
+/// （バッファ実体は同一の `sk_jmats_lodN` を共有するのでメモリ増加はゼロ）。
+///
+/// `MeshletCullPipeline` / `SkinComputePipeline` と同じ手動 BGL 構築の流儀。
+pub struct SkinDeformPipeline {
+    pub pipeline:  wgpu::ComputePipeline,
+    /// group 0 レイアウト（エントリごとの BindGroup 生成に使う）。
+    pub entry_bgl: wgpu::BindGroupLayout,
+    /// group 1 レイアウト（LOD ごとのジョイント行列 BindGroup 生成に使う。COMPUTE 可視）。
+    pub joint_bgl: wgpu::BindGroupLayout,
+}
+
+impl SkinDeformPipeline {
+    /// パイプラインを生成する。`DrawPipelines` の構築時に 1 回だけ呼ばれる。
+    /// （実 GPU テストからも直接生成できるよう pub）
+    pub fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("Skin Deform Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/skin_deform.wgsl").into()),
+        });
+
+        // ── BGL エントリのヘルパー（SkinComputePipeline と同じ流儀）──────
+        let ro_storage = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty:                 wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size:   None,
+            },
+            count: None,
+        };
+        let rw_storage = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty:                 wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size:   None,
+            },
+            count: None,
+        };
+        let uniform_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty:                 wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size:   None,
+            },
+            count: None,
+        };
+
+        let entry_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("Skin Deform Entry BGL"),
+            entries: &[uniform_entry(0), ro_storage(1), ro_storage(2), rw_storage(3)],
+        });
+        let joint_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("Skin Deform Joint BGL (compute visible)"),
+            entries: &[ro_storage(0)],
+        });
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("Skin Deform Layout"),
+            bind_group_layouts:   &[&entry_bgl, &joint_bgl],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:               Some("Skin Deform Pipeline"),
+            layout:              Some(&layout),
+            module:              &shader,
+            entry_point:         Some("cs_main"),
+            compilation_options: Default::default(),
+            cache,
+        });
+
+        Self { pipeline, entry_bgl, joint_bgl }
+    }
+}
+
+// ============================================================
 //  IdPassPipeline — Actor ID 書き込みパス
 // ============================================================
 
@@ -1681,6 +1784,9 @@ pub struct DrawPipelines {
     /// オブジェクト単位の視錐台カリング（旧 CullPipeline）は撤去済み。可視範囲の間引きはこれのみが担う。
     pub meshlet_cull:         MeshletCullPipeline,
     pub skin_compute:         SkinComputePipeline,
+    /// RT スキン BLAS 用「変形後ローカル頂点位置」書き出し compute（Phase RT-Skin）。
+    /// RT 非対応 GPU でも構築コストは軽微（compute 1 本）なので常に持つ。
+    pub skin_deform:          SkinDeformPipeline,
     pub depth_prepass:        DepthPrepassPipelines,
     pub shadow_depth:         ShadowDepthPipelines,
     pub id_pass:              IdPassPipeline,
@@ -1776,6 +1882,8 @@ impl DrawPipelines {
         let unlit_line          = UnlitPipeline::new(device, sf, df, cache);
         let meshlet_cull        = MeshletCullPipeline::new(device, cache);
         let skin_compute        = SkinComputePipeline::new(device, cache);
+        // RT スキン BLAS 用の変形 compute（Phase RT-Skin）。
+        let skin_deform         = SkinDeformPipeline::new(device, cache);
         let depth_prepass       = DepthPrepassPipelines::new(device, df, cache);
         let shadow_depth        = ShadowDepthPipelines::new(device, super::shadow::SHADOW_DEPTH_FORMAT, cache);
         let id_pass             = IdPassPipeline::new(device, sf, df, cache);
@@ -1842,6 +1950,6 @@ impl DrawPipelines {
         let shadow_mask           = rt.as_ref().map(|r| {
             super::shadow_mask::ShadowMaskPipelines::new(device, &deferred, &r.lights_bgl, cache)
         });
-        Self { mesh, skinned_mesh, rt, unlit_line, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, velocity_debug, gbuffer_debug, reflection, ao, ssgi, shadow_mask, caustics, water_reflection }
+        Self { mesh, skinned_mesh, rt, unlit_line, meshlet_cull, skin_compute, skin_deform, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, velocity_debug, gbuffer_debug, reflection, ao, ssgi, shadow_mask, caustics, water_reflection }
     }
 }
