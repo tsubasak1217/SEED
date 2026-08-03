@@ -13,7 +13,8 @@
 //  先頭連結することで、二重実装そのものを無くしてある。
 //
 //  ## 高さ場の構成
-//  水面高さ = 解析サイン波（W1・川では流れに乗る W4）
+//  水面高さ = 解析サイン波（W1・川では流れに乗る W4。**W6.4 でプロシージャルノイズによる
+//             方向/位相ジッタとドメインワープが掛かる**）
 //           ＋ 波紋／航跡（I2。インタラクションフィールド）
 //           ＋ 岸波（W1.5。ショアフィールド）
 //  の**単純な重ね合わせ**である。高さ場の重ね合わせは勾配の重ね合わせと同値なので、
@@ -90,6 +91,10 @@ struct WaterParams {
     /// **読むのはコースティクス生成パス（`caustics.wgsl`）だけ**だが、水域パラメータ配列を
     /// 1 本に保つためレイアウトはここ（共有モジュール）で宣言する。
     caustics:         vec4<f32>,
+    /// 波形のプロシージャルランダマイズ（Phase W6.4）。
+    /// x = 強さ（**0 で完全無効＝W6.3 以前と同一出力**）／y = ノイズの空間周波数倍率／
+    /// z,w = 予約（0）。
+    wave_noise:       vec4<f32>,
 }
 
 @group(1) @binding(0) var<storage, read> u_water: array<WaterParams>;
@@ -231,6 +236,344 @@ const WAVE_PHASE_2: f32 = 3.4;
 const WAVE_PHASE_3: f32 = 5.1;
 const WAVE_PHASE_4: f32 = 2.2;
 const WAVE_PHASE_5: f32 = 4.9;
+
+// ─── プロシージャルノイズ（Phase W6.4）─────────────────────────
+//
+// ## なぜノイズを足すのか
+// W6.1 で層を 6 枚・周波数比を無理数にしても、サイン波の重ね合わせである以上
+// 「どこを見ても同じ規則で峰と谷が並ぶ」という均質さは消えない。実際の水面は
+// 風のむら・流れの乱れで**波の向きと位相が場所ごとに揺らいでいる**。
+// そこでハッシュ由来の value noise を 2 段で効かせる:
+//   ① レイヤの方向・位相を層番号ハッシュでばらす（波の「並び」を崩す）
+//   ② ドメインワープ（サンプル位置そのものを低周波ノイズで歪める）＋
+//      ノイズ自体を高さへ少量加算（波の「形」を崩す）
+//
+// ## テクスチャを使わない理由
+// 高さ場は**頂点シェーダからも呼ばれる**（W5.1 の頂点変位）。頂点段には暗黙 LOD が
+// 無く、さらに deferred のテクスチャ枠は残り 2 枚しかない（W5.3 の申し送り）。
+// したがってノイズは完全にシェーダ内プロシージャル（整数ハッシュ）で作る。
+//
+// ## 高さと勾配の厳密な整合
+// value noise は**解析微分を持つ**（格子 4 隅の双一次補間 ＋ 5 次補間関数）。
+// ドメインワープの勾配も合成関数の微分則（ヤコビアンの転置を掛ける）で厳密に出せる。
+// 差分近似は一切使わない。これにより W5.1 の頂点変位（高さ）と法線（勾配）は
+// ノイズを入れても構造的に食い違わない（CPU ミラー `water/wave_noise.rs` の
+// ユニットテストが「数値微分 ≒ 解析勾配」を固定している）。
+//
+// ## コスト
+// 1 サンプルあたり fbm を 2 本（ワープ用・高さ加算用）＝ ハッシュ 16 回程度。
+// **`wave_noise_strength` が 0 なら丸ごと早期リターン**するので、
+// 0 のときのコストと出力は W6.3 以前と完全に同一である。
+// コースティクスパス（`caustics.wgsl`）は 1 画素で高さ場を 5 回叩くため、
+// オクターブ数はここのコストノブそのものになる（増やすときは実測すること）。
+
+/// fBm のオクターブ数。**コストは概ねこの値に比例する**（上のコスト節を参照）。
+const WATER_NOISE_OCTAVES: u32 = 2u;
+
+/// オクターブごとの周波数倍率（非整数比。整数比だと格子が揃って方眼が見える）。
+const WATER_NOISE_LACUNARITY: f32 = 1.937;
+
+/// オクターブごとの振幅倍率（標準的な 1/2 減衰）。
+const WATER_NOISE_GAIN: f32 = 0.5;
+
+/// オクターブごとに掛ける回転（37°）。同じ向きのまま周波数だけ上げると
+/// 格子の軸（XZ）に沿った縞が積み重なって見えるため、毎オクターブ回す。
+const WATER_NOISE_ROT_COS: f32 = 0.79864;
+const WATER_NOISE_ROT_SIN: f32 = 0.60182;
+
+/// 格子座標を 1 個の u32 へ畳むための奇数大素数（x 用・y 用）。
+const WATER_NOISE_HASH_PRIME_X: u32 = 1597334677u;
+const WATER_NOISE_HASH_PRIME_Y: u32 = 3812015801u;
+
+/// 32bit 整数ハッシュ（murmur3 の finalizer `fmix32`）の乗数とシフト量。
+/// **CPU ミラー `water/wave_noise.rs` と 1 ビットも違えてはならない**
+/// （違うと CPU テストが固定している式と GPU の出力がずれる）。
+const WATER_NOISE_HASH_MIX_A: u32 = 2246822519u; // 0x85ebca6b
+const WATER_NOISE_HASH_MIX_B: u32 = 3266489917u; // 0xc2b2ae35
+const WATER_NOISE_HASH_SHIFT_A: u32 = 16u;
+const WATER_NOISE_HASH_SHIFT_B: u32 = 13u;
+const WATER_NOISE_HASH_SHIFT_C: u32 = 16u;
+
+/// 1 個のハッシュから**2 チャンネル**取り出すためのビット分割。
+/// 上位 16bit と下位 16bit を別チャンネルとして使う（finalizer が全ビットを
+/// 撹拌しているので両者は実用上独立）。ドメインワープは 2 成分ベクトル場なので、
+/// これで格子 4 隅のハッシュ 4 回だけで 2 成分ぶんの value noise が作れる。
+const WATER_NOISE_CHANNEL_SHIFT: u32 = 16u;
+const WATER_NOISE_CHANNEL_MASK:  u32 = 65535u;
+const WATER_NOISE_CHANNEL_INV:   f32 = 1.0 / 65535.0;
+
+/// 5 次補間関数 `w(t) = 6t⁵ − 15t⁴ + 10t³` の係数。
+/// 3 次（smoothstep）だと 2 階微分が格子線で不連続になり、
+/// 法線（＝1 階微分）の変化率が折れて格子が透けて見える。5 次なら C² で消える。
+const WATER_NOISE_FADE_C5: f32 =   6.0;
+const WATER_NOISE_FADE_C4: f32 = -15.0;
+const WATER_NOISE_FADE_C3: f32 =  10.0;
+/// その導関数 `w'(t) = 30 t²(t−1)²` の係数。
+const WATER_NOISE_FADE_DERIV_C: f32 = 30.0;
+
+/// ドメインワープ用ノイズの空間周波数（基本波数 `wave_scale` に対する比）。
+/// 1 未満 ＝ 基本波より長い波長（既定 0.35 なら基本波の約 2.9 倍）。
+/// ワープは「うねりの向きが場所ごとに変わる」効果なので、基本波より低周波にする。
+const WATER_NOISE_WARP_FREQ_RATIO: f32 = 0.35;
+
+/// ワープの変位量（**ワープノイズ自身の波長**に対する比）。
+///
+/// 基本波の波長ではなく**ノイズの波長**に対する比にしてあるのが要点である。
+/// ワープのヤコビアン `∂変位/∂位置` は `比 × 2π × |∇noise|` となり
+/// `wave_noise_scale` にも `wave_scale` にも依存しない定数になる。
+/// これにより「ノイズを細かくしたら勾配が発散して水面が尖る」が構造的に起きない。
+const WATER_NOISE_WARP_AMP_RATIO: f32 = 0.06;
+
+/// ワープ模様が流れる速さ（波の位相速度 `wave_speed / wave_scale` に対する比）。
+/// 0 だと歪みの模様がワールドへ貼り付いて止まって見える。波よりずっと遅く流す。
+const WATER_NOISE_WARP_DRIFT_RATIO: f32 = 0.05;
+/// ワープ模様が流れる向き（30°。XZ 単位ベクトル）。
+const WATER_NOISE_WARP_DRIFT_DIR: vec2<f32> = vec2<f32>(0.86603, 0.50000);
+
+/// 高さへ直接足すノイズの空間周波数（`wave_scale` に対する比）。
+/// 基本波より高周波にして「サイン波の峰の上に乗る細かな乱れ」を作る。
+const WATER_NOISE_DETAIL_FREQ_RATIO: f32 = 2.5;
+/// 高さへ直接足すノイズの振幅（`wave_amplitude` に対する比）。
+const WATER_NOISE_DETAIL_AMP_RATIO: f32 = 0.4;
+/// 高さノイズが流れる速さ・向き（ワープと別の値にして両者の周期が揃わないようにする）。
+const WATER_NOISE_DETAIL_DRIFT_RATIO: f32 = 0.09;
+const WATER_NOISE_DETAIL_DRIFT_DIR: vec2<f32> = vec2<f32>(-0.42262, 0.90631); // 115°
+/// 高さノイズのサンプル原点ずらし（ワープと同じ格子セルを引かないようにする）。
+const WATER_NOISE_DETAIL_OFFSET: vec2<f32> = vec2<f32>(137.3, 61.7);
+
+/// レイヤ方向をばらす最大角（ラジアン。±20°）。
+///
+/// これ以上振ると W6.3 の `wave_direction_deg`（進行方向の指定）が
+/// 「向きを指定しても波がばらばらに見える」状態になり、パラメータの意味が壊れる。
+const WAVE_JITTER_ANGLE_MAX_RAD: f32 = 0.34907;
+
+/// レイヤ初期位相をばらす最大量（ラジアン。±π ＝ 全域）。
+/// 位相は進行方向に影響しないので上限を絞る理由がない。
+const WAVE_JITTER_PHASE_MAX_RAD: f32 = 3.14159265;
+
+/// 方向ジッタ・位相ジッタのハッシュ種（互いに無関係な値にするため別種にする）。
+const WAVE_JITTER_SEED_DIR:   u32 = 2654435769u; // 0x9e3779b9
+const WAVE_JITTER_SEED_PHASE: u32 = 1013904223u;
+
+/// 32bit 整数ハッシュ（murmur3 finalizer）。
+fn water_noise_hash_u32(x: u32) -> u32 {
+    var h = x;
+    h = h ^ (h >> WATER_NOISE_HASH_SHIFT_A);
+    h = h * WATER_NOISE_HASH_MIX_A;
+    h = h ^ (h >> WATER_NOISE_HASH_SHIFT_B);
+    h = h * WATER_NOISE_HASH_MIX_B;
+    h = h ^ (h >> WATER_NOISE_HASH_SHIFT_C);
+    return h;
+}
+
+/// 整数種から −1..1 の擬似乱数を 1 個作る（レイヤジッタ用）。
+fn water_noise_hash_signed(seed: u32) -> f32 {
+    let h = water_noise_hash_u32(seed);
+    // 上位 16bit だけ使う（下位より撹拌が効いている必要はないが、
+    // 格子ハッシュと同じ取り出し方に揃えて挙動を 1 種類に保つ）。
+    let v = f32(h >> WATER_NOISE_CHANNEL_SHIFT) * WATER_NOISE_CHANNEL_INV;
+    return v * 2.0 - 1.0;
+}
+
+/// 格子セル 1 個から **2 チャンネル**の −1..1 擬似乱数を作る。
+fn water_noise_hash2(cell: vec2<i32>) -> vec2<f32> {
+    let h = water_noise_hash_u32(
+        bitcast<u32>(cell.x) * WATER_NOISE_HASH_PRIME_X
+      ^ bitcast<u32>(cell.y) * WATER_NOISE_HASH_PRIME_Y,
+    );
+    let a = f32(h >> WATER_NOISE_CHANNEL_SHIFT) * WATER_NOISE_CHANNEL_INV;
+    let b = f32(h &  WATER_NOISE_CHANNEL_MASK)  * WATER_NOISE_CHANNEL_INV;
+    return vec2<f32>(a, b) * 2.0 - vec2<f32>(1.0, 1.0);
+}
+
+/// 5 次補間関数 `w(t)`（成分ごと）。
+fn water_noise_fade(t: vec2<f32>) -> vec2<f32> {
+    return t * t * t * (t * (t * WATER_NOISE_FADE_C5 + WATER_NOISE_FADE_C4) + WATER_NOISE_FADE_C3);
+}
+
+/// 5 次補間関数の導関数 `w'(t) = 30 t²(t−1)²`（成分ごと）。
+fn water_noise_fade_deriv(t: vec2<f32>) -> vec2<f32> {
+    let u = t - vec2<f32>(1.0, 1.0);
+    return WATER_NOISE_FADE_DERIV_C * t * t * u * u;
+}
+
+/// 2 チャンネルの value noise とその**解析勾配**。
+struct WaterNoise2 {
+    /// チャンネル x, y のノイズ値（おおよそ −1..1）
+    value:  vec2<f32>,
+    /// チャンネル x の勾配 (∂/∂p.x, ∂/∂p.y)
+    grad_x: vec2<f32>,
+    /// チャンネル y の勾配 (∂/∂p.x, ∂/∂p.y)
+    grad_y: vec2<f32>,
+}
+
+/// 2 チャンネル value noise（格子 4 隅の双一次補間＋5 次補間関数）。
+///
+/// 値と勾配を**同時に**返す。勾配は差分ではなく解析式であり、
+/// `∂/∂p.x = (k1 + k3·u.y)·w'(f.x)` / `∂/∂p.y = (k2 + k3·u.x)·w'(f.y)` である
+/// （k は双一次補間の係数）。ここが差分になると法線と頂点変位が食い違う。
+fn water_value_noise2(p: vec2<f32>) -> WaterNoise2 {
+    let base = floor(p);
+    let f    = p - base;
+    let cell = vec2<i32>(base);
+
+    let a = water_noise_hash2(cell);
+    let b = water_noise_hash2(cell + vec2<i32>(1, 0));
+    let c = water_noise_hash2(cell + vec2<i32>(0, 1));
+    let d = water_noise_hash2(cell + vec2<i32>(1, 1));
+
+    // 双一次補間の係数（v = k0 + k1·u.x + k2·u.y + k3·u.x·u.y）。
+    let k0 = a;
+    let k1 = b - a;
+    let k2 = c - a;
+    let k3 = a - b - c + d;
+
+    let u  = water_noise_fade(f);
+    let du = water_noise_fade_deriv(f);
+
+    let value = k0 + k1 * u.x + k2 * u.y + k3 * (u.x * u.y);
+    // 各チャンネルの ∂/∂p.x と ∂/∂p.y（チャンネル 2 本ぶんをまとめて計算）。
+    let dx = (k1 + k3 * u.y) * du.x;
+    let dy = (k2 + k3 * u.x) * du.y;
+
+    var n: WaterNoise2;
+    n.value  = value;
+    n.grad_x = vec2<f32>(dx.x, dy.x);
+    n.grad_y = vec2<f32>(dx.y, dy.y);
+    return n;
+}
+
+/// オクターブ蓄積用のヤコビアン転置適用。
+///
+/// オクターブ k のサンプル位置は `q_k = (L·R)^k p` なので
+/// `∂q_k/∂p = L^k R^k`（等方スケール ＋ 回転）。よって
+/// `∇_p = (∂q_k/∂p)ᵀ ∇_q = L^k R(−kθ) ∇_q` である。
+/// `s` = `L^k`、`(c, sn)` = `R^k` の cos/sin。
+fn water_noise_jacobian_t(g: vec2<f32>, s: f32, c: f32, sn: f32) -> vec2<f32> {
+    return vec2<f32>(s * ( c * g.x + sn * g.y),
+                     s * (-sn * g.x +  c * g.y));
+}
+
+/// 2 チャンネル value noise の fBm（値と解析勾配）。
+///
+/// オクターブごとに周波数を `WATER_NOISE_LACUNARITY` 倍しつつ 37° 回す。
+/// 合計振幅で割って正規化するので、オクターブ数を変えても振れ幅の目安は −1..1 のまま。
+fn water_noise_fbm2(p: vec2<f32>) -> WaterNoise2 {
+    var q      = p;
+    var amp    = 1.0;
+    var norm   = 0.0;
+    var value  = vec2<f32>(0.0, 0.0);
+    var grad_x = vec2<f32>(0.0, 0.0);
+    var grad_y = vec2<f32>(0.0, 0.0);
+    // ヤコビアン `∂q/∂p = L^k R^k` を「スケール s ＋ 回転(c, sn)」として持ち回る。
+    var js  = 1.0;
+    var jc  = 1.0;
+    var jsn = 0.0;
+
+    for (var i: u32 = 0u; i < WATER_NOISE_OCTAVES; i = i + 1u) {
+        let n = water_value_noise2(q);
+        value  = value  + amp * n.value;
+        grad_x = grad_x + amp * water_noise_jacobian_t(n.grad_x, js, jc, jsn);
+        grad_y = grad_y + amp * water_noise_jacobian_t(n.grad_y, js, jc, jsn);
+        norm   = norm + amp;
+        amp    = amp * WATER_NOISE_GAIN;
+        // 次オクターブ: q ← L·R·q（同じ変換をヤコビアンにも積む）。
+        q = vec2<f32>(q.x * WATER_NOISE_ROT_COS - q.y * WATER_NOISE_ROT_SIN,
+                      q.x * WATER_NOISE_ROT_SIN + q.y * WATER_NOISE_ROT_COS)
+          * WATER_NOISE_LACUNARITY;
+        js = js * WATER_NOISE_LACUNARITY;
+        let nc = jc * WATER_NOISE_ROT_COS - jsn * WATER_NOISE_ROT_SIN;
+        let ns = jc * WATER_NOISE_ROT_SIN + jsn * WATER_NOISE_ROT_COS;
+        jc  = nc;
+        jsn = ns;
+    }
+
+    let inv = 1.0 / max(norm, WATER_EPSILON);
+    var r: WaterNoise2;
+    r.value  = value  * inv;
+    r.grad_x = grad_x * inv;
+    r.grad_y = grad_y * inv;
+    return r;
+}
+
+/// レイヤ i のジッタ量（x = 方向の回転角[rad] / y = 初期位相の追加[rad]）。
+///
+/// **方向ジッタは隣り合う層をペアにして符号を反転させ、総和を厳密に 0 にしている。**
+/// こうしないとハッシュの偏りがそのまま「全層がまとめて少し回った」＝
+/// `wave_direction_deg` の指定と食い違う結果になる。
+/// ペアは振幅の近い隣接層（0-1 / 2-3 / 4-5）同士なので、
+/// 振幅重み付き平均で見ても向きのずれは無視できる。
+/// **`WAVE_LAYER_COUNT` が偶数であることが前提**（6 層）。
+fn water_wave_layer_jitter(i: u32, strength: f32) -> vec2<f32> {
+    let pair = i >> 1u;
+    let sgn  = 1.0 - 2.0 * f32(i & 1u);
+    let ang  = sgn * water_noise_hash_signed(pair + WAVE_JITTER_SEED_DIR)
+             * WAVE_JITTER_ANGLE_MAX_RAD;
+    let ph   = water_noise_hash_signed(i + WAVE_JITTER_SEED_PHASE)
+             * WAVE_JITTER_PHASE_MAX_RAD;
+    return vec2<f32>(ang, ph) * strength;
+}
+
+/// ノイズによるサンプル位置の歪みと、高さへの直接加算ぶん。
+struct WaveNoiseSample {
+    /// 歪めたあとのサンプル位置（**逆回転済み座標系** q の中の点）
+    pos:         vec2<f32>,
+    /// ワープのヤコビアン `∂pos/∂q` の第 1 行（= ∂pos.x/∂q）
+    jac_row0:    vec2<f32>,
+    /// 同 第 2 行（= ∂pos.y/∂q）
+    jac_row1:    vec2<f32>,
+    /// 高さへ直接足すノイズ（m）
+    height:      f32,
+    /// その勾配 `∂height/∂q`
+    height_grad: vec2<f32>,
+}
+
+/// ノイズ項（ドメインワープ＋高さ加算）をまとめて 1 回で求める。
+///
+/// **高さ側と勾配側で必ずこの同じ関数を呼ぶこと**（別々に書くと片方の式を直したときに
+/// もう片方が取り残され、法線と頂点変位が食い違う）。
+/// `strength` が 0 以下なら恒等変換（ワープ無し・加算無し）を返し、
+/// ノイズの計算そのものを行わない ＝ W6.3 以前と完全に同一の出力・コストになる。
+fn water_wave_noise_sample(
+    q: vec2<f32>, amplitude: f32, scale: f32, speed: f32, t: f32,
+    strength: f32, noise_scale: f32,
+) -> WaveNoiseSample {
+    var s: WaveNoiseSample;
+    s.pos         = q;
+    s.jac_row0    = vec2<f32>(1.0, 0.0);
+    s.jac_row1    = vec2<f32>(0.0, 1.0);
+    s.height      = 0.0;
+    s.height_grad = vec2<f32>(0.0, 0.0);
+    if (strength <= 0.0) {
+        return s;
+    }
+
+    // 波の位相速度（m/s 相当）。サイン層の時間項は「位相[rad]」なので、
+    // 空間の流れ量へ直すには基本波数で割る必要がある。
+    let phase_speed = speed / max(scale, WATER_EPSILON);
+
+    // ① ドメインワープ。変位量はワープノイズ自身の波長に対する比で決める
+    //    （ヤコビアンが scale / noise_scale に依存しなくなる。定数節を参照）。
+    let warp_freq = max(scale * noise_scale * WATER_NOISE_WARP_FREQ_RATIO, WATER_EPSILON);
+    let warp_amp  = strength * WATER_NOISE_WARP_AMP_RATIO * (WATER_TAU / warp_freq);
+    let warp_off  = WATER_NOISE_WARP_DRIFT_DIR
+                  * (t * phase_speed * WATER_NOISE_WARP_DRIFT_RATIO);
+    let wn = water_noise_fbm2((q + warp_off) * warp_freq);
+    s.pos      = q + warp_amp * wn.value;
+    // 連鎖律: ∂(warp_amp·n(q·f))/∂q = warp_amp·f·∇n
+    s.jac_row0 = vec2<f32>(1.0, 0.0) + (warp_amp * warp_freq) * wn.grad_x;
+    s.jac_row1 = vec2<f32>(0.0, 1.0) + (warp_amp * warp_freq) * wn.grad_y;
+
+    // ② 高さへ直接足す細かなノイズ（サイン波の峰に乗る乱れ）。
+    let det_freq = max(scale * noise_scale * WATER_NOISE_DETAIL_FREQ_RATIO, WATER_EPSILON);
+    let det_amp  = strength * amplitude * WATER_NOISE_DETAIL_AMP_RATIO;
+    let det_off  = WATER_NOISE_DETAIL_DRIFT_DIR
+                 * (t * phase_speed * WATER_NOISE_DETAIL_DRIFT_RATIO);
+    let dn = water_noise_fbm2((q + det_off) * det_freq + WATER_NOISE_DETAIL_OFFSET);
+    s.height      = det_amp * dn.value.x;
+    s.height_grad = (det_amp * det_freq) * dn.grad_x;
+    return s;
+}
 
 // ─── 低周波の空間包絡（Phase W6.1）──────────────────────────────
 //
@@ -513,6 +856,17 @@ fn water_wave_rotate_gradient(g: vec2<f32>, axis: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(g.x * axis.x + g.y * axis.y, -g.x * axis.y + g.y * axis.x);
 }
 
+/// 波の進行方向ベクトルを角度 `a`（ラジアン）だけ回す（Phase W6.4 のレイヤジッタ用）。
+///
+/// 位置の逆回転（`water_wave_rotate_point`）と違い、こちらは**層ごとに**掛かるため
+/// まとめて 1 回にはできない。`sin/cos` が層数ぶん増えるが、
+/// `wave_noise_strength = 0` のときは角度 0 ＝ 恒等回転で結果は従来と同一になる。
+fn water_wave_rotate_dir(d: vec2<f32>, a: f32) -> vec2<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return vec2<f32>(d.x * c - d.y * s, d.x * s + d.y * c);
+}
+
 /// 低周波の空間包絡（Phase W6.1）。平均 1・振れ幅 ±`WAVE_ENVELOPE_DEPTH` の緩やかな振幅変調。
 ///
 /// 引数 `p` は**逆回転済みの座標**（波と一緒に包絡も回るようにするため）。
@@ -527,45 +881,59 @@ fn water_wave_envelope(p: vec2<f32>, scale: f32, speed: f32, t: f32) -> f32 {
 
 /// 解析的サイン波の重ね合わせによる水面高さ場の **勾配** (∂h/∂x, ∂h/∂z) を求める。
 ///
-/// 高さ場 h(p) = E(p) · Σ_k A_k · sin(dot(d_k, R⁻¹p) · f_k + t · s_k + φ_k) の解析微分（cos）。
+/// 高さ場 h(p) = E(q) · [ Σ_k A_k · sin(dot(d'_k, W(q)) · f_k + t · s_k + φ'_k) + N(q) ]
+/// （q = R⁻¹p／W = ドメインワープ／d',φ' = ジッタ済みの方向・位相／N = 高さノイズ。W6.4）
+/// の解析微分。サイン層の微分は cos、ワープは**ヤコビアンの転置**を掛けて戻す。
 /// `E` は低周波の空間包絡で、その微分は無視する（局所定数近似。定数節を参照）。
 /// 法線ではなく勾配を返すのは、**波紋（I2）の勾配と足し合わせてから 1 回だけ
 /// 正規化する**ため（法線を 2 つ作って混ぜるより物理的に正しい：
 /// 高さ場の重ね合わせ = 勾配の重ね合わせ）。
 fn water_wave_gradient(
     p: vec2<f32>, amplitude: f32, scale: f32, speed: f32, t: f32, axis: vec2<f32>,
+    noise_strength: f32, noise_scale: f32,
 ) -> vec2<f32> {
     let q = water_wave_rotate_point(p, axis);
-    var grad = vec2<f32>(0.0, 0.0);
+    let n = water_wave_noise_sample(q, amplitude, scale, speed, t, noise_strength, noise_scale);
+    // まず「歪めた座標 pos の中での勾配」を作る。
+    var g = vec2<f32>(0.0, 0.0);
     for (var i: u32 = 0u; i < WAVE_LAYER_COUNT; i = i + 1u) {
         let L     = wave_layer(i);
+        let j     = water_wave_layer_jitter(i, noise_strength);
+        let dir   = water_wave_rotate_dir(L.dir, j.x);
         let freq  = scale * L.freq_mul;
         let amp   = amplitude * L.amp_mul;
-        let phase = dot(L.dir, q) * freq + t * speed * L.speed_mul + L.phase;
-        // d/dp [ A sin(dot(d,p) f + ...) ] = A f cos(...) * d
-        grad = grad + L.dir * (amp * freq * cos(phase));
+        let phase = dot(dir, n.pos) * freq + t * speed * L.speed_mul + L.phase + j.y;
+        // d/dpos [ A sin(dot(d,pos) f + ...) ] = A f cos(...) * d
+        g = g + dir * (amp * freq * cos(phase));
     }
+    // ワープの連鎖律: ∇_q = Jᵀ ∇_pos（J の行は ∂pos/∂q）。
+    var grad = g.x * n.jac_row0 + g.y * n.jac_row1 + n.height_grad;
     grad = grad * water_wave_envelope(q, scale, speed, t);
     return water_wave_rotate_gradient(grad, axis);
 }
 
 /// 解析的サイン波の重ね合わせによる水面高さ場の **高さ**（m）。
 ///
-/// `water_wave_gradient` と同じ層構成・同じ包絡の原関数（sin）。W5.1（頂点変位）が
-/// 頂点段で高さを必要とするため、勾配と対で持たせてある。
+/// `water_wave_gradient` と同じ層構成・同じジッタ・同じワープ・同じ包絡の原関数（sin）。
+/// W5.1（頂点変位）が頂点段で高さを必要とするため、勾配と対で持たせてある。
+/// **片方だけ式を変えてはならない**（法線と頂点変位が食い違う）。
 fn water_wave_height(
     p: vec2<f32>, amplitude: f32, scale: f32, speed: f32, t: f32, axis: vec2<f32>,
+    noise_strength: f32, noise_scale: f32,
 ) -> f32 {
     let q = water_wave_rotate_point(p, axis);
+    let n = water_wave_noise_sample(q, amplitude, scale, speed, t, noise_strength, noise_scale);
     var h = 0.0;
     for (var i: u32 = 0u; i < WAVE_LAYER_COUNT; i = i + 1u) {
         let L     = wave_layer(i);
+        let j     = water_wave_layer_jitter(i, noise_strength);
+        let dir   = water_wave_rotate_dir(L.dir, j.x);
         let freq  = scale * L.freq_mul;
         let amp   = amplitude * L.amp_mul;
-        let phase = dot(L.dir, q) * freq + t * speed * L.speed_mul + L.phase;
+        let phase = dot(dir, n.pos) * freq + t * speed * L.speed_mul + L.phase + j.y;
         h = h + amp * sin(phase);
     }
-    return h * water_wave_envelope(q, scale, speed, t);
+    return (h + n.height) * water_wave_envelope(q, scale, speed, t);
 }
 
 /// 高さ場の勾配から水面法線（ワールド空間・上向き基準）を作る。
@@ -798,15 +1166,17 @@ fn water_flow_wave_height(
     p: WaterParams, world_xz: vec2<f32>, flow_dir: vec2<f32>, t: f32,
 ) -> f32 {
     let axis = water_wave_axis(p);
+    let ns   = p.wave_noise.x;
+    let nsc  = p.wave_noise.y;
     if (!water_is_river(p)) {
-        return water_wave_height(world_xz, p.wave.x, p.wave.y, p.wave.z, t, axis);
+        return water_wave_height(world_xz, p.wave.x, p.wave.y, p.wave.z, t, axis, ns, nsc);
     }
     let dir = water_flow_dir(p, flow_dir);
     let off = water_flow_offsets(p, dir, t);
     let w   = water_flow_weight(t);
     // サンプル位置を **上流側へ**ずらす（＝模様が下流へ動いて見える）。
-    let h0 = water_wave_height(world_xz - off.xy, p.wave.x, p.wave.y, p.wave.z, t, axis);
-    let h1 = water_wave_height(world_xz - off.zw, p.wave.x, p.wave.y, p.wave.z, t, axis);
+    let h0 = water_wave_height(world_xz - off.xy, p.wave.x, p.wave.y, p.wave.z, t, axis, ns, nsc);
+    let h1 = water_wave_height(world_xz - off.zw, p.wave.x, p.wave.y, p.wave.z, t, axis, ns, nsc);
     // mix(a, b, w) = a*(1-w) + b*w → 位相 0 に (1-w)、位相 1 に w。
     return mix(h0, h1, w);
 }
@@ -816,14 +1186,16 @@ fn water_flow_wave_gradient(
     p: WaterParams, world_xz: vec2<f32>, flow_dir: vec2<f32>, t: f32,
 ) -> vec2<f32> {
     let axis = water_wave_axis(p);
+    let ns   = p.wave_noise.x;
+    let nsc  = p.wave_noise.y;
     if (!water_is_river(p)) {
-        return water_wave_gradient(world_xz, p.wave.x, p.wave.y, p.wave.z, t, axis);
+        return water_wave_gradient(world_xz, p.wave.x, p.wave.y, p.wave.z, t, axis, ns, nsc);
     }
     let dir = water_flow_dir(p, flow_dir);
     let off = water_flow_offsets(p, dir, t);
     let w   = water_flow_weight(t);
-    let g0 = water_wave_gradient(world_xz - off.xy, p.wave.x, p.wave.y, p.wave.z, t, axis);
-    let g1 = water_wave_gradient(world_xz - off.zw, p.wave.x, p.wave.y, p.wave.z, t, axis);
+    let g0 = water_wave_gradient(world_xz - off.xy, p.wave.x, p.wave.y, p.wave.z, t, axis, ns, nsc);
+    let g1 = water_wave_gradient(world_xz - off.zw, p.wave.x, p.wave.y, p.wave.z, t, axis, ns, nsc);
     // 高さ側とまったく同じ重み配分にすること（食い違うと法線と変位がずれる）。
     return mix(g0, g1, w);
 }

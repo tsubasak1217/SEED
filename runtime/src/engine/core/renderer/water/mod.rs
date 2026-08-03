@@ -47,6 +47,7 @@
 
 pub mod params;
 pub mod tessellation;
+pub mod wave_noise;
 
 pub use params::{
     WaterParams, WATER_MAX_INSTANCES, WATER_MAX_VOLUMES,
@@ -911,9 +912,9 @@ mod tests {
         let id      = field_names(&id_src());
         assert_eq!(surface, id,
             "water_surface.wgsl と water_id.wgsl の WaterParams フィールド順が食い違っている");
-        // Phase W5.3（水中コースティクス）で `caustics` を足して 17 本になった。
-        assert_eq!(surface.len(), 17,
-            "Rust 側 WaterParams（vec4 17 本）と本数を揃えること");
+        // Phase W5.3 で `caustics`、W6.4 で `wave_noise` を足して 18 本になった。
+        assert_eq!(surface.len(), 18,
+            "Rust 側 WaterParams（vec4 18 本）と本数を揃えること");
     }
 
     /// WGSL 側 `WaterParams` の **naga 実測サイズ**が Rust 側と一致すること。
@@ -974,7 +975,8 @@ mod tests {
         // 包絡は高さ・勾配の両方へ同じ係数で掛かること（片方だけだと法線と変位が食い違う）。
         assert!(src.contains("grad = grad * water_wave_envelope(q, scale, speed, t);"),
             "勾配へ包絡が掛かっていない");
-        assert!(src.contains("return h * water_wave_envelope(q, scale, speed, t);"),
+        // Phase W6.4 でノイズの高さ加算ぶんも同じ包絡の中に入った（`(h + n.height) * E`）。
+        assert!(src.contains("return (h + n.height) * water_wave_envelope(q, scale, speed, t);"),
             "高さへ包絡が掛かっていない");
         // 周波数比は無理数（有理数比だと最小公倍数で必ず繰り返す）。
         assert!(src.contains("const WAVE_FREQ_MUL_1: f32 = 1.618034;"),
@@ -1023,6 +1025,36 @@ mod tests {
         // 勾配は必ず戻し回転を通すこと（通し忘れると法線だけ回らずに陰影が破綻する）。
         assert!(src.contains("return water_wave_rotate_gradient(grad, axis);"),
             "解析波の勾配がワールド系へ戻されていない");
+    }
+
+    /// 波形のプロシージャルランダマイズ（Phase W6.4）が生きていること。
+    ///
+    /// ノイズは「消しても絵は出る（ただし規則的な繰り返しが戻る）」変更なので、
+    /// 経路が静かに失われないよう契約として固定する。
+    /// **特に重要なのは高さと勾配が同じノイズ関数を共有していること**で、
+    /// ここが割れると W5.1 の頂点変位と法線が食い違う。
+    #[test]
+    fn water_shader_randomizes_waves_with_noise() {
+        let src = surface_src();
+        // ハッシュベースの value noise（テクスチャバインドを増やさないための前提）。
+        assert!(src.contains("fn water_noise_hash_u32("), "整数ハッシュが消えている");
+        assert!(src.contains("fn water_value_noise2("),   "value noise が消えている");
+        assert!(src.contains("fn water_noise_fbm2("),     "fBm が消えている");
+        // テクスチャを増やしていないこと（頂点段から呼ばれる＋deferred の枠が残り 2 枚）。
+        assert!(!src.contains("t_wave_noise"), "ノイズ用テクスチャが増えている（禁止）");
+        // 高さ・勾配が**同じ**ノイズサンプル関数を共有していること。
+        let calls = src.matches("water_wave_noise_sample(q, amplitude, scale, speed, t, noise_strength, noise_scale)").count();
+        assert_eq!(calls, 2,
+            "高さ側・勾配側の 2 箇所で同じノイズサンプルを共有していない（実際 {calls} 箇所）");
+        // ワープの勾配はヤコビアン転置で厳密に戻すこと（差分近似に戻さない）。
+        assert!(src.contains("var grad = g.x * n.jac_row0 + g.y * n.jac_row1 + n.height_grad;"),
+            "ドメインワープの勾配がヤコビアン経由で合成されていない（＝法線と変位が食い違う）");
+        // レイヤジッタの総和が 0 になる符号反転（進行方向の平均を保つ根拠）。
+        assert!(src.contains("let sgn  = 1.0 - 2.0 * f32(i & 1u);"),
+            "レイヤ方向ジッタのペア符号反転が消えている（＝wave_direction_deg がずれる）");
+        // 強さ 0 の早期リターン（＝W6.3 以前と同一出力・同一コスト）。
+        assert!(src.contains("if (strength <= 0.0) {"),
+            "wave_noise_strength = 0 の早期リターンが消えている");
     }
 
     /// 川の流れの向きが**関節タンジェントの補間値**であること（Phase W6.2）。

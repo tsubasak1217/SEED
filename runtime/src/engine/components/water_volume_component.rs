@@ -62,6 +62,28 @@ fn default_wave_scale() -> f32 { 0.12 }
 fn default_wave_speed() -> f32 { 0.6 }
 // wave_direction_deg の既定値は 0.0（＝+Z 方向へ進む）なので、
 // serde の型既定（f32 = 0.0）で足りる。専用の default 関数は置かない。
+// ─── 波形のランダマイズ（Phase W6.4）の既定値 ─────────────────
+//
+// 解析サイン波 6 層は、周波数比を無理数に取っても「どこを見ても同じ規則で峰が並ぶ」
+// 均質さが残る。プロシージャルノイズ（シェーダ内ハッシュ）でレイヤの方向・位相をばらし、
+// さらにサンプル位置をドメインワープすることで、その規則性を崩す。
+// **描画専用パラメータなのでインスペクタ UI・スクリプト API へは公開しない**
+//（波の「性質」であって日常的な調整値ではない。W1.5 の岸波・W5.3 のコースティクスと同じ方針）。
+
+/// wave_noise_strength の既定値（波形ランダマイズの強さ）。
+///
+/// **0 で完全無効＝W6.3 以前とビット単位で同一の水面**になる。
+/// 0.35 は「置いただけで規則的な繰り返し感が消えるが、`wave_direction_deg` で
+/// 指定した進行方向も波の体感の強さも保たれる」控えめな値。
+/// 1.0 を超える値は演出用（歪みが強すぎるとワープが折り返して皺のような筋が出る）。
+fn default_wave_noise_strength() -> f32 { 0.35 }
+/// wave_noise_scale の既定値（ノイズの空間周波数倍率。1.0 = 標準）。
+///
+/// 大きいほどノイズの模様が細かくなる（＝乱れの空間スケールが小さくなる）。
+/// ワープの変位量はノイズ自身の波長に比例させてあるので、
+/// この値を上げても水面の勾配（＝法線の傾き）は暴れない。
+fn default_wave_noise_scale() -> f32 { 1.0 }
+
 /// fresnel_power の既定値（Schlick 近似の指数）。
 fn default_fresnel_power() -> f32 { 5.0 }
 /// fresnel_strength の既定値（フレネル反射の寄与率）。
@@ -262,6 +284,12 @@ pub struct WaterVolumeComponentData {
     /// 既定 0.0。範囲の制限は設けない（360 を超える値も剰余として自然に働く）。
     #[serde(default)]
     pub wave_direction_deg: f32,
+    /// 波形ランダマイズの強さ（**0 で完全無効**。Phase W6.4）
+    #[serde(default = "default_wave_noise_strength")]
+    pub wave_noise_strength: f32,
+    /// 波形ランダマイズのノイズ空間周波数倍率（1.0 = 標準。Phase W6.4）
+    #[serde(default = "default_wave_noise_scale")]
+    pub wave_noise_scale: f32,
     /// フレネル指数（Schlick 近似の累乗。大きいほど正面が透ける）
     #[serde(default = "default_fresnel_power")]
     pub fresnel_power: f32,
@@ -376,6 +404,9 @@ impl Default for WaterVolumeComponentData {
             wave_speed:            default_wave_speed(),
             // 方位角の既定は 0 度（＝+Z 方向へ進む）。
             wave_direction_deg:    0.0,
+            // 波形ランダマイズ（Phase W6.4。描画専用パラメータ）。
+            wave_noise_strength:   default_wave_noise_strength(),
+            wave_noise_scale:      default_wave_noise_scale(),
             fresnel_power:         default_fresnel_power(),
             fresnel_strength:      default_fresnel_strength(),
             reflection_color:      default_reflection_color(),
@@ -442,6 +473,10 @@ pub struct WaterVolumeComponent {
     pub wave_speed: f32,
     /// 解析波の進行方位角（度。0 = +Z、正で +X 側へ回る。Phase W6.3）
     pub wave_direction_deg: f32,
+    /// 波形ランダマイズの強さ（0 で完全無効。Phase W6.4）
+    pub wave_noise_strength: f32,
+    /// 波形ランダマイズのノイズ空間周波数倍率（Phase W6.4）
+    pub wave_noise_scale: f32,
     /// フレネル指数
     pub fresnel_power: f32,
     /// フレネル反射の寄与率（0..1）
@@ -503,6 +538,8 @@ impl WaterVolumeComponent {
             wave_scale:            data.wave_scale,
             wave_speed:            data.wave_speed,
             wave_direction_deg:    data.wave_direction_deg,
+            wave_noise_strength:   data.wave_noise_strength,
+            wave_noise_scale:      data.wave_noise_scale,
             fresnel_power:         data.fresnel_power,
             fresnel_strength:      data.fresnel_strength,
             reflection_color:      data.reflection_color,
@@ -544,6 +581,8 @@ impl WaterVolumeComponent {
             wave_scale:            self.wave_scale,
             wave_speed:            self.wave_speed,
             wave_direction_deg:    self.wave_direction_deg,
+            wave_noise_strength:   self.wave_noise_strength,
+            wave_noise_scale:      self.wave_noise_scale,
             fresnel_power:         self.fresnel_power,
             fresnel_strength:      self.fresnel_strength,
             reflection_color:      self.reflection_color,
@@ -620,6 +659,11 @@ mod tests {
         assert_eq!(d.wave_speed, def.wave_speed);
         // 方位角の既定は 0 度（旧 .scene にフィールドが無くても見た目が変わらない）。
         assert_eq!(d.wave_direction_deg, 0.0);
+        // 波形ランダマイズ（Phase W6.4）。旧 .scene にフィールドが無くても既定値が入ること。
+        assert_eq!(d.wave_noise_strength, def.wave_noise_strength);
+        assert_eq!(d.wave_noise_scale, def.wave_noise_scale);
+        assert_eq!(d.wave_noise_strength, 0.35);
+        assert_eq!(d.wave_noise_scale, 1.0);
         assert_eq!(d.fresnel_power, def.fresnel_power);
         assert_eq!(d.fresnel_strength, def.fresnel_strength);
         assert_eq!(d.reflection_color, def.reflection_color);
@@ -679,6 +723,8 @@ mod tests {
             wave_scale: 0.33,
             wave_speed: 2.5,
             wave_direction_deg: 37.5,
+            wave_noise_strength: 0.8,
+            wave_noise_scale: 1.75,
             fresnel_power: 3.5,
             fresnel_strength: 0.6,
             reflection_color: [0.11, 0.22, 0.33],
@@ -716,6 +762,8 @@ mod tests {
         assert_eq!(back.wave_scale, src.wave_scale);
         assert_eq!(back.wave_speed, src.wave_speed);
         assert_eq!(back.wave_direction_deg, src.wave_direction_deg);
+        assert_eq!(back.wave_noise_strength, src.wave_noise_strength);
+        assert_eq!(back.wave_noise_scale, src.wave_noise_scale);
         assert_eq!(back.fresnel_power, src.fresnel_power);
         assert_eq!(back.fresnel_strength, src.fresnel_strength);
         assert_eq!(back.reflection_color, src.reflection_color);

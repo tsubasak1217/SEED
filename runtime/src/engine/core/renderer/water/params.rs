@@ -61,6 +61,14 @@ pub const SHORE_WAVE_LENGTH_MIN: f32 = 0.1;
 /// エイリアシングにしかならないので 1/60 秒相当を下限にする。
 pub const SHORE_WAVE_PERIOD_MIN: f32 = 1.0 / 60.0;
 
+/// 波形ランダマイズのノイズ空間周波数倍率の下限（Phase W6.4）。
+///
+/// 0 以下だとノイズの空間周波数が 0 になり、「ワープの波長 = ∞」＝
+/// 変位量が発散する（ワープ量をノイズ自身の波長比で決めているため）。
+/// 目視で意味を持つ最小の細かさとして 1/100 を下限にする
+/// （既定 `wave_scale`=0.12 に対して波長 5km 相当＝実質「歪みなし」に見える）。
+pub const WAVE_NOISE_SCALE_MIN: f32 = 0.01;
+
 /// 水ボリューム 1 個ぶんの GPU パラメータ。
 ///
 /// **全フィールドを vec4 相当（`[f32; 4]`）で構成している**。
@@ -147,6 +155,14 @@ pub struct WaterParams {
     /// 読まない。それでも同じ配列に持たせているのは、水域パラメータの収集・アップロードを
     /// 1 本に保つため（`actor_id` を ID パス専用に同居させているのと同じ理由）。
     pub caustics: [f32; 4],
+    /// 波形のプロシージャルランダマイズ（Phase W6.4）。
+    /// x = 強さ（**0 で完全無効＝W6.3 以前と同一出力**）／y = ノイズの空間周波数倍率／
+    /// z,w = 予約（0）。
+    ///
+    /// 空きスロットが尽きていた（`wave_axis.w` の 1 枠だけでは 2 パラメータを置けない）ため、
+    /// W1.5・W5.3 と同じく末尾へ vec4 を 1 本追加している。
+    /// **`water_height_field.wgsl` の `struct WaterParams` と順序・意味を同期すること。**
+    pub wave_noise: [f32; 4],
 }
 
 /// ショアフィールドを持たない水域を表すレイヤ番号（負値）。
@@ -271,6 +287,17 @@ impl WaterParams {
                 vis.caustics_depth_fade.max(0.0),
                 vis.shadow_refraction_strength.max(0.0),
             ],
+            // 波形ランダマイズ（Phase W6.4）。
+            //   x = 強さ（負値は「逆向きにばらす」という意味を持たない。0 で完全無効なので
+            //       そこへ倒す＝シェーダ側が早期リターンして W6.3 以前と同一出力になる）
+            //   y = ノイズの空間周波数倍率（0 以下はワープ量が発散するので下限を切る）
+            //   z,w = 予約（0）
+            wave_noise: [
+                vis.wave_noise_strength.max(0.0),
+                vis.wave_noise_scale.max(WAVE_NOISE_SCALE_MIN),
+                0.0,
+                0.0,
+            ],
         }
     }
 
@@ -344,8 +371,9 @@ mod tests {
     fn water_params_layout_is_std430_safe() {
         assert_eq!(std::mem::size_of::<WaterParams>() % 16, 0,
             "WaterParams のサイズは 16 の倍数であること（std430 の配列ストライド）");
-        // Phase W5.3（水中コースティクス）で vec4 を 1 本足したので 17 本＝272 バイト。
-        assert_eq!(std::mem::size_of::<WaterParams>(), 16 * 17,
+        // Phase W5.3（水中コースティクス）＋ W6.4（波形ランダマイズ）で
+        // vec4 を 1 本ずつ足したので 18 本＝288 バイト。
+        assert_eq!(std::mem::size_of::<WaterParams>(), 16 * 18,
             "WaterParams は vec4 17 本ぶん（272 バイト）であること。\
              WGSL 側 struct WaterParams（water_height_field.wgsl）と同期すること");
         assert_eq!(std::mem::align_of::<WaterParams>(), 4,
@@ -359,7 +387,9 @@ mod tests {
         let visual = WaterVisualParams {
             shallow_color: [0.0; 3], deep_color: [0.0; 3], absorption_distance: 1.0,
             surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
-            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0, fresnel_power: 1.0,
+            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0,
+            // 波形ランダマイズ（Phase W6.4）。既定相当の値を入れておく。
+            wave_noise_strength: 0.35, wave_noise_scale: 1.0, fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
@@ -399,7 +429,9 @@ mod tests {
         let visual = WaterVisualParams {
             shallow_color: [0.0; 3], deep_color: [0.0; 3], absorption_distance: 1.0,
             surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
-            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0, fresnel_power: 2.0,
+            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0,
+            // 波形ランダマイズ（Phase W6.4）。既定相当の値を入れておく。
+            wave_noise_strength: 0.35, wave_noise_scale: 1.0, fresnel_power: 2.0,
             fresnel_strength: 0.5, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.25, ripple_foam_threshold: 0.08,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
@@ -437,6 +469,8 @@ mod tests {
             shallow_color: [0.0; 3], deep_color: [0.0; 3], absorption_distance: 1.0,
             surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
             wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 90.0,
+            // 波形ランダマイズ（Phase W6.4）。既定相当の値を入れておく。
+            wave_noise_strength: 0.35, wave_noise_scale: 1.0,
             fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
@@ -476,6 +510,8 @@ mod tests {
             shallow_color: [0.0; 3], deep_color: [0.0; 3], absorption_distance: 1.0,
             surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
             wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0,
+            // 波形ランダマイズ（Phase W6.4）。既定相当の値を入れておく。
+            wave_noise_strength: 0.35, wave_noise_scale: 1.0,
             fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
@@ -547,7 +583,9 @@ mod tests {
         let visual = WaterVisualParams {
             shallow_color: [0.0; 3], deep_color: [0.0; 3], absorption_distance: 1.0,
             surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
-            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0, fresnel_power: 1.0,
+            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0,
+            // 波形ランダマイズ（Phase W6.4）。既定相当の値を入れておく。
+            wave_noise_strength: 0.35, wave_noise_scale: 1.0, fresnel_power: 1.0,
             fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
