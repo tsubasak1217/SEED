@@ -430,6 +430,7 @@ impl WaterRenderer {
         id_base:    u32,
         field:      Option<&super::interaction::InteractionFieldRenderer>,
         shore:      &ShoreFieldSet,
+        reflection_view: &wgpu::TextureView,
     ) -> bool {
         self.quad_count             = 0;
         self.river_count            = 0;
@@ -588,6 +589,13 @@ impl WaterRenderer {
                     binding: 5,
                     resource: wgpu::BindingResource::Sampler(&self.shore_sampler),
                 },
+                // 水面反射 RT（Phase W5.2）。反射パスが走らないフレーム（RT 無効・
+                // deferred 無効・非対応 GPU）は 1x1 の黒ダミーが挿さる。
+                // **A=0 が「反射寄与なし」の中立値**なので、シェーダ側に分岐が要らない。
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(reflection_view),
+                },
             ],
         }));
 
@@ -700,6 +708,18 @@ impl WaterRenderer {
         &self.fallback_field_uniform
     }
 
+    /// 屈折背景グラブ（シーン HDR のフル解像度 1 ミップコピー）のビュー。
+    ///
+    /// 水面反射パス（Phase W5.2）が **同じテクスチャ**をシーンカラー入力として読む。
+    /// scene_hdr 本体ではなくこのコピーを共有するのが要点で、
+    ///   ・コピーは 1 フレーム 1 回のまま（反射のために追加コピーをしない）
+    ///   ・scene_hdr がアタッチされている間でも読み書き競合が起きない
+    ///   ・中身は「不透明＋スカイボックス」＝水面自身を含まない（自己参照しない）
+    /// が同時に成立する。`prepare` が `true` を返したフレームでのみ `Some`。
+    pub fn grab_view(&self) -> Option<&wgpu::TextureView> {
+        self.grab_view.as_ref()
+    }
+
     /// このフレームのクアッド（Ocean / Region）インスタンス数。
     ///
     /// パラメータ配列は `[クアッド…, 川…]` の順なので、コースティクスの水域探索は
@@ -753,6 +773,16 @@ impl WaterRenderer {
                 self.quad_count..(self.quad_count + self.river_count),
             );
         }
+    }
+
+    /// 他パスが水面の格子を**まったく同じ分割・同じ順序**で描くための公開版
+    /// （水面反射パス（Phase W5.2）が使う）。
+    ///
+    /// パイプラインと BindGroup は呼び出し側が設定済みであること。ここが共有されている
+    /// おかげで、反射 RT と水面パスのラスタライズ結果はピクセル単位で一致し、
+    /// 水面シェーダは補間なしの `textureLoad` で反射を拾える。
+    pub fn draw_grid_buckets<'p>(&'p self, pass: &mut wgpu::RenderPass<'p>) {
+        self.draw_buckets(pass);
     }
 
     /// 水面パス内で全水ボリュームを描く。

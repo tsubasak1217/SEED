@@ -54,8 +54,10 @@ pub struct WaterVisualParams {
     pub fresnel_power: f32,
     /// フレネル反射の寄与率（0..1）
     pub fresnel_strength: f32,
-    /// 浅い角度での簡易反射色（リニア RGB）
-    pub reflection_color: [f32; 3],
+    /// 反射の全体強度（0 で反射無効。Phase W5.2）
+    pub reflection_intensity: f32,
+    /// 波による反射のぼけ（粗さ 0..1。0 で厳密な鏡面。Phase W5.2）
+    pub reflection_roughness: f32,
     /// 屈折 UV の最大歪み（画面比）
     pub refraction_distortion: f32,
     /// 波紋・航跡（インタラクションフィールド）の法線摂動スケール（Phase I2）
@@ -99,7 +101,8 @@ impl WaterVisualParams {
             wave_noise_scale:      c.wave_noise_scale,
             fresnel_power:         c.fresnel_power,
             fresnel_strength:      c.fresnel_strength,
-            reflection_color:      c.reflection_color,
+            reflection_intensity:  c.reflection_intensity,
+            reflection_roughness:  c.reflection_roughness,
             refraction_distortion: c.refraction_distortion,
             ripple_strength:       c.ripple_strength,
             ripple_foam_threshold: c.ripple_foam_threshold,

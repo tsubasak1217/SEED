@@ -55,7 +55,14 @@
 //             binding2 = そのサンプラー（線形・ClampToEdge。本ファイル）
 //             binding3 = シーン深度（DepthOnly ビュー。textureLoad のみ。本ファイル）
 //             binding4/5 = ショアフィールド配列とサンプラー（**共有モジュール**）
+//             binding6 = 水面反射 RT（Phase W5.2。反射パスが焼いた反射色＋強度。本ファイル）
 //    group 2: インタラクションフィールド一式（**共有モジュール**）
+//
+//  ## 反射（Phase W5.2）
+//  反射は本パスでは計算しない。**独立した水面反射パス**（`water_reflection_*.wgsl`）が
+//  同じ格子・同じ波法線でレイを飛ばして焼いた RT を、ここでは 1 枚読んで
+//  フレネルで混ぜるだけである（水面パイプラインのバインドグループが上限に達しており、
+//  TLAS・ライト・GI をここへ足せないため）。
 // ============================================================
 
 // ─── Group 0: カメラ ─────────────────────────────────────────
@@ -88,6 +95,12 @@ struct CameraUniform {
 @group(1) @binding(1) var t_scene: texture_2d<f32>;
 @group(1) @binding(2) var s_scene: sampler;
 @group(1) @binding(3) var t_depth: texture_depth_2d;
+/// 水面反射 RT（Phase W5.2）。**水面反射パスが本パスと同じ格子・同じ波法線で焼いた**
+/// 反射色（rgb）と反射強度（a）。ラスタライズ結果がピクセル単位で一致するため、
+/// サンプラー補間ではなく `textureLoad` で 1:1 に読む。
+/// 反射パスが走らないフレームは 1x1 の黒ダミーが挿さり、範囲外 textureLoad は
+/// WGSL 仕様でゼロを返す＝**全画面が「反射なし」**になる（分岐が要らない）。
+@group(1) @binding(6) var t_water_reflection: texture_2d<f32>;
 
 // ─── 合成専用の定数（マジックナンバー禁止のため全て命名する）───
 
@@ -256,7 +269,7 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
     // ⑦-a 岸フォーム: 水深が foam_width 未満の帯に滑らかに乗せる。
     let foam_width = max(p.foam_color.a, WATER_EPSILON);
     let foam       = (1.0 - smoothstep(0.0, foam_width, thickness))
-                   * p.reflection_color.a * foam_gate;
+                   * p.reflection.w * foam_gate;
     color          = color + p.foam_color.rgb * foam;
 
     // ⑦' 航跡フォーム（Phase I2）: 波紋の高さがしきい値を超えた所へ白い泡を乗せる。
@@ -274,15 +287,21 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
     let shore_foam = water_shore_foam(p, in.world_pos.xz, u_camera.time) * foam_gate;
     color = color + p.foam_color.rgb * shore_foam;
 
-    // ⑧ フレネル: 浅い角度ほど反射色へ寄せる。
+    // ⑧ フレネル: 浅い角度ほど反射像へ寄せる。
     //    `n` は視線側を向く法線（水中では下向き）なので、この 1 本の式が
-    //    水上＝空の反射、水中＝水面の内側での反射（全反射の粗い代用）の両方を兼ねる。
+    //    水上＝空・景色の反射、水中＝水面の内側での反射（全反射の粗い代用）の両方を兼ねる。
     let view_dir = normalize(u_camera.position - in.world_pos);
     let fresnel  = clamp(
         p.fresnel.y * pow(1.0 - clamp(dot(n, view_dir), 0.0, 1.0), max(p.fresnel.x, WATER_EPSILON)),
         0.0, 1.0,
     );
-    color = mix(color, p.reflection_color.rgb, fresnel);
+    // ⑧' 反射像（Phase W5.2）。**水面反射パスが焼いた本物の反射**をそのまま混ぜる。
+    //     rgb = 反射色（ハイブリッド RT ／ SSR フォールバック）、a = 反射強度。
+    //     反射パスが走らなかったフレーム・水域の強度 0・非対応 GPU はいずれも a = 0 になり、
+    //     この式は `color` を素通しする＝反射なしの水（W5.2 以前の「反射色」も掛からない）。
+    //     旧実装の固定色 `reflection_color` はこの経路に置き換わって撤去済み。
+    let reflection = textureLoad(t_water_reflection, vec2<i32>(in.clip.xy), 0);
+    color = mix(color, reflection.rgb, fresnel * clamp(reflection.a, 0.0, 1.0));
 
     // 背景を自前で合成済みなので、そのまま不透明（alpha=1）で書き出す（ブレンドは Replace）。
     return vec4<f32>(color, 1.0);

@@ -189,7 +189,10 @@ mod tests {
             // 波形ランダマイズ（Phase W6.4）。既定相当の値を入れておく。
             wave_noise_strength: 0.35, wave_noise_scale: 1.0,
             fresnel_power: 0.0,
-            fresnel_strength: 0.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
+            fresnel_strength: 0.0,
+            // 反射（Phase W5.2）。テスト用ダミーなので強度 0（＝反射なし）。
+            reflection_intensity: 0.0, reflection_roughness: 0.0,
+            refraction_distortion: 0.0,
             ripple_strength: 0.0, ripple_foam_threshold: 0.0,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
