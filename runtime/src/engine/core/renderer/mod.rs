@@ -15,6 +15,8 @@ pub(crate) mod clustered;
 pub(crate) mod ddgi;
 pub(crate) mod shadow;
 pub(crate) mod rt_shadow;
+/// スキンメッシュの RT 加速構造（Phase RT-Skin）。変形後頂点の書き出し＋専用 BLAS 管理。
+pub(crate) mod rt_skin_blas;
 pub(crate) mod post;
 pub(crate) mod transparency;
 pub(crate) mod batch2d;

@@ -21,9 +21,14 @@
 //      キャッシュする（非スキンのみ）。TLAS は cast_shadows=true の全インスタンス
 //      （カメラカリング前）から毎フレーム再構築する（画面外キャスターも影を落とせる）。
 //
+//  【スキンメッシュ（Phase RT-Skin）】
+//    スキンメッシュも TLAS へ登録する。BLAS は「source_path+mesh+prim」ではなく
+//    **インスタンスまで含めた粒度**（ポーズが異なれば頂点も異なるため共有できない）で
+//    毎フレーム再構築する。変形後頂点の書き出しと BLAS の管理は `rt_skin_blas.rs` が担い、
+//    本モジュールは「TLAS への詰め込み・マスク決定・bindless レコード生成」だけを
+//    非スキンとまったく同じ流儀で行う。詳細は rt_skin_blas.rs のヘッダを参照。
+//
 //  【v1 の割り切り（TODO）】
-//    - スキンメッシュは対象外（TLAS に入れない）。スキン済み頂点からの BLAS 毎フレーム
-//      再構築が必要（TODO）。
 //    - rect/point のソフトシャドウ（複数サンプル面光源）は未対応。v1 はハード 1 本。
 // ============================================================
 
@@ -40,6 +45,10 @@ use wgpu::{
 use super::bindless::{BindlessResources, BindlessInstanceRecord, BINDLESS_FLAG_ELIGIBLE, BINDLESS_FLAG_MASK, BINDLESS_FLAG_GEOM, BINDLESS_DUMMY_TEX_INDEX};
 use super::gpu_resources::{GpuModel, GpuPrimitive, InstancedModelBatch};
 use super::lighting::LightBuffer;
+use super::pipeline::SkinDeformPipeline;
+use super::rt_skin_blas::{
+    skin_blas_size_desc, RtSkinBlasManager, SkinBlasKey, SKIN_DEFORM_VERTEX_STRIDE,
+};
 use super::shadow::ShadowResources;
 use crate::engine::core::loader::model::AlphaMode;
 
@@ -216,6 +225,8 @@ pub struct RtShadowResources {
     last_tlas_sig: Option<u64>,
     /// 直近に TLAS へ登録したインスタンス数（[PERF] 表示用）。
     last_inst_count: u32,
+    /// 直近に TLAS へ登録したスキン由来インスタンス数（[PERF] 表示用）。
+    last_skin_inst_count: u32,
     /// 【診断】直近にログ出力した (0x02 総数<<16 | GEOM 数) のパック値。変化時のみ再ログ（ログ爆発防止）。
     /// RT 屈折の界面再屈折可否（GEOM 付与率）の裏取り用（毎フレームではなく内容変化時のみ 1 行）。
     last_geom_log: u32,
@@ -224,6 +235,10 @@ pub struct RtShadowResources {
     /// DDGI のヒット点近似シェーディングで、ヒットした instance_custom_data で引く。
     /// 容量 MAX_RT_INSTANCES。TLAS を（再）構築したフレームにのみ詰め直してアップロードする。
     albedo_buffer: wgpu::Buffer,
+
+    /// スキンメッシュの RT 加速構造マネージャ（Phase RT-Skin）。
+    /// 変形後頂点バッファ・専用 BLAS・変形 compute の BindGroup を保持する。
+    skin_blas: RtSkinBlasManager,
 }
 
 /// `prepare_and_build` の結果統計（[PERF] ログ用）。
@@ -232,6 +247,12 @@ pub struct RtBuildStat {
     pub built: bool,
     /// TLAS に登録されているインスタンス数（構築時は今回値、スキップ時は前回値）。
     pub instances: u32,
+    /// そのうちスキンメッシュ由来のインスタンス数（＝毎フレーム再構築したスキン BLAS 数）。
+    /// 構築時は今回値、静止スキップ時は前回値。
+    pub skin_instances: u32,
+    /// スキン RT（エントリ確保・params 更新・変形 compute 記録）に費やした **CPU 側** 時間 [ms]。
+    /// GPU 実行時間ではなくコマンド記録＋リソース管理のコスト。静止スキップ時は 0。
+    pub skin_build_ms: f64,
 }
 
 impl RtShadowResources {
@@ -290,6 +311,8 @@ impl RtShadowResources {
             last_inst_count: 0,
             last_geom_log: u32::MAX, // 初回は必ずログを出す（0 と衝突しない番兵）。
             albedo_buffer,
+            skin_blas: RtSkinBlasManager::new(),
+            last_skin_inst_count: 0,
         }
     }
 
@@ -318,7 +341,11 @@ impl RtShadowResources {
         self.blas_cache.retain(|k, _| !freed_keys.iter().any(|f| k.source_path == *f));
         // 警告集合（BLAS_INPUT 用途不足）も同じキーで掃除し、無限成長を防ぐ。
         self.warned_usage.retain(|k| !freed_keys.iter().any(|f| k.source_path == *f));
-        before - self.blas_cache.len()
+        // スキン側（Phase RT-Skin）も同じキー体系（batch_key）なので同時に掃除する。
+        // スキンエントリは「インスタンスごとの変形後頂点バッファ」を持つぶん 1 件が重く、
+        // 取りこぼすと VRAM の蓄積が非スキンより速い。
+        let skin_freed = self.skin_blas.prune_batch_keys(freed_keys);
+        before - self.blas_cache.len() + skin_freed
     }
 
     /// BLAS（新規のみ）と TLAS を command encoder へ記録する。
@@ -340,6 +367,10 @@ impl RtShadowResources {
         // `BindlessInstanceRecord` テーブルを埋め、RT 反射のヒットシェーディングが引く。
         // 既存の平均アルベド storage（albedo_buffer）は当面併存（DDGI/色付き影の読み手を壊さない）。
         bindless: Option<&BindlessResources>,
+        // スキンメッシュの変形 compute パイプライン（Phase RT-Skin）。
+        // None を渡すとスキンメッシュは一切 TLAS に載らない（従来挙動へ縮退）。
+        // 実運用では常に Some だが、パイプライン非依存のテストを書けるよう Option にしている。
+        skin_deform: Option<&SkinDeformPipeline>,
     ) -> RtBuildStat {
         // ── 1. 新規 BLAS の作成対象を収集（キャッシュ未登録の非スキンプリミティブ）──
         // 借用衝突を避けるため、先に「作成すべきキー＋対象プリミティブ参照」を集める。
@@ -409,6 +440,31 @@ impl RtShadowResources {
             );
         }
 
+        // ── 2.2. スキンエントリの収集（Phase RT-Skin）─────────────────
+        // 「スキンプリミティブ × インスタンス」を今フレームぶん列挙する。ここでは CPU 側の
+        // 情報だけを集め、GPU リソースの生成（＝上限判定を含む）は静止スキップ判定の後で行う。
+        // スキップするフレームで ensure_entry を呼ぶと、変形 compute を積まないのに
+        // live_keys/pending だけが更新されて状態がズレるため、順序は必ずこの通りにする。
+        let mut skin_cands: Vec<SkinEntryInfo> = Vec::new();
+        if skin_deform.is_some() {
+            for (caster_i, (_path, _gpu, batch)) in casters.iter().enumerate() {
+                batch.rt_enumerate_skinned(
+                    |mesh_idx, prim_idx, material_idx, transform, inst_idx, lod, compact_idx| {
+                        // ポーズ依存値（再生時刻）。Animator 非駆動（None）は静止扱いなので
+                        // 実値と衝突しない番兵ビットを使う。
+                        let anim_bits = batch.anim_time_overrides.get(inst_idx)
+                            .and_then(|o| *o)
+                            .map(f32::to_bits)
+                            .unwrap_or(ANIM_TIME_NONE_BITS);
+                        skin_cands.push(SkinEntryInfo {
+                            caster_i, mesh_idx, prim_idx, inst_idx,
+                            material_idx, transform, lod, compact_idx, anim_bits,
+                        });
+                    },
+                );
+            }
+        }
+
         // ── 2.5. 静止シーン判定（TLAS 再構築スキップ）─────────────────
         // TLAS の内容は「キャスターパス × (mesh,prim) × ワールド変換」で完全に決まる。
         // これらを順序どおりにハッシュしたシグネチャが前フレームと一致し、かつ今回
@@ -469,21 +525,101 @@ impl RtShadowResources {
                     for v in &transform { hasher.write_u32(v.to_bits()); }
                 });
             }
+
+            // ── スキンエントリ（Phase RT-Skin）をシグネチャに含める ──────────
+            // 【これが無いと何が壊れるか】アニメーション再生中は「変換行列もマテリアルも
+            // 変わらないのにポーズだけが変わる」フレームが普通に発生する。ポーズ依存値を
+            // 混ぜないとシグネチャが不変のまま静止スキップが発火し、変形 compute も
+            // BLAS 再構築も走らず、**RT 上のキャラだけが姿勢を固めたまま止まる**。
+            // よって再生時刻（anim_time_overrides）と、行列位置を決める lod/compact_idx を
+            // 必ず含める。
+            hasher.write_u8(SKIN_SIG_MARKER); // 非スキン部との境界（連結の曖昧さを消す）
+            for c in &skin_cands {
+                // キャスターの識別（batch_key）。同一 (mesh,prim,inst) が別バッチにあり得る。
+                hasher.write(casters[c.caster_i].0.as_bytes());
+                hasher.write_u8(SKIN_SIG_MARKER);
+                hasher.write_usize(c.mesh_idx);
+                hasher.write_usize(c.prim_idx);
+                hasher.write_usize(c.inst_idx);
+                hasher.write_usize(c.lod);
+                hasher.write_u32(c.compact_idx);
+                hasher.write_u32(c.anim_bits);
+                // マテリアル由来（マスク・色付き影・bindless レコード）は非スキンと同じ理由で含める。
+                let gpu = casters[c.caster_i].1;
+                hasher.write_u8(instance_mask_for(gpu.primitive_alpha_mode(c.material_idx)));
+                let alb = gpu.primitive_avg_albedo(c.material_idx);
+                for v in &alb { hasher.write_u32(v.to_bits()); }
+                hasher.write_u32(gpu.primitive_transmission(c.material_idx).to_bits());
+                if bindless.is_some() {
+                    let bcf = gpu.primitive_base_color_factor(c.material_idx);
+                    for v in &bcf { hasher.write_u32(v.to_bits()); }
+                    hasher.write_u32(gpu.primitive_bindless_albedo_tex_index(c.material_idx));
+                    let is_mask = matches!(gpu.primitive_alpha_mode(c.material_idx), AlphaMode::Mask);
+                    hasher.write_u8(is_mask as u8);
+                    hasher.write_u32(gpu.primitive_alpha_cutoff(c.material_idx).to_bits());
+                }
+                for v in &c.transform { hasher.write_u32(v.to_bits()); }
+            }
             hasher.finish()
         };
 
         // 初回（last_tlas_sig=None）は必ず構築する。新規 BLAS があるフレームも必ず構築する。
         if !new_blas_built && self.last_tlas_sig == Some(new_sig) {
             // 静止フレーム: GPU 上の TLAS は前回のまま有効。CPU 詰め直し・GPU ビルドを共に省く。
-            return RtBuildStat { built: false, instances: self.last_inst_count };
+            //
+            // 【スキンも一緒にスキップする理由（整合性）】ここで抜けると
+            // `skin_blas.record_deform` を積まないため、変形後頂点バッファは前フレームの
+            // 内容のまま据え置かれる。同時にスキン BLAS も再構築しないので、
+            // 「バッファの中身」と「BLAS が畳み込んだ形状」は完全に一致したままになる。
+            // 片方だけ更新すると両者が食い違い、RT 上でメッシュが壊れる。
+            // シグネチャにポーズ依存値を含めてあるので、動いているフレームはここを通らない。
+            return RtBuildStat {
+                built:          false,
+                instances:      self.last_inst_count,
+                skin_instances: self.last_skin_inst_count,
+                skin_build_ms:  0.0,
+            };
         }
         self.last_tlas_sig = Some(new_sig);
+
+        // ── 2.7. スキンエントリの GPU リソース確保＋変形 compute の記録 ──────
+        // ここから先は必ず TLAS を再構築する経路なので、変形出力と BLAS を同じフレームで
+        // 揃えて更新できる。
+        let mut skin_accepted: Vec<(SkinBlasKey, &SkinEntryInfo)> = Vec::new();
+        let skin_t0 = std::time::Instant::now();
+        if let Some(deform) = skin_deform {
+            self.skin_blas.begin_frame();
+            for c in &skin_cands {
+                let (path, gpu, batch) = &casters[c.caster_i];
+                // プリミティブとスキンシステムを引く（どちらか欠ければ対象外）。
+                let Some(prim) = gpu.meshes.get(c.mesh_idx)
+                    .and_then(|m| m.primitives.get(c.prim_idx)) else { continue };
+                let Some(skin) = batch.skin.as_ref() else { continue };
+                let ok = self.skin_blas.ensure_entry(
+                    device, queue, deform, path, c.mesh_idx, c.prim_idx, c.inst_idx,
+                    prim, skin, c.lod, c.compact_idx,
+                );
+                if ok {
+                    skin_accepted.push((
+                        SkinBlasKey::new(path, c.mesh_idx, c.prim_idx, c.inst_idx), c,
+                    ));
+                }
+            }
+            // 今フレームに現れなかったエントリ（アクタ削除・上限超過）を解放して VRAM 蓄積を防ぐ。
+            self.skin_blas.prune_unused();
+            // 【依存の根拠】変形 compute を **BLAS ビルドより前** に、同じ encoder へ積む。
+            // wgpu のコマンドは 1 本のキュー上で記録順に実行され、compute pass の書き込みは
+            // 後続の加速構造ビルドから可視になる（パス境界に暗黙のバリアが入る）。
+            // 逆順に積むと BLAS は前フレームの頂点を読む（1 フレーム遅れの姿勢になる）。
+            self.skin_blas.record_deform(encoder, deform);
+        }
+        let skin_build_ms = skin_t0.elapsed().as_secs_f64() * 1000.0;
 
         // ── 3. 新規 BLAS のビルドエントリを構築 ──────────────────
         // サイズ記述子はビルド呼び出しまで生存させる必要があるため Vec に確保する。
         let size_descs: Vec<BlasTriangleGeometrySizeDescriptor> =
             to_build.iter().map(|(_, p)| blas_size_desc(p)).collect();
-        let blas_entries: Vec<BlasBuildEntry> = to_build.iter().enumerate()
+        let mut blas_entries: Vec<BlasBuildEntry> = to_build.iter().enumerate()
             .map(|(i, (key, prim))| {
                 let blas = self.blas_cache.get(key).unwrap();
                 BlasBuildEntry {
@@ -502,6 +638,66 @@ impl RtShadowResources {
             })
             .collect();
 
+        // ── 3.5. スキン BLAS のビルドエントリ（Phase RT-Skin・毎フレーム全件）──────
+        // 非スキンと違い「新規のみ」ではなく **今フレームの全スキンエントリ** を積む。
+        // ポーズが変わればジオメトリが変わるため、キャッシュという概念が成立しないからである。
+        // 頂点入力は変形 compute の出力バッファ（ストライド 16B = vec4<f32>）。
+        // インデックスは元プリミティブのものをそのまま使う（トポロジは変形で不変）。
+        //
+        // 添字ズレを構造的に防ぐため、まず「ビルド対象」を 1 パスで確定させてから
+        // サイズ記述子とビルドエントリを **同じ Vec から順に** 作る
+        //（記述子は build 呼び出しまで生存させる必要があるので別 Vec に確保する）。
+        //
+        // 【重要】この `skin_targets` が **TLAS 登録の対象集合でもある**（下の 4.5 が同じ Vec を回す）。
+        // ビルド対象と TLAS 登録対象を別々に絞り込むと、片方だけ通ったエントリが
+        // 「ビルドされていない BLAS を参照する TLAS インスタンス」になり wgpu の検証で落ちる。
+        // 集合を 1 本に統一することで、その食い違いを構造的に不可能にしている。
+        struct SkinBuildTarget<'a> {
+            blas:     &'a wgpu::Blas,
+            out_buf:  &'a wgpu::Buffer,
+            index_bu: &'a wgpu::Buffer,
+            vertex_count: u32,
+            index_count:  u32,
+            /// TLAS 詰め込みで使う列挙情報（マテリアル・変換）。
+            info:     &'a SkinEntryInfo,
+        }
+        let skin_targets: Vec<SkinBuildTarget> = skin_accepted.iter()
+            .filter_map(|(key, c)| {
+                let (blas, out_buf, vc, ic) = self.skin_blas.blas_inputs(key)?;
+                let prim = casters[c.caster_i].1.meshes.get(c.mesh_idx)
+                    .and_then(|m| m.primitives.get(c.prim_idx))?;
+                // 防御チェック: インデックスバッファの BLAS_INPUT 用途（非スキンと同じ流儀）。
+                // ensure_entry でも検証済みだが、ここは wgpu の検証パニックへ直結する最終境界
+                // なので二重に確認する。用途が無ければこのエントリはビルドも登録もしない。
+                if !prim.index_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT) {
+                    return None;
+                }
+                Some(SkinBuildTarget {
+                    blas, out_buf, index_bu: &prim.index_buffer,
+                    vertex_count: vc, index_count: ic, info: c,
+                })
+            })
+            .collect();
+        let skin_size_descs: Vec<BlasTriangleGeometrySizeDescriptor> = skin_targets.iter()
+            .map(|t| skin_blas_size_desc(t.vertex_count, t.index_count))
+            .collect();
+        for (t, size) in skin_targets.iter().zip(skin_size_descs.iter()) {
+            blas_entries.push(BlasBuildEntry {
+                blas: t.blas,
+                geometry: BlasGeometries::TriangleGeometries(vec![BlasTriangleGeometry {
+                    size,
+                    vertex_buffer:           t.out_buf,
+                    first_vertex:            0,
+                    // 変形出力は vec4<f32> 配列。BLAS は先頭 12B（Float32x3）を読む。
+                    vertex_stride:           SKIN_DEFORM_VERTEX_STRIDE,
+                    index_buffer:            Some(t.index_bu),
+                    first_index:             Some(0),
+                    transform_buffer:        None,
+                    transform_buffer_offset: None,
+                }]),
+            });
+        }
+
         // ── 4. TLAS インスタンスを詰め直す（全 None → キャスター順に登録）──
         let mut inst_count: usize = 0;
         // 【診断】RT 屈折の界面再屈折可否の裏取り。0x02（半透明）インスタンス総数と、そのうち
@@ -517,8 +713,11 @@ impl RtShadowResources {
         } else {
             Vec::new()
         };
+        // スキン由来のインスタンス数（[PERF] 表示用）。
+        let mut skin_inst_count: u32 = 0;
         {
             // disjoint フィールド借用: blas_cache（不変）と tlas_package（可変）。
+            // スキン側は上で確定させた skin_targets（&self.skin_blas 由来の参照）を使う。
             let cache = &self.blas_cache;
             let instances = self.tlas_package
                 .get_mut_slice(0..MAX_RT_INSTANCES as usize)
@@ -592,6 +791,66 @@ impl RtShadowResources {
                 if overflow { break; }
             }
 
+            // ── 4.5. スキンインスタンスを同じスロット列へ続けて詰める（Phase RT-Skin）──
+            // `inst_count` を非スキンと共有するため、custom_data（＝albedos / records の添字）
+            // の一意性と、MAX_RT_INSTANCES のオーバーフロー判定はそのまま引き継がれる。
+            // マスク・平均アルベド・α×transmission パック・bindless レコードの詰め方は
+            // 非スキンとまったく同じ（唯一の違いは BINDLESS_FLAG_GEOM を立てないこと）。
+            for t in &skin_targets {
+                if inst_count >= MAX_RT_INSTANCES as usize { overflow = true; break; }
+                let c = t.info;
+                let blas = t.blas;
+                let gpu = casters[c.caster_i].1;
+                let material_idx = c.material_idx;
+
+                let mask = instance_mask_for(gpu.primitive_alpha_mode(material_idx));
+                if mask == RT_MASK_NON_OPAQUE { translucent_total += 1; }
+
+                let mut alb = gpu.primitive_avg_albedo(material_idx);
+                let alpha = alb[3].clamp(0.0, 1.0);
+                let trans = gpu.primitive_transmission(material_idx).clamp(0.0, 1.0);
+                alb[3] = pack_shadow_alpha_transmission(alpha, trans);
+                albedos[inst_count] = alb;
+
+                if !records.is_empty() {
+                    let tex_index = gpu.primitive_bindless_albedo_tex_index(material_idx);
+                    let geom = gpu.meshes.get(c.mesh_idx)
+                        .and_then(|m| m.primitives.get(c.prim_idx))
+                        .map(|gp| (gp.bindless_eligible, gp.bindless_uv_offset,
+                                   gp.bindless_index_offset, gp.bindless_normal_offset))
+                        .unwrap_or((false, 0, 0, 0));
+                    let geom_registered = geom.0;
+                    let elig = geom_registered && tex_index != BINDLESS_DUMMY_TEX_INDEX;
+                    let is_mask = matches!(gpu.primitive_alpha_mode(material_idx), AlphaMode::Mask);
+                    let mut flags = if elig { BINDLESS_FLAG_ELIGIBLE } else { 0 };
+                    if is_mask { flags |= BINDLESS_FLAG_MASK; }
+                    // 【重要】BINDLESS_FLAG_GEOM は **立てない**。
+                    //   このビットは「メガバッファの法線でヒット点の界面法線を復元してよい」
+                    //   ことを意味するが、メガバッファへ登録されているスキンの法線は
+                    //   **バインドポーズのまま**（変形 compute は位置しか書き出さない）で、
+                    //   実際の変形後法線とは食い違う。立てると RT 屈折が誤った界面法線で
+                    //   再屈折し、ガラス越しのスキンキャラが歪んで見える。
+                    //   UV とインデックスは変形で不変なので ELIGIBLE（テクスチャ引き）は有効。
+                    records[inst_count] = BindlessInstanceRecord {
+                        avg_albedo:        alb,
+                        base_color_factor: gpu.primitive_base_color_factor(material_idx),
+                        albedo_tex_index:  tex_index,
+                        uv_offset:         geom.1,
+                        index_offset:      geom.2,
+                        flags,
+                        alpha_cutoff:      if is_mask { gpu.primitive_alpha_cutoff(material_idx) } else { 0.0 },
+                        // 法線オフセットは GEOM を立てないので参照されないが、
+                        // レコードの意味を壊さないよう登録値をそのまま入れておく。
+                        normal_offset:     geom.3,
+                        _pad:              [0; 2],
+                    };
+                }
+                instances[inst_count] =
+                    Some(TlasInstance::new(blas, c.transform, inst_count as u32, mask));
+                inst_count += 1;
+                skin_inst_count += 1;
+            }
+
             if overflow && !self.warned_overflow {
                 self.warned_overflow = true;
                 eprintln!(
@@ -630,9 +889,48 @@ impl RtShadowResources {
         encoder.build_acceleration_structures(blas_entries.iter(), std::iter::once(&self.tlas_package));
 
         self.last_inst_count = inst_count as u32;
-        RtBuildStat { built: true, instances: inst_count as u32 }
+        self.last_skin_inst_count = skin_inst_count;
+        RtBuildStat {
+            built:          true,
+            instances:      inst_count as u32,
+            skin_instances: skin_inst_count,
+            skin_build_ms,
+        }
     }
 }
+
+// ─── スキンエントリの中間表現（Phase RT-Skin）────────────────
+//
+// `rt_enumerate_skinned` の列挙結果を、シグネチャ計算・GPU リソース確保・BLAS ビルド・
+// TLAS 詰め込みの 4 箇所で使い回すための構造体。列挙を 1 回に抑え、かつ各段階が
+// 同じ集合・同じ順序を見ることを保証する（順序がズレると custom_data と albedos/records の
+// 対応が壊れる）。
+
+/// 「スキンプリミティブ × インスタンス」1 件分の列挙結果。
+struct SkinEntryInfo {
+    /// `casters` 内での添字（batch_key / GpuModel / バッチを引くため）。
+    caster_i:     usize,
+    mesh_idx:     usize,
+    prim_idx:     usize,
+    inst_idx:     usize,
+    material_idx: Option<usize>,
+    /// TLAS インスタンス変換（3x4 行優先）。VS の `u_model.model` と同一行列。
+    transform:    [f32; 12],
+    /// ジョイント行列バッファの LOD 番号。
+    lod:          usize,
+    /// LOD 内のコンパクト添字（`joint_base = compact_idx * MAX_JOINTS`）。
+    compact_idx:  u32,
+    /// 再生時刻のビット表現（静止シーン判定のシグネチャに含める）。
+    anim_bits:    u32,
+}
+
+/// シグネチャ内でスキン部の開始／各エントリの区切りを示すマーカーバイト。
+/// 非スキン部の区切り（0xff）と同じ役割で、可変長要素の連結が偶然一致するのを防ぐ。
+const SKIN_SIG_MARKER: u8 = 0xfe;
+
+/// `anim_time_overrides` が `None`（Animator 非駆動＝静止）のときにシグネチャへ混ぜる番兵。
+/// f32 の NaN ビットパターンなので、実際の再生時刻（有限値）と衝突しない。
+const ANIM_TIME_NONE_BITS: u32 = 0x7fc0_0000;
 
 // ─── BLAS 構築ヘルパー ───────────────────────────────────────
 

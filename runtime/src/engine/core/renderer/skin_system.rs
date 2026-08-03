@@ -8,7 +8,7 @@
 //    - 頂点シェーダが読む joint VS BG（group 3）を per-LOD で提供
 // ============================================================
 
-use super::gpu_resources::NUM_LODS;
+use super::gpu_resources::{next_gpu_generation, NUM_LODS};
 use super::pipeline::SkinComputePipeline;
 use crate::engine::core::loader::model::{AnimationOutputs, Interpolation, Model};
 use wgpu::util::DeviceExt;
@@ -70,6 +70,17 @@ pub struct SkinComputeSystem {
     /// 頂点シェーダ用 BG → vertex group 3
     pub lod_joint_vs_bgs: Vec<wgpu::BindGroup>,
 
+    /// LOD ごとのジョイント行列バッファ（`sk_jmats_lodN`）そのもの。
+    ///
+    /// 【なぜバッファ自体を保持するのか（RT スキン BLAS）】
+    /// 従来は生成した `jm_buf` を出力 BG／VS BG へ move するだけで保持していなかった。
+    /// Phase RT-Skin では、同じジョイント行列を **compute 可視の別 BindGroup**
+    /// （`SkinDeformPipeline::joint_bgl`）からも読む必要がある。既存 BG の
+    /// レイアウトは visibility=COMPUTE(出力)/VERTEX(VS) で用途が固定されているため
+    /// 流用できず、バッファ実体から新しい BindGroup を作る。
+    /// バッファは共有なので VRAM 増加はゼロ（Vec の参照ぶんのみ）。
+    lod_jmat_bufs: Vec<wgpu::Buffer>,
+
     // ── メタデータ ────────────────────────────────────────────
     pub n_nodes: u32,
     pub n_joints: u32,
@@ -77,6 +88,16 @@ pub struct SkinComputeSystem {
     pub anim_duration: f32,
     /// バッチの割り当て済みインスタンス上限（バッファサイズ算出に使用した値）
     pub max_instances: u32,
+
+    /// このスキンシステムの GPU リソース生成世代（`next_gpu_generation()` で採番）。
+    ///
+    /// 【なぜ必要か】統合バッチは容量不足時に **同じ batch_key のまま作り直される**
+    /// （frame_renderer の統合バッチ再生成／terrain_scatter_ops の容量拡張）。
+    /// そのとき `SkinComputeSystem` ごと新しくなり、`sk_jmats_lodN` も別バッファになる。
+    /// RT スキン BLAS（rt_skin_blas.rs）はジョイント行列 BindGroup を (batch_key, LOD) で
+    /// キャッシュするため、この世代を突き合わせないと **旧バッファを掴んだ BindGroup を
+    /// 使い続け、RT 上のキャラだけがそのフレームのポーズで永久停止する**。
+    pub generation: u64,
 }
 
 impl SkinComputeSystem {
@@ -291,6 +312,8 @@ impl SkinComputeSystem {
         let mut lod_per_frame_bgs = Vec::with_capacity(NUM_LODS);
         let mut lod_output_bgs = Vec::with_capacity(NUM_LODS);
         let mut lod_joint_vs_bgs = Vec::with_capacity(NUM_LODS);
+        // RT スキン BLAS の変形 compute が同じバッファを読むため、実体を保持する。
+        let mut lod_jmat_bufs = Vec::with_capacity(NUM_LODS);
 
         for lod in 0..NUM_LODS {
             let at_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -348,6 +371,8 @@ impl SkinComputeSystem {
             lod_per_frame_bgs.push(pf_bg);
             lod_output_bgs.push(out_bg);
             lod_joint_vs_bgs.push(vs_bg);
+            // BG へ move せず実体を保持（RT スキン BLAS の変形 compute が別 BG から読む）。
+            lod_jmat_bufs.push(jm_buf);
         }
 
         Some(Self {
@@ -357,12 +382,24 @@ impl SkinComputeSystem {
             lod_params_bufs,
             lod_output_bgs,
             lod_joint_vs_bgs,
+            lod_jmat_bufs,
             n_nodes,
             n_joints,
             n_channels,
             anim_duration,
             max_instances: num_instances,
+            // バッチ再生成のたびに新しい世代を採番する（RT 側の BindGroup キャッシュ追従用）。
+            generation: next_gpu_generation(),
         })
+    }
+
+    /// 指定 LOD のジョイント行列バッファ（`sk_jmats_lodN`）を返す。
+    ///
+    /// RT スキン BLAS（`rt_skin_blas.rs`）の変形 compute が、compute 可視の
+    /// 専用 BindGroup を作るために参照する。頂点シェーダが読むのとまったく同じ
+    /// バッファなので、変形結果は描画結果と厳密に一致する。
+    pub fn jmat_buffer(&self, lod: usize) -> Option<&wgpu::Buffer> {
+        self.lod_jmat_bufs.get(lod)
     }
 
     /// LOD ごとのコンパクト anim_times を GPU にアップロードする。

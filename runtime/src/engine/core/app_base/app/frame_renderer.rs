@@ -369,6 +369,11 @@ impl App {
         let mut perf_tlas_built:    bool = false;
         // TLAS に登録されているインスタンス数
         let mut perf_tlas_insts:    u32 = 0;
+        // そのうちスキンメッシュ由来のインスタンス数（＝毎フレーム再構築したスキン BLAS 数, Phase RT-Skin）。
+        // 毎フレームの BLAS 再構築コストは概ねこの数に比例するので、tlas 時間と並べて読む。
+        let mut perf_tlas_skin:     u32 = 0;
+        // スキン RT（エントリ確保・変形 compute 記録）の CPU 側時間 [ms]（Phase RT-Skin）。
+        let mut perf_tlas_skin_ms:  f64 = 0.0;
         // メインレンダーパス全体（begin〜pass drop）にかかった時間 [ms]
         let mut perf_main_pass_ms:  f64 = 0.0;
         // 水面描画（Phase W1: prepare + 屈折背景グラブ + 水面パス記録）にかかった CPU 時間 [ms]。
@@ -1759,6 +1764,22 @@ impl App {
                                     .iter().filter(|&&c| c > 0).count() as u32;
                             }
                             sd.batch.dispatch_skin(
+                                &mut skin_pass,
+                                &draw_ctx.pipelines.skin_compute,
+                            );
+                        }
+                        // ── 散布モデル（kind=Model）のスキンも同じパスで dispatch する ──────
+                        // 【なぜ必要か（Phase RT-Skin で顕在化）】散布モデルのバッチも
+                        // `create_instanced_batch` が作るため、glTF にスキン＋アニメーションが
+                        // あれば `SkinComputeSystem` が生成される。しかしここまで dispatch 対象は
+                        // `shared_model_batches` だけで、散布側のジョイント行列バッファは
+                        // **ゼロのまま**だった（＝頂点が原点へ潰れる）。ラスタ描画でも壊れていたが、
+                        // 散布モデルも RT キャスターに含まれるため、RT スキン BLAS では
+                        // 「原点に潰れた巨大な退化ジオメトリ」が TLAS に入り、反射・GI・影に
+                        // シーン全体規模の破綻を出しうる。dispatch はスキン無しバッチでは
+                        // 即 return するので、スキンを持たない通常の散布プロップにコスト増は無い。
+                        for res in self.terrain.scatter_models.values() {
+                            res.batch.dispatch_skin(
                                 &mut skin_pass,
                                 &draw_ctx.pipelines.skin_compute,
                             );
@@ -4406,20 +4427,32 @@ impl App {
                             if let Some(rt_cell) = draw_ctx.rt_shadow.as_ref() {
                                 let mut rt = rt_cell.borrow_mut();
                                 // 散布モデル（kind=Model）の RT キャスターキーを先に確保して寿命を持たせる。
-                                //   キーは "scatter://{model_path}"。同一モデルの複数プロップは同じキー＝
-                                //   同じ BLAS を共有する（木は高ポリ＝searsia 21 プリムなので、数千本でも
-                                //   BLAS は 21 個で済む＝MAX_BLAS_BUILDS_PER_FRAME の分割ビルドに素直に乗る）。
+                                //   キーは "scatter://{prop_index}/{model_path}"。
                                 //   ECS アクター（shared_model_batches）の batch_key とは名前空間を分けて、
                                 //   frame_renderer の stale prune（prune_source_paths）が散布 BLAS を巻き添えで
                                 //   解放しない（＝再ビルド churn を避ける）ようにする。
                                 //   String は rt_casters（借用）より長生きさせる必要があるため、ここで所有 Vec に集める。
+                                //
+                                // 【なぜ prop_index を含めるのか（Phase RT-Skin で顕在化した衝突）】
+                                //   `scatter_models` は prop_index（プロップ定義の添字）でキー付けされており、
+                                //   **同じモデルパスを使うプロップが 2 つあると同一キーのバッチが 2 件並ぶ**。
+                                //   非スキンは BLAS をパス単位で共有するだけなので無害だったが、スキンの
+                                //   BLAS キーは (batch_key, mesh, prim, inst) なので別プロップの別インスタンスが
+                                //   同一キーへ衝突し、同じ出力バッファへバリア無しに 2 回書き込む競合／
+                                //   同一 BLAS のビルドエントリ重複／別変換で同じポーズが 2 体出る、という
+                                //   実害が出る。prop_index を含めればキーは構造的に一意になる。
+                                //
+                                // 【副作用（挙動変更・許容と判断）】同一モデルを使う複数プロップ間で
+                                //   非スキン BLAS が共有されなくなり、BLAS の VRAM がプロップ数ぶん増える。
+                                //   プロップ定義数は少数（数個〜十数個）なので許容範囲。
+                                //   docs/rendering_roadmap.md の既知事項にも記載している。
                                 let scatter_rt: Vec<(
                                     String,
                                     &crate::engine::methods::drawer::GpuModel,
                                     &crate::engine::methods::drawer::InstancedModelBatch,
-                                )> = self.terrain.scatter_models.values()
-                                    .map(|res| (
-                                        format!("scatter://{}", res.model_path),
+                                )> = self.terrain.scatter_models.iter()
+                                    .map(|(prop_index, res)| (
+                                        format!("scatter://{}/{}", prop_index, res.model_path),
                                         &res.gpu_model,
                                         &res.batch,
                                     ))
@@ -4448,13 +4481,20 @@ impl App {
                                 // バインドレス（B2）: 対応 GPU では instance_table も同時に詰めさせる。
                                 // rt_shadow とは別 RefCell のため共有借用で共存できる。
                                 let bindless_ref = draw_ctx.bindless.as_ref().map(|c| c.borrow());
+                                // スキンメッシュ（Phase RT-Skin）: 変形後頂点の書き出し compute を
+                                // 渡す。この encoder には既に skin compute（ジョイント行列）が
+                                // 積まれているため、prepare_and_build 内で
+                                // 「変形 compute → 加速構造ビルド」を続けて積めば依存が満たされる。
                                 let stat = rt.prepare_and_build(
                                     &draw_ctx.device, &draw_ctx.queue, frame.encoder_mut(),
                                     &rt_casters, bindless_ref.as_deref(),
+                                    Some(&draw_ctx.pipelines.skin_deform),
                                 );
                                 perf_tlas_ms    = _perf_t_tlas.elapsed().as_secs_f64() * 1000.0;
                                 perf_tlas_built = stat.built;
                                 perf_tlas_insts = stat.instances;
+                                perf_tlas_skin  = stat.skin_instances;
+                                perf_tlas_skin_ms = stat.skin_build_ms;
                             }
                         }
 
@@ -7214,7 +7254,7 @@ impl App {
                              physics={phys_total_ms:.3}ms(3d={perf_physics_ms:.3}ms+snap={perf_snapshot_ms:.3}ms+2d={perf_physics2d_ms:.3}ms) \
                              bf={perf_begin_frame_ms:.3}ms ipc={perf_ipc_ms:.3}ms \
                              batch={perf_batch_ms:.3}ms merge={perf_merge_ms:.3}ms skin={perf_skin_ms:.3}ms \
-                             tlas={perf_tlas_ms:.3}ms({}/{perf_tlas_insts}inst) \
+                             tlas={perf_tlas_ms:.3}ms({}/{perf_tlas_insts}inst,skin={perf_tlas_skin}blas/{perf_tlas_skin_ms:.3}ms) \
                              main_pass={perf_main_pass_ms:.3}ms(draw={perf_draw_ms:.3}ms+pass_drop={perf_pass_drop_ms:.3}ms+rest={main_rest_ms:.3}ms) \
                              sprites={perf_sprite_insts}枚/{perf_sprite_draws}draws \
                              meshlet={perf_meshlet_considered}考慮 \

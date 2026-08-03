@@ -1707,6 +1707,167 @@ RT 色付き影の透過色を「プリミティブ平均アルベド」から�
   影が落ちること・非対応 GPU で従来の平均アルベド影に縮退すること・性能（Mask/Blend の第 2 クエリで
   ヒットごとテクスチャフェッチ増）・group3 追加による fragment storage buffer 本数（≈7）が実機リミット内。
 
+## フェーズ RT-Skin: スキンメッシュを TLAS へ登録する 【状況: 実装済み（実機検証待ち）】
+
+**目的**: それまで RT のあらゆる経路（RT 影・RT 反射・DDGI・水面反射）に一切映らなかった
+スキンメッシュ（ボーン変形するキャラクタ）を TLAS へ載せ、鏡・水面・影・GI に現れるようにする。
+
+### なぜ従来できなかったのか（問題の実体）
+
+本エンジンの GPU スキニングは **スキニング済み頂点を出力していない**。
+`SkinComputeSystem`（`renderer/skin_system.rs`）が計算するのは **ジョイント行列だけ** で、
+頂点変形は毎描画で頂点シェーダ（`shaders/shader_skinned_vertex.wgsl`）が行う:
+
+```wgsl
+let base = inst_idx * MAX_JOINTS;            // inst_idx = LOD 内 compact index
+let skin = w.x*joint_matrices[base+j.x] + ...;
+let world_pos4 = u_model.model * (skin * vec4(v.position, 1.0));
+```
+
+BLAS は「メモリ上に実体として存在する頂点バッファ」を要求するため、
+流用できるバッファがそもそも無かった（`rt_shadow.rs` は `skin_vertex_buffer.is_some()` の
+プリミティブを一律スキップしていた）。
+
+### 実装方式
+
+1. **ジョイント行列**（既存）: `skin_compute.wgsl` が LOD ごとに `sk_jmats_lod{N}` を書く。
+   `skin_system.rs` はこのバッファ実体を `lod_jmat_bufs` として保持するようになった
+   （従来は BindGroup へ move して捨てていた）。
+2. **変形 compute**（新規）: `shaders/skin_deform.wgsl` が
+   「1 プリミティブ × 1 インスタンス」ごとに、頂点シェーダとまったく同じ式で
+   **変形後ローカル位置** `skin * vec4(position, 1)` を `vec4<f32>` 配列（16B/頂点）へ書き出す。
+   元の `Vertex` / `SkinVertex` は生バイト列を `array<u32>` として読む
+   （u16 joints は `w & 0xFFFF` / `w >> 16` でアンパック。重み総和 0 はバインドポーズへフォールバック）。
+3. **BLAS**（新規・ローカル空間）: 変形出力を頂点入力（`vertex_stride = 16`, `Float32x3`）、
+   元プリミティブのインデックスバッファをそのまま（トポロジは変形で不変）として
+   **毎フレーム再構築**する。
+4. **TLAS 変換**: そのスキンノードの **ワールド行列**（VS の `u_model.model` と同一）を渡す。
+   → RT 側の `TLAS変換 × BLAS頂点` が描画側の `u_model.model * (skin * pos)` と厳密に一致する。
+
+### 新規／変更ファイル
+
+| ファイル | 内容 |
+| --- | --- |
+| `shaders/skin_deform.wgsl`（新規） | 変形後ローカル頂点位置を書き出す compute |
+| `renderer/rt_skin_blas.rs`（新規） | エントリ（batch_key+mesh+prim+inst）単位の出力バッファ／BLAS／BindGroup 管理と変形 compute の記録 |
+| `renderer/pipeline.rs` | `SkinDeformPipeline`（group0=エントリ, group1=ジョイント行列）を追加。**compute 可視の joint BGL を新設**（既存 VS 用は `visibility=VERTEX` で流用不可） |
+| `renderer/skin_system.rs` | `lod_jmat_bufs` の保持と `jmat_buffer(lod)` の公開 |
+| `renderer/gpu_resources.rs` | RT 対応時に vertex/skin バッファへ `STORAGE` 付与、`register_bindless` のスキン除外撤廃、`rt_enumerate_skinned` 新設 |
+| `renderer/rt_shadow.rs` | スキンエントリの収集・シグネチャ・BLAS ビルド・TLAS 詰め込み |
+| `app/frame_renderer.rs` | `prepare_and_build` へ `skin_deform` を渡す、`[PERF]` に `skin=Nblas/X.XXXms` |
+
+### 実行順序（依存の根拠）
+
+`frame_renderer` は **1 本の command encoder** に次の順で積み、フレーム末尾で 1 回だけ submit する:
+
+```
+skin compute（ジョイント行列）
+  → RT Skin Deform Pass（変形後頂点）
+  → build_acceleration_structures（スキン BLAS ＋ 非スキン新規 BLAS ＋ TLAS）
+```
+
+wgpu/WebGPU のコマンドは 1 本のキュー上で記録順に実行され、パス境界に暗黙のバリアが入るため、
+明示的な同期 API 無しで依存が満たされる。
+
+### 対応した RT 経路
+
+TLAS は `RtShadowResources` が 1 個だけ持ち、下記すべてが同じものを参照するため、
+**登録した時点で全経路に同時に効く**:
+
+- RT 影（`rt_shadow_on.wgsl`）
+- RT 反射（`reflection_rt.wgsl` / D6 ハイブリッド）
+- DDGI（`ddgi_probe_update.wgsl`）
+- 水面反射（D6 反射経路の流用: `water_reflection.rs`）
+- RT 屈折（`transparency` の RT バリアント）※ ただし下記の GEOM 制限あり
+
+### 静止スキップとの整合（重要）
+
+TLAS の静止再構築スキップ（`last_tlas_sig`）のシグネチャには
+**ポーズ依存値**（`anim_time_overrides[inst]` のビット、`lod`、`compact_idx`）を必ず含めている。
+含めないと「変換もマテリアルも変わらないがポーズだけ変わる」フレームでスキップが発火し、
+**RT 上のキャラだけ姿勢が固まる**。またスキップするフレームは変形 compute も積まないので、
+「変形出力バッファの中身」と「BLAS が畳み込んだ形状」は常に一致する。
+
+### キャッシュの追従（生成世代）— レビュー指摘の修正
+
+RT スキン BLAS は「頂点バッファを掴んだ BindGroup」「頂点数から算出した BLAS サイズ記述子」
+「ジョイント行列 BindGroup」をキーでキャッシュするが、**同じキーのまま実体が作り直される**
+経路が実在する:
+
+- `frame_renderer` の統合バッチ再生成（capacity 不足 → 同じ path で `insert`）
+- `terrain_scatter_ops` の散布バッチ容量拡張（同じ prop の `res.batch` を差し替え）
+- 同一 batch_key でのモデル差し替え（`GpuPrimitive` ごと入れ替わる）
+
+キー一致だけで再利用すると、**ラスタは正しいのに RT のキャラだけが再構築時点のポーズで永久停止**し、
+さらに新バッファより短い旧バッファの未初期化スロットを読んで頂点が原点へ潰れた退化 BLAS になる。
+頂点数・インデックス数が減る差し替えでは BLAS ビルドが wgpu の検証で落ちる。
+
+対策として `gpu_resources::next_gpu_generation()`（プロセス内単調増加の `AtomicU64`）で
+**生成世代**を採番し、`GpuPrimitive::generation` と `SkinComputeSystem::generation` に持たせた。
+キャッシュ側は生成時の世代を保存し、`cache_needs_rebuild(cached, current)` で突き合わせて
+不一致なら作り直す。バッチ再生成では `GpuPrimitive` は据え置きで `SkinComputeSystem` だけが
+新しくなるため、**2 つの世代は独立に判定する**。
+
+### 散布プロップの caster キー変更（挙動変更・明示）
+
+散布モデルの RT キャスターキーを `scatter://{model_path}` から
+**`scatter://{prop_index}/{model_path}`** へ変更した。
+
+`terrain.scatter_models` は `prop_index` でキー付けされているため、**同じモデルパスを使う
+プロップが 2 つあると同一キーのバッチが rt_casters に 2 件並ぶ**。非スキンは BLAS を
+パス単位で共有するだけなので無害だったが、スキンの BLAS キーは
+`(batch_key, mesh, prim, inst)` なので別プロップの別インスタンスが同一キーへ衝突し、
+同じ出力バッファへバリア無しに 2 回 dispatch する書き込みレース／同一 BLAS のビルドエントリ重複／
+別変換で同じポーズが 2 体出る、という実害になる。
+
+- **副作用（許容と判断）**: 同一モデルを使う複数プロップ間で **非スキン BLAS が共有されなくなり**、
+  BLAS の VRAM がプロップ数ぶん増える。プロップ定義数は少数（数個〜十数個）なので許容範囲。
+- `prune_source_paths` は完全一致でキーを掃除する実装なので、キー体系の変更に追従が要らない
+  （`scatter://` 名前空間は ECS アクターの batch_key と分離されたままである）。
+
+### 既知の制限（正直な列挙）
+
+- **毎フレーム BLAS フル再構築**。`AccelerationStructureUpdateMode::PreferUpdate`（refit）は使っていない。
+  理由は (a) refit は BVH を歪めるためポーズが大きく変わると品質が劣化し、リセット判断のロジックが要る、
+  (b) wgpu 25 で「同一ジオメトリ記述の再ビルドが更新になる」保証をバックエンド横断で検証できていない、の 2 点。
+  実測でボトルネックになったら再検討する。
+- **上限 `MAX_RT_SKIN_BLAS = 64`**（スキンプリミティブ × インスタンス）。判定は
+  「マップの総件数」ではなく **今フレームに受理した件数**（`live_keys`）に対して行う。
+  総件数で判定すると、エントリ集合が総入れ替えになるフレームで未解放の旧エントリが枠を食い、
+  新規が丸ごと弾かれて 1 フレーム点滅するため。超過分は RT に映らず 1 回だけ警告する。
+- **頂点数 1〜`MAX_RT_SKIN_VERTICES`(200_000) かつインデックス数 1 以上**が必要。
+  範囲外（頂点 0／インデックス 0／上限超過）は警告してスキップする。
+- **法線がバインドポーズのまま**。変形 compute は位置しか書き出さないため、
+  bindless メガバッファへ登録したスキンの法線は変形後と食い違う。
+  よってスキンインスタンスには **`BINDLESS_FLAG_GEOM` を立てない**
+  （＝RT 屈折の「界面ごとの本物の再屈折」はスキンでは不可。直進近似へ縮退する）。
+  UV とインデックスは変形で不変なので `ELIGIBLE`（テクスチャの実サンプル）は有効。
+- **`register_bindless` のスキン除外を撤廃した副作用**: スキンプリミティブも UV/index/法線の
+  メガバッファ予算を消費するようになった。予算枯渇時は `bindless_eligible=false` となり
+  平均色へ縮退する（従来どおりの安全側フォールバック）が、スキンが多いシーンでは
+  非スキン側の登録が押し出される可能性がある。
+- **モーフターゲット非対応**（`AnimationOutputs::MorphWeights` は GPU スキニング自体が未対応）。
+- **LOD0 のインデックスバッファ固定**。RT は常にフル解像度のトポロジで構築する（非スキンと同じ）。
+- 分割ビルドのスロットリング（`MAX_BLAS_BUILDS_PER_FRAME`）は非スキン新規 BLAS にのみ効く。
+  スキンは性質上毎フレーム全件をビルドするため、上限 2 つ（エントリ数・頂点数）がコスト制御の唯一の手段。
+
+### 検証（実装時点）
+
+- `cargo build` 0 エラー。`cargo test` **779 passed / 0 failed / 9 ignored**（従来 772 から +7）。
+- 追加テスト（純 CPU）: skin_deform.wgsl の `MAX_JOINTS` が Rust `skin_system::MAX_JOINTS` および
+  `shader_skinned_vertex.wgsl` と一致すること、`WORKGROUP_SIZE` が Rust のディスパッチ数算出と一致すること、
+  skin_deform.wgsl の naga parse + validate、`SkinVertex` の u16 アンパックが WGSL のビット演算と
+  一致すること（実バイト列で照合）、変形出力ストライドが 16B であること、
+  **生成世代によるキャッシュ無効化の規則**（未キャッシュ=生成／一致=再利用／不一致=作り直し）と
+  **生成世代の採番が単調増加かつ一意**であること。
+- 追加テスト（実 GPU・`#[ignore]`）: `rt_skin_blas::tests::skin_deform_builds_blas_on_gpu`
+  — パイプライン生成 → 変形 compute → BLAS＋TLAS ビルドが通ること。
+  RT 機能非対応アダプタでは eprintln してスキップする。**この環境の実機 GPU で実際に実行され pass した**
+  （スキップではない）。
+- **未検証（実機 GPU が必要）**: 反射・水面・影に実際にスキンキャラが正しい姿勢で映ること、
+  変形結果がラスタ描画とピクセル一致すること、64 エントリ時のフレーム時間、
+  ポーズ更新の 1 フレーム遅延が無いこと。
+
 ### Phase HZ: Hi-Z オクルージョンカリング（地形チャンク） 【状況: 配線完了・opt-in（既定 OFF）／実機は機構動作確認まで】
 
 死蔵していた `hiz.rs`＋WGSL 3 本（hiz_copy_depth / hiz_gen_mip / hiz_occlusion）を実際のフレームループへ配線し、
