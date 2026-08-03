@@ -49,7 +49,7 @@ pub mod params;
 pub mod tessellation;
 
 pub use params::{
-    WaterParams, WATER_CELL_VERTEX_COUNT, WATER_MAX_INSTANCES, WATER_MAX_VOLUMES,
+    WaterParams, WATER_MAX_INSTANCES, WATER_MAX_VOLUMES,
 };
 
 use std::collections::HashMap;

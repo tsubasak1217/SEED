@@ -1365,20 +1365,36 @@ impl<'r> RenderFrame<'r> {
     pub fn begin_caustics_pass_to<'f>(
         &'f mut self,
         caustics: &'f wgpu::TextureView,
+        caustics_offset: &'f wgpu::TextureView,
     ) -> wgpu::RenderPass<'f>
     where
         'r: 'f,
     {
+        // 2 枚とも Clear(0)。**0 が両方の中立値**であることがこのパスの安全弁である:
+        //   location0（透過率 rgb / 集光 a）: 全成分 0 は「水中ではない」の印で、
+        //     消費側（deferred）が中立値 (1,1,1,0) へ写し直す（乗算項のため）。
+        //   location1（影の屈折オフセット XZ）: 0 がそのまま「ずらさない」＝加算の中立値。
+        // 非水中ピクセルは fs_caustics が discard するため、どちらもクリア値のまま残る。
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Water Caustics Generation Pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view:           caustics,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view:           caustics,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view:           caustics_offset,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ],
             depth_stencil_attachment: None,
             occlusion_query_set: None,
             timestamp_writes:    None,

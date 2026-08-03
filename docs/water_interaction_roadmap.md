@@ -514,13 +514,17 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
   | 集光係数の生成（**アルゴリズム本体**） | `shaders/caustics.wgsl` の `fs_caustics`（水域探索 → 屈折オフセット → 5 点ラプラシアン → シャープ化 → 深度フェード） |
   | 高さ場（**水面パスと共有・唯一の実体**） | `shaders/water_height_field.wgsl` の `water_surface_height()` / `water_surface_gradient()` |
   | パイプライン・リソース・結果テクスチャ | `renderer/caustics.rs` の `CausticsPipelines` / `CausticsTargets` / `CausticsUniform` |
-  | パイプライン定義（連結順・出力フォーマット） | `renderer/pipelines/caustics.toml`（`color_format = "R16Float"` は `pipeline_config.rs` に本フェーズで追加） |
+  | パイプライン定義（連結順・出力フォーマット） | `renderer/pipelines/caustics.toml`（`color_format = "Rgba16Float"` ＋ **`extra_color_formats = ["Rg16Float"]`（MRT 2 枚目）**。フォーマット文字列の解決は `pipeline_config.rs` の `parse_color_format`） |
   | レンダーパス開始（clear = 0＝寄与なし） | `renderer/mod.rs` の `RenderFrame::begin_caustics_pass_to` |
   | 水面リソースの公開（BindGroup は各パスが自作） | `renderer/water/mod.rs` の `params_buffer()` / `shore_texture_view()` / `shore_sampler()` / `fallback_sampler()` / `fallback_field_view()` / `fallback_field_uniform()` / `quad_count()` |
   | GPU パラメータ | `renderer/water/params.rs` の `WaterParams::caustics`（vec4 を 1 本追加＝計 17 本） |
   | コンポーネント（データドリブン） | `components/water_volume_component.rs` の `caustics_intensity` / `caustics_scale` / `caustics_depth_fade` |
   | 中間表現の受け渡し | `water/resolved.rs` の `WaterVisualParams`（同名 3 フィールド） |
   | 消費（deferred 側の採取） | `shaders/deferred_lighting.wgsl` の `@group(1) @binding(12) t_caustics` → `s.caustics` |
+  | 影の屈折ゆらぎ（生成） | `shaders/caustics.wgsl` の `CausticsOut.shadow_offset`（location1。`(sxz − world.xz) × shadow_refraction_strength`） |
+  | 影の屈折ゆらぎ（消費: シャドウマップ／インライン RT） | `shaders/lighting_eval.wgsl` の `shadow_pos`（平行光のみ）→ `sample_shadow_dir` / `rt_shadow_factor` |
+  | 影の屈折ゆらぎ（消費: RT ソフト影マスク） | `shaders/shadow_mask.wgsl` の `mask_eval_slot(..., refract_offset)`（**生成パス側**でレイ原点をずらす） |
+  | 影の屈折ゆらぎ（受け皿・オフセットテクスチャ） | `shaders/surface.wgsl` の `Surface::shadow_refract_offset` ／ `renderer/caustics.rs` の `CAUSTICS_OFFSET_FORMAT` / `CausticsTargets::offset_view()` / `CausticsPipelines::dummy_offset_view` |
   | 消費（ライト評価での増幅） | `shaders/lighting_eval.wgsl` のライトループ（影適用後・`geo_gate` 算出前） |
   | 受け皿の型 | `shaders/surface.wgsl` の `Surface::caustics` |
   | フレーム統合（パス順・ゲート） | `core/app_base/app/frame_renderer.rs`（`caustics_possible` / `caustics_active` / `caustics_result_view`） |
@@ -532,6 +536,7 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
   | `caustics_intensity` | `0.6` | 集光模様の強さ。**0 で完全無効**（これが唯一の無効化手段。render_features のトグルは追加していない） |
   | `caustics_scale` | `1.0` | 模様の細かさ倍率（大きいほど差分ステップが縮み、細かい網目を拾う） |
   | `caustics_depth_fade` | `6.0` | 水面からこの距離(m)進むと模様がほぼ消える（指数フェード） |
+  | `shadow_refraction_strength` | `1.0` | **水中に落ちる影を水面の屈折に合わせて揺らがせる誇張倍率**。1.0 = 物理どおり／**0 で完全無効（従来と 1 ビットも変わらない影）**。物理的なずれは水深 2m・勾配 0.05 で 2〜3cm と目に見えないため、演出としては 5〜20 程度まで上げて使う |
 
   いずれも**描画専用**なので、インスペクタ UI・`component_ops` の `ACTOR_COMPONENTS`・
   `water_ops`・`docs/scripting_api.md` へは公開していない（C# 側は無変更）。
@@ -615,6 +620,78 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
     クアッド系水域を数十個置くと無視できなくなる（空間分割は入れていない）。
   - **deferred 有効時のみ**。フォワード描画・ワイヤーフレーム・2D 編集ビュー・
     G-Buffer デバッグ表示中は焼かない（ライティングへの入力なので意味を持たない）。
+
+  ---
+
+  **W5.3 追補: 水中に落ちる影の屈折ゆらぎ（2026-08-03）**
+
+  水中のピクセルへ届く太陽光は、真上ではなく **`水面勾配 × 深さ × (1 − 1/n)` だけずれた位置**
+  で水面を通っている。したがって遮蔽判定もその位置で行うのが物理的に正しく、結果として
+  **水中に落ちる影が水面のうねりに同期して揺らぐ**（コースティクスの網目と同じ高さ場・同じ時間を
+  見ているので、明るい網目の揺れと影の揺れが完全に一致する）。
+
+  **方式（案 A: 2 枚目の RT を追加）を選んだ理由**
+
+  - コースティクスの既存 RGBA は `rgb = 透過率 / a = 集光強度` で完全に埋まっており、
+    オフセット（XZ の 2ch）を入れる余地が無い。
+  - 透過率を輝度＋色相へ圧縮して同居させる案（案 B）は退けた。**透過率は直達光への乗算項**
+    （W5.3 の「色付きガラス」表現）なので、圧縮誤差がそのまま画面全体の色ズレになる。
+  - `Rg16Float` を 1 枚足すコストはフル解像度でも **4 byte/px**（1920×1080 で約 2MB）と
+    G-Buffer 1 枚より軽く、同一パスの MRT なので**追加のドロー・追加の水域探索はゼロ**。
+  - 副産物として `pipeline_config.rs` に `extra_color_formats`（MRT のフォーマット配列）を
+    追加した。既定は空なので**既存 TOML の挙動は 1 ビットも変わらない**。
+
+  **対応できた影経路**
+
+  | 影経路 | 対応 | 適用点 |
+  |---|---|---|
+  | **CSM シャドウマップ**（既定の影方式） | ✅ | `lighting_eval.wgsl`: `sample_shadow_dir(shadow_pos, view_z)`。**カスケード選択の `view_z` は素の `world_pos` 由来のまま**（ずらすとカスケード境界で影の解像度が波形に明滅する） |
+  | **インライン RT 影**（`rt_shadow_on.wgsl`） | ✅ | `lighting_eval.wgsl`: `rt_shadow_factor` のレイ原点を `shadow_pos` に差し替え |
+  | **RT ソフト影マスク**（半解像度デノイズ済み） | ✅（**生成パス側**で対応） | `shadow_mask.wgsl`: `mask_eval_slot` のレイ原点をずらす。フル解像度のオフセットテクスチャを、既存の `mask_full_pix(uv)` と**同一の整数座標**で読むので、法線・深度・オフセットが必ず同じ点を指す |
+  | スポット／点光源／エリアライトの影 | ❌（意図的に対象外） | オフセットは「鉛直入射の平行光が水面で屈折する」近似から導いた量で、任意位置の局所光には意味を持たないため |
+
+  **なぜマスクだけ生成パス側なのか**: マスクは「そのピクセルの遮蔽率」を焼いた結果であって
+  位置情報を持たない。消費側（`deferred_lighting.wgsl`）でマスクの**サンプル UV** をずらすと、
+  屈折光線が通る位置ではなく「別のピクセルの遮蔽率」を拾い、遮蔽物のシルエットが二重になる。
+  レイ原点をずらせるのはレイを飛ばす生成パスだけなので、そこで対応するしかない。
+
+  **【順序依存】コースティクス生成パスを RT シャドウマスク生成パスより前へ移した**。
+  マスク生成が同じフレームのオフセットを読むため（後ろのままだと 1 フレーム遅れる／常に 0 になる）。
+  コースティクスパスの入力はシーン深度と水パラメータだけで、AO にもマスクにも依存しないので
+  前倒しは安全である。`frame_renderer.rs` の該当箇所にこの順序依存をコメントで明記した。
+
+  **回帰ゼロの根拠（中立値の設計）**
+
+  - オフセットは**加算項**なので中立値は `0` ちょうど。0 を作る経路が 3 つ
+    （レンダーパスの `Clear(0)` ／ 非水中ピクセルの `discard` で書かれない ／ 機能 OFF の
+    ダミー 1x1 への範囲外 `textureLoad`）あり、そのいずれもが「従来と同一の影」を意味する。
+    W5.3 本体の透過率（**乗算**項なので 0 だと直達光が全部黒くなる）と違い、
+    中立値へ写し直す `select` が要らないのはこのためである。
+  - `shadow_refraction_strength = 0` のとき、シェーダは `(sxz − world.xz) * 0.0` を書くので
+    **厳密に 0**（f32 の乗算に誤差は無い）＝クリア値と同値になる。
+  - フォワード（半透明・不透明フォワード）は `surface_gather.wgsl` が明示的に `vec2(0)` を書く
+    （ゼロ初期化と同値だが、意図をコードに残すため）。
+  - 契約テスト `deferred.rs::shadow_refraction_path_is_wired` が生成・消費 3 経路・中立値を
+    文字列で固定し、`caustics.rs::shadow_offset_is_exactly_zero_when_disabled` が
+    「0 で厳密に無効」「クランプが対称」「深度フェードを掛けない」を固定する。
+
+  **既知の制限（この追補ぶん）**
+
+  - **太陽の傾きぶんの横ずれは無視している**。オフセットは「鉛直入射」近似で導いた量で、
+    影のサンプル位置は `world_pos` と同じ Y のまま XZ だけずらす。厳密には太陽の入射角に応じた
+    もう一段の横ずれが要るが、コースティクス本体も同じ近似を使っており、**両者が同じ近似を
+    共有していること**の方が見た目の一貫性には重要である。
+  - **`caustics_intensity = 0` の水域では影のゆらぎも出ない**。水域探索の早期棄却が
+    `caustics.x <= 0` で `continue` するため、そのピクセルは `discard` されオフセットが 0 になる。
+    影だけ揺らして網目は消す、という組み合わせは現状できない（`caustics_intensity` を
+    ごく小さい正値にすれば実質そうなる）。
+  - **発散防止のクランプは ±2m**（`CAUSTICS_SHADOW_OFFSET_MAX_M`）。深い水域で誇張倍率を
+    大きくすると数十 m 級までずれ、影が完全に別の遮蔽物を拾って CSM のカスケード境界も跨ぐため。
+  - **W5.3 本体と同じ制限をそのまま継承する**（川リボンは対象外／クアッドは XZ 矩形判定のみ／
+    深さは base plane 基準／deferred 有効時のみ／フォワード半透明には効かない）。
+  - **`max_sampled_textures_per_shader_stage` の残余が 2 になった**。deferred ライティング
+    （RT バリアント）のフラグメント段は本追補で 13 → **14 枚**になり、wgpu 既定上限 16 まで
+    残り 2 枚である。次に group1 へテクスチャを足すときはここを確認すること。
 
 - **W6: 水面の見た目の詰め（タイル感・川の継ぎ目・波の方向）** — ✅ **実装済み（2026-07-29）**
   W5 の大物（頂点変位・SSR）に入る前の、既存の絵の粗を潰す小フェーズ。

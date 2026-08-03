@@ -64,6 +64,8 @@ pub struct WaterVisualParams {
     pub caustics_scale: f32,
     /// コースティクスが消える水深（m。Phase W5.3）
     pub caustics_depth_fade: f32,
+    /// 水中の影を水面の屈折でずらす誇張倍率（1.0=物理どおり／0 で無効。Phase W5.3）
+    pub shadow_refraction_strength: f32,
     /// 岸波の強さ（0 で完全無効。Phase W1.5）
     pub shore_wave_strength: f32,
     /// 岸へ寄せるうねりの波長（m。Phase W1.5）
@@ -98,6 +100,7 @@ impl WaterVisualParams {
             caustics_intensity:    c.caustics_intensity,
             caustics_scale:        c.caustics_scale,
             caustics_depth_fade:   c.caustics_depth_fade,
+            shadow_refraction_strength: c.shadow_refraction_strength,
             shore_wave_strength:   c.shore_wave_strength,
             shore_wave_length:     c.shore_wave_length,
             shore_wave_period:     c.shore_wave_period,

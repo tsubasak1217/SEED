@@ -102,6 +102,13 @@ fn default_caustics_scale() -> f32 { 1.0 }
 /// 実際の水中でも集光は数 m で拡散して消えるため、深い水域の底まで
 /// 網目が届き続けないようにする指数フェードの距離定数。
 fn default_caustics_depth_fade() -> f32 { 6.0 }
+/// shadow_refraction_strength の既定値（水中に落ちる影の屈折ゆらぎ誇張倍率）。
+///
+/// **1.0 = 物理どおり**（水面勾配 × 深さ × (1 − 1/n) だけ影のサンプル位置をずらす）。
+/// **0 で完全無効**＝影は従来どおりワールド座標そのままで評価され、回帰ゼロになる。
+/// 1.0 を超える値は「物理より大げさに揺らす」演出用のノブである
+/// （現実の屈折ずれは水深 2m・勾配 0.05 でも 2〜3cm 程度で、見た目にはほぼ出ないため）。
+fn default_shadow_refraction_strength() -> f32 { 1.0 }
 
 // ─── 岸波（ショアフィールド。Phase W1.5）の既定値 ────────────
 //
@@ -282,6 +289,10 @@ pub struct WaterVolumeComponentData {
     /// 水面からこの距離（m）進むとコースティクスがほぼ消える（Phase W5.3）
     #[serde(default = "default_caustics_depth_fade")]
     pub caustics_depth_fade: f32,
+    /// 水中に落ちる影を水面の屈折に合わせて揺らがせる誇張倍率（Phase W5.3）。
+    /// 1.0 = 物理どおり／**0 で完全無効（従来と同一の影）**
+    #[serde(default = "default_shadow_refraction_strength")]
+    pub shadow_refraction_strength: f32,
     /// 岸波（ショアフィールド）の強さ。**0 で完全無効**（Phase W1.5）
     #[serde(default = "default_shore_wave_strength")]
     pub shore_wave_strength: f32,
@@ -375,6 +386,7 @@ impl Default for WaterVolumeComponentData {
             caustics_intensity:    default_caustics_intensity(),
             caustics_scale:        default_caustics_scale(),
             caustics_depth_fade:   default_caustics_depth_fade(),
+            shadow_refraction_strength: default_shadow_refraction_strength(),
             shore_wave_strength:   default_shore_wave_strength(),
             shore_wave_length:     default_shore_wave_length(),
             shore_wave_period:     default_shore_wave_period(),
@@ -448,6 +460,8 @@ pub struct WaterVolumeComponent {
     pub caustics_scale: f32,
     /// コースティクスが消える水深（m。Phase W5.3）
     pub caustics_depth_fade: f32,
+    /// 水中の影を水面の屈折でずらす誇張倍率（1.0=物理どおり／0 で無効。Phase W5.3）
+    pub shadow_refraction_strength: f32,
     /// 岸波の強さ（0 で完全無効。Phase W1.5）
     pub shore_wave_strength: f32,
     /// 岸へ寄せるうねりの波長（m。Phase W1.5）
@@ -498,6 +512,7 @@ impl WaterVolumeComponent {
             caustics_intensity:    data.caustics_intensity,
             caustics_scale:        data.caustics_scale,
             caustics_depth_fade:   data.caustics_depth_fade,
+            shadow_refraction_strength: data.shadow_refraction_strength,
             shore_wave_strength:   data.shore_wave_strength,
             shore_wave_length:     data.shore_wave_length,
             shore_wave_period:     data.shore_wave_period,
@@ -538,6 +553,7 @@ impl WaterVolumeComponent {
             caustics_intensity:    self.caustics_intensity,
             caustics_scale:        self.caustics_scale,
             caustics_depth_fade:   self.caustics_depth_fade,
+            shadow_refraction_strength: self.shadow_refraction_strength,
             shore_wave_strength:   self.shore_wave_strength,
             shore_wave_length:     self.shore_wave_length,
             shore_wave_period:     self.shore_wave_period,
@@ -615,9 +631,12 @@ mod tests {
         assert_eq!(d.caustics_intensity, def.caustics_intensity);
         assert_eq!(d.caustics_scale, def.caustics_scale);
         assert_eq!(d.caustics_depth_fade, def.caustics_depth_fade);
+        assert_eq!(d.shadow_refraction_strength, def.shadow_refraction_strength);
         assert_eq!(d.caustics_intensity, 0.6);
         assert_eq!(d.caustics_scale, 1.0);
         assert_eq!(d.caustics_depth_fade, 6.0);
+        // 既定は物理どおり（1.0）。0 なら従来と同一の影になる。
+        assert_eq!(d.shadow_refraction_strength, 1.0);
         assert_eq!(d.shore_wave_strength, def.shore_wave_strength);
         assert_eq!(d.shore_wave_length, def.shore_wave_length);
         assert_eq!(d.shore_wave_period, def.shore_wave_period);
@@ -669,6 +688,7 @@ mod tests {
             caustics_intensity: 0.35,
             caustics_scale: 2.5,
             caustics_depth_fade: 9.5,
+            shadow_refraction_strength: 3.25,
             shore_wave_strength: 0.75,
             shore_wave_length: 9.5,
             shore_wave_period: 3.25,
@@ -705,6 +725,7 @@ mod tests {
         assert_eq!(back.caustics_intensity, src.caustics_intensity);
         assert_eq!(back.caustics_scale, src.caustics_scale);
         assert_eq!(back.caustics_depth_fade, src.caustics_depth_fade);
+        assert_eq!(back.shadow_refraction_strength, src.shadow_refraction_strength);
         assert_eq!(back.shore_wave_strength, src.shore_wave_strength);
         assert_eq!(back.shore_wave_length, src.shore_wave_length);
         assert_eq!(back.shore_wave_period, src.shore_wave_period);

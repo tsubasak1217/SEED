@@ -57,6 +57,14 @@ pub struct PipelineConfig {
     /// "surface" → surface_format、"R32Uint" → R32Uint、"none" → fragment: None
     #[serde(default = "default_color_format")]
     pub color_format: String,
+    /// **2 枚目以降のカラーターゲット（MRT）のフォーマット**（location 1, 2, … の順）。
+    ///
+    /// 空（既定）なら従来どおり単一ターゲット＝全既存 TOML の挙動は 1 ビットも変わらない。
+    /// 記法は `color_format` と同じ文字列。blend / write_mask は全ターゲット共通の値を使う
+    /// （ターゲットごとに別のブレンドを要求するパスが現れたら、そのときに配列化すること）。
+    /// `color_format = "none"` のときは無視される（フラグメント出力そのものが無いため）。
+    #[serde(default)]
+    pub extra_color_formats: Vec<String>,
     /// "Replace" | "AlphaBlending" | "Additive" | "PremultipliedAlpha" | "WboitBgMultiply" | "None"
     #[serde(default = "default_blend")]
     pub blend:        String,
@@ -85,6 +93,27 @@ fn default_front_face()    -> String { "Ccw".into() }
 fn default_true()          -> bool   { true }
 fn default_depth_compare() -> String { "Less".into() }
 fn default_color_format()  -> String { "surface".into() }
+
+/// TOML のフォーマット文字列を `wgpu::TextureFormat` へ解決する。
+///
+/// `color_format` と `extra_color_formats`（MRT）の**唯一の解決口**であり、
+/// 両者で受け付ける名前が食い違わないことをこの 1 関数で保証する。
+/// 未知の名前はサーフェスフォーマットへ落とす（従来挙動の踏襲）。
+fn parse_color_format(name: &str, surface_format: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    match name {
+        "R32Uint"     => wgpu::TextureFormat::R32Uint,
+        "Rgba32Float" => wgpu::TextureFormat::Rgba32Float,
+        "Rgba16Float" => wgpu::TextureFormat::Rgba16Float,
+        // 1 チャネル HDR（水中コースティクスの集光係数。Phase W5.3）。
+        // 値域は 0..CAUSTICS_MAX_GAIN なので f16 の精度で十分足りる。
+        "R16Float"    => wgpu::TextureFormat::R16Float,
+        // 2 チャネル HDR（影の屈折オフセット XZ・単位 m。Phase W5.3）。
+        // 値域は ±CAUSTICS_SHADOW_OFFSET_MAX_M（2m）なので f16 の刻み（この帯域で
+        // 約 1mm）で十分。フル解像度でも 4 byte/px と軽い。
+        "Rg16Float"   => wgpu::TextureFormat::Rg16Float,
+        _             => surface_format,
+    }
+}
 fn default_blend()         -> String { "Replace".into() }
 fn default_write_mask()    -> String { "all".into() }
 
@@ -295,14 +324,7 @@ impl<'d> RenderPipelineBuilder<'d> {
         let color_target: Option<wgpu::ColorTargetState> = if cfg.color_format == "none" {
             None
         } else {
-            let format = match cfg.color_format.as_str() {
-                "R32Uint"     => wgpu::TextureFormat::R32Uint,
-                "Rgba32Float" => wgpu::TextureFormat::Rgba32Float,
-                // 1 チャネル HDR（水中コースティクスの集光係数。Phase W5.3）。
-                // 値域は 0..CAUSTICS_MAX_GAIN なので f16 の精度で十分足りる。
-                "R16Float"    => wgpu::TextureFormat::R16Float,
-                _             => surface_format,
-            };
+            let format = parse_color_format(&cfg.color_format, surface_format);
             let blend = match cfg.blend.as_str() {
                 "AlphaBlending" => Some(wgpu::BlendState::ALPHA_BLENDING),
                 // 加算合成（src*1 + dst*1）。ブルームのアップサンプル／合成パスで、
@@ -351,7 +373,19 @@ impl<'d> RenderPipelineBuilder<'d> {
         };
 
         // ── 8. フラグメントステート ────────────────────────────
-        let color_targets = color_target.as_ref().map(|ct| vec![Some(ct.clone())]);
+        // MRT（extra_color_formats）は先頭ターゲットの blend / write_mask をそのまま複製し、
+        // フォーマットだけ差し替える。空なら従来どおり 1 枚（既存 TOML への影響ゼロ）。
+        let color_targets = color_target.as_ref().map(|ct| {
+            let mut v = vec![Some(ct.clone())];
+            for name in &cfg.extra_color_formats {
+                v.push(Some(wgpu::ColorTargetState {
+                    format:     parse_color_format(name, surface_format),
+                    blend:      ct.blend,
+                    write_mask: ct.write_mask,
+                }));
+            }
+            v
+        });
         let fragment: Option<wgpu::FragmentState<'_>> =
             match (&cfg.fragment_entry, &color_targets) {
                 (Some(entry), Some(targets)) => Some(wgpu::FragmentState {

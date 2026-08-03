@@ -52,6 +52,20 @@ struct MaskCameraUniform {
 @group(1) @binding(3) var t_gbuffer3: texture_2d<f32>;   // emissive.rgb（未使用・レイアウト一致用）
 @group(1) @binding(4) var t_depth:    texture_depth_2d;  // 深度（textureLoad 専用）
 @group(1) @binding(5) var s_gbuffer:  sampler;           // 予約（未使用）
+// ── 影の屈折オフセット（Phase W5.3）: コースティクス生成パスの 2 枚目の MRT ──────────
+// .xy ＝ 水中ピクセルの影サンプル位置に足すワールド XZ オフセット（m・誇張倍率適用済み）。
+//
+// 【なぜ消費側ではなく生成側でずらすのか】
+// マスクは「そのピクセルの遮蔽率」を焼いた結果であって、位置情報を持たない。
+// deferred 側でマスクの**サンプル UV** をずらすと、屈折した光線が通る位置ではなく
+// 「別のピクセルの遮蔽率」を拾うことになり、遮蔽物のシルエットが二重になる。
+// レイ原点をずらせるのはレイを飛ばす本パスだけなので、ここで対応する。
+//
+// 【半解像度との対応】本パスは半解像度だが、オフセットテクスチャは**フル解像度**である。
+// 既存の `mask_full_pix(uv)`（G-Buffer・深度の読み出しに使っている写像）と
+// まったく同じ整数座標で読むことで、法線・深度・オフセットが必ず同一テクセル由来になる。
+// group1 のレイアウトは deferred の gbuffer_bgl を借用しており binding13 を含む（deferred.rs）。
+@group(1) @binding(13) var t_caustics_offset: texture_2d<f32>;
 
 // ─── Group 2: ShadowMaskParams（Rust shadow_mask::ShadowMaskParams 32B と同期）───
 struct ShadowMaskParams {
@@ -123,15 +137,33 @@ fn mask_full_pix(uv: vec2<f32>) -> vec2<i32> {
 
 /// スロット slot（< count 前提）のライトを rt_shadow_factor で評価し、透過率（rgb）を返す。
 /// nv には G-Buffer の N（法線マップ後）を代用する（deferred_lighting.wgsl の Nv 代用方針と一致）。
-fn mask_eval_slot(slot: u32, world_pos: vec3<f32>, ng: vec3<f32>, nv: vec3<f32>, frag_xy: vec2<f32>) -> vec3<f32> {
+///
+/// `refract_offset` は水中の影の屈折ゆらぎ（Phase W5.3）。**平行光のときだけ**レイ原点へ
+/// `vec3(x, 0, y)` として足す（lighting_eval.wgsl のインライン経路と同一の規約）。
+/// 非水中・機能 OFF では厳密に 0 なので、レイ原点は従来と完全に同一になる。
+fn mask_eval_slot(
+    slot:           u32,
+    world_pos:      vec3<f32>,
+    ng:             vec3<f32>,
+    nv:             vec3<f32>,
+    frag_xy:        vec2<f32>,
+    refract_offset: vec2<f32>,
+) -> vec3<f32> {
     let li    = u_mask.indices[slot];
     let light = u_lights[min(li, arrayLength(&u_lights) - 1u)];
     // L・光源距離・見込み半径（cone_radius）は lighting_eval.wgsl と共通の共有関数で求める
     //（インライン経路とマスク経路で L が食い違わないことを保証する単一実装）。
+    // **幾何は素の world_pos で取る**（ずらすのはレイ原点だけ。局所光の距離減衰・見込み半径を
+    //   オフセットで変えてしまわないため。平行光では L も距離も位置に依存しない）。
     let geo = light_shadow_geometry(light, world_pos);
+    // レイ原点（平行光のみ屈折オフセット込み）。lighting_eval.wgsl の shadow_pos と同式。
+    var ray_origin = world_pos;
+    if light.kind == LIGHT_KIND_DIRECTIONAL {
+        ray_origin = world_pos + vec3<f32>(refract_offset.x, 0.0, refract_offset.y);
+    }
     // deterministic_tint=false: マスクはこの後 separable バイラテラルでデノイズされるため、
     // ソフト影の色付き tint はサンプルごとに評価してよい（均されて色にも半影勾配が乗る＝高品質）。
-    return rt_shadow_factor(world_pos, ng, nv, geo.L, geo.dist, geo.cone_radius, frag_xy, false);
+    return rt_shadow_factor(ray_origin, ng, nv, geo.L, geo.dist, geo.cone_radius, frag_xy, false);
 }
 
 // ─── マスク生成フラグメント（4 レイヤを MRT で同時出力。rgb=透過率, a=半解像度深度）───
@@ -197,10 +229,14 @@ fn fs_mask(in: MaskVsOut) -> MaskOut {
     // IGN 種は半解像度フラグ座標（マスクはこの後デノイズするためノイズは均される）。
     // 各スロットは .rgb=透過率, .a=view_z（深度ガイド）で出力する。
     let frag_xy = in.pos.xy;
+    // 水中の影の屈折オフセット（Phase W5.3）。G-Buffer・深度と**同一の**フル解像度テクセル
+    // （mask_full_pix）から読むので、法線・深度・オフセットの三者が必ず同じ点を指す。
+    // 非水中・機能 OFF・コースティクス未生成フレーム（ダミー 1x1）はすべて 0＝従来と同一。
+    let refract_offset = textureLoad(t_caustics_offset, pix, 0).xy;
     let cnt     = min(u_mask.count, SHADOW_MASK_LAYERS);
-    if cnt > 0u { out.l0 = vec4<f32>(mask_eval_slot(0u, world_pos, Ng, N, frag_xy), view_z); }
-    if cnt > 1u { out.l1 = vec4<f32>(mask_eval_slot(1u, world_pos, Ng, N, frag_xy), view_z); }
-    if cnt > 2u { out.l2 = vec4<f32>(mask_eval_slot(2u, world_pos, Ng, N, frag_xy), view_z); }
-    if cnt > 3u { out.l3 = vec4<f32>(mask_eval_slot(3u, world_pos, Ng, N, frag_xy), view_z); }
+    if cnt > 0u { out.l0 = vec4<f32>(mask_eval_slot(0u, world_pos, Ng, N, frag_xy, refract_offset), view_z); }
+    if cnt > 1u { out.l1 = vec4<f32>(mask_eval_slot(1u, world_pos, Ng, N, frag_xy, refract_offset), view_z); }
+    if cnt > 2u { out.l2 = vec4<f32>(mask_eval_slot(2u, world_pos, Ng, N, frag_xy, refract_offset), view_z); }
+    if cnt > 3u { out.l3 = vec4<f32>(mask_eval_slot(3u, world_pos, Ng, N, frag_xy, refract_offset), view_z); }
     return out;
 }

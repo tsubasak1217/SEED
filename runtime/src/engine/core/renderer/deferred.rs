@@ -306,6 +306,15 @@ pub fn create_gbuffer_bind_group(
     // AO/シャドウマスク/SSGI/反射パスは group1 を 0..5 のみ宣言する（subset 合法）ため、
     // それらの呼び出しでも同じダミーを渡してよい。
     caustics_view: &wgpu::TextureView,
+    // ── 影の屈折オフセット入力（Phase W5.3）: group1 binding13 ────────────────────
+    // binding 13 = フル解像度 2ch（Rg16Float）の影サンプル位置オフセット（ワールド XZ・m）。
+    // **サンプラーは無い**（textureLoad で 1:1）。機能 OFF のフレームは
+    // CausticsPipelines::dummy_offset_view（1x1 ゼロ）を渡す（0＝ずらさない＝従来と同一）。
+    //
+    // **RT ソフト影マスク生成パス（shadow_mask.wgsl）はこの binding を実際に読む**
+    // （レイ原点をずらせるのは生成側だけのため）。AO / SSGI / 反射パスは group1 の
+    // 0..5 のみ宣言する（subset 合法）ので、それらの呼び出しではダミーを渡してよい。
+    caustics_offset_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label:  Some("Deferred GBuffer BG (group 1)"),
@@ -324,6 +333,7 @@ pub fn create_gbuffer_bind_group(
             wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(mask_view) },
             wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::Sampler(mask_sampler) },
             wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(caustics_view) },
+            wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(caustics_offset_view) },
         ],
     })
 }
@@ -461,6 +471,61 @@ mod tests {
         // 逆光透け用の radiance_direct には掛けないこと（影を無視する項に集光を足さない）。
         assert!(!eval.contains("radiance_direct = radiance_direct * (1.0 + s.caustics)"),
             "radiance_direct にコースティクスを掛けてはいけない");
+    }
+
+    /// 水中に落ちる影の**屈折ゆらぎ**（Phase W5.3）の配線が全経路で生きていること。
+    ///
+    /// コースティクス本体と違い、この機能は「影が揺らがない」だけで絵が壊れないため、
+    /// 配線が 1 本落ちても目視・コンパイルの両方で気づけない。影の 3 経路それぞれの
+    /// 適用点と、「非水中／機能 OFF では厳密に従来と同一」を担保する中立値を文字列で固定する。
+    #[test]
+    fn shadow_refraction_path_is_wired() {
+        // ① 生成側: コースティクスパスが 2 枚目の MRT（location1）へオフセットを書く。
+        let caustics = include_str!("shaders/caustics.wgsl");
+        assert!(caustics.contains("@location(1) shadow_offset: vec2<f32>,"),
+            "caustics.wgsl の 2 枚目の MRT（影の屈折オフセット）宣言が消えている");
+        assert!(caustics.contains("(sxz - world_pos.xz) * p.caustics.w"),
+            "オフセット式が変わっている（屈折点 sxz と水底点の差 × 誇張倍率 caustics.w が要件）");
+
+        // ② 消費側 A: deferred が binding13 を読んで Surface へ渡す。
+        let deferred = include_str!("shaders/deferred_lighting.wgsl");
+        assert!(deferred.contains("@group(1) @binding(13) var t_caustics_offset: texture_2d<f32>;"),
+            "deferred_lighting.wgsl の t_caustics_offset（group1 binding13）宣言が消えている");
+        assert!(deferred.contains("s.shadow_refract_offset = textureLoad(t_caustics_offset, pix, 0).xy;"),
+            "deferred が影の屈折オフセットを Surface へ渡していない");
+        let surface = include_str!("shaders/surface.wgsl");
+        assert!(surface.contains("shadow_refract_offset: vec2<f32>,"),
+            "surface.wgsl の Surface に shadow_refract_offset フィールドが無い");
+
+        // ③ 消費側 B: ライト評価が**平行光の影だけ**をずらす（シャドウマップ／インライン RT）。
+        let eval = include_str!("shaders/lighting_eval.wgsl");
+        // 改行コード（CRLF/LF）に依存しないよう、1 行ずつ独立に押さえる。
+        assert!(eval.contains("var shadow_pos = s.world_pos;"),
+            "影サンプル位置の変数（既定＝素のワールド座標）が消えている");
+        assert!(eval.contains("+ vec3<f32>(s.shadow_refract_offset.x, 0.0, s.shadow_refract_offset.y);"),
+            "平行光限定の影サンプル位置オフセットが消えている");
+        assert!(eval.contains("sample_shadow_dir(shadow_pos, view_z)"),
+            "シャドウマップ経路（既定の影方式）がオフセット位置を使っていない");
+        assert!(eval.contains("shadow_pos, Ng, Nv, L, light_dist, cone_radius, s.frag_coord, true,"),
+            "インライン RT 影経路がオフセット位置をレイ原点にしていない");
+        // カスケード選択は素の view_z のまま（ずらすとカスケード境界で影の解像度が明滅する）。
+        assert!(eval.contains("let view_z = (u_camera.view * vec4<f32>(s.world_pos, 1.0)).z;"),
+            "カスケード選択の view_z がオフセット由来に変わっている");
+
+        // ④ 消費側 C: RT ソフト影マスクは**生成パス側**でレイ原点をずらす（消費側では不可能）。
+        let mask = include_str!("shaders/shadow_mask.wgsl");
+        assert!(mask.contains("@group(1) @binding(13) var t_caustics_offset: texture_2d<f32>;"),
+            "shadow_mask.wgsl が影の屈折オフセットを宣言していない");
+        // フル解像度オフセットを G-Buffer/深度と同一の写像（mask_full_pix の pix）で読むこと。
+        assert!(mask.contains("let refract_offset = textureLoad(t_caustics_offset, pix, 0).xy;"),
+            "マスク生成が半解像度と食い違う座標でオフセットを読んでいる疑い");
+        assert!(mask.contains("ray_origin = world_pos + vec3<f32>(refract_offset.x, 0.0, refract_offset.y);"),
+            "マスク生成のレイ原点がオフセットされていない");
+
+        // ⑤ 中立値: **加算項なので 0 が中立**。フォワード採取点も明示的に 0 を書く。
+        let gather = include_str!("shaders/surface_gather.wgsl");
+        assert!(gather.contains("s.shadow_refract_offset = vec2<f32>(0.0, 0.0);"),
+            "surface_gather の影オフセット中立値（0）設定が消えている");
     }
 
     /// RT ソフト影マスクの「深度考慮アップサンプル（joint bilateral）」の深度重みの境界性質を検証する。
