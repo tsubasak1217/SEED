@@ -1,7 +1,8 @@
 # caustics.toml — 水中コースティクス生成パス（Phase W5.3）
 #
 # 頂点バッファ無しのフルスクリーン三角形 1 枚で、シーン深度から復元した
-# ワールド座標が水面より下なら集光係数を 1ch（R16Float）へ書き出す。
+# ワールド座標が水面より下なら、水色（浅場/深場の吸収則）で着色した
+# 集光寄与 RGB（Rgba16Float、A 未使用）を書き出す。
 #
 # shader_sources: 高さ場は **water_surface.toml / water_id.toml とまったく同じ
 #   共有モジュール**を連結して使う（＝水面の見た目と水底の模様が同じ波を見る）。
@@ -30,6 +31,6 @@ front_face      = "Ccw"
 
 no_depth        = true
 
-color_format    = "R16Float"
+color_format    = "Rgba16Float"
 blend           = "None"
 write_mask      = "all"

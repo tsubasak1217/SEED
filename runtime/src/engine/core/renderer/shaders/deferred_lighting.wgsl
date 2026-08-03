@@ -312,7 +312,7 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     s.screen_gi     = vec4<f32>(ssgi, 1.0);
     // 水中コースティクス（Phase W5.3）。フル解像度 1:1 なので textureLoad で直接引く。
     // 機能 OFF のダミー 1x1 では範囲外ロード＝0 が返り、増幅なしになる（上の宣言コメント参照）。
-    s.caustics      = textureLoad(t_caustics, pix, 0).r;
+    s.caustics      = textureLoad(t_caustics, pix, 0).rgb;
 
     // ── RT ソフト影マスク（Phase RT-Shadow-Denoise）: 深度考慮アップサンプル（joint bilateral）──
     // 従来は半解像度 4 レイヤを s_shadow_mask（Filtering）でそのままバイリニア拡大していたが、

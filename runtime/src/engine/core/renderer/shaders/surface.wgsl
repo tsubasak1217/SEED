@@ -175,7 +175,8 @@ struct Surface {
     /// 影の中では radiance が既に 0 に近いので自動的に光らない（＝影の中に模様が出ない）。
     /// 供給元はコースティクス生成パス（`caustics.wgsl`）が焼いたフル解像度 1ch テクスチャで、
     /// deferred が group1 binding12 から `textureLoad` で 1:1 に読む。
-    caustics: f32,
+    /// 水色（浅場/深場の吸収則）で着色済みの集光寄与 RGB。
+    caustics: vec3<f32>,
 
     /// shadow_mask が有効か。1.0=deferred が設定済み（マスク経路を使える）／0.0=無効。
     ///
