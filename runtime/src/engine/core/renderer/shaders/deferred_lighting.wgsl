@@ -97,6 +97,13 @@ struct CameraUniform {
 // textureLoad はゼロを返す**ため、1x1 でも全画面が caustics=0（＝増幅なし）になる。
 // つまり「無効時に何を挿すか」でシェーダ側の分岐を増やす必要がない。
 @group(1) @binding(12) var t_caustics: texture_2d<f32>;
+// ── 影の屈折オフセット入力（Phase W5.3）: フル解像度 2ch（Rg16Float・単位 m）──────────
+// コースティクス生成パスの 2 枚目の MRT。.xy ＝ 水中ピクセルの影サンプル位置に足す
+// ワールド XZ オフセット（誇張倍率 shadow_refraction_strength 適用済み）。
+// **加算項なので中立値は 0**。非水中（discard でクリア値 0 のまま）・機能 OFF の
+// ダミー 1x1（ゼロ）・範囲外 textureLoad（WGSL 仕様でゼロ）がすべて「ずらさない」に
+// 一致するため、透過率のような中立値への写し直しが要らない。
+@group(1) @binding(13) var t_caustics_offset: texture_2d<f32>;
 
 // ─── フルスクリーン三角形の頂点定数 ───────────────────────────
 //
@@ -321,6 +328,9 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         caustics_raw,
         any(caustics_raw != vec4<f32>(0.0)),
     );
+    // 影の屈折オフセット（Phase W5.3）。同じ生成パスのフル解像度 MRT なので同じ pix で 1:1。
+    // 0＝ずらさない（加算の中立値）なので、非水中・機能 OFF でも写し直しは不要。
+    s.shadow_refract_offset = textureLoad(t_caustics_offset, pix, 0).xy;
 
     // ── RT ソフト影マスク（Phase RT-Shadow-Denoise）: 深度考慮アップサンプル（joint bilateral）──
     // 従来は半解像度 4 レイヤを s_shadow_mask（Filtering）でそのままバイリニア拡大していたが、

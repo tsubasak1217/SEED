@@ -3,9 +3,13 @@
 //
 //  ## 役割（単一責任）
 //  シーン深度から復元したワールド座標が「水面より下」なら、そこへ届く直達光が
-//  水面のうねりでどれだけ集光されるかを 1 チャネル（R16Float）へ書き出すだけ。
-//  色も影も一切扱わない。**消費側は deferred ライティング**で、
-//  `Surface.caustics` 経由で平行光（太陽）の直達 radiance を増幅する。
+//  水面でどう変化するかを **2 枚の MRT** へ書き出すだけ。影の判定そのものは行わない。
+//    location0（Rgba16Float）: rgb = 水を通った直達光の透過率／a = 集光強度
+//    location1（Rg16Float）  : 影のサンプル位置に足すワールド XZ オフセット（m）
+//  消費側は
+//    - deferred ライティング  : `Surface.caustics` / `Surface.shadow_refract_offset`
+//    - RT ソフト影マスク生成  : `shadow_mask.wgsl` がレイ原点をオフセットする
+//  である（オフセットは平行光の影にしか適用されない）。
 //
 //  ## なぜ独立パスなのか
 //  コースティクスは「水面から見た模様」ではなく「**水底のピクセル**が受け取る光量」である。
@@ -140,6 +144,14 @@ const CAUSTICS_OUTPUT_GAIN: f32 = 2.0;
 /// 増幅率が発散して白飛びしうる。物理的な上限ではなく**破綻防止のクランプ**である。
 const CAUSTICS_MAX_GAIN: f32 = 4.0;
 
+/// 影の屈折オフセットの上限（m。片側・XZ 各成分の絶対値）。
+///
+/// オフセットは「水面勾配 × 深さ × 屈折係数 × 誇張倍率」なので、深い水域で誇張倍率を
+/// 大きくすると数十 m 級まで発散しうる。そこまでずらすと影が完全に別の場所の遮蔽物を
+/// 拾い、CSM のカスケード境界も跨いで破綻する（物理的な上限ではなく**破綻防止のクランプ**）。
+/// 揺らぎとして意味があるのは高々「遮蔽物の見かけの大きさ」程度なので 2m で止める。
+const CAUSTICS_SHADOW_OFFSET_MAX_M: f32 = 2.0;
+
 // ─── フルスクリーン三角形 ────────────────────────────────────
 //
 // 3 頂点で画面全体を覆う巨大三角形（`deferred_lighting.wgsl` の vs_fullscreen と同一）。
@@ -179,8 +191,27 @@ fn caustics_world_from_depth(pix: vec2<f32>, depth: f32) -> vec3<f32> {
 
 // ─── コースティクス生成フラグメント ──────────────────────────
 
+/// 本パスの MRT 出力（2 枚）。
+///
+/// **2 枚に分けた理由（案 A の採用根拠）**
+/// 影の屈折オフセットは「透過率 rgb ＋ 集光強度 a」で既に埋まっている RGBA には入らない。
+/// 透過率を輝度＋色相へ圧縮して同居させる案（案 B）は、**水の色が乗算項として直達光に
+/// 掛かる**（W5.3 の「色付きガラス」表現）ため、圧縮誤差がそのまま画面全体の色ズレになる。
+/// 一方 Rg16Float の 2ch を足すコストはフル解像度でも 4 byte/px と G-Buffer 1 枚より軽い。
+/// 精度と単純さの両方で 2 枚に分ける方が優れるため案 A を採った。
+///
+/// **クリア値 0 が中立**（オフセット無し＝従来と同一の影）である点が肝で、
+/// 非水中ピクセル（discard）・機能 OFF のダミー 1x1・範囲外 textureLoad のいずれも
+/// 0 を返す。加算項なので消費側に「無効時の分岐」が一切要らない。
+struct CausticsOut {
+    /// rgb = 水を通った平行光の透過率／a = 集光強度（従来と同一の意味）。
+    @location(0) light: vec4<f32>,
+    /// 影のサンプル位置に足すワールド XZ オフセット（m）。誇張倍率まで適用済み。
+    @location(1) shadow_offset: vec2<f32>,
+}
+
 @fragment
-fn fs_caustics(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+fn fs_caustics(@builtin(position) frag: vec4<f32>) -> CausticsOut {
     let pix   = vec2<i32>(frag.xy);
     let depth = textureLoad(t_scene_depth, pix, 0);
     // 背景（空）は水中ではありえない。ターゲットのクリア値 0（＝寄与なし）を残す。
@@ -282,5 +313,26 @@ fn fs_caustics(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // 集光の輝きにも同じ透過率が掛かる（消費側で radiance × T × (1 + strength)）ため、
     // ここでは無次元の強度だけを A へ格納する。
     let strength = min(c * fade * p.caustics.x * CAUSTICS_OUTPUT_GAIN, CAUSTICS_MAX_GAIN);
-    return vec4<f32>(transmission, strength);
+
+    // ── ④ 影の屈折オフセット（水中に落ちる影を水面のうねりで揺らす）────
+    //    このピクセルへ届く直達光は、真上ではなく `sxz`（②で求めた屈折点）で水面を
+    //    通っている。つまり「遮蔽物があるか」を判定すべきなのは真上の光線ではなく
+    //    **sxz を通る光線**である。したがって影のサンプル位置を `sxz − world_pos.xz`
+    //    だけずらせば、水面のうねりに同期して水中の影がゆらぐ。
+    //
+    //    現実の屈折ずれは（水深 2m・勾配 0.05 で 2〜3cm 程度と）目に見えないほど小さいため、
+    //    ユーザーパラメータ `shadow_refraction_strength`（caustics.w）で誇張できるようにする。
+    //    **0 なら完全にゼロ**＝クリア値と同値になり、影は従来と 1 ビットも変わらない。
+    //    集光強度と違い深度フェード（fade）は掛けない。屈折そのものは深いほど強くなる現象で、
+    //    「深いほど揺らぎが大きい」方が水中の見え方として正しいためである。
+    let shadow_offset = clamp(
+        (sxz - world_pos.xz) * p.caustics.w,
+        vec2<f32>(-CAUSTICS_SHADOW_OFFSET_MAX_M),
+        vec2<f32>( CAUSTICS_SHADOW_OFFSET_MAX_M),
+    );
+
+    var out: CausticsOut;
+    out.light         = vec4<f32>(transmission, strength);
+    out.shadow_offset = shadow_offset;
+    return out;
 }

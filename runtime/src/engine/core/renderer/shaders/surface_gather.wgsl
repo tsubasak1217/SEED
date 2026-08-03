@@ -160,6 +160,10 @@ fn gather_surface(in: VertexOutput, front_facing: bool) -> Surface {
     // ゼロ初期化のままだと直達光が全て消える。フォワードでは必ず中立値
     // （透過率 1・集光 0 ＝ 無変化）を設定する。
     s.caustics      = vec4<f32>(1.0, 1.0, 1.0, 0.0);
+    // 影の屈折オフセットも deferred 専用機能。こちらは**加算項**なので中立値は 0 で、
+    // ゼロ初期化と一致する（設定し忘れても絵は壊れない）。それでも「フォワードでは
+    // 影をずらさない」という意図をコード上に残すため明示的に 0 を書く。
+    s.shadow_refract_offset = vec2<f32>(0.0, 0.0);
     s.world_pos     = in.world_pos;
     s.normal        = N;
     s.geo_normal    = Ng;

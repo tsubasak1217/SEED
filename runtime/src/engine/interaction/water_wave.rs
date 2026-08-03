@@ -143,6 +143,8 @@ mod tests {
             ripple_strength: 0.0, ripple_foam_threshold: 0.0,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
+            // 影の屈折ゆらぎもテスト用ダミーでは 0（＝影をずらさない）。
+            shadow_refraction_strength: 0.0,
             // 岸波（W1.5）はテスト用のダミーなので全て 0（＝岸波を出さない）。
             shore_wave_strength: 0.0, shore_wave_length: 0.0,
             shore_wave_period: 0.0, shore_wave_foam: 0.0,

@@ -280,6 +280,22 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
         // 影（この後の乗算）は含まない。逆光透け項は影を掛けない（後述の理由）ため、この値を使う。
         let radiance_direct = radiance;
 
+        // ── 影のサンプル位置（水中の屈折ゆらぎ・Phase W5.3）─────────────
+        // 水中ピクセルへ届く平行光は、真上ではなく「水面勾配 × 深さ × (1−1/n)」だけ
+        // ずれた位置で水面を通っている。遮蔽判定をその位置で行うことで、水中に落ちる影が
+        // 水面のうねりに同期して揺らぐ（コースティクスの模様と同じ高さ場・同じ時間なので、
+        // 明るい網目と影の揺らぎが一致する）。
+        //
+        // **平行光にしか掛けない**理由: オフセットは「鉛直入射の平行光が水面で屈折する」
+        // 近似から導いた量であり、水中／水上の任意位置にある点光源へは意味を持たない。
+        // 非水中ピクセル・機能 OFF（shadow_refraction_strength = 0）・フォワードパスでは
+        // オフセットが厳密に 0 なので、shadow_pos == s.world_pos ＝ **従来と完全に同一**になる。
+        var shadow_pos = s.world_pos;
+        if light.kind == LIGHT_KIND_DIRECTIONAL {
+            shadow_pos = s.world_pos
+                       + vec3<f32>(s.shadow_refract_offset.x, 0.0, s.shadow_refract_offset.y);
+        }
+
         // ── シャドウ減衰（2 経路を実行時分岐）─────────────────
         if rt_shadow_enabled() {
             // インラインレイトレ影（Phase R8）: 全ライト種で表面→ライト方向の遮蔽レイ。
@@ -309,8 +325,11 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
                 // ソフト影の per-sample 色付き tint がそのまま scene_hdr へ焼かれて赤い斑点ノイズに
                 // なる。よってソフト影の tint は中心 L の決定的 1 評価へ縮退させる（可視性の
                 // ソフトサンプリングは維持）。マスク経路（shadow_mask.wgsl）は false で高品質側。
+                // レイ原点は shadow_pos（平行光のみ水中の屈折オフセット込み）。
+                // 水平方向へ数 cm〜数十 cm ずらすだけなので、Ng によるクリアランス確保
+                // （rt_shadow_factor 内部）はそのまま効く。
                 radiance = radiance * rt_shadow_factor(
-                    s.world_pos, Ng, Nv, L, light_dist, cone_radius, s.frag_coord, true,
+                    shadow_pos, Ng, Nv, L, light_dist, cone_radius, s.frag_coord, true,
                 );
             }
         } else {
@@ -321,7 +340,11 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
             let sidx = i32(light.shadow_index);
             if sidx >= 0 {
                 if light.kind == LIGHT_KIND_DIRECTIONAL {
-                    radiance = radiance * sample_shadow_dir(s.world_pos, view_z);
+                    // サンプル位置だけをずらし、カスケード選択の view_z は**素の world_pos 由来**
+                    // のままにする。オフセットでカスケードが切り替わると、カスケード境界の
+                    // 水面で影の解像度が波形に明滅するため（位置のずれは高々数十 cm で、
+                    // カスケード選択に与えるべき影響も無い）。
+                    radiance = radiance * sample_shadow_dir(shadow_pos, view_z);
                 } else if light.kind == LIGHT_KIND_SPOT {
                     radiance = radiance * sample_shadow_spot(s.world_pos, sidx);
                 }

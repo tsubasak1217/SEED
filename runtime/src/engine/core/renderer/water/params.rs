@@ -140,7 +140,8 @@ pub struct WaterParams {
     /// 流れの向きが区間境界で連続になり、リボンの継ぎ目が消える。
     pub river_tangent: [f32; 4],
     /// 水中コースティクス（Phase W5.3）。
-    /// x = 強度（0 で完全無効）／y = パターンの細かさ倍率／z = 深度フェード距離(m)／w = 予約(0)
+    /// x = 強度（0 で完全無効）／y = パターンの細かさ倍率／z = 深度フェード距離(m)／
+    /// **w = 影の屈折ゆらぎ誇張倍率（1.0 = 物理どおり／0 で無効）**
     ///
     /// 消費するのは**コースティクス生成パスだけ**（`caustics.wgsl`）で、水面パス・ID パスは
     /// 読まない。それでも同じ配列に持たせているのは、水域パラメータの収集・アップロードを
@@ -262,12 +263,13 @@ impl WaterParams {
             //   y = 細かさ倍率（0 以下だと差分ステップが発散するのでシェーダ側でも下限を切るが、
             //       ここでも負値を潰しておく）
             //   z = 深度フェード距離（同上。0 は「即座に消える」ではなく 0 除算になるため）
-            //   w = 予約（0）
+            //   w = 影の屈折ゆらぎ誇張倍率（0 で従来と同一の影。負値は「逆向きにずらす」という
+            //       意味を持たず、影が波の谷へ吸い寄せられる不自然な絵になるので 0 で下限を切る）
             caustics: [
                 vis.caustics_intensity.max(0.0),
                 vis.caustics_scale.max(0.0),
                 vis.caustics_depth_fade.max(0.0),
-                0.0,
+                vis.shadow_refraction_strength.max(0.0),
             ],
         }
     }
@@ -362,6 +364,7 @@ mod tests {
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
+            shadow_refraction_strength: 1.0,
             shore_wave_strength: 0.0, shore_wave_length: 12.0,
             shore_wave_period: 4.0, shore_wave_foam: 0.8,
         };
@@ -401,6 +404,7 @@ mod tests {
             ripple_strength: 1.25, ripple_foam_threshold: 0.08,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
+            shadow_refraction_strength: 1.0,
             shore_wave_strength: 0.0, shore_wave_length: 12.0,
             shore_wave_period: 4.0, shore_wave_foam: 0.8,
         };
@@ -438,6 +442,7 @@ mod tests {
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
+            shadow_refraction_strength: 1.0,
             shore_wave_strength: 0.0, shore_wave_length: 12.0,
             shore_wave_period: 4.0, shore_wave_foam: 0.8,
         };
@@ -476,6 +481,7 @@ mod tests {
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
+            shadow_refraction_strength: 1.0,
             shore_wave_strength: 0.0, shore_wave_length: 12.0,
             shore_wave_period: 4.0, shore_wave_foam: 0.8,
         };
@@ -546,6 +552,7 @@ mod tests {
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
+            shadow_refraction_strength: 1.0,
             shore_wave_strength: 0.0, shore_wave_length: 12.0,
             shore_wave_period: 4.0, shore_wave_foam: 0.8,
         };

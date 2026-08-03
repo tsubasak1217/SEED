@@ -34,6 +34,13 @@ use super::pipeline_config::RenderPipelineBuilder;
 /// **`pipelines/caustics.toml` の `color_format` と一致必須。**
 pub const CAUSTICS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// 影の屈折オフセットテクスチャ（location 1）のフォーマット（2ch HDR・単位 m）。
+/// **`pipelines/caustics.toml` の `extra_color_formats` と一致必須。**
+///
+/// 値域は ±`CAUSTICS_SHADOW_OFFSET_MAX_M`（2m）で、f16 の刻みはこの帯域で約 1mm。
+/// 影のサンプル位置をずらす用途に対して過剰なほど細かいので f16 で足りる。
+pub const CAUSTICS_OFFSET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+
 /// 本パスのシェーダソース解決（パイプライン生成とテストが共有する唯一の窓口）。
 ///
 /// 高さ場モジュール（`water_height_field.wgsl`）の実体は water モジュールが持つ。
@@ -94,6 +101,15 @@ pub struct CausticsPipelines {
     /// deferred 側は `textureLoad` で読み、WGSL 仕様では**範囲外の textureLoad は
     /// ゼロを返す**ため、1x1 のダミーでも全画面がコースティクス 0（＝増幅なし）になる。
     pub dummy_view: wgpu::TextureView,
+    /// 影の屈折オフセット用ダミー 1x1（ゼロ＝オフセット無し・永続）。
+    #[allow(dead_code)]
+    dummy_offset_tex: wgpu::Texture,
+    /// 上のビュー。deferred の group1 binding13／shadow_mask 生成パスへ「機能 OFF」として渡す。
+    ///
+    /// オフセットは**加算項**なので中立値は 0 であり、ダミーの黒・クリア値 0・
+    /// 範囲外 textureLoad の 0 がすべてそのまま「従来と同一の影」を意味する
+    /// （透過率のように中立値へ写し直す分岐が要らないのはこのため）。
+    pub dummy_offset_view: wgpu::TextureView,
 }
 
 impl CausticsPipelines {
@@ -158,7 +174,38 @@ impl CausticsPipelines {
         );
         let dummy_view = dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-        Self { pipeline, params_bgl, field_bgl, depth_bgl, uniform_buf, dummy_tex, dummy_view }
+        // 影の屈折オフセット用ダミー 1x1（ゼロ＝オフセット無し）。
+        let dummy_offset_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("Water Caustics Offset Dummy 1x1"),
+            size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          CAUSTICS_OFFSET_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats:    &[],
+        });
+        /// Rg16Float 1 テクセルのバイト数（2 チャネル × f16）。
+        const CAUSTICS_OFFSET_TEXEL_BYTES: u32 = 4;
+        let zero: [u8; CAUSTICS_OFFSET_TEXEL_BYTES as usize] =
+            [0u8; CAUSTICS_OFFSET_TEXEL_BYTES as usize];
+        queue.write_texture(
+            dummy_offset_tex.as_image_copy(),
+            &zero,
+            wgpu::TexelCopyBufferLayout {
+                offset:         0,
+                bytes_per_row:  Some(CAUSTICS_OFFSET_TEXEL_BYTES),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        let dummy_offset_view =
+            dummy_offset_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        Self {
+            pipeline, params_bgl, field_bgl, depth_bgl, uniform_buf,
+            dummy_tex, dummy_view, dummy_offset_tex, dummy_offset_view,
+        }
     }
 
     /// このフレームのクアッドインスタンス数を UBO へ書き込む（パス直前に呼ぶ）。
@@ -274,6 +321,9 @@ impl CausticsPipelines {
 pub struct CausticsTargets {
     /// 結果テクスチャとそのビュー（未確保なら `None`）。
     tex: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// 影の屈折オフセット（location 1・Rg16Float）とそのビュー（未確保なら `None`）。
+    /// `tex` と必ず同時に確保・同一サイズ（同じ MRT パスのアタッチメントであるため）。
+    offset_tex: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// 確保済みサイズ（幅・高さ）。
     w: u32,
     h: u32,
@@ -286,7 +336,7 @@ impl Default for CausticsTargets {
 impl CausticsTargets {
     /// 空の（未確保の）ターゲットを生成する（device 不要・eager 構築可）。
     pub fn new() -> Self {
-        Self { tex: None, w: 0, h: 0 }
+        Self { tex: None, offset_tex: None, w: 0, h: 0 }
     }
 
     /// フル解像度サイズへ追従する。既存が同サイズなら何もしない。
@@ -311,7 +361,20 @@ impl CausticsTargets {
             view_formats:    &[],
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        // 影の屈折オフセット（location 1）。同一パスの MRT なので必ず同サイズで確保する。
+        let offset_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("water_caustics_offset"),
+            size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          CAUSTICS_OFFSET_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats:    &[],
+        });
+        let offset_view = offset_tex.create_view(&wgpu::TextureViewDescriptor::default());
         self.tex = Some((tex, view));
+        self.offset_tex = Some((offset_tex, offset_view));
         self.w = w;
         self.h = h;
         true
@@ -320,6 +383,11 @@ impl CausticsTargets {
     /// 結果テクスチャのビュー（`ensure` 済みであること）。
     pub fn view(&self) -> &wgpu::TextureView {
         &self.tex.as_ref().expect("CausticsTargets: ensure 未実行").1
+    }
+
+    /// 影の屈折オフセットテクスチャのビュー（`ensure` 済みであること）。
+    pub fn offset_view(&self) -> &wgpu::TextureView {
+        &self.offset_tex.as_ref().expect("CausticsTargets: ensure 未実行（offset）").1
     }
 }
 
@@ -374,6 +442,33 @@ mod tests {
         // 高さ場の共有モジュールを必ず連結すること（独自波の新造を禁じる契約）。
         assert!(toml_src.contains("water_height_field.wgsl"),
             "高さ場の共有モジュールが連結されていない（＝独自波を作っている疑い）");
+        // 2 枚目の MRT（影の屈折オフセット・Rg16Float）。Rust 側 CAUSTICS_OFFSET_FORMAT と一致必須。
+        assert!(toml_src.contains(r#"extra_color_formats = ["Rg16Float"]"#),
+            "影の屈折オフセット用 MRT（location1）が TOML から消えている");
+        assert_eq!(CAUSTICS_OFFSET_FORMAT, wgpu::TextureFormat::Rg16Float);
+        assert!(wgsl_src.contains("@location(1) shadow_offset: vec2<f32>,"),
+            "シェーダ側の location1 出力が TOML の MRT 宣言と食い違っている");
+    }
+
+    /// 影の屈折オフセットは「機能 OFF なら厳密に 0」でなければならない（回帰ゼロの根拠）。
+    ///
+    /// 消費側（`lighting_eval.wgsl` / `shadow_mask.wgsl`）はオフセットを**加算**するため、
+    /// 中立値は 0 ちょうどである。0 を作る経路が 3 つ（クリア値／`discard` で書かれない／
+    /// ダミー 1x1 への範囲外 textureLoad）あり、そのいずれもが「従来と同一の影」を意味する。
+    /// 誇張倍率（`WaterParams.caustics.w`）が 0 のときに式が厳密な 0 を返すことを固定する。
+    #[test]
+    fn shadow_offset_is_exactly_zero_when_disabled() {
+        let src = get_shader_source("caustics.wgsl");
+        // 誇張倍率 caustics.w を掛けているので、0 なら積は厳密に 0（f32 の乗算で誤差は出ない）。
+        assert!(src.contains("(sxz - world_pos.xz) * p.caustics.w"),
+            "誇張倍率が掛かっていない（0 で無効化できなくなる）");
+        // クランプの下限・上限は対称（片側だけ効くと影が一方向へ寄る）。
+        assert!(src.contains("vec2<f32>(-CAUSTICS_SHADOW_OFFSET_MAX_M)")
+             && src.contains("vec2<f32>( CAUSTICS_SHADOW_OFFSET_MAX_M)"),
+            "オフセットの発散防止クランプが対称でない／消えている");
+        // 深度フェード（fade）を掛けてはいけない（屈折ずれは深いほど大きい現象）。
+        assert!(!src.contains("(sxz - world_pos.xz) * fade"),
+            "影の屈折オフセットに深度フェードを掛けてはいけない");
     }
 
     /// WGSL 側 `CausticsUniform` の naga 実測サイズが Rust と一致すること。

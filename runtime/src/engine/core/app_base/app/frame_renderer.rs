@@ -2402,6 +2402,8 @@ impl App {
                                 &draw_ctx.pipelines.deferred.mask_sampler,
                                 // コースティクスはメインビュー専用（プレビューは水面パスも持たない）。
                                 &draw_ctx.pipelines.caustics.dummy_view,
+                                // 影の屈折オフセット（binding13）も同様に未参照＝ダミー 1x1（ゼロ）でよい。
+                                &draw_ctx.pipelines.caustics.dummy_offset_view,
                             );
 
                         // ── A. G-Buffer パス: 不透明ジオメトリをプレビュー G-Buffer 4 枚＋深度へ焼く ──
@@ -4866,6 +4868,8 @@ impl App {
                                     &draw_ctx.pipelines.deferred.mask_dummy_view, &draw_ctx.pipelines.deferred.mask_sampler,
                                     // AO / マスク生成シェーダは group1 の 0..5 のみ宣言＝コースティクスも未参照。
                                     &draw_ctx.pipelines.caustics.dummy_view,
+                                    // 影の屈折オフセット（binding13）も同様に未参照＝ダミー 1x1（ゼロ）でよい。
+                                    &draw_ctx.pipelines.caustics.dummy_offset_view,
                                 );
                                 let ao_params_bg = ao_p.create_params_bg(&draw_ctx.device);
                                 // RT-AO データ（TLAS）。needs_tlas() 経由で構築済み保証。共有借用（RefCell）。
@@ -4892,6 +4896,71 @@ impl App {
                                 // いもす法ブラー（ao_raw → ao_a/ao_b, 結果は必ず ao_b）。
                                 ao_p.blur(&draw_ctx.device, frame.encoder_mut(), &self.ao_targets);
                             }
+
+                            // ── 水中コースティクス生成パス（Phase W5.3）─────────────────
+                            // G-Buffer 深度が確定した後・deferred ライティングの前に、フル解像度の
+                            // MRT 2 枚を焼く。ピクセルごとに深度からワールド座標を復元し、いずれかの
+                            // クアッド系水域の水面より下なら、水面の高さ場から
+                            //   location0: 透過率 rgb ＋ 集光強度 a（直達光の色と明るさ）
+                            //   location1: 影のサンプル位置に足すワールド XZ オフセット（m）
+                            // を求める。水面フォワードパスでは水底のピクセルを踏めないため、
+                            // ここで焼いてライティングの入力にするしかない（caustics.rs の冒頭コメント参照）。
+                            // 水パラメータは上で前倒しした water.prepare がアップロード済み。
+                            //
+                            // **【順序依存】このパスは RT ソフト影マスク生成パスより前に置くこと。**
+                            // マスク生成はレイ原点を location1 のオフセットぶんずらすため、
+                            // 同じフレームのオフセットが既に焼けている必要がある（後ろへ動かすと
+                            // 1 フレーム遅れのオフセットを読むか、常に 0 になる）。
+                            if caustics_active {
+                                let cp = &draw_ctx.pipelines.caustics;
+                                let water = self.water_renderer.as_ref()
+                                    .expect("caustics_active なら water_renderer は構築済み");
+                                // 探索範囲は配列先頭のクアッド系インスタンスだけ（川リボンは対象外）。
+                                cp.write_params(&draw_ctx.queue, water.quad_count());
+                                // group1/2 は水面パスと同じリソースを**本パス専用レイアウト**で組み直す
+                                //（BindGroup はレイアウト非互換で使い回せない。ID パスと同じ事情）。
+                                let caustics_params_bg = cp.create_params_bg(&draw_ctx.device, water);
+                                let caustics_field_bg  = cp.create_field_bg(
+                                    &draw_ctx.device, water, self.interaction_field.as_ref());
+                                let caustics_depth_bg  = cp.create_depth_bg(
+                                    &draw_ctx.device, frame.depth_only_view_r());
+                                if let Some(params_bg) = caustics_params_bg.as_ref() {
+                                    let mut cpass = frame.begin_caustics_pass_to(
+                                        self.caustics_targets.view(),
+                                        self.caustics_targets.offset_view());
+                                    // Play レターボックス時は他パスと同一のゲームビューポートを適用する
+                                    //（帯の外を焼かない＋不透明幾何との位置一致。deferred と同一条件）。
+                                    if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
+                                        let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                        cpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                        cpass.set_scissor_rect(
+                                            vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                                    }
+                                    cp.draw(&mut cpass, &camera_buf.bind_group,
+                                            params_bg, &caustics_field_bg, &caustics_depth_bg);
+                                }
+                            }
+
+                            // コースティクス結果ビュー（group1 binding12 へ渡す。Phase W5.3）。
+                            // 焼いたフレームは実テクスチャ、それ以外はダミー 1x1（黒）。
+                            // deferred 側は textureLoad で読み、範囲外は WGSL 仕様でゼロを返すため
+                            // ダミーでも全画面が「増幅なし」になる（分岐を増やさずに無効化できる）。
+                            let caustics_result_view: &wgpu::TextureView = if caustics_active {
+                                self.caustics_targets.view()
+                            } else {
+                                &draw_ctx.pipelines.caustics.dummy_view
+                            };
+                            // 同パスの 2 枚目の MRT（group1 binding13 へ渡す。Phase W5.3）。
+                            // こちらは**加算項**なので中立値は 0＝ダミー 1x1（ゼロ）で
+                            // 「影をずらさない＝従来と同一の影」になる。
+                            // **RT ソフト影マスク生成パスもこのビューを読む**（レイ原点をずらせるのは
+                            // 生成パス側だけのため）。ゆえに上のコースティクス生成パスは
+                            // シャドウマスク生成パスより**先に**記録してある（順序依存）。
+                            let caustics_offset_result_view: &wgpu::TextureView = if caustics_active {
+                                self.caustics_targets.offset_view()
+                            } else {
+                                &draw_ctx.pipelines.caustics.dummy_offset_view
+                            };
 
                             // ── 色付き影バインドレス group3 BG（B3）───────────────────────────────
                             // RT 対応 かつ バインドレス対応 GPU（deferred.colored_shadow_bgl が Some）のとき、
@@ -4927,7 +4996,12 @@ impl App {
                                     &draw_ctx.pipelines.ssgi.dummy_view, &draw_ctx.pipelines.ssgi.linear_sampler,
                                     &draw_ctx.pipelines.deferred.mask_dummy_view, &draw_ctx.pipelines.deferred.mask_sampler,
                                     // AO / マスク生成シェーダは group1 の 0..5 のみ宣言＝コースティクスも未参照。
+                                    // マスク生成シェーダは group1 の 0..5 と **binding13（影の屈折オフセット）** を宣言する。
+                                    // コースティクス本体（binding12）は読まないのでダミーでよい。
                                     &draw_ctx.pipelines.caustics.dummy_view,
+                                    // binding13 は本物を渡す。レイ原点を屈折オフセットぶんずらせるのは生成側だけで、
+                                    // これが「水中に落ちる影が水面のうねりで揺らぐ」RT マスク経路の実体である。
+                                    caustics_offset_result_view,
                                 );
                                 let mask_params_bg = smp.create_params_bg(&draw_ctx.device);
                                 {
@@ -4957,42 +5031,6 @@ impl App {
                                 smp.blur(&draw_ctx.device, frame.encoder_mut(), &self.shadow_mask_targets);
                             }
 
-                            // ── 水中コースティクス生成パス（Phase W5.3）─────────────────
-                            // G-Buffer 深度が確定した後・deferred ライティングの前に、フル解像度 1ch の
-                            // 集光係数を焼く。ピクセルごとに深度からワールド座標を復元し、いずれかの
-                            // クアッド系水域の水面より下なら、水面の高さ場のラプラシアン（＝屈折光線の
-                            // 収束）から係数を求める。水面フォワードパスでは水底のピクセルを踏めないため、
-                            // ここで焼いてライティングの入力にするしかない（caustics.rs の冒頭コメント参照）。
-                            // 水パラメータは上で前倒しした water.prepare がアップロード済み。
-                            if caustics_active {
-                                let cp = &draw_ctx.pipelines.caustics;
-                                let water = self.water_renderer.as_ref()
-                                    .expect("caustics_active なら water_renderer は構築済み");
-                                // 探索範囲は配列先頭のクアッド系インスタンスだけ（川リボンは対象外）。
-                                cp.write_params(&draw_ctx.queue, water.quad_count());
-                                // group1/2 は水面パスと同じリソースを**本パス専用レイアウト**で組み直す
-                                //（BindGroup はレイアウト非互換で使い回せない。ID パスと同じ事情）。
-                                let caustics_params_bg = cp.create_params_bg(&draw_ctx.device, water);
-                                let caustics_field_bg  = cp.create_field_bg(
-                                    &draw_ctx.device, water, self.interaction_field.as_ref());
-                                let caustics_depth_bg  = cp.create_depth_bg(
-                                    &draw_ctx.device, frame.depth_only_view_r());
-                                if let Some(params_bg) = caustics_params_bg.as_ref() {
-                                    let mut cpass = frame.begin_caustics_pass_to(
-                                        self.caustics_targets.view());
-                                    // Play レターボックス時は他パスと同一のゲームビューポートを適用する
-                                    //（帯の外を焼かない＋不透明幾何との位置一致。deferred と同一条件）。
-                                    if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
-                                        let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
-                                        cpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
-                                        cpass.set_scissor_rect(
-                                            vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
-                                    }
-                                    cp.draw(&mut cpass, &camera_buf.bind_group,
-                                            params_bg, &caustics_field_bg, &caustics_depth_bg);
-                                }
-                            }
-
                             // AO 結果ビュー（ライティングの group1 binding6 へ渡す）。AO=Off 時は白 1x1（ao=1.0）。
                             let ao_sampler = &draw_ctx.pipelines.ao.linear_sampler;
                             let ao_result_view: &wgpu::TextureView = if ao_effective != crate::engine::core::renderer::AoMode::Off {
@@ -5018,15 +5056,6 @@ impl App {
                                 &draw_ctx.pipelines.deferred.mask_dummy_view
                             };
                             let mask_sampler = &draw_ctx.pipelines.deferred.mask_sampler;
-                            // コースティクス結果ビュー（group1 binding12 へ渡す。Phase W5.3）。
-                            // 焼いたフレームは実テクスチャ、それ以外はダミー 1x1（黒）。
-                            // deferred 側は textureLoad で読み、範囲外は WGSL 仕様でゼロを返すため
-                            // ダミーでも全画面が「増幅なし」になる（分岐を増やさずに無効化できる）。
-                            let caustics_result_view: &wgpu::TextureView = if caustics_active {
-                                self.caustics_targets.view()
-                            } else {
-                                &draw_ctx.pipelines.caustics.dummy_view
-                            };
                             // B'. G-Buffer デバッグ可視化パス（シーンビュー表示モード「G-Buffer: 〜」）。
                             //
                             //   ライティングの代わりに、G-Buffer の 1 チャンネルをそのまま HDR へ書く。
@@ -5108,6 +5137,7 @@ impl App {
                                     // 水中コースティクス（Phase W5.3）: deferred_lighting.wgsl の group1 binding12。
                                     // 生成したフレームは実テクスチャ、それ以外はダミー 1x1（黒）＝増幅なし。
                                     caustics_result_view,
+                                    caustics_offset_result_view,
                                 );
                                 let mut lpass = frame.begin_deferred_lighting_pass_to(hdr_view, clear_color);
                                 if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
@@ -5246,6 +5276,8 @@ impl App {
                                 &draw_ctx.pipelines.deferred.mask_dummy_view, &draw_ctx.pipelines.deferred.mask_sampler,
                                 // SSGI / 反射シェーダは group1 の 0..5 のみ宣言＝コースティクスも未参照。
                                 &draw_ctx.pipelines.caustics.dummy_view,
+                                // 影の屈折オフセット（binding13）も同様に未参照＝ダミー 1x1（ゼロ）でよい。
+                                &draw_ctx.pipelines.caustics.dummy_offset_view,
                             );
                             // group2（SsgiParams + scene_hdr + sampler）。scene_hdr は今フレームの不透明 HDR。
                             let ssgi_input_bg = sp.create_input_bg(&draw_ctx.device, hdr_view);
@@ -5297,6 +5329,8 @@ impl App {
                                 &draw_ctx.pipelines.deferred.mask_dummy_view, &draw_ctx.pipelines.deferred.mask_sampler,
                                 // SSGI / 反射シェーダは group1 の 0..5 のみ宣言＝コースティクスも未参照。
                                 &draw_ctx.pipelines.caustics.dummy_view,
+                                // 影の屈折オフセット（binding13）も同様に未参照＝ダミー 1x1（ゼロ）でよい。
+                                &draw_ctx.pipelines.caustics.dummy_offset_view,
                             );
                             let input_bg = refl.create_input_bg(&draw_ctx.device, hdr_view);
                             let gi_bg    = refl.create_gi_bg(&draw_ctx.device, &draw_ctx.gi);

@@ -32,5 +32,9 @@ front_face      = "Ccw"
 no_depth        = true
 
 color_format    = "Rgba16Float"
+# 2 枚目の MRT（location 1）＝ 影の屈折オフセット（ワールド XZ・単位 m）。
+#   Rust 側 CAUSTICS_OFFSET_FORMAT と一致必須。
+#   クリア値 0 が「オフセット無し＝従来と同一の影」の中立値になる（加算項）。
+extra_color_formats = ["Rg16Float"]
 blend           = "None"
 write_mask      = "all"
