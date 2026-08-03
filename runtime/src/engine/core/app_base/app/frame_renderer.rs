@@ -4222,6 +4222,21 @@ impl App {
                     if caustics_possible {
                         self.caustics_targets.ensure(&draw_ctx.device, surf_w, surf_h);
                     }
+                    // 水面反射 RT（Phase W5.2）のフル解像度 HDR テクスチャ。
+                    // ゲートは既存の反射（D6）と揃える（deferred 有効・反射モードが Off でない）＋
+                    // 水域があるフレームのみ。水面パスは結果を **textureLoad で 1:1 に読む**ので
+                    // 半解像度にはしない（補間で反射像が滲むうえ、波の高周波が失われる）。
+                    let water_reflection_possible =
+                        reflection_effective != crate::engine::core::renderer::ReflectionMode::Off
+                        && water_gate;
+                    if water_reflection_possible {
+                        self.rt_pool.ensure(
+                            &draw_ctx.device,
+                            crate::engine::core::renderer::RT_WATER_REFLECTION_NAME,
+                            surf_w, surf_h,
+                            crate::engine::core::renderer::WATER_REFLECTION_FORMAT,
+                        );
+                    }
                     // SSGI（Phase SSGI）半解像度テクスチャ（ssgi_raw/ssgi_a/ssgi_b）。SSGI 有効時のみ確保。
                     // ensure が再確保（初回・リサイズ）を返したら ssgi_b の前フレーム履歴が消えるため、
                     // この 1 フレームは未収束扱い（ssgi_warmed=false）にして GI をフラットに倒す。
@@ -4328,6 +4343,10 @@ impl App {
                     // 反射 RT のビュー（確保済みのときのみ Some）。ensure 済み後に view を取る規約。
                     let reflection_view = if reflection_effective != crate::engine::core::renderer::ReflectionMode::Off {
                         Some(self.rt_pool.view(crate::engine::core::renderer::RT_REFLECTION_NAME))
+                    } else { None };
+                    // 水面反射 RT のビュー（確保済みのときのみ Some。ensure 済み後に取る規約）。
+                    let water_reflection_view = if water_reflection_possible {
+                        Some(self.rt_pool.view(crate::engine::core::renderer::RT_WATER_REFLECTION_NAME))
                     } else { None };
 
                     // ── メインレンダーパス ────────────────
@@ -4685,6 +4704,11 @@ impl App {
                                 self.interaction_field.as_ref(),
                                 // 岸波のショアフィールド（Phase W1.5）。上の W1.5 節で更新済み。
                                 &self.water_shore_fields,
+                                // 水面反射 RT（Phase W5.2）。反射パスを走らせないフレームは
+                                // 黒 1x1 のダミーを挿す（**A=0＝反射寄与なし**が中立値なので、
+                                // 水面シェーダ側に「反射があるか」の分岐は要らない）。
+                                water_reflection_view
+                                    .unwrap_or(&draw_ctx.pipelines.water_reflection.dummy_view),
                             );
                             // ID パス（後段）で水面クアッドを描いてよいかを伝える。
                             // **この前倒しは ID パス（draw_id）より必ず前**である
@@ -5636,6 +5660,66 @@ impl App {
                                     let water = self.water_renderer.as_ref()
                                         .expect("water_renderer は直前に構築済み");
                                     water.record_grab(frame.encoder_mut(), scene_hdr);
+
+                                    // ①' 水面反射パス（Phase W5.2）。
+                                    //
+                                    // 【なぜ「グラブの後・水面パスの前」なのか（順序制約）】
+                                    //  ・反射には「不透明＋スカイボックスが描き終わったシーンカラー」が要る。
+                                    //    グラブはまさにその **コピー** なので、直後に置けば空が映る反射になる
+                                    //    （D6 の反射パスと同じ位置＝メインパス前に置くと、スカイボックスは
+                                    //     まだ描かれておらず「空が映らない水」になってしまう）。
+                                    //  ・グラブはコピーなので、scene_hdr がアタッチされていても
+                                    //    読み書き競合が起きない（追加のコピーも発生しない）。
+                                    //  ・水面自身はまだ描かれていない＝反射が水面を映す自己参照が起きない。
+                                    //  W5.3（コースティクス）の「深度確定後・ライティング前」と同様に、
+                                    //  この前後関係は入れ替えられない類のものである。
+                                    if let Some(wr_view) = water_reflection_view {
+                                        let wrp = &draw_ctx.pipelines.water_reflection;
+                                        // RT 反射を使えるか: 反射モードが Rt かつ RT パイプラインが構築済み
+                                        // （＝RAY_QUERY 対応 GPU）かつ TLAS を借りられること。
+                                        // どれか欠ければ SSR 変種へ落ちる（＝非対応 GPU でも反射は出る）。
+                                        let want_rt = reflection_effective
+                                            == crate::engine::core::renderer::ReflectionMode::Rt
+                                            && wrp.has_rt();
+                                        let rt_ref = if want_rt {
+                                            draw_ctx.rt_shadow.as_ref().map(|c| c.borrow())
+                                        } else { None };
+                                        let use_rt = rt_ref.is_some();
+                                        // group1 は水パラメータが要る（prepare 済みなので必ず Some）。
+                                        let params_bg =
+                                            wrp.create_params_bg(&draw_ctx.device, water, use_rt);
+                                        if let (Some(params_bg), Some(grab_view)) =
+                                            (params_bg.as_ref(), water.grab_view())
+                                        {
+                                            let field_bg = wrp.create_field_bg(
+                                                &draw_ctx.device, water,
+                                                self.interaction_field.as_ref(), use_rt);
+                                            let scene_bg = wrp.create_scene_bg(
+                                                &draw_ctx.device, grab_view,
+                                                frame.depth_only_view_r(), use_rt);
+                                            let meta = draw_ctx.light_buffer.meta_main_buffer();
+                                            let gi_bg = match rt_ref.as_ref() {
+                                                Some(r) => wrp.create_rt_gi_bg(
+                                                    &draw_ctx.device, &draw_ctx.gi, meta,
+                                                    draw_ctx.light_buffer.lights_buffer(),
+                                                    r.tlas(), r.albedo_buffer()),
+                                                None => wrp.create_gi_bg(
+                                                    &draw_ctx.device, &draw_ctx.gi, meta),
+                                            };
+                                            let mut rpass =
+                                                frame.begin_water_reflection_pass_to(wr_view);
+                                            // Play レターボックス時は他パスと同一のゲームビューポート
+                                            //（水面パスとラスタライズを 1 ピクセルもズラさないため必須）。
+                                            if self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok {
+                                                let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                                rpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                                rpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                                            }
+                                            wrp.draw(
+                                                &mut rpass, water, &camera_buf.bind_group,
+                                                params_bg, &field_bg, &scene_bg, &gi_bg, use_rt);
+                                        }
+                                    }
 
                                     // ② 水面パス（color=hdr を Load・深度アタッチメント無し）。
                                     let mut wpass = frame.begin_water_pass_to(hdr_view);

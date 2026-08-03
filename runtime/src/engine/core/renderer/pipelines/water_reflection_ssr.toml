@@ -1,0 +1,33 @@
+# water_reflection_ssr.toml — 水面のスクリーンスペース反射パス（Phase W5.2 フォールバック）
+#
+# RT 非対応 GPU／RT 反射を使わない設定のときに water_reflection_rt.toml の代わりに走り、
+# **同じ反射 RT を同じ規約で埋める**（水面パスから見て両者は区別できない）。
+# RAY_QUERY を一切使わないので、レイトレ非対応 GPU でもシェーダモジュール生成が通る。
+#
+# shader_sources: RT 変種から cluster_common（LIGHT_KIND_* 定数）を外しただけ。
+#   SSR はライトを 1 つも参照しないため定数が要らない。
+#
+# num_bind_groups = 5: group0=カメラ / group1=水パラメータ＋岸波 / group2=波紋の場 /
+#   group3=シーンカラーのグラブ＋深度 / group4=GI＋ライトメタ。
+#   （group4 は RT 変種の 0..4 だけ＝TLAS・ライト配列・アルベドを宣言しない）
+num_bind_groups = 5
+shader_sources  = [
+    "water_height_field.wgsl",
+    "ddgi_common.wgsl",
+    "water_reflection_common.wgsl",
+    "water_reflection_ssr.wgsl",
+]
+vertex_entry    = "vs_water_reflection"
+fragment_entry  = "fs_water_reflection"
+vertex_slots    = []
+vertex_visible_groups = [1, 2]
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+no_depth        = true
+
+color_format    = "Rgba16Float"
+blend           = "None"
+write_mask      = "all"

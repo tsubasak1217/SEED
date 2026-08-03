@@ -1,0 +1,48 @@
+# water_reflection_rt.toml — 水面のハイブリッド RT 反射パス（Phase W5.2）
+#
+# 水面の格子を **水面パスとまったく同じ頂点生成**（water_height_field.wgsl の
+# water_grid_vertex）で描き、フラグメントごとに TLAS へ反射レイを 1 本飛ばして
+# 反射色を専用 RT（Rgba16Float）へ書く。水面パスはその RT を 1 枚 textureLoad するだけ。
+#
+# shader_sources の順（WGSL は宣言前の識別子を参照できないので順序は固定）:
+#   water_height_field      … WaterParams / 高さ場 / 格子頂点（group1・group2 を宣言）
+#   cluster_common          … LIGHT_KIND_* 定数（バインディングは持たない）
+#   ddgi_common             … GiParams / ddgi_sample_irradiance（同上）
+#   water_reflection_common … カメラ(group0)・グラブと深度(group3)・GI(group4 0..4)・頂点段
+#   water_reflection_rt     … ライト/TLAS/アルベド(group4 5..7)・フラグメント本体
+#
+# num_bind_groups = 5: group0=カメラ / group1=水パラメータ＋岸波 / group2=波紋の場 /
+#   group3=シーンカラーのグラブ＋深度 / group4=GI＋ライト＋TLAS。**上限ちょうど**であり、
+#   これ以上グループは増やせない（バインドレスのテクスチャ配列を諦めた理由でもある）。
+#
+# vertex_visible_groups = [1, 2]: 頂点段が高さ場（ショアフィールド・波紋の場）を
+#   サンプルするため。水面パス・ID パスとまったく同じ理由・同じ指定。
+#
+# no_depth = true: 深度はアタッチメントではなくサンプルテクスチャとして読み、
+#   シェーダ内で手動深度テスト（遮蔽 → discard）を行う（water_surface.toml と同じ理由）。
+#
+# cull_mode = "None": 水中から見上げた水面（裏面）でも反射を計算する。
+#
+# blend = "None": クリア値 0（＝反射なし）の上へ上書きする。
+shader_sources  = [
+    "water_height_field.wgsl",
+    "cluster_common.wgsl",
+    "ddgi_common.wgsl",
+    "water_reflection_common.wgsl",
+    "water_reflection_rt.wgsl",
+]
+vertex_entry    = "vs_water_reflection"
+fragment_entry  = "fs_water_reflection"
+vertex_slots    = []
+num_bind_groups = 5
+vertex_visible_groups = [1, 2]
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+no_depth        = true
+
+color_format    = "Rgba16Float"
+blend           = "None"
+write_mask      = "all"

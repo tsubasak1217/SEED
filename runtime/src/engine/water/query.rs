@@ -194,7 +194,8 @@ mod tests {
             wave_noise_strength: 0.35, wave_noise_scale: 1.0,
             fresnel_power: 0.0,
             fresnel_strength: 0.0,
-            reflection_color: [0.0; 3],
+            // 反射（Phase W5.2）。問い合わせ用ダミーなので強度 0（＝反射なし）。
+            reflection_intensity: 0.0, reflection_roughness: 0.0,
             refraction_distortion: 0.0,
             ripple_strength: 0.0,
             ripple_foam_threshold: 0.0,

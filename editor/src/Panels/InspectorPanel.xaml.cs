@@ -534,10 +534,10 @@ public partial class InspectorPanel : UserControl
     private const float WaterFresnelPowerDefault = 5f;
     /// <summary>フレネル強度の既定値。</summary>
     private const float WaterFresnelStrengthDefault = 1f;
-    /// <summary>反射色（リニア RGB）の既定値。</summary>
-    private const float WaterReflectRDefault = 0.35f;
-    private const float WaterReflectGDefault = 0.50f;
-    private const float WaterReflectBDefault = 0.62f;
+    /// <summary>反射の全体強度の既定値（Phase W5.2。1.0 = フレネルどおりに映す／0 で無効）。</summary>
+    private const float WaterReflectionIntensityDefault = 1f;
+    /// <summary>波による反射のぼけ（粗さ）の既定値（Phase W5.2。0 で厳密な鏡面）。</summary>
+    private const float WaterReflectionRoughnessDefault = 0.15f;
     /// <summary>屈折の歪み量の既定値。</summary>
     private const float WaterRefractionDistortionDefault = 0.03f;
     /// <summary>波紋・航跡（インタラクションフィールド）の法線摂動スケールの既定値。</summary>
@@ -789,9 +789,9 @@ public partial class InspectorPanel : UserControl
         // 反射・屈折（フレネル指数/強度・反射色・屈折の歪み）
         float WaterFresnelPower = WaterFresnelPowerDefault,
         float WaterFresnelStrength = WaterFresnelStrengthDefault,
-        float WaterReflectR = WaterReflectRDefault,
-        float WaterReflectG = WaterReflectGDefault,
-        float WaterReflectB = WaterReflectBDefault,
+        // 反射（Phase W5.2）: 強度と粗さ。旧「反射色」は本物の反射像へ置き換わり撤去済み。
+        float WaterReflectionIntensity = WaterReflectionIntensityDefault,
+        float WaterReflectionRoughness = WaterReflectionRoughnessDefault,
         float WaterRefractionDistortion = WaterRefractionDistortionDefault,
         // 波紋・航跡（Phase I2）: 法線摂動スケール・フォームしきい値
         float WaterRippleStrength = WaterRippleStrengthDefault,
@@ -1261,9 +1261,9 @@ public partial class InspectorPanel : UserControl
             var waterWaveDir      = comp.TryGetProperty("wave_direction_deg", out var wwd) ? wwd.GetSingle() : WaterWaveDirectionDegDefault;
             var waterFresnelPow   = comp.TryGetProperty("fresnel_power",    out var wfp)  ? wfp.GetSingle() : WaterFresnelPowerDefault;
             var waterFresnelStr   = comp.TryGetProperty("fresnel_strength", out var wfs)  ? wfs.GetSingle() : WaterFresnelStrengthDefault;
-            var waterReflectR     = comp.TryGetProperty("reflect_r",        out var wrr)  ? wrr.GetSingle() : WaterReflectRDefault;
-            var waterReflectG     = comp.TryGetProperty("reflect_g",        out var wrg)  ? wrg.GetSingle() : WaterReflectGDefault;
-            var waterReflectB     = comp.TryGetProperty("reflect_b",        out var wrb)  ? wrb.GetSingle() : WaterReflectBDefault;
+            // 反射（Phase W5.2）。旧シーン（フィールド欠落）でも既定値で表示できる。
+            var waterReflIntensity = comp.TryGetProperty("reflection_intensity", out var wri) ? wri.GetSingle() : WaterReflectionIntensityDefault;
+            var waterReflRoughness = comp.TryGetProperty("reflection_roughness", out var wrg) ? wrg.GetSingle() : WaterReflectionRoughnessDefault;
             var waterRefractDist  = comp.TryGetProperty("refraction_distortion", out var wrd) ? wrd.GetSingle() : WaterRefractionDistortionDefault;
             // 波紋・航跡（Phase I2）。旧シーン（フィールド欠落）でも既定値で表示できる。
             var waterRippleStr    = comp.TryGetProperty("ripple_strength", out var wrs) ? wrs.GetSingle() : WaterRippleStrengthDefault;
@@ -1383,7 +1383,8 @@ public partial class InspectorPanel : UserControl
                 WaterWaveAmplitude: waterWaveAmp, WaterWaveScale: waterWaveScale, WaterWaveSpeed: waterWaveSpeed,
                 WaterWaveDirectionDeg: waterWaveDir,
                 WaterFresnelPower: waterFresnelPow, WaterFresnelStrength: waterFresnelStr,
-                WaterReflectR: waterReflectR, WaterReflectG: waterReflectG, WaterReflectB: waterReflectB,
+                WaterReflectionIntensity: waterReflIntensity,
+                WaterReflectionRoughness: waterReflRoughness,
                 WaterRefractionDistortion: waterRefractDist,
                 WaterRippleStrength: waterRippleStr,
                 WaterRippleFoamThreshold: waterRippleFoamTh,
@@ -5140,7 +5141,11 @@ public partial class InspectorPanel : UserControl
         var reflectSp      = (StackPanel)reflectSection.Child;
         AddFloatRow(reflectSp, "フレネル指数", info.WaterFresnelPower,    "fresnel_power",    "F2");
         AddFloatRow(reflectSp, "フレネル強度", info.WaterFresnelStrength, "fresnel_strength", "F2");
-        AddColorRow(reflectSp, "反射色", info.WaterReflectR, info.WaterReflectG, info.WaterReflectB, "reflection_color");
+        // 反射（Phase W5.2）: シーン内のオブジェクト・空が実際に映り込む。
+        //   強度 0 でこの水域の反射を完全に切れる（描画コストも消える）。
+        //   粗さは「波による反射のぼけ」で、0 なら厳密な鏡面。
+        AddFloatRow(reflectSp, "反射の強さ", info.WaterReflectionIntensity, "reflection_intensity", "F2");
+        AddFloatRow(reflectSp, "反射のぼけ", info.WaterReflectionRoughness, "reflection_roughness", "F2");
         AddFloatRow(reflectSp, "屈折の歪み", info.WaterRefractionDistortion, "refraction_distortion", "F3");
         sp.Children.Add(reflectSection);
 

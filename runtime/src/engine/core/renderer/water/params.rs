@@ -95,8 +95,16 @@ pub struct WaterParams {
     pub deep_color: [f32; 4],
     /// rgb = 岸フォームの色／a = フォーム幅（m）
     pub foam_color: [f32; 4],
-    /// rgb = 簡易反射色／a = フォーム強度
-    pub reflection_color: [f32; 4],
+    /// 反射（Phase W5.2）。
+    /// x = 反射の全体強度（0 で無効）／y = 波による反射のぼけ（粗さ 0..1）／
+    /// z = 予約（0）／**w = フォーム強度（0..1）**
+    ///
+    /// x,y を消費するのは**水面反射パス**（`water_reflection_*.wgsl`）だけで、
+    /// 水面パスは w（フォーム強度）しか読まない。
+    /// W5.2 以前はここが「簡易反射色 rgb ＋ フォーム強度 a」だったが、固定色の反射は
+    /// 本物の反射（水面反射 RT）へ置き換わったので rgb を反射の調整値に転用した
+    /// （vec4 の本数もストライドも変わらない＝WGSL 側の struct 宣言も 1 行の差し替えで済む）。
+    pub reflection: [f32; 4],
     /// x = 波振幅／y = 波の空間周波数／z = 波速度／w = 屈折歪み
     pub wave: [f32; 4],
     /// x = フレネル指数／y = フレネル寄与率／
@@ -222,8 +230,15 @@ impl WaterParams {
                 vis.foam_color[0], vis.foam_color[1], vis.foam_color[2],
                 vis.foam_width,
             ],
-            reflection_color: [
-                vis.reflection_color[0], vis.reflection_color[1], vis.reflection_color[2],
+            // 反射（Phase W5.2）。
+            //   x = 強度（負値は「反射を反転する」という意味を持たないので 0 で下限を切る＝無効）
+            //   y = 粗さ（0..1 の外はジッタ量が発散／反転するのでクランプ）
+            //   z = 予約（0）
+            //   w = フォーム強度（W5.2 以前と同じスロット）
+            reflection: [
+                vis.reflection_intensity.max(0.0),
+                vis.reflection_roughness.clamp(0.0, 1.0),
+                0.0,
                 vis.foam_intensity,
             ],
             wave: [
@@ -390,7 +405,8 @@ mod tests {
             wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0,
             // 波形ランダマイズ（Phase W6.4）。既定相当の値を入れておく。
             wave_noise_strength: 0.35, wave_noise_scale: 1.0, fresnel_power: 1.0,
-            fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
+            fresnel_strength: 1.0, reflection_intensity: 1.0, reflection_roughness: 0.15,
+            refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
@@ -432,7 +448,8 @@ mod tests {
             wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0,
             // 波形ランダマイズ（Phase W6.4）。既定相当の値を入れておく。
             wave_noise_strength: 0.35, wave_noise_scale: 1.0, fresnel_power: 2.0,
-            fresnel_strength: 0.5, reflection_color: [0.0; 3], refraction_distortion: 0.0,
+            fresnel_strength: 0.5, reflection_intensity: 1.0, reflection_roughness: 0.15,
+            refraction_distortion: 0.0,
             ripple_strength: 1.25, ripple_foam_threshold: 0.08,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
@@ -472,7 +489,8 @@ mod tests {
             // 波形ランダマイズ（Phase W6.4）。既定相当の値を入れておく。
             wave_noise_strength: 0.35, wave_noise_scale: 1.0,
             fresnel_power: 1.0,
-            fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
+            fresnel_strength: 1.0, reflection_intensity: 1.0, reflection_roughness: 0.15,
+            refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
@@ -513,7 +531,8 @@ mod tests {
             // 波形ランダマイズ（Phase W6.4）。既定相当の値を入れておく。
             wave_noise_strength: 0.35, wave_noise_scale: 1.0,
             fresnel_power: 1.0,
-            fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
+            fresnel_strength: 1.0, reflection_intensity: 1.0, reflection_roughness: 0.15,
+            refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
@@ -586,7 +605,8 @@ mod tests {
             wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 1.0, wave_direction_deg: 0.0,
             // 波形ランダマイズ（Phase W6.4）。既定相当の値を入れておく。
             wave_noise_strength: 0.35, wave_noise_scale: 1.0, fresnel_power: 1.0,
-            fresnel_strength: 1.0, reflection_color: [0.0; 3], refraction_distortion: 0.0,
+            fresnel_strength: 1.0, reflection_intensity: 1.0, reflection_roughness: 0.15,
+            refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,

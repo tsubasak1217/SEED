@@ -88,8 +88,26 @@ fn default_wave_noise_scale() -> f32 { 1.0 }
 fn default_fresnel_power() -> f32 { 5.0 }
 /// fresnel_strength の既定値（フレネル反射の寄与率）。
 fn default_fresnel_strength() -> f32 { 1.0 }
-/// reflection_color の既定値（浅い角度で映る空の簡易色・リニア）。
-fn default_reflection_color() -> [f32; 3] { [0.35, 0.50, 0.62] }
+// ─── 反射（Phase W5.2）の既定値 ────────────────────────────
+//
+// W5.2 で「浅い角度で単色（reflection_color）へ寄せる」簡易反射を廃止し、
+// **水面反射パス**（TLAS へレイを飛ばすハイブリッド RT／非対応 GPU では SSR）が
+// 焼いた本物の反射像へ置き換えた。したがって色のパラメータは存在せず、
+// 「どれだけ映すか（強度）」と「どれだけ滲むか（粗さ）」だけを持つ。
+
+/// reflection_intensity の既定値（反射の全体強度）。
+///
+/// **1.0 = フレネルの計算どおりに映す**（＝物理的な既定）。0 でこの水域の反射を
+/// 完全に切れる（レイも飛ばさないので描画コストも消える）。
+/// 1 を超える値は演出用（実際より強く映る）。
+fn default_reflection_intensity() -> f32 { 1.0 }
+
+/// reflection_roughness の既定値（波による反射のぼけ）。
+///
+/// 1 ピクセル 1 レイなので、粗さは「ぼけ」ではなく **散り**として出る。
+/// 0.15 は「鏡のような映り込みの輪郭がわずかに崩れて水らしくなる」控えめな値で、
+/// **0 にすれば厳密な鏡面**へ戻せる。1.0 まで上げると反射像はほぼ判別できなくなる。
+fn default_reflection_roughness() -> f32 { 0.15 }
 /// refraction_distortion の既定値（屈折 UV の最大歪み。画面比）。
 fn default_refraction_distortion() -> f32 { 0.03 }
 /// ripple_strength の既定値（波紋の法線摂動スケール。1.0 = 標準）。
@@ -296,9 +314,16 @@ pub struct WaterVolumeComponentData {
     /// フレネル反射の寄与率（0..1）
     #[serde(default = "default_fresnel_strength")]
     pub fresnel_strength: f32,
-    /// 浅い角度で映る簡易反射色（リニア RGB）
-    #[serde(default = "default_reflection_color")]
-    pub reflection_color: [f32; 3],
+    /// 反射の全体強度（**0 でこの水域の反射を無効**。Phase W5.2）
+    ///
+    /// 旧 `reflection_color`（固定色の簡易反射）は W5.2 で撤去した。
+    /// serde は**未知フィールドを無視する**ので、旧 `.scene` に残っている
+    /// `reflection_color` は読み飛ばされ、この 2 つは既定値で埋まる（読み込みは失敗しない）。
+    #[serde(default = "default_reflection_intensity")]
+    pub reflection_intensity: f32,
+    /// 波による反射のぼけ（粗さ 0..1。0 で厳密な鏡面。Phase W5.2）
+    #[serde(default = "default_reflection_roughness")]
+    pub reflection_roughness: f32,
     /// 屈折 UV の最大歪み（画面比）
     #[serde(default = "default_refraction_distortion")]
     pub refraction_distortion: f32,
@@ -421,7 +446,8 @@ impl Default for WaterVolumeComponentData {
             wave_noise_scale:      default_wave_noise_scale(),
             fresnel_power:         default_fresnel_power(),
             fresnel_strength:      default_fresnel_strength(),
-            reflection_color:      default_reflection_color(),
+            reflection_intensity:  default_reflection_intensity(),
+            reflection_roughness:  default_reflection_roughness(),
             refraction_distortion: default_refraction_distortion(),
             ripple_strength:       default_ripple_strength(),
             ripple_foam_threshold: default_ripple_foam_threshold(),
@@ -495,8 +521,10 @@ pub struct WaterVolumeComponent {
     pub fresnel_power: f32,
     /// フレネル反射の寄与率（0..1）
     pub fresnel_strength: f32,
-    /// 浅い角度での簡易反射色（リニア RGB）
-    pub reflection_color: [f32; 3],
+    /// 反射の全体強度（0 で無効。Phase W5.2）
+    pub reflection_intensity: f32,
+    /// 波による反射のぼけ（粗さ 0..1。Phase W5.2）
+    pub reflection_roughness: f32,
     /// 屈折 UV の最大歪み（画面比）
     pub refraction_distortion: f32,
     /// 波紋・航跡の法線摂動スケール（Phase I2）
@@ -577,7 +605,8 @@ impl WaterVolumeComponent {
             wave_noise_scale:      data.wave_noise_scale,
             fresnel_power:         data.fresnel_power,
             fresnel_strength:      data.fresnel_strength,
-            reflection_color:      data.reflection_color,
+            reflection_intensity:  data.reflection_intensity,
+            reflection_roughness:  data.reflection_roughness,
             refraction_distortion: data.refraction_distortion,
             ripple_strength:       data.ripple_strength,
             ripple_foam_threshold: data.ripple_foam_threshold,
@@ -627,7 +656,8 @@ impl WaterVolumeComponent {
             wave_noise_scale:      self.wave_noise_scale,
             fresnel_power:         self.fresnel_power,
             fresnel_strength:      self.fresnel_strength,
-            reflection_color:      self.reflection_color,
+            reflection_intensity:  self.reflection_intensity,
+            reflection_roughness:  self.reflection_roughness,
             refraction_distortion: self.refraction_distortion,
             ripple_strength:       self.ripple_strength,
             ripple_foam_threshold: self.ripple_foam_threshold,
@@ -680,6 +710,32 @@ mod tests {
         assert_eq!(WaterVolumeKind::default(), WaterVolumeKind::Region);
     }
 
+    /// **撤去済みフィールドが残っている旧 `.scene` を読めること**（Phase W5.2 の後方互換）。
+    ///
+    /// W5.2 で `reflection_color`（固定色の簡易反射）をコンポーネントから削除した。
+    /// `WaterVolumeComponentData` は `deny_unknown_fields` を付けていないので、
+    /// serde は未知フィールドを読み飛ばす＝**旧シーンの読み込みは失敗しない**。
+    /// ここが壊れると「W5.2 より前に保存したシーンが丸ごと開けない」という
+    /// 最悪の退行になるため、契約としてテストで固定する。
+    #[test]
+    fn old_scene_with_removed_reflection_color_still_loads() {
+        // 旧 .scene が持っていた形（撤去済みキー＋生きているキーの混在）。
+        let json = r#"{
+            "surface_height": 3.5,
+            "reflection_color": [0.35, 0.50, 0.62],
+            "fresnel_strength": 0.75
+        }"#;
+        let d: WaterVolumeComponentData =
+            serde_json::from_str(json).expect("撤去済みキーを含む旧 .scene を読めること");
+        // 生きているキーはちゃんと読めている。
+        assert_eq!(d.surface_height, 3.5);
+        assert_eq!(d.fresnel_strength, 0.75);
+        // 撤去済みキーは無視され、新しい反射パラメータは既定値で埋まる。
+        let def = WaterVolumeComponentData::default();
+        assert_eq!(d.reflection_intensity, def.reflection_intensity);
+        assert_eq!(d.reflection_roughness, def.reflection_roughness);
+    }
+
     /// 空 JSON（全フィールド欠落＝旧 .scene 相当）でもデシリアライズでき、
     /// 既定値が入ること（serde(default) の付け漏れ検出）。
     #[test]
@@ -709,7 +765,12 @@ mod tests {
         assert_eq!(d.wave_noise_scale, 1.0);
         assert_eq!(d.fresnel_power, def.fresnel_power);
         assert_eq!(d.fresnel_strength, def.fresnel_strength);
-        assert_eq!(d.reflection_color, def.reflection_color);
+        // 反射（Phase W5.2）。旧 .scene の `reflection_color` は未知フィールドとして
+        // 読み飛ばされ、この 2 つが既定値（1.0 / 0.15）で埋まる。
+        assert_eq!(d.reflection_intensity, def.reflection_intensity);
+        assert_eq!(d.reflection_roughness, def.reflection_roughness);
+        assert_eq!(d.reflection_intensity, 1.0);
+        assert_eq!(d.reflection_roughness, 0.15);
         assert_eq!(d.refraction_distortion, def.refraction_distortion);
         assert_eq!(d.ripple_strength, def.ripple_strength);
         assert_eq!(d.ripple_foam_threshold, def.ripple_foam_threshold);
@@ -773,7 +834,8 @@ mod tests {
             wave_noise_scale: 1.75,
             fresnel_power: 3.5,
             fresnel_strength: 0.6,
-            reflection_color: [0.11, 0.22, 0.33],
+            reflection_intensity: 0.8,
+            reflection_roughness: 0.42,
             refraction_distortion: 0.07,
             ripple_strength: 1.5,
             ripple_foam_threshold: 0.2,
@@ -813,7 +875,8 @@ mod tests {
         assert_eq!(back.wave_noise_scale, src.wave_noise_scale);
         assert_eq!(back.fresnel_power, src.fresnel_power);
         assert_eq!(back.fresnel_strength, src.fresnel_strength);
-        assert_eq!(back.reflection_color, src.reflection_color);
+        assert_eq!(back.reflection_intensity, src.reflection_intensity);
+        assert_eq!(back.reflection_roughness, src.reflection_roughness);
         assert_eq!(back.refraction_distortion, src.refraction_distortion);
         assert_eq!(back.ripple_strength, src.ripple_strength);
         assert_eq!(back.ripple_foam_threshold, src.ripple_foam_threshold);

@@ -51,7 +51,8 @@ impl App {
     ///      shallow_color / deep_color / absorption_distance / surface_opacity /
     ///      foam_color / foam_width / foam_intensity / wave_amplitude / wave_scale /
     ///      wave_speed / wave_direction_deg（W6.3）/ ripple_strength / ripple_foam_threshold /
-    ///      fresnel_power / fresnel_strength / reflection_color /
+    ///      fresnel_power / fresnel_strength /
+    ///      reflection_intensity / reflection_roughness（W5.2。旧 reflection_color は撤去）/
     ///      refraction_distortion / shore_wave_*（W1.5）/
     ///      river_width / flow_speed / river_depth / spline_points /
     ///      spline_snap_terrain（W4）/
@@ -176,9 +177,21 @@ impl App {
                     w.fresnel_strength = v.clamp(NORMALIZED_MIN, NORMALIZED_MAX);
                 }
             }
-            "reflection_color" => {
-                if let Some(v) = parse_vec3(value) {
-                    w.reflection_color = clamp_vec3_min(v, COLOR_CHANNEL_MIN);
+            // ── 反射（Phase W5.2）────────────────────────────────────
+            // 旧 "reflection_color"（固定色の簡易反射）は撤去済み。未知 key は
+            // この match の `_ => return` で無視されるので、古いエディタから
+            // 送られてきても何も起きない（＝壊れない）。
+            "reflection_intensity" => {
+                // 負の強度は「反射を反転する」という意味を持たないので 0 で下限を切る
+                //（0 = この水域の反射を完全に切る＝レイも飛ばさない）。上限は演出用に開けておく。
+                if let Ok(v) = value.parse::<f32>() {
+                    w.reflection_intensity = v.max(NON_NEGATIVE_MIN);
+                }
+            }
+            "reflection_roughness" => {
+                // 粗さは 0..1 の正規化パラメータ（描画側でも同じ範囲へクランプする）。
+                if let Ok(v) = value.parse::<f32>() {
+                    w.reflection_roughness = v.clamp(NORMALIZED_MIN, NORMALIZED_MAX);
                 }
             }
             "refraction_distortion" => {

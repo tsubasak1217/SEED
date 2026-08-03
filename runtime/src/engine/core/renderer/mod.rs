@@ -65,6 +65,9 @@ pub(crate) mod velocity_debug;
 pub(crate) mod gbuffer_debug;
 /// 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）
 pub(crate) mod reflection;
+/// 水面反射パス（Phase W5.2）。D6 のハイブリッド RT 反射を水面の格子へ流用し、
+/// 反射色を専用 RT へ焼く（水面パスはそれを 1 枚読むだけ）。
+pub(crate) mod water_reflection;
 /// いもす法（累積和）単一チャンネル分離ボックスブラー基盤（Phase D4。AO で初適用・SSGI へ転用可）
 pub(crate) mod imos_blur;
 /// AO（SSAO / RT-AO）フルスクリーンパス＋いもす法ブラー＋半解像度リソース（Phase D4）
@@ -118,6 +121,9 @@ pub use interaction::{InteractionFieldRenderer, InteractionFieldUniformGpu, Inte
                       INTERACTION_FIELD_DECAY_TAU_SECS, INTERACTION_MAX_SOURCES};
 pub use reflection::{ReflectionPipelines, ReflectionParams,
                      RT_REFLECTION_NAME, REFLECTION_FORMAT, DEFAULT_REFLECTION_INTENSITY};
+// パイプライン本体（`WaterReflectionPipelines`）は `DrawPipelines::water_reflection` 経由でしか
+// 触らないので再エクスポートしない（型名を直接書く箇所が無い）。RT 名とフォーマットだけ公開する。
+pub use water_reflection::{RT_WATER_REFLECTION_NAME, WATER_REFLECTION_FORMAT};
 pub use imos_blur::{ImosBlur, ImosBlurParams, IMOS_BLUR_FORMAT};
 pub use ao::{AoPipelines, AoTargets, AoParams, AO_FORMAT, AO_RESOLUTION_DIVISOR,
              AO_SSAO_WORLD_RADIUS, AO_RTAO_WORLD_RADIUS, DEFAULT_AO_INTENSITY};
@@ -1398,6 +1404,44 @@ impl<'r> RenderFrame<'r> {
             depth_stencil_attachment: None,
             occlusion_query_set: None,
             timestamp_writes:    None,
+        })
+    }
+
+    // ── 水面反射パス（Phase W5.2）──────────────────────────────
+
+    /// 水面反射 RT へ生成パスを開始する（**屈折背景グラブの後・水面パスの前**に呼ぶ）。
+    ///
+    /// - color = `water_reflection` を **LoadOp::Clear(0,0,0,0)**。
+    ///   A（＝反射強度）0 が「反射寄与なし」の中立値であり、水面が無いピクセル・
+    ///   不透明物に遮蔽されて `discard` したピクセルはこの値のまま残る。
+    ///   したがってクリア値は保険ではなく **意味のある既定値**である。
+    /// - depth = None（共有深度は group3 のサンプルテクスチャとして読む。同一パスで
+    ///   アタッチメント兼サンプルにすると read/write 競合になるため。水面パスと同じ理由）。
+    ///
+    /// 【なぜこの位置か】反射には「不透明＋スカイボックスが描き終わったシーンカラー」が要る。
+    /// グラブ（`WaterRenderer::record_grab`）はまさにそれのコピーなので、その直後に置けば
+    /// 空が映る反射になり、かつ scene_hdr との読み書き競合も起きない。
+    /// 水面自身はまだ描かれていないので、反射が水面を映す自己参照も構造的に起きない。
+    pub fn begin_water_reflection_pass_to<'f>(
+        &'f mut self,
+        water_reflection: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Water Reflection Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           water_reflection,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set:      None,
+            timestamp_writes:         None,
         })
     }
 
