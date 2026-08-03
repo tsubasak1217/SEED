@@ -676,6 +676,12 @@ pub fn build_actor(
                 world.insert(slot_entity, WaterVolumeComponent::from_data(wv_data));
                 actor.add_slot_typed::<WaterVolumeComponent>(slot_name, ComponentKind::WaterVolume, slot_entity);
             }
+            ComponentData::WaterLinkComponent(wl_data) => {
+                // 水位グラフのリンク＝開口（W2.5）を ECS ワールドに挿入してスロットを登録する
+                use crate::engine::components::WaterLinkComponent;
+                world.insert(slot_entity, WaterLinkComponent::from_data(wl_data));
+                actor.add_slot_typed::<WaterLinkComponent>(slot_name, ComponentKind::WaterLink, slot_entity);
+            }
             ComponentData::InteractionSourceComponent(is_data) => {
                 // インタラクションソースを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::InteractionSourceComponent;

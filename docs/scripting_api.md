@@ -633,6 +633,38 @@ if (gameObject.GetComponent<InputMap>() is { } input)   // InputMap?（未アタ
 - **後方互換**: 旧 v1 形式（version 欠落・WASD バインディング）も読み込め、内部で自動的に v2 へ移行します（エディタの保存は常に v2）。
 - **複数コンポーネントの索引例**: 同種を複数持つ場合は `gameObject.GetComponent<InputMap>(1)`（index）や `gameObject.GetComponent<InputMap>("Vehicle")`（スロット名）で選べます。
 
+### WaterVolume / WaterLink（水位グラフ＝浸水・バルブ制御）
+
+海・池・川を表す `WaterVolume` と、2 つの水域をつなぐ開口（扉・窓・穴・バルブ）を表す `WaterLink` です。エディタで水域に「水位シミュレーション」を有効にし、その間に `WaterLink` を置くと、Play 中に**水位差 × 開口面積 × 係数**で水が行き来します（連通ボリューム方式）。**バルブ開閉は `Openness` を書くだけ**です。
+
+```csharp
+// バルブを閉じる／開ける（0 = 全閉で水は 1 滴も通らない、1 = 全開）
+if (gameObject.GetComponent<WaterLink>() is { } valve)
+{
+    valve.Openness         // float（get/set。0..1。0 = バルブ全閉）
+    valve.OpeningWidth     // float（get/set。開口の幅 m）
+    valve.OpeningHeight    // float（get/set。開口の高さ m）
+    valve.OpeningBottom    // float（get/set。開口下端 Y。アクタ原点からの相対 m）
+    valve.FlowCoefficient  // float（get/set。流量係数 1/s。大きいほど速く釣り合う）
+
+    // 例: レバーを引いたらバルブ全閉
+    if (input.GetActionStart("Interact")) valve.Openness = 0f;
+}
+
+// 水位を読んで判定する
+if (gameObject.GetComponent<WaterVolume>() is { } water)
+{
+    water.WaterLevel     // float（get のみ。現在の水面 Y。ワールド絶対値）
+    water.SurfaceHeight  // float（get/set。設定水位。Ocean=ワールド絶対 / Region=アクタ相対）
+    water.SimulateLevel  // bool（get/set。水位グラフの対象にするか。Region のみ有効）
+
+    // 例: 水位が 3m を超えたら脱出フラグ
+    if (water.WaterLevel > 3f) { /* 脱出イベント */ }
+}
+```
+
+> **重要**: `WaterVolume.WaterLevel` は**読み取り専用**です。直接代入できると体積保存が破れて水位グラフの前提が壊れるため、水を足す／抜く演出は `WaterLink.Openness` の開閉で表現します。`WaterLink` の接続先（volume_a / volume_b）も実行中は変更できません（インスペクタで設定します）。
+
 ### 利用可能なコンポーネント一覧
 
 | コンポーネント名 | 取得 | 内容 |
@@ -645,6 +677,8 @@ if (gameObject.GetComponent<InputMap>() is { } input)   // InputMap?（未アタ
 | `Animator` | `gameObject.GetComponent<Animator>()` | 再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume |
 | `ParticleEmitter` | `gameObject.GetComponent<ParticleEmitter>()` | 放出レート・ループ・抵抗・拡散角 + Play/Stop/Burst |
 | `InputMap` | `gameObject.GetComponent<InputMap>()` | 入力アクション評価（Bool / Axis1D / Axis2D。Key / GamepadButton / GamepadAxis） |
+| `WaterVolume` | `gameObject.GetComponent<WaterVolume>()` | 現在水位（読み取り専用）・設定水位・水位シミュレーションの有効／無効 |
+| `WaterLink` | `gameObject.GetComponent<WaterLink>()` | 水位グラフの開口。**開閉率（バルブ）**・開口寸法・流量係数 |
 
 > **重要**: `GetComponent<T>()` は `T?` を返し、同種コンポーネントを複数スロット持てます。`GetComponent<T>()`＝0 番目、`GetComponent<T>(index)`＝index 番目、`GetComponent<T>("Name")`＝スロット名一致。
 

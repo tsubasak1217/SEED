@@ -253,7 +253,13 @@ impl ResolvedWaterVolume {
                 };
                 Self {
                     kind:         c.kind,
-                    surface_y:    actor_pos[1] + c.surface_height,
+                    // 水面 Y は「設定水位（アクタ Y + surface_height）」が基本だが、
+                    // 水位グラフ（W2.5）が動いている間だけ **その現在水位で差し替える**。
+                    // ここ 1 か所を差し替えるだけで、描画・WaterQuery・岸波ベイクの
+                    // すべてが自動的に現在水位を見る（下流に個別の分岐が要らない）。
+                    // Spline（川）は水位グラフのノードになれないので常に None ＝
+                    // 従来どおり公称値になる（`river` の折れ線が実際の水面を持つ）。
+                    surface_y:    c.sim_level_y.unwrap_or(actor_pos[1] + c.surface_height),
                     center:       actor_pos,
                     half_extents: half,
                     ocean_extent: c.ocean_extent,
@@ -291,6 +297,22 @@ mod tests {
         let r = ResolvedWaterVolume::from_component(&c, [1.0, 10.0, 2.0], 0);
         assert_eq!(r.surface_y, 12.0, "Region の水面 Y = アクタ Y + surface_height");
         assert_eq!(r.center, [1.0, 10.0, 2.0], "AABB 中心はアクタ位置");
+    }
+
+    /// 水位グラフ（W2.5）が動いている間は、その現在水位が `surface_y` を上書きすること。
+    /// これが崩れると「水は流れているのに水面が動かない」状態になる。
+    #[test]
+    fn simulated_level_overrides_authored_surface_height() {
+        let mut c = WaterVolumeComponent::default();
+        c.kind           = WaterVolumeKind::Region;
+        c.surface_height = 2.0;              // 設定水位（アクタ Y=10 なら 12）
+        c.sim_level_y    = Some(7.25);       // 水位グラフの現在水位（ワールド絶対 Y）
+        let r = ResolvedWaterVolume::from_component(&c, [0.0, 10.0, 0.0], 0);
+        assert_eq!(r.surface_y, 7.25, "現在水位が使われること");
+        // 揮発水位が消えれば設定水位へ戻る（Play 停止時の挙動）。
+        c.sim_level_y = None;
+        let r = ResolvedWaterVolume::from_component(&c, [0.0, 10.0, 0.0], 0);
+        assert_eq!(r.surface_y, 12.0, "None なら設定水位（アクタ Y + surface_height）");
     }
 
     /// Region の AABB 半径は負値を与えても絶対値になる（反転 AABB を作らない）。

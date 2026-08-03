@@ -554,6 +554,22 @@ public partial class InspectorPanel : UserControl
     private const float WaterShoreFoamDefault = 0.8f;
     /// <summary>水の各色はアルファを持たないため、カラーピッカーへ渡す固定アルファ。</summary>
     private const float WaterColorAlpha = 1f;
+    /// <summary>水位シミュレーション（水位グラフ、Phase W2.5）を有効にするかの既定値。</summary>
+    private const bool WaterSimulateLevelDefault = false;
+
+    // ── WaterLinkComponent（水位グラフの開口、Phase W2.5）の既定値 ──
+    // Rust 側 WaterLinkComponentData の既定値と厳密に一致させること。
+
+    /// <summary>開口下端のアクタ相対 Y の既定値（m）。</summary>
+    private const float WaterLinkOpeningBottomDefault = 0f;
+    /// <summary>開口の高さの既定値（m）。標準的な扉の高さ 2m（Rust 側 default_opening_height と一致）。</summary>
+    private const float WaterLinkOpeningHeightDefault = 2f;
+    /// <summary>開口の幅の既定値（m）。</summary>
+    private const float WaterLinkOpeningWidthDefault = 1f;
+    /// <summary>開閉率（0..1）の既定値。0 でバルブ全閉。</summary>
+    private const float WaterLinkOpennessDefault = 1f;
+    /// <summary>流量係数（1/s）の既定値。</summary>
+    private const float WaterLinkFlowCoefficientDefault = 1f;
 
     // ── 川（スプライン水面、W4）の既定値 ───────────────────────
     // kind == "Spline" のときのみ使用する。既定値は Rust 側 WaterVolumeComponentData と一致させる。
@@ -793,6 +809,22 @@ public partial class InspectorPanel : UserControl
         // 川（W4.1）: 折れ線 1 分割ぶんの目標長（m）と、制御点を借りる参照先アクタ名（空 = 参照なし）
         float WaterRiverSegmentLength = WaterRiverSegmentLengthDefault,
         string WaterControlPointRef = "",
+        // 水位シミュレーション（水位グラフ、Phase W2.5）を有効にするか。
+        // true のとき、この WaterVolume は WaterLinkComponent を介した連通ボリューム浸水の対象になる。
+        // 既定値は Rust 側 WaterVolumeComponentData::simulate_level と一致させる。
+        bool WaterSimulateLevel = WaterSimulateLevelDefault,
+        // ── WaterLinkComponent 用フィールド（Phase W2.5）───────────
+        // 2 つの WaterVolume をつなぐ開口（扉・窓・穴・バルブ）。既定値は Rust 側
+        // WaterLinkComponentData と一致させる（受信欠落時のフォールバックにも使用）。
+        // 接続先 A/B（アクタ名。空文字列 = 未接続）。
+        string WaterLinkVolumeA = "", string WaterLinkVolumeB = "",
+        // 開口下端のアクタ相対 Y（m）・高さ（m）・幅（m）。
+        float WaterLinkOpeningBottom = WaterLinkOpeningBottomDefault,
+        float WaterLinkOpeningHeight = WaterLinkOpeningHeightDefault,
+        float WaterLinkOpeningWidth  = WaterLinkOpeningWidthDefault,
+        // 開閉率（0..1。0 = バルブ全閉）と流量係数（1/s）。
+        float WaterLinkOpenness         = WaterLinkOpennessDefault,
+        float WaterLinkFlowCoefficient  = WaterLinkFlowCoefficientDefault,
         // ── InteractionSourceComponent 用フィールド（Phase I1）──
         // 影響半径・強さ・有効フラグ。既定値は Rust 側 InteractionSourceComponentData と一致。
         float InteractionRadius = InteractionRadiusDefault,
@@ -1250,6 +1282,17 @@ public partial class InspectorPanel : UserControl
             // 川（W4.1）: 分割長と制御点参照。どちらも旧ランタイム／旧シーンでは欠落しうるので既定値へ落とす。
             var waterRiverSegLen  = comp.TryGetProperty("river_segment_length", out var wrsl) ? wrsl.GetSingle() : WaterRiverSegmentLengthDefault;
             var waterCpRef        = comp.TryGetProperty("control_point_ref",    out var wcpr) ? wcpr.GetString() ?? "" : "";
+            // 水位シミュレーション（水位グラフ、Phase W2.5）フラグ。JSON bool（true/false）として送られる。
+            var waterSimulateLevel = comp.TryGetProperty("simulate_level", out var wsimv) ? ReadJsonBool(wsimv, WaterSimulateLevelDefault) : WaterSimulateLevelDefault;
+            // WaterLinkComponent 用（Phase W2.5）: 接続先アクタ名 2 本・開口の寸法・開閉率・流量係数。
+            // 欠落時は Rust 側 WaterLinkComponentData の既定値と一致する定数へフォールバックする。
+            var waterLinkVolumeA        = comp.TryGetProperty("volume_a",         out var wlva) ? wlva.GetString() ?? "" : "";
+            var waterLinkVolumeB        = comp.TryGetProperty("volume_b",         out var wlvb) ? wlvb.GetString() ?? "" : "";
+            var waterLinkOpeningBottom  = comp.TryGetProperty("opening_bottom",   out var wlob) ? wlob.GetSingle() : WaterLinkOpeningBottomDefault;
+            var waterLinkOpeningHeight  = comp.TryGetProperty("opening_height",   out var wloh) ? wloh.GetSingle() : WaterLinkOpeningHeightDefault;
+            var waterLinkOpeningWidth   = comp.TryGetProperty("opening_width",    out var wlow) ? wlow.GetSingle() : WaterLinkOpeningWidthDefault;
+            var waterLinkOpenness       = comp.TryGetProperty("openness",         out var wlop) ? wlop.GetSingle() : WaterLinkOpennessDefault;
+            var waterLinkFlowCoeff      = comp.TryGetProperty("flow_coefficient", out var wlfc) ? wlfc.GetSingle() : WaterLinkFlowCoefficientDefault;
             // InteractionSourceComponent 用（Phase I1）: 半径・強さ・有効フラグ。
             // 欠落時は Rust 側既定値と一致する定数へフォールバックする。
             var interactRadius   = comp.TryGetProperty("radius",   out var isr) ? isr.GetSingle()  : InteractionRadiusDefault;
@@ -1351,6 +1394,14 @@ public partial class InspectorPanel : UserControl
                 WaterSplinePoints: waterSplinePoints,
                 WaterRiverSegmentLength: waterRiverSegLen,
                 WaterControlPointRef: waterCpRef,
+                WaterSimulateLevel: waterSimulateLevel,
+                // WaterLinkComponent 用フィールド
+                WaterLinkVolumeA: waterLinkVolumeA, WaterLinkVolumeB: waterLinkVolumeB,
+                WaterLinkOpeningBottom: waterLinkOpeningBottom,
+                WaterLinkOpeningHeight: waterLinkOpeningHeight,
+                WaterLinkOpeningWidth: waterLinkOpeningWidth,
+                WaterLinkOpenness: waterLinkOpenness,
+                WaterLinkFlowCoefficient: waterLinkFlowCoeff,
                 // InteractionSourceComponent 用フィールド
                 InteractionRadius: interactRadius, InteractionStrength: interactStrength,
                 InteractionEnabled: interactEnabled,
@@ -1473,6 +1524,7 @@ public partial class InspectorPanel : UserControl
         "JointAttachComponent" => Color.FromRgb(0x30, 0x10, 0x2C), // 暗マゼンタ（ジョイントアタッチ。ライトと区別しやすい色）
         "SkyboxComponent"     => Color.FromRgb(0x10, 0x1C, 0x38), // 暗青（スカイボックス）
         "WaterVolumeComponent" => Color.FromRgb(0x0E, 0x2A, 0x3A), // 暗い青（水）
+        "WaterLinkComponent"  => Color.FromRgb(0x14, 0x22, 0x3A), // 暗い青紫（水の暗青と区別できるトーン。開口＝リンクの意味合い）
         "InteractionSourceComponent" => Color.FromRgb(0x18, 0x30, 0x18), // 暗い緑（草・環境への干渉）
         "ControlPointComponent" => Color.FromRgb(0x24, 0x1E, 0x38), // 暗い紫（汎用パス。水の暗青・草の暗緑と識別できる色）
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
@@ -1496,6 +1548,7 @@ public partial class InspectorPanel : UserControl
         "JointAttachComponent" => "JointAttach",
         "SkyboxComponent"     => "Skybox",
         "WaterVolumeComponent" => "Water Volume",
+        "WaterLinkComponent"  => "Water Link",
         "InteractionSourceComponent" => "Interaction Source",
         "ControlPointComponent" => "Control Point",
         "PluginComponent"     => "Plugin",
@@ -1731,6 +1784,7 @@ public partial class InspectorPanel : UserControl
             "SkyboxComponent"    => BuildSkyboxSlotContent(info),
             "ParticleEmitterComponent" => BuildParticleSlotContent(info),
             "WaterVolumeComponent" => BuildWaterVolumeSlotContent(info),
+            "WaterLinkComponent"  => BuildWaterLinkSlotContent(info),
             "InteractionSourceComponent" => BuildInteractionSourceSlotContent(info),
             "ControlPointComponent" => BuildControlPointSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
@@ -5026,6 +5080,12 @@ public partial class InspectorPanel : UserControl
         // 海の描画半径（Ocean 専用）。
         var oceanExtentRow = AddFloatRow(regionSp, "海の描画半径(m)", info.WaterOceanExtent, "ocean_extent", "F1");
 
+        // 水位シミュレーション（水位グラフ、Phase W2.5）。Region 種別の水域のみが水位グラフの
+        // ノードになれる（川・海は底面積が定義できないため対象外）ので Region のときだけ表示する。
+        var simulateLevelRow = BuildCheckRow("水位シミュレーション（水位グラフ）", info.WaterSimulateLevel,
+            v => SendField("simulate_level", v ? "true" : "false"));
+        regionSp.Children.Add(simulateLevelRow);
+
         sp.Children.Add(regionSection);
 
         // ── 色と透明度セクション ───────────────────────────────
@@ -5408,6 +5468,7 @@ public partial class InspectorPanel : UserControl
             bool isSpline = kind == "Spline";
             extentsRow.element.Visibility  = isRegion ? Visibility.Visible : Visibility.Collapsed;
             oceanExtentRow.Visibility      = isOcean  ? Visibility.Visible : Visibility.Collapsed;
+            simulateLevelRow.Visibility    = isRegion ? Visibility.Visible : Visibility.Collapsed;
             splineHint.Visibility          = isSpline ? Visibility.Visible : Visibility.Collapsed;
             riverSection.Visibility        = isSpline ? Visibility.Visible : Visibility.Collapsed;
         }
@@ -5420,6 +5481,181 @@ public partial class InspectorPanel : UserControl
                 UpdateKindVisibility(kind);
             }
         };
+
+        return sp;
+    }
+
+    /// <summary>
+    /// WaterLinkComponent（水位グラフの開口。Phase W2.5）のインスペクター UI を構築して返す。
+    /// 「接続先」（volume_a / volume_b のアクタ名参照）「開口」（下端 Y・高さ・幅）
+    /// 「制御」（開閉率・流量係数）の 3 セクションで構成し、変更時は
+    /// SET_WATER_LINK_FIELD:{actor},{slot},{key},{value} を送信する。
+    /// アクタ名参照ボックスは WaterVolumeComponent の川セクションにある
+    /// control_point_ref 参照ボックス（D&D＋ダブルクリックジャンプ＋✕クリア）と同じ流儀を踏襲する。
+    /// </summary>
+    private UIElement BuildWaterLinkSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // フィールド変更をランタイムへ送信するローカル関数。
+        // key は SET_WATER_LINK_FIELD のキー名（volume_a / volume_b / opening_bottom / opening_height /
+        // opening_width / openness / flow_coefficient）。
+        void SendField(string key, string value)
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_WATER_LINK_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
+        }
+
+        // 数値入力行を親セクションへ追加し、Enter / フォーカス喪失 / ドラッグ操作で値を送信する
+        // （BuildWaterVolumeSlotContent の同名ローカル関数と同じ流儀）。
+        void AddFloatRow(StackPanel parent, string label, float value, string key, string format, string? tooltip = null)
+        {
+            var row = BuildLabeledNumberRow(label, value, format);
+            if (tooltip is not null) ToolTipService.SetToolTip(row.element, tooltip);
+            parent.Children.Add(row.element);
+            void Commit()
+            {
+                if (!float.TryParse(row.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+                SendField(key, v.ToString(CultureInfo.InvariantCulture));
+            }
+            row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
+            row.textBox.LostFocus += (_, _) => Commit();
+            NumericDragBehavior.SetOnDrag(row.textBox, Commit);
+        }
+
+        // アクタ名参照ボックス（ドロップゾーン＋✕クリア＋ダブルクリックジャンプ）を 1 本組み立てて
+        // 親セクションへ追加するローカル関数。volume_a / volume_b の両方で使い回す。
+        void AddActorRefRow(StackPanel parent, string caption, string initialActorName, string key, string tooltip)
+        {
+            var curName = initialActorName ?? "";
+
+            var refLabel = new TextBlock
+            {
+                FontSize          = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming      = TextTrimming.CharacterEllipsis,
+            };
+            var refDropZone = new Border
+            {
+                BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x77, 0x99)),
+                BorderThickness = new Thickness(1),
+                Background      = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
+                CornerRadius    = new CornerRadius(3),
+                Padding         = new Thickness(6, 3, 6, 3),
+                AllowDrop       = true,
+                Child           = refLabel,
+                Cursor          = Cursors.Hand,
+                ToolTip         = tooltip,
+            };
+            var refClearBtn = new Button
+            {
+                Content         = "✕",
+                FontSize        = 10,
+                Width           = 22,
+                Foreground      = new SolidColorBrush(Color.FromRgb(0xAA, 0x55, 0x55)),
+                Background      = new SolidColorBrush(Color.FromRgb(0x22, 0x22, 0x22)),
+                BorderBrush     = new SolidColorBrush(Color.FromRgb(0x44, 0x22, 0x22)),
+                BorderThickness = new Thickness(1),
+                Margin          = new Thickness(3, 0, 0, 0),
+                ToolTip         = "接続を解除する",
+            };
+            var refGrid = new Grid { Margin = new Thickness(0, 4, 0, 2) };
+            refGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            refGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            refGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var refCaption = new TextBlock
+            {
+                Text = caption, Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(refCaption, 0);
+            Grid.SetColumn(refDropZone, 1);
+            Grid.SetColumn(refClearBtn, 2);
+            refGrid.Children.Add(refCaption);
+            refGrid.Children.Add(refDropZone);
+            refGrid.Children.Add(refClearBtn);
+            parent.Children.Add(refGrid);
+
+            // ダブルクリックで Hierarchy の参照先アクタへジャンプする（現在値から都度読む）。
+            ActorRefJump.AttachDoubleClickReveal(
+                refDropZone, () => string.IsNullOrEmpty(curName) ? null : curName);
+
+            void UpdateLabel()
+            {
+                bool hasRef = !string.IsNullOrEmpty(curName);
+                refLabel.Text       = hasRef ? curName : "（未接続）";
+                refLabel.Foreground = new SolidColorBrush(hasRef
+                    ? Color.FromRgb(0xCC, 0xCC, 0xCC)
+                    : Color.FromRgb(0x77, 0x77, 0x77));
+                refClearBtn.IsEnabled = hasRef;
+            }
+            UpdateLabel();
+
+            void SetRef(string actorName)
+            {
+                curName = actorName ?? "";
+                SendField(key, curName);
+                UpdateLabel();
+            }
+
+            // D&D: HierarchyPanel は DoDragDrop を Move|Copy で呼ぶため、Move を返さないと
+            // Effects の AND が None になりドロップが成立しない（control_point_ref 参照と同じ理由）。
+            refDropZone.DragOver += (_, e) =>
+            {
+                e.Effects = TryGetDraggedActorName(e) is not null
+                    ? DragDropEffects.Move : DragDropEffects.None;
+                e.Handled = true;
+            };
+            refDropZone.Drop += (_, e) =>
+            {
+                if (_currentActorId < 0) return;
+                var droppedName = TryGetDraggedActorName(e);
+                if (string.IsNullOrEmpty(droppedName)) return;
+                SetRef(droppedName);
+                e.Handled = true;
+            };
+            refClearBtn.Click += (_, _) => SetRef("");
+        }
+
+        // ── 接続先セクション ───────────────────────────────────
+        var connSection = BuildSection("接続先");
+        var connSp      = (StackPanel)connSection.Child;
+        AddActorRefRow(connSp, "接続先 A", info.WaterLinkVolumeA, "volume_a",
+            "Hierarchy から WaterVolumeComponent（Region 種別）を持つアクタをドロップして接続先 A にする\n"
+            + "（ダブルクリックで Hierarchy の参照先アクタへジャンプ）");
+        AddActorRefRow(connSp, "接続先 B", info.WaterLinkVolumeB, "volume_b",
+            "Hierarchy から WaterVolumeComponent（Region 種別）を持つアクタをドロップして接続先 B にする\n"
+            + "（ダブルクリックで Hierarchy の参照先アクタへジャンプ）");
+        connSp.Children.Add(new TextBlock
+        {
+            Text         = "川（Spline）・海（Ocean）は水位グラフのノードになれません（底面積が定義できないため）。"
+                          + "接続先には領域（Region）種別の Water Volume を指定してください。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 2, 0, 2),
+        });
+        sp.Children.Add(connSection);
+
+        // ── 開口セクション ─────────────────────────────────────
+        var openingSection = BuildSection("開口");
+        var openingSp      = (StackPanel)openingSection.Child;
+        AddFloatRow(openingSp, "開口下端(m)", info.WaterLinkOpeningBottom, "opening_bottom", "F2",
+            "開口下端のアクタ相対 Y（m）。低い位置に置いた開口ほど早く水を通します（例: 階段穴の下端）。");
+        AddFloatRow(openingSp, "高さ(m)",     info.WaterLinkOpeningHeight, "opening_height", "F2",
+            "開口の高さ（m）。この高さぶん水没すると全断面が流れます。");
+        AddFloatRow(openingSp, "幅(m)",       info.WaterLinkOpeningWidth,  "opening_width",  "F2",
+            "開口の幅（m）。幅 × 濡れ高さ × 開閉率が実効断面積になります。");
+        sp.Children.Add(openingSection);
+
+        // ── 制御セクション ─────────────────────────────────────
+        var controlSection = BuildSection("制御");
+        var controlSp      = (StackPanel)controlSection.Child;
+        AddFloatRow(controlSp, "開閉率(0-1)", info.WaterLinkOpenness, "openness", "F2",
+            "開閉率（0..1）。0 でバルブ全閉＝水は 1 滴も通りません。1 で全開。ゲームプレイでバルブ・扉を演出するときはこの値を変えます。");
+        AddFloatRow(controlSp, "流量係数(1/s)", info.WaterLinkFlowCoefficient, "flow_coefficient", "F2",
+            "流量係数（1/s）。大きいほど水位差が速く釣り合います（発振はしません）。");
+        sp.Children.Add(controlSection);
 
         return sp;
     }

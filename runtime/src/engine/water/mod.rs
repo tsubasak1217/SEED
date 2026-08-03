@@ -29,6 +29,9 @@ pub mod query;
 pub mod collect;
 pub mod shore;
 pub mod spline;
+// 水位グラフ（Phase W2.5）: 数値計算（level_graph）と ECS 結線（level_sim）を分ける。
+pub mod level_graph;
+pub mod level_sim;
 
 pub use resolved::{ResolvedWaterVolume, WaterVisualParams};
 pub use spline::{
@@ -42,3 +45,7 @@ pub use shore::{
     ShoreFieldEntry, ShoreFieldSet, ShoreTerrainBounds,
     SHORE_FIELD_MAX_LAYERS, SHORE_FIELD_RESOLUTION,
 };
+// 水位グラフ（Phase W2.5）。計算は level_graph、シーンとの結線は level_sim。
+// 外部（app/interaction）が使うのは結線側の 2 型のみ。level_graph の計算 API は
+// level_sim だけが呼ぶ内部詳細なので、モジュール外へは再エクスポートしない。
+pub use level_sim::{WaterFlowEvent, WaterLevelSim};

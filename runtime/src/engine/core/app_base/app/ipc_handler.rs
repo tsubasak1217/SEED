@@ -1176,6 +1176,10 @@ impl App {
                 IpcCommand::SetWaterField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_water_field(actor_dfs_id, slot_idx, &key, &value);
                 }
+                IpcCommand::SetWaterLinkField { actor_dfs_id, slot_idx, key, value } => {
+                    // 水位グラフの開口（W2.5）。バルブ開閉・寸法・接続先の更新。
+                    self.handle_set_water_link_field(actor_dfs_id, slot_idx, &key, &value);
+                }
                 IpcCommand::SetControlPoints { actor_dfs_id, slot_idx, json } => {
                     self.handle_set_control_points(actor_dfs_id, slot_idx, &json);
                 }

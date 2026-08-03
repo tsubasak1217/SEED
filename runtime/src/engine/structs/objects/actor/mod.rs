@@ -408,6 +408,11 @@ impl Actor {
                     world.get::<crate::engine::components::WaterVolumeComponent>(slot.entity)
                         .map(|wv| ComponentData::WaterVolumeComponent(wv.to_data()))
                 }
+                ComponentKind::WaterLink => {
+                    // 水位グラフのリンク（開口。W2.5）をシリアライズ用データに変換する
+                    world.get::<crate::engine::components::WaterLinkComponent>(slot.entity)
+                        .map(|wl| ComponentData::WaterLinkComponent(wl.to_data()))
+                }
                 ComponentKind::InteractionSource => {
                     // インタラクションソースをシリアライズ用データに変換する
                     world.get::<crate::engine::components::InteractionSourceComponent>(slot.entity)

@@ -383,6 +383,18 @@ pub struct WaterVolumeComponentData {
     /// 1 アクタに ControlPoint スロットが複数ある場合は 0 番目を使う。
     #[serde(default)]
     pub control_point_ref: String,
+    /// この水域を**水位グラフ（Phase W2.5）のノードにするか**。既定 false。
+    ///
+    /// true にすると Play 中、`WaterLinkComponent`（開口）でつながった他の水域と
+    /// 「水位差 × 開口面積 × 係数」で水をやり取りし、水面が時間変化する。
+    /// **false（既定）なら W2.5 以前と 1 ビットも変わらない静止水面**である。
+    ///
+    /// ## kind = Region のときだけ効く
+    /// Ocean は XZ 無限で底面積が定義できず、Spline（川）は水面 Y が地点ごとに
+    /// 違うので「水位スカラー 1 個」で表せない。したがってノードになれるのは
+    /// Region だけで、他の種別では本フラグは無視される（詳細は `water/level_sim.rs`）。
+    #[serde(default)]
+    pub simulate_level: bool,
 }
 
 impl Default for WaterVolumeComponentData {
@@ -430,6 +442,8 @@ impl Default for WaterVolumeComponentData {
             river_segment_length:  default_river_segment_length(),
             // 参照は既定で空（＝spline_points 経路。既存シーンの挙動そのまま）。
             control_point_ref:     String::new(),
+            // 水位グラフ（W2.5）は既定で無効（＝旧シーンの水面は静止したまま）。
+            simulate_level:        false,
         }
     }
 }
@@ -517,6 +531,27 @@ pub struct WaterVolumeComponent {
     pub river_segment_length: f32,
     /// 川の制御点を借りる参照先アクタ名（空 = spline_points を使う。Phase W4.1）
     pub control_point_ref: String,
+    /// この水域を水位グラフのノードにするか（Region のみ有効。既定 false。Phase W2.5）
+    pub simulate_level: bool,
+    /// **【揮発】水位グラフが計算した現在の水面 Y（ワールド絶対値）。Phase W2.5**
+    ///
+    /// ## 保存しない（Data 型に対応フィールドが無い唯一のフィールド）
+    /// 水位は「扉を開けたら流れ込んだ」というゲームプレイの結果であり、
+    /// レベルデザイナが編集する設定値ではない。`.scene` へ書き出すと
+    /// 「Play して水が流れた状態」がシーンに焼き付いてしまうため、
+    /// **`to_data` / `from_data` は本フィールドを一切扱わない**
+    /// （＝保存もされず、Undo スナップショットにも乗らない）。
+    ///
+    /// ## None の意味
+    /// `None` = 水位グラフの管理下にない（＝`surface_height` の静止水面を使う）。
+    /// Play 開始で `Some(初期水位)` になり、Play 停止で `None` へ戻る
+    /// （`water::level_sim::WaterLevelSim` が両方向を担当する）。
+    ///
+    /// ## 消費側
+    /// `ResolvedWaterVolume::from_component_with_path` が Region の `surface_y` を
+    /// この値で差し替える。したがって描画・`WaterQuery`・岸波ベイクのすべてが
+    /// **自動的に現在水位を見る**（下流に個別の分岐は要らない）。
+    pub sim_level_y: Option<f32>,
 }
 
 impl WaterVolumeComponent {
@@ -560,10 +595,17 @@ impl WaterVolumeComponent {
             river_depth:           data.river_depth,
             river_segment_length:  data.river_segment_length,
             control_point_ref:     data.control_point_ref,
+            simulate_level:        data.simulate_level,
+            // 揮発フィールド（W2.5）。読み込み直後は常に「未シミュレーション」。
+            // Play を開始した最初のフレームに level_sim が初期水位を入れる。
+            sim_level_y:           None,
         }
     }
 
     /// シリアライズ用データへ変換する。
+    ///
+    /// **`sim_level_y`（揮発の現在水位）は意図的に書き出さない**
+    /// （Play 中の水位が `.scene` へ焼き付くのを防ぐ。フィールドの doc を参照）。
     pub fn to_data(&self) -> WaterVolumeComponentData {
         WaterVolumeComponentData {
             kind:                  self.kind,
@@ -605,6 +647,7 @@ impl WaterVolumeComponent {
             river_segment_length:  self.river_segment_length,
             // 参照名も所有権を渡せない（&self 受け）ため複製する。
             control_point_ref:     self.control_point_ref.clone(),
+            simulate_level:        self.simulate_level,
         }
     }
 }
@@ -695,6 +738,9 @@ mod tests {
         assert_eq!(d.river_segment_length, 2.0, "旧シーンの川の形が変わらない既定値であること");
         assert_eq!(d.control_point_ref, def.control_point_ref);
         assert!(d.control_point_ref.is_empty(), "参照は既定で未設定");
+        // W2.5: 水位グラフは既定で無効（旧 .scene の水面が動き出さない保証）
+        assert_eq!(d.simulate_level, def.simulate_level);
+        assert!(!d.simulate_level, "水位シミュレーションは既定 OFF であること");
     }
 
     /// kind は文字列としてシリアライズされること（C# 側の期待に合わせる）。
@@ -745,6 +791,7 @@ mod tests {
             river_depth: 1.75,
             river_segment_length: 0.75,
             control_point_ref: "RiverPathActor".to_string(),
+            simulate_level: true,
         };
         let back = WaterVolumeComponent::from_data(src.clone()).to_data();
         assert_eq!(back.kind, src.kind);
@@ -784,5 +831,25 @@ mod tests {
         assert_eq!(back.river_depth, src.river_depth);
         assert_eq!(back.river_segment_length, src.river_segment_length);
         assert_eq!(back.control_point_ref, src.control_point_ref);
+        assert_eq!(back.simulate_level, src.simulate_level);
+    }
+
+    /// **揮発の現在水位（`sim_level_y`）は保存されないこと**（Phase W2.5 の中核契約）。
+    ///
+    /// これが `.scene` へ書き出されると「Play して水が流れた状態」がシーンに
+    /// 焼き付き、次に開いたときの水面が編集値と食い違う。
+    #[test]
+    fn simulated_level_is_volatile_and_never_serialized() {
+        let mut c = WaterVolumeComponent::default();
+        c.surface_height = 1.0;
+        c.sim_level_y    = Some(42.0);   // Play 中に水位グラフが入れた値のつもり
+        // ① to_data には現れない（Data 型にフィールドが無いので、
+        //    往復させると None へ落ちることで確認する）。
+        let restored = WaterVolumeComponent::from_data(c.to_data());
+        assert_eq!(restored.sim_level_y, None, "保存・復元で揮発水位は消えること");
+        assert_eq!(restored.surface_height, 1.0, "設定水位は保たれること");
+        // ② JSON にもキーが出ない。
+        let json = serde_json::to_string(&c.to_data()).unwrap();
+        assert!(!json.contains("sim_level_y"), "JSON に揮発水位が漏れないこと: {json}");
     }
 }

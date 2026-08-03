@@ -55,7 +55,8 @@ impl App {
     ///      refraction_distortion / shore_wave_*（W1.5）/
     ///      river_width / flow_speed / river_depth / spline_points /
     ///      spline_snap_terrain（W4）/
-    ///      river_segment_length / control_point_ref（W4.1）。
+    ///      river_segment_length / control_point_ref（W4.1）/
+    ///      simulate_level（W2.5 水位グラフの対象フラグ）。
     /// ベクタ系（region_half_extents / *_color）は "x,y,z" 形式。
     /// 川の制御点 `spline_points` は "x,y,z;x,y,z;..." で**リスト全体**を置き換える。
     /// `spline_snap_terrain` は値をオフセット Y（m）として制御点を地形へ落とす。
@@ -254,6 +255,14 @@ impl App {
                 // 1 点でもパースに失敗したら**丸ごと無視**する（半端な川を作らない）。
                 let Some(points) = parse_point_list(value) else { return };
                 w.spline_points = points;
+            }
+            "simulate_level" => {
+                // 水位グラフ（W2.5）の対象にするか。C# のチェックボックスは "true"/"false" を送る。
+                // OFF に戻したときは**揮発の現在水位も消す**（そうしないと、Play 中に
+                // フラグを落とした水域が最後の水位のまま固まって見える）。
+                let on = value.eq_ignore_ascii_case("true") || value == "1";
+                w.simulate_level = on;
+                if !on { w.sim_level_y = None; }
             }
             _ => return,
         }
