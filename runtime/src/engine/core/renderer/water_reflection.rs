@@ -608,7 +608,9 @@ mod tests {
     /// 「完全な鏡面へ戻せる」ことがパラメータとして意味を持つ最低条件である。
     #[test]
     fn zero_roughness_keeps_the_normal_untouched() {
-        let src = get_shader_source("water_reflection_common.wgsl");
+        // チェックアウトの改行コード（LF/CRLF）に依存しないよう正規化してから照合する
+        // （cherry-pick 先の CRLF 実体化で複数行 contains が偽陽性で落ちた実績あり）。
+        let src = get_shader_source("water_reflection_common.wgsl").replace("\r\n", "\n");
         assert!(src.contains("if roughness <= 0.0 {\n        return n;\n    }"),
             "粗さ 0 の早期リターン（＝厳密な鏡面）が消えている");
     }
