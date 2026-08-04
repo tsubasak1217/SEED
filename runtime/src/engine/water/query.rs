@@ -67,15 +67,30 @@ impl<'a> WaterQuery<'a> {
     /// この点(の XZ)における水面高さ。水が無ければ None。
     /// 複数重なる場合は最も高い水面を返す。
     pub fn surface_height_at(&self, point: [f32; 3]) -> Option<f32> {
-        let mut best: Option<f32> = None;
+        self.topmost_volume_at_xz(point).map(|(_, y)| y)
+    }
+
+    /// この点(の XZ)で**最も高い水面を提供している水域**とその水面高さ。
+    ///
+    /// `surface_height_at` はこの関数の高さ成分そのものである
+    /// （＝「高さを返した水域」と「物性を返す水域」が必ず一致する。
+    /// 別々に走査すると、重なった水域で「水面は大洋・粘度は池」という
+    /// ちぐはぐな組み合わせが起こりうる）。
+    ///
+    /// 水域の物性（粘度・波紋の減衰率）を引くための正式窓口でもある。
+    pub fn topmost_volume_at_xz(
+        &self,
+        point: [f32; 3],
+    ) -> Option<(&'a ResolvedWaterVolume, f32)> {
+        let mut best: Option<(&'a ResolvedWaterVolume, f32)> = None;
         for v in self.volumes {
             // XZ が範囲内のボリュームだけが水面高さを提供する
             let Some(y) = volume_surface_at_xz(v, point) else { continue };
             // 最も高い水面を採用する（f32 の比較は NaN を除外したいので max ではなく明示比較）
-            best = Some(match best {
-                Some(prev) if prev >= y => prev,
-                _ => y,
-            });
+            best = match best {
+                Some((pv, py)) if py >= y => Some((pv, py)),
+                _ => Some((v, y)),
+            };
         }
         best
     }
@@ -199,6 +214,8 @@ mod tests {
             refraction_distortion: 0.0,
             ripple_strength: 0.0,
             ripple_foam_threshold: 0.0,
+            // 水域ごとの物性（Phase I2.1）。既定相当（＝現行の水）の値を入れておく。
+            viscosity: 0.0, ripple_damping: 1.0 / 1.5,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
             // 影の屈折ゆらぎもテスト用ダミーでは 0（＝影をずらさない）。

@@ -1501,6 +1501,10 @@ impl App {
                                 &draw_ctx.queue,
                                 frame.encoder_mut(),
                                 &moving,
+                                // 水域ごとの物性（粘度・波紋の減衰率。Phase I2.1）を
+                                // 場へ渡す。場は全水域で 1 枚を共有するため、
+                                // 「どのテクセルがどの水域か」を毎フレーム教える必要がある。
+                                &water_volumes,
                                 saved_camera_pos,
                                 ctx.delta_time,
                             );

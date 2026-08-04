@@ -43,7 +43,10 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::engine::interaction::MovingInteractionSource;
+use crate::engine::interaction::{
+    collect_water_physics_regions, MovingInteractionSource, WaterPhysicsRegion,
+};
+use crate::engine::water::ResolvedWaterVolume;
 
 // ============================================================
 //  形状・挙動の定数（マジックナンバー禁止）
@@ -138,6 +141,15 @@ pub const INTERACTION_MAX_SOURCES: usize = 64;
 /// コンピュートのワークグループ 1 辺（WGSL と一致必須）。
 pub const INTERACTION_FIELD_WORKGROUP_SIZE: u32 = 8;
 
+/// 1 フレームに場へ渡せる「水域の物性矩形」の最大数（Phase I2.1）。
+///
+/// 更新シェーダはテクセルごとにこの配列を先頭から走査し、**最初に当たった矩形で
+/// 打ち切る**。窓（64m）に重なる水域だけへ CPU 側で絞ってあるので、
+/// 典型シーンでは 0〜2 個しか入らない。32 は「入り組んだ水場でも足りる」上限で、
+/// 32 × 32 バイト = 1KB とバッファも極小。
+/// 超過ぶんは**面積の大きい矩形から**捨てる（`collect_water_physics_regions`）。
+pub const INTERACTION_MAX_WATER_REGIONS: usize = 32;
+
 /// 速度 1 m/s あたりの草の曲げ角（rad·s/m）。
 ///
 /// 人の歩行（約 1.4m/s）で 0.35rad ≒ 20 度、走り（約 5m/s）で上限に張り付く程度。
@@ -154,12 +166,28 @@ pub const INTERACTION_GRASS_MAX_BEND: f32 = 1.396_263_4;
 pub const INTERACTION_FIELD_TEXEL_SIZE: f32 =
     INTERACTION_FIELD_EXTENT_M / INTERACTION_FIELD_RESOLUTION as f32;
 
-/// 1 サブステップぶんの波の減衰係数 exp(-dt_fixed/τ_wave)。
+/// 波紋の減衰率の既定値（1/s）＝ 時定数 `INTERACTION_WAVE_DECAY_TAU_SECS` の逆数。
 ///
-/// 固定刻みなので値は常に一定（フレームレートに依存しない）。
-/// `f32::exp` が const fn でないため定数ではなく関数として置く（実質定数）。
+/// `WaterVolumeComponent::ripple_damping` の既定値（`default_ripple_damping`）と
+/// **同じ値でなければならない**（テスト `default_ripple_damping_matches_engine_tau` が固定する）。
+/// 水域が物性を指定しない／水が 1 つも無いテクセルは、この率で減衰する。
+pub const INTERACTION_WAVE_DEFAULT_DAMPING_RATE: f32 = 1.0 / INTERACTION_WAVE_DECAY_TAU_SECS;
+
+/// 1 サブステップぶんの波の減衰係数 exp(-dt_fixed × 減衰率)。
+///
+/// 固定刻みなので、率が同じなら値は常に一定（フレームレートに依存しない）。
+/// `f32::exp` が const fn でないため定数ではなく関数として置く。
+///
+/// **水域ごとの物性（Phase I2.1）も同じ式で係数を作る**
+/// （`interaction::water_physics`）。式を 1 本に揃えてあるので、
+/// 「水域の外」と「既定の物性を持つ水域の中」で減衰が食い違うことがない。
+pub fn interaction_wave_damp_for_rate(rate: f32) -> f32 {
+    (-INTERACTION_WAVE_FIXED_DT_SECS * rate).exp()
+}
+
+/// 水域外テクセル（＝草の揺れなど非水用途）で使う既定の減衰係数。
 pub fn interaction_wave_damp_per_substep() -> f32 {
-    (-INTERACTION_WAVE_FIXED_DT_SECS / INTERACTION_WAVE_DECAY_TAU_SECS).exp()
+    interaction_wave_damp_for_rate(INTERACTION_WAVE_DEFAULT_DAMPING_RATE)
 }
 
 /// 実経過時間から「今フレームに実行する波のサブステップ数」と
@@ -194,6 +222,8 @@ const BINDING_SOURCES: u32 = 1;
 const BINDING_SRC_TEX: u32 = 2;
 /// 更新パス group0: 今フレームの場（書き）。
 const BINDING_DST_TEX: u32 = 3;
+/// 更新パス group0: 水域の物性矩形配列（storage。Phase I2.1）。
+const BINDING_WATER_REGIONS: u32 = 4;
 
 /// 消費側 group: 場テクスチャ。
 const BINDING_SAMPLE_TEX:     u32 = 0;
@@ -235,11 +265,50 @@ pub struct InteractionFieldUniformGpu {
     /// 波の伝播係数 k = (c·dt_fixed/dx)²（無次元・**定数** `INTERACTION_WAVE_K`）。更新パスのみ使用。
     pub wave_k:         f32,
     /// 1 サブステップぶんの波の減衰係数 exp(-dt_fixed/τ_wave)（**定数**）。更新パスのみ使用。
+    ///
+    /// **水域の物性矩形に当たらなかったテクセルの既定値**でもある（Phase I2.1）。
     pub wave_damp:      f32,
+    /// 有効な水域の物性矩形数（`u_water_regions` の先頭から何個読むか。Phase I2.1）。
+    /// **0 なら走査ループが回らず、W5.2 以前と完全に同一の処理になる。** 更新パスのみ使用。
+    pub water_region_count: u32,
     /// 16 バイト境界へ揃えるためのパディング（未使用）。
-    pub _pad0:          f32,
     pub _pad1:          f32,
     pub _pad2:          f32,
+}
+
+/// 「この XZ 矩形の中では波はこの係数で進む」1 件ぶん（Phase I2.1）。
+///
+/// WGSL `WaterPhysicsRegion` と一致必須（std430 / 32 バイト）。
+/// **係数は CPU 側（`interaction::water_physics`）で完成済み**であり、
+/// シェーダは矩形判定と代入しか行わない（安定性のクランプを 1 箇所に集約するため）。
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Debug, Default)]
+pub struct WaterPhysicsRegionGpu {
+    /// 矩形のワールド XZ 最小（場の窓でクリップ済み）。
+    pub min_xz:    [f32; 2],
+    /// 矩形のワールド XZ 最大（場の窓でクリップ済み）。
+    pub max_xz:    [f32; 2],
+    /// この矩形内での波の伝播係数 k = (c·dt_fixed/dx)²。
+    pub wave_k:    f32,
+    /// この矩形内での 1 サブステップぶんの減衰係数。
+    pub wave_damp: f32,
+    /// 16 バイト境界へ揃えるためのパディング（未使用）。
+    pub _pad0:     f32,
+    pub _pad1:     f32,
+}
+
+impl From<WaterPhysicsRegion> for WaterPhysicsRegionGpu {
+    /// エンジン層の物性矩形を GPU レイアウトへ詰め替える（値の加工は一切しない）。
+    fn from(r: WaterPhysicsRegion) -> Self {
+        Self {
+            min_xz:    r.min_xz,
+            max_xz:    r.max_xz,
+            wave_k:    r.wave_k,
+            wave_damp: r.wave_damp,
+            _pad0:     0.0,
+            _pad1:     0.0,
+        }
+    }
 }
 
 /// インタラクションソース 1 個（GPU）。WGSL `InteractionSourceGpu` と一致必須（32 バイト）。
@@ -339,6 +408,8 @@ pub struct InteractionFieldRenderer {
     uniform_buf: wgpu::Buffer,
     /// ソース配列（storage。容量は `INTERACTION_MAX_SOURCES` 固定）。
     sources_buf: wgpu::Buffer,
+    /// 水域の物性矩形配列（storage。容量は `INTERACTION_MAX_WATER_REGIONS` 固定。Phase I2.1）。
+    water_regions_buf: wgpu::Buffer,
     /// 場テクスチャのビュー 2 枚（添字 = テクスチャ番号）。
     ///
     /// **消費側が自前の BindGroup を作れるように保持している。**
@@ -415,6 +486,17 @@ impl InteractionFieldRenderer {
             mapped_at_creation: false,
         });
 
+        // ── 水域の物性矩形配列（固定容量。Phase I2.1）──
+        //   水が 0 個のフレームでも中身を読まないだけでバインドは常に有効にしておく
+        //   （storage バッファはサイズ 0 を作れず、毎フレームの BindGroup 再生成も避けたい）。
+        let water_regions_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("interaction_field_water_regions"),
+            size:  (INTERACTION_MAX_WATER_REGIONS
+                        * std::mem::size_of::<WaterPhysicsRegionGpu>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // ── 更新パイプライン ──
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label:  Some("interaction_field"),
@@ -457,6 +539,9 @@ impl InteractionFieldRenderer {
                         binding: BINDING_SRC_TEX, resource: wgpu::BindingResource::TextureView(src) },
                     wgpu::BindGroupEntry {
                         binding: BINDING_DST_TEX, resource: wgpu::BindingResource::TextureView(dst) },
+                    wgpu::BindGroupEntry {
+                        binding:  BINDING_WATER_REGIONS,
+                        resource: water_regions_buf.as_entire_binding() },
                 ],
             })
         };
@@ -508,6 +593,7 @@ impl InteractionFieldRenderer {
             sample_bind_groups,
             uniform_buf,
             sources_buf,
+            water_regions_buf,
             views: [view0, view1],
             sampler,
             current: 0,
@@ -548,6 +634,8 @@ impl InteractionFieldRenderer {
     /// このフレームの場を更新する（コマンドは `encoder` へ記録される）。
     ///
     /// - `sources`   : 速度確定済みのソース列（`InteractionSourceVelocityTracker::update` の結果）。
+    /// - `volumes`   : 解決済み水ボリューム列（Phase I2.1。**水域ごとの物性**を場へ渡すため）。
+    ///                 空スライスを渡せば全テクセルが従来どおりのエンジン定数で進む。
     /// - `camera_pos`: 窓の中心にするワールド座標（メインカメラ位置）。
     /// - `delta_secs`: 前フレームからの経過時間（**壁時計**。Edit 中も減衰が進むように）。
     ///
@@ -560,6 +648,7 @@ impl InteractionFieldRenderer {
         queue:      &wgpu::Queue,
         encoder:    &mut wgpu::CommandEncoder,
         sources:    &[MovingInteractionSource],
+        volumes:    &[ResolvedWaterVolume],
         camera_pos: [f32; 3],
         delta_secs: f32,
     ) -> bool {
@@ -641,6 +730,28 @@ impl InteractionFieldRenderer {
             queue.write_buffer(&self.sources_buf, 0, bytemuck::cast_slice(&gpu));
         }
 
+        // ── ⑧' 水域の物性矩形をアップロード（Phase I2.1）──
+        //   窓（今フレームの origin_xz を基準）に重なる水域だけを矩形へ落とす。
+        //   面積の昇順に並ぶので、シェーダは「最初に当たった矩形」で打ち切ってよい。
+        //   消去フレーム（decay = 0）は場を 0 で書き潰すだけなので矩形は要らない。
+        let regions = if clearing {
+            Vec::new()
+        } else {
+            collect_water_physics_regions(
+                volumes,
+                origin_xz,
+                INTERACTION_FIELD_EXTENT_M,
+                INTERACTION_WAVE_K,
+                INTERACTION_WAVE_FIXED_DT_SECS,
+                INTERACTION_MAX_WATER_REGIONS,
+            )
+        };
+        if !regions.is_empty() {
+            let gpu: Vec<WaterPhysicsRegionGpu> =
+                regions.iter().copied().map(WaterPhysicsRegionGpu::from).collect();
+            queue.write_buffer(&self.water_regions_buf, 0, bytemuck::cast_slice(&gpu));
+        }
+
         // ── ⑨ パラメータ UBO ──
         //   波の係数はどちらも固定刻み由来の定数＝フレーム時間に依存しない
         //   （＝どんな fps でも CFL 条件が破れない。これが発散事故の恒久対策）。
@@ -656,7 +767,9 @@ impl InteractionFieldRenderer {
             max_bend:       INTERACTION_GRASS_MAX_BEND,
             wave_k:         INTERACTION_WAVE_K,
             wave_damp:      interaction_wave_damp_per_substep(),
-            _pad0:          0.0,
+            // 水域の物性矩形（Phase I2.1）。0 ならシェーダの走査ループは 1 周も回らず、
+            // 全テクセルが上の既定係数で進む＝W5.2 以前と完全に同一の挙動になる。
+            water_region_count: regions.len() as u32,
             _pad1:          0.0,
             _pad2:          0.0,
         };
@@ -741,6 +854,17 @@ fn create_update_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayo
                     access:         wgpu::StorageTextureAccess::WriteOnly,
                     format:         INTERACTION_FIELD_FORMAT,
                     view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            // 水域の物性矩形配列（read-only storage。Phase I2.1）
+            wgpu::BindGroupLayoutEntry {
+                binding:    BINDING_WATER_REGIONS,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty:                 wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size:   None,
                 },
                 count: None,
             },
@@ -911,6 +1035,80 @@ mod tests {
     fn settle_time_covers_wave_decay() {
         assert!(INTERACTION_FIELD_SETTLE_SECS >= INTERACTION_WAVE_DECAY_TAU_SECS * 5.0);
         assert!(INTERACTION_FIELD_SETTLE_SECS >= INTERACTION_FIELD_DECAY_TAU_SECS * 5.0);
+    }
+
+    // ── 水域ごとの物性（Phase I2.1）────────────────────────────
+
+    /// 物性矩形の GPU 構造体は std430 の 32 バイトであること
+    /// （ズレると GPU が隣の矩形のデータを読む＝静かな描画バグ）。
+    #[test]
+    fn water_physics_region_is_32_bytes() {
+        assert_eq!(std::mem::size_of::<WaterPhysicsRegionGpu>(), 32);
+        assert_eq!(std::mem::size_of::<WaterPhysicsRegionGpu>() % 16, 0,
+            "std430 の配列ストライドは 16 の倍数であること");
+    }
+
+    /// 更新シェーダが物性矩形を **binding 4** で宣言し、走査していること。
+    ///
+    /// リファクタでバインドや走査関数が落ちても、静かに「粘度が効かない」に
+    /// なるだけで誰も気づかないため、文字列で押さえる。
+    #[test]
+    fn shader_declares_and_consumes_water_regions() {
+        let src = field_shader();
+        assert!(src.contains("@group(0) @binding(4) var<storage, read> u_water_regions:"),
+            "物性矩形の storage バインド（binding 4）が無い");
+        assert!(src.contains("fn interaction_wave_coeffs("),
+            "テクセルごとの係数引き（水域走査）が消えている");
+        // 1 回目・2 回目以降の**両方**のサブステップが係数を引くこと。
+        // 片方だけだと「1 サブステップ目だけ粘度が効く」という気づきにくい不具合になる。
+        assert_eq!(src.matches("interaction_wave_coeffs(").count(), 3,
+            "係数引きは 定義1 + 2 エントリからの呼び出し2 = 3 箇所であること");
+    }
+
+    /// Rust の GPU 構造体と WGSL の `WaterPhysicsRegion` でフィールド並びが一致すること。
+    #[test]
+    fn water_region_fields_match_shader() {
+        let body = field_shader()
+            .split_once("struct WaterPhysicsRegion {")
+            .expect("struct WaterPhysicsRegion が見つからない").1
+            .split_once('}').expect("struct の終端が見つからない").0;
+        let names: Vec<String> = body.lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with("//"))
+            .filter_map(|l| l.split_once(':').map(|(n, _)| n.trim().to_string()))
+            .collect();
+        assert_eq!(names, vec!["min_xz", "max_xz", "wave_k", "wave_damp", "_pad0", "_pad1"],
+            "WGSL 側 WaterPhysicsRegion の並びが Rust 側 WaterPhysicsRegionGpu と不一致");
+    }
+
+    /// **コンポーネントの既定減衰率がエンジンの時定数と等価**であること。
+    ///
+    /// 片方だけ変えると「既定の水なのに減衰だけ変わっている」という
+    /// 気づきにくい退行になるため、2 つの独立した既定値をここで縛る。
+    #[test]
+    fn default_ripple_damping_matches_engine_tau() {
+        use crate::engine::components::water_volume_component::WaterVolumeComponentData;
+        let d = WaterVolumeComponentData::default();
+        assert!((d.ripple_damping - INTERACTION_WAVE_DEFAULT_DAMPING_RATE).abs() < 1e-6,
+            "コンポーネント既定 {} とエンジン既定 {} が食い違う",
+            d.ripple_damping, INTERACTION_WAVE_DEFAULT_DAMPING_RATE);
+        // 率で計算した既定の減衰係数が、旧来の exp(-dt/τ) と一致すること。
+        let legacy = (-INTERACTION_WAVE_FIXED_DT_SECS / INTERACTION_WAVE_DECAY_TAU_SECS).exp();
+        assert!((interaction_wave_damp_per_substep() - legacy).abs() < 1e-7,
+            "既定の減衰係数が I2 実装時の値から動いている");
+    }
+
+    /// 物性矩形の GPU 変換は値を一切加工しないこと（クランプは CPU 側で完了済み）。
+    #[test]
+    fn region_to_gpu_is_a_verbatim_copy() {
+        let r = WaterPhysicsRegion {
+            min_xz: [-1.0, -2.0], max_xz: [3.0, 4.0], wave_k: 0.09, wave_damp: 0.5,
+        };
+        let g = WaterPhysicsRegionGpu::from(r);
+        assert_eq!(g.min_xz, r.min_xz);
+        assert_eq!(g.max_xz, r.max_xz);
+        assert_eq!(g.wave_k, r.wave_k);
+        assert_eq!(g.wave_damp, r.wave_damp);
     }
 
     /// ソース構造体は std430 の 32 バイトであること（波振幅を足しても変わらない）

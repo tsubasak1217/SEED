@@ -24,8 +24,16 @@ pub mod resolved;
 pub mod velocity;
 /// 水面付近のソースへ波の注入量を割り当てる（Phase I2）。
 pub mod water_wave;
+/// 水域ごとの物性（粘度・波紋の減衰率）→ 波動方程式の係数（Phase I2.1）。
+pub mod water_physics;
 
 pub use collect::collect_interaction_sources;
 pub use resolved::{source_key, ResolvedInteractionSource};
 pub use velocity::{InteractionSourceVelocityTracker, MovingInteractionSource};
 pub use water_wave::{apply_water_wave_injection, flow_event_wave_source};
+pub use water_physics::{
+    collect_water_physics_regions, sanitize_ripple_damping_rate,
+    viscosity_stamp_scale, viscosity_wave_speed_scale,
+    WaterPhysicsRegion, RIPPLE_DAMPING_RATE_MAX, RIPPLE_DAMPING_RATE_MIN,
+    VISCOSITY_MAX, VISCOSITY_MIN,
+};

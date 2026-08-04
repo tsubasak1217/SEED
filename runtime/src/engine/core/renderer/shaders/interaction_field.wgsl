@@ -133,9 +133,12 @@ struct InteractionFieldUniform {
     /// 波の伝播係数 (c·WAVE_FIXED_DT/dx)²（無次元・**定数**）。**更新パスのみ使う。**
     wave_k:         f32,
     /// 1 サブステップぶんの波の減衰係数 exp(-WAVE_FIXED_DT/tau_wave)（**定数**）。**更新パスのみ使う。**
+    /// **水域の物性矩形に当たらないテクセルの既定値**でもある（Phase I2.1）。
     wave_damp:      f32,
+    /// 有効な水域の物性矩形数（Phase I2.1）。**更新パスのみ使う。**
+    /// 0 なら走査ループが 1 周も回らず、W5.2 以前と完全に同一の処理になる。
+    water_region_count: u32,
     /// 16 バイト境界へ揃えるためのパディング（未使用）。
-    _pad0:          f32,
     _pad1:          f32,
     _pad2:          f32,
 }
@@ -167,6 +170,26 @@ struct InteractionSourceGpu {
 /// core WebGPU の storage フォーマットに含まれない（imos_blur.rs と同じ事情）。
 /// 余ったチャンネルは上記「チャンネル割り当て」で I2 用に予約する。
 @group(0) @binding(3) var dst_field: texture_storage_2d<rgba16float, write>;
+
+/// 水域 1 個ぶんの「物性矩形」（Phase I2.1）。
+/// Rust `WaterPhysicsRegionGpu` と一致必須（std430 / 32 バイト）。
+///
+/// **係数は CPU 側（`interaction::water_physics`）で完成済み**である。
+/// シェーダは矩形の内外判定と代入しか行わない ＝ 粘度の変換式も
+/// CFL 安定条件のクランプも 1 箇所（Rust 側・テスト付き）にしか存在しない。
+struct WaterPhysicsRegion {
+    /// 矩形のワールド XZ 最小（場の窓でクリップ済み）。
+    min_xz:    vec2<f32>,
+    /// 矩形のワールド XZ 最大（場の窓でクリップ済み）。
+    max_xz:    vec2<f32>,
+    /// この矩形内での波の伝播係数 k = (c·WAVE_FIXED_DT/dx)²。
+    wave_k:    f32,
+    /// この矩形内での 1 サブステップぶんの減衰係数。
+    wave_damp: f32,
+    _pad0:     f32,
+    _pad1:     f32,
+}
+@group(0) @binding(4) var<storage, read> u_water_regions: array<WaterPhysicsRegion>;
 
 // ============================================================
 //  ユーティリティ
@@ -209,15 +232,45 @@ fn interaction_load_height(coord: vec2<i32>, offset: vec2<i32>, shift: vec2<i32>
     return textureLoad(src_field, prev, 0).z;
 }
 
+/// このテクセルを覆う水域の波の係数（x = 伝播係数 k / y = 減衰係数 damp）を引く。
+///
+/// ## 走査規約（Phase I2.1）
+/// 配列は CPU 側で**面積の昇順**（小さい＝具体的な水域が先）に並んでおり、
+/// **最初に当たった矩形で打ち切る**。これにより「大洋の中に浮かぶ小さなマグマ池」は
+/// 池の物性で勝つ。窓に重ならない水域は 1 個も入っていないので、
+/// ループが回る回数は「画面の窓に映る水域の数」（典型 0〜2）に等しい。
+///
+/// ## どの矩形にも当たらないテクセル ＝ 従来定数
+/// 水域の外（草の揺れなど非水用途の領域）は uniform の既定係数をそのまま返す。
+/// したがって水を置いていないシーンは W5.2 以前とビット単位で同一の挙動になる。
+fn interaction_wave_coeffs(world_xz: vec2<f32>) -> vec2<f32> {
+    for (var i: u32 = 0u; i < u_field.water_region_count; i = i + 1u) {
+        let r = u_water_regions[i];
+        if (world_xz.x >= r.min_xz.x && world_xz.x <= r.max_xz.x &&
+            world_xz.y >= r.min_xz.y && world_xz.y <= r.max_xz.y) {
+            return vec2<f32>(r.wave_k, r.wave_damp);
+        }
+    }
+    return vec2<f32>(u_field.wave_k, u_field.wave_damp);
+}
+
+/// 今フレームのテクセル座標 → そのテクセル中心のワールド XZ。
+fn interaction_texel_world_xz(gid: vec2<u32>) -> vec2<f32> {
+    return u_field.origin_xz
+         + (vec2<f32>(f32(gid.x), f32(gid.y)) + vec2<f32>(0.5)) * u_field.texel_size;
+}
+
 /// 波を **固定刻み 1 サブステップぶん**進める（教科書形の陽解法）。
 ///
 ///   h_next = damp_sub · ( 2·h_now − h_prev + k_fixed·∇²h_now )
 ///
-/// `wave_k` / `wave_damp` はどちらも固定刻み由来の**定数**（uniform 経由で受け取るだけで、
-/// フレーム時間には依存しない）。慣性項の dt 比補正は行わない — 行うと発散する
+/// `coeffs` は `interaction_wave_coeffs` が返す (k, damp)。どちらも固定刻み由来で
+/// フレーム時間には依存せず、**粘度で k が動いても必ず基準値（0.25）以下**に留まる
+/// （粘度は波速を下げる方向にしか効かないため。根拠は `water_physics.rs` のテスト）。
+/// 慣性項の dt 比補正は行わない — 行うと発散する
 /// （理由は冒頭コメント「時間刻みは固定である」節）。
-fn interaction_wave_step(h_now: f32, h_prev: f32, lap: f32) -> f32 {
-    return (2.0 * h_now - h_prev + u_field.wave_k * lap) * u_field.wave_damp;
+fn interaction_wave_step(h_now: f32, h_prev: f32, lap: f32, coeffs: vec2<f32>) -> f32 {
+    return (2.0 * h_now - h_prev + coeffs.x * lap) * coeffs.y;
 }
 
 /// 読み側から 4 近傍のラプラシアン（5 点ステンシル）を取る。
@@ -281,8 +334,7 @@ fn cs_interaction_field(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // ── ① このテクセルのワールド XZ（テクセル中心）──
-    let world_xz = u_field.origin_xz
-                 + (vec2<f32>(f32(gid.x), f32(gid.y)) + vec2<f32>(0.5)) * u_field.texel_size;
+    let world_xz = interaction_texel_world_xz(gid.xy);
 
     // ── ② 前フレームの値を再マップして読む ──
     //   カメラ移動ぶんの整数テクセルオフセット。**1 フレームに 1 回だけ**適用する
@@ -298,10 +350,13 @@ fn cs_interaction_field(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // ── ④ 波（.z = h_t / .w = h_(t-1)）: 固定刻みで 1 サブステップ進める ──
+    //   **係数はこのテクセルを覆う水域の物性から引く**（Phase I2.1）。
+    //   水域の外は uniform の既定係数＝従来どおり。
+    let coeffs = interaction_wave_coeffs(world_xz);
     let h_now  = prev.z;
     let h_prev = prev.w;
     let lap    = interaction_laplacian(coord, shift, res_i, h_now);
-    var h_next = interaction_wave_step(h_now, h_prev, lap);
+    var h_next = interaction_wave_step(h_now, h_prev, lap, coeffs);
 
     // ── ⑤ 各ソースを焼き込む ──
     //   【速度】加算ではなく「重み付きの上書き（mix）」であることが重要。
@@ -354,11 +409,13 @@ fn cs_interaction_wave_substep(@builtin(global_invocation_id) gid: vec3<u32>) {
     let no_shift = vec2<i32>(0, 0);
     let prev     = interaction_load_shifted(coord, no_shift, res_i);
 
+    // 係数の引き方は 1 回目と同じ（同一フレーム内なので窓原点も矩形リストも同一）。
+    let coeffs = interaction_wave_coeffs(interaction_texel_world_xz(gid.xy));
     let h_now  = prev.z;
     let h_prev = prev.w;
     let lap    = interaction_laplacian(coord, no_shift, res_i, h_now);
     let h_next = interaction_finalize_height(
-        interaction_wave_step(h_now, h_prev, lap), h_now);
+        interaction_wave_step(h_now, h_prev, lap, coeffs), h_now);
 
     textureStore(dst_field, coord, vec4<f32>(prev.xy, h_next, h_now));
 }

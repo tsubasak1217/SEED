@@ -64,6 +64,15 @@ pub struct WaterVisualParams {
     pub ripple_strength: f32,
     /// 波紋フォームが出る波高しきい値（m 相当。Phase I2）
     pub ripple_foam_threshold: f32,
+    /// この水域の粘度（0..1。0 = 現行の水と完全同一。Phase I2.1）。
+    ///
+    /// **見た目ではなく物性値だが、ここへ同居させている。**
+    /// 消費者（波紋の伝播・スタンプ・解析波の速度）はいずれも
+    /// `ResolvedWaterVolume` だけを見る層であり、物性のためだけに
+    /// 並列のもう 1 本の中間表現を作ると解決経路が二重化するため。
+    pub viscosity: f32,
+    /// この水域の波紋の減衰率（1/s。大きいほど速く消える。Phase I2.1）
+    pub ripple_damping: f32,
     /// 水中コースティクスの強さ（0 で完全無効。Phase W5.3）
     pub caustics_intensity: f32,
     /// コースティクスの細かさ倍率（Phase W5.3）
@@ -106,6 +115,8 @@ impl WaterVisualParams {
             refraction_distortion: c.refraction_distortion,
             ripple_strength:       c.ripple_strength,
             ripple_foam_threshold: c.ripple_foam_threshold,
+            viscosity:             c.viscosity,
+            ripple_damping:        c.ripple_damping,
             caustics_intensity:    c.caustics_intensity,
             caustics_scale:        c.caustics_scale,
             caustics_depth_fade:   c.caustics_depth_fade,

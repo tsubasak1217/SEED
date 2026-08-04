@@ -544,6 +544,13 @@ public partial class InspectorPanel : UserControl
     private const float WaterRippleStrengthDefault = 1f;
     /// <summary>波紋フォームが出る波高しきい値の既定値（m 相当）。</summary>
     private const float WaterRippleFoamThresholdDefault = 0.05f;
+    /// <summary>水域の粘度の既定値（Phase I2.1。0 = ふつうの水＝従来と同一挙動）。</summary>
+    private const float WaterViscosityDefault = 0f;
+    /// <summary>
+    /// 波紋の減衰率の既定値（1/s。Phase I2.1）。
+    /// Rust 側 <c>default_ripple_damping</c>（エンジンの減衰時定数 1.5 秒の逆数）と一致させること。
+    /// </summary>
+    private const float WaterRippleDampingDefault = 1f / 1.5f;
     /// <summary>岸波（Phase W1.5）の強さの既定値。</summary>
     private const float WaterShoreStrengthDefault = 1f;
     /// <summary>岸波（Phase W1.5）のうねりの波長の既定値（m）。</summary>
@@ -796,6 +803,9 @@ public partial class InspectorPanel : UserControl
         // 波紋・航跡（Phase I2）: 法線摂動スケール・フォームしきい値
         float WaterRippleStrength = WaterRippleStrengthDefault,
         float WaterRippleFoamThreshold = WaterRippleFoamThresholdDefault,
+        // 水域ごとの物性（Phase I2.1）: 粘度・波紋の減衰率
+        float WaterViscosity = WaterViscosityDefault,
+        float WaterRippleDamping = WaterRippleDampingDefault,
         // 岸波（Phase W1.5）: 岸に寄せるうねりの強さ・波長・周期・泡量
         float WaterShoreStrength = WaterShoreStrengthDefault,
         float WaterShoreLength = WaterShoreLengthDefault,
@@ -1268,6 +1278,9 @@ public partial class InspectorPanel : UserControl
             // 波紋・航跡（Phase I2）。旧シーン（フィールド欠落）でも既定値で表示できる。
             var waterRippleStr    = comp.TryGetProperty("ripple_strength", out var wrs) ? wrs.GetSingle() : WaterRippleStrengthDefault;
             var waterRippleFoamTh = comp.TryGetProperty("ripple_foam_threshold", out var wrft) ? wrft.GetSingle() : WaterRippleFoamThresholdDefault;
+            // 水域ごとの物性（Phase I2.1）。旧シーン／旧ランタイム（フィールド欠落）でも既定値で表示できる。
+            var waterViscosity    = comp.TryGetProperty("viscosity", out var wvis) ? wvis.GetSingle() : WaterViscosityDefault;
+            var waterRippleDamp   = comp.TryGetProperty("ripple_damping", out var wrdm) ? wrdm.GetSingle() : WaterRippleDampingDefault;
             // 岸波（Phase W1.5）。旧シーン（フィールド欠落）でも既定値で表示できる。
             var waterShoreStr    = comp.TryGetProperty("shore_wave_strength", out var wss) ? wss.GetSingle() : WaterShoreStrengthDefault;
             var waterShoreLen    = comp.TryGetProperty("shore_wave_length",   out var wsl) ? wsl.GetSingle() : WaterShoreLengthDefault;
@@ -1388,6 +1401,8 @@ public partial class InspectorPanel : UserControl
                 WaterRefractionDistortion: waterRefractDist,
                 WaterRippleStrength: waterRippleStr,
                 WaterRippleFoamThreshold: waterRippleFoamTh,
+                WaterViscosity: waterViscosity,
+                WaterRippleDamping: waterRippleDamp,
                 WaterShoreStrength: waterShoreStr, WaterShoreLength: waterShoreLen,
                 WaterShorePeriod: waterShorePeriod, WaterShoreFoam: waterShoreFoam,
                 WaterRiverWidth: waterRiverWidth, WaterFlowSpeed: waterFlowSpeed,
@@ -5118,13 +5133,23 @@ public partial class InspectorPanel : UserControl
 
         // ── 波紋・航跡セクション（Phase I2）─────────────────────
         // InteractionSource を持つアクタが水面付近を動くと立つ波紋の見え方を調整する。
-        // 波の伝播速度・減衰はエンジン定数（全水域で共通の物理）なので UI には出さない。
+        // 波の伝播速度・減衰そのものは下の「物性」セクション（Phase I2.1）で調整する。
         var rippleSection = BuildSection("波紋・航跡");
         var rippleSp      = (StackPanel)rippleSection.Child;
         AddFloatRow(rippleSp, "波紋の強さ",     info.WaterRippleStrength,     "ripple_strength",       "F2");
         AddFloatRow(rippleSp, "泡のしきい値",   info.WaterRippleFoamThreshold, "ripple_foam_threshold", "F3");
         rippleSp.Children.Add(MakeHint("動くアクタに InteractionSource を付けると、水面付近で波紋と航跡の泡が出ます。"));
         sp.Children.Add(rippleSection);
+
+        // ── 物性セクション（Phase I2.1）─────────────────────────
+        // 「水／泥／マグマ」を 1 つの WaterVolume で作り分けるためのノブ。
+        // 見た目ではなく水の“中身”なので、波紋・航跡とは別セクションに分ける。
+        var physicsSection = BuildSection("物性");
+        var physicsSp      = (StackPanel)physicsSection.Child;
+        AddFloatRow(physicsSp, "粘度(0..1)",       info.WaterViscosity,    "viscosity",      "F2");
+        AddFloatRow(physicsSp, "波紋の減衰率(1/s)", info.WaterRippleDamping, "ripple_damping", "F3");
+        physicsSp.Children.Add(MakeHint("粘度を上げると波紋が立ちにくく・伝播が遅くなり、水面模様のスクロールもなまります（0 = ふつうの水／1 = マグマ相当）。減衰率は大きいほど波紋が速く消えます。"));
+        sp.Children.Add(physicsSection);
 
         // ── 岸波セクション（Phase W1.5）─────────────────────────
         // 岸に向かって寄せるうねり（強さ・波長・周期）と、そのうねりが生む泡量を調整する。

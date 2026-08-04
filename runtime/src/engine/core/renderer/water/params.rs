@@ -9,6 +9,9 @@
 
 use crate::engine::water::ResolvedWaterVolume;
 use crate::engine::components::water_volume_component::WaterVolumeKind;
+// 粘度による波速の低下係数は「波紋の伝播」と同じ関数を共有する（Phase I2.1）。
+// 二重定義すると「模様のスクロールと波紋の広がりで粘度の効きが違う」ずれが出る。
+use crate::engine::interaction::viscosity_wave_speed_scale;
 use super::tessellation::{WATER_GRID_WARP_OFF, WATER_GRID_WARP_ON};
 
 /// 1 ドローで描ける水ボリュームの最大数。
@@ -241,8 +244,17 @@ impl WaterParams {
                 0.0,
                 vis.foam_intensity,
             ],
+            // 解析波（水面模様のスクロール）。
+            //   z = 波速には **粘度の低下係数**を掛ける（Phase I2.1）。
+            //   波紋（インタラクションフィールド）の伝播だけを遅くして解析波を
+            //   そのままにすると、「模様はさらさら流れているのに輪だけ止まっている」
+            //   ちぐはぐな見え方になるため、同じ係数で一緒になまらせる。
+            //   **粘度 0（既定）では係数が厳密に 1.0** なので、既存シーンは変わらない。
             wave: [
-                vis.wave_amplitude, vis.wave_scale, vis.wave_speed, vis.refraction_distortion,
+                vis.wave_amplitude,
+                vis.wave_scale,
+                vis.wave_speed * viscosity_wave_speed_scale(vis.viscosity),
+                vis.refraction_distortion,
             ],
             fresnel: [
                 vis.fresnel_power, vis.fresnel_strength,
@@ -408,6 +420,8 @@ mod tests {
             fresnel_strength: 1.0, reflection_intensity: 1.0, reflection_roughness: 0.15,
             refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
+            // 水域ごとの物性（Phase I2.1）。既定相当（＝現行の水）の値を入れておく。
+            viscosity: 0.0, ripple_damping: 1.0 / 1.5,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
             shadow_refraction_strength: 1.0,
@@ -451,6 +465,8 @@ mod tests {
             fresnel_strength: 0.5, reflection_intensity: 1.0, reflection_roughness: 0.15,
             refraction_distortion: 0.0,
             ripple_strength: 1.25, ripple_foam_threshold: 0.08,
+            // 水域ごとの物性（Phase I2.1）。既定相当（＝現行の水）の値を入れておく。
+            viscosity: 0.0, ripple_damping: 1.0 / 1.5,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
             shadow_refraction_strength: 1.0,
@@ -492,6 +508,8 @@ mod tests {
             fresnel_strength: 1.0, reflection_intensity: 1.0, reflection_roughness: 0.15,
             refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
+            // 水域ごとの物性（Phase I2.1）。既定相当（＝現行の水）の値を入れておく。
+            viscosity: 0.0, ripple_damping: 1.0 / 1.5,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
             shadow_refraction_strength: 1.0,
@@ -534,6 +552,8 @@ mod tests {
             fresnel_strength: 1.0, reflection_intensity: 1.0, reflection_roughness: 0.15,
             refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
+            // 水域ごとの物性（Phase I2.1）。既定相当（＝現行の水）の値を入れておく。
+            viscosity: 0.0, ripple_damping: 1.0 / 1.5,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
             shadow_refraction_strength: 1.0,
@@ -595,6 +615,49 @@ mod tests {
             "航跡フォームが消えている");
     }
 
+    /// 粘度は解析波の速度（`wave.z`）を下げること。粘度 0 では**ビット単位で不変**（Phase I2.1）。
+    ///
+    /// 波紋（インタラクションフィールド）の伝播だけを遅くして解析波を据え置くと、
+    /// 「模様はさらさら流れているのに輪だけ止まる」ちぐはぐな絵になる。
+    #[test]
+    fn viscosity_slows_the_analytic_wave_speed() {
+        use crate::engine::water::WaterVisualParams;
+        let visual = WaterVisualParams {
+            shallow_color: [0.0; 3], deep_color: [0.0; 3], absorption_distance: 1.0,
+            surface_opacity: 1.0, foam_color: [0.0; 3], foam_width: 1.0, foam_intensity: 1.0,
+            wave_amplitude: 1.0, wave_scale: 1.0, wave_speed: 2.0, wave_direction_deg: 0.0,
+            wave_noise_strength: 0.35, wave_noise_scale: 1.0, fresnel_power: 1.0,
+            fresnel_strength: 1.0, reflection_intensity: 1.0, reflection_roughness: 0.15,
+            refraction_distortion: 0.0,
+            ripple_strength: 1.0, ripple_foam_threshold: 0.1,
+            viscosity: 0.0, ripple_damping: 1.0 / 1.5,
+            caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
+            shadow_refraction_strength: 1.0,
+            shore_wave_strength: 0.0, shore_wave_length: 12.0,
+            shore_wave_period: 4.0, shore_wave_foam: 0.8,
+        };
+        let v = ResolvedWaterVolume {
+            kind: WaterVolumeKind::Region, surface_y: 0.0,
+            center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
+            actor_dfs_id: 0, river: None,
+        };
+        // 粘度 0（既定）は素の `wave_speed` がそのまま入る（丸めも入らない）。
+        let p = WaterParams::from_resolved(&v, [0.0; 3], 0, None);
+        assert_eq!(p.wave[2], 2.0, "粘度 0 で波速が変わっている");
+
+        // 粘度を上げると単調に遅くなり、上限（粘度 1）でも 0 にはならない。
+        let mut prev = p.wave[2];
+        for i in 1..=4 {
+            let mut vis = visual;
+            vis.viscosity = i as f32 / 4.0;
+            let q = WaterParams::from_resolved(
+                &ResolvedWaterVolume { visual: vis, ..v.clone() }, [0.0; 3], 0, None);
+            assert!(q.wave[2] < prev, "粘度 {} で単調に遅くなっていない", vis.viscosity);
+            assert!(q.wave[2] > 0.0, "粘度 {} で波が止まっている", vis.viscosity);
+            prev = q.wave[2];
+        }
+    }
+
     /// ピッキング用 raw ID は `id_base + DFS + 1`（0 = 背景を空ける共通規約）。
     #[test]
     fn actor_id_follows_id_pass_convention() {
@@ -608,6 +671,8 @@ mod tests {
             fresnel_strength: 1.0, reflection_intensity: 1.0, reflection_roughness: 0.15,
             refraction_distortion: 0.0,
             ripple_strength: 1.0, ripple_foam_threshold: 0.1,
+            // 水域ごとの物性（Phase I2.1）。既定相当（＝現行の水）の値を入れておく。
+            viscosity: 0.0, ripple_damping: 1.0 / 1.5,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
             shadow_refraction_strength: 1.0,
