@@ -191,7 +191,12 @@ fn vs_water(
 // ─── フラグメントシェーダ ────────────────────────────────────
 
 /// 水面 1 フラグメントを合成する。処理順は
-/// 波法線 → 水中判定 → 手動深度テスト → 厚み復元 → 吸収 → 屈折 → 岸フォーム → フレネル → 合成。
+/// 波法線 → 水中判定 → 手動深度テスト → 厚み復元 → 屈折グラブ → 泡量 → 反射サンプル
+/// → **シェーディング契約（`water_shade_entry`）へ引き渡し**。
+///
+/// 本関数は「色の材料を集めるところ」までを担い、**最終色は契約側が決める**（Phase W8）。
+/// アセット未指定の水域では `water_shade_entry` が `water_shade_default` を素通しするため、
+/// 出力は W7 以前と完全に同一である。
 @fragment
 fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
     let p = u_water[in.idx];
@@ -239,12 +244,7 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
         thickness  = distance(bottom, in.world_pos);
     }
 
-    // ④ 吸収（Beer-Lambert 近似）: 厚いほど deep_color へ寄る。
-    let absorb_dist = max(p.shallow_color.a, WATER_EPSILON);
-    let absorb      = exp(-thickness / absorb_dist);
-    let tint        = mix(p.deep_color.rgb, p.shallow_color.rgb, absorb);
-
-    // ⑤ 屈折（スクリーンスペース）: 波法線の XZ で背景 UV をずらしてグラブを読む。
+    // ④ 屈折（スクリーンスペース）: 波法線の XZ で背景 UV をずらしてグラブを読む。
     let base_uv = in.clip.xy / max(u_camera.resolution, vec2<f32>(WATER_EPSILON, WATER_EPSILON));
     let warp_uv = clamp(
         base_uv + n.xz * p.wave.w,
@@ -260,57 +260,73 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
     }
     let background = textureSampleLevel(t_scene, s_scene, refract_uv, 0.0).rgb;
 
-    // ⑥ 最終合成: 深いほど背景を隠す（surface_opacity が最大被覆率）。
-    let opacity = clamp(p.deep_color.a, 0.0, 1.0) * (1.0 - absorb);
-    var color   = mix(background, tint, opacity);
-
-    // ⑦ 泡の全体ゲート（Phase W7）
+    // ⑤ 泡の全体ゲート（Phase W7）
     //    泡（岸フォーム・航跡・砕け波）はいずれも **水面の上側に浮くもの**なので、
     //    水中から見上げているときは載せない。特に岸フォームは thickness=0（素通し）だと
     //    「水深 0 = 岸際」と誤判定されて画面全面が白く塗られてしまうため、この
     //    ゲートは水中視点における必須の抑制である。
     let foam_gate = select(1.0, 0.0, underwater);
 
-    // ⑦-a 岸フォーム: 水深が foam_width 未満の帯に滑らかに乗せる。
+    // ⑤-a 岸フォーム: 水深が foam_width 未満の帯に滑らかに乗せる。
     let foam_width = max(p.foam_color.a, WATER_EPSILON);
     let foam       = (1.0 - smoothstep(0.0, foam_width, thickness))
                    * p.reflection.w * foam_gate;
-    color          = color + p.foam_color.rgb * foam;
 
-    // ⑦' 航跡フォーム（Phase I2）: 波紋の高さがしきい値を超えた所へ白い泡を乗せる。
-    //     岸フォームと **同じ foam_color** を流用する（水ごとの泡の色は 1 つ、という設計）。
+    // ⑤-b 航跡フォーム（Phase I2）: 波紋の高さがしきい値を超えた所へ白い泡を乗せる。
     let ripple_threshold = max(p.fresnel.w, WATER_EPSILON);
     let ripple_foam = smoothstep(
         ripple_threshold,
         ripple_threshold * (1.0 + WATER_RIPPLE_FOAM_RAMP),
         abs(ripple_h),
     ) * WATER_RIPPLE_FOAM_MAX * clamp(p.fresnel.z, 0.0, 1.0) * foam_gate;
-    color = color + p.foam_color.rgb * ripple_foam;
 
-    // ⑦'' 岸波の泡（Phase W1.5）: 砕け波の白帯と打ち上げ（swash）の泡。
-    //      ここも **同じ foam_color** を流用する。
+    // ⑤-c 岸波の泡（Phase W1.5）: 砕け波の白帯と打ち上げ（swash）の泡。
     let shore_foam = water_shore_foam(p, in.world_pos.xz, u_camera.time) * foam_gate;
-    color = color + p.foam_color.rgb * shore_foam;
 
-    // ⑧ フレネル: 浅い角度ほど反射像へ寄せる。
-    //    `n` は視線側を向く法線（水中では下向き）なので、この 1 本の式が
-    //    水上＝空・景色の反射、水中＝水面の内側での反射（全反射の粗い代用）の両方を兼ねる。
-    let view_dir = normalize(u_camera.position - in.world_pos);
-    let fresnel  = clamp(
-        p.fresnel.y * pow(1.0 - clamp(dot(n, view_dir), 0.0, 1.0), max(p.fresnel.x, WATER_EPSILON)),
-        0.0, 1.0,
-    );
-    // ⑧' 反射像（Phase W5.2）。**水面反射パスが焼いた本物の反射**をそのまま混ぜる。
-    //     規約は **プリマルチプライド**: rgb = 反射色 × 強度、a = 反射強度。
-    //     色は `rgb / a` で戻す。これは粗さブラー（いもす法ボックス）が掛かった RT でも
-    //     「反射のある画素だけの α 重み付き平均」になり、水際や遮蔽物のシルエット周りに
-    //     黒（反射なし＝0）が滲まないための規約である（詳細は water_reflection_common.wgsl）。
-    //     反射パスが走らなかったフレーム・水域の強度 0・非対応 GPU はいずれも a = 0 になり、
-    //     この式は `color` を素通しする＝反射なしの水（W5.2 以前の「反射色」も掛からない）。
-    let reflection = textureLoad(t_water_reflection, vec2<i32>(in.clip.xy), 0);
-    let refl_rgb   = reflection.rgb / max(reflection.a, WATER_REFL_UNPREMULT_MIN);
-    color = mix(color, refl_rgb, fresnel * clamp(reflection.a, 0.0, 1.0));
+    // ⑥ 反射像（Phase W5.2）。**水面反射パスが焼いた本物の反射**を読む。
+    //    規約は **プリマルチプライド**: rgb = 反射色 × 強度、a = 反射強度。
+    //    色は `rgb / a` で戻す。これは粗さブラー（いもす法ボックス）が掛かった RT でも
+    //    「反射のある画素だけの α 重み付き平均」になり、水際や遮蔽物のシルエット周りに
+    //    黒（反射なし＝0）が滲まないための規約である（詳細は water_reflection_common.wgsl）。
+    //    反射パスが走らなかったフレーム・水域の強度 0・非対応 GPU はいずれも a = 0 になり、
+    //    契約側の混合式は `color` を素通しする＝反射なしの水になる。
+    let reflection   = textureLoad(t_water_reflection, vec2<i32>(in.clip.xy), 0);
+    let refl_rgb     = reflection.rgb / max(reflection.a, WATER_REFL_UNPREMULT_MIN);
+    let refl_strength = clamp(reflection.a, 0.0, 1.0);
 
-    // 背景を自前で合成済みなので、そのまま不透明（alpha=1）で書き出す（ブレンドは Replace）。
-    return vec4<f32>(color, 1.0);
+    // ⑦ シェーディング契約への引き渡し（Phase W8）
+    //    ここまでで「色を作るのに必要な値」はすべて揃っている。最終色の決定は
+    //    `water_shade_entry`（既定 = water_shade_default／アセット指定時 = ユーザー実装）
+    //    に委ねる。エンジンが決めるのは **形状と物性まで**で、色はアセットの担当である。
+    var si: WaterShadeInput;
+    si.world_pos           = in.world_pos;
+    si.normal              = n;
+    si.normal_up           = n_up;
+    si.view_dir            = normalize(u_camera.position - in.world_pos);
+    si.underwater          = underwater;
+    si.thickness           = thickness;
+    si.foam                = foam;
+    si.ripple_foam         = ripple_foam;
+    si.shore_foam          = shore_foam;
+    si.ripple_height       = ripple_h;
+    si.refraction_color    = background;
+    si.reflection_color    = refl_rgb;
+    si.reflection_strength = refl_strength;
+    // 流速ベクトル: 川のタンジェント（頂点間で補間済み）× 流速。川以外はゼロ。
+    si.flow                = in.flow_dir * p.river_p1.w;
+    si.time                = u_camera.time;
+    si.shallow_color       = p.shallow_color.rgb;
+    si.deep_color          = p.deep_color.rgb;
+    si.absorption_distance = p.shallow_color.a;
+    si.surface_opacity     = p.deep_color.a;
+    si.foam_color          = p.foam_color.rgb;
+    si.fresnel_power       = p.fresnel.x;
+    si.fresnel_strength    = p.fresnel.y;
+    si.wave_amplitude      = p.wave.x;
+    si.viscosity           = p.wave_noise.z;
+
+    // ブレンドは Replace なので、背景合成は契約側で済んでいる前提。
+    // アルファは HDR RT の a チャンネルへそのまま書かれるだけで合成には使われない
+    //（標準実装は 1.0 を返す。契約 v1 では将来のための予約という位置づけ）。
+    return water_shade_entry(si);
 }

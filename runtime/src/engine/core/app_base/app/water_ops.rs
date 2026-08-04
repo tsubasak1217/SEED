@@ -63,7 +63,8 @@ impl App {
     ///      river_width / flow_speed / river_depth / spline_points /
     ///      spline_snap_terrain（W4）/
     ///      river_segment_length / control_point_ref（W4.1）/
-    ///      simulate_level（W2.5 水位グラフの対象フラグ）。
+    ///      simulate_level（W2.5 水位グラフの対象フラグ）/
+    ///      surface_shader（W8 水面シェーディングアセットのパス）。
     /// ベクタ系（region_half_extents / *_color）は "x,y,z" 形式。
     /// 川の制御点 `spline_points` は "x,y,z;x,y,z;..." で**リスト全体**を置き換える。
     /// `spline_snap_terrain` は値をオフセット Y（m）として制御点を地形へ落とす。
@@ -281,6 +282,15 @@ impl App {
                 // 組み立てる作業を許すため。解決できない間は spline_points が使われる）。
                 // 前後の空白だけは落とす（D&D と手入力で差が出ないように）。
                 w.control_point_ref = value.trim().to_string();
+            }
+            "surface_shader" => {
+                // 水面シェーディングアセット（.wgsl）のパス（W8）。
+                // **空文字列 = 標準へ戻す**（インスペクタの「×」がこれを送る）。
+                // 存在しないパスでも `control_point_ref` と同じくそのまま保存する
+                //（アセットを後から作る作業を許すため。読めない間は標準で描かれ、
+                //  LOAD_ERROR が 1 度だけ通知される）。
+                // 前後の空白だけは落とす（D&D と手入力で差が出ないように）。
+                w.surface_shader = value.trim().to_string();
             }
             "spline_points" => {
                 // **リスト全体の置き換え**（追加・削除・編集のいずれもこの 1 キーで来る）。

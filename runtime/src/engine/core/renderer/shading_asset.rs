@@ -115,7 +115,7 @@ pub const SHADING_ASSET_POLL_INTERVAL_SECS: f64 = 1.0;
 /// `std::collections::hash_map::DefaultHasher`（SipHash-1-3）を使う。暗号学的強度は不要で、
 /// 求めるのは「同一内容 → 同一キー」「異なる内容 → 実質衝突しない」の 2 点だけである。
 /// **内容**のハッシュをキーにするため、別パスに同じ内容を置いた場合はパイプラインを共有できる。
-fn content_hash(src: &str) -> u64 {
+pub(crate) fn content_hash(src: &str) -> u64 {
     let mut h = DefaultHasher::new();
     src.hash(&mut h);
     h.finish()
@@ -138,7 +138,7 @@ pub fn load_source(path: &str) -> std::io::Result<String> {
 /// 後段の「行頭 fn」検出と行番号写像の前提になっているため）。
 /// 文字列リテラル（WGSL には実質存在しないが将来に備える）は考慮しない単純スキャンだが、
 /// 検出側が「行頭の `fn`」を要求するため誤検出には至らない。
-fn strip_comments(src: &str) -> String {
+pub(crate) fn strip_comments(src: &str) -> String {
     /// スキャナの状態。
     #[derive(Clone, Copy, PartialEq)]
     enum St { Code, Line, Block }
@@ -193,7 +193,7 @@ fn strip_comments(src: &str) -> String {
 /// この条件だけで「定義」と「呼び出し・識別子の一部」を分離できる。
 /// `my_shade_model_1` のような**前置き付き識別子**も、`fn` と空白の後に来る名前が
 /// 完全一致であることを要求するため誤検出しない。
-fn line_defines_fn(line: &str, fn_name: &str) -> bool {
+pub(crate) fn line_defines_fn(line: &str, fn_name: &str) -> bool {
     let t = line.trim_start();
     // `fn` キーワード＋直後が空白であること。
     let Some(rest) = t.strip_prefix("fn") else { return false };
@@ -261,9 +261,18 @@ pub fn detect_shade_models(asset_src: &str) -> ShadeModelSet {
 ///
 /// 宣言はコメント内に書くため、**コメント除去前**の生ソースを走査する。
 pub fn parse_contract_version(asset_src: &str) -> Option<u32> {
+    parse_contract_marker(asset_src, CONTRACT_MARKER)
+}
+
+/// 任意の契約マーカー `// @<marker> <N>` を読む汎用版。
+///
+/// シェーディングアセット（`@shading_contract`）と水面シェーディングアセット
+/// （`@water_shading_contract`）で**同じ規則**を使うため、走査だけをここへ切り出してある。
+/// マーカーはコメント内に書くので、**コメント除去前**の生ソースを走査する。
+pub(crate) fn parse_contract_marker(asset_src: &str, marker: &str) -> Option<u32> {
     for line in asset_src.lines() {
-        let Some(pos) = line.find(CONTRACT_MARKER) else { continue };
-        let rest = &line[pos + CONTRACT_MARKER.len()..];
+        let Some(pos) = line.find(marker) else { continue };
+        let rest = &line[pos + marker.len()..];
         let num: String = rest.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
         if !num.is_empty() {
             return num.parse::<u32>().ok();
@@ -405,7 +414,7 @@ fn substitute_dispatch(standard: &[String], asset_name: &str, generated_name: &s
 ///
 /// 開始行番号は **1 始まり**。`RenderPipelineBuilder::build_owned` と同じく `"\n"` で join する
 /// ため、パート k の開始行 = 1 + Σ(パート i の改行数 + 1)（i < k）で求まる。
-fn concat_sources<F>(names: &[String], asset_name: &str, resolve: F) -> (String, usize)
+pub(crate) fn concat_sources<F>(names: &[String], asset_name: &str, resolve: F) -> (String, usize)
 where
     F: Fn(&str) -> String,
 {
@@ -457,12 +466,12 @@ pub fn map_reported_line(
 }
 
 /// アセットの行数（`concat_sources` の行会計と同じ数え方）。
-fn asset_line_count(asset_src: &str) -> usize {
+pub(crate) fn asset_line_count(asset_src: &str) -> usize {
     asset_src.matches('\n').count() + 1
 }
 
 /// naga の parse + validate を通す。失敗時は `(メッセージ, 行番号)` を返す。
-fn validate_wgsl(src: &str, caps: naga::valid::Capabilities) -> Result<(), (String, Option<usize>)> {
+pub(crate) fn validate_wgsl(src: &str, caps: naga::valid::Capabilities) -> Result<(), (String, Option<usize>)> {
     let module = match naga::front::wgsl::parse_str(src) {
         Ok(m) => m,
         Err(e) => {

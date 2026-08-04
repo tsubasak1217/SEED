@@ -141,6 +141,11 @@ pub struct DrawContext {
     /// アセット未指定のプロジェクトでは一切触られない（空のまま）。
     /// `&self` 共有下でフレーム内から解決・ホットリロードするため内部可変を内包する。
     pub shading_asset_cache: crate::engine::core::renderer::shading_asset::ShadingAssetCache,
+    /// 水面シェーディングアセット（.wgsl）のビルド結果キャッシュ（Phase W8）。
+    /// `WaterVolume.surface_shader` を設定した水域が 1 つも無ければ一切触られない（空のまま）。
+    /// L3-a の `shading_asset_cache` とは**別のキャッシュ**である（契約もパイプラインも別物）。
+    pub water_shading_asset_cache:
+        crate::engine::core::renderer::water::shading_asset::WaterShadingAssetCache,
     /// スプライトのポストエフェクト焼き込みキャッシュ（(texture_path, postfx_path) → 焼き込みテクスチャ）。
     /// `&self` 共有下でフレーム内から焼き込み・参照するため内部可変（RefCell）を内包する。
     pub sprite_postfx_cache: SpritePostfxCache,
@@ -249,6 +254,8 @@ impl DrawContext {
             depth_format,
             shading_asset_cache:
                 crate::engine::core::renderer::shading_asset::ShadingAssetCache::new(),
+            water_shading_asset_cache:
+                crate::engine::core::renderer::water::shading_asset::WaterShadingAssetCache::new(),
             sprite_postfx_cache: SpritePostfxCache::new(),
             model_cache:      RefCell::new(HashMap::new()),
             sprite_tex_cache: RefCell::new(HashMap::new()),

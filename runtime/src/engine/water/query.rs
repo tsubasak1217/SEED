@@ -239,6 +239,7 @@ mod tests {
             actor_dfs_id: 0,
             // Ocean / Region は川を持たない
             river: None,
+            surface_shader: String::new(),
         }
     }
 
@@ -255,6 +256,7 @@ mod tests {
             actor_dfs_id: 0,
             // Ocean / Region は川を持たない
             river: None,
+            surface_shader: String::new(),
         }
     }
 
@@ -270,6 +272,7 @@ mod tests {
             // 問い合わせ（水中判定）はピッキング ID を使わないのでダミー
             actor_dfs_id: 0,
             river: None,
+            surface_shader: String::new(),
         }
     }
 
@@ -293,6 +296,7 @@ mod tests {
             river: crate::engine::water::RiverPath::build(
                 points, width, flow_speed, depth,
                 crate::engine::water::spline::RIVER_SAMPLE_STEP_M),
+            surface_shader: String::new(),
         }
     }
 

@@ -46,6 +46,7 @@
 // ============================================================
 
 pub mod params;
+pub mod shading_asset;
 pub mod tessellation;
 pub mod wave_noise;
 
@@ -83,11 +84,45 @@ pub const SHORE_FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16F
 /// `caustics.rs` のリゾルバは `water_height_field.wgsl` をここへ委譲する。
 pub(super) fn resolve_water_shader(name: &str) -> &'static str {
     match name {
-        "water_height_field.wgsl" => include_str!("../shaders/water_height_field.wgsl"),
-        "water_surface.wgsl"      => include_str!("../shaders/water_surface.wgsl"),
-        "water_id.wgsl"           => include_str!("../shaders/water_id.wgsl"),
+        "water_height_field.wgsl"     => include_str!("../shaders/water_height_field.wgsl"),
+        // 水面シェーディング契約 v1（Phase W8）。水面パスだけが連結する
+        //（ID パス・反射パス・コースティクスは色を作らないため不要）。
+        "water_shading_contract.wgsl" => include_str!("../shaders/water_shading_contract.wgsl"),
+        "water_shade_dispatch.wgsl"   => include_str!("../shaders/water_shade_dispatch.wgsl"),
+        "water_surface.wgsl"          => include_str!("../shaders/water_surface.wgsl"),
+        "water_id.wgsl"               => include_str!("../shaders/water_id.wgsl"),
         other => panic!("water: unknown shader source: {other}"),
     }
+}
+
+/// 同一のシェーディングアセットを使う水インスタンスのまとまり（Phase W8）。
+///
+/// ## なぜバケットを分けるのか
+/// 水面の最終色はパイプライン（＝連結された WGSL）が決めるため、
+/// **見た目の違う水を 1 ドローで描くことはできない**。そこでパラメータ配列を
+/// 「アセットごと → その中でクアッド／川」の順に並べ替え、アセットごとに
+/// `set_pipeline` してからそのレンジだけを描く。
+///
+/// ## 並びの規約（重要）
+/// 配列全体は従来どおり **[全クアッド…, 全川…]** の 2 区画に分かれている
+/// （1 ドローの頂点数はバケット種別で決まるため、この 2 区画は崩せない）。
+/// アセットによる分割は**それぞれの区画の内側**で行う。したがって
+/// 1 グループは「クアッド区画内の連続レンジ」と「川区画内の連続レンジ」を 1 本ずつ持つ。
+///
+/// ID パス・水面反射パス・コースティクスパスはこの分割を**使わない**
+/// （形状は全水域で共通であり、色を作らないパスにアセットは関係しないため）。
+struct WaterDrawGroup {
+    /// このグループのシェーディングアセットパス（空文字＝エンジン標準）。
+    /// 診断ログ用に保持する。描画の分岐は `pipeline` の Some/None で行う。
+    asset: String,
+    /// 解決済みのアセット変種パイプライン。`None` は
+    /// 「アセット未指定」または「ロード失敗でフォールバック」の意味で、
+    /// どちらも `WaterRenderer::pipeline`（標準）で描く。
+    pipeline: Option<std::sync::Arc<shading_asset::WaterShadingAssetPipelines>>,
+    /// クアッド区画内のインスタンスレンジ（`instance_index` の絶対値）。
+    quad_range: std::ops::Range<u32>,
+    /// 川区画内のインスタンスレンジ（`instance_index` の絶対値）。
+    river_range: std::ops::Range<u32>,
 }
 
 /// 水面描画に必要な GPU リソース一式と描画手続き。
@@ -153,6 +188,12 @@ pub struct WaterRenderer {
     quad_vertex_count: u32,
     /// 川リボン 1 インスタンスの頂点数。
     river_vertex_count: u32,
+
+    /// このフレームのシェーディングアセット別バケット（Phase W8）。
+    ///
+    /// アセットを 1 つも使っていないフレームでは**要素 1 個**（標準・全レンジ）になり、
+    /// ドローコール数も従来（クアッド 1・川 1）とまったく同じである。
+    groups: Vec<WaterDrawGroup>,
 
     // ─── ショアフィールド（岸波。Phase W1.5）─────────────────────
     /// 水域ごとの岸情報を積んだ配列テクスチャ（レイヤ = 水域）。
@@ -310,6 +351,7 @@ impl WaterRenderer {
             river_count:        0,
             quad_vertex_count:  0,
             river_vertex_count: 0,
+            groups:             Vec::new(),
             warned_overflow:  false,
             shore_tex:        None,
             shore_view:       None,
@@ -431,11 +473,14 @@ impl WaterRenderer {
         field:      Option<&super::interaction::InteractionFieldRenderer>,
         shore:      &ShoreFieldSet,
         reflection_view: &wgpu::TextureView,
+        shader_cache:    &shading_asset::WaterShadingAssetCache,
+        allow_hot_reload: bool,
     ) -> bool {
         self.quad_count             = 0;
         self.river_count            = 0;
         self.quad_vertex_count      = 0;
         self.river_vertex_count     = 0;
+        self.groups.clear();
         self.frame_bind_group       = None;
         self.frame_field_bind_group = None;
         self.id_bind_group          = None;
@@ -467,19 +512,44 @@ impl WaterRenderer {
         //    1 インスタンスの頂点数が両者で桁違いになり、1 ドローの頂点数（1 つだけ）を
         //    共有できなくなったためである。配列は [クアッド…, 川…] の順に連結し、
         //    2 回のドローが `instance_index` のレンジで自分のぶんだけを描く。
-        let mut quads:  Vec<WaterParams> = Vec::with_capacity(count);
-        let mut rivers: Vec<WaterParams> = Vec::new();
+        //
+        //    **Phase W8 以降はさらにシェーディングアセットごとへ細分する**。水面の最終色は
+        //    パイプライン（連結された WGSL）が決めるので、見た目の違う水を 1 ドローでは
+        //    描けない。そこでバケットを「アセット別 →（クアッド／川）」の 2 段にし、
+        //    配列は [アセット A のクアッド…, アセット B のクアッド…, …,
+        //            アセット A の川…, アセット B の川…, …] の順に連結する。
+        //    アセットを使っていないプロジェクトではグループが 1 個しかできないので、
+        //    並びもドローコール数も W5.1 と完全に同一になる。
+        //
+        //    `buckets` は (アセットパス, クアッド列, 川列) を **初出順**で持つ。
+        //    HashMap を使わないのは、並び順がフレーム間で揺れるとドローの順序が変わり、
+        //    半透明の重なりが不安定になるためである。
+        let mut buckets: Vec<(String, Vec<WaterParams>, Vec<WaterParams>)> = Vec::new();
+        // 現在までに積んだインスタンス総数（上限判定に使う）。
+        let mut total = 0usize;
         // 各バケットが「欲しがる」分割数（後で頂点予算へ収める）。
+        // **アセットで分割しても分割数は全体で 1 つ**である（1 ドローの頂点数はレンジに
+        // 依らず 1 つだけ指定するため、区画内で分割数が違うと格子が壊れる）。
         let mut quad_div_want  = 1u32;
         let mut river_div_want = (1u32, 1u32);
         for v in &volumes[..count] {
+            // この水域のアセット（空文字＝標準）に対応するバケットを引く／作る。
+            let key = v.surface_shader.trim();
+            let bi = match buckets.iter().position(|(k, _, _)| k == key) {
+                Some(i) => i,
+                None => {
+                    buckets.push((key.to_string(), Vec::new(), Vec::new()));
+                    buckets.len() - 1
+                }
+            };
             match v.river.as_ref() {
                 // 川: 折れ線の隣り合うノード対ごとにリボンの 1 コマを積む。
                 Some(river) => {
                     for w in river.nodes.windows(2) {
-                        if quads.len() + rivers.len() >= WATER_MAX_INSTANCES { break; }
-                        rivers.push(WaterParams::from_river_segment(
+                        if total >= WATER_MAX_INSTANCES { break; }
+                        buckets[bi].2.push(WaterParams::from_river_segment(
                             v, &w[0], &w[1], river.half_width, river.flow_speed, id_base));
+                        total += 1;
                         // 幅方向は半幅から、長さ方向は区間の実長から刻み数を決める。
                         let seg_len = distance_xyz(w[0].pos, w[1].pos);
                         let want = tessellation::river_desired_divisions(river.half_width, seg_len);
@@ -488,17 +558,18 @@ impl WaterRenderer {
                 }
                 // Ocean / Region: 1 個の軸平行クアッド（を格子へ刻んだもの）。
                 None => {
-                    if quads.len() + rivers.len() >= WATER_MAX_INSTANCES { break; }
+                    if total >= WATER_MAX_INSTANCES { break; }
                     let p = WaterParams::from_resolved(
                         v, camera_pos, id_base, shore.get(v.actor_dfs_id));
                     quad_div_want = quad_div_want.max(tessellation::quad_desired_divisions(
                         matches!(v.kind, crate::engine::components::water_volume_component::WaterVolumeKind::Ocean),
                         p.half_extent[0].max(p.half_extent[2]),
                     ));
-                    quads.push(p);
+                    buckets[bi].1.push(p);
+                    total += 1;
                 }
             }
-            if quads.len() + rivers.len() >= WATER_MAX_INSTANCES {
+            if total >= WATER_MAX_INSTANCES {
                 if !self.warned_overflow {
                     self.warned_overflow = true;
                     eprintln!(
@@ -510,29 +581,85 @@ impl WaterRenderer {
             }
         }
         // 川の制御点が足りない等で 1 インスタンスも出なければ、描くものが無い。
-        if quads.is_empty() && rivers.is_empty() {
+        if total == 0 {
             return false;
         }
 
         // ── 格子分割数を頂点予算へ収めて全インスタンスへ焼き込む（Phase W5.1）──
-        //    バケット内は同じ分割数でなければならない（1 ドローの頂点数は 1 つだけ）。
-        let quad_div = tessellation::fit_quad_divisions(quad_div_want, quads.len());
-        for p in quads.iter_mut() {
-            p.set_grid_divisions(quad_div, quad_div);
-        }
+        //    区画（クアッド／川）内は同じ分割数でなければならない（1 ドローの頂点数は 1 つだけ）。
+        let total_quads:  usize = buckets.iter().map(|b| b.1.len()).sum();
+        let total_rivers: usize = buckets.iter().map(|b| b.2.len()).sum();
+        let quad_div = tessellation::fit_quad_divisions(quad_div_want, total_quads);
         let (river_div_a, river_div_l) =
-            tessellation::fit_river_divisions(river_div_want, rivers.len());
-        for p in rivers.iter_mut() {
-            p.set_grid_divisions(river_div_a, river_div_l);
+            tessellation::fit_river_divisions(river_div_want, total_rivers);
+        for (_, quads, rivers) in buckets.iter_mut() {
+            for p in quads.iter_mut()  { p.set_grid_divisions(quad_div, quad_div); }
+            for p in rivers.iter_mut() { p.set_grid_divisions(river_div_a, river_div_l); }
         }
-        self.quad_count         = quads.len()  as u32;
-        self.river_count        = rivers.len() as u32;
+        self.quad_count         = total_quads  as u32;
+        self.river_count        = total_rivers as u32;
         self.quad_vertex_count  = tessellation::grid_vertex_count(quad_div, quad_div);
         self.river_vertex_count = tessellation::grid_vertex_count(river_div_a, river_div_l);
 
-        // 2 バケットを 1 本の配列へ連結する（先頭 quad_count 個がクアッド）。
-        let mut gpu = quads;
-        gpu.extend(rivers);
+        // ── 2 区画を 1 本の配列へ連結し、アセット別のレンジを確定する（Phase W8）──
+        //    先に全グループのクアッドを、続けて全グループの川を並べる。
+        //    レンジは `instance_index` の絶対値なので、そのままドローへ渡せる。
+        let mut gpu: Vec<WaterParams> = Vec::with_capacity(total_quads + total_rivers);
+        let mut quad_cursor = 0u32;
+        for (_, quads, _) in buckets.iter() {
+            quad_cursor += quads.len() as u32;
+            gpu.extend_from_slice(quads);
+        }
+        debug_assert_eq!(quad_cursor as usize, total_quads);
+        let mut river_cursor = total_quads as u32;
+        for (_, _, rivers) in buckets.iter() {
+            river_cursor += rivers.len() as u32;
+            gpu.extend_from_slice(rivers);
+        }
+        debug_assert_eq!(river_cursor as usize, total_quads + total_rivers);
+
+        // ── アセットを解決してグループを組み立てる ─────────────────
+        //    解決は毎フレーム呼ぶが、実際の I/O・naga 検証・パイプライン生成が走るのは
+        //    「初回」と「ホットリロードで mtime が変わったとき」だけである。
+        let mut quad_start  = 0u32;
+        let mut river_start = total_quads as u32;
+        for (key, quads, rivers) in buckets.iter() {
+            let quad_range  = quad_start..(quad_start + quads.len() as u32);
+            let river_range = river_start..(river_start + rivers.len() as u32);
+            quad_start  = quad_range.end;
+            river_start = river_range.end;
+            // 空文字＝標準。アセット指定時のみキャッシュを引く（未指定は一切通らない）。
+            let pipeline = if key.is_empty() {
+                None
+            } else {
+                shading_asset::resolve(
+                    device, shader_cache, key, self.hdr_format, DEPTH_FORMAT, allow_hot_reload,
+                )
+            };
+            self.groups.push(WaterDrawGroup {
+                asset: key.clone(), pipeline, quad_range, river_range,
+            });
+        }
+        // バケット分割の結果を 1 行で報告する（内容が変わったときだけ出力される）。
+        // 「アセットを設定したのに見た目が変わらない」の切り分けに使う:
+        //   ・ここに自分のアセットパスが出ていない → 水域の設定が届いていない
+        //   ・出ているのに `標準` と表示される      → ロードに失敗している（LOAD_ERROR を見る）
+        shader_cache.report(
+            shading_asset::REPORT_CHANNEL_GROUPS,
+            format!(
+                "[WATER SHADING] groups=[{}]",
+                self.groups.iter()
+                    .map(|g| format!(
+                        "{}:quad{}+river{}{}",
+                        if g.asset.is_empty() { "<標準>" } else { g.asset.as_str() },
+                        g.quad_range.len(), g.river_range.len(),
+                        if !g.asset.is_empty() && g.pipeline.is_none() { "(標準へフォールバック)" }
+                        else { "" },
+                    ))
+                    .collect::<Vec<_>>().join(", "),
+            ),
+        );
+
         let count = gpu.len();
 
         if self.params_buf.is_none() || self.params_capacity < count {
@@ -787,14 +914,37 @@ impl WaterRenderer {
 
     /// 水面パス内で全水ボリュームを描く。
     /// `prepare` が `true` を返したフレームでのみ呼ぶこと。
+    ///
+    /// ## シェーディングアセット別の分割ドロー（Phase W8）
+    /// 最終色はパイプラインが決めるため、**アセットごとに `set_pipeline` して
+    /// そのレンジだけを描く**。アセットを使っていないフレームはグループが 1 個しか
+    /// できず、発行されるドローは従来と同じ「クアッド 1・川 1」の 2 本である。
+    ///
+    /// BindGroup をグループごとに設定し直しているのは、パイプラインを差し替えた際に
+    /// バインドが無効化されうる（WebGPU 仕様上、レイアウト非互換なら破棄される）ためである。
+    /// 実際には全変種が同じ TOML から作られるためレイアウトは互換だが、
+    /// 「差し替え後に必ず張り直す」方が仕様変更に対して安全で、コストも無視できる
+    /// （グループ数は水域に使われているアセットの種類数＝通常 1〜数個）。
     pub fn draw<'p>(&'p self, pass: &mut wgpu::RenderPass<'p>, camera_bg: &'p wgpu::BindGroup) {
         let Some(bg) = self.frame_bind_group.as_ref() else { return; };
         let Some(field_bg) = self.frame_field_bind_group.as_ref() else { return; };
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, camera_bg, &[]);
-        pass.set_bind_group(1, bg, &[]);
-        pass.set_bind_group(2, field_bg, &[]);
-        self.draw_buckets(pass);
+        for g in &self.groups {
+            // ロード失敗・アセット未指定はどちらも組み込み標準へ落とす。
+            let pipeline = match g.pipeline.as_ref() {
+                Some(p) => &p.pipeline,
+                None    => &self.pipeline,
+            };
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, camera_bg, &[]);
+            pass.set_bind_group(1, bg, &[]);
+            pass.set_bind_group(2, field_bg, &[]);
+            if !g.quad_range.is_empty() && self.quad_vertex_count > 0 {
+                pass.draw(0..self.quad_vertex_count, g.quad_range.clone());
+            }
+            if !g.river_range.is_empty() && self.river_vertex_count > 0 {
+                pass.draw(0..self.river_vertex_count, g.river_range.clone());
+            }
+        }
     }
 
     /// ID パス内で全水面クアッドを 1 ドローで描く（エディタのピッキング用）。

@@ -318,11 +318,17 @@ impl WaterParams {
             //   x = 強さ（負値は「逆向きにばらす」という意味を持たない。0 で完全無効なので
             //       そこへ倒す＝シェーダ側が早期リターンして W6.3 以前と同一出力になる）
             //   y = ノイズの空間周波数倍率（0 以下はワープ量が発散するので下限を切る）
-            //   z,w = 予約（0）
+            //   z = 粘度 0..1（Phase W8。シェーディング契約の `viscosity` として渡す）
+            //   w = 予約（0）
+            //
+            // 粘度をここへ同居させるのは、W6.4 で確保済みの空きスロットを使えば
+            // 配列ストライドも WGSL 側 struct 宣言も変えずに済むためである。
+            // 粘度は既に CPU 側で波速・波紋減衰へ焼き込まれているが、**色には効かない**。
+            // マグマ・毒池のようなアセットが「粘つく艶」を色で表現するために生値を要求する。
             wave_noise: [
                 vis.wave_noise_strength.max(0.0),
                 vis.wave_noise_scale.max(WAVE_NOISE_SCALE_MIN),
-                0.0,
+                vis.viscosity.clamp(0.0, 1.0),
                 0.0,
             ],
         }
@@ -432,6 +438,7 @@ mod tests {
             kind: WaterVolumeKind::Ocean, surface_y: 3.0,
             center: [0.0; 3], half_extents: [0.0; 3], ocean_extent: 500.0, visual,
             actor_dfs_id: 0, river: None,
+            surface_shader: String::new(),
         };
         let p = WaterParams::from_resolved(&ocean, [10.0, 5.0, -20.0], 0, None);
         assert_eq!(p.center, [10.0, 3.0, -20.0, 0.0]);
@@ -444,6 +451,7 @@ mod tests {
             kind: WaterVolumeKind::Region, surface_y: 2.0,
             center: [1.0, 0.0, 2.0], half_extents: [4.0, 1.0, 6.0], ocean_extent: 500.0, visual,
             actor_dfs_id: 0, river: None,
+            surface_shader: String::new(),
         };
         let q = WaterParams::from_resolved(&region, [10.0, 5.0, -20.0], 0, None);
         assert_eq!(q.center, [1.0, 2.0, 2.0, 0.0]);
@@ -477,6 +485,7 @@ mod tests {
             kind: WaterVolumeKind::Region, surface_y: 0.0,
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
             actor_dfs_id: 0, river: None,
+            surface_shader: String::new(),
         };
         let p = WaterParams::from_resolved(&v, [0.0; 3], 0, None);
         assert_eq!(p.fresnel, [2.0, 0.5, 1.25, 0.08], "x,y=フレネル / z,w=波紋");
@@ -520,6 +529,7 @@ mod tests {
             kind: WaterVolumeKind::Region, surface_y: 0.0,
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
             actor_dfs_id: 0, river: None,
+            surface_shader: String::new(),
         };
         let p = WaterParams::from_resolved(&v, [0.0; 3], 0, None);
         assert!(p.wave_axis[0].abs() < 1e-6, "cos(90°) ≒ 0（実際 {}）", p.wave_axis[0]);
@@ -569,6 +579,7 @@ mod tests {
             kind: WaterVolumeKind::Spline, surface_y: 0.0,
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
             actor_dfs_id: 0, river: Some(path.clone()),
+            surface_shader: String::new(),
         };
         let segs: Vec<WaterParams> = path.nodes.windows(2)
             .map(|w| WaterParams::from_river_segment(
@@ -640,6 +651,7 @@ mod tests {
             kind: WaterVolumeKind::Region, surface_y: 0.0,
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
             actor_dfs_id: 0, river: None,
+            surface_shader: String::new(),
         };
         // 粘度 0（既定）は素の `wave_speed` がそのまま入る（丸めも入らない）。
         let p = WaterParams::from_resolved(&v, [0.0; 3], 0, None);
@@ -683,6 +695,7 @@ mod tests {
             kind: WaterVolumeKind::Region, surface_y: 0.0,
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
             actor_dfs_id: 7, river: None,
+            surface_shader: String::new(),
         };
         let p = WaterParams::from_resolved(&v, [0.0; 3], 100, None);
         assert_eq!(p.actor_id[0], 108, "id_base(100) + DFS(7) + 1");

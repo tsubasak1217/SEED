@@ -781,6 +781,9 @@ public partial class InspectorPanel : UserControl
         float WaterDeepB = WaterDeepBDefault,
         float WaterAbsorptionDistance = WaterAbsorptionDistanceDefault,
         float WaterSurfaceOpacity = WaterSurfaceOpacityDefault,
+        // 水面シェーディングアセット（Phase W8。.wgsl の仮想パス）。空文字列 = エンジン標準の水面シェーディング。
+        // 形状・波・反射・屈折には影響せず、水面の「色だけ」を差し替えるアセット。
+        string WaterSurfaceShader = "",
         // 岸のフォーム（色・幅・強度）
         float WaterFoamR = WaterFoamRDefault,
         float WaterFoamG = WaterFoamGDefault,
@@ -1260,6 +1263,8 @@ public partial class InspectorPanel : UserControl
             var waterDeepB        = comp.TryGetProperty("deep_b",           out var wdb)  ? wdb.GetSingle() : WaterDeepBDefault;
             var waterAbsorption   = comp.TryGetProperty("absorption_distance", out var wab) ? wab.GetSingle() : WaterAbsorptionDistanceDefault;
             var waterOpacity      = comp.TryGetProperty("surface_opacity",  out var wso)  ? wso.GetSingle() : WaterSurfaceOpacityDefault;
+            // 水面シェーディングアセット（Phase W8）: .wgsl の仮想パス。欠落/空文字はエンジン標準を意味する。
+            var waterSurfaceShader = comp.TryGetProperty("surface_shader", out var wssh) ? wssh.GetString() ?? "" : "";
             var waterFoamR        = comp.TryGetProperty("foam_r",           out var wfr)  ? wfr.GetSingle() : WaterFoamRDefault;
             var waterFoamG        = comp.TryGetProperty("foam_g",           out var wfg)  ? wfg.GetSingle() : WaterFoamGDefault;
             var waterFoamB        = comp.TryGetProperty("foam_b",           out var wfb)  ? wfb.GetSingle() : WaterFoamBDefault;
@@ -1391,6 +1396,7 @@ public partial class InspectorPanel : UserControl
                 WaterShallowR: waterShallowR, WaterShallowG: waterShallowG, WaterShallowB: waterShallowB,
                 WaterDeepR: waterDeepR, WaterDeepG: waterDeepG, WaterDeepB: waterDeepB,
                 WaterAbsorptionDistance: waterAbsorption, WaterSurfaceOpacity: waterOpacity,
+                WaterSurfaceShader: waterSurfaceShader,
                 WaterFoamR: waterFoamR, WaterFoamG: waterFoamG, WaterFoamB: waterFoamB,
                 WaterFoamWidth: waterFoamWidth, WaterFoamIntensity: waterFoamIntensity,
                 WaterWaveAmplitude: waterWaveAmp, WaterWaveScale: waterWaveScale, WaterWaveSpeed: waterWaveSpeed,
@@ -5107,6 +5113,43 @@ public partial class InspectorPanel : UserControl
         // ── 色と透明度セクション ───────────────────────────────
         var colorSection = BuildSection("色と透明度");
         var colorSp      = (StackPanel)colorSection.Child;
+
+        // 水面シェーディングアセット参照（Phase W8。.wgsl。カメラの shading_asset 行と同じ
+        // FileRefBuilder + D&D の流儀を流用する）。種別（Ocean/Region/Spline）に関わらず共通。
+        // 未設定（空文字列）のときはエンジン標準の水面シェーディングを使う。
+        // 空文字列 virtualPath を送るとランタイム側で標準へ戻る。
+        var waterShadingRow = FileRefBuilder.Build(
+            "水面シェーダ", info.WaterSurfaceShader,
+            [".wgsl"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "水面シェーディングアセット（WGSL）を選択",
+                    Filter = "WGSL シェーダ|*.wgsl|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                SendField("surface_shader", virtualPath);
+            },
+            // 行末の「×」ボタンで指定を解除する（空パス送信でエンジン標準へ戻る）
+            () => SendField("surface_shader", ""));
+        if (waterShadingRow is FrameworkElement waterShadingFe)
+        {
+            waterShadingFe.ToolTip = "空欄＝エンジン標準の水。指定した .wgsl が水面の色だけを決めます（形状・波・反射は不変）。\n" +
+                                      "「×」ボタンまたは右クリックで指定を解除";
+            waterShadingFe.MouseRightButtonUp += (_, e) =>
+            {
+                SendField("surface_shader", "");
+                e.Handled = true;
+            };
+        }
+        colorSp.Children.Add(waterShadingRow);
+
         AddColorRow(colorSp, "浅場の色", info.WaterShallowR, info.WaterShallowG, info.WaterShallowB, "shallow_color");
         AddColorRow(colorSp, "深場の色", info.WaterDeepR,    info.WaterDeepG,    info.WaterDeepB,    "deep_color");
         AddFloatRow(colorSp, "吸収距離(m)",   info.WaterAbsorptionDistance, "absorption_distance", "F2");
