@@ -5760,7 +5760,12 @@ impl App {
                                         // D6 の全体反射モードには連動させず GPU 対応だけで自動選択する
                                         //（上の water_reflection_possible のコメント参照）。
                                         // どれか欠ければ SSR 変種へ落ちる（＝非対応 GPU でも反射は出る）。
-                                        let want_rt = wrp.has_rt();
+                                        // バインドレス変種の RT パイプラインは group3 に
+                                        // テクスチャ配列一式が要る。BindlessResources が
+                                        // 無いフレームでは BindGroup を組めないので、
+                                        // 安全側で SSR 変種へ落とす（反射は出続ける）。
+                                        let want_rt = wrp.has_rt()
+                                            && (!wrp.has_bindless() || draw_ctx.bindless.is_some());
                                         let rt_ref = if want_rt {
                                             draw_ctx.rt_shadow.as_ref().map(|c| c.borrow())
                                         } else { None };
@@ -5779,9 +5784,18 @@ impl App {
                                             let field_bg = wrp.create_field_bg(
                                                 &draw_ctx.device, water,
                                                 self.interaction_field.as_ref(), use_rt);
+                                            // group3: バインドレス変種では画面外ヒットの
+                                            // ベースカラーテクスチャ一式（instance_table・UV・
+                                            // index・テクスチャ配列・サンプラー）も同居する。
+                                            // 借用は BindGroup 生成の間だけ保持する。
+                                            let bl_ref = if use_rt && wrp.has_bindless() {
+                                                draw_ctx.bindless.as_ref().map(|c| c.borrow())
+                                            } else { None };
                                             let scene_bg = wrp.create_scene_bg(
                                                 &draw_ctx.device, grab_view,
-                                                frame.depth_only_view_r(), sky_src.as_ref(), use_rt);
+                                                frame.depth_only_view_r(), sky_src.as_ref(), use_rt,
+                                                bl_ref.as_deref());
+                                            drop(bl_ref);
                                             let meta = draw_ctx.light_buffer.meta_main_buffer();
                                             let gi_bg = match rt_ref.as_ref() {
                                                 Some(r) => wrp.create_rt_gi_bg(

@@ -150,6 +150,14 @@ pub struct RenderPipelineBuilder<'d> {
     /// 同一 TOML から塗り（Fill）とワイヤ（Line）のバリアントを作るために使う。
     /// Line は Features::POLYGON_MODE_LINE（ネイティブ限定）対応 GPU でのみ有効。
     polygon_mode_override: Option<wgpu::PolygonMode>,
+    /// **サイズ未指定の `binding_array<T>`** に与える要素数（バインドレス用）。
+    ///
+    /// WGSL の `binding_array<texture_2d<f32>>`（要素数を書かない形）は naga 上
+    /// `ArraySize::Dynamic` になり、リフレクションだけでは BindGroupLayoutEntry の
+    /// `count` を決められない。実際の要素数は**アダプタ上限でクランプした実行時の値**
+    /// （`bindless::bindless_capacity()`）なので、シェーダに定数として書くこともできない。
+    /// そこでビルダー経由で外から与える。バインドレスを使わないパイプラインでは None。
+    binding_array_count: Option<u32>,
 }
 
 impl<'d> RenderPipelineBuilder<'d> {
@@ -163,7 +171,18 @@ impl<'d> RenderPipelineBuilder<'d> {
         let cfg: PipelineConfig = toml::from_str(toml_src)
             .expect("invalid pipeline TOML");
         Self { device, cfg, surface_format, depth_format, stencil: None, cache: None, label: None,
-               depth_write_override: None, cull_mode_override: None, polygon_mode_override: None }
+               depth_write_override: None, cull_mode_override: None, polygon_mode_override: None,
+               binding_array_count: None }
+    }
+
+    /// サイズ未指定の `binding_array<T>` に与える要素数を設定する（バインドレス変種専用）。
+    ///
+    /// **バインドレス変種を構築するときは必ず指定すること**。指定せずに
+    /// `binding_array<T>` を含む WGSL を渡すと、要素数が決められないため `build` がパニックする
+    /// （黙って 0 要素のレイアウトを作ると、BindGroup 生成時に分かりにくい検証エラーになるため）。
+    pub fn with_binding_array_count(mut self, count: u32) -> Self {
+        self.binding_array_count = Some(count);
+        self
     }
 
     /// シェーダ連結リスト（`shader_sources`）を上書きする。
@@ -254,7 +273,8 @@ impl<'d> RenderPipelineBuilder<'d> {
         F: Fn(&str) -> String,
     {
         let Self { device, cfg, surface_format, depth_format, stencil, cache, label,
-                   depth_write_override, cull_mode_override, polygon_mode_override } = self;
+                   depth_write_override, cull_mode_override, polygon_mode_override,
+                   binding_array_count } = self;
         // ラベル未指定時は vertex_entry 名を使う（従来の label: None から改善）。
         let pipeline_label = label.unwrap_or(cfg.vertex_entry.as_str());
 
@@ -268,7 +288,8 @@ impl<'d> RenderPipelineBuilder<'d> {
         // （シェーダモジュール作成より先に行う。グループ数がデバイスリミットを
         //   超えている場合、wgpu は create_shader_module 時点でパニックするため、
         //   その前に原因が分かるメッセージで検証する）
-        let mut reflected = reflect_bgls(device, &combined, &cfg.vertex_visible_groups);
+        let mut reflected = reflect_bgls(
+            device, &combined, &cfg.vertex_visible_groups, binding_array_count, pipeline_label);
 
         let num_groups = cfg.num_bind_groups.unwrap_or_else(|| {
             reflected.keys().max().copied().map_or(0, |m| m + 1)
@@ -471,10 +492,16 @@ impl<'d> RenderPipelineBuilder<'d> {
 /// `vertex_visible_groups` に挙げた group のテクスチャ・サンプラーだけは
 /// `VERTEX_FRAGMENT` へ広げる（頂点シェーダからサンプルするパス用。TOML 側の
 /// `vertex_visible_groups` を参照）。
+///
+/// `binding_array_count` は **サイズ未指定の `binding_array<T>`**（バインドレスの
+/// テクスチャ配列）へ与える要素数。WGSL 側にサイズが書いてあればそちらを優先する。
+/// `pipeline_label` はエラーメッセージ用（どのパイプラインで失敗したかを示す）。
 fn reflect_bgls(
     device:                &wgpu::Device,
     src:                   &str,
     vertex_visible_groups: &[u32],
+    binding_array_count:   Option<u32>,
+    pipeline_label:        &str,
 ) -> BTreeMap<u32, wgpu::BindGroupLayout> {
     let module = naga::front::wgsl::parse_str(src)
         .unwrap_or_else(|e| panic!("WGSL parse failed: {e:?}"));
@@ -486,7 +513,32 @@ fn reflect_bgls(
 
         let ty = &module.types[var.ty];
 
-        let Some((wgpu_ty, mut visibility)) = to_binding_type(&ty.inner, var.space)
+        // `binding_array<T>` は「要素型 T のバインド種別 ＋ 要素数（count）」で 1 エントリになる。
+        // それ以外は従来どおり型そのものを見る（count = None）。
+        let (inner_ty, count) = match &ty.inner {
+            naga::TypeInner::BindingArray { base, size } => {
+                // 要素数の決定: WGSL に定数サイズが書いてあればそれ、無ければビルダー指定値。
+                // どちらも無い場合はレイアウトを決められないので、原因が分かる形で落とす
+                //（0 要素のレイアウトを黙って作ると BindGroup 生成時の難読なエラーになる）。
+                let n = match size {
+                    naga::ArraySize::Constant(n) => n.get(),
+                    _ => binding_array_count.unwrap_or_else(|| panic!(
+                        "pipeline '{pipeline_label}': サイズ未指定の binding_array が \
+                         @group({}) @binding({}) にあるが、要素数が指定されていない。\
+                         RenderPipelineBuilder::with_binding_array_count() で\
+                         バインドレス容量を渡すこと",
+                        rb.group, rb.binding)),
+                };
+                let nz = std::num::NonZeroU32::new(n).unwrap_or_else(|| panic!(
+                    "pipeline '{pipeline_label}': binding_array の要素数が 0 \
+                     （@group({}) @binding({})）。バインドレス容量は 1 以上でなければならない",
+                    rb.group, rb.binding));
+                (&module.types[*base].inner, Some(nz))
+            },
+            other => (other, None),
+        };
+
+        let Some((wgpu_ty, mut visibility)) = to_binding_type(inner_ty, var.space)
             else { continue };
 
         // 頂点段からサンプルする group は VERTEX 可視を足す（既定は FRAGMENT のみ）。
@@ -499,7 +551,7 @@ fn reflect_bgls(
             binding:    rb.binding,
             visibility,
             ty:         wgpu_ty,
-            count:      None,
+            count,
         });
     }
 

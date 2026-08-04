@@ -96,7 +96,14 @@ struct WaterSkyUniform {
     /// rgb = tint × intensity（実効色の乗算項）／**a = 有効フラグ（0 でスカイボックス無し）**。
     tint_enabled: vec4<f32>,
 }
-@group(3) @binding(3) var<uniform> wr_sky:   WaterSkyUniform;
+// 【なぜ uniform ではなく storage なのか】
+// group3 はバインドレス変種で `binding_array<texture_2d<f32>>`（ヒット点のベースカラー
+// テクスチャ配列）を同居させる。WebGPU/wgpu の制約により
+// **binding_array と uniform buffer は同一 bind group に置けない**
+//（wgpu-core: "Bind groups may not contain both a binding array and a uniform buffer"）。
+// レイアウト（vec4 ×4 = 64B）は uniform と同一なので、値も更新経路も一切変わらない。
+// 不透明 RT 反射（reflection_rt.wgsl）が LightMeta を storage で読んでいるのと同じ理由・同じ流儀。
+@group(3) @binding(3) var<storage, read> wr_sky: WaterSkyUniform;
 @group(3) @binding(4) var          t_water_sky: texture_2d<f32>;
 @group(3) @binding(5) var          s_water_sky: sampler;
 

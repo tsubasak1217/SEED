@@ -11,9 +11,17 @@
 #   water_reflection_common … カメラ(group0)・グラブと深度(group3)・GI(group4 0..4)・頂点段
 #   water_reflection_rt     … ライト/TLAS/アルベド(group4 5..7)・フラグメント本体
 #
+# 【重要】ここに書くのは **基底の並びだけ** である。画面外ヒットのアルベド解決
+#   （water_reflection_hit_on / _off）は GPU のバインドレス対応可否で決まるため、
+#   water_reflection.rs の `rt_shader_sources()` が実行時に末尾へ 1〜2 本足す。
+#   したがって本 TOML の並び単体では `water_refl_hit_albedo` が未定義であり、
+#   パイプライン構築は必ず `rt_shader_sources()` を通すこと。
+#
 # num_bind_groups = 5: group0=カメラ / group1=水パラメータ＋岸波 / group2=波紋の場 /
-#   group3=シーンカラーのグラブ＋深度 / group4=GI＋ライト＋TLAS。**上限ちょうど**であり、
-#   これ以上グループは増やせない（バインドレスのテクスチャ配列を諦めた理由でもある）。
+#   group3=シーンカラーのグラブ＋深度（＋バインドレスのテクスチャ配列一式）/
+#   group4=GI＋ライト＋TLAS。**上限ちょうど**であり、これ以上グループは増やせない。
+#   バインドレスを group3 へ入れられるのは、group3 の唯一の uniform だった wr_sky を
+#   storage へ変えて「binding_array と uniform の同居不可」制約を外したためである。
 #
 # vertex_visible_groups = [1, 2]: 頂点段が高さ場（ショアフィールド・波紋の場）を
 #   サンプルするため。水面パス・ID パスとまったく同じ理由・同じ指定。
