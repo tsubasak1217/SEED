@@ -297,6 +297,7 @@ mod tests {
             kind: WaterVolumeKind::Region, surface_y: 0.0,
             center, half_extents: half, ocean_extent: 0.0,
             visual: visual(viscosity, damping), actor_dfs_id: 0, river: None,
+            surface_shader: String::new(),
         }
     }
 
@@ -425,6 +426,7 @@ mod tests {
             kind: WaterVolumeKind::Ocean, surface_y: 0.0,
             center: [0.0; 3], half_extents: [0.0; 3], ocean_extent: 2000.0,
             visual: visual(0.5, 1.0), actor_dfs_id: 0, river: None,
+            surface_shader: String::new(),
         };
         let regions = collect_water_physics_regions(
             &[ocean], [100.0, -50.0], 64.0, K_BASE, FIXED_DT, 32);
@@ -439,6 +441,7 @@ mod tests {
             kind: WaterVolumeKind::Ocean, surface_y: 0.0,
             center: [0.0; 3], half_extents: [0.0; 3], ocean_extent: 2000.0,
             visual: visual(0.0, 1.0), actor_dfs_id: 0, river: None,
+            surface_shader: String::new(),
         };
         // 粘度 1 のマグマ池（小さい）を大洋（大きい）より **後ろ**に置いて渡す。
         let pond = region([0.0; 3], [4.0, 1.0, 4.0], 1.0, 1.0);
@@ -488,6 +491,7 @@ mod tests {
             kind: WaterVolumeKind::Spline, surface_y: 0.0,
             center: [0.0; 3], half_extents: [0.0; 3], ocean_extent: 0.0,
             visual: visual(1.0, 1.0), actor_dfs_id: 0, river: Some(path),
+            surface_shader: String::new(),
         };
         let regions = collect_water_physics_regions(
             &[v], [-32.0, -32.0], 64.0, K_BASE, FIXED_DT, 32);
@@ -504,6 +508,7 @@ mod tests {
             kind: WaterVolumeKind::Spline, surface_y: 0.0,
             center: [0.0; 3], half_extents: [0.0; 3], ocean_extent: 0.0,
             visual: visual(1.0, 1.0), actor_dfs_id: 0, river: None,
+            surface_shader: String::new(),
         };
         let regions = collect_water_physics_regions(
             &[v], [-32.0, -32.0], 64.0, K_BASE, FIXED_DT, 32);

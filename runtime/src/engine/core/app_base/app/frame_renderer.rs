@@ -4764,6 +4764,10 @@ impl App {
                                 );
                             }
                             let depth_sample_view = frame.depth_only_view_r();
+                            // ホットリロードの可否は `water` の可変借用より **前** に読む
+                            // （`self` の可変借用中に `self.mode` を読めないため）。
+                            let water_shader_hot_reload =
+                                self.mode == RuntimeMode::Edit || self.play_shader_hot_reload;
                             let water = self.water_renderer.as_mut()
                                 .expect("water_renderer は直前に構築済み");
                             water_prepared = water.prepare(
@@ -4793,7 +4797,26 @@ impl App {
                                     water_reflection_view
                                         .unwrap_or(&draw_ctx.pipelines.water_reflection.dummy_view)
                                 },
+                                // 水面シェーディングアセット（Phase W8）のビルド結果キャッシュ。
+                                // `surface_shader` を設定した水域がある場合だけ触られる。
+                                &draw_ctx.water_shading_asset_cache,
+                                // ホットリロードの可否は L3-a のシェーディングアセットと
+                                // **同じ規約**を共有する（Edit は常に ON、Play はエディタ設定
+                                // `play_shader_hot_reload` に従う）。片方だけ挙動が違うと
+                                // 「WGSL を保存したのに反映される／されない」が分かれて混乱する。
+                                water_shader_hot_reload,
                             );
+
+                            // ── 水面シェーディングアセットのエラー／警告通知 ─────────
+                            // レンダラーからは IPC を送れないため、キャッシュがキューに積んだ
+                            // 人間可読メッセージをここで drain してエディタへ流す
+                            // （L3-a の LOAD_ERROR: と同じ流儀。同一メッセージの連投は抑止済み）。
+                            for msg in draw_ctx.water_shading_asset_cache.drain_errors() {
+                                eprintln!("[SEED water_shading_asset] {msg}");
+                                if let Some(ipc) = &self.ipc {
+                                    ipc.send(&format!("LOAD_ERROR:{msg}"));
+                                }
+                            }
                             // ID パス（後段）で水面クアッドを描いてよいかを伝える。
                             // **この前倒しは ID パス（draw_id）より必ず前**である
                             //（後になるとピッキングが 1 フレーム遅れる／壊れる）。

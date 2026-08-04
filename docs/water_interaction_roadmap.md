@@ -1229,6 +1229,73 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
   - 半透明オブジェクトは水面の屈折像に映らない（W7.1 の副作用。上記）。
   - 水中から見上げた水面にフォグ・色味は一切乗らない（素通し）。W2 の水中ポストで乗る。
 
+- **W8: 水面シェーディングアセット** — ✅ **実装済み（2026-08-04）**
+  ユーザーの `.wgsl` 1 枚で**水面 1 ピクセルの最終色**を差し替える土台。
+  マグマ・毒沼などを「アセットの差し替えだけ」で作れるようにする。
+  **正典は `docs/water_shading_asset.md`**（契約の全入力・標準ライブラリ・サンプルの設定値）。
+
+  **設計の要点**
+
+  - **アセットが変えられるのは「色」だけ**。形状・波の高さ場・ピック形状・反射像・
+    コースティクス・物性はすべて共有高さ場（`water_height_field.wgsl`）と
+    `WaterVolume` のパラメータが正典で、アセットからは変更できない。
+    ID パス・水面反射パス・コースティクスパスは**アセットを一切通らない**ため、
+    見た目を差し替えてもクリック判定と反射の焼き込みは常に一致する。
+  - **契約は純粋関数の集まり**。アセットが実装するのは
+    `fn water_shade(input: WaterShadeInput) -> vec4<f32>` の 1 本だけで、
+    バインディング（uniform / texture / storage）は一切見えない。
+    必要な材料（ワールド位置・波法線・視線・厚み・3 種の泡・反射サンプル rgb+強度・
+    屈折グラブ・流速・時間・水域パラメータ・粘度）はすべて構造体に詰めて渡される。
+    契約がレイアウトではなく**意味のある名前**で渡すので、`WaterParams` に vec4 を
+    足しても契約は壊れない。
+  - **標準実装 `water_shade_default()` を契約側に置く**。アセット未指定・ロード失敗の
+    フォールバック先であると同時に、アセットから呼んで部分流用もできる
+    （「標準の水を作ってから加工する」「吸収だけ標準を使う」）。
+  - **差し替えは連結 1 要素の置換**。L3-a と同じ流儀で、
+    `water_shade_dispatch.wgsl`（既定の `water_shade_entry`）を
+    「アセット本体 ＋ 生成した `water_shade_entry`」へ差し替える。
+    NaN/Inf/負値のガードは**ユーザー実装にしか掛けない**ため、
+    アセットを指定していない水は W7 以前と 1 ビットも変わらない。
+  - **描画はアセットごとのバケット分割**。パラメータ配列を
+    `[Aのクアッド…, Bのクアッド…, Aの川…, Bの川…]` の順に並べ、
+    グループごとに `set_pipeline` してレンジだけを描く。
+    外側の 2 区画（クアッド／川）は W5.1 のまま崩さない（1 ドローの頂点数は 1 つだけで、
+    両者の格子分割数が桁違いのため）。
+    **アセットを 1 つも使わないプロジェクトはグループ 1 個＝ドローコールも並びも W5.1 と同一**。
+  - **キャッシュキーは内容ハッシュ**（L3-a と同一）。同一内容なら別パスでもパイプラインを
+    共有し（マグマ池 10 個でパイプライン 1 本）、失敗も記録して内容が変わるまで再ビルドしない。
+    mtime を 1 秒間隔でポーリングするホットリロードは、Edit 常時・Play はエディタ設定
+    `play_shader_hot_reload`（**L3-a と共有**）に従う。
+  - **エディタの WGSL 検証はマーカーで自動判別**。IPC（`VALIDATE_WGSL`）に種別パラメータを
+    足さず、ソース先頭の `// @water_shading_contract N` の有無で
+    水面契約 / L3-a 契約の検証コンテキストを切り替える。ファイルを移動・改名しても
+    内容が正しければ常に正しい契約で検証される。
+
+  **実装参照**
+
+  | 役割 | 場所 |
+  |---|---|
+  | 契約 v1（型・標準実装・標準ライブラリ） | `renderer/shaders/water_shading_contract.wgsl` |
+  | 既定ディスパッチ（差し替え対象） | `renderer/shaders/water_shade_dispatch.wgsl` |
+  | ロード・検証・生成・キャッシュ | `renderer/water/shading_asset.rs` |
+  | 材料の収集と契約への引き渡し | `renderer/shaders/water_surface.wgsl`（`fs_water`） |
+  | 連結順の正典 | `renderer/pipelines/water_surface.toml` |
+  | バケット分割と分割ドロー | `renderer/water/mod.rs`（`WaterRenderer::prepare` / `draw`） |
+  | コンポーネントのフィールド | `components/water_volume_component.rs`（`surface_shader`） |
+  | IPC（設定） | `app/water_ops.rs`（`SET_WATER_FIELD ... surface_shader`） |
+  | IPC（検証の振り分け） | `app/shading_validate_ops.rs` |
+  | インスペクタ UI | `editor/src/Panels/InspectorPanel.xaml.cs`（`BuildWaterVolumeSlotContent`） |
+  | サンプルアセット | `runtime/assets/shaders/magma.wgsl` / `poison.wgsl` |
+
+  **W8 の既知の制限**（`docs/water_shading_asset.md` 8 章に詳細）
+
+  - スクリプトエディタの**補完**に水面契約のシンボル（`WaterShadeInput` のフィールド・
+    `water_shade_*` 関数）がまだ出ない。検証（赤線）は効く。
+  - 水面パスはバインドグループが上限に達しており**ライト配列を読めない**。
+    ライト依存のスペキュラが欲しいアセットは固定光で近似する（`poison.wgsl` がその例）。
+  - 出力アルファは HDR RT に書かれるだけで**合成には使われない**（ブレンドは Replace）。
+    契約 v1 では将来のための予約枠。
+
 ### インタラクション系（I）
 
 - **I1: InteractionSource＋瞬発場＋草の揺れ** — ✅ **実装済み（2026-07-28）**

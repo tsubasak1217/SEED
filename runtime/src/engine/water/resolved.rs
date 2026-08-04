@@ -166,6 +166,15 @@ pub struct ResolvedWaterVolume {
     /// 制御点が 2 点未満の Spline は `None` になり、描画も問い合わせも行われない
     /// （＝「川として成立していない水」は存在しないのと同じ扱い）。
     pub river: Option<RiverPath>,
+    /// 水面シェーディングアセットのパス（Phase W8。`assets://` 仮想パスまたは絶対パス）。
+    ///
+    /// **空文字列 = エンジン標準の見た目**。この文字列が同じ水域どうしは
+    /// 描画バケットがまとめられ、1 本のパイプラインで描かれる
+    /// （`renderer::water::WaterRenderer::prepare` を参照）。
+    ///
+    /// 問い合わせ（`WaterQuery`）はこの値を一切見ない。アセットが決めるのは色だけで、
+    /// 形状・物性はこの構造体の他のフィールドが正典であるという境界を保つため。
+    pub surface_shader: String,
 }
 
 impl ResolvedWaterVolume {
@@ -223,6 +232,7 @@ impl ResolvedWaterVolume {
                 visual:       WaterVisualParams::from_component(c),
                 actor_dfs_id,
                 river:        None,
+                surface_shader: c.surface_shader.trim().to_string(),
             },
             // Region / Spline: アクタ位置を AABB 中心とし、水面 Y は
             // 「中心 Y + surface_height（相対）」で決まる。
@@ -280,6 +290,7 @@ impl ResolvedWaterVolume {
                     visual:       WaterVisualParams::from_component(c),
                     actor_dfs_id,
                     river,
+                    surface_shader: c.surface_shader.trim().to_string(),
                 }
             }
         }

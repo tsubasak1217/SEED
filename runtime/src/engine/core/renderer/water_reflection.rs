@@ -889,12 +889,20 @@ mod tests {
         assert!(get_shader_source("water_reflection_common.wgsl")
                 .contains("return vec4<f32>(color * intensity, intensity);"),
             "出力がプリマルチプライドでない（ブラー時に水際が黒く滲む）");
-        // 水面パス側は a を重みとして掛け、色は a で割り戻す（0 なら反射なしの水）。
+        // 水面パス側は RT を読んでプリマルチプライドを割り戻し、a を強度として
+        // シェーディング契約（Phase W8）へ渡す。**混合そのものは契約側が行う**ので、
+        // ここは「読み取りと受け渡し」「契約側の重み付け」の 2 箇所を別々に固定する。
         let surface = super::super::water::resolve_water_shader("water_surface.wgsl");
-        assert!(surface.contains("fresnel * clamp(reflection.a, 0.0, 1.0)"),
-            "水面パスが反射強度（a）を重みとして使っていない");
         assert!(surface.contains("reflection.rgb / max(reflection.a, WATER_REFL_UNPREMULT_MIN)"),
             "水面パスがプリマルチプライドを割り戻していない（反射が強度倍に暗く／明るくなる）");
+        assert!(surface.contains("let refl_strength = clamp(reflection.a, 0.0, 1.0);"),
+            "水面パスが反射強度（a）を契約入力として取り出していない");
+        assert!(surface.contains("si.reflection_strength = refl_strength;"),
+            "反射強度がシェーディング契約へ渡されていない");
+        // 契約の標準実装が「フレネル × 反射強度」で混ぜること（a=0 なら反射なしの水）。
+        let contract = super::super::water::resolve_water_shader("water_shading_contract.wgsl");
+        assert!(contract.contains("fresnel * clamp(input.reflection_strength, 0.0, 1.0)"),
+            "契約の標準実装が反射強度（a）を重みとして使っていない");
     }
 
     /// 粗さ 0 はブラーパスごとスキップされること（＝完全な鏡面の保証）。

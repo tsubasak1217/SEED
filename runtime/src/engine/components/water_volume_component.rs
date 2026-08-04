@@ -461,6 +461,20 @@ pub struct WaterVolumeComponentData {
     /// 1 アクタに ControlPoint スロットが複数ある場合は 0 番目を使う。
     #[serde(default)]
     pub control_point_ref: String,
+    /// 水面シェーディングアセット（`.wgsl`）のパス（Phase W8）。
+    ///
+    /// **空文字列 = エンジン標準の見た目**（既定）。`assets://` 仮想パスまたは絶対パスを
+    /// 指定すると、その `.wgsl` が実装する `water_shade` が水面 1 ピクセルの最終色を決める。
+    ///
+    /// ## 変えられるのは色だけ
+    /// 形状・波・流れ・波紋・岸波・ピック形状・反射・コースティクスは共有の高さ場が正典で、
+    /// アセットからは一切変更できない。詳細は docs/water_shading_asset.md を参照。
+    ///
+    /// ## 同じアセットを指す水域はまとめて描かれる
+    /// 描画バケットはこの文字列で分割されるため、マグマ池を 10 個置いても
+    /// パイプラインは 1 本・ドローはクアッド 1 本で済む。
+    #[serde(default)]
+    pub surface_shader: String,
     /// この水域を**水位グラフ（Phase W2.5）のノードにするか**。既定 false。
     ///
     /// true にすると Play 中、`WaterLinkComponent`（開口）でつながった他の水域と
@@ -524,6 +538,8 @@ impl Default for WaterVolumeComponentData {
             river_segment_length:  default_river_segment_length(),
             // 参照は既定で空（＝spline_points 経路。既存シーンの挙動そのまま）。
             control_point_ref:     String::new(),
+            // 空文字＝エンジン標準の水（Phase W8）。
+            surface_shader:        String::new(),
             // 水位グラフ（W2.5）は既定で無効（＝旧シーンの水面は静止したまま）。
             simulate_level:        false,
         }
@@ -619,6 +635,8 @@ pub struct WaterVolumeComponent {
     pub river_segment_length: f32,
     /// 川の制御点を借りる参照先アクタ名（空 = spline_points を使う。Phase W4.1）
     pub control_point_ref: String,
+    /// 水面シェーディングアセット（.wgsl）のパス（空 = エンジン標準。Phase W8）
+    pub surface_shader: String,
     /// この水域を水位グラフのノードにするか（Region のみ有効。既定 false。Phase W2.5）
     pub simulate_level: bool,
     /// **【揮発】水位グラフが計算した現在の水面 Y（ワールド絶対値）。Phase W2.5**
@@ -686,6 +704,7 @@ impl WaterVolumeComponent {
             river_depth:           data.river_depth,
             river_segment_length:  data.river_segment_length,
             control_point_ref:     data.control_point_ref,
+            surface_shader:        data.surface_shader,
             simulate_level:        data.simulate_level,
             // 揮発フィールド（W2.5）。読み込み直後は常に「未シミュレーション」。
             // Play を開始した最初のフレームに level_sim が初期水位を入れる。
@@ -741,6 +760,7 @@ impl WaterVolumeComponent {
             river_segment_length:  self.river_segment_length,
             // 参照名も所有権を渡せない（&self 受け）ため複製する。
             control_point_ref:     self.control_point_ref.clone(),
+            surface_shader:        self.surface_shader.clone(),
             simulate_level:        self.simulate_level,
         }
     }
@@ -870,6 +890,8 @@ mod tests {
         assert_eq!(d.river_segment_length, 2.0, "旧シーンの川の形が変わらない既定値であること");
         assert_eq!(d.control_point_ref, def.control_point_ref);
         assert!(d.control_point_ref.is_empty(), "参照は既定で未設定");
+        assert_eq!(d.surface_shader, def.surface_shader);
+        assert!(d.surface_shader.is_empty(), "水面シェーダは既定で未設定＝エンジン標準");
         // W2.5: 水位グラフは既定で無効（旧 .scene の水面が動き出さない保証）
         assert_eq!(d.simulate_level, def.simulate_level);
         assert!(!d.simulate_level, "水位シミュレーションは既定 OFF であること");
@@ -926,6 +948,7 @@ mod tests {
             river_depth: 1.75,
             river_segment_length: 0.75,
             control_point_ref: "RiverPathActor".to_string(),
+            surface_shader: "assets://shaders/magma.wgsl".to_string(),
             simulate_level: true,
         };
         let back = WaterVolumeComponent::from_data(src.clone()).to_data();
@@ -969,6 +992,7 @@ mod tests {
         assert_eq!(back.river_depth, src.river_depth);
         assert_eq!(back.river_segment_length, src.river_segment_length);
         assert_eq!(back.control_point_ref, src.control_point_ref);
+        assert_eq!(back.surface_shader, src.surface_shader);
         assert_eq!(back.simulate_level, src.simulate_level);
     }
 
