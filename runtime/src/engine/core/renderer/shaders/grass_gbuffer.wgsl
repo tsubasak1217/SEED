@@ -269,8 +269,9 @@ struct InteractionFieldUniform {
     wave_k:         f32,
     /// 1 サブステップぶんの波の減衰係数（更新パスのみ使用。草は見ない）。
     wave_damp:      f32,
+    /// 水域の物性矩形数（更新パスのみ使用。草は見ない。Phase I2.1）。
+    water_region_count: u32,
     /// パディング（未使用）。
-    _pad0:          f32,
     _pad1:          f32,
     _pad2:          f32,
 }

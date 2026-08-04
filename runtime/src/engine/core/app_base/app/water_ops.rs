@@ -22,6 +22,11 @@ use crate::engine::core::renderer::water::params::{
 };
 // 川幅の下限も同じ理由でエンジン層（スプライン幾何）の定数を共有する。
 use crate::engine::water::{RIVER_SEGMENT_LENGTH_MIN, RIVER_WIDTH_MIN};
+// 水域ごとの物性（W5.2 / I2.1）のクランプも、波紋シミュレーション本体と同じ関数・
+// 定数を使う（別実装にすると「インスペクタでは通るがシミュレーションで丸められる」ずれが出る）。
+use crate::engine::interaction::{
+    sanitize_ripple_damping_rate, VISCOSITY_MAX, VISCOSITY_MIN,
+};
 
 use super::App;
 
@@ -51,6 +56,7 @@ impl App {
     ///      shallow_color / deep_color / absorption_distance / surface_opacity /
     ///      foam_color / foam_width / foam_intensity / wave_amplitude / wave_scale /
     ///      wave_speed / wave_direction_deg（W6.3）/ ripple_strength / ripple_foam_threshold /
+    ///      viscosity / ripple_damping（I2.1 水域ごとの物性）/
     ///      fresnel_power / fresnel_strength /
     ///      reflection_intensity / reflection_roughness（W5.2。旧 reflection_color は撤去）/
     ///      refraction_distortion / shore_wave_*（W1.5）/
@@ -208,6 +214,21 @@ impl App {
                 // 0 だと静水面まで泡だらけになるため、描画側と同じ下限で締める。
                 if let Ok(v) = value.parse::<f32>() {
                     w.ripple_foam_threshold = v.max(NON_NEGATIVE_MIN);
+                }
+            }
+            // ── 水域ごとの物性（Phase I2.1）──────────────────────────
+            "viscosity" => {
+                // 粘度は 0..1 の正規化パラメータ。負の粘度・粘度 2 に物理的な意味は無く、
+                // シミュレーション側でも同じ範囲へクランプされる（二重定義を避けて定数を共有）。
+                if let Ok(v) = value.parse::<f32>() {
+                    w.viscosity = v.clamp(VISCOSITY_MIN, VISCOSITY_MAX);
+                }
+            }
+            "ripple_damping" => {
+                // 波紋の減衰率（1/s）。0 だと波紋が永久に消えず、巨大値は非正規化数を生むため、
+                // シミュレーション側と**同じ**許容レンジで締める。
+                if let Ok(v) = value.parse::<f32>() {
+                    w.ripple_damping = sanitize_ripple_damping_rate(v);
                 }
             }
             // ── 岸波（Phase W1.5）──────────────────────────────────

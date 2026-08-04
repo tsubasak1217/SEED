@@ -383,7 +383,8 @@ pub enum IpcCommand {
     /// key: kind / surface_height / region_half_extents / ocean_extent / shallow_color /
     ///      deep_color / absorption_distance / surface_opacity / foam_color / foam_width /
     ///      foam_intensity / wave_amplitude / wave_scale / wave_speed /
-    ///      ripple_strength / ripple_foam_threshold / fresnel_power /
+    ///      ripple_strength / ripple_foam_threshold /
+    ///      viscosity / ripple_damping（I2.1 水域ごとの物性）/ fresnel_power /
     ///      fresnel_strength / reflection_intensity / reflection_roughness（W5.2）/
     ///      refraction_distortion /
     ///      shore_wave_strength / shore_wave_length / shore_wave_period / shore_wave_foam（W1.5 岸波）。

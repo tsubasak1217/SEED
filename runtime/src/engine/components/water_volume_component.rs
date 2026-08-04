@@ -120,6 +120,37 @@ fn default_ripple_strength() -> f32 { 1.0 }
 /// 歩行が立てる波（振幅 0.03 前後）では泡が出ず、走り・飛び込みで出る値。
 fn default_ripple_foam_threshold() -> f32 { 0.05 }
 
+// ─── 水域ごとの物性（Phase W5.2 / I2.1）の既定値 ────────────────
+//
+// ここまでのパラメータが「見た目」だったのに対し、以下 2 つは
+// **その水域の“中身”＝物性**である。水／泥／マグマを 1 つの WaterVolume で
+// 作り分けるためのノブで、波紋（インタラクションフィールド）の伝播と
+// 解析波のスクロール速度に効く。
+//
+// **既定値は「W5.2 以前とまったく同じ水」**になるよう選んである
+//（viscosity = 0 は全スケールが厳密に 1.0、ripple_damping は現行の減衰時定数の逆数）。
+
+/// viscosity の既定値（0 = さらさらの水。W5.2 以前と同一挙動）。
+///
+/// 0 のとき粘度由来のスケール係数はすべて **厳密に 1.0**（浮動小数の丸めも入らない）
+/// になるため、既存シーンの波紋・波は 1 ビットも変わらない。
+fn default_viscosity() -> f32 { 0.0 }
+
+/// ripple_damping の既定値（波紋の減衰**率** 1/s）。
+///
+/// ## なぜ「率」であって「時定数」ではないのか
+/// フィールド名が damping（減衰）なので、**値が大きいほど速く消える**方が
+/// 名前と意味が一致する。時定数 τ（秒）にすると「大きいほど長く残る」となり
+/// 名前と逆向きになるため、率 = 1/τ を採る。
+///
+/// ## 既定値の根拠（現行定数との等価性）
+/// `renderer::interaction::INTERACTION_WAVE_DECAY_TAU_SECS`（= 1.5 秒）の逆数。
+/// 1 サブステップの減衰係数は `exp(-dt_fixed × 率)` で計算されるので、
+/// この既定値は現行の `exp(-dt_fixed / 1.5)` と等価である
+///（等価性は `interaction::water_physics` のテストが数値で固定する）。
+/// **ここを触るとエンジン定数と食い違う**ので、片方だけ変えないこと。
+fn default_ripple_damping() -> f32 { 1.0 / 1.5 }
+
 // ─── 水中コースティクス（Phase W5.3）の既定値 ─────────────────
 //
 // コースティクス（集光模様）は「水面の高さ場のラプラシアン × 水深」から作る
@@ -333,6 +364,28 @@ pub struct WaterVolumeComponentData {
     /// 波紋フォームが出る波高しきい値（m 相当。Phase I2）
     #[serde(default = "default_ripple_foam_threshold")]
     pub ripple_foam_threshold: f32,
+    /// **この水域の粘度（0..1。既定 0 = 現行の水と完全同一）。Phase I2.1**
+    ///
+    /// 「水／泥／マグマ」を 1 つのコンポーネントで作り分けるための物性値。
+    /// 上げると次の 3 つが同時に効く（すべて `interaction::water_physics` が担当）:
+    ///   1. **波紋が立ちにくい** — 波源スタンプの振幅がスケールで縮む
+    ///   2. **伝播が遅い** — 波動方程式の波速 c が下がる（＝波紋の輪がゆっくり広がる）
+    ///   3. **解析波もなまる** — 見た目の一貫性のため `wave_speed` にも同じ低下係数が掛かる
+    ///
+    /// 範囲外の値は 0..1 へクランプされる（負の粘度・粘度 2 に物理的な意味が無いため）。
+    /// **波速は下がる方向にしか動かない**ので、CFL 安定条件が粘度で破れることはない。
+    #[serde(default = "default_viscosity")]
+    pub viscosity: f32,
+    /// **この水域の波紋の減衰率（1/s。既定 = 現行エンジン定数と等価）。Phase I2.1**
+    ///
+    /// 大きいほど波紋が速く消える（率なので `damping` の名前と向きが一致する）。
+    /// 1 サブステップぶんの減衰係数は `exp(-dt_fixed × この値)`。
+    /// 粘度とは**独立**に指定できる（＝「重いのに波が長く残る溶岩」も作れる）。
+    ///
+    /// 極端な値は `interaction::water_physics` の許容レンジへクランプされる
+    ///（0 を許すと波紋が永久に消えず、巨大値は非正規化数を生むため）。
+    #[serde(default = "default_ripple_damping")]
+    pub ripple_damping: f32,
     /// 水中コースティクス（集光模様）の強さ。**0 で完全無効**（Phase W5.3）
     #[serde(default = "default_caustics_intensity")]
     pub caustics_intensity: f32,
@@ -451,6 +504,9 @@ impl Default for WaterVolumeComponentData {
             refraction_distortion: default_refraction_distortion(),
             ripple_strength:       default_ripple_strength(),
             ripple_foam_threshold: default_ripple_foam_threshold(),
+            // 水域ごとの物性（Phase I2.1）。既定は「W5.2 以前と同一の水」。
+            viscosity:             default_viscosity(),
+            ripple_damping:        default_ripple_damping(),
             // 水中コースティクス（Phase W5.3。描画専用パラメータ）。
             caustics_intensity:    default_caustics_intensity(),
             caustics_scale:        default_caustics_scale(),
@@ -531,6 +587,10 @@ pub struct WaterVolumeComponent {
     pub ripple_strength: f32,
     /// 波紋フォームが出る波高しきい値（m 相当。Phase I2）
     pub ripple_foam_threshold: f32,
+    /// この水域の粘度（0..1。0 = 現行の水と完全同一。Phase I2.1）
+    pub viscosity: f32,
+    /// この水域の波紋の減衰率（1/s。大きいほど速く消える。Phase I2.1）
+    pub ripple_damping: f32,
     /// 水中コースティクスの強さ（0 で完全無効。Phase W5.3）
     pub caustics_intensity: f32,
     /// コースティクスの細かさ倍率（Phase W5.3）
@@ -610,6 +670,8 @@ impl WaterVolumeComponent {
             refraction_distortion: data.refraction_distortion,
             ripple_strength:       data.ripple_strength,
             ripple_foam_threshold: data.ripple_foam_threshold,
+            viscosity:             data.viscosity,
+            ripple_damping:        data.ripple_damping,
             caustics_intensity:    data.caustics_intensity,
             caustics_scale:        data.caustics_scale,
             caustics_depth_fade:   data.caustics_depth_fade,
@@ -661,6 +723,8 @@ impl WaterVolumeComponent {
             refraction_distortion: self.refraction_distortion,
             ripple_strength:       self.ripple_strength,
             ripple_foam_threshold: self.ripple_foam_threshold,
+            viscosity:             self.viscosity,
+            ripple_damping:        self.ripple_damping,
             caustics_intensity:    self.caustics_intensity,
             caustics_scale:        self.caustics_scale,
             caustics_depth_fade:   self.caustics_depth_fade,
@@ -774,6 +838,13 @@ mod tests {
         assert_eq!(d.refraction_distortion, def.refraction_distortion);
         assert_eq!(d.ripple_strength, def.ripple_strength);
         assert_eq!(d.ripple_foam_threshold, def.ripple_foam_threshold);
+        // 水域ごとの物性（Phase I2.1）。旧 .scene にフィールドが無くても既定値が入り、
+        // **粘度 0 ＝ W5.2 以前とまったく同じ水**として読み込まれること。
+        assert_eq!(d.viscosity, def.viscosity);
+        assert_eq!(d.ripple_damping, def.ripple_damping);
+        assert_eq!(d.viscosity, 0.0, "粘度の既定は 0（現行の水と同一挙動）");
+        assert_eq!(d.ripple_damping, 1.0 / 1.5,
+            "波紋の減衰率の既定は現行エンジン定数（τ=1.5s）の逆数であること");
         // 水中コースティクス（Phase W5.3）。旧 .scene にフィールドが無くても
         // 既定値（0.6 / 1.0 / 6.0）が入り、読み込みが失敗しないこと。
         assert_eq!(d.caustics_intensity, def.caustics_intensity);
@@ -839,6 +910,8 @@ mod tests {
             refraction_distortion: 0.07,
             ripple_strength: 1.5,
             ripple_foam_threshold: 0.2,
+            viscosity: 0.65,
+            ripple_damping: 2.5,
             caustics_intensity: 0.35,
             caustics_scale: 2.5,
             caustics_depth_fade: 9.5,
@@ -880,6 +953,8 @@ mod tests {
         assert_eq!(back.refraction_distortion, src.refraction_distortion);
         assert_eq!(back.ripple_strength, src.ripple_strength);
         assert_eq!(back.ripple_foam_threshold, src.ripple_foam_threshold);
+        assert_eq!(back.viscosity, src.viscosity);
+        assert_eq!(back.ripple_damping, src.ripple_damping);
         assert_eq!(back.caustics_intensity, src.caustics_intensity);
         assert_eq!(back.caustics_scale, src.caustics_scale);
         assert_eq!(back.caustics_depth_fade, src.caustics_depth_fade);

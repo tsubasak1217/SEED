@@ -24,6 +24,7 @@
 use crate::engine::water::{ResolvedWaterVolume, WaterQuery};
 
 use super::velocity::MovingInteractionSource;
+use super::water_physics::viscosity_stamp_scale;
 
 // ─── 調整定数（マジックナンバー禁止）─────────────────────────
 
@@ -95,7 +96,9 @@ pub fn apply_water_wave_injection(
 /// ソース 1 個が立てる波の振幅を求める（水面付近にいなければ 0）。
 fn wave_amplitude_for(src: &MovingInteractionSource, query: &WaterQuery<'_>) -> f32 {
     // ① その XZ に水面があるか（無ければ水域外＝注入なし）。
-    let Some(surface_y) = query.surface_height_at(src.world_pos) else {
+    //    **水面を提供した水域そのもの**も受け取る（Phase I2.1）。粘度は水域ごとの
+    //    物性なので、「どの水を叩いているのか」が分からないと振幅を決められない。
+    let Some((volume, surface_y)) = query.topmost_volume_at_xz(src.world_pos) else {
         return 0.0;
     };
     // ② 水面に十分近いか（Y の帯で判定する。空中・水底深くのソースは弾く）。
@@ -120,8 +123,14 @@ fn wave_amplitude_for(src: &MovingInteractionSource, query: &WaterQuery<'_>) -> 
     } else {
         0.0
     };
-    // ④ コンポーネントの強さを掛け、上限で飽和させる。
-    ((h_term + v_term) * src.strength.max(0.0)).min(WAVE_MAX_AMPLITUDE)
+    // ④ コンポーネントの強さと **水域の粘度スケール** を掛け、上限で飽和させる。
+    //
+    //    粘度スケール（Phase I2.1）は「重い流体ほど波紋が立ちにくい」を表す。
+    //    粘度 0（既定）では厳密に 1.0 なので、既存シーンの振幅は 1 ビットも変わらない。
+    //    上限クランプの**前**に掛けるのが要点で、後に掛けると
+    //    「飛び込みだけは粘度に関係なく上限に張り付く」という不自然になる。
+    let viscosity_scale = viscosity_stamp_scale(volume.visual.viscosity);
+    ((h_term + v_term) * src.strength.max(0.0) * viscosity_scale).min(WAVE_MAX_AMPLITUDE)
 }
 
 // ─── 水位グラフの流量 → 波源（Phase W2.5 の演出接続）───────────
@@ -194,6 +203,8 @@ mod tests {
             reflection_intensity: 0.0, reflection_roughness: 0.0,
             refraction_distortion: 0.0,
             ripple_strength: 0.0, ripple_foam_threshold: 0.0,
+            // 水域ごとの物性（Phase I2.1）。既定相当（＝現行の水）の値を入れておく。
+            viscosity: 0.0, ripple_damping: 1.0 / 1.5,
             // 水中コースティクス（Phase W5.3）。既定相当の値を入れておく。
             caustics_intensity: 0.6, caustics_scale: 1.0, caustics_depth_fade: 6.0,
             // 影の屈折ゆらぎもテスト用ダミーでは 0（＝影をずらさない）。
@@ -317,6 +328,74 @@ mod tests {
         s[0].strength = 0.0;
         apply_water_wave_injection(&mut s, &[pond()]);
         assert_eq!(s[0].wave_amplitude, 0.0);
+    }
+
+    // ── 水域ごとの粘度（Phase I2.1）────────────────────────────
+
+    /// **粘度 0（既定）の水は従来とビット単位で同一の振幅**になること。
+    /// これが崩れると、既存シーンの波紋の見た目が黙って変わる。
+    #[test]
+    fn zero_viscosity_matches_legacy_amplitude() {
+        // 期待値は粘度を掛けない旧式（速度 → 振幅）そのもの。
+        let speed = 4.0_f32;
+        let expected = (speed * WAVE_AMPLITUDE_PER_HORIZONTAL_SPEED).min(WAVE_MAX_AMPLITUDE);
+        let mut s = vec![source([0.0, 0.0, 0.0], [speed, 0.0], 0.0)];
+        apply_water_wave_injection(&mut s, &[pond()]);
+        assert_eq!(s[0].wave_amplitude, expected, "粘度 0 で振幅が変わっている");
+    }
+
+    /// 粘度を上げると同じ動きでも波紋が立ちにくくなること（泥・マグマの体感）。
+    #[test]
+    fn higher_viscosity_injects_less() {
+        let mut water = pond();
+        let mut mud   = pond();
+        mud.visual.viscosity = 0.5;
+        let mut magma = pond();
+        magma.visual.viscosity = 1.0;
+
+        let run = |v: &ResolvedWaterVolume| {
+            let mut s = vec![source([0.0, 0.0, 0.0], [4.0, 0.0], 0.0)];
+            apply_water_wave_injection(&mut s, std::slice::from_ref(v));
+            s[0].wave_amplitude
+        };
+        water.visual.viscosity = 0.0;
+        let a_water = run(&water);
+        let a_mud   = run(&mud);
+        let a_magma = run(&magma);
+        assert!(a_water > a_mud && a_mud > a_magma, "粘度で単調に弱くならない");
+        // 粘度 1 でも完全には消えない（「重い流体でも落下物は波を立てる」）。
+        assert!(a_magma > 0.0, "粘度 1 で波紋が完全に消えている");
+    }
+
+    /// 粘度は**飽和の前**に効くこと（飛び込みだけ粘度を無視して上限に張り付かない）。
+    #[test]
+    fn viscosity_applies_before_saturation() {
+        let mut magma = pond();
+        magma.visual.viscosity = 1.0;
+        // 飽和するほど激しい動き。
+        let mut s = vec![source([0.0, 0.0, 0.0], [20.0, 20.0], -20.0)];
+        apply_water_wave_injection(&mut s, &[magma]);
+        assert!(s[0].wave_amplitude < WAVE_MAX_AMPLITUDE,
+            "粘度 1 のマグマで上限に張り付いている（クランプ後に掛けている疑い）");
+    }
+
+    /// 重なった水域では**水面を提供した水域の粘度**が使われること。
+    ///
+    /// 高さと物性を別々に走査すると「水面は大洋・粘度は池」というちぐはぐが起きる。
+    #[test]
+    fn viscosity_comes_from_the_volume_that_provides_the_surface() {
+        // 低い水面のマグマ池（粘度 1）の上に、高い水面の普通の水（粘度 0）が重なる。
+        let mut magma = pond();
+        magma.surface_y = -1.0;
+        magma.visual.viscosity = 1.0;
+        let mut water = pond();
+        water.surface_y = 0.0;
+        water.visual.viscosity = 0.0;
+        // ソースは高い方の水面（Y=0）にいる ＝ 普通の水を叩いている。
+        let mut s = vec![source([0.0, 0.0, 0.0], [4.0, 0.0], 0.0)];
+        apply_water_wave_injection(&mut s, &[magma, water]);
+        let expected = (4.0_f32 * WAVE_AMPLITUDE_PER_HORIZONTAL_SPEED).min(WAVE_MAX_AMPLITUDE);
+        assert_eq!(s[0].wave_amplitude, expected, "下の池の粘度を拾っている");
     }
 
     // ── 水位グラフの流量 → 波源（Phase W2.5）──────────────────
