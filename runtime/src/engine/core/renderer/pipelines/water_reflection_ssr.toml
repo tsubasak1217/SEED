@@ -14,6 +14,7 @@ num_bind_groups = 5
 shader_sources  = [
     "water_height_field.wgsl",
     "ddgi_common.wgsl",
+    "sky_reflection_common.wgsl",
     "water_reflection_common.wgsl",
     "water_reflection_ssr.wgsl",
 ]

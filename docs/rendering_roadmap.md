@@ -904,6 +904,41 @@ Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward
   `PostFxSettings.reflection_intensity`（既定 1.0, SET_POST_FX の `reflection_intensity`）。
   BindGroup: SSR=group0..3（4）/ RT=group0..4（5＝max_bind_groups 上限）/ composite=group0（1）。
   実装: `renderer/reflection.rs`, `shaders/reflection_common|ssr|rt|composite.wgsl`, `frame_renderer.rs` 配線。
+- **D6 反射のミス経路で空を映す（天球テクスチャ直接サンプル）: 実装済み（2026-08-04）**。
+  反射レイが何にも当たらなかったとき（＝空へ抜けたとき）の色が GI プローブ／フラットアンビエント
+  だけだったため、**反射先の空が画面外になるケース**（見下ろし・壁際・磨かれた床）で反射が
+  のっぺりした一色になり、同じシーンの水面反射（W5.2 は天球直接サンプルを持つ）と見た目が食い違っていた。
+  修正: `ssr_fallback` / `rt_refl_fallback` の先頭に **equirectangular 天球テクスチャの直接サンプル**段を追加し、
+  「① 天球 → ② GI プローブ／アンビエント」の 2 段にした。スカイボックスが 1 つも無いシーンでは
+  `enabled=0` のダミーが挿さり、**従来どおり GI へフォールバックする（挙動不変）**。
+  - **式は水面反射と 1 本を共有する**: 新設の `shaders/sky_reflection_common.wgsl`
+    （`ReflectionSkyUniform` / `SkyReflSample` / `sky_refl_sample(sky, tex, smp, dir)`。
+    バインディングを持たない純定義）を D6・水面の**両方**が連結する。UV 変換（経度 atan2/2π+0.5・
+    緯度 acos/π）・実効色（tint×intensity）・有効フラグ判定がここ 1 箇所にしかないので、
+    水面と不透明面が「同じ方向なのに違う空の色」を返す事故が構造的に起きない。
+    Rust 側も `renderer/reflection_sky.rs` の `ReflectionSkyUniform` / `ReflectionSkySource` を共用し、
+    代表天球の選択は `SkyboxSystem::reflection_sky_source()` の 1 入口に統一した
+    （旧 `WaterSkyUniform` / `WaterSkySource` / `water_reflection_source()` からのリネーム）。
+  - **バインド枠**: 天球 3 本（uniform=binding3 / texture=binding4 / sampler=binding5）は
+    **group2（input）**へ追加した。group2 は SSR/RT 両変種が共有する唯一のグループで、かつ
+    `binding_array` を含まないので uniform を素直に置ける（水面反射は group3 にバインドレスの
+    テクスチャ配列が同居するため storage 化が必要だった。ここではその制約が無い）。
+    **グループ数は増えない（SSR=4 / RT=5 のまま＝上限維持）**。フラグメント段の実測は
+    単体テクスチャ 10 本・サンプラー 4〜5 本（既定上限 16 に対し十分な余裕）。
+  - **水面反射にある「画面内の空をグラブから射影して拾う」段は D6 には無い**。反射パスが走るのは
+    skybox の球メッシュを描く**前**であり、入力の `scene_hdr` の背景にはまだ空が描かれていない
+    （水面反射は skybox 描画後にグラブを取るのでその段を持てる）。よって D6 は 2 段構成である。
+  - サンプラーは **u=Repeat / v=ClampToEdge**（`skybox.rs`・水面反射と同一規約。u を clamp すると
+    経度 0°の継ぎ目に縦線が出る）。
+  - 検証: 契約テスト（ミス経路の順序・共有関数経由・group2 宣言）、naga 検証（連結順に
+    `sky_reflection_common.wgsl` を追加）、実 GPU テスト
+    `reflection::tests::reflection_pipelines_build_on_gpu`（`--ignored`。パイプライン生成＋
+    天球あり/なし両方の group2 BindGroup 生成）。GPU テストは RT/バインドレスのグローバルフラグを
+    書き換えるため `renderer::GPU_TEST_LOCK` で直列化する（並列実行で偽陽性が出た実績あり）。
+  実装: `shaders/sky_reflection_common.wgsl`（新規）, `renderer/reflection_sky.rs`（新規）,
+  `shaders/reflection_common|ssr|rt.wgsl`, `shaders/water_reflection_common.wgsl`,
+  `renderer/reflection.rs` / `water_reflection.rs` / `skybox.rs` / `mod.rs` / `pipeline.rs`,
+  `frame_renderer.rs` 配線。
 - **RT 反射のガラス対応（実装 A）: 実装済み**。従来 RT 反射レイは `RT_REFL_CULL_MASK=0x01`（不透明のみ）で
   ガラスを素通りし、反射面にガラスが映らなかった。修正: 不透明トレース（0x01）とは別に、同じ原点・方向で
   **半透明（0x02）だけを最大 4 枚トレース**（`rt_refl_glass`）し、入射面ごとに透過色 T=(1-α)+α·tr·albedo を
@@ -1429,8 +1464,18 @@ RT-Translucency の屈折を土台に、「本物のガラス」を作れる 2 �
 - `deferred` を OFF にすると反射が完全に消えること（反射は G-Buffer 有効時のみ動く独立パス）。
 - RT 非対応 GPU で `rt` を選ぶと自動で SSR が動くこと（`reflection=ssr(rt非対応→ssr)` ログ）。
 - `reflection_intensity` を変えると反射の強さがスケールすること。
-- SSR は画面外・裏面ヒットでミスし、GI 有効時は粗い環境反射、無効時は反射なし（黒＝加算無害）になること。
+- SSR は画面外・裏面ヒットでミスし、**スカイボックスのあるシーンでは天球の色が映る**こと。
+  スカイボックスが無いシーンでは従来どおり GI 有効時は粗い環境反射、無効時は反射なし（黒＝加算無害）。
   （`App::log_render_features_if_changed`、変化時のみ・重複抑制）。
+- **ミス経路の空の映り込み（2026-08-04 追加）**: スカイボックスのあるシーンで反射モードを
+  `Rt` / `Ssr` の**両方**に切り替え、鏡面の床・金属に **空の色・雲・夕焼けが映る**こと。
+  とくに**カメラを見下ろし気味にする**（＝反射先の空が画面外になる）と効果が分かる
+  ——修正前はここで GI の平坦色（GI 無効なら黒）になっていた。
+- 同じシーンに水面がある場合、**水面の反射と床の反射で空の色が一致**すること
+  （UV 変換・実効色を共有 WGSL 関数に一本化した効果。ズレていたら共有経路が壊れている）。
+- WorldAnchored なスカイボックスをアクタごと回転させると、反射に映る空も一緒に回ること
+  （逆回転行列が効いている証拠）。CameraLocked では回らない。
+- スカイボックスを削除／無効化すると、反射が従来の GI フォールバックへ戻ること（挙動不変の確認）。
 
 ### TLAS 構築ゲートの一般化
 

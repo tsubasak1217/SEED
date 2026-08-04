@@ -67,6 +67,9 @@ pub(crate) mod velocity_debug;
 pub(crate) mod gbuffer_debug;
 /// 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）
 pub(crate) mod reflection;
+/// 反射のミス経路（レイが空へ抜けたとき）に映すスカイボックスの入力データ。
+/// D6 不透明反射（`reflection`）と W5.2 水面反射（`water_reflection`）が共用する。
+pub(crate) mod reflection_sky;
 /// 水面反射パス（Phase W5.2）。D6 のハイブリッド RT 反射を水面の格子へ流用し、
 /// 反射色を専用 RT へ焼く（水面パスはそれを 1 枚読むだけ）。
 pub(crate) mod water_reflection;
@@ -123,11 +126,13 @@ pub use interaction::{InteractionFieldRenderer, InteractionFieldUniformGpu, Inte
                       INTERACTION_FIELD_DECAY_TAU_SECS, INTERACTION_MAX_SOURCES};
 pub use reflection::{ReflectionPipelines, ReflectionParams,
                      RT_REFLECTION_NAME, REFLECTION_FORMAT, DEFAULT_REFLECTION_INTENSITY};
+// 反射のミス経路が映すスカイボックス（D6 不透明反射と W5.2 水面反射で共用する入力データ）。
+pub use reflection_sky::{ReflectionSkySource, ReflectionSkyUniform};
 // パイプライン本体（`WaterReflectionPipelines`）は `DrawPipelines::water_reflection` 経由でしか
 // 触らないので再エクスポートしない（型名を直接書く箇所が無い）。RT 名とフォーマットだけ公開する。
 pub use water_reflection::{
     RT_WATER_REFLECTION_NAME, WATER_REFLECTION_FORMAT,
-    WaterReflectionBlurTargets, WaterSkySource, WaterSkyUniform,
+    WaterReflectionBlurTargets,
     water_reflection_blur_radius_px, WATER_REFL_BLUR_ITERATIONS,
 };
 pub use imos_blur::{ImosBlur, ImosBlurParams, IMOS_BLUR_FORMAT};
@@ -138,6 +143,20 @@ pub use shadow_mask::{ShadowMaskPipelines, ShadowMaskTargets, ShadowMaskParams,
                       RT_SHADOW_MASK_LIGHTS, SHADOW_MASK_FORMAT, SHADOW_MASK_RESOLUTION_DIVISOR,
                       select_shadow_mask_lights, assign_shadow_mask_slots};
 pub use shadow_mask_bilateral::{ShadowMaskBilateral, ShadowMaskBilateralParams};
+
+/// **実 GPU テスト（`--ignored`）を直列化するためのロック**。
+///
+/// RT 対応・バインドレス対応は `rt_shadow` / `bindless` の**プロセス全体で 1 つのグローバル**で
+/// 表現されており、GPU テストはそれを一時的に書き換えてから元へ戻す。`cargo test` は既定で
+/// テストを並列に走らせるため、複数の GPU テストが同時に走ると
+/// **片方の「元へ戻す」がもう片方の設定を潰し**、「RT 対応アダプタなのに RT 変種が構築されない」
+/// といった偽陽性の失敗になる（実際に反射と水面反射の GPU テストで発生した）。
+/// グローバルを書き換える GPU テストは必ず本ロックを取ること。
+///
+/// 毒されたロック（別テストが panic した後）でも検証は続行したいので、`unwrap_or_else` で
+/// 中身を取り出して使う（`PoisonError::into_inner`）。
+#[cfg(test)]
+pub(crate) static GPU_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub use post::{RtPool, PostContext, VignetteParams, VignetteStage,
                PostFxSettings, BloomParams, BloomPipelines,
                DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_INTENSITY,

@@ -195,7 +195,19 @@ fn rt_refl_hit_indirect(hit_pos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     return rt_meta.ambient_color * rt_meta.ambient_intensity;
 }
 
+// レイが何にも当たらなかったとき（＝空へ抜けたとき）の色。優先順位には理由がある:
+//   ① 天球テクスチャの直接サンプル … 反射方向の空が**画面外**でも本物の空の色が返る。
+//      これが無いと、空を映すべき床・磨かれた面が GI プローブの平坦色になり、
+//      同じシーンの水面反射（W5.2 は同じ共有関数を使う）と見た目が食い違う。
+//      画面内に写っている空を拾う段は D6 には無い（reflection_common.wgsl の理由参照:
+//      本パスの時点で scene_hdr にはまだ skybox が描かれていない）。
+//   ② GI プローブ／フラットアンビエント … スカイボックスが無いシーンのフォールバック。
+// なお `rt_refl_hit_indirect`（ヒット点の間接光の床）は空ではなく面の環境光なので変更しない。
 fn rt_refl_fallback(world_pos: vec3<f32>, r_dir: vec3<f32>) -> vec3<f32> {
+    let sky = reflection_sky_miss(r_dir);
+    if sky.valid {
+        return sky.color;
+    }
     if rt_gi.enabled != 0u {
         return ddgi_sample_irradiance(rt_gi, world_pos, r_dir, t_gi_irr, t_gi_vis, s_gi);
     }

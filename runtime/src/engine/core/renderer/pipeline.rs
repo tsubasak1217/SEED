@@ -157,6 +157,11 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         // デファードのフルスクリーン・ライティング復元（Phase D3: Deferred 化 Phase A）。
         "deferred_lighting.wgsl"     => include_str!("shaders/deferred_lighting.wgsl"),
         // 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）。
+        // 反射のミス経路が使う「天球テクスチャ直接サンプル」の共有定義
+        //（ReflectionSkyUniform / sky_refl_sample。バインディングを持たない純定義）。
+        // 不透明反射 D6（reflection_*）と水面反射 W5.2（water_reflection_*）の**両方**が連結し、
+        // 利用側の共通ファイルより**前**に置くこと（WGSL は宣言前の識別子を参照できない）。
+        "sky_reflection_common.wgsl" => include_str!("shaders/sky_reflection_common.wgsl"),
         "reflection_common.wgsl"     => include_str!("shaders/reflection_common.wgsl"),
         "reflection_ssr.wgsl"        => include_str!("shaders/reflection_ssr.wgsl"),
         "reflection_rt.wgsl"         => include_str!("shaders/reflection_rt.wgsl"),
@@ -1936,7 +1941,7 @@ impl DrawPipelines {
         let gbuffer_debug         = super::gbuffer_debug::GBufferDebugPipeline::new(device, sf, cache);
         // 反射（Phase D6）。deferred の camera_bgl/gbuffer_bgl を借りて構築するため deferred の後に呼ぶ。
         // 出力先は sf（scene_hdr / RT_REFLECTION と同じ HDR）。
-        let reflection            = super::reflection::ReflectionPipelines::new(device, &deferred, sf, cache);
+        let reflection            = super::reflection::ReflectionPipelines::new(device, queue, &deferred, sf, cache);
         // AO（Phase D4）。deferred の camera_bgl/gbuffer_bgl を借りて構築するため deferred の後に呼ぶ。
         // 白 1x1 の初期化に queue を使う（AO=Off 時の t_ao スロット用）。
         let ao                    = super::ao::AoPipelines::new(device, queue, &deferred, cache);

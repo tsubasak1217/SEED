@@ -73,6 +73,31 @@ struct ReflectionParams {
 @group(2) @binding(1) var t_scene_hdr: texture_2d<f32>;
 @group(2) @binding(2) var s_scene:     sampler;
 
+// ─── Group 2（続き）: スカイボックス（ミス経路で本物の空を映す）──────
+//
+// 【なぜ scene_hdr では空を拾えないのか】
+// 反射パスが走るのは **不透明 Deferred ライティング直後・メインフォワード再開前**であり、
+// スカイボックスの球メッシュはそのあと（frame_renderer の skybox_system.draw）に描かれる。
+// つまり本パスが入力として読む `t_scene_hdr` の背景画素には**空がまだ描かれていない**。
+// よって水面反射（W5.2）の①「画面内に写っている空をグラブから射影して拾う」段は
+// D6 では成立しない（水面パスは skybox 描画後にグラブを取るので成立する）。
+// D6 のミス経路は **② 天球テクスチャ直接サンプル → ③ GI/アンビエント** の 2 段になる。
+//
+// 型・UV 変換・実効色の乗算は `sky_reflection_common.wgsl`（水面反射と共有）が持つ。
+// group2 は `binding_array` を含まないので、ここは素直に **uniform** で置ける
+//（水面側は group3 にバインドレスのテクスチャ配列が同居するため storage。値は同一）。
+// スカイボックスが 1 つも無いシーンでは `enabled = 0` のダミーが挿さり、従来どおり
+// GI プローブ／アンビエントへ落ちる（＝挙動は D6 当初と同一）。
+@group(2) @binding(3) var<uniform> u_refl_sky: ReflectionSkyUniform;
+@group(2) @binding(4) var          t_refl_sky: texture_2d<f32>;
+@group(2) @binding(5) var          s_refl_sky: sampler;
+
+/// このパスのバインディングを差し込んで天球を直接サンプルする薄いラッパー。
+/// SSR / RT の両変種のミス経路（`ssr_fallback` / `rt_refl_fallback`）から呼ぶ。
+fn reflection_sky_miss(dir: vec3<f32>) -> SkyReflSample {
+    return sky_refl_sample(u_refl_sky, t_refl_sky, s_refl_sky, dir);
+}
+
 // フルスクリーン三角形（deferred_lighting.wgsl と同一手法）。
 const REFLECTION_FS_POS: array<vec2<f32>, 3> = array<vec2<f32>, 3>(
     vec2<f32>(-1.0, -1.0),

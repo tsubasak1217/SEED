@@ -82,20 +82,9 @@ struct CameraUniform {
 // スカイボックスが 1 つも無いシーンでは `enabled = 0` のダミーが挿さり、従来どおり
 // GI プローブ／アンビエントへ落ちる（＝挙動は W5.2 当初と同一）。
 //
-// `WaterSkyUniform` は Rust 側 `water_reflection.rs::WaterSkyUniform`（64B）のミラー。
-// **skybox.wgsl の SkyboxUniform とは別物**（あちらは球メッシュの配置行列を持つ描画用。
-// こちらは「ワールド方向 → 天球ローカル方向」の逆回転と実効色だけを持つサンプル用）。
-struct WaterSkyUniform {
-    /// ワールド → 天球ローカルの逆回転行列 第 1 行（.xyz。.w は未使用）。
-    /// CameraLocked は単位行列（ワールド方向でそのままサンプルする）。
-    rot_inv_0: vec4<f32>,
-    /// 同 第 2 行。
-    rot_inv_1: vec4<f32>,
-    /// 同 第 3 行。
-    rot_inv_2: vec4<f32>,
-    /// rgb = tint × intensity（実効色の乗算項）／**a = 有効フラグ（0 でスカイボックス無し）**。
-    tint_enabled: vec4<f32>,
-}
+// 型（`ReflectionSkyUniform`）・UV 変換・実効色の乗算は **不透明反射 D6 と共有**の
+// `sky_reflection_common.wgsl` が持つ（本ファイルより前に連結される）。
+// 水面と不透明面が同じ方向へ同じ空の色を返すことが要件なので、式を二重に持たない。
 // 【なぜ uniform ではなく storage なのか】
 // group3 はバインドレス変種で `binding_array<texture_2d<f32>>`（ヒット点のベースカラー
 // テクスチャ配列）を同居させる。WebGPU/wgpu の制約により
@@ -103,7 +92,7 @@ struct WaterSkyUniform {
 //（wgpu-core: "Bind groups may not contain both a binding array and a uniform buffer"）。
 // レイアウト（vec4 ×4 = 64B）は uniform と同一なので、値も更新経路も一切変わらない。
 // 不透明 RT 反射（reflection_rt.wgsl）が LightMeta を storage で読んでいるのと同じ理由・同じ流儀。
-@group(3) @binding(3) var<storage, read> wr_sky: WaterSkyUniform;
+@group(3) @binding(3) var<storage, read> wr_sky: ReflectionSkyUniform;
 @group(3) @binding(4) var          t_water_sky: texture_2d<f32>;
 @group(3) @binding(5) var          s_water_sky: sampler;
 
@@ -171,13 +160,9 @@ const WATER_REFL_IGN_C: f32 = 52.9829189;
 /// 1 本目と相関しない値が要る（同じ式へ無理数的なオフセットを入れて位相をずらす）。
 const WATER_REFL_IGN_OFFSET: vec2<f32> = vec2<f32>(5.588238, 7.117382);
 
-/// 円周率まわり（equirectangular サンプリング用。他モジュールと名前が衝突しないよう接頭辞付き）。
-const WATER_REFL_INV_2PI: f32 = 0.15915494309189; // 1 / (2π)
-const WATER_REFL_INV_PI:  f32 = 0.31830988618379; // 1 / π
-const WATER_REFL_TAU:     f32 = 6.28318530717959; // 2π（ジッタ角の全周）
-
-/// スカイボックス有効フラグ（`wr_sky.tint_enabled.w`）の判定しきい値。
-const WATER_REFL_SKY_ENABLED_EPS: f32 = 0.5;
+/// ジッタ角の全周（2π）。equirect の UV 換算係数と有効フラグしきい値は
+/// 共有モジュール `sky_reflection_common.wgsl`（`SKY_REFL_*`）が持つ。
+const WATER_REFL_TAU: f32 = 6.28318530717959;
 
 /// プリマルチプライドの逆算（`rgb / a`）で 0 除算を避ける下限。
 /// 反射強度がこの値以下なら、そもそも反射寄与が見えないので色は使われない。
@@ -298,30 +283,13 @@ fn water_refl_screen_sky(origin: vec3<f32>, dir: vec3<f32>) -> WaterReflSky {
 
 /// **天球テクスチャを直接**サンプルする（画面外の空を映すための経路）。
 ///
-/// スカイボックスが無いシーンでは `valid = false` を返し、呼び出し側が GI へ落ちる。
-/// equirectangular の UV 変換は `skybox.wgsl::fs_main` と**同一式**である
-/// （経度 = atan2(z, x)/2π + 0.5、緯度 = acos(y)/π。ミップ継ぎ目回避で level 0 固定）。
-/// これを揃えないと「画面内の空（グラブ経由）」と「画面外の空（本経路）」で
-/// 同じ方向なのに違う色が出て、水面に不連続な色の境目が走る。
-fn water_refl_skybox(dir: vec3<f32>) -> WaterReflSky {
-    var s: WaterReflSky;
-    s.color = vec3<f32>(0.0, 0.0, 0.0);
-    s.valid = false;
-    if wr_sky.tint_enabled.w < WATER_REFL_SKY_ENABLED_EPS {
-        return s; // このシーンにスカイボックスが無い（ダミーがバインドされている）。
-    }
-    // ワールド方向 → 天球ローカル方向（CameraLocked は単位行列なので実質そのまま）。
-    let d = normalize(vec3<f32>(
-        dot(wr_sky.rot_inv_0.xyz, dir),
-        dot(wr_sky.rot_inv_1.xyz, dir),
-        dot(wr_sky.rot_inv_2.xyz, dir),
-    ));
-    let u = atan2(d.z, d.x) * WATER_REFL_INV_2PI + 0.5;
-    let v = acos(clamp(d.y, -1.0, 1.0)) * WATER_REFL_INV_PI;
-    s.color = textureSampleLevel(t_water_sky, s_water_sky, vec2<f32>(u, v), 0.0).rgb
-            * wr_sky.tint_enabled.rgb;
-    s.valid = true;
-    return s;
+/// 実体は不透明反射 D6 と共有の `sky_refl_sample()`（`sky_reflection_common.wgsl`）である。
+/// 本パス側のバインディング（storage の `wr_sky`・天球テクスチャ・Repeat サンプラー）を
+/// 差し込むだけの薄いラッパーで、**UV 変換式・実効色・有効フラグ判定は 1 本しか存在しない**
+/// （水面と不透明面で同じ方向に同じ色が出ることが要件）。
+/// スカイボックスが無いシーンでは `valid = false` が返り、呼び出し側が GI へ落ちる。
+fn water_refl_skybox(dir: vec3<f32>) -> SkyReflSample {
+    return sky_refl_sample(wr_sky, t_water_sky, s_water_sky, dir);
 }
 
 /// レイが何にも当たらなかったときの色（**ミス経路の唯一の窓口**。RT / SSR 共通）。

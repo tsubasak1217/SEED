@@ -51,8 +51,19 @@ fn ssr_project(world_pos: vec3<f32>) -> SsrProj {
     return r;
 }
 
-// ミス時: GI 有効なら反射方向の DDGI、無効なら 0（加算合成なので黒は無害）。
+// ミス時（マーチが画面外へ抜けた／何にも当たらなかった）の色。優先順位には理由がある:
+//   ① 天球テクスチャの直接サンプル … 反射方向の空が**画面外**でも本物の空の色が返る。
+//      これが無いと、空を映すべき床・水たまり・磨かれた面が GI の平坦色（GI 無効なら黒）になり、
+//      同じシーンの水面反射（W5.2 は同じ経路を持つ）と見た目が食い違う。
+//      画面内に写っている空を拾う段は D6 には無い（reflection_common.wgsl の理由参照:
+//      本パスの時点で scene_hdr にはまだ skybox が描かれていない）。
+//   ② GI プローブ … スカイボックスが無いシーンのフォールバック。
+//   ③ 0（黒）… GI も無効なら寄与なし（加算合成なので黒は無害）。
 fn ssr_fallback(world_pos: vec3<f32>, r_dir: vec3<f32>) -> vec3<f32> {
+    let sky = reflection_sky_miss(r_dir);
+    if sky.valid {
+        return sky.color;
+    }
     if ssr_gi.enabled != 0u {
         return ddgi_sample_irradiance(ssr_gi, world_pos, r_dir, ssr_gi_irr, ssr_gi_vis, ssr_gi_samp);
     }
