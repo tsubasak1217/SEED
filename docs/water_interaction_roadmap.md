@@ -792,6 +792,42 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
     水面反射（本節）／D6 の RT 反射の画面外ヒット（`reflection_rt_hit_off.wgsl`）／
     DDGI のバウンス色（`ddgi_probe_update.wgsl`）／RT 色付き影の色相（`rt_shadow_on.wgsl`）／
     RT 屈折のガラス着色（`refract_rt.wgsl`）。
+  - **地形（terrain チャンク）はバインドレス実サンプルに乗れない → チャンク単位の平均色**
+    （2026-08-04 実装）。
+    **症状**: 上記バインドレス化のあとも、水面／RT 反射に映る画面外の地形だけが
+    **白〜灰色の板**のままだった。
+    **原因**: 地形チャンクはレイヤブレンド（`layers.json` のルール＋手ペイントで
+    レイヤ重みが決まり、複数テクスチャを triplanar でブレンド）で色を作るため、
+    **単一のベースカラーテクスチャを持たない**。マテリアルは
+    `terrain_mesh_build.rs` が `Material::default()`（テクスチャ無し・
+    `base_color_factor` = 白）で組み立てていたので、
+    `BindlessInstanceRecord.flags` に `ELIGIBLE` が立たず（＝テクスチャを引けない）、
+    ヒットシェーダが平均アルベドへ縮退した先が**白のベタ塗り**だった。
+    **修正（最低ライン＝チャンク単位の実効平均色）**:
+    再メッシュ時／ペイント時に「そのチャンクのレイヤ重み平均 × 各レイヤの実効色
+    （`base_color` × ベースカラーテクスチャのアルファ加重平均）」を CPU で焼き、
+    チャンクマテリアルの `avg_albedo` / `base_color_tex_avg` へ書く
+    （`app/terrain_layer_albedo.rs`。テクスチャ平均は `asset_cache::texture_avg_linear` を
+    再利用し、正規化済みアセットパス単位でプロセス内キャッシュ）。
+    合成式は `terrain_gbuffer_write.wgsl` のベースカラー合成
+    `Σ_slot weight × (base_color × tex)` と一致させてある。
+    灰色 → 土色／草色の**チャンク単位の色**になる。
+    **追従経路**: フル再メッシュ（`terrain_mesh_to_model`）とペイント高速パス
+    （`rebuild_terrain_model_with_colors`）の両方で再計算する。高速パスは `GpuModel` を
+    作り直さないので `gpu_model.avg_albedos[0]` も明示的に書き戻す
+    （`terrain_ops.rs::apply_terrain_paint_colors`）。これにより `rt_shadow.rs` の
+    静止スキップ シグネチャ（`primitive_avg_albedo` をハッシュ）が変わり、
+    次フレームで TLAS と instance_table が再構築される。
+    `layers.json` の保存（`TERRAIN_RELOAD_LAYERS`）は全チャンク再メッシュなので自動追従。
+    **効く先**: 水面反射（本節）／D6 の RT 反射の画面外ヒット／DDGI のバウンス色／
+    RT 色付き影の色相／RT 屈折のガラス着色（すべて同じ平均アルベド storage を読む）。
+    **残る限界（申し送り）**: 色の分布はチャンク（既定 16m 角）単位で潰れるため、
+    水面に映る地形は**チャンク単位のモザイク**になり、境界で色が段差になる。
+    ヒット位置ベースの近似ブレンド（ヒットのワールド XZ からレイヤ重みを引き、
+    上位 1〜2 レイヤをブレンドする）は、地形が頂点 UV を持たず triplanar で
+    描かれる以上、**レイヤ重みを運ぶ新しいメガバッファ（頂点ごとの重み）＋
+    `BindlessInstanceRecord` へのパレット拡張＋レイヤ実効色テーブル**が要る。
+    レコード 64B の拡張と 4 変種のシェーダ改修に波及するため本フェーズでは見送った。
   - **粗さブラーの半径は「このフレームに映る水域の最大粗さ」で一様**（v1 の制限）。
     いもす法の分離ボックスは走査線全体で窓幅一定であることが前提なので、画素ごとに
     半径を変えるには半径別に複数枚ぼかして合成する必要がある。粗さの違う水域が

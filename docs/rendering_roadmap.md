@@ -1507,6 +1507,19 @@ inline RT のヒットシェーディング（色付き影・DDGI・RT 反射）
   **WGSL リフレクション経由のパイプライン**でもサイズ未指定 `binding_array<T>` の
   `count` を実行時容量で埋められるようにした（従来は BGL 手書きの reflection.rs だけが
   バインドレスを使えた）。詳細は `docs/water_interaction_roadmap.md` の W5.2 節。
+- **地形チャンクの平均アルベド（2026-08-04 実装）**: 地形はレイヤブレンドで色を作るため
+  **単一のベースカラーテクスチャを持たず**、バインドレスの実サンプル経路（`ELIGIBLE`）に
+  原理的に乗れない。従来はマテリアルが `Material::default()`（白）だったため、
+  縮退先の平均アルベドが白のベタ塗りになり、RT 反射・水面反射・DDGI・色付き影で
+  **地形だけが灰色の板**として映っていた。
+  `app/terrain_layer_albedo.rs` を新設し、チャンクの
+  「レイヤ重み平均 × 各レイヤ実効色（`base_color` × テクスチャ平均）」を CPU で焼いて
+  `Material.avg_albedo` / `base_color_tex_avg` へ書くようにした。
+  平均アルベド storage は全 RT 経路で共有なので、この 1 箇所の修正が
+  `reflection_rt_hit_*` / `water_reflection_hit_*` / `ddgi_probe_update` /
+  `rt_shadow_on` / `refract_rt` すべてに効く。
+  精度はチャンク単位（既定 16m 角）止まり。ヒット位置ベースのブレンドが要る条件は
+  `docs/water_interaction_roadmap.md` の W5.2 節へ申し送り。
 
 ### 非対応 GPU フォールバック方針
 

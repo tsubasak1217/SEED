@@ -3411,7 +3411,7 @@ impl App {
                     continue;
                 }
                 rebuild_terrain_model_with_colors(
-                    &prim.vertices, &prim.indices, &model.name, &colors, palette,
+                    &prim.vertices, &prim.indices, &model.name, &colors, palette, &layers,
                 )
             };
             colors_ms += t_colors.elapsed().as_secs_f64() * MILLIS_PER_SEC;
@@ -3434,6 +3434,28 @@ impl App {
                 // `mc.model` から GPU リソースを作り直すため、ここが古いままだと
                 // 後でオーバーライドを付けた瞬間に色が巻き戻る。
                 mc.model = Some(Arc::new(new_model));
+
+                // ── GPU 側の平均アルベドも追従させる（RT 反射／水面反射／DDGI／色付き影）──
+                //   この高速パスは `GpuModel` を作り直さず頂点バッファだけを書き換えるため、
+                //   `gpu_model.avg_albedos`（`GpuModel::upload` が CPU マテリアルから焼いた値）は
+                //   放置すると塗る前のチャンク平均色で固定される。結果、地形を塗り替えても
+                //   水面に映る色・GI のバウンス色だけが古いまま取り残される。
+                //   ここで書き戻すと rt_shadow.rs の静止スキップ シグネチャ
+                //  （primitive_avg_albedo をハッシュしている）が変わり、次フレームで
+                //   TLAS と instance_table が確実に再構築されて反映される。
+                //   地形チャンクはマテリアル 1 枚（material_index=0）固定。
+                if let Some(avg) = mc
+                    .model
+                    .as_ref()
+                    .and_then(|m| m.materials.first())
+                    .map(|mat| mat.avg_albedo)
+                {
+                    if let Some(gpu) = mc.gpu_model.as_mut() {
+                        if let Some(slot) = gpu.avg_albedos.first_mut() {
+                            *slot = avg;
+                        }
+                    }
+                }
 
                 // GPU 頂点バッファは **1 回の write_buffer で全頂点を丸ごと**書き直す。
                 //   頂点あたり 16 バイト（color の offset 56）だけを書く方式もあるが、

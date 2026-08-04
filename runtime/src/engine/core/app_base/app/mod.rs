@@ -73,6 +73,7 @@ mod prefab_ops;
 pub(crate) mod camera_scene_gizmo;
 pub(super) mod terrain_ops;
 pub(crate) mod terrain_mesh_build;
+pub(crate) mod terrain_layer_albedo;
 /// 地形プロップ散布（草・木）のエンジン統合層（散布データ ⇄ ECS/GPU/IPC の橋渡し）。
 pub(super) mod terrain_scatter_ops;
 
