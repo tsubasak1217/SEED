@@ -15,9 +15,14 @@
 //  自己参照制約を回避）。合成は別パスで Additive(One/One)+LoadOp::Load を使う。
 //
 //  ## BindGroup グループ割当（max_bind_groups=5 厳守）
-//    SSR: group0=camera / group1=G-Buffer / group2=input(params+hdr) / group3=GI        （4 groups）
-//    RT : group0=camera / group1=G-Buffer / group2=input / group3=RTデータ / group4=GI  （5 groups＝上限）
+//    SSR: group0=camera / group1=G-Buffer / group2=input(params+hdr+sky) / group3=GI       （4 groups）
+//    RT : group0=camera / group1=G-Buffer / group2=input / group3=RTデータ / group4=GI     （5 groups＝上限）
 //    composite: group0=反射RT+sampler（1 group）
+//  ミス経路の天球サンプル（sky）を **group2 に置いた**のは、group2 が SSR / RT の
+//  **両変種で共有される唯一のグループ**であり、かつ `binding_array` を含まないため
+//  uniform buffer を素直に置けるからである（水面反射は group3 にバインドレスの
+//  テクスチャ配列が同居するので storage 化が必要だった。ここではその制約が無い）。
+//  グループ数は 1 つも増えない（上限 5 を維持）。
 //  group0/1 は DeferredLightingPipelines の camera_bgl/gbuffer_bgl を借用して等価性を担保する
 //  （frame_renderer は camera_buf.bind_group と deferred::create_gbuffer_bind_group をそのまま流用）。
 // ============================================================
@@ -25,6 +30,7 @@
 use super::ddgi::GiResources;
 use super::deferred::DeferredLightingPipelines;
 use super::pipeline::get_shader_source;
+use super::reflection_sky::{ReflectionSkySource, ReflectionSkyUniform};
 
 // ─── 定数 ────────────────────────────────────────────────────
 
@@ -88,6 +94,18 @@ pub struct ReflectionPipelines {
     pub params_buffer: wgpu::Buffer,
     /// 入力・GI・合成で共用するリニア clamp サンプラー。
     pub sampler: wgpu::Sampler,
+    /// ミス経路の天球サンプル用 UBO（64B。毎フレーム `update_sky` で書き換える）。
+    sky_buffer: wgpu::Buffer,
+    /// 天球サンプラー（**経度方向は Repeat**）。equirectangular の u は 0/1 で巻き付くので、
+    /// clamp すると経度 0°（背後）の継ぎ目に縦線が出る。`skybox.rs` / 水面反射と同じ規約。
+    sky_sampler: wgpu::Sampler,
+    /// スカイボックスが無いフレームに group2 の天球スロットを埋めるダミー 1x1（黒・永続）。
+    /// uniform 側の `enabled = 0` によりサンプル自体が起きないが、**バインドは必ず埋める**
+    /// 必要がある（レイアウトを常に同一に保ち、パイプラインを 1 本で済ませるため）。
+    #[allow(dead_code)]
+    sky_dummy_tex: wgpu::Texture,
+    /// 上のビュー。
+    sky_dummy_view: wgpu::TextureView,
 }
 
 impl ReflectionPipelines {
@@ -95,8 +113,10 @@ impl ReflectionPipelines {
     ///
     /// - `deferred`   : group0/1（camera/gbuffer）の BGL を借用する（等価性担保）。
     /// - `out_format` : 出力先 HDR フォーマット（scene_hdr / RT_REFLECTION と同一）。
+    /// - `queue`      : 天球ダミー 1x1 を黒で初期化するために使う（未初期化メモリを読ませない）。
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         deferred: &DeferredLightingPipelines,
         out_format: wgpu::TextureFormat,
         cache: Option<&wgpu::PipelineCache>,
@@ -139,10 +159,18 @@ impl ReflectionPipelines {
             count: None,
         };
 
-        // group2: input（params uniform + scene_hdr tex + sampler）。
+        // group2: input（params uniform + scene_hdr tex + sampler + 天球 uniform/tex/sampler）。
+        // 天球 3 本（3..5）は SSR / RT の**両変種が共有**する（ミス経路を揃えるため）。
+        // フラグメント段のリソース数（既定上限 16 texture / 16 sampler に対する実測）:
+        //   SSR: texture = group1 の 6（G-Buffer 4 + 深度 + AO）+ group2 の 2（hdr + 天球）
+        //                + group3 の 2（GI irr/vis）= 10 ／ sampler = 1 + 2 + 1 = 4
+        //   RT : 上記に group4 の GI 2 texture・1 sampler が加わり、group3 は
+        //        バインドレス時のみ binding_array（別枠 max_binding_array_elements_per_shader_stage）
+        //        ＋サンプラー 1 本。単体テクスチャは 10、サンプラーは 5。
+        // いずれも上限に対して十分な余裕がある。
         let input_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Reflection Input BGL (group2)"),
-            entries: &[uniform(0), tex(1), samp(2)],
+            entries: &[uniform(0), tex(1), samp(2), uniform(3), tex(4), samp(5)],
         });
         // GI（GiParams uniform + irr tex + vis tex + sampler）。SSR group3 / RT group4 共用。
         let gi_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -217,6 +245,8 @@ impl ReflectionPipelines {
                 &gi_bgl,
             ],
             &[
+                // 天球サンプルの共有定義は reflection_common より前（宣言前参照はできない）。
+                "sky_reflection_common.wgsl",
                 "reflection_common.wgsl",
                 "ddgi_common.wgsl",
                 "reflection_ssr.wgsl",
@@ -235,6 +265,8 @@ impl ReflectionPipelines {
         let rt = if super::rt_shadow::rt_shadows_supported() {
             let mut srcs: Vec<&str> = vec![
                 "cluster_common.wgsl",
+                // 天球サンプルの共有定義は reflection_common より前（宣言前参照はできない）。
+                "sky_reflection_common.wgsl",
                 "reflection_common.wgsl",
                 "ddgi_common.wgsl",
                 "reflection_rt.wgsl",
@@ -311,6 +343,68 @@ impl ReflectionPipelines {
             mapped_at_creation: false,
         });
 
+        // ── ミス経路の天球サンプル用リソース ───────────────────────
+        // 天球用サンプラー（u=Repeat / v=Clamp）。`skybox.rs` / 水面反射と同じ規約で、
+        // 経度の巻き付きを Repeat に、天頂・天底のにじみ防止を Clamp に任せる。
+        let sky_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Reflection Sky Sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        // スカイボックスパラメータ UBO（既定は「無し」＝enabled 0。
+        // スカイボックスのあるフレームだけ `update_sky` が上書きする）。
+        let sky_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Reflection Sky Params UBO"),
+            size: std::mem::size_of::<ReflectionSkyUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(
+            &sky_buffer,
+            0,
+            bytemuck::bytes_of(&ReflectionSkyUniform::disabled()),
+        );
+        // スカイボックス無しフレーム用のダミー 1x1（黒）。enabled=0 でサンプルされないが、
+        // 未初期化メモリを読ませないよう黒で明示的に埋める。
+        /// ダミー天球のフォーマット（filterable float であればよい。1 テクセル 4 バイト）。
+        const SKY_DUMMY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+        /// 上のフォーマットの 1 テクセルのバイト数。
+        const SKY_DUMMY_TEXEL_BYTES: u32 = 4;
+        let sky_dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Reflection Sky Dummy 1x1"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SKY_DUMMY_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            sky_dummy_tex.as_image_copy(),
+            &[0u8; SKY_DUMMY_TEXEL_BYTES as usize],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(SKY_DUMMY_TEXEL_BYTES),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let sky_dummy_view = sky_dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
         Self {
             ssr,
             rt,
@@ -321,6 +415,10 @@ impl ReflectionPipelines {
             composite_bgl,
             params_buffer,
             sampler,
+            sky_buffer,
+            sky_sampler,
+            sky_dummy_tex,
+            sky_dummy_view,
         }
     }
 
@@ -333,12 +431,35 @@ impl ReflectionPipelines {
         );
     }
 
-    /// group2（input）の BindGroup を生成する（params UBO + scene_hdr + sampler）。
+    /// このフレームの代表スカイボックスを GPU へ反映する（`create_input_bg` より前に呼ぶ）。
+    ///
+    /// `None` を渡すと「スカイボックス無し」（`enabled = 0`）を書き、反射のミス経路は
+    /// 従来どおり GI プローブ／アンビエントへ落ちる（＝D6 当初と完全に同じ挙動）。
+    /// **パラメータ UBO だけを更新する**（テクスチャの差し替えは `create_input_bg` の引数側）。
+    pub fn update_sky(&self, queue: &wgpu::Queue, sky: Option<&ReflectionSkySource<'_>>) {
+        let u = match sky {
+            Some(s) => s.uniform,
+            None => ReflectionSkyUniform::disabled(),
+        };
+        queue.write_buffer(&self.sky_buffer, 0, bytemuck::bytes_of(&u));
+    }
+
+    /// group2（input）の BindGroup を生成する
+    /// （params UBO + scene_hdr + sampler + 天球 UBO/テクスチャ/サンプラー）。
+    ///
+    /// `sky` はこのフレームの代表スカイボックス（`SkyboxSystem::reflection_sky_source`）。
+    /// `None` のときは**ダミー 1x1（黒）**を挿す（uniform 側の `enabled = 0` で
+    /// サンプル自体が起きないが、バインドは必ず埋める＝レイアウトは常に同一）。
     pub fn create_input_bg(
         &self,
         device: &wgpu::Device,
         scene_hdr: &wgpu::TextureView,
+        sky: Option<&ReflectionSkySource<'_>>,
     ) -> wgpu::BindGroup {
+        let sky_view = match sky {
+            Some(s) => s.view,
+            None => &self.sky_dummy_view,
+        };
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Reflection Input BG"),
             layout: &self.input_bgl,
@@ -354,6 +475,18 @@ impl ReflectionPipelines {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.sky_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(sky_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.sky_sampler),
                 },
             ],
         })
@@ -566,10 +699,11 @@ mod tests {
     /// SSR 連結（RAY_QUERY 不要）を naga で parse + validate する。
     #[test]
     fn reflection_ssr_shader_parses() {
+        let sky_c = include_str!("shaders/sky_reflection_common.wgsl");
         let refl_c = include_str!("shaders/reflection_common.wgsl");
         let ddgi_c = include_str!("shaders/ddgi_common.wgsl");
         let ssr = include_str!("shaders/reflection_ssr.wgsl");
-        let src = [refl_c, ddgi_c, ssr].join("\n");
+        let src = [sky_c, refl_c, ddgi_c, ssr].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[reflection_ssr] WGSL parse 失敗: {e:?}"));
         let mut v = naga::valid::Validator::new(
@@ -586,11 +720,12 @@ mod tests {
     #[test]
     fn reflection_rt_off_shader_parses() {
         let cluster = include_str!("shaders/cluster_common.wgsl");
+        let sky_c = include_str!("shaders/sky_reflection_common.wgsl");
         let refl_c = include_str!("shaders/reflection_common.wgsl");
         let ddgi_c = include_str!("shaders/ddgi_common.wgsl");
         let rt = include_str!("shaders/reflection_rt.wgsl");
         let hit_off = include_str!("shaders/reflection_rt_hit_off.wgsl");
-        let src = [cluster, refl_c, ddgi_c, rt, hit_off].join("\n");
+        let src = [cluster, sky_c, refl_c, ddgi_c, rt, hit_off].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[reflection_rt off] WGSL parse 失敗: {e:?}"));
         let mut v = naga::valid::Validator::new(
@@ -607,12 +742,13 @@ mod tests {
     #[test]
     fn reflection_rt_on_bindless_shader_parses() {
         let cluster = include_str!("shaders/cluster_common.wgsl");
+        let sky_c = include_str!("shaders/sky_reflection_common.wgsl");
         let refl_c = include_str!("shaders/reflection_common.wgsl");
         let ddgi_c = include_str!("shaders/ddgi_common.wgsl");
         let rt = include_str!("shaders/reflection_rt.wgsl");
         let bindless = include_str!("shaders/bindless_common.wgsl");
         let hit_on = include_str!("shaders/reflection_rt_hit_on.wgsl");
-        let src = [cluster, refl_c, ddgi_c, rt, bindless, hit_on].join("\n");
+        let src = [cluster, sky_c, refl_c, ddgi_c, rt, bindless, hit_on].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[reflection_rt on] WGSL parse 失敗: {e:?}"));
         let caps = naga::valid::Capabilities::RAY_QUERY
@@ -647,11 +783,12 @@ mod tests {
     #[test]
     fn reflection_rt_mirror_layouts_match() {
         let cluster = include_str!("shaders/cluster_common.wgsl");
+        let sky_c = include_str!("shaders/sky_reflection_common.wgsl");
         let refl_c = include_str!("shaders/reflection_common.wgsl");
         let ddgi_c = include_str!("shaders/ddgi_common.wgsl");
         let rt = include_str!("shaders/reflection_rt.wgsl");
         let hit_off = include_str!("shaders/reflection_rt_hit_off.wgsl");
-        let src = [cluster, refl_c, ddgi_c, rt, hit_off].join("\n");
+        let src = [cluster, sky_c, refl_c, ddgi_c, rt, hit_off].join("\n");
         let module = naga::front::wgsl::parse_str(&src).expect("RT 反射連結の parse に失敗");
         let mut layouter = naga::proc::Layouter::default();
         layouter
@@ -783,5 +920,197 @@ mod tests {
             t < 0.5,
             "HIT_DEPTH_TOLERANCE({t}) は 0.5 未満（遮蔽面の誤一致を防ぐ許容幅）"
         );
+    }
+
+    /// ミス経路（レイが空へ抜けたとき）が **GI より先に天球テクスチャを直接サンプル**すること。
+    ///
+    /// これが無いと、反射方向の空が画面外にあるケース（見下ろし・壁際・磨かれた床など）で
+    /// 反射が GI プローブの平坦色（GI 無効なら黒）になり、**同じシーンの水面反射
+    /// （W5.2 は同じ経路を持つ）と見た目が食い違う**。本タスクの回帰ガードである。
+    /// SSR / RT の**両変種**を見る（片方だけ空が映らない事故の防止）。
+    #[test]
+    fn reflection_miss_path_samples_the_skybox_before_gi() {
+        // SSR: ssr_fallback の中で「天球 → GI」の順であること。
+        let ssr = include_str!("shaders/reflection_ssr.wgsl").replace("\r\n", "\n");
+        let ssr_fb = ssr
+            .split("fn ssr_fallback(")
+            .nth(1)
+            .expect("reflection_ssr.wgsl にミス経路 ssr_fallback が無い");
+        let i_sky = ssr_fb
+            .find("reflection_sky_miss(")
+            .expect("SSR のミス経路に天球サンプルが無い（画面外の空が映らない）");
+        let i_gi = ssr_fb
+            .find("ssr_gi.enabled")
+            .expect("SSR のミス経路に GI フォールバックが無い");
+        assert!(
+            i_sky < i_gi,
+            "SSR のミス経路が「天球 → GI」の順でない（GI の平坦色が空を上書きする）"
+        );
+
+        // RT: rt_refl_fallback の中で「天球 → GI」の順であること。
+        let rt = include_str!("shaders/reflection_rt.wgsl").replace("\r\n", "\n");
+        let rt_fb = rt
+            .split("fn rt_refl_fallback(")
+            .nth(1)
+            .expect("reflection_rt.wgsl にミス経路 rt_refl_fallback が無い");
+        let i_sky_rt = rt_fb
+            .find("reflection_sky_miss(")
+            .expect("RT のミス経路に天球サンプルが無い（画面外の空が映らない）");
+        let i_gi_rt = rt_fb
+            .find("rt_gi.enabled")
+            .expect("RT のミス経路に GI フォールバックが無い");
+        assert!(
+            i_sky_rt < i_gi_rt,
+            "RT のミス経路が「天球 → GI」の順でない（GI の平坦色が空を上書きする）"
+        );
+
+        // 天球サンプルの実体は **水面反射と共有**の関数であること。
+        // 自前実装に戻ると UV 変換・実効色がズレて水面と不透明面で違う空の色になる。
+        let common = include_str!("shaders/reflection_common.wgsl").replace("\r\n", "\n");
+        assert!(
+            common.contains("sky_refl_sample(u_refl_sky, t_refl_sky, s_refl_sky, dir)"),
+            "天球サンプルが共有関数 sky_refl_sample を経由していない（水面反射と式が分岐する）"
+        );
+        // group2（SSR / RT の両変種が共有する唯一のグループ）へ 3 本を置く契約。
+        // group2 に binding_array は無いので uniform で置ける（水面側は storage）。
+        for decl in [
+            "@group(2) @binding(3) var<uniform> u_refl_sky: ReflectionSkyUniform;",
+            "@group(2) @binding(4) var          t_refl_sky: texture_2d<f32>;",
+            "@group(2) @binding(5) var          s_refl_sky: sampler;",
+        ] {
+            assert!(
+                common.contains(decl),
+                "reflection_common.wgsl に天球バインドの宣言が無い/変わっている: {decl}"
+            );
+        }
+    }
+
+    /// **GPU 実機での反射パイプライン生成と group2 BindGroup 生成**が通ること
+    /// （`--ignored` で実行する検証用。水面反射の同種テストと同じ流儀）。
+    ///
+    /// naga の静的検証は WGSL の妥当性しか見ない。実機でしか出ない失敗要因は 2 つ:
+    ///   ① **group2 に足した天球 3 本（uniform / texture / sampler）の種別・binding 番号**が
+    ///      Rust の `entries` と WGSL の宣言で食い違うと、ここで初めて落ちる。
+    ///   ② **`max_bind_groups`**（RT 変種は group0〜4 の 5 個＝上限ちょうどを使う）。
+    /// そのため `Limits::default()`（max_bind_groups=4）ではなく 5 を要求する。
+    ///
+    /// 実行: `cargo test reflection::tests::reflection_pipelines_build_on_gpu -- --ignored --nocapture`
+    #[test]
+    #[ignore = "実 GPU が必要。--ignored で実行する"]
+    fn reflection_pipelines_build_on_gpu() {
+        // RT／バインドレスのグローバルフラグを書き換えるので、他の GPU テストと直列化する
+        //（並列に走ると相手の「元へ戻す」で設定を潰され、偽陽性で落ちる）。
+        let _guard = super::super::GPU_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        else {
+            eprintln!("[reflection] GPU アダプタが見つからないため検証をスキップ");
+            return;
+        };
+        // アダプタが RAY_QUERY に対応していれば RT 変種も検証対象に含める。
+        let rt_feats = wgpu::Features::EXPERIMENTAL_RAY_QUERY
+            | wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE;
+        let has_rt = adapter.features().contains(rt_feats);
+        // バインドレスも本体と同じ条件で判定する（RT の group3 が binding_array を含む変種）。
+        let bindless_feats = wgpu::Features::TEXTURE_BINDING_ARRAY
+            | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+        let adapter_limits = adapter.limits();
+        let array_cap = adapter_limits.max_binding_array_elements_per_shader_stage;
+        let has_bindless = has_rt && adapter.features().contains(bindless_feats) && array_cap > 0;
+        let bindless_cap = array_cap
+            .min(adapter_limits.max_sampled_textures_per_shader_stage)
+            .min(super::super::BINDLESS_MAX_TEXTURES)
+            .max(1);
+        let default_limits = wgpu::Limits::default();
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: if has_rt {
+                rt_feats
+            } else {
+                wgpu::Features::empty()
+            } | if has_bindless {
+                bindless_feats
+            } else {
+                wgpu::Features::empty()
+            },
+            required_limits: wgpu::Limits {
+                // 本体（renderer/mod.rs）と同じ要求。RT 変種は group0〜4 を使う。
+                max_bind_groups: 5,
+                max_sampled_textures_per_shader_stage: if has_bindless {
+                    bindless_cap.max(default_limits.max_sampled_textures_per_shader_stage)
+                } else {
+                    default_limits.max_sampled_textures_per_shader_stage
+                },
+                max_binding_array_elements_per_shader_stage: if has_bindless {
+                    bindless_cap
+                } else {
+                    default_limits.max_binding_array_elements_per_shader_stage
+                },
+                ..wgpu::Limits::default()
+            },
+            ..Default::default()
+        }))
+        .expect("デバイス生成に失敗");
+
+        // RT／バインドレス対応フラグは他テストと共有のグローバルなので、必ず元へ戻す。
+        let saved_rt = super::super::rt_shadow::rt_shadows_supported();
+        let saved_bl = super::super::bindless::bindless_supported();
+        let saved_bl_cap = super::super::bindless::bindless_capacity();
+        super::super::rt_shadow::set_rt_shadows_supported(has_rt);
+        super::super::bindless::set_bindless_supported(has_bindless);
+        super::super::bindless::set_bindless_capacity(if has_bindless { bindless_cap } else { 0 });
+
+        // group0/1 の BGL 提供元。反射は deferred の camera_bgl / gbuffer_bgl を借りる。
+        let deferred = DeferredLightingPipelines::new(
+            &device,
+            &queue,
+            REFLECTION_FORMAT,
+            super::super::DEPTH_FORMAT,
+            None,
+        );
+        // 生成そのものが検証（失敗すれば wgpu がパニック／エラーを出す）。
+        let pipelines =
+            ReflectionPipelines::new(&device, &queue, &deferred, REFLECTION_FORMAT, None);
+        assert_eq!(
+            pipelines.rt.is_some(),
+            has_rt,
+            "RT 対応アダプタなら RT 変種が、非対応なら SSR 変種だけが構築されること"
+        );
+
+        // ── group2（params + scene_hdr + sampler + 天球 3 本）の BindGroup 生成まで検証する ──
+        // 天球バインドは本タスクで後から足した分なので、ここが通ることが
+        // 「binding 3..5 の種別（uniform / texture / sampler）が Rust と WGSL で一致している」
+        // ことの実機側の証拠になる。
+        let hdr = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("reflection test scene hdr"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: REFLECTION_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let hdr_view = hdr.create_view(&wgpu::TextureViewDescriptor::default());
+        // スカイボックス無し（ダミー 1x1 が挿さる）と有り（HDR を天球に見立てる）の両方。
+        let sky = ReflectionSkySource {
+            view: &hdr_view,
+            uniform: ReflectionSkyUniform::disabled(),
+        };
+        let _bg_none = pipelines.create_input_bg(&device, &hdr_view, None);
+        let _bg_sky = pipelines.create_input_bg(&device, &hdr_view, Some(&sky));
+        pipelines.update_sky(&queue, Some(&sky));
+        pipelines.update_sky(&queue, None);
+
+        // グローバルを元へ戻す（他テストへの副作用を残さない）。
+        super::super::rt_shadow::set_rt_shadows_supported(saved_rt);
+        super::super::bindless::set_bindless_supported(saved_bl);
+        super::super::bindless::set_bindless_capacity(saved_bl_cap);
     }
 }

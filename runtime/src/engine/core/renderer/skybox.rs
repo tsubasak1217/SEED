@@ -233,7 +233,10 @@ impl SkyboxSystem {
         !self.frame.is_empty()
     }
 
-    /// 水面反射のミス経路（画面外へ抜けたレイ）が映す **代表スカイボックス** を返す。
+    /// 反射のミス経路（画面外へ抜けたレイ）が映す **代表スカイボックス** を返す。
+    ///
+    /// 水面反射（W5.2）と不透明反射（D6）の**両方**がこの 1 つの入口を使う
+    /// （別々に選ぶと、同じシーンで水面と床が違う空を映す事故が起きる）。
     ///
     /// ## なぜ「代表 1 つ」なのか
     /// 反射のミス経路は「このレイの先に何が見えるか」を 1 サンプルで答える経路であり、
@@ -243,15 +246,15 @@ impl SkyboxSystem {
     /// 複数 WorldAnchored 天球の反射は W5.2 の対象外（docs の既知の制限）。
     ///
     /// `sync_gpu` の後に呼ぶこと（テクスチャのロードに失敗した記述は取り除かれている）。
-    pub fn water_reflection_source(&self)
-        -> Option<super::water_reflection::WaterSkySource<'_>>
+    pub fn reflection_sky_source(&self)
+        -> Option<super::reflection_sky::ReflectionSkySource<'_>>
     {
         // CameraLocked を優先し、無ければ先頭を使う。
         let f = self.frame.iter().find(|f| matches!(f.mode, SkyboxMode::CameraLocked))
             .or_else(|| self.frame.first())?;
         // テクスチャは sync_gpu が tex_cache へ入れている（BindGroup と同じ実体）。
         let view = self.tex_cache.get(&f.texture_path)?;
-        Some(super::water_reflection::WaterSkySource {
+        Some(super::reflection_sky::ReflectionSkySource {
             view,
             uniform: sky_uniform_for_reflection(&f.uniform, f.mode),
         })
@@ -410,7 +413,7 @@ impl SkyboxSystem {
 
 // ─── フリー関数 ───────────────────────────────────────────────
 
-/// 描画用 `SkyboxUniform` から、水面反射用 `WaterSkyUniform`（逆回転＋実効色）を作る。
+/// 描画用 `SkyboxUniform` から、反射用 `ReflectionSkyUniform`（逆回転＋実効色）を作る。
 ///
 /// ## 何を変換しているのか
 /// 描画（`skybox.wgsl`）は球メッシュの**ローカル位置**をそのままサンプル方向に使うので、
@@ -429,8 +432,8 @@ impl SkyboxSystem {
 fn sky_uniform_for_reflection(
     u:    &SkyboxUniform,
     mode: SkyboxMode,
-) -> crate::engine::core::renderer::water_reflection::WaterSkyUniform {
-    use crate::engine::core::renderer::water_reflection::WaterSkyUniform;
+) -> crate::engine::core::renderer::reflection_sky::ReflectionSkyUniform {
+    use crate::engine::core::renderer::reflection_sky::ReflectionSkyUniform;
 
     // 実効色（tint × intensity）。描画側 `fs_main` の `tex * tint * intensity` と同一。
     let tint = [
@@ -468,7 +471,7 @@ fn sky_uniform_for_reflection(
         }
     };
 
-    WaterSkyUniform {
+    ReflectionSkyUniform {
         rot_inv_0:    rows[0],
         rot_inv_1:    rows[1],
         rot_inv_2:    rows[2],

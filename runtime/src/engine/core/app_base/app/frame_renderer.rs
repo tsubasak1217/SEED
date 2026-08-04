@@ -5481,7 +5481,20 @@ impl App {
                                 // 影の屈折オフセット（binding13）も同様に未参照＝ダミー 1x1（ゼロ）でよい。
                                 &draw_ctx.pipelines.caustics.dummy_offset_view,
                             );
-                            let input_bg = refl.create_input_bg(&draw_ctx.device, hdr_view);
+                            // ミス経路（レイが空へ抜けたとき）に映す代表スカイボックス。
+                            // 水面反射（W5.2）とまったく同じ入口・同じ WGSL 関数を使うので、
+                            // 水面と床・磨かれた面が同じ方向に同じ空の色を映す。
+                            // スカイボックスが無いシーンでは None → enabled=0 のダミーが挿さり、
+                            // 従来どおり GI プローブ／アンビエントへフォールバックする。
+                            //
+                            // 【なぜ「画面内の空をグラブから拾う」段が無いのか】
+                            // 本パスは skybox の球メッシュを描く**前**に走るため、入力の scene_hdr
+                            // には空がまだ描かれていない（水面反射は skybox 描画後にグラブを取るので
+                            // その段を持てる）。よって D6 は「天球直接サンプル → GI」の 2 段である。
+                            let refl_sky_src = self.skybox_system.reflection_sky_source();
+                            refl.update_sky(&draw_ctx.queue, refl_sky_src.as_ref());
+                            let input_bg = refl.create_input_bg(
+                                &draw_ctx.device, hdr_view, refl_sky_src.as_ref());
                             let gi_bg    = refl.create_gi_bg(&draw_ctx.device, &draw_ctx.gi);
 
                             // RT 反射は TLAS/平均アルベドが要る。reflection==Rt かつ RT パイプライン存在時のみ
@@ -5773,7 +5786,7 @@ impl App {
                                         // 反射のミス経路（画面外へ抜けたレイ）が映すスカイボックス。
                                         // sync_gpu 済みのこのフレームの代表天球を取り、uniform を
                                         // 先に書いてから BindGroup を作る（無ければ None＝GI へ落ちる）。
-                                        let sky_src = self.skybox_system.water_reflection_source();
+                                        let sky_src = self.skybox_system.reflection_sky_source();
                                         wrp.update_sky(&draw_ctx.queue, sky_src.as_ref());
                                         // group1 は水パラメータが要る（prepare 済みなので必ず Some）。
                                         let params_bg =

@@ -117,46 +117,12 @@ fn rt_shader_sources(use_bindless: bool) -> Vec<String> {
 // ============================================================
 //  スカイボックス連携（ミス経路で本物の空を映すための入力）
 // ============================================================
-
-/// 反射のミス経路が使うスカイボックス uniform（WGSL `WaterSkyUniform` と 1:1・64B）。
-///
-/// **`skybox.rs::SkyboxUniform`（描画用・96B）とは別物**である。あちらは球メッシュを
-/// 配置するための行列を持つが、こちらが要るのは「ワールド方向 → 天球ローカル方向」の
-/// 逆回転と実効色だけで、平行移動もスケールも意味を持たない。共有すると
-/// 「描画用の行列を反射がどう解釈するか」が暗黙の契約になるため、意味の違う 2 本に分けてある。
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct WaterSkyUniform {
-    /// 逆回転行列の第 1 行（.xyz。.w はパディング）。
-    pub rot_inv_0: [f32; 4],
-    /// 同 第 2 行。
-    pub rot_inv_1: [f32; 4],
-    /// 同 第 3 行。
-    pub rot_inv_2: [f32; 4],
-    /// rgb = tint × intensity ／ **a = 有効フラグ（0 = スカイボックス無し）**。
-    pub tint_enabled: [f32; 4],
-}
-
-impl WaterSkyUniform {
-    /// スカイボックスが無いシーン用の中立値（`enabled = 0`）。
-    /// これが挿さっている限り WGSL 側は天球を一切サンプルせず、GI へフォールバックする。
-    pub fn disabled() -> Self {
-        Self {
-            rot_inv_0:    [1.0, 0.0, 0.0, 0.0],
-            rot_inv_1:    [0.0, 1.0, 0.0, 0.0],
-            rot_inv_2:    [0.0, 0.0, 1.0, 0.0],
-            tint_enabled: [0.0, 0.0, 0.0, 0.0],
-        }
-    }
-}
-
-/// このフレームに反射へ映す代表スカイボックス（`SkyboxSystem` が組み立てて渡す）。
-pub struct WaterSkySource<'a> {
-    /// equirectangular 天球テクスチャのビュー（LDR sRGB / HDR f16 のどちらもあり得る）。
-    pub view: &'a wgpu::TextureView,
-    /// GPU へ書く uniform（逆回転＋実効色＋有効フラグ）。
-    pub uniform: WaterSkyUniform,
-}
+//
+// 型そのものは **不透明反射 D6 と共用**の `reflection_sky.rs` にある
+// （`ReflectionSkyUniform` / `ReflectionSkySource`）。水面と不透明面が同じ方向へ
+// 同じ空の色を返すことが要件であり、型・生成関数・WGSL 関数を 1 本に揃えてある。
+// 本モジュールが持つのは「そのデータを water 反射パスの group3 へどう積むか」だけである。
+pub use super::reflection_sky::{ReflectionSkySource, ReflectionSkyUniform};
 
 // ============================================================
 //  WaterReflectionPipelines
@@ -311,11 +277,11 @@ impl WaterReflectionPipelines {
         // uniform バッファを置けない（wgpu の bind group 制約）。値・レイアウトは不変。
         let sky_uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label:              Some("Water Reflection Sky Params"),
-            size:               std::mem::size_of::<WaterSkyUniform>() as u64,
+            size:               std::mem::size_of::<ReflectionSkyUniform>() as u64,
             usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        queue.write_buffer(&sky_uniform, 0, bytemuck::bytes_of(&WaterSkyUniform::disabled()));
+        queue.write_buffer(&sky_uniform, 0, bytemuck::bytes_of(&ReflectionSkyUniform::disabled()));
 
         // ── 機能 OFF 用のダミー 1x1（黒＝A も 0＝反射寄与ゼロ）──────
         let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -433,10 +399,10 @@ impl WaterReflectionPipelines {
     /// **パラメータバッファだけを更新する**（テクスチャの差し替えは `create_scene_bg` の引数側）。
     /// バッファの実体は storage だが、型・レイアウト・意味は uniform 時代と完全に同一である
     /// （group3 が binding_array と同居するための都合。値は 1 フレームに 1 回書くだけ）。
-    pub fn update_sky(&self, queue: &wgpu::Queue, sky: Option<&WaterSkySource<'_>>) {
+    pub fn update_sky(&self, queue: &wgpu::Queue, sky: Option<&ReflectionSkySource<'_>>) {
         let u = match sky {
             Some(s) => s.uniform,
-            None    => WaterSkyUniform::disabled(),
+            None    => ReflectionSkyUniform::disabled(),
         };
         queue.write_buffer(&self.sky_uniform, 0, bytemuck::bytes_of(&u));
     }
@@ -456,7 +422,7 @@ impl WaterReflectionPipelines {
         device:     &wgpu::Device,
         grab_view:  &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
-        sky:        Option<&WaterSkySource<'_>>,
+        sky:        Option<&ReflectionSkySource<'_>>,
         use_rt:     bool,
         bindless:   Option<&super::bindless::BindlessResources>,
     ) -> wgpu::BindGroup {
@@ -983,8 +949,14 @@ mod tests {
         let i_env    = miss.find("water_refl_env(").expect("GI フォールバックが無い");
         assert!(i_screen < i_sky && i_sky < i_env,
             "ミス経路の優先順位が「画面内の空 → 天球 → GI」でない");
-        // スカイボックスが無いシーンでは天球を触らない（有効フラグで分岐する）。
-        assert!(common.contains("if wr_sky.tint_enabled.w < WATER_REFL_SKY_ENABLED_EPS {"),
+        // 天球サンプルの実体は **不透明反射 D6 と共有**の関数であること。
+        // ここが自前実装に戻ると、水面と不透明面で UV 変換や実効色がズレて
+        // 「同じ空を見ているのに違う色」になる（水際に不連続な境目が出る）。
+        assert!(common.contains("sky_refl_sample(wr_sky, t_water_sky, s_water_sky, dir)"),
+            "天球サンプルが共有関数 sky_refl_sample を経由していない（D6 と式が分岐する）");
+        // スカイボックスが無いシーンでは天球を触らない（有効フラグで分岐する）。判定は共有側。
+        let shared = get_shader_source("sky_reflection_common.wgsl").replace("\r\n", "\n");
+        assert!(shared.contains("if sky.tint_enabled.w < SKY_REFL_ENABLED_EPS {"),
             "スカイボックス有効フラグの判定が消えている（無いシーンでダミーを映してしまう）");
         // 両変種がミス経路の共通窓口を使うこと（片方だけ空が映らない事故の防止）。
         for name in ["water_reflection_rt.wgsl", "water_reflection_ssr.wgsl"] {
@@ -996,13 +968,18 @@ mod tests {
     /// スカイボックス uniform の WGSL / Rust レイアウトが一致すること（64B・4 本の vec4）。
     #[test]
     fn water_sky_uniform_layout_matches_the_shader() {
-        assert_eq!(std::mem::size_of::<WaterSkyUniform>(), 64);
-        let common = get_shader_source("water_reflection_common.wgsl");
+        assert_eq!(std::mem::size_of::<ReflectionSkyUniform>(), 64);
+        // 構造体定義は共有モジュール（D6 反射と共用）にある。
+        let shared = get_shader_source("sky_reflection_common.wgsl");
         for field in ["rot_inv_0", "rot_inv_1", "rot_inv_2", "tint_enabled"] {
-            assert!(common.contains(field), "WGSL 側に {field} が無い（レイアウト不一致）");
+            assert!(shared.contains(field), "WGSL 側に {field} が無い（レイアウト不一致）");
         }
+        // 水面パスは group3 に **storage** で挿す（binding_array と uniform は同居できない）。
+        let common = get_shader_source("water_reflection_common.wgsl");
+        assert!(common.contains("var<storage, read> wr_sky: ReflectionSkyUniform"),
+            "水面反射の天球パラメータが storage の ReflectionSkyUniform でない");
         // 無効値は enabled=0（＝天球を一切サンプルしない中立値）。
-        assert_eq!(WaterSkyUniform::disabled().tint_enabled[3], 0.0);
+        assert_eq!(ReflectionSkyUniform::disabled().tint_enabled[3], 0.0);
     }
 
     /// **GPU 実機でのパイプライン生成**が通ること（`--ignored` で実行する検証用）。
@@ -1025,6 +1002,11 @@ mod tests {
     #[test]
     #[ignore = "実 GPU が必要。--ignored で実行する"]
     fn water_reflection_pipelines_build_on_gpu() {
+        // RT／バインドレスのグローバルフラグを書き換えるので、他の GPU テストと直列化する
+        //（並列に走ると相手の「元へ戻す」で設定を潰され、偽陽性で落ちる）。
+        let _guard = super::super::GPU_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let Ok(adapter) = pollster::block_on(instance.request_adapter(
             &wgpu::RequestAdapterOptions::default())) else {
@@ -1119,7 +1101,7 @@ mod tests {
         // 両方で BindGroup を作れること。天球バインドは group3 へ後から足した分なので、
         // ここが通ることが「binding 3..5 の種別（uniform / texture / sampler）が合っている」
         // ことの実機側の証拠になる。
-        let sky = WaterSkySource { view: &color_view, uniform: WaterSkyUniform::disabled() };
+        let sky = ReflectionSkySource { view: &color_view, uniform: ReflectionSkyUniform::disabled() };
         // バインドレス変種では group3 にテクスチャ配列一式が要るので、実体を用意して渡す
         //（これが通ることが「binding_array の count・種別・binding 番号が Rust と WGSL で
         //  一致している」ことの実機側の証拠になる）。

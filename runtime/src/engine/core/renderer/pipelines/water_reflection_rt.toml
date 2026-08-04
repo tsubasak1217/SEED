@@ -8,6 +8,7 @@
 #   water_height_field      … WaterParams / 高さ場 / 格子頂点（group1・group2 を宣言）
 #   cluster_common          … LIGHT_KIND_* 定数（バインディングは持たない）
 #   ddgi_common             … GiParams / ddgi_sample_irradiance（同上）
+#   sky_reflection_common   … ReflectionSkyUniform / sky_refl_sample（不透明反射 D6 と共有。同上）
 #   water_reflection_common … カメラ(group0)・グラブと深度(group3)・GI(group4 0..4)・頂点段
 #   water_reflection_rt     … ライト/TLAS/アルベド(group4 5..7)・フラグメント本体
 #
@@ -36,6 +37,7 @@ shader_sources  = [
     "water_height_field.wgsl",
     "cluster_common.wgsl",
     "ddgi_common.wgsl",
+    "sky_reflection_common.wgsl",
     "water_reflection_common.wgsl",
     "water_reflection_rt.wgsl",
 ]
