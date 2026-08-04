@@ -36,6 +36,7 @@
 //      これを避けたい場合はチャンクを小さくするか、レイヤ設計を見直すこと。
 // ============================================================
 
+use crate::engine::core::app_base::app::terrain_layer_albedo::chunk_avg_albedo;
 use crate::engine::core::loader::model::{
     CullFace, Material, Mesh, Model, ModelNode, Primitive, Vertex,
 };
@@ -100,7 +101,11 @@ pub fn terrain_mesh_to_model(
         });
     }
 
-    build_terrain_model(vertices, mesh.indices.clone(), name, palette)
+    // チャンクの実効平均アルベド（RT 反射／水面反射／DDGI／色付き影のヒット縮退色）。
+    // 頂点カラー（スロット重み）とレイヤ実効色から求める。詳細は terrain_layer_albedo.rs。
+    let avg_albedo = chunk_avg_albedo(&colors, palette, layers);
+
+    build_terrain_model(vertices, mesh.indices.clone(), name, palette, avg_albedo)
 }
 
 /// 頂点ごとのレイヤ重み（＝頂点カラー RGBA）とチャンクパレットを計算する。
@@ -253,14 +258,20 @@ pub fn compute_layer_colors(
 /// - `src_vertices`: 元モデルの頂点列。位置・法線・接線・UV はそのまま引き継ぐ。
 /// - `indices`:      元モデルのインデックス列（ペイントでは不変）。
 /// - `colors`:       新しい頂点カラー。`src_vertices` と同じ長さでなければならない。
+/// - `layers`:       レイヤ定義一式（チャンク平均アルベドの再計算に使う）。
 ///
 /// 長さが食い違う場合は `None` を返す（呼び出し側はフル再メッシュへフォールバックする）。
+///
+/// 【平均アルベドも必ず作り直すこと】ペイントでレイヤ重みが変われば、RT 反射・水面反射・
+/// DDGI が使うチャンク平均色も変わる。ここで再計算しないと、塗った直後は見た目だけが
+/// 変わり、水面に映る色が塗る前のまま取り残される。
 pub fn rebuild_terrain_model_with_colors(
     src_vertices: &[Vertex],
     indices: &[u32],
     name: &str,
     colors: &[[f32; 4]],
     palette: [u32; TERRAIN_BLEND_SLOTS],
+    layers: &TerrainLayerSet,
 ) -> Option<Model> {
     if src_vertices.len() != colors.len() {
         return None;
@@ -270,7 +281,9 @@ pub fn rebuild_terrain_model_with_colors(
         .zip(colors.iter())
         .map(|(v, c)| Vertex { color: *c, ..*v })
         .collect();
-    let (model, _palette) = build_terrain_model(vertices, indices.to_vec(), name, palette);
+    let avg_albedo = chunk_avg_albedo(colors, palette, layers);
+    let (model, _palette) =
+        build_terrain_model(vertices, indices.to_vec(), name, palette, avg_albedo);
     Some(model)
 }
 
@@ -278,11 +291,15 @@ pub fn rebuild_terrain_model_with_colors(
 ///
 /// Model の骨組み（単一ノード・単一メッシュ・地形マテリアル）はレイヤ計算とは
 /// 独立した関心事なので、`terrain_mesh_to_model` から分離してある。
+///
+/// - `avg_albedo`: このチャンクの実効平均アルベド（リニア RGB）。RT 反射・水面反射・
+///   DDGI・RT 色付き影が「テクスチャを引けないヒット」で使う縮退色になる。
 fn build_terrain_model(
     vertices: Vec<Vertex>,
     indices: Vec<u32>,
     name: &str,
     palette: [u32; TERRAIN_BLEND_SLOTS],
+    avg_albedo: [f32; 3],
 ) -> (Model, [u32; TERRAIN_BLEND_SLOTS]) {
     // ─── 1 プリミティブ（1 マテリアル）を構築する ───
     //   skin_vertices は必ず空（地形はスキニング非対応）。LOD・メッシュレットも未生成。
@@ -337,11 +354,26 @@ fn build_terrain_model(
     //   パレットをマテリアルへ載せ忘れると描画側が既定パレット（恒等 [0,1,2,3]）で
     //   解決してしまい、チャンクごとに層が入れ替わって描かれる（T2b の回帰点）。
     //   このフィールドは upload_model → GpuMaterial → gbuffer の group3 選択まで運ばれる。
+    //
+    //   【平均アルベド（RT 反射／水面反射／DDGI／RT 色付き影）】
+    //   地形はレイヤブレンドで色を決めるため単一のベースカラーテクスチャを持たず、
+    //   bindless のヒット実サンプル経路（water_reflection_hit_on.wgsl 等）へは乗れない。
+    //   それらのシェーダはテクスチャを引けないインスタンスを
+    //   `BindlessInstanceRecord.avg_albedo` へ縮退させるので、ここへチャンクの実効平均色を
+    //   焼いておかないと、水面に映る画面外の地形が**白／灰色のベタ塗り**になる。
+    //   - `avg_albedo.rgb` = チャンク平均色、`.a` = 1.0（不透明。色付き影のアルファ源）。
+    //   - `base_color_tex_avg` にも同じ値を入れる。これは「base_color_factor を掛ける前の
+    //     テクスチャ平均」という定義のフィールドで、`base_color_factor` が白の地形では
+    //     avg_albedo と一致する。マテリアルオーバーライドが掛かったとき
+    //     `eff_avg_albedo`（gpu_resources.rs）が **テクスチャ平均 × 新 factor** で
+    //     再計算するため、ここを白のままにするとオーバーライドの瞬間に地形色が失われる。
     let material = Material {
         double_sided: false,
         cull_face: CullFace::Back,
         terrain_layers: true,
         terrain_palette: palette,
+        avg_albedo: [avg_albedo[0], avg_albedo[1], avg_albedo[2], 1.0],
+        base_color_tex_avg: avg_albedo,
         ..Material::default()
     };
 
@@ -913,6 +945,7 @@ mod tests {
             "chunk",
             &new_colors,
             palette,
+            &layers,
         )
         .expect("長さが一致しているのに None が返った");
 
@@ -936,10 +969,89 @@ mod tests {
                 "chunk",
                 &new_colors[..1],
                 palette,
+                &layers,
             )
             .is_none(),
             "長さ不一致を検出できていない"
         );
+    }
+
+    /// 地形チャンクのマテリアル平均アルベドが「塗ったレイヤの色」になること。
+    ///
+    /// これが白（`Material::default()` のまま）だと、水面反射・RT 反射・DDGI が
+    /// テクスチャを引けないヒットで白のベタ塗りへ縮退し、**地形が灰色の板として映る**
+    /// （本修正の主眼）。`base_color_tex_avg` も同値でなければ、マテリアル
+    /// オーバーライドが掛かった瞬間に `eff_avg_albedo` が地形色を失う。
+    #[test]
+    fn terrain_material_avg_albedo_matches_painted_layer_color() {
+        let layers = TerrainLayerSet::default(); // 既定 4 層（grass/dirt/rock/sand）
+        for painted in 0..layers.layers.len() as u32 {
+            let mesh = painted_mesh(painted);
+            let (model, _palette) = terrain_mesh_to_model(&mesh, "chunk", TEST_ORIGIN, &layers);
+            let mat = &model.materials[0];
+            let expect = layers.layers[painted as usize].base_color; // テクスチャ無しレイヤ
+
+            for ch in 0..3 {
+                assert!(
+                    (mat.avg_albedo[ch] - expect[ch]).abs() < EPS,
+                    "レイヤ {painted}: avg_albedo が塗ったレイヤ色と不一致 \
+                     got={:?} want={expect:?}",
+                    mat.avg_albedo
+                );
+                assert!(
+                    (mat.base_color_tex_avg[ch] - expect[ch]).abs() < EPS,
+                    "レイヤ {painted}: base_color_tex_avg が avg_albedo と食い違う"
+                );
+            }
+            // .a は不透明（色付き影のアルファ源。半透明扱いされると影が消える）。
+            assert_eq!(mat.avg_albedo[3], 1.0, "レイヤ {painted}: .a が 1.0 でない");
+            // 既定 4 層はいずれも白ではない＝白ベタ塗りへの退行検出。
+            assert!(
+                mat.avg_albedo[..3].iter().any(|v| *v < 0.9),
+                "レイヤ {painted}: 平均アルベドが白に張り付いている"
+            );
+        }
+    }
+
+    /// ペイント高速パス（`rebuild_terrain_model_with_colors`）でも平均アルベドが追従すること。
+    ///
+    /// 追従しないと「塗り替えた地形の見た目は変わったのに、水面に映る色だけ塗る前のまま」
+    /// という形で表面化する。
+    #[test]
+    fn rebuild_terrain_model_updates_avg_albedo() {
+        let layers = TerrainLayerSet::default();
+        let mesh = painted_mesh(0);
+        let (model, palette) = terrain_mesh_to_model(&mesh, "chunk", TEST_ORIGIN, &layers);
+        let src = &model.meshes[0].primitives[0];
+
+        // パレット内で「レイヤ 0 以外のスロット」へ 100% 寄せた色に差し替える。
+        // 既定 4 層のパレットは全層を含むので、スロット 1 は必ずレイヤ 0 とは別層になる。
+        let target_slot = 1usize;
+        let target_layer = palette[target_slot] as usize;
+        assert_ne!(target_layer, palette[0] as usize, "テスト前提が崩れている");
+
+        let mut c = [0.0f32; TERRAIN_BLEND_SLOTS];
+        c[target_slot] = 1.0;
+        let new_colors: Vec<[f32; 4]> = vec![c; src.vertices.len()];
+
+        let rebuilt = rebuild_terrain_model_with_colors(
+            &src.vertices,
+            &src.indices,
+            "chunk",
+            &new_colors,
+            palette,
+            &layers,
+        )
+        .expect("長さが一致しているのに None が返った");
+
+        let expect = layers.layers[target_layer].base_color;
+        let got = rebuilt.materials[0].avg_albedo;
+        for ch in 0..3 {
+            assert!(
+                (got[ch] - expect[ch]).abs() < EPS,
+                "ペイント後の平均アルベドが追従していない got={got:?} want={expect:?}"
+            );
+        }
     }
 
     /// レイヤ定義が 4 層未満のとき、パレットの重複スロットで重みが二重計上されないこと。
