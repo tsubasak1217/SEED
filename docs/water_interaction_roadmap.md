@@ -658,7 +658,9 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
   | 反射色の生成（**SSR 変種・RT 非対応 GPU 用**） | `shaders/water_reflection_ssr.wgsl` の `fs_water_reflection`（ワールド空間マーチ＋二分細分。出力規約は RT 版と同一） |
   | 両変種の共通部（頂点段・座標変換・粗さジッタ・ミス経路・出力規約） | `shaders/water_reflection_common.wgsl`（`vs_water_reflection` / `water_refl_surface` / `water_refl_miss` / `water_refl_screen_sky` / `water_refl_skybox` / `water_refl_env` / `water_refl_output`） |
   | **粗さのぼかし（いもす法・分離ボックス）** | `renderer/water_reflection.rs` の `WaterReflectionPipelines::blur` ＋ `WaterReflectionBlurTargets`（フル解像度 ping-pong 2 枚。実体は共有の `imos_blur.rs` / `shaders/imos_blur.wgsl`） |
-  | **反射に映すスカイボックス（ミス経路）** | `renderer/skybox.rs` の `SkyboxSystem::water_reflection_source()` ＋ `sky_uniform_for_reflection()` → `water_reflection.rs` の `WaterSkyUniform` / `WaterSkySource`（group3 binding 3..5） |
+  | **反射に映すスカイボックス（ミス経路）** | `renderer/skybox.rs` の `SkyboxSystem::water_reflection_source()` ＋ `sky_uniform_for_reflection()` → `water_reflection.rs` の `WaterSkyUniform` / `WaterSkySource`（group3 binding 3..5。**binding 3 は storage**＝バインドレスと同居するため） |
+  | **画面外ヒットのアルベド解決（2 変種）** | `shaders/water_reflection_hit_on.wgsl`（バインドレス＝UV 補間 → ベースカラーテクスチャ実サンプル。group3 binding 6..10）/ `water_reflection_hit_off.wgsl`（平均色）。連結の選択は `water_reflection.rs::rt_shader_sources()` |
+  | **リフレクションの binding_array 要素数** | `renderer/pipeline_config.rs` の `RenderPipelineBuilder::with_binding_array_count()`（サイズ未指定 `binding_array<T>` の `count` を実行時のバインドレス容量で埋める） |
   | 形状・波法線（**水面パスと共有・唯一の実体**） | `shaders/water_height_field.wgsl` の `water_grid_vertex()` / `water_surface_gradient()` |
   | パイプライン・BindGroup・ダミー | `renderer/water_reflection.rs` の `WaterReflectionPipelines`（RT は `Option`＝対応 GPU のみ） |
   | パイプライン定義（連結順・グループ数） | `renderer/pipelines/water_reflection_rt.toml` / `water_reflection_ssr.toml` |
@@ -742,10 +744,22 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
     このために共有の `imos_blur.wgsl` を `.rgb` → **`.rgba`** へ広げた
     （ランニング和はチャンネル独立なので、AO＝`.r` / SSGI＝`.rgb` / 屈折ピラミッド＝`.rgb` の
     既存 3 用途の結果はビット単位で不変）。
-  - **バインドレス（B2）とガラス層の再トレースは入れていない**。前者は
-    「binding_array と uniform は同一グループに同居できない」制約で GI の UBO と両立せず
-    （グループは 5 で満杯）、後者は反射レイ 1 本あたり最大 4 本の追加レイが水面全面に
-    掛かるため。どちらも不透明側（D6）では従来どおり有効である。
+  - **画面外ヒットは バインドレス（B2）でベースカラーテクスチャを実サンプルする**
+    （2026-08-04 追加。当初は「平均色で塗る」割り切りだった）。
+    当初見送った理由は「binding_array と uniform は同一 bind group に同居できない」
+    （wgpu-core: *Bind groups may not contain both a binding array and a uniform buffer*）で、
+    group3/group4 のどちらにも uniform があり、グループは 5 で満杯だったこと。
+    **解法**: group3 の唯一の uniform だった `wr_sky`（スカイボックス 64B）を **storage へ変えて**
+    group3 を uniform ゼロにし、そこへバインドレス資源 5 本（binding 6..10）を同居させた。
+    グループ数は 5 のまま・group1/group2（水面パスと共有する高さ場モジュールが宣言）は不変。
+    ・**なぜ group1+group2 の統合ではないのか**: group1/2 は `water_height_field.wgsl` が宣言し
+      水面パス・ID パス・コースティクスと共有している。番号を動かすと共有モジュールの
+      利用者全員を巻き込むため、影響が本パス内で閉じる「group3 の uniform 排除」を選んだ。
+    ・切り替えは D6 とまったく同じ **連結ファイルの差し替え**（`water_reflection_hit_on.wgsl` /
+      `_off.wgsl`）。`binding_array` は**宣言があるだけ**で非対応 GPU の BGL 生成が落ちるため、
+      シェーダ内 if では分岐できない。非対応 GPU は従来どおり平均色へ縮退する。
+  - **ガラス層の再トレースは入れていない**。反射レイ 1 本あたり最大 4 本の追加レイが
+    水面全面に掛かるため。不透明側（D6）では従来どおり有効である。
 
   **既知の制限**
 
@@ -755,8 +769,16 @@ G-Buffer 書き込み時のレイヤ選択）で行われる。
   - **D6 の全体反射モード（既定 Off）には連動しない**（2026-08-04 修正）。当初は同じゲートに
     していたが、既定設定で水面が一切反射しない罠だったため切り離した。水面反射の ON/OFF は
     WaterVolume の `reflection_intensity`（0 で無効）だけで決まり、RT/SSR 変種は GPU 対応で自動選択。
-  - **画面外ヒットのアルベドは平均色**（バインドレスを使わないため。上記設計判断参照）。
-    画面内に見えているヒットは実レンダリング結果なので、面積の大半は正しい色になる。
+  - **画面外ヒットのアルベドは、バインドレス非対応 GPU でのみ平均色**（対応 GPU は上記のとおり
+    ベースカラーテクスチャを実サンプルする。2026-08-04 改訂）。
+    **平均色経路で何が起きていたか（実症状）**: テクスチャのアルファ加重平均は多くのモデルで
+    灰色に寄るため、画面外にあるカラフルなモデル（テクスチャ付きの bunny、パーツごとに
+    緑・青・紫のマテリアルを持つロボット等）が水面に**一様な灰色の塊**として映っていた。
+    これはスキンメッシュ固有の不具合ではない（`rt_shadow.rs` のスキン TLAS 登録は
+    非スキンと同一の流儀で平均アルベド／`BindlessInstanceRecord` を `custom_data` 順に
+    詰めており、紐付けは正しかった）。原因は W5.2 の平均色近似そのもので、
+    バインドレス変種の追加で解消した。
+    画面内に見えているヒットは元々実レンダリング結果なので、面積の大半は当初から正しい色である。
     平均色は「ベースカラーテクスチャのアルファ加重平均（リニア）× base_color_factor」で、
     テクスチャの色味は**含まれている**（`asset_cache::compute_material_avg_albedo`、
     キャッシュ v13 で `base_color_tex_avg` を別途保持）。

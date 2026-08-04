@@ -180,6 +180,10 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "water_reflection_common.wgsl" => include_str!("shaders/water_reflection_common.wgsl"),
         "water_reflection_rt.wgsl"     => include_str!("shaders/water_reflection_rt.wgsl"),
         "water_reflection_ssr.wgsl"    => include_str!("shaders/water_reflection_ssr.wgsl"),
+        // 画面外ヒットのアルベド解決 2 変種（バインドレス可否で連結を差し替える）。
+        // on 側は binding_array を宣言するため、非対応 GPU では連結してはならない。
+        "water_reflection_hit_on.wgsl"  => include_str!("shaders/water_reflection_hit_on.wgsl"),
+        "water_reflection_hit_off.wgsl" => include_str!("shaders/water_reflection_hit_off.wgsl"),
         // RT ソフト影マスク生成（Phase RT-Shadow-Denoise）。
         "shadow_mask.wgsl"           => include_str!("shaders/shadow_mask.wgsl"),
         other => panic!("unknown shader source: {other}"),

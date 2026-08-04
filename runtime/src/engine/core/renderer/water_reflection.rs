@@ -89,6 +89,31 @@ fn resolve_water_reflection_shader(name: &str) -> &'static str {
     }
 }
 
+/// RT 変種の連結シェーダ列を返す（**バインドレス可否で末尾が変わる唯一の場所**）。
+///
+/// 基底の並びは TOML（`water_reflection_rt.toml` の `shader_sources`）が正典で、
+/// 本関数はその末尾へ「画面外ヒットのアルベド解決」変種を 1 つ（バインドレス時は
+/// `bindless_common` と併せて 2 つ）足すだけである。基底を Rust 側に書き写すと
+/// TOML と二重管理になるため、必ず TOML を読んで組み立てる。
+///
+/// TOML に hit 変種を書けないのは、どちらを連結するかが **実行時の GPU 対応**で
+/// 決まるためである（TOML は静的な設定なので分岐を表現できない）。
+/// ＝ TOML 単体では `water_refl_hit_albedo` が未定義になる。本関数が唯一の入口。
+fn rt_shader_sources(use_bindless: bool) -> Vec<String> {
+    let cfg: super::pipeline_config::PipelineConfig =
+        toml::from_str(include_str!("pipelines/water_reflection_rt.toml"))
+            .expect("water_reflection_rt.toml が読めない");
+    let mut sources = cfg.shader_sources;
+    if use_bindless {
+        // BindlessInstanceRecord / BINDLESS_FLAG_* の定義 → それを使うヒット解決の順。
+        sources.push("bindless_common.wgsl".to_string());
+        sources.push("water_reflection_hit_on.wgsl".to_string());
+    } else {
+        sources.push("water_reflection_hit_off.wgsl".to_string());
+    }
+    sources
+}
+
 // ============================================================
 //  スカイボックス連携（ミス経路で本物の空を映すための入力）
 // ============================================================
@@ -164,8 +189,17 @@ pub struct WaterReflectionPipelines {
     /// 天球サンプラー（**経度方向は Repeat**）。equirectangular の u は 0/1 で巻き付くので、
     /// clamp すると経度 0°（背後）の継ぎ目に縦線が出る。skybox.rs のサンプラーと同じ規約。
     sky_sampler: wgpu::Sampler,
-    /// スカイボックス uniform（毎フレーム `update_sky` で書き換える 64B）。
+    /// スカイボックスパラメータ（毎フレーム `update_sky` で書き換える 64B）。
+    /// **storage バッファ**である（group3 は binding_array と同居するため uniform を置けない。
+    /// 理由の詳細は `water_reflection_common.wgsl` の `wr_sky` 宣言のコメント）。
     sky_uniform: wgpu::Buffer,
+    /// RT 変種が**バインドレスのヒットシェーディング**で構築されたか。
+    ///
+    /// true のとき `rt_scene_bgl`（group3）は instance_table / UV / index / テクスチャ配列 /
+    /// サンプラーを含む拡張レイアウトになっている＝**`create_scene_bg` に
+    /// `BindlessResources` を渡さないと BindGroup を作れない**。
+    /// false なら従来の 6 binding（平均色経路）。
+    rt_bindless: bool,
     /// 粗さブラー用のいもす法（分離ボックス）コンピュート一式。
     /// SSGI と同じく**自前のインスタンスを持つ**（AO の物を借りると所有関係が分かりにくく、
     /// パイプライン構築順の暗黙依存が生まれるため。実体は薄いパイプライン 1 本）。
@@ -209,9 +243,17 @@ impl WaterReflectionPipelines {
         // ── RT（RAY_QUERY 対応 GPU のみ）────────────────────────
         // 非対応 GPU では `acceleration_structure` を含むモジュール生成自体が失敗するため、
         // **パイプラインごと作らない**（シェーダ内分岐では回避できない）。
+        //
+        // ヒットシェーディングはバインドレス可否で連結ファイルを差し替える（D6 と同じ流儀）:
+        //   on : bindless_common + water_reflection_hit_on  … 実テクスチャをサンプル
+        //   off: water_reflection_hit_off                    … 従来の平均色ベタ塗り
+        // `binding_array` の**宣言があるだけ**で非対応 GPU の BGL 生成は落ちるため、
+        // 分岐はシェーダ内 if ではなく連結レベルで行う必要がある。
+        let use_bindless =
+            super::rt_shadow::rt_shadows_supported() && super::bindless::bindless_supported();
         let (rt, rt_params_bgl, rt_field_bgl, rt_scene_bgl, rt_gi_bgl) =
             if super::rt_shadow::rt_shadows_supported() {
-                let (pipeline, mut bgls) = RenderPipelineBuilder::new(
+                let mut builder = RenderPipelineBuilder::new(
                     device,
                     include_str!("pipelines/water_reflection_rt.toml"),
                     WATER_REFLECTION_FORMAT,
@@ -219,7 +261,14 @@ impl WaterReflectionPipelines {
                 )
                 .with_label("Water Reflection RT")
                 .with_cache(cache)
-                .build(resolve_water_reflection_shader);
+                .with_shader_sources(rt_shader_sources(use_bindless));
+                if use_bindless {
+                    // サイズ未指定の `binding_array<texture_2d<f32>>` の要素数
+                    //（アダプタ上限でクランプ済みの実行時確定値）をリフレクションへ渡す。
+                    builder = builder
+                        .with_binding_array_count(super::bindless::bindless_capacity().max(1));
+                }
+                let (pipeline, mut bgls) = builder.build(resolve_water_reflection_shader);
                 assert!(bgls.len() >= 5,
                     "water_reflection_rt は group0..group4 を宣言すること");
                 let gi     = bgls.remove(4);
@@ -230,6 +279,8 @@ impl WaterReflectionPipelines {
             } else {
                 (None, None, None, None, None)
             };
+        // RT パイプラインを作らなかった GPU では拡張レイアウトも存在しない。
+        let rt_bindless = rt.is_some() && use_bindless;
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label:          Some("Water Reflection Sampler"),
@@ -255,11 +306,13 @@ impl WaterReflectionPipelines {
             ..Default::default()
         });
 
-        // スカイボックス uniform（既定は「無し」。スカイボックスのあるフレームだけ上書きされる）。
+        // スカイボックスパラメータ（既定は「無し」。スカイボックスのあるフレームだけ上書きされる）。
+        // **STORAGE** で作る: group3 はバインドレスのテクスチャ配列と同居するため、
+        // uniform バッファを置けない（wgpu の bind group 制約）。値・レイアウトは不変。
         let sky_uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label:              Some("Water Reflection Sky Uniform"),
+            label:              Some("Water Reflection Sky Params"),
             size:               std::mem::size_of::<WaterSkyUniform>() as u64,
-            usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         queue.write_buffer(&sky_uniform, 0, bytemuck::bytes_of(&WaterSkyUniform::disabled()));
@@ -294,7 +347,7 @@ impl WaterReflectionPipelines {
             ssr, rt,
             ssr_params_bgl, ssr_field_bgl, ssr_scene_bgl, ssr_gi_bgl,
             rt_params_bgl, rt_field_bgl, rt_scene_bgl, rt_gi_bgl,
-            sampler, sky_sampler, sky_uniform,
+            sampler, sky_sampler, sky_uniform, rt_bindless,
             imos: super::imos_blur::ImosBlur::new(device, cache),
             dummy_tex, dummy_view,
         }
@@ -303,6 +356,14 @@ impl WaterReflectionPipelines {
     /// RT 反射パイプラインを持っているか（＝RAY_QUERY 対応 GPU か）。
     pub fn has_rt(&self) -> bool {
         self.rt.is_some()
+    }
+
+    /// RT 変種がバインドレス（ヒット点の実テクスチャサンプル）で構築されているか。
+    ///
+    /// true のときは **`create_scene_bg` に `BindlessResources` を必ず渡すこと**。
+    /// 渡さないと group3 のレイアウトとエントリ数が食い違い、BindGroup 生成に失敗する。
+    pub fn has_bindless(&self) -> bool {
+        self.rt_bindless
     }
 
     /// group1（水パラメータ＋ショアフィールド）の BindGroup を作る。
@@ -369,7 +430,9 @@ impl WaterReflectionPipelines {
     ///
     /// `None` を渡すと「スカイボックス無し」（`enabled = 0`）を書き、反射のミス経路は
     /// 従来どおり GI プローブ／アンビエントへ落ちる。
-    /// **uniform だけを更新する**（テクスチャの差し替えは `create_scene_bg` の引数側）。
+    /// **パラメータバッファだけを更新する**（テクスチャの差し替えは `create_scene_bg` の引数側）。
+    /// バッファの実体は storage だが、型・レイアウト・意味は uniform 時代と完全に同一である
+    /// （group3 が binding_array と同居するための都合。値は 1 フレームに 1 回書くだけ）。
     pub fn update_sky(&self, queue: &wgpu::Queue, sky: Option<&WaterSkySource<'_>>) {
         let u = match sky {
             Some(s) => s.uniform,
@@ -385,6 +448,9 @@ impl WaterReflectionPipelines {
     /// `sky` はこのフレームの代表スカイボックス。`None` のときは**ダミー 1x1（黒）**を挿す
     /// （uniform 側の `enabled = 0` でサンプル自体が起きないので、中身は何でもよいが
     ///  バインドは必ず埋める必要がある＝レイアウトは常に同一）。
+    /// `bindless` は **`has_bindless()` が true かつ `use_rt` のときのみ必須**
+    /// （binding 6..10 にインスタンステーブル・UV・index・テクスチャ配列・サンプラーを挿す）。
+    /// SSR 変種や非バインドレス GPU では `None` を渡す（余分なエントリは足さない）。
     pub fn create_scene_bg(
         &self,
         device:     &wgpu::Device,
@@ -392,22 +458,44 @@ impl WaterReflectionPipelines {
         depth_view: &wgpu::TextureView,
         sky:        Option<&WaterSkySource<'_>>,
         use_rt:     bool,
+        bindless:   Option<&super::bindless::BindlessResources>,
     ) -> wgpu::BindGroup {
         let sky_view = match sky {
             Some(s) => s.view,
             None    => &self.dummy_view,
         };
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(grab_view) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(depth_view) },
+            wgpu::BindGroupEntry { binding: 3, resource: self.sky_uniform.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(sky_view) },
+            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sky_sampler) },
+        ];
+        // ── バインドレス（画面外ヒットの実テクスチャサンプル）の追加エントリ ──
+        // `texture_view_list()` が返す Vec は `TextureViewArray` が借用するので、
+        // BindGroup を作り終わるまで生かしておく必要がある（先に束縛して寿命を伸ばす）。
+        let views;
+        if use_rt && self.rt_bindless {
+            let bl = bindless.expect(
+                "water_reflection: バインドレス変種の RT パイプラインなのに \
+                 BindlessResources が渡されていない（group3 のレイアウトと食い違う）");
+            views = bl.texture_view_list();
+            entries.push(wgpu::BindGroupEntry {
+                binding: 6, resource: bl.instance_table_buffer().as_entire_binding() });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 7, resource: bl.uv_buffer().as_entire_binding() });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 8, resource: bl.index_buffer().as_entire_binding() });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 9, resource: wgpu::BindingResource::TextureViewArray(&views) });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 10, resource: wgpu::BindingResource::Sampler(bl.shared_sampler()) });
+        }
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("Water Reflection Scene BG (group 3)"),
             layout:  self.scene_bgl(use_rt),
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(grab_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(depth_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: self.sky_uniform.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(sky_view) },
-                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sky_sampler) },
-            ],
+            entries: &entries,
         })
     }
 
@@ -660,8 +748,18 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n")
     }
-    fn rt_src()  -> String { joined(include_str!("pipelines/water_reflection_rt.toml")) }
     fn ssr_src() -> String { joined(include_str!("pipelines/water_reflection_ssr.toml")) }
+
+    /// RT 変種の「実際にコンパイルされる WGSL」。**連結の正典は `rt_shader_sources`**
+    /// （TOML の基底 ＋ 実行時に決まるヒット解決変種）なので、テストもそこから組み立てる。
+    fn rt_variant_src(use_bindless: bool) -> String {
+        rt_shader_sources(use_bindless).iter()
+            .map(|n| resolve_water_reflection_shader(n))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    /// 従来（平均色）変種。既存テストが参照する既定の RT ソース。
+    fn rt_src() -> String { rt_variant_src(false) }
 
     /// SSR 変種（RAY_QUERY 不要）を naga で parse + validate する。
     /// **RAY_QUERY capability を与えずに通ること**が「RT 非対応 GPU で動く」の根拠である。
@@ -679,17 +777,85 @@ mod tests {
     }
 
     /// RT 変種（RAY_QUERY 必須）を naga で parse + validate する。
+    /// **バインドレス on / off の両方**を検証する（片方だけ壊れる事故を防ぐ）。
+    /// on 側は `binding_array` を含むため、RAY_QUERY に加えて非一様インデックスの
+    /// capability が要る（＝実 GPU の feature 要求とテストの前提が一致していることの証拠）。
     #[test]
     fn water_reflection_rt_shader_parses_and_validates() {
-        let src = rt_src();
-        let module = naga::front::wgsl::parse_str(&src)
-            .unwrap_or_else(|e| panic!("[water_reflection_rt] WGSL parse 失敗: {e:?}"));
-        let mut v = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::RAY_QUERY,
-        );
-        v.validate(&module)
-            .unwrap_or_else(|e| panic!("[water_reflection_rt] validate 失敗: {e:?}"));
+        for use_bindless in [false, true] {
+            let src = rt_variant_src(use_bindless);
+            let module = naga::front::wgsl::parse_str(&src).unwrap_or_else(|e|
+                panic!("[water_reflection_rt bindless={use_bindless}] WGSL parse 失敗: {e:?}"));
+            let mut caps = naga::valid::Capabilities::RAY_QUERY;
+            if use_bindless {
+                caps |= naga::valid::Capabilities::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+            }
+            let mut v = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps);
+            v.validate(&module).unwrap_or_else(|e|
+                panic!("[water_reflection_rt bindless={use_bindless}] validate 失敗: {e:?}"));
+        }
+    }
+
+    /// バインドレス変種が「ヒット点のテクスチャを実サンプルする」実装であること。
+    ///
+    /// ここが平均色へ戻ると、W5.2 で問題になった
+    /// **画面外の物体が一様な灰色の塊として水面に映る**症状がそのまま再発する
+    /// （テクスチャの平均色は多くのモデルで灰色に寄るため）。
+    #[test]
+    fn bindless_variant_samples_the_real_base_color_texture() {
+        let on = rt_variant_src(true);
+        assert!(on.contains("textureSampleLevel(wrbl_tex[rec.albedo_tex_index]"),
+            "バインドレス変種がベースカラーテクスチャを実サンプルしていない");
+        assert!(on.contains("rec.base_color_factor.rgb"),
+            "サンプル値に base_color_factor を掛けていない（マテリアル色が反映されない）");
+        // 対象外インスタンス（UV/テクスチャ未登録）は平均色へ縮退する＝退化しない保証。
+        assert!(on.contains("BINDLESS_FLAG_ELIGIBLE"),
+            "バインドレス対象判定が無い（未登録インスタンスで不正な添字を引く）");
+        // 非バインドレス変種は binding_array を **一切宣言しない**
+        //（宣言があるだけで非対応 GPU の BGL 生成が落ちる）。
+        // コメント中の言及は無害なので、`@group(...)` を持つ宣言行だけを見る。
+        let off = rt_variant_src(false);
+        let declares_binding_array = |src: &str| src.lines().any(|l| {
+            let t = l.trim();
+            !t.starts_with("//") && t.contains("@group(") && t.contains("binding_array")
+        });
+        assert!(!declares_binding_array(&off),
+            "非バインドレス変種に binding_array 宣言が混ざっている（非対応 GPU で起動不能になる）");
+        assert!(declares_binding_array(&on),
+            "バインドレス変種に binding_array 宣言が無い（テクスチャ配列を引けない）");
+        assert!(off.contains("fn water_refl_hit_albedo("),
+            "非バインドレス変種にヒット解決関数が無い");
+    }
+
+    /// group3（バインドレスを同居させるグループ）に uniform バッファが無いこと。
+    ///
+    /// wgpu の制約「binding_array と uniform buffer は同一 bind group に置けない」に
+    /// 抵触すると、**バインドレス対応 GPU でだけ**起動時に BGL 生成が落ちる。
+    /// group3 の唯一の uniform だった `wr_sky` を storage へ変えたのがこの制約対応であり、
+    /// 戻されると再発するのでテストで固定する。
+    #[test]
+    fn group3_has_no_uniform_buffer_so_it_can_host_the_binding_array() {
+        let common = get_shader_source("water_reflection_common.wgsl").replace("\r\n", "\n");
+        for line in common.lines() {
+            let l = line.trim();
+            if l.starts_with("@group(3)") {
+                assert!(!l.contains("var<uniform>"),
+                    "group3 に uniform バッファがある: {l}\n\
+                     （binding_array と同居できないため storage にすること）");
+            }
+        }
+        // バインドレスのテクスチャ配列は group3 側に置く（group4 は GiParams が uniform）。
+        // Rust 側 `create_scene_bg` が挿す binding 番号（6..10）と 1:1 で対応すること。
+        let on = get_shader_source("water_reflection_hit_on.wgsl");
+        for (binding, name) in [
+            (6u32, "wrbl_records"), (7, "wrbl_uv"), (8, "wrbl_index"),
+            (9, "wrbl_tex"), (10, "wrbl_smp"),
+        ] {
+            let decl = on.lines().find(|l| l.contains(&format!("{name}:")))
+                .unwrap_or_else(|| panic!("バインドレス変種に {name} の宣言が無い"));
+            assert!(decl.contains("@group(3)") && decl.contains(&format!("@binding({binding})")),
+                "{name} が group3 binding{binding} に無い（Rust 側 create_scene_bg と食い違う）: {decl}");
+        }
     }
 
     /// TOML のエントリポイント名・出力設定がシェーダ／Rust 側の前提と一致すること。
@@ -869,25 +1035,59 @@ mod tests {
         let rt_feats = wgpu::Features::EXPERIMENTAL_RAY_QUERY
             | wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE;
         let has_rt = adapter.features().contains(rt_feats);
+        // バインドレス（テクスチャ配列＋非一様インデックス）も本体と同じ条件で判定する。
+        // 対応していれば **バインドレス変種の RT パイプラインと group3 BindGroup** まで検証する
+        //（binding_array と uniform の同居不可・要素数リミットは実機でしか出ない失敗要因）。
+        let bindless_feats = wgpu::Features::TEXTURE_BINDING_ARRAY
+            | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+        let adapter_limits = adapter.limits();
+        let array_cap = adapter_limits.max_binding_array_elements_per_shader_stage;
+        let has_bindless = has_rt && adapter.features().contains(bindless_feats) && array_cap > 0;
+        // テクスチャ配列容量は本体（renderer/mod.rs）と同じくアダプタ上限でクランプする。
+        let bindless_cap = array_cap
+            .min(adapter_limits.max_sampled_textures_per_shader_stage)
+            .min(super::super::BINDLESS_MAX_TEXTURES)
+            .max(1);
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
-                required_features: if has_rt { rt_feats } else { wgpu::Features::empty() },
+                required_features: if has_rt { rt_feats } else { wgpu::Features::empty() }
+                    | if has_bindless { bindless_feats } else { wgpu::Features::empty() },
                 required_limits: wgpu::Limits {
                     // 本体（renderer/mod.rs）と同じ要求。本パスは group0〜4 を使う。
                     max_bind_groups: 5,
+                    // バインドレス時のみ、テクスチャ配列に必要なリミットを引き上げる。
+                    max_sampled_textures_per_shader_stage: if has_bindless {
+                        bindless_cap.max(wgpu::Limits::default().max_sampled_textures_per_shader_stage)
+                    } else {
+                        wgpu::Limits::default().max_sampled_textures_per_shader_stage
+                    },
+                    max_binding_array_elements_per_shader_stage: if has_bindless {
+                        bindless_cap
+                    } else {
+                        wgpu::Limits::default().max_binding_array_elements_per_shader_stage
+                    },
                     ..wgpu::Limits::default()
                 },
                 ..Default::default()
             }))
             .expect("デバイス生成に失敗");
+        // BindlessResources は `&Arc<Device>` を要求する（内部で保持するため）。
+        // 以降は `&device` の deref 強制で `&wgpu::Device` としても使える。
+        let device = std::sync::Arc::new(device);
 
-        // RT 対応フラグは他テストと共有のグローバルなので、必ず元へ戻す。
+        // RT／バインドレス対応フラグは他テストと共有のグローバルなので、必ず元へ戻す。
         let saved = super::super::rt_shadow::rt_shadows_supported();
+        let saved_bl     = super::super::bindless::bindless_supported();
+        let saved_bl_cap = super::super::bindless::bindless_capacity();
         super::super::rt_shadow::set_rt_shadows_supported(has_rt);
+        super::super::bindless::set_bindless_supported(has_bindless);
+        super::super::bindless::set_bindless_capacity(if has_bindless { bindless_cap } else { 0 });
         // 生成そのものが検証（失敗すれば wgpu がパニック／エラーを出す）。
         let pipelines = WaterReflectionPipelines::new(&device, &queue, None);
         assert_eq!(pipelines.has_rt(), has_rt,
             "RT 対応アダプタなら RT 変種が、非対応なら SSR 変種だけが構築されること");
+        assert_eq!(pipelines.has_bindless(), has_bindless,
+            "バインドレス対応アダプタならバインドレス変種で構築されること");
 
         // ── group3（グラブ＋サンプラー＋深度）の BindGroup 生成まで検証する ──
         // BGL は WGSL リフレクション由来なので、Rust 側の `entries` と
@@ -920,10 +1120,20 @@ mod tests {
         // ここが通ることが「binding 3..5 の種別（uniform / texture / sampler）が合っている」
         // ことの実機側の証拠になる。
         let sky = WaterSkySource { view: &color_view, uniform: WaterSkyUniform::disabled() };
+        // バインドレス変種では group3 にテクスチャ配列一式が要るので、実体を用意して渡す
+        //（これが通ることが「binding_array の count・種別・binding 番号が Rust と WGSL で
+        //  一致している」ことの実機側の証拠になる）。
+        let bindless = if has_bindless {
+            Some(super::super::bindless::BindlessResources::new(&device, &queue, bindless_cap))
+        } else {
+            None
+        };
         for use_rt in [false, has_rt] {
-            let _bg = pipelines.create_scene_bg(&device, &color_view, &depth_view, None, use_rt);
-            let _bg_sky =
-                pipelines.create_scene_bg(&device, &color_view, &depth_view, Some(&sky), use_rt);
+            let bl = if use_rt && pipelines.has_bindless() { bindless.as_ref() } else { None };
+            let _bg = pipelines.create_scene_bg(
+                &device, &color_view, &depth_view, None, use_rt, bl);
+            let _bg_sky = pipelines.create_scene_bg(
+                &device, &color_view, &depth_view, Some(&sky), use_rt, bl);
         }
         pipelines.update_sky(&queue, Some(&sky));
         pipelines.update_sky(&queue, None);
@@ -935,8 +1145,12 @@ mod tests {
 
         let _ = device.poll(wgpu::PollType::Wait);
         super::super::rt_shadow::set_rt_shadows_supported(saved);
-        eprintln!("[water_reflection] 実 GPU 検証 OK（RT 変種: {}）",
-            if has_rt { "構築した" } else { "アダプタ非対応のためスキップ" });
+        super::super::bindless::set_bindless_supported(saved_bl);
+        super::super::bindless::set_bindless_capacity(saved_bl_cap);
+        eprintln!("[water_reflection] 実 GPU 検証 OK（RT 変種: {} / バインドレス: {}）",
+            if has_rt { "構築した" } else { "アダプタ非対応のためスキップ" },
+            if has_bindless { format!("構築した（容量 {bindless_cap}）") }
+            else { "アダプタ非対応のためスキップ".to_string() });
     }
 
     /// 粗さ 0 は厳密に鏡面（法線を一切いじらない）であること。

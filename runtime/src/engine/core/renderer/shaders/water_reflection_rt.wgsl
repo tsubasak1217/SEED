@@ -17,20 +17,18 @@
 //  違いは **入力の出どころ**だけ（不透明は G-Buffer、水面はラスタライズした波の法線）。
 //
 //  ## 不透明版と違う点（意図的な簡略化）
-//  ・**バインドレス（B2）のテクスチャ配列を使わない**。画面外ヒットのアルベドは
-//    平均色（`rt_albedo`）で塗る。水面反射で画面外ヒットが占める面積は小さく、
-//    かつ group3/4 に binding_array を持ち込むと「binding_array と uniform は同一
-//    グループに同居できない」制約で GI の UBO が置けなくなる（グループは 5 で満杯）。
 //  ・**ガラス層（0x02）の再トレースを行わない**。反射レイあたり最大 4 本の追加レイは
 //    水面全面に掛かるとコストが重く、水面に映るガラスの色付きシルエットは
 //    優先度が低いと判断した（不透明側は従来どおり対応済み）。
 //
 //  ## 連結順
-//    [water_height_field, cluster_common, ddgi_common, water_reflection_common, （本ファイル）]
+//    [water_height_field, cluster_common, ddgi_common, water_reflection_common, （本ファイル）,
+//     （バインドレス時のみ）bindless_common, water_reflection_hit_on ／ さもなくば hit_off]
 //      water_height_field      : WaterParams / 高さ場 / 格子頂点（group1・group2 を宣言）
 //      cluster_common          : LIGHT_KIND_* 定数
 //      ddgi_common             : GiParams / ddgi_sample_irradiance
 //      water_reflection_common : カメラ(group0)・グラブと深度(group3)・GI(group4 の 0..4)・頂点段
+//      water_reflection_hit_*  : 画面外ヒットのアルベド解決（実テクスチャ／平均色の 2 変種）
 //
 //  ★同期必須★ `WaterReflLight` は `lighting.rs::GpuLight`（112B）のミラーであり、
 //  `reflection_rt.wgsl::GpuLightR` と同一である。片方だけ変えてはならない。
@@ -126,14 +124,16 @@ fn water_refl_direct_irradiance(hit_pos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     return e;
 }
 
-/// ヒット先のベースカラー（プリミティブ平均アルベド。範囲外は中間グレー）。
-/// `reflection_rt_hit_off.wgsl` と同じ「平均色」近似である。
-fn water_refl_hit_albedo(ai: u32) -> vec3<f32> {
-    if ai < arrayLength(&wr_albedo) {
-        return wr_albedo[ai].rgb;
-    }
-    return vec3<f32>(0.5, 0.5, 0.5);
-}
+/// アルベドを引けなかったとき（インスタンス番号が範囲外）の中間グレー。
+/// ヒット解決の両変種（`water_reflection_hit_on/off.wgsl`）が共有する唯一の既定値。
+const WATER_REFL_MISSING_ALBEDO: vec3<f32> = vec3<f32>(0.5, 0.5, 0.5);
+
+// ヒット先のベースカラーを返す `water_refl_hit_albedo(ai, prim_index, bary)` は
+// **連結される変種ファイル**が定義する（WGSL はモジュールスコープの前方参照を許す）:
+//   on （バインドレス対応）: water_reflection_hit_on.wgsl  … UV 補間 → テクスチャ実サンプル
+//   off（従来／非対応 GPU）: water_reflection_hit_off.wgsl … 平均アルベドのベタ塗り
+// 分岐をシェーダ内の if にできないのは、binding_array の**宣言そのもの**が
+// 非対応 GPU で BGL 生成を落とすため（不透明 RT 反射 D6 とまったく同じ制約）。
 
 // ─── フラグメント ────────────────────────────────────────────
 
@@ -200,7 +200,11 @@ fn fs_water_reflection(in: WaterReflVsOut) -> @location(0) vec4<f32> {
             // 画面外／遮蔽裏：解析近似。明るさ規約は本画面へ揃える
             //   直接光 … Lambert なので albedo/π × E
             //   間接光 … 本画面のアンビエント規約に合わせて /π を掛けない
-            let albedo   = water_refl_hit_albedo(hit.instance_custom_data);
+            // ヒット解決は連結された変種に委ねる（バインドレス対応なら実テクスチャ色、
+            // 非対応なら平均色）。画面外ヒットが「一様な灰色の塊」になる W5.2 の
+            // 仕様限界は、この on 変種で解消される。
+            let albedo   = water_refl_hit_albedo(
+                hit.instance_custom_data, hit.primitive_index, hit.barycentrics);
             let direct   = water_refl_direct_irradiance(hit_pos, n_hit);
             let indirect = water_refl_env(hit_pos, n_hit);
             reflected = albedo * (direct / WATER_REFL_PI + indirect);
