@@ -4,9 +4,11 @@ namespace SEED;
 /// GameObject の水域（WaterVolumeComponent）へのアクセサ（Phase W2.5）。
 /// Rust ランタイムのコンポーネントを FFI 経由で読み書きする薄いラッパー（値はエンジンが保持）。
 ///
-/// 公開しているのは<b>水位グラフの読み書きに必要な最小限だけ</b>である。
-/// 色・波・泡などの見た目パラメータは演出設定であってゲームロジックが触るものではないため、
-/// スクリプトへは公開せずインスペクタでの編集に限定している。
+/// 公開しているのは<b>水位グラフの読み書き</b>と、
+/// <b>水面シェーディングアセットが宣言したパラメータ</b>（<see cref="SetShaderParam(string, float)"/>）である。
+/// 色・波・泡などエンジン標準の見た目パラメータは演出設定であってゲームロジックが触るものではないため、
+/// スクリプトへは公開せずインスペクタでの編集に限定している
+/// （アセットが `override` で宣言したパラメータだけは「ゲーム内変数で動かす」用途があるので公開する）。
 ///
 /// 水域を持たないエンティティに対する読み取りは既定値、書き込みは無視される。
 /// </summary>
@@ -63,4 +65,48 @@ public readonly struct WaterVolume : IComponentHandle<WaterVolume>
         get => ScriptHost.TryGetBool(_entity, Comp, "simulate_level", out var v) && v;
         set => ScriptHost.TrySetBool(_entity, Comp, "simulate_level", value);
     }
+
+    // ── 水面シェーディングアセットのパラメータ（Phase W8.2）────────────────
+    //
+    // アセット（.wgsl）が `@color override glow_color: vec3<f32> = vec3(...);` のように
+    // 宣言したパラメータを、ゲーム内変数から毎フレーム動かすための入口。
+    // フィールド名は「接頭辞 + アセット内の識別子」でランタイムへ渡す
+    // （名前はアセットが決めるので、固定プロパティにはできない）。
+    // 接頭辞は Rust 側 host_api.rs の定数と完全一致させること。
+
+    /// <summary>スカラー（f32）パラメータのフィールド名接頭辞（Rust 側と一致必須）。</summary>
+    private const string ShaderParamFloatPrefix = "shader_param_f:";
+    /// <summary>色（vec3&lt;f32&gt;）パラメータのフィールド名接頭辞（Rust 側と一致必須）。</summary>
+    private const string ShaderParamVec3Prefix = "shader_param_v3:";
+
+    /// <summary>
+    /// 水面シェーダのスカラーパラメータを設定する（例: ボス HP で発光を強める）。
+    ///
+    /// <paramref name="name"/> はアセットの <c>override</c> 宣言の識別子。
+    /// 宣言に無い名前でも保存はされるが、描画側は無視する（アセットを直せば効き始める）。
+    /// <b>Play 中の変更はシーンへ焼き付かない</b>（Play 終了で開始時点の値へ戻る）。
+    /// </summary>
+    public void SetShaderParam(string name, float value)
+        => ScriptHost.TrySetFloat(_entity, Comp, ShaderParamFloatPrefix + name, value);
+
+    /// <summary>
+    /// 水面シェーダの色（vec3）パラメータを設定する。リニア RGB（1 を超える発光値も可）。
+    /// <b>Play 中の変更はシーンへ焼き付かない</b>（Play 終了で開始時点の値へ戻る）。
+    /// </summary>
+    public void SetShaderParam(string name, Vector3 value)
+        => ScriptHost.TrySetVec3(_entity, Comp, ShaderParamVec3Prefix + name, value);
+
+    /// <summary>
+    /// 水面シェーダのスカラーパラメータを読む。
+    /// シーンに上書き値が無ければ<b>アセットの既定値</b>、宣言自体が無ければ 0 を返す。
+    /// </summary>
+    public float GetShaderParamFloat(string name)
+        => ScriptHost.TryGetFloat(_entity, Comp, ShaderParamFloatPrefix + name, out var v) ? v : 0f;
+
+    /// <summary>
+    /// 水面シェーダの色（vec3）パラメータを読む。
+    /// シーンに上書き値が無ければ<b>アセットの既定値</b>、宣言自体が無ければ (0,0,0) を返す。
+    /// </summary>
+    public Vector3 GetShaderParamVector3(string name)
+        => ScriptHost.TryGetVec3(_entity, Comp, ShaderParamVec3Prefix + name, out var v) ? v : Vector3.Zero;
 }

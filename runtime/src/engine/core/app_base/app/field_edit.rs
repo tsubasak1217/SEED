@@ -99,6 +99,10 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         // スライダーのドラッグは「そのパラメータ 1 個ぶん」で 1 コマンドにまとまる。
         IpcCommand::SetWaterShaderParam { actor_dfs_id, slot_idx, name, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetWaterShaderParam", name),
+        // 「デフォルトに戻す」ボタン（W8.2）。値編集と**別のコマンド名**でマージキーを作るので、
+        // 直前のスライダー操作と 1 手にまとまらず、Ctrl+Z 1 回でリセット前へ戻る。
+        IpcCommand::ResetWaterShaderParam { actor_dfs_id, slot_idx, name } =>
+            slot(*actor_dfs_id, *slot_idx, "ResetWaterShaderParam", name),
         IpcCommand::SetWaterLinkField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetWaterLinkField", key),
         IpcCommand::SetLightField { actor_dfs_id, slot_idx, key, .. } =>
@@ -897,6 +901,29 @@ mod tests {
         }
         assert_ne!(mk("emission_color"), mk("glow_boost"),
             "別パラメータの編集は別コマンドとしてまとめられること");
+    }
+
+    /// 分類関数: 「デフォルトに戻す」（`@reset` ボタン）も Undo 対象であり、
+    /// **直前の値編集とはマージされない**こと。
+    ///
+    /// マージされてしまうと「スライダーを動かす → リセット」が 1 手に潰れ、
+    /// Ctrl+Z でリセット直前の値へ戻れなくなる。
+    #[test]
+    fn field_edit_target_classifies_water_shader_param_reset_separately() {
+        let reset = field_edit_target(&IpcCommand::ResetWaterShaderParam {
+            actor_dfs_id: 3, slot_idx: 1, name: "glow_boost".into(),
+        });
+        let edit = field_edit_target(&IpcCommand::SetWaterShaderParam {
+            actor_dfs_id: 3, slot_idx: 1, name: "glow_boost".into(), value: "1,0,0,0".into(),
+        });
+        match &reset {
+            FieldEditTarget::Slot { actor_dfs_id, slot_idx, merge_key } => {
+                assert_eq!((*actor_dfs_id, *slot_idx), (3, 1));
+                assert!(merge_key.contains("glow_boost"), "{merge_key}");
+            }
+            other => panic!("スロット編集として分類されること: {other:?}"),
+        }
+        assert_ne!(reset, edit, "値編集とリセットは別コマンドとして積まれること");
     }
 
     /// 分類関数: 同じスロットでも別フィールドならマージキーが異なること。

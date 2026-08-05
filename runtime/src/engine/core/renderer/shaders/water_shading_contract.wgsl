@@ -147,7 +147,7 @@ struct WaterShadeInput {
     /// この水域の描画インスタンス番号（`u_water` / `u_water_shade_params` の添字）。
     ///
     /// **アセットから直接読む必要はない**。エンジンが生成するディスパッチが、
-    /// アセットの `//! param` 宣言に対応する `var<private>` へ値を代入するために使う。
+    /// アセットの `override` 宣言に対応する `var<private>` へ値を代入するために使う。
     /// 契約 v1 への**追加**フィールドであり、既存アセットの意味は何も変わらない。
     instance_index: u32,
 }

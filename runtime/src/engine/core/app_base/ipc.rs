@@ -398,6 +398,15 @@ pub enum IpcCommand {
     /// スカラーは x のみ意味を持ち、残りは 0 を送る）。
     /// **`WaterVolumeComponent::shader_params` にはこの 4 成分がそのまま入る**。
     SetWaterShaderParam { actor_dfs_id: u32, slot_idx: u32, name: String, value: String },
+    /// 水面シェーディングアセットのパラメータ 1 個を**アセットの既定値へ戻す**
+    /// （`@reset` 属性を持つ行の「デフォルトに戻す」ボタン。water_ops.rs が処理）。
+    ///
+    /// フォーマット: RESET_WATER_SHADER_PARAM:{actor_dfs_id},{slot_idx},{name}
+    ///
+    /// 実装は「シーン側の上書き値を**消す**」であり、既定値を書き込むのではない。
+    /// こうしておくと、後からアセットの既定値を書き換えたときに
+    /// 「戻したはずの水域」が新しい既定値へ追随する（＝アセットが正典であり続ける）。
+    ResetWaterShaderParam { actor_dfs_id: u32, slot_idx: u32, name: String },
     /// WaterLinkComponent（水位グラフの開口。W2.5）のフィールド更新（water_link_ops.rs が処理）。
     /// フォーマット: SET_WATER_LINK_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
     /// key: volume_a / volume_b / opening_bottom / opening_height /
@@ -1697,6 +1706,14 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     name: name.to_string(), value: value.to_string(),
                                 })
                             })
+                        }
+                        s if s.starts_with("RESET_WATER_SHADER_PARAM:") => {
+                            // フォーマット: RESET_WATER_SHADER_PARAM:{actor},{slot},{name}
+                            // name に "," は入らない（WGSL 識別子）ので tail をそのまま使う。
+                            parse2u_tail(&s["RESET_WATER_SHADER_PARAM:".len()..])
+                                .map(|(a, sl, tail)| IpcCommand::ResetWaterShaderParam {
+                                    actor_dfs_id: a, slot_idx: sl, name: tail.to_string(),
+                                })
                         }
                         s if s.starts_with("SET_WATER_LINK_FIELD:") => {
                             // フォーマット: SET_WATER_LINK_FIELD:{actor_dfs_id},{slot_idx},{key},{value}

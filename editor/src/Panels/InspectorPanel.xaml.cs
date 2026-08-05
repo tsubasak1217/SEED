@@ -573,6 +573,13 @@ public partial class InspectorPanel : UserControl
     /// スライダーの Minimum == Maximum は操作不能になるため、表示だけを守るための保険。
     /// </summary>
     private const float ShaderParamMinRangeWidth = 1f;
+    /// <summary>
+    /// 「デフォルトに戻す」ボタン（アセットが <c>@reset</c> を付けた行にだけ出る）の記号。
+    /// 巻き戻しを表す矢印 1 文字。行を狭めないよう文字だけのボタンにしている。
+    /// </summary>
+    private const string ShaderParamResetGlyph = "⟲";
+    /// <summary>「デフォルトに戻す」ボタンの文字サイズ。</summary>
+    private const double ShaderParamResetFontSize = 11;
     /// <summary>水位シミュレーション（水位グラフ、Phase W2.5）を有効にするかの既定値。</summary>
     private const bool WaterSimulateLevelDefault = false;
 
@@ -5003,13 +5010,16 @@ public partial class InspectorPanel : UserControl
     /// （Ocean のとき領域半径を隠し、Region のとき海の描画半径を隠す）。
     /// </summary>
     /// <summary>
-    /// 水面シェーディングアセットのパラメータ注釈（Phase W8.2）の行を生成して親へ追加する。
+    /// 水面シェーディングアセットのパラメータ宣言（Phase W8.2）の行を生成して親へ追加する。
     ///
-    /// ランタイムが送ってきた JSON 配列（名前・型・ラベル・範囲・現在値）から、
+    /// ランタイムが送ってきた JSON 配列（名前・型・ラベル・範囲・現在値・リセット可否）から、
     /// 型ごとに行の形を選ぶ:
     ///   color … カラーピッカー（リニア RGB。アルファは持たない）
     ///   range … スライダー＋数値ボックス（min/max はアセットの宣言どおり）
     ///   float … 数値行（範囲なし）
+    ///
+    /// アセットが <c>@reset</c> を付けた行だけ、右端に「デフォルトに戻す」ボタンを添える
+    /// （RESET_WATER_SHADER_PARAM を送る。Undo はランタイム側の共通機構が担う）。
     ///
     /// **構文解析は一切行わない**（正典はランタイムの water/shade_params.rs）。
     /// 値の送信は SET_WATER_SHADER_PARAM で、型に依らず常に 4 成分を送る。
@@ -5044,6 +5054,44 @@ public partial class InspectorPanel : UserControl
                 $"SET_WATER_SHADER_PARAM:{_currentActorId},{info.SlotIdx},{name},{x},{y},{z},{w}"));
         }
 
+        // パラメータ 1 個をアセットの既定値へ戻す（`@reset` の付いた行のボタン）。
+        // ランタイムはシーン側の上書き値を消すだけで、既定値の解釈はアセットが持ち続ける。
+        void SendReset(string name)
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"RESET_WATER_SHADER_PARAM:{_currentActorId},{info.SlotIdx},{name}"));
+        }
+
+        // 行の右端へ「デフォルトに戻す」ボタンを添えた要素を返す
+        //（3 種の行のどれにも同じ形で付けられるよう DockPanel で包む）。
+        UIElement WithResetButton(UIElement row, string name, string label)
+        {
+            var button = new Button
+            {
+                Content           = ShaderParamResetGlyph,
+                Background        = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)),
+                Foreground        = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)),
+                BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+                BorderThickness   = new Thickness(1),
+                FontSize          = ShaderParamResetFontSize,
+                Padding           = new Thickness(5, 0, 5, 1),
+                Margin            = new Thickness(4, 0, 0, 0),
+                Cursor            = Cursors.Hand,
+                VerticalAlignment = VerticalAlignment.Center,
+                Template          = FileRefBuilder.BuildButtonTemplate(),
+                ToolTip           = $"「{label}」をアセットの既定値に戻す（Ctrl+Z で取り消せます）",
+            };
+            button.Click += (_, _) => SendReset(name);
+
+            var dock = new DockPanel { LastChildFill = true };
+            // Dock された子を先に、可変幅の本体を最後に入れる（LastChildFill の作法）。
+            DockPanel.SetDock(button, Dock.Right);
+            dock.Children.Add(button);
+            dock.Children.Add(row);
+            return dock;
+        }
+
         foreach (var item in items)
         {
             var name = item.TryGetProperty("name", out var pn) ? pn.GetString() ?? "" : "";
@@ -5052,6 +5100,8 @@ public partial class InspectorPanel : UserControl
             var label = item.TryGetProperty("label", out var pl) ? pl.GetString() ?? name : name;
             var min   = item.TryGetProperty("min",   out var pmin) ? pmin.GetSingle() : 0f;
             var max   = item.TryGetProperty("max",   out var pmax) ? pmax.GetSingle() : 1f;
+            // `@reset` 属性の有無（旧ランタイムはキーを送らない＝ボタン無しで安全側）。
+            var canReset = item.TryGetProperty("reset", out var pr) && pr.ValueKind == JsonValueKind.True;
             // 値は常に 4 成分。欠けている場合は 0 で埋める（旧ランタイム耐性）。
             float[] v = new float[ShaderParamComponentCount];
             if (item.TryGetProperty("value", out var pv) && pv.ValueKind == JsonValueKind.Array)
@@ -5092,7 +5142,7 @@ public partial class InspectorPanel : UserControl
                         SendParam(name, curR, curG, curB, 0f);
                     };
                     row.ToolTip = $"{name}（水面シェーダのパラメータ）";
-                    parent.Children.Add(row);
+                    parent.Children.Add(canReset ? WithResetButton(row, name, label) : row);
                     break;
                 }
                 // ── 範囲つきスカラー（スライダー）──
@@ -5101,7 +5151,7 @@ public partial class InspectorPanel : UserControl
                     var row = BuildRangeSliderRow(label, v[0], min, max,
                         nv => SendParam(name, nv, 0f, 0f, 0f));
                     if (row is FrameworkElement fe) fe.ToolTip = $"{name}（{min} 〜 {max}）";
-                    parent.Children.Add(row);
+                    parent.Children.Add(canReset ? WithResetButton(row, name, label) : row);
                     break;
                 }
                 // ── 範囲なしスカラー（数値行）。未知の型もここへ落とす（値は編集できる）──
@@ -5122,7 +5172,8 @@ public partial class InspectorPanel : UserControl
                     NumericDragBehavior.SetOnDrag(numeric.textBox, Commit);
                     if (numeric.element is FrameworkElement nfe)
                         nfe.ToolTip = $"{name}（水面シェーダのパラメータ）";
-                    parent.Children.Add(numeric.element);
+                    parent.Children.Add(
+                        canReset ? WithResetButton(numeric.element, name, label) : numeric.element);
                     break;
                 }
             }
@@ -5368,7 +5419,7 @@ public partial class InspectorPanel : UserControl
         colorSp.Children.Add(waterShadingRow);
 
         // ── 水面シェーダのパラメータ（Phase W8.2）─────────────────
-        // アセットが `//! param` で宣言したパラメータを、参照行の直下へ動的に並べる。
+        // アセットが `override` で宣言したパラメータを、参照行の直下へ動的に並べる。
         // 構文解析はランタイムが済ませてあるので、ここは種別に応じて行の形
         //（カラーピッカー／スライダー／数値）を選ぶだけである。
         AddShaderParamRows(colorSp, info);

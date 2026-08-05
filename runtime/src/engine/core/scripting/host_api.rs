@@ -298,6 +298,18 @@ const KIND_ANIMATOR: &str = "Animator";
 const KIND_PARTICLE: &str = "ParticleEmitter";
 const KIND_INPUT_MAP: &str = "InputMap";
 
+// ─── 水面シェーダパラメータの動的フィールド名（Phase W8.2）────────
+//  `WaterVolume` の `shader_params` は**アセットが決める名前**のマップなので、
+//  他のフィールドのように固定の match キーにできない。そこで
+//  「接頭辞 ＋ アセット内の識別子」というフィールド名で受け渡す。
+//  接頭辞で成分数（1 or 3）を決めるため、C# 側の `SetShaderParam` の
+//  オーバーロードと 1 対 1 に対応する。**C# の定数と完全一致させること。**
+
+/// スカラー（f32）パラメータのフィールド名接頭辞。
+const SHADER_PARAM_FLOAT_PREFIX: &str = "shader_param_f:";
+/// 色（vec3<f32>）パラメータのフィールド名接頭辞。
+const SHADER_PARAM_VEC3_PREFIX: &str = "shader_param_v3:";
+
 /// スロットが指定コンポーネント種別（kind 文字列）の実体を持つかを判定する。
 ///
 /// スロット専用 entity に対して各コンポーネント型を直引きして種別を確定する
@@ -634,7 +646,22 @@ fn read_floats(
                     });
                     put(out, &[level])
                 }
-                _                => None,
+                // ── 水面シェーディングアセットのパラメータ（W8.2）──
+                // フィールド名は `shader_param_f:<名前>` / `shader_param_v3:<名前>` の
+                // **接頭辞つき動的キー**である（アセットごとに名前が違うので固定 match にできない）。
+                // 保存値が無ければアセットの宣言（`override ... = ...`）の既定値へ落ちる。
+                // 宣言そのものが無い（アセット未指定・名前の綴り違い）ときは 0 を返す。
+                other => {
+                    let (name, is_vec3) = match other.strip_prefix(SHADER_PARAM_VEC3_PREFIX) {
+                        Some(n) => (n, true),
+                        None    => (other.strip_prefix(SHADER_PARAM_FLOAT_PREFIX)?, false),
+                    };
+                    let value = w.shader_params.get(name).copied().or_else(|| {
+                        crate::engine::core::renderer::water::shading_asset::declaration_default(
+                            &w.surface_shader, name)
+                    }).unwrap_or([0.0; 4]);
+                    if is_vec3 { put(out, &value[..3]) } else { put(out, &value[..1]) }
+                }
             }
         }
         _ => None,
@@ -834,7 +861,34 @@ fn write_floats(
                     // OFF にしたら揮発水位も消す（water_ops.rs と同一の規則）。
                     if !on { w.sim_level_y = None; }
                 }).is_some(),
-                _                => false,
+                // ── 水面シェーディングアセットのパラメータ（W8.2）──
+                // 「ボス HP で毒の蛍光を変える」のような**毎フレームの流し込み**が用途。
+                // インスペクタ経路（SET_WATER_SHADER_PARAM）と同じく
+                // `shader_params` へ 4 成分をそのまま入れる（描画側の解釈も同一）。
+                //
+                // **Play 中の書き込みはシーンへ焼き付かない**: Play 終了時に
+                // `play_mode_ops::restore_actors_from_snapshot` が Play 開始時点の
+                // ActorData からアクタを作り直すため、ここでの変更は自動的に巻き戻る
+                //（sim_level_y と同じ「Play 中だけの値」になる）。SCENE_MODIFIED も
+                // Undo 記録も行わない（スクリプトの実行はシーンの編集ではない）。
+                other => {
+                    let (name, is_vec3) = match other.strip_prefix(SHADER_PARAM_VEC3_PREFIX) {
+                        Some(n) => (n, true),
+                        None    => match other.strip_prefix(SHADER_PARAM_FLOAT_PREFIX) {
+                            Some(n) => (n, false),
+                            None    => return false,
+                        },
+                    };
+                    if name.is_empty() { return false; }
+                    // 型ごとに要素数を厳密に検査する（C# 側の実装ミスを丸めない）。
+                    let value = if is_vec3 {
+                        match take::<3>(v) { Some(a) => [a[0], a[1], a[2], 0.0], None => return false }
+                    } else {
+                        match take::<1>(v) { Some(a) => [a[0], 0.0, 0.0, 0.0], None => return false }
+                    };
+                    w.shader_params.insert(name.to_string(), value);
+                    true
+                }
             }
         }
         _ => false,

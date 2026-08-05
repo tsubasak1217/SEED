@@ -47,7 +47,7 @@
 
 pub mod params;
 /// 水面シェーディングアセットの「パラメータ注釈」解析（Phase W8.2）。
-/// アセット内の `//! param ...` 行を読み、インスペクタ行と GPU ブロックの正典になる。
+/// アセット内の `override` 宣言を読み、インスペクタ行と GPU ブロックの正典になる。
 pub mod shade_params;
 pub mod shading_asset;
 pub mod tessellation;
