@@ -573,13 +573,8 @@ public partial class InspectorPanel : UserControl
     /// スライダーの Minimum == Maximum は操作不能になるため、表示だけを守るための保険。
     /// </summary>
     private const float ShaderParamMinRangeWidth = 1f;
-    /// <summary>
-    /// 「デフォルトに戻す」ボタン（アセットが <c>@reset</c> を付けた行にだけ出る）の記号。
-    /// 巻き戻しを表す矢印 1 文字。行を狭めないよう文字だけのボタンにしている。
-    /// </summary>
-    private const string ShaderParamResetGlyph = "⟲";
-    /// <summary>「デフォルトに戻す」ボタンの文字サイズ。</summary>
-    private const double ShaderParamResetFontSize = 11;
+    // 「デフォルトに戻す」ボタン（アセットが @reset を付けた行にだけ出る）の見た目は
+    // SEEDEditor.Controls.ResetButtonFactory が持つ（スクリプトの [ResetButton] と共通）。
     /// <summary>水位シミュレーション（水位グラフ、Phase W2.5）を有効にするかの既定値。</summary>
     private const bool WaterSimulateLevelDefault = false;
 
@@ -5064,33 +5059,12 @@ public partial class InspectorPanel : UserControl
         }
 
         // 行の右端へ「デフォルトに戻す」ボタンを添えた要素を返す
-        //（3 種の行のどれにも同じ形で付けられるよう DockPanel で包む）。
+        //（見た目・包み方はスクリプトの [ResetButton] と共通のファクトリに任せる）。
         UIElement WithResetButton(UIElement row, string name, string label)
-        {
-            var button = new Button
-            {
-                Content           = ShaderParamResetGlyph,
-                Background        = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)),
-                Foreground        = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)),
-                BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-                BorderThickness   = new Thickness(1),
-                FontSize          = ShaderParamResetFontSize,
-                Padding           = new Thickness(5, 0, 5, 1),
-                Margin            = new Thickness(4, 0, 0, 0),
-                Cursor            = Cursors.Hand,
-                VerticalAlignment = VerticalAlignment.Center,
-                Template          = FileRefBuilder.BuildButtonTemplate(),
-                ToolTip           = $"「{label}」をアセットの既定値に戻す（Ctrl+Z で取り消せます）",
-            };
-            button.Click += (_, _) => SendReset(name);
-
-            var dock = new DockPanel { LastChildFill = true };
-            // Dock された子を先に、可変幅の本体を最後に入れる（LastChildFill の作法）。
-            DockPanel.SetDock(button, Dock.Right);
-            dock.Children.Add(button);
-            dock.Children.Add(row);
-            return dock;
-        }
+            => SEEDEditor.Controls.ResetButtonFactory.Wrap(
+                row,
+                $"「{label}」をアセットの既定値に戻す（Ctrl+Z で取り消せます）",
+                () => SendReset(name));
 
         foreach (var item in items)
         {

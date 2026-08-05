@@ -295,6 +295,9 @@ public static class ScriptCompiler
             RangeMax  = rangeMax,
             Children  = children,
             Reference = reference,
+            // [Serializable] ネストクラスそのものにはボタンを出さない
+            // （子を一括で戻すと Undo が 1 手にまとまらないため。子フィールド個別には付けられる）。
+            ShowResetButton = children is null && HasResetButton(f),
         };
     }
 
@@ -319,6 +322,13 @@ public static class ScriptCompiler
     /// </summary>
     private static bool HasSerializeField(FieldInfo f) =>
         f.GetCustomAttributesData().Any(a => a.AttributeType.Name == nameof(SerializeFieldAttribute));
+
+    /// <summary>
+    /// [ResetButton] 属性の有無を型名で判定する。
+    /// 判定方式は HasSerializeField と同じ理由（アセンブリ ID 差異の吸収）で属性名照合にする。
+    /// </summary>
+    private static bool HasResetButton(FieldInfo f) =>
+        f.GetCustomAttributesData().Any(a => a.AttributeType.Name == nameof(ResetButtonAttribute));
 
     /// <summary>[SerializeField] の Label / Tooltip を属性データから読み取る。</summary>
     private static (string? label, string? tooltip) ReadSerializeField(FieldInfo f)

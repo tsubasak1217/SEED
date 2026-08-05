@@ -49,6 +49,7 @@ public class Mover : SEEDScript
 | `[Header("見出し")]` | フィールド | そのフィールドの直前に見出し行を挿入する |
 | `[Tooltip("説明")]` | フィールド | マウスオーバー時の説明。`[SerializeField(Tooltip = ...)]` より**独立した `[Tooltip]` が優先**される |
 | `[Range(min, max)]` | フィールド | 数値フィールドをスライダー表示にする（float / int） |
+| `[ResetButton]` | フィールド | 行の右端に「デフォルトに戻す」ボタン（⟲）を出す。押すと**宣言の初期化子の値**（無ければ 0 / false / 空文字 / 参照は未設定）へ戻る。Ctrl+Z で取り消せる |
 | `[RequireComponent(typeof(OtherScript))]` / `[RequireComponent("Camera")]` | クラス | アタッチ時に不足コンポーネントを**自動追加**する。型指定＝他スクリプト（型名から `.cs` を探す）、文字列指定＝ネイティブコンポーネント名 |
 | `[DisallowMultipleComponent]` | クラス | 同一アクターに同じスクリプトを 2 つ以上付けられなくする（追加操作が警告で中止される） |
 
@@ -65,8 +66,20 @@ public class CameraShake : SEEDScript
     [SerializeField]
     [Tooltip("1 秒あたりの振動回数")]
     private float frequency = 8.0f;
+
+    // 行末の ⟲ を押すと 1.5 に戻る（初期化子が無い場合は 0 に戻る）
+    [SerializeField, ResetButton]
+    private float damping = 1.5f;
 }
 ```
+
+**`[ResetButton]` の詳細**
+
+- 戻り先はフィールド**宣言の初期化子**の値です。初期化子が無ければ言語既定値（数値 `0` / `bool false` / `string` 空文字）になります。
+- 参照フィールド（`GameObject` / `Transform` など）に付けた場合は「未設定」へ戻ります（✕ ボタンと同じ結果）。
+- リセットは通常の値編集と同じ経路を通るため **Ctrl+Z で取り消せます**（リセット前の値に戻る）。
+- 対応型は数値（float / double / int / long / short）・bool・string・参照フィールドです。**列挙型など、インスペクタが読み取り専用表示にする型ではボタンは出ません**。既定値の文字列に改行が含まれる場合もボタンは出ません（1 行 1 コマンドの通信経路に載せられないため）。
+- `[Serializable]` ネストクラスの**フィールドそのもの**に付けてもボタンは出ません（子をまとめて戻すと Ctrl+Z が 1 手にまとまらないため）。**ネストの中の個々のフィールド**には付けられます。その場合の戻り先は**そのネストクラス側の初期化子**であり、外側での `new Nested { inner = 99f }` のような初期化は反映されません。
 
 - `[Serializable]` を付けたクラス／構造体型のフィールドに `[SerializeField]` を付けると、インスペクタで**子フィールドが再帰的に展開**されます（入れ子の上限は 8 段）。
 - `GameObject` やコンポーネントハンドル型（`Transform` / `Camera` など）のフィールドに `[SerializeField]` を付けると、**他アクターへの参照フィールド**になります（Hierarchy から D&D で設定）。詳細は第 7 節の「参照フィールド」を参照してください。
