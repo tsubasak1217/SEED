@@ -663,6 +663,24 @@ if (gameObject.GetComponent<WaterVolume>() is { } water)
 }
 ```
 
+水面シェーディングアセット（`.wgsl`）が `override` で宣言したパラメータは、名前を指定して読み書きできます（ゲーム内変数を見た目へ流し込む用途。例: ボス HP で毒沼の蛍光を変える）。
+
+```csharp
+if (gameObject.GetComponent<WaterVolume>() is { } water)
+{
+    water.SetShaderParam("glow_boost", 2.5f);                       // f32 パラメータへ書く
+    water.SetShaderParam("glow_color", new Vector3(0.2f, 0.6f, 0.1f)); // vec3<f32>（色）へ書く
+    water.GetShaderParamFloat("glow_boost");                        // float（未設定ならアセット既定値、宣言が無ければ 0）
+    water.GetShaderParamVector3("glow_color");                      // Vector3（同上。宣言が無ければ (0,0,0)）
+
+    // 例: ボス HP が減るほど毒沼が明るく光る（毎フレーム流し込む）
+    float t = 1f - bossHp / bossHpMax;
+    water.SetShaderParam("glow_boost", 0.5f + 3f * t);
+}
+```
+
+> **重要**: `SetShaderParam` の名前はアセットの `override` 宣言の識別子です（インスペクタの行と同じもの）。Play 中の書き込みは**シーンへ焼き付きません**（Play 終了で Play 開始時点の値に戻ります）。恒久的な既定値はアセット側の初期値かインスペクタで設定してください。
+
 > **重要**: `WaterVolume.WaterLevel` は**読み取り専用**です。直接代入できると体積保存が破れて水位グラフの前提が壊れるため、水を足す／抜く演出は `WaterLink.Openness` の開閉で表現します。`WaterLink` の接続先（volume_a / volume_b）も実行中は変更できません（インスペクタで設定します）。
 
 ### 利用可能なコンポーネント一覧
@@ -677,7 +695,7 @@ if (gameObject.GetComponent<WaterVolume>() is { } water)
 | `Animator` | `gameObject.GetComponent<Animator>()` | 再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume |
 | `ParticleEmitter` | `gameObject.GetComponent<ParticleEmitter>()` | 放出レート・ループ・抵抗・拡散角 + Play/Stop/Burst |
 | `InputMap` | `gameObject.GetComponent<InputMap>()` | 入力アクション評価（Bool / Axis1D / Axis2D。Key / GamepadButton / GamepadAxis） |
-| `WaterVolume` | `gameObject.GetComponent<WaterVolume>()` | 現在水位（読み取り専用）・設定水位・水位シミュレーションの有効／無効 |
+| `WaterVolume` | `gameObject.GetComponent<WaterVolume>()` | 現在水位（読み取り専用）・設定水位・水位シミュレーションの有効／無効・水面シェーダのパラメータ（SetShaderParam / GetShaderParamFloat / GetShaderParamVector3） |
 | `WaterLink` | `gameObject.GetComponent<WaterLink>()` | 水位グラフの開口。**開閉率（バルブ）**・開口寸法・流量係数 |
 
 > **重要**: `GetComponent<T>()` は `T?` を返し、同種コンポーネントを複数スロット持てます。`GetComponent<T>()`＝0 番目、`GetComponent<T>(index)`＝index 番目、`GetComponent<T>("Name")`＝スロット名一致。

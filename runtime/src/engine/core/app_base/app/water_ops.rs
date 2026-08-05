@@ -320,7 +320,7 @@ impl App {
     /// 水面シェーディングアセットのパラメータ 1 個を更新する
     /// （SET_WATER_SHADER_PARAM IPC。Phase W8.2）。
     ///
-    /// `name` はアセットの `//! param` で宣言された識別子、`value` は `"x,y,z,w"`。
+    /// `name` はアセットの `override` 宣言の識別子、`value` は `"x,y,z,w"`。
     /// 値は `WaterVolumeComponent::shader_params` へ**そのまま**入る
     /// （型ごとの意味づけ＝どの成分を使うかは WGSL 生成側の責務であり、
     ///   ここで色かスカラーかを判定はしない）。
@@ -362,6 +362,54 @@ impl App {
         let Some(scene) = &mut self.scene else { return };
         let Some(w) = scene.world.get_mut::<WaterVolumeComponent>(entity) else { return };
         w.shader_params.insert(key.to_string(), v);
+
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// 水面シェーディングアセットのパラメータ 1 個をアセットの既定値へ戻す
+    /// （RESET_WATER_SHADER_PARAM IPC。`@reset` 属性の付いた行のボタン）。
+    ///
+    /// ## 「既定値を書き込む」ではなく「上書き値を消す」理由
+    /// `shader_params` は**上書きだけを持つ差分**であり、値が無い名前は
+    /// 描画・インスペクタとも自動的にアセットの既定値へ落ちる
+    /// （`shade_params::build_block` / `params_json`）。
+    /// 消す実装にしておくと、後からアセット側の既定値を書き換えたときに
+    /// 「戻した水域」は新しい既定値へ追随する（既定値を焼き込むと追随しない）。
+    ///
+    /// Undo は `field_edit.rs` の共通機構が担当する（このコマンドは
+    /// `field_edit_target` で `Slot` に分類されており、実行前のコンポーネント全体が
+    /// スナップショットされる）。ここに Undo 記録を書いてはならない（二重記録になる）。
+    ///
+    /// 元々値を持っていなかった名前（＝既に既定値）へのリセットは**何もしない**
+    /// （再送信もしないので、無意味な SCENE_MODIFIED で「未保存」印が付かない）。
+    pub(super) fn handle_reset_water_shader_param(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        name:         &str,
+    ) {
+        use super::find_actor_by_dfs;
+
+        let key = name.trim();
+        if key.is_empty() { return; }
+
+        let wl = self.active_world_line;
+        // 対象スロットのエンティティを解決する（handle_set_water_shader_param と同流儀）。
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            let Some(actor) = find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                else { return };
+            actor.slots().get(slot_idx as usize)
+                .filter(|s| s.kind == ComponentKind::WaterVolume)
+                .map(|s| s.entity)
+        };
+        let Some(entity) = slot_entity else { return };
+
+        let Some(scene) = &mut self.scene else { return };
+        let Some(w) = scene.world.get_mut::<WaterVolumeComponent>(entity) else { return };
+        if w.shader_params.remove(key).is_none() { return; }
 
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }

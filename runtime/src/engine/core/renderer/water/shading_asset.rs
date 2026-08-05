@@ -57,7 +57,7 @@ use crate::engine::core::renderer::shading_asset::{
     WgslDiagnostic, asset_line_count, concat_sources, content_hash, line_defines_fn,
     map_reported_line, parse_contract_marker, strip_comments, validate_wgsl, MappedLine,
 };
-use super::shade_params::{WaterShadeParamDecl, parse_params};
+use super::shade_params::{WaterShadeParamDecl, parse_params, strip_declarations};
 
 // ============================================================
 //  定数（マジックナンバーの一切を名前で持つ）
@@ -90,10 +90,12 @@ const GENERATED_SOURCE_NAME: &str = "<generated water_shade_entry>";
 
 /// 生成したパラメータ宣言（`var<private>` 群）に与える擬似シェーダ名（W8.2）。
 ///
-/// **アセット本体より前**に連結する。WGSL のモジュールスコープに `let` は書けず、
-/// `const` はストレージの値を持てないため、`var<private>` を先に宣言しておき、
-/// `water_shade_entry` の先頭で値を代入する形にしてある。
-/// これにより、アセット作者は宣言した名前を `water_shade` の中でそのまま値として読める。
+/// **アセット本体より前**に連結する。アセットに書かれた `override` 宣言は
+/// 連結前に `strip_declarations` で除去され、代わりにここが生成する
+/// `var<private>` が値の置き場になる（WGSL の `override` はスカラーしか許さず、
+/// `@color` のような独自属性も通らないため、素のままでは naga を通せない）。
+/// `water_shade_entry` の先頭でストレージバッファの値を代入するので、
+/// アセット作者は宣言した名前を `water_shade` の中でそのまま値として読める。
 const GENERATED_DECLS_SOURCE_NAME: &str = "<generated water shade params>";
 
 /// エディタへ返す診断の `variant` 識別子（ワイヤ契約）。
@@ -170,6 +172,47 @@ pub fn declarations_for_path(asset_path: &str) -> Vec<WaterShadeParamDecl> {
     }
 }
 
+// ── スクリプト API 用の既定値キャッシュ ─────────────────────────
+//
+// `GetShaderParamFloat` などは「シーンに保存値が無ければアセットの既定値」を返す契約
+// なので、宣言を引く必要がある。素直に毎回ファイルを読むと**毎フレーム I/O** になるため、
+// パス → (mtime, 宣言) を憶えておき、mtime が変わったときだけ読み直す。
+// 描画側のキャッシュ（`WaterShadingAssetCache`）はデバイスを持つ `DrawContext` の中にあり、
+// スクリプトホスト（World しか持たない）からは触れないので、別に小さく持つ。
+/// 「まだ一度も読んでいない」ことを表す番兵 mtime（実在し得ない値）。
+const SCRIPT_DECL_CACHE_UNREAD: u64 = u64::MAX;
+
+thread_local! {
+    /// アセットパス → (最後に読んだ mtime, そのときの宣言)。
+    static SCRIPT_DECL_CACHE: RefCell<HashMap<String, (u64, Vec<WaterShadeParamDecl>)>> =
+        RefCell::new(HashMap::new());
+}
+
+/// アセットが宣言したパラメータの**既定値**を引く（スクリプト API 用）。
+///
+/// - `None` : アセットが空／読めない／その名前の宣言が無い。
+/// - 同じパスを繰り返し引いても、mtime が変わらない限りファイルは読み直さない。
+pub fn declaration_default(
+    asset_path: &str,
+    name:       &str,
+) -> Option<[f32; super::shade_params::PARAM_VALUE_COMPONENTS]> {
+    if asset_path.trim().is_empty() { return None; }
+    let mtime = crate::engine::asset_fs::mtime(asset_path);
+    SCRIPT_DECL_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        // 初回は「あり得ない mtime」で作り、直後の比較で必ず読み込ませる
+        //（宣言が 0 個のアセットを毎回読み直さないための番人）。
+        let entry = cache.entry(asset_path.to_string())
+            .or_insert_with(|| (SCRIPT_DECL_CACHE_UNREAD, Vec::new()));
+        // mtime が変わったときだけ読み直す。
+        if entry.0 != mtime {
+            entry.0 = mtime;
+            entry.1 = declarations_for_path(asset_path);
+        }
+        entry.1.iter().find(|d| d.name == name).map(|d| d.default)
+    })
+}
+
 /// 宣言リストの同一性を判定するための署名。
 ///
 /// 「アセットを保存したらインスペクタの行を作り直すか」の判定にだけ使う。
@@ -194,7 +237,7 @@ fn declarations_signature(decls: &[WaterShadeParamDecl]) -> String {
 pub fn generate_param_decls(decls: &[WaterShadeParamDecl]) -> String {
     if decls.is_empty() { return String::new(); }
     let mut s = String::new();
-    s.push_str("// ── 自動生成（water/shading_asset.rs）。アセットの `//! param` 宣言に対応する\n");
+    s.push_str("// ── 自動生成（water/shading_asset.rs）。アセットの `override` 宣言に対応する\n");
     s.push_str("//    値の置き場です。値は water_shade_entry の先頭で代入されます ──\n");
     for d in decls {
         s.push_str(&format!("var<private> {}: {};\n", d.name, d.kind.wgsl_type()));
@@ -391,16 +434,19 @@ pub fn validate_asset_source(asset_src: &str) -> Vec<WgslDiagnostic> {
         }
     }
 
-    // ── 2. 実装検出・パラメータ注釈の解析・生成 ───────────
+    // ── 2. 実装検出・パラメータ宣言の解析・生成 ───────────
+    //    宣言（`override` ＋ 属性）は naga が解釈できないので、連結へ渡す前に
+    //    **行数を保ったまま**除去する（行番号写像がそのまま使える）。
     let has_impl  = detect_water_shade(asset_src);
     let params    = parse_params(asset_src);
+    let body      = strip_declarations(asset_src);
     let decls     = generate_param_decls(&params.params);
     let generated = generate_dispatch(has_impl, &params.params);
-    let lines     = asset_line_count(asset_src);
+    let lines     = asset_line_count(&body);
 
     // ── 3. 連結の検証 ─────────────────────────────────────
     if let Err((msg, line, start)) =
-        prepare_variant(IN_MEMORY_ASSET_NAME, asset_src, &decls, &generated)
+        prepare_variant(IN_MEMORY_ASSET_NAME, &body, &decls, &generated)
     {
         let mapped = line.map(|l| map_reported_line(l, start, lines));
         let (line, message) = match mapped {
@@ -423,12 +469,12 @@ pub fn validate_asset_source(asset_src: &str) -> Vec<WgslDiagnostic> {
         }];
     }
 
-    // ── 5. パラメータ注釈（W8.2）の問題を診断として返す ─────
-    //    連結は通る（＝壊れたアノテーション行はただのコメント）ので、
+    // ── 5. パラメータ宣言（W8.2）の問題を診断として返す ─────
+    //    連結は通る（＝壊れた宣言行は除去されている）ので、
     //    ここまで来て初めて報告できる。行番号はアセット内のものをそのまま使う。
     params.warnings.iter()
         .map(|w| WgslDiagnostic {
-            message: format!("パラメータ注釈: {}", w.message),
+            message: format!("パラメータ宣言: {}", w.message),
             line:    Some(w.line),
             variant: VARIANT_NAME_PARAM.to_string(),
         })
@@ -498,21 +544,23 @@ impl WaterShadingAssetPipelines {
             warnings.push(format!("{asset_path}:-: {}", missing_impl_message()));
         }
 
-        // ── パラメータ注釈（W8.2）の解析と生成 ────────────────
-        //    壊れた注釈行はただのコメントなので描画は成立する。警告として通知する。
+        // ── パラメータ宣言（W8.2）の解析と生成 ────────────────
+        //    壊れた宣言行は除去されるだけで描画は成立する。警告として通知する。
         let params = parse_params(asset_src);
         for w in &params.warnings {
-            warnings.push(format!("{asset_path}:{}: パラメータ注釈: {}", w.line, w.message));
+            warnings.push(format!("{asset_path}:{}: パラメータ宣言: {}", w.line, w.message));
         }
+        // 宣言ブロックを除去した本体（naga・wgpu へ渡すのは必ずこちら）。
+        let body      = strip_declarations(asset_src);
         let decls     = generate_param_decls(&params.params);
         let generated = generate_dispatch(has_impl, &params.params);
 
         // ── 連結の検証（不正な WGSL をデバイスへ渡さない）──────
-        let (_src, names, _start) = prepare_variant(asset_name, asset_src, &decls, &generated)
+        let (_src, names, _start) = prepare_variant(asset_name, &body, &decls, &generated)
             .map_err(|(msg, line, start)| format_error(asset_path, &msg, line, start, lines))?;
 
         // ── パイプライン生成 ──────────────────────────────────
-        let resolve = make_resolver(asset_name, asset_src, &decls, &generated);
+        let resolve = make_resolver(asset_name, &body, &decls, &generated);
         let (pipeline, _bgls) =
             RenderPipelineBuilder::new(device, WATER_SURFACE_TOML, out_format, depth_format)
                 .with_label(PIPELINE_LABEL)
@@ -932,11 +980,12 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
                 "{name}: 契約バージョン宣言が無い／版が違う");
             assert!(detect_water_shade(src), "{name}: water_shade の定義が無い");
             let params    = parse_params(src);
+            let body      = strip_declarations(src);
             let decls     = generate_param_decls(&params.params);
             let generated = generate_dispatch(true, &params.params);
-            if let Err((msg, line, start)) = prepare_variant(name, src, &decls, &generated) {
+            if let Err((msg, line, start)) = prepare_variant(name, &body, &decls, &generated) {
                 panic!("{name} の検証に失敗: {}",
-                    format_error(name, &msg, line, start, asset_line_count(src)));
+                    format_error(name, &msg, line, start, asset_line_count(&body)));
             }
             // インメモリ検証（エディタが叩く経路）でも診断ゼロであること。
             assert!(validate_asset_source(src).is_empty(),
@@ -1021,12 +1070,14 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
 
     // ── 6. パラメータ注釈（Phase W8.2）───────────────────────
 
-    /// パラメータ注釈つきのテストアセット。宣言した名前を `water_shade` から直接読む
+    /// パラメータ宣言つきのテストアセット。宣言した名前を `water_shade` から直接読む
     /// （＝この機能の中心的な使い勝手）。
     const PARAM_ASSET: &str = r#"// @water_shading_contract 1
-//! param color  emission_color = (1.0, 0.4, 0.1)   // 発光色
-//! param range(0.0, 10.0) crack_speed = 1.5        // 亀裂の流速
-//! param float  glow_boost = 2.0                    // 発光の強さ
+@color
+override emission_color: vec3<f32> = vec3(1.0, 0.4, 0.1);  // 発光色
+@range(0.0, 10.0) @reset
+override crack_speed: f32 = 1.5;                           // 亀裂の流速
+override glow_boost: f32 = 2.0;                            // 発光の強さ
 
 fn water_shade(input: WaterShadeInput) -> vec4<f32> {
     let n = water_shade_fbm(input.world_pos.xz - input.flow * input.time * crack_speed);
@@ -1110,27 +1161,55 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
     #[test]
     fn param_asset_passes_naga_validation() {
         let params    = parse_params(PARAM_ASSET);
+        let body      = strip_declarations(PARAM_ASSET);
         let decls     = generate_param_decls(&params.params);
         let generated = generate_dispatch(true, &params.params);
-        if let Err((msg, line, start)) = prepare_variant("param.wgsl", PARAM_ASSET, &decls, &generated) {
-            panic!("パラメータ注釈つきアセットの検証に失敗: {}",
-                format_error("param.wgsl", &msg, line, start, asset_line_count(PARAM_ASSET)));
+        if let Err((msg, line, start)) = prepare_variant("param.wgsl", &body, &decls, &generated) {
+            panic!("パラメータ宣言つきアセットの検証に失敗: {}",
+                format_error("param.wgsl", &msg, line, start, asset_line_count(&body)));
         }
         // エディタ検証（未保存バッファ経路）でも診断ゼロであること。
         assert!(validate_asset_source(PARAM_ASSET).is_empty(),
             "診断が出た: {:?}", validate_asset_source(PARAM_ASSET));
     }
 
-    /// 壊れた注釈行は「診断 1 件（variant=param）＋ アセット自体は正常」になること。
+    /// **宣言を除去せずに連結すると naga が落ちる**こと（＝前処理が必須である根拠）。
+    ///
+    /// これが通ってしまうなら前処理は要らない、という逆向きの確認でもある。
     #[test]
-    fn broken_annotation_reports_param_diagnostic() {
+    fn raw_override_block_would_fail_naga() {
+        let params    = parse_params(PARAM_ASSET);
+        let decls     = generate_param_decls(&params.params);
+        let generated = generate_dispatch(true, &params.params);
+        assert!(prepare_variant("param.wgsl", PARAM_ASSET, &decls, &generated).is_err(),
+            "override 宣言つきの生ソースが naga を通ってしまった（前処理の前提が崩れている）");
+    }
+
+    /// 宣言の**後ろ**にある構文エラーが、除去後もアセットの実際の行を指すこと
+    /// （行数を保つ除去にしてある理由。ここがずれると誤った行に赤線が出る）。
+    #[test]
+    fn line_numbers_survive_declaration_stripping() {
+        let broken = "// @water_shading_contract 1\n\
+                      @color\n\
+                      override tint: vec3<f32> = vec3(1.0, 0.0, 0.0);\n\
+                      fn water_shade(input: WaterShadeInput) -> vec4<f32> {\n\
+                      \x20   retur vec4<f32>(tint, 1.0);\n\
+                      }\n";
+        let diags = validate_asset_source(broken);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].line, Some(5), "宣言を除いた後もアセット 5 行目を指すこと: {:?}", diags[0]);
+    }
+
+    /// 壊れた宣言行は「診断 1 件（variant=param）＋ アセット自体は正常」になること。
+    #[test]
+    fn broken_declaration_reports_param_diagnostic() {
         let src = "// @water_shading_contract 1\n\
-                   //! param bogus weird = 1.0\n\
+                   override weird: i32 = 1;\n\
                    fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(0.0); }\n";
         let diags = validate_asset_source(src);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].variant, VARIANT_NAME_PARAM);
-        assert_eq!(diags[0].line, Some(2), "注釈のある行を指すこと: {:?}", diags[0]);
+        assert_eq!(diags[0].line, Some(2), "宣言のある行を指すこと: {:?}", diags[0]);
     }
 
     /// `water_shade` を定義していないアセットは「警告 1 件」（＝エラーではない）。

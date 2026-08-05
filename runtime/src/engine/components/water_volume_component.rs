@@ -477,7 +477,7 @@ pub struct WaterVolumeComponentData {
     /// パイプラインは 1 本・ドローはクアッド 1 本で済む。
     #[serde(default)]
     pub surface_shader: String,
-    /// 水面シェーディングアセットが `//! param` で宣言したパラメータの値（Phase W8.2）。
+    /// 水面シェーディングアセットが `override` で宣言したパラメータの値（Phase W8.2）。
     ///
     /// キー = アセット内の識別子／値 = `vec4`（color は xyz、スカラーは x のみ使う）。
     /// **既定は空**で、そのときアセットに書かれた既定値がそのまま使われる。

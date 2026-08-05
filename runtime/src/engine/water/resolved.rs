@@ -177,7 +177,7 @@ pub struct ResolvedWaterVolume {
     pub surface_shader: String,
     /// 水面シェーディングアセットのパラメータ値（Phase W8.2）。
     ///
-    /// キー = アセットの `//! param` 識別子／値 = `vec4`。
+    /// キー = アセットの `override` 宣言の識別子／値 = `vec4`。
     /// **アセットの宣言との突き合わせは描画側が行う**（ここは値の運び屋にすぎない）。
     /// `surface_shader` が空ならこのマップも使われない。
     pub shader_params: std::collections::BTreeMap<String, [f32; 4]>,
