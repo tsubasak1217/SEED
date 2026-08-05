@@ -22,5 +22,13 @@ ECS の理念（**データ**＝コンポーネント／**ロジック**＝シ�
   非網羅の match は `cargo build` が落として守ってくれるが、非 match の取りこぼしはコンパイルを通ってしまうので注意。
 - **スロット専用 `entity` を `spawn` してから `insert` する**。`actor.entity` へ直接 insert すると同型コンポーネントの
   複数持ちが壊れる。ルート直付けは Transform / CanvasTransform のみ。
+- **`ComponentData` に variant を追加したら、Undo の復元側も書く**。
+  `app/field_edit.rs::apply_component_data_in_place` は網羅 match なのでビルドが落ちて気付ける。
+  純粋な値の詰め替えで復元できるなら `Xxx::from_data` を呼ぶだけでよい（新規コンポーネントは
+  必ず `from_data` / `to_data` の対を用意すること）。GPU 資源や CLR インスタンスの作り直しが
+  要る場合のみ `SlotApply::NeedsRebuild` を返す。仕組みの全体像は **docs/editor_undo.md**。
+- **インスペクタから値を変える IPC コマンドを足したら、`app/field_edit.rs::field_edit_target`
+  に分類を書く**（網羅 match。書くまでビルドが通らない）。これだけで Ctrl+Z 対応になる。
+  ハンドラ側に Undo の記録を書いてはいけない（二重記録になる）。
 - 詳細な追加手順（ファイル配置・World 登録・エディタ連携・IPC）は **add-ecs-component Skill**。
   そのコンポーネントをスクリプト／AI 補完へ公開する手順は **add-script-api Skill** を使う。

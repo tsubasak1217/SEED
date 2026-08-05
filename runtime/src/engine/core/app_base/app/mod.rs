@@ -14,6 +14,8 @@
 
 // ── サブモジュール ──────────────────────────────────────────
 mod drag_state;
+/// インスペクタのフィールド編集を汎用的に Undo/Redo へ載せる機構（分類表・スナップショット・適用）
+mod field_edit;
 mod ipc_handler;
 mod hierarchy_sync;
 mod clipboard;
@@ -701,6 +703,9 @@ pub struct App {
     actor_virtual_selected_slot_idx: usize,
     /// インスペクターフィールドドラッグ中の事前状態（Undo 1 コマンド化のために使用）。
     inspector_transform_drag: Option<InspectorTransformDrag>,
+    /// 直近に記録したインスペクタのフィールド編集（連続編集を 1 コマンドへまとめるために保持）。
+    /// 詳細は field_edit.rs のヘッダを参照。
+    field_edit_session: Option<field_edit::FieldEditSession>,
     /// アクタ散布（kind=Actor プロップ）用のプレハブ ActorData キャッシュ。
     /// ブラシ散布は 1 ストロークで何十回も飛んでくるため、同じ .actor ファイルの
     /// 再読込・再パースを避ける。プレハブ内容が変わりうる操作（ルール再散布の開始・
@@ -1270,6 +1275,7 @@ impl App {
             selected_actor_dfs_ids:          Vec::new(),
             actor_virtual_selected_slot_idx: 0,
             inspector_transform_drag:     None,
+            field_edit_session:           None,
             scatter_prefab_cache:         std::collections::HashMap::new(),
             edit_physics_enabled:        false,
             edit_physics_with_rigidbody: false,
@@ -1508,7 +1514,7 @@ mod shading_validate_ops;
 // サブモジュール（render.rs 等）は既存の `use super::fn_name` のまま使用可能。
 use actor_utils::{
     collect_actor_nodes, build_hierarchy_json,
-    find_actor_by_dfs, find_actor_by_dfs_mut,
+    find_actor_by_dfs,
     canvas_anchor_offset_for_dfs, collect_canvas_actors_in_rect,
     collect_transform_only_in_rect,
     collect_mcs_in_world_line,
@@ -1522,6 +1528,8 @@ use actor_utils::{
     find_parent_actor_of_dfs, get_3d_canvas_world_mat,
     extract_actor_by_dfs_with_origin, find_actor_by_entity_mut,
 };
+// undo.rs（app_base 直下の ActorActiveCommand）からも DFS 探索を共有するため再エクスポートする。
+pub(crate) use actor_utils::find_actor_by_dfs_mut;
 use platform_utils::{
     camera_grab_start, camera_grab_end, apply_window_clamp, release_window_clamp,
     warp_cursor_to_local, mmb_grab_start, mmb_grab_end,

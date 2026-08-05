@@ -9513,6 +9513,24 @@ public partial class InspectorPanel : UserControl
                 tb.Focus();
             }
         };
+
+        // Enter による確定後はキーボードフォーカスを外す。
+        //
+        // 【理由】Ctrl+Z / Ctrl+Y はグローバルキーボードフック（MainWindow.Input.cs）で
+        // 拾ってランタイムへ送るが、TextBox にフォーカスがある間は「テキスト入力中」と
+        // 判定して送らない（IsTextInputFocused）。フォーカスが残ったままだと、
+        // 値を確定した直後の Ctrl+Z がランタイムに届かず「Undo が効かない」ように見える。
+        // 数値ドラッグ確定時に NumericDragBehavior がフォーカスを外しているのと同じ扱いに揃える。
+        //
+        // 確定処理（呼び出し側が KeyDown / LostFocus に登録する Commit）より後に外すため、
+        // Dispatcher で現在のイベント処理が終わってから実行する。
+        tb.KeyDown += (_, e) =>
+        {
+            if (e.Key != Key.Enter) return;
+            tb.Dispatcher.BeginInvoke(
+                new Action(() => { if (tb.IsKeyboardFocusWithin) Keyboard.ClearFocus(); }),
+                System.Windows.Threading.DispatcherPriority.Background);
+        };
     }
 
     private static UIElement BuildPropertyRow(string label, string value)

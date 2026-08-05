@@ -52,6 +52,19 @@ pub trait Command {
     fn component_rebuild_for_redo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
         None
     }
+    /// Undo 実行後に AppBase が **1 スロットだけ**再適用するためのデータ
+    /// (world_line, actor_dfs_id, slot_idx, slot_data)。
+    /// インスペクタのフィールド編集（SlotFieldEditCommand）で使う。
+    /// 全スロット再構築（component_rebuild_*）と違い、対象スロットの ECS エンティティを
+    /// 維持したまま値だけ差し替えるため、同一アクタの他スロット（モデルの GPU 資源・
+    /// スクリプトの CLR インスタンス・再生中の音声）を巻き添えにしない。
+    fn slot_data_for_undo(&self) -> Option<(u32, u32, u32, ComponentSlotData)> {
+        None
+    }
+    /// Redo 実行後に AppBase が 1 スロットだけ再適用するためのデータ。
+    fn slot_data_for_redo(&self) -> Option<(u32, u32, u32, ComponentSlotData)> {
+        None
+    }
     /// Undo/Redo 後にインスペクターへ通知すべきアクターの (world_line, dfs_id)。
     fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
         None
@@ -131,6 +144,15 @@ impl UndoHistory {
         }
     }
 
+    /// past スタックの深さ。
+    ///
+    /// インスペクタのフィールド編集マージ（field_edit.rs）が
+    /// 「直前に自分が積んだコマンドがまだ先頭にあるか」を判定するために使う。
+    /// 記録直後の深さと一致していれば、その間に他の操作は積まれていない。
+    pub fn past_len(&self) -> usize {
+        self.past.len()
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.past.is_empty()
     }
@@ -156,6 +178,14 @@ impl UndoHistory {
     }
     pub fn peek_redone_component_rebuild(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
         self.past.last()?.component_rebuild_for_redo()
+    }
+    /// undo() 直後: 1 スロットだけ再適用すべきデータ（インスペクタのフィールド編集）。
+    pub fn peek_undone_slot_data(&self) -> Option<(u32, u32, u32, ComponentSlotData)> {
+        self.future.last()?.slot_data_for_undo()
+    }
+    /// redo() 直後: 1 スロットだけ再適用すべきデータ（インスペクタのフィールド編集）。
+    pub fn peek_redone_slot_data(&self) -> Option<(u32, u32, u32, ComponentSlotData)> {
+        self.past.last()?.slot_data_for_redo()
     }
     /// undo() 直後: future の末尾のコマンドのインスペクター通知先。
     pub fn peek_undone_actor_inspect(&self) -> Option<(u32, u32)> {
@@ -405,6 +435,12 @@ impl Command for CompositeCommand {
             .iter()
             .rev()
             .find_map(|c| c.component_rebuild_for_redo())
+    }
+    fn slot_data_for_undo(&self) -> Option<(u32, u32, u32, ComponentSlotData)> {
+        self.commands.iter().rev().find_map(|c| c.slot_data_for_undo())
+    }
+    fn slot_data_for_redo(&self) -> Option<(u32, u32, u32, ComponentSlotData)> {
+        self.commands.iter().rev().find_map(|c| c.slot_data_for_redo())
     }
     fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
         self.commands.iter().find_map(|c| c.actor_inspect_notify())
@@ -788,45 +824,93 @@ fn find_entity_in_children(actor: &Actor, dfs_id: u32, c: &mut u32) -> Option<En
     None
 }
 
+
 // ============================================================
-//  PluginFieldCommand — プラグインフィールド値の変更 Undo コマンド
+//  SlotFieldEditCommand — インスペクタのフィールド編集（汎用）
 // ============================================================
 
-use crate::engine::components::PluginComponent;
-
-/// プラグインコンポーネントのフィールド値を 1 つ変更する Undo コマンド。
+/// コンポーネントスロット 1 個分の値変更をまるごと Undo/Redo する汎用コマンド。
 ///
-/// slot_entity を直接保持することで find_actor_by_dfs を不要にしている。
-/// execute: new_value を適用
-/// undo:    old_value に戻す
-pub struct PluginFieldCommand {
-    /// スロット専用 ECS エンティティ（PluginComponent が格納されている）
-    pub slot_entity: Entity,
-    /// 変更フィールドのキー
-    pub key: String,
-    /// 変更前の値
-    pub old_value: String,
-    /// 変更後の値
-    pub new_value: String,
-    /// インスペクタ再送信用 (world_line, actor_dfs_id)
+/// 【設計】
+/// インスペクタから飛んでくる `SET_*_FIELD` 系 IPC は種類が数十あり、
+/// ハンドラごとに個別 Undo コマンドを書くと必ず対応漏れが出る。
+/// そこで **IPC 適用の前後でスロットのシリアライズ表現（ComponentSlotData）を
+/// スナップショットし、差分があれば本コマンドを積む**という 1 本の経路に集約する
+/// （分類表は app/field_edit.rs、記録は ipc_handler.rs のディスパッチ入口）。
+///
+/// `execute` / `undo` は Scene だけでは完結しない（モデルの GPU 再アップロードや
+/// スクリプトの CLR インスタンス生成に App 側の資源が要る）ため No-op とし、
+/// AppBase が `slot_data_for_undo/redo()` を読んで `apply_slot_data` で適用する。
+/// これは ComponentSlotsSnapshotCommand と同じ流儀である。
+pub struct SlotFieldEditCommand {
     pub world_line: u32,
     pub actor_dfs_id: u32,
+    /// アクタ内のスロット連番（ComponentSlot のインデックス）。
+    pub slot_idx: u32,
+    /// 編集前のスロット状態（名前・enabled・コンポーネント値を含む）。
+    pub before: ComponentSlotData,
+    /// 編集後のスロット状態。
+    pub after: ComponentSlotData,
 }
 
-impl Command for PluginFieldCommand {
-    fn execute(&mut self, scene: &mut Scene) {
-        if let Some(pc) = scene.world.get_mut::<PluginComponent>(self.slot_entity) {
-            pc.set_field(&self.key, &self.new_value);
-        }
+impl Command for SlotFieldEditCommand {
+    fn execute(&mut self, _scene: &mut Scene) {}
+    fn undo(&mut self, _scene: &mut Scene) {}
+    fn slot_data_for_undo(&self) -> Option<(u32, u32, u32, ComponentSlotData)> {
+        Some((
+            self.world_line,
+            self.actor_dfs_id,
+            self.slot_idx,
+            self.before.clone(),
+        ))
     }
-
-    fn undo(&mut self, scene: &mut Scene) {
-        if let Some(pc) = scene.world.get_mut::<PluginComponent>(self.slot_entity) {
-            pc.set_field(&self.key, &self.old_value);
-        }
+    fn slot_data_for_redo(&self) -> Option<(u32, u32, u32, ComponentSlotData)> {
+        Some((
+            self.world_line,
+            self.actor_dfs_id,
+            self.slot_idx,
+            self.after.clone(),
+        ))
     }
-
     fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
         Some((self.world_line, self.actor_dfs_id))
+    }
+}
+
+// ============================================================
+//  ActorActiveCommand — アクターのアクティブフラグ変更
+// ============================================================
+
+/// アクターの active フラグ（Unity の SetActive 相当）の変更を Undo/Redo するコマンド。
+/// ヒエラルキー表示にも出るため is_structural = true とし、Undo 後に再送信させる。
+pub struct ActorActiveCommand {
+    pub world_line: u32,
+    pub dfs_id: u32,
+    pub before: bool,
+    pub after: bool,
+}
+
+impl Command for ActorActiveCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        set_actor_active(scene, self.world_line, self.dfs_id, self.after);
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        set_actor_active(scene, self.world_line, self.dfs_id, self.before);
+    }
+    fn is_structural(&self) -> bool {
+        true
+    }
+    fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
+        Some((self.world_line, self.dfs_id))
+    }
+}
+
+/// DFS id でアクターの active フラグを更新する。
+/// アクターツリー探索は app 側の既存ユーティリティを共有する（DFS 規則の二重実装を避ける）。
+fn set_actor_active(scene: &mut Scene, wl: u32, dfs_id: u32, active: bool) {
+    use crate::engine::core::app_base::app::find_actor_by_dfs_mut;
+    let mut c = 0u32;
+    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
+        actor.active = active;
     }
 }

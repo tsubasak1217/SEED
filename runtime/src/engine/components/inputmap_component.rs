@@ -41,6 +41,12 @@ pub struct InputMapComponent {
 }
 
 impl InputMapComponent {
+    /// シリアライズ用データから復元する（to_data の逆）。
+    /// シーン読込・Undo/Redo の両方から使う唯一の復元経路。
+    pub fn from_data(data: InputMapComponentData) -> Self {
+        Self { asset_path: data.asset_path }
+    }
+
     /// シリアライズ用データに変換する。
     pub fn to_data(&self) -> InputMapComponentData {
         InputMapComponentData {
