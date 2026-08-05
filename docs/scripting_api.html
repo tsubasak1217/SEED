@@ -248,7 +248,7 @@
 </div>
 
 <!-- ════════════════ 1. 基本形 ════════════════ -->
-<section id="sec-basic" data-keywords="スクリプト 基本形 テンプレート SEEDScript SerializeField 継承 class インスペクタ 属性 Header Tooltip Range ResetButton リセット デフォルトに戻す RequireComponent DisallowMultipleComponent Serializable">
+<section id="sec-basic" data-keywords="スクリプト 基本形 テンプレート SEEDScript SerializeField 継承 class インスペクタ 属性 Header Tooltip Range ResetButton リセット デフォルトに戻す RequireComponent DisallowMultipleComponent Serializable Bindable バインド 参照バインド 水面シェーダ ref">
   <h2>1. スクリプトの基本形</h2>
   <p class="section-note">C# で書き、<code>SEEDScript</code>（<code>SEEDEditor.Scripting</code> 名前空間）を継承します。</p>
 <pre><span class="k">using</span> SEEDEditor.Scripting;   <span class="c">// SEEDScript・[SerializeField]・NativeFrameContext</span>
@@ -278,6 +278,7 @@
     <tr><td><code>[Tooltip("説明")]</code></td><td>フィールド</td><td>マウスオーバー時の説明。<code>[SerializeField(Tooltip = ...)]</code> より<b>独立した <code>[Tooltip]</code> が優先</b>される</td></tr>
     <tr><td><code>[Range(min, max)]</code></td><td>フィールド</td><td>数値フィールドをスライダー表示にする（float / int）</td></tr>
     <tr><td><code>[ResetButton]</code></td><td>フィールド</td><td>行の右端に「デフォルトに戻す」ボタン（⟲）を出す。押すと<b>宣言の初期化子の値</b>（無ければ 0 / false / 空文字 / 参照は未設定）へ戻る。Ctrl+Z で取り消せる</td></tr>
+    <tr><td><code>[Bindable]</code></td><td>フィールド</td><td>このフィールドを<b>シェーダパラメータのバインド元</b>として公開する（<code>[SerializeField]</code> との併用が必須）。対応型は <code>float</code> と <code>Vector3</code> のみ</td></tr>
     <tr><td><code>[RequireComponent(typeof(OtherScript))]</code> / <code>[RequireComponent("Camera")]</code></td><td>クラス</td><td>アタッチ時に不足コンポーネントを<b>自動追加</b>する。型指定＝他スクリプト（型名から <code>.cs</code> を探す）、文字列指定＝ネイティブコンポーネント名</td></tr>
     <tr><td><code>[DisallowMultipleComponent]</code></td><td>クラス</td><td>同一アクターに同じスクリプトを 2 つ以上付けられなくする（追加操作が警告で中止される）</td></tr>
   </table>
@@ -302,6 +303,17 @@
   <p class="section-note">戻り先はフィールド<b>宣言の初期化子</b>の値です。初期化子が無ければ言語既定値（数値 <code>0</code> / <code>bool false</code> / <code>string</code> 空文字）になります。参照フィールド（<code>GameObject</code> / <code>Transform</code> など）では「未設定」へ戻ります（✕ ボタンと同じ結果）。</p>
   <p class="section-note">リセットは通常の値編集と同じ経路を通るため <b>Ctrl+Z で取り消せます</b>（リセット前の値に戻る）。対応型は数値（float / double / int / long / short）・bool・string・参照フィールドで、<b>列挙型などインスペクタが読み取り専用表示にする型ではボタンは出ません</b>。既定値の文字列に改行が含まれる場合もボタンは出ません（1 行 1 コマンドの通信経路に載せられないため）。</p>
   <p class="section-note"><code>[Serializable]</code> ネストクラスの<b>フィールドそのもの</b>に付けてもボタンは出ません（子をまとめて戻すと Ctrl+Z が 1 手にまとまらないため）。<b>ネストの中の個々のフィールド</b>には付けられます。その場合の戻り先は<b>そのネストクラス側の初期化子</b>であり、外側での <code>new Nested { inner = 99f }</code> のような初期化は反映されません。</p>
+
+  <h3><code>[Bindable]</code> の詳細</h3>
+  <p class="section-note">水面シェーディングアセット（<code>.wgsl</code>）が <code>@ref</code> を付けて宣言したパラメータは、インスペクタで「アクタ → コンポーネント → 変数」を選ぶだけで、このフィールドの<b>実行中の値</b>が毎フレームシェーダへ流し込まれます（<a href="water_shading_asset.md">water_shading_asset.md</a> の「3.6 <code>@ref</code> — シーンから値を流し込む」を参照）。</p>
+  <p class="section-note"><code>[SerializeField]</code> との<b>併用が必須</b>です。<code>[SerializeField]</code> の無いフィールドに付けてもバインド候補には現れません（インスペクタに出ない値をバインド候補に出すと、何がどこから流れているのか追跡できなくなるため）。</p>
+  <p class="section-note">対応する型は WGSL 側と厳密に対応する 2 つだけです。<code>float</code> … WGSL の <code>f32</code> パラメータへ繋がる／<code>Vector3</code> … WGSL の <code>vec3&lt;f32&gt;</code>（色）パラメータへ繋がる。<b>成分の部分取り出しは行いません。</b> <code>Vector3</code> を <code>f32</code> のパラメータへ繋ぐことはできません（X 成分だけ欲しいなら <code>float</code> のフィールドを別に用意してください）。上記以外の型に付けても候補には現れません。</p>
+  <p class="section-note">値は<b>毎フレーム、描画の直前に実行中のインスタンスから直接</b>読まれます（Edit / Play の両方）。したがって <code>Update</code> などで書き換えた値がそのままシェーダへ届きます。</p>
+  <p class="section-note"><code>[Bindable]</code> が付いているかどうかの検証は、<b>値を読み取るたびにランタイム側で毎回行われます</b>（設定時に一度だけ検証してキャッシュする方式ではありません）。そのため、バインドを張った後にこの属性を外す・フィールドを消す・型を変える、といった変更をすると、<b>その瞬間からバインドは静かに切れます</b>。シェーダのパラメータは保存値（無ければアセットの既定値）へフォールバックし、インスペクタのその行に ⚠ が出ます。</p>
+  <p class="section-note">スクリプトのコンパイルに失敗している間は、そのスクリプトのフィールドはバインド候補に一切現れません（まずコンパイルエラーを直してください）。</p>
+<pre>[<span class="t">SerializeField</span>, <span class="t">Bindable</span>]
+<span class="k">private float</span> glowPower = 1.0f;</pre>
+
   <p class="section-note"><code>[Serializable]</code> を付けたクラス／構造体型のフィールドに <code>[SerializeField]</code> を付けると、インスペクタで<b>子フィールドが再帰的に展開</b>されます（入れ子の上限は 8 段）。</p>
   <p class="section-note"><code>GameObject</code> やコンポーネントハンドル型（<code>Transform</code> / <code>Camera</code> など）のフィールドに <code>[SerializeField]</code> を付けると、<b>他アクターへの参照フィールド</b>になります（Hierarchy から D&amp;D で設定）。詳細は第 7 節の「参照フィールド」を参照してください。</p>
 </section>

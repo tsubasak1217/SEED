@@ -103,6 +103,10 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         // 直前のスライダー操作と 1 手にまとまらず、Ctrl+Z 1 回でリセット前へ戻る。
         IpcCommand::ResetWaterShaderParam { actor_dfs_id, slot_idx, name } =>
             slot(*actor_dfs_id, *slot_idx, "ResetWaterShaderParam", name),
+        // `@ref` パラメータのバインド設定・解除（W8.3）。値編集とは別のコマンド名で
+        // マージキーを作るので、直前の値操作と 1 手にまとまらない。
+        IpcCommand::SetWaterShaderBinding { actor_dfs_id, slot_idx, name, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetWaterShaderBinding", name),
         IpcCommand::SetWaterLinkField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetWaterLinkField", key),
         IpcCommand::SetLightField { actor_dfs_id, slot_idx, key, .. } =>
@@ -336,6 +340,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::GetCamState
         | IpcCommand::GetSceneInfo
         | IpcCommand::GetPluginList
+        // バインド元候補の問い合わせ（W8.3）。読み取りのみでシーンを変えない。
+        | IpcCommand::GetBindableSources { .. }
         | IpcCommand::ValidateWgsl { .. } => FieldEditTarget::None,
     }
 }

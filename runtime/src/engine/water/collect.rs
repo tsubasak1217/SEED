@@ -71,27 +71,11 @@ pub fn collect_water_volumes(
 
 /// 指定世界線のアクタツリーを DFS で走査し、**名前が一致する最初のアクタ**を返す。
 ///
-/// 同名アクタを禁止していないエンジンなので、一致が複数ありうる。
-/// 「DFS で最初に見つかったもの」という決定的な規則を明文化しておくことで、
-/// 参照が指す先がフレームごとに揺れないことを保証する
-/// （＝川が別の点列へ勝手に切り替わらない）。
-///
-/// 名前が空の要求は常に None（「未設定」を「名前が空のアクタ」に解決させない）。
-pub fn find_actor_by_name<'a>(
-    actors:     &'a [Actor],
-    world_line: u32,
-    name:       &str,
-) -> Option<&'a Actor> {
-    if name.is_empty() { return None; }
-    /// サブツリーを DFS して名前一致を探す。
-    fn dfs<'a>(actor: &'a Actor, name: &str) -> Option<&'a Actor> {
-        if actor.name == name { return Some(actor); }
-        actor.children().iter().find_map(|c| dfs(c, name))
-    }
-    actors.iter()
-        .filter(|a| a.world_line == world_line)
-        .find_map(|root| dfs(root, name))
-}
+/// 実体は汎用の参照解決（`engine::binding::resolve::find_actor_by_name`）にある。
+/// 「アクタ名で引く」規則は川の制御点参照・`@ref` バインド・スクリプトの参照
+/// フィールドが**同一でなければならない**（別々に実装すると、同名アクタが
+/// あるシーンで参照ごとに違う相手を指してしまう）ため、実装を 1 つに束ねている。
+pub use crate::engine::binding::resolve::find_actor_by_name;
 
 /// `control_point_ref` を解決し、参照先の制御点列をワールド空間の折れ線にして返す。
 ///
@@ -164,8 +148,20 @@ fn collect_in_actor(
                 None
             };
 
-            let resolved = ResolvedWaterVolume::from_component_with_path(
+            let mut resolved = ResolvedWaterVolume::from_component_with_path(
                 wv, pos, dfs_id, control_polyline.as_deref());
+
+            // ── シェーダパラメータの `@ref` バインド（W8.3）──────────
+            // 解決できたバインドの実値で**パラメータ値を上書き**する。
+            // 上書きするのはこの中間表現（毎フレーム作り直される複製）だけなので、
+            // シーンの保存値は一切変わらない（バインドを外せば元の値に戻る）。
+            // 解決できなかったバインドは差し込まれず、保存値／アセット既定値のまま。
+            for (name, value) in super::bindings::resolve_bindings_for_asset(
+                all_actors, world, world_line, &resolved.surface_shader, &wv.bindings)
+            {
+                resolved.shader_params.insert(name, value);
+            }
+
             // 川（Spline。W4）は制御点が 2 点未満だと折れ線が作れず、
             // 描画も問い合わせも定義できない。収集しない（下流が誤って参照しないように）。
             if wv.kind == WaterVolumeKind::Spline && resolved.river.is_none() { continue; }

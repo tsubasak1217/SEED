@@ -402,6 +402,89 @@ public static unsafe class ScriptBridge
         }
     }
 
+    // ─── [Bindable] フィールドのライブ読み取り（Phase W8.3）──────
+    //
+    // 【なぜ FFI で読むのか】
+    // Rust 側の ScriptComponent.fields は「編集時のシリアライズ値」であり、
+    // Play 中にスクリプトが書き換えた値は反映されない。シェーダの @ref バインドは
+    // 「今この瞬間の値」を流すのが目的なので、正典は常に CLR 側の実インスタンスである。
+    //
+    // 【なぜ [Bindable] の検証をここで行うのか】
+    // エディタでバインドを張った後にスクリプトから属性が外れる／フィールドが消える
+    // ことがある。読み取りのたびに検証しておけば、属性を外した瞬間からバインドは
+    // 解決失敗になり、インスペクタに ⚠ が出る（＝設定時だけの検証では追随できない）。
+
+    /// <summary>
+    /// バインド元として読める最大成分数（<c>Vector3</c> の 3）。
+    /// Rust 側が渡すバッファ長（vec4 = 4）とは別で、こちらは「型の上限」である。
+    /// </summary>
+    private const int BindableMaxComponents = 3;
+
+    /// <summary>
+    /// 指定パスの <c>[SerializeField, Bindable]</c> フィールドの**実行中の値**を
+    /// float 配列として読み出す FFI（水面シェーダの <c>@ref</c> バインド。Phase W8.3）。
+    ///
+    /// リフレクションでインスタンスのフィールドを読むだけで World / Actor ツリーへは
+    /// 触れないため、スクリプトフェーズ外（描画準備中・インスペクタ更新中）でも安全。
+    ///
+    /// 戻り値: 書き込んだ成分数（<c>float</c> なら 1、<c>Vector3</c> なら 3）。
+    /// フィールドが無い・<c>[Bindable]</c> が無い・<c>[SerializeField]</c> が無い・
+    /// 型が非対応・バッファ不足・例外のいずれでも **0**（＝解決失敗）を返す。
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int ReadFieldFloats(nint h, byte* namePtr, int nameLen, float* outBuf, int capacity)
+    {
+        try
+        {
+            if (outBuf is null || capacity <= 0) return 0;
+            var target = Get(h);
+            if (target is null) return 0;
+
+            var path = Encoding.UTF8.GetString(namePtr, nameLen);
+            if (!TryResolveLeafField(target, path, createMissing: false, out var owner, out var leaf))
+                return 0;
+
+            // [SerializeField] と [Bindable] の両方が要る。
+            // 属性は Roslyn コンパイルと ALC コンパイルでアセンブリ ID が異なりうるので、
+            // 型一致ではなく**属性名**で照合する（ScriptCompiler と同じ流儀）。
+            if (!HasAttributeNamed(leaf, nameof(SerializeFieldAttribute))) return 0;
+            if (!HasAttributeNamed(leaf, nameof(BindableAttribute)))       return 0;
+
+            var value = leaf.GetValue(owner);
+            if (value is null) return 0;
+
+            // 対応型は WGSL 側と 1 対 1 の 2 種類だけ。成分の部分取り出しはしない。
+            switch (value)
+            {
+                case float f when capacity >= 1:
+                    outBuf[0] = f;
+                    return 1;
+                case SEED.Vector3 v when capacity >= BindableMaxComponents:
+                    outBuf[0] = v.x;
+                    outBuf[1] = v.y;
+                    outBuf[2] = v.z;
+                    return BindableMaxComponents;
+                default:
+                    return 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] ReadFieldFloats failed: {ex.Message}");
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// フィールドに指定名の属性が付いているかを**属性名で**判定する。
+    ///
+    /// エディタの Roslyn コンパイルとランタイムの ALC コンパイルでは属性の
+    /// アセンブリ ID が異なる場合があるため、<c>GetCustomAttribute</c> の型一致ではなく
+    /// 名前で照合する（ScriptCompiler の <c>HasSerializeField</c> と同じ理由）。
+    /// </summary>
+    private static bool HasAttributeNamed(System.Reflection.FieldInfo field, string attributeTypeName)
+        => field.GetCustomAttributesData().Any(a => a.AttributeType.Name == attributeTypeName);
+
     /// <summary>
     /// 指定パスの末端フィールドが参照フィールド型かを判定する。
     /// 途中のネストオブジェクトを生成せずに型だけを辿るため、判定に副作用がない。

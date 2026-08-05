@@ -463,10 +463,16 @@ impl App {
                     // C# は構文解析を一切持たず、この配列から行を作るだけである
                     //（構文の正典を Rust 側 1 か所に保つため）。
                     // アセット未指定・読めないパスでは空配列＝行を作らない。
+                    // `@ref` バインド（W8.3）はここで**実際に解決してから**送る。
+                    // 解決できたものは現在値としてそのまま表示され、解決できなかった
+                    // ものは `binding_ok:false` になって C# 側が ⚠ を出す
+                    //（＝インスペクタの表示と描画に流れる値が必ず一致する）。
                     let shader_params_json = {
                         use crate::engine::core::renderer::water::{shade_params, shading_asset};
                         let decls = shading_asset::declarations_for_path(&d.surface_shader);
-                        shade_params::params_json(&decls, &d.shader_params)
+                        let live  = crate::engine::water::bindings::resolve_bindings(
+                            &scene.actors, &scene.world, wl, &decls, &d.bindings);
+                        shade_params::params_json(&decls, &d.shader_params, &d.bindings, &live)
                     };
                     ("WaterVolumeComponent", format!(
                         r#","kind":{kind_json},"surface_height":{:.4},"region_hx":{:.4},"region_hy":{:.4},"region_hz":{:.4},"ocean_extent":{:.4},"shallow_r":{:.4},"shallow_g":{:.4},"shallow_b":{:.4},"deep_r":{:.4},"deep_g":{:.4},"deep_b":{:.4},"absorption_distance":{:.4},"surface_opacity":{:.4},"foam_r":{:.4},"foam_g":{:.4},"foam_b":{:.4},"foam_width":{:.4},"foam_intensity":{:.4},"wave_amplitude":{:.4},"wave_scale":{:.4},"wave_speed":{:.4},"wave_direction_deg":{:.4},"fresnel_power":{:.4},"fresnel_strength":{:.4},"reflection_intensity":{:.4},"reflection_roughness":{:.4},"refraction_distortion":{:.4},"ripple_strength":{:.4},"ripple_foam_threshold":{:.4},"viscosity":{:.4},"ripple_damping":{:.4},"shore_wave_strength":{:.4},"shore_wave_length":{:.4},"shore_wave_period":{:.4},"shore_wave_foam":{:.4},"river_width":{:.4},"flow_speed":{:.4},"river_depth":{:.4},"river_segment_length":{:.4},"control_point_ref":{cp_ref_json},"surface_shader":{surface_shader_json},"shader_params":{shader_params_json},"simulate_level":{},"spline_points":{spline_json}"#,

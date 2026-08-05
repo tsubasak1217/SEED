@@ -493,6 +493,23 @@ pub struct WaterVolumeComponentData {
     /// 並びが変わり、無意味な差分が出る）。
     #[serde(default)]
     pub shader_params: BTreeMap<String, [f32; 4]>,
+    /// `@ref` パラメータのバインド先（Phase W8.3）。
+    ///
+    /// キー = アセット内の識別子（`shader_params` と同じキー空間）／
+    /// 値 = `"アクタ名|スロット名|変数名"`（`engine::binding::resolve` が正典）。
+    ///
+    /// バインドが解決できたパラメータは**毎フレームその実値で上書き**され、
+    /// `shader_params` の保存値は書き換わらない（＝バインドを外せば保存値へ戻る）。
+    /// 解決できないバインドは保存値／アセット既定値へフォールバックし、
+    /// インスペクタに ⚠ が出る。
+    ///
+    /// ## アクタ改名の追従
+    /// 値の 1 要素目がアクタ名なので、アクタ改名時に `rename_refs.rs` が
+    /// ここを書き換える（対応を忘れるとバインドが静かに切れる）。
+    ///
+    /// `BTreeMap` を使う理由は `shader_params` と同じ（保存 JSON のキー順の安定）。
+    #[serde(default)]
+    pub bindings: BTreeMap<String, String>,
     /// この水域を**水位グラフ（Phase W2.5）のノードにするか**。既定 false。
     ///
     /// true にすると Play 中、`WaterLinkComponent`（開口）でつながった他の水域と
@@ -560,6 +577,8 @@ impl Default for WaterVolumeComponentData {
             surface_shader:        String::new(),
             // 空＝アセットの既定値をそのまま使う（Phase W8.2）。
             shader_params:         BTreeMap::new(),
+            // 空＝バインド無し（＝保存値／既定値がそのまま使われる。Phase W8.3）。
+            bindings:              BTreeMap::new(),
             // 水位グラフ（W2.5）は既定で無効（＝旧シーンの水面は静止したまま）。
             simulate_level:        false,
         }
@@ -659,6 +678,8 @@ pub struct WaterVolumeComponent {
     pub surface_shader: String,
     /// アセットのパラメータ注釈に対する値（空 = すべてアセット既定値。Phase W8.2）
     pub shader_params: BTreeMap<String, [f32; 4]>,
+    /// `@ref` パラメータのバインド先（空 = バインド無し。Phase W8.3）
+    pub bindings: BTreeMap<String, String>,
     /// この水域を水位グラフのノードにするか（Region のみ有効。既定 false。Phase W2.5）
     pub simulate_level: bool,
     /// **【揮発】水位グラフが計算した現在の水面 Y（ワールド絶対値）。Phase W2.5**
@@ -728,6 +749,7 @@ impl WaterVolumeComponent {
             control_point_ref:     data.control_point_ref,
             surface_shader:        data.surface_shader,
             shader_params:         data.shader_params,
+            bindings:              data.bindings,
             simulate_level:        data.simulate_level,
             // 揮発フィールド（W2.5）。読み込み直後は常に「未シミュレーション」。
             // Play を開始した最初のフレームに level_sim が初期水位を入れる。
@@ -786,6 +808,7 @@ impl WaterVolumeComponent {
             surface_shader:        self.surface_shader.clone(),
             // マップも所有権を渡せない（&self 受け）ため複製する。
             shader_params:         self.shader_params.clone(),
+            bindings:              self.bindings.clone(),
             simulate_level:        self.simulate_level,
         }
     }
@@ -920,6 +943,8 @@ mod tests {
         // W8.2: アセットのパラメータ値は既定で空（＝アセットに書かれた既定値を使う）。
         assert_eq!(d.shader_params, def.shader_params);
         assert!(d.shader_params.is_empty(), "パラメータ値は既定で空であること");
+        assert_eq!(d.bindings, def.bindings);
+        assert!(d.bindings.is_empty(), "バインドは既定で空であること");
         // W2.5: 水位グラフは既定で無効（旧 .scene の水面が動き出さない保証）
         assert_eq!(d.simulate_level, def.simulate_level);
         assert!(!d.simulate_level, "水位シミュレーションは既定 OFF であること");
@@ -981,6 +1006,9 @@ mod tests {
                 ("emission_color".to_string(), [1.0, 0.4, 0.1, 0.0]),
                 ("crack_speed".to_string(),    [2.5, 0.0, 0.0, 0.0]),
             ]),
+            bindings: BTreeMap::from([
+                ("emission_color".to_string(), "Sun|MainLight|color".to_string()),
+            ]),
             simulate_level: true,
         };
         let back = WaterVolumeComponent::from_data(src.clone()).to_data();
@@ -1026,6 +1054,7 @@ mod tests {
         assert_eq!(back.control_point_ref, src.control_point_ref);
         assert_eq!(back.surface_shader, src.surface_shader);
         assert_eq!(back.shader_params, src.shader_params);
+        assert_eq!(back.bindings, src.bindings, "@ref バインドも往復すること（W8.3）");
         assert_eq!(back.simulate_level, src.simulate_level);
     }
 

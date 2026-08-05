@@ -407,6 +407,27 @@ pub enum IpcCommand {
     /// こうしておくと、後からアセットの既定値を書き換えたときに
     /// 「戻したはずの水域」が新しい既定値へ追随する（＝アセットが正典であり続ける）。
     ResetWaterShaderParam { actor_dfs_id: u32, slot_idx: u32, name: String },
+    /// 水面シェーディングアセットの `@ref` パラメータ 1 個のバインド先を設定・解除する
+    /// （Phase W8.3。water_ops.rs が処理）。
+    ///
+    /// フォーマット: SET_WATER_SHADER_BINDING:{actor_dfs_id},{slot_idx},{name},{binding}
+    /// `name` はアセット内の識別子、`binding` は `"アクタ名|スロット名|変数名"`。
+    /// **`binding` が空文字列ならバインド解除**（保存値／アセット既定値へ戻る）。
+    ///
+    /// 値そのもの（`shader_params`）は一切触らない。バインドを外したときに
+    /// 「バインド前の値」へ戻るのはそのためである。
+    SetWaterShaderBinding { actor_dfs_id: u32, slot_idx: u32, name: String, binding: String },
+    /// 指定アクタが供給できるバインド元（`@ref` の接続先候補）を問い合わせる
+    /// （Phase W8.3。water_ops.rs が処理し、`BINDABLE_SOURCES:` で返す）。
+    ///
+    /// フォーマット: GET_BINDABLE_SOURCES:{actor_dfs_id},{value_type}
+    /// `value_type` は `f32` / `vec3`（WGSL 型と厳密一致するものだけを返す）。
+    ///
+    /// 応答は `BINDABLE_SOURCES:{json}` で、json は
+    /// `[{"slot":"スロット名","label":"表示名","variables":[{"name":"…","label":"…"}]}]`。
+    /// **候補の正典は Rust 側**（`engine::binding::catalog` とスクリプトの `[Bindable]`）であり、
+    /// エディタはミラー表を持たない。
+    GetBindableSources { actor_dfs_id: u32, value_type: String },
     /// WaterLinkComponent（水位グラフの開口。W2.5）のフィールド更新（water_link_ops.rs が処理）。
     /// フォーマット: SET_WATER_LINK_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
     /// key: volume_a / volume_b / opening_bottom / opening_height /
@@ -1714,6 +1735,30 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 .map(|(a, sl, tail)| IpcCommand::ResetWaterShaderParam {
                                     actor_dfs_id: a, slot_idx: sl, name: tail.to_string(),
                                 })
+                        }
+                        s if s.starts_with("SET_WATER_SHADER_BINDING:") => {
+                            // フォーマット: SET_WATER_SHADER_BINDING:{actor},{slot},{name},{binding}
+                            // binding（"アクタ名|スロット名|変数名"）にはアクタ名が入り "," を
+                            // 含みうるので、最初の "," までを name とし tail 全体を binding にする。
+                            // **binding は空文字列でもよい**（＝バインド解除）ので、
+                            // split_once の右辺が空になる場合も正常系である。
+                            parse2u_tail(&s["SET_WATER_SHADER_BINDING:".len()..]).and_then(|(a, sl, tail)| {
+                                let (name, binding) = tail.split_once(',')?;
+                                Some(IpcCommand::SetWaterShaderBinding {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    name: name.to_string(), binding: binding.to_string(),
+                                })
+                            })
+                        }
+                        s if s.starts_with("GET_BINDABLE_SOURCES:") => {
+                            // フォーマット: GET_BINDABLE_SOURCES:{actor_dfs_id},{value_type}
+                            let tail = &s["GET_BINDABLE_SOURCES:".len()..];
+                            tail.split_once(',').and_then(|(a, t)| {
+                                Some(IpcCommand::GetBindableSources {
+                                    actor_dfs_id: a.trim().parse().ok()?,
+                                    value_type:   t.trim().to_string(),
+                                })
+                            })
                         }
                         s if s.starts_with("SET_WATER_LINK_FIELD:") => {
                             // フォーマット: SET_WATER_LINK_FIELD:{actor_dfs_id},{slot_idx},{key},{value}

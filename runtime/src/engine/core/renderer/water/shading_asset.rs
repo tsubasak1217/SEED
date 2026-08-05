@@ -188,15 +188,18 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-/// アセットが宣言したパラメータの**既定値**を引く（スクリプト API 用）。
+/// アセットの宣言を**キャッシュ付きで**引き、`f` に渡して結果だけを取り出す。
 ///
-/// - `None` : アセットが空／読めない／その名前の宣言が無い。
-/// - 同じパスを繰り返し引いても、mtime が変わらない限りファイルは読み直さない。
-pub fn declaration_default(
+/// 宣言 `Vec` を複製せずに済ませるため、参照を借りるクロージャ形式にしてある
+/// （毎フレーム・毎水域から呼ばれる経路なので、無駄な複製を作らない）。
+///
+/// 同じパスを繰り返し引いても、mtime が変わらない限りファイルは読み直さない。
+/// アセットパスが空なら宣言は 0 個（＝空スライス）として `f` を呼ぶ。
+pub fn with_cached_declarations<R>(
     asset_path: &str,
-    name:       &str,
-) -> Option<[f32; super::shade_params::PARAM_VALUE_COMPONENTS]> {
-    if asset_path.trim().is_empty() { return None; }
+    f:          impl FnOnce(&[WaterShadeParamDecl]) -> R,
+) -> R {
+    if asset_path.trim().is_empty() { return f(&[]); }
     let mtime = crate::engine::asset_fs::mtime(asset_path);
     SCRIPT_DECL_CACHE.with(|c| {
         let mut cache = c.borrow_mut();
@@ -209,7 +212,20 @@ pub fn declaration_default(
             entry.0 = mtime;
             entry.1 = declarations_for_path(asset_path);
         }
-        entry.1.iter().find(|d| d.name == name).map(|d| d.default)
+        f(&entry.1)
+    })
+}
+
+/// アセットが宣言したパラメータの**既定値**を引く（スクリプト API 用）。
+///
+/// - `None` : アセットが空／読めない／その名前の宣言が無い。
+/// - 同じパスを繰り返し引いても、mtime が変わらない限りファイルは読み直さない。
+pub fn declaration_default(
+    asset_path: &str,
+    name:       &str,
+) -> Option<[f32; super::shade_params::PARAM_VALUE_COMPONENTS]> {
+    with_cached_declarations(asset_path, |decls| {
+        decls.iter().find(|d| d.name == name).map(|d| d.default)
     })
 }
 

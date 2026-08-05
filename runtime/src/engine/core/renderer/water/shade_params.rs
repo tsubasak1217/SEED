@@ -19,12 +19,18 @@
 //  @reset @range(0.0, 4.0)
 //  override glow_boost: f32 = 2.0;                            // リセットボタン付き
 //
+//  @ref
+//  override player_speed: f32 = 0.0;                          // 参照バインド行（W8.3）
+//
 //  override plain: f32 = 1.0;                                 // 属性なし = 数値行
 //  ```
 //    ・属性は**宣言の上の行**にも**同一行**にも書ける。複数併記は空白区切り。
 //    ・`@color` … カラーピッカー（型は `vec3<f32>`）。`vec3<f32>` なら属性を省いても色扱い。
 //    ・`@range(min, max)` … スライダー（型は `f32`）。
 //    ・`@reset` … インスペクタ行の右端に「デフォルトに戻す」ボタンを出す。
+//    ・`@ref` … 値の入力欄の代わりに**参照バインド行**を出す（W8.3）。
+//               シーン内コンポーネントの変数を毎フレーム流し込む。
+//               `@reset` と併用すると「バインドを外して既定値へ戻す」ボタンが付く。
 //    ・属性なしの `f32` … 数値行。
 //  行末の `// …` は**インスペクタの表示ラベル**（省略時は識別子そのもの）。
 //
@@ -75,6 +81,11 @@ const ATTR_COLOR: &str = "color";
 const ATTR_RANGE: &str = "range";
 /// 属性 `@reset`（インスペクタ行に「デフォルトに戻す」ボタンを出す）。
 const ATTR_RESET: &str = "reset";
+/// 属性 `@ref`（インスペクタ行を「値の入力」ではなく「参照バインド」にする。W8.3）。
+///
+/// この属性が付いたパラメータは、シーン内のコンポーネントの変数を毎フレーム流し込む
+/// 対象になる。値そのものを編集する UI は出さず、参照ピッカーの行に置き換わる。
+const ATTR_REF: &str = "ref";
 
 /// エンジンが解釈する属性名の一覧。
 ///
@@ -83,7 +94,7 @@ const ATTR_RESET: &str = "reset";
 /// エンジンの宣言ではないので、除去も警告もしない（ユーザーのコードを壊さないため）。
 /// 後続フェーズで `@ref` 等を足すときは、ここへ名前を追加してから
 /// `apply_attributes` に解釈を書く。
-const KNOWN_ATTRS: [&str; 3] = [ATTR_COLOR, ATTR_RANGE, ATTR_RESET];
+const KNOWN_ATTRS: [&str; 4] = [ATTR_COLOR, ATTR_RANGE, ATTR_RESET, ATTR_REF];
 
 /// 行末ラベルコメントの区切り。
 const LABEL_COMMENT: &str = "//";
@@ -192,6 +203,11 @@ pub struct WaterShadeParamDecl {
     pub label: String,
     /// `@reset` が付いているか（インスペクタ行に「デフォルトに戻す」ボタンを出す）。
     pub resettable: bool,
+    /// `@ref` が付いているか（インスペクタ行を参照バインド行にする。W8.3）。
+    ///
+    /// true のパラメータは、シーン内コンポーネントの変数を毎フレーム読んで
+    /// 値を上書きできる。バインドが未設定・解決不能なら保存値／既定値へ落ちる。
+    pub bindable: bool,
 }
 
 /// 解析中に見つかった問題 1 件。
@@ -452,7 +468,7 @@ fn parse_declaration(
     };
 
     // ── ⑤ 属性の解釈 ──────────────────────────────────────────
-    let (kind, resettable) = apply_attributes(attrs, is_color, notes)?;
+    let (kind, resettable, bindable) = apply_attributes(attrs, is_color, notes)?;
 
     // ── ⑥ 既定値 ──────────────────────────────────────────────
     let default = if is_color { parse_color_init(init_text)? } else { parse_scalar_init(init_text)? };
@@ -460,10 +476,10 @@ fn parse_declaration(
     // ── ⑦ ラベル（無ければ識別子そのもの）────────────────────
     let label = if label.is_empty() { name.to_string() } else { label.to_string() };
 
-    Ok(WaterShadeParamDecl { name: name.to_string(), kind, default, label, resettable })
+    Ok(WaterShadeParamDecl { name: name.to_string(), kind, default, label, resettable, bindable })
 }
 
-/// 属性列から「UI 種別」と「リセットボタンの有無」を決める。
+/// 属性列から「UI 種別」「リセットボタンの有無」「参照バインド可否」を決める。
 ///
 /// 未知の属性は**エラーにせず警告**にする（後続フェーズで属性が増える前提のため、
 /// 新しい属性を書いたアセットが古いエンジンで丸ごと壊れないようにする）。
@@ -471,15 +487,17 @@ fn apply_attributes(
     attrs:    &[Attribute],
     is_color: bool,
     notes:    &mut Vec<String>,
-) -> Result<(WaterShadeParamKind, bool), String> {
+) -> Result<(WaterShadeParamKind, bool, bool), String> {
     let mut range: Option<(f32, f32)> = None;
     let mut resettable = false;
+    let mut bindable   = false;
     let mut color_attr = false;
 
     for a in attrs {
         match a.name.as_str() {
             ATTR_COLOR => color_attr = true,
             ATTR_RESET => resettable = true,
+            ATTR_REF   => bindable   = true,
             ATTR_RANGE => {
                 if a.args.len() != RANGE_ARG_COUNT {
                     return Err(format!(
@@ -516,7 +534,7 @@ fn apply_attributes(
     } else {
         WaterShadeParamKind::Float
     };
-    Ok((kind, resettable))
+    Ok((kind, resettable, bindable))
 }
 
 /// 識別子として使える名前かを検査する。
@@ -664,34 +682,61 @@ pub fn build_block(
 /// 出力例:
 /// ```json
 /// [{"name":"emission_color","type":"color","label":"発光色",
-///   "min":0.0,"max":0.0,"reset":true,"value":[1.0,0.4,0.1,0.0]}]
+///   "min":0.0,"max":0.0,"reset":true,"ref":false,
+///   "binding":"","binding_ok":true,"value":[1.0,0.4,0.1,0.0]}]
 /// ```
 /// - `type` は `color` / `range` / `float`。C# はこの文字列で行の形（ピッカー／
 ///   スライダー／数値）を選ぶ。
 /// - `min` / `max` は `range` のときだけ意味を持つ（他の型では 0 を送る）。
 /// - `reset` は `@reset` 属性の有無。true の行だけ「デフォルトに戻す」ボタンを出す。
-/// - `value` は**常に 4 成分**。保存値があればそれ、無ければアセットの既定値。
+/// - `ref` は `@ref` 属性の有無（W8.3）。true の行は値の入力欄ではなく
+///   **参照バインド行**（参照ピッカー）になる。
+/// - `binding` は保存されているバインド先文字列 `"アクタ名|スロット名|変数名"`。
+///   未設定なら空文字列。`ref` が false の行では常に空。
+/// - `binding_ok` はバインドが**今このフレームで解決できたか**。
+///   バインド未設定なら true（＝警告を出さない）、設定済みで解決できなければ false
+///   （C# は ⚠ を出し、値は保存値／既定値のまま表示する）。
+/// - `value` は**常に 4 成分**。解決済みバインドがあればその実値、
+///   無ければ保存値、それも無ければアセットの既定値。
 ///
 /// **解析は Rust 側だけが行う**という設計なので、C# はこの配列を表示するだけでよい。
+///
+/// `live` は「バインドが解決できたパラメータ名 → その実値」。
+/// 解決できなかったバインドはここに**入れない**（それが `binding_ok=false` の定義）。
 pub fn params_json(
-    decls: &[WaterShadeParamDecl],
-    saved: &BTreeMap<String, [f32; PARAM_VALUE_COMPONENTS]>,
+    decls:    &[WaterShadeParamDecl],
+    saved:    &BTreeMap<String, [f32; PARAM_VALUE_COMPONENTS]>,
+    bindings: &BTreeMap<String, String>,
+    live:     &BTreeMap<String, [f32; PARAM_VALUE_COMPONENTS]>,
 ) -> String {
     let items: Vec<serde_json::Value> = decls.iter().map(|d| {
-        let value = saved.get(&d.name).copied().unwrap_or(d.default);
+        // 表示値の優先順位: 解決済みバインド > シーン保存値 > アセット既定値。
+        let value = live.get(&d.name).copied()
+            .or_else(|| saved.get(&d.name).copied())
+            .unwrap_or(d.default);
         let (min, max) = match d.kind {
             WaterShadeParamKind::Range { min, max } => (min, max),
             // range 以外では使わない枠。キーを常に出しておくと C# の分岐が減る。
             _ => (0.0, 0.0),
         };
+        // `@ref` でない行にバインドが残っていても表示しない（属性を外したときの
+        // 孤児バインドを UI へ漏らさない。保存値としては残るので属性を戻せば復活する）。
+        let binding = if d.bindable {
+            bindings.get(&d.name).map(String::as_str).unwrap_or("")
+        } else {
+            ""
+        };
         serde_json::json!({
-            "name":  d.name,
-            "type":  d.kind.as_str(),
-            "label": d.label,
-            "min":   min,
-            "max":   max,
-            "reset": d.resettable,
-            "value": [value[0], value[1], value[2], value[3]],
+            "name":       d.name,
+            "type":       d.kind.as_str(),
+            "label":      d.label,
+            "min":        min,
+            "max":        max,
+            "reset":      d.resettable,
+            "ref":        d.bindable,
+            "binding":    binding,
+            "binding_ok": binding.is_empty() || live.contains_key(&d.name),
+            "value":      [value[0], value[1], value[2], value[3]],
         })
     }).collect();
     serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string())
@@ -983,8 +1028,9 @@ fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(tint, 1.0); }
         assert!(set.warnings.is_empty(), "{:?}", set.warnings);
         let mut saved = BTreeMap::new();
         saved.insert("c".to_string(), [0.0, 1.0, 0.0, 0.0]);
-        let json: serde_json::Value =
-            serde_json::from_str(&params_json(&set.params, &saved)).expect("JSON として読めること");
+        let json: serde_json::Value = serde_json::from_str(
+            &params_json(&set.params, &saved, &BTreeMap::new(), &BTreeMap::new()))
+            .expect("JSON として読めること");
         let arr = json.as_array().expect("配列であること");
         assert_eq!(arr.len(), 3);
         // ① 宣言順・型・ラベル
@@ -1003,12 +1049,90 @@ fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(tint, 1.0); }
         // ④ 保存値が無ければアセット既定値
         assert_eq!(arr[2]["type"], "float");
         assert_eq!(arr[2]["value"][0], 2.0);
+        // ⑤ @ref を書いていない行はバインド行にならず、警告状態にもならない
+        for row in arr {
+            assert_eq!(row["ref"], false, "{row}");
+            assert_eq!(row["binding"], "", "{row}");
+            assert_eq!(row["binding_ok"], true, "{row}");
+        }
+    }
+
+    /// `@ref` 属性が解析され、他の属性と併用できること（W8.3）。
+    #[test]
+    fn ref_attribute_is_parsed_and_combines() {
+        let set = parse_params(
+            "@ref override speed: f32 = 0.0;                 // 速さ
+             @ref @reset @range(0.0, 4.0) override glow: f32 = 1.0;
+             @ref @color override tint: vec3<f32> = vec3(1.0);
+             override plain: f32 = 1.0;
+");
+        assert!(set.warnings.is_empty(), "{:?}", set.warnings);
+        assert_eq!(set.params.len(), 4);
+        assert!(set.params[0].bindable, "@ref が効くこと");
+        assert!(set.params[1].bindable && set.params[1].resettable,
+            "@ref と @reset は併用できること");
+        assert_eq!(set.params[1].kind, WaterShadeParamKind::Range { min: 0.0, max: 4.0 });
+        assert!(set.params[2].bindable);
+        assert_eq!(set.params[2].kind, WaterShadeParamKind::Color);
+        assert!(!set.params[3].bindable, "@ref を書いていない行は false");
+    }
+
+    /// JSON にバインド状態が載ること（未設定・解決成功・解決失敗の 3 状態。W8.3）。
+    #[test]
+    fn params_json_carries_binding_state() {
+        let set = parse_params(
+            "@ref override a: f32 = 1.0;
+             @ref override b: f32 = 2.0;
+             @ref override c: f32 = 3.0;
+");
+        assert!(set.warnings.is_empty(), "{:?}", set.warnings);
+        let saved = BTreeMap::from([("b".to_string(), [9.0, 0.0, 0.0, 0.0])]);
+        let bindings = BTreeMap::from([
+            ("b".to_string(), "Sun|MainLight|intensity".to_string()),
+            ("c".to_string(), "Gone|MainLight|intensity".to_string()),
+        ]);
+        // b は解決できた、c は解決できなかった、という状態を作る。
+        let live = BTreeMap::from([("b".to_string(), [5.5, 0.0, 0.0, 0.0])]);
+        let json: serde_json::Value =
+            serde_json::from_str(&params_json(&set.params, &saved, &bindings, &live))
+                .expect("JSON として読めること");
+        let arr = json.as_array().expect("配列であること");
+
+        // ① バインド未設定 = 警告なし・アセット既定値
+        assert_eq!(arr[0]["ref"], true);
+        assert_eq!(arr[0]["binding"], "");
+        assert_eq!(arr[0]["binding_ok"], true);
+        assert_eq!(arr[0]["value"][0], 1.0);
+        // ② 解決成功 = 実値が現在値になり、保存値(9.0)より優先される
+        assert_eq!(arr[1]["binding"], "Sun|MainLight|intensity");
+        assert_eq!(arr[1]["binding_ok"], true);
+        assert_eq!(arr[1]["value"][0], 5.5);
+        // ③ 解決失敗 = 警告つき・値は保存値／既定値のまま
+        assert_eq!(arr[2]["binding"], "Gone|MainLight|intensity");
+        assert_eq!(arr[2]["binding_ok"], false);
+        assert_eq!(arr[2]["value"][0], 3.0);
+    }
+
+    /// `@ref` が外れた宣言に残った孤児バインドは JSON へ漏れないこと（W8.3）。
+    #[test]
+    fn orphan_binding_on_non_ref_param_is_hidden() {
+        let set = parse_params("override a: f32 = 1.0;
+");
+        let bindings = BTreeMap::from([("a".to_string(), "Sun|MainLight|intensity".to_string())]);
+        let json: serde_json::Value = serde_json::from_str(
+            &params_json(&set.params, &BTreeMap::new(), &bindings, &BTreeMap::new()))
+            .expect("JSON として読めること");
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr[0]["ref"], false);
+        assert_eq!(arr[0]["binding"], "", "孤児バインドは表示しない");
+        assert_eq!(arr[0]["binding_ok"], true, "⚠ も出さない");
     }
 
     /// 宣言が無ければ空配列（インスペクタは行を 1 つも作らない）。
     #[test]
     fn params_json_is_empty_array_without_declarations() {
-        assert_eq!(params_json(&[], &BTreeMap::new()), "[]");
+        assert_eq!(
+            params_json(&[], &BTreeMap::new(), &BTreeMap::new(), &BTreeMap::new()), "[]");
     }
 
     /// 型ごとの WGSL 型名・swizzle が一貫していること（生成コードの正しさの土台）。

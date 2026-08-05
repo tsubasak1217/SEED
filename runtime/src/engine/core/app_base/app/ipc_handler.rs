@@ -1209,6 +1209,14 @@ impl App {
                     // 「デフォルトに戻す」ボタン（W8.2）。上書き値を消して既定値へ落とす。
                     self.handle_reset_water_shader_param(actor_dfs_id, slot_idx, &name);
                 }
+                IpcCommand::SetWaterShaderBinding { actor_dfs_id, slot_idx, name, binding } => {
+                    // `@ref` パラメータのバインド設定・解除（W8.3）。
+                    self.handle_set_water_shader_binding(actor_dfs_id, slot_idx, &name, &binding);
+                }
+                IpcCommand::GetBindableSources { actor_dfs_id, value_type } => {
+                    // バインド元候補の問い合わせ（W8.3）。読み取りのみで状態は変えない。
+                    self.handle_get_bindable_sources(actor_dfs_id, &value_type);
+                }
                 IpcCommand::SetWaterLinkField { actor_dfs_id, slot_idx, key, value } => {
                     // 水位グラフの開口（W2.5）。バルブ開閉・寸法・接続先の更新。
                     self.handle_set_water_link_field(actor_dfs_id, slot_idx, &key, &value);

@@ -124,6 +124,46 @@ impl ScriptComponent {
         unsafe { (self.host.is_ref_field_fn)(self.handle, n.as_ptr(), n.len() as i32) != 0 }
     }
 
+    /// `[SerializeField, Bindable]` フィールドの**実行中の値**を読む（Phase W8.3）。
+    ///
+    /// `want_components` は要求する成分数（`f32` = 1、`vec3` = 3）。
+    /// **CLR 側が返した成分数と厳密一致したときだけ `Some`** を返す
+    /// （成分の部分取り出しをしない契約。`vec3` から X だけ取る等はしない）。
+    ///
+    /// ## なぜ `fields` マップを読まないのか
+    /// Rust 側の `fields` は**編集時のシリアライズ値**であり、Play 中に
+    /// スクリプトが書き換えた値は反映されない。バインドの目的は
+    /// 「今この瞬間のスクリプトの値をシェーダへ流す」ことなので、
+    /// 正典は常に CLR 側の実インスタンスである。
+    ///
+    /// ## `[Bindable]` の検証場所
+    /// **CLR 側（`ScriptBridge.ReadFieldFloats`）が毎回検証する。**
+    /// エディタでの設定時にも検証するが、設定後にスクリプトから属性が外れる／
+    /// フィールドが消えることがあるため、読み取り時の検証を正典にしている
+    /// （＝属性を外した瞬間からバインドは解決失敗になり、⚠ が出る）。
+    ///
+    /// World へは一切触れないため、スクリプトフェーズ外（描画準備中・
+    /// インスペクタ更新中）でも安全に呼べる。
+    pub fn read_bindable_field(
+        &self,
+        name:            &str,
+        want_components: usize,
+    ) -> Option<[f32; crate::engine::binding::catalog::BINDING_VALUE_COMPONENTS]> {
+        use crate::engine::binding::catalog::BINDING_VALUE_COMPONENTS;
+        let n = name.as_bytes();
+        // 未使用成分は 0 のまま返す（vec4 として運ぶ規約）。
+        let mut buf = [0.0f32; BINDING_VALUE_COMPONENTS];
+        let written = unsafe {
+            (self.host.read_field_floats_fn)(
+                self.handle, n.as_ptr(), n.len() as i32,
+                buf.as_mut_ptr(), BINDING_VALUE_COMPONENTS as i32,
+            )
+        };
+        // 0 以下 = 読めなかった。成分数不一致 = 型が違う（どちらも解決失敗）。
+        if written <= 0 || written as usize != want_components { return None; }
+        Some(buf)
+    }
+
     /// CLR インスタンスへフィールド値を FFI 経由で書き込む（内部用）。
     fn apply_field_ffi(&self, name: &str, value: &str) {
         let n = name.as_bytes();
