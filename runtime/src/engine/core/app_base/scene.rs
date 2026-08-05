@@ -122,6 +122,13 @@ struct SceneData {
     /// パスは `assets://` 仮想パスまたは絶対パス（engine/asset_fs.rs の規約）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shading_asset: Option<String>,
+    /// シーン既定のシェーディングアセットが宣言した `override` パラメータの上書き値。
+    /// キー = アセット内の識別子／値 = 4 成分。空なら丸ごと省略する（旧 `.scene` 互換）。
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    shading_params: std::collections::BTreeMap<String, [f32; 4]>,
+    /// `@ref` パラメータのバインド先（`"アクタ名|スロット名|変数名"`）。
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    shading_bindings: std::collections::BTreeMap<String, String>,
     /// シーン単位のビューポート／レンダリング設定（`scene_settings::SceneSettingsData`）。
     /// 旧 `.scene` にはこのキーが無いため None のまま読める。None のときは出力時もキーごと省略し、
     /// project_settings.json 側の設定（`App::load_graphics_settings`）がそのまま効く。
@@ -149,6 +156,17 @@ pub struct Scene {
     /// None なら組み込み標準 PBR を使う。
     /// パスは `assets://` 仮想パスまたは絶対パス（engine/asset_fs.rs の規約）。
     pub shading_asset: Option<String>,
+    /// シーン既定のシェーディングアセットのパラメータ上書き値。
+    ///
+    /// **上書きだけを持つ差分**であり、値の無いパラメータはアセットの既定値で描かれる。
+    /// カメラ側にアセットが指定されている場合はカメラ側の値が使われる
+    /// （アセットのフォールバック連鎖と同じ持ち主から値も採る）。
+    pub shading_params: std::collections::BTreeMap<String, [f32; 4]>,
+    /// `@ref` パラメータのバインド先（キーは `shading_params` と同じ空間）。
+    ///
+    /// ## アクタ改名の追従
+    /// 値の 1 要素目がアクタ名なので、アクタ改名時に `rename_refs.rs` がここを書き換える。
+    pub shading_bindings: std::collections::BTreeMap<String, String>,
     /// シーン単位のビューポート／レンダリング設定（`.scene` の `settings` 節）。
     /// None は「このシーンには設定が無い」＝旧シーン。その場合は起動時に読んだ
     /// project_settings.json の設定がそのまま使われる（フォールバック）。
@@ -162,7 +180,9 @@ impl Scene {
         crate::engine::systems::register_default_systems(&mut schedule);
         // シェーディングアセットは既定で未設定（組み込み標準 PBR を使う）
         // シーン設定は既定で未設定（project_settings.json 側の設定が使われる）
-        Self { name: name.into(), world: World::new(), actors: Vec::new(), schedule, shading_asset: None, settings: None }
+        Self { name: name.into(), world: World::new(), actors: Vec::new(), schedule, shading_asset: None,
+               shading_params: std::collections::BTreeMap::new(),
+               shading_bindings: std::collections::BTreeMap::new(), settings: None }
     }
 
     pub fn add_actor(&mut self, actor: Actor) {
@@ -363,7 +383,9 @@ impl Scene {
             name:         self.name.clone(),
             debug_camera: Some(camera.clone()),
             // シーン既定のシェーディングアセット（未設定なら None のまま出力を省略する）
-            shading_asset: self.shading_asset.clone(),
+            shading_asset:    self.shading_asset.clone(),
+            shading_params:   self.shading_params.clone(),
+            shading_bindings: self.shading_bindings.clone(),
             // シーン単位のビューポート／レンダリング設定（未設定なら None のまま出力を省略する）
             settings:      self.settings.clone(),
             actors:       self.actors.iter().map(|a| a.to_data(&self.world)).collect(),
@@ -427,7 +449,9 @@ impl Scene {
         let cam = data.debug_camera;
         let mut scene = Scene::new(data.name);
         // シーン既定のシェーディングアセットを復元する（旧 .scene には無いので None のまま）
-        scene.shading_asset = data.shading_asset;
+        scene.shading_asset    = data.shading_asset;
+        scene.shading_params   = data.shading_params;
+        scene.shading_bindings = data.shading_bindings;
         // シーン単位のビューポート／レンダリング設定を復元する（旧 .scene には無いので None のまま）。
         // 実際の適用は呼び出し側（App::load_play_scene / IPC LOAD_SCENE ハンドラ）が
         // App::apply_scene_settings で行う。

@@ -182,6 +182,10 @@ impl App {
                         if structural {
                             self.send_hierarchy();
                         }
+                        // シーン設定ウィンドウの「シェーダ」行（SceneShadingCommand）は
+                        // ACTOR_COMPONENTS に載らないので、専用に送り直す。
+                        // 対象外のコマンドを Undo した場合でも内容が変わらないだけで害は無い。
+                        self.send_scene_shading_params();
                     }
                 }
                 IpcCommand::Redo => {
@@ -222,6 +226,8 @@ impl App {
                         if structural {
                             self.send_hierarchy();
                         }
+                        // Undo 側と同じ理由でシーン設定のシェーダ行を送り直す。
+                        self.send_scene_shading_params();
                     }
                 }
                 IpcCommand::Copy  => { self.do_copy(); }
@@ -1356,6 +1362,34 @@ impl App {
                     let p = path.clone();
                     self.handle_set_camera_shading_asset(actor_dfs_id, slot_idx, &p);
                 }
+                IpcCommand::SetCameraShadingParam { actor_dfs_id, slot_idx, name, value } => {
+                    let (n, v) = (name.clone(), value.clone());
+                    self.handle_set_camera_shading_param(actor_dfs_id, slot_idx, &n, &v);
+                }
+                IpcCommand::ResetCameraShadingParam { actor_dfs_id, slot_idx, name } => {
+                    let n = name.clone();
+                    self.handle_reset_camera_shading_param(actor_dfs_id, slot_idx, &n);
+                }
+                IpcCommand::SetCameraShadingBinding { actor_dfs_id, slot_idx, name, binding } => {
+                    let (n, b) = (name.clone(), binding.clone());
+                    self.handle_set_camera_shading_binding(actor_dfs_id, slot_idx, &n, &b);
+                }
+                IpcCommand::SetSceneShadingParam { name, value } => {
+                    let (n, v) = (name.clone(), value.clone());
+                    self.handle_set_scene_shading_param(&n, &v);
+                }
+                IpcCommand::ResetSceneShadingParam { name } => {
+                    let n = name.clone();
+                    self.handle_reset_scene_shading_param(&n);
+                }
+                IpcCommand::SetSceneShadingBinding { name, binding } => {
+                    let (n, b) = (name.clone(), binding.clone());
+                    self.handle_set_scene_shading_binding(&n, &b);
+                }
+                IpcCommand::GetSceneShadingParams => {
+                    // シーン設定ウィンドウのパラメータ行を作るための問い合わせ（読み取りのみ）。
+                    self.send_scene_shading_params();
+                }
                 IpcCommand::SetSceneShadingAsset { path } => {
                     // シーン既定のシェーディングアセットを更新する（空文字は未設定＝None）
                     let trimmed = path.trim();
@@ -1367,6 +1401,8 @@ impl App {
                         };
                         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
                     }
+                    // アセットが変われば宣言も変わるので、パラメータ行を作り直させる。
+                    self.send_scene_shading_params();
                 }
                 IpcCommand::ValidateWgsl { request_id, source } => {
                     // シェーディングアセットの未保存 WGSL を検証して診断を返す（保存・GPU 不要）。

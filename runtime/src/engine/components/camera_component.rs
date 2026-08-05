@@ -165,6 +165,26 @@ pub struct CameraComponentData {
     /// パスは `assets://` 仮想パスまたは絶対パス（engine/asset_fs.rs の規約）。
     #[serde(default)]
     pub shading_asset: Option<String>,
+    /// このカメラのシェーディングアセットが宣言した `override` パラメータの**上書き値**。
+    ///
+    /// キー = アセット内の識別子／値 = 4 成分（色は `[r,g,b,0]`、スカラーは `[v,0,0,0]`）。
+    /// **上書きだけを持つ差分**であり、値の無いパラメータはアセットの既定値で描かれる。
+    /// 宣言が消えた／改名された値は孤児として無視される（シーンからは消さない）。
+    ///
+    /// `BTreeMap` なのは保存 JSON のキー順を安定させるため
+    /// （`HashMap` だと開き直すたびに並びが変わり無意味な差分が出る）。
+    #[serde(default)]
+    pub shading_params: std::collections::BTreeMap<String, [f32; 4]>,
+    /// `@ref` パラメータのバインド先（キーは `shading_params` と同じ空間）。
+    ///
+    /// 値は `"アクタ名|スロット名|変数名"`（`engine::binding::resolve` が正典）。
+    /// 解決できたパラメータは毎フレームその実値で描かれ、保存値は書き換わらない。
+    ///
+    /// ## アクタ改名の追従
+    /// 値の 1 要素目がアクタ名なので、アクタ改名時に `rename_refs.rs` がここを書き換える
+    /// （対応を忘れるとバインドが静かに切れる）。
+    #[serde(default)]
+    pub shading_bindings: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for CameraComponentData {
@@ -183,6 +203,9 @@ impl Default for CameraComponentData {
             ortho_height: default_ortho_height(),
             // 既定は未指定（シーン既定 → 組み込み標準 PBR にフォールバックする）
             shading_asset: None,
+            // 既定は上書きなし（＝すべてアセットの既定値で描かれる）
+            shading_params:   std::collections::BTreeMap::new(),
+            shading_bindings: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -221,6 +244,24 @@ pub struct CameraComponent {
     /// None のときはシーン既定 → 組み込み標準 PBR へフォールバックする。
     /// パスは `assets://` 仮想パスまたは絶対パス（engine/asset_fs.rs の規約）。
     pub shading_asset: Option<String>,
+    /// このカメラのシェーディングアセットが宣言した `override` パラメータの**上書き値**。
+    ///
+    /// キー = アセット内の識別子／値 = 4 成分（色は `[r,g,b,0]`、スカラーは `[v,0,0,0]`）。
+    /// **上書きだけを持つ差分**であり、値の無いパラメータはアセットの既定値で描かれる。
+    /// 宣言が消えた／改名された値は孤児として無視される（シーンからは消さない）。
+    ///
+    /// `BTreeMap` なのは保存 JSON のキー順を安定させるため
+    /// （`HashMap` だと開き直すたびに並びが変わり無意味な差分が出る）。
+    pub shading_params: std::collections::BTreeMap<String, [f32; 4]>,
+    /// `@ref` パラメータのバインド先（キーは `shading_params` と同じ空間）。
+    ///
+    /// 値は `"アクタ名|スロット名|変数名"`（`engine::binding::resolve` が正典）。
+    /// 解決できたパラメータは毎フレームその実値で描かれ、保存値は書き換わらない。
+    ///
+    /// ## アクタ改名の追従
+    /// 値の 1 要素目がアクタ名なので、アクタ改名時に `rename_refs.rs` がここを書き換える
+    /// （対応を忘れるとバインドが静かに切れる）。
+    pub shading_bindings: std::collections::BTreeMap<String, String>,
 }
 
 impl CameraComponent {
@@ -238,7 +279,9 @@ impl CameraComponent {
             bar_color: data.bar_color,
             projection: data.projection,
             ortho_height: data.ortho_height,
-            shading_asset: data.shading_asset,
+            shading_asset:    data.shading_asset,
+            shading_params:   data.shading_params,
+            shading_bindings: data.shading_bindings,
         }
     }
 
@@ -256,7 +299,9 @@ impl CameraComponent {
             bar_color: self.bar_color,
             projection: self.projection,
             ortho_height: self.ortho_height,
-            shading_asset: self.shading_asset.clone(),
+            shading_asset:    self.shading_asset.clone(),
+            shading_params:   self.shading_params.clone(),
+            shading_bindings: self.shading_bindings.clone(),
         }
     }
 }

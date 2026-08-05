@@ -250,6 +250,15 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public event Action<string>? BindableSourcesReceived;
 
+    /// <summary>
+    /// シーン既定シェーディングアセットのパラメータ一覧が返ってきたときに発火する
+    /// （GET_SCENE_SHADING_PARAMS への応答、および値変更・Undo 後の自動再送）。
+    ///
+    /// JSON はインスペクタの水面パラメータ行と**同一のワイヤ表現**
+    /// （<c>[{"name","type","label","min","max","reset","ref","binding","binding_ok","value"}]</c>）。
+    /// </summary>
+    public event Action<string>? SceneShadingParamsReceived;
+
     /// <summary>デバッグカメラ状態が返ってきたときに発火する（CAM_STATE メッセージ本体）。</summary>
     public event Action<string>? CameraStateReceived;
 
@@ -1430,6 +1439,14 @@ public sealed class RuntimeManager : IDisposable
             var json = msg["BINDABLE_SOURCES:".Length..];
             EditorLog.Write($"[Runtime→Editor] BINDABLE_SOURCES ({json.Length} chars)");
             BindableSourcesReceived?.Invoke(json);
+        }
+        else if (msg.StartsWith("SCENE_SHADING_PARAMS:", StringComparison.Ordinal))
+        {
+            // シーン設定ウィンドウの「シェーダ」行の直下に出すパラメータ行の元データ。
+            // 解釈は受け手（シーン設定ウィンドウ）に任せ、ここは JSON をそのまま流す。
+            var json = msg["SCENE_SHADING_PARAMS:".Length..];
+            EditorLog.Write($"[Runtime→Editor] SCENE_SHADING_PARAMS ({json.Length} chars)");
+            SceneShadingParamsReceived?.Invoke(json);
         }
         else if (msg.StartsWith("CONTROL_POINT_SELECTED:", StringComparison.Ordinal))
         {

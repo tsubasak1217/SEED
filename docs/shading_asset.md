@@ -356,6 +356,172 @@ G-Buffer RT3.a に 2bit で焼かれる（正典 `renderer/surface_id.rs`。`SHA
 
 ---
 
+## 5.5 パラメータ宣言 — インスペクタから触れる値を作る
+
+アセットの先頭に `override` 宣言を書くと、**その 1 行がインスペクタの 1 行になる**。
+値はシーン（カメラ／シーン設定）に保存され、アセット側の既定値より優先される。
+
+> 構文・属性・上限は**水面シェーディングアセットと完全に共通**である。
+> 実装も 1 本（`runtime/src/engine/core/renderer/shade_params.rs`）で、
+> 系統ごとの違いは「予約接頭辞」だけ（`ShadeParamDialect`）。
+> 詳しい構文解説は `docs/water_shading_asset.md` の 3.5 / 3.6 節と同一内容である。
+
+### 5.5.1 構文
+
+```wgsl
+// @shading_contract 1
+
+/// 拡散光の階調数。
+@range(1.0, 8.0) @reset
+override toon_steps: f32 = 3.0;                              // 階調数
+
+/// 影に乗せる色かぶり（白なら色かぶり無し）。
+@color @reset
+override toon_shadow_tint: vec3<f32> = vec3(1.0, 1.0, 1.0);  // 影の色
+
+/// シーンの値を毎フレーム流し込む（バインド行になる）。
+@ref @reset
+override toon_light_boost: f32 = 1.0;                        // 明るさ倍率
+```
+
+| 要素 | 意味 |
+|---|---|
+| `override <名前>: <型> = <既定値>;` | 宣言 1 行。型は `f32` と `vec3<f32>`（`vec3f` 可）のみ |
+| `@color` | カラーピッカー行（`vec3<f32>` 専用。省略しても `vec3<f32>` は色扱い） |
+| `@range(min, max)` | スライダー行（`f32` 専用） |
+| `@reset` | 行の右端に「デフォルトに戻す」⟲ ボタンを出す |
+| `@ref` | 値の入力欄の代わりに**参照バインド行**を出す（5.6 節） |
+| 行末の `// …` | インスペクタの表示ラベル（省略時は識別子そのもの） |
+
+属性は宣言の上の行にも同一行にも書け、複数併記は空白区切り。
+**1 アセットあたり 8 個まで**（`SHADE_PARAM_MAX`）。超過ぶんは無視され、警告が出る。
+
+予約接頭辞（`shade_` / `shading_` / `SHADING_` / `u_shading` / `u_camera`）で始まる名前は
+契約側の識別子と衝突するため宣言できない（その行を無視して警告になる）。
+
+### 5.5.2 宣言した名前はそのまま値として読める
+
+```wgsl
+fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
+    let band = shading_posterize(shading_saturate(dot(sf.normal, li.direction)), toon_steps);
+    return sf.base_color * band * li.color;
+}
+```
+
+バインディングもインデックスも知らなくてよい。エンジンが連結前に宣言行を
+**行数を保ったまま除去**し（`strip_declarations`。naga は `override` の `vec3` も独自属性も
+解釈できないため）、代わりに次を生成してアセット本体の前へ置く:
+
+```wgsl
+struct ShadingAssetParamBlock { values: array<vec4<f32>, 8>, };
+@group(2) @binding(0) var<uniform> u_shading_params: ShadingAssetParamBlock;
+var<private> toon_steps: f32;
+```
+
+そして生成された `shade_surface` の先頭で `toon_steps = u_shading_params.values[0u].x;` と代入する。
+除去は行数を変えないので、naga が報告する行番号はアセットの行番号のまま使える。
+
+### 5.5.3 GPU 側のレイアウト（group2 を使う理由）
+
+パラメータは **group2 binding0 の uniform 1 本**（`vec4` × 8 = 128 バイト固定長）で運ぶ。
+スロット順は**宣言の出現順**で、`shade_params::build_block` が同じ順で値を詰める
+（テスト `toon_asset_param_slots_match_generated_indices` が対応を固定）。
+
+group2 を選んだのは、L3 アセットが差し替える deferred ライティングの
+**3 変種すべてで空いている唯一のグループ**だからである
+（group0=camera / group1=G-Buffer / group3=gap または色付き影バインドレス / group4=ライト）。
+group0 の camera uniform は 22 本のパイプラインが同じ BindGroup を共有しており、
+そこへ足すと無関係なパイプラインまでレイアウト不一致で壊れる。
+
+BindGroupLayout は **rt_off 変種のリフレクション結果**をそのまま使う
+（手書きレイアウトと突き合わせないので、`min_binding_size` や `visibility` の
+食い違いが原理的に起きない）。rt_bindless の手動レイアウトにも同じ BGL を渡す。
+
+宣言が 0 個のアセットでは uniform も BindGroup も作られず、group2 には従来どおり
+組み込みの空 BindGroup が bind される（＝アセット導入前と完全に同値）。
+
+### 5.5.4 値の保存
+
+| 添付先 | 保存先 | `.scene` 上のキー |
+|---|---|---|
+| カメラ | `CameraComponent::shading_params` / `shading_bindings` | Camera スロットの `shading_params` / `shading_bindings` |
+| シーン既定 | `Scene::shading_params` / `shading_bindings` | ルート直下の `shading_params` / `shading_bindings` |
+
+- どちらも `BTreeMap<String, [f32; 4]>`（色は `[r,g,b,0]`、スカラーは `[v,0,0,0]`）。
+  キー順を安定させるため `HashMap` ではなく `BTreeMap`。
+- **上書きだけを持つ差分**であり、値の無いパラメータはアセットの既定値で描かれる。
+- 宣言が消えた／改名された値は**孤児として無視**される（シーンからは消さない。
+  アセットを戻せば値も戻る）。
+- **どちらの値が使われるかはアセットの持ち主と一致する**（6.3 節のフォールバック連鎖）。
+  カメラがアセットを供給したならカメラの値、シーン既定へ落ちたならシーンの値。
+
+### 5.5.5 IPC
+
+| コマンド | 書式 |
+|---|---|
+| `SET_CAMERA_SHADING_PARAM` | `SET_CAMERA_SHADING_PARAM:{actor},{slot},{name},{x},{y},{z},{w}` |
+| `RESET_CAMERA_SHADING_PARAM` | `RESET_CAMERA_SHADING_PARAM:{actor},{slot},{name}` |
+| `SET_CAMERA_SHADING_BINDING` | `SET_CAMERA_SHADING_BINDING:{actor},{slot},{name},{binding}` |
+| `SET_SCENE_SHADING_PARAM` | `SET_SCENE_SHADING_PARAM:{name},{x},{y},{z},{w}` |
+| `RESET_SCENE_SHADING_PARAM` | `RESET_SCENE_SHADING_PARAM:{name}` |
+| `SET_SCENE_SHADING_BINDING` | `SET_SCENE_SHADING_BINDING:{name},{binding}` |
+| `GET_SCENE_SHADING_PARAMS` | 問い合わせ。応答 `SCENE_SHADING_PARAMS:{json}` |
+
+値は**型に依らず常に 4 成分**で運ぶ（アセットの宣言が変わっても IPC の形が変わらないため）。
+処理は `app/shading_param_ops.rs`。
+
+**すべて Undo に載る**（Ctrl+Z）。カメラ側は `field_edit.rs` の `FieldEditTarget::Slot`、
+シーン側は新設の `FieldEditTarget::SceneShading` として分類され、
+ハンドラ側には Undo 記録を一切書かない（共通機構が前後のスナップショットを比較して積む）。
+値編集・リセット・バインド設定は**別のマージキー**を持つので、
+「スライダーを動かす → ⟲ を押す」が 1 手に潰れず、Ctrl+Z 1 回でリセット前へ戻れる。
+
+> **シーン設定のうち Undo に載るのはシェーダまわりだけ**である。
+> ビューポート／レンダリング設定（`SET_SCENE_SETTINGS`）は対象外のまま残してある。
+> それらはエディタ側が個別 IPC（`SET_POST_FX` / `SET_AMBIENT` 等）で**既にライブ適用済み**で、
+> `SET_SCENE_SETTINGS` は保存用データの格納しかしない。データだけ巻き戻すと
+> 画面と設定ウィンドウの表示が食い違い、かえって直せない状態になるためである。
+
+### 5.5.6 インスペクタの行
+
+- **カメラ**: Camera コンポーネントの「Shading」行の**直下**に動的生成される。
+- **シーン既定**: シーン設定ウィンドウ →「レンダリング」→「シーンのシェーダー」の
+  「シェーダ」行の**直下**に動的生成される。
+
+行の形（カラーピッカー／スライダー／数値／参照バインド）はランタイムが送る宣言 JSON が決め、
+**C# 側は構文解析を一切持たない**。水面・カメラ・シーンの 3 か所は同じ行生成コード
+（`InspectorPanel.AddShaderParamRows` + `ShaderParamTarget`）を使うので、見た目と操作が完全に揃う。
+
+アセットを保存して宣言（追加・削除・改名・既定値・ラベル・属性）が変わると、
+ホットリロードに連動して行が自動で作り直される。
+
+---
+
+## 5.6 `@ref` — シーンから値を流し込む（バインド）
+
+`@ref` を付けたパラメータは、値を手で入れる行ではなく
+「シーン内のどのコンポーネントのどの変数から値を貰うか」を指定する行になる。
+
+- バインド文字列は `"アクタ名|スロット名|変数名"`（正典は `engine::binding::resolve`）。
+- 操作はインスペクタ／シーン設定ウィンドウの行へ**アクタをドロップ** →
+  2 ページの選択ウィンドウ（1 ページ目=コンポーネント／2 ページ目=変数）。
+- 候補の正典は Rust 側（`engine::binding::catalog` の表と、スクリプトの
+  `[SerializeField, Bindable]` フィールド）。エディタはミラー表を持たない。
+- 型は**厳密一致**（`@color` は `vec3`、それ以外は `f32`。成分の部分取り出しはしない）。
+- 解決できたバインドは**毎フレームその実値で上書き**され、保存値は書き換わらない
+  （＝バインドを外せば保存値へ戻る）。優先順位は
+  **解決済みバインド > シーン保存値 > アセット既定値**。
+- 解決に失敗（アクタ・スロット・変数が消えた／型が変わった）したら保存値／既定値へ落ち、
+  行に ⚠ が出る。ログは出さない（毎フレーム走る経路のため）。
+- `@reset` と併用すると「バインドを解除してから既定値へ戻す」1 つのボタンになる。
+- アクタを改名するとバインドの 1 要素目が追従する（`rename_refs.rs`。
+  カメラ添付・シーン添付・水面の 3 か所すべて）。
+
+解決の実装は水面と共有する（`engine::binding::shade_bindings`）。
+
+
+---
+
 ## 6. 設定方法
 
 ### 6.1 カメラごとの指定（インスペクタ）
@@ -380,8 +546,12 @@ G-Buffer RT3.a に 2bit で焼かれる（正典 `renderer/surface_id.rs`。`SHA
 }
 ```
 
-> **シーン既定にはエディタ UI が無い**。現状の設定手段は `.scene` の手編集か、
-> 後述の IPC コマンド `SET_SCENE_SHADING_ASSET` の直送のみ。
+エディタでは **シーン設定ウィンドウ →「レンダリング」→「シーンのシェーダー」** の
+「シェーダ」行で指定する（`.wgsl` の D&D／ファイル選択／× で解除）。
+その直下にアセットのパラメータ行が並ぶ（5.5.6 節）。
+
+`.scene` にはパラメータの上書き値とバインドも保存される
+（`shading_params` / `shading_bindings`。空なら丸ごと省略されるので旧 `.scene` と互換）。
 
 ### 6.3 フォールバック連鎖
 
@@ -404,6 +574,8 @@ Edit / ポーズ中はデバッグカメラで描くため `main_camera_shading_
 | `SET_CAMERA_SHADING_ASSET` | `SET_CAMERA_SHADING_ASSET:{actor_dfs_id},{slot_idx},{path}` | 指定アクタの Camera スロットの `shading_asset` を設定。`path` が空／空白のみなら `None` へ戻す |
 | `SET_SCENE_SHADING_ASSET` | `SET_SCENE_SHADING_ASSET:{path}` | シーン既定を設定。空／空白のみなら `None` |
 
+パラメータ値・`@ref` バインドの IPC は 5.5.5 節を参照。
+
 - 定義: `ipc.rs:480-487`、パース: `ipc.rs:1792-1806`
 - 処理: `camera_component_ops.rs:194`（カメラ）／`ipc_handler.rs:1197-1208`（シーン）
 - どちらも成功時に `SCENE_MODIFIED` を返す。`path` は `assets://` 仮想パスまたは絶対パス。
@@ -412,31 +584,66 @@ Edit / ポーズ中はデバッグカメラで描くため `main_camera_shading_
 
 ## 7. トゥーンの実装例（フルコード）
 
-以下は `shading_asset.rs` のユニットテストが naga 検証にかけている実サンプル
-（`TOON_ASSET`, `shading_asset.rs:978-1041`）そのものである。
-3 変種すべて（rt_off / rt_on / rt_bindless）で検証に通ることをテスト
+以下は**同梱サンプル `runtime/assets/shaders/toon.wgsl` の全文**である。
+同じ内容が `shading_asset.rs` のユニットテスト（`TOON_ASSET`）にも置かれており、
+「宣言の除去 → uniform 生成 → 連結 → naga 検証」の実経路を 3 変種すべて
+（rt_off / rt_on / rt_bindless）で通ることをテスト
 `toon_asset_passes_naga_validation_for_all_variants` が保証している。
+
+> テスト側が実ファイルを `include_str!` しないのは、`runtime/assets/` が
+> このリポジトリのコミット対象外だからである（取り込むと新規クローンでビルドが落ちる）。
+> **この 3 か所（アセット実体・テストのリテラル・本節）は同一内容に保つこと。**
 
 **`shade_default` が主役**である点に注目すること。このファイルを差すだけで世界全体がトゥーンになり、
 末尾の `shade_model_1` は「例外的にこのオブジェクトだけ標準 PBR に戻す」ための上書きにすぎない。
+先頭の `override` 宣言（5.5 節）はそのままインスペクタの行になり、
+既定値はパラメータを一切触っていない状態の絵と一致させてある。
 
 ```wgsl
 // @shading_contract 1
 // ============================================================
 // toon.wgsl — 3 階調セルシェーディング + リムライト（全体の既定シェーディング）
 //
-// このファイルをカメラまたはシーンの「Shading」に差すだけで、シェーディングモデルを
-// 設定していない全表面（地形・草・全マテリアル）がトゥーンで描かれる。
-// マテリアル側の設定は不要。
+// このファイルをカメラまたはシーンの「シェーディングアセット」に差すだけで、
+// シェーディングモデルを設定していない全表面（地形・草・全マテリアル）が
+// トゥーンで描かれる。マテリアル側の設定は不要。
 //
 // 例外的に「このモデルだけは標準 PBR のままにしたい」場合だけ、そのマテリアルの
 // シェーディングモデルを 1 にして shade_model_1（下部）で上書きする。
+//
+// ── パラメータ ──────────────────────────────────────────────
+// 下の `override` 宣言はインスペクタの行になる（カメラの「シェーディングアセット」行の
+// 直下、またはシーン設定ウィンドウの「シェーダ」行の直下）。値はシーンに保存され、
+// アセット側の既定値より優先される。既定値は**このファイル単体で見た目が完成する**よう、
+// パラメータを一切触っていない状態の絵と一致させてある。
 // ============================================================
 
 /// 拡散光の階調数（3 階調＝影・中間・ハイライト）。
-const TOON_DIFFUSE_STEPS: f32 = 3.0;
+/// 大きくするほど滑らかに、小さくするほど強いセル画調になる。
+@range(1.0, 8.0) @reset
+override toon_steps: f32 = 3.0;                                  // 階調数
+
+/// 影側に乗せる色かぶり。白（既定）なら色かぶり無し＝素の陰影。
+/// 青寄りにすると空の反射を拾ったような、暖色にすると間接光の回り込みのような影になる。
+@color @reset
+override toon_shadow_tint: vec3<f32> = vec3(1.0, 1.0, 1.0);      // 影の色
+
 /// 最も暗い階調でも完全な黒にしないための下限（環境光的な底上げ）。
-const TOON_SHADOW_FLOOR: f32 = 0.15;
+@range(0.0, 1.0) @reset
+override toon_shadow_floor: f32 = 0.15;                          // 影の明るさの下限
+
+/// リムライト（輪郭光）の強さ。0 で無効。
+@range(0.0, 2.0) @reset
+override toon_rim_strength: f32 = 0.35;                          // リムライトの強さ
+
+/// 全体の明るさ倍率。
+/// `@ref` が付いているので、インスペクタでは値の入力欄ではなく**参照バインド行**になり、
+/// シーン内のコンポーネントの変数（例: ライトの強度、スクリプトの [Bindable] フィールド）を
+/// 毎フレーム流し込める。バインドしなければこの既定値が使われる。
+@ref @reset
+override toon_light_boost: f32 = 1.0;                            // 明るさ倍率
+
+// ── パラメータにしない定数（画作りの骨格であり、触る必要が薄いもの）──
 /// スペキュラを「乗るか乗らないか」の 2 値にするしきい値。
 const TOON_SPECULAR_THRESHOLD: f32 = 0.6;
 /// 2 値スペキュラの強さ。
@@ -445,8 +652,6 @@ const TOON_SPECULAR_STRENGTH: f32 = 0.7;
 const TOON_SPECULAR_POWER: f32 = 48.0;
 /// リムライトの立ち上がり（大きいほど輪郭が細くなる）。
 const TOON_RIM_POWER: f32 = 3.0;
-/// リムライトの強さ。
-const TOON_RIM_STRENGTH: f32 = 0.35;
 
 /// 全体の既定シェーディング: トゥーン。
 /// シェーディングモデルを設定していない全表面（ID 0）がこれで描かれる。
@@ -458,8 +663,11 @@ fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
     // ── 拡散: N·L を階調化する ─────────────────────────────
     let ndl  = shading_saturate(dot(N, L));
     // floor(x * steps) / steps は「段の下端」を返すため、段の中心へ寄せて明るさの目減りを防ぐ。
-    let band = shading_posterize(ndl, TOON_DIFFUSE_STEPS) + 0.5 / TOON_DIFFUSE_STEPS;
-    let diffuse_term = max(shading_saturate(band), TOON_SHADOW_FLOOR);
+    let band = shading_posterize(ndl, toon_steps) + 0.5 / toon_steps;
+    let diffuse_term = max(shading_saturate(band), toon_shadow_floor);
+
+    // 影側ほど `toon_shadow_tint` を強く混ぜる（既定の白では恒等＝色かぶり無し）。
+    let tint = mix(toon_shadow_tint, vec3<f32>(1.0), diffuse_term);
 
     // ── スペキュラ: Blinn-Phong を 2 値化する ───────────────
     let H    = normalize(V + L);
@@ -470,10 +678,13 @@ fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
     // ── リムライト: 視線に対して立っている面ほど明るく ──────
     // 影の付いていない側に出ると不自然なので、ライト方向の寄与で抑える。
     let rim  = pow(1.0 - shading_saturate(dot(N, V)), TOON_RIM_POWER);
-    let rim_term = rim * TOON_RIM_STRENGTH * ndl;
+    let rim_term = rim * toon_rim_strength * ndl;
 
     // li.color は減衰・スポット円錐・影まで織り込み済み（再計算してはならない）。
-    return (sf.base_color * diffuse_term + vec3<f32>(spec_term) + vec3<f32>(rim_term)) * li.color;
+    let lit = sf.base_color * diffuse_term * tint
+            + vec3<f32>(spec_term)
+            + vec3<f32>(rim_term);
+    return lit * li.color * toon_light_boost;
 }
 
 /// シェーディングモデル 1: 例外オブジェクト用の上書き。
@@ -485,64 +696,6 @@ fn shade_model_1(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
     return shade_model_0(sf, li);
 }
 ```
-
-### 試し方
-
-1. 上のコードを `assets/shading/toon.wgsl` として保存する（拡張子は `.wgsl`）。
-2. アセットを割り当てる。どちらか一方でよい。
-   - **カメラに設定**: シーンの Camera アクタを選択 → インスペクタの Camera コンポーネント →
-     「Shading」行にファイルを D&D（または参照ボタンで選択）。Play したときに効く。
-   - **シーン既定に設定**: `.scene` のルートに `"shading_asset": "assets://shading/toon.wgsl"` を
-     追記して読み込み直す（または `SET_SCENE_SHADING_ASSET` を直送）。Edit のメインビューでも効く。
-3. **これで完了**。マテリアルには何も触らなくてよい。地形・草を含む画面全体が
-   3 階調＋リムライトになる（`shade_default` が ID 0 の全表面を受けるため）。
-   stderr の `[SHADING] loaded path=... models=shade_default,1 ...` で有効化を確認できる。
-4. （任意）**例外を作る**: 標準 PBR のままにしたいモデルのマテリアルだけ `shading_model` を
-   1 にする。`.mat` / `.smdl` の `shading_model` フィールドを編集する（**現状エディタ UI は無い**
-   ― 10 章参照）。そのマテリアルだけ `shade_model_1`（＝標準 PBR）で描かれる。
-5. **ホットリロードの確認**（Edit は常時、Play も既定オンで可）: エンジンを動かしたまま `toon.wgsl` の
-   `TOON_DIFFUSE_STEPS` を `2.0` などへ書き換えて保存する。約 1 秒以内に階調数が変わる。
-   わざと構文エラーを入れて保存すれば、画面が壊れずに標準 PBR へ戻り、
-   エディタへエラーが通知されることも確認できる。
-
----
-
-### 7.5 時間を使う例（脈動する発光）
-
-`sf.time`（ゲーム内累計秒）を使うと、アセットだけでアニメーションする光応答が書ける。
-下は「画面全体の明るさがゆっくり脈動する」最小例で、実体はこれだけである:
-
-```wgsl
-// @shading_contract 1
-const PULSE_SPEED: f32 = 3.0;   // 脈動の速さ（ラジアン/秒）
-const PULSE_DEPTH: f32 = 0.5;   // 脈動の深さ（0=一定, 1=完全に消える）
-
-fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
-    let pulse = 1.0 - PULSE_DEPTH * (0.5 - 0.5 * cos(sf.time * PULSE_SPEED));
-    return shade_model_0(sf, li) * pulse;   // 標準 PBR の結果を時間で変調する
-}
-```
-
-`sf.world_pos` と組み合わせれば「流れる縞」になる（位相に位置を足すだけ）:
-
-```wgsl
-let stripe = 0.5 + 0.5 * sin(sf.world_pos.y * 4.0 - sf.time * 2.0);
-```
-
-**注意点**（どれも `time` の性質から来る）:
-
-- **Edit 中も動く（時間源が切り替わる）。** `time` は Play（非ポーズ）中はゲーム内時間
-  `anim_time`、Edit・ポーズ中は常時進む壁時計 `ambient_time` を配る。
-  Edit のメインビューでホットリロードしながら書けば、**式の反映も動きもその場で確認できる**。
-  ただし Play ⇄ Edit の切替時に位相は跳ぶ（連続性は保証しない）。
-  なお草の揺れ（`GrassUniform.time`）は従来どおり `anim_time` 駆動で、Edit では止まったまま。
-- **`shade_default` は画面全体に効く。** 特定のオブジェクトだけ脈動させたいときは
-  `shade_model_1`（マテリアルの `shading_model = 1`）に書く。
-- **エミッシブを足してはならない。** `sf.emissive` はエンジンがライト評価の最後に加算するため、
-  「発光を脈動させる」つもりでアセットが `sf.emissive` を返り値に足すと二重加算になる。
-  上の例のように**反射項の側を変調**するか、`sf.base_color` を使って自前の項を組む。
-- **長時間 Play で位相分解能が落ちる。** `time` は f32 秒なので絶対値が大きくなると
-  `sin()` の刻みが粗くなる。速い模様は速度係数を小さく保つか、`sf.time % 周期` を取ってから使う。
 
 ---
 
@@ -630,6 +783,8 @@ Play 開始後に初めて解決されるパスは 1 回だけ読み込み＋ビ
 | **半透明 / WBOIT / フォワードパスには効かない** | アセットの差し替えは deferred ライティングパスにしか適用されない（`frame_renderer.rs:4696` のブロック内でのみ `resolve` が呼ばれる）。フォワード・半透明・WBOIT のパイプライン（`mesh*.toml` / `transparent_*.toml` / `transparency.rs:316-330,517-530`）は常に `shading_dispatch.wgsl`（＝モデル 0 固定）を連結する。よって半透明マテリアルの `shading_model` を 1 にしても標準 PBR で描かれる |
 | **カメラプレビュー小窓は常に組み込み標準** | プレビューのライティングパスは `draw_ctx.pipelines.deferred.pipeline` を直に使う（`frame_renderer.rs:2287`）。アセットは経由しない |
 | **deferred が無効なフレームには効かない** | `deferred_active = false`（Edit のワイヤーフレーム表示・2D シーンビュー・`post_fx.deferred` オフ）のときは deferred ライティングパス自体が走らないため、アセットは効かない |
+| **パラメータは 1 アセットあたり 8 個まで** | GPU へ運ぶ uniform が `vec4` × 8 の固定長ブロックだから（`SHADE_PARAM_MAX`）。超過ぶんは無視され、理由が警告として通知される。増やすときは Rust の定数と生成 WGSL の配列長を同時に直す（テストが一致を固定している） |
+| **パラメータの型は `f32` と `vec3<f32>` の 2 種類のみ** | インスペクタの行の形（スライダー／数値／カラーピッカー）が決まる型だけを受け付ける。`i32` / `vec2` / `vec4` / テクスチャは非対応 |
 | **compose（画面全体の組み立て）は未対応** | ライト走査・アンビエント・影の適用・GI・反射の合成はエンジンが持つ。段階 **L3-b** の課題であり未実装 |
 | **例外用の ID は 1..3 の 3 枠のみ** | G-Buffer RT3.a に詰められるビット幅が 2bit（`SHADING_MODEL_BITS = 2`）だから。正典は `renderer/surface_id.rs`。枠数は `USER_MODEL_SLOTS = 3`（`shading_asset.rs:67`）で、ユニットテスト `user_model_id_range_is_derived_from_surface_id` が 1..3 を固定している。**全体の既定（`shade_default`）は ID を消費しない**ため、この制限は「例外を何種類作れるか」だけに掛かる |
 | **マテリアルの `shading_model` にエディタ UI が無い** | 実装確認: エディタ側に `shading_model` を編集する UI は存在しない（`editor/` 内に該当文字列なし）。`MaterialOverrideKind::Inline` にも `shading_model` フィールドは無い（`material_override.rs:46-80`）。現状の設定手段は `.mat` アセットまたはモデルキャッシュ（`.smdl`）に載る `Material::shading_model`（`loader/model.rs:320`）のみで、glTF / OBJ ローダは常に既定値 0 を入れる。**`shade_default` を使う限りこの制限には当たらない**（マテリアルを触らずに全体が変わる）ので、UI が無いことが問題になるのは「例外オブジェクトを作りたいとき」だけである |
@@ -641,9 +796,12 @@ Play 開始後に初めて解決されるパスは 1 回だけ読み込み＋ビ
 
 ### 11.1 連結順（実際の配列）
 
-標準リストの `"shading_dispatch.wgsl"` の位置を、**アセット本体＋生成ディスパッチの 2 要素**へ
-その場で置換する（`substitute_dispatch`, `shading_asset.rs:355`）。標準リストは
-TOML / 定数から機械的に読み、**この配列をハードコードしない**（連結順の二重管理を避ける）。
+標準リストの `"shading_dispatch.wgsl"` の位置を、
+**生成パラメータ宣言＋アセット本体＋生成ディスパッチの 3 要素**へその場で置換する
+（`substitute_dispatch`）。標準リストは TOML / 定数から機械的に読み、
+**この配列をハードコードしない**（連結順の二重管理を避ける）。
+パラメータ宣言が**アセット本体より前**に来るのが要点である
+（アセットは宣言された名前を参照するため、順序が逆だと未定義識別子になる）。
 
 | 変種 | 標準リストの正典 | 連結順 |
 |---|---|---|
@@ -651,7 +809,9 @@ TOML / 定数から機械的に読み、**この配列をハードコードし�
 | `RtOn` | `pipelines/deferred_lighting_rt.toml:4` | `cluster_common` → `pbr_common` → `ddgi_common` → `light_common` → `shadow` → `rt_shadow_on` → `rt_shadow_tint_avg` → `surface` → `shading_contract` → **`shading_dispatch`** → `lighting_eval` → `deferred_lighting` |
 | `RtBindless` | `deferred.rs:37-42`（`RT_BINDLESS_SHADER_SOURCES`） | `cluster_common` → `pbr_common` → `ddgi_common` → `light_common` → `shadow` → `rt_shadow_on` → `bindless_common` → `rt_shadow_tint_bindless` → `surface` → `shading_contract` → **`shading_dispatch`** → `lighting_eval` → `deferred_lighting` |
 
-置換後は太字の 1 要素が `[<アセットのパス>, "<generated shade_surface>"]` の 2 要素になる。
+置換後は太字の 1 要素が
+`["<generated shading params>", <アセットのパス>, "<generated shade_surface>"]` の 3 要素になる
+（宣言が 0 個のアセットでは 1 要素目が空文字列に解決されるだけで、連結の形は変わらない）。
 `shade_surface` の定義は連結全体で常にちょうど 1 本（既定版と生成版は排他）。
 置換位置の正しさはテスト `dispatch_element_is_substituted_in_place`（`shading_asset.rs:1306`）が固定。
 
@@ -671,8 +831,9 @@ naga 検証のケイパビリティは変種ごとに異なる（`Variant::capab
 
 ### 11.3 生成される `shade_surface`
 
-`generate_dispatch`（`shading_asset.rs:273`）が出す WGSL。入力は `detect_shade_models` が返す
-`ShadeModelSet { has_default, models }` の 1 値だけである。
+`generate_dispatch` が出す WGSL。入力は `detect_shade_models` が返す
+`ShadeModelSet { has_default, models }` と、`parse_params` が返すパラメータ宣言の 2 つである。
+宣言があるときは switch より前に「uniform → `var<private>`」の代入が宣言順で並ぶ（5.5.2 節）。
 
 **`case Nu:` はアセットが実装した ID のぶんだけ**出力される（3 モデルすべてを定義すれば
 `case 1u:` / `case 2u:` / `case 3u:` の 3 腕が並ぶ）。**定義されていない ID の `case` は出力されない**。

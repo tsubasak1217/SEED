@@ -1,12 +1,19 @@
 // ============================================================
-//  water/shade_params.rs — 水面シェーディングアセットの「パラメータ宣言」解析（Phase W8.2 / W5.2）
+//  shade_params.rs — シェーディングアセットの「パラメータ宣言」解析（共通・正典）
 //
 //  ## 役割（単一責任）
-//  ユーザーが書いた `.wgsl`（水面シェーディングアセット）の中に置かれた
+//  ユーザーが書いた `.wgsl`（シェーディングアセット）の中に置かれた
 //  **`override` 宣言ブロック**を読み取り、「インスペクタに出す 1 行ぶんの宣言」の
 //  リストへ変換する。あわせて、その宣言行を**連結前に除去する**ための行番号も返す。
 //  ファイル I/O も GPU も触らない**純粋関数**の集まりであり、この 1 ファイルが
 //  構文の正典である（C# 側は解析を持たず、ランタイムが送る JSON を表示するだけ）。
+//
+//  ## 2 つのアセット種別で共有する
+//  同じ構文を次の 2 系統が使う。**実装はこの 1 本だけ**であり、系統ごとの違いは
+//  `ShadeParamDialect`（予約接頭辞）というデータでのみ表現する:
+//    ・水面シェーディングアセット（`water/shading_asset.rs`。`WATER_DIALECT`）
+//    ・L3 シェーディングアセット（`shading_asset.rs`。`SHADING_DIALECT`）
+//  構文・属性・上限・JSON ワイヤ表現はすべて共通なので、片方だけが変わることは無い。
 //
 //  ## 構文（C# の属性に似せた宣言。W5.2 で `//! param` コメント方式から移行）
 //  ```wgsl
@@ -48,7 +55,7 @@
 //  バインディングもインデックスも一切知らなくてよい。
 //
 //  ## 上限
-//  1 アセットあたり `WATER_SHADE_PARAM_MAX` 個まで。超過ぶんは**黙って切らず**、
+//  1 アセットあたり `SHADE_PARAM_MAX` 個まで。超過ぶんは**黙って切らず**、
 //  警告メッセージ（`warnings`）に理由を残したうえで無視する。
 //
 //  ## 依存
@@ -64,10 +71,11 @@ use std::collections::BTreeMap;
 
 /// 1 アセットが宣言できるパラメータの最大個数。
 ///
-/// GPU 側は 1 インスタンスあたり `vec4` をこの本数ぶん持つ固定長ブロックで運ぶ
-/// （`water_shade_params.wgsl` の `WaterShadeParamBlock`）。増やすときは
+/// GPU 側は `vec4` をこの本数ぶん持つ固定長ブロックで運ぶ
+/// （水面は `water_shade_params.wgsl` のストレージ配列、L3 は
+/// `shading_asset.rs` が生成する group2 の uniform）。増やすときは
 /// WGSL 側の配列長も同時に直すこと（一致はテストが固定する）。
-pub const WATER_SHADE_PARAM_MAX: usize = 8;
+pub const SHADE_PARAM_MAX: usize = 8;
 
 /// パラメータ宣言のキーワード（WGSL の `override` を借りている）。
 const DECL_KEYWORD: &str = "override";
@@ -133,13 +141,39 @@ pub const PARAM_VALUE_COMPONENTS: usize = 4;
 /// WGSL の浮動小数リテラルに付く型サフィックス（`1.5f` / `1.5h`）。
 const FLOAT_SUFFIXES: [char; 2] = ['f', 'h'];
 
-/// エンジンが使う識別子の予約接頭辞。
+// ============================================================
+//  方言（アセット種別ごとの違いはこのデータだけ）
+// ============================================================
+
+/// アセット種別ごとの解析設定。
 ///
-/// これらで始まる名前を宣言されると、生成した `var<private>` が
+/// 構文そのものは 2 系統で完全に共通なので、違いは
+/// 「その系統の契約 WGSL が使っている識別子の接頭辞」だけである。
+/// 予約接頭辞で始まる名前を宣言されると、生成した `var<private>` が
 /// 契約側の関数・定数と衝突して WGSL のコンパイルエラーになる。
 /// 「アセット内の意味不明なエラー」より「その行を無視して警告」の方が親切なので、
 /// 解析段階で弾く。
-const RESERVED_NAME_PREFIXES: [&str; 3] = ["water_shade", "u_water", "WATER_"];
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ShadeParamDialect {
+    /// 予約接頭辞（この綴りで始まる名前は宣言できない）。
+    pub reserved_prefixes: &'static [&'static str],
+}
+
+/// 水面シェーディングアセット（`water_shading_contract.wgsl`）の方言。
+///
+/// 契約側は `water_shade*` / `u_water*` / `WATER_*` を使う。
+pub const WATER_DIALECT: ShadeParamDialect = ShadeParamDialect {
+    reserved_prefixes: &["water_shade", "u_water", "WATER_"],
+};
+
+/// L3 シェーディングアセット（`shading_contract.wgsl`）の方言。
+///
+/// 契約側は `shade_*`（`shade_surface` / `shade_model_N` / `shade_light`）・
+/// `shading_*`（`shading_nan_guard` 等）・`SHADING_*`（定数）・
+/// `u_shading*`（生成する uniform）・`u_camera`（group0）を使う。
+pub const SHADING_DIALECT: ShadeParamDialect = ShadeParamDialect {
+    reserved_prefixes: &["shade_", "shading_", "SHADING_", "u_shading", "u_camera"],
+};
 
 // ============================================================
 //  データ型
@@ -147,7 +181,7 @@ const RESERVED_NAME_PREFIXES: [&str; 3] = ["water_shade", "u_water", "WATER_"];
 
 /// パラメータの種別（インスペクタの行の作り方＝UI の形も決める）。
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum WaterShadeParamKind {
+pub enum ShadeParamKind {
     /// リニア RGB の色（WGSL 型 `vec3<f32>`）。インスペクタはカラーピッカー。
     Color,
     /// 範囲つきスカラー（WGSL 型 `f32`）。インスペクタはスライダー。
@@ -161,20 +195,20 @@ pub enum WaterShadeParamKind {
     Float,
 }
 
-impl WaterShadeParamKind {
+impl ShadeParamKind {
     /// インスペクタへ送る種別文字列（C# 側の分岐キーと一致させるワイヤ契約）。
     pub fn as_str(self) -> &'static str {
         match self {
-            WaterShadeParamKind::Color        => ATTR_COLOR,
-            WaterShadeParamKind::Range { .. } => ATTR_RANGE,
-            WaterShadeParamKind::Float        => "float",
+            ShadeParamKind::Color        => ATTR_COLOR,
+            ShadeParamKind::Range { .. } => ATTR_RANGE,
+            ShadeParamKind::Float        => "float",
         }
     }
 
     /// 生成する `var<private>` の WGSL 型名。
     pub fn wgsl_type(self) -> &'static str {
         match self {
-            WaterShadeParamKind::Color => TYPE_VEC3_LONG,
+            ShadeParamKind::Color => TYPE_VEC3_LONG,
             _                          => TYPE_F32,
         }
     }
@@ -182,7 +216,7 @@ impl WaterShadeParamKind {
     /// ストレージの `vec4` から値を取り出す WGSL の swizzle（`.xyz` / `.x`）。
     pub fn wgsl_swizzle(self) -> &'static str {
         match self {
-            WaterShadeParamKind::Color => "xyz",
+            ShadeParamKind::Color => "xyz",
             _                          => "x",
         }
     }
@@ -190,12 +224,12 @@ impl WaterShadeParamKind {
 
 /// アセットが宣言した 1 パラメータ。
 #[derive(Clone, PartialEq, Debug)]
-pub struct WaterShadeParamDecl {
+pub struct ShadeParamDecl {
     /// WGSL の識別子（アセット内でそのまま値として参照できる名前）。
     /// シーンへ保存する値のキーでもある。
     pub name: String,
     /// 種別（UI の形と WGSL の型を決める）。
-    pub kind: WaterShadeParamKind,
+    pub kind: ShadeParamKind,
     /// 既定値（アセット側が書いた値）。シーンに保存値が無ければこれが使われる。
     /// Color は `[r, g, b, 0]`、Float/Range は `[v, 0, 0, 0]`。
     pub default: [f32; PARAM_VALUE_COMPONENTS],
@@ -216,7 +250,7 @@ pub struct WaterShadeParamDecl {
 /// 行番号を構造として持つのは、エディタの診断（アセット内の該当行を指す）へ
 /// そのまま渡せるようにするためである。
 #[derive(Clone, PartialEq, Debug)]
-pub struct WaterShadeParamWarning {
+pub struct ShadeParamWarning {
     /// アセット内の行番号（1 始まり）。
     pub line: usize,
     /// 人間向けの説明（行番号は含まない）。
@@ -225,11 +259,11 @@ pub struct WaterShadeParamWarning {
 
 /// 1 アセットぶんの解析結果。
 #[derive(Clone, Default, PartialEq, Debug)]
-pub struct WaterShadeParamSet {
+pub struct ShadeParamSet {
     /// 宣言（アセット内の出現順＝GPU のスロット順＝インスペクタの行順）。
-    pub params: Vec<WaterShadeParamDecl>,
+    pub params: Vec<ShadeParamDecl>,
     /// 解析中に見つかった問題（構文エラー・上限超過・重複・未知の属性）。
-    pub warnings: Vec<WaterShadeParamWarning>,
+    pub warnings: Vec<ShadeParamWarning>,
     /// **連結前に除去すべき行**（1 始まり）。
     ///
     /// 宣言行と、その宣言に付いた属性だけの行。素の naga はこれらを解釈できないため、
@@ -237,9 +271,9 @@ pub struct WaterShadeParamSet {
     pub consumed_lines: Vec<usize>,
 }
 
-impl WaterShadeParamSet {
+impl ShadeParamSet {
     /// 名前から宣言を引く（見つからなければ None）。
-    pub fn find(&self, name: &str) -> Option<&WaterShadeParamDecl> {
+    pub fn find(&self, name: &str) -> Option<&ShadeParamDecl> {
         self.params.iter().find(|p| p.name == name)
     }
 }
@@ -270,8 +304,8 @@ struct Attribute {
 /// **ブロックコメントの中身は考慮しない**（`/* override x: f32 = 1.0; */` も宣言として拾う）。
 /// 宣言はコードであってコメントアウトで無効化する用途を想定していない
 /// （無効化したいなら宣言ごと消すこと）。
-pub fn parse_params(asset_src: &str) -> WaterShadeParamSet {
-    let mut set = WaterShadeParamSet::default();
+pub fn parse_params(asset_src: &str, dialect: ShadeParamDialect) -> ShadeParamSet {
+    let mut set = ShadeParamSet::default();
     // 直前までに現れた「宣言待ちの属性」（上の行に書かれた属性）。
     let mut pending: Vec<Attribute> = Vec::new();
 
@@ -318,13 +352,13 @@ pub fn parse_params(asset_src: &str) -> WaterShadeParamSet {
 
         // 非致命の指摘（未知の属性など）はここへ溜め、行番号を付けて警告にする。
         let mut notes: Vec<String> = Vec::new();
-        let parsed = parse_declaration(rest, &all_attrs, label, &mut notes);
+        let parsed = parse_declaration(rest, &all_attrs, label, dialect, &mut notes);
         for message in notes {
-            set.warnings.push(WaterShadeParamWarning { line: line_no, message });
+            set.warnings.push(ShadeParamWarning { line: line_no, message });
         }
         match parsed {
             Ok(decl)     => push_declaration(&mut set, decl, line_no),
-            Err(message) => set.warnings.push(WaterShadeParamWarning { line: line_no, message }),
+            Err(message) => set.warnings.push(ShadeParamWarning { line: line_no, message }),
         }
     }
 
@@ -334,22 +368,22 @@ pub fn parse_params(asset_src: &str) -> WaterShadeParamSet {
 }
 
 /// 解析済みの宣言を集合へ追加する（重複・上限のチェック込み）。
-fn push_declaration(set: &mut WaterShadeParamSet, decl: WaterShadeParamDecl, line_no: usize) {
+fn push_declaration(set: &mut ShadeParamSet, decl: ShadeParamDecl, line_no: usize) {
     // 重複名は最初の 1 個だけを採る（後勝ちにすると GPU のスロット順が
     // 「後ろの行」に引っ張られて、既に保存された値との対応が壊れる）。
     if set.params.iter().any(|p| p.name == decl.name) {
-        set.warnings.push(WaterShadeParamWarning {
+        set.warnings.push(ShadeParamWarning {
             line:    line_no,
             message: format!("パラメータ `{}` が重複しています（最初の宣言だけを使います）", decl.name),
         });
         return;
     }
     // 上限超過は黙って切らず、理由を残して無視する。
-    if set.params.len() >= WATER_SHADE_PARAM_MAX {
-        set.warnings.push(WaterShadeParamWarning {
+    if set.params.len() >= SHADE_PARAM_MAX {
+        set.warnings.push(ShadeParamWarning {
             line:    line_no,
             message: format!(
-                "パラメータ `{}` は上限 {WATER_SHADE_PARAM_MAX} 個を超えるため \
+                "パラメータ `{}` は上限 {SHADE_PARAM_MAX} 個を超えるため \
                  無視しました（不要な宣言を減らしてください）", decl.name),
         });
         return;
@@ -358,9 +392,9 @@ fn push_declaration(set: &mut WaterShadeParamSet, decl: WaterShadeParamDecl, lin
 }
 
 /// 対応する宣言を持たない属性を警告に変えて捨てる。
-fn flush_dangling(pending: &mut Vec<Attribute>, set: &mut WaterShadeParamSet) {
+fn flush_dangling(pending: &mut Vec<Attribute>, set: &mut ShadeParamSet) {
     for a in pending.drain(..) {
-        set.warnings.push(WaterShadeParamWarning {
+        set.warnings.push(ShadeParamWarning {
             line:    a.line,
             message: format!(
                 "属性 `{ATTR_SIGIL}{}` に対応する `{DECL_KEYWORD}` 宣言がありません", a.name),
@@ -428,11 +462,12 @@ fn starts_with_keyword(text: &str, keyword: &str) -> bool {
 /// - 戻り値 `Err` : その行は宣言として成立しない（呼び出し側が行番号を付けて警告にする）。
 /// - `notes`      : 致命的ではない指摘（未知の属性など）。宣言自体は成立する。
 fn parse_declaration(
-    rest:  &str,
-    attrs: &[Attribute],
-    label: &str,
-    notes: &mut Vec<String>,
-) -> Result<WaterShadeParamDecl, String> {
+    rest:    &str,
+    attrs:   &[Attribute],
+    label:   &str,
+    dialect: ShadeParamDialect,
+    notes:   &mut Vec<String>,
+) -> Result<ShadeParamDecl, String> {
     // ── ① キーワードを外す ────────────────────────────────────
     let body = rest[DECL_KEYWORD.len()..].trim();
 
@@ -456,7 +491,7 @@ fn parse_declaration(
 
     // ── ③ 名前の検査 ──────────────────────────────────────────
     let name = name.trim();
-    validate_name(name)?;
+    validate_name(name, dialect)?;
 
     // ── ④ 型（空白を除いて比較する。`vec3 < f32 >` のような書き方も許す）──
     let type_key: String = type_text.chars().filter(|c| !c.is_whitespace()).collect();
@@ -476,7 +511,7 @@ fn parse_declaration(
     // ── ⑦ ラベル（無ければ識別子そのもの）────────────────────
     let label = if label.is_empty() { name.to_string() } else { label.to_string() };
 
-    Ok(WaterShadeParamDecl { name: name.to_string(), kind, default, label, resettable, bindable })
+    Ok(ShadeParamDecl { name: name.to_string(), kind, default, label, resettable, bindable })
 }
 
 /// 属性列から「UI 種別」「リセットボタンの有無」「参照バインド可否」を決める。
@@ -487,7 +522,7 @@ fn apply_attributes(
     attrs:    &[Attribute],
     is_color: bool,
     notes:    &mut Vec<String>,
-) -> Result<(WaterShadeParamKind, bool, bool), String> {
+) -> Result<(ShadeParamKind, bool, bool), String> {
     let mut range: Option<(f32, f32)> = None;
     let mut resettable = false;
     let mut bindable   = false;
@@ -528,11 +563,11 @@ fn apply_attributes(
 
     // `vec3<f32>` は属性を省いても色として扱う（他に UI の形が無いため）。
     let kind = if is_color {
-        WaterShadeParamKind::Color
+        ShadeParamKind::Color
     } else if let Some((min, max)) = range {
-        WaterShadeParamKind::Range { min, max }
+        ShadeParamKind::Range { min, max }
     } else {
-        WaterShadeParamKind::Float
+        ShadeParamKind::Float
     };
     Ok((kind, resettable, bindable))
 }
@@ -541,7 +576,7 @@ fn apply_attributes(
 ///
 /// WGSL の識別子規則（先頭は英字か `_`、以降は英数字か `_`）に加えて、
 /// エンジンの予約接頭辞を弾く。
-fn validate_name(name: &str) -> Result<(), String> {
+fn validate_name(name: &str, dialect: ShadeParamDialect) -> Result<(), String> {
     if name.is_empty() {
         return Err("パラメータ名が空です".to_string());
     }
@@ -553,7 +588,7 @@ fn validate_name(name: &str) -> Result<(), String> {
     if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(format!("パラメータ名 `{name}` に使えない文字が含まれています（英数字と `_` のみ）"));
     }
-    for prefix in RESERVED_NAME_PREFIXES {
+    for prefix in dialect.reserved_prefixes.iter().copied() {
         if name.starts_with(prefix) {
             return Err(format!(
                 "パラメータ名 `{name}` はエンジン予約の接頭辞 `{prefix}` で始まっています \
@@ -618,8 +653,8 @@ fn parse_number(text: &str) -> Result<f32, String> {
 /// 連結の前に必ずこれを通す。**行数は 1 行も変えない**ので、
 /// naga が報告する行番号はアセットの行番号としてそのまま使える
 /// （行番号写像 `map_reported_line` の前提が壊れない）。
-pub fn strip_declarations(asset_src: &str) -> String {
-    let consumed = parse_params(asset_src).consumed_lines;
+pub fn strip_declarations(asset_src: &str, dialect: ShadeParamDialect) -> String {
+    let consumed = parse_params(asset_src, dialect).consumed_lines;
     if consumed.is_empty() { return asset_src.to_string(); }
 
     let mut out   = String::with_capacity(asset_src.len());
@@ -639,20 +674,20 @@ pub fn strip_declarations(asset_src: &str) -> String {
 
 /// GPU へ送る 1 インスタンスぶんのパラメータブロック。
 ///
-/// WGSL 側 `water_shade_params.wgsl` の `WaterShadeParamBlock` と
+/// WGSL 側 `water_shade_params.wgsl` の `ShadeParamBlock` と
 /// **要素数・レイアウトを厳密一致**させること（`vec4` の配列なので std430 の
 /// パディング問題は構造的に起きない）。
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct WaterShadeParamBlock {
-    /// スロット 0..WATER_SHADE_PARAM_MAX の値。宣言の無いスロットはゼロ。
-    pub values: [[f32; PARAM_VALUE_COMPONENTS]; WATER_SHADE_PARAM_MAX],
+pub struct ShadeParamBlock {
+    /// スロット 0..SHADE_PARAM_MAX の値。宣言の無いスロットはゼロ。
+    pub values: [[f32; PARAM_VALUE_COMPONENTS]; SHADE_PARAM_MAX],
 }
 
-impl Default for WaterShadeParamBlock {
+impl Default for ShadeParamBlock {
     /// 宣言が 1 個も無い（＝アセット未指定・ロード失敗）ときのブロック。全ゼロ。
     fn default() -> Self {
-        Self { values: [[0.0; PARAM_VALUE_COMPONENTS]; WATER_SHADE_PARAM_MAX] }
+        Self { values: [[0.0; PARAM_VALUE_COMPONENTS]; SHADE_PARAM_MAX] }
     }
 }
 
@@ -663,11 +698,11 @@ impl Default for WaterShadeParamBlock {
 /// - `saved` にしか無い名前（アセット側の宣言が消えた・改名された）は**無視**する
 ///   （孤児は捨てるが、シーンからは消さない。アセットを戻せば復活する）。
 pub fn build_block(
-    decls: &[WaterShadeParamDecl],
+    decls: &[ShadeParamDecl],
     saved: &BTreeMap<String, [f32; PARAM_VALUE_COMPONENTS]>,
-) -> WaterShadeParamBlock {
-    let mut block = WaterShadeParamBlock::default();
-    for (slot, decl) in decls.iter().take(WATER_SHADE_PARAM_MAX).enumerate() {
+) -> ShadeParamBlock {
+    let mut block = ShadeParamBlock::default();
+    for (slot, decl) in decls.iter().take(SHADE_PARAM_MAX).enumerate() {
         block.values[slot] = saved.get(&decl.name).copied().unwrap_or(decl.default);
     }
     block
@@ -704,7 +739,7 @@ pub fn build_block(
 /// `live` は「バインドが解決できたパラメータ名 → その実値」。
 /// 解決できなかったバインドはここに**入れない**（それが `binding_ok=false` の定義）。
 pub fn params_json(
-    decls:    &[WaterShadeParamDecl],
+    decls:    &[ShadeParamDecl],
     saved:    &BTreeMap<String, [f32; PARAM_VALUE_COMPONENTS]>,
     bindings: &BTreeMap<String, String>,
     live:     &BTreeMap<String, [f32; PARAM_VALUE_COMPONENTS]>,
@@ -715,7 +750,7 @@ pub fn params_json(
             .or_else(|| saved.get(&d.name).copied())
             .unwrap_or(d.default);
         let (min, max) = match d.kind {
-            WaterShadeParamKind::Range { min, max } => (min, max),
+            ShadeParamKind::Range { min, max } => (min, max),
             // range 以外では使わない枠。キーを常に出しておくと C# の分岐が減る。
             _ => (0.0, 0.0),
         };
@@ -749,6 +784,11 @@ pub fn params_json(
 mod tests {
     use super::*;
 
+    /// テスト用の短縮版（既存テストは水面方言のまま検証する＝共通化で挙動が変わっていないこと）。
+    fn parse_params_t(src: &str) -> ShadeParamSet { parse_params(src, WATER_DIALECT) }
+    /// 同上（除去）。
+    fn strip_declarations_t(src: &str) -> String { strip_declarations(src, WATER_DIALECT) }
+
     /// 3 種の型が正しく解析され、ラベルが行末コメントから取られること。
     #[test]
     fn parses_all_three_kinds() {
@@ -761,23 +801,23 @@ override crack_speed: f32 = 1.5;                           // 亀裂の流速
 override glow_boost: f32 = 2.0;                            // 発光の強さ
 fn water_shade(input: WaterShadeInput) -> vec4<f32> { return vec4<f32>(0.0); }
 ";
-        let set = parse_params(src);
+        let set = parse_params_t(src);
         assert!(set.warnings.is_empty(), "警告が出た: {:?}", set.warnings);
         assert_eq!(set.params.len(), 3);
 
         assert_eq!(set.params[0].name, "emission_color");
-        assert_eq!(set.params[0].kind, WaterShadeParamKind::Color);
+        assert_eq!(set.params[0].kind, ShadeParamKind::Color);
         assert_eq!(set.params[0].default, [1.0, 0.4, 0.1, 0.0]);
         assert_eq!(set.params[0].label, "発光色");
         assert!(!set.params[0].resettable, "@reset を書いていない");
 
         assert_eq!(set.params[1].name, "crack_speed");
-        assert_eq!(set.params[1].kind, WaterShadeParamKind::Range { min: 0.0, max: 10.0 });
+        assert_eq!(set.params[1].kind, ShadeParamKind::Range { min: 0.0, max: 10.0 });
         assert_eq!(set.params[1].default, [1.5, 0.0, 0.0, 0.0]);
         assert_eq!(set.params[1].label, "亀裂の流速");
 
         assert_eq!(set.params[2].name, "glow_boost");
-        assert_eq!(set.params[2].kind, WaterShadeParamKind::Float);
+        assert_eq!(set.params[2].kind, ShadeParamKind::Float);
         assert_eq!(set.params[2].default, [2.0, 0.0, 0.0, 0.0]);
     }
 
@@ -789,12 +829,12 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> { return vec4<f32>(0.0); }
 @color @reset
 override tint: vec3<f32> = vec3(0.5);
 ";
-        let set = parse_params(src);
+        let set = parse_params_t(src);
         assert!(set.warnings.is_empty(), "{:?}", set.warnings);
         assert_eq!(set.params.len(), 2);
-        assert_eq!(set.params[0].kind, WaterShadeParamKind::Range { min: 0.0, max: 4.0 });
+        assert_eq!(set.params[0].kind, ShadeParamKind::Range { min: 0.0, max: 4.0 });
         assert!(set.params[0].resettable, "@reset が効くこと");
-        assert_eq!(set.params[1].kind, WaterShadeParamKind::Color);
+        assert_eq!(set.params[1].kind, ShadeParamKind::Color);
         assert!(set.params[1].resettable);
         assert_eq!(set.params[1].default, [0.5, 0.5, 0.5, 0.0], "vec3(x) は splat");
     }
@@ -802,16 +842,16 @@ override tint: vec3<f32> = vec3(0.5);
     /// 属性を省いた `vec3<f32>` も色として扱われること（UI の形が他に無いため）。
     #[test]
     fn vec3_without_color_attribute_is_color() {
-        let set = parse_params("override tint: vec3f = vec3<f32>(1.0, 2.0, 3.0);\n");
+        let set = parse_params_t("override tint: vec3f = vec3<f32>(1.0, 2.0, 3.0);\n");
         assert!(set.warnings.is_empty(), "{:?}", set.warnings);
-        assert_eq!(set.params[0].kind, WaterShadeParamKind::Color);
+        assert_eq!(set.params[0].kind, ShadeParamKind::Color);
         assert_eq!(set.params[0].default, [1.0, 2.0, 3.0, 0.0]);
     }
 
     /// ラベルが無ければ識別子名がラベルになること。
     #[test]
     fn label_falls_back_to_identifier() {
-        let set = parse_params("override glow: f32 = 1.0;\n");
+        let set = parse_params_t("override glow: f32 = 1.0;\n");
         assert_eq!(set.params.len(), 1);
         assert_eq!(set.params[0].label, "glow");
     }
@@ -819,7 +859,7 @@ override tint: vec3<f32> = vec3(0.5);
     /// 旧構文（`//! param`）はもう解釈されないこと（W5.2 で廃止）。
     #[test]
     fn legacy_comment_syntax_is_no_longer_parsed() {
-        let set = parse_params("//! param float glow = 1.0\n//! param color c = (1.0,0.0,0.0)\n");
+        let set = parse_params_t("//! param float glow = 1.0\n//! param color c = (1.0,0.0,0.0)\n");
         assert!(set.params.is_empty(), "旧構文を拾ってはならない: {:?}", set.params);
         assert!(set.warnings.is_empty(), "ただのコメントなので警告も出さない: {:?}", set.warnings);
         assert!(set.consumed_lines.is_empty(), "除去対象にもしない");
@@ -834,7 +874,7 @@ const e: f32 = 1.0;
 var<private> f: f32;
 fn overrider(x: f32) -> f32 { return x; }
 ";
-        let set = parse_params(src);
+        let set = parse_params_t(src);
         assert!(set.params.is_empty(), "拾ってはならない行を拾った: {:?}", set.params);
         assert!(set.warnings.is_empty(), "無関係な行で警告を出してはならない: {:?}", set.warnings);
         assert!(set.consumed_lines.is_empty(), "無関係な行を除去してはならない");
@@ -844,10 +884,10 @@ fn overrider(x: f32) -> f32 { return x; }
     #[test]
     fn leaves_plain_wgsl_attributes_alone() {
         let src = "@group(1) @binding(9)\nvar<storage> foo: array<f32>;\n";
-        let set = parse_params(src);
+        let set = parse_params_t(src);
         assert!(set.consumed_lines.is_empty(), "WGSL の属性行を除去してはならない");
         assert!(set.warnings.is_empty(), "{:?}", set.warnings);
-        assert_eq!(strip_declarations(src), src, "ソースが変わってはならない");
+        assert_eq!(strip_declarations_t(src), src, "ソースが変わってはならない");
     }
 
     /// 構文エラーの行は「無視 ＋ 行番号つき警告」になること（アセット全体は壊さない）。
@@ -861,7 +901,7 @@ override weird: i32 = 1;
 @color override bad_color: f32 = 1.0;
 @range(1.0) override bad_range: f32 = 1.0;
 ";
-        let set = parse_params(src);
+        let set = parse_params_t(src);
         assert_eq!(set.params.len(), 1, "正しい 1 行だけが通ること: {:?}", set.params);
         assert_eq!(set.warnings.len(), 5, "壊れた 5 行ぶん警告が出ること: {:?}", set.warnings);
         assert_eq!(set.warnings[0].line, 2, "{:?}", set.warnings[0]);
@@ -874,7 +914,7 @@ override weird: i32 = 1;
     /// 対応する宣言を持たない属性は警告になること。
     #[test]
     fn dangling_attribute_warns() {
-        let set = parse_params("@color\nconst c: f32 = 1.0;\n");
+        let set = parse_params_t("@color\nconst c: f32 = 1.0;\n");
         assert_eq!(set.warnings.len(), 1, "{:?}", set.warnings);
         assert_eq!(set.warnings[0].line, 1);
         assert!(set.warnings[0].message.contains(DECL_KEYWORD), "{:?}", set.warnings[0]);
@@ -883,7 +923,7 @@ override weird: i32 = 1;
     /// 未知の属性は警告のみで、宣言自体は通ること（属性追加への前方互換）。
     #[test]
     fn unknown_attribute_warns_but_keeps_declaration() {
-        let set = parse_params("@reset @future_thing override a: f32 = 1.0;\n");
+        let set = parse_params_t("@reset @future_thing override a: f32 = 1.0;\n");
         assert_eq!(set.params.len(), 1, "宣言は生きること: {:?}", set.params);
         assert!(set.params[0].resettable, "既知の属性は効くこと");
         assert_eq!(set.warnings.len(), 1);
@@ -894,11 +934,11 @@ override weird: i32 = 1;
     #[test]
     fn exceeding_max_warns_and_ignores() {
         let mut src = String::new();
-        for i in 0..(WATER_SHADE_PARAM_MAX + 2) {
+        for i in 0..(SHADE_PARAM_MAX + 2) {
             src.push_str(&format!("override p{i}: f32 = {i}.0;\n"));
         }
-        let set = parse_params(&src);
-        assert_eq!(set.params.len(), WATER_SHADE_PARAM_MAX);
+        let set = parse_params_t(&src);
+        assert_eq!(set.params.len(), SHADE_PARAM_MAX);
         assert_eq!(set.warnings.len(), 2, "超過ぶんの警告が出ること: {:?}", set.warnings);
         assert!(set.warnings[0].message.contains("上限"), "{:?}", set.warnings[0]);
     }
@@ -906,7 +946,7 @@ override weird: i32 = 1;
     /// 重複名は最初の宣言だけを採り、警告を出すこと。
     #[test]
     fn duplicate_names_keep_first() {
-        let set = parse_params("override a: f32 = 1.0;\noverride a: f32 = 2.0;\n");
+        let set = parse_params_t("override a: f32 = 1.0;\noverride a: f32 = 2.0;\n");
         assert_eq!(set.params.len(), 1);
         assert_eq!(set.params[0].default[0], 1.0, "先に書いた宣言が残ること");
         assert_eq!(set.warnings.len(), 1);
@@ -917,10 +957,35 @@ override weird: i32 = 1;
     #[test]
     fn rejects_reserved_prefixes() {
         for name in ["water_shade_x", "u_water_foo", "WATER_MAX"] {
-            let set = parse_params(&format!("override {name}: f32 = 1.0;\n"));
+            let set = parse_params_t(&format!("override {name}: f32 = 1.0;\n"));
             assert!(set.params.is_empty(), "{name} は弾かれること");
             assert_eq!(set.warnings.len(), 1);
             assert!(set.warnings[0].message.contains("予約"), "{:?}", set.warnings[0]);
+        }
+    }
+
+    /// 方言ごとに予約接頭辞が切り替わること（共通化の要）。
+    ///
+    /// 水面で通っていた名前が L3 で通らなくなる／その逆、という**取り違え**を固定する。
+    /// ここが崩れると「アセットに書いた名前が黙って無視される」という
+    /// 最も分かりにくい壊れ方をする。
+    #[test]
+    fn dialect_switches_reserved_prefixes() {
+        // ① L3 の契約識別子は L3 方言でだけ弾かれる。
+        for name in ["shade_x", "shading_helper", "SHADING_MAX", "u_shading_foo", "u_camera_x"] {
+            let src = format!("override {name}: f32 = 1.0;\n");
+            assert!(parse_params(&src, SHADING_DIALECT).params.is_empty(),
+                "{name} は L3 方言で弾かれること");
+            assert_eq!(parse_params(&src, WATER_DIALECT).params.len(), 1,
+                "{name} は水面方言では従来どおり通ること（既存挙動の不変）");
+        }
+        // ② 水面の契約識別子は水面方言でだけ弾かれる。
+        for name in ["water_shade_x", "u_water_foo", "WATER_MAX"] {
+            let src = format!("override {name}: f32 = 1.0;\n");
+            assert!(parse_params(&src, WATER_DIALECT).params.is_empty(),
+                "{name} は水面方言で弾かれること");
+            assert_eq!(parse_params(&src, SHADING_DIALECT).params.len(), 1,
+                "{name} は L3 方言では通ること");
         }
     }
 
@@ -928,7 +993,7 @@ override weird: i32 = 1;
     #[test]
     fn rejects_invalid_identifiers() {
         for name in ["1abc", "a-b", "a.b"] {
-            let set = parse_params(&format!("override {name}: f32 = 1.0;\n"));
+            let set = parse_params_t(&format!("override {name}: f32 = 1.0;\n"));
             assert!(set.params.is_empty(), "{name} は弾かれること: {:?}", set.params);
             assert_eq!(set.warnings.len(), 1, "{name}: {:?}", set.warnings);
         }
@@ -937,7 +1002,7 @@ override weird: i32 = 1;
     /// range の max <= min は弾かれること（スライダーが成立しない）。
     #[test]
     fn rejects_inverted_range() {
-        let set = parse_params("@range(1.0, 1.0) override a: f32 = 1.0;\n");
+        let set = parse_params_t("@range(1.0, 1.0) override a: f32 = 1.0;\n");
         assert!(set.params.is_empty());
         assert_eq!(set.warnings.len(), 1);
     }
@@ -945,7 +1010,7 @@ override weird: i32 = 1;
     /// WGSL の型サフィックス付きリテラル（`1.5f`）も読めること。
     #[test]
     fn accepts_float_suffix_literals() {
-        let set = parse_params("override a: f32 = 1.5f;\n@color override c: vec3<f32> = vec3(1.0f, 0.0f, 0.5f);\n");
+        let set = parse_params_t("override a: f32 = 1.5f;\n@color override c: vec3<f32> = vec3(1.0f, 0.0f, 0.5f);\n");
         assert!(set.warnings.is_empty(), "{:?}", set.warnings);
         assert_eq!(set.params[0].default[0], 1.5);
         assert_eq!(set.params[1].default, [1.0, 0.0, 0.5, 0.0]);
@@ -962,7 +1027,7 @@ override weird: i32 = 1;
 override tint: vec3<f32> = vec3(1.0, 0.0, 0.0);  // 色
 fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(tint, 1.0); }
 ";
-        let stripped = strip_declarations(src);
+        let stripped = strip_declarations_t(src);
         assert_eq!(stripped.split('\n').count(), src.split('\n').count(),
             "行数が変わると naga の行番号がずれる");
         assert!(!stripped.contains(DECL_KEYWORD), "宣言が残っている: {stripped}");
@@ -978,9 +1043,9 @@ fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(tint, 1.0); }
     #[test]
     fn strip_handles_crlf() {
         let src = "@color\r\noverride c: vec3<f32> = vec3(1.0);\r\nconst K: f32 = 1.0;\r\n";
-        let set = parse_params(src);
+        let set = parse_params_t(src);
         assert_eq!(set.params.len(), 1, "CRLF でも解析できること: {:?}", set.warnings);
-        let stripped = strip_declarations(src);
+        let stripped = strip_declarations_t(src);
         assert_eq!(stripped.split('\n').count(), src.split('\n').count());
         assert!(stripped.contains("const K: f32 = 1.0;"));
         assert!(!stripped.contains(DECL_KEYWORD));
@@ -990,7 +1055,7 @@ fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(tint, 1.0); }
     #[test]
     fn strip_is_identity_without_declarations() {
         let src = "fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(0.0); }\n";
-        assert_eq!(strip_declarations(src), src);
+        assert_eq!(strip_declarations_t(src), src);
     }
 
     // ── GPU ブロック / JSON ──────────────────────────────────
@@ -998,7 +1063,7 @@ fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(tint, 1.0); }
     /// GPU ブロックは宣言順に詰められ、保存値が既定値を上書きすること。
     #[test]
     fn block_uses_saved_values_over_defaults() {
-        let set = parse_params(
+        let set = parse_params_t(
             "@color override c: vec3<f32> = vec3(1.0, 0.0, 0.0);\noverride f: f32 = 2.0;\n");
         let mut saved = BTreeMap::new();
         saved.insert("f".to_string(), [9.0, 0.0, 0.0, 0.0]);
@@ -1011,7 +1076,7 @@ fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(tint, 1.0); }
     /// 宣言に無い保存値（改名・削除後の孤児）は無視され、ブロックを壊さないこと。
     #[test]
     fn orphan_saved_values_are_ignored() {
-        let set = parse_params("override f: f32 = 2.0;\n");
+        let set = parse_params_t("override f: f32 = 2.0;\n");
         let mut saved = BTreeMap::new();
         saved.insert("removed_param".to_string(), [7.0, 0.0, 0.0, 0.0]);
         let block = build_block(&set.params, &saved);
@@ -1021,7 +1086,7 @@ fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(tint, 1.0); }
     /// インスペクタ向け JSON が宣言順・型・現在値・リセット可否を載せること（ワイヤ契約）。
     #[test]
     fn params_json_carries_kind_range_reset_and_current_value() {
-        let set = parse_params(
+        let set = parse_params_t(
             "@color override c: vec3<f32> = vec3(1.0, 0.0, 0.0);  // 色\n\
              @range(0.0, 10.0) @reset override r: f32 = 1.5;\n\
              override f: f32 = 2.0;\n");
@@ -1060,7 +1125,7 @@ fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(tint, 1.0); }
     /// `@ref` 属性が解析され、他の属性と併用できること（W8.3）。
     #[test]
     fn ref_attribute_is_parsed_and_combines() {
-        let set = parse_params(
+        let set = parse_params_t(
             "@ref override speed: f32 = 0.0;                 // 速さ
              @ref @reset @range(0.0, 4.0) override glow: f32 = 1.0;
              @ref @color override tint: vec3<f32> = vec3(1.0);
@@ -1071,16 +1136,16 @@ fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(tint, 1.0); }
         assert!(set.params[0].bindable, "@ref が効くこと");
         assert!(set.params[1].bindable && set.params[1].resettable,
             "@ref と @reset は併用できること");
-        assert_eq!(set.params[1].kind, WaterShadeParamKind::Range { min: 0.0, max: 4.0 });
+        assert_eq!(set.params[1].kind, ShadeParamKind::Range { min: 0.0, max: 4.0 });
         assert!(set.params[2].bindable);
-        assert_eq!(set.params[2].kind, WaterShadeParamKind::Color);
+        assert_eq!(set.params[2].kind, ShadeParamKind::Color);
         assert!(!set.params[3].bindable, "@ref を書いていない行は false");
     }
 
     /// JSON にバインド状態が載ること（未設定・解決成功・解決失敗の 3 状態。W8.3）。
     #[test]
     fn params_json_carries_binding_state() {
-        let set = parse_params(
+        let set = parse_params_t(
             "@ref override a: f32 = 1.0;
              @ref override b: f32 = 2.0;
              @ref override c: f32 = 3.0;
@@ -1116,7 +1181,7 @@ fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(tint, 1.0); }
     /// `@ref` が外れた宣言に残った孤児バインドは JSON へ漏れないこと（W8.3）。
     #[test]
     fn orphan_binding_on_non_ref_param_is_hidden() {
-        let set = parse_params("override a: f32 = 1.0;
+        let set = parse_params_t("override a: f32 = 1.0;
 ");
         let bindings = BTreeMap::from([("a".to_string(), "Sun|MainLight|intensity".to_string())]);
         let json: serde_json::Value = serde_json::from_str(
@@ -1138,11 +1203,11 @@ fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(tint, 1.0); }
     /// 型ごとの WGSL 型名・swizzle が一貫していること（生成コードの正しさの土台）。
     #[test]
     fn wgsl_type_and_swizzle_match_kind() {
-        assert_eq!(WaterShadeParamKind::Color.wgsl_type(), "vec3<f32>");
-        assert_eq!(WaterShadeParamKind::Color.wgsl_swizzle(), "xyz");
-        assert_eq!(WaterShadeParamKind::Float.wgsl_type(), "f32");
-        assert_eq!(WaterShadeParamKind::Float.wgsl_swizzle(), "x");
-        let r = WaterShadeParamKind::Range { min: 0.0, max: 1.0 };
+        assert_eq!(ShadeParamKind::Color.wgsl_type(), "vec3<f32>");
+        assert_eq!(ShadeParamKind::Color.wgsl_swizzle(), "xyz");
+        assert_eq!(ShadeParamKind::Float.wgsl_type(), "f32");
+        assert_eq!(ShadeParamKind::Float.wgsl_swizzle(), "x");
+        let r = ShadeParamKind::Range { min: 0.0, max: 1.0 };
         assert_eq!(r.wgsl_type(), "f32");
         assert_eq!(r.wgsl_swizzle(), "x");
     }

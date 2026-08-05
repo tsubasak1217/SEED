@@ -28,3 +28,5 @@
 
 pub mod catalog;
 pub mod resolve;
+/// シェーディングアセットの `@ref` パラメータのバインド解決（水面・L3 共通）。
+pub mod shade_bindings;

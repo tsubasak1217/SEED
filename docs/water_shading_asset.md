@@ -221,6 +221,17 @@ return vec4<f32>(color, 1.0);
 > **旧構文（`//! param` コメント）は廃止**（W5.2）。ただのコメントとして無視されるので、
 > 古いアセットはインスペクタ行が出なくなる。下の構文へ書き換えること。
 
+> **この構文は L3 シェーディングアセットと共通である**。解析の実装は 1 本だけで
+> （`runtime/src/engine/core/renderer/shade_params.rs`）、水面と L3 の違いは
+> 「予約接頭辞」を持つ `ShadeParamDialect` というデータだけである
+> （水面 = `water_shade` / `u_water` / `WATER_`、L3 = `shade_` / `shading_` / `SHADING_` /
+> `u_shading` / `u_camera`）。属性・上限・インスペクタ行の見た目・IPC のワイヤ表現も同一。
+> L3 側の説明は `docs/shading_asset.md` の 5.5 / 5.6 節。
+>
+> GPU への運び方だけが違う: 水面は**水域ごとに値が要る**のでストレージバッファの配列
+> （group1 binding7）、L3 は**カメラ／シーンにつき 1 セット**でよいので uniform 1 本
+> （group2 binding0）である。
+
 ### 3.5.1 構文
 
 ```wgsl

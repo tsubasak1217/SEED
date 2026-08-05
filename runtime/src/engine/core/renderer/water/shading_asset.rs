@@ -57,7 +57,19 @@ use crate::engine::core::renderer::shading_asset::{
     WgslDiagnostic, asset_line_count, concat_sources, content_hash, line_defines_fn,
     map_reported_line, parse_contract_marker, strip_comments, validate_wgsl, MappedLine,
 };
-use super::shade_params::{WaterShadeParamDecl, parse_params, strip_declarations};
+use super::shade_params::{ShadeParamDecl, ShadeParamSet, WATER_DIALECT};
+
+/// パラメータ宣言を**水面方言**で解析する（共通パーサ `renderer::shade_params` への入口）。
+///
+/// 方言の選択をこの 1 箇所に閉じることで、以降の呼び出しは種別を意識しなくてよい。
+fn parse_params(asset_src: &str) -> ShadeParamSet {
+    super::shade_params::parse_params(asset_src, WATER_DIALECT)
+}
+
+/// 宣言行を**水面方言**で除去する（行数は保存される）。
+fn strip_declarations(asset_src: &str) -> String {
+    super::shade_params::strip_declarations(asset_src, WATER_DIALECT)
+}
 
 // ============================================================
 //  定数（マジックナンバーの一切を名前で持つ）
@@ -162,7 +174,7 @@ pub fn parse_contract_version(asset_src: &str) -> Option<u32> {
 /// **読めないパス・空パスでは空 Vec**（＝パラメータ行を 1 つも出さない）を返す。
 /// 描画側の解決とは独立に毎回読み直すが、呼ばれるのはアクタ選択時と
 /// アセット保存時だけなので、フレーム毎の I/O にはならない。
-pub fn declarations_for_path(asset_path: &str) -> Vec<WaterShadeParamDecl> {
+pub fn declarations_for_path(asset_path: &str) -> Vec<ShadeParamDecl> {
     if asset_path.trim().is_empty() { return Vec::new(); }
     match load_source(asset_path) {
         Ok(src) => parse_params(&src).params,
@@ -184,7 +196,7 @@ const SCRIPT_DECL_CACHE_UNREAD: u64 = u64::MAX;
 
 thread_local! {
     /// アセットパス → (最後に読んだ mtime, そのときの宣言)。
-    static SCRIPT_DECL_CACHE: RefCell<HashMap<String, (u64, Vec<WaterShadeParamDecl>)>> =
+    static SCRIPT_DECL_CACHE: RefCell<HashMap<String, (u64, Vec<ShadeParamDecl>)>> =
         RefCell::new(HashMap::new());
 }
 
@@ -197,7 +209,7 @@ thread_local! {
 /// アセットパスが空なら宣言は 0 個（＝空スライス）として `f` を呼ぶ。
 pub fn with_cached_declarations<R>(
     asset_path: &str,
-    f:          impl FnOnce(&[WaterShadeParamDecl]) -> R,
+    f:          impl FnOnce(&[ShadeParamDecl]) -> R,
 ) -> R {
     if asset_path.trim().is_empty() { return f(&[]); }
     let mtime = crate::engine::asset_fs::mtime(asset_path);
@@ -233,7 +245,7 @@ pub fn declaration_default(
 ///
 /// 「アセットを保存したらインスペクタの行を作り直すか」の判定にだけ使う。
 /// 名前・型・既定値・ラベルのいずれが変わっても別署名になる。
-fn declarations_signature(decls: &[WaterShadeParamDecl]) -> String {
+fn declarations_signature(decls: &[ShadeParamDecl]) -> String {
     format!("{decls:?}")
 }
 
@@ -250,7 +262,7 @@ fn declarations_signature(decls: &[WaterShadeParamDecl]) -> String {
 /// var<private> emission_color: vec3<f32>;
 /// var<private> crack_speed: f32;
 /// ```
-pub fn generate_param_decls(decls: &[WaterShadeParamDecl]) -> String {
+pub fn generate_param_decls(decls: &[ShadeParamDecl]) -> String {
     if decls.is_empty() { return String::new(); }
     let mut s = String::new();
     s.push_str("// ── 自動生成（water/shading_asset.rs）。アセットの `override` 宣言に対応する\n");
@@ -271,7 +283,7 @@ pub fn generate_param_decls(decls: &[WaterShadeParamDecl]) -> String {
 ///
 /// `decls` が空でなければ、本体の前に「ストレージ → `var<private>` の代入」を並べる。
 /// スロット番号は**宣言の出現順**であり、`shade_params::build_block` が同じ順で値を詰める。
-pub fn generate_dispatch(has_impl: bool, decls: &[WaterShadeParamDecl]) -> String {
+pub fn generate_dispatch(has_impl: bool, decls: &[ShadeParamDecl]) -> String {
     let mut s = String::new();
     s.push_str("// ── 自動生成（water/shading_asset.rs）。このコードは編集できません ──\n");
     s.push_str("fn water_shade_entry(input: WaterShadeInput) -> vec4<f32> {\n");
@@ -519,7 +531,7 @@ pub struct WaterShadingAssetPipelines {
     ///
     /// このパイプラインで描く水域のパラメータブロックは、必ずこの順で詰める
     /// （`WaterRenderer::prepare` が `shade_params::build_block` で行う）。
-    pub params: Vec<WaterShadeParamDecl>,
+    pub params: Vec<ShadeParamDecl>,
 }
 
 impl WaterShadingAssetPipelines {
@@ -1107,7 +1119,7 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
     /// 画面を見ても原因の分からない壊れ方をする。
     #[test]
     fn rust_and_wgsl_param_slot_counts_match() {
-        use super::super::shade_params::WATER_SHADE_PARAM_MAX;
+        use super::super::shade_params::SHADE_PARAM_MAX;
         let src = include_str!("../shaders/water_shade_params.wgsl");
         // ① 定数 WATER_SHADE_PARAM_SLOTS
         let line = src.lines().map(str::trim)
@@ -1115,11 +1127,11 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
             .expect("water_shade_params.wgsl に const WATER_SHADE_PARAM_SLOTS が無い");
         let rhs = line.split('=').nth(1).expect("= の右辺がありません");
         let num: String = rhs.trim().chars().take_while(|c| c.is_ascii_digit()).collect();
-        assert_eq!(num.parse::<usize>().expect("数値として読めません"), WATER_SHADE_PARAM_MAX,
-            "WGSL の WATER_SHADE_PARAM_SLOTS と Rust の WATER_SHADE_PARAM_MAX が食い違っている");
+        assert_eq!(num.parse::<usize>().expect("数値として読めません"), SHADE_PARAM_MAX,
+            "WGSL の WATER_SHADE_PARAM_SLOTS と Rust の SHADE_PARAM_MAX が食い違っている");
         // ② 構造体の配列長
-        assert!(src.contains(&format!("array<vec4<f32>, {WATER_SHADE_PARAM_MAX}>")),
-            "WaterShadeParamBlock の配列長が {WATER_SHADE_PARAM_MAX} でない");
+        assert!(src.contains(&format!("array<vec4<f32>, {SHADE_PARAM_MAX}>")),
+            "ShadeParamBlock の配列長が {SHADE_PARAM_MAX} でない");
     }
 
     /// **標準連結（アセット未指定）にもパラメータ用の binding が宣言されていること**。

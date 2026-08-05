@@ -26,55 +26,15 @@
 
 use std::collections::BTreeMap;
 
-use crate::engine::binding::catalog::{BindableValueType, BINDING_VALUE_COMPONENTS};
-use crate::engine::binding::resolve::{parse_binding, resolve_binding};
-use crate::engine::core::renderer::water::shade_params::{
-    WaterShadeParamDecl, WaterShadeParamKind,
-};
+use crate::engine::binding::catalog::BINDING_VALUE_COMPONENTS;
 use crate::engine::core::renderer::water::shading_asset;
 use crate::engine::ecs::World;
 use crate::engine::structs::objects::Actor;
 
-/// 水面パラメータの UI 種別から、バインドが要求する値の型を決める。
-///
-/// **色（`vec3<f32>`）は `Vec3`、それ以外（`f32`）は `F32`** という 1 対 1 対応。
-/// WGSL 側の型がこの 2 種類しかないので分岐もここだけで閉じる。
-fn required_value_type(kind: WaterShadeParamKind) -> BindableValueType {
-    match kind {
-        WaterShadeParamKind::Color => BindableValueType::Vec3,
-        _                          => BindableValueType::F32,
-    }
-}
-
-/// バインドを解決して「パラメータ名 → 実値」のマップを作る。
-///
-/// - `decls`    : アセットの宣言（`@ref` の有無と型の正典）
-/// - `bindings` : 保存されているバインド（パラメータ名 → バインド先文字列）
-///
-/// 戻り値に入るのは**解決できたバインドだけ**である。
-/// 空マップ＝「1 本も解決できなかった」＝すべて保存値／既定値へフォールバック。
-pub fn resolve_bindings(
-    actors:     &[Actor],
-    world:      &World,
-    world_line: u32,
-    decls:      &[WaterShadeParamDecl],
-    bindings:   &BTreeMap<String, String>,
-) -> BTreeMap<String, [f32; BINDING_VALUE_COMPONENTS]> {
-    let mut out = BTreeMap::new();
-    for (param_name, binding_text) in bindings {
-        // ① アセット側が `@ref` を宣言しているパラメータだけを対象にする。
-        let Some(decl) = decls.iter().find(|d| &d.name == param_name) else { continue };
-        if !decl.bindable { continue; }
-        // ② バインド先文字列を割る（壊れていれば解決失敗）。
-        let Some(target) = parse_binding(binding_text) else { continue };
-        // ③ シーンから実値を読む（型は厳密一致）。
-        let want = required_value_type(decl.kind);
-        if let Some(v) = resolve_binding(actors, world, world_line, &target, want) {
-            out.insert(param_name.clone(), v);
-        }
-    }
-    out
-}
+// 解決そのものは**アセット種別に依存しない**ので、共通実装
+// （`engine::binding::shade_bindings`）を再輸出する。ここに残すのは
+// 「水面アセットのキャッシュから宣言を引く」という水固有の接続部だけである。
+pub use crate::engine::binding::shade_bindings::{required_value_type, resolve_bindings};
 
 /// アセットの宣言をキャッシュから引いたうえでバインドを解決する。
 ///
@@ -101,7 +61,12 @@ mod tests {
     use super::*;
     use crate::engine::components::light_component::LightComponent;
     use crate::engine::components::{ComponentKind, Transform};
-    use crate::engine::core::renderer::water::shade_params::parse_params;
+    use crate::engine::core::renderer::water::shade_params::{parse_params as parse_params_raw, WATER_DIALECT};
+
+    /// 水面方言で解析する短縮版（テスト専用）。
+    fn parse_params(src: &str) -> crate::engine::core::renderer::water::shade_params::ShadeParamSet {
+        parse_params_raw(src, WATER_DIALECT)
+    }
 
     /// 光源 1 個を持つテストシーンを組む。
     fn scene_with_light(intensity: f32, color: [f32; 3]) -> (World, Vec<Actor>) {
@@ -185,13 +150,6 @@ mod tests {
             &actors, &world, 0, "assets://nope.wgsl", &BTreeMap::new()).is_empty());
     }
 
-    /// UI 種別と要求型の対応（色だけが vec3）。
-    #[test]
-    fn required_value_type_maps_color_to_vec3() {
-        assert_eq!(required_value_type(WaterShadeParamKind::Color), BindableValueType::Vec3);
-        assert_eq!(required_value_type(WaterShadeParamKind::Float), BindableValueType::F32);
-        assert_eq!(
-            required_value_type(WaterShadeParamKind::Range { min: 0.0, max: 1.0 }),
-            BindableValueType::F32);
-    }
+    // UI 種別と要求型の対応（色だけが vec3）は共通実装側のテスト
+    // （`binding::shade_bindings::tests::value_type_matches_param_kind`）が固定する。
 }

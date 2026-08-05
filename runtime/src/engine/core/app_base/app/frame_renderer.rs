@@ -722,7 +722,16 @@ impl App {
         // フレーム内で 2 度走らせないため（アクタ数が多い地形シーンで効く）。
         // Edit モード・Play ポーズ中はデバッグカメラを使うため None のまま
         // （＝Scene 指定へフォールバックする）。
+        // L3 アセットの宣言が変わったフレームか（描画ブロックで検出し、サブミット後に処理する）。
+        let mut shading_decls_changed = false;
         let mut main_camera_shading_asset: Option<String> = None;
+        // 同アセットのパラメータ上書き値と `@ref` バインド。
+        // **アセットと同じ持ち主から採る**（カメラがアセットを供給したならカメラの値、
+        // シーン既定へ落ちたならシーンの値）ので、パスと一緒にここで控える。
+        let mut main_camera_shading_params:   std::collections::BTreeMap<String, [f32; 4]> =
+            std::collections::BTreeMap::new();
+        let mut main_camera_shading_bindings: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
 
         if let (Some(scene), Some(camera_buf), Some(queue)) =
             (&mut self.scene, &self.camera_buf, queue)
@@ -757,7 +766,9 @@ impl App {
                 let game_cam = scene.find_main_camera().map(|(tf, cd)| {
                     // シェーディングアセット（L3-a）: メインカメラの指定を控える。
                     // ここでしか CameraComponentData に触れないため、この場で拾うのが最も安い。
-                    main_camera_shading_asset = cd.shading_asset.clone();
+                    main_camera_shading_asset    = cd.shading_asset.clone();
+                    main_camera_shading_params   = cd.shading_params.clone();
+                    main_camera_shading_bindings = cd.shading_bindings.clone();
                     let (vp_x, vp_y, vp_w, vp_h, proj_aspect, fov_y_rad) = compute_game_viewport(
                         &cd.scaling_mode, win_w_f, win_h_f,
                         cd.target_width, cd.target_height, cd.fov_y_deg,
@@ -5287,9 +5298,21 @@ impl App {
                                 //   Edit  : Scene.shading_asset → None（デバッグカメラ含むメインビュー）
                                 // どこにも指定が無ければ `None` となり、以降は**従来どおり**
                                 // draw_ctx.pipelines.deferred.* をそのまま使う（新経路に一切入らない）。
-                                let shading_asset_path: Option<&str> = main_camera_shading_asset
-                                    .as_deref()
-                                    .or_else(|| scene.shading_asset.as_deref());
+                                // パラメータ値の持ち主も同じ規則で決める（カメラが
+                                // アセットを供給したならカメラの値、シーン既定へ落ちたなら
+                                // シーンの値）。片方だけ別の持ち主から採ると、
+                                // 「カメラにアセットを差したのにシーンの値が効く」という
+                                // 説明のつかない挙動になる。
+                                let (shading_asset_path, shading_saved, shading_bindings):
+                                    (Option<&str>, &std::collections::BTreeMap<String, [f32; 4]>,
+                                     &std::collections::BTreeMap<String, String>) =
+                                    match main_camera_shading_asset.as_deref() {
+                                        Some(p) => (Some(p), &main_camera_shading_params,
+                                                    &main_camera_shading_bindings),
+                                        None    => (scene.shading_asset.as_deref(),
+                                                    &scene.shading_params,
+                                                    &scene.shading_bindings),
+                                    };
                                 // ホットリロードの可否:
                                 //   - Edit モード : 常に有効（従来どおり）。
                                 //   - Play モード : エディタ設定 `play_shader_hot_reload`（既定 ON）に従う。
@@ -5301,6 +5324,11 @@ impl App {
                                 // 再生を止めずに画作りを詰められる利点を優先する。
                                 let allow_hot_reload =
                                     self.mode == RuntimeMode::Edit || self.play_shader_hot_reload;
+                                // 宣言が変わっていれば UI の行を作り直させる（フラグだけ立て、
+                                // 実際の送信は GPU サブミット後。ここは draw_ctx を借用中）。
+                                if !draw_ctx.shading_asset_cache.take_decls_changed().is_empty() {
+                                    shading_decls_changed = true;
+                                }
                                 let shading_pipes = shading_asset_path.and_then(|p| {
                                     crate::engine::core::renderer::shading_asset::resolve(
                                         &draw_ctx.device,
@@ -5407,10 +5435,44 @@ impl App {
                                 } else {
                                     &draw_ctx.pipelines.deferred.empty_bg3
                                 };
+                                // ── group2: シェーディングアセットのパラメータ uniform ──
+                                // アセット版パイプラインを採用でき、かつそのアセットが
+                                // `override` を 1 個以上宣言しているときだけ実バッファを bind する。
+                                // それ以外（アセット未指定・組み込みへフォールバック・宣言 0 個）は
+                                // 従来どおり空 BG（＝group2 は gap レイアウトのまま）。
+                                let lit_g2: &wgpu::BindGroup = match (
+                                    asset_pipe,
+                                    shading_pipes.as_ref().and_then(|ap| ap.params_bg.as_ref()),
+                                ) {
+                                    (Some(_), Some(bg)) => {
+                                        // 値の転送。`queue.write_buffer` はキュータイムラインの
+                                        // 操作なので、レンダーパス記録中に呼んでも
+                                        // 「このコマンドバッファの実行前」に適用される。
+                                        //
+                                        // 宣言（＝スロット順）はビルド済みパイプラインが持って
+                                        // いるので、ここでアセットファイルを読み直す必要は無い。
+                                        let ap = shading_pipes.as_ref()
+                                            .expect("params_bg が Some ならパイプラインも Some");
+                                        let live =
+                                            crate::engine::binding::shade_bindings::resolve_bindings(
+                                                &scene.actors, &scene.world, self.active_world_line,
+                                                &ap.params, shading_bindings,
+                                            );
+                                        let values =
+                                            crate::engine::binding::shade_bindings::overlay_bindings(
+                                                shading_saved, &live,
+                                            );
+                                        draw_ctx.shading_asset_cache.upload_params(
+                                            &draw_ctx.device, &draw_ctx.queue, &ap.params, &values,
+                                        );
+                                        bg
+                                    }
+                                    _ => &draw_ctx.pipelines.deferred.empty_bg2,
+                                };
                                 lpass.set_pipeline(lit_pipe);
                                 lpass.set_bind_group(0, &camera_buf.bind_group, &[]);
                                 lpass.set_bind_group(1, &gbuffer_bg, &[]);
-                                lpass.set_bind_group(2, &draw_ctx.pipelines.deferred.empty_bg2, &[]);
+                                lpass.set_bind_group(2, lit_g2, &[]);
                                 lpass.set_bind_group(3, lit_g3, &[]);
                                 lpass.set_bind_group(4, lit_lights_bg, &[]);
                                 lpass.draw(0..3, 0..1);
@@ -7680,6 +7742,17 @@ impl App {
             for dfs in self.selected_actor_dfs_ids.clone() {
                 self.send_actor_components(dfs as u32, self.actor_virtual_selected_slot_idx);
             }
+        }
+
+        // ── L3 シェーディングアセットの宣言の変化を UI へ反映 ─────────
+        // カメラ添付はインスペクタ、シーン添付はシーン設定ウィンドウが行を持つので、
+        // 両方へ送り直す（対象でなければ受け側が何もしないだけで実害は無い）。
+        if shading_decls_changed { self.pending_shading_param_decls_resend = true; }
+        if std::mem::take(&mut self.pending_shading_param_decls_resend) {
+            for dfs in self.selected_actor_dfs_ids.clone() {
+                self.send_actor_components(dfs as u32, self.actor_virtual_selected_slot_idx);
+            }
+            self.send_scene_shading_params();
         }
 
         // ── ドロップ処理（GPU サブミット後）─────────────
