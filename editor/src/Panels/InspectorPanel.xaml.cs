@@ -361,24 +361,24 @@ public partial class InspectorPanel : UserControl
             // Mouse.Captured != null: NumericDragBehavior などによるキャプチャ中
             if (_isDraggingTransform || Mouse.Captured != null) return;
 
-            // VP ref 解決待ちの場合は、ドロップされたアクターの Camera スロットを抽出して
-            // インスペクタ UI 再構築ではなく参照設定処理に転用する。
-            if (_pendingVpRefActorDfsId >= 0)
+            // どのアクタの応答であっても構成キャッシュへ入れる。
+            // 参照ピッカーがドラッグ中に「適合ゼロならドロップ拒否」を判定するために使う。
+            var incomingId = TryGetActorComponentsId(json);
+            if (ActorComponentSnapshot.TryParse(json) is { } snapshot)
+                ActorComponentCache.Store(snapshot);
+
+            // 参照ドロップの解決待ちなら、ドロップされたアクタの構成を参照設定処理へ転用する。
+            // ドロップとは無関係な ACTOR_COMPONENTS（選択更新など）を取り違えないよう、
+            // 応答の id が問い合わせた DFS ID と一致する場合に限る。
+            if (_pendingReference is { } pending && incomingId == pending.DroppedActorDfsId)
             {
-                ResolveCameraRefFromComponents(json);
+                ResolvePendingReference(json);
                 return;
             }
 
-            // スクリプトの参照フィールド解決待ちの場合も同様に、
-            // ドロップされたアクターの構成を参照設定処理へ転用する。
-            // ただし、ドロップとは無関係な ACTOR_COMPONENTS（選択更新など）を
-            // 取り違えないよう、応答の id が問い合わせた DFS ID と一致する場合に限る。
-            if (_pendingScriptRefActorDfsId >= 0 &&
-                TryGetActorComponentsId(json) == _pendingScriptRefActorDfsId)
-            {
-                ResolveScriptRefFromComponents(json);
-                return;
-            }
+            // 選択中でないアクタの応答（ドラッグ先読み等）でインスペクタを描き替えない。
+            // id が取れない応答は従来どおり通す（後方互換）。
+            if (incomingId >= 0 && incomingId != _currentActorId) return;
 
             try { BuildActorComponentList(json); }
             catch (Exception ex) { EditorLog.Write($"InspectorPanel: ACTOR_COMPONENTS parse error: {ex.Message}"); }
@@ -1765,13 +1765,22 @@ public partial class InspectorPanel : UserControl
             arrow.Text                = expanded ? "▼" : "▶";
         });
 
-        // ヘッダークリックで開閉トグル + コンポーネントスロットなら選択も更新する。
-        // ダブルクリック（e.ClickCount==2）の場合は直前の1クリック目で走った開閉トグルを
-        // 打ち消してからリネームを開始する（開閉とリネームが同時発火しないようにするため）。
+        // ── ヘッダーのマウス操作（開閉トグル / リネーム / 参照ドラッグ元）──
+        //
+        // コンポーネント見出しは参照ピッカーへのドラッグ元でもあるため、開閉トグルは
+        // 「押した瞬間」ではなく「ドラッグせずに離したとき」に行う。こうしないと
+        // ドラッグを始めるたびにセクションが開閉してしまう。
+        // 単クリックの体感は変わらない（押下→即離しでトグルされる）。
+        var headerPressPoint = new Point();
+        bool headerPressed   = false;
+
         header.MouseLeftButtonDown += (_, e) =>
         {
+            // ダブルクリックは 1 クリック目の Up で走った開閉トグルを打ち消してから
+            // リネームを開始する（開閉とリネームが同時発火しないようにするため）。
             if (isComponentSlot && e.ClickCount == 2)
             {
+                headerPressed = false;
                 toggle.Toggle();
                 StartComponentRename(slotIdx, title);
                 e.Handled = true;
@@ -1784,8 +1793,32 @@ public partial class InspectorPanel : UserControl
                 RefreshAccordionSelection();
             }
 
+            headerPressPoint = e.GetPosition(header);
+            headerPressed    = true;
+        };
+
+        header.MouseLeftButtonUp += (_, _) =>
+        {
+            if (!headerPressed) return;
+            headerPressed = false;
             toggle.Toggle();
         };
+
+        // コンポーネントスロットのヘッダーは、参照ピッカーへドラッグして
+        // 「このコンポーネント（またはその所有アクタ）」を参照に設定できる。
+        if (isComponentSlot)
+        {
+            header.MouseMove += (_, e) =>
+            {
+                if (!headerPressed || e.LeftButton != MouseButtonState.Pressed) return;
+                var diff = e.GetPosition(header) - headerPressPoint;
+                if (Math.Abs(diff.X) < SystemParameters.MinimumHorizontalDragDistance &&
+                    Math.Abs(diff.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+
+                headerPressed = false;   // ドラッグに移行したので離しても開閉しない
+                StartComponentReferenceDrag(header, slotIdx, title, typeId);
+            };
+        }
 
         // 右クリックで削除・複製・リネーム・コピー/貼り付けの操作メニューを表示する
         if (isComponentSlot)
@@ -4978,26 +5011,6 @@ public partial class InspectorPanel : UserControl
     }
 
     /// <summary>
-    /// ドラッグデータから「アクタ名」を取り出す（取れなければ null）。
-    ///
-    /// HierarchyPanel は単一アクタのドラッグ時に DFS ID（"HierarchyActorDfsId"）と
-    /// 名前リスト（"HierarchyActorNames"）の両方を積んでいる。
-    /// 川の制御点参照は**名前**で持つので、名前が直接取れるこちらを使う
-    /// （SerializeField 参照のように GET_ACTOR_COMPONENTS の往復を挟まずに済み、
-    ///  ドロップした瞬間に UI が確定する）。
-    ///
-    /// 複数アクタのドラッグ（名前が 2 件以上）は曖昧なので受け付けない。
-    /// </summary>
-    private static string? TryGetDraggedActorName(DragEventArgs e)
-    {
-        if (!e.Data.GetDataPresent("HierarchyActorNames")) return null;
-        if (e.Data.GetData("HierarchyActorNames") is not List<string> names) return null;
-        if (names.Count != 1) return null;
-        var name = names[0];
-        return string.IsNullOrWhiteSpace(name) ? null : name;
-    }
-
-    /// <summary>
     /// WaterVolumeComponent のインスペクター UI を構築して返す。
     /// 「領域」「色と透明度」「岸のフォーム」「波」「反射・屈折」の 5 セクションで構成し、
     /// 変更時は SET_WATER_FIELD:{actor},{slot},{key},{value} を送信する。
@@ -5489,108 +5502,48 @@ public partial class InspectorPanel : UserControl
         //（SerializeField の参照 UI と同じ流儀。再構築を待たずに表示が追従する）。
         var cpRef = info.WaterControlPointRef ?? "";
 
-        var refLabel = new TextBlock
-        {
-            FontSize          = 11,
-            VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming      = TextTrimming.CharacterEllipsis,
-        };
-        var refDropZone = new Border
-        {
-            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x77, 0x99)),
-            BorderThickness = new Thickness(1),
-            Background      = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
-            CornerRadius    = new CornerRadius(3),
-            Padding         = new Thickness(6, 3, 6, 3),
-            AllowDrop       = true,
-            Child           = refLabel,
-            Cursor          = Cursors.Hand,
-            ToolTip         = "Hierarchy からアクタをドロップして、その ControlPointComponent を川の制御点にする\n"
-                            + "（ダブルクリックで Hierarchy の参照先アクタへジャンプ）\n"
-                            + "未設定のあいだは spline_points が使われます。",
-        };
-        // 参照先アクタ名の行（ドロップゾーン＝伸縮 / 解除ボタン＝固定幅）
-        var refClearBtn = new Button
-        {
-            Content         = "✕",
-            FontSize        = 10,
-            Width           = 22,
-            Foreground      = new SolidColorBrush(Color.FromRgb(0xAA, 0x55, 0x55)),
-            Background      = new SolidColorBrush(Color.FromRgb(0x22, 0x22, 0x22)),
-            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x44, 0x22, 0x22)),
-            BorderThickness = new Thickness(1),
-            Margin          = new Thickness(3, 0, 0, 0),
-            ToolTip         = "参照を解除する（spline_points に戻る）",
-        };
-        var refGrid = new Grid { Margin = new Thickness(0, 4, 0, 2) };
-        refGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        refGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        refGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var refCaption = new TextBlock
-        {
-            Text = "制御点の参照", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
-            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
-        };
-        Grid.SetColumn(refCaption, 0);
-        Grid.SetColumn(refDropZone, 1);
-        Grid.SetColumn(refClearBtn, 2);
-        refGrid.Children.Add(refCaption);
-        refGrid.Children.Add(refDropZone);
-        refGrid.Children.Add(refClearBtn);
-        riverSp.Children.Add(refGrid);
-
         // 参照が設定されているときにだけ出す案内（spline_points UI の代わり）。
         var refActiveHint = MakeHint(
             "制御点は参照先アクタの ControlPointComponent で編集します（spline_points は使用されません）。");
-        riverSp.Children.Add(refActiveHint);
 
         // 参照設定時に隠す旧 spline_points 編集 UI 一式の入れ物。
         // 個々の要素ではなくこのパネル 1 つの可視性だけを切り替える。
         var legacySplinePanel = new StackPanel();
 
-        // ダブルクリックで Hierarchy の参照先アクタへジャンプする
-        //（参照は張り替わるので、現在値から都度読む）。
-        ActorRefJump.AttachDoubleClickReveal(
-            refDropZone, () => string.IsNullOrEmpty(cpRef) ? null : cpRef);
-
-        // 参照の有無で「ラベル表示」「旧 UI の可視性」「案内の可視性」をまとめて更新する。
+        // 参照の有無で「案内」「旧 UI」の可視性をまとめて更新する
+        //（ラベル表示・警告表示は参照ピッカーが担当する）。
         void UpdateControlPointRefUi()
         {
             bool hasRef = !string.IsNullOrEmpty(cpRef);
-            refLabel.Text       = hasRef ? cpRef : WaterControlPointRefUnsetText;
-            refLabel.Foreground = new SolidColorBrush(hasRef
-                ? Color.FromRgb(0xCC, 0xCC, 0xCC)
-                : Color.FromRgb(0x77, 0x77, 0x77));
-            refClearBtn.IsEnabled     = hasRef;
-            refActiveHint.Visibility  = hasRef ? Visibility.Visible : Visibility.Collapsed;
-            legacySplinePanel.Visibility = hasRef ? Visibility.Collapsed : Visibility.Visible;
+            refActiveHint.Visibility     = hasRef ? Visibility.Visible : Visibility.Collapsed;
+            legacySplinePanel.Visibility  = hasRef ? Visibility.Collapsed : Visibility.Visible;
         }
 
-        // 参照を張り替えてランタイムへ送る（空文字列 = 参照解除）。
-        void SetControlPointRef(string actorName)
-        {
-            cpRef = actorName ?? "";
-            SendField("control_point_ref", cpRef);
-            UpdateControlPointRefUi();
-        }
+        // 制御点参照は共通の参照ピッカーで組み立てる。
+        // 保存値はアクタ名のみ（ランタイムは参照先アクタの先頭 ControlPointComponent を使う）。
+        var cpRefPicker = ReferencePicker.Create(
+            new ReferenceFieldSpec
+            {
+                Kind         = ReferenceKindCatalog.ControlPointKind,
+                WantSlotName = false,     // control_point_ref はアクタ名のみを保持する
+                Caption      = "制御点の参照",
+                UnsetText    = WaterControlPointRefUnsetText,
+                ClearTooltip = "参照を解除する（spline_points に戻る）",
+                ExtraTooltip = "川のスプラインの制御点にするアクタ\n"
+                             + "未設定のあいだは spline_points が使われます。",
+            },
+            cpRef, null,
+            (actorName, _) =>
+            {
+                cpRef = actorName ?? "";
+                SendField("control_point_ref", cpRef);
+                UpdateControlPointRefUi();
+            },
+            this);
 
-        // D&D: HierarchyPanel は DoDragDrop を Move|Copy で呼ぶため、Move を返さないと
-        // Effects の AND が None になりドロップが成立しない（VP ref / SerializeField と同じ理由）。
-        refDropZone.DragOver += (_, e) =>
-        {
-            e.Effects = TryGetDraggedActorName(e) is not null
-                ? DragDropEffects.Move : DragDropEffects.None;
-            e.Handled = true;
-        };
-        refDropZone.Drop += (_, e) =>
-        {
-            if (_currentActorId < 0) return;
-            var droppedName = TryGetDraggedActorName(e);
-            if (string.IsNullOrEmpty(droppedName)) return;
-            SetControlPointRef(droppedName);
-            e.Handled = true;
-        };
-        refClearBtn.Click += (_, _) => SetControlPointRef("");
+        cpRefPicker.Element.Margin = new Thickness(0, 4, 0, 2);
+        riverSp.Children.Add(cpRefPicker.Element);
+        riverSp.Children.Add(refActiveHint);
 
         AddFloatRow(riverSp, "川幅(m)",     info.WaterRiverWidth, "river_width", "F2");
         AddFloatRow(riverSp, "流速(m/s)",   info.WaterFlowSpeed,  "flow_speed",  "F2");
@@ -5844,109 +5797,35 @@ public partial class InspectorPanel : UserControl
             NumericDragBehavior.SetOnDrag(row.textBox, Commit);
         }
 
-        // アクタ名参照ボックス（ドロップゾーン＋✕クリア＋ダブルクリックジャンプ）を 1 本組み立てて
-        // 親セクションへ追加するローカル関数。volume_a / volume_b の両方で使い回す。
+        // 接続先アクタ参照ボックスを共通の参照ピッカーで 1 本組み立てて親セクションへ追加する。
+        // volume_a / volume_b の両方で使い回す。保存値はアクタ名のみ
+        // （ランタイムは参照先アクタの先頭 WaterVolumeComponent を水位グラフのノードにする）。
         void AddActorRefRow(StackPanel parent, string caption, string initialActorName, string key, string tooltip)
         {
-            var curName = initialActorName ?? "";
-
-            var refLabel = new TextBlock
-            {
-                FontSize          = 11,
-                VerticalAlignment = VerticalAlignment.Center,
-                TextTrimming      = TextTrimming.CharacterEllipsis,
-            };
-            var refDropZone = new Border
-            {
-                BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x77, 0x99)),
-                BorderThickness = new Thickness(1),
-                Background      = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
-                CornerRadius    = new CornerRadius(3),
-                Padding         = new Thickness(6, 3, 6, 3),
-                AllowDrop       = true,
-                Child           = refLabel,
-                Cursor          = Cursors.Hand,
-                ToolTip         = tooltip,
-            };
-            var refClearBtn = new Button
-            {
-                Content         = "✕",
-                FontSize        = 10,
-                Width           = 22,
-                Foreground      = new SolidColorBrush(Color.FromRgb(0xAA, 0x55, 0x55)),
-                Background      = new SolidColorBrush(Color.FromRgb(0x22, 0x22, 0x22)),
-                BorderBrush     = new SolidColorBrush(Color.FromRgb(0x44, 0x22, 0x22)),
-                BorderThickness = new Thickness(1),
-                Margin          = new Thickness(3, 0, 0, 0),
-                ToolTip         = "接続を解除する",
-            };
-            var refGrid = new Grid { Margin = new Thickness(0, 4, 0, 2) };
-            refGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            refGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            refGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var refCaption = new TextBlock
-            {
-                Text = caption, Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
-                FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
-            };
-            Grid.SetColumn(refCaption, 0);
-            Grid.SetColumn(refDropZone, 1);
-            Grid.SetColumn(refClearBtn, 2);
-            refGrid.Children.Add(refCaption);
-            refGrid.Children.Add(refDropZone);
-            refGrid.Children.Add(refClearBtn);
-            parent.Children.Add(refGrid);
-
-            // ダブルクリックで Hierarchy の参照先アクタへジャンプする（現在値から都度読む）。
-            ActorRefJump.AttachDoubleClickReveal(
-                refDropZone, () => string.IsNullOrEmpty(curName) ? null : curName);
-
-            void UpdateLabel()
-            {
-                bool hasRef = !string.IsNullOrEmpty(curName);
-                refLabel.Text       = hasRef ? curName : "（未接続）";
-                refLabel.Foreground = new SolidColorBrush(hasRef
-                    ? Color.FromRgb(0xCC, 0xCC, 0xCC)
-                    : Color.FromRgb(0x77, 0x77, 0x77));
-                refClearBtn.IsEnabled = hasRef;
-            }
-            UpdateLabel();
-
-            void SetRef(string actorName)
-            {
-                curName = actorName ?? "";
-                SendField(key, curName);
-                UpdateLabel();
-            }
-
-            // D&D: HierarchyPanel は DoDragDrop を Move|Copy で呼ぶため、Move を返さないと
-            // Effects の AND が None になりドロップが成立しない（control_point_ref 参照と同じ理由）。
-            refDropZone.DragOver += (_, e) =>
-            {
-                e.Effects = TryGetDraggedActorName(e) is not null
-                    ? DragDropEffects.Move : DragDropEffects.None;
-                e.Handled = true;
-            };
-            refDropZone.Drop += (_, e) =>
-            {
-                if (_currentActorId < 0) return;
-                var droppedName = TryGetDraggedActorName(e);
-                if (string.IsNullOrEmpty(droppedName)) return;
-                SetRef(droppedName);
-                e.Handled = true;
-            };
-            refClearBtn.Click += (_, _) => SetRef("");
+            var picker = ReferencePicker.Create(
+                new ReferenceFieldSpec
+                {
+                    Kind         = ReferenceKindCatalog.WaterVolumeKind,
+                    WantSlotName = false,
+                    Caption      = caption,
+                    UnsetText    = "（未接続）",
+                    ClearTooltip = "接続を解除する",
+                    ExtraTooltip = tooltip,
+                },
+                initialActorName, null,
+                (actorName, _) => SendField(key, actorName ?? ""),
+                this);
+            picker.Element.Margin = new Thickness(0, 4, 0, 2);
+            parent.Children.Add(picker.Element);
         }
 
         // ── 接続先セクション ───────────────────────────────────
         var connSection = BuildSection("接続先");
         var connSp      = (StackPanel)connSection.Child;
         AddActorRefRow(connSp, "接続先 A", info.WaterLinkVolumeA, "volume_a",
-            "Hierarchy から WaterVolumeComponent（Region 種別）を持つアクタをドロップして接続先 A にする\n"
-            + "（ダブルクリックで Hierarchy の参照先アクタへジャンプ）");
+            "水位グラフの接続先 A にする水域（Region 種別の WaterVolume）");
         AddActorRefRow(connSp, "接続先 B", info.WaterLinkVolumeB, "volume_b",
-            "Hierarchy から WaterVolumeComponent（Region 種別）を持つアクタをドロップして接続先 B にする\n"
-            + "（ダブルクリックで Hierarchy の参照先アクタへジャンプ）");
+            "水位グラフの接続先 B にする水域（Region 種別の WaterVolume）");
         connSp.Children.Add(new TextBlock
         {
             Text         = "川（Spline）・海（Ocean）は水位グラフのノードになれません（底面積が定義できないため）。"
@@ -7651,54 +7530,32 @@ public partial class InspectorPanel : UserControl
         // カメラ参照フィールド（D&D 受け付けエリア）
         var vpRefCameraPanel = new StackPanel { Visibility = info.VpRefType == "camera" ? Visibility.Visible : Visibility.Collapsed };
 
-        // 現在の参照表示ラベル
-        var vpRefLabel = new TextBlock
-        {
-            Text       = info.VpRefType == "camera" && !string.IsNullOrEmpty(info.VpRefActor)
-                             ? $"{info.VpRefActor} / {info.VpRefSlot}"
-                             : "（未設定）",
-            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-            FontSize   = 11,
-            Margin     = new Thickness(4, 0, 4, 2),
-        };
+        // 基準カメラ参照は共通の参照ピッカーで組み立てる
+        // （表示・D&D・✕解除・ダブルクリックジャンプ・参照先消失の警告が共通実装になる）。
+        // 解除＝「ウィンドウ基準へ戻す」なので、確定・解除の両方をここで IPC へ振り分ける。
+        var vpRefPicker = ReferencePicker.Create(
+            new ReferenceFieldSpec
+            {
+                Kind         = ReferenceKindCatalog.CameraKind,
+                WantSlotName = true,   // actor_name + slot_name で保存する
+                UnsetText    = "（未設定）",
+                ClearTooltip = "参照を解除してウィンドウ基準に戻す",
+                ExtraTooltip = "キャンバスの基準領域にするカメラ",
+            },
+            info.VpRefType == "camera" ? info.VpRefActor : null,
+            info.VpRefType == "camera" ? info.VpRefSlot  : null,
+            (actorName, slotName) =>
+            {
+                if (_currentActorId < 0) return;
+                if (actorName is null)
+                    _runtime?.SendToRuntime($"SET_CANVAS_VIEWPORT_REF_WINDOW:{_currentActorId},{info.SlotIdx}");
+                else
+                    _runtime?.SendToRuntime(
+                        $"SET_CANVAS_VIEWPORT_REF_CAMERA:{_currentActorId},{info.SlotIdx},{actorName},{slotName}");
+            },
+            this);
 
-        // D&D ドロップゾーン: シーンビューポートやヒエラルキーからカメラアクターをドロップできる
-        var vpDropZone = new Border
-        {
-            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x77, 0x99)),
-            BorderThickness = new Thickness(1),
-            Background      = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
-            CornerRadius    = new CornerRadius(3),
-            Padding         = new Thickness(6, 4, 6, 4),
-            Margin          = new Thickness(0, 0, 0, 2),
-            AllowDrop       = true,
-            Child           = vpRefLabel,
-            Cursor          = Cursors.Hand,
-            ToolTip         = "シーンビューポートまたはヒエラルキーからカメラアクターをドロップして参照を設定\n"
-                            + "（ダブルクリックで Hierarchy の参照先アクタへジャンプ）",
-        };
-
-        // アクタ参照フィールドのジャンプ動線:
-        // 名前部分のダブルクリックで Hierarchy の該当アクタへスクロールし、一定時間ハイライトする。
-        // 参照先はドロップで張り替わるため、ラベルの現在値から都度アクタ名を取り出す。
-        ActorRefJump.AttachDoubleClickReveal(vpDropZone, () => ExtractVpRefActorName(vpRefLabel.Text));
-
-        // クリア（ウィンドウに戻す）ボタン
-        var btnClearVp = new Button
-        {
-            Content         = "✕ 参照解除",
-            FontSize        = 10,
-            Foreground      = new SolidColorBrush(Color.FromRgb(0xAA, 0x55, 0x55)),
-            Background      = new SolidColorBrush(Color.FromRgb(0x22, 0x22, 0x22)),
-            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x44, 0x22, 0x22)),
-            BorderThickness = new Thickness(1),
-            Padding         = new Thickness(6, 2, 6, 2),
-            Margin          = new Thickness(0, 0, 0, 4),
-            HorizontalAlignment = HorizontalAlignment.Left,
-        };
-
-        vpRefCameraPanel.Children.Add(vpDropZone);
-        vpRefCameraPanel.Children.Add(btnClearVp);
+        vpRefCameraPanel.Children.Add(vpRefPicker.Element);
         vpManualPanel.Children.Add(vpRefCameraPanel);
         if (showVpRef) sp.Children.Add(vpManualPanel);
 
@@ -7730,10 +7587,13 @@ public partial class InspectorPanel : UserControl
         {
             if (_currentActorId < 0) return;
             var selTag = (cmbVpRef.SelectedItem as ComboBoxItem)?.Tag as string ?? "window";
-            if (selTag == "camera" && !string.IsNullOrEmpty(info.VpRefActor))
+            // 参照先は UI 構築時の info ではなくピッカーの現在値から読む
+            // （ドロップで張り替えた直後にコンボを切り替えても最新値が送られる）。
+            if (selTag == "camera" && !string.IsNullOrEmpty(vpRefPicker.ActorName))
             {
                 _runtime?.SendToRuntime(
-                    $"SET_CANVAS_VIEWPORT_REF_CAMERA:{_currentActorId},{info.SlotIdx},{info.VpRefActor},{info.VpRefSlot}");
+                    $"SET_CANVAS_VIEWPORT_REF_CAMERA:{_currentActorId},{info.SlotIdx},"
+                    + $"{vpRefPicker.ActorName},{vpRefPicker.SlotName}");
             }
             else
             {
@@ -7768,40 +7628,7 @@ public partial class InspectorPanel : UserControl
             }
         };
 
-        // D&D: ドラッグオーバー（カメラアクター DFS ID を期待）
-        // HierarchyPanel は DoDragDrop を DragDropEffects.Move で呼ぶため、
-        // ここも Move を要求しないと Effects の AND が None になってドロップが拒否される。
-        vpDropZone.DragOver += (_, e) =>
-        {
-            if (e.Data.GetDataPresent("HierarchyActorDfsId") || e.Data.GetDataPresent("SceneViewActorDfsId"))
-                e.Effects = DragDropEffects.Move;
-            else
-                e.Effects = DragDropEffects.None;
-            e.Handled = true;
-        };
-
-        // D&D: ドロップ処理
-        vpDropZone.Drop += (_, e) =>
-        {
-            if (_currentActorId < 0 || _runtime is null) return;
-            int? droppedDfsId = null;
-            if (e.Data.GetDataPresent("HierarchyActorDfsId"))
-                droppedDfsId = e.Data.GetData("HierarchyActorDfsId") as int?;
-            else if (e.Data.GetDataPresent("SceneViewActorDfsId"))
-                droppedDfsId = e.Data.GetData("SceneViewActorDfsId") as int?;
-            if (droppedDfsId is null) return;
-            // ドロップされたアクターのカメラスロットを解決する（IPC 経由でスロット一覧を取得）
-            ResolveAndApplyCameraRef(droppedDfsId.Value, info.SlotIdx, vpRefLabel);
-            e.Handled = true;
-        };
-
-        // 参照解除ボタン
-        btnClearVp.Click += (_, _) =>
-        {
-            if (_currentActorId < 0) return;
-            _runtime?.SendToRuntime($"SET_CANVAS_VIEWPORT_REF_WINDOW:{_currentActorId},{info.SlotIdx}");
-            vpRefLabel.Text = "（未設定）";
-        };
+        // D&D・参照解除は共通の参照ピッカー（vpRefPicker）が担当するため、ここには何も要らない。
 
         tbW.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSize(); e.Handled = true; } };
         tbW.LostFocus += (_, _) => CommitSize();
@@ -7967,194 +7794,6 @@ public partial class InspectorPanel : UserControl
     }
 
     /// <summary>
-    /// ドロップされたアクターの Camera スロットを解決して参照を設定する。
-    /// 同一アクターに複数の Camera スロットがある場合はポップアップで選択させる。
-    /// actorファイルからのドロップは DFS ID が存在しないため不可（インスタンス化済みのみ対応）。
-    /// </summary>
-    private void ResolveAndApplyCameraRef(int droppedActorDfsId, int canvasSlotIdx, TextBlock displayLabel)
-    {
-        if (_runtime is null || _currentActorId < 0) return;
-
-        // ランタイムへアクターのコンポーネント一覧を要求して Camera スロットを収集する
-        // NOTE: GET_ACTOR_COMPONENTS の応答は非同期 IPC のため、ここでは pending 状態にして
-        //       OnActorComponentsReceived で続きを処理する。
-        _pendingVpRefActorDfsId  = droppedActorDfsId;
-        _pendingVpRefCanvasSlotIdx = canvasSlotIdx;
-        _pendingVpRefDisplayLabel  = displayLabel;
-        _runtime.SendToRuntime($"GET_ACTOR_COMPONENTS:{droppedActorDfsId}");
-    }
-
-    /// <summary>
-    /// カメラ参照ラベルの「アクタ名」と「カメラスロット名」の区切り文字列。
-    /// 表示生成側（`$"{actorName} / {slotName}"`）と必ず同じものを使うこと。
-    /// </summary>
-    private const string VpRefLabelSeparator = " / ";
-
-    /// <summary>
-    /// カメラ参照ラベルの表示文字列（"アクタ名 / スロット名"）からアクタ名を取り出す。
-    /// 未設定表示（"（未設定）"）など区切りを含まない場合は null を返す。
-    /// </summary>
-    private static string? ExtractVpRefActorName(string labelText)
-    {
-        var idx = labelText.IndexOf(VpRefLabelSeparator, StringComparison.Ordinal);
-        return idx <= 0 ? null : labelText[..idx];
-    }
-
-    // ── CanvasViewportRef ドロップ解決用 pending フィールド ──────────────
-    private int     _pendingVpRefActorDfsId    = -1;
-    private int     _pendingVpRefCanvasSlotIdx = -1;
-    private TextBlock? _pendingVpRefDisplayLabel = null;
-
-    /// <summary>
-    /// GET_ACTOR_COMPONENTS の応答 JSON から CameraComponent スロットを抽出して VP ref を設定する。
-    /// Camera が 1 件なら即時適用、複数件ならポップアップで選択させる。
-    /// </summary>
-    private void ResolveCameraRefFromComponents(string json)
-    {
-        // pending フィールドをローカルに退避してからリセットする（再帰ガード）
-        var pendingDfsId   = _pendingVpRefActorDfsId;
-        var canvasSlotIdx  = _pendingVpRefCanvasSlotIdx;
-        var displayLabel   = _pendingVpRefDisplayLabel;
-        _pendingVpRefActorDfsId    = -1;
-        _pendingVpRefCanvasSlotIdx = -1;
-        _pendingVpRefDisplayLabel  = null;
-
-        if (displayLabel is null || _runtime is null || _currentActorId < 0) return;
-
-        string actorName;
-        var cameraSlots = new List<(int slotIdx, string slotName)>();
-
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            actorName = root.TryGetProperty("name", out var np) ? np.GetString() ?? "" : $"Actor#{pendingDfsId}";
-
-            if (root.TryGetProperty("components", out var comps))
-            {
-                foreach (var comp in comps.EnumerateArray())
-                {
-                    var compType = comp.TryGetProperty("type", out var ct) ? ct.GetString() ?? "" : "";
-                    if (compType != "CameraComponent") continue;
-                    var slotIdx  = comp.TryGetProperty("slot", out var si) ? si.GetInt32()    : 0;
-                    var slotName = comp.TryGetProperty("name", out var cn) ? cn.GetString() ?? $"Camera[{slotIdx}]" : $"Camera[{slotIdx}]";
-                    cameraSlots.Add((slotIdx, slotName));
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            EditorLog.Write($"InspectorPanel: VP ref resolve error: {ex.Message}");
-            return;
-        }
-
-        if (cameraSlots.Count == 0)
-        {
-            MessageBox.Show(
-                "選択されたアクターには CameraComponent がありません。",
-                "参照設定エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        // VP ref を確定して IPC 送信・ラベル更新するローカル関数
-        void Apply(string slotName)
-        {
-            _runtime.SendToRuntime(
-                $"SET_CANVAS_VIEWPORT_REF_CAMERA:{_currentActorId},{canvasSlotIdx},{actorName},{slotName}");
-            displayLabel.Text = $"{actorName} / {slotName}";
-        }
-
-        if (cameraSlots.Count == 1)
-        {
-            // Camera が 1 件のみ → 即時適用
-            Apply(cameraSlots[0].slotName);
-        }
-        else
-        {
-            // Camera が複数 → ポップアップで選択させる
-            ShowComponentSlotSelectionPopup(
-                cameraSlots.Select(s => s.slotName).ToList(), "CameraComponent", Apply);
-        }
-    }
-
-    /// <summary>
-    /// 同一アクター内に同種コンポーネントが複数あるときのスロット選択ポップアップを表示する。
-    /// 選択確定後に onSelected コールバックを呼ぶ。
-    /// キャンバスのカメラ参照とスクリプトの参照フィールドで共用する。
-    /// </summary>
-    /// <param name="slotNames">選択肢となるスロット名の一覧。</param>
-    /// <param name="kindLabel">コンポーネント種別の表示名（ダイアログ文言に使う）。</param>
-    /// <param name="onSelected">選択確定時のコールバック。</param>
-    private void ShowComponentSlotSelectionPopup(
-        List<string> slotNames, string kindLabel, Action<string> onSelected)
-    {
-        var dlg = new Window
-        {
-            Title                 = $"{kindLabel} スロットを選択",
-            Width                 = 300,
-            SizeToContent         = SizeToContent.Height,
-            Owner                 = Window.GetWindow(this),
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background            = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
-            ResizeMode            = ResizeMode.NoResize,
-        };
-
-        var sp = new StackPanel { Margin = new Thickness(12, 12, 12, 12) };
-
-        sp.Children.Add(new TextBlock
-        {
-            Text         = $"同一アクター内に複数の {kindLabel} があります。\n参照するスロットを選択してください。",
-            Foreground   = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-            FontSize     = 11,
-            TextWrapping = TextWrapping.Wrap,
-            Margin       = new Thickness(0, 0, 0, 8),
-        });
-
-        var listBox = new ListBox
-        {
-            Background  = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A)),
-            Foreground  = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-            MaxHeight   = 150,
-            Margin      = new Thickness(0, 0, 0, 8),
-        };
-        foreach (var name in slotNames)
-            listBox.Items.Add(new ListBoxItem
-            {
-                Content    = name,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-            });
-        listBox.SelectedIndex = 0;
-        sp.Children.Add(listBox);
-
-        var btnOk = new Button
-        {
-            Content             = "選択",
-            Padding             = new Thickness(12, 4, 12, 4),
-            HorizontalAlignment = HorizontalAlignment.Right,
-        };
-        sp.Children.Add(btnOk);
-
-        // 確定処理（ボタン・ダブルクリック共通）
-        void Confirm()
-        {
-            if (listBox.SelectedItem is ListBoxItem item && item.Content is string selected)
-            {
-                onSelected(selected);
-                dlg.Close();
-            }
-        }
-
-        btnOk.Click              += (_, _) => Confirm();
-        listBox.MouseDoubleClick += (_, _) => Confirm();
-        // Enter キーで確定
-        dlg.KeyDown += (_, e) => { if (e.Key == Key.Return || e.Key == Key.Enter) { Confirm(); e.Handled = true; } };
-
-        dlg.Content = sp;
-        dlg.ShowDialog();
-    }
-
-    /// <summary>
     /// リニア値 (0-1) を sRGB バイト (0-255) に変換する。
     /// WPF の Color.FromArgb は sRGB バイト値を期待するため、
     /// Rust ランタイムから受け取るリニア値を表示用に変換する際に使用する。
@@ -8285,55 +7924,15 @@ public partial class InspectorPanel : UserControl
         {
             if (_currentActorId < 0) return;
             _runtime?.SendToRuntime($"SET_SCRIPT_FIELD:{_currentActorId},{slotIdx},{name},{val}");
-        }, ResolveScriptReferenceDrop,
+        // 参照フィールドのドロップ解決はエディタ共通の参照ピッカー基盤へ委譲する
+        // （InspectorPanel が IReferenceDropResolver を実装している）。
+        }, this,
         // [Serializable] ネストの折りたたみ状態を再構築ごしに復元する
         // （SET_SCRIPT_FIELD のたびに ACTOR_COMPONENTS が再送されてこの UI は作り直される）。
         // キーは「スロット添字 + フィールドのドットパス」。
         expandStates: _expandStates,
         expandKeyPrefix: $"{ExpandKeyScriptFieldPrefix}{slotIdx}:"));
         sp.Children.Add(fieldSection);
-    }
-
-    // ── スクリプト参照フィールドのドロップ解決 ───────────────────────
-    //
-    // 参照フィールド（[SerializeField] SEED.Transform target; など）へ Hierarchy から
-    // アクタ行をドロップしたときの解決フロー。
-    //   1. ドロップされたアクターの構成を GET_ACTOR_COMPONENTS で問い合わせる（非同期 IPC）
-    //   2. 応答（ACTOR_COMPONENTS）を ResolveScriptRefFromComponents が受けて、
-    //      フィールドの参照種別に合うスロットを抽出する
-    //   3. 0 件 → 警告 / 1 件 → 即確定 / 複数 → スロット選択ダイアログ
-    // 保存値の書式は SEED.ScriptReference（"アクタ名" / "アクタ名|スロット名"）。
-
-    /// <summary>参照ドロップ解決待ちのアクター DFS ID（-1 = 待機なし）。</summary>
-    private int _pendingScriptRefActorDfsId = -1;
-
-    /// <summary>参照ドロップ解決待ちのフィールド情報（種別判定用）。</summary>
-    private ScriptFieldInfo? _pendingScriptRefField;
-
-    /// <summary>参照ドロップ解決後に確定値を適用するコールバック。</summary>
-    private Action<string>? _pendingScriptRefApply;
-
-    /// <summary>
-    /// ドロップを受けた時点で選択されていたアクター（＝スクリプトの持ち主）の DFS ID。
-    /// 非同期応答が返るまでに選択が変わった場合、別アクターへ書き込まないための照合用。
-    /// </summary>
-    private int _pendingScriptRefOwnerActorId = -1;
-
-    /// <summary>
-    /// 参照フィールドへアクターがドロップされたときの入口
-    /// （<see cref="ScriptInspectorBuilder.ReferenceDropHandler"/> の実装）。
-    /// スロット構成が必要なのでランタイムへ問い合わせ、続きは応答受信時に行う。
-    /// </summary>
-    private void ResolveScriptReferenceDrop(
-        ScriptFieldInfo field, int droppedActorDfsId, Action<string> apply)
-    {
-        if (_runtime is null || _currentActorId < 0) return;
-
-        _pendingScriptRefActorDfsId   = droppedActorDfsId;
-        _pendingScriptRefOwnerActorId = _currentActorId;
-        _pendingScriptRefField        = field;
-        _pendingScriptRefApply        = apply;
-        _runtime.SendToRuntime($"GET_ACTOR_COMPONENTS:{droppedActorDfsId}");
     }
 
     /// <summary>
@@ -8349,122 +7948,6 @@ public partial class InspectorPanel : UserControl
                 ? id : -1;
         }
         catch { return -1; }
-    }
-
-    /// <summary>
-    /// GET_ACTOR_COMPONENTS の応答 JSON から、参照フィールドの種別に合うスロットを
-    /// 抽出して値を確定する（複数該当時はスロット選択ダイアログを出す）。
-    /// </summary>
-    private void ResolveScriptRefFromComponents(string json)
-    {
-        // pending をローカルへ退避してから即リセットする（再帰・取りこぼし防止）
-        var field = _pendingScriptRefField;
-        var apply = _pendingScriptRefApply;
-        var owner = _pendingScriptRefOwnerActorId;
-        _pendingScriptRefActorDfsId   = -1;
-        _pendingScriptRefOwnerActorId = -1;
-        _pendingScriptRefField        = null;
-        _pendingScriptRefApply        = null;
-
-        if (field?.Reference is not { } refKind || apply is null) return;
-
-        // 応答待ちの間に選択が変わっていたら、その UI・IPC 宛先はもう別のアクターを
-        // 指している。誤ったアクターへ書き込まないよう破棄する。
-        if (owner != _currentActorId) return;
-
-        string actorName;
-        bool   hasTransform;        // 3D の Transform を持つか
-        bool   hasCanvasTransform;  // 2D の CanvasTransform を持つか
-        var    slots = new List<string>();
-
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            actorName = root.TryGetProperty("name", out var np) ? np.GetString() ?? "" : "";
-            hasTransform       = root.TryGetProperty("transform", out _);
-            hasCanvasTransform = root.TryGetProperty("canvas_transform", out _);
-
-            // スロット格納型の場合のみ、該当する type のスロット名を集める
-            var wantType = ScriptReferenceCatalog.SlotComponentType(refKind.Kind);
-            if (wantType is not null && root.TryGetProperty("components", out var comps))
-            {
-                foreach (var comp in comps.EnumerateArray())
-                {
-                    var compType = comp.TryGetProperty("type", out var ct) ? ct.GetString() ?? "" : "";
-                    if (compType != wantType) continue;
-                    var slotIdx  = comp.TryGetProperty("slot", out var si) ? si.GetInt32() : 0;
-                    var slotName = comp.TryGetProperty("name", out var cn) ? cn.GetString() ?? "" : "";
-                    // スロット名が空の場合は名前で特定できないため index 表記にフォールバックする
-                    slots.Add(string.IsNullOrEmpty(slotName) ? $"{refKind.Kind}[{slotIdx}]" : slotName);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            EditorLog.Write($"InspectorPanel: スクリプト参照の解決に失敗: {ex.Message}");
-            return;
-        }
-
-        if (string.IsNullOrEmpty(actorName))
-        {
-            MessageBox.Show("ドロップされたアクターの名前を取得できませんでした。",
-                "参照設定エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-        // アクタ名に区切り文字が含まれると "アクタ名|スロット名" を復元できない
-        if (actorName.Contains(SEED.ScriptReference.SlotSeparator))
-        {
-            MessageBox.Show(
-                $"アクタ名に '{SEED.ScriptReference.SlotSeparator}' を含むアクターは参照できません。\n"
-                + "アクタ名を変更してください。",
-                "参照設定エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var kindLabel = ScriptReferenceCatalog.DisplayName(refKind.Kind);
-
-        // ── GameObject 参照: アクタ名だけで確定する ──
-        if (refKind.IsGameObject)
-        {
-            apply(SEED.ScriptReference.Format(actorName, null));
-            return;
-        }
-
-        // ── ルート直付け型（Transform / CanvasTransform）: 保持の有無だけ検証する ──
-        if (!ScriptReferenceCatalog.NeedsSlotSelection(refKind.Kind))
-        {
-            bool ok = refKind.Kind switch
-            {
-                "Transform"       => hasTransform,
-                "CanvasTransform" => hasCanvasTransform,
-                _                 => false,
-            };
-            if (!ok)
-            {
-                MessageBox.Show($"「{actorName}」は {kindLabel} を持っていません。",
-                    "参照設定エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-            apply(SEED.ScriptReference.Format(actorName, null));
-            return;
-        }
-
-        // ── スロット格納型: 該当スロットを選ぶ ──
-        if (slots.Count == 0)
-        {
-            MessageBox.Show($"「{actorName}」は {kindLabel} を持っていません。",
-                "参照設定エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-        if (slots.Count == 1)
-        {
-            apply(SEED.ScriptReference.Format(actorName, slots[0]));
-            return;
-        }
-        // 同種スロットが複数 → 選択ダイアログ（VP ref と同じ UI を流用）
-        ShowComponentSlotSelectionPopup(slots, kindLabel,
-            selected => apply(SEED.ScriptReference.Format(actorName, selected)));
     }
 
     /// <summary>script_fields JSON（{"name":"value",...}）を辞書に変換する。</summary>

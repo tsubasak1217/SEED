@@ -213,7 +213,10 @@ public readonly struct Rigidbody : IComponentHandle<Rigidbody>
 インスペクタで D&D 参照フィールドになる）。`ScriptReference.cs` は触らない。
 
 ただし**スロット格納型**の場合だけ、エディタがドロップ先アクターのスロットを絞り込むために
-`editor/src/Scripting/ScriptReferenceCatalog.cs` の 2 つの表へ 1 行ずつ足す。
+`editor/src/Controls/ReferenceKindCatalog.cs` の 2 つの表へ 1 行ずつ足す
+（この表はスクリプト参照だけでなく、水・リンク・キャンバスの参照フィールドも引く共通カタログ。
+`ScriptReferenceCatalog.cs` はここへの薄い転送になっている。詳細は
+`docs/editor_reference_picker.md`）。
 
 ```csharp
 // SlotComponentTypeByKind（種別名 → ACTOR_COMPONENTS の "type" 文字列）

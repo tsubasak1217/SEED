@@ -84,6 +84,21 @@ public partial class HierarchyPanel
         return RevealActorByName(actorName);
     }
 
+    /// <summary>
+    /// 指定名のアクタがシーンに存在するかを返す。
+    ///
+    /// 参照ピッカー（ReferencePicker）が「参照先が消えていないか」を確認するための問い合わせ。
+    /// ツリーの表示状態（仮想化・展開）に依存しないよう、ノードモデル側を走査する。
+    /// </summary>
+    /// <param name="actorName">対象アクタの名前（完全一致・大文字小文字は区別する）。</param>
+    public bool ActorExistsByName(string actorName)
+    {
+        if (string.IsNullOrEmpty(actorName)) return false;
+        foreach (var node in GetAllNodes(_roots))
+            if (node.Name == actorName) return true;
+        return false;
+    }
+
     // ── 実装 ──────────────────────────────────────────────────────
 
     /// <summary>

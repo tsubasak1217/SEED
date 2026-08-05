@@ -333,6 +333,9 @@ public partial class HierarchyPanel : UserControl
         Dispatcher.BeginInvoke(() =>
         {
             _roots = ParseHierarchy(json);
+            // アクタ構成キャッシュ（参照ピッカーのドラッグ中判定用）は DFS ID をキーに持つ。
+            // ツリーが作り直されると DFS ID は別アクタを指し得るのでここで捨てる。
+            SEEDEditor.Controls.ActorComponentCache.Clear();
             _selectedIds.Clear();
             if (_selectedId >= 0) _selectedIds.Add(_selectedId);
             _anchorId = _selectedId;
@@ -1367,7 +1370,15 @@ public partial class HierarchyPanel : UserControl
         var data = new DataObject("DragIds", _dragNodeIds);
         // VP ref ドロップゾーン用: 単一アクタードラッグ時に DFS ID をカスタムキーで付加する
         if (_dragNodeIds.Count == 1)
+        {
             data.SetData("HierarchyActorDfsId", _dragNodeIds[0]);
+
+            // 参照ピッカーはドラッグ中に「適合コンポーネントがゼロならドロップ拒否」を出す。
+            // その判定にはアクタの構成が要るので、未取得なら先読み要求だけ投げておく
+            // （応答が間に合わなくても、ドロップ時の IPC 往復で必ず正しく解決される）。
+            if (SEEDEditor.Controls.ActorComponentCache.TryGet(_dragNodeIds[0]) is null)
+                _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{_dragNodeIds[0]}");
+        }
 
         // Project パネルへのドロップ（アクタファイル化）用に、ドラッグ中の各アクタの
         // 種別（2D/3D）と名前を _dragNodeIds と同じ順序で付加する（複数ドラッグ対応）。

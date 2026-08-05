@@ -398,6 +398,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             ShowAnchorable("hierarchy");
             PanelHierarchy.RevealActor(dfsId);
         };
+        // 参照ピッカーの「参照先が消えていないか」判定を Hierarchy のノードモデルへ接続する。
+        SEEDEditor.Panels.ActorRefJump.ActorExistsByName = PanelHierarchy.ActorExistsByName;
         // .anim ファイルのダブルクリックでアニメーションタイムラインパネルを開いて読み込む
         PanelProject.AnimFileOpened     += path =>
         {
