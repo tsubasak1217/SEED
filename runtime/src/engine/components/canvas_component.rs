@@ -219,6 +219,20 @@ pub struct CanvasComponent {
 }
 
 impl CanvasComponent {
+    /// シリアライズ用データから復元する（to_data の逆）。
+    /// シーン読込・Undo/Redo の両方から使う唯一の復元経路。
+    pub fn from_data(data: CanvasComponentData) -> Self {
+        Self {
+            width: data.width,
+            height: data.height,
+            auto_scale: data.auto_scale,
+            viewport_ref: data.viewport_ref,
+            gravity_mode: data.gravity_mode,
+            draw_zone: data.draw_zone,
+            pivot: data.pivot,
+        }
+    }
+
     /// シリアライズ用データに変換する。
     pub fn to_data(&self) -> CanvasComponentData {
         CanvasComponentData {

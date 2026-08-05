@@ -355,106 +355,7 @@ impl Actor {
 
         let transform        = world.get::<Transform>(self.entity).cloned();
         let canvas_transform = world.get::<CanvasTransform>(self.entity).cloned();
-        let components = self.slots.iter().filter_map(|slot| {
-            let data = match slot.kind {
-                ComponentKind::Model => {
-                    world.get::<ModelComponent>(slot.entity)
-                        .map(|mc| ComponentData::ModelComponent(mc.to_data()))
-                }
-                ComponentKind::Script => {
-                    world.get::<ScriptComponent>(slot.entity)
-                        .map(|sc| ComponentData::ScriptComponent(sc.to_data()))
-                }
-                ComponentKind::Placeholder => {
-                    world.get::<PlaceholderScriptSlot>(slot.entity)
-                        .map(|ps| ComponentData::ScriptComponent(ps.to_data()))
-                }
-                ComponentKind::Canvas => {
-                    world.get::<CanvasComponent>(slot.entity)
-                        .map(|cc| ComponentData::CanvasComponent(cc.to_data()))
-                }
-                ComponentKind::Sprite => {
-                    world.get::<SpriteComponent>(slot.entity)
-                        .map(|sc| ComponentData::SpriteComponent(sc.to_data()))
-                }
-                ComponentKind::InputMap => {
-                    world.get::<InputMapComponent>(slot.entity)
-                        .map(|ic| ComponentData::InputMapComponent(ic.to_data()))
-                }
-                ComponentKind::Camera => {
-                    world.get::<CameraComponent>(slot.entity)
-                        .map(|cc| ComponentData::CameraComponent(cc.to_data()))
-                }
-                ComponentKind::Plugin => {
-                    world.get::<crate::engine::components::PluginComponent>(slot.entity)
-                        .map(|pc| pc.clone())
-                        .map(ComponentData::PluginComponent)
-                }
-                ComponentKind::Collider => {
-                    world.get::<ColliderComponent>(slot.entity)
-                        .map(|cc| ComponentData::ColliderComponent(ColliderComponentData::from(cc)))
-                }
-                ComponentKind::Collider2d => {
-                    // 2D コライダーコンポーネントをシリアライズ用データに変換する
-                    world.get::<crate::engine::components::Collider2dComponent>(slot.entity)
-                        .map(|cc| ComponentData::Collider2dComponent(crate::engine::components::Collider2dComponentData::from(cc)))
-                }
-                ComponentKind::Audio => {
-                    world.get::<crate::engine::components::AudioComponent>(slot.entity)
-                        .map(|ac| ComponentData::AudioComponent(ac.to_data()))
-                }
-                ComponentKind::WaterVolume => {
-                    // 水ボリュームコンポーネントをシリアライズ用データに変換する
-                    world.get::<crate::engine::components::WaterVolumeComponent>(slot.entity)
-                        .map(|wv| ComponentData::WaterVolumeComponent(wv.to_data()))
-                }
-                ComponentKind::WaterLink => {
-                    // 水位グラフのリンク（開口。W2.5）をシリアライズ用データに変換する
-                    world.get::<crate::engine::components::WaterLinkComponent>(slot.entity)
-                        .map(|wl| ComponentData::WaterLinkComponent(wl.to_data()))
-                }
-                ComponentKind::InteractionSource => {
-                    // インタラクションソースをシリアライズ用データに変換する
-                    world.get::<crate::engine::components::InteractionSourceComponent>(slot.entity)
-                        .map(|is| ComponentData::InteractionSourceComponent(is.to_data()))
-                }
-                ComponentKind::ControlPoint => {
-                    // コントロールポイント（汎用パスの点列）をシリアライズ用データに変換する
-                    world.get::<crate::engine::components::ControlPointComponent>(slot.entity)
-                        .map(|cp| ComponentData::ControlPointComponent(cp.to_data()))
-                }
-                ComponentKind::Animator => {
-                    world.get::<crate::engine::components::AnimatorComponent>(slot.entity)
-                        .map(|an| ComponentData::AnimatorComponent(an.to_data()))
-                }
-                ComponentKind::Light => {
-                    world.get::<crate::engine::components::LightComponent>(slot.entity)
-                        .map(|lc| ComponentData::LightComponent(lc.to_data()))
-                }
-                ComponentKind::JointAttach => {
-                    world.get::<crate::engine::components::JointAttachComponent>(slot.entity)
-                        .map(|ja| ComponentData::JointAttachComponent(ja.to_data()))
-                }
-                ComponentKind::ParticleEmitter => {
-                    world.get::<crate::engine::components::ParticleEmitterComponent>(slot.entity)
-                        .map(|pe| ComponentData::ParticleEmitterComponent(pe.to_data()))
-                }
-                ComponentKind::Skybox => {
-                    world.get::<crate::engine::components::SkyboxComponent>(slot.entity)
-                        .map(|sb| ComponentData::SkyboxComponent(sb.to_data()))
-                }
-                ComponentKind::TerrainChunk => {
-                    // 地形チャンクの座標＋.tvox リンクをシリアライズ用データへ変換する
-                    world.get::<crate::engine::components::TerrainChunkComponent>(slot.entity)
-                        .map(|tc| ComponentData::TerrainChunkComponent(tc.to_data()))
-                }
-            };
-            data.map(|d| ComponentSlotData {
-                name:      slot.name.clone(),
-                component: d,
-                enabled:   slot.enabled,
-            })
-        }).collect();
+        let components = self.slots.iter().filter_map(|slot| slot_to_data(world, slot)).collect();
 
         ActorData {
             name:             self.name.clone(),
@@ -464,7 +365,8 @@ impl Actor {
             canvas_transform,
             is_folder:        self.is_folder,
             components,
-            children:         self.children.iter().map(|c| c.to_data_recursive(world, counter)).collect(),
+            children:         self.children.iter()
+                                  .map(|c| c.to_data_recursive(world, counter)).collect(),
             active:           self.active,
             // プレハブ参照リンクを往復させる（ルートのみ Some、子は None）。
             prefab_source:    self.prefab_source.clone(),
@@ -472,7 +374,118 @@ impl Actor {
             scatter_prop_id:  self.scatter_prop_id.clone(),
         }
     }
+}
 
+/// コンポーネントスロット 1 個をシリアライズ用データへ変換する。
+///
+/// `Actor::to_data_recursive`（シーン保存）と、インスペクタのフィールド編集の
+/// スナップショット（app/field_edit.rs）の共通経路。後者は 1 スロットだけ必要で、
+/// アクタ全体をシリアライズすると同居する ModelComponent の全インスタンス行列まで
+/// 毎回コピーすることになるため、スロット単位で切り出せることが重要である。
+///
+/// World にコンポーネント実体が無いスロットは None（保存対象から落とす。従来動作）。
+pub fn slot_to_data(world: &World, slot: &ComponentSlot) -> Option<ComponentSlotData> {
+    let data = match slot.kind {
+        ComponentKind::Model => {
+            world.get::<ModelComponent>(slot.entity)
+                .map(|mc| ComponentData::ModelComponent(mc.to_data()))
+        }
+        ComponentKind::Script => {
+            world.get::<ScriptComponent>(slot.entity)
+                .map(|sc| ComponentData::ScriptComponent(sc.to_data()))
+        }
+        ComponentKind::Placeholder => {
+            world.get::<PlaceholderScriptSlot>(slot.entity)
+                .map(|ps| ComponentData::ScriptComponent(ps.to_data()))
+        }
+        ComponentKind::Canvas => {
+            world.get::<CanvasComponent>(slot.entity)
+                .map(|cc| ComponentData::CanvasComponent(cc.to_data()))
+        }
+        ComponentKind::Sprite => {
+            world.get::<SpriteComponent>(slot.entity)
+                .map(|sc| ComponentData::SpriteComponent(sc.to_data()))
+        }
+        ComponentKind::InputMap => {
+            world.get::<InputMapComponent>(slot.entity)
+                .map(|ic| ComponentData::InputMapComponent(ic.to_data()))
+        }
+        ComponentKind::Camera => {
+            world.get::<CameraComponent>(slot.entity)
+                .map(|cc| ComponentData::CameraComponent(cc.to_data()))
+        }
+        ComponentKind::Plugin => {
+            world.get::<crate::engine::components::PluginComponent>(slot.entity)
+                .map(|pc| pc.clone())
+                .map(ComponentData::PluginComponent)
+        }
+        ComponentKind::Collider => {
+            world.get::<ColliderComponent>(slot.entity)
+                .map(|cc| ComponentData::ColliderComponent(ColliderComponentData::from(cc)))
+        }
+        ComponentKind::Collider2d => {
+            // 2D コライダーコンポーネントをシリアライズ用データに変換する
+            world.get::<crate::engine::components::Collider2dComponent>(slot.entity)
+                .map(|cc| ComponentData::Collider2dComponent(crate::engine::components::Collider2dComponentData::from(cc)))
+        }
+        ComponentKind::Audio => {
+            world.get::<crate::engine::components::AudioComponent>(slot.entity)
+                .map(|ac| ComponentData::AudioComponent(ac.to_data()))
+        }
+        ComponentKind::WaterVolume => {
+            // 水ボリュームコンポーネントをシリアライズ用データに変換する
+            world.get::<crate::engine::components::WaterVolumeComponent>(slot.entity)
+                .map(|wv| ComponentData::WaterVolumeComponent(wv.to_data()))
+        }
+        ComponentKind::WaterLink => {
+            // 水位グラフのリンク（開口。W2.5）をシリアライズ用データに変換する
+            world.get::<crate::engine::components::WaterLinkComponent>(slot.entity)
+                .map(|wl| ComponentData::WaterLinkComponent(wl.to_data()))
+        }
+        ComponentKind::InteractionSource => {
+            // インタラクションソースをシリアライズ用データに変換する
+            world.get::<crate::engine::components::InteractionSourceComponent>(slot.entity)
+                .map(|is| ComponentData::InteractionSourceComponent(is.to_data()))
+        }
+        ComponentKind::ControlPoint => {
+            // コントロールポイント（汎用パスの点列）をシリアライズ用データに変換する
+            world.get::<crate::engine::components::ControlPointComponent>(slot.entity)
+                .map(|cp| ComponentData::ControlPointComponent(cp.to_data()))
+        }
+        ComponentKind::Animator => {
+            world.get::<crate::engine::components::AnimatorComponent>(slot.entity)
+                .map(|an| ComponentData::AnimatorComponent(an.to_data()))
+        }
+        ComponentKind::Light => {
+            world.get::<crate::engine::components::LightComponent>(slot.entity)
+                .map(|lc| ComponentData::LightComponent(lc.to_data()))
+        }
+        ComponentKind::JointAttach => {
+            world.get::<crate::engine::components::JointAttachComponent>(slot.entity)
+                .map(|ja| ComponentData::JointAttachComponent(ja.to_data()))
+        }
+        ComponentKind::ParticleEmitter => {
+            world.get::<crate::engine::components::ParticleEmitterComponent>(slot.entity)
+                .map(|pe| ComponentData::ParticleEmitterComponent(pe.to_data()))
+        }
+        ComponentKind::Skybox => {
+            world.get::<crate::engine::components::SkyboxComponent>(slot.entity)
+                .map(|sb| ComponentData::SkyboxComponent(sb.to_data()))
+        }
+        ComponentKind::TerrainChunk => {
+            // 地形チャンクの座標＋.tvox リンクをシリアライズ用データへ変換する
+            world.get::<crate::engine::components::TerrainChunkComponent>(slot.entity)
+                .map(|tc| ComponentData::TerrainChunkComponent(tc.to_data()))
+        }
+    };
+    data.map(|d| ComponentSlotData {
+        name:      slot.name.clone(),
+        component: d,
+        enabled:   slot.enabled,
+    })
+}
+
+impl Actor {
     /// 2D Actor かどうかを返す。
     pub fn is_2d(&self) -> bool { self.actor_kind == ActorKind::Actor2D }
 

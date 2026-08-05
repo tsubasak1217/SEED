@@ -125,7 +125,8 @@ pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool, boo
 // ============================================================
 
 /// DFS id でアクターへの可変参照を取得する。
-pub(super) fn find_actor_by_dfs_mut<'a>(
+/// undo.rs（app_base 直下）の ActorActiveCommand からも使うため pub(crate)。
+pub(crate) fn find_actor_by_dfs_mut<'a>(
     actors:  &'a mut Vec<Actor>,
     wl:      u32,
     dfs_id:  u32,

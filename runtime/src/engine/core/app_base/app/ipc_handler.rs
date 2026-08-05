@@ -17,6 +17,7 @@ use super::{
     find_actor_by_dfs,
     release_window_clamp,
 };
+use super::field_edit::{FieldEditTarget, field_edit_target, is_recording_suppressed};
 
 // ── フレーム途絶中の IPC ポンプ（about_to_wait 経路）のチューニング定数 ──────────
 //
@@ -100,6 +101,18 @@ impl App {
             None => Vec::new(),
         };
         for cmd in cmds {
+            // ── インスペクタのフィールド編集を Undo 履歴へ載せる（汎用機構） ──
+            //   コマンドを分類し、対象があれば適用「前」の値をスナップショットしておく。
+            //   個別ハンドラには一切手を入れず、この 1 箇所で全 SET_* 経路を拾う
+            //   （詳細と対象外の判断根拠は field_edit.rs）。
+            //   Play 中はシーンの編集ではなく実行時の一時変更なので記録しない。
+            let fe_target = if is_recording_suppressed(self.mode) {
+                FieldEditTarget::None
+            } else {
+                field_edit_target(&cmd)
+            };
+            let fe_before = self.field_edit_snapshot(&fe_target);
+
             match cmd {
                 IpcCommand::CtrlDown           => self.ctrl_held = true,
                 IpcCommand::CtrlUp             => self.ctrl_held = false,
@@ -132,6 +145,8 @@ impl App {
                     if !v { release_window_clamp(); }
                 }
                 IpcCommand::Undo => {
+                    // Undo を跨いで直前のフィールド編集へマージしない（編集の連続性が切れる）。
+                    self.reset_field_edit_session();
                     let result = if let Some(scene) = &mut self.scene {
                         self.undo_history.undo(scene)
                     } else { None };
@@ -144,6 +159,10 @@ impl App {
                         if let Some((wl, actor_dfs_id, slots_data)) = self.undo_history.peek_undone_component_rebuild() {
                             self.rebuild_actor_slots(wl, actor_dfs_id, slots_data);
                             self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                        }
+                        // インスペクタのフィールド編集（1 スロットだけ値を戻す）
+                        if let Some((wl, actor_dfs_id, slot_idx, slot_data)) = self.undo_history.peek_undone_slot_data() {
+                            self.apply_slot_data(wl, actor_dfs_id, slot_idx, &slot_data);
                         }
                         // アクタートランスフォーム変更 → インスペクター通知
                         if let Some((_wl, dfs_id)) = self.undo_history.peek_undone_actor_inspect() {
@@ -166,6 +185,8 @@ impl App {
                     }
                 }
                 IpcCommand::Redo => {
+                    // Redo を跨いで直前のフィールド編集へマージしない。
+                    self.reset_field_edit_session();
                     let result = if let Some(scene) = &mut self.scene {
                         self.undo_history.redo(scene)
                     } else { None };
@@ -178,6 +199,10 @@ impl App {
                         if let Some((wl, actor_dfs_id, slots_data)) = self.undo_history.peek_redone_component_rebuild() {
                             self.rebuild_actor_slots(wl, actor_dfs_id, slots_data);
                             self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                        }
+                        // インスペクタのフィールド編集（1 スロットだけ値を進める）
+                        if let Some((wl, actor_dfs_id, slot_idx, slot_data)) = self.undo_history.peek_redone_slot_data() {
+                            self.apply_slot_data(wl, actor_dfs_id, slot_idx, &slot_data);
                         }
                         // アクタートランスフォーム変更 → インスペクター通知
                         if let Some((_wl, dfs_id)) = self.undo_history.peek_redone_actor_inspect() {
@@ -1587,6 +1612,12 @@ impl App {
                     }
                 }
             }
+
+            // ── 適用後の値と比較し、変化していれば Undo 履歴へ積む ──
+            //   同一フィールドへの連続更新（スライダー 1 ドラッグ）は 1 コマンドへマージされる。
+            if let Some(before) = fe_before {
+                self.field_edit_record(&fe_target, before);
+            }
         }
 
         // ── フレーム末の地形ダーティ集約を消化する ──
@@ -1754,10 +1785,10 @@ impl App {
     //  プラグインフィールド変更処理
     // ============================================================
 
-    /// プラグインコンポーネントのフィールド値を変更し Undo に記録する。
+    /// プラグインコンポーネントのフィールド値を変更する。
+    /// Undo 記録は field_edit.rs の汎用機構が担当する（ここでは記録しない）。
     fn handle_set_plugin_field(&mut self, actor_dfs_id: u32, slot_idx: u32, key: &str, new_value: &str) {
         use crate::engine::components::{PluginComponent, ComponentKind};
-        use crate::engine::core::app_base::undo::PluginFieldCommand;
 
         let wl    = self.active_world_line;
         let scene = match self.scene.as_mut() { Some(s) => s, None => return };
@@ -1794,15 +1825,10 @@ impl App {
             pc.set_field(key, new_value);
         }
 
-        // Undo コマンドを記録する（slot_entity を直接保持）
-        self.undo_history.record(Box::new(PluginFieldCommand {
-            slot_entity: slot_entity,
-            key:         key.to_string(),
-            old_value,
-            new_value:   new_value.to_string(),
-            world_line:  self.active_world_line,
-            actor_dfs_id,
-        }));
+        // Undo の記録はここでは行わない。
+        // インスペクタのフィールド編集はすべて field_edit.rs の汎用機構
+        //（IPC ディスパッチ入口での前後スナップショット）が 1 箇所で拾う。
+        // ここでも記録すると 1 回の編集で履歴が 2 段積まれ、Ctrl+Z が 2 回必要になる。
 
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }

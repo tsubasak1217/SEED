@@ -1150,6 +1150,11 @@ impl App {
         let mut new_slots = Vec::new();
         for slot_data in slots_data {
             let slot_entity = scene.world.spawn();
+            // ComponentSlot::new は enabled = true 固定のため、復元値をここで保持し
+            // match を抜けたあとに書き戻す（無効化したコンポーネントが Undo/Redo で
+            // 勝手に有効へ戻る不具合の修正）。
+            let slot_enabled = slot_data.enabled;
+            let slots_len_before = new_slots.len();
             match slot_data.component {
                 ComponentData::ModelComponent(mc_data) => {
                     let cast_shadows = mc_data.cast_shadows;
@@ -1254,18 +1259,9 @@ impl App {
                     }
                 }
                 ComponentData::CanvasComponent(cc_data) => {
-                    scene.world.insert(
-                        slot_entity,
-                        CanvasComponent {
-                            width: cc_data.width,
-                            height: cc_data.height,
-                            auto_scale: cc_data.auto_scale,
-                            viewport_ref: cc_data.viewport_ref.clone(),
-                            gravity_mode: cc_data.gravity_mode,
-                            draw_zone: cc_data.draw_zone,
-                            pivot: cc_data.pivot,
-                        },
-                    );
+                    scene
+                        .world
+                        .insert(slot_entity, CanvasComponent::from_data(cc_data));
                     new_slots.push(ComponentSlot::new::<CanvasComponent>(
                         slot_data.name,
                         ComponentKind::Canvas,
@@ -1273,17 +1269,9 @@ impl App {
                     ));
                 }
                 ComponentData::SpriteComponent(sc_data) => {
-                    scene.world.insert(
-                        slot_entity,
-                        SpriteComponent {
-                            texture_path: sc_data.texture_path,
-                            color: sc_data.color,
-                            width: sc_data.width,
-                            height: sc_data.height,
-                            layer: sc_data.layer,
-                            postfx_path: sc_data.postfx_path,
-                        },
-                    );
+                    scene
+                        .world
+                        .insert(slot_entity, SpriteComponent::from_data(sc_data));
                     new_slots.push(ComponentSlot::new::<SpriteComponent>(
                         slot_data.name,
                         ComponentKind::Sprite,
@@ -1291,12 +1279,9 @@ impl App {
                     ));
                 }
                 ComponentData::InputMapComponent(ic_data) => {
-                    scene.world.insert(
-                        slot_entity,
-                        InputMapComponent {
-                            asset_path: ic_data.asset_path,
-                        },
-                    );
+                    scene
+                        .world
+                        .insert(slot_entity, InputMapComponent::from_data(ic_data));
                     new_slots.push(ComponentSlot::new::<InputMapComponent>(
                         slot_data.name,
                         ComponentKind::InputMap,
@@ -1457,6 +1442,11 @@ impl App {
                     // 旧フォーマット互換: ColliderComponent に統合済みのためスキップする
                     scene.world.despawn(slot_entity);
                 }
+            }
+            // 実際にスロットが積まれた場合のみ enabled を復元する
+            // （モデルのロード失敗・旧互換スキップでは何も積まれない）。
+            if let Some(s) = new_slots.get_mut(slots_len_before) {
+                s.enabled = slot_enabled;
             }
         }
 

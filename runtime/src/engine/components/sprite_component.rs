@@ -72,6 +72,19 @@ pub struct SpriteComponent {
 }
 
 impl SpriteComponent {
+    /// シリアライズ用データから復元する（to_data の逆）。
+    /// シーン読込・Undo/Redo の両方から使う唯一の復元経路。
+    pub fn from_data(data: SpriteComponentData) -> Self {
+        Self {
+            texture_path: data.texture_path,
+            color: data.color,
+            width: data.width,
+            height: data.height,
+            layer: data.layer,
+            postfx_path: data.postfx_path,
+        }
+    }
+
     /// シリアライズ用データに変換する。
     pub fn to_data(&self) -> SpriteComponentData {
         SpriteComponentData {
