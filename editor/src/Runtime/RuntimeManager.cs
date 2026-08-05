@@ -241,6 +241,15 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>アクター編集モードでコンポーネント一覧が返ってきたときに発火する（JSON 文字列）。</summary>
     public event Action<string>? ActorComponentsReceived;
 
+    /// <summary>
+    /// 水面シェーダの <c>@ref</c> パラメータに繋げられるバインド元候補が返ってきたときに発火する
+    /// （GET_BINDABLE_SOURCES への応答。引数は JSON 文字列）。
+    ///
+    /// JSON は <c>[{"slot":"…","label":"…","variables":[{"name":"…","label":"…"}]}]</c>。
+    /// **候補の正典はランタイム側**なので、エディタは受け取った配列を並べるだけでよい。
+    /// </summary>
+    public event Action<string>? BindableSourcesReceived;
+
     /// <summary>デバッグカメラ状態が返ってきたときに発火する（CAM_STATE メッセージ本体）。</summary>
     public event Action<string>? CameraStateReceived;
 
@@ -1413,6 +1422,14 @@ public sealed class RuntimeManager : IDisposable
             var json = msg["ACTOR_COMPONENTS:".Length..];
             EditorLog.Write($"[Runtime→Editor] ACTOR_COMPONENTS ({json.Length} chars)");
             ActorComponentsReceived?.Invoke(json);
+        }
+        else if (msg.StartsWith("BINDABLE_SOURCES:", StringComparison.Ordinal))
+        {
+            // 水面シェーダ @ref 行のドロップ解決に使うバインド元候補（GET_BINDABLE_SOURCES の応答）。
+            // 中身の解釈はインスペクタ側に任せ、ここは JSON をそのまま流すだけにする。
+            var json = msg["BINDABLE_SOURCES:".Length..];
+            EditorLog.Write($"[Runtime→Editor] BINDABLE_SOURCES ({json.Length} chars)");
+            BindableSourcesReceived?.Invoke(json);
         }
         else if (msg.StartsWith("CONTROL_POINT_SELECTED:", StringComparison.Ordinal))
         {

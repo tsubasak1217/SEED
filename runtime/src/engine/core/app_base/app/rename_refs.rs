@@ -32,6 +32,7 @@ use crate::engine::components::{
     CanvasComponent, CanvasViewportRef, ComponentKind, ScriptComponent, WaterLinkComponent,
     WaterVolumeComponent,
 };
+use crate::engine::binding::resolve::{format_binding, parse_binding};
 use crate::engine::ecs::World;
 use crate::engine::structs::objects::Actor;
 
@@ -112,11 +113,26 @@ fn rewrite_refs_in_slots(
         match slot.kind {
             // ── 川の制御点参照（値は "アクタ名" のみ） ──────────────
             ComponentKind::WaterVolume => {
-                if let Some(w) = world.get_mut::<WaterVolumeComponent>(slot.entity)
-                    && w.control_point_ref == old_name
-                {
-                    w.control_point_ref = new_name.to_string();
-                    any = true;
+                if let Some(w) = world.get_mut::<WaterVolumeComponent>(slot.entity) {
+                    if w.control_point_ref == old_name {
+                        w.control_point_ref = new_name.to_string();
+                        any = true;
+                    }
+                    // ── シェーダパラメータの `@ref` バインド（W8.3）──────
+                    // 値は "アクタ名|スロット名|変数名" なので、**1 要素目だけ**を
+                    // 書き換える（スロット名・変数名がたまたま旧アクタ名と同じでも
+                    // 巻き添えにしない）。ここを忘れるとアクタ改名でバインドが静かに切れる。
+                    for binding in w.bindings.values_mut() {
+                        let Some(t) = parse_binding(binding) else { continue };
+                        if t.actor != old_name { continue; }
+                        // 新しい名前が区切り文字を含む等で組み立てられない場合は
+                        // 書き換えない（壊れた文字列を保存するより、旧名のまま
+                        // 「解決できないバインド」として ⚠ を出す方が復旧しやすい）。
+                        let Some(next) = format_binding(new_name, &t.slot, &t.variable)
+                            else { continue };
+                        *binding = next;
+                        any = true;
+                    }
                 }
             }
             // ── 水位グラフの開口が指す 2 つの水域（値は "アクタ名" のみ。W2.5）──

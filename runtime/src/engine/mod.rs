@@ -1,5 +1,7 @@
 pub mod animation;
 pub mod asset_fs;
+/// シーン内コンポーネントの変数を「値の供給元」として公開する仕組み（`@ref` バインド）
+pub mod binding;
 pub mod components;
 pub mod core;
 pub mod ecs;

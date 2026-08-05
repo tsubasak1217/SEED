@@ -114,6 +114,20 @@ type ResolveRefsFn = unsafe extern "system" fn(isize);
 /// リフレクションのみで World へアクセスしないため、フェーズ外でも呼べる。
 /// 戻り値: 参照フィールドなら 1、それ以外は 0。
 type IsRefFieldFn = unsafe extern "system" fn(isize, *const u8, i32) -> i32;
+/// 指定パスの `[SerializeField, Bindable]` フィールドの**実行中の値**を float 配列で読む
+/// （シェーダパラメータの `@ref` バインド。Phase W8.3）。
+///
+/// 引数: (ハンドル, フィールド名 UTF-8 ポインタ, その長さ, 書き込み先バッファ, バッファ容量)
+/// 戻り値: 書き込んだ成分数（`float` なら 1、`Vector3` なら 3）。
+///         フィールドが無い・`[Bindable]` が付いていない・型が非対応・
+///         バッファが足りないときは **0**（＝解決失敗）。
+///
+/// ## フェーズ外から呼んでよい理由
+/// リフレクションでインスタンスのフィールドを読むだけで、World・Actor ツリーへは
+/// 一切触れない（`IsReferenceField` と同じ制約）。したがって描画準備中でも
+/// エディタのインスペクタ更新中でも安全に呼べる。
+type ReadFieldFloatsFn =
+    unsafe extern "system" fn(isize, *const u8, i32, *mut f32, i32) -> i32;
 /// コンポーネントアクセス用の関数ポインタ表（HOST_API）を C# へ登録する。
 type RegisterHostApiFn = unsafe extern "system" fn(*const host_api::ScriptHostApi);
 
@@ -148,6 +162,8 @@ pub struct ScriptingHost {
     pub(crate) resolve_refs_fn: ResolveRefsFn,
     /// フィールドが参照フィールド型かの判定（アクタリネーム時の参照追従で使用）
     pub(crate) is_ref_field_fn: IsRefFieldFn,
+    /// `[Bindable]` フィールドの実行中の値の読み取り（`@ref` バインドの解決で使用）
+    pub(crate) read_field_floats_fn: ReadFieldFloatsFn,
     register_host_api_fn:    RegisterHostApiFn,
 }
 
@@ -204,6 +220,8 @@ impl ScriptingHost {
             set_field_fn:      get_fn!(fn(isize, *const u8, i32, *const u8, i32), pdcstr!("SetFieldValue")),
             resolve_refs_fn:   get_fn!(fn(isize),                              pdcstr!("ResolveReferenceFields")),
             is_ref_field_fn:   get_fn!(fn(isize, *const u8, i32) -> i32,       pdcstr!("IsReferenceField")),
+            read_field_floats_fn: get_fn!(fn(isize, *const u8, i32, *mut f32, i32) -> i32,
+                                                                              pdcstr!("ReadFieldFloats")),
             register_host_api_fn: get_fn!(fn(*const host_api::ScriptHostApi),  pdcstr!("RegisterHostApi")),
         }))
     }

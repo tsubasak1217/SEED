@@ -27,6 +27,8 @@
 pub mod resolved;
 pub mod query;
 pub mod collect;
+/// 水面シェーダパラメータの `@ref` バインド適用（W8.3）
+pub mod bindings;
 pub mod shore;
 pub mod spline;
 // 水位グラフ（Phase W2.5）: 数値計算（level_graph）と ECS 結線（level_sim）を分ける。

@@ -195,6 +195,7 @@ public partial class InspectorPanel : UserControl
             _runtime.PluginListReceived      -= OnPluginListReceived;
             _runtime.ControlPointSelected    -= OnControlPointSelected;
             _runtime.ControlPointDeselected  -= OnControlPointDeselected;
+            _runtime.BindableSourcesReceived -= OnBindableSourcesReceived;
         }
         _runtime = runtime;
         _runtime.SelectionChanged        += OnSelectionChanged;
@@ -203,6 +204,7 @@ public partial class InspectorPanel : UserControl
         _runtime.PluginListReceived      += OnPluginListReceived;
         _runtime.ControlPointSelected    += OnControlPointSelected;
         _runtime.ControlPointDeselected  += OnControlPointDeselected;
+        _runtime.BindableSourcesReceived += OnBindableSourcesReceived;
     }
 
     /// <summary>
@@ -5089,6 +5091,14 @@ public partial class InspectorPanel : UserControl
             var max   = item.TryGetProperty("max",   out var pmax) ? pmax.GetSingle() : 1f;
             // `@reset` 属性の有無（旧ランタイムはキーを送らない＝ボタン無しで安全側）。
             var canReset = item.TryGetProperty("reset", out var pr) && pr.ValueKind == JsonValueKind.True;
+            // `@ref` 属性（Phase W8.3）。true の行は値の入力欄ではなく参照バインド行になる。
+            // 旧ランタイムはキーを送らないので「参照ではない＝従来どおりの値行」に倒す。
+            var isRef = item.TryGetProperty("ref", out var pref) && pref.ValueKind == JsonValueKind.True;
+            // 現在のバインド先 "アクタ名|スロット名|変数名"（未設定なら空文字列）。
+            var binding = item.TryGetProperty("binding", out var pb) ? pb.GetString() ?? "" : "";
+            // バインドが今解決できているか。キーが無い旧ランタイムは「解決済み」＝警告なしに倒す。
+            var bindingOk = !item.TryGetProperty("binding_ok", out var pbo)
+                            || pbo.ValueKind != JsonValueKind.False;
             // 値は常に 4 成分。欠けている場合は 0 で埋める（旧ランタイム耐性）。
             float[] v = new float[ShaderParamComponentCount];
             if (item.TryGetProperty("value", out var pv) && pv.ValueKind == JsonValueKind.Array)
@@ -5099,6 +5109,15 @@ public partial class InspectorPanel : UserControl
                     if (i >= ShaderParamComponentCount) break;
                     v[i++] = c.GetSingle();
                 }
+            }
+
+            // ── `@ref` の行は値 UI を作らず、参照バインド行に差し替える ──
+            //    値の入力は「バインド元から流れてくる」ので、ここで編集させない。
+            if (isRef)
+            {
+                parent.Children.Add(BuildShaderBindingRow(
+                    info, name, label, type, binding, bindingOk, canReset, SendReset));
+                continue;
             }
 
             switch (type)

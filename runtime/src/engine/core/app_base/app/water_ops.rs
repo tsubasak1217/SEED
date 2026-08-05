@@ -415,6 +415,161 @@ impl App {
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
+    /// `@ref` パラメータ 1 個のバインド先を設定・解除する
+    /// （SET_WATER_SHADER_BINDING IPC。Phase W8.3）。
+    ///
+    /// `binding` が空文字列なら**解除**（キーごと消す）。
+    /// 解除しても `shader_params` の保存値には触れないので、
+    /// バインド前に手で入れた値がそのまま復活する。
+    ///
+    /// ## 妥当性の検証をここで行わない理由
+    /// `handle_set_water_shader_param` と同じで、アセットは編集中に書き換わる。
+    /// 「今の宣言に `@ref` が無い名前は拒否する」とすると、
+    /// バインドを張る → アセットを直す → バインドが消えている、という
+    /// 順序依存の事故が起きる。孤児のバインドは**解決側が無視する**
+    /// （`water::bindings::resolve_bindings`）ので、持っていても害が無い。
+    ///
+    /// ただし**文字列として壊れているバインドは受け付けない**
+    /// （3 要素に割れないものは、保存しても永久に解決できないゴミにしかならない）。
+    pub(super) fn handle_set_water_shader_binding(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        name:         &str,
+        binding:      &str,
+    ) {
+        use super::find_actor_by_dfs;
+        use crate::engine::binding::resolve::parse_binding;
+
+        // 空の名前はキーとして成立しない（マップが壊れる）。
+        let key = name.trim();
+        if key.is_empty() { return; }
+        let binding = binding.trim();
+        // 空 = 解除。それ以外は 3 要素へ割れることを確認する。
+        if !binding.is_empty() && parse_binding(binding).is_none() { return; }
+
+        let wl = self.active_world_line;
+        // 対象スロットのエンティティを解決する（handle_set_water_shader_param と同流儀）。
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            let Some(actor) = find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                else { return };
+            actor.slots().get(slot_idx as usize)
+                .filter(|s| s.kind == ComponentKind::WaterVolume)
+                .map(|s| s.entity)
+        };
+        let Some(entity) = slot_entity else { return };
+
+        let Some(scene) = &mut self.scene else { return };
+        let Some(w) = scene.world.get_mut::<WaterVolumeComponent>(entity) else { return };
+        let changed = if binding.is_empty() {
+            w.bindings.remove(key).is_some()
+        } else {
+            w.bindings.insert(key.to_string(), binding.to_string()).as_deref() != Some(binding)
+        };
+        // 何も変わっていないなら再送も SCENE_MODIFIED も出さない
+        //（無意味な「未保存」印を付けないため）。
+        if !changed { return; }
+
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// 指定アクタが供給できるバインド元の候補を返す
+    /// （GET_BINDABLE_SOURCES IPC。Phase W8.3）。
+    ///
+    /// 応答は `BINDABLE_SOURCES:{json}`:
+    /// ```json
+    /// [{"slot":"MainLight","label":"Light","variables":[{"name":"intensity","label":"強度"}]}]
+    /// ```
+    /// - `slot`      … バインド文字列の 2 要素目に入る値（スロット名。Transform は "Transform"）
+    /// - `label`     … 1 ページ目に出す表示名（コンポーネント種別）
+    /// - `variables` … 2 ページ目に出す変数一覧（要求型に**厳密一致**するものだけ）
+    ///
+    /// **供給値の正典は Rust 側**（`engine::binding::catalog` の表と、
+    /// スクリプトの `[SerializeField, Bindable]` フィールド）であり、
+    /// エディタはこの応答を並べるだけでよい（ミラー表を持たない）。
+    ///
+    /// 変数が 1 つも無いスロットは**候補に出さない**（選んでも進めない行を作らない）。
+    ///
+    /// ## スクリプトの候補が出ない場合
+    /// スクリプトのコンパイルに失敗している（CLR インスタンスではなく
+    /// プレースホルダになっている）と、`[Bindable]` を問い合わせる相手が居ないため
+    /// そのスロットは候補に出ない。まずスクリプトのコンパイルエラーを直すこと。
+    pub(super) fn handle_get_bindable_sources(&self, actor_dfs_id: u32, value_type: &str) {
+        use super::find_actor_by_dfs;
+        use crate::engine::binding::catalog::{self, BindableHost, BindableValueType};
+        use crate::engine::components::script_component::ScriptComponent;
+        use crate::engine::components::Transform;
+
+        let Some(ipc)   = &self.ipc   else { return };
+        let Some(scene) = &self.scene else { return };
+        // 未知の型名は候補ゼロ（＝空配列）で返す。無応答にすると UI が待ち続ける。
+        let Some(want) = BindableValueType::from_str(value_type.trim()) else {
+            ipc.send("BINDABLE_SOURCES:[]");
+            return;
+        };
+
+        let wl = self.active_world_line;
+        let mut c = 0u32;
+        let Some(actor) = find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c) else {
+            ipc.send("BINDABLE_SOURCES:[]");
+            return;
+        };
+
+        /// 応答 1 件（1 スロットぶん）を組み立てる小道具。
+        fn entry(slot: &str, label: &str, vars: Vec<serde_json::Value>) -> serde_json::Value {
+            serde_json::json!({ "slot": slot, "label": label, "variables": vars })
+        }
+
+        let mut out: Vec<serde_json::Value> = Vec::new();
+
+        // ── ① アクタのルート直付け（Transform）────────────────
+        //     スロット一覧に現れないので先に見る。スロット名は表の表示名をそのまま使う
+        //     （解決側 `resolve_binding` と同じ規約）。
+        if scene.world.get::<Transform>(actor.entity).is_some() {
+            let vars: Vec<serde_json::Value> =
+                catalog::variables_for(BindableHost::ActorRoot, want)
+                    .map(|v| serde_json::json!({ "name": v.variable, "label": v.variable_label }))
+                    .collect();
+            if let Some(first) = catalog::variables_for(BindableHost::ActorRoot, want).next()
+                && !vars.is_empty()
+            {
+                out.push(entry(first.component_label, first.component_label, vars));
+            }
+        }
+
+        // ── ② スロット（有効なもののみ）──────────────────────
+        for slot in actor.slots().iter().filter(|s| s.enabled) {
+            let vars: Vec<serde_json::Value> = if slot.kind == ComponentKind::Script {
+                // スクリプトは C# 側が正典。[SerializeField] の各フィールドへ
+                // 実際に読み取りを試し、**要求型と成分数が一致したものだけ**を候補にする
+                //（＝[Bindable] の検証も型判定も CLR 側の 1 か所で完結する）。
+                let Some(sc) = scene.world.get::<ScriptComponent>(slot.entity) else { continue };
+                sc.fields.keys()
+                    .filter(|name| sc.read_bindable_field(name, want.components()).is_some())
+                    .map(|name| serde_json::json!({ "name": name, "label": name }))
+                    .collect()
+            } else {
+                catalog::variables_for(BindableHost::Slot(slot.kind), want)
+                    .map(|v| serde_json::json!({ "name": v.variable, "label": v.variable_label }))
+                    .collect()
+            };
+            if vars.is_empty() { continue; }
+
+            // 1 ページ目の表示名。組込はカタログの表示名、スクリプトはスロット名そのもの。
+            let label = catalog::variables_for(BindableHost::Slot(slot.kind), want)
+                .next()
+                .map(|v| v.component_label.to_string())
+                .unwrap_or_else(|| slot.name.clone());
+            out.push(entry(&slot.name, &label, vars));
+        }
+
+        let json = serde_json::to_string(&out).unwrap_or_else(|_| "[]".to_string());
+        ipc.send(&format!("BINDABLE_SOURCES:{json}"));
+    }
+
     /// 川の制御点をすべて「地形高さ + オフセット」の Y へ合わせる（Phase W4）。
     ///
     /// 川は地形の谷筋に沿って引くものなので、XZ だけ置いてから一括で
