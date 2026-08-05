@@ -36,7 +36,8 @@ use crate::engine::components::ComponentData;
 use crate::engine::components::ComponentKind;
 use crate::engine::core::app_base::ipc::IpcCommand;
 use crate::engine::core::app_base::undo::{
-    ActorActiveCommand, CanvasTransformCommand, SlotFieldEditCommand,
+    ActorActiveCommand, CanvasTransformCommand, SceneShadingCommand, SceneShadingState,
+    SlotFieldEditCommand,
 };
 use crate::engine::components::CanvasTransform;
 use crate::engine::ecs::{Entity, World};
@@ -69,6 +70,16 @@ pub(super) enum FieldEditTarget {
     CanvasTransform { actor_dfs_id: u32, merge_key: String },
     /// アクターのアクティブフラグ編集。
     ActorActive { actor_dfs_id: u32 },
+    /// シーン設定ウィンドウの「シェーダ」まわり（アセットパス・パラメータ・`@ref` バインド）。
+    ///
+    /// コンポーネントスロットではないので `Slot` には載らないが、
+    /// **編集であることに変わりはない**ので同じ機構で Undo に載せる。
+    SceneShading { merge_key: String },
+}
+
+/// シーン設定のシェーディング編集の分類を組み立てる小ヘルパ。
+fn scene_shading(cmd_name: &str, field: &str) -> FieldEditTarget {
+    FieldEditTarget::SceneShading { merge_key: format!("{cmd_name}/scene/{field}") }
 }
 
 /// スロット編集の分類を組み立てる小ヘルパ。
@@ -194,6 +205,17 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             slot(*actor_dfs_id, *slot_idx, "SetCameraComponentOrthoHeight", ""),
         IpcCommand::SetCameraComponentShadingAsset { actor_dfs_id, slot_idx, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetCameraComponentShadingAsset", ""),
+        // カメラ添付シェーディングアセットのパラメータ（L3）。マージキーにパラメータ名まで
+        // 含めるので、スライダーのドラッグは「そのパラメータ 1 個ぶん」で 1 コマンドにまとまる。
+        IpcCommand::SetCameraShadingParam { actor_dfs_id, slot_idx, name, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetCameraShadingParam", name),
+        // 「デフォルトに戻す」ボタン。値編集と**別のコマンド名**でマージキーを作るので、
+        // 直前のスライダー操作と 1 手にまとまらず、Ctrl+Z 1 回でリセット前へ戻る。
+        IpcCommand::ResetCameraShadingParam { actor_dfs_id, slot_idx, name } =>
+            slot(*actor_dfs_id, *slot_idx, "ResetCameraShadingParam", name),
+        // `@ref` バインドの設定・解除。これも値編集とは別コマンド名にする。
+        IpcCommand::SetCameraShadingBinding { actor_dfs_id, slot_idx, name, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetCameraShadingBinding", name),
         // スロット名・有効フラグも ComponentSlotData に含まれるため同じ経路で戻せる。
         IpcCommand::SetSlotEnabled { actor_dfs_id, slot_idx, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetSlotEnabled", ""),
@@ -215,6 +237,17 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             },
         IpcCommand::SetActorActive { dfs_id, .. } =>
             FieldEditTarget::ActorActive { actor_dfs_id: *dfs_id },
+
+        // ── シーン設定ウィンドウの「シェーダ」まわり ──────────
+        // アセットパス・パラメータ値・`@ref` バインドの 3 種。まとめて 1 つの
+        // スナップショット（SceneShadingState）で戻すので、分類先も 1 つにする。
+        IpcCommand::SetSceneShadingAsset { .. } => scene_shading("SetSceneShadingAsset", ""),
+        IpcCommand::SetSceneShadingParam { name, .. } =>
+            scene_shading("SetSceneShadingParam", name),
+        IpcCommand::ResetSceneShadingParam { name } =>
+            scene_shading("ResetSceneShadingParam", name),
+        IpcCommand::SetSceneShadingBinding { name, .. } =>
+            scene_shading("SetSceneShadingBinding", name),
 
         // ── 対象外 ──────────────────────────────────────────
         // 【既に専用 Undo を持つ経路】ここで記録すると二重に積まれる。
@@ -274,8 +307,13 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::TerrainScatterRules { .. }
         | IpcCommand::TerrainScatterBrush { .. }
         // 【シーン／プロジェクト単位の設定】インスペクタではなく設定パネルの管轄。
+        //
+        // このうち**シェーダまわりだけ**は Undo 対象にしてある（下の SceneShading 腕）。
+        // SET_SCENE_SETTINGS（ビューポート／レンダリング設定）を対象外のまま残すのは、
+        // それらがエディタ側で個別 IPC（SET_POST_FX / SET_AMBIENT 等）により
+        // **既にライブ適用済み**で、このコマンドは保存用データの格納しかしないためである。
+        // データだけ巻き戻すと画面と設定ウィンドウの表示が食い違う（＝直せない状態になる）。
         | IpcCommand::SetSceneSettings { .. }
-        | IpcCommand::SetSceneShadingAsset { .. }
         | IpcCommand::SetPostFx { .. }
         | IpcCommand::SetAmbient { .. }
         | IpcCommand::SetRtShadows(..)
@@ -342,6 +380,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::GetPluginList
         // バインド元候補の問い合わせ（W8.3）。読み取りのみでシーンを変えない。
         | IpcCommand::GetBindableSources { .. }
+        // シーン既定のパラメータ一覧の問い合わせ。読み取りのみでシーンを変えない。
+        | IpcCommand::GetSceneShadingParams
         | IpcCommand::ValidateWgsl { .. } => FieldEditTarget::None,
     }
 }
@@ -354,6 +394,8 @@ pub(super) enum FieldEditSnapshot {
     Slot(ComponentSlotData),
     CanvasTransform(CanvasTransform),
     ActorActive(bool),
+    /// シーン既定のシェーディング設定 1 式。
+    SceneShading(SceneShadingState),
 }
 
 impl FieldEditSnapshot {
@@ -371,6 +413,7 @@ fn json_of(snap: &FieldEditSnapshot) -> String {
         FieldEditSnapshot::Slot(d) => serde_json::to_string(d).unwrap_or_default(),
         FieldEditSnapshot::CanvasTransform(ct) => serde_json::to_string(ct).unwrap_or_default(),
         FieldEditSnapshot::ActorActive(a) => a.to_string(),
+        FieldEditSnapshot::SceneShading(st) => format!("{st:?}"),
     }
 }
 
@@ -633,6 +676,9 @@ impl App {
                 let actor = find_actor_by_dfs(&scene.actors, wl, *actor_dfs_id, &mut c)?;
                 Some(FieldEditSnapshot::ActorActive(actor.active))
             }
+            // シーン設定は世界線に属さない（シーン全体で 1 つ）。
+            FieldEditTarget::SceneShading { .. } =>
+                Some(FieldEditSnapshot::SceneShading(SceneShadingState::capture(scene))),
         }
     }
 
@@ -651,7 +697,8 @@ impl App {
         let (merge_key, wl) = match target {
             FieldEditTarget::None => return,
             FieldEditTarget::Slot { merge_key, .. }
-            | FieldEditTarget::CanvasTransform { merge_key, .. } => {
+            | FieldEditTarget::CanvasTransform { merge_key, .. }
+            | FieldEditTarget::SceneShading { merge_key } => {
                 (merge_key.clone(), self.active_world_line)
             }
             // アクティブ切替はトグルなのでマージ対象にしない（キーを毎回変える必要はなく、
@@ -742,6 +789,16 @@ impl App {
                     dfs_id: *actor_dfs_id,
                     before: *b,
                     after: *a,
+                }));
+            }
+            (
+                FieldEditTarget::SceneShading { .. },
+                FieldEditSnapshot::SceneShading(b),
+                FieldEditSnapshot::SceneShading(a),
+            ) => {
+                self.undo_history.record(Box::new(SceneShadingCommand {
+                    before: b.clone(),
+                    after:  a.clone(),
                 }));
             }
             // 前後でスナップショット種別が変わることは無い（対象が同じなら型も同じ）。
@@ -930,6 +987,97 @@ mod tests {
             other => panic!("スロット編集として分類されること: {other:?}"),
         }
         assert_ne!(reset, edit, "値編集とリセットは別コマンドとして積まれること");
+    }
+
+    /// 分類関数: カメラ添付シェーディングアセットのパラメータ（L3）が
+    /// スロット編集として分類され、値編集・リセット・バインドが別コマンドに分かれること。
+    ///
+    /// ここが `None` に落ちると、カメラのシェーディングパラメータだけ Ctrl+Z が効かない
+    /// という「この機能だけ Undo の穴」になる。
+    #[test]
+    fn field_edit_target_classifies_camera_shading_param() {
+        let edit = field_edit_target(&IpcCommand::SetCameraShadingParam {
+            actor_dfs_id: 2, slot_idx: 1, name: "toon_steps".into(), value: "3,0,0,0".into(),
+        });
+        match &edit {
+            FieldEditTarget::Slot { actor_dfs_id, slot_idx, merge_key } => {
+                assert_eq!((*actor_dfs_id, *slot_idx), (2, 1));
+                assert!(merge_key.contains("toon_steps"), "{merge_key}");
+            }
+            other => panic!("スロット編集として分類されること: {other:?}"),
+        }
+        let reset = field_edit_target(&IpcCommand::ResetCameraShadingParam {
+            actor_dfs_id: 2, slot_idx: 1, name: "toon_steps".into(),
+        });
+        let bind = field_edit_target(&IpcCommand::SetCameraShadingBinding {
+            actor_dfs_id: 2, slot_idx: 1, name: "toon_steps".into(), binding: "A|B|c".into(),
+        });
+        assert_ne!(edit, reset, "値編集とリセットは 1 手にまとまらないこと");
+        assert_ne!(edit, bind,  "値編集とバインド設定は 1 手にまとまらないこと");
+        // 別パラメータは別コマンド（スライダー往復が他のパラメータを巻き込まない）。
+        assert_ne!(edit, field_edit_target(&IpcCommand::SetCameraShadingParam {
+            actor_dfs_id: 2, slot_idx: 1, name: "toon_rim_strength".into(),
+            value: "1,0,0,0".into(),
+        }));
+    }
+
+    /// 分類関数: シーン設定ウィンドウの「シェーダ」まわりが Undo 対象になること。
+    ///
+    /// シーン設定は長らく Undo の対象外だったが、シェーダのパラメータは
+    /// スライダーで詰める性質上 Ctrl+Z が必須なので、専用の分類を持たせてある。
+    #[test]
+    fn field_edit_target_classifies_scene_shading_edits() {
+        let asset = field_edit_target(&IpcCommand::SetSceneShadingAsset {
+            path: "assets://shaders/toon.wgsl".into(),
+        });
+        let param = field_edit_target(&IpcCommand::SetSceneShadingParam {
+            name: "toon_steps".into(), value: "3,0,0,0".into(),
+        });
+        let reset = field_edit_target(&IpcCommand::ResetSceneShadingParam {
+            name: "toon_steps".into(),
+        });
+        let bind  = field_edit_target(&IpcCommand::SetSceneShadingBinding {
+            name: "toon_light_boost".into(), binding: "Sun|MainLight|intensity".into(),
+        });
+        for t in [&asset, &param, &reset, &bind] {
+            assert!(matches!(t, FieldEditTarget::SceneShading { .. }),
+                "SceneShading として分類されること: {t:?}");
+        }
+        assert_ne!(param, reset, "値編集とリセットは別コマンド");
+        assert_ne!(param, bind,  "値編集とバインド設定は別コマンド");
+        assert_ne!(param, asset, "アセット差し替えと値編集は別コマンド");
+        // 読み取り専用の問い合わせは対象外であること。
+        assert_eq!(field_edit_target(&IpcCommand::GetSceneShadingParams), FieldEditTarget::None);
+        // ビューポート／レンダリング設定は従来どおり対象外（理由は分類表のコメント参照）。
+        assert_eq!(
+            field_edit_target(&IpcCommand::SetSceneSettings { json: "{}".into() }),
+            FieldEditTarget::None,
+        );
+    }
+
+    /// シーン設定のシェーディング状態が set → undo → redo で往復すること。
+    #[test]
+    fn scene_shading_state_round_trips() {
+        use crate::engine::core::app_base::scene::Scene;
+        use crate::engine::core::app_base::undo::{Command, SceneShadingCommand, SceneShadingState};
+
+        let mut scene = Scene::new("test");
+        scene.shading_asset = Some("assets://shaders/toon.wgsl".into());
+        let before = SceneShadingState::capture(&scene);
+
+        scene.shading_params.insert("toon_steps".into(), [5.0, 0.0, 0.0, 0.0]);
+        scene.shading_bindings.insert("toon_light_boost".into(), "Sun|MainLight|intensity".into());
+        let after = SceneShadingState::capture(&scene);
+        assert_ne!(before, after);
+
+        let mut cmd = SceneShadingCommand { before: before.clone(), after: after.clone() };
+        cmd.undo(&mut scene);
+        assert!(scene.shading_params.is_empty(), "Undo で上書き値が消えること");
+        assert!(scene.shading_bindings.is_empty(), "Undo でバインドも消えること");
+        assert_eq!(scene.shading_asset.as_deref(), Some("assets://shaders/toon.wgsl"),
+            "触っていないアセットパスは巻き添えにならないこと");
+        cmd.execute(&mut scene);
+        assert_eq!(scene.shading_params["toon_steps"], [5.0, 0.0, 0.0, 0.0], "Redo で戻ること");
     }
 
     /// 分類関数: 同じスロットでも別フィールドならマージキーが異なること。

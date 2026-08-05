@@ -150,6 +150,25 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
     /// <summary>シーン既定シェーディングアセットの仮想パス（未設定なら null）。</summary>
     private string? _shadingAssetPath;
 
+    /// <summary>
+    /// シーン既定シェーディングアセットが宣言したパラメータの配列 JSON
+    /// （<c>SCENE_SHADING_PARAMS</c> の受信内容）。
+    ///
+    /// **解析はランタイムだけが行う**ので、ここは受け取った JSON をそのまま持ち、
+    /// 行の生成は <see cref="_shadingParamRowBuilder"/> へ委譲する
+    /// （インスペクタの水面パラメータ行と同じコードを使い回すため）。
+    /// </summary>
+    private string _shadingParamsJson = "[]";
+
+    /// <summary>
+    /// パラメータ行を組み立てる処理（MainWindow が InspectorPanel の実装を渡す）。
+    ///
+    /// 行の形（カラーピッカー／スライダー／数値／参照バインド）は水面・カメラと
+    /// 完全に同じであるべきなので、UI の作り方はインスペクタの 1 本に集約している。
+    /// null なら（＝未接続なら）パラメータ行を出さない。
+    /// </summary>
+    private Action<StackPanel, string>? _shadingParamRowBuilder;
+
     /// <summary>デバッグカメラの位置（X, Y, Z）。シーン設定ではなく CAM_TRANSFORM で扱う。</summary>
     private float[] _cameraPosition;
 
@@ -253,6 +272,27 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
         _shadingAssetPath = shadingAssetPath;
         _cameraPosition   = (float[])cameraPosition.Clone();
         _cameraEuler      = (float[])cameraEuler.Clone();
+        SelectCategory(_selectedCategoryId);
+    }
+
+    /// <summary>
+    /// パラメータ行の生成処理を接続する（MainScene 側の InspectorPanel 実装を渡す）。
+    /// 接続後は次のパネル再構築からパラメータ行が出る。
+    /// </summary>
+    public void SetShadingParamRowBuilder(Action<StackPanel, string> builder)
+    {
+        _shadingParamRowBuilder = builder;
+        SelectCategory(_selectedCategoryId);
+    }
+
+    /// <summary>
+    /// ランタイムから受信したシーン既定シェーディングパラメータ（SCENE_SHADING_PARAMS）を
+    /// 表示へ反映する。宣言・現在値・バインド状態がすべてこの JSON に載っている。
+    /// </summary>
+    public void UpdateShadingParams(string json)
+    {
+        if (_shadingParamsJson == json) return;   // 変化なしなら作り直さない（ちらつき防止）
+        _shadingParamsJson = json;
         SelectCategory(_selectedCategoryId);
     }
 
@@ -597,6 +637,9 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
             "カメラ側の Shading が未設定のときのフォールバック先になります。\n" +
             "未設定の場合は組み込み標準 PBR を使用します。"));
         panel.Children.Add(BuildShadingAssetRow());
+        // アセットが宣言した `override` パラメータの行を「シェーダ」行の直下へ動的生成する
+        //（カメラ添付・水面と同じ流儀・同じワイヤ表現）。
+        _shadingParamRowBuilder?.Invoke(panel, _shadingParamsJson);
 
         // ── デフォルトに戻す（このカテゴリのみ）──
         panel.Children.Add(SceneSettingsControls.ResetButton(() =>

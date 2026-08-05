@@ -692,6 +692,10 @@ public partial class InspectorPanel : UserControl
         string CamProjection = "perspective", float CamOrthoHeight = 10f,
         // シェーディングアセット（.wgsl）参照。空文字列 = 未設定（シーン既定 → 組み込み標準 PBR）
         string CamShadingAsset = "",
+        // シェーディングアセットが宣言した `override` パラメータの配列 JSON。
+        // 水面の WaterShaderParamsJson と**同一のワイヤ表現**（解析の正典はランタイム）。
+        // 空配列 = アセット未指定／宣言なし（＝パラメータ行を 1 つも作らない）。
+        string CamShadingParamsJson = "[]",
         // PluginComponent 用フィールド
         // plugin_fields は [{"key":...,"label":...,"kind":{...},"current_value":...,"tooltip":...},...] JSON
         string PluginName = "", string PluginFieldsJson = "",
@@ -1155,6 +1159,9 @@ public partial class InspectorPanel : UserControl
             var camOrthoHeight = comp.TryGetProperty("ortho_height", out var cohj) ? cohj.GetSingle() : 10f;
             // CameraComponent 用: シェーディングアセット（.wgsl）のパス。空文字は未設定を意味する
             var camShadingAsset = comp.TryGetProperty("shading_asset", out var csaj) ? csaj.GetString() ?? "" : "";
+            // CameraComponent 用: シェーディングアセットのパラメータ宣言＋現在値（配列 JSON）
+            var camShadingParams = comp.TryGetProperty("shading_params", out var cspj)
+                ? cspj.GetRawText() : "[]";
             // PluginComponent 用: プラグイン名とフィールド定義 JSON
             var pluginName       = comp.TryGetProperty("plugin_name",   out var pn)  ? pn.GetString()  ?? "" : "";
             var pluginFieldsJson = comp.TryGetProperty("plugin_fields",  out var pf)  ? pf.GetRawText()      : "[]";
@@ -1364,6 +1371,7 @@ public partial class InspectorPanel : UserControl
                 CamBarCR: camBarCR, CamBarCG: camBarCG, CamBarCB: camBarCB, CamBarCA: camBarCA,
                 CamProjection: camProjection, CamOrthoHeight: camOrthoHeight,
                 CamShadingAsset: camShadingAsset,
+                CamShadingParamsJson: camShadingParams,
                 PluginName: pluginName, PluginFieldsJson: pluginFieldsJson,
                 ColliderDataJson: colliderDataJson, RigidbodyDataJson: rigidbodyDataJson,
                 ScriptFieldsJson: scriptFieldsJson,
@@ -2588,6 +2596,18 @@ public partial class InspectorPanel : UserControl
             };
         }
         sp.Children.Add(shadingRow);
+
+        // ── アセットが宣言したパラメータ行（L3）──────────────────
+        // 「シェーディングアセット」行の**直下**へ動的生成する（水面と同じ流儀）。
+        // 行の形（カラーピッカー／スライダー／数値／参照バインド）はランタイムが送る
+        // 宣言 JSON が決める。C# は構文解析を一切持たない。
+        AddShaderParamRows(sp, new ShaderParamTarget(
+            info.CamShadingParamsJson,
+            () => $"SET_CAMERA_SHADING_PARAM:{_currentActorId},{info.SlotIdx},",
+            () => $"RESET_CAMERA_SHADING_PARAM:{_currentActorId},{info.SlotIdx},",
+            () => $"SET_CAMERA_SHADING_BINDING:{_currentActorId},{info.SlotIdx},",
+            "シェーディングアセット",
+            RequiresActorSelection: true));
 
         return sp;
     }
@@ -5034,10 +5054,10 @@ public partial class InspectorPanel : UserControl
     /// **構文解析は一切行わない**（正典はランタイムの water/shade_params.rs）。
     /// 値の送信は SET_WATER_SHADER_PARAM で、型に依らず常に 4 成分を送る。
     /// </summary>
-    private void AddShaderParamRows(StackPanel parent, SlotInfo info)
+    public void AddShaderParamRows(StackPanel parent, ShaderParamTarget target)
     {
-        // 宣言が無ければ何も作らない（アセット未指定・読めないパス・注釈なし）。
-        if (string.IsNullOrWhiteSpace(info.WaterShaderParamsJson)) return;
+        // 宣言が無ければ何も作らない（アセット未指定・読めないパス・宣言なし）。
+        if (string.IsNullOrWhiteSpace(target.ParamsJson)) return;
 
         // JsonDocument は using で確実に解放し、要素は Clone して外へ持ち出す
         //（RootElement を Document の寿命より長く持ち回らないための定石。
@@ -5045,7 +5065,7 @@ public partial class InspectorPanel : UserControl
         List<JsonElement> items;
         try
         {
-            using var doc = JsonDocument.Parse(info.WaterShaderParamsJson);
+            using var doc = JsonDocument.Parse(target.ParamsJson);
             if (doc.RootElement.ValueKind != JsonValueKind.Array) return;
             items = doc.RootElement.EnumerateArray().Select(e => e.Clone()).ToList();
         }
@@ -5059,18 +5079,17 @@ public partial class InspectorPanel : UserControl
         // パラメータ 1 個の値をランタイムへ送る（常に 4 成分）。
         void SendParam(string name, float x, float y, float z, float w)
         {
-            if (_currentActorId < 0) return;
+            if (target.RequiresActorSelection && _currentActorId < 0) return;
             _runtime?.SendToRuntime(FormattableString.Invariant(
-                $"SET_WATER_SHADER_PARAM:{_currentActorId},{info.SlotIdx},{name},{x},{y},{z},{w}"));
+                $"{target.SetPrefix()}{name},{x},{y},{z},{w}"));
         }
 
         // パラメータ 1 個をアセットの既定値へ戻す（`@reset` の付いた行のボタン）。
         // ランタイムはシーン側の上書き値を消すだけで、既定値の解釈はアセットが持ち続ける。
         void SendReset(string name)
         {
-            if (_currentActorId < 0) return;
-            _runtime?.SendToRuntime(FormattableString.Invariant(
-                $"RESET_WATER_SHADER_PARAM:{_currentActorId},{info.SlotIdx},{name}"));
+            if (target.RequiresActorSelection && _currentActorId < 0) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant($"{target.ResetPrefix()}{name}"));
         }
 
         // 行の右端へ「デフォルトに戻す」ボタンを添えた要素を返す
@@ -5116,7 +5135,7 @@ public partial class InspectorPanel : UserControl
             if (isRef)
             {
                 parent.Children.Add(BuildShaderBindingRow(
-                    info, name, label, type, binding, bindingOk, canReset, SendReset));
+                    target, name, label, type, binding, bindingOk, canReset, SendReset));
                 continue;
             }
 
@@ -5140,14 +5159,15 @@ public partial class InspectorPanel : UserControl
                     swatch.MouseLeftButtonDown += (_, _) =>
                     {
                         var result = ColorPickerWindow.ShowDialog(
-                            Window.GetWindow(this), curR, curG, curB, WaterColorAlpha);
+                            target.DialogOwner ?? Window.GetWindow(this),
+                            curR, curG, curB, WaterColorAlpha);
                         if (result is null) return;
                         (curR, curG, curB, _) = result.Value;
                         setColor(curR, curG, curB, WaterColorAlpha);
                         // 4 成分目は色では使わないので 0 を送る（受け側もそのまま保存する）。
                         SendParam(name, curR, curG, curB, 0f);
                     };
-                    row.ToolTip = $"{name}（水面シェーダのパラメータ）";
+                    row.ToolTip = $"{name}（{target.Description}のパラメータ）";
                     parent.Children.Add(canReset ? WithResetButton(row, name, label) : row);
                     break;
                 }
@@ -5177,7 +5197,7 @@ public partial class InspectorPanel : UserControl
                     numeric.textBox.LostFocus += (_, _) => Commit();
                     NumericDragBehavior.SetOnDrag(numeric.textBox, Commit);
                     if (numeric.element is FrameworkElement nfe)
-                        nfe.ToolTip = $"{name}（水面シェーダのパラメータ）";
+                        nfe.ToolTip = $"{name}（{target.Description}のパラメータ）";
                     parent.Children.Add(
                         canReset ? WithResetButton(numeric.element, name, label) : numeric.element);
                     break;
@@ -5428,7 +5448,13 @@ public partial class InspectorPanel : UserControl
         // アセットが `override` で宣言したパラメータを、参照行の直下へ動的に並べる。
         // 構文解析はランタイムが済ませてあるので、ここは種別に応じて行の形
         //（カラーピッカー／スライダー／数値）を選ぶだけである。
-        AddShaderParamRows(colorSp, info);
+        AddShaderParamRows(colorSp, new ShaderParamTarget(
+            info.WaterShaderParamsJson,
+            () => $"SET_WATER_SHADER_PARAM:{_currentActorId},{info.SlotIdx},",
+            () => $"RESET_WATER_SHADER_PARAM:{_currentActorId},{info.SlotIdx},",
+            () => $"SET_WATER_SHADER_BINDING:{_currentActorId},{info.SlotIdx},",
+            "水面シェーダ",
+            RequiresActorSelection: true));
 
         AddColorRow(colorSp, "浅場の色", info.WaterShallowR, info.WaterShallowG, info.WaterShallowB, "shallow_color");
         AddColorRow(colorSp, "深場の色", info.WaterDeepR,    info.WaterDeepG,    info.WaterDeepB,    "deep_color");

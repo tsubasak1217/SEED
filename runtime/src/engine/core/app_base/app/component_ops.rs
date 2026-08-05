@@ -630,8 +630,23 @@ impl App {
                     let shading_asset_json = serde_json::to_string(
                         d.shading_asset.as_deref().unwrap_or("")
                     ).unwrap_or_else(|_| "\"\"".to_string());
+                    // シェーディングアセットが宣言した `override` パラメータの行を作るための
+                    // JSON（水面の "shader_params" と**同一のワイヤ表現**なので、
+                    // エディタ側は同じ行生成コードを使い回せる）。
+                    // 宣言の解析は Rust 側だけが行い、C# は表示するだけである。
+                    let shading_params_json = {
+                        use crate::engine::core::renderer::shade_params;
+                        use crate::engine::core::renderer::shading_asset as l3;
+                        let path = d.shading_asset.as_deref().unwrap_or("");
+                        l3::with_cached_declarations(path, |decls| {
+                            let live = crate::engine::binding::shade_bindings::resolve_bindings(
+                                &scene.actors, &scene.world, wl, decls, &d.shading_bindings);
+                            shade_params::params_json(
+                                decls, &d.shading_params, &d.shading_bindings, &live)
+                        })
+                    };
                     ("CameraComponent", format!(
-                        r#","fov_y_deg":{:.4},"near":{:.4},"far":{:.4},"is_main":{},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"scaling_mode":"{}","target_width":{},"target_height":{},"bar_cr":{:.4},"bar_cg":{:.4},"bar_cb":{:.4},"bar_ca":{:.4},"projection":"{}","ortho_height":{:.4},"shading_asset":{shading_asset_json}"#,
+                        r#","fov_y_deg":{:.4},"near":{:.4},"far":{:.4},"is_main":{},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"scaling_mode":"{}","target_width":{},"target_height":{},"bar_cr":{:.4},"bar_cg":{:.4},"bar_cb":{:.4},"bar_ca":{:.4},"projection":"{}","ortho_height":{:.4},"shading_asset":{shading_asset_json},"shading_params":{shading_params_json}"#,
                         d.fov_y_deg, d.near, d.far, d.is_main as u8,
                         d.clear_color[0], d.clear_color[1], d.clear_color[2], d.clear_color[3],
                         d.scaling_mode.as_str(), d.target_width, d.target_height,

@@ -42,6 +42,22 @@ use super::deferred::{DeferredLightingPipelines, RT_BINDLESS_SHADER_SOURCES};
 use super::pipeline::get_shader_source;
 use super::pipeline_config::{PipelineConfig, RenderPipelineBuilder};
 use super::surface_id::{SHADING_MODEL_DEFAULT_PBR, SHADING_MODEL_MASK};
+use super::shade_params::{
+    ShadeParamBlock, ShadeParamDecl, ShadeParamSet, PARAM_VALUE_COMPONENTS, SHADE_PARAM_MAX,
+    SHADING_DIALECT,
+};
+
+/// パラメータ宣言を **L3 方言**で解析する（共通パーサ `renderer::shade_params` への入口）。
+///
+/// 方言の選択をこの 1 箇所へ閉じることで、以降の呼び出しは種別を意識しなくてよい。
+fn parse_params(asset_src: &str) -> ShadeParamSet {
+    super::shade_params::parse_params(asset_src, SHADING_DIALECT)
+}
+
+/// 宣言行を **L3 方言**で除去する（行数は保存されるので行番号写像はそのまま使える）。
+fn strip_declarations(asset_src: &str) -> String {
+    super::shade_params::strip_declarations(asset_src, SHADING_DIALECT)
+}
 
 // ============================================================
 //  定数（マジックナンバーの一切を名前で持つ）
@@ -68,6 +84,9 @@ const VARIANT_NAME_RT_ON: &str = "rt_on";
 const VARIANT_NAME_RT_BINDLESS: &str = "rt_bindless";
 /// 変種の検証以前（契約バージョンの照合）で弾かれたことを表す識別子。
 const VARIANT_NAME_CONTRACT: &str = "contract";
+/// パラメータ宣言（`override` ＋ 属性）の指摘であることを表す識別子。
+/// 連結自体は成功しているので変種名ではなくこの固定値を載せる。
+const VARIANT_NAME_PARAMS: &str = "params";
 
 /// 契約バージョン診断が指す行番号（1 始まり）。
 ///
@@ -105,6 +124,28 @@ const DISPATCH_SOURCE_NAME: &str = "shading_dispatch.wgsl";
 /// 生成した `shade_surface` に与える擬似シェーダ名（連結リスト上の識別子）。
 /// 実ファイルは存在しない。`make_resolver` がこの名前を生成ソースへ解決する。
 const GENERATED_SOURCE_NAME: &str = "<generated shade_surface>";
+
+/// 生成したパラメータ宣言（uniform ＋ `var<private>`）に与える擬似シェーダ名。
+/// **アセット本体より前**に連結される（アセットは宣言された名前を参照するため）。
+const GENERATED_PARAMS_SOURCE_NAME: &str = "<generated shading params>";
+
+// ── パラメータ uniform の置き場所（GPU 配線の正典） ──────────────────
+//
+// デファードライティングの group2 は元々「gap（空レイアウト）」で、rt_off / rt_on /
+// rt_bindless の **3 変種すべてで空いている**唯一のグループである
+// （group0=camera, group1=G-Buffer, group3=gap または色付き影バインドレス, group4=ライト）。
+// L3 アセットが差し替えるのはこの 3 変種だけなので、ここに 1 本 uniform を置けば
+// 全経路へ値が届く。camera uniform（group0 binding0）は 22 本のパイプラインが
+// 同じ BindGroup を共有しており、そこへ足すと無関係なパイプラインまで
+// レイアウト不一致で壊れるため採らない。
+/// パラメータ uniform を置くバインドグループ番号（deferred の gap を使う）。
+const SHADING_PARAM_GROUP: usize = 2;
+/// パラメータ uniform のバインディング番号。
+const SHADING_PARAM_BINDING: u32 = 0;
+/// 生成する uniform 変数の名前（`SHADING_DIALECT` の予約接頭辞 `u_shading` に含まれる）。
+const SHADING_PARAM_UNIFORM_NAME: &str = "u_shading_params";
+/// 生成する uniform 構造体の型名。
+const SHADING_PARAM_STRUCT_NAME: &str = "ShadingAssetParamBlock";
 
 /// アセットの mtime をポーリングする最短間隔 [秒]。
 /// Edit モードのホットリロード専用。毎フレーム `std::fs::metadata` を叩かないための間引き。
@@ -282,8 +323,94 @@ pub(crate) fn parse_contract_marker(asset_src: &str, marker: &str) -> Option<u32
 }
 
 // ============================================================
+//  1-1b. パラメータ宣言の引き出し（インスペクタ・バインド解決の入口）
+// ============================================================
+
+/// アセットパスからパラメータ宣言だけを読み出す（GPU もパイプラインキャッシュも使わない）。
+///
+/// **読めないパス・空パスでは空 Vec**（＝パラメータ行を 1 つも出さない）を返す。
+/// エラー通知は描画側の解決が行うので、ここで二重に通知はしない。
+pub fn declarations_for_path(asset_path: &str) -> Vec<ShadeParamDecl> {
+    if asset_path.trim().is_empty() { return Vec::new(); }
+    match load_source(asset_path) {
+        Ok(src) => parse_params(&src).params,
+        Err(_)  => Vec::new(),
+    }
+}
+
+/// 「まだ一度も読んでいない」ことを表す番兵 mtime（実在し得ない値）。
+const DECL_CACHE_UNREAD: u64 = u64::MAX;
+
+thread_local! {
+    /// アセットパス → (最後に読んだ mtime, そのときの宣言)。
+    ///
+    /// 宣言はインスペクタ更新とバインド解決（毎フレーム）から引かれるため、
+    /// 素直に毎回ファイルを読むと毎フレーム I/O になる。mtime が変わったときだけ読み直す。
+    /// 描画側のキャッシュ（`ShadingAssetCache`）はデバイスを持つ `DrawContext` の中にあり、
+    /// シーン走査側からは触れないので、別に小さく持つ（water 側と同じ流儀）。
+    static DECL_CACHE: RefCell<HashMap<String, (u64, Vec<ShadeParamDecl>)>> =
+        RefCell::new(HashMap::new());
+}
+
+/// アセットの宣言を**キャッシュ付きで**引き、`f` に渡して結果だけを取り出す。
+///
+/// 宣言 `Vec` を複製せずに済ませるため、参照を借りるクロージャ形式にしてある。
+/// アセットパスが空なら宣言 0 個（＝空スライス）として `f` を呼ぶ。
+pub fn with_cached_declarations<R>(
+    asset_path: &str,
+    f:          impl FnOnce(&[ShadeParamDecl]) -> R,
+) -> R {
+    if asset_path.trim().is_empty() { return f(&[]); }
+    let mtime = crate::engine::asset_fs::mtime(asset_path);
+    DECL_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        // 初回は「あり得ない mtime」で作り、直後の比較で必ず読み込ませる
+        //（宣言が 0 個のアセットを毎回読み直さないための番人）。
+        let entry = cache.entry(asset_path.to_string())
+            .or_insert_with(|| (DECL_CACHE_UNREAD, Vec::new()));
+        if entry.0 != mtime {
+            entry.0 = mtime;
+            entry.1 = declarations_for_path(asset_path);
+        }
+        f(&entry.1)
+    })
+}
+
+// ============================================================
 //  1-2. ディスパッチ生成
 // ============================================================
+
+/// パラメータ宣言（`override`）から uniform と `var<private>` の WGSL を生成する。
+///
+/// アセット本体の**前**に連結される。宣言が 0 個なら空文字列を返し、
+/// group2 には何も置かない（＝従来どおり空 BindGroup が bind される）。
+///
+/// 生成例:
+/// ```wgsl
+/// struct ShadingAssetParamBlock { values: array<vec4<f32>, 8>, };
+/// @group(2) @binding(0) var<uniform> u_shading_params: ShadingAssetParamBlock;
+/// var<private> shadow_tint: vec3<f32>;
+/// var<private> toon_steps: f32;
+/// ```
+/// 値の代入は `generate_dispatch` が `shade_surface` の先頭に置く
+/// （`var<private>` は初期化子から uniform を読めないため、関数の中で代入する）。
+pub fn generate_param_decls(decls: &[ShadeParamDecl]) -> String {
+    if decls.is_empty() { return String::new(); }
+    let mut s = String::new();
+    s.push_str("// ── 自動生成（shading_asset.rs）。アセットの `override` 宣言に対応する\n");
+    s.push_str("//    値の置き場です。値は shade_surface の先頭で代入されます ──\n");
+    s.push_str(&format!(
+        "struct {SHADING_PARAM_STRUCT_NAME} {{ values: array<vec4<f32>, {SHADE_PARAM_MAX}>, }};\n"
+    ));
+    s.push_str(&format!(
+        "@group({SHADING_PARAM_GROUP}) @binding({SHADING_PARAM_BINDING}) \
+         var<uniform> {SHADING_PARAM_UNIFORM_NAME}: {SHADING_PARAM_STRUCT_NAME};\n"
+    ));
+    for d in decls {
+        s.push_str(&format!("var<private> {}: {};\n", d.name, d.kind.wgsl_type()));
+    }
+    s
+}
 
 /// 検出結果から契約関数 `shade_surface` の WGSL 実装を生成する。
 ///
@@ -303,10 +430,23 @@ pub(crate) fn parse_contract_marker(asset_src: &str, marker: &str) -> Option<u32
 /// - **`shade_model_0` へ落ちる `default:` 腕**: ガードを掛けない。「`shade_default` を
 ///   定義しないアセットでは ID 0 の経路がアセット導入前と完全に同値」という L3-a の
 ///   設計要件に疑いを残さないため（shading_dispatch.wgsl 参照）。
-pub fn generate_dispatch(found: &ShadeModelSet) -> String {
+///
+/// ## パラメータの取り込み
+/// `decls` が空でなければ、本体の switch より前に
+/// 「uniform → `var<private>`」の代入を宣言順で並べる。
+/// スロット番号は宣言の出現順であり、`shade_params::build_block` が同じ順で値を詰める。
+pub fn generate_dispatch(found: &ShadeModelSet, decls: &[ShadeParamDecl]) -> String {
     let mut s = String::new();
     s.push_str("// ── 自動生成（shading_asset.rs）。このコードは編集できません ──\n");
     s.push_str("fn shade_surface(sf: ShadingSurface, li: LightSample) -> vec3<f32> {\n");
+    // パラメータの取り込み（宣言順＝スロット順）。
+    // `shade_params::build_block` が同じ順で値を詰めるので、添字は 1 対 1 で対応する。
+    for (slot, d) in decls.iter().enumerate() {
+        s.push_str(&format!(
+            "    {} = {SHADING_PARAM_UNIFORM_NAME}.values[{slot}u].{};\n",
+            d.name, d.kind.wgsl_swizzle(),
+        ));
+    }
     s.push_str("    switch sf.shading_model {\n");
     for (slot, defined) in found.models.iter().enumerate() {
         if !defined { continue }
@@ -397,10 +537,19 @@ impl Variant {
 /// 置換後のリストは `resolve_with_asset` と組み合わせて使う（名前 → ソースの解決側で
 /// アセット本体と生成ディスパッチを返す）。名前は WGSL には現れないので任意でよいが、
 /// naga のエラーメッセージ以外の場所で見えることは無い。
-fn substitute_dispatch(standard: &[String], asset_name: &str, generated_name: &str) -> Vec<String> {
-    let mut out = Vec::with_capacity(standard.len() + 1);
+///
+/// パラメータ宣言（`params_name`）は**アセット本体より前**に置く。
+/// アセットは宣言された名前を値として参照するため、順序が逆だと未定義識別子になる。
+fn substitute_dispatch(
+    standard:       &[String],
+    asset_name:     &str,
+    params_name:    &str,
+    generated_name: &str,
+) -> Vec<String> {
+    let mut out = Vec::with_capacity(standard.len() + 2);
     for name in standard {
         if name == DISPATCH_SOURCE_NAME {
+            out.push(params_name.to_string());
             out.push(asset_name.to_string());
             out.push(generated_name.to_string());
         } else {
@@ -611,23 +760,39 @@ pub fn validate_asset_source(asset_src: &str) -> Vec<WgslDiagnostic> {
         }
     }
 
-    // ── 2. モデル検出とディスパッチ生成 ───────────────────
-    // 実装が 1 つも無いのは「エラー」ではない（全表面が標準 PBR で描かれるだけ）ので
-    // 診断にはしない。build 側でも警告扱いである。
+    // ── 2. モデル検出・パラメータ宣言の解析・生成 ─────────
+    //    宣言（`override` ＋ 属性）は naga が解釈できないので、連結へ渡す前に
+    //    **行数を保ったまま**除去する（行番号写像がそのまま使える）。
+    //    実装が 1 つも無いのは「エラー」ではない（全表面が標準 PBR で描かれるだけ）ので
+    //    診断にはしない。build 側でも警告扱いである。
     let found     = detect_shade_models(asset_src);
-    let generated = generate_dispatch(&found);
-    let lines     = asset_line_count(asset_src);
+    let params    = parse_params(asset_src);
+    let body      = strip_declarations(asset_src);
+    let decls     = generate_param_decls(&params.params);
+    let generated = generate_dispatch(&found, &params.params);
+    let lines     = asset_line_count(&body);
 
     // ── 3. 3 変種を順に検証し、最初の失敗で打ち切る ────────
     for variant in [Variant::RtOff, Variant::RtOn, Variant::RtBindless] {
         if let Err((msg, line, start)) =
-            prepare_variant(variant, IN_MEMORY_ASSET_NAME, asset_src, &generated)
+            prepare_variant(variant, IN_MEMORY_ASSET_NAME, &body, &decls, &generated)
         {
             return vec![diagnostic_from_variant_error(variant, &msg, line, start, lines)];
         }
     }
 
-    // ── 4. 全変種成功 ─────────────────────────────────────
+    // ── 4. パラメータ宣言の問題を診断として返す ────────────
+    //    連結は通る（＝壊れた宣言行は除去済み）ので、ここは「行としては読めたが
+    //    意味が取れない」宣言の指摘である。エディタは該当行にマーカーを置ける。
+    if !params.warnings.is_empty() {
+        return params.warnings.iter().map(|w| WgslDiagnostic {
+            message: w.message.clone(),
+            line:    Some(w.line),
+            variant: VARIANT_NAME_PARAMS.to_string(),
+        }).collect();
+    }
+
+    // ── 5. 全変種成功 ─────────────────────────────────────
     Vec::new()
 }
 
@@ -655,6 +820,18 @@ pub struct ShadingAssetPipelines {
     /// 診断ログ（`[SHADING] loaded ... models=`）で「既定が差し替わったか」「どのモデル ID が
     /// 有効になったか」を一目で分かるようにするために保持する。描画判定には使わない。
     pub models:      ShadeModelSet,
+    /// このアセットが宣言したパラメータ（出現順＝GPU のスロット順）。
+    ///
+    /// 描画側はこの順で `shade_params::build_block` を作り、`params_bg` の
+    /// uniform バッファへ書き込む。空なら group2 は使わない。
+    pub params:      Vec<ShadeParamDecl>,
+    /// group2 に bind するパラメータ uniform の BindGroup。
+    ///
+    /// 宣言が 1 個も無いアセットでは `None`（このとき生成 WGSL にも uniform が
+    /// 現れないので、描画側は従来どおり空 BindGroup を bind する）。
+    /// レイアウトは **rt_off 変種のリフレクション結果**から取るので、
+    /// 手書きレイアウトとの食い違いが構造的に起こらない。
+    pub params_bg:   Option<wgpu::BindGroup>,
 }
 
 /// 1 変種ぶんの連結ソースを組み立てて naga 検証する。
@@ -664,6 +841,7 @@ fn prepare_variant(
     variant:    Variant,
     asset_name: &str,
     asset_src:  &str,
+    params:     &str,
     generated:  &str,
 ) -> Result<(String, Vec<String>, usize), (String, Option<usize>, usize)> {
     let standard = variant.standard_sources();
@@ -676,8 +854,9 @@ fn prepare_variant(
         "シェーディングアセットの連結リストに {DISPATCH_SOURCE_NAME} が含まれていない\
          （バリアント {variant:?} の標準連結順を確認すること）"
     );
-    let names   = substitute_dispatch(&standard, asset_name, GENERATED_SOURCE_NAME);
-    let resolve = make_resolver(asset_name, asset_src, generated);
+    let names   = substitute_dispatch(
+        &standard, asset_name, GENERATED_PARAMS_SOURCE_NAME, GENERATED_SOURCE_NAME);
+    let resolve = make_resolver(asset_name, asset_src, params, generated);
     let (combined, asset_start) = concat_sources(&names, asset_name, &resolve);
     match validate_wgsl(&combined, variant.capabilities()) {
         Ok(())            => Ok((combined, names, asset_start)),
@@ -696,18 +875,21 @@ impl ShadingAssetPipelines {
     /// 失敗（rt_off 変種の検証失敗・パイプライン構築不能）は `Err(メッセージ)`。
     /// rt / rt_bindless 変種の失敗は `Err` にせず、当該フィールドを None にしてメッセージを
     /// `warnings` へ積む（呼び出し側がそこだけ組み込みへフォールバックできる）。
+    ///
+    /// - `params_buf`  : パラメータ uniform（128B）。キャッシュが 1 本だけ持ち、
+    ///                   全アセットで共有する（同時に使われるアセットは 1 枚だけのため）。
     fn build(
         device:       &wgpu::Device,
         deferred:     &DeferredLightingPipelines,
         asset_path:   &str,
         asset_src:    &str,
+        params_buf:   &wgpu::Buffer,
         out_format:   wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
         warnings:     &mut Vec<String>,
     ) -> Result<Self, String> {
         // アセット名は naga のエラー表示にしか現れないので、アセットのパスをそのまま使う。
         let asset_name = asset_path;
-        let lines      = asset_line_count(asset_src);
 
         // ── 契約バージョンの照合 ──────────────────────────────
         match parse_contract_version(asset_src) {
@@ -731,16 +913,27 @@ impl ShadingAssetPipelines {
                  見つかりません（全マテリアルがエンジン標準 PBR で描画されます）"
             ));
         }
-        let generated = generate_dispatch(&found);
+
+        // ── パラメータ宣言の解析と前処理 ──────────────────────
+        // 宣言（`override` ＋ 独自属性）は naga が解釈できないので、連結前に
+        // **行数を保ったまま**除去する。以降は除去済みの `body` だけを連結に使う。
+        let params_set = parse_params(asset_src);
+        for w in &params_set.warnings {
+            warnings.push(format!("{asset_path}:{}: {}", w.line, w.message));
+        }
+        let body      = strip_declarations(asset_src);
+        let lines     = asset_line_count(&body);
+        let decls_src = generate_param_decls(&params_set.params);
+        let generated = generate_dispatch(&found, &params_set.params);
 
         // ── rt_off 変種（必須） ───────────────────────────────
         let (_src_off, names_off, _start_off) =
-            prepare_variant(Variant::RtOff, asset_name, asset_src, &generated)
+            prepare_variant(Variant::RtOff, asset_name, &body, &decls_src, &generated)
                 .map_err(|(msg, line, start)| {
                     format_error(asset_path, Variant::RtOff, &msg, line, start, lines)
                 })?;
-        let resolve_off = make_resolver(asset_name, asset_src, &generated);
-        let (pipeline, _bgls) = RenderPipelineBuilder::new(
+        let resolve_off = make_resolver(asset_name, &body, &decls_src, &generated);
+        let (pipeline, bgls_off) = RenderPipelineBuilder::new(
             device, include_str!("pipelines/deferred_lighting.toml"), out_format, depth_format,
         )
         .with_label("deferred_lighting_shading_asset")
@@ -748,12 +941,33 @@ impl ShadingAssetPipelines {
         .with_shader_sources(names_off)
         .build_owned(resolve_off);
 
+        // ── パラメータ uniform の BindGroup（group2）────────────
+        // レイアウトは rt_off のリフレクション結果をそのまま使う。手書きの BGL と
+        // 突き合わせないので、min_binding_size や visibility の食い違いが原理的に起きない。
+        // 宣言が 0 個のアセットでは生成 WGSL に uniform が現れず、この BGL は空レイアウトに
+        // なる（そのときは BindGroup を作らず、描画側が組み込みの空 BG を bind する）。
+        let params_bgl = bgls_off.into_iter().nth(SHADING_PARAM_GROUP).expect(
+            "deferred_lighting のバインドグループは 0..=4 の 5 本ある（group2 が取れない）",
+        );
+        let params_bg = if params_set.params.is_empty() {
+            None
+        } else {
+            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label:   Some("shading_asset_params"),
+                layout:  &params_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding:  SHADING_PARAM_BINDING,
+                    resource: params_buf.as_entire_binding(),
+                }],
+            }))
+        };
+
         // ── rt_on 変種（RT 対応 GPU のみ） ────────────────────
         let mut rt_group4_bgl: Option<wgpu::BindGroupLayout> = None;
         let rt = if super::rt_shadow::rt_shadows_supported() {
-            match prepare_variant(Variant::RtOn, asset_name, asset_src, &generated) {
+            match prepare_variant(Variant::RtOn, asset_name, &body, &decls_src, &generated) {
                 Ok((_src, names, _start)) => {
-                    let resolve = make_resolver(asset_name, asset_src, &generated);
+                    let resolve = make_resolver(asset_name, &body, &decls_src, &generated);
                     let (pipe, bgls) = RenderPipelineBuilder::new(
                         device, include_str!("pipelines/deferred_lighting_rt.toml"),
                         out_format, depth_format,
@@ -777,15 +991,17 @@ impl ShadingAssetPipelines {
         // ── rt_bindless 変種（RT かつバインドレス対応 GPU のみ） ──
         // レイアウトは組み込み側の BGL を借用する（deferred.rs の rt_bindless 構築と同じ流儀。
         // group4 は rt 変種のリフレクション結果、group3 は組み込みの colored_shadow_bgl）。
+        // group2 だけは **アセット由来**（パラメータ uniform かもしれない）なので、
+        // rt_off のリフレクション結果 `params_bgl` を渡す（宣言 0 個なら空レイアウト＝従来と同じ）。
         let use_bindless = rt.is_some()
             && super::bindless::bindless_supported()
             && deferred.colored_shadow_bgl.is_some();
         let rt_bindless = if use_bindless {
             let g4     = rt_group4_bgl.as_ref().expect("rt 変種構築時に group4 BGL は必ず確定する");
             let cs_bgl = deferred.colored_shadow_bgl.as_ref().expect("use_bindless の条件で Some");
-            match prepare_variant(Variant::RtBindless, asset_name, asset_src, &generated) {
+            match prepare_variant(Variant::RtBindless, asset_name, &body, &decls_src, &generated) {
                 Ok((combined, _names, _start)) => Some(build_bindless_pipeline(
-                    device, deferred, g4, cs_bgl, &combined, out_format,
+                    device, deferred, &params_bgl, g4, cs_bgl, &combined, out_format,
                 )),
                 Err((msg, line, start)) => {
                     warnings.push(format_error(asset_path, Variant::RtBindless, &msg, line, start, lines));
@@ -796,7 +1012,7 @@ impl ShadingAssetPipelines {
             None
         };
 
-        Ok(Self { pipeline, rt, rt_bindless, models: found })
+        Ok(Self { pipeline, rt, rt_bindless, models: found, params: params_set.params, params_bg })
     }
 }
 
@@ -815,16 +1031,19 @@ pub fn models_label(models: &ShadeModelSet) -> String {
     if parts.is_empty() { "なし".to_string() } else { parts.join(",") }
 }
 
-/// シェーダ名 → ソースの解決関数を作る（アセット本体・生成ディスパッチ・組み込みの 3 分岐）。
+/// シェーダ名 → ソースの解決関数を作る
+/// （アセット本体・生成パラメータ宣言・生成ディスパッチ・組み込みの 4 分岐）。
 fn make_resolver<'a>(
     asset_name: &'a str,
     asset_src:  &'a str,
+    params:     &'a str,
     generated:  &'a str,
 ) -> impl Fn(&str) -> String + 'a {
     move |n: &str| {
-        if n == asset_name                    { asset_src.to_string() }
-        else if n == GENERATED_SOURCE_NAME    { generated.to_string() }
-        else                                  { get_shader_source(n).to_string() }
+        if n == asset_name                        { asset_src.to_string() }
+        else if n == GENERATED_PARAMS_SOURCE_NAME { params.to_string() }
+        else if n == GENERATED_SOURCE_NAME        { generated.to_string() }
+        else                                      { get_shader_source(n).to_string() }
     }
 }
 
@@ -835,6 +1054,7 @@ fn make_resolver<'a>(
 fn build_bindless_pipeline(
     device:     &wgpu::Device,
     deferred:   &DeferredLightingPipelines,
+    params_bgl: &wgpu::BindGroupLayout,
     g4:         &wgpu::BindGroupLayout,
     cs_bgl:     &wgpu::BindGroupLayout,
     combined:   &str,
@@ -847,7 +1067,7 @@ fn build_bindless_pipeline(
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("deferred_lighting_rt_bindless_shading_asset"),
         bind_group_layouts: &[
-            &deferred.camera_bgl, &deferred.gbuffer_bgl, &deferred.gap_bgl2, cs_bgl, g4,
+            &deferred.camera_bgl, &deferred.gbuffer_bgl, params_bgl, cs_bgl, g4,
         ],
         push_constant_ranges: &[],
     });
@@ -909,6 +1129,20 @@ pub struct ShadingAssetCache {
     errors:     RefCell<Vec<String>>,
     /// 直近に積んだメッセージ（同じものを連続で積まないための番人）。
     last_error: RefCell<Option<String>>,
+    /// パラメータ uniform（group2 binding0）のバッファ。初回の `resolve` で 1 回だけ作る。
+    ///
+    /// **アセット 1 枚ぶんの値しか同時に必要にならない**（カメラ→シーンの優先規則で
+    /// 1 フレームに採用されるアセットは 1 枚）ので、キャッシュが 1 本だけ持って共有する。
+    /// `OnceCell` なのは、キャッシュ生成時点ではまだデバイスが無いため。
+    params_buf:  std::cell::OnceCell<wgpu::Buffer>,
+    /// アセットパス → 前回のパラメータ宣言署名（ホットリロード連動用）。
+    decl_sigs:     RefCell<HashMap<String, String>>,
+    /// ホットリロードで**宣言が変わった**アセットパスのキュー。
+    ///
+    /// App がフレーム末に drain し、選択中アクタの `ACTOR_COMPONENTS` と
+    /// シーン設定の `SCENE_SHADING_PARAMS` を送り直して行を作り直させる
+    /// （値の行が増減・改名しても UI が追随する）。
+    decls_changed: RefCell<Vec<String>>,
     /// 直近に出力した `[SHADING]` 診断行（チャンネル名 → 前回の行）。
     ///
     /// `resolve` も描画側の採用ログも毎フレーム呼ばれるため、同一内容の行を出し続けない
@@ -930,8 +1164,63 @@ impl ShadingAssetCache {
             paths:      RefCell::new(HashMap::new()),
             errors:      RefCell::new(Vec::new()),
             last_error:  RefCell::new(None),
+            params_buf:  std::cell::OnceCell::new(),
+            decl_sigs:     RefCell::new(HashMap::new()),
+            decls_changed: RefCell::new(Vec::new()),
             last_report: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// 宣言が変わったアセットパスを取り出して空にする。
+    ///
+    /// 呼び出し側（App）は、開いているインスペクタ・シーン設定ウィンドウの
+    /// パラメータ行を作り直させる。
+    pub fn take_decls_changed(&self) -> Vec<String> {
+        std::mem::take(&mut *self.decls_changed.borrow_mut())
+    }
+
+    /// 読み込んだソースの宣言署名を記録し、**前回から変わっていれば**通知キューへ積む。
+    ///
+    /// 初回（署名の記録が無い）は積まない。初回の表示はアクタ選択・ウィンドウ表示の
+    /// タイミングで `declarations_for_path` が直接ファイルを読んで作るためである。
+    fn note_declarations(&self, asset_path: &str, asset_src: &str) {
+        // 名前・型・既定値・ラベル・属性のいずれが変わっても別署名になる。
+        let sig  = format!("{:?}", parse_params(asset_src).params);
+        let prev = self.decl_sigs.borrow_mut().insert(asset_path.to_string(), sig.clone());
+        if let Some(prev) = prev
+            && prev != sig
+        {
+            self.decls_changed.borrow_mut().push(asset_path.to_string());
+        }
+    }
+
+    /// パラメータ uniform バッファを返す（無ければ作る）。
+    ///
+    /// サイズは `SHADE_PARAM_MAX` 個ぶんの `vec4`（固定長）。宣言数に関わらず
+    /// 同じ大きさなので、アセットを差し替えてもバッファを作り直す必要が無い。
+    pub fn params_buffer(&self, device: &wgpu::Device) -> &wgpu::Buffer {
+        self.params_buf.get_or_init(|| device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("shading_asset_params"),
+            size:  std::mem::size_of::<ShadeParamBlock>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }))
+    }
+
+    /// パラメータの現在値を GPU へ書き込む（描画パスを開く前に呼ぶ）。
+    ///
+    /// `values` は「パラメータ名 → 値」で、**解決済みバインドを差し込んだ後**のマップを渡す。
+    /// 宣言に無い名前（改名・削除後の孤児）は無視され、宣言にあって値の無いものは
+    /// アセットの既定値になる（`build_block` の規約）。
+    pub fn upload_params(
+        &self,
+        device: &wgpu::Device,
+        queue:  &wgpu::Queue,
+        decls:  &[ShadeParamDecl],
+        values: &std::collections::BTreeMap<String, [f32; PARAM_VALUE_COMPONENTS]>,
+    ) {
+        let block = super::shade_params::build_block(decls, values);
+        queue.write_buffer(self.params_buffer(device), 0, bytemuck::bytes_of(&block));
     }
 
     /// `[SHADING]` 診断行を出力する（前回と同一内容なら出力しない）。
@@ -1081,6 +1370,8 @@ fn resolve_inner(
             return None;
         }
     };
+    // 宣言が変わったら UI の行を作り直させる（ホットリロード連動）。
+    cache.note_declarations(asset_path, &src);
     let hash = content_hash(&src);
     cache.paths.borrow_mut().insert(
         asset_path.to_string(),
@@ -1100,8 +1391,9 @@ fn resolve_inner(
 
     // ── 4. ビルド ─────────────────────────────────────────────
     let mut warnings = Vec::new();
+    let params_buf = cache.params_buffer(device).clone();
     let result = ShadingAssetPipelines::build(
-        device, deferred, asset_path, &src, out_format, depth_format, &mut warnings,
+        device, deferred, asset_path, &src, &params_buf, out_format, depth_format, &mut warnings,
     );
     for w in warnings { cache.push_message(w); }
 
@@ -1136,28 +1428,62 @@ fn resolve_inner(
 mod tests {
     use super::*;
 
-    /// テスト用のサンプル「トゥーン」シェーディングアセット。
+    /// サンプル「トゥーン」シェーディングアセット。
     ///
-    /// 3 階調のセルシェーディング＋リムライトを **`shade_default`** として実装する
-    /// （＝カメラ／シーンに差すだけで地形・草を含む全体がトゥーンになる）。
-    /// 加えて「例外オブジェクトだけ標準 PBR に戻す」上書き例を `shade_model_1` で示す。
-    /// docs のサンプルコードとしてもそのまま使える実用的な内容にしてある。
+    /// 3 階調のセルシェーディング＋リムライトを **`shade_default`** として実装し
+    /// （＝カメラ／シーンに差すだけで地形・草を含む全体がトゥーンになる）、
+    /// 「例外オブジェクトだけ標準 PBR に戻す」上書き例を `shade_model_1` で示す。
+    /// 加えて `@range` / `@color` / `@ref` のパラメータ宣言を持ち、
+    /// 「宣言の除去 → uniform 生成 → 連結 → naga 検証」の実経路を丸ごと通す。
+    ///
+    /// **`runtime/assets/` を `include_str!` しない**のは、アセットディレクトリが
+    /// このリポジトリのコミット対象外だからである（取り込むと新規クローンでビルドが落ちる）。
+    /// 同梱サンプル `runtime/assets/shaders/toon.wgsl` と docs の 7 章は
+    /// このリテラルと同一内容にしておくこと。
     const TOON_ASSET: &str = r#"// @shading_contract 1
 // ============================================================
 // toon.wgsl — 3 階調セルシェーディング + リムライト（全体の既定シェーディング）
 //
-// このファイルをカメラまたはシーンの「Shading」に差すだけで、シェーディングモデルを
-// 設定していない全表面（地形・草・全マテリアル）がトゥーンで描かれる。
-// マテリアル側の設定は不要。
+// このファイルをカメラまたはシーンの「シェーディングアセット」に差すだけで、
+// シェーディングモデルを設定していない全表面（地形・草・全マテリアル）が
+// トゥーンで描かれる。マテリアル側の設定は不要。
 //
 // 例外的に「このモデルだけは標準 PBR のままにしたい」場合だけ、そのマテリアルの
 // シェーディングモデルを 1 にして shade_model_1（下部）で上書きする。
+//
+// ── パラメータ ──────────────────────────────────────────────
+// 下の `override` 宣言はインスペクタの行になる（カメラの「シェーディングアセット」行の
+// 直下、またはシーン設定ウィンドウの「シェーダ」行の直下）。値はシーンに保存され、
+// アセット側の既定値より優先される。既定値は**このファイル単体で見た目が完成する**よう、
+// パラメータを一切触っていない状態の絵と一致させてある。
 // ============================================================
 
 /// 拡散光の階調数（3 階調＝影・中間・ハイライト）。
-const TOON_DIFFUSE_STEPS: f32 = 3.0;
+/// 大きくするほど滑らかに、小さくするほど強いセル画調になる。
+@range(1.0, 8.0) @reset
+override toon_steps: f32 = 3.0;                                  // 階調数
+
+/// 影側に乗せる色かぶり。白（既定）なら色かぶり無し＝素の陰影。
+/// 青寄りにすると空の反射を拾ったような、暖色にすると間接光の回り込みのような影になる。
+@color @reset
+override toon_shadow_tint: vec3<f32> = vec3(1.0, 1.0, 1.0);      // 影の色
+
 /// 最も暗い階調でも完全な黒にしないための下限（環境光的な底上げ）。
-const TOON_SHADOW_FLOOR: f32 = 0.15;
+@range(0.0, 1.0) @reset
+override toon_shadow_floor: f32 = 0.15;                          // 影の明るさの下限
+
+/// リムライト（輪郭光）の強さ。0 で無効。
+@range(0.0, 2.0) @reset
+override toon_rim_strength: f32 = 0.35;                          // リムライトの強さ
+
+/// 全体の明るさ倍率。
+/// `@ref` が付いているので、インスペクタでは値の入力欄ではなく**参照バインド行**になり、
+/// シーン内のコンポーネントの変数（例: ライトの強度、スクリプトの [Bindable] フィールド）を
+/// 毎フレーム流し込める。バインドしなければこの既定値が使われる。
+@ref @reset
+override toon_light_boost: f32 = 1.0;                            // 明るさ倍率
+
+// ── パラメータにしない定数（画作りの骨格であり、触る必要が薄いもの）──
 /// スペキュラを「乗るか乗らないか」の 2 値にするしきい値。
 const TOON_SPECULAR_THRESHOLD: f32 = 0.6;
 /// 2 値スペキュラの強さ。
@@ -1166,8 +1492,6 @@ const TOON_SPECULAR_STRENGTH: f32 = 0.7;
 const TOON_SPECULAR_POWER: f32 = 48.0;
 /// リムライトの立ち上がり（大きいほど輪郭が細くなる）。
 const TOON_RIM_POWER: f32 = 3.0;
-/// リムライトの強さ。
-const TOON_RIM_STRENGTH: f32 = 0.35;
 
 /// 全体の既定シェーディング: トゥーン。
 /// シェーディングモデルを設定していない全表面（ID 0）がこれで描かれる。
@@ -1179,8 +1503,11 @@ fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
     // ── 拡散: N·L を階調化する ─────────────────────────────
     let ndl  = shading_saturate(dot(N, L));
     // floor(x * steps) / steps は「段の下端」を返すため、段の中心へ寄せて明るさの目減りを防ぐ。
-    let band = shading_posterize(ndl, TOON_DIFFUSE_STEPS) + 0.5 / TOON_DIFFUSE_STEPS;
-    let diffuse_term = max(shading_saturate(band), TOON_SHADOW_FLOOR);
+    let band = shading_posterize(ndl, toon_steps) + 0.5 / toon_steps;
+    let diffuse_term = max(shading_saturate(band), toon_shadow_floor);
+
+    // 影側ほど `toon_shadow_tint` を強く混ぜる（既定の白では恒等＝色かぶり無し）。
+    let tint = mix(toon_shadow_tint, vec3<f32>(1.0), diffuse_term);
 
     // ── スペキュラ: Blinn-Phong を 2 値化する ───────────────
     let H    = normalize(V + L);
@@ -1191,10 +1518,13 @@ fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
     // ── リムライト: 視線に対して立っている面ほど明るく ──────
     // 影の付いていない側に出ると不自然なので、ライト方向の寄与で抑える。
     let rim  = pow(1.0 - shading_saturate(dot(N, V)), TOON_RIM_POWER);
-    let rim_term = rim * TOON_RIM_STRENGTH * ndl;
+    let rim_term = rim * toon_rim_strength * ndl;
 
     // li.color は減衰・スポット円錐・影まで織り込み済み（再計算してはならない）。
-    return (sf.base_color * diffuse_term + vec3<f32>(spec_term) + vec3<f32>(rim_term)) * li.color;
+    let lit = sf.base_color * diffuse_term * tint
+            + vec3<f32>(spec_term)
+            + vec3<f32>(rim_term);
+    return lit * li.color * toon_light_boost;
 }
 
 /// シェーディングモデル 1: 例外オブジェクト用の上書き。
@@ -1311,7 +1641,7 @@ fn caller(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return shade_defau
     /// 検出されたモデルの case だけが出ること。
     #[test]
     fn dispatch_emits_only_detected_cases() {
-        let d = generate_dispatch(&set(false, [true, false, true]));
+        let d = generate_dispatch(&set(false, [true, false, true]), &[]);
         assert!(d.contains("case 1u:"), "モデル 1 の case が必要");
         assert!(!d.contains("case 2u:"), "未定義のモデル 2 の case は出さない");
         assert!(d.contains("case 3u:"), "モデル 3 の case が必要");
@@ -1325,7 +1655,7 @@ fn caller(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return shade_defau
     fn dispatch_default_is_model_zero_without_guard() {
         for models in [[false; 3], [true, true, true], [false, true, false]] {
             let found = set(false, models);
-            let d = generate_dispatch(&found);
+            let d = generate_dispatch(&found, &[]);
             let default_line = d.lines().find(|l| l.trim_start().starts_with("default:"))
                 .expect("default 腕が必要");
             assert!(default_line.contains("shade_model_0(sf, li)"),
@@ -1351,7 +1681,7 @@ fn caller(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return shade_defau
     #[test]
     fn dispatch_default_routes_to_shade_default_when_defined() {
         for models in [[false; 3], [true, false, true]] {
-            let d = generate_dispatch(&set(true, models));
+            let d = generate_dispatch(&set(true, models), &[]);
             let default_line = d.lines().find(|l| l.trim_start().starts_with("default:"))
                 .expect("default 腕が必要");
             assert!(default_line.contains("shading_nan_guard(shade_default(sf, li))"),
@@ -1441,22 +1771,52 @@ fn caller(sf: ShadingSurface, li: LightSample) -> vec3<f32> { return shade_defau
     fn toon_asset_passes_naga_validation_for_all_variants() {
         let found = detect_shade_models(TOON_ASSET);
         assert_eq!(found, set(true, [true, false, false]));
-        let generated = generate_dispatch(&found);
+        // 実ビルドと同じ前処理を通す（宣言の除去 → uniform 生成 → ディスパッチ生成）。
+        let params = parse_params(TOON_ASSET);
+        assert!(params.warnings.is_empty(), "サンプルの宣言に警告が出た: {:?}", params.warnings);
+        assert_eq!(params.params.len(), 5, "サンプルのパラメータ数: {:?}", params.params);
+        let body      = strip_declarations(TOON_ASSET);
+        let decls     = generate_param_decls(&params.params);
+        let generated = generate_dispatch(&found, &params.params);
         // 生成コードが「全体トゥーン（default→shade_default）＋例外だけ標準 PBR（case 1u）」に
         // なっていること。連結が通るだけでなく、意図した振り分けであることまで固定する。
         assert!(generated.contains("default: { return shading_nan_guard(shade_default(sf, li)); }"));
         assert!(generated.contains("case 1u: { return shading_nan_guard(shade_model_1(sf, li)); }"));
+        // パラメータが group2 の uniform から var<private> へ取り込まれていること。
+        assert!(decls.contains("@group(2) @binding(0)"), "{decls}");
+        assert!(generated.contains("toon_steps = u_shading_params.values[0u].x;"), "{generated}");
+        assert!(generated.contains("toon_shadow_tint = u_shading_params.values[1u].xyz;"),
+            "{generated}");
         for variant in [Variant::RtOff, Variant::RtOn, Variant::RtBindless] {
-            match prepare_variant(variant, "toon.wgsl", TOON_ASSET, &generated) {
+            match prepare_variant(variant, "toon.wgsl", &body, &decls, &generated) {
                 Ok((_src, _names, start)) => {
                     assert!(start > 1, "アセットは標準ライブラリの後に来る（{variant:?}）");
                 }
                 Err((msg, line, start)) => panic!(
                     "[{variant:?}] トゥーンアセットの検証に失敗: {}",
                     format_error("toon.wgsl", variant, &msg, line, start,
-                                 asset_line_count(TOON_ASSET)),
+                                 asset_line_count(&body)),
                 ),
             }
+        }
+    }
+
+    /// パラメータの既定値が「宣言順のスロット」へ正しく詰まること（GPU レイアウトの正典）。
+    ///
+    /// 生成 WGSL の添字（`values[N]`）と `build_block` のスロット順が食い違うと、
+    /// 「スライダーを動かすと別のパラメータが変わる」という壊れ方をする。
+    #[test]
+    fn toon_asset_param_slots_match_generated_indices() {
+        use super::super::shade_params::build_block;
+        let params = parse_params(TOON_ASSET).params;
+        let block  = build_block(&params, &std::collections::BTreeMap::new());
+        for (slot, d) in params.iter().enumerate() {
+            let generated = generate_dispatch(&detect_shade_models(TOON_ASSET), &params);
+            assert!(generated.contains(&format!("{} = u_shading_params.values[{slot}u]", d.name)),
+                "宣言 {} のスロットが {slot} でない:
+{generated}", d.name);
+            assert_eq!(block.values[slot], d.default,
+                "スロット {slot} に宣言 {} の既定値が入ること", d.name);
         }
     }
 
@@ -1486,10 +1846,10 @@ fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
 "#;
         let found = detect_shade_models(PULSE_ASSET);
         assert_eq!(found, set(true, [false, false, false]));
-        let generated = generate_dispatch(&found);
+        let generated = generate_dispatch(&found, &[]);
         for variant in [Variant::RtOff, Variant::RtOn, Variant::RtBindless] {
             if let Err((msg, line, start)) =
-                prepare_variant(variant, "pulse.wgsl", PULSE_ASSET, &generated)
+                prepare_variant(variant, "pulse.wgsl", PULSE_ASSET, "", &generated)
             {
                 panic!(
                     "[{variant:?}] sf.time を使うアセットの検証に失敗: {}",
@@ -1585,10 +1945,13 @@ fn shade_default(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
             let std_list = variant.standard_sources();
             let idx = std_list.iter().position(|n| n == DISPATCH_SOURCE_NAME)
                 .unwrap_or_else(|| panic!("{variant:?} の標準リストに {DISPATCH_SOURCE_NAME} が無い"));
-            let subst = substitute_dispatch(&std_list, "asset.wgsl", "<gen>");
-            assert_eq!(subst.len(), std_list.len() + 1);
-            assert_eq!(subst[idx], "asset.wgsl");
-            assert_eq!(subst[idx + 1], "<gen>");
+            let subst = substitute_dispatch(&std_list, "asset.wgsl", "<params>", "<gen>");
+            assert_eq!(subst.len(), std_list.len() + 2);
+            // パラメータ宣言 → アセット本体 → 生成ディスパッチ の順であること
+            //（アセットは宣言された名前を参照するので、宣言が前に来ないと未定義になる）。
+            assert_eq!(subst[idx], "<params>");
+            assert_eq!(subst[idx + 1], "asset.wgsl");
+            assert_eq!(subst[idx + 2], "<gen>");
             assert!(!subst.iter().any(|n| n == DISPATCH_SOURCE_NAME),
                 "既定ディスパッチは連結から外れること（shade_surface の二重定義になる）");
         }

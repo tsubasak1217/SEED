@@ -114,8 +114,22 @@ public partial class MainWindow
             win.SettingChanged      += OnSceneSettingChanged;
             win.ShadingAssetChanged += OnSceneShadingAssetChanged;
             win.Closed              += (_, _) => _sceneSettingsWindow = null;
+            // 「シェーダ」行の直下に出すパラメータ行は、インスペクタの行生成を使い回す
+            //（水面・カメラ・シーンで見た目と操作を完全に揃えるため）。
+            // ダイアログ（色ピッカー・参照選択）の親はこのウィンドウにして背面へ回らないようにする。
+            win.SetShadingParamRowBuilder((panel, json) =>
+                PanelInspector.AddShaderParamRows(panel, new SEEDEditor.Panels.ShaderParamTarget(
+                    json,
+                    () => "SET_SCENE_SHADING_PARAM:",
+                    () => "RESET_SCENE_SHADING_PARAM:",
+                    () => "SET_SCENE_SHADING_BINDING:",
+                    "シーンのシェーダー",
+                    RequiresActorSelection: false,
+                    DialogOwner: win)));
             _sceneSettingsWindow = win;
             win.Show();
+            // 宣言はランタイムしか解析できないので、開いた時点で一覧を取り寄せる。
+            _runtimeManager?.SendToRuntime("GET_SCENE_SHADING_PARAMS");
         }
 
         if (_runtimeManager?.State == EditorState.Edit)
@@ -188,6 +202,17 @@ public partial class MainWindow
         }
 
         SendSceneSettings();
+    }
+
+    /// <summary>
+    /// シーン既定シェーディングアセットのパラメータ一覧（SCENE_SHADING_PARAMS）の受信。
+    ///
+    /// ワーカースレッドから来るので UI スレッドへ渡してから反映する。
+    /// シーン設定ウィンドウが開いていなければ捨ててよい（開いた時点で再取得する）。
+    /// </summary>
+    private void OnSceneShadingParamsReceived(string json)
+    {
+        Dispatcher.InvokeAsync(() => _sceneSettingsWindow?.UpdateShadingParams(json));
     }
 
     /// <summary>

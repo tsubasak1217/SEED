@@ -29,7 +29,8 @@
 // ============================================================
 
 use crate::engine::components::{
-    CanvasComponent, CanvasViewportRef, ComponentKind, ScriptComponent, WaterLinkComponent,
+    CameraComponent, CanvasComponent, CanvasViewportRef, ComponentKind, ScriptComponent,
+    WaterLinkComponent,
     WaterVolumeComponent,
 };
 use crate::engine::binding::resolve::{format_binding, parse_binding};
@@ -51,6 +52,10 @@ impl App {
         new_name: &str,
     ) -> Vec<u32> {
         let Some(scene) = self.scene.as_mut() else { return Vec::new() };
+        // シーン添付シェーディングアセットの `@ref` バインドもアクタ名を含む。
+        // アクタに属さないので DFS ID を返す対象ではないが、書き換えは必要
+        //（忘れると改名でシーン既定のバインドだけ静かに切れる）。
+        rewrite_bindings_actor_name(&mut scene.shading_bindings, old_name, new_name);
         // actors（不変借用）と world（可変借用）は Scene の別フィールドなので
         // 同時に借用できる（分割借用）。
         propagate_in_actors(&scene.actors, &mut scene.world, wl, old_name, new_name)
@@ -99,6 +104,32 @@ fn rewrite_refs_in_subtree(
     }
 }
 
+
+/// `@ref` バインドマップ（パラメータ名 → `"アクタ名|スロット名|変数名"`）のうち、
+/// 1 要素目が旧アクタ名に一致するものを新名へ書き換える。
+///
+/// **1 要素目だけ**を対象にするのは、スロット名・変数名がたまたま旧アクタ名と
+/// 同じでも巻き添えにしないため。新しい名前が区切り文字を含む等で組み立てられない
+/// 場合は書き換えない（壊れた文字列を保存するより、旧名のまま「解決できないバインド」
+/// として ⚠ を出す方が復旧しやすい）。
+///
+/// 水面・カメラ添付・シーン添付のバインドはすべて同じ形なので、この 1 本を共有する。
+pub(super) fn rewrite_bindings_actor_name(
+    bindings: &mut std::collections::BTreeMap<String, String>,
+    old_name: &str,
+    new_name: &str,
+) -> bool {
+    let mut any = false;
+    for binding in bindings.values_mut() {
+        let Some(t) = parse_binding(binding) else { continue };
+        if t.actor != old_name { continue; }
+        let Some(next) = format_binding(new_name, &t.slot, &t.variable) else { continue };
+        *binding = next;
+        any = true;
+    }
+    any
+}
+
 /// アクタの全スロットを調べ、旧名一致の参照を新名へ書き換える。
 /// 1 件でも書き換えたら true を返す。
 fn rewrite_refs_in_slots(
@@ -119,20 +150,8 @@ fn rewrite_refs_in_slots(
                         any = true;
                     }
                     // ── シェーダパラメータの `@ref` バインド（W8.3）──────
-                    // 値は "アクタ名|スロット名|変数名" なので、**1 要素目だけ**を
-                    // 書き換える（スロット名・変数名がたまたま旧アクタ名と同じでも
-                    // 巻き添えにしない）。ここを忘れるとアクタ改名でバインドが静かに切れる。
-                    for binding in w.bindings.values_mut() {
-                        let Some(t) = parse_binding(binding) else { continue };
-                        if t.actor != old_name { continue; }
-                        // 新しい名前が区切り文字を含む等で組み立てられない場合は
-                        // 書き換えない（壊れた文字列を保存するより、旧名のまま
-                        // 「解決できないバインド」として ⚠ を出す方が復旧しやすい）。
-                        let Some(next) = format_binding(new_name, &t.slot, &t.variable)
-                            else { continue };
-                        *binding = next;
-                        any = true;
-                    }
+                    // ここを忘れるとアクタ改名でバインドが静かに切れる。
+                    any |= rewrite_bindings_actor_name(&mut w.bindings, old_name, new_name);
                 }
             }
             // ── 水位グラフの開口が指す 2 つの水域（値は "アクタ名" のみ。W2.5）──
@@ -173,11 +192,18 @@ fn rewrite_refs_in_slots(
             // ComponentKind へ variant を追加したときにここがコンパイルエラーになり、
             // 「新種別はアクタ名参照を持つか？」の判断を強制するため
             // （.claude/rules/ecs-components.md の match 更新先リスト参照）。
+            // ── カメラ添付シェーディングアセットの `@ref` バインド（L3）──
+            ComponentKind::Camera => {
+                if let Some(cc) = world.get_mut::<CameraComponent>(slot.entity) {
+                    any |= rewrite_bindings_actor_name(
+                        &mut cc.shading_bindings, old_name, new_name);
+                }
+            }
+            // ── アクタ名参照を持たない種別（明示列挙） ──────────────
             ComponentKind::Model
             | ComponentKind::Placeholder
             | ComponentKind::Sprite
             | ComponentKind::InputMap
-            | ComponentKind::Camera
             | ComponentKind::Plugin
             | ComponentKind::Collider
             | ComponentKind::Collider2d

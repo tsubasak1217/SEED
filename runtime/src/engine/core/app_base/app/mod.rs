@@ -948,6 +948,10 @@ pub struct App {
     /// その場では `&self` を要求する送信メソッドを呼べない。フラグだけ立てておき、
     /// GPU サブミット後に処理する（1 フレーム遅れるが、ホットリロードの体感には出ない）。
     pending_water_param_decls_resend: bool,
+    /// L3 シェーディングアセットのパラメータ宣言が変わったので、
+    /// 選択中アクタの `ACTOR_COMPONENTS` と `SCENE_SHADING_PARAMS` を送り直す必要があるか。
+    /// 立てる理由・タイミングは `pending_water_param_decls_resend` と同じ。
+    pending_shading_param_decls_resend: bool,
     /// DRAG_HOVER コマンドを受け取ったときに設定する。
     /// 次フレームの ID パスでワールド座標を解決してプレビュー球体位置を更新する。
     /// タプル: (viewport_x, viewport_y)
@@ -1356,6 +1360,7 @@ impl App {
             batch_absent_frames:     HashMap::new(),
             pending_drop:            None,
             pending_water_param_decls_resend: false,
+            pending_shading_param_decls_resend: false,
             pending_drop_hover: None,
             drop_preview_pos:   None,
             drag_hover_canvas_entity: None,
@@ -1517,6 +1522,8 @@ mod slot_ops;
 mod script_ops;
 /// シェーディングアセット WGSL のインメモリ検証（エディタの未保存バッファ → 診断）。
 mod shading_validate_ops;
+/// L3 シェーディングアセットのパラメータ編集（カメラ添付・シーン添付）。
+mod shading_param_ops;
 
 // actor_utils / platform_utils の関数を親名前空間に再エクスポートする。
 // サブモジュール（render.rs 等）は既存の `use super::fn_name` のまま使用可能。

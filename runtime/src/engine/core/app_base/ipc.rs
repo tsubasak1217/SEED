@@ -578,10 +578,48 @@ pub enum IpcCommand {
     /// フォーマット: SET_CAMERA_SHADING_ASSET:{actor_dfs_id},{slot_idx},{path}
     /// path は assets:// 仮想パスまたは絶対パス。空文字は未設定（None）を意味する。
     SetCameraComponentShadingAsset { actor_dfs_id: u32, slot_idx: u32, path: String },
+    /// CameraComponent のシェーディングアセットが宣言したパラメータ 1 個を更新する
+    /// （shading_param_ops.rs が処理。水面の SET_WATER_SHADER_PARAM と同じ流儀）。
+    ///
+    /// フォーマット: SET_CAMERA_SHADING_PARAM:{actor_dfs_id},{slot_idx},{name},{x},{y},{z},{w}
+    /// `name` はアセット内の識別子、値は常に 4 成分（color は xyz、スカラーは x のみ）。
+    SetCameraShadingParam { actor_dfs_id: u32, slot_idx: u32, name: String, value: String },
+    /// CameraComponent のシェーディングパラメータ 1 個を**アセットの既定値へ戻す**
+    /// （`@reset` 属性を持つ行のボタン）。
+    ///
+    /// フォーマット: RESET_CAMERA_SHADING_PARAM:{actor_dfs_id},{slot_idx},{name}
+    /// 実装は「上書き値を消す」であり、既定値を焼き込むのではない
+    /// （後からアセットの既定値を変えたときに追随するため）。
+    ResetCameraShadingParam { actor_dfs_id: u32, slot_idx: u32, name: String },
+    /// CameraComponent の `@ref` パラメータ 1 個のバインド先を設定・解除する。
+    ///
+    /// フォーマット: SET_CAMERA_SHADING_BINDING:{actor_dfs_id},{slot_idx},{name},{binding}
+    /// `binding` が空文字列ならバインド解除（保存値／アセット既定値へ戻る）。
+    SetCameraShadingBinding { actor_dfs_id: u32, slot_idx: u32, name: String, binding: String },
     /// シーン既定のシェーディングアセット（WGSL ファイル）のパスを設定する
     /// フォーマット: SET_SCENE_SHADING_ASSET:{path}
     /// path は assets:// 仮想パスまたは絶対パス。空文字は未設定（None）を意味する。
     SetSceneShadingAsset { path: String },
+    /// シーン既定のシェーディングアセットが宣言したパラメータ 1 個を更新する
+    /// （shading_param_ops.rs が処理）。
+    ///
+    /// フォーマット: SET_SCENE_SHADING_PARAM:{name},{x},{y},{z},{w}
+    SetSceneShadingParam { name: String, value: String },
+    /// シーン既定のシェーディングパラメータ 1 個をアセットの既定値へ戻す。
+    /// フォーマット: RESET_SCENE_SHADING_PARAM:{name}
+    ResetSceneShadingParam { name: String },
+    /// シーン既定の `@ref` パラメータ 1 個のバインド先を設定・解除する。
+    /// フォーマット: SET_SCENE_SHADING_BINDING:{name},{binding}
+    /// `binding` が空文字列ならバインド解除。
+    SetSceneShadingBinding { name: String, binding: String },
+    /// シーン既定のシェーディングパラメータ一覧（宣言＋現在値）を問い合わせる。
+    ///
+    /// フォーマット: GET_SCENE_SHADING_PARAMS
+    /// 応答: `SCENE_SHADING_PARAMS:{json}`（`shade_params::params_json` と同一のワイヤ表現）。
+    ///
+    /// シーン設定ウィンドウは `.scene` を直接読んで表示を組み立てるが、
+    /// **宣言の解析は Rust 側だけが行う**ため、行の作り方はこの問い合わせで取る。
+    GetSceneShadingParams,
     /// シェーディングアセットの WGSL ソースを、保存せずにインメモリ検証して診断を返す
     /// フォーマット: VALIDATE_WGSL:{request_id},{json_source}
     /// - request_id  : 10 進 u64。レスポンスと対応付けるための識別子（カンマを含まない）
@@ -1715,6 +1753,58 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 })
                             })
                         }
+                        s if s.starts_with("SET_CAMERA_SHADING_PARAM:") => {
+                            // フォーマット: SET_CAMERA_SHADING_PARAM:{actor},{slot},{name},{x},{y},{z},{w}
+                            // value（"x,y,z,w"）が "," を含むので、最初の "," までを name にする。
+                            parse2u_tail(&s["SET_CAMERA_SHADING_PARAM:".len()..]).and_then(|(a, sl, tail)| {
+                                let (name, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetCameraShadingParam {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    name: name.to_string(), value: value.to_string(),
+                                })
+                            })
+                        }
+                        s if s.starts_with("RESET_CAMERA_SHADING_PARAM:") => {
+                            // フォーマット: RESET_CAMERA_SHADING_PARAM:{actor},{slot},{name}
+                            // name に "," は入らない（WGSL 識別子）ので tail をそのまま使う。
+                            parse2u_tail(&s["RESET_CAMERA_SHADING_PARAM:".len()..])
+                                .map(|(a, sl, tail)| IpcCommand::ResetCameraShadingParam {
+                                    actor_dfs_id: a, slot_idx: sl, name: tail.to_string(),
+                                })
+                        }
+                        s if s.starts_with("SET_CAMERA_SHADING_BINDING:") => {
+                            // フォーマット: SET_CAMERA_SHADING_BINDING:{actor},{slot},{name},{binding}
+                            // binding はアクタ名を含み "," を含みうるので tail 全体を binding にする。
+                            // **空文字列＝解除**なので、右辺が空になるのも正常系である。
+                            parse2u_tail(&s["SET_CAMERA_SHADING_BINDING:".len()..]).and_then(|(a, sl, tail)| {
+                                let (name, binding) = tail.split_once(',')?;
+                                Some(IpcCommand::SetCameraShadingBinding {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    name: name.to_string(), binding: binding.to_string(),
+                                })
+                            })
+                        }
+                        s if s.starts_with("SET_SCENE_SHADING_PARAM:") => {
+                            // フォーマット: SET_SCENE_SHADING_PARAM:{name},{x},{y},{z},{w}
+                            s["SET_SCENE_SHADING_PARAM:".len()..].split_once(',')
+                                .map(|(name, value)| IpcCommand::SetSceneShadingParam {
+                                    name: name.trim().to_string(), value: value.to_string(),
+                                })
+                        }
+                        s if s.starts_with("RESET_SCENE_SHADING_PARAM:") => {
+                            // フォーマット: RESET_SCENE_SHADING_PARAM:{name}
+                            Some(IpcCommand::ResetSceneShadingParam {
+                                name: s["RESET_SCENE_SHADING_PARAM:".len()..].trim().to_string(),
+                            })
+                        }
+                        s if s.starts_with("SET_SCENE_SHADING_BINDING:") => {
+                            // フォーマット: SET_SCENE_SHADING_BINDING:{name},{binding}
+                            // binding は空文字列でもよい（＝解除）。
+                            s["SET_SCENE_SHADING_BINDING:".len()..].split_once(',')
+                                .map(|(name, binding)| IpcCommand::SetSceneShadingBinding {
+                                    name: name.trim().to_string(), binding: binding.trim().to_string(),
+                                })
+                        }
                         s if s.starts_with("SET_WATER_SHADER_PARAM:") => {
                             // フォーマット: SET_WATER_SHADER_PARAM:{actor},{slot},{name},{x},{y},{z},{w}
                             // value（"x,y,z,w"）に "," を含むので、最初の "," までを name とし
@@ -2180,6 +2270,7 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         }
                         "GET_PLUGIN_LIST"  => Some(IpcCommand::GetPluginList),
                         "GET_SCENE_INFO"   => Some(IpcCommand::GetSceneInfo),
+                        "GET_SCENE_SHADING_PARAMS" => Some(IpcCommand::GetSceneShadingParams),
                         "PAUSE_RENDER"     => Some(IpcCommand::PauseRender),
                         "RESUME_RENDER"    => Some(IpcCommand::ResumeRender),
 

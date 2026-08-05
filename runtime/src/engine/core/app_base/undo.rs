@@ -914,3 +914,60 @@ fn set_actor_active(scene: &mut Scene, wl: u32, dfs_id: u32, active: bool) {
         actor.active = active;
     }
 }
+
+// ============================================================
+//  SceneShadingCommand — シーン設定の「シェーダ」まわりの編集
+// ============================================================
+
+/// シーン既定のシェーディング設定（アセットパス・パラメータ上書き値・`@ref` バインド）
+/// をまるごと Undo/Redo するコマンド。
+///
+/// 【設計】
+/// シーン設定はコンポーネントスロットではないので `SlotFieldEditCommand` に載らない。
+/// とはいえ対象は「3 つの小さな値」だけなので、**変更前後をそのまま持つ**のが最も単純で、
+/// スナップショットの取り方も他のフィールド編集と同じ（`field_edit.rs` の共通機構）にできる。
+///
+/// `execute` / `undo` は Scene だけで完結する（GPU 資源も CLR も絡まない純粋なデータ）ため、
+/// `SlotFieldEditCommand` と違ってここで直接書き戻す。
+/// 巻き戻した内容をシーン設定ウィンドウへ反映させるのは AppBase の責務
+/// （Undo/Redo の後に `SCENE_SHADING_PARAMS` を送り直す）。
+pub struct SceneShadingCommand {
+    /// 編集前の状態。
+    pub before: SceneShadingState,
+    /// 編集後の状態。
+    pub after:  SceneShadingState,
+}
+
+/// シーン既定のシェーディング設定 1 式（Undo のスナップショット単位）。
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct SceneShadingState {
+    /// シーン既定のシェーディングアセットのパス（未設定は None）。
+    pub asset:    Option<String>,
+    /// パラメータの上書き値（アセット既定値からの差分）。
+    pub params:   std::collections::BTreeMap<String, [f32; 4]>,
+    /// `@ref` パラメータのバインド先。
+    pub bindings: std::collections::BTreeMap<String, String>,
+}
+
+impl SceneShadingState {
+    /// 現在のシーンから状態を取り出す。
+    pub fn capture(scene: &Scene) -> Self {
+        Self {
+            asset:    scene.shading_asset.clone(),
+            params:   scene.shading_params.clone(),
+            bindings: scene.shading_bindings.clone(),
+        }
+    }
+
+    /// シーンへ状態を書き戻す。
+    pub fn apply(&self, scene: &mut Scene) {
+        scene.shading_asset    = self.asset.clone();
+        scene.shading_params   = self.params.clone();
+        scene.shading_bindings = self.bindings.clone();
+    }
+}
+
+impl Command for SceneShadingCommand {
+    fn execute(&mut self, scene: &mut Scene) { self.after.apply(scene); }
+    fn undo(&mut self, scene: &mut Scene)    { self.before.apply(scene); }
+}

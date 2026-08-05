@@ -47,8 +47,11 @@
 
 pub mod params;
 /// 水面シェーディングアセットの「パラメータ注釈」解析（Phase W8.2）。
-/// アセット内の `override` 宣言を読み、インスペクタ行と GPU ブロックの正典になる。
-pub mod shade_params;
+///
+/// 実装は **L3 と共有する共通モジュール**（`renderer::shade_params`）へ昇格済みで、
+/// ここはその再輸出である（`water::shade_params::...` という既存の呼び名を保つ）。
+/// 水面側は `WATER_DIALECT` を渡して使う。
+pub use crate::engine::core::renderer::shade_params;
 pub mod shading_asset;
 pub mod tessellation;
 pub mod wave_noise;
@@ -57,7 +60,7 @@ pub use params::{
     WaterParams, WATER_MAX_INSTANCES, WATER_MAX_VOLUMES,
 };
 /// アセットのパラメータ値（W8.2）を GPU へ運ぶ 1 インスタンスぶんのブロック。
-pub use shade_params::WaterShadeParamBlock;
+pub use shade_params::ShadeParamBlock;
 
 use std::collections::HashMap;
 
@@ -703,7 +706,7 @@ impl WaterRenderer {
         //    アセット未指定・ロード失敗のバケットは宣言が無いので全ゼロブロックになる
         //    （標準パイプラインはこの storage を読まないため、値が何であれ影響しない）。
         //    スロット順はアセットの宣言順で、生成した WGSL の添字と一致する。
-        let mut blocks: Vec<WaterShadeParamBlock> = Vec::with_capacity(total_quads + total_rivers);
+        let mut blocks: Vec<ShadeParamBlock> = Vec::with_capacity(total_quads + total_rivers);
         for (bi, b) in buckets.iter().enumerate() {
             let decls = resolved[bi].as_ref().map(|p| p.params.as_slice()).unwrap_or(&[]);
             for &vi in &b.quad_volumes {
@@ -747,7 +750,7 @@ impl WaterRenderer {
             let capacity = count.max(1);
             self.shade_params_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Water Shade Params Storage"),
-                size:  (capacity * std::mem::size_of::<WaterShadeParamBlock>()) as u64,
+                size:  (capacity * std::mem::size_of::<ShadeParamBlock>()) as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }));

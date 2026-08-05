@@ -346,6 +346,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _runtimeManager.ViewportContextMenuRequested  += OnViewportContextMenuRequested;
         _runtimeManager.FirstFrameReady               += OnFirstFrameReady;
         _runtimeManager.CameraStateReceived           += OnCameraStateReceived;
+        // シーン既定シェーディングアセットのパラメータ一覧（シーン設定ウィンドウの動的行）。
+        _runtimeManager.SceneShadingParamsReceived    += OnSceneShadingParamsReceived;
         _runtimeManager.EditPhysicsStateReceived      += OnEditPhysicsStateReceived;
         _runtimeManager.HierarchyUpdated              += _ => MarkDirtyFromHierarchy();
         _runtimeManager.SceneModified                 += MarkDirty;

@@ -9,6 +9,40 @@ using SEEDEditor.Controls;
 namespace SEEDEditor.Panels;
 
 /// <summary>
+/// シェーダパラメータ行（<c>override</c> 宣言由来）の「送信先」1 式。
+///
+/// 同じ構文・同じワイヤ表現のパラメータが 3 か所に現れるため、行の作り方は 1 本にまとめ、
+/// **違いはこのレコードのデータだけ**にしてある:
+///   - 水面シェーディングアセット（WaterVolume スロット）
+///   - L3 シェーディングアセット・カメラ添付（Camera スロット）
+///   - L3 シェーディングアセット・シーン添付（シーン設定ウィンドウ）
+///
+/// 接頭辞を <see cref="Func{TResult}"/> で受け取るのは、水面・カメラでは
+/// 「送信時点で選択中のアクタ」を埋め込む必要があるため（行の生成時に固定すると、
+/// 選択が変わった直後の 1 送信が別アクタへ飛ぶ余地が残る）。
+/// </summary>
+/// <param name="ParamsJson">ランタイムが送ってきたパラメータ配列の JSON。</param>
+/// <param name="SetPrefix">値送信コマンドの接頭辞（末尾はカンマまで。後ろに <c>{name},{x},{y},{z},{w}</c> が付く）。</param>
+/// <param name="ResetPrefix">既定値へ戻すコマンドの接頭辞（後ろに <c>{name}</c> が付く）。</param>
+/// <param name="BindPrefix"><c>@ref</c> バインド設定コマンドの接頭辞（後ろに <c>{name},{binding}</c> が付く）。</param>
+/// <param name="Description">ツールチップに出す種別の説明（例「水面シェーダ」）。</param>
+/// <param name="RequiresActorSelection">
+/// 送信にアクタ選択が要るか。シーン添付は要らない（シーン全体の設定なので）。
+/// </param>
+/// <param name="DialogOwner">
+/// 色ピッカー・参照選択ウィンドウの親。null ならインスペクタの所属ウィンドウを使う。
+/// シーン設定ウィンドウから呼ぶ場合はそのウィンドウを渡す（背面に隠れないようにする）。
+/// </param>
+public sealed record ShaderParamTarget(
+    string        ParamsJson,
+    Func<string>  SetPrefix,
+    Func<string>  ResetPrefix,
+    Func<string>  BindPrefix,
+    string        Description,
+    bool          RequiresActorSelection,
+    Window?       DialogOwner = null);
+
+/// <summary>
 /// InspectorPanel の「水面シェーダ <c>@ref</c> パラメータ（参照バインド行）」実装（Phase W8.3）。
 ///
 /// 水面シェーディングアセットが <c>@ref</c> を付けたパラメータは、値を手で入れる行ではなく
@@ -148,6 +182,12 @@ public partial class InspectorPanel
     private sealed record PendingBindableSources(
         int OwnerActorId, Action<List<BindableSource>> OnReceived);
 
+    /// <summary>
+    /// アクタ選択に紐づかない問い合わせを表す番兵（シーン設定ウィンドウからのバインド行）。
+    /// 実在の DFS ID は 0 以上なので衝突しない。
+    /// </summary>
+    private const int NoOwnerActorId = -1;
+
     /// <summary>現在解決待ちのバインド元問い合わせ（無ければ null）。</summary>
     private PendingBindableSources? _pendingBindableSources;
 
@@ -161,12 +201,20 @@ public partial class InspectorPanel
     /// <param name="actorDfsId">候補を持つ側（ドロップされた）アクタの DFS ID。</param>
     /// <param name="valueType">要求する値型（<c>f32</c> / <c>vec3</c>）。</param>
     /// <param name="onReceived">応答受信時の続き処理。</param>
+    /// <param name="requiresActorSelection">
+    /// アクタ選択に紐づく問い合わせか。シーン設定ウィンドウのバインド行は
+    /// アクタに属さないので false（このとき応答時の所有者照合も行わない）。
+    /// </param>
     private void RequestBindableSources(
-        int actorDfsId, string valueType, Action<List<BindableSource>> onReceived)
+        int actorDfsId, string valueType, bool requiresActorSelection,
+        Action<List<BindableSource>> onReceived)
     {
-        if (_runtime is null || _currentActorId < 0) return;
+        if (_runtime is null) return;
+        if (requiresActorSelection && _currentActorId < 0) return;
 
-        _pendingBindableSources = new PendingBindableSources(_currentActorId, onReceived);
+        // 所有者を持たない問い合わせは NoOwnerActorId で記録し、応答時の照合を飛ばす。
+        _pendingBindableSources = new PendingBindableSources(
+            requiresActorSelection ? _currentActorId : NoOwnerActorId, onReceived);
 
         // アクタ名は BINDABLE_SOURCES の応答に含まれないため、キャッシュに無い場合に備えて
         // 構成も一緒に取り寄せておく（IPC は順序どおりに処理・返送されるので、
@@ -191,7 +239,8 @@ public partial class InspectorPanel
 
             // 応答待ちの間に選択が変わっていたら、その IPC 宛先はもう別のアクタを指している。
             // 誤ったアクタへバインドを書き込まないよう破棄する。
-            if (pending.OwnerActorId != _currentActorId) return;
+            if (pending.OwnerActorId != NoOwnerActorId && pending.OwnerActorId != _currentActorId)
+                return;
 
             pending.OnReceived(ParseBindableSources(json));
         });
@@ -219,7 +268,7 @@ public partial class InspectorPanel
     /// ピッカー自身はアクタ名／スロット名しか表示できないため、変数名は右隣の
     /// 小さなラベルとツールチップで補う（ReferencePicker は書き換えない）。
     /// </summary>
-    /// <param name="info">対象の WaterVolume スロット。</param>
+    /// <param name="target">送信先 1 式（IPC 接頭辞・ダイアログ親・説明）。</param>
     /// <param name="paramName">アセット内のパラメータ識別子（IPC のキー）。</param>
     /// <param name="paramLabel">表示ラベル。</param>
     /// <param name="paramType">アセット宣言の型名（color / range / float）。</param>
@@ -228,7 +277,7 @@ public partial class InspectorPanel
     /// <param name="canReset">アセットが <c>@reset</c> を付けているか。</param>
     /// <param name="sendResetParam">値をアセット既定値へ戻す IPC を送る処理（呼び出し側と共有）。</param>
     private UIElement BuildShaderBindingRow(
-        SlotInfo info, string paramName, string paramLabel, string paramType,
+        ShaderParamTarget target, string paramName, string paramLabel, string paramType,
         string binding, bool bindingOk, bool canReset, Action<string> sendResetParam)
     {
         // ── 現在のバインドを 3 要素へ割る（壊れていれば「未設定」扱い）──
@@ -242,9 +291,8 @@ public partial class InspectorPanel
         // Undo はランタイム側の共通機構が拾うので、ここで履歴を積んではいけない。
         void SendBinding(string value)
         {
-            if (_currentActorId < 0) return;
-            _runtime?.SendToRuntime(
-                $"SET_WATER_SHADER_BINDING:{_currentActorId},{info.SlotIdx},{paramName},{value}");
+            if (target.RequiresActorSelection && _currentActorId < 0) return;
+            _runtime?.SendToRuntime($"{target.BindPrefix()}{paramName},{value}");
         }
 
         // ── 変数名ラベル（ピッカーが表示できない 3 要素目を補う）──
@@ -296,7 +344,7 @@ public partial class InspectorPanel
 
         ReferencePicker? picker = null;
         var resolver = new ShaderBindingDropResolver(
-            this, BindableValueTypeOf(paramType),
+            this, target, BindableValueTypeOf(paramType),
             (actorName, slotName, variableName) =>
             {
                 // 3 要素が揃ったのでバインドを確定する。
@@ -340,7 +388,7 @@ public partial class InspectorPanel
         grid.Children.Add(picker.Element);
         grid.Children.Add(variableBlock);
         grid.Children.Add(warnBlock);
-        grid.ToolTip = $"{paramName}（水面シェーダのパラメータ／参照バインド）";
+        grid.ToolTip = $"{paramName}（{target.Description}のパラメータ／参照バインド）";
 
         if (!canReset) return grid;
 
@@ -375,6 +423,9 @@ public partial class InspectorPanel
         /// <summary>IPC と選択ウィンドウの親を持つインスペクタ。</summary>
         private readonly InspectorPanel _owner;
 
+        /// <summary>送信先 1 式（アクタ選択の要否・ダイアログの親）。</summary>
+        private readonly ShaderParamTarget _target;
+
         /// <summary>要求する値型（<c>f32</c> / <c>vec3</c>）。</summary>
         private readonly string _valueType;
 
@@ -382,12 +433,15 @@ public partial class InspectorPanel
         private readonly Action<string, string, string> _onBound;
 
         /// <param name="owner">IPC を持つインスペクタ。</param>
+        /// <param name="target">送信先 1 式。</param>
         /// <param name="valueType">要求する値型（<c>f32</c> / <c>vec3</c>）。</param>
         /// <param name="onBound">確定した (アクタ名, スロット名, 変数名) を受け取る処理。</param>
         public ShaderBindingDropResolver(
-            InspectorPanel owner, string valueType, Action<string, string, string> onBound)
+            InspectorPanel owner, ShaderParamTarget target, string valueType,
+            Action<string, string, string> onBound)
         {
             _owner     = owner;
+            _target    = target;
             _valueType = valueType;
             _onBound   = onBound;
         }
@@ -418,7 +472,8 @@ public partial class InspectorPanel
             // 応答受信時に取り寄せ済みのキャッシュから引く。
             var actorNameFromDrag = ComponentDragPayload.FromDragData(data)?.ActorName ?? "";
 
-            _owner.RequestBindableSources(dfsId.Value, _valueType, sources =>
+            _owner.RequestBindableSources(
+                dfsId.Value, _valueType, _target.RequiresActorSelection, sources =>
             {
                 var actorName = !string.IsNullOrEmpty(actorNameFromDrag)
                     ? actorNameFromDrag
@@ -511,7 +566,7 @@ public partial class InspectorPanel
             }
 
             var selected = ReferenceSelectorWindow.Show(
-                Window.GetWindow(_owner),
+                _target.DialogOwner ?? Window.GetWindow(_owner),
                 new ReferenceSelectorPage(
                     "バインド元のコンポーネントを選択",
                     $"「{actorName}」から値を受け取るコンポーネントを選択してください。",
