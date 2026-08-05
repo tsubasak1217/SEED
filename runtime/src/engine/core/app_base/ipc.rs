@@ -390,6 +390,14 @@ pub enum IpcCommand {
     ///      shore_wave_strength / shore_wave_length / shore_wave_period / shore_wave_foam（W1.5 岸波）。
     /// ベクタ系（region_half_extents / *_color）の value は "x,y,z" 形式。
     SetWaterField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// 水面シェーディングアセットが宣言したパラメータ 1 個の値を更新する
+    /// （Phase W8.2。water_ops.rs が処理）。
+    ///
+    /// フォーマット: SET_WATER_SHADER_PARAM:{actor_dfs_id},{slot_idx},{name},{x},{y},{z},{w}
+    /// `name` はアセット内の識別子、value は常に 4 成分（color は xyz、
+    /// スカラーは x のみ意味を持ち、残りは 0 を送る）。
+    /// **`WaterVolumeComponent::shader_params` にはこの 4 成分がそのまま入る**。
+    SetWaterShaderParam { actor_dfs_id: u32, slot_idx: u32, name: String, value: String },
     /// WaterLinkComponent（水位グラフの開口。W2.5）のフィールド更新（water_link_ops.rs が処理）。
     /// フォーマット: SET_WATER_LINK_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
     /// key: volume_a / volume_b / opening_bottom / opening_height /
@@ -1674,6 +1682,19 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 Some(IpcCommand::SetWaterField {
                                     actor_dfs_id: a, slot_idx: sl,
                                     key: key.to_string(), value: value.to_string(),
+                                })
+                            })
+                        }
+                        s if s.starts_with("SET_WATER_SHADER_PARAM:") => {
+                            // フォーマット: SET_WATER_SHADER_PARAM:{actor},{slot},{name},{x},{y},{z},{w}
+                            // value（"x,y,z,w"）に "," を含むので、最初の "," までを name とし
+                            // 残り全部を value にする（SET_WATER_FIELD と同じ流儀）。
+                            // **プレフィックスが SET_WATER_FIELD: と衝突しない**ことに注意。
+                            parse2u_tail(&s["SET_WATER_SHADER_PARAM:".len()..]).and_then(|(a, sl, tail)| {
+                                let (name, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetWaterShaderParam {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    name: name.to_string(), value: value.to_string(),
                                 })
                             })
                         }

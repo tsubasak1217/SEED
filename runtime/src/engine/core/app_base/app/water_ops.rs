@@ -43,6 +43,8 @@ const NON_NEGATIVE_MIN: f32 = 0.0;
 const COLOR_CHANNEL_MIN: f32 = 0.0;
 /// "x,y,z" 形式の要素数。
 const VEC3_COMPONENT_COUNT: usize = 3;
+/// "x,y,z,w" 形式の要素数（シェーディングアセットのパラメータ値。Phase W8.2）。
+const VEC4_COMPONENT_COUNT: usize = 4;
 /// 川の制御点リスト（"x,y,z;x,y,z;..."）の点区切り文字。
 const POINT_LIST_SEPARATOR: char = ';';
 /// 地形スナップのカラム走査で、地形の上下端へ足す余白（m）。
@@ -315,6 +317,56 @@ impl App {
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
+    /// 水面シェーディングアセットのパラメータ 1 個を更新する
+    /// （SET_WATER_SHADER_PARAM IPC。Phase W8.2）。
+    ///
+    /// `name` はアセットの `//! param` で宣言された識別子、`value` は `"x,y,z,w"`。
+    /// 値は `WaterVolumeComponent::shader_params` へ**そのまま**入る
+    /// （型ごとの意味づけ＝どの成分を使うかは WGSL 生成側の責務であり、
+    ///   ここで色かスカラーかを判定はしない）。
+    ///
+    /// ## 宣言の検証をここで行わない理由
+    /// アセットは編集中に書き換わる（ホットリロード）ため、「今の宣言に無い名前は
+    /// 拒否する」とすると、保存 → アセットを直す → 値が消えている、という順序依存の
+    /// 事故が起きる。孤児の値は**描画側が無視する**（`shade_params::build_block`）ので、
+    /// 保存しておいても害が無く、アセットを戻せば値も戻る。
+    ///
+    /// 不正な value（4 成分でない・数値でない）は無視する。
+    pub(super) fn handle_set_water_shader_param(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        name:         &str,
+        value:        &str,
+    ) {
+        use super::find_actor_by_dfs;
+
+        // 空の名前はキーとして成立しない（マップが壊れる）。
+        let key = name.trim();
+        if key.is_empty() { return; }
+        let Some(v) = parse_vec4(value) else { return };
+
+        let wl = self.active_world_line;
+        // 対象スロットのエンティティを解決する（handle_set_water_field と同流儀）。
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            let Some(actor) = find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                else { return };
+            actor.slots().get(slot_idx as usize)
+                .filter(|s| s.kind == ComponentKind::WaterVolume)
+                .map(|s| s.entity)
+        };
+        let Some(entity) = slot_entity else { return };
+
+        let Some(scene) = &mut self.scene else { return };
+        let Some(w) = scene.world.get_mut::<WaterVolumeComponent>(entity) else { return };
+        w.shader_params.insert(key.to_string(), v);
+
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
     /// 川の制御点をすべて「地形高さ + オフセット」の Y へ合わせる（Phase W4）。
     ///
     /// 川は地形の谷筋に沿って引くものなので、XZ だけ置いてから一括で
@@ -405,6 +457,22 @@ fn parse_vec3(value: &str) -> Option<[f32; 3]> {
     ])
 }
 
+/// "x,y,z,w" 形式の文字列を [f32; 4] へパースする（Phase W8.2）。
+///
+/// シェーディングアセットのパラメータは型に依らず**常に 4 成分**で運ぶ
+/// （色は xyz、スカラーは x のみ意味を持つ）。成分数を型で変えないのは、
+/// アセットの宣言が変わっても IPC の形が変わらないようにするためである。
+fn parse_vec4(value: &str) -> Option<[f32; 4]> {
+    let parts: Vec<&str> = value.split(',').collect();
+    if parts.len() != VEC4_COMPONENT_COUNT { return None; }
+    Some([
+        parts[0].trim().parse::<f32>().ok()?,
+        parts[1].trim().parse::<f32>().ok()?,
+        parts[2].trim().parse::<f32>().ok()?,
+        parts[3].trim().parse::<f32>().ok()?,
+    ])
+}
+
 /// 川の制御点リスト `"x,y,z;x,y,z;..."` をパースする（Phase W4）。
 ///
 /// 空文字列は「制御点なし」（空 Vec）として成功扱いにする
@@ -474,6 +542,22 @@ mod tests {
         assert_eq!(parse_point_list("0,0,0;1,2"), None,      "要素不足の点がある");
         assert_eq!(parse_point_list("0,0,0;a,b,c"), None,    "非数値の点がある");
         assert_eq!(parse_point_list("0,0,0,0"), None,        "要素過多");
+    }
+
+    /// シェーディングアセットのパラメータ値（"x,y,z,w"）がパースできること。
+    #[test]
+    fn parse_vec4_accepts_four_components() {
+        assert_eq!(parse_vec4("1,2,3,4"), Some([1.0, 2.0, 3.0, 4.0]));
+        assert_eq!(parse_vec4(" 0.5 , -1.5 , 2 , 0 "), Some([0.5, -1.5, 2.0, 0.0]));
+    }
+
+    /// 成分数違い・非数値は None（＝値を書き換えない）になること。
+    #[test]
+    fn parse_vec4_rejects_malformed() {
+        assert_eq!(parse_vec4("1,2,3"), None,     "3 成分（vec3 の形）は受け付けない");
+        assert_eq!(parse_vec4("1,2,3,4,5"), None, "成分過多");
+        assert_eq!(parse_vec4("1,2,x,4"), None,   "非数値");
+        assert_eq!(parse_vec4(""), None,          "空文字列");
     }
 
     /// 下限クランプが 3 成分すべてに掛かること。

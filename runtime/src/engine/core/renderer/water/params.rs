@@ -439,6 +439,7 @@ mod tests {
             center: [0.0; 3], half_extents: [0.0; 3], ocean_extent: 500.0, visual,
             actor_dfs_id: 0, river: None,
             surface_shader: String::new(),
+            shader_params:  Default::default(),
         };
         let p = WaterParams::from_resolved(&ocean, [10.0, 5.0, -20.0], 0, None);
         assert_eq!(p.center, [10.0, 3.0, -20.0, 0.0]);
@@ -452,6 +453,7 @@ mod tests {
             center: [1.0, 0.0, 2.0], half_extents: [4.0, 1.0, 6.0], ocean_extent: 500.0, visual,
             actor_dfs_id: 0, river: None,
             surface_shader: String::new(),
+            shader_params:  Default::default(),
         };
         let q = WaterParams::from_resolved(&region, [10.0, 5.0, -20.0], 0, None);
         assert_eq!(q.center, [1.0, 2.0, 2.0, 0.0]);
@@ -486,6 +488,7 @@ mod tests {
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
             actor_dfs_id: 0, river: None,
             surface_shader: String::new(),
+            shader_params:  Default::default(),
         };
         let p = WaterParams::from_resolved(&v, [0.0; 3], 0, None);
         assert_eq!(p.fresnel, [2.0, 0.5, 1.25, 0.08], "x,y=フレネル / z,w=波紋");
@@ -530,6 +533,7 @@ mod tests {
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
             actor_dfs_id: 0, river: None,
             surface_shader: String::new(),
+            shader_params:  Default::default(),
         };
         let p = WaterParams::from_resolved(&v, [0.0; 3], 0, None);
         assert!(p.wave_axis[0].abs() < 1e-6, "cos(90°) ≒ 0（実際 {}）", p.wave_axis[0]);
@@ -580,6 +584,7 @@ mod tests {
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
             actor_dfs_id: 0, river: Some(path.clone()),
             surface_shader: String::new(),
+            shader_params:  Default::default(),
         };
         let segs: Vec<WaterParams> = path.nodes.windows(2)
             .map(|w| WaterParams::from_river_segment(
@@ -652,6 +657,7 @@ mod tests {
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
             actor_dfs_id: 0, river: None,
             surface_shader: String::new(),
+            shader_params:  Default::default(),
         };
         // 粘度 0（既定）は素の `wave_speed` がそのまま入る（丸めも入らない）。
         let p = WaterParams::from_resolved(&v, [0.0; 3], 0, None);
@@ -696,6 +702,7 @@ mod tests {
             center: [0.0; 3], half_extents: [1.0; 3], ocean_extent: 1.0, visual,
             actor_dfs_id: 7, river: None,
             surface_shader: String::new(),
+            shader_params:  Default::default(),
         };
         let p = WaterParams::from_resolved(&v, [0.0; 3], 100, None);
         assert_eq!(p.actor_id[0], 108, "id_base(100) + DFS(7) + 1");

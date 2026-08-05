@@ -57,6 +57,7 @@ use crate::engine::core::renderer::shading_asset::{
     WgslDiagnostic, asset_line_count, concat_sources, content_hash, line_defines_fn,
     map_reported_line, parse_contract_marker, strip_comments, validate_wgsl, MappedLine,
 };
+use super::shade_params::{WaterShadeParamDecl, parse_params};
 
 // ============================================================
 //  定数（マジックナンバーの一切を名前で持つ）
@@ -87,11 +88,22 @@ const WATER_DISPATCH_SOURCE_NAME: &str = "water_shade_dispatch.wgsl";
 /// 実ファイルは存在しない。`make_resolver` がこの名前を生成ソースへ解決する。
 const GENERATED_SOURCE_NAME: &str = "<generated water_shade_entry>";
 
+/// 生成したパラメータ宣言（`var<private>` 群）に与える擬似シェーダ名（W8.2）。
+///
+/// **アセット本体より前**に連結する。WGSL のモジュールスコープに `let` は書けず、
+/// `const` はストレージの値を持てないため、`var<private>` を先に宣言しておき、
+/// `water_shade_entry` の先頭で値を代入する形にしてある。
+/// これにより、アセット作者は宣言した名前を `water_shade` の中でそのまま値として読める。
+const GENERATED_DECLS_SOURCE_NAME: &str = "<generated water shade params>";
+
 /// エディタへ返す診断の `variant` 識別子（ワイヤ契約）。
 /// 水面パスは変種が 1 つしかないので固定値 1 個だけ。
 const VARIANT_NAME_WATER: &str = "water";
 /// 変種の検証以前（契約バージョンの照合）で弾かれたことを表す識別子。
 const VARIANT_NAME_CONTRACT: &str = "contract";
+/// パラメータ注釈（W8.2）の解析で見つかった問題を表す識別子。
+/// **これが返ってもアセット自体は正常にコンパイルされている**（行が無視されるだけ）。
+const VARIANT_NAME_PARAM: &str = "param";
 
 /// 契約バージョン診断が指す行番号（1 始まり）。
 /// 宣言はアセット先頭コメントに書く規約なので、指摘は常に先頭行へ寄せる。
@@ -142,9 +154,53 @@ pub fn parse_contract_version(asset_src: &str) -> Option<u32> {
     parse_contract_marker(asset_src, WATER_CONTRACT_MARKER)
 }
 
+/// アセットパスからパラメータ宣言（W8.2）だけを読み出す（GPU もキャッシュも使わない）。
+///
+/// インスペクタへ送る `ACTOR_COMPONENTS` の水コンポーネント JSON を組み立てるための入口。
+/// **読めないパス・空パスでは空 Vec**（＝パラメータ行を 1 つも出さない）を返す。
+/// 描画側の解決とは独立に毎回読み直すが、呼ばれるのはアクタ選択時と
+/// アセット保存時だけなので、フレーム毎の I/O にはならない。
+pub fn declarations_for_path(asset_path: &str) -> Vec<WaterShadeParamDecl> {
+    if asset_path.trim().is_empty() { return Vec::new(); }
+    match load_source(asset_path) {
+        Ok(src) => parse_params(&src).params,
+        // 読めないアセットは「宣言なし」。エラー通知は描画側の解決が行うので、
+        // ここで二重に通知はしない。
+        Err(_)  => Vec::new(),
+    }
+}
+
+/// 宣言リストの同一性を判定するための署名。
+///
+/// 「アセットを保存したらインスペクタの行を作り直すか」の判定にだけ使う。
+/// 名前・型・既定値・ラベルのいずれが変わっても別署名になる。
+fn declarations_signature(decls: &[WaterShadeParamDecl]) -> String {
+    format!("{decls:?}")
+}
+
 // ============================================================
 //  2. ディスパッチ生成
 // ============================================================
+
+/// パラメータ注釈（W8.2）から `var<private>` 宣言の WGSL を生成する。
+///
+/// アセット本体の**前**に連結される。宣言が 0 個なら空文字列（連結しても無害）。
+///
+/// 生成例:
+/// ```wgsl
+/// var<private> emission_color: vec3<f32>;
+/// var<private> crack_speed: f32;
+/// ```
+pub fn generate_param_decls(decls: &[WaterShadeParamDecl]) -> String {
+    if decls.is_empty() { return String::new(); }
+    let mut s = String::new();
+    s.push_str("// ── 自動生成（water/shading_asset.rs）。アセットの `//! param` 宣言に対応する\n");
+    s.push_str("//    値の置き場です。値は water_shade_entry の先頭で代入されます ──\n");
+    for d in decls {
+        s.push_str(&format!("var<private> {}: {};\n", d.name, d.kind.wgsl_type()));
+    }
+    s
+}
 
 /// 検出結果から契約関数 `water_shade_entry` の WGSL 実装を生成する。
 ///
@@ -153,10 +209,20 @@ pub fn parse_contract_version(asset_src: &str) -> Option<u32> {
 /// - `has_impl = false` : `water_shade_default(input)`。アセットに実装が無い場合の
 ///   落とし先で、**既定連結（`water_shade_dispatch.wgsl`）と完全に同値**にする
 ///   （ガードも掛けない＝アセットを差す前と 1 ビットも変わらない）。
-pub fn generate_dispatch(has_impl: bool) -> String {
+///
+/// `decls` が空でなければ、本体の前に「ストレージ → `var<private>` の代入」を並べる。
+/// スロット番号は**宣言の出現順**であり、`shade_params::build_block` が同じ順で値を詰める。
+pub fn generate_dispatch(has_impl: bool, decls: &[WaterShadeParamDecl]) -> String {
     let mut s = String::new();
     s.push_str("// ── 自動生成（water/shading_asset.rs）。このコードは編集できません ──\n");
     s.push_str("fn water_shade_entry(input: WaterShadeInput) -> vec4<f32> {\n");
+    // パラメータの取り込み（宣言順＝スロット順）。
+    for (slot, d) in decls.iter().enumerate() {
+        s.push_str(&format!(
+            "    {} = water_shade_param(input.instance_index, {slot}u).{};\n",
+            d.name, d.kind.wgsl_swizzle(),
+        ));
+    }
     if has_impl {
         // ユーザー実装はガードを通す。
         s.push_str(&format!("    return water_shade_nan_guard({WATER_SHADE_FN_NAME}(input));\n"));
@@ -184,12 +250,21 @@ fn standard_sources() -> Vec<String> {
 /// 水面パスのパイプライン設定（連結順・レイアウト・エントリポイントの正典）。
 const WATER_SURFACE_TOML: &str = include_str!("../pipelines/water_surface.toml");
 
-/// 標準連結リストの `water_shade_dispatch.wgsl` を「アセット本体 ＋ 生成ディスパッチ」で
-/// 置換したシェーダ名リストを返す。
-fn substitute_dispatch(standard: &[String], asset_name: &str, generated_name: &str) -> Vec<String> {
-    let mut out = Vec::with_capacity(standard.len() + 1);
+/// 標準連結リストの `water_shade_dispatch.wgsl` を
+/// 「生成パラメータ宣言 ＋ アセット本体 ＋ 生成ディスパッチ」で置換した名前リストを返す。
+///
+/// パラメータ宣言がアセット本体より**前**に来るのが要点である
+/// （アセットは宣言された名前を参照するため、順序が逆だと未定義識別子になる）。
+fn substitute_dispatch(
+    standard:      &[String],
+    asset_name:    &str,
+    decls_name:    &str,
+    generated_name: &str,
+) -> Vec<String> {
+    let mut out = Vec::with_capacity(standard.len() + 2);
     for name in standard {
         if name == WATER_DISPATCH_SOURCE_NAME {
+            out.push(decls_name.to_string());
             out.push(asset_name.to_string());
             out.push(generated_name.to_string());
         } else {
@@ -199,16 +274,19 @@ fn substitute_dispatch(standard: &[String], asset_name: &str, generated_name: &s
     out
 }
 
-/// シェーダ名 → ソースの解決関数を作る（アセット本体・生成ディスパッチ・組み込みの 3 分岐）。
+/// シェーダ名 → ソースの解決関数を作る
+/// （アセット本体・生成パラメータ宣言・生成ディスパッチ・組み込みの 4 分岐）。
 fn make_resolver<'a>(
     asset_name: &'a str,
     asset_src:  &'a str,
+    decls:      &'a str,
     generated:  &'a str,
 ) -> impl Fn(&str) -> String + 'a {
     move |n: &str| {
-        if n == asset_name                 { asset_src.to_string() }
-        else if n == GENERATED_SOURCE_NAME { generated.to_string() }
-        else                               { super::resolve_water_shader(n).to_string() }
+        if n == asset_name                       { asset_src.to_string() }
+        else if n == GENERATED_DECLS_SOURCE_NAME { decls.to_string() }
+        else if n == GENERATED_SOURCE_NAME       { generated.to_string() }
+        else                                     { super::resolve_water_shader(n).to_string() }
     }
 }
 
@@ -219,6 +297,7 @@ fn make_resolver<'a>(
 fn prepare_variant(
     asset_name: &str,
     asset_src:  &str,
+    decls:      &str,
     generated:  &str,
 ) -> Result<(String, Vec<String>, usize), (String, Option<usize>, usize)> {
     let standard = standard_sources();
@@ -230,8 +309,9 @@ fn prepare_variant(
         "水面シェーディングアセットの連結リストに {WATER_DISPATCH_SOURCE_NAME} が含まれていない\
          （water_surface.toml の shader_sources を確認すること）"
     );
-    let names   = substitute_dispatch(&standard, asset_name, GENERATED_SOURCE_NAME);
-    let resolve = make_resolver(asset_name, asset_src, generated);
+    let names   = substitute_dispatch(
+        &standard, asset_name, GENERATED_DECLS_SOURCE_NAME, GENERATED_SOURCE_NAME);
+    let resolve = make_resolver(asset_name, asset_src, decls, generated);
     let (combined, asset_start) = concat_sources(&names, asset_name, &resolve);
     // 水面パスは RT / バインドレスを使わないため追加ケイパビリティは不要。
     match validate_wgsl(&combined, naga::valid::Capabilities::empty()) {
@@ -311,14 +391,16 @@ pub fn validate_asset_source(asset_src: &str) -> Vec<WgslDiagnostic> {
         }
     }
 
-    // ── 2. 実装検出とディスパッチ生成 ─────────────────────
+    // ── 2. 実装検出・パラメータ注釈の解析・生成 ───────────
     let has_impl  = detect_water_shade(asset_src);
-    let generated = generate_dispatch(has_impl);
+    let params    = parse_params(asset_src);
+    let decls     = generate_param_decls(&params.params);
+    let generated = generate_dispatch(has_impl, &params.params);
     let lines     = asset_line_count(asset_src);
 
     // ── 3. 連結の検証 ─────────────────────────────────────
     if let Err((msg, line, start)) =
-        prepare_variant(IN_MEMORY_ASSET_NAME, asset_src, &generated)
+        prepare_variant(IN_MEMORY_ASSET_NAME, asset_src, &decls, &generated)
     {
         let mapped = line.map(|l| map_reported_line(l, start, lines));
         let (line, message) = match mapped {
@@ -341,7 +423,16 @@ pub fn validate_asset_source(asset_src: &str) -> Vec<WgslDiagnostic> {
         }];
     }
 
-    Vec::new()
+    // ── 5. パラメータ注釈（W8.2）の問題を診断として返す ─────
+    //    連結は通る（＝壊れたアノテーション行はただのコメント）ので、
+    //    ここまで来て初めて報告できる。行番号はアセット内のものをそのまま使う。
+    params.warnings.iter()
+        .map(|w| WgslDiagnostic {
+            message: format!("パラメータ注釈: {}", w.message),
+            line:    Some(w.line),
+            variant: VARIANT_NAME_PARAM.to_string(),
+        })
+        .collect()
 }
 
 // ============================================================
@@ -362,6 +453,11 @@ pub struct WaterShadingAssetPipelines {
     pub pipeline: wgpu::RenderPipeline,
     /// アセットが `water_shade` を実装しているか（診断ログ用。描画判定には使わない）。
     pub has_impl: bool,
+    /// アセットが宣言したパラメータ（W8.2）。**出現順＝GPU のスロット順**。
+    ///
+    /// このパイプラインで描く水域のパラメータブロックは、必ずこの順で詰める
+    /// （`WaterRenderer::prepare` が `shade_params::build_block` で行う）。
+    pub params: Vec<WaterShadeParamDecl>,
 }
 
 impl WaterShadingAssetPipelines {
@@ -401,14 +497,22 @@ impl WaterShadingAssetPipelines {
         if !has_impl {
             warnings.push(format!("{asset_path}:-: {}", missing_impl_message()));
         }
-        let generated = generate_dispatch(has_impl);
+
+        // ── パラメータ注釈（W8.2）の解析と生成 ────────────────
+        //    壊れた注釈行はただのコメントなので描画は成立する。警告として通知する。
+        let params = parse_params(asset_src);
+        for w in &params.warnings {
+            warnings.push(format!("{asset_path}:{}: パラメータ注釈: {}", w.line, w.message));
+        }
+        let decls     = generate_param_decls(&params.params);
+        let generated = generate_dispatch(has_impl, &params.params);
 
         // ── 連結の検証（不正な WGSL をデバイスへ渡さない）──────
-        let (_src, names, _start) = prepare_variant(asset_name, asset_src, &generated)
+        let (_src, names, _start) = prepare_variant(asset_name, asset_src, &decls, &generated)
             .map_err(|(msg, line, start)| format_error(asset_path, &msg, line, start, lines))?;
 
         // ── パイプライン生成 ──────────────────────────────────
-        let resolve = make_resolver(asset_name, asset_src, &generated);
+        let resolve = make_resolver(asset_name, asset_src, &decls, &generated);
         let (pipeline, _bgls) =
             RenderPipelineBuilder::new(device, WATER_SURFACE_TOML, out_format, depth_format)
                 .with_label(PIPELINE_LABEL)
@@ -416,7 +520,7 @@ impl WaterShadingAssetPipelines {
                 .with_shader_sources(names)
                 .build_owned(resolve);
 
-        Ok(Self { pipeline, has_impl })
+        Ok(Self { pipeline, has_impl, params: params.params })
     }
 }
 
@@ -458,6 +562,13 @@ pub struct WaterShadingAssetCache {
     /// 直近に出力した `[WATER SHADING]` 診断行（アセットパス → 前回の行）。
     /// 毎フレーム呼ばれるので「前回と同じ行なら出力しない」で間引く。
     last_report: RefCell<HashMap<String, String>>,
+    /// アセットパス → 前回のパラメータ宣言署名（W8.2。ホットリロード連動用）。
+    decl_sigs:   RefCell<HashMap<String, String>>,
+    /// ホットリロードで**宣言が変わった**アセットパスのキュー（W8.2）。
+    ///
+    /// App がフレーム末に drain し、選択中アクタの `ACTOR_COMPONENTS` を再送して
+    /// インスペクタの行を作り直させる（値の行が増減・改名しても UI が追随する）。
+    decls_changed: RefCell<Vec<String>>,
 }
 
 impl Default for WaterShadingAssetCache {
@@ -473,6 +584,30 @@ impl WaterShadingAssetCache {
             errors:      RefCell::new(Vec::new()),
             last_error:  RefCell::new(None),
             last_report: RefCell::new(HashMap::new()),
+            decl_sigs:     RefCell::new(HashMap::new()),
+            decls_changed: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// 宣言が変わったアセットパスを取り出して空にする（W8.2）。
+    /// 呼び出し側（App）は、選択中アクタがそのアセットを使っていれば
+    /// `ACTOR_COMPONENTS` を再送する。
+    pub fn take_decls_changed(&self) -> Vec<String> {
+        std::mem::take(&mut *self.decls_changed.borrow_mut())
+    }
+
+    /// 読み込んだソースの宣言署名を記録し、**前回から変わっていれば**通知キューへ積む。
+    ///
+    /// 初回（署名の記録が無い）は積まない。初回のインスペクタ表示は
+    /// アクタ選択時に `declarations_for_path` が直接ファイルを読んで作るため、
+    /// 既に正しい行が出ているからである。
+    fn note_declarations(&self, asset_path: &str, asset_src: &str) {
+        let sig = declarations_signature(&parse_params(asset_src).params);
+        let prev = self.decl_sigs.borrow_mut().insert(asset_path.to_string(), sig.clone());
+        if let Some(prev) = prev {
+            if prev != sig {
+                self.decls_changed.borrow_mut().push(asset_path.to_string());
+            }
         }
     }
 
@@ -604,6 +739,8 @@ fn resolve_inner(
             return None;
         }
     };
+    // 宣言（W8.2）が前回から変わっていれば、インスペクタの行を作り直させる。
+    cache.note_declarations(asset_path, &src);
     let hash = content_hash(&src);
     cache.paths.borrow_mut().insert(
         asset_path.to_string(),
@@ -733,7 +870,7 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
     /// 実装ありならガード付きでユーザー実装を呼ぶこと。
     #[test]
     fn dispatch_calls_user_impl_with_guard() {
-        let d = generate_dispatch(true);
+        let d = generate_dispatch(true, &[]);
         assert!(d.contains("return water_shade_nan_guard(water_shade(input));"), "{d}");
         assert!(!d.contains("water_shade_default"), "{d}");
     }
@@ -741,7 +878,7 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
     /// 実装なしなら標準へ素通し（ガードも掛けない＝既定連結と同値）。
     #[test]
     fn dispatch_falls_back_to_default_without_guard() {
-        let d = generate_dispatch(false);
+        let d = generate_dispatch(false, &[]);
         assert!(d.contains("return water_shade_default(input);"), "{d}");
         assert!(!d.contains("water_shade_nan_guard"),
             "既定経路にガードを掛けてはならない（アセット導入前との同値性）: {d}");
@@ -753,10 +890,11 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
         let std_list = standard_sources();
         let idx = std_list.iter().position(|n| n == WATER_DISPATCH_SOURCE_NAME)
             .expect("標準リストに water_shade_dispatch.wgsl が無い");
-        let subst = substitute_dispatch(&std_list, "asset.wgsl", "<gen>");
-        assert_eq!(subst.len(), std_list.len() + 1);
-        assert_eq!(subst[idx], "asset.wgsl");
-        assert_eq!(subst[idx + 1], "<gen>");
+        let subst = substitute_dispatch(&std_list, "asset.wgsl", "<decls>", "<gen>");
+        assert_eq!(subst.len(), std_list.len() + 2);
+        assert_eq!(subst[idx], "<decls>", "パラメータ宣言はアセット本体より前に来ること");
+        assert_eq!(subst[idx + 1], "asset.wgsl");
+        assert_eq!(subst[idx + 2], "<gen>");
         assert!(!subst.iter().any(|n| n == WATER_DISPATCH_SOURCE_NAME),
             "既定ディスパッチは連結から外れること（water_shade_entry の二重定義になる）");
     }
@@ -766,8 +904,8 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
     /// サンプルアセット＋生成ディスパッチを差し込んだ連結が naga を通ること。
     #[test]
     fn tint_asset_passes_naga_validation() {
-        let generated = generate_dispatch(detect_water_shade(TINT_ASSET));
-        match prepare_variant("tint.wgsl", TINT_ASSET, &generated) {
+        let generated = generate_dispatch(detect_water_shade(TINT_ASSET), &[]);
+        match prepare_variant("tint.wgsl", TINT_ASSET, "", &generated) {
             Ok((_src, _names, start)) => {
                 assert!(start > 1, "アセットは共有モジュール・契約の後に来る");
             }
@@ -793,14 +931,41 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
             assert_eq!(parse_contract_version(src), Some(WATER_SHADING_CONTRACT_VERSION),
                 "{name}: 契約バージョン宣言が無い／版が違う");
             assert!(detect_water_shade(src), "{name}: water_shade の定義が無い");
-            let generated = generate_dispatch(true);
-            if let Err((msg, line, start)) = prepare_variant(name, src, &generated) {
+            let params    = parse_params(src);
+            let decls     = generate_param_decls(&params.params);
+            let generated = generate_dispatch(true, &params.params);
+            if let Err((msg, line, start)) = prepare_variant(name, src, &decls, &generated) {
                 panic!("{name} の検証に失敗: {}",
                     format_error(name, &msg, line, start, asset_line_count(src)));
             }
             // インメモリ検証（エディタが叩く経路）でも診断ゼロであること。
             assert!(validate_asset_source(src).is_empty(),
                 "{name}: エディタ検証で診断が出た: {:?}", validate_asset_source(src));
+        }
+    }
+
+    /// 同梱サンプルがパラメータ注釈を宣言していること（W8.2 のショーケース）。
+    ///
+    /// ここが空になる＝「アセットを差してもインスペクタにパラメータ行が出ない」なので、
+    /// 機能の入口が見えなくなる退行として検出する。
+    #[test]
+    fn bundled_samples_declare_inspector_params() {
+        const SAMPLES: [(&str, &str); 2] = [
+            ("magma.wgsl",  include_str!("../../../../../assets/shaders/magma.wgsl")),
+            ("poison.wgsl", include_str!("../../../../../assets/shaders/poison.wgsl")),
+        ];
+        for (name, src) in SAMPLES {
+            let set = parse_params(src);
+            assert!(set.warnings.is_empty(), "{name}: 注釈の警告が出ている: {:?}", set.warnings);
+            assert!(set.params.len() >= 3,
+                "{name}: パラメータ宣言が 3 個未満（{} 個）", set.params.len());
+            // 宣言した名前がアセット本体で実際に参照されていること
+            //（宣言だけして使っていないと、インスペクタで動かしても何も起きない）。
+            for p in &set.params {
+                let uses = src.matches(p.name.as_str()).count();
+                assert!(uses >= 2,
+                    "{name}: パラメータ `{}` が宣言のみで使われていない", p.name);
+            }
         }
     }
 
@@ -852,6 +1017,120 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].variant, VARIANT_NAME_CONTRACT);
         assert!(diags[0].message.contains("不一致"), "{}", diags[0].message);
+    }
+
+    // ── 6. パラメータ注釈（Phase W8.2）───────────────────────
+
+    /// パラメータ注釈つきのテストアセット。宣言した名前を `water_shade` から直接読む
+    /// （＝この機能の中心的な使い勝手）。
+    const PARAM_ASSET: &str = r#"// @water_shading_contract 1
+//! param color  emission_color = (1.0, 0.4, 0.1)   // 発光色
+//! param range(0.0, 10.0) crack_speed = 1.5        // 亀裂の流速
+//! param float  glow_boost = 2.0                    // 発光の強さ
+
+fn water_shade(input: WaterShadeInput) -> vec4<f32> {
+    let n = water_shade_fbm(input.world_pos.xz - input.flow * input.time * crack_speed);
+    return vec4<f32>(emission_color * n * glow_boost, 1.0);
+}
+"#;
+
+    /// Rust の上限本数と WGSL の配列長・定数が一致すること。
+    ///
+    /// ここが食い違うと「宣言 8 個目だけが読めない」という、
+    /// 画面を見ても原因の分からない壊れ方をする。
+    #[test]
+    fn rust_and_wgsl_param_slot_counts_match() {
+        use super::super::shade_params::WATER_SHADE_PARAM_MAX;
+        let src = include_str!("../shaders/water_shade_params.wgsl");
+        // ① 定数 WATER_SHADE_PARAM_SLOTS
+        let line = src.lines().map(str::trim)
+            .find(|l| l.starts_with("const WATER_SHADE_PARAM_SLOTS"))
+            .expect("water_shade_params.wgsl に const WATER_SHADE_PARAM_SLOTS が無い");
+        let rhs = line.split('=').nth(1).expect("= の右辺がありません");
+        let num: String = rhs.trim().chars().take_while(|c| c.is_ascii_digit()).collect();
+        assert_eq!(num.parse::<usize>().expect("数値として読めません"), WATER_SHADE_PARAM_MAX,
+            "WGSL の WATER_SHADE_PARAM_SLOTS と Rust の WATER_SHADE_PARAM_MAX が食い違っている");
+        // ② 構造体の配列長
+        assert!(src.contains(&format!("array<vec4<f32>, {WATER_SHADE_PARAM_MAX}>")),
+            "WaterShadeParamBlock の配列長が {WATER_SHADE_PARAM_MAX} でない");
+    }
+
+    /// **標準連結（アセット未指定）にもパラメータ用の binding が宣言されていること**。
+    ///
+    /// BindGroupLayout はシェーダ宣言のリフレクション（`pipeline_config::reflect_bgls` が
+    /// `global_variables` を走査する）で作られ、`WaterRenderer` は標準パイプライン由来の
+    /// レイアウトへ binding 7 のエントリを挿す。標準側の宣言が落ちると
+    /// **BindGroup の生成時に「レイアウトに無い binding」で落ちる**ため、
+    /// 「使っていなくても宣言は残る」ことをここで固定する。
+    #[test]
+    fn standard_concat_declares_param_storage_binding() {
+        let names = standard_sources();
+        // アセット名に該当しないダミーを渡す（標準連結そのものを組み立てる）。
+        let (src, _start) = concat_sources(&names, "<none>", |n: &str| {
+            super::super::resolve_water_shader(n).to_string()
+        });
+        let module = naga::front::wgsl::parse_str(&src)
+            .expect("標準連結が naga で解析できること");
+        let found = module.global_variables.iter().any(|(_, v)| {
+            v.binding.as_ref().map(|b| (b.group, b.binding)) == Some((1, 7))
+        });
+        assert!(found,
+            "標準連結に @group(1) @binding(7)（パラメータ storage）の宣言が無い。\
+             アセット側パイプラインとレイアウトが食い違って BindGroup 生成が落ちる");
+    }
+
+    /// 宣言から `var<private>` が型どおりに生成されること。
+    #[test]
+    fn generates_private_vars_for_declarations() {
+        let params = parse_params(PARAM_ASSET);
+        let decls  = generate_param_decls(&params.params);
+        assert!(decls.contains("var<private> emission_color: vec3<f32>;"), "{decls}");
+        assert!(decls.contains("var<private> crack_speed: f32;"), "{decls}");
+        assert!(decls.contains("var<private> glow_boost: f32;"), "{decls}");
+        // 宣言が無ければ 1 文字も出さない（連結しても無害）。
+        assert!(generate_param_decls(&[]).is_empty());
+    }
+
+    /// ディスパッチが宣言順のスロットから値を取り込むこと（Color は xyz / スカラーは x）。
+    #[test]
+    fn dispatch_loads_params_in_declaration_order() {
+        let params = parse_params(PARAM_ASSET);
+        let d = generate_dispatch(true, &params.params);
+        assert!(d.contains("emission_color = water_shade_param(input.instance_index, 0u).xyz;"), "{d}");
+        assert!(d.contains("crack_speed = water_shade_param(input.instance_index, 1u).x;"), "{d}");
+        assert!(d.contains("glow_boost = water_shade_param(input.instance_index, 2u).x;"), "{d}");
+        // 取り込みはユーザー実装の呼び出しより前であること（順序が逆だと値が届かない）。
+        let load_at = d.find("emission_color = ").expect("取り込みが無い");
+        let call_at = d.find("water_shade_nan_guard").expect("呼び出しが無い");
+        assert!(load_at < call_at, "パラメータの取り込みは呼び出しより前であること: {d}");
+    }
+
+    /// 宣言した名前をアセット内でそのまま参照する連結が naga 検証を通ること
+    /// （この機能の中核。ここが落ちるとアセットが一切コンパイルできない）。
+    #[test]
+    fn param_asset_passes_naga_validation() {
+        let params    = parse_params(PARAM_ASSET);
+        let decls     = generate_param_decls(&params.params);
+        let generated = generate_dispatch(true, &params.params);
+        if let Err((msg, line, start)) = prepare_variant("param.wgsl", PARAM_ASSET, &decls, &generated) {
+            panic!("パラメータ注釈つきアセットの検証に失敗: {}",
+                format_error("param.wgsl", &msg, line, start, asset_line_count(PARAM_ASSET)));
+        }
+        // エディタ検証（未保存バッファ経路）でも診断ゼロであること。
+        assert!(validate_asset_source(PARAM_ASSET).is_empty(),
+            "診断が出た: {:?}", validate_asset_source(PARAM_ASSET));
+    }
+
+    /// 壊れた注釈行は「診断 1 件（variant=param）＋ アセット自体は正常」になること。
+    #[test]
+    fn broken_annotation_reports_param_diagnostic() {
+        let src = "// @water_shading_contract 1\n\
+                   //! param bogus weird = 1.0\n\
+                   fn water_shade(i: WaterShadeInput) -> vec4<f32> { return vec4<f32>(0.0); }\n";
+        let diags = validate_asset_source(src);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].variant, VARIANT_NAME_PARAM);
+        assert_eq!(diags[0].line, Some(2), "注釈のある行を指すこと: {:?}", diags[0]);
     }
 
     /// `water_shade` を定義していないアセットは「警告 1 件」（＝エラーではない）。

@@ -175,6 +175,12 @@ pub struct ResolvedWaterVolume {
     /// 問い合わせ（`WaterQuery`）はこの値を一切見ない。アセットが決めるのは色だけで、
     /// 形状・物性はこの構造体の他のフィールドが正典であるという境界を保つため。
     pub surface_shader: String,
+    /// 水面シェーディングアセットのパラメータ値（Phase W8.2）。
+    ///
+    /// キー = アセットの `//! param` 識別子／値 = `vec4`。
+    /// **アセットの宣言との突き合わせは描画側が行う**（ここは値の運び屋にすぎない）。
+    /// `surface_shader` が空ならこのマップも使われない。
+    pub shader_params: std::collections::BTreeMap<String, [f32; 4]>,
 }
 
 impl ResolvedWaterVolume {
@@ -233,6 +239,7 @@ impl ResolvedWaterVolume {
                 actor_dfs_id,
                 river:        None,
                 surface_shader: c.surface_shader.trim().to_string(),
+                shader_params:  c.shader_params.clone(),
             },
             // Region / Spline: アクタ位置を AABB 中心とし、水面 Y は
             // 「中心 Y + surface_height（相対）」で決まる。
@@ -291,6 +298,7 @@ impl ResolvedWaterVolume {
                     actor_dfs_id,
                     river,
                     surface_shader: c.surface_shader.trim().to_string(),
+                    shader_params:  c.shader_params.clone(),
                 }
             }
         }

@@ -226,6 +226,7 @@ mod tests {
             visual:       dummy_visual(),
             actor_dfs_id: 0, river: None,
             surface_shader: String::new(),
+            shader_params:  Default::default(),
         }
     }
 
@@ -317,6 +318,7 @@ mod tests {
             center: [0.0; 3], half_extents: [0.0; 3], ocean_extent: 100.0,
             visual: dummy_visual(), actor_dfs_id: 0, river: None,
             surface_shader: String::new(),
+            shader_params:  Default::default(),
         };
         let mut s = vec![source([9999.0, 3.0, -9999.0], [5.0, 0.0], 0.0)];
         apply_water_wave_injection(&mut s, &[ocean]);

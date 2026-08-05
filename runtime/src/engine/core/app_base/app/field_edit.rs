@@ -94,6 +94,11 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         // <FIELD-EDIT-TABLE:SLOT>
         IpcCommand::SetWaterField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetWaterField", key),
+        // 水面シェーディングアセットのパラメータ（W8.2）。
+        // マージキーにパラメータ名まで含めるので、カラーピッカーの連打・
+        // スライダーのドラッグは「そのパラメータ 1 個ぶん」で 1 コマンドにまとまる。
+        IpcCommand::SetWaterShaderParam { actor_dfs_id, slot_idx, name, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetWaterShaderParam", name),
         IpcCommand::SetWaterLinkField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetWaterLinkField", key),
         IpcCommand::SetLightField { actor_dfs_id, slot_idx, key, .. } =>
@@ -872,6 +877,26 @@ mod tests {
             }
             other => panic!("Slot 対象になること: {other:?}"),
         }
+    }
+
+    /// 分類関数: 水面シェーディングアセットのパラメータ（W8.2）が
+    /// スロット編集として分類され、パラメータ名でマージキーが分かれること。
+    ///
+    /// ここが `None` に落ちると、インスペクタでパラメータを触っても
+    /// Ctrl+Z が効かなくなる（＝この機能だけ Undo の穴になる）。
+    #[test]
+    fn field_edit_target_classifies_water_shader_param() {
+        let mk = |name: &str| field_edit_target(&IpcCommand::SetWaterShaderParam {
+            actor_dfs_id: 3, slot_idx: 1, name: name.into(), value: "1,0,0,0".into(),
+        });
+        match mk("emission_color") {
+            FieldEditTarget::Slot { actor_dfs_id, slot_idx, .. } => {
+                assert_eq!((actor_dfs_id, slot_idx), (3, 1));
+            }
+            other => panic!("スロット編集として分類されること: {other:?}"),
+        }
+        assert_ne!(mk("emission_color"), mk("glow_boost"),
+            "別パラメータの編集は別コマンドとしてまとめられること");
     }
 
     /// 分類関数: 同じスロットでも別フィールドならマージキーが異なること。

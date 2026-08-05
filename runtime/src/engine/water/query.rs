@@ -240,6 +240,7 @@ mod tests {
             // Ocean / Region は川を持たない
             river: None,
             surface_shader: String::new(),
+            shader_params:  Default::default(),
         }
     }
 
@@ -257,6 +258,7 @@ mod tests {
             // Ocean / Region は川を持たない
             river: None,
             surface_shader: String::new(),
+            shader_params:  Default::default(),
         }
     }
 
@@ -273,6 +275,7 @@ mod tests {
             actor_dfs_id: 0,
             river: None,
             surface_shader: String::new(),
+            shader_params:  Default::default(),
         }
     }
 
@@ -297,6 +300,7 @@ mod tests {
                 points, width, flow_speed, depth,
                 crate::engine::water::spline::RIVER_SAMPLE_STEP_M),
             surface_shader: String::new(),
+            shader_params:  Default::default(),
         }
     }
 

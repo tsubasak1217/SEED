@@ -324,6 +324,9 @@ fn fs_water(in: WaterVsOut) -> @location(0) vec4<f32> {
     si.fresnel_strength    = p.fresnel.y;
     si.wave_amplitude      = p.wave.x;
     si.viscosity           = p.wave_noise.z;
+    // アセットのパラメータ注釈（W8.2）を引くためのインスタンス番号。
+    // 生成ディスパッチだけが使う内部値で、標準経路では読まれない。
+    si.instance_index      = in.idx;
 
     // ブレンドは Replace なので、背景合成は契約側で済んでいる前提。
     // アルファは HDR RT の a チャンネルへそのまま書かれるだけで合成には使われない
