@@ -100,6 +100,88 @@ Undo / Redo 自体を実行するとマージセッションは打ち切られ�
 
 ---
 
+## 1.5 コンポーネント行の「⟲ デフォルトに戻す」（汎用リセット機構）
+
+インスペクタの各パラメータ行の右端にある ⟲ ボタンは、
+**その 1 フィールドだけを Rust の `Default` 由来の既定値へ戻す**。
+コンポーネントごとの個別実装は無く、1 本の汎用 IPC で全コンポーネントを賄う。
+
+### IPC
+
+```
+RESET_COMPONENT_FIELD:{actor_dfs_id},{slot_idx},{field_path}
+```
+
+`field_path` は **Rust の `*ComponentData` の serde フィールド名**であって、
+`SET_*_FIELD` のキー名ではない（両者は別体系で、実際に食い違うものがある。
+例: ライトの角度は SET キー `inner_angle` / serde 名 `inner_angle_deg`、
+JointAttach は SET キー `offset_rot` / serde 名 `offset_rot_deg`）。
+入れ子は `/` 区切りで指定する（例 `material_overrides/0/kind/roughness`）。
+
+### ランタイム側の仕組み（`app/component_reset_ops.rs`）
+
+リセットを「**コンポーネントの JSON 表現のうち 1 パスだけを既定値で差し替える**」
+という、コンポーネントに依存しない操作へ還元してある。
+
+1. 対象スロットの現在値を `slot_to_data` で `ComponentData` にする
+2. `ComponentData` は `#[serde(tag = "type", content = "data")]` なので、
+   現在値と「同じ variant の既定値」を両方 `serde_json::Value` 化する
+3. `data` 以下を `field_path` で辿り、**その 1 箇所だけ**を既定値で置き換える
+4. `from_value` で `ComponentData` へ戻し、`field_edit.rs::apply_slot_data` で適用する
+
+したがって**フィールドが増えてもこのファイルは変更不要**。
+唯一の追従点は既定値を作る `default_component_data` の**網羅 match**で、
+`ComponentData` に variant を足すとビルドが落ちて気付ける。
+
+| 規則 | 内容 |
+|---|---|
+| 既定値の正典 | 各コンポーネントの Rust `Default`（`XxxComponent::default().to_data()`） |
+| 既定値側でパスが解決できないとき | JSON `null` を既定とみなす。マテリアルのインライン上書きは `Option<T>` で `None` = 「モデル埋め込みの値を使う」なので、これが正しい「既定へ戻す」になる |
+| 既に既定値のとき | **何もしない**（無意味な `SCENE_MODIFIED` で未保存印を付けない＝ボタンが無反応に見えるのが正常） |
+| 現在値側でパスが解決できない／戻せない JSON | 何もしない（不正なリセットでシーンを壊さない） |
+| リセット非対応の種別 | `ScriptComponent`（既定値は C# の型定義側にある）／`PluginComponent`（既定値はプラグイン DLL のフィールド定義が持つ）／`LegacyRigidbodyComponent`（読み込み専用の旧フォーマット） |
+
+### Undo
+
+`field_edit_target` が `IpcCommand::ResetComponentField` を `Slot` へ分類しているので、
+**1.（汎用機構）にそのまま乗る**。ハンドラ側に Undo 記録を書いてはならない（二重記録になる）。
+マージキーのコマンド名を `SET_*` と分けてあるため、
+「スライダーを動かす → ⟲」は 1 手に潰れず、Ctrl+Z 1 回でリセット直前の値へ戻る。
+
+### エディタ側
+
+| ファイル | 役割 |
+|---|---|
+| `editor/src/Controls/ResetButtonFactory.cs` | ⟲ ボタンの見た目と包み方（スクリプトの `[ResetButton]`・シェーダアセットの `@reset` と共通） |
+| `editor/src/Panels/InspectorPanel.FieldReset.cs` | `RESET_COMPONENT_FIELD` を送る共通入口。「値域が表にあればスライダー行、無ければ数値行」を選び、⟲ を添えて返す |
+| `editor/src/Controls/ComponentFieldRanges.cs` | **値域表（1 箇所集約）**。キーは `"{型名}.{serde フィールド名}"` |
+
+各コンポーネントのビルダはローカルの行ヘルパから共通入口を呼ぶだけで、
+行ごとの個別対応は書かない。
+
+**⟲ を付ける/付けないの判断基準は「値の調整」か「構造の定義」か**:
+
+| 付ける（値の調整） | 付けない（構造の定義・参照） |
+|---|---|
+| 色・強度・不透明度・粘度・減衰・角度・速度・寿命・質量・摩擦・マテリアル値 | Transform、サイズ／half extents／offset 位置、キャンバスサイズ、コライダー形状寸法 |
+| | 参照・パス・名前系（アセットパス、アクタ名参照、ジョイント名、クリップ名） |
+| | kind・種別 enum、モードフラグ（`simulate_level`・Is Main・キネマティック 等） |
+
+### 値域表とランタイム clamp の同期
+
+スライダーの上下限は**ランタイムの clamp が正典**。UI 側で勝手に狭めると
+ランタイムが受け付ける値に手が届かず、広げるとスライダーの端が
+「動かせるのに反映されない死に領域」になる。
+水の 0..1 系については `water_ops.rs` の契約テストモジュール `field_range_contract`
+（`table_entries_are_clamped_in_runtime` / `runtime_clamps_are_listed_in_table`）が
+C# の表を `include_str!` で読み、**双方向**
+（表にあるものは clamp されている／clamp されているものは表にある）に固定する。
+走査は CRLF 非依存（`lines()` ベース）にすること。
+
+上限の無い `v.max(0.0)` 系はスライダーにしない（表に載せない）。
+
+---
+
 ## 2. 個別の Undo コマンド（従来からある経路）
 
 `undo.rs` に定義。
@@ -153,3 +235,8 @@ Edit モードで、各フィールドを編集 → Ctrl+Z で戻る → Ctrl+Y 
    Ctrl+Z で **移動だけ**が戻ること（cast_shadows は戻らない）
 8. **Play 中は積まれないこと**: Play 中に値を変えて Exit Play → Ctrl+Z が
    Play 中の変更を戻さないこと
+9. **⟲ リセット（1.5）**: 値を変えたパラメータ行の ⟲ を押す → 既定値へ戻ること。
+   続けて Ctrl+Z **1 回**でリセット直前の値へ戻ること
+   （スライダーのドラッグと 1 手にまとまらないこと）
+10. **⟲ の無反応が正常なケース**: 既に既定値の行で ⟲ を押しても何も起きず、
+    タイトルバーに「未保存」印が付かないこと

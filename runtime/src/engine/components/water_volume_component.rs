@@ -37,31 +37,57 @@ use crate::engine::ecs::Component;
 
 // ─── デフォルト値関数 ─────────────────────────────────────────
 // マジックナンバー禁止のため、非ゼロ既定値はすべて関数に切り出す。
+//
+// 【見た目パラメータの既定値の出どころ】
+// 色・波・フォーム・フレネル・屈折・波紋・岸波の既定値は、
+// TerrainTest シーンの "Pond"（実際に見た目を詰めた池）で採用した値をそのまま採る。
+// 「WaterVolume を付けただけで、それなりに見られる池になる」ことを狙った実測由来の値であり、
+// 理論値ではない（各関数のコメントにある説明は、その値が何を意味するかの説明である）。
+//
+// 【既定値を変えても既存シーンは変わらない】
+// `WaterVolumeComponentData` は **skip_serializing を一切使っていない**ので、
+// 保存済み `.scene` には常に全フィールドが書かれている。したがって既定値の変更が
+// 効くのは「新規に付けた WaterVolume」と「そのフィールドがまだ無い旧 .scene」だけである
+//（この契約はテスト `existing_scene_values_survive_default_changes` が固定する）。
+//
+// 【ここに含めないもの】
+// 器の形（kind / region_half_extents / ocean_extent / surface_height）、
+// 参照系（control_point_ref / surface_shader / shader_params / bindings）、
+// 水位グラフ（simulate_level）、川の幾何（river_*・flow_speed）は
+// Pond の値を採らない。新規作成の器はニュートラルであるべきで、
+// Pond のシーン固有の都合（池なのに残っている川パラメータ等）を持ち込まないため。
+// `ripple_damping` もエンジン定数 `INTERACTION_WAVE_DEFAULT_DAMPING_RATE` と
+// 等価であることを別テストが固定しているため、Pond の値では上書きしない。
 
 /// region_half_extents の既定値（ローカル AABB 半径：横 10m・縦 5m・奥 10m）。
 fn default_region_half_extents() -> [f32; 3] { [10.0, 5.0, 10.0] }
 /// ocean_extent の既定値（大洋クアッドの片側半径 2km）。
 fn default_ocean_extent() -> f32 { 2000.0 }
-/// shallow_color の既定値（浅場の緑がかった水色・リニア）。
-fn default_shallow_color() -> [f32; 3] { [0.10, 0.45, 0.42] }
-/// deep_color の既定値（深場の濃紺・リニア）。
-fn default_deep_color() -> [f32; 3] { [0.01, 0.06, 0.12] }
-/// absorption_distance の既定値（8m 進むと深場の色へほぼ収束する）。
-fn default_absorption_distance() -> f32 { 8.0 }
-/// surface_opacity の既定値（深場での最大不透明度）。
-fn default_surface_opacity() -> f32 { 0.92 }
-/// foam_color の既定値（白）。
-fn default_foam_color() -> [f32; 3] { [1.0, 1.0, 1.0] }
+/// shallow_color の既定値（浅場の緑・リニア。Pond 由来の濁った池の色）。
+fn default_shallow_color() -> [f32; 3] { [0.006108751, 0.2609179, 0.10416865] }
+/// deep_color の既定値（深場のほぼ黒い緑・リニア。Pond 由来）。
+fn default_deep_color() -> [f32; 3] { [0.0008225105, 0.014470353, 0.0031918993] }
+/// absorption_distance の既定値（2m 進むと深場の色へほぼ収束する＝濁った水）。
+fn default_absorption_distance() -> f32 { 2.0 }
+/// surface_opacity の既定値（深場での最大不透明度。1.0 = 深い所は完全に不透明）。
+fn default_surface_opacity() -> f32 { 1.0 }
+/// foam_color の既定値（暗いグレー。Pond 由来。`foam_intensity` が既定 0 なので通常は出ない）。
+fn default_foam_color() -> [f32; 3] { [0.04938031, 0.04938031, 0.04938031] }
 /// foam_width の既定値（この水深より浅い所にフォームが出る）。
 fn default_foam_width() -> f32 { 0.35 }
-/// foam_intensity の既定値（フォームの濃さ）。
-fn default_foam_intensity() -> f32 { 0.8 }
+/// foam_intensity の既定値（フォームの濃さ）。**既定 0 = 岸フォームを出さない**。
+///
+/// 岸フォームは地形と水面の交線に強く出るため、既定で有効だと
+/// 「水を置いた瞬間に白い縁が出る」。必要な水域だけ上げる運用にする。
+fn default_foam_intensity() -> f32 { 0.0 }
 /// wave_amplitude の既定値（法線摂動の強さ。形状は変えず陰影だけ揺らす）。
-fn default_wave_amplitude() -> f32 { 0.06 }
-/// wave_scale の既定値（波の空間周波数 1/m）。
-fn default_wave_scale() -> f32 { 0.12 }
-/// wave_speed の既定値（波のスクロール速度）。
-fn default_wave_speed() -> f32 { 0.6 }
+///
+/// 0.01 は「水面がわずかに揺らぐが、反射像の形は保たれる」静かな池の値。
+fn default_wave_amplitude() -> f32 { 0.01 }
+/// wave_scale の既定値（波の空間周波数 1/m）。5.0 = 20cm 周期の細かいさざ波。
+fn default_wave_scale() -> f32 { 5.0 }
+/// wave_speed の既定値（波のスクロール速度）。細かい波なので速めに流す。
+fn default_wave_speed() -> f32 { 3.0 }
 // wave_direction_deg の既定値は 0.0（＝+Z 方向へ進む）なので、
 // serde の型既定（f32 = 0.0）で足りる。専用の default 関数は置かない。
 // ─── 波形のランダマイズ（Phase W6.4）の既定値 ─────────────────
@@ -87,7 +113,9 @@ fn default_wave_noise_strength() -> f32 { 0.35 }
 fn default_wave_noise_scale() -> f32 { 1.0 }
 
 /// fresnel_power の既定値（Schlick 近似の指数）。
-fn default_fresnel_power() -> f32 { 5.0 }
+///
+/// 3.0 は物理的な 5.0 より小さく、**正面から見ても空がやや映る**（池が黒く沈まない）。
+fn default_fresnel_power() -> f32 { 3.0 }
 /// fresnel_strength の既定値（フレネル反射の寄与率）。
 fn default_fresnel_strength() -> f32 { 1.0 }
 // ─── 反射（Phase W5.2）の既定値 ────────────────────────────
@@ -107,16 +135,19 @@ fn default_reflection_intensity() -> f32 { 1.0 }
 /// reflection_roughness の既定値（波による反射のぼけ）。
 ///
 /// 1 ピクセル 1 レイなので、粗さは「ぼけ」ではなく **散り**として出る。
-/// 0.15 は「鏡のような映り込みの輪郭がわずかに崩れて水らしくなる」控えめな値で、
+/// 0.1 は「鏡のような映り込みの輪郭がわずかに崩れて水らしくなる」控えめな値で、
 /// **0 にすれば厳密な鏡面**へ戻せる。1.0 まで上げると反射像はほぼ判別できなくなる。
-fn default_reflection_roughness() -> f32 { 0.15 }
+fn default_reflection_roughness() -> f32 { 0.1 }
 /// refraction_distortion の既定値（屈折 UV の最大歪み。画面比）。
-fn default_refraction_distortion() -> f32 { 0.03 }
+///
+/// 0.2 は「水底の模様が波でしっかり揺らぐ」量。0 で歪みなし（水底が素通し）。
+fn default_refraction_distortion() -> f32 { 0.2 }
 /// ripple_strength の既定値（波紋の法線摂動スケール。1.0 = 標準）。
 ///
 /// インタラクションフィールドの波高勾配を水面法線へ足す際の倍率。
 /// 0 にすると波紋・航跡の表示だけを切れる（場の計算自体は他の消費者と共有のため止まらない）。
-fn default_ripple_strength() -> f32 { 1.0 }
+/// 既定 0.1 は「歩いた跡が分かるが、水面の質感を壊さない」控えめな量（1.0 が等倍）。
+fn default_ripple_strength() -> f32 { 0.1 }
 /// ripple_foam_threshold の既定値（この波高（m 相当）を超えた所に航跡の泡が出る）。
 ///
 /// 歩行が立てる波（振幅 0.03 前後）では泡が出ず、走り・飛び込みで出る値。
@@ -190,18 +221,20 @@ fn default_shadow_refraction_strength() -> f32 { 1.0 }
 // これらの値でも一切現れない（＝既定が有効でも見た目が壊れることはない）。
 
 /// shore_wave_strength の既定値（1.0 = 標準）。**0 で完全無効（W1 と同一出力）**。
-fn default_shore_wave_strength() -> f32 { 1.0 }
+///
+/// 既定 0.2 は「浜に寄せるうねりがうっすら乗る」程度。外洋を作るときは 1.0 まで上げる。
+fn default_shore_wave_strength() -> f32 { 0.2 }
 /// shore_wave_length の既定値（うねりの波長 m）。
 ///
-/// 浜へ寄せるうねりとして自然に見える長さ。短くすると細かいさざ波、
-/// 長くすると外洋の大きなうねりになる。
-fn default_shore_wave_length() -> f32 { 12.0 }
+/// 短くすると細かいさざ波、長くすると外洋の大きなうねりになる。
+/// 既定 5m は池・川の岸に合うサイズ（外洋なら 12m 前後）。
+fn default_shore_wave_length() -> f32 { 5.0 }
 /// shore_wave_period の既定値（うねりが 1 波長進む周期 秒）。
 ///
-/// 波長 12m / 周期 4s ＝ 位相速度 3m/s。実際の浜のうねりに近い速さ。
-fn default_shore_wave_period() -> f32 { 4.0 }
+/// 波長 5m / 周期 8s ＝ 位相速度 0.625m/s。池の岸でゆっくり上下する遅いうねり。
+fn default_shore_wave_period() -> f32 { 8.0 }
 /// shore_wave_foam の既定値（砕け波・打ち上げの泡量 0..1）。
-fn default_shore_wave_foam() -> f32 { 0.8 }
+fn default_shore_wave_foam() -> f32 { 1.0 }
 
 // ─── 川（スプライン。Phase W4）の既定値 ──────────────────────
 //
@@ -902,7 +935,7 @@ mod tests {
         assert_eq!(d.reflection_intensity, def.reflection_intensity);
         assert_eq!(d.reflection_roughness, def.reflection_roughness);
         assert_eq!(d.reflection_intensity, 1.0);
-        assert_eq!(d.reflection_roughness, 0.15);
+        assert_eq!(d.reflection_roughness, 0.1);
         assert_eq!(d.refraction_distortion, def.refraction_distortion);
         assert_eq!(d.ripple_strength, def.ripple_strength);
         assert_eq!(d.ripple_foam_threshold, def.ripple_foam_threshold);
@@ -948,6 +981,126 @@ mod tests {
         // W2.5: 水位グラフは既定で無効（旧 .scene の水面が動き出さない保証）
         assert_eq!(d.simulate_level, def.simulate_level);
         assert!(!d.simulate_level, "水位シミュレーションは既定 OFF であること");
+    }
+
+    /// **見た目パラメータの既定値が TerrainTest/Pond の調整値であること**（回帰防止）。
+    ///
+    /// 「WaterVolume を付けただけでそれなりの池になる」ことが既定値の目的なので、
+    /// うっかり別の値へ戻す（＝新規水域の見た目が変わる）ことを検出する。
+    /// ここを意図して変えるときは、この表も同時に更新すること。
+    #[test]
+    fn defaults_match_tuned_pond_values() {
+        let d = WaterVolumeComponentData::default();
+        assert_eq!(d.shallow_color,        [0.006108751, 0.2609179, 0.10416865]);
+        assert_eq!(d.deep_color,           [0.0008225105, 0.014470353, 0.0031918993]);
+        assert_eq!(d.absorption_distance,  2.0);
+        assert_eq!(d.surface_opacity,      1.0);
+        assert_eq!(d.foam_color,           [0.04938031, 0.04938031, 0.04938031]);
+        assert_eq!(d.foam_intensity,       0.0, "岸フォームは既定で出さないこと");
+        assert_eq!(d.wave_amplitude,       0.01);
+        assert_eq!(d.wave_scale,           5.0);
+        assert_eq!(d.wave_speed,           3.0);
+        assert_eq!(d.fresnel_power,        3.0);
+        assert_eq!(d.reflection_roughness, 0.1);
+        assert_eq!(d.refraction_distortion, 0.2);
+        assert_eq!(d.ripple_strength,      0.1);
+        assert_eq!(d.shore_wave_strength,  0.2);
+        assert_eq!(d.shore_wave_length,    5.0);
+        assert_eq!(d.shore_wave_period,    8.0);
+        assert_eq!(d.shore_wave_foam,      1.0);
+
+        // ── 既定値を Pond から採ら「ない」もの ──
+        // 器の形・参照・水位グラフ・川の幾何は新規作成時にニュートラルであること。
+        assert_eq!(d.kind, WaterVolumeKind::Region, "器の種別は Region のまま");
+        assert_eq!(d.surface_height, 0.0,           "水面高さはアクタ原点のまま");
+        assert_eq!(d.region_half_extents, [10.0, 5.0, 10.0], "領域サイズは Pond に寄せない");
+        assert_eq!(d.ocean_extent, 2000.0);
+        assert!(!d.simulate_level,                  "水位グラフは既定 OFF のまま");
+        assert!(d.control_point_ref.is_empty(),     "参照は既定で空のまま");
+        assert!(d.surface_shader.is_empty(),        "シェーディングアセットは既定で未指定");
+        assert!(d.shader_params.is_empty(),         "アセットのパラメータ値は既定で空");
+        assert_eq!(d.river_width, 4.0,              "川の幾何は Pond（Region）から採らない");
+        assert_eq!(d.river_depth, 2.0);
+        assert_eq!(d.river_segment_length, 2.0);
+        assert_eq!(d.flow_speed, 1.5);
+        // 波紋の減衰率はエンジン定数と等価であることが別テストの契約なので据え置く。
+        assert_eq!(d.ripple_damping, 1.0 / 1.5);
+    }
+
+    /// **既定値を変えても、保存済み `.scene` の水域は 1 つも値が変わらないこと**。
+    ///
+    /// `WaterVolumeComponentData` は `skip_serializing` を一切使っていないため、
+    /// 保存された `.scene` には必ず全フィールドが書かれている。したがって
+    /// 既定値の変更が既存シーンへ波及することは無い——という契約を、
+    /// 「既定値と 1 つも一致しない値で作った水域を往復させる」ことで固定する。
+    ///
+    /// もし将来 `skip_serializing_if` を足すと、その値が既定値と一致したときに
+    /// JSON からキーが消え、次に既定値を変えたときシーンの見た目が勝手に変わる。
+    /// このテストは JSON のキー本数まで見てそれを検出する。
+    #[test]
+    fn existing_scene_values_survive_default_changes() {
+        // 既定値とは異なる値を全フィールドへ入れた「保存済みの水域」。
+        let saved = WaterVolumeComponentData {
+            shallow_color:         [0.9, 0.8, 0.7],
+            deep_color:            [0.6, 0.5, 0.4],
+            absorption_distance:   17.0,
+            surface_opacity:       0.33,
+            foam_color:            [0.3, 0.2, 0.1],
+            foam_width:            1.11,
+            foam_intensity:        0.44,
+            wave_amplitude:        0.55,
+            wave_scale:            0.66,
+            wave_speed:            0.77,
+            fresnel_power:         9.0,
+            reflection_roughness:  0.88,
+            refraction_distortion: 0.99,
+            ripple_strength:       1.23,
+            shore_wave_strength:   0.21,
+            shore_wave_length:     3.21,
+            shore_wave_period:     4.32,
+            shore_wave_foam:       0.12,
+            ..Default::default()
+        };
+        // .scene への保存と読み戻しをそのまま再現する。
+        let json  = serde_json::to_string(&saved).expect("保存できること");
+        let back: WaterVolumeComponentData =
+            serde_json::from_str(&json).expect("読み戻せること");
+
+        assert_eq!(back.shallow_color,        saved.shallow_color);
+        assert_eq!(back.deep_color,           saved.deep_color);
+        assert_eq!(back.absorption_distance,  saved.absorption_distance);
+        assert_eq!(back.surface_opacity,      saved.surface_opacity);
+        assert_eq!(back.foam_color,           saved.foam_color);
+        assert_eq!(back.foam_width,           saved.foam_width);
+        assert_eq!(back.foam_intensity,       saved.foam_intensity);
+        assert_eq!(back.wave_amplitude,       saved.wave_amplitude);
+        assert_eq!(back.wave_scale,           saved.wave_scale);
+        assert_eq!(back.wave_speed,           saved.wave_speed);
+        assert_eq!(back.fresnel_power,        saved.fresnel_power);
+        assert_eq!(back.reflection_roughness, saved.reflection_roughness);
+        assert_eq!(back.refraction_distortion, saved.refraction_distortion);
+        assert_eq!(back.ripple_strength,      saved.ripple_strength);
+        assert_eq!(back.shore_wave_strength,  saved.shore_wave_strength);
+        assert_eq!(back.shore_wave_length,    saved.shore_wave_length);
+        assert_eq!(back.shore_wave_period,    saved.shore_wave_period);
+        assert_eq!(back.shore_wave_foam,      saved.shore_wave_foam);
+
+        // 既定値と一致する値でも JSON からキーが落ちないこと
+        //（＝ skip_serializing_if が入り込んでいないことの検出）。
+        let all_default = serde_json::to_value(WaterVolumeComponentData::default())
+            .expect("既定値をシリアライズできること");
+        let obj = all_default.as_object().expect("オブジェクトであること");
+        for key in [
+            "shallow_color", "deep_color", "absorption_distance", "surface_opacity",
+            "foam_color", "foam_width", "foam_intensity", "wave_amplitude", "wave_scale",
+            "wave_speed", "wave_direction_deg", "fresnel_power", "fresnel_strength",
+            "reflection_intensity", "reflection_roughness", "refraction_distortion",
+            "ripple_strength", "ripple_foam_threshold", "viscosity", "ripple_damping",
+            "shore_wave_strength", "shore_wave_length", "shore_wave_period", "shore_wave_foam",
+        ] {
+            assert!(obj.contains_key(key),
+                "既定値と同じでも .scene へ書き出されること（skip_serializing 禁止）: {key}");
+        }
     }
 
     /// kind は文字列としてシリアライズされること（C# 側の期待に合わせる）。

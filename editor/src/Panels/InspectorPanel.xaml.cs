@@ -2265,38 +2265,39 @@ public partial class InspectorPanel : UserControl
         projRow.Children.Add(projCombo);
         sp.Children.Add(projRow);
 
-        // FOV（垂直視野角）— 透視投影時のみ表示
-        var rowFov = BuildLabeledNumberRow("FOV (垂直°)", info.FovYDeg);
-        sp.Children.Add(rowFov.element);
-        void CommitFov()
+        // ── 数値フィールド + SET_CAMERA_* 送信をまとめて構築 ──
+        // 行の作り（値域が確定していればスライダー・無ければ数値入力）と
+        // 「⟲ 既定値に戻す」は共通入口 BuildResettableFloatRow に一任する
+        //（行ごとの個別対応・個別 Commit 配線を書かないため）。
+        // command は SET コマンド名、serdeField は Rust の CameraComponentData のフィールド名で、
+        // 両者は別体系なので必ず両方渡す（例: SET_CAMERA_FOV / fov_y_deg）。
+        // 戻り値の行要素は投影方式による表示切替に使う。
+        UIElement AddFloatRow(string label, float value, string command, string serdeField)
         {
-            if (_currentActorId < 0) return;
-            if (!float.TryParse(rowFov.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
-            _runtime?.SendToRuntime(FormattableString.Invariant($"SET_CAMERA_FOV:{_currentActorId},{info.SlotIdx},{v}"));
+            var row = BuildResettableFloatRow(
+                info.SlotIdx, CameraComponentType, label, value, serdeField, CameraNumberFormat,
+                v =>
+                {
+                    if (_currentActorId < 0) return;
+                    _runtime?.SendToRuntime(FormattableString.Invariant(
+                        $"{command}:{_currentActorId},{info.SlotIdx},{v}"));
+                });
+            sp.Children.Add(row);
+            return row;
         }
-        rowFov.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitFov(); e.Handled = true; } };
-        rowFov.textBox.LostFocus += (_, _) => CommitFov();
-        NumericDragBehavior.SetOnDrag(rowFov.textBox, CommitFov);
+
+        // FOV（垂直視野角）— 透視投影時のみ表示。値域 1..179 が値域表にあるためスライダーになる。
+        var rowFov = AddFloatRow("FOV (垂直°)", info.FovYDeg, "SET_CAMERA_FOV", "fov_y_deg");
 
         // 正射高さ（縦・ワールド単位）— 正射投影時のみ表示
-        var rowOrtho = BuildLabeledNumberRow("正射高さ (縦)", info.CamOrthoHeight);
-        sp.Children.Add(rowOrtho.element);
-        void CommitOrtho()
-        {
-            if (_currentActorId < 0) return;
-            if (!float.TryParse(rowOrtho.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
-            _runtime?.SendToRuntime(FormattableString.Invariant($"SET_CAMERA_ORTHO_HEIGHT:{_currentActorId},{info.SlotIdx},{v}"));
-        }
-        rowOrtho.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitOrtho(); e.Handled = true; } };
-        rowOrtho.textBox.LostFocus += (_, _) => CommitOrtho();
-        NumericDragBehavior.SetOnDrag(rowOrtho.textBox, CommitOrtho);
+        var rowOrtho = AddFloatRow("正射高さ (縦)", info.CamOrthoHeight, "SET_CAMERA_ORTHO_HEIGHT", "ortho_height");
 
         // 投影方式に応じた FOV / 正射高さ フィールドの表示切替
         void UpdateProjectionVisibility(string proj)
         {
             bool ortho = proj == "orthographic";
-            rowFov.element.Visibility   = ortho ? Visibility.Collapsed : Visibility.Visible;
-            rowOrtho.element.Visibility = ortho ? Visibility.Visible   : Visibility.Collapsed;
+            rowFov.Visibility   = ortho ? Visibility.Collapsed : Visibility.Visible;
+            rowOrtho.Visibility = ortho ? Visibility.Visible   : Visibility.Collapsed;
         }
         UpdateProjectionVisibility(info.CamProjection);
         projCombo.SelectionChanged += (_, _) =>
@@ -2308,31 +2309,11 @@ public partial class InspectorPanel : UserControl
             }
         };
 
-        // ニアクリップ
-        var rowNear = BuildLabeledNumberRow("Near", info.CamNear);
-        sp.Children.Add(rowNear.element);
-        void CommitNear()
-        {
-            if (_currentActorId < 0) return;
-            if (!float.TryParse(rowNear.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
-            _runtime?.SendToRuntime(FormattableString.Invariant($"SET_CAMERA_NEAR:{_currentActorId},{info.SlotIdx},{v}"));
-        }
-        rowNear.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitNear(); e.Handled = true; } };
-        rowNear.textBox.LostFocus += (_, _) => CommitNear();
-        NumericDragBehavior.SetOnDrag(rowNear.textBox, CommitNear);
+        // ニアクリップ（Rust 側は `value.max(0.0001)` で下限のみ。上限が無いので数値行のまま）
+        AddFloatRow("Near", info.CamNear, "SET_CAMERA_NEAR", "near");
 
-        // ファークリップ
-        var rowFar = BuildLabeledNumberRow("Far", info.CamFar);
-        sp.Children.Add(rowFar.element);
-        void CommitFar()
-        {
-            if (_currentActorId < 0) return;
-            if (!float.TryParse(rowFar.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
-            _runtime?.SendToRuntime(FormattableString.Invariant($"SET_CAMERA_FAR:{_currentActorId},{info.SlotIdx},{v}"));
-        }
-        rowFar.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitFar(); e.Handled = true; } };
-        rowFar.textBox.LostFocus += (_, _) => CommitFar();
-        NumericDragBehavior.SetOnDrag(rowFar.textBox, CommitFar);
+        // ファークリップ（Rust 側は `value.max(near + 0.1)` で下限のみ。同上）
+        AddFloatRow("Far", info.CamFar, "SET_CAMERA_FAR", "far");
 
         // メインカメラフラグ
         var mainRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
@@ -2388,7 +2369,8 @@ public partial class InspectorPanel : UserControl
             _runtime?.SendToRuntime(FormattableString.Invariant(
                 $"SET_CAMERA_CLEAR_COLOR:{_currentActorId},{info.SlotIdx},{curR},{curG},{curB},{curA}"));
         };
-        sp.Children.Add(clearRow);
+        // 色は値域表の対象外（HDR 許容で上限が無い）だが、既定値へ戻す操作は数値行と同じく提供する。
+        sp.Children.Add(WithFieldReset(clearRow, info.SlotIdx, CameraComponentType, "clear_color", "クリアカラー"));
 
         // スケーリングモード
         var scalingModes = new[]
@@ -2541,15 +2523,18 @@ public partial class InspectorPanel : UserControl
             _runtime?.SendToRuntime(FormattableString.Invariant(
                 $"SET_CAMERA_BAR_COLOR:{_currentActorId},{info.SlotIdx},{curBarR},{curBarG},{curBarB},{curBarA}"));
         };
-        sp.Children.Add(barRow);
+        // 色は値域表の対象外。⟲ だけ添える。
+        // 表示切替は **包んだ側**（⟲ ボタンごと隠す）に掛けること。
+        var barRowElement = WithFieldReset(barRow, info.SlotIdx, CameraComponentType, "bar_color", "帯カラー");
+        sp.Children.Add(barRowElement);
 
         // LetterBox / PillarBox のときのみ帯カラー行を表示する
         static bool IsBarMode(string mode) => mode is "letter_box" or "pillar_box" or "letter_pillar_box";
-        barRow.Visibility = IsBarMode(info.CamScalingMode) ? Visibility.Visible : Visibility.Collapsed;
+        barRowElement.Visibility = IsBarMode(info.CamScalingMode) ? Visibility.Visible : Visibility.Collapsed;
         scalingCombo.SelectionChanged += (_, _) =>
         {
             if (scalingCombo.SelectedItem is ComboBoxItem item && item.Tag is string mode)
-                barRow.Visibility = IsBarMode(mode) ? Visibility.Visible : Visibility.Collapsed;
+                barRowElement.Visibility = IsBarMode(mode) ? Visibility.Visible : Visibility.Collapsed;
         };
 
         // ── シェーディングアセット参照（.wgsl。テクスチャ参照と同じ FileRefBuilder + D&D の流儀）──
@@ -2932,36 +2917,25 @@ public partial class InspectorPanel : UserControl
         };
 
         // --- 数値フィールド群 ---
-        (UIElement element, TextBox textBox) MakeF(string label, float val) => BuildLabeledNumberRow(label, val);
-
-        var rowMass = MakeF("質量 (kg)",        curMass);
-        var rowRest = MakeF("反発係数",          curRest);
-        var rowFric = MakeF("摩擦係数",          curFric);
-        var rowLinD = MakeF("移動速度の減衰",    curLinDamp);
-        var rowAngD = MakeF("回転速度の減衰",    curAngD);
-        var rowGrav = MakeF("重力の倍率",        curGrav);
-        rbParamsPanel.Children.Add(rowMass.element);
-        rbParamsPanel.Children.Add(rowRest.element);
-        rbParamsPanel.Children.Add(rowFric.element);
-        rbParamsPanel.Children.Add(rowLinD.element);
-        rbParamsPanel.Children.Add(rowAngD.element);
-        rbParamsPanel.Children.Add(rowGrav.element);
-
-        void CommitFloats() {
-            if (!TryParseF(rowMass.textBox, out curMass))    return;
-            if (!TryParseF(rowRest.textBox, out curRest))    return;
-            if (!TryParseF(rowFric.textBox, out curFric))    return;
-            if (!TryParseF(rowLinD.textBox, out curLinDamp)) return;
-            if (!TryParseF(rowAngD.textBox, out curAngD))    return;
-            if (!TryParseF(rowGrav.textBox, out curGrav))    return;
-            CommitCollider();
-        }
-        foreach (var row in new[] { rowMass, rowRest, rowFric, rowLinD, rowAngD, rowGrav })
+        // 行の作り（値域が確定していればスライダー）と「⟲ 既定値に戻す」は
+        // 共通入口 BuildResettableFloatRow に一任する（行ごとの個別配線を書かないため）。
+        // Collider は SET_COLLIDER_DATA で ColliderComponentData と同形の JSON を丸ごと送るため
+        // 「送信キー」という概念が無く、serde フィールド名がそのままリセットのパスになる。
+        // なお値域表への追記は無い（physics_component_ops.rs に clamp が無く、
+        // 反発・摩擦の上限を UI 側で勝手に決めるとランタイムが受け付ける値に手が届かなくなるため）。
+        void AddRbFloatRow(string label, float value, string serdeField, Action<float> assign)
         {
-            row.textBox.LostFocus += (_, _) => CommitFloats();
-            row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitFloats(); };
-            NumericDragBehavior.SetOnDrag(row.textBox, CommitFloats);
+            rbParamsPanel.Children.Add(BuildResettableFloatRow(
+                info.SlotIdx, ColliderComponentType, label, value, serdeField, ColliderNumberFormat,
+                v => { assign(v); CommitCollider(); }));
         }
+
+        AddRbFloatRow("質量 (kg)",     curMass,    "mass",            v => curMass    = v);
+        AddRbFloatRow("反発係数",       curRest,    "restitution",     v => curRest    = v);
+        AddRbFloatRow("摩擦係数",       curFric,    "friction",        v => curFric    = v);
+        AddRbFloatRow("移動速度の減衰", curLinDamp, "linear_damping",  v => curLinDamp = v);
+        AddRbFloatRow("回転速度の減衰", curAngD,    "angular_damping", v => curAngD    = v);
+        AddRbFloatRow("重力の倍率",     curGrav,    "gravity_scale",   v => curGrav    = v);
 
         // --- キネマティック（スクリプトで直接制御） ---
         rbParamsPanel.Children.Add(BuildCheckRow("キネマティック", curKinem,
@@ -2972,8 +2946,11 @@ public partial class InspectorPanel : UserControl
         rbParamsPanel.Children.Add(BuildFreezeRow("静止回転軸", curFreezeR, () => CommitCollider()));
 
         // --- 初速度 ---
+        // 3 成分まとめて 1 パス（serde 名 initial_linear_velocity）でリセットする＝ Undo も 1 回で戻る。
         var rowLinV = BuildXYZRowSimple("初速度 (m/s)", curLinV[0], curLinV[1], curLinV[2]);
-        rbParamsPanel.Children.Add(rowLinV.element);
+        rbParamsPanel.Children.Add(WithFieldReset(
+            rowLinV.element, info.SlotIdx, ColliderComponentType,
+            "initial_linear_velocity", "初速度 (m/s)"));
         void CommitLinV() {
             if (!TryParseF(rowLinV.tx, out var x)) return;
             if (!TryParseF(rowLinV.ty, out var y)) return;
@@ -2987,7 +2964,9 @@ public partial class InspectorPanel : UserControl
 
         // --- 初期角速度 ---
         var rowAngV = BuildXYZRowSimple("初角速度 (rad/s)", curAngV[0], curAngV[1], curAngV[2]);
-        rbParamsPanel.Children.Add(rowAngV.element);
+        rbParamsPanel.Children.Add(WithFieldReset(
+            rowAngV.element, info.SlotIdx, ColliderComponentType,
+            "initial_angular_velocity", "初角速度 (rad/s)"));
         void CommitAngV() {
             if (!TryParseF(rowAngV.tx, out var x)) return;
             if (!TryParseF(rowAngV.ty, out var y)) return;
@@ -3320,35 +3299,22 @@ public partial class InspectorPanel : UserControl
             Visibility      = curUseRb ? Visibility.Visible : Visibility.Collapsed,
         };
 
-        (UIElement element, TextBox textBox) MakeF2d(string label, float val) => BuildLabeledNumberRow(label, val);
-        var rowMass2d = MakeF2d("質量 (kg)",     curMass);
-        var rowRest2d = MakeF2d("反発係数",       curRest);
-        var rowFric2d = MakeF2d("摩擦係数",       curFric);
-        var rowLinD2d = MakeF2d("移動速度の減衰", curLinDamp);
-        var rowAngD2d = MakeF2d("回転速度の減衰", curAngD);
-        var rowGrav2d = MakeF2d("重力の倍率",     curGrav);
-        rbParamsPanel2d.Children.Add(rowMass2d.element);
-        rbParamsPanel2d.Children.Add(rowRest2d.element);
-        rbParamsPanel2d.Children.Add(rowFric2d.element);
-        rbParamsPanel2d.Children.Add(rowLinD2d.element);
-        rbParamsPanel2d.Children.Add(rowAngD2d.element);
-        rbParamsPanel2d.Children.Add(rowGrav2d.element);
-
-        void CommitFloats2d() {
-            if (!TryParseF(rowMass2d.textBox, out curMass))    return;
-            if (!TryParseF(rowRest2d.textBox, out curRest))    return;
-            if (!TryParseF(rowFric2d.textBox, out curFric))    return;
-            if (!TryParseF(rowLinD2d.textBox, out curLinDamp)) return;
-            if (!TryParseF(rowAngD2d.textBox, out curAngD))    return;
-            if (!TryParseF(rowGrav2d.textBox, out curGrav))    return;
-            CommitCollider2d();
-        }
-        foreach (var row2d in new[] { rowMass2d, rowRest2d, rowFric2d, rowLinD2d, rowAngD2d, rowGrav2d })
+        // 行の作りと「⟲ 既定値に戻す」は 3D コライダーと同じく共通入口へ一任する。
+        // SET_COLLIDER2D_DATA も Collider2dComponentData と同形の JSON を丸ごと送るため、
+        // serde フィールド名がそのままリセットのパスになる（値域表への追記は無し。理由は 3D 版と同じ）。
+        void AddRbFloatRow2d(string label, float value, string serdeField, Action<float> assign)
         {
-            row2d.textBox.LostFocus += (_, _) => CommitFloats2d();
-            row2d.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitFloats2d(); };
-            NumericDragBehavior.SetOnDrag(row2d.textBox, CommitFloats2d);
+            rbParamsPanel2d.Children.Add(BuildResettableFloatRow(
+                info.SlotIdx, Collider2dComponentType, label, value, serdeField, ColliderNumberFormat,
+                v => { assign(v); CommitCollider2d(); }));
         }
+
+        AddRbFloatRow2d("質量 (kg)",     curMass,    "mass",            v => curMass    = v);
+        AddRbFloatRow2d("反発係数",       curRest,    "restitution",     v => curRest    = v);
+        AddRbFloatRow2d("摩擦係数",       curFric,    "friction",        v => curFric    = v);
+        AddRbFloatRow2d("移動速度の減衰", curLinDamp, "linear_damping",  v => curLinDamp = v);
+        AddRbFloatRow2d("回転速度の減衰", curAngD,    "angular_damping", v => curAngD    = v);
+        AddRbFloatRow2d("重力の倍率",     curGrav,    "gravity_scale",   v => curGrav    = v);
 
         // --- キネマティック ---
         rbParamsPanel2d.Children.Add(BuildCheckRow("キネマティック", curKinem,
@@ -3379,8 +3345,11 @@ public partial class InspectorPanel : UserControl
             v => { curFreezeR = v; CommitCollider2d(); }));
 
         // --- 初速度 (px/s) ---
+        // 2 成分まとめて 1 パス（serde 名 initial_linear_velocity）でリセットする。
         var rowLinV2d = BuildXYRowSimple2d("初速度 (px/s)", curLinV[0], curLinV[1]);
-        rbParamsPanel2d.Children.Add(rowLinV2d.element);
+        rbParamsPanel2d.Children.Add(WithFieldReset(
+            rowLinV2d.element, info.SlotIdx, Collider2dComponentType,
+            "initial_linear_velocity", "初速度 (px/s)"));
         void CommitLinV2d() {
             if (!TryParseF(rowLinV2d.tx, out var x)) return;
             if (!TryParseF(rowLinV2d.ty, out var y)) return;
@@ -3391,14 +3360,8 @@ public partial class InspectorPanel : UserControl
         NumericDragBehavior.SetOnDrag(rowLinV2d.tx, CommitLinV2d); NumericDragBehavior.SetOnDrag(rowLinV2d.ty, CommitLinV2d);
 
         // --- 初期角速度 (rad/s) ---
-        var rowAngV2d = BuildLabeledNumberRow("初角速度 (rad/s)", curAngV2);
-        rbParamsPanel2d.Children.Add(rowAngV2d.element);
-        void CommitAngV2d() {
-            if (TryParseF(rowAngV2d.textBox, out var v)) { curAngV2 = v; CommitCollider2d(); }
-        }
-        rowAngV2d.textBox.LostFocus += (_, _) => CommitAngV2d();
-        rowAngV2d.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitAngV2d(); };
-        NumericDragBehavior.SetOnDrag(rowAngV2d.textBox, CommitAngV2d);
+        // 2D の角速度は Z 軸まわりのスカラー（serde 名 initial_angular_velocity）。
+        AddRbFloatRow2d("初角速度 (rad/s)", curAngV2, "initial_angular_velocity", v => curAngV2 = v);
 
         rbSectionContainer2d.Children.Add(rbBorder2d);
 
@@ -3605,6 +3568,11 @@ public partial class InspectorPanel : UserControl
     /// mode は "embedded"（glTF埋込・既定）/ "mat"（.mat割当）/ "inline"（インライン上書き）。
     /// base_color/emissive はリニア RGB(A)。
     /// CullFace は "back" | "front" | "none"（glTF の double_sided=true は "none" として届く）。
+    ///
+    /// OverrideIndex は ModelComponentData.material_overrides（Vec）内での **位置**で、
+    /// 上書きが無いスロットは -1。マテリアルスロット番号（Slot）とは別物である点に注意
+    /// （SET_MATERIAL_OVERRIDE は同一 slot を retain で除いてから push するので並びが変わる）。
+    /// 「⟲ 既定値に戻す」の field_path はこの位置を使って組み立てる。
     /// </summary>
     private sealed record MaterialSlotData(
         int Slot, string Name, string Mode,
@@ -3612,7 +3580,7 @@ public partial class InspectorPanel : UserControl
         float Metallic, float Roughness,
         float ER, float EG, float EB,
         string AlphaMode, float AlphaCutoff, float Ior, float Transmission, float DiffuseTransmission, bool MrTexIgnore, string CullFace,
-        int ShadingModel, string Path);
+        int ShadingModel, string Path, int OverrideIndex);
 
     /// <summary>
     /// SET_MATERIAL_OVERRIDE の "kind":"mat_asset" 送信用 JSON ペイロード（System.Text.Json でシリアライズ）。
@@ -3675,6 +3643,31 @@ public partial class InspectorPanel : UserControl
     /// </summary>
     private static readonly string[] ShadingModelLabels =
         ["0: 標準PBR", "1: アセット定義1", "2: アセット定義2", "3: アセット定義3"];
+
+    /// <summary>
+    /// 「このマテリアルスロットには上書きが無い」を表す override_index の値。
+    /// ランタイムの build_materials_json が同じ意味で -1 を送ってくる。
+    /// </summary>
+    private const int NoMaterialOverrideIndex = -1;
+
+    /// <summary>
+    /// マテリアルのインライン上書き 1 フィールドのリセットパス書式。
+    /// {0}=material_overrides（Vec）内の位置、{1}=MaterialOverrideKind::Inline の serde フィールド名。
+    /// MaterialOverrideKind は内部タグ（<c>#[serde(tag = "kind")]</c>）なので kind を 1 段挟む。
+    /// </summary>
+    private const string MaterialInlineResetPathFormat = "material_overrides/{0}/kind/{1}";
+
+    /// <summary>マテリアルのモード文字列: インライン上書き（ACTOR_COMPONENTS の materials[].mode）。</summary>
+    private const string MaterialModeInline = "inline";
+
+    /// <summary>屈折率（IOR）入力の下限（1.0 = 屈折なし）。UI 側の目安レンジ。</summary>
+    private const float MaterialIorMin = 1.0f;
+    /// <summary>屈折率（IOR）入力の上限（ダイヤモンド級 ≈2.4 を含む 2.5）。UI 側の目安レンジ。</summary>
+    private const float MaterialIorMax = 2.5f;
+    /// <summary>マテリアルの正規化パラメータ（透過率等）の下限。</summary>
+    private const float MaterialNormalizedMin = 0.0f;
+    /// <summary>マテリアルの正規化パラメータ（透過率等）の上限。</summary>
+    private const float MaterialNormalizedMax = 1.0f;
 
     /// <summary>シェーディングモデル コンボのツールチップ（インスペクタ表示用の説明文）。</summary>
     private const string ShadingModelTooltip =
@@ -3748,10 +3741,14 @@ public partial class InspectorPanel : UserControl
                         ? Math.Clamp(smv, 0, ShadingModelLabels.Length - 1)
                         : ShadingModelDefaultPbr;
                     var path        = m.TryGetProperty("path",        out var mp) ? mp.GetString() ?? ""       : "";
+                    // override_index キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう
+                    // 既定 -1（上書き無し＝⟲ 非表示）にフォールバックする。
+                    var overrideIndex = m.TryGetProperty("override_index", out var oi) && oi.TryGetInt32(out var oiv)
+                        ? oiv : NoMaterialOverrideIndex;
 
                     result.Add(new MaterialSlotData(slot, name, mode, r, g, b, a, metallic, roughness,
                         er, eg, eb, alphaMode, alphaCutoff, ior, transmission, diffuseTransmission, mrTexIgnore, cullFace,
-                        shadingModel, path));
+                        shadingModel, path, overrideIndex));
                 }
                 return result;
             }
@@ -3960,6 +3957,37 @@ public partial class InspectorPanel : UserControl
             _runtime?.SendToRuntime($"SET_MATERIAL_OVERRIDE:{_currentActorId},{info.SlotIdx},{mat.Slot},{json}");
         }
 
+        // ── インライン値の「⟲ 既定値に戻す」────────────────────
+        // リセット対象は ModelComponent のスロット（info.SlotIdx）であって
+        // マテリアルスロット（mat.Slot）ではない。パスは
+        // material_overrides/{Vec 内の位置}/kind/{フィールド} で、
+        // 位置はランタイムが materials JSON に載せてくる override_index を使う
+        //（マテリアルスロット番号とは一致しない）。
+        //
+        // Inline の各フィールドは Rust 側で Option<T> であり、None は
+        // 「モデル埋め込みの値を使う」を意味する。したがってリセット＝null 化＝
+        // 「モデル本来の値へ戻る」という正しい意味になる（ランタイム側で実装済み）。
+        //
+        // ⟲ を出さないのは次の場合で、いずれも「既に既定値」または「インライン値の行ではない」:
+        //   ・上書きがまだ無い（override_index = -1。埋込モードのまま値を見ているだけ）
+        //   ・.mat アセット種別の上書き（インライン値を持たない）
+        // モードを「インライン上書き」へ切り替えた直後もまだ上書きが無いので ⟲ は出ないが、
+        // 最初の編集で SET_MATERIAL_OVERRIDE → ACTOR_COMPONENTS 再送 → 再構築が走り ⟲ が現れる。
+        string? InlineResetPath(string serdeField)
+            => mat.Mode == MaterialModeInline && mat.OverrideIndex != NoMaterialOverrideIndex
+                ? string.Format(CultureInfo.InvariantCulture, MaterialInlineResetPathFormat,
+                                mat.OverrideIndex, serdeField)
+                : null;
+
+        // 行要素に ⟲ を添える（リセット不能なら行をそのまま返す）。
+        UIElement WithInlineReset(UIElement row, string serdeField, string label)
+        {
+            var path = InlineResetPath(serdeField);
+            return path is null
+                ? row
+                : WithFieldReset(row, info.SlotIdx, ModelComponentType, path, label);
+        }
+
         // base_color スウォッチ（Sprite カラーの市松実装を流用）
         var baseColorSwatch = BuildColorSwatch(curR, curG, curB, curA);
         baseColorSwatch.swatch.MouseLeftButtonUp += (_, _) =>
@@ -3977,17 +4005,26 @@ public partial class InspectorPanel : UserControl
             FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
         });
         baseColorRow.Children.Add(baseColorSwatch.swatch);
-        inlinePanel.Children.Add(baseColorRow);
+        inlinePanel.Children.Add(WithInlineReset(baseColorRow, "base_color", "ベースカラー"));
 
         // metallic / roughness スライダー（0..1）
-        inlinePanel.Children.Add(BuildMaterialSliderRow("メタリック", curMetallic, v => { curMetallic = v; SendInline(); }));
-        inlinePanel.Children.Add(BuildMaterialSliderRow("ラフネス", curRoughness, v => { curRoughness = v; SendInline(); }));
+        // 0..1 は glTF PBR の定義そのもので、ランタイム側 clamp 由来ではないため
+        // 値域表（ComponentFieldRanges）には載せず、この専用スライダー行のまま ⟲ だけ添える。
+        inlinePanel.Children.Add(WithInlineReset(
+            BuildMaterialSliderRow("メタリック", curMetallic, v => { curMetallic = v; SendInline(); }),
+            "metallic", "メタリック"));
+        inlinePanel.Children.Add(WithInlineReset(
+            BuildMaterialSliderRow("ラフネス", curRoughness, v => { curRoughness = v; SendInline(); }),
+            "roughness", "ラフネス"));
 
         // 拡散透過スライダー（0..1。葉・布・紙の逆光透け＝KHR_materials_diffuse_transmission 簡易版）。
         // 【一時無効化】パラメータの割に制御が難しく狙った見た目にならないため 2026-07-20 時点で
         // 非表示にしている（削除ではない）。ランタイム側も build_material_uniform で 0.0 を強制しており、
         // ここを操作しても反映されない。再有効化する場合はこの Visibility.Collapsed を外す。
-        var diffuseTransmissionRow = BuildMaterialSliderRow("拡散透過", curDiffuseTransmission, v => { curDiffuseTransmission = v; SendInline(); });
+        // ⟲ を包んだ側に Visibility を掛ける（包んだ側を隠さないとボタンだけ残る）。
+        var diffuseTransmissionRow = WithInlineReset(
+            BuildMaterialSliderRow("拡散透過", curDiffuseTransmission, v => { curDiffuseTransmission = v; SendInline(); }),
+            "diffuse_transmission", "拡散透過");
         diffuseTransmissionRow.Visibility = Visibility.Collapsed;
         inlinePanel.Children.Add(diffuseTransmissionRow);
 
@@ -4028,7 +4065,7 @@ public partial class InspectorPanel : UserControl
             FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
         });
         emissiveRow.Children.Add(emissiveSwatch.swatch);
-        inlinePanel.Children.Add(emissiveRow);
+        inlinePanel.Children.Add(WithInlineReset(emissiveRow, "emissive", "発光色"));
 
         // 屈折率（IOR）／透過率行への前方参照。alpha_mode コンボの変更時に表示/非表示を切り替えるため、
         // コンボのハンドラより前に宣言する（クロージャは変数を捕捉するので後から代入した実体が見える）。
@@ -4061,54 +4098,48 @@ public partial class InspectorPanel : UserControl
         alphaModeRow.Children.Add(alphaModeCombo);
         inlinePanel.Children.Add(alphaModeRow);
 
-        // alpha_cutoff 数値フィールド（alpha_mode=mask のときに参照される閾値）
-        var cutoffRow = BuildLabeledNumberRow("カットオフ", curAlphaCutoff, "F2");
-        cutoffRow.textBox.LostFocus += (_, _) => CommitCutoff();
-        cutoffRow.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitCutoff(); e.Handled = true; } };
-        NumericDragBehavior.SetOnDrag(cutoffRow.textBox, CommitCutoff);
-        void CommitCutoff()
-        {
-            if (float.TryParse(cutoffRow.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
-                curAlphaCutoff = v;
-            SendInline();
-        }
-        inlinePanel.Children.Add(cutoffRow.element);
+        // alpha_cutoff 数値フィールド（alpha_mode=mask のときに参照される閾値）。
+        // 行の作りと ⟲ の配線は共通入口 BuildResettableFloatRow + WithInlineReset に一任する。
+        // 値域表には載っていないので素の数値行になる。
+        inlinePanel.Children.Add(WithInlineReset(
+            BuildResettableFloatRow(
+                info.SlotIdx, ModelComponentType, "カットオフ", curAlphaCutoff,
+                // 値域引き当てを行わせないため field は null（⟲ は WithInlineReset が添える）。
+                field: null, MaterialNumberFormat,
+                v => { curAlphaCutoff = v; SendInline(); }),
+            "alpha_cutoff", "カットオフ"));
 
         // 屈折率（IOR, Phase RT-Translucency）。AlphaMode=Blend のときだけ表示する（条件付き表示）。
         // レンダリング機能の「半透明＝レイトレ」選択時、Blend マテリアルのスクリーンスペース屈折に使う。
         // 1.0=屈折なし、ガラス≈1.5、水≈1.33。
-        var iorRow = BuildLabeledNumberRow("屈折率", curIor, "F2");
-        iorRow.textBox.LostFocus += (_, _) => CommitIor();
-        iorRow.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitIor(); e.Handled = true; } };
-        NumericDragBehavior.SetOnDrag(iorRow.textBox, CommitIor);
-        void CommitIor()
-        {
-            if (float.TryParse(iorRow.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
-                curIor = Math.Clamp(v, 1.0f, 2.5f); // 現実的な屈折率レンジにクランプ（1.0=なし〜ダイヤ級 2.4）
-            SendInline();
-        }
-        // 初期表示は現在の alpha_mode に応じる（Blend のみ表示）。
-        iorRow.element.Visibility = curAlphaMode == "blend" ? Visibility.Visible : Visibility.Collapsed;
-        iorRowElement = iorRow.element;
-        inlinePanel.Children.Add(iorRow.element);
+        // 現実的な屈折率レンジ（1.0=なし〜ダイヤ級 2.4）へ UI 側でクランプする。
+        // これは C# 側の目安であってランタイムの clamp ではないため値域表には載せない
+        //（載せるとスライダー化され「ランタイムが受け付ける値に手が届かない」状態になる）。
+        var iorRow = WithInlineReset(
+            BuildResettableFloatRow(
+                info.SlotIdx, ModelComponentType, "屈折率", curIor,
+                field: null, MaterialNumberFormat,
+                v => { curIor = Math.Clamp(v, MaterialIorMin, MaterialIorMax); SendInline(); }),
+            "ior", "屈折率");
+        // 初期表示は現在の alpha_mode に応じる（Blend のみ表示）。⟲ ごと隠すため包んだ側に掛ける。
+        iorRow.Visibility = curAlphaMode == "blend" ? Visibility.Visible : Visibility.Collapsed;
+        iorRowElement = iorRow;
+        inlinePanel.Children.Add(iorRow);
 
         // 透過率（transmission, ガラス表現）。AlphaMode=Blend のときだけ表示する（条件付き表示）。
         // アルファ（被覆）と分離した「向こうがどれだけ透けるか」。0.0=従来動作、1.0=最大透過。
         // レンダリング機能の「半透明＝レイトレ」選択時、Blend マテリアルの屈折透過合成に使う。
-        var transmissionRow = BuildLabeledNumberRow("透過率", curTransmission, "F2");
-        transmissionRow.textBox.LostFocus += (_, _) => CommitTransmission();
-        transmissionRow.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitTransmission(); e.Handled = true; } };
-        NumericDragBehavior.SetOnDrag(transmissionRow.textBox, CommitTransmission);
-        void CommitTransmission()
-        {
-            if (float.TryParse(transmissionRow.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
-                curTransmission = Math.Clamp(v, 0.0f, 1.0f); // 透過率は 0..1
-            SendInline();
-        }
-        // 初期表示は現在の alpha_mode に応じる（Blend のみ表示）。
-        transmissionRow.element.Visibility = curAlphaMode == "blend" ? Visibility.Visible : Visibility.Collapsed;
-        transmissionRowElement = transmissionRow.element;
-        inlinePanel.Children.Add(transmissionRow.element);
+        // 透過率は 0..1（glTF の定義）。こちらもランタイム clamp 由来ではないため値域表には載せない。
+        var transmissionRow = WithInlineReset(
+            BuildResettableFloatRow(
+                info.SlotIdx, ModelComponentType, "透過率", curTransmission,
+                field: null, MaterialNumberFormat,
+                v => { curTransmission = Math.Clamp(v, MaterialNormalizedMin, MaterialNormalizedMax); SendInline(); }),
+            "transmission", "透過率");
+        // 初期表示は現在の alpha_mode に応じる（Blend のみ表示）。⟲ ごと隠すため包んだ側に掛ける。
+        transmissionRow.Visibility = curAlphaMode == "blend" ? Visibility.Visible : Visibility.Collapsed;
+        transmissionRowElement = transmissionRow;
+        inlinePanel.Children.Add(transmissionRow);
 
         // cull_face ドロップダウン（back/front/none）。
         // カリング面は全マテリアルで意味を持つが、値の送信経路はインライン上書き（SET_MATERIAL_OVERRIDE:"inline"）
@@ -4415,7 +4446,8 @@ public partial class InspectorPanel : UserControl
         };
         colorRow.Children.Add(colorLabel);
         colorRow.Children.Add(colorSwatch);
-        sp.Children.Add(colorRow);
+        // 色は値域表の対象外（アルファ込み 4 成分・HDR 許容）だが、既定値へ戻す操作は提供する。
+        sp.Children.Add(WithFieldReset(colorRow, info.SlotIdx, SpriteComponentType, "color", "カラー"));
 
         colorSwatch.MouseLeftButtonUp += (_, _) =>
         {
@@ -4458,24 +4490,23 @@ public partial class InspectorPanel : UserControl
         // 大きいほど手前に描画される（既定 0・同値はヒエラルキー順）。
         // 比較は同一描画ゾーン内（ビューポートはゾーン単位で全キャンバス横断、
         // ワールドキャンバスはそのキャンバス内）で行われる。
-        var rowLayer = BuildLabeledNumberRow("レイヤー", info.SpriteLayer);
-        rowLayer.textBox.ToolTip = "描画優先度。大きいほど手前に描画されます。\n同じ値はヒエラルキー順。同一描画ゾーン内で比較されます。";
-        sp.Children.Add(rowLayer.element);
-
-        // レイヤー変更を送信するローカル関数（整数のみ受け付ける）
-        void CommitLayer()
-        {
-            if (_currentActorId < 0) return;
-            if (!float.TryParse(rowLayer.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var lf)) return;
-            // 数値ドラッグ等で小数が入っても整数へ丸めて送信する
-            var layer = (int)MathF.Round(lf);
-            rowLayer.textBox.Text = layer.ToString(CultureInfo.InvariantCulture);
-            _runtime?.SendToRuntime(FormattableString.Invariant(
-                $"SET_SPRITE_LAYER:{_currentActorId},{info.SlotIdx},{layer}"));
-        }
-        rowLayer.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitLayer(); e.Handled = true; } };
-        rowLayer.textBox.LostFocus += (_, _) => CommitLayer();
-        NumericDragBehavior.SetOnDrag(rowLayer.textBox, CommitLayer);
+        // 行の作りと「⟲ 既定値に戻す」は共通入口 BuildResettableFloatRow に一任する。
+        // SET キー体系は SET_SPRITE_LAYER、serde 名は layer（SpriteComponentData）。
+        // 値域表には載せない（レイヤー番号に上限は無い）ので素の数値行になる。
+        // 数値ドラッグ等で小数が入っても整数へ丸めてから送信する。
+        var rowLayer = BuildResettableFloatRow(
+            info.SlotIdx, SpriteComponentType, "レイヤー", info.SpriteLayer, "layer",
+            SpriteLayerNumberFormat,
+            v =>
+            {
+                if (_currentActorId < 0) return;
+                var layer = (int)MathF.Round(v);
+                _runtime?.SendToRuntime(FormattableString.Invariant(
+                    $"SET_SPRITE_LAYER:{_currentActorId},{info.SlotIdx},{layer}"));
+            });
+        if (rowLayer is FrameworkElement layerFe)
+            layerFe.ToolTip = "描画優先度。大きいほど手前に描画されます。\n同じ値はヒエラルキー順。同一描画ゾーン内で比較されます。";
+        sp.Children.Add(rowLayer);
 
         return sp;
     }
@@ -4488,6 +4519,25 @@ public partial class InspectorPanel : UserControl
     private const float AudioPanMax = 1f;
     /// <summary>音量の下限（無音）。</summary>
     private const float AudioVolumeMin = 0f;
+
+    /// <summary>ライトの数値行の表示書式（強度・距離・角度とも小数 1 桁）。</summary>
+    private const string LightNumberFormat = "F1";
+    /// <summary>オーディオの距離行の表示書式（m 単位。小数 1 桁）。</summary>
+    private const string AudioDistanceNumberFormat = "F1";
+    /// <summary>オーディオの音量・パン行の表示書式（0..1 前後の値なので小数 2 桁）。</summary>
+    private const string AudioLevelNumberFormat = "F2";
+    /// <summary>スカイボックスの強度行の表示書式。</summary>
+    private const string SkyboxNumberFormat = "F1";
+    /// <summary>カメラの数値行の表示書式（FOV・クリップ面・正射高さとも小数 1 桁）。</summary>
+    private const string CameraNumberFormat = "F1";
+    /// <summary>コライダー（3D/2D 共通）の物理パラメータ行の表示書式。</summary>
+    private const string ColliderNumberFormat = "F1";
+    /// <summary>スプライトのレイヤー行の表示書式（整数）。</summary>
+    private const string SpriteLayerNumberFormat = "F0";
+    /// <summary>アニメータの再生速度行の表示書式。</summary>
+    private const string AnimatorNumberFormat = "F2";
+    /// <summary>マテリアルのインライン数値行（カットオフ・屈折率・透過率）の表示書式。</summary>
+    private const string MaterialNumberFormat = "F2";
 
     /// <summary>
     /// AnimatorComponent のインスペクター UI を構築して返す。
@@ -4802,17 +4852,14 @@ public partial class InspectorPanel : UserControl
         sp.Children.Add(playOnStartRow);
 
         // ── 再生速度 ──────────────────────────────────────────
-        var rowSpeed = BuildLabeledNumberRow("速度", curSpeed, "F2");
-        sp.Children.Add(rowSpeed.element);
-        void CommitSpeed()
-        {
-            if (float.TryParse(rowSpeed.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
-                curSpeed = v;
-            CommitAnimator();
-        }
-        rowSpeed.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSpeed(); e.Handled = true; } };
-        rowSpeed.textBox.LostFocus += (_, _) => CommitSpeed();
-        NumericDragBehavior.SetOnDrag(rowSpeed.textBox, CommitSpeed);
+        // 行の作りと「⟲ 既定値に戻す」は共通入口 BuildResettableFloatRow に一任する。
+        // Animator は SET_ANIMATOR_CLIPS で AnimatorComponentData を丸ごと送るため、
+        // 送信キーという概念が無く serde 名（speed）がそのままフィールドパスになる。
+        // ランタイム側に clamp が無い（負値で逆再生できる）ので値域表には載せない。
+        sp.Children.Add(BuildResettableFloatRow(
+            info.SlotIdx, AnimatorComponentType, "速度", curSpeed, "speed",
+            AnimatorNumberFormat,
+            v => { curSpeed = v; CommitAnimator(); }));
 
         // ── タイムラインで編集 ──────────────────────────────────
         var editTimelineBtn = new Button
@@ -4952,23 +4999,23 @@ public partial class InspectorPanel : UserControl
                 Color.FromRgb(LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB)));
             SendField("color", FormattableString.Invariant($"{curR},{curG},{curB}"));
         };
-        sp.Children.Add(colorRow);
+        // 色は値域表の対象外（HDR 許容で上限が無い）だが、既定値へ戻す操作は数値行と同じく提供する。
+        sp.Children.Add(WithFieldReset(colorRow, info.SlotIdx, LightComponentType, "color", "色"));
 
         // ── 数値フィールド + SET_LIGHT_FIELD 送信をまとめて構築 ──
+        // 行の作り（スライダー / 数値入力）と「⟲ 既定値に戻す」は共通入口
+        // BuildResettableFloatRow に一任する（行ごとの個別対応を書かないため）。
+        // serdeField は Rust の LightComponentData のフィールド名。SET キーと綴りが
+        // 異なるもの（角度系）だけ明示的に渡す。
         // 戻り値の行要素を種別ごとの表示切替に使えるよう返す。
-        UIElement AddFloatRow(string label, float value, string key)
+        UIElement AddFloatRow(string label, float value, string key, string? serdeField = null)
         {
-            var row = BuildLabeledNumberRow(label, value);
-            sp.Children.Add(row.element);
-            void Commit()
-            {
-                if (!float.TryParse(row.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
-                SendField(key, v.ToString(CultureInfo.InvariantCulture));
-            }
-            row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
-            row.textBox.LostFocus += (_, _) => Commit();
-            NumericDragBehavior.SetOnDrag(row.textBox, Commit);
-            return row.element;
+            var row = BuildResettableFloatRow(
+                info.SlotIdx, LightComponentType, label, value, serdeField ?? key,
+                LightNumberFormat,
+                v => SendField(key, v.ToString(CultureInfo.InvariantCulture)));
+            sp.Children.Add(row);
+            return row;
         }
 
         // 強度は全種別で共通。
@@ -4976,8 +5023,10 @@ public partial class InspectorPanel : UserControl
 
         // 種別ごとに表示切替するフィールド群。
         var rangeRow  = AddFloatRow("減衰距離 (Range)", info.LightRange,       "range");
-        var innerRow  = AddFloatRow("内側角 (°)",        info.LightInnerAngle,  "inner_angle");
-        var outerRow  = AddFloatRow("外側角 (°)",        info.LightOuterAngle,  "outer_angle");
+        // 角度 2 行は SET キー（inner_angle / outer_angle）と serde 名（*_deg）が食い違う。
+        // リセットと値域引き当ては serde 名で行う必要があるため明示的に渡す。
+        var innerRow  = AddFloatRow("内側角 (°)",        info.LightInnerAngle,  "inner_angle", "inner_angle_deg");
+        var outerRow  = AddFloatRow("外側角 (°)",        info.LightOuterAngle,  "outer_angle", "outer_angle_deg");
         var rectWRow  = AddFloatRow("矩形 幅",            info.LightRectWidth,   "rect_width");
         var rectHRow  = AddFloatRow("矩形 高さ",          info.LightRectHeight,  "rect_height");
         // ソフト影半径: directional は角径(度)、point/spot/rect はワールド半径。0 でハード影。
@@ -5212,14 +5261,20 @@ public partial class InspectorPanel : UserControl
     /// <see cref="BuildMaterialSliderRow"/> は 0..1 固定なので、アセットが宣言した
     /// 任意の範囲を扱えるようにした版である（レイアウトの流儀は同一）。
     /// </summary>
-    private UIElement BuildRangeSliderRow(string label, float value, float min, float max, Action<float> onChange)
+    /// <param name="labelWidth">
+    /// 行ラベルの幅（px）。既定は <see cref="InspectorRowLabelWidth"/>。
+    /// ラベル幅が標準と異なるセクションでは、同じセクション内の他の行と
+    /// ラベル位置がそろうように呼び出し側がそのセクションの幅を渡す。
+    /// </param>
+    private UIElement BuildRangeSliderRow(string label, float value, float min, float max, Action<float> onChange,
+                                          double labelWidth = InspectorRowLabelWidth)
     {
         // 反転・退化した範囲が来ても UI が壊れないよう最低限の保護を入れる
         //（ランタイム側でも弾いているので通常は起きない）。
         if (max <= min) max = min + ShaderParamMinRangeWidth;
 
         var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(labelWidth) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
 
@@ -5289,21 +5344,22 @@ public partial class InspectorPanel : UserControl
 
         // ── 共通ヘルパ ─────────────────────────────────────────
 
-        // 数値入力行を親セクションへ追加し、Enter / フォーカス喪失 / ドラッグ操作で値を送信する。
+        // 数値入力行を親セクションへ追加する。行の作り（値域が確定していればスライダー）と
+        // 「⟲ 既定値に戻す」は共通入口 BuildResettableFloatRow に一任する。
+        // WaterVolume は SET_WATER_FIELD の key と Rust の serde 名が全て一致しているため、
+        // リセット用のフィールドパスは key をそのまま使える。
+        // resettable=false は「値の調整ではなく器の定義（水面高さ・領域サイズ）なので
+        // 既定値へ戻す操作を出さない」行のためのスイッチ。
         // 表示切替に使えるよう生成した行要素を返す。
-        UIElement AddFloatRow(StackPanel parent, string label, float value, string key, string format)
+        UIElement AddFloatRow(StackPanel parent, string label, float value, string key, string format,
+                              bool resettable = true)
         {
-            var row = BuildLabeledNumberRow(label, value, format);
-            parent.Children.Add(row.element);
-            void Commit()
-            {
-                if (!float.TryParse(row.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
-                SendField(key, v.ToString(CultureInfo.InvariantCulture));
-            }
-            row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
-            row.textBox.LostFocus += (_, _) => Commit();
-            NumericDragBehavior.SetOnDrag(row.textBox, Commit);
-            return row.element;
+            var row = BuildResettableFloatRow(
+                info.SlotIdx, WaterVolumeComponentType, label, value,
+                resettable ? key : null, format,
+                v => SendField(key, v.ToString(CultureInfo.InvariantCulture)));
+            parent.Children.Add(row);
+            return row;
         }
 
         // 色（リニア RGB）行を親セクションへ追加する。水の色はアルファを持たないため
@@ -5327,7 +5383,8 @@ public partial class InspectorPanel : UserControl
                 setColor(curR, curG, curB, WaterColorAlpha);
                 SendField(key, FormattableString.Invariant($"{curR},{curG},{curB}"));
             };
-            parent.Children.Add(row);
+            // 色は値域表の対象外（HDR 許容で上限が無い）。⟲ だけ添える。
+            parent.Children.Add(WithFieldReset(row, info.SlotIdx, WaterVolumeComponentType, key, label));
         }
 
         // 補足説明を薄い色で表示する行を生成して返す（表示切替に使うため要素を返す）。
@@ -5374,7 +5431,9 @@ public partial class InspectorPanel : UserControl
         regionSp.Children.Add(splineHint);
 
         // 水面高さ（Ocean=ワールド Y / Region=アクタ相対 Y）。全種別で共通。
-        AddFloatRow(regionSp, "水面高さ", info.WaterSurfaceHeight, "surface_height", "F2");
+        // 「器の定義」なので ⟲（既定値に戻す）は付けない
+        //（配置した水面を既定の 0 へ戻す操作は事故にしかならない）。
+        AddFloatRow(regionSp, "水面高さ", info.WaterSurfaceHeight, "surface_height", "F2", resettable: false);
 
         // 領域半径 XYZ（Region 専用）。3 つのテキストボックスいずれの確定でも 3 値まとめて送信する。
         var extentsRow = BuildXYZRowSimple("領域半径 XYZ", info.WaterRegionHX, info.WaterRegionHY, info.WaterRegionHZ);
@@ -5393,8 +5452,9 @@ public partial class InspectorPanel : UserControl
             NumericDragBehavior.SetOnDrag(tb, CommitExtents);
         }
 
-        // 海の描画半径（Ocean 専用）。
-        var oceanExtentRow = AddFloatRow(regionSp, "海の描画半径(m)", info.WaterOceanExtent, "ocean_extent", "F1");
+        // 海の描画半径（Ocean 専用）。領域サイズ＝器の定義なので ⟲ は付けない。
+        var oceanExtentRow = AddFloatRow(regionSp, "海の描画半径(m)", info.WaterOceanExtent, "ocean_extent", "F1",
+            resettable: false);
 
         // 水位シミュレーション（水位グラフ、Phase W2.5）。Region 種別の水域のみが水位グラフの
         // ノードになれる（川・海は底面積が定義できないため対象外）ので Region のときだけ表示する。
@@ -5825,21 +5885,19 @@ public partial class InspectorPanel : UserControl
             _runtime?.SendToRuntime($"SET_WATER_LINK_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
         }
 
-        // 数値入力行を親セクションへ追加し、Enter / フォーカス喪失 / ドラッグ操作で値を送信する
-        // （BuildWaterVolumeSlotContent の同名ローカル関数と同じ流儀）。
-        void AddFloatRow(StackPanel parent, string label, float value, string key, string format, string? tooltip = null)
+        // 数値入力行を親セクションへ追加する（BuildWaterVolumeSlotContent の同名ローカル関数と同じ流儀）。
+        // 行の作りと「⟲ 既定値に戻す」は共通入口 BuildResettableFloatRow に一任する。
+        // SET_WATER_LINK_FIELD の key は Rust の WaterLinkComponentData の serde 名と一致しているため、
+        // リセット用のフィールドパスは key をそのまま使える。
+        void AddFloatRow(StackPanel parent, string label, float value, string key, string format,
+                         string? tooltip = null, bool resettable = true)
         {
-            var row = BuildLabeledNumberRow(label, value, format);
-            if (tooltip is not null) ToolTipService.SetToolTip(row.element, tooltip);
-            parent.Children.Add(row.element);
-            void Commit()
-            {
-                if (!float.TryParse(row.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
-                SendField(key, v.ToString(CultureInfo.InvariantCulture));
-            }
-            row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
-            row.textBox.LostFocus += (_, _) => Commit();
-            NumericDragBehavior.SetOnDrag(row.textBox, Commit);
+            var row = BuildResettableFloatRow(
+                info.SlotIdx, WaterLinkComponentType, label, value,
+                resettable ? key : null, format,
+                v => SendField(key, v.ToString(CultureInfo.InvariantCulture)));
+            if (tooltip is not null) ToolTipService.SetToolTip(row, tooltip);
+            parent.Children.Add(row);
         }
 
         // 接続先アクタ参照ボックスを共通の参照ピッカーで 1 本組み立てて親セクションへ追加する。
@@ -5885,12 +5943,17 @@ public partial class InspectorPanel : UserControl
         // ── 開口セクション ─────────────────────────────────────
         var openingSection = BuildSection("開口");
         var openingSp      = (StackPanel)openingSection.Child;
+        // 開口の 3 行は「開口という構造の定義」（オフセット位置と寸法）なので ⟲ は付けない。
+        // 既定値へ戻すと配置した扉・階段穴の形が黙って変わってしまう。
         AddFloatRow(openingSp, "開口下端(m)", info.WaterLinkOpeningBottom, "opening_bottom", "F2",
-            "開口下端のアクタ相対 Y（m）。低い位置に置いた開口ほど早く水を通します（例: 階段穴の下端）。");
+            "開口下端のアクタ相対 Y（m）。低い位置に置いた開口ほど早く水を通します（例: 階段穴の下端）。",
+            resettable: false);
         AddFloatRow(openingSp, "高さ(m)",     info.WaterLinkOpeningHeight, "opening_height", "F2",
-            "開口の高さ（m）。この高さぶん水没すると全断面が流れます。");
+            "開口の高さ（m）。この高さぶん水没すると全断面が流れます。",
+            resettable: false);
         AddFloatRow(openingSp, "幅(m)",       info.WaterLinkOpeningWidth,  "opening_width",  "F2",
-            "開口の幅（m）。幅 × 濡れ高さ × 開閉率が実効断面積になります。");
+            "開口の幅（m）。幅 × 濡れ高さ × 開閉率が実効断面積になります。",
+            resettable: false);
         sp.Children.Add(openingSection);
 
         // ── 制御セクション ─────────────────────────────────────
@@ -6459,19 +6522,14 @@ public partial class InspectorPanel : UserControl
             _runtime?.SendToRuntime($"SET_INTERACTION_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
         }
 
-        // 数値入力行（Enter / フォーカス喪失 / ドラッグ操作で確定送信）。
+        // 数値入力行。行の作り（値域が確定していればスライダー）と「⟲ 既定値に戻す」は
+        // 共通入口 BuildResettableFloatRow に一任する。
+        // SET_INTERACTION_FIELD の key は InteractionSourceComponentData の serde 名と一致。
         void AddFloatRow(StackPanel parent, string label, float value, string key, string format)
         {
-            var row = BuildLabeledNumberRow(label, value, format);
-            parent.Children.Add(row.element);
-            void Commit()
-            {
-                if (!float.TryParse(row.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
-                SendField(key, v.ToString(CultureInfo.InvariantCulture));
-            }
-            row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
-            row.textBox.LostFocus += (_, _) => Commit();
-            NumericDragBehavior.SetOnDrag(row.textBox, Commit);
+            parent.Children.Add(BuildResettableFloatRow(
+                info.SlotIdx, InteractionSourceComponentType, label, value, key, format,
+                v => SendField(key, v.ToString(CultureInfo.InvariantCulture))));
         }
 
         var section = BuildSection("インタラクション");
@@ -6556,10 +6614,19 @@ public partial class InspectorPanel : UserControl
 
         // ── オフセット3行（位置/回転/スケール）を送信するローカル関数群 ──
         // XYZ 3成分をまとめて "x,y,z" 形式でコミットする共通処理。
-        void AddOffsetRow(string label, float x, float y, float z, string key)
+        //
+        // resetField は Rust の JointAttachComponentData の serde フィールド名。
+        // 非 null なら行の右端に「⟲ 既定値に戻す」を添える（null＝リセット対象外）。
+        // SET キーが 1 本でも Rust 側は 3 成分の配列フィールドなので、
+        // **行全体で 1 パス**を指定すればよく Undo も 1 回で戻る。
+        // なお SET キー offset_rot と serde 名 offset_rot_deg は綴りが食い違うため、
+        // 両者を混同しないよう別引数で受け取る。
+        void AddOffsetRow(string label, float x, float y, float z, string key, string? resetField = null)
         {
             var row = BuildXYZRowSimple(label, x, y, z);
-            sp.Children.Add(row.element);
+            sp.Children.Add(resetField is null
+                ? row.element
+                : WithFieldReset(row.element, info.SlotIdx, JointAttachComponentType, resetField, label));
             void Commit()
             {
                 if (!float.TryParse(row.tx.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vx)) return;
@@ -6575,13 +6642,14 @@ public partial class InspectorPanel : UserControl
             NumericDragBehavior.SetOnDrag(row.tz, Commit);
         }
 
-        // 位置オフセット
+        // 位置オフセット（配置＝構造の定義に当たるので ⟲ は付けない）
         AddOffsetRow("位置オフセット", info.JaOffPX, info.JaOffPY, info.JaOffPZ, "offset_pos");
-        // 回転オフセット（YXZ オイラー角・度）
-        AddOffsetRow("回転オフセット", info.JaOffEX, info.JaOffEY, info.JaOffEZ, "offset_rot");
+        // 回転オフセット（YXZ オイラー角・度）。既定 [0,0,0] へ戻せるようにする。
+        // SET キー offset_rot に対し serde 名は offset_rot_deg（食い違うので明示的に渡す）。
+        AddOffsetRow("回転オフセット", info.JaOffEX, info.JaOffEY, info.JaOffEZ, "offset_rot", "offset_rot_deg");
         // スケールオフセット（既定 1。負値はスケール反転になり得るため通常は正値を推奨するが、
         // Light 同様の常識的な範囲として特にクランプはしない＝入力値をそのまま送信する）
-        AddOffsetRow("スケールオフセット", info.JaOffSX, info.JaOffSY, info.JaOffSZ, "offset_scale");
+        AddOffsetRow("スケールオフセット", info.JaOffSX, info.JaOffSY, info.JaOffSZ, "offset_scale", "offset_scale");
 
         return sp;
     }
@@ -6649,16 +6717,12 @@ public partial class InspectorPanel : UserControl
         sp.Children.Add(modeRow);
 
         // ── 強度 ──
-        var intensityRow = BuildLabeledNumberRow("強度", info.SkyboxIntensity);
-        sp.Children.Add(intensityRow.element);
-        void CommitIntensity()
-        {
-            if (!float.TryParse(intensityRow.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
-            SendField("intensity", v.ToString(CultureInfo.InvariantCulture));
-        }
-        intensityRow.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitIntensity(); e.Handled = true; } };
-        intensityRow.textBox.LostFocus += (_, _) => CommitIntensity();
-        NumericDragBehavior.SetOnDrag(intensityRow.textBox, CommitIntensity);
+        // 行の作りと「⟲ 既定値に戻す」は共通入口へ一任する（SET キー "intensity" は serde 名と一致）。
+        // 強度は上限クランプが無い（HDR 許容）ため値域表には無く、数値入力行になる。
+        sp.Children.Add(BuildResettableFloatRow(
+            info.SlotIdx, SkyboxComponentType, "強度", info.SkyboxIntensity, "intensity",
+            SkyboxNumberFormat,
+            v => SendField("intensity", v.ToString(CultureInfo.InvariantCulture))));
 
         // ── ティント（リニア RGB）────────────────────────────
         float curR = info.SkyboxTintR, curG = info.SkyboxTintG, curB = info.SkyboxTintB;
@@ -6688,7 +6752,8 @@ public partial class InspectorPanel : UserControl
                 Color.FromRgb(LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB)));
             SendField("tint", FormattableString.Invariant($"{curR},{curG},{curB}"));
         };
-        sp.Children.Add(tintRow);
+        // 色は値域表の対象外（HDR 許容で上限が無い）。⟲ だけ添える。
+        sp.Children.Add(WithFieldReset(tintRow, info.SlotIdx, SkyboxComponentType, "tint", "ティント"));
 
         return sp;
     }
@@ -6713,6 +6778,7 @@ public partial class InspectorPanel : UserControl
         const double MaxParticlesCap  = 65536.0;                 // max_particles の上限
         const double RandomnessMax    = 1.0;                     // direction_randomness の上限（0..1）
         const int    MaxTexturePaths  = 8;                       // texture_paths の要素数上限
+        const string ParticleNumberFormat = "F3";                // 数値行の表示書式（AddFloatRowN の非整数と同じ）
 
         // フィールド変更をランタイムへ送信するローカル関数。
         // key は ACTOR_COMPONENTS の JSON フィールド名と同一（emit_interval / dir_x / shape / playing 等）。
@@ -6738,7 +6804,7 @@ public partial class InspectorPanel : UserControl
             row.Children.Add(new TextBlock
             {
                 Text = label, Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
-                FontSize = 11, Width = 110, VerticalAlignment = VerticalAlignment.Center,
+                FontSize = 11, Width = ParticleRowLabelWidth, VerticalAlignment = VerticalAlignment.Center,
             });
             var check = new CheckBox
             {
@@ -6776,11 +6842,18 @@ public partial class InspectorPanel : UserControl
         // N 個の数値フィールドを 1 つのラベルの右に横並びで配置する行を生成する共通ヘルパー。
         // fields は (初期値, 送信キー) の組。ドラッグ/Enter/フォーカス喪失で該当キーを個別に送信する。
         // min/max はドラッグ中・確定時の両方でクランプする（NumericDragBehavior.Attach に一元化）。
+        //
+        // resetField は Rust の ParticleEmitterComponentData の serde フィールドパス。
+        // 非 null なら行の右端に「⟲ 既定値に戻す」を添える（null＝リセット対象外）。
+        // SET キーが x/y/z・min/max に割れている行でも、Rust 側は 1 本の配列フィールド
+        // （gravity / lifetime / size_range 等）なので **行全体で 1 パス**を指定すればよく、
+        // Undo も 1 回で戻る。
         UIElement AddFloatRowN(string label, (float value, string key)[] fields, bool isInt,
-                                double min = double.NegativeInfinity, double max = double.PositiveInfinity)
+                                double min = double.NegativeInfinity, double max = double.PositiveInfinity,
+                                string? resetField = null)
         {
             var row = new Grid { Margin = new Thickness(0, 2, 0, 2) };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ParticleRowLabelWidth) });
             for (int i = 0; i < fields.Length; i++)
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
@@ -6813,25 +6886,50 @@ public partial class InspectorPanel : UserControl
                 tb.LostFocus += (_, _) => Commit();
                 NumericDragBehavior.Attach(tb, sensitivity: isInt ? 1.0 : 0.1, isInteger: isInt, onDrag: Commit, min: min, max: max);
             }
-            sp.Children.Add(row);
-            return row;
+            // ⟲ を添える場合は包んだ側を親へ入れる（表示切替も包んだ側に掛かるようにする）。
+            UIElement element = resetField is null
+                ? row
+                : WithFieldReset(row, info.SlotIdx, ParticleEmitterComponentType, resetField, label);
+            sp.Children.Add(element);
+            return element;
         }
 
         // 数値 1 個の行。Enter / フォーカス喪失 / ドラッグで指定キーの値を送信する。
         // isInt=true のときは整数化してから送信する（max_particles 用）。min/max はドラッグ・確定時共にクランプ。
+        //
+        // 値域が確定している単一スカラー（値域表に載っているもの）は共通入口
+        // BuildResettableFloatRow へ回してスライダー行にする。多値行・整数行は
+        // 専用レイアウト（横並び・整数化）が要るためこの行ビルダのまま ⟲ だけ添える。
         UIElement AddFloatRow(string label, float value, string key, bool isInt = false,
-                               double min = double.NegativeInfinity, double max = double.PositiveInfinity)
-            => AddFloatRowN(label, new[] { (value, key) }, isInt, min, max);
+                               double min = double.NegativeInfinity, double max = double.PositiveInfinity,
+                               string? resetField = null)
+        {
+            if (!isInt && resetField is not null
+                && ComponentFieldRanges.TryGet(ParticleEmitterComponentType, resetField, out _))
+            {
+                var slider = BuildResettableFloatRow(
+                    info.SlotIdx, ParticleEmitterComponentType, label, value, resetField,
+                    ParticleNumberFormat,
+                    v => SendField(key, v.ToString(CultureInfo.InvariantCulture)),
+                    // 多値行（AddFloatRowN）と同じラベル幅を渡し、セクション内でラベル位置をそろえる。
+                    ParticleRowLabelWidth);
+                sp.Children.Add(slider);
+                return slider;
+            }
+            return AddFloatRowN(label, new[] { (value, key) }, isInt, min, max, resetField);
+        }
 
         // 2 個の数値フィールド（min/max ペア等）を横並びで配置する行。
         UIElement AddFloatRow2(string label, float v1, string k1, float v2, string k2,
-                                double min = double.NegativeInfinity, double max = double.PositiveInfinity)
-            => AddFloatRowN(label, new[] { (v1, k1), (v2, k2) }, false, min, max);
+                                double min = double.NegativeInfinity, double max = double.PositiveInfinity,
+                                string? resetField = null)
+            => AddFloatRowN(label, new[] { (v1, k1), (v2, k2) }, false, min, max, resetField);
 
         // 3 個の数値フィールド（XYZ 等）を横並びで配置する行。
         UIElement AddFloatRow3(string label, float v1, string k1, float v2, string k2, float v3, string k3,
-                                double min = double.NegativeInfinity, double max = double.PositiveInfinity)
-            => AddFloatRowN(label, new[] { (v1, k1), (v2, k2), (v3, k3) }, false, min, max);
+                                double min = double.NegativeInfinity, double max = double.PositiveInfinity,
+                                string? resetField = null)
+            => AddFloatRowN(label, new[] { (v1, k1), (v2, k2), (v3, k3) }, false, min, max, resetField);
 
         // ドロップダウン（enum tag）行を生成するローカル関数。
         // options は (tag, label) のリスト。選択変更時に SendField(key, tag) を送る。
@@ -6843,7 +6941,7 @@ public partial class InspectorPanel : UserControl
             row.Children.Add(new TextBlock
             {
                 Text = label, Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
-                FontSize = 11, Width = 110, VerticalAlignment = VerticalAlignment.Center,
+                FontSize = 11, Width = ParticleRowLabelWidth, VerticalAlignment = VerticalAlignment.Center,
             });
             var combo = new ComboBox { Width = 150, FontSize = 11, Margin = new Thickness(4, 0, 0, 0) };
             foreach (var (tag, text) in options)
@@ -6920,13 +7018,16 @@ public partial class InspectorPanel : UserControl
         AddDropdownRow("出現範囲", spawnVolumeOptions, info.PeSpawnVolume, "spawn_volume",
             extra: UpdateSpawnVolumeVisibility);
         // 出現範囲が box/sphere のときだけ、それぞれ対応するパラメータ行を表示する（要求11）。
+        // 箱半径・球半径は「出現範囲という構造の定義（サイズ）」なので ⟲ は付けない
+        //（Rust 側も spawn_volume という enum の内側にあり、単独フィールドとして戻せない）。
         spawnBoxRows    = new List<UIElement> { AddFloatRow3("箱 半径 XYZ", info.PeSpawnBoxX, "spawn_box_x", info.PeSpawnBoxY, "spawn_box_y", info.PeSpawnBoxZ, "spawn_box_z", min: MinZero, max: NoLimit) };
         spawnSphereRows = new List<UIElement> { AddFloatRow("球 半径",  info.PeSpawnSphereRadius, "spawn_sphere_radius", min: MinZero, max: NoLimit) };
         UpdateSpawnVolumeVisibility(info.PeSpawnVolume);
 
         // ── 放出 ───────────────────────────────────────────────
         AddHeading("放出");
-        AddFloatRow("最大パーティクル数", info.PeMaxParticles, "max_particles", isInt: true, min: 1, max: MaxParticlesCap);
+        AddFloatRow("最大パーティクル数", info.PeMaxParticles, "max_particles", isInt: true, min: 1, max: MaxParticlesCap,
+            resetField: "max_particles");
         var emitModeOptions = new (string, string)[]
         {
             ("loop", "ループ"), ("once", "一回"), ("count", "回数指定"),
@@ -6935,38 +7036,54 @@ public partial class InspectorPanel : UserControl
         UIElement? emitCountRow = null;
         AddDropdownRow("放出モード", emitModeOptions, info.PeEmitMode, "emit_mode",
             extra: mode => { if (emitCountRow != null) emitCountRow.Visibility = mode == "count" ? Visibility.Visible : Visibility.Collapsed; });
+        // 放出総数は Rust 側では EmitMode::Count { total } という enum の内側の値であり、
+        // 単独フィールドとして既定値へ戻せない（既定は Loop で total 自体が存在しない）ため ⟲ は付けない。
         emitCountRow = AddFloatRow("放出総数", info.PeEmitCountTotal, "emit_count_total", isInt: true, min: MinZero, max: NoLimit);
         emitCountRow.Visibility = info.PeEmitMode == "count" ? Visibility.Visible : Visibility.Collapsed;
-        AddFloatRow("開始遅延(秒)",   info.PeInitialDelay,     "initial_delay", min: MinZero, max: NoLimit);
-        AddFloatRow("プリウォーム(秒)", info.PePrewarmTime,     "prewarm_time", min: MinZero, max: NoLimit);
-        AddFloatRow("放出間隔(秒)",   info.PeEmitInterval,     "emit_interval", min: MinZero, max: NoLimit);
-        AddFloatRow("1回の放出数",    info.PeParticlesPerEmit, "particles_per_emit", isInt: true, min: MinZero, max: NoLimit);
+        AddFloatRow("開始遅延(秒)",   info.PeInitialDelay,     "initial_delay", min: MinZero, max: NoLimit,
+            resetField: "initial_delay");
+        AddFloatRow("プリウォーム(秒)", info.PePrewarmTime,     "prewarm_time", min: MinZero, max: NoLimit,
+            resetField: "prewarm_time");
+        AddFloatRow("放出間隔(秒)",   info.PeEmitInterval,     "emit_interval", min: MinZero, max: NoLimit,
+            resetField: "emit_interval");
+        AddFloatRow("1回の放出数",    info.PeParticlesPerEmit, "particles_per_emit", isInt: true, min: MinZero, max: NoLimit,
+            resetField: "particles_per_emit");
 
         // ── 寿命 / 速度 ─────────────────────────────────────────
         AddHeading("寿命 / 速度");
-        AddFloatRow2("寿命(秒) min/max", info.PeLifetimeMin, "lifetime_min", info.PeLifetimeMax, "lifetime_max", min: MinZero, max: NoLimit);
-        AddFloatRow2("初速 min/max",     info.PeSpeedMin,    "speed_min",    info.PeSpeedMax,    "speed_max",    min: MinZero, max: NoLimit);
+        // SET キーは min/max に割れているが Rust 側は [f32; 2] の 1 フィールド。行全体で 1 パスを指定する。
+        AddFloatRow2("寿命(秒) min/max", info.PeLifetimeMin, "lifetime_min", info.PeLifetimeMax, "lifetime_max", min: MinZero, max: NoLimit,
+            resetField: "lifetime");
+        AddFloatRow2("初速 min/max",     info.PeSpeedMin,    "speed_min",    info.PeSpeedMax,    "speed_max",    min: MinZero, max: NoLimit,
+            resetField: "initial_speed");
 
         // ── 方向 ───────────────────────────────────────────────
         AddHeading("方向");
         // 符号付き（ローカル方向ベクトル）のため clamp なし。
-        AddFloatRow3("放出方向(ローカル) XYZ", info.PeDirX, "dir_x", info.PeDirY, "dir_y", info.PeDirZ, "dir_z");
-        AddFloatRow("方向ランダム度(0..1)", info.PeDirectionRandomness, "direction_randomness", min: MinZero, max: RandomnessMax);
+        AddFloatRow3("放出方向(ローカル) XYZ", info.PeDirX, "dir_x", info.PeDirY, "dir_y", info.PeDirZ, "dir_z",
+            resetField: "direction_local");
+        // 0..1 に確定した単一スカラーなので共通入口へ回り、スライダー行になる。
+        AddFloatRow("方向ランダム度(0..1)", info.PeDirectionRandomness, "direction_randomness", min: MinZero, max: RandomnessMax,
+            resetField: "direction_randomness");
 
         // ── 物理 ───────────────────────────────────────────────
         AddHeading("物理");
         // 重力は符号付きのため clamp なし。
-        AddFloatRow3("重力 XYZ", info.PeGravityX, "gravity_x", info.PeGravityY, "gravity_y", info.PeGravityZ, "gravity_z");
-        AddFloatRow("空気抵抗 (Drag)", info.PeDrag, "drag", min: MinZero, max: NoLimit);
+        AddFloatRow3("重力 XYZ", info.PeGravityX, "gravity_x", info.PeGravityY, "gravity_y", info.PeGravityZ, "gravity_z",
+            resetField: "gravity");
+        AddFloatRow("空気抵抗 (Drag)", info.PeDrag, "drag", min: MinZero, max: NoLimit, resetField: "drag");
 
         // ── 回転 / サイズ ───────────────────────────────────────
         // Pixel 形状では意味を持たないため pixelHiddenRows に集約し、形状変更時に表示/非表示を切り替える。
         AddHeading("回転 / サイズ");
         // 回転速度（度/秒）は符号付きのため clamp なし。
-        pixelHiddenRows.Add(AddFloatRow2("回転速度(度/秒) min/max", info.PeRotSpeedMin, "rot_speed_min", info.PeRotSpeedMax, "rot_speed_max"));
-        pixelHiddenRows.Add(AddFloatRow2("サイズ倍率 min/max", info.PeSizeMin, "size_min", info.PeSizeMax, "size_max", min: MinZero, max: NoLimit));
+        pixelHiddenRows.Add(AddFloatRow2("回転速度(度/秒) min/max", info.PeRotSpeedMin, "rot_speed_min", info.PeRotSpeedMax, "rot_speed_max",
+            resetField: "rot_speed_range"));
+        pixelHiddenRows.Add(AddFloatRow2("サイズ倍率 min/max", info.PeSizeMin, "size_min", info.PeSizeMax, "size_max", min: MinZero, max: NoLimit,
+            resetField: "size_range"));
         // 初期回転範囲（度）。符号付きのため clamp なし。
-        pixelHiddenRows.Add(AddFloatRow2("初期回転(度) min/max", info.PeInitRotMin, "initial_rot_min", info.PeInitRotMax, "initial_rot_max"));
+        pixelHiddenRows.Add(AddFloatRow2("初期回転(度) min/max", info.PeInitRotMin, "initial_rot_min", info.PeInitRotMax, "initial_rot_max",
+            resetField: "initial_rotation_range"));
 
         // ── カーブ ─────────────────────────────────────────────
         // 速度/回転速度(1ch)・スケール(3ch=xyz) を CurveEditorControl（per-key 補間タイプ対応）で編集する。
@@ -7308,18 +7425,13 @@ public partial class InspectorPanel : UserControl
             }));
 
         // ── 音量フィールド ─────────────────────────────────────
-        var rowVol = BuildLabeledNumberRow("音量", info.AudioVolume, "F2");
-        sp.Children.Add(rowVol.element);
-        void CommitVolume()
-        {
-            if (!float.TryParse(rowVol.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
-            // 負値は無効なため下限でクランプする
-            v = MathF.Max(AudioVolumeMin, v);
-            SendField("volume", v.ToString(CultureInfo.InvariantCulture));
-        }
-        rowVol.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitVolume(); e.Handled = true; } };
-        rowVol.textBox.LostFocus += (_, _) => CommitVolume();
-        NumericDragBehavior.SetOnDrag(rowVol.textBox, CommitVolume);
+        // 行の作りと「⟲ 既定値に戻す」は共通入口へ一任する（SET キー "volume" は serde 名と一致）。
+        // 音量は上限クランプが無い（1.0 超の増幅を許す）ため値域表には無く、数値入力行になる。
+        sp.Children.Add(BuildResettableFloatRow(
+            info.SlotIdx, AudioComponentType, "音量", info.AudioVolume, "volume",
+            AudioLevelNumberFormat,
+            // 負値は無効なため下限でクランプしてから送信する。
+            v => SendField("volume", MathF.Max(AudioVolumeMin, v).ToString(CultureInfo.InvariantCulture))));
 
         // ── チェックボックス行（ループ・自動再生・3D空間再生）────
         // ラベル + CheckBox の横並び行を生成して SET_AUDIO_FIELD を送信するローカル関数
@@ -7364,37 +7476,25 @@ public partial class InspectorPanel : UserControl
         // ── 減衰開始距離 / 無音距離（3D空間再生 ON 時のみ有効）──
         AddHint("以下の距離設定は 3D空間再生が ON のときに適用されます");
 
-        // 数値フィールド + SET_AUDIO_FIELD 送信をまとめて構築するローカル関数
+        // 数値フィールド + SET_AUDIO_FIELD 送信をまとめて構築するローカル関数。
+        // 行の作りと ⟲ は共通入口へ一任する（距離系の SET キーは serde 名と一致）。
         void AddFloatRow(string label, float value, string key)
         {
-            var row = BuildLabeledNumberRow(label, value);
-            sp.Children.Add(row.element);
-            void Commit()
-            {
-                if (!float.TryParse(row.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
-                SendField(key, v.ToString(CultureInfo.InvariantCulture));
-            }
-            row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
-            row.textBox.LostFocus += (_, _) => Commit();
-            NumericDragBehavior.SetOnDrag(row.textBox, Commit);
+            sp.Children.Add(BuildResettableFloatRow(
+                info.SlotIdx, AudioComponentType, label, value, key, AudioDistanceNumberFormat,
+                v => SendField(key, v.ToString(CultureInfo.InvariantCulture))));
         }
         AddFloatRow("減衰開始距離", info.AudioMinDistance, "min_distance");
         AddFloatRow("無音距離",     info.AudioMaxDistance, "max_distance");
 
         // ── パン（3D空間再生 OFF 時のみ有効）──────────────────
+        // パンは値域が -1..1 に確定している（audio_ops.rs の clamp）ので、
+        // 値域表の引き当てによりスライダー行になる。
         AddHint($"パン（{AudioPanMin:F0}=左 〜 {AudioPanMax:F0}=右）は 3D空間再生が OFF のときのみ有効です");
-        var rowPan = BuildLabeledNumberRow("パン", info.AudioPan, "F2");
-        sp.Children.Add(rowPan.element);
-        void CommitPan()
-        {
-            if (!float.TryParse(rowPan.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
-            // パンは [-1, 1] にクランプして送信する
-            v = Math.Clamp(v, AudioPanMin, AudioPanMax);
-            SendField("pan", v.ToString(CultureInfo.InvariantCulture));
-        }
-        rowPan.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitPan(); e.Handled = true; } };
-        rowPan.textBox.LostFocus += (_, _) => CommitPan();
-        NumericDragBehavior.SetOnDrag(rowPan.textBox, CommitPan);
+        sp.Children.Add(BuildResettableFloatRow(
+            info.SlotIdx, AudioComponentType, "パン", info.AudioPan, "pan", AudioLevelNumberFormat,
+            // ランタイム側と同じ範囲で二重にクランプしてから送信する。
+            v => SendField("pan", Math.Clamp(v, AudioPanMin, AudioPanMax).ToString(CultureInfo.InvariantCulture))));
 
         return sp;
     }
@@ -7832,7 +7932,12 @@ public partial class InspectorPanel : UserControl
             NumericDragBehavior.SetOnDrag(tbPivX, CommitPivot); NumericDragBehavior.SetOnDrag(tbPivY, CommitPivot);
             piv3dRow.Children.Add(piv3dFieldGrid);
 
-            sp.Children.Add(piv3dRow);
+            // ピボットは「アクター位置がキャンバスのどの点に対応するか」の割合値（0..1）で、
+            // キャンバスサイズのような器の定義ではなく調整値なので ⟲ を添える。
+            // 2 成分まとめて 1 パス（serde 名 pivot）でリセットする＝ Undo も 1 回で戻る。
+            // 値域は Rust 側 `pivot_x.clamp(0.0, 1.0)`（transform_ops.rs）で 0..1 だが、
+            // 2 成分行のため単一スカラー用の値域表（スライダー化）の対象外である。
+            sp.Children.Add(WithFieldReset(piv3dRow, info.SlotIdx, CanvasComponentType, "pivot", "ピボット"));
         }
 
         return sp;
@@ -7854,11 +7959,16 @@ public partial class InspectorPanel : UserControl
 
     /// <summary>ラベル + 数値入力フィールドの行を生成する。</summary>
     /// <param name="format">数値の書式。デフォルトは "F1"（小数第1位）。整数表示には "F0" を指定。</param>
-    private static (UIElement element, TextBox textBox) BuildLabeledNumberRow(string label, float value, string format = "F1")
+    /// <param name="labelWidth">
+    /// 行ラベルの幅（px）。既定は <see cref="InspectorRowLabelWidth"/>。
+    /// ラベル幅が標準と異なるセクションでは、そのセクションの幅を呼び出し側が渡す。
+    /// </param>
+    private static (UIElement element, TextBox textBox) BuildLabeledNumberRow(
+        string label, float value, string format = "F1", double labelWidth = InspectorRowLabelWidth)
     {
         var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(labelWidth) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         var lbl = new TextBlock

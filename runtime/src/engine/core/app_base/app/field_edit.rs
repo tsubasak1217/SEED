@@ -138,6 +138,13 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             slot(*actor_dfs_id, *slot_idx, "SetModelField", key),
         IpcCommand::SetPluginField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetPluginField", key),
+        // インスペクタ各行の「⟲ デフォルトに戻す」ボタン（全コンポーネント共通）。
+        // コマンド名を SET 系（"SetLightField" 等）と**変えている**ので、
+        // 直前のスライダー操作とはマージキーが一致せず 1 手にまとまらない。
+        // その結果、Ctrl+Z 1 回で「リセットの直前の値」へ戻る
+        // （まとまってしまうとドラッグ開始前の値まで飛んでしまう）。
+        IpcCommand::ResetComponentField { actor_dfs_id, slot_idx, field } =>
+            slot(*actor_dfs_id, *slot_idx, "ResetComponentField", field),
         // </FIELD-EDIT-TABLE:SLOT>
 
         // ── フィールド名を持たないスロット値編集（1 コマンド = 1 フィールド） ──
@@ -1078,6 +1085,34 @@ mod tests {
             "触っていないアセットパスは巻き添えにならないこと");
         cmd.execute(&mut scene);
         assert_eq!(scene.shading_params["toon_steps"], [5.0, 0.0, 0.0, 0.0], "Redo で戻ること");
+    }
+
+    /// 分類関数: 汎用の「デフォルトに戻す」（RESET_COMPONENT_FIELD）が
+    /// Slot に分類され、**SET 系とマージキーが異なる**こと。
+    ///
+    /// マージされてしまうと「スライダーを動かす → ⟲ を押す」が 1 手に潰れ、
+    /// Ctrl+Z でリセット直前の値へ戻れなくなる。
+    #[test]
+    fn field_edit_target_classifies_component_field_reset_separately() {
+        let reset = field_edit_target(&IpcCommand::ResetComponentField {
+            actor_dfs_id: 4, slot_idx: 2, field: "intensity".into(),
+        });
+        match &reset {
+            FieldEditTarget::Slot { actor_dfs_id, slot_idx, merge_key } => {
+                assert_eq!((*actor_dfs_id, *slot_idx), (4, 2));
+                assert!(merge_key.contains("intensity"), "{merge_key}");
+            }
+            other => panic!("スロット編集として分類されること: {other:?}"),
+        }
+        // 同じアクタ・スロット・フィールドを指す値編集とはマージキーが異なること。
+        let edit = field_edit_target(&IpcCommand::SetLightField {
+            actor_dfs_id: 4, slot_idx: 2, key: "intensity".into(), value: "5".into(),
+        });
+        assert_ne!(reset, edit, "値編集とリセットは 1 手にまとまらないこと");
+        // 別フィールドのリセットどうしも別コマンドであること。
+        assert_ne!(reset, field_edit_target(&IpcCommand::ResetComponentField {
+            actor_dfs_id: 4, slot_idx: 2, field: "range".into(),
+        }));
     }
 
     /// 分類関数: 同じスロットでも別フィールドならマージキーが異なること。
