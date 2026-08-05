@@ -18,16 +18,23 @@
 # 連結順の意味（Phase W8 で 2 本 → 4 本になった）:
 #   1. water_height_field.wgsl     形状・高さ場・WaterParams・WATER_EPSILON（ID/反射パスと共有）
 #   2. water_shading_contract.wgsl 水面シェーディング契約 v1（WaterShadeInput / water_shade_default）
-#   3. water_shade_dispatch.wgsl   契約関数 water_shade_entry の **既定実装**。
+#   3. water_shade_params.wgsl     アセットのパラメータ注釈（W8.2）の受け皿。
+#                                  group1 binding7 の storage（水域ごとに vec4×8）と
+#                                  アクセサ関数だけを持つ。**水面パス専用**で、
+#                                  ID パス・反射パス・コースティクスは連結しない。
+#   4. water_shade_dispatch.wgsl   契約関数 water_shade_entry の **既定実装**。
 #                                  水域に surface_shader が指定されている場合、Rust 側
 #                                  （water/shading_asset.rs）が **この 1 要素を**
 #                                  「アセット本体 ＋ 生成した water_shade_entry」へ差し替える。
 #                                  差し替え位置の目印なので、要素名を変えるときは
 #                                  water/shading_asset.rs の WATER_DISPATCH_SOURCE_NAME も直すこと。
-#   4. water_surface.wgsl          頂点/フラグメント本体（材料を集めて契約へ渡す）
+#                                  差し替え時は「生成した var<private> 宣言 ＋ アセット本体 ＋
+#                                  生成した water_shade_entry」の 3 要素へ広がる（W8.2）。
+#   5. water_surface.wgsl          頂点/フラグメント本体（材料を集めて契約へ渡す）
 shader_sources  = [
     "water_height_field.wgsl",
     "water_shading_contract.wgsl",
+    "water_shade_params.wgsl",
     "water_shade_dispatch.wgsl",
     "water_surface.wgsl",
 ]

@@ -4817,6 +4817,18 @@ impl App {
                                     ipc.send(&format!("LOAD_ERROR:{msg}"));
                                 }
                             }
+
+                            // ── パラメータ注釈の変化をインスペクタへ反映（Phase W8.2）─────
+                            // アセットを保存して `//! param` の宣言（追加・削除・改名・
+                            // 既定値・ラベル）が変わったら、選択中アクタの ACTOR_COMPONENTS を
+                            // 送り直してインスペクタに行を作り直させる。
+                            // これが無いと、行が古い宣言のまま残って
+                            // 「アセットにパラメータを足したのに UI に出ない」状態になる。
+                            // ここではフラグを立てるだけにする（レンダラーを可変借用している
+                            // 最中なので送信メソッドを呼べない）。実際の再送は GPU サブミット後。
+                            if !draw_ctx.water_shading_asset_cache.take_decls_changed().is_empty() {
+                                self.pending_water_param_decls_resend = true;
+                            }
                             // ID パス（後段）で水面クアッドを描いてよいかを伝える。
                             // **この前倒しは ID パス（draw_id）より必ず前**である
                             //（後になるとピッキングが 1 フレーム遅れる／壊れる）。
@@ -7657,6 +7669,16 @@ impl App {
                     }));
                 }
                 self.send_selected();
+            }
+        }
+
+        // ── 水面シェーダのパラメータ宣言の変化を UI へ反映（Phase W8.2）─────
+        // アセットを保存して `//! param` の宣言が変わったフレームの後始末。
+        // 選択中アクタの ACTOR_COMPONENTS を送り直し、インスペクタに行を作り直させる
+        //（選択アクタが水域でなければ、C# 側は水の行を作らないので実害は無い）。
+        if std::mem::take(&mut self.pending_water_param_decls_resend) {
+            for dfs in self.selected_actor_dfs_ids.clone() {
+                self.send_actor_components(dfs as u32, self.actor_virtual_selected_slot_idx);
             }
         }
 

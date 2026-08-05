@@ -1201,6 +1201,10 @@ impl App {
                 IpcCommand::SetWaterField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_water_field(actor_dfs_id, slot_idx, &key, &value);
                 }
+                IpcCommand::SetWaterShaderParam { actor_dfs_id, slot_idx, name, value } => {
+                    // 水面シェーディングアセットのパラメータ値（W8.2）。
+                    self.handle_set_water_shader_param(actor_dfs_id, slot_idx, &name, &value);
+                }
                 IpcCommand::SetWaterLinkField { actor_dfs_id, slot_idx, key, value } => {
                     // 水位グラフの開口（W2.5）。バルブ開閉・寸法・接続先の更新。
                     self.handle_set_water_link_field(actor_dfs_id, slot_idx, &key, &value);

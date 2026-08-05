@@ -561,6 +561,18 @@ public partial class InspectorPanel : UserControl
     private const float WaterShoreFoamDefault = 0.8f;
     /// <summary>水の各色はアルファを持たないため、カラーピッカーへ渡す固定アルファ。</summary>
     private const float WaterColorAlpha = 1f;
+    /// <summary>
+    /// 水面シェーダのパラメータ（Phase W8.2）を運ぶ成分数。
+    /// 型に依らず常に 4 成分で送受信する（color は xyz、スカラーは x のみ使う）。
+    /// </summary>
+    private const int ShaderParamComponentCount = 4;
+    /// <summary>水面シェーダのパラメータ値の表示書式（小数 3 桁）。</summary>
+    private const string ShaderParamNumberFormat = "F3";
+    /// <summary>
+    /// range 宣言が退化していた（max &lt;= min）場合に UI 側で確保する最小の幅。
+    /// スライダーの Minimum == Maximum は操作不能になるため、表示だけを守るための保険。
+    /// </summary>
+    private const float ShaderParamMinRangeWidth = 1f;
     /// <summary>水位シミュレーション（水位グラフ、Phase W2.5）を有効にするかの既定値。</summary>
     private const bool WaterSimulateLevelDefault = false;
 
@@ -784,6 +796,10 @@ public partial class InspectorPanel : UserControl
         // 水面シェーディングアセット（Phase W8。.wgsl の仮想パス）。空文字列 = エンジン標準の水面シェーディング。
         // 形状・波・反射・屈折には影響せず、水面の「色だけ」を差し替えるアセット。
         string WaterSurfaceShader = "",
+        // 水面シェーダのパラメータ注釈（Phase W8.2）。ランタイムが解析して送る JSON 配列の生テキスト。
+        // 要素: {"name","type"("color"/"range"/"float"),"label","min","max","value":[x,y,z,w]}
+        // 空配列 = アセット未指定／宣言なし（＝パラメータ行を 1 つも作らない）。
+        string WaterShaderParamsJson = "[]",
         // 岸のフォーム（色・幅・強度）
         float WaterFoamR = WaterFoamRDefault,
         float WaterFoamG = WaterFoamGDefault,
@@ -1265,6 +1281,10 @@ public partial class InspectorPanel : UserControl
             var waterOpacity      = comp.TryGetProperty("surface_opacity",  out var wso)  ? wso.GetSingle() : WaterSurfaceOpacityDefault;
             // 水面シェーディングアセット（Phase W8）: .wgsl の仮想パス。欠落/空文字はエンジン標準を意味する。
             var waterSurfaceShader = comp.TryGetProperty("surface_shader", out var wssh) ? wssh.GetString() ?? "" : "";
+            // 水面シェーダのパラメータ注釈（Phase W8.2）。**解析はランタイム側が済ませてある**ので、
+            // ここは生 JSON をそのまま持ち回り、UI 構築時に 1 度だけ読む。
+            // 旧ランタイム（キー欠落）では空配列＝行なしになる。
+            var waterShaderParams = comp.TryGetProperty("shader_params", out var wsp2) ? wsp2.GetRawText() : "[]";
             var waterFoamR        = comp.TryGetProperty("foam_r",           out var wfr)  ? wfr.GetSingle() : WaterFoamRDefault;
             var waterFoamG        = comp.TryGetProperty("foam_g",           out var wfg)  ? wfg.GetSingle() : WaterFoamGDefault;
             var waterFoamB        = comp.TryGetProperty("foam_b",           out var wfb)  ? wfb.GetSingle() : WaterFoamBDefault;
@@ -1397,6 +1417,7 @@ public partial class InspectorPanel : UserControl
                 WaterDeepR: waterDeepR, WaterDeepG: waterDeepG, WaterDeepB: waterDeepB,
                 WaterAbsorptionDistance: waterAbsorption, WaterSurfaceOpacity: waterOpacity,
                 WaterSurfaceShader: waterSurfaceShader,
+                WaterShaderParamsJson: waterShaderParams,
                 WaterFoamR: waterFoamR, WaterFoamG: waterFoamG, WaterFoamB: waterFoamB,
                 WaterFoamWidth: waterFoamWidth, WaterFoamIntensity: waterFoamIntensity,
                 WaterWaveAmplitude: waterWaveAmp, WaterWaveScale: waterWaveScale, WaterWaveSpeed: waterWaveSpeed,
@@ -4981,6 +5002,202 @@ public partial class InspectorPanel : UserControl
     /// 種別（Ocean/Region/Spline）に応じて、その種別で意味を持たない行は非表示にする
     /// （Ocean のとき領域半径を隠し、Region のとき海の描画半径を隠す）。
     /// </summary>
+    /// <summary>
+    /// 水面シェーディングアセットのパラメータ注釈（Phase W8.2）の行を生成して親へ追加する。
+    ///
+    /// ランタイムが送ってきた JSON 配列（名前・型・ラベル・範囲・現在値）から、
+    /// 型ごとに行の形を選ぶ:
+    ///   color … カラーピッカー（リニア RGB。アルファは持たない）
+    ///   range … スライダー＋数値ボックス（min/max はアセットの宣言どおり）
+    ///   float … 数値行（範囲なし）
+    ///
+    /// **構文解析は一切行わない**（正典はランタイムの water/shade_params.rs）。
+    /// 値の送信は SET_WATER_SHADER_PARAM で、型に依らず常に 4 成分を送る。
+    /// </summary>
+    private void AddShaderParamRows(StackPanel parent, SlotInfo info)
+    {
+        // 宣言が無ければ何も作らない（アセット未指定・読めないパス・注釈なし）。
+        if (string.IsNullOrWhiteSpace(info.WaterShaderParamsJson)) return;
+
+        // JsonDocument は using で確実に解放し、要素は Clone して外へ持ち出す
+        //（RootElement を Document の寿命より長く持ち回らないための定石。
+        //  プラグインフィールド行と同じ流儀）。
+        List<JsonElement> items;
+        try
+        {
+            using var doc = JsonDocument.Parse(info.WaterShaderParamsJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) return;
+            items = doc.RootElement.EnumerateArray().Select(e => e.Clone()).ToList();
+        }
+        catch (JsonException)
+        {
+            // 壊れた JSON は「パラメータ無し」として扱う（インスペクタ全体を落とさない）。
+            return;
+        }
+        if (items.Count == 0) return;
+
+        // パラメータ 1 個の値をランタイムへ送る（常に 4 成分）。
+        void SendParam(string name, float x, float y, float z, float w)
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_WATER_SHADER_PARAM:{_currentActorId},{info.SlotIdx},{name},{x},{y},{z},{w}"));
+        }
+
+        foreach (var item in items)
+        {
+            var name = item.TryGetProperty("name", out var pn) ? pn.GetString() ?? "" : "";
+            if (string.IsNullOrEmpty(name)) continue;
+            var type  = item.TryGetProperty("type",  out var pt) ? pt.GetString() ?? "" : "";
+            var label = item.TryGetProperty("label", out var pl) ? pl.GetString() ?? name : name;
+            var min   = item.TryGetProperty("min",   out var pmin) ? pmin.GetSingle() : 0f;
+            var max   = item.TryGetProperty("max",   out var pmax) ? pmax.GetSingle() : 1f;
+            // 値は常に 4 成分。欠けている場合は 0 で埋める（旧ランタイム耐性）。
+            float[] v = new float[ShaderParamComponentCount];
+            if (item.TryGetProperty("value", out var pv) && pv.ValueKind == JsonValueKind.Array)
+            {
+                int i = 0;
+                foreach (var c in pv.EnumerateArray())
+                {
+                    if (i >= ShaderParamComponentCount) break;
+                    v[i++] = c.GetSingle();
+                }
+            }
+
+            switch (type)
+            {
+                // ── 色（リニア RGB。アセット側は vec3 として読む）──
+                case "color":
+                {
+                    float curR = v[0], curG = v[1], curB = v[2];
+                    var (swatch, setColor) = BuildColorSwatch(curR, curG, curB, WaterColorAlpha);
+                    var row = new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2),
+                    };
+                    row.Children.Add(new TextBlock
+                    {
+                        Text = label, Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                        FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+                    });
+                    row.Children.Add(swatch);
+                    swatch.MouseLeftButtonDown += (_, _) =>
+                    {
+                        var result = ColorPickerWindow.ShowDialog(
+                            Window.GetWindow(this), curR, curG, curB, WaterColorAlpha);
+                        if (result is null) return;
+                        (curR, curG, curB, _) = result.Value;
+                        setColor(curR, curG, curB, WaterColorAlpha);
+                        // 4 成分目は色では使わないので 0 を送る（受け側もそのまま保存する）。
+                        SendParam(name, curR, curG, curB, 0f);
+                    };
+                    row.ToolTip = $"{name}（水面シェーダのパラメータ）";
+                    parent.Children.Add(row);
+                    break;
+                }
+                // ── 範囲つきスカラー（スライダー）──
+                case "range":
+                {
+                    var row = BuildRangeSliderRow(label, v[0], min, max,
+                        nv => SendParam(name, nv, 0f, 0f, 0f));
+                    if (row is FrameworkElement fe) fe.ToolTip = $"{name}（{min} 〜 {max}）";
+                    parent.Children.Add(row);
+                    break;
+                }
+                // ── 範囲なしスカラー（数値行）。未知の型もここへ落とす（値は編集できる）──
+                default:
+                {
+                    var numeric = BuildLabeledNumberRow(label, v[0], ShaderParamNumberFormat);
+                    void Commit()
+                    {
+                        if (!float.TryParse(numeric.textBox.Text, NumberStyles.Float,
+                                CultureInfo.InvariantCulture, out var nv)) return;
+                        SendParam(name, nv, 0f, 0f, 0f);
+                    }
+                    numeric.textBox.KeyDown += (_, e) =>
+                    {
+                        if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; }
+                    };
+                    numeric.textBox.LostFocus += (_, _) => Commit();
+                    NumericDragBehavior.SetOnDrag(numeric.textBox, Commit);
+                    if (numeric.element is FrameworkElement nfe)
+                        nfe.ToolTip = $"{name}（水面シェーダのパラメータ）";
+                    parent.Children.Add(numeric.element);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 任意の [min..max] レンジのスライダー + 数値ボックス行を生成する（Phase W8.2）。
+    ///
+    /// <see cref="BuildMaterialSliderRow"/> は 0..1 固定なので、アセットが宣言した
+    /// 任意の範囲を扱えるようにした版である（レイアウトの流儀は同一）。
+    /// </summary>
+    private UIElement BuildRangeSliderRow(string label, float value, float min, float max, Action<float> onChange)
+    {
+        // 反転・退化した範囲が来ても UI が壊れないよう最低限の保護を入れる
+        //（ランタイム側でも弾いているので通常は起きない）。
+        if (max <= min) max = min + ShaderParamMinRangeWidth;
+
+        var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
+
+        var lbl = new TextBlock
+        {
+            Text = label, Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 11, VerticalAlignment = VerticalAlignment.Center,
+        };
+        var slider = new Slider
+        {
+            Minimum = min, Maximum = max, Value = Math.Clamp(value, min, max),
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 4, 0),
+        };
+        var box = new TextBox
+        {
+            Text = value.ToString(ShaderParamNumberFormat, CultureInfo.InvariantCulture),
+            FontSize = 11, VerticalAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
+        };
+
+        // スライダー ⇔ テキストの相互更新で無限ループにならないようにする番人。
+        bool updating = false;
+        slider.ValueChanged += (_, e) =>
+        {
+            if (updating) return;
+            updating = true;
+            box.Text = ((float)e.NewValue).ToString(ShaderParamNumberFormat, CultureInfo.InvariantCulture);
+            onChange((float)e.NewValue);
+            updating = false;
+        };
+        void CommitBox()
+        {
+            if (updating) return;
+            if (!float.TryParse(box.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+            v = Math.Clamp(v, min, max);
+            updating = true;
+            box.Text = v.ToString(ShaderParamNumberFormat, CultureInfo.InvariantCulture);
+            slider.Value = v;
+            updating = false;
+            onChange(v);
+        }
+        box.LostFocus += (_, _) => CommitBox();
+        box.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitBox(); e.Handled = true; } };
+
+        Grid.SetColumn(lbl, 0);
+        Grid.SetColumn(slider, 1);
+        Grid.SetColumn(box, 2);
+        grid.Children.Add(lbl);
+        grid.Children.Add(slider);
+        grid.Children.Add(box);
+        return grid;
+    }
+
     private UIElement BuildWaterVolumeSlotContent(SlotInfo info)
     {
         var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
@@ -5149,6 +5366,12 @@ public partial class InspectorPanel : UserControl
             };
         }
         colorSp.Children.Add(waterShadingRow);
+
+        // ── 水面シェーダのパラメータ（Phase W8.2）─────────────────
+        // アセットが `//! param` で宣言したパラメータを、参照行の直下へ動的に並べる。
+        // 構文解析はランタイムが済ませてあるので、ここは種別に応じて行の形
+        //（カラーピッカー／スライダー／数値）を選ぶだけである。
+        AddShaderParamRows(colorSp, info);
 
         AddColorRow(colorSp, "浅場の色", info.WaterShallowR, info.WaterShallowG, info.WaterShallowB, "shallow_color");
         AddColorRow(colorSp, "深場の色", info.WaterDeepR,    info.WaterDeepG,    info.WaterDeepB,    "deep_color");

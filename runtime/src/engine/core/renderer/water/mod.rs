@@ -46,6 +46,9 @@
 // ============================================================
 
 pub mod params;
+/// 水面シェーディングアセットの「パラメータ注釈」解析（Phase W8.2）。
+/// アセット内の `//! param ...` 行を読み、インスペクタ行と GPU ブロックの正典になる。
+pub mod shade_params;
 pub mod shading_asset;
 pub mod tessellation;
 pub mod wave_noise;
@@ -53,6 +56,8 @@ pub mod wave_noise;
 pub use params::{
     WaterParams, WATER_MAX_INSTANCES, WATER_MAX_VOLUMES,
 };
+/// アセットのパラメータ値（W8.2）を GPU へ運ぶ 1 インスタンスぶんのブロック。
+pub use shade_params::WaterShadeParamBlock;
 
 use std::collections::HashMap;
 
@@ -88,10 +93,47 @@ pub(super) fn resolve_water_shader(name: &str) -> &'static str {
         // 水面シェーディング契約 v1（Phase W8）。水面パスだけが連結する
         //（ID パス・反射パス・コースティクスは色を作らないため不要）。
         "water_shading_contract.wgsl" => include_str!("../shaders/water_shading_contract.wgsl"),
+        // アセットのパラメータ注釈（W8.2）の受け皿。group1 binding7 の storage を
+        // **水面パスにだけ**足すため、ここでしか連結しない。
+        "water_shade_params.wgsl"     => include_str!("../shaders/water_shade_params.wgsl"),
         "water_shade_dispatch.wgsl"   => include_str!("../shaders/water_shade_dispatch.wgsl"),
         "water_surface.wgsl"          => include_str!("../shaders/water_surface.wgsl"),
         "water_id.wgsl"               => include_str!("../shaders/water_id.wgsl"),
         other => panic!("water: unknown shader source: {other}"),
+    }
+}
+
+/// `prepare` の作業用バケット（同一アセットの水インスタンスを溜める箱。Phase W8）。
+///
+/// `WaterDrawGroup` が「確定した描画レンジ」なのに対し、こちらは
+/// **レンジが決まる前**の積み上げ途中の入れ物である（1 フレーム内で捨てられる）。
+///
+/// クアッド列・川列と**同じ並び**で「元になった水域の添字」を持つのが要点で、
+/// これがあるから 1 水域が複数インスタンスへ広がる川でも、
+/// インスタンスごとのパラメータ値（W8.2）を正しく引ける。
+struct WaterBucket {
+    /// このバケットのシェーディングアセットパス（空文字＝エンジン標準）。
+    asset: String,
+    /// Ocean / Region のクアッドインスタンス。
+    quads: Vec<WaterParams>,
+    /// `quads` と同じ並びの、元になった水域の添字（`volumes` への添字）。
+    quad_volumes: Vec<usize>,
+    /// 川リボンのインスタンス（1 水域が分割数ぶんに広がる）。
+    rivers: Vec<WaterParams>,
+    /// `rivers` と同じ並びの、元になった水域の添字。
+    river_volumes: Vec<usize>,
+}
+
+impl WaterBucket {
+    /// 空のバケットを作る。
+    fn new(asset: &str) -> Self {
+        Self {
+            asset: asset.to_string(),
+            quads: Vec::new(),
+            quad_volumes: Vec::new(),
+            rivers: Vec::new(),
+            river_volumes: Vec::new(),
+        }
     }
 }
 
@@ -155,6 +197,11 @@ pub struct WaterRenderer {
     params_buf: Option<wgpu::Buffer>,
     /// `params_buf` の容量（要素数）。
     params_capacity: usize,
+    /// 水面シェーディングアセットのパラメータ値（Phase W8.2）。
+    /// `params_buf` と**同じインスタンス添字**で引ける並列配列（1 要素 = vec4×8）。
+    shade_params_buf: Option<wgpu::Buffer>,
+    /// `shade_params_buf` の容量（要素数）。
+    shade_params_capacity: usize,
 
     /// 屈折背景グラブ（シーン HDR のフル解像度 1 ミップコピー）。
     grab_tex: Option<wgpu::Texture>,
@@ -339,6 +386,8 @@ impl WaterRenderer {
             hdr_format,
             params_buf:       None,
             params_capacity:  0,
+            shade_params_buf:      None,
+            shade_params_capacity: 0,
             grab_tex:         None,
             grab_view:        None,
             grab_width:       0,
@@ -521,10 +570,10 @@ impl WaterRenderer {
         //    アセットを使っていないプロジェクトではグループが 1 個しかできないので、
         //    並びもドローコール数も W5.1 と完全に同一になる。
         //
-        //    `buckets` は (アセットパス, クアッド列, 川列) を **初出順**で持つ。
+        //    `buckets` はアセット別の作業単位を **初出順**で持つ。
         //    HashMap を使わないのは、並び順がフレーム間で揺れるとドローの順序が変わり、
         //    半透明の重なりが不安定になるためである。
-        let mut buckets: Vec<(String, Vec<WaterParams>, Vec<WaterParams>)> = Vec::new();
+        let mut buckets: Vec<WaterBucket> = Vec::new();
         // 現在までに積んだインスタンス総数（上限判定に使う）。
         let mut total = 0usize;
         // 各バケットが「欲しがる」分割数（後で頂点予算へ収める）。
@@ -532,13 +581,13 @@ impl WaterRenderer {
         // 依らず 1 つだけ指定するため、区画内で分割数が違うと格子が壊れる）。
         let mut quad_div_want  = 1u32;
         let mut river_div_want = (1u32, 1u32);
-        for v in &volumes[..count] {
+        for (vi, v) in volumes[..count].iter().enumerate() {
             // この水域のアセット（空文字＝標準）に対応するバケットを引く／作る。
             let key = v.surface_shader.trim();
-            let bi = match buckets.iter().position(|(k, _, _)| k == key) {
+            let bi = match buckets.iter().position(|b| b.asset == key) {
                 Some(i) => i,
                 None => {
-                    buckets.push((key.to_string(), Vec::new(), Vec::new()));
+                    buckets.push(WaterBucket::new(key));
                     buckets.len() - 1
                 }
             };
@@ -547,8 +596,11 @@ impl WaterRenderer {
                 Some(river) => {
                     for w in river.nodes.windows(2) {
                         if total >= WATER_MAX_INSTANCES { break; }
-                        buckets[bi].2.push(WaterParams::from_river_segment(
+                        buckets[bi].rivers.push(WaterParams::from_river_segment(
                             v, &w[0], &w[1], river.half_width, river.flow_speed, id_base));
+                        // パラメータ値は水域単位。川は 1 水域が複数インスタンスへ広がるので、
+                        // どのインスタンスがどの水域から来たかをここで覚えておく（W8.2）。
+                        buckets[bi].river_volumes.push(vi);
                         total += 1;
                         // 幅方向は半幅から、長さ方向は区間の実長から刻み数を決める。
                         let seg_len = distance_xyz(w[0].pos, w[1].pos);
@@ -565,7 +617,8 @@ impl WaterRenderer {
                         matches!(v.kind, crate::engine::components::water_volume_component::WaterVolumeKind::Ocean),
                         p.half_extent[0].max(p.half_extent[2]),
                     ));
-                    buckets[bi].1.push(p);
+                    buckets[bi].quads.push(p);
+                    buckets[bi].quad_volumes.push(vi);
                     total += 1;
                 }
             }
@@ -587,14 +640,14 @@ impl WaterRenderer {
 
         // ── 格子分割数を頂点予算へ収めて全インスタンスへ焼き込む（Phase W5.1）──
         //    区画（クアッド／川）内は同じ分割数でなければならない（1 ドローの頂点数は 1 つだけ）。
-        let total_quads:  usize = buckets.iter().map(|b| b.1.len()).sum();
-        let total_rivers: usize = buckets.iter().map(|b| b.2.len()).sum();
+        let total_quads:  usize = buckets.iter().map(|b| b.quads.len()).sum();
+        let total_rivers: usize = buckets.iter().map(|b| b.rivers.len()).sum();
         let quad_div = tessellation::fit_quad_divisions(quad_div_want, total_quads);
         let (river_div_a, river_div_l) =
             tessellation::fit_river_divisions(river_div_want, total_rivers);
-        for (_, quads, rivers) in buckets.iter_mut() {
-            for p in quads.iter_mut()  { p.set_grid_divisions(quad_div, quad_div); }
-            for p in rivers.iter_mut() { p.set_grid_divisions(river_div_a, river_div_l); }
+        for b in buckets.iter_mut() {
+            for p in b.quads.iter_mut()  { p.set_grid_divisions(quad_div, quad_div); }
+            for p in b.rivers.iter_mut() { p.set_grid_divisions(river_div_a, river_div_l); }
         }
         self.quad_count         = total_quads  as u32;
         self.river_count        = total_rivers as u32;
@@ -606,15 +659,15 @@ impl WaterRenderer {
         //    レンジは `instance_index` の絶対値なので、そのままドローへ渡せる。
         let mut gpu: Vec<WaterParams> = Vec::with_capacity(total_quads + total_rivers);
         let mut quad_cursor = 0u32;
-        for (_, quads, _) in buckets.iter() {
-            quad_cursor += quads.len() as u32;
-            gpu.extend_from_slice(quads);
+        for b in buckets.iter() {
+            quad_cursor += b.quads.len() as u32;
+            gpu.extend_from_slice(&b.quads);
         }
         debug_assert_eq!(quad_cursor as usize, total_quads);
         let mut river_cursor = total_quads as u32;
-        for (_, _, rivers) in buckets.iter() {
-            river_cursor += rivers.len() as u32;
-            gpu.extend_from_slice(rivers);
+        for b in buckets.iter() {
+            river_cursor += b.rivers.len() as u32;
+            gpu.extend_from_slice(&b.rivers);
         }
         debug_assert_eq!(river_cursor as usize, total_quads + total_rivers);
 
@@ -623,23 +676,48 @@ impl WaterRenderer {
         //    「初回」と「ホットリロードで mtime が変わったとき」だけである。
         let mut quad_start  = 0u32;
         let mut river_start = total_quads as u32;
-        for (key, quads, rivers) in buckets.iter() {
-            let quad_range  = quad_start..(quad_start + quads.len() as u32);
-            let river_range = river_start..(river_start + rivers.len() as u32);
+        // バケットごとの解決結果（パラメータ宣言を引くため、グループへ移す前に一度保持する）。
+        let mut resolved: Vec<Option<std::sync::Arc<shading_asset::WaterShadingAssetPipelines>>> =
+            Vec::with_capacity(buckets.len());
+        for b in buckets.iter() {
+            let quad_range  = quad_start..(quad_start + b.quads.len() as u32);
+            let river_range = river_start..(river_start + b.rivers.len() as u32);
             quad_start  = quad_range.end;
             river_start = river_range.end;
             // 空文字＝標準。アセット指定時のみキャッシュを引く（未指定は一切通らない）。
-            let pipeline = if key.is_empty() {
+            let pipeline = if b.asset.is_empty() {
                 None
             } else {
                 shading_asset::resolve(
-                    device, shader_cache, key, self.hdr_format, DEPTH_FORMAT, allow_hot_reload,
+                    device, shader_cache, &b.asset, self.hdr_format, DEPTH_FORMAT, allow_hot_reload,
                 )
             };
+            resolved.push(pipeline.clone());
             self.groups.push(WaterDrawGroup {
-                asset: key.clone(), pipeline, quad_range, river_range,
+                asset: b.asset.clone(), pipeline, quad_range, river_range,
             });
         }
+
+        // ── パラメータブロック配列（Phase W8.2）─────────────────
+        //    並びは `gpu` と**厳密に同じ**（全バケットのクアッド → 全バケットの川）。
+        //    アセット未指定・ロード失敗のバケットは宣言が無いので全ゼロブロックになる
+        //    （標準パイプラインはこの storage を読まないため、値が何であれ影響しない）。
+        //    スロット順はアセットの宣言順で、生成した WGSL の添字と一致する。
+        let mut blocks: Vec<WaterShadeParamBlock> = Vec::with_capacity(total_quads + total_rivers);
+        for (bi, b) in buckets.iter().enumerate() {
+            let decls = resolved[bi].as_ref().map(|p| p.params.as_slice()).unwrap_or(&[]);
+            for &vi in &b.quad_volumes {
+                blocks.push(shade_params::build_block(decls, &volumes[vi].shader_params));
+            }
+        }
+        for (bi, b) in buckets.iter().enumerate() {
+            let decls = resolved[bi].as_ref().map(|p| p.params.as_slice()).unwrap_or(&[]);
+            for &vi in &b.river_volumes {
+                blocks.push(shade_params::build_block(decls, &volumes[vi].shader_params));
+            }
+        }
+        debug_assert_eq!(blocks.len(), total_quads + total_rivers,
+            "パラメータブロックはインスタンス配列と 1 対 1 でなければならない");
         // バケット分割の結果を 1 行で報告する（内容が変わったときだけ出力される）。
         // 「アセットを設定したのに見た目が変わらない」の切り分けに使う:
         //   ・ここに自分のアセットパスが出ていない → 水域の設定が届いていない
@@ -661,6 +739,23 @@ impl WaterRenderer {
         );
 
         let count = gpu.len();
+
+        // ── パラメータブロックのアップロード（Phase W8.2）──────
+        //    バッファは常に確保する（アセット未使用でも group1 binding7 の
+        //    BindGroup エントリが要るため。中身は全ゼロで無害）。
+        if self.shade_params_buf.is_none() || self.shade_params_capacity < count {
+            let capacity = count.max(1);
+            self.shade_params_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Water Shade Params Storage"),
+                size:  (capacity * std::mem::size_of::<WaterShadeParamBlock>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.shade_params_capacity = capacity;
+        }
+        let shade_params_buf =
+            self.shade_params_buf.as_ref().expect("water: shade params buffer 未確保");
+        queue.write_buffer(shade_params_buf, 0, bytemuck::cast_slice(&blocks));
 
         if self.params_buf.is_none() || self.params_capacity < count {
             let capacity = count.max(1);
@@ -703,6 +798,9 @@ impl WaterRenderer {
             layout:  &self.params_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
+                // アセットのパラメータ値（Phase W8.2）。標準パイプラインは読まないが、
+                // レイアウトは共通なので常に挿す。
+                wgpu::BindGroupEntry { binding: 7, resource: shade_params_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(grab_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(depth_view) },

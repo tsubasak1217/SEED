@@ -941,6 +941,13 @@ pub struct App {
     /// 次フレームの ID パス後にワールド座標を読み出してアクターを配置する。
     /// タプル: (actor_path, screen_x, screen_y)
     pending_drop: Option<(String, u32, u32)>,
+    /// 水面シェーディングアセットのパラメータ宣言（W8.2）が変わったので、
+    /// 選択中アクタの ACTOR_COMPONENTS を送り直す必要があるか。
+    ///
+    /// 検出は描画準備の最中（`&mut self.renderer` を借りている最中）に起きるため、
+    /// その場では `&self` を要求する送信メソッドを呼べない。フラグだけ立てておき、
+    /// GPU サブミット後に処理する（1 フレーム遅れるが、ホットリロードの体感には出ない）。
+    pending_water_param_decls_resend: bool,
     /// DRAG_HOVER コマンドを受け取ったときに設定する。
     /// 次フレームの ID パスでワールド座標を解決してプレビュー球体位置を更新する。
     /// タプル: (viewport_x, viewport_y)
@@ -1348,6 +1355,7 @@ impl App {
             velocity_reset_requested: false,
             batch_absent_frames:     HashMap::new(),
             pending_drop:            None,
+            pending_water_param_decls_resend: false,
             pending_drop_hover: None,
             drop_preview_pos:   None,
             drag_hover_canvas_entity: None,
