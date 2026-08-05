@@ -35,6 +35,17 @@ internal static class ActorRefJump
     public static Action<int>? RevealActorByDfsIdRequested;
 
     /// <summary>
+    /// 「その名前のアクタがシーンに存在するか」を問い合わせるフック。
+    /// MainWindow が HierarchyPanel.ActorExistsByName へ接続する。
+    ///
+    /// 参照フィールドは値をアクタ名の文字列で持つため、参照先が削除されると
+    /// 表示だけが残る。参照ピッカー（ReferencePicker）はこのフックで存在を確認し、
+    /// 見つからないときに警告表示へ切り替える。
+    /// 未接続（null）のときは「判定不能」として警告を出さない。
+    /// </summary>
+    public static Func<string, bool>? ActorExistsByName;
+
+    /// <summary>
     /// 指定要素のダブルクリックで「アクタ名によるジャンプ」を行うよう配線する。
     /// アクタ参照を表示している行（ラベル・ドロップゾーン等）に付ける。
     /// </summary>
