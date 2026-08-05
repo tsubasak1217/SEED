@@ -31,6 +31,12 @@ public record ScriptFieldInfo(
     public IReadOnlyList<ScriptFieldInfo>? Children { get; init; }
 
     /// <summary>
+    /// [ResetButton] が付いているか。true の行だけ右端に「デフォルトに戻す」ボタンを出す。
+    /// 戻り先の値は <see cref="DefaultValue"/>（宣言時の初期化子。無ければ言語既定値）。
+    /// </summary>
+    public bool ShowResetButton { get; init; }
+
+    /// <summary>
     /// 参照フィールド（GameObject / Transform / Camera … へのハンドル）の種別情報。
     /// 参照フィールドでなければ null。判定は SEED.ScriptReference が正典。
     /// </summary>

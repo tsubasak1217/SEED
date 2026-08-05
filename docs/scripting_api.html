@@ -248,7 +248,7 @@
 </div>
 
 <!-- ════════════════ 1. 基本形 ════════════════ -->
-<section id="sec-basic" data-keywords="スクリプト 基本形 テンプレート SEEDScript SerializeField 継承 class インスペクタ 属性 Header Tooltip Range RequireComponent DisallowMultipleComponent Serializable">
+<section id="sec-basic" data-keywords="スクリプト 基本形 テンプレート SEEDScript SerializeField 継承 class インスペクタ 属性 Header Tooltip Range ResetButton リセット デフォルトに戻す RequireComponent DisallowMultipleComponent Serializable">
   <h2>1. スクリプトの基本形</h2>
   <p class="section-note">C# で書き、<code>SEEDScript</code>（<code>SEEDEditor.Scripting</code> 名前空間）を継承します。</p>
 <pre><span class="k">using</span> SEEDEditor.Scripting;   <span class="c">// SEEDScript・[SerializeField]・NativeFrameContext</span>
@@ -277,6 +277,7 @@
     <tr><td><code>[Header("見出し")]</code></td><td>フィールド</td><td>そのフィールドの直前に見出し行を挿入する</td></tr>
     <tr><td><code>[Tooltip("説明")]</code></td><td>フィールド</td><td>マウスオーバー時の説明。<code>[SerializeField(Tooltip = ...)]</code> より<b>独立した <code>[Tooltip]</code> が優先</b>される</td></tr>
     <tr><td><code>[Range(min, max)]</code></td><td>フィールド</td><td>数値フィールドをスライダー表示にする（float / int）</td></tr>
+    <tr><td><code>[ResetButton]</code></td><td>フィールド</td><td>行の右端に「デフォルトに戻す」ボタン（⟲）を出す。押すと<b>宣言の初期化子の値</b>（無ければ 0 / false / 空文字 / 参照は未設定）へ戻る。Ctrl+Z で取り消せる</td></tr>
     <tr><td><code>[RequireComponent(typeof(OtherScript))]</code> / <code>[RequireComponent("Camera")]</code></td><td>クラス</td><td>アタッチ時に不足コンポーネントを<b>自動追加</b>する。型指定＝他スクリプト（型名から <code>.cs</code> を探す）、文字列指定＝ネイティブコンポーネント名</td></tr>
     <tr><td><code>[DisallowMultipleComponent]</code></td><td>クラス</td><td>同一アクターに同じスクリプトを 2 つ以上付けられなくする（追加操作が警告で中止される）</td></tr>
   </table>
@@ -292,7 +293,15 @@
     [<span class="t">SerializeField</span>]
     [<span class="t">Tooltip</span>(<span class="s">"1 秒あたりの振動回数"</span>)]
     <span class="k">private float</span> frequency = 8.0f;
+
+    <span class="c">// 行末の ⟲ を押すと 1.5 に戻る（初期化子が無い場合は 0 に戻る）</span>
+    [<span class="t">SerializeField</span>, <span class="t">ResetButton</span>]
+    <span class="k">private float</span> damping = 1.5f;
 }</pre>
+  <h3><code>[ResetButton]</code> の詳細</h3>
+  <p class="section-note">戻り先はフィールド<b>宣言の初期化子</b>の値です。初期化子が無ければ言語既定値（数値 <code>0</code> / <code>bool false</code> / <code>string</code> 空文字）になります。参照フィールド（<code>GameObject</code> / <code>Transform</code> など）では「未設定」へ戻ります（✕ ボタンと同じ結果）。</p>
+  <p class="section-note">リセットは通常の値編集と同じ経路を通るため <b>Ctrl+Z で取り消せます</b>（リセット前の値に戻る）。対応型は数値（float / double / int / long / short）・bool・string・参照フィールドで、<b>列挙型などインスペクタが読み取り専用表示にする型ではボタンは出ません</b>。既定値の文字列に改行が含まれる場合もボタンは出ません（1 行 1 コマンドの通信経路に載せられないため）。</p>
+  <p class="section-note"><code>[Serializable]</code> ネストクラスの<b>フィールドそのもの</b>に付けてもボタンは出ません（子をまとめて戻すと Ctrl+Z が 1 手にまとまらないため）。<b>ネストの中の個々のフィールド</b>には付けられます。その場合の戻り先は<b>そのネストクラス側の初期化子</b>であり、外側での <code>new Nested { inner = 99f }</code> のような初期化は反映されません。</p>
   <p class="section-note"><code>[Serializable]</code> を付けたクラス／構造体型のフィールドに <code>[SerializeField]</code> を付けると、インスペクタで<b>子フィールドが再帰的に展開</b>されます（入れ子の上限は 8 段）。</p>
   <p class="section-note"><code>GameObject</code> やコンポーネントハンドル型（<code>Transform</code> / <code>Camera</code> など）のフィールドに <code>[SerializeField]</code> を付けると、<b>他アクターへの参照フィールド</b>になります（Hierarchy から D&amp;D で設定）。詳細は第 7 節の「参照フィールド」を参照してください。</p>
 </section>

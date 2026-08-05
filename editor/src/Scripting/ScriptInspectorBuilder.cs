@@ -91,7 +91,72 @@ public static class ScriptInspectorBuilder
         }
     }
 
+    /// <summary>
+    /// フィールド 1 件分の行を作り、[ResetButton] が付いていれば右端に
+    /// 「デフォルトに戻す」ボタンを添えて返す。
+    ///
+    /// リセットは通常の値編集とまったく同じ経路（onChange → SET_SCRIPT_FIELD）を通す。
+    /// これだけでランタイム側の共通 Undo 機構（field_edit.rs）に自動で載るため、
+    /// Ctrl+Z でリセット前の値へ戻せる。
+    /// </summary>
     private static UIElement? BuildRow(
+        ScriptFieldInfo field, string path,
+        IReadOnlyDictionary<string, string> values, Action<string, string> onChange,
+        ReferenceDropHandler? onRefDrop)
+    {
+        var row = BuildRowCore(field, path, values, onChange, onRefDrop);
+        if (row is null || !field.ShowResetButton) return row;
+
+        // 既定値を文字列化できない型（列挙型など未対応の読み取り専用行）はボタンを出さない。
+        var resetValue = FormatResetValue(field);
+        if (resetValue is null) return row;
+
+        return ResetButtonFactory.Wrap(
+            row,
+            $"「{field.Label}」を宣言時の既定値に戻す（Ctrl+Z で取り消せます）",
+            () => onChange(path, resetValue));
+    }
+
+    /// <summary>
+    /// [ResetButton] の戻り先の値を、SET_SCRIPT_FIELD へ流す文字列表現に変換する。
+    ///
+    /// 元の値は ScriptCompiler が「型のインスタンスを 1 個作って読んだフィールド値」
+    /// （＝宣言の初期化子。初期化子が無ければ言語既定値 0 / false / null）である。
+    /// 書式は各行ビルダーが解釈する形式と揃えること（数値は F3・bool は true/false）。
+    /// 未対応型は null を返し、呼び出し側でボタン自体を出さない。
+    /// </summary>
+    private static string? FormatResetValue(ScriptFieldInfo field)
+    {
+        // 参照フィールドは型に依らず「未設定」へ戻す（✕ ボタンと同じ値）。
+        if (field.Reference is not null) return SEED.ScriptReference.UnsetValue;
+
+        var t = field.Field.FieldType;
+        var d = field.DefaultValue;
+        try
+        {
+            if (t == typeof(float) || t == typeof(double)) return Fmt(Convert.ToSingle(d ?? 0f));
+            if (t == typeof(int) || t == typeof(long) || t == typeof(short))
+                return Convert.ToInt64(d ?? 0L).ToString(CultureInfo.InvariantCulture);
+            if (t == typeof(bool)) return (bool)(d ?? false) ? "true" : "false";
+            if (t == typeof(string))
+            {
+                var s = (string?)d ?? "";
+                // IPC は 1 行 1 コマンドの行区切りなので、改行を含む既定値は送れない
+                // （途中で別コマンドとして解釈されてしまう）。値を勝手に書き換えるより、
+                // ボタンを出さない方が安全なのでリセット非対応として扱う。
+                return s.Contains('\n') || s.Contains('\r') ? null : s;
+            }
+        }
+        catch (Exception e) when (e is InvalidCastException or FormatException or OverflowException)
+        {
+            // 想定外の値が入っていた場合はボタンを出さない（誤った値を書き込まない安全側）。
+            return null;
+        }
+        return null;
+    }
+
+    /// <summary>型に応じた行本体を生成する（リセットボタンは付けない）。</summary>
+    private static UIElement? BuildRowCore(
         ScriptFieldInfo field, string path,
         IReadOnlyDictionary<string, string> values, Action<string, string> onChange,
         ReferenceDropHandler? onRefDrop)
