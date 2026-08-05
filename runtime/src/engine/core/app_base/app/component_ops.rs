@@ -28,6 +28,10 @@ use super::{
 //  マテリアルスロット一覧 JSON 構築（Phase R7）
 // ============================================================
 
+/// 「このマテリアルスロットには上書きが無い」を表す `override_index` の値。
+/// エディタ側（InspectorPanel の `NoMaterialOverrideIndex`）と同じ意味で使う。
+const NO_MATERIAL_OVERRIDE_INDEX: i64 = -1;
+
 /// `AlphaMode` をインスペクター送信用の文字列表現に変換する。
 fn alpha_mode_str(mode: crate::engine::core::loader::model::AlphaMode) -> &'static str {
     use crate::engine::core::loader::model::AlphaMode;
@@ -42,10 +46,16 @@ fn alpha_mode_str(mode: crate::engine::core::loader::model::AlphaMode) -> &'stat
 ///
 /// 各要素は `{"slot":i,"name":..,"mode":"embedded"|"mat"|"inline","base_color":[..],
 /// "metallic":..,"roughness":..,"emissive":[..],"alpha_mode":"..","alpha_cutoff":..,
-/// "cull_face":"back"|"front"|"none","shading_model":0..3,"path":".."}`。
+/// "cull_face":"back"|"front"|"none","shading_model":0..3,"path":"..","override_index":n}`。
 /// - `mode` は該当スロットに `material_overrides` があるかどうかで決まる。
 /// - factor/alpha 系フィールドは常に「現在の実効値」（オーバーライド適用後。無ければ glTF 埋込値）。
 /// - `path` は MatAsset オーバーライドのときのみ非空。
+/// - `override_index` は `material_overrides`（Vec）内での **位置**。上書きが無いスロットは
+///   `NO_MATERIAL_OVERRIDE_INDEX`（-1）。**マテリアルスロット番号 `slot` とは一致しない**
+///   （`handle_set_material_override` が同一 slot を retain で除いてから push するため並びが変わる）。
+///   インスペクタの「⟲ 既定値に戻す」が送るフィールドパス
+///   `material_overrides/{override_index}/kind/{フィールド}` を組み立てるために必要で、
+///   エディタ側からは Vec の並びが見えないのでランタイムが位置を教える責務を持つ。
 /// - `mc` が None（モデル未ロード等）または `model` が未ロードの場合は空配列 `[]` を返す。
 fn build_materials_json(mc: Option<&ModelComponent>) -> String {
     use crate::engine::components::MaterialOverrideKind;
@@ -74,6 +84,14 @@ fn build_materials_json(mc: Option<&ModelComponent>) -> String {
         let mut shading_model = mat.shading_model;
         let mut path         = String::new();
         let mut mode         = "embedded";
+
+        // Vec 内の位置を控える（見つからなければ -1＝上書き無し）。
+        // 以降の `find` と同じ条件なので、位置と中身は必ず同じ要素を指す。
+        let override_index: i64 = mc
+            .material_overrides
+            .iter()
+            .position(|o| o.slot == i)
+            .map_or(NO_MATERIAL_OVERRIDE_INDEX, |p| p as i64);
 
         if let Some(ovr) = mc.material_overrides.iter().find(|o| o.slot == i) {
             match &ovr.kind {
@@ -123,7 +141,7 @@ fn build_materials_json(mc: Option<&ModelComponent>) -> String {
         let name_json = serde_json::to_string(&mat.name).unwrap_or_default();
         let path_json = serde_json::to_string(&path).unwrap_or_default();
         items.push(format!(
-            r#"{{"slot":{i},"name":{name_json},"mode":"{mode}","base_color":[{:.4},{:.4},{:.4},{:.4}],"metallic":{:.4},"roughness":{:.4},"emissive":[{:.4},{:.4},{:.4}],"alpha_mode":"{alpha_mode}","alpha_cutoff":{:.4},"ior":{:.4},"transmission":{:.4},"diffuse_transmission":{:.4},"mr_tex_ignore":{mr_tex_ignore},"cull_face":"{cull_face}","shading_model":{shading_model},"path":{path_json}}}"#,
+            r#"{{"slot":{i},"name":{name_json},"mode":"{mode}","base_color":[{:.4},{:.4},{:.4},{:.4}],"metallic":{:.4},"roughness":{:.4},"emissive":[{:.4},{:.4},{:.4}],"alpha_mode":"{alpha_mode}","alpha_cutoff":{:.4},"ior":{:.4},"transmission":{:.4},"diffuse_transmission":{:.4},"mr_tex_ignore":{mr_tex_ignore},"cull_face":"{cull_face}","shading_model":{shading_model},"path":{path_json},"override_index":{override_index}}}"#,
             base_color[0], base_color[1], base_color[2], base_color[3],
             metallic, roughness,
             emissive[0], emissive[1], emissive[2],

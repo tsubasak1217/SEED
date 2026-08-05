@@ -1215,6 +1215,10 @@ impl App {
                     // 「デフォルトに戻す」ボタン（W8.2）。上書き値を消して既定値へ落とす。
                     self.handle_reset_water_shader_param(actor_dfs_id, slot_idx, &name);
                 }
+                IpcCommand::ResetComponentField { actor_dfs_id, slot_idx, field } => {
+                    // インスペクタ各行の「⟲ デフォルトに戻す」ボタン（全コンポーネント共通）。
+                    self.handle_reset_component_field(actor_dfs_id, slot_idx, &field);
+                }
                 IpcCommand::SetWaterShaderBinding { actor_dfs_id, slot_idx, name, binding } => {
                     // `@ref` パラメータのバインド設定・解除（W8.3）。
                     self.handle_set_water_shader_binding(actor_dfs_id, slot_idx, &name, &binding);

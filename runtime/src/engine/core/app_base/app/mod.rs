@@ -16,6 +16,9 @@
 mod drag_state;
 /// インスペクタのフィールド編集を汎用的に Undo/Redo へ載せる機構（分類表・スナップショット・適用）
 mod field_edit;
+/// インスペクタ各行の「⟲ デフォルトに戻す」を賄うコンポーネント非依存のリセット機構
+/// （RESET_COMPONENT_FIELD）。
+mod component_reset_ops;
 mod ipc_handler;
 mod hierarchy_sync;
 mod clipboard;

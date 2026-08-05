@@ -407,6 +407,16 @@ pub enum IpcCommand {
     /// こうしておくと、後からアセットの既定値を書き換えたときに
     /// 「戻したはずの水域」が新しい既定値へ追随する（＝アセットが正典であり続ける）。
     ResetWaterShaderParam { actor_dfs_id: u32, slot_idx: u32, name: String },
+    /// **任意のコンポーネント**のフィールド 1 個を既定値へ戻す
+    /// （インスペクタ各行の「⟲ デフォルトに戻す」ボタン。component_reset_ops.rs が処理）。
+    ///
+    /// フォーマット: RESET_COMPONENT_FIELD:{actor_dfs_id},{slot_idx},{field_path}
+    ///
+    /// `field_path` は **コンポーネントの JSON 表現上のパス**（`/` 区切り、残り全部）。
+    /// 例: `intensity` / `wave_amplitude` / `material_overrides/0/kind/roughness`。
+    /// 種別ごとの分岐を持たない汎用コマンドなので、コンポーネントが増えても
+    /// このコマンドを増やす必要はない（既定値の正典は Rust の `Default`）。
+    ResetComponentField { actor_dfs_id: u32, slot_idx: u32, field: String },
     /// 水面シェーディングアセットの `@ref` パラメータ 1 個のバインド先を設定・解除する
     /// （Phase W8.3。water_ops.rs が処理）。
     ///
@@ -1824,6 +1834,17 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             parse2u_tail(&s["RESET_WATER_SHADER_PARAM:".len()..])
                                 .map(|(a, sl, tail)| IpcCommand::ResetWaterShaderParam {
                                     actor_dfs_id: a, slot_idx: sl, name: tail.to_string(),
+                                })
+                        }
+                        s if s.starts_with("RESET_COMPONENT_FIELD:") => {
+                            // フォーマット: RESET_COMPONENT_FIELD:{actor},{slot},{field_path}
+                            // field_path は "/" 区切りなので "," を含まないが、
+                            // 万一含まれても壊れないよう tail（残り全部）をそのまま使う。
+                            // プレフィックスは他のどのコマンドとも衝突しない
+                            // （既存の RESET_* は WATER / CAMERA / SCENE の 3 種のみ）。
+                            parse2u_tail(&s["RESET_COMPONENT_FIELD:".len()..])
+                                .map(|(a, sl, tail)| IpcCommand::ResetComponentField {
+                                    actor_dfs_id: a, slot_idx: sl, field: tail.to_string(),
                                 })
                         }
                         s if s.starts_with("SET_WATER_SHADER_BINDING:") => {

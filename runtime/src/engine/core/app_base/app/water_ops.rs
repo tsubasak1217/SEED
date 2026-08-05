@@ -770,3 +770,205 @@ mod tests {
         assert_eq!(clamp_vec3_min([1.0, 2.0, 3.0], NON_NEGATIVE_MIN), [1.0, 2.0, 3.0]);
     }
 }
+
+// ============================================================
+//  契約テスト: エディタの値域表 ⇔ ランタイムの clamp
+// ============================================================
+
+/// エディタ（C#）の値域表 `ComponentFieldRanges` と、このファイルの clamp が
+/// **食い違わない**ことをビルド時のソース走査で固定する。
+///
+/// ## なぜ要るか
+/// 値域表はインスペクタの行を「スライダーにするか数値入力にするか」を決める。
+/// ランタイムの clamp を後から変えても C# 側は何も壊れずに動いてしまうため、
+/// ずれは「スライダーの端が効かない」「本来動かせる値に手が届かない」という
+/// 気付きにくい不具合として残る。ソース同士を突き合わせて落とすのが唯一の防波堤。
+///
+/// ## 走査の方針
+/// - `include_str!` で両ソースを読み、**`lines()` ベース**で走査する
+///   （CRLF で実体化されるリポジトリなので、生の `"\n"` 前提の split は使わない）。
+/// - 走査が空振りして「常に成功するテスト」にならないよう、最低件数を assert する。
+#[cfg(test)]
+mod field_range_contract {
+    /// エディタの値域表（C# ソース）。
+    /// パスはこのファイル（runtime/src/engine/core/app_base/app/）からの相対。
+    const RANGES_CS: &str =
+        include_str!("../../../../../../editor/src/Controls/ComponentFieldRanges.cs");
+    /// このファイル自身（clamp の正典）。
+    const WATER_OPS_RS: &str = include_str!("water_ops.rs");
+    /// 粘度の許容レンジ定数の定義元。
+    const WATER_PHYSICS_RS: &str = include_str!("../../../interaction/water_physics.rs");
+
+    /// 値域表のキーのうち、この契約テストが対象にするコンポーネント。
+    const WATER_KEY_PREFIX: &str = "WaterVolumeComponent.";
+    /// 0..1 の正規化パラメータを表す C# 側の表記。
+    const NORMALIZED_RANGE_CS: &str = "(0f, 1f)";
+
+    /// 「0..1 へ clamp する」と読める定数対（water_ops.rs のクランプ表記）。
+    /// 粘度だけは波紋シミュレーション側と定数を共有しているため別名になる。
+    /// どちらも実値が 0.0 / 1.0 であることは
+    /// `viscosity_range_constants_are_zero_to_one` が別途固定する。
+    const NORMALIZED_CLAMP_EXPRESSIONS: [&str; 2] = [
+        "clamp(NORMALIZED_MIN, NORMALIZED_MAX)",
+        "clamp(VISCOSITY_MIN, VISCOSITY_MAX)",
+    ];
+
+    /// 値域表から (キー, 値域の C# 表記) を取り出す。
+    ///
+    /// 対象行は `["Type.field"] = (min, max),` の形だけ。コメント行は除く。
+    fn parse_ranges_table() -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for line in RANGES_CS.lines() {
+            let t = line.trim();
+            if t.starts_with("//") || !t.starts_with("[\"") {
+                continue;
+            }
+            // キー: 最初の `"` 〜 次の `"`。
+            let Some(rest) = t.strip_prefix("[\"") else { continue };
+            let Some(quote_end) = rest.find('"') else { continue };
+            let key = rest[..quote_end].to_string();
+            // 値域: `=` の右側から末尾のカンマを落とす。
+            let Some(eq) = t.find('=') else { continue };
+            let value = t[eq + 1..].trim().trim_end_matches(',').trim().to_string();
+            out.push((key, value));
+        }
+        out
+    }
+
+    /// water_ops.rs の `handle_set_water_field` から、
+    /// 「0..1 へ clamp している SET キー」の一覧を取り出す。
+    ///
+    /// `"key" => {` の行で対象キーを覚え、続く行に clamp 表記が現れたら採用する
+    /// （コメント行は無視するので、doc コメント中の key 列挙には反応しない）。
+    ///
+    /// 走査範囲は **`handle_set_water_field` の match の中だけ**に限る。
+    /// ファイル全体を舐めると、このテストモジュール自身が持つ
+    /// `NORMALIZED_CLAMP_EXPRESSIONS` の文字列リテラルまで拾ってしまうため。
+    fn parse_normalized_clamped_keys() -> Vec<String> {
+        /// 走査を開始する行（このハンドラの定義）。
+        const SCAN_BEGIN: &str = "pub(super) fn handle_set_water_field(";
+        /// 走査を終える行（key の match の既定腕＝表の終わり）。
+        const SCAN_END: &str = "_ => return,";
+
+        let mut out: Vec<String> = Vec::new();
+        let mut current: Option<String> = None;
+        let mut started = false;
+        for line in WATER_OPS_RS.lines() {
+            let t = line.trim();
+            if !started {
+                started = t.starts_with(SCAN_BEGIN);
+                continue;
+            }
+            if t == SCAN_END {
+                break;
+            }
+            if t.starts_with("//") {
+                continue;
+            }
+            // `"key" => {` / `"key" | "key2" => {` の形からキーを拾う。
+            if t.starts_with('"') && t.contains("=>") {
+                let name: String = t[1..].chars().take_while(|c| *c != '"').collect();
+                if !name.is_empty() {
+                    current = Some(name);
+                }
+                continue;
+            }
+            if NORMALIZED_CLAMP_EXPRESSIONS.iter().any(|e| t.contains(e)) {
+                if let Some(key) = &current {
+                    if !out.contains(key) {
+                        out.push(key.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// (a) 値域表に 0..1 として載っている水のフィールドは、
+    ///     water_ops.rs で実際に 0..1 へ clamp されていること。
+    #[test]
+    fn table_entries_are_clamped_in_runtime() {
+        let table   = parse_ranges_table();
+        let clamped = parse_normalized_clamped_keys();
+
+        let mut checked = 0usize;
+        let mut missing = Vec::new();
+        for (key, range) in &table {
+            let Some(field) = key.strip_prefix(WATER_KEY_PREFIX) else { continue };
+            if range != NORMALIZED_RANGE_CS {
+                continue;
+            }
+            checked += 1;
+            if !clamped.iter().any(|k| k == field) {
+                missing.push(field.to_string());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "値域表が 0..1 としているのに water_ops.rs で 0..1 へ clamp していない: {missing:?}"
+        );
+        // 走査が空振りしていないことの担保（現状 6 件: surface_opacity / foam_intensity /
+        // fresnel_strength / reflection_roughness / shore_wave_foam / viscosity）。
+        assert!(
+            checked >= 6,
+            "値域表の走査が機能していない（水の 0..1 エントリが {checked} 件しか見つからない）"
+        );
+    }
+
+    /// (b) water_ops.rs で 0..1 へ clamp しているフィールドは、
+    ///     値域表にも 0..1 として載っていること（載せ漏れ検出）。
+    #[test]
+    fn runtime_clamps_are_listed_in_table() {
+        let table   = parse_ranges_table();
+        let clamped = parse_normalized_clamped_keys();
+
+        let mut missing = Vec::new();
+        for field in &clamped {
+            let key = format!("{WATER_KEY_PREFIX}{field}");
+            let listed = table
+                .iter()
+                .any(|(k, range)| k == &key && range == NORMALIZED_RANGE_CS);
+            if !listed {
+                missing.push(field.clone());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "water_ops.rs が 0..1 へ clamp しているのに値域表へ載っていない\
+             （インスペクタがスライダーにならない）: {missing:?}"
+        );
+        // 走査が空振りしていないことの担保。
+        assert!(
+            clamped.len() >= 6,
+            "clamp の走査が機能していない（0..1 クランプが {} 件しか見つからない）",
+            clamped.len()
+        );
+    }
+
+    /// 粘度の定数対が本当に 0.0 / 1.0 であること。
+    ///
+    /// (a)(b) は `clamp(VISCOSITY_MIN, VISCOSITY_MAX)` を「0..1 の clamp」として
+    /// 扱うため、定数側が動いたらこのテストが落ちて気付けるようにしておく。
+    #[test]
+    fn viscosity_range_constants_are_zero_to_one() {
+        /// 定数の宣言行から `= 値;` の値部分を取り出す。
+        fn const_value(src: &str, name: &str) -> Option<String> {
+            let decl = format!("pub const {name}: f32 =");
+            src.lines()
+                .map(str::trim)
+                .find(|l| l.starts_with(&decl))
+                .and_then(|l| l.split('=').nth(1))
+                .map(|v| v.trim().trim_end_matches(';').trim().to_string())
+        }
+        assert_eq!(
+            const_value(WATER_PHYSICS_RS, "VISCOSITY_MIN").as_deref(),
+            Some("0.0"),
+            "VISCOSITY_MIN が 0.0 でなくなった（値域表の 0..1 と食い違う）"
+        );
+        assert_eq!(
+            const_value(WATER_PHYSICS_RS, "VISCOSITY_MAX").as_deref(),
+            Some("1.0"),
+            "VISCOSITY_MAX が 1.0 でなくなった（値域表の 0..1 と食い違う）"
+        );
+    }
+}
