@@ -164,6 +164,12 @@ impl App {
                         if let Some((wl, actor_dfs_id, slot_idx, slot_data)) = self.undo_history.peek_undone_slot_data() {
                             self.apply_slot_data(wl, actor_dfs_id, slot_idx, &slot_data);
                         }
+                        // 地表カバー場（CoverFieldEditCommand）を編集前へ戻す。
+                        // 実体は Scene の外（App.terrain）なので、コマンド自身ではなく
+                        // ここで書き戻す（apply_slot_data と同じ流儀）。
+                        if let Some(fields) = self.undo_history.peek_undone_cover_fields() {
+                            self.restore_cover_snapshots(&fields);
+                        }
                         // アクタートランスフォーム変更 → インスペクター通知
                         if let Some((_wl, dfs_id)) = self.undo_history.peek_undone_actor_inspect() {
                             self.send_actor_components(dfs_id, self.actor_virtual_selected_slot_idx);
@@ -207,6 +213,10 @@ impl App {
                         // インスペクタのフィールド編集（1 スロットだけ値を進める）
                         if let Some((wl, actor_dfs_id, slot_idx, slot_data)) = self.undo_history.peek_redone_slot_data() {
                             self.apply_slot_data(wl, actor_dfs_id, slot_idx, &slot_data);
+                        }
+                        // Undo と対称に、地表カバー場を編集後へ進める。
+                        if let Some(fields) = self.undo_history.peek_redone_cover_fields() {
+                            self.restore_cover_snapshots(&fields);
                         }
                         // アクタートランスフォーム変更 → インスペクター通知
                         if let Some((_wl, dfs_id)) = self.undo_history.peek_redone_actor_inspect() {

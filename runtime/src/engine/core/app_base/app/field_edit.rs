@@ -312,11 +312,11 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::TerrainRedo
         | IpcCommand::TerrainStrokeEnd
         | IpcCommand::TerrainReloadLayers
-        // カバー場のシミュレート・消去は地形データの編集であり、
-        // インスペクタのフィールド編集（Ctrl+Z 対象）ではない。
-        // これらは terrain 専用 undo スタック（TerrainEdit の cover_before/cover_after）
-        // に積まれ、TERRAIN_UNDO / TERRAIN_REDO で巻き戻せる
-        //（連続シミュレートは「開始〜停止」がまとめて 1 エントリになる）。
+        // カバー場のシミュレート・消去はカバー場そのものの編集であり、
+        // スロットの値を変える「フィールド編集」ではない（ここでスナップショットしても差分ゼロ）。
+        // これらはハンドラ側（terrain_cover_ops.rs::commit_cover_undo_session）が
+        // メイン履歴へ CoverFieldEditCommand として積み、通常の Ctrl+Z（UNDO）で戻せる
+        //（連続シミュレートは「開始〜停止」がまとめて 1 コマンドになる）。
         | IpcCommand::TerrainCoverSimStart
         | IpcCommand::TerrainCoverSimStop
         | IpcCommand::TerrainCoverStep { .. }

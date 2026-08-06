@@ -15,6 +15,15 @@ use crate::engine::core::app_base::scene::Scene;
 use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::{ActorData, ComponentSlotData};
+use crate::engine::terrain::chunk_coord::ChunkCoord;
+use crate::engine::terrain::cover::CoverField;
+
+/// カバー場（地表の積雪・落ち葉等）のスナップショット群。
+///
+/// キーはチャンク座標、値はそのチャンクのカバー場まるごと。
+/// **変化のあったチャンクだけ**を持つ差分表現である
+/// （`terrain_cover_ops.rs::diff_cover_fields` が作る）。
+pub type CoverFieldSnapshots = std::collections::HashMap<ChunkCoord, CoverField>;
 
 // ============================================================
 //  Command トレイト
@@ -75,6 +84,17 @@ pub trait Command {
     }
     /// Redo 実行後に AppBase が復元すべきアクター DFS 選択状態 (dfs_ids, primary)。
     fn actor_dfs_selection_after_redo(&self) -> Option<(Vec<usize>, Option<usize>)> {
+        None
+    }
+    /// Undo 実行後に AppBase が地形へ書き戻すべきカバー場スナップショット。
+    ///
+    /// カバー場は `App.terrain`（Scene の外）にあるため `execute`/`undo` では触れない。
+    /// `SlotFieldEditCommand` と同じく **AppBase が peek して適用する**流儀を採る。
+    fn cover_fields_for_undo(&self) -> Option<CoverFieldSnapshots> {
+        None
+    }
+    /// Redo 実行後に AppBase が地形へ書き戻すべきカバー場スナップショット。
+    fn cover_fields_for_redo(&self) -> Option<CoverFieldSnapshots> {
         None
     }
 }
@@ -202,6 +222,18 @@ impl UndoHistory {
     /// redo() 直後: 復元すべきアクター DFS 選択状態。
     pub fn peek_redone_actor_dfs_selection(&self) -> Option<(Vec<usize>, Option<usize>)> {
         self.past.last()?.actor_dfs_selection_after_redo()
+    }
+    /// undo() 直後: 地形へ書き戻すべきカバー場スナップショット（`CoverFieldEditCommand`）。
+    ///
+    /// 借用の都合で複製を返す（呼び出し側が `&mut self`（App）で書き戻すため、
+    /// 履歴への不変借用を保ったままにできない）。1 エントリは変化チャンク数 × 2KB で、
+    /// Ctrl+Z 1 回につき 1 度しか起きないので複製コストは問題にならない。
+    pub fn peek_undone_cover_fields(&self) -> Option<CoverFieldSnapshots> {
+        self.future.last()?.cover_fields_for_undo()
+    }
+    /// redo() 直後: 地形へ書き戻すべきカバー場スナップショット。
+    pub fn peek_redone_cover_fields(&self) -> Option<CoverFieldSnapshots> {
+        self.past.last()?.cover_fields_for_redo()
     }
 }
 
@@ -456,6 +488,12 @@ impl Command for CompositeCommand {
             .iter()
             .rev()
             .find_map(|c| c.actor_dfs_selection_after_redo())
+    }
+    fn cover_fields_for_undo(&self) -> Option<CoverFieldSnapshots> {
+        self.commands.iter().rev().find_map(|c| c.cover_fields_for_undo())
+    }
+    fn cover_fields_for_redo(&self) -> Option<CoverFieldSnapshots> {
+        self.commands.iter().rev().find_map(|c| c.cover_fields_for_redo())
     }
 }
 
@@ -970,4 +1008,147 @@ impl SceneShadingState {
 impl Command for SceneShadingCommand {
     fn execute(&mut self, scene: &mut Scene) { self.after.apply(scene); }
     fn undo(&mut self, scene: &mut Scene)    { self.before.apply(scene); }
+}
+
+// ============================================================
+//  CoverFieldEditCommand — 地表カバー場（積雪・落ち葉等）の編集
+// ============================================================
+
+/// カバー場の 1 操作（再生セッション／N 秒進める／全消去）を Undo/Redo するコマンド。
+///
+/// 【なぜ地形専用スタックではなくメイン履歴なのか】
+///   カバー場を積もらせる操作の入口は **`CoverEmitterComponent` を持つアクタのインスペクタ**
+///   であり、ユーザーから見ればコンポーネント操作の一部である。ところが地形専用スタック
+///   （`TerrainEdit` / `TERRAIN_UNDO`）はエディタが**地形編集モード中にしか送らない**ため、
+///   「コンポーネントを追加 → シミュレート → Ctrl+Z」で雪が戻らず、代わりにコンポーネント
+///   追加が取り消されるという壊れた順序になっていた。カバーはメイン履歴（`UndoHistory`）で
+///   管轄し、地形密度・ペイントだけを地形専用スタックに残すことで積み順を 1 本化する。
+///
+/// 【`execute` / `undo` が No-op である理由】
+///   カバー場の実体は `App.terrain`（Scene の外）にあり、書き戻しには
+///   再焼き付け予約（`cover_pending_apply`）や `.tcover` のダーティ化も伴う。
+///   Scene だけでは完結しないので、`SlotFieldEditCommand` と同じく AppBase が
+///   `cover_fields_for_undo/redo()` を peek して `restore_cover_snapshots` で適用する。
+///
+/// 【メモリ】1 チャンク 2KB × 変化チャンク数 × 2（before + after）。
+///   既定 48 チャンクが全変化しても約 192KB で、密度 1 ストローク（143KB × 2 × チャンク数）
+///   よりはるかに軽い。
+pub struct CoverFieldEditCommand {
+    /// 操作前のカバー場（変化のあったチャンクのみ）。
+    pub before: CoverFieldSnapshots,
+    /// 操作後のカバー場（`before` と同じキー集合）。
+    pub after: CoverFieldSnapshots,
+}
+
+impl Command for CoverFieldEditCommand {
+    fn execute(&mut self, _scene: &mut Scene) {}
+    fn undo(&mut self, _scene: &mut Scene) {}
+    fn cover_fields_for_undo(&self) -> Option<CoverFieldSnapshots> {
+        Some(self.before.clone())
+    }
+    fn cover_fields_for_redo(&self) -> Option<CoverFieldSnapshots> {
+        Some(self.after.clone())
+    }
+}
+
+// ============================================================
+//  テスト
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// テスト用: 指定チャンクへ「量 `amount` の素材 0 が積もった」カバー場を作る。
+    fn cover_snapshot(coord: ChunkCoord, amount: f32) -> CoverFieldSnapshots {
+        let mut field = CoverField::new();
+        field.deposit(0, 0, 0, amount);
+        let mut map = CoverFieldSnapshots::new();
+        map.insert(coord, field);
+        map
+    }
+
+    /// テスト用: カバー場の 1 操作ぶんのコマンド（空 → 積もった状態）。
+    fn cover_command(coord: ChunkCoord) -> Box<dyn Command> {
+        let mut before = CoverFieldSnapshots::new();
+        before.insert(coord, CoverField::new());
+        Box::new(CoverFieldEditCommand {
+            before,
+            after: cover_snapshot(coord, 1.0),
+        })
+    }
+
+    /// 「コンポーネント追加 → カバー場シミュレート → Ctrl+Z ×2」の積み順を固定する。
+    ///
+    /// これは実際に報告された不具合（カバーの Undo が地形専用スタックへ積まれていたため、
+    /// 通常の Ctrl+Z が雪ではなくコンポーネント追加を取り消した）の回帰テストである。
+    /// 1 回目の Undo でカバー場が戻り、2 回目でコンポーネント追加が戻ること
+    /// ＝ **両者が同一の履歴に、操作した順で積まれていること**を検証する。
+    #[test]
+    fn cover_edit_undoes_before_earlier_component_add() {
+        let mut scene = Scene::new("undo_order_test");
+        let mut history = UndoHistory::new();
+        let coord = ChunkCoord::new(0, 0, 0);
+
+        // ① コンポーネント追加（Cover Emitter を 1 つ足したスロット構成のスナップショット）。
+        use crate::engine::components::cover_emitter_component::CoverEmitterComponent;
+        use crate::engine::components::ComponentData;
+        let added_slot = ComponentSlotData {
+            name: "CoverEmitter".to_string(),
+            component: ComponentData::CoverEmitterComponent(
+                CoverEmitterComponent::default().to_data(),
+            ),
+            enabled: true,
+        };
+        history.record(Box::new(ComponentSlotsSnapshotCommand {
+            world_line: 0,
+            actor_dfs_id: 0,
+            before_slots: Vec::new(),
+            after_slots: vec![added_slot],
+        }));
+        // ② カバー場のシミュレート。
+        history.record(cover_command(coord));
+
+        // ─── 1 回目の Ctrl+Z: カバー場が戻る ───
+        assert!(history.undo(&mut scene).is_some(), "1 回目の undo は成功する");
+        let restored = history
+            .peek_undone_cover_fields()
+            .expect("1 回目の undo はカバー場の巻き戻しであること");
+        assert!(
+            restored[&coord].is_empty(),
+            "積もる前（空のカバー場）へ戻ること"
+        );
+        assert!(
+            history.peek_undone_component_rebuild().is_none(),
+            "1 回目の undo でコンポーネント構成を巻き戻さないこと"
+        );
+
+        // ─── 2 回目の Ctrl+Z: コンポーネント追加が戻る ───
+        assert!(history.undo(&mut scene).is_some(), "2 回目の undo は成功する");
+        let (_wl, _dfs, slots) = history
+            .peek_undone_component_rebuild()
+            .expect("2 回目の undo はコンポーネント構成の巻き戻しであること");
+        assert!(slots.is_empty(), "コンポーネント追加前（スロット無し）へ戻ること");
+        assert!(
+            history.peek_undone_cover_fields().is_none(),
+            "2 回目の undo でカバー場を巻き戻さないこと"
+        );
+    }
+
+    /// Redo がカバー場を「操作後」へ進めること（undo と対称であること）。
+    #[test]
+    fn cover_edit_redo_restores_after_state() {
+        let mut scene = Scene::new("undo_order_test");
+        let mut history = UndoHistory::new();
+        let coord = ChunkCoord::new(1, 0, -2);
+
+        history.record(cover_command(coord));
+        history.undo(&mut scene);
+        assert!(history.redo(&mut scene).is_some(), "redo は成功する");
+
+        let restored = history
+            .peek_redone_cover_fields()
+            .expect("redo はカバー場を進めること");
+        assert!(!restored[&coord].is_empty(), "積もった状態へ戻ること");
+    }
 }

@@ -42,8 +42,9 @@ use crate::engine::terrain::cover::{
     CoverField, CoverMask, CoverMaterialSet, CoverSurface,
 };
 
+use crate::engine::core::app_base::undo::CoverFieldEditCommand;
+
 use super::terrain_mesh_build::rebuild_terrain_model_with_cover;
-use super::terrain_ops::TerrainEdit;
 use super::App;
 
 // ─── アセットの所在（props.json / layers.json と同じ流儀）─────────────────────
@@ -522,10 +523,17 @@ impl App {
         self.terrain.cover_undo_session_before = Some(self.terrain.cover.clone());
     }
 
-    /// カバー場編集セッションを確定し、変化があれば undo スタックへ 1 エントリ積む。
+    /// カバー場編集セッションを確定し、変化があればメイン Undo 履歴へ 1 コマンド積む。
     ///
     /// セッション未開始（`None`）なら何もしない。差分が 1 件も無い場合も
     /// **何も積まない**（「開始してすぐ停止した」で undo 履歴を汚さない）。
+    ///
+    /// 【地形専用スタックではなくメイン履歴へ積む理由】
+    ///   カバーの操作入口は `CoverEmitterComponent` のインスペクタであり、ユーザーから見れば
+    ///   コンポーネント操作の一部である。エディタが `TERRAIN_UNDO` を送るのは
+    ///   **地形編集モード中だけ**（`MainWindow.Input.cs`）なので、地形専用スタックへ積むと
+    ///   「コンポーネント追加 → シミュレート → Ctrl+Z」で雪が戻らず、代わりにコンポーネント
+    ///   追加が取り消されてしまう。メイン履歴へ積めば操作した順に 1 本で戻せる。
     fn commit_cover_undo_session(&mut self) {
         let Some(before) = self.terrain.cover_undo_session_before.take() else {
             return;
@@ -535,13 +543,46 @@ impl App {
             // 変化なし。空のコマンドを積むと Ctrl+Z が「何も起きない 1 回」を消費する。
             return;
         }
-        // カバー場だけの編集なので密度／ペイント側は空マップ（TerrainEdit のコメント参照）。
-        self.push_terrain_edit(TerrainEdit {
-            before: HashMap::new(),
-            after: HashMap::new(),
-            cover_before,
-            cover_after,
-        });
+        // 直前のインスペクタ編集へマージされないよう、フィールド編集セッションを切る
+        // （マージ判定は「自分が積んだ直後か」を past_len で見るため、割り込みを明示する）。
+        self.reset_field_edit_session();
+        self.undo_history.record(Box::new(CoverFieldEditCommand {
+            before: cover_before,
+            after: cover_after,
+        }));
+    }
+
+    /// カバー場のスナップショット群を現在の地形へ書き戻す（undo / redo 共通）。
+    ///
+    /// 書き戻しに伴い次の 3 つを更新する:
+    ///   ① `cover`          … 実体そのもの
+    ///   ② `cover_dirty`    … .tcover の保存対象（巻き戻した状態を保存させる）
+    ///   ③ `cover_pending_apply` … 頂点への焼き直し予約
+    ///
+    /// 【`remesh_chunks` を呼ばない理由】
+    ///   カバー場は密度場を一切変えないので、メッシュを作り直す必要が無い。
+    ///   むしろ再メッシュはカバーの派生キャッシュ（`cover_surface` / `cover_base_mesh`）を
+    ///   捨てるため、無駄な再計算を招くだけである。頂点への反映は
+    ///   `apply_pending_cover` の経路（②③）だけで完結する。
+    pub(super) fn restore_cover_snapshots(&mut self, snapshots: &CoverFieldMap) {
+        if snapshots.is_empty() {
+            return;
+        }
+        for (&coord, field) in snapshots {
+            // 密度側の undo と同じく、チャンクが存在する場合のみ書き戻す。
+            // セッション中にハイトマップ再読込等でチャンク集合が作り直されると、
+            // スナップショットに「今は存在しないチャンク」が残りうる。無条件に insert すると
+            // 幽霊チャンクのカバー場が復活し、保存時に不要な .tcover を書いてしまう。
+            if !self.terrain.chunks.contains_key(&coord) {
+                continue;
+            }
+            self.terrain.cover.insert(coord, field.clone());
+            self.terrain.cover_dirty.insert(coord);
+            self.terrain.cover_pending_apply.insert(coord);
+        }
+        // 巻き戻しは待たせる意味が無いので、次フレームで即座に焼き直す
+        // （`handle_terrain_cover_clear` と同じ流儀）。
+        self.terrain.cover_apply_timer = COVER_APPLY_INTERVAL_SEC;
     }
 
     // ─── IPC ハンドラ（連続開始 / 停止 / 即時ステップ / 全消去）───────────────
