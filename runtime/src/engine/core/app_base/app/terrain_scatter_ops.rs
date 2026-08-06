@@ -1284,12 +1284,22 @@ impl App {
     ///   古い草が復活する（消したはずの草が戻る＝もっとも分かりにくい部類のバグ）。
     ///   よって「0 本 = ファイルを消す」を保存の不変条件とする。
     ///
+    /// - `only_dirty`: true なら **変更のあったチャンクだけ**を書き出す
+    ///   （シーン保存に相乗りするフラッシュ用。`save_terrain_cover` と同じ規約）。
+    ///
     /// 戻り値は (書き出したファイル数, 削除したファイル数)。
-    pub(super) fn save_terrain_scatter(&mut self, dir: &std::path::Path) -> (u32, u32) {
+    pub(super) fn save_terrain_scatter(
+        &mut self,
+        dir: &std::path::Path,
+        only_dirty: bool,
+    ) -> (u32, u32) {
         let mut written = 0u32;
         let mut removed = 0u32;
 
         for (&coord, instances) in &self.terrain.scatter {
+            if only_dirty && !self.terrain.scatter_dirty.contains(&coord) {
+                continue;
+            }
             let path = dir.join(tscatter_file_name(coord));
             if instances.is_empty() {
                 // ─── 空 → 既存ファイルを削除する（無ければ何もしない）───

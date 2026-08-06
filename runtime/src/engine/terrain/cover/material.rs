@@ -76,6 +76,19 @@ fn default_trample_darkening() -> f32 {
     0.0
 }
 
+/// 縁の盛り上がり比（0..1）の既定値。0 = 踏んでも縁が盛り上がらない。
+///
+/// 既定を 0 にするのは `displacement` と同じ理由である。書き忘れた素材が
+/// 勝手に量を増やして地形を膨らませるより、何も起きないほうが事故として軽い。
+fn default_rim_ratio() -> f32 {
+    0.0
+}
+
+/// 踏み固めキャビティ係数（0..1）の既定値。0 = 溝の中で環境光が遮られない。
+fn default_trample_cavity() -> f32 {
+    0.0
+}
+
 // ─── クランプ範囲（読み込み時の正規化に使う）─────────────────────────────────
 
 /// 粗さの下限（完全鏡面によるスペキュラ発散を防ぐ。シェーダ側の下限と対）。
@@ -142,6 +155,34 @@ pub struct CoverMaterial {
     /// 雪は圧雪でわずかに灰色を帯び、泥は水を含んで明確に黒くなる。
     #[serde(default = "default_trample_darkening")]
     pub trample_darkening: f32,
+    /// 縁の盛り上がり比（0..1。I3.2 の見栄え強化）。
+    ///
+    /// 踏み込んだぶんの素材が足跡の**外周へ押しのけられて盛れる**量を、
+    /// 踏み込み深さに対する比で表す。0.5 なら「深さ 0.4 ぶん踏んだ縁に
+    /// 量 0.2 が足される」。この盛り上がりは踏み固めチャネルではなく
+    /// **量チャネルへの加算**として入るため、変位・色・法線のすべてが
+    /// 既存の 1 本の経路をそのまま通る（新しい描画分岐が要らない）。
+    ///
+    /// 【なぜ「見えやすさ」に効くのか】
+    ///   凹みだけの痕は、上から光が当たると溝の底も周りも同じ向きを向いていて
+    ///   陰影が出ない。縁が盛れると痕の周囲に必ず「傾いた面」が生まれ、
+    ///   どの角度から照らしても輪郭にハイライトと影の対が出る。
+    #[serde(default = "default_rim_ratio")]
+    pub rim_ratio: f32,
+    /// 踏み固めキャビティ係数（0..1。I3.2 の見栄え強化）。
+    ///
+    /// 溝の中がどれだけ環境光を遮られるか（アンビエントオクルージョン）。
+    /// `trample_darkening` がアルベドそのものを暗くする（＝直射日光の下でも暗い）
+    /// のに対し、こちらは **G-Buffer の occlusion** へ書かれ、
+    /// アンビエント・DDGI・疑似バウンスにだけ効く。
+    ///
+    /// 【なぜ 2 つに分けるのか】
+    ///   圧雪が灰色を帯びるのは素材そのものの変化（アルベド）だが、
+    ///   溝の底が暗く見える主因は「空が見えなくなること」であり、別物である。
+    ///   分けておくと、日向では輪郭がくっきり・日陰では溝だけが沈む、という
+    ///   参考画像どおりの見え方が素材の数値だけで作れる。
+    #[serde(default = "default_trample_cavity")]
+    pub trample_cavity: f32,
 }
 
 impl Default for CoverMaterial {
@@ -155,6 +196,8 @@ impl Default for CoverMaterial {
             refill_rate: default_refill_rate(),
             footprint_persistence: default_footprint_persistence(),
             trample_darkening: default_trample_darkening(),
+            rim_ratio: default_rim_ratio(),
+            trample_cavity: default_trample_cavity(),
         }
     }
 }
@@ -198,6 +241,16 @@ impl CoverMaterial {
         } else {
             default_trample_darkening()
         };
+        self.rim_ratio = if self.rim_ratio.is_finite() {
+            self.rim_ratio.clamp(UNIT_MIN, UNIT_MAX)
+        } else {
+            default_rim_ratio()
+        };
+        self.trample_cavity = if self.trample_cavity.is_finite() {
+            self.trample_cavity.clamp(UNIT_MIN, UNIT_MAX)
+        } else {
+            default_trample_cavity()
+        };
     }
 }
 
@@ -228,14 +281,20 @@ impl Default for CoverMaterialSet {
                     albedo: [0.86, 0.90, 0.95],
                     // 新雪は粉で拡散的。
                     roughness: 0.75,
-                    // 量 1.0 で 15cm 積もる。
-                    displacement: 0.15,
+                    // 量 1.0 で 22cm 積もる。頂点間隔 0.5m に対して 22cm の段差は
+                    // 約 24 度の傾きになり、足跡の縁がはっきり陰影として立つ
+                    // （15cm ではメッシュの傾きが浅く「跡は付くが地味」になっていた）。
+                    displacement: 0.22,
                     // 新雪はさらさらと崩れて轍がゆっくり均される。
                     refill_rate: 0.02,
                     // 雪は足跡が最もよく残る素材。
                     footprint_persistence: 0.9,
-                    // 圧雪はわずかに灰色を帯びる。
-                    trample_darkening: 0.15,
+                    // 圧雪は空気が抜けて明確に灰色を帯びる。
+                    trample_darkening: 0.32,
+                    // 新雪は軽く、踏んだぶんの半分ほどが縁へ押しのけられる。
+                    rim_ratio: 0.5,
+                    // 深い溝の底からは空がほとんど見えない。
+                    trample_cavity: 0.7,
                 },
                 CoverMaterial {
                     id: "leaf_carpet".to_string(),
@@ -244,13 +303,16 @@ impl Default for CoverMaterialSet {
                     albedo: [0.24, 0.13, 0.05],
                     roughness: 0.90,
                     // 葉は薄いので盛り上がりは小さい。
-                    displacement: 0.04,
+                    displacement: 0.06,
                     // 落ち葉は風で戻らない（降り積もる分だけで埋まる）。
                     refill_rate: 0.0,
                     // 踏むと潰れるが、雪ほど形は残らない。
                     footprint_persistence: 0.5,
                     // 潰れた葉は湿って暗くなる。
-                    trample_darkening: 0.2,
+                    trample_darkening: 0.3,
+                    // 葉は絡み合っていて雪ほど横へ逃げない。
+                    rim_ratio: 0.3,
+                    trample_cavity: 0.5,
                 },
                 CoverMaterial {
                     id: "wet".to_string(),
@@ -265,6 +327,9 @@ impl Default for CoverMaterialSet {
                     // 水膜は形を保てない＝足跡が一切残らない。
                     footprint_persistence: 0.0,
                     trample_darkening: 0.0,
+                    // 形を持たない素材なので縁も溝も作らない。
+                    rim_ratio: 0.0,
+                    trample_cavity: 0.0,
                 },
             ],
         }

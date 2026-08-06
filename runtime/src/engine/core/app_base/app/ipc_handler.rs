@@ -328,6 +328,17 @@ impl App {
                     self.send_hierarchy();
                 }
                 IpcCommand::SaveScene(path) => {
+                    // ── 地形の実体（.tvox / .tscatter / .tcover）も一緒にフラッシュする ──
+                    //   地形は .scene の外に住んでいるため、ここで書かないと
+                    //   「Ctrl+S したのに掘った地形・積もった雪が消える」ことになる。
+                    //   書くのはダーティなチャンクだけなので、地形を触っていない
+                    //   セッションでは 1 バイトも触らない（保存が遅くならない）。
+                    //   .scene 本体より先に書き、最後の .scene 書き込みを確定操作にする。
+                    if let Err(e) = self.flush_dirty_terrain() {
+                        if let Some(ipc) = &self.ipc {
+                            ipc.send(&format!("TERRAIN_SAVE_ERROR:{e}"));
+                        }
+                    }
                     if let Some(scene) = &self.scene {
                         let pos = self.camera.base.transform.position;
                         let cam_data = DebugCameraData {

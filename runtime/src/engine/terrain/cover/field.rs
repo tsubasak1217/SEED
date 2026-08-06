@@ -492,14 +492,33 @@ impl<'a> CoverNeighborhood<'a> {
     ///
     /// 範囲外・非有限の UV は 0..1 へクランプする（頂点は必ず 0..1 に収まる契約）。
     pub fn sample(&self, u: f32, v: f32, world_y: f32) -> CoverSample {
+        self.sample_extended(clamp01(u), clamp01(v), world_y)
+    }
+
+    /// `sample` の **クランプしない**版。自チャンクの外（0..1 の外側）も読める。
+    ///
+    /// 【何のために要るのか（法線の勾配計算）】
+    ///   カバーの盛り上がりから法線を作るには、頂点の周りを ±半テクセルずらして
+    ///   高さを読む必要がある。ここでクランプしてしまうと、チャンク境界上の頂点は
+    ///   自チャンク側にしか踏み出せず、**同じ 1 点なのに隣のメッシュとは違う勾配**
+    ///   （＝違う法線）になり、境界に照明の筋が出る。
+    ///   クランプせずに読めば、隣接チャンクのテクセルを実際に読みに行くため、
+    ///   複製された頂点はどちらのメッシュから見ても同じ 4 テクセル・同じ重みへ
+    ///   行き着き、法線まで bit 単位で一致する（位置について §2.6 が保証しているのと同じ理屈）。
+    ///
+    /// 3×3 ビューの外（自チャンクから 1 チャンク以上離れた位置）は「量 0」として読まれる。
+    /// 非有限な UV は 0 として扱う（`clamp01` と同じ縮退）。
+    pub fn sample_extended(&self, u: f32, v: f32, world_y: f32) -> CoverSample {
+        let u = if u.is_finite() { u } else { 0.0 };
+        let v = if v.is_finite() { v } else { 0.0 };
         // ─── テクセル中心を基準にした連続座標へ変換する（クランプしない）───
         //   u=1.0（チャンクの端）では fx = R-0.5 となり、x1 = R すなわち
         //   隣チャンクのテクセル 0 を指す。隣から見た u=0.0 は fx = -0.5 で
         //   x0 = -1（＝こちらのテクセル R-1）・x1 = 0 となり、
         //   **同じ 2 テクセル・同じ tx=0.5** に行き着く。
         let r = COVER_FIELD_RESOLUTION as f32;
-        let fx = clamp01(u) * r - COVER_TEXEL_CENTER_OFFSET;
-        let fz = clamp01(v) * r - COVER_TEXEL_CENTER_OFFSET;
+        let fx = u * r - COVER_TEXEL_CENTER_OFFSET;
+        let fz = v * r - COVER_TEXEL_CENTER_OFFSET;
         let fx0 = fx.floor();
         let fz0 = fz.floor();
         let tx = fx - fx0;

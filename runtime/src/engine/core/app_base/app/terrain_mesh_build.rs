@@ -45,7 +45,9 @@ use crate::engine::terrain::layers::{
     blend_rule_and_paint_all_into, select_top_slots,
 };
 use crate::engine::terrain::marching_cubes::TerrainMesh;
-use crate::engine::terrain::cover::{CoverMaterialSet, CoverNeighborhood};
+use crate::engine::terrain::cover::{
+    COVER_FIELD_RESOLUTION, CoverMaterialSet, CoverNeighborhood,
+};
 
 /// 接線の既定値（xyz=+X 軸, w=+1 ハンドネス）。地形は法線マップを持たないためダミー。
 const DEFAULT_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -307,6 +309,7 @@ pub fn rebuild_terrain_model_with_colors(
 ///     uv0.x = 実効の量（0..1）… 0 のとき従来と完全に同一の絵になる
 ///     uv0.y = 素材添字        … フラグメント側で round() して uniform の素材表を引く
 ///     uv1.x = 踏み固めの暗さ（0..1。I3.2）… 0 のとき従来と完全に同一の絵になる
+///     uv1.y = 踏み固めのキャビティ遮蔽（0..1。I3.2 見栄え強化）… G-Buffer の occlusion へ
 ///
 /// 【轍（I3.2）が頂点で完結する理由】
 ///   実効の量は `max(積もった量 - 踏み固め, 0)` であり、この引き算を CPU 側で
@@ -317,10 +320,32 @@ pub fn rebuild_terrain_model_with_colors(
 ///   GPU の uniform（素材表）を触らずに済み、カバーを持たない地形では
 ///   uv1 が [0,0] のままなので**従来とビット単位で同じ**出力になる。
 ///
+/// 【法線も焼き直す（I3.2 見栄え強化 / この機能の要）】
+///   変位で位置だけを動かして法線を据え置くと、凹んだ所も周りも同じ向きを向いたままで
+///   **陰影がまったく変わらない**。輪郭の位置ズレでしか痕が見えず、
+///   「跡は付くが地味」という症状になる（実機で報告された状態がこれである）。
+///
+///   焼き直す方法は 2 つある:
+///     (a) 変位後の三角形から面法線を積み直す
+///     (b) カバーの高さ場 h(x,z) の勾配で元の法線を摂動する
+///   採ったのは **(b)** である。(a) はチャンク単位でしか三角形を持てないため、
+///   境界の複製頂点が「隣のチャンクの三角形」を数えられず、**両側で違う法線**に
+///   なって境界に照明の筋が出る。(b) の高さ場はチャンクを跨ぐ `CoverNeighborhood`
+///   から読めるので、境界上の複製頂点は必ず同じ値に行き着く（§2.6 と同じ保証）。
+///
+///   摂動は「高さ場を法線方向へ押し出した面」の標準的な近似:
+///     勾配 g = (∂h/∂x, 0, ∂h/∂z) から接平面成分 g_t = g - N(N·g) を取り、
+///     n' = normalize(N - g_t)
+///   平坦な地面（N=+Y）では n' = normalize(-∂h/∂x, 1, -∂h/∂z) となり、
+///   足跡の壁がそのまま傾いた面として陰影に出る。
+///
 /// 【引数】
-/// - `src_vertices`: 現在の CPU モデルの頂点列（法線・頂点カラーはそのまま引き継ぐ）
+/// - `src_vertices`: 現在の CPU モデルの頂点列（頂点カラーはそのまま引き継ぐ）
 /// - `base_positions`: **カバー適用前**の頂点位置。ここへ毎回変位を足し直すことで、
 ///   適用を繰り返しても変位が累積しない（前回の変位を引き算する必要が無い）
+/// - `base_normals`: **カバー適用前**の頂点法線。位置と同じ理由で基準値が要る。
+///   `src_vertices` の法線は前回の摂動が既に入っているため、そこから摂動し直すと
+///   適用のたびに法線が傾き続けて破綻する
 /// - `base_avg_albedo`: カバー適用前のチャンク平均アルベド（RGB）
 /// - `cover`: 自チャンク＋XZ 隣接 8 チャンクのカバー場ビュー。
 ///   **隣接チャンクを含めるのはチャンク境界の隙間対策**である。境界上の頂点は
@@ -343,13 +368,17 @@ pub fn rebuild_terrain_model_with_cover(
     name: &str,
     palette: [u32; TERRAIN_BLEND_SLOTS],
     base_positions: &[[f32; 3]],
+    base_normals: &[[f32; 3]],
     base_avg_albedo: [f32; 3],
     cover: &CoverNeighborhood,
     materials: &CoverMaterialSet,
     chunk_extent: f32,
     chunk_origin_y: f32,
 ) -> Option<Model> {
-    if src_vertices.len() != base_positions.len() || !(chunk_extent > 0.0) {
+    if src_vertices.len() != base_positions.len()
+        || src_vertices.len() != base_normals.len()
+        || !(chunk_extent > 0.0)
+    {
         return None;
     }
 
@@ -360,46 +389,67 @@ pub fn rebuild_terrain_model_with_cover(
     let mut cover_weight_sum = 0.0f32;
 
     let mut vertices: Vec<Vertex> = Vec::with_capacity(src_vertices.len());
-    for (v, base) in src_vertices.iter().zip(base_positions.iter()) {
+    for ((v, base), base_normal) in
+        src_vertices.iter().zip(base_positions.iter()).zip(base_normals.iter())
+    {
         // ─── 頂点のチャンクローカル位置 → カバー場 UV ───
         //   地形チャンクの頂点はチャンク最小コーナー原点のローカル座標である
         //   （ワールド化はノード／インスタンス行列の担当）。
         //   境界上の頂点（ローカル座標が 0 ちょうど / chunk_extent ちょうど）は、
         //   隣接チャンクのメッシュから読んでも同じ 4 テクセル・同じ重みに解決される。
         //   Y 照合のためのワールド Y は「チャンク原点 Y ＋ 基準位置のローカル Y」。
-        let sample = cover.sample(
-            base[0] / chunk_extent,
-            base[2] / chunk_extent,
-            chunk_origin_y + base[1],
-        );
+        let u = base[0] / chunk_extent;
+        let w = base[2] / chunk_extent;
+        let world_y = chunk_origin_y + base[1];
+        let sample = cover.sample(u, w, world_y);
         let amount = sample.amount;
 
-        // ─── 踏み固めの暗さ（0..1）を 1 スカラーへ畳む ───
-        //   踏み固めた素材の色係数が 0（または素材が引けない）なら 0＝従来どおり。
-        let trample_darken = materials
+        // ─── 踏み固めの暗さ／キャビティ遮蔽を 1 スカラーずつへ畳む ───
+        //   踏み固めた素材の係数が 0（または素材が引けない）なら 0＝従来どおり。
+        //   暗さはアルベドそのもの、キャビティは環境光の遮蔽（別の物理量）である。
+        let (trample_darken, trample_cavity) = materials
             .get(sample.trample_material as usize)
-            .map(|m| (sample.trample * m.trample_darkening).clamp(0.0, 1.0))
-            .unwrap_or(0.0);
+            .map(|m| {
+                (
+                    (sample.trample * m.trample_darkening).clamp(0.0, 1.0),
+                    (sample.trample * m.trample_cavity).clamp(0.0, 1.0),
+                )
+            })
+            .unwrap_or((0.0, 0.0));
+
+        // ─── カバーの高さ場の勾配から法線を摂動する ───
+        //   カバーがまったく無い頂点（量 0 かつ踏み固め 0）は基準法線のまま返す。
+        //   この判定はワールド位置だけの純関数なので、境界の複製頂点は
+        //   どちらのメッシュから見ても同じ結論に行き着く（法線の食い違いが起きない）。
+        let normal = if amount > 0.0 || sample.trample > 0.0 {
+            cover_perturbed_normal(*base_normal, cover, materials, u, w, world_y, chunk_extent)
+        } else {
+            *base_normal
+        };
 
         // ─── 素材が引けない（未定義添字・素材セットが空）なら「カバー無し」へ縮退 ───
         //   踏み固めだけが残っている（下地が露出した轍）場合もここへ来るため、
-        //   位置は基準のまま・色だけ暗くする。
+        //   位置は基準のまま・色だけ暗くする。**法線は摂動を残す**
+        //   （轍の底は削れて平らでも、その壁は隣のテクセルの高さ差で立っている）。
         let Some(mat) = materials.get(sample.material as usize).filter(|_| amount > 0.0) else {
             vertices.push(Vertex {
                 position: *base,
+                normal,
                 uv0: [0.0, 0.0],
-                uv1: [trample_darken, 0.0],
+                uv1: [trample_darken, trample_cavity],
                 ..*v
             });
             continue;
         };
 
-        // ─── 変位: 基準位置から法線方向へ「実効の量 × 素材の変位高さ」だけ持ち上げる ───
+        // ─── 変位: 基準位置から**基準法線**方向へ「実効の量 × 素材の変位高さ」だけ持ち上げる ───
+        //   押し出す向きは摂動前の法線でなければならない（摂動後を使うと、
+        //   傾いた向きへ押し出して隣の頂点との整合が崩れる）。
         let lift = amount * mat.displacement;
         let position = [
-            base[0] + v.normal[0] * lift,
-            base[1] + v.normal[1] * lift,
-            base[2] + v.normal[2] * lift,
+            base[0] + base_normal[0] * lift,
+            base[1] + base_normal[1] * lift,
+            base[2] + base_normal[2] * lift,
         ];
 
         // 平均アルベドの寄与を溜める。
@@ -410,10 +460,12 @@ pub fn rebuild_terrain_model_with_cover(
 
         vertices.push(Vertex {
             position,
+            normal,
             // uv0 は地形では未使用だった（常に [0,0]）。ここでカバー情報の運び手に転用する。
             uv0: [amount, sample.material as f32],
-            // uv1 も地形では未使用（常に [0,0]）。x に踏み固めの暗さを載せる。
-            uv1: [trample_darken, 0.0],
+            // uv1 も地形では未使用（常に [0,0]）。
+            //   x = 踏み固めの暗さ（アルベド）/ y = キャビティ遮蔽（occlusion）。
+            uv1: [trample_darken, trample_cavity],
             ..*v
         });
     }
@@ -438,6 +490,92 @@ pub fn rebuild_terrain_model_with_cover(
     let (model, _palette) =
         build_terrain_model(vertices, indices.to_vec(), name, palette, avg_albedo);
     Some(model)
+}
+
+// ─── カバーの高さ場から法線を作る（I3.2 見栄え強化）───────────────────────────
+
+/// 法線の勾配を測るときに前後へずらす距離（チャンク正規化 UV）。
+///
+/// カバー場テクセルの **半分**（`0.5 / 解像度`）。前後合わせて中心差分の幅は
+/// ちょうど 1 テクセルとなり、バイリニア補間で復元できる最小の起伏をそのまま拾う。
+/// これより狭めても情報は増えず（同じ三角形の内側を舐めるだけ）、
+/// 広げると足跡の壁がなまって陰影が弱くなる。
+///
+/// 解像度 32 に対して 1/64 = 0.015625 は 2 の冪であり、
+/// チャンク境界（UV が 0 ちょうど / 1 ちょうど）で足しても引いても
+/// 丸め誤差が出ない＝両側のメッシュが厳密に同じ位置を読む。
+const COVER_NORMAL_STEP_UV: f32 = 0.5 / COVER_FIELD_RESOLUTION as f32;
+
+/// 指定 UV におけるカバーの盛り上がり高さ（メートル）。
+///
+/// 「実効の量 × その素材の変位高さ」であり、`rebuild_terrain_model_with_cover` が
+/// 頂点位置へ焼いている変位量と**同じ式**である（法線と形状がズレないための要）。
+/// 素材が引けない・量 0 の点は 0（＝素の地面の高さ）。
+fn cover_lift_at(
+    cover: &CoverNeighborhood,
+    materials: &CoverMaterialSet,
+    u: f32,
+    v: f32,
+    world_y: f32,
+) -> f32 {
+    // 自チャンクの外へはみ出す読みなので、クランプしない版を使う
+    // （クランプすると境界の頂点だけ片側差分になり、隣のメッシュと法線が食い違う）。
+    let s = cover.sample_extended(u, v, world_y);
+    if !(s.amount > 0.0) {
+        return 0.0;
+    }
+    materials
+        .get(s.material as usize)
+        .map(|m| s.amount * m.displacement)
+        .unwrap_or(0.0)
+}
+
+/// カバーの高さ場の勾配で、地形の法線を摂動して返す。
+///
+/// 平坦な地面（法線 +Y）では `normalize(-∂h/∂x, 1, -∂h/∂z)` に一致する。
+/// 斜面では勾配の接平面成分だけを使うため、斜面そのものの傾きは二重に効かない。
+///
+/// 高さ場が平ら（勾配 0）なら `base_normal` がそのまま返る。
+fn cover_perturbed_normal(
+    base_normal: [f32; 3],
+    cover: &CoverNeighborhood,
+    materials: &CoverMaterialSet,
+    u: f32,
+    v: f32,
+    world_y: f32,
+    chunk_extent: f32,
+) -> [f32; 3] {
+    // ─── 中心差分で高さ場の勾配（m/m）を測る ───
+    let h_xm = cover_lift_at(cover, materials, u - COVER_NORMAL_STEP_UV, v, world_y);
+    let h_xp = cover_lift_at(cover, materials, u + COVER_NORMAL_STEP_UV, v, world_y);
+    let h_zm = cover_lift_at(cover, materials, u, v - COVER_NORMAL_STEP_UV, world_y);
+    let h_zp = cover_lift_at(cover, materials, u, v + COVER_NORMAL_STEP_UV, world_y);
+
+    // UV の 1 歩はワールドで `step × チャンク一辺` メートル。中心差分なのでその 2 倍で割る。
+    let inv_span = 1.0 / (2.0 * COVER_NORMAL_STEP_UV * chunk_extent);
+    let dhdx = (h_xp - h_xm) * inv_span;
+    let dhdz = (h_zp - h_zm) * inv_span;
+    if dhdx == 0.0 && dhdz == 0.0 {
+        return base_normal;
+    }
+
+    // ─── 勾配の接平面成分を法線から差し引く ───
+    let n = base_normal;
+    let g = [dhdx, 0.0, dhdz];
+    let g_dot_n = g[0] * n[0] + g[1] * n[1] + g[2] * n[2];
+    let perturbed = [
+        n[0] - (g[0] - n[0] * g_dot_n),
+        n[1] - (g[1] - n[1] * g_dot_n),
+        n[2] - (g[2] - n[2] * g_dot_n),
+    ];
+    let len_sq =
+        perturbed[0] * perturbed[0] + perturbed[1] * perturbed[1] + perturbed[2] * perturbed[2];
+    if !(len_sq > 0.0) || !len_sq.is_finite() {
+        // 極端な勾配で法線が潰れた場合の保険（黒落ち・NaN を出さない）。
+        return base_normal;
+    }
+    let inv_len = 1.0 / len_sq.sqrt();
+    [perturbed[0] * inv_len, perturbed[1] * inv_len, perturbed[2] * inv_len]
 }
 
 /// 頂点列・インデックス列・パレットから、地形チャンク 1 個ぶんの Model を組み立てる。
@@ -1248,5 +1386,145 @@ mod tests {
             (resolved[1] - 0.25).abs() < EPS,
             "レイヤ 1 の比率が崩れた: {resolved:?}"
         );
+    }
+
+    // ─── カバーの焼き込み（I3.2 見栄え強化）─────────────────────────────────
+
+    /// カバー焼き込みテスト用の素材セット（雪 1 種。変位 0.2m）。
+    fn cover_test_materials() -> CoverMaterialSet {
+        use crate::engine::terrain::cover::CoverMaterial;
+        CoverMaterialSet {
+            materials: vec![CoverMaterial {
+                id: "snow".to_string(),
+                displacement: TEST_COVER_DISPLACEMENT,
+                footprint_persistence: 1.0,
+                trample_darkening: 0.3,
+                trample_cavity: 0.5,
+                ..CoverMaterial::default()
+            }],
+        }
+    }
+
+    /// テストで使うカバー素材の変位高さ（m）。
+    const TEST_COVER_DISPLACEMENT: f32 = 0.2;
+    /// テストで使うチャンク 1 辺の長さ（m。既定設定と同じ 16m）。
+    const TEST_CHUNK_EXTENT: f32 = 16.0;
+
+    /// 平坦な地面の頂点列（XZ 平面上・法線 +Y）を作る。
+    ///
+    /// x はチャンクの左端から右端まで 1m 刻み、z は中央固定。三角形は張らない
+    /// （`rebuild_terrain_model_with_cover` は頂点ごとの純変換なのでインデックスは無関係）。
+    fn flat_cover_vertices() -> (Vec<Vertex>, Vec<[f32; 3]>, Vec<[f32; 3]>) {
+        let mut vertices = Vec::new();
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        for i in 0..=(TEST_CHUNK_EXTENT as usize) {
+            let p = [i as f32, 0.0, TEST_CHUNK_EXTENT * 0.5];
+            vertices.push(Vertex { position: p, ..Vertex::default() });
+            positions.push(p);
+            normals.push(DEFAULT_NORMAL);
+        }
+        (vertices, positions, normals)
+    }
+
+    /// カバーの盛り上がりの**境目**で法線が傾くこと（＝凹凸が陰影として見えること）。
+    ///
+    /// 【何を守っているか】
+    ///   変位で位置だけを動かして法線を据え置くと、足跡の中も外も同じ向きを向いたままで
+    ///   陰影がまったく変わらない（「跡は付くが地味」の正体がこれだった）。
+    ///   高さが変わる場所では法線が必ず傾いていなければならない。
+    #[test]
+    fn cover_height_step_tilts_vertex_normals() {
+        use crate::engine::terrain::cover::CoverField;
+
+        // チャンクの左半分にだけ雪を積む（中央に高さの段差ができる）。
+        let mut field = CoverField::new();
+        for iz in 0..COVER_FIELD_RESOLUTION {
+            for ix in 0..COVER_FIELD_RESOLUTION {
+                if ix < COVER_FIELD_RESOLUTION / 2 {
+                    field.deposit(ix, iz, 0, 1.0);
+                }
+            }
+        }
+        let view = CoverNeighborhood::isolated(&field);
+        let materials = cover_test_materials();
+        let (vertices, positions, normals) = flat_cover_vertices();
+
+        let model = rebuild_terrain_model_with_cover(
+            &vertices,
+            &[],
+            "chunk",
+            [0; TERRAIN_BLEND_SLOTS],
+            &positions,
+            &normals,
+            [0.5, 0.5, 0.5],
+            &view,
+            &materials,
+            TEST_CHUNK_EXTENT,
+            0.0,
+        )
+        .expect("長さが一致しているのに None が返った");
+        let out = &model.meshes[0].primitives[0].vertices;
+
+        // 雪が一様に積もっている内側（x=4m）は、高さが平らなので法線は真上のまま。
+        //   チャンクの端（x=0）は隣にカバー場が無い＝そこも高さの段差なので使わない
+        //   （世界の端でカバーが 0 へ落ちるのは仕様。docs/cover_field.md §2.6）。
+        assert_eq!(out[4].normal, DEFAULT_NORMAL, "平らな雪面の法線は変わらないこと");
+        // 高さの段差（チャンク中央 = x 8m）では法線が +X 方向へ倒れる。
+        //   高さは +X 方向へ下る（左が高い）ので、勾配 ∂h/∂x < 0 → 法線の x は正。
+        let edge = &out[TEST_CHUNK_EXTENT as usize / 2];
+        assert!(
+            edge.normal[0] > 0.1,
+            "高さの境目で法線が傾いていない（凹凸が陰影に出ない）: {:?}",
+            edge.normal
+        );
+        assert!(edge.normal[1] > 0.0, "法線が裏返らないこと: {:?}", edge.normal);
+        let len = (edge.normal[0] * edge.normal[0]
+            + edge.normal[1] * edge.normal[1]
+            + edge.normal[2] * edge.normal[2])
+            .sqrt();
+        assert!((len - 1.0).abs() < EPS, "法線が正規化されていない: {len}");
+    }
+
+    /// カバーがまったく無いチャンクでは、頂点が 1 ビットも変わらないこと。
+    ///
+    /// 「カバー場を持たない地形はカバー機能導入前と同一の絵になる」という
+    /// 本機能の根幹の契約（docs/cover_field.md §2.3）を、法線を焼き直すように
+    /// なった後も守れているかの確認。
+    #[test]
+    fn empty_cover_leaves_vertices_bit_identical() {
+        use crate::engine::terrain::cover::CoverField;
+
+        let field = CoverField::new();
+        let view = CoverNeighborhood::isolated(&field);
+        let materials = cover_test_materials();
+        let (vertices, positions, normals) = flat_cover_vertices();
+
+        let model = rebuild_terrain_model_with_cover(
+            &vertices,
+            &[],
+            "chunk",
+            [0; TERRAIN_BLEND_SLOTS],
+            &positions,
+            &normals,
+            [0.5, 0.5, 0.5],
+            &view,
+            &materials,
+            TEST_CHUNK_EXTENT,
+            0.0,
+        )
+        .expect("長さが一致しているのに None が返った");
+
+        for (i, (out, src)) in model.meshes[0].primitives[0]
+            .vertices
+            .iter()
+            .zip(vertices.iter())
+            .enumerate()
+        {
+            assert_eq!(out.position, src.position, "頂点 {i} の位置が変わった");
+            assert_eq!(out.normal, src.normal, "頂点 {i} の法線が変わった");
+            assert_eq!(out.uv0, [0.0, 0.0], "頂点 {i} の uv0 が汚れた");
+            assert_eq!(out.uv1, [0.0, 0.0], "頂点 {i} の uv1 が汚れた");
+        }
     }
 }
