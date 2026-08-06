@@ -39,7 +39,7 @@ use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::chunk_coord::ChunkCoord;
 use crate::engine::terrain::cover::{
     accumulate_chunk, read_cover_chunk, write_cover_chunk, CoverEmitRange, CoverEmitSpec,
-    CoverField, CoverMask, CoverMaterialSet, CoverSurface,
+    CoverField, CoverMask, CoverMaterialSet, CoverNeighborhood, CoverSurface,
 };
 
 use crate::engine::core::app_base::undo::CoverFieldEditCommand;
@@ -325,7 +325,31 @@ impl App {
         }
         for coord in changed {
             self.terrain.cover_dirty.insert(coord);
-            self.terrain.cover_pending_apply.insert(coord);
+            self.queue_cover_apply(coord);
+        }
+    }
+
+    /// カバー場が変化したチャンクを「頂点への焼き直し待ち」へ入れる。
+    ///
+    /// 【隣接チャンクも一緒に入れる理由】
+    ///   チャンク境界の頂点は隣のカバー場も読む（`CoverNeighborhood`）。
+    ///   変化したチャンクだけを焼き直すと、隣のメッシュは古い値のまま残り、
+    ///   境界の複製頂点どうしで変位が食い違って**そこだけ隙間が開く**。
+    ///   境界の一致は「両側が同じ世代のカバー場を読んでいる」ことが前提なので、
+    ///   XZ 方向の 8 近傍（角を含む）も必ず一緒に焼き直す。
+    ///   存在しないチャンクは入れない（焼く対象が無い）。
+    fn queue_cover_apply(&mut self, coord: ChunkCoord) {
+        self.terrain.cover_pending_apply.insert(coord);
+        for dz in -1..=1i32 {
+            for dx in -1..=1i32 {
+                if dx == 0 && dz == 0 {
+                    continue;
+                }
+                let neighbor = ChunkCoord::new(coord.x + dx, coord.y, coord.z + dz);
+                if self.terrain.chunks.contains_key(&neighbor) {
+                    self.terrain.cover_pending_apply.insert(neighbor);
+                }
+            }
         }
     }
 
@@ -351,9 +375,30 @@ impl App {
         self.terrain.cover_surface.remove(&coord);
         self.terrain.cover_base_mesh.remove(&coord);
         // カバーが乗っているチャンクは、新しいメッシュへ焼き直す必要がある。
-        if self.terrain.cover.get(&coord).is_some_and(|f| !f.is_empty()) {
+        // 隣にだけカバーがある場合も、境界の頂点はそれを読むので焼き直す
+        // （焼き直すのは新しいメッシュを持つこのチャンクだけでよい）。
+        if self.any_cover_in_neighborhood(coord, |f| !f.is_empty()) {
             self.terrain.cover_pending_apply.insert(coord);
         }
+    }
+
+    /// 自分または XZ 隣接 8 チャンクのカバー場のどれかが `pred` を満たすか。
+    ///
+    /// 境界の頂点は隣のカバー場も読むため、焼き直しの要否は必ずこの範囲で判断する
+    /// （自分だけを見ると「隣に積もった雪が境界へはみ出す分」を取りこぼす）。
+    fn any_cover_in_neighborhood(
+        &self,
+        coord: ChunkCoord,
+        pred: impl Fn(&CoverField) -> bool,
+    ) -> bool {
+        (-1..=1i32).any(|dz| {
+            (-1..=1i32).any(|dx| {
+                self.terrain
+                    .cover
+                    .get(&ChunkCoord::new(coord.x + dx, coord.y, coord.z + dz))
+                    .is_some_and(&pred)
+            })
+        })
     }
 
     // ─── ④ 頂点への焼き込み ─────────────────────────────────────────────────
@@ -417,43 +462,47 @@ impl App {
         extent: f32,
         materials: &CoverMaterialSet,
     ) -> bool {
-        let Some(field) = self.terrain.cover.get(&coord).cloned() else { return false };
+        // ─── 焼く価値があるか（自分＋XZ 隣接 8 チャンクのどこかにカバー場があるか）───
+        //   **自分のカバー場だけを見てはいけない**。境界の頂点は隣のカバー場も読むので、
+        //   「自分には何も積もっていないが隣には積もっている」チャンクも焼き直さないと、
+        //   隣のメッシュだけが持ち上がって境界に隙間が開く。
+        //
+        //   ここでは「空でないか」ではなく「カバー場の器があるか」で判定する。
+        //   全消去（`TERRAIN_COVER_CLEAR`）の直後は全チャンクが空の器になるが、
+        //   頂点にはまだ変位が焼かれているので、**空の場で焼き直して基準位置へ戻す**
+        //   必要があるためである。
+        if !self.any_cover_in_neighborhood(coord, |_| true) {
+            return false;
+        }
         let Some(&slot_entity) = self.terrain.chunk_slot_entity.get(&coord) else { return false };
 
-        // ─── 基準メッシュ（カバー適用前の頂点位置・平均アルベド）を用意する ───
-        //   無ければ現在の CPU モデルから作る。`invalidate_cover_for_remesh` が
-        //   再メッシュのたびに捨てるので、ここで拾うのは常に「カバー未適用のメッシュ」である。
+        // ─── ① 基準メッシュ（カバー適用前の頂点位置・平均アルベド）を用意する ───
+        //   `&mut self` を要するのはここだけなので、先に済ませてしまう。
+        //   こうすると ② では近傍カバー場への参照（`&self.terrain.cover`）を
+        //   借用競合なしに持てる（クローンを取らずに 9 チャンク分を読める）。
+        if !self.ensure_cover_base_mesh(coord, slot_entity) {
+            return false;
+        }
+
+        // ─── ② カバー場を頂点へ焼く（読み取りだけの段）───
         let new_model: Option<Model> = {
             let Some(scene) = self.scene.as_ref() else { return false };
             let Some(mc) = scene.world.get::<ModelComponent>(slot_entity) else { return false };
-            // 空メッシュチャンク（全 AIR / 全 SOLID）は書き換える頂点が無い。
-            if mc.gpu_model.is_none() {
-                return false;
-            }
             let Some(model) = mc.model.as_ref() else { return false };
             let (Some(mesh), Some(material)) = (model.meshes.first(), model.materials.first())
             else {
                 return false;
             };
             let Some(prim) = mesh.primitives.first() else { return false };
+            let Some(base) = self.terrain.cover_base_mesh.get(&coord) else { return false };
 
-            let base = match self.terrain.cover_base_mesh.get(&coord) {
-                Some(b) if b.positions.len() == prim.vertices.len() => b,
-                _ => {
-                    let positions: Vec<[f32; 3]> =
-                        prim.vertices.iter().map(|v| v.position).collect();
-                    let avg = material.avg_albedo;
-                    self.terrain.cover_base_mesh.insert(
-                        coord,
-                        CoverBaseMesh {
-                            positions: Arc::new(positions),
-                            avg_albedo: [avg[0], avg[1], avg[2]],
-                        },
-                    );
-                    // 借用の都合で入れ直してから引き直す（挿入直後なので必ず存在する）。
-                    self.terrain.cover_base_mesh.get(&coord).unwrap()
-                }
-            };
+            // 自チャンク＋XZ 隣接 8 チャンクのカバー場ビュー。
+            // 境界上の頂点が「隣のメッシュから読んでも同じ値」になるために必須である
+            // （同じ Y の段だけを見る。上下段は別の面を持つため混ぜてはならない）。
+            let cover = &self.terrain.cover;
+            let neighborhood = CoverNeighborhood::from_lookup(|dx, dz| {
+                cover.get(&ChunkCoord::new(coord.x + dx, coord.y, coord.z + dz))
+            });
 
             rebuild_terrain_model_with_cover(
                 &prim.vertices,
@@ -462,7 +511,7 @@ impl App {
                 material.terrain_palette,
                 &base.positions,
                 base.avg_albedo,
-                &field,
+                &neighborhood,
                 materials,
                 extent,
             )
@@ -502,6 +551,53 @@ impl App {
                 );
             }
         }
+        true
+    }
+
+    /// カバー適用前の基準メッシュ（頂点位置・平均アルベド）をキャッシュへ用意する。
+    ///
+    /// 無ければ現在の CPU モデルから作る。`invalidate_cover_for_remesh` が再メッシュの
+    /// たびに捨てるので、ここで拾うのは常に「カバー未適用のメッシュ」である。
+    /// 頂点数が食い違うキャッシュ（再メッシュ直後）も作り直す。
+    ///
+    /// 戻り値は「基準メッシュが使える状態になったか」。
+    /// 空メッシュチャンク（全 AIR / 全 SOLID）は書き換える頂点が無いので false。
+    fn ensure_cover_base_mesh(
+        &mut self,
+        coord: ChunkCoord,
+        slot_entity: crate::engine::ecs::Entity,
+    ) -> bool {
+        // ─── 現在の CPU モデルから基準値を取り出す（&self の段）───
+        let base = {
+            let Some(scene) = self.scene.as_ref() else { return false };
+            let Some(mc) = scene.world.get::<ModelComponent>(slot_entity) else { return false };
+            // 空メッシュチャンクは焼き込む頂点そのものが無い。
+            if mc.gpu_model.is_none() {
+                return false;
+            }
+            let Some(model) = mc.model.as_ref() else { return false };
+            let (Some(mesh), Some(material)) = (model.meshes.first(), model.materials.first())
+            else {
+                return false;
+            };
+            let Some(prim) = mesh.primitives.first() else { return false };
+            // 既に同じ頂点数の基準値があるなら作り直さない。
+            if self
+                .terrain
+                .cover_base_mesh
+                .get(&coord)
+                .is_some_and(|b| b.positions.len() == prim.vertices.len())
+            {
+                return true;
+            }
+            let positions: Vec<[f32; 3]> = prim.vertices.iter().map(|v| v.position).collect();
+            let avg = material.avg_albedo;
+            CoverBaseMesh {
+                positions: Arc::new(positions),
+                avg_albedo: [avg[0], avg[1], avg[2]],
+            }
+        };
+        self.terrain.cover_base_mesh.insert(coord, base);
         true
     }
 
@@ -578,7 +674,8 @@ impl App {
             }
             self.terrain.cover.insert(coord, field.clone());
             self.terrain.cover_dirty.insert(coord);
-            self.terrain.cover_pending_apply.insert(coord);
+            // 隣接チャンクの境界頂点もこのカバー場を読むので一緒に焼き直す。
+            self.queue_cover_apply(coord);
         }
         // 巻き戻しは待たせる意味が無いので、次フレームで即座に焼き直す
         // （`handle_terrain_cover_clear` と同じ流儀）。
@@ -692,7 +789,8 @@ impl App {
                 field.clear();
             }
             self.terrain.cover_dirty.insert(coord);
-            self.terrain.cover_pending_apply.insert(coord);
+            // 消えたカバーは隣接チャンクの境界頂点にも効くので一緒に焼き直す。
+            self.queue_cover_apply(coord);
         }
         // 消去は待たせる意味が無いので、次フレームで即座に焼き直す。
         self.terrain.cover_apply_timer = COVER_APPLY_INTERVAL_SEC;
@@ -772,8 +870,9 @@ impl App {
                     let has_cover = !field.is_empty();
                     self.terrain.cover.insert(*coord, field);
                     // 読み込んだカバーを頂点へ焼き直す（描画へ反映する）。
+                    // 隣接チャンクの境界頂点もこの場を読むので一緒に予約する。
                     if has_cover {
-                        self.terrain.cover_pending_apply.insert(*coord);
+                        self.queue_cover_apply(*coord);
                     }
                 }
                 Err(e) => {
@@ -816,7 +915,10 @@ impl App {
             self.terrain.cover.keys().copied().collect();
         touched.extend(snapshot.keys().copied());
         self.terrain.cover = snapshot;
-        self.terrain.cover_pending_apply.extend(touched);
+        // 隣接チャンクの境界頂点も揮発ぶんを読んでいたので一緒に焼き直す。
+        for coord in touched {
+            self.queue_cover_apply(coord);
+        }
         self.terrain.cover_apply_timer = COVER_APPLY_INTERVAL_SEC;
     }
 }

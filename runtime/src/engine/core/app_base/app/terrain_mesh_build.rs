@@ -45,7 +45,7 @@ use crate::engine::terrain::layers::{
     blend_rule_and_paint_all_into, select_top_slots,
 };
 use crate::engine::terrain::marching_cubes::TerrainMesh;
-use crate::engine::terrain::cover::{CoverField, CoverMaterialSet};
+use crate::engine::terrain::cover::{CoverMaterialSet, CoverNeighborhood};
 
 /// 接線の既定値（xyz=+X 軸, w=+1 ハンドネス）。地形は法線マップを持たないためダミー。
 const DEFAULT_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -312,6 +312,11 @@ pub fn rebuild_terrain_model_with_colors(
 /// - `base_positions`: **カバー適用前**の頂点位置。ここへ毎回変位を足し直すことで、
 ///   適用を繰り返しても変位が累積しない（前回の変位を引き算する必要が無い）
 /// - `base_avg_albedo`: カバー適用前のチャンク平均アルベド（RGB）
+/// - `cover`: 自チャンク＋XZ 隣接 8 チャンクのカバー場ビュー。
+///   **隣接チャンクを含めるのはチャンク境界の隙間対策**である。境界上の頂点は
+///   隣り合うチャンクのメッシュへ複製されているため、自分のカバー場だけを端で
+///   クランプして読むと両者が別の値を読み、変位量が食い違って隙間が開く
+///   （`CoverNeighborhood` のコメントを参照）。
 /// - `chunk_extent`: チャンク 1 辺のワールド長（頂点のチャンクローカル座標 → カバー UV）
 ///
 /// 長さが食い違う場合は `None`（呼び出し側はフル再メッシュへフォールバックする）。
@@ -322,7 +327,7 @@ pub fn rebuild_terrain_model_with_cover(
     palette: [u32; TERRAIN_BLEND_SLOTS],
     base_positions: &[[f32; 3]],
     base_avg_albedo: [f32; 3],
-    field: &CoverField,
+    cover: &CoverNeighborhood,
     materials: &CoverMaterialSet,
     chunk_extent: f32,
 ) -> Option<Model> {
@@ -341,8 +346,10 @@ pub fn rebuild_terrain_model_with_cover(
         // ─── 頂点のチャンクローカル位置 → カバー場 UV ───
         //   地形チャンクの頂点はチャンク最小コーナー原点のローカル座標である
         //   （ワールド化はノード／インスタンス行列の担当）。
+        //   境界上の頂点（ローカル座標が 0 ちょうど / chunk_extent ちょうど）は、
+        //   隣接チャンクのメッシュから読んでも同じ 4 テクセル・同じ重みに解決される。
         let (amount, material_index) =
-            field.sample(base[0] / chunk_extent, base[2] / chunk_extent);
+            cover.sample(base[0] / chunk_extent, base[2] / chunk_extent);
 
         // ─── 素材が引けない（未定義添字・素材セットが空）なら「カバー無し」へ縮退 ───
         let Some(mat) = materials.get(material_index as usize).filter(|_| amount > 0.0) else {

@@ -196,37 +196,162 @@ impl CoverField {
         }
     }
 
-    /// チャンクローカルの正規化 XZ 座標（0..1）でカバー場を読む。
-    ///
-    /// 量はバイリニア補間（頂点へ載せたときに階段状にならないようにする）、
-    /// 素材は最近傍（添字を補間すると存在しない素材を指してしまうため）。
-    ///
-    /// 範囲外の入力は端のテクセルへクランプする。
-    pub fn sample(&self, u: f32, v: f32) -> (f32, u8) {
-        // ─── テクセル中心を基準にした連続座標へ変換する ───
-        //   テクセル ix の中心は u = (ix + 0.5) / R。逆に解くと fx = u*R - 0.5。
-        let r = COVER_FIELD_RESOLUTION as f32;
-        let fx = (clamp01(u) * r - 0.5).clamp(0.0, r - 1.0);
-        let fz = (clamp01(v) * r - 0.5).clamp(0.0, r - 1.0);
-        let x0 = fx.floor() as usize;
-        let z0 = fz.floor() as usize;
-        let x1 = (x0 + 1).min(COVER_FIELD_RESOLUTION - 1);
-        let z1 = (z0 + 1).min(COVER_FIELD_RESOLUTION - 1);
-        let tx = fx - x0 as f32;
-        let tz = fz - z0 as f32;
+}
 
-        // ─── 量はバイリニア補間 ───
-        let a00 = self.amount_at(x0, z0);
-        let a10 = self.amount_at(x1, z0);
-        let a01 = self.amount_at(x0, z1);
-        let a11 = self.amount_at(x1, z1);
+// ============================================================
+//  CoverNeighborhood — チャンクを跨いで読むカバー場ビュー（3×3）
+// ============================================================
+
+/// テクセル中心の位置（テクセル格子の左下からの割合）。
+///
+/// テクセル ix の中心は正規化座標で `(ix + 0.5) / R`。逆に解くと `fx = u*R - 0.5` になる。
+const COVER_TEXEL_CENTER_OFFSET: f32 = 0.5;
+
+/// 自チャンクと **XZ 方向の隣接 8 チャンク**のカバー場をまとめた読み取り専用ビュー。
+///
+/// 【なぜ 1 チャンク単体で読んではいけないのか（チャンク境界の段差・隙間）】
+///   チャンク境界の上にある地形メッシュの頂点は、隣り合う 2 チャンク
+///   （角では 4 チャンク）のメッシュへ **複製**されている。
+///   各メッシュが自分のカバー場だけを「端でクランプして」読むと、
+///   物理的に同じ 1 点なのに、チャンク A では端のテクセル・チャンク B では
+///   反対端のテクセルという **別の値**を読む。変位（盛り上げ）は頂点位置へ焼くので、
+///   食い違った瞬間に複製頂点が別々の場所へ動き、**メッシュに隙間が開く**。
+///
+///   そこで読み取りをチャンク横断にし、境界上の頂点が
+///   **どのチャンクのメッシュから読んでも同じ 4 テクセル・同じ重み・同じ演算順序**に
+///   なるようにする。結果は f32 のビット単位で一致する
+///   （回帰テスト `boundary_sample_is_bit_identical_between_neighbours`）。
+///
+///   これは水面グリッド（W5.1）で境界線の共有点を厳密に一致させたのと同じ原則である
+///   ＝「共有される点は、どちらの所有者から見ても厳密に同じ値を読む」。
+///
+/// 【隣接チャンクにカバー場が無い場合】
+///   **量 0（素材なし）として読む**。「まだ雪が降っていない隣のチャンク」と
+///   「そもそもチャンクが存在しない世界の端」を区別しない。どちらも 0 なので
+///   両側から読んだ値は必ず一致し、境界が破綻することはない
+///   （世界の端では最後の半テクセルぶんだけカバーがなだらかに 0 へ落ちる）。
+pub struct CoverNeighborhood<'a> {
+    /// `[dz + 1][dx + 1]` の 3×3。中央 `[1][1]` が自チャンク。`None` はカバー場なし（＝量 0）。
+    fields: [[Option<&'a CoverField>; 3]; 3],
+}
+
+impl<'a> CoverNeighborhood<'a> {
+    /// 隣接チャンクを持たない単体ビューを作る。
+    ///
+    /// カバー場が 1 個しか無い場面（単体テスト・チャンクが 1 個だけの世界）用。
+    /// 端のテクセルの外は「量 0」として読まれる。
+    pub fn isolated(center: &'a CoverField) -> Self {
+        Self::from_lookup(|dx, dz| if dx == 0 && dz == 0 { Some(center) } else { None })
+    }
+
+    /// 近傍参照関数からビューを組み立てる。
+    ///
+    /// `lookup(dx, dz)` は -1..=1 のチャンクオフセット（同じ Y の同一段）に対する
+    /// カバー場を返す（無ければ `None`）。
+    pub fn from_lookup(mut lookup: impl FnMut(i32, i32) -> Option<&'a CoverField>) -> Self {
+        let mut fields: [[Option<&'a CoverField>; 3]; 3] = [[None; 3]; 3];
+        for dz in -1..=1i32 {
+            for dx in -1..=1i32 {
+                fields[(dz + 1) as usize][(dx + 1) as usize] = lookup(dx, dz);
+            }
+        }
+        Self { fields }
+    }
+
+    /// 自チャンクローカルの正規化 XZ 座標（0..1）でカバー場を読む。
+    ///
+    /// 戻り値は `(量 0..1, 素材添字)`。
+    ///
+    /// - 量は **バイリニア補間**（頂点へ載せたときに階段状にならないようにする）。
+    ///   境界（u=0 / u=1）では 4 隅の半分が隣チャンクのテクセルになる。
+    /// - 素材は「重み × 量」が最大のテクセルのもの（＝実質的に最近傍だが、
+    ///   **量 0 のテクセルは決して選ばない**）。添字は補間できないので離散選択にする。
+    ///   量 0 のテクセルを選ばないのは、雪の乗った境界の隣が空のとき
+    ///   「量はあるのに素材が空のもの」という矛盾した組を返さないためである。
+    ///
+    /// 範囲外・非有限の入力は 0..1 へクランプする（頂点は必ず 0..1 に収まる契約）。
+    pub fn sample(&self, u: f32, v: f32) -> (f32, u8) {
+        // ─── テクセル中心を基準にした連続座標へ変換する（クランプしない）───
+        //   u=1.0（チャンクの端）では fx = R-0.5 となり、x1 = R すなわち
+        //   隣チャンクのテクセル 0 を指す。隣から見た u=0.0 は fx = -0.5 で
+        //   x0 = -1（＝こちらのテクセル R-1）・x1 = 0 となり、
+        //   **同じ 2 テクセル・同じ tx=0.5** に行き着く。
+        let r = COVER_FIELD_RESOLUTION as f32;
+        let fx = clamp01(u) * r - COVER_TEXEL_CENTER_OFFSET;
+        let fz = clamp01(v) * r - COVER_TEXEL_CENTER_OFFSET;
+        let fx0 = fx.floor();
+        let fz0 = fz.floor();
+        let tx = fx - fx0;
+        let tz = fz - fz0;
+        let (x0, z0) = (fx0 as i32, fz0 as i32);
+        let (x1, z1) = (x0 + 1, z0 + 1);
+
+        // ─── 量はバイリニア補間（4 隅は近傍チャンクを跨いで読む）───
+        let a00 = self.amount_at_global(x0, z0);
+        let a10 = self.amount_at_global(x1, z0);
+        let a01 = self.amount_at_global(x0, z1);
+        let a11 = self.amount_at_global(x1, z1);
         let a = (a00 * (1.0 - tx) + a10 * tx) * (1.0 - tz) + (a01 * (1.0 - tx) + a11 * tx) * tz;
 
-        // ─── 素材は最近傍（4 隅のうち最も近いテクセル）───
-        let nx = if tx < 0.5 { x0 } else { x1 };
-        let nz = if tz < 0.5 { z0 } else { z1 };
-        (a, self.material_at(nx, nz))
+        // ─── 素材は「重み × 量」が最大のテクセルから採る ───
+        //   4 隅の列挙順は常に (x0,z0) → (x1,z0) → (x0,z1) → (x1,z1) であり、
+        //   x0/z0 は必ずグローバルに小さい側なので、どのチャンクから読んでも同じ順序になる
+        //   ＝同点のときの選び方まで一致する（境界でのビット一致に必要）。
+        let candidates = [
+            ((1.0 - tx) * (1.0 - tz) * a00, x0, z0),
+            (tx * (1.0 - tz) * a10, x1, z0),
+            ((1.0 - tx) * tz * a01, x0, z1),
+            (tx * tz * a11, x1, z1),
+        ];
+        let mut best_score = 0.0f32;
+        let mut material = COVER_MATERIAL_NONE;
+        for &(score, gx, gz) in &candidates {
+            if score > best_score {
+                best_score = score;
+                material = self.material_at_global(gx, gz);
+            }
+        }
+        (a, material)
     }
+
+    /// 3×3 を跨ぐテクセル座標の量（該当チャンクが無ければ 0）。
+    fn amount_at_global(&self, gx: i32, gz: i32) -> f32 {
+        match self.locate(gx, gz) {
+            Some((field, ix, iz)) => field.amount_at(ix, iz),
+            None => 0.0,
+        }
+    }
+
+    /// 3×3 を跨ぐテクセル座標の素材添字（該当チャンクが無ければ「素材なし」）。
+    fn material_at_global(&self, gx: i32, gz: i32) -> u8 {
+        match self.locate(gx, gz) {
+            Some((field, ix, iz)) => field.material_at(ix, iz),
+            None => COVER_MATERIAL_NONE,
+        }
+    }
+
+    /// 自チャンク基準のテクセル座標（-R..2R）を「どの近傍チャンクのどのテクセルか」へ解く。
+    ///
+    /// 3×3 の外（呼び出し側の契約では起こらない）や、カバー場を持たない近傍は `None`。
+    fn locate(&self, gx: i32, gz: i32) -> Option<(&CoverField, usize, usize)> {
+        let (cx, ix) = split_global_texel(gx)?;
+        let (cz, iz) = split_global_texel(gz)?;
+        self.fields[cz][cx].map(|f| (f, ix, iz))
+    }
+}
+
+/// 自チャンク基準のテクセル座標を `(近傍添字 0..3, チャンク内テクセル 0..R)` へ分解する。
+///
+/// 負値も正しく扱うため除算は `div_euclid` / `rem_euclid` を使う
+/// （`/` と `%` は 0 方向へ丸めるので -1 が 0 になってしまう）。
+#[inline]
+fn split_global_texel(g: i32) -> Option<(usize, usize)> {
+    let r = COVER_FIELD_RESOLUTION as i32;
+    let chunk_offset = g.div_euclid(r);
+    if !(-1..=1).contains(&chunk_offset) {
+        return None;
+    }
+    Some(((chunk_offset + 1) as usize, g.rem_euclid(r) as usize))
 }
 
 /// テクセル座標を配列添字へ変換する（row-major）。
@@ -316,12 +441,26 @@ impl CoverSurface {
                 let sz = texel_to_sample(iz, samples);
 
                 // ─── 上から下へ走査して最初の「空気 → 個体」境界を探す ───
-                //   規約: density < iso ⇒ SOLID、density > iso ⇒ AIR。
+                //   規約は **マーチングキューブと厳密に同じ**にする:
+                //     density <  iso ⇒ SOLID
+                //     density >= iso ⇒ AIR
+                //
+                //   【なぜ等号の置き場所が重要か（チャンク境界の不整合）】
+                //     密度がちょうど iso のサンプルを「個体」側に数えると、
+                //     カバー場が面を見つけるチャンクと、実際にメッシュ（セル）を
+                //     生成するチャンクが **1 段ずれる**。
+                //     既定の平坦地面（density = world_y）は面がちょうど y=0 に来るため、
+                //     メッシュは y=-16..0 のチャンクが持つのに、面情報は y=0..16 の
+                //     チャンク（実際には全て空気）が持つことになり、
+                //     積もった雪がどこにも焼き込まれない（見えない）。
+                //     マーチングキューブ側は `density < iso` を個体としているので、
+                //     ここも同じ不等号にすることで
+                //     「面を持つチャンク＝そのセルのメッシュを出すチャンク」が常に一致する。
                 let mut found: Option<(usize, f32)> = None;
                 for iy in (1..samples).rev() {
                     let upper = chunk.sample(sx, iy, sz);
                     let lower = chunk.sample(sx, iy - 1, sz);
-                    if upper > iso && lower <= iso {
+                    if upper >= iso && lower < iso {
                         // 境界は iy-1 と iy の間。線形補間で交点のセル内比率を得る。
                         let denom = upper - lower;
                         let t = if denom.abs() > f32::EPSILON {
