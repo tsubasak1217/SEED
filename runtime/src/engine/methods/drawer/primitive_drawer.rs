@@ -77,6 +77,14 @@ impl LineBatch {
     /// 描画頂点が 0 かどうかを返す（バッチが空かどうかの確認用）。
     pub fn is_empty(&self) -> bool { self.vertices.is_empty() }
 
+    /// 積まれた線分の本数を返す。
+    ///
+    /// 頂点列は「線分 1 本 = 頂点 2 個」で積まれる（`add_line` 系が唯一の入口で、
+    /// 常に 2 個ずつ push する）ため、頂点数の半分が線分数になる。
+    /// ギズモのユニットテストが「何を描いたか」を検証するために使う
+    /// （`is_empty` だけでは「描いた／描かない」しか区別できない）。
+    pub fn line_count(&self) -> usize { self.vertices.len() / 2 }
+
     pub fn build(&self, device: &wgpu::Device) -> GpuLineBatch {
         GpuLineBatch::new(device, &self.vertices)
     }
