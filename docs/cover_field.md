@@ -225,33 +225,53 @@ ECS / GPU / ファイル IO への依存を一切持たない（JSON 文字列 i
 超える場合は刻み幅のほうを伸ばす。自然減衰が無く積算が単調加算なので、
 **刻み幅を変えても飽和前の合計量は厳密に同じ**である（エディタが固まらないための安全弁）。
 
-### Undo（terrain 専用スタックに相乗り）
+### Undo（メイン履歴の管轄。地形専用スタックではない）
 
-カバー場は `App.terrain`（Scene の外）にあるため、ECS 用の `undo.rs`（`Command` トレイト）には載せられない。
-密度ブラシ・ペイントブラシと**同じ terrain 専用スタック**（`TerrainEdit` / `TERRAIN_UNDO_MAX = 32`）へ相乗りさせている。
+**カバー場の Undo はシーン全体のメイン履歴（`undo.rs::UndoHistory`）に載る。**
+通常の Ctrl+Z（IPC `UNDO`）で戻り、コンポーネント追加・インスペクタ編集と**同じ 1 本の履歴**に
+操作した順で積まれる。
 
-`TerrainEdit` にカバー用の before/after を**独立した 2 マップとして**足した:
+#### 管轄の線引き（なぜ地形専用スタックではないのか）
+
+| 対象 | 履歴 | エディタが送るキー |
+|---|---|---|
+| 地形の**密度・ペイント**（ブラシのストローク） | terrain 専用スタック（`TerrainEdit` / `TERRAIN_UNDO_MAX = 32`） | 地形編集モード中の Ctrl+Z → `TERRAIN_UNDO` |
+| **カバー場**（再生セッション／N 秒進める／全消去） | メイン履歴（`CoverFieldEditCommand` / `MAX_HISTORY = 100`） | 通常の Ctrl+Z → `UNDO` |
+
+カバーの操作入口は `CoverEmitterComponent` の**インスペクタ**であり、ユーザーから見れば
+コンポーネント操作の一部である。ところがエディタは**地形編集モード中にしか `TERRAIN_UNDO` を送らない**
+（`MainWindow.Input.cs` の `_terrainMode ? "TERRAIN_UNDO" : "UNDO"`）。
+そのため地形専用スタックへ積むと「コンポーネント追加 → シミュレート → Ctrl+Z」で
+**雪は残ったままコンポーネント追加のほうが取り消される**という壊れた順序になる（実際に発生した不具合）。
+メイン履歴へ積むことで、この順序は「1 回目 = 雪が戻る／2 回目 = コンポーネント追加が戻る」に一本化される
+（回帰テスト: `undo.rs::cover_edit_undoes_before_earlier_component_add`）。
+
+逆に、**地形編集モード中の Ctrl+Z（`TERRAIN_UNDO`）はカバーを戻さない**。
+両方の履歴に載せると 1 回の操作を 2 回戻せてしまうため、カバーの巻き戻し口はメイン履歴だけに限る。
+
+#### コマンド
 
 ```rust
-pub struct TerrainEdit {
-    pub before: HashMap<ChunkCoord, ChunkSnapshot>,   // 密度＋ペイント
-    pub after:  HashMap<ChunkCoord, ChunkSnapshot>,
-    pub cover_before: HashMap<ChunkCoord, CoverField>, // カバー場（変化したチャンクのみ）
-    pub cover_after:  HashMap<ChunkCoord, CoverField>,
+pub struct CoverFieldEditCommand {
+    pub before: HashMap<ChunkCoord, CoverField>, // 変化したチャンクのみ
+    pub after:  HashMap<ChunkCoord, CoverField>, // before と同じキー集合
 }
 ```
 
-密度側と同居させず**別マップにした理由**: 1 チャンクの密度スナップショットは 33³×4B ≒ 143KB あるのに対し、
-カバー場は 2KB しかない。同じ `ChunkSnapshot` に相乗りさせると、雪を積もらせただけで
-密度 143KB×チャンク数を無駄に控えることになる（全消去 48 チャンクで 13MB）。
-**密度編集のエントリは `cover_*` が空、カバー編集のエントリは `before`/`after` が空**になる。
+`execute` / `undo` は **No-op** である。カバー場の実体は `App.terrain`（Scene の外）にあり、
+書き戻しには再焼き付け予約や `.tcover` のダーティ化も伴うため、`SlotFieldEditCommand` と同じく
+**AppBase が `cover_fields_for_undo/redo()` を peek して `restore_cover_snapshots` で適用する**
+（`ipc_handler.rs` の `IpcCommand::Undo` / `Redo` の腕）。
+
+密度スナップショットと同居させない理由もここにある。1 チャンクの密度は 33³×4B ≒ 143KB あるのに対し
+カバー場は 2KB しかなく、雪を積もらせただけで密度を控えるのは純粋な無駄である。
 
 セッションの取り方（`terrain_cover_ops.rs`）:
 
 | 関数 | 役割 |
 |---|---|
 | `begin_cover_undo_session` | 開始時に `terrain.cover` を丸ごと複製（48 チャンクで約 96KB）。**既にセッション中なら何もしない**（多重開始で before を壊さない） |
-| `commit_cover_undo_session` | before と現在の**和集合**を走査し、`CoverField` が実際に変わったチャンクだけを before/after へ入れて 1 エントリ push。差分ゼロなら**何も push しない**（空コマンドで履歴を汚さない） |
+| `commit_cover_undo_session` | before と現在の**和集合**を走査し、`CoverField` が実際に変わったチャンクだけを before/after へ入れて `undo_history` へ 1 コマンド record。差分ゼロなら**何も積まない**（空コマンドで履歴を汚さない） |
 | `stop_cover_sim_and_commit` | 連続シミュレートを止めて確定する（全消去・Play 開始からも呼ばれる） |
 
 「そのチャンクにカバー場が無かった」状態は `CoverField::new()`（全ゼロ）で表現する。
@@ -264,8 +284,9 @@ undo/redo の適用（`restore_cover_snapshots`）は、書き戻し・`cover_di
 密度側の undo と同じく、**現存しないチャンクは書き戻さない**（ハイトマップ再読込等でチャンク集合が
 作り直された場合に幽霊チャンクの `.tcover` が復活するのを防ぐ）。
 
-**メモリ**: 1 エントリ = 4KB × 変化チャンク数（before + after）。既定 48 チャンクが全変化して約 192KB、
-履歴上限 32 本をすべてカバー編集で埋めた最悪ケースで約 6MB。密度 1 ストローク（143KB×2×チャンク数）より軽い。
+**メモリ**: 1 コマンド = 4KB × 変化チャンク数（before + after）。既定 48 チャンクが全変化して約 192KB。
+メイン履歴の上限 `MAX_HISTORY = 100` を**すべて**カバー編集で埋めた最悪ケースで約 19MB
+（現実には他の操作と混ざるので届かない）。密度 1 ストローク（143KB×2×チャンク数）より 1 チャンクあたり 35 倍軽い。
 
 ### Play — 積算は揮発する
 
@@ -284,7 +305,9 @@ Play しただけでシーンが「変更済み」にはならない。
 | ECS コンポーネント | `runtime/src/engine/components/cover_emitter_component.rs` |
 | インスペクタ更新 | `runtime/src/engine/core/app_base/app/cover_emitter_ops.rs`（`SET_COVER_FIELD`） |
 | エンジン統合 | `runtime/src/engine/core/app_base/app/terrain_cover_ops.rs` |
-| Undo（スタック・復元） | `runtime/src/engine/core/app_base/app/terrain_ops.rs`（`TerrainEdit` / `restore_cover_snapshots`） |
+| Undo（コマンド） | `runtime/src/engine/core/app_base/undo.rs`（`CoverFieldEditCommand`） |
+| Undo（セッション・復元） | `terrain_cover_ops.rs`（`begin/commit_cover_undo_session` / `restore_cover_snapshots`） |
+| Undo（適用の呼び出し口） | `ipc_handler.rs`（`IpcCommand::Undo` / `Redo` の `peek_*_cover_fields`） |
 | シーンギズモ | `runtime/src/engine/core/app_base/app/cover_emitter_scene_gizmo.rs` |
 | 頂点への焼き込み | `terrain_mesh_build.rs::rebuild_terrain_model_with_cover` |
 | GPU uniform | `renderer/terrain_gbuffer.rs`（`TerrainLayerUniformGpu.cover`） |
@@ -358,9 +381,11 @@ Play しただけでシーンが「変更済み」にはならない。
 4. **法線は変位で作り直さない**。変位が小さい前提の近似。
 5. **素材の境界は最近傍（硬いエッジ）**。素材添字は頂点間で補間できないため
    フラグメント側で `round()` する。量のほうは滑らかに補間されるので実画像では目立たない。
-6. **Undo は terrain 専用スタック（Ctrl+Z）に載っており、シーン全体の undo とは別**。
-   地形編集モードでシーンビューにフォーカスがある状態の Ctrl+Z が `TERRAIN_UNDO` として届く
-   （インスペクタ入力中の Ctrl+Z はフィールド編集の undo になる）。
+6. **Undo はメイン履歴（通常の Ctrl+Z）の管轄で、地形密度の Undo とは別スタック**。
+   シーンビューにフォーカスがある状態の Ctrl+Z が `UNDO` として届く
+   （インスペクタ入力中の Ctrl+Z はテキストボックスの undo になる）。
+   **地形編集モード中の Ctrl+Z は `TERRAIN_UNDO` になり、カバー場は戻らない**（§5 の管轄表）。
+   カバーを戻したいときは地形編集モードを抜けてから Ctrl+Z する。
    Play 中の揮発積算は Undo 対象外（Stop で保存状態へ戻るので、そもそも戻すものが無い）。
 7. **1 チャンクに 1 層**。多層（雪の下に落ち葉が残る）は将来判断。
 
@@ -396,10 +421,15 @@ Play しただけでシーンが「変更済み」にはならない。
 7. 範囲を **Global** に変えて 5 秒進めると、地形全体の緩斜面が雪で覆われる
 8. 素材 ID を `wet` に変えて 5 秒進めると、雪が削られてから濡れた黒い地面へ変わる
    （置き換え規則の確認）
-9. **Undo の確認**（シーンビューをクリックしてフォーカスを移し、地形編集モードのまま **Ctrl+Z**）
+9. **Undo の確認**（**地形編集モードを抜けてから**シーンビューをクリックしてフォーカスを移し **Ctrl+Z**）
    - 「5 秒進める」1 押しぶんが 1 回の Ctrl+Z で丸ごと戻る（複数回に分かれない）
    - ▶ で 10 秒ほど積もらせて ■ で停止 → Ctrl+Z 1 回で**再生前の状態まで**戻る
    - **全消去** → Ctrl+Z で雪が戻る。もう一度 Ctrl+Y（redo）で再び消える
+   - **積み順の確認（本節の要）**: 新しいアクタに Cover Emitter を**追加**してから 5 秒進め、
+     Ctrl+Z を 2 回押す。**1 回目で雪が戻り、2 回目でコンポーネント追加が取り消される**こと
+     （逆順になっていたら回帰）
+   - 地形編集モード中の Ctrl+Z（`TERRAIN_UNDO`）では**雪は戻らない**（仕様。§5 の管轄表）。
+     この状態ではブラシで彫った地形だけが戻る
 10. 地形メニューから **保存**。シーンを開き直しても雪が残っていることを確認する
 11. **Play** → 雪がさらに積もる。**Stop** → 保存した状態へ戻る（Play 中の積算は揮発）
     - ▶ で再生したまま Play へ入ると、ボタンが自動で ■ → ▶ に戻る（再生はランタイム側で締められる）
