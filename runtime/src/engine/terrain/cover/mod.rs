@@ -39,7 +39,8 @@ mod tests_cover;
 pub use accumulate::accumulate_chunk;
 pub use emit::{CoverEmitRange, CoverEmitSpec, CoverMask};
 pub use field::{
-    slope_scale, texel_center_uv, CoverField, CoverSurface, COVER_FIELD_RESOLUTION,
+    slope_scale, texel_center_uv, CoverField, CoverNeighborhood, CoverSurface,
+    COVER_FIELD_RESOLUTION,
     COVER_FIELD_TEXELS, COVER_SLOPE_UP_FULL, COVER_SLOPE_UP_MIN, COVER_SURFACE_ABSENT,
 };
 pub use material::{

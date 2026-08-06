@@ -11,8 +11,8 @@
 use super::accumulate::accumulate_chunk;
 use super::emit::{CoverEmitRange, CoverEmitSpec, CoverMask};
 use super::field::{
-    slope_scale, CoverField, CoverSurface, COVER_FIELD_RESOLUTION, COVER_SLOPE_UP_FULL,
-    COVER_SLOPE_UP_MIN, COVER_SURFACE_ABSENT,
+    slope_scale, CoverField, CoverNeighborhood, CoverSurface, COVER_FIELD_RESOLUTION,
+    COVER_SLOPE_UP_FULL, COVER_SLOPE_UP_MIN, COVER_SURFACE_ABSENT,
 };
 use super::material::CoverMaterialSet;
 use super::tcover::{read_chunk, write_chunk, TcoverError, TCOVER_MAGIC};
@@ -30,9 +30,16 @@ const MAT_LEAF: u8 = 1;
 fn flat_surface(y: f32) -> CoverSurface {
     // `CoverSurface` のフィールドは private なので、密度チャンクから作るのが正道。
     // 「水平地面のチャンク」を作って from_chunk に通す（実装経路と同じ道を通す）。
+    //
+    // 【なぜ y=-1 のチャンクを使うのか】
+    //   `from_ground_plane` は density = ワールド Y なので、面（density = iso = 0）は
+    //   ちょうど y=0 に来る。個体は density < iso 側、すなわち **y<0 側のチャンク**であり、
+    //   メッシュ（マーチングキューブのセル）も面情報もそちらのチャンクが持つ
+    //   （y=0..16 のチャンクは完全に空気で、面もメッシュも持たない）。
     let settings = TerrainSettings::default();
-    let chunk = TerrainChunkData::from_ground_plane(&settings, ChunkCoord::new(0, 0, 0));
-    CoverSurface::from_chunk(&chunk, &settings, y)
+    let chunk = TerrainChunkData::from_ground_plane(&settings, ChunkCoord::new(0, -1, 0));
+    // 面がちょうど y へ来るよう、チャンク原点は 1 チャンクぶん下に置く。
+    CoverSurface::from_chunk(&chunk, &settings, y - settings.chunk_extent())
 }
 
 /// 全域エミッタ（素材 `mat`・強度 `rate`）を 1 個だけ持つ配列を作る。
@@ -88,11 +95,12 @@ fn slope_scale_rejects_absent_and_nan() {
 fn steep_slope_accumulates_less_than_flat() {
     let settings = TerrainSettings::default();
     let extent = settings.chunk_extent();
-    let coord = ChunkCoord::new(0, 0, 0);
+    // 面（density = 0）を含むのは y<0 側のチャンクである（`flat_surface` のコメント参照）。
+    let coord = ChunkCoord::new(0, -1, 0);
 
     // ─── 平地: density = worldY（既定の地面平面）───
     let flat = TerrainChunkData::from_ground_plane(&settings, coord);
-    let flat_surface = CoverSurface::from_chunk(&flat, &settings, 0.0);
+    let flat_surface = CoverSurface::from_chunk(&flat, &settings, -extent);
 
     // ─── 急斜面: density = worldY - 4*worldX（傾き 4 ≒ 76 度）───
     let mut steep = TerrainChunkData::new_filled(&settings, 0.0);
@@ -417,32 +425,252 @@ fn invalid_mask_yields_zero_coverage() {
 //  サンプリング（頂点へ載せるときの読み方）
 // ============================================================
 
-/// 一様な場をどこで読んでも同じ値が返ること（バイリニアの重みが総和 1 である保証）。
+/// 一様な場を（隣接チャンクも同じ場なら）どこで読んでも同じ値が返ること。
+///
+/// バイリニアの重みの総和が 1 であること＋境界でも隣を読めていることの保証。
 #[test]
 fn uniform_field_samples_uniformly() {
-    let mut f = CoverField::new();
-    for iz in 0..COVER_FIELD_RESOLUTION {
-        for ix in 0..COVER_FIELD_RESOLUTION {
-            f.deposit(ix, iz, MAT_SNOW, 0.5);
-        }
-    }
+    let f = uniform_field(MAT_SNOW, 0.5);
+    // 周囲 8 チャンクにも同じ場がある状況（＝広い雪原の内部）。
+    let view = CoverNeighborhood::from_lookup(|_, _| Some(&f));
     for &(u, v) in &[(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (0.123, 0.987)] {
-        let (a, m) = f.sample(u, v);
+        let (a, m) = view.sample(u, v);
         assert!((a - 0.5).abs() < 0.01, "一様な場は一様に読めること (u={u},v={v},a={a})");
         assert_eq!(m, MAT_SNOW);
     }
 }
 
-/// 範囲外の UV は端のテクセルへクランプされること（NaN も 0 側へ落ちる）。
+/// 範囲外・非有限の UV は 0..1 へクランプされ、パニックしないこと。
 #[test]
 fn sample_clamps_out_of_range_uv() {
-    let mut f = CoverField::new();
-    f.deposit(0, 0, MAT_LEAF, 1.0);
-    let (a, m) = f.sample(-5.0, -5.0);
-    assert_eq!(a, 1.0);
+    let f = uniform_field(MAT_LEAF, 1.0);
+    let view = CoverNeighborhood::from_lookup(|_, _| Some(&f));
+    let (a, m) = view.sample(-5.0, -5.0);
+    assert_eq!(a, 1.0, "範囲外 UV は端（u=0）として読まれること");
     assert_eq!(m, MAT_LEAF);
-    let (a_nan, _) = f.sample(f32::NAN, f32::NAN);
+    let (a_nan, _) = view.sample(f32::NAN, f32::NAN);
     assert_eq!(a_nan, 1.0, "NaN は 0 側の端へクランプされること");
+}
+
+/// 隣接チャンクにカバー場が無い側は「量 0」として読まれること（世界の端の規約）。
+#[test]
+fn missing_neighbour_reads_as_zero() {
+    let f = uniform_field(MAT_SNOW, 1.0);
+    let isolated = CoverNeighborhood::isolated(&f);
+    // 中央は満量のまま。
+    let (center, _) = isolated.sample(0.5, 0.5);
+    assert_eq!(center, 1.0, "内部は隣の有無に影響されないこと");
+    // 端（u=1.0）は「自分のテクセル 31」と「存在しない隣のテクセル 0」の中点＝半分。
+    let (edge, mat) = isolated.sample(1.0, 0.5);
+    assert!((edge - 0.5).abs() < 1e-6, "隣が無い側は 0 へ向かって落ちること (a={edge})");
+    assert_eq!(mat, MAT_SNOW, "量のあるテクセルの素材が選ばれること（空側は選ばない）");
+    // 角は 4 隅のうち 1 つだけが存在する＝1/4。
+    let (corner, _) = isolated.sample(1.0, 1.0);
+    assert!((corner - 0.25).abs() < 1e-6, "角は 1/4 になること (a={corner})");
+}
+
+// ============================================================
+//  6. チャンク境界の共有頂点（段差・隙間の回帰テスト）
+// ============================================================
+
+/// 境界を共有する 2 チャンクが、同じ 1 点を **f32 のビット単位で同じ値**として読むこと。
+///
+/// 【何を守っているか】
+///   チャンク境界上の地形メッシュ頂点は隣り合うチャンク双方のメッシュへ複製されている。
+///   カバーの変位は頂点位置へ焼くので、両者が違う量を読んだ瞬間に複製頂点が
+///   別々の場所へ動き、**メッシュに隙間（段差）が開く**。
+///   「ほぼ同じ」では不十分で、ビット単位で一致していなければならない
+///   （0.001 の差でも 0.15m の変位に掛かれば目に見える段差になりうる）。
+///
+///   水面グリッド（W5.1）の `grid_lines_are_shared_exactly_between_neighbours` と同じ原則。
+#[test]
+fn boundary_sample_is_bit_identical_between_neighbours() {
+    // 隣り合う 2 チャンク A（左）・B（右）に、わざと違う模様のカバーを積む。
+    let a = patterned_field(7);
+    let b = patterned_field(31);
+
+    // A から見た B は dx=+1、B から見た A は dx=-1。
+    let view_a = CoverNeighborhood::from_lookup(|dx, dz| match (dx, dz) {
+        (0, 0) => Some(&a),
+        (1, 0) => Some(&b),
+        _ => None,
+    });
+    let view_b = CoverNeighborhood::from_lookup(|dx, dz| match (dx, dz) {
+        (0, 0) => Some(&b),
+        (-1, 0) => Some(&a),
+        _ => None,
+    });
+
+    // 境界（A の u=1.0 と B の u=0.0）は同じワールド上の 1 本の線である。
+    // v は共有頂点が取りうる任意の位置（端・中央・半端な位置）を広く試す。
+    let steps = 64;
+    for i in 0..=steps {
+        let v = i as f32 / steps as f32;
+        let (amount_a, mat_a) = view_a.sample(1.0, v);
+        let (amount_b, mat_b) = view_b.sample(0.0, v);
+        assert_eq!(
+            amount_a.to_bits(),
+            amount_b.to_bits(),
+            "境界の共有点はビット単位で同じ量を読むこと (v={v}, a={amount_a}, b={amount_b})"
+        );
+        assert_eq!(mat_a, mat_b, "境界の共有点は同じ素材を読むこと (v={v})");
+    }
+}
+
+/// 角（4 チャンクが集まる 1 点）でも 4 者が同じ値を読むこと。
+///
+/// 辺の共有（2 チャンク）が合っていても、角で 4 者が食い違えば
+/// そこだけ穴が開く（実際に起きた壊れ方の再現防止）。
+#[test]
+fn corner_sample_is_bit_identical_between_four_chunks() {
+    // 4 チャンク: 00（自分）・10（+X）・01（+Z）・11（+X+Z）。
+    let f00 = patterned_field(3);
+    let f10 = patterned_field(11);
+    let f01 = patterned_field(23);
+    let f11 = patterned_field(29);
+    let pick = |dx: i32, dz: i32, ox: i32, oz: i32| -> Option<&CoverField> {
+        // (ox,oz) は「そのビューにとっての自分」のワールド上のチャンク位置。
+        match (ox + dx, oz + dz) {
+            (0, 0) => Some(&f00),
+            (1, 0) => Some(&f10),
+            (0, 1) => Some(&f01),
+            (1, 1) => Some(&f11),
+            _ => None,
+        }
+    };
+    let view00 = CoverNeighborhood::from_lookup(|dx, dz| pick(dx, dz, 0, 0));
+    let view10 = CoverNeighborhood::from_lookup(|dx, dz| pick(dx, dz, 1, 0));
+    let view01 = CoverNeighborhood::from_lookup(|dx, dz| pick(dx, dz, 0, 1));
+    let view11 = CoverNeighborhood::from_lookup(|dx, dz| pick(dx, dz, 1, 1));
+
+    // ワールド上の同じ 1 点（4 チャンクが接する角）を、それぞれのローカル UV で読む。
+    let samples = [
+        view00.sample(1.0, 1.0),
+        view10.sample(0.0, 1.0),
+        view01.sample(1.0, 0.0),
+        view11.sample(0.0, 0.0),
+    ];
+    for (i, s) in samples.iter().enumerate().skip(1) {
+        assert_eq!(
+            s.0.to_bits(),
+            samples[0].0.to_bits(),
+            "角の共有点はビット単位で同じ量を読むこと (view={i})"
+        );
+        assert_eq!(s.1, samples[0].1, "角の共有点は同じ素材を読むこと (view={i})");
+    }
+}
+
+/// 積算 → 焼き込みの往路を通しても境界が一致すること（実運用に近い経路の検証）。
+///
+/// 2 チャンクにまたがる Region エミッタで積算し、境界線上の共有点を両側から読む。
+/// 積算側（`accumulate_chunk`）は各チャンクのローカル情報で走るので、
+/// 「積算そのものに非対称が入っていないか」もここで一緒に押さえる。
+#[test]
+fn accumulated_boundary_is_bit_identical_across_two_chunks() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(0.0);
+
+    // 2 チャンクの境界（x = extent）をまたぐ Region エミッタ。
+    let emitters = vec![CoverEmitSpec {
+        range: CoverEmitRange::Region {
+            center: [extent, 0.0, extent * 0.5],
+            half_extents: [extent * 0.75, extent, extent],
+            fade: extent * 0.5,
+        },
+        material_index: MAT_SNOW,
+        rate: 0.3,
+    }];
+
+    let mut left = CoverField::new();
+    let mut right = CoverField::new();
+    accumulate_chunk(&mut left, &surface, [0.0, 0.0, 0.0], extent, &emitters, 1.0);
+    accumulate_chunk(&mut right, &surface, [extent, 0.0, 0.0], extent, &emitters, 1.0);
+    assert!(!left.is_empty() && !right.is_empty(), "両チャンクに積もっていること");
+
+    let view_left = CoverNeighborhood::from_lookup(|dx, dz| match (dx, dz) {
+        (0, 0) => Some(&left),
+        (1, 0) => Some(&right),
+        _ => None,
+    });
+    let view_right = CoverNeighborhood::from_lookup(|dx, dz| match (dx, dz) {
+        (0, 0) => Some(&right),
+        (-1, 0) => Some(&left),
+        _ => None,
+    });
+
+    let steps = 32;
+    for i in 0..=steps {
+        let v = i as f32 / steps as f32;
+        let (al, ml) = view_left.sample(1.0, v);
+        let (ar, mr) = view_right.sample(0.0, v);
+        assert_eq!(al.to_bits(), ar.to_bits(), "境界の変位量が一致すること (v={v})");
+        assert_eq!(ml, mr, "境界の素材が一致すること (v={v})");
+        assert!(al > 0.0, "エミッタの真下なので実際に積もっていること (v={v})");
+    }
+}
+
+/// カバー場を持つチャンクと、メッシュ（マーチングキューブのセル）を持つチャンクが一致すること。
+///
+/// 【なぜこれが要るか】
+///   面情報の air/solid 判定がマーチングキューブと 1 段ずれていると、
+///   「雪はチャンク A のカバー場に積もるのに、その面のメッシュはチャンク B が持つ」
+///   という状態になり、積もった雪がどの頂点にも焼かれず**一切見えない**。
+///   既定の平坦地面（density = ワールド Y、面がちょうど y=0）はまさにこの境界例で、
+///   実際に「雪が見えない／チャンク境界で途切れる」不具合の原因だった。
+#[test]
+fn cover_surface_chunk_matches_mesh_chunk() {
+    use crate::engine::terrain::marching_cubes;
+    let settings = TerrainSettings::default();
+
+    // 面（density = iso = 0）がちょうど境界 y=0 に来る既定の地面平面。
+    for (coord, expect_surface) in [(ChunkCoord::new(0, -1, 0), true), (ChunkCoord::new(0, 0, 0), false)] {
+        let chunk = TerrainChunkData::from_ground_plane(&settings, coord);
+        let mesh = marching_cubes::generate_standalone(&chunk, &settings);
+        let has_mesh = !mesh.positions.is_empty();
+        let surface = CoverSurface::from_chunk(&chunk, &settings, coord.world_origin(&settings)[1]);
+        let has_surface = (0..COVER_FIELD_RESOLUTION)
+            .any(|iz| (0..COVER_FIELD_RESOLUTION).any(|ix| surface.has_surface(ix, iz)));
+        assert_eq!(
+            has_mesh, expect_surface,
+            "メッシュを持つのは個体側のチャンクだけであること (coord={coord:?})"
+        );
+        assert_eq!(
+            has_surface, has_mesh,
+            "面情報を持つチャンクとメッシュを持つチャンクは一致すること (coord={coord:?})"
+        );
+    }
+}
+
+// ─── 境界テスト用のヘルパ ────────────────────────────────────────────────────
+
+/// 全テクセルが同じ素材・同じ量のカバー場を作る。
+fn uniform_field(material: u8, amount: f32) -> CoverField {
+    let mut f = CoverField::new();
+    for iz in 0..COVER_FIELD_RESOLUTION {
+        for ix in 0..COVER_FIELD_RESOLUTION {
+            f.deposit(ix, iz, material, amount);
+        }
+    }
+    f
+}
+
+/// テクセルごとに量も素材も変わる模様入りのカバー場を作る。
+///
+/// 境界の一致を「たまたま両側が同じ値だった」で通してしまわないよう、
+/// 隣り合うテクセルの値が必ず異なるようにする（`seed` で模様をずらす）。
+fn patterned_field(seed: usize) -> CoverField {
+    let mut f = CoverField::new();
+    for iz in 0..COVER_FIELD_RESOLUTION {
+        for ix in 0..COVER_FIELD_RESOLUTION {
+            // 0 でない量を全テクセルへ（0 だと素材選択が縮退して差が出ない）。
+            let n = (ix * 7 + iz * 13 + seed) % COVER_FIELD_RESOLUTION;
+            let amount = (n + 1) as f32 / (COVER_FIELD_RESOLUTION + 1) as f32;
+            let material = if (ix + iz + seed) % 2 == 0 { MAT_SNOW } else { MAT_LEAF };
+            f.deposit(ix, iz, material, amount);
+        }
+    }
+    f
 }
 
 // ============================================================
