@@ -53,8 +53,9 @@ pub use tcover::{
     TCOVER_MAGIC, TCOVER_VERSION,
 };
 pub use trample::{
-    resolve_forward_xz, stamp_chunk as stamp_cover_chunk, CoverStampShape, CoverStampSpec,
-    COVER_STAMP_DEFAULT_FORWARD,
+    resolve_forward_xz, stamp_chunk as stamp_cover_chunk,
+    stamp_chunk_tracked as stamp_cover_chunk_tracked, CoverStampShape, CoverStampSpec,
+    COVER_STAMP_DEFAULT_FORWARD, COVER_STAMP_GROUND_SNAP_DROP,
 };
 
 // `read_header` は本体を読まずに座標だけ知りたい場面（統計表示）用。

@@ -17,9 +17,23 @@
 //  【Y 照合（この機能の要）】
 //    カバー場は XZ の 2 次元なので、真上から押すだけでは
 //    「洞窟の床を歩いた轍が、頭上の地表にも付く」ことになる。
-//    そこでスタンプ側は接地点のワールド Y を持ち、テクセルの基準 Y
-//    （`CoverField::base_y_at` ＝ その面のワールド高さ）と許容差の内側で
-//    一致するテクセルにだけ適用する。
+//    そこでスタンプ側は接地点のワールド Y を持ち、その高さの近傍にある面
+//    （`CoverSurface::surface_y_at` ＝ その面のワールド高さ）にだけ適用する。
+//
+//  【Y 照合の窓は上下で非対称（接地スナップ。I3.2 の不具合修正）】
+//    当初は「|面の Y − ソースの Y| ≤ 半径」という **上下対称**の窓だった。
+//    しかしソースの Y は *アクタの原点* であり、足裏とは限らない。
+//    キャラクターのモデル原点が腰にある・当たり判定カプセルの中心にある、
+//    といったごく普通の構成では原点が地面より 1m 前後高くなるため、
+//    対称窓では照合に落ちて **轍が 1 テクセルも押されない**（実機で報告された症状）。
+//
+//    そこで窓を次の非対称なものへ変えた:
+//      ・上方向（面がソースより上）… `y_tolerance()` まで
+//        ＝ 少し埋まっている足元を許すぶんだけ。ここを広げると
+//           「洞窟の床を歩いたら頭上の地表にも付く」が復活するので広げない。
+//      ・下方向（面がソースより下）… `y_tolerance() + COVER_STAMP_GROUND_SNAP_DROP`
+//        ＝ 浮いた原点から地面を探しに行く距離。
+//    「真上の面には押さない」という Y 照合の目的はそのまま保たれる。
 //
 //  【形状（Circle / Texture）】
 //    Circle  … 半径ベースの等方な窪み（既定）。人の足跡程度ならこれで足りる。
@@ -53,6 +67,26 @@ pub const COVER_STAMP_DEFAULT_FORWARD: [f32; 2] = [0.0, 1.0];
 /// 半径が極端に小さいソースでも「1 テクセルの起伏」ぶんは許さないと
 /// 平地を歩いても一切痕が付かなくなる。
 pub const COVER_STAMP_Y_TOLERANCE_MIN: f32 = 0.25;
+
+/// 接地スナップで下方向へ余分に面を探す距離（メートル）。
+///
+/// 【なぜ必要か】
+///   ソースのワールド Y は「アクタの原点」であって足裏ではない。人型モデルの
+///   原点が腰にある、当たり判定カプセルの中心に置いてある、といった構成では
+///   原点が地面より 1m 前後高い位置に来る。上下対称の許容差だけでは
+///   そこで照合に落ち、轍が一切押されなくなる。
+///
+/// 【なぜ「下方向だけ」広げるのか】
+///   上方向を同じだけ広げると「洞窟の床を歩いた轍が頭上の地表に付く」という、
+///   Y 照合がそもそも防ぎたかった漏れが復活する。物は必ず**面の上に載る**ので、
+///   探す向きは下だけでよい。
+///
+/// 【なぜ 2m なのか】
+///   人型（腰の高さ 1m 前後）・小型車両（車軸中心 0.5m 前後）の原点ずれを
+///   余裕をもって飲み込みつつ、「2m 上の桟橋を歩いたら下の雪に轍が付く」という
+///   誤爆までは届かない距離として選んだ。これを超える浮きを許したい場合は
+///   ソースの半径を大きくする（許容差が半径に比例して伸びる）。
+pub const COVER_STAMP_GROUND_SNAP_DROP: f32 = 2.0;
 
 /// 踏み固めが効き始める傾斜（`slope_scale` の値）の下限。
 ///
@@ -102,13 +136,37 @@ pub struct CoverStampSpec {
 impl CoverStampSpec {
     /// Y 照合の許容差（メートル）。半径に比例させ、下限で底上げする。
     ///
+    /// これは **上方向**（面がソースより上にある場合）の許容量であり、
+    /// 下方向は `ground_reach_down()` を使う（上下非対称。ファイル冒頭参照）。
+    ///
     /// 【なぜ半径から作るのか】
-    ///   接地点の Y はアクタの原点であり、足裏とは限らない（モデルによって
-    ///   原点が腰にあることもある）。影響半径は「その物がどれだけの範囲に
-    ///   触れているか」の宣言なので、上下方向の許容にもそのまま使うのが
-    ///   データ 1 個で意図を表現できて素直である。
+    ///   影響半径は「その物がどれだけの範囲に触れているか」の宣言なので、
+    ///   上下方向の許容にもそのまま使うのがデータ 1 個で意図を表現できて素直である。
     pub fn y_tolerance(&self) -> f32 {
         self.radius.max(COVER_STAMP_Y_TOLERANCE_MIN)
+    }
+
+    /// 接地スナップで **下方向**へ面を探しに行く距離（メートル）。
+    ///
+    /// 上方向の許容差に固定の探索距離を足したもの。アクタの原点が地面より
+    /// 高い位置にあっても轍が押されるようにするための窓であり、
+    /// 「真上の面には押さない」性質は上側の許容差が守る。
+    pub fn ground_reach_down(&self) -> f32 {
+        self.y_tolerance() + COVER_STAMP_GROUND_SNAP_DROP
+    }
+
+    /// このスタンプが、ワールド高さ `surface_y` の面に届くか（Y 照合の本体）。
+    ///
+    /// 窓は上下非対称:
+    ///   `contact_y - ground_reach_down() ≤ surface_y ≤ contact_y + y_tolerance()`
+    ///
+    /// 非有限な面の高さ（壊れた派生データ）は常に false（触らない）。
+    pub fn matches_surface_y(&self, surface_y: f32) -> bool {
+        if !surface_y.is_finite() {
+            return false;
+        }
+        let delta = surface_y - self.contact[1];
+        delta <= self.y_tolerance() && delta >= -self.ground_reach_down()
     }
 
     /// このスタンプが XZ 方向に届く最大距離（メートル）。
@@ -127,16 +185,20 @@ impl CoverStampSpec {
 
     /// このスタンプが指定 AABB（チャンクなど）に一切かからないか。
     ///
-    /// Y は「接地点 ± 許容差」で判定する（別の段のチャンクを触らないため）。
+    /// Y は `matches_surface_y` と **同じ非対称の窓**
+    /// （`[接地点 - ground_reach_down, 接地点 + y_tolerance]`）で判定する。
+    /// ここを対称のままにすると、テクセル単位では届く面を持つチャンクが
+    /// チャンク選別の段で先に落ちてしまい、修正が効かない。
     pub fn is_outside_aabb(&self, min: [f32; 3], max: [f32; 3]) -> bool {
         let reach = self.reach_xz();
-        let ty = self.y_tolerance();
+        let up = self.y_tolerance();
+        let down = self.ground_reach_down();
         self.contact[0] + reach < min[0]
             || self.contact[0] - reach > max[0]
             || self.contact[2] + reach < min[2]
             || self.contact[2] - reach > max[2]
-            || self.contact[1] + ty < min[1]
-            || self.contact[1] - ty > max[1]
+            || self.contact[1] + up < min[1]
+            || self.contact[1] - down > max[1]
     }
 
     /// 指定ワールド XZ 位置での踏み込み比率（0..1）を返す。
@@ -203,6 +265,9 @@ impl CoverStampSpec {
 ///
 /// 戻り値は「カバー場が実際に変化したか」。false のときチャンクはダーティにならず、
 /// 頂点の焼き直しも保存も走らない。
+///
+/// どのスタンプが効いたかを知りたい場合は `stamp_chunk_tracked` を使う
+/// （実装は 1 本きり。こちらはヒット列を捨てるだけの薄い包み）。
 pub fn stamp_chunk(
     field: &mut CoverField,
     surface: &CoverSurface,
@@ -210,6 +275,32 @@ pub fn stamp_chunk(
     chunk_extent: f32,
     stamps: &[CoverStampSpec],
     materials: &CoverMaterialSet,
+) -> bool {
+    let mut hits = vec![false; stamps.len()];
+    stamp_chunk_tracked(field, surface, chunk_origin, chunk_extent, stamps, materials, &mut hits)
+}
+
+/// `stamp_chunk` に「どのスタンプが実際にカバー場を変えたか」の記録を足したもの。
+///
+/// - `hits`: `stamps` と同順の記録先。**スタンプ `i` が最深として採用され、かつ
+///   そのテクセルの踏み固めが実際に深くなった**とき `hits[i] = true` になる。
+///   関数は false を書き戻さない（呼び出し側が複数チャンク分を累積できる）。
+///   長さが `stamps` より短い場合、はみ出す添字は単に記録されない。
+///
+/// 【何のための記録か（デバッグ描画）】
+///   「轍が付かない」類の不具合は、収集・チャンク選別・Y 照合・素材・量の
+///   どこで落ちたのかが実機では見えない。選択中ソースのギズモを
+///   「今まさに押した」瞬間だけ色替えするために、押したという事実を
+///   ソース単位で返す必要がある。値の意味は真偽 1 ビットだけなので、
+///   計算コストは実質ゼロである。
+pub fn stamp_chunk_tracked(
+    field: &mut CoverField,
+    surface: &CoverSurface,
+    chunk_origin: [f32; 3],
+    chunk_extent: f32,
+    stamps: &[CoverStampSpec],
+    materials: &CoverMaterialSet,
+    hits: &mut [bool],
 ) -> bool {
     if stamps.is_empty() || !(chunk_extent > 0.0) {
         return false;
@@ -222,9 +313,11 @@ pub fn stamp_chunk(
         chunk_origin[1] + chunk_extent,
         chunk_origin[2] + chunk_extent,
     ];
-    let active: Vec<&CoverStampSpec> = stamps
+    // ヒット記録のため **元の添字を持ったまま**残す。
+    let active: Vec<(usize, &CoverStampSpec)> = stamps
         .iter()
-        .filter(|s| s.strength > 0.0 && !s.is_outside_aabb(aabb_min, aabb_max))
+        .enumerate()
+        .filter(|(_, s)| s.strength > 0.0 && !s.is_outside_aabb(aabb_min, aabb_max))
         .collect();
     if active.is_empty() {
         return false;
@@ -262,10 +355,11 @@ pub fn stamp_chunk(
 
             // ─── 各スタンプを評価して、最も深い踏み込みを採る ───
             let mut depth = 0.0f32;
-            for s in &active {
-                // Y 照合: 接地点とこのテクセルの面が上下に離れていれば無関係
-                // （洞窟の床を歩いた轍が頭上の地表へ写らない）。
-                if (surface_y - s.contact[1]).abs() > s.y_tolerance() {
+            let mut deepest: Option<usize> = None;
+            for (index, s) in &active {
+                // Y 照合: この面がスタンプの上下窓の内側にあるか
+                // （洞窟の床を歩いた轍が頭上の地表へ写らない ＋ 浮いた原点でも接地する）。
+                if !s.matches_surface_y(surface_y) {
                     continue;
                 }
                 let f = s.footprint_at(world_x, world_z);
@@ -277,6 +371,7 @@ pub fn stamp_chunk(
                 let d = f * s.strength * material.footprint_persistence;
                 if d > depth {
                     depth = d;
+                    deepest = Some(*index);
                 }
             }
             if depth <= 0.0 {
@@ -285,6 +380,12 @@ pub fn stamp_chunk(
 
             if field.stamp_trample(ix, iz, depth) {
                 changed = true;
+                // 実際に場を変えたスタンプだけを「作用中」として記録する
+                // （既に同じ深さまで踏まれていたテクセルは記録しない＝
+                //   ギズモの色替えが「今まさに押した」だけを意味するようになる）。
+                if let Some(hit) = deepest.and_then(|i| hits.get_mut(i)) {
+                    *hit = true;
+                }
             }
         }
     }

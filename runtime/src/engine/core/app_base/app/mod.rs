@@ -87,6 +87,7 @@ pub(super) mod terrain_cover_ops;
 mod cover_emitter_ops;
 /// カバーエミッタの「降る範囲」のビューポート可視化（選択中アクターのみ）
 pub(crate) mod cover_emitter_scene_gizmo;
+pub(crate) mod interaction_source_scene_gizmo;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────
 use std::collections::{HashMap, HashSet};

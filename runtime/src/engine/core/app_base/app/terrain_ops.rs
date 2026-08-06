@@ -703,6 +703,13 @@ pub struct TerrainState {
     ///   ・テクスチャ形状を回す向き
     /// に使う。Play の開始・終了で必ず捨てる（揮発するゲーム状態）。
     pub cover_stamp_tracks: HashMap<u64, super::terrain_cover_ops::CoverStampTrack>,
+    /// 轍スタンプ源の「今この瞬間の作用状況」（I3.2 デバッグ描画）。
+    ///
+    /// キーは `cover_stamp_tracks` と同じソースキー。選択中アクターのギズモを
+    /// 状態に応じて色替えするためだけに持つ、純粋な観測用の状態である
+    /// （シミュレーション結果には一切影響しない）。
+    /// `cover_stamp_tracks` と同じく Play の開始・終了で必ず捨てる。
+    pub cover_stamp_debug: HashMap<u64, super::terrain_cover_ops::CoverStampDebug>,
 
     // ─── 物理コリジョン（地形の静的トライメッシュコライダー）─────────────────
     /// チャンク → そのチャンクに対応する物理コライダーの entity_id。
@@ -791,6 +798,7 @@ impl Default for TerrainState {
             cover_play_snapshot: None,
             cover_undo_session_before: None,
             cover_stamp_tracks: HashMap::new(),
+            cover_stamp_debug: HashMap::new(),
             chunk_collider_ids: HashMap::new(),
             next_terrain_collider_id: TERRAIN_COLLIDER_ENTITY_BASE,
 

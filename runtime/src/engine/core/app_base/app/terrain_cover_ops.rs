@@ -39,8 +39,8 @@ use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::chunk_coord::ChunkCoord;
 use crate::engine::terrain::cover::{
     accumulate_chunk, cover_y_match_tolerance, read_cover_chunk, resolve_forward_xz,
-    stamp_cover_chunk, write_cover_chunk, CoverEmitRange, CoverEmitSpec, CoverField, CoverMask,
-    CoverMaterialSet, CoverNeighborhood, CoverStampShape, CoverStampSpec, CoverSurface,
+    stamp_cover_chunk_tracked, write_cover_chunk, CoverEmitRange, CoverEmitSpec, CoverField,
+    CoverMask, CoverMaterialSet, CoverNeighborhood, CoverStampShape, CoverStampSpec, CoverSurface,
 };
 use crate::engine::components::interaction_source_component::{
     InteractionSourceComponent, InteractionStampShape,
@@ -118,6 +118,16 @@ const MILLIS_PER_SEC: f64 = 1000.0;
 ///   閾値は 60Hz で 0.06m/s（＝ほぼ静止）に相当する小さな値にしてあり、
 ///   ゆっくり歩いても轍は途切れない。
 const COVER_STAMP_MIN_MOVE: f32 = 0.001;
+
+/// 轍スタンプ源の「作用中」表示を保持する時間（秒）。
+///
+/// 【なぜ保持が要るのか】
+///   スタンプが実際にカバー場を変えるのは「新しいテクセルへ踏み込んだ」フレーム
+///   だけであり、同じ場所を踏み続けている間は 1 ビットも変わらない（最大値更新のため）。
+///   その生の真偽値をそのまま色にすると、ギズモが 60Hz で激しく明滅して
+///   「効いているのか」がまったく読み取れない。直近に押した事実を短時間だけ
+///   保持することで、動いている間は安定して作用色に見えるようにする。
+const COVER_STAMP_DEBUG_HOLD_SEC: f32 = 0.25;
 
 // ============================================================
 //  カバー適用前のメッシュ基準値（変位の累積を防ぐキャッシュ）
@@ -314,10 +324,29 @@ impl App {
         //   Edit 中の轍オーサリングはスコープ外なので、シミュレートボタンでは動かさない
         //   （エミッタと違って「どこを歩いたか」は Play でしか生まれない情報である）。
         if play_running && step > 0.0 {
-            let stamps = self.collect_cover_stamps(step);
-            self.apply_cover_stamps(&stamps);
+            // 前フレームの「作用中」表示を先に減衰させる。押した事実はこのあと
+            // 上書きで立て直されるので、順序はこちらが先でなければならない。
+            self.decay_cover_stamp_debug(step);
+            let jobs = self.collect_cover_stamps(step);
+            self.apply_cover_stamps(&jobs);
         }
         t.elapsed().as_secs_f64() * MILLIS_PER_SEC
+    }
+
+    /// 轍スタンプ源の「作用中」表示を `dt` 秒ぶん減衰させる（デバッグ描画用）。
+    ///
+    /// 保持時間を使い切ったソースはマップから消す（＝ギズモは通常色へ戻る）。
+    /// 観測用の状態しか触らないので、シミュレーション結果には影響しない。
+    fn decay_cover_stamp_debug(&mut self, dt: f32) {
+        if self.terrain.cover_stamp_debug.is_empty() {
+            return;
+        }
+        let dt = dt.max(0.0);
+        self.terrain.cover_stamp_debug.retain(|_, d| {
+            d.stamped_hold = (d.stamped_hold - dt).max(0.0);
+            d.moving_hold = (d.moving_hold - dt).max(0.0);
+            d.stamped_hold > 0.0 || d.moving_hold > 0.0
+        });
     }
 
     // ─── ③-2 轍のスタンプ（I3.2）─────────────────────────────────────────────
@@ -330,7 +359,7 @@ impl App {
     ///   草の速度が壊れる。走査自体はアクタ木の DFS だけで軽く、
     ///   前フレーム位置も轍専用に持ったほうが「移動時のみスタンプ」を素直に書ける。
     ///   ＝**同じデータ（InteractionSource）を、別々の消費者が別々に読む**形にしてある。
-    fn collect_cover_stamps(&mut self, dt: f32) -> Vec<CoverStampSpec> {
+    fn collect_cover_stamps(&mut self, dt: f32) -> Vec<CoverStampJob> {
         // ─── ① シーン走査（読み取りのみ）───
         let raw = {
             let Some(scene) = self.scene.as_ref() else { return Vec::new() };
@@ -346,10 +375,12 @@ impl App {
         // ─── ② 消えたソースの追跡情報を捨てる（Play を跨いだ蓄積を防ぐ）───
         if raw.is_empty() {
             self.terrain.cover_stamp_tracks.clear();
+            self.terrain.cover_stamp_debug.clear();
             return Vec::new();
         }
         let alive: HashSet<u64> = raw.iter().map(|r| r.key).collect();
         self.terrain.cover_stamp_tracks.retain(|k, _| alive.contains(k));
+        self.terrain.cover_stamp_debug.retain(|k, _| alive.contains(k));
 
         // ─── ③ マスク画像を確保する（エミッタのマスクと同じキャッシュを使う）───
         for r in &raw {
@@ -381,6 +412,14 @@ impl App {
                 continue;
             }
 
+            // ─── デバッグ表示: 動いている＝インタラクションフィールド（草・波紋）へ
+            //     書き込んでいる状態。轍が押されたかどうかとは独立に記録する。
+            self.terrain
+                .cover_stamp_debug
+                .entry(r.key)
+                .or_default()
+                .moving_hold = COVER_STAMP_DEBUG_HOLD_SEC;
+
             let shape = match r.shape {
                 InteractionStampShape::Circle => CoverStampShape::Circle,
                 InteractionStampShape::Texture => {
@@ -397,11 +436,14 @@ impl App {
                     CoverStampShape::Texture { size: r.stamp_size, forward_xz: forward, mask }
                 }
             };
-            out.push(CoverStampSpec {
-                contact: r.world_pos,
-                radius: r.radius,
-                strength: r.strength,
-                shape,
+            out.push(CoverStampJob {
+                key: r.key,
+                spec: CoverStampSpec {
+                    contact: r.world_pos,
+                    radius: r.radius,
+                    strength: r.strength,
+                    shape,
+                },
             });
         }
         out
@@ -415,10 +457,15 @@ impl App {
     ///   既定 48 チャンクのうち触るのは 1〜4 個で済む。
     ///   触ったチャンクだけを既存の `queue_cover_apply` 経路へ載せるので、
     ///   頂点の焼き直しも接地点の周りだけに閉じる。
-    fn apply_cover_stamps(&mut self, stamps: &[CoverStampSpec]) {
-        if stamps.is_empty() {
+    fn apply_cover_stamps(&mut self, jobs: &[CoverStampJob]) {
+        if jobs.is_empty() {
             return;
         }
+        // 純粋層へ渡すのは仕様だけ（キーはデバッグ記録の紐づけにしか使わない）。
+        let stamps: Vec<CoverStampSpec> = jobs.iter().map(|j| j.spec.clone()).collect();
+        // どのスタンプが実際に場を変えたか（ギズモの「作用中」色替えの根拠）。
+        // 全チャンクぶんを OR で累積する。
+        let mut hits = vec![false; stamps.len()];
         let t = Instant::now();
         let settings = self.terrain.settings.clone();
         let extent = settings.chunk_extent();
@@ -453,13 +500,27 @@ impl App {
             let Some(surface) = self.terrain.cover_surface.get(&coord) else { continue };
             let origin = coord.world_origin(&settings);
             let Some(field) = self.terrain.cover.get_mut(&coord) else { continue };
-            if stamp_cover_chunk(field, surface, origin, extent, stamps, &materials) {
+            if stamp_cover_chunk_tracked(
+                field, surface, origin, extent, &stamps, &materials, &mut hits,
+            ) {
                 changed.push(coord);
             }
         }
         for coord in changed {
             self.terrain.cover_dirty.insert(coord);
             self.queue_cover_apply(coord);
+        }
+
+        // ─── ③ 「今まさに轍を押した」ソースを記録する（デバッグ描画用）───
+        for (job, hit) in jobs.iter().zip(hits.iter()) {
+            if !hit {
+                continue;
+            }
+            self.terrain
+                .cover_stamp_debug
+                .entry(job.key)
+                .or_default()
+                .stamped_hold = COVER_STAMP_DEBUG_HOLD_SEC;
         }
     }
 
@@ -1139,6 +1200,8 @@ impl App {
         // 轍の追跡情報（前フレーム位置・進行方向）は Play ごとに作り直す
         // （前回の Play の位置と突き合わせて巨大な移動量が出るのを防ぐ）。
         self.terrain.cover_stamp_tracks.clear();
+        // デバッグ表示の作用状態も Play をまたいで残さない。
+        self.terrain.cover_stamp_debug.clear();
         self.terrain.cover_play_snapshot = Some(self.terrain.cover.clone());
     }
 
@@ -1149,6 +1212,8 @@ impl App {
     pub(super) fn restore_cover_after_play(&mut self) {
         let Some(snapshot) = self.terrain.cover_play_snapshot.take() else { return };
         self.terrain.cover_stamp_tracks.clear();
+        // Stop した瞬間にギズモを通常色へ戻す（作用中の色が残らないように）。
+        self.terrain.cover_stamp_debug.clear();
         // Play 中に触れた（または Play 前から乗っていた）チャンクは全部焼き直す。
         let mut touched: HashSet<ChunkCoord> =
             self.terrain.cover.keys().copied().collect();
@@ -1266,6 +1331,44 @@ pub struct CoverStampTrack {
     pub last_pos: [f32; 3],
     /// 直近の進行方向（ワールド XZ の単位ベクトル）。静止中も保持する。
     pub forward: [f32; 2],
+}
+
+/// 轍スタンプ源の「今この瞬間の作用状況」（デバッグ描画専用の観測値）。
+///
+/// 【なぜ真偽値ではなく残り秒数なのか】
+///   押した／動いたという事実はフレーム単位で途切れる。真偽値のまま色にすると
+///   ギズモが 60Hz で明滅して読めないので、直近の事実を短時間だけ保持する
+///   （`COVER_STAMP_DEBUG_HOLD_SEC`）。0 になったソースはマップから消える。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CoverStampDebug {
+    /// 「轍を実際に押した」表示の残り時間（秒）。0 = 押していない。
+    pub stamped_hold: f32,
+    /// 「移動している（＝インタラクションフィールドへ書き込んでいる）」表示の
+    /// 残り時間（秒）。0 = 静止。
+    pub moving_hold: f32,
+}
+
+impl CoverStampDebug {
+    /// 轍を押している最中か（ギズモの最優先の色）。
+    pub fn is_stamping(&self) -> bool {
+        self.stamped_hold > 0.0
+    }
+
+    /// 移動中か（草・波紋へ書き込んでいる状態）。
+    pub fn is_moving(&self) -> bool {
+        self.moving_hold > 0.0
+    }
+}
+
+/// 1 ソース分のスタンプ依頼（純粋層へ渡す仕様 ＋ 記録用のソースキー）。
+///
+/// 純粋層（`trample.rs`）はキーを知る必要が無いので `CoverStampSpec` は
+/// キーを持たない。エンジン層だけが「どのソースの押下だったか」を追う。
+struct CoverStampJob {
+    /// ソースキー（`interaction::source_key`）。デバッグ表示の紐づけに使う。
+    key: u64,
+    /// ワールド解決済みのスタンプ仕様。
+    spec: CoverStampSpec,
 }
 
 /// アクタ走査で拾った轍スタンプ源の生データ。

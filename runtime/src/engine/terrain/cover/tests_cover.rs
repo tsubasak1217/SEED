@@ -17,7 +17,10 @@ use super::field::{
 };
 use super::material::{CoverMaterial, CoverMaterialSet};
 use super::tcover::{read_chunk, write_chunk, TcoverError, TCOVER_MAGIC, TCOVER_VERSION};
-use super::trample::{stamp_chunk, CoverStampShape, CoverStampSpec};
+use super::trample::{
+    resolve_forward_xz, stamp_chunk, stamp_chunk_tracked, CoverStampShape, CoverStampSpec,
+    COVER_STAMP_GROUND_SNAP_DROP,
+};
 use crate::engine::terrain::chunk_coord::ChunkCoord;
 use crate::engine::terrain::chunk_data::TerrainChunkData;
 use crate::engine::terrain::settings::TerrainSettings;
@@ -943,6 +946,237 @@ fn texture_stamp_rotates_with_direction() {
     };
     assert!(forward_x.footprint_at(1.0, 0.0) > 0.0, "回した先に痕が伸びる");
     assert_eq!(forward_x.footprint_at(0.0, 1.0), 0.0, "回した後の横方向には痕が無い");
+}
+
+// ============================================================
+//  7-2. 「動かしても轍が残らない」不具合の再現と回帰（I3.2 修正）
+//
+//  実機で報告された症状:
+//    「雪の上で InteractionSource を持つアクタを動かしても跡が残らない」
+//
+//  原因は Y 照合の窓が **上下対称**（|面の Y − ソースの Y| ≤ 半径）だったこと。
+//  ソースの Y はアクタの原点であり足裏ではないため、原点が腰にある人型・
+//  カプセル中心にあるキャラでは常に窓の外へ落ち、1 テクセルも押されなかった。
+//
+//  以下のテストはエンジン層（app/terrain_cover_ops.rs）の経路を素材だけ差し替えて
+//  再現する:
+//    ① 実チャンク座標のワールド原点で `is_outside_aabb` によるチャンク選別
+//    ② 選ばれたチャンクへ `stamp_chunk` を適用
+//  修正前はどちらかの段で必ず落ちる（＝痕が付かない）。
+// ============================================================
+
+/// 既定設定における「面を持つチャンク」の座標（地面平面 density = ワールド Y）。
+///
+/// 面がちょうど y=0 に来るので、個体側＝ y=-16..0 のチャンク（y 添字 -1）が
+/// メッシュも面情報も持つ（`flat_surface` のコメントと同じ理由）。
+const TEST_GROUND_CHUNK: ChunkCoord = ChunkCoord { x: 0, y: -1, z: 0 };
+
+/// 人型キャラクターのモデル原点が地面より高い典型値（腰の高さ・メートル）。
+const TEST_ACTOR_ORIGIN_HEIGHT: f32 = 0.9;
+
+/// 足跡サイズのソース半径（メートル）。許容差の下限より大きく、原点の浮きより小さい。
+const TEST_FOOT_RADIUS: f32 = 0.4;
+
+/// エンジン層と同じチャンク選別を行い、選ばれた場合だけスタンプを適用する。
+///
+/// `apply_cover_stamps` の ①（AABB 交差でチャンクを絞る）と
+/// ②（`stamp_cover_chunk` を呼ぶ）を、そのままの順序で再現したもの。
+/// 戻り値は「このチャンクのカバー場が変化したか」。
+fn engine_like_apply(
+    field: &mut CoverField,
+    surface: &CoverSurface,
+    coord: ChunkCoord,
+    settings: &TerrainSettings,
+    stamps: &[CoverStampSpec],
+    materials: &CoverMaterialSet,
+) -> bool {
+    let extent = settings.chunk_extent();
+    let origin = coord.world_origin(settings);
+    let max = [origin[0] + extent, origin[1] + extent, origin[2] + extent];
+    // ① チャンク選別（1 つも掛からなければエンジン層はこのチャンクに触らない）。
+    if !stamps.iter().any(|s| !s.is_outside_aabb(origin, max)) {
+        return false;
+    }
+    // ② 押し当て。
+    stamp_chunk(field, surface, origin, extent, stamps, materials)
+}
+
+/// **再現テスト**: アクタの原点が地面より高くても轍が押されること。
+///
+/// 修正前はチャンク選別を通っても Y 照合で全テクセルが落ち、`changed == false`
+/// になっていた（＝実機で「跡が残らない」）。
+#[test]
+fn stamp_reaches_ground_from_raised_actor_origin() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+
+    // 面は y=0。アクタの原点は腰の高さ（0.9m）にあり、足跡サイズの半径を持つ。
+    let stamps = vec![circle_stamp(
+        [extent * 0.5, TEST_SURFACE_Y + TEST_ACTOR_ORIGIN_HEIGHT, extent * 0.5],
+        TEST_FOOT_RADIUS,
+        1.0,
+    )];
+    // 前提の確認: 原点の浮きは上下対称の許容差（= 半径）を確かに超えている。
+    assert!(
+        TEST_ACTOR_ORIGIN_HEIGHT > stamps[0].y_tolerance(),
+        "この浮き幅が対称窓を超えていないと再現テストにならない"
+    );
+
+    let changed = engine_like_apply(
+        &mut field, &surface, TEST_GROUND_CHUNK, &settings, &stamps, &test_materials(),
+    );
+    assert!(changed, "原点が地面より高いアクタでも轍が押されること");
+    let mid = COVER_FIELD_RESOLUTION / 2;
+    assert!(field.trample_at(mid, mid) > 0.0, "接地点の真下が踏み固められること");
+}
+
+/// 接地スナップの下方向は `半径 + COVER_STAMP_GROUND_SNAP_DROP` までであること。
+///
+/// これ以上浮いたソース（空を飛んでいる・高い足場の上）は地面を踏まない。
+#[test]
+fn ground_snap_stops_beyond_documented_drop() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let materials = test_materials();
+
+    // 窓のちょうど内側 / ちょうど外側を、境界の両側で確かめる。
+    let reach = TEST_FOOT_RADIUS.max(0.25) + COVER_STAMP_GROUND_SNAP_DROP;
+    let inside = [extent * 0.5, TEST_SURFACE_Y + reach * 0.99, extent * 0.5];
+    let outside = [extent * 0.5, TEST_SURFACE_Y + reach * 1.01, extent * 0.5];
+
+    let mut f_in = snowy_field_at(TEST_SURFACE_Y);
+    assert!(
+        engine_like_apply(
+            &mut f_in, &surface, TEST_GROUND_CHUNK, &settings,
+            &[circle_stamp(inside, TEST_FOOT_RADIUS, 1.0)], &materials,
+        ),
+        "探索距離の内側は踏む"
+    );
+
+    let mut f_out = snowy_field_at(TEST_SURFACE_Y);
+    assert!(
+        !engine_like_apply(
+            &mut f_out, &surface, TEST_GROUND_CHUNK, &settings,
+            &[circle_stamp(outside, TEST_FOOT_RADIUS, 1.0)], &materials,
+        ),
+        "探索距離の外側は踏まない（浮いている物は地面に痕を残さない）"
+    );
+}
+
+/// 面がソースより **上** にある場合は踏まないこと（Y 照合の目的は保たれている）。
+///
+/// 洞窟の床（下段）を歩いた轍が頭上の地表（上段）へ写らないための不変条件。
+/// 接地スナップは下方向にしか広げていないので、この性質は変わらない。
+#[test]
+fn ground_snap_never_stamps_ceiling_above_source() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+
+    // ソースは面の 3m 下（洞窟の中）。上方向の許容差は半径どまりなので届かない。
+    let stamps = vec![circle_stamp(
+        [extent * 0.5, TEST_SURFACE_Y - 3.0, extent * 0.5],
+        TEST_FOOT_RADIUS,
+        1.0,
+    )];
+    assert!(
+        !engine_like_apply(
+            &mut field, &surface, TEST_GROUND_CHUNK, &settings, &stamps, &test_materials(),
+        ),
+        "ソースより上の面は踏まない（頭上の地表への漏れ防止）"
+    );
+}
+
+/// **再現テスト（統合）**: 雪のチャンクの上を原点の浮いたソースが歩くと、
+/// 経路に沿って複数テクセルの轍が残ること。
+///
+/// エンジン層の毎フレーム処理（前フレーム位置の追跡 → 移動量 → 進行方向 →
+/// スタンプ → チャンク選別 → 押し当て）を 1 本のループで再現する。
+#[test]
+fn moving_source_leaves_a_trail_of_footprints() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+    let materials = test_materials();
+
+    // 60Hz で 1m/s ＝ 1 フレーム 1/60 m 進む。チャンク中央を X 方向へ横断する。
+    let dt = 1.0 / 60.0;
+    let speed = 1.0;
+    let frames = 120; // 2 秒ぶん = 2m
+    let start_x = extent * 0.5 - 1.0;
+    let z = extent * 0.5;
+
+    let mut previous: Option<[f32; 3]> = None;
+    let mut forward: Option<[f32; 2]> = None;
+    let mut stamped_frames = 0u32;
+    for i in 0..frames {
+        let pos = [
+            start_x + speed * dt * i as f32,
+            TEST_SURFACE_Y + TEST_ACTOR_ORIGIN_HEIGHT,
+            z,
+        ];
+        // 初出フレームは移動量が無いのでスタンプしない（エンジン層と同じ規則）。
+        let Some(prev) = previous.replace(pos) else { continue };
+        let delta = [pos[0] - prev[0], pos[2] - prev[2]];
+        forward = Some(resolve_forward_xz(delta, dt, forward));
+        let stamps = vec![circle_stamp(pos, TEST_FOOT_RADIUS, 1.0)];
+        if engine_like_apply(
+            &mut field, &surface, TEST_GROUND_CHUNK, &settings, &stamps, &materials,
+        ) {
+            stamped_frames += 1;
+        }
+    }
+
+    assert!(stamped_frames > 0, "移動中のどこかで必ず場が変わること");
+
+    // 経路（z 一定・x が 2m ぶん）に沿って複数のテクセルが踏まれていること。
+    let row = COVER_FIELD_RESOLUTION / 2;
+    let trail = (0..COVER_FIELD_RESOLUTION)
+        .filter(|&ix| field.trample_at(ix, row) > 0.0)
+        .count();
+    assert!(
+        trail >= 4,
+        "2m の移動経路に沿って轍が続くこと（踏まれたテクセル数 = {trail}）"
+    );
+    // 経路から離れた隅は踏まれない（＝全面塗りつぶしではない）。
+    assert_eq!(field.trample_at(0, 0), 0.0, "経路の外は踏まれない");
+}
+
+/// `stamp_chunk_tracked` が「実際に場を変えたスタンプ」だけを記録すること。
+///
+/// ギズモの「作用中」色替えが、押した瞬間だけを意味するための契約。
+#[test]
+fn tracked_stamp_reports_only_effective_sources() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+    let materials = test_materials();
+
+    // 0 番: チャンク中央を踏むソース。1 番: 遠く離れていて何も踏まないソース。
+    let stamps = vec![
+        circle_stamp([extent * 0.5, TEST_SURFACE_Y, extent * 0.5], 1.0, 1.0),
+        circle_stamp([extent * 10.0, TEST_SURFACE_Y, extent * 10.0], 1.0, 1.0),
+    ];
+    let mut hits = vec![false; stamps.len()];
+    assert!(stamp_chunk_tracked(
+        &mut field, &surface, [0.0, -extent, 0.0], extent, &stamps, &materials, &mut hits,
+    ));
+    assert!(hits[0], "踏んだソースは記録される");
+    assert!(!hits[1], "届かないソースは記録されない");
+
+    // 同じ場所をもう一度踏んでも深さが変わらなければ「作用中」にはならない。
+    let mut hits2 = vec![false; stamps.len()];
+    let changed = stamp_chunk_tracked(
+        &mut field, &surface, [0.0, -extent, 0.0], extent, &stamps, &materials, &mut hits2,
+    );
+    assert!(!changed, "同じ深さの踏み直しは場を変えない");
+    assert!(!hits2[0], "場が変わらないフレームは作用中にしない");
 }
 
 // ============================================================
