@@ -484,11 +484,20 @@ const TERRAIN_UNDO_MAX: usize = 32;
 ///
 /// 触ったチャンクのみを before/after として保持する（全チャンクをスナップショットすると
 /// 1 チャンクあたり 33³×4byte ≒ 143KB と重いため、ストロークで実際に触れたチャンクに限定する）。
+///
+/// 【密度側とカバー側は独立】
+///   密度／ペイントのストローク由来のエントリでは `cover_before/cover_after` が空、
+///   カバー場の操作（シミュレート・全消去）由来のエントリでは `before/after` が空になる。
+///   1 エントリに両方が入ることは無い（操作の入口が別々のため）。
 pub struct TerrainEdit {
     /// ストローク開始時点のチャンク状態（chunk coord -> スナップショット）。
     pub before: HashMap<ChunkCoord, ChunkSnapshot>,
     /// ストローク終了時点のチャンク状態（chunk coord -> スナップショット）。
     pub after: HashMap<ChunkCoord, ChunkSnapshot>,
+    /// カバー場の編集前の状態（**変化のあったチャンクのみ**）。密度／ペイント編集では空。
+    pub cover_before: HashMap<ChunkCoord, crate::engine::terrain::cover::CoverField>,
+    /// カバー場の編集後の状態（**変化のあったチャンクのみ**）。密度／ペイント編集では空。
+    pub cover_after: HashMap<ChunkCoord, crate::engine::terrain::cover::CoverField>,
 }
 
 /// undo/redo 用の 1 チャンク分スナップショット（密度＋スプラット）。
@@ -683,6 +692,12 @@ pub struct TerrainState {
     pub cover_apply_timer: f32,
     /// Play 開始時に退避した Edit のカバー場（Stop で書き戻す＝Play 中の積算は揮発）。
     pub cover_play_snapshot: Option<super::terrain_cover_ops::CoverFieldMap>,
+    /// カバー場編集セッションの開始時スナップショット（None = セッション未開始）。
+    ///
+    /// 「1 操作 = 1 Undo 単位」にするための控えである。連続シミュレートは
+    /// 「開始〜停止」の間ぜんぶを 1 セッション（= undo スタックの 1 エントリ）として扱うため、
+    /// 開始時点の全カバー場をここへ複製し、停止時に現在値と突き合わせて差分を取る。
+    pub cover_undo_session_before: Option<super::terrain_cover_ops::CoverFieldMap>,
 
     // ─── 物理コリジョン（地形の静的トライメッシュコライダー）─────────────────
     /// チャンク → そのチャンクに対応する物理コライダーの entity_id。
@@ -769,6 +784,7 @@ impl Default for TerrainState {
             cover_sim_running: false,
             cover_apply_timer: 0.0,
             cover_play_snapshot: None,
+            cover_undo_session_before: None,
             chunk_collider_ids: HashMap::new(),
             next_terrain_collider_id: TERRAIN_COLLIDER_ENTITY_BASE,
 
@@ -3636,20 +3652,74 @@ impl App {
                 }
             }
 
-            self.terrain.undo_stack.push(TerrainEdit { before, after });
-            // 上限を超えたら最古のエントリを破棄する（無制限にメモリを食わせない）。
-            if self.terrain.undo_stack.len() > TERRAIN_UNDO_MAX {
-                self.terrain.undo_stack.remove(0);
-            }
-            // 新しい編集が確定したので、以前の undo から辿れた redo 履歴は無効化する
-            // （シーン全体の UndoHistory と同じ規約）。
-            self.terrain.redo_stack.clear();
+            // 密度／ペイントのストロークなのでカバー場側の差分は持たない（空マップ）。
+            self.push_terrain_edit(TerrainEdit {
+                before,
+                after,
+                cover_before: HashMap::new(),
+                cover_after: HashMap::new(),
+            });
         }
         self.terrain.stroke_active = false;
     }
 
+    /// 確定済みの編集を terrain 専用 undo スタックへ積む（上限処理・redo 破棄つき）。
+    ///
+    /// 密度ストロークの確定（`handle_terrain_stroke_end`）とカバー場セッションの確定
+    /// （`commit_cover_undo_session`）が同じ規約で積むための共通処理。
+    pub(super) fn push_terrain_edit(&mut self, edit: TerrainEdit) {
+        self.terrain.undo_stack.push(edit);
+        // 上限を超えたら最古のエントリを破棄する（無制限にメモリを食わせない）。
+        if self.terrain.undo_stack.len() > TERRAIN_UNDO_MAX {
+            self.terrain.undo_stack.remove(0);
+        }
+        // 新しい編集が確定したので、以前の undo から辿れた redo 履歴は無効化する
+        // （シーン全体の UndoHistory と同じ規約）。
+        self.terrain.redo_stack.clear();
+    }
+
+    /// カバー場のスナップショット群を現在の地形へ書き戻す（undo / redo 共通）。
+    ///
+    /// 書き戻しに伴い次の 3 つを更新する:
+    ///   ① `cover`          … 実体そのもの
+    ///   ② `cover_dirty`    … .tcover の保存対象（巻き戻した状態を保存させる）
+    ///   ③ `cover_pending_apply` … 頂点への焼き直し予約
+    ///
+    /// 【`remesh_chunks` を呼ばない理由】
+    ///   カバー場は密度場を一切変えないので、メッシュを作り直す必要が無い。
+    ///   むしろ再メッシュはカバーの派生キャッシュ（`cover_surface` / `cover_base_mesh`）を
+    ///   捨てるため、無駄な再計算を招くだけである。頂点への反映は
+    ///   `apply_pending_cover` の経路（②③）だけで完結する。
+    fn restore_cover_snapshots(
+        &mut self,
+        snapshots: &HashMap<ChunkCoord, crate::engine::terrain::cover::CoverField>,
+    ) {
+        if snapshots.is_empty() {
+            return;
+        }
+        for (&coord, field) in snapshots {
+            // 密度側の undo と同じく、チャンクが存在する場合のみ書き戻す。
+            // セッション中にハイトマップ再読込等でチャンク集合が作り直されると、
+            // スナップショットに「今は存在しないチャンク」が残りうる。無条件に insert すると
+            // 幽霊チャンクのカバー場が復活し、保存時に不要な .tcover を書いてしまう。
+            if !self.terrain.chunks.contains_key(&coord) {
+                continue;
+            }
+            self.terrain.cover.insert(coord, field.clone());
+            self.terrain.cover_dirty.insert(coord);
+            self.terrain.cover_pending_apply.insert(coord);
+        }
+        // 巻き戻しは待たせる意味が無いので、次フレームで即座に焼き直す
+        // （`handle_terrain_cover_clear` と同じ流儀）。
+        self.terrain.cover_apply_timer = super::terrain_cover_ops::COVER_APPLY_INTERVAL_SEC;
+    }
+
     /// terrain 専用 undo（TERRAIN_UNDO）。undo_stack から直近のエントリを取り出し、
     /// 各チャンクの密度を before（編集前）へ書き戻して再メッシュ化し、redo_stack へ積む。
+    ///
+    /// カバー場（I3.1）由来のエントリでは密度側が空なので `remesh_chunks` は
+    /// 空スライスで呼ばれる＝入口で早期 return する（no-op）。カバー場の巻き戻しは
+    /// `restore_cover_snapshots` が担当する。
     pub(super) fn handle_terrain_undo(&mut self) {
         let Some(edit) = self.terrain.undo_stack.pop() else {
             return;
@@ -3676,6 +3746,11 @@ impl App {
         self.restick_scatter_for_chunks(&touched);
         // 密度が戻った＝ショアフィールドの焼き直し対象（Phase W1.5）。
         self.terrain_edit_version += 1;
+        // ── カバー場（I3.1）を編集前へ戻す ──
+        //   密度側とは独立しており、カバー由来のエントリでは cover_before のみが埋まる。
+        //   SCENE_MODIFIED は送らない（密度側の undo/redo も送っていない既存流儀に合わせる。
+        //   未保存であることは cover_dirty / terrain のダーティ管理が保持する）。
+        self.restore_cover_snapshots(&edit.cover_before);
         self.terrain.redo_stack.push(edit);
     }
 
@@ -3697,6 +3772,8 @@ impl App {
         self.restick_scatter_for_chunks(&touched);
         // undo と同じ理由（Phase W1.5）。
         self.terrain_edit_version += 1;
+        // undo と対称にカバー場を編集後へ進める（I3.1）。
+        self.restore_cover_snapshots(&edit.cover_after);
         self.terrain.undo_stack.push(edit);
     }
 

@@ -43,6 +43,7 @@ use crate::engine::terrain::cover::{
 };
 
 use super::terrain_mesh_build::rebuild_terrain_model_with_cover;
+use super::terrain_ops::TerrainEdit;
 use super::App;
 
 // ─── アセットの所在（props.json / layers.json と同じ流儀）─────────────────────
@@ -61,7 +62,8 @@ const COVER_MATERIALS_PATH_ENV: &str = "SEED_TERRAIN_COVER_MATERIALS";
 /// 「チャンクの全頂点を作り直して GPU へ再アップロード」であり、可視チャンク数に
 /// 比例して重い。雪が積もる速さに対して 10Hz で十分に滑らかに見えるため、
 /// ここで間引く（1 フレームぶんの積み増しは肉眼では判別できない）。
-const COVER_APPLY_INTERVAL_SEC: f32 = 0.1;
+/// （undo/redo の巻き戻しでも同じ即時反映の流儀を使うため `pub(super)`。）
+pub(super) const COVER_APPLY_INTERVAL_SEC: f32 = 0.1;
 
 /// Edit のシミュレートボタンで「秒数指定」したときの標準の 1 ステップ時間（秒）。
 ///
@@ -88,8 +90,10 @@ const COVER_SIMULATE_MAX_STEPS: u32 = 600;
 /// （既定強度 0.2/秒 なら 5 秒で満量）。非有限値・負値の防波堤も兼ねる。
 const COVER_SIMULATE_MAX_SECONDS: f32 = 3600.0;
 
-/// シミュレートの秒数入力がこの値以下なら「連続シミュレート（再生形式）」とみなす。
-const COVER_SIMULATE_CONTINUOUS_THRESHOLD: f32 = 0.0;
+/// 即時ステップ（`TERRAIN_COVER_STEP`）で意味を持つ最小の秒数。
+///
+/// これ以下（0 秒・負値）が来ても何も積もらないので、計算も通知もせず素通しする。
+const COVER_STEP_MIN_SECONDS: f32 = 0.0;
 
 /// 連続シミュレート中の 1 フレームあたりの時間刻み上限（秒）。
 ///
@@ -500,13 +504,51 @@ impl App {
         true
     }
 
-    // ─── IPC ハンドラ（シミュレート / 停止 / 全消去）─────────────────────────
+    // ─── Undo セッション（1 操作 = 1 Undo 単位）──────────────────────────────
 
-    /// カバー場の Edit シミュレート（`TERRAIN_COVER_SIMULATE:{seconds}`）。
+    /// カバー場編集セッションを開始する。
     ///
-    /// - `seconds > 0`: その秒数ぶんを **即時**（このフレーム内）計算して停止する
-    /// - `seconds <= 0`: 停止コマンドが来るまで毎フレーム積算する（再生形式）
+    /// 開始時点の `terrain.cover` を丸ごと複製して控える（既定 48 チャンクで約 96KB
+    /// ＝ 1 チャンク 2KB 強なので無視できる）。密度側の `stroke_before` が
+    /// 「触ったチャンクだけ」を控えるのに対し丸ごと控えるのは、カバー積算が
+    /// エミッタの届く全チャンクへ同時に効く（＝どこが変わるか事前に分からない）ためである。
     ///
+    /// **既に開始済みなら何もしない**。連続シミュレート中に「N 秒進める」を押しても
+    /// 開始時点の before を上書きせず、停止までを 1 つの undo 単位に畳み込むための規約。
+    fn begin_cover_undo_session(&mut self) {
+        if self.terrain.cover_undo_session_before.is_some() {
+            return;
+        }
+        self.terrain.cover_undo_session_before = Some(self.terrain.cover.clone());
+    }
+
+    /// カバー場編集セッションを確定し、変化があれば undo スタックへ 1 エントリ積む。
+    ///
+    /// セッション未開始（`None`）なら何もしない。差分が 1 件も無い場合も
+    /// **何も積まない**（「開始してすぐ停止した」で undo 履歴を汚さない）。
+    fn commit_cover_undo_session(&mut self) {
+        let Some(before) = self.terrain.cover_undo_session_before.take() else {
+            return;
+        };
+        let (cover_before, cover_after) = diff_cover_fields(&before, &self.terrain.cover);
+        if cover_before.is_empty() {
+            // 変化なし。空のコマンドを積むと Ctrl+Z が「何も起きない 1 回」を消費する。
+            return;
+        }
+        // カバー場だけの編集なので密度／ペイント側は空マップ（TerrainEdit のコメント参照）。
+        self.push_terrain_edit(TerrainEdit {
+            before: HashMap::new(),
+            after: HashMap::new(),
+            cover_before,
+            cover_after,
+        });
+    }
+
+    // ─── IPC ハンドラ（連続開始 / 停止 / 即時ステップ / 全消去）───────────────
+
+    /// カバー場のリアルタイム連続シミュレートを開始する（`TERRAIN_COVER_SIM_START`）。
+    ///
+    /// 停止コマンドが来るまで毎フレーム積算する（実際の積算は `tick_cover` が行う）。
     /// 結果は編集データとしてカバー場へ書かれ、`TERRAIN_SAVE` の保存対象になる。
     ///
     /// 【素材定義をここで読み直さない理由】
@@ -515,17 +557,40 @@ impl App {
     ///   「変位は新しい定義・色は古い定義」というちぐはぐが生じ、素材を増減させた
     ///   場合は添字までずれる。cover_materials.json の反映は layers.json と同じ
     ///   `TERRAIN_RELOAD_LAYERS`（地形設定ウィンドウの保存）に一本化する。
-    pub(super) fn handle_terrain_cover_simulate(&mut self, seconds: f32) {
-        // ─── 連続シミュレート（秒数入力なし）───
-        if !(seconds > COVER_SIMULATE_CONTINUOUS_THRESHOLD) {
-            self.terrain.cover_sim_running = true;
-            if let Some(ipc) = &self.ipc {
-                ipc.send("TERRAIN_COVER_SIMULATE_OK:running");
-            }
+    pub(super) fn handle_terrain_cover_sim_start(&mut self) {
+        // 開始〜停止のあいだ全部で 1 つの undo 単位にする。
+        self.begin_cover_undo_session();
+        self.terrain.cover_sim_running = true;
+        if let Some(ipc) = &self.ipc {
+            ipc.send("TERRAIN_COVER_SIM_STARTED");
+        }
+    }
+
+    /// カバー場の連続シミュレートを停止する（`TERRAIN_COVER_SIM_STOP`）。
+    ///
+    /// 停止と同時にセッションを確定し、開始時点からの差分を 1 つの undo エントリにする。
+    pub(super) fn handle_terrain_cover_sim_stop(&mut self) {
+        self.terrain.cover_sim_running = false;
+        self.commit_cover_undo_session();
+        if let Some(ipc) = &self.ipc {
+            ipc.send("TERRAIN_COVER_SIM_STOPPED");
+            ipc.send("SCENE_MODIFIED");
+        }
+    }
+
+    /// カバー場を指定秒数ぶん即時計算する（`TERRAIN_COVER_STEP:{seconds}`）。
+    ///
+    /// 「押したら計算して止まる」操作であり、連続シミュレートは開始しない。
+    pub(super) fn handle_terrain_cover_step(&mut self, seconds: f32) {
+        // 0 秒以下は何も積もらないので素通しする（空の undo エントリも作らない）。
+        if !(seconds > COVER_STEP_MIN_SECONDS) {
             return;
         }
 
-        // ─── 秒数指定: 有限ステップ数で一気に回す ───
+        // 連続シミュレート中なら既存セッションに畳み込まれる（多重開始しない）。
+        self.begin_cover_undo_session();
+
+        // ─── 有限ステップ数で一気に回す ───
         //   刻みは「60Hz 相当」を基本とし、指定秒数が長い場合だけ
         //   ステップ数を上限で頭打ちにして刻み幅のほうを伸ばす
         //   （合計量は刻み幅に依らないので結果は変わらない。定数コメント参照）。
@@ -538,29 +603,26 @@ impl App {
         for _ in 0..steps {
             self.accumulate_cover(&emitters, step_dt);
         }
-        // 秒数指定は「押したら計算して止まる」なので、連続シミュレートは開始しない。
-        self.terrain.cover_sim_running = false;
         // 即時計算なので焼き直しの間引きを待たずに反映する。
         self.terrain.cover_apply_timer = COVER_APPLY_INTERVAL_SEC;
 
+        // 【セッションを確定するかどうかの判断】
+        //   連続シミュレート中に押されたぶんは「再生の成果」の一部なので、
+        //   ここでは確定せず停止時（SIM_STOP）の 1 コマンドに含める。
+        //   停止中に押されたぶんだけが独立した 1 undo 単位になる。
+        if !self.terrain.cover_sim_running {
+            self.commit_cover_undo_session();
+        }
+
         let ms = t.elapsed().as_secs_f64() * MILLIS_PER_SEC;
         eprintln!(
-            "[SEED terrain] cover simulate: {seconds:.2}s in {steps} steps, \
+            "[SEED terrain] cover step: {seconds:.2}s in {steps} steps, \
              emitters={} chunks={} ({ms:.1}ms)",
             emitters.len(),
             self.terrain.cover.len()
         );
         if let Some(ipc) = &self.ipc {
-            ipc.send(&format!("TERRAIN_COVER_SIMULATE_OK:{steps}"));
-            ipc.send("SCENE_MODIFIED");
-        }
-    }
-
-    /// 連続シミュレートを停止する（`TERRAIN_COVER_SIMULATE_STOP`）。
-    pub(super) fn handle_terrain_cover_simulate_stop(&mut self) {
-        self.terrain.cover_sim_running = false;
-        if let Some(ipc) = &self.ipc {
-            ipc.send("TERRAIN_COVER_SIMULATE_STOPPED");
+            ipc.send(&format!("TERRAIN_COVER_STEP_OK:{steps}"));
             ipc.send("SCENE_MODIFIED");
         }
     }
@@ -569,8 +631,17 @@ impl App {
     ///
     /// 消したチャンクは「未保存」になるので、`TERRAIN_SAVE` で
     /// ディスク上の .tcover も削除される（消したはずの雪が復活しない）。
+    ///
+    /// 【連続シミュレート中に押された場合】
+    ///   先に停止してそこまでの成果を 1 つの undo エントリとして確定してから消去する。
+    ///   こうすると「再生の成果」と「全消去」が別々の Ctrl+Z になり、
+    ///   消去だけを取り消して積もった状態へ戻れる。
     pub(super) fn handle_terrain_cover_clear(&mut self) {
-        self.terrain.cover_sim_running = false;
+        self.stop_cover_sim_and_commit();
+
+        // 消去そのものを独立した 1 undo 単位にする。
+        self.begin_cover_undo_session();
+
         let coords: Vec<ChunkCoord> = self.terrain.cover.keys().copied().collect();
         for coord in coords {
             if let Some(field) = self.terrain.cover.get_mut(&coord) {
@@ -584,9 +655,27 @@ impl App {
         }
         // 消去は待たせる意味が無いので、次フレームで即座に焼き直す。
         self.terrain.cover_apply_timer = COVER_APPLY_INTERVAL_SEC;
+        // 消去を 1 つの undo エントリとして確定する（消す物が無ければ何も積まれない）。
+        self.commit_cover_undo_session();
         if let Some(ipc) = &self.ipc {
             ipc.send("TERRAIN_COVER_CLEARED");
             ipc.send("SCENE_MODIFIED");
+        }
+    }
+
+    /// 連続シミュレートが動いていれば停止し、そこまでの成果を undo エントリとして確定する。
+    ///
+    /// ユーザーの停止操作以外（全消去・Play 開始）で連続シミュレートが終わる場合の共通処理。
+    /// エディタのトグルボタンを▶へ戻すため、**必ず** `TERRAIN_COVER_SIM_STOPPED` を送る。
+    /// 動いていなければ何もしない（不要な通知を撒かない）。
+    pub(super) fn stop_cover_sim_and_commit(&mut self) {
+        if !self.terrain.cover_sim_running {
+            return;
+        }
+        self.terrain.cover_sim_running = false;
+        self.commit_cover_undo_session();
+        if let Some(ipc) = &self.ipc {
+            ipc.send("TERRAIN_COVER_SIM_STOPPED");
         }
     }
 
@@ -664,9 +753,15 @@ impl App {
     ///
     /// メモリは 1 チャンク 2KB 強（32×32×2 バイト）なので、丸ごと複製して構わない。
     pub(super) fn snapshot_cover_for_play(&mut self) {
-        self.terrain.cover_play_snapshot = Some(self.terrain.cover.clone());
         // Play 中に Edit のシミュレートが動き続けると二重に積もるので必ず止める。
-        self.terrain.cover_sim_running = false;
+        //
+        // 【ここで undo セッションも確定する理由】
+        //   Play 中の積算は揮発する（＝Undo 対象外）ため、セッションが Play を跨ぐと
+        //   「Stop 後に Ctrl+Z したら Play 前の状態まで一気に戻る」ような
+        //   ちぐはぐな 1 エントリが出来てしまう。Play へ入る前に締めておく。
+        //   エディタのトグルボタンを▶へ戻すため SIM_STOPPED も送られる。
+        self.stop_cover_sim_and_commit();
+        self.terrain.cover_play_snapshot = Some(self.terrain.cover.clone());
     }
 
     /// Play 終了時に Edit のカバー場へ戻す。
@@ -784,6 +879,44 @@ fn collect_cover_in_actor(
 /// チャンク → カバー場のマップ（`.tcover` の実体）。
 pub type CoverFieldMap = HashMap<ChunkCoord, CoverField>;
 
+// ============================================================
+//  Undo 差分抽出（純粋関数）
+// ============================================================
+
+/// カバー場セッションの before / after を突き合わせ、**変化したチャンクだけ**を抜き出す。
+///
+/// 戻り値は `(cover_before, cover_after)` で、どちらも同じキー集合を持つ。
+/// これをそのまま `TerrainEdit` へ載せると undo/redo が対称に働く。
+///
+/// 【「そのチャンクにカバー場が無かった」の表現】
+///   欠落キーは `CoverField::new()`（全ゼロ）で埋める。空のカバー場は保存時に
+///   .tcover ファイルごと削除される（＝存在しないのと等価）ので、
+///   「無かった」と「全部ゼロ」を区別する必要が無い。この規約のおかげで
+///   新規に積もったチャンク／全消去されたチャンクも分岐なしに扱える。
+///
+/// App に依存しない純粋関数として切り出してあり、単体テストできる。
+fn diff_cover_fields(
+    before: &CoverFieldMap,
+    after: &CoverFieldMap,
+) -> (CoverFieldMap, CoverFieldMap) {
+    let mut out_before = CoverFieldMap::new();
+    let mut out_after = CoverFieldMap::new();
+
+    // 両者のキーの **和集合** を走査する（新規追加も消滅も取りこぼさない）。
+    let coords: HashSet<ChunkCoord> = before.keys().chain(after.keys()).copied().collect();
+    for coord in coords {
+        let before_field = before.get(&coord).cloned().unwrap_or_default();
+        let after_field = after.get(&coord).cloned().unwrap_or_default();
+        // CoverField: PartialEq（素材添字と量の完全一致）で比較する。
+        if before_field == after_field {
+            continue;
+        }
+        out_before.insert(coord, before_field);
+        out_after.insert(coord, after_field);
+    }
+    (out_before, out_after)
+}
+
 // ─── ユニットテスト ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -843,5 +976,83 @@ mod tests {
         // 0 に近い指定でも 0 除算せず 1 ステップになる。
         let (steps, _) = plan(1.0e-6);
         assert_eq!(steps, 1);
+    }
+
+    // ─── Undo 差分抽出（diff_cover_fields）────────────────────────────────
+
+    /// テスト用: 指定テクセルへ素材を積んだカバー場を作る。
+    fn field_with_deposit(material_index: u8, amount: f32) -> CoverField {
+        let mut f = CoverField::new();
+        f.deposit(0, 0, material_index, amount);
+        f
+    }
+
+    /// 変化していないチャンクは差分に含まれないこと（空コマンドを作らない）。
+    #[test]
+    fn diff_cover_fields_ignores_unchanged_chunks() {
+        let coord = ChunkCoord::new(1, 0, 2);
+        let mut before = CoverFieldMap::new();
+        before.insert(coord, field_with_deposit(1, 0.5));
+        // まったく同じ内容の after。
+        let after = before.clone();
+
+        let (b, a) = diff_cover_fields(&before, &after);
+        assert!(b.is_empty(), "変化なしなら before 側は空");
+        assert!(a.is_empty(), "変化なしなら after 側は空");
+    }
+
+    /// 新規に積もったチャンクは before が「空フィールド」として記録されること。
+    ///
+    /// これにより undo で「積もる前＝何も無い」状態へ正しく戻せる。
+    #[test]
+    fn diff_cover_fields_treats_missing_before_as_empty_field() {
+        let coord = ChunkCoord::new(0, 0, 0);
+        let before = CoverFieldMap::new(); // このチャンクにはカバー場が無かった
+        let mut after = CoverFieldMap::new();
+        after.insert(coord, field_with_deposit(2, 0.75));
+
+        let (b, a) = diff_cover_fields(&before, &after);
+        assert_eq!(b.len(), 1);
+        assert_eq!(a.len(), 1);
+        assert!(b[&coord].is_empty(), "before は全ゼロのカバー場");
+        assert!(!a[&coord].is_empty(), "after は積もった状態");
+    }
+
+    /// 消去されたチャンクは after が「空フィールド」として記録されること。
+    ///
+    /// 全消去（`TERRAIN_COVER_CLEAR`）の undo が成立するための条件。
+    #[test]
+    fn diff_cover_fields_treats_cleared_after_as_empty_field() {
+        let coord = ChunkCoord::new(-3, 0, 4);
+        let mut before = CoverFieldMap::new();
+        before.insert(coord, field_with_deposit(0, 1.0));
+        let mut after = CoverFieldMap::new();
+        after.insert(coord, CoverField::new()); // clear() 後の状態
+
+        let (b, a) = diff_cover_fields(&before, &after);
+        assert_eq!(b.len(), 1);
+        assert!(!b[&coord].is_empty(), "before は積もった状態");
+        assert!(a[&coord].is_empty(), "after は全ゼロのカバー場");
+    }
+
+    /// 変化したチャンクだけが抜き出され、before / after のキー集合が一致すること。
+    #[test]
+    fn diff_cover_fields_extracts_only_changed_chunks() {
+        let unchanged = ChunkCoord::new(0, 0, 0);
+        let changed = ChunkCoord::new(1, 0, 0);
+        let mut before = CoverFieldMap::new();
+        before.insert(unchanged, field_with_deposit(1, 0.5));
+        before.insert(changed, field_with_deposit(1, 0.5));
+        let mut after = before.clone();
+        after.insert(changed, field_with_deposit(1, 0.9));
+
+        let (b, a) = diff_cover_fields(&before, &after);
+        assert_eq!(b.len(), 1, "変化した 1 チャンクだけ");
+        assert!(b.contains_key(&changed));
+        assert!(!b.contains_key(&unchanged));
+        // undo/redo が対称に働くための不変条件。
+        let keys_b: HashSet<ChunkCoord> = b.keys().copied().collect();
+        let keys_a: HashSet<ChunkCoord> = a.keys().copied().collect();
+        assert_eq!(keys_b, keys_a, "before と after のキー集合は一致する");
     }
 }

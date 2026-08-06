@@ -180,6 +180,19 @@ public partial class InspectorPanel : UserControl
 
     public event Action? TransformCommitted;
 
+    // ── 地表カバー場のシミュレート状態 ──────────────────────
+    //   インスペクタ UI はアクタ選択のたびに作り直されるため、稼働状態は
+    //   ボタン自身ではなくパネルのフィールドが保持する（再構築時にここから復元する）。
+
+    /// <summary>カバー場のリアルタイムシミュレートが動いているか（ランタイム通知で更新）。</summary>
+    private bool _coverSimRunning;
+    /// <summary>
+    /// 現在表示中のカバー場 再生/停止トグルボタン。
+    /// UI 再構築で失効するので、通知を受けて更新する前に必ず null チェックすること
+    /// （別コンポーネント選択中に通知が来ても落ちないようにする）。
+    /// </summary>
+    private Button? _coverSimToggleBtn;
+
     // ── Runtime binding ──────────────────────────────────────
 
     /// <summary>アセットルートパスを設定する（仮想パス変換に使用）。</summary>
@@ -196,6 +209,7 @@ public partial class InspectorPanel : UserControl
             _runtime.ControlPointSelected    -= OnControlPointSelected;
             _runtime.ControlPointDeselected  -= OnControlPointDeselected;
             _runtime.BindableSourcesReceived -= OnBindableSourcesReceived;
+            _runtime.TerrainCoverSimRunningChanged -= OnCoverSimRunningChanged;
         }
         _runtime = runtime;
         _runtime.SelectionChanged        += OnSelectionChanged;
@@ -205,6 +219,35 @@ public partial class InspectorPanel : UserControl
         _runtime.ControlPointSelected    += OnControlPointSelected;
         _runtime.ControlPointDeselected  += OnControlPointDeselected;
         _runtime.BindableSourcesReceived += OnBindableSourcesReceived;
+        _runtime.TerrainCoverSimRunningChanged += OnCoverSimRunningChanged;
+    }
+
+    /// <summary>
+    /// カバー場のリアルタイムシミュレートの稼働状態通知を受け、トグル表示を合わせる。
+    ///
+    /// 停止通知はユーザーの停止操作以外（全消去・Play 開始）でも飛ぶため、
+    /// 送信時に自前で反転させず、この通知だけを表示の根拠にしている。
+    /// IPC はワーカースレッドから来るので Dispatcher へマーシャリングする。
+    /// </summary>
+    private void OnCoverSimRunningChanged(bool running)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            _coverSimRunning = running;
+            ApplyCoverSimToggleVisual();
+        });
+    }
+
+    /// <summary>
+    /// 再生/停止トグルの表示（記号・ToolTip）を _coverSimRunning に合わせて塗り直す。
+    /// UI 再構築直後の復元と、ランタイム通知の受信の両方から呼ぶ。
+    /// ボタンが無い（別コンポーネントを選択中など）ときは何もしない。
+    /// </summary>
+    private void ApplyCoverSimToggleVisual()
+    {
+        if (_coverSimToggleBtn is null) return;
+        _coverSimToggleBtn.Content = _coverSimRunning ? CoverSimStopGlyph : CoverSimPlayGlyph;
+        _coverSimToggleBtn.ToolTip = _coverSimRunning ? CoverSimStopToolTip : CoverSimPlayToolTip;
     }
 
     /// <summary>
@@ -649,8 +692,28 @@ public partial class InspectorPanel : UserControl
     private const float CoverStrengthDefault = 0.2f;
     /// <summary>有効フラグの既定値。</summary>
     private const bool CoverEnabledDefault = true;
-    /// <summary>シミュレート秒数入力の既定表示（空 = 連続シミュレート）。</summary>
-    private const string CoverSimulateSecondsDefault = "";
+    /// <summary>
+    /// 「秒進める」の秒数入力の既定表示。
+    /// 既定強度 0.2/秒 で満量になる 5 秒（Rust 側 CoverEmitter の既定強度と対応）。
+    /// </summary>
+    private const string CoverSimulateSecondsDefault = "5";
+    /// <summary>再生/停止トグルの「停止中（押すと再生）」表示。</summary>
+    private const string CoverSimPlayGlyph = "▶";
+    /// <summary>再生/停止トグルの「再生中（押すと停止）」表示。</summary>
+    private const string CoverSimStopGlyph = "■";
+    /// <summary>再生/停止トグルの停止中の ToolTip。</summary>
+    private const string CoverSimPlayToolTip =
+        "リアルタイムに積もらせ続けます（秒数欄とは無関係）。もう一度押すと止まります。";
+    /// <summary>再生/停止トグルの再生中の ToolTip。</summary>
+    private const string CoverSimStopToolTip =
+        "リアルタイムシミュレートを止めます。開始からここまでが 1 回の Ctrl+Z で戻ります。";
+    /// <summary>再生/停止トグルの幅（px）。記号 1 文字ぶんの正方形に近い見た目にする。</summary>
+    private const double CoverSimToggleWidth = 28;
+    /// <summary>
+    /// 「秒進める」が意味を持つ最小の秒数（これ以下ならボタンを無効化する）。
+    /// Rust 側 COVER_STEP_MIN_SECONDS と一致させること（超過のみ有効＝0 は無効）。
+    /// </summary>
+    private const float CoverStepMinSeconds = 0f;
 
     // ── ControlPointComponent（フェーズB）の定数 ───────────────
     // 川・巡回ルート・カメラパスなど用途中立の「順序付き点列」を編集するための定数群。
@@ -6572,7 +6635,7 @@ public partial class InspectorPanel : UserControl
     ///
     /// 構成は 2 セクション:
     ///   ・「カバーエミッタ」… 範囲種別と、種別に応じたパラメータ（無関係な項目は非表示）
-    ///   ・「シミュレート」  … Edit で積算を回すボタン群（秒数入力・停止・全消去）
+    ///   ・「シミュレート」  … Edit で積算を回す操作（再生/停止トグル・秒進める・全消去）
     ///
     /// 変更時は SET_COVER_FIELD:{actor},{slot},{key},{value} を送信する。
     /// 中心位置はアクタの Transform から解決されるため UI には現れない
@@ -6735,19 +6798,25 @@ public partial class InspectorPanel : UserControl
         var simSection = BuildSection("シミュレート（編集）");
         var simBody    = (StackPanel)simSection.Child;
 
+        // ── ②-1 リアルタイム再生/停止トグル ──
+        //   秒数入力とは完全に独立した操作（秒数は読まない）。
+        //   表示（▶ / ■）はランタイムからの SIM_STARTED / SIM_STOPPED 通知だけで切り替える。
         var simRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
-        var simBtn = new Button
+        var toggleBtn = new Button
         {
-            Content = "シミュレート", FontSize = 11, Height = 22,
-            Padding = new Thickness(8, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center,
-            ToolTip = "秒数を入れるとその秒数ぶんを即座に計算して止まります。空欄なら停止するまで積もり続けます。",
+            FontSize = 11, Height = 22, Width = CoverSimToggleWidth,
+            Padding = new Thickness(0), VerticalAlignment = VerticalAlignment.Center,
         };
-        simRow.Children.Add(simBtn);
-        simRow.Children.Add(new TextBlock
-        {
-            Text = "秒数", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
-            FontSize = 11, Margin = new Thickness(8, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center,
-        });
+        // 生成した時点で現在のボタンとして登録し、フィールドの状態から表示を復元する
+        // （アクタを選び直しても再生中なら ■ のまま出る）。
+        _coverSimToggleBtn = toggleBtn;
+        ApplyCoverSimToggleVisual();
+        toggleBtn.Click += (_, _) =>
+            _runtime?.SendToRuntime(_coverSimRunning ? "TERRAIN_COVER_SIM_STOP" : "TERRAIN_COVER_SIM_START");
+        simRow.Children.Add(toggleBtn);
+
+        // ── ②-2 「秒進める」＋秒数入力 ──
+        //   入力された秒数ぶんだけ即時計算して止まる（連続再生は始まらない）。
         var secondsBox = new TextBox
         {
             Text            = CoverSimulateSecondsDefault,
@@ -6758,36 +6827,53 @@ public partial class InspectorPanel : UserControl
             FontSize        = 11,
             Padding         = new Thickness(4, 1, 4, 1),
             Width           = 56,
-            ToolTip         = "空欄 = 停止まで連続シミュレート",
+            ToolTip         = "即時計算する秒数。0 以下や空欄では「秒進める」は押せません。",
+            Margin          = new Thickness(8, 0, 4, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
         NumericDragBehavior.SetEnabled(secondsBox, true);
         simRow.Children.Add(secondsBox);
-        simBtn.Click += (_, _) =>
+
+        var stepBtn = new Button
         {
-            // 秒数が読めなければ 0 を送る＝ランタイム側は「連続シミュレート」と解釈する。
-            var seconds = float.TryParse(secondsBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
-                ? v : 0f;
-            _runtime?.SendToRuntime($"TERRAIN_COVER_SIMULATE:{seconds.ToString(CultureInfo.InvariantCulture)}");
+            Content = "秒進める", FontSize = 11, Height = 22,
+            Padding = new Thickness(8, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = "入力した秒数ぶんを即座に計算して止まります（連続再生は始まりません）。",
         };
+
+        // 秒数として読めない／0 以下ならボタンを無効化する。
+        // 入力のたびに評価し直し、初期表示でも 1 回評価しておく。
+        bool TryReadStepSeconds(out float seconds)
+        {
+            seconds = 0f;
+            return float.TryParse(secondsBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out seconds)
+                   && seconds > CoverStepMinSeconds;
+        }
+        void UpdateStepEnabled() => stepBtn.IsEnabled = TryReadStepSeconds(out _);
+        secondsBox.TextChanged += (_, _) => UpdateStepEnabled();
+        UpdateStepEnabled();
+
+        stepBtn.Click += (_, _) =>
+        {
+            // 無効時は押せないので、ここに来た時点で必ず読める（読めなければ何もしない）。
+            if (!TryReadStepSeconds(out var seconds)) return;
+            _runtime?.SendToRuntime($"TERRAIN_COVER_STEP:{seconds.ToString(CultureInfo.InvariantCulture)}");
+        };
+        simRow.Children.Add(stepBtn);
         simBody.Children.Add(simRow);
 
+        // ── ②-3 全消去 ──
         var ctrlRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
-        var stopBtn = new Button
-        {
-            Content = "停止", FontSize = 11, Height = 22,
-            Padding = new Thickness(10, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center,
-            ToolTip = "連続シミュレートを止めます。",
-        };
-        stopBtn.Click += (_, _) => _runtime?.SendToRuntime("TERRAIN_COVER_SIMULATE_STOP");
-        ctrlRow.Children.Add(stopBtn);
-
         var clearBtn = new Button
         {
             Content = "全消去", FontSize = 11, Height = 22,
-            Padding = new Thickness(10, 0, 10, 0), Margin = new Thickness(8, 0, 0, 0),
+            Padding = new Thickness(10, 0, 10, 0),
             VerticalAlignment = VerticalAlignment.Center,
-            ToolTip = "全チャンクのカバー場を消します（取り消せません）。",
+            // Undo 対応済み。ただし Ctrl+Z がカバー場へ届くのは
+            // 「地形編集モード中にシーンビューポートへフォーカスがある」ときだけ
+            // （MainWindow.Input.cs：この条件のときのみ TERRAIN_UNDO を送る）。
+            ToolTip = "全チャンクのカバー場を消します。"
+                    + "地形編集モード中にシーンビューを選んだ状態で Ctrl+Z を押すと元に戻せます。",
         };
         clearBtn.Click += (_, _) => _runtime?.SendToRuntime("TERRAIN_COVER_CLEAR");
         ctrlRow.Children.Add(clearBtn);

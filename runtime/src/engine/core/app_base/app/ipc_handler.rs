@@ -380,13 +380,17 @@ impl App {
                     // 進行中のブラシストロークを 1 undo エントリとして確定する。
                     self.handle_terrain_stroke_end();
                 }
-                IpcCommand::TerrainCoverSimulate { seconds } => {
-                    // カバー場（I3.1）の Edit シミュレート。
-                    // seconds > 0 なら即時計算、0 以下なら停止まで連続。
-                    self.handle_terrain_cover_simulate(seconds);
+                IpcCommand::TerrainCoverSimStart => {
+                    // カバー場（I3.1）のリアルタイム連続シミュレート開始。
+                    self.handle_terrain_cover_sim_start();
                 }
-                IpcCommand::TerrainCoverSimulateStop => {
-                    self.handle_terrain_cover_simulate_stop();
+                IpcCommand::TerrainCoverSimStop => {
+                    // 連続シミュレート停止（開始〜停止で 1 undo エントリが確定する）。
+                    self.handle_terrain_cover_sim_stop();
+                }
+                IpcCommand::TerrainCoverStep { seconds } => {
+                    // 指定秒数ぶんを即時計算して停止する。
+                    self.handle_terrain_cover_step(seconds);
                 }
                 IpcCommand::TerrainCoverClear => {
                     self.handle_terrain_cover_clear();

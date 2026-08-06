@@ -314,11 +314,12 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::TerrainReloadLayers
         // カバー場のシミュレート・消去は地形データの編集であり、
         // インスペクタのフィールド編集（Ctrl+Z 対象）ではない。
-        // 【既知の制限】カバー場は terrain 専用 undo スタック（TerrainEdit）にも
-        // 積んでいない。誤って消去した場合は保存前ならシーンを開き直す、
-        // 保存後なら再シミュレートで作り直す（docs/cover_field.md に明記）。
-        | IpcCommand::TerrainCoverSimulate { .. }
-        | IpcCommand::TerrainCoverSimulateStop
+        // これらは terrain 専用 undo スタック（TerrainEdit の cover_before/cover_after）
+        // に積まれ、TERRAIN_UNDO / TERRAIN_REDO で巻き戻せる
+        //（連続シミュレートは「開始〜停止」がまとめて 1 エントリになる）。
+        | IpcCommand::TerrainCoverSimStart
+        | IpcCommand::TerrainCoverSimStop
+        | IpcCommand::TerrainCoverStep { .. }
         | IpcCommand::TerrainCoverClear
         | IpcCommand::TerrainHeightmap { .. }
         | IpcCommand::TerrainScatterRules { .. }
