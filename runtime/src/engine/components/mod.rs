@@ -36,6 +36,8 @@ pub mod water_volume_component;
 pub mod water_link_component;
 /// インタラクションソース（Phase I1: 動く物が草・水・雪泥の共有場へ書き込む宣言）
 pub mod interaction_source_component;
+/// カバーエミッタ（Phase I3.1: 地表カバー場へ雪・落ち葉・濡れを降らせる宣言）
+pub mod cover_emitter_component;
 /// コントロールポイント（汎用パス: 川・巡回ルート・カメラパスの共通土台）
 pub mod control_point_component;
 
@@ -69,6 +71,9 @@ pub use skybox_component::{SkyboxComponent, SkyboxComponentData, SkyboxMode};
 pub use water_volume_component::{WaterVolumeComponent, WaterVolumeComponentData, WaterVolumeKind};
 pub use water_link_component::{WaterLinkComponent, WaterLinkComponentData};
 pub use interaction_source_component::{InteractionSourceComponent, InteractionSourceComponentData};
+pub use cover_emitter_component::{
+    CoverEmitterComponent, CoverEmitterComponentData, CoverEmitterRangeKind,
+};
 pub use control_point_component::{
     ControlPoint, ControlPointComponent, ControlPointComponentData, ControlPointInterp,
     DEFAULT_TIME_STEP as CONTROL_POINT_DEFAULT_TIME_STEP, MAX_CONTROL_POINTS,
@@ -132,6 +137,8 @@ pub enum ComponentKind {
     WaterLink,
     /// インタラクションソース（動く物 → 瞬発場への書き手。草の揺れ・水の波紋を駆動）
     InteractionSource,
+    /// カバーエミッタ（地表カバー場への書き手。雪・落ち葉・濡れを降らせる。I3.1）
+    CoverEmitter,
     /// コントロールポイント（汎用パス。川・巡回ルート・カメラパスが共用する点列）
     ControlPoint,
 }
@@ -160,6 +167,7 @@ impl ComponentKind {
             Self::WaterVolume => "WaterVolumeComponent",
             Self::WaterLink   => "WaterLinkComponent",
             Self::InteractionSource => "InteractionSourceComponent",
+            Self::CoverEmitter => "CoverEmitterComponent",
             Self::ControlPoint => "ControlPointComponent",
         }
     }
@@ -207,6 +215,8 @@ pub enum ComponentData {
     WaterLinkComponent(WaterLinkComponentData),
     /// インタラクションソース（瞬発場への書き手）
     InteractionSourceComponent(InteractionSourceComponentData),
+    /// カバーエミッタ（地表カバー場への書き手。I3.1）
+    CoverEmitterComponent(CoverEmitterComponentData),
     /// コントロールポイント（汎用パスの点列）
     ControlPointComponent(ControlPointComponentData),
 }

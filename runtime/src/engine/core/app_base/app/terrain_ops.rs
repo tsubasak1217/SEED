@@ -101,7 +101,7 @@ const PERF_LOG_ENV: &str = "SEED_PERF_LOG";
 ///
 /// フレーム描画側は 60 フレームに 1 回へ間引いているが、地形編集は間欠的（ドラッグ中のみ）で
 /// 1 回 1 回が重いため、**再メッシュが起きたら毎回出す**。間引くと肝心のスパイクを取り逃す。
-static PERF_TERRAIN_LOG_ENABLED: std::sync::LazyLock<bool> =
+pub(super) static PERF_TERRAIN_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os(PERF_LOG_ENV).is_some());
 
 /// 地形コライダー生成の計測ログ（`[PERF terrain phys]` 行）を出すか。`SEED_PERF_LOG` で有効化。
@@ -660,6 +660,30 @@ pub struct TerrainState {
     /// ルール散布の大域シード（決定性の要。UI から変えられる）。
     pub scatter_seed: u64,
 
+    // ─── 地表カバー場（Terrain I3.1。実装は terrain_cover_ops.rs）───────────────
+    /// カバー素材定義（assets/terrain/cover_materials.json 由来。読めなければ既定 3 種）。
+    pub cover_materials: crate::engine::terrain::cover::CoverMaterialSet,
+    /// cover_materials.json の警告を出したか（毎フレーム同じ警告でログを埋めないため）。
+    pub cover_materials_warned: bool,
+    /// チャンク → カバー場（.tcover の実体。素材添字＋量の 1 層）。
+    pub cover: HashMap<ChunkCoord, crate::engine::terrain::cover::CoverField>,
+    /// カバー場が編集されて未保存のチャンク集合（handle_terrain_save でクリア）。
+    pub cover_dirty: HashSet<ChunkCoord>,
+    /// カバー場を頂点へ焼き直す必要があるチャンク集合（apply_pending_cover が消化）。
+    pub cover_pending_apply: HashSet<ChunkCoord>,
+    /// チャンク → 地表情報（密度場からの派生キャッシュ。再メッシュで捨てる）。
+    pub cover_surface: HashMap<ChunkCoord, crate::engine::terrain::cover::CoverSurface>,
+    /// チャンク → カバー適用前のメッシュ基準値（変位の累積を防ぐ。再メッシュで捨てる）。
+    pub cover_base_mesh: HashMap<ChunkCoord, super::terrain_cover_ops::CoverBaseMesh>,
+    /// マスク画像パス → デコード済みグレースケール（読み込み失敗も「無効」として記録する）。
+    pub cover_mask_cache: HashMap<String, crate::engine::terrain::cover::CoverMask>,
+    /// Edit の連続シミュレート（インスペクタのシミュレートボタン）が動作中か。
+    pub cover_sim_running: bool,
+    /// 頂点焼き直しの間引きタイマー（秒）。
+    pub cover_apply_timer: f32,
+    /// Play 開始時に退避した Edit のカバー場（Stop で書き戻す＝Play 中の積算は揮発）。
+    pub cover_play_snapshot: Option<super::terrain_cover_ops::CoverFieldMap>,
+
     // ─── 物理コリジョン（地形の静的トライメッシュコライダー）─────────────────
     /// チャンク → そのチャンクに対応する物理コライダーの entity_id。
     ///
@@ -734,6 +758,17 @@ impl Default for TerrainState {
             scatter_prop: 0,
             scatter_seed: DEFAULT_SCATTER_SEED,
 
+            cover_materials: crate::engine::terrain::cover::CoverMaterialSet::default(),
+            cover_materials_warned: false,
+            cover: HashMap::new(),
+            cover_dirty: HashSet::new(),
+            cover_pending_apply: HashSet::new(),
+            cover_surface: HashMap::new(),
+            cover_base_mesh: HashMap::new(),
+            cover_mask_cache: HashMap::new(),
+            cover_sim_running: false,
+            cover_apply_timer: 0.0,
+            cover_play_snapshot: None,
             chunk_collider_ids: HashMap::new(),
             next_terrain_collider_id: TERRAIN_COLLIDER_ENTITY_BASE,
 
@@ -1663,6 +1698,12 @@ impl App {
     /// この場合 G-Buffer パスは地形専用パイプラインへ切り替えないため、
     /// レイヤ色は出ないが描画自体は通常マテリアルで成立する（安全側）。
     pub(super) fn ensure_terrain_layers(&mut self) {
+        // ── ⓪ カバー素材定義も読み直す（I3.1）──
+        //   カバー素材表はレイヤ uniform（group3）へ同居させているため、
+        //   レイヤ GPU リソースを作り直すこの経路が唯一の反映点である。
+        //   ここで読まないと cover_materials.json の差し替えが色・粗さに効かない。
+        self.ensure_cover_materials();
+
         // ── ① 定義を読む（アセットが無ければ既定セット）──
         //   環境変数 SEED_TERRAIN_LAYERS が指定されていればそちらを優先する（検証用フック）。
         let source = std::env::var(TERRAIN_LAYERS_PATH_ENV)
@@ -1709,6 +1750,8 @@ impl App {
                 &ctx.queue,
                 &ctx.pipelines.gbuffer.terrain.layer_bgl,
                 &set,
+                // カバー素材表（I3.1）も同じ uniform に載る。レイヤと同時に作り直す。
+                &self.terrain.cover_materials,
             )
         });
 
@@ -2840,6 +2883,9 @@ impl App {
             // ペイント保留も同様に取り消す。フル再メッシュは頂点カラーも作り直すため、
             // 直後にペイント高速パスを走らせるのは完全に無駄（結果も同一）になる。
             self.terrain.pending_paint.remove(coord);
+            // カバー場（I3.1）の派生データ（地表情報・メッシュ基準値）を捨てる。
+            // 積もった量そのものは保持する（少し掘っただけで積雪が消えるのは直感に反する）。
+            self.invalidate_cover_for_remesh(*coord);
         }
 
         let t_total = Instant::now();
@@ -3484,6 +3530,16 @@ impl App {
         // 未保存マーク（借用が解けてから立てる）。
         for coord in &painted {
             self.terrain.dirty.insert(*coord);
+            // ── カバー場（I3.1）の平均アルベドを取り戻す ──
+            //   高速パスは `chunk_avg_albedo`（レイヤ重みだけから作る値）で
+            //   マテリアルの平均アルベドを作り直すため、カバーの寄与が消える。
+            //   頂点位置・uv0（カバー情報）は `..*v` で引き継がれるので絵は変わらないが、
+            //   水面反射・RT 反射・DDGI が使う縮退色だけが「雪の無い地面」に戻ってしまう。
+            //   カバーが乗っているチャンクは焼き直しへ回して整合を取り戻す
+            //   （基準メッシュは無効化しない＝再メッシュではないので基準は今も正しい）。
+            if self.terrain.cover.get(coord).is_some_and(|f| !f.is_empty()) {
+                self.terrain.cover_pending_apply.insert(*coord);
+            }
         }
 
         // ── ⑨ フォールバック対象はまとめてフル再メッシュへ回す ──
@@ -3686,12 +3742,17 @@ impl App {
         //   次回ロードで消したはずの草が復活する。
         let (scatter_written, scatter_removed) = self.save_terrain_scatter(&dir);
 
+        // ── カバー場（.tcover）を .tvox の隣へ保存する（I3.1）──
+        //   散布と同じ理由で別ファイル・同時保存。量 0 のチャンクはファイルを **削除** する
+        //   （残すと次回ロードで消したはずの雪が復活する）。
+        let (cover_written, cover_removed) = self.save_terrain_cover(&dir);
+
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("TERRAIN_SAVE_OK:{count}"));
         }
         if *PERF_TERRAIN_LOG_ENABLED {
             eprintln!(
-                "[SEED terrain] save: tvox={count} tscatter written={scatter_written} removed={scatter_removed}"
+                "[SEED terrain] save: tvox={count} tscatter written={scatter_written} removed={scatter_removed}                  tcover written={cover_written} removed={cover_removed}"
             );
         }
     }
@@ -3888,6 +3949,14 @@ impl App {
         //   プロップ定義も併せて読む（インスタンスの prop_id を解決するのに要る）。
         self.ensure_terrain_props();
         self.load_terrain_scatter(&scatter_paths);
+
+        // ── フェーズ 1.6: カバー場（.tcover）を読む（I3.1）──
+        //   散布と同じく、ファイルが無いのはエラーではない（カバー機能より前に
+        //   保存されたシーンには存在しない）。素材定義（cover_materials.json）は
+        //   このあとのフェーズ 2 で `ensure_terrain_layers` が読み直す
+        //   （素材表は GPU のレイヤ uniform に同居しており、CPU と GPU の両方を
+        //     同時に更新できる経路がそこしか無いため）。
+        self.load_terrain_cover(&scatter_paths);
 
         // ── フェーズ 2: 全チャンク読込後にメッシュ化（隣接読みが揃った状態で継ぎ目を正しく作る）──
         //   レイヤ定義もここで読み直す（.tvox v1 のようにスプラットを持たないデータでも

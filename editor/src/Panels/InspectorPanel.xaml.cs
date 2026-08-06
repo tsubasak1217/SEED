@@ -632,6 +632,26 @@ public partial class InspectorPanel : UserControl
     /// <summary>有効フラグの既定値。</summary>
     private const bool InteractionEnabledDefault = true;
 
+    // ── CoverEmitterComponent の既定値（Phase I3.1）────────────
+    // Rust 側 CoverEmitterComponentData の既定値と厳密に一致させること。
+
+    /// <summary>範囲種別の既定値。追加した瞬間に世界中が雪で埋まらないよう Region。</summary>
+    private const string CoverRangeKindDefault = "Region";
+    /// <summary>直方体の各軸半径の既定値（m）。既定チャンク 1 個ぶん（16m）の半分。</summary>
+    private const float CoverExtentDefault = 8f;
+    /// <summary>境界フェード幅の既定値（m）。0 だと縁に直線が出る。</summary>
+    private const float CoverFadeDefault = 1f;
+    /// <summary>マスク矩形の XZ サイズの既定値（m）。</summary>
+    private const float CoverMaskSizeDefault = 32f;
+    /// <summary>素材 ID の既定値（cover_materials.json の先頭素材）。</summary>
+    private const string CoverMaterialIdDefault = "snow";
+    /// <summary>強度の既定値（量/秒）。0.2 = 5 秒で満量。</summary>
+    private const float CoverStrengthDefault = 0.2f;
+    /// <summary>有効フラグの既定値。</summary>
+    private const bool CoverEnabledDefault = true;
+    /// <summary>シミュレート秒数入力の既定表示（空 = 連続シミュレート）。</summary>
+    private const string CoverSimulateSecondsDefault = "";
+
     // ── ControlPointComponent（フェーズB）の定数 ───────────────
     // 川・巡回ルート・カメラパスなど用途中立の「順序付き点列」を編集するための定数群。
     // Rust 側 ControlPointComponent の定数と必ず一致させること。
@@ -871,7 +891,21 @@ public partial class InspectorPanel : UserControl
         // 制御点配列は「生 JSON 文字列」のまま保持する。1 点が position/rotation/time/interp の
         // 4 属性を持つため、独自の区切り記法（"x,y,z;..." 等）を作るとエスケープと拡張で破綻する。
         // PeColorCurvesJson と同じく JSON をそのまま往復させ、送信時も JSON 配列で全置換する。
-        string ControlPointsJson = "[]");
+        string ControlPointsJson = "[]",
+        // ── CoverEmitterComponent 用フィールド（Phase I3.1）──
+        // 範囲種別・範囲パラメータ・素材 ID・強度・有効フラグ。
+        // 既定値は Rust 側 CoverEmitterComponentData と一致。
+        string CoverRangeKind = CoverRangeKindDefault,
+        float CoverExtentsX = CoverExtentDefault,
+        float CoverExtentsY = CoverExtentDefault,
+        float CoverExtentsZ = CoverExtentDefault,
+        float CoverFade = CoverFadeDefault,
+        string CoverMaskPath = "",
+        float CoverMaskSizeX = CoverMaskSizeDefault,
+        float CoverMaskSizeZ = CoverMaskSizeDefault,
+        string CoverMaterialId = CoverMaterialIdDefault,
+        float CoverStrength = CoverStrengthDefault,
+        bool CoverEnabled = CoverEnabledDefault);
 
     private List<SlotInfo> _slotInfos = new();
 
@@ -1352,6 +1386,23 @@ public partial class InspectorPanel : UserControl
             // ControlPointComponent 用（フェーズB）: 制御点配列を生 JSON のまま保持する。
             // 要素は {"position":[x,y,z],"rotation":[x,y,z],"time":t,"interp":"..."}。欠落時は空配列。
             var controlPointsJson = comp.TryGetProperty("points", out var cpp) ? cpp.GetRawText() : "[]";
+            // CoverEmitterComponent 用（Phase I3.1）。欠落時は Rust 側既定値と一致する定数へ。
+            var coverRangeKind  = comp.TryGetProperty("range_kind",  out var ck)  ? ck.GetString() ?? CoverRangeKindDefault : CoverRangeKindDefault;
+            var coverExtentsX   = comp.TryGetProperty("extents_x",   out var cex) ? cex.GetSingle() : CoverExtentDefault;
+            var coverExtentsY   = comp.TryGetProperty("extents_y",   out var cey) ? cey.GetSingle() : CoverExtentDefault;
+            var coverExtentsZ   = comp.TryGetProperty("extents_z",   out var cez) ? cez.GetSingle() : CoverExtentDefault;
+            var coverFade       = comp.TryGetProperty("fade",        out var cf)  ? cf.GetSingle()  : CoverFadeDefault;
+            var coverMaskPath   = comp.TryGetProperty("mask_path",   out var cmp) ? cmp.GetString() ?? "" : "";
+            var coverMaskSizeX  = comp.TryGetProperty("mask_size_x", out var cmx) ? cmx.GetSingle() : CoverMaskSizeDefault;
+            var coverMaskSizeZ  = comp.TryGetProperty("mask_size_z", out var cmz) ? cmz.GetSingle() : CoverMaskSizeDefault;
+            var coverMaterialId = comp.TryGetProperty("material_id", out var cmi) ? cmi.GetString() ?? CoverMaterialIdDefault : CoverMaterialIdDefault;
+            // 【重要】強度のキーは "cover_strength"。InteractionSource の "strength" と
+            // 同名にすると、同一スロットの JSON では衝突しないものの、
+            // 読み違いの温床になるため型ごとに別名を割り当てている。
+            var coverStrength   = comp.TryGetProperty("cover_strength", out var cs) ? cs.GetSingle() : CoverStrengthDefault;
+            // 【重要】キーは "emitter_enabled"。スロット共通の "enabled"(数値0/1)と
+            // キー重複させると GetProperty が数値側を返し GetBoolean() が例外になる。
+            var coverEnabled    = comp.TryGetProperty("emitter_enabled", out var ce) ? ce.GetBoolean() : CoverEnabledDefault;
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 AutoScale: autoScale,
@@ -1461,7 +1512,16 @@ public partial class InspectorPanel : UserControl
                 InteractionRadius: interactRadius, InteractionStrength: interactStrength,
                 InteractionEnabled: interactEnabled,
                 // ControlPointComponent 用フィールド
-                ControlPointsJson: controlPointsJson);
+                ControlPointsJson: controlPointsJson,
+                // CoverEmitterComponent 用フィールド（I3.1）
+                CoverRangeKind: coverRangeKind,
+                CoverExtentsX: coverExtentsX, CoverExtentsY: coverExtentsY, CoverExtentsZ: coverExtentsZ,
+                CoverFade: coverFade,
+                CoverMaskPath: coverMaskPath,
+                CoverMaskSizeX: coverMaskSizeX, CoverMaskSizeZ: coverMaskSizeZ,
+                CoverMaterialId: coverMaterialId,
+                CoverStrength: coverStrength,
+                CoverEnabled: coverEnabled);
             _slotInfos.Add(info);
 
             // アコーディオンにパラメータ編集エリアを追加（ヘッダーがリネーム・削除・複製・選択を兼ねる）
@@ -1581,6 +1641,7 @@ public partial class InspectorPanel : UserControl
         "WaterVolumeComponent" => Color.FromRgb(0x0E, 0x2A, 0x3A), // 暗い青（水）
         "WaterLinkComponent"  => Color.FromRgb(0x14, 0x22, 0x3A), // 暗い青紫（水の暗青と区別できるトーン。開口＝リンクの意味合い）
         "InteractionSourceComponent" => Color.FromRgb(0x18, 0x30, 0x18), // 暗い緑（草・環境への干渉）
+        "CoverEmitterComponent" => Color.FromRgb(0x2E, 0x2E, 0x38), // 明るめの灰青（雪・地表を覆うもの）
         "ControlPointComponent" => Color.FromRgb(0x24, 0x1E, 0x38), // 暗い紫（汎用パス。水の暗青・草の暗緑と識別できる色）
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
@@ -1605,6 +1666,7 @@ public partial class InspectorPanel : UserControl
         "WaterVolumeComponent" => "Water Volume",
         "WaterLinkComponent"  => "Water Link",
         "InteractionSourceComponent" => "Interaction Source",
+        "CoverEmitterComponent" => "Cover Emitter",
         "ControlPointComponent" => "Control Point",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
@@ -1874,6 +1936,7 @@ public partial class InspectorPanel : UserControl
             "WaterVolumeComponent" => BuildWaterVolumeSlotContent(info),
             "WaterLinkComponent"  => BuildWaterLinkSlotContent(info),
             "InteractionSourceComponent" => BuildInteractionSourceSlotContent(info),
+            "CoverEmitterComponent" => BuildCoverEmitterSlotContent(info),
             "ControlPointComponent" => BuildControlPointSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
@@ -6502,6 +6565,246 @@ public partial class InspectorPanel : UserControl
         // OLE のドロップが届かなかった場合のみ、カーソル位置から復元して送る。
         // （ドロップターゲットの登録に失敗している環境などへの保険）
         mainWindow.TryAddControlPointAtCursor(_currentActorId, slotIdx);
+    }
+
+    /// <summary>
+    /// CoverEmitterComponent のインスペクター UI を構築して返す（Phase I3.1）。
+    ///
+    /// 構成は 2 セクション:
+    ///   ・「カバーエミッタ」… 範囲種別と、種別に応じたパラメータ（無関係な項目は非表示）
+    ///   ・「シミュレート」  … Edit で積算を回すボタン群（秒数入力・停止・全消去）
+    ///
+    /// 変更時は SET_COVER_FIELD:{actor},{slot},{key},{value} を送信する。
+    /// 中心位置はアクタの Transform から解決されるため UI には現れない
+    /// （＝アクタを動かすだけで降る場所が動く。docs/cover_field.md）。
+    /// </summary>
+    private UIElement BuildCoverEmitterSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // フィールド変更をランタイムへ送信するローカル関数。
+        void SendField(string key, string value)
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_COVER_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
+        }
+
+        // 数値入力行。行の作り（値域が確定していればスライダー）と「⟲ 既定値に戻す」は
+        // 共通入口 BuildResettableFloatRow に一任する。
+        //
+        // 【ipcKey と resetPath を分ける理由】
+        //   SET_COVER_FIELD の key は「1 スカラー = 1 キー」（extents_x など）だが、
+        //   ⟲ が送る RESET_COMPONENT_FIELD は **Rust の serde フィールドパス**
+        //   （`extents/0` のような配列添字込み）でなければ解決できない。
+        //   両者を同じ文字列にすると ⟲ が黙って何もしない行ができる。
+        UIElement MakeFloatRow(string label, float value, string ipcKey, string resetPath, string format)
+            => BuildResettableFloatRow(
+                info.SlotIdx, CoverEmitterComponentType, label, value, resetPath, format,
+                v => SendField(ipcKey, v.ToString(CultureInfo.InvariantCulture)));
+
+        // 文字列入力行（素材 ID・マスク画像パス）。フォーカスが外れた時点で送信する
+        // （1 文字打つたびに IPC を撃たない）。
+        UIElement MakeTextRow(string label, string value, string key, string tooltip)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+            row.Children.Add(new TextBlock
+            {
+                Text = label, FontSize = 11, Width = 90,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            var box = new TextBox
+            {
+                Text            = value,
+                Background      = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+                Foreground      = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                BorderBrush     = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+                BorderThickness = new Thickness(1),
+                FontSize        = 11,
+                Padding         = new Thickness(4, 1, 4, 1),
+                Width           = 170,
+                ToolTip         = tooltip,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            box.LostFocus += (_, _) => SendField(key, box.Text);
+            row.Children.Add(box);
+            return row;
+        }
+
+        // ── ① カバーエミッタ本体 ──────────────────────────────
+        var section = BuildSection("カバーエミッタ");
+        var body    = (StackPanel)section.Child;
+
+        // 有効フラグ（ゲームロジックから一時的に降雪を止めるためのデータ側スイッチ）。
+        body.Children.Add(BuildCheckRow("有効", info.CoverEnabled,
+            v => SendField("enabled", v ? "true" : "false")));
+
+        // 範囲種別ドロップダウン。値は Rust 側 CoverEmitterRangeKind::as_str と一致させる。
+        var kinds = new[]
+        {
+            ("Global",      "全域 (Global)"),
+            ("Region",      "領域 (Region)"),
+            ("TextureMask", "マスク画像 (TextureMask)"),
+        };
+        var kindRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        kindRow.Children.Add(new TextBlock
+        {
+            Text = "範囲", FontSize = 11, Width = 90,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var kindCombo = new ComboBox { Width = 170, FontSize = 11 };
+        foreach (var (val, label) in kinds)
+            kindCombo.Items.Add(new ComboBoxItem { Content = label, Tag = val });
+        var curKindIdx = Array.FindIndex(kinds, t => t.Item1 == info.CoverRangeKind);
+        kindCombo.SelectedIndex = curKindIdx >= 0
+            ? curKindIdx
+            : Array.FindIndex(kinds, t => t.Item1 == CoverRangeKindDefault);
+        kindRow.Children.Add(kindCombo);
+        body.Children.Add(kindRow);
+
+        // 素材 ID と強度は種別によらず常に効く。
+        body.Children.Add(MakeTextRow("素材ID", info.CoverMaterialId, "material_id",
+            "assets/terrain/cover_materials.json の id（例: snow / leaf_carpet / wet / mud）"));
+        body.Children.Add(MakeFloatRow("強度(量/秒)", info.CoverStrength, "strength", "strength", "F3"));
+
+        // Region 専用の行（半径 3 軸＋境界フェード）。
+        var extentsRowX = MakeFloatRow("半径X(m)", info.CoverExtentsX, "extents_x", "extents/0", "F2");
+        var extentsRowY = MakeFloatRow("半径Y(m)", info.CoverExtentsY, "extents_y", "extents/1", "F2");
+        var extentsRowZ = MakeFloatRow("半径Z(m)", info.CoverExtentsZ, "extents_z", "extents/2", "F2");
+        var fadeRow     = MakeFloatRow("境界ぼかし(m)", info.CoverFade, "fade", "fade", "F2");
+        body.Children.Add(extentsRowX);
+        body.Children.Add(extentsRowY);
+        body.Children.Add(extentsRowZ);
+        body.Children.Add(fadeRow);
+
+        // TextureMask 専用の行（画像パス＋矩形サイズ）。
+        var maskPathRow  = MakeTextRow("マスク画像", info.CoverMaskPath, "mask_path",
+            "グレースケール画像（白=強度そのまま / 黒=降らない）。空にするとこのエミッタは無効になります。");
+        var maskSizeXRow = MakeFloatRow("マスク幅X(m)", info.CoverMaskSizeX, "mask_size_x", "mask_size/0", "F2");
+        var maskSizeZRow = MakeFloatRow("マスク幅Z(m)", info.CoverMaskSizeZ, "mask_size_z", "mask_size/1", "F2");
+        body.Children.Add(maskPathRow);
+        body.Children.Add(maskSizeXRow);
+        body.Children.Add(maskSizeZRow);
+
+        var kindHint = new TextBlock
+        {
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 4, 0, 2),
+        };
+        body.Children.Add(kindHint);
+
+        // ── 種別に応じた行の表示切替（無関係なパラメータは非表示にする）──
+        void UpdateKindVisibility(string kind)
+        {
+            bool isRegion = kind == "Region";
+            bool isMask   = kind == "TextureMask";
+            var regionVis = isRegion ? Visibility.Visible : Visibility.Collapsed;
+            var maskVis   = isMask   ? Visibility.Visible : Visibility.Collapsed;
+            extentsRowX.Visibility  = regionVis;
+            extentsRowY.Visibility  = regionVis;
+            extentsRowZ.Visibility  = regionVis;
+            fadeRow.Visibility      = regionVis;
+            maskPathRow.Visibility  = maskVis;
+            maskSizeXRow.Visibility = maskVis;
+            maskSizeZRow.Visibility = maskVis;
+            kindHint.Text = kind switch
+            {
+                "Global"      => "ワールド全域に降ります（位置・大きさは無関係）。天候そのものを表す設定です。",
+                "TextureMask" => "アクタ位置を中心とした XZ 矩形へ画像を真上から投影します。",
+                _             => "アクタ位置を中心とした直方体の内側に降ります。中心はギズモで動かせます。",
+            };
+        }
+        UpdateKindVisibility(info.CoverRangeKind);
+        kindCombo.SelectionChanged += (_, _) =>
+        {
+            if (kindCombo.SelectedItem is ComboBoxItem item && item.Tag is string kind)
+            {
+                SendField("range_kind", kind);
+                UpdateKindVisibility(kind);
+            }
+        };
+
+        sp.Children.Add(section);
+
+        // ── ② シミュレート（Edit 専用）────────────────────────
+        //   Play 中の積算は Stop で捨てられる（揮発）ので、保存したい積もり方は
+        //   ここで作る。結果は編集データとしてカバー場へ書かれ、地形保存の対象になる。
+        var simSection = BuildSection("シミュレート（編集）");
+        var simBody    = (StackPanel)simSection.Child;
+
+        var simRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        var simBtn = new Button
+        {
+            Content = "シミュレート", FontSize = 11, Height = 22,
+            Padding = new Thickness(8, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = "秒数を入れるとその秒数ぶんを即座に計算して止まります。空欄なら停止するまで積もり続けます。",
+        };
+        simRow.Children.Add(simBtn);
+        simRow.Children.Add(new TextBlock
+        {
+            Text = "秒数", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Margin = new Thickness(8, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center,
+        });
+        var secondsBox = new TextBox
+        {
+            Text            = CoverSimulateSecondsDefault,
+            Background      = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+            Foreground      = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+            BorderThickness = new Thickness(1),
+            FontSize        = 11,
+            Padding         = new Thickness(4, 1, 4, 1),
+            Width           = 56,
+            ToolTip         = "空欄 = 停止まで連続シミュレート",
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        NumericDragBehavior.SetEnabled(secondsBox, true);
+        simRow.Children.Add(secondsBox);
+        simBtn.Click += (_, _) =>
+        {
+            // 秒数が読めなければ 0 を送る＝ランタイム側は「連続シミュレート」と解釈する。
+            var seconds = float.TryParse(secondsBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
+                ? v : 0f;
+            _runtime?.SendToRuntime($"TERRAIN_COVER_SIMULATE:{seconds.ToString(CultureInfo.InvariantCulture)}");
+        };
+        simBody.Children.Add(simRow);
+
+        var ctrlRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        var stopBtn = new Button
+        {
+            Content = "停止", FontSize = 11, Height = 22,
+            Padding = new Thickness(10, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = "連続シミュレートを止めます。",
+        };
+        stopBtn.Click += (_, _) => _runtime?.SendToRuntime("TERRAIN_COVER_SIMULATE_STOP");
+        ctrlRow.Children.Add(stopBtn);
+
+        var clearBtn = new Button
+        {
+            Content = "全消去", FontSize = 11, Height = 22,
+            Padding = new Thickness(10, 0, 10, 0), Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = "全チャンクのカバー場を消します（取り消せません）。",
+        };
+        clearBtn.Click += (_, _) => _runtime?.SendToRuntime("TERRAIN_COVER_CLEAR");
+        ctrlRow.Children.Add(clearBtn);
+        simBody.Children.Add(ctrlRow);
+
+        simBody.Children.Add(new TextBlock
+        {
+            Text         = "シミュレート結果は地形の保存（地形メニュー）で .tcover として保存されます。"
+                         + "Play 中の積もりは Stop で捨てられ、保存した状態へ戻ります。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 4, 0, 2),
+        });
+
+        sp.Children.Add(simSection);
+        return sp;
     }
 
     /// <summary>

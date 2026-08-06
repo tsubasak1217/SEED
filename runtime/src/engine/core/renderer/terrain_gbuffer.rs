@@ -38,6 +38,7 @@ use wgpu::util::DeviceExt;
 
 use crate::engine::core::loader::model::{CullFace, Model, CULL_FACE_VARIANTS};
 use crate::engine::terrain::layers::{TerrainLayerSet, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS};
+use crate::engine::terrain::cover::{CoverMaterialSet, TERRAIN_MAX_COVER_MATERIALS};
 
 use super::pipeline::{get_shader_source, CullPipelineSet, MeshPipeline};
 use super::terrain_layer_textures::TerrainLayerTextureArrays;
@@ -99,10 +100,28 @@ struct TerrainLayerParamsGpu {
 struct TerrainLayerUniformGpu {
     /// レイヤ定義本体（最大 TERRAIN_MAX_LAYERS 層）。全パレットで内容は同じ。
     layers: [TerrainLayerParamsGpu; TERRAIN_MAX_LAYERS],
+    /// カバー素材表（I3.1）。全チャンク・全パレットで内容は同じ。
+    ///
+    /// 1 素材 = vec4（rgb = アルベド（リニア）, a = 粗さ）。**変位は載せない**
+    /// （変位は CPU が頂点位置へ焼き込むので、シェーダは知る必要が無い）。
+    cover: [[f32; 4]; TERRAIN_MAX_COVER_MATERIALS],
     /// このチャンクが使うレイヤ番号 4 つ（頂点カラー成分 → レイヤ番号の対応表）。
     palette: [u32; TERRAIN_BLEND_SLOTS],
-    /// x = triplanar ブレンドの鋭さ, y = 有効レイヤ数, zw = 予約
+    /// x = triplanar ブレンドの鋭さ, y = 有効レイヤ数, z = カバー素材数, w = 予約
     params: [f32; 4],
+}
+
+/// カバー素材定義（CPU 側）から uniform のカバー配列部分を組み立てる。
+///
+/// 定義数が `TERRAIN_MAX_COVER_MATERIALS` に満たない場合、余りは
+/// 「黒・粗さ 1」で埋める（未定義値を残さない）。量 0 のテクセルでは
+/// そもそも参照されないため、この埋め値が絵に出ることは無い。
+fn build_cover_params(set: &CoverMaterialSet) -> [[f32; 4]; TERRAIN_MAX_COVER_MATERIALS] {
+    let mut out = [[0.0, 0.0, 0.0, 1.0]; TERRAIN_MAX_COVER_MATERIALS];
+    for (i, m) in set.materials.iter().take(TERRAIN_MAX_COVER_MATERIALS).enumerate() {
+        out[i] = [m.albedo[0], m.albedo[1], m.albedo[2], m.roughness];
+    }
+    out
 }
 
 /// レイヤ定義（CPU 側）から uniform のレイヤ配列部分を組み立てる。
@@ -165,6 +184,10 @@ pub struct TerrainLayerResources {
     layer_params: [TerrainLayerParamsGpu; TERRAIN_MAX_LAYERS],
     /// 有効レイヤ数（uniform の params.y に載る）。
     active_layer_count: u32,
+    /// カバー素材表（全パレット共通。I3.1）。
+    cover_params: [[f32; 4]; TERRAIN_MAX_COVER_MATERIALS],
+    /// 有効カバー素材数（uniform の params.z に載る）。
+    active_cover_count: u32,
     /// 2D 配列テクスチャ 3 本（base_color / normal / roughness）。
     textures: TerrainLayerTextureArrays,
     /// 全レイヤ共通のサンプラ。
@@ -183,10 +206,13 @@ impl TerrainLayerResources {
         queue:  &wgpu::Queue,
         layout: &wgpu::BindGroupLayout,
         set:    &TerrainLayerSet,
+        cover:  &CoverMaterialSet,
     ) -> Self {
         let mut me = Self {
             layer_params:       build_layer_params(set),
             active_layer_count: set.layers.len().min(TERRAIN_MAX_LAYERS) as u32,
+            cover_params:       build_cover_params(cover),
+            active_cover_count: cover.len().min(TERRAIN_MAX_COVER_MATERIALS) as u32,
             textures:           TerrainLayerTextureArrays::new(device, queue, set),
             sampler:            create_layer_sampler(device),
             bind_groups:        HashMap::new(),
@@ -209,11 +235,12 @@ impl TerrainLayerResources {
         //   1 パレット 800B 程度なので、パレット種類数（高々数十）ぶん持っても問題ない。
         let uniform = TerrainLayerUniformGpu {
             layers:  self.layer_params,
+            cover:   self.cover_params,
             palette: clamp_palette(palette, self.active_layer_count),
             params:  [
                 DEFAULT_TRIPLANAR_SHARPNESS,
                 self.active_layer_count as f32,
-                0.0,
+                self.active_cover_count as f32,
                 0.0,
             ],
         };
@@ -584,6 +611,9 @@ mod tests {
         for expected in [
             format!("const TERRAIN_BLEND_SLOTS: u32 = {TERRAIN_BLEND_SLOTS}u;"),
             format!("const TERRAIN_MAX_LAYERS: u32 = {TERRAIN_MAX_LAYERS}u;"),
+            format!(
+                "const TERRAIN_MAX_COVER_MATERIALS: u32 = {TERRAIN_MAX_COVER_MATERIALS}u;"
+            ),
         ] {
             assert!(
                 src.contains(&expected),
@@ -616,8 +646,9 @@ mod tests {
         const PARAMS_BYTES: usize = 48;
         assert_eq!(std::mem::size_of::<TerrainLayerParamsGpu>(), PARAMS_BYTES);
 
-        // uniform = 48 × 16 層 + palette(vec4<u32>=16) + params(vec4=16)。
-        const EXPECTED_BYTES: usize = PARAMS_BYTES * TERRAIN_MAX_LAYERS + 16 + 16;
+        // uniform = 48 × 16 層 + cover(vec4 × 16 = 256) + palette(vec4<u32>=16) + params(vec4=16)。
+        const EXPECTED_BYTES: usize =
+            PARAMS_BYTES * TERRAIN_MAX_LAYERS + 16 * TERRAIN_MAX_COVER_MATERIALS + 16 + 16;
         assert_eq!(std::mem::size_of::<TerrainLayerUniformGpu>(), EXPECTED_BYTES);
 
         // uniform バッファは 16 バイト境界（WGSL uniform address space の要求）。

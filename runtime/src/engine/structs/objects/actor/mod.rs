@@ -447,6 +447,11 @@ pub fn slot_to_data(world: &World, slot: &ComponentSlot) -> Option<ComponentSlot
             world.get::<crate::engine::components::InteractionSourceComponent>(slot.entity)
                 .map(|is| ComponentData::InteractionSourceComponent(is.to_data()))
         }
+        ComponentKind::CoverEmitter => {
+            // カバーエミッタ（地表カバー場への書き手。I3.1）をシリアライズ用データに変換する
+            world.get::<crate::engine::components::CoverEmitterComponent>(slot.entity)
+                .map(|ce| ComponentData::CoverEmitterComponent(ce.to_data()))
+        }
         ComponentKind::ControlPoint => {
             // コントロールポイント（汎用パスの点列）をシリアライズ用データに変換する
             world.get::<crate::engine::components::ControlPointComponent>(slot.entity)

@@ -215,6 +215,9 @@ fn rewrite_refs_in_slots(
             | ComponentKind::Skybox
             | ComponentKind::TerrainChunk
             | ComponentKind::InteractionSource
+            // カバーエミッタは素材 ID（cover_materials.json のキー）しか参照せず、
+            // アクター名参照は持たないので、リネームで書き換えるものは無い。
+            | ComponentKind::CoverEmitter
             | ComponentKind::ControlPoint => {}
         }
     }

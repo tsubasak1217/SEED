@@ -713,6 +713,13 @@ pub fn build_actor(
                 actor.add_slot_typed::<InteractionSourceComponent>(
                     slot_name, ComponentKind::InteractionSource, slot_entity);
             }
+            ComponentData::CoverEmitterComponent(ce_data) => {
+                // カバーエミッタ（I3.1）を ECS ワールドに挿入してスロットを登録する
+                use crate::engine::components::CoverEmitterComponent;
+                world.insert(slot_entity, CoverEmitterComponent::from_data(&ce_data));
+                actor.add_slot_typed::<CoverEmitterComponent>(
+                    slot_name, ComponentKind::CoverEmitter, slot_entity);
+            }
             ComponentData::ControlPointComponent(cp_data) => {
                 // コントロールポイント（汎用パスの点列）を ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::ControlPointComponent;
