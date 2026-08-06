@@ -163,15 +163,18 @@ pub enum IpcCommand {
     /// エディタはドラッグ終了（マウスアップ）時に送る。
     /// ワイヤ形式: `TERRAIN_STROKE_END`（引数なし）
     TerrainStrokeEnd,
-    /// カバー場（I3.1）の Edit シミュレートを開始する / 指定秒数ぶん即時計算する。
+    /// カバー場（I3.1）のリアルタイム連続シミュレートを開始する。
     ///
-    /// `seconds` が 0 以下なら「停止まで連続シミュレート」（再生形式）、
-    /// 正の値ならその秒数ぶんを 1 回で計算して即座に停止する。
-    /// ワイヤ形式: `TERRAIN_COVER_SIMULATE:{seconds}`
-    TerrainCoverSimulate { seconds: f32 },
+    /// 開始〜停止までが 1 つの undo 単位（terrain 専用スタックの 1 エントリ）になる。
+    /// ワイヤ形式: `TERRAIN_COVER_SIM_START`（引数なし）
+    TerrainCoverSimStart,
     /// カバー場の連続シミュレートを停止する。
-    /// ワイヤ形式: `TERRAIN_COVER_SIMULATE_STOP`（引数なし）
-    TerrainCoverSimulateStop,
+    /// ワイヤ形式: `TERRAIN_COVER_SIM_STOP`（引数なし）
+    TerrainCoverSimStop,
+    /// カバー場を指定秒数ぶん **即時**（このフレーム内）計算して停止する。
+    ///
+    /// ワイヤ形式: `TERRAIN_COVER_STEP:{seconds}`
+    TerrainCoverStep { seconds: f32 },
     /// 全チャンクのカバー場を消去する。
     /// ワイヤ形式: `TERRAIN_COVER_CLEAR`（引数なし）
     TerrainCoverClear,
@@ -953,10 +956,13 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
         "TERRAIN_UNDO" => Some(IpcCommand::TerrainUndo),
         "TERRAIN_REDO" => Some(IpcCommand::TerrainRedo),
         "TERRAIN_STROKE_END" => Some(IpcCommand::TerrainStrokeEnd),
-        // カバー場（I3.1）の連続シミュレート停止・全消去。
-        // 引数付きの TERRAIN_COVER_SIMULATE: より **先に** 完全一致で判定する
-        // （語頭が同じなので順序を逆にすると STOP が引数付きとして解釈される）。
-        "TERRAIN_COVER_SIMULATE_STOP" => Some(IpcCommand::TerrainCoverSimulateStop),
+        // カバー場（I3.1）の連続シミュレート開始／停止・全消去。
+        // START と STOP は語頭（`TERRAIN_COVER_SIM_ST`）が共通なので、
+        // 前方一致ではなく **完全一致アーム** で判定する（取り違えが起きない）。
+        // 秒数指定は別コマンド `TERRAIN_COVER_STEP:` に分離済みで、
+        // これらとは語頭も異なるため判定順に依存しない。
+        "TERRAIN_COVER_SIM_START" => Some(IpcCommand::TerrainCoverSimStart),
+        "TERRAIN_COVER_SIM_STOP" => Some(IpcCommand::TerrainCoverSimStop),
         "TERRAIN_COVER_CLEAR" => Some(IpcCommand::TerrainCoverClear),
 
         // ── 引数付きコマンド ──
@@ -1042,11 +1048,12 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
                 erase:    parts[5].trim().parse::<u32>().ok()? != 0,
             })
         }
-        // カバー場シミュレート: "seconds"（f32×1）。
-        // 0 以下 = 停止まで連続、正の値 = その秒数ぶんを即時計算して停止。
-        s if s.starts_with("TERRAIN_COVER_SIMULATE:") => {
-            parse_nf::<1>(&s["TERRAIN_COVER_SIMULATE:".len()..])
-                .map(|fs| IpcCommand::TerrainCoverSimulate { seconds: fs[0] })
+        // カバー場の即時ステップ: "seconds"（f32×1）。
+        // 指定秒数ぶんをこのフレーム内で計算して停止する（連続シミュレートは
+        // 引数なしの TERRAIN_COVER_SIM_START / _STOP が担当する）。
+        s if s.starts_with("TERRAIN_COVER_STEP:") => {
+            parse_nf::<1>(&s["TERRAIN_COVER_STEP:".len()..])
+                .map(|fs| IpcCommand::TerrainCoverStep { seconds: fs[0] })
         }
         // 地形レイヤペイント: "layer,screen_x,screen_y,radius,strength"。
         // 先頭 layer は u32、残り 4 つは f32（TERRAIN_BRUSH と同じ並び）。
@@ -2574,26 +2581,27 @@ mod tests {
         assert!(matches!(parse_terrain_command("TERRAIN_COVER_CLEAR"), Some(IpcCommand::TerrainCoverClear)));
     }
 
-    /// カバー場（I3.1）のシミュレート系コマンドが正しく解釈されること。
+    /// カバー場（I3.1）のシミュレート系 3 コマンドが正しく解釈されること。
     ///
-    /// 判定順の回帰テストも兼ねる: `TERRAIN_COVER_SIMULATE_STOP` は
-    /// 引数付きの `TERRAIN_COVER_SIMULATE:` と語頭が同じなので、
-    /// 完全一致アームを先に置かないと STOP が引数付きとして解釈されて握り潰される。
+    /// 語頭衝突の回帰テストも兼ねる: `TERRAIN_COVER_SIM_START` と
+    /// `TERRAIN_COVER_SIM_STOP` は `TERRAIN_COVER_SIM_ST` まで共通なので、
+    /// 前方一致で判定すると取り違えが起きる（両方とも完全一致アームで判定する）。
     #[test]
-    fn parses_cover_simulate_commands_in_correct_order() {
+    fn parses_cover_simulate_commands() {
         assert!(matches!(
-            parse_terrain_command("TERRAIN_COVER_SIMULATE_STOP"),
-            Some(IpcCommand::TerrainCoverSimulateStop)
+            parse_terrain_command("TERRAIN_COVER_SIM_START"),
+            Some(IpcCommand::TerrainCoverSimStart)
         ));
-        match parse_terrain_command("TERRAIN_COVER_SIMULATE:2.5") {
-            Some(IpcCommand::TerrainCoverSimulate { seconds }) => assert_eq!(seconds, 2.5),
-            _ => panic!("秒数付きシミュレートが解釈できない"),
+        assert!(matches!(
+            parse_terrain_command("TERRAIN_COVER_SIM_STOP"),
+            Some(IpcCommand::TerrainCoverSimStop)
+        ));
+        match parse_terrain_command("TERRAIN_COVER_STEP:2.5") {
+            Some(IpcCommand::TerrainCoverStep { seconds }) => assert_eq!(seconds, 2.5),
+            _ => panic!("秒数付きステップが解釈できない"),
         }
-        // 空欄（連続シミュレート）はエディタ側が 0 を送る。
-        match parse_terrain_command("TERRAIN_COVER_SIMULATE:0") {
-            Some(IpcCommand::TerrainCoverSimulate { seconds }) => assert_eq!(seconds, 0.0),
-            _ => panic!("連続シミュレートが解釈できない"),
-        }
+        // 引数の形式が不正なものは受け付けない（黙って 0 秒扱いにしない）。
+        assert!(parse_terrain_command("TERRAIN_COVER_STEP:abc").is_none());
     }
 
     /// プレビュー OFF が「引数付きプレビュー」より先に判定されること（判定順の回帰テスト）。

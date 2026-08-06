@@ -2222,6 +2222,16 @@ impl App {
                         )
                     } else { None };
 
+                    // 選択中カバーエミッタアクターのギズモ（降る範囲のワイヤ枠、3D シーン）。
+                    let cover_emitter_gizmo_batch = if is_3d_scene {
+                        super::cover_emitter_scene_gizmo::build_selected_cover_emitter_gizmo_batch(
+                            &scene.actors, &scene.world,
+                            self.active_world_line,
+                            self.actor_virtual_selected_idx,
+                            &draw_ctx.device,
+                        )
+                    } else { None };
+
                     // カメラプレビューリソースを初期化・更新する
                     if let Some(ref cam_data) = selected_cam_data {
                         // プレビューテクスチャサイズをカメラのアスペクト比に合わせて算出する。
@@ -6490,6 +6500,19 @@ impl App {
                             {
                                 draw_line_batch(
                                     &mut pass, skybox_gz,
+                                    &camera_buf.bind_group, line_bg,
+                                    &draw_ctx.pipelines,
+                                );
+                            }
+                        }
+
+                        // カバーエミッタギズモ（選択中カバーエミッタアクターのみ、3D シーン）
+                        if !scene_canvas_ss {
+                            if let (Some(cover_gz), Some((_, line_bg))) =
+                                (&cover_emitter_gizmo_batch, &self.line_model_buf)
+                            {
+                                draw_line_batch(
+                                    &mut pass, cover_gz,
                                     &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );

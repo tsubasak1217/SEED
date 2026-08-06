@@ -338,6 +338,16 @@ public sealed class RuntimeManager : IDisposable
     public event Action<long, string>? WgslDiagnosticsReceived;
 
     /// <summary>
+    /// 地表カバー場のリアルタイム連続シミュレートの稼働状態が変わった通知
+    /// （TERRAIN_COVER_SIM_STARTED = true / TERRAIN_COVER_SIM_STOPPED = false）。
+    ///
+    /// 停止通知はユーザーの停止操作以外（全消去・Play 開始）でも飛ぶ。
+    /// インスペクタの再生/停止トグルはこの通知だけを真実として表示を合わせること
+    /// （送信直後に自前でトグルを反転させるとランタイム側の実状態とズレる）。
+    /// </summary>
+    public event Action<bool>? TerrainCoverSimRunningChanged;
+
+    /// <summary>
     /// ビューポート上で ControlPoint の点が選択された通知
     /// （CONTROL_POINT_SELECTED:{actorDfsId},{slotIdx},{index}）。
     /// 引数は (actorDfsId, slotIdx, index)。インスペクタのリスト行ハイライトに使う。
@@ -1419,6 +1429,28 @@ public sealed class RuntimeManager : IDisposable
             var err = msg["TERRAIN_SCATTER_ERROR:".Length..];
             EditorLog.Write($"[Runtime→Editor] TERRAIN_SCATTER_ERROR {err}");
             TerrainScatterCompleted?.Invoke(false, err);
+        }
+        // ── 地表カバー場（CoverEmitterComponent）のシミュレート通知 ──
+        //   稼働状態が変わる 2 種だけをイベント化し、単発完了の 2 種はログのみに留める
+        //   （拾わないと未知メッセージとして毎回ログに警告が出る）。
+        else if (msg == "TERRAIN_COVER_SIM_STARTED")
+        {
+            EditorLog.Write("[Runtime→Editor] TERRAIN_COVER_SIM_STARTED");
+            TerrainCoverSimRunningChanged?.Invoke(true);
+        }
+        else if (msg == "TERRAIN_COVER_SIM_STOPPED")
+        {
+            EditorLog.Write("[Runtime→Editor] TERRAIN_COVER_SIM_STOPPED");
+            TerrainCoverSimRunningChanged?.Invoke(false);
+        }
+        else if (msg.StartsWith("TERRAIN_COVER_STEP_OK:", StringComparison.Ordinal))
+        {
+            var steps = msg["TERRAIN_COVER_STEP_OK:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_COVER_STEP_OK steps={steps}");
+        }
+        else if (msg == "TERRAIN_COVER_CLEARED")
+        {
+            EditorLog.Write("[Runtime→Editor] TERRAIN_COVER_CLEARED");
         }
         else if (msg.StartsWith("ACTOR_DATA:", StringComparison.Ordinal))
         {
