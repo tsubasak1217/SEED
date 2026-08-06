@@ -151,6 +151,9 @@ pub fn default_component_data(current: &ComponentData) -> Option<ComponentData> 
         ComponentData::InteractionSourceComponent(_) =>
             ComponentData::InteractionSourceComponent(
                 InteractionSourceComponent::default().to_data()),
+        ComponentData::CoverEmitterComponent(_) =>
+            ComponentData::CoverEmitterComponent(
+                CoverEmitterComponent::default().to_data()),
         ComponentData::ControlPointComponent(_) =>
             ComponentData::ControlPointComponent(ControlPointComponent::default().to_data()),
     };
@@ -544,6 +547,7 @@ mod tests {
             ComponentData::WaterLinkComponent(WaterLinkComponent::default().to_data()),
             ComponentData::InteractionSourceComponent(
                 InteractionSourceComponent::default().to_data()),
+            ComponentData::CoverEmitterComponent(CoverEmitterComponent::default().to_data()),
             ComponentData::ControlPointComponent(ControlPointComponent::default().to_data()),
         ];
         for d in &supported {

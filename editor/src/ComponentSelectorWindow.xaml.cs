@@ -69,6 +69,7 @@ public partial class ComponentSelectorWindow : Window
             new("WaterVolumeComponent", "Water Volume", "海・池などの水領域。水面描画と水中判定を提供", ActorTarget.Actor3D),
             new("WaterLinkComponent", "Water Link", "2つの水域をつなぐ開口（扉・窓・穴・バルブ）。水位グラフで水が行き来する", ActorTarget.Actor3D),
             new("InteractionSourceComponent", "Interaction Source", "動く物に付ける。移動速度を共有フィールドへ焼き、草を押し倒す（将来は水の波紋・雪泥の轍も）", ActorTarget.Actor3D),
+            new("CoverEmitterComponent", "Cover Emitter", "地表へ雪・落ち葉・濡れを積もらせる。範囲は全域/直方体/マスク画像から選ぶ", ActorTarget.Actor3D),
         }),
         ("UI", new()
         {
@@ -366,6 +367,7 @@ public partial class ComponentSelectorWindow : Window
         "WaterVolumeComponent"     => "Water",
         "WaterLinkComponent"       => "WaterLink",
         "InteractionSourceComponent" => "Interaction",
+        "CoverEmitterComponent"       => "CoverEmitter",
         "ControlPointComponent"      => "ControlPoint",
         // Plugin:{name} → プラグイン名をデフォルト名とする
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],

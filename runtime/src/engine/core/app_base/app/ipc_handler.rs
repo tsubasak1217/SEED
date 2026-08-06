@@ -380,6 +380,17 @@ impl App {
                     // 進行中のブラシストロークを 1 undo エントリとして確定する。
                     self.handle_terrain_stroke_end();
                 }
+                IpcCommand::TerrainCoverSimulate { seconds } => {
+                    // カバー場（I3.1）の Edit シミュレート。
+                    // seconds > 0 なら即時計算、0 以下なら停止まで連続。
+                    self.handle_terrain_cover_simulate(seconds);
+                }
+                IpcCommand::TerrainCoverSimulateStop => {
+                    self.handle_terrain_cover_simulate_stop();
+                }
+                IpcCommand::TerrainCoverClear => {
+                    self.handle_terrain_cover_clear();
+                }
                 IpcCommand::TerrainReloadLayers => {
                     // layers.json を読み直し、レイヤテクスチャと全チャンクを作り直す
                     // （エディタの地形設定ウィンドウでレイヤを保存した直後の即時反映）。
@@ -1260,6 +1271,10 @@ impl App {
                     // 未解決の問い合わせと配置予定マーカーの両方を捨てる。
                     self.pending_control_point_hover = None;
                     self.control_point_drop_preview  = None;
+                }
+                IpcCommand::SetCoverField { actor_dfs_id, slot_idx, key, value } => {
+                    // カバーエミッタ（I3.1）のインスペクタ更新。
+                    self.handle_set_cover_field(actor_dfs_id, slot_idx, &key, &value);
                 }
                 IpcCommand::SetInteractionField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_interaction_field(actor_dfs_id, slot_idx, &key, &value);

@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 
 namespace SEEDEditor.Controls;
 
@@ -63,6 +63,15 @@ internal static class ComponentFieldRanges
         // 根拠: runtime/src/engine/core/app_base/app/interaction_ops.rs
         //       `v.clamp(NORMALIZED_MIN, NORMALIZED_MAX)`（0.0 / 1.0）
         ["InteractionSourceComponent.strength"] = (0f, 1f),
+
+        // ── CoverEmitterComponent（I3.1）─────────────────────────
+        // 根拠: runtime/src/engine/core/app_base/app/cover_emitter_ops.rs
+        //       extents_* / mask_size_* は `v.max(EXTENT_MIN)`、fade は `v.max(FADE_MIN)`、
+        //       strength は `v.max(STRENGTH_MIN)`。いずれも上限は無いが、
+        //       スライダーで扱える実用域をここで決める（手入力は範囲外も通る）。
+        ["CoverEmitterComponent.fade"] = (0f, 16f),
+        // 強度は「量/秒」。1.0 = 1 秒で満量。0.05〜2 が実用域なので上限 2 とする。
+        ["CoverEmitterComponent.strength"] = (0f, 2f),
 
         // ── ParticleEmitterComponent ────────────────────────────
         // 根拠: runtime/src/engine/core/app_base/app/particle_ops.rs

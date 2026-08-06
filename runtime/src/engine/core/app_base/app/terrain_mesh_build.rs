@@ -45,6 +45,7 @@ use crate::engine::terrain::layers::{
     blend_rule_and_paint_all_into, select_top_slots,
 };
 use crate::engine::terrain::marching_cubes::TerrainMesh;
+use crate::engine::terrain::cover::{CoverField, CoverMaterialSet};
 
 /// 接線の既定値（xyz=+X 軸, w=+1 ハンドネス）。地形は法線マップを持たないためダミー。
 const DEFAULT_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -282,6 +283,116 @@ pub fn rebuild_terrain_model_with_colors(
         .map(|(v, c)| Vertex { color: *c, ..*v })
         .collect();
     let avg_albedo = chunk_avg_albedo(colors, palette, layers);
+    let (model, _palette) =
+        build_terrain_model(vertices, indices.to_vec(), name, palette, avg_albedo);
+    Some(model)
+}
+
+// ============================================================
+//  カバー場（I3.1）の頂点への焼き込み
+// ============================================================
+
+/// カバー場を頂点へ焼き込んだ地形チャンク Model を組み立てる。
+///
+/// 【なぜ頂点へ焼くのか（設計判断）】
+///   カバーの見た目には「色・粗さの上書き」と「量に応じた盛り上げ（変位）」の 2 つがある。
+///   後者を **頂点シェーダ**でやると、その頂点シェーダは G-Buffer パス専用であり、
+///   シャドウマップ・深度プリパス・ID パス・RT の BLAS が持つ形状とズレる
+///   （雪が影を落とさない・雪の下に地面が透ける）。
+///   位置そのものへ焼けば、頂点バッファを共有する **全パスが自動的に一致**する。
+///
+///   色・粗さの側は逆にシェーダで解決する。頂点へ焼くと素材の粗さが運べず、
+///   地形レイヤとのブレンドもできないためである。頂点は「量」と「素材番号」だけを
+///   運び（未使用だった `uv0` を転用）、実際の合成は terrain_gbuffer_write.wgsl が行う。
+///     uv0.x = 量（0..1）  … 0 のとき従来と完全に同一の絵になる
+///     uv0.y = 素材添字     … フラグメント側で round() して uniform の素材表を引く
+///
+/// 【引数】
+/// - `src_vertices`: 現在の CPU モデルの頂点列（法線・頂点カラーはそのまま引き継ぐ）
+/// - `base_positions`: **カバー適用前**の頂点位置。ここへ毎回変位を足し直すことで、
+///   適用を繰り返しても変位が累積しない（前回の変位を引き算する必要が無い）
+/// - `base_avg_albedo`: カバー適用前のチャンク平均アルベド（RGB）
+/// - `chunk_extent`: チャンク 1 辺のワールド長（頂点のチャンクローカル座標 → カバー UV）
+///
+/// 長さが食い違う場合は `None`（呼び出し側はフル再メッシュへフォールバックする）。
+pub fn rebuild_terrain_model_with_cover(
+    src_vertices: &[Vertex],
+    indices: &[u32],
+    name: &str,
+    palette: [u32; TERRAIN_BLEND_SLOTS],
+    base_positions: &[[f32; 3]],
+    base_avg_albedo: [f32; 3],
+    field: &CoverField,
+    materials: &CoverMaterialSet,
+    chunk_extent: f32,
+) -> Option<Model> {
+    if src_vertices.len() != base_positions.len() || !(chunk_extent > 0.0) {
+        return None;
+    }
+
+    // ─── 平均アルベドの加重平均用アキュムレータ ───
+    //   RT 反射・水面反射・DDGI が使うチャンク平均色。雪が積もれば水面へ映る色も
+    //   白くならなければならないので、ここで量に比例して寄せる。
+    let mut cover_color_sum = [0.0f32; 3];
+    let mut cover_weight_sum = 0.0f32;
+
+    let mut vertices: Vec<Vertex> = Vec::with_capacity(src_vertices.len());
+    for (v, base) in src_vertices.iter().zip(base_positions.iter()) {
+        // ─── 頂点のチャンクローカル位置 → カバー場 UV ───
+        //   地形チャンクの頂点はチャンク最小コーナー原点のローカル座標である
+        //   （ワールド化はノード／インスタンス行列の担当）。
+        let (amount, material_index) =
+            field.sample(base[0] / chunk_extent, base[2] / chunk_extent);
+
+        // ─── 素材が引けない（未定義添字・素材セットが空）なら「カバー無し」へ縮退 ───
+        let Some(mat) = materials.get(material_index as usize).filter(|_| amount > 0.0) else {
+            vertices.push(Vertex {
+                position: *base,
+                uv0: [0.0, 0.0],
+                ..*v
+            });
+            continue;
+        };
+
+        // ─── 変位: 基準位置から法線方向へ「量 × 素材の変位高さ」だけ持ち上げる ───
+        let lift = amount * mat.displacement;
+        let position = [
+            base[0] + v.normal[0] * lift,
+            base[1] + v.normal[1] * lift,
+            base[2] + v.normal[2] * lift,
+        ];
+
+        // 平均アルベドの寄与を溜める。
+        for c in 0..3 {
+            cover_color_sum[c] += mat.albedo[c] * amount;
+        }
+        cover_weight_sum += amount;
+
+        vertices.push(Vertex {
+            position,
+            // uv0 は地形では未使用だった（常に [0,0]）。ここでカバー情報の運び手に転用する。
+            uv0: [amount, material_index as f32],
+            ..*v
+        });
+    }
+
+    // ─── 平均アルベド: 「全頂点の平均被覆率」でカバー色へ寄せる ───
+    let avg_albedo = if cover_weight_sum > 0.0 && !vertices.is_empty() {
+        let coverage = (cover_weight_sum / vertices.len() as f32).clamp(0.0, 1.0);
+        let cover_color = [
+            cover_color_sum[0] / cover_weight_sum,
+            cover_color_sum[1] / cover_weight_sum,
+            cover_color_sum[2] / cover_weight_sum,
+        ];
+        [
+            base_avg_albedo[0] + (cover_color[0] - base_avg_albedo[0]) * coverage,
+            base_avg_albedo[1] + (cover_color[1] - base_avg_albedo[1]) * coverage,
+            base_avg_albedo[2] + (cover_color[2] - base_avg_albedo[2]) * coverage,
+        ]
+    } else {
+        base_avg_albedo
+    };
+
     let (model, _palette) =
         build_terrain_model(vertices, indices.to_vec(), name, palette, avg_albedo);
     Some(model)

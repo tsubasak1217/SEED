@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Input;
@@ -52,6 +52,8 @@ public partial class InspectorPanel
     private const string ParticleEmitterComponentType = "ParticleEmitterComponent";
     /// <summary>インタラクション書き手の型名。</summary>
     private const string InteractionSourceComponentType = "InteractionSourceComponent";
+    /// <summary>カバーエミッタ（地表カバー場への書き手。I3.1）の型名。</summary>
+    private const string CoverEmitterComponentType = "CoverEmitterComponent";
 
     // ── 第2バッチのコンポーネント型名 ───────────────────────────
 

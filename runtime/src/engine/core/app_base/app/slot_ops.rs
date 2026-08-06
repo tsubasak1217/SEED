@@ -492,6 +492,11 @@ impl App {
                         use crate::engine::components::InteractionSourceComponent;
                         scene.world.remove::<InteractionSourceComponent>(slot_entity);
                     }
+                    ComponentKind::CoverEmitter => {
+                        // カバーエミッタ（I3.1）
+                        use crate::engine::components::CoverEmitterComponent;
+                        scene.world.remove::<CoverEmitterComponent>(slot_entity);
+                    }
                     ComponentKind::ControlPoint => {
                         use crate::engine::components::ControlPointComponent;
                         scene.world.remove::<ControlPointComponent>(slot_entity);
@@ -914,6 +919,18 @@ impl App {
                 if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                     actor.add_slot_typed::<InteractionSourceComponent>(
                         slot_data.name, ComponentKind::InteractionSource, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
+            }
+            ComponentData::CoverEmitterComponent(ce_data) => {
+                // カバーエミッタ（I3.1）を複製する（新しいスロット専用エンティティへ挿入）
+                use crate::engine::components::CoverEmitterComponent;
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, CoverEmitterComponent::from_data(&ce_data));
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<CoverEmitterComponent>(
+                        slot_data.name, ComponentKind::CoverEmitter, slot_entity);
                 } else { scene.world.despawn(slot_entity); }
                 true
             }
@@ -1351,6 +1368,13 @@ impl App {
                     scene.world.insert(slot_entity, InteractionSourceComponent::from_data(&is_data));
                     new_slots.push(ComponentSlot::new::<InteractionSourceComponent>(
                         slot_data.name, ComponentKind::InteractionSource, slot_entity));
+                }
+                ComponentData::CoverEmitterComponent(ce_data) => {
+                    // カバーエミッタ（I3.1）をスロット専用エンティティへ復元する
+                    use crate::engine::components::CoverEmitterComponent;
+                    scene.world.insert(slot_entity, CoverEmitterComponent::from_data(&ce_data));
+                    new_slots.push(ComponentSlot::new::<CoverEmitterComponent>(
+                        slot_data.name, ComponentKind::CoverEmitter, slot_entity));
                 }
                 ComponentData::ControlPointComponent(cp_data) => {
                     // コントロールポイント（汎用パスの点列）をスロット専用エンティティへ復元する

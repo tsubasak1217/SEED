@@ -81,6 +81,10 @@ pub(crate) mod terrain_mesh_build;
 pub(crate) mod terrain_layer_albedo;
 /// 地形プロップ散布（草・木）のエンジン統合層（散布データ ⇄ ECS/GPU/IPC の橋渡し）。
 pub(super) mod terrain_scatter_ops;
+/// 地表カバー場（雪・落ち葉・泥・濡れ）のエンジン統合層（I3.1）。正典は docs/cover_field.md。
+pub(super) mod terrain_cover_ops;
+/// カバーエミッタ（CoverEmitterComponent）のインスペクタ更新（SET_COVER_FIELD。I3.1）
+mod cover_emitter_ops;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────
 use std::collections::{HashMap, HashSet};

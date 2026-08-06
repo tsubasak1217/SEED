@@ -48,6 +48,18 @@ const TERRAIN_BLEND_SLOTS: u32 = 4u;
 /// layers.json に定義できるレイヤ数の上限（＝テクスチャ配列のレイヤ枚数）。
 const TERRAIN_MAX_LAYERS: u32 = 16u;
 
+/// カバー素材（雪・落ち葉・濡れ など）の最大数（I3.1）。
+/// Rust 側 `TERRAIN_MAX_COVER_MATERIALS` と一致必須
+/// （terrain_gbuffer.rs のテスト `terrain_layer_count_matches_shader` が固定する）。
+const TERRAIN_MAX_COVER_MATERIALS: u32 = 16u;
+
+/// カバー量がこの値以下のフラグメントはカバー処理を完全にスキップする。
+///
+/// 【重要】カバー場を持たない地形では頂点の uv0 が常に [0,0] なので、
+/// この分岐により **カバー機能導入前とビット単位で同じ**フラグメント出力になる
+/// （コストも uv0 の読み取りと 1 回の比較だけ）。
+const TERRAIN_COVER_EPSILON: f32 = 0.0009;
+
 // ─── detile モードコード（Rust DetileMode::to_gpu_code と一致必須）────────────
 
 /// 単純タイリング（従来動作）。
@@ -146,9 +158,12 @@ struct TerrainLayerParams {
 struct TerrainLayerUniform {
     /// レイヤ定義本体（最大 TERRAIN_MAX_LAYERS 層）。
     layers: array<TerrainLayerParams, TERRAIN_MAX_LAYERS>,
+    /// カバー素材表（I3.1）。rgb = アルベド（リニア）, a = 粗さ。
+    /// 変位は CPU が頂点位置へ焼き込むため、ここには載らない。
+    cover: array<vec4<f32>, TERRAIN_MAX_COVER_MATERIALS>,
     /// このチャンクが使うレイヤ番号 4 つ（頂点カラー成分 → レイヤ番号の対応表）。
     palette: vec4<u32>,
-    /// x = triplanar ブレンドの鋭さ, y = 有効レイヤ数, zw = 予約
+    /// x = triplanar ブレンドの鋭さ, y = 有効レイヤ数, z = 有効カバー素材数, w = 予約
     params: vec4<f32>,
 }
 
@@ -537,6 +552,35 @@ fn fs_terrain_gbuffer(
         metallic  = u_terrain.layers[0].surface.x;
         roughness = u_terrain.layers[0].surface.y;
         normal    = geo_n;
+    }
+
+    // ── 地表カバー（I3.1: 雪・落ち葉・泥・濡れ）を最後に重ねる ──
+    //
+    //  頂点が運んでくる情報（terrain_mesh_build.rs が焼いた値）:
+    //    uv0.x = 量（0..1）  uv0.y = カバー素材の添字
+    //  変位（盛り上げ）は既に頂点位置へ焼かれているので、ここでは
+    //  **色と粗さの上書きだけ**を行う。
+    //
+    //  量 0 のフラグメント（＝カバー場を持たない地形のすべて）は
+    //  この if に入らないため、従来と完全に同一の出力になる。
+    let cover_amount = clamp(in.uv0.x, 0.0, 1.0);
+    if cover_amount > TERRAIN_COVER_EPSILON && u_terrain.params.z > 0.5 {
+        // 素材添字は頂点間で線形補間されるため、最近傍へ丸めて解決する
+        //  （添字を補間すると存在しない素材を指してしまう）。
+        //  境界は 50% の位置で切り替わる硬いエッジになるが、量のほうは
+        //  滑らかに補間されるので実画像では目立たない。
+        let cover_count = u32(u_terrain.params.z);
+        let ci = min(u32(round(max(in.uv0.y, 0.0))), cover_count - 1u);
+        let cm = u_terrain.cover[ci];
+
+        // 量 1.0 で素材の色・粗さへ完全に置き換わる（線形補間）。
+        //  ・雪   … 白へ寄り、粗さは高いまま
+        //  ・落ち葉 … 茶へ寄る
+        //  ・濡れ … 暗くなり、粗さが落ちて鏡面反射が立つ
+        albedo    = mix(albedo, cm.rgb, cover_amount);
+        roughness = mix(roughness, cm.a, cover_amount);
+        // カバーはすべて非金属（雪も落ち葉も水膜も導体ではない）。
+        metallic  = mix(metallic, 0.0, cover_amount);
     }
 
     let n_len = length(normal);

@@ -441,6 +441,23 @@ impl App {
                         d.radius, d.strength, d.enabled,
                     ))
                 }
+                ComponentData::CoverEmitterComponent(d) => {
+                    // カバーエミッタ（I3.1）: 範囲種別・範囲パラメータ・素材 ID・強度を送る。
+                    // 【重要】有効フラグのキー名は "emitter_enabled"。スロット共通ラッパが既に
+                    // "enabled"（数値 0/1、slot_data.enabled）を持つため、"enabled" で送ると
+                    // 同一 JSON オブジェクト内のキー重複になり、C# の GetProperty が数値側を
+                    // 返して GetBoolean() が例外 → インスペクタ全体が表示不能になる
+                    // （InteractionSourceComponent で実際に起きたリグレッションと同じ罠）。
+                    let mask_json = serde_json::to_string(&d.mask_path).unwrap_or_default();
+                    let mat_json = serde_json::to_string(&d.material_id).unwrap_or_default();
+                    ("CoverEmitterComponent", format!(
+                        r#","range_kind":"{}","extents_x":{:.4},"extents_y":{:.4},"extents_z":{:.4},"fade":{:.4},"mask_path":{mask_json},"mask_size_x":{:.4},"mask_size_z":{:.4},"material_id":{mat_json},"cover_strength":{:.4},"emitter_enabled":{}"#,
+                        d.range_kind.as_str(),
+                        d.extents[0], d.extents[1], d.extents[2], d.fade,
+                        d.mask_size[0], d.mask_size[1],
+                        d.strength, d.enabled,
+                    ))
+                }
                 ComponentData::ControlPointComponent(d) => {
                     // コントロールポイント: 点列を **JSON 配列そのまま**で送る。
                     // 水の spline_points（"x,y,z;..." の 1 文字列）と違い、1 点が
@@ -980,6 +997,38 @@ impl App {
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<AudioComponent>(name, ComponentKind::Audio, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "CoverEmitterComponent" => {
+                // デフォルト（Region 8m 立方・雪・0.2/秒・有効）の CoverEmitterComponent を追加する。
+                // 既定が Global でないのは、追加した瞬間にワールド全域が雪で埋まる
+                // （取り返しの付きにくい編集が 1 フレームで起きる）事故を避けるため。
+                use crate::engine::components::CoverEmitterComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, CoverEmitterComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<CoverEmitterComponent>(
+                            name, ComponentKind::CoverEmitter, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

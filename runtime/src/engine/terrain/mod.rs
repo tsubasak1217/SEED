@@ -10,6 +10,8 @@
 pub mod brush;
 pub mod chunk_coord;
 pub mod chunk_data;
+/// 地表カバー場（I3.1: 雪・落ち葉・泥・濡れ）。正典は docs/cover_field.md。
+pub mod cover;
 pub mod heightmap;
 pub mod layers;
 pub mod lod;
@@ -39,6 +41,15 @@ pub use layers::{
     TerrainLayer, TerrainLayerSet, blend_rule_and_paint_all, expand_slots, select_top_slots,
 };
 pub use lod::{TERRAIN_LOD_STRIDES, generate_lod_mesh, lod_count, stride_for_lod};
+// カバー場（I3.1）。tcover の read_chunk / write_chunk は tvox と名前が衝突するため、
+// cover モジュール側で `read_cover_chunk` / `write_cover_chunk` へ改名して再エクスポートしてある。
+#[allow(unused_imports)]
+pub use cover::{
+    COVER_FIELD_RESOLUTION, COVER_FIELD_TEXELS, COVER_MATERIAL_NONE, COVER_SLOPE_UP_FULL,
+    COVER_SLOPE_UP_MIN, CoverEmitRange, CoverEmitSpec, CoverField, CoverMask, CoverMaterial,
+    CoverMaterialSet, CoverSurface, TCOVER_MAGIC, TCOVER_VERSION, TERRAIN_MAX_COVER_MATERIALS,
+    TcoverError, accumulate_chunk, read_cover_chunk, slope_scale, write_cover_chunk,
+};
 pub use marching_cubes::{
     TerrainMesh, TerrainVertexEdge, generate, generate_standalone, interp_vertex_paint,
 };

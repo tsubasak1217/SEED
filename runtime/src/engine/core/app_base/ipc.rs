@@ -163,6 +163,25 @@ pub enum IpcCommand {
     /// エディタはドラッグ終了（マウスアップ）時に送る。
     /// ワイヤ形式: `TERRAIN_STROKE_END`（引数なし）
     TerrainStrokeEnd,
+    /// カバー場（I3.1）の Edit シミュレートを開始する / 指定秒数ぶん即時計算する。
+    ///
+    /// `seconds` が 0 以下なら「停止まで連続シミュレート」（再生形式）、
+    /// 正の値ならその秒数ぶんを 1 回で計算して即座に停止する。
+    /// ワイヤ形式: `TERRAIN_COVER_SIMULATE:{seconds}`
+    TerrainCoverSimulate { seconds: f32 },
+    /// カバー場の連続シミュレートを停止する。
+    /// ワイヤ形式: `TERRAIN_COVER_SIMULATE_STOP`（引数なし）
+    TerrainCoverSimulateStop,
+    /// 全チャンクのカバー場を消去する。
+    /// ワイヤ形式: `TERRAIN_COVER_CLEAR`（引数なし）
+    TerrainCoverClear,
+    /// `CoverEmitterComponent`（I3.1）のフィールドを更新する（cover_emitter_ops.rs が処理）。
+    ///
+    /// key: range_kind / extents_x / extents_y / extents_z / fade / mask_path /
+    ///      mask_size_x / mask_size_z / material_id / strength / enabled。
+    /// value は数値・文字列・"true"/"false" のいずれか（key ごとに解釈）。
+    /// ワイヤ形式: `SET_COVER_FIELD:{actor_dfs_id},{slot_idx},{key},{value}`
+    SetCoverField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// レイヤ定義（layers.json）を再読込し、レイヤテクスチャ配列と全チャンクを作り直す。
     /// エディタの地形設定ウィンドウがレイヤを保存した直後に送る（シーンビューへの即時反映）。
     /// ワイヤ形式: `TERRAIN_RELOAD_LAYERS`（引数なし）
@@ -934,6 +953,11 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
         "TERRAIN_UNDO" => Some(IpcCommand::TerrainUndo),
         "TERRAIN_REDO" => Some(IpcCommand::TerrainRedo),
         "TERRAIN_STROKE_END" => Some(IpcCommand::TerrainStrokeEnd),
+        // カバー場（I3.1）の連続シミュレート停止・全消去。
+        // 引数付きの TERRAIN_COVER_SIMULATE: より **先に** 完全一致で判定する
+        // （語頭が同じなので順序を逆にすると STOP が引数付きとして解釈される）。
+        "TERRAIN_COVER_SIMULATE_STOP" => Some(IpcCommand::TerrainCoverSimulateStop),
+        "TERRAIN_COVER_CLEAR" => Some(IpcCommand::TerrainCoverClear),
 
         // ── 引数付きコマンド ──
         // 地形初期化（新形式）: "chunks_x,chunks_z,chunk_cells,voxel_size"。
@@ -1017,6 +1041,12 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
                 // erase は 0/1。0 以外はすべて「消去」として扱う（寛容側）。
                 erase:    parts[5].trim().parse::<u32>().ok()? != 0,
             })
+        }
+        // カバー場シミュレート: "seconds"（f32×1）。
+        // 0 以下 = 停止まで連続、正の値 = その秒数ぶんを即時計算して停止。
+        s if s.starts_with("TERRAIN_COVER_SIMULATE:") => {
+            parse_nf::<1>(&s["TERRAIN_COVER_SIMULATE:".len()..])
+                .map(|fs| IpcCommand::TerrainCoverSimulate { seconds: fs[0] })
         }
         // 地形レイヤペイント: "layer,screen_x,screen_y,radius,strength"。
         // 先頭 layer は u32、残り 4 つは f32（TERRAIN_BRUSH と同じ並び）。
@@ -1948,6 +1978,19 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 })
                             })
                         }
+                        s if s.starts_with("SET_COVER_FIELD:") => {
+                            // フォーマット: SET_COVER_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+                            // value に "," を含みうる（mask_path が Windows パス・
+                            // material_id が任意文字）ため、最初のカンマまでを key とし
+                            // 残り全部を value にする（JointAttach と同じ tail 方式）。
+                            parse2u_tail(&s["SET_COVER_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetCoverField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
+                        }
                         s if s.starts_with("SET_JOINTATTACH_FIELD:") => {
                             // フォーマット: SET_JOINTATTACH_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
                             // value に "," を含む（offset_* は "x,y,z"、joint_name も任意文字）ため tail をそのまま value にする。
@@ -2528,6 +2571,29 @@ mod tests {
         assert!(matches!(parse_terrain_command("TERRAIN_UNDO"),        Some(IpcCommand::TerrainUndo)));
         assert!(matches!(parse_terrain_command("TERRAIN_REDO"),        Some(IpcCommand::TerrainRedo)));
         assert!(matches!(parse_terrain_command("TERRAIN_STROKE_END"),  Some(IpcCommand::TerrainStrokeEnd)));
+        assert!(matches!(parse_terrain_command("TERRAIN_COVER_CLEAR"), Some(IpcCommand::TerrainCoverClear)));
+    }
+
+    /// カバー場（I3.1）のシミュレート系コマンドが正しく解釈されること。
+    ///
+    /// 判定順の回帰テストも兼ねる: `TERRAIN_COVER_SIMULATE_STOP` は
+    /// 引数付きの `TERRAIN_COVER_SIMULATE:` と語頭が同じなので、
+    /// 完全一致アームを先に置かないと STOP が引数付きとして解釈されて握り潰される。
+    #[test]
+    fn parses_cover_simulate_commands_in_correct_order() {
+        assert!(matches!(
+            parse_terrain_command("TERRAIN_COVER_SIMULATE_STOP"),
+            Some(IpcCommand::TerrainCoverSimulateStop)
+        ));
+        match parse_terrain_command("TERRAIN_COVER_SIMULATE:2.5") {
+            Some(IpcCommand::TerrainCoverSimulate { seconds }) => assert_eq!(seconds, 2.5),
+            _ => panic!("秒数付きシミュレートが解釈できない"),
+        }
+        // 空欄（連続シミュレート）はエディタ側が 0 を送る。
+        match parse_terrain_command("TERRAIN_COVER_SIMULATE:0") {
+            Some(IpcCommand::TerrainCoverSimulate { seconds }) => assert_eq!(seconds, 0.0),
+            _ => panic!("連続シミュレートが解釈できない"),
+        }
     }
 
     /// プレビュー OFF が「引数付きプレビュー」より先に判定されること（判定順の回帰テスト）。

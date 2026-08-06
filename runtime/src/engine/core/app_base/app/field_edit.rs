@@ -130,6 +130,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             slot(*actor_dfs_id, *slot_idx, "SetSkyboxField", key),
         IpcCommand::SetInteractionField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetInteractionField", key),
+        IpcCommand::SetCoverField { actor_dfs_id, slot_idx, key, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetCoverField", key),
         IpcCommand::SetJointAttachField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetJointAttachField", key),
         IpcCommand::SetParticleField { actor_dfs_id, slot_idx, key, .. } =>
@@ -310,6 +312,14 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::TerrainRedo
         | IpcCommand::TerrainStrokeEnd
         | IpcCommand::TerrainReloadLayers
+        // カバー場のシミュレート・消去は地形データの編集であり、
+        // インスペクタのフィールド編集（Ctrl+Z 対象）ではない。
+        // 【既知の制限】カバー場は terrain 専用 undo スタック（TerrainEdit）にも
+        // 積んでいない。誤って消去した場合は保存前ならシーンを開き直す、
+        // 保存後なら再シミュレートで作り直す（docs/cover_field.md に明記）。
+        | IpcCommand::TerrainCoverSimulate { .. }
+        | IpcCommand::TerrainCoverSimulateStop
+        | IpcCommand::TerrainCoverClear
         | IpcCommand::TerrainHeightmap { .. }
         | IpcCommand::TerrainScatterRules { .. }
         | IpcCommand::TerrainScatterBrush { .. }
@@ -640,6 +650,12 @@ pub(super) fn apply_component_data_in_place(
             world.insert(entity, InteractionSourceComponent::from_data(d));
             SlotApply::Applied
         }
+        // カバーエミッタ（I3.1）は純粋な値の詰め替えだけで復元できる
+        // （GPU 資源も CLR インスタンスも持たない）。
+        ComponentData::CoverEmitterComponent(d) => {
+            world.insert(entity, CoverEmitterComponent::from_data(d));
+            SlotApply::Applied
+        }
         ComponentData::ControlPointComponent(d) => {
             world.insert(entity, ControlPointComponent::from_data(d));
             SlotApply::Applied
@@ -915,6 +931,7 @@ pub(super) fn component_kind_of(data: &ComponentData) -> ComponentKind {
         ComponentData::WaterVolumeComponent(_) => ComponentKind::WaterVolume,
         ComponentData::WaterLinkComponent(_) => ComponentKind::WaterLink,
         ComponentData::InteractionSourceComponent(_) => ComponentKind::InteractionSource,
+        ComponentData::CoverEmitterComponent(_) => ComponentKind::CoverEmitter,
         ComponentData::ControlPointComponent(_) => ComponentKind::ControlPoint,
     }
 }

@@ -379,6 +379,9 @@ impl App {
         // 水面描画（Phase W1: prepare + 屈折背景グラブ + 水面パス記録）にかかった CPU 時間 [ms]。
         // 水ボリュームが 0 個のフレームは一切実行されないため常に 0。
         let mut perf_water_ms:      f64 = 0.0;
+        // 地表カバー場（Phase I3.1: 積算 + 頂点焼き直し）にかかった CPU 時間 [ms]。
+        // シミュレート停止中かつ Edit のフレームは一切実行されないため常に 0。
+        let mut perf_cover_ms:      f64 = 0.0;
         // 瞬発インタラクションフィールド更新（Phase I1: 収集 + 速度算出 + コンピュート記録）に
         // かかった CPU 時間 [ms]。草もソースも無いフレームは一切実行されないため常に 0。
         let mut perf_interact_ms:   f64 = 0.0;
@@ -1265,6 +1268,27 @@ impl App {
                     &scene.actors, &mut scene.world, awl, ctx.delta_time, time_running,
                 );
             }
+        }
+
+        // ── 地表カバー場の積算と頂点焼き直し（Phase I3.1）────────────
+        //
+        // 【何をするか】有効な `CoverEmitterComponent` を集め、地形チャンクの
+        //  カバー場（32×32/チャンク）へ「被覆率 × 強度 × dt × 傾斜スケール」を積む。
+        //  変化したチャンクは頂点へ焼き直され（変位 ＋ uv0 のカバー情報）、
+        //  次のドローから雪・落ち葉・濡れとして描かれる。
+        //
+        // 【Play 中のみ／シミュレート中のみ】積算はゲーム状態（Play）または
+        //  編集操作（Edit のシミュレートボタン）でしか進まない。どちらでもない
+        //  フレームでは `tick_terrain_cover` が最初の 1 行で返る（完全に無コスト）。
+        //  Play 中に積もったぶんは Stop で捨てられ、Edit の保存状態へ戻る
+        //  （水位 `sim_level_y` とまったく同じ考え方）。
+        //
+        // 【なぜここか】`&mut World`（エミッタ収集）と `&mut ModelComponent`
+        //  （頂点バッファ書き換え）を要するので、`self` を細かく借り続ける
+        //  描画ブロックへ入る前に済ませる（水位グラフと同じ理由）。
+        {
+            perf_cover_ms = self.tick_terrain_cover(ctx.delta_time, time_running);
+            perf_cover_ms += self.apply_pending_cover(ctx.delta_time);
         }
 
         // ── スカイボックス（天球）CPU 収集（Phase R9）──────────────
@@ -7431,7 +7455,7 @@ impl App {
                             - perf_begin_frame_ms - perf_ipc_ms - perf_batch_ms - perf_merge_ms
                             - perf_skin_ms - perf_main_pass_ms - perf_id_ms
                             - perf_grid_ms - perf_collider_ms - perf_finish_ms - perf_grass_ms
-                            - perf_water_ms - perf_interact_ms
+                            - perf_water_ms - perf_interact_ms - perf_cover_ms
                             - phys_total_ms).max(0.0);
                         eprintln!(
                             "[PERF f={perf_idx}] MC={perf_mc_count} skin_MC={perf_skin_mc_count} dispatches={perf_skin_dispatches} \
@@ -7445,7 +7469,7 @@ impl App {
                              meshlet={perf_meshlet_considered}考慮 \
                              id={perf_id_ms:.3}ms grid={perf_grid_ms:.3}ms collider={perf_collider_ms:.3}ms \
                              grass={perf_grass_ms:.3}ms grass_inst={} \
-                             water={perf_water_ms:.3}ms interact={perf_interact_ms:.3}ms \
+                             water={perf_water_ms:.3}ms interact={perf_interact_ms:.3}ms                              cover={perf_cover_ms:.3}ms \
                              anim_t={:.3}s \
                              finish={perf_finish_ms:.3}ms other={other_ms:.3}ms",
                             if perf_tlas_built { "build" } else { "skip" },
