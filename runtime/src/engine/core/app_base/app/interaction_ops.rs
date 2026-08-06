@@ -6,12 +6,17 @@
 //    （water_ops.rs / light_ops.rs と同流儀）。
 //
 //  値の解釈規則:
-//    ・radius   … 半径（m）。0 以下は場に何も書けないので下限でクランプする
-//    ・strength … 0..1 の正規化パラメータ。範囲外はクランプする
-//    ・enabled  … "true" / "false"
+//    ・radius          … 半径（m）。0 以下は場に何も書けないので下限でクランプする
+//    ・strength        … 0..1 の正規化パラメータ。範囲外はクランプする
+//    ・enabled         … "true" / "false"
+//    ・stamp_shape     … "Circle" / "Texture"（未知の文字列は無視）。I3.2
+//    ・stamp_mask_path … 文字列そのまま（空 = 痕を付けない）。I3.2
+//    ・stamp_size_x/z  … テクスチャ形状の実寸（m）。下限クランプ。I3.2
 // ============================================================
 
-use crate::engine::components::interaction_source_component::InteractionSourceComponent;
+use crate::engine::components::interaction_source_component::{
+    InteractionSourceComponent, InteractionStampShape,
+};
 use crate::engine::components::ComponentKind;
 
 use super::App;
@@ -29,6 +34,14 @@ const NORMALIZED_MAX: f32 = 1.0;
 /// 場のテクセルサイズを実質的な下限として採用する。
 const RADIUS_MIN: f32 =
     crate::engine::core::renderer::interaction::INTERACTION_FIELD_TEXEL_SIZE;
+
+/// 轍スタンプ（テクスチャ形状）の実寸の下限（m）。
+///
+/// カバー場のテクセルは既定 0.5m 刻みなので、これより小さい痕は
+/// 「値は入るのに 1 テクセルにも当たらない」分かりにくい状態になる。
+/// とはいえ足跡は 1 テクセルより小さいのが普通なので、
+/// 数値として意味を保てる最小値（1cm）を下限にする。
+const STAMP_SIZE_MIN: f32 = 0.01;
 
 impl App {
     /// インスペクタからの InteractionSourceComponent フィールド更新
@@ -70,6 +83,26 @@ impl App {
             }
             "enabled" => {
                 if let Some(v) = parse_bool(value) { c.enabled = v; }
+            }
+            // ─── 轍スタンプ（I3.2）───
+            "stamp_shape" => {
+                let Some(k) = InteractionStampShape::from_str_opt(value.trim()) else { return };
+                c.stamp_shape = k;
+            }
+            "stamp_mask_path" => {
+                c.stamp_mask_path = value.to_string();
+                // マスク画像を差し替えたので、次のスタンプでロードし直させる
+                // （カバーエミッタのマスクと同じキャッシュを共有している）。
+                self.terrain.cover_mask_cache.clear();
+                self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                return;
+            }
+            "stamp_size_x" | "stamp_size_z" => {
+                let Ok(v) = value.parse::<f32>() else { return };
+                if !v.is_finite() { return; }
+                let axis = if key == "stamp_size_x" { 0 } else { 1 };
+                c.stamp_size[axis] = v.max(STAMP_SIZE_MIN);
             }
             _ => return,
         }

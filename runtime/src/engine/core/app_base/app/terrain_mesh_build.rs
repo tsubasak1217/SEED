@@ -304,8 +304,18 @@ pub fn rebuild_terrain_model_with_colors(
 ///   色・粗さの側は逆にシェーダで解決する。頂点へ焼くと素材の粗さが運べず、
 ///   地形レイヤとのブレンドもできないためである。頂点は「量」と「素材番号」だけを
 ///   運び（未使用だった `uv0` を転用）、実際の合成は terrain_gbuffer_write.wgsl が行う。
-///     uv0.x = 量（0..1）  … 0 のとき従来と完全に同一の絵になる
-///     uv0.y = 素材添字     … フラグメント側で round() して uniform の素材表を引く
+///     uv0.x = 実効の量（0..1）… 0 のとき従来と完全に同一の絵になる
+///     uv0.y = 素材添字        … フラグメント側で round() して uniform の素材表を引く
+///     uv1.x = 踏み固めの暗さ（0..1。I3.2）… 0 のとき従来と完全に同一の絵になる
+///
+/// 【轍（I3.2）が頂点で完結する理由】
+///   実効の量は `max(積もった量 - 踏み固め, 0)` であり、この引き算を CPU 側で
+///   済ませてしまえば、変位も色の混ぜ具合も**従来の 1 本の経路**がそのまま使える
+///   （踏まれた所は量が減る＝盛り上がりが消え、量 0 まで削られれば下地が露出する）。
+///   残るのは「踏まれた所を少し暗くする」だけなので、
+///   `踏み固め × 素材の踏み固め色係数` を 1 スカラーに畳んで uv1.x へ載せる。
+///   GPU の uniform（素材表）を触らずに済み、カバーを持たない地形では
+///   uv1 が [0,0] のままなので**従来とビット単位で同じ**出力になる。
 ///
 /// 【引数】
 /// - `src_vertices`: 現在の CPU モデルの頂点列（法線・頂点カラーはそのまま引き継ぐ）
@@ -318,6 +328,13 @@ pub fn rebuild_terrain_model_with_colors(
 ///   クランプして読むと両者が別の値を読み、変位量が食い違って隙間が開く
 ///   （`CoverNeighborhood` のコメントを参照）。
 /// - `chunk_extent`: チャンク 1 辺のワールド長（頂点のチャンクローカル座標 → カバー UV）
+/// - `chunk_origin_y`: チャンク最小コーナーのワールド Y。頂点はチャンクローカル座標なので、
+///   カバー場の Y 照合（どの段の面を読むか）に要るワールド Y をここから復元する
+///
+/// 【Y 照合（I3.2）】
+///   `cover` は上下 3 段を含む 3×3×3 ビューであり、頂点のワールド Y に最も近い
+///   基準 Y を持つ段の面を読む。これにより、地表が Y のチャンク境界面を横切る場所で
+///   上下段のメッシュが別々の面を読んで段差を作る問題（I3.1 §7-8）が解消する。
 ///
 /// 長さが食い違う場合は `None`（呼び出し側はフル再メッシュへフォールバックする）。
 pub fn rebuild_terrain_model_with_cover(
@@ -330,6 +347,7 @@ pub fn rebuild_terrain_model_with_cover(
     cover: &CoverNeighborhood,
     materials: &CoverMaterialSet,
     chunk_extent: f32,
+    chunk_origin_y: f32,
 ) -> Option<Model> {
     if src_vertices.len() != base_positions.len() || !(chunk_extent > 0.0) {
         return None;
@@ -348,20 +366,35 @@ pub fn rebuild_terrain_model_with_cover(
         //   （ワールド化はノード／インスタンス行列の担当）。
         //   境界上の頂点（ローカル座標が 0 ちょうど / chunk_extent ちょうど）は、
         //   隣接チャンクのメッシュから読んでも同じ 4 テクセル・同じ重みに解決される。
-        let (amount, material_index) =
-            cover.sample(base[0] / chunk_extent, base[2] / chunk_extent);
+        //   Y 照合のためのワールド Y は「チャンク原点 Y ＋ 基準位置のローカル Y」。
+        let sample = cover.sample(
+            base[0] / chunk_extent,
+            base[2] / chunk_extent,
+            chunk_origin_y + base[1],
+        );
+        let amount = sample.amount;
+
+        // ─── 踏み固めの暗さ（0..1）を 1 スカラーへ畳む ───
+        //   踏み固めた素材の色係数が 0（または素材が引けない）なら 0＝従来どおり。
+        let trample_darken = materials
+            .get(sample.trample_material as usize)
+            .map(|m| (sample.trample * m.trample_darkening).clamp(0.0, 1.0))
+            .unwrap_or(0.0);
 
         // ─── 素材が引けない（未定義添字・素材セットが空）なら「カバー無し」へ縮退 ───
-        let Some(mat) = materials.get(material_index as usize).filter(|_| amount > 0.0) else {
+        //   踏み固めだけが残っている（下地が露出した轍）場合もここへ来るため、
+        //   位置は基準のまま・色だけ暗くする。
+        let Some(mat) = materials.get(sample.material as usize).filter(|_| amount > 0.0) else {
             vertices.push(Vertex {
                 position: *base,
                 uv0: [0.0, 0.0],
+                uv1: [trample_darken, 0.0],
                 ..*v
             });
             continue;
         };
 
-        // ─── 変位: 基準位置から法線方向へ「量 × 素材の変位高さ」だけ持ち上げる ───
+        // ─── 変位: 基準位置から法線方向へ「実効の量 × 素材の変位高さ」だけ持ち上げる ───
         let lift = amount * mat.displacement;
         let position = [
             base[0] + v.normal[0] * lift,
@@ -378,7 +411,9 @@ pub fn rebuild_terrain_model_with_cover(
         vertices.push(Vertex {
             position,
             // uv0 は地形では未使用だった（常に [0,0]）。ここでカバー情報の運び手に転用する。
-            uv0: [amount, material_index as f32],
+            uv0: [amount, sample.material as f32],
+            // uv1 も地形では未使用（常に [0,0]）。x に踏み固めの暗さを載せる。
+            uv1: [trample_darken, 0.0],
             ..*v
         });
     }

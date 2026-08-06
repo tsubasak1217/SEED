@@ -674,6 +674,12 @@ public partial class InspectorPanel : UserControl
     private const float InteractionStrengthDefault = 1f;
     /// <summary>有効フラグの既定値。</summary>
     private const bool InteractionEnabledDefault = true;
+    /// <summary>轍スタンプ形状の既定値（Rust 側 InteractionStampShape::Circle と一致）。</summary>
+    private const string InteractionStampShapeDefault = "Circle";
+    /// <summary>轍スタンプ（テクスチャ形状）の横幅の既定値（m）。ブーツの足裏相当。</summary>
+    private const float InteractionStampSizeXDefault = 0.12f;
+    /// <summary>轍スタンプ（テクスチャ形状）の進行方向長さの既定値（m）。</summary>
+    private const float InteractionStampSizeZDefault = 0.30f;
 
     // ── CoverEmitterComponent の既定値（Phase I3.1）────────────
     // Rust 側 CoverEmitterComponentData の既定値と厳密に一致させること。
@@ -950,6 +956,11 @@ public partial class InspectorPanel : UserControl
         float InteractionRadius = InteractionRadiusDefault,
         float InteractionStrength = InteractionStrengthDefault,
         bool InteractionEnabled = InteractionEnabledDefault,
+        // 轍スタンプ（Phase I3.2）: 形状種別・マスク画像・実寸。
+        string InteractionStampShape = InteractionStampShapeDefault,
+        string InteractionStampMaskPath = "",
+        float InteractionStampSizeX = InteractionStampSizeXDefault,
+        float InteractionStampSizeZ = InteractionStampSizeZDefault,
         // ── ControlPointComponent 用フィールド（フェーズB）──────
         // 制御点配列は「生 JSON 文字列」のまま保持する。1 点が position/rotation/time/interp の
         // 4 属性を持つため、独自の区切り記法（"x,y,z;..." 等）を作るとエスケープと拡張で破綻する。
@@ -1446,6 +1457,11 @@ public partial class InspectorPanel : UserControl
             // 【重要】キーは "source_enabled"。スロット共通の "enabled"(数値0/1)とキー重複
             // させると GetProperty が数値側を返し GetBoolean() が例外になる（既往リグレッション）。
             var interactEnabled  = comp.TryGetProperty("source_enabled", out var ise) ? ise.GetBoolean() : InteractionEnabledDefault;
+            // 轍スタンプ（Phase I3.2）。欠落時は Rust 側既定値と一致する定数へ。
+            var stampShape    = comp.TryGetProperty("stamp_shape",     out var iss2) ? iss2.GetString() ?? InteractionStampShapeDefault : InteractionStampShapeDefault;
+            var stampMaskPath = comp.TryGetProperty("stamp_mask_path", out var ismp) ? ismp.GetString() ?? "" : "";
+            var stampSizeX    = comp.TryGetProperty("stamp_size_x",    out var issx) ? issx.GetSingle() : InteractionStampSizeXDefault;
+            var stampSizeZ    = comp.TryGetProperty("stamp_size_z",    out var issz) ? issz.GetSingle() : InteractionStampSizeZDefault;
             // ControlPointComponent 用（フェーズB）: 制御点配列を生 JSON のまま保持する。
             // 要素は {"position":[x,y,z],"rotation":[x,y,z],"time":t,"interp":"..."}。欠落時は空配列。
             var controlPointsJson = comp.TryGetProperty("points", out var cpp) ? cpp.GetRawText() : "[]";
@@ -1574,6 +1590,11 @@ public partial class InspectorPanel : UserControl
                 // InteractionSourceComponent 用フィールド
                 InteractionRadius: interactRadius, InteractionStrength: interactStrength,
                 InteractionEnabled: interactEnabled,
+                // 轍スタンプ（I3.2）
+                InteractionStampShape: stampShape,
+                InteractionStampMaskPath: stampMaskPath,
+                InteractionStampSizeX: stampSizeX,
+                InteractionStampSizeZ: stampSizeZ,
                 // ControlPointComponent 用フィールド
                 ControlPointsJson: controlPointsJson,
                 // CoverEmitterComponent 用フィールド（I3.1）
@@ -6943,6 +6964,115 @@ public partial class InspectorPanel : UserControl
         });
 
         sp.Children.Add(section);
+
+        // ── 轍スタンプ（Phase I3.2）────────────────────────────
+        //   Play 中に雪・泥の上を動くと、その足跡・轍が地表カバー場へ残る。
+        //   形状は「円」（既定）と「テクスチャ」（進行方向へ回るマスク画像）の 2 種。
+        //   ※ここでの形状は **轍だけ**に効く。草なびき・水の波紋は従来どおり半径の円。
+        var stampSection = BuildSection("轍（地表カバーへの痕）");
+        var stampBody    = (StackPanel)stampSection.Child;
+
+        // 形状ドロップダウン。値は Rust 側 InteractionStampShape::as_str と一致させる。
+        var shapes = new[]
+        {
+            ("Circle",  "円 (Circle)"),
+            ("Texture", "テクスチャ (Texture)"),
+        };
+        var shapeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        shapeRow.Children.Add(new TextBlock
+        {
+            Text = "形状", FontSize = 11, Width = 90,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var shapeCombo = new ComboBox { Width = 170, FontSize = 11 };
+        foreach (var (val, label) in shapes)
+            shapeCombo.Items.Add(new ComboBoxItem { Content = label, Tag = val });
+        var curShapeIdx = Array.FindIndex(shapes, t => t.Item1 == info.InteractionStampShape);
+        shapeCombo.SelectedIndex = curShapeIdx >= 0
+            ? curShapeIdx
+            : Array.FindIndex(shapes, t => t.Item1 == InteractionStampShapeDefault);
+        shapeRow.Children.Add(shapeCombo);
+        stampBody.Children.Add(shapeRow);
+
+        // Texture 専用の行（マスク画像＋実寸）。参照行は他のファイル参照と同じ流儀。
+        var maskRow = (FrameworkElement)FileRefBuilder.Build(
+            "痕画像", info.InteractionStampMaskPath,
+            [".png", ".jpg", ".jpeg", ".bmp", ".tga"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "轍の痕（グレースケール画像）を選択",
+                    Filter = "画像|*.png;*.jpg;*.jpeg;*.bmp;*.tga|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                // 絶対パスを assets:// 仮想パスへ変換してから送信する。
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                SendField("stamp_mask_path", virtualPath);
+            },
+            // 行末の「×」で指定を解除する（空パス送信で未設定へ戻る）。
+            () => SendField("stamp_mask_path", ""));
+
+        var stampSizeXRow = (FrameworkElement)BuildResettableFloatRow(
+            info.SlotIdx, InteractionSourceComponentType, "痕の幅X(m)",
+            info.InteractionStampSizeX, "stamp_size/0", "F3",
+            v => SendField("stamp_size_x", v.ToString(CultureInfo.InvariantCulture)));
+        var stampSizeZRow = (FrameworkElement)BuildResettableFloatRow(
+            info.SlotIdx, InteractionSourceComponentType, "痕の長さZ(m)",
+            info.InteractionStampSizeZ, "stamp_size/1", "F3",
+            v => SendField("stamp_size_z", v.ToString(CultureInfo.InvariantCulture)));
+
+        stampBody.Children.Add(maskRow);
+        stampBody.Children.Add(stampSizeXRow);
+        stampBody.Children.Add(stampSizeZRow);
+
+        var stampHint = new TextBlock
+        {
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 4, 0, 2),
+        };
+        stampBody.Children.Add(stampHint);
+
+        // ── 形状に応じた行の表示切替（無関係なパラメータは非表示にする）──
+        void UpdateStampVisibility(string shape)
+        {
+            var texVis = shape == "Texture" ? Visibility.Visible : Visibility.Collapsed;
+            maskRow.Visibility       = texVis;
+            stampSizeXRow.Visibility = texVis;
+            stampSizeZRow.Visibility = texVis;
+            stampHint.Text = shape == "Texture"
+                ? "グレースケール画像を進行方向へ回して押し当てます（白=最も深い / 黒=踏まない）。"
+                + "画像の上方向が進行方向です。タイヤのトレッドや靴底の型に使えます。"
+                : "影響半径の円で踏み固めます（中心ほど深い）。人の足跡程度ならこれで十分です。";
+        }
+        UpdateStampVisibility(info.InteractionStampShape);
+        shapeCombo.SelectionChanged += (_, _) =>
+        {
+            if (shapeCombo.SelectedItem is ComboBoxItem item && item.Tag is string shape)
+            {
+                SendField("stamp_shape", shape);
+                UpdateStampVisibility(shape);
+            }
+        };
+
+        stampBody.Children.Add(new TextBlock
+        {
+            Text         = "痕が残るのは Play 中に動いたときだけで、Stop すると消えます（積もり方と同じ扱い）。"
+                         + "残りやすさ・埋め戻り方・踏んだ所の暗さは cover_materials.json の素材ごとの係数で決まります。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 4, 0, 2),
+        });
+
+        sp.Children.Add(stampSection);
         return sp;
     }
 

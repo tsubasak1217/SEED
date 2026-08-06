@@ -695,6 +695,14 @@ pub struct TerrainState {
     /// 「開始〜停止」の間ぜんぶを 1 セッション（= undo スタックの 1 エントリ）として扱うため、
     /// 開始時点の全カバー場をここへ複製し、停止時に現在値と突き合わせて差分を取る。
     pub cover_undo_session_before: Option<super::terrain_cover_ops::CoverFieldMap>,
+    /// 轍スタンプ源（InteractionSource）の追跡情報（I3.2）。
+    ///
+    /// キーはアクタ DFS 連番＋スロット添字（`interaction::source_key`）。
+    /// 前フレーム位置と直近の進行方向を持ち、
+    ///   ・動いたか（＝踏んだか）の判定
+    ///   ・テクスチャ形状を回す向き
+    /// に使う。Play の開始・終了で必ず捨てる（揮発するゲーム状態）。
+    pub cover_stamp_tracks: HashMap<u64, super::terrain_cover_ops::CoverStampTrack>,
 
     // ─── 物理コリジョン（地形の静的トライメッシュコライダー）─────────────────
     /// チャンク → そのチャンクに対応する物理コライダーの entity_id。
@@ -782,6 +790,7 @@ impl Default for TerrainState {
             cover_apply_timer: 0.0,
             cover_play_snapshot: None,
             cover_undo_session_before: None,
+            cover_stamp_tracks: HashMap::new(),
             chunk_collider_ids: HashMap::new(),
             next_terrain_collider_id: TERRAIN_COLLIDER_ENTITY_BASE,
 
