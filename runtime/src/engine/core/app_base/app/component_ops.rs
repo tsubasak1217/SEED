@@ -436,9 +436,14 @@ impl App {
                     // 同一 JSON オブジェクト内のキー重複になり、C# の GetProperty が数値側を
                     // 返して GetBoolean() が例外 → インスペクタ全体が表示不能になる
                     // （実際に起きたリグレッション）。
+                    // 轍スタンプ（I3.2）: 形状種別・マスク画像・実寸も送る。
+                    let stamp_mask_json =
+                        serde_json::to_string(&d.stamp_mask_path).unwrap_or_default();
                     ("InteractionSourceComponent", format!(
-                        r#","radius":{:.4},"strength":{:.4},"source_enabled":{}"#,
+                        r#","radius":{:.4},"strength":{:.4},"source_enabled":{},"stamp_shape":"{}","stamp_mask_path":{stamp_mask_json},"stamp_size_x":{:.4},"stamp_size_z":{:.4}"#,
                         d.radius, d.strength, d.enabled,
+                        d.stamp_shape.as_str(),
+                        d.stamp_size[0], d.stamp_size[1],
                     ))
                 }
                 ComponentData::CoverEmitterComponent(d) => {

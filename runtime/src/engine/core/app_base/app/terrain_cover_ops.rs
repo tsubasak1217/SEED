@@ -38,8 +38,12 @@ use crate::engine::core::loader::model::Model;
 use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::chunk_coord::ChunkCoord;
 use crate::engine::terrain::cover::{
-    accumulate_chunk, read_cover_chunk, write_cover_chunk, CoverEmitRange, CoverEmitSpec,
-    CoverField, CoverMask, CoverMaterialSet, CoverNeighborhood, CoverSurface,
+    accumulate_chunk, cover_y_match_tolerance, read_cover_chunk, resolve_forward_xz,
+    stamp_cover_chunk, write_cover_chunk, CoverEmitRange, CoverEmitSpec, CoverField, CoverMask,
+    CoverMaterialSet, CoverNeighborhood, CoverStampShape, CoverStampSpec, CoverSurface,
+};
+use crate::engine::components::interaction_source_component::{
+    InteractionSourceComponent, InteractionStampShape,
 };
 
 use crate::engine::core::app_base::undo::CoverFieldEditCommand;
@@ -103,6 +107,17 @@ const COVER_SIMULATE_MAX_DT: f32 = 1.0 / 20.0;
 
 /// ミリ秒換算（計測ログ用）。
 const MILLIS_PER_SEC: f64 = 1000.0;
+
+// ─── 轍スタンプ（I3.2）の調整用定数 ──────────────────────────────────────────
+
+/// スタンプを行う最小の移動量（メートル / フレーム）。
+///
+/// 【なぜ「移動時のみ」なのか】
+///   その場に立っているだけのアクタで毎フレーム 32×32 を舐めるのは無駄であり、
+///   踏み固めは最大値更新なので静止中に走らせても結果が 1 ビットも変わらない。
+///   閾値は 60Hz で 0.06m/s（＝ほぼ静止）に相当する小さな値にしてあり、
+///   ゆっくり歩いても轍は途切れない。
+const COVER_STAMP_MIN_MOVE: f32 = 0.001;
 
 // ============================================================
 //  カバー適用前のメッシュ基準値（変位の累積を防ぐキャッシュ）
@@ -295,7 +310,157 @@ impl App {
             let emitters = self.collect_cover_emitters();
             self.accumulate_cover(&emitters, step);
         }
+        // ─── 轍のスタンプ（I3.2。Play 中のみ）───
+        //   Edit 中の轍オーサリングはスコープ外なので、シミュレートボタンでは動かさない
+        //   （エミッタと違って「どこを歩いたか」は Play でしか生まれない情報である）。
+        if play_running && step > 0.0 {
+            let stamps = self.collect_cover_stamps(step);
+            self.apply_cover_stamps(&stamps);
+        }
         t.elapsed().as_secs_f64() * MILLIS_PER_SEC
+    }
+
+    // ─── ③-2 轍のスタンプ（I3.2）─────────────────────────────────────────────
+
+    /// 動いている `InteractionSource` から、このフレームのスタンプ仕様を組み立てる。
+    ///
+    /// 【インタラクションフィールド（草・波紋）と収集を共有しない理由】
+    ///   あちらの収集はフレーム後半（描画ブロックの中）で走り、速度トラッカーは
+    ///   1 フレーム 1 回しか更新できない状態を持つ。ここから呼ぶと二重更新になって
+    ///   草の速度が壊れる。走査自体はアクタ木の DFS だけで軽く、
+    ///   前フレーム位置も轍専用に持ったほうが「移動時のみスタンプ」を素直に書ける。
+    ///   ＝**同じデータ（InteractionSource）を、別々の消費者が別々に読む**形にしてある。
+    fn collect_cover_stamps(&mut self, dt: f32) -> Vec<CoverStampSpec> {
+        // ─── ① シーン走査（読み取りのみ）───
+        let raw = {
+            let Some(scene) = self.scene.as_ref() else { return Vec::new() };
+            let wl = self.active_world_line;
+            let mut out: Vec<RawStampSource> = Vec::new();
+            let mut dfs = 0u32;
+            for root in scene.actors.iter().filter(|a| a.world_line == wl) {
+                collect_stamp_in_actor(root, &scene.world, &mut out, &mut dfs, true);
+            }
+            out
+        };
+
+        // ─── ② 消えたソースの追跡情報を捨てる（Play を跨いだ蓄積を防ぐ）───
+        if raw.is_empty() {
+            self.terrain.cover_stamp_tracks.clear();
+            return Vec::new();
+        }
+        let alive: HashSet<u64> = raw.iter().map(|r| r.key).collect();
+        self.terrain.cover_stamp_tracks.retain(|k, _| alive.contains(k));
+
+        // ─── ③ マスク画像を確保する（エミッタのマスクと同じキャッシュを使う）───
+        for r in &raw {
+            if r.shape == InteractionStampShape::Texture && !r.mask_path.is_empty() {
+                self.ensure_cover_mask(&r.mask_path);
+            }
+        }
+
+        // ─── ④ 移動量から向きを決めてスタンプ仕様を作る ───
+        let mut out = Vec::new();
+        for r in raw {
+            let track = self.terrain.cover_stamp_tracks.get(&r.key).copied();
+            let previous_forward = track.map(|t| t.forward);
+            let delta_xz = match track {
+                Some(t) => [r.world_pos[0] - t.last_pos[0], r.world_pos[2] - t.last_pos[2]],
+                // 初出のソースは「動いていない」扱い（出現した瞬間に痕を残さない）。
+                None => [0.0, 0.0],
+            };
+            let moved = (delta_xz[0] * delta_xz[0] + delta_xz[1] * delta_xz[1]).sqrt();
+            let forward = resolve_forward_xz(delta_xz, dt, previous_forward);
+
+            // 追跡情報は動いていなくても必ず更新する（次フレームの差分の基準になる）。
+            self.terrain
+                .cover_stamp_tracks
+                .insert(r.key, CoverStampTrack { last_pos: r.world_pos, forward });
+
+            // 静止中はスタンプしない（結果が変わらないので走らせるだけ無駄）。
+            if moved < COVER_STAMP_MIN_MOVE {
+                continue;
+            }
+
+            let shape = match r.shape {
+                InteractionStampShape::Circle => CoverStampShape::Circle,
+                InteractionStampShape::Texture => {
+                    let mask = self
+                        .terrain
+                        .cover_mask_cache
+                        .get(&r.mask_path)
+                        .cloned()
+                        .unwrap_or_else(CoverMask::empty);
+                    // マスクが無効（未設定・読み込み失敗）なら痕を付けない。
+                    if !mask.is_valid() {
+                        continue;
+                    }
+                    CoverStampShape::Texture { size: r.stamp_size, forward_xz: forward, mask }
+                }
+            };
+            out.push(CoverStampSpec {
+                contact: r.world_pos,
+                radius: r.radius,
+                strength: r.strength,
+                shape,
+            });
+        }
+        out
+    }
+
+    /// スタンプ仕様を、接地しうるチャンクにだけ適用する。
+    ///
+    /// 【全チャンクを舐めない理由（性能）】
+    ///   積算（天候）は世界全体に降りうるが、轍は接地点の周囲 1〜2 メートルの話である。
+    ///   スタンプの届く AABB と交差するチャンクだけを選べば、
+    ///   既定 48 チャンクのうち触るのは 1〜4 個で済む。
+    ///   触ったチャンクだけを既存の `queue_cover_apply` 経路へ載せるので、
+    ///   頂点の焼き直しも接地点の周りだけに閉じる。
+    fn apply_cover_stamps(&mut self, stamps: &[CoverStampSpec]) {
+        if stamps.is_empty() {
+            return;
+        }
+        let t = Instant::now();
+        let settings = self.terrain.settings.clone();
+        let extent = settings.chunk_extent();
+        let materials = self.terrain.cover_materials.clone();
+
+        // ─── ① スタンプの AABB に触れるチャンクだけを選ぶ ───
+        let coords: Vec<ChunkCoord> = self
+            .terrain
+            .chunks
+            .keys()
+            .copied()
+            .filter(|coord| {
+                let origin = coord.world_origin(&settings);
+                let max = [origin[0] + extent, origin[1] + extent, origin[2] + extent];
+                stamps.iter().any(|s| !s.is_outside_aabb(origin, max))
+            })
+            .collect();
+        if coords.is_empty() {
+            return;
+        }
+
+        // ─── ② 面情報を用意して押し当てる ───
+        for coord in &coords {
+            self.ensure_cover_surface(*coord);
+        }
+        let mut changed: Vec<ChunkCoord> = Vec::new();
+        for coord in coords {
+            // カバー場が無いチャンク（何も積もっていない）には轍も付かない。
+            if !self.terrain.cover.contains_key(&coord) {
+                continue;
+            }
+            let Some(surface) = self.terrain.cover_surface.get(&coord) else { continue };
+            let origin = coord.world_origin(&settings);
+            let Some(field) = self.terrain.cover.get_mut(&coord) else { continue };
+            if stamp_cover_chunk(field, surface, origin, extent, stamps, &materials) {
+                changed.push(coord);
+            }
+        }
+        for coord in changed {
+            self.terrain.cover_dirty.insert(coord);
+            self.queue_cover_apply(coord);
+        }
     }
 
     /// 全チャンクのカバー場を `dt` 秒ぶん進める（純粋関数 `accumulate_chunk` の駆動）。
@@ -307,6 +472,9 @@ impl App {
         }
         let settings = self.terrain.settings.clone();
         let extent = settings.chunk_extent();
+        // 素材定義は積算中に `&mut self.terrain.cover` と同時に借りられないので複製する
+        // （素材は十数件の小さな構造体であり、複製コストは無視できる）。
+        let materials = self.terrain.cover_materials.clone();
 
         // 地表情報（密度場の派生キャッシュ）を必要なぶんだけ用意する。
         let coords: Vec<ChunkCoord> = self.terrain.chunks.keys().copied().collect();
@@ -319,7 +487,7 @@ impl App {
             let Some(surface) = self.terrain.cover_surface.get(&coord) else { continue };
             let origin = coord.world_origin(&settings);
             let field = self.terrain.cover.entry(coord).or_default();
-            if accumulate_chunk(field, surface, origin, extent, emitters, dt) {
+            if accumulate_chunk(field, surface, origin, extent, emitters, &materials, dt) {
                 changed.push(coord);
             }
         }
@@ -336,24 +504,35 @@ impl App {
     ///   変化したチャンクだけを焼き直すと、隣のメッシュは古い値のまま残り、
     ///   境界の複製頂点どうしで変位が食い違って**そこだけ隙間が開く**。
     ///   境界の一致は「両側が同じ世代のカバー場を読んでいる」ことが前提なので、
-    ///   XZ 方向の 8 近傍（角を含む）も必ず一緒に焼き直す。
+    ///   26 近傍（XZ の 8 近傍 × 上下 3 段。角を含む）を必ず一緒に焼き直す。
     ///   存在しないチャンクは入れない（焼く対象が無い）。
+    ///
+    /// 【上下段も入れる理由（I3.2）】
+    ///   Y 照合の導入で、境界面上の頂点は**上下段のカバー場も候補として読む**ように
+    ///   なった。下段の雪が変わったのに上段のメッシュを焼き直さないと、
+    ///   境界面上の複製頂点が世代違いの値を読んで筋が出る（横方向とまったく同じ理屈）。
     fn queue_cover_apply(&mut self, coord: ChunkCoord) {
         self.terrain.cover_pending_apply.insert(coord);
-        for dz in -1..=1i32 {
-            for dx in -1..=1i32 {
-                if dx == 0 && dz == 0 {
-                    continue;
-                }
-                let neighbor = ChunkCoord::new(coord.x + dx, coord.y, coord.z + dz);
-                if self.terrain.chunks.contains_key(&neighbor) {
-                    self.terrain.cover_pending_apply.insert(neighbor);
+        for dy in -1..=1i32 {
+            for dz in -1..=1i32 {
+                for dx in -1..=1i32 {
+                    if dx == 0 && dy == 0 && dz == 0 {
+                        continue;
+                    }
+                    let neighbor = ChunkCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+                    if self.terrain.chunks.contains_key(&neighbor) {
+                        self.terrain.cover_pending_apply.insert(neighbor);
+                    }
                 }
             }
         }
     }
 
     /// 指定チャンクの地表情報（密度場からの派生）をキャッシュへ用意する。
+    ///
+    /// 地表情報を **新しく作った**ときは、そのチャンクのカバー場の基準 Y も
+    /// 併せて同期する（I3.2）。基準 Y は「面のワールド高さ」であり、
+    /// 地形が変われば当然変わる派生値なので、面情報と同じ寿命で扱う。
     fn ensure_cover_surface(&mut self, coord: ChunkCoord) {
         if self.terrain.cover_surface.contains_key(&coord) {
             return;
@@ -361,7 +540,23 @@ impl App {
         let Some(chunk) = self.terrain.chunks.get(&coord) else { return };
         let origin_y = coord.world_origin(&self.terrain.settings)[1];
         let surface = CoverSurface::from_chunk(chunk, &self.terrain.settings, origin_y);
+        if let Some(field) = self.terrain.cover.get_mut(&coord) {
+            field.refresh_base_y(&surface);
+        }
         self.terrain.cover_surface.insert(coord, surface);
+    }
+
+    /// 指定チャンクのカバー場の基準 Y を、地表情報から同期する（I3.2）。
+    ///
+    /// `ensure_cover_surface` は「面情報が無いときだけ」作るため、
+    /// **面情報が先にあってカバー場が後から来た**場合（.tcover のロード・Undo の
+    /// 書き戻し・Play スナップショットの復元）に基準 Y が未同期のまま残る。
+    /// その 1 か所を埋めるのが本関数であり、カバー場を差し替えた経路は必ずここを通す。
+    pub(super) fn sync_cover_base_y(&mut self, coord: ChunkCoord) {
+        self.ensure_cover_surface(coord);
+        let Some(surface) = self.terrain.cover_surface.get(&coord) else { return };
+        let Some(field) = self.terrain.cover.get_mut(&coord) else { return };
+        field.refresh_base_y(surface);
     }
 
     /// 地形が編集された（再メッシュされた）チャンクのカバー派生データを捨てる。
@@ -382,21 +577,24 @@ impl App {
         }
     }
 
-    /// 自分または XZ 隣接 8 チャンクのカバー場のどれかが `pred` を満たすか。
+    /// 自分または隣接 26 チャンク（XZ 8 近傍 × 上下 3 段）のカバー場のどれかが `pred` を満たすか。
     ///
     /// 境界の頂点は隣のカバー場も読むため、焼き直しの要否は必ずこの範囲で判断する
     /// （自分だけを見ると「隣に積もった雪が境界へはみ出す分」を取りこぼす）。
+    /// 上下段まで見るのは Y 照合（I3.2）で上下段の面も候補になったためである。
     fn any_cover_in_neighborhood(
         &self,
         coord: ChunkCoord,
         pred: impl Fn(&CoverField) -> bool,
     ) -> bool {
-        (-1..=1i32).any(|dz| {
-            (-1..=1i32).any(|dx| {
-                self.terrain
-                    .cover
-                    .get(&ChunkCoord::new(coord.x + dx, coord.y, coord.z + dz))
-                    .is_some_and(&pred)
+        (-1..=1i32).any(|dy| {
+            (-1..=1i32).any(|dz| {
+                (-1..=1i32).any(|dx| {
+                    self.terrain
+                        .cover
+                        .get(&ChunkCoord::new(coord.x + dx, coord.y + dy, coord.z + dz))
+                        .is_some_and(&pred)
+                })
             })
         })
     }
@@ -476,6 +674,28 @@ impl App {
         }
         let Some(&slot_entity) = self.terrain.chunk_slot_entity.get(&coord) else { return false };
 
+        // ─── ⓪ 上下段も含めた近傍の面情報を用意しておく（I3.2 の Y 照合の前提）───
+        //   焼き込みは上下段のカバー場も読むため、そちらの基準 Y が未同期だと
+        //   段の選択が「未知」へ縮退して境界の一致が崩れる。
+        //
+        //   `ensure_cover_surface` は **面情報を新しく作ったときだけ**基準 Y を同期する
+        //   （キャッシュ済みなら何もしない）。基準 Y を作り直す必要がある他の経路
+        //   ——カバー場の差し替え（.tcover ロード / Undo / Play 復元）——は
+        //   それぞれの場所で `sync_cover_base_y` を呼んでいるので、
+        //   ここで毎回 27 チャンク分を舐め直す必要は無い。
+        for dy in -1..=1i32 {
+            for dz in -1..=1i32 {
+                for dx in -1..=1i32 {
+                    let n = ChunkCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+                    if self.terrain.cover.contains_key(&n) {
+                        self.ensure_cover_surface(n);
+                    }
+                }
+            }
+        }
+        // 頂点はチャンクローカル座標なので、Y 照合に使うワールド Y の基準を控える。
+        let chunk_origin_y = coord.world_origin(&self.terrain.settings)[1];
+
         // ─── ① 基準メッシュ（カバー適用前の頂点位置・平均アルベド）を用意する ───
         //   `&mut self` を要するのはここだけなので、先に済ませてしまう。
         //   こうすると ② では近傍カバー場への参照（`&self.terrain.cover`）を
@@ -496,12 +716,20 @@ impl App {
             let Some(prim) = mesh.primitives.first() else { return false };
             let Some(base) = self.terrain.cover_base_mesh.get(&coord) else { return false };
 
-            // 自チャンク＋XZ 隣接 8 チャンクのカバー場ビュー。
-            // 境界上の頂点が「隣のメッシュから読んでも同じ値」になるために必須である
-            // （同じ Y の段だけを見る。上下段は別の面を持つため混ぜてはならない）。
+            // 自チャンク＋隣接 26 チャンク（XZ 8 近傍 × 上下 3 段）のカバー場ビュー。
+            // 境界上の頂点が「隣のメッシュから読んでも同じ値」になるために必須である。
+            //
+            // 【上下段も含める理由（I3.2）】
+            //   地表が Y のチャンク境界面を横切る場所では、面が上段にある列と
+            //   下段にある列が隣り合う。境界面上の複製頂点は上下段のメッシュへ
+            //   複製されているので、上下段の面も候補に入れて
+            //   **頂点のワールド Y に最も近い面**を選ばないと、両者が別の値を読んで
+            //   段差になる（I3.1 §7-8 の既知の制限）。選び方はワールド位置の純関数
+            //   なので、どちらのメッシュから読んでも同じ面に行き着く。
             let cover = &self.terrain.cover;
-            let neighborhood = CoverNeighborhood::from_lookup(|dx, dz| {
-                cover.get(&ChunkCoord::new(coord.x + dx, coord.y, coord.z + dz))
+            let y_tolerance = cover_y_match_tolerance(extent);
+            let neighborhood = CoverNeighborhood::from_lookup(y_tolerance, |dx, dy, dz| {
+                cover.get(&ChunkCoord::new(coord.x + dx, coord.y + dy, coord.z + dz))
             });
 
             rebuild_terrain_model_with_cover(
@@ -514,6 +742,7 @@ impl App {
                 &neighborhood,
                 materials,
                 extent,
+                chunk_origin_y,
             )
         };
         let Some(new_model) = new_model else { return false };
@@ -673,6 +902,9 @@ impl App {
                 continue;
             }
             self.terrain.cover.insert(coord, field.clone());
+            // 書き戻した場の基準 Y を現在の地形へ同期する（スナップショットは
+            // 撮った時点の地形に基づく。地形を編集してから undo しても破綻させない）。
+            self.sync_cover_base_y(coord);
             self.terrain.cover_dirty.insert(coord);
             // 隣接チャンクの境界頂点もこのカバー場を読むので一緒に焼き直す。
             self.queue_cover_apply(coord);
@@ -872,6 +1104,9 @@ impl App {
                     // 読み込んだカバーを頂点へ焼き直す（描画へ反映する）。
                     // 隣接チャンクの境界頂点もこの場を読むので一緒に予約する。
                     if has_cover {
+                        // TCOVER v1 から読んだ場は基準 Y が「未知」なので、
+                        // ここで地表情報から再計算して Y 照合が効く状態にする。
+                        self.sync_cover_base_y(*coord);
                         self.queue_cover_apply(*coord);
                     }
                 }
@@ -901,6 +1136,9 @@ impl App {
         //   ちぐはぐな 1 エントリが出来てしまう。Play へ入る前に締めておく。
         //   エディタのトグルボタンを▶へ戻すため SIM_STOPPED も送られる。
         self.stop_cover_sim_and_commit();
+        // 轍の追跡情報（前フレーム位置・進行方向）は Play ごとに作り直す
+        // （前回の Play の位置と突き合わせて巨大な移動量が出るのを防ぐ）。
+        self.terrain.cover_stamp_tracks.clear();
         self.terrain.cover_play_snapshot = Some(self.terrain.cover.clone());
     }
 
@@ -910,6 +1148,7 @@ impl App {
     /// （Play しただけでシーンが変更済みになる、という挙動を避ける）。
     pub(super) fn restore_cover_after_play(&mut self) {
         let Some(snapshot) = self.terrain.cover_play_snapshot.take() else { return };
+        self.terrain.cover_stamp_tracks.clear();
         // Play 中に触れた（または Play 前から乗っていた）チャンクは全部焼き直す。
         let mut touched: HashSet<ChunkCoord> =
             self.terrain.cover.keys().copied().collect();
@@ -917,6 +1156,7 @@ impl App {
         self.terrain.cover = snapshot;
         // 隣接チャンクの境界頂点も揮発ぶんを読んでいたので一緒に焼き直す。
         for coord in touched {
+            self.sync_cover_base_y(coord);
             self.queue_cover_apply(coord);
         }
         self.terrain.cover_apply_timer = COVER_APPLY_INTERVAL_SEC;
@@ -1012,6 +1252,79 @@ fn collect_cover_in_actor(
 
     for child in actor.children() {
         collect_cover_in_actor(child, world, out, active);
+    }
+}
+
+// ============================================================
+//  轍スタンプのソース収集（ECS 走査。I3.2）
+// ============================================================
+
+/// 轍スタンプの追跡情報（フレームを跨いで持つ最小の状態）。
+#[derive(Clone, Copy, Debug)]
+pub struct CoverStampTrack {
+    /// 前フレームのワールド位置（移動量＝踏んだかどうかの判定に使う）。
+    pub last_pos: [f32; 3],
+    /// 直近の進行方向（ワールド XZ の単位ベクトル）。静止中も保持する。
+    pub forward: [f32; 2],
+}
+
+/// アクタ走査で拾った轍スタンプ源の生データ。
+struct RawStampSource {
+    /// フレームを跨いで安定なキー（アクタ DFS 連番 ＋ スロット添字）。
+    key: u64,
+    /// アクターのワールド位置（＝接地点として扱う）。
+    world_pos: [f32; 3],
+    radius: f32,
+    strength: f32,
+    shape: InteractionStampShape,
+    mask_path: String,
+    stamp_size: [f32; 2],
+}
+
+/// `collect_cover_stamps` の再帰実装。
+///
+/// スキップ規則・DFS 連番の数え方は `interaction::collect_interaction_sources` と
+/// 完全に同一にする（同じコンポーネントを読む以上、収集対象がずれてはならない）。
+fn collect_stamp_in_actor(
+    actor: &Actor,
+    world: &crate::engine::ecs::World,
+    out: &mut Vec<RawStampSource>,
+    dfs_counter: &mut u32,
+    parent_active: bool,
+) {
+    let dfs_id = *dfs_counter;
+    *dfs_counter += 1;
+    let active = parent_active && actor.active;
+
+    if active {
+        let pos = world
+            .get::<Transform>(actor.entity)
+            .map(|t| t.position)
+            .unwrap_or(FALLBACK_ACTOR_POSITION);
+
+        for (slot_index, slot) in actor.slots().iter().enumerate() {
+            if slot.kind != ComponentKind::InteractionSource || !slot.enabled {
+                continue;
+            }
+            let Some(src) = world.get::<InteractionSourceComponent>(slot.entity) else { continue };
+            if !src.enabled || src.radius <= 0.0 || src.strength <= 0.0 {
+                continue;
+            }
+            out.push(RawStampSource {
+                key: crate::engine::interaction::source_key(dfs_id, slot_index as u32),
+                world_pos: pos,
+                radius: src.radius,
+                strength: src.strength,
+                shape: src.stamp_shape,
+                mask_path: src.stamp_mask_path.clone(),
+                stamp_size: src.stamp_size,
+            });
+        }
+    }
+
+    // 子孫へは常に再帰する（非アクティブでも DFS 連番は進める）。
+    for child in actor.children() {
+        collect_stamp_in_actor(child, world, out, dfs_counter, active);
     }
 }
 

@@ -61,13 +61,18 @@ fn default_displacement() -> f32 {
     0.0
 }
 
-/// 埋め戻し速度（将来用）の既定値。0 = 埋め戻さない。
+/// 埋め戻し速度（量/秒）の既定値。0 = 積もった分でしか轍は埋まらない。
 fn default_refill_rate() -> f32 {
     0.0
 }
 
-/// 足跡の残りやすさ（将来用）の既定値。0 = 足跡が残らない。
+/// 足跡の残りやすさ（0..1）の既定値。0 = 足跡が残らない。
 fn default_footprint_persistence() -> f32 {
+    0.0
+}
+
+/// 踏み固め色係数（0..1）の既定値。0 = 踏んでも色が変わらない。
+fn default_trample_darkening() -> f32 {
     0.0
 }
 
@@ -117,12 +122,26 @@ pub struct CoverMaterial {
     /// 量 1.0 のときに地表を法線方向へ持ち上げる高さ（メートル）。
     #[serde(default = "default_displacement")]
     pub displacement: f32,
-    /// 【将来用】足跡・轍が埋め戻る速度（量/秒）。I3.2 で使う。
+    /// 足跡・轍が埋め戻る速度（量/秒。I3.2）。
+    ///
+    /// 有効なエミッタがこのテクセルへ降っている間だけ効く「均され方」であり、
+    /// 自然減衰ではない（エミッタが止まれば轍は永久に残る）。
+    /// 雪のようにさらさらと崩れる素材ほど大きくする。
     #[serde(default = "default_refill_rate")]
     pub refill_rate: f32,
-    /// 【将来用】足跡の残りやすさ（0..1）。I3.2 で使う。
+    /// 足跡の残りやすさ（0..1。I3.2）。
+    ///
+    /// 踏み込みの深さに掛かる係数。0 なら何度踏んでも痕が付かない
+    /// （濡れ・水膜のように形を保てない素材）。
     #[serde(default = "default_footprint_persistence")]
     pub footprint_persistence: f32,
+    /// 踏み固め色係数（0..1。I3.2）。
+    ///
+    /// 踏み固められた部分をどれだけ暗くするか。踏み固めが最大（1.0）のとき、
+    /// 地表の色が `1 - trample_darkening` 倍になる。
+    /// 雪は圧雪でわずかに灰色を帯び、泥は水を含んで明確に黒くなる。
+    #[serde(default = "default_trample_darkening")]
+    pub trample_darkening: f32,
 }
 
 impl Default for CoverMaterial {
@@ -135,6 +154,7 @@ impl Default for CoverMaterial {
             displacement: default_displacement(),
             refill_rate: default_refill_rate(),
             footprint_persistence: default_footprint_persistence(),
+            trample_darkening: default_trample_darkening(),
         }
     }
 }
@@ -173,6 +193,11 @@ impl CoverMaterial {
         } else {
             default_footprint_persistence()
         };
+        self.trample_darkening = if self.trample_darkening.is_finite() {
+            self.trample_darkening.clamp(UNIT_MIN, UNIT_MAX)
+        } else {
+            default_trample_darkening()
+        };
     }
 }
 
@@ -205,8 +230,12 @@ impl Default for CoverMaterialSet {
                     roughness: 0.75,
                     // 量 1.0 で 15cm 積もる。
                     displacement: 0.15,
-                    refill_rate: 0.0,
-                    footprint_persistence: 0.0,
+                    // 新雪はさらさらと崩れて轍がゆっくり均される。
+                    refill_rate: 0.02,
+                    // 雪は足跡が最もよく残る素材。
+                    footprint_persistence: 0.9,
+                    // 圧雪はわずかに灰色を帯びる。
+                    trample_darkening: 0.15,
                 },
                 CoverMaterial {
                     id: "leaf_carpet".to_string(),
@@ -216,8 +245,12 @@ impl Default for CoverMaterialSet {
                     roughness: 0.90,
                     // 葉は薄いので盛り上がりは小さい。
                     displacement: 0.04,
+                    // 落ち葉は風で戻らない（降り積もる分だけで埋まる）。
                     refill_rate: 0.0,
-                    footprint_persistence: 0.0,
+                    // 踏むと潰れるが、雪ほど形は残らない。
+                    footprint_persistence: 0.5,
+                    // 潰れた葉は湿って暗くなる。
+                    trample_darkening: 0.2,
                 },
                 CoverMaterial {
                     id: "wet".to_string(),
@@ -229,7 +262,9 @@ impl Default for CoverMaterialSet {
                     // 水膜は厚みを持たない。
                     displacement: 0.0,
                     refill_rate: 0.0,
+                    // 水膜は形を保てない＝足跡が一切残らない。
                     footprint_persistence: 0.0,
+                    trample_darkening: 0.0,
                 },
             ],
         }

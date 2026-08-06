@@ -21,8 +21,21 @@
 //  【なぜ XZ の 2 次元なのか（洞窟の扱い）】
 //    カバー場はチャンク（3 次元インデックス）に紐づくため、地表と洞窟の床は
 //    多くの場合そもそも別チャンクになり、別々のカバー場を持つ。
-//    同一チャンク内に上下 2 枚の面がある場合のみ、XZ 投影では区別できず
-//    上の面が勝つ（本フェーズの既知の制限。Y 照合チャネルは I3.2 で扱う）。
+//    同一チャンク内に上下 2 枚の面がある場合のみ、XZ 投影では区別できず上の面が勝つ。
+//
+//  【I3.2 で足したもの — 踏み固め（trample）と面の基準 Y（base_y）】
+//    ・trample … 足跡・轍の深さ。量と同じ量子化（0..255 = 0.0..1.0）で持ち、
+//                実効の盛り上がりは `max(量 - trample, 0)` になる。
+//                trample が量を超えたテクセルは下地（地形レイヤ）が露出する。
+//    ・base_y  … そのテクセルの「積もっている面」のワールド Y（メートル）。
+//                量を持つテクセルでは必ず有限値であり、面が無ければ
+//                `COVER_BASE_Y_ABSENT`（-∞）を入れる。
+//
+//    base_y があることで、カバー場の読み取りを **ワールド Y でも照合**できる
+//    （`CoverNeighborhood` が 3×3×3 になった理由）。これは
+//      ① 洞窟の床に付いた轍が頭上の地表へ写らない（スタンプ時の Y 照合）
+//      ② Y（上下）チャンク境界をまたぐ複製頂点が同じ面を読む（I3.1 §7-8 の段差解消）
+//    の両方を、同じ 1 つの規約「面はワールド位置の純関数として選ぶ」で解決する。
 // ============================================================
 
 use super::super::chunk_data::TerrainChunkData;
@@ -64,6 +77,38 @@ pub const COVER_SLOPE_UP_FULL: f32 = 0.87;
 /// 実在する法線の Y 成分は -1..1 に収まるため、-2 は決して衝突しない。
 pub const COVER_SURFACE_ABSENT: f32 = -2.0;
 
+// ─── Y 照合（I3.2）──────────────────────────────────────────────────────────
+
+/// 「そのテクセルには面が無い（基準 Y が未知）」ことを表す番兵値。
+///
+/// 有限値なら必ず実在の面の高さ、という不変条件にするため、非有限値を選ぶ。
+/// 判定は常に `is_finite()` で行う（-∞ との差は必ず ∞ になり、どの閾値も超える）。
+pub const COVER_BASE_Y_ABSENT: f32 = f32::NEG_INFINITY;
+
+/// Y 照合の許容差をチャンク 1 辺から決める比率。
+///
+/// 【なぜチャンクサイズに比例させるのか（固定値ではない理由）】
+///   Y 照合の目的は「上下に積まれたチャンクのうち、どの段の面を読むか」を
+///   ワールド位置だけで一意に決めることである。段の間隔はチャンク 1 辺（既定 16m）
+///   なので、許容差がそれ未満であれば **1 つ上／1 つ下の段の面は必ず除外される**。
+///   除外が保証されると、境界上の複製頂点を焼く 2 つのチャンクが
+///   （見えている近傍の集合は違うのに）**同じ候補集合**へ行き着く
+///   ＝どちらから焼いても厳密に同じ値になる（bit 一致）。
+///   0.5 なら既定で 8m。人が歩く地形の段差としては十分に緩い。
+pub const COVER_Y_MATCH_TOLERANCE_RATIO: f32 = 0.5;
+
+/// チャンク 1 辺から Y 照合の許容差（メートル）を求める。
+///
+/// 焼き込み側・スタンプ側の双方がこの 1 関数を通ることで、
+/// 「どこから読んでも同じ面が選ばれる」規約が 1 か所に固定される。
+#[inline]
+pub fn cover_y_match_tolerance(chunk_extent: f32) -> f32 {
+    if !(chunk_extent > 0.0) || !chunk_extent.is_finite() {
+        return 0.0;
+    }
+    chunk_extent * COVER_Y_MATCH_TOLERANCE_RATIO
+}
+
 /// 傾斜による積もりやすさ（0..1）を返す。
 ///
 /// `up_dot` は地表法線の Y 成分（1 = 完全な水平面、0 = 垂直な崖）。
@@ -93,12 +138,35 @@ pub fn slope_scale(up_dot: f32) -> f32 {
 ///
 /// 添字は XZ の row-major（`index = ix + iz * COVER_FIELD_RESOLUTION`）。
 /// 量は u8 量子化（0 = 何も無い、255 = 量 1.0）。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct CoverField {
     /// 各テクセルの素材添字（`CoverMaterialSet` の添字）。量 0 のときは無意味。
     material: Vec<u8>,
     /// 各テクセルの量（0..255 で 0.0..1.0 を表す）。
     amount: Vec<u8>,
+    /// 各テクセルの踏み固め深さ（0..255 で 0.0..1.0。量と同じ単位。I3.2）。
+    ///
+    /// 実効の盛り上がりは `max(量 - trample, 0)`。量を超えた分は下地の露出を意味する。
+    trample: Vec<u8>,
+    /// 各テクセルの「積もっている面」のワールド Y（メートル。I3.2）。
+    ///
+    /// 面が無ければ `COVER_BASE_Y_ABSENT`。**量を持つテクセルでは必ず有限値**
+    /// という不変条件を積算側（`accumulate_chunk`）が守る。
+    base_y: Vec<f32>,
+}
+
+/// カバー場の等価性は「素材・量・踏み固め」で判定する（基準 Y は含めない）。
+///
+/// 【なぜ base_y を比べないのか】
+///   base_y は密度場（地形）から導かれる派生値であって、ユーザーの編集結果ではない。
+///   Undo の差分抽出（`diff_cover_fields`）がこの `PartialEq` を使うため、
+///   base_y を含めると「地形を掘り直しただけ」で全チャンクが Undo 差分に載ってしまう。
+impl PartialEq for CoverField {
+    fn eq(&self, other: &Self) -> bool {
+        self.material == other.material
+            && self.amount == other.amount
+            && self.trample == other.trample
+    }
 }
 
 impl Default for CoverField {
@@ -113,6 +181,8 @@ impl CoverField {
         Self {
             material: vec![COVER_MATERIAL_NONE; COVER_FIELD_TEXELS],
             amount: vec![0u8; COVER_FIELD_TEXELS],
+            trample: vec![0u8; COVER_FIELD_TEXELS],
+            base_y: vec![COVER_BASE_Y_ABSENT; COVER_FIELD_TEXELS],
         }
     }
 
@@ -126,31 +196,134 @@ impl CoverField {
         &self.amount
     }
 
+    /// 生の踏み固め配列（永続化で使用）。長さは常に `COVER_FIELD_TEXELS`。
+    pub fn raw_trample(&self) -> &[u8] {
+        &self.trample
+    }
+
+    /// 生の基準 Y 配列（永続化で使用）。長さは常に `COVER_FIELD_TEXELS`。
+    pub fn raw_base_y(&self) -> &[f32] {
+        &self.base_y
+    }
+
     /// 生の配列からカバー場を復元する（永続化からの読み戻し）。
     ///
-    /// 長さが `COVER_FIELD_TEXELS` と一致しない場合は `None`
+    /// 長さが `COVER_FIELD_TEXELS` と一致しない配列が 1 つでもあれば `None`
     /// （壊れたファイルを黙って読まない）。
-    pub fn from_raw(material: Vec<u8>, amount: Vec<u8>) -> Option<Self> {
-        if material.len() != COVER_FIELD_TEXELS || amount.len() != COVER_FIELD_TEXELS {
+    ///
+    /// TCOVER v1（踏み固め・基準 Y を持たない旧ファイル）は、読み込み側が
+    /// 「trample = 全 0 / base_y = 全て `COVER_BASE_Y_ABSENT`」を渡して移行する。
+    /// 基準 Y はロード後に地表情報から再計算される（`refresh_base_y`）。
+    pub fn from_raw(
+        material: Vec<u8>,
+        amount: Vec<u8>,
+        trample: Vec<u8>,
+        base_y: Vec<f32>,
+    ) -> Option<Self> {
+        if material.len() != COVER_FIELD_TEXELS
+            || amount.len() != COVER_FIELD_TEXELS
+            || trample.len() != COVER_FIELD_TEXELS
+            || base_y.len() != COVER_FIELD_TEXELS
+        {
             return None;
         }
-        Some(Self { material, amount })
+        Some(Self { material, amount, trample, base_y })
     }
 
-    /// 全テクセルの量が 0 か（＝保存する価値が無い＝描画にも一切影響しない）。
+    /// 全テクセルの量と踏み固めが 0 か（＝保存する価値が無い＝描画にも一切影響しない）。
+    ///
+    /// 踏み固めも見るのは、量が 0 でも轍だけが残っている状態
+    /// （下地が露出したまま雪が完全に削れた場合）をファイル削除で失わないため。
     pub fn is_empty(&self) -> bool {
-        self.amount.iter().all(|&a| a == 0)
+        self.amount.iter().all(|&a| a == 0) && self.trample.iter().all(|&t| t == 0)
     }
 
-    /// 全テクセルを消去する（量 0・素材なし）。
+    /// 全テクセルを消去する（量 0・素材なし・轍なし・基準 Y 未知）。
     pub fn clear(&mut self) {
         self.material.fill(COVER_MATERIAL_NONE);
         self.amount.fill(0);
+        self.trample.fill(0);
+        self.base_y.fill(COVER_BASE_Y_ABSENT);
     }
 
-    /// 指定テクセルの量（0..1）を返す。
+    /// 指定テクセルの量（0..1）を返す。踏み固めは引かれていない「積もった総量」。
     pub fn amount_at(&self, ix: usize, iz: usize) -> f32 {
         self.amount[texel_index(ix, iz)] as f32 / COVER_AMOUNT_QUANT_MAX
+    }
+
+    /// 指定テクセルの踏み固め深さ（0..1。量と同じ単位）を返す。
+    pub fn trample_at(&self, ix: usize, iz: usize) -> f32 {
+        self.trample[texel_index(ix, iz)] as f32 / COVER_AMOUNT_QUANT_MAX
+    }
+
+    /// 指定テクセルの基準 Y（面のワールド Y）。面が無ければ `COVER_BASE_Y_ABSENT`。
+    pub fn base_y_at(&self, ix: usize, iz: usize) -> f32 {
+        self.base_y[texel_index(ix, iz)]
+    }
+
+    /// 指定テクセルの基準 Y を設定する（積算・面情報の同期から呼ばれる）。
+    pub fn set_base_y(&mut self, ix: usize, iz: usize, y: f32) {
+        self.base_y[texel_index(ix, iz)] = y;
+    }
+
+    /// 地表情報から基準 Y を丸ごと再計算する（TCOVER v1 の移行・地形編集後の同期）。
+    ///
+    /// 面が無いテクセルは `COVER_BASE_Y_ABSENT` になる。そのテクセルに量が
+    /// 残っていても描画では「面が無い」として読み飛ばされる
+    /// （地形を掘って面ごと消えた場所の雪は見えなくなる、という素直な挙動）。
+    pub fn refresh_base_y(&mut self, surface: &CoverSurface) {
+        for iz in 0..COVER_FIELD_RESOLUTION {
+            for ix in 0..COVER_FIELD_RESOLUTION {
+                let i = texel_index(ix, iz);
+                self.base_y[i] = if surface.has_surface(ix, iz) {
+                    surface.surface_y_at(ix, iz)
+                } else {
+                    COVER_BASE_Y_ABSENT
+                };
+            }
+        }
+    }
+
+    /// 指定テクセルへ踏み固めを押し当てる（I3.2 の轍スタンプ）。
+    ///
+    /// 【なぜ加算ではなく最大値なのか】
+    ///   加算だと同じ場所に立ち続けるだけで穴が掘れてしまい、
+    ///   「1 回踏んだ足跡の深さ」という直感から外れる。最大値で更新すれば
+    ///   何度踏んでも形状の深さは一定に収束し、順序にも依存しない
+    ///   （複数のソースが同じテクセルを踏んでも結果が決定的）。
+    ///
+    /// 戻り値は実際に値が変化したか。`depth` が 0 以下・非有限なら何もしない。
+    pub fn stamp_trample(&mut self, ix: usize, iz: usize, depth: f32) -> bool {
+        if !depth.is_finite() || depth <= 0.0 {
+            return false;
+        }
+        let i = texel_index(ix, iz);
+        let q = quantize_amount(depth);
+        if q <= self.trample[i] {
+            return false;
+        }
+        self.trample[i] = q;
+        true
+    }
+
+    /// 指定テクセルの踏み固めを `delta` だけ埋め戻す（0 で下げ止まる）。
+    ///
+    /// 戻り値は実際に値が変化したか。
+    pub fn refill_trample(&mut self, ix: usize, iz: usize, delta: f32) -> bool {
+        if !delta.is_finite() || delta <= 0.0 {
+            return false;
+        }
+        let i = texel_index(ix, iz);
+        if self.trample[i] == 0 {
+            return false;
+        }
+        let current = self.trample[i] as f32 / COVER_AMOUNT_QUANT_MAX;
+        let next = quantize_amount(current - delta);
+        if next == self.trample[i] {
+            return false;
+        }
+        self.trample[i] = next;
+        true
     }
 
     /// 指定テクセルの素材添字を返す。
@@ -230,9 +403,44 @@ const COVER_TEXEL_CENTER_OFFSET: f32 = 0.5;
 ///   「そもそもチャンクが存在しない世界の端」を区別しない。どちらも 0 なので
 ///   両側から読んだ値は必ず一致し、境界が破綻することはない
 ///   （世界の端では最後の半テクセルぶんだけカバーがなだらかに 0 へ落ちる）。
+/// 【Y（上下）方向も 3 段を見る理由（I3.2 で 3×3 → 3×3×3 へ拡張）】
+///   横（XZ）の境界が一致しても、地表がちょうど Y のチャンク境界面を横切る場所では
+///   「面が上段にある列」と「下段にある列」が隣り合う。その境界面上の複製頂点は
+///   上下段で別のカバー場を読むため、変位が食い違って筋が出ていた（I3.1 §7-8）。
+///
+///   そこで、各テクセルが持つ **基準 Y（面のワールド高さ）** と、読みたい点の
+///   ワールド Y とを照合し、**最も近い段の面**を選ぶ。選び方はワールド位置だけの
+///   純関数なので、上段のメッシュから読んでも下段のメッシュから読んでも同じ段が選ばれる。
+///   許容差（`cover_y_match_tolerance`）はチャンク 1 辺の半分であり、
+///   1 つ以上離れた段の面は必ず除外される
+///   ＝両側で候補集合が実質的に一致し、bit 単位で同じ結果になる。
 pub struct CoverNeighborhood<'a> {
-    /// `[dz + 1][dx + 1]` の 3×3。中央 `[1][1]` が自チャンク。`None` はカバー場なし（＝量 0）。
-    fields: [[Option<&'a CoverField>; 3]; 3],
+    /// `[dy + 1][dz + 1][dx + 1]` の 3×3×3。中央 `[1][1][1]` が自チャンク。
+    /// `None` はカバー場なし（＝量 0）。
+    fields: [[[Option<&'a CoverField>; 3]; 3]; 3],
+    /// Y 照合の許容差（メートル）。これを超えて離れた面は候補にしない。
+    y_tolerance: f32,
+}
+
+/// カバー場を 1 点で読んだ結果（I3.2）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CoverSample {
+    /// 実効の量（0..1）。`max(積もった量 - 踏み固め, 0)` のバイリニア補間。
+    ///
+    /// 描画はこの値だけを見る（盛り上がりも色の混ぜ具合もこれで決まる）。
+    pub amount: f32,
+    /// 踏み固め深さ（0..1）のバイリニア補間。踏まれた部分を暗くするために使う。
+    pub trample: f32,
+    /// 素材添字（`CoverMaterialSet` の添字）。実効量 0 のときは `COVER_MATERIAL_NONE`。
+    pub material: u8,
+    /// 踏み固めの色係数を引くための素材添字。踏み固め 0 のときは `COVER_MATERIAL_NONE`。
+    ///
+    /// 【なぜ `material` と別に持つのか】
+    ///   踏み固めが量を超えたテクセルは「下地が露出した」状態であり、
+    ///   `material` は `COVER_MATERIAL_NONE` になる（素材色を塗ってはいけない）。
+    ///   しかし轍として **暗くする**ためには、そこを踏み固めた素材が何だったかが要る。
+    ///   2 つを分けることで、「色は塗らないが轍としては暗い」を表現できる。
+    pub trample_material: u8,
 }
 
 impl<'a> CoverNeighborhood<'a> {
@@ -240,37 +448,50 @@ impl<'a> CoverNeighborhood<'a> {
     ///
     /// カバー場が 1 個しか無い場面（単体テスト・チャンクが 1 個だけの世界）用。
     /// 端のテクセルの外は「量 0」として読まれる。
+    /// Y 照合の許容差は実質無限（＝どの高さから読んでも中央の面が選ばれる）。
     pub fn isolated(center: &'a CoverField) -> Self {
-        Self::from_lookup(|dx, dz| if dx == 0 && dz == 0 { Some(center) } else { None })
+        Self::from_lookup(f32::INFINITY, |dx, dy, dz| {
+            if dx == 0 && dy == 0 && dz == 0 {
+                Some(center)
+            } else {
+                None
+            }
+        })
     }
 
     /// 近傍参照関数からビューを組み立てる。
     ///
-    /// `lookup(dx, dz)` は -1..=1 のチャンクオフセット（同じ Y の同一段）に対する
-    /// カバー場を返す（無ければ `None`）。
-    pub fn from_lookup(mut lookup: impl FnMut(i32, i32) -> Option<&'a CoverField>) -> Self {
-        let mut fields: [[Option<&'a CoverField>; 3]; 3] = [[None; 3]; 3];
-        for dz in -1..=1i32 {
-            for dx in -1..=1i32 {
-                fields[(dz + 1) as usize][(dx + 1) as usize] = lookup(dx, dz);
+    /// `lookup(dx, dy, dz)` は -1..=1 のチャンクオフセットに対するカバー場を返す
+    /// （無ければ `None`）。`y_tolerance` は Y 照合の許容差（メートル）で、
+    /// 呼び出し側は必ず `cover_y_match_tolerance(chunk_extent)` を使うこと
+    /// （両隣のチャンクが違う値を使うと境界の一致が壊れる）。
+    pub fn from_lookup(
+        y_tolerance: f32,
+        mut lookup: impl FnMut(i32, i32, i32) -> Option<&'a CoverField>,
+    ) -> Self {
+        let mut fields: [[[Option<&'a CoverField>; 3]; 3]; 3] = [[[None; 3]; 3]; 3];
+        for dy in -1..=1i32 {
+            for dz in -1..=1i32 {
+                for dx in -1..=1i32 {
+                    fields[(dy + 1) as usize][(dz + 1) as usize][(dx + 1) as usize] =
+                        lookup(dx, dy, dz);
+                }
             }
         }
-        Self { fields }
+        Self { fields, y_tolerance }
     }
 
-    /// 自チャンクローカルの正規化 XZ 座標（0..1）でカバー場を読む。
+    /// 自チャンクローカルの正規化 XZ 座標（0..1）と **ワールド Y** でカバー場を読む。
     ///
-    /// 戻り値は `(量 0..1, 素材添字)`。
-    ///
-    /// - 量は **バイリニア補間**（頂点へ載せたときに階段状にならないようにする）。
+    /// - 量・踏み固めは **バイリニア補間**（頂点へ載せたときに階段状にならない）。
     ///   境界（u=0 / u=1）では 4 隅の半分が隣チャンクのテクセルになる。
-    /// - 素材は「重み × 量」が最大のテクセルのもの（＝実質的に最近傍だが、
+    /// - 4 隅それぞれについて、上下 3 段のうち基準 Y が `world_y` に最も近い段を選ぶ
+    ///   （許容差を超える段・面が無い段は「量 0」として扱う）。
+    /// - 素材は「重み × 実効量」が最大のテクセルのもの（＝実質的に最近傍だが、
     ///   **量 0 のテクセルは決して選ばない**）。添字は補間できないので離散選択にする。
-    ///   量 0 のテクセルを選ばないのは、雪の乗った境界の隣が空のとき
-    ///   「量はあるのに素材が空のもの」という矛盾した組を返さないためである。
     ///
-    /// 範囲外・非有限の入力は 0..1 へクランプする（頂点は必ず 0..1 に収まる契約）。
-    pub fn sample(&self, u: f32, v: f32) -> (f32, u8) {
+    /// 範囲外・非有限の UV は 0..1 へクランプする（頂点は必ず 0..1 に収まる契約）。
+    pub fn sample(&self, u: f32, v: f32, world_y: f32) -> CoverSample {
         // ─── テクセル中心を基準にした連続座標へ変換する（クランプしない）───
         //   u=1.0（チャンクの端）では fx = R-0.5 となり、x1 = R すなわち
         //   隣チャンクのテクセル 0 を指す。隣から見た u=0.0 は fx = -0.5 で
@@ -286,57 +507,122 @@ impl<'a> CoverNeighborhood<'a> {
         let (x0, z0) = (fx0 as i32, fz0 as i32);
         let (x1, z1) = (x0 + 1, z0 + 1);
 
-        // ─── 量はバイリニア補間（4 隅は近傍チャンクを跨いで読む）───
-        let a00 = self.amount_at_global(x0, z0);
-        let a10 = self.amount_at_global(x1, z0);
-        let a01 = self.amount_at_global(x0, z1);
-        let a11 = self.amount_at_global(x1, z1);
-        let a = (a00 * (1.0 - tx) + a10 * tx) * (1.0 - tz) + (a01 * (1.0 - tx) + a11 * tx) * tz;
+        // ─── 4 隅を読む（それぞれ Y 照合で段を選ぶ）───
+        //   列挙順は常に (x0,z0) → (x1,z0) → (x0,z1) → (x1,z1)。
+        //   x0/z0 は必ずグローバルに小さい側なので、どのチャンクから読んでも
+        //   同じ順序＝同点時の選び方まで一致する（境界での bit 一致に必要）。
+        let c00 = self.texel_at_global(x0, z0, world_y);
+        let c10 = self.texel_at_global(x1, z0, world_y);
+        let c01 = self.texel_at_global(x0, z1, world_y);
+        let c11 = self.texel_at_global(x1, z1, world_y);
 
-        // ─── 素材は「重み × 量」が最大のテクセルから採る ───
-        //   4 隅の列挙順は常に (x0,z0) → (x1,z0) → (x0,z1) → (x1,z1) であり、
-        //   x0/z0 は必ずグローバルに小さい側なので、どのチャンクから読んでも同じ順序になる
-        //   ＝同点のときの選び方まで一致する（境界でのビット一致に必要）。
+        // ─── 重み（バイリニア）───
+        let w00 = (1.0 - tx) * (1.0 - tz);
+        let w10 = tx * (1.0 - tz);
+        let w01 = (1.0 - tx) * tz;
+        let w11 = tx * tz;
+
+        // ─── 実効量・踏み固めを補間する ───
+        //   演算順序を固定するため、必ず「行方向 → 列方向」でまとめる
+        //   （浮動小数の加算は結合則を満たさないので、順序が違うと bit 一致しない）。
+        let amount = (c00.amount * (1.0 - tx) + c10.amount * tx) * (1.0 - tz)
+            + (c01.amount * (1.0 - tx) + c11.amount * tx) * tz;
+        let trample = (c00.trample * (1.0 - tx) + c10.trample * tx) * (1.0 - tz)
+            + (c01.trample * (1.0 - tx) + c11.trample * tx) * tz;
+
+        // ─── 素材は「重み × 実効量」が最大のテクセルから採る ───
         let candidates = [
-            ((1.0 - tx) * (1.0 - tz) * a00, x0, z0),
-            (tx * (1.0 - tz) * a10, x1, z0),
-            ((1.0 - tx) * tz * a01, x0, z1),
-            (tx * tz * a11, x1, z1),
+            (w00, c00),
+            (w10, c10),
+            (w01, c01),
+            (w11, c11),
         ];
-        let mut best_score = 0.0f32;
+        let mut best_amount = 0.0f32;
         let mut material = COVER_MATERIAL_NONE;
-        for &(score, gx, gz) in &candidates {
-            if score > best_score {
-                best_score = score;
-                material = self.material_at_global(gx, gz);
+        let mut best_trample = 0.0f32;
+        let mut trample_material = COVER_MATERIAL_NONE;
+        for &(w, c) in &candidates {
+            if w * c.amount > best_amount {
+                best_amount = w * c.amount;
+                material = c.material;
+            }
+            // 踏み固めの色係数用は「重み × 踏み固め」で選ぶ
+            // （実効量が 0 でも轍として暗くしたいので、別の基準が要る）。
+            if w * c.trample > best_trample {
+                best_trample = w * c.trample;
+                trample_material = c.trample_material;
             }
         }
-        (a, material)
+        CoverSample { amount, trample, material, trample_material }
     }
 
-    /// 3×3 を跨ぐテクセル座標の量（該当チャンクが無ければ 0）。
-    fn amount_at_global(&self, gx: i32, gz: i32) -> f32 {
-        match self.locate(gx, gz) {
-            Some((field, ix, iz)) => field.amount_at(ix, iz),
-            None => 0.0,
-        }
-    }
-
-    /// 3×3 を跨ぐテクセル座標の素材添字（該当チャンクが無ければ「素材なし」）。
-    fn material_at_global(&self, gx: i32, gz: i32) -> u8 {
-        match self.locate(gx, gz) {
-            Some((field, ix, iz)) => field.material_at(ix, iz),
-            None => COVER_MATERIAL_NONE,
-        }
-    }
-
-    /// 自チャンク基準のテクセル座標（-R..2R）を「どの近傍チャンクのどのテクセルか」へ解く。
+    /// 3×3 を跨ぐテクセル座標を、Y 照合で選んだ段から読む。
     ///
-    /// 3×3 の外（呼び出し側の契約では起こらない）や、カバー場を持たない近傍は `None`。
-    fn locate(&self, gx: i32, gz: i32) -> Option<(&CoverField, usize, usize)> {
-        let (cx, ix) = split_global_texel(gx)?;
-        let (cz, iz) = split_global_texel(gz)?;
-        self.fields[cz][cx].map(|f| (f, ix, iz))
+    /// 該当チャンクが無い／面が無い／どの段も許容差の外なら「量 0・踏み固め 0・素材なし」。
+    fn texel_at_global(&self, gx: i32, gz: i32, world_y: f32) -> CoverSample {
+        let empty = CoverSample {
+            amount: 0.0,
+            trample: 0.0,
+            material: COVER_MATERIAL_NONE,
+            trample_material: COVER_MATERIAL_NONE,
+        };
+        let (Some((cx, ix)), Some((cz, iz))) = (split_global_texel(gx), split_global_texel(gz))
+        else {
+            return empty;
+        };
+
+        // ─── 上下 3 段のうち、基準 Y が world_y に最も近い段を選ぶ ───
+        //   走査順は必ず下段 → 上段（dy 昇順）で、更新は厳密不等号。
+        //   こうすると同着（上下の面が world_y から等距離）でも常に下段が勝ち、
+        //   どのチャンクから読んでも同じ段に行き着く。
+        let mut best: Option<(f32, &CoverField)> = None;
+        let mut any_base_known = false;
+        for dy in 0..3usize {
+            let Some(field) = self.fields[dy][cz][cx] else { continue };
+            let base = field.base_y_at(ix, iz);
+            if !base.is_finite() {
+                continue;
+            }
+            any_base_known = true;
+            let diff = (base - world_y).abs();
+            if diff > self.y_tolerance {
+                continue;
+            }
+            match best {
+                Some((best_diff, _)) if diff >= best_diff => {}
+                _ => best = Some((diff, field)),
+            }
+        }
+
+        // ─── 基準 Y が 1 段も分かっていない列は I3.1 と同じ挙動へ縮退する ───
+        //   TCOVER v1 を読み込んだ直後など、地表情報との同期がまだ済んでいない場合に
+        //   「積もっているのに何も描かれない」状態にしないための保険。
+        //   同期後（`refresh_base_y`）は必ず上の分岐で解決されるため、この縮退が
+        //   実際に効くのは移行の一瞬だけである。
+        let field = match best {
+            Some((_, f)) => f,
+            None if !any_base_known => match self.fields[1][cz][cx] {
+                Some(f) => f,
+                None => return empty,
+            },
+            // 基準 Y は分かっているのにどの段も許容差の外＝この点の面ではない。
+            None => return empty,
+        };
+
+        // ─── 実効量 = 積もった量 - 踏み固め（0 でクランプ）───
+        let amount = field.amount_at(ix, iz);
+        let trample = field.trample_at(ix, iz);
+        let effective = (amount - trample).max(0.0);
+        let stored_material = field.material_at(ix, iz);
+        CoverSample {
+            amount: effective,
+            trample,
+            // 実効量が 0 のテクセルは「素材なし」と同じに扱う
+            // （踏み固めで下地が露出した所へ素材色を塗らないため）。
+            material: if effective > 0.0 { stored_material } else { COVER_MATERIAL_NONE },
+            // 轍の色係数は「踏み固めた素材」から引く（露出後も轍として暗い）。
+            trample_material: if trample > 0.0 { stored_material } else { COVER_MATERIAL_NONE },
+        }
     }
 }
 

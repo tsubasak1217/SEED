@@ -11,16 +11,56 @@
 use super::accumulate::accumulate_chunk;
 use super::emit::{CoverEmitRange, CoverEmitSpec, CoverMask};
 use super::field::{
-    slope_scale, CoverField, CoverNeighborhood, CoverSurface, COVER_FIELD_RESOLUTION,
-    COVER_SLOPE_UP_FULL, COVER_SLOPE_UP_MIN, COVER_SURFACE_ABSENT,
+    cover_y_match_tolerance, slope_scale, CoverField, CoverNeighborhood, CoverSurface,
+    COVER_BASE_Y_ABSENT, COVER_FIELD_RESOLUTION, COVER_SLOPE_UP_FULL, COVER_SLOPE_UP_MIN,
+    COVER_SURFACE_ABSENT,
 };
-use super::material::CoverMaterialSet;
-use super::tcover::{read_chunk, write_chunk, TcoverError, TCOVER_MAGIC};
+use super::material::{CoverMaterial, CoverMaterialSet};
+use super::tcover::{read_chunk, write_chunk, TcoverError, TCOVER_MAGIC, TCOVER_VERSION};
+use super::trample::{stamp_chunk, CoverStampShape, CoverStampSpec};
 use crate::engine::terrain::chunk_coord::ChunkCoord;
 use crate::engine::terrain::chunk_data::TerrainChunkData;
 use crate::engine::terrain::settings::TerrainSettings;
 
 // ─── テスト用ヘルパ ──────────────────────────────────────────────────────────
+
+/// テストで使う「面のワールド Y」。既定の地面平面（density = ワールド Y）の面は y=0。
+const TEST_SURFACE_Y: f32 = 0.0;
+
+/// テスト用の素材セット（雪 = 添字 0・落ち葉 = 添字 1）。
+///
+/// 積算・スタンプは素材から「埋め戻し速度」「足跡の残りやすさ」を引くため、
+/// 素材セット無しには走らない。轍が確実に付く値を入れてある。
+fn test_materials() -> CoverMaterialSet {
+    CoverMaterialSet {
+        materials: vec![
+            CoverMaterial {
+                id: "snow".to_string(),
+                displacement: 0.15,
+                refill_rate: 0.0,
+                footprint_persistence: 1.0,
+                trample_darkening: 0.2,
+                ..CoverMaterial::default()
+            },
+            CoverMaterial {
+                id: "leaf".to_string(),
+                displacement: 0.04,
+                refill_rate: 0.0,
+                footprint_persistence: 0.5,
+                trample_darkening: 0.1,
+                ..CoverMaterial::default()
+            },
+        ],
+    }
+}
+
+/// 既定チャンクの Y 照合許容差を使う 3×3×3 ビューを作る（テストの定型）。
+fn test_view<'a>(
+    lookup: impl FnMut(i32, i32, i32) -> Option<&'a CoverField>,
+) -> CoverNeighborhood<'a> {
+    let tolerance = cover_y_match_tolerance(TerrainSettings::default().chunk_extent());
+    CoverNeighborhood::from_lookup(tolerance, lookup)
+}
 
 /// 素材添字（テストで使う値。0 = 雪相当、1 = 落ち葉相当）。
 const MAT_SNOW: u8 = 0;
@@ -119,8 +159,12 @@ fn steep_slope_accumulates_less_than_flat() {
     let emitters = global_emitter(MAT_SNOW, 1.0);
     let mut flat_field = CoverField::new();
     let mut steep_field = CoverField::new();
-    accumulate_chunk(&mut flat_field, &flat_surface, [0.0; 3], extent, &emitters, 0.5);
-    accumulate_chunk(&mut steep_field, &steep_surface, [0.0; 3], extent, &emitters, 0.5);
+    accumulate_chunk(
+        &mut flat_field, &flat_surface, [0.0; 3], extent, &emitters, &test_materials(), 0.5,
+    );
+    accumulate_chunk(
+        &mut steep_field, &steep_surface, [0.0; 3], extent, &emitters, &test_materials(), 0.5,
+    );
 
     let flat_total: u32 = flat_field.raw_amount().iter().map(|&a| a as u32).sum();
     let steep_total: u32 = steep_field.raw_amount().iter().map(|&a| a as u32).sum();
@@ -281,6 +325,7 @@ fn no_emitters_leaves_field_bit_identical() {
         [0.0; 3],
         settings.chunk_extent(),
         &[],
+        &test_materials(),
         1.0 / 60.0,
     );
     assert!(!changed, "エミッタ無しでは変化フラグが立たないこと");
@@ -297,12 +342,12 @@ fn zero_rate_or_zero_dt_or_out_of_range_changes_nothing() {
 
     // 強度 0。
     let mut f = before.clone();
-    assert!(!accumulate_chunk(&mut f, &surface, [0.0; 3], extent, &global_emitter(MAT_SNOW, 0.0), 1.0));
+    assert!(!accumulate_chunk(&mut f, &surface, [0.0; 3], extent, &global_emitter(MAT_SNOW, 0.0), &test_materials(), 1.0));
     assert_eq!(f, before);
 
     // dt 0。
     let mut f = before.clone();
-    assert!(!accumulate_chunk(&mut f, &surface, [0.0; 3], extent, &global_emitter(MAT_SNOW, 1.0), 0.0));
+    assert!(!accumulate_chunk(&mut f, &surface, [0.0; 3], extent, &global_emitter(MAT_SNOW, 1.0), &test_materials(), 0.0));
     assert_eq!(f, before);
 
     // 遠くの Region（チャンク AABB にかからない）。
@@ -316,7 +361,7 @@ fn zero_rate_or_zero_dt_or_out_of_range_changes_nothing() {
         rate: 1.0,
     }];
     let mut f = before.clone();
-    assert!(!accumulate_chunk(&mut f, &surface, [0.0; 3], extent, &far, 1.0));
+    assert!(!accumulate_chunk(&mut f, &surface, [0.0; 3], extent, &far, &test_materials(), 1.0));
     assert_eq!(f, before);
 }
 
@@ -340,6 +385,7 @@ fn chunk_without_surface_accumulates_nothing() {
         [0.0; 3],
         settings.chunk_extent(),
         &global_emitter(MAT_SNOW, 1.0),
+        &test_materials(),
         1.0,
     );
     assert!(!changed);
@@ -432,9 +478,10 @@ fn invalid_mask_yields_zero_coverage() {
 fn uniform_field_samples_uniformly() {
     let f = uniform_field(MAT_SNOW, 0.5);
     // 周囲 8 チャンクにも同じ場がある状況（＝広い雪原の内部）。
-    let view = CoverNeighborhood::from_lookup(|_, _| Some(&f));
+    let view = test_view(|dx, dy, dz| if dy == 0 { Some(&f) } else { None });
     for &(u, v) in &[(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (0.123, 0.987)] {
-        let (a, m) = view.sample(u, v);
+        let s = view.sample(u, v, TEST_SURFACE_Y);
+        let (a, m) = (s.amount, s.material);
         assert!((a - 0.5).abs() < 0.01, "一様な場は一様に読めること (u={u},v={v},a={a})");
         assert_eq!(m, MAT_SNOW);
     }
@@ -444,12 +491,12 @@ fn uniform_field_samples_uniformly() {
 #[test]
 fn sample_clamps_out_of_range_uv() {
     let f = uniform_field(MAT_LEAF, 1.0);
-    let view = CoverNeighborhood::from_lookup(|_, _| Some(&f));
-    let (a, m) = view.sample(-5.0, -5.0);
-    assert_eq!(a, 1.0, "範囲外 UV は端（u=0）として読まれること");
-    assert_eq!(m, MAT_LEAF);
-    let (a_nan, _) = view.sample(f32::NAN, f32::NAN);
-    assert_eq!(a_nan, 1.0, "NaN は 0 側の端へクランプされること");
+    let view = test_view(|_, dy, _| if dy == 0 { Some(&f) } else { None });
+    let s = view.sample(-5.0, -5.0, TEST_SURFACE_Y);
+    assert_eq!(s.amount, 1.0, "範囲外 UV は端（u=0）として読まれること");
+    assert_eq!(s.material, MAT_LEAF);
+    let nan = view.sample(f32::NAN, f32::NAN, TEST_SURFACE_Y);
+    assert_eq!(nan.amount, 1.0, "NaN は 0 側の端へクランプされること");
 }
 
 /// 隣接チャンクにカバー場が無い側は「量 0」として読まれること（世界の端の規約）。
@@ -458,15 +505,21 @@ fn missing_neighbour_reads_as_zero() {
     let f = uniform_field(MAT_SNOW, 1.0);
     let isolated = CoverNeighborhood::isolated(&f);
     // 中央は満量のまま。
-    let (center, _) = isolated.sample(0.5, 0.5);
-    assert_eq!(center, 1.0, "内部は隣の有無に影響されないこと");
+    let center = isolated.sample(0.5, 0.5, TEST_SURFACE_Y);
+    assert_eq!(center.amount, 1.0, "内部は隣の有無に影響されないこと");
     // 端（u=1.0）は「自分のテクセル 31」と「存在しない隣のテクセル 0」の中点＝半分。
-    let (edge, mat) = isolated.sample(1.0, 0.5);
-    assert!((edge - 0.5).abs() < 1e-6, "隣が無い側は 0 へ向かって落ちること (a={edge})");
-    assert_eq!(mat, MAT_SNOW, "量のあるテクセルの素材が選ばれること（空側は選ばない）");
+    let edge = isolated.sample(1.0, 0.5, TEST_SURFACE_Y);
+    assert!(
+        (edge.amount - 0.5).abs() < 1e-6,
+        "隣が無い側は 0 へ向かって落ちること (a={})", edge.amount
+    );
+    assert_eq!(edge.material, MAT_SNOW, "量のあるテクセルの素材が選ばれること（空側は選ばない）");
     // 角は 4 隅のうち 1 つだけが存在する＝1/4。
-    let (corner, _) = isolated.sample(1.0, 1.0);
-    assert!((corner - 0.25).abs() < 1e-6, "角は 1/4 になること (a={corner})");
+    let corner = isolated.sample(1.0, 1.0, TEST_SURFACE_Y);
+    assert!(
+        (corner.amount - 0.25).abs() < 1e-6,
+        "角は 1/4 になること (a={})", corner.amount
+    );
 }
 
 // ============================================================
@@ -490,14 +543,14 @@ fn boundary_sample_is_bit_identical_between_neighbours() {
     let b = patterned_field(31);
 
     // A から見た B は dx=+1、B から見た A は dx=-1。
-    let view_a = CoverNeighborhood::from_lookup(|dx, dz| match (dx, dz) {
-        (0, 0) => Some(&a),
-        (1, 0) => Some(&b),
+    let view_a = test_view(|dx, dy, dz| match (dx, dy, dz) {
+        (0, 0, 0) => Some(&a),
+        (1, 0, 0) => Some(&b),
         _ => None,
     });
-    let view_b = CoverNeighborhood::from_lookup(|dx, dz| match (dx, dz) {
-        (0, 0) => Some(&b),
-        (-1, 0) => Some(&a),
+    let view_b = test_view(|dx, dy, dz| match (dx, dy, dz) {
+        (0, 0, 0) => Some(&b),
+        (-1, 0, 0) => Some(&a),
         _ => None,
     });
 
@@ -506,8 +559,10 @@ fn boundary_sample_is_bit_identical_between_neighbours() {
     let steps = 64;
     for i in 0..=steps {
         let v = i as f32 / steps as f32;
-        let (amount_a, mat_a) = view_a.sample(1.0, v);
-        let (amount_b, mat_b) = view_b.sample(0.0, v);
+        let sa = view_a.sample(1.0, v, TEST_SURFACE_Y);
+        let sb = view_b.sample(0.0, v, TEST_SURFACE_Y);
+        let (amount_a, mat_a) = (sa.amount, sa.material);
+        let (amount_b, mat_b) = (sb.amount, sb.material);
         assert_eq!(
             amount_a.to_bits(),
             amount_b.to_bits(),
@@ -538,25 +593,25 @@ fn corner_sample_is_bit_identical_between_four_chunks() {
             _ => None,
         }
     };
-    let view00 = CoverNeighborhood::from_lookup(|dx, dz| pick(dx, dz, 0, 0));
-    let view10 = CoverNeighborhood::from_lookup(|dx, dz| pick(dx, dz, 1, 0));
-    let view01 = CoverNeighborhood::from_lookup(|dx, dz| pick(dx, dz, 0, 1));
-    let view11 = CoverNeighborhood::from_lookup(|dx, dz| pick(dx, dz, 1, 1));
+    let view00 = test_view(|dx, dy, dz| if dy == 0 { pick(dx, dz, 0, 0) } else { None });
+    let view10 = test_view(|dx, dy, dz| if dy == 0 { pick(dx, dz, 1, 0) } else { None });
+    let view01 = test_view(|dx, dy, dz| if dy == 0 { pick(dx, dz, 0, 1) } else { None });
+    let view11 = test_view(|dx, dy, dz| if dy == 0 { pick(dx, dz, 1, 1) } else { None });
 
     // ワールド上の同じ 1 点（4 チャンクが接する角）を、それぞれのローカル UV で読む。
     let samples = [
-        view00.sample(1.0, 1.0),
-        view10.sample(0.0, 1.0),
-        view01.sample(1.0, 0.0),
-        view11.sample(0.0, 0.0),
+        view00.sample(1.0, 1.0, TEST_SURFACE_Y),
+        view10.sample(0.0, 1.0, TEST_SURFACE_Y),
+        view01.sample(1.0, 0.0, TEST_SURFACE_Y),
+        view11.sample(0.0, 0.0, TEST_SURFACE_Y),
     ];
     for (i, s) in samples.iter().enumerate().skip(1) {
         assert_eq!(
-            s.0.to_bits(),
-            samples[0].0.to_bits(),
+            s.amount.to_bits(),
+            samples[0].amount.to_bits(),
             "角の共有点はビット単位で同じ量を読むこと (view={i})"
         );
-        assert_eq!(s.1, samples[0].1, "角の共有点は同じ素材を読むこと (view={i})");
+        assert_eq!(s.material, samples[0].material, "角の共有点は同じ素材を読むこと (view={i})");
     }
 }
 
@@ -584,26 +639,32 @@ fn accumulated_boundary_is_bit_identical_across_two_chunks() {
 
     let mut left = CoverField::new();
     let mut right = CoverField::new();
-    accumulate_chunk(&mut left, &surface, [0.0, 0.0, 0.0], extent, &emitters, 1.0);
-    accumulate_chunk(&mut right, &surface, [extent, 0.0, 0.0], extent, &emitters, 1.0);
+    accumulate_chunk(
+        &mut left, &surface, [0.0, 0.0, 0.0], extent, &emitters, &test_materials(), 1.0,
+    );
+    accumulate_chunk(
+        &mut right, &surface, [extent, 0.0, 0.0], extent, &emitters, &test_materials(), 1.0,
+    );
     assert!(!left.is_empty() && !right.is_empty(), "両チャンクに積もっていること");
 
-    let view_left = CoverNeighborhood::from_lookup(|dx, dz| match (dx, dz) {
-        (0, 0) => Some(&left),
-        (1, 0) => Some(&right),
+    let view_left = test_view(|dx, dy, dz| match (dx, dy, dz) {
+        (0, 0, 0) => Some(&left),
+        (1, 0, 0) => Some(&right),
         _ => None,
     });
-    let view_right = CoverNeighborhood::from_lookup(|dx, dz| match (dx, dz) {
-        (0, 0) => Some(&right),
-        (-1, 0) => Some(&left),
+    let view_right = test_view(|dx, dy, dz| match (dx, dy, dz) {
+        (0, 0, 0) => Some(&right),
+        (-1, 0, 0) => Some(&left),
         _ => None,
     });
 
     let steps = 32;
     for i in 0..=steps {
         let v = i as f32 / steps as f32;
-        let (al, ml) = view_left.sample(1.0, v);
-        let (ar, mr) = view_right.sample(0.0, v);
+        let sl = view_left.sample(1.0, v, TEST_SURFACE_Y);
+        let sr = view_right.sample(0.0, v, TEST_SURFACE_Y);
+        let (al, ml) = (sl.amount, sl.material);
+        let (ar, mr) = (sr.amount, sr.material);
         assert_eq!(al.to_bits(), ar.to_bits(), "境界の変位量が一致すること (v={v})");
         assert_eq!(ml, mr, "境界の素材が一致すること (v={v})");
         assert!(al > 0.0, "エミッタの真下なので実際に積もっていること (v={v})");
@@ -650,6 +711,9 @@ fn uniform_field(material: u8, amount: f32) -> CoverField {
     for iz in 0..COVER_FIELD_RESOLUTION {
         for ix in 0..COVER_FIELD_RESOLUTION {
             f.deposit(ix, iz, material, amount);
+            // 量を持つテクセルの基準 Y は必ず有限、という不変条件を満たしておく
+            // （実経路では積算がこれを設定する）。
+            f.set_base_y(ix, iz, TEST_SURFACE_Y);
         }
     }
     f
@@ -668,6 +732,7 @@ fn patterned_field(seed: usize) -> CoverField {
             let amount = (n + 1) as f32 / (COVER_FIELD_RESOLUTION + 1) as f32;
             let material = if (ix + iz + seed) % 2 == 0 { MAT_SNOW } else { MAT_LEAF };
             f.deposit(ix, iz, material, amount);
+            f.set_base_y(ix, iz, TEST_SURFACE_Y);
         }
     }
     f
@@ -708,4 +773,303 @@ fn bundled_sample_asset_parses() {
     assert!(snow.displacement > 0.0, "雪は変位を持つ");
     assert_eq!(wet.displacement, 0.0, "濡れは変位ゼロ");
     assert!(wet.roughness < snow.roughness, "濡れは粗さが低い（鏡面が立つ）");
+}
+
+// ============================================================
+//  7. 轍（I3.2）— 踏み固め・Y 照合・埋め戻し・形状
+// ============================================================
+
+/// テスト用: 全テクセルに満量の雪が乗り、基準 Y が `y` のカバー場を作る。
+fn snowy_field_at(y: f32) -> CoverField {
+    let mut f = CoverField::new();
+    for iz in 0..COVER_FIELD_RESOLUTION {
+        for ix in 0..COVER_FIELD_RESOLUTION {
+            f.deposit(ix, iz, MAT_SNOW, 1.0);
+            f.set_base_y(ix, iz, y);
+        }
+    }
+    f
+}
+
+/// チャンク中央を円形に踏むスタンプ仕様。
+fn circle_stamp(contact: [f32; 3], radius: f32, strength: f32) -> CoverStampSpec {
+    CoverStampSpec { contact, radius, strength, shape: CoverStampShape::Circle }
+}
+
+/// 円形スタンプが接地点の周囲だけを踏み固め、実効の量を減らすこと。
+#[test]
+fn circle_stamp_presses_only_around_contact() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(0.0);
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+
+    // チャンク中央（8m, 0m, 8m）を半径 1m で踏む。
+    let stamps = vec![circle_stamp([extent * 0.5, TEST_SURFACE_Y, extent * 0.5], 1.0, 1.0)];
+    let changed = stamp_chunk(
+        &mut field, &surface, [0.0; 3], extent, &stamps, &test_materials(),
+    );
+    assert!(changed, "接地点の周囲は踏み固められること");
+
+    // 中央のテクセル（16,16 = 8m 付近）は踏まれ、隅（0,0）は踏まれない。
+    let mid = COVER_FIELD_RESOLUTION / 2;
+    assert!(field.trample_at(mid, mid) > 0.0, "接地点は踏み固められる");
+    assert_eq!(field.trample_at(0, 0), 0.0, "半径の外は踏まれない");
+}
+
+/// 踏み固めが量を超えると実効の量が 0 になる（＝下地が露出する）こと。
+#[test]
+fn trample_beyond_amount_exposes_bare_ground() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(0.0);
+    // 薄く積もった雪（量 0.3）を満額の強さで踏む。
+    let mut field = CoverField::new();
+    let mid = COVER_FIELD_RESOLUTION / 2;
+    for iz in 0..COVER_FIELD_RESOLUTION {
+        for ix in 0..COVER_FIELD_RESOLUTION {
+            field.deposit(ix, iz, MAT_SNOW, 0.3);
+            field.set_base_y(ix, iz, TEST_SURFACE_Y);
+        }
+    }
+    let stamps = vec![circle_stamp([extent * 0.5, TEST_SURFACE_Y, extent * 0.5], 2.0, 1.0)];
+    stamp_chunk(&mut field, &surface, [0.0; 3], extent, &stamps, &test_materials());
+
+    assert!(field.trample_at(mid, mid) > field.amount_at(mid, mid), "踏み固めが量を超えること");
+    let view = CoverNeighborhood::isolated(&field);
+    let sample = view.sample(0.5, 0.5, TEST_SURFACE_Y);
+    assert_eq!(sample.amount, 0.0, "実効の量は 0（下地が露出）");
+    assert!(sample.trample > 0.0, "轍としての踏み固めは残る（暗くするために要る）");
+    assert_eq!(sample.trample_material, MAT_SNOW, "踏み固めた素材は分かる（色係数を引くため）");
+}
+
+/// 接地 Y が離れているテクセルは踏まれないこと（洞窟の床 → 頭上の地表への漏れ防止）。
+#[test]
+fn stamp_ignores_surfaces_far_in_y() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(0.0);
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+
+    // 面（y=0）から 10m 上を歩いた場合（半径 1m ＝ 許容差 1m）。
+    let stamps = vec![circle_stamp([extent * 0.5, 10.0, extent * 0.5], 1.0, 1.0)];
+    let changed = stamp_chunk(
+        &mut field, &surface, [0.0; 3], extent, &stamps, &test_materials(),
+    );
+    assert!(!changed, "Y が離れた面は踏まれないこと");
+    assert_eq!(field.trample_at(COVER_FIELD_RESOLUTION / 2, COVER_FIELD_RESOLUTION / 2), 0.0);
+}
+
+/// 足跡の残りやすさが 0 の素材（濡れなど）には痕が付かないこと。
+#[test]
+fn stamp_does_nothing_on_non_persistent_material() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(0.0);
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+
+    // 残りやすさ 0 の素材だけを持つセット。
+    let materials = CoverMaterialSet {
+        materials: vec![CoverMaterial {
+            id: "wet".to_string(),
+            footprint_persistence: 0.0,
+            ..CoverMaterial::default()
+        }],
+    };
+    let stamps = vec![circle_stamp([extent * 0.5, TEST_SURFACE_Y, extent * 0.5], 2.0, 1.0)];
+    assert!(!stamp_chunk(&mut field, &surface, [0.0; 3], extent, &stamps, &materials));
+}
+
+/// 積算（降雪）が轍を埋め戻すこと。
+#[test]
+fn accumulation_refills_trample() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(0.0);
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+
+    // まず深く踏む。
+    let stamps = vec![circle_stamp([extent * 0.5, TEST_SURFACE_Y, extent * 0.5], 4.0, 1.0)];
+    stamp_chunk(&mut field, &surface, [0.0; 3], extent, &stamps, &test_materials());
+    let mid = COVER_FIELD_RESOLUTION / 2;
+    let before = field.trample_at(mid, mid);
+    assert!(before > 0.0);
+
+    // 降雪を 1 秒ぶん当てる（強度 0.5 → 轍が 0.5 ぶん埋まる）。
+    accumulate_chunk(
+        &mut field,
+        &surface,
+        [0.0; 3],
+        extent,
+        &global_emitter(MAT_SNOW, 0.5),
+        &test_materials(),
+        1.0,
+    );
+    let after = field.trample_at(mid, mid);
+    assert!(after < before, "降った分だけ轍が浅くなること (before={before}, after={after})");
+}
+
+/// テクスチャ形状が進行方向へ回ること（前後に長い痕が向きに追従する）。
+#[test]
+fn texture_stamp_rotates_with_direction() {
+    // 中央 1 列だけが白い縦長のマスク（3×3 の中央列）。
+    let mask = CoverMask {
+        width: 3,
+        height: 3,
+        pixels: vec![0, 255, 0, 0, 255, 0, 0, 255, 0],
+    };
+    // 進行方向 +Z のときは、痕は Z 方向に伸びる（X へずらすと当たらない）。
+    let forward_z = CoverStampSpec {
+        contact: [0.0, 0.0, 0.0],
+        radius: 1.0,
+        strength: 1.0,
+        shape: CoverStampShape::Texture {
+            size: [3.0, 3.0],
+            forward_xz: [0.0, 1.0],
+            mask: mask.clone(),
+        },
+    };
+    assert!(forward_z.footprint_at(0.0, 1.0) > 0.0, "進行方向には痕が伸びる");
+    assert_eq!(forward_z.footprint_at(1.0, 0.0), 0.0, "横方向には痕が無い");
+
+    // 進行方向 +X へ回すと、当たり方がちょうど入れ替わる。
+    let forward_x = CoverStampSpec {
+        shape: CoverStampShape::Texture {
+            size: [3.0, 3.0],
+            forward_xz: [1.0, 0.0],
+            mask,
+        },
+        ..forward_z.clone()
+    };
+    assert!(forward_x.footprint_at(1.0, 0.0) > 0.0, "回した先に痕が伸びる");
+    assert_eq!(forward_x.footprint_at(0.0, 1.0), 0.0, "回した後の横方向には痕が無い");
+}
+
+// ============================================================
+//  8. Y（上下）チャンク境界の一致（I3.1 §7-8 の回帰テスト）
+// ============================================================
+
+/// 地表が Y のチャンク境界面を横切る場所で、上下段のメッシュが同じ面を読むこと。
+///
+/// 【何を守っているか】
+///   境界面（world_y = extent）上の頂点は上下段のメッシュへ複製されている。
+///   下段の視点（自分 = 下段）と上段の視点（自分 = 上段）で **同じ 1 点**を読み、
+///   ビット単位で一致することを確認する。これが崩れると I3.1 §7-8 の筋が出る。
+#[test]
+fn y_boundary_sample_is_bit_identical_between_stacked_chunks() {
+    let extent = TerrainSettings::default().chunk_extent();
+    // 下段のチャンクに、境界面のすぐ下（y = extent - 0.1）の面を持つカバーがある。
+    let lower = snowy_field_at(extent - 0.1);
+    // 上段のチャンクには、境界面のすぐ上（y = extent + 0.1）の面を持つカバーがある。
+    let upper = patterned_field_at(5, extent + 0.1);
+
+    // 下段から見ると upper は dy=+1、上段から見ると lower は dy=-1。
+    let view_lower = test_view(|dx, dy, dz| match (dx, dy, dz) {
+        (0, 0, 0) => Some(&lower),
+        (0, 1, 0) => Some(&upper),
+        _ => None,
+    });
+    let view_upper = test_view(|dx, dy, dz| match (dx, dy, dz) {
+        (0, 0, 0) => Some(&upper),
+        (0, -1, 0) => Some(&lower),
+        _ => None,
+    });
+
+    // 境界面上（world_y = extent）の点を、上下段それぞれの視点で読む。
+    let steps = 32;
+    for i in 0..=steps {
+        let u = i as f32 / steps as f32;
+        let sl = view_lower.sample(u, 0.5, extent);
+        let su = view_upper.sample(u, 0.5, extent);
+        assert_eq!(
+            sl.amount.to_bits(),
+            su.amount.to_bits(),
+            "Y 境界の共有点はビット単位で同じ量を読むこと (u={u})"
+        );
+        assert_eq!(sl.material, su.material, "Y 境界の共有点は同じ素材を読むこと (u={u})");
+    }
+}
+
+/// テスト用: 模様入りで基準 Y が `y` のカバー場。
+fn patterned_field_at(seed: usize, y: f32) -> CoverField {
+    let mut f = patterned_field(seed);
+    for iz in 0..COVER_FIELD_RESOLUTION {
+        for ix in 0..COVER_FIELD_RESOLUTION {
+            f.set_base_y(ix, iz, y);
+        }
+    }
+    f
+}
+
+/// 1 段以上離れた面は候補にならない（＝洞窟の床の轍が地表へ漏れない）こと。
+#[test]
+fn distant_y_layer_is_not_sampled() {
+    let extent = TerrainSettings::default().chunk_extent();
+    // 自分の段には面が無く、1 段下（16m 下）にだけ雪がある。
+    let below = snowy_field_at(-1.0);
+    let view = test_view(|dx, dy, dz| match (dx, dy, dz) {
+        (0, -1, 0) => Some(&below),
+        _ => None,
+    });
+    // 上段の面の高さ（y = extent）で読む＝17m 離れているので候補外。
+    let s = view.sample(0.5, 0.5, extent);
+    assert_eq!(s.amount, 0.0, "許容差を超えて離れた面は読まれないこと");
+}
+
+// ============================================================
+//  9. TCOVER v2 と v1 互換
+// ============================================================
+
+/// 踏み固め・基準 Y を含めて .tcover が往復すること。
+#[test]
+fn tcover_v2_round_trips_trample_and_base_y() {
+    let mut field = snowy_field_at(3.5);
+    field.stamp_trample(4, 5, 0.6);
+    let coord = ChunkCoord::new(1, -2, 3);
+
+    let bytes = write_chunk(&field, coord);
+    assert_eq!(bytes[0..4], TCOVER_MAGIC);
+    assert_eq!(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]), TCOVER_VERSION);
+
+    let (back, back_coord) = read_chunk(&bytes).expect("v2 が読めること");
+    assert_eq!(back_coord, coord);
+    assert_eq!(back.raw_trample(), field.raw_trample(), "踏み固めが往復すること");
+    assert_eq!(
+        back.raw_base_y().iter().map(|y| y.to_bits()).collect::<Vec<_>>(),
+        field.raw_base_y().iter().map(|y| y.to_bits()).collect::<Vec<_>>(),
+        "基準 Y がビット単位で往復すること"
+    );
+}
+
+/// TCOVER v1（素材＋量だけ）のファイルが読め、轍 0・基準 Y 未知へ移行すること。
+#[test]
+fn tcover_v1_is_readable_and_migrates() {
+    // v1 のバイト列を手で組み立てる（ヘッダのバージョンを 1 にし、本体は素材＋量のみ）。
+    let field = snowy_field_at(0.0);
+    let coord = ChunkCoord::new(0, 0, 0);
+    let mut v1: Vec<u8> = Vec::new();
+    v1.extend_from_slice(&TCOVER_MAGIC);
+    v1.extend_from_slice(&1u32.to_le_bytes());
+    v1.extend_from_slice(&coord.x.to_le_bytes());
+    v1.extend_from_slice(&coord.y.to_le_bytes());
+    v1.extend_from_slice(&coord.z.to_le_bytes());
+    v1.extend_from_slice(&(COVER_FIELD_RESOLUTION as u32).to_le_bytes());
+    v1.extend_from_slice(field.raw_material());
+    v1.extend_from_slice(field.raw_amount());
+
+    let (back, _) = read_chunk(&v1).expect("v1 が読めること");
+    assert_eq!(back.raw_amount(), field.raw_amount(), "量はそのまま読めること");
+    assert!(back.raw_trample().iter().all(|&t| t == 0), "轍は 0 として移行すること");
+    assert!(
+        back.raw_base_y().iter().all(|&y| y == COVER_BASE_Y_ABSENT),
+        "基準 Y は未知として移行すること（ロード後に再計算される）"
+    );
+
+    // 未知の基準 Y は地表情報から再計算できる。
+    let mut migrated = back;
+    migrated.refresh_base_y(&flat_surface(0.0));
+    assert!(
+        migrated.raw_base_y().iter().all(|&y| y.is_finite()),
+        "再計算後は全テクセルの基準 Y が有限になること"
+    );
 }

@@ -39,12 +39,70 @@ fn default_radius() -> f32 { 1.0 }
 /// `strength` の既定値（0..1）。1 = 場へ自分の速度をそのまま書き込む。
 fn default_strength() -> f32 { 1.0 }
 
+/// `stamp_shape` の既定値（`Circle`）。
+///
+/// 既定を円にしているのは、テクスチャを用意しなくても轍が機能するため
+/// （＝コンポーネントを付けるだけで足跡が残る）。
+fn default_stamp_shape() -> InteractionStampShape {
+    InteractionStampShape::Circle
+}
+
+/// `stamp_size`（テクスチャ形状の実寸・メートル）の既定値。
+///
+/// `[進行方向に直交する幅, 進行方向の長さ]`。ブーツの足裏（12cm × 30cm）を
+/// 想定した値で、追加してすぐ人型の足跡として使える大きさにしてある。
+fn default_stamp_size() -> [f32; 2] {
+    [0.12, 0.30]
+}
+
 /// `enabled` の既定値（true）。
 ///
 /// スロットの `enabled`（コンポーネント自体の有効/無効）とは別に、
 /// **ゲームロジックから一時的に場への書き込みを止める**ためのデータ側フラグ。
 /// 例: 空中にいる間だけ草を踏まない、といった制御をスクリプトから行う。
 fn default_enabled() -> bool { true }
+
+// ─── 轍スタンプの形状（Phase I3.2）─────────────────────────────
+
+/// 地表カバー場へ押し当てる痕（轍・足跡）の形状。
+///
+/// serde は文字列（`"Circle"` / `"Texture"`）でシリアライズする。
+/// 旧シーン（stamp_shape 欠落）は `#[serde(default)]` により `Circle` になる。
+///
+/// 【草なびき・水の波紋には効かない】
+///   形状はカバー場のスタンプ（轍）専用である。インタラクションフィールドは
+///   ワールド俯瞰の低解像度テクスチャに「速度」を焼く仕組みで、そこへ向きを持つ
+///   マスクを載せるには場のフォーマット自体を変える必要がある。
+///   草が踏み分けられる範囲と、地面に残る痕の形は別物（前者は体の周り、
+///   後者は接地面）なので、半径だけの等方な影響で意味的にも正しい。
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub enum InteractionStampShape {
+    /// 等方な円（既定）。半径 `radius` の内側を中心ほど深く踏み固める。
+    Circle,
+    /// グレースケール画像を進行方向へ回転させて押し当てる。
+    ///
+    /// 白 = 最大の深さ、黒 = 踏まない。画像の **上方向が進行方向**。
+    Texture,
+}
+
+impl InteractionStampShape {
+    /// インスペクタへ送る種別文字列（C# 側ドロップダウンの Tag と一致させる）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Circle => "Circle",
+            Self::Texture => "Texture",
+        }
+    }
+
+    /// IPC 文字列から種別へ変換する。未知の文字列は `None`（呼び出し側で無視する）。
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s {
+            "Circle" => Some(Self::Circle),
+            "Texture" => Some(Self::Texture),
+            _ => None,
+        }
+    }
+}
 
 // ─── InteractionSourceComponentData（シリアライズ用）───────────
 
@@ -60,6 +118,15 @@ pub struct InteractionSourceComponentData {
     /// 有効フラグ。false の間は場へ一切書き込まない。既定 true。
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// 轍スタンプの形状（Phase I3.2）。既定 `Circle`。
+    #[serde(default = "default_stamp_shape")]
+    pub stamp_shape: InteractionStampShape,
+    /// `Texture` 形状のグレースケール画像パス（`assets://...` 可）。空 = 痕を付けない。
+    #[serde(default)]
+    pub stamp_mask_path: String,
+    /// `Texture` 形状の実寸（メートル）。`[横幅, 進行方向の長さ]`。
+    #[serde(default = "default_stamp_size")]
+    pub stamp_size: [f32; 2],
 }
 
 impl Default for InteractionSourceComponentData {
@@ -68,6 +135,9 @@ impl Default for InteractionSourceComponentData {
             radius:   default_radius(),
             strength: default_strength(),
             enabled:  default_enabled(),
+            stamp_shape:     default_stamp_shape(),
+            stamp_mask_path: String::new(),
+            stamp_size:      default_stamp_size(),
         }
     }
 }
@@ -87,6 +157,12 @@ pub struct InteractionSourceComponent {
     pub strength: f32,
     /// 有効フラグ（false の間は場へ書き込まない）。
     pub enabled: bool,
+    /// 轍スタンプの形状（Phase I3.2）。
+    pub stamp_shape: InteractionStampShape,
+    /// `Texture` 形状のグレースケール画像パス。空 = 痕を付けない。
+    pub stamp_mask_path: String,
+    /// `Texture` 形状の実寸（メートル）。`[横幅, 進行方向の長さ]`。
+    pub stamp_size: [f32; 2],
 }
 
 impl Default for InteractionSourceComponent {
@@ -95,6 +171,9 @@ impl Default for InteractionSourceComponent {
             radius:   default_radius(),
             strength: default_strength(),
             enabled:  default_enabled(),
+            stamp_shape:     default_stamp_shape(),
+            stamp_mask_path: String::new(),
+            stamp_size:      default_stamp_size(),
         }
     }
 }
@@ -106,6 +185,9 @@ impl InteractionSourceComponent {
             radius:   data.radius,
             strength: data.strength,
             enabled:  data.enabled,
+            stamp_shape:     data.stamp_shape,
+            stamp_mask_path: data.stamp_mask_path.clone(),
+            stamp_size:      data.stamp_size,
         }
     }
 
@@ -115,6 +197,9 @@ impl InteractionSourceComponent {
             radius:   self.radius,
             strength: self.strength,
             enabled:  self.enabled,
+            stamp_shape:     self.stamp_shape,
+            stamp_mask_path: self.stamp_mask_path.clone(),
+            stamp_size:      self.stamp_size,
         }
     }
 }
@@ -136,14 +221,36 @@ mod tests {
         assert!(c.enabled);
     }
 
-    /// to_data → from_data で値が完全に往復すること。
+    /// to_data → from_data で値が完全に往復すること（轍スタンプの形状込み）。
     #[test]
     fn data_round_trips() {
-        let c = InteractionSourceComponent { radius: 2.5, strength: 0.25, enabled: false };
+        let c = InteractionSourceComponent {
+            radius: 2.5,
+            strength: 0.25,
+            enabled: false,
+            stamp_shape: InteractionStampShape::Texture,
+            stamp_mask_path: "assets://tex/tire.png".to_string(),
+            stamp_size: [0.4, 1.2],
+        };
         let back = InteractionSourceComponent::from_data(&c.to_data());
         assert_eq!(back.radius, 2.5);
         assert_eq!(back.strength, 0.25);
         assert!(!back.enabled);
+        assert_eq!(back.stamp_shape, InteractionStampShape::Texture);
+        assert_eq!(back.stamp_mask_path, "assets://tex/tire.png");
+        assert_eq!(back.stamp_size, [0.4, 1.2]);
+    }
+
+    /// 轍スタンプ形状の文字列が C# ドロップダウンの Tag と一致すること。
+    #[test]
+    fn stamp_shape_strings_are_stable() {
+        assert_eq!(InteractionStampShape::Circle.as_str(), "Circle");
+        assert_eq!(InteractionStampShape::Texture.as_str(), "Texture");
+        assert_eq!(
+            InteractionStampShape::from_str_opt("Texture"),
+            Some(InteractionStampShape::Texture)
+        );
+        assert_eq!(InteractionStampShape::from_str_opt("Blob"), None);
     }
 
     /// **フィールドが 1 つも無い旧 .scene（`{}`）でも読み込めること**（serde default の要）。
@@ -155,6 +262,9 @@ mod tests {
         assert_eq!(d.radius, 1.0);
         assert_eq!(d.strength, 1.0);
         assert!(d.enabled);
+        // 轍スタンプ（I3.2）を知らない旧シーンは円形の既定値になる。
+        assert_eq!(d.stamp_shape, InteractionStampShape::Circle);
+        assert!(d.stamp_mask_path.is_empty());
     }
 
     /// 一部フィールドだけを持つ JSON でも、残りは既定値で埋まること。

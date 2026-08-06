@@ -8,21 +8,29 @@
 //    **まったく同じこの関数**を呼ぶ（挙動が二重定義にならない）。
 //
 //  【自然減衰は無い】
-//    本フェーズでは融解・埋め戻し・風化は扱わない（スコープ外）。
-//    積もる方向にしか動かないため、シミュレート時間が長いほど
-//    単調に量が増えて必ず飽和する（＝発散しない）。
+//    融解・風化は扱わない（スコープ外）。積もる方向にしか動かないため、
+//    シミュレート時間が長いほど単調に量が増えて必ず飽和する（＝発散しない）。
+//
+//  【轍の埋め戻し（I3.2）】
+//    「自然に消える」ことはしないが、**新しく積もった分だけ轍が浅くなる**。
+//    降雪が足跡を埋めるのはこの経路であり、エミッタが止まれば轍は永久に残る。
+//    埋め戻し速度は「今このテクセルへ積もった量（＝エミッタ強度に比例）」＋
+//    「素材の既定速度 `refill_rate`（量/秒）」の合計とする。
 // ============================================================
 
 use super::emit::CoverEmitSpec;
 use super::field::{
-    texel_center_uv, slope_scale, CoverField, CoverSurface, COVER_FIELD_RESOLUTION,
+    texel_center_uv, slope_scale, CoverField, CoverSurface, COVER_BASE_Y_ABSENT,
+    COVER_FIELD_RESOLUTION,
 };
+use super::material::CoverMaterialSet;
 
 /// 1 チャンク分のカバー場を `dt` 秒ぶん進める。
 ///
 /// - `chunk_origin`: チャンク最小コーナーのワールド座標（メートル）
 /// - `chunk_extent`: チャンク 1 辺のワールド長（メートル）
 /// - `emitters`: ワールド解決済みのエミッタ列
+/// - `materials`: カバー素材定義（轍の埋め戻し速度 `refill_rate` を引くために要る）
 /// - `dt`: 経過時間（秒）
 ///
 /// 戻り値は「カバー場が実際に変化したか」。false のときチャンクは
@@ -34,6 +42,7 @@ pub fn accumulate_chunk(
     chunk_origin: [f32; 3],
     chunk_extent: f32,
     emitters: &[CoverEmitSpec],
+    materials: &CoverMaterialSet,
     dt: f32,
 ) -> bool {
     // ─── 早期棄却: 時間が進まない／エミッタが無い ───
@@ -63,6 +72,9 @@ pub fn accumulate_chunk(
         for ix in 0..COVER_FIELD_RESOLUTION {
             // ─── 面が無いテクセル（空中・チャンクが全て個体）は積もらない ───
             if !surface.has_surface(ix, iz) {
+                // 面が消えたテクセルの基準 Y は「未知」へ戻す
+                // （地形を掘り直した後に古い高さが残ると Y 照合が誤爆する）。
+                field.set_base_y(ix, iz, COVER_BASE_Y_ABSENT);
                 continue;
             }
             // ─── 傾斜ルール: 急斜面ほど積もりにくい ───
@@ -75,11 +87,17 @@ pub fn accumulate_chunk(
             //   Y は「面の高さ」を使う。これにより Region の Y 方向の範囲判定が
             //   「谷にだけ雪を積もらせる」という直感どおりに効く。
             let (u, v) = texel_center_uv(ix, iz);
+            let surface_y = surface.surface_y_at(ix, iz);
             let world = [
                 chunk_origin[0] + u * chunk_extent,
-                surface.surface_y_at(ix, iz),
+                surface_y,
                 chunk_origin[2] + v * chunk_extent,
             ];
+
+            // ─── 面の基準 Y を同期する（I3.2 の Y 照合の土台）───
+            //   「量を持つテクセルの基準 Y は必ず有限」という不変条件を、
+            //   積む前に更新しておくことで満たす。
+            field.set_base_y(ix, iz, surface_y);
 
             // ─── 各エミッタの寄与を順に積む ───
             //   複数エミッタが同じテクセルへ違う素材を降らせた場合は、
@@ -99,6 +117,20 @@ pub fn accumulate_chunk(
                 if field.amount_at(ix, iz) != before_amount
                     || field.material_at(ix, iz) != before_material
                 {
+                    changed = true;
+                }
+
+                // ─── 轍の埋め戻し（I3.2）───
+                //   降った分（delta）はそのまま轍を浅くする。加えて素材が
+                //   「自分で均される」性質（`refill_rate`：雪はさらさらと崩れる）を
+                //   持つなら、その速度ぶんも被覆率に比例して埋める。
+                //   エミッタが止まればどちらの項も 0 になり、轍は永久に残る。
+                let material_refill = materials
+                    .get(e.material_index as usize)
+                    .map(|m| m.refill_rate)
+                    .unwrap_or(0.0);
+                let refill = delta + material_refill * coverage * dt;
+                if field.refill_trample(ix, iz, refill) {
                     changed = true;
                 }
             }

@@ -60,6 +60,12 @@ const TERRAIN_MAX_COVER_MATERIALS: u32 = 16u;
 /// （コストも uv0 の読み取りと 1 回の比較だけ）。
 const TERRAIN_COVER_EPSILON: f32 = 0.0009;
 
+/// 踏み固めの暗さ（uv1.x）がこの値以下なら轍の処理を完全にスキップする（I3.2）。
+///
+/// カバー場を持たない地形の uv1 は常に [0,0] なので、
+/// この分岐により轍の導入前とビット単位で同じ出力になる。
+const TERRAIN_TRAMPLE_EPSILON: f32 = 0.0009;
+
 // ─── detile モードコード（Rust DetileMode::to_gpu_code と一致必須）────────────
 
 /// 単純タイリング（従来動作）。
@@ -581,6 +587,21 @@ fn fs_terrain_gbuffer(
         roughness = mix(roughness, cm.a, cover_amount);
         // カバーはすべて非金属（雪も落ち葉も水膜も導体ではない）。
         metallic  = mix(metallic, 0.0, cover_amount);
+    }
+
+    // ── 轍・足跡の踏み固め（I3.2）──
+    //
+    //  頂点が運んでくる値: uv1.x = 踏み固め量 × 素材の踏み固め色係数（0..1）。
+    //  CPU 側（terrain_mesh_build.rs）で既に 1 スカラーへ畳んであるので、
+    //  ここは「その割合ぶん暗くする」だけでよい。
+    //
+    //  【カバーの合成より "後" に掛ける理由】
+    //  踏み固めが積もった量を超えた所は下地（地形レイヤ）が露出しており、
+    //  上の分岐には入らない（cover_amount が 0 になる）。それでも轍としては
+    //  暗くしたいので、カバーの有無に依らず効く位置へ置く。
+    let trample_darken = clamp(in.uv1.x, 0.0, 1.0);
+    if trample_darken > TERRAIN_TRAMPLE_EPSILON {
+        albedo = albedo * (1.0 - trample_darken);
     }
 
     let n_len = length(normal);

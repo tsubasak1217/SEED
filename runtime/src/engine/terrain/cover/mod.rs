@@ -12,6 +12,7 @@
 //    field.rs      — チャンク紐づけのカバー場（素材＋量の 1 層）と地表情報・傾斜ルール
 //    emit.rs       — エミッタ範囲（Global / Region / TextureMask）の評価
 //    accumulate.rs — 積算（場 × 地表 × エミッタ × dt → 新しい場）
+//    trample.rs    — 轍・足跡のスタンプ（形状評価と Y 照合。I3.2）
 //    tcover.rs     — カバー場のバージョン付きバイナリ永続化（.tcover）
 //
 //  【エンジン層との境界】
@@ -28,6 +29,7 @@ pub mod emit;
 pub mod field;
 pub mod material;
 pub mod tcover;
+pub mod trample;
 
 /// カバー場（I3.1）専用のユニットテスト（役割単位でファイル分割）。
 #[cfg(test)]
@@ -39,8 +41,8 @@ mod tests_cover;
 pub use accumulate::accumulate_chunk;
 pub use emit::{CoverEmitRange, CoverEmitSpec, CoverMask};
 pub use field::{
-    slope_scale, texel_center_uv, CoverField, CoverNeighborhood, CoverSurface,
-    COVER_FIELD_RESOLUTION,
+    cover_y_match_tolerance, slope_scale, texel_center_uv, CoverField, CoverNeighborhood,
+    CoverSample, CoverSurface, COVER_BASE_Y_ABSENT, COVER_FIELD_RESOLUTION,
     COVER_FIELD_TEXELS, COVER_SLOPE_UP_FULL, COVER_SLOPE_UP_MIN, COVER_SURFACE_ABSENT,
 };
 pub use material::{
@@ -49,6 +51,10 @@ pub use material::{
 pub use tcover::{
     read_chunk as read_cover_chunk, write_chunk as write_cover_chunk, TcoverError, TcoverHeader,
     TCOVER_MAGIC, TCOVER_VERSION,
+};
+pub use trample::{
+    resolve_forward_xz, stamp_chunk as stamp_cover_chunk, CoverStampShape, CoverStampSpec,
+    COVER_STAMP_DEFAULT_FORWARD,
 };
 
 // `read_header` は本体を読まずに座標だけ知りたい場面（統計表示）用。
