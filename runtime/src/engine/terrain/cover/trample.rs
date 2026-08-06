@@ -88,6 +88,19 @@ pub const COVER_STAMP_Y_TOLERANCE_MIN: f32 = 0.25;
 ///   ソースの半径を大きくする（許容差が半径に比例して伸びる）。
 pub const COVER_STAMP_GROUND_SNAP_DROP: f32 = 2.0;
 
+/// 縁の盛り上がり（リム）が張り出す倍率。
+///
+/// 痕の形状をこの倍率で拡大したものと、等倍のものとの **差** が縁の帯になる
+/// （円なら半径 r と r×倍率 の間のリング、テクスチャ痕なら輪郭に沿った縁取り）。
+/// 形状に依らず 1 つの規則で縁を作れるのがこの方式の利点であり、
+/// タイヤのトレッド痕でも「踏んだ形の外側だけ」が正しく盛れる。
+///
+/// 【なぜ 1.4 なのか】
+///   1.0 に近いと縁が痕の輪郭と重なって潰れ、大きすぎると足跡から離れた場所が
+///   盛り上がって「土手」に見える。痕の半径の 4 割ぶん外へ広がる幅は、
+///   カバー場のテクセル 0.5m に対しても 1 テクセル前後を確保できる最小値である。
+pub const COVER_STAMP_RIM_SCALE: f32 = 1.4;
+
 /// 踏み固めが効き始める傾斜（`slope_scale` の値）の下限。
 ///
 /// 崖には積もらない（＝カバーが無い）ので踏む対象も無い。積算と同じ規則を
@@ -173,14 +186,18 @@ impl CoverStampSpec {
     ///
     /// `Texture` はサイズの対角線の半分まで届きうる（どの向きに回転しても
     /// はみ出さない保守的な上界）。
+    /// **縁の盛り上がり（リム）まで含めた**距離であることに注意。リムは形状を
+    /// `COVER_STAMP_RIM_SCALE` 倍したところまで届くので、ここを等倍のままにすると
+    /// 縁だけが載るチャンクが選別で落ちて盛り上がりが切れる。
     pub fn reach_xz(&self) -> f32 {
-        match &self.shape {
+        let base = match &self.shape {
             CoverStampShape::Circle => self.radius.max(0.0),
             CoverStampShape::Texture { size, .. } => {
                 let half_diagonal = (size[0] * size[0] + size[1] * size[1]).sqrt() * 0.5;
                 half_diagonal.max(self.radius.max(0.0))
             }
-        }
+        };
+        base * COVER_STAMP_RIM_SCALE
     }
 
     /// このスタンプが指定 AABB（チャンクなど）に一切かからないか。
@@ -206,12 +223,35 @@ impl CoverStampSpec {
     /// 形状ごとの落ち方だけを決める純粋関数であり、素材の残りやすさ・強さは
     /// 呼び出し側が掛ける（責務の分離：`CoverEmitSpec::coverage_at` と同じ流儀）。
     pub fn footprint_at(&self, world_x: f32, world_z: f32) -> f32 {
+        // 等倍＝痕そのもの。倍率を掛けたものは縁（`rim_at`）の計算に使う。
+        self.footprint_at_scaled(world_x, world_z, 1.0)
+    }
+
+    /// 縁の盛り上がり比（0..1）を返す。
+    ///
+    /// 「形状を `COVER_STAMP_RIM_SCALE` 倍した痕」と「等倍の痕」の差である。
+    /// 痕の内側では両者がほぼ等しいので 0 に近づき、輪郭のすぐ外側で最大になり、
+    /// さらに外では両方 0 になって消える。つまり **痕の周りを囲む帯**が得られる。
+    ///
+    /// 形状の種類を知らずに縁を作れるので、円でもタイヤのトレッド痕でも
+    /// 同じ 1 行で「踏んだ形の外側だけが盛れる」ようになる。
+    pub fn rim_at(&self, world_x: f32, world_z: f32) -> f32 {
+        let outer = self.footprint_at_scaled(world_x, world_z, COVER_STAMP_RIM_SCALE);
+        let inner = self.footprint_at(world_x, world_z);
+        (outer - inner).max(0.0)
+    }
+
+    /// 形状を `scale` 倍したときの踏み込み比率（0..1）。
+    ///
+    /// `scale = 1.0` のとき `footprint_at` と **bit 単位で同じ**値を返す
+    /// （半径・サイズへの 1.0 倍は浮動小数として恒等変換であるため）。
+    fn footprint_at_scaled(&self, world_x: f32, world_z: f32, scale: f32) -> f32 {
         let dx = world_x - self.contact[0];
         let dz = world_z - self.contact[2];
         match &self.shape {
             // ─── 円: 中心 1.0・縁 0.0 の smoothstep ───
             CoverStampShape::Circle => {
-                let r = self.radius;
+                let r = self.radius * scale;
                 if !(r > 0.0) {
                     return 0.0;
                 }
@@ -226,7 +266,7 @@ impl CoverStampSpec {
 
             // ─── テクスチャ: 進行方向へ回した局所座標で画像を読む ───
             CoverStampShape::Texture { size, forward_xz, mask } => {
-                let (sw, sl) = (size[0], size[1]);
+                let (sw, sl) = (size[0] * scale, size[1] * scale);
                 if !(sw > 0.0) || !(sl > 0.0) || !mask.is_valid() {
                     return 0.0;
                 }
@@ -339,7 +379,8 @@ pub fn stamp_chunk_tracked(
             if amount <= 0.0 {
                 continue;
             }
-            let Some(material) = materials.get(field.material_at(ix, iz) as usize) else {
+            let material_index = field.material_at(ix, iz);
+            let Some(material) = materials.get(material_index as usize) else {
                 continue;
             };
             // 素材が「足跡の残りやすさ」を持たない（濡れ・水膜など）なら何も起きない。
@@ -353,15 +394,26 @@ pub fn stamp_chunk_tracked(
             let world_z = chunk_origin[2] + v * chunk_extent;
             let surface_y = surface.surface_y_at(ix, iz);
 
-            // ─── 各スタンプを評価して、最も深い踏み込みを採る ───
+            // ─── 各スタンプを評価して、最も深い踏み込み／最も強い縁を採る ───
+            //   踏み込みと縁は同じテクセルで同時に立ちうる（痕の輪郭付近）。
+            //   どちらも「最大値を採る」ことで、複数ソースが重なっても結果が
+            //   順序に依存しない（`stamp_trample` が最大値更新なのと同じ流儀）。
             let mut depth = 0.0f32;
             let mut deepest: Option<usize> = None;
+            let mut rim = 0.0f32;
             for (index, s) in &active {
                 // Y 照合: この面がスタンプの上下窓の内側にあるか
                 // （洞窟の床を歩いた轍が頭上の地表へ写らない ＋ 浮いた原点でも接地する）。
                 if !s.matches_surface_y(surface_y) {
                     continue;
                 }
+                // 縁の盛り上がり = 縁の帯 × 強さ × 素材の残りやすさ。
+                //   「形を保てない素材（濡れ）では縁も立たない」を残りやすさで表す。
+                let rim_f = s.rim_at(world_x, world_z);
+                if rim_f > 0.0 {
+                    rim = rim.max(rim_f * s.strength * material.footprint_persistence);
+                }
+
                 let f = s.footprint_at(world_x, world_z);
                 if f <= 0.0 {
                     continue;
@@ -374,6 +426,22 @@ pub fn stamp_chunk_tracked(
                     deepest = Some(*index);
                 }
             }
+
+            // ─── 縁の盛り上がり: 押しのけられた素材を量チャネルへ足す ───
+            //   踏み固めチャネルではなく **量** を増やすので、変位・色・法線は
+            //   既存の 1 本の経路（`rebuild_terrain_model_with_cover`）がそのまま扱う。
+            //   足す素材は必ず「そのテクセルに今ある素材」なので、`deposit` の
+            //   異素材置き換え規則（削ってから積む）には決して入らない
+            //   ＝踏むたびに縁が確実に高くなる（上限は量 1.0）。
+            let rim_gain = rim * material.rim_ratio;
+            if rim_gain > 0.0 {
+                let before = field.amount_at(ix, iz);
+                field.deposit(ix, iz, material_index, rim_gain);
+                if field.amount_at(ix, iz) != before {
+                    changed = true;
+                }
+            }
+
             if depth <= 0.0 {
                 continue;
             }

@@ -3774,12 +3774,12 @@ impl App {
         //   （片方だけ保存できると地形と草がずれた状態がディスクに残るため）。
         //   インスタンスが 0 本のチャンクはファイルを **削除** する。残すと
         //   次回ロードで消したはずの草が復活する。
-        let (scatter_written, scatter_removed) = self.save_terrain_scatter(&dir);
+        let (scatter_written, scatter_removed) = self.save_terrain_scatter(&dir, false);
 
         // ── カバー場（.tcover）を .tvox の隣へ保存する（I3.1）──
         //   散布と同じ理由で別ファイル・同時保存。量 0 のチャンクはファイルを **削除** する
         //   （残すと次回ロードで消したはずの雪が復活する）。
-        let (cover_written, cover_removed) = self.save_terrain_cover(&dir);
+        let (cover_written, cover_removed) = self.save_terrain_cover(&dir, false);
 
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("TERRAIN_SAVE_OK:{count}"));
@@ -3789,6 +3789,87 @@ impl App {
                 "[SEED terrain] save: tvox={count} tscatter written={scatter_written} removed={scatter_removed}                  tcover written={cover_written} removed={cover_removed}"
             );
         }
+    }
+
+    /// シーン保存（Ctrl+S）に相乗りして、**変更のあった地形チャンクだけ**を書き出す。
+    ///
+    /// 【なぜシーン保存へ足すのか】
+    ///   地形の実体（密度 .tvox / 散布 .tscatter / カバー .tcover）は .scene の外にあり、
+    ///   従来は「地形を保存」ボタン（TERRAIN_SAVE）を別に押さないとディスクへ落ちなかった。
+    ///   掘った・草を生やした・雪を積もらせた直後に Ctrl+S だけしてエディタを閉じると
+    ///   その作業が丸ごと消える、という取り返しのつかない失われ方をする。
+    ///   「保存」と言われたら地形も保存されるのが唯一素直な挙動である。
+    ///
+    /// 【`handle_terrain_save` と分けてある理由】
+    ///   あちらは *全チャンク*を無条件に書く（ロード時の確実な復元が目的）。
+    ///   シーン保存のたびに全チャンクを書き直すと、地形を一切触っていない
+    ///   セッションでも Ctrl+S が地形の規模に比例して遅くなる。
+    ///   こちらはダーティ集合だけを書き、**ダーティが空なら 1 バイトも触らない**
+    ///   （ディレクトリ作成すら行わない＝完全にゼロコスト）。
+    ///
+    /// 【IPC を送らない理由】
+    ///   呼び出し元（SaveScene ハンドラ）が SAVE_OK / SAVE_ERROR を送る。
+    ///   ここでも TERRAIN_SAVE_OK を送るとエディタの保存完了通知が二重に走るため、
+    ///   結果は戻り値で返し、通知の作法は呼び出し元に委ねる。
+    ///
+    /// 戻り値は「書き出した／削除したファイルの総数」。失敗時は `Err(理由)`。
+    ///
+    /// 【Play 中はカバー場を書かない】
+    ///   Play 中の積算・轍は**揮発**が仕様であり（Stop で Edit の保存状態へ戻る）、
+    ///   Play 中の Ctrl+S でそれをディスクへ焼くと「消えるはずの雪が永久に残る」。
+    ///   スナップショット（`cover_play_snapshot`）が生きている＝Play 中の判定である。
+    ///   `cover_dirty` は消さずに残すので、Stop 後の保存でちゃんと書かれる。
+    pub(super) fn flush_dirty_terrain(&mut self) -> Result<u32, String> {
+        // Play 中のカバー場は揮発なので保存対象から外す。
+        let cover_persistable = self.terrain.cover_play_snapshot.is_none();
+
+        // ─── ダーティが 1 つも無ければ即座に帰る（保存経路を遅くしない）───
+        if self.terrain.dirty.is_empty()
+            && self.terrain.scatter_dirty.is_empty()
+            && (self.terrain.cover_dirty.is_empty() || !cover_persistable)
+        {
+            return Ok(0);
+        }
+
+        let settings = self.terrain.settings.clone();
+        let scene = self.terrain.scene_name.clone();
+        let Some(root) = crate::engine::asset_fs::root() else {
+            return Err("assets root unresolved".to_string());
+        };
+        let dir = root.join("terrain").join(&scene);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return Err(e.to_string());
+        }
+
+        // ─── 密度（.tvox）: ダーティなチャンクだけ ───
+        let mut voxel_written = 0u32;
+        let dirty: Vec<ChunkCoord> = self.terrain.dirty.iter().copied().collect();
+        for coord in dirty {
+            let Some(chunk) = self.terrain.chunks.get(&coord) else { continue };
+            let bytes = tvox::write_chunk(chunk, coord, &settings);
+            let path = dir.join(tvox_file_name(coord));
+            match std::fs::write(&path, &bytes) {
+                Ok(()) => voxel_written += 1,
+                Err(e) => eprintln!("[SEED terrain] save failed: {path:?} err={e}"),
+            }
+        }
+        self.terrain.dirty.clear();
+
+        // ─── 散布（.tscatter）・カバー（.tcover）も同じくダーティ分だけ ───
+        //   片方だけ保存できると地形と草・雪がずれた状態がディスクに残るため、
+        //   `handle_terrain_save` と同じく必ず 3 種そろえて書く。
+        let (scatter_written, scatter_removed) = self.save_terrain_scatter(&dir, true);
+        let (cover_written, cover_removed) =
+            if cover_persistable { self.save_terrain_cover(&dir, true) } else { (0, 0) };
+        let total =
+            voxel_written + scatter_written + scatter_removed + cover_written + cover_removed;
+
+        if *PERF_TERRAIN_LOG_ENABLED {
+            eprintln!(
+                "[SEED terrain] scene-save flush: tvox={voxel_written} tscatter written={scatter_written} removed={scatter_removed} tcover written={cover_written} removed={cover_removed}"
+            );
+        }
+        Ok(total)
     }
 
     /// シーンロード後に、TerrainChunkComponent を持つアクターの .tvox を読み戻して

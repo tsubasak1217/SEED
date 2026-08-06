@@ -604,14 +604,20 @@ fn fs_terrain_gbuffer(
         albedo = albedo * (1.0 - trample_darken);
     }
 
+    //  uv1.y = 踏み固めのキャビティ遮蔽（0..1）。溝の底からは空が見えない、を表す。
+    //  occlusion はアンビエント・DDGI・疑似バウンスにだけ掛かる（直接光には効かない）ので、
+    //  「日向では輪郭がくっきり、日陰では溝だけが沈む」という見え方になる。
+    //  0 のときは occlusion = 1.0＝従来と完全に同一。
+    let trample_cavity = clamp(in.uv1.y, 0.0, 1.0);
+
     let n_len = length(normal);
     let out_n = select(geo_n, normal / n_len, n_len > TRIPLANAR_MIN_SUM);
 
     // ── G-Buffer へ書き込む ──
-    //   occlusion は 1（地形は AO テクスチャを持たない。SSAO は後段のパスが乗せる）。
+    //   occlusion は轍のキャビティのみ（地形は AO テクスチャを持たない。SSAO は後段のパスが乗せる）。
     //   emissive / diffuse_transmission は地形では常に 0。
     var o: TerrainGBufferOut;
-    o.albedo_occ = vec4<f32>(albedo, 1.0);
+    o.albedo_occ = vec4<f32>(albedo, 1.0 - trample_cavity);
     // RT1.w=1: authored 法線フラグ（地形の信頼できる法線を geo_gate に使わせる）。
     o.normal     = vec4<f32>(out_n, TERRAIN_NORMAL_AUTHORED_FLAG);
     // .a = user_data（汎用ユーザーデータ）。地形はレイヤ定義側に相当する概念を持たないため 0。

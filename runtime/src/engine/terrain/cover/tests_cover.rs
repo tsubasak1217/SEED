@@ -575,6 +575,49 @@ fn boundary_sample_is_bit_identical_between_neighbours() {
     }
 }
 
+/// 境界の共有点で、**法線用の前後サンプル**もビット単位で一致すること。
+///
+/// 【何を守っているか】
+///   カバーの盛り上がりから法線を作るには、頂点の周りを ±半テクセルずらして
+///   高さを読む（`sample_extended`）。ここで自チャンクへクランプしてしまうと、
+///   境界上の複製頂点は片側からしか差分を取れず、A のメッシュと B のメッシュで
+///   **違う法線**になって境界に照明の筋が出る。
+///   位置（量）だけでなく勾配まで一致していて初めて継ぎ目が消える。
+#[test]
+fn boundary_gradient_samples_are_bit_identical_between_neighbours() {
+    let a = patterned_field(7);
+    let b = patterned_field(31);
+    let view_a = test_view(|dx, dy, dz| match (dx, dy, dz) {
+        (0, 0, 0) => Some(&a),
+        (1, 0, 0) => Some(&b),
+        _ => None,
+    });
+    let view_b = test_view(|dx, dy, dz| match (dx, dy, dz) {
+        (0, 0, 0) => Some(&b),
+        (-1, 0, 0) => Some(&a),
+        _ => None,
+    });
+
+    // 法線計算のずらし幅（`COVER_NORMAL_STEP_UV` と同じ半テクセル）。
+    let step = 0.5 / COVER_FIELD_RESOLUTION as f32;
+    let steps = 64;
+    for i in 0..=steps {
+        let v = i as f32 / steps as f32;
+        // A から見た境界は u=1.0、B から見た境界は u=0.0。前後どちらへずらしても
+        // 同じワールド位置を指すので、同じ値でなければならない。
+        for offset in [-step, step] {
+            let sa = view_a.sample_extended(1.0 + offset, v, TEST_SURFACE_Y);
+            let sb = view_b.sample_extended(0.0 + offset, v, TEST_SURFACE_Y);
+            assert_eq!(
+                sa.amount.to_bits(),
+                sb.amount.to_bits(),
+                "法線用サンプルもビット単位で一致すること (v={v}, offset={offset})"
+            );
+            assert_eq!(sa.material, sb.material, "法線用サンプルの素材も一致すること (v={v})");
+        }
+    }
+}
+
 /// 角（4 チャンクが集まる 1 点）でも 4 者が同じ値を読むこと。
 ///
 /// 辺の共有（2 チャンク）が合っていても、角で 4 者が食い違えば
@@ -818,6 +861,85 @@ fn circle_stamp_presses_only_around_contact() {
     let mid = COVER_FIELD_RESOLUTION / 2;
     assert!(field.trample_at(mid, mid) > 0.0, "接地点は踏み固められる");
     assert_eq!(field.trample_at(0, 0), 0.0, "半径の外は踏まれない");
+}
+
+/// 素材に `rim_ratio` があるとき、痕の **外周**の量が増える（縁が盛り上がる）こと。
+///
+/// 【何を守っているか】
+///   凹ませるだけの痕は、真上から光が当たると溝の底も周りも同じ向きを向いていて
+///   陰影が出ない。踏んだぶんの素材が縁へ押しのけられて盛り上がることで、
+///   痕の周囲に必ず「傾いた面」ができ、どの角度から照らしても輪郭が立つ。
+///   縁は踏み固めチャネルではなく **量チャネル**へ足す（＝変位・色・法線の
+///   既存経路がそのまま扱う）ので、ここでは量の増加を直接確認する。
+#[test]
+fn rim_raises_amount_around_footprint() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(0.0);
+
+    // 縁が盛れる余地を残すため、量は 0.5（満額 1.0 だと飽和して差が出ない）。
+    let mut field = CoverField::new();
+    for iz in 0..COVER_FIELD_RESOLUTION {
+        for ix in 0..COVER_FIELD_RESOLUTION {
+            field.deposit(ix, iz, MAT_SNOW, 0.5);
+            field.set_base_y(ix, iz, TEST_SURFACE_Y);
+        }
+    }
+
+    // 縁を持つ素材セット（雪の rim_ratio だけを立てる）。
+    let mut materials = test_materials();
+    materials.materials[MAT_SNOW as usize].rim_ratio = 0.6;
+
+    let mid = COVER_FIELD_RESOLUTION / 2;
+    let stamps = vec![circle_stamp([extent * 0.5, TEST_SURFACE_Y, extent * 0.5], 1.0, 1.0)];
+    assert!(stamp_chunk(&mut field, &surface, [0.0; 3], extent, &stamps, &materials));
+
+    // 痕の輪郭付近（中心から 1 テクセル外）は量が増えている＝縁が盛れた。
+    assert!(
+        field.amount_at(mid + 1, mid) > field.amount_at(0, 0),
+        "痕の縁は素の面より量が多いこと（rim={} base={}）",
+        field.amount_at(mid + 1, mid),
+        field.amount_at(0, 0),
+    );
+    // 遠く離れたテクセルは 1 ビットも触られない。
+    assert_eq!(field.amount_at(0, 0), field.amount_at(0, 1), "痕の外は素のまま");
+    assert_eq!(field.trample_at(0, 0), 0.0, "痕の外は踏み固められない");
+}
+
+/// `rim_ratio` が 0 の素材では縁が一切立たないこと（データ駆動の既定が効く保証）。
+///
+/// 既存シーンの素材定義（新フィールドを持たない JSON）は既定 0 で読まれるため、
+/// **勝手に地形が膨らまない**ことをここで固定する。
+#[test]
+fn rim_is_absent_when_material_has_no_rim_ratio() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(0.0);
+    let mut field = CoverField::new();
+    for iz in 0..COVER_FIELD_RESOLUTION {
+        for ix in 0..COVER_FIELD_RESOLUTION {
+            field.deposit(ix, iz, MAT_SNOW, 0.5);
+            field.set_base_y(ix, iz, TEST_SURFACE_Y);
+        }
+    }
+
+    // test_materials() は rim_ratio を指定していない＝既定 0。
+    let materials = test_materials();
+    assert_eq!(materials.get(MAT_SNOW as usize).unwrap().rim_ratio, 0.0);
+
+    // 量は u8 量子化されるので、比較の基準は「積んだ直後の実値」を採る。
+    let base_amount = field.amount_at(0, 0);
+    let mid = COVER_FIELD_RESOLUTION / 2;
+    let stamps = vec![circle_stamp([extent * 0.5, TEST_SURFACE_Y, extent * 0.5], 1.0, 1.0)];
+    stamp_chunk(&mut field, &surface, [0.0; 3], extent, &stamps, &materials);
+
+    for ix in 0..COVER_FIELD_RESOLUTION {
+        assert_eq!(
+            field.amount_at(ix, mid),
+            base_amount,
+            "量チャネルは 1 テクセルも増えないこと (ix={ix})"
+        );
+    }
 }
 
 /// 踏み固めが量を超えると実効の量が 0 になる（＝下地が露出する）こと。

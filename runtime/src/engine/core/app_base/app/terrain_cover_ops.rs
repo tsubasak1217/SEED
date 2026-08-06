@@ -145,6 +145,12 @@ const COVER_STAMP_DEBUG_HOLD_SEC: f32 = 0.25;
 pub struct CoverBaseMesh {
     /// カバー適用前の頂点位置（チャンクローカル座標。頂点列と同順・同長）。
     positions: Arc<Vec<[f32; 3]>>,
+    /// カバー適用前の頂点法線（頂点列と同順・同長）。
+    ///
+    /// 位置とまったく同じ理由で基準値が要る。カバーの高さ場の勾配で法線を摂動する
+    /// （＝足跡の壁に陰影を出す）ため、現在の法線を入力にすると適用のたびに
+    /// 摂動が積み重なって法線が倒れ続けてしまう。
+    normals: Arc<Vec<[f32; 3]>>,
     /// カバー適用前のチャンク平均アルベド（リニア RGB）。
     avg_albedo: [f32; 3],
 }
@@ -799,6 +805,7 @@ impl App {
                 &model.name,
                 material.terrain_palette,
                 &base.positions,
+                &base.normals,
                 base.avg_albedo,
                 &neighborhood,
                 materials,
@@ -881,9 +888,11 @@ impl App {
                 return true;
             }
             let positions: Vec<[f32; 3]> = prim.vertices.iter().map(|v| v.position).collect();
+            let normals: Vec<[f32; 3]> = prim.vertices.iter().map(|v| v.normal).collect();
             let avg = material.avg_albedo;
             CoverBaseMesh {
                 positions: Arc::new(positions),
+                normals: Arc::new(normals),
                 avg_albedo: [avg[0], avg[1], avg[2]],
             }
         };
@@ -1120,12 +1129,24 @@ impl App {
     ///   復活する。`save_terrain_scatter` と同じく「空 = ファイルを消す」を
     ///   保存の不変条件とする。
     ///
+    /// - `only_dirty`: true なら **変更のあったチャンクだけ**を書き出す
+    ///   （シーン保存に相乗りするフラッシュ用。触っていない地形のぶんディスクを
+    ///   叩かないので、Ctrl+S が地形の規模で遅くならない）。
+    ///   false なら全チャンク（「地形を保存」ボタン＝ロード時の確実な復元を優先）。
+    ///
     /// 戻り値は (書き出したファイル数, 削除したファイル数)。
-    pub(super) fn save_terrain_cover(&mut self, dir: &std::path::Path) -> (u32, u32) {
+    pub(super) fn save_terrain_cover(
+        &mut self,
+        dir: &std::path::Path,
+        only_dirty: bool,
+    ) -> (u32, u32) {
         let mut written = 0u32;
         let mut removed = 0u32;
 
         for (&coord, field) in &self.terrain.cover {
+            if only_dirty && !self.terrain.cover_dirty.contains(&coord) {
+                continue;
+            }
             let path = dir.join(tcover_file_name(coord));
             if field.is_empty() {
                 match std::fs::remove_file(&path) {
