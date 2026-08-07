@@ -202,6 +202,21 @@ fn should_finalize_stroke(deferred_empty: bool, stroke_active: bool, idle_elapse
     !deferred_empty && (!stroke_active || idle_elapsed)
 }
 
+/// RT BLAS 再構築待ちから「このフレームで消化する分」を選ぶ純粋関数。
+///
+/// - 座標順（x, y, z）に並べる。`HashSet` の走査順は実行ごとに変わるため、
+///   ソートしないと同じ操作でも捨てられるチャンクの組が毎回変わり、再現性が無くなる。
+/// - `budget` 個で頭打ちにする（0 なら何も返さない）。残りは呼び出し側の集合に残り、
+///   次フレーム以降で消化される。
+///
+/// 副作用を持たない選択ロジックなので、単体テストで決定性と予算を直接検証できるよう関数化する。
+fn select_rt_prune_batch(pending: &HashSet<ChunkCoord>, budget: usize) -> Vec<ChunkCoord> {
+    let mut coords: Vec<ChunkCoord> = pending.iter().copied().collect();
+    coords.sort_by_key(|c| (c.x, c.y, c.z));
+    coords.truncate(budget);
+    coords
+}
+
 /// LOD 距離しきい値（env 上書き反映済み）。`(lod1, lod2)` を返す。
 fn terrain_lod_distances() -> (f32, f32) {
     let parse = |name: &str, default: f32| -> f32 {
@@ -695,9 +710,15 @@ pub struct TerrainState {
     pub cover_dirty: HashSet<ChunkCoord>,
     /// カバー場を頂点へ焼き直す必要があるチャンク集合（apply_pending_cover が消化）。
     pub cover_pending_apply: HashSet<ChunkCoord>,
-    /// カバーの変位で頂点が動いたため **RT 加速構造（BLAS）を作り直すべき**チャンク集合。
+    /// 頂点が動いたため **RT 加速構造（BLAS）を作り直すべき**チャンク集合。
     ///
-    /// 【なぜ必要か（カバー消去で地面が真っ黒になるバグの主因）】
+    /// カバーの焼き直し（`apply_pending_cover`）と、ストローク中の密度ブラシ再メッシュ
+    /// （`remesh_chunks(defer_side_effects=true)`）の**両方**がここへ積む。どちらも
+    /// 「ラスタの地表が動いたのに BLAS が古い形のまま残る」というまったく同じ不整合であり、
+    /// 別々の器で管理する理由が無いため 1 本に統合している。
+    /// 消化するのは `flush_rt_blas_prune`（毎フレーム・件数予算つき）。
+    ///
+    /// 【なぜ必要か（地面が真っ黒になるバグの主因）】
     ///   `apply_cover_to_chunk` は GPU 頂点バッファを直接書き換えるが、
     ///   `RtShadowResources::blas_cache` は `source_path`（＝チャンクの batch_key）を
     ///   キーにした**一度作ったら作り直さない**キャッシュである。よってカバーの変位で
@@ -709,9 +730,16 @@ pub struct TerrainState {
     ///   レイ原点のバイアスは 2.5cm しかないので、なぞった領域は全面遮蔽＝真っ黒になる
     ///   （密度ブラシで穴を掘ったときの黒落ちと同じ機構。`invalidate_geometry_caches` 参照）。
     ///
-    /// 毎回すぐ prune すると降雪シミュレート中に BLAS を作り直し続けてしまうので、
-    /// 「ストローク中でない ＆ 焼き直し待ちが空」＝落ち着いた瞬間にまとめて消化する。
-    pub cover_rt_prune_pending: HashSet<ChunkCoord>,
+    /// 【なぜ「落ち着くまで待つ」のをやめたか】
+    ///   初版は「ストローク中でない ＆ 焼き直し待ちが空」の瞬間にまとめて消化していたが、
+    ///   ①ストロークをなぞっている最中はずっと黒いまま ②消化処理がカバー焼き直しの
+    ///   内側からしか呼ばれず、マウスを離した時点で焼き直し待ちが空だと二度と発火しない、
+    ///   という 2 つの欠陥があった（②が「たまに直る／たいてい直らない」の正体）。
+    ///   現在は毎フレーム件数予算つきで消化する。捨ててからまだ作り直されていない
+    ///   チャンクは TLAS 登録がスキップされる（`rt_shadow::prepare_and_build` は
+    ///   `blas_cache.get()==None` を素通りする）ため、**古い形で誤遮蔽するのではなく
+    ///   一時的に影を落とさない**という安全側へ倒れる。
+    pub rt_blas_prune_pending: HashSet<ChunkCoord>,
     /// チャンク → 地表情報（密度場からの派生キャッシュ。再メッシュで捨てる）。
     pub cover_surface: HashMap<ChunkCoord, crate::engine::terrain::cover::CoverSurface>,
     /// チャンク → カバー適用前のメッシュ基準値（変位の累積を防ぐ。再メッシュで捨てる）。
@@ -853,7 +881,7 @@ impl Default for TerrainState {
             cover: HashMap::new(),
             cover_dirty: HashSet::new(),
             cover_pending_apply: HashSet::new(),
-            cover_rt_prune_pending: HashSet::new(),
+            rt_blas_prune_pending: HashSet::new(),
             cover_surface: HashMap::new(),
             cover_base_mesh: HashMap::new(),
             mask_cache: HashMap::new(),
@@ -2921,22 +2949,14 @@ impl App {
             );
         }
 
-        // ── ③ RT BLAS prune（確定時にまとめて）──
-        //   統合バッチ側の無効化はストローク中も毎フレーム済ませてある（描画に必要なため）。
-        //   ここでは RT 加速構造の BLAS だけを、確定チャンクの batch_key（=source_path）で
-        //   prune する。次フレームに最新頂点で BLAS/TLAS が再構築され RT 影が追従する。
-        let mut keys: Vec<String> = Vec::with_capacity(coords.len());
-        if let Some(scene) = self.scene.as_ref() {
-            for &coord in &coords {
-                if let Some(&slot) = self.terrain.chunk_slot_entity.get(&coord) {
-                    if let Some(mc) = scene.world.get::<ModelComponent>(slot) {
-                        keys.push(mc.source_path.clone());
-                    }
-                }
-            }
-        }
-        // prune_rt=true：RT BLAS のみ prune（統合バッチ削除は毎フレーム済みなので実質再確認）。
-        self.invalidate_geometry_caches(&keys, true);
+        // ── ③ RT BLAS の追従は**ここでは行わない**（意図的な削除。旧実装との差分）──
+        //   旧実装はここで確定チャンクをまとめて prune していたが、それでは
+        //   「なぞっている最中はずっと黒いまま」という症状が残る。
+        //   現在は `remesh_chunks(defer_side_effects=true)` が触れたチャンクを
+        //   `rt_blas_prune_pending` へ積み、`flush_rt_blas_prune` が毎フレーム消化するため、
+        //   ストローク最後のブラシ適用フレームで最終形状の BLAS へ必ず追従済みである。
+        //   ここで prune し直すと、その最新 BLAS を捨てて確定直後に無駄な再構築を
+        //   全チャンクぶん走らせるだけになる（＝二重コスト）。
 
         // 確定済み → 無操作タイムアウトの基準をリセットする。
         self.terrain.last_brush_apply = None;
@@ -3139,9 +3159,18 @@ impl App {
         }
 
         // ── フェーズ C-3: ジオメトリ由来の派生キャッシュを破棄する（下記メソッドの説明を参照） ──
-        //   統合バッチ無効化は描画に必須なので常に行う。RT BLAS prune は付随処理なので、
-        //   ストローク遅延中（defer_side_effects）はスキップし確定時にまとめて行う。
+        //   統合バッチ無効化は描画に必須なので常に行う。
+        //
+        //   RT BLAS prune は、ストローク遅延中（defer_side_effects）はここで直接行わず
+        //   `rt_blas_prune_pending` へ積み、`flush_rt_blas_prune` が毎フレーム予算つきで消化する。
+        //   ここで無条件に prune すると 1 ストロークで触れた全チャンクが毎フレーム捨てられ、
+        //   BLAS 再構築の上限（MAX_BLAS_BUILDS_PER_FRAME）を越えて影が長く抜けるためである。
+        //   **遅らせてはいけない**のが要点で、掘っている最中に BLAS が古い（掘る前の高い）形の
+        //   ままだと、レイ原点が地中に沈んで掘った跡が真っ黒になる。
         self.invalidate_geometry_caches(&swapped_keys, !defer_side_effects);
+        if defer_side_effects {
+            self.terrain.rt_blas_prune_pending.extend(coords.iter().copied());
+        }
         let swap_ms = t_swap.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 
         // ── フェーズ D: 物理稼働中なら地形コライダーを追従再構成する ──
@@ -3723,6 +3752,70 @@ impl App {
                     rt_cell.borrow_mut().prune_source_paths(keys);
                 }
             }
+        }
+    }
+
+    /// 頂点が動いたチャンクの RT 加速構造（BLAS）を、毎フレーム件数予算つきで作り直させる。
+    ///
+    /// 【解決している不具合】
+    ///   ラスタの地表（GPU 頂点バッファ）はカバー焼き込み・密度ブラシ再メッシュで即座に
+    ///   動くが、`RtShadowResources::blas_cache` は `source_path` をキーにした
+    ///   「一度作ったら作り直さない」キャッシュなので、レイトレが辿る地形は古い形のまま残る。
+    ///   地表が**下がった**場合（カバー消去・掘削）、RT 影のレイ原点が古い形状の内側へ沈み、
+    ///   レイ原点バイアス（数センチ）では抜け出せないので全面遮蔽＝真っ黒になる。
+    ///
+    /// 【なぜ毎フレームなのか】
+    ///   ストローク中の黒はストローク終了後に直しても遅い（なぞっている最中がいちばん見える）。
+    ///   よってストローク中かどうかで一切分岐せず、積まれた端から消化する。
+    ///
+    /// 【予算をつける理由】
+    ///   カバー焼き直しは 27 近傍をまとめて焼くため、1 回で 27 チャンクぶん積まれうる。
+    ///   一方 BLAS の再構築は `MAX_BLAS_BUILDS_PER_FRAME` 個／フレームに絞られている
+    ///   （超えると 1 submit の GPU 占有が TDR しきい値を越えてデバイスロストする）。
+    ///   したがって捨てる側も同じ数で頭打ちにするのが正しい。これより多く捨てても
+    ///   再構築が追いつかず、影が抜けている時間が伸びるだけである。
+    ///   予算を超えたぶんは集合に残り、次フレーム以降で消化される。
+    ///
+    /// 【捨ててから作り直されるまでの見え方】
+    ///   `prepare_and_build` の TLAS 詰め直しは `blas_cache.get()==None` のインスタンスを
+    ///   素通りするため、その数フレームは当該チャンクが RT 影のオクルーダから外れる。
+    ///   RT 影がそのチャンクぶんだけ薄くなるが、古い形で誤遮蔽して真っ黒になるより
+    ///   はるかに軽微であり、意図した安全側の縮退である。
+    pub(super) fn flush_rt_blas_prune(&mut self) {
+        if self.terrain.rt_blas_prune_pending.is_empty() {
+            return;
+        }
+        // ── ① このフレームで消化する分を選ぶ（決定性のため座標順・予算で頭打ち）──
+        let batch = select_rt_prune_batch(
+            &self.terrain.rt_blas_prune_pending,
+            crate::engine::core::renderer::rt_shadow::MAX_BLAS_BUILDS_PER_FRAME,
+        );
+        for coord in &batch {
+            self.terrain.rt_blas_prune_pending.remove(coord);
+        }
+
+        // ── ② チャンクスロットの `source_path`（= batch_key = BlasKey.source_path）を集める ──
+        let mut keys: Vec<String> = Vec::with_capacity(batch.len());
+        if let Some(scene) = self.scene.as_ref() {
+            for &coord in &batch {
+                if let Some(&slot) = self.terrain.chunk_slot_entity.get(&coord) {
+                    if let Some(mc) = scene.world.get::<ModelComponent>(slot) {
+                        keys.push(mc.source_path.clone());
+                    }
+                }
+            }
+        }
+        // prune_rt=true: RT BLAS を捨てる。次フレームに最新頂点で作り直され、
+        // `new_blas_built=true` により TLAS も必ず組み直される。
+        let t = Instant::now();
+        self.invalidate_geometry_caches(&keys, true);
+        if *PERF_TERRAIN_LOG_ENABLED && !keys.is_empty() {
+            eprintln!(
+                "[PERF terrain] rt_blas_prune chunks={} remain={} take={:.2}ms",
+                keys.len(),
+                self.terrain.rt_blas_prune_pending.len(),
+                t.elapsed().as_secs_f64() * MILLIS_PER_SEC
+            );
         }
     }
 
@@ -4971,6 +5064,103 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ─── RT BLAS 再構築待ちの消化バッチ選択（純粋ロジック）のテスト ────────────
+
+    /// 予算より多く溜まっていても、1 回で取り出すのは予算ぶんだけ。
+    /// かつ座標順（x, y, z）で決定的に並ぶ（HashSet の走査順に依存しない）。
+    #[test]
+    fn rt_prune_batch_is_budgeted_and_deterministic() {
+        // 座標順が挿入順と一致しないように、わざと逆順・飛び番で入れる。
+        let pending: HashSet<ChunkCoord> = [
+            ChunkCoord::new(2, 0, 0),
+            ChunkCoord::new(0, 0, 1),
+            ChunkCoord::new(0, 1, 0),
+            ChunkCoord::new(0, 0, 0),
+            ChunkCoord::new(1, 0, 0),
+        ]
+        .into_iter()
+        .collect();
+
+        let batch = select_rt_prune_batch(&pending, 3);
+        assert_eq!(batch.len(), 3, "予算 3 で頭打ちになるはず");
+        assert_eq!(
+            batch,
+            vec![
+                ChunkCoord::new(0, 0, 0),
+                ChunkCoord::new(0, 0, 1),
+                ChunkCoord::new(0, 1, 0),
+            ],
+            "(x, y, z) の昇順で選ばれるはず"
+        );
+
+        // 何度呼んでも同じ結果（HashSet の走査順が変わっても揺れない）。
+        for _ in 0..8 {
+            assert_eq!(select_rt_prune_batch(&pending, 3), batch);
+        }
+    }
+
+    /// 予算が集合サイズ以上なら全部取り出す。予算 0 なら 1 つも取り出さない。
+    #[test]
+    fn rt_prune_batch_edge_budgets() {
+        let pending: HashSet<ChunkCoord> =
+            [ChunkCoord::new(0, 0, 0), ChunkCoord::new(1, 0, 0)].into_iter().collect();
+
+        assert_eq!(select_rt_prune_batch(&pending, 0).len(), 0, "予算 0 では何も選ばない");
+        assert_eq!(select_rt_prune_batch(&pending, 2).len(), 2);
+        assert_eq!(select_rt_prune_batch(&pending, 99).len(), 2, "予算超過でも集合サイズ止まり");
+        assert_eq!(select_rt_prune_batch(&HashSet::new(), 8).len(), 0, "空集合は空バッチ");
+    }
+
+    /// 消化予算は BLAS の 1 フレーム再構築上限と一致していること。
+    ///
+    /// 予算のほうが大きいと、再構築が追いつかないぶんだけ「BLAS が捨てられて
+    /// TLAS から抜けている（＝影が落ちない）」チャンクが増え続ける。
+    /// 根拠を 2 か所に書かないための単一情報源の担保である。
+    #[test]
+    fn rt_prune_budget_matches_blas_build_limit() {
+        assert_eq!(
+            crate::engine::core::renderer::rt_shadow::MAX_BLAS_BUILDS_PER_FRAME,
+            8,
+            "BLAS 再構築上限が変わったら、地形側の prune 予算の妥当性を再検討すること"
+        );
+    }
+
+    // ─── 契約テスト: RT BLAS 追従の呼び出し位置 ────────────────────────────────
+
+    /// **回帰テスト（黒落ちが「たまにしか直らない」不具合の固定）**
+    ///
+    /// 旧実装は消化処理を `apply_pending_cover` の内側から呼んでいた。あのメソッドは
+    /// 「焼き直し待ちが空なら先頭で return」するため、マウスを離した時点で待ちが空だと
+    /// 消化が二度と発火せず、BLAS が古い形のまま残って地面が黒いままになっていた
+    /// （待ちが残っていたときだけ偶然直る＝「たまに解消する」の正体）。
+    ///
+    /// よって消化 `flush_rt_blas_prune` は
+    ///   ・毎フレーム無条件に走る `frame_renderer.rs` から呼ばれること
+    ///   ・条件付きで早期 return するカバー系（`terrain_cover_ops.rs`）から呼ばれないこと
+    /// を契約として固定する。改行コードに依存しないよう `lines()` で走査する。
+    #[test]
+    fn rt_blas_prune_is_flushed_from_frame_loop_only() {
+        const FLUSH_FN: &str = "flush_rt_blas_prune";
+        let frame_src = include_str!("frame_renderer.rs");
+        let cover_src = include_str!("terrain_cover_ops.rs");
+
+        // 呼び出し行だけを数える（定義・doc コメントを拾わないよう `self.` 付きで見る）。
+        let calls_in = |src: &str| -> usize {
+            src.lines().filter(|l| l.contains(&format!("self.{FLUSH_FN}("))).count()
+        };
+
+        assert_eq!(
+            calls_in(frame_src),
+            1,
+            "frame_renderer.rs から毎フレームちょうど 1 回呼ばれること"
+        );
+        assert_eq!(
+            calls_in(cover_src),
+            0,
+            "早期 return するカバー処理の内側から呼んではいけない（旧実装の不具合）"
+        );
     }
 
     /// マウスアップ済み（stroke_active=false）かつ溜まっていれば、無操作でなくても確定する。
