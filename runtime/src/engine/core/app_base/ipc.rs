@@ -143,6 +143,16 @@ pub enum IpcCommand {
     ///   layer: 塗る対象レイヤ番号（0 起点。layers.json の並び順に対応）
     /// 密度は変えず、レイヤ重み（スプラット）だけを押し上げる。
     TerrainPaint { layer: u32, screen_x: f32, screen_y: f32, radius: f32, strength: f32 },
+    /// 地形ペイント系ブラシの形状マスク画像を設定・解除する。
+    ///
+    /// ワイヤ形式: `TERRAIN_BRUSH_MASK:{path}`（`path` が空文字なら解除）
+    ///   path: グレースケール画像のパス（`assets://` 仮想パス・絶対パスのどちらも可）。
+    ///
+    /// **パス専用の状態設定コマンド**である。既存の `TERRAIN_PAINT` /
+    /// `TERRAIN_COVER_BRUSH` はカンマ区切りであり、カンマを含みうる
+    /// Windows のファイルパスを混ぜられないため、別コマンドに分けてある。
+    /// コロン以降はすべて path（カンマも含む）として扱う。
+    TerrainBrushMask { path: String },
     /// ボクセル地形の全チャンクを .tvox としてアセット配下へ保存する。
     /// ワイヤ形式: `TERRAIN_SAVE`（引数なし）
     TerrainSave,
@@ -1096,6 +1106,14 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
         s if s.starts_with("TERRAIN_COVER_STEP:") => {
             parse_nf::<1>(&s["TERRAIN_COVER_STEP:".len()..])
                 .map(|fs| IpcCommand::TerrainCoverStep { seconds: fs[0] })
+        }
+        // ブラシ形状マスク: "path"（コロン以降すべて）。
+        // **数値ヘルパを通さない**のが要点である。Windows のパスはカンマを含みうるので、
+        // 分割せずそのまま渡す。空文字は「解除」を意味する正当な値なので弾かない。
+        s if s.starts_with("TERRAIN_BRUSH_MASK:") => {
+            Some(IpcCommand::TerrainBrushMask {
+                path: s["TERRAIN_BRUSH_MASK:".len()..].to_string(),
+            })
         }
         // 地形レイヤペイント: "layer,screen_x,screen_y,radius,strength"。
         // 先頭 layer は u32、残り 4 つは f32（TERRAIN_BRUSH と同じ並び）。
@@ -2681,6 +2699,33 @@ mod tests {
         match parse_terrain_command("TERRAIN_PAINT:3,10,20,2,1") {
             Some(IpcCommand::TerrainPaint { layer, .. }) => assert_eq!(layer, 3),
             _ => panic!("TerrainPaint を期待した"),
+        }
+    }
+
+    /// ブラシ形状マスクの設定コマンドが、**パスを一切分割せずに**受け取れること。
+    ///
+    /// 本コマンドを別立てにした理由そのものを固定するテストである。
+    /// Windows のパスはカンマ・コロン・空白を含みうるので、
+    /// カンマ区切りのブラシコマンドへ相乗りさせるとここが壊れる。
+    #[test]
+    fn brush_mask_parses_path_verbatim() {
+        // ─── カンマ・コロンを含む絶対パス（分割してはいけない）───
+        let raw = r"C:\assets\brush,01: test.png";
+        match parse_terrain_command(&format!("TERRAIN_BRUSH_MASK:{raw}")) {
+            Some(IpcCommand::TerrainBrushMask { path }) => assert_eq!(path, raw),
+            _ => panic!("TerrainBrushMask を期待した"),
+        }
+        // ─── 仮想パス ───
+        match parse_terrain_command("TERRAIN_BRUSH_MASK:assets://terrain/brush.png") {
+            Some(IpcCommand::TerrainBrushMask { path }) => {
+                assert_eq!(path, "assets://terrain/brush.png");
+            }
+            _ => panic!("TerrainBrushMask を期待した"),
+        }
+        // ─── 空文字は「解除」を意味する正当な値（None にしない）───
+        match parse_terrain_command("TERRAIN_BRUSH_MASK:") {
+            Some(IpcCommand::TerrainBrushMask { path }) => assert!(path.is_empty()),
+            _ => panic!("解除コマンドも TerrainBrushMask として受け取ること"),
         }
     }
 

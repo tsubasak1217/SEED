@@ -695,12 +695,47 @@ pub struct TerrainState {
     pub cover_dirty: HashSet<ChunkCoord>,
     /// カバー場を頂点へ焼き直す必要があるチャンク集合（apply_pending_cover が消化）。
     pub cover_pending_apply: HashSet<ChunkCoord>,
+    /// カバーの変位で頂点が動いたため **RT 加速構造（BLAS）を作り直すべき**チャンク集合。
+    ///
+    /// 【なぜ必要か（カバー消去で地面が真っ黒になるバグの主因）】
+    ///   `apply_cover_to_chunk` は GPU 頂点バッファを直接書き換えるが、
+    ///   `RtShadowResources::blas_cache` は `source_path`（＝チャンクの batch_key）を
+    ///   キーにした**一度作ったら作り直さない**キャッシュである。よってカバーの変位で
+    ///   ラスタの地表が動いても、レイトレが辿る地形は BLAS を作った時点の形のままになる。
+    ///   フレームの実行順は「カバー焼き込み（更新）→ BLAS 構築（描画）」なので、
+    ///   カバーの載ったシーンをロードすると **BLAS は「雪が積もった高さ」で作られる**。
+    ///   その状態で消しゴムを掛けるとラスタの地表だけが素の高さ（既定の雪で 22cm 下）へ戻り、
+    ///   RT 影のレイ原点が「まだ在ることになっている雪」の**内側**に沈む。
+    ///   レイ原点のバイアスは 2.5cm しかないので、なぞった領域は全面遮蔽＝真っ黒になる
+    ///   （密度ブラシで穴を掘ったときの黒落ちと同じ機構。`invalidate_geometry_caches` 参照）。
+    ///
+    /// 毎回すぐ prune すると降雪シミュレート中に BLAS を作り直し続けてしまうので、
+    /// 「ストローク中でない ＆ 焼き直し待ちが空」＝落ち着いた瞬間にまとめて消化する。
+    pub cover_rt_prune_pending: HashSet<ChunkCoord>,
     /// チャンク → 地表情報（密度場からの派生キャッシュ。再メッシュで捨てる）。
     pub cover_surface: HashMap<ChunkCoord, crate::engine::terrain::cover::CoverSurface>,
     /// チャンク → カバー適用前のメッシュ基準値（変位の累積を防ぐ。再メッシュで捨てる）。
     pub cover_base_mesh: HashMap<ChunkCoord, super::terrain_cover_ops::CoverBaseMesh>,
     /// マスク画像パス → デコード済みグレースケール（読み込み失敗も「無効」として記録する）。
-    pub cover_mask_cache: HashMap<String, crate::engine::terrain::cover::CoverMask>,
+    ///
+    /// 【カバー専用ではなく地形共通のキャッシュである点に注意】
+    ///   カバーエミッタの `TextureMask` 範囲・轍スタンプの `Texture` 形状に加え、
+    ///   地形ペイント系ブラシの形状マスク（`brush_mask_path`）も同じ器を使う。
+    ///   デコード結果（`CoverMask`）は幅・高さ・グレー値だけを持つ汎用データであり、
+    ///   同じ画像を 2 つの用途で二重にデコードする理由が無いためである。
+    pub mask_cache: HashMap<String, crate::engine::terrain::cover::CoverMask>,
+    /// 地形ペイント系ブラシに適用する形状マスク画像のパス（空文字＝未指定）。
+    ///
+    /// 【ここ（TerrainState）に持たせる理由】
+    ///   半径・強度と同じ「ツールの現在設定」であり、ブラシ 1 発ごとに IPC で
+    ///   運ぶ種類の情報ではない（Windows のファイルパスはカンマを含みうるため、
+    ///   カンマ区切りのブラシコマンドへ足すこともできない）。
+    ///   エディタは `TERRAIN_BRUSH_MASK:{path}` で設定・解除だけを送る。
+    ///
+    /// 対象は **レイヤペイントブラシ（TERRAIN_PAINT）とカバーブラシ
+    /// （TERRAIN_COVER_BRUSH の塗り／消去）** の 2 つ。密度ブラシは対象外
+    /// （形状マスクは「面に絵を貼る」道具であり、3D の掘削とは相性が悪い）。
+    pub brush_mask_path: String,
     /// Edit の連続シミュレート（インスペクタのシミュレートボタン）が動作中か。
     pub cover_sim_running: bool,
     /// 頂点焼き直しの間引きタイマー（秒）。
@@ -818,9 +853,12 @@ impl Default for TerrainState {
             cover: HashMap::new(),
             cover_dirty: HashSet::new(),
             cover_pending_apply: HashSet::new(),
+            cover_rt_prune_pending: HashSet::new(),
             cover_surface: HashMap::new(),
             cover_base_mesh: HashMap::new(),
-            cover_mask_cache: HashMap::new(),
+            mask_cache: HashMap::new(),
+            // ブラシ形状マスクは既定で未指定＝従来どおりの円形フォールオフ。
+            brush_mask_path: String::new(),
             cover_sim_running: false,
             cover_apply_timer: 0.0,
             cover_play_snapshot: None,
@@ -1653,9 +1691,17 @@ impl App {
         //   TERRAIN_INIT の引数で渡されたチャンク構成（枚数・分割数・ボクセルサイズ）は
         //   この呼び出しの直前に self.terrain.settings へ反映済みであり、既定値へ
         //   戻すとその指定が丸ごと無視されるため、退避して復元する。
+        //
+        //   **ブラシ形状マスクのパスも同じ理由で持ち越す**。あれは地形データではなく
+        //   「今エディタで選んでいる道具の形」であり、半径・強度スライダーと同じ性質を持つ。
+        //   地形を作り直したらブラシの形だけ黙って円へ戻る、という挙動は説明がつかない。
+        //   デコード済みキャッシュ（mask_cache）のほうは捨ててよい（次のストロークで
+        //   `ensure_terrain_brush_mask` が読み直す）。
         let settings = self.terrain.settings.clone();
+        let brush_mask_path = std::mem::take(&mut self.terrain.brush_mask_path);
         self.terrain = TerrainState::default();
         self.terrain.settings = settings.clone();
+        self.terrain.brush_mask_path = brush_mask_path;
         let scene_name = self.scene.as_ref().map(|s| s.name.clone()).unwrap_or_default();
         self.terrain.scene_name = scene_name.clone();
 
@@ -1930,6 +1976,9 @@ impl App {
         if self.draw_ctx.is_none() || self.terrain.chunks.is_empty() {
             return;
         }
+        // ブラシ形状マスクを（指定されていれば）デコード済みにしておく。
+        // 未指定なら 1 命令も走らず、この先の挙動は従来とまったく同じになる。
+        self.ensure_terrain_brush_mask();
         let settings = self.terrain.settings.clone();
         let brush = SphereBrush { center, radius, strength };
 
@@ -1953,11 +2002,17 @@ impl App {
         // ── ② 球ブラシをスプラット場へ適用 ──
         let affected: Vec<ChunkCoord> = {
             let terrain = &mut self.terrain;
+            // 形状マスクの参照と `chunks` の可変借用は **別フィールド**なので同時に持てる
+            // （`resolve_brush_mask` がフィールド単位の引数を取るのはこのため）。
+            let mask = super::terrain_brush_mask_ops::resolve_brush_mask(
+                &terrain.mask_cache,
+                &terrain.brush_mask_path,
+            );
             let mut view = FieldView {
                 settings: &terrain.settings,
                 chunks: &mut terrain.chunks,
             };
-            terrain::paint::apply_paint(&mut view, &brush, layer as u32, BRUSH_DT)
+            terrain::paint::apply_paint_with_mask(&mut view, &brush, layer as u32, BRUSH_DT, mask)
         };
         if affected.is_empty() {
             return;
@@ -3649,7 +3704,7 @@ impl App {
     ///   常に破棄するが、RT BLAS（②）はストローク中は遅延したい。ストローク遅延経路は
     ///   `prune_rt=false` で呼んで①だけを毎フレーム行い、確定時に `prune_rt=true` で②を追従させる。
     ///   ブラシ以外の全経路は `prune_rt=true`（従来どおり両方破棄）。
-    fn invalidate_geometry_caches(&mut self, keys: &[String], prune_rt: bool) {
+    pub(super) fn invalidate_geometry_caches(&mut self, keys: &[String], prune_rt: bool) {
         if keys.is_empty() {
             return;
         }
@@ -3934,7 +3989,10 @@ impl App {
         // `TerrainState` はここで作り直されるためカウンタを持たせられず、App 側に置いてある。
         self.terrain_edit_version += 1;
         // 地形状態をリセットしてシーン名を取り込む。
+        // ブラシ形状マスクのパスは「道具の設定」なので持ち越す（handle_terrain_init と同じ理由）。
+        let brush_mask_path = std::mem::take(&mut self.terrain.brush_mask_path);
         self.terrain = TerrainState::default();
+        self.terrain.brush_mask_path = brush_mask_path;
         let scene_name = match self.scene.as_ref() { Some(s) => s.name.clone(), None => return };
         self.terrain.scene_name = scene_name;
 

@@ -30,9 +30,11 @@
 //    真下の洞窟の床に積もった雪まで消してしまう。
 // ============================================================
 
+use super::emit::CoverMask;
 use super::field::{
     slope_scale, texel_center_uv, CoverField, CoverSurface, COVER_FIELD_RESOLUTION,
 };
+use crate::engine::terrain::brush_mask::brush_shape_factor;
 
 // ─── 定数（マジックナンバー禁止）─────────────────────────────────────────────
 
@@ -127,20 +129,35 @@ impl CoverBrushSpec {
     ///
     /// 落ち方は轍スタンプの円形状（`CoverStampSpec::footprint_at` の `Circle`）と
     /// まったく同じ式にしてある。カバーへ作用する道具の縁の出方を揃えるためである。
+    ///
+    /// 形状マスクを使う場合は `falloff_at_masked` を呼ぶこと（本関数はマスク無しと等価）。
     pub fn falloff_at(&self, world_x: f32, world_z: f32) -> f32 {
-        let r = self.radius;
-        if !(r > 0.0) {
-            return 0.0;
-        }
+        self.falloff_at_masked(world_x, world_z, None)
+    }
+
+    /// 形状マスクを考慮した効き具合（0..1）。
+    ///
+    /// `mask` が `None`（未指定）または無効（読み込み失敗）なら、
+    /// 従来どおりの円形 smoothstep へ縮退する（`brush_mask.rs` の規約）。
+    /// マスクが有効なら、ブラシ球の XZ バウンディング正方形へ貼った画像の値を返す。
+    pub fn falloff_at_masked(
+        &self,
+        world_x: f32,
+        world_z: f32,
+        mask: Option<&CoverMask>,
+    ) -> f32 {
+        // 円形フォールオフに使う距離は従来どおり **XZ 平面上の距離**
+        // （カバーは面の性質なので、Y 方向の距離は Y 照合が別途担当する）。
         let dx = world_x - self.center[0];
         let dz = world_z - self.center[2];
         let d = (dx * dx + dz * dz).sqrt();
-        if d >= r {
-            return 0.0;
-        }
-        let t = 1.0 - d / r;
-        // 両端で傾き 0 になる smoothstep（縁に硬い線が出ない）。
-        t * t * (3.0 - 2.0 * t)
+        brush_shape_factor(
+            mask,
+            [self.center[0], self.center[2]],
+            self.radius,
+            [world_x, world_z],
+            d,
+        )
     }
 }
 
@@ -166,6 +183,28 @@ pub fn brush_chunk(
     chunk_origin: [f32; 3],
     chunk_extent: f32,
     spec: &CoverBrushSpec,
+) -> bool {
+    brush_chunk_with_mask(field, surface, chunk_origin, chunk_extent, spec, None)
+}
+
+/// 形状マスク付きで 1 チャンク分のカバー場へブラシを 1 発当てる。
+///
+/// `mask` 以外の引数と戻り値の意味は `brush_chunk` と同一。
+/// `mask` が `None`（未指定）または無効（読み込み失敗）なら、
+/// **`brush_chunk` とビット単位で同じ結果**になる（`brush_mask.rs` の縮退規約）。
+///
+/// 【マスクを `CoverBrushSpec` へ持たせず引数で渡す理由】
+///   エンジン層はマスクを `TerrainState` のキャッシュ（`HashMap`）から借りる。
+///   `CoverBrushSpec` に参照を持たせるとライフタイム引数が全呼び出し側へ波及し、
+///   逆に所有させるとブラシ 1 発ごとに画像を複製することになる。
+///   「仕様（数値）」と「素材（画像）」を分けて渡せば、どちらも避けられる。
+pub fn brush_chunk_with_mask(
+    field: &mut CoverField,
+    surface: &CoverSurface,
+    chunk_origin: [f32; 3],
+    chunk_extent: f32,
+    spec: &CoverBrushSpec,
+    mask: Option<&CoverMask>,
 ) -> bool {
     // ─── 早期棄却: 効かないブラシ・関係ないチャンク ───
     if !(chunk_extent > 0.0) || !(spec.strength > 0.0) || !(spec.radius > 0.0) {
@@ -198,7 +237,9 @@ pub fn brush_chunk(
             let (u, v) = texel_center_uv(ix, iz);
             let world_x = chunk_origin[0] + u * chunk_extent;
             let world_z = chunk_origin[2] + v * chunk_extent;
-            let falloff = spec.falloff_at(world_x, world_z);
+            // 形状マスクがあればマスク値、無ければ従来の円形フォールオフ。
+            // ブラシ球の XZ 正方形（一辺 = 2 × 半径）の外はマスク側が 0 を返す。
+            let falloff = spec.falloff_at_masked(world_x, world_z, mask);
             if falloff <= 0.0 {
                 continue;
             }

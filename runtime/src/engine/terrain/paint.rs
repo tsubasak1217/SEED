@@ -27,8 +27,10 @@
 
 use std::collections::HashSet;
 
-use super::brush::{SphereBrush, falloff};
+use super::brush::SphereBrush;
+use super::brush_mask::{brush_mask_is_active, brush_shape_factor};
 use super::chunk_coord::ChunkCoord;
+use super::cover::CoverMask;
 use super::layers::{BlendSlots, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS};
 use super::settings::TerrainSettings;
 
@@ -123,6 +125,29 @@ pub fn apply_paint(
     layer_index: u32,
     dt: f32,
 ) -> Vec<ChunkCoord> {
+    apply_paint_with_mask(field, brush, layer_index, dt, None)
+}
+
+/// 形状マスク付きのレイヤペイント。
+///
+/// `mask` 以外の引数と戻り値の意味は `apply_paint` と同一。
+/// `mask` が `None`（未指定）または無効（読み込み失敗）なら、
+/// **`apply_paint` とビット単位で同じ結果**になる（`brush_mask.rs` の縮退規約）。
+///
+/// 【マスク指定時にサンプルの棄却範囲が変わる点（唯一の挙動差）】
+///   マスク無しは「球の中（3D 距離 ≤ 半径）」だけを塗る。
+///   マスクありは画像をブラシ球の **XZ バウンディング正方形**（一辺 = 2 × 半径）へ
+///   貼るため、球の外側にある正方形の四隅も塗れなければならない。
+///   そこで XZ は正方形（マスクの UV 範囲外判定に任せる）、Y だけを半径で切る。
+///   Y を切らないと、列挙している立方体 AABB の上下端まで塗ってしまい、
+///   「地表を撫でたら真上・真下のサンプルまで塗られる」ことになる。
+pub fn apply_paint_with_mask(
+    field: &mut impl PaintField,
+    brush: &SphereBrush,
+    layer_index: u32,
+    dt: f32,
+    mask: Option<&CoverMask>,
+) -> Vec<ChunkCoord> {
     // ─── レイヤ番号の検証（不正なら無操作）───
     //   レイヤ定義の実数はここでは分からないため、定義上限で弾く。
     if layer_index as usize >= TERRAIN_MAX_LAYERS {
@@ -143,6 +168,8 @@ pub fn apply_paint(
     let (gy0, gy1) = (min_g(1), max_g(1));
     let (gz0, gz1) = (min_g(2), max_g(2));
     let r2 = brush.radius * brush.radius;
+    // マスクが「形として効く」状態か（棄却範囲を円／正方形で切り替えるため先に判定する）。
+    let mask_active = brush_mask_is_active(mask);
 
     // ─── フェーズ 1：新スプラット値を計算する ───
     let mut writes: Vec<([i32; 3], BlendSlots, f32)> = Vec::new();
@@ -155,12 +182,25 @@ pub fn apply_paint(
                 let dy = wp[1] - brush.center[1];
                 let dz = wp[2] - brush.center[2];
                 let dist2 = dx * dx + dy * dy + dz * dz;
-                if dist2 > r2 {
-                    // 球の外 → スキップ。
+                if mask_active {
+                    // マスクは XZ 正方形いっぱいに貼るので、XZ の棄却は行わない
+                    // （UV 範囲外は `CoverMask::sample` が 0 を返して自然に落ちる）。
+                    // Y だけは半径で切る（上下へ無制限に塗らないため）。
+                    if dy.abs() > brush.radius {
+                        continue;
+                    }
+                } else if dist2 > r2 {
+                    // 球の外 → スキップ（マスク未指定時の従来挙動）。
                     continue;
                 }
-                // 密度ブラシと同じ減衰カーブ（中心 1 → 半径 0）。
-                let f = falloff(dist2.sqrt(), brush.radius);
+                // マスクがあればマスク値、無ければ密度ブラシと同じ減衰カーブ（中心 1 → 半径 0）。
+                let f = brush_shape_factor(
+                    mask,
+                    [brush.center[0], brush.center[2]],
+                    brush.radius,
+                    [wp[0], wp[2]],
+                    dist2.sqrt(),
+                );
                 let delta = brush.strength * f * dt;
                 if delta <= PAINT_MIN_AMOUNT {
                     continue;

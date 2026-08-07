@@ -214,16 +214,12 @@
                 </Grid>
             </TabItem>
 
-            <!-- ── ブラシタブ: 将来拡張用の器 ─────────────────────────────
-                 ブラシテクスチャ（ハイトマップ状のスタンプ）・ブラシプリセットなどを
-                 ここへ足す想定。中身が空でもタブを置いておくことで、追加時に
-                 ウィンドウ構造そのものを組み替えずに済む。 -->
+            <!-- ── ブラシタブ: ブラシ共通設定（形状マスク）───────────────
+                 中身は TerrainSettingsWindow.Brush.cs が動的に組み立てる
+                 （ファイル参照行はインスペクタと共通の FileRefBuilder を使うため、
+                  XAML では器だけを用意して C# 側から差し込む）。 -->
             <TabItem Header="ブラシ">
-                <StackPanel Margin="12">
-                    <TextBlock Text="ブラシ設定" Style="{StaticResource SectionHeaderStyle}"/>
-                    <TextBlock Foreground="#888888" TextWrapping="Wrap"
-                               Text="（未実装）ブラシテクスチャ（スタンプ画像）やブラシプリセットをここへ追加する。 現在の半径・強度はシーンビュー上部の地形ツールバーで調整する。"/>
-                </StackPanel>
+                <StackPanel x:Name="BrushTabPanel" Margin="12"/>
             </TabItem>
         </TabControl>
 

@@ -104,7 +104,20 @@ public partial class TerrainSettingsWindow : Window
     /// <param name="assetsRoot">assets ディレクトリの絶対パス。</param>
     /// <param name="sendToRuntime">ランタイムへ IPC 行を送る処理。</param>
     /// <param name="onSaved">保存完了時に呼ばれる処理（レイヤ一覧の変更をエディタ UI へ伝える）。</param>
-    public TerrainSettingsWindow(string assetsRoot, Action<string> sendToRuntime, Action onSaved)
+    /// <param name="brushMaskPath">
+    /// 現在のブラシ形状マスク（未指定なら null）。ウィンドウは開閉のたびに作り直されるため、
+    /// 値の実体は MainWindow が保持し、表示用にここへ渡す。
+    /// </param>
+    /// <param name="onBrushMaskChanged">
+    /// ブラシ形状マスクが変わったときの通知（解除時は null）。
+    /// 受け手（MainWindow）が値を保持し `TERRAIN_BRUSH_MASK` をランタイムへ送る。
+    /// </param>
+    public TerrainSettingsWindow(
+        string assetsRoot,
+        Action<string> sendToRuntime,
+        Action onSaved,
+        string? brushMaskPath = null,
+        Action<string?>? onBrushMaskChanged = null)
     {
         InitializeComponent();
         _assetsRoot    = assetsRoot;
@@ -120,6 +133,9 @@ public partial class TerrainSettingsWindow : Window
         // 散布タブ（props.json）。レイヤ一覧を参照するため、_doc の読み込み後に初期化する
         // （レイヤ条件のレイヤ名候補を layers.json から作るため）。
         InitScatterTab();
+
+        // ブラシタブ（共通のブラシ設定）。他タブのデータには依存しないので順序は問わない。
+        InitBrushTab(brushMaskPath, onBrushMaskChanged);
 
         if (_doc.WasMissingOrInvalid)
         {

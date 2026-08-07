@@ -375,6 +375,10 @@ impl App {
                     // 地形レイヤペイント（密度は変えずスプラット重みだけを押し上げる）。
                     self.handle_terrain_paint(layer as usize, screen_x, screen_y, radius, strength);
                 }
+                IpcCommand::TerrainBrushMask { path } => {
+                    // 地形ペイント系ブラシの形状マスクを設定・解除する（空文字で解除）。
+                    self.handle_terrain_brush_mask(path);
+                }
                 IpcCommand::TerrainSave => {
                     // ボクセル地形の全チャンクを .tvox として保存する。
                     self.handle_terrain_save();

@@ -9,7 +9,9 @@
 // ============================================================
 
 use super::accumulate::accumulate_chunk;
-use super::brush::{brush_chunk as brush_cover_chunk, CoverBrushMode, CoverBrushSpec};
+use super::brush::{
+    brush_chunk as brush_cover_chunk, brush_chunk_with_mask, CoverBrushMode, CoverBrushSpec,
+};
 use super::emit::{CoverEmitRange, CoverEmitSpec, CoverMask};
 use super::field::{
     cover_y_match_tolerance, slope_scale, CoverField, CoverNeighborhood, CoverSurface,
@@ -1490,11 +1492,17 @@ fn cover_brush_erase_only_inside_radius() {
     );
 }
 
-/// 消し切ったテクセルは量 0・素材なしになり、場全体が空になれば `is_empty` が真になること。
+/// 消し切ったテクセルは量 0・轍 0 になり、場全体が空になれば `is_empty` が真になること。
 ///
 /// 「量 0 のチャンクは .tcover を削除する」保存規約（§3.4）が成立する前提を固定する。
+///
+/// 【素材添字は消えないことも同時に固定する】
+///   素材添字は頂点属性（uv0.y）として線形補間されるため、消した所だけ添字が
+///   飛ぶと、消した領域の縁で「塗っていない別素材」が解決されて黒い縁が出る
+///   （カバー消去で地面が黒くなるバグの一因）。量 0 のテクセルは読み取り側が
+///   必ず「量 0」として扱うので、添字を残しても描画には一切寄与しない。
 #[test]
-fn cover_brush_erase_clears_material_and_empties_field() {
+fn cover_brush_erase_empties_field_but_keeps_material_index() {
     let settings = TerrainSettings::default();
     let extent = settings.chunk_extent();
     let surface = flat_surface(TEST_SURFACE_Y);
@@ -1521,8 +1529,8 @@ fn cover_brush_erase_clears_material_and_empties_field() {
             assert_eq!(field.amount_at(ix, iz), 0.0);
             assert_eq!(field.trample_at(ix, iz), 0.0, "轍も一緒に消えること");
             assert_eq!(
-                field.material_at(ix, iz), COVER_MATERIAL_NONE,
-                "消え切ったテクセルの素材は空へ戻ること"
+                field.material_at(ix, iz), MAT_SNOW,
+                "消え切っても素材添字は保つこと（補間で縁が黒くならないための不変条件）"
             );
         }
     }
@@ -1663,4 +1671,216 @@ fn cover_brush_is_noop_for_degenerate_spec() {
     assert!(!brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &erase_brush(center, 0.0, 1.0)));
     assert!(!brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &erase_brush(center, f32::NAN, 1.0)));
     assert_eq!(field.raw_amount(), before.as_slice(), "無作用のブラシは場を変えないこと");
+}
+
+// ============================================================
+//  8. 黒落ち回帰（カバー消去で地面が真っ黒になったバグ）
+// ============================================================
+
+/// 消しゴムでできた「量が 0 へ落ちる帯」の全域で、素材添字がぐらつかないこと。
+///
+/// 【何を守っているか（バグの再現条件）】
+///   素材添字は頂点属性（uv0.y）としてラスタライザが**線形補間**する。
+///   消した領域だけ添字が別の値（旧実装では「素材なし」＝添字 0）へ飛ぶと、
+///   帯の途中で「塗っていない素材」が最近傍として解決される。
+///   たとえば添字 3（泥）を塗った所を消すと、帯の中で添字 2（濡れ・ほぼ黒）が
+///   選ばれ、その色が量に比例して地表へ混ざって黒い縁になる。
+///
+///   ここでは「量 > 0 の点で読める素材添字は、塗った素材ただ 1 つ」を固定する。
+///   これが成り立てば、どの 2 点を補間しても添字は動かない。
+#[test]
+fn cover_erase_keeps_single_material_index_across_falloff() {
+    // 添字 3 まで使う素材セット（実アセットと同じ 4 素材構成を模す）。
+    const MAT_MUD: u8 = 3;
+
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let mut field = CoverField::new();
+
+    // ① チャンク全体へ泥（添字 3）を敷く。
+    let center = [extent * 0.5, TEST_SURFACE_Y, extent * 0.5];
+    let paint = paint_brush(center, extent * 2.0, 1.0, MAT_MUD, 1.0);
+    for _ in 0..32 {
+        if !brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &paint) {
+            break;
+        }
+    }
+    // ② 中央を消しゴムで抜く（縁に「量が 0 へ落ちる帯」ができる）。
+    let erase = erase_brush(center, extent * 0.25, 1.0);
+    for _ in 0..32 {
+        if !brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &erase) {
+            break;
+        }
+    }
+
+    // ③ 帯を含むチャンク全域を細かく読み、素材添字を検査する。
+    let view = CoverNeighborhood::isolated(&field);
+    let steps = COVER_FIELD_RESOLUTION * 4;
+    let mut saw_partial = false;
+    for iz in 0..=steps {
+        for ix in 0..=steps {
+            let u = ix as f32 / steps as f32;
+            let v = iz as f32 / steps as f32;
+            let s = view.sample(u, v, TEST_SURFACE_Y);
+            if s.amount > 0.0 {
+                assert_eq!(
+                    s.material, MAT_MUD,
+                    "量のある点で塗っていない素材が選ばれた (u={u}, v={v})"
+                );
+                if s.amount < 1.0 {
+                    saw_partial = true;
+                }
+            }
+            // 頂点へ焼く添字は、量が 0 の点でも近傍と同じ値でなければならない
+            // （ここがぐらつくと補間で黒縁になる）。チャンク内はすべて泥である。
+            assert_eq!(
+                s.blend_material, MAT_MUD,
+                "補間用の素材添字が近傍と食い違った (u={u}, v={v})"
+            );
+        }
+    }
+    assert!(saw_partial, "消しゴムの縁に『量が 0 へ落ちる帯』が実在すること");
+}
+
+/// 「素材なし」は素材セットから決して引けないこと（＝寄与ゼロが構造的に保証されること）。
+///
+/// 旧実装では `COVER_MATERIAL_NONE == 0` が 1 番目の実素材と衝突しており、
+/// 素材なしのはずのテクセルが 1 番目の素材の踏み固め係数
+/// （`trample_darkening` / `trample_cavity`）を引いて地表を暗くしていた。
+#[test]
+fn cover_material_none_never_resolves_to_a_real_material() {
+    let set = test_materials();
+    assert!(
+        set.get(COVER_MATERIAL_NONE as usize).is_none(),
+        "素材なしの添字が実在の素材として解決されてはならない"
+    );
+    // 上限いっぱいに定義しても衝突しないこと（添字の定義域と番兵の分離）。
+    let full = CoverMaterialSet {
+        materials: (0..crate::engine::terrain::cover::TERRAIN_MAX_COVER_MATERIALS)
+            .map(|i| CoverMaterial { id: format!("m{i}"), ..CoverMaterial::default() })
+            .collect(),
+    };
+    assert!(full.get(COVER_MATERIAL_NONE as usize).is_none());
+}
+
+// ============================================================
+//  10. カバーブラシの形状マスク（brush_mask.rs との統合）
+//
+//  本節が固定する契約:
+//    ・マスク未指定は従来どおり（`brush_chunk` と `brush_chunk_with_mask(None)` が同一結果）
+//    ・全黒マスクはカバー場を 1 ビットも変えない
+//    ・全白マスクは正方形の内側（球の四隅を含む）を一様に塗る
+//    ・読み込み失敗マスクは「効かない」ではなく円形フォールオフへ縮退する
+// ============================================================
+
+/// 単色マスクを作る（4×4 の一様グレースケール）。
+fn uniform_brush_mask(value: u8) -> CoverMask {
+    const SIZE: usize = 4;
+    CoverMask { width: SIZE, height: SIZE, pixels: vec![value; SIZE * SIZE] }
+}
+
+/// マスク未指定（`None`）が、マスク導入前の `brush_chunk` とビット単位で同じ結果になること。
+///
+/// 既にカバーブラシを使って作ったシーンの編集結果を、この機能追加で変えないための固定。
+#[test]
+fn cover_brush_without_mask_matches_legacy_bit_exact() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let center = [extent * 0.5, TEST_SURFACE_Y, extent * 0.5];
+    let spec = erase_brush(center, 3.0, 0.7);
+
+    let mut legacy = snowy_field_at(TEST_SURFACE_Y);
+    let mut masked = snowy_field_at(TEST_SURFACE_Y);
+    let a = brush_cover_chunk(&mut legacy, &surface, [0.0, 0.0, 0.0], extent, &spec);
+    let b = brush_chunk_with_mask(&mut masked, &surface, [0.0, 0.0, 0.0], extent, &spec, None);
+
+    assert_eq!(a, b, "変化フラグが一致すること");
+    assert!(legacy == masked, "マスク未指定はマスク導入前と 1 ビットも変わらないこと");
+}
+
+/// 全黒マスクではカバーブラシが何も変えないこと（変化フラグも false）。
+#[test]
+fn cover_brush_black_mask_changes_nothing() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let center = [extent * 0.5, TEST_SURFACE_Y, extent * 0.5];
+    let spec = erase_brush(center, 3.0, 1.0);
+    let mask = uniform_brush_mask(0);
+
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+    let before = field.clone();
+    let changed =
+        brush_chunk_with_mask(&mut field, &surface, [0.0, 0.0, 0.0], extent, &spec, Some(&mask));
+
+    assert!(!changed, "全黒マスクでは変化しないこと");
+    assert!(field == before, "全黒マスクではカバー場が 1 ビットも変わらないこと");
+}
+
+/// 全白マスクは正方形の内側を一様に消し、正方形の外は 1 ビットも変えないこと。
+///
+/// 円形フォールオフでは縁が滑らかに減衰するのに対し、全白マスクでは
+/// 正方形の内側すべてが**同じ量**だけ効く（＝白 = フル強度）ことを固定する。
+#[test]
+fn cover_brush_white_mask_erases_square_uniformly() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    // 正方形がチャンク中央の一部だけを覆うよう、半径はチャンクの 1/4 に取る。
+    let radius = extent * 0.25;
+    let center = [extent * 0.5, TEST_SURFACE_Y, extent * 0.5];
+    let spec = erase_brush(center, radius, 1.0);
+    let mask = uniform_brush_mask(255);
+
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+    assert!(brush_chunk_with_mask(
+        &mut field, &surface, [0.0, 0.0, 0.0], extent, &spec, Some(&mask)
+    ));
+
+    // テクセル中心のワールド XZ を求めながら、正方形の内外で期待値を変えて検証する。
+    let mut inside_amounts: Vec<f32> = Vec::new();
+    for iz in 0..COVER_FIELD_RESOLUTION {
+        for ix in 0..COVER_FIELD_RESOLUTION {
+            let (u, v) = crate::engine::terrain::cover::texel_center_uv(ix, iz);
+            let wx = u * extent;
+            let wz = v * extent;
+            let inside = (wx - center[0]).abs() <= radius && (wz - center[2]).abs() <= radius;
+            let amount = field.amount_at(ix, iz);
+            if inside {
+                inside_amounts.push(amount);
+            } else {
+                assert_eq!(amount, 1.0, "正方形の外は 1 ビットも変えないこと (ix={ix} iz={iz})");
+            }
+        }
+    }
+    assert!(!inside_amounts.is_empty(), "正方形の内側にテクセルが 1 つも無い");
+    // 内側はすべて同じ量（一様）であること。
+    let first = inside_amounts[0];
+    assert!(first < 1.0, "正方形の内側は削れていること");
+    for a in &inside_amounts {
+        assert_eq!(*a, first, "全白マスクの内側は一様であること");
+    }
+}
+
+/// 読み込み失敗マスク（`CoverMask::empty()`）は「効かない」ではなく円形へ縮退すること。
+#[test]
+fn cover_brush_invalid_mask_degrades_to_circular() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let center = [extent * 0.5, TEST_SURFACE_Y, extent * 0.5];
+    let spec = erase_brush(center, 3.0, 0.7);
+    let broken = CoverMask::empty();
+
+    let mut circular = snowy_field_at(TEST_SURFACE_Y);
+    let mut degraded = snowy_field_at(TEST_SURFACE_Y);
+    brush_chunk_with_mask(&mut circular, &surface, [0.0, 0.0, 0.0], extent, &spec, None);
+    let changed = brush_chunk_with_mask(
+        &mut degraded, &surface, [0.0, 0.0, 0.0], extent, &spec, Some(&broken),
+    );
+
+    assert!(changed, "読み込み失敗マスクでもブラシは効き続けること（無反応にしない）");
+    assert!(degraded == circular, "縮退結果はマスク未指定と 1 ビットも変わらないこと");
 }

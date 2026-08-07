@@ -98,7 +98,7 @@ impl App {
             "mask_path" => {
                 c.mask_path = value.to_string();
                 // マスク画像を差し替えたので、次の積算でロードし直させる。
-                self.terrain.cover_mask_cache.clear();
+                self.terrain.mask_cache.clear();
                 self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
                 if let Some(ipc) = &self.ipc {
                     ipc.send("SCENE_MODIFIED");
