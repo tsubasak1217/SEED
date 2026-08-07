@@ -384,6 +384,42 @@ serde/JSON ではない。地形コマンドは以下の 3 つ。エディタ側
 - エディタは terrain モード中の Ctrl+Z / Ctrl+Y を（通常の `UNDO`/`REDO` ではなく）`TERRAIN_UNDO`/`TERRAIN_REDO`
   として送り、左ボタン解放とモード離脱で `TERRAIN_STROKE_END` を送る。
 
+### 9.5 ストローク中の付随処理と RT 加速構造（BLAS）の追従
+
+ドラッグ中（`stroke_active`）は、描画メッシュ（`remesh_chunks`）だけを毎フレーム更新し、
+重い付随処理は `stroke_deferred_chunks` へ溜めて確定時（マウスアップ or 無操作タイムアウト
+`STROKE_IDLE_FLUSH_MS`）に一括処理する（`finalize_stroke_deferred`）。
+
+| 付随処理 | ストローク中 | 理由 |
+|---|---|---|
+| 物理コライダー再構築 | **遅延** | 同期 QBVH 構築がフレーム時間を支配する |
+| 散布の再接地 | **遅延** | 全インスタンスの柱探索が重い |
+| 統合バッチ無効化 | 毎フレーム | 描画に必須 |
+| **RT BLAS 再構築** | **毎フレーム（予算つき）** | 遅延すると**掘った跡が真っ黒になる**（下記） |
+
+**RT BLAS だけは遅延できない。** BLAS キャッシュ（`rt_shadow.rs`。キー = `source_path`
+＝チャンクの `batch_key`）は「一度作ったら作り直さない」ため、掘削・カバー消去でラスタの地表が
+下がっても RT が辿る地形は古い（高い）ままになる。すると RT 影のレイ原点が古い形状の**内側**へ
+沈み、レイ原点バイアス（数センチ）では抜け出せず全面遮蔽＝**真っ黒**になる。
+
+そこで頂点が動いたチャンクを `TerrainState::rt_blas_prune_pending` へ積み、
+`terrain_ops.rs::flush_rt_blas_prune` が**毎フレーム**（`frame_renderer` の
+カバー焼き直し直後・描画ブロックより前）消化する。積む側は 2 経路:
+
+- `remesh_chunks(defer_side_effects=true)` … 密度ブラシ（掘る/盛る）のストローク中再メッシュ
+- `apply_pending_cover` … カバー場の頂点焼き直し（詳細は **docs/cover_field.md §6-2**）
+
+消化は 1 フレーム `rt_shadow::MAX_BLAS_BUILDS_PER_FRAME`（= 8）チャンクまでの予算つきで、
+これは BLAS の 1 フレーム再構築上限と同じ値である（多く捨てても再構築が追いつかない）。
+捨ててからまだ作り直されていないチャンクは TLAS 詰め直しで素通りされる
+（`blas_cache.get()==None`）ため、**古い形で誤遮蔽するのではなく数フレーム影を落とさない**
+という安全側へ縮退する。
+
+**計測**：`SEED_PERF_LOG` を設定すると
+`[PERF terrain] rt_blas_prune chunks=… remain=… take=…ms` が出る（`chunks` = そのフレームで
+捨てた数、`remain` = 予算を超えて次フレームへ繰り越した数）。BLAS 構築そのものの件数は
+`[SEED RT] BLAS 構築: terrain://…` 行と `BLAS 分割ビルド: … 後続フレームへ繰り越し` 行で追える。
+
 ### 9.6 チャンク構成の設定（TERRAIN_INIT / TERRAIN_HEIGHTMAP のパラメータ）
 
 **背景**：`voxel_size`(0.5m) / `chunk_cells`(32) / 初期平地の枚数(4×4) はすべて `settings.rs` の

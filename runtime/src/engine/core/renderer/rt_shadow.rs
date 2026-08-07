@@ -95,7 +95,12 @@ pub const MAX_RT_INSTANCES: u32 = 4096;
 /// 8 個 ≒ 地形 1.4 万三角形 ×8 の BLAS ビルド／フレーム。72 チャンクでも 9 フレーム
 ///（60fps で約 0.15 秒）で消化でき、1 submit あたりの GPU 占有を TDR しきい値より十分
 /// 低く保てる大きさとして選んだ。
-const MAX_BLAS_BUILDS_PER_FRAME: usize = 8;
+///
+/// 【公開している理由】地形側（`terrain_ops::flush_rt_blas_prune`）が「1 フレームに
+///   何チャンクぶんの BLAS を捨ててよいか」の予算をこの値と一致させるため。
+///   ここより多く捨てても再構築が追いつかず、影が抜けている時間が伸びるだけで得が無い。
+///   予算の根拠を 2 か所に書かないための単一情報源である。
+pub const MAX_BLAS_BUILDS_PER_FRAME: usize = 8;
 
 /// メッシュ頂点 1 個のバイトストライド（Vertex 構造体サイズ）。
 /// 位置は各頂点の先頭（offset 0）の Float32x3。BLAS はこのストライドで位置のみを読む。
