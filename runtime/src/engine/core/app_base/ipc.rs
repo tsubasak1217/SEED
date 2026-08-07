@@ -178,6 +178,24 @@ pub enum IpcCommand {
     /// 全チャンクのカバー場を消去する。
     /// ワイヤ形式: `TERRAIN_COVER_CLEAR`（引数なし）
     TerrainCoverClear,
+    /// カバー場を球ブラシで手編集する（地形編集モードの「カバー」ツール）。
+    ///
+    /// ワイヤ形式:
+    /// `TERRAIN_COVER_BRUSH:{material_id},{screen_x},{screen_y},{radius},{strength},{target_amount},{erase}`
+    ///   material_id  : cover_materials.json の素材 ID（消去時は無視される）。
+    ///   target_amount: 塗りの目標量（0..1。消去時は無視される）。
+    ///   erase        : 0=塗る / 1=消す。
+    /// 着弾点は密度ブラシと同じレイマーチで求める（プレビュー球と必ず一致させるため）。
+    /// Undo は密度ブラシと同じ terrain 専用スタック（`TERRAIN_STROKE_END` で確定）。
+    TerrainCoverBrush {
+        material_id: String,
+        screen_x: f32,
+        screen_y: f32,
+        radius: f32,
+        strength: f32,
+        target_amount: f32,
+        erase: bool,
+    },
     /// `CoverEmitterComponent`（I3.1）のフィールドを更新する（cover_emitter_ops.rs が処理）。
     ///
     /// key: range_kind / extents_x / extents_y / extents_z / fade / mask_path /
@@ -891,6 +909,10 @@ const TERRAIN_HEIGHTMAP_FIELDS: usize = TERRAIN_CHUNK_CONFIG_FIELDS + 2;
 /// （prop_id, screen_x, screen_y, radius, density, erase）。
 const TERRAIN_SCATTER_BRUSH_FIELDS: usize = 6;
 
+/// `TERRAIN_COVER_BRUSH:` の引数個数
+/// （material_id, screen_x, screen_y, radius, strength, target_amount, erase）。
+const TERRAIN_COVER_BRUSH_FIELDS: usize = 7;
+
 /// ハイトマップ**新形式**をパースする。
 /// `"chunks_x,chunks_z,chunk_cells,voxel_size,height_scale,path"`（path は末尾・カンマ可）。
 ///
@@ -1046,6 +1068,26 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
                 density:  parts[4].trim().parse::<f32>().ok()?,
                 // erase は 0/1。0 以外はすべて「消去」として扱う（寛容側）。
                 erase:    parts[5].trim().parse::<u32>().ok()? != 0,
+            })
+        }
+        // カバーブラシ: "material_id,screen_x,screen_y,radius,strength,target_amount,erase"。
+        // 先頭が文字列 ID なので数値ヘルパは使えず、固定 7 フィールドで切り出す
+        // （散布ブラシとまったく同じ流儀。ID にカンマは使えない規約）。
+        s if s.starts_with("TERRAIN_COVER_BRUSH:") => {
+            let rest = &s["TERRAIN_COVER_BRUSH:".len()..];
+            let parts: Vec<&str> = rest.split(',').collect();
+            if parts.len() != TERRAIN_COVER_BRUSH_FIELDS {
+                return None;
+            }
+            Some(IpcCommand::TerrainCoverBrush {
+                material_id:   parts[0].to_string(),
+                screen_x:      parts[1].trim().parse::<f32>().ok()?,
+                screen_y:      parts[2].trim().parse::<f32>().ok()?,
+                radius:        parts[3].trim().parse::<f32>().ok()?,
+                strength:      parts[4].trim().parse::<f32>().ok()?,
+                target_amount: parts[5].trim().parse::<f32>().ok()?,
+                // erase は 0/1。0 以外はすべて「消去」として扱う（寛容側）。
+                erase:         parts[6].trim().parse::<u32>().ok()? != 0,
             })
         }
         // カバー場の即時ステップ: "seconds"（f32×1）。
@@ -2719,6 +2761,40 @@ mod tests {
         assert!(parse_terrain_command("TERRAIN_SCATTER_BRUSH:g,1,2,3,4,0,9").is_none());
         assert!(parse_terrain_command("TERRAIN_SCATTER_BRUSH:g,x,2,3,4,0").is_none());
         assert!(parse_terrain_command("TERRAIN_SCATTER_BRUSH:g,1,2,3,4,x").is_none());
+    }
+
+    /// カバーブラシコマンドが 7 フィールドへ正しく分解されること。
+    #[test]
+    fn cover_brush_parses() {
+        match parse_terrain_command("TERRAIN_COVER_BRUSH:snow,100,200,3.5,0.5,0.8,0") {
+            Some(IpcCommand::TerrainCoverBrush {
+                material_id, screen_x, screen_y, radius, strength, target_amount, erase,
+            }) => {
+                assert_eq!(material_id, "snow");
+                assert_eq!(screen_x, 100.0);
+                assert_eq!(screen_y, 200.0);
+                assert_eq!(radius, 3.5);
+                assert_eq!(strength, 0.5);
+                assert_eq!(target_amount, 0.8);
+                assert!(!erase, "erase=0 は塗り");
+            }
+            _ => panic!("TerrainCoverBrush を期待した"),
+        }
+
+        // ─── erase=1 は消しゴム（素材 ID は無視されるので空文字も通る）───
+        match parse_terrain_command("TERRAIN_COVER_BRUSH:,1,2,3,0.5,0,1") {
+            Some(IpcCommand::TerrainCoverBrush { material_id, erase, .. }) => {
+                assert_eq!(material_id, "");
+                assert!(erase);
+            }
+            _ => panic!("erase=1 を期待した"),
+        }
+
+        // ─── 不正形: フィールド不足／過多／数値でない ───
+        assert!(parse_terrain_command("TERRAIN_COVER_BRUSH:snow,1,2,3,0.5,0").is_none());
+        assert!(parse_terrain_command("TERRAIN_COVER_BRUSH:snow,1,2,3,0.5,0,0,9").is_none());
+        assert!(parse_terrain_command("TERRAIN_COVER_BRUSH:snow,x,2,3,0.5,0,0").is_none());
+        assert!(parse_terrain_command("TERRAIN_COVER_BRUSH:snow,1,2,3,0.5,0,x").is_none());
     }
 
     /// 旧形式のハイトマップはカンマを含むパスでも右端のカンマで分割されること。

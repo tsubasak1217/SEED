@@ -416,6 +416,15 @@ impl App {
                 IpcCommand::TerrainCoverClear => {
                     self.handle_terrain_cover_clear();
                 }
+                IpcCommand::TerrainCoverBrush {
+                    material_id, screen_x, screen_y, radius, strength, target_amount, erase,
+                } => {
+                    // カバー場の手編集（消しゴム／塗り）。Undo は密度ブラシと同じ
+                    // terrain 専用スタックで、TERRAIN_STROKE_END が 1 ストロークを確定する。
+                    self.handle_terrain_cover_brush(
+                        material_id, screen_x, screen_y, radius, strength, target_amount, erase,
+                    );
+                }
                 IpcCommand::TerrainReloadLayers => {
                     // layers.json を読み直し、レイヤテクスチャと全チャンクを作り直す
                     // （エディタの地形設定ウィンドウでレイヤを保存した直後の即時反映）。

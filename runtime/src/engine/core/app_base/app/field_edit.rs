@@ -324,6 +324,9 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::TerrainHeightmap { .. }
         | IpcCommand::TerrainScatterRules { .. }
         | IpcCommand::TerrainScatterBrush { .. }
+        // カバーブラシは terrain 専用 Undo スタック（ストローク単位）の管轄であり、
+        // メイン履歴のフィールド編集としては扱わない（二重記録を避ける）。
+        | IpcCommand::TerrainCoverBrush { .. }
         // 【シーン／プロジェクト単位の設定】インスペクタではなく設定パネルの管轄。
         //
         // このうち**シェーダまわりだけ**は Undo 対象にしてある（下の SceneShading 腕）。

@@ -46,6 +46,8 @@ use crate::engine::terrain::{
 // 散布プロップ（Terrain T3）。状態の器だけをここで持ち、処理は terrain_scatter_ops.rs にある。
 use crate::engine::core::renderer::grass_gbuffer::GrassInstanceBuffer;
 use crate::engine::terrain::scatter::{ScatterInstance, TerrainPropSet};
+// カバーブラシ（地形編集モード）の Undo スナップショットが `TerrainEdit` に同居するため。
+use crate::engine::terrain::cover::CoverField;
 // kind=Model 散布プロップの GPU リソース型（定義・処理とも terrain_scatter_ops.rs）。
 use super::terrain_scatter_ops::ScatterModelResource;
 
@@ -485,16 +487,32 @@ const TERRAIN_UNDO_MAX: usize = 32;
 /// 触ったチャンクのみを before/after として保持する（全チャンクをスナップショットすると
 /// 1 チャンクあたり 33³×4byte ≒ 143KB と重いため、ストロークで実際に触れたチャンクに限定する）。
 ///
-/// 【このスタックが扱うのは密度・ペイントだけ】
-///   地表カバー場（積雪・落ち葉。I3.1）はここには載らない。カバーは
-///   `CoverEmitterComponent` のインスペクタから操作するコンポーネント由来の編集であり、
-///   通常の Ctrl+Z（`UNDO`）で戻せなければならないため、メイン履歴
-///   （`undo.rs::CoverFieldEditCommand`）の管轄である。管轄の線引きは docs/cover_field.md §5。
+/// 【カバー場の扱い — 「操作した場所で戻る」で線引きする】
+///   地表カバー場（積雪・落ち葉。I3.1）のうち、**地形編集モードのカバーブラシ**で
+///   手編集したぶんはここに載る（`cover_before` / `cover_after`）。
+///   一方、**エミッタのシミュレート・全消去**（入口は `CoverEmitterComponent` の
+///   インスペクタ）はメイン履歴（`undo.rs::CoverFieldEditCommand`）の管轄である。
+///
+///   分ける基準は「どこで操作したか」である。エディタが `TERRAIN_UNDO` を送るのは
+///   地形編集モード中の Ctrl+Z だけ（`MainWindow.Input.cs`）なので、
+///   地形編集モードの道具で行った編集を地形スタックへ、
+///   インスペクタで行った編集をメイン履歴へ載せると、
+///   ユーザーから見て「操作したのと同じ場所で 1 回ずつ戻る」ようになる。
+///   管轄表は docs/cover_field.md §5。
 pub struct TerrainEdit {
     /// ストローク開始時点のチャンク状態（chunk coord -> スナップショット）。
     pub before: HashMap<ChunkCoord, ChunkSnapshot>,
     /// ストローク終了時点のチャンク状態（chunk coord -> スナップショット）。
     pub after: HashMap<ChunkCoord, ChunkSnapshot>,
+    /// ストローク開始時点のカバー場（カバーブラシで**実際に変化した**チャンクのみ）。
+    ///
+    /// 密度スナップショット（143KB/チャンク）と別マップにしてあるのは、
+    /// カバー場が 2KB しかないためである。雪を消しただけのストロークで
+    /// 密度まで控えるのは純粋な無駄であり、逆も同じ。
+    /// 密度ブラシだけのストロークではこのマップは空になる。
+    pub cover_before: HashMap<ChunkCoord, CoverField>,
+    /// ストローク終了時点のカバー場（`cover_before` と同じキー集合）。
+    pub cover_after: HashMap<ChunkCoord, CoverField>,
 }
 
 /// undo/redo 用の 1 チャンク分スナップショット（密度＋スプラット）。
@@ -689,6 +707,16 @@ pub struct TerrainState {
     pub cover_apply_timer: f32,
     /// Play 開始時に退避した Edit のカバー場（Stop で書き戻す＝Play 中の積算は揮発）。
     pub cover_play_snapshot: Option<super::terrain_cover_ops::CoverFieldMap>,
+    /// 現在のブラシストロークで**カバーブラシが触れた**チャンクの「編集前」カバー場。
+    ///
+    /// 密度側の `stroke_before` と対を成し、`handle_terrain_stroke_end` で
+    /// `TerrainEdit::cover_before` として消費される（＝1 ストローク = 1 Undo 単位）。
+    /// カバー場が無かったチャンクは空の `CoverField` を控える
+    /// （「場が無い」と「全テクセル量 0」は保存規約の上で等価であるため）。
+    ///
+    /// エミッタのシミュレート用セッション（`cover_undo_session_before`）とは
+    /// **別物**である。あちらはメイン履歴、こちらは terrain 専用スタックへ載る。
+    pub cover_stroke_before: HashMap<ChunkCoord, CoverField>,
     /// カバー場編集セッションの開始時スナップショット（None = セッション未開始）。
     ///
     /// 「1 操作 = 1 Undo 単位」にするための控えである。連続シミュレートは
@@ -796,6 +824,7 @@ impl Default for TerrainState {
             cover_sim_running: false,
             cover_apply_timer: 0.0,
             cover_play_snapshot: None,
+            cover_stroke_before: HashMap::new(),
             cover_undo_session_before: None,
             cover_stamp_tracks: HashMap::new(),
             cover_stamp_debug: HashMap::new(),
@@ -3654,7 +3683,13 @@ impl App {
     /// ストローク中に溜めたコライダー再構築・散布再接地・RT BLAS prune が一括適用される。
     /// このメソッド自身は付随処理を起動しない（flush が最終形状で 1 回だけ行うのが正しい）。
     pub(super) fn handle_terrain_stroke_end(&mut self) {
-        if !self.terrain.stroke_before.is_empty() {
+        // ── カバーブラシのぶんを先に取り出す（実際に変化したチャンクだけが残る）──
+        //   密度・ペイントとカバーは同じストロークに混ざりうる（ツールは排他だが、
+        //   ツールを切り替えても左ボタンを離すまでは 1 ストロークである）。
+        //   どちらか一方でも変化があれば 1 つの Undo エントリとして積む。
+        let (cover_before, cover_after) = self.take_cover_stroke_snapshots();
+
+        if !self.terrain.stroke_before.is_empty() || !cover_before.is_empty() {
             // before を丸ごと取り出す（以後 stroke_before は空に戻る）。
             let before = std::mem::take(&mut self.terrain.stroke_before);
 
@@ -3666,7 +3701,7 @@ impl App {
                 }
             }
 
-            self.terrain.undo_stack.push(TerrainEdit { before, after });
+            self.terrain.undo_stack.push(TerrainEdit { before, after, cover_before, cover_after });
             // 上限を超えたら最古のエントリを破棄する（無制限にメモリを食わせない）。
             if self.terrain.undo_stack.len() > TERRAIN_UNDO_MAX {
                 self.terrain.undo_stack.remove(0);
@@ -3681,9 +3716,10 @@ impl App {
     /// terrain 専用 undo（TERRAIN_UNDO）。undo_stack から直近のエントリを取り出し、
     /// 各チャンクの密度を before（編集前）へ書き戻して再メッシュ化し、redo_stack へ積む。
     ///
-    /// **カバー場は戻さない**。カバーはメイン履歴（`UNDO`）の管轄であり、地形編集モード中の
-    /// Ctrl+Z でも通常の Ctrl+Z でも「積雪を戻すのは常にメイン履歴」で一貫させる
-    /// （両方に載せると 1 回の操作を 2 回戻せてしまう）。
+    /// **戻すカバー場はカバーブラシで手編集したぶんだけ**である。エミッタの
+    /// シミュレート・全消去はメイン履歴（`UNDO`）の管轄であり、そちらはここでは戻らない
+    /// （両方に載せると 1 回の操作を 2 回戻せてしまう）。線引きは `TerrainEdit` の
+    /// コメントと docs/cover_field.md §5 を参照。
     pub(super) fn handle_terrain_undo(&mut self) {
         let Some(edit) = self.terrain.undo_stack.pop() else {
             return;
@@ -3708,8 +3744,17 @@ impl App {
         //   取り残される」という明確に壊れた見た目になるからである。
         //   再接地により「草は常に今の地面に載っている」という不変条件は保たれる。
         self.restick_scatter_for_chunks(&touched);
+        // ── カバーブラシで手編集したぶんを書き戻す ──
+        //   書き戻し・.tcover のダーティ化・頂点の焼き直し予約は
+        //   メイン履歴の undo と同じ 1 本の経路（`restore_cover_snapshots`）を通す。
+        //   カバー場は密度を一切変えないので、ここで再メッシュは要らない。
+        self.restore_cover_snapshots(&edit.cover_before);
         // 密度が戻った＝ショアフィールドの焼き直し対象（Phase W1.5）。
-        self.terrain_edit_version += 1;
+        // カバーだけのエントリ（カバーブラシのストローク）では密度が 1 ビットも
+        // 変わっていないので、焼き直しを要求しない（無駄な再計算を誘発しない）。
+        if !touched.is_empty() {
+            self.terrain_edit_version += 1;
+        }
         self.terrain.redo_stack.push(edit);
     }
 
@@ -3729,8 +3774,12 @@ impl App {
         self.remesh_chunks(&touched, false, false);
         // undo と同じ理由で再接地する（散布自体は redo の対象外）。
         self.restick_scatter_for_chunks(&touched);
-        // undo と同じ理由（Phase W1.5）。
-        self.terrain_edit_version += 1;
+        // カバーブラシのぶんを「編集後」へ進める（undo の対称）。
+        self.restore_cover_snapshots(&edit.cover_after);
+        // undo と同じ理由（Phase W1.5。カバーだけのエントリでは密度が変わらない）。
+        if !touched.is_empty() {
+            self.terrain_edit_version += 1;
+        }
         self.terrain.undo_stack.push(edit);
     }
 

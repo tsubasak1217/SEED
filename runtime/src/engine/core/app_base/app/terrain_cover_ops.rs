@@ -578,7 +578,8 @@ impl App {
     ///   Y 照合の導入で、境界面上の頂点は**上下段のカバー場も候補として読む**ように
     ///   なった。下段の雪が変わったのに上段のメッシュを焼き直さないと、
     ///   境界面上の複製頂点が世代違いの値を読んで筋が出る（横方向とまったく同じ理屈）。
-    fn queue_cover_apply(&mut self, coord: ChunkCoord) {
+    /// （カバーブラシ `terrain_cover_brush_ops.rs` も同じ経路を通すため `pub(super)`。）
+    pub(super) fn queue_cover_apply(&mut self, coord: ChunkCoord) {
         self.terrain.cover_pending_apply.insert(coord);
         for dy in -1..=1i32 {
             for dz in -1..=1i32 {
@@ -600,7 +601,8 @@ impl App {
     /// 地表情報を **新しく作った**ときは、そのチャンクのカバー場の基準 Y も
     /// 併せて同期する（I3.2）。基準 Y は「面のワールド高さ」であり、
     /// 地形が変われば当然変わる派生値なので、面情報と同じ寿命で扱う。
-    fn ensure_cover_surface(&mut self, coord: ChunkCoord) {
+    /// （カバーブラシ `terrain_cover_brush_ops.rs` からも呼ぶため `pub(super)`。）
+    pub(super) fn ensure_cover_surface(&mut self, coord: ChunkCoord) {
         if self.terrain.cover_surface.contains_key(&coord) {
             return;
         }

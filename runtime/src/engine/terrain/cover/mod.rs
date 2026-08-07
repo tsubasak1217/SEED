@@ -13,6 +13,7 @@
 //    emit.rs       — エミッタ範囲（Global / Region / TextureMask）の評価
 //    accumulate.rs — 積算（場 × 地表 × エミッタ × dt → 新しい場）
 //    trample.rs    — 轍・足跡のスタンプ（形状評価と Y 照合。I3.2）
+//    brush.rs      — 手編集ブラシ（地形編集モードの消しゴム／塗り）
 //    tcover.rs     — カバー場のバージョン付きバイナリ永続化（.tcover）
 //
 //  【エンジン層との境界】
@@ -25,6 +26,7 @@
 // ============================================================
 
 pub mod accumulate;
+pub mod brush;
 pub mod emit;
 pub mod field;
 pub mod material;
@@ -39,6 +41,10 @@ mod tests_cover;
 // エンジン統合層はサブモジュールを直接指さず、必ずここ経由で参照する
 // （公開面を 1 か所に集約するため。scatter/mod.rs と同じ流儀）。
 pub use accumulate::accumulate_chunk;
+pub use brush::{
+    brush_chunk as brush_cover_chunk, CoverBrushMode, CoverBrushSpec,
+    COVER_BRUSH_MAX_DELTA_PER_APPLY,
+};
 pub use emit::{CoverEmitRange, CoverEmitSpec, CoverMask};
 pub use field::{
     cover_y_match_tolerance, slope_scale, texel_center_uv, CoverField, CoverNeighborhood,

@@ -369,6 +369,127 @@ impl CoverField {
         }
     }
 
+    // ─── 手編集（カバーブラシ。地形編集モードの消しゴム／塗り）─────────────────
+
+    /// 指定テクセルのカバーを `delta`（量/正規化）ぶん削る（消しゴムブラシ）。
+    ///
+    /// 【量と踏み固めを同時に削る理由】
+    ///   このテクセルの「見えているもの」は量（盛り上がり）と踏み固め（轍の窪み）の
+    ///   2 チャネルであり、`is_empty()` はその両方が 0 のときだけ真になる。
+    ///   量だけを削ると轍だけが残り、消しゴムでなぞったのに `.tcover` が
+    ///   消えない（＝「量 0 のチャンクはファイルを削除する」不変条件へ届かない）。
+    ///   ブラシの意味は「そこにあるカバーを無かったことにする」なので、
+    ///   同じ強さで両方を削るのが素直である。
+    ///
+    /// 【量が 0 になったら素材も空へ戻す理由】
+    ///   量 0 のテクセルの素材添字は本来無意味だが、残しておくと次に別素材を
+    ///   塗ったときに「異素材の置き換え規則」（削ってから積む）へ入ってしまい、
+    ///   消したはずの場所に 1 ストローク余分に掛かる。完全に消えた時点で
+    ///   `COVER_MATERIAL_NONE` へ戻し、「何も無い地面」と同じ状態にする。
+    ///
+    /// 戻り値は実際に値が変化したか。`delta` が 0 以下・非有限なら何もしない。
+    pub fn erase(&mut self, ix: usize, iz: usize, delta: f32) -> bool {
+        if !delta.is_finite() || delta <= 0.0 {
+            return false;
+        }
+        let i = texel_index(ix, iz);
+        let mut changed = false;
+
+        // ─── 積もった量を削る ───
+        if self.amount[i] != 0 {
+            let current = self.amount[i] as f32 / COVER_AMOUNT_QUANT_MAX;
+            let next = quantize_amount(current - delta);
+            if next != self.amount[i] {
+                self.amount[i] = next;
+                changed = true;
+            }
+        }
+
+        // ─── 踏み固め（轍）も同じ強さで削る ───
+        if self.trample[i] != 0 {
+            let current = self.trample[i] as f32 / COVER_AMOUNT_QUANT_MAX;
+            let next = quantize_amount(current - delta);
+            if next != self.trample[i] {
+                self.trample[i] = next;
+                changed = true;
+            }
+        }
+
+        // ─── 完全に消えたテクセルは素材も空へ戻す ───
+        if self.amount[i] == 0 && self.material[i] != COVER_MATERIAL_NONE {
+            self.material[i] = COVER_MATERIAL_NONE;
+            changed = true;
+        }
+        changed
+    }
+
+    /// 指定テクセルの量を `target`（目標量 0..1）へ `delta` ぶん近づける（塗りブラシ）。
+    ///
+    /// 【なぜ「加算」ではなく「目標へ近づける」なのか】
+    ///   エミッタの積算（`deposit`）は時間で単調に増えるので上限は飽和（1.0）でよいが、
+    ///   手で敷く雪は「このくらいの厚みにしたい」という指定である。目標量を持たせて
+    ///   両方向から近づけることで、なぞった場所の厚みがストローク回数に依らず
+    ///   目標値へ収束する（＝何往復しても同じ絵になる）。
+    ///
+    /// 【異素材の扱いは `deposit` と同じ規則】
+    ///   違う素材が乗っているテクセルでは、まず古い素材を `delta` ぶん削る。
+    ///   削り切ってから新素材が乗り始める（落ち葉の上に雪を敷く手触りが
+    ///   エミッタで降らせた場合と一致する）。
+    ///
+    /// 戻り値は実際に値が変化したか。`delta` が 0 以下・非有限なら何もしない。
+    pub fn paint(&mut self, ix: usize, iz: usize, material_index: u8, target: f32, delta: f32) -> bool {
+        if !delta.is_finite() || delta <= 0.0 {
+            return false;
+        }
+        // 目標量は 0..1 の外・NaN を許さない（量チャネルの定義域）。
+        let target = if target.is_finite() {
+            target.clamp(COVER_AMOUNT_MIN, COVER_AMOUNT_MAX)
+        } else {
+            return false;
+        };
+        let i = texel_index(ix, iz);
+        let current = self.amount[i] as f32 / COVER_AMOUNT_QUANT_MAX;
+
+        // ─── 異素材が乗っている: まず古い素材を削る（`deposit` と同じ置き換え規則）───
+        if self.amount[i] != 0 && self.material[i] != material_index {
+            let next = if current > delta {
+                // 古い素材がまだ残る（素材は変えない）。
+                quantize_amount(current - delta)
+            } else {
+                // 削り切った。新素材へ切り替え、余りを初期量にする（目標量で頭打ち）。
+                self.material[i] = material_index;
+                quantize_amount((delta - current).min(target))
+            };
+            if next == self.amount[i] {
+                return false;
+            }
+            self.amount[i] = next;
+            return true;
+        }
+
+        // ─── 同素材（または空のテクセル）: 目標量へ `delta` ぶん近づける ───
+        let next_value = if current < target {
+            (current + delta).min(target)
+        } else if current > target {
+            (current - delta).max(target)
+        } else {
+            // 既に目標量ちょうど＝これ以上塗っても何も変わらない。
+            return false;
+        };
+        let next = quantize_amount(next_value);
+        // 量が 0 のまま動かないテクセルへ素材だけ書き込まない
+        // （量 0 の素材添字は無意味であり、書くと Undo の差分だけが増える）。
+        if next == 0 && self.amount[i] == 0 {
+            return false;
+        }
+        let material_changed = self.material[i] != material_index;
+        self.material[i] = material_index;
+        if next == self.amount[i] {
+            return material_changed;
+        }
+        self.amount[i] = next;
+        true
+    }
 }
 
 // ============================================================
