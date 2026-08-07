@@ -129,6 +129,15 @@ public partial class MainWindow
     /// </summary>
     private readonly System.Collections.Generic.List<string> _terrainCoverMaterialIds = new();
 
+    /// <summary>
+    /// ブラシ形状マスク（ブラシテクスチャ）のパス。null／空 = 未指定（従来どおりの円形フォールオフ）。
+    ///
+    /// 半径・強度と同じ「ツールの現在設定」であり、レイヤペイントブラシとカバーブラシで共有する。
+    /// 設定ウィンドウは開閉のたびに作り直されるため、値の実体はこちら（MainWindow）が持つ。
+    /// ランタイム側の実体は `TerrainState::brush_mask_path` で、`TERRAIN_BRUSH_MASK` で同期する。
+    /// </summary>
+    private string? _terrainBrushMaskPath;
+
     /// <summary>低レベルマウスフックのコールバック（GC 回収防止のためフィールド保持）。</summary>
     private LowLevelMouseProc? _terrainMouseProc;
 
@@ -316,7 +325,11 @@ public partial class MainWindow
                 RefreshTerrainLayerCombo();
                 RefreshTerrainPropCombo();
                 RefreshTerrainCoverMaterialCombo();
-            })
+            },
+            // ブラシ形状マスクは「ツールの現在設定」なので値の実体はここ（MainWindow）が持つ。
+            // 設定ウィンドウは開閉のたびに作り直されるため、ウィンドウ側に持たせると選択が消える。
+            brushMaskPath: _terrainBrushMaskPath,
+            onBrushMaskChanged: SetTerrainBrushMask)
         {
             Owner = this,
         };
@@ -731,6 +744,22 @@ public partial class MainWindow
             TerrainStrengthPanel.Visibility =
                 _terrainOp == TerrainOpScatter ? Visibility.Collapsed : Visibility.Visible;
         }
+    }
+
+    /// <summary>
+    /// ブラシ形状マスク（ブラシテクスチャ）を設定・解除し、ランタイムへ同期する。
+    ///
+    /// 地形設定ウィンドウの「ブラシ」タブから呼ばれる。`path` が null／空なら解除で、
+    /// ランタイムは従来どおりの円形フォールオフへ戻る。
+    /// ブラシ 1 発ごとの IPC（TERRAIN_PAINT / TERRAIN_COVER_BRUSH）には載せない
+    /// ——あちらはカンマ区切りであり、カンマを含みうる Windows のパスを混ぜられないため。
+    /// </summary>
+    private void SetTerrainBrushMask(string? path)
+    {
+        _terrainBrushMaskPath = string.IsNullOrEmpty(path) ? null : path;
+        _runtimeManager?.SendToRuntime(
+            "TERRAIN_BRUSH_MASK:"
+            + SEEDEditor.Terrain.TerrainSettingsWindow.NormalizeBrushMaskForIpc(_terrainBrushMaskPath));
     }
 
     /// <summary>

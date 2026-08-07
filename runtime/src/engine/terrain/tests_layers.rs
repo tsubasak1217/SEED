@@ -274,9 +274,12 @@ fn paint_blends_over_rule_without_overwriting_when_unpainted() {
 // ============================================================
 
 /// ペイント用の最小 PaintField 実装（単一チャンク・境界重複なし）。
-struct PaintView<'a> {
-    settings: &'a TerrainSettings,
-    chunks: &'a mut HashMap<ChunkCoord, TerrainChunkData>,
+///
+/// ブラシ形状マスクのテスト（`tests_brush_mask.rs`）も同じ器を使うため `pub(super)`。
+/// テスト用の場を 2 つ書くと「片方だけ規約がずれる」危険があるので共有する。
+pub(super) struct PaintView<'a> {
+    pub(super) settings: &'a TerrainSettings,
+    pub(super) chunks: &'a mut HashMap<ChunkCoord, TerrainChunkData>,
 }
 
 impl<'a> PaintView<'a> {

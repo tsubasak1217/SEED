@@ -85,6 +85,8 @@ pub(super) mod terrain_scatter_ops;
 pub(super) mod terrain_cover_ops;
 /// カバー場の手編集ブラシ（地形編集モードの消しゴム／塗り）。Undo は terrain 専用スタック。
 pub(super) mod terrain_cover_brush_ops;
+/// 地形ペイント系ブラシの形状マスク（TERRAIN_BRUSH_MASK の状態とキャッシュ解決）。
+pub(super) mod terrain_brush_mask_ops;
 /// カバーエミッタ（CoverEmitterComponent）のインスペクタ更新（SET_COVER_FIELD。I3.1）
 mod cover_emitter_ops;
 /// カバーエミッタの「降る範囲」のビューポート可視化（選択中アクターのみ）

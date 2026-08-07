@@ -1467,6 +1467,14 @@ public sealed class RuntimeManager : IDisposable
         {
             EditorLog.Write($"[Runtime→Editor] {msg}");
         }
+        // ブラシ形状マスクの設定結果。設定・解除のたびに 1 回だけ来る低頻度メッセージなので
+        // 成否とも残す（読み込み失敗時はブラシが円形へ縮退するだけで動き続けるため、
+        // ログが唯一の手掛かりになる）。
+        else if (msg.StartsWith("TERRAIN_BRUSH_MASK_OK:", StringComparison.Ordinal)
+              || msg.StartsWith("TERRAIN_BRUSH_MASK_ERROR:", StringComparison.Ordinal))
+        {
+            EditorLog.Write($"[Runtime→Editor] {msg}");
+        }
         else if (msg.StartsWith("ACTOR_DATA:", StringComparison.Ordinal))
         {
             var json = msg["ACTOR_DATA:".Length..];

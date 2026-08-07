@@ -381,11 +381,22 @@ impl CoverField {
     ///   ブラシの意味は「そこにあるカバーを無かったことにする」なので、
     ///   同じ強さで両方を削るのが素直である。
     ///
-    /// 【量が 0 になったら素材も空へ戻す理由】
-    ///   量 0 のテクセルの素材添字は本来無意味だが、残しておくと次に別素材を
-    ///   塗ったときに「異素材の置き換え規則」（削ってから積む）へ入ってしまい、
-    ///   消したはずの場所に 1 ストローク余分に掛かる。完全に消えた時点で
-    ///   `COVER_MATERIAL_NONE` へ戻し、「何も無い地面」と同じ状態にする。
+    /// 【量が 0 になっても素材添字を消さない理由（黒落ちバグの修正）】
+    ///   以前はここで `COVER_MATERIAL_NONE` へ戻していたが、これは 2 つの意味で害だった。
+    ///   ① 目的が達成できていない —— 「消した場所へ別素材を塗ると
+    ///      異素材の置き換え規則（削ってから積む）に入って 1 ストローク損をする」
+    ///      のを避けるためだったが、`deposit` / `paint` の置き換え規則は
+    ///      どちらも **`amount != 0` を前提**にしており、量 0 のテクセルは
+    ///      素材添字に関わらず素直な上書きになる。つまり消す必要が最初から無い。
+    ///   ② 消すと描画が壊れる —— 素材添字は頂点属性（uv0.y）としてラスタライザが
+    ///      **線形補間**する。消した所だけ添字が別の値へ飛ぶと、消した領域の縁で
+    ///      「塗った素材と無関係な素材」（たとえば添字 3 と 0 の中間＝添字 2）が
+    ///      解決され、その素材の色（濡れ・泥のような暗い色）が地表へ混ざって
+    ///      黒い縁が出る。消しても素材添字を保つと、消した領域と残っている領域で
+    ///      添字が一致し、補間しても常に同じ素材が選ばれる。
+    ///
+    /// 量が 0 のテクセルは `CoverNeighborhood` の読み取りで必ず「量 0」として扱われるため、
+    /// 素材添字が残っていても色や変位には一切寄与しない。
     ///
     /// 戻り値は実際に値が変化したか。`delta` が 0 以下・非有限なら何もしない。
     pub fn erase(&mut self, ix: usize, iz: usize, delta: f32) -> bool {
@@ -415,11 +426,7 @@ impl CoverField {
             }
         }
 
-        // ─── 完全に消えたテクセルは素材も空へ戻す ───
-        if self.amount[i] == 0 && self.material[i] != COVER_MATERIAL_NONE {
-            self.material[i] = COVER_MATERIAL_NONE;
-            changed = true;
-        }
+        // 素材添字は **消さない**（上のコメント参照）。
         changed
     }
 
@@ -562,6 +569,22 @@ pub struct CoverSample {
     ///   しかし轍として **暗くする**ためには、そこを踏み固めた素材が何だったかが要る。
     ///   2 つを分けることで、「色は塗らないが轍としては暗い」を表現できる。
     pub trample_material: u8,
+    /// **頂点属性へ焼くための**素材添字（`material` の補間安全版）。
+    ///
+    /// 【なぜ `material` と別に要るのか（黒落ちバグの本体）】
+    ///   素材添字は頂点属性（uv0.y）としてラスタライザが**線形補間**する。
+    ///   実効量 0 の点で `material` を `COVER_MATERIAL_NONE` に落とすと、
+    ///   カバーの縁（量が 0 へ落ちていく帯）で添字が「塗った素材 → なし」へ
+    ///   ぐらつき、その中間値が**塗っていない別素材**として解決される。
+    ///   濡れ・泥のような暗い素材が中間に居ると、縁が黒く沈む。
+    ///
+    ///   そこでこの値は「実効量 0 の点でも、近傍で実際に使われている素材添字」を
+    ///   返す。カバーの内側から縁の外側まで添字が同じ値で埋まるため、
+    ///   補間しても常に同じ素材が選ばれる。量（uv0.x）のほうは滑らかに 0 へ
+    ///   落ちるので、見た目は従来どおりなめらかなまま黒縁だけが消える。
+    ///
+    ///   近傍にカバーが 1 つも無ければ `COVER_MATERIAL_NONE`（＝素材なし）。
+    pub blend_material: u8,
 }
 
 impl<'a> CoverNeighborhood<'a> {
@@ -681,6 +704,10 @@ impl<'a> CoverNeighborhood<'a> {
         let mut material = COVER_MATERIAL_NONE;
         let mut best_trample = 0.0f32;
         let mut trample_material = COVER_MATERIAL_NONE;
+        // 補間安全な添字（`blend_material`）は「実効量が 0 でも、そのテクセルが
+        // 記憶している素材」から選ぶ。走査順は上の 4 隅の列挙順に固定してあるので、
+        // 同点時の選び方までチャンク横断で一致する（境界の bit 一致に必要）。
+        let mut blend_material = COVER_MATERIAL_NONE;
         for &(w, c) in &candidates {
             if w * c.amount > best_amount {
                 best_amount = w * c.amount;
@@ -692,8 +719,18 @@ impl<'a> CoverNeighborhood<'a> {
                 best_trample = w * c.trample;
                 trample_material = c.trample_material;
             }
+            // 記憶している素材のうち最初に見つかったものを採る
+            // （実効量で選び直す必要は無い。目的は「縁で添字がぐらつかない」ことだけ）。
+            if blend_material == COVER_MATERIAL_NONE {
+                blend_material = c.blend_material;
+            }
         }
-        CoverSample { amount, trample, material, trample_material }
+        // 実効量がある点では、実際に描かれる素材と補間用の添字を必ず一致させる
+        // （両者がずれると、その点だけ隣と違う素材が選ばれて縁が出る）。
+        if material != COVER_MATERIAL_NONE {
+            blend_material = material;
+        }
+        CoverSample { amount, trample, material, trample_material, blend_material }
     }
 
     /// 3×3 を跨ぐテクセル座標を、Y 照合で選んだ段から読む。
@@ -705,6 +742,7 @@ impl<'a> CoverNeighborhood<'a> {
             trample: 0.0,
             material: COVER_MATERIAL_NONE,
             trample_material: COVER_MATERIAL_NONE,
+            blend_material: COVER_MATERIAL_NONE,
         };
         let (Some((cx, ix)), Some((cz, iz))) = (split_global_texel(gx), split_global_texel(gz))
         else {
@@ -762,6 +800,9 @@ impl<'a> CoverNeighborhood<'a> {
             material: if effective > 0.0 { stored_material } else { COVER_MATERIAL_NONE },
             // 轍の色係数は「踏み固めた素材」から引く（露出後も轍として暗い）。
             trample_material: if trample > 0.0 { stored_material } else { COVER_MATERIAL_NONE },
+            // 補間用は実効量に関わらず「記憶している素材」をそのまま返す
+            // （消しゴムで量が 0 になったテクセルも素材添字を保持している）。
+            blend_material: stored_material,
         }
     }
 }

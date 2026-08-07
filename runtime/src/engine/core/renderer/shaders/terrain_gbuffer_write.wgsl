@@ -576,17 +576,25 @@ fn fs_terrain_gbuffer(
         //  境界は 50% の位置で切り替わる硬いエッジになるが、量のほうは
         //  滑らかに補間されるので実画像では目立たない。
         let cover_count = u32(u_terrain.params.z);
-        let ci = min(u32(round(max(in.uv0.y, 0.0))), cover_count - 1u);
-        let cm = u_terrain.cover[ci];
+        let ci = u32(round(max(in.uv0.y, 0.0)));
+        // 【防御】定義されていない添字（＝素材なし）は寄与ゼロで素通りさせる。
+        //  CPU 側（terrain_mesh_build.rs）は「カバーの縁でも添字がぐらつかない」よう
+        //  補間安全な添字を焼いているので、通常ここは常に有効な添字になる。
+        //  それでも clamp（min）で範囲へ押し込めてしまうと、壊れた頂点属性が
+        //  「最後の素材の色」として地表へ混ざり、原因の分かりにくい色化けになる。
+        //  範囲外は**何もしない**のが唯一安全な縮退である。
+        if ci < cover_count {
+            let cm = u_terrain.cover[ci];
 
-        // 量 1.0 で素材の色・粗さへ完全に置き換わる（線形補間）。
-        //  ・雪   … 白へ寄り、粗さは高いまま
-        //  ・落ち葉 … 茶へ寄る
-        //  ・濡れ … 暗くなり、粗さが落ちて鏡面反射が立つ
-        albedo    = mix(albedo, cm.rgb, cover_amount);
-        roughness = mix(roughness, cm.a, cover_amount);
-        // カバーはすべて非金属（雪も落ち葉も水膜も導体ではない）。
-        metallic  = mix(metallic, 0.0, cover_amount);
+            // 量 1.0 で素材の色・粗さへ完全に置き換わる（線形補間）。
+            //  ・雪   … 白へ寄り、粗さは高いまま
+            //  ・落ち葉 … 茶へ寄る
+            //  ・濡れ … 暗くなり、粗さが落ちて鏡面反射が立つ
+            albedo    = mix(albedo, cm.rgb, cover_amount);
+            roughness = mix(roughness, cm.a, cover_amount);
+            // カバーはすべて非金属（雪も落ち葉も水膜も導体ではない）。
+            metallic  = mix(metallic, 0.0, cover_amount);
+        }
     }
 
     // ── 轍・足跡の踏み固め（I3.2）──

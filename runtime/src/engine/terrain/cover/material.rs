@@ -34,11 +34,21 @@ use serde::{Deserialize, Serialize};
 /// （terrain_gbuffer.rs のテスト `terrain_cover_count_matches_shader` が固定する）。
 pub const TERRAIN_MAX_COVER_MATERIALS: usize = 16;
 
-/// カバー場が素材を指せない状態（＝量 0）を表す添字。
+/// カバー場が素材を指せない状態（＝素材未設定）を表す添字。
 ///
 /// 量が 0 のテクセルでは素材添字は無意味だが、未定義値を残さないために
 /// 常にこの値で埋める（＝シリアライズ結果が決定的になる）。
-pub const COVER_MATERIAL_NONE: u8 = 0;
+///
+/// 【なぜ 0 ではなく u8::MAX なのか（黒落ちバグの構造的原因だった）】
+///   以前はこの値が 0 であり、**1 番目に定義された実在の素材と添字が衝突**していた。
+///   その結果「素材なし」を意味する `COVER_MATERIAL_NONE` が
+///   `CoverMaterialSet::get(0)` で 1 番目の素材として解決されてしまい、
+///   たとえば踏み固めの色係数（`CoverSample::trample_material`）が
+///   「素材なし」なのに 1 番目の素材の `trample_darkening` / `trample_cavity` を
+///   引いて地表を暗くする・環境光を遮る、という不整合が起きていた。
+///   `TERRAIN_MAX_COVER_MATERIALS`（16）より必ず大きい値にしておけば、
+///   `get()` は常に `None` を返し「素材なし＝寄与ゼロ」が構造的に保証される。
+pub const COVER_MATERIAL_NONE: u8 = u8::MAX;
 
 // ─── 既定値関数（serde default 用。マジックナンバー禁止）─────────────────────
 

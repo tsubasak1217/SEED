@@ -231,7 +231,7 @@ impl App {
         // ─── マスク画像をキャッシュへ確保する ───
         for r in &raw {
             if r.range_kind == CoverEmitterRangeKind::TextureMask && !r.mask_path.is_empty() {
-                self.ensure_cover_mask(&r.mask_path);
+                self.ensure_terrain_mask(&r.mask_path);
             }
         }
 
@@ -254,7 +254,7 @@ impl App {
                 CoverEmitterRangeKind::TextureMask => {
                     let mask = self
                         .terrain
-                        .cover_mask_cache
+                        .mask_cache
                         .get(&r.mask_path)
                         .cloned()
                         .unwrap_or_else(CoverMask::empty);
@@ -283,8 +283,14 @@ impl App {
     /// 読み込みに失敗した場合も「無効なマスク」をキャッシュへ入れる。
     /// こうしないと毎フレーム同じ壊れたパスを読み直してしまう
     /// （`scatter_model_failed` と同じ考え方）。
-    fn ensure_cover_mask(&mut self, path: &str) {
-        if self.terrain.cover_mask_cache.contains_key(path) {
+    ///
+    /// 【カバー専用ではない】
+    ///   カバーエミッタ・轍スタンプに加え、地形ペイント系ブラシの形状マスク
+    ///   （`terrain_brush_mask_ops.rs`）も本関数を通してデコードする。
+    ///   デコード結果は用途を問わない汎用のグレースケールなので、
+    ///   キャッシュ（`TerrainState::mask_cache`）ごと共用する。
+    pub(super) fn ensure_terrain_mask(&mut self, path: &str) {
+        if self.terrain.mask_cache.contains_key(path) {
             return;
         }
         let mask = match crate::engine::asset_fs::read_image_result(path) {
@@ -301,7 +307,7 @@ impl App {
                 CoverMask::empty()
             }
         };
-        self.terrain.cover_mask_cache.insert(path.to_string(), mask);
+        self.terrain.mask_cache.insert(path.to_string(), mask);
     }
 
     // ─── ③ 積算の駆動 ───────────────────────────────────────────────────────
@@ -391,7 +397,7 @@ impl App {
         // ─── ③ マスク画像を確保する（エミッタのマスクと同じキャッシュを使う）───
         for r in &raw {
             if r.shape == InteractionStampShape::Texture && !r.mask_path.is_empty() {
-                self.ensure_cover_mask(&r.mask_path);
+                self.ensure_terrain_mask(&r.mask_path);
             }
         }
 
@@ -431,7 +437,7 @@ impl App {
                 InteractionStampShape::Texture => {
                     let mask = self
                         .terrain
-                        .cover_mask_cache
+                        .mask_cache
                         .get(&r.mask_path)
                         .cloned()
                         .unwrap_or_else(CoverMask::empty);
@@ -702,14 +708,67 @@ impl App {
         for coord in coords {
             if self.apply_cover_to_chunk(coord, extent, &materials) {
                 applied += 1;
+                // 頂点が動いた＝RT が辿る地形（BLAS）も作り直す必要がある。
+                self.terrain.cover_rt_prune_pending.insert(coord);
             }
         }
+
+        // カバーの変位でラスタの地表が動いた＝RT が辿る地形も追従させる必要がある。
+        self.flush_cover_rt_prune();
 
         let total_ms = t_total.elapsed().as_secs_f64() * MILLIS_PER_SEC;
         if *super::terrain_ops::PERF_TERRAIN_LOG_ENABLED && applied > 0 {
             eprintln!("[PERF terrain] cover apply chunks={applied} total={total_ms:.2}ms");
         }
         total_ms
+    }
+
+    /// カバーの変位で頂点が動いたチャンクの RT 加速構造（BLAS）を作り直させる。
+    ///
+    /// 【なぜ要るのか】
+    ///   BLAS キャッシュは `source_path`（チャンクの batch_key）をキーにした
+    ///   「一度作ったら作り直さない」キャッシュであり、`apply_cover_to_chunk` が
+    ///   GPU 頂点バッファを書き換えてもそのまま残る。フレームの実行順は
+    ///   「カバー焼き込み（更新）→ BLAS 構築（描画）」なので、カバーの載ったシーンでは
+    ///   BLAS が「積もった高さ」で作られる。その後カバーを消すとラスタの地表だけが
+    ///   素の高さへ戻り、RT 影のレイ原点が「まだ在ることになっているカバー」の内側へ
+    ///   沈んで全面遮蔽＝真っ黒になる（`TerrainState::cover_rt_prune_pending` の解説参照）。
+    ///
+    /// 【いつ消化するのか】
+    ///   BLAS の作り直しは重い（1 チャンクあたり頂点 ~9000）ので、
+    ///   **落ち着いた瞬間だけ**にまとめる。具体的には
+    ///     ・ブラシストローク中ではない（マウスを離している）
+    ///     ・焼き直し待ちが空（＝降雪シミュレートなどが進行中でない）
+    ///   の両方を満たすときに一括で prune する。密度ブラシが
+    ///   `finalize_stroke_deferred` で同じことをしているのと同じ方針である。
+    fn flush_cover_rt_prune(&mut self) {
+        if self.terrain.cover_rt_prune_pending.is_empty() {
+            return;
+        }
+        if self.terrain.stroke_active || !self.terrain.cover_pending_apply.is_empty() {
+            return;
+        }
+        // 決定性のため座標順に処理する（HashSet の走査順は実行ごとに変わる）。
+        let mut coords: Vec<ChunkCoord> =
+            std::mem::take(&mut self.terrain.cover_rt_prune_pending).into_iter().collect();
+        coords.sort_by_key(|c| (c.x, c.y, c.z));
+
+        // チャンクスロットの `source_path`（= batch_key = BlasKey.source_path）を集める。
+        let mut keys: Vec<String> = Vec::with_capacity(coords.len());
+        if let Some(scene) = self.scene.as_ref() {
+            for &coord in &coords {
+                if let Some(&slot) = self.terrain.chunk_slot_entity.get(&coord) {
+                    if let Some(mc) =
+                        scene.world.get::<crate::engine::components::ModelComponent>(slot)
+                    {
+                        keys.push(mc.source_path.clone());
+                    }
+                }
+            }
+        }
+        // prune_rt=true: RT BLAS を捨てる。次フレームに最新頂点で作り直され、
+        // `new_blas_built=true` により TLAS も必ず組み直される。
+        self.invalidate_geometry_caches(&keys, true);
     }
 
     /// 1 チャンクぶんのカバー場を頂点へ焼き込み、GPU 頂点バッファを書き換える。

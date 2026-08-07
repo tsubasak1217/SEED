@@ -8,6 +8,8 @@
 // ============================================================
 
 pub mod brush;
+/// 地形ペイント系ブラシの形状マスク評価（レイヤペイント／カバーで共用）。
+pub mod brush_mask;
 pub mod chunk_coord;
 pub mod chunk_data;
 /// 地表カバー場（I3.1: 雪・落ち葉・泥・濡れ）。正典は docs/cover_field.md。
@@ -28,11 +30,16 @@ mod tests;
 #[cfg(test)]
 mod tests_layers;
 
+/// ブラシ形状マスク専用のユニットテスト（役割単位でファイル分割）。
+#[cfg(test)]
+mod tests_brush_mask;
+
 /// 編集ホットパスの CPU 計測（#[ignore] 付き。通常のテスト実行では走らない）。
 #[cfg(test)]
 mod bench;
 
 pub use brush::{BrushOp, SampleField, SphereBrush, apply, chunks_in_brush_aabb};
+pub use brush_mask::{brush_mask_is_active, brush_mask_uv, brush_shape_factor};
 pub use chunk_coord::ChunkCoord;
 pub use chunk_data::TerrainChunkData;
 pub use heightmap::HeightmapField;
@@ -53,7 +60,7 @@ pub use cover::{
 pub use marching_cubes::{
     TerrainMesh, TerrainVertexEdge, generate, generate_standalone, interp_vertex_paint,
 };
-pub use paint::{PaintField, apply_paint};
+pub use paint::{PaintField, apply_paint, apply_paint_with_mask};
 pub use settings::{
     MAX_CHUNK_CELLS, MAX_GROUND_CHUNKS, MAX_TOTAL_CHUNKS, MAX_VOXEL_SIZE, MIN_CHUNK_CELLS,
     MIN_GROUND_CHUNKS, MIN_VOXEL_SIZE, TerrainSettings,

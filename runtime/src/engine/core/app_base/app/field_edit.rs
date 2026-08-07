@@ -305,6 +305,9 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::TerrainAddChunks { .. }
         | IpcCommand::TerrainBrush { .. }
         | IpcCommand::TerrainPaint { .. }
+        // ブラシ形状マスクは「道具の設定」であってシーンの値ではないため Undo 対象外
+        // （半径・強度スライダーが Undo に載らないのと同じ扱い）。
+        | IpcCommand::TerrainBrushMask { .. }
         | IpcCommand::TerrainSave
         | IpcCommand::TerrainBrushPreview { .. }
         | IpcCommand::TerrainBrushPreviewOff

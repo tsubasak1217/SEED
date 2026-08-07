@@ -30,9 +30,10 @@ use std::collections::HashMap;
 
 use crate::engine::terrain::chunk_coord::ChunkCoord;
 use crate::engine::terrain::cover::{
-    brush_cover_chunk, CoverBrushMode, CoverBrushSpec, CoverField,
+    brush_cover_chunk_with_mask, CoverBrushMode, CoverBrushSpec, CoverField,
 };
 
+use super::terrain_brush_mask_ops::resolve_brush_mask;
 use super::terrain_cover_ops::COVER_APPLY_INTERVAL_SEC;
 use super::App;
 
@@ -137,6 +138,9 @@ impl App {
         if self.terrain.chunks.is_empty() {
             return;
         }
+        // ブラシ形状マスクを（指定されていれば）デコード済みにしておく。
+        // 未指定なら 1 命令も走らず、この先の挙動は従来とまったく同じになる。
+        self.ensure_terrain_brush_mask();
         let settings = self.terrain.settings.clone();
         let extent = settings.chunk_extent();
 
@@ -180,21 +184,26 @@ impl App {
         }
 
         // ─── ④ 各チャンクへブラシを当てる ───
+        //   `&mut self.terrain` を 1 本取り、面情報（cover_surface）・カバー場（cover）・
+        //   マスクキャッシュ（mask_cache）を **別フィールドとして**同時に借りる。
+        //   フィールド単位なら不変借用と可変借用が両立するので、
+        //   面情報の複製（32×32 の f32 が 2 枚 = 8KB／チャンク）もマスクの複製も要らない。
         let mut changed: Vec<ChunkCoord> = Vec::new();
-        for coord in touched {
-            // 消しゴムは「カバー場が無いチャンク」には何もすることが無い。
-            // 塗りは新しく器を作る必要があるので `entry` で用意する。
-            if spec.mode == CoverBrushMode::Erase && !self.terrain.cover.contains_key(&coord) {
-                continue;
-            }
-            let Some(surface) = self.terrain.cover_surface.get(&coord) else { continue };
-            let origin = coord.world_origin(&settings);
-            // 面情報とカバー場を同時に借りられないため、面情報だけ複製する
-            // （32×32 の f32 が 2 枚 = 8KB。ブラシは 1 フレームに数チャンクしか触らない）。
-            let surface = surface.clone();
-            let field = self.terrain.cover.entry(coord).or_default();
-            if brush_cover_chunk(field, &surface, origin, extent, spec) {
-                changed.push(coord);
+        {
+            let terrain = &mut self.terrain;
+            let mask = resolve_brush_mask(&terrain.mask_cache, &terrain.brush_mask_path);
+            for coord in touched {
+                // 消しゴムは「カバー場が無いチャンク」には何もすることが無い。
+                // 塗りは新しく器を作る必要があるので `entry` で用意する。
+                if spec.mode == CoverBrushMode::Erase && !terrain.cover.contains_key(&coord) {
+                    continue;
+                }
+                let Some(surface) = terrain.cover_surface.get(&coord) else { continue };
+                let origin = coord.world_origin(&settings);
+                let field = terrain.cover.entry(coord).or_default();
+                if brush_cover_chunk_with_mask(field, surface, origin, extent, spec, mask) {
+                    changed.push(coord);
+                }
             }
         }
 

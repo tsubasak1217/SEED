@@ -431,11 +431,25 @@ pub fn rebuild_terrain_model_with_cover(
         //   踏み固めだけが残っている（下地が露出した轍）場合もここへ来るため、
         //   位置は基準のまま・色だけ暗くする。**法線は摂動を残す**
         //   （轍の底は削れて平らでも、その壁は隣のテクセルの高さ差で立っている）。
+        // ─── 補間安全な素材添字（黒落ち対策。uv0.y へ焼く値）───
+        //   量が 0 の頂点でも「近傍で実際に使われている素材」の添字を載せる。
+        //   ラスタライザは uv0 を線形補間するため、量が 0 へ落ちる帯で添字まで
+        //   一緒に 0 へ動くと、途中の値が**塗っていない別素材**として解決され、
+        //   その素材の色（濡れ・泥のような暗い色）が縁に黒く出てしまう。
+        //   添字を帯の内外で同じ値に揃えると、補間しても常に同じ素材が選ばれる。
+        //   近傍にカバーが無ければ素材セットの範囲外（`COVER_MATERIAL_NONE`）なので、
+        //   ここでは従来どおり 0 を書いてカバー無しへ縮退させる。
+        let blend_index = materials
+            .get(sample.blend_material as usize)
+            .map(|_| sample.blend_material as f32)
+            .unwrap_or(0.0);
+
         let Some(mat) = materials.get(sample.material as usize).filter(|_| amount > 0.0) else {
             vertices.push(Vertex {
                 position: *base,
                 normal,
-                uv0: [0.0, 0.0],
+                // 量は 0（＝シェーダはカバー処理へ入らない）。素材添字だけは近傍と揃える。
+                uv0: [0.0, blend_index],
                 uv1: [trample_darken, trample_cavity],
                 ..*v
             });
@@ -462,7 +476,8 @@ pub fn rebuild_terrain_model_with_cover(
             position,
             normal,
             // uv0 は地形では未使用だった（常に [0,0]）。ここでカバー情報の運び手に転用する。
-            uv0: [amount, sample.material as f32],
+            //   y は補間安全な添字（量>0 の頂点では `sample.material` と必ず一致する）。
+            uv0: [amount, blend_index],
             // uv1 も地形では未使用（常に [0,0]）。
             //   x = 踏み固めの暗さ（アルベド）/ y = キャビティ遮蔽（occlusion）。
             uv1: [trample_darken, trample_cavity],
@@ -1527,4 +1542,5 @@ mod tests {
             assert_eq!(out.uv1, [0.0, 0.0], "頂点 {i} の uv1 が汚れた");
         }
     }
+
 }
