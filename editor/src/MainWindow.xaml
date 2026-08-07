@@ -1349,6 +1349,48 @@
                                                              ToolTip="散布（草・木などのプロップを手で撒く。形状もレイヤも変えない）"
                                                              Content="散布"
                                                              Checked="OnTerrainToolChanged"/>
+                                                <!-- カバー（I3.1 の地表カバー場）。積もった雪・落ち葉を手で消す／敷く。 -->
+                                                <RadioButton x:Name="BtnTerrainCover"
+                                                             GroupName="TerrainTools"
+                                                             Style="{StaticResource TerrainToolBtnStyle}"
+                                                             ToolTip="カバー（積もった雪・落ち葉を手で消す／敷く。形状もレイヤも変えない）"
+                                                             Content="カバー"
+                                                             Checked="OnTerrainToolChanged"/>
+
+                                                <!-- 素材選択＋目標量＋消去モード（カバーツール選択時のみ表示）。
+                                                     項目は assets/terrain/cover_materials.json の並びに対応する。 -->
+                                                <StackPanel x:Name="TerrainCoverPanel"
+                                                            Orientation="Horizontal" VerticalAlignment="Center"
+                                                            Visibility="Collapsed">
+                                                    <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
+                                                    <TextBlock x:Name="LblTerrainCoverMaterial"
+                                                               Text="素材" Foreground="#AAAAAA" FontSize="11"
+                                                               VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                                    <!-- 項目は cover_materials.json から動的に生成する（RefreshTerrainCoverMaterialCombo）。 -->
+                                                    <ComboBox x:Name="CmbTerrainCoverMaterial"
+                                                              Width="140" VerticalAlignment="Center"
+                                                              FontSize="11"
+                                                              ToolTip="敷く素材（cover_materials.json の並び順）。消去時は使われない"/>
+
+                                                    <TextBlock x:Name="LblTerrainCoverAmount"
+                                                               Text="目標量" Foreground="#AAAAAA" FontSize="11"
+                                                               VerticalAlignment="Center" Margin="8,0,4,0"/>
+                                                    <Slider x:Name="SldTerrainCoverAmount"
+                                                            Width="80" VerticalAlignment="Center"
+                                                            Minimum="0" Maximum="1" Value="1"
+                                                            ToolTip="敷く厚み（0〜1。1 = 満量）。なぞった場所はこの量へ収束する"/>
+                                                    <TextBlock x:Name="TxtTerrainCoverAmount" Text="1.00"
+                                                               Foreground="#CCCCCC" FontSize="11" FontFamily="Consolas"
+                                                               VerticalAlignment="Center" Margin="4,0,0,0" MinWidth="34"/>
+
+                                                    <CheckBox x:Name="ChkTerrainCoverErase"
+                                                              Content="消去" Foreground="#CCCCCC" FontSize="11"
+                                                              VerticalAlignment="Center" Margin="8,0,0,0"
+                                                              IsChecked="True"
+                                                              ToolTip="ONにすると、敷くかわりにブラシ範囲のカバー（雪・落ち葉・轍）を消す"
+                                                              Checked="OnTerrainCoverEraseChanged"
+                                                              Unchecked="OnTerrainCoverEraseChanged"/>
+                                                </StackPanel>
 
                                                 <!-- プロップ選択＋密度＋消去モード（散布ツール選択時のみ表示）。
                                                      項目は assets/terrain/props.json の並びに対応する。 -->

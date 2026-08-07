@@ -1452,6 +1452,21 @@ public sealed class RuntimeManager : IDisposable
         {
             EditorLog.Write("[Runtime→Editor] TERRAIN_COVER_CLEARED");
         }
+        // カバーブラシの結果は散布ブラシとまったく同じ扱い（高頻度なのでログに書かない）。
+        else if (msg.StartsWith("TERRAIN_COVER_BRUSH_OK:", StringComparison.Ordinal))
+        {
+            TerrainBrushResult?.Invoke(true, msg["TERRAIN_COVER_BRUSH_OK:".Length..]);
+        }
+        else if (msg == "TERRAIN_COVER_BRUSH_MISS")
+        {
+            TerrainBrushResult?.Invoke(false, "");
+        }
+        // 未定義の素材 ID を塗ろうとした等の設定ミスは、ドラッグ中に連呼されうるが
+        // 原因が分からないと直せないのでログには残す（ステータス表示までは行わない）。
+        else if (msg.StartsWith("TERRAIN_COVER_BRUSH_ERROR:", StringComparison.Ordinal))
+        {
+            EditorLog.Write($"[Runtime→Editor] {msg}");
+        }
         else if (msg.StartsWith("ACTOR_DATA:", StringComparison.Ordinal))
         {
             var json = msg["ACTOR_DATA:".Length..];

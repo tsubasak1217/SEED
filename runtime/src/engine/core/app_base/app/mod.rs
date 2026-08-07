@@ -83,6 +83,8 @@ pub(crate) mod terrain_layer_albedo;
 pub(super) mod terrain_scatter_ops;
 /// 地表カバー場（雪・落ち葉・泥・濡れ）のエンジン統合層（I3.1）。正典は docs/cover_field.md。
 pub(super) mod terrain_cover_ops;
+/// カバー場の手編集ブラシ（地形編集モードの消しゴム／塗り）。Undo は terrain 専用スタック。
+pub(super) mod terrain_cover_brush_ops;
 /// カバーエミッタ（CoverEmitterComponent）のインスペクタ更新（SET_COVER_FIELD。I3.1）
 mod cover_emitter_ops;
 /// カバーエミッタの「降る範囲」のビューポート可視化（選択中アクターのみ）

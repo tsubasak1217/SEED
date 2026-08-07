@@ -59,9 +59,22 @@ public partial class MainWindow
     /// </summary>
     private const int TerrainOpScatter = 101;
 
-    /// <summary>散布ブラシの消去フラグ値（IPC 文字列の erase 引数。ランタイムと一致させる）。</summary>
+    /// <summary>
+    /// カバーツールを表す擬似 op 値（地表カバー場 I3.1 の手編集）。
+    /// ペイント・散布と同様にランタイムの BrushOp には存在せず、この値のときだけ
+    /// TERRAIN_COVER_BRUSH を送る（積もった雪・落ち葉を消す／敷く専用コマンド）。
+    /// </summary>
+    private const int TerrainOpCover = 102;
+
+    /// <summary>ブラシの消去フラグ値（IPC 文字列の erase 引数。ランタイムと一致させる）。</summary>
     private const int TerrainScatterEraseOff = 0;
     private const int TerrainScatterEraseOn  = 1;
+
+    /// <summary>素材選択コンボが空／未選択のときに使うカバーブラシのフォールバック素材 ID（空＝ランタイム側で無効扱い）。</summary>
+    private const string TerrainCoverFallbackMaterialId = "";
+
+    /// <summary>目標量スライダーが未生成のときのフォールバック目標量（0〜1）。</summary>
+    private const double TerrainCoverAmountFallback = 1.0;
 
     /// <summary>プロップ選択コンボが空／未選択のときに使う散布ブラシのフォールバック prop_id（空＝ランタイム側で無効扱い）。</summary>
     private const string TerrainScatterFallbackPropId = "";
@@ -110,6 +123,12 @@ public partial class MainWindow
     /// </summary>
     private readonly System.Collections.Generic.List<string> _terrainPropIds = new();
 
+    /// <summary>
+    /// カバー素材選択コンボの各行に対応する素材 ID（cover_materials.json の並び順）。
+    /// コンボの表示文字列は「名前 (ID)」なので、IPC へ渡す ID はここから引く。
+    /// </summary>
+    private readonly System.Collections.Generic.List<string> _terrainCoverMaterialIds = new();
+
     /// <summary>低レベルマウスフックのコールバック（GC 回収防止のためフィールド保持）。</summary>
     private LowLevelMouseProc? _terrainMouseProc;
 
@@ -142,10 +161,61 @@ public partial class MainWindow
             SldTerrainDensity.ValueChanged += (_, _) => UpdateTerrainDensityLabel();
             UpdateTerrainDensityLabel();
         }
+        if (SldTerrainCoverAmount != null)
+        {
+            SldTerrainCoverAmount.ValueChanged += (_, _) => UpdateTerrainCoverAmountLabel();
+            UpdateTerrainCoverAmountLabel();
+        }
         // レイヤ選択コンボは layers.json（レイヤ総数自由）から動的に作る。
         RefreshTerrainLayerCombo();
         // プロップ選択コンボは props.json（プロップ総数自由）から動的に作る。
         RefreshTerrainPropCombo();
+        // カバー素材コンボは cover_materials.json（素材総数自由）から動的に作る。
+        RefreshTerrainCoverMaterialCombo();
+        // 既定は消去モードなので、素材／目標量の表示可否を初期状態へ合わせる。
+        UpdateTerrainCoverPaintParamVisibility();
+    }
+
+    /// <summary>
+    /// ツールバーのカバー素材選択コンボを cover_materials.json の内容から作り直す。
+    /// <para>
+    /// レイヤ／プロップのコンボ（<see cref="RefreshTerrainLayerCombo"/> /
+    /// <see cref="RefreshTerrainPropCombo"/>）と同じ流儀。素材総数は自由なので
+    /// XAML に固定項目は置かない。選択位置は可能な限り維持する。
+    /// IPC へ渡す素材 ID は表示文字列ではなく <see cref="_terrainCoverMaterialIds"/> から引く。
+    /// </para>
+    /// </summary>
+    private void RefreshTerrainCoverMaterialCombo()
+    {
+        if (CmbTerrainCoverMaterial == null) return;
+
+        int previous = CmbTerrainCoverMaterial.SelectedIndex;
+        var doc = SEEDEditor.Terrain.TerrainCoverMaterialsDocument.Load(AssetsPath);
+
+        CmbTerrainCoverMaterial.Items.Clear();
+        _terrainCoverMaterialIds.Clear();
+        foreach (var m in doc.Materials)
+        {
+            CmbTerrainCoverMaterial.Items.Add(
+                SEEDEditor.Terrain.TerrainCoverMaterialsDocument.FormatComboEntry(m.Name, m.Id));
+            _terrainCoverMaterialIds.Add(m.Id);
+        }
+
+        CmbTerrainCoverMaterial.SelectedIndex = _terrainCoverMaterialIds.Count == 0
+            ? -1
+            : Math.Clamp(previous < 0 ? 0 : previous, 0, _terrainCoverMaterialIds.Count - 1);
+    }
+
+    /// <summary>
+    /// ツールバーのカバー素材選択コンボから、敷く素材の ID を返す。
+    /// 未選択・UI 未生成のときは空文字を返す（消去ブラシでは素材が読まれないため無害）。
+    /// </summary>
+    private string GetSelectedTerrainCoverMaterialId()
+    {
+        int idx = CmbTerrainCoverMaterial?.SelectedIndex ?? -1;
+        return idx >= 0 && idx < _terrainCoverMaterialIds.Count
+            ? _terrainCoverMaterialIds[idx]
+            : TerrainCoverFallbackMaterialId;
     }
 
     /// <summary>
@@ -238,7 +308,15 @@ public partial class MainWindow
             // ランタイム未起動でも設定編集自体は可能にする（送信だけ黙って捨てる）。
             sendToRuntime: msg => _runtimeManager?.SendToRuntime(msg),
             // 保存後はツールバーのレイヤ／プロップ選択コンボを作り直して構成変更を反映する。
-            onSaved: () => { RefreshTerrainLayerCombo(); RefreshTerrainPropCombo(); })
+            // 保存後はツールバーの各選択コンボを作り直して構成変更を反映する
+            // （カバー素材は設定ウィンドウでは編集しないが、TERRAIN_RELOAD_LAYERS で
+            //   ランタイム側が cover_materials.json を読み直すため、表示も揃えておく）。
+            onSaved: () =>
+            {
+                RefreshTerrainLayerCombo();
+                RefreshTerrainPropCombo();
+                RefreshTerrainCoverMaterialCombo();
+            })
         {
             Owner = this,
         };
@@ -263,6 +341,35 @@ public partial class MainWindow
     {
         if (TxtTerrainDensity != null && SldTerrainDensity != null)
             TxtTerrainDensity.Text = $"{SldTerrainDensity.Value:F1}";
+    }
+
+    private void UpdateTerrainCoverAmountLabel()
+    {
+        if (TxtTerrainCoverAmount != null && SldTerrainCoverAmount != null)
+            TxtTerrainCoverAmount.Text = $"{SldTerrainCoverAmount.Value:F2}";
+    }
+
+    /// <summary>
+    /// カバーブラシの「消去」チェックが切り替わったときの表示更新。
+    /// 消去中は素材・目標量が使われないため隠す
+    /// （選択に無関係なパラメータは出さない、というインスペクタ方針に合わせる）。
+    /// </summary>
+    private void OnTerrainCoverEraseChanged(object sender, RoutedEventArgs e)
+        => UpdateTerrainCoverPaintParamVisibility();
+
+    /// <summary>
+    /// カバーブラシの塗り専用パラメータ（素材選択・目標量）の表示可否を、
+    /// 「消去」チェックの状態から決める。
+    /// </summary>
+    private void UpdateTerrainCoverPaintParamVisibility()
+    {
+        bool erasing = ChkTerrainCoverErase?.IsChecked == true;
+        var visibility = erasing ? Visibility.Collapsed : Visibility.Visible;
+        if (LblTerrainCoverMaterial != null) LblTerrainCoverMaterial.Visibility = visibility;
+        if (CmbTerrainCoverMaterial != null) CmbTerrainCoverMaterial.Visibility = visibility;
+        if (SldTerrainCoverAmount   != null) SldTerrainCoverAmount.Visibility   = visibility;
+        if (TxtTerrainCoverAmount   != null) TxtTerrainCoverAmount.Visibility   = visibility;
+        if (LblTerrainCoverAmount   != null) LblTerrainCoverAmount.Visibility   = visibility;
     }
 
     /// <summary>
@@ -467,6 +574,21 @@ public partial class MainWindow
             return;
         }
 
+        // カバーツールは積もったカバー場を消す／敷く別コマンド（TERRAIN_COVER_BRUSH）へ振り分ける。
+        // 半径／強度スライダーとストローク（undo 単位）の扱いは密度ブラシと共通で、
+        // 素材と目標量は塗りモードのときだけ意味を持つ（消去時はランタイムが無視する）。
+        if (_terrainOp == TerrainOpCover)
+        {
+            double amount = SldTerrainCoverAmount?.Value ?? TerrainCoverAmountFallback;
+            int erase = ChkTerrainCoverErase?.IsChecked == true
+                ? TerrainScatterEraseOn
+                : TerrainScatterEraseOff;
+            _runtimeManager.SendToRuntime(
+                $"TERRAIN_COVER_BRUSH:{GetSelectedTerrainCoverMaterialId()},{lx},{ly},"
+                + $"{radius.ToString(ci)},{strength.ToString(ci)},{amount.ToString(ci)},{erase.ToString(ci)}");
+            return;
+        }
+
         _runtimeManager.SendToRuntime(
             $"TERRAIN_BRUSH:{_terrainOp},{lx},{ly},{radius.ToString(ci)},{strength.ToString(ci)}");
     }
@@ -578,6 +700,7 @@ public partial class MainWindow
         else if (BtnTerrainFlatten?.IsChecked == true) _terrainOp = TerrainOpFlatten;
         else if (BtnTerrainPaint?.IsChecked == true)   _terrainOp = TerrainOpPaint;
         else if (BtnTerrainScatter?.IsChecked == true) _terrainOp = TerrainOpScatter;
+        else if (BtnTerrainCover?.IsChecked == true)   _terrainOp = TerrainOpCover;
 
         // レイヤ選択 UI はペイントツールのときだけ意味を持つため、それ以外では隠す
         // （選択に無関係なパラメータは出さない、というインスペクタ方針に合わせる）。
@@ -594,7 +717,15 @@ public partial class MainWindow
                 _terrainOp == TerrainOpScatter ? Visibility.Visible : Visibility.Collapsed;
         }
 
+        // 素材選択・目標量・消去はカバーツールのときだけ意味を持つため、同じ方針で隠す。
+        if (TerrainCoverPanel != null)
+        {
+            TerrainCoverPanel.Visibility =
+                _terrainOp == TerrainOpCover ? Visibility.Visible : Visibility.Collapsed;
+        }
+
         // 強度スライダーは散布ツールでは使わない（密度スライダーが代わりを務める）。
+        // カバーツールでは「1 発でどれだけ消す／敷くか」として使うので表示したままにする。
         if (TerrainStrengthPanel != null)
         {
             TerrainStrengthPanel.Visibility =

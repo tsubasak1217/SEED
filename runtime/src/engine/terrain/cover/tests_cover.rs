@@ -9,13 +9,14 @@
 // ============================================================
 
 use super::accumulate::accumulate_chunk;
+use super::brush::{brush_chunk as brush_cover_chunk, CoverBrushMode, CoverBrushSpec};
 use super::emit::{CoverEmitRange, CoverEmitSpec, CoverMask};
 use super::field::{
     cover_y_match_tolerance, slope_scale, CoverField, CoverNeighborhood, CoverSurface,
     COVER_BASE_Y_ABSENT, COVER_FIELD_RESOLUTION, COVER_SLOPE_UP_FULL, COVER_SLOPE_UP_MIN,
     COVER_SURFACE_ABSENT,
 };
-use super::material::{CoverMaterial, CoverMaterialSet};
+use super::material::{CoverMaterial, CoverMaterialSet, COVER_MATERIAL_NONE};
 use super::tcover::{read_chunk, write_chunk, TcoverError, TCOVER_MAGIC, TCOVER_VERSION};
 use super::trample::{
     resolve_forward_xz, stamp_chunk, stamp_chunk_tracked, CoverStampShape, CoverStampSpec,
@@ -1428,4 +1429,238 @@ fn tcover_v1_is_readable_and_migrates() {
         migrated.raw_base_y().iter().all(|&y| y.is_finite()),
         "再計算後は全テクセルの基準 Y が有限になること"
     );
+}
+
+// ============================================================
+//  5. カバーブラシ（地形編集モードの手編集）
+// ============================================================
+//
+//  本節が固定する契約:
+//    ・消しゴムはブラシ範囲だけを削り、範囲外を 1 ビットも変えない
+//    ・消し切ったテクセルは素材も空へ戻る（.tcover の削除規約と整合する）
+//    ・塗りは目標量へ収束する（何往復しても同じ絵になる）
+//    ・Y 照合により、地表をなぞったブラシが真下の洞窟の雪を消さない
+
+/// チャンク中央へ当てる消しゴムブラシ仕様。
+fn erase_brush(center: [f32; 3], radius: f32, strength: f32) -> CoverBrushSpec {
+    CoverBrushSpec {
+        center,
+        radius,
+        strength,
+        mode: CoverBrushMode::Erase,
+        material_index: MAT_SNOW,
+        target_amount: 0.0,
+    }
+}
+
+/// チャンク中央へ当てる塗りブラシ仕様。
+fn paint_brush(center: [f32; 3], radius: f32, strength: f32, mat: u8, target: f32) -> CoverBrushSpec {
+    CoverBrushSpec {
+        center,
+        radius,
+        strength,
+        mode: CoverBrushMode::Paint,
+        material_index: mat,
+        target_amount: target,
+    }
+}
+
+/// 消しゴムはブラシ範囲内だけを削り、範囲外は 1 ビットも変えないこと。
+#[test]
+fn cover_brush_erase_only_inside_radius() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+
+    // チャンク中央（原点は [0,0,0]）に半径 2m のブラシを当てる。
+    let center = [extent * 0.5, TEST_SURFACE_Y, extent * 0.5];
+    let spec = erase_brush(center, 2.0, 1.0);
+    let changed = brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &spec);
+    assert!(changed, "満量の雪へ消しゴムを当てたら変化すること");
+
+    // 中央のテクセルは減っている。
+    let mid = COVER_FIELD_RESOLUTION / 2;
+    assert!(field.amount_at(mid, mid) < 1.0, "ブラシ中心は削れること");
+    // 角（ブラシから 10m 以上離れている）は無傷。
+    assert_eq!(field.amount_at(0, 0), 1.0, "ブラシ範囲外は 1 ビットも変えないこと");
+    assert_eq!(
+        field.material_at(0, 0), MAT_SNOW,
+        "ブラシ範囲外の素材も変えないこと"
+    );
+}
+
+/// 消し切ったテクセルは量 0・素材なしになり、場全体が空になれば `is_empty` が真になること。
+///
+/// 「量 0 のチャンクは .tcover を削除する」保存規約（§3.4）が成立する前提を固定する。
+#[test]
+fn cover_brush_erase_clears_material_and_empties_field() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+    // 轍も付けておく（量だけでなく踏み固めも消えることの確認）。
+    for iz in 0..COVER_FIELD_RESOLUTION {
+        for ix in 0..COVER_FIELD_RESOLUTION {
+            field.stamp_trample(ix, iz, 0.5);
+        }
+    }
+
+    // チャンク全体を包む大きなブラシで、変化しなくなるまで当て続ける。
+    let center = [extent * 0.5, TEST_SURFACE_Y, extent * 0.5];
+    let spec = erase_brush(center, extent, 1.0);
+    for _ in 0..64 {
+        if !brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &spec) {
+            break;
+        }
+    }
+
+    assert!(field.is_empty(), "消しゴムで撫で切ったチャンクは空になること");
+    for iz in 0..COVER_FIELD_RESOLUTION {
+        for ix in 0..COVER_FIELD_RESOLUTION {
+            assert_eq!(field.amount_at(ix, iz), 0.0);
+            assert_eq!(field.trample_at(ix, iz), 0.0, "轍も一緒に消えること");
+            assert_eq!(
+                field.material_at(ix, iz), COVER_MATERIAL_NONE,
+                "消え切ったテクセルの素材は空へ戻ること"
+            );
+        }
+    }
+}
+
+/// 塗りブラシは目標量へ収束し、それを超えて積み上がらないこと（何往復しても同じ絵）。
+#[test]
+fn cover_brush_paint_converges_to_target_amount() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let mut field = CoverField::new();
+
+    let center = [extent * 0.5, TEST_SURFACE_Y, extent * 0.5];
+    let target = 0.5;
+    let spec = paint_brush(center, 4.0, 1.0, MAT_SNOW, target);
+    for _ in 0..64 {
+        if !brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &spec) {
+            break;
+        }
+    }
+
+    let mid = COVER_FIELD_RESOLUTION / 2;
+    // 量子化（1/255）の丸め幅を許容する。
+    let quant = 1.0 / 255.0;
+    assert!(
+        (field.amount_at(mid, mid) - target).abs() <= quant,
+        "ブラシ中心は目標量へ収束すること（実測 {}）",
+        field.amount_at(mid, mid)
+    );
+    assert_eq!(field.material_at(mid, mid), MAT_SNOW, "塗った素材になること");
+
+    // ─── 目標量を超えて積み上がらないこと ───
+    //   ブラシの縁は falloff がほぼ 0 なので収束が極端に遅い（＝上のループは
+    //   打ち切りで抜ける）。「これ以上 1 ビットも変わらない」を場全体へ課すと
+    //   縁の 1 テクセルのせいで落ちるため、契約は「上限を超えない」で固定する。
+    for iz in 0..COVER_FIELD_RESOLUTION {
+        for ix in 0..COVER_FIELD_RESOLUTION {
+            assert!(
+                field.amount_at(ix, iz) <= target + quant,
+                "塗りは目標量を超えないこと ({ix},{iz})"
+            );
+        }
+    }
+    // 収束済みの中心テクセルは、さらに当てても動かない。
+    let center_before = field.amount_at(mid, mid);
+    brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &spec);
+    assert_eq!(
+        field.amount_at(mid, mid), center_before,
+        "収束した中心テクセルはこれ以上変化しないこと"
+    );
+    // 「量を持つテクセルの基準 Y は必ず有限」の不変条件。
+    assert!(field.base_y_at(mid, mid).is_finite(), "塗ったテクセルの基準 Y は有限であること");
+}
+
+/// 塗りブラシは目標量より厚い場所を削って目標へ寄せること（両方向へ収束する）。
+#[test]
+fn cover_brush_paint_reduces_when_above_target() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let mut field = snowy_field_at(TEST_SURFACE_Y); // 満量（1.0）から始める
+
+    let center = [extent * 0.5, TEST_SURFACE_Y, extent * 0.5];
+    let target = 0.25;
+    let spec = paint_brush(center, 4.0, 1.0, MAT_SNOW, target);
+    for _ in 0..64 {
+        if !brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &spec) {
+            break;
+        }
+    }
+
+    let mid = COVER_FIELD_RESOLUTION / 2;
+    let quant = 1.0 / 255.0;
+    assert!(
+        (field.amount_at(mid, mid) - target).abs() <= quant,
+        "厚すぎる場所は目標量まで削れること（実測 {}）",
+        field.amount_at(mid, mid)
+    );
+}
+
+/// 異素材を塗ると、まず古い素材が削れてから新素材が乗ること（`deposit` と同じ置き換え規則）。
+#[test]
+fn cover_brush_paint_replaces_other_material_by_eroding_first() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let mut field = snowy_field_at(TEST_SURFACE_Y); // 雪が満量
+
+    let center = [extent * 0.5, TEST_SURFACE_Y, extent * 0.5];
+    let spec = paint_brush(center, 4.0, 1.0, MAT_LEAF, 1.0);
+    let mid = COVER_FIELD_RESOLUTION / 2;
+
+    // 1 発目: 雪がまだ残っているので素材は雪のまま、量だけ減る。
+    brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &spec);
+    assert_eq!(field.material_at(mid, mid), MAT_SNOW, "削っている間は素材が変わらないこと");
+    assert!(field.amount_at(mid, mid) < 1.0, "古い素材が削れること");
+
+    // 削り切るまで当て続けると落ち葉へ置き換わる。
+    for _ in 0..64 {
+        if !brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &spec) {
+            break;
+        }
+    }
+    assert_eq!(field.material_at(mid, mid), MAT_LEAF, "削り切ったら新素材へ置き換わること");
+}
+
+/// 地表をなぞったブラシが、Y 照合により別の段（真下の洞窟の床）へ効かないこと。
+#[test]
+fn cover_brush_does_not_reach_other_y_level() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    // 面が y=0 にあるカバー場に対し、ブラシは 1 チャンク下（y=-16）を指す。
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+    let before = field.raw_amount().to_vec();
+
+    let center = [extent * 0.5, TEST_SURFACE_Y - extent, extent * 0.5];
+    // 半径を大きくしても Y 許容差は半径由来なので、チャンク 1 辺ぶん離れれば届かない。
+    let spec = erase_brush(center, 2.0, 1.0);
+    let changed = brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &spec);
+
+    assert!(!changed, "別の段の面には効かないこと");
+    assert_eq!(field.raw_amount(), before.as_slice(), "量が 1 ビットも変わらないこと");
+}
+
+/// 強さ 0・半径 0 のブラシは完全に無作用であること（無駄な dirty 化を作らない）。
+#[test]
+fn cover_brush_is_noop_for_degenerate_spec() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let mut field = snowy_field_at(TEST_SURFACE_Y);
+    let before = field.raw_amount().to_vec();
+    let center = [extent * 0.5, TEST_SURFACE_Y, extent * 0.5];
+
+    assert!(!brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &erase_brush(center, 2.0, 0.0)));
+    assert!(!brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &erase_brush(center, 0.0, 1.0)));
+    assert!(!brush_cover_chunk(&mut field, &surface, [0.0, 0.0, 0.0], extent, &erase_brush(center, f32::NAN, 1.0)));
+    assert_eq!(field.raw_amount(), before.as_slice(), "無作用のブラシは場を変えないこと");
 }
