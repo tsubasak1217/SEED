@@ -50,23 +50,35 @@ impl Transform {
         Self::default()
     }
 
-    /// TRS 行列（行優先・GPU 慣習）を生成する。
-    /// YXZ: Ry * Rx * Rz の順で合成する。
-    pub fn to_mat4(&self) -> [[f32; 4]; 4] {
+    /// 回転行列の 3 本の基底ベクトル（列）を返す。スケール・平行移動は含まない。
+    ///
+    /// 戻り値は `[右(+X), 上(+Y), 前(+Z)]` の順で、いずれも単位長（純回転行列の列のため）。
+    /// YXZ オイラー角（度）から `R = Ry * Rx * Rz` を合成した結果の各列に対応する。
+    ///
+    /// **SEED のローカル前方向は +Z**（左手系）である。回転 0 のとき
+    /// 右 = (1,0,0) / 上 = (0,1,0) / 前 = (0,0,1) になる。
+    ///
+    /// `to_mat4()` / `forward()` / `up()` / `right()` はすべてこの 1 関数を経由するため、
+    /// 回転規約はここだけが正典であり、多重管理にならない。
+    pub fn rotation_basis(&self) -> [[f32; 3]; 3] {
         let [ex, ey, ez] = self.rotation.map(f32::to_radians);
         let (cx, sx) = (ex.cos(), ex.sin());
         let (cy, sy) = (ey.cos(), ey.sin());
         let (cz, sz) = (ez.cos(), ez.sin());
 
-        let r00 = cy * cz + sy * sx * sz;
-        let r01 = -cy * sz + sy * sx * cz;
-        let r02 = sy * cx;
-        let r10 = cx * sz;
-        let r11 = cx * cz;
-        let r12 = -sx;
-        let r20 = -sy * cz + cy * sx * sz;
-        let r21 = sy * sz + cy * sx * cz;
-        let r22 = cy * cx;
+        // 列 0 = 右方向、列 1 = 上方向、列 2 = 前方向
+        [
+            [cy * cz + sy * sx * sz, cx * sz, -sy * cz + cy * sx * sz],
+            [-cy * sz + sy * sx * cz, cx * cz, sy * sz + cy * sx * cz],
+            [sy * cx, -sx, cy * cx],
+        ]
+    }
+
+    /// TRS 行列（行優先・GPU 慣習）を生成する。
+    /// YXZ: Ry * Rx * Rz の順で合成する。
+    pub fn to_mat4(&self) -> [[f32; 4]; 4] {
+        // 回転部分は rotation_basis()（正典）の列をそのまま使う
+        let [[r00, r10, r20], [r01, r11, r21], [r02, r12, r22]] = self.rotation_basis();
 
         let [svx, svy, svz] = self.scale;
         let [tx, ty, tz] = self.position;
@@ -79,29 +91,22 @@ impl Transform {
         ]
     }
 
-    /// ワールド前方向ベクトルを返す（スケール無視）。
+    /// ワールド前方向ベクトルを返す（スケール無視・単位長）。
     ///
-    /// YXZ オイラー角から +Z forward を計算する。
+    /// YXZ オイラー角から +Z forward を計算する（回転 0 で (0,0,1)）。
     /// カメラのビュー行列構築などに使用する。
     pub fn forward(&self) -> [f32; 3] {
-        let [ex, ey, _] = self.rotation.map(f32::to_radians);
-        let cx = ex.cos();
-        let sx = ex.sin();
-        let cy = ey.cos();
-        let sy = ey.sin();
-        [sy * cx, -sx, cy * cx]
+        self.rotation_basis()[2]
     }
 
-    /// ワールド上方向ベクトルを返す（スケール無視）。
+    /// ワールド上方向ベクトルを返す（スケール無視・単位長。回転 0 で (0,1,0)）。
     pub fn up(&self) -> [f32; 3] {
-        let [ex, ey, ez] = self.rotation.map(f32::to_radians);
-        let cx = ex.cos();
-        let sx = ex.sin();
-        let cy = ey.cos();
-        let sy = ey.sin();
-        let cz = ez.cos();
-        let sz = ez.sin();
-        [-cy * sz + sy * sx * cz, cx * cz, sy * sz + cy * sx * cz]
+        self.rotation_basis()[1]
+    }
+
+    /// ワールド右方向ベクトルを返す（スケール無視・単位長。回転 0 で (1,0,0)）。
+    pub fn right(&self) -> [f32; 3] {
+        self.rotation_basis()[0]
     }
 
     /// 行列から位置・YXZ オイラー角（度）・スケールを取り出す。
@@ -171,3 +176,107 @@ impl Transform {
 
 // ECS コンポーネントとして登録
 impl Component for Transform {}
+
+// ─── テスト ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 方向ベクトル比較の許容誤差（f32 の三角関数誤差を吸収する）
+    const EPS: f32 = 1e-5;
+
+    /// 3 要素ベクトルが期待値と一致するか（許容誤差付き）を検証する。
+    fn assert_vec3_near(actual: [f32; 3], expected: [f32; 3], label: &str) {
+        for i in 0..3 {
+            assert!(
+                (actual[i] - expected[i]).abs() < EPS,
+                "{label}: 成分 {i} が不一致 actual={actual:?} expected={expected:?}"
+            );
+        }
+    }
+
+    /// 回転を指定した Transform を作る（位置・スケールは既定値）。
+    fn with_rotation(rotation: [f32; 3]) -> Transform {
+        Transform { rotation, ..Default::default() }
+    }
+
+    /// 回転 0 のとき、基底は世界軸に一致する（＝エンジンの前方向は +Z）。
+    #[test]
+    fn basis_at_identity_rotation_is_world_axes() {
+        let t = Transform::identity();
+        assert_vec3_near(t.forward(), [0.0, 0.0, 1.0], "forward(+Z)");
+        assert_vec3_near(t.up(), [0.0, 1.0, 0.0], "up(+Y)");
+        assert_vec3_near(t.right(), [1.0, 0.0, 0.0], "right(+X)");
+    }
+
+    /// Y 軸 +90 度回転で、前方向が回転前の右方向（+X）へ移る（左手系・時計回り）。
+    #[test]
+    fn yaw_90_moves_forward_to_world_right() {
+        let t = with_rotation([0.0, 90.0, 0.0]);
+        assert_vec3_near(t.forward(), [1.0, 0.0, 0.0], "yaw90 forward");
+        assert_vec3_near(t.right(), [0.0, 0.0, -1.0], "yaw90 right");
+        assert_vec3_near(t.up(), [0.0, 1.0, 0.0], "yaw90 up");
+    }
+
+    /// X 軸 +90 度回転（見下ろし）で、前方向が -Y、上方向が +Z を向く。
+    #[test]
+    fn pitch_90_looks_down() {
+        let t = with_rotation([90.0, 0.0, 0.0]);
+        assert_vec3_near(t.forward(), [0.0, -1.0, 0.0], "pitch90 forward");
+        assert_vec3_near(t.up(), [0.0, 0.0, 1.0], "pitch90 up");
+        assert_vec3_near(t.right(), [1.0, 0.0, 0.0], "pitch90 right");
+    }
+
+    /// Z 軸 +90 度回転（ロール）で、上方向が -X、右方向が +Y へ移り、前方向は不変。
+    #[test]
+    fn roll_90_rotates_up_and_right_only() {
+        let t = with_rotation([0.0, 0.0, 90.0]);
+        assert_vec3_near(t.forward(), [0.0, 0.0, 1.0], "roll90 forward");
+        assert_vec3_near(t.up(), [-1.0, 0.0, 0.0], "roll90 up");
+        assert_vec3_near(t.right(), [0.0, 1.0, 0.0], "roll90 right");
+    }
+
+    /// 任意回転でも基底は正規直交（単位長かつ互いに直交）であることを保証する。
+    /// スクリプト API が「正規化済み」と約束しているため、その根拠を固定する。
+    #[test]
+    fn basis_is_orthonormal_for_arbitrary_rotation() {
+        let t = with_rotation([37.0, -128.0, 64.0]);
+        let axes = [t.right(), t.up(), t.forward()];
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        for (i, a) in axes.iter().enumerate() {
+            assert!((dot(*a, *a) - 1.0).abs() < EPS, "軸 {i} が単位長でない: {a:?}");
+            for (j, b) in axes.iter().enumerate().skip(i + 1) {
+                assert!(dot(*a, *b).abs() < EPS, "軸 {i} と軸 {j} が直交していない");
+            }
+        }
+        // 左手系の関係（右 = 上 × 前）を確認する
+        let (u, f) = (t.up(), t.forward());
+        let cross = [
+            u[1] * f[2] - u[2] * f[1],
+            u[2] * f[0] - u[0] * f[2],
+            u[0] * f[1] - u[1] * f[0],
+        ];
+        assert_vec3_near(cross, t.right(), "up × forward == right");
+    }
+
+    /// 基底は to_mat4() の回転部分（各列）と一致する。
+    /// 方向ベクトルと描画用行列で回転規約がずれていないことを固定する。
+    #[test]
+    fn basis_matches_to_mat4_columns() {
+        // スケールを掛けても列方向が変わらないことを見るため非一様スケールを与える
+        let t = Transform {
+            position: [3.0, -2.0, 8.0],
+            rotation: [37.0, -128.0, 64.0],
+            scale: [2.0, 3.0, 4.0],
+        };
+        let m = t.to_mat4();
+        let axes = [t.right(), t.up(), t.forward()];
+        for (col, axis) in axes.iter().enumerate() {
+            // 行列の列 = 基底 × その軸のスケール
+            let s = t.scale[col];
+            let column = [m[0][col] / s, m[1][col] / s, m[2][col] / s];
+            assert_vec3_near(column, *axis, "to_mat4 列と基底の一致");
+        }
+    }
+}

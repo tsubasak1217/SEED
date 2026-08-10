@@ -580,7 +580,7 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="コンポーネント GetComponent Transform CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ">
+<section id="sec-components" data-keywords="コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -589,9 +589,19 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
   <div class="api"><code class="sig">transform.Rotation</code><span class="desc">Vector3（get/set。YXZ オイラー角・度）</span></div>
   <div class="api"><code class="sig">transform.Scale</code><span class="desc">Vector3（get/set）</span></div>
   <div class="api"><code class="sig">transform.Teleport(pos)</code><span class="desc">void: 衝突を無視して pos へ瞬間移動（キャラクターコントローラー用。前回位置もリセットし押し戻されない）</span></div>
+  <div class="api"><code class="sig">transform.Forward</code><span class="desc">Vector3（get のみ。前方向・正規化済み。回転 0 のとき (0,0,1)）</span></div>
+  <div class="api"><code class="sig">transform.Back</code><span class="desc">Vector3（get のみ。-Forward）</span></div>
+  <div class="api"><code class="sig">transform.Right</code><span class="desc">Vector3（get のみ。右方向・正規化済み。回転 0 のとき (1,0,0)）</span></div>
+  <div class="api"><code class="sig">transform.Left</code><span class="desc">Vector3（get のみ。-Right）</span></div>
+  <div class="api"><code class="sig">transform.Up</code><span class="desc">Vector3（get のみ。上方向・正規化済み。回転 0 のとき (0,1,0)）</span></div>
+  <div class="api"><code class="sig">transform.Down</code><span class="desc">Vector3（get のみ。-Up）</span></div>
 <pre><span class="c">// 例: 回しながら上げる</span>
 transform.Rotation += <span class="k">new</span> <span class="t">SEED.Vector3</span>(0f, 90f * <span class="t">SEED.Time</span>.DeltaTime, 0f);
-transform.Position += <span class="t">SEED.Vector3</span>.Up * <span class="t">SEED.Time</span>.DeltaTime;</pre>
+transform.Position += <span class="t">SEED.Vector3</span>.Up * <span class="t">SEED.Time</span>.DeltaTime;
+
+<span class="c">// 例: 自分の向いている方向へ前進する</span>
+transform.Position += transform.Forward * 5f * <span class="t">SEED.Time</span>.DeltaTime;</pre>
+  <p class="section-note"><b>エンジンの前方向は +Z</b>（左手系）です。<code>Rotation</code> が 0 のとき <code>Forward == (0,0,1)</code> / <code>Right == (1,0,0)</code> / <code>Up == (0,1,0)</code> になります。方向ベクトルはスケールの影響を受けず常に正規化済み・ワールド空間で、<code>Back</code> / <code>Left</code> / <code>Down</code> はそれぞれ <code>Forward</code> / <code>Right</code> / <code>Up</code> の符号反転です（すべて get のみ）。</p>
   <p class="section-note"><b>親子の追従</b>: <code>Transform</code> の各値はワールド絶対座標です。スクリプトから <code>Position</code> / <code>Rotation</code> / <code>Scale</code> のいずれかを書き込むと、その差分が自身のメッシュと全子孫アクター（Transform とメッシュの両方）へ即座に伝播します。モデルを持たない子アクター（カメラなど）も追従します。代入した直後に子の <code>Transform</code> を読めば更新後の値が返ります。なおアニメーション・物理による Transform 更新はこの伝播経路を通りません（既知の制限）。</p>
 
   <h3 id="cmp-canvastransform">CanvasTransform（2D キャンバス上の位置・回転・スケール）</h3>

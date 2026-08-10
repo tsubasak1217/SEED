@@ -543,6 +543,13 @@ fn read_floats(
                 "position" => put(out, &t.position),
                 "rotation" => put(out, &t.rotation),
                 "scale"    => put(out, &t.scale),
+                // ── 方向ベクトル（read のみ・単位長）──
+                // 回転規約（YXZ オイラー・前方向 +Z）の正典である Transform::rotation_basis()
+                // をそのまま通す。C# 側で再計算せず、ここで得た基底を返すことで二重管理を防ぐ。
+                // Back / Left / Down は C# 側で符号反転して求める。
+                "forward"  => put(out, &t.forward()),
+                "up"       => put(out, &t.up()),
+                "right"    => put(out, &t.right()),
                 _          => None,
             }
         }

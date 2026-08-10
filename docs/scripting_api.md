@@ -511,10 +511,26 @@ transform.Rotation         // Vector3（get/set。YXZ オイラー角・度）
 transform.Scale            // Vector3（get/set）
 transform.Teleport(pos)    // void: 衝突を無視して pos へ瞬間移動（キャラクターコントローラー用）
 
+// 方向ベクトル（すべて get のみ・ワールド空間・正規化済み）
+transform.Forward          // Vector3（回転 0 のとき (0,0,1)）
+transform.Back             // Vector3（-Forward）
+transform.Right            // Vector3（回転 0 のとき (1,0,0)）
+transform.Left             // Vector3（-Right）
+transform.Up               // Vector3（回転 0 のとき (0,1,0)）
+transform.Down             // Vector3（-Up）
+
 // 例: 回しながら上げる（エンジン API は SEED. で修飾）
 transform.Rotation += new SEED.Vector3(0f, 90f * SEED.Time.DeltaTime, 0f);
 transform.Position += SEED.Vector3.Up * SEED.Time.DeltaTime;
+
+// 例: 自分の向いている方向へ前進する
+transform.Position += transform.Forward * 5f * SEED.Time.DeltaTime;
 ```
+
+> **重要 — エンジンの前方向は +Z**（左手系）です。`Transform.Rotation` が 0 のとき
+> `Forward == (0,0,1)` / `Right == (1,0,0)` / `Up == (0,1,0)` になります。方向ベクトルは
+> スケールの影響を受けず常に正規化済み・ワールド空間で、`Back` / `Left` / `Down` は
+> それぞれ `Forward` / `Right` / `Up` の符号反転です（すべて get のみ）。
 
 > **`Teleport(pos)`**: キャラクターコントローラー（Collider の「キャラクターコントローラー」ON）を、
 > 地形との衝突解決（自動押し戻し）を発生させずに `pos` へ瞬間移動します。物理側の「前回位置」も

@@ -62,6 +62,34 @@ public readonly struct Transform : IComponentHandle<Transform>
         set => ScriptHost.TrySetVec3(_entity, Comp, "scale", value);
     }
 
+    // ── 方向ベクトル（すべて get のみ・ワールド空間・正規化済み）─────────
+    //
+    // 値は Rust 側 Transform::rotation_basis()（YXZ オイラーの回転規約の正典）が
+    // 算出した基底をそのまま受け取る。C# 側でオイラー→行列を再実装しないこと
+    // （回転規約が二重管理になり、片方だけ直したときに静かにずれる）。
+    // SEED のローカル前方向は +Z なので、回転 0 のとき Forward == (0,0,1)。
+
+    /// <summary>前方向（ワールド空間・正規化済み。回転 0 のとき +Z）。</summary>
+    public Vector3 Forward
+        => ScriptHost.TryGetVec3(_entity, Comp, "forward", out var v) ? v : Vector3.Forward;
+
+    /// <summary>後方向（<see cref="Forward"/> の反転）。</summary>
+    public Vector3 Back => -Forward;
+
+    /// <summary>右方向（ワールド空間・正規化済み。回転 0 のとき +X）。</summary>
+    public Vector3 Right
+        => ScriptHost.TryGetVec3(_entity, Comp, "right", out var v) ? v : Vector3.Right;
+
+    /// <summary>左方向（<see cref="Right"/> の反転）。</summary>
+    public Vector3 Left => -Right;
+
+    /// <summary>上方向（ワールド空間・正規化済み。回転 0 のとき +Y）。</summary>
+    public Vector3 Up
+        => ScriptHost.TryGetVec3(_entity, Comp, "up", out var v) ? v : Vector3.Up;
+
+    /// <summary>下方向（<see cref="Up"/> の反転）。</summary>
+    public Vector3 Down => -Up;
+
     /// <summary>
     /// キャラクターコントローラーを衝突無視で瞬間移動させる。
     ///
