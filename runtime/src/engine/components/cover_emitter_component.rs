@@ -261,7 +261,7 @@ mod tests {
             fade: 0.5,
             mask_path: "assets://masks/snow.png".to_string(),
             mask_size: [64.0, 48.0],
-            material_id: "leaf_carpet".to_string(),
+            material_id: "wet".to_string(),
             strength: 1.25,
             enabled: false,
         };

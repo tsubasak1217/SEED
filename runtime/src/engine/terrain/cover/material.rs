@@ -280,7 +280,7 @@ impl Default for CoverMaterialSet {
     /// cover_materials.json が読めないときの組み込み既定セット。
     ///
     /// アセットが無い環境（テスト・最小構成）でも「雪を降らせる」が
-    /// そのまま動くように、サンプルアセットと同じ 3 種を内蔵する。
+    /// そのまま動くように、サンプルアセットと同じ 2 種（雪・濡れ）を内蔵する。
     fn default() -> Self {
         Self {
             materials: vec![
@@ -305,24 +305,6 @@ impl Default for CoverMaterialSet {
                     rim_ratio: 0.5,
                     // 深い溝の底からは空がほとんど見えない。
                     trample_cavity: 0.7,
-                },
-                CoverMaterial {
-                    id: "leaf_carpet".to_string(),
-                    name: "落ち葉の絨毯".to_string(),
-                    // 枯葉の茶色。
-                    albedo: [0.24, 0.13, 0.05],
-                    roughness: 0.90,
-                    // 葉は薄いので盛り上がりは小さい。
-                    displacement: 0.06,
-                    // 落ち葉は風で戻らない（降り積もる分だけで埋まる）。
-                    refill_rate: 0.0,
-                    // 踏むと潰れるが、雪ほど形は残らない。
-                    footprint_persistence: 0.5,
-                    // 潰れた葉は湿って暗くなる。
-                    trample_darkening: 0.3,
-                    // 葉は絡み合っていて雪ほど横へ逃げない。
-                    rim_ratio: 0.3,
-                    trample_cavity: 0.5,
                 },
                 CoverMaterial {
                     id: "wet".to_string(),
@@ -402,7 +384,7 @@ mod tests {
     fn index_of_resolves_id() {
         let set = CoverMaterialSet::default();
         assert_eq!(set.index_of("snow"), Some(0));
-        assert_eq!(set.index_of("wet"), Some(2));
+        assert_eq!(set.index_of("wet"), Some(1));
         assert_eq!(set.index_of("nonexistent"), None);
     }
 
@@ -452,13 +434,13 @@ mod tests {
         assert_eq!(set.len(), TERRAIN_MAX_COVER_MATERIALS);
     }
 
-    /// 既定セットが「雪・落ち葉・濡れ」の 3 種であること（サンプルアセットとの契約）。
+    /// 既定セットが「雪・濡れ」の 2 種であること（サンプルアセットとの契約）。
     #[test]
-    fn default_set_has_three_samples() {
+    fn default_set_has_two_samples() {
         let set = CoverMaterialSet::default();
-        assert_eq!(set.len(), 3);
+        assert_eq!(set.len(), 2);
         // 濡れは変位ゼロ・粗さ低下（雨用）という仕様上の約束。
-        let wet = set.get(2).expect("3 件目があること");
+        let wet = set.get(1).expect("2 件目があること");
         assert_eq!(wet.displacement, 0.0);
         assert!(wet.roughness < 0.5);
     }
