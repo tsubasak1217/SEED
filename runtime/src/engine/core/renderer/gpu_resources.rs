@@ -1684,6 +1684,29 @@ const LOD_DIST_SQ: [f32; 3] = [
                    // 60 ユニット以遠: LOD3（10%）
 ];
 
+/// カメラからの距離の二乗を距離 LOD バケット番号（0..NUM_LODS-1）へ写す純関数。
+///
+/// `update()` の LOD 振り分けと、`lod_buckets_unchanged()` の再判定が
+/// **必ず同じ式を使う**ようにするため、判定を 1 か所へ集約している
+/// （両者がずれると「スキップしたのに本来は LOD が変わっていた」＝見た目の変化になる）。
+fn lod_bucket_for_dist_sq(dist_sq: f32) -> usize {
+    if dist_sq < LOD_DIST_SQ[0] { 0 }
+    else if dist_sq < LOD_DIST_SQ[1] { 1 }
+    else if dist_sq < LOD_DIST_SQ[2] { 2 }
+    else { 3 }
+}
+
+/// ワールド AABB の中心とカメラ位置から距離の二乗を求める純関数（LOD 振り分けの入力）。
+fn lod_dist_sq_from_aabb(aabb_min: [f32; 3], aabb_max: [f32; 3], camera_pos: [f32; 3]) -> f32 {
+    let cx = (aabb_min[0] + aabb_max[0]) * 0.5;
+    let cy = (aabb_min[1] + aabb_max[1]) * 0.5;
+    let cz = (aabb_min[2] + aabb_max[2]) * 0.5;
+    let dx = cx - camera_pos[0];
+    let dy = cy - camera_pos[1];
+    let dz = cz - camera_pos[2];
+    dx * dx + dy * dy + dz * dz
+}
+
 /// レンダーパスで `draw_indexed` を呼ぶ際に必要な
 /// (ノード, プリミティブ) ペア情報。
 ///
@@ -1787,6 +1810,17 @@ pub struct InstancedModelBatch {
 
     // ── Dirty Flag ───────────────────────────────────────────
     dirty: bool,
+
+    /// このバッチが GPU へアップロードした内容の版番号（`next_gpu_generation()` で採番）。
+    ///
+    /// `update()` を実行するたびに新しい世代へ差し替わる。プロセス内で単調増加する
+    /// グローバルカウンタから採番するため、**別のバッチと値が衝突することはない**
+    /// （バッチが解放されて同じアドレスに新しいバッチが再確保されても誤検出しない）。
+    ///
+    /// 保証は片方向で「世代が同じなら GPU バッファの内容も確実に同じ」。逆
+    /// （内容が同じでも世代が変わりうる）は成立するが、利用側（シャドウ深度パスの
+    /// 静的スキップ）は再描画へ倒れるだけなので見た目に影響しない。
+    content_generation: u64,
 
     /// インスタンスごとの Animator 駆動権威時刻（元インスタンスインデックス順）。
     /// `Some(t)` のインスタンスは `t` を再生時刻として使う（`ModelComponent::anim_drive` 由来）。
@@ -2147,6 +2181,8 @@ impl InstancedModelBatch {
             lod_id_bgs,
             lod_compact_insts: vec![Vec::new(); NUM_LODS],
             dirty: true,
+            // 生成直後は「まだ何もアップロードしていない」固有世代を持つ。
+            content_generation: next_gpu_generation(),
             anim_time_overrides: Vec::new(),
             // タグ列は初回 update() で埋まる（空 = 全インスタンス タグ無し扱い）。
             render_tags:         Vec::new(),
@@ -2162,6 +2198,47 @@ impl InstancedModelBatch {
     pub fn set_anim_time_overrides(&mut self, overrides: &[Option<f32>]) {
         self.anim_time_overrides.clear();
         self.anim_time_overrides.extend_from_slice(overrides);
+    }
+
+    /// GPU へアップロード済みの内容の版番号（`update()` のたびに採り直される）。
+    /// 「値が前フレームと同じ ⇒ このバッチが描く内容は完全に同一」を意味する。
+    pub fn content_generation(&self) -> u64 { self.content_generation }
+
+    /// 現在のカメラ位置で距離 LOD を振り直しても、前回 `update()` が確定させた
+    /// LOD バケット割り当てと完全一致するかを返す（統合バッチ更新のダーティゲート用）。
+    ///
+    /// `update()` の出力はインスタンス行列・タグ・アニメ時刻に加えて
+    /// 「カメラ距離による LOD 振り分け結果」に依存する。カメラは毎フレーム微動しうるが、
+    /// **振り分け結果が変わらない限り** アップロードされる中身は完全に同一になる。
+    /// そこでカメラ位置そのものを比較するのではなく、キャッシュ済みのワールド AABB から
+    /// バケットを再計算して前回結果と突き合わせる（インスタンス数ぶんの距離計算のみ＝軽量）。
+    ///
+    /// `false` を返すのは「バケットが 1 つでも移動した」場合と、内部状態が
+    /// 未確定（`dirty` / AABB キャッシュ長の不一致）の場合。安全側に倒して再計算させる。
+    pub fn lod_buckets_unchanged(&self, camera_pos: [f32; 3]) -> bool {
+        // ワールド行列キャッシュが未確定なら判定できない（＝更新させる）。
+        if self.dirty { return false; }
+        let n_instances = self.world_aabbs.len();
+        if n_instances == 0 { return false; }
+        // 前回の振り分け結果を「インスタンス添字 → LOD」の逆引き表に展開する。
+        // 全 LOD の合計が n_instances と一致しなければ整合が取れていない＝再計算。
+        const LOD_UNASSIGNED: usize = usize::MAX;
+        let mut assigned = vec![LOD_UNASSIGNED; n_instances];
+        let mut total = 0usize;
+        for (lod, insts) in self.lod_compact_insts.iter().enumerate() {
+            for &inst_idx in insts {
+                if inst_idx >= n_instances { return false; }
+                assigned[inst_idx] = lod;
+                total += 1;
+            }
+        }
+        if total != n_instances { return false; }
+        // 現在のカメラ位置で振り直して 1 つでも違えば「変化あり」。
+        for (inst_idx, aabb) in self.world_aabbs.iter().enumerate() {
+            let dist_sq = lod_dist_sq_from_aabb(aabb.aabb_min, aabb.aabb_max, camera_pos);
+            if lod_bucket_for_dist_sq(dist_sq) != assigned[inst_idx] { return false; }
+        }
+        true
     }
 
     // ── GPU メッシュレットカリング（第1弾）─────────────────────
@@ -2321,6 +2398,10 @@ impl InstancedModelBatch {
         render_tags:     &[u8],
         camera_pos:      [f32; 3],
     ) {
+        // アップロード内容が差し替わるので版番号を採り直す（早期 return するケースも
+        // 含めて必ず更新し、「世代が同じなら内容も同じ」という片方向保証を守る）。
+        self.content_generation = next_gpu_generation();
+
         let n_instances  = root_transforms.len();
         let n_mesh_nodes = self.n_mesh_nodes;
         if n_mesh_nodes == 0 { return; }
@@ -2416,18 +2497,8 @@ impl InstancedModelBatch {
         self.velocity_reset = false;
 
         for (inst_idx, aabb) in self.world_aabbs.iter().enumerate() {
-            let cx = (aabb.aabb_min[0] + aabb.aabb_max[0]) * 0.5;
-            let cy = (aabb.aabb_min[1] + aabb.aabb_max[1]) * 0.5;
-            let cz = (aabb.aabb_min[2] + aabb.aabb_max[2]) * 0.5;
-            let dx = cx - camera_pos[0];
-            let dy = cy - camera_pos[1];
-            let dz = cz - camera_pos[2];
-            let dist_sq = dx*dx + dy*dy + dz*dz;
-
-            let lod = if dist_sq < LOD_DIST_SQ[0] { 0 }
-                      else if dist_sq < LOD_DIST_SQ[1] { 1 }
-                      else if dist_sq < LOD_DIST_SQ[2] { 2 }
-                      else { 3 };
+            let dist_sq = lod_dist_sq_from_aabb(aabb.aabb_min, aabb.aabb_max, camera_pos);
+            let lod = lod_bucket_for_dist_sq(dist_sq);
 
             lod_visible_insts[lod].push(inst_idx);
             for pos in 0..n_mesh_nodes {

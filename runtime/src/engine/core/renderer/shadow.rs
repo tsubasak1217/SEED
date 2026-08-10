@@ -93,6 +93,10 @@ pub struct ShadowPlan {
     pub dir_active: bool,
     /// 描画するスポット影の数（0..MAX_SHADOW_SPOTS）。
     pub spot_count: usize,
+    /// カスケードごとの light view-proj（ワールド→クリップ, 行優先）。
+    /// `record()` がカスケード別キャスターカリングと静的スキップ判定に使う。
+    /// `dir_active == false` のときは単位行列（未使用）。
+    pub cascade_vp: [Mat4x4<f32>; CSM_CASCADE_COUNT],
 }
 
 impl ShadowPlan {
@@ -129,6 +133,25 @@ pub struct ShadowResources {
     cascade_cams:      Vec<CameraBuffer>,
     /// スポットごとのシャドウカメラ。
     spot_cams:         Vec<CameraBuffer>,
+    /// カスケードごとの「前フレームに深度マップへ描いた内容」の署名（静的スキップ用）。
+    /// `None` = 内容不明（起動直後・方向光影が無効だったフレームの後）＝必ず描き直す。
+    /// `record()` は `&self` で呼ばれるため内部可変で持つ（GPU 資源とは独立の CPU 状態）。
+    last_cascade_sigs: std::cell::RefCell<Vec<Option<CascadeDrawSig>>>,
+}
+
+/// 1 カスケードが深度マップへ描いた内容を一意に決める署名（静的スキップの比較対象）。
+///
+/// - `vp`:      カスケードの light view-proj。**ビット一致**で比較する（誤差許容なし）。
+///              ライト方向・カメラ姿勢・分割距離のどれが変わってもここに現れる。
+/// - `casters`: そのカスケードで実際に描いたキャスターの内容世代を描画順に並べたもの。
+///              `InstancedModelBatch::content_generation()` はプロセス内で一意なので、
+///              値が一致する ⇒ そのバッチのインスタンス行列・ボーン時刻・LOD 可視数まで
+///              含めて完全に同一、が保証される（バッチの解放・再確保でも衝突しない）。
+///              カリング結果が変われば要素数か並びが変わるので、それも検出できる。
+#[derive(Clone, Debug, PartialEq)]
+struct CascadeDrawSig {
+    vp:      [[f32; 4]; 4],
+    casters: Vec<u64>,
 }
 
 impl ShadowResources {
@@ -226,6 +249,8 @@ impl ShadowResources {
             ubo,
             cascade_cams,
             spot_cams,
+            // 起動直後は深度マップの内容が未定義なので、全カスケード「要描画」から始める。
+            last_cascade_sigs: std::cell::RefCell::new(vec![None; CSM_CASCADE_COUNT]),
         }
     }
 
@@ -257,7 +282,11 @@ impl ShadowResources {
                 if wants_shadow(l) { l.shadow_index = -1.0; }
             }
             queue.write_buffer(&self.ubo, 0, bytemuck::bytes_of(&ubo));
-            return ShadowPlan { dir_active: false, spot_count: 0 };
+            return ShadowPlan {
+                dir_active: false,
+                spot_count: 0,
+                cascade_vp: [Mat4x4::identity(); CSM_CASCADE_COUNT],
+            };
         }
 
         // ── 採用スロットの割り当て ────────────────────────────
@@ -290,8 +319,11 @@ impl ShadowResources {
         let spot_count = spot_srcs.len();
 
         // ── 方向光 CSM 行列 ───────────────────────────────────
+        // カスケード行列は record() のカリング／静的スキップ判定でも使うため plan で返す。
+        let mut cascade_vp = [Mat4x4::identity(); CSM_CASCADE_COUNT];
         if let Some(dir) = dir_dir {
             let (vps, splits) = compute_cascade_matrices(cam_view, near, far, fov_y, aspect, dir);
+            cascade_vp = vps;
             for i in 0..CSM_CASCADE_COUNT {
                 self.cascade_cams[i].update(queue, &view_proj_uniform(&vps[i], SHADOW_MAP_SIZE as f32));
                 ubo.cascade_vp[i] = vps[i].transpose().data;
@@ -314,13 +346,22 @@ impl ShadowResources {
         ];
         queue.write_buffer(&self.ubo, 0, bytemuck::bytes_of(&ubo));
 
-        ShadowPlan { dir_active, spot_count }
+        ShadowPlan { dir_active, spot_count, cascade_vp }
     }
 
     /// 影パスを記録する（`plan.any()` が true のときのみ呼ぶ）。
     ///
-    /// 各カスケード/スポットのレイヤへ深度専用パスを開き、全キャスターを描画する。
+    /// 各カスケード/スポットのレイヤへ深度専用パスを開き、キャスターを描画する。
     /// `casters` はメインパスと同じ (GpuModel, Batch) の並び（cast_shadows で事前フィルタ済み）。
+    ///
+    /// 方向光カスケードには 2 段の省略が入る（いずれも**描画結果は完全に不変**）:
+    ///   ① カスケード別キャスターカリング: そのカスケードの正射ボリューム（クリップ空間）と
+    ///      交差しないキャスターを描画から外す。GPU のクリップで捨てられるものを CPU で
+    ///      先に落とすだけなので深度バッファの中身は変わらない。
+    ///   ② 静的カスケードスキップ: カスケード行列（ビット一致）と、そのカスケードが描く
+    ///      キャスター列（内容世代）が前フレームと完全一致するなら、深度パス自体を開かず
+    ///      前フレームの深度マップを使い回す。深度テクスチャは常設で他用途に使われないため
+    ///      内容は保たれる。
     pub fn record(
         &self,
         encoder:      &mut wgpu::CommandEncoder,
@@ -330,12 +371,44 @@ impl ShadowResources {
     ) {
         // 方向光カスケード。
         if plan.dir_active {
+            // キャスターのワールド AABB は全カスケードで共用するので 1 回だけ求める。
+            // None = 境界不明（update 未実行など）＝カリング対象外（必ず描く）。
+            let caster_bounds: Vec<Option<([f32; 3], [f32; 3])>> = casters.iter()
+                .map(|(_, batch)| caster_cull_bounds(batch))
+                .collect();
+
+            let mut last_sigs = self.last_cascade_sigs.borrow_mut();
             for i in 0..CSM_CASCADE_COUNT {
+                let vp = &plan.cascade_vp[i];
+                // ── ① カスケード別キャスターカリング ──────────────────
+                let visible: Vec<usize> = (0..casters.len())
+                    .filter(|&k| match caster_bounds[k] {
+                        Some((mn, mx)) => !aabb_outside_clip_volume(vp, mn, mx),
+                        None           => true,
+                    })
+                    .collect();
+
+                // ── ② 静的カスケードスキップ ─────────────────────────
+                let sig = CascadeDrawSig {
+                    vp:      vp.data,
+                    casters: visible.iter().map(|&k| casters[k].1.content_generation()).collect(),
+                };
+                if last_sigs[i].as_ref() == Some(&sig) {
+                    // 行列もキャスターも 1 ビット変わっていない ⇒ 前フレームの深度が正しいまま。
+                    continue;
+                }
+                last_sigs[i] = Some(sig);
+
                 let mut pass = begin_depth_layer_pass(encoder, &self.dir_layer_views[i], "CSM Cascade Pass");
-                for &(gpu, batch) in casters {
+                for &k in &visible {
+                    let (gpu, batch) = casters[k];
                     draw_caster(&mut pass, gpu, batch, &self.cascade_cams[i].bind_group, shadow_pipes);
                 }
             }
+        } else {
+            // 方向光影が無効なフレームは深度マップの内容が保証されないので、
+            // 次に有効化されたフレームで必ず描き直させる（スキップ判定をリセット）。
+            for s in self.last_cascade_sigs.borrow_mut().iter_mut() { *s = None; }
         }
         // スポット。
         for j in 0..plan.spot_count {
@@ -582,8 +655,148 @@ fn compute_spot_matrix(s: &GpuLight) -> Mat4x4<f32> {
     proj * view
 }
 
+// ============================================================
+//  カスケード別キャスターカリング
+// ============================================================
+
+/// キャスターをカスケード別カリングにかけてよいか判定し、その判定用ワールド AABB を返す。
+///
+/// `None` を返した場合は「境界が信用できない」＝カリングせず必ず描く（安全側）。
+/// スキンメッシュを除外するのは、バッチが持つワールド AABB が **バインドポーズの
+/// モデル AABB をインスタンス行列で変換したもの**であり、アニメーションで手足が
+/// AABB の外へ出るとその影を誤って捨ててしまうため。
+fn caster_cull_bounds(batch: &InstancedModelBatch) -> Option<([f32; 3], [f32; 3])> {
+    if batch.skin.is_some() { return None; }
+    batch.world_bounds()
+}
+
+/// ワールド AABB が view-proj のクリップボリュームの外側に**完全に**あるかを判定する純関数。
+///
+/// AABB の 8 頂点をクリップ空間へ写し、6 つのクリップ面
+/// （`x ≥ -w`, `x ≤ w`, `y ≥ -w`, `y ≤ w`, `z ≥ 0`, `z ≤ w` ― wgpu の深度レンジ [0,1]）
+/// のいずれか 1 つについて 8 頂点すべてが外側なら `true`（＝描いても 1 ピクセルも残らない）。
+///
+/// 保守的な判定であり「外側と判定したなら本当に描画結果に寄与しない」ことだけを保証する
+/// （交差しているのに `false` を返す取りこぼしはあるが、その場合は従来どおり描くだけ）。
+/// したがって深度バッファの内容は **カリング有無で 1 ビットも変わらない**。
+///
+/// 【前提】カスケードの投影は正射（w ≡ 1）であること。透視投影では視点をまたぐ AABB で
+/// w が負になり判定が破綻しうるため、この関数はスポット影には使わない。
+fn aabb_outside_clip_volume(vp: &Mat4x4<f32>, mn: [f32; 3], mx: [f32; 3]) -> bool {
+    /// クリップ面の数（左右・上下・近遠）。
+    const CLIP_PLANE_COUNT: usize = 6;
+    // 各頂点について 6 面の「内側なら true」を集計する。
+    let mut inside_any = [false; CLIP_PLANE_COUNT];
+    for i in 0..8 {
+        let p = Vector4::new(
+            if i & 1 == 0 { mn[0] } else { mx[0] },
+            if i & 2 == 0 { mn[1] } else { mx[1] },
+            if i & 4 == 0 { mn[2] } else { mx[2] },
+            1.0,
+        );
+        let c = *vp * p;
+        let tests = [
+            c.x >= -c.w,   // 左
+            c.x <=  c.w,   // 右
+            c.y >= -c.w,   // 下
+            c.y <=  c.w,   // 上
+            c.z >=  0.0,   // 近（wgpu の深度レンジは [0,1]）
+            c.z <=  c.w,   // 遠
+        ];
+        for (k, t) in tests.iter().enumerate() {
+            inside_any[k] |= *t;
+        }
+    }
+    // どれか 1 面で「8 頂点すべて外側」なら完全に外。
+    inside_any.iter().any(|&any_inside| !any_inside)
+}
+
 /// 3D ベクトルを正規化する（長さ 0 は +Z フォールバック）。
 fn normalize(v: [f32; 3]) -> [f32; 3] {
     let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if len < 1e-6 { [0.0, 0.0, 1.0] } else { [v[0] / len, v[1] / len, v[2] / len] }
+}
+
+// ============================================================
+//  テスト
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// テスト用の正射 view-proj（ライト方向 = -Y、`center` 中心・半径 `radius`）。
+    /// `compute_cascade_matrices` と同じ組み立て（look_at + orthographic_lh）を再現する。
+    fn ortho_vp(center: [f32; 3], radius: f32) -> Mat4x4<f32> {
+        let dir  = [0.0, -1.0, 0.0];
+        let back = radius * SHADOW_CASTER_PULLBACK;
+        let eye  = Vector3::new(
+            center[0] - dir[0] * back,
+            center[1] - dir[1] * back,
+            center[2] - dir[2] * back,
+        );
+        let ctr  = Vector3::new(center[0], center[1], center[2]);
+        // ライトが真下向きなので up は +Z（look_at の縮退回避。本体と同じ規則）。
+        let view  = Mat4x4::look_at_lh(eye, ctr, Vector3::new(0.0, 0.0, 1.0));
+        let ortho = Mat4x4::orthographic_lh(-radius, radius, -radius, radius, 0.0, back + radius * 2.0);
+        ortho * view
+    }
+
+    /// カスケードの中心にある AABB は「外側」と判定されない（＝描画対象に残る）。
+    #[test]
+    fn aabb_inside_cascade_is_not_culled() {
+        let vp = ortho_vp([0.0, 0.0, 0.0], 10.0);
+        assert!(!aabb_outside_clip_volume(&vp, [-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]));
+    }
+
+    /// カスケードの横（ライト空間 XY 方向）へ大きく外れた AABB は棄却される。
+    #[test]
+    fn aabb_far_aside_is_culled() {
+        let vp = ortho_vp([0.0, 0.0, 0.0], 10.0);
+        // ワールド X 方向へ半径のはるか外側。
+        assert!(aabb_outside_clip_volume(&vp, [100.0, -1.0, -1.0], [110.0, 1.0, 1.0]));
+        // ワールド Z 方向（ライト空間の縦方向）も同様。
+        assert!(aabb_outside_clip_volume(&vp, [-1.0, -1.0, 100.0], [1.0, 1.0, 110.0]));
+    }
+
+    /// カスケード境界をまたぐ AABB は棄却しない（保守的判定＝見た目を変えない）。
+    #[test]
+    fn aabb_straddling_border_is_not_culled() {
+        let vp = ortho_vp([0.0, 0.0, 0.0], 10.0);
+        assert!(!aabb_outside_clip_volume(&vp, [5.0, -1.0, -1.0], [50.0, 1.0, 1.0]));
+    }
+
+    /// ライト方向の手前（eye よりさらに上）にある AABB は近クリップ外として棄却される。
+    /// GPU も同じく near クリップで捨てるため、描画結果は変わらない。
+    #[test]
+    fn aabb_before_near_plane_is_culled() {
+        let radius = 10.0f32;
+        let vp = ortho_vp([0.0, 0.0, 0.0], radius);
+        let eye_y = radius * SHADOW_CASTER_PULLBACK;
+        assert!(aabb_outside_clip_volume(
+            &vp,
+            [-1.0, eye_y + 1.0, -1.0],
+            [ 1.0, eye_y + 5.0,  1.0],
+        ));
+    }
+
+    /// カスケード署名は行列・キャスター列のどちらが変わっても不一致になる
+    /// （＝静的スキップが誤発火しない）。
+    #[test]
+    fn cascade_sig_detects_matrix_and_caster_changes() {
+        let base = CascadeDrawSig { vp: Mat4x4::<f32>::identity().data, casters: vec![1, 2] };
+        assert_eq!(base, base.clone(), "同一入力なら一致（＝スキップできる）");
+
+        let mut moved = base.clone();
+        moved.vp[0][3] += 1.0e-6;                   // 微小な差でも検出する（ビット一致比較）
+        assert_ne!(base, moved, "カスケード行列の変化を検出");
+
+        let mut updated = base.clone();
+        updated.casters[1] = 3;                     // キャスターが update されて世代が変わった
+        assert_ne!(base, updated, "キャスター内容の変化を検出");
+
+        let mut culled = base.clone();
+        culled.casters.pop();                       // カリング結果が変わった
+        assert_ne!(base, culled, "描画キャスター数の変化を検出");
+    }
 }

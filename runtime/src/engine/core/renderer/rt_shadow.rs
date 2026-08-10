@@ -590,7 +590,8 @@ impl RtShadowResources {
         // ── 2.7. スキンエントリの GPU リソース確保＋変形 compute の記録 ──────
         // ここから先は必ず TLAS を再構築する経路なので、変形出力と BLAS を同じフレームで
         // 揃えて更新できる。
-        let mut skin_accepted: Vec<(SkinBlasKey, &SkinEntryInfo)> = Vec::new();
+        // (キー, 列挙情報, このフレームに BLAS を構築し直す必要があるか)
+        let mut skin_accepted: Vec<(SkinBlasKey, &SkinEntryInfo, bool)> = Vec::new();
         let skin_t0 = std::time::Instant::now();
         if let Some(deform) = skin_deform {
             self.skin_blas.begin_frame();
@@ -600,13 +601,17 @@ impl RtShadowResources {
                 let Some(prim) = gpu.meshes.get(c.mesh_idx)
                     .and_then(|m| m.primitives.get(c.prim_idx)) else { continue };
                 let Some(skin) = batch.skin.as_ref() else { continue };
-                let ok = self.skin_blas.ensure_entry(
+                // ポーズ署名（anim_bits）を渡し、前回構築時と完全一致するエントリは
+                // 変形 compute も BLAS 再構築も省かせる（per-actor の静止スキップ）。
+                let status = self.skin_blas.ensure_entry(
                     device, queue, deform, path, c.mesh_idx, c.prim_idx, c.inst_idx,
-                    prim, skin, c.lod, c.compact_idx,
+                    prim, skin, c.lod, c.compact_idx, c.anim_bits,
                 );
-                if ok {
+                if status.accepted() {
                     skin_accepted.push((
-                        SkinBlasKey::new(path, c.mesh_idx, c.prim_idx, c.inst_idx), c,
+                        SkinBlasKey::new(path, c.mesh_idx, c.prim_idx, c.inst_idx),
+                        c,
+                        status.needs_rebuild(),
                     ));
                 }
             }
@@ -643,9 +648,13 @@ impl RtShadowResources {
             })
             .collect();
 
-        // ── 3.5. スキン BLAS のビルドエントリ（Phase RT-Skin・毎フレーム全件）──────
-        // 非スキンと違い「新規のみ」ではなく **今フレームの全スキンエントリ** を積む。
-        // ポーズが変わればジオメトリが変わるため、キャッシュという概念が成立しないからである。
+        // ── 3.5. スキン BLAS のビルドエントリ（Phase RT-Skin）──────────────────
+        // 非スキンと違い「新規のみ」では足りない。ポーズが変わればジオメトリが変わるため、
+        // **ポーズが動いたエントリは毎フレーム**積み直す必要がある。逆に言えば、ポーズが
+        // 前回構築時と 1 ビット違わないエントリ（アニメ停止中・非駆動）は積む必要がなく、
+        // `ensure_entry` が返した `needs_rebuild` で選り分ける（`skin_targets` の
+        // `needs_rebuild` フィールド）。スキップしたエントリは変形 compute も走らないので、
+        // 変形出力バッファと BLAS は前フレームの内容で整合したまま据え置かれる。
         // 頂点入力は変形 compute の出力バッファ（ストライド 16B = vec4<f32>）。
         // インデックスは元プリミティブのものをそのまま使う（トポロジは変形で不変）。
         //
@@ -657,17 +666,25 @@ impl RtShadowResources {
         // ビルド対象と TLAS 登録対象を別々に絞り込むと、片方だけ通ったエントリが
         // 「ビルドされていない BLAS を参照する TLAS インスタンス」になり wgpu の検証で落ちる。
         // 集合を 1 本に統一することで、その食い違いを構造的に不可能にしている。
+        // ポーズ静止によるビルド省略は「集合を絞る」のではなく **同じ集合の中の
+        // `needs_rebuild` フラグ**で表す。省略されたエントリの BLAS は過去フレームで
+        // 必ず構築済み（`ensure_entry` が未構築なら必ず `NeedsRebuild` を返す）なので、
+        // TLAS へ登録しても未構築参照にはならない。
         struct SkinBuildTarget<'a> {
             blas:     &'a wgpu::Blas,
             out_buf:  &'a wgpu::Buffer,
             index_bu: &'a wgpu::Buffer,
             vertex_count: u32,
             index_count:  u32,
+            /// このフレームに BLAS を構築し直すか（false = ポーズ静止で据え置き）。
+            needs_rebuild: bool,
+            /// ビルド確定（`mark_built`）に使うキー。
+            key:      SkinBlasKey,
             /// TLAS 詰め込みで使う列挙情報（マテリアル・変換）。
             info:     &'a SkinEntryInfo,
         }
         let skin_targets: Vec<SkinBuildTarget> = skin_accepted.iter()
-            .filter_map(|(key, c)| {
+            .filter_map(|(key, c, needs_rebuild)| {
                 let (blas, out_buf, vc, ic) = self.skin_blas.blas_inputs(key)?;
                 let prim = casters[c.caster_i].1.meshes.get(c.mesh_idx)
                     .and_then(|m| m.primitives.get(c.prim_idx))?;
@@ -679,14 +696,22 @@ impl RtShadowResources {
                 }
                 Some(SkinBuildTarget {
                     blas, out_buf, index_bu: &prim.index_buffer,
-                    vertex_count: vc, index_count: ic, info: c,
+                    vertex_count: vc, index_count: ic,
+                    needs_rebuild: *needs_rebuild, key: key.clone(), info: c,
                 })
             })
+            .collect();
+        // 実際にビルドへ積んだキー（ビルド後に `mark_built` で署名を確定させる）。
+        let skin_built_keys: Vec<SkinBlasKey> = skin_targets.iter()
+            .filter(|t| t.needs_rebuild)
+            .map(|t| t.key.clone())
             .collect();
         let skin_size_descs: Vec<BlasTriangleGeometrySizeDescriptor> = skin_targets.iter()
             .map(|t| skin_blas_size_desc(t.vertex_count, t.index_count))
             .collect();
         for (t, size) in skin_targets.iter().zip(skin_size_descs.iter()) {
+            // ポーズが動いていないエントリはビルドを積まない（BLAS は前フレームのまま有効）。
+            if !t.needs_rebuild { continue; }
             blas_entries.push(BlasBuildEntry {
                 blas: t.blas,
                 geometry: BlasGeometries::TriangleGeometries(vec![BlasTriangleGeometry {
@@ -892,6 +917,14 @@ impl RtShadowResources {
         }
 
         encoder.build_acceleration_structures(blas_entries.iter(), std::iter::once(&self.tlas_package));
+
+        // ビルドへ積み終えたスキンエントリのポーズ署名を「構築済み」として確定させる。
+        // ここまで来て初めて BLAS の中身が今フレームの署名と一致するため、確定は
+        // ビルド記録の後に行う（`blas_entries` は上で drop 済み＝可変借用が取れる）。
+        drop(blas_entries);
+        if !skin_built_keys.is_empty() {
+            self.skin_blas.mark_built(&skin_built_keys);
+        }
 
         self.last_inst_count = inst_count as u32;
         self.last_skin_inst_count = skin_inst_count;

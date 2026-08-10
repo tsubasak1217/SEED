@@ -128,6 +128,62 @@ struct SkinBlasEntry {
     /// 頂点数・インデックス数が減る差し替えでは BLAS ビルドが wgpu の検証で落ちるため、
     /// 世代不一致を検出したらエントリごと作り直す。
     prim_generation: u64,
+    /// **最後に BLAS を構築できたときの**ポーズ署名。`None` = 一度も構築していない。
+    /// これが今フレームの署名と一致するなら、変形 compute も BLAS 再構築も省ける。
+    pose_sig_built: Option<SkinPoseSignature>,
+    /// 今フレームの `ensure_entry` が算出したポーズ署名（`mark_built` で `pose_sig_built` へ確定）。
+    pose_sig_current: SkinPoseSignature,
+}
+
+// ─── ポーズ署名（per-actor の BLAS 再構築スキップ）──────────────
+
+/// 1 スキンエントリの「変形後頂点の中身」を一意に決める入力一式。
+///
+/// スキン変形の出力は
+///   （元頂点＋スキン属性）×（ジョイント行列 `jmats[joint_base..]`）
+/// で決まり、ジョイント行列は再生時刻から毎フレーム同じ計算で作られる。
+/// `SkinComputeSystem` は **モデルの animations[0] を 1 本だけ**焼き込んでおり、
+/// 別のクリップへ差し替わるときはシステムごと作り直され `skin_generation` が変わる。
+/// したがってここに挙げた 5 つが一致すれば、変形後頂点は 1 ビット違わず同一になる。
+///
+/// - `prim_generation`: 元プリミティブ（頂点・スキン属性・インデックス）の実体世代。
+/// - `skin_generation`: ジョイント行列バッファを持つスキンシステムの実体世代。
+/// - `lod` / `compact_idx`: どのジョイント行列スロットを読むか（`joint_base` の決定要素）。
+/// - `anim_bits`: 再生時刻のビット表現（Animator 非駆動は番兵値＝静止）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct SkinPoseSignature {
+    pub prim_generation: u64,
+    pub skin_generation: u64,
+    pub lod:             usize,
+    pub compact_idx:     u32,
+    pub anim_bits:       u32,
+}
+
+/// このエントリの変形 compute ＋ BLAS 再構築が必要かを判定する純関数。
+///
+/// `built` は「最後に BLAS を構築できたときの署名」（未構築は `None`）。
+/// 未構築なら必ず再構築する（構築していない BLAS を TLAS へ登録すると wgpu の検証で落ちる）。
+fn pose_needs_rebuild(built: Option<SkinPoseSignature>, current: SkinPoseSignature) -> bool {
+    built != Some(current)
+}
+
+/// `ensure_entry` の結果。TLAS へ載せてよいか／再構築が要るかを分けて返す。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SkinEntryStatus {
+    /// 対象外（頂点数制約・用途不足・件数上限）。TLAS へ載せてはいけない。
+    Rejected,
+    /// 登録済み。ポーズが前回構築時と完全一致するため、変形 compute も BLAS 再構築も省く。
+    /// 前フレームの変形後頂点バッファと BLAS がそのまま正しい（両者は必ず同時に据え置かれる）。
+    Unchanged,
+    /// 登録済み。初回、またはポーズ／実体が変わったので変形＋BLAS 再構築が要る。
+    NeedsRebuild,
+}
+
+impl SkinEntryStatus {
+    /// TLAS へ載せてよいか（`Rejected` 以外）。
+    pub fn accepted(self) -> bool { self != SkinEntryStatus::Rejected }
+    /// このフレームに BLAS を構築し直す必要があるか。
+    pub fn needs_rebuild(self) -> bool { self == SkinEntryStatus::NeedsRebuild }
 }
 
 /// ジョイント行列 BindGroup のキャッシュ 1 件。
@@ -227,8 +283,10 @@ impl RtSkinBlasManager {
     /// - `prim`: 元プリミティブ（頂点・スキン属性・インデックスの供給元）。
     /// - `skin`: このバッチのスキンシステム（ジョイント行列バッファの供給元）。
     /// - `lod` / `compact_idx`: ジョイント行列の位置。`joint_base = compact_idx * MAX_JOINTS`。
+    /// - `anim_bits`: 再生時刻のビット表現（ポーズ署名の要素。呼び出し元が算出する）。
     ///
-    /// 返り値 `true` = 登録成功（TLAS へ載せてよい）。`false` = 上限超過・用途不足等で非対象。
+    /// 返り値は `SkinEntryStatus`。`Rejected` 以外なら TLAS へ載せてよく、
+    /// `NeedsRebuild` のときだけ変形 compute を積み BLAS を構築し直す必要がある。
     #[allow(clippy::too_many_arguments)]
     pub fn ensure_entry(
         &mut self,
@@ -243,11 +301,12 @@ impl RtSkinBlasManager {
         skin:        &SkinComputeSystem,
         lod:         usize,
         compact_idx: u32,
-    ) -> bool {
+        anim_bits:   u32,
+    ) -> SkinEntryStatus {
         let key = SkinBlasKey::new(batch_key, mesh_idx, prim_idx, inst_idx);
 
         // ── 事前条件: スキン属性バッファが無ければ変形できない ──────────
-        let Some(skin_vb) = prim.skin_vertex_buffer.as_ref() else { return false };
+        let Some(skin_vb) = prim.skin_vertex_buffer.as_ref() else { return SkinEntryStatus::Rejected };
 
         // ── 頂点数／インデックス数の制約（VRAM／ビルド時間の暴走防止）────────
         // インデックス 0 のプリミティブは三角形が 1 枚も無く BLAS を作る意味が無い
@@ -265,7 +324,7 @@ impl RtSkinBlasManager {
                     batch_key, prim.vertex_count, prim.index_count
                 );
             }
-            return false;
+            return SkinEntryStatus::Rejected;
         }
 
         // ── 用途検証: 変形 compute は元バッファを storage として読む ──────
@@ -283,7 +342,7 @@ impl RtSkinBlasManager {
                     batch_key
                 );
             }
-            return false;
+            return SkinEntryStatus::Rejected;
         }
 
         // ── 総数上限（**今フレームに受理した件数** に対して判定する）──────────
@@ -302,7 +361,7 @@ impl RtSkinBlasManager {
                      （MAX_RT_SKIN_BLAS を増やすか対象を減らしてください）"
                 );
             }
-            return false;
+            return SkinEntryStatus::Rejected;
         }
 
         // ── エントリの生成（初回、または実体が作り直されたとき）──────────
@@ -325,7 +384,7 @@ impl RtSkinBlasManager {
             self.joint_bgs.get(&joint_key).map(|j| j.skin_generation), skin.generation,
         );
         if need_new_joint_bg {
-            let Some(jbuf) = skin.jmat_buffer(lod) else { return false };
+            let Some(jbuf) = skin.jmat_buffer(lod) else { return SkinEntryStatus::Rejected };
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label:   Some("Skin Deform Joint BG"),
                 layout:  &pipeline.joint_bgl,
@@ -350,12 +409,47 @@ impl RtSkinBlasManager {
             entry.last_params = params;
         }
 
-        // ── 当該フレームの生存＋ディスパッチ予定へ登録 ─────────────────
+        // ── ポーズ署名の突き合わせ（per-actor の再構築スキップ）─────────
+        // 変形後頂点を決める入力が前回構築時と 1 ビット違わなければ、変形 compute も
+        // BLAS も前フレームのものがそのまま正しい。アニメ停止中・ポーズ静止中の
+        // アクタはここで毎フレームの変形＋BLAS 再構築を丸ごと省ける。
+        // 【重要】変形出力バッファと BLAS は**必ず同時に**据え置かれる（両方スキップ、
+        // または両方更新）。片方だけ更新すると RT 上でメッシュが壊れる。
+        let sig = SkinPoseSignature {
+            prim_generation: prim.generation,
+            skin_generation: skin.generation,
+            lod,
+            compact_idx,
+            anim_bits,
+        };
+        entry.pose_sig_current = sig;
+        let needs_rebuild = pose_needs_rebuild(entry.pose_sig_built, sig);
+
+        // ── 当該フレームの生存へ登録（スキップしても生存扱い＝prune させない）──
+        self.live_keys.insert(key.clone());
+        if !needs_rebuild {
+            return SkinEntryStatus::Unchanged;
+        }
+        // ── ディスパッチ予定へ登録 ─────────────────────────────────
         // ワークグループ数は「頂点数 ÷ workgroup_size」の切り上げ。
         let wg_count = entry.vertex_count.div_ceil(DEFORM_WORKGROUP_SIZE);
-        self.live_keys.insert(key.clone());
         self.pending.push(PendingDispatch { key, joint_key, wg_count });
-        true
+        SkinEntryStatus::NeedsRebuild
+    }
+
+    /// BLAS を実際に構築したエントリの署名を「構築済み」として確定させる。
+    ///
+    /// `ensure_entry` が `NeedsRebuild` を返しても、呼び出し側の最終防御
+    /// （インデックスバッファの用途検証など）でビルド対象から外れることがある。
+    /// その場合に署名を確定させてしまうと、次フレームで「構築していない BLAS」を
+    /// 静止扱いで TLAS へ登録し wgpu の検証で落ちる。そこで確定は
+    /// **実際にビルドへ積んだキー**を渡してもらう本メソッドで行う。
+    pub fn mark_built(&mut self, keys: &[SkinBlasKey]) {
+        for k in keys {
+            if let Some(e) = self.entries.get_mut(k) {
+                e.pose_sig_built = Some(e.pose_sig_current);
+            }
+        }
     }
 
     /// 当該フレームに現れなかったエントリ（＝アクタ削除・LOD 外れ・上限超過）を解放する。
@@ -511,6 +605,9 @@ fn create_entry(
         },
         // 生成元プリミティブの世代を記録し、実体差し替えを検出できるようにする。
         prim_generation: prim.generation,
+        // 新規エントリの BLAS は未構築。初回は必ず変形＋構築を通す。
+        pose_sig_built:   None,
+        pose_sig_current: SkinPoseSignature::default(),
     }
 }
 
@@ -682,6 +779,49 @@ mod tests {
         assert!(cache_needs_rebuild(Some(7), 8), "世代不一致なら作り直すべき");
         // 世代が「戻る」ことは採番の性質上ないが、不一致は一律で作り直す（安全側）。
         assert!(cache_needs_rebuild(Some(8), 7), "不一致は方向に関わらず作り直すべき");
+    }
+
+    /// ポーズ署名による per-actor スキップ判定（`pose_needs_rebuild`）の両方向。
+    ///
+    /// 「入力不変 → スキップ」「入力変化 → 再構築」がどちらも成立しないと、
+    /// 前者を落とせば最適化が効かず、後者を落とせば RT 上でポーズが固まる。
+    #[test]
+    fn pose_skip_follows_all_inputs() {
+        let base = SkinPoseSignature {
+            prim_generation: 10,
+            skin_generation: 20,
+            lod:             1,
+            compact_idx:     3,
+            anim_bits:       0.5f32.to_bits(),
+        };
+        // 未構築（初回）は必ず構築する。構築していない BLAS を TLAS へ載せると落ちるため。
+        assert!(pose_needs_rebuild(None, base), "未構築なら必ず再構築");
+        // 完全一致 ⇒ 変形も BLAS 再構築も省く。
+        assert!(!pose_needs_rebuild(Some(base), base), "入力不変ならスキップできる");
+
+        // 各要素を単独で変えたら、必ず再構築へ倒れること。
+        let mut anim = base;   anim.anim_bits = 0.75f32.to_bits();      // 再生時刻が進んだ
+        let mut prim = base;   prim.prim_generation += 1;               // モデル実体の差し替え
+        let mut skin = base;   skin.skin_generation += 1;               // スキンシステム再生成
+        let mut lod  = base;   lod.lod += 1;                            // LOD が切り替わった
+        let mut idx  = base;   idx.compact_idx += 1;                    // ジョイント行列スロット移動
+        for changed in [anim, prim, skin, lod, idx] {
+            assert!(
+                pose_needs_rebuild(Some(base), changed),
+                "入力が変われば再構築が必要: {changed:?}"
+            );
+        }
+    }
+
+    /// `SkinEntryStatus` の意味付け（TLAS へ載せてよいか／再構築が要るか）。
+    #[test]
+    fn skin_entry_status_semantics() {
+        assert!(!SkinEntryStatus::Rejected.accepted(),     "非対象は TLAS へ載せない");
+        assert!(!SkinEntryStatus::Rejected.needs_rebuild(), "非対象はビルドもしない");
+        assert!(SkinEntryStatus::Unchanged.accepted(),      "静止エントリも TLAS へは載せる");
+        assert!(!SkinEntryStatus::Unchanged.needs_rebuild(), "静止エントリはビルドを省く");
+        assert!(SkinEntryStatus::NeedsRebuild.accepted(),    "更新エントリは TLAS へ載せる");
+        assert!(SkinEntryStatus::NeedsRebuild.needs_rebuild(), "更新エントリはビルドする");
     }
 
     /// 生成世代の採番が単調増加かつ一意であること。
