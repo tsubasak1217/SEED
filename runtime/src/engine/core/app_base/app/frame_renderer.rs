@@ -142,6 +142,38 @@ fn compute_stale_batch_prune(
 }
 
 // ============================================================
+//  should_draw_id_pass — ID パス（ピック用）の描画要否判定
+// ============================================================
+
+/// このフレームで ID パス（ワールド座標 + Actor ID バッファ）を描くべきかを判定する純関数。
+///
+/// ID パスは全不透明ジオメトリをフル解像度でもう一度描く専用パスで、実測 4〜5ms/フレームと重い。
+/// にもかかわらず消費者は **CPU 側の 1 ピクセル読み戻しだけ**（ID テクスチャをサンプルする
+/// シェーダは存在しない）なので、「今フレーム読み戻す用途があるフレーム」だけ描けば足りる。
+///
+/// - `in_editor`:            Edit モードまたは Play ポーズ中（エディタ操作が効くフレーム）。
+/// - `has_readback_request`: 今フレームに ID バッファの読み戻し要求があるか
+///                           （D&D 着弾・コントロールポイント D&D／ホバー・アクタ追加・クリックピック）。
+/// - `id_pass_in_play`:      Play 中も毎フレーム描く指定（環境変数 `SEED_ID_PASS_IN_PLAY`）。
+///
+/// 【1 フレーム遅延が起きない理由】読み戻し要求は「要求が立ったフレームの内に描いて、
+/// 同じフレームの GPU サブミット後に読む」という同期構造になっている。要求が無いフレームは
+/// 描画もコピー予約（`schedule_id_copy`）も行わないため、古い ID バッファを読む経路は生じない。
+fn should_draw_id_pass(
+    in_editor:            bool,
+    has_readback_request: bool,
+    id_pass_in_play:      bool,
+) -> bool {
+    if in_editor {
+        // エディタ操作フレーム: 読み戻し要求があるフレームだけ描く（オンデマンド）。
+        has_readback_request
+    } else {
+        // Play（非ポーズ）: 既定でスキップ。合成用マスクが要るときだけ環境変数で毎フレーム描く。
+        id_pass_in_play
+    }
+}
+
+// ============================================================
 //  terrain_world_bounds — 地形チャンクの実在範囲（Phase W1.5）
 // ============================================================
 
@@ -324,12 +356,16 @@ impl App {
         //   必ず begin_frame（描画コマンド記録＝snatch read lock 取得）より前で呼ぶ。ここで
         //   完了済み旧リソースを drop → poll(Poll) で遅延破棄を確定することで、フレーム末尾の
         //   queue.submit() が遅延破棄を処理して snatch lock 再帰パニックする経路を踏まない。
+        // 地形の GPU リソース退役処理と LOD 再メッシュは、どちらもチャンク数に比例して
+        // 効いてくる（移動中は毎フレーム数チャンクを再メッシュする）ため 1 区間で計測する。
+        let _prof_terrain_lod = ScopeGuard::new("地形/LOD 再メッシュ・GPU 退役");
         self.process_terrain_gpu_retire();
 
         // チャンク単位 地形 LOD: 前フレームのカメラ位置で各チャンクの目標 LOD を選び、
         // 変化ぶんだけ近い順に小分けで再メッシュする（遠いチャンクを低ポリ化して描画三角形を削減）。
         // 描画の借用が始まる前（フレーム先頭）で行うことで scene/draw_ctx の可変借用衝突を避ける。
         self.tick_terrain_lod();
+        drop(_prof_terrain_lod);
         mark_frame_stage(FrameStage::TerrainLodDone);
 
         // 地形スモーク（SEED_TERRAIN_SMOKE=1）専用: 描画開始後に 1 度だけ掘るステップ。
@@ -709,7 +745,12 @@ impl App {
         // JointAttach を持つアクターをターゲットモデルのジョイントへ追従させる。
         // Edit / Play 両モードで毎フレーム走る（パーティクル常時プレビューと同様）。
         // Edit では anim_drive が無いためモデル静止＝バインドポーズのジョイントへ吸着する。
-        self.update_joint_attachments();
+        {
+            // 全アクタ DFS ＋ ターゲットモデルのジョイント行列解決を毎フレーム行うため、
+            // アクタ数の多いシーンでは無視できない。単独の区間として計測する。
+            crate::profile_scope!("ジョイントアタッチ追従");
+            self.update_joint_attachments();
+        }
 
         // ── GPU カメラ・インスタンスバッファ更新 ──────
         let window_size = self.window.as_ref().map(|w| w.inner_size());
@@ -787,6 +828,9 @@ impl App {
         if let (Some(scene), Some(camera_buf), Some(queue)) =
             (&mut self.scene, &self.camera_buf, queue)
         {
+            // カメラ行列の決定（メイン／2D オルソ／プレビュー）＋ CameraUniform のアップロード、
+            // 視錐台平面の算出、キャンバスオーバーレイカメラ更新までを 1 区間として計測する。
+            crate::profile_scope!("カメラ更新");
             // カメラ選択:
             //   - 2D アクター編集タブ → 2D オルソカメラ
             //   - Play モード         → シーン内 is_main=true の CameraComponent
@@ -1052,6 +1096,13 @@ impl App {
             perf_batch_ms = 0.0;
         }
 
+        // ここから「エディタ状態の収集」区間（プロファイラ計測）。
+        // ギズモ位置・ドラッグホバー・ピック ID レイアウト・各種シーンギズモ行列・
+        // コントロールポイント線・ライト収集・シャドウキャスター収集など、
+        // レンダラを可変借用する前に `&self` で確定させる CPU 処理をまとめて 1 区間として測る。
+        // （個々は小さいが、アクタ数に比例する DFS 走査が何本も走るため合計では効く）
+        let _prof_editor_state = ScopeGuard::new("エディタ状態収集");
+
         // ── ギズモ位置：全選択アクターの重心（マルチ選択対応） ──
         //
         // 【重要】ここは「ギズモを**描く**位置」であり、当たり判定とドラッグ計算が使う
@@ -1259,6 +1310,8 @@ impl App {
         //   - View2D で 3D アクターを選択中: 3D シーン非表示のためギズモも表示しない
         // 判定ロジックは gizmo_handler 側の操作抑制と共通（gizmo_suppressed_by_edit_view）。
         let gizmo_suppressed_by_view = self.gizmo_suppressed_by_edit_view();
+        // 「エディタ状態収集」区間ここまで（以降はパーティクル・水・地形の毎フレーム更新）。
+        drop(_prof_editor_state);
 
         // ── GPU パーティクル CPU 更新（Phase RP・フェーズ 1）──────────────
         // 放出個数の決定・リングカーソル前進・pending_burst（スクリプトの Burst 要求）消費を行う。
@@ -1275,6 +1328,7 @@ impl App {
         // 長時間ストール（シーンロード・ブレークポイント等）明けの巨大 dt で粒子が
         // 瞬間移動しないよう上限でクランプする（1 フレームで進める最大シミュレーション時間）。
         {
+            crate::profile_scope!("パーティクル/CPU 更新");
             /// パーティクルの 1 ステップで進める最大シミュレーション時間 [秒]。
             /// これを超える dt はクランプする（ストール明けの瞬間移動を防ぐ）。
             const PARTICLE_MAX_STEP_SECS: f32 = 1.0 / 15.0;
@@ -1362,6 +1416,7 @@ impl App {
         // Skybox スロットを走査して描画対象を確定する（CameraLocked は最初の 1 つのみ）。
         // 読み取りのみ（&World）のため描画ブロック前にここで実施する。0 個なら以降即 return。
         {
+            crate::profile_scope!("描画/スカイボックス収集");
             let awl = self.active_world_line;
             if let Some(scene) = self.scene.as_ref() {
                 self.skybox_system.collect(&scene.world, &scene.actors, awl);
@@ -1423,6 +1478,11 @@ impl App {
             perf_begin_frame_ms = _perf_t_bf.elapsed().as_secs_f64() * 1000.0;
             match begin_frame_result {
                 Ok(mut frame) => {
+                    // ここから「描画/フレーム準備」区間（プロファイラ計測）。
+                    // シャドウ行列の確定・ライト配列の GPU アップロード・MC 収集・水ボリューム解決まで、
+                    // どのレンダーパスも開けていない準備処理をまとめて 1 区間として測る。
+                    let _prof_frame_setup = ScopeGuard::new("描画/フレーム準備");
+
                     // ── シャドウ行列の準備（Phase R2）──────────────────
                     // カスケード/スポットの light view-proj を計算して UBO・シャドウカメラへ
                     // 書き込み、frame_lights の shadow_index を確定させる（採用/不採用）。
@@ -1525,6 +1585,8 @@ impl App {
                     // 【地形の読み方】散布プロップの接地判定と同一のサンプラ
                     //  （`TerrainScatterField` → `sample_density_world`）を使う。別実装にすると
                     //  「草は生えているのに岸波が陸へ乗る」ずれが出る。
+                    // 「描画/フレーム準備」区間ここまで（以降は個別に計測済みの区間が続く）。
+                    drop(_prof_frame_setup);
                     {
                         crate::profile_scope!("水/岸波フィールド更新");
                         // 地形チャンクの実在範囲（AABB）。カラム走査の早期棄却に使う。
@@ -1908,6 +1970,7 @@ impl App {
                     // pending_burst 消費は描画ブロック前（collect_and_consume）で済ませてある。
                     // エミッタ 0 個なら sync_gpu/dispatch とも即 return（バッファ確保なし＝コスト増ゼロ）。
                     if self.particle_system.has_emitters() {
+                        crate::profile_scope!("描画/パーティクル同期・シミュレーション記録");
                         self.particle_system.sync_gpu(
                             &draw_ctx.device, &draw_ctx.queue,
                             &draw_ctx.pipelines.particle_compute,
@@ -1939,6 +2002,9 @@ impl App {
                     //   ★影パスはライト視錐台が別物なので、ここ（メインカメラ視錐台）では触らない
                     //     ——カメラ視界外でも視界内へ影を落とすチャンクがあるため、影キャスタを
                     //     カメラ視錐台で棄却すると影が欠ける。影の緩和は今回スコープ外（申し送り）。
+                    // ここから「描画/地形カリング」区間（視錐台・距離・Hi-Z 遮蔽の集合構築）。
+                    // 地形チャンク数（16×16×3 層で 768）に比例するので、チャンクが多いシーンで効く。
+                    let _prof_terrain_cull = ScopeGuard::new("描画/地形カリング(視錐台・Hi-Z)");
                     let terrain_cull_disabled = *super::terrain_scatter_ops::TERRAIN_CULL_DISABLED;
                     let terrain_cull_dist = *super::terrain_scatter_ops::TERRAIN_CHUNK_CULL_DISTANCE;
                     let terrain_cull_dist_sq = terrain_cull_dist * terrain_cull_dist;
@@ -2028,12 +2094,16 @@ impl App {
                         );
                     }
 
+                    // 「描画/地形カリング」区間ここまで。
+                    drop(_prof_terrain_cull);
+
                     // ── GPU メッシュレットカリング（第1弾）: 前処理＋ compute ディスパッチ ──
                     // meshlet_active（設定オン かつ MULTI_DRAW_INDIRECT_COUNT 対応）のときのみ。
                     // 前処理: 可視 LOD0 インスタンス × メッシュレットのパラメータ更新・カウント 0 リセット・
                     //         BindGroup 構築。compute: 生存メッシュレットを間接コマンドへ詰める。
                     // 出力（cmd/count バッファ）はメインパスの multi_draw_indexed_indirect_count が読む。
                     if meshlet_active {
+                        crate::profile_scope!("描画/メッシュレットカリング");
                         // 前処理（BindGroup 構築・パラメータ更新）。batch は可変、GpuModel は
                         // gpu_model_by_path から借用（all_mcs 由来＝shared_model_batches と非交差）。
                         for (path, sd) in self.shared_model_batches.iter_mut() {
@@ -2115,6 +2185,12 @@ impl App {
                     // カメラアイコン / フラスタム / プレビューはアクター編集 2D タブ・
                     // 2D シーンビュー以外で表示する。
                     // WL 0 に 2D アクターが混在していても 3D カメラギズモを表示する。
+                    //
+                    // ここから「描画/シーンギズモ・カメラプレビュー」区間（プロファイラ計測）。
+                    // カメラ／ライト／エミッタのアイコンバッチ更新に加え、選択カメラの
+                    // プレビュー小窓（専用 CSM ＋ G-Buffer ＋ ライティング ＋ フォワード）の
+                    // 記録まで含む。プレビューは実質もう 1 シーン分の描画なので単独で測る価値がある。
+                    let _prof_scene_gizmo = ScopeGuard::new("描画/シーンギズモ・カメラプレビュー");
                     let is_3d_scene = in_editor && !use_ortho_2d_camera;
                     let (vp_w_f, vp_h_f) = window_size.map_or(
                         (1280.0_f32, 720.0_f32),
@@ -2979,8 +3055,12 @@ impl App {
                         .filter(|b| !b.segment_lines.is_empty())
                         .map(|b| b.segment_lines.build_thick(&draw_ctx.device));
 
+                    // 「描画/シーンギズモ・カメラプレビュー」区間ここまで。
+                    drop(_prof_scene_gizmo);
+
                     // グリッド描画バッチ（エディタモード + show_grid のみ）
                     let _perf_t_grid = std::time::Instant::now();
+                    let _prof_grid = ScopeGuard::new("描画/グリッドバッチ生成");
                     // アクター編集タブの 2D キャンバス: XY 平面グリッド（常時表示）
                     // その他（シーン上のキャンバス含む 3D 系）: XZ 平面グリッド
                     // シーン上に canvas があっても 3D グリッドを維持する（is_actor_edit_canvas で判定）
@@ -3178,7 +3258,13 @@ impl App {
 
                         Some(lb.build(&draw_ctx.device))
                     } else { None };
+                    drop(_prof_grid);
                     perf_grid_ms = _perf_t_grid.elapsed().as_secs_f64() * 1000.0;
+
+                    // ここから「描画/コライダー・ピック面生成」区間（プロファイラ計測）。
+                    // 3D コライダーのワイヤーフレーム、2D／3D キャンバス配下コライダーのワイヤー、
+                    // および ID パス用ピック面クワッドの CPU 生成をまとめて 1 区間として測る。
+                    let _prof_collider = ScopeGuard::new("描画/コライダー・ピック面生成");
 
                     // ── コライダー面ピッキングアイテム ────────────────────────────────
                     // エディタ編集ビューでは 2D コライダーは 1px のワイヤーフレームで描画される。
@@ -3641,7 +3727,11 @@ impl App {
                     //     2D アクターが混在するシーンで scene_canvas_ss=true になっても、
                     //     3D Canvas が 2D オルソカメラで極小点として映るバグを防ぐ。
                     //     レイヤーはキャンバス単位で安定ソートする（ゾーン概念なし）。
+                    // 「描画/コライダー・ピック面生成」区間ここまで。
+                    drop(_prof_collider);
+
                     let (sprite_prepared_2d_bg, sprite_prepared_2d_fg, sprite_prepared_3d) = {
+                        crate::profile_scope!("描画/スプライト収集・ソート");
                         // 2D キャンバスアクターのスプライト（オルソ／ワールドスペース 2D 用）
                         let mut items_2d = Vec::new();
                         // 3D Canvas（Actor3D + CanvasComponent）の子スプライト（3D 透視カメラ用）
@@ -3829,6 +3919,11 @@ impl App {
                             if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
                         } else { None }
                     } else { None };
+
+                    // ここから「描画/アウトライン・アイコン生成」区間（プロファイラ計測）。
+                    // 3D Canvas 矩形アウトライン、選択スプライトのアウトライン、
+                    // シーン内アイコンオーバーレイの CPU 生成＋ GPU バッファ化をまとめて測る。
+                    let _prof_outline = ScopeGuard::new("描画/アウトライン・アイコン生成");
 
                     // ── 3D Canvas アウトライン（エディタモード）──────────────────────────────
                     // Actor3D + CanvasComponent を持つアクターの矩形境界を 3D ワールド空間で描画する。
@@ -4108,6 +4203,14 @@ impl App {
                             &positions, vp_w, vp_h, &draw_ctx.device,
                         )
                     } else { None };
+
+                    // 「描画/アウトライン・アイコン生成」区間ここまで。
+                    drop(_prof_outline);
+
+                    // ここから「描画/RT 確保・透明収集」区間（プロファイラ計測）。
+                    // HDR／G-Buffer／AO／SSGI／反射／WBOIT 等のレンダーターゲット確保と、
+                    // 半透明バッチの収集・経路判定（deferred/forward, WBOIT/距離ソート）を含む。
+                    let _prof_rt_setup = ScopeGuard::new("描画/RT 確保・透明収集");
 
                     // ── HDR オフスクリーンの確保（Phase R3）──────────────
                     // シーン（メインパス＋キャンバスオーバーレイ）を Rgba16Float の HDR
@@ -4540,6 +4643,9 @@ impl App {
                         Some(self.rt_pool.view(crate::engine::core::renderer::RT_WATER_REFLECTION_NAME))
                     } else { None };
 
+                    // 「描画/RT 確保・透明収集」区間ここまで。
+                    drop(_prof_rt_setup);
+
                     // ── メインレンダーパス ────────────────
                     let _perf_t_main = std::time::Instant::now();
                     {
@@ -4710,6 +4816,7 @@ impl App {
                         // （放射輝度＋可視性）をローテーション更新する。GiParams は毎フレーム書き込む
                         // （gi_on=false のときは enabled=0 を書き、描画側はフラットアンビエントへ戻る）。
                         {
+                            crate::profile_scope!("描画/DDGI プローブ更新");
                             // プローブ格子をシーン（全静的バッチのワールド AABB 合併）へフィットさせる。
                             // world_aabbs は描画カリングで計算・キャッシュされるため 1 フレーム遅れることがある
                             // （静止シーンでは安定。理想はモデル変化時のみ再計算）。
@@ -4811,6 +4918,7 @@ impl App {
                         // その場合はクラスタを無効化して線形走査へフォールバックする
                         // （＝ライトが落ちて暗転することはない）。
                         {
+                            crate::profile_scope!("描画/クラスタ構築");
                             // 実際に set_viewport する矩形。Play のレターボックス時はゲーム領域。
                             // frag_coord はフレームバッファ基準なので、タイル分割の正規化は
                             // この矩形で行わないと構築側（NDC 等分）とズレる。
@@ -4893,6 +5001,7 @@ impl App {
                         //  `if deferred_active` ブロックの**外**に置くこと。
                         let mut water_prepared = false;
                         if water_gate {
+                            crate::profile_scope!("描画/水面 prepare");
                             // 遅延構築（App::new は device 確立前に走るためここで初期化する）。
                             // パイプラインキャッシュは遅延構築のため None（一度きりの構築コストのみ）。
                             if self.water_renderer.is_none() {
@@ -5922,6 +6031,10 @@ impl App {
                         // 全 MC を統合バッチで描画（N_actors → N_unique_models 回の draw call）
                         // 2D シーンビューでは 3D モデルを描画しない（3D シーン非表示）
                         let _perf_t_draw = std::time::Instant::now();
+                        // 不透明（フォワード時）・水面・距離ソート半透明・屈折の逐次グラブまでの
+                        // コマンド記録区間。deferred 時は不透明が G-Buffer パス側へ移るので、
+                        // この区間は水面・半透明が主になる。
+                        let _prof_draw = ScopeGuard::new("描画/不透明・半透明 記録");
                         if !edit_view_2d {
                             // デファード時は不透明を G-Buffer 経由で既に描画済み（このメインパスは
                             // Load で再開しており、半透明・スカイボックス・ギズモ等のみを重ねる）。
@@ -6228,6 +6341,7 @@ impl App {
                                 }
                             }
                         }
+                        drop(_prof_draw);
                         perf_draw_ms = _perf_t_draw.elapsed().as_secs_f64() * 1000.0;
 
                         // グリッド描画（スプライト・選択矩形より先に描画）
@@ -7036,13 +7150,49 @@ impl App {
                     }
 
                     // ── ID パス ────────────────────────────────────────────────
-                    // Edit / Pause 中は常に描く（ピッキング・D&D のワールド座標取得が依存）。
+                    // 読み戻し要求の取り出し（ID パスの描画要否判定と、実際のコピー予約で共有する）。
+                    //
+                    // readback 優先度: drop > control_point_drop > control_point_hover > add_actor > pick
+                    //
+                    // コントロールポイント D&D を add_actor / pick より優先するのは、
+                    // どちらも「ユーザーがマウスを離した瞬間の 1 回きりの操作」であり、
+                    // 後回しにすると次フレームへ再キューされてカーソル位置と着弾点が
+                    // ずれる（間にカメラが動くと別の場所に点が置かれる）ため。
+                    // 通常ドロップ（drop）より下なのは、そちらが先に実装済みの
+                    // 優先度契約であり、同一フレームに両方が飛ぶことは実際上ないため。
+                    //
+                    // 【なぜ ID パスより「前」に計算するのか】ID パスの唯一の消費者がこの読み戻しなので、
+                    // 「要求があるフレームだけ描く」オンデマンド化の判定材料になる（should_draw_id_pass）。
+                    let drop_pos = self.pending_drop
+                        .as_ref()
+                        .map(|&(_, sx, sy)| (sx, sy));
+                    let cp_pos = self.pending_control_point_drop
+                        .as_ref()
+                        .map(|&(_, _, sx, sy)| (sx, sy));
+                    // コントロールポイントの配置予定マーカー用ホバー。
+                    // 実際の追加より優先度を下げ、アクタ追加・ピックより上に置く。
+                    // ドラッグ中はクリックもコンテキストメニューも起きないので、
+                    // 実質この 3 つが同時に立つことはない。
+                    let cp_hover_pos = self.pending_control_point_hover;
+                    let add_actor_pos = self.pending_add_actor
+                        .as_ref()
+                        .and_then(|&(is_2d, _, _, sx, sy)| {
+                            // 2D アクターはスポーン位置不要なので readback しない
+                            if is_2d { None } else { Some((sx, sy)) }
+                        });
+                    let readback_pos = drop_pos.or(cp_pos).or(cp_hover_pos)
+                        .or(add_actor_pos).or(pick_pos);
+
+                    // Edit / Pause 中は「読み戻し要求があるフレームだけ」描く（オンデマンド化）。
                     // Play 中は既定でスキップし、`SEED_ID_PASS_IN_PLAY` が設定されたときだけ
                     // 毎フレーム描いて合成（第 3 層）が読める per-actor マスクを供給する。
                     // 判断根拠と使い分けの指針は id_pass.rs の ID_PASS_IN_PLAY コメントを参照。
                     // コストは [PERF] 行の `id=` フィールドで計測できる（SEED_PERF_LOG=1）。
-                    let draw_id_pass_this_frame = in_editor
-                        || crate::engine::methods::drawer::id_pass::id_pass_enabled_in_play();
+                    let draw_id_pass_this_frame = should_draw_id_pass(
+                        in_editor,
+                        readback_pos.is_some(),
+                        crate::engine::methods::drawer::id_pass::id_pass_enabled_in_play(),
+                    );
                     if draw_id_pass_this_frame {
                         if let Some(id_buf) = &self.id_buffer {
                             let _perf_t_id = std::time::Instant::now();
@@ -7519,33 +7669,8 @@ impl App {
                             }
                             drop(_prof_id);
                             perf_id_ms = _perf_t_id.elapsed().as_secs_f64() * 1000.0;
-                            // readback 優先度: drop > control_point_drop > add_actor > pick
-                            //
-                            // コントロールポイント D&D を add_actor / pick より優先するのは、
-                            // どちらも「ユーザーがマウスを離した瞬間の 1 回きりの操作」であり、
-                            // 後回しにすると次フレームへ再キューされてカーソル位置と着弾点が
-                            // ずれる（間にカメラが動くと別の場所に点が置かれる）ため。
-                            // 通常ドロップ（drop）より下なのは、そちらが先に実装済みの
-                            // 優先度契約であり、同一フレームに両方が飛ぶことは実際上ないため。
-                            let drop_pos = self.pending_drop
-                                .as_ref()
-                                .map(|&(_, sx, sy)| (sx, sy));
-                            let cp_pos = self.pending_control_point_drop
-                                .as_ref()
-                                .map(|&(_, _, sx, sy)| (sx, sy));
-                            // コントロールポイントの配置予定マーカー用ホバー。
-                            // 実際の追加より優先度を下げ、アクタ追加・ピックより上に置く。
-                            // ドラッグ中はクリックもコンテキストメニューも起きないので、
-                            // 実質この 3 つが同時に立つことはない。
-                            let cp_hover_pos = self.pending_control_point_hover;
-                            let add_actor_pos = self.pending_add_actor
-                                .as_ref()
-                                .and_then(|&(is_2d, _, _, sx, sy)| {
-                                    // 2D アクターはスポーン位置不要なので readback しない
-                                    if is_2d { None } else { Some((sx, sy)) }
-                                });
-                            let readback_pos = drop_pos.or(cp_pos).or(cp_hover_pos)
-                                .or(add_actor_pos).or(pick_pos);
+                            // 読み戻し要求（readback_pos）は ID パス描画の要否判定と共有するため
+                            // このブロックへ入る前に確定済み。ここではコピー予約とフラグ更新だけを行う。
                             if let Some((px, py)) = readback_pos {
                                 let px = px.min(id_buf.width.saturating_sub(1));
                                 let py = py.min(id_buf.height.saturating_sub(1));
@@ -7713,6 +7838,12 @@ impl App {
                 Err(e) => eprintln!("Render error: {e:?}"),
             }
         }
+
+        // ここから「サブミット後処理」区間（プロファイラ計測）。
+        // ID バッファの読み戻し（map_async + device.poll によるブロッキング待ち）と、
+        // その結果を使う選択更新・ドロップ着弾・アクタ追加・シェーダ宣言の UI 反映を含む。
+        // 読み戻しは GPU の完了待ちを伴うため、要求が立ったフレームだけ重くなる区間である。
+        let _prof_post_submit = ScopeGuard::new("サブミット後処理");
 
         // ── ピック結果の読み出し（GPU サブミット後）─────
         if did_pick {
@@ -8056,6 +8187,9 @@ impl App {
             }
         }
 
+        // 「サブミット後処理」区間ここまで。
+        drop(_prof_post_submit);
+
         // ─ 7. EndFrame（Play 時のみ）─────────────────
         if time_running {
             use crate::engine::ecs::Phase;
@@ -8198,6 +8332,49 @@ mod camera_preview_lighting_tests {
             region.contains("shadow_preview"),
             "カメラプレビューのパスがプレビューカメラ基準の CSM を構築していません"
         );
+    }
+}
+
+// ============================================================
+//  ID パス オンデマンド化の判定テスト
+// ============================================================
+
+#[cfg(test)]
+mod id_pass_gate_tests {
+    use super::should_draw_id_pass;
+
+    /// エディタ操作フレームでは「読み戻し要求があるときだけ」描くこと（オンデマンド化の本体）。
+    #[test]
+    fn editor_draws_only_when_readback_requested() {
+        assert!(
+            should_draw_id_pass(true, true, false),
+            "ピック／D&D の読み戻し要求があるフレームは必ず描く必要がある"
+        );
+        assert!(
+            !should_draw_id_pass(true, false, false),
+            "読み戻し要求が無いフレームは描かない（4〜5ms/フレームの削減点）"
+        );
+    }
+
+    /// Play（非ポーズ）は既定でスキップし、環境変数指定時のみ毎フレーム描くこと。
+    #[test]
+    fn play_skips_unless_env_opt_in() {
+        assert!(!should_draw_id_pass(false, false, false), "Play 既定はスキップ");
+        assert!(
+            !should_draw_id_pass(false, true, false),
+            "Play 既定では読み戻し要求があってもスキップ（従来挙動を変えない）"
+        );
+        assert!(
+            should_draw_id_pass(false, false, true),
+            "SEED_ID_PASS_IN_PLAY 指定時は要求の有無に関わらず毎フレーム描く"
+        );
+    }
+
+    /// エディタでは環境変数指定は判定に影響しないこと（Play 専用のスイッチである）。
+    #[test]
+    fn editor_gate_is_independent_of_play_env() {
+        assert!(!should_draw_id_pass(true, false, true));
+        assert!(should_draw_id_pass(true, true, true));
     }
 }
 
