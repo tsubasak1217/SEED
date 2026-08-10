@@ -98,6 +98,14 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public bool PlayColliderDraw { get; set; }
 
+    /// <summary>
+    /// プロファイラ計測の購読状態（プロファイラパネルが表示中のときのみ true）。
+    /// ランタイム側は SET_PROFILER で明示的に ON にしない限り計測を止めたままにするため、
+    /// このフラグは「次に接続し直したランタイムへ再送すべき値」としても使う
+    /// （<see cref="SetProfilerEnabled"/> 参照）。
+    /// </summary>
+    public bool ProfilerEnabled { get; private set; }
+
     private readonly RuntimeSourceWatcher? _sourceWatcher;
     private Process?                      _process;
     private PipeServer?                   _pipe;
@@ -288,6 +296,12 @@ public sealed class RuntimeManager : IDisposable
 
     /// <summary>ランタイム側のFPSが更新されたときに発火する（0.5秒ごと）。</summary>
     public event Action<float>? FpsReceived;
+
+    /// <summary>
+    /// ランタイム側のプロファイラ計測レポートを受信したときに発火する（0.5秒ごと、JSON 文字列）。
+    /// SET_PROFILER で購読を ON にしている間のみランタイムから送られてくる。
+    /// </summary>
+    public event Action<string>? ProfilerReportReceived;
 
     /// <summary>
     /// ロード済みプラグイン一覧が返ってきたときに発火する（JSON 文字列）。
@@ -530,6 +544,9 @@ public sealed class RuntimeManager : IDisposable
         _pipe?.Send("ENTER_PLAY");
         // コライダー描画フラグを同期する（ウィンドウ Play の --play-collider-draw=1 に相当）。
         _pipe?.Send($"SET_PLAY_COLLIDER_DRAW:{(PlayColliderDraw ? 1 : 0)}");
+        // プロファイラ購読状態を同期する（新しいランタイムは常に OFF スタートのため、
+        // パネルが開いたままなら再送しないと Play 後に計測データが止まる）。
+        _pipe?.Send($"SET_PROFILER:{(ProfilerEnabled ? 1 : 0)}");
         // 状態遷移とフォーカスは PLAY_ENTERED 受信時に MainWindow 側で行う。
     }
 
@@ -576,6 +593,9 @@ public sealed class RuntimeManager : IDisposable
         _pipe?.Send($"LOAD_SCENE:{PlayScenePath}");
         // コライダー描画フラグを同期する（新規起動時の --play-collider-draw=1 に相当）
         _pipe?.Send($"SET_PLAY_COLLIDER_DRAW:{(PlayColliderDraw ? 1 : 0)}");
+        // プロファイラ購読状態を同期する（保持 Play ランタイムは非表示中に OFF 化されている
+        // 可能性があるため、パネルが開いたままなら明示的に再送する）。
+        _pipe?.Send($"SET_PROFILER:{(ProfilerEnabled ? 1 : 0)}");
 
         // ウィンドウを再表示して前面化する
         if (_runtimeHwnd != IntPtr.Zero)
@@ -641,6 +661,17 @@ public sealed class RuntimeManager : IDisposable
         if (!noisy)
             EditorLog.Write($"[Editor→Runtime] {message[..Math.Min(80, message.Length)]}");
         _pipe?.Send(message);
+    }
+
+    /// <summary>
+    /// ランタイムへプロファイラ計測の ON/OFF を送る（プロファイラパネルの表示状態と連動）。
+    /// ランタイム側はデフォルト OFF で、パネルを閉じている間は計測コスト自体をゼロにするため、
+    /// パネルの表示/非表示のたびに必ず呼び出すこと。
+    /// </summary>
+    public void SetProfilerEnabled(bool enabled)
+    {
+        ProfilerEnabled = enabled;
+        _pipe?.Send($"SET_PROFILER:{(enabled ? 1 : 0)}");
     }
 
     /// <summary>
@@ -1155,6 +1186,11 @@ public sealed class RuntimeManager : IDisposable
                 await _pipe.WaitForConnectionAsync(cts.Token);
                 pipeConnected = true;
                 EditorLog.Write("Pipe connected");
+                // プロファイラ購読状態を新しいランタイムへ同期する。
+                // ランタイムは既定で計測 OFF のため、パネルを開いたままエディタを起動した
+                // （＝接続前に SetProfilerEnabled が空振りした）ケースをここで拾わないと、
+                // パネルを一度閉じて開き直すまでデータが届かない。
+                _pipe?.Send($"SET_PROFILER:{(ProfilerEnabled ? 1 : 0)}");
             }
             catch (Exception ex) when (!launchToken.IsCancellationRequested)
             {
@@ -1602,6 +1638,11 @@ public sealed class RuntimeManager : IDisposable
         {
             FpsReceived?.Invoke(fps);
         }
+        else if (msg.StartsWith("PROFILER:", StringComparison.Ordinal))
+        {
+            // プロファイラ計測レポート（0.5秒ごと、JSON）。SET_PROFILER で購読 ON の間だけ届く。
+            ProfilerReportReceived?.Invoke(msg["PROFILER:".Length..]);
+        }
         else if (msg.StartsWith("PLUGIN_LIST:", StringComparison.Ordinal))
         {
             // ロード済みプラグイン一覧を受信する。
@@ -1760,6 +1801,9 @@ public sealed class RuntimeManager : IDisposable
             _process.Exited += OnRuntimeExited;
         if (_pipe is not null)
             _pipe.MessageReceived += OnPipeMessage;
+        // 退避していた Edit ランタイムへ戻るので、プロファイラ購読状態を同期し直す
+        // （Play 中にパネルを開閉していた場合の取りこぼしを防ぐ）。
+        _pipe?.Send($"SET_PROFILER:{(ProfilerEnabled ? 1 : 0)}");
 
         // Edit ウィンドウを再表示してコンテナサイズに合わせる
         if (_runtimeHwnd != IntPtr.Zero)

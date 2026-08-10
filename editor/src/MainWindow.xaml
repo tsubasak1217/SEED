@@ -758,6 +758,11 @@
                               IsCheckable="True"
                               Tag="animation_timeline"
                               Click="OnTogglePanel"/>
+                    <MenuItem x:Name="MenuItemProfiler"
+                              Header="プロファイラ"
+                              IsCheckable="True"
+                              Tag="profiler"
+                              Click="OnTogglePanel"/>
                 </MenuItem>
                 <!-- スクリプト: スクリプト編集関連ウィンドウ -->
                 <MenuItem Header="スクリプト">
@@ -1738,6 +1743,14 @@
                                                   CanHide="False"
                                                   CanFloat="True">
                                 <!-- コンテンツは LoadLayout の LayoutSerializationCallback で設定される -->
+                            </avd:LayoutAnchorable>
+                            <!-- ランタイムのフレームプロファイラ計測結果を表示するパネル -->
+                            <avd:LayoutAnchorable Title="プロファイラ"
+                                                  ContentId="profiler"
+                                                  CanClose="False"
+                                                  CanHide="True"
+                                                  CanFloat="True">
+                                <panels:ProfilerPanel x:Name="PanelProfiler"/>
                             </avd:LayoutAnchorable>
                         </avd:LayoutAnchorablePane>
 

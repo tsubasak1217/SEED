@@ -388,6 +388,7 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::EditPhysicsApplyFrame
         | IpcCommand::SetPlayColliderDraw(..)
         | IpcCommand::SetPlayShaderHotReload(..)
+        | IpcCommand::SetProfilerEnabled(..)
         | IpcCommand::SetDebugGuard(..)
         // 【Undo/Redo 自身・入出力・問い合わせ】
         | IpcCommand::Undo
