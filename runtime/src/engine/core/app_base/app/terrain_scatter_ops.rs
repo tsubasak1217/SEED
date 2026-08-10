@@ -654,6 +654,13 @@ pub(crate) struct ScatterModelResource {
     /// だけを `batch.update` へ流す。これによりバッチには**可視インスタンスだけ**が
     /// 載り、G-Buffer パスもシャドウパスも可視ぶんだけを描く。
     pub chunk_spans: Vec<ScatterModelChunkSpan>,
+    /// 毎フレームの `batch.update` を入力不変フレームで省くためのダーティゲート。
+    ///
+    /// 散布モデルは静的なので、可視チャンクの連結結果（`visible`）と距離 LOD の
+    /// 振り分けが前フレームと完全一致すれば、`update` の出力は 1 ビットも変わらない。
+    /// 省略できると CPU 時間が浮くだけでなく、バッチの内容世代（`content_generation`）が
+    /// 据え置かれるためシャドウ深度パスの静的カスケードスキップも成立するようになる。
+    pub merge_gate: super::merge_batch_gate::MergeBatchGate,
 }
 
 /// 散布モデル 1 チャンク分の「ワールド行列列＋ワールド AABB」。
@@ -1620,6 +1627,8 @@ impl TerrainState {
                                 batch,
                                 capacity,
                                 chunk_spans: Vec::new(),
+                                // 新規バッチは未アップロード。初回 update で確定させる。
+                                merge_gate: Default::default(),
                             },
                         );
                         self.scatter_model_failed.remove(&prop_index);
@@ -1653,6 +1662,9 @@ impl TerrainState {
                 // 容量拡張時もメッシュレットカリング有効で作り直す（生成時と同じ方針）。
                 res.batch = ctx.create_instanced_batch(&res.cpu_model, capacity as u32);
                 res.capacity = capacity;
+                // バッチ実体が入れ替わったので、ダーティゲートの前フレーム情報も捨てる
+                // （新バッチは未アップロード＝必ず update させる）。
+                res.merge_gate = Default::default();
                 // 【snatch lock 再帰の防止】read lock 非保持のここで旧バッファ解放を確定させる。
                 let _ = ctx.device.poll(wgpu::PollType::Wait);
             }
@@ -1741,6 +1753,25 @@ impl TerrainState {
                 visible.extend_from_slice(&span.mats[..kept]);
             }
             dbg_visible += visible.len();
+            // ── ダーティゲート ────────────────────────────────────────
+            // 散布モデルは静的で、タグもアニメ時刻も持たない（常に空スライス）。
+            // 可視行列列と距離 LOD の振り分けが前フレームと完全一致するなら、
+            // update の出力（ワールド行列キャッシュ・LOD バッファ・ID バッファ）は
+            // 完全に同一になるので丸ごと省ける。
+            // 速度バッファは下で毎フレーム reset している（＝常に prev=curr）ため、
+            // スキップしても GPU 上の前フレーム行列は prev=curr のまま正しい。
+            {
+                let gate_inputs = super::merge_batch_gate::MergeBatchInputs {
+                    mats:           &visible,
+                    abs_ids:        &[],
+                    render_tags:    &[],
+                    time_overrides: &[],
+                };
+                let lod_unchanged = res.batch.lod_buckets_unchanged(camera_pos);
+                if res.merge_gate.decide(&gate_inputs, lod_unchanged, false) {
+                    continue;
+                }
+            }
             // 可視ぶんだけをアップロード（dirty 化してワールド行列を再計算させる）。
             // visible が空なら update 内部で全 LOD カウントが 0 になり、何も描かれない。
             res.batch.mark_dirty();

@@ -1784,32 +1784,40 @@ impl App {
                                 batch:      new_batch,
                                 capacity:   cap,
                                 id_zero_bg,
-                                // 新規/再生成バッチは未アップロード。次の update で確定させる。
-                                uploaded_sig: None,
+                                // 新規/再生成バッチは未アップロード。初回 update で確定させる。
+                                merge_gate: Default::default(),
                             });
                         }
                         if let Some(sd) = self.shared_model_batches.get_mut(path) {
-                            // ── 静的地形チャンクの update スキップ（Fix B）──────────────
-                            // 地形チャンクは静的で、変形/remesh のときだけメッシュと mats が
-                            // 変わる。remesh 時は batch_key（合成 source_path=ジオメトリ由来）
-                            // 自体が変わり別バッチになるため、同一キーで mats が前フレームと
-                            // 一致するなら描画は完全に不変。毎フレームの mark_dirty()+update()
-                            // （rayon 行列再計算・全ノードバッファ書込・id バッファ書込）を丸ごと
-                            // 省ける。地形は独自の remesh ベース LOD を持ち、汎用 per-instance
-                            // 距離 LOD（バケット振り分け）は 1 インスタンス・単一 LOD メッシュの
-                            // チャンクでは描画に影響しないため、カメラ移動時の再バケット省略も
-                            // 視覚的に安全。通常モデル/散布/アニメは非地形キー or mats 変化のため
-                            // 従来どおり毎フレーム更新される（挙動不変）。
-                            let is_terrain = path.starts_with(
-                                crate::engine::components::TERRAIN_SOURCE_SCHEME);
-                            let unchanged = is_terrain
-                                && sd.uploaded_sig.as_ref().is_some_and(|(m, a)| {
-                                    m.as_slice() == info.mats.as_slice()
-                                        && a.as_slice() == info.abs_ids.as_slice()
-                                });
-                            if unchanged {
-                                // 前フレームと同一（行列・ID とも）: 既存の lod バッファ・
-                                // compact をそのまま使い、更新を丸ごと省く。
+                            // ── 統合バッチ更新のダーティゲート ──────────────────────
+                            // `update()` の出力を決めるのは
+                            //   ① インスタンス行列 ② 絶対 ID ③ セマンティックタグ
+                            //   ④ アニメ権威時刻   ⑤ カメラ距離による LOD 振り分け結果
+                            // の 5 つだけ。①〜④ が前フレームとビット一致し、⑤ も振り直して
+                            // 同一なら、mark_dirty()+update()（rayon 行列再計算・全ノード
+                            // バッファ書込・ID バッファ書込）の結果は完全に同じになるので
+                            // 丸ごと省ける。地形チャンクだけでなく、静止した通常モデル・
+                            // 散布・停止中アニメにも効く（旧実装は地形キー限定だった）。
+                            //
+                            // ⑤ はカメラ位置そのものではなく「バケットが移動したか」で見る。
+                            // カメラは毎フレーム微動しうるが、LOD が切り替わらない限り
+                            // アップロード内容は不変なため、カメラ移動中もスキップが効く
+                            // （旧地形スキップが持っていた効果を失わない）。
+                            //
+                            // 速度バッファ（モーションベクタ）は「停止した最初のフレーム」に
+                            // 前フレーム行列を整定させる必要があるため、一致 1 回目は更新し
+                            // 2 回目からスキップする（merge_batch_gate 参照）。
+                            let gate_inputs = super::merge_batch_gate::MergeBatchInputs {
+                                mats:           &info.mats,
+                                abs_ids:        &info.abs_ids,
+                                render_tags:    &info.render_tags,
+                                time_overrides: &info.time_overrides,
+                            };
+                            let lod_unchanged = sd.batch.lod_buckets_unchanged(saved_camera_pos);
+                            // 速度リセット要求フレーム（Play⇄Edit 切替・シーンロード・RT リサイズ）は
+                            // 必ず update を通し、prev=curr を GPU へ反映させる。
+                            if sd.merge_gate.decide(&gate_inputs, lod_unchanged, velocity_reset_frame) {
+                                // 入力不変: 既存の lod バッファ・compact をそのまま使い回す。
                                 continue;
                             }
                             {
@@ -1849,11 +1857,8 @@ impl App {
                                     }
                                 }
                             }
-                            // 地形キーは今回アップロードした mats・abs_ids を記録し、
-                            // 次フレームの一致判定に使う。非地形は記録しない（None のまま＝常に更新）。
-                            if is_terrain {
-                                sd.uploaded_sig = Some((info.mats.clone(), info.abs_ids.clone()));
-                            }
+                            // 次フレームの一致判定に使うスナップショットは `merge_gate.decide()` が
+                            // 既に取り込んでいる（変化フレームのみ詰め直す）。ここでの記録は不要。
                         }
                     }
                     drop(_prof_merge);

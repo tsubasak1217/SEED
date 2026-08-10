@@ -40,6 +40,7 @@ mod pick_2d;
 mod canvas_drop;
 mod render;
 mod frame_renderer;
+mod merge_batch_gate;
 mod canvas_collect;
 mod collider2d_wireframe;
 mod collider3d_pick;
@@ -405,15 +406,14 @@ struct SharedModelData {
     /// ID パス用ベースオフセット=0 のバインドグループ。
     /// lod_id_buffers には絶対 ID を書き込むため base=0 で識別可能。
     id_zero_bg: (wgpu::Buffer, wgpu::BindGroup),
-    /// 静的地形チャンクの毎フレーム update スキップ（Fix B）用スナップショット。
-    /// `(統合インスタンス行列, 各インスタンスの絶対 ID)` を前回 `batch.update()` 時の値で保持する。
-    /// 地形チャンクキー（`TERRAIN_SOURCE_SCHEME`）のときだけ設定・比較する。次フレームの
-    /// merge 結果がこれと完全一致すれば mark_dirty()+update()+id バッファ書込をまるごと省ける
-    /// （描画結果・ピッキング ID ともに不変）。
-    /// 行列だけでなく abs_ids も比較するのは、行列不変でもアクター追加/削除で id_base が
-    /// ずれると lod_id_buffers（ピッキング）が陳腐化するのを防ぐため。
-    /// 非地形（通常モデル・散布・アニメ）は None のままで、従来どおり毎フレーム更新する。
-    uploaded_sig: Option<(Vec<[[f32; 4]; 4]>, Vec<u32>)>,
+    /// 統合バッチ更新のダーティゲート状態（地形に限らず全 batch_key で有効）。
+    ///
+    /// 前フレームの入力（インスタンス行列・絶対 ID・セマンティックタグ・アニメ権威時刻）と
+    /// 距離 LOD の振り分け結果が完全一致するフレームでは、`mark_dirty()`+`update()`+
+    /// ID バッファ書込をまるごと省ける（描画結果・ピッキング ID ともに不変）。
+    /// 速度バッファ（モーションベクタ）の整定のため、一致 1 回目は更新して 2 回目から
+    /// スキップする。詳細は `merge_batch_gate` モジュール参照。
+    merge_gate: merge_batch_gate::MergeBatchGate,
 }
 
 // ============================================================
