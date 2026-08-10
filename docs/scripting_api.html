@@ -679,7 +679,7 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <b>ゲームパッド</b>: GamepadButton = South/East/West/North・DPad*・LeftShoulder/RightShoulder・LeftStickPress/RightStickPress・Start/Select。GamepadAxis = LeftStickX/Y・RightStickX/Y（-1..1）・LeftTrigger/RightTrigger（0..1）。GamepadAxis のみ <code>dead_zone</code>（既定 0.2）が有効。接続パッドは最初の 1 台のみ。<br>
     キー名はエディタの選択肢（<code>Space</code> / <code>LeftShift</code> / <code>Q</code> / <code>Alpha0</code> / <code>Keypad0</code> / <code>UpArrow</code> …）に対応。マッピング不能な名前は無反応（ロード時に警告 1 回）。<br>
     <b>後方互換</b>: 旧 v1（version 欠落・WASD）も読み込め、内部で自動的に v2 へ移行（保存は常に v2）。<br>
-    <code>.inputmap</code> は初回アクセス時に読み込み・キャッシュ（毎フレーム再読込しません。実行中のファイル編集は反映されません）。<br>
+    <code>.inputmap</code> は初回アクセス時に読み込み・キャッシュし、以降は <b>1 秒間隔の mtime 監視で自動再読込</b>（毎フレーム再読込はしません）。編集・保存すれば約 1 秒以内に反映され、ランタイム再起動は不要です。再読込時はエッジ検出履歴もリセットされます。<br>
     複数持ち: <code>gameObject.GetComponent&lt;InputMap&gt;(1)</code>（index）や <code>gameObject.GetComponent&lt;InputMap&gt;("Vehicle")</code>（名前）で選択。
   </div>
 

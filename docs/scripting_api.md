@@ -675,7 +675,7 @@ if (gameObject.GetComponent<InputMap>() is { } input)   // InputMap?（未アタ
 - **軸（Axis1D / Axis2D）**: `正バインド − 負バインド` を合成して `[-1,1]` にクランプします。デジタル（Key/GamepadButton）は押下で 1.0、アナログ（GamepadAxis スティック）はデッドゾーン適用後の符号付き生値です。スティックは各軸の正バインドに `LeftStickX` 等を 1 件置けば両方向をカバーします。Axis2D は `normalize` を有効にすると長さ>1 のとき正規化され、斜めキーボードが 0.707 になります。
 - **ゲームパッド**: GamepadButton は `South`/`East`/`West`/`North`・`DPadUp/Down/Left/Right`・`LeftShoulder`(LB)/`RightShoulder`(RB)・`LeftStickPress`(L3)/`RightStickPress`(R3)・`Start`/`Select`。GamepadAxis は `LeftStickX`/`LeftStickY`/`RightStickX`/`RightStickY`（-1..1）・`LeftTrigger`/`RightTrigger`（0..1）。GamepadAxis のみ `dead_zone`（既定 0.2）が有効です。接続パッドは最初の 1 台のみ対応します。
 - **キー名**はエディタの選択肢（`Space` / `LeftShift` / `Q` / `Alpha0` / `Keypad0` / `UpArrow` …）に対応します。マッピング不能な名前は無反応（ロード時に警告 1 回）。
-- `.inputmap` は初回アクセス時に読み込み・キャッシュされます（毎フレーム再読込しません）。実行中のファイル編集は反映されません。
+- `.inputmap` は初回アクセス時に読み込み・キャッシュされ、以降は **1 秒間隔の mtime 監視で自動再読込**されます（毎フレームの再読込はしません）。ファイルを編集・保存すれば約 1 秒以内に反映され、ランタイムの再起動は不要です。再読込時はアクションのエッジ検出履歴（Start/End・Trigger/Release）もリセットされます。
 - **後方互換**: 旧 v1 形式（version 欠落・WASD バインディング）も読み込め、内部で自動的に v2 へ移行します（エディタの保存は常に v2）。
 - **複数コンポーネントの索引例**: 同種を複数持つ場合は `gameObject.GetComponent<InputMap>(1)`（index）や `gameObject.GetComponent<InputMap>("Vehicle")`（スロット名）で選べます。
 

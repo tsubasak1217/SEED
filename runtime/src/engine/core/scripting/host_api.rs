@@ -376,7 +376,7 @@ thread_local! {
     /// スクリプトは CLR メインスレッド専用（scripting/mod.rs）なので thread_local で足りる。
     /// 初回アクセス時に asset_fs でファイルを読み込み・パースし、以降は再パースしない
     /// （毎フレーム読むのは禁止方針）。asset_path が変わると別キーとして新規パースされる。
-    static INPUT_MAP_CACHE: RefCell<HashMap<String, ActionMap>> =
+    static INPUT_MAP_CACHE: RefCell<HashMap<String, CachedActionMap>> =
         RefCell::new(HashMap::new());
 
     /// asset_path をキーにしたアクション状態のフレーム履歴（Start/End・条件エッジ用）。
@@ -405,6 +405,60 @@ fn current_script_frame() -> u64 {
     SCRIPT_FRAME.load(Ordering::Relaxed)
 }
 
+/// キャッシュ済み ActionMap ＋ ホットリロード用のメタ情報。
+///
+/// 【なぜ mtime 監視が要るか（実バグの再発防止）】
+/// かつては「初回パース後は二度と再読込しない」キャッシュだったため、
+/// エディタで .inputmap を編集しても**ランタイムを再起動するまで反映されず**、
+/// 「矢印キーを削除したのに効き続ける」「RightStickX を追加したのに効かない」
+/// という報告バグの原因になった。シェーディングアセットと同じ mtime ポーリング
+/// （`INPUT_MAP_POLL_INTERVAL_SECS` 間引き）で編集へ自動追従する。
+struct CachedActionMap {
+    map: ActionMap,
+    /// 最後に読み込んだときのファイル mtime（asset_fs::mtime）。
+    mtime: u64,
+    /// 最後に mtime を確認した時刻（ポーリング間引き用）。
+    last_check: std::time::Instant,
+}
+
+/// .inputmap の mtime をポーリングする最短間隔 [秒]。
+/// シェーディングアセットのホットリロード（SHADING_ASSET_POLL_INTERVAL_SECS）と同じ方針。
+const INPUT_MAP_POLL_INTERVAL_SECS: f64 = 1.0;
+
+/// キャッシュエントリを「最新のファイル内容」に保証する。
+///
+/// - 未キャッシュ → 読み込んでパース
+/// - キャッシュ済み → 前回確認から `INPUT_MAP_POLL_INTERVAL_SECS` 経過していれば
+///   mtime を再取得し、変わっていたら再パース。**あわせて対応する ActionRuntime
+///   （フレーム履歴）も破棄する** — 旧マップのエッジ検出履歴を新マップへ持ち越すと
+///   「削除したアクションの Release が発火する」類の混線が起きるため。
+fn ensure_action_map_fresh(cache: &mut HashMap<String, CachedActionMap>, key: &str) {
+    let now = std::time::Instant::now();
+    if let Some(entry) = cache.get_mut(key) {
+        if now.duration_since(entry.last_check).as_secs_f64() < INPUT_MAP_POLL_INTERVAL_SECS {
+            return;
+        }
+        entry.last_check = now;
+        let normalized = crate::engine::asset_fs::normalize_asset_path(key);
+        let mtime = crate::engine::asset_fs::mtime(&normalized);
+        if mtime == entry.mtime {
+            return;
+        }
+        entry.mtime = mtime;
+        entry.map = load_action_map(key);
+        ACTION_RUNTIME_CACHE.with(|rc| {
+            rc.borrow_mut().remove(key);
+        });
+        return;
+    }
+    let normalized = crate::engine::asset_fs::normalize_asset_path(key);
+    cache.insert(key.to_string(), CachedActionMap {
+        map: load_action_map(key),
+        mtime: crate::engine::asset_fs::mtime(&normalized),
+        last_check: now,
+    });
+}
+
 /// asset_path から ActionMap をロードする（失敗時は空マップ＋警告）。
 fn load_action_map(asset_path: &str) -> ActionMap {
     let normalized = crate::engine::asset_fs::normalize_asset_path(asset_path);
@@ -427,12 +481,10 @@ fn with_action_map<R>(world: &World, slot: Entity, f: impl FnOnce(&ActionMap) ->
     let key = ic.asset_path.clone();
     INPUT_MAP_CACHE.with(|c| {
         let mut cache = c.borrow_mut();
-        if !cache.contains_key(&key) {
-            let map = load_action_map(&key);
-            cache.insert(key.clone(), map);
-        }
+        // 未キャッシュなら読み込み、キャッシュ済みでも mtime 変化で再読込（ホットリロード）
+        ensure_action_map_fresh(&mut cache, &key);
         // 直前に必ず挿入済みなので unwrap は安全
-        Some(f(cache.get(&key).unwrap()))
+        Some(f(&cache.get(&key).unwrap().map))
     })
 }
 
@@ -453,11 +505,10 @@ fn with_action_map_and_runtime<R>(
     let key = ic.asset_path.clone();
     INPUT_MAP_CACHE.with(|c| {
         let mut cache = c.borrow_mut();
-        if !cache.contains_key(&key) {
-            let map = load_action_map(&key);
-            cache.insert(key.clone(), map);
-        }
-        let map = cache.get(&key).unwrap();
+        // 未キャッシュなら読み込み、キャッシュ済みでも mtime 変化で再読込（ホットリロード）。
+        // 再読込時は対応する ActionRuntime も ensure 側が破棄する。
+        ensure_action_map_fresh(&mut cache, &key);
+        let map = &cache.get(&key).unwrap().map;
         // 別 RefCell なので同時借用しても衝突しない。
         ACTION_RUNTIME_CACHE.with(|rc| {
             let mut runtimes = rc.borrow_mut();
