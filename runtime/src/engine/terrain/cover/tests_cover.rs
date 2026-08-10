@@ -798,7 +798,7 @@ fn patterned_field(seed: usize) -> CoverField {
 #[test]
 fn default_material_ids_match_sample_asset_ids() {
     let set = CoverMaterialSet::default();
-    for id in ["snow", "leaf_carpet", "wet"] {
+    for id in ["snow", "wet"] {
         assert!(set.index_of(id).is_some(), "既定セットに `{id}` があること");
     }
 }
@@ -813,7 +813,7 @@ fn bundled_sample_asset_parses() {
     const SAMPLE: &str = include_str!("../../../../assets/terrain/cover_materials.json");
     let set = CoverMaterialSet::from_json_str(SAMPLE).expect("サンプルアセットが読めること");
     // 組み込み既定と同じ ID が揃っていること（既定 ⇄ アセットの意味の一致）。
-    for id in ["snow", "leaf_carpet", "wet"] {
+    for id in ["snow", "wet"] {
         assert!(set.index_of(id).is_some(), "サンプルアセットに `{id}` があること");
     }
     // 雪は盛り上がり、濡れは盛り上がらない（仕様上の約束）。

@@ -715,6 +715,15 @@ public partial class InspectorPanel : UserControl
         "リアルタイムシミュレートを止めます。開始からここまでが 1 回の Ctrl+Z で戻ります。";
     /// <summary>再生/停止トグルの幅（px）。記号 1 文字ぶんの正方形に近い見た目にする。</summary>
     private const double CoverSimToggleWidth = 28;
+    /// <summary>カバーエミッタ行のラベル幅（px）。範囲種別コンボなど同セクションの他行と揃える。</summary>
+    private const double CoverRowLabelWidth = 90;
+    /// <summary>カバーエミッタ行の入力欄幅（px）。範囲種別コンボなど同セクションの他行と揃える。</summary>
+    private const double CoverRowInputWidth = 170;
+    /// <summary>
+    /// 素材コンボに cover_materials.json 由来の候補が 1 つも無いときに出す項目の表示文字列。
+    /// （アセットが見つからない／壊れている場合。ID は空のままなので送信もしない）
+    /// </summary>
+    private const string CoverMaterialUnsetLabel = "(未設定)";
     /// <summary>
     /// 「秒進める」が意味を持つ最小の秒数（これ以下ならボタンを無効化する）。
     /// Rust 側 COVER_STEP_MIN_SECONDS と一致させること（超過のみ有効＝0 は無効）。
@@ -6715,6 +6724,75 @@ public partial class InspectorPanel : UserControl
             return row;
         }
 
+        // 素材選択行。cover_materials.json（＝素材定義の正典）から候補を作る。
+        //
+        // 【地形ツールバーのカバーブラシと同じ流儀にしてある理由】
+        //   素材一覧の読み出しは TerrainCoverMaterialsDocument に一本化してあり、
+        //   表示文字列の整形（"雪 (snow)"）も FormatComboEntry に集約されている。
+        //   ここで独自に組み立てると、素材を増やしたときに 2 か所直す羽目になる。
+        //
+        // 【シーンに保存済みの未知 ID の扱い】
+        //   cover_materials.json から素材が削除された／別プロジェクトのシーンを開いた等で
+        //   一覧に無い ID が来ることがある。この場合は「(不明: xxx)」項目を先頭に足して
+        //   それを選択状態にする。こうしないと SelectedIndex が -1 になって
+        //   「何が設定されているのか画面から分からない」うえ、うっかり触ると
+        //   別素材へ黙って書き換わる。値は保持され、ユーザーが明示的に選び直すまで送らない。
+        UIElement MakeCoverMaterialRow(string currentId, string key)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+            row.Children.Add(new TextBlock
+            {
+                Text = "素材", FontSize = 11, Width = CoverRowLabelWidth,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+
+            var combo = new ComboBox
+            {
+                Width = CoverRowInputWidth, FontSize = 11,
+                ToolTip = "assets/terrain/cover_materials.json で定義された地表カバー素材",
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+
+            var doc = SEEDEditor.Terrain.TerrainCoverMaterialsDocument.Load(_assetsPath);
+            int selected = -1;
+            foreach (var m in doc.Materials)
+            {
+                int idx = combo.Items.Add(new ComboBoxItem
+                {
+                    Content = SEEDEditor.Terrain.TerrainCoverMaterialsDocument.FormatComboEntry(m.Name, m.Id),
+                    Tag     = m.Id,
+                });
+                if (m.Id == currentId) selected = idx;
+            }
+
+            // 一覧に無い ID（未知 or 空）は、その値を保ったまま選べる項目として先頭に足す。
+            if (selected < 0)
+            {
+                combo.Items.Insert(0, new ComboBoxItem
+                {
+                    Content = string.IsNullOrWhiteSpace(currentId)
+                        ? CoverMaterialUnsetLabel
+                        : $"(不明: {currentId})",
+                    Tag = currentId,
+                });
+                selected = 0;
+            }
+            combo.SelectedIndex = selected;
+
+            // 初期選択を確定させたあとにハンドラを繋ぐ（構築時の空撃ち送信を避ける）。
+            combo.SelectionChanged += (_, _) =>
+            {
+                if (combo.SelectedItem is ComboBoxItem item && item.Tag is string id
+                    && !string.IsNullOrWhiteSpace(id))
+                {
+                    SendField(key, id);
+                }
+            };
+            row.Children.Add(combo);
+            return row;
+        }
+
         // ── ① カバーエミッタ本体 ──────────────────────────────
         var section = BuildSection("カバーエミッタ");
         var body    = (StackPanel)section.Child;
@@ -6748,8 +6826,9 @@ public partial class InspectorPanel : UserControl
         body.Children.Add(kindRow);
 
         // 素材 ID と強度は種別によらず常に効く。
-        body.Children.Add(MakeTextRow("素材ID", info.CoverMaterialId, "material_id",
-            "assets/terrain/cover_materials.json の id（例: snow / leaf_carpet / wet / mud）"));
+        // 素材は cover_materials.json の一覧から選ばせる（手入力だと存在しない ID を
+        // 打ててしまい、ランタイム側で黙って無効になる）。
+        body.Children.Add(MakeCoverMaterialRow(info.CoverMaterialId, "material_id"));
         body.Children.Add(MakeFloatRow("強度(量/秒)", info.CoverStrength, "strength", "strength", "F3"));
 
         // Region 専用の行（半径 3 軸＋境界フェード）。
