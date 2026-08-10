@@ -1417,6 +1417,7 @@ mod tests {
                 trample_cavity: 0.5,
                 ..CoverMaterial::default()
             }],
+            ..CoverMaterialSet::default()
         }
     }
 

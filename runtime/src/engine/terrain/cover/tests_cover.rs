@@ -57,6 +57,8 @@ fn test_materials() -> CoverMaterialSet {
                 ..CoverMaterial::default()
             },
         ],
+        // 積算ティック間隔はこれらのテストの対象外なので既定のままでよい。
+        ..CoverMaterialSet::default()
     }
 }
 
@@ -1003,6 +1005,7 @@ fn stamp_does_nothing_on_non_persistent_material() {
             footprint_persistence: 0.0,
             ..CoverMaterial::default()
         }],
+        ..CoverMaterialSet::default()
     };
     let stamps = vec![circle_stamp([extent * 0.5, TEST_SURFACE_Y, extent * 0.5], 2.0, 1.0)];
     assert!(!stamp_chunk(&mut field, &surface, [0.0; 3], extent, &stamps, &materials));
@@ -1760,6 +1763,7 @@ fn cover_material_none_never_resolves_to_a_real_material() {
         materials: (0..crate::engine::terrain::cover::TERRAIN_MAX_COVER_MATERIALS)
             .map(|i| CoverMaterial { id: format!("m{i}"), ..CoverMaterial::default() })
             .collect(),
+        ..CoverMaterialSet::default()
     };
     assert!(full.get(COVER_MATERIAL_NONE as usize).is_none());
 }
@@ -1883,4 +1887,199 @@ fn cover_brush_invalid_mask_degrades_to_circular() {
 
     assert!(changed, "読み込み失敗マスクでもブラシは効き続けること（無反応にしない）");
     assert!(degraded == circular, "縮退結果はマスク未指定と 1 ビットも変わらないこと");
+}
+
+// ============================================================
+//  8. 積算の間引き（性能）— 変化なしスキップと積算ティック
+//
+//  ここが固定する契約:
+//    ・積もり切った（飽和した）チャンクは「変化なし」を返す
+//      → 呼び出し側は焼き直しにもダーティにも載せない
+//    ・量子化（1/255）の粒より小さい積み増しでは「変化なし」のまま
+//      → 浮動小数の微小変化が永久に「変化あり」を出し続けない
+//    ・チャンクの事前判定は積算の早期棄却と同じ条件で一致する
+//    ・ティックは間隔で発火し、返す秒数の総和は投入した dt の総和と一致する
+// ============================================================
+
+use super::accumulate::{advance_accumulate_tick, chunk_has_active_emitter};
+use super::material::DEFAULT_ACCUMULATE_INTERVAL_SEC;
+
+/// 飽和したチャンクは「変化なし」を返し、場も 1 ビットも変わらないこと。
+///
+/// これが「積もりきった雪のチャンクを毎フレーム焼き直さない」ことの根拠。
+#[test]
+fn saturated_chunk_reports_no_change() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let emitters = global_emitter(MAT_SNOW, 1.0);
+    let materials = test_materials();
+
+    // 十分な時間を積んで満量（量 1.0）まで飽和させる。
+    let mut field = CoverField::new();
+    assert!(accumulate_chunk(
+        &mut field, &surface, [0.0; 3], extent, &emitters, &materials, 10.0,
+    ));
+    let saturated = field.clone();
+
+    // 飽和後はいくら積んでも変化しない（＝焼き直しキューへ載らない）。
+    for _ in 0..10 {
+        let changed = accumulate_chunk(
+            &mut field, &surface, [0.0; 3], extent, &emitters, &materials, 1.0 / 60.0,
+        );
+        assert!(!changed, "飽和したチャンクは変化フラグを立てないこと");
+    }
+    assert_eq!(field, saturated, "飽和後は場が 1 ビットも変わらないこと");
+}
+
+/// 量子化の粒（1/255）に届かない積み増しでは「変化なし」のままであること。
+///
+/// 変化判定は **量子化済みの格納値**で行っているという契約。生の f32 を比べていると、
+/// どれだけ小さな dt でも毎回「変化あり」になり、スキップが永久に効かなくなる。
+#[test]
+fn sub_quantum_accumulation_reports_no_change() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let materials = test_materials();
+    // 1 回あたりの積み増し = 0.2 × (1/600) ≒ 0.00033 → 量子化すると 0.085 段 → 四捨五入で 0 段。
+    let emitters = global_emitter(MAT_SNOW, 0.2);
+
+    let mut field = CoverField::new();
+    let before = field.clone();
+    let changed = accumulate_chunk(
+        &mut field, &surface, [0.0; 3], extent, &emitters, &materials, 1.0 / 600.0,
+    );
+    assert!(!changed, "量子化の粒に届かない積み増しは変化として扱わないこと");
+    assert_eq!(field, before, "場も 1 ビットも変わらないこと");
+}
+
+/// チャンクの事前判定が、積算の早期棄却とまったく同じ条件で一致すること。
+///
+/// 片方だけ緩いと「場を確保したのに何も積もらない」「積もるはずが場が無い」が起きる。
+#[test]
+fn chunk_pre_filter_matches_accumulate_early_reject() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent();
+    let surface = flat_surface(TEST_SURFACE_Y);
+    let materials = test_materials();
+    let origin = [0.0f32; 3];
+
+    // 全域エミッタ: 必ず触る。
+    let global = global_emitter(MAT_SNOW, 1.0);
+    assert!(chunk_has_active_emitter(origin, extent, &global));
+
+    // 強度 0: 触らない。
+    let zero = global_emitter(MAT_SNOW, 0.0);
+    assert!(!chunk_has_active_emitter(origin, extent, &zero));
+
+    // エミッタ無し: 触らない。
+    assert!(!chunk_has_active_emitter(origin, extent, &[]));
+
+    // 遠くの Region: 触らない。判定と実処理の結果が一致することも確かめる。
+    let far = vec![CoverEmitSpec {
+        range: CoverEmitRange::Region {
+            center: [1000.0, 0.0, 1000.0],
+            half_extents: [1.0, 1.0, 1.0],
+            fade: 0.0,
+        },
+        material_index: MAT_SNOW,
+        rate: 1.0,
+    }];
+    assert!(!chunk_has_active_emitter(origin, extent, &far));
+    let mut field = CoverField::new();
+    assert!(
+        !accumulate_chunk(&mut field, &surface, origin, extent, &far, &materials, 1.0),
+        "事前判定が false のとき、実処理も必ず変化なしであること"
+    );
+}
+
+/// ティックは間隔に達するまで発火せず、達した瞬間に「貯めた全量」を返すこと。
+#[test]
+fn accumulate_tick_fires_at_interval_boundary() {
+    const INTERVAL: f32 = 0.25;
+    const FRAME: f32 = 0.1;
+    let mut timer = 0.0f32;
+
+    // 0.1 → 0.2 は未達。
+    assert_eq!(advance_accumulate_tick(&mut timer, FRAME, INTERVAL), None);
+    assert_eq!(advance_accumulate_tick(&mut timer, FRAME, INTERVAL), None);
+    // 0.3 で到達 → 貯めた 0.3 秒ぶんをまとめて返す（0.25 ではない）。
+    let fired = advance_accumulate_tick(&mut timer, FRAME, INTERVAL)
+        .expect("間隔に達したら発火すること");
+    assert!((fired - 0.3).abs() < 1.0e-5, "返るのは貯めた全量であること: {fired}");
+    assert_eq!(timer, 0.0, "発火後はタイマが 0 へ戻ること");
+}
+
+/// ティックが返した秒数の総和が、投入した dt の総和と一致すること（積算総量の保存）。
+///
+/// これが「ティック化しても毎フレーム積算と同じ量が積もる」ことの根拠。
+#[test]
+fn accumulate_tick_conserves_total_time() {
+    const INTERVAL: f32 = DEFAULT_ACCUMULATE_INTERVAL_SEC;
+    const FRAME: f32 = 1.0 / 60.0;
+    const FRAMES: usize = 600; // 10 秒ぶん
+
+    let mut timer = 0.0f32;
+    let mut fired_total = 0.0f32;
+    for _ in 0..FRAMES {
+        if let Some(dt) = advance_accumulate_tick(&mut timer, FRAME, INTERVAL) {
+            fired_total += dt;
+        }
+    }
+    // 発火した総量 ＋ 未消化の端数 ＝ 投入した総量。
+    let injected = FRAME * FRAMES as f32;
+    assert!(
+        (fired_total + timer - injected).abs() < 1.0e-2,
+        "発火総量 {fired_total} ＋ 端数 {timer} が投入総量 {injected} と一致すること"
+    );
+    // 端数は必ず 1 ティック未満（＝取りこぼしは最大 1 ティックぶん）。
+    assert!(timer < INTERVAL, "未消化の端数は 1 ティック未満であること");
+}
+
+/// 異常な入力（負の dt・非有限のタイマ／間隔）でティックが壊れないこと。
+#[test]
+fn accumulate_tick_survives_bad_input() {
+    // 負の dt は 0 として扱う（時間が巻き戻らない）。
+    let mut timer = 0.1f32;
+    assert_eq!(advance_accumulate_tick(&mut timer, -1.0, 0.25), None);
+    assert_eq!(timer, 0.1);
+
+    // 壊れたタイマは 0 から復帰する。
+    let mut timer = f32::NAN;
+    assert_eq!(advance_accumulate_tick(&mut timer, 0.1, 0.25), None);
+    assert_eq!(timer, 0.1);
+
+    // 間隔が不正なら毎フレーム発火へ倒す（永久に発火しないより安全）。
+    let mut timer = 0.0f32;
+    assert!(advance_accumulate_tick(&mut timer, 0.1, f32::NAN).is_some());
+}
+
+/// 素材セットの積算間隔が、異常値でも安全な範囲へ丸められること。
+#[test]
+fn accumulate_interval_is_sanitized() {
+    let mut set = CoverMaterialSet::default();
+    assert_eq!(set.accumulate_interval_sec(), DEFAULT_ACCUMULATE_INTERVAL_SEC);
+
+    // 0・負値は下限（＝毎フレーム相当）へ。
+    set.accumulate_interval_sec = 0.0;
+    assert!(set.accumulate_interval_sec() > 0.0);
+    set.accumulate_interval_sec = -5.0;
+    assert!(set.accumulate_interval_sec() > 0.0);
+
+    // 非有限は既定値へ。
+    set.accumulate_interval_sec = f32::NAN;
+    assert_eq!(set.accumulate_interval_sec(), DEFAULT_ACCUMULATE_INTERVAL_SEC);
+
+    // 極端に大きい値は上限で頭打ち。
+    set.accumulate_interval_sec = 1.0e6;
+    assert!(set.accumulate_interval_sec() < 1.0e6);
+}
+
+/// 積算間隔フィールドが無い旧 cover_materials.json でも既定値で読めること（serde default）。
+#[test]
+fn accumulate_interval_defaults_for_old_asset() {
+    let set = CoverMaterialSet::from_json_str(r#"{"materials":[{"id":"snow"}]}"#)
+        .expect("読めること");
+    assert_eq!(set.accumulate_interval_sec(), DEFAULT_ACCUMULATE_INTERVAL_SEC);
 }

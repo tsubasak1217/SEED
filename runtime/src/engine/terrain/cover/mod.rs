@@ -40,7 +40,7 @@ mod tests_cover;
 // ─── 再エクスポート（本モジュールの公開 API）─────────────────────────────────
 // エンジン統合層はサブモジュールを直接指さず、必ずここ経由で参照する
 // （公開面を 1 か所に集約するため。scatter/mod.rs と同じ流儀）。
-pub use accumulate::accumulate_chunk;
+pub use accumulate::{accumulate_chunk, advance_accumulate_tick, chunk_has_active_emitter};
 pub use brush::{
     brush_chunk as brush_cover_chunk, brush_chunk_with_mask as brush_cover_chunk_with_mask,
     CoverBrushMode, CoverBrushSpec, COVER_BRUSH_MAX_DELTA_PER_APPLY,
@@ -52,7 +52,8 @@ pub use field::{
     COVER_FIELD_TEXELS, COVER_SLOPE_UP_FULL, COVER_SLOPE_UP_MIN, COVER_SURFACE_ABSENT,
 };
 pub use material::{
-    CoverMaterial, CoverMaterialSet, COVER_MATERIAL_NONE, TERRAIN_MAX_COVER_MATERIALS,
+    CoverMaterial, CoverMaterialSet, COVER_MATERIAL_NONE, DEFAULT_ACCUMULATE_INTERVAL_SEC,
+    TERRAIN_MAX_COVER_MATERIALS,
 };
 pub use tcover::{
     read_chunk as read_cover_chunk, write_chunk as write_cover_chunk, TcoverError, TcoverHeader,

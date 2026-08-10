@@ -353,8 +353,22 @@ impl CoverField {
 
         // ─── 同素材（または空のテクセル）は素直に加算する ───
         if self.amount[i] == 0 || self.material[i] == material_index {
+            let next = quantize_amount(current + delta);
+            // ─── 量が 0 のままなら素材添字も書き換えない ───
+            //   【なぜ必要か（毎フレーム焼き直しの原因だった）】
+            //     `delta` が量子化の粒（1/255）に届かないと量は 0 のまま動かないのに、
+            //     ここで素材添字だけが「素材なし（255）→ このエミッタの素材」へ変わる。
+            //     呼び出し側（`accumulate_chunk`）は素材添字の変化も「変化あり」と見なすため、
+            //     **見た目が 1 ピクセルも変わらないのにチャンクが焼き直し待ちへ載る**。
+            //     さらに素材の違うエミッタが 2 つ同じテクセルへ届いていると、
+            //     量 0 のまま添字が交互に書き換わり続けて永久に「変化あり」が立つ。
+            //   量 0 のテクセルは色にも変位にも一切寄与しない（`CoverNeighborhood` が
+            //   量 0 を必ず「何も無い」として読む）ので、添字を据え置いて実害は無い。
+            if next == 0 {
+                return;
+            }
             self.material[i] = material_index;
-            self.amount[i] = quantize_amount(current + delta);
+            self.amount[i] = next;
             return;
         }
 
