@@ -110,6 +110,7 @@ public partial class MainWindow
         MenuItemProject.IsChecked   = IsPanelVisible("project");
         MenuItemOutput.IsChecked    = IsPanelVisible("output");
         MenuItemAnimationTimeline.IsChecked = IsPanelVisible("animation_timeline");
+        MenuItemProfiler.IsChecked = IsPanelVisible("profiler");
         // スクリプト関連ウィンドウの表示状態もチェックへ反映する
         MenuItemOpenDocuments.IsChecked = IsPanelVisible("open_documents");
         MenuItemErrorList.IsChecked     = IsPanelVisible("error_list");

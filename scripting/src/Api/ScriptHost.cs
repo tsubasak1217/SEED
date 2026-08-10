@@ -487,6 +487,28 @@ public static unsafe class ScriptHost
             return _api.Scene(kind, pp, pl) != 0;
     }
 
+    // ── プロファイラ（手動スコープ計測）────────────────────────────
+
+    /// <summary>
+    /// プロファイラの手動スコープを開始／終了する。計測されたら true。
+    /// kind: 0=Begin（name を使う）/ 1=End（name は無視）。
+    /// エディタの「プロファイラ」パネルが閉じている間は常に false（計測しない）。
+    /// </summary>
+    public static bool ProfilerScope(int kind, string? name)
+    {
+        if (!_available || _api.Profiler == null) return false;
+
+        // End（name 不要）は文字列変換をせずそのまま呼ぶ。
+        if (string.IsNullOrEmpty(name))
+            return _api.Profiler(kind, null, 0) != 0;
+
+        int nl = Encoding.UTF8.GetByteCount(name);
+        Span<byte> nb = stackalloc byte[nl];
+        Encoding.UTF8.GetBytes(name, nb);
+        fixed (byte* np = nb)
+            return _api.Profiler(kind, np, nl) != 0;
+    }
+
     // ── 物理（Raycast）──────────────────────────────────────────
 
     /// <summary>
@@ -617,4 +639,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<uint, uint, int, byte*, int, int> InputAction;
     /// <summary>(slotIdx, slotGen, name, nameLen, out float*, outLen) → 書き込んだ要素数（InputMap 軸アクション。outLen>=2 で Vector2）</summary>
     public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, float*, int, int> InputActionAxis;
+    /// <summary>(kind, name, nameLen) → 1/0（プロファイラ手動計測。kind: 0=Begin/1=End。End は name を無視）</summary>
+    public delegate* unmanaged[Cdecl]<int, byte*, int, int> Profiler;
 }

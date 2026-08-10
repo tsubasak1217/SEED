@@ -795,6 +795,13 @@ pub enum IpcCommand {
     /// フォーマット: SET_PLAY_SHADER_HOT_RELOAD:{0|1}
     SetPlayShaderHotReload(bool),
 
+    /// プロファイラ計測の購読設定。
+    /// エディタの「プロファイラ」パネルが表示されている間だけ true を送る。
+    /// true の間だけランタイムがフレーム内セクション時間を計測し、
+    /// 集計窓ごとに `PROFILER:{json}` を返す（非表示時は計測自体を止めてオーバーヘッドを消す）。
+    /// フォーマット: SET_PROFILER:{0|1}
+    SetProfilerEnabled(bool),
+
     // ─── 編集時物理タイムライン ─────────────────────────────────────────────
     /// 再生/停止トグル。
     /// フォーマット: EDIT_PHYSICS_PLAY_PAUSE
@@ -2541,6 +2548,10 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         // エディタ設定（editor_preferences.json の play_shader_hot_reload）と 1 対 1。
                         "SET_PLAY_SHADER_HOT_RELOAD:1" => Some(IpcCommand::SetPlayShaderHotReload(true)),
                         "SET_PLAY_SHADER_HOT_RELOAD:0" => Some(IpcCommand::SetPlayShaderHotReload(false)),
+
+                        // プロファイラ計測の購読 ON/OFF（プロファイラパネルの表示状態と 1 対 1）。
+                        "SET_PROFILER:1" => Some(IpcCommand::SetProfilerEnabled(true)),
+                        "SET_PROFILER:0" => Some(IpcCommand::SetProfilerEnabled(false)),
 
                         s if s.starts_with("SET_ANIMATOR_CLIPS:") => {
                             // フォーマット: SET_ANIMATOR_CLIPS:{actor_dfs_id},{slot_idx},{json}

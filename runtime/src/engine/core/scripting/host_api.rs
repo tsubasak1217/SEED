@@ -1857,6 +1857,46 @@ unsafe extern "system" fn ffi_input_action_axis(
     written.unwrap_or(0)
 }
 
+// ─── プロファイラ（SEED.Profiler.Begin / End）────────────────────
+//
+// スクリプトから任意区間を計測するための FFI。エンジンのフレームプロファイラ
+// （engine/core/profiling）へ手動スコープとして積む。
+//
+// kind: 0 = Begin（name を使う）/ 1 = End（name は無視）
+// 戻り値: 1 = 計測された / 0 = 計測されなかった
+//         （プロファイラパネル非表示・名前の種類が上限超過・Begin と対応しない End 等）。
+//
+// 【安全性】スクリプトが Begin と End を対応させ損ねても、エンジン側のスコープは
+// 壊れない（End はスクリプトが開いたスコープしか閉じず、閉じ忘れは親スコープの
+// 終了時にまとめて閉じられる）。
+unsafe extern "system" fn ffi_profiler(kind: i32, name: *const u8, name_len: i32) -> i32 {
+    use crate::engine::core::profiling;
+
+    /// `kind` の値: 計測開始。
+    const PROFILER_KIND_BEGIN: i32 = 0;
+    /// `kind` の値: 計測終了。
+    const PROFILER_KIND_END: i32 = 1;
+
+    match kind {
+        PROFILER_KIND_BEGIN => {
+            // 計測が無効なら文字列変換もインターンも行わない（無効時のコストを最小化）。
+            if !profiling::is_enabled() {
+                return 0;
+            }
+            let name_str = str_from(name, name_len);
+            if name_str.is_empty() {
+                return 0;
+            }
+            match profiling::intern_name(name_str) {
+                Some(interned) => profiling::script_scope_begin(interned) as i32,
+                None => 0,
+            }
+        }
+        PROFILER_KIND_END => profiling::script_scope_end() as i32,
+        _ => 0,
+    }
+}
+
 // ─── C# へ渡す関数ポインタ表 ─────────────────────────────────
 
 /// C# の #[StructLayout(Sequential)] ScriptHostApi と同一レイアウト。
@@ -1892,6 +1932,9 @@ pub struct ScriptHostApi {
     resolve_component_slot: unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, i32, *mut u32) -> i32,
     input_action:           unsafe extern "system" fn(u32, u32, i32, *const u8, i32) -> i32,
     input_action_axis:      unsafe extern "system" fn(u32, u32, *const u8, i32, *mut f32, i32) -> i32,
+    // プロファイラ系（SEED.Profiler.Begin / End）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    profiler:               unsafe extern "system" fn(i32, *const u8, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -1919,6 +1962,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     resolve_component_slot: ffi_resolve_component_slot,
     input_action:           ffi_input_action,
     input_action_axis:      ffi_input_action_axis,
+    profiler:               ffi_profiler,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

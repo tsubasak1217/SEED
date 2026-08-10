@@ -15,6 +15,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use winit::event_loop::ActiveEventLoop;
 
 use crate::engine::components::ModelComponent;
+// プロファイラ（エディタの「プロファイラ」パネル用のセクション別 CPU 時間計測）。
+//
+// フレームループは 1 つの巨大な関数で、区間の多くが既存の `perf_*`（SEED_PERF_LOG 用）
+// タイマで「開始 Instant → 終了時に elapsed」の形に計測されている。二重計測を避けるため、
+// プロファイラのスコープも同じ区間の開始で `ScopeGuard::new` を作り、既存タイマの終了行で
+// `drop(...)` して閉じる（`profile_scope!` と等価な RAII 計測をブロック境界に依存せず行う）。
+use crate::engine::core::profiling::{self, ScopeGuard};
 
 /// デバッグログ用フレームカウンター（ログを出力する最大フレーム数）。
 static DEBUG_FRAME: AtomicU64 = AtomicU64::new(0);
@@ -276,6 +283,11 @@ impl App {
     ///
     /// render.rs の window_event から委譲される。
     pub(super) fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop) {
+        // プロファイラのフレーム記録を開始する（計測が無効なら実質ゼロコストで即 return）。
+        // 早期 return 経路（描画一時停止・最小化・サーフェスエラー）では end_frame が
+        // 呼ばれないが、次フレームの begin_frame が記録をクリアするので破綻しない。
+        profiling::begin_frame();
+
         let dbg_frame = DEBUG_FRAME.fetch_add(1, Ordering::Relaxed);
         let dbg = dbg_frame < DEBUG_LOG_FRAMES;
         if dbg { eprintln!("[SEED FRAME {dbg_frame}] start  mode={:?}  paused={}", self.mode, self.paused); }
@@ -412,7 +424,9 @@ impl App {
         let mut perf_physics_active = false;
 
         let _perf_t_ipc = std::time::Instant::now();
+        let _prof_ipc = ScopeGuard::new("IPC 処理");
         self.process_ipc(event_loop);
+        drop(_prof_ipc);
         perf_ipc_ms = _perf_t_ipc.elapsed().as_secs_f64() * 1000.0;
         mark_frame_stage(FrameStage::IpcDone);
         if dbg { eprintln!("[SEED FRAME {dbg_frame}] process_ipc done"); }
@@ -482,14 +496,18 @@ impl App {
                 // 3D 物理同期の所要時間を計測（recv・書き戻し・kinematic送信・
                 // ドラッグ押し戻しの同期オーバーラップ問い合わせ最大 20ms を含む）
                 let _perf_t_phys = std::time::Instant::now();
+                let _prof_phys = ScopeGuard::new("物理/3D 同期");
                 self.update_physics();
+                drop(_prof_phys);
                 perf_physics_ms = _perf_t_phys.elapsed().as_secs_f64() * 1000.0;
                 if dbg { eprintln!("[SEED FRAME {dbg_frame}] update_physics done"); }
                 // 編集時のみスナップショットを記録する（変化なしなら自動停止）
                 if self.mode == RuntimeMode::Edit && self.edit_physics_enabled {
                     let dt = 1.0 / 60.0f64; // 固定タイムステップ（物理スレッドと同期）
                     let _perf_t_snap = std::time::Instant::now();
+                    let _prof_snap = ScopeGuard::new("物理/スナップショット記録");
                     self.try_record_physics_snapshot(dt);
+                    drop(_prof_snap);
                     perf_snapshot_ms = _perf_t_snap.elapsed().as_secs_f64() * 1000.0;
                 }
             }
@@ -502,7 +520,9 @@ impl App {
             if should_update_physics_2d {
                 perf_physics_active = true;
                 let _perf_t_phys2d = std::time::Instant::now();
+                let _prof_phys2d = ScopeGuard::new("物理/2D 同期");
                 self.update_physics_2d();
+                drop(_prof_phys2d);
                 perf_physics2d_ms = _perf_t_phys2d.elapsed().as_secs_f64() * 1000.0;
             }
         }
@@ -607,7 +627,10 @@ impl App {
             use crate::engine::core::scripting::{publish_input, publish_physics_sender};
             // アニメーション評価（スクリプト更新より前に実行し、スクリプトが上書き可能にする）。
             // AnimatorComponent のクリップを進めて対象アクターの Transform 等へ書き込む。
-            self.update_animations(ctx.delta_time);
+            {
+                crate::profile_scope!("アニメーション評価");
+                self.update_animations(ctx.delta_time);
+            }
             // スクリプトの Input API 用に入力状態への読み取り専用ポインタを公開する。
             // 入力イベントの処理はイベントハンドラ側で行われるため、
             // フェーズ実行中に self.input が変更されることはない。
@@ -621,20 +644,45 @@ impl App {
             //（描画と同一の座標変換チェーンでフレームごとに計算する）
             crate::engine::core::scripting::host_api::publish_screen_positions(
                 self.collect_2d_screen_positions());
+            // スクリプト（＋ ECS システム）のフェーズ別実行時間を計測する。
+            // 親スコープ「スクリプト」の下に各フェーズがぶら下がるので、
+            // パネル上で「どのフェーズが重いか」が階層で読める。
+            let _prof_script = ScopeGuard::new("スクリプト");
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] begin_frame"); }
-            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::BeginFrame, &ctx); }
+            {
+                crate::profile_scope!("スクリプト/BeginFrame");
+                if let Some(scene) = &mut self.scene { scene.run_phase(Phase::BeginFrame, &ctx); }
+            }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] early_update"); }
-            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::EarlyUpdate, &ctx); }
+            {
+                crate::profile_scope!("スクリプト/EarlyUpdate");
+                if let Some(scene) = &mut self.scene { scene.run_phase(Phase::EarlyUpdate, &ctx); }
+            }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] update"); }
-            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Update, &ctx); }
+            {
+                crate::profile_scope!("スクリプト/Update");
+                if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Update, &ctx); }
+            }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] constant_update"); }
-            for fixed_ctx in self.clock.drain_fixed() {
-                if let Some(scene) = &mut self.scene { scene.run_phase(Phase::ConstantUpdate, &fixed_ctx); }
+            {
+                // 固定タイムステップは 1 フレームに 0〜N 回走る。呼び出し回数も記録されるので
+                // 「追いつき」で複数回回っている状況もパネルから判別できる。
+                crate::profile_scope!("スクリプト/ConstantUpdate");
+                for fixed_ctx in self.clock.drain_fixed() {
+                    if let Some(scene) = &mut self.scene { scene.run_phase(Phase::ConstantUpdate, &fixed_ctx); }
+                }
             }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] late_update"); }
-            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::LateUpdate, &ctx); }
+            {
+                crate::profile_scope!("スクリプト/LateUpdate");
+                if let Some(scene) = &mut self.scene { scene.run_phase(Phase::LateUpdate, &ctx); }
+            }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] scene.render"); }
-            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Render, &ctx); }
+            {
+                crate::profile_scope!("スクリプト/Render");
+                if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Render, &ctx); }
+            }
+            drop(_prof_script);
             mark_frame_stage(FrameStage::ScriptPhaseDone);
             // キャラクターコントローラーの ①希望位置送信（スクリプトが Transform に書いた値を
             // 物理へ非同期送信）＋ ②前フレーム分の補正結果を ECS へ反映（描画直前）を行う。
@@ -1261,6 +1309,7 @@ impl App {
         //  でのみ進む。Play を抜けた最初のフレームで揮発水位が消え、
         //  インスペクタで設定した静止水面へ戻る（波が Edit 中も動くのとは対照的）。
         {
+            crate::profile_scope!("水/水位グラフ");
             let awl = self.active_world_line;
             let sim = &mut self.water_level_sim;
             if let Some(scene) = self.scene.as_mut() {
@@ -1287,9 +1336,13 @@ impl App {
         //  （頂点バッファ書き換え）を要するので、`self` を細かく借り続ける
         //  描画ブロックへ入る前に済ませる（水位グラフと同じ理由）。
         {
+            crate::profile_scope!("地形/カバー場積算・焼き直し");
             perf_cover_ms = self.tick_terrain_cover(ctx.delta_time, time_running);
             perf_cover_ms += self.apply_pending_cover(ctx.delta_time);
         }
+
+        // BLAS 追従（頂点が動いたチャンクの RT 加速構造再構築）も計測対象にする。
+        // 待ちが空のフレームでは即 return するため、常時ほぼ 0ms で並ぶ。
 
         // ── 頂点が動いたチャンクの RT 加速構造（BLAS）を追従させる ────────────
         //
@@ -1300,7 +1353,10 @@ impl App {
         //   沈んで全面遮蔽＝真っ黒になる。両方の発生源より後・描画ブロックより前である
         //   この位置なら、同一フレーム内で最新頂点から BLAS を作り直せる。
         //   待ちが空のフレームは即座に返るので、通常フレームのコストはゼロである。
-        self.flush_rt_blas_prune();
+        {
+            crate::profile_scope!("RT/BLAS 追従");
+            self.flush_rt_blas_prune();
+        }
 
         // ── スカイボックス（天球）CPU 収集（Phase R9）──────────────
         // Skybox スロットを走査して描画対象を確定する（CameraLocked は最初の 1 つのみ）。
@@ -1331,6 +1387,7 @@ impl App {
         //   メソッドとして呼ぶ（App の &mut self メソッドだと draw_ctx 借用と衝突する）。
         //   camera_pos は距離 LOD の振り分けに使うだけ（見た目の姿勢には影響しない）。
         if let Some(ctx) = self.draw_ctx.as_ref() {
+            crate::profile_scope!("地形/散布モデル更新");
             self.terrain.rebuild_scatter_models_gpu(ctx, saved_camera_pos);
             // ── 散布モデルのチャンク単位フラスタム＋距離カリング（毎フレーム）──
             //   rebuild が用意した chunk_spans を、メインカメラ視錐台＋距離で絞り、
@@ -1343,6 +1400,7 @@ impl App {
         }
 
         let perf_grass_ms: f64 = {
+            crate::profile_scope!("地形/草バッファ再構築");
             let t_grass = std::time::Instant::now();
             if let Some((device, queue)) = self
                 .draw_ctx
@@ -1359,7 +1417,9 @@ impl App {
         {
             // begin_frame = get_current_texture(): GPU バックプレッシャーでここが長くなる
             let _perf_t_bf = std::time::Instant::now();
+            let _prof_bf = ScopeGuard::new("描画/BeginFrame(スワップチェーン取得)");
             let begin_frame_result = renderer.begin_frame();
+            drop(_prof_bf);
             perf_begin_frame_ms = _perf_t_bf.elapsed().as_secs_f64() * 1000.0;
             match begin_frame_result {
                 Ok(mut frame) => {
@@ -1466,6 +1526,7 @@ impl App {
                     //  （`TerrainScatterField` → `sample_density_world`）を使う。別実装にすると
                     //  「草は生えているのに岸波が陸へ乗る」ずれが出る。
                     {
+                        crate::profile_scope!("水/岸波フィールド更新");
                         // 地形チャンクの実在範囲（AABB）。カラム走査の早期棄却に使う。
                         // 地形が 1 チャンクも無ければ `None`＝岸が定義できないので焼かない。
                         let shore_bounds = terrain_world_bounds(&self.terrain);
@@ -1496,6 +1557,7 @@ impl App {
                     //  （場テクスチャ 4MB とコンピュートパイプラインの常駐コストを回避）。
                     //  草バッファがあるなら必ず構築される＝描画側は場の不在を考えなくてよい。
                     {
+                        crate::profile_scope!("インタラクションフィールド更新");
                         let perf_t_interact = std::time::Instant::now();
                         // ① シーンから書き手を集めてワールド解決する。
                         let sources = crate::engine::interaction::collect_interaction_sources(
@@ -1599,6 +1661,7 @@ impl App {
                     > = std::collections::HashMap::new();
                     // merge_map 構築＋全統合バッチ update() の CPU 時間を計測する（merge バケット）。
                     let _perf_t_merge = std::time::Instant::now();
+                    let _prof_merge = ScopeGuard::new("描画/統合バッチ更新");
                     let merge_map: std::collections::HashMap<String, MergeInfo> = {
                         let mut map: std::collections::HashMap<String, MergeInfo>
                             = std::collections::HashMap::new();
@@ -1731,6 +1794,7 @@ impl App {
                             }
                         }
                     }
+                    drop(_prof_merge);
                     perf_merge_ms = _perf_t_merge.elapsed().as_secs_f64() * 1000.0;
 
                     // ─── stale 統合バッチ／BLAS キャッシュの遅延 prune ──────────────
@@ -1799,6 +1863,7 @@ impl App {
                     perf_mc_count = all_mcs.len();
                     let _perf_t_skin = std::time::Instant::now();
                     {
+                        crate::profile_scope!("描画/スキニング Compute 記録");
                         let mut skin_pass = frame.encoder_mut().begin_compute_pass(
                             &wgpu::ComputePassDescriptor {
                                 label:            Some("Skin Compute Pass"),
@@ -4478,6 +4543,9 @@ impl App {
                     // ── メインレンダーパス ────────────────
                     let _perf_t_main = std::time::Instant::now();
                     {
+                        // メインパス一式（シャドウ〜G-Buffer〜ライティング〜半透明〜オーバーレイ）。
+                        // 内側の各パスが子スコープとしてぶら下がる。
+                        crate::profile_scope!("描画/メインパス");
                         // Play モード: ゲームカメラのクリアカラーで全体クリア
                         // （帯エリアは begin_render_pass 後に BarFillPipeline で別途塗りつぶす）
                         // Edit モード: アクター編集タブ・2D シーンビューは紺色、通常はダークグレー
@@ -4487,6 +4555,7 @@ impl App {
                         // 複合 BG（binding 2〜5）経由でこの深度をサンプルする。
                         // キャスターが無ければ 0 コストでスキップ。
                         if shadow_plan.any() {
+                            crate::profile_scope!("描画/シャドウ深度パス");
                             let mut shadow_casters: Vec<(
                                 &crate::engine::methods::drawer::GpuModel,
                                 &crate::engine::methods::drawer::InstancedModelBatch,
@@ -4581,6 +4650,7 @@ impl App {
                                     rt_casters.push((key.as_str(), gpu, batch));
                                 }
                                 let _perf_t_tlas = std::time::Instant::now();
+                                let _prof_tlas = ScopeGuard::new("RT/TLAS・BLAS ビルド");
                                 // バインドレス（B2）: 対応 GPU では instance_table も同時に詰めさせる。
                                 // rt_shadow とは別 RefCell のため共有借用で共存できる。
                                 let bindless_ref = draw_ctx.bindless.as_ref().map(|c| c.borrow());
@@ -4593,6 +4663,7 @@ impl App {
                                     &rt_casters, bindless_ref.as_deref(),
                                     Some(&draw_ctx.pipelines.skin_deform),
                                 );
+                                drop(_prof_tlas);
                                 perf_tlas_ms    = _perf_t_tlas.elapsed().as_secs_f64() * 1000.0;
                                 perf_tlas_built = stat.built;
                                 perf_tlas_insts = stat.instances;
@@ -4913,6 +4984,7 @@ impl App {
                         // フルスクリーン・ライティングパスで HDR シーンへ復元する。以降のメインパスは
                         // Load で再開し、半透明・スカイボックス・ギズモ等のフォワード要素だけを重ねる。
                         if deferred_active {
+                            crate::profile_scope!("描画/デファード一式");
                             // g0v..g3v は deferred_active のときのみ Some（RT ensure 済みのため必ず値がある）。
                             let (g0, g1, g2, g3, gv) = (
                                 g0v.expect("gbuffer0 view must exist when deferred_active"),
@@ -4925,6 +4997,7 @@ impl App {
                             // A. G-Buffer パス: 不透明ジオメトリのみを 4 枚の MRT + 深度へ焼く。
                             //    2D シーンビューは deferred_active=false になるため edit_view_2d 分岐は不要。
                             {
+                                crate::profile_scope!("描画/G-Buffer パス");
                                 let mut gpass = frame.begin_gbuffer_pass_to(g0, g1, g2, g3, gv);
                                 // Play時はメインパスと同じ viewport/scissor をG-Bufferにも適用する
                                 // （レターボックス帯の外にジオメトリを焼かないため）。
@@ -5049,6 +5122,7 @@ impl App {
                             //   readback_idle() が false（前回マップ未消費）のフレームは丸ごと見送る
                             //   （マップ中 staging への二重 COPY / 二重 map を防ぐ）。deferred のみ。
                             if *super::terrain_scatter_ops::HIZ_OCCLUSION_ENABLED {
+                                crate::profile_scope!("描画/Hi-Z オクルージョン");
                                 let (sw, sh) = frame.surface_size();
                                 // レイジー構築（初回のみ）。以降は ensure_size でサイズ追従する。
                                 if self.hiz.is_none() {
@@ -5104,6 +5178,7 @@ impl App {
                             // いもす法で ao_b へ均す。ライティングは group1 に ao_b をバイリニアで受け取り
                             // occlusion に乗算する（アンビエント/DDGI/バウンスにのみ効く）。
                             if ao_effective != crate::engine::core::renderer::AoMode::Off {
+                                crate::profile_scope!("描画/AO パス");
                                 let ao_p = &draw_ctx.pipelines.ao;
                                 // RT-AO は TLAS が要る。ao==Rt かつ RT パイプライン存在時のみ RT、
                                 // それ以外は SSAO（安全側フォールバック）。半径は方式ごとの定数。
@@ -5170,6 +5245,7 @@ impl App {
                             // 同じフレームのオフセットが既に焼けている必要がある（後ろへ動かすと
                             // 1 フレーム遅れのオフセットを読むか、常に 0 になる）。
                             if caustics_active {
+                                crate::profile_scope!("描画/水中コースティクス");
                                 let cp = &draw_ctx.pipelines.caustics;
                                 let water = self.water_renderer.as_ref()
                                     .expect("caustics_active なら water_renderer は構築済み");
@@ -5243,6 +5319,7 @@ impl App {
                             // deferred ライティングが mask_b をサンプルする。scene_lights_bg は shadow_mask_active の
                             // 条件（rt_on）から RT 複合 BG（TLAS/平均アルベド入り）であることが保証される。
                             if shadow_mask_active {
+                                crate::profile_scope!("描画/RT ソフト影マスク");
                                 let smp = draw_ctx.pipelines.shadow_mask.as_ref().unwrap();
                                 smp.write_params(&draw_ctx.queue, &shadow_mask_selection);
                                 // group1（G-Buffer）: マスク生成は 0..5 のみ参照。AO/SSGI/マスクスロットはダミーを渡す。
@@ -5351,6 +5428,7 @@ impl App {
                             //    G-Buffer デバッグ表示中は上の可視化パスが代わりを務めるためスキップする
                             //    （ライティング結果を描いてから上書きするのは純粋な無駄）。
                             if !gbuffer_debug_active {
+                                crate::profile_scope!("描画/デファードライティング");
                                 // ── シェーディングアセット（L3-a）の解決 ────────────────
                                 // フォールバック連鎖:
                                 //   Play  : メインカメラの shading_asset → Scene.shading_asset → None
@@ -5560,6 +5638,7 @@ impl App {
                         // ライティング（group1 t_ssgi）が読む（1 フレーム遅延方式）。scene_hdr は入力（読み）・
                         // ssgi_raw は出力（書き）で別テクスチャのため読み書き競合しない。
                         if ssgi_active {
+                            crate::profile_scope!("描画/SSGI パス");
                             let sp = &draw_ctx.pipelines.ssgi;
                             // ミス埋め色＝フラットアンビエント放射照度（ambient_color * ambient_intensity）。
                             // レイが画面外/背景へ抜けたピクセルをこの色で埋め、黒縁を出さない。
@@ -5609,6 +5688,7 @@ impl App {
                         // scene_hdr は入力（読み）・RT_REFLECTION は出力（書き）で別テクスチャのため競合しない。
                         if let Some(refl_view) = reflection_view {
                             use crate::engine::core::renderer::ReflectionMode;
+                            crate::profile_scope!("描画/反射パス(SSR/RT)");
                             let refl = &draw_ctx.pipelines.reflection;
                             // intensity を UBO へ反映。
                             refl.write_params(&draw_ctx.queue, self.post_fx.reflection_intensity);
@@ -5904,6 +5984,7 @@ impl App {
                                 // 水面パスは別レンダーパスなので、ここでメインパスを一旦閉じる。
                                 drop(pass);
                                 let perf_t_water = std::time::Instant::now();
+                                let _prof_water = ScopeGuard::new("描画/水面パス");
                                 let water_ready = water_prepared;
                                 if water_ready {
                                     // ① 屈折背景のグラブ（シーン HDR → 専用 1 ミップテクスチャ）。
@@ -6018,6 +6099,7 @@ impl App {
                                     }
                                     water.draw(&mut wpass, &camera_buf.bind_group);
                                 }
+                                drop(_prof_water);
                                 perf_water_ms = perf_t_water.elapsed().as_secs_f64() * 1000.0;
 
                                 // メインパスを Load で再開する（以降の距離ソート半透明・
@@ -6226,6 +6308,7 @@ impl App {
                         //（本修正の要点：旧構成では合成がオーバーレイの後に走り上書きしていた）。
                         // 無効時は一切実行しない。
                         if tp_wboit {
+                            crate::profile_scope!("描画/WBOIT 透明");
                             if let (Some(accum_view), Some(reveal_view)) =
                                 (wboit_accum_view, wboit_reveal_view)
                             {
@@ -6298,6 +6381,7 @@ impl App {
                         // カラー = Load（合成済み HDR を保持して重ねる）。これにより Always ギズモ／軸は
                         // 半透明の上にも常に見え、LessEqual ワイヤは不透明に隠れつつ WBOIT 合成に消されない。
                         // 以降このスコープの `pass` はオーバーレイパスを指す（メインパスは drop 済み）。
+                        let _prof_overlay = ScopeGuard::new("描画/エディタオーバーレイ");
                         let mut pass = frame.begin_overlay_pass_to(hdr_view);
 
                         // ドロッププレビュー球体描画（ドラッグ中のみ）
@@ -6708,6 +6792,7 @@ impl App {
                         // 多数のアクターがある場合にここが大きなボトルネックになりうる。
                         let _perf_t_drop = std::time::Instant::now();
                         drop(pass);
+                        drop(_prof_overlay);
                         perf_pass_drop_ms = _perf_t_drop.elapsed().as_secs_f64() * 1000.0;
                     }
 
@@ -6723,6 +6808,7 @@ impl App {
                     // G-Buffer デバッグ表示中は GPU パーティクルも描かない（半透明と同じ理由で、
                     // 生値の上に加算・アルファ合成されると G-Buffer の値が読めなくなる）。
                     if self.particle_system.has_emitters() && !gbuffer_debug_active {
+                        crate::profile_scope!("描画/GPU パーティクル");
                         // ── Play レターボックス時のビューポート適用（半透明/不透明と一致させる）──
                         // GPU パーティクルは 3D メインカメラ（camera_buf）で hdr_view（実サーフェス全面）
                         // へ直接描くため、ビューポート未適用だとレターボックス時に全面基準へズレる
@@ -6787,6 +6873,7 @@ impl App {
                     // ダウン／アップサンプルし、intensity 倍でシーン HDR へ加算合成する。
                     // 無効時はパスも RT 確保も一切行わない（コスト増ゼロ）。
                     if bloom_on {
+                        crate::profile_scope!("描画/ブルーム");
                         let bloom_params = crate::engine::core::renderer::BloomParams {
                             threshold: self.post_fx.bloom_threshold,
                             knee:      self.post_fx.bloom_knee,
@@ -6803,6 +6890,7 @@ impl App {
                     // トーンマップ後の LDR へ描くため、いったん LDR 中間 RT へ出す。
                     // ビネット有効時はトーンマップ前段に挿す（チェーン: hdr→ビネット→トーンマップ）。
                     {
+                        crate::profile_scope!("描画/トーンマップ");
                         // ビネット強度（土台のサンプル値。将来はプロジェクト設定でデータ駆動化）。
                         const VIGNETTE_INTENSITY: f32 = 0.4;
                         let vignette_stage = inter_view.map(|iv| {
@@ -6928,9 +7016,12 @@ impl App {
                     // トーンマップ済み LDR（＋2D オーバーレイ）をスワップチェーンへ書き出す。
                     // FXAA 有効時はエッジをなめらかにし、無効時は中央 1 タップのコピー。
                     // この 1 パスがトーンマップ後 LDR → スワップチェーンの橋渡しを兼ねる。
-                    frame.present_to_swapchain(
-                        &draw_ctx.post, &draw_ctx.device, ldr_view, fxaa_on,
-                    );
+                    {
+                        crate::profile_scope!("描画/FXAA・プレゼントコピー");
+                        frame.present_to_swapchain(
+                            &draw_ctx.post, &draw_ctx.device, ldr_view, fxaa_on,
+                        );
+                    }
 
                     // ── カメラプレビューブリット（選択カメラがある場合のみ）──────
                     // メインパスの後に、オフスクリーンプレビューをビューポート右下に貼り付ける。
@@ -6955,6 +7046,7 @@ impl App {
                     if draw_id_pass_this_frame {
                         if let Some(id_buf) = &self.id_buffer {
                             let _perf_t_id = std::time::Instant::now();
+                            let _prof_id = ScopeGuard::new("描画/ID パス(ピック用)");
                             {
                                 // BindGroup は RenderPass より長く生きる必要があるので先に生成する
 
@@ -7425,6 +7517,7 @@ impl App {
                                     );
                                 }
                             }
+                            drop(_prof_id);
                             perf_id_ms = _perf_t_id.elapsed().as_secs_f64() * 1000.0;
                             // readback 優先度: drop > control_point_drop > add_actor > pick
                             //
@@ -7475,7 +7568,12 @@ impl App {
 
                     mark_frame_stage(FrameStage::EncodeDone);
                     let _perf_t_finish = std::time::Instant::now();
-                    frame.finish();
+                    {
+                        // encoder.finish() + queue.submit() + surface.present() の合計。
+                        // GPU バックプレッシャー（VSync 待ち）はここに現れる。
+                        crate::profile_scope!("描画/Submit・Present");
+                        frame.finish();
+                    }
                     perf_finish_ms = _perf_t_finish.elapsed().as_secs_f64() * 1000.0;
                     mark_frame_stage(FrameStage::PresentDone);
 
@@ -7964,7 +8062,10 @@ impl App {
             use crate::engine::core::scripting::publish_input;
             // EndFrame フェーズのスクリプトからも Input API を使えるようにする
             publish_input(Some(&self.input));
-            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::EndFrame, &ctx); }
+            {
+                crate::profile_scope!("スクリプト/EndFrame");
+                if let Some(scene) = &mut self.scene { scene.run_phase(Phase::EndFrame, &ctx); }
+            }
             publish_input(None);
             // EndFrame 中に積まれたシーン操作コマンドも同フレーム内で適用する
             self.apply_script_scene_commands();
@@ -8012,6 +8113,16 @@ impl App {
                     eprintln!("[PLAY_HB] frame={n} gap={gap}ms");
                     PLAY_HB_LAST_MS.store(now_ms, Ordering::Relaxed);
                 }
+            }
+        }
+
+        // ── プロファイラ: フレーム記録を確定し、集計窓が満了していればエディタへ送る ──
+        //   毎フレーム送るのではなく集計窓（既定 0.5 秒）ごとに 1 回だけ送る。
+        //   フレームレート抑制（pace_frame_if_unfocused）の待ちを計測へ含めないため、
+        //   その直前で閉じる。
+        if let Some(report_json) = profiling::end_frame() {
+            if let Some(ipc) = &self.ipc {
+                ipc.send(&format!("PROFILER:{report_json}"));
             }
         }
 

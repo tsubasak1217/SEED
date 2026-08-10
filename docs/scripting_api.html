@@ -811,6 +811,34 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
   <div class="warn">読み込みに失敗した場合は現在のシーンが維持されます（戻り値 true は「受理」であり成功保証ではない）。<b>Transition を呼んだフレームで発行した Instantiate / Destroy は破棄されます</b>。シーン遷移を決めたら、そのフレームではそれ以上シーン操作をしないでください。</div>
 </section>
 
+<!-- ════════════════ 7.6 Profiler ════════════════ -->
+<section id="sec-profiler" data-keywords="Profiler プロファイラ 計測 パフォーマンス 重い ボトルネック 時間 Begin End Scope">
+  <h2>7.6 Profiler（任意区間の時間計測）</h2>
+  <p class="section-note">
+    エディタの「プロファイラ」パネルへ、自分のスクリプトの任意区間を計測項目として出せます。
+    計測結果は<b>そのとき実行中のセクションの子</b>として階層に現れます
+    （例: <code>スクリプト &gt; Update &gt; 敵の索敵</code>）。詳細は <code>docs/profiler.md</code>。
+  </p>
+  <div class="api"><code class="sig">using (Profiler.Scope("名前")) { … }</code><span class="desc">推奨。using ブロックを抜けた時点で自動的に計測終了（例外で抜けても閉じる）</span></div>
+  <div class="api"><code class="sig">Profiler.Begin("名前")</code><span class="desc">計測開始。必ず対応する End を呼ぶこと。戻り値は「計測されたか」</span></div>
+  <div class="api"><code class="sig">Profiler.End()</code><span class="desc">直近の Begin に対応する区間を終了する</span></div>
+<pre><span class="c">// 推奨: using で自動終了</span>
+<span class="k">using</span> (<span class="t">SEED.Profiler</span>.Scope(<span class="s">"敵の索敵"</span>))
+{
+    SearchEnemies();
+}
+
+<span class="c">// 明示的に書く場合は Begin と End を必ず対にする</span>
+<span class="t">SEED.Profiler</span>.Begin(<span class="s">"経路探索"</span>);
+SolvePath();
+<span class="t">SEED.Profiler</span>.End();</pre>
+  <div class="warn">
+    <b>計測されるのはエディタの「プロファイラ」パネルを開いている間だけ</b>です（閉じている間はほぼゼロコストで false を返します）。<br>
+    <b>名前は固定文字列にしてください。</b> 名前の種類には上限（256）があり、<code>Begin($"敵{i}")</code> のようにループ変数を埋め込むと上限に達し、それ以降の名前が計測されなくなります。<br>
+    Begin と End の対応が崩れてもエンジン側の計測は壊れません（End は自分が開いた区間しか閉じません）。
+  </div>
+</section>
+
 <!-- ════════════════ 8. シェーディングアセット (WGSL) ════════════════ -->
 <section id="sec-shading" data-keywords="wgsl WGSL シェーダー シェーダ シェーディング シェーディングアセット shading shade_default shade_model ShadingSurface LightSample 契約 契約バージョン shading_contract 光応答式 トゥーン toon BRDF ライティング 標準ライブラリ ホットリロード 画作り マテリアル">
   <h2>8. シェーディングアセット（WGSL）</h2>

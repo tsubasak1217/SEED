@@ -356,6 +356,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // キャンバス編集タブ開始応答（EDIT_CANVAS_BEGIN → CANVAS_EDIT_WL）
         _runtimeManager.CanvasEditStarted             += OnCanvasEditStarted;
         _runtimeManager.FpsReceived                   += OnFpsReceived;
+        // プロファイラ計測レポート（0.5秒ごと）をパネルへ流す（パネル表示中のみランタイムが送ってくる）。
+        _runtimeManager.ProfilerReportReceived        += PanelProfiler.ApplyReport;
+        // パネル側からランタイムへ計測の購読 ON/OFF（表示状態と連動）を送れるようにする。
+        PanelProfiler.SetRuntime(_runtimeManager);
         // 地形（terrain）編集: 初期化/保存/ブラシの結果をステータス表示へ反映する。
         _runtimeManager.TerrainInitCompleted          += OnTerrainInitCompleted;
         _runtimeManager.TerrainSaveCompleted          += OnTerrainSaveCompleted;
@@ -1021,6 +1025,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                     "script_editor"  => PanelScriptEditor,
                     "open_documents" => _openDocsPanel,
                     "error_list"     => _errorListPanel,
+                    "profiler"       => PanelProfiler,
                     _                => null,
                 };
             };
@@ -1094,6 +1099,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         EnsureAnchorable("error_list",     "エラー一覧", _errorListPanel);
         // 新規追加パネル（旧 layout.xml には存在しない）。CanClose=False の常設パネルとして復元を保証する。
         EnsureAnchorable("animation_timeline", "アニメーション", PanelAnimationTimeline);
+        EnsureAnchorable("profiler", "プロファイラ", PanelProfiler);
     }
 
     private void EnsureAnchorable(string contentId, string title, object? content)

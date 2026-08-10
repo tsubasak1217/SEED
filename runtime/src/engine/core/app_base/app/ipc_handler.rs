@@ -1679,6 +1679,11 @@ impl App {
                     // ここで false にしても Edit 中の編集フローには影響しない。
                     self.play_shader_hot_reload = v;
                 }
+                IpcCommand::SetProfilerEnabled(v) => {
+                    // プロファイラパネルの購読状態に追従して計測の有効／無効を切り替える。
+                    // 無効化時は集計器も破棄されるため、次に開いたとき古い窓のデータが混ざらない。
+                    crate::engine::core::profiling::set_profiling_enabled(v);
+                }
 
                 // ── 2D 物理シミュレーション設定 ──────────────────────────────
                 IpcCommand::SetEditPhysics2d { enabled, with_rigidbody } => {
