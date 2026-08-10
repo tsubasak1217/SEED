@@ -38,9 +38,10 @@ use crate::engine::core::loader::model::Model;
 use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::chunk_coord::ChunkCoord;
 use crate::engine::terrain::cover::{
-    accumulate_chunk, cover_y_match_tolerance, read_cover_chunk, resolve_forward_xz,
-    stamp_cover_chunk_tracked, write_cover_chunk, CoverEmitRange, CoverEmitSpec, CoverField,
-    CoverMask, CoverMaterialSet, CoverNeighborhood, CoverStampShape, CoverStampSpec, CoverSurface,
+    accumulate_chunk, advance_accumulate_tick, chunk_has_active_emitter, cover_y_match_tolerance,
+    read_cover_chunk, resolve_forward_xz, stamp_cover_chunk_tracked, write_cover_chunk,
+    CoverEmitRange, CoverEmitSpec, CoverField, CoverMask, CoverMaterialSet, CoverNeighborhood,
+    CoverStampShape, CoverStampSpec, CoverSurface,
 };
 use crate::engine::components::interaction_source_component::{
     InteractionSourceComponent, InteractionStampShape,
@@ -319,6 +320,13 @@ impl App {
     /// Edit 中は `terrain.cover_sim_running`（シミュレートボタン）が立っているあいだだけ進む。
     /// **どちらも false のフレームは 1 命令も走らない**（エミッタ収集すら行わない）。
     ///
+    /// 【積算はティック、轍スタンプは毎フレーム】
+    ///   エミッタからの積算（降雪など）は `CoverMaterialSet::accumulate_interval_sec()` の
+    ///   間隔でしか走らない。1 フレームぶんの積み増しは量の量子化（1/255）より細かく、
+    ///   絵が 1 ピクセルも変わらないのに全チャンク走査とエミッタ収集を払っていたためである。
+    ///   一方 `InteractionSource` による轍スタンプは「踏んだ瞬間に凹む」応答性が要るので
+    ///   **毎フレームのまま**にする（変化したチャンクだけが焼き直される点はスタンプ側で担保）。
+    ///
     /// 戻り値は積算に要した時間（ミリ秒。計測ログ用）。
     pub(super) fn tick_terrain_cover(&mut self, dt: f32, play_running: bool) -> f64 {
         let running = play_running || self.terrain.cover_sim_running;
@@ -328,14 +336,24 @@ impl App {
         let t = Instant::now();
         // フレーム落ち時に何秒ぶんも一気に積もらないよう刻みを制限する。
         let step = dt.clamp(0.0, COVER_SIMULATE_MAX_DT);
-        if step > 0.0 {
+        // ─── 積算ティック（性能）───
+        //   貯めた時間が間隔に達したフレームだけ、貯めた全量をまとめて積む。
+        //   返る秒数はタイマの全量なので、積算総量は毎フレーム実行時と厳密に一致する。
+        let interval = self.terrain.cover_materials.accumulate_interval_sec();
+        if let Some(tick_dt) =
+            advance_accumulate_tick(&mut self.terrain.cover_accum_timer, step, interval)
+        {
+            // ティックが来たフレームだけ計上される（来ないフレームはスコープ自体が無い）。
+            crate::profile_scope!("地形/カバー積算ティック");
             let emitters = self.collect_cover_emitters();
-            self.accumulate_cover(&emitters, step);
+            self.accumulate_cover(&emitters, tick_dt);
         }
         // ─── 轍のスタンプ（I3.2。Play 中のみ）───
         //   Edit 中の轍オーサリングはスコープ外なので、シミュレートボタンでは動かさない
         //   （エミッタと違って「どこを歩いたか」は Play でしか生まれない情報である）。
         if play_running && step > 0.0 {
+            // 轍スタンプは毎フレーム走る（応答性優先）ので、積算ティックとは別枠で計測する。
+            crate::profile_scope!("地形/轍スタンプ");
             // 前フレームの「作用中」表示を先に減衰させる。押した事実はこのあと
             // 上書きで立て直されるので、順序はこちらが先でなければならない。
             self.decay_cover_stamp_debug(step);
@@ -343,6 +361,20 @@ impl App {
             self.apply_cover_stamps(&jobs);
         }
         t.elapsed().as_secs_f64() * MILLIS_PER_SEC
+    }
+
+    /// 積算ティックの未消化端数を、いま 1 回だけ積んでタイマを空にする。
+    ///
+    /// シミュレート停止のように「ここで時間の進行が終わる」場面から呼ぶ。
+    /// 端数が 0 のときは何もしない（エミッタ収集も走らない）。
+    fn flush_cover_accum_residual(&mut self) {
+        let residual = self.terrain.cover_accum_timer;
+        self.terrain.cover_accum_timer = 0.0;
+        if !(residual > 0.0) || self.terrain.chunks.is_empty() {
+            return;
+        }
+        let emitters = self.collect_cover_emitters();
+        self.accumulate_cover(&emitters, residual);
     }
 
     /// 轍スタンプ源の「作用中」表示を `dt` 秒ぶん減衰させる（デバッグ描画用）。
@@ -539,6 +571,14 @@ impl App {
     /// 全チャンクのカバー場を `dt` 秒ぶん進める（純粋関数 `accumulate_chunk` の駆動）。
     ///
     /// 変化したチャンクだけを「未保存」と「頂点焼き直し待ち」にマークする。
+    ///
+    /// 【エミッタが届かないチャンクは一切触らない】
+    ///   以前は全チャンクへ `entry().or_default()` で空のカバー場を作ってから
+    ///   `accumulate_chunk` の早期棄却に頼っていた。これだと 1 テクセルも積もらない
+    ///   遠方チャンクにも `CoverField`（4 配列 × 1024 テクセル）が居座り、
+    ///   地表情報（`CoverSurface`）の生成まで走ってしまう。
+    ///   `chunk_has_active_emitter`（純関数・早期棄却とまったく同じ条件）で
+    ///   先に落とすことで、確保も走査も起きない。
     fn accumulate_cover(&mut self, emitters: &[CoverEmitSpec], dt: f32) {
         if emitters.is_empty() {
             return;
@@ -549,8 +589,20 @@ impl App {
         // （素材は十数件の小さな構造体であり、複製コストは無視できる）。
         let materials = self.terrain.cover_materials.clone();
 
+        // エミッタが届くチャンクだけへ絞り込む（届かないチャンクは場も面情報も作らない）。
+        let coords: Vec<ChunkCoord> = self
+            .terrain
+            .chunks
+            .keys()
+            .copied()
+            .filter(|coord| {
+                chunk_has_active_emitter(coord.world_origin(&settings), extent, emitters)
+            })
+            .collect();
+        if coords.is_empty() {
+            return;
+        }
         // 地表情報（密度場の派生キャッシュ）を必要なぶんだけ用意する。
-        let coords: Vec<ChunkCoord> = self.terrain.chunks.keys().copied().collect();
         for coord in &coords {
             self.ensure_cover_surface(*coord);
         }
@@ -697,6 +749,8 @@ impl App {
         }
 
         let t_total = Instant::now();
+        // 焼き直しが実際に走るフレームだけ計上される（間引きで返るフレームは対象外）。
+        crate::profile_scope!("地形/カバー頂点焼き直し");
         // 決定性のため座標順に処理する（ログ・GPU コマンド列を再現可能にする）。
         let mut coords: Vec<ChunkCoord> =
             std::mem::take(&mut self.terrain.cover_pending_apply).into_iter().collect();
@@ -1014,6 +1068,8 @@ impl App {
     pub(super) fn handle_terrain_cover_sim_start(&mut self) {
         // 開始〜停止のあいだ全部で 1 つの undo 単位にする。
         self.begin_cover_undo_session();
+        // 前回セッションの端数を持ち越さない（押した瞬間から時間を数え直す）。
+        self.terrain.cover_accum_timer = 0.0;
         self.terrain.cover_sim_running = true;
         if let Some(ipc) = &self.ipc {
             ipc.send("TERRAIN_COVER_SIM_STARTED");
@@ -1023,8 +1079,13 @@ impl App {
     /// カバー場の連続シミュレートを停止する（`TERRAIN_COVER_SIM_STOP`）。
     ///
     /// 停止と同時にセッションを確定し、開始時点からの差分を 1 つの undo エントリにする。
+    ///
+    /// 停止の瞬間に「ティック間隔に届かず未消化のまま残っていた端数時間」をここで積む。
+    /// こうしないと、押していた時間の最後の最大 1 ティックぶんが失われ、
+    /// 「N 秒押した結果」が毎フレーム積算だったときと一致しなくなる。
     pub(super) fn handle_terrain_cover_sim_stop(&mut self) {
         self.terrain.cover_sim_running = false;
+        self.flush_cover_accum_residual();
         self.commit_cover_undo_session();
         if let Some(ipc) = &self.ipc {
             ipc.send("TERRAIN_COVER_SIM_STOPPED");
@@ -1128,6 +1189,9 @@ impl App {
             return;
         }
         self.terrain.cover_sim_running = false;
+        // 停止の瞬間に残っていた積算ティックの端数を積む
+        // （`handle_terrain_cover_sim_stop` と同じ理由。押していた時間を取りこぼさない）。
+        self.flush_cover_accum_residual();
         self.commit_cover_undo_session();
         if let Some(ipc) = &self.ipc {
             ipc.send("TERRAIN_COVER_SIM_STOPPED");
@@ -1237,6 +1301,8 @@ impl App {
         self.terrain.cover_stamp_tracks.clear();
         // デバッグ表示の作用状態も Play をまたいで残さない。
         self.terrain.cover_stamp_debug.clear();
+        // 積算ティックの端数も Play の頭から数え直す（Edit の端数を持ち込まない）。
+        self.terrain.cover_accum_timer = 0.0;
         self.terrain.cover_play_snapshot = Some(self.terrain.cover.clone());
     }
 
@@ -1246,6 +1312,8 @@ impl App {
     /// （Play しただけでシーンが変更済みになる、という挙動を避ける）。
     pub(super) fn restore_cover_after_play(&mut self) {
         let Some(snapshot) = self.terrain.cover_play_snapshot.take() else { return };
+        // Play 中に貯まった積算ティックの端数は、積算結果ごと捨てる（Play の積算は揮発）。
+        self.terrain.cover_accum_timer = 0.0;
         self.terrain.cover_stamp_tracks.clear();
         // Stop した瞬間にギズモを通常色へ戻す（作用中の色が残らないように）。
         self.terrain.cover_stamp_debug.clear();

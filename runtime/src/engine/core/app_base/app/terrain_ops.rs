@@ -167,6 +167,81 @@ const TERRAIN_LOD_BUDGET_MS: f64 = 6.0;
 /// FPS 下限を損なうため、下限保護とオーバーヘッド償却の折衷として小さめの 2 に留める。
 const TERRAIN_LOD_BATCH: usize = 2;
 
+// ============================================================
+//  RemeshOptions — 再メッシュの付随処理をどこまでやるか
+// ============================================================
+
+/// `App::remesh_chunks` の付随処理の指定。
+///
+/// 【なぜ真偽値の並びをやめたのか】
+///   付随処理の軸が 3 つ（付随処理の遅延・GPU 解放の遅延・コライダー追従）になり、
+///   呼び出し側が `remesh_chunks(&coords, false, true, false)` のような
+///   「意味の読めない真偽値の列」になった。名前付きコンストラクタで
+///   **呼び出し側に経路の名前が残る**ようにする。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RemeshOptions {
+    /// 付随処理（RT BLAS prune）をストローク確定まで遅らせるか。
+    ///
+    /// true のときは `rt_blas_prune_pending` へ積むだけにする（毎フレームの prune で
+    /// BLAS 再構築上限を食い潰さないため）。統合バッチ無効化は描画に必須なので常に走る。
+    pub defer_side_effects: bool,
+    /// 旧 GPU リソースを即 drop + `poll(Wait)` せず、退役キューへ回すか。
+    ///
+    /// true にすると GPU アイドル待ちのバリアを張らない（移動時スパイクの排除）。
+    pub defer_gpu_release: bool,
+    /// 地形の物理コライダーを作り直すか。
+    ///
+    /// 【false にしてよいのは「密度場が 1 ビットも変わっていない」再メッシュだけ】
+    ///   コライダーは表示 LOD に関係なく常にフル解像度（LOD0）で作られる。
+    ///   よって **表示 LOD の切り替えだけで再メッシュしたチャンクの当たり判定は、
+    ///   再構築しても 1 ビットも変わらない**。にもかかわらず従来はここで
+    ///   「密度からフル解像度のメッシュを作り直す（LOD>0 のときは MC 再実行）＋
+    ///   Rapier トライメッシュの QBVH をメインスレッドで同期構築」を払っており、
+    ///   Play 中にカメラが動くと毎フレーム数十 ms を消費していた（実測 91ms）。
+    pub sync_colliders: bool,
+}
+
+impl RemeshOptions {
+    /// 即時経路（ブラシ確定・undo/redo・チャンク追加・一括収束）。
+    ///
+    /// 付随処理も GPU 解放もコライダー追従も、その場ですべて行う。
+    pub(super) fn immediate() -> Self {
+        Self { defer_side_effects: false, defer_gpu_release: false, sync_colliders: true }
+    }
+
+    /// LOD 遷移経路（`tick_terrain_lod`。毎フレーム・密度場は不変）。
+    ///
+    /// GPU 解放は退役キューへ回し、コライダーは触らない（形状が変わらないため）。
+    pub(super) fn lod_transition() -> Self {
+        Self { defer_side_effects: false, defer_gpu_release: true, sync_colliders: false }
+    }
+
+    /// ストローク中の遅延を切り替えた版を返す（ブラシ経路のみ動的に決まるため）。
+    pub(super) fn with_deferred_side_effects(mut self, defer: bool) -> Self {
+        self.defer_side_effects = defer;
+        // ストローク中はコライダー追従も確定時（`finalize_stroke_deferred`）へ回す。
+        self.sync_colliders = !defer;
+        self
+    }
+}
+
+/// このフレームで「あと何チャンク切り出してよいか」を返す（純関数）。
+///
+/// 【予算の 2 段構え】
+///   ① 件数のハード上限 `TERRAIN_LOD_TRANSITIONS_PER_FRAME`（本関数が担当）
+///   ② 時間バジェット `TERRAIN_LOD_BUDGET_MS`（呼び出し側が 1 バッチ処理ごとに判定）
+///   本関数が 0 を返す＝件数上限に到達で、残りは次フレームへ**繰り越す**（捨てない）。
+///
+/// 【最低 1 バッチは必ず前進する】
+///   `processed == 0` のときは必ず正の値を返す（上限は 1 以上の定数）。
+///   時間バジェット側の判定も「1 バッチ処理したあと」に行うため、
+///   1 チャンクが極端に重いフレームでも飢餓せず収束する。
+///
+/// - `processed`: このフレームで既に再メッシュ済みのチャンク数
+pub(super) fn lod_batch_size(processed: usize) -> usize {
+    TERRAIN_LOD_BATCH.min(TERRAIN_LOD_TRANSITIONS_PER_FRAME.saturating_sub(processed))
+}
+
 /// LOD 遷移で差し替えた旧チャンク GPU リソース（`GpuModel`／`InstancedModelBatch`）を、
 /// その場で drop せず「退役キュー」で保持するフレーム数。
 ///
@@ -768,6 +843,12 @@ pub struct TerrainState {
     pub cover_sim_running: bool,
     /// 頂点焼き直しの間引きタイマー（秒）。
     pub cover_apply_timer: f32,
+    /// 積算ティックの未消化経過時間（秒）。
+    ///
+    /// `CoverMaterialSet::accumulate_interval_sec()` に達したフレームで、
+    /// **貯めた全量をまとめて**積算へ渡して 0 へ戻す（`advance_accumulate_tick`）。
+    /// 貯めてから一括で入れるため、積算総量は毎フレーム積算していたときと一致する。
+    pub cover_accum_timer: f32,
     /// Play 開始時に退避した Edit のカバー場（Stop で書き戻す＝Play 中の積算は揮発）。
     pub cover_play_snapshot: Option<super::terrain_cover_ops::CoverFieldMap>,
     /// 現在のブラシストロークで**カバーブラシが触れた**チャンクの「編集前」カバー場。
@@ -889,6 +970,7 @@ impl Default for TerrainState {
             brush_mask_path: String::new(),
             cover_sim_running: false,
             cover_apply_timer: 0.0,
+            cover_accum_timer: 0.0,
             cover_play_snapshot: None,
             cover_stroke_before: HashMap::new(),
             cover_undo_session_before: None,
@@ -1920,7 +2002,7 @@ impl App {
         // ── ② 全チャンクを再メッシュ化する ──
         //   remesh_chunks が &mut self を取るため、対象座標は先に確定させておく。
         let coords: Vec<ChunkCoord> = self.terrain.chunk_slot_entity.keys().copied().collect();
-        self.remesh_chunks(&coords, false, false);
+        self.remesh_chunks(&coords, RemeshOptions::immediate());
 
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("TERRAIN_RELOAD_LAYERS_OK:{}", coords.len()));
@@ -2273,7 +2355,7 @@ impl App {
             }
         }
         let neighbor_list: Vec<ChunkCoord> = neighbors.into_iter().collect();
-        self.remesh_chunks(&neighbor_list, false, false);
+        self.remesh_chunks(&neighbor_list, RemeshOptions::immediate());
 
         self.send_hierarchy();
         eprintln!(
@@ -2637,10 +2719,9 @@ impl App {
             loop {
                 // このバッチぶんの座標を最大 `TERRAIN_LOD_BATCH` 件、かつ件数側の
                 // ハード上限（`TERRAIN_LOD_TRANSITIONS_PER_FRAME`）を超えない範囲で集める。
-                let mut coords: Vec<ChunkCoord> = Vec::with_capacity(TERRAIN_LOD_BATCH);
-                while coords.len() < TERRAIN_LOD_BATCH
-                    && processed + coords.len() < TERRAIN_LOD_TRANSITIONS_PER_FRAME
-                {
+                let take = lod_batch_size(processed);
+                let mut coords: Vec<ChunkCoord> = Vec::with_capacity(take);
+                while coords.len() < take {
                     let Some((_dist, coord, desired)) = iter.next() else {
                         break; // 候補を出し切った
                     };
@@ -2655,7 +2736,7 @@ impl App {
                 // 同時に作り直し、派生キャッシュ＝統合バッチ・BLAS も破棄される）。
                 //   defer_gpu_release=true: 毎フレーム経路なので旧 GPU リソースは即 drop せず遅延退役し、
                 //   poll(Wait) の GPU 待ちストール（移動時 80〜130ms スパイクの真因）を張らない。
-                self.remesh_chunks(&coords, false, true);
+                self.remesh_chunks(&coords, RemeshOptions::lod_transition());
                 processed += coords.len();
 
                 // ── バジェット判定は必ず「1 バッチ処理したあと」に行う ──
@@ -2795,7 +2876,7 @@ impl App {
             //   コライダー追従は no-op、統合バッチ無効化・BLAS prune は必要ぶんだけ走る）。
             //   defer_gpu_release=false: 一括収束は Play 開始前（GPU アイドル）なので poll(Wait) は軽く、
             //   即時解放で VRAM ピークを抑える方が有利（数百チャンク分の旧リソースを溜めない）。
-            self.remesh_chunks(&coords, false, false);
+            self.remesh_chunks(&coords, RemeshOptions::immediate());
         }
 
         // ── 所要時間ログ（常時 ON）──
@@ -2838,7 +2919,7 @@ impl App {
             // （統合バッチ無効化は描画に必要なので毎回維持される）。
             //   defer_gpu_release=false: ブラシ経路は挙動不変（旧 GPU 即解放 + poll(Wait)）。
             //   ブラシ中の poll ストールは本タスクの対象外（移動時 LOD スパイクとは別問題）。
-            self.remesh_chunks(&coords, deferring, false);
+            self.remesh_chunks(&coords, RemeshOptions::immediate().with_deferred_side_effects(deferring));
             if deferring {
                 // ── 付随処理は確定時にまとめて処理する。ここではチャンクを積むだけ ──
                 self.terrain.stroke_deferred_chunks.extend(coords.iter().copied());
@@ -2989,20 +3070,13 @@ impl App {
     ///   「CPU メッシュ生成 → 旧 drop → poll 1 回 → 新規アップロード」という順序にしたため、
     ///   VRAM ピークも実際に下がる（CPU 側のメッシュはシステムメモリなので二重に持ってよい）。
     ///
-    /// 【`defer_side_effects`】ストローク中のブラシ経路（`flush_terrain_pending_remesh`）から
-    ///   `true` で呼ばれる。`true` のときはフェーズD（物理コライダー再構築）と RT BLAS prune を
-    ///   スキップする（描画に必須な統合バッチ無効化は `true`/`false` に関わらず必ず実行）。
-    ///   スキップした付随処理はストローク確定時に `finalize_stroke_deferred` がまとめて追従する。
-    ///   ブラシ以外の全経路（undo/redo・チャンク追加・ペイントのフォールバック）は
-    ///   `false`（即時）で呼び、従来どおり挙動不変。
-    ///
-    /// 【`defer_gpu_release`】毎フレームの LOD 遷移経路（`tick_terrain_lod`）だけが `true` で呼ぶ。
-    ///   `true` のときフェーズ B の同期バリア `device.poll(Wait)` を張らず、旧 GpuModel／
-    ///   InstancedModelBatch を即 drop せず `gpu_retire_queue` へ退役させる（`process_terrain_gpu_retire`
-    ///   が数フレーム後に安全点で drop → `poll(Poll)`）。狙いは「LOD 遷移フレームが GPU 待ちで
-    ///   80〜130ms に落ちる（移動時スパイク）」の排除。`false`（ブラシ・undo/redo・チャンク追加・
-    ///   一括収束）では従来どおり即 drop + `poll(Wait)` で VRAM ピークを抑えつつ同期解放する。
-    fn remesh_chunks(&mut self, coords: &[ChunkCoord], defer_side_effects: bool, defer_gpu_release: bool) {
+    /// 【付随処理の指定は `RemeshOptions`】各フラグの意味と「どの経路がどれを使うか」は
+    ///   `RemeshOptions` の定義（本ファイル冒頭）に集約してある。要約すると:
+    ///     ・`immediate()`      … ブラシ確定・undo/redo・チャンク追加・一括収束（全部その場でやる）
+    ///     ・`lod_transition()` … 毎フレームの LOD 遷移（GPU 解放は退役キュー・コライダーは触らない）
+    ///     ・`with_deferred_side_effects(true)` … ストローク中（付随処理を確定時へ回す）
+    fn remesh_chunks(&mut self, coords: &[ChunkCoord], opts: RemeshOptions) {
+        let RemeshOptions { defer_side_effects, defer_gpu_release, sync_colliders } = opts;
         if self.draw_ctx.is_none() || coords.is_empty() {
             return;
         }
@@ -3179,12 +3253,23 @@ impl App {
         //   なったチャンクはコライダー削除、掘って表面が出たチャンクは新規登録される）。
         //   ペイントは形状不変なので `apply_terrain_paint_colors` 経由でここには来ない。
         //
-        //   【遅延】ストローク中（defer_side_effects=true）はスキップする。コライダーの
+        //   【遅延】ストローク中（`with_deferred_side_effects(true)`）はスキップする。コライダーの
         //   同期 QBVH 構築（キャラコンミラー）が毎フレームだとフレーム時間を支配するため。
         //   スキップぶんはストローク確定時に `finalize_stroke_deferred` が追従する。
         //   物理稼働中にストロークすると確定までコライダーが 1 つ前の形状のままになるが、
         //   これは監督判断済みの許容トレードオフである。
-        if !defer_side_effects && self.physics_thread.is_some() {
+        //
+        //   【LOD 遷移では**そもそも呼ばない**（`lod_transition()`）】
+        //   コライダーは表示 LOD に関係なく常にフル解像度（LOD0）で作られるため、
+        //   表示 LOD が変わっただけのチャンクを作り直しても結果は 1 ビットも変わらない。
+        //   それどころか LOD>0 のチャンクでは描画メッシュを流用できず
+        //   `build_chunk_collider_shape`（密度からのフル解像度 MC 再実行）へ落ちるため、
+        //   「まったく同じ形を、いちばん高い経路で作り直す」という純粋な浪費だった。
+        //   Play 中はカメラが動くたびに LOD 遷移が起きるので、これがフレームを支配していた。
+        //   遅延ではなく**不要**なので、確定時の追従（`finalize_stroke_deferred`）も要らない。
+        if sync_colliders && self.physics_thread.is_some() {
+            // QBVH の同期構築を含む重い区間。呼ばれたフレームだけ計上される。
+            crate::profile_scope!("物理/地形コライダー追従");
             for &coord in coords {
                 self.sync_terrain_chunk_collider(coord);
             }
@@ -3687,7 +3772,7 @@ impl App {
 
         // ── ⑨ フォールバック対象はまとめてフル再メッシュへ回す ──
         if !fallback.is_empty() {
-            self.remesh_chunks(&fallback, false, false);
+            self.remesh_chunks(&fallback, RemeshOptions::immediate());
         }
 
         // ── 計測ログ（`[PERF terrain] remesh ...` と同じ流儀・同じゲート）──
@@ -3882,7 +3967,7 @@ impl App {
                 touched.push(coord);
             }
         }
-        self.remesh_chunks(&touched, false, false);
+        self.remesh_chunks(&touched, RemeshOptions::immediate());
         // ── 密度を戻すと地面も戻るので、散布プロップを新しい地表へ貼り直す ──
         //   【散布そのものは undo されない（T3 第1段のスコープ外）】
         //   undo/redo スタックが持つのは密度とスプラットのスナップショットだけで、
@@ -3919,7 +4004,7 @@ impl App {
                 touched.push(coord);
             }
         }
-        self.remesh_chunks(&touched, false, false);
+        self.remesh_chunks(&touched, RemeshOptions::immediate());
         // undo と同じ理由で再接地する（散布自体は redo の対象外）。
         self.restick_scatter_for_chunks(&touched);
         // カバーブラシのぶんを「編集後」へ進める（undo の対称）。
@@ -5049,6 +5134,89 @@ const PHYS_SMOKE_BALL_SLOT_NAME: &str = "collider";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── LOD 再メッシュの件数予算（純粋ロジック）のテスト ──────────────────────
+
+    /// 何も処理していないフレームでは必ず 1 バッチぶん切り出せること（前進保証）。
+    ///
+    /// ここが 0 を返すと、重いチャンクが 1 つあるだけで LOD が永久に収束しない。
+    #[test]
+    fn lod_batch_always_advances_from_zero() {
+        assert_eq!(lod_batch_size(0), TERRAIN_LOD_BATCH);
+        assert!(lod_batch_size(0) > 0, "先頭バッチは必ず正であること");
+    }
+
+    /// 件数上限に達したら 0 を返し、残りは次フレームへ繰り越されること。
+    #[test]
+    fn lod_batch_stops_at_frame_cap() {
+        // 上限ちょうど / 超過のどちらでも 0（飽和減算で負にならない）。
+        assert_eq!(lod_batch_size(TERRAIN_LOD_TRANSITIONS_PER_FRAME), 0);
+        assert_eq!(lod_batch_size(TERRAIN_LOD_TRANSITIONS_PER_FRAME + 100), 0);
+    }
+
+    /// 上限直前では「上限を跨がないぶんだけ」に切り詰められること。
+    #[test]
+    fn lod_batch_clips_to_remaining_cap() {
+        let remaining = 1usize;
+        let processed = TERRAIN_LOD_TRANSITIONS_PER_FRAME - remaining;
+        assert_eq!(
+            lod_batch_size(processed),
+            remaining.min(TERRAIN_LOD_BATCH),
+            "上限を跨いで処理しないこと"
+        );
+    }
+
+    /// 予算を回し切ると、処理数の合計はちょうど件数上限で頭打ちになること
+    /// （＝1 フレームで際限なく再メッシュしない／余りは次フレームへ残る）。
+    #[test]
+    fn lod_batch_sum_saturates_at_cap() {
+        let mut processed = 0usize;
+        // 候補が無限にあると仮定して、切り出せなくなるまで回す。
+        loop {
+            let take = lod_batch_size(processed);
+            if take == 0 {
+                break;
+            }
+            processed += take;
+        }
+        assert_eq!(processed, TERRAIN_LOD_TRANSITIONS_PER_FRAME);
+    }
+
+    // ─── 再メッシュ経路ごとの付随処理指定（挙動の契約）のテスト ────────────────
+
+    /// LOD 遷移経路は**コライダーを作り直さない**こと。
+    ///
+    /// 表示 LOD が変わっただけのチャンクは密度場が 1 ビットも変わっていない。
+    /// コライダーは常にフル解像度（LOD0）なので、作り直しても結果は同一であり、
+    /// QBVH の同期構築ぶんだけフレーム時間を捨てることになる。
+    #[test]
+    fn lod_transition_never_syncs_colliders() {
+        let o = RemeshOptions::lod_transition();
+        assert!(!o.sync_colliders, "LOD 遷移でコライダーを作り直さないこと");
+        assert!(o.defer_gpu_release, "旧 GPU リソースは退役キューへ回すこと");
+        assert!(!o.defer_side_effects, "RT BLAS prune は従来どおり即時であること");
+    }
+
+    /// 即時経路（ブラシ確定・undo/redo・チャンク追加）は従来どおり全部やること。
+    #[test]
+    fn immediate_path_does_everything() {
+        let o = RemeshOptions::immediate();
+        assert!(o.sync_colliders);
+        assert!(!o.defer_gpu_release);
+        assert!(!o.defer_side_effects);
+    }
+
+    /// ストローク中はコライダー追従も付随処理も確定時へ回すこと（従来挙動の維持）。
+    #[test]
+    fn stroke_defers_colliders_with_side_effects() {
+        let deferred = RemeshOptions::immediate().with_deferred_side_effects(true);
+        assert!(deferred.defer_side_effects);
+        assert!(!deferred.sync_colliders, "遅延中はコライダーも触らない（従来と同じ）");
+
+        let immediate = RemeshOptions::immediate().with_deferred_side_effects(false);
+        assert!(!immediate.defer_side_effects);
+        assert!(immediate.sync_colliders);
+    }
 
     // ─── ストローク遅延付随処理の確定判定（純粋ロジック）のテスト ──────────────
 

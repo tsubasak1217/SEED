@@ -359,12 +359,19 @@ impl App {
         // 地形の GPU リソース退役処理と LOD 再メッシュは、どちらもチャンク数に比例して
         // 効いてくる（移動中は毎フレーム数チャンクを再メッシュする）ため 1 区間で計測する。
         let _prof_terrain_lod = ScopeGuard::new("地形/LOD 再メッシュ・GPU 退役");
-        self.process_terrain_gpu_retire();
+        {
+            // 退役キューの drop と poll(Poll) だけを分離して見る（再メッシュ本体と混ぜない）。
+            crate::profile_scope!("地形/GPU 退役");
+            self.process_terrain_gpu_retire();
+        }
 
         // チャンク単位 地形 LOD: 前フレームのカメラ位置で各チャンクの目標 LOD を選び、
         // 変化ぶんだけ近い順に小分けで再メッシュする（遠いチャンクを低ポリ化して描画三角形を削減）。
         // 描画の借用が始まる前（フレーム先頭）で行うことで scene/draw_ctx の可変借用衝突を避ける。
-        self.tick_terrain_lod();
+        {
+            crate::profile_scope!("地形/LOD 再メッシュ");
+            self.tick_terrain_lod();
+        }
         drop(_prof_terrain_lod);
         mark_frame_stage(FrameStage::TerrainLodDone);
 
@@ -507,6 +514,9 @@ impl App {
             if ready {
                 self.hierarchy_dirty = false;
                 self.last_hierarchy_send = Some(now);
+                // シーン木の全ノードをシリアライズして IPC で送る。100ms スロットルは
+                // 掛かっているが、編集・生成が続く間は定常的に発火するので単独で計測する。
+                crate::profile_scope!("IPC/ヒエラルキー送信");
                 self.do_send_hierarchy();
             }
         }
@@ -673,13 +683,24 @@ impl App {
             publish_input(Some(&self.input));
             // スクリプトの Physics.Raycast 用に物理スレッドへの送信チャンネルを公開する
             publish_physics_sender(self.physics_thread.as_ref().map(|t| t.command_sender()));
-            // AudioSource.IsPlaying 判定用に再生中スロット一覧を公開する
-            crate::engine::core::scripting::host_api::publish_playing_audio_slots(
-                self.playing_audio_slots());
-            // CanvasTransform.ScreenPosition 用に 2D アクターのスクリーン座標を公開する
-            //（描画と同一の座標変換チェーンでフレームごとに計算する）
-            crate::engine::core::scripting::host_api::publish_screen_positions(
-                self.collect_2d_screen_positions());
+            {
+                // AudioSource.IsPlaying 判定用に再生中スロット一覧を公開する
+                crate::profile_scope!("オーディオ/再生スロット公開");
+                crate::engine::core::scripting::host_api::publish_playing_audio_slots(
+                    self.playing_audio_slots());
+            }
+            {
+                // CanvasTransform.ScreenPosition 用に 2D アクターのスクリーン座標を公開する
+                //（描画と同一の座標変換チェーンでフレームごとに計算する）
+                //
+                // 【単独で計測する理由】スクリプトが ScreenPosition を 1 度も読まなくても、
+                //   world_line 内の全アクタを DFS して Canvas 階層のワールド変換を
+                //   毎フレーム作り直す。アクタ数に比例する無条件コストなので、
+                //   「Frame の自己時間」に紛れないよう必ず自分のスコープを持たせる。
+                crate::profile_scope!("UI/2D スクリーン座標収集");
+                crate::engine::core::scripting::host_api::publish_screen_positions(
+                    self.collect_2d_screen_positions());
+            }
             // スクリプト（＋ ECS システム）のフェーズ別実行時間を計測する。
             // 親スコープ「スクリプト」の下に各フェーズがぶら下がるので、
             // パネル上で「どのフェーズが重いか」が階層で読める。
@@ -724,7 +745,10 @@ impl App {
             // 物理へ非同期送信）＋ ②前フレーム分の補正結果を ECS へ反映（描画直前）を行う。
             // **必ずスクリプトフェーズ実行後・描画前**に呼ぶことで、この フレームでスクリプトが
             // 書いた希望位置を拾い、かつスクリプトの貫通直書きをクランプ済みの補正後位置で上書きする。
-            self.sync_character_controllers();
+            {
+                crate::profile_scope!("物理/キャラクターコントローラ同期");
+                self.sync_character_controllers();
+            }
             mark_frame_stage(FrameStage::CharCtrlDone);
             // 入力・物理チャンネルの公開を解除する（フェーズ外でのアクセスを防ぐ）
             publish_input(None);
@@ -732,11 +756,20 @@ impl App {
             // スクリプトが積んだシーン操作コマンド（Instantiate / Destroy）を適用する。
             // フェーズ実行後にまとめて適用することで、実行中スクリプトとの競合を避ける
             // （生成アクターはこの後の描画収集から同フレームで見える）。
-            self.apply_script_scene_commands();
-            // スクリプトが積んだオーディオコマンド（Audio.Play 等）を適用する
-            self.apply_script_audio_commands();
-            // AudioComponent の play_on_start 発火と距離減衰・パンを更新する
-            self.update_component_audio();
+            {
+                crate::profile_scope!("スクリプト/シーンコマンド適用");
+                self.apply_script_scene_commands();
+            }
+            {
+                // スクリプトが積んだオーディオコマンド（Audio.Play 等）を適用する
+                crate::profile_scope!("オーディオ/コマンド適用");
+                self.apply_script_audio_commands();
+            }
+            {
+                // AudioComponent の play_on_start 発火と距離減衰・パンを更新する
+                crate::profile_scope!("オーディオ/コンポーネント更新");
+                self.update_component_audio();
+            }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] game logic done"); }
         }
 
@@ -8207,6 +8240,7 @@ impl App {
             }
             publish_input(None);
             // EndFrame 中に積まれたシーン操作コマンドも同フレーム内で適用する
+            crate::profile_scope!("スクリプト/シーンコマンド適用");
             self.apply_script_scene_commands();
         }
 

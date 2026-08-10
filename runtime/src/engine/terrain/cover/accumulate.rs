@@ -25,6 +25,80 @@ use super::field::{
 };
 use super::material::CoverMaterialSet;
 
+/// このチャンクの AABB に「1 テクセルでも積もらせうる」エミッタがあるか（純関数）。
+///
+/// 【なぜ独立した関数なのか（性能）】
+///   駆動側（`terrain_cover_ops::accumulate_cover`）は、カバー場をまだ持たないチャンクへ
+///   空のカバー場を作ってから `accumulate_chunk` を呼んでいた。エミッタが遠くにある
+///   チャンクでは 1 テクセルも積もらないのに、チャンク数ぶんの `CoverField`
+///   （4 配列 × 1024 テクセル）が確保され、以後ずっとメモリと走査対象に居座る。
+///   「触る価値があるか」を場の確保より前に判定できるよう、
+///   `accumulate_chunk` の早期棄却と**まったく同じ条件**をここへ切り出した。
+///
+/// - `chunk_origin`: チャンク最小コーナーのワールド座標（メートル）
+/// - `chunk_extent`: チャンク 1 辺のワールド長（メートル）
+pub fn chunk_has_active_emitter(
+    chunk_origin: [f32; 3],
+    chunk_extent: f32,
+    emitters: &[CoverEmitSpec],
+) -> bool {
+    if emitters.is_empty() || !(chunk_extent > 0.0) {
+        return false;
+    }
+    let aabb_max = [
+        chunk_origin[0] + chunk_extent,
+        chunk_origin[1] + chunk_extent,
+        chunk_origin[2] + chunk_extent,
+    ];
+    emitters
+        .iter()
+        .any(|e| emitter_touches_chunk(e, chunk_origin, aabb_max))
+}
+
+/// 積算ティックのタイマを `dt` 秒進め、発火したら「まとめて積むべき秒数」を返す（純関数）。
+///
+/// 【なぜティックにするのか】性能。理由と間隔の根拠は
+/// `material::DEFAULT_ACCUMULATE_INTERVAL_SEC` の説明を参照。
+///
+/// 【積算総量が毎フレーム実行時と一致する理由】
+///   発火時に返すのは「貯めたタイマの全量」であり、タイマは 0 へ戻す。
+///   よって発火のたびに返した秒数の総和は、投入した `dt` の総和から
+///   「まだ発火していない端数」を引いた値に **厳密に一致**する。
+///   積算式は `量 += 被覆率 × 強度 × dt × 傾斜` の単調加算なので、
+///   同じ総秒数を 1 回で入れても N 回に分けて入れても飽和前の合計量は等しい。
+///
+/// - `timer`: 呼び出し側が保持する未消化の経過時間（秒）。本関数が更新する
+/// - `dt`: 今フレームの経過時間（秒）。非有限・負値は 0 として扱う
+/// - `interval`: ティック間隔（秒）。`CoverMaterialSet::accumulate_interval_sec()` で丸めた値
+///
+/// 戻り値が `Some(seconds)` のときだけ積算を走らせる。`None` のフレームは何もしない。
+pub fn advance_accumulate_tick(timer: &mut f32, dt: f32, interval: f32) -> Option<f32> {
+    let step = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
+    // タイマが壊れた値になっていたら（外部から差し込まれた NaN 等）0 へ戻して復帰する。
+    if !timer.is_finite() {
+        *timer = 0.0;
+    }
+    *timer += step;
+    // 間隔が不正なら「毎フレーム積算」へ倒す（丸めは呼び出し側の責務だが二重の防波堤）。
+    let interval = if interval.is_finite() && interval > 0.0 { interval } else { 0.0 };
+    if *timer < interval || *timer <= 0.0 {
+        return None;
+    }
+    let elapsed = *timer;
+    *timer = 0.0;
+    Some(elapsed)
+}
+
+/// エミッタ 1 個がこのチャンク AABB へ寄与しうるか。
+///
+/// `chunk_has_active_emitter`（場の確保前の判定）と `accumulate_chunk`（実処理の早期棄却）が
+/// **同じ条件**で動くことを型で保証するために 1 か所へ切り出してある。
+/// 片方だけ緩いと「場は作られるのに何も積もらない」「場が無いのに積もるはずだった」が起きる。
+#[inline]
+fn emitter_touches_chunk(e: &CoverEmitSpec, aabb_min: [f32; 3], aabb_max: [f32; 3]) -> bool {
+    e.rate > 0.0 && !e.is_outside_aabb(aabb_min, aabb_max)
+}
+
 /// 1 チャンク分のカバー場を `dt` 秒ぶん進める。
 ///
 /// - `chunk_origin`: チャンク最小コーナーのワールド座標（メートル）
@@ -61,7 +135,7 @@ pub fn accumulate_chunk(
     ];
     let active: Vec<&CoverEmitSpec> = emitters
         .iter()
-        .filter(|e| e.rate > 0.0 && !e.is_outside_aabb(aabb_min, aabb_max))
+        .filter(|e| emitter_touches_chunk(e, aabb_min, aabb_max))
         .collect();
     if active.is_empty() {
         return false;

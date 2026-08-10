@@ -50,6 +50,46 @@ pub const TERRAIN_MAX_COVER_MATERIALS: usize = 16;
 ///   `get()` は常に `None` を返し「素材なし＝寄与ゼロ」が構造的に保証される。
 pub const COVER_MATERIAL_NONE: u8 = u8::MAX;
 
+// ─── 積算ティック（性能）────────────────────────────────────────────────────
+
+/// 積算ティック間隔の既定値（秒）。
+///
+/// 【なぜ毎フレームではなくティックなのか】
+///   積算 1 回は「全チャンク × 32×32 テクセル」を舐め、変化したチャンクは
+///   頂点の焼き直し（＝全頂点の再生成と GPU 再アップロード）まで誘発する。
+///   ところが 60fps の 1 フレーム（16.7ms）で積もる量は、既定強度 0.2/秒なら
+///   0.0033（量子化 1/255＝0.0039 にすら届かない）で、**1 フレームぶんは
+///   量子化の粒より細かく、絵は 1 ピクセルも変わらない**。
+///   間隔をこの値にすると 1 ティックで 0.05（＝約 13/255）動き、
+///   量子化の粒を確実に跨ぐぶんだけまとめて積む形になる。
+///
+/// 【0.25 秒という値の根拠】
+///   雪が満量（量 1.0）に達するまで既定強度で 5 秒。0.25 秒刻みなら 20 段階で
+///   積もり切るため、積もっていく過程が段階的に見える解像度は十分に残る。
+///   これより粗くすると「量が飛ぶ」のが変位（最大 22cm）の段差として見え始める。
+///
+/// 【轍スタンプは対象外】
+///   `InteractionSource` による踏み跡は「押した瞬間に凹む」応答性が要るので、
+///   ティックとは無関係に毎フレーム走る（`tick_terrain_cover` 参照）。
+pub const DEFAULT_ACCUMULATE_INTERVAL_SEC: f32 = 0.25;
+
+/// 積算ティック間隔として受け付ける下限（秒）。
+///
+/// 0 や負値・NaN を許すと「毎フレーム積算」へ退化する（＝性能改善が無効化される）。
+/// 1/60 秒＝毎フレームがこのしくみの下限として意味を持つ最小値である。
+const ACCUMULATE_INTERVAL_MIN_SEC: f32 = 1.0 / 60.0;
+
+/// 積算ティック間隔として受け付ける上限（秒）。
+///
+/// これ以上粗くすると、量の跳ね上がりが変位の段差としてはっきり見える
+/// （＝データの打ち間違いで絵が壊れるのを防ぐ防波堤）。
+const ACCUMULATE_INTERVAL_MAX_SEC: f32 = 2.0;
+
+/// `accumulate_interval_sec` の serde 既定値。
+fn default_accumulate_interval_sec() -> f32 {
+    DEFAULT_ACCUMULATE_INTERVAL_SEC
+}
+
 // ─── 既定値関数（serde default 用。マジックナンバー禁止）─────────────────────
 
 /// アルベド（リニア RGB）の既定値。中間グレー（未設定の素材が真っ黒にならない）。
@@ -274,6 +314,19 @@ pub struct CoverMaterialSet {
     /// 素材定義の配列（最大 `TERRAIN_MAX_COVER_MATERIALS` 件）。
     #[serde(default)]
     pub materials: Vec<CoverMaterial>,
+
+    /// 積算ティックの間隔（秒）。既定 `DEFAULT_ACCUMULATE_INTERVAL_SEC`。
+    ///
+    /// 【なぜ素材セット（cover_materials.json）に置くのか】
+    ///   これは「地表カバー場のシミュレーションをどれだけ細かく回すか」という
+    ///   カバー機能そのものの調整値であり、シーンやアクタに紐づく値ではない。
+    ///   カバー機能の正典アセットは cover_materials.json なので、同じファイルの
+    ///   ルートへ置けば「雪の見え方を詰める人」が 1 ファイルの中で完結できる。
+    ///   `serde(default)` 付きなので、既存アセットを 1 文字も変えずに既定値で動く。
+    ///
+    /// 値の意味は `accumulate_interval_sec()` の説明を参照（読むときは必ずそちらを通す）。
+    #[serde(default = "default_accumulate_interval_sec")]
+    pub accumulate_interval_sec: f32,
 }
 
 impl Default for CoverMaterialSet {
@@ -324,6 +377,7 @@ impl Default for CoverMaterialSet {
                     trample_cavity: 0.0,
                 },
             ],
+            accumulate_interval_sec: DEFAULT_ACCUMULATE_INTERVAL_SEC,
         }
     }
 }
@@ -363,6 +417,20 @@ impl CoverMaterialSet {
     /// 素材が 1 つも定義されていないか。
     pub fn is_empty(&self) -> bool {
         self.materials.is_empty()
+    }
+
+    /// 積算ティック間隔（秒）を、安全な範囲へ丸めて返す。
+    ///
+    /// **生フィールドを直接読まずに必ずこの関数を通すこと**。
+    /// 非有限値（NaN・∞）や 0／負値がそのままティック判定へ入ると、
+    /// 「永久にティックが来ない」「毎フレーム積算へ退化する」のどちらかに落ちる。
+    /// 丸めをここ 1 か所に閉じることで、JSON がどんな値でも挙動が壊れない。
+    pub fn accumulate_interval_sec(&self) -> f32 {
+        if !self.accumulate_interval_sec.is_finite() {
+            return DEFAULT_ACCUMULATE_INTERVAL_SEC;
+        }
+        self.accumulate_interval_sec
+            .clamp(ACCUMULATE_INTERVAL_MIN_SEC, ACCUMULATE_INTERVAL_MAX_SEC)
     }
 }
 
