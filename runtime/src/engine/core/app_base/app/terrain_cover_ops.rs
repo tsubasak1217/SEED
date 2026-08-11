@@ -39,9 +39,10 @@ use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::chunk_coord::ChunkCoord;
 use crate::engine::terrain::cover::{
     accumulate_chunk, advance_accumulate_tick, chunk_has_active_emitter, cover_y_match_tolerance,
-    read_cover_chunk, resolve_forward_xz, stamp_cover_chunk_tracked, write_cover_chunk,
-    CoverEmitRange, CoverEmitSpec, CoverField, CoverMask, CoverMaterialSet, CoverNeighborhood,
-    CoverStampShape, CoverStampSpec, CoverSurface,
+    plan_cover_bake, read_cover_chunk, resolve_forward_xz, stamp_cover_chunk_tracked,
+    write_cover_chunk, CoverEmitRange, CoverEmitSpec, CoverField, CoverMask, CoverMaterialSet,
+    CoverNeighborhood, CoverStampShape, CoverStampSpec, CoverSurface,
+    COVER_BAKE_CHUNK_BUDGET_PER_FRAME,
 };
 use crate::engine::components::interaction_source_component::{
     InteractionSourceComponent, InteractionStampShape,
@@ -553,6 +554,10 @@ impl App {
         for coord in changed {
             self.terrain.cover_dirty.insert(coord);
             self.queue_cover_apply(coord);
+            // 轍は「踏んだ瞬間に跡が付く」ことが体感の核なので、焼き直しのフレーム予算から
+            // 除外して必ず今フレームに焼く。境界整合のため、隣接して一緒に焼く必要がある
+            // 26 近傍も同じ即時扱いにする（成分ごと即時になるため分割されない）。
+            self.terrain.cover_immediate_apply.insert(coord);
         }
 
         // ─── ③ 「今まさに轍を押した」ソースを記録する（デバッグ描画用）───
@@ -732,6 +737,13 @@ impl App {
     ///
     /// `COVER_APPLY_INTERVAL_SEC` で間引く。待ちが空のフレームは即座に返る。
     ///
+    /// 【フレーム分散（予算つき）】
+    ///   発火フレームで待ちを全件焼くと、走行中の轍や広域の積雪で 1 フレームだけ
+    ///   数十ミリ秒跳ねる。そこで `plan_cover_bake`（純粋層）へ採否を委ね、
+    ///   今フレームぶんだけを焼いて残りは待ち集合へ戻す（次の発火フレームへ繰り越す）。
+    ///   境界整合のため、26 近傍で連結した待ちチャンクの塊は分割されない
+    ///   （詳細は `terrain/cover/bake_schedule.rs` 冒頭）。
+    ///
     /// 戻り値は焼き直しに要した時間（ミリ秒。計測ログ用）。
     pub(super) fn apply_pending_cover(&mut self, dt: f32) -> f64 {
         if self.terrain.cover_pending_apply.is_empty() {
@@ -751,10 +763,43 @@ impl App {
         let t_total = Instant::now();
         // 焼き直しが実際に走るフレームだけ計上される（間引きで返るフレームは対象外）。
         crate::profile_scope!("地形/カバー頂点焼き直し");
+
+        // ── 今フレームに焼く分を予算つきで選ぶ（残りは待ち集合へ戻して繰り越す）──
+        //   計画は純粋層（`plan_cover_bake`）が決める。ここは入出力の受け渡しに徹する。
+        let settings = self.terrain.settings.clone();
+        let camera   = self.last_camera_pos;
+        let pending  = std::mem::take(&mut self.terrain.cover_pending_apply);
+        let immediate = std::mem::take(&mut self.terrain.cover_immediate_apply);
+        let plan = plan_cover_bake(
+            &pending,
+            &immediate,
+            |c| {
+                // チャンク中心 = ワールド原点 + 一辺の半分。
+                let o = c.world_origin(&settings);
+                let h = settings.chunk_extent() * 0.5;
+                [o[0] + h, o[1] + h, o[2] + h]
+            },
+            camera,
+            COVER_BAKE_CHUNK_BUDGET_PER_FRAME,
+        );
+        // 繰り越し分を待ち集合へ戻す。集合なので、この後に追加変更が積まれても
+        // 重複（二重焼き）にならず、取りこぼしも起きない。
+        self.terrain.cover_pending_apply.extend(plan.deferred.iter().copied());
+        if !plan.deferred.is_empty() {
+            // 繰り越しがあるときは **次のフレームで即座に再発火**させる。
+            // 間引き間隔（0.1 秒）を待つと、予算で割った回数ぶんだけ反映が遅れてしまい、
+            // 「スパイクを均す」のではなく「反映が遅くなる」改悪になるため。
+            self.terrain.cover_apply_timer = COVER_APPLY_INTERVAL_SEC;
+        }
+        // 即時マークも、繰り越されたチャンクぶんだけ持ち越す（次フレームでも轍優先を保つ）。
+        for c in &plan.deferred {
+            if immediate.contains(c) {
+                self.terrain.cover_immediate_apply.insert(*c);
+            }
+        }
         // 決定性のため座標順に処理する（ログ・GPU コマンド列を再現可能にする）。
-        let mut coords: Vec<ChunkCoord> =
-            std::mem::take(&mut self.terrain.cover_pending_apply).into_iter().collect();
-        coords.sort_by_key(|c| (c.x, c.y, c.z));
+        // `plan.bake` は純粋層でソート済み。
+        let coords: Vec<ChunkCoord> = plan.bake;
 
         let extent = self.terrain.settings.chunk_extent();
         let materials = self.terrain.cover_materials.clone();

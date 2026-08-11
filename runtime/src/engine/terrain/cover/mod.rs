@@ -26,6 +26,8 @@
 // ============================================================
 
 pub mod accumulate;
+/// 頂点焼き直しのフレーム分散スケジューラ（予算・優先順・26 近傍の同時性）。
+pub mod bake_schedule;
 pub mod brush;
 pub mod emit;
 pub mod field;
@@ -41,6 +43,10 @@ mod tests_cover;
 // エンジン統合層はサブモジュールを直接指さず、必ずここ経由で参照する
 // （公開面を 1 か所に集約するため。scatter/mod.rs と同じ流儀）。
 pub use accumulate::{accumulate_chunk, advance_accumulate_tick, chunk_has_active_emitter};
+pub use bake_schedule::{
+    plan_cover_bake, CoverBakePlan, CoverBakePriority, COVER_BAKE_CHUNK_BUDGET_PER_FRAME,
+    COVER_BAKE_NEAR_CAMERA_DISTANCE_M,
+};
 pub use brush::{
     brush_chunk as brush_cover_chunk, brush_chunk_with_mask as brush_cover_chunk_with_mask,
     CoverBrushMode, CoverBrushSpec, COVER_BRUSH_MAX_DELTA_PER_APPLY,

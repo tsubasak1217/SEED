@@ -785,6 +785,12 @@ pub struct TerrainState {
     pub cover_dirty: HashSet<ChunkCoord>,
     /// カバー場を頂点へ焼き直す必要があるチャンク集合（apply_pending_cover が消化）。
     pub cover_pending_apply: HashSet<ChunkCoord>,
+    /// 上記のうち **轍スタンプ由来**（接地への応答性が最優先）のチャンク集合。
+    ///
+    /// 焼き直しはフレーム予算で分散されるが、轍だけは「踏んだ瞬間に跡が付く」ことが
+    /// 体感の核なので、予算を無視して必ず今フレームに焼く（`plan_cover_bake` の
+    /// `Immediate` 優先度）。繰り越されたチャンクぶんはこの集合にも持ち越される。
+    pub cover_immediate_apply: HashSet<ChunkCoord>,
     /// 頂点が動いたため **RT 加速構造（BLAS）を作り直すべき**チャンク集合。
     ///
     /// カバーの焼き直し（`apply_pending_cover`）と、ストローク中の密度ブラシ再メッシュ
@@ -962,6 +968,7 @@ impl Default for TerrainState {
             cover: HashMap::new(),
             cover_dirty: HashSet::new(),
             cover_pending_apply: HashSet::new(),
+            cover_immediate_apply: HashSet::new(),
             rt_blas_prune_pending: HashSet::new(),
             cover_surface: HashMap::new(),
             cover_base_mesh: HashMap::new(),

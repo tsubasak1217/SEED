@@ -121,6 +121,22 @@ struct MirrorEntry {
     /// キャラの「前回解決済みワールド位置」[x, y, z]（`is_character` のときのみ Some）。
     /// `motion = desired − char_last_pos`。解決後に補正後位置へ更新する。
     char_last_pos: Option<[f32; 3]>,
+    /// 現在ミラーへ適用済みのコライダーワールド姿勢。
+    ///
+    /// 差分同期の変更検知に使う。次に与えられた姿勢がこれと完全一致するなら
+    /// 「動いていない」ので Rapier への書き込みも空間索引の更新も丸ごと省ける。
+    applied_iso: Isometry<Real>,
+}
+
+/// 2 つのコライダー姿勢が「空間索引の更新を要するほど違うか」を判定する純粋関数。
+///
+/// ミラーの姿勢は毎フレーム ECS の値から同じ計算式で作り直されるため、動いていない
+/// オブジェクトでは完全に同一のビットパターンが再生される。したがって厳密比較で十分であり、
+/// 許容誤差を設けない（誤差を設けると「僅かに動いた物体を動いていないと誤判定する」
+/// ＝挙動が変わるリスクを負うのに対し、厳密比較は挙動を 1 ビットも変えない）。
+fn pose_changed(current: &Isometry<Real>, next: &Isometry<Real>) -> bool {
+    current.translation.vector != next.translation.vector
+        || current.rotation.coords != next.rotation.coords
 }
 
 // ─── 事前構築ミラーコライダー（並列構築用）────────────────────────────────────
@@ -188,6 +204,12 @@ pub struct CharacterWorld {
     entities:      HashMap<u64, MirrorEntry>,
     /// ColliderHandle → entity_id（接触相手の逆引き用）。
     col_to_entity: HashMap<ColliderHandle, u64>,
+    /// 前回の `update_query` 以降に**姿勢が変わった／新規挿入された**コライダー。
+    /// 差分同期（`QueryPipeline::update_incremental`）へ渡す「更新対象」リスト。
+    pending_modified: Vec<ColliderHandle>,
+    /// 前回の `update_query` 以降に**削除された**コライダー。
+    /// 同上の「削除対象」リスト（索引から先に抜くことで ABA 問題を避ける）。
+    pending_removed:  Vec<ColliderHandle>,
 }
 
 impl CharacterWorld {
@@ -200,6 +222,8 @@ impl CharacterWorld {
             character_controller: make_character_controller(),
             entities:             HashMap::new(),
             col_to_entity:        HashMap::new(),
+            pending_modified:     Vec::new(),
+            pending_removed:      Vec::new(),
         }
     }
 
@@ -259,6 +283,8 @@ impl CharacterWorld {
 
         let is_character = pre.is_character;
         let initial_pos  = pre.initial_pos;
+        // 挿入位置（build_collider が既にワールド姿勢 × オフセットを適用済み）を控える。
+        let applied_iso  = *pre.collider.position();
         let handle = self.collider_set.insert(pre.collider);
 
         self.col_to_entity.insert(handle, entity_id);
@@ -269,7 +295,10 @@ impl CharacterWorld {
             offset:     pre.offset,
             // キャラは登録時のワールド位置を前回解決済み位置の初期値にする。
             char_last_pos: if is_character { Some(initial_pos) } else { None },
+            applied_iso,
         });
+        // 新規コライダーは空間索引にまだ存在しないので、必ず更新対象へ積む。
+        self.pending_modified.push(handle);
     }
 
     /// entity_id のコライダーをミラーから削除する（未登録なら何もしない）。
@@ -283,6 +312,8 @@ impl CharacterWorld {
                 &mut self.rigid_body_set,
                 false,
             );
+            // 空間索引からも抜く必要があるため削除対象へ積む。
+            self.pending_removed.push(entry.handle);
         }
     }
 
@@ -296,19 +327,33 @@ impl CharacterWorld {
         self.query_pipeline = QueryPipeline::new();
         self.entities.clear();
         self.col_to_entity.clear();
+        // 索引ごと作り直したので、旧ハンドルを指す差分リストは無効。破棄する。
+        self.pending_modified.clear();
+        self.pending_removed.clear();
     }
 
     /// 動く物体（kinematic/dynamic/他キャラ）のミラー位置を ECS のワールド姿勢へ更新する。
     ///
     /// コライダーのワールド位置 = ワールド姿勢 × ローカルオフセット。
     /// キャラ自身の `char_last_pos`（解決の基準）はここでは触らない（`resolve_character` が更新する）。
+    ///
+    /// 【差分同期】与えられた姿勢が現在ミラーへ適用済みの姿勢と完全一致する場合は、
+    /// Rapier への書き込みも空間索引の更新予約も行わず即座に戻る（結果に影響しない計算の省略）。
     pub fn set_position(&mut self, entity_id: u64, pos: [f32; 3], rot: [f32; 4]) {
         let Some(entry) = self.entities.get(&entity_id) else { return };
         let offset_iso = Isometry::translation(entry.offset[0], entry.offset[1], entry.offset[2]);
         let world = to_isometry(pos, rot) * offset_iso;
-        if let Some(col) = self.collider_set.get_mut(entry.handle) {
+        // 変化なし: 何もしない（このオブジェクトは今フレームの索引更新対象に入らない）。
+        if !pose_changed(&entry.applied_iso, &world) { return; }
+
+        let handle = entry.handle;
+        if let Some(col) = self.collider_set.get_mut(handle) {
             col.set_position(world);
         }
+        if let Some(entry) = self.entities.get_mut(&entity_id) {
+            entry.applied_iso = world;
+        }
+        self.pending_modified.push(handle);
     }
 
     /// キャラの「前回解決済み位置」を指定位置へ強制セットする（テレポート用）。
@@ -328,11 +373,29 @@ impl CharacterWorld {
     /// クエリパイプラインを現在のコライダー集合で更新する。
     ///
     /// コライダーの `set_position` 後・`resolve_character` 前に呼ぶこと（KCC が参照する空間索引を
-    /// 最新化する）。トップレベル索引はコライダー 1 個につき 1 葉（トライメッシュ内部 BVH は
-    /// 生成時に一度だけ構築され再利用される）なので、地形数百コライダーでも軽い（計測は本モジュールの
-    /// テスト `query_update_cost_benchmark` 参照）。
+    /// 最新化する）。
+    ///
+    /// 【差分同期】`QueryPipeline::update`（＝索引の全消去＋全再構築）は、1 個も動いていない
+    /// フレームでも全コライダーぶんの AABB 再計算と木の再構築を行う。地形コライダーは登録後
+    /// 二度と動かないため、これは毎フレームまるごと無駄になっていた。
+    /// そこで前回の更新以降に**実際に姿勢が変わった／挿入された／削除された**コライダーだけを
+    /// `update_incremental` へ渡す。索引の内容は全再構築と同じ（refit＋rebalance で葉の AABB は
+    /// 最新化される）ため、衝突解決の結果は変わらない。
+    ///
+    /// 差分が空のフレームでは Rapier 呼び出し自体を省く。
     pub fn update_query(&mut self) {
-        self.query_pipeline.update(&self.collider_set);
+        if self.pending_modified.is_empty() && self.pending_removed.is_empty() {
+            return;
+        }
+        // 削除を先に処理させる（同一スロット再利用による ABA を避ける Rapier 推奨順）。
+        self.query_pipeline.update_incremental(
+            &self.collider_set,
+            &self.pending_modified,
+            &self.pending_removed,
+            true, // refit＋rebalance を行い、木を全再構築と同等の状態にする
+        );
+        self.pending_modified.clear();
+        self.pending_removed.clear();
     }
 
     /// キャラクターの希望位置を KCC で衝突解決し、補正後位置・接地・接触 dynamic を返す。
@@ -414,13 +477,20 @@ impl CharacterWorld {
             }
         }
 
-        // 前回位置を更新し、ミラーコライダー位置も補正後位置へ同期する
+        // 前回位置を更新し、ミラーコライダー位置も補正後位置へ同期する。
+        // 姿勢が実際に変わったときだけ Rapier へ書き込み、次回の索引更新対象へ積む（差分同期）。
+        let world   = to_isometry(corrected, rotation) * offset_iso;
+        let changed = self.entities.get(&entity_id)
+            .map_or(false, |e| pose_changed(&e.applied_iso, &world));
         if let Some(entry) = self.entities.get_mut(&entity_id) {
             entry.char_last_pos = Some(corrected);
+            if changed { entry.applied_iso = world; }
         }
-        let world = to_isometry(corrected, rotation) * offset_iso;
-        if let Some(col) = self.collider_set.get_mut(own_handle) {
-            col.set_position(world);
+        if changed {
+            if let Some(col) = self.collider_set.get_mut(own_handle) {
+                col.set_position(world);
+            }
+            self.pending_modified.push(own_handle);
         }
 
         Some(CharacterResolve { corrected, grounded: movement.grounded, dynamic_pushes })
@@ -429,6 +499,12 @@ impl CharacterWorld {
     /// 登録済みコライダー総数（診断ログ用）。
     pub fn collider_count(&self) -> usize {
         self.collider_set.len()
+    }
+
+    /// 未反映の差分件数 (更新対象, 削除対象)。差分同期のユニットテスト検証用。
+    #[cfg(test)]
+    pub fn pending_sync_counts(&self) -> (usize, usize) {
+        (self.pending_modified.len(), self.pending_removed.len())
     }
 }
 
@@ -649,6 +725,113 @@ mod tests {
             "密着押し込みでも dynamic 箱への +X 押し出しが返るべき: {:?}", r.dynamic_pushes);
     }
 
+    // ─── 差分同期（update_query の増分更新）のテスト ───────────────────────────
+
+    /// `pose_changed` は完全一致で false、1 成分でも違えば true を返すこと。
+    #[test]
+    fn pose_changed_detects_exact_difference() {
+        let a = to_isometry([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0]);
+        let b = to_isometry([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0]);
+        assert!(!pose_changed(&a, &b), "同一姿勢は変化なし");
+
+        let moved = to_isometry([1.0, 2.0, 3.001], [0.0, 0.0, 0.0, 1.0]);
+        assert!(pose_changed(&a, &moved), "位置差は変化として検出する");
+
+        let rotated = to_isometry([1.0, 2.0, 3.0], [0.0, 0.3826834, 0.0, 0.9238795]);
+        assert!(pose_changed(&a, &rotated), "回転差は変化として検出する");
+    }
+
+    /// 挿入は索引更新対象へ積まれ、`update_query` で消化されること。
+    /// 位置が変わらない `set_position` は 1 件も積まれない（＝全再構築を避ける本題）。
+    #[test]
+    fn sync_skips_unchanged_and_marks_changed() {
+        let mut cw = CharacterWorld::new();
+        cw.add_object(&floor_object(1));
+        assert_eq!(cw.pending_sync_counts(), (1, 0), "新規挿入は更新対象になる");
+
+        cw.update_query();
+        assert_eq!(cw.pending_sync_counts(), (0, 0), "索引更新後は差分が空になる");
+
+        // 登録時と同じ姿勢を与える → 変化なしなので積まれない
+        cw.set_position(1, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(cw.pending_sync_counts(), (0, 0), "不変の set_position はスキップされる");
+
+        // 実際に動かす → 積まれる
+        cw.set_position(1, [0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(cw.pending_sync_counts(), (1, 0), "変化した set_position は更新対象になる");
+
+        // 未登録 id への set_position は何も積まない
+        cw.update_query();
+        cw.set_position(999, [5.0, 5.0, 5.0], [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(cw.pending_sync_counts(), (0, 0), "未登録 id は差分に載らない");
+    }
+
+    /// 削除は削除対象へ積まれ、`update_query` で消化されること。
+    /// `clear` は索引ごと作り直すため差分を破棄すること。
+    #[test]
+    fn sync_tracks_removal_and_clear() {
+        let mut cw = CharacterWorld::new();
+        cw.add_object(&floor_object(1));
+        cw.update_query();
+
+        cw.remove(1);
+        assert_eq!(cw.pending_sync_counts(), (0, 1), "削除は削除対象になる");
+        cw.update_query();
+        assert_eq!(cw.pending_sync_counts(), (0, 0), "索引更新後は差分が空になる");
+
+        // 未登録 id の削除は何も積まない
+        cw.remove(1);
+        assert_eq!(cw.pending_sync_counts(), (0, 0), "未登録 id の削除は差分に載らない");
+
+        cw.add_object(&floor_object(2));
+        cw.clear();
+        assert_eq!(cw.pending_sync_counts(), (0, 0), "clear は旧ハンドルの差分を破棄する");
+    }
+
+    /// 差分同期に切り替えても、床への押し戻し・壁ずりの結果が全再構築時と一致すること
+    /// （複数フレームぶん解決を回し、途中で動く床を挟んでも索引が陳腐化しないことの回帰）。
+    #[test]
+    fn incremental_sync_keeps_collision_correct_over_frames() {
+        let mut cw = CharacterWorld::new();
+        cw.add_object(&floor_object(1));
+        cw.add_object(&capsule_char(2, [0.0, 1.0, 0.0]));
+
+        // 「動く床」役: 初期は遠方に置き、途中で キャラの真下へ移動させる。
+        cw.add_object(&PhysicsObject {
+            entity_id: 3,
+            position: [100.0, 5.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale:    [1.0, 1.0, 1.0],
+            collider: ColliderShape::Box { half_extents: [2.0, 0.5, 2.0] },
+            collider_offset: [0.0, 0.0, 0.0],
+            rigidbody: None,
+            is_trigger: false,
+            physics_layer: 0,
+            layer_mask: 0,
+            is_character_controller: false,
+        });
+
+        let dt = PHYSICS_FIXED_STEP as Real;
+        // 10 フレーム、重力ぶん落としながら解決する（床の上に留まるはず）。
+        let mut pos = [0.0_f32, 1.0, 0.0];
+        for _ in 0..10 {
+            cw.update_query();
+            pos[1] -= 0.05;
+            pos = cw.resolve_character(2, pos, [0.0, 0.0, 0.0, 1.0], dt).expect("Some").corrected;
+        }
+        let foot_y = pos[1] - (CAP_HALF_HEIGHT + CAP_RADIUS);
+        assert!(foot_y > -0.05, "床(y=0)に留まっていない: foot_y={foot_y}");
+
+        // 動く床を y=2.0 のキャラ頭上へ持ってくる（差分同期が索引へ反映されるか）。
+        cw.set_position(3, [0.0, 2.5, 0.0], [0.0, 0.0, 0.0, 1.0]);
+        cw.update_query();
+        // 上方向へ大きく押し込む → 動く床の下面(y=2.0)で止まるはず。
+        let up = [pos[0], pos[1] + 3.0, pos[2]];
+        let r = cw.resolve_character(2, up, [0.0, 0.0, 0.0, 1.0], dt).expect("Some");
+        let head_y = r.corrected[1] + (CAP_HALF_HEIGHT + CAP_RADIUS);
+        assert!(head_y < 2.1, "移動させた床が索引へ反映されていない: head_y={head_y}");
+    }
+
     /// ★Query 更新コストの実測（監督指示の設計判断用）★
     ///
     /// 地形相当の静的トライメッシュ約 300 個＋動体 4 個を構築し、動体を 1 個動かして
@@ -718,6 +901,105 @@ mod tests {
         eprintln!(
             "[char_world bench] colliders={} update_query 平均 = {:.4} ms/回（{} 回計測・動体 1 個/回移動）",
             cw.collider_count(), per, ITERS,
+        );
+    }
+
+    /// ★KCC 解決コストの実測（「床ずりで重くなる」の再現計測）★
+    ///
+    /// 地形チャンク相当の高密度トライメッシュ（1 チャンク 8192 三角）を 3×3 敷き、
+    ///   (A) 空中を水平移動（接触なし・スライド反復 1 回で抜ける）
+    ///   (B) 床へ押し付けながら水平移動（接触あり・スライド反復が回る）
+    /// の 1 回あたり解決時間を比較して stderr へ出す。
+    /// CI フレーキー回避のため時間そのものは assert しない（`--nocapture` で数値を読む）。
+    #[test]
+    fn resolve_cost_benchmark_ground_slide() {
+        use std::time::Instant;
+
+        /// 1 チャンクの分割数（片側）。8192 三角 ≒ 実地形チャンクのオーダー。
+        const GRID: i32 = 64;
+        /// 1 チャンクの一辺（メートル）。
+        const CHUNK_SIZE: f32 = 32.0;
+        /// 敷き詰めるチャンク数（片側）。
+        const CHUNKS: i32 = 3;
+        /// 計測反復回数。
+        const ITERS: u32 = 200;
+
+        /// GRID×GRID の平面トライメッシュ（原点基準・XZ 平面）を作る。
+        fn grid_mesh() -> ColliderShape {
+            let step = CHUNK_SIZE / GRID as f32;
+            let mut vertices = Vec::new();
+            for iz in 0..=GRID {
+                for ix in 0..=GRID {
+                    vertices.push([ix as f32 * step, 0.0, iz as f32 * step]);
+                }
+            }
+            let mut indices = Vec::new();
+            let stride = (GRID + 1) as u32;
+            for iz in 0..GRID as u32 {
+                for ix in 0..GRID as u32 {
+                    let a = iz * stride + ix;
+                    indices.push([a, a + 1, a + stride + 1]);
+                    indices.push([a, a + stride + 1, a + stride]);
+                }
+            }
+            ColliderShape::TriangleMeshIndexed { vertices, indices }
+        }
+
+        let mut cw = CharacterWorld::new();
+        let mut id = 1u64;
+        for cz in 0..CHUNKS {
+            for cx in 0..CHUNKS {
+                cw.add_object(&PhysicsObject {
+                    entity_id: id,
+                    position: [cx as f32 * CHUNK_SIZE, 0.0, cz as f32 * CHUNK_SIZE],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale:    [1.0, 1.0, 1.0],
+                    collider: grid_mesh(),
+                    collider_offset: [0.0, 0.0, 0.0],
+                    rigidbody: None,
+                    is_trigger: false,
+                    physics_layer: 0,
+                    layer_mask: 0,
+                    is_character_controller: false,
+                });
+                id += 1;
+            }
+        }
+        let char_id = id;
+        cw.add_object(&capsule_char(char_id, [16.0, 0.9, 16.0]));
+        cw.update_query();
+
+        let dt = PHYSICS_FIXED_STEP as Real;
+        // 1 フレームぶんの水平移動量（5 m/s 相当）と重力ぶんの下向き量。
+        let step_x = 5.0 * dt;
+        let fall   = -9.8 * dt * dt;
+
+        // ── (A) 空中（床から十分離れた高さ）で水平移動 ──
+        cw.teleport_character(char_id, [16.0, 30.0, 16.0], [0.0, 0.0, 0.0, 1.0]);
+        let mut pos = [16.0_f32, 30.0, 16.0];
+        let start = Instant::now();
+        for _ in 0..ITERS {
+            pos[0] += step_x;
+            let r = cw.resolve_character(char_id, pos, [0.0, 0.0, 0.0, 1.0], dt).expect("Some");
+            pos = r.corrected;
+        }
+        let air_ms = start.elapsed().as_secs_f64() / ITERS as f64 * 1000.0;
+
+        // ── (B) 床へ押し付けながら水平移動（壁ずり＝スライド反復が回る）──
+        cw.teleport_character(char_id, [16.0, 0.9, 16.0], [0.0, 0.0, 0.0, 1.0]);
+        let mut pos = [16.0_f32, 0.9, 16.0];
+        let start = Instant::now();
+        for _ in 0..ITERS {
+            pos[0] += step_x;
+            pos[1] += fall;
+            let r = cw.resolve_character(char_id, pos, [0.0, 0.0, 0.0, 1.0], dt).expect("Some");
+            pos = r.corrected;
+        }
+        let ground_ms = start.elapsed().as_secs_f64() / ITERS as f64 * 1000.0;
+
+        eprintln!(
+            "[char_world bench] colliders={} resolve 空中={:.4} ms/回 床ずり={:.4} ms/回（{} 回計測）",
+            cw.collider_count(), air_ms, ground_ms, ITERS,
         );
     }
 }

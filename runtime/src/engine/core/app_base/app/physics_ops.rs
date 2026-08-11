@@ -579,11 +579,17 @@ impl App {
         }
 
         // ── 動く物体の現在姿勢 と キャラの希望位置 を ECS から収集する（scene 借用はここで閉じる）──
+        // 【内訳計測】「物理/キャラクターコントローラ同期」は自己時間 100% の巨大スコープに
+        //   なりやすく、ECS 収集・ミラー追従・空間索引更新・KCC 解決のどれが重いのか
+        //   パネルから判別できなかった。以降の各段に子スコープを張って内訳を可視化する。
         let (movers, desired) = match &self.scene {
-            Some(scene) => (
-                collect_dynamic_kinematic_transforms(scene, wl),
-                collect_character_step_updates(scene, wl),
-            ),
+            Some(scene) => {
+                crate::profile_scope!("物理/キャラ同期/ECS 収集");
+                (
+                    collect_dynamic_kinematic_transforms(scene, wl),
+                    collect_character_step_updates(scene, wl),
+                )
+            }
             None => return,
         };
 
@@ -598,20 +604,32 @@ impl App {
         let mut results:  Vec<(u64, [f32; 3], bool)> = Vec::new();
         let mut impulses: Vec<(u64, [f32; 3])>       = Vec::new();
         if let Some(cw) = &mut self.character_world {
-            for (id, pos, rot) in movers {
-                cw.set_position(id, pos, rot);
+            {
+                // 動く物体のミラー追従（姿勢が変わっていないものは CharacterWorld 側でスキップ）
+                crate::profile_scope!("物理/キャラ同期/ミラー追従");
+                for (id, pos, rot) in movers {
+                    cw.set_position(id, pos, rot);
+                }
             }
-            cw.update_query();
-            for (id, dpos, rot) in &desired {
-                if let Some(res) = cw.resolve_character(*id, *dpos, *rot, dt) {
-                    results.push((*id, res.corrected, res.grounded));
-                    // 接触 dynamic への押し出し（方向×速度）に実効質量係数を掛けてインパルス化する。
-                    for (hit_id, push) in res.dynamic_pushes {
-                        impulses.push((hit_id, [
-                            push[0] * CHAR_PUSH_IMPULSE_SCALE,
-                            push[1] * CHAR_PUSH_IMPULSE_SCALE,
-                            push[2] * CHAR_PUSH_IMPULSE_SCALE,
-                        ]));
+            {
+                // 空間索引（QBVH）の差分更新。変化 0 件のフレームは Rapier 呼び出しごと省かれる。
+                crate::profile_scope!("物理/キャラ同期/索引更新");
+                cw.update_query();
+            }
+            {
+                // KCC 本体（シェイプキャスト＋スライド反復）。床ずり時に反復が回って支配的になる区間。
+                crate::profile_scope!("物理/キャラ同期/KCC 解決");
+                for (id, dpos, rot) in &desired {
+                    if let Some(res) = cw.resolve_character(*id, *dpos, *rot, dt) {
+                        results.push((*id, res.corrected, res.grounded));
+                        // 接触 dynamic への押し出し（方向×速度）に実効質量係数を掛けてインパルス化する。
+                        for (hit_id, push) in res.dynamic_pushes {
+                            impulses.push((hit_id, [
+                                push[0] * CHAR_PUSH_IMPULSE_SCALE,
+                                push[1] * CHAR_PUSH_IMPULSE_SCALE,
+                                push[2] * CHAR_PUSH_IMPULSE_SCALE,
+                            ]));
+                        }
                     }
                 }
             }
@@ -640,6 +658,8 @@ impl App {
         let should_apply = self.mode != RuntimeMode::Edit || self.edit_physics_with_rigidbody;
         let drag = self.dragging_physics_entity_id;
         if should_apply {
+            // 補正後位置の ECS 書き戻し（子孫アクタへの伝播を含む）。
+            crate::profile_scope!("物理/キャラ同期/ECS 反映");
             if let Some(scene) = &mut self.scene {
                 for (id, corrected, _g) in &results {
                     if Some(*id) == drag { continue; }
