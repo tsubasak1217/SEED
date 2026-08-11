@@ -67,3 +67,46 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.crc32fast]
 opt-level = 2
+
+# ── 物理・衝突判定クレートの debug ビルド最適化 ────────────────────────
+# エディタは runtime/target/debug/SEED.exe（dev プロファイル）を起動するため、
+# ここに列挙しないクレートは unoptimized + debug-assertions + overflow-checks の
+# ままコンパイルされる。rapier / parry / nalgebra / simba は 1 フレームに数千〜数万回の
+# 小さなベクトル・行列演算を積み上げる構造で、この 3 つのペナルティが素直に
+# 数十倍の実行時間差になる。
+#
+# 【実測（dev・opt-level 未指定時）】
+#   ・CharacterWorld::update_query（コライダー 304 個の QBVH 再構築）= 3.03 ms/回
+#   ・KCC resolve_character = 空中 0.023 ms/回 に対し **床ずり 2.52 ms/回**（約 108 倍）
+#   床ずり時は rapier の move_shape がスライド反復（最大 20 回）を回し、各反復で
+#   シェイプキャスト＋接地判定（近傍コライダー全件の接触マニフォールド生成）を行う。
+#   反復回数の増加と 1 演算あたりの重さが掛け算になるため、
+#   「地面方向に入力して床ずりすると物理が急に重くなる」症状として現れていた。
+#
+# アプリケーション本体（SEED クレート）の最適化レベルは変えないため、
+# 自前コードのデバッグ体験（ブレークポイント・変数表示）は従来どおり維持される。
+# 挙動（衝突解決の結果）は最適化レベルによって変わらない。
+[profile.dev.package.rapier3d]
+opt-level = 2
+[profile.dev.package.rapier2d]
+opt-level = 2
+[profile.dev.package.parry3d]
+opt-level = 2
+[profile.dev.package.parry2d]
+opt-level = 2
+[profile.dev.package.nalgebra]
+opt-level = 2
+[profile.dev.package.simba]
+opt-level = 2
+# nalgebra / simba がスカラー演算のたびに呼ぶトレイト実装群。インライン展開されないと
+# 上記 2 つを最適化しても呼び出しコストが残るため、同じ最適化レベルを与える。
+[profile.dev.package.num-traits]
+opt-level = 2
+[profile.dev.package.approx]
+opt-level = 2
+[profile.dev.package.wide]
+opt-level = 2
+# QBVH の葉配列・接触マニフォールドの一時バッファに使われる固定長ベクタ。
+# 添字アクセスの境界チェックがそのまま QBVH 走査のホットパスに乗る。
+[profile.dev.package.arrayvec]
+opt-level = 2
