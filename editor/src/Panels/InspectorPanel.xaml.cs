@@ -239,14 +239,15 @@ public partial class InspectorPanel : UserControl
     }
 
     /// <summary>
-    /// 再生/停止トグルの表示（記号・ToolTip）を _coverSimRunning に合わせて塗り直す。
+    /// 再生/停止トグルの表示（アイコン・ToolTip）を _coverSimRunning に合わせて塗り直す。
     /// UI 再構築直後の復元と、ランタイム通知の受信の両方から呼ぶ。
     /// ボタンが無い（別コンポーネントを選択中など）ときは何もしない。
     /// </summary>
     private void ApplyCoverSimToggleVisual()
     {
         if (_coverSimToggleBtn is null) return;
-        _coverSimToggleBtn.Content = _coverSimRunning ? CoverSimStopGlyph : CoverSimPlayGlyph;
+        _coverSimToggleBtn.Content = SEEDEditor.Controls.AppIcon.Create(
+            _coverSimRunning ? CoverSimStopIconKey : CoverSimPlayIconKey, CoverSimToggleIconSize);
         _coverSimToggleBtn.ToolTip = _coverSimRunning ? CoverSimStopToolTip : CoverSimPlayToolTip;
     }
 
@@ -703,10 +704,24 @@ public partial class InspectorPanel : UserControl
     /// 既定強度 0.2/秒 で満量になる 5 秒（Rust 側 CoverEmitter の既定強度と対応）。
     /// </summary>
     private const string CoverSimulateSecondsDefault = "5";
-    /// <summary>再生/停止トグルの「停止中（押すと再生）」表示。</summary>
-    private const string CoverSimPlayGlyph = "▶";
-    /// <summary>再生/停止トグルの「再生中（押すと停止）」表示。</summary>
-    private const string CoverSimStopGlyph = "■";
+    /// <summary>再生/停止トグルの「停止中（押すと再生）」アイコンキー。</summary>
+    private const string CoverSimPlayIconKey = "Icon.Play";
+    /// <summary>再生/停止トグルの「再生中（押すと停止）」アイコンキー。</summary>
+    private const string CoverSimStopIconKey = "Icon.Stop";
+    /// <summary>再生/停止トグルのアイコン一辺サイズ（px）。</summary>
+    private const double CoverSimToggleIconSize = 11;
+
+    /// <summary>参照アセット行の先頭アイコンの一辺サイズ（px）。</summary>
+    private const double RefRowIconSize = 13;
+
+    /// <summary>アコーディオンのセクションヘッダーに置くアイコンの一辺サイズ（px）。</summary>
+    private const double SectionHeaderIconSize = 12;
+    /// <summary>セクションヘッダーの種別アイコン色。</summary>
+    private static readonly SolidColorBrush SectionHeaderIconBrush = new(Color.FromRgb(0x55, 0xAA, 0xFF));
+    /// <summary>コンポーネント削除ボタンの通常色。</summary>
+    private static readonly SolidColorBrush RemoveButtonBrush      = new(Color.FromRgb(0xCC, 0xCC, 0xCC));
+    /// <summary>コンポーネント削除ボタンのホバー色（破壊操作なので赤系）。</summary>
+    private static readonly SolidColorBrush RemoveButtonHoverBrush = new(Color.FromRgb(0xFF, 0x66, 0x66));
     /// <summary>再生/停止トグルの停止中の ToolTip。</summary>
     private const string CoverSimPlayToolTip =
         "リアルタイムに積もらせ続けます（秒数欄とは無関係）。もう一度押すと止まります。";
@@ -1816,17 +1831,18 @@ public partial class InspectorPanel : UserControl
         Grid.SetColumn(arrow, 0);
         headerGrid.Children.Add(arrow);
 
-        // 種別アイコン（コンポーネントスロットのみ）
-        if (isComponentSlot)
+        // 種別アイコン。コンポーネントスロットは種別ごとのアイコン、
+        // それ以外（アクタの基本情報セクション）は Transform のアイコンを出す。
+        // TypeId -> アイコンキーの対応表は Controls/ComponentIcons.cs が唯一の正典。
         {
-            var icon = new TextBlock
-            {
-                Text              = typeId == "ModelComponent" ? "◈" : "⬡",
-                Foreground        = new SolidColorBrush(Color.FromRgb(0x55, 0xAA, 0xFF)),
-                FontSize          = 10,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin            = new Thickness(0, 0, 4, 0),
-            };
+            var iconKey = isComponentSlot
+                ? SEEDEditor.Controls.ComponentIcons.GetIconKey(typeId)
+                : SEEDEditor.Controls.ComponentIcons.TransformIconKey;
+
+            var icon = SEEDEditor.Controls.AppIcon.Create(iconKey, SectionHeaderIconSize);
+            icon.SetBrush(SectionHeaderIconBrush);
+            icon.VerticalAlignment = VerticalAlignment.Center;
+            icon.Margin            = new Thickness(0, 0, 4, 0);
             Grid.SetColumn(icon, 2);
             headerGrid.Children.Add(icon);
         }
@@ -1880,20 +1896,14 @@ public partial class InspectorPanel : UserControl
         // ── 削除×ボタン（旧コンポーネント一覧チップの削除機能を移設。コンポーネントスロットのみ）──
         if (isComponentSlot)
         {
-            var removeBtn = new TextBlock
-            {
-                Text              = "✕",
-                Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-                FontSize          = 10,
-                VerticalAlignment = VerticalAlignment.Center,
-                Cursor            = Cursors.Hand,
-                Padding           = new Thickness(6, 0, 0, 0),
-                ToolTip           = "コンポーネントを削除",
-            };
-            removeBtn.MouseEnter += (_, _) =>
-                removeBtn.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x66));
-            removeBtn.MouseLeave += (_, _) =>
-                removeBtn.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
+            var removeBtn = SEEDEditor.Controls.AppIcon.Create("Icon.Close", SectionHeaderIconSize);
+            removeBtn.SetBrush(RemoveButtonBrush);
+            removeBtn.VerticalAlignment = VerticalAlignment.Center;
+            removeBtn.Cursor            = Cursors.Hand;
+            removeBtn.Margin            = new Thickness(6, 0, 0, 0);
+            removeBtn.ToolTip           = "コンポーネントを削除";
+            removeBtn.MouseEnter += (_, _) => removeBtn.SetBrush(RemoveButtonHoverBrush);
+            removeBtn.MouseLeave += (_, _) => removeBtn.SetBrush(RemoveButtonBrush);
             removeBtn.MouseLeftButtonDown += (_, e) =>
             {
                 // 開閉トグルへ伝播させない（削除操作を折り畳みと混同しないため）
@@ -8777,14 +8787,10 @@ public partial class InspectorPanel : UserControl
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        // 📦 アイコン
-        var icon = new TextBlock
-        {
-            Text              = "📦",
-            FontSize          = 13,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin            = new Thickness(2, 0, 6, 0),
-        };
+        // 参照アセットを表すアイコン
+        var icon = SEEDEditor.Controls.AppIcon.Create("Icon.Prefab", RefRowIconSize);
+        icon.VerticalAlignment = VerticalAlignment.Center;
+        icon.Margin            = new Thickness(2, 0, 6, 0);
         Grid.SetColumn(icon, 0);
         grid.Children.Add(icon);
 

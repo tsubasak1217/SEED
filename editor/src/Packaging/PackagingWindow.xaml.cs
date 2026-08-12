@@ -61,31 +61,40 @@ public partial class PackagingWindow : Window
 
     private static readonly List<PlatformInfo> Platforms = [
         new(TargetPlatform.Windows,
-            "Windows", "🖥",
+            "Windows", "Icon.Platform.Windows",
             PlatformAvailability.Available),
         new(TargetPlatform.macOS,
-            "macOS", "🍎",
+            "macOS", "Icon.Platform.MacOS",
             PlatformAvailability.RequiresOtherOS,
             "macOS 上でのビルドが必要です（CI / GitHub Actions を推奨）"),
         new(TargetPlatform.Android,
-            "Android", "🤖",
+            "Android", "Icon.Platform.Android",
             PlatformAvailability.RequiresSetup,
             "Android NDK と cargo-ndk のセットアップが必要です"),
         new(TargetPlatform.iOS,
-            "iOS", "📱",
+            "iOS", "Icon.Platform.iOS",
             PlatformAvailability.RequiresOtherOS,
             "macOS + Xcode 上でのビルドが必要です"),
         new(TargetPlatform.PlayStation5,
-            "PlayStation 5", "🎮",
+            "PlayStation 5", "Icon.Platform.PlayStation",
             PlatformAvailability.RequiresLicense,
             "Sony Interactive Entertainment のライセンス契約が必要です"),
         new(TargetPlatform.NintendoSwitch,
-            "Nintendo Switch", "🕹",
+            "Nintendo Switch", "Icon.Platform.Switch",
             PlatformAvailability.RequiresLicense,
             "Nintendo のライセンス契約が必要です"),
     ];
 
     // ── ブラシ ───────────────────────────────────────────────
+
+    /// <summary>プラットフォーム一覧行のアイコン一辺サイズ（px）。</summary>
+    private const double PlatformIconSize = 18.0;
+
+    /// <summary>可用性バッジ内アイコンの一辺サイズ（px）。バッジ径 18 に収まる大きさ。</summary>
+    private const double BadgeIconSize = 11.0;
+
+    /// <summary>設定ペイン見出しのアイコン一辺サイズ（px）。</summary>
+    private const double SectionHeaderIconSize = 20.0;
 
     private static readonly SolidColorBrush BrushSelected  = new(Color.FromRgb(0x1A, 0x2A, 0x3A));
     private static readonly SolidColorBrush BrushAvailable = new(Color.FromRgb(0x33, 0x99, 0x55));
@@ -174,13 +183,13 @@ public partial class PackagingWindow : Window
     private Border BuildPlatformRow(PlatformInfo info)
     {
         // 可用性バッジ色
-        var (badgeColor, badgeText) = info.Availability switch
+        var (badgeColor, badgeIconKey) = info.Availability switch
         {
-            PlatformAvailability.Available       => (BrushAvailable, "✓"),
-            PlatformAvailability.RequiresSetup   => (BrushWarn,      "⚙"),
-            PlatformAvailability.RequiresOtherOS => (BrushWarn,      "⚠"),
-            PlatformAvailability.RequiresLicense => (BrushDisabled,  "✕"),
-            _ => (BrushDisabled, "?"),
+            PlatformAvailability.Available       => (BrushAvailable, "Icon.Apply"),
+            PlatformAvailability.RequiresSetup   => (BrushWarn,      "Icon.Settings"),
+            PlatformAvailability.RequiresOtherOS => (BrushWarn,      "Icon.Warning"),
+            PlatformAvailability.RequiresLicense => (BrushDisabled,  "Icon.Close"),
+            _ => (BrushDisabled, "Icon.Info"),
         };
 
         var badge = new Border
@@ -191,24 +200,14 @@ public partial class PackagingWindow : Window
             Background      = badgeColor,
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment   = VerticalAlignment.Center,
-            Child = new TextBlock
-            {
-                Text              = badgeText,
-                FontSize          = 9,
-                Foreground        = Brushes.White,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment   = VerticalAlignment.Center,
-            },
+            Child = BuildBadgeIcon(badgeIconKey),
         };
 
         var sp = new StackPanel { Orientation = Orientation.Horizontal };
-        sp.Children.Add(new TextBlock
-        {
-            Text              = info.Icon,
-            FontSize          = 18,
-            Margin            = new Thickness(0, 0, 8, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-        });
+        var platformIcon = SEEDEditor.Controls.AppIcon.Create(info.IconKey, PlatformIconSize);
+        platformIcon.Margin            = new Thickness(0, 0, 8, 0);
+        platformIcon.VerticalAlignment = VerticalAlignment.Center;
+        sp.Children.Add(platformIcon);
         sp.Children.Add(new TextBlock
         {
             Text              = info.DisplayName,
@@ -278,7 +277,7 @@ public partial class PackagingWindow : Window
         var meta = Platforms.Find(p => p.Platform == platform)!;
 
         // プラットフォームタイトル
-        SettingsPane.Children.Add(BuildSectionHeader(meta.Icon + "  " + meta.DisplayName));
+        SettingsPane.Children.Add(BuildPlatformSectionHeader(meta.IconKey, meta.DisplayName));
 
         // 注記（利用不可・要セットアップの場合）
         if (!string.IsNullOrEmpty(meta.Note))
@@ -478,6 +477,42 @@ public partial class PackagingWindow : Window
     }
 
     // ── UI ヘルパー ──────────────────────────────────────────
+
+    /// <summary>プラットフォーム設定ペインの見出し（アイコン＋名前）を作る。</summary>
+    /// <param name="iconKey">Icons.xaml のアイコンキー。</param>
+    /// <param name="displayName">プラットフォーム表示名。</param>
+    private static UIElement BuildPlatformSectionHeader(string iconKey, string displayName)
+    {
+        var sp = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin      = new Thickness(0, 0, 0, 12),
+        };
+        var icon = SEEDEditor.Controls.AppIcon.Create(iconKey, SectionHeaderIconSize);
+        icon.VerticalAlignment = VerticalAlignment.Center;
+        icon.Margin            = new Thickness(0, 0, 8, 0);
+        sp.Children.Add(icon);
+        sp.Children.Add(new TextBlock
+        {
+            Text              = displayName,
+            FontSize          = 16,
+            FontWeight        = FontWeights.Bold,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        return sp;
+    }
+
+    /// <summary>可用性バッジ（丸い色付き背景）の中に載せる白いアイコンを作る。</summary>
+    /// <param name="iconKey">Icons.xaml のアイコンキー。</param>
+    private static UIElement BuildBadgeIcon(string iconKey)
+    {
+        var icon = SEEDEditor.Controls.AppIcon.Create(iconKey, BadgeIconSize);
+        icon.SetBrush(Brushes.White);
+        icon.HorizontalAlignment = HorizontalAlignment.Center;
+        icon.VerticalAlignment   = VerticalAlignment.Center;
+        return icon;
+    }
 
     private static UIElement BuildSectionHeader(string title)
     {

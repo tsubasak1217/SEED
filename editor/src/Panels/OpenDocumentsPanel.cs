@@ -23,6 +23,23 @@ public sealed class OpenDocumentsPanel : UserControl
     private static readonly SolidColorBrush Active   = new(Color.FromRgb(0x09, 0x3A, 0x5E));
     private static readonly SolidColorBrush Accent   = new(Color.FromRgb(0x55, 0xAA, 0xFF));
 
+    /// <summary>タブ行に添えるアイコン（鍵・未保存・閉じる）の一辺サイズ（px）。</summary>
+    private const double TabIconSize = 11.0;
+
+    /// <summary>
+    /// タブ名の前へ置く小さなアイコン（読み取り専用の鍵・未保存マーク）を作る。
+    /// </summary>
+    /// <param name="iconKey">Icons.xaml のリソースキー。</param>
+    /// <param name="brush">アイコンの塗り色。</param>
+    private static SEEDEditor.Controls.AppIcon MakeTabIcon(string iconKey, Brush brush)
+    {
+        var icon = SEEDEditor.Controls.AppIcon.Create(iconKey, TabIconSize);
+        icon.SetBrush(brush);
+        icon.Margin            = new Thickness(0, 0, 4, 0);
+        icon.VerticalAlignment = VerticalAlignment.Center;
+        return icon;
+    }
+
     private readonly ScriptEditorPanel _editorPanel;
     private readonly StackPanel _list;
 
@@ -76,24 +93,13 @@ public sealed class OpenDocumentsPanel : UserControl
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        // ファイル名（+ 未保存なら ● を前置 / 読み取り専用なら 🔒 を前置）
+        // ファイル名（+ 未保存なら未保存マーク / 読み取り専用なら鍵アイコンを前置）
         var nameStack = new StackPanel { Orientation = Orientation.Horizontal };
         if (doc.IsReadOnly)
-            nameStack.Children.Add(new TextBlock
-            {
-                // Segoe MDL2 Assets のロック字形（モノクロなので Foreground の色が効く）を黄色で表示。
-                Text = "",
-                FontFamily = new FontFamily("Segoe MDL2 Assets"),
-                Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xC8, 0x2E)),
-                FontSize = 11,
-                Margin = new Thickness(0, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center,
-            });
+            nameStack.Children.Add(MakeTabIcon(
+                "Icon.Lock", new SolidColorBrush(Color.FromRgb(0xFF, 0xC8, 0x2E))));
         if (doc.IsDirty)
-            nameStack.Children.Add(new TextBlock
-            {
-                Text = "●", Foreground = Accent, FontSize = 9,
-                Margin = new Thickness(0, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center,
-            });
+            nameStack.Children.Add(MakeTabIcon("Icon.Dirty", Accent));
         nameStack.Children.Add(new TextBlock
         {
             Text = Path.GetFileName(doc.FilePath),
@@ -105,13 +111,13 @@ public sealed class OpenDocumentsPanel : UserControl
         grid.Children.Add(nameStack);
 
         // 閉じるボタン
-        var close = new TextBlock
-        {
-            Text = "✕", Foreground = Dim, FontSize = 10, Cursor = Cursors.Hand,
-            VerticalAlignment = VerticalAlignment.Center, Padding = new Thickness(4, 0, 2, 0),
-        };
-        close.MouseEnter += (_, _) => close.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x66));
-        close.MouseLeave += (_, _) => close.Foreground = Dim;
+        var close = SEEDEditor.Controls.AppIcon.Create("Icon.Close", TabIconSize);
+        close.SetBrush(Dim);
+        close.Cursor            = Cursors.Hand;
+        close.VerticalAlignment = VerticalAlignment.Center;
+        close.Margin            = new Thickness(4, 0, 2, 0);
+        close.MouseEnter += (_, _) => close.SetBrush(new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x66)));
+        close.MouseLeave += (_, _) => close.SetBrush(Dim);
         close.MouseLeftButtonDown += (_, e) => { _editorPanel.CloseFile(doc.FilePath); e.Handled = true; };
         Grid.SetColumn(close, 1);
         grid.Children.Add(close);

@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:avd="https://github.com/Dirkster99/AvalonDock"
         xmlns:panels="clr-namespace:SEEDEditor.Panels"
+        xmlns:ctrl="clr-namespace:SEEDEditor.Controls"
         xmlns:local="clr-namespace:SEEDEditor"
         Title="SEED Editor" Height="720" Width="1280"
         Background="#1E1E1E"
@@ -694,12 +695,24 @@
                 <MenuItem x:Name="MenuQuickSave"
                           Header="上書き保存"
                           InputGestureText="Ctrl+S"
-                          Click="OnMenuQuickSave"/>
+                          Click="OnMenuQuickSave">
+                    <MenuItem.Icon>
+                        <ctrl:AppIcon IconKey="Icon.Save" Width="14" Height="14" Foreground="#CCCCCC"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="名前を付けて保存..."
                           InputGestureText="Ctrl+Shift+S"
-                          Click="OnMenuSaveAs"/>
+                          Click="OnMenuSaveAs">
+                    <MenuItem.Icon>
+                        <ctrl:AppIcon IconKey="Icon.Save" Width="14" Height="14" Foreground="#CCCCCC"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
-                <MenuItem Header="パッケージ化..." Click="OnOpenPackaging"/>
+                <MenuItem Header="パッケージ化..." Click="OnOpenPackaging">
+                    <MenuItem.Icon>
+                        <ctrl:AppIcon IconKey="Icon.Build" Width="14" Height="14" Foreground="#CCCCCC"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <MenuItem Header="終了" Click="OnMenuExit"/>
             </MenuItem>
@@ -708,10 +721,18 @@
             <MenuItem Header="編集">
                 <MenuItem Header="元に戻す"
                           InputGestureText="Ctrl+Z"
-                          Click="OnMenuUndo"/>
+                          Click="OnMenuUndo">
+                    <MenuItem.Icon>
+                        <ctrl:AppIcon IconKey="Icon.Undo" Width="14" Height="14" Foreground="#CCCCCC"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="やり直し"
                           InputGestureText="Ctrl+Y"
-                          Click="OnMenuRedo"/>
+                          Click="OnMenuRedo">
+                    <MenuItem.Icon>
+                        <ctrl:AppIcon IconKey="Icon.Redo" Width="14" Height="14" Foreground="#CCCCCC"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <MenuItem Header="コピー"
                           InputGestureText="Ctrl+C"
@@ -722,11 +743,19 @@
                 <Separator/>
                 <MenuItem Header="削除"
                           InputGestureText="Del / Esc"
-                          Click="OnMenuDelete"/>
+                          Click="OnMenuDelete">
+                    <MenuItem.Icon>
+                        <ctrl:AppIcon IconKey="Icon.Delete" Width="14" Height="14" Foreground="#CCCCCC"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <!-- エディタ全体の環境設定（スクロール係数など。editor_preferences.json に保存） -->
                 <MenuItem Header="環境設定..."
-                          Click="OnOpenEditorPreferences"/>
+                          Click="OnOpenEditorPreferences">
+                    <MenuItem.Icon>
+                        <ctrl:AppIcon IconKey="Icon.Settings" Width="14" Height="14" Foreground="#CCCCCC"/>
+                    </MenuItem.Icon>
+                </MenuItem>
             </MenuItem>
 
             <!-- 表示（カテゴリごとに入れ子化） -->
@@ -812,36 +841,47 @@
                 <StackPanel Grid.Column="2" Orientation="Horizontal"
                             HorizontalAlignment="Right" VerticalAlignment="Center"
                             Margin="0,0,8,0">
-                    <Button Content="⚙ プロジェクト設定"
-                            Style="{StaticResource TopBarTextBtnStyle}"
+                    <Button Style="{StaticResource TopBarTextBtnStyle}"
                             Click="OnOpenProjectSettings"
-                            ToolTip="プロジェクト設定を開く"/>
+                            ToolTip="プロジェクト設定を開く">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <ctrl:AppIcon IconKey="Icon.ProjectSettings" Width="14" Height="14"/>
+                            <TextBlock Text="プロジェクト設定" Margin="5,0,0,0"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
 
                 <!-- 中央: 状態ラベル + Play/Stop + Pause + Settings -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal"
                             VerticalAlignment="Center">
+                    <!-- 実行状態インジケータ。アイコンと文字列はどちらも
+                         MainWindow.Camera.cs の状態遷移から差し替える。
+                         色は AppIcon が LblState と同じブラシを共有できないため、
+                         状態切替時に両方へ同じブラシを代入している。 -->
+                    <ctrl:AppIcon x:Name="IconState" IconKey="Icon.Dirty"
+                                  Width="13" Height="13"
+                                  VerticalAlignment="Center" Margin="0,0,3,0"/>
                     <TextBlock x:Name="LblState"
-                               Text="● EDIT" Foreground="#60C060"
+                               Text="EDIT" Foreground="#60C060"
                                VerticalAlignment="Center" Margin="0,0,8,0"/>
                     <Button x:Name="BtnPlayPause"
                             Style="{StaticResource PlayBarBtnStyle}"
                             Background="#1F4A22"
                             Click="OnPlayPause"
                             ToolTip="Play / Pause / Resume">
-                        <Image x:Name="ImgPlayPause"
-                               Source="pack://application:,,,/resources/icons/playbar/play.png"
-                               Width="18" Height="18"
-                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                        <!-- 再生/一時停止の切替はコード側で IconKey を差し替える
+                             （MainWindow.Camera.cs の状態遷移を参照）。 -->
+                        <ctrl:AppIcon x:Name="ImgPlayPause" IconKey="Icon.Play"
+                                      Width="16" Height="16" Foreground="#9FE0A8"/>
                     </Button>
                     <Button x:Name="BtnStop"
                             Style="{StaticResource PlayBarBtnStyle}"
                             Background="#4A1F1F"
                             Click="OnStop" IsEnabled="False"
                             ToolTip="Stop">
-                        <Image Source="pack://application:,,,/resources/icons/playbar/stop.png"
-                               Width="18" Height="18"
-                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                        <ctrl:AppIcon IconKey="Icon.Stop" Width="16" Height="16"
+                                      Foreground="#E09A9A"/>
                     </Button>
 
                     <!-- デバッグ操作（ブレークポイント停止中のみ表示）:
@@ -851,27 +891,29 @@
                                 Visibility="Collapsed">
                         <Button x:Name="BtnDebugContinue" Style="{StaticResource PlayBarBtnStyle}"
                                 Background="#25402A" Click="OnDebugContinue" ToolTip="継続 (F5)">
-                            <TextBlock Text="▶" FontSize="13" Foreground="#8FE0A0"/>
+                            <ctrl:AppIcon IconKey="Icon.Play" Width="15" Height="15" Foreground="#8FE0A0"/>
                         </Button>
                         <Button x:Name="BtnDebugStepOver" Style="{StaticResource PlayBarBtnStyle}"
                                 Background="#333333" Click="OnDebugStepOver" ToolTip="ステップオーバー (F10)">
-                            <TextBlock Text="↷" FontSize="15" Foreground="#DDDDDD"/>
+                            <ctrl:AppIcon IconKey="Icon.Debug.StepOver" Width="15" Height="15" Foreground="#DDDDDD"/>
                         </Button>
                         <Button x:Name="BtnDebugStepIn" Style="{StaticResource PlayBarBtnStyle}"
                                 Background="#333333" Click="OnDebugStepIn" ToolTip="ステップイン (F11)">
-                            <TextBlock Text="↳" FontSize="15" Foreground="#DDDDDD"/>
+                            <ctrl:AppIcon IconKey="Icon.Debug.StepInto" Width="15" Height="15" Foreground="#DDDDDD"/>
                         </Button>
                         <Button x:Name="BtnDebugStepOut" Style="{StaticResource PlayBarBtnStyle}"
                                 Background="#333333" Click="OnDebugStepOut" ToolTip="ステップアウト (Shift+F11)">
-                            <TextBlock Text="↰" FontSize="15" Foreground="#DDDDDD"/>
+                            <ctrl:AppIcon IconKey="Icon.Debug.StepOut" Width="15" Height="15" Foreground="#DDDDDD"/>
                         </Button>
                     </StackPanel>
-                    <Button x:Name="BtnSettings" Content="⚙"
+                    <Button x:Name="BtnSettings"
                             Width="28" Height="28" Margin="6,0,0,0"
                             Click="OnSettings"
                             Background="#404040" Foreground="#AAAAAA"
                             BorderThickness="0" Padding="4"
-                            ToolTip="Settings"/>
+                            ToolTip="Settings">
+                        <ctrl:AppIcon IconKey="Icon.Settings" Width="16" Height="16"/>
+                    </Button>
                     <!-- FPS 表示（ランタイム側の計測値） -->
                     <TextBlock x:Name="TxtFps"
                                Text=""
@@ -1252,7 +1294,6 @@
                                                 <!-- 右端固定: シーンに戻るボタン -->
                                                 <Button x:Name="BtnReturnToScene"
                                                         DockPanel.Dock="Right"
-                                                        Content="◀ シーンに戻る"
                                                         Height="22"
                                                         Margin="4,3"
                                                         Padding="8,0"
@@ -1264,6 +1305,11 @@
                                                         Cursor="Hand"
                                                         Visibility="Collapsed"
                                                         Click="OnReturnToScene">
+                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <ctrl:AppIcon IconKey="Icon.Back" Width="13" Height="13"/>
+                                                        <TextBlock Text="シーンに戻る" Margin="4,0,0,0"
+                                                                   VerticalAlignment="Center"/>
+                                                    </StackPanel>
                                                     <Button.Style>
                                                         <Style TargetType="Button">
                                                             <Setter Property="Template">
@@ -1506,10 +1552,15 @@
 
                                                 <!-- 地形設定ウィンドウ（レイヤ定義などをまとめて編集する別ウィンドウ）-->
                                                 <Button x:Name="BtnTerrainSettings"
-                                                        Content="⚙ 設定"
                                                         Style="{StaticResource TerrainActionBtnStyle}"
                                                         ToolTip="地形設定ウィンドウを開く（レイヤ定義の編集・将来のブラシ設定）"
-                                                        Click="OnTerrainSettings"/>
+                                                        Click="OnTerrainSettings">
+                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <ctrl:AppIcon IconKey="Icon.Settings" Width="13" Height="13"/>
+                                                        <TextBlock Text="設定" Margin="4,0,0,0"
+                                                                   VerticalAlignment="Center"/>
+                                                    </StackPanel>
+                                                </Button>
 
                                                 <!-- ステータス表示（初期化/保存/ブラシの結果）-->
                                                 <TextBlock x:Name="TxtTerrainStatus" Text=""
@@ -1563,10 +1614,11 @@
                                                         Style="{StaticResource ViewportOptBtnStyle}"
                                                         ToolTip="Viewport Options"
                                                         Click="OnViewportOptions">
-                                                    <TextBlock Text="⚙" FontSize="16"
-                                                               Foreground="#AAAAAA"
-                                                               VerticalAlignment="Center"
-                                                               HorizontalAlignment="Center"/>
+                                                    <ctrl:AppIcon IconKey="Icon.Settings"
+                                                                  Width="16" Height="16"
+                                                                  Foreground="#AAAAAA"
+                                                                  VerticalAlignment="Center"
+                                                                  HorizontalAlignment="Center"/>
                                                 </Button>
 
                                                 <!-- ツールボタン群 -->
@@ -1578,8 +1630,9 @@
                                                                  Style="{StaticResource ToolBtnStyle}"
                                                                  ToolTip="Select (Q)"
                                                                  Click="OnToolSelect">
-                                                        <Image Source="pack://application:,,,/resources/icons/toolbar/select.png"
-                                                               Width="20" Height="20"/>
+                                                        <ctrl:AppIcon IconKey="Icon.Tool.Select"
+                                                                      Width="18" Height="18"
+                                                                      Foreground="#DCDCDC"/>
                                                     </RadioButton>
 
                                                     <RadioButton x:Name="BtnToolMove"
@@ -1587,8 +1640,9 @@
                                                                  Style="{StaticResource ToolBtnStyle}"
                                                                  ToolTip="Move (W)"
                                                                  Click="OnToolMove">
-                                                        <Image Source="pack://application:,,,/resources/icons/toolbar/translate.png"
-                                                               Width="20" Height="20"/>
+                                                        <ctrl:AppIcon IconKey="Icon.Tool.Move"
+                                                                      Width="18" Height="18"
+                                                                      Foreground="#DCDCDC"/>
                                                     </RadioButton>
 
                                                     <RadioButton x:Name="BtnToolRotate"
@@ -1596,8 +1650,9 @@
                                                                  Style="{StaticResource ToolBtnStyle}"
                                                                  ToolTip="Rotate (E)"
                                                                  Click="OnToolRotate">
-                                                        <Image Source="pack://application:,,,/resources/icons/toolbar/rotate.png"
-                                                               Width="20" Height="20"/>
+                                                        <ctrl:AppIcon IconKey="Icon.Tool.Rotate"
+                                                                      Width="18" Height="18"
+                                                                      Foreground="#DCDCDC"/>
                                                     </RadioButton>
 
                                                     <RadioButton x:Name="BtnToolScale"
@@ -1605,8 +1660,9 @@
                                                                  Style="{StaticResource ToolBtnStyle}"
                                                                  ToolTip="Scale (R)"
                                                                  Click="OnToolScale">
-                                                        <Image Source="pack://application:,,,/resources/icons/toolbar/scale.png"
-                                                               Width="20" Height="20"/>
+                                                        <ctrl:AppIcon IconKey="Icon.Tool.Scale"
+                                                                      Width="18" Height="18"
+                                                                      Foreground="#DCDCDC"/>
                                                     </RadioButton>
                                                 </StackPanel>
                                             </DockPanel>
@@ -1635,17 +1691,18 @@
                                                     <ColumnDefinition Width="Auto"/>
                                                 </Grid.ColumnDefinitions>
 
-                                                <!-- 再生/停止ボタン（▶ / ■） -->
-                                                <TextBlock x:Name="TxtPhysicsPlayBtn"
-                                                           Grid.Column="0"
-                                                           Text="▶"
-                                                           Foreground="#CCFFFFFF"
-                                                           FontSize="14"
-                                                           VerticalAlignment="Center"
-                                                           Cursor="Hand"
-                                                           Margin="0,0,8,0"
-                                                           ToolTip="再生 / 停止（スペースキー）"
-                                                           MouseLeftButtonDown="OnPhysicsTimerClick"/>
+                                                <!-- 再生/停止ボタン。IconKey はコード側（MainWindow.Physics.cs）で
+                                                     Icon.Play / Icon.Stop に差し替える。 -->
+                                                <ctrl:AppIcon x:Name="TxtPhysicsPlayBtn"
+                                                              Grid.Column="0"
+                                                              IconKey="Icon.Play"
+                                                              Width="14" Height="14"
+                                                              Foreground="#CCFFFFFF"
+                                                              VerticalAlignment="Center"
+                                                              Cursor="Hand"
+                                                              Margin="0,0,8,0"
+                                                              ToolTip="再生 / 停止（スペースキー）"
+                                                              MouseLeftButtonDown="OnPhysicsTimerClick"/>
 
                                                 <!-- 現在時刻表示 -->
                                                 <TextBlock x:Name="TxtPhysicsTimer"
@@ -1691,11 +1748,11 @@
                                                         Cursor="Hand"
                                                         ToolTip="このフレームをスタート状態として適用（履歴をクリアしてフレーム0に設定）"
                                                         MouseLeftButtonDown="OnPhysicsApplyClick">
-                                                    <TextBlock Text="✓"
-                                                               Foreground="#88FFCC88"
-                                                               FontSize="11"
-                                                               HorizontalAlignment="Center"
-                                                               VerticalAlignment="Center"/>
+                                                    <ctrl:AppIcon IconKey="Icon.Apply"
+                                                                  Width="13" Height="13"
+                                                                  Foreground="#88FFCC88"
+                                                                  HorizontalAlignment="Center"
+                                                                  VerticalAlignment="Center"/>
                                                 </Border>
                                             </Grid>
                                         </Border>

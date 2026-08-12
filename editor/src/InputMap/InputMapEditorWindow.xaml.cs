@@ -30,6 +30,9 @@ namespace SEEDEditor.InputMap;
 /// </summary>
 public partial class InputMapEditorWindow : Window
 {
+    /// <summary>バインディング行の削除ボタンのアイコン一辺サイズ（px）。</summary>
+    private const double RowDeleteIconSize = 11;
+
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(nint hwnd, int attr, ref int value, int size);
     private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
@@ -448,7 +451,7 @@ public partial class InputMapEditorWindow : Window
         // ── 削除ボタン ───────────────────────────────────────
         var btnRemove = new Button
         {
-            Content = "✕",
+            Content = SEEDEditor.Controls.AppIcon.Create("Icon.Close", RowDeleteIconSize),
             Width = 28,
             Height = 24,
             Background = Brushes.Transparent,

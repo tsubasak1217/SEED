@@ -109,8 +109,11 @@ public partial class InspectorPanel
     /// <summary>アセット宣言の型名のうち、色（vec3）として扱うもの。</summary>
     private const string ShaderParamTypeColor = "color";
 
-    /// <summary>警告アイコン（バインドが解決できないときに行へ添える）。</summary>
-    private const string BindingWarnGlyph = "⚠";
+    /// <summary>警告アイコンのキー（バインドが解決できないときに行へ添える）。</summary>
+    private const string BindingWarnIconKey = "Icon.Warning";
+
+    /// <summary>警告アイコンの一辺サイズ（px）。</summary>
+    private const double BindingWarnIconSize = 12;
 
     /// <summary>バインドが解決できないときのツールチップ文言。</summary>
     private const string BindingUnresolvedTooltip =
@@ -304,18 +307,14 @@ public partial class InspectorPanel
             VerticalAlignment = VerticalAlignment.Center,
         };
 
-        // ── 解決できないバインドの警告（ReferencePicker 自身の ⚠ とは別要因）──
+        // ── 解決できないバインドの警告（ReferencePicker 自身の警告とは別要因）──
         //    アクタは居るがコンポーネント／変数が無い・型が変わった、を知らせる。
-        var warnBlock = new TextBlock
-        {
-            Text              = BindingWarnGlyph,
-            Foreground        = BindingWarnBrush,
-            FontSize          = BindingFontSize,
-            Margin            = BindingSideLabelMargin,
-            VerticalAlignment = VerticalAlignment.Center,
-            ToolTip           = BindingUnresolvedTooltip,
-            Visibility        = Visibility.Collapsed,
-        };
+        var warnBlock = SEEDEditor.Controls.AppIcon.Create(BindingWarnIconKey, BindingWarnIconSize);
+        warnBlock.SetBrush(BindingWarnBrush);
+        warnBlock.Margin            = BindingSideLabelMargin;
+        warnBlock.VerticalAlignment = VerticalAlignment.Center;
+        warnBlock.ToolTip           = BindingUnresolvedTooltip;
+        warnBlock.Visibility        = Visibility.Collapsed;
 
         // 変数名ラベルと警告表示を現在値から作り直す。
         void RefreshSideLabels(string variableName, bool resolved)

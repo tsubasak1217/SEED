@@ -534,28 +534,53 @@ public partial class HierarchyPanel : UserControl
         return item;
     }
 
+    /// <summary>ツリー行のノード種別アイコンの一辺サイズ（px）。</summary>
+    private const double NodeIconSize = 12.0;
+
+    /// <summary>リネーム中の仮ヘッダーに出すアイコンの一辺サイズ（px）。</summary>
+    private const double RenameIconSize = 12.0;
+
+    /// <summary>
+    /// TextBlock の Inlines へ埋め込める形のベクターアイコンを作る。
+    ///
+    /// ツリー行のヘッダーは TextBlock 1 個で組む作りなので（呼び出し側が
+    /// TextBlock を前提にしている）、コンテナを StackPanel へ変えずに
+    /// <see cref="InlineUIContainer"/> でアイコンを行内へ差し込む。
+    /// </summary>
+    /// <param name="iconKey">Icons.xaml のリソースキー。</param>
+    /// <param name="brush">アイコンの塗り色。</param>
+    /// <param name="size">一辺のサイズ（px）。</param>
+    private static InlineUIContainer MakeInlineIcon(string iconKey, Brush brush, double size)
+    {
+        var icon = SEEDEditor.Controls.AppIcon.Create(iconKey, size);
+        icon.SetBrush(brush);
+        icon.Margin = new Thickness(0, 0, 4, 0);
+        return new InlineUIContainer(icon)
+        {
+            // 文字のベースラインではなく行の中央へ揃える（記号表示時と同じ見え方）。
+            BaselineAlignment = BaselineAlignment.Center,
+        };
+    }
+
     private static TextBlock BuildItemHeader(ActorNode node)
     {
         var tb = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
-        // フォルダ: 黄土色 ▤（最優先判定。フォルダは IsGroup も true で届くため先に弾く）、
-        // IsGroup: 黄色 ▶、2D アクター: オレンジ ◆、3D アクター: 青 ◆
+        // ノード種別アイコン。色は従来の記号表示と同じ配色を踏襲する。
+        // フォルダ判定が最優先（フォルダは IsGroup も true で届くため先に弾く）。
         var iconBrush = node.IsFolder ? BrushFolderIcon
                       : node.IsGroup  ? BrushGroupIcon
                       : node.Is2D     ? BrushActor2DIcon
                       :                 BrushActorIcon;
-        var iconGlyph = node.IsFolder ? "▤ "
-                      : node.IsGroup  ? "▶ "
-                      :                 "◆ ";
-        tb.Inlines.Add(new Run(iconGlyph)
-        {
-            Foreground = iconBrush,
-            FontSize   = 9,
-        });
-        // プレハブインスタンスのルートは Unity 風に、名前の前へ小さなプレハブアイコン（📦）を付け、
+        var iconKey = node.IsFolder ? "Icon.Node.Folder"
+                    : node.IsGroup  ? "Icon.Node.Group"
+                    : node.Is2D     ? "Icon.Node.Actor2D"
+                    :                 "Icon.Node.Actor3D";
+        tb.Inlines.Add(MakeInlineIcon(iconKey, iconBrush, NodeIconSize));
+        // プレハブインスタンスのルートは Unity 風に、名前の前へ小さなプレハブアイコンを付け、
         // 名前テキストを青系（水色）で表示して通常アクターと区別する（子ノードは通常表示）。
         if (node.IsPrefab)
         {
-            tb.Inlines.Add(new Run("📦 ") { FontSize = 10 });
+            tb.Inlines.Add(MakeInlineIcon("Icon.Prefab", BrushPrefabText, NodeIconSize));
             tb.Inlines.Add(new Run(node.Name) { FontSize = 13, Foreground = BrushPrefabText });
         }
         else
@@ -2026,14 +2051,10 @@ public partial class HierarchyPanel : UserControl
         tb.LostFocus += (_, _) => Commit();
 
         // ヘッダーをアイコン＋TextBox に置き換え
-        var icon = new TextBlock
-        {
-            Text              = "◆",
-            Foreground        = new SolidColorBrush(Color.FromRgb(0x55, 0xAA, 0xFF)),
-            FontSize          = 9,
-            Margin            = new Thickness(0, 0, 4, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
+        var icon = SEEDEditor.Controls.AppIcon.Create("Icon.Node.Actor3D", RenameIconSize);
+        icon.SetBrush(new SolidColorBrush(Color.FromRgb(0x55, 0xAA, 0xFF)));
+        icon.Margin            = new Thickness(0, 0, 4, 0);
+        icon.VerticalAlignment = VerticalAlignment.Center;
         var sp = new StackPanel { Orientation = Orientation.Horizontal };
         sp.Children.Add(icon);
         sp.Children.Add(tb);

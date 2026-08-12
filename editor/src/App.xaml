@@ -5,6 +5,14 @@
              xmlns:ctrl="clr-namespace:SEEDEditor.Controls"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
+        <ResourceDictionary>
+
+        <ResourceDictionary.MergedDictionaries>
+            <!-- ベクターアイコン定義（自動生成）。エディタ全体のアイコンはここの
+                 Geometry を AppIcon / IconImages 経由で参照する。
+                 キー一覧と追加手順は docs/editor_icons.md が正典。 -->
+            <ResourceDictionary Source="Resources/Icons.xaml"/>
+        </ResourceDictionary.MergedDictionaries>
 
         <!-- ════════════════════════════════════════════════════════════════
              ComboBox ダークテーマ（アプリ全体の既定・暗黙スタイル）
@@ -251,5 +259,6 @@
             </Setter>
         </Style>
 
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

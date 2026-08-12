@@ -776,10 +776,12 @@ public partial class MainWindow
                 _pressedVks.Clear();
                 BtnPlayPause.IsEnabled   = true;
                 BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.Source      = _imgPlay;
+                ImgPlayPause.IconKey     = IconKeyPlay;
                 BtnStop.IsEnabled        = false;
-                LblState.Text            = "● EDIT";
+                LblState.Text            = "EDIT";
                 LblState.Foreground      = Brushes.LightGreen;
+                IconState.IconKey        = IconKeyStateEdit;
+                IconState.Foreground     = Brushes.LightGreen;
                 ViewportDocumentContent.Visibility = Visibility.Visible;
                 TxtViewportStatus.Text             = "";
                 ViewportLoadingOverlay.Visibility  = Visibility.Visible;
@@ -789,10 +791,12 @@ public partial class MainWindow
             case EditorState.Play:
                 BtnPlayPause.IsEnabled   = true;
                 BtnPlayPause.Background  = _brushPause;
-                ImgPlayPause.Source      = _imgPause;
+                ImgPlayPause.IconKey     = IconKeyPause;
                 BtnStop.IsEnabled        = true;
-                LblState.Text            = "▶ PLAY";
+                LblState.Text            = "PLAY";
                 LblState.Foreground      = Brushes.LightSkyBlue;
+                IconState.IconKey        = IconKeyStatePlay;
+                IconState.Foreground     = Brushes.LightSkyBlue;
                 // ビューポートホストの表示制御:
                 // - ウィンドウ Play: ランタイムは別ウィンドウなのでホストを隠す（従来動作）
                 // - 埋め込みインプレース Play: この WPF 要素がランタイム子 HWND のホストそのもの。
@@ -808,10 +812,12 @@ public partial class MainWindow
             case EditorState.Pause:
                 BtnPlayPause.IsEnabled   = true;
                 BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.Source      = _imgPlay;
+                ImgPlayPause.IconKey     = IconKeyPlay;
                 BtnStop.IsEnabled        = true;
-                LblState.Text            = "⏸ PAUSE";
+                LblState.Text            = "PAUSE";
                 LblState.Foreground      = Brushes.Orange;
+                IconState.IconKey        = IconKeyStatePause;
+                IconState.Foreground     = Brushes.Orange;
                 ViewportDocumentContent.Visibility = Visibility.Visible;
                 ViewportLoadingOverlay.Visibility  = Visibility.Collapsed;
                 break;
@@ -819,10 +825,12 @@ public partial class MainWindow
             case EditorState.Building:
                 BtnPlayPause.IsEnabled   = false;
                 BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.Source      = _imgPlay;
+                ImgPlayPause.IconKey     = IconKeyPlay;
                 BtnStop.IsEnabled        = false;
-                LblState.Text            = "⚙ BUILDING...";
+                LblState.Text            = "BUILDING...";
                 LblState.Foreground      = Brushes.Yellow;
+                IconState.IconKey        = IconKeyStateBuilding;
+                IconState.Foreground     = Brushes.Yellow;
                 TxtViewportStatus.Text            = "ビルド中...";
                 ViewportLoadingOverlay.Visibility = Visibility.Visible;
                 break;
@@ -833,10 +841,12 @@ public partial class MainWindow
                 // ・Stop ボタンは有効化し、ウィンドウ出現前でも起動をキャンセルできるようにする（不具合1）。
                 BtnPlayPause.IsEnabled   = false;
                 BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.Source      = _imgPlay;
+                ImgPlayPause.IconKey     = IconKeyPlay;
                 BtnStop.IsEnabled        = true;
-                LblState.Text            = "▶ LAUNCHING...";
+                LblState.Text            = "LAUNCHING...";
                 LblState.Foreground      = Brushes.LightSkyBlue;
+                IconState.IconKey        = IconKeyStatePlay;
+                IconState.Foreground     = Brushes.LightSkyBlue;
                 TxtViewportStatus.Text            = "起動中...";
                 ViewportLoadingOverlay.Visibility = Visibility.Visible;
                 break;
@@ -844,10 +854,12 @@ public partial class MainWindow
             case EditorState.Idle:
                 BtnPlayPause.IsEnabled   = false;
                 BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.Source      = _imgPlay;
+                ImgPlayPause.IconKey     = IconKeyPlay;
                 BtnStop.IsEnabled        = false;
-                LblState.Text            = "○ IDLE";
+                LblState.Text            = "IDLE";
                 LblState.Foreground      = Brushes.Gray;
+                IconState.IconKey        = IconKeyStateIdle;
+                IconState.Foreground     = Brushes.Gray;
                 TxtViewportStatus.Text            = "再起動中...";
                 ViewportLoadingOverlay.Visibility = Visibility.Visible;
                 break;

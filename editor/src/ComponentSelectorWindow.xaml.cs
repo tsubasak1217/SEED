@@ -133,6 +133,18 @@ public partial class ComponentSelectorWindow : Window
                 ActorTarget.Common))
             .ToList();
 
+    /// <summary>コンポーネント種別アイコンの一辺サイズ（px）。</summary>
+    private const double ItemIconSize = 14.0;
+
+    /// <summary>アイコンとラベルの間隔（px）。</summary>
+    private const double ItemIconGap = 6.0;
+
+    /// <summary>通常行のラベル／アイコン色。</summary>
+    private static readonly SolidColorBrush BrushLabelNormal   = new(Color.FromRgb(0xCC, 0xCC, 0xCC));
+
+    /// <summary>追加済みで選べない行のラベル／アイコン色。</summary>
+    private static readonly SolidColorBrush BrushLabelDisabled = new(Color.FromRgb(0x44, 0x44, 0x44));
+
     private static readonly SolidColorBrush BrushSelected  = new(Color.FromRgb(0x1A, 0x2A, 0x3A));
     private static readonly SolidColorBrush BrushHover     = new(Color.FromRgb(0x28, 0x28, 0x28));
     private static readonly SolidColorBrush BrushTransp    = Brushes.Transparent;
@@ -285,9 +297,7 @@ public partial class ComponentSelectorWindow : Window
         var label = new TextBlock
         {
             Text       = entry.Label,
-            Foreground = disabled
-                ? new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44))
-                : new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            Foreground = disabled ? BrushLabelDisabled : BrushLabelNormal,
             FontSize   = 12,
         };
 
@@ -300,13 +310,26 @@ public partial class ComponentSelectorWindow : Window
             FontSize   = 10,
             Margin     = new Thickness(0, 1, 0, 0),
         };
-        var sp = new StackPanel();
-        sp.Children.Add(label);
-        if (!string.IsNullOrEmpty(entry.Description)) sp.Children.Add(desc);
+        var texts = new StackPanel();
+        texts.Children.Add(label);
+        if (!string.IsNullOrEmpty(entry.Description)) texts.Children.Add(desc);
+
+        // コンポーネント種別アイコン（対応表は Controls/ComponentIcons.cs が唯一の正典）。
+        // 無効行（追加済み）はラベルと同じトーンまで落として一体で減光する。
+        var icon = SEEDEditor.Controls.AppIcon.Create(
+            SEEDEditor.Controls.ComponentIcons.GetIconKey(entry.TypeId), ItemIconSize);
+        icon.SetBrush(disabled ? BrushLabelDisabled : BrushLabelNormal);
+        icon.VerticalAlignment = VerticalAlignment.Center;
+        icon.Margin            = new Thickness(0, 0, ItemIconGap, 0);
+
+        var sp = new StackPanel { Orientation = Orientation.Horizontal };
+        sp.Children.Add(icon);
+        sp.Children.Add(texts);
 
         var border = new Border
         {
-            Padding    = new Thickness(28, 5, 8, 5),
+            // アイコンぶんだけ左パディングを詰め、行全体の見た目の開始位置は従来どおりに保つ。
+            Padding    = new Thickness(28 - ItemIconSize - ItemIconGap, 5, 8, 5),
             Cursor     = disabled ? Cursors.No : Cursors.Hand,
             Background = Brushes.Transparent,
             Child      = sp,

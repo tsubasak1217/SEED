@@ -93,6 +93,9 @@ internal sealed class ReferencePicker
     // ── レイアウト定数 ────────────────────────────────────────
     private const double CaptionWidth   = 90;
     private const double ClearButtonWidth = 22;
+
+    /// <summary>解除ボタンのアイコン一辺サイズ（px）。</summary>
+    private const double ClearButtonIconSize = 10;
     private const double LabelFontSize  = 11;
 
     // ── 配色 ─────────────────────────────────────────────────
@@ -158,11 +161,10 @@ internal sealed class ReferencePicker
             ToolTip         = BuildTooltip(spec),
         };
 
-        // ── ✕ 解除ボタン ─────────────────────────────────────
+        // ── 解除（クリア）ボタン ─────────────────────────────
         _clearButton = new Button
         {
-            Content         = "✕",
-            FontSize        = 10,
+            Content         = AppIcon.Create("Icon.Close", ClearButtonIconSize),
             Width           = ClearButtonWidth,
             Foreground      = BrushClear,
             Background      = BrushClearBg,

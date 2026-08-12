@@ -22,6 +22,9 @@ public static class ScriptInspectorBuilder
     private static readonly SolidColorBrush BrushBorder = new(Color.FromRgb(0x3F, 0x3F, 0x46));
     private static readonly SolidColorBrush BrushAccent = new(Color.FromRgb(0x55, 0xAA, 0xFF));
 
+    /// <summary>数値ドラッグハンドルのアイコン一辺サイズ（px）。</summary>
+    private const double DragHandleIconSize = 11;
+
     /// <summary>
     /// [SerializeField] フィールド一覧から WPF の StackPanel を生成する。
     /// onValueChanged: (fieldPath, newValueString)。ネストは "parent.child" のドットパス。
@@ -439,18 +442,14 @@ public static class ScriptInspectorBuilder
         VerticalContentAlignment = VerticalAlignment.Center,
     };
 
-    private static TextBlock MakeDragLabel(TextBox target, double speed, Action<string> onChange, bool isInt)
+    private static SEEDEditor.Controls.AppIcon MakeDragLabel(TextBox target, double speed, Action<string> onChange, bool isInt)
     {
-        var label = new TextBlock
-        {
-            Text                = "≡",
-            Foreground          = BrushAccent,
-            FontSize            = 11,
-            VerticalAlignment   = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Cursor              = Cursors.SizeWE,
-            Margin              = new Thickness(2, 0, 2, 0),
-        };
+        var label = SEEDEditor.Controls.AppIcon.Create("Icon.DragHandle", DragHandleIconSize);
+        label.SetBrush(BrushAccent);
+        label.VerticalAlignment   = VerticalAlignment.Center;
+        label.HorizontalAlignment = HorizontalAlignment.Center;
+        label.Cursor              = Cursors.SizeWE;
+        label.Margin              = new Thickness(2, 0, 2, 0);
 
         double originX = 0;
         float  originV = 0;

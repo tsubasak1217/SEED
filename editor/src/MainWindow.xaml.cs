@@ -251,8 +251,25 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         return assetsDir;
     }
 
-    private static readonly BitmapImage _imgPlay  = new(new Uri("pack://application:,,,/resources/icons/playbar/play.png"));
-    private static readonly BitmapImage _imgPause = new(new Uri("pack://application:,,,/resources/icons/playbar/pause.png"));
+    // ── 実行バーのアイコンキー（Icons.xaml のリソースキー）──────────────
+    // 実行状態の遷移（MainWindow.Camera.cs の ApplyEditorState）から
+    // ImgPlayPause / IconState の IconKey へ代入して見た目を切り替える。
+
+    /// <summary>実行ボタンが「再生できる」状態のときのアイコン。</summary>
+    private const string IconKeyPlay  = "Icon.Play";
+    /// <summary>実行ボタンが「一時停止できる」状態（＝Play 中）のときのアイコン。</summary>
+    private const string IconKeyPause = "Icon.Pause";
+
+    /// <summary>状態インジケータ: 編集中。</summary>
+    private const string IconKeyStateEdit     = "Icon.Dirty";
+    /// <summary>状態インジケータ: 再生中 / 起動中。</summary>
+    private const string IconKeyStatePlay     = "Icon.Play";
+    /// <summary>状態インジケータ: 一時停止中。</summary>
+    private const string IconKeyStatePause    = "Icon.Pause";
+    /// <summary>状態インジケータ: ビルド中。</summary>
+    private const string IconKeyStateBuilding = "Icon.Settings";
+    /// <summary>状態インジケータ: 待機（ランタイム未起動）。</summary>
+    private const string IconKeyStateIdle     = "Icon.Info";
 
     private static readonly SolidColorBrush _brushPlay  = new(Color.FromRgb(0x1F, 0x4A, 0x22));
     private static readonly SolidColorBrush _brushStop  = new(Color.FromRgb(0x4A, 0x1F, 0x1F));
@@ -545,6 +562,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // XAML 既定レイアウトのパネルにもコンテンツを確実に割り当てる。
         EnsureScriptEditorDocument();
         EnsureScriptSidePanels();
+
+        // 全パネルが出揃った後にタブ見出しアイコンを一括適用する。
+        // layout.xml から復元されたパネルは XAML の IconSource を持たないため、
+        // ここで ContentId 基準に付け直すのが唯一の適用点（PanelIcons を参照）。
+        SEEDEditor.Controls.PanelIcons.Apply(DockManager);
 
         // レイアウト復元後、ビューポートを必ず一度実体化させてランタイムを起動する。
         EnsureViewportRealizedAtStartup();

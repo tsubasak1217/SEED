@@ -120,6 +120,19 @@ serializer.LayoutSerializationCallback += (_, args) =>
 - 新規カテゴリを作らず既存の「パネル」または「スクリプト」カテゴリに増やしてよい。独立した種類のUIなら新カテゴリを追加してもよい。
 - `OnTogglePanel` / `OnViewMenuOpened` の実体は `editor/src/MainWindow.Scene.cs` にある。
 
+## 3.5. パネルタブのアイコンを登録する
+
+`editor/src/Controls/PanelIcons.cs` の `IconKeyByContentId` に `["xxx"] = "Icon.Panel.Xxx"` を 1 行追加し、
+`editor/gen_icons.py` の `CATALOG` に `("Icon.Panel.Xxx", "<mdi名>")` を足して `cd editor && python gen_icons.py` を実行する。
+
+タブ見出しのアイコンは XAML の `IconSource` ではなくここへ集約している。
+`layout.xml` から復元されたパネルは XAML ではなく逆シリアライズで作り直されるため、
+XAML に書いた `IconSource` は失われるから（`MainWindow.OnWindowLoaded` が
+レイアウト確定後に `PanelIcons.Apply(DockManager)` を一度だけ呼ぶ）。
+
+詳細は `.claude/rules/editor-icons.md` / `docs/editor_icons.md` を参照。登録漏れはビルドエラーにならず、
+タブがアイコン無しで表示されるだけなので注意。
+
 ## 4. トグル・チェック状態の反映（コード変更は基本不要）
 
 `OnTogglePanel`（`MainWindow.Scene.cs`）は `sender.Tag` から `ContentId` を取り、`LayoutAnchorable.Show()/Hide()` を呼ぶ汎用実装なので、
@@ -154,7 +167,8 @@ private void OnViewMenuOpened(object sender, RoutedEventArgs e)
 
 ## 6. 検証手順
 
-1. `dotnet build editor/SEEDEditor.sln` でビルドが通ることを確認する。
+1. `dotnet build editor/SEEDEditor.sln` でビルドが通ることを確認する。あわせて `cd editor && python check_icons.py` で
+   アイコンキーの未定義参照が 0 件であることを確認する。
 2. エディタを起動し、「表示」メニューから新規パネルが表示されることを確認する。
 3. パネルを表示した状態でエディタを終了し、再起動してレイアウトが復元される（同じ位置・表示状態）ことを確認する。
 4. 一度パネルを非表示にしてから再起動し、非表示状態も復元されることを確認する。
@@ -168,6 +182,7 @@ private void OnViewMenuOpened(object sender, RoutedEventArgs e)
   `null` になり、枠だけの空パネルになる。
 - **「表示」メニューへの登録漏れ、または `Tag` と `ContentId` の不一致**: `OnTogglePanel` が対象パネルを
   見つけられず、メニューをクリックしても何も起こらない。
+- **`PanelIcons` へのアイコン登録を忘れる**: ビルドは通るが、そのパネルのタブだけアイコンが付かず他と揃わない。
 - **`OnViewMenuOpened` へのチェック状態反映を追加し忘れる**: パネルの表示/非表示自体は機能するが、
   メニューのチェックマークが実状態と食い違ったままになる。
 - **`CanClose="False"` にすべきパネルを閉じられる設定のままにする**: ユーザーが閉じた後、

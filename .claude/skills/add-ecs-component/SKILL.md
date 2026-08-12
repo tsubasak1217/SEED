@@ -95,13 +95,16 @@ pub struct AudioComponentData {
 
 3. **フィールド編集のIPC**: 値変更をRustへ返す。`runtime/src/engine/core/app_base/ipc.rs` の `enum IpcCommand` に `SetXxxField { actor_dfs_id, slot_idx, key, value }` を足し、同ファイルのテキストコマンドパーサ（`SET_AUDIO_FIELD:` の分岐が雛形）に対応させ、`ipc_handler.rs` の dispatch で `world.get_mut::<XxxComponent>(slot_entity)` を更新するハンドラを呼ぶ。C#側は対応する `SET_XXX_FIELD:` 文字列を送る。
 
-4. 新規コンポーネント追加コマンド自体は既存の `ADD_COMPONENT` 経路（`ipc_handler.rs` → `handle_add_component_to_actor`）を流用するので、C#は選択メニューの `TypeId` 文字列を送るだけでよい（ステップ5と対応）。
+4. **種別アイコンの登録**: `editor/src/Controls/ComponentIcons.cs` の `IconKeyByTypeId` に `["XxxComponent"] = "Icon.Component.Xxx"` を追加し、`editor/gen_icons.py` の `CATALOG` に `("Icon.Component.Xxx", "<mdi名>")` を足して `cd editor && python gen_icons.py` を実行する（詳細は `.claude/rules/editor-icons.md` / `docs/editor_icons.md`）。漏れると汎用の `Icon.Component.Unknown` で表示される。
+
+5. 新規コンポーネント追加コマンド自体は既存の `ADD_COMPONENT` 経路（`ipc_handler.rs` → `handle_add_component_to_actor`）を流用するので、C#は選択メニューの `TypeId` 文字列を送るだけでよい（ステップ5と対応）。
 
 ---
 
 ## 検証手順
 
 1. `cd runtime && cargo build`（Rust側コンパイルが通ることを確認。`mod.rs`・`ComponentKind`・各 match の腕が揃っていないとここで落ちる）。
+   その後 `cd editor && python check_icons.py` でアイコンキーの未定義参照が 0 件であることも確認する。
 2. エディタを起動 → アクター選択 → インスペクタの「コンポーネント追加」で新コンポーネントが選択肢に出るか。
 3. 追加 → インスペクタに全フィールドが表示され、値を編集できるか（IPC往復）。
 4. シーンを保存 → `.scene` を開いて `"type":"XxxComponent"` ブロックが書かれているか目視。
@@ -114,6 +117,7 @@ pub struct AudioComponentData {
 - `ComponentKind` に variant を足したが `display_name()` / `to_data_recursive` / `rebuild_actor_slots` / `handle_remove_component_slot` の match 更新漏れ → 非網羅で `cargo build` が落ちる（Rustが守ってくれる）。
 - serde `#[serde(default)]` 漏れ → **旧 `.scene` の読み込みが丸ごと失敗**（そのアクターやシーン全体が読めない）。非ゼロ既定値は `default = "fn"` を使う。
 - エディタ側のどれか漏れ → 追加はできるがインスペクタ非表示／選択メニュー非掲載／編集がRustへ届かない（C#はコンパイル時に守られないので特に注意）。
+- `ComponentIcons` へのアイコン登録漏れ → ビルドは通るが、インスペクタと追加メニューで種別が汎用アイコンのまま区別できない。
 - スロット専用 `entity` を `spawn` せず `actor.entity` に直接 `insert` → 同型コンポーネント複数持ちが壊れる。
 
 ---
