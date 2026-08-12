@@ -8,7 +8,7 @@
 
 Add-Type -AssemblyName PresentationCore, PresentationFramework, WindowsBase
 
-$xamlPath = Join-Path $PSScriptRoot 'src/Resources/Icons.xaml'
+$xamlPath = Join-Path $PSScriptRoot 'resources/icons/Icons.xaml'
 $stream = [System.IO.File]::OpenRead($xamlPath)
 try {
     $dict = [System.Windows.Markup.XamlReader]::Load($stream)

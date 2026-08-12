@@ -251,14 +251,18 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         return assetsDir;
     }
 
-    // ── 実行バーのアイコンキー（Icons.xaml のリソースキー）──────────────
+    // ── 実行バーのボタン画像（ユーザー設定の PNG アイコン）────────────
     // 実行状態の遷移（MainWindow.Camera.cs の ApplyEditorState）から
-    // ImgPlayPause / IconState の IconKey へ代入して見た目を切り替える。
+    // ImgPlayPause.Source へ代入して見た目を切り替える。
 
-    /// <summary>実行ボタンが「再生できる」状態のときのアイコン。</summary>
-    private const string IconKeyPlay  = "Icon.Play";
-    /// <summary>実行ボタンが「一時停止できる」状態（＝Play 中）のときのアイコン。</summary>
-    private const string IconKeyPause = "Icon.Pause";
+    /// <summary>実行ボタンが「再生できる」状態のときの画像。</summary>
+    private static readonly BitmapImage _imgPlay  = new(new Uri("pack://application:,,,/resources/icons/playbar/play.png"));
+    /// <summary>実行ボタンが「一時停止できる」状態（＝Play 中）のときの画像。</summary>
+    private static readonly BitmapImage _imgPause = new(new Uri("pack://application:,,,/resources/icons/playbar/pause.png"));
+
+    // ── 状態インジケータのアイコンキー（Icons.xaml のリソースキー）──────
+    // ラベル左の丸印はもともと記号文字だったものをベクターアイコンに置き換えた箇所で、
+    // PNG 資産が無いためベクターのまま扱う。
 
     /// <summary>状態インジケータ: 編集中。</summary>
     private const string IconKeyStateEdit     = "Icon.Dirty";

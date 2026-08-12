@@ -2,7 +2,7 @@
 Icons.xaml 生成スクリプト（開発時のみ使用。実行結果の Icons.xaml がビルド対象）。
 
 Iconify API から Material Design Icons (mdi / Apache 2.0) の 24x24 パス data を取得し、
-editor/src/Resources/Icons.xaml を丸ごと生成し直す。
+editor/resources/icons/Icons.xaml を丸ごと生成し直す。
 アイコンを追加するときは下の CATALOG に 1 行足して再実行するだけでよい。
 
 使い方:  python editor/gen_icons.py
@@ -135,7 +135,7 @@ CATALOG = [
     ("Icon.Platform.Switch", "nintendo-switch"),
 ]
 
-OUT_PATH = "src/Resources/Icons.xaml"
+OUT_PATH = "resources/icons/Icons.xaml"
 API = "https://api.iconify.design/mdi.json?icons="
 
 

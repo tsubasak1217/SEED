@@ -107,12 +107,13 @@ public partial class ProjectPanel : UserControl
 
     // ── アイコン URI ──────────────────────────────────────────────
 
-    // 拡張子・フォルダ -> アイコンキーの対応表は Controls/FileTypeIcons.cs が唯一の正典。
-    // ここでは「キーを ImageSource に変換して Image へ載せる」ことだけを行う。
-    // Image（ラスタ用のコントロール）を使い続けているのは、画像ファイルのタイルが
-    // サムネイル生成後に Source を実画像へ差し替える作りだから。ベクターアイコンは
-    // IconImages が DrawingImage 化して同じ Source に載せるので、
-    // 「形式アイコン → サムネイル」の差し替えが 1 つのコントロールで完結する。
+    // 拡張子・フォルダ -> アイコンの対応表は Controls/FileTypeIcons.cs が唯一の正典。
+    // ここでは「FileTypeIcons が返した ImageSource を Image へ載せる」ことだけを行う。
+    // PNG かベクターかは FileTypeIcons が決めるので、このパネルは区別しない。
+    // Image を使い続けているのは、画像ファイルのタイルがサムネイル生成後に
+    // Source を実画像へ差し替える作りだから。ベクターアイコンも DrawingImage として
+    // 同じ Source に載るので、「形式アイコン → サムネイル」の差し替えが
+    // 1 つのコントロールで完結する。
 
     /// <summary>フォルダツリーのヘッダーアイコンの一辺サイズ（px）。</summary>
     private const int FolderHeaderIconSize = 20;
@@ -366,12 +367,13 @@ public partial class ProjectPanel : UserControl
     {
         var icon = new Image
         {
-            Source            = SEEDEditor.Controls.IconImages.Get(SEEDEditor.Controls.FileTypeIcons.FolderIconKey),
+            Source            = SEEDEditor.Controls.FileTypeIcons.GetFolderImage(isEmpty: false),
             Width             = FolderHeaderIconSize,
             Height            = FolderHeaderIconSize,
             Margin            = new Thickness(0, 0, 5, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
+        RenderOptions.SetBitmapScalingMode(icon, BitmapScalingMode.HighQuality);
         var label = new TextBlock
         {
             Text              = isRoot ? "Assets" : name,
@@ -452,7 +454,7 @@ public partial class ProjectPanel : UserControl
     {
         bool isEmpty = !dir.EnumerateFileSystemInfos().Any();
         var  item    = WrapTile(
-            MakeIconImage(SEEDEditor.Controls.FileTypeIcons.GetFolderIconKey(isEmpty), TileIconSize),
+            MakeIconImage(SEEDEditor.Controls.FileTypeIcons.GetFolderImage(isEmpty), TileIconSize),
             dir.Name, dir.FullName);
         AttachItemEvents(item, dir);
         AttachDropTarget(item);
@@ -470,7 +472,7 @@ public partial class ProjectPanel : UserControl
     private UIElement BuildFileItem(FileInfo file)
     {
         var imgCtrl = MakeIconImage(
-            SEEDEditor.Controls.FileTypeIcons.GetIconKey(file.Extension), TileIconSize);
+            SEEDEditor.Controls.FileTypeIcons.GetImage(file.Extension), TileIconSize);
         var item    = WrapTile(imgCtrl, file.Name, file.FullName);
         if (SEEDEditor.Controls.FileTypeIcons.SupportsThumbnail(file.Extension))
             _ = LoadImagePreviewAsync(imgCtrl, file.FullName);
@@ -479,21 +481,24 @@ public partial class ProjectPanel : UserControl
     }
 
     /// <summary>
-    /// アイコンキーから、タイル用の <see cref="Image"/> コントロールを作る。
+    /// アイコン画像から、タイル用の <see cref="Image"/> コントロールを作る。
     /// </summary>
-    /// <param name="iconKey">Icons.xaml のリソースキー（FileTypeIcons が返す値）。</param>
+    /// <param name="icon">FileTypeIcons が返した形式アイコン（PNG かベクター）。</param>
     /// <param name="size">一辺のサイズ（px）。</param>
-    private static Image MakeIconImage(string iconKey, int size)
+    private static Image MakeIconImage(ImageSource icon, int size)
     {
-        return new Image
+        var img = new Image
         {
-            Source              = SEEDEditor.Controls.IconImages.Get(iconKey),
+            Source              = icon,
             Width               = size,
             Height              = size,
             Stretch             = Stretch.Uniform,
             HorizontalAlignment = HorizontalAlignment.Center,
             Margin              = new Thickness(0, 6, 0, 3),
         };
+        // PNG アイコンを拡大表示するため、縮小拡大の品質を明示する。
+        RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
+        return img;
     }
 
     private static Border WrapTile(Image iconCtrl, string name, string? fullPath)

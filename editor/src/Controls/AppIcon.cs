@@ -10,9 +10,10 @@ namespace SEEDEditor.Controls;
 /// <summary>
 /// ベクターアイコンを 1 個描画する共通コントロール。
 ///
-/// エディタ内のアイコンは絵文字・記号文字・PNG ではなく必ずこのコントロール
-/// （または <see cref="IconImages"/>）を通す。形状データは
-/// src/Resources/Icons.xaml の <c>Geometry</c> リソースから
+/// 新規に足すアイコンは絵文字・記号文字ではなく必ずこのコントロール
+/// （または <see cref="IconImages"/>）を通す。ユーザーが用意した既存の PNG
+/// アイコン（ギズモ・プレイバー・検索・ファイル形式）はそのまま PNG を使う。
+/// 形状データは resources/icons/Icons.xaml の <c>Geometry</c> リソースから
 /// <see cref="IconKey"/> で引く（キー一覧と用途は docs/editor_icons.md が正典）。
 ///
 /// 色はハードコードしない。内部の <see cref="Path"/> の Fill は
