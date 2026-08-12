@@ -256,6 +256,22 @@ image.Source = FileTypeIcons.GetFolderImage(isEmpty);
 | `Icon.Tool.Rotate` | `rotate-3d-variant` |
 | `Icon.Tool.Scale` | `resize` |
 
+#### 地形（terrain）編集ツール
+
+ビューポート左の地形縦パネル（ツール選択トグル）と、上部の地形操作バーで使う。
+初期化は `Icon.Reset`、保存は `Icon.Save` を流用するのでここには無い。
+
+| アイコンキー | MDI アイコン名 | 用途 |
+|---|---|---|
+| `Icon.Terrain.Raise` | `elevation-rise` | 盛る |
+| `Icon.Terrain.Carve` | `shovel` | 掘る |
+| `Icon.Terrain.Smooth` | `blur` | 均す |
+| `Icon.Terrain.Flatten` | `format-align-bottom` | 平坦化 |
+| `Icon.Terrain.Paint` | `brush` | ペイント（レイヤ塗り） |
+| `Icon.Terrain.Scatter` | `grass` | 散布（プロップ） |
+| `Icon.Terrain.Cover` | `snowflake` | カバー（雪・落ち葉） |
+| `Icon.Terrain.Heightmap` | `image-filter-hdr` | ハイトマップ読込 |
+
 #### ドッキングパネル
 
 | アイコンキー | MDI アイコン名 |

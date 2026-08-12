@@ -683,8 +683,16 @@ public partial class MainWindow
         bool terrain = (item.Tag as string) == "terrain";
         _terrainMode = terrain;
 
+        // terrain モードの UI は 2 つある（どちらも同じ条件で出し入れする）:
+        //   ・上部の横バー（TerrainToolbar）  = 地形全体に効くグローバル操作
+        //   ・左の縦パネル（TerrainSidePanel）= ブラシパラメータ＋ツール選択
+        // 縦パネルは Auto 幅の列に置いてあるので、Collapsed にすると列ごと 0 幅に潰れ、
+        // common モードではビューポートが従来どおりの広さに戻る。
+        var terrainUiVisibility = terrain ? Visibility.Visible : Visibility.Collapsed;
         if (TerrainToolbar != null)
-            TerrainToolbar.Visibility = terrain ? Visibility.Visible : Visibility.Collapsed;
+            TerrainToolbar.Visibility = terrainUiVisibility;
+        if (TerrainSidePanel != null)
+            TerrainSidePanel.Visibility = terrainUiVisibility;
 
         // モードを抜けたら進行中のストロークを打ち切り、ブラシプレビューを消す。
         if (!terrain)
