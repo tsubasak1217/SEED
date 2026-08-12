@@ -59,6 +59,19 @@ CATALOG = [
     ("Icon.Tool.Rotate", "rotate-3d-variant"),
     ("Icon.Tool.Scale", "resize"),
 
+    # 地形編集モードのツールバー／縦パネル専用。ツール選択トグルと
+    # グローバル操作（ハイトマップ読込）で使う。初期化は Icon.Reset、
+    # 保存は Icon.Save を流用するのでここには置かない。
+    ("── 地形（terrain）編集ツール ──", None),
+    ("Icon.Terrain.Raise", "elevation-rise"),
+    ("Icon.Terrain.Carve", "shovel"),
+    ("Icon.Terrain.Smooth", "blur"),
+    ("Icon.Terrain.Flatten", "format-align-bottom"),
+    ("Icon.Terrain.Paint", "brush"),
+    ("Icon.Terrain.Scatter", "grass"),
+    ("Icon.Terrain.Cover", "snowflake"),
+    ("Icon.Terrain.Heightmap", "image-filter-hdr"),
+
     ("── ドッキングパネル ──", None),
     ("Icon.Panel.Hierarchy", "file-tree"),
     ("Icon.Panel.OpenDocuments", "tab"),

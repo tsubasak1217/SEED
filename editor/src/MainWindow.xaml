@@ -5,6 +5,7 @@
         xmlns:panels="clr-namespace:SEEDEditor.Panels"
         xmlns:ctrl="clr-namespace:SEEDEditor.Controls"
         xmlns:local="clr-namespace:SEEDEditor"
+        xmlns:sys="clr-namespace:System;assembly=mscorlib"
         Title="SEED Editor" Height="720" Width="1280"
         Background="#1E1E1E"
         WindowState="Maximized"
@@ -442,17 +443,32 @@
             </Setter>
         </Style>
 
-        <!-- 地形ツール選択トグル（テキストラベル付き RadioButton）。選択状態をアクセント色で表示。-->
+        <!-- ── 地形（terrain）縦パネルの寸法定数 ────────────────────
+             縦パネルはビューポート左側（ギズモストリップの右隣）に立つ細長い列。
+             マジックナンバーを XAML 中に散らさないよう、幅・アイコンサイズは
+             ここへ集約して StaticResource で参照する。 -->
+        <!-- 縦パネル全体の幅（枠・パディング込み）-->
+        <sys:Double x:Key="TerrainSidePanelWidth">180</sys:Double>
+        <!-- 縦パネル内のコントロール幅（パネル幅 − 内側パディング − スクロールバー分）-->
+        <sys:Double x:Key="TerrainSideControlWidth">152</sys:Double>
+        <!-- ツール選択トグル／アクションボタンに載せるアイコンの一辺 -->
+        <sys:Double x:Key="TerrainIconSize">14</sys:Double>
+
+        <!-- 地形ツール選択トグル（アイコン＋テキスト併記の RadioButton）。
+             縦パネルに 1 行 1 ツールで積むため、幅は親いっぱいに伸ばし
+             中身は左寄せにする。選択状態はアクセント色で表示。-->
         <Style x:Key="TerrainToolBtnStyle" TargetType="RadioButton">
-            <Setter Property="Height"          Value="22"/>
-            <Setter Property="Margin"          Value="2,0"/>
-            <Setter Property="Padding"         Value="8,0"/>
-            <Setter Property="FontSize"        Value="11"/>
-            <Setter Property="Background"      Value="#3A3A3A"/>
-            <Setter Property="Foreground"      Value="#CCCCCC"/>
-            <Setter Property="BorderBrush"     Value="#555555"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="Height"                   Value="24"/>
+            <Setter Property="Margin"                   Value="0,0,0,3"/>
+            <Setter Property="Padding"                  Value="7,0"/>
+            <Setter Property="FontSize"                 Value="11"/>
+            <Setter Property="Background"               Value="#3A3A3A"/>
+            <Setter Property="Foreground"               Value="#CCCCCC"/>
+            <Setter Property="BorderBrush"              Value="#555555"/>
+            <Setter Property="BorderThickness"          Value="1"/>
+            <Setter Property="Cursor"                   Value="Hand"/>
+            <Setter Property="HorizontalAlignment"      Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
@@ -462,7 +478,7 @@
                                 BorderThickness="{TemplateBinding BorderThickness}"
                                 CornerRadius="3"
                                 Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center"
+                            <ContentPresenter HorizontalAlignment="Left"
                                               VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
@@ -517,6 +533,30 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+        </Style>
+
+        <!-- 地形縦パネルの見出し（「ブラシ」「ツール」などのセクション名）-->
+        <Style x:Key="TerrainSideHeaderStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="FontSize"   Value="11"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Margin"     Value="0,0,0,5"/>
+        </Style>
+
+        <!-- 地形縦パネルのパラメータ名ラベル（「半径」「強度」など）-->
+        <Style x:Key="TerrainSideCaptionStyle" TargetType="TextBlock">
+            <Setter Property="Foreground"        Value="#AAAAAA"/>
+            <Setter Property="FontSize"          Value="11"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <!-- 地形縦パネルの数値表示（ラベル行の右端に置く現在値）-->
+        <Style x:Key="TerrainSideValueStyle" TargetType="TextBlock">
+            <Setter Property="Foreground"          Value="#CCCCCC"/>
+            <Setter Property="FontSize"            Value="11"/>
+            <Setter Property="FontFamily"          Value="Consolas"/>
+            <Setter Property="VerticalAlignment"   Value="Center"/>
+            <Setter Property="HorizontalAlignment" Value="Right"/>
         </Style>
 
         <!-- 数値入力 TextBox スタイル（スライダー横の小型入力欄）-->
@@ -1040,8 +1080,11 @@
                                             <RowDefinition x:Name="PhysicsTimelineRow" Height="0"/>
                                         </Grid.RowDefinitions>
                                         <Grid.ColumnDefinitions>
-                                            <!-- ツールストリップ列 -->
+                                            <!-- ツールストリップ列（SRT ギズモ）-->
                                             <ColumnDefinition Width="44"/>
+                                            <!-- 地形（terrain）縦パネル列。terrain モード時のみ中身が Visible になり、
+                                                 Collapsed のときは Auto 幅が 0 に潰れてビューポートを侵食しない。 -->
+                                            <ColumnDefinition Width="Auto"/>
                                             <!-- Viewport 列 -->
                                             <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
@@ -1050,7 +1093,7 @@
                                              左端に固定シーンタブ（ワールド/ビューポート）を常設するため
                                              常時表示する（タブ生成は MainWindow.SceneTabs.cs / FileOps.cs） -->
                                         <Border x:Name="ActorTabBar"
-                                                Grid.Row="0" Grid.ColumnSpan="2"
+                                                Grid.Row="0" Grid.ColumnSpan="3"
                                                 Background="#252526"
                                                 BorderBrush="#3A3A3A" BorderThickness="0,0,0,1"
                                                 Height="28"
@@ -1349,191 +1392,48 @@
                                             </DockPanel>
                                         </Border>
 
-                                        <!-- ── 地形（terrain）ツールバー（Row 1, 全列スパン）────────
+                                        <!-- ── 地形（terrain）グローバル操作バー（Row 1, 全列スパン）────────
                                              CmbSceneMode が terrain のときだけ Visible になる。
                                              HwndHost（ビューポート）とは別の行に置くため Airspace 問題なし。
-                                             ツール選択（盛る/掘る/均す/平坦化）＋ブラシ半径/強度スライダー＋
-                                             地形の初期化/保存ボタン＋ステータス表示で構成する。 -->
+
+                                             ここに残すのは「地形アセット全体に効くグローバル操作」だけ:
+                                             初期化 / 保存 / ハイトマップ読込 / 設定 / ステータス表示。
+                                             ブラシパラメータとツール選択は左の縦パネル（TerrainSidePanel）へ移した。 -->
                                         <Border x:Name="TerrainToolbar"
-                                                Grid.Row="1" Grid.ColumnSpan="2"
+                                                Grid.Row="1" Grid.ColumnSpan="3"
                                                 Background="#252526"
                                                 BorderBrush="#3A3A3A" BorderThickness="0,0,0,1"
                                                 Padding="6,4"
                                                 Visibility="Collapsed">
                                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                                <!-- ツール選択（トグル＝RadioButton 群。選択状態はアクセント色で可視化）-->
-                                                <TextBlock Text="ツール" Foreground="#AAAAAA" FontSize="11"
-                                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                                <RadioButton x:Name="BtnTerrainRaise"
-                                                             GroupName="TerrainTools"
-                                                             Style="{StaticResource TerrainToolBtnStyle}"
-                                                             IsChecked="True"
-                                                             ToolTip="盛る（地面を隆起させる）"
-                                                             Content="盛る"
-                                                             Checked="OnTerrainToolChanged"/>
-                                                <RadioButton x:Name="BtnTerrainCarve"
-                                                             GroupName="TerrainTools"
-                                                             Style="{StaticResource TerrainToolBtnStyle}"
-                                                             ToolTip="掘る（地面を削って洞窟を作る）"
-                                                             Content="掘る"
-                                                             Checked="OnTerrainToolChanged"/>
-                                                <RadioButton x:Name="BtnTerrainSmooth"
-                                                             GroupName="TerrainTools"
-                                                             Style="{StaticResource TerrainToolBtnStyle}"
-                                                             ToolTip="均す（周囲の平均へならす）"
-                                                             Content="均す"
-                                                             Checked="OnTerrainToolChanged"/>
-                                                <RadioButton x:Name="BtnTerrainFlatten"
-                                                             GroupName="TerrainTools"
-                                                             Style="{StaticResource TerrainToolBtnStyle}"
-                                                             ToolTip="平坦化（ブラシ中心の高さへそろえる）"
-                                                             Content="平坦化"
-                                                             Checked="OnTerrainToolChanged"/>
-                                                <!-- レイヤペイント（Terrain T2）。密度は変えずレイヤ重みだけを塗る。 -->
-                                                <RadioButton x:Name="BtnTerrainPaint"
-                                                             GroupName="TerrainTools"
-                                                             Style="{StaticResource TerrainToolBtnStyle}"
-                                                             ToolTip="ペイント（地形マテリアルレイヤを手で塗る。形状は変えない）"
-                                                             Content="ペイント"
-                                                             Checked="OnTerrainToolChanged"/>
-                                                <!-- 散布（Terrain T3）。地形の形状もレイヤも変えず、プロップを撒く／消す。 -->
-                                                <RadioButton x:Name="BtnTerrainScatter"
-                                                             GroupName="TerrainTools"
-                                                             Style="{StaticResource TerrainToolBtnStyle}"
-                                                             ToolTip="散布（草・木などのプロップを手で撒く。形状もレイヤも変えない）"
-                                                             Content="散布"
-                                                             Checked="OnTerrainToolChanged"/>
-                                                <!-- カバー（I3.1 の地表カバー場）。積もった雪・落ち葉を手で消す／敷く。 -->
-                                                <RadioButton x:Name="BtnTerrainCover"
-                                                             GroupName="TerrainTools"
-                                                             Style="{StaticResource TerrainToolBtnStyle}"
-                                                             ToolTip="カバー（積もった雪・落ち葉を手で消す／敷く。形状もレイヤも変えない）"
-                                                             Content="カバー"
-                                                             Checked="OnTerrainToolChanged"/>
 
-                                                <!-- 素材選択＋目標量＋消去モード（カバーツール選択時のみ表示）。
-                                                     項目は assets/terrain/cover_materials.json の並びに対応する。 -->
-                                                <StackPanel x:Name="TerrainCoverPanel"
-                                                            Orientation="Horizontal" VerticalAlignment="Center"
-                                                            Visibility="Collapsed">
-                                                    <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
-                                                    <TextBlock x:Name="LblTerrainCoverMaterial"
-                                                               Text="素材" Foreground="#AAAAAA" FontSize="11"
-                                                               VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                                    <!-- 項目は cover_materials.json から動的に生成する（RefreshTerrainCoverMaterialCombo）。 -->
-                                                    <ComboBox x:Name="CmbTerrainCoverMaterial"
-                                                              Width="140" VerticalAlignment="Center"
-                                                              FontSize="11"
-                                                              ToolTip="敷く素材（cover_materials.json の並び順）。消去時は使われない"/>
-
-                                                    <TextBlock x:Name="LblTerrainCoverAmount"
-                                                               Text="目標量" Foreground="#AAAAAA" FontSize="11"
-                                                               VerticalAlignment="Center" Margin="8,0,4,0"/>
-                                                    <Slider x:Name="SldTerrainCoverAmount"
-                                                            Width="80" VerticalAlignment="Center"
-                                                            Minimum="0" Maximum="1" Value="1"
-                                                            ToolTip="敷く厚み（0〜1。1 = 満量）。なぞった場所はこの量へ収束する"/>
-                                                    <TextBlock x:Name="TxtTerrainCoverAmount" Text="1.00"
-                                                               Foreground="#CCCCCC" FontSize="11" FontFamily="Consolas"
-                                                               VerticalAlignment="Center" Margin="4,0,0,0" MinWidth="34"/>
-
-                                                    <CheckBox x:Name="ChkTerrainCoverErase"
-                                                              Content="消去" Foreground="#CCCCCC" FontSize="11"
-                                                              VerticalAlignment="Center" Margin="8,0,0,0"
-                                                              IsChecked="True"
-                                                              ToolTip="ONにすると、敷くかわりにブラシ範囲のカバー（雪・落ち葉・轍）を消す"
-                                                              Checked="OnTerrainCoverEraseChanged"
-                                                              Unchecked="OnTerrainCoverEraseChanged"/>
-                                                </StackPanel>
-
-                                                <!-- プロップ選択＋密度＋消去モード（散布ツール選択時のみ表示）。
-                                                     項目は assets/terrain/props.json の並びに対応する。 -->
-                                                <StackPanel x:Name="TerrainScatterPanel"
-                                                            Orientation="Horizontal" VerticalAlignment="Center"
-                                                            Visibility="Collapsed">
-                                                    <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
-                                                    <TextBlock Text="プロップ" Foreground="#AAAAAA" FontSize="11"
-                                                               VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                                    <!-- 項目は props.json から動的に生成する（RefreshTerrainPropCombo）。 -->
-                                                    <ComboBox x:Name="CmbTerrainProp"
-                                                              Width="140" VerticalAlignment="Center"
-                                                              FontSize="11"
-                                                              ToolTip="撒く対象のプロップ（props.json の並び順）"/>
-
-                                                    <TextBlock Text="密度" Foreground="#AAAAAA" FontSize="11"
-                                                               VerticalAlignment="Center" Margin="8,0,4,0"/>
-                                                    <Slider x:Name="SldTerrainDensity"
-                                                            Width="80" VerticalAlignment="Center"
-                                                            Minimum="0.1" Maximum="32" Value="4"
-                                                            ToolTip="ブラシ 1 回あたりの散布密度（点/m²）"/>
-                                                    <TextBlock x:Name="TxtTerrainDensity" Text="4.0"
-                                                               Foreground="#CCCCCC" FontSize="11" FontFamily="Consolas"
-                                                               VerticalAlignment="Center" Margin="4,0,0,0" MinWidth="30"/>
-
-                                                    <CheckBox x:Name="ChkTerrainScatterErase"
-                                                              Content="消去" Foreground="#CCCCCC" FontSize="11"
-                                                              VerticalAlignment="Center" Margin="8,0,0,0"
-                                                              ToolTip="ONにすると、撒くかわりにブラシ範囲のプロップを消す"/>
-                                                </StackPanel>
-
-                                                <!-- レイヤ選択（ペイントツール選択時のみ表示）。
-                                                     項目は assets/terrain/layers.json の並びに対応する。 -->
-                                                <StackPanel x:Name="TerrainLayerPanel"
-                                                            Orientation="Horizontal" VerticalAlignment="Center"
-                                                            Visibility="Collapsed">
-                                                    <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
-                                                    <TextBlock Text="レイヤ" Foreground="#AAAAAA" FontSize="11"
-                                                               VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                                    <!-- 項目は layers.json から動的に生成する（RefreshTerrainLayerCombo）。
-                                                         レイヤ総数は自由なので XAML に固定項目は置かない。 -->
-                                                    <ComboBox x:Name="CmbTerrainLayer"
-                                                              Width="110" VerticalAlignment="Center"
-                                                              FontSize="11"
-                                                              ToolTip="塗る対象の地形レイヤ（layers.json の並び順）"/>
-                                                </StackPanel>
-
-                                                <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
-
-                                                <!-- ブラシ半径スライダー（0.5〜8m）-->
-                                                <TextBlock Text="半径" Foreground="#AAAAAA" FontSize="11"
-                                                           VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                                <Slider x:Name="SldTerrainRadius"
-                                                        Width="90" VerticalAlignment="Center"
-                                                        Minimum="0.5" Maximum="8" Value="3"
-                                                        ToolTip="ブラシ半径（メートル）"/>
-                                                <TextBlock x:Name="TxtTerrainRadius" Text="3.0m"
-                                                           Foreground="#CCCCCC" FontSize="11" FontFamily="Consolas"
-                                                           VerticalAlignment="Center" Margin="4,0,10,0" MinWidth="40"/>
-
-                                                <!-- ブラシ強度スライダー（0〜1）。
-                                                     散布ツール選択時は意味を持たないため、パネルごと隠す
-                                                     （OnTerrainToolChanged が Visibility を切り替える）。 -->
-                                                <StackPanel x:Name="TerrainStrengthPanel"
-                                                            Orientation="Horizontal" VerticalAlignment="Center">
-                                                    <TextBlock Text="強度" Foreground="#AAAAAA" FontSize="11"
-                                                               VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                                    <Slider x:Name="SldTerrainStrength"
-                                                            Width="90" VerticalAlignment="Center"
-                                                            Minimum="0" Maximum="1" Value="0.5"
-                                                            ToolTip="ブラシ強度（0〜1）"/>
-                                                    <TextBlock x:Name="TxtTerrainStrength" Text="0.50"
-                                                               Foreground="#CCCCCC" FontSize="11" FontFamily="Consolas"
-                                                               VerticalAlignment="Center" Margin="4,0,10,0" MinWidth="34"/>
-                                                </StackPanel>
-
-                                                <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
-
-                                                <!-- 地形の初期化 / 保存 -->
+                                                <!-- 地形の初期化（平地を作り直す）-->
                                                 <Button x:Name="BtnTerrainInit"
-                                                        Content="地形を初期化"
                                                         Style="{StaticResource TerrainActionBtnStyle}"
                                                         ToolTip="地形設定で指定したチャンク構成（既定 4×4 チャンク）で平地を生成する（既存の地形は作り直される）"
-                                                        Click="OnTerrainInit"/>
+                                                        Click="OnTerrainInit">
+                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <ctrl:AppIcon IconKey="Icon.Reset"
+                                                                      Width="{StaticResource TerrainIconSize}"
+                                                                      Height="{StaticResource TerrainIconSize}"/>
+                                                        <TextBlock Text="地形を初期化" Margin="4,0,0,0"
+                                                                   VerticalAlignment="Center"/>
+                                                    </StackPanel>
+                                                </Button>
+
+                                                <!-- 地形の保存（全チャンクの .tvox 書き出し）-->
                                                 <Button x:Name="BtnTerrainSave"
-                                                        Content="地形を保存"
                                                         Style="{StaticResource TerrainActionBtnStyle}"
                                                         ToolTip="全チャンクの密度データ（.tvox）を保存する"
-                                                        Click="OnTerrainSave"/>
+                                                        Click="OnTerrainSave">
+                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <ctrl:AppIcon IconKey="Icon.Save"
+                                                                      Width="{StaticResource TerrainIconSize}"
+                                                                      Height="{StaticResource TerrainIconSize}"/>
+                                                        <TextBlock Text="地形を保存" Margin="4,0,0,0"
+                                                                   VerticalAlignment="Center"/>
+                                                    </StackPanel>
+                                                </Button>
 
                                                 <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
 
@@ -1546,20 +1446,29 @@
                                                          Margin="0,0,6,0"
                                                          ToolTip="ハイトマップ最大高さ(m)"/>
                                                 <Button x:Name="BtnTerrainHeightmap"
-                                                        Content="ハイトマップ読込"
                                                         Style="{StaticResource TerrainActionBtnStyle}"
                                                         ToolTip="画像（グレースケール高さマップ）から、地形設定で指定したチャンク構成で地形を生成する"
-                                                        Click="OnTerrainHeightmap"/>
+                                                        Click="OnTerrainHeightmap">
+                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <ctrl:AppIcon IconKey="Icon.Terrain.Heightmap"
+                                                                      Width="{StaticResource TerrainIconSize}"
+                                                                      Height="{StaticResource TerrainIconSize}"/>
+                                                        <TextBlock Text="ハイトマップ読込" Margin="4,0,0,0"
+                                                                   VerticalAlignment="Center"/>
+                                                    </StackPanel>
+                                                </Button>
 
                                                 <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
 
                                                 <!-- 地形設定ウィンドウ（レイヤ定義などをまとめて編集する別ウィンドウ）-->
                                                 <Button x:Name="BtnTerrainSettings"
                                                         Style="{StaticResource TerrainActionBtnStyle}"
-                                                        ToolTip="地形設定ウィンドウを開く（レイヤ定義の編集・将来のブラシ設定）"
+                                                        ToolTip="地形設定ウィンドウを開く（レイヤ定義の編集・ブラシ設定）"
                                                         Click="OnTerrainSettings">
                                                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                                        <ctrl:AppIcon IconKey="Icon.Settings" Width="13" Height="13"/>
+                                                        <ctrl:AppIcon IconKey="Icon.Settings"
+                                                                      Width="{StaticResource TerrainIconSize}"
+                                                                      Height="{StaticResource TerrainIconSize}"/>
                                                         <TextBlock Text="設定" Margin="4,0,0,0"
                                                                    VerticalAlignment="Center"/>
                                                     </StackPanel>
@@ -1572,8 +1481,267 @@
                                             </StackPanel>
                                         </Border>
 
+                                        <!-- ── 地形（terrain）縦パネル（Row 2, Col 1）────────────────
+                                             ギズモ縦ストリップ（Col 0）のすぐ右隣に立つ細長いパネル。
+                                             HwndHost（Col 2）とは列が異なるため Airspace 問題なし。
+                                             CmbSceneMode が terrain のときだけ Visible になり、
+                                             それ以外では Collapsed → Auto 幅列が 0 に潰れる。
+
+                                             上段 = ブラシパラメータ（半径・強度・ツール別サブパネル）
+                                             下段 = 地形ツール選択（アイコン＋テキストの縦並びトグル）
+                                             低解像度でも溢れないよう全体を ScrollViewer に入れる。 -->
+                                        <Border x:Name="TerrainSidePanel"
+                                                Grid.Row="2" Grid.Column="1"
+                                                Width="{StaticResource TerrainSidePanelWidth}"
+                                                Background="#CC1C1C1C"
+                                                BorderBrush="#3A3A3A" BorderThickness="0,0,1,0"
+                                                Visibility="Collapsed">
+                                            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled"
+                                                          Focusable="False">
+                                                <StackPanel Margin="8,10,8,10">
+
+                                                    <!-- ── 上段: ブラシパラメータ ───────────────── -->
+                                                    <TextBlock Text="ブラシ"
+                                                               Style="{StaticResource TerrainSideHeaderStyle}"/>
+
+                                                    <!-- ブラシ半径（0.5〜8m）。全ツール共通。 -->
+                                                    <DockPanel LastChildFill="True">
+                                                        <TextBlock Text="半径" DockPanel.Dock="Left"
+                                                                   Style="{StaticResource TerrainSideCaptionStyle}"/>
+                                                        <TextBlock x:Name="TxtTerrainRadius" Text="3.0m"
+                                                                   Style="{StaticResource TerrainSideValueStyle}"/>
+                                                    </DockPanel>
+                                                    <Slider x:Name="SldTerrainRadius"
+                                                            Width="{StaticResource TerrainSideControlWidth}"
+                                                            HorizontalAlignment="Left"
+                                                            Margin="0,2,0,8"
+                                                            Minimum="0.5" Maximum="8" Value="3"
+                                                            ToolTip="ブラシ半径（メートル）"/>
+
+                                                    <!-- ブラシ強度（0〜1）。
+                                                         散布ツール選択時は意味を持たないため、パネルごと隠す
+                                                         （OnTerrainToolChanged が Visibility を切り替える）。 -->
+                                                    <StackPanel x:Name="TerrainStrengthPanel">
+                                                        <DockPanel LastChildFill="True">
+                                                            <TextBlock Text="強度" DockPanel.Dock="Left"
+                                                                       Style="{StaticResource TerrainSideCaptionStyle}"/>
+                                                            <TextBlock x:Name="TxtTerrainStrength" Text="0.50"
+                                                                       Style="{StaticResource TerrainSideValueStyle}"/>
+                                                        </DockPanel>
+                                                        <Slider x:Name="SldTerrainStrength"
+                                                                Width="{StaticResource TerrainSideControlWidth}"
+                                                                HorizontalAlignment="Left"
+                                                                Margin="0,2,0,8"
+                                                                Minimum="0" Maximum="1" Value="0.5"
+                                                                ToolTip="ブラシ強度（0〜1）"/>
+                                                    </StackPanel>
+
+                                                    <!-- レイヤ選択（ペイントツール選択時のみ表示）。
+                                                         項目は assets/terrain/layers.json から動的生成
+                                                         （RefreshTerrainLayerCombo）。レイヤ総数は自由なので
+                                                         XAML に固定項目は置かない。 -->
+                                                    <StackPanel x:Name="TerrainLayerPanel"
+                                                                Visibility="Collapsed">
+                                                        <TextBlock Text="レイヤ"
+                                                                   Style="{StaticResource TerrainSideCaptionStyle}"/>
+                                                        <ComboBox x:Name="CmbTerrainLayer"
+                                                                  Width="{StaticResource TerrainSideControlWidth}"
+                                                                  HorizontalAlignment="Left"
+                                                                  Margin="0,2,0,8"
+                                                                  FontSize="11"
+                                                                  ToolTip="塗る対象の地形レイヤ（layers.json の並び順）"/>
+                                                    </StackPanel>
+
+                                                    <!-- プロップ選択＋密度＋消去モード（散布ツール選択時のみ表示）。
+                                                         項目は assets/terrain/props.json の並びに対応する。 -->
+                                                    <StackPanel x:Name="TerrainScatterPanel"
+                                                                Visibility="Collapsed">
+                                                        <TextBlock Text="プロップ"
+                                                                   Style="{StaticResource TerrainSideCaptionStyle}"/>
+                                                        <!-- 項目は props.json から動的に生成する（RefreshTerrainPropCombo）。 -->
+                                                        <ComboBox x:Name="CmbTerrainProp"
+                                                                  Width="{StaticResource TerrainSideControlWidth}"
+                                                                  HorizontalAlignment="Left"
+                                                                  Margin="0,2,0,6"
+                                                                  FontSize="11"
+                                                                  ToolTip="撒く対象のプロップ（props.json の並び順）"/>
+
+                                                        <DockPanel LastChildFill="True">
+                                                            <TextBlock Text="密度" DockPanel.Dock="Left"
+                                                                       Style="{StaticResource TerrainSideCaptionStyle}"/>
+                                                            <TextBlock x:Name="TxtTerrainDensity" Text="4.0"
+                                                                       Style="{StaticResource TerrainSideValueStyle}"/>
+                                                        </DockPanel>
+                                                        <Slider x:Name="SldTerrainDensity"
+                                                                Width="{StaticResource TerrainSideControlWidth}"
+                                                                HorizontalAlignment="Left"
+                                                                Margin="0,2,0,6"
+                                                                Minimum="0.1" Maximum="32" Value="4"
+                                                                ToolTip="ブラシ 1 回あたりの散布密度（点/m²）"/>
+
+                                                        <CheckBox x:Name="ChkTerrainScatterErase"
+                                                                  Content="消去" Foreground="#CCCCCC" FontSize="11"
+                                                                  Margin="0,0,0,8"
+                                                                  ToolTip="ONにすると、撒くかわりにブラシ範囲のプロップを消す"/>
+                                                    </StackPanel>
+
+                                                    <!-- 素材選択＋目標量＋消去モード（カバーツール選択時のみ表示）。
+                                                         項目は assets/terrain/cover_materials.json の並びに対応する。
+                                                         消去モード時は素材・目標量が無意味になるため、
+                                                         UpdateTerrainCoverParamVisibility が個別に隠す。 -->
+                                                    <StackPanel x:Name="TerrainCoverPanel"
+                                                                Visibility="Collapsed">
+                                                        <TextBlock x:Name="LblTerrainCoverMaterial" Text="素材"
+                                                                   Style="{StaticResource TerrainSideCaptionStyle}"/>
+                                                        <!-- 項目は cover_materials.json から動的に生成する
+                                                             （RefreshTerrainCoverMaterialCombo）。 -->
+                                                        <ComboBox x:Name="CmbTerrainCoverMaterial"
+                                                                  Width="{StaticResource TerrainSideControlWidth}"
+                                                                  HorizontalAlignment="Left"
+                                                                  Margin="0,2,0,6"
+                                                                  FontSize="11"
+                                                                  ToolTip="敷く素材（cover_materials.json の並び順）。消去時は使われない"/>
+
+                                                        <DockPanel LastChildFill="True">
+                                                            <TextBlock x:Name="LblTerrainCoverAmount" Text="目標量"
+                                                                       DockPanel.Dock="Left"
+                                                                       Style="{StaticResource TerrainSideCaptionStyle}"/>
+                                                            <TextBlock x:Name="TxtTerrainCoverAmount" Text="1.00"
+                                                                       Style="{StaticResource TerrainSideValueStyle}"/>
+                                                        </DockPanel>
+                                                        <Slider x:Name="SldTerrainCoverAmount"
+                                                                Width="{StaticResource TerrainSideControlWidth}"
+                                                                HorizontalAlignment="Left"
+                                                                Margin="0,2,0,6"
+                                                                Minimum="0" Maximum="1" Value="1"
+                                                                ToolTip="敷く厚み（0〜1。1 = 満量）。なぞった場所はこの量へ収束する"/>
+
+                                                        <CheckBox x:Name="ChkTerrainCoverErase"
+                                                                  Content="消去" Foreground="#CCCCCC" FontSize="11"
+                                                                  Margin="0,0,0,8"
+                                                                  IsChecked="True"
+                                                                  ToolTip="ONにすると、敷くかわりにブラシ範囲のカバー（雪・落ち葉・轍）を消す"
+                                                                  Checked="OnTerrainCoverEraseChanged"
+                                                                  Unchecked="OnTerrainCoverEraseChanged"/>
+                                                    </StackPanel>
+
+                                                    <!-- 上段（ブラシ）と下段（ツール選択）の区切り線 -->
+                                                    <Border Height="1" Background="#3A3A3A" Margin="0,2,0,10"/>
+
+                                                    <!-- ── 下段: 地形ツール選択 ─────────────────
+                                                         1 行 = [アイコン][ラベル] の縦並びトグル。
+                                                         選択状態は TerrainToolBtnStyle がアクセント色で表示する。 -->
+                                                    <TextBlock Text="地形ツール"
+                                                               Style="{StaticResource TerrainSideHeaderStyle}"/>
+
+                                                    <RadioButton x:Name="BtnTerrainRaise"
+                                                                 GroupName="TerrainTools"
+                                                                 Style="{StaticResource TerrainToolBtnStyle}"
+                                                                 IsChecked="True"
+                                                                 ToolTip="盛る（地面を隆起させる）"
+                                                                 Checked="OnTerrainToolChanged">
+                                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                            <ctrl:AppIcon IconKey="Icon.Terrain.Raise"
+                                                                          Width="{StaticResource TerrainIconSize}"
+                                                                          Height="{StaticResource TerrainIconSize}"/>
+                                                            <TextBlock Text="盛る" Margin="6,0,0,0"
+                                                                       VerticalAlignment="Center"/>
+                                                        </StackPanel>
+                                                    </RadioButton>
+
+                                                    <RadioButton x:Name="BtnTerrainCarve"
+                                                                 GroupName="TerrainTools"
+                                                                 Style="{StaticResource TerrainToolBtnStyle}"
+                                                                 ToolTip="掘る（地面を削って洞窟を作る）"
+                                                                 Checked="OnTerrainToolChanged">
+                                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                            <ctrl:AppIcon IconKey="Icon.Terrain.Carve"
+                                                                          Width="{StaticResource TerrainIconSize}"
+                                                                          Height="{StaticResource TerrainIconSize}"/>
+                                                            <TextBlock Text="掘る" Margin="6,0,0,0"
+                                                                       VerticalAlignment="Center"/>
+                                                        </StackPanel>
+                                                    </RadioButton>
+
+                                                    <RadioButton x:Name="BtnTerrainSmooth"
+                                                                 GroupName="TerrainTools"
+                                                                 Style="{StaticResource TerrainToolBtnStyle}"
+                                                                 ToolTip="均す（周囲の平均へならす）"
+                                                                 Checked="OnTerrainToolChanged">
+                                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                            <ctrl:AppIcon IconKey="Icon.Terrain.Smooth"
+                                                                          Width="{StaticResource TerrainIconSize}"
+                                                                          Height="{StaticResource TerrainIconSize}"/>
+                                                            <TextBlock Text="均す" Margin="6,0,0,0"
+                                                                       VerticalAlignment="Center"/>
+                                                        </StackPanel>
+                                                    </RadioButton>
+
+                                                    <RadioButton x:Name="BtnTerrainFlatten"
+                                                                 GroupName="TerrainTools"
+                                                                 Style="{StaticResource TerrainToolBtnStyle}"
+                                                                 ToolTip="平坦化（ブラシ中心の高さへそろえる）"
+                                                                 Checked="OnTerrainToolChanged">
+                                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                            <ctrl:AppIcon IconKey="Icon.Terrain.Flatten"
+                                                                          Width="{StaticResource TerrainIconSize}"
+                                                                          Height="{StaticResource TerrainIconSize}"/>
+                                                            <TextBlock Text="平坦化" Margin="6,0,0,0"
+                                                                       VerticalAlignment="Center"/>
+                                                        </StackPanel>
+                                                    </RadioButton>
+
+                                                    <!-- レイヤペイント（Terrain T2）。密度は変えずレイヤ重みだけを塗る。 -->
+                                                    <RadioButton x:Name="BtnTerrainPaint"
+                                                                 GroupName="TerrainTools"
+                                                                 Style="{StaticResource TerrainToolBtnStyle}"
+                                                                 ToolTip="ペイント（地形マテリアルレイヤを手で塗る。形状は変えない）"
+                                                                 Checked="OnTerrainToolChanged">
+                                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                            <ctrl:AppIcon IconKey="Icon.Terrain.Paint"
+                                                                          Width="{StaticResource TerrainIconSize}"
+                                                                          Height="{StaticResource TerrainIconSize}"/>
+                                                            <TextBlock Text="ペイント" Margin="6,0,0,0"
+                                                                       VerticalAlignment="Center"/>
+                                                        </StackPanel>
+                                                    </RadioButton>
+
+                                                    <!-- 散布（Terrain T3）。地形の形状もレイヤも変えず、プロップを撒く／消す。 -->
+                                                    <RadioButton x:Name="BtnTerrainScatter"
+                                                                 GroupName="TerrainTools"
+                                                                 Style="{StaticResource TerrainToolBtnStyle}"
+                                                                 ToolTip="散布（草・木などのプロップを手で撒く。形状もレイヤも変えない）"
+                                                                 Checked="OnTerrainToolChanged">
+                                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                            <ctrl:AppIcon IconKey="Icon.Terrain.Scatter"
+                                                                          Width="{StaticResource TerrainIconSize}"
+                                                                          Height="{StaticResource TerrainIconSize}"/>
+                                                            <TextBlock Text="散布" Margin="6,0,0,0"
+                                                                       VerticalAlignment="Center"/>
+                                                        </StackPanel>
+                                                    </RadioButton>
+
+                                                    <!-- カバー（I3.1 の地表カバー場）。積もった雪・落ち葉を手で消す／敷く。 -->
+                                                    <RadioButton x:Name="BtnTerrainCover"
+                                                                 GroupName="TerrainTools"
+                                                                 Style="{StaticResource TerrainToolBtnStyle}"
+                                                                 ToolTip="カバー（積もった雪・落ち葉を手で消す／敷く。形状もレイヤも変えない）"
+                                                                 Checked="OnTerrainToolChanged">
+                                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                            <ctrl:AppIcon IconKey="Icon.Terrain.Cover"
+                                                                          Width="{StaticResource TerrainIconSize}"
+                                                                          Height="{StaticResource TerrainIconSize}"/>
+                                                            <TextBlock Text="カバー" Margin="6,0,0,0"
+                                                                       VerticalAlignment="Center"/>
+                                                        </StackPanel>
+                                                    </RadioButton>
+                                                </StackPanel>
+                                            </ScrollViewer>
+                                        </Border>
+
                                         <!-- Viewport HWND (code-behind で ViewportHost を差し込む) -->
-                                        <ContentControl Grid.Row="2" Grid.Column="1"
+                                        <ContentControl Grid.Row="2" Grid.Column="2"
                                                         x:Name="ViewportDocumentContent"
                                                         Background="Black"/>
 
@@ -1582,7 +1750,7 @@
                                              ビューポート列を覆っていても HwndHost やその下の要素が
                                              マウスイベントを受け取れるようにする。 -->
                                         <Grid x:Name="ViewportLoadingOverlay"
-                                              Grid.Row="2" Grid.Column="1"
+                                              Grid.Row="2" Grid.Column="2"
                                               Panel.ZIndex="5"
                                               IsHitTestVisible="False">
                                             <Image Source="pack://application:,,,/resources/images/blueSky_ORE.png"
@@ -1667,11 +1835,11 @@
                                             </DockPanel>
                                         </Border>
 
-                                        <!-- ── 編集時物理タイムライン（Row 2, Col 1 のみ）── -->
-                                        <!-- ツールストリップ列（Col 0）には表示しない。
+                                        <!-- ── 編集時物理タイムライン（Row 3, Viewport 列のみ）── -->
+                                        <!-- ツールストリップ列（Col 0）・地形縦パネル列（Col 1）には表示しない。
                                              HwndHost と同じ列に重ならない行に配置するため Airspace 問題なし。 -->
                                         <Border x:Name="PhysicsTimelinePanel"
-                                                Grid.Row="3" Grid.Column="1"
+                                                Grid.Row="3" Grid.Column="2"
                                                 Background="#E0141414"
                                                 BorderBrush="#55AACCFF"
                                                 BorderThickness="0,1,0,0"
