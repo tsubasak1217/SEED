@@ -7,7 +7,7 @@ using System.Windows.Media;
 namespace SEEDEditor.Controls;
 
 /// <summary>
-/// インスペクタ行の右端へ添える「デフォルトに戻す」ボタン（⟲）の共通ファクトリ。
+/// インスペクタ行の右端へ添える「デフォルトに戻す」ボタンの共通ファクトリ。
 ///
 /// 同じ見た目・同じ操作感のボタンを複数の経路が必要とするため一箇所にまとめる。
 ///   ・水面シェーディングアセットの `@reset` 付きパラメータ（InspectorPanel）
@@ -18,11 +18,11 @@ namespace SEEDEditor.Controls;
 /// </summary>
 internal static class ResetButtonFactory
 {
-    /// <summary>ボタンに出す記号。巻き戻しを表す矢印 1 文字（行幅を圧迫しないよう文字のみ）。</summary>
-    private const string Glyph = "⟲";
+    /// <summary>ボタンに出すアイコン（巻き戻し）。</summary>
+    private const string IconKey = "Icon.Reset";
 
-    /// <summary>ボタンの文字サイズ。</summary>
-    private const double GlyphFontSize = 11;
+    /// <summary>アイコンの一辺サイズ（px）。行幅を圧迫しない小型サイズ。</summary>
+    private const double IconSize = 11;
 
     /// <summary>ボタン背景色（他の小型ボタンと同系統の暗いグレー）。</summary>
     private static readonly Color BackgroundColor = Color.FromRgb(0x33, 0x33, 0x33);
@@ -48,12 +48,11 @@ internal static class ResetButtonFactory
     {
         var button = new Button
         {
-            Content           = Glyph,
+            Content           = AppIcon.Create(IconKey, IconSize),
             Background        = new SolidColorBrush(BackgroundColor),
             Foreground        = new SolidColorBrush(ForegroundColor),
             BorderBrush       = new SolidColorBrush(BorderColor),
             BorderThickness   = new Thickness(1),
-            FontSize          = GlyphFontSize,
             Padding           = ContentPadding,
             Margin            = OuterMargin,
             Cursor            = Cursors.Hand,

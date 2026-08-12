@@ -36,6 +36,15 @@ namespace SEEDEditor.AI;
 /// </summary>
 public class AIAssistantPanel
 {
+    /// <summary>履歴セッション削除ボタンのアイコン一辺サイズ（px）。</summary>
+    private const double SessionDeleteIconSize = 12;
+
+    /// <summary>設定（歯車）ボタンのアイコン一辺サイズ（px）。</summary>
+    private const double GearButtonIconSize = 15;
+
+    /// <summary>履歴パネルの「戻る」ボタンのアイコン一辺サイズ（px）。</summary>
+    private const double BackButtonIconSize = 12;
+
     // ── モード定数 ───────────────────────────────────────────────
     private const int MODE_API = 0;
     private const int MODE_CLI = 1;
@@ -357,10 +366,9 @@ public class AIAssistantPanel
 
         _gearButton = new Button
         {
-            Content           = "⚙",
+            Content           = SEEDEditor.Controls.AppIcon.Create("Icon.Settings", GearButtonIconSize),
             Width             = 26,
             Height            = 26,
-            FontSize          = 15,
             Background        = Brushes.Transparent,
             Foreground        = Brushes.LightGray,
             BorderThickness   = new Thickness(0),
@@ -796,10 +804,9 @@ public class AIAssistantPanel
         // 削除ボタン
         var deleteBtn = new Button
         {
-            Content         = "×",
+            Content         = SEEDEditor.Controls.AppIcon.Create("Icon.Close", SessionDeleteIconSize),
             Width           = 22,
             Height          = 22,
-            FontSize        = 12,
             Background      = Brushes.Transparent,
             Foreground      = new SolidColorBrush(Color.FromRgb(180, 80, 80)),
             BorderThickness = new Thickness(0),
@@ -840,7 +847,7 @@ public class AIAssistantPanel
         RefreshSessionList();
         _chatPanel.Visibility    = Visibility.Collapsed;
         _historyPanel.Visibility = Visibility.Visible;
-        _historyToggleButton.Content = "← 戻る";
+        _historyToggleButton.Content = SEEDEditor.Controls.AppIcon.WithText("Icon.Back", "戻る", BackButtonIconSize);
     }
 
     // ── 設定管理 ─────────────────────────────────────────────────

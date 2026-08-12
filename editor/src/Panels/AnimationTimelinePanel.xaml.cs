@@ -60,6 +60,9 @@ public partial class AnimationTimelinePanel : UserControl
     private bool _isModelClipSelected;
 
     /// <summary>クリップ未選択時の既定の案内文（model クリップ選択時のみ別文言に差し替える）。</summary>
+    /// <summary>再生/一時停止トグルのアイコン一辺サイズ（px）。XAML の初期表示と同値。</summary>
+    private const double PlayPauseIconSize = 11.0;
+
     private const string DefaultNoClipHint = "Animator 付きアクタを選択するか、「直接開く」で .anim を開いてください";
     private const string ModelClipHint     = "モデル内蔵アニメは編集できません（再生設定は Inspector で行ってください）";
 
@@ -695,7 +698,7 @@ public partial class AnimationTimelinePanel : UserControl
         if (!CanPreview()) return;
 
         _isPlaying = true;
-        BtnPlayPause.Content = "⏸";
+        BtnPlayPause.Content = SEEDEditor.Controls.AppIcon.Create("Icon.Pause", PlayPauseIconSize);
         _previewTimer.Start();
     }
 
@@ -739,7 +742,7 @@ public partial class AnimationTimelinePanel : UserControl
     private void StopPreview()
     {
         _isPlaying = false;
-        BtnPlayPause.Content = "▶";
+        BtnPlayPause.Content = SEEDEditor.Controls.AppIcon.Create("Icon.Play", PlayPauseIconSize);
         _previewTimer.Stop();
 
         if (_previewActive && _actorDfsId >= 0)

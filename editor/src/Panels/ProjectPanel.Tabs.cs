@@ -58,11 +58,11 @@ public partial class ProjectPanel
     /// <summary>タブ名のフォントサイズ。</summary>
     private const double TabFontSize = 11.0;
 
-    /// <summary>閉じるボタン「×」のフォントサイズ。</summary>
-    private const double TabCloseFontSize = 11.0;
+    /// <summary>閉じるボタンアイコンの一辺サイズ（px）。</summary>
+    private const double TabCloseIconSize = 11.0;
 
-    /// <summary>タブ列末尾に置く「新しいタブ」ボタン（＋）のフォントサイズ。閉じるボタンより一回り大きくして視認性を確保する。</summary>
-    private const double NewTabButtonFontSize = 13.0;
+    /// <summary>タブ列末尾に置く「新しいタブ」ボタンのアイコン一辺サイズ（px）。閉じるボタンより一回り大きくして視認性を確保する。</summary>
+    private const double NewTabButtonIconSize = 13.0;
 
     /// <summary>「新しいタブ」ボタンのツールチップ文言。</summary>
     private const string NewTabButtonToolTip = "新しいタブ";
@@ -147,14 +147,10 @@ public partial class ProjectPanel
     /// </summary>
     private UIElement BuildNewTabButton()
     {
-        var plus = new TextBlock
-        {
-            Text              = "+",
-            FontSize          = NewTabButtonFontSize,
-            Foreground        = TabCloseForeground,
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Center,
-        };
+        var plus = SEEDEditor.Controls.AppIcon.Create("Icon.Add", NewTabButtonIconSize);
+        plus.SetBrush(TabCloseForeground);
+        plus.VerticalAlignment   = VerticalAlignment.Center;
+        plus.HorizontalAlignment = HorizontalAlignment.Center;
 
         var btn = new Border
         {
@@ -197,16 +193,12 @@ public partial class ProjectPanel
         // 閉じるボタンは最後の 1 枚には出さない（閉じられないことを見た目でも示す）
         if (_tabs.Count > MinTabCount)
         {
-            var closeBtn = new TextBlock
-            {
-                Text              = "×",
-                FontSize          = TabCloseFontSize,
-                Foreground        = TabCloseForeground,
-                Margin            = new Thickness(6, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center,
-                Cursor            = Cursors.Hand,
-                ToolTip           = "このタブを閉じる",
-            };
+            var closeBtn = SEEDEditor.Controls.AppIcon.Create("Icon.Close", TabCloseIconSize);
+            closeBtn.SetBrush(TabCloseForeground);
+            closeBtn.Margin            = new Thickness(6, 0, 0, 0);
+            closeBtn.VerticalAlignment = VerticalAlignment.Center;
+            closeBtn.Cursor            = Cursors.Hand;
+            closeBtn.ToolTip           = "このタブを閉じる";
             closeBtn.MouseLeftButtonDown += (_, e) =>
             {
                 CloseTab(tab);

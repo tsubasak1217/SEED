@@ -51,6 +51,9 @@ public partial class TerrainSettingsWindow
     /// <summary>レイヤ条件行の「削除」ボタン幅（px）。</summary>
     private const double ConditionRemoveButtonWidth = 28;
 
+    /// <summary>条件削除ボタンのアイコン一辺サイズ（px）。</summary>
+    private const double ConditionRemoveIconSize = 11;
+
     /// <summary>レイヤ条件のレイヤ名コンボ幅（px）。</summary>
     private const double ConditionLayerComboWidth = 140;
 
@@ -462,7 +465,7 @@ public partial class TerrainSettingsWindow
             var btnRemove = new Button
             {
                 Style   = (Style)FindResource("ToolButtonStyle"),
-                Content = "×",
+                Content = SEEDEditor.Controls.AppIcon.Create("Icon.Close", ConditionRemoveIconSize),
                 Width   = ConditionRemoveButtonWidth,
                 Margin  = new Thickness(8, 0, 0, 0),
                 ToolTip = "この条件を削除する",

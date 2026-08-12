@@ -168,7 +168,8 @@ public class PackagingData
 public record PlatformInfo(
     TargetPlatform Platform,
     string         DisplayName,
-    string         Icon,
+    /// <summary>Icons.xaml のアイコンキー（例 "Icon.Platform.Windows"）。絵文字ではない。</summary>
+    string         IconKey,
     PlatformAvailability Availability,
     string         Note = "");
 

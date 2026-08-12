@@ -1,6 +1,7 @@
 <Window x:Class="SEEDEditor.CreateItemWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ctrl="clr-namespace:SEEDEditor.Controls"
         Title="新規作成"
         Width="390"
         SizeToContent="Height"
@@ -73,10 +74,10 @@
 
             <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateActor3D">
                 <StackPanel Orientation="Horizontal">
-                    <Image Source="pack://application:,,,/resources/icons/folderview/actor.png"
-                           Width="34" Height="34"
+                    <ctrl:AppIcon IconKey="Icon.File.Actor"
+                           Width="30" Height="30"
                            Margin="0,0,14,0" VerticalAlignment="Center"
-                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                           Foreground="#B8B8B8"/>
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="Actor (3D)"
                                    Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>
@@ -88,10 +89,10 @@
 
             <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateActor2D">
                 <StackPanel Orientation="Horizontal">
-                    <Image Source="pack://application:,,,/resources/icons/folderview/actor.png"
-                           Width="34" Height="34"
+                    <ctrl:AppIcon IconKey="Icon.File.Actor2D"
+                           Width="30" Height="30"
                            Margin="0,0,14,0" VerticalAlignment="Center"
-                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                           Foreground="#B8B8B8"/>
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="Actor (2D)"
                                    Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>
@@ -103,10 +104,10 @@
 
             <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateScript">
                 <StackPanel Orientation="Horizontal">
-                    <Image Source="pack://application:,,,/resources/icons/folderview/script.png"
-                           Width="34" Height="34"
+                    <ctrl:AppIcon IconKey="Icon.File.Script"
+                           Width="30" Height="30"
                            Margin="0,0,14,0" VerticalAlignment="Center"
-                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                           Foreground="#B8B8B8"/>
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="Script"
                                    Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>
@@ -118,10 +119,10 @@
 
             <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateScene">
                 <StackPanel Orientation="Horizontal">
-                    <Image Source="pack://application:,,,/resources/icons/folderview/scene.png"
-                           Width="34" Height="34"
+                    <ctrl:AppIcon IconKey="Icon.File.Scene"
+                           Width="30" Height="30"
                            Margin="0,0,14,0" VerticalAlignment="Center"
-                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                           Foreground="#B8B8B8"/>
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="Scene"
                                    Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>
@@ -133,10 +134,10 @@
 
             <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateMaterial">
                 <StackPanel Orientation="Horizontal">
-                    <Image Source="pack://application:,,,/resources/icons/folderview/image.png"
-                           Width="34" Height="34"
+                    <ctrl:AppIcon IconKey="Icon.File.Material"
+                           Width="30" Height="30"
                            Margin="0,0,14,0" VerticalAlignment="Center"
-                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                           Foreground="#B8B8B8"/>
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="Material"
                                    Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>
@@ -148,10 +149,10 @@
 
             <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateShader">
                 <StackPanel Orientation="Horizontal">
-                    <Image Source="pack://application:,,,/resources/icons/folderview/script.png"
-                           Width="34" Height="34"
+                    <ctrl:AppIcon IconKey="Icon.File.Shader"
+                           Width="30" Height="30"
                            Margin="0,0,14,0" VerticalAlignment="Center"
-                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                           Foreground="#B8B8B8"/>
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="Shader"
                                    Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>
@@ -163,10 +164,10 @@
 
             <Button Style="{StaticResource ItemRowStyle}" Click="OnCreatePostFX">
                 <StackPanel Orientation="Horizontal">
-                    <Image Source="pack://application:,,,/resources/icons/folderview/image.png"
-                           Width="34" Height="34"
+                    <ctrl:AppIcon IconKey="Icon.File.PostFx"
+                           Width="30" Height="30"
                            Margin="0,0,14,0" VerticalAlignment="Center"
-                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                           Foreground="#B8B8B8"/>
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="Post Effect"
                                    Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>

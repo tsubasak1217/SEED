@@ -107,32 +107,18 @@ public partial class ProjectPanel : UserControl
 
     // ── アイコン URI ──────────────────────────────────────────────
 
-    private static Uri PackUri(string name)
-        => new($"pack://application:,,,/resources/icons/folderview/{name}", UriKind.Absolute);
+    // 拡張子・フォルダ -> アイコンキーの対応表は Controls/FileTypeIcons.cs が唯一の正典。
+    // ここでは「キーを ImageSource に変換して Image へ載せる」ことだけを行う。
+    // Image（ラスタ用のコントロール）を使い続けているのは、画像ファイルのタイルが
+    // サムネイル生成後に Source を実画像へ差し替える作りだから。ベクターアイコンは
+    // IconImages が DrawingImage 化して同じ Source に載せるので、
+    // 「形式アイコン → サムネイル」の差し替えが 1 つのコントロールで完結する。
 
-    private static readonly Uri UriFolder      = PackUri("folder.png");
-    private static readonly Uri UriFolderEmpty = PackUri("folder_empty.png");
-    private static readonly Uri UriImage       = PackUri("image.png");
-    private static readonly Uri UriModel       = PackUri("model.png");
-    private static readonly Uri UriScene       = PackUri("scene.png");
-    private static readonly Uri UriScript      = PackUri("script.png");
-    private static readonly Uri UriActor       = PackUri("actor.png");
-    private static readonly Uri UriActor2D     = PackUri("actor2d.png");
+    /// <summary>フォルダツリーのヘッダーアイコンの一辺サイズ（px）。</summary>
+    private const int FolderHeaderIconSize = 20;
 
-    private static readonly HashSet<string> ImageExts = new(StringComparer.OrdinalIgnoreCase)
-        { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".hdr", ".exr", ".webp" };
-
-    private static Uri GetFileIconUri(string ext) => ext.ToLowerInvariant() switch
-    {
-        ".scene"                               => UriScene,
-        ".actor"                               => UriActor,
-        ".actor2d"                             => UriActor2D,
-        ".inputmap"                            => UriScript,
-        ".glb" or ".gltf" or ".obj" or ".fbx" => UriModel,
-        ".lua" or ".cs" or ".py" or ".wgsl"   => UriScript,
-        _ when ImageExts.Contains(ext)         => UriImage,
-        _                                      => UriImage,
-    };
+    /// <summary>ファイルグリッドのタイルアイコンの一辺サイズ（px）。</summary>
+    private const int TileIconSize = 66;
 
     // ─────────────────────────────────────────────────────────────
 
@@ -380,13 +366,12 @@ public partial class ProjectPanel : UserControl
     {
         var icon = new Image
         {
-            Source            = new BitmapImage(UriFolder),
-            Width             = 20,
-            Height            = 20,
+            Source            = SEEDEditor.Controls.IconImages.Get(SEEDEditor.Controls.FileTypeIcons.FolderIconKey),
+            Width             = FolderHeaderIconSize,
+            Height            = FolderHeaderIconSize,
             Margin            = new Thickness(0, 0, 5, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        RenderOptions.SetBitmapScalingMode(icon, BitmapScalingMode.HighQuality);
         var label = new TextBlock
         {
             Text              = isRoot ? "Assets" : name,
@@ -466,36 +451,49 @@ public partial class ProjectPanel : UserControl
     private UIElement BuildDirItem(DirectoryInfo dir)
     {
         bool isEmpty = !dir.EnumerateFileSystemInfos().Any();
-        var  item    = WrapTile(MakeIconImage(isEmpty ? UriFolderEmpty : UriFolder, 66),
-                                dir.Name, dir.FullName);
+        var  item    = WrapTile(
+            MakeIconImage(SEEDEditor.Controls.FileTypeIcons.GetFolderIconKey(isEmpty), TileIconSize),
+            dir.Name, dir.FullName);
         AttachItemEvents(item, dir);
         AttachDropTarget(item);
         return item;
     }
 
+    /// <summary>
+    /// ファイル 1 個ぶんのタイルを作る。
+    ///
+    /// アイコンは必ず「拡張子から引いた形式アイコン」で先に描く。サムネイルを
+    /// 生成できる形式のときだけ非同期プレビューを走らせ、成功した場合に限り
+    /// 実画像へ差し替える。したがってプレビュー生成前・生成中・生成失敗の間は
+    /// 常に形式アイコンが見えたままになる（未知の拡張子は汎用ファイルアイコン）。
+    /// </summary>
     private UIElement BuildFileItem(FileInfo file)
     {
-        var imgCtrl = MakeIconImage(GetFileIconUri(file.Extension), 66);
+        var imgCtrl = MakeIconImage(
+            SEEDEditor.Controls.FileTypeIcons.GetIconKey(file.Extension), TileIconSize);
         var item    = WrapTile(imgCtrl, file.Name, file.FullName);
-        if (ImageExts.Contains(file.Extension))
+        if (SEEDEditor.Controls.FileTypeIcons.SupportsThumbnail(file.Extension))
             _ = LoadImagePreviewAsync(imgCtrl, file.FullName);
         AttachItemEvents(item, file);
         return item;
     }
 
-    private static Image MakeIconImage(Uri uri, int size)
+    /// <summary>
+    /// アイコンキーから、タイル用の <see cref="Image"/> コントロールを作る。
+    /// </summary>
+    /// <param name="iconKey">Icons.xaml のリソースキー（FileTypeIcons が返す値）。</param>
+    /// <param name="size">一辺のサイズ（px）。</param>
+    private static Image MakeIconImage(string iconKey, int size)
     {
-        var img = new Image
+        return new Image
         {
-            Source              = new BitmapImage(uri),
+            Source              = SEEDEditor.Controls.IconImages.Get(iconKey),
             Width               = size,
             Height              = size,
             Stretch             = Stretch.Uniform,
             HorizontalAlignment = HorizontalAlignment.Center,
             Margin              = new Thickness(0, 6, 0, 3),
         };
-        RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
-        return img;
     }
 
     private static Border WrapTile(Image iconCtrl, string name, string? fullPath)

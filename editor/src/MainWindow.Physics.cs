@@ -203,8 +203,8 @@ public partial class MainWindow
         // TrackFill（進捗バー）の幅を更新する
         UpdatePhysicsTrackFill();
 
-        // 再生ボタンのテキスト（再生中:■、停止中:▶）
-        TxtPhysicsPlayBtn.Text = _physicsTimelinePaused ? "▶" : "■";
+        // 再生ボタンのアイコン（停止中は「再生」、再生中は「停止」を出す）
+        TxtPhysicsPlayBtn.IconKey = _physicsTimelinePaused ? "Icon.Play" : "Icon.Stop";
         // 再生中は水色、停止中は白
         var timerColor = _physicsTimelinePaused
             ? System.Windows.Media.Color.FromRgb(0xAA, 0xAA, 0xAA)

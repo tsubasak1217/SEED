@@ -30,6 +30,9 @@ internal sealed record ReferenceSelectorPage(string Title, string Description, I
 /// </summary>
 internal sealed class ReferenceSelectorWindow : Window
 {
+    /// <summary>「戻る」ボタンのアイコン一辺サイズ（px）。</summary>
+    private const double BackButtonIconSize = 12;
+
     // ── レイアウト定数（マジックナンバー回避）────────────────────
     private const double WindowWidth       = 320;
     private const double ListMaxHeight     = 180;
@@ -100,7 +103,7 @@ internal sealed class ReferenceSelectorWindow : Window
         // 「戻る」はページが 2 枚目以降のときだけ有効（多段選択の拡張用）
         _backButton = new Button
         {
-            Content = "← 戻る",
+            Content = AppIcon.WithText("Icon.Back", "戻る", BackButtonIconSize),
             Padding = new Thickness(10, 4, 10, 4),
             Margin  = new Thickness(0, 0, 6, 0),
         };

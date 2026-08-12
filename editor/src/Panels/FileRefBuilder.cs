@@ -14,6 +14,9 @@ namespace SEEDEditor.Panels;
 /// </summary>
 internal static class FileRefBuilder
 {
+    /// <summary>参照クリアボタンのアイコン一辺サイズ（px）。</summary>
+    private const double ClearButtonIconSize = 10;
+
     /// <summary>ダブルクリックと判定するクリック回数（WPF の ClickCount 比較用）。</summary>
     private const int DoubleClickCount = 2;
 
@@ -183,12 +186,11 @@ internal static class FileRefBuilder
         {
             var clearBtn = new Button
             {
-                Content           = "×",
+                Content           = SEEDEditor.Controls.AppIcon.Create("Icon.Close", ClearButtonIconSize),
                 Background        = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)),
                 Foreground        = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)),
                 BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
                 BorderThickness   = new Thickness(1),
-                FontSize          = 10,
                 Padding           = new Thickness(6, 2, 6, 2),
                 Margin            = new Thickness(2, 0, 0, 0),
                 Cursor            = Cursors.Hand,

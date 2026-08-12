@@ -21,6 +21,9 @@ namespace SEEDEditor;
 
 public partial class MainWindow
 {
+    /// <summary>シーンタブの閉じるボタンのアイコン一辺サイズ（px）。</summary>
+    private const double SceneTabCloseIconSize = 10;
+
     // ── シーンファイル読み込み ────────────────────────────────────
 
     private void OnSceneFileOpened(string path)
@@ -316,10 +319,10 @@ public partial class MainWindow
             // 内部レイアウト
             var dp = new DockPanel { Margin = new Thickness(8, 0, 4, 0) };
 
-            // × ボタン
+            // 閉じるボタン
             var closeBtn = new Button
             {
-                Content         = "×",
+                Content         = SEEDEditor.Controls.AppIcon.Create("Icon.Close", SceneTabCloseIconSize),
                 Width           = 16,
                 Height          = 16,
                 Margin          = new Thickness(4, 0, 0, 0),

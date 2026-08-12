@@ -26,6 +26,12 @@ public sealed class ErrorListPanel : UserControl
     private static readonly SolidColorBrush Dim    = new(Color.FromRgb(0x99, 0x99, 0x99));
     private static readonly SolidColorBrush ErrorC = new(Color.FromRgb(0xF4, 0x47, 0x47));
     private static readonly SolidColorBrush WarnC  = new(Color.FromRgb(0xD7, 0xBA, 0x36));
+
+    /// <summary>診断行の重大度アイコンの一辺サイズ（px）。</summary>
+    private const double SeverityIconSize = 12.0;
+
+    /// <summary>重大度アイコン列の幅（px）。以降の列位置を従来どおりに保つ。</summary>
+    private const double SeverityIconColumnWidth = 18.0;
     private static readonly SolidColorBrush SelBg  = new(Color.FromRgb(0x09, 0x3A, 0x5E));
 
     private readonly ScriptEditorPanel _editorPanel;
@@ -90,7 +96,7 @@ public sealed class ErrorListPanel : UserControl
         var diags = _editorPanel.GetDiagnostics();
         int errors   = diags.Count(d => d.IsError);
         int warnings = diags.Count(d => !d.IsError);
-        _counts.Text = $"⊘ {errors} エラー    △ {warnings} 警告";
+        _counts.Text = $"{errors} エラー    {warnings} 警告";
 
         _list.Items.Clear();
         if (diags.Count == 0)
@@ -113,12 +119,14 @@ public sealed class ErrorListPanel : UserControl
     {
         var sp = new StackPanel { Orientation = Orientation.Horizontal };
 
-        sp.Children.Add(new TextBlock
-        {
-            Text = d.IsError ? "⊘" : "△",
-            Foreground = d.IsError ? ErrorC : WarnC,
-            Width = 18, VerticalAlignment = VerticalAlignment.Center,
-        });
+        // 診断の重大度アイコン（エラー＝赤い丸に「!」、警告＝三角に「!」）
+        var severityIcon = SEEDEditor.Controls.AppIcon.Create(
+            d.IsError ? "Icon.Error" : "Icon.Warning", SeverityIconSize);
+        severityIcon.SetBrush(d.IsError ? ErrorC : WarnC);
+        severityIcon.Width             = SeverityIconColumnWidth;
+        severityIcon.HorizontalAlignment = HorizontalAlignment.Left;
+        severityIcon.VerticalAlignment = VerticalAlignment.Center;
+        sp.Children.Add(severityIcon);
         sp.Children.Add(new TextBlock
         {
             Text = d.Id, Foreground = Dim, Width = 64, FontSize = 11, VerticalAlignment = VerticalAlignment.Center,
