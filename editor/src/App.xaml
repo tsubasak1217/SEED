@@ -10,8 +10,9 @@
         <ResourceDictionary.MergedDictionaries>
             <!-- ベクターアイコン定義（自動生成）。エディタ全体のアイコンはここの
                  Geometry を AppIcon / IconImages 経由で参照する。
+                 アイコン資産は PNG・ベクターとも editor/resources/icons/ に置く。
                  キー一覧と追加手順は docs/editor_icons.md が正典。 -->
-            <ResourceDictionary Source="Resources/Icons.xaml"/>
+            <ResourceDictionary Source="pack://application:,,,/resources/icons/Icons.xaml"/>
         </ResourceDictionary.MergedDictionaries>
 
         <!-- ════════════════════════════════════════════════════════════════

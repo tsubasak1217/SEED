@@ -776,7 +776,7 @@ public partial class MainWindow
                 _pressedVks.Clear();
                 BtnPlayPause.IsEnabled   = true;
                 BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.IconKey     = IconKeyPlay;
+                ImgPlayPause.Source      = _imgPlay;
                 BtnStop.IsEnabled        = false;
                 LblState.Text            = "EDIT";
                 LblState.Foreground      = Brushes.LightGreen;
@@ -791,7 +791,7 @@ public partial class MainWindow
             case EditorState.Play:
                 BtnPlayPause.IsEnabled   = true;
                 BtnPlayPause.Background  = _brushPause;
-                ImgPlayPause.IconKey     = IconKeyPause;
+                ImgPlayPause.Source      = _imgPause;
                 BtnStop.IsEnabled        = true;
                 LblState.Text            = "PLAY";
                 LblState.Foreground      = Brushes.LightSkyBlue;
@@ -812,7 +812,7 @@ public partial class MainWindow
             case EditorState.Pause:
                 BtnPlayPause.IsEnabled   = true;
                 BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.IconKey     = IconKeyPlay;
+                ImgPlayPause.Source      = _imgPlay;
                 BtnStop.IsEnabled        = true;
                 LblState.Text            = "PAUSE";
                 LblState.Foreground      = Brushes.Orange;
@@ -825,7 +825,7 @@ public partial class MainWindow
             case EditorState.Building:
                 BtnPlayPause.IsEnabled   = false;
                 BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.IconKey     = IconKeyPlay;
+                ImgPlayPause.Source      = _imgPlay;
                 BtnStop.IsEnabled        = false;
                 LblState.Text            = "BUILDING...";
                 LblState.Foreground      = Brushes.Yellow;
@@ -841,7 +841,7 @@ public partial class MainWindow
                 // ・Stop ボタンは有効化し、ウィンドウ出現前でも起動をキャンセルできるようにする（不具合1）。
                 BtnPlayPause.IsEnabled   = false;
                 BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.IconKey     = IconKeyPlay;
+                ImgPlayPause.Source      = _imgPlay;
                 BtnStop.IsEnabled        = true;
                 LblState.Text            = "LAUNCHING...";
                 LblState.Foreground      = Brushes.LightSkyBlue;
@@ -854,7 +854,7 @@ public partial class MainWindow
             case EditorState.Idle:
                 BtnPlayPause.IsEnabled   = false;
                 BtnPlayPause.Background  = _brushPlay;
-                ImgPlayPause.IconKey     = IconKeyPlay;
+                ImgPlayPause.Source      = _imgPlay;
                 BtnStop.IsEnabled        = false;
                 LblState.Text            = "IDLE";
                 LblState.Foreground      = Brushes.Gray;

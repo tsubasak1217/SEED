@@ -870,18 +870,21 @@
                             Background="#1F4A22"
                             Click="OnPlayPause"
                             ToolTip="Play / Pause / Resume">
-                        <!-- 再生/一時停止の切替はコード側で IconKey を差し替える
+                        <!-- 再生/一時停止の切替はコード側で Source を差し替える
                              （MainWindow.Camera.cs の状態遷移を参照）。 -->
-                        <ctrl:AppIcon x:Name="ImgPlayPause" IconKey="Icon.Play"
-                                      Width="16" Height="16" Foreground="#9FE0A8"/>
+                        <Image x:Name="ImgPlayPause"
+                               Source="pack://application:,,,/resources/icons/playbar/play.png"
+                               Width="18" Height="18"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
                     </Button>
                     <Button x:Name="BtnStop"
                             Style="{StaticResource PlayBarBtnStyle}"
                             Background="#4A1F1F"
                             Click="OnStop" IsEnabled="False"
                             ToolTip="Stop">
-                        <ctrl:AppIcon IconKey="Icon.Stop" Width="16" Height="16"
-                                      Foreground="#E09A9A"/>
+                        <Image Source="pack://application:,,,/resources/icons/playbar/stop.png"
+                               Width="18" Height="18"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
                     </Button>
 
                     <!-- デバッグ操作（ブレークポイント停止中のみ表示）:
@@ -1630,9 +1633,8 @@
                                                                  Style="{StaticResource ToolBtnStyle}"
                                                                  ToolTip="Select (Q)"
                                                                  Click="OnToolSelect">
-                                                        <ctrl:AppIcon IconKey="Icon.Tool.Select"
-                                                                      Width="18" Height="18"
-                                                                      Foreground="#DCDCDC"/>
+                                                        <Image Source="pack://application:,,,/resources/icons/toolbar/select.png"
+                                                               Width="20" Height="20"/>
                                                     </RadioButton>
 
                                                     <RadioButton x:Name="BtnToolMove"
@@ -1640,9 +1642,8 @@
                                                                  Style="{StaticResource ToolBtnStyle}"
                                                                  ToolTip="Move (W)"
                                                                  Click="OnToolMove">
-                                                        <ctrl:AppIcon IconKey="Icon.Tool.Move"
-                                                                      Width="18" Height="18"
-                                                                      Foreground="#DCDCDC"/>
+                                                        <Image Source="pack://application:,,,/resources/icons/toolbar/translate.png"
+                                                               Width="20" Height="20"/>
                                                     </RadioButton>
 
                                                     <RadioButton x:Name="BtnToolRotate"
@@ -1650,9 +1651,8 @@
                                                                  Style="{StaticResource ToolBtnStyle}"
                                                                  ToolTip="Rotate (E)"
                                                                  Click="OnToolRotate">
-                                                        <ctrl:AppIcon IconKey="Icon.Tool.Rotate"
-                                                                      Width="18" Height="18"
-                                                                      Foreground="#DCDCDC"/>
+                                                        <Image Source="pack://application:,,,/resources/icons/toolbar/rotate.png"
+                                                               Width="20" Height="20"/>
                                                     </RadioButton>
 
                                                     <RadioButton x:Name="BtnToolScale"
@@ -1660,9 +1660,8 @@
                                                                  Style="{StaticResource ToolBtnStyle}"
                                                                  ToolTip="Scale (R)"
                                                                  Click="OnToolScale">
-                                                        <ctrl:AppIcon IconKey="Icon.Tool.Scale"
-                                                                      Width="18" Height="18"
-                                                                      Foreground="#DCDCDC"/>
+                                                        <Image Source="pack://application:,,,/resources/icons/toolbar/scale.png"
+                                                               Width="20" Height="20"/>
                                                     </RadioButton>
                                                 </StackPanel>
                                             </DockPanel>

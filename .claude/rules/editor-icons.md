@@ -12,11 +12,21 @@ paths:
 
 ## 絶対ルール
 
-- **アイコン代わりに絵文字・記号文字・アイコンフォント・PNG を使わない**。
-  `▶ ■ ⏸ ⚙ ✕ ✓ ⚠ 📦 ⬡ ◆ ▲ ▼ ＋` などを新しく UI へ書かない。
-  すべて `Controls/AppIcon`（または `Controls/IconImages`）経由のベクターアイコンにする。
+- **アイコン資産の置き場は `editor/resources/icons/` に統一する**。
+  PNG（`common/` `folderview/` `playbar/` `toolbar/` `viewport/`）も
+  ベクター定義（`Icons.xaml`）も同じ場所に置く。他の場所へ増やさない。
+- **既存の PNG アイコンをベクターへ勝手に置き換えない**。
+  ユーザーが用意・設定した資産であり、意図した見た目。対象は
+  ①ギズモツールバー（select / translate / rotate / scale）
+  ②プレイバー（play / pause / stop）③検索ボックス
+  ④ファイル形式アイコン（`FileTypeIcons.PngByExtension` にある拡張子・フォルダ）
+  ⑤新規作成ウィンドウの項目アイコン。
+- **新規に足すアイコンはベクター（MDI）にする。PNG を新しく増やさない**。
+  同時に、アイコン代わりの絵文字・記号文字・アイコンフォントも使わない。
+  `▶ ■ ⏸ ⚙ ✕ ✓ ⚠ 📦 ⬡ ◆ ▲ ▼ ＋` などを新しく UI へ書かず、
+  `Controls/AppIcon`（または `Controls/IconImages`）経由のベクターアイコンにする。
   フォント依存で環境ごとに字形が変わる／色が付けられない／高 DPI で滲む、が理由。
-- **`editor/src/Resources/Icons.xaml` を手で編集しない**。自動生成ファイル。
+- **`editor/resources/icons/Icons.xaml` を手で編集しない**。自動生成ファイル。
   追加は `editor/gen_icons.py` の `CATALOG` に 1 行足して `python gen_icons.py` を実行する。
 - **色をハードコードしない**。`AppIcon` は親の `Foreground` を継承する。
   明示したいときだけ `Foreground="..."`（XAML）か `SetBrush()`（コード）を使う。
@@ -33,7 +43,7 @@ paths:
 | 追加するもの | 更新する対応表 |
 |---|---|
 | ECS コンポーネント種別 | `editor/src/Controls/ComponentIcons.cs` の `IconKeyByTypeId` |
-| ファイル形式（拡張子） | `editor/src/Controls/FileTypeIcons.cs` の `IconKeyByExtension` |
+| ファイル形式（拡張子） | `editor/src/Controls/FileTypeIcons.cs`。既存 PNG があるなら `PngByExtension`、無ければ `IconKeyByExtension` |
 | ドッキングパネル | `editor/src/Controls/PanelIcons.cs` の `IconKeyByContentId` |
 | ツールバー / 個別ボタン | 対応表なし。使用箇所で `IconKey` を直接指定する |
 
@@ -47,7 +57,7 @@ paths:
 
 ## フォールバック（削ってはいけない挙動）
 
-- `FileTypeIcons.GetIconKey()` は未知の拡張子で必ず `Icon.File.Generic` を返す。
+- `FileTypeIcons.GetImage()` は未知の拡張子で必ず汎用 PNG（`folderview/image.png`）を返す。
 - サムネイルを持てる形式でも、**生成前・生成中・生成失敗の間は形式アイコンを表示したまま**にする。
   `ProjectPanel.BuildFileItem()` の「まず形式アイコンを描き、デコード成功時だけ差し替える」順序を崩さない。
 - `ComponentIcons.GetIconKey()` は未知の TypeId で `Icon.Component.Unknown` を返す。

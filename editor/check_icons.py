@@ -13,7 +13,7 @@ import os
 import re
 import sys
 
-ICONS_XAML = "src/Resources/Icons.xaml"
+ICONS_XAML = "resources/icons/Icons.xaml"
 SOURCE_ROOT = "src"
 SOURCE_EXTS = (".cs", ".xaml")
 

@@ -25,6 +25,14 @@
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>
+
+    <!-- アイコン資産置き場（resources/icons/）にあるベクターアイコン辞書。       -->
+    <!-- EnableDefaultPageItems=false で既定グロブを切っているため、src/ の外に   -->
+    <!-- ある XAML はここで明示的に Page 登録しないとビルド出力に入らない。       -->
+    <Page Include="resources\icons\*.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
   </ItemGroup>
 
   <!-- WPF の _wpftmp 内部プロジェクトが SeedMcpServer サブディレクトリの     -->
