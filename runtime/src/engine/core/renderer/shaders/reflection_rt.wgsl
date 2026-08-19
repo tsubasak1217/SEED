@@ -268,7 +268,9 @@ fn rt_refl_glass(origin: vec3<f32>, dir: vec3<f32>, tmax: f32) -> RtReflGlass {
         }
         // 入射面でだけ色フィルタ＋ツヤを乗せる。裏面（出射面）は tmin を進めるだけ（二重計上防止）。
         if hit.front_face {
-            let layer = rt_refl_layer_tint(hit.instance_custom_data);
+            // 【レコード索引規約】custom_data は先頭レコード番号。実レコードは
+            // `custom_data + geometry_index`（スキン統合 BLAS はプリミティブごとに別レコード）。
+            let layer = rt_refl_layer_tint(hit.instance_custom_data + hit.geometry_index);
             g.tint = g.tint * layer;
             // 中立ツヤ: 層の遮蔽量（1 - 相対輝度(T)）に比例した白ツヤ。視点依存フレネルの代用（上の判断根拠参照）。
             let block = clamp(1.0 - dot(layer, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
@@ -365,7 +367,8 @@ fn fs_rt(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
             //   on（バインドレス対応）: instance_custom_data → instance_table → UV 補間 → テクスチャサンプル
             //   off（従来）          : instance_custom_data で平均アルベド storage を引く（ベタ塗り）
             // ミップは 0 固定（レイ微分は将来課題）。フォールバック（flags 対象外・tex 0）は on 側で平均色へ。
-            let albedo  = rt_hit_base_color(hit.instance_custom_data, hit.primitive_index, hit.barycentrics);
+            // 第 1 引数は **レコード番号** = custom_data + geometry_index（レコード索引規約）。
+            let albedo  = rt_hit_base_color(hit.instance_custom_data + hit.geometry_index, hit.primitive_index, hit.barycentrics);
             let direct  = rt_refl_direct_irradiance(hit_pos, n_hit);
             // 間接光の床（GI 有効なら DDGI プローブ、無効ならフラットアンビエント）。
             // 従来は enabled に関わらず DDGI を無条件サンプルしていたが、GI 無効時にフラットアンビエントへ

@@ -210,9 +210,14 @@ fn gi_cast_ray(o: vec3<f32>, dir: vec3<f32>, dist_cap: f32) -> GiRayResult {
     }
     let hit_pos = o + dir * hit.t;
     let n = -dir; // approximate hit normal
-    // Average albedo indexed by TLAS custom data (instance index at pack time).
+    // Average albedo indexed by material record index.
+    // 【レコード索引規約】TLAS の custom_data は「そのインスタンスの先頭レコード番号」で、
+    // 実レコードは `custom_data + geometry_index` で引く。非スキンは 1 インスタンス =
+    // 1 ジオメトリなので geometry_index=0 で従来と同一。スキンは 1 体の全プリミティブが
+    // 1 BLAS の複数ジオメトリへ統合されているため、ここでプリミティブ別のマテリアルに解決される。
+    // Rust 側 rt_shadow.rs の MAX_RT_RECORDS / record_count と対。
     var albedo = vec3<f32>(0.5);
-    let ai = hit.instance_custom_data;
+    let ai = hit.instance_custom_data + hit.geometry_index;
     if ai < arrayLength(&gi_albedo) {
         albedo = gi_albedo[ai].rgb;
     }

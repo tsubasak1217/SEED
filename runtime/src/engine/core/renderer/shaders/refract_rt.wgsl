@@ -221,7 +221,9 @@ fn refract_sample_bg(surf: Surface, frag_xy: vec2<f32>, ior: f32) -> vec3<f32> {
         }
 
         let hit_pos = origin + dir * hit.t;
-        let ai      = hit.instance_custom_data;
+        // 【レコード索引規約】custom_data は先頭レコード番号。実レコードは
+        // `custom_data + geometry_index`（スキン統合 BLAS はプリミティブごとに別レコード）。
+        let ai      = hit.instance_custom_data + hit.geometry_index;
 
         // 入射面（front_face）でだけ界面色を乗せる（色付き影と同一規約＝二重計上防止）。
         // 裏面（出射面）は tint を掛けない（媒質 1 個につき透過色は入射面で 1 回だけ）。

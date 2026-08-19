@@ -43,11 +43,11 @@ use wgpu::{
 };
 
 use super::bindless::{BindlessResources, BindlessInstanceRecord, BINDLESS_FLAG_ELIGIBLE, BINDLESS_FLAG_MASK, BINDLESS_FLAG_GEOM, BINDLESS_DUMMY_TEX_INDEX};
-use super::gpu_resources::{GpuModel, GpuPrimitive, InstancedModelBatch};
+use super::gpu_resources::{GpuModel, GpuPrimitive, InstancedModelBatch, RtSkinnedPrimRef};
 use super::lighting::LightBuffer;
 use super::pipeline::SkinDeformPipeline;
 use super::rt_skin_blas::{
-    skin_blas_size_desc, RtSkinBlasManager, SkinBlasKey, SKIN_DEFORM_VERTEX_STRIDE,
+    skin_blas_size_desc, RtSkinBlasManager, SkinBlasKey, SkinPrimInput, SKIN_DEFORM_VERTEX_STRIDE,
 };
 use super::shadow::ShadowResources;
 use crate::engine::core::loader::model::AlphaMode;
@@ -74,6 +74,19 @@ pub fn rt_shadows_supported() -> bool {
 /// TLAS に格納できるインスタンス（キャスター×メッシュノードプリミティブ）の上限。
 /// これを超えるキャスターは影を落とさない（オーバーフロー時に 1 回だけ警告）。
 pub const MAX_RT_INSTANCES: u32 = 4096;
+
+/// マテリアルレコード（平均アルベド storage ／ bindless インスタンステーブル）の上限。
+///
+/// 【なぜ TLAS インスタンス数と別なのか（Phase RT-Skin の BLAS 統合）】
+/// スキンメッシュは「1 体 = 1 BLAS（複数ジオメトリ）= 1 TLAS インスタンス」だが、
+/// マテリアルはプリミティブ（＝ジオメトリ）ごとに異なる。したがって
+/// **1 TLAS インスタンスが複数レコードを消費する**。シェーダは
+/// `record = instance_custom_data + geometry_index` でレコードを引く
+/// （非スキンは geometry_index が常に 0 なので従来どおり 1:1）。
+/// 詳細は本ファイル末尾の「レコード索引規約」を参照。
+///
+/// 値は当面 TLAS 上限と同じ 4096（レコード 1 件 = 平均アルベド 16B ＋ bindless 64B）。
+pub const MAX_RT_RECORDS: u32 = MAX_RT_INSTANCES;
 
 /// 1 フレームで新規構築する BLAS の最大数（分割ビルドの上限）。
 ///
@@ -450,23 +463,39 @@ impl RtShadowResources {
         // 情報だけを集め、GPU リソースの生成（＝上限判定を含む）は静止スキップ判定の後で行う。
         // スキップするフレームで ensure_entry を呼ぶと、変形 compute を積まないのに
         // live_keys/pending だけが更新されて状態がズレるため、順序は必ずこの通りにする。
+        // 【Phase RT-Skin の BLAS 統合】列挙の単位は「メッシュノード × インスタンス」＝1 体。
+        // さらに TLAS インスタンスマスク（不透明 / 非不透明）ごとに分割する。マスクは
+        // TLAS インスタンス単位の属性であり、1 BLAS = 1 TLAS インスタンス = 1 マスクだからである
+        //（混ぜると半透明部位が不透明の影を落とす退行になる）。
         let mut skin_cands: Vec<SkinEntryInfo> = Vec::new();
         if skin_deform.is_some() {
-            for (caster_i, (_path, _gpu, batch)) in casters.iter().enumerate() {
-                batch.rt_enumerate_skinned(
-                    |mesh_idx, prim_idx, material_idx, transform, inst_idx, lod, compact_idx| {
-                        // ポーズ依存値（再生時刻）。Animator 非駆動（None）は静止扱いなので
-                        // 実値と衝突しない番兵ビットを使う。
-                        let anim_bits = batch.anim_time_overrides.get(inst_idx)
-                            .and_then(|o| *o)
-                            .map(f32::to_bits)
-                            .unwrap_or(ANIM_TIME_NONE_BITS);
+            for (caster_i, (_path, gpu, batch)) in casters.iter().enumerate() {
+                batch.rt_enumerate_skinned(|g| {
+                    // ポーズ依存値（再生時刻）。Animator 非駆動（None）は静止扱いなので
+                    // 実値と衝突しない番兵ビットを使う。
+                    let anim_bits = batch.anim_time_overrides.get(g.inst_idx)
+                        .and_then(|o| *o)
+                        .map(f32::to_bits)
+                        .unwrap_or(ANIM_TIME_NONE_BITS);
+                    // マスク別に振り分ける（並び順は列挙順を保つ＝ジオメトリ順の決定性）。
+                    for mask in [RT_MASK_OPAQUE, RT_MASK_NON_OPAQUE] {
+                        let prims: Vec<RtSkinnedPrimRef> = g.prims.iter().copied()
+                            .filter(|p| instance_mask_for(gpu.primitive_alpha_mode(p.material_idx)) == mask)
+                            .collect();
+                        if prims.is_empty() { continue; }
                         skin_cands.push(SkinEntryInfo {
-                            caster_i, mesh_idx, prim_idx, inst_idx,
-                            material_idx, transform, lod, compact_idx, anim_bits,
+                            caster_i,
+                            node_idx:    g.node_idx,
+                            inst_idx:    g.inst_idx,
+                            mask,
+                            transform:   g.transform,
+                            lod:         g.lod,
+                            compact_idx: g.compact_idx,
+                            anim_bits,
+                            prims,
                         });
-                    },
-                );
+                    }
+                });
             }
         }
 
@@ -540,30 +569,36 @@ impl RtShadowResources {
             // 必ず含める。
             hasher.write_u8(SKIN_SIG_MARKER); // 非スキン部との境界（連結の曖昧さを消す）
             for c in &skin_cands {
-                // キャスターの識別（batch_key）。同一 (mesh,prim,inst) が別バッチにあり得る。
+                // キャスターの識別（batch_key）。同一 (node,inst) が別バッチにあり得る。
                 hasher.write(casters[c.caster_i].0.as_bytes());
                 hasher.write_u8(SKIN_SIG_MARKER);
-                hasher.write_usize(c.mesh_idx);
-                hasher.write_usize(c.prim_idx);
+                hasher.write_usize(c.node_idx);
                 hasher.write_usize(c.inst_idx);
+                hasher.write_u8(c.mask);
                 hasher.write_usize(c.lod);
                 hasher.write_u32(c.compact_idx);
                 hasher.write_u32(c.anim_bits);
-                // マテリアル由来（マスク・色付き影・bindless レコード）は非スキンと同じ理由で含める。
-                let gpu = casters[c.caster_i].1;
-                hasher.write_u8(instance_mask_for(gpu.primitive_alpha_mode(c.material_idx)));
-                let alb = gpu.primitive_avg_albedo(c.material_idx);
-                for v in &alb { hasher.write_u32(v.to_bits()); }
-                hasher.write_u32(gpu.primitive_transmission(c.material_idx).to_bits());
-                if bindless.is_some() {
-                    let bcf = gpu.primitive_base_color_factor(c.material_idx);
-                    for v in &bcf { hasher.write_u32(v.to_bits()); }
-                    hasher.write_u32(gpu.primitive_bindless_albedo_tex_index(c.material_idx));
-                    let is_mask = matches!(gpu.primitive_alpha_mode(c.material_idx), AlphaMode::Mask);
-                    hasher.write_u8(is_mask as u8);
-                    hasher.write_u32(gpu.primitive_alpha_cutoff(c.material_idx).to_bits());
-                }
                 for v in &c.transform { hasher.write_u32(v.to_bits()); }
+                // プリミティブ列（＝BLAS のジオメトリ順・レコードの並び順）。件数も混ぜて
+                // 連結の曖昧さを消す。順序が変わればレコード対応が変わるので必ず再構築させる。
+                hasher.write_usize(c.prims.len());
+                let gpu = casters[c.caster_i].1;
+                for p in &c.prims {
+                    hasher.write_usize(p.mesh_idx);
+                    hasher.write_usize(p.prim_idx);
+                    // マテリアル由来（色付き影・bindless レコード）は非スキンと同じ理由で含める。
+                    let alb = gpu.primitive_avg_albedo(p.material_idx);
+                    for v in &alb { hasher.write_u32(v.to_bits()); }
+                    hasher.write_u32(gpu.primitive_transmission(p.material_idx).to_bits());
+                    if bindless.is_some() {
+                        let bcf = gpu.primitive_base_color_factor(p.material_idx);
+                        for v in &bcf { hasher.write_u32(v.to_bits()); }
+                        hasher.write_u32(gpu.primitive_bindless_albedo_tex_index(p.material_idx));
+                        let is_mask = matches!(gpu.primitive_alpha_mode(p.material_idx), AlphaMode::Mask);
+                        hasher.write_u8(is_mask as u8);
+                        hasher.write_u32(gpu.primitive_alpha_cutoff(p.material_idx).to_bits());
+                    }
+                }
             }
             hasher.finish()
         };
@@ -595,24 +630,55 @@ impl RtShadowResources {
         let skin_t0 = std::time::Instant::now();
         if let Some(deform) = skin_deform {
             self.skin_blas.begin_frame();
-            for c in &skin_cands {
-                let (path, gpu, batch) = &casters[c.caster_i];
-                // プリミティブとスキンシステムを引く（どちらか欠ければ対象外）。
-                let Some(prim) = gpu.meshes.get(c.mesh_idx)
-                    .and_then(|m| m.primitives.get(c.prim_idx)) else { continue };
-                let Some(skin) = batch.skin.as_ref() else { continue };
-                // ポーズ署名（anim_bits）を渡し、前回構築時と完全一致するエントリは
-                // 変形 compute も BLAS 再構築も省かせる（per-actor の静止スキップ）。
-                let status = self.skin_blas.ensure_entry(
-                    device, queue, deform, path, c.mesh_idx, c.prim_idx, c.inst_idx,
-                    prim, skin, c.lod, c.compact_idx, c.anim_bits,
-                );
-                if status.accepted() {
-                    skin_accepted.push((
-                        SkinBlasKey::new(path, c.mesh_idx, c.prim_idx, c.inst_idx),
-                        c,
-                        status.needs_rebuild(),
-                    ));
+            // 【体単位の原子的な予約】1 体は分類（マスク）ごとに最大 2 エントリへ割れる。
+            // 1 件ずつ上限判定すると「不透明部位だけ載って半透明部位が弾かれる」＝
+            // 体の途中で切れる部分受理が起きうるため、同一 (caster, node, inst) の
+            // 連続区間をまとめて枠を確保できるときだけ登録する。
+            // （`skin_cands` は列挙時に同一体の分類を隣接させて push している）
+            let mut i = 0usize;
+            while i < skin_cands.len() {
+                let head = &skin_cands[i];
+                let body_id = (head.caster_i, head.node_idx, head.inst_idx);
+                let mut j = i;
+                while j < skin_cands.len() {
+                    let c = &skin_cands[j];
+                    if (c.caster_i, c.node_idx, c.inst_idx) != body_id { break; }
+                    j += 1;
+                }
+                let group = &skin_cands[i..j];
+                i = j;
+
+                // 枠が足りなければこの体は 1 件も登録しない（部分受理の禁止）。
+                if !self.skin_blas.can_accept_group(group.len()) { continue; }
+
+                for c in group {
+                    let (path, gpu, batch) = &casters[c.caster_i];
+                    let Some(skin) = batch.skin.as_ref() else { continue };
+                    // このエントリを構成するプリミティブ実体を解決する。
+                    // 解決できないものは落とす（モデル実体との不整合＝安全側）。
+                    let prims: Vec<SkinPrimInput<'_>> = c.prims.iter()
+                        .filter_map(|p| {
+                            gpu.meshes.get(p.mesh_idx)
+                                .and_then(|m| m.primitives.get(p.prim_idx))
+                                .map(|prim| SkinPrimInput {
+                                    mesh_idx: p.mesh_idx, prim_idx: p.prim_idx, prim,
+                                })
+                        })
+                        .collect();
+                    if prims.is_empty() { continue; }
+                    // ポーズ署名（anim_bits）を渡し、前回構築時と完全一致するエントリは
+                    // 変形 compute も BLAS 再構築も省かせる（per-actor の静止スキップ）。
+                    let status = self.skin_blas.ensure_entry(
+                        device, queue, deform, path, c.node_idx, c.inst_idx, c.mask as u32,
+                        &prims, skin, c.lod, c.compact_idx, c.anim_bits,
+                    );
+                    if status.accepted() {
+                        skin_accepted.push((
+                            SkinBlasKey::new(path, c.node_idx, c.inst_idx, c.mask as u32),
+                            c,
+                            status.needs_rebuild(),
+                        ));
+                    }
                 }
             }
             // 今フレームに現れなかったエントリ（アクタ削除・上限超過）を解放して VRAM 蓄積を防ぐ。
@@ -670,34 +736,66 @@ impl RtShadowResources {
         // `needs_rebuild` フラグ**で表す。省略されたエントリの BLAS は過去フレームで
         // 必ず構築済み（`ensure_entry` が未構築なら必ず `NeedsRebuild` を返す）なので、
         // TLAS へ登録しても未構築参照にはならない。
-        struct SkinBuildTarget<'a> {
-            blas:     &'a wgpu::Blas,
-            out_buf:  &'a wgpu::Buffer,
-            index_bu: &'a wgpu::Buffer,
+        /// 統合 BLAS 内の 1 ジオメトリ分のビルド入力＋レコード生成情報。
+        /// `Vec` の添字がそのまま `geometry_index` であり、bindless レコードの相対位置になる。
+        struct SkinGeomTarget<'a> {
+            /// 変形 compute の出力（BLAS の頂点入力）。
+            out_buf:      &'a wgpu::Buffer,
+            /// 元プリミティブのインデックスバッファ（トポロジは変形で不変）。
+            index_bu:     &'a wgpu::Buffer,
             vertex_count: u32,
             index_count:  u32,
+            /// このジオメトリのマテリアル（レコード生成に使う。`None` = デフォルト）。
+            material_idx: Option<usize>,
+            /// bindless メガバッファのオフセットを引くためのメッシュ／プリミティブ番号。
+            mesh_idx:     usize,
+            prim_idx:     usize,
+        }
+        struct SkinBuildTarget<'a> {
+            blas:  &'a wgpu::Blas,
+            /// ジオメトリ順（＝`geometry_index` 順）のビルド入力。
+            geoms: Vec<SkinGeomTarget<'a>>,
             /// このフレームに BLAS を構築し直すか（false = ポーズ静止で据え置き）。
             needs_rebuild: bool,
             /// ビルド確定（`mark_built`）に使うキー。
-            key:      SkinBlasKey,
-            /// TLAS 詰め込みで使う列挙情報（マテリアル・変換）。
-            info:     &'a SkinEntryInfo,
+            key:   SkinBlasKey,
+            /// TLAS 詰め込みで使う列挙情報（マスク・変換）。
+            info:  &'a SkinEntryInfo,
         }
         let skin_targets: Vec<SkinBuildTarget> = skin_accepted.iter()
             .filter_map(|(key, c, needs_rebuild)| {
-                let (blas, out_buf, vc, ic) = self.skin_blas.blas_inputs(key)?;
-                let prim = casters[c.caster_i].1.meshes.get(c.mesh_idx)
-                    .and_then(|m| m.primitives.get(c.prim_idx))?;
-                // 防御チェック: インデックスバッファの BLAS_INPUT 用途（非スキンと同じ流儀）。
-                // ensure_entry でも検証済みだが、ここは wgpu の検証パニックへ直結する最終境界
-                // なので二重に確認する。用途が無ければこのエントリはビルドも登録もしない。
-                if !prim.index_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT) {
-                    return None;
+                let (blas, slots) = self.skin_blas.blas_geometries(key)?;
+                let gpu = casters[c.caster_i].1;
+                let mut geoms: Vec<SkinGeomTarget> = Vec::with_capacity(slots.len());
+                for slot in slots {
+                    let prim = gpu.meshes.get(slot.mesh_idx)
+                        .and_then(|m| m.primitives.get(slot.prim_idx))?;
+                    // 防御チェック: インデックスバッファの BLAS_INPUT 用途（非スキンと同じ流儀）。
+                    // ensure_entry でも検証済みだが、ここは wgpu の検証パニックへ直結する最終境界
+                    // なので二重に確認する。1 ジオメトリでも欠ければ **エントリごと** 見送る
+                    //（ジオメトリを抜くと BLAS のサイズ記述子と食い違い、さらに geometry_index と
+                    //  レコードの対応もズレるため、部分ビルドは許されない）。
+                    if !prim.index_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT) {
+                        return None;
+                    }
+                    // マテリアルは列挙情報（`info.prims`）側が正典。スロットと同じ
+                    // (mesh, prim) を引いて対応付ける。
+                    let material_idx = c.prims.iter()
+                        .find(|p| p.mesh_idx == slot.mesh_idx && p.prim_idx == slot.prim_idx)
+                        .and_then(|p| p.material_idx);
+                    geoms.push(SkinGeomTarget {
+                        out_buf:      &slot.out_buffer,
+                        index_bu:     &prim.index_buffer,
+                        vertex_count: slot.vertex_count,
+                        index_count:  slot.index_count,
+                        material_idx,
+                        mesh_idx:     slot.mesh_idx,
+                        prim_idx:     slot.prim_idx,
+                    });
                 }
+                if geoms.is_empty() { return None; }
                 Some(SkinBuildTarget {
-                    blas, out_buf, index_bu: &prim.index_buffer,
-                    vertex_count: vc, index_count: ic,
-                    needs_rebuild: *needs_rebuild, key: key.clone(), info: c,
+                    blas, geoms, needs_rebuild: *needs_rebuild, key: key.clone(), info: c,
                 })
             })
             .collect();
@@ -706,25 +804,34 @@ impl RtShadowResources {
             .filter(|t| t.needs_rebuild)
             .map(|t| t.key.clone())
             .collect();
-        let skin_size_descs: Vec<BlasTriangleGeometrySizeDescriptor> = skin_targets.iter()
-            .map(|t| skin_blas_size_desc(t.vertex_count, t.index_count))
+        // サイズ記述子はビルド呼び出しまで生存させる必要があるため、エントリごとに確保する
+        //（`skin_targets` と同順・同長）。
+        let skin_size_descs: Vec<Vec<BlasTriangleGeometrySizeDescriptor>> = skin_targets.iter()
+            .map(|t| t.geoms.iter()
+                .map(|g| skin_blas_size_desc(g.vertex_count, g.index_count))
+                .collect())
             .collect();
-        for (t, size) in skin_targets.iter().zip(skin_size_descs.iter()) {
+        for (t, descs) in skin_targets.iter().zip(skin_size_descs.iter()) {
             // ポーズが動いていないエントリはビルドを積まない（BLAS は前フレームのまま有効）。
             if !t.needs_rebuild { continue; }
-            blas_entries.push(BlasBuildEntry {
-                blas: t.blas,
-                geometry: BlasGeometries::TriangleGeometries(vec![BlasTriangleGeometry {
+            // 1 体（1 メッシュノードインスタンス）の全プリミティブを
+            // **1 つの BLAS のジオメトリ配列**として積む（本修正の中核）。
+            let geometries: Vec<BlasTriangleGeometry> = t.geoms.iter().zip(descs.iter())
+                .map(|(g, size)| BlasTriangleGeometry {
                     size,
-                    vertex_buffer:           t.out_buf,
+                    vertex_buffer:           g.out_buf,
                     first_vertex:            0,
                     // 変形出力は vec4<f32> 配列。BLAS は先頭 12B（Float32x3）を読む。
                     vertex_stride:           SKIN_DEFORM_VERTEX_STRIDE,
-                    index_buffer:            Some(t.index_bu),
+                    index_buffer:            Some(g.index_bu),
                     first_index:             Some(0),
                     transform_buffer:        None,
                     transform_buffer_offset: None,
-                }]),
+                })
+                .collect();
+            blas_entries.push(BlasBuildEntry {
+                blas:     t.blas,
+                geometry: BlasGeometries::TriangleGeometries(geometries),
             });
         }
 
@@ -735,14 +842,20 @@ impl RtShadowResources {
         // GEOM 付与率が低い＝法線メガバッファ枯渇等で glass が直進近似へ縮退している証跡になる。
         let mut translucent_total: usize = 0;
         let mut translucent_geom:  usize = 0;
-        // 平均アルベド（Phase RT-GI）を TLAS インスタンスと同順（custom_data 順）で詰める。
-        let mut albedos: Vec<[f32; 4]> = vec![[0.0f32; 4]; MAX_RT_INSTANCES as usize];
+        // 平均アルベド（Phase RT-GI）を **レコード順**で詰める。
+        let mut albedos: Vec<[f32; 4]> = vec![[0.0f32; 4]; MAX_RT_RECORDS as usize];
         // バインドレス（B2）: インスタンステーブルを同順で詰める（対応 GPU のみ確保）。
         let mut records: Vec<BindlessInstanceRecord> = if bindless.is_some() {
-            vec![BindlessInstanceRecord::dummy(); MAX_RT_INSTANCES as usize]
+            vec![BindlessInstanceRecord::dummy(); MAX_RT_RECORDS as usize]
         } else {
             Vec::new()
         };
+        // 【レコード索引規約】マテリアルレコードの通し番号。TLAS インスタンスの
+        // custom_data には **そのインスタンスの先頭レコード番号** を入れ、シェーダは
+        // `record = instance_custom_data + geometry_index` で引く。
+        // 非スキンは 1 インスタンス = 1 ジオメトリなので geometry_index が常に 0 で
+        // 従来と同一の 1:1 対応になり、スキン統合 BLAS だけが 2 件以上を消費する。
+        let mut record_count: usize = 0;
         // スキン由来のインスタンス数（[PERF] 表示用）。
         let mut skin_inst_count: u32 = 0;
         {
@@ -757,7 +870,9 @@ impl RtShadowResources {
             let mut overflow = false;
             for (path, gpu, batch) in casters {
                 batch.rt_enumerate(|mesh_idx, prim_idx, material_idx, transform| {
-                    if inst_count >= MAX_RT_INSTANCES as usize { overflow = true; return; }
+                    // TLAS スロットとレコードの両方に空きが要る（非スキンは 1 件ずつ消費）。
+                    if inst_count >= MAX_RT_INSTANCES as usize
+                        || record_count >= MAX_RT_RECORDS as usize { overflow = true; return; }
                     let key = BlasKey::new(path, mesh_idx, prim_idx);
                     if let Some(blas) = cache.get(&key) {
                         // custom_data はインスタンス番号（GI が平均アルベドを引くキーでもある）。
@@ -773,49 +888,23 @@ impl RtShadowResources {
                         //     α=1,tr=0 → 影 = 0（透過しない被覆面は光を通さない＝暗い影）
                         //     α=0      → 影なし。
                         // GI/反射は .a を読まないため、色付き影のためだけの .a パックで GI/反射は不変。
-                        let mut alb = gpu.primitive_avg_albedo(material_idx); // [r,g,b,a]（.a=base_color_factor.a）
-                        let alpha = alb[3].clamp(0.0, 1.0);
-                        let trans = gpu.primitive_transmission(material_idx).clamp(0.0, 1.0);
-                        alb[3] = pack_shadow_alpha_transmission(alpha, trans); // .rgb は生アルベドのまま
-                        albedos[inst_count] = alb;
-                        // ── バインドレス（B2）: インスタンステーブルを同 index（custom_data）に詰める ──
-                        // eligible = UV/index 登録済み かつ albedo テクスチャ登録済み（tex≠0）。
-                        // どちらか欠ければ flags=0 で、ヒットシェーダは平均色（avg_albedo）へ縮退する。
+                        // ── レコード生成（平均アルベド＋bindless）は非スキンと共通の関数で行う ──
+                        // 非スキンは法線メガバッファが実ジオメトリと一致するので GEOM を許可する。
+                        let (alb, rec, geom_registered) = build_hit_record(
+                            gpu, material_idx, mesh_idx, prim_idx, /* allow_geom_flag */ true,
+                        );
+                        albedos[record_count] = alb;
                         if !records.is_empty() {
-                            let tex_index = gpu.primitive_bindless_albedo_tex_index(material_idx);
-                            let geom = gpu.meshes.get(mesh_idx)
-                                .and_then(|m| m.primitives.get(prim_idx))
-                                .map(|gp| (gp.bindless_eligible, gp.bindless_uv_offset,
-                                           gp.bindless_index_offset, gp.bindless_normal_offset))
-                                .unwrap_or((false, 0, 0, 0));
-                            let geom_registered = geom.0; // UV/index/法線をメガバッファへ登録済みか。
-                            let elig = geom_registered && tex_index != BINDLESS_DUMMY_TEX_INDEX;
-                            // Mask マテリアル（アルファテスト）は色付き影の第 2 クエリでテクスチャ α を
-                            // alpha_cutoff と比較して葉の形の影を落とす（B3）。flag を立て cutoff を積む。
-                            let is_mask = matches!(gpu.primitive_alpha_mode(material_idx), AlphaMode::Mask);
-                            let mut flags = if elig { BINDLESS_FLAG_ELIGIBLE } else { 0 };
-                            if is_mask { flags |= BINDLESS_FLAG_MASK; }
-                            // ジオメトリ（法線）登録済みなら GEOM を立てる（テクスチャ有無に依存しない）。
-                            // RT 屈折の界面ごとの本物の再屈折はこのビットで法線復元可否を判定する。
-                            if geom_registered { flags |= BINDLESS_FLAG_GEOM; }
+                            records[record_count] = rec;
                             // 【診断】0x02 のうち GEOM 付与済み（界面で実屈折できる）数を数える。
                             if mask == RT_MASK_NON_OPAQUE && geom_registered { translucent_geom += 1; }
-                            records[inst_count] = BindlessInstanceRecord {
-                                avg_albedo:        alb, // 先頭 16B は既存 storage と同一（.a=パック済み）
-                                base_color_factor: gpu.primitive_base_color_factor(material_idx),
-                                albedo_tex_index:  tex_index,
-                                uv_offset:         geom.1,
-                                index_offset:      geom.2,
-                                flags,
-                                // Mask のときだけ有効な閾値（Blend では 0.0）。BINDLESS_FLAG_MASK が
-                                // 立っているインスタンスでのみシェーダが参照する。
-                                alpha_cutoff:      if is_mask { gpu.primitive_alpha_cutoff(material_idx) } else { 0.0 },
-                                normal_offset:     geom.3,
-                                _pad:              [0; 2],
-                            };
                         }
-                        instances[inst_count] = Some(TlasInstance::new(blas, transform, inst_count as u32, mask));
-                        inst_count += 1;
+                        // custom_data は **先頭レコード番号**（非スキンは 1 ジオメトリなので
+                        // シェーダ側の `custom_data + geometry_index` が従来の 1:1 と一致する）。
+                        instances[inst_count] =
+                            Some(TlasInstance::new(blas, transform, record_count as u32, mask));
+                        inst_count   += 1;
+                        record_count += 1;
                     }
                 });
                 if overflow { break; }
@@ -826,57 +915,45 @@ impl RtShadowResources {
             // の一意性と、MAX_RT_INSTANCES のオーバーフロー判定はそのまま引き継がれる。
             // マスク・平均アルベド・α×transmission パック・bindless レコードの詰め方は
             // 非スキンとまったく同じ（唯一の違いは BINDLESS_FLAG_GEOM を立てないこと）。
+            // 【統合 BLAS のレコード配置】1 エントリ = 1 TLAS インスタンスだが、
+            // マテリアルはジオメトリ（＝元プリミティブ）ごとに異なる。そこで
+            // **ジオメトリ順にレコードを連続配置**し、custom_data には先頭レコード番号を入れる。
+            // シェーダは `record = instance_custom_data + geometry_index` で自分のレコードを引く。
             for t in &skin_targets {
-                if inst_count >= MAX_RT_INSTANCES as usize { overflow = true; break; }
-                let c = t.info;
-                let blas = t.blas;
-                let gpu = casters[c.caster_i].1;
-                let material_idx = c.material_idx;
+                let n_geom = t.geoms.len();
+                // TLAS スロット 1 件＋レコード n_geom 件が **まとめて** 入る空きが要る。
+                // 途中で切れるとジオメトリとレコードの対応が壊れるため、入らなければ
+                // このインスタンスは 1 件も登録しない。
+                if inst_count >= MAX_RT_INSTANCES as usize
+                    || record_count + n_geom > MAX_RT_RECORDS as usize {
+                    overflow = true;
+                    break;
+                }
+                let c    = t.info;
+                let gpu  = casters[c.caster_i].1;
+                // マスクはエントリ（＝分類）単位で一意。列挙時にマスクごとへ分けてある。
+                let mask = c.mask;
+                let record_base = record_count;
 
-                let mask = instance_mask_for(gpu.primitive_alpha_mode(material_idx));
-                if mask == RT_MASK_NON_OPAQUE { translucent_total += 1; }
-
-                let mut alb = gpu.primitive_avg_albedo(material_idx);
-                let alpha = alb[3].clamp(0.0, 1.0);
-                let trans = gpu.primitive_transmission(material_idx).clamp(0.0, 1.0);
-                alb[3] = pack_shadow_alpha_transmission(alpha, trans);
-                albedos[inst_count] = alb;
-
-                if !records.is_empty() {
-                    let tex_index = gpu.primitive_bindless_albedo_tex_index(material_idx);
-                    let geom = gpu.meshes.get(c.mesh_idx)
-                        .and_then(|m| m.primitives.get(c.prim_idx))
-                        .map(|gp| (gp.bindless_eligible, gp.bindless_uv_offset,
-                                   gp.bindless_index_offset, gp.bindless_normal_offset))
-                        .unwrap_or((false, 0, 0, 0));
-                    let geom_registered = geom.0;
-                    let elig = geom_registered && tex_index != BINDLESS_DUMMY_TEX_INDEX;
-                    let is_mask = matches!(gpu.primitive_alpha_mode(material_idx), AlphaMode::Mask);
-                    let mut flags = if elig { BINDLESS_FLAG_ELIGIBLE } else { 0 };
-                    if is_mask { flags |= BINDLESS_FLAG_MASK; }
-                    // 【重要】BINDLESS_FLAG_GEOM は **立てない**。
+                for g in &t.geoms {
+                    if mask == RT_MASK_NON_OPAQUE { translucent_total += 1; }
+                    // 【重要】スキンでは BINDLESS_FLAG_GEOM を **立てない**（allow_geom_flag=false）。
                     //   このビットは「メガバッファの法線でヒット点の界面法線を復元してよい」
                     //   ことを意味するが、メガバッファへ登録されているスキンの法線は
                     //   **バインドポーズのまま**（変形 compute は位置しか書き出さない）で、
                     //   実際の変形後法線とは食い違う。立てると RT 屈折が誤った界面法線で
                     //   再屈折し、ガラス越しのスキンキャラが歪んで見える。
                     //   UV とインデックスは変形で不変なので ELIGIBLE（テクスチャ引き）は有効。
-                    records[inst_count] = BindlessInstanceRecord {
-                        avg_albedo:        alb,
-                        base_color_factor: gpu.primitive_base_color_factor(material_idx),
-                        albedo_tex_index:  tex_index,
-                        uv_offset:         geom.1,
-                        index_offset:      geom.2,
-                        flags,
-                        alpha_cutoff:      if is_mask { gpu.primitive_alpha_cutoff(material_idx) } else { 0.0 },
-                        // 法線オフセットは GEOM を立てないので参照されないが、
-                        // レコードの意味を壊さないよう登録値をそのまま入れておく。
-                        normal_offset:     geom.3,
-                        _pad:              [0; 2],
-                    };
+                    let (alb, rec, _) = build_hit_record(
+                        gpu, g.material_idx, g.mesh_idx, g.prim_idx, /* allow_geom_flag */ false,
+                    );
+                    albedos[record_count] = alb;
+                    if !records.is_empty() { records[record_count] = rec; }
+                    record_count += 1;
                 }
+
                 instances[inst_count] =
-                    Some(TlasInstance::new(blas, c.transform, inst_count as u32, mask));
+                    Some(TlasInstance::new(t.blas, c.transform, record_base as u32, mask));
                 inst_count += 1;
                 skin_inst_count += 1;
             }
@@ -884,9 +961,10 @@ impl RtShadowResources {
             if overflow && !self.warned_overflow {
                 self.warned_overflow = true;
                 eprintln!(
-                    "[SEED RT] 警告: RT 影キャスターのインスタンス数が上限 {} を超過しました。\
-                     超過分は影を落としません（MAX_RT_INSTANCES を増やすか対象を減らしてください）",
-                    MAX_RT_INSTANCES
+                    "[SEED RT] 警告: RT 影キャスターが上限（インスタンス {} / マテリアルレコード {}）を\
+                     超過しました。超過分は影を落としません\
+                     （MAX_RT_INSTANCES / MAX_RT_RECORDS を増やすか対象を減らしてください）",
+                    MAX_RT_INSTANCES, MAX_RT_RECORDS
                 );
             }
         }
@@ -912,7 +990,7 @@ impl RtShadowResources {
         // （custom_data 順で albedos と一致）。対応 GPU のみ（records 非空）。
         if let Some(b) = bindless {
             if !records.is_empty() {
-                b.upload_instance_records(queue, &records[..inst_count]);
+                b.upload_instance_records(queue, &records[..record_count]);
             }
         }
 
@@ -944,22 +1022,99 @@ impl RtShadowResources {
 // 同じ集合・同じ順序を見ることを保証する（順序がズレると custom_data と albedos/records の
 // 対応が壊れる）。
 
-/// 「スキンプリミティブ × インスタンス」1 件分の列挙結果。
+/// 「スキンメッシュノード × インスタンス × インスタンスマスク」1 エントリ分の列挙結果。
+///
+/// これが **RT スキン BLAS 1 個の単位**である（複数プリミティブ = 複数ジオメトリ）。
 struct SkinEntryInfo {
     /// `casters` 内での添字（batch_key / GpuModel / バッチを引くため）。
-    caster_i:     usize,
-    mesh_idx:     usize,
-    prim_idx:     usize,
-    inst_idx:     usize,
-    material_idx: Option<usize>,
+    caster_i:    usize,
+    /// メッシュノード番号（ワールド変換の単位）。
+    node_idx:    usize,
+    /// バッチ内のインスタンス番号。
+    inst_idx:    usize,
+    /// TLAS インスタンスマスク（不透明 / 非不透明）。1 BLAS = 1 マスク。
+    mask:        u8,
     /// TLAS インスタンス変換（3x4 行優先）。VS の `u_model.model` と同一行列。
-    transform:    [f32; 12],
+    transform:   [f32; 12],
     /// ジョイント行列バッファの LOD 番号。
-    lod:          usize,
+    lod:         usize,
     /// LOD 内のコンパクト添字（`joint_base = compact_idx * MAX_JOINTS`）。
-    compact_idx:  u32,
+    compact_idx: u32,
     /// 再生時刻のビット表現（静止シーン判定のシグネチャに含める）。
-    anim_bits:    u32,
+    anim_bits:   u32,
+    /// このエントリを構成するプリミティブ列（BLAS のジオメトリ順＝レコードの並び順）。
+    prims:       Vec<RtSkinnedPrimRef>,
+}
+
+// ─── ヒットレコードの生成（非スキン／スキン共通）──────────────────
+//
+/// TLAS ジオメトリ 1 件分の「平均アルベド（色付き影のパック込み）」と
+/// bindless インスタンスレコードを組み立てる。
+///
+/// 非スキン経路とスキン経路で **まったく同じ規則**を使うために関数化してある
+/// （唯一の違いは `allow_geom_flag`）。両者で別々に書くと、片方だけパック方式や
+/// フラグ条件が変わったときに RT 反射・屈折・色付き影が経路ごとに食い違う。
+///
+/// - `allow_geom_flag`: `BINDLESS_FLAG_GEOM`（メガバッファ法線で界面法線を復元してよい）を
+///   立てることを許すか。スキンは変形後法線をメガバッファへ書いていない（バインドポーズのまま）
+///   ため必ず `false` を渡す。
+///
+/// 返り値: `(平均アルベド[.a=α×transmission パック], レコード, ジオメトリ登録済みか)`。
+/// 第 3 要素は診断ログ（GEOM 付与率）専用。
+fn build_hit_record(
+    gpu:             &GpuModel,
+    material_idx:    Option<usize>,
+    mesh_idx:        usize,
+    prim_idx:        usize,
+    allow_geom_flag: bool,
+) -> ([f32; 4], BindlessInstanceRecord, bool) {
+    // 平均アルベド（Phase RT-GI）。
+    // .rgb=平均アルベド（GI/反射のバウンス色。ddgi_probe_update / reflection_rt は .rgb のみ参照）。
+    // .a =RT 色付き影専用。α（base_color_factor.a）と transmission を固定小数でパックして相乗り。
+    //   シェーダ側は透過率 T = (1-α) + α·transmission·albedo.rgb を評価する:
+    //     α=1,tr=1 → 影 = アルベド色（色ガラスは baseColor で透過光を濾過）
+    //     α=1,tr=0 → 影 = 0（透過しない被覆面は光を通さない＝暗い影）
+    //     α=0      → 影なし。
+    // GI/反射は .a を読まないため、色付き影のためだけの .a パックで GI/反射は不変。
+    let mut alb = gpu.primitive_avg_albedo(material_idx); // [r,g,b,a]（.a=base_color_factor.a）
+    let alpha = alb[3].clamp(0.0, 1.0);
+    let trans = gpu.primitive_transmission(material_idx).clamp(0.0, 1.0);
+    alb[3] = pack_shadow_alpha_transmission(alpha, trans); // .rgb は生アルベドのまま
+
+    // ── バインドレス（B2）: レコードを組み立てる ──
+    // eligible = UV/index 登録済み かつ albedo テクスチャ登録済み（tex≠0）。
+    // どちらか欠ければ flags=0 で、ヒットシェーダは平均色（avg_albedo）へ縮退する。
+    let tex_index = gpu.primitive_bindless_albedo_tex_index(material_idx);
+    let geom = gpu.meshes.get(mesh_idx)
+        .and_then(|m| m.primitives.get(prim_idx))
+        .map(|gp| (gp.bindless_eligible, gp.bindless_uv_offset,
+                   gp.bindless_index_offset, gp.bindless_normal_offset))
+        .unwrap_or((false, 0, 0, 0));
+    let geom_registered = geom.0; // UV/index/法線をメガバッファへ登録済みか。
+    let elig = geom_registered && tex_index != BINDLESS_DUMMY_TEX_INDEX;
+    // Mask マテリアル（アルファテスト）は色付き影の第 2 クエリでテクスチャ α を
+    // alpha_cutoff と比較して葉の形の影を落とす（B3）。flag を立て cutoff を積む。
+    let is_mask = matches!(gpu.primitive_alpha_mode(material_idx), AlphaMode::Mask);
+    let mut flags = if elig { BINDLESS_FLAG_ELIGIBLE } else { 0 };
+    if is_mask { flags |= BINDLESS_FLAG_MASK; }
+    if geom_registered && allow_geom_flag { flags |= BINDLESS_FLAG_GEOM; }
+
+    let rec = BindlessInstanceRecord {
+        avg_albedo:        alb, // 先頭 16B は既存 storage と同一（.a=パック済み）
+        base_color_factor: gpu.primitive_base_color_factor(material_idx),
+        albedo_tex_index:  tex_index,
+        uv_offset:         geom.1,
+        index_offset:      geom.2,
+        flags,
+        // Mask のときだけ有効な閾値（Blend では 0.0）。BINDLESS_FLAG_MASK が
+        // 立っているインスタンスでのみシェーダが参照する。
+        alpha_cutoff:      if is_mask { gpu.primitive_alpha_cutoff(material_idx) } else { 0.0 },
+        // 法線オフセットは GEOM を立てない経路では参照されないが、
+        // レコードの意味を壊さないよう登録値をそのまま入れておく。
+        normal_offset:     geom.3,
+        _pad:              [0; 2],
+    };
+    (alb, rec, geom_registered)
 }
 
 /// シグネチャ内でスキン部の開始／各エントリの区切りを示すマーカーバイト。
@@ -1019,6 +1174,65 @@ fn create_blas_for_prim(device: &wgpu::Device, prim: &GpuPrimitive) -> wgpu::Bla
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 【レコード索引規約】全 WGSL が `instance_custom_data` を **単体で使っていない**こと。
+    ///
+    /// Phase RT-Skin の BLAS 統合以降、TLAS の custom_data は「そのインスタンスの
+    /// 先頭レコード番号」であり、実レコードは `custom_data + geometry_index` で引く。
+    /// 非スキンは geometry_index が常に 0 なので従来と同じ値になるが、スキン統合 BLAS では
+    /// 加算を忘れると **1 体の全プリミティブが先頭プリミティブのマテリアルで着色される**
+    /// （影の色・反射のテクスチャ・アルファテストが全部おかしくなる）。
+    /// この間違いはコンパイルでも実行時エラーでも検出できないので、ソースレベルで縛る。
+    #[test]
+    fn wgsl_reads_record_index_with_geometry_index() {
+        /// 検査対象（`instance_custom_data` を読む可能性のある全 WGSL）。
+        const SOURCES: &[(&str, &str)] = &[
+            ("ddgi_probe_update.wgsl",      include_str!("shaders/ddgi_probe_update.wgsl")),
+            ("reflection_rt.wgsl",          include_str!("shaders/reflection_rt.wgsl")),
+            ("refract_rt.wgsl",             include_str!("shaders/refract_rt.wgsl")),
+            ("rt_shadow_on.wgsl",           include_str!("shaders/rt_shadow_on.wgsl")),
+            ("rt_shadow_tint_avg.wgsl",     include_str!("shaders/rt_shadow_tint_avg.wgsl")),
+            ("rt_shadow_tint_bindless.wgsl",include_str!("shaders/rt_shadow_tint_bindless.wgsl")),
+            ("water_reflection_rt.wgsl",    include_str!("shaders/water_reflection_rt.wgsl")),
+            ("reflection_rt_hit_on.wgsl",   include_str!("shaders/reflection_rt_hit_on.wgsl")),
+            ("reflection_rt_hit_off.wgsl",  include_str!("shaders/reflection_rt_hit_off.wgsl")),
+            ("water_reflection_hit_on.wgsl",include_str!("shaders/water_reflection_hit_on.wgsl")),
+            ("water_reflection_hit_off.wgsl",include_str!("shaders/water_reflection_hit_off.wgsl")),
+        ];
+        /// 読み出し箇所の直後に必ず続くべき文字列（geometry_index の加算）。
+        const REQUIRED_SUFFIX: &str = " + hit.geometry_index";
+        const FIELD: &str = ".instance_custom_data";
+
+        for (name, src) in SOURCES {
+            for (lineno, line) in src.lines().enumerate() {
+                let code = line.trim_start();
+                // コメント行は規約の説明を含むので対象外。
+                if code.starts_with("//") { continue; }
+                let Some(pos) = line.find(FIELD) else { continue };
+                let rest = &line[pos + FIELD.len()..];
+                assert!(
+                    rest.starts_with(REQUIRED_SUFFIX),
+                    "{name}:{} が instance_custom_data を単体で読んでいます。\
+                     レコードは `instance_custom_data + hit.geometry_index` で引くこと\
+                     （スキン統合 BLAS では 1 インスタンスが複数レコードを持つ）: {line}",
+                    lineno + 1
+                );
+            }
+        }
+    }
+
+    /// レコード容量が TLAS インスタンス容量以上であること。
+    ///
+    /// スキン統合 BLAS は 1 TLAS インスタンスで複数レコードを消費するため、
+    /// レコード側が小さいと先に枯渇して「体の一部だけレコードが無い」状態を作りうる。
+    /// 実装は「まとめて入らなければ登録しない」で防いでいるが、容量関係そのものを固定する。
+    #[test]
+    fn record_capacity_covers_instances() {
+        assert!(
+            MAX_RT_RECORDS >= MAX_RT_INSTANCES,
+            "MAX_RT_RECORDS({MAX_RT_RECORDS}) は MAX_RT_INSTANCES({MAX_RT_INSTANCES}) 以上であること"
+        );
+    }
 
     /// WGSL の `RT_SHADOW_CULL_MASK` と Rust の `RT_MASK_OPAQUE` が同じ値であることを検証する。
     ///

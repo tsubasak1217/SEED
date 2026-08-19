@@ -12,11 +12,31 @@
 //    2. 本モジュールが「1 プリミティブ × 1 インスタンス」ごとに
 //       skin_deform.wgsl を dispatch し、**変形後ローカル頂点位置**（vec4, 16B）を
 //       専用 storage バッファへ書き出す。
-//    3. そのバッファを頂点入力、元プリミティブのインデックスバッファをインデックス入力
-//       として BLAS を毎フレーム再構築する。
+//    3. **1 スキンメッシュノードインスタンス（＝キャラ 1 体の 1 メッシュノード）につき
+//       BLAS を 1 個**作り、そのノードに属する全プリミティブを
+//       `BlasGeometries::TriangleGeometries` の **ジオメトリ配列**として登録する。
+//       BLAS を毎フレーム再構築する。
 //    4. TLAS インスタンス変換にはノードのワールド行列を渡す。
 //       → 描画結果 `u_model.model * (skin * pos)` と RT の
 //         `TLAS変換 * BLAS頂点` が厳密に一致する。
+//
+//  【なぜ「プリミティブ単位」ではなく「インスタンス単位」の BLAS なのか】
+//    以前は (batch_key, mesh, prim, inst) を 1 エントリ＝1 BLAS としていた。
+//    glTF のスキンモデルはマテリアル分割で 1 メッシュが数十プリミティブに割れるのが普通で
+//    （BrainStem は 1 メッシュ 59 プリミティブ）、20 体並べると 1180 エントリになり、
+//    上限 `MAX_RT_SKIN_BLAS` を「体の途中で」使い切る。結果、
+//    **先頭の 1 体だけが TLAS に載り、その 1 体にだけ RTAO と RT 影の自己遮蔽が乗って
+//    暗く見える**（他の体は RT から完全に消える）という不整合が起きていた。
+//    1 インスタンス = 1 BLAS に統合すると、
+//      - エントリ消費が「1 体 = 1 件」になり、上限が体数の意味を持つ
+//      - 上限到達時に「体の途中で切れる」部分受理が構造的に起きない
+//      - BLAS 本数が 59×N → N に減り、VRAM とビルド時間の両方が改善する
+//    という 3 点が同時に得られる。
+//
+//  【グルーピングの単位は「メッシュノード」であって「メッシュ」ではない】
+//    1 つの BLAS は TLAS インスタンス変換を 1 個しか持てない。同じ mesh_idx を
+//    参照する **別ノード**（＝別ワールド変換）を 1 つの BLAS に混ぜると、片方の変換で
+//    もう片方まで動いてしまう。よってキーは `(batch_key, node_idx, inst_idx)` とする。
 //
 //  【単一責任】
 //    本モジュールは「変形出力バッファ・BLAS・BindGroup の生成／キャッシュ／解放と
@@ -24,7 +44,9 @@
 //    bindless レコードの生成は rt_shadow.rs の責務（非スキンと共通）。
 // ============================================================
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 use wgpu::{
     AccelerationStructureFlags, AccelerationStructureGeometryFlags,
@@ -38,19 +60,34 @@ use super::skin_system::{SkinComputeSystem, MAX_JOINTS};
 
 // ─── 定数 ────────────────────────────────────────────────────
 
-/// RT へ載せられる「スキンプリミティブ × インスタンス」の総数上限。
+/// RT へ載せられる「スキンメッシュノード × インスタンス」の総数上限。
 ///
-/// 1 エントリにつき「変形後頂点バッファ（頂点数 × 16B）＋ 専用 BLAS」が VRAM に常駐し、
-/// さらに毎フレーム BLAS を再構築する（＝GPU 時間も比例して増える）。無制限に許すと
-/// 群衆シーンで VRAM とフレーム時間の両方が破綻するため、明示的な天井を設ける。
-/// 64 は「主要キャラ数体 × 数プリミティブ」を想定した値。超過分は登録せず 1 回だけ警告する。
+/// **単位は「1 体（1 メッシュノードインスタンス）= 1 件」**である（プリミティブ数には依存しない）。
+/// 1 エントリにつき「そのノードの全プリミティブぶんの変形後頂点バッファ（頂点数 × 16B）＋
+/// 専用 BLAS 1 個」が VRAM に常駐し、さらに毎フレーム BLAS を再構築する
+/// （＝GPU 時間も比例して増える）。無制限に許すと群衆シーンで VRAM とフレーム時間の
+/// 両方が破綻するため、明示的な天井を設ける。
+/// 64 は「主要キャラ 64 体」を想定した値。超過分は登録せず 1 回だけ警告する。
+///
+/// 【部分受理は起きない】判定は 1 体を丸ごと受け入れるか丸ごと弾くかの二択であり、
+/// 「体の途中でプリミティブが切れる」ことは構造的に起こらない
+/// （テスト `capacity_rejects_whole_instances_only` が固定する）。
 pub const MAX_RT_SKIN_BLAS: usize = 64;
 
-/// 1 エントリ（プリミティブ×インスタンス）が持てる頂点数の上限。
+/// 1 プリミティブが持てる頂点数の上限。
 ///
-/// 変形出力は 16B/頂点なので 20 万頂点 = 3.2MB/エントリ。これを超えるプリミティブは
+/// 変形出力は 16B/頂点なので 20 万頂点 = 3.2MB/プリミティブ。これを超えるプリミティブは
 /// 毎フレームの BLAS 再構築コストが現実的でない（TDR リスク）ため登録しない。
 pub const MAX_RT_SKIN_VERTICES: u32 = 200_000;
+
+/// 1 エントリ（＝1 BLAS）が持てるジオメトリ数の上限。
+///
+/// wgpu / 各バックエンドは 1 BLAS のジオメトリ数に上限を持つ（Vulkan の
+/// `maxGeometryCount` は実装依存だが 2^24 程度と十分大きい）。ここでの上限は
+/// ハード制約ではなく「1 体あたりのビルドコストとレコード消費の天井」であり、
+/// 想定外のモデル（数千プリミティブ）が 1 フレームのビルドを爆発させるのを防ぐ。
+/// 256 は「マテリアル分割された実用キャラ（BrainStem = 59）」に十分な余裕を持つ値。
+pub const MAX_RT_SKIN_GEOMETRIES: usize = 256;
 
 /// 変形出力 1 頂点あたりのバイト数（`vec4<f32>` = BLAS の頂点ストライド）。
 /// マジックナンバーを避けるため型サイズから導出する。skin_deform.wgsl の
@@ -88,46 +125,84 @@ struct SkinDeformParams {
 ///
 /// 非スキン BLAS（`BlasKey`）と違い **インスタンスまで含む**。同じモデルの別インスタンスは
 /// ポーズが異なる＝変形後頂点が異なるため、BLAS を共有できないからである。
+///
+/// 粒度は **メッシュノード**（プリミティブ単位ではない）。1 ノードの全プリミティブが
+/// 1 つの BLAS へジオメトリ配列として入る。ノード単位にする理由はファイル冒頭の
+/// 「グルーピングの単位は……」を参照（1 BLAS = 1 ワールド変換）。
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SkinBlasKey {
     /// キャスターキー（frame_renderer が渡す統合バッチキー ＝ `BlasKey::source_path` と同一体系）。
     pub batch_key: String,
-    pub mesh_idx:  usize,
-    pub prim_idx:  usize,
+    /// メッシュノード番号（`NodePrimDraw::node_idx`）。ワールド変換の単位。
+    pub node_idx:  usize,
+    /// バッチ内のインスタンス番号。
     pub inst_idx:  usize,
+    /// 呼び出し側が定める「同一 BLAS へまとめてよい分類」。
+    ///
+    /// 本モジュールは値の意味を解釈しない（単一責任）。rt_shadow.rs は
+    /// **TLAS インスタンスマスク**（不透明 0x01 / 非不透明 0x02）を渡す。
+    /// マスクは TLAS インスタンス単位の属性なので、異なるマスクのプリミティブを
+    /// 1 つの BLAS へ混ぜると「半透明部位が不透明の影を落とす」等の退行になる。
+    /// 分類が違えば別 BLAS（別 TLAS インスタンス）に分ける、という規約をキーで表す。
+    pub class_id:  u32,
 }
 
 impl SkinBlasKey {
-    pub fn new(batch_key: &str, mesh_idx: usize, prim_idx: usize, inst_idx: usize) -> Self {
-        Self { batch_key: batch_key.to_string(), mesh_idx, prim_idx, inst_idx }
+    pub fn new(batch_key: &str, node_idx: usize, inst_idx: usize, class_id: u32) -> Self {
+        Self { batch_key: batch_key.to_string(), node_idx, inst_idx, class_id }
     }
+}
+
+// ─── 入力（呼び出し側が渡すプリミティブ列）──────────────────────
+
+/// `ensure_entry` へ渡す「このメッシュノードを構成するプリミティブ 1 個」。
+///
+/// 呼び出し側（rt_shadow.rs）が `InstancedModelBatch::rt_enumerate_skinned` の
+/// グループ列挙から組み立てる。順序がそのまま **BLAS のジオメトリ順** になり、
+/// さらに bindless レコードの並び順にもなるため、呼び出しごとに順序を変えてはならない。
+pub struct SkinPrimInput<'a> {
+    pub mesh_idx: usize,
+    pub prim_idx: usize,
+    pub prim:     &'a GpuPrimitive,
 }
 
 // ─── エントリ ────────────────────────────────────────────────
 
-/// 1 エントリ（スキンプリミティブ × インスタンス）分の GPU リソース。
-struct SkinBlasEntry {
+/// 1 プリミティブ（＝BLAS 内の 1 ジオメトリ）分の GPU リソース。
+pub struct SkinPrimSlot {
+    /// このスロットが由来するメッシュ番号（呼び出し側がマテリアルを引くのに使う）。
+    pub mesh_idx:     usize,
+    /// このスロットが由来するプリミティブ番号（同上）。
+    pub prim_idx:     usize,
     /// 変形後ローカル頂点位置（`vec4<f32>` 配列）。BLAS の頂点入力かつ compute の出力。
-    out_buffer:    wgpu::Buffer,
-    /// skin_deform.wgsl の uniform（毎フレーム joint_base を書き換える）。
-    params_buffer: wgpu::Buffer,
-    /// group0 BindGroup（params / 元頂点 / スキン属性 / 出力）。プリミティブが変わらない限り不変。
-    entry_bg:      wgpu::BindGroup,
-    /// このエントリ専用の BLAS（毎フレーム再構築）。
-    blas:          wgpu::Blas,
+    pub out_buffer:   wgpu::Buffer,
     /// 頂点数（ディスパッチ数とサイズ記述子に使う）。
-    vertex_count:  u32,
+    pub vertex_count: u32,
     /// インデックス数（サイズ記述子に使う）。
-    index_count:   u32,
+    pub index_count:  u32,
+    /// skin_deform.wgsl の uniform（毎フレーム joint_base を書き換える）。
+    params_buffer:    wgpu::Buffer,
+    /// group0 BindGroup（params / 元頂点 / スキン属性 / 出力）。プリミティブが変わらない限り不変。
+    entry_bg:         wgpu::BindGroup,
     /// 直近に書き込んだ params（同値なら `queue.write_buffer` を省く）。
-    last_params:   SkinDeformParams,
-    /// このエントリを作ったときの `GpuPrimitive::generation`。
+    last_params:      SkinDeformParams,
+}
+
+/// 1 エントリ（スキンメッシュノード × インスタンス）分の GPU リソース。
+struct SkinBlasEntry {
+    /// このエントリ専用の BLAS（毎フレーム再構築）。`slots` と同順のジオメトリ配列を持つ。
+    blas:  wgpu::Blas,
+    /// ジオメトリ順のプリミティブスロット。**この順序が BLAS の geometry_index と一致する**。
+    slots: Vec<SkinPrimSlot>,
+    /// このエントリを作ったときの「構成シグネチャ」。
     ///
-    /// 同一キー（batch_key+mesh+prim+inst）のままモデル実体が差し替わると、
+    /// 同一キー（batch_key+node+inst）のままモデル実体が差し替わると、各スロットの
     /// `entry_bg` が掴む頂点バッファも `vertex_count` / `index_count` も古いままになる。
-    /// 頂点数・インデックス数が減る差し替えでは BLAS ビルドが wgpu の検証で落ちるため、
-    /// 世代不一致を検出したらエントリごと作り直す。
-    prim_generation: u64,
+    /// 頂点数・インデックス数が減る差し替えでは BLAS ビルドが wgpu の検証で落ち、
+    /// プリミティブ数が変わればジオメトリ配列の形そのものが変わる。
+    /// 構成（プリミティブ列＋各実体世代＋頂点/インデックス数）をハッシュで畳み込み、
+    /// 不一致を検出したらエントリごと作り直す。
+    layout_sig: u64,
     /// **最後に BLAS を構築できたときの**ポーズ署名。`None` = 一度も構築していない。
     /// これが今フレームの署名と一致するなら、変形 compute も BLAS 再構築も省ける。
     pose_sig_built: Option<SkinPoseSignature>,
@@ -146,13 +221,15 @@ struct SkinBlasEntry {
 /// 別のクリップへ差し替わるときはシステムごと作り直され `skin_generation` が変わる。
 /// したがってここに挙げた 5 つが一致すれば、変形後頂点は 1 ビット違わず同一になる。
 ///
-/// - `prim_generation`: 元プリミティブ（頂点・スキン属性・インデックス）の実体世代。
+/// - `layout_sig`: エントリを構成する **全プリミティブ**（頂点・スキン属性・インデックス）の
+///   実体世代と形状を畳み込んだハッシュ。BLAS 統合により 1 エントリが複数プリミティブを
+///   持つため、単一の `prim_generation` ではなく結合ハッシュを署名要素にする。
 /// - `skin_generation`: ジョイント行列バッファを持つスキンシステムの実体世代。
 /// - `lod` / `compact_idx`: どのジョイント行列スロットを読むか（`joint_base` の決定要素）。
 /// - `anim_bits`: 再生時刻のビット表現（Animator 非駆動は番兵値＝静止）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct SkinPoseSignature {
-    pub prim_generation: u64,
+    pub layout_sig:      u64,
     pub skin_generation: u64,
     pub lod:             usize,
     pub compact_idx:     u32,
@@ -203,11 +280,9 @@ struct JointBgEntry {
 
 /// 当該フレームに変形 compute を積むエントリ 1 件分の情報。
 struct PendingDispatch {
-    key:        SkinBlasKey,
+    key:       SkinBlasKey,
     /// ジョイント行列 BindGroup のキャッシュキー（バッチキー＋LOD）。
-    joint_key:  (String, usize),
-    /// ディスパッチするワークグループ数。
-    wg_count:   u32,
+    joint_key: (String, usize),
 }
 
 // ─── マネージャ ──────────────────────────────────────────────
@@ -235,10 +310,10 @@ pub struct RtSkinBlasManager {
     pending:          Vec<PendingDispatch>,
     /// 総数上限超過の警告を出したか（ログ爆発防止）。
     warned_capacity:  bool,
-    /// 頂点数上限超過の警告を出したエントリ（同一キーは 1 回だけ警告）。
-    warned_vertices:  HashSet<SkinBlasKey>,
-    /// バッファ用途不足の警告を出したエントリ（同一キーは 1 回だけ警告）。
-    warned_usage:     HashSet<SkinBlasKey>,
+    /// 頂点数上限超過の警告を出したプリミティブ（同一プリミティブは 1 回だけ警告）。
+    warned_vertices:  HashSet<(String, usize, usize)>,
+    /// バッファ用途不足の警告を出したプリミティブ（同一プリミティブは 1 回だけ警告）。
+    warned_usage:     HashSet<(String, usize, usize)>,
 }
 
 impl Default for RtSkinBlasManager {
@@ -265,6 +340,17 @@ impl RtSkinBlasManager {
         self.pending.clear();
     }
 
+    /// 「1 体ぶん（＝`groups` 個のエントリ）をまとめて受け入れられるか」を事前に問う。
+    ///
+    /// 【なぜ事前予約が要るか】1 体は分類（インスタンスマスク）ごとに複数エントリへ
+    /// 割れることがある。1 件ずつ上限判定すると「不透明部位だけ通って半透明部位が
+    /// 弾かれる」＝**体の途中で切れる部分受理**が起きうる。呼び出し側は 1 体を
+    /// 登録する前に本メソッドで枠を確認し、足りなければその体を丸ごと見送る。
+    /// これにより「体の一部だけが RT に映る」不整合が構造的に起こらない。
+    pub fn can_accept_group(&self, groups: usize) -> bool {
+        capacity_allows_group(self.live_keys.len(), groups)
+    }
+
     /// 解放されたバッチキーに紐づくエントリ／BindGroup を追従解放する。
     /// `RtShadowResources::prune_source_paths` から呼ばれ、非スキン BLAS と同じ寿命規則に揃える。
     pub fn prune_batch_keys(&mut self, freed_keys: &[String]) -> usize {
@@ -272,21 +358,26 @@ impl RtSkinBlasManager {
         let before = self.entries.len();
         self.entries.retain(|k, _| !freed_keys.iter().any(|f| k.batch_key == *f));
         self.joint_bgs.retain(|(bk, _), _| !freed_keys.iter().any(|f| bk == f));
-        self.warned_vertices.retain(|k| !freed_keys.iter().any(|f| k.batch_key == *f));
-        self.warned_usage.retain(|k| !freed_keys.iter().any(|f| k.batch_key == *f));
+        self.warned_vertices.retain(|(bk, _, _)| !freed_keys.iter().any(|f| bk == f));
+        self.warned_usage.retain(|(bk, _, _)| !freed_keys.iter().any(|f| bk == f));
         before - self.entries.len()
     }
 
-    /// 1 エントリを当該フレームに登録し、必要なら GPU リソースを生成する。
+    /// 1 エントリ（＝スキンメッシュノード 1 インスタンス）を当該フレームに登録し、
+    /// 必要なら GPU リソースを生成する。
     ///
-    /// - `batch_key` / `mesh_idx` / `prim_idx` / `inst_idx`: エントリの同定に使う。
-    /// - `prim`: 元プリミティブ（頂点・スキン属性・インデックスの供給元）。
+    /// - `batch_key` / `node_idx` / `inst_idx`: エントリの同定に使う。
+    /// - `prims`: このノードを構成するプリミティブ列。**この順序が BLAS のジオメトリ順**になる。
     /// - `skin`: このバッチのスキンシステム（ジョイント行列バッファの供給元）。
     /// - `lod` / `compact_idx`: ジョイント行列の位置。`joint_base = compact_idx * MAX_JOINTS`。
     /// - `anim_bits`: 再生時刻のビット表現（ポーズ署名の要素。呼び出し元が算出する）。
     ///
     /// 返り値は `SkinEntryStatus`。`Rejected` 以外なら TLAS へ載せてよく、
     /// `NeedsRebuild` のときだけ変形 compute を積み BLAS を構築し直す必要がある。
+    ///
+    /// 【部分受理をしない】制約を満たさないプリミティブは個別に除外されるが、
+    /// **件数上限による拒否は 1 体まるごと**である（枠が足りなければ 1 件も登録しない）。
+    /// これにより「体の途中で切れて一部だけ RT に映る」不整合が起こらない。
     #[allow(clippy::too_many_arguments)]
     pub fn ensure_entry(
         &mut self,
@@ -294,88 +385,81 @@ impl RtSkinBlasManager {
         queue:       &wgpu::Queue,
         pipeline:    &SkinDeformPipeline,
         batch_key:   &str,
-        mesh_idx:    usize,
-        prim_idx:    usize,
+        node_idx:    usize,
         inst_idx:    usize,
-        prim:        &GpuPrimitive,
+        class_id:    u32,
+        prims:       &[SkinPrimInput<'_>],
         skin:        &SkinComputeSystem,
         lod:         usize,
         compact_idx: u32,
         anim_bits:   u32,
     ) -> SkinEntryStatus {
-        let key = SkinBlasKey::new(batch_key, mesh_idx, prim_idx, inst_idx);
+        let key = SkinBlasKey::new(batch_key, node_idx, inst_idx, class_id);
 
-        // ── 事前条件: スキン属性バッファが無ければ変形できない ──────────
-        let Some(skin_vb) = prim.skin_vertex_buffer.as_ref() else { return SkinEntryStatus::Rejected };
-
-        // ── 頂点数／インデックス数の制約（VRAM／ビルド時間の暴走防止）────────
-        // インデックス 0 のプリミティブは三角形が 1 枚も無く BLAS を作る意味が無い
-        // （index_count=0 のサイズ記述子の扱いはバックエンド依存なので手前で弾く）。
-        if prim.vertex_count == 0
-            || prim.index_count == 0
-            || prim.vertex_count > MAX_RT_SKIN_VERTICES
-        {
-            if self.warned_vertices.insert(key.clone()) {
+        // ── 1. プリミティブごとの適格性判定（BLAS へ入れられるものだけ残す）──
+        // ここで弾かれるのは「そもそも BLAS を作れない／作る意味が無い」プリミティブだけで、
+        // 残ったプリミティブは 1 つの BLAS のジオメトリ配列としてまとめて扱う。
+        let mut accepted: Vec<&SkinPrimInput<'_>> = Vec::with_capacity(prims.len());
+        for p in prims {
+            if self.prim_is_eligible(batch_key, p) {
+                accepted.push(p);
+            }
+        }
+        if accepted.is_empty() { return SkinEntryStatus::Rejected; }
+        // ジオメトリ数の天井（1 体あたりのビルドコストとレコード消費の暴走防止）。
+        // 切り捨ては「その体の一部が RT に映らない」という目に見える縮退なので、
+        // 黙って落とさず 1 回だけ警告する（同一 (batch, node) につき 1 回）。
+        if accepted.len() > MAX_RT_SKIN_GEOMETRIES {
+            // prim_idx に番兵 usize::MAX を使い、プリミティブ単位の警告キーと衝突させない
+            // （実在の prim_idx が usize::MAX になることはない）。
+            let wk = (batch_key.to_string(), node_idx, usize::MAX);
+            if self.warned_vertices.insert(wk) {
                 eprintln!(
-                    "[SEED RT] 警告: {} mesh#{mesh_idx} prim#{prim_idx} inst#{inst_idx} の頂点数 {} /\
-                     インデックス数 {} が RT スキン BLAS の制約（頂点 1〜{MAX_RT_SKIN_VERTICES}・\
-                     インデックス 1 以上）を満たしません。このプリミティブは\
-                     RT（影/反射/GI/水面反射）に映りません",
-                    batch_key, prim.vertex_count, prim.index_count
+                    "[SEED RT] 警告: {batch_key} node#{node_idx} のスキンプリミティブ数 {} が\
+                     1 BLAS あたりの上限 {MAX_RT_SKIN_GEOMETRIES} を超えています。\
+                     超過分は RT（影/反射/GI/水面反射）に映りません",
+                    accepted.len()
                 );
             }
-            return SkinEntryStatus::Rejected;
+            accepted.truncate(MAX_RT_SKIN_GEOMETRIES);
         }
 
-        // ── 用途検証: 変形 compute は元バッファを storage として読む ──────
-        // 用途が足りないまま BindGroup を作ると wgpu の検証エラーでアプリが落ちるため、
-        // 非スキン側の BLAS_INPUT 検証（rt_shadow.rs）と同じ流儀でここも防御する。
-        let vb_ok  = prim.vertex_buffer.usage().contains(wgpu::BufferUsages::STORAGE);
-        let svb_ok = skin_vb.usage().contains(wgpu::BufferUsages::STORAGE);
-        let ib_ok  = prim.index_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT);
-        if !vb_ok || !svb_ok || !ib_ok {
-            if self.warned_usage.insert(key.clone()) {
-                eprintln!(
-                    "[SEED RT] 警告: {} mesh#{mesh_idx} prim#{prim_idx} のバッファ用途が不足しています\
-                     （vertex STORAGE={vb_ok}, skin STORAGE={svb_ok}, index BLAS_INPUT={ib_ok}）。\
-                     このスキンプリミティブは RT に映りません（gpu_resources.rs の生成経路を確認）",
-                    batch_key
-                );
-            }
-            return SkinEntryStatus::Rejected;
-        }
-
-        // ── 総数上限（**今フレームに受理した件数** に対して判定する）──────────
+        // ── 2. 総数上限（**今フレームに受理した件数** に対して判定する）──────────
         // 【なぜ「マップの総件数」ではないのか】`entries` には前フレームまでのエントリが
         // 残っており、解放は後段の `prune_unused` で行われる。総件数で判定すると、
         // エントリ集合が総入れ替えになるフレーム（アクタ差し替え・シーン切替）で
         // 「まだ解放されていない旧エントリ」が枠を食い、新規が丸ごと弾かれて 1 フレーム
         // 点滅する。今フレームの受理数（`live_keys`）を基準にすれば旧エントリの残存に
         // 左右されず、「1 フレームに載せる最大数」という本来の意味どおりに効く。
-        if self.live_keys.len() >= MAX_RT_SKIN_BLAS {
+        //
+        // 【単位】1 体 = 1 件。プリミティブ数に依存しないので、上限に達しても
+        // 「体の途中で切れる」ことはない。
+        if !capacity_allows(self.live_keys.len(), self.live_keys.contains(&key)) {
             if !self.warned_capacity {
                 self.warned_capacity = true;
                 eprintln!(
-                    "[SEED RT] 警告: RT スキン BLAS のエントリ数が上限 {MAX_RT_SKIN_BLAS} に達しました。\
-                     これ以上のスキンプリミティブ×インスタンスは RT（影/反射/GI/水面反射）に映りません\
+                    "[SEED RT] 警告: RT スキン BLAS のエントリ数が上限 {MAX_RT_SKIN_BLAS} 体に達しました。\
+                     これ以上のスキンメッシュ（1 体 = 1 エントリ）は RT（影/反射/GI/水面反射）に映りません\
                      （MAX_RT_SKIN_BLAS を増やすか対象を減らしてください）"
                 );
             }
             return SkinEntryStatus::Rejected;
         }
 
-        // ── エントリの生成（初回、または実体が作り直されたとき）──────────
-        // 世代不一致 = 同じキーのままモデル実体が差し替わった。古い頂点バッファを掴んだ
-        // BindGroup と古い頂点数のまま BLAS を組むと、最悪 wgpu の検証パニックになる。
+        // ── 3. エントリの生成（初回、または構成が変わったとき）──────────
+        // 構成シグネチャ不一致 = 同じキーのままモデル実体が差し替わった／プリミティブ構成が
+        // 変わった。古い頂点バッファを掴んだ BindGroup と古い形状のまま BLAS を組むと、
+        // 最悪 wgpu の検証パニックになる。
+        let layout_sig = compute_layout_sig(&accepted);
         let need_new_entry = cache_needs_rebuild(
-            self.entries.get(&key).map(|e| e.prim_generation), prim.generation,
+            self.entries.get(&key).map(|e| e.layout_sig), layout_sig,
         );
         if need_new_entry {
-            let entry = create_entry(device, pipeline, prim, skin_vb, &key);
+            let entry = create_entry(device, pipeline, &accepted, layout_sig, &key);
             self.entries.insert(key.clone(), entry);
         }
 
-        // ── ジョイント行列 BindGroup（(バッチ, LOD) 単位でキャッシュ）─────
+        // ── 4. ジョイント行列 BindGroup（(バッチ, LOD) 単位でキャッシュ）─────
         // こちらも世代で追従する。バッチ再生成では `GpuPrimitive` は据え置きのまま
         // `SkinComputeSystem` だけが新しくなる（＝2 つの世代は独立に動く）ため、
         // エントリ側とジョイント側でそれぞれ別に突き合わせる必要がある。
@@ -396,27 +480,30 @@ impl RtSkinBlasManager {
             );
         }
 
-        // ── params の更新（joint_base はポーズ／LOD で毎フレーム変わりうる）──
+        // ── 5. params の更新（joint_base はポーズ／LOD で毎フレーム変わりうる）──
         let entry = self.entries.get_mut(&key).expect("直前に挿入済み");
-        let params = SkinDeformParams {
-            vertex_count:        entry.vertex_count,
-            joint_base:          compact_idx * MAX_JOINTS as u32,
-            vertex_stride_words: vertex_stride_words(),
-            skin_stride_words:   skin_stride_words(),
-        };
-        if entry.last_params != params {
-            queue.write_buffer(&entry.params_buffer, 0, bytemuck::bytes_of(&params));
-            entry.last_params = params;
+        let joint_base = compact_idx * MAX_JOINTS as u32;
+        for slot in entry.slots.iter_mut() {
+            let params = SkinDeformParams {
+                vertex_count:        slot.vertex_count,
+                joint_base,
+                vertex_stride_words: vertex_stride_words(),
+                skin_stride_words:   skin_stride_words(),
+            };
+            if slot.last_params != params {
+                queue.write_buffer(&slot.params_buffer, 0, bytemuck::bytes_of(&params));
+                slot.last_params = params;
+            }
         }
 
-        // ── ポーズ署名の突き合わせ（per-actor の再構築スキップ）─────────
+        // ── 6. ポーズ署名の突き合わせ（per-actor の再構築スキップ）─────────
         // 変形後頂点を決める入力が前回構築時と 1 ビット違わなければ、変形 compute も
         // BLAS も前フレームのものがそのまま正しい。アニメ停止中・ポーズ静止中の
         // アクタはここで毎フレームの変形＋BLAS 再構築を丸ごと省ける。
         // 【重要】変形出力バッファと BLAS は**必ず同時に**据え置かれる（両方スキップ、
         // または両方更新）。片方だけ更新すると RT 上でメッシュが壊れる。
         let sig = SkinPoseSignature {
-            prim_generation: prim.generation,
+            layout_sig,
             skin_generation: skin.generation,
             lod,
             compact_idx,
@@ -425,16 +512,61 @@ impl RtSkinBlasManager {
         entry.pose_sig_current = sig;
         let needs_rebuild = pose_needs_rebuild(entry.pose_sig_built, sig);
 
-        // ── 当該フレームの生存へ登録（スキップしても生存扱い＝prune させない）──
+        // ── 7. 当該フレームの生存へ登録（スキップしても生存扱い＝prune させない）──
         self.live_keys.insert(key.clone());
         if !needs_rebuild {
             return SkinEntryStatus::Unchanged;
         }
-        // ── ディスパッチ予定へ登録 ─────────────────────────────────
-        // ワークグループ数は「頂点数 ÷ workgroup_size」の切り上げ。
-        let wg_count = entry.vertex_count.div_ceil(DEFORM_WORKGROUP_SIZE);
-        self.pending.push(PendingDispatch { key, joint_key, wg_count });
+        self.pending.push(PendingDispatch { key, joint_key });
         SkinEntryStatus::NeedsRebuild
+    }
+
+    /// プリミティブ 1 個が BLAS ジオメトリとして適格かを判定する（不適格なら 1 回だけ警告）。
+    ///
+    /// 判定内容は 2 つ:
+    ///   - 頂点数／インデックス数の制約（VRAM とビルド時間の暴走防止）
+    ///   - 変形 compute と BLAS が要求するバッファ用途（STORAGE / BLAS_INPUT）
+    /// 用途が足りないまま BindGroup を作ると wgpu の検証エラーでアプリが落ちるため、
+    /// 非スキン側の BLAS_INPUT 検証（rt_shadow.rs）と同じ流儀でここも防御する。
+    fn prim_is_eligible(&mut self, batch_key: &str, p: &SkinPrimInput<'_>) -> bool {
+        let prim = p.prim;
+        // スキン属性バッファが無ければ変形できない。
+        let Some(skin_vb) = prim.skin_vertex_buffer.as_ref() else { return false };
+
+        // インデックス 0 のプリミティブは三角形が 1 枚も無く BLAS を作る意味が無い
+        // （index_count=0 のサイズ記述子の扱いはバックエンド依存なので手前で弾く）。
+        if prim.vertex_count == 0
+            || prim.index_count == 0
+            || prim.vertex_count > MAX_RT_SKIN_VERTICES
+        {
+            let wk = (batch_key.to_string(), p.mesh_idx, p.prim_idx);
+            if self.warned_vertices.insert(wk) {
+                eprintln!(
+                    "[SEED RT] 警告: {batch_key} mesh#{} prim#{} の頂点数 {} / インデックス数 {} が\
+                     RT スキン BLAS の制約（頂点 1〜{MAX_RT_SKIN_VERTICES}・インデックス 1 以上）を\
+                     満たしません。このプリミティブは RT（影/反射/GI/水面反射）に映りません",
+                    p.mesh_idx, p.prim_idx, prim.vertex_count, prim.index_count
+                );
+            }
+            return false;
+        }
+
+        let vb_ok  = prim.vertex_buffer.usage().contains(wgpu::BufferUsages::STORAGE);
+        let svb_ok = skin_vb.usage().contains(wgpu::BufferUsages::STORAGE);
+        let ib_ok  = prim.index_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT);
+        if !vb_ok || !svb_ok || !ib_ok {
+            let wk = (batch_key.to_string(), p.mesh_idx, p.prim_idx);
+            if self.warned_usage.insert(wk) {
+                eprintln!(
+                    "[SEED RT] 警告: {batch_key} mesh#{} prim#{} のバッファ用途が不足しています\
+                     （vertex STORAGE={vb_ok}, skin STORAGE={svb_ok}, index BLAS_INPUT={ib_ok}）。\
+                     このスキンプリミティブは RT に映りません（gpu_resources.rs の生成経路を確認）",
+                    p.mesh_idx, p.prim_idx
+                );
+            }
+            return false;
+        }
+        true
     }
 
     /// BLAS を実際に構築したエントリの署名を「構築済み」として確定させる。
@@ -485,18 +617,24 @@ impl RtSkinBlasManager {
         for p in &self.pending {
             let (Some(entry), Some(jbg)) =
                 (self.entries.get(&p.key), self.joint_bgs.get(&p.joint_key)) else { continue };
-            pass.set_bind_group(0, &entry.entry_bg, &[]);
             pass.set_bind_group(1, &jbg.bg, &[]);
-            pass.dispatch_workgroups(p.wg_count, 1, 1);
+            // 1 エントリ（体）の全プリミティブを続けてディスパッチする。
+            // ワークグループ数は「頂点数 ÷ workgroup_size」の切り上げ。
+            for slot in &entry.slots {
+                pass.set_bind_group(0, &slot.entry_bg, &[]);
+                pass.dispatch_workgroups(slot.vertex_count.div_ceil(DEFORM_WORKGROUP_SIZE), 1, 1);
+            }
         }
     }
 
-    /// BLAS ビルドに必要な (BLAS, 変形後頂点バッファ, 頂点数, インデックス数) を返す。
-    pub fn blas_inputs(&self, key: &SkinBlasKey)
-        -> Option<(&wgpu::Blas, &wgpu::Buffer, u32, u32)>
+    /// BLAS ビルドに必要な (BLAS, ジオメトリ順のプリミティブスロット) を返す。
+    ///
+    /// スロットの並びがそのまま BLAS のジオメトリ順（＝シェーダが読む `geometry_index`）であり、
+    /// 呼び出し側はこの順序で bindless レコードを連続配置しなければならない。
+    pub fn blas_geometries(&self, key: &SkinBlasKey)
+        -> Option<(&wgpu::Blas, &[SkinPrimSlot])>
     {
-        self.entries.get(key)
-            .map(|e| (&e.blas, &e.out_buffer, e.vertex_count, e.index_count))
+        self.entries.get(key).map(|e| (&e.blas, e.slots.as_slice()))
     }
 }
 
@@ -504,10 +642,10 @@ impl RtSkinBlasManager {
 
 /// キャッシュしている GPU リソースを作り直すべきかを判定する（単一の判断箇所）。
 ///
-/// - `cached`: そのキャッシュエントリを作ったときの生成世代。`None` = 未キャッシュ。
-/// - `current`: 現在の実体の生成世代（`GpuPrimitive::generation` / `SkinComputeSystem::generation`）。
+/// - `cached`: そのキャッシュエントリを作ったときの生成世代／構成シグネチャ。`None` = 未キャッシュ。
+/// - `current`: 現在の実体の生成世代／構成シグネチャ。
 ///
-/// キーが一致していても実体が作り直されていれば世代が変わる。この関数はその
+/// キーが一致していても実体が作り直されていれば値が変わる。この関数はその
 /// 「キー一致だけでは足りない」という判断を 1 箇所に集約し、エントリ側とジョイント側の
 /// 両方から同じ規則で使う（片方だけ判定を忘れる、という退行を防ぐ）。
 fn cache_needs_rebuild(cached: Option<u64>, current: u64) -> bool {
@@ -515,6 +653,44 @@ fn cache_needs_rebuild(cached: Option<u64>, current: u64) -> bool {
         None => true,             // 未キャッシュ: 作る
         Some(g) => g != current,  // 実体が差し替わった: 作り直す
     }
+}
+
+/// 件数上限を新規エントリに対して許可するかを判定する純関数（単一の判断箇所）。
+///
+/// - `live_len`: 今フレームにすでに受理したエントリ数（＝体数）。
+/// - `already_live`: このキーが今フレームすでに受理済みか（再登録は枠を消費しない）。
+///
+/// 【この関数を切り出す理由】上限判定は「1 体 = 1 件」という本修正の核心であり、
+/// GPU デバイス無しで検証できる形にしておかないと、退行（プリミティブ単位への逆戻り）を
+/// テストで縛れない。`ensure_entry` は 1 体につき 1 回だけ本関数を呼ぶので、
+/// プリミティブ数がいくつでも消費は 1 件であり、部分受理は構造的に起こらない。
+fn capacity_allows(live_len: usize, already_live: bool) -> bool {
+    already_live || capacity_allows_group(live_len, 1)
+}
+
+/// 「まとめて `groups` 件のエントリを受け入れられるか」を判定する純関数。
+/// 1 体が分類（マスク）ごとに複数エントリへ割れるときの **原子的な予約**に使う。
+fn capacity_allows_group(live_len: usize, groups: usize) -> bool {
+    live_len + groups <= MAX_RT_SKIN_BLAS
+}
+
+/// エントリの構成シグネチャを計算する。
+///
+/// 畳み込む要素は「プリミティブ列の順序・同定（mesh/prim）・実体世代・形状（頂点/インデックス数）」。
+/// これが変われば BindGroup も BLAS のジオメトリ配列も作り直す必要がある。
+/// ポーズ署名の `layout_sig` としても使い、実体差し替えで必ず BLAS を再構築させる。
+fn compute_layout_sig(accepted: &[&SkinPrimInput<'_>]) -> u64 {
+    let mut h = DefaultHasher::new();
+    // 件数を先に混ぜ、連結の曖昧さ（[a],[b] と [a,b] の衝突）を消す。
+    accepted.len().hash(&mut h);
+    for p in accepted {
+        p.mesh_idx.hash(&mut h);
+        p.prim_idx.hash(&mut h);
+        p.prim.generation.hash(&mut h);
+        p.prim.vertex_count.hash(&mut h);
+        p.prim.index_count.hash(&mut h);
+    }
+    h.finish()
 }
 
 /// `Vertex` 1 個のワード数（u32 単位）。skin_deform.wgsl が生バイト列を u32 配列として読むため。
@@ -527,14 +703,15 @@ fn skin_stride_words() -> u32 {
     (std::mem::size_of::<crate::engine::core::loader::model::SkinVertex>() / BYTES_PER_WORD) as u32
 }
 
-/// エントリ 1 件分の GPU リソース（出力バッファ・uniform・BindGroup・BLAS）を生成する。
-fn create_entry(
+/// プリミティブ 1 個分のスロット（出力バッファ・uniform・BindGroup）を生成する。
+fn create_slot(
     device:   &wgpu::Device,
     pipeline: &SkinDeformPipeline,
-    prim:     &GpuPrimitive,
-    skin_vb:  &wgpu::Buffer,
-    key:      &SkinBlasKey,
-) -> SkinBlasEntry {
+    p:        &SkinPrimInput<'_>,
+) -> SkinPrimSlot {
+    let prim = p.prim;
+    let skin_vb = prim.skin_vertex_buffer.as_ref()
+        .expect("prim_is_eligible がスキン属性バッファの存在を保証している");
     let vertex_count = prim.vertex_count;
     let index_count  = prim.index_count;
 
@@ -564,6 +741,38 @@ fn create_entry(
         ],
     });
 
+    SkinPrimSlot {
+        mesh_idx: p.mesh_idx,
+        prim_idx: p.prim_idx,
+        out_buffer,
+        vertex_count,
+        index_count,
+        params_buffer,
+        entry_bg,
+        // 番兵: 実際の params と必ず異なる値を入れ、初回は必ず書き込ませる。
+        last_params: SkinDeformParams {
+            vertex_count:        u32::MAX,
+            joint_base:          u32::MAX,
+            vertex_stride_words: u32::MAX,
+            skin_stride_words:   u32::MAX,
+        },
+    }
+}
+
+/// エントリ 1 件分（＝1 体 1 メッシュノード）の GPU リソースを生成する。
+///
+/// BLAS は **プリミティブ数ぶんのジオメトリ配列**を持つ 1 個だけ作る。
+fn create_entry(
+    device:     &wgpu::Device,
+    pipeline:   &SkinDeformPipeline,
+    accepted:   &[&SkinPrimInput<'_>],
+    layout_sig: u64,
+    key:        &SkinBlasKey,
+) -> SkinBlasEntry {
+    let slots: Vec<SkinPrimSlot> = accepted.iter()
+        .map(|p| create_slot(device, pipeline, p))
+        .collect();
+
     // 【ビルドフラグの根拠】スキン BLAS は毎フレーム内容が変わるため、
     // トレース性能より **ビルド速度** を優先する（PREFER_FAST_BUILD）。
     // update_mode は Build（フル再構築）とした。wgpu 25 には
@@ -573,45 +782,35 @@ fn create_entry(
     //   - wgpu 25 の Blas は「同じジオメトリ記述で再ビルドすると更新になる」保証を
     //     API レベルで明示しておらず、バックエンドによる差異を検証できていない。
     // 実測で問題が出るまではフル再構築で正しさを優先する（docs に既知の制限として記載）。
+    let descriptors: Vec<BlasTriangleGeometrySizeDescriptor> = slots.iter()
+        .map(|s| skin_blas_size_desc(s.vertex_count, s.index_count))
+        .collect();
     let blas = device.create_blas(
         &CreateBlasDescriptor {
             label:       Some("RT Skin BLAS"),
             flags:       AccelerationStructureFlags::PREFER_FAST_BUILD,
             update_mode: AccelerationStructureUpdateMode::Build,
         },
-        BlasGeometrySizeDescriptors::Triangles {
-            descriptors: vec![skin_blas_size_desc(vertex_count, index_count)],
-        },
+        BlasGeometrySizeDescriptors::Triangles { descriptors },
     );
 
+    let total_verts: u64 = slots.iter().map(|s| s.vertex_count as u64).sum();
     eprintln!(
-        "[SEED RT] スキン BLAS 生成: {} mesh#{} prim#{} inst#{}（頂点 {vertex_count} / インデックス {index_count}）",
-        key.batch_key, key.mesh_idx, key.prim_idx, key.inst_idx
+        "[SEED RT] スキン BLAS 生成: {} node#{} inst#{}（ジオメトリ {} 個 / 合計頂点 {}）",
+        key.batch_key, key.node_idx, key.inst_idx, slots.len(), total_verts
     );
 
     SkinBlasEntry {
-        out_buffer,
-        params_buffer,
-        entry_bg,
         blas,
-        vertex_count,
-        index_count,
-        // 番兵: 実際の params と必ず異なる値を入れ、初回は必ず書き込ませる。
-        last_params: SkinDeformParams {
-            vertex_count:        u32::MAX,
-            joint_base:          u32::MAX,
-            vertex_stride_words: u32::MAX,
-            skin_stride_words:   u32::MAX,
-        },
-        // 生成元プリミティブの世代を記録し、実体差し替えを検出できるようにする。
-        prim_generation: prim.generation,
+        slots,
+        layout_sig,
         // 新規エントリの BLAS は未構築。初回は必ず変形＋構築を通す。
         pose_sig_built:   None,
         pose_sig_current: SkinPoseSignature::default(),
     }
 }
 
-/// スキン BLAS のサイズ記述子。
+/// スキン BLAS のジオメトリ 1 個ぶんのサイズ記述子。
 ///
 /// 頂点フォーマットは Float32x3（変形出力 vec4 の先頭 12B を読む）、インデックスは Uint32。
 /// OPAQUE フラグは非スキン（rt_shadow.rs の `blas_size_desc`）と同じ理由で常に立てる
@@ -759,7 +958,7 @@ mod tests {
         );
     }
 
-    /// 生成世代によるキャッシュ無効化の規則を固定する。
+    /// 構成シグネチャによるキャッシュ無効化の規則を固定する。
     ///
     /// これは「同じ batch_key のままバッチ／モデル実体が作り直される」経路
     /// （frame_renderer の統合バッチ再生成・terrain_scatter_ops の容量拡張・モデル差し替え）
@@ -773,10 +972,10 @@ mod tests {
     fn cache_invalidation_follows_generation() {
         // 未キャッシュは必ず作る。
         assert!(cache_needs_rebuild(None, 1), "未キャッシュなら生成が必要");
-        // 世代が同じなら再利用する（毎フレーム作り直すと確保コストが跳ねる）。
-        assert!(!cache_needs_rebuild(Some(7), 7), "世代一致なら再利用するべき");
-        // 世代が変わっていれば必ず作り直す（実体が差し替わっている）。
-        assert!(cache_needs_rebuild(Some(7), 8), "世代不一致なら作り直すべき");
+        // 値が同じなら再利用する（毎フレーム作り直すと確保コストが跳ねる）。
+        assert!(!cache_needs_rebuild(Some(7), 7), "一致なら再利用するべき");
+        // 値が変わっていれば必ず作り直す（実体が差し替わっている）。
+        assert!(cache_needs_rebuild(Some(7), 8), "不一致なら作り直すべき");
         // 世代が「戻る」ことは採番の性質上ないが、不一致は一律で作り直す（安全側）。
         assert!(cache_needs_rebuild(Some(8), 7), "不一致は方向に関わらず作り直すべき");
     }
@@ -788,7 +987,7 @@ mod tests {
     #[test]
     fn pose_skip_follows_all_inputs() {
         let base = SkinPoseSignature {
-            prim_generation: 10,
+            layout_sig:      10,
             skin_generation: 20,
             lod:             1,
             compact_idx:     3,
@@ -801,7 +1000,7 @@ mod tests {
 
         // 各要素を単独で変えたら、必ず再構築へ倒れること。
         let mut anim = base;   anim.anim_bits = 0.75f32.to_bits();      // 再生時刻が進んだ
-        let mut prim = base;   prim.prim_generation += 1;               // モデル実体の差し替え
+        let mut prim = base;   prim.layout_sig += 1;                    // モデル実体／構成の差し替え
         let mut skin = base;   skin.skin_generation += 1;               // スキンシステム再生成
         let mut lod  = base;   lod.lod += 1;                            // LOD が切り替わった
         let mut idx  = base;   idx.compact_idx += 1;                    // ジョイント行列スロット移動
@@ -848,6 +1047,131 @@ mod tests {
             "変形出力のストライドは vec4<f32> = 16B である必要があります");
     }
 
+    /// キーの粒度が「メッシュノード × インスタンス」であること（プリミティブを含まない）。
+    ///
+    /// これが崩れる（prim_idx が復活する）と、1 体が 59 エントリを消費して
+    /// 上限 64 を体の途中で使い切る退行（オリジナル 1 体だけが暗くなる症状）が再発する。
+    #[test]
+    fn key_granularity_is_node_instance() {
+        const CLASS_OPAQUE: u32 = 0x01;
+        const CLASS_BLEND:  u32 = 0x02;
+        let a = SkinBlasKey::new("batch", 3, 7, CLASS_OPAQUE);
+        let b = SkinBlasKey::new("batch", 3, 7, CLASS_OPAQUE);
+        assert_eq!(a, b, "同じ (batch, node, inst, class) は同一キーであること");
+        // ノードが違えば別キー（別ワールド変換 = 別 BLAS でなければならない）。
+        assert_ne!(a, SkinBlasKey::new("batch", 4, 7, CLASS_OPAQUE), "ノードが違えば別エントリ");
+        // インスタンスが違えば別キー（ポーズが違う = 頂点が違う）。
+        assert_ne!(a, SkinBlasKey::new("batch", 3, 8, CLASS_OPAQUE), "インスタンスが違えば別エントリ");
+        // 分類（インスタンスマスク）が違えば別キー（マスクは TLAS インスタンス単位の属性）。
+        assert_ne!(a, SkinBlasKey::new("batch", 3, 7, CLASS_BLEND), "分類が違えば別エントリ");
+    }
+
+    /// 1 体が複数分類（不透明＋半透明）へ割れるときの **原子的な予約**。
+    ///
+    /// 1 件ずつ上限判定すると「不透明部位だけ載って半透明部位が弾かれる」部分受理が
+    /// 起きうる。呼び出し側は体ごとに `can_accept_group(分類数)` で予約するため、
+    /// 枠が足りない体は 1 件も登録されない。
+    #[test]
+    fn group_reservation_is_atomic() {
+        // 残り 1 枠しかないとき、2 分類の体は丸ごと見送られる。
+        assert!(!capacity_allows_group(MAX_RT_SKIN_BLAS - 1, 2),
+            "残り 1 枠で 2 分類の体を部分受理してはならない");
+        // ちょうど収まるなら受け入れる。
+        assert!(capacity_allows_group(MAX_RT_SKIN_BLAS - 2, 2), "ちょうど収まる体は受け入れる");
+        assert!(capacity_allows_group(0, MAX_RT_SKIN_BLAS), "空なら上限ちょうどまで入る");
+        assert!(!capacity_allows_group(0, MAX_RT_SKIN_BLAS + 1), "上限を 1 件でも超えたら拒否");
+    }
+
+    /// 構成シグネチャが「プリミティブ列の順序と件数」を区別すること。
+    ///
+    /// ジオメトリ順は bindless レコードの並び順そのものなので、順序が変わったのに
+    /// エントリを作り直さないと `geometry_index` とレコードの対応が入れ替わり、
+    /// 別マテリアルのテクスチャで影・反射が着色される。
+    #[test]
+    fn layout_sig_distinguishes_order_and_count() {
+        // GpuPrimitive の実体を作らずにシグネチャだけ検証するため、ハッシュ入力を直接組む
+        // ヘルパーと同じ規則をここで再現する（compute_layout_sig の入力と 1:1）。
+        fn sig(items: &[(usize, usize, u64, u32, u32)]) -> u64 {
+            let mut h = DefaultHasher::new();
+            items.len().hash(&mut h);
+            for (m, p, g, vc, ic) in items {
+                m.hash(&mut h); p.hash(&mut h); g.hash(&mut h);
+                vc.hash(&mut h); ic.hash(&mut h);
+            }
+            h.finish()
+        }
+        let a = sig(&[(0, 0, 1, 10, 30), (0, 1, 1, 20, 60)]);
+        let b = sig(&[(0, 1, 1, 20, 60), (0, 0, 1, 10, 30)]); // 順序違い
+        let c = sig(&[(0, 0, 1, 10, 30)]);                    // 件数違い
+        let d = sig(&[(0, 0, 2, 10, 30), (0, 1, 1, 20, 60)]); // 世代違い
+        assert_ne!(a, b, "ジオメトリ順が変われば構成シグネチャも変わること");
+        assert_ne!(a, c, "プリミティブ数が変われば構成シグネチャも変わること");
+        assert_ne!(a, d, "実体世代が変われば構成シグネチャも変わること");
+        assert_eq!(a, sig(&[(0, 0, 1, 10, 30), (0, 1, 1, 20, 60)]), "同一入力は同一シグネチャ");
+    }
+
+    /// 【本修正の中核】20 体 × 59 プリミティブ（BrainStem 相当）を登録したとき、
+    /// **全 20 体が受理される**こと。
+    ///
+    /// 旧実装はエントリ単位が (batch, mesh, prim, inst) だったため、20×59 = 1180 件が
+    /// 上限 64 を「体の途中で」使い切り、inst0 だけが全 59 件受理・inst1 は 5 件だけ・
+    /// inst2 以降は全滅した。結果 TLAS にはオリジナル 1 体しか載らず、その 1 体にだけ
+    /// RTAO と RT 影の自己遮蔽が乗って暗く見えた。ここでは実 GPU 無しで判定規則だけを
+    /// 再現し（`ensure_entry` は 1 体につき 1 回だけ `capacity_allows` を呼ぶ）、
+    /// 「1 体 = 1 件」であることを固定する。
+    #[test]
+    fn twenty_actors_with_many_primitives_are_all_accepted() {
+        const ACTORS:     usize = 20;
+        const PRIMS:      usize = 59; // BrainStem の 1 メッシュあたりプリミティブ数
+        let mut live: Vec<SkinBlasKey> = Vec::new();
+        let mut accepted = 0usize;
+
+        // 列挙はインスタンス major（gpu_resources::rt_enumerate_skinned と同じ順序）。
+        const CLASS_OPAQUE: u32 = 0x01; // 全プリミティブが不透明な体（BrainStem 相当）
+        for inst in 0..ACTORS {
+            let key = SkinBlasKey::new("batch", 0, inst, CLASS_OPAQUE);
+            let already = live.contains(&key);
+            if !capacity_allows(live.len(), already) { continue; }
+            // 1 体に何プリミティブあっても、消費するのは 1 件だけ。
+            let _ = PRIMS;
+            if !already { live.push(key); }
+            accepted += 1;
+        }
+
+        assert_eq!(
+            accepted, ACTORS,
+            "20 体 × {PRIMS} プリミティブでも全 {ACTORS} 体が受理されること\
+             （プリミティブ単位に戻ると 1 体しか載らない退行が再発する）"
+        );
+        assert_eq!(live.len(), ACTORS, "エントリ消費は 1 体 = 1 件であること");
+        assert!(
+            ACTORS * PRIMS > MAX_RT_SKIN_BLAS,
+            "このテストは「旧単位なら必ず上限を超える」規模で行う意味がある（{} > {MAX_RT_SKIN_BLAS}）",
+            ACTORS * PRIMS
+        );
+    }
+
+    /// 上限に達したときの拒否が「体まるごと」であり、体の途中で切れないこと。
+    ///
+    /// 上限までは全て受理され、上限を超えた体は 1 件も登録されない（部分受理が無い）。
+    /// 判定が 1 体につき 1 回しか走らない構造なので、これは規則として保証される。
+    #[test]
+    fn capacity_rejects_whole_instances_only() {
+        const OVER: usize = 10; // 上限を超えて要求する体数
+        let mut live = 0usize;
+        let mut results = Vec::new();
+        for _ in 0..(MAX_RT_SKIN_BLAS + OVER) {
+            let ok = capacity_allows(live, false);
+            if ok { live += 1; }
+            results.push(ok);
+        }
+        assert_eq!(live, MAX_RT_SKIN_BLAS, "受理数は上限ちょうどで止まること");
+        assert!(results[..MAX_RT_SKIN_BLAS].iter().all(|&b| b), "上限までは全て受理");
+        assert!(results[MAX_RT_SKIN_BLAS..].iter().all(|&b| !b), "超過分は全て拒否");
+        // 同一キーの再登録は枠を消費しない（既に生存しているエントリは常に通す）。
+        assert!(capacity_allows(MAX_RT_SKIN_BLAS, true), "受理済みキーの再登録は常に許可");
+    }
+
     /// **実 GPU**: 変形 compute パイプライン生成 → ダミープリミティブ 1 個の変形 →
     /// BLAS＋TLAS のビルドがエラー無く通ること。
     ///
@@ -883,9 +1207,11 @@ mod tests {
         // ── パイプライン生成（ステージ可視性の検証を兼ねる）──────────
         let pipeline = SkinDeformPipeline::new(&device, None);
 
-        // ── ダミー: 三角形 1 枚（3 頂点）＋ジョイント 1 本 ────────────
+        // ── ダミー: 三角形 1 枚（3 頂点）＋ジョイント 1 本 を 2 ジオメトリぶん ────
+        // 統合 BLAS（複数ジオメトリ）の経路を実デバイスで通すため、意図的に 2 個作る。
         const TRI_VERTS:   u32 = 3;
         const TRI_INDICES: u32 = 3;
+        const GEOM_COUNT:  usize = 2;
         let verts = vec![Vertex::default(); TRI_VERTS as usize];
         let skins = vec![
             SkinVertex { joints: [0; 4], weights: [1.0, 0.0, 0.0, 0.0] };
@@ -914,45 +1240,54 @@ mod tests {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        // ── 出力／uniform／BindGroup ───────────────────────────────
-        let out_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("test out"),
-            size: TRI_VERTS as u64 * SKIN_DEFORM_VERTEX_STRIDE,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::BLAS_INPUT,
-            mapped_at_creation: false,
-        });
+        // ── 出力／uniform／BindGroup（ジオメトリごと）───────────────
         let params = SkinDeformParams {
             vertex_count: TRI_VERTS, joint_base: 0,
             vertex_stride_words: vertex_stride_words(),
             skin_stride_words:   skin_stride_words(),
         };
-        let pbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("test params"), contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let entry_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("test entry bg"), layout: &pipeline.entry_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: pbuf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: vb.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: svb.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: out_buf.as_entire_binding() },
-            ],
-        });
+        let mut out_bufs = Vec::new();
+        let mut entry_bgs = Vec::new();
+        for g in 0..GEOM_COUNT {
+            let out_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("test out"),
+                size: TRI_VERTS as u64 * SKIN_DEFORM_VERTEX_STRIDE,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::BLAS_INPUT,
+                mapped_at_creation: false,
+            });
+            let pbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("test params"), contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("test entry bg"), layout: &pipeline.entry_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: pbuf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: vb.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: svb.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: out_buf.as_entire_binding() },
+                ],
+            });
+            let _ = g;
+            out_bufs.push(out_buf);
+            entry_bgs.push(bg);
+        }
         let joint_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("test joint bg"), layout: &pipeline.joint_bgl,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: jbuf.as_entire_binding() }],
         });
 
-        // ── BLAS / TLAS ────────────────────────────────────────────
-        let size_desc = skin_blas_size_desc(TRI_VERTS, TRI_INDICES);
+        // ── BLAS（2 ジオメトリ）/ TLAS ──────────────────────────────
+        let size_descs: Vec<_> = (0..GEOM_COUNT)
+            .map(|_| skin_blas_size_desc(TRI_VERTS, TRI_INDICES))
+            .collect();
         let blas = device.create_blas(
             &CreateBlasDescriptor {
                 label: Some("test skin blas"),
                 flags: AccelerationStructureFlags::PREFER_FAST_BUILD,
                 update_mode: AccelerationStructureUpdateMode::Build,
             },
-            BlasGeometrySizeDescriptors::Triangles { descriptors: vec![size_desc.clone()] },
+            BlasGeometrySizeDescriptors::Triangles { descriptors: size_descs.clone() },
         );
         let tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
             label: Some("test skin tlas"), max_instances: 1,
@@ -970,9 +1305,11 @@ mod tests {
                 label: Some("test deform pass"), timestamp_writes: None,
             });
             pass.set_pipeline(&pipeline.pipeline);
-            pass.set_bind_group(0, &entry_bg, &[]);
             pass.set_bind_group(1, &joint_bg, &[]);
-            pass.dispatch_workgroups(TRI_VERTS.div_ceil(DEFORM_WORKGROUP_SIZE), 1, 1);
+            for bg in &entry_bgs {
+                pass.set_bind_group(0, bg, &[]);
+                pass.dispatch_workgroups(TRI_VERTS.div_ceil(DEFORM_WORKGROUP_SIZE), 1, 1);
+            }
         }
         // 恒等変換（3x4 行優先）。
         let xf: [f32; 12] = [1.0, 0.0, 0.0, 0.0,
@@ -981,21 +1318,22 @@ mod tests {
         package.get_mut_slice(0..1).expect("TLAS スライス")[0] =
             Some(wgpu::TlasInstance::new(&blas, xf, 0, 0xFF));
 
+        let geometries: Vec<wgpu::BlasTriangleGeometry> = (0..GEOM_COUNT)
+            .map(|g| wgpu::BlasTriangleGeometry {
+                size:                    &size_descs[g],
+                vertex_buffer:           &out_bufs[g],
+                first_vertex:            0,
+                vertex_stride:           SKIN_DEFORM_VERTEX_STRIDE,
+                index_buffer:            Some(&ib),
+                first_index:             Some(0),
+                transform_buffer:        None,
+                transform_buffer_offset: None,
+            })
+            .collect();
         encoder.build_acceleration_structures(
             std::iter::once(&wgpu::BlasBuildEntry {
                 blas: &blas,
-                geometry: wgpu::BlasGeometries::TriangleGeometries(vec![
-                    wgpu::BlasTriangleGeometry {
-                        size:                    &size_desc,
-                        vertex_buffer:           &out_buf,
-                        first_vertex:            0,
-                        vertex_stride:           SKIN_DEFORM_VERTEX_STRIDE,
-                        index_buffer:            Some(&ib),
-                        first_index:             Some(0),
-                        transform_buffer:        None,
-                        transform_buffer_offset: None,
-                    },
-                ]),
+                geometry: wgpu::BlasGeometries::TriangleGeometries(geometries),
             }),
             std::iter::once(&package),
         );
