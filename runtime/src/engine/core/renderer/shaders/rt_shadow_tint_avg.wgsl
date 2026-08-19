@@ -120,7 +120,9 @@ fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32, max_hits: 
         }
 
         // naga 25 の committed intersection では front_face は bool（type_gen.rs で検証済み）。
-        let ai = hit.instance_custom_data;
+        // 【レコード索引規約】custom_data は先頭レコード番号。実レコードは
+        // `custom_data + geometry_index`（スキン統合 BLAS はプリミティブごとに別レコード）。
+        let ai = hit.instance_custom_data + hit.geometry_index;
         if hit.front_face {
             // 入射面（front-facing）: 常に色フィルタを掛ける（色付き影・拡散透過とも共通）。
             // 閉メッシュは表面（入射）＋裏面（出射）の 2 枚を貫くため、両方で掛けると色フィルタが

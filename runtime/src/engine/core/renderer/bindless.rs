@@ -113,9 +113,14 @@ pub const BINDLESS_NORMAL_BUFFER_BYTES: u64 = 32 * 1024 * 1024;
 /// 法線要素 1 個のバイト数（八面体エンコード u32）。
 pub const BINDLESS_NORMAL_ELEM_BYTES: u64 = 4;
 
-/// TLAS インスタンス数の上限（= rt_shadow::MAX_RT_INSTANCES）。インスタンステーブルの容量。
+/// マテリアルレコード数の上限（= rt_shadow::MAX_RT_RECORDS）。インスタンステーブルの容量。
 /// rt_shadow 側の定数と一致させること（レイアウトテストで担保）。
-pub const BINDLESS_MAX_INSTANCES: u32 = super::rt_shadow::MAX_RT_INSTANCES;
+///
+/// 【名称と実体】歴史的に「インスタンス」と呼んでいるが、Phase RT-Skin の BLAS 統合以降、
+/// テーブルの 1 要素は **TLAS インスタンスではなくジオメトリ単位のマテリアルレコード**である
+/// （1 スキンインスタンス = 1 BLAS = 複数ジオメトリ = 複数レコード）。
+/// シェーダは `record = instance_custom_data + geometry_index` で引く。
+pub const BINDLESS_MAX_INSTANCES: u32 = super::rt_shadow::MAX_RT_RECORDS;
 
 // ─── BindlessInstanceRecord: フラグビット ────────────────────
 
@@ -1439,12 +1444,17 @@ mod tests {
         assert!(reg.occupied[0], "index 0 は常に占有（ダミー予約）");
     }
 
-    /// 容量計算: BINDLESS_MAX_INSTANCES が rt_shadow の MAX_RT_INSTANCES と一致すること。
+    /// 容量計算: BINDLESS_MAX_INSTANCES が rt_shadow の MAX_RT_RECORDS と一致すること。
+    ///
+    /// instance_table の 1 要素は **TLAS インスタンス** ではなく **マテリアルレコード** である
+    /// （Phase RT-Skin の BLAS 統合以降、1 スキンインスタンスが複数レコードを消費する）。
+    /// ここが食い違うと `record = custom_data + geometry_index` が配列外を指し、
+    /// ヒットシェーディングが別マテリアル／ゴミを読む。
     #[test]
     fn instance_capacity_matches_rt_shadow() {
         assert_eq!(
             BINDLESS_MAX_INSTANCES,
-            super::super::rt_shadow::MAX_RT_INSTANCES
+            super::super::rt_shadow::MAX_RT_RECORDS
         );
     }
 

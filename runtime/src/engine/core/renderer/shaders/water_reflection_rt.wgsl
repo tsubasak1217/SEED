@@ -203,8 +203,11 @@ fn fs_water_reflection(in: WaterReflVsOut) -> @location(0) vec4<f32> {
             // ヒット解決は連結された変種に委ねる（バインドレス対応なら実テクスチャ色、
             // 非対応なら平均色）。画面外ヒットが「一様な灰色の塊」になる W5.2 の
             // 仕様限界は、この on 変種で解消される。
+            // 第 1 引数は **レコード番号** = custom_data + geometry_index（レコード索引規約）。
+            // 非スキンは geometry_index=0 で従来と同一、スキン統合 BLAS では
+            // ヒットしたプリミティブのマテリアルレコードに解決される。
             let albedo   = water_refl_hit_albedo(
-                hit.instance_custom_data, hit.primitive_index, hit.barycentrics);
+                hit.instance_custom_data + hit.geometry_index, hit.primitive_index, hit.barycentrics);
             let direct   = water_refl_direct_irradiance(hit_pos, n_hit);
             let indirect = water_refl_env(hit_pos, n_hit);
             reflected = albedo * (direct / WATER_REFL_PI + indirect);

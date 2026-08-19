@@ -2675,11 +2675,17 @@ impl InstancedModelBatch {
         }
     }
 
-    /// RT スキン BLAS 用（Phase RT-Skin）: 全インスタンス × 全 **スキン** メッシュノード
-    /// プリミティブを列挙する。`rt_enumerate`（非スキン）と対になる関数。
+    /// RT スキン BLAS 用（Phase RT-Skin）: 全インスタンス × 全 **スキン** メッシュノードを
+    /// 「1 ノードインスタンス = 1 グループ」で列挙する。`rt_enumerate`（非スキン）と対になる関数。
     ///
-    /// コールバック引数:
-    ///   `(mesh_idx, prim_idx, material_idx, 3x4 行優先ワールド変換, inst_idx, lod, compact_idx)`
+    /// 【なぜプリミティブ単位ではなくノード単位のグループなのか】
+    ///   RT スキン BLAS は「1 体（1 メッシュノードインスタンス）= 1 BLAS」で作り、
+    ///   そのノードに属する全プリミティブを BLAS のジオメトリ配列として入れる
+    ///   （rt_skin_blas.rs 冒頭参照）。1 BLAS は TLAS インスタンス変換を 1 個しか
+    ///   持てないため、グループの単位は「同一ワールド変換を共有する範囲」＝メッシュノード
+    ///   でなければならない（同じ mesh_idx を参照する別ノードを混ぜてはいけない）。
+    ///   よって列挙側もノード単位でまとめて渡し、呼び出し側が
+    ///   「プリミティブ列 → 1 BLAS」の対応を組み立てられるようにする。
     ///
     /// - `lod` / `compact_idx` は「そのインスタンスのジョイント行列がどのバッファの
     ///   どの位置にあるか」を指す。変形 compute はこの 2 値から
@@ -2695,15 +2701,33 @@ impl InstancedModelBatch {
     /// - 視錐台カリングは行われていないため、全インスタンスがいずれかの LOD に属する
     ///   （＝画面外のスキンキャラも反射・影に映せる）。万一逆引きが見つからない
     ///   インスタンスがあればスキップする（安全側）。
-    pub fn rt_enumerate_skinned<F: FnMut(usize, usize, Option<usize>, [f32; 12], usize, usize, u32)>(
-        &self,
-        mut f: F,
-    ) {
+    ///
+    /// 【順序の安定性】グループ内のプリミティブ順は `node_prim_list` の順、
+    /// グループ順は node_idx の昇順で決定的である。この順序は BLAS の `geometry_index` と
+    /// bindless レコードの並び順に直結するため、フレーム間で揺れてはならない。
+    pub fn rt_enumerate_skinned<F: FnMut(RtSkinnedNodeInstance<'_>)>(&self, mut f: F) {
         // スキンシステムが無いバッチは対象外。
         if self.skin.is_none() { return; }
         if self.world_mats_cache.is_empty() || self.n_mesh_nodes == 0 { return; }
 
         let n_inst = self.num_instances as usize;
+
+        // ── ノード → プリミティブ列 のグルーピングを 1 回だけ構築 ──────────
+        // `node_prim_list` は (is_skinned, cull_face, material_idx) でソート済みであり、
+        // 同一ノードのプリミティブが連続している保証は無い。よって明示的にまとめる。
+        // BTreeMap を使い、グループ順（node_idx 昇順）を決定的にする。
+        let mut by_node: std::collections::BTreeMap<usize, Vec<RtSkinnedPrimRef>> =
+            std::collections::BTreeMap::new();
+        for draw in &self.node_prim_list {
+            // スキンプリミティブのみを列挙する（非スキンは rt_enumerate が扱う）。
+            if !draw.is_skinned { continue; }
+            by_node.entry(draw.node_idx).or_default().push(RtSkinnedPrimRef {
+                mesh_idx:     draw.mesh_idx,
+                prim_idx:     draw.prim_idx,
+                material_idx: draw.material_idx,
+            });
+        }
+        if by_node.is_empty() { return; }
 
         // ── inst_idx → (lod, compact_idx) の逆引きを 1 回だけ構築（O(1) 化）──
         // `find_compact_index` は lod_compact_insts を線形探索するため、
@@ -2720,24 +2744,52 @@ impl InstancedModelBatch {
 
         for inst in 0..n_inst {
             let Some((lod, compact)) = inv[inst] else { continue };
-            for draw in &self.node_prim_list {
-                // スキンプリミティブのみを列挙する（非スキンは rt_enumerate が扱う）。
-                if !draw.is_skinned { continue; }
-                let Some(pos) = self.node_pos_map[draw.node_idx] else { continue };
+            for (&node_idx, prims) in &by_node {
+                let Some(pos) = self.node_pos_map[node_idx] else { continue };
                 let cache_idx = inst * self.n_mesh_nodes + pos;
                 let Some(mu) = self.world_mats_cache.get(cache_idx) else { continue };
-                f(
-                    draw.mesh_idx,
-                    draw.prim_idx,
-                    draw.material_idx,
-                    model_uniform_to_tlas_transform(&mu.model),
-                    inst,
+                f(RtSkinnedNodeInstance {
+                    node_idx,
+                    inst_idx:    inst,
                     lod,
-                    compact,
-                );
+                    compact_idx: compact,
+                    transform:   model_uniform_to_tlas_transform(&mu.model),
+                    prims,
+                });
             }
         }
     }
+}
+
+/// `rt_enumerate_skinned` が渡すプリミティブ 1 個の参照情報（Phase RT-Skin）。
+///
+/// `material_idx`（`None` = デフォルトマテリアル）をそのまま渡すのは、
+/// 「どのマテリアルが影を落とすか」の判断を呼び出し側（rt_shadow.rs）へ委ねるため。
+/// バッチは幾何とマテリアル参照の列挙だけを担い、alpha_mode の解釈は行わない。
+#[derive(Clone, Copy, Debug)]
+pub struct RtSkinnedPrimRef {
+    pub mesh_idx:     usize,
+    pub prim_idx:     usize,
+    pub material_idx: Option<usize>,
+}
+
+/// `rt_enumerate_skinned` が渡す「スキンメッシュノード 1 インスタンス」（Phase RT-Skin）。
+///
+/// これがそのまま **RT スキン BLAS 1 個の単位**である。`prims` の順序が BLAS の
+/// ジオメトリ順（シェーダが読む `geometry_index`）になる。
+pub struct RtSkinnedNodeInstance<'a> {
+    /// メッシュノード番号（ワールド変換の単位＝BLAS の単位）。
+    pub node_idx:    usize,
+    /// バッチ内のインスタンス番号。
+    pub inst_idx:    usize,
+    /// ジョイント行列バッファの LOD 番号。
+    pub lod:         usize,
+    /// LOD 内のコンパクト添字（`joint_base = compact_idx * MAX_JOINTS`）。
+    pub compact_idx: u32,
+    /// TLAS インスタンス変換（3x4 行優先）。VS の `u_model.model` と同一行列。
+    pub transform:   [f32; 12],
+    /// このノードを構成するスキンプリミティブ列（BLAS のジオメトリ順）。
+    pub prims:       &'a [RtSkinnedPrimRef],
 }
 
 /// 列優先で格納されたモデル行列（`ModelUniform.model`, `model[col][row]`）を
