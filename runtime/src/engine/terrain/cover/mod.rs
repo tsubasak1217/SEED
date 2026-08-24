@@ -26,8 +26,10 @@
 // ============================================================
 
 pub mod accumulate;
-/// 頂点焼き直しのフレーム分散スケジューラ（予算・優先順・26 近傍の同時性）。
+/// 頂点焼き直しのフレーム分散スケジューラ（予算・優先順）。
 pub mod bake_schedule;
+/// 頂点焼き直しの作業単位（カバー場を凍結して境界整合を保つ「波」）。
+pub mod bake_wave;
 pub mod brush;
 pub mod emit;
 pub mod field;
@@ -47,6 +49,7 @@ pub use bake_schedule::{
     plan_cover_bake, CoverBakePlan, CoverBakePriority, COVER_BAKE_CHUNK_BUDGET_PER_FRAME,
     COVER_BAKE_NEAR_CAMERA_DISTANCE_M,
 };
+pub use bake_wave::CoverBakeWave;
 pub use brush::{
     brush_chunk as brush_cover_chunk, brush_chunk_with_mask as brush_cover_chunk_with_mask,
     CoverBrushMode, CoverBrushSpec, COVER_BRUSH_MAX_DELTA_PER_APPLY,

@@ -1443,6 +1443,60 @@ mod tests {
         (vertices, positions, normals)
     }
 
+    /// カバーの焼き込みが **その場更新**であること — 頂点数もインデックス列も変わらない。
+    ///
+    /// 【何を守っているか】
+    ///   カバーの変位は「既存頂点を法線方向へ押し出して法線を引き直す」だけの純変換で、
+    ///   Marching Cubes の再実行（＝トポロジ変更）は原理的に不要である。この性質が
+    ///   あるからこそ、焼き込みは GPU 頂点バッファの部分書き戻し 1 回で済み、
+    ///   コライダー再構築・LOD 再生成・統合バッチ再構築のいずれも通さずに済む。
+    ///   ここが崩れると（頂点が増減すると）GPU バッファ長が合わなくなり、
+    ///   下流の「構成は不変」という前提がすべて壊れる。
+    #[test]
+    fn cover_bake_preserves_vertex_count_and_indices() {
+        use crate::engine::terrain::cover::CoverField;
+
+        // 一様に雪を積む（＝全頂点が実際に動く条件）。
+        let mut field = CoverField::new();
+        for iz in 0..COVER_FIELD_RESOLUTION {
+            for ix in 0..COVER_FIELD_RESOLUTION {
+                field.deposit(ix, iz, 0, 1.0);
+            }
+        }
+        let view = CoverNeighborhood::isolated(&field);
+        let materials = cover_test_materials();
+        let (vertices, positions, normals) = flat_cover_vertices();
+        // 三角形を実際に張って、インデックス列が素通しされることを確かめる。
+        let indices: Vec<u32> = (0..(vertices.len() as u32 - 2))
+            .flat_map(|i| [i, i + 1, i + 2])
+            .collect();
+
+        let model = rebuild_terrain_model_with_cover(
+            &vertices,
+            &indices,
+            "chunk",
+            [0; TERRAIN_BLEND_SLOTS],
+            &positions,
+            &normals,
+            [0.5, 0.5, 0.5],
+            &view,
+            &materials,
+            TEST_CHUNK_EXTENT,
+            0.0,
+        )
+        .expect("長さが一致しているのに None が返った");
+        let prim = &model.meshes[0].primitives[0];
+
+        assert_eq!(prim.vertices.len(), vertices.len(), "頂点数が変わってはならない");
+        assert_eq!(prim.indices, indices, "インデックス列が変わってはならない");
+        // 変位が実際に効いていること（＝上の不変性が「何もしていない」由来ではない）。
+        assert!(
+            prim.vertices[4].position[1] > vertices[4].position[1],
+            "一様な雪で頂点が持ち上がっていない: {:?}",
+            prim.vertices[4].position,
+        );
+    }
+
     /// カバーの盛り上がりの**境目**で法線が傾くこと（＝凹凸が陰影として見えること）。
     ///
     /// 【何を守っているか】

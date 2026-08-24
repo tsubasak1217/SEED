@@ -2083,3 +2083,89 @@ fn accumulate_interval_defaults_for_old_asset() {
         .expect("読めること");
     assert_eq!(set.accumulate_interval_sec(), DEFAULT_ACCUMULATE_INTERVAL_SEC);
 }
+
+// ─── 焼き直しの波（bake_wave）— フレームをまたいだ境界整合 ───────────────────
+
+/// **隣接チャンクを別フレームに焼いても境界がビット一致すること**（本改修の核心）。
+///
+/// 【何を守っているか】
+///   旧実装は「26 近傍で連結した待ちチャンクの塊を 1 フレームで焼く」ことで境界整合を
+///   守っていた。そのため全域降雪では全チャンクが 1 成分になり、フレーム予算が
+///   まったく効かなかった（積算ティックのたびに全チャンクを 1 フレームで焼く）。
+///
+///   現在は焼き直し開始時にカバー場を凍結（`CoverBakeWave`）し、波に属するチャンクは
+///   何フレームに分かれて焼かれても凍結データだけを読む。本テストは
+///   「A を焼く → 実データだけ積算が進む → 次フレームに B を焼く」を模し、
+///   その間に実データが変わっても A と B の境界がビット一致することを固定する。
+#[test]
+fn frozen_wave_keeps_boundary_identical_across_frames() {
+    use super::bake_wave::CoverBakeWave;
+    use std::collections::{HashMap, HashSet};
+
+    let coord_a = ChunkCoord::new(0, 0, 0);
+    let coord_b = ChunkCoord::new(1, 0, 0);
+
+    // 実データ（積算がこの後も書き換え続ける器）。
+    let mut live: HashMap<ChunkCoord, CoverField> = HashMap::new();
+    live.insert(coord_a, patterned_field(7));
+    live.insert(coord_b, patterned_field(31));
+
+    // ── 波を張る（対象 ∪ 26 近傍を凍結）──
+    let mut wave = CoverBakeWave::default();
+    let targets: HashSet<ChunkCoord> = [coord_a, coord_b].into_iter().collect();
+    let snapshot: HashMap<ChunkCoord, CoverField> =
+        live.iter().map(|(k, v)| (*k, v.clone())).collect();
+    wave.start(targets, HashSet::new(), snapshot);
+
+    /// 境界線上の複数点を「そのチャンクのメッシュから読んだ値」として拾う。
+    fn sample_boundary(wave: &CoverBakeWave, center: ChunkCoord, u: f32) -> Vec<(u32, u8)> {
+        let view = CoverNeighborhood::from_lookup(cover_y_match_tolerance(16.0), |dx, dy, dz| {
+            wave.field(ChunkCoord::new(center.x + dx, center.y + dy, center.z + dz))
+        });
+        (0..=16)
+            .map(|i| {
+                let s = view.sample(u, i as f32 / 16.0, TEST_SURFACE_Y);
+                (s.amount.to_bits(), s.material)
+            })
+            .collect()
+    }
+
+    // ── フレーム 1: A だけを焼く（凍結データから読む）──
+    let baked_a = sample_boundary(&wave, coord_a, 1.0);
+    wave.mark_baked(coord_a);
+    assert!(wave.is_active(), "B がまだ残っているので波は続く");
+
+    // ── フレーム間: 実データだけが積算で進む（次の波が拾うぶん）──
+    for f in live.values_mut() {
+        for iz in 0..COVER_FIELD_RESOLUTION {
+            for ix in 0..COVER_FIELD_RESOLUTION {
+                f.deposit(ix, iz, 0, 0.25);
+            }
+        }
+    }
+
+    // ── フレーム 2: B を焼く。凍結データを読むので A と食い違わない ──
+    let baked_b = sample_boundary(&wave, coord_b, 0.0);
+    wave.mark_baked(coord_b);
+    assert!(!wave.is_active(), "全件焼き終わって波が閉じる");
+
+    assert_eq!(
+        baked_a, baked_b,
+        "別フレームに焼いても境界の共有点はビット単位で一致すること",
+    );
+
+    // 念のため、凍結していなければ食い違っていたことも確かめる（テストの有効性の担保）。
+    let live_view = CoverNeighborhood::from_lookup(cover_y_match_tolerance(16.0), |dx, dy, dz| {
+        live.get(&ChunkCoord::new(coord_b.x + dx, coord_b.y + dy, coord_b.z + dz))
+    });
+    let live_b: Vec<(u32, u8)> = (0..=16)
+        .map(|i| {
+            let s = live_view.sample(0.0, i as f32 / 16.0, TEST_SURFACE_Y);
+            (s.amount.to_bits(), s.material)
+        })
+        .collect();
+    assert_ne!(
+        baked_a, live_b,
+        "実データを読んでいたら段差になっていたはず（テストが実際に差を検出できている）",
+    );
+}
