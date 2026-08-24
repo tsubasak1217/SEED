@@ -685,6 +685,13 @@ impl App {
     /// 書き戻し・Play スナップショットの復元）に基準 Y が未同期のまま残る。
     /// その 1 か所を埋めるのが本関数であり、カバー場を差し替えた経路は必ずここを通す。
     pub(super) fn sync_cover_base_y(&mut self, coord: ChunkCoord) {
+        // ── カバー場が差し替わったので、進行中の焼き直し波（凍結データ）を捨てる ──
+        //   本関数を呼ぶのはカバー場そのものを入れ替える経路（.tcover ロード / Undo /
+        //   Play 復元）だけである。凍結データはその入れ替え**前**の内容なので、
+        //   そのまま焼き続けると消えたはずの雪を頂点へ書き戻してしまう。
+        //   未処理チャンクは待ち集合へ戻すので、次の波が新しい内容で焼き直す。
+        //   （既に空の波なら空を返すだけ。ループから何度呼ばれても無害。）
+        self.abort_cover_bake_wave();
         self.ensure_cover_surface(coord);
         let Some(surface) = self.terrain.cover_surface.get(&coord) else { return };
         let Some(field) = self.terrain.cover.get_mut(&coord) else { return };
@@ -701,6 +708,15 @@ impl App {
     pub(super) fn invalidate_cover_for_remesh(&mut self, coord: ChunkCoord) {
         self.terrain.cover_surface.remove(&coord);
         self.terrain.cover_base_mesh.remove(&coord);
+        // ── 進行中の焼き直し波から、このチャンクと 26 近傍を追い出す ──
+        //   波は「カバー場を凍結して何フレームかに分けて焼く」仕組みで、凍結データには
+        //   面のワールド高さ（基準 Y）も含まれる。再メッシュで面が動くとその前提が崩れる
+        //   ので、当該チャンクと——境界頂点がそのカバー場を読む——26 近傍を波から外し、
+        //   待ち集合へ戻して次の波（＝新しい凍結データ）で焼き直させる。
+        let evicted = self.terrain.cover_bake_wave.evict_neighborhood(coord);
+        for c in evicted {
+            self.terrain.cover_pending_apply.insert(c);
+        }
         // カバーが乗っているチャンクは、新しいメッシュへ焼き直す必要がある。
         // 隣にだけカバーがある場合も、境界の頂点はそれを読むので焼き直す
         // （焼き直すのは新しいメッシュを持つこのチャンクだけでよい）。
@@ -731,32 +747,87 @@ impl App {
         })
     }
 
+    /// 自分または隣接 26 チャンクのカバー場が、**進行中の波の凍結データ**に載っているか。
+    ///
+    /// `any_cover_in_neighborhood` の凍結データ版。焼き込みの要否判定はこちらを使う
+    /// （焼き込み自体が凍結データしか読まないため、判定も同じ器で行わないと
+    /// 「器はあるのに凍結されていない」チャンクを焼こうとして空の場で潰してしまう）。
+    ///
+    /// 「空でないか」ではなく「器があるか」で判定するのは元の判定と同じ理由である。
+    /// 全消去（`TERRAIN_COVER_CLEAR`）の直後は全チャンクが空の器になるが、頂点には
+    /// まだ変位が焼かれているので、**空の場で焼き直して基準位置へ戻す**必要がある。
+    fn wave_has_cover_in_neighborhood(&self, coord: ChunkCoord) -> bool {
+        (-1..=1i32).any(|dy| {
+            (-1..=1i32).any(|dz| {
+                (-1..=1i32).any(|dx| {
+                    self.terrain
+                        .cover_bake_wave
+                        .has_field(ChunkCoord::new(coord.x + dx, coord.y + dy, coord.z + dz))
+                })
+            })
+        })
+    }
+
     // ─── ④ 頂点への焼き込み ─────────────────────────────────────────────────
 
     /// 焼き直し待ちのチャンクへカバー場を反映する（毎フレーム呼ばれる）。
     ///
     /// `COVER_APPLY_INTERVAL_SEC` で間引く。待ちが空のフレームは即座に返る。
     ///
-    /// 【フレーム分散（予算つき）】
+    /// 【フレーム分散（予算つき）＋ カバー場の凍結】
     ///   発火フレームで待ちを全件焼くと、走行中の轍や広域の積雪で 1 フレームだけ
-    ///   数十ミリ秒跳ねる。そこで `plan_cover_bake`（純粋層）へ採否を委ね、
-    ///   今フレームぶんだけを焼いて残りは待ち集合へ戻す（次の発火フレームへ繰り越す）。
-    ///   境界整合のため、26 近傍で連結した待ちチャンクの塊は分割されない
-    ///   （詳細は `terrain/cover/bake_schedule.rs` 冒頭）。
+    ///   数十ミリ秒跳ねる。そこで「波（`CoverBakeWave`）」という作業単位を作り、
+    ///   波を張った時点でカバー場を丸ごと凍結してから、`plan_cover_bake`（純粋層）の
+    ///   予算に従って何フレームかに分けて焼く。
+    ///
+    ///   凍結が要点である。境界の複製頂点は隣のカバー場も読むため、隣り合うチャンクを
+    ///   別フレームに焼くと世代がずれて段差が出る。旧実装はこれを「26 近傍で連結した
+    ///   塊は分割しない」というスケジューリング規則で防いでいたが、全域降雪では全チャンクが
+    ///   1 成分になって予算がまったく効かなかった（＝積算ティックのたびに全チャンクを
+    ///   1 フレームで焼く）。凍結してしまえば分割は常に安全なので、予算が素直に効く。
+    ///
+    /// 【波が進行中のフレームは間引かない】
+    ///   `COVER_APPLY_INTERVAL_SEC` の間引きは「新しい波を張るまでの待ち」にだけ効かせる。
+    ///   波の消化まで間引くと、予算で割った回数ぶん反映が遅れる（スパイクを均すのではなく
+    ///   反映が遅くなるという改悪になる）。
     ///
     /// 戻り値は焼き直しに要した時間（ミリ秒。計測ログ用）。
     pub(super) fn apply_pending_cover(&mut self, dt: f32) -> f64 {
-        if self.terrain.cover_pending_apply.is_empty() {
-            // 待ちが無いあいだはタイマーを進めない（次に積もった瞬間へ即反映するため）。
+        // ── ① 轍スタンプが来たら進行中の波を張り直す（接地への応答性が最優先）──
+        //   波は凍結データで動くため、新しい轍は次の波まで反映されない。轍だけは
+        //   「踏んだ瞬間に跡が付く」ことが体感の核なので、未処理分を待ち集合へ戻して
+        //   即座に新しい波を張り直す（`plan_cover_bake` が轍を予算外で先に焼く）。
+        if !self.terrain.cover_immediate_apply.is_empty()
+            && self.terrain.cover_bake_wave.is_active()
+        {
+            let (rest, urgent) = self.terrain.cover_bake_wave.clear();
+            self.terrain.cover_pending_apply.extend(rest);
+            self.terrain.cover_immediate_apply.extend(urgent);
+            // 間引きを待たずに今フレームで張り直す。
             self.terrain.cover_apply_timer = COVER_APPLY_INTERVAL_SEC;
-            return 0.0;
         }
-        self.terrain.cover_apply_timer += dt.max(0.0);
-        if self.terrain.cover_apply_timer < COVER_APPLY_INTERVAL_SEC {
-            return 0.0;
-        }
-        self.terrain.cover_apply_timer = 0.0;
-        if self.draw_ctx.is_none() {
+
+        // ── ② 波が無ければ、間引き間隔を見て新しい波を張る ──
+        if !self.terrain.cover_bake_wave.is_active() {
+            if self.terrain.cover_pending_apply.is_empty() {
+                // 待ちが無いあいだはタイマーを進めない（次に積もった瞬間へ即反映するため）。
+                self.terrain.cover_apply_timer = COVER_APPLY_INTERVAL_SEC;
+                return 0.0;
+            }
+            self.terrain.cover_apply_timer += dt.max(0.0);
+            if self.terrain.cover_apply_timer < COVER_APPLY_INTERVAL_SEC {
+                return 0.0;
+            }
+            self.terrain.cover_apply_timer = 0.0;
+            if self.draw_ctx.is_none() {
+                return 0.0;
+            }
+            self.begin_cover_bake_wave();
+            if !self.terrain.cover_bake_wave.is_active() {
+                return 0.0;
+            }
+        } else if self.draw_ctx.is_none() {
+            // 描画コンテキストが無いフレームは焼けない。波はそのまま次フレームへ持ち越す。
             return 0.0;
         }
 
@@ -764,15 +835,13 @@ impl App {
         // 焼き直しが実際に走るフレームだけ計上される（間引きで返るフレームは対象外）。
         crate::profile_scope!("地形/カバー頂点焼き直し");
 
-        // ── 今フレームに焼く分を予算つきで選ぶ（残りは待ち集合へ戻して繰り越す）──
+        // ── ③ 今フレームに焼く分を予算つきで選ぶ（残りは波が保持したまま次フレームへ）──
         //   計画は純粋層（`plan_cover_bake`）が決める。ここは入出力の受け渡しに徹する。
         let settings = self.terrain.settings.clone();
         let camera   = self.last_camera_pos;
-        let pending  = std::mem::take(&mut self.terrain.cover_pending_apply);
-        let immediate = std::mem::take(&mut self.terrain.cover_immediate_apply);
         let plan = plan_cover_bake(
-            &pending,
-            &immediate,
+            self.terrain.cover_bake_wave.remaining(),
+            self.terrain.cover_bake_wave.immediate(),
             |c| {
                 // チャンク中心 = ワールド原点 + 一辺の半分。
                 let o = c.world_origin(&settings);
@@ -782,21 +851,6 @@ impl App {
             camera,
             COVER_BAKE_CHUNK_BUDGET_PER_FRAME,
         );
-        // 繰り越し分を待ち集合へ戻す。集合なので、この後に追加変更が積まれても
-        // 重複（二重焼き）にならず、取りこぼしも起きない。
-        self.terrain.cover_pending_apply.extend(plan.deferred.iter().copied());
-        if !plan.deferred.is_empty() {
-            // 繰り越しがあるときは **次のフレームで即座に再発火**させる。
-            // 間引き間隔（0.1 秒）を待つと、予算で割った回数ぶんだけ反映が遅れてしまい、
-            // 「スパイクを均す」のではなく「反映が遅くなる」改悪になるため。
-            self.terrain.cover_apply_timer = COVER_APPLY_INTERVAL_SEC;
-        }
-        // 即時マークも、繰り越されたチャンクぶんだけ持ち越す（次フレームでも轍優先を保つ）。
-        for c in &plan.deferred {
-            if immediate.contains(c) {
-                self.terrain.cover_immediate_apply.insert(*c);
-            }
-        }
         // 決定性のため座標順に処理する（ログ・GPU コマンド列を再現可能にする）。
         // `plan.bake` は純粋層でソート済み。
         let coords: Vec<ChunkCoord> = plan.bake;
@@ -814,24 +868,98 @@ impl App {
                 // 焼き直し待ちが空」のときに二度と発火しない（＝黒が残り続ける）。
                 self.terrain.rt_blas_prune_pending.insert(coord);
             }
+            // 焼けなかったチャンク（空メッシュ・カバー場が無い等）も波からは外す。
+            // 残すと同じチャンクを毎フレーム再検討し続けて波が終わらない。
+            self.terrain.cover_bake_wave.mark_baked(coord);
         }
 
         let total_ms = t_total.elapsed().as_secs_f64() * MILLIS_PER_SEC;
         if *super::terrain_ops::PERF_TERRAIN_LOG_ENABLED && applied > 0 {
-            eprintln!("[PERF terrain] cover apply chunks={applied} total={total_ms:.2}ms");
+            eprintln!(
+                "[PERF terrain] cover apply chunks={applied} remain={} total={total_ms:.2}ms",
+                self.terrain.cover_bake_wave.remaining().len(),
+            );
         }
         total_ms
     }
 
+    /// 進行中の焼き直し波を捨て、未処理チャンクを待ち集合へ戻す。
+    ///
+    /// 凍結データの前提（＝波を張った時点のカバー場）が崩れた経路から呼ぶ。
+    /// 取りこぼしを防ぐため未処理分は必ず待ち集合へ、轍マークは即時集合へ戻す。
+    pub(super) fn abort_cover_bake_wave(&mut self) {
+        if !self.terrain.cover_bake_wave.is_active() {
+            return;
+        }
+        let (rest, urgent) = self.terrain.cover_bake_wave.clear();
+        self.terrain.cover_pending_apply.extend(rest);
+        self.terrain.cover_immediate_apply.extend(urgent);
+    }
+
+    /// 新しい焼き直しの波を張る（待ち集合を対象へ移し、カバー場を凍結する）。
+    ///
+    /// 【凍結する範囲】
+    ///   対象チャンクだけでなく **その 26 近傍まで**凍結する。境界の複製頂点は隣接
+    ///   チャンクのカバー場を読むためで、欠けていると「量 0」に縮退して段差が出る。
+    ///
+    /// 【凍結の前に面情報を同期する理由】
+    ///   凍結データには「積もっている面のワールド Y（基準 Y）」が含まれる。これは
+    ///   密度場から導く派生値なので、凍結前に `ensure_cover_surface` で同期しておかないと
+    ///   古い基準 Y を波の全期間にわたって読み続けることになる。
+    fn begin_cover_bake_wave(&mut self) {
+        let targets: HashSet<ChunkCoord> = std::mem::take(&mut self.terrain.cover_pending_apply);
+        let immediate: HashSet<ChunkCoord> =
+            std::mem::take(&mut self.terrain.cover_immediate_apply);
+
+        // ── 凍結対象（対象 ∪ その 26 近傍のうち、カバー場の器があるもの）を集める ──
+        //   決定性のため座標順にそろえてから重複を除く。
+        let mut freeze: Vec<ChunkCoord> = Vec::new();
+        for &c in &targets {
+            for dy in -1..=1i32 {
+                for dz in -1..=1i32 {
+                    for dx in -1..=1i32 {
+                        let n = ChunkCoord::new(c.x + dx, c.y + dy, c.z + dz);
+                        if self.terrain.cover.contains_key(&n) {
+                            freeze.push(n);
+                        }
+                    }
+                }
+            }
+        }
+        freeze.sort_by_key(|c| (c.x, c.y, c.z));
+        freeze.dedup();
+
+        // 面情報（と基準 Y）を先に同期してから凍結する。
+        for &n in &freeze {
+            self.ensure_cover_surface(n);
+        }
+        let mut snapshot: HashMap<ChunkCoord, CoverField> = HashMap::with_capacity(freeze.len());
+        for &n in &freeze {
+            if let Some(field) = self.terrain.cover.get(&n) {
+                snapshot.insert(n, field.clone());
+            }
+        }
+        self.terrain.cover_bake_wave.start(targets, immediate, snapshot);
+    }
+
     /// 1 チャンクぶんのカバー場を頂点へ焼き込み、GPU 頂点バッファを書き換える。
     ///
-    /// 【`apply_terrain_paint_colors` と同じ理由で `invalidate_geometry_caches` を呼ばない】
-    ///   あれは BLAS 再構築と統合バッチ再構築を誘発する。カバーの変位は数センチであり、
-    ///   RT 影・RT 反射が「カバー無しの地形」を辿ることによる差は肉眼で識別できない。
-    ///   毎フレーム BLAS を作り直すコストのほうが桁違いに大きいので呼ばない
-    ///   （docs/cover_field.md に既知の制限として明記）。
-    ///   ラスタ経路（G-Buffer・シャドウマップ・深度・ID）は同じ頂点バッファを読むため
-    ///   すべて自動的に一致する。
+    /// 【その場更新であり、下流を作り直さない（docs/cover_field.md §2.8）】
+    ///   カバーの変位は「既存頂点への上書き」であって、頂点数もインデックス列も変わらない
+    ///   （回帰テスト `cover_bake_preserves_vertex_count_and_indices`）。したがって
+    ///   Marching Cubes の再実行・コライダー（Rapier QBVH）再構築・LOD 再生成はいずれも
+    ///   通さず、CPU モデルを差し替えて `queue.write_buffer` 1 回で GPU 頂点バッファを
+    ///   書き直すだけで済む。ラスタ経路（G-Buffer・シャドウマップ・深度・ID）は
+    ///   同じ頂点バッファを読むためすべて自動的に一致する。
+    ///
+    ///   統合バッチ（`shared_model_batches`）も**捨てない**。バッチが持つのは
+    ///   「どのインスタンスをどの行列で描くか」という構成だけで、それは 1 ビットも
+    ///   変わらないためである（捨てるとバッチ再構築＋初回 update() ＋影の静的スキップ解除の
+    ///   連鎖になる）。形状が変わったことは `flush_rt_blas_prune` が
+    ///   `note_geometry_content_changed`（内容世代の更新）で影へ伝える。
+    ///
+    ///   RT 加速構造（BLAS）だけは `rt_blas_prune_pending` へ積んで追従させる
+    ///   （キャッシュが `source_path` キーで「一度作ったら作り直さない」ため）。
     ///
     /// 戻り値は実際に書き換えたか。
     fn apply_cover_to_chunk(
@@ -849,30 +977,15 @@ impl App {
         //   全消去（`TERRAIN_COVER_CLEAR`）の直後は全チャンクが空の器になるが、
         //   頂点にはまだ変位が焼かれているので、**空の場で焼き直して基準位置へ戻す**
         //   必要があるためである。
-        if !self.any_cover_in_neighborhood(coord, |_| true) {
+        //
+        //   判定も焼き込みも読むのは**波の凍結データだけ**である（実データではない）。
+        //   面情報の同期（I3.2 の Y 照合が要る基準 Y）は波を張るときに
+        //   `begin_cover_bake_wave` が 27 近傍ぶんまとめて済ませている。
+        if !self.wave_has_cover_in_neighborhood(coord) {
             return false;
         }
         let Some(&slot_entity) = self.terrain.chunk_slot_entity.get(&coord) else { return false };
 
-        // ─── ⓪ 上下段も含めた近傍の面情報を用意しておく（I3.2 の Y 照合の前提）───
-        //   焼き込みは上下段のカバー場も読むため、そちらの基準 Y が未同期だと
-        //   段の選択が「未知」へ縮退して境界の一致が崩れる。
-        //
-        //   `ensure_cover_surface` は **面情報を新しく作ったときだけ**基準 Y を同期する
-        //   （キャッシュ済みなら何もしない）。基準 Y を作り直す必要がある他の経路
-        //   ——カバー場の差し替え（.tcover ロード / Undo / Play 復元）——は
-        //   それぞれの場所で `sync_cover_base_y` を呼んでいるので、
-        //   ここで毎回 27 チャンク分を舐め直す必要は無い。
-        for dy in -1..=1i32 {
-            for dz in -1..=1i32 {
-                for dx in -1..=1i32 {
-                    let n = ChunkCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
-                    if self.terrain.cover.contains_key(&n) {
-                        self.ensure_cover_surface(n);
-                    }
-                }
-            }
-        }
         // 頂点はチャンクローカル座標なので、Y 照合に使うワールド Y の基準を控える。
         let chunk_origin_y = coord.world_origin(&self.terrain.settings)[1];
 
@@ -906,10 +1019,16 @@ impl App {
             //   **頂点のワールド Y に最も近い面**を選ばないと、両者が別の値を読んで
             //   段差になる（I3.1 §7-8 の既知の制限）。選び方はワールド位置の純関数
             //   なので、どちらのメッシュから読んでも同じ面に行き着く。
-            let cover = &self.terrain.cover;
+            //
+            // 【実データではなく波の凍結データを読む理由（境界整合の要）】
+            //   波に属するチャンクは何フレームかに分けて焼かれる。実データを読むと、
+            //   その間に積算が進んだぶんだけ「先に焼いたチャンク」と「後で焼いたチャンク」で
+            //   世代がずれ、境界の複製頂点が食い違って段差になる。凍結データなら
+            //   波の全期間を通じて同一なので、分割して焼いても bit 単位で一致する。
+            let wave = &self.terrain.cover_bake_wave;
             let y_tolerance = cover_y_match_tolerance(extent);
             let neighborhood = CoverNeighborhood::from_lookup(y_tolerance, |dx, dy, dz| {
-                cover.get(&ChunkCoord::new(coord.x + dx, coord.y + dy, coord.z + dz))
+                wave.field(ChunkCoord::new(coord.x + dx, coord.y + dy, coord.z + dz))
             });
 
             rebuild_terrain_model_with_cover(

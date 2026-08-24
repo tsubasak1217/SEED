@@ -791,6 +791,19 @@ pub struct TerrainState {
     /// 体感の核なので、予算を無視して必ず今フレームに焼く（`plan_cover_bake` の
     /// `Immediate` 優先度）。繰り越されたチャンクぶんはこの集合にも持ち越される。
     pub cover_immediate_apply: HashSet<ChunkCoord>,
+    /// 進行中の焼き直し「波」（カバー場を凍結した作業単位。`terrain/cover/bake_wave.rs`）。
+    ///
+    /// 【なぜ凍結が要るか】
+    ///   境界の複製頂点は隣接チャンクのカバー場も読むため、隣り合うチャンクを別フレームに
+    ///   焼くと世代がずれて段差（隙間）が出る。旧実装はこれを「26 近傍で連結した待ち
+    ///   チャンクの塊を分割しない」というスケジューリング規則で防いでいたが、全域降雪では
+    ///   全チャンクが 1 成分になり、フレーム予算がまったく効かなかった。
+    ///   現在は焼き直し開始時にカバー場を丸ごとクローンして凍結し、その波に属する
+    ///   チャンクは何フレームに分かれて焼かれても同じ凍結データだけを読む。これで
+    ///   境界整合を保ったままチャンク単位の予算が実効になる。
+    ///
+    ///   波が空のあいだは何も保持しない（メモリを占めない）。
+    pub cover_bake_wave: crate::engine::terrain::cover::CoverBakeWave,
     /// 頂点が動いたため **RT 加速構造（BLAS）を作り直すべき**チャンク集合。
     ///
     /// カバーの焼き直し（`apply_pending_cover`）と、ストローク中の密度ブラシ再メッシュ
@@ -969,6 +982,7 @@ impl Default for TerrainState {
             cover_dirty: HashSet::new(),
             cover_pending_apply: HashSet::new(),
             cover_immediate_apply: HashSet::new(),
+            cover_bake_wave: Default::default(),
             rt_blas_prune_pending: HashSet::new(),
             cover_surface: HashMap::new(),
             cover_base_mesh: HashMap::new(),
@@ -3829,20 +3843,50 @@ impl App {
         if keys.is_empty() {
             return;
         }
-        // ① 統合バッチキャッシュ（cpu_model を焼き込み済み）を破棄する。
-        //    不在フレーム計数も一緒に消し、遅延 prune の状態を持ち越さない。
+        self.invalidate_merge_batch_caches(keys);
+        if prune_rt {
+            self.prune_rt_blas_caches(keys);
+        }
+    }
+
+    /// 上記①だけを行う（統合バッチキャッシュの破棄）。
+    ///
+    /// **メッシュの構成（頂点数・プリミティブ構成・ローカル AABB）が変わったときだけ**
+    /// 呼ぶこと。頂点の中身だけが差し替わった場合（カバー焼き込み・頂点ペイント）は
+    /// 呼んではいけない：バッチを捨てると次フレームに
+    ///   ・`create_instanced_batch`（バッファ確保・バインドグループ作成）
+    ///   ・初回 `update()`（rayon の行列再計算・全ノードバッファ書込・ID バッファ書込）
+    ///   ・それに伴う `content_generation` の更新 → 影の静的カスケードスキップ解除
+    /// が丸ごと走り、毎フレーム再構築の連鎖になる（本改修で断ち切った経路）。
+    fn invalidate_merge_batch_caches(&mut self, keys: &[String]) {
+        // 不在フレーム計数も一緒に消し、遅延 prune の状態を持ち越さない。
         for key in keys {
             self.shared_model_batches.remove(key);
             self.batch_absent_frames.remove(key);
         }
-        // ② RT 加速構造の BLAS キャッシュ（＋用途警告集合）を破棄する。
-        //    RT 非対応 GPU では draw_ctx.rt_shadow が None のため何もしない。
-        //    ストローク遅延中（prune_rt=false）はスキップし、確定時にまとめて prune する。
-        if prune_rt {
-            if let Some(ctx) = self.draw_ctx.as_ref() {
-                if let Some(rt_cell) = ctx.rt_shadow.as_ref() {
-                    rt_cell.borrow_mut().prune_source_paths(keys);
-                }
+    }
+
+    /// 上記②だけを行う（RT 加速構造 BLAS キャッシュの破棄）。
+    ///
+    /// RT 非対応 GPU では `draw_ctx.rt_shadow` が None のため何もしない。
+    fn prune_rt_blas_caches(&mut self, keys: &[String]) {
+        if let Some(ctx) = self.draw_ctx.as_ref() {
+            if let Some(rt_cell) = ctx.rt_shadow.as_ref() {
+                rt_cell.borrow_mut().prune_source_paths(keys);
+            }
+        }
+    }
+
+    /// 「バッチ構成は不変のまま、描かれる形状（頂点バッファの中身）だけが変わった」
+    /// ことを統合バッチへ伝え、影の静的カスケードスキップを解除させる。
+    ///
+    /// 統合バッチそのものは**捨てない**（捨てると再構築の連鎖になる。上記参照）。
+    /// 内容世代だけを進めることで、そのチャンクを描くカスケードだけが次フレームに
+    /// 深度を焼き直し、形状が変わっていないカスケードはスキップされ続ける。
+    fn note_geometry_content_changed(&mut self, keys: &[String]) {
+        for key in keys {
+            if let Some(sd) = self.shared_model_batches.get_mut(key) {
+                sd.batch.note_geometry_changed();
             }
         }
     }
@@ -3897,10 +3941,23 @@ impl App {
                 }
             }
         }
-        // prune_rt=true: RT BLAS を捨てる。次フレームに最新頂点で作り直され、
-        // `new_blas_built=true` により TLAS も必ず組み直される。
+        // ── ③ RT BLAS を捨てる。次フレームに最新頂点で作り直され、
+        //       `new_blas_built=true` により TLAS も必ず組み直される。
+        //
+        //   **統合バッチは捨てない**（`invalidate_geometry_caches` を呼ばない）。
+        //   ここへ積まれるのは
+        //     ・カバーの頂点焼き込み（`apply_cover_to_chunk`）… 構成不変。捨てる理由が無い
+        //     ・ストローク遅延中の再メッシュ（`remesh_chunks(defer_side_effects=true)`）
+        //       … 構成は変わるが、`remesh_chunks` のフェーズ C-3 が**その場で同期的に**
+        //          統合バッチを捨て済み
+        //   の 2 つだけであり、どちらもここで捨てる必要が無い。捨てると次フレームに
+        //   バッチ再構築＋初回 update() が走り、`content_generation` が変わって影の
+        //   静的カスケードスキップまで無効化される（＝降雪中に毎フレーム再構築の連鎖）。
+        //
+        //   代わりに「形状だけ変わった」ことを内容世代へ伝え、影は正しく焼き直させる。
         let t = Instant::now();
-        self.invalidate_geometry_caches(&keys, true);
+        self.note_geometry_content_changed(&keys);
+        self.prune_rt_blas_caches(&keys);
         if *PERF_TERRAIN_LOG_ENABLED && !keys.is_empty() {
             eprintln!(
                 "[PERF terrain] rt_blas_prune chunks={} remain={} take={:.2}ms",
