@@ -71,6 +71,15 @@
     <Geometry x:Key="Icon.Terrain.Cover" po:Freeze="True">F1 m20.79 13.95l-2.33.62l-2-1.13v-2.88l2-1.13l2.33.62l.52-1.93l-1.77-.47l.46-1.77l-1.93-.52l-.62 2.33l-2 1.13L13 7.38V5.12l1.71-1.71L13.29 2L12 3.29L10.71 2L9.29 3.41L11 5.12v2.26L8.5 8.82l-2-1.13l-.58-2.33L4 5.88l.47 1.77l-1.77.47l.52 1.93l2.33-.62l2 1.13v2.89l-2 1.13l-2.33-.62l-.52 1.93l1.77.47L4 18.12l1.93.52l.62-2.33l2-1.13L11 16.62v2.26l-1.71 1.71L10.71 22L12 20.71L13.29 22l1.41-1.41l-1.7-1.71v-2.26l2.5-1.45l2 1.13l.62 2.33l1.88-.51l-.47-1.77l1.77-.47zM9.5 10.56L12 9.11l2.5 1.45v2.88L12 14.89l-2.5-1.45z</Geometry>
     <Geometry x:Key="Icon.Terrain.Heightmap" po:Freeze="True">F1 m14 6l-3.75 5l2.85 3.8l-1.6 1.2C9.81 13.75 7 10 7 10l-6 8h22z</Geometry>
 
+    <!-- ── スプライトリグ（sprite_mesh 編集）ツール ── -->
+    <Geometry x:Key="Icon.SpriteRig.DrawPolygon" po:Freeze="True">F1 M17 15.7V13h2v4l-9 4l-7-7l4-9h4v2H8.3l-2.9 6.6l5 5zM22 5v2h-3v3h-2V7h-3V5h3V2h2v3z</Geometry>
+    <Geometry x:Key="Icon.SpriteRig.AddVertex" po:Freeze="True">F1 M9 9v6h6V9zm2 2h2v2h-2z</Geometry>
+    <Geometry x:Key="Icon.SpriteRig.AutoMesh" po:Freeze="True">F1 M7.5 5.6L5 7l1.4-2.5L5 2l2.5 1.4L10 2L8.6 4.5L10 7zm12 9.8L22 14l-1.4 2.5L22 19l-2.5-1.4L17 19l1.4-2.5L17 14zM22 2l-1.4 2.5L22 7l-2.5-1.4L17 7l1.4-2.5L17 2l2.5 1.4zm-8.66 10.78l2.44-2.44l-2.12-2.12l-2.44 2.44zm1.03-5.49l2.34 2.34c.39.37.39 1.02 0 1.41L5.04 22.71c-.39.39-1.04.39-1.41 0l-2.34-2.34c-.39-.37-.39-1.02 0-1.41L12.96 7.29c.39-.39 1.04-.39 1.41 0</Geometry>
+    <Geometry x:Key="Icon.SpriteRig.Retriangulate" po:Freeze="True">F1 M9 3v6h.73l-3.94 7H2v6h6v-2h8v2h6v-6h-3.79l-3.94-7H15V3m-4 2h2v2h-2m1 2.04l4 7.11V18H8v-1.85M4 18h2v2H4m14-2h2v2h-2</Geometry>
+    <Geometry x:Key="Icon.SpriteRig.PixelGrid" po:Freeze="True">F1 M10 4v4h4V4zm6 0v4h4V4zm0 6v4h4v-4zm0 6v4h4v-4zm-2 4v-4h-4v4zm-6 0v-4H4v4zm0-6v-4H4v4zm0-6V4H4v4zm2 6h4v-4h-4zM4 2h16a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H4c-1.08 0-2-.9-2-2V4a2 2 0 0 1 2-2</Geometry>
+    <Geometry x:Key="Icon.SpriteRig.ZoomFit" po:Freeze="True">F1 M20 2H4c-1.11 0-2 .89-2 2v16c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V4c0-1.11-.89-2-2-2m0 18H4V4h16m-7 4v2h-2V8H9l3-3l3 3m1 7v-2h-2v-2h2V9l3 3m-9 1H8v2l-3-3l3-3v2h2m5 5l-3 3l-3-3h2v-2h2v2</Geometry>
+    <Geometry x:Key="Icon.SpriteRig.OpenImage" po:Freeze="True">F1 M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3zm-4.7 6H5c-1.1 0-2-.9-2-2V5c0-1.1.9-2 2-2h14c1.1 0 2 .9 2 2v8.3c-.6-.2-1.3-.3-2-.3c-1.1 0-2.2.3-3.1.9L14.5 12L11 16.5l-2.5-3L5 18h8.1c-.1.3-.1.7-.1 1c0 .7.1 1.4.3 2</Geometry>
+
     <!-- ── ドッキングパネル ── -->
     <Geometry x:Key="Icon.Panel.Hierarchy" po:Freeze="True">F1 M3 3h6v4H3zm12 7h6v4h-6zm0 7h6v4h-6zm-2-4H7v5h6v2H5V9h2v2h6z</Geometry>
     <Geometry x:Key="Icon.Panel.OpenDocuments" po:Freeze="True">F1 M21 3H3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2m0 16H3V5h10v4h8z</Geometry>
@@ -84,6 +93,7 @@
     <Geometry x:Key="Icon.Panel.Inspector" po:Freeze="True">F1 M8 13c-1.86 0-3.41 1.28-3.86 3H2v2h2.14c.45 1.72 2 3 3.86 3s3.41-1.28 3.86-3H22v-2H11.86c-.45-1.72-2-3-3.86-3m0 6c-1.1 0-2-.9-2-2s.9-2 2-2s2 .9 2 2s-.9 2-2 2M19.86 6c-.45-1.72-2-3-3.86-3s-3.41 1.28-3.86 3H2v2h10.14c.45 1.72 2 3 3.86 3s3.41-1.28 3.86-3H22V6zM16 9c-1.1 0-2-.9-2-2s.9-2 2-2s2 .9 2 2s-.9 2-2 2</Geometry>
     <Geometry x:Key="Icon.Panel.AiAssistant" po:Freeze="True">F1 M17.5 15.5c0 1.11-.89 2-2 2s-2-.89-2-2s.9-2 2-2s2 .9 2 2m-9-2c-1.1 0-2 .9-2 2s.9 2 2 2s2-.89 2-2s-.89-2-2-2M23 15v3c0 .55-.45 1-1 1h-1v1c0 1.11-.89 2-2 2H5a2 2 0 0 1-2-2v-1H2c-.55 0-1-.45-1-1v-3c0-.55.45-1 1-1h1c0-3.87 3.13-7 7-7h1V5.73c-.6-.34-1-.99-1-1.73c0-1.1.9-2 2-2s2 .9 2 2c0 .74-.4 1.39-1 1.73V7h1c3.87 0 7 3.13 7 7h1c.55 0 1 .45 1 1m-2 1h-2v-2c0-2.76-2.24-5-5-5h-4c-2.76 0-5 2.24-5 5v2H3v1h2v3h14v-3h2z</Geometry>
     <Geometry x:Key="Icon.Panel.Terrain" po:Freeze="True">F1 m14 6l-3.75 5l2.85 3.8l-1.6 1.2C9.81 13.75 7 10 7 10l-6 8h22z</Geometry>
+    <Geometry x:Key="Icon.Panel.SpriteRig" po:Freeze="True">F1 m22.7 14.4l-1 1l-2.1-2.1l1-1c.2-.2.6-.2.8 0l1.3 1.3c.2.2.2.5 0 .8M13 19.9l6.1-6.1l2.1 2.1l-6.1 6.1H13zm-2 0v-.8l.6-.6l.5-.5H8v-2H6V8h2V6h8v2h2v4.1l1.1-1.1l.2-.2c.2-.2.5-.4.8-.5V8h2V2h-6v2H8V2H2v6h2v8H2v6h6v-2zM18 4h2v2h-2zM4 4h2v2H4zm2 16H4v-2h2z</Geometry>
 
     <!-- ── コンポーネント種別（ComponentKind 対応）── -->
     <Geometry x:Key="Icon.Component.Transform" po:Freeze="True">F1 m12 2l4 4h-3v7.85l6.53 3.76L21 15.03l1.5 5.47l-5.5 1.46l1.53-2.61L12 15.58l-6.53 3.77L7 21.96L1.5 20.5L3 15.03l1.47 2.58L11 13.85V6H8z</Geometry>

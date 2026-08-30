@@ -107,6 +107,15 @@ pub struct SpriteMeshData {
     /// 制作者向けメモ（省略可・実行時挙動に影響しない）。
     #[serde(default)]
     pub comment: String,
+    /// このメッシュの元画像（省略可・`.sprite_mesh` からの相対パス）。
+    ///
+    /// エディタのスプライトリグパネルが「メッシュを開き直したとき、
+    /// どの画像に重ねて編集するか」を引き当てるためのヒントで、
+    /// **実行時の描画には一切使わない**（描画テクスチャは
+    /// `SkinnedSpriteComponent::texture_path` が決める）。
+    /// 省略時は空文字列（version 1 導入前のファイルもそのまま読める）。
+    #[serde(default)]
+    pub texture: String,
     /// 頂点位置（スプライトローカルのキャンバスピクセル座標）。
     pub vertices: Vec<[f32; 2]>,
     /// 頂点 UV（[0,1]×[0,1]・左上原点）。`vertices` と同数。
@@ -177,6 +186,8 @@ pub struct SpriteMesh {
     pub inverse_bind: Vec<[[f32; 4]; 4]>,
     /// 頂点ごとの正規化済みウェイト。
     pub weights: Vec<SpriteVertexWeights>,
+    /// 元画像への相対パス（エディタ用のヒント。空文字列 = 未指定）。
+    pub texture: String,
 }
 
 /// `.sprite_mesh` の読み込み・検証で起こり得る失敗。
@@ -445,6 +456,7 @@ impl SpriteMesh {
             bind_global,
             inverse_bind,
             weights,
+            texture: data.texture,
         })
     }
 
@@ -533,6 +545,11 @@ mod tests {
         include_str!("../../../../tests/fixtures/quad_one_bone.sprite_mesh");
     /// テスト用フィクスチャ（2 ボーンの帯）。
     const TWO_BONE_ARM: &str = include_str!("../../../../tests/fixtures/two_bone_arm.sprite_mesh");
+    /// エディタのスプライトリグパネル（Phase B1a）が自動生成したメッシュ。
+    /// `editor/tests/SpriteRigTests` が透過円から作って書き出したもので、
+    /// 「エディタが吐く JSON をランタイムのパーサがそのまま受理する」ことの検証に使う。
+    const GENERATED_CIRCLE: &str =
+        include_str!("../../../../tests/fixtures/generated_circle.sprite_mesh");
 
     /// 2 点がほぼ一致することを検査する（浮動小数の許容誤差付き）。
     fn assert_close(a: [f32; 2], b: [f32; 2], eps: f32, what: &str) {
@@ -746,6 +763,53 @@ mod tests {
         assert_close(mesh.skin_vertex(4, &palette), [110.0, 100.0], 1e-3, "v4");
         // (200, 10) → ローカル (100,10) → 回転後 (-10,100) → (90,100)
         assert_close(mesh.skin_vertex(5, &palette), [90.0, 100.0], 1e-3, "v5");
+    }
+
+    /// `texture` は省略可能フィールドで、無ければ空文字列になる（後方互換）。
+    #[test]
+    fn texture_field_is_optional() {
+        // 既存フィクスチャには texture が無い ＝ 従来ファイルがそのまま読める
+        let old = SpriteMesh::from_json(QUAD_ONE_BONE).expect("パース成功");
+        assert_eq!(old.texture, "", "texture 省略時は空文字列");
+
+        // 明示された相対パスはそのまま保持される
+        let src = r#"{
+            "version": 1,
+            "texture": "hero.png",
+            "vertices": [[0,0]], "uvs": [[0,0]], "triangles": [0,0,0],
+            "bones": [{"name":"a","parent":""}],
+            "weights": [[{"bone":0,"weight":1.0}]]
+        }"#;
+        let with_texture = SpriteMesh::from_json(src).expect("パース成功");
+        assert_eq!(with_texture.texture, "hero.png");
+    }
+
+    /// エディタ（スプライトリグパネル）が自動生成したメッシュを受理できることを検査する。
+    ///
+    /// これが通らなくなったら、エディタ側の書き出しとランタイムの検証条件がずれている。
+    /// フィクスチャは `dotnet run --project editor/tests/SpriteRigTests` で再生成する。
+    #[test]
+    fn editor_generated_mesh_is_accepted() {
+        let mesh = SpriteMesh::from_json(GENERATED_CIRCLE).expect("エディタ生成メッシュのパース成功");
+
+        assert!(mesh.vertex_count() > 0, "頂点がある");
+        assert_eq!(mesh.triangles.len() % 3, 0, "三角形インデックスは 3 の倍数");
+        assert_eq!(mesh.uvs.len(), mesh.vertex_count(), "UV 数が頂点数と一致");
+        assert_eq!(mesh.weights.len(), mesh.vertex_count(), "ウェイト数が頂点数と一致");
+        assert_eq!(mesh.bone_count(), 1, "B1a はルート 1 本だけを書き出す");
+        assert_eq!(mesh.bone_index("root"), Some(0), "ルートボーン名は root");
+        assert_eq!(mesh.texture, "generated_circle.png", "texture ヒントが読める");
+
+        // UV は [0,1]^2 に収まり、全ウェイトはルートへ 1.0 に正規化されている
+        for uv in &mesh.uvs {
+            assert!(
+                (0.0..=1.0).contains(&uv[0]) && (0.0..=1.0).contains(&uv[1]),
+                "UV が [0,1]^2 の外: {uv:?}"
+            );
+        }
+        for w in &mesh.weights {
+            assert_eq!(w.weights, [1.0, 0.0, 0.0, 0.0], "全頂点がルートへ 1.0");
+        }
     }
 
     /// ボーンが 1 本も解決できないときのフォールバック（バインドポーズ＝無変形）。

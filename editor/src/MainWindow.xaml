@@ -827,6 +827,11 @@
                               IsCheckable="True"
                               Tag="animation_timeline"
                               Click="OnTogglePanel"/>
+                    <MenuItem x:Name="MenuItemSpriteRig"
+                              Header="スプライトリグ"
+                              IsCheckable="True"
+                              Tag="sprite_rig"
+                              Click="OnTogglePanel"/>
                     <MenuItem x:Name="MenuItemProfiler"
                               Header="プロファイラ"
                               IsCheckable="True"
@@ -2006,6 +2011,14 @@
                                                   CanHide="True"
                                                   CanFloat="True">
                                 <panels:AnimationTimelinePanel x:Name="PanelAnimationTimeline"/>
+                            </avd:LayoutAnchorable>
+                            <!-- スプライトリグ編集パネル（.sprite_mesh のメッシュ作成・編集） -->
+                            <avd:LayoutAnchorable Title="スプライトリグ"
+                                                  ContentId="sprite_rig"
+                                                  CanClose="False"
+                                                  CanHide="True"
+                                                  CanFloat="True">
+                                <panels:SpriteRigPanel x:Name="PanelSpriteRig"/>
                             </avd:LayoutAnchorable>
                             <avd:LayoutAnchorable Title="エラー一覧"
                                                   ContentId="error_list"
