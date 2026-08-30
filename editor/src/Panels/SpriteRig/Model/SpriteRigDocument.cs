@@ -18,7 +18,7 @@ namespace SEEDEditor.Panels.SpriteRig.Model;
 ///   2. 輪郭ポリゴン／内部点（＝入力データ）を書き換える
 ///   3. <see cref="SpriteRigMesh.Rebuild"/> で三角形を作り直し、<see cref="IsDirty"/> を立てる
 /// </summary>
-public sealed class SpriteRigDocument
+public sealed partial class SpriteRigDocument
 {
     /// <summary>頂点ハンドルのヒット判定半径の既定値（画像ピクセル）。</summary>
     public const double DefaultHitRadius = 6.0;
@@ -148,6 +148,10 @@ public sealed class SpriteRigDocument
         // ボーンは自動生成の対象外なので既存のものを引き継ぐ
         generated.Bones = Mesh.Bones;
         generated.Rebuild(AutoMeshOptions.RefineDelaunay);
+        // ジオメトリは総取り替えでも、ウェイトは旧頂点から座標で引き継ぐ
+        // （ペイント済みの重みが自動メッシュのやり直しで消えないようにする）
+        generated.Weights = WeightTransfer.Transfer(
+            Mesh.Vertices, Mesh.Weights, generated.Vertices, generated.Bones.Count);
 
         Mesh = generated;
         PendingPolygon.Clear();
@@ -323,6 +327,8 @@ public sealed class SpriteRigDocument
         Mesh = restored;
         PendingPolygon.Clear();
         SelectedPoint = null;
+        // 復元後のメッシュに対して選択・ドラッグ状態が範囲外になり得るので捨てる
+        ClampSelections();
         MarkDirty();
         return true;
     }
@@ -336,6 +342,8 @@ public sealed class SpriteRigDocument
         Mesh = restored;
         PendingPolygon.Clear();
         SelectedPoint = null;
+        // 復元後のメッシュに対して選択・ドラッグ状態が範囲外になり得るので捨てる
+        ClampSelections();
         MarkDirty();
         return true;
     }

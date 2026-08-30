@@ -19,7 +19,7 @@ namespace SEEDEditor.Panels.SpriteRig;
 /// 画面座標へは <c>screen = image * Zoom + Offset</c> の相似変換のみで写す
 /// （回転を持たないので、逆変換も割り算だけで済む）。
 /// </summary>
-public sealed class SpriteRigCanvas : FrameworkElement
+public sealed partial class SpriteRigCanvas : FrameworkElement
 {
     // ── 表示パラメータ（マジックナンバー排除）──────────────────────
 
@@ -186,10 +186,18 @@ public sealed class SpriteRigCanvas : FrameworkElement
 
         if (document.ShowPixelGrid && document.Zoom >= PixelGridMinZoom) DrawPixelGrid(dc, imageRect);
 
+        // ウェイトの面塗りはワイヤの下に敷く（形が読めなくならないように）
+        if (document.EditMode == SpriteRigEditMode.Weight) DrawWeightOverlay(dc, document);
+
         DrawTriangles(dc, document);
         DrawContours(dc, document);
         DrawPendingPolygon(dc, document);
-        DrawHandles(dc, document);
+
+        // 触れる対象のハンドルだけを出す（モードごとに操作対象が違うため）
+        if (document.EditMode == SpriteRigEditMode.Mesh) DrawHandles(dc, document);
+        else DrawBones(dc, document);
+
+        if (document.EditMode == SpriteRigEditMode.Weight) DrawBrushCursor(dc, document);
     }
 
     /// <summary>ピクセル境界のグリッドを描く（十分拡大しているときのみ）。</summary>
@@ -363,7 +371,7 @@ public sealed class SpriteRigCanvas : FrameworkElement
             return;
         }
 
-        // 右ボタン: 作図のキャンセル
+        // 右ボタン: 作りかけの取り消し（ポリゴン作図 / ボーンの連鎖作成）
         if (e.ChangedButton == MouseButton.Right)
         {
             if (_document.PendingPolygon.Count > 0)
@@ -371,12 +379,32 @@ public sealed class SpriteRigCanvas : FrameworkElement
                 _document.CancelPendingPolygon();
                 InvalidateVisual();
             }
+            else if (_document.EditMode == SpriteRigEditMode.Bone)
+            {
+                _document.CancelBoneCreate();
+                if (IsMouseCaptured) ReleaseMouseCapture();
+                InvalidateVisual();
+            }
             e.Handled = true;
             return;
         }
 
         if (e.ChangedButton != MouseButton.Left) return;
-        HandleLeftClick(ScreenToImage(e.GetPosition(this)));
+
+        Vec2 position = ScreenToImage(e.GetPosition(this));
+        switch (_document.EditMode)
+        {
+            case SpriteRigEditMode.Bone:
+                HandleBoneLeftDown(position, e.ClickCount >= 2);
+                break;
+            case SpriteRigEditMode.Weight:
+                HandleWeightLeftDown(position);
+                break;
+            default:
+                HandleLeftClick(position);
+                break;
+        }
+        InvalidateVisual();
         e.Handled = true;
     }
 
@@ -387,9 +415,6 @@ public sealed class SpriteRigCanvas : FrameworkElement
     private void HandleLeftClick(Vec2 position)
     {
         var document = _document!;
-        // ボーン／ウェイトモードは Phase B1b で実装する（B1a では何もしない）
-        if (document.EditMode != SpriteRigEditMode.Mesh) return;
-
         double hitRadius = HitRadiusInScreenPixels / document.Zoom;
 
         switch (document.Tool)
@@ -424,7 +449,6 @@ public sealed class SpriteRigCanvas : FrameworkElement
                 }
                 break;
         }
-        InvalidateVisual();
     }
 
     /// <summary>
@@ -460,6 +484,14 @@ public sealed class SpriteRigCanvas : FrameworkElement
             return;
         }
 
+        // ボーン作成・ボーン移動・ウェイトペイント（メッシュ以外のモード）
+        if (_document.EditMode != SpriteRigEditMode.Mesh)
+        {
+            if (HandleRiggingMouseMove(_cursorInImage, e.LeftButton == MouseButtonState.Pressed))
+                InvalidateVisual();
+            return;
+        }
+
         // 頂点ドラッグ
         if (_document.IsDraggingPoint && e.LeftButton == MouseButtonState.Pressed)
         {
@@ -486,6 +518,16 @@ public sealed class SpriteRigCanvas : FrameworkElement
             return;
         }
 
+        if (e.ChangedButton == MouseButton.Left && _document.EditMode != SpriteRigEditMode.Mesh)
+        {
+            if (HandleRiggingMouseUp())
+            {
+                InvalidateVisual();
+                e.Handled = true;
+            }
+            return;
+        }
+
         if (e.ChangedButton == MouseButton.Left && _document.IsDraggingPoint)
         {
             _document.EndPointDrag();
@@ -501,6 +543,17 @@ public sealed class SpriteRigCanvas : FrameworkElement
     {
         base.OnKeyDown(e);
         if (_document == null) return;
+
+        // ボーン／ウェイトモードのキー操作を先に処理する（Esc・Delete の意味が違うため）
+        if (_document.EditMode != SpriteRigEditMode.Mesh)
+        {
+            if (HandleRiggingKeyDown(e.Key))
+            {
+                InvalidateVisual();
+                e.Handled = true;
+            }
+            return;
+        }
 
         switch (e.Key)
         {

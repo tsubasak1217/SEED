@@ -142,6 +142,7 @@ public static class SpriteMeshFile
                 Position = new[] { bone.Position.X, bone.Position.Y },
                 Rotation = bone.Rotation,
                 Scale = new[] { bone.Scale.X, bone.Scale.Y },
+                Length = bone.Length,
             });
         }
 
@@ -164,37 +165,26 @@ public static class SpriteMeshFile
     private static List<SpriteMeshInfluenceDto> NormalizeInfluences(
         List<SpriteRigInfluence>? influences, int boneCount)
     {
+        // ボーン範囲外の影響だけここで落とし、
+        // 「4 本まで・正の値・合計 1.0」の整形は編集側と同じ規則（WeightPaint）に任せる。
         var valid = new List<SpriteRigInfluence>(MaxBoneInfluences);
         if (influences != null)
         {
             foreach (var influence in influences)
             {
                 if (influence.BoneIndex < 0 || influence.BoneIndex >= boneCount) continue;
-                if (!double.IsFinite(influence.Weight) || influence.Weight <= 0.0) continue;
                 valid.Add(influence);
             }
         }
 
-        // 影響が 5 本以上なら大きい順に 4 本へ切り詰める
-        if (valid.Count > MaxBoneInfluences)
-        {
-            valid.Sort((a, b) => b.Weight.CompareTo(a.Weight));
-            valid.RemoveRange(MaxBoneInfluences, valid.Count - MaxBoneInfluences);
-        }
-        // 1 本も無ければルート（添字 0）へ 1.0 で固定する
-        if (valid.Count == 0) valid.Add(new SpriteRigInfluence(0, 1.0));
-
-        // 合計 1.0 へ正規化してから書き出す（ランタイムでも正規化されるが、ファイル単体で正しくしておく）
-        double sum = 0.0;
-        foreach (var influence in valid) sum += influence.Weight;
-
-        var result = new List<SpriteMeshInfluenceDto>(valid.Count);
-        foreach (var influence in valid)
+        var normalized = WeightPaint.Normalize(valid);
+        var result = new List<SpriteMeshInfluenceDto>(normalized.Count);
+        foreach (var influence in normalized)
         {
             result.Add(new SpriteMeshInfluenceDto
             {
                 Bone = influence.BoneIndex,
-                Weight = influence.Weight / sum,
+                Weight = influence.Weight,
             });
         }
         return result;
@@ -283,6 +273,7 @@ public static class SpriteMeshFile
                 Position = ToVec2(bone.Position, Vec2.Zero),
                 Rotation = bone.Rotation,
                 Scale = ToVec2(bone.Scale, new Vec2(1.0, 1.0)),
+                Length = bone.Length,
             });
         }
         mesh.EnsureRootBone();
@@ -368,6 +359,13 @@ public static class SpriteMeshFile
         [JsonPropertyName("position")] public double[]? Position { get; set; }
         [JsonPropertyName("rotation")] public double Rotation { get; set; }
         [JsonPropertyName("scale")] public double[]? Scale { get; set; }
+
+        /// <summary>
+        /// ボーンの長さ（省略可・既定 0）。オーサリング専用で実行時のスキニングには影響しない。
+        /// ランタイム側も <c>#[serde(default)]</c> で受けるため、旧ファイル・新ファイルの
+        /// どちらもエディタ／ランタイムの両方で読める。
+        /// </summary>
+        [JsonPropertyName("length")] public double Length { get; set; }
     }
 
     /// <summary>1 頂点に対する 1 本ぶんのボーン影響。</summary>

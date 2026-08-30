@@ -72,7 +72,7 @@ CATALOG = [
     ("Icon.Terrain.Cover", "snowflake"),
     ("Icon.Terrain.Heightmap", "image-filter-hdr"),
 
-    # スプライトリグパネル（.sprite_mesh のメッシュ編集）のツールバー専用。
+    # スプライトリグパネル（.sprite_mesh のメッシュ・ボーン・ウェイト編集）のツールバー専用。
     # 選択 = Icon.Tool.Select、頂点移動 = Icon.Tool.Move、頂点削除 = Icon.Delete、
     # 保存 = Icon.Save、ボーンモード = Icon.Bone、ウェイトモード = Icon.Terrain.Paint を
     # 流用するのでここには置かない。
@@ -84,6 +84,10 @@ CATALOG = [
     ("Icon.SpriteRig.PixelGrid", "grid"),
     ("Icon.SpriteRig.ZoomFit", "fit-to-page-outline"),
     ("Icon.SpriteRig.OpenImage", "image-plus"),
+    # Phase B1b（ボーン作成・ウェイト割り当て）。
+    # ボーン作成は「鎖を継ぎ足す」操作なので折れ線の追加アイコンを当てる。
+    ("Icon.SpriteRig.CreateBone", "vector-polyline-plus"),
+    ("Icon.SpriteRig.AutoWeight", "auto-fix"),
 
     ("── ドッキングパネル ──", None),
     ("Icon.Panel.Hierarchy", "file-tree"),

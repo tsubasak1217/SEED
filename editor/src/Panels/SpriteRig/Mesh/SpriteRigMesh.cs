@@ -19,9 +19,10 @@ namespace SEEDEditor.Panels.SpriteRig.Mesh;
 /// 穴かどうかはユーザーに指定させず、<b>他ポリゴンに何重に囲まれているか（偶奇）</b>で
 /// 自動判定する（偶数 = 外周・奇数 = 穴）。
 ///
-/// ボーンとウェイトは Phase B1b（ボーン配置・ウェイトペイント）で本格的に使う。
-/// B1a では「ルート 1 本・全頂点がルートへ 1.0」を保つだけで、
-/// 保存した <c>.sprite_mesh</c> がランタイムの検証を通ることを保証する。
+/// ボーン（<see cref="Bones"/>）とウェイト（<see cref="Weights"/>）は Phase B1b で
+/// 編集対象になった。ボーンの階層計算は <see cref="SpriteRigSkeleton"/>、
+/// 自動ウェイトは <see cref="AutoWeights"/>、ペイントは <see cref="WeightPaint"/>、
+/// 再三角分割時の引き継ぎは <see cref="WeightTransfer"/> が担当する。
 /// </summary>
 public sealed class SpriteRigMesh
 {
@@ -49,8 +50,11 @@ public sealed class SpriteRigMesh
     /// </summary>
     public List<SpriteRigBone> Bones { get; set; } = new();
 
-    /// <summary>頂点ごとのボーン影響（<see cref="Vertices"/> と同数）。</summary>
-    public List<List<SpriteRigInfluence>> Weights { get; private set; } = new();
+    /// <summary>
+    /// 頂点ごとのボーン影響（<see cref="Vertices"/> と同数）。
+    /// メッシュを作り直したときに旧ウェイトを引き継げるよう、外から差し替え可能にしてある。
+    /// </summary>
+    public List<List<SpriteRigInfluence>> Weights { get; set; } = new();
 
     /// <summary>三角形の個数。</summary>
     public int TriangleCount => Triangles.Count / Triangulation.IndicesPerTriangle;
@@ -69,6 +73,12 @@ public sealed class SpriteRigMesh
     {
         ClassifyHoles();
 
+        // 作り直す前の頂点とウェイトを控えておき、新しい頂点へ座標で引き継ぐ。
+        // （B1a では毎回ルート 1.0 へ張り直していたため、再三角分割のたびに
+        //   ペイントしたウェイトが失われていた）
+        var previousVertices = Vertices;
+        var previousWeights = Weights;
+
         var regions = BuildRegions();
         var result = Triangulation.Triangulate(regions, InteriorPoints, refineDelaunay);
 
@@ -76,7 +86,7 @@ public sealed class SpriteRigMesh
         Triangles = result.Triangles;
 
         EnsureRootBone();
-        ResetWeightsToRoot();
+        Weights = WeightTransfer.Transfer(previousVertices, previousWeights, Vertices, Bones.Count);
     }
 
     /// <summary>
@@ -170,8 +180,9 @@ public sealed class SpriteRigMesh
     /// <summary>
     /// 全頂点のウェイトを「ルートボーンへ 1.0」に張り直す。
     ///
-    /// B1a ではウェイト編集 UI を持たないため、頂点数が変わるたびにこれで作り直す。
-    /// B1b でウェイトペイントを入れる際は、ここを「既存ウェイトを座標で引き継ぐ」実装へ置き換える。
+    /// 通常の再構築では <see cref="WeightTransfer.Transfer"/> が旧ウェイトを座標で引き継ぐので
+    /// これは使わない。壊れたファイルの救済（ウェイト数と頂点数が食い違う場合）や、
+    /// ユーザーが明示的にウェイトを初期化したい場合の逃げ道として残してある。
     /// </summary>
     public void ResetWeightsToRoot()
     {
@@ -257,6 +268,24 @@ public sealed class SpriteRigBone
     /// <summary>バインドポーズのローカルスケール。</summary>
     public Vec2 Scale { get; set; } = new(1.0, 1.0);
 
+    /// <summary>
+    /// ボーンの長さ（ボーンローカル +X 方向・スケール適用前）。
+    ///
+    /// <para>
+    /// <c>.sprite_mesh</c> の <c>length</c> フィールドと 1:1 対応する<b>省略可能</b>な情報で、
+    /// 実行時のスキニング計算には一切影響しない（変形はあくまで TRS だけで決まる）。
+    /// 持っている理由は、編集 UI とビューポート表示が
+    /// 「根元 → 先端」の骨形状を描くのに先端位置を必要とするためである。
+    /// </para>
+    ///
+    /// <para>
+    /// 子を持つボーンなら先端位置は子の <see cref="Position"/> からも分かるが、
+    /// <b>末端ボーンは長さ情報を持ちようがない</b>ので、この形で明示的に保存する。
+    /// 旧ファイル（<c>length</c> 無し）は 0 として読まれ、表示時のみ既定長へフォールバックする。
+    /// </para>
+    /// </summary>
+    public double Length { get; set; }
+
     /// <summary>無変形のルートボーンを作る。</summary>
     /// <param name="name">ボーン名。</param>
     public static SpriteRigBone CreateRoot(string name) => new() { Name = name };
@@ -269,6 +298,7 @@ public sealed class SpriteRigBone
         Position = Position,
         Rotation = Rotation,
         Scale = Scale,
+        Length = Length,
     };
 }
 

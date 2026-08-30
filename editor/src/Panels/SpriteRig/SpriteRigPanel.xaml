@@ -46,6 +46,30 @@
             <Setter Property="Margin" Value="0,8,0,3"/>
         </Style>
 
+        <!-- 左縦パネルのチェックボックス（暗い背景で読める色に揃える） -->
+        <Style x:Key="PanelCheckBoxStyle" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="Margin" Value="0,3,0,0"/>
+        </Style>
+
+        <!-- 左縦パネルの補足説明 -->
+        <Style x:Key="PanelHintStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#8A8A8A"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="Margin" Value="0,6,0,0"/>
+        </Style>
+
+        <!-- 左縦パネルの一覧（ボーンリスト） -->
+        <Style x:Key="PanelListStyle" TargetType="ListBox">
+            <Setter Property="Background" Value="#1E1E1E"/>
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="BorderBrush" Value="#3A3A3A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FontSize" Value="11"/>
+        </Style>
+
         <!-- スライダー横の数値表示 -->
         <Style x:Key="SliderValueStyle" TargetType="TextBlock">
             <Setter Property="Foreground" Value="#CCCCCC"/>
@@ -137,11 +161,14 @@
                         <ComboBox x:Name="CmbEditMode" FontSize="11" Height="22"
                                   SelectionChanged="OnEditModeChanged">
                             <ComboBoxItem Content="メッシュ" IsSelected="True"/>
-                            <ComboBoxItem Content="ボーン（B1b）"/>
-                            <ComboBoxItem Content="ウェイト（B1b）"/>
+                            <ComboBoxItem Content="ボーン"/>
+                            <ComboBoxItem Content="ウェイト"/>
                         </ComboBox>
                         <TextBlock x:Name="TbModeHint" Text="" Foreground="#E5C07B" FontSize="10"
                                    TextWrapping="Wrap" Margin="0,3,0,0" Visibility="Collapsed"/>
+
+                        <!-- ここから下はメッシュ編集モードのときだけ出す -->
+                        <StackPanel x:Name="PanelMeshTools">
 
                         <TextBlock Text="ツール" Style="{StaticResource SectionLabelStyle}"/>
                         <ToggleButton x:Name="ToolSelect" Style="{StaticResource ToolToggleStyle}"
@@ -241,6 +268,129 @@
                                 Margin="0,0,0,3" HorizontalContentAlignment="Center"
                                 Click="OnClearMesh" Content="メッシュを消去"
                                 ToolTip="輪郭と内部点をすべて消す（ボーンは残る）"/>
+
+                        </StackPanel>
+
+                        <!-- ── ボーン編集モード ── -->
+                        <StackPanel x:Name="PanelBoneTools" Visibility="Collapsed">
+
+                            <TextBlock Text="ボーンツール" Style="{StaticResource SectionLabelStyle}"/>
+                            <ToggleButton x:Name="BoneToolCreate" Style="{StaticResource ToolToggleStyle}"
+                                          Click="OnBoneToolSelected" IsChecked="True"
+                                          ToolTip="押した位置が根元・離した位置が先端。続けて描くと先端から鎖が伸びる（Esc で連鎖終了）">
+                                <StackPanel Orientation="Horizontal">
+                                    <ctrl:AppIcon IconKey="Icon.SpriteRig.CreateBone" Width="12" Height="12"/>
+                                    <TextBlock Text="ボーン作成" Margin="6,0,0,0"/>
+                                </StackPanel>
+                            </ToggleButton>
+                            <ToggleButton x:Name="BoneToolSelect" Style="{StaticResource ToolToggleStyle}"
+                                          Click="OnBoneToolSelected"
+                                          ToolTip="関節をドラッグして移動／骨をクリックして選択（ダブルクリックで名前変更）">
+                                <StackPanel Orientation="Horizontal">
+                                    <ctrl:AppIcon IconKey="Icon.Tool.Select" Width="12" Height="12"/>
+                                    <TextBlock Text="選択 / 移動" Margin="6,0,0,0"/>
+                                </StackPanel>
+                            </ToggleButton>
+
+                            <TextBlock Text="ボーン一覧" Style="{StaticResource SectionLabelStyle}"/>
+                            <ListBox x:Name="ListBones" Height="140" Style="{StaticResource PanelListStyle}"
+                                     SelectionChanged="OnBoneListSelectionChanged"
+                                     MouseDoubleClick="OnBoneListDoubleClick"
+                                     ToolTip="階層順に並ぶ。ダブルクリックで名前を編集できる"/>
+
+                            <TextBlock Text="名前" Foreground="#999999" FontSize="10" Margin="0,5,0,0"/>
+                            <TextBox x:Name="TxtBoneName" FontSize="11" Height="22"
+                                     Background="#1E1E1E" Foreground="#CCCCCC" BorderBrush="#3A3A3A"
+                                     KeyDown="OnBoneNameKeyDown" LostFocus="OnBoneNameLostFocus"/>
+
+                            <TextBlock Text="親ボーン" Foreground="#999999" FontSize="10" Margin="0,5,0,0"/>
+                            <ComboBox x:Name="CmbBoneParent" FontSize="11" Height="22"
+                                      SelectionChanged="OnBoneParentChanged"
+                                      ToolTip="ワールド上の姿勢は変えずに階層だけを付け替える"/>
+
+                            <Button x:Name="BtnDeleteBone" Style="{StaticResource ToolbarButtonStyle}"
+                                    Margin="0,7,0,0" HorizontalContentAlignment="Center"
+                                    Click="OnDeleteBone"
+                                    ToolTip="選択中のボーンを削除する（子は親へ付け替わる / Delete キーでも可）">
+                                <StackPanel Orientation="Horizontal">
+                                    <ctrl:AppIcon IconKey="Icon.Delete" Width="12" Height="12"/>
+                                    <TextBlock Text="ボーンを削除" Margin="5,0,0,0"/>
+                                </StackPanel>
+                            </Button>
+
+                            <TextBlock Style="{StaticResource PanelHintStyle}"
+                                       Text="ボーン作成: ドラッグで 1 本。離した先端から続けて生やせます。Esc で連鎖終了。"/>
+                        </StackPanel>
+
+                        <!-- ── ウェイト編集モード ── -->
+                        <StackPanel x:Name="PanelWeightTools" Visibility="Collapsed">
+
+                            <TextBlock Text="対象ボーン" Style="{StaticResource SectionLabelStyle}"/>
+                            <ListBox x:Name="ListWeightBones" Height="110" Style="{StaticResource PanelListStyle}"
+                                     SelectionChanged="OnWeightBoneSelectionChanged"
+                                     ToolTip="ヒートマップとブラシの対象になるボーン"/>
+
+                            <TextBlock Text="自動ウェイト" Style="{StaticResource SectionLabelStyle}"/>
+                            <TextBlock Text="減衰 (p)" Foreground="#999999" FontSize="10"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Slider x:Name="SldWeightFalloff" Width="150" Minimum="0.5" Maximum="8"
+                                        TickFrequency="0.1" IsSnapToTickEnabled="True"
+                                        ValueChanged="OnWeightParameterChanged"/>
+                                <TextBlock x:Name="TbWeightFalloff" Style="{StaticResource SliderValueStyle}"/>
+                            </StackPanel>
+                            <CheckBox x:Name="ChkSuppressAcrossContour" Style="{StaticResource PanelCheckBoxStyle}"
+                                      Content="輪郭をまたぐ影響を抑える" Click="OnWeightToggleChanged"
+                                      ToolTip="頂点とボーンを結ぶ直線がメッシュの外を通る場合、その影響を弱める"/>
+                            <CheckBox x:Name="ChkAutoWeightSelectedOnly" Style="{StaticResource PanelCheckBoxStyle}"
+                                      Content="選択頂点だけに適用" Click="OnWeightToggleChanged"/>
+                            <Button x:Name="BtnAutoWeight" Style="{StaticResource ToolbarButtonStyle}"
+                                    Margin="0,7,0,3" HorizontalContentAlignment="Center" Click="OnAutoWeight"
+                                    ToolTip="ボーン線分への距離からウェイトを割り当て直す">
+                                <StackPanel Orientation="Horizontal">
+                                    <ctrl:AppIcon IconKey="Icon.SpriteRig.AutoWeight" Width="12" Height="12"/>
+                                    <TextBlock Text="自動ウェイト" Margin="5,0,0,0"/>
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="BtnResetWeights" Style="{StaticResource ToolbarButtonStyle}"
+                                    Margin="0,0,0,3" HorizontalContentAlignment="Center"
+                                    Click="OnResetWeights" Content="ウェイトを初期化"
+                                    ToolTip="全頂点をルートボーンへ 1.0 で張り直す"/>
+
+                            <TextBlock Text="ブラシ" Style="{StaticResource SectionLabelStyle}"/>
+                            <TextBlock Text="半径 (px)" Foreground="#999999" FontSize="10"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Slider x:Name="SldBrushRadius" Width="150" Minimum="1" Maximum="200"
+                                        TickFrequency="1" IsSnapToTickEnabled="True"
+                                        ValueChanged="OnWeightParameterChanged"/>
+                                <TextBlock x:Name="TbBrushRadius" Style="{StaticResource SliderValueStyle}"/>
+                            </StackPanel>
+                            <TextBlock Text="強さ" Foreground="#999999" FontSize="10" Margin="0,4,0,0"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Slider x:Name="SldBrushStrength" Width="150" Minimum="0" Maximum="1"
+                                        TickFrequency="0.01" IsSnapToTickEnabled="True"
+                                        ValueChanged="OnWeightParameterChanged"/>
+                                <TextBlock x:Name="TbBrushStrength" Style="{StaticResource SliderValueStyle}"/>
+                            </StackPanel>
+                            <TextBlock Text="モード" Foreground="#999999" FontSize="10" Margin="0,4,0,0"/>
+                            <ComboBox x:Name="CmbBrushMode" FontSize="11" Height="22"
+                                      SelectionChanged="OnBrushModeChanged">
+                                <ComboBoxItem Content="加算" IsSelected="True"/>
+                                <ComboBoxItem Content="減算"/>
+                                <ComboBoxItem Content="置換"/>
+                                <ComboBoxItem Content="スムーズ"/>
+                            </ComboBox>
+
+                            <TextBlock Text="表示" Style="{StaticResource SectionLabelStyle}"/>
+                            <CheckBox x:Name="ChkAllBoneColors" Style="{StaticResource PanelCheckBoxStyle}"
+                                      Content="全ボーンを色分け表示" Click="OnWeightToggleChanged"
+                                      ToolTip="外すと選択ボーンの影響度ヒートマップ（青 → 赤）になる"/>
+
+                            <TextBlock Text="選択頂点の影響" Style="{StaticResource SectionLabelStyle}"/>
+                            <ItemsControl x:Name="ListInfluences"/>
+
+                            <TextBlock Style="{StaticResource PanelHintStyle}"
+                                       Text="左ドラッグ = 塗る / Ctrl+左 = ボーンを持ち替え / Shift+左 = 頂点を選択"/>
+                        </StackPanel>
 
                         <TextBlock Text="情報" Style="{StaticResource SectionLabelStyle}"/>
                         <TextBlock x:Name="TbMeshInfo" Text="—" Foreground="#CCCCCC" FontSize="10"

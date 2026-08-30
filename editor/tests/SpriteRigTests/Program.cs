@@ -24,6 +24,10 @@ public static class Program
     private const string GeneratedFixtureRelativePath =
         "runtime/tests/fixtures/generated_circle.sprite_mesh";
 
+    /// <summary>Rust 側テストへ渡す、多ボーン + 自動ウェイトのフィクスチャ相対パス。</summary>
+    private const string RiggedFixtureRelativePath =
+        "runtime/tests/fixtures/generated_rigged.sprite_mesh";
+
     /// <summary>面積比較の相対許容誤差。</summary>
     private const double AreaRelativeTolerance = 1.0e-6;
 
@@ -46,9 +50,20 @@ public static class Program
         harness.Add("別画像をインポートしてもタブが増えて既存編集が残る", ImportingAnotherImageAddsTab);
         harness.Add("Undo / Redo が自動メッシュ生成を巻き戻せる", UndoRedoRestoresGeometry);
         harness.Add("手動ポリゴン作図と頂点編集が反映される", ManualPolygonEditing);
+        harness.Add("ボーンの 根元/先端 表現と TRS が 3 階層で往復する", BoneHeadTipTrsRoundTrip);
+        harness.Add("親の付け替えでワールド姿勢が変わらない", ReparentPreservesWorldPose);
+        harness.Add("先端ドラッグで先端に生えた子が追従する", TipDragCarriesAttachedChild);
+        harness.Add("2 ボーンの棒で中間頂点が両方から約 50% を受ける", AutoWeightSplitsEvenlyAtMidpoint);
+        harness.Add("自動ウェイトは最大 4 本・合計 1.0 を守る", AutoWeightRespectsInfluenceLimit);
+        harness.Add("5 本目を塗ると最弱の 1 本が追い出される", PaintEvictsWeakestInfluence);
+        harness.Add("ブラシは半径外の頂点を書き換えない", BrushLeavesVerticesOutsideRadius);
+        harness.Add("メッシュ再生成でウェイトが座標で引き継がれる", WeightsSurviveRetriangulation);
+        harness.Add("ボーン削除で影響が除かれ再正規化される", DeletingBoneRenormalizesWeights);
+        harness.Add("bones / weights を含む .sprite_mesh が往復する", RiggedMeshRoundTrip);
         harness.Add("Rust テスト用フィクスチャを書き出す", WriteGeneratedFixture);
+        harness.Add("Rust テスト用の多ボーンフィクスチャを書き出す", WriteRiggedFixture);
 
-        Console.WriteLine("スプライトリグ（Phase B1a）テスト");
+        Console.WriteLine("スプライトリグ（Phase B1a / B1b）テスト");
         return harness.Run();
     }
 
@@ -372,6 +387,347 @@ public static class Program
     }
 
     // ============================================================
+    //  Phase B1b: ボーンの編集表現 ⇔ TRS
+    // ============================================================
+
+    /// <summary>
+    /// 「根元 + 先端」で指定したボーン 3 階層が、親ローカル TRS へ変換されても
+    /// まったく同じ位置へ復元されることを確認する（B1b の変換規約の要）。
+    /// </summary>
+    private static void BoneHeadTipTrsRoundTrip()
+    {
+        var bones = new List<SpriteRigBone>();
+
+        // 3 階層の鎖（それぞれ向きが違うので、回転の合成がずれていれば検出できる）
+        var heads = new[] { new Vec2(10.0, 20.0), new Vec2(60.0, 20.0), new Vec2(100.0, 60.0) };
+        var tips = new[] { new Vec2(60.0, 20.0), new Vec2(100.0, 60.0), new Vec2(140.0, 40.0) };
+
+        for (int i = 0; i < heads.Length; i++)
+            SpriteRigSkeleton.AddBone(bones, i - 1, heads[i], tips[i]);
+
+        Check.Equal(3, bones.Count, "ボーン数");
+        Check.Equal(string.Empty, bones[0].Parent, "先頭ボーンはルート");
+        Check.Equal(bones[0].Name, bones[1].Parent, "2 本目の親");
+        Check.Equal(bones[1].Name, bones[2].Parent, "3 本目の親");
+
+        var globals = SpriteRigSkeleton.ComputeGlobals(bones);
+        for (int i = 0; i < heads.Length; i++)
+        {
+            AssertVec2Close(heads[i], SpriteRigSkeleton.HeadOf(globals, i), 1.0e-9, $"ボーン {i} の根元");
+            AssertVec2Close(tips[i], SpriteRigSkeleton.TipOf(bones, globals, i), 1.0e-9, $"ボーン {i} の先端");
+            Check.Close(Vec2.Distance(heads[i], tips[i]), bones[i].Length, 1.0e-9, $"ボーン {i} の長さ");
+        }
+
+        // 末端ボーンの長さは子から復元できないので、length フィールドが唯一の情報源になる
+        Check.True(bones[2].Length > 0.0, "末端ボーンにも長さが入る");
+    }
+
+    /// <summary>親を付け替えてもワールド上の根元・先端が動かないことを確認する。</summary>
+    private static void ReparentPreservesWorldPose()
+    {
+        var bones = new List<SpriteRigBone>();
+        SpriteRigSkeleton.AddBone(bones, -1, new Vec2(0.0, 0.0), new Vec2(50.0, 0.0));
+        SpriteRigSkeleton.AddBone(bones, 0, new Vec2(50.0, 0.0), new Vec2(50.0, 40.0));
+        SpriteRigSkeleton.AddBone(bones, 1, new Vec2(50.0, 40.0), new Vec2(90.0, 70.0));
+
+        var before = SpriteRigSkeleton.ComputeGlobals(bones);
+        Vec2 head = SpriteRigSkeleton.HeadOf(before, 2);
+        Vec2 tip = SpriteRigSkeleton.TipOf(bones, before, 2);
+
+        Check.True(SpriteRigSkeleton.Reparent(bones, 2, 0), "ルート直下の子へ付け替えられる");
+
+        var after = SpriteRigSkeleton.ComputeGlobals(bones);
+        AssertVec2Close(head, SpriteRigSkeleton.HeadOf(after, 2), 1.0e-9, "付け替え後の根元");
+        AssertVec2Close(tip, SpriteRigSkeleton.TipOf(bones, after, 2), 1.0e-9, "付け替え後の先端");
+
+        // 自分の子孫を親にしようとすると循環するので拒否される
+        Check.True(!SpriteRigSkeleton.Reparent(bones, 0, 1), "子孫を親にはできない");
+    }
+
+    /// <summary>先端を動かしたとき、先端に生えている子ボーンが追従することを確認する。</summary>
+    private static void TipDragCarriesAttachedChild()
+    {
+        var bones = new List<SpriteRigBone>();
+        SpriteRigSkeleton.AddBone(bones, -1, new Vec2(0.0, 0.0), new Vec2(50.0, 0.0));
+        SpriteRigSkeleton.AddBone(bones, 0, new Vec2(50.0, 0.0), new Vec2(90.0, 0.0));
+
+        SpriteRigSkeleton.MoveTip(bones, 0, new Vec2(70.0, 0.0));
+
+        var globals = SpriteRigSkeleton.ComputeGlobals(bones);
+        AssertVec2Close(new Vec2(0.0, 0.0), SpriteRigSkeleton.HeadOf(globals, 0), 1.0e-9, "親の根元は動かない");
+        AssertVec2Close(new Vec2(70.0, 0.0), SpriteRigSkeleton.TipOf(bones, globals, 0), 1.0e-9, "親の先端");
+        AssertVec2Close(new Vec2(70.0, 0.0), SpriteRigSkeleton.HeadOf(globals, 1), 1.0e-9, "子の根元が先端へ追従する");
+    }
+
+    // ============================================================
+    //  Phase B1b: 自動ウェイト
+    // ============================================================
+
+    /// <summary>
+    /// 2 本のボーンが一直線に並んだ「棒」で、継ぎ目の頂点が両方から
+    /// ほぼ半々の影響を受けることを確認する（距離カーネルの基本性質）。
+    /// </summary>
+    private static void AutoWeightSplitsEvenlyAtMidpoint()
+    {
+        var mesh = BuildBarMesh(out int midpointVertex);
+
+        int applied = AutoWeights.Apply(mesh, new AutoWeights.Options());
+        Check.Equal(mesh.Vertices.Count, applied, "適用された頂点数");
+
+        double toFirst = WeightPaint.GetWeight(mesh.Weights[midpointVertex], 0);
+        double toSecond = WeightPaint.GetWeight(mesh.Weights[midpointVertex], 1);
+        Check.Close(0.5, toFirst, 1.0e-6, "継ぎ目から 1 本目への影響");
+        Check.Close(0.5, toSecond, 1.0e-6, "継ぎ目から 2 本目への影響");
+
+        // 端の頂点は、乗っているボーンが支配的になる
+        Check.True(WeightPaint.GetWeight(mesh.Weights[0], 0) > 0.9, "1 本目の根元は 1 本目が支配的");
+        Check.True(WeightPaint.GetWeight(mesh.Weights[2], 1) > 0.9, "2 本目の先端は 2 本目が支配的");
+    }
+
+    /// <summary>ボーンが 5 本以上あっても、影響は 4 本以内・合計 1.0 に収まることを確認する。</summary>
+    private static void AutoWeightRespectsInfluenceLimit()
+    {
+        var mesh = BuildBarMesh(out _);
+        // 似た距離のボーンを増やして、上限の切り詰めが効くかを見る
+        for (int i = 0; i < 4; i++)
+        {
+            SpriteRigSkeleton.AddBone(mesh.Bones, 0,
+                new Vec2(20.0 + i * 30.0, 5.0 + i), new Vec2(60.0 + i * 30.0, 5.0 + i));
+        }
+        Check.Equal(6, mesh.Bones.Count, "ボーン数");
+
+        AutoWeights.Apply(mesh, new AutoWeights.Options());
+        foreach (var influences in mesh.Weights) AssertInfluencesValid(influences, mesh.Bones.Count);
+    }
+
+    // ============================================================
+    //  Phase B1b: ウェイトペイント
+    // ============================================================
+
+    /// <summary>
+    /// 既に 4 本の影響を持つ頂点へ 5 本目を塗ると、
+    /// <b>塗ったボーン以外で最も弱い 1 本</b>が追い出されることを確認する。
+    /// </summary>
+    private static void PaintEvictsWeakestInfluence()
+    {
+        var influences = new List<SpriteRigInfluence>
+        {
+            new(0, 0.4), new(1, 0.3), new(2, 0.2), new(3, 0.1),
+        };
+
+        var painted = WeightPaint.SetBoneWeight(influences, boneIndex: 4, target: 0.5);
+
+        Check.Equal(WeightPaint.MaxInfluences, painted.Count, "影響本数は上限のまま");
+        Check.Close(0.5, WeightPaint.GetWeight(painted, 4), 1.0e-9, "塗ったボーンのウェイト");
+        Check.Close(0.0, WeightPaint.GetWeight(painted, 3), 1.0e-9, "最弱だったボーン 3 が追い出される");
+        // 残った 3 本は元の比率のまま 0.5 を按分する（0.4 : 0.3 : 0.2 → 0.9 で割って 0.5 倍）
+        Check.Close(0.5 * 0.4 / 0.9, WeightPaint.GetWeight(painted, 0), 1.0e-9, "ボーン 0 の按分後ウェイト");
+        AssertInfluencesValid(painted, boneCount: 5);
+
+        // ウェイトを 0 まで下げると、その影響自体が消えて残りが正規化される
+        var erased = WeightPaint.SetBoneWeight(painted, boneIndex: 4, target: 0.0);
+        Check.Close(0.0, WeightPaint.GetWeight(erased, 4), 1.0e-9, "0 にした影響は消える");
+        AssertInfluencesValid(erased, boneCount: 5);
+    }
+
+    /// <summary>ブラシが半径の外の頂点へ影響しないことを確認する。</summary>
+    private static void BrushLeavesVerticesOutsideRadius()
+    {
+        var mesh = BuildBarMesh(out _);
+        AutoWeights.Apply(mesh, new AutoWeights.Options());
+
+        double before = WeightPaint.GetWeight(mesh.Weights[2], 0);
+        var brush = new WeightPaint.BrushOptions { Radius = 10.0, Strength = 1.0, Mode = WeightBrushMode.Add };
+
+        // 1 本目の根元 (0,0) を中心に塗る。頂点 2 は (200,0) なので半径外
+        Check.True(WeightPaint.ApplyBrush(mesh.Vertices, mesh.Weights, mesh.Triangles, 0, Vec2.Zero, brush),
+            "半径内の頂点が塗られる");
+        Check.Close(before, WeightPaint.GetWeight(mesh.Weights[2], 0), 1.0e-12, "半径外の頂点は変わらない");
+        foreach (var influences in mesh.Weights) AssertInfluencesValid(influences, mesh.Bones.Count);
+    }
+
+    // ============================================================
+    //  Phase B1b: ウェイトの引き継ぎ・ボーン削除
+    // ============================================================
+
+    /// <summary>
+    /// 三角分割をやり直しても、既存頂点のウェイトが座標を手がかりに引き継がれることを確認する。
+    /// （B1a では毎回ルート 1.0 へ張り直されていた箇所）
+    /// </summary>
+    private static void WeightsSurviveRetriangulation()
+    {
+        var image = SpriteImageData.CreateOpaque(200, 100);
+        var document = new SpriteRigDocument(@"C:\assets\bar.png", image);
+
+        document.AddPendingPolygonPoint(new Vec2(10.0, 10.0));
+        document.AddPendingPolygonPoint(new Vec2(190.0, 10.0));
+        document.AddPendingPolygonPoint(new Vec2(190.0, 90.0));
+        document.AddPendingPolygonPoint(new Vec2(10.0, 90.0));
+        Check.True(document.CommitPendingPolygon(), "輪郭を確定できる");
+
+        // 2 本のボーンを置いて自動ウェイトを掛ける
+        SpriteRigSkeleton.AddBone(document.Mesh.Bones, 0, new Vec2(10.0, 50.0), new Vec2(100.0, 50.0));
+        SpriteRigSkeleton.AddBone(document.Mesh.Bones, 1, new Vec2(100.0, 50.0), new Vec2(190.0, 50.0));
+        Check.True(document.ApplyAutoWeights() > 0, "自動ウェイトが適用される");
+
+        var probe = new Vec2(10.0, 10.0);
+        int beforeIndex = document.HitTestVertex(probe);
+        Check.True(beforeIndex >= 0, "輪郭頂点が派生頂点として存在する");
+        double beforeWeight = document.GetInfluenceWeight(beforeIndex, 1);
+        Check.True(beforeWeight > 0.0, "引き継ぎを検出できるだけのウェイトがある");
+
+        // 内部点を足すと三角分割がやり直される
+        Check.True(document.AddVertexAt(new Vec2(100.0, 70.0)), "内部点を追加できる");
+
+        int afterIndex = document.HitTestVertex(probe);
+        Check.True(afterIndex >= 0, "再構築後も同じ座標に頂点がある");
+        Check.Close(beforeWeight, document.GetInfluenceWeight(afterIndex, 1), 1.0e-12,
+            "再三角分割後もウェイトが保たれる");
+
+        foreach (var influences in document.Mesh.Weights)
+            AssertInfluencesValid(influences, document.Mesh.Bones.Count);
+    }
+
+    /// <summary>ボーンを削除すると、その影響が消えて残りが再正規化されることを確認する。</summary>
+    private static void DeletingBoneRenormalizesWeights()
+    {
+        var image = SpriteImageData.CreateOpaque(100, 100);
+        var document = new SpriteRigDocument(@"C:\assets\del.png", image);
+
+        document.AddPendingPolygonPoint(new Vec2(10.0, 10.0));
+        document.AddPendingPolygonPoint(new Vec2(90.0, 10.0));
+        document.AddPendingPolygonPoint(new Vec2(90.0, 90.0));
+        Check.True(document.CommitPendingPolygon(), "輪郭を確定できる");
+
+        SpriteRigSkeleton.AddBone(document.Mesh.Bones, 0, new Vec2(10.0, 10.0), new Vec2(50.0, 10.0));
+        SpriteRigSkeleton.AddBone(document.Mesh.Bones, 1, new Vec2(50.0, 10.0), new Vec2(90.0, 10.0));
+        Check.Equal(3, document.Mesh.Bones.Count, "ボーン数");
+
+        // 検証しやすいよう、先頭頂点のウェイトを手で作る
+        document.Mesh.Weights[0] = WeightPaint.Normalize(new List<SpriteRigInfluence>
+        {
+            new(0, 0.5), new(1, 0.3), new(2, 0.2),
+        });
+
+        Check.True(document.DeleteBone(1), "中間のボーンを削除できる");
+        Check.Equal(2, document.Mesh.Bones.Count, "削除後のボーン数");
+
+        var influences = document.Mesh.Weights[0];
+        AssertInfluencesValid(influences, document.Mesh.Bones.Count);
+        // 消えたボーン 1 の 0.3 が抜け、0.5 : 0.2 を 0.7 で割った比率になる
+        Check.Close(0.5 / 0.7, WeightPaint.GetWeight(influences, 0), 1.0e-9, "ボーン 0 の再正規化後ウェイト");
+        Check.Close(0.2 / 0.7, WeightPaint.GetWeight(influences, 1), 1.0e-9, "旧ボーン 2 が添字 1 へ詰められる");
+
+        // 最後の 1 本は消せない
+        Check.True(document.DeleteBone(1), "2 本目も消せる");
+        Check.True(!document.DeleteBone(0), "最後の 1 本は消せない");
+    }
+
+    /// <summary>ボーン階層・長さ・ウェイトを含む .sprite_mesh が往復することを確認する。</summary>
+    private static void RiggedMeshRoundTrip()
+    {
+        var mesh = BuildBarMesh(out _);
+        AutoWeights.Apply(mesh, new AutoWeights.Options());
+
+        string json = SpriteMeshFile.Serialize(mesh, 200, 40, null, "bar", "");
+        var loaded = SpriteMeshFile.Deserialize(json, baseDirectory: null).Mesh;
+
+        Check.Equal(mesh.Bones.Count, loaded.Bones.Count, "ボーン数");
+        for (int i = 0; i < mesh.Bones.Count; i++)
+        {
+            Check.Equal(mesh.Bones[i].Name, loaded.Bones[i].Name, $"ボーン {i} の名前");
+            Check.Equal(mesh.Bones[i].Parent, loaded.Bones[i].Parent, $"ボーン {i} の親");
+            Check.Close(mesh.Bones[i].Rotation, loaded.Bones[i].Rotation, 1.0e-9, $"ボーン {i} の回転");
+            Check.Close(mesh.Bones[i].Length, loaded.Bones[i].Length, 1.0e-9, $"ボーン {i} の長さ");
+            AssertVec2Close(mesh.Bones[i].Position, loaded.Bones[i].Position, 1.0e-9, $"ボーン {i} の位置");
+        }
+
+        // 根元・先端が往復後も一致する（＝編集表現が完全に復元される）
+        var before = SpriteRigSkeleton.ComputeGlobals(mesh.Bones);
+        var after = SpriteRigSkeleton.ComputeGlobals(loaded.Bones);
+        for (int i = 0; i < mesh.Bones.Count; i++)
+        {
+            AssertVec2Close(SpriteRigSkeleton.HeadOf(before, i), SpriteRigSkeleton.HeadOf(after, i),
+                1.0e-9, $"ボーン {i} の根元");
+            AssertVec2Close(SpriteRigSkeleton.TipOf(mesh.Bones, before, i),
+                SpriteRigSkeleton.TipOf(loaded.Bones, after, i), 1.0e-9, $"ボーン {i} の先端");
+        }
+
+        Check.Equal(mesh.Weights.Count, loaded.Weights.Count, "ウェイト数");
+        for (int v = 0; v < mesh.Weights.Count; v++)
+        {
+            AssertInfluencesValid(loaded.Weights[v], loaded.Bones.Count);
+            Check.Close(WeightPaint.GetWeight(mesh.Weights[v], 0),
+                WeightPaint.GetWeight(loaded.Weights[v], 0), 1.0e-6, $"頂点 {v} のボーン 0 ウェイト");
+        }
+
+        // 旧ファイル（length 無し）も読める＝後方互換
+        string legacy = json.Replace("\"length\":", "\"legacy_ignored\":");
+        var legacyMesh = SpriteMeshFile.Deserialize(legacy, baseDirectory: null).Mesh;
+        Check.Equal(mesh.Bones.Count, legacyMesh.Bones.Count, "length 無しでも読める");
+        Check.Close(0.0, legacyMesh.Bones[0].Length, 1.0e-12, "length 省略時は 0");
+    }
+
+    // ============================================================
+    //  Phase B1b のテスト用ヘルパー
+    // ============================================================
+
+    /// <summary>
+    /// 「2 本のボーンが一直線に並んだ棒」を手で組み立てる。
+    ///
+    /// 自動ウェイトの性質だけを見たいので、輪郭ポリゴンは持たせず
+    /// （＝輪郭またぎのペナルティが働かない）頂点と三角形だけを直接置く。
+    /// </summary>
+    /// <param name="midpointVertex">2 本のボーンの継ぎ目にある頂点の添字。</param>
+    private static SpriteRigMesh BuildBarMesh(out int midpointVertex)
+    {
+        var mesh = new SpriteRigMesh();
+        mesh.Vertices.Add(new Vec2(0.0, 0.0));
+        mesh.Vertices.Add(new Vec2(100.0, 0.0));
+        mesh.Vertices.Add(new Vec2(200.0, 0.0));
+        mesh.Vertices.Add(new Vec2(100.0, 20.0));
+        mesh.Triangles.AddRange(new[] { 0, 1, 3, 1, 2, 3 });
+
+        mesh.Bones.Clear();
+        SpriteRigSkeleton.AddBone(mesh.Bones, -1, new Vec2(0.0, 0.0), new Vec2(100.0, 0.0));
+        SpriteRigSkeleton.AddBone(mesh.Bones, 0, new Vec2(100.0, 0.0), new Vec2(200.0, 0.0));
+
+        midpointVertex = 1;
+        return mesh;
+    }
+
+    /// <summary>影響一覧がランタイムの受理条件（1〜4 本・範囲内・合計 1.0）を満たすことを表明する。</summary>
+    /// <param name="influences">検査する影響一覧。</param>
+    /// <param name="boneCount">ボーン総数。</param>
+    private static void AssertInfluencesValid(IReadOnlyList<SpriteRigInfluence> influences, int boneCount)
+    {
+        Check.True(influences.Count >= 1 && influences.Count <= WeightPaint.MaxInfluences,
+            $"影響は 1〜{WeightPaint.MaxInfluences} 本（実際 {influences.Count} 本）");
+
+        var seen = new HashSet<int>();
+        double sum = 0.0;
+        foreach (var influence in influences)
+        {
+            Check.True(influence.BoneIndex >= 0 && influence.BoneIndex < boneCount, "ボーン添字が範囲内");
+            Check.True(seen.Add(influence.BoneIndex), "同じボーンが重複しない");
+            Check.True(influence.Weight > 0.0 && double.IsFinite(influence.Weight), "ウェイトが正の有限値");
+            sum += influence.Weight;
+        }
+        Check.Close(1.0, sum, 1.0e-9, "ウェイト合計");
+    }
+
+    /// <summary>2 点がほぼ一致することを表明する。</summary>
+    /// <param name="expected">期待する点。</param>
+    /// <param name="actual">実際の点。</param>
+    /// <param name="tolerance">許容誤差。</param>
+    /// <param name="what">対象の説明。</param>
+    private static void AssertVec2Close(Vec2 expected, Vec2 actual, double tolerance, string what)
+    {
+        Check.Close(expected.X, actual.X, tolerance, what + " (X)");
+        Check.Close(expected.Y, actual.Y, tolerance, what + " (Y)");
+    }
+
+    // ============================================================
     //  Rust 側テスト用フィクスチャの書き出し
     // ============================================================
 
@@ -406,8 +762,49 @@ public static class Program
     }
 
     /// <summary>
+    /// ボーン階層とウェイトを持つメッシュを <c>runtime/tests/fixtures/</c> へ書き出す。
+    /// Rust 側の <c>editor_generated_rigged_mesh_is_accepted</c> がこれを読み、
+    /// 「B1b が吐く多ボーン + 自動ウェイトの JSON をランタイムがそのまま受理する」ことを確認する。
+    /// </summary>
+    private static void WriteRiggedFixture()
+    {
+        string root = FindRepositoryRoot();
+        string fixturePath = Path.Combine(root,
+            RiggedFixtureRelativePath.Replace('/', Path.DirectorySeparatorChar));
+
+        var image = SyntheticImages.Circle(96, 36.0);
+        var mesh = AutoMesh.Build(image, new AutoMesh.Options
+        {
+            SimplifyTolerance = 1.5,
+            InteriorSpacing = 14.0,
+        });
+
+        // 画像を横断する 3 本の鎖を置き、距離ベースの自動ウェイトを掛ける
+        mesh.Bones.Clear();
+        SpriteRigSkeleton.AddBone(mesh.Bones, -1, new Vec2(16.0, 48.0), new Vec2(48.0, 48.0), "root");
+        SpriteRigSkeleton.AddBone(mesh.Bones, 0, new Vec2(48.0, 48.0), new Vec2(72.0, 48.0), "mid");
+        SpriteRigSkeleton.AddBone(mesh.Bones, 1, new Vec2(72.0, 48.0), new Vec2(88.0, 48.0), "tip");
+        int applied = AutoWeights.Apply(mesh, new AutoWeights.Options());
+        Check.Equal(mesh.Vertices.Count, applied, "全頂点へ自動ウェイトが適用される");
+
+        foreach (var influences in mesh.Weights) AssertInfluencesValid(influences, mesh.Bones.Count);
+
+        string json = SpriteMeshFile.Serialize(
+            mesh, image.Width, image.Height,
+            relativeTexturePath: "generated_rigged.png",
+            name: "generated_rigged",
+            comment: "editor/tests/SpriteRigTests が自動生成（手で編集しない）");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(fixturePath)!);
+        File.WriteAllText(fixturePath, json);
+        Console.WriteLine($"         フィクスチャを書き出しました: {fixturePath}");
+        Console.WriteLine($"         頂点 {mesh.Vertices.Count} / 三角形 {mesh.TriangleCount} / ボーン {mesh.Bones.Count}");
+    }
+
+    /// <summary>
     /// 実行ファイルの位置からリポジトリルート（runtime/ と editor/ を持つ階層）を探す。
     /// </summary>
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
