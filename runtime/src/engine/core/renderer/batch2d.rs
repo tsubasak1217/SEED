@@ -19,9 +19,36 @@
 //  9-slice スプライトも本バッチャの対象外（別ジオメトリのため TODO）。
 // ============================================================
 
+use crate::engine::components::CanvasDrawZone;
 use crate::engine::core::renderer::pipeline::{SpriteOutlinePipeline, SpritePipeline};
+use crate::engine::core::renderer::sprite_skin::SkinnedSpriteDraw;
 use crate::engine::methods::drawer::GpuSpriteTexture;
 use std::sync::Arc;
+
+// ============================================================
+//  SpriteDrawItem — 収集フェーズが積む 1 描画アイテム
+// ============================================================
+
+/// 2D 描画アイテム 1 件（矩形スプライトとスキンメッシュの共通表現）。
+///
+/// `mesh` が `None` ならユニットクワッド（従来の SpriteComponent）、
+/// `Some` なら `.sprite_mesh` の変形済み頂点＋インデックスで描く。
+/// **両者は同じリストに並んで同じ規則（ゾーン → レイヤー）でソートされる**ので、
+/// 矩形スプライトとスキンスプライトの前後関係が正しく解決される。
+pub struct SpriteDrawItem {
+    /// GPU モデル行列（列優先）。
+    pub model: [[f32; 4]; 4],
+    /// RGBA カラー乗算。
+    pub color: [f32; 4],
+    /// テクスチャ。None = 白フォールバック。
+    pub tex: Option<Arc<GpuSpriteTexture>>,
+    /// スキンメッシュ描画のハンドル。None = ユニットクワッド描画。
+    pub mesh: Option<Arc<SkinnedSpriteDraw>>,
+    /// 描画ゾーン（背景／前面）。
+    pub zone: CanvasDrawZone,
+    /// 描画優先度レイヤー（大きいほど手前）。
+    pub layer: i32,
+}
 
 // ============================================================
 //  per-instance データ
@@ -62,6 +89,10 @@ pub struct SpriteBatch {
     pub base: u32,
     /// インスタンス数。
     pub count: u32,
+    /// スキンメッシュ描画のハンドル。
+    /// `Some` のバッチは常に count=1（メッシュごとに頂点／インデックスが違うため
+    /// 融合できない）。`None` のバッチだけがユニットクワッドで融合される。
+    pub mesh: Option<Arc<SkinnedSpriteDraw>>,
 }
 
 /// 1 回の push で得られるバッチ列。
@@ -138,19 +169,28 @@ impl InstanceStream {
     /// 同一フレーム内で push を複数回呼んでも整合する（scratch は連続配置）。
     pub fn push<I>(&mut self, items: I) -> SpriteBatchList
     where
-        I: IntoIterator<Item = ([[f32; 4]; 4], [f32; 4], Option<Arc<GpuSpriteTexture>>)>,
+        I: IntoIterator<Item = SpriteDrawItem>,
     {
         let mut batches: Vec<SpriteBatch> = Vec::new();
-        for (model, color, tex) in items {
+        for item in items {
             let idx = self.scratch.len() as u32;
-            self.scratch.push(SpriteInstance { model, color });
-            // 直前バッチと同一テクスチャなら融合、違えば新バッチを開始する。
+            self.scratch.push(SpriteInstance {
+                model: item.model,
+                color: item.color,
+            });
+            // 融合条件: 直前バッチが「クワッド描画」かつ同一テクスチャのときだけ。
+            // スキンメッシュは頂点／インデックスバッファがバッチごとに違うため
+            // 常に単独バッチ（count=1）になる。
+            let mergeable = item.mesh.is_none();
             match batches.last_mut() {
-                Some(b) if same_tex(&b.tex, &tex) => b.count += 1,
+                Some(b) if mergeable && b.mesh.is_none() && same_tex(&b.tex, &item.tex) => {
+                    b.count += 1
+                }
                 _ => batches.push(SpriteBatch {
-                    tex,
+                    tex: item.tex,
                     base: idx,
                     count: 1,
+                    mesh: item.mesh,
                 }),
             }
         }
@@ -227,16 +267,18 @@ pub fn draw_sprite_batches<'rp>(
     pipeline: &'rp SpritePipeline,
     camera_bg: &'rp wgpu::BindGroup,
     inst_buf: &'rp wgpu::Buffer,
-    list: &SpriteBatchList,
+    list: &'rp SpriteBatchList,
 ) {
     if list.batches.is_empty() {
         return;
     }
 
     pass.set_pipeline(&pipeline.pipeline);
-    // slot0: ユニットクワッド（per-vertex, 全バッチ共有）
-    pass.set_vertex_buffer(0, pipeline.unit_quad_vbuf.slice(..));
     pass.set_bind_group(0, camera_bg, &[]);
+    // slot0 の既定はユニットクワッド。スキンメッシュのバッチだけ差し替える。
+    pass.set_vertex_buffer(0, pipeline.unit_quad_vbuf.slice(..));
+    // 直前のバッチがメッシュだったか（＝ slot0 をクワッドへ戻す必要があるか）。
+    let mut slot0_is_mesh = false;
 
     for b in &list.batches {
         // slot1: このバッチのインスタンス範囲だけをスライスして束ねる
@@ -250,8 +292,24 @@ pub fn draw_sprite_batches<'rp>(
             .map(|t| &t.bind_group)
             .unwrap_or(&pipeline.white_fallback_bg);
         pass.set_bind_group(1, tex_bg, &[]);
-        // ユニットクワッド 6 頂点 × count インスタンスを 1 ドローで描画
-        pass.draw(0..6, 0..b.count);
+
+        match &b.mesh {
+            // スキンメッシュ: 変形済み頂点（sprite_vertex レイアウト）＋インデックス描画
+            Some(m) => {
+                pass.set_vertex_buffer(0, m.vertex_buffer.slice(..));
+                pass.set_index_buffer(m.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..m.index_count, 0, 0..b.count);
+                slot0_is_mesh = true;
+            }
+            // 従来のユニットクワッド 6 頂点 × count インスタンス
+            None => {
+                if slot0_is_mesh {
+                    pass.set_vertex_buffer(0, pipeline.unit_quad_vbuf.slice(..));
+                    slot0_is_mesh = false;
+                }
+                pass.draw(0..6, 0..b.count);
+            }
+        }
     }
 }
 
@@ -266,7 +324,7 @@ pub fn draw_sprite_outline_batches<'rp>(
     outline_pipeline: &'rp SpriteOutlinePipeline,
     camera_bg: &'rp wgpu::BindGroup,
     inst_buf: &'rp wgpu::Buffer,
-    list: &SpriteBatchList,
+    list: &'rp SpriteBatchList,
 ) {
     if list.batches.is_empty() {
         return;

@@ -33,7 +33,7 @@ use crate::engine::components::{
     ModelComponent, ModelComponentData,
     ScriptComponent, ScriptComponentData, PlaceholderScriptSlot,
     CanvasComponent, CanvasComponentData,
-    SpriteComponent,
+    SpriteComponent, SkinnedSpriteComponent,
     InputMapComponent,
     CameraComponent,
     ColliderComponent, ColliderComponentData,
@@ -405,6 +405,10 @@ pub fn slot_to_data(world: &World, slot: &ComponentSlot) -> Option<ComponentSlot
         ComponentKind::Sprite => {
             world.get::<SpriteComponent>(slot.entity)
                 .map(|sc| ComponentData::SpriteComponent(sc.to_data()))
+        }
+        ComponentKind::SkinnedSprite => {
+            world.get::<SkinnedSpriteComponent>(slot.entity)
+                .map(|sc| ComponentData::SkinnedSpriteComponent(sc.to_data()))
         }
         ComponentKind::InputMap => {
             world.get::<InputMapComponent>(slot.entity)

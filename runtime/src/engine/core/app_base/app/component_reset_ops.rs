@@ -118,6 +118,8 @@ pub fn default_component_data(current: &ComponentData) -> Option<ComponentData> 
             ComponentData::CanvasComponent(CanvasComponent::default().to_data()),
         ComponentData::SpriteComponent(_) =>
             ComponentData::SpriteComponent(SpriteComponent::default().to_data()),
+        ComponentData::SkinnedSpriteComponent(_) =>
+            ComponentData::SkinnedSpriteComponent(SkinnedSpriteComponent::default().to_data()),
         ComponentData::InputMapComponent(_) =>
             ComponentData::InputMapComponent(InputMapComponent::default().to_data()),
         ComponentData::CameraComponent(_) =>
@@ -529,6 +531,7 @@ mod tests {
             ComponentData::ModelComponent(ModelComponent::empty().to_data()),
             ComponentData::CanvasComponent(CanvasComponent::default().to_data()),
             ComponentData::SpriteComponent(SpriteComponent::default().to_data()),
+            ComponentData::SkinnedSpriteComponent(SkinnedSpriteComponent::default().to_data()),
             ComponentData::InputMapComponent(InputMapComponent::default().to_data()),
             ComponentData::CameraComponent(CameraComponent::default().to_data()),
             ComponentData::ColliderComponent(

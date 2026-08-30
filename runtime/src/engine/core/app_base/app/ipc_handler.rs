@@ -1140,7 +1140,7 @@ impl App {
                     let a  = args.clone();
                     match ct.as_str() {
                         // Canvas 上に配置するコンポーネント → 親子化ロジック経由
-                        "SpriteComponent" | "Collider2dComponent" => {
+                        "SpriteComponent" | "SkinnedSpriteComponent" | "Collider2dComponent" => {
                             self.handle_add_canvas_child_component(actor_dfs_id, &ct, &sn, &a);
                         }
                         _ => {
@@ -1331,6 +1331,9 @@ impl App {
                 }
                 IpcCommand::SetAudioField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_audio_field(actor_dfs_id, slot_idx, &key, &value);
+                }
+                IpcCommand::SetSkinnedSpriteField { actor_dfs_id, slot_idx, key, value } => {
+                    self.handle_set_skinned_sprite_field(actor_dfs_id, slot_idx, &key, &value);
                 }
                 IpcCommand::SetAnimatorClips { actor_dfs_id, slot_idx, json } => {
                     self.handle_set_animator_clips(actor_dfs_id, slot_idx, &json);

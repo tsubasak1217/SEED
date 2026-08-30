@@ -31,7 +31,7 @@
 use crate::engine::components::{
     CameraComponent, CanvasComponent, CanvasViewportRef, ComponentKind, ScriptComponent,
     WaterLinkComponent,
-    WaterVolumeComponent,
+    WaterVolumeComponent, SkinnedSpriteComponent,
 };
 use crate::engine::binding::resolve::{format_binding, parse_binding};
 use crate::engine::ecs::World;
@@ -197,6 +197,25 @@ fn rewrite_refs_in_slots(
                 if let Some(cc) = world.get_mut::<CameraComponent>(slot.entity) {
                     any |= rewrite_bindings_actor_name(
                         &mut cc.shading_bindings, old_name, new_name);
+                }
+            }
+            // ── スキンスプライトのボーン対応表（値は「相対アクタパス」） ──
+            // 値は "arm/upper" のような "/" 区切りの相対パスなので、
+            // **セグメント単位**で旧名に一致するものだけを置換する
+            // （"armature" のような部分一致を書き換えてしまわないため）。
+            ComponentKind::SkinnedSprite => {
+                if let Some(ss) = world.get_mut::<SkinnedSpriteComponent>(slot.entity) {
+                    for path in ss.bone_overrides.values_mut() {
+                        let renamed: Vec<&str> = path
+                            .split('/')
+                            .map(|seg| if seg == old_name { new_name } else { seg })
+                            .collect();
+                        let next = renamed.join("/");
+                        if *path != next {
+                            *path = next;
+                            any = true;
+                        }
+                    }
                 }
             }
             // ── アクタ名参照を持たない種別（明示列挙） ──────────────

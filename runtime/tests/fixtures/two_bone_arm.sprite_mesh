@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "name": "two_bone_arm",
+  "comment": "2 ボーンの帯メッシュ。root(原点) の子に elbow(+100,0)。先端 2 頂点は elbow のみに 100% 追従する。",
+  "vertices": [[0.0, -10.0], [0.0, 10.0], [100.0, -10.0], [100.0, 10.0], [200.0, -10.0], [200.0, 10.0]],
+  "uvs": [[0.0, 0.0], [0.0, 1.0], [0.5, 0.0], [0.5, 1.0], [1.0, 0.0], [1.0, 1.0]],
+  "triangles": [0, 2, 3, 0, 3, 1, 2, 4, 5, 2, 5, 3],
+  "bones": [
+    { "name": "root",  "parent": "",     "position": [0.0, 0.0],   "rotation": 0.0, "scale": [1.0, 1.0] },
+    { "name": "elbow", "parent": "root", "position": [100.0, 0.0], "rotation": 0.0, "scale": [1.0, 1.0] }
+  ],
+  "weights": [
+    [{ "bone": 0, "weight": 1.0 }],
+    [{ "bone": 0, "weight": 1.0 }],
+    [{ "bone": 0, "weight": 1.0 }],
+    [{ "bone": 0, "weight": 1.0 }],
+    [{ "bone": 1, "weight": 1.0 }],
+    [{ "bone": 1, "weight": 1.0 }]
+  ]
+}

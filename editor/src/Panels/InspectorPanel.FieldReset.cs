@@ -61,6 +61,8 @@ public partial class InspectorPanel
     private const string CameraComponentType = "CameraComponent";
     /// <summary>スプライトの型名。</summary>
     private const string SpriteComponentType = "SpriteComponent";
+    /// <summary>メッシュ変形スキニング 2D スプライトの型名。</summary>
+    private const string SkinnedSpriteComponentType = "SkinnedSpriteComponent";
     /// <summary>キャンバスの型名。</summary>
     private const string CanvasComponentType = "CanvasComponent";
     /// <summary>3D コライダーの型名。</summary>

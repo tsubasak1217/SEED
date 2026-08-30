@@ -28,6 +28,8 @@ pub(crate) mod particle_shapes;
 pub(crate) mod skybox;
 /// .mat マテリアルアセット（Phase R7: マルチマテリアル編集）
 pub mod material_asset;
+/// 2D メッシュ変形スキニング（Phase A1: `.sprite_mesh` の GPU 変形資源とディスパッチ）
+pub mod sprite_skin;
 /// .postfx ポストエフェクトアセット＋テクスチャ単位ポストプロセス（Phase R3 応用）
 pub mod postfx;
 /// エディタのシーンビュー表示モード（Lit / Unlit / Wireframe）
@@ -168,7 +170,8 @@ pub use post::{RtPool, PostContext, VignetteParams, VignetteStage,
 pub use transparency::{TransparencyMode, TransparentPipelines,
                        RT_WBOIT_ACCUM, RT_WBOIT_REVEAL,
                        WBOIT_ACCUM_FORMAT, WBOIT_REVEAL_FORMAT};
-pub use batch2d::{SpriteBatcher, SpriteInstance, SpriteBatch, SpriteBatchList,
+pub use sprite_skin::{SpriteSkinCache, SpriteSkinPipeline, SkinnedSpriteDraw, GpuSpriteMesh};
+pub use batch2d::{SpriteBatcher, SpriteInstance, SpriteBatch, SpriteBatchList, SpriteDrawItem,
                   SPRITE_INSTANCE_SIZE, draw_sprite_batches, draw_sprite_outline_batches};
 pub use postfx::{PostfxContext, SpritePostfxCache};
 pub use view_mode::{SceneViewMode, GBufferDebugChannel, set_wireframe_supported, wireframe_supported};

@@ -166,6 +166,25 @@ impl CanvasTransform {
             [0.0, 0.0, 0.0, 1.0],
         ]
     }
+
+    /// スキンメッシュ（`.sprite_mesh`）描画用のローカル行列を返す。
+    ///
+    /// `to_sprite_mat4` との違いは**引数の意味だけ**である:
+    /// - `to_sprite_mat4(width, height)`: ユニットクワッド [0,1]² を実寸へ引き伸ばす。
+    ///   ＝ 引数はスプライトの「サイズ」。
+    /// - `to_mesh_mat4(scale_x, scale_y)`: 頂点が既にキャンバスピクセル座標で
+    ///   実寸を持っているため、引数は**追加スケール係数**（既定 1.0）である。
+    ///   親キャンバスの `scale_size` 追従分だけを掛ける用途に使う。
+    ///
+    /// この違いにより `pivot` の解釈も変わる: スキンメッシュでは
+    /// `pivot * scale` ＝ **メッシュローカルのピクセルオフセット**として効く
+    /// （scale=1 のとき pivot はそのままピクセル値）。
+    ///
+    /// 実装は `to_sprite_mat4` に委譲する（式が同一のため二重実装しない）。
+    #[inline]
+    pub fn to_mesh_mat4(&self, scale_x: f32, scale_y: f32) -> [[f32; 4]; 4] {
+        self.to_sprite_mat4(scale_x, scale_y)
+    }
 }
 
 impl Default for CanvasTransform {

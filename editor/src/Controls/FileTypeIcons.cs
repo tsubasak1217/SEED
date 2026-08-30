@@ -55,6 +55,7 @@ internal static class FileTypeIcons
         [".mat"]      = "Icon.File.Material",
         [".postfx"]   = "Icon.File.PostFx",
         [".tvox"]     = "Icon.File.Terrain",
+        [".sprite_mesh"] = "Icon.File.SpriteMesh",
 
         // ── スクリプト / シェーダ ──
         [".cs"]       = "Icon.File.Script",

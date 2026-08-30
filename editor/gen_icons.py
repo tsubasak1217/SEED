@@ -96,6 +96,8 @@ CATALOG = [
     ("Icon.Component.CoverEmitter", "snowflake"),
     ("Icon.Component.Canvas", "rectangle-outline"),
     ("Icon.Component.Sprite", "image-outline"),
+    ("Icon.Component.SkinnedSprite", "vector-polygon"),
+    ("Icon.File.SpriteMesh", "vector-triangle"),
     ("Icon.Component.Light", "lightbulb-on-outline"),
     ("Icon.Component.JointAttach", "bone"),
     ("Icon.Component.ParticleEmitter", "shimmer"),

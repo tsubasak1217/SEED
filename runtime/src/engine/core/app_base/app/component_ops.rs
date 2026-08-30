@@ -15,7 +15,7 @@
 use crate::engine::components::{
     ModelComponent, Transform as ActorTransform, ComponentKind, ComponentData,
     PlaceholderScriptSlot, CanvasComponent,
-    GROUP_ID_BASE, CanvasTransform, SpriteComponent, InputMapComponent,
+    GROUP_ID_BASE, CanvasTransform, SpriteComponent, SkinnedSpriteComponent, InputMapComponent,
     CameraComponent, ColliderComponent, Collider2dComponent,
 };
 use crate::engine::core::app_base::undo::ComponentSlotsSnapshotCommand;
@@ -413,6 +413,19 @@ impl App {
                         r#","texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"sprite_w":{:.4},"sprite_h":{:.4},"layer":{},"postfx_path":{postfx_json}"#,
                         d.color[0], d.color[1], d.color[2], d.color[3], d.width, d.height,
                         d.layer,
+                    ))
+                }
+                ComponentData::SkinnedSpriteComponent(d) => {
+                    // メッシュパス・テクスチャパス・カラー・レイヤーをインスペクター用に送信する。
+                    // ボーン対応表（bone_overrides）の編集 UI は Phase A2 の担当のため、
+                    // ここでは「解決に使う件数」だけを送って表示できるようにしておく。
+                    let mesh_json = serde_json::to_string(&d.mesh_path).unwrap_or_default();
+                    let path_json = serde_json::to_string(&d.texture_path).unwrap_or_default();
+                    ("SkinnedSpriteComponent", format!(
+                        r#","mesh_path":{mesh_json},"texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"layer":{},"bone_override_count":{}"#,
+                        d.color[0], d.color[1], d.color[2], d.color[3],
+                        d.layer,
+                        d.bone_overrides.len(),
                     ))
                 }
                 ComponentData::InputMapComponent(d) => {
@@ -955,6 +968,36 @@ impl App {
                         world_line: wl, actor_dfs_id, before_slots, after_slots,
                     }));
                     self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "SkinnedSpriteComponent" => {
+                // SkinnedSpriteComponent をアクターに直接追加する。
+                // 配置ルール（Canvas 直下の子アクターへ置く）は SpriteComponent と同一で、
+                // ipc_handler の Canvas 自動親子化ロジックが同じ扱いをする。
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, SkinnedSpriteComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<SkinnedSpriteComponent>(
+                            name, ComponentKind::SkinnedSprite, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
                     self.selected_instances.clear();
                     self.send_hierarchy();
                     self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);

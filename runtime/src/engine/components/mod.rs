@@ -14,6 +14,8 @@ pub mod model_component;
 pub mod script_component;
 pub mod canvas_component;
 pub mod sprite_component;
+/// メッシュ変形スキニング 2D スプライト（Phase A1: Spine 風メッシュ変形の土台）
+pub mod skinned_sprite_component;
 pub mod inputmap_component;
 pub mod camera_component;
 pub mod plugin_component;
@@ -53,6 +55,7 @@ pub use script_component::{
 };
 pub use canvas_component::{CanvasComponent, CanvasComponentData, CanvasViewportRef, AspectRatioAxis, GravityMode, CanvasDrawZone};
 pub use sprite_component::{SpriteComponent, SpriteComponentData};
+pub use skinned_sprite_component::{SkinnedSpriteComponent, SkinnedSpriteComponentData};
 pub use inputmap_component::{InputMapComponent, InputMapComponentData};
 pub use camera_component::{CameraComponent, CameraComponentData, ScalingMode, CameraProjection};
 pub use plugin_component::{PluginComponent, PluginComponentData};
@@ -107,6 +110,8 @@ pub enum ComponentKind {
     Canvas,
     /// 2D スプライト（テクスチャ画像・キャンバス上表示）
     Sprite,
+    /// メッシュ変形スキニング 2D スプライト（.sprite_mesh + ボーン子アクター）
+    SkinnedSprite,
     /// 入力マップアセット参照（.inputmap ファイルへのリンク）
     InputMap,
     /// ゲームカメラ（Play モードの視点）
@@ -152,6 +157,7 @@ impl ComponentKind {
             Self::Placeholder => "ScriptComponent (placeholder)",
             Self::Canvas      => "CanvasComponent",
             Self::Sprite      => "SpriteComponent",
+            Self::SkinnedSprite => "SkinnedSpriteComponent",
             Self::InputMap    => "InputMapComponent",
             Self::Camera      => "CameraComponent",
             Self::Plugin      => "PluginComponent",
@@ -184,6 +190,8 @@ pub enum ComponentData {
     ScriptComponent(ScriptComponentData),
     CanvasComponent(CanvasComponentData),
     SpriteComponent(SpriteComponentData),
+    /// メッシュ変形スキニング 2D スプライト（Phase A1）
+    SkinnedSpriteComponent(SkinnedSpriteComponentData),
     InputMapComponent(InputMapComponentData),
     CameraComponent(CameraComponentData),
     /// 動的プラグインコンポーネント（plugin_name + fields を保持）

@@ -1793,6 +1793,9 @@ pub struct DrawPipelines {
     /// オブジェクト単位の視錐台カリング（旧 CullPipeline）は撤去済み。可視範囲の間引きはこれのみが担う。
     pub meshlet_cull:         MeshletCullPipeline,
     pub skin_compute:         SkinComputePipeline,
+    /// 2D メッシュ変形スキニング compute（Phase A1）。
+    /// バインドポーズ頂点＋ボーンパレット → 変形後の `sprite_vertex` 列を書き出す。
+    pub sprite_skin:          super::sprite_skin::SpriteSkinPipeline,
     /// RT スキン BLAS 用「変形後ローカル頂点位置」書き出し compute（Phase RT-Skin）。
     /// RT 非対応 GPU でも構築コストは軽微（compute 1 本）なので常に持つ。
     pub skin_deform:          SkinDeformPipeline,
@@ -1893,6 +1896,8 @@ impl DrawPipelines {
         let skin_compute        = SkinComputePipeline::new(device, cache);
         // RT スキン BLAS 用の変形 compute（Phase RT-Skin）。
         let skin_deform         = SkinDeformPipeline::new(device, cache);
+        // 2D メッシュ変形スキニング compute（Phase A1）。
+        let sprite_skin         = super::sprite_skin::SpriteSkinPipeline::new(device, cache);
         let depth_prepass       = DepthPrepassPipelines::new(device, df, cache);
         let shadow_depth        = ShadowDepthPipelines::new(device, super::shadow::SHADOW_DEPTH_FORMAT, cache);
         let id_pass             = IdPassPipeline::new(device, sf, df, cache);
@@ -1959,6 +1964,6 @@ impl DrawPipelines {
         let shadow_mask           = rt.as_ref().map(|r| {
             super::shadow_mask::ShadowMaskPipelines::new(device, &deferred, &r.lights_bgl, cache)
         });
-        Self { mesh, skinned_mesh, rt, unlit_line, meshlet_cull, skin_compute, skin_deform, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, velocity_debug, gbuffer_debug, reflection, ao, ssgi, shadow_mask, caustics, water_reflection }
+        Self { mesh, skinned_mesh, rt, unlit_line, meshlet_cull, skin_compute, skin_deform, sprite_skin, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, velocity_debug, gbuffer_debug, reflection, ao, ssgi, shadow_mask, caustics, water_reflection }
     }
 }
