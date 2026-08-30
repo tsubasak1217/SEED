@@ -29,9 +29,8 @@ namespace SEEDEditor.Panels;
 /// このクラスの責務は「その集合を WPF の TabControl とツールバーへ写すこと」だけで、
 /// 編集ロジックそのものは持たない（単体テスト可能性を保つため）。
 ///
-/// Phase B1b（ボーン配置・ウェイトペイント）は
-/// <see cref="SpriteRigEditMode"/> の切替と <see cref="SpriteRigMesh.Bones"/> /
-/// <see cref="SpriteRigMesh.Weights"/> のデータ構造だけ先に用意してある。
+/// Phase B1b（ボーン作成・自動/手動ウェイト）の UI は
+/// <c>SpriteRigPanel.Rigging.cs</c> 側に分けてある。
 /// </summary>
 public partial class SpriteRigPanel : UserControl
 {
@@ -184,6 +183,8 @@ public partial class SpriteRigPanel : UserControl
 
         var canvas = new SpriteRigCanvas { Document = document };
         canvas.DocumentModified += OnCanvasDocumentModified;
+        canvas.BoneRenameRequested += OnCanvasBoneRenameRequested;
+        canvas.RigSelectionChanged += OnCanvasRigSelectionChanged;
 
         var tab = new TabItem
         {
@@ -336,6 +337,7 @@ public partial class SpriteRigPanel : UserControl
         _suppressUiEvents = false;
 
         UpdateSliderLabels(document);
+        UpdateRiggingUi(document);
         UpdateModeHint(document);
         UpdateTabHeader(document);
 
@@ -346,6 +348,7 @@ public partial class SpriteRigPanel : UserControl
           + $"内部点: {document.Mesh.InteriorPoints.Count}\n"
           + $"頂点: {document.Mesh.Vertices.Count}\n"
           + $"三角形: {document.Mesh.TriangleCount}\n"
+          + $"ボーン: {document.Mesh.Bones.Count} 本\n"
           + $"保存先: {(document.MeshPath == null ? "（未保存）" : Path.GetFileName(document.MeshPath))}";
 
         TitleChanged?.Invoke(document.IsDirty ? "スプライトリグ *" : "スプライトリグ");
@@ -368,14 +371,19 @@ public partial class SpriteRigPanel : UserControl
         TbMinIslandArea.Text = options.MinIslandArea.ToString("0", CultureInfo.InvariantCulture);
     }
 
-    /// <summary>ボーン／ウェイトモードが未実装であることの案内を出し分ける。</summary>
+    /// <summary>編集モードごとの短い操作案内を出し分ける。</summary>
+    /// <param name="document">アクティブなドキュメント。</param>
     private void UpdateModeHint(SpriteRigDocument document)
     {
-        bool isMeshMode = document.EditMode == SpriteRigEditMode.Mesh;
-        TbModeHint.Visibility = isMeshMode ? Visibility.Collapsed : Visibility.Visible;
-        TbModeHint.Text = isMeshMode
-            ? string.Empty
-            : "このモードの編集操作は Phase B1b で実装します（現在は表示のみ）。";
+        string hint = document.EditMode switch
+        {
+            SpriteRigEditMode.Bone => "ドラッグで骨を 1 本作ります。Delete で削除。",
+            SpriteRigEditMode.Weight when document.SelectedBoneIndex < 0
+                => "対象ボーンを選ぶとヒートマップとブラシが使えます。",
+            _ => string.Empty,
+        };
+        TbModeHint.Text = hint;
+        TbModeHint.Visibility = string.IsNullOrEmpty(hint) ? Visibility.Collapsed : Visibility.Visible;
     }
 
     /// <summary>ツール選択トグルの状態を現在のツールへ合わせる。</summary>
@@ -517,8 +525,11 @@ public partial class SpriteRigPanel : UserControl
         if (_suppressUiEvents || _documents.Active is not { } document) return;
 
         document.EditMode = (SpriteRigEditMode)Math.Max(0, CmbEditMode.SelectedIndex);
-        UpdateModeHint(document);
+        // モードをまたぐと入力の意味が変わるので、作りかけの状態はすべて捨てる
+        document.CancelPendingPolygon();
+        document.CancelBoneCreate();
         ActiveCanvas?.Refresh();
+        UpdateUiForActiveDocument();
     }
 
     /// <summary>ツール選択トグルの共通ハンドラ。</summary>

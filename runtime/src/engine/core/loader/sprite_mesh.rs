@@ -79,6 +79,16 @@ pub struct SpriteMeshBoneData {
     /// バインドポーズのローカルスケール。
     #[serde(default = "default_scale")]
     pub scale: [f32; 2],
+    /// ボーンの長さ（ボーンローカル +X 方向・スケール適用前）。**省略可・既定 0**。
+    ///
+    /// エディタのスプライトリグパネル（Phase B1b）が
+    /// 「根元 → 先端」でボーンを編集・描画するためのオーサリング情報で、
+    /// **実行時のスキニング計算には一切影響しない**（変形は TRS だけで決まる）。
+    /// 子を持つボーンなら先端は子の position から分かるが、
+    /// 末端ボーンは長さ情報を持ちようがないため、ここに明示的に保存する。
+    /// 旧ファイルは 0 として読まれ、表示側が既定長のスタブへフォールバックする。
+    #[serde(default)]
+    pub length: f32,
 }
 
 /// serde 既定値: スケール [1, 1]。
@@ -149,6 +159,8 @@ pub struct SpriteMeshBone {
     pub bind_rotation: f32,
     /// バインドポーズのローカルスケール。
     pub bind_scale: [f32; 2],
+    /// ボーンの長さ（オーサリング用。0 = 未記録）。スキニングには使わない。
+    pub bind_length: f32,
 }
 
 /// 1 頂点ぶんの正規化済みスキンウェイト（GPU へそのまま渡せる固定長）。
@@ -379,6 +391,7 @@ impl SpriteMesh {
                 bind_position: b.position,
                 bind_rotation: b.rotation,
                 bind_scale: b.scale,
+                bind_length: b.length,
             });
         }
         // 循環検出（各ボーンから親を辿り、ボーン数を超えたら循環）
@@ -550,6 +563,11 @@ mod tests {
     /// 「エディタが吐く JSON をランタイムのパーサがそのまま受理する」ことの検証に使う。
     const GENERATED_CIRCLE: &str =
         include_str!("../../../../tests/fixtures/generated_circle.sprite_mesh");
+    /// エディタのスプライトリグパネル（Phase B1b）が生成した「多ボーン + 自動ウェイト」のメッシュ。
+    /// ボーン作成ツールと距離ベース自動ウェイトの出力が、
+    /// そのままランタイムのパーサを通ることの検証に使う。
+    const GENERATED_RIGGED: &str =
+        include_str!("../../../../tests/fixtures/generated_rigged.sprite_mesh");
 
     /// 2 点がほぼ一致することを検査する（浮動小数の許容誤差付き）。
     fn assert_close(a: [f32; 2], b: [f32; 2], eps: f32, what: &str) {
@@ -810,6 +828,69 @@ mod tests {
         for w in &mesh.weights {
             assert_eq!(w.weights, [1.0, 0.0, 0.0, 0.0], "全頂点がルートへ 1.0");
         }
+    }
+
+    /// エディタ（Phase B1b）が書き出した多ボーン + 自動ウェイトのメッシュを受理できること。
+    #[test]
+    fn editor_generated_rigged_mesh_is_accepted() {
+        let mesh = SpriteMesh::from_json(GENERATED_RIGGED).expect("リグ済みメッシュのパース成功");
+
+        assert_eq!(mesh.bone_count(), 3, "3 本の鎖が読める");
+        assert_eq!(mesh.bone_index("root"), Some(0));
+        assert_eq!(mesh.bone_index("mid"), Some(1));
+        assert_eq!(mesh.bone_index("tip"), Some(2));
+        assert_eq!(mesh.bones[1].parent, Some(0), "mid の親は root");
+        assert_eq!(mesh.bones[2].parent, Some(1), "tip の親は mid");
+
+        // length はオーサリング用の省略可能フィールド。読めていること（0 でないこと）だけ確認する
+        assert!(mesh.bones[2].bind_length > 0.0, "末端ボーンの長さが読める");
+
+        // バインドポーズのグローバル位置＝根元は、鎖の合成どおりに並ぶ
+        assert_close(
+            [mesh.bind_global[1][0][3], mesh.bind_global[1][1][3]],
+            [48.0, 48.0],
+            1e-3,
+            "mid の根元",
+        );
+        assert_close(
+            [mesh.bind_global[2][0][3], mesh.bind_global[2][1][3]],
+            [72.0, 48.0],
+            1e-3,
+            "tip の根元",
+        );
+
+        // 全頂点のウェイトが正規化され、影響ボーンが範囲内であること
+        assert_eq!(mesh.weights.len(), mesh.vertex_count());
+        let mut uses_more_than_one_bone = false;
+        for w in &mesh.weights {
+            let sum: f32 = w.weights.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-5, "ウェイト合計が 1.0: {sum}");
+            for (slot, &b) in w.bones.iter().enumerate() {
+                if w.weights[slot] > 0.0 {
+                    assert!((b as usize) < mesh.bone_count(), "ボーン添字が範囲内");
+                }
+            }
+            if w.weights.iter().filter(|&&x| x > 0.0).count() > 1 {
+                uses_more_than_one_bone = true;
+            }
+        }
+        assert!(
+            uses_more_than_one_bone,
+            "自動ウェイトは複数ボーンへブレンドされた頂点を持つ"
+        );
+    }
+
+    /// `length` を持たない旧ファイルも読める（後方互換）。
+    #[test]
+    fn bone_length_is_optional() {
+        let src = r#"{
+            "version": 1,
+            "vertices": [[0,0]], "uvs": [[0,0]], "triangles": [0,0,0],
+            "bones": [{"name":"a","parent":""}],
+            "weights": [[{"bone":0,"weight":1.0}]]
+        }"#;
+        let m = SpriteMesh::from_json(src).expect("パース成功");
+        assert_eq!(m.bones[0].bind_length, 0.0, "length 省略時は 0");
     }
 
     /// ボーンが 1 本も解決できないときのフォールバック（バインドポーズ＝無変形）。
