@@ -795,8 +795,15 @@ public partial class InspectorPanel : UserControl
         string PostFxPath = "",
         // SkinnedSpriteComponent 用: メッシュアセット（.sprite_mesh）参照。空文字列 = 未設定
         string SkinMeshPath = "",
-        // SkinnedSpriteComponent 用: ボーン対応表の明示エントリ数（0 = 全自動解決）。読み取り専用表示。
+        // SkinnedSpriteComponent 用: ボーン対応表の明示エントリ数（0 = 全自動解決）。
         int SkinBoneOverrideCount = 0,
+        // SkinnedSpriteComponent 用: メッシュのボーン一覧と解決結果（Phase A2）。
+        // メッシュ未設定・読込失敗のときは空リスト（＝ 対応表を出さない）。
+        IReadOnlyList<SkinBoneRow>? SkinBonesRaw = null,
+        // SkinnedSpriteComponent 用: 明示指定の候補（スプライト配下のアクター）。
+        IReadOnlyList<SkinBoneCandidate>? SkinBoneCandidatesRaw = null,
+        // SkinnedSpriteComponent 用: 未解決ボーン数（0 = すべて解決済み）。
+        int SkinBoneUnresolved = 0,
         // InputMapComponent 用フィールド
         string InputMapPath = "",
         // CameraComponent 用フィールド
@@ -1276,6 +1283,10 @@ public partial class InspectorPanel : UserControl
             // SkinnedSpriteComponent 用: メッシュパス・ボーン対応表の件数
             var skinMeshPath = comp.TryGetProperty("mesh_path", out var smp) ? smp.GetString() ?? "" : "";
             var skinBoneOverrides = comp.TryGetProperty("bone_override_count", out var sboc) ? sboc.GetInt32() : 0;
+            // SkinnedSpriteComponent 用: ボーン対応表（Phase A2）
+            var skinBones      = ParseSkinBones(comp);
+            var skinBoneCands  = ParseSkinBoneCandidates(comp);
+            var skinBoneUnres  = comp.TryGetProperty("bone_unresolved", out var sbu) ? sbu.GetInt32() : 0;
             // InputMapComponent 用: アセットパス
             var inputMapPath = comp.TryGetProperty("asset_path", out var ap) ? ap.GetString() ?? "" : "";
             // CameraComponent 用: FOV / near / far / is_main / clear_color
@@ -1526,6 +1537,8 @@ public partial class InspectorPanel : UserControl
                 SpriteLayer: sprLayer,
                 PostFxPath: postFxPath,
                 SkinMeshPath: skinMeshPath, SkinBoneOverrideCount: skinBoneOverrides,
+                SkinBonesRaw: skinBones, SkinBoneCandidatesRaw: skinBoneCands,
+                SkinBoneUnresolved: skinBoneUnres,
                 InputMapPath: inputMapPath,
                 FovYDeg: fovYDeg, CamNear: camNear, CamFar: camFar, IsMain: isMain,
                 CamCR: camCR, CamCG: camCG, CamCB: camCB, CamCA: camCA,
@@ -4611,12 +4624,11 @@ public partial class InspectorPanel : UserControl
 
     /// <summary>
     /// SkinnedSpriteComponent（メッシュ変形スキニング 2D スプライト）の
-    /// インスペクター UI を構築して返す（Phase A1: 基本フィールドのみ）。
+    /// インスペクター UI を構築して返す。
     ///
-    /// メッシュ／テクスチャ／カラー／レイヤーを編集できる。
-    /// ボーン対応表（bone_overrides）の編集 UI は Phase A2 の担当なので、
-    /// ここでは「明示指定が何件あるか」を読み取り専用で表示するに留める
-    /// （0 件 = メッシュのボーン名と同名の子アクターを自動解決）。
+    /// メッシュ／テクスチャ／カラー／レイヤーに加え、ボーン対応表
+    /// （メッシュのボーン名 → 解決先アクターの相対パス）を編集できる。
+    /// 対応表の実装は InspectorPanel.SpriteBones.cs にある。
     /// </summary>
     private UIElement BuildSkinnedSpriteSlotContent(SlotInfo info)
     {
@@ -4690,17 +4702,8 @@ public partial class InspectorPanel : UserControl
             layerFe.ToolTip = "描画優先度。大きいほど手前に描画されます。\n通常のスプライトと同じ土俵で比較されます。";
         sp.Children.Add(rowLayer);
 
-        // ボーン解決の状態表示（読み取り専用。編集 UI は Phase A2）
-        sp.Children.Add(new TextBlock
-        {
-            Text = info.SkinBoneOverrideCount > 0
-                ? $"ボーン対応: 明示指定 {info.SkinBoneOverrideCount} 件"
-                : "ボーン対応: 自動解決（メッシュのボーン名と同名の子アクター）",
-            Foreground   = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
-            FontSize     = 11,
-            Margin       = new Thickness(0, 6, 0, 2),
-            TextWrapping = TextWrapping.Wrap,
-        });
+        // ボーン対応表（Phase A2。InspectorPanel.SpriteBones.cs）
+        sp.Children.Add(BuildSkinnedSpriteBoneTable(info));
 
         return sp;
     }

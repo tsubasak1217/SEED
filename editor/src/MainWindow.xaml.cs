@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -348,10 +348,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // 値を確定させておくことで、既定値でランタイム設定を上書きするのを防ぐ。
         LoadSceneSettingsForCurrentScene();
 
-        // グリッド表示 / 軸ガイド表示はシーン設定ではなくセッション限りの状態（既定 ON）。
+        // グリッド表示 / 軸ガイド表示 / ボーン表示はシーン設定ではなくセッション限りの状態（既定 ON）。
         // 起動時にトグルボタンの見た目を現在値へ揃える。
         UpdateGridToggleVisual();
         UpdateAxisGizmoToggleVisual();
+        UpdateSpriteBoneToggleVisual();
 
         _runtimeManager = new RuntimeManager(RuntimeExePath)
         {

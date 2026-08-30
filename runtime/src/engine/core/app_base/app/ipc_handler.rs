@@ -741,6 +741,9 @@ impl App {
                     self.ambient_color     = color;
                     self.ambient_intensity = intensity;
                 }
+                IpcCommand::SetShowSpriteBones(v) => {
+                    self.show_sprite_bones = v;
+                }
                 IpcCommand::SetShowAxisGizmo(v) => {
                     self.show_axis_gizmo = v;
                 }
@@ -1334,6 +1337,13 @@ impl App {
                 }
                 IpcCommand::SetSkinnedSpriteField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_skinned_sprite_field(actor_dfs_id, slot_idx, &key, &value);
+                }
+                IpcCommand::SetSkinnedSpriteBoneOverrides { actor_dfs_id, slot_idx, json } => {
+                    let j = json.clone();
+                    self.handle_set_skinned_sprite_bone_overrides(actor_dfs_id, slot_idx, &j);
+                }
+                IpcCommand::CreateSpriteBoneActors { actor_dfs_id, slot_idx } => {
+                    self.handle_create_sprite_bone_actors(actor_dfs_id, slot_idx);
                 }
                 IpcCommand::SetAnimatorClips { actor_dfs_id, slot_idx, json } => {
                     self.handle_set_animator_clips(actor_dfs_id, slot_idx, &json);

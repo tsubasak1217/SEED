@@ -65,6 +65,14 @@ public partial class MainWindow
     /// </summary>
     private bool _showAxisGizmo = DefaultShowGuide;
 
+    /// <summary>
+    /// スキンスプライトのボーン（線＋関節）を表示するか（IPC SHOW_SPRITE_BONES に対応）。
+    /// _showGrid と同じくセッション限りの非永続状態。
+    /// ランタイム側は「Edit モード かつ 選択中のスキンスプライト」でのみ描画するため、
+    /// このトグルは「そもそもボーンを描くか」の総元栓に相当する。
+    /// </summary>
+    private bool _showSpriteBones = DefaultShowGuide;
+
     /// <summary>開いているシーン設定ウィンドウ（多重起動防止用。閉じたら null）。</summary>
     private SceneSettingsWindow? _sceneSettingsWindow;
 
@@ -339,6 +347,13 @@ public partial class MainWindow
         _runtimeManager?.SendToRuntime($"SHOW_AXIS_GIZMO:{(_showAxisGizmo ? "1" : "0")}");
     }
 
+    /// <summary>スキンスプライトのボーン表示の有無をランタイムへ送信する。</summary>
+    private void SendShowSpriteBones()
+    {
+        if (!_viewportSettingsInitialized) return;
+        _runtimeManager?.SendToRuntime($"SHOW_SPRITE_BONES:{(_showSpriteBones ? "1" : "0")}");
+    }
+
     /// <summary>デバッグカメラの位置・回転をランタイムへ送信する。</summary>
     private void SendCameraTransform()
     {
@@ -472,6 +487,7 @@ public partial class MainWindow
         SendViewportFar();
         SendShowGrid();
         SendShowAxisGizmo();
+        SendShowSpriteBones();
         SendCameraSpeed();
         // 2D（正射投影）の状態も再送する（ランタイムは透視投影で起動するため）
         _runtimeManager?.SendToRuntime(
@@ -595,6 +611,21 @@ public partial class MainWindow
 
     /// <summary>「軸」トグルボタンの見た目を現在の状態に合わせて更新する。</summary>
     private void UpdateAxisGizmoToggleVisual() => ApplyToggleVisual(BtnAxisGizmoToggle, _showAxisGizmo);
+
+    /// <summary>
+    /// シーンパネル上部「ボーン」ボタン: スキンスプライトのボーン表示を切り替える。
+    /// グリッド・軸と同じくセッション限りの非永続項目。
+    /// </summary>
+    private void OnSpriteBoneToggleClicked(object sender, RoutedEventArgs e)
+    {
+        _showSpriteBones = !_showSpriteBones;
+        SendShowSpriteBones();
+        UpdateSpriteBoneToggleVisual();
+    }
+
+    /// <summary>「ボーン」トグルボタンの見た目を現在の状態に合わせて更新する。</summary>
+    private void UpdateSpriteBoneToggleVisual()
+        => ApplyToggleVisual(BtnSpriteBoneToggle, _showSpriteBones);
 
     // ── ギズモ座標系（World / Local）トグル ────────────────────────
 

@@ -305,6 +305,9 @@ pub enum IpcCommand {
     SetAmbient { color: [f32; 3], intensity: f32 },
     /// 軸ギズモ表示オンオフ
     SetShowAxisGizmo(bool),
+    /// スキンスプライトのボーン可視化 ON/OFF（エディタ・セッション限り）。
+    /// フォーマット: SHOW_SPRITE_BONES:0|1
+    SetShowSpriteBones(bool),
     /// アクターを指定パスへ保存（アクター編集モードのアクティブ世界線）
     SaveActor(String),
     /// インスペクターフィールドドラッグ開始（Undo 単一化のため事前状態を保存）
@@ -429,6 +432,13 @@ pub enum IpcCommand {
     /// SkinnedSpriteComponent のフィールドを更新する
     /// （key: mesh_path / texture_path / color / layer。Phase A1）
     SetSkinnedSpriteField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// SkinnedSpriteComponent の `bone_overrides`（ボーン名 → アクター相対パス）を
+    /// JSON オブジェクトで一括置換する（Phase A2 のボーン対応表 UI が使う）。
+    /// フォーマット: SET_SKINNED_SPRITE_BONE_OVERRIDES:{actor_dfs_id},{slot_idx},{json}
+    SetSkinnedSpriteBoneOverrides { actor_dfs_id: u32, slot_idx: u32, json: String },
+    /// `.sprite_mesh` のボーン宣言から 2D 子アクター階層を一括生成する（Phase A2）。
+    /// フォーマット: CREATE_SPRITE_BONE_ACTORS:{actor_dfs_id},{slot_idx}
+    CreateSpriteBoneActors { actor_dfs_id: u32, slot_idx: u32 },
     /// LightComponent のフィールドを更新する
     /// （key: kind/color/intensity/range/inner_angle/outer_angle/rect_width/rect_height/cast_shadows）
     SetLightField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
@@ -1542,6 +1552,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         }
                         "SHOW_AXIS_GIZMO:1"     => Some(IpcCommand::SetShowAxisGizmo(true)),
                         "SHOW_AXIS_GIZMO:0"     => Some(IpcCommand::SetShowAxisGizmo(false)),
+                        "SHOW_SPRITE_BONES:1"   => Some(IpcCommand::SetShowSpriteBones(true)),
+                        "SHOW_SPRITE_BONES:0"   => Some(IpcCommand::SetShowSpriteBones(false)),
                         "CANVAS_SS_OVERLAY:1"   => Some(IpcCommand::SetCanvasScreenSpaceOverlay(true)),
                         "CANVAS_SS_OVERLAY:0"   => Some(IpcCommand::SetCanvasScreenSpaceOverlay(false)),
                         // Edit ビューモード切替（エディタの 3Dシーン / 2Dシーンタブ）
@@ -1844,6 +1856,24 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 Some(IpcCommand::SetAudioField {
                                     actor_dfs_id: a, slot_idx: sl,
                                     key: key.to_string(), value: value.to_string(),
+                                })
+                            })
+                        }
+                        s if s.starts_with("SET_SKINNED_SPRITE_BONE_OVERRIDES:") => {
+                            // フォーマット: SET_SKINNED_SPRITE_BONE_OVERRIDES:{actor_dfs_id},{slot_idx},{json}
+                            // json は "," を含むため tail をそのまま渡す（分割しない）。
+                            parse2u_tail(&s["SET_SKINNED_SPRITE_BONE_OVERRIDES:".len()..])
+                                .map(|(a, sl, tail)| IpcCommand::SetSkinnedSpriteBoneOverrides {
+                                    actor_dfs_id: a, slot_idx: sl, json: tail.to_string(),
+                                })
+                        }
+                        s if s.starts_with("CREATE_SPRITE_BONE_ACTORS:") => {
+                            // フォーマット: CREATE_SPRITE_BONE_ACTORS:{actor_dfs_id},{slot_idx}
+                            let rest = &s["CREATE_SPRITE_BONE_ACTORS:".len()..];
+                            rest.split_once(',').and_then(|(a, sl)| {
+                                Some(IpcCommand::CreateSpriteBoneActors {
+                                    actor_dfs_id: a.trim().parse::<u32>().ok()?,
+                                    slot_idx:     sl.trim().parse::<u32>().ok()?,
                                 })
                             })
                         }

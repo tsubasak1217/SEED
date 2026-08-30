@@ -49,8 +49,17 @@ impl App {
             return;
         };
 
+        // メッシュパスが変わったか（変わったら CPU メッシュキャッシュを捨てる）
+        let mut mesh_changed = false;
+
         match key {
-            "mesh_path" => ss.mesh_path = value.to_string(),
+            "mesh_path" => {
+                ss.mesh_path = value.to_string();
+                // メッシュを差し替えた瞬間は「同じパスへ内容だけ書き換えた」場合も
+                // 含めて読み直したい（オーサリング中はここが唯一の再読込トリガー）。
+                // 描画側キャッシュはパス変更を自前で検出するので、CPU 側だけ捨てる。
+                mesh_changed = true;
+            }
             "texture_path" => ss.texture_path = value.to_string(),
             "color" => {
                 // "r,g,b,a" を厳密に 4 成分でパースする（欠けていたら丸めずに無視）
@@ -72,8 +81,17 @@ impl App {
             _ => {}
         }
 
+        if mesh_changed {
+            self.clear_sprite_mesh_cpu_cache();
+        }
+
         if let Some(ipc) = &self.ipc {
             ipc.send("SCENE_MODIFIED");
+        }
+        // ボーン対応表（メッシュのボーン一覧）が入れ替わるので、
+        // メッシュ差し替え時はインスペクタへ最新の表を送り直す。
+        if mesh_changed {
+            self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
         }
     }
 }

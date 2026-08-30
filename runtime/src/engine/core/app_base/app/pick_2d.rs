@@ -20,8 +20,10 @@ use std::collections::HashMap;
 
 use crate::engine::components::{
     AspectRatioAxis, CanvasComponent, CanvasDrawZone, CanvasTransform, ComponentKind,
-    SpriteComponent, Transform,
+    SkinnedSpriteComponent, SpriteComponent, Transform,
 };
+use crate::engine::core::loader::sprite_mesh::SpriteMesh;
+use crate::engine::core::renderer::sprite_skin::build_bone_matrices;
 use crate::engine::core::app_base::undo::ActorDfsSelectionCommand;
 use crate::engine::ecs::{Entity, World};
 use crate::engine::methods::gizmo_interact::{mat4x4_mul, screen_to_ray};
@@ -104,6 +106,13 @@ impl App {
                 [0.0, 0.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 1.0],
             ];
+            // `.sprite_mesh` の CPU キャッシュ（スキンスプライトの三角形判定に使う）。
+            // ハンドルを clone して渡すので、`scene` の不変借用と競合しない。
+            let mesh_cache = self.sprite_mesh_cpu_handle();
+            let mesh_of = |path: &str| {
+                super::sprite_bone_ops::load_sprite_mesh_cached(&mesh_cache, path)
+            };
+
             let mut counter: u32 = 0;
             walk_pick_candidates_2d(
                 &scene.actors,
@@ -121,6 +130,7 @@ impl App {
                 &overrides,
                 &root_auto,
                 design_space,
+                &mesh_of,
                 &mut cands,
             );
         }
@@ -250,6 +260,70 @@ pub(super) fn hit_test_rect_2d(
     lx >= 0.0 && lx <= eff_w && ly >= 0.0 && ly <= eff_h
 }
 
+/// キャンバス空間の点 (px, py) が、スキンメッシュの**変形後の三角形**のいずれかに
+/// 入っているか判定する（Phase A2）。
+///
+/// # なぜ逆変換してから判定するのか
+/// スキン後の頂点は「メッシュローカル（スプライトローカルのキャンバスピクセル）」
+/// 座標であり、`m`（= parent_world_rs × to_mesh_mat4）がそれをキャンバス空間へ写す。
+/// 三角形を 1 つずつ順変換するより、**点を 1 度だけ逆変換**するほうが安い
+/// （頂点数に依らず逆行列計算は 1 回）。
+///
+/// GPU の ID パスも変形後頂点でメッシュ形状のまま ID を描くため、この判定と
+/// GPU ピックは同じ形になる（＝ どちらの経路でもクリック判定が見た目と一致する）。
+fn hit_test_mesh_2d(
+    px: f32,
+    py: f32,
+    m: &[[f32; 4]; 4],
+    mesh: &SpriteMesh,
+    bone_matrices: &[[[f32; 4]; 4]],
+) -> bool {
+    // 2×2 回転スケール行列の行列式（面積 0 の退化行列は判定不能）
+    let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+    if det.abs() < 1e-9 {
+        return false;
+    }
+    let dx = px - m[0][3];
+    let dy = py - m[1][3];
+    // クラメールの公式でメッシュローカル座標へ逆変換
+    let lx = (dx * m[1][1] - dy * m[0][1]) / det;
+    let ly = (m[0][0] * dy - m[1][0] * dx) / det;
+
+    // 変形後頂点を 1 度だけ計算する（CPU スキニングの正典 = SpriteMesh::skin_vertex）
+    let deformed: Vec<[f32; 2]> = (0..mesh.vertex_count())
+        .map(|vi| mesh.skin_vertex(vi, bone_matrices))
+        .collect();
+
+    // 各三角形で内外判定（符号付き面積の符号が 3 辺で揃えば内側）
+    for tri in mesh.triangles.chunks_exact(3) {
+        let (a, b, c) = (
+            deformed[tri[0] as usize],
+            deformed[tri[1] as usize],
+            deformed[tri[2] as usize],
+        );
+        if point_in_triangle([lx, ly], a, b, c) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 点が三角形の内側（辺上を含む）にあるか。
+///
+/// 3 辺の外積の符号が揃っているかで判定する。三角形の巻き方向（CW/CCW）に
+/// 依存しないよう「負が無い or 正が無い」で見る。
+fn point_in_triangle(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
+    let cross = |u: [f32; 2], v: [f32; 2], w: [f32; 2]| {
+        (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0])
+    };
+    let d1 = cross(a, b, p);
+    let d2 = cross(b, c, p);
+    let d3 = cross(c, a, p);
+    let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+    let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+    !(has_neg && has_pos)
+}
+
 // ── 候補収集ウォーク（collect_canvas_rects と同一の変換チェーン）──────────────
 
 /// アクターツリーを DFS ウォークし、クリック点に当たる Sprite/Canvas 候補を集める。
@@ -275,6 +349,8 @@ fn walk_pick_candidates_2d(
     overrides: &HashMap<Entity, [f32; 2]>,
     root_auto_sizes: &HashMap<Entity, [f32; 2]>,
     design_space: bool,
+    // `.sprite_mesh` を CPU キャッシュから引くローダ（スキンスプライトの三角形判定用）
+    mesh_of: &dyn Fn(&str) -> Option<std::sync::Arc<SpriteMesh>>,
     out: &mut Vec<PickCand2d>,
 ) {
     for actor in actors {
@@ -417,6 +493,34 @@ fn walk_pick_candidates_2d(
             }
         }
 
+        // ── SkinnedSprite ヒット（変形後メッシュの三角形で判定）──────────────
+        // 矩形スプライトと同じ優先度（PickKind2d::Sprite）で積む。
+        // 判定形状は GPU ID パスと同じ「変形後メッシュ」なので、CPU ピック
+        // （アクター編集 2D タブ）と GPU ピックでクリック結果が一致する。
+        for slot in actor.slots() {
+            if slot.kind != ComponentKind::SkinnedSprite || !slot.enabled {
+                continue;
+            }
+            let Some(ss) = world.get::<SkinnedSpriteComponent>(slot.entity) else {
+                continue;
+            };
+            let Some(mesh) = mesh_of(&ss.mesh_path) else {
+                continue;
+            };
+            // メッシュ頂点は既に実寸を持つので、掛けるのは追加スケールのみ（描画と同一）
+            let m = mat4x4_mul(parent_world_rs, eff_ct.to_mesh_mat4(size_sc_x, size_sc_y));
+            let (bone_mats, _) = build_bone_matrices(&mesh, ss, actor, world);
+            if hit_test_mesh_2d(canvas_x, canvas_y, &m, &mesh, &bone_mats) {
+                out.push(PickCand2d {
+                    dfs: my_dfs,
+                    kind: PickKind2d::Sprite,
+                    zone: my_zone,
+                    depth,
+                });
+                break;
+            }
+        }
+
         // ── Canvas 矩形ヒット（補助候補）──────────────────────────────────────
         if let Some(_cc) = my_canvas {
             let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(my_eff_w, my_eff_h));
@@ -475,6 +579,7 @@ fn walk_pick_candidates_2d(
             overrides,
             root_auto_sizes,
             design_space,
+            mesh_of,
             out,
         );
     }
@@ -612,4 +717,73 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
     ]
+}
+
+// ============================================================
+//  テスト
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::core::loader::sprite_mesh::IDENTITY_MAT4;
+
+    /// 最小の矩形メッシュ（[0,0]-[100,80]・1 ボーン）。
+    const QUAD_ONE_BONE: &str =
+        include_str!("../../../../../tests/fixtures/quad_one_bone.sprite_mesh");
+
+    /// 点-三角形判定: 内側・頂点・辺上は真、外側は偽。巻き方向に依存しない。
+    #[test]
+    fn point_in_triangle_basics() {
+        let a = [0.0, 0.0];
+        let b = [10.0, 0.0];
+        let c = [0.0, 10.0];
+        assert!(point_in_triangle([1.0, 1.0], a, b, c), "内側");
+        assert!(point_in_triangle([0.0, 0.0], a, b, c), "頂点");
+        assert!(point_in_triangle([5.0, 0.0], a, b, c), "辺上");
+        assert!(!point_in_triangle([9.0, 9.0], a, b, c), "外側（斜辺の外）");
+        assert!(!point_in_triangle([-1.0, 1.0], a, b, c), "外側（左）");
+        // 巻き方向を逆にしても結果は同じ
+        assert!(point_in_triangle([1.0, 1.0], a, c, b));
+        assert!(!point_in_triangle([9.0, 9.0], a, c, b));
+    }
+
+    /// 無変形（恒等スキン）の矩形メッシュは、その矩形の内外がそのまま判定結果になる。
+    #[test]
+    fn hit_test_mesh_matches_quad_bounds() {
+        let mesh = SpriteMesh::from_json(QUAD_ONE_BONE).expect("読み込み成功");
+        let bones = mesh.identity_bone_matrices();
+        let m = IDENTITY_MAT4;
+
+        // フィクスチャは [0,0]-[100,80] の矩形（docs/sprite_skinning.md §3）
+        assert!(hit_test_mesh_2d(50.0, 40.0, &m, &mesh, &bones), "中心は当たる");
+        assert!(hit_test_mesh_2d(0.5, 0.5, &m, &mesh, &bones), "左上近傍は当たる");
+        assert!(!hit_test_mesh_2d(-1.0, 40.0, &m, &mesh, &bones), "左外は当たらない");
+        assert!(!hit_test_mesh_2d(101.0, 40.0, &m, &mesh, &bones), "右外は当たらない");
+        assert!(!hit_test_mesh_2d(50.0, 81.0, &m, &mesh, &bones), "下外は当たらない");
+    }
+
+    /// 平行移動した行列を与えると、判定領域も同じだけ動く（点側を逆変換している証拠）。
+    #[test]
+    fn hit_test_mesh_follows_model_matrix() {
+        let mesh = SpriteMesh::from_json(QUAD_ONE_BONE).expect("読み込み成功");
+        let bones = mesh.identity_bone_matrices();
+        // x へ +200 平行移動する行列（行優先: m[0][3] が tx）
+        let mut m = IDENTITY_MAT4;
+        m[0][3] = 200.0;
+
+        assert!(!hit_test_mesh_2d(50.0, 40.0, &m, &mesh, &bones), "元の位置には無い");
+        assert!(hit_test_mesh_2d(250.0, 40.0, &m, &mesh, &bones), "移動後の位置に当たる");
+    }
+
+    /// 面積 0 の退化行列は判定不能として偽を返す（ゼロ除算を作らない）。
+    #[test]
+    fn hit_test_mesh_rejects_degenerate_matrix() {
+        let mesh = SpriteMesh::from_json(QUAD_ONE_BONE).expect("読み込み成功");
+        let bones = mesh.identity_bone_matrices();
+        let mut m = IDENTITY_MAT4;
+        m[0][0] = 0.0;
+        m[1][1] = 0.0;
+        assert!(!hit_test_mesh_2d(50.0, 40.0, &m, &mesh, &bones));
+    }
 }

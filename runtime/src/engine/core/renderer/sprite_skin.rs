@@ -354,10 +354,115 @@ fn resolve_bone_matrix_by_name(
     None
 }
 
+/// 子孫を DFS で探索し、名前一致するアクターまでの**相対パス**を求める（自動解決）。
+///
+/// `resolve_bone_matrix_by_name` と**同じ走査順・同じ採用規則**（最初に見つかった 1 つ）
+/// で動くため、返すパスは実際に変形へ使われるアクターと必ず一致する。
+/// エディタのボーン対応表が「自動解決の結果」を薄字で表示するために使う。
+fn resolve_bone_path_by_name(
+    node: &Actor,
+    world: &World,
+    name: &str,
+    prefix: &str,
+) -> Option<String> {
+    for child in node.children() {
+        if world.get::<CanvasTransform>(child.entity).is_none() {
+            continue;
+        }
+        let path = if prefix.is_empty() {
+            child.name.clone()
+        } else {
+            format!("{prefix}/{}", child.name)
+        };
+        if child.name == name {
+            return Some(path);
+        }
+        if let Some(found) = resolve_bone_path_by_name(child, world, name, &path) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// 1 ボーンの解決結果（行列とその出どころ）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoneResolution {
+    /// 実際に使われたアクターの**スプライトルート基準の相対パス**。
+    /// `None` = 解決できず、バインドポーズ（無変形）で描画される。
+    pub path: Option<String>,
+    /// `bone_overrides` の明示エントリで解決したなら true。
+    pub is_override: bool,
+    /// スプライトルート基準のボーンアクター合成行列（未解決なら単位行列）。
+    pub current: [[f32; 4]; 4],
+}
+
+/// 1 ボーンを「明示パス → 直下名 → 子孫 DFS 名一致」の順で解決する。
+///
+/// ボーン解決規則の**唯一の実装**。描画（パレット構築）・エディタの対応表表示・
+/// CPU ピッキングがすべてこれを通るので、三者の解決結果は必ず一致する。
+pub fn resolve_bone(
+    comp: &SkinnedSpriteComponent,
+    root: &Actor,
+    world: &World,
+    bone_name: &str,
+) -> BoneResolution {
+    // ① 明示パス（無ければボーン名を直下パスとして）で解決を試す
+    let path = comp.bone_path(bone_name);
+    let is_override = comp
+        .bone_overrides
+        .get(bone_name)
+        .is_some_and(|s| !s.is_empty());
+    if let Some(current) = resolve_bone_matrix_by_path(root, world, path) {
+        return BoneResolution {
+            path: Some(path.to_string()),
+            is_override,
+            current,
+        };
+    }
+    // ② 見つからなければ子孫 DFS の名前一致でフォールバック（自動解決）
+    if let Some(current) = resolve_bone_matrix_by_name(root, world, bone_name, IDENTITY_MAT4) {
+        return BoneResolution {
+            path: resolve_bone_path_by_name(root, world, bone_name, ""),
+            is_override: false,
+            current,
+        };
+    }
+    // ③ 全滅: バインドポーズ（無変形）
+    BoneResolution {
+        path: None,
+        is_override,
+        current: IDENTITY_MAT4,
+    }
+}
+
+/// メッシュの全ボーンについて `bone_matrix = current_relative × inverse_bind` を計算する。
+///
+/// 戻り値: (ボーン行列列（`mesh.bones` と同順）, 解決できなかったボーン名の一覧)。
+/// CPU スキニング（ピッキング・テスト）と GPU パレット構築の共通の土台。
+pub fn build_bone_matrices(
+    mesh: &SpriteMesh,
+    comp: &SkinnedSpriteComponent,
+    root: &Actor,
+    world: &World,
+) -> (Vec<[[f32; 4]; 4]>, Vec<String>) {
+    let mut mats = Vec::with_capacity(mesh.bone_count());
+    let mut unresolved = Vec::new();
+    for (bi, bone) in mesh.bones.iter().enumerate() {
+        let r = resolve_bone(comp, root, world, &bone.name);
+        if r.path.is_none() {
+            unresolved.push(bone.name.clone());
+            mats.push(IDENTITY_MAT4);
+        } else {
+            mats.push(mat4x4_mul(r.current, mesh.inverse_bind[bi]));
+        }
+    }
+    (mats, unresolved)
+}
+
 /// ボーンパレット（GPU へ送る vec4 × 2 × bone_count）を組み立てる。
 ///
-/// `bone_matrix = current_relative * inverse_bind` を各ボーンについて計算する。
-/// 解決できなかったボーンは単位行列（= バインドポーズのまま無変形）になる。
+/// `build_bone_matrices` の結果を GPU レイアウトへ詰め替えるだけ
+/// （2D アフィンは 6 成分しか要らないので行優先 4×4 の 0/1 行目だけを送る）。
 ///
 /// 戻り値: (パレット, 解決できなかったボーン名の一覧)
 fn build_bone_palette(
@@ -366,28 +471,13 @@ fn build_bone_palette(
     root: &Actor,
     world: &World,
 ) -> (Vec<[f32; 4]>, Vec<String>) {
-    let mut palette: Vec<[f32; 4]> = Vec::with_capacity(mesh.bone_count() * PALETTE_VEC4_PER_BONE);
-    let mut unresolved: Vec<String> = Vec::new();
-
-    for (bi, bone) in mesh.bones.iter().enumerate() {
-        // ① 明示パス（無ければボーン名を直下パスとして）で解決を試す
-        let path = comp.bone_path(&bone.name);
-        let current = resolve_bone_matrix_by_path(root, world, path)
-            // ② 見つからなければ子孫 DFS の名前一致でフォールバック
-            .or_else(|| resolve_bone_matrix_by_name(root, world, &bone.name, IDENTITY_MAT4));
-
-        let m = match current {
-            Some(cur) => mat4x4_mul(cur, mesh.inverse_bind[bi]),
-            None => {
-                unresolved.push(bone.name.clone());
-                IDENTITY_MAT4
-            }
-        };
+    let (mats, unresolved) = build_bone_matrices(mesh, comp, root, world);
+    let mut palette: Vec<[f32; 4]> = Vec::with_capacity(mats.len() * PALETTE_VEC4_PER_BONE);
+    for m in &mats {
         // 行優先 4×4 の 0/1 行目を (a, b, tx) / (c, d, ty) として詰める
         palette.push([m[0][0], m[0][1], m[0][3], 0.0]);
         palette.push([m[1][0], m[1][1], m[1][3], 0.0]);
     }
-
     (palette, unresolved)
 }
 
@@ -765,5 +855,48 @@ mod tests {
     #[test]
     fn deformed_vertex_stride_matches_sprite_vertex() {
         assert_eq!(super::DEFORMED_VERTEX_SIZE, 16);
+    }
+
+    // ── ボーン解決の報告（Phase A2: エディタのボーン対応表が使う）────────────
+
+    /// 自動解決したボーンは「実際に使われたアクターの相対パス」を返し、
+    /// override フラグは立たない。
+    #[test]
+    fn resolve_bone_reports_auto_resolved_path() {
+        let (world, root) = build_rig(0.0);
+        let comp = SkinnedSpriteComponent::default();
+
+        let r = resolve_bone(&comp, &root, &world, "root");
+        assert_eq!(r.path.as_deref(), Some("root"));
+        assert!(!r.is_override);
+
+        // elbow は root の子（直下パスでは見つからず DFS 名一致で解決される）
+        let r = resolve_bone(&comp, &root, &world, "elbow");
+        assert_eq!(r.path.as_deref(), Some("root/elbow"));
+        assert!(!r.is_override);
+    }
+
+    /// 明示オーバーライドで解決したボーンは override フラグが立つ。
+    #[test]
+    fn resolve_bone_reports_override() {
+        let (world, root) = build_rig(0.0);
+        let mut comp = SkinnedSpriteComponent::default();
+        comp.bone_overrides
+            .insert("elbow".into(), "root/elbow".into());
+
+        let r = resolve_bone(&comp, &root, &world, "elbow");
+        assert_eq!(r.path.as_deref(), Some("root/elbow"));
+        assert!(r.is_override, "明示指定として報告される");
+    }
+
+    /// どこにも対応アクターが無いボーンは未解決（path=None・行列は単位）。
+    #[test]
+    fn resolve_bone_reports_unresolved() {
+        let (world, root) = build_rig(0.0);
+        let comp = SkinnedSpriteComponent::default();
+
+        let r = resolve_bone(&comp, &root, &world, "no_such_bone");
+        assert!(r.path.is_none());
+        assert_eq!(r.current, IDENTITY_MAT4);
     }
 }

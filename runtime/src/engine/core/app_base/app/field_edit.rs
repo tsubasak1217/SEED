@@ -126,6 +126,10 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             slot(*actor_dfs_id, *slot_idx, "SetAudioField", key),
         IpcCommand::SetSkinnedSpriteField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetSkinnedSpriteField", key),
+        // ボーン対応表は「1 フィールド（bone_overrides）の一括差し替え」なので
+        // フィールドキーを固定文字列にして 1 スロット 1 件の Undo にまとめる。
+        IpcCommand::SetSkinnedSpriteBoneOverrides { actor_dfs_id, slot_idx, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetSkinnedSpriteBoneOverrides", "bone_overrides"),
         IpcCommand::SetScriptField { actor_dfs_id, slot_idx, field, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetScriptField", field),
         IpcCommand::SetSkyboxField { actor_dfs_id, slot_idx, key, .. } =>
@@ -284,6 +288,9 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::AddActor2D { .. }
         | IpcCommand::AddActorChild { .. }
         | IpcCommand::AddActor2dChild { .. }
+        // ボーンアクターの一括生成はアクターツリーの構造変更であり、
+        // ハンドラ側が ActorTreeSnapshotCommand を 1 件積む（二重記録を避けるため対象外）。
+        | IpcCommand::CreateSpriteBoneActors { .. }
         | IpcCommand::WrapActor { .. }
         | IpcCommand::RemoveActor(..)
         | IpcCommand::RenameActor { .. }
@@ -348,6 +355,7 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::SetGizmoSpace(..)
         | IpcCommand::SetShowGrid(..)
         | IpcCommand::SetShowAxisGizmo(..)
+        | IpcCommand::SetShowSpriteBones(..)
         | IpcCommand::SetCameraFov(..)
         | IpcCommand::SetCameraFar(..)
         | IpcCommand::SetCameraTransform { .. }

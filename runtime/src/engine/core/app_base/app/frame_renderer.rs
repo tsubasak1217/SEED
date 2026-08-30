@@ -1500,6 +1500,11 @@ impl App {
             t_grass.elapsed().as_secs_f64() * 1000.0
         };
 
+        // ボーン可視化（Phase A2）が使う `.sprite_mesh` CPU キャッシュの共有ハンドル。
+        // この下で `&mut self.renderer` を握るため、`self` を再借用できなくなる前に
+        // ハンドルだけ取り出しておく。
+        let sprite_mesh_cache = self.sprite_mesh_cpu_handle();
+
         if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
             (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
         {
@@ -3940,12 +3945,26 @@ impl App {
                                 crate::engine::core::app_base::app::canvas_collect::OUTLINE_RING_STEP
                                     * canvas_scale_rect
                             };
+                            // スキンスプライトのボーン可視化（Phase A2）。
+                            // エディタモード かつ ビューポートオプションで ON のときだけ渡す
+                            // （Play 中は None＝ 描かない）。メッシュは App の CPU キャッシュから引く。
+                            let bone_mesh_of = |path: &str| {
+                                crate::engine::core::app_base::app::sprite_bone_ops::load_sprite_mesh_cached(&sprite_mesh_cache, path)
+                            };
+                            let bone_ctx = if in_editor && self.show_sprite_bones {
+                                Some(crate::engine::core::app_base::app::canvas_collect::BoneOverlayCtx {
+                                    mesh_of: &bone_mesh_of,
+                                })
+                            } else {
+                                None
+                            };
                             collect_canvas_rects(
                                 &scene.actors, &scene.world, wl, &mut lb, rect_col,
                                 &self.selected_actor_dfs_ids, &mut counter,
                                 None, IDENTITY_RECT, [1.0, 1.0],
                                 canvas_scale_rect, y_sign_rect, viewport_size_rect, &canvas_vp_overrides_r,
                                 &root_auto_sizes_r, edit_view_2d, outline_step,
+                                bone_ctx.as_ref(),
                             );
                             // 2D シーンビューでドラッグホバー中のルートキャンバス枠を
                             // 通常枠より明るく・太くハイライト描画する（Phase 3、事前計算済み）
@@ -7336,8 +7355,14 @@ impl App {
                                 // 子スプライト ID アイテムと、3D キャンバスのパネル面ピック
                                 // アイテム（透明でも面全体を選択可能にする深度対応クワッド）を
                                 // 同一 DFS 走査で同時収集する。
+                                // タプル末尾はスキンメッシュの描画ハンドル（None = ユニットクワッド）。
+                                // これにより 3D ワールドキャンバス配下のスキンスプライトも
+                                // 「見た目のメッシュ形状のまま」ピックできる（Phase A2）。
                                 let (canvas_3d_child_id_raw_items, canvas_panel_pick_items):
-                                    (Vec<(u32, [[f32; 4]; 4], Option<String>)>, Vec<(u32, [[f32; 4]; 4])>) =
+                                    (Vec<(u32, [[f32; 4]; 4], Option<String>,
+                                          Option<std::sync::Arc<
+                                              crate::engine::core::renderer::SkinnedSpriteDraw>>)>,
+                                     Vec<(u32, [[f32; 4]; 4])>) =
                                     if !use_ortho_2d_camera {
                                         if let Some(scene) = &self.scene {
                                             let wl = self.active_world_line;
@@ -7346,7 +7371,8 @@ impl App {
                                             let mut ctr    = 0u32;
                                             collect_3d_canvas_child_id_items(
                                                 &scene.actors, &scene.world, wl,
-                                                &mut ctr, canvas_id_offset, &mut items, &mut panels,
+                                                &mut ctr, canvas_id_offset, draw_ctx,
+                                                &mut items, &mut panels,
                                             );
                                             (items, panels)
                                         } else { (vec![], vec![]) }
@@ -7372,12 +7398,19 @@ impl App {
                                 // 3D Canvas 子スプライト ID GPU バインドグループ（WS）
                                 let canvas_3d_child_id_bgs: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
                                     canvas_3d_child_id_raw_items.iter()
-                                        .map(|&(raw_id, gpu_mat, _)| {
+                                        .map(|(raw_id, gpu_mat, _, _)| {
                                             prepare_canvas_id_bg(
                                                 &draw_ctx.device, &draw_ctx.pipelines,
-                                                gpu_mat, raw_id,
+                                                *gpu_mat, *raw_id,
                                             )
                                         })
+                                        .collect();
+
+                                // アイテムごとのスキンメッシュハンドル（描画順・件数と 1:1）
+                                let canvas_3d_child_id_meshes: Vec<Option<std::sync::Arc<
+                                    crate::engine::core::renderer::SkinnedSpriteDraw>>> =
+                                    canvas_3d_child_id_raw_items.iter()
+                                        .map(|(_, _, _, mesh)| mesh.clone())
                                         .collect();
 
                                 // スプライトテクスチャ Arc を保持してライフタイムを確保する
@@ -7398,7 +7431,7 @@ impl App {
                                 let canvas_3d_child_sprite_arcs: Vec<Option<std::sync::Arc<GpuSpriteTexture>>> = {
                                     let cache = draw_ctx.sprite_tex_cache.borrow();
                                     canvas_3d_child_id_raw_items.iter()
-                                        .map(|(_, _, path_opt): &(u32, [[f32;4];4], Option<String>)| {
+                                        .map(|(_, _, path_opt, _)| {
                                             path_opt.as_deref().and_then(|path| {
                                                 cache.get(path).and_then(|opt| opt.clone())
                                             })
@@ -7692,9 +7725,9 @@ impl App {
                                         &camera_buf.bind_group, None,
                                         &canvas_3d_child_id_bgs,
                                         &canvas_3d_child_id_tex_bg_refs,
-                                        // 3D ワールドキャンバス配下のスキンスプライトのピックは
-                                        // Phase A2 の担当（描画は collect_sprite_items 経由で行われる）。
-                                        &[],
+                                        // 3D ワールドキャンバス配下のスキンスプライトも
+                                        // 変形済み頂点で ID を描く（ピック形状 == 見た目）。
+                                        &canvas_3d_child_id_meshes,
                                         &[], &[], &[],
                                     );
                                 }
