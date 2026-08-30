@@ -1252,6 +1252,52 @@
                                                         </Style>
                                                     </Button.Style>
                                                 </Button>
+                                                <!-- BtnAxisGizmoToggle の左隣固定: スキンスプライトのボーン表示トグル。
+                                                     グリッド・軸と同じくセッション限りの非永続項目（既定 ON）。
+                                                     SHOW_SPRITE_BONES IPC を直接送り .scene には保存しない。
+                                                     ボーンは「選択中のスキンスプライト（またはその配下のボーン
+                                                     アクター）」にだけ描かれ、Play 中は常に非表示。 -->
+                                                <Button x:Name="BtnSpriteBoneToggle"
+                                                        DockPanel.Dock="Right"
+                                                        Content="ボーン"
+                                                        Width="46" Height="22"
+                                                        Margin="4,3"
+                                                        FontSize="10"
+                                                        FontWeight="Bold"
+                                                        Foreground="#CCCCCC"
+                                                        Background="#3A3A3A"
+                                                        BorderBrush="#555555"
+                                                        BorderThickness="1"
+                                                        Cursor="Hand"
+                                                        ToolTip="選択中スキンスプライトのボーン表示を切り替え（このセッション限り・保存されません）"
+                                                        Click="OnSpriteBoneToggleClicked">
+                                                    <Button.Style>
+                                                        <Style TargetType="Button">
+                                                            <Setter Property="Template">
+                                                                <Setter.Value>
+                                                                    <ControlTemplate TargetType="Button">
+                                                                        <Border x:Name="Bd"
+                                                                                Background="{TemplateBinding Background}"
+                                                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                                                CornerRadius="3"
+                                                                                Padding="{TemplateBinding Padding}">
+                                                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                        </Border>
+                                                                        <ControlTemplate.Triggers>
+                                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                                <Setter TargetName="Bd" Property="Background" Value="#505050"/>
+                                                                            </Trigger>
+                                                                            <Trigger Property="IsPressed" Value="True">
+                                                                                <Setter TargetName="Bd" Property="Background" Value="#666666"/>
+                                                                            </Trigger>
+                                                                        </ControlTemplate.Triggers>
+                                                                    </ControlTemplate>
+                                                                </Setter.Value>
+                                                            </Setter>
+                                                        </Style>
+                                                    </Button.Style>
+                                                </Button>
                                                 <!-- BtnGridToggle の左隣固定: 軸ガイド（画面隅の XYZ ギズモ）表示トグル。
                                                      グリッドと同じくセッション限りの非永続項目（既定 ON）。 -->
                                                 <Button x:Name="BtnAxisGizmoToggle"

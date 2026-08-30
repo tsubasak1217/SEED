@@ -132,6 +132,14 @@ pub struct SpriteMeshBone {
     pub parent: Option<usize>,
     /// バインドポーズのローカル変換行列（行優先）。
     pub local_bind: [[f32; 4]; 4],
+    /// バインドポーズのローカル位置（親ボーン基準・キャンバスピクセル）。
+    /// `local_bind` の材料そのもの。行列から逆算せずに済むよう保持する
+    /// （エディタの「ボーンアクター生成」が CanvasTransform へそのまま写す）。
+    pub bind_position: [f32; 2],
+    /// バインドポーズのローカル回転（度・Z 軸まわり）。
+    pub bind_rotation: f32,
+    /// バインドポーズのローカルスケール。
+    pub bind_scale: [f32; 2],
 }
 
 /// 1 頂点ぶんの正規化済みスキンウェイト（GPU へそのまま渡せる固定長）。
@@ -357,6 +365,9 @@ impl SpriteMesh {
                 name: b.name.clone(),
                 parent,
                 local_bind: trs_to_mat4(b.position, b.rotation, b.scale),
+                bind_position: b.position,
+                bind_rotation: b.rotation,
+                bind_scale: b.scale,
             });
         }
         // 循環検出（各ボーンから親を辿り、ボーン数を超えたら循環）

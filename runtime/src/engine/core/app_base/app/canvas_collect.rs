@@ -17,8 +17,9 @@ use crate::engine::components::{
     CanvasViewportRef, ComponentKind, ScalingMode, SkinnedSpriteComponent, SpriteComponent,
     Transform as ActorTransform,
 };
+use crate::engine::core::loader::sprite_mesh::SpriteMesh;
 use crate::engine::core::renderer::SpriteDrawItem;
-use crate::engine::core::renderer::sprite_skin::SkinnedSpriteDraw;
+use crate::engine::core::renderer::sprite_skin::{SkinnedSpriteDraw, resolve_bone};
 use crate::engine::ecs::{Entity, World};
 use crate::engine::methods::drawer::{
     DrawContext, GpuSpriteTexture, LineBatch, load_sprite_texture,
@@ -86,6 +87,204 @@ const OUTLINE_RINGS_THIN: u32 = 1;
 const OUTLINE_RINGS_THICK: u32 = 5;
 /// ルート（基準）キャンバス枠の基本色（非選択時）。#00ff00ff（緑）。
 const ROOT_CANVAS_OUTLINE_COL: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+
+// ============================================================
+//  ボーンオーバーレイ（Phase A2 / エディタのみ）
+// ============================================================
+
+/// 末端ボーン（子を持たないボーン）を描くときの既定長（メッシュローカル px）。
+/// 子ボーンが無く長さを推定できない場合のフォールバック。
+const BONE_TIP_DEFAULT_LEN: f32 = 24.0;
+/// 関節の丸の半径（メッシュローカル px 相当）。
+const BONE_JOINT_RADIUS: f32 = 4.0;
+/// 関節の丸を近似する多角形の分割数。
+const BONE_JOINT_SEGMENTS: u32 = 12;
+/// 通常のボーン線・関節の色（水色）。
+const BONE_COL: [f32; 4] = [0.30, 0.80, 1.00, 1.0];
+/// 選択中ボーンの強調色（キャンバス枠・スプライト枠と同じオレンジ）。
+const BONE_SELECTED_COL: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
+/// 解決できなかったボーンの色（赤。対応アクターが無く無変形で描かれている）。
+const BONE_UNRESOLVED_COL: [f32; 4] = [1.0, 0.25, 0.25, 1.0];
+
+/// ボーンオーバーレイ描画に必要な外部依存をまとめた文脈。
+///
+/// `collect_canvas_rects` の引数をこれ以上増やさないための束ね。
+/// `None` を渡せばボーン描画は完全にスキップされる（Play 中・表示 OFF 時）。
+pub(super) struct BoneOverlayCtx<'a> {
+    /// `.sprite_mesh` を CPU で引くローダ（App の CPU キャッシュを束ねたクロージャ）。
+    pub mesh_of: &'a dyn Fn(&str) -> Option<Arc<SpriteMesh>>,
+}
+
+/// アクターの子孫数（自分は含まない）。DFS 番号の送り幅計算に使う。
+fn subtree_dfs_len(actor: &Actor) -> u32 {
+    actor.children().iter().map(|c| 1 + subtree_dfs_len(c)).sum()
+}
+
+/// スプライトルート基準の相対パスから、そのアクターの DFS 番号を求める。
+///
+/// `find_actor_by_dfs` と同じ規則（子孫を world_line 無関係に全カウント）で数えるため、
+/// 返り値は `selected_actor_dfs_ids` とそのまま突き合わせられる。
+fn dfs_of_relative_path(root: &Actor, root_dfs: u32, path: &str) -> Option<u32> {
+    let mut cur = root;
+    let mut cur_dfs = root_dfs;
+    for seg in path.split('/') {
+        if seg.is_empty() {
+            continue;
+        }
+        let mut child_dfs = cur_dfs + 1;
+        let mut found = None;
+        for child in cur.children() {
+            if child.name == seg {
+                found = Some((child, child_dfs));
+                break;
+            }
+            child_dfs += 1 + subtree_dfs_len(child);
+        }
+        let (c, d) = found?;
+        cur = c;
+        cur_dfs = d;
+    }
+    Some(cur_dfs)
+}
+
+/// 円（多角形近似）を LineBatch へ描く。
+fn add_circle(lb: &mut LineBatch, center: [f32; 3], radius: f32, color: [f32; 4]) {
+    let seg = BONE_JOINT_SEGMENTS.max(3);
+    let mut prev: Option<[f32; 3]> = None;
+    for i in 0..=seg {
+        let t = (i as f32 / seg as f32) * std::f32::consts::TAU;
+        let p = [
+            center[0] + radius * t.cos(),
+            center[1] + radius * t.sin(),
+            center[2],
+        ];
+        if let Some(q) = prev {
+            lb.add_line(q, p, color);
+        }
+        prev = Some(p);
+    }
+}
+
+/// スキンスプライト 1 スロットぶんのボーン（線＋関節）を LineBatch へ積む。
+///
+/// # 座標
+/// ボーンアクターの合成行列（`resolve_bone` が返す `current`）は
+/// **スプライトルート基準 = メッシュローカルと同一空間**なので、関節位置は
+/// その平行移動成分そのもの。あとはスプライト本体と同じ `mesh_world`
+/// （= parent_world_rs × to_mesh_mat4）で描画空間へ写す。この一致により、
+/// ボーン線は必ず変形後メッシュの上に乗る。
+///
+/// # 色
+/// 未解決（対応アクター無し）= 赤 / 選択中のボーンアクター = オレンジ / それ以外 = 水色。
+#[allow(clippy::too_many_arguments)]
+fn add_sprite_bone_overlay(
+    lb: &mut LineBatch,
+    ctx: &BoneOverlayCtx<'_>,
+    comp: &SkinnedSpriteComponent,
+    actor: &Actor,
+    my_dfs: u32,
+    world: &World,
+    mesh_world: [[f32; 4]; 4],
+    canvas_scale: f32,
+    y_sign: f32,
+    selected_dfs_ids: &[usize],
+) {
+    let Some(mesh) = (ctx.mesh_of)(&comp.mesh_path) else {
+        return;
+    };
+
+    // メッシュローカル → 描画空間（スプライト本体とまったく同じ写像）
+    let csy = canvas_scale * y_sign;
+    let tp = |lx: f32, ly: f32| -> [f32; 3] {
+        [
+            (mesh_world[0][0] * lx + mesh_world[0][1] * ly + mesh_world[0][3]) * canvas_scale,
+            (mesh_world[1][0] * lx + mesh_world[1][1] * ly + mesh_world[1][3]) * csy,
+            0.0,
+        ]
+    };
+
+    /// 1 ボーンぶんの表示情報（関節位置・向き・色・子の有無）。
+    struct BoneVis {
+        /// メッシュローカルの関節位置
+        pos: [f32; 2],
+        /// ボーン自身の +X 方向（末端ボーンのスタブ向き）
+        dir: [f32; 2],
+        /// 描画色
+        col: [f32; 4],
+        /// 子ボーンを持つか
+        has_child: bool,
+    }
+
+    // ── 各ボーンの現在姿勢を 1 度だけ解決する ──
+    let mut vis: Vec<BoneVis> = Vec::with_capacity(mesh.bone_count());
+    for (bi, bone) in mesh.bones.iter().enumerate() {
+        let r = resolve_bone(comp, actor, world, &bone.name);
+        // 未解決ボーンはバインドポーズで描画されているので、表示もバインドポーズ位置に置く
+        let m = if r.path.is_some() {
+            r.current
+        } else {
+            mesh.bind_global[bi]
+        };
+        let col = if r.path.is_none() {
+            BONE_UNRESOLVED_COL
+        } else if r
+            .path
+            .as_deref()
+            .and_then(|p| dfs_of_relative_path(actor, my_dfs, p))
+            .is_some_and(|d| selected_dfs_ids.contains(&(d as usize)))
+        {
+            BONE_SELECTED_COL
+        } else {
+            BONE_COL
+        };
+        // 2×2 部分の第 1 列がボーンローカル +X の向き（正規化して使う）
+        let (dx, dy) = (m[0][0], m[1][0]);
+        let len = (dx * dx + dy * dy).sqrt();
+        let dir = if len > f32::EPSILON {
+            [dx / len, dy / len]
+        } else {
+            [1.0, 0.0]
+        };
+        vis.push(BoneVis {
+            pos: [m[0][3], m[1][3]],
+            dir,
+            col,
+            has_child: false,
+        });
+    }
+    for bone in &mesh.bones {
+        if let Some(pi) = bone.parent {
+            if let Some(v) = vis.get_mut(pi) {
+                v.has_child = true;
+            }
+        }
+    }
+
+    // ── 親関節 → 子関節の線（ボーンの「長さ」は子ボーンへの距離そのもの）──
+    for (bi, bone) in mesh.bones.iter().enumerate() {
+        let Some(pi) = bone.parent else { continue };
+        let (Some(pv), Some(cv)) = (vis.get(pi), vis.get(bi)) else {
+            continue;
+        };
+        lb.add_line(tp(pv.pos[0], pv.pos[1]), tp(cv.pos[0], cv.pos[1]), cv.col);
+    }
+
+    // ── 末端ボーン（子なし）は既定長のスタブで向きを示す ──
+    for v in vis.iter().filter(|v| !v.has_child) {
+        let tip = [
+            v.pos[0] + v.dir[0] * BONE_TIP_DEFAULT_LEN,
+            v.pos[1] + v.dir[1] * BONE_TIP_DEFAULT_LEN,
+        ];
+        lb.add_line(tp(v.pos[0], v.pos[1]), tp(tip[0], tip[1]), v.col);
+    }
+
+    // ── 関節の丸 ──
+    // メッシュローカルで円を作るとボーン変形で歪むため、描画空間で作って丸さを保つ。
+    let radius_screen = BONE_JOINT_RADIUS * canvas_scale;
+    for v in &vis {
+        add_circle(lb, tp(v.pos[0], v.pos[1]), radius_screen, v.col);
+    }
+}
 
 /// 太い矩形アウトラインを LineBatch へ描画する共通ヘルパー。
 ///
@@ -621,6 +820,9 @@ pub(super) fn collect_canvas_rects(
     // アウトラインのリング間隔（描画空間の単位）。
     // SS 表示では「画面 1px 相当」を渡すことで、ズームに依らず連続した太線に見える。
     outline_step: f32,
+    // スキンスプライトのボーン可視化（Phase A2）。None = 描かない
+    // （Play 中・ビューポートオプションで OFF・メッシュローダが無い場合）。
+    bone_overlay: Option<&BoneOverlayCtx<'_>>,
 ) {
     for actor in actors {
         if actor.world_line != wl {
@@ -822,6 +1024,41 @@ pub(super) fn collect_canvas_rects(
                             }
                         }
                     }
+                    ComponentKind::SkinnedSprite => {
+                        // スキンスプライト: 「本体または配下のボーンアクターが選択中」の
+                        // ときだけボーン（線＋関節）を描く。
+                        //
+                        // 配下判定は DFS 番号の連続性を使う: このノードの子孫は
+                        // my_dfs+1 .. my_dfs+subtree_len に必ず収まる（find_actor_by_dfs
+                        // と同じ番号付け規則）。ボーンアクターを選んでギズモで回している
+                        // 最中もボーン表示が消えないようにするための判定である。
+                        let Some(ctx) = bone_overlay else { continue };
+                        let sub = subtree_dfs_len(actor) as usize;
+                        let selected_here = selected_dfs_ids
+                            .iter()
+                            .any(|&d| d >= my_dfs && d <= my_dfs + sub);
+                        if !selected_here {
+                            continue;
+                        }
+                        let Some(ss) = world.get::<SkinnedSpriteComponent>(slot.entity) else {
+                            continue;
+                        };
+                        // スプライト本体の描画とまったく同じ変換連鎖（to_mesh_mat4）
+                        let mesh_world =
+                            mat4x4_mul(parent_world_rs, eff_ct.to_mesh_mat4(size_sc_x, size_sc_y));
+                        add_sprite_bone_overlay(
+                            lb,
+                            ctx,
+                            ss,
+                            actor,
+                            my_dfs as u32,
+                            world,
+                            mesh_world,
+                            canvas_scale,
+                            y_sign,
+                            selected_dfs_ids,
+                        );
+                    }
                     _ => {}
                 }
             }
@@ -869,6 +1106,7 @@ pub(super) fn collect_canvas_rects(
                 root_auto_sizes,
                 design_space,
                 outline_step,
+                bone_overlay,
             );
         } else {
             // CanvasTransform なし（Actor3D 等）: 枠描画対象外だが、DFS 番号は
@@ -1258,7 +1496,11 @@ pub(super) fn collect_3d_canvas_child_id_items(
     wl: u32,
     counter: &mut u32,
     mc_total: u32,
-    out: &mut Vec<(u32, [[f32; 4]; 4], Option<String>)>,
+    // 変形済みスキンメッシュの描画ハンドルを引くための描画文脈。
+    // 本フレームの描画収集（collect_sprite_items）が既に compute を回しているので、
+    // ここでは `draw_handle` で結果を参照するだけでよい（再ディスパッチしない）。
+    draw_ctx: &DrawContext,
+    out: &mut Vec<(u32, [[f32; 4]; 4], Option<String>, Option<Arc<SkinnedSpriteDraw>>)>,
     // 3D キャンバス（Actor3D + CanvasComponent）のパネル面そのものをピック対象にする
     // ための面クワッド出力（raw_id, GPU 列優先モデル行列）。透明でも面全体を選択可能に
     // するため、深度対応の canvas_id パイプライン（白フォールバック alpha=1）で描画する。
@@ -1337,8 +1579,13 @@ pub(super) fn collect_3d_canvas_child_id_items(
                     // 子を 3D ワールド行列で再帰走査する。
                     // このキャンバス内の追加分をレイヤー昇順で安定ソートしてから out へ
                     // 追加する（ワールドキャンバスのレイヤーはキャンバス内で完結する）。
-                    let mut canvas_items: Vec<(u32, [[f32; 4]; 4], Option<String>, i32)> =
-                        Vec::new();
+                    let mut canvas_items: Vec<(
+                        u32,
+                        [[f32; 4]; 4],
+                        Option<String>,
+                        Option<Arc<SkinnedSpriteDraw>>,
+                        i32,
+                    )> = Vec::new();
                     walk_3d_canvas_children_id(
                         &actor.children,
                         world,
@@ -1348,11 +1595,16 @@ pub(super) fn collect_3d_canvas_child_id_items(
                         canvas_to_world,
                         [1.0, 1.0],
                         mc_total,
+                        draw_ctx,
                         &mut canvas_items,
                     );
                     // 安定ソート: 同一レイヤーはヒエラルキー DFS 順を維持する
-                    canvas_items.sort_by_key(|&(_, _, _, layer)| layer);
-                    out.extend(canvas_items.into_iter().map(|(id, m, p, _)| (id, m, p)));
+                    canvas_items.sort_by_key(|it| it.4);
+                    out.extend(
+                        canvas_items
+                            .into_iter()
+                            .map(|(id, m, p, mesh, _)| (id, m, p, mesh)),
+                    );
                     true
                 } else {
                     false
@@ -1372,6 +1624,7 @@ pub(super) fn collect_3d_canvas_child_id_items(
                 wl,
                 counter,
                 mc_total,
+                draw_ctx,
                 out,
                 panel_out,
             );
@@ -1394,7 +1647,14 @@ fn walk_3d_canvas_children_id(
     parent_world_rs: [[f32; 4]; 4],
     parent_cumul_scale: [f32; 2],
     mc_total: u32,
-    out: &mut Vec<(u32, [[f32; 4]; 4], Option<String>, i32)>,
+    draw_ctx: &DrawContext,
+    out: &mut Vec<(
+        u32,
+        [[f32; 4]; 4],
+        Option<String>,
+        Option<Arc<SkinnedSpriteDraw>>,
+        i32,
+    )>,
 ) {
     for actor in actors {
         if actor.world_line != wl {
@@ -1489,6 +1749,16 @@ fn walk_3d_canvas_children_id(
             // SpriteComponent を持つアクターを ID アイテムとして追加する。
             // テクスチャなし（単色）は白テクスチャフォールバックで全面選択可能にする。
             // （enabled=false のスプライトは非表示のためピック対象外）
+            // 3D ワールド行列 → GPU 列優先モデル行列（Z 成分を含めた 3D フルマトリクス）
+            let to_gpu_mat = |sw: [[f32; 4]; 4]| {
+                [
+                    [sw[0][0], sw[1][0], sw[2][0], 0.0],
+                    [sw[0][1], sw[1][1], sw[2][1], 0.0],
+                    [sw[0][2], sw[1][2], sw[2][2], 0.0],
+                    [sw[0][3], sw[1][3], sw[2][3], 1.0],
+                ]
+            };
+            let mut pushed = false;
             for slot in actor.slots() {
                 if slot.kind == ComponentKind::Sprite && slot.enabled {
                     if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
@@ -1496,13 +1766,6 @@ fn walk_3d_canvas_children_id(
                         let eh = sc.height * size_sc_y;
                         // 3D ワールド空間のスプライト行列（canvas_to_world 込み）
                         let sw = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(ew, eh));
-                        // GPU 列優先モデル行列（Z 成分を含めた 3D フルマトリクス）
-                        let gpu_mat = [
-                            [sw[0][0], sw[1][0], sw[2][0], 0.0],
-                            [sw[0][1], sw[1][1], sw[2][1], 0.0],
-                            [sw[0][2], sw[1][2], sw[2][2], 0.0],
-                            [sw[0][3], sw[1][3], sw[2][3], 1.0],
-                        ];
                         // テクスチャなしは None → 白フォールバック（全面 alpha=1）
                         let tex_path = if sc.texture_path.is_empty() {
                             None
@@ -1511,9 +1774,42 @@ fn walk_3d_canvas_children_id(
                         };
                         // raw_id = canvas_id_offset + dfs_id（canvas_id_offset = mc_total）
                         // layer は呼び出し側のキャンバス内レイヤーソートに使用する
-                        out.push((mc_total + my_dfs + 1, gpu_mat, tex_path, sc.layer));
+                        out.push((mc_total + my_dfs + 1, to_gpu_mat(sw), tex_path, None, sc.layer));
+                        pushed = true;
                         break;
                     }
+                }
+            }
+            // 矩形スプライトが無いアクターのみ、スキンスプライトをピック対象にする
+            // （2D キャンバスの ID 収集 collect_canvas_id_items と同じ優先規約）。
+            // 変形済み頂点は本フレームの描画収集が既に作っているので、ここでは
+            // ハンドルを引くだけ（まだ作られていない＝描画対象でないならピック対象外）。
+            if !pushed {
+                for slot in actor.slots() {
+                    if slot.kind != ComponentKind::SkinnedSprite || !slot.enabled {
+                        continue;
+                    }
+                    let Some(ss) = world.get::<SkinnedSpriteComponent>(slot.entity) else {
+                        continue;
+                    };
+                    let Some(mesh_draw) = draw_ctx.sprite_skin.draw_handle(slot.entity) else {
+                        continue;
+                    };
+                    // メッシュ頂点は既に実寸を持つので、掛けるのは追加スケールのみ
+                    let sw = mat4x4_mul(parent_world_rs, eff_ct.to_mesh_mat4(size_sc_x, size_sc_y));
+                    let tex_path = if ss.texture_path.is_empty() {
+                        None
+                    } else {
+                        Some(ss.texture_path.clone())
+                    };
+                    out.push((
+                        mc_total + my_dfs + 1,
+                        to_gpu_mat(sw),
+                        tex_path,
+                        Some(mesh_draw),
+                        ss.layer,
+                    ));
+                    break;
                 }
             }
 
@@ -1544,6 +1840,7 @@ fn walk_3d_canvas_children_id(
             next_world_rs,
             next_cumul_scale,
             mc_total,
+            draw_ctx,
             out,
         );
     }

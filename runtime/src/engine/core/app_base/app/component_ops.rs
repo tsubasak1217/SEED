@@ -417,12 +417,18 @@ impl App {
                 }
                 ComponentData::SkinnedSpriteComponent(d) => {
                     // メッシュパス・テクスチャパス・カラー・レイヤーをインスペクター用に送信する。
-                    // ボーン対応表（bone_overrides）の編集 UI は Phase A2 の担当のため、
-                    // ここでは「解決に使う件数」だけを送って表示できるようにしておく。
                     let mesh_json = serde_json::to_string(&d.mesh_path).unwrap_or_default();
                     let path_json = serde_json::to_string(&d.texture_path).unwrap_or_default();
+                    // ボーン対応表（Phase A2）:
+                    //   "bones"            … メッシュのボーン名 → 実際に解決されたアクター相対パス
+                    //   "bone_candidates"  … スプライトルート配下のアクター（相対パス + DFS ID）
+                    //   "bone_unresolved"  … 解決できなかったボーン数（インスペクタの警告表示用）
+                    // メッシュ未設定／読込失敗のときは空文字列（＝ 表を出さない）。
+                    let comp = SkinnedSpriteComponent::from_data(d.clone());
+                    let bones_json =
+                        self.skinned_sprite_bone_json(&comp, actor, dfs_id, &scene.world);
                     ("SkinnedSpriteComponent", format!(
-                        r#","mesh_path":{mesh_json},"texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"layer":{},"bone_override_count":{}"#,
+                        r#","mesh_path":{mesh_json},"texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"layer":{},"bone_override_count":{}{bones_json}"#,
                         d.color[0], d.color[1], d.color[2], d.color[3],
                         d.layer,
                         d.bone_overrides.len(),

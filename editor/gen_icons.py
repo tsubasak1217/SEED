@@ -98,6 +98,9 @@ CATALOG = [
     ("Icon.Component.Sprite", "image-outline"),
     ("Icon.Component.SkinnedSprite", "vector-polygon"),
     ("Icon.File.SpriteMesh", "vector-triangle"),
+    # スキンスプライトのボーン操作（インスペクタの「ボーンアクターを生成」ボタン等）。
+    # Icon.Component.JointAttach と同じ mdi:bone だが、用途が別なのでキーを分ける。
+    ("Icon.Bone", "bone"),
     ("Icon.Component.Light", "lightbulb-on-outline"),
     ("Icon.Component.JointAttach", "bone"),
     ("Icon.Component.ParticleEmitter", "shimmer"),

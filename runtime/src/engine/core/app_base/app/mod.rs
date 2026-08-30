@@ -13,6 +13,20 @@
 // ============================================================
 
 // ── サブモジュール ──────────────────────────────────────────
+/// `.sprite_mesh` の CPU 側キャッシュ（パス → 検証済みメッシュ。`None` = 読込失敗）。
+///
+/// 描画側キャッシュ（`renderer::SpriteSkinCache`）は `wgpu::Device` を要求するため、
+/// IPC ハンドラやボーン可視化のような「デバイス無しで済ませたい経路」用に別途持つ。
+/// `Rc` 共有 + 内部可変なので `&self` からも、描画中の借用下からも引ける。
+pub(crate) type SpriteMeshCpuCache = std::rc::Rc<
+    std::cell::RefCell<
+        std::collections::HashMap<
+            String,
+            Option<std::sync::Arc<crate::engine::core::loader::sprite_mesh::SpriteMesh>>,
+        >,
+    >,
+>;
+
 mod drag_state;
 /// インスペクタのフィールド編集を汎用的に Undo/Redo へ載せる機構（分類表・スナップショット・適用）
 mod field_edit;
@@ -58,6 +72,7 @@ mod play_diag;
 mod audio_ops;
 /// SkinnedSpriteComponent のフィールド編集（Phase A1）
 mod skinned_sprite_ops;
+pub(crate) mod sprite_bone_ops;
 /// 水ボリューム（WaterVolumeComponent）のインスペクタ更新（SET_WATER_FIELD）
 mod water_ops;
 /// 水位グラフのリンク（WaterLinkComponent）のインスペクタ更新（SET_WATER_LINK_FIELD。W2.5）
@@ -704,6 +719,17 @@ pub struct App {
     features_log_state: Option<(crate::engine::core::renderer::RenderFeatures, bool)>,
     /// 軸ギズモ表示フラグ（エディタモードのみ）。
     show_axis_gizmo: bool,
+    /// スキンスプライトのボーン可視化フラグ（エディタモードのみ・セッション限り）。
+    /// グリッド／軸ギズモと同じくシーンには保存しない（IPC SHOW_SPRITE_BONES）。
+    show_sprite_bones: bool,
+    /// `.sprite_mesh` の CPU 側キャッシュ（パス → 検証済みメッシュ。None = 読込失敗）。
+    /// 描画側キャッシュは wgpu::Device を要求するため、IPC ハンドラや
+    /// ボーン可視化のような「デバイス無しで済ませたい経路」用に別途持つ。
+    /// `&self` の経路（send_actor_components / 収集フェーズ）から引くので内部可変。
+    /// `Rc` 共有なのは、描画フレーム中（`&mut self.renderer` を握っている最中）に
+    /// ボーン可視化がメッシュを引く必要があるため。`self` を再借用せずに済むよう、
+    /// 借用が始まる前にハンドルだけ clone して持ち出す。
+    sprite_mesh_cpu_cache: SpriteMeshCpuCache,
     /// 軸ギズモのホバー状態（どのドットにカーソルが当たっているか）。
     axis_gizmo_hovered: Option<crate::engine::core::font::axis_gizmo::AxisHit>,
     /// 軸ギズモクリック時のカメラ回転スナップアニメーション状態。
@@ -1296,6 +1322,8 @@ impl App {
             render_features:    crate::engine::core::renderer::RenderFeatures::default(),
             features_log_state: None,
             show_axis_gizmo: true,
+            show_sprite_bones: true,
+            sprite_mesh_cpu_cache: SpriteMeshCpuCache::default(),
             axis_gizmo_hovered: None,
             camera_snap_anim:   None,
             actor_virtual_selected_idx:      None,
