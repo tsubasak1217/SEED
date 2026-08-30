@@ -45,6 +45,16 @@
     <Page     Remove="SeedMcpServer\**" />
   </ItemGroup>
 
+  <!-- アルゴリズム単体テスト（editor/tests/）は独立したコンソールプロジェクトなので、  -->
+  <!-- 既定グロブで本体へ取り込まれないように除外する（Main の重複を防ぐ）。          -->
+  <ItemGroup>
+    <Compile  Remove="tests\**" />
+    <EmbeddedResource Remove="tests\**" />
+    <None     Remove="tests\**" />
+    <Content  Remove="tests\**" />
+    <Page     Remove="tests\**" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Dirkster.AvalonDock" Version="4.74.0" />
     <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="4.74.0" />

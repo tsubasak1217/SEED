@@ -40,6 +40,7 @@ internal static class PanelIcons
         ["profiler"]           = "Icon.Panel.Profiler",
         ["inspector"]          = "Icon.Panel.Inspector",
         ["ai_assistant"]       = "Icon.Panel.AiAssistant",
+        ["sprite_rig"]         = "Icon.Panel.SpriteRig",
     };
 
     /// <summary>

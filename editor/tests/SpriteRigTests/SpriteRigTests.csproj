@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    スプライトリグのアルゴリズム単体テスト。
+
+    外部パッケージ（xunit 等）に依存させず、素のコンソールアプリ + 自前アサートで組む。
+    理由は 2 つ:
+      1. NuGet の追加取得なしでオフラインでも `dotnet run` だけで回せる
+      2. SEEDEditor 本体（WPF / WinExe）を参照せずに済み、テストが UI から独立する
+
+    そのため、テスト対象のソースは ProjectReference ではなく
+    「WPF 非依存のファイルだけをリンクで取り込む」方式にしている。
+    ここに列挙されているファイルは WPF 型を一切使ってはならない
+    （使うと本テストがビルドできなくなり、それが設計崩れの検知器になる）。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.SpriteRig</RootNamespace>
+    <AssemblyName>SpriteRigTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\Panels\SpriteRig\Mesh\*.cs">
+      <Link>Linked\Mesh\%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\SpriteRig\Model\*.cs">
+      <Link>Linked\Model\%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\SpriteRig\IO\*.cs">
+      <Link>Linked\IO\%(Filename)%(Extension)</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

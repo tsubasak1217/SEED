@@ -149,6 +149,18 @@ public partial class ProjectPanel : UserControl
     /// <summary>.anim ファイルがダブルクリックされた（絶対パス）。AnimationTimelinePanel での編集起動用。</summary>
     public event Action<string>? AnimFileOpened;
 
+    /// <summary>
+    /// 画像ファイルの右クリックメニューから「スプライトリグを作成」が選ばれた（絶対パス）。
+    /// スプライトリグパネルを開き、その画像の新しい編集タブを作る。
+    /// </summary>
+    public event Action<string>? SpriteRigCreateRequested;
+
+    /// <summary>
+    /// .sprite_mesh がダブルクリックされた／右クリックメニューから編集が選ばれた（絶対パス）。
+    /// スプライトリグパネルで再編集する。
+    /// </summary>
+    public event Action<string>? SpriteMeshFileOpened;
+
     public void SetAssetsPath(string assetsPath)
     {
         _assetsRoot  = assetsPath;
@@ -608,6 +620,11 @@ public partial class ProjectPanel : UserControl
                     // Phase R7 最小実装: 専用エディタパネルは未実装のため、既定の関連付けアプリ（テキストエディタ等）
                     // で開く。JSON テキストなので Windows の既定関連付けがあれば十分編集可能。
                     OpenMaterialFile(matFile.FullName);
+                else if (entry is FileInfo meshFile &&
+                         meshFile.Extension.Equals(SpriteRig.IO.SpriteMeshFile.Extension,
+                                                   StringComparison.OrdinalIgnoreCase))
+                    // .sprite_mesh はスプライトリグパネルで再編集する
+                    SpriteMeshFileOpened?.Invoke(meshFile.FullName);
             }
             else if (e.ClickCount == 1)
             {
@@ -1063,6 +1080,9 @@ public partial class ProjectPanel : UserControl
     {
         var menu = new ContextMenu();
 
+        // 単一選択のときだけ、ファイル種別に応じた専用コマンドを先頭に出す
+        AddSpriteRigMenuItems(menu);
+
         Add(menu, "コピー",    "Ctrl+C", DoCopy);
         Add(menu, "切り取り",  "Ctrl+X", DoCut);
         menu.Items.Add(new Separator());
@@ -1083,6 +1103,33 @@ public partial class ProjectPanel : UserControl
         menu.PlacementTarget = FileScrollViewer;
         menu.Placement       = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
         menu.IsOpen          = true;
+    }
+
+    /// <summary>
+    /// 右クリックメニューへスプライトリグ関連の項目を足す。
+    ///
+    /// 画像を単一選択しているときは「スプライトリグを作成」、
+    /// .sprite_mesh を単一選択しているときは「スプライトリグを編集」を出す。
+    /// 対象外のときは何も足さない（メニューが無駄に伸びないようにする）。
+    /// </summary>
+    /// <param name="menu">項目を足す対象のコンテキストメニュー。</param>
+    private void AddSpriteRigMenuItems(ContextMenu menu)
+    {
+        if (_selectedItems.Count != 1) return;
+        if (_selectedItems.First().Tag is not string path) return;
+        if (!File.Exists(path)) return;
+
+        string extension = Path.GetExtension(path);
+        if (SpriteRig.SpriteImageLoader.IsSupportedExtension(extension))
+        {
+            Add(menu, "スプライトリグを作成", null, () => SpriteRigCreateRequested?.Invoke(path));
+            menu.Items.Add(new Separator());
+        }
+        else if (extension.Equals(SpriteRig.IO.SpriteMeshFile.Extension, StringComparison.OrdinalIgnoreCase))
+        {
+            Add(menu, "スプライトリグを編集", null, () => SpriteMeshFileOpened?.Invoke(path));
+            menu.Items.Add(new Separator());
+        }
     }
 
     private void ShowEmptyContextMenu()

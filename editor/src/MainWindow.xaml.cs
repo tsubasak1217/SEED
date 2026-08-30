@@ -435,6 +435,33 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             PanelAnimationTimeline.LoadAnimFile(path);
         };
 
+        // ── スプライトリグ（.sprite_mesh のメッシュ編集）パネル ──
+        // アセットルートを渡し、プロジェクトパネルからの起動口を 3 つ繋ぐ:
+        //   1. 画像の右クリック →「スプライトリグを作成」
+        //   2. .sprite_mesh の右クリック →「スプライトリグを編集」／ダブルクリック
+        //   3. パネルへの画像ドラッグ＆ドロップ（パネル側が自前で受ける）
+        PanelSpriteRig.SetAssetsPath(AssetsPath);
+        PanelProject.SpriteRigCreateRequested += path =>
+        {
+            ShowAnchorable("sprite_rig");
+            PanelSpriteRig.OpenImage(path);
+        };
+        PanelProject.SpriteMeshFileOpened += path =>
+        {
+            ShowAnchorable("sprite_rig");
+            PanelSpriteRig.OpenSpriteMesh(path);
+        };
+        // 未保存インジケータ（*）を LayoutAnchorable のタイトルへ反映する
+        PanelSpriteRig.TitleChanged += title =>
+        {
+            var anchorable = DockManager.Layout.Descendents()
+                .OfType<LayoutAnchorable>()
+                .FirstOrDefault(a => a.ContentId == "sprite_rig");
+            if (anchorable is not null) anchorable.Title = title;
+        };
+        // 保存結果はログへ出す。プロジェクトパネルの一覧更新は FileSystemWatcher が拾う。
+        PanelSpriteRig.MeshSaved += path => EditorLog.Write($"スプライトメッシュを保存しました: {path}");
+
         // スクリプトエディタ: アセットルートを渡して IntelliSense / F12 を有効化する
         PanelScriptEditor.SetAssetsPath(AssetsPath);
         // スクリプトエディタ: 書式・配色設定を読み込む
@@ -1048,6 +1075,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                     "viewport"      => ViewportGrid,
                     "output"         => PanelOutput,
                     "animation_timeline" => PanelAnimationTimeline,
+                    "sprite_rig"     => PanelSpriteRig,
                     "ai_assistant"   => _aiPanelUi,
                     "script_editor"  => PanelScriptEditor,
                     "open_documents" => _openDocsPanel,
@@ -1127,6 +1155,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // 新規追加パネル（旧 layout.xml には存在しない）。CanClose=False の常設パネルとして復元を保証する。
         EnsureAnchorable("animation_timeline", "アニメーション", PanelAnimationTimeline);
         EnsureAnchorable("profiler", "プロファイラ", PanelProfiler);
+        EnsureAnchorable("sprite_rig", "スプライトリグ", PanelSpriteRig);
     }
 
     private void EnsureAnchorable(string contentId, string title, object? content)
