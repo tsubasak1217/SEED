@@ -14,8 +14,11 @@ use std::sync::Arc;
 
 use crate::engine::components::{
     AspectRatioAxis, CameraComponent, CanvasComponent, CanvasDrawZone, CanvasTransform,
-    CanvasViewportRef, ComponentKind, ScalingMode, SpriteComponent, Transform as ActorTransform,
+    CanvasViewportRef, ComponentKind, ScalingMode, SkinnedSpriteComponent, SpriteComponent,
+    Transform as ActorTransform,
 };
+use crate::engine::core::renderer::SpriteDrawItem;
+use crate::engine::core::renderer::sprite_skin::SkinnedSpriteDraw;
 use crate::engine::ecs::{Entity, World};
 use crate::engine::methods::drawer::{
     DrawContext, GpuSpriteTexture, LineBatch, load_sprite_texture,
@@ -144,6 +147,57 @@ fn add_thick_rect(
     }
 }
 
+
+// ============================================================
+//  描画アイテム構築の共通ヘルパー
+// ============================================================
+
+/// キャンバス空間の行優先ワールド行列を、GPU（列優先）のモデル行列へ変換する。
+///
+/// スプライト・スキンメッシュ・ID パスがまったく同じ規則で行列を組むための正典。
+///   col0 = x 基底（canvas_scale で単位変換）
+///   col1 = y 基底（csy = canvas_scale * y_sign。キャンバス Y 下向き → ワールド Y 上向き）
+///   col2 = z 基底（3D キャンバスでは actor_3d_mat 由来、2D では identity）
+///   col3 = 平行移動（3D キャンバスの z 成分も含める）
+pub(super) fn canvas_mat_to_gpu(
+    world_row_major: [[f32; 4]; 4],
+    canvas_scale: f32,
+    y_sign: f32,
+) -> [[f32; 4]; 4] {
+    let m = world_row_major;
+    let csy = canvas_scale * y_sign;
+    [
+        [m[0][0] * canvas_scale, m[1][0] * csy, m[2][0], 0.0],
+        [m[0][1] * canvas_scale, m[1][1] * csy, m[2][1], 0.0],
+        [m[0][2] * canvas_scale, m[1][2] * csy, m[2][2], 0.0],
+        [m[0][3] * canvas_scale, m[1][3] * csy, m[2][3], 1.0],
+    ]
+}
+
+/// テクスチャパスから GPU テクスチャを解決する（SpriteComponent と共通のキャッシュ経路）。
+///
+/// キャッシュ値: Some(arc)=成功 / None=失敗済み（毎フレームのリトライ・ログ爆発防止）。
+pub(super) fn resolve_sprite_texture(
+    draw_ctx: &DrawContext,
+    path: &str,
+) -> Option<Arc<GpuSpriteTexture>> {
+    if path.is_empty() {
+        return None;
+    }
+    let mut cache = draw_ctx.sprite_tex_cache.borrow_mut();
+    if !cache.contains_key(path) {
+        let loaded = load_sprite_texture(
+            &draw_ctx.device,
+            &draw_ctx.queue,
+            path,
+            &draw_ctx.pipelines.sprite.tex_bgl,
+            &draw_ctx.pipelines.sprite.sampler,
+        );
+        cache.insert(path.to_string(), loaded);
+    }
+    cache.get(path).and_then(|e| e.clone())
+}
+
 // ============================================================
 //  collect_sprite_items
 // ============================================================
@@ -197,13 +251,7 @@ pub(super) fn collect_sprite_items(
     // ビューポートタブの設計空間表示中か（= edit_view_is_2d）。
     // true のときルートキャンバス左上をワールド原点に一致させる（センタリングしない）。
     design_space: bool,
-    out: &mut Vec<(
-        [[f32; 4]; 4],
-        [f32; 4],
-        Option<Arc<GpuSpriteTexture>>,
-        CanvasDrawZone,
-        i32,
-    )>,
+    out: &mut Vec<SpriteDrawItem>,
 ) {
     for actor in actors {
         if actor.world_line != wl {
@@ -424,9 +472,67 @@ pub(super) fn collect_sprite_items(
                             }
                         }
                         // 描画ゾーン（ルートキャンバス継承）とレイヤー（スプライト個別）を添付する
-                        out.push((gpu_mat, sc.color, tex, my_zone, sc.layer));
+                        out.push(SpriteDrawItem {
+                            model: gpu_mat,
+                            color: sc.color,
+                            tex,
+                            mesh: None,
+                            zone: my_zone,
+                            layer: sc.layer,
+                        });
                     }
                 }
+            }
+
+            // SkinnedSpriteComponent スロットを走査してスキンメッシュ描画アイテムを収集する。
+            //
+            // 矩形スプライトと**同じ out へ同じ規約**（ゾーン・レイヤー・color・
+            // キャンバス Transform）で積むため、両者の前後関係は呼び出し側の
+            // 共通ソートだけで正しく解決される。
+            //
+            // 座標系: `.sprite_mesh` の頂点は既にキャンバスピクセル実寸を持つため、
+            // ここで掛けるのは親キャンバス由来の**追加スケール**のみ（to_mesh_mat4）。
+            for slot in actor.slots() {
+                if slot.kind != ComponentKind::SkinnedSprite || !slot.enabled {
+                    continue;
+                }
+                let Some(ss) = world.get::<SkinnedSpriteComponent>(slot.entity) else {
+                    continue;
+                };
+                // ボーンアクターの現在姿勢を集めて GPU で変形し、描画ハンドルを得る。
+                // メッシュ未設定・読み込み失敗時は None（＝ このスロットは描画しない）。
+                let Some(mesh_draw): Option<Arc<SkinnedSpriteDraw>> =
+                    draw_ctx.sprite_skin.prepare_instance(
+                        &draw_ctx.device,
+                        &draw_ctx.queue,
+                        &draw_ctx.pipelines.sprite_skin,
+                        slot.entity,
+                        ss,
+                        actor,
+                        world,
+                    )
+                else {
+                    continue;
+                };
+
+                // メッシュローカル → キャンバス → GPU 列優先（スプライトと同一の変換連鎖）
+                let mesh_world = mat4x4_mul(
+                    parent_world_rs,
+                    eff_ct.to_mesh_mat4(size_scale_x, size_scale_y),
+                );
+                let gpu_mat = canvas_mat_to_gpu(mesh_world, canvas_scale, y_sign);
+
+                // テクスチャは SpriteComponent とまったく同じキャッシュ経路で解決する
+                let tex = resolve_sprite_texture(draw_ctx, &ss.texture_path);
+
+                out.push(SpriteDrawItem {
+                    model: gpu_mat,
+                    color: ss.color,
+                    tex,
+                    mesh: Some(mesh_draw),
+                    zone: my_zone,
+                    layer: ss.layer,
+                });
             }
 
             // 子アクターへの基準 Canvas サイズと auto_scale を構築する
@@ -774,8 +880,27 @@ pub(super) fn collect_canvas_rects(
 }
 
 // ============================================================
-//  collect_canvas_id_items
+//  CanvasIdItem / collect_canvas_id_items
 // ============================================================
+
+/// キャンバス ID パス（GPU ピッキング）へ描く 1 アイテム。
+///
+/// 矩形スプライトとスキンメッシュの共通表現。`mesh` が `Some` のときは
+/// 変形済み頂点＋インデックスで描くので、**ピック形状が実際の見た目と一致する**。
+pub(super) struct CanvasIdItem {
+    /// ID パスの A チャンネルへ書き込む raw ID。
+    pub raw_id: u32,
+    /// GPU 列優先モデル行列。
+    pub model: [[f32; 4]; 4],
+    /// アルファマスク用テクスチャパス（None = 白フォールバックで全面ピック可）。
+    pub tex_path: Option<String>,
+    /// スキンメッシュ描画のハンドル（None = ユニットクワッド）。
+    pub mesh: Option<Arc<SkinnedSpriteDraw>>,
+    /// 描画ゾーン（描画順ソート用）。
+    pub zone: CanvasDrawZone,
+    /// レイヤー（描画順ソート用）。
+    pub layer: i32,
+}
 
 /// キャンバスアクター ID アイテムを DFS 順に収集する。
 ///
@@ -820,7 +945,11 @@ pub(super) fn collect_canvas_id_items(
     in_ss_subtree: bool,
     // ビューポートタブの設計空間表示中か（= edit_view_is_2d。collect_sprite_items と同じ扱い）
     design_space: bool,
-    out: &mut Vec<(u32, [[f32; 4]; 4], Option<String>, CanvasDrawZone, i32)>,
+    // スキンスプライトの変形済み頂点を引くための描画コンテキスト。
+    // 本フレームのスプライト収集（collect_sprite_items）が既にディスパッチ済みの
+    // 変形結果をそのまま使う（ID パス用に再変形はしない）。
+    draw_ctx: &DrawContext,
+    out: &mut Vec<CanvasIdItem>,
 ) {
     for actor in actors {
         if actor.world_line != wl {
@@ -956,7 +1085,15 @@ pub(super) fn collect_canvas_id_items(
                 // SpriteComponent を持つアクターをピッキング対象にする。
                 // テクスチャなし（単色）は白テクスチャフォールバックを使用して全面選択可能にする。
                 let csy = canvas_scale * y_sign;
-                let mut gpu_mat_and_path: Option<([[f32; 4]; 4], Option<String>, i32)> = None;
+                let mut gpu_mat_and_path: Option<(
+                    [[f32; 4]; 4],
+                    Option<String>,
+                    i32,
+                    Option<Arc<SkinnedSpriteDraw>>,
+                )> = None;
+                // スキンスプライト（`.sprite_mesh`）: 変形済み頂点でメッシュ形状のまま
+                // ID を書く。矩形スプライトより先に走査するのではなく**後**に見るため、
+                // 同一アクターに両方あるときは従来どおり SpriteComponent が優先される。
                 for slot in actor.slots() {
                     // enabled=false のスプライトは非表示のためピック対象からも外す
                     if slot.kind == ComponentKind::Sprite && slot.enabled {
@@ -979,17 +1116,59 @@ pub(super) fn collect_canvas_id_items(
                                 ],
                                 tex_path,
                                 sc.layer,
+                                None,
                             ));
                             break;
                         }
                     }
                 }
+                // 矩形スプライトが無いアクターのみ、スキンスプライトをピック対象にする。
+                if gpu_mat_and_path.is_none() {
+                    for slot in actor.slots() {
+                        if slot.kind != ComponentKind::SkinnedSprite || !slot.enabled {
+                            continue;
+                        }
+                        let Some(ss) = world.get::<SkinnedSpriteComponent>(slot.entity) else {
+                            continue;
+                        };
+                        // 本フレームの描画収集で変形済みの頂点バッファを引く。
+                        // まだ変形されていない（＝描画対象でない）場合はピック対象外。
+                        let Some(mesh_draw) = draw_ctx.sprite_skin.draw_handle(slot.entity) else {
+                            continue;
+                        };
+                        let mw = mat4x4_mul(parent_world_rs, eff_ct.to_mesh_mat4(id_sc_x, id_sc_y));
+                        let tex_path = if ss.texture_path.is_empty() {
+                            None
+                        } else {
+                            Some(ss.texture_path.clone())
+                        };
+                        gpu_mat_and_path = Some((
+                            [
+                                [mw[0][0] * canvas_scale, mw[1][0] * csy, 0.0, 0.0],
+                                [mw[0][1] * canvas_scale, mw[1][1] * csy, 0.0, 0.0],
+                                [0.0, 0.0, 1.0, 0.0],
+                                [mw[0][3] * canvas_scale, mw[1][3] * csy, 0.0, 1.0],
+                            ],
+                            tex_path,
+                            ss.layer,
+                            Some(mesh_draw),
+                        ));
+                        break;
+                    }
+                }
 
-                if let Some((gpu_mat, tex_path, layer)) = gpu_mat_and_path {
+                if let Some((gpu_mat, tex_path, layer, mesh)) = gpu_mat_and_path {
                     // raw_id = mc_total + my_dfs + 1
                     // （0 = 背景、1..mc_total = 3D MC インスタンス）
                     // 描画ゾーン・レイヤーは呼び出し側の描画順ソートに使用する
-                    out.push((mc_total + my_dfs + 1, gpu_mat, tex_path, my_zone, layer));
+                    out.push(CanvasIdItem {
+                        raw_id: mc_total + my_dfs + 1,
+                        model: gpu_mat,
+                        tex_path,
+                        mesh,
+                        zone: my_zone,
+                        layer,
+                    });
                 }
 
                 // 子への継承情報を計算する（collect_sprite_items と同じロジック。
@@ -1048,6 +1227,7 @@ pub(super) fn collect_canvas_id_items(
             next_zone,
             next_in_ss,
             design_space,
+            draw_ctx,
             out,
         );
     }

@@ -124,6 +124,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             slot(*actor_dfs_id, *slot_idx, "SetLightField", key),
         IpcCommand::SetAudioField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetAudioField", key),
+        IpcCommand::SetSkinnedSpriteField { actor_dfs_id, slot_idx, key, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetSkinnedSpriteField", key),
         IpcCommand::SetScriptField { actor_dfs_id, slot_idx, field, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetScriptField", field),
         IpcCommand::SetSkyboxField { actor_dfs_id, slot_idx, key, .. } =>
@@ -601,6 +603,10 @@ pub(super) fn apply_component_data_in_place(
             world.insert(entity, SpriteComponent::from_data(d.clone()));
             SlotApply::Applied
         }
+        ComponentData::SkinnedSpriteComponent(d) => {
+            world.insert(entity, SkinnedSpriteComponent::from_data(d.clone()));
+            SlotApply::Applied
+        }
         ComponentData::InputMapComponent(d) => {
             world.insert(entity, InputMapComponent::from_data(d.clone()));
             SlotApply::Applied
@@ -923,6 +929,7 @@ pub(super) fn component_kind_of(data: &ComponentData) -> ComponentKind {
         ComponentData::ScriptComponent(_) => ComponentKind::Script,
         ComponentData::CanvasComponent(_) => ComponentKind::Canvas,
         ComponentData::SpriteComponent(_) => ComponentKind::Sprite,
+        ComponentData::SkinnedSpriteComponent(_) => ComponentKind::SkinnedSprite,
         ComponentData::InputMapComponent(_) => ComponentKind::InputMap,
         ComponentData::CameraComponent(_) => ComponentKind::Camera,
         ComponentData::PluginComponent(_) => ComponentKind::Plugin,

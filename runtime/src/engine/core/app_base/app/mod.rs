@@ -56,6 +56,8 @@ mod play_mode_ops;
 /// 【一時】埋め込み Play の凍結/黒画面 診断計器（ウォッチドッグ・ステージ印・イベントトレース）。原因確定後に撤去。
 mod play_diag;
 mod audio_ops;
+/// SkinnedSpriteComponent のフィールド編集（Phase A1）
+mod skinned_sprite_ops;
 /// 水ボリューム（WaterVolumeComponent）のインスペクタ更新（SET_WATER_FIELD）
 mod water_ops;
 /// 水位グラフのリンク（WaterLinkComponent）のインスペクタ更新（SET_WATER_LINK_FIELD。W2.5）

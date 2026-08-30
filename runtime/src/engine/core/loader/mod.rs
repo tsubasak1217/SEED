@@ -2,6 +2,8 @@ pub mod asset_cache;
 mod gltf_loader;
 pub mod model;
 mod obj_loader;
+/// `.sprite_mesh`（2D メッシュ変形スキニング用の頂点＋ボーン定義）ローダー。
+pub mod sprite_mesh;
 
 pub use model::*;
 

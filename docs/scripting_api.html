@@ -580,7 +580,7 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ">
+<section id="sec-components" data-keywords="コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -621,6 +621,12 @@ transform.Position += transform.Forward * 5f * <span class="t">SEED.Time</span>.
 <pre><span class="c">// 例: 点滅させる</span>
 sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t">SEED.Mathf</span>.PingPong(<span class="t">SEED.Time</span>.ElapsedTime, 1f));</pre>
 
+  <h3 id="cmp-skinnedsprite">SkinnedSprite（メッシュ変形 2D スプライト）</h3>
+  <div class="api"><code class="sig">skin.MeshPath</code><span class="desc">string（get/set。.sprite_mesh の assets:// 仮想パス。空文字=非表示）</span></div>
+  <div class="api"><code class="sig">skin.TexturePath</code><span class="desc">string（get/set。assets:// 仮想パス。空文字=単色表示）</span></div>
+  <div class="api"><code class="sig">skin.Color</code><span class="desc">Color（get/set。RGBA。テクスチャに乗算）</span></div>
+  <div class="api"><code class="sig">skin.Layer</code><span class="desc">int（get/set。描画優先度。Sprite と同じ土俵で比較される）</span></div>
+  <div class="api"><code class="sig">（ボーン操作 API は無し）</code><span class="desc">ボーンは普通の 2D 子アクター。そのアクターの CanvasTransform を動かすか .anim で再生する</span></div>
   <h3 id="cmp-camera">Camera（3D カメラ設定）</h3>
   <p class="section-note">カメラの位置・向きは同じ GameObject の <code>transform</code> で動かします。</p>
   <div class="api"><code class="sig">cam.FieldOfView</code><span class="desc">float（get/set。垂直視野角・度。透視投影時に使用）</span></div>
@@ -735,6 +741,7 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><td><code>Transform</code></td><td><code>gameObject.GetComponent&lt;Transform&gt;()</code> / <code>transform</code></td><td>3D 位置・回転・スケール</td></tr>
     <tr><td><code>CanvasTransform</code></td><td><code>gameObject.GetComponent&lt;CanvasTransform&gt;()</code></td><td>2D キャンバス上の位置・回転・スケール・ピボット・アンカー</td></tr>
     <tr><td><code>Sprite</code></td><td><code>gameObject.GetComponent&lt;Sprite&gt;()</code></td><td>テクスチャパス・色・サイズ・レイヤー</td></tr>
+<tr><td><code>SkinnedSprite</code></td><td><code>gameObject.GetComponent&lt;SkinnedSprite&gt;()</code></td><td>メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー。ボーンは子アクターの CanvasTransform で動かす</td></tr>
     <tr><td><code>Camera</code></td><td><code>gameObject.GetComponent&lt;Camera&gt;()</code></td><td>FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度</td></tr>
     <tr><td><code>AudioSource</code></td><td><code>gameObject.GetComponent&lt;AudioSource&gt;()</code></td><td>音源パス・音量・ループ・3D 減衰・パン + Play/Stop</td></tr>
     <tr><td><code>Animator</code></td><td><code>gameObject.GetComponent&lt;Animator&gt;()</code></td><td>再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume</td></tr>

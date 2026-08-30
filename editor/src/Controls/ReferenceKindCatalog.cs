@@ -56,6 +56,7 @@ internal static class ReferenceKindCatalog
     private static readonly Dictionary<string, string> SlotComponentTypeByKind = new()
     {
         ["Sprite"]          = "SpriteComponent",
+        ["SkinnedSprite"]   = "SkinnedSpriteComponent",
         [CameraKind]        = "CameraComponent",
         ["Audio"]           = "AudioComponent",
         ["Animator"]        = "AnimatorComponent",
@@ -79,6 +80,7 @@ internal static class ReferenceKindCatalog
         [TransformKind]       = "Transform（3D アクター）",
         [CanvasTransformKind] = "CanvasTransform（2D アクター）",
         ["Sprite"]            = "Sprite",
+        ["SkinnedSprite"]     = "SkinnedSprite",
         [CameraKind]          = "Camera",
         ["Audio"]             = "AudioSource",
         ["Animator"]          = "Animator",

@@ -14,7 +14,7 @@
 use crate::engine::components::{
     CameraComponent, CanvasComponent, ColliderComponent, ComponentData, ComponentKind,
     InputMapComponent, ModelComponent, PlaceholderScriptSlot, PluginComponent, ScriptComponent,
-    SpriteComponent, Transform as ActorTransform,
+    SpriteComponent, SkinnedSpriteComponent, Transform as ActorTransform,
 };
 use crate::engine::core::app_base::undo::ComponentSlotsSnapshotCommand;
 use crate::engine::structs::objects::actor::{ComponentSlot, ComponentSlotData};
@@ -435,6 +435,9 @@ impl App {
                     ComponentKind::Sprite => {
                         scene.world.remove::<SpriteComponent>(slot_entity);
                     }
+                    ComponentKind::SkinnedSprite => {
+                        scene.world.remove::<SkinnedSpriteComponent>(slot_entity);
+                    }
                     ComponentKind::InputMap => {
                         scene.world.remove::<InputMapComponent>(slot_entity);
                     }
@@ -777,6 +780,27 @@ impl App {
                     actor.add_slot_typed::<SpriteComponent>(
                         slot_data.name,
                         ComponentKind::Sprite,
+                        slot_entity,
+                    );
+                } else {
+                    scene.world.despawn(slot_entity);
+                }
+                true
+            }
+            ComponentData::SkinnedSpriteComponent(sc_data) => {
+                // SkinnedSpriteComponent を複製して新スロット専用エンティティに insert。
+                // ボーン対応表もそのまま引き継ぐ（複製先の子アクター名は同じ構成のため）。
+                let slot_entity = scene.world.spawn();
+                scene
+                    .world
+                    .insert(slot_entity, SkinnedSpriteComponent::from_data(sc_data));
+                let mut c = 0u32;
+                if let Some(actor) =
+                    find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c)
+                {
+                    actor.add_slot_typed::<SkinnedSpriteComponent>(
+                        slot_data.name,
+                        ComponentKind::SkinnedSprite,
                         slot_entity,
                     );
                 } else {
@@ -1292,6 +1316,16 @@ impl App {
                     new_slots.push(ComponentSlot::new::<SpriteComponent>(
                         slot_data.name,
                         ComponentKind::Sprite,
+                        slot_entity,
+                    ));
+                }
+                ComponentData::SkinnedSpriteComponent(sc_data) => {
+                    scene
+                        .world
+                        .insert(slot_entity, SkinnedSpriteComponent::from_data(sc_data));
+                    new_slots.push(ComponentSlot::new::<SkinnedSpriteComponent>(
+                        slot_data.name,
+                        ComponentKind::SkinnedSprite,
                         slot_entity,
                     ));
                 }

@@ -577,6 +577,28 @@ if (gameObject.GetComponent<Sprite>() is { } sprite)   // Sprite?（未アタッ
 }
 ```
 
+### SkinnedSprite（メッシュ変形 2D スプライト）
+
+`.sprite_mesh` のメッシュを、子アクター（＝ボーン）の `CanvasTransform` で変形しながら描画します。
+レイヤー・色・描画ゾーンの規約は `Sprite` と完全に同じです。
+**ボーンを動かす API はありません**——ボーンは普通の 2D 子アクターなので、そのアクターの
+`CanvasTransform` を操作するか、`.anim` のプロパティトラックで再生してください。
+
+```csharp
+if (gameObject.GetComponent<SkinnedSprite>() is { } skin)   // SkinnedSprite?（未アタッチは null）
+{
+    skin.MeshPath          // string（get/set。.sprite_mesh の assets:// 仮想パス。空文字=非表示）
+    skin.TexturePath       // string（get/set。assets:// 仮想パス。空文字=単色表示）
+    skin.Color             // Color（get/set。RGBA。テクスチャに乗算）
+    skin.Layer             // int（get/set。描画優先度。Sprite と同じ土俵で比較される）
+
+    // 例: ボーン（アクター名 "elbow"）を回して腕を振る
+    var elbow = SEED.GameObject.Find("elbow");
+    if (elbow.GetComponent<CanvasTransform>() is { } ct)
+        ct.Rotation = SEED.Mathf.Sin(SEED.Time.ElapsedTime) * 30f;
+}
+```
+
 ### Camera（3D カメラ設定）
 
 カメラの位置・向きは同じ GameObject の `transform` で動かします。
@@ -752,6 +774,7 @@ if (gameObject.GetComponent<WaterVolume>() is { } water)
 | `Transform` | `gameObject.GetComponent<Transform>()` / `transform` | 3D 位置・回転・スケール |
 | `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー |
 | `Sprite` | `gameObject.GetComponent<Sprite>()` | テクスチャパス・色・サイズ・レイヤー |
+| `SkinnedSprite` | `gameObject.GetComponent<SkinnedSprite>()` | メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー。ボーンは子アクターの CanvasTransform で動かす |
 | `Camera` | `gameObject.GetComponent<Camera>()` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |
 | `AudioSource` | `gameObject.GetComponent<AudioSource>()` | 音源パス・音量・ループ・3D 減衰・パン + Play/Stop |
 | `Animator` | `gameObject.GetComponent<Animator>()` | 再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume |

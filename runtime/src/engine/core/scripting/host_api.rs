@@ -33,8 +33,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::engine::components::{
     AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, InputMapComponent,
-    ParticleEmitterComponent, SpriteComponent, Transform, WaterLinkComponent,
-    WaterVolumeComponent,
+    ParticleEmitterComponent, SkinnedSpriteComponent, SpriteComponent, Transform,
+    WaterLinkComponent, WaterVolumeComponent,
 };
 use crate::engine::core::input::action_map::{ActionMap, ActionRuntime};
 use crate::engine::core::input::{Input, InputState};
@@ -292,6 +292,7 @@ fn actor_of_entity<'a>(entity: Entity) -> Option<&'a Actor> {
 const KIND_TRANSFORM: &str = "Transform";
 const KIND_CANVAS_TRANSFORM: &str = "CanvasTransform";
 const KIND_SPRITE: &str = "Sprite";
+const KIND_SKINNED_SPRITE: &str = "SkinnedSprite";
 const KIND_CAMERA: &str = "Camera";
 const KIND_AUDIO: &str = "Audio";
 const KIND_ANIMATOR: &str = "Animator";
@@ -318,6 +319,7 @@ const SHADER_PARAM_VEC3_PREFIX: &str = "shader_param_v3:";
 fn slot_is_kind(world: &World, slot: &ComponentSlot, kind: &str) -> bool {
     match kind {
         KIND_SPRITE => world.get::<SpriteComponent>(slot.entity).is_some(),
+        KIND_SKINNED_SPRITE => world.get::<SkinnedSpriteComponent>(slot.entity).is_some(),
         KIND_CAMERA => world.get::<CameraComponent>(slot.entity).is_some(),
         KIND_AUDIO => world.get::<AudioComponent>(slot.entity).is_some(),
         KIND_ANIMATOR => world.get::<AnimatorComponent>(slot.entity).is_some(),
@@ -578,6 +580,17 @@ fn read_floats(
                 _        => None,
             }
         }
+        // ── メッシュ変形スキニング 2D スプライト（スロット格納型: locate で解決）──
+        "SkinnedSprite" => {
+            let e = locate::<SkinnedSpriteComponent>(world, entity)?;
+            let s = world.get::<SkinnedSpriteComponent>(e)?;
+            match field {
+                "color" => put(out, &s.color),
+                // 描画優先度レイヤー（i32 → f32 変換して返す。Sprite の layer と同様）
+                "layer" => put(out, &[s.layer as f32]),
+                _       => None,
+            }
+        }
         // ── オーディオソース（スロット格納型: locate で解決）──
         "Audio" => {
             let e = locate::<AudioComponent>(world, entity)?;
@@ -800,6 +813,17 @@ fn write_floats(
                 _        => false,
             }
         }
+        // ── メッシュ変形スキニング 2D スプライト（スロット格納型: locate で解決）──
+        "SkinnedSprite" => {
+            let Some(e) = locate::<SkinnedSpriteComponent>(world, entity) else { return false };
+            let Some(s) = world.get_mut::<SkinnedSpriteComponent>(e) else { return false };
+            match field {
+                "color" => take(v).map(|a| s.color = a).is_some(),
+                // 描画優先度レイヤー（f32 → i32 変換して格納。Sprite の layer と同様）
+                "layer" => take::<1>(v).map(|a| s.layer = a[0] as i32).is_some(),
+                _       => false,
+            }
+        }
         // ── オーディオソース（スロット格納型: locate で解決）──
         "Audio" => {
             let Some(e) = locate::<AudioComponent>(world, entity) else { return false };
@@ -964,6 +988,15 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
                 _              => None,
             }
         }
+        "SkinnedSprite" => {
+            let e = locate::<SkinnedSpriteComponent>(world, entity)?;
+            let s = world.get::<SkinnedSpriteComponent>(e)?;
+            match field {
+                "texture_path" => Some(s.texture_path.clone()),
+                "mesh_path"    => Some(s.mesh_path.clone()),
+                _              => None,
+            }
+        }
         "Audio" => {
             let e = locate::<AudioComponent>(world, entity)?;
             let a = world.get::<AudioComponent>(e)?;
@@ -1008,6 +1041,15 @@ fn write_string(
                 _              => false,
             }
         }
+        "SkinnedSprite" => {
+            let Some(e) = locate::<SkinnedSpriteComponent>(world, entity) else { return false };
+            let Some(s) = world.get_mut::<SkinnedSpriteComponent>(e) else { return false };
+            match field {
+                "texture_path" => { s.texture_path = value.to_string(); true }
+                "mesh_path"    => { s.mesh_path    = value.to_string(); true }
+                _              => false,
+            }
+        }
         "Audio" => {
             let Some(e) = locate::<AudioComponent>(world, entity) else { return false };
             let Some(a) = world.get_mut::<AudioComponent>(e) else { return false };
@@ -1037,6 +1079,7 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
         "Transform"       => world.get::<Transform>(entity).is_some(),
         "CanvasTransform" => world.get::<CanvasTransform>(entity).is_some(),
         "Sprite"          => locate::<SpriteComponent>(world, entity).is_some(),
+        "SkinnedSprite"   => locate::<SkinnedSpriteComponent>(world, entity).is_some(),
         "Camera"          => locate::<CameraComponent>(world, entity).is_some(),
         "Audio"           => locate::<AudioComponent>(world, entity).is_some(),
         "Animator"        => locate::<AnimatorComponent>(world, entity).is_some(),

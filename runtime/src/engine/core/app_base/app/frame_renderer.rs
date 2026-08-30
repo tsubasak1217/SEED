@@ -219,7 +219,7 @@ fn terrain_world_bounds(
 /// - proj_aspect: 射影行列に渡すアスペクト比
 /// - fov_y_rad: 射影行列に渡す実効縦 FOV（ラジアン）
 use super::canvas_collect::{
-    collect_sprite_items, collect_canvas_rects, collect_canvas_id_items,
+    collect_sprite_items, collect_canvas_rects, collect_canvas_id_items, CanvasIdItem,
     collect_3d_canvas_child_id_items, sprite_world_corners,
     compute_game_viewport, clamp_viewport_to_target, build_ss_layout_maps_free,
 };
@@ -2547,7 +2547,7 @@ impl App {
                                         // 3D ワールドキャンバス配下は常に親サイズ Some のためルート分岐に入らず design_space 無関係
                                         CanvasDrawZone::Foreground, false, &mut items,
                                     );
-                                    items[canvas_start..].sort_by_key(|&(_, _, _, _, layer)| layer);
+                                    items[canvas_start..].sort_by_key(|it| it.layer);
                                 }
                             }
                             // ゾーン・レイヤーを除いた (行列, カラー, テクスチャ) を
@@ -2556,9 +2556,7 @@ impl App {
                             // メインとは別の永続バッファ（preview ストリーム）を使う。
                             let mut sb = draw_ctx.sprites.borrow_mut();
                             sb.preview.begin();
-                            let list = sb.preview.push(
-                                items.into_iter().map(|(m, col, tex, _, _)| (m, col, tex))
-                            );
+                            let list = sb.preview.push(items);
                             sb.preview.upload(&draw_ctx.device, &draw_ctx.queue);
                             list
                         };
@@ -3865,7 +3863,7 @@ impl App {
                                     // 3D ワールドキャンバス配下は常に親サイズ Some のためルート分岐に入らず design_space 無関係
                                     CanvasDrawZone::Foreground, false, &mut items_3d,
                                 );
-                                items_3d[canvas_start..].sort_by_key(|&(_, _, _, _, layer)| layer);
+                                items_3d[canvas_start..].sort_by_key(|it| it.layer);
                             }
                         }
 
@@ -3875,9 +3873,9 @@ impl App {
                         // ゾーン共有ソート = 全キャンバス横断で同一ゾーンのレイヤーを比較する。
                         let (mut items_2d_bg, mut items_2d_fg): (Vec<_>, Vec<_>) =
                             items_2d.into_iter()
-                                .partition(|&(_, _, _, zone, _)| zone == CanvasDrawZone::Background);
-                        items_2d_bg.sort_by_key(|&(_, _, _, _, layer)| layer);
-                        items_2d_fg.sort_by_key(|&(_, _, _, _, layer)| layer);
+                                .partition(|it| it.zone == CanvasDrawZone::Background);
+                        items_2d_bg.sort_by_key(|it| it.layer);
+                        items_2d_fg.sort_by_key(|it| it.layer);
 
                         // ゾーン・レイヤーを除いた (行列, カラー, テクスチャ) を main チャンネルへ積む。
                         // ここでは begin＋3 リスト分の push のみ行い、upload は後段（選択アウトラインを
@@ -3885,9 +3883,9 @@ impl App {
                         // 各 push はテクスチャ境界でバッチ分割し、描画順（ソート済み）は保つ。
                         let mut sb = draw_ctx.sprites.borrow_mut();
                         sb.main.begin();
-                        let list_bg = sb.main.push(items_2d_bg.into_iter().map(|(m, col, tex, _, _)| (m, col, tex)));
-                        let list_fg = sb.main.push(items_2d_fg.into_iter().map(|(m, col, tex, _, _)| (m, col, tex)));
-                        let list_3d = sb.main.push(items_3d.into_iter().map(|(m, col, tex, _, _)| (m, col, tex)));
+                        let list_bg = sb.main.push(items_2d_bg);
+                        let list_fg = sb.main.push(items_2d_fg);
+                        let list_3d = sb.main.push(items_3d);
                         (list_bg, list_fg, list_3d)
                     };
 
@@ -4069,8 +4067,9 @@ impl App {
                     const ORANGE: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
 
                     // 2D シーンビューでは 3D Canvas 子スプライトも非表示のためアウトラインを生成しない
-                    let sprite_3d_outline_items:
-                        Vec<([[f32; 4]; 4], [f32; 4], Option<std::sync::Arc<GpuSpriteTexture>>)> =
+                    let sprite_3d_outline_items: Vec<
+                        crate::engine::core::renderer::SpriteDrawItem,
+                    > =
                     if in_editor && !edit_view_2d && !self.selected_actor_dfs_ids.is_empty() {
                         if let Some(scene) = &self.scene {
                             let wl = self.active_world_line;
@@ -4138,7 +4137,16 @@ impl App {
                                     [sw[0][2], sw[1][2], sw[2][2], 0.0],
                                     [sw[0][3], sw[1][3], sw[2][3], 1.0],
                                 ];
-                                items.push((gpu_mat, ORANGE, None));
+                                // アウトラインはテクスチャ・メッシュを持たない単色クワッド。
+                                // ゾーン／レイヤーは push 側で使われない（バッチ順は積んだ順）。
+                                items.push(crate::engine::core::renderer::SpriteDrawItem {
+                                    model: gpu_mat,
+                                    color: ORANGE,
+                                    tex:   None,
+                                    mesh:  None,
+                                    zone:  CanvasDrawZone::Foreground,
+                                    layer: 0,
+                                });
                             }
                             items
                         } else { vec![] }
@@ -4149,7 +4157,7 @@ impl App {
                     // （Phase R6）。以降 main パス／オーバーレイパスは main_inst_buf を参照する。
                     let sprite_3d_outline_list = {
                         let mut sb = draw_ctx.sprites.borrow_mut();
-                        let list = sb.main.push(sprite_3d_outline_items.into_iter());
+                        let list = sb.main.push(sprite_3d_outline_items);
                         sb.main.upload(&draw_ctx.device, &draw_ctx.queue);
                         list
                     };
@@ -7263,7 +7271,7 @@ impl App {
                                 // scene canvas モードのみ実行（actor edit 2D タブは CPU picking 専用）
                                 // DFS カウンタは find_actor_by_dfs と同じ規則で全アクターを数える。
                                 let canvas_id_is_ss = scene_canvas_ss;
-                                let canvas_id_raw_items: Vec<(u32, [[f32; 4]; 4], Option<String>)> =
+                                let canvas_id_raw_items: Vec<CanvasIdItem> =
                                     if is_canvas && !is_actor_edit_2d {
                                         if let Some(scene) = &self.scene {
                                             let wl = self.active_world_line;
@@ -7304,7 +7312,7 @@ impl App {
                                                 canvas_id_offset,
                                                 // トップレベルは SS サブツリー扱い
                                                 // （Actor3D 通過で false になり 3D キャンバス子を除外）
-                                                CanvasDrawZone::Foreground, true, edit_view_2d, &mut items,
+                                                CanvasDrawZone::Foreground, true, edit_view_2d, draw_ctx, &mut items,
                                             );
                                             // スプライト描画と同一の順序（背景ゾーン → 前面ゾーン、
                                             // 各ゾーン内はレイヤー昇順の安定ソート）へ並べ替える。
@@ -7312,13 +7320,11 @@ impl App {
                                             // 視覚的最前面のスプライトがピックされる。
                                             let (mut id_bg, mut id_fg): (Vec<_>, Vec<_>) =
                                                 items.into_iter().partition(
-                                                    |&(_, _, _, zone, _)| zone == CanvasDrawZone::Background);
-                                            id_bg.sort_by_key(|&(_, _, _, _, layer)| layer);
-                                            id_fg.sort_by_key(|&(_, _, _, _, layer)| layer);
-                                            // ゾーン・レイヤーを除いた 3 要素タプルへ戻す
-                                            id_bg.into_iter().chain(id_fg)
-                                                .map(|(id, m, p, _, _)| (id, m, p))
-                                                .collect()
+                                                    |it| it.zone == CanvasDrawZone::Background);
+                                            id_bg.sort_by_key(|it| it.layer);
+                                            id_fg.sort_by_key(|it| it.layer);
+                                            // ソート済みの描画順（背景 → 前面）で 1 本に連結する
+                                            id_bg.into_iter().chain(id_fg).collect()
                                         } else { vec![] }
                                     } else { vec![] };
 
@@ -7349,13 +7355,19 @@ impl App {
                                 // キャンバス ID GPU バインドグループ（render pass より長く生きる）
                                 let canvas_id_bgs: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
                                     canvas_id_raw_items.iter()
-                                        .map(|&(raw_id, gpu_mat, _)| {
+                                        .map(|it| {
                                             prepare_canvas_id_bg(
                                                 &draw_ctx.device, &draw_ctx.pipelines,
-                                                gpu_mat, raw_id,
+                                                it.model, it.raw_id,
                                             )
                                         })
                                         .collect();
+
+                                // アイテムごとのスキンメッシュハンドル（None = ユニットクワッド）。
+                                // ID パスの描画順・件数と 1:1 で対応させる。
+                                let canvas_id_meshes: Vec<Option<std::sync::Arc<
+                                    crate::engine::core::renderer::SkinnedSpriteDraw>>> =
+                                    canvas_id_raw_items.iter().map(|it| it.mesh.clone()).collect();
 
                                 // 3D Canvas 子スプライト ID GPU バインドグループ（WS）
                                 let canvas_3d_child_id_bgs: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
@@ -7373,9 +7385,9 @@ impl App {
                                 let canvas_sprite_arcs: Vec<Option<std::sync::Arc<GpuSpriteTexture>>> = {
                                     let cache = draw_ctx.sprite_tex_cache.borrow();
                                     canvas_id_raw_items.iter()
-                                        .map(|(_, _, path_opt): &(u32, [[f32;4];4], Option<String>)| {
-                                            // path_opt は常に Some（テクスチャありのみ out に追加される）
-                                            path_opt.as_deref().and_then(|path| {
+                                        .map(|it| {
+                                            // tex_path=None はテクスチャ無し（白フォールバックで全面ピック可）
+                                            it.tex_path.as_deref().and_then(|path| {
                                                 cache.get(path).and_then(|opt| opt.clone())
                                             })
                                         })
@@ -7680,7 +7692,10 @@ impl App {
                                         &camera_buf.bind_group, None,
                                         &canvas_3d_child_id_bgs,
                                         &canvas_3d_child_id_tex_bg_refs,
-                                        &[], &[],
+                                        // 3D ワールドキャンバス配下のスキンスプライトのピックは
+                                        // Phase A2 の担当（描画は collect_sprite_items 経由で行われる）。
+                                        &[],
+                                        &[], &[], &[],
                                     );
                                 }
 
@@ -7693,15 +7708,15 @@ impl App {
                                     draw_canvas_id_items(
                                         &mut id_pass, &draw_ctx.pipelines,
                                         &camera_buf.bind_group, ss_camera_bg,
-                                        &[], &[],
-                                        &canvas_id_bgs, &canvas_id_tex_bg_refs,
+                                        &[], &[], &[],
+                                        &canvas_id_bgs, &canvas_id_tex_bg_refs, &canvas_id_meshes,
                                     );
                                 } else {
                                     draw_canvas_id_items(
                                         &mut id_pass, &draw_ctx.pipelines,
                                         &camera_buf.bind_group, None,
-                                        &canvas_id_bgs, &canvas_id_tex_bg_refs,
-                                        &[], &[],
+                                        &canvas_id_bgs, &canvas_id_tex_bg_refs, &canvas_id_meshes,
+                                        &[], &[], &[],
                                     );
                                 }
                             }

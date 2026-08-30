@@ -155,6 +155,7 @@ impl App {
             "Script"  => "ScriptComponent",
             "Canvas"  => "CanvasComponent",
             "Sprite"  => "SpriteComponent",
+            "SkinnedSprite" => "SkinnedSpriteComponent",
             "Camera"  => "CameraComponent",
             "InputMap" => "InputMapComponent",
             _ => component_type,

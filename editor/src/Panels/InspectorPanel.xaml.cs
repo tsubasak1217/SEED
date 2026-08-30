@@ -793,6 +793,10 @@ public partial class InspectorPanel : UserControl
         int SpriteLayer = 0,
         // SpriteComponent 用: テクスチャ単位ポストエフェクト（.postfx アセット）参照。空文字列 = 未設定
         string PostFxPath = "",
+        // SkinnedSpriteComponent 用: メッシュアセット（.sprite_mesh）参照。空文字列 = 未設定
+        string SkinMeshPath = "",
+        // SkinnedSpriteComponent 用: ボーン対応表の明示エントリ数（0 = 全自動解決）。読み取り専用表示。
+        int SkinBoneOverrideCount = 0,
         // InputMapComponent 用フィールド
         string InputMapPath = "",
         // CameraComponent 用フィールド
@@ -1269,6 +1273,9 @@ public partial class InspectorPanel : UserControl
             var sprH = comp.TryGetProperty("sprite_h", out var sh) ? sh.GetSingle() : 100f;
             // SpriteComponent 用: 描画優先度レイヤー
             var sprLayer = comp.TryGetProperty("layer", out var slj) ? slj.GetInt32() : 0;
+            // SkinnedSpriteComponent 用: メッシュパス・ボーン対応表の件数
+            var skinMeshPath = comp.TryGetProperty("mesh_path", out var smp) ? smp.GetString() ?? "" : "";
+            var skinBoneOverrides = comp.TryGetProperty("bone_override_count", out var sboc) ? sboc.GetInt32() : 0;
             // InputMapComponent 用: アセットパス
             var inputMapPath = comp.TryGetProperty("asset_path", out var ap) ? ap.GetString() ?? "" : "";
             // CameraComponent 用: FOV / near / far / is_main / clear_color
@@ -1518,6 +1525,7 @@ public partial class InspectorPanel : UserControl
                 SpriteW: sprW, SpriteH: sprH,
                 SpriteLayer: sprLayer,
                 PostFxPath: postFxPath,
+                SkinMeshPath: skinMeshPath, SkinBoneOverrideCount: skinBoneOverrides,
                 InputMapPath: inputMapPath,
                 FovYDeg: fovYDeg, CamNear: camNear, CamFar: camFar, IsMain: isMain,
                 CamCR: camCR, CamCG: camCG, CamCB: camCB, CamCA: camCA,
@@ -1736,6 +1744,7 @@ public partial class InspectorPanel : UserControl
         "ModelComponent"      => Color.FromRgb(0x1C, 0x32, 0x1C), // 暗緑
         "CanvasComponent"     => Color.FromRgb(0x18, 0x28, 0x3C), // 暗青
         "SpriteComponent"     => Color.FromRgb(0x28, 0x18, 0x38), // 暗紫
+        "SkinnedSpriteComponent" => Color.FromRgb(0x2E, 0x18, 0x30), // 暗紫（スプライト系と同系色）
         "InputMapComponent"   => Color.FromRgb(0x38, 0x26, 0x12), // 暗橙
         "CameraComponent"     => Color.FromRgb(0x12, 0x30, 0x38), // 暗シアン
         "ColliderComponent"   => Color.FromRgb(0x38, 0x16, 0x16), // 暗赤
@@ -1761,6 +1770,7 @@ public partial class InspectorPanel : UserControl
         "ModelComponent"      => "Model",
         "CanvasComponent"     => "Canvas",
         "SpriteComponent"     => "Sprite",
+        "SkinnedSpriteComponent" => "Skinned Sprite",
         "InputMapComponent"   => "InputMap",
         "CameraComponent"     => "Camera",
         "ColliderComponent"   => "Collider",
@@ -2028,6 +2038,7 @@ public partial class InspectorPanel : UserControl
             "ScriptComponent"   => BuildScriptSlotContent(info),
             "CanvasComponent"    => BuildCanvasSlotContent(info),
             "SpriteComponent"    => BuildSpriteSlotContent(info),
+            "SkinnedSpriteComponent" => BuildSkinnedSpriteSlotContent(info),
             "InputMapComponent"  => BuildInputMapSlotContent(info),
             "CameraComponent"    => BuildCameraSlotContent(info),
             "AudioComponent"     => BuildAudioSlotContent(info),
@@ -4509,6 +4520,191 @@ public partial class InspectorPanel : UserControl
         return grid;
     }
 
+    // ── 共通: カラーピッカー行 ─────────────────────────────────
+
+    /// <summary>カラースウォッチの幅（px）。</summary>
+    private const double ColorSwatchWidth = 120;
+    /// <summary>カラースウォッチの高さ（px）。</summary>
+    private const double ColorSwatchHeight = 22;
+    /// <summary>市松背景の分割数（縦横とも）。</summary>
+    private const int ColorSwatchCheckerDivisions = 2;
+    /// <summary>カラー行のラベル幅（px）。</summary>
+    private const double ColorRowLabelWidth = 52;
+
+    /// <summary>
+    /// 「ラベル + 市松背景つきカラースウォッチ」の 1 行を作る。
+    /// クリックで ColorPickerWindow を開き、確定色を onPicked へ渡す
+    /// （どの IPC で送るかは呼び出し側が決める）。
+    ///
+    /// 色は値域表（ComponentFieldRanges）の対象外だが、「⟲ 既定値に戻す」は
+    /// 共通機構（WithFieldReset）へ載せる。
+    /// </summary>
+    private UIElement BuildColorPickerRow(
+        string label, float r, float g, float b, float a,
+        int slotIdx, string componentType, string field,
+        Action<float, float, float, float> onPicked)
+    {
+        float curR = r, curG = g, curB = b, curA = a;
+
+        // 現在色（アルファ込み）のブラシを作る小ヘルパー
+        SolidColorBrush CurrentBrush() => new(Color.FromArgb(
+            (byte)(curA * 255), LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB)));
+
+        var colorSwatch = new Border
+        {
+            Width           = ColorSwatchWidth,
+            Height          = ColorSwatchHeight,
+            Margin          = new Thickness(0, 2, 0, 2),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+            BorderThickness = new Thickness(1),
+            Background      = CurrentBrush(),
+            Cursor          = Cursors.Hand,
+        };
+
+        // 市松背景（透明部の視覚化）
+        var checkerGrid = new Grid();
+        for (int ci = 0; ci < ColorSwatchCheckerDivisions; ci++)
+            checkerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        for (int ri = 0; ri < ColorSwatchCheckerDivisions; ri++)
+            checkerGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        for (int ri = 0; ri < ColorSwatchCheckerDivisions; ri++)
+            for (int ci = 0; ci < ColorSwatchCheckerDivisions; ci++)
+            {
+                bool dark = (ri + ci) % 2 == 0;
+                var cell = new Border { Background = dark
+                    ? new SolidColorBrush(Color.FromRgb(0x60, 0x60, 0x60))
+                    : new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99)) };
+                Grid.SetRow(cell, ri); Grid.SetColumn(cell, ci);
+                checkerGrid.Children.Add(cell);
+            }
+        var swatchOverlay = new Border { Background = CurrentBrush() };
+        var swatchPanel = new Grid();
+        swatchPanel.Children.Add(checkerGrid);
+        swatchPanel.Children.Add(swatchOverlay);
+        colorSwatch.Child = swatchPanel;
+
+        var colorRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        colorRow.Children.Add(new TextBlock
+        {
+            Text              = label,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize          = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            Width             = ColorRowLabelWidth,
+        });
+        colorRow.Children.Add(colorSwatch);
+
+        colorSwatch.MouseLeftButtonUp += (_, _) =>
+        {
+            var win = Window.GetWindow(this);
+            var result = ColorPickerWindow.ShowDialog(win, curR, curG, curB, curA);
+            if (result is null) return;
+            (curR, curG, curB, curA) = result.Value;
+            swatchOverlay.Background = CurrentBrush();
+            onPicked(curR, curG, curB, curA);
+        };
+
+        return WithFieldReset(colorRow, slotIdx, componentType, field, label);
+    }
+
+    // ── SkinnedSpriteComponent inspector ──────────────────────
+
+    /// <summary>
+    /// SkinnedSpriteComponent（メッシュ変形スキニング 2D スプライト）の
+    /// インスペクター UI を構築して返す（Phase A1: 基本フィールドのみ）。
+    ///
+    /// メッシュ／テクスチャ／カラー／レイヤーを編集できる。
+    /// ボーン対応表（bone_overrides）の編集 UI は Phase A2 の担当なので、
+    /// ここでは「明示指定が何件あるか」を読み取り専用で表示するに留める
+    /// （0 件 = メッシュのボーン名と同名の子アクターを自動解決）。
+    /// </summary>
+    private UIElement BuildSkinnedSpriteSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // メッシュアセット（.sprite_mesh）参照行
+        sp.Children.Add(FileRefBuilder.Build(
+            "メッシュ", info.SkinMeshPath,
+            [".sprite_mesh"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "スプライトメッシュを選択",
+                    Filter = "スプライトメッシュ|*.sprite_mesh|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                _runtime?.SendToRuntime(
+                    $"SET_SKINNED_SPRITE_FIELD:{_currentActorId},{info.SlotIdx},mesh_path,{virtualPath}");
+            }));
+
+        // テクスチャ参照行（SpriteComponent と同じ拡張子・同じ流儀）
+        sp.Children.Add(FileRefBuilder.Build(
+            "テクスチャ", info.TexturePath,
+            [".png", ".jpg", ".jpeg", ".bmp", ".tga", ".webp"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "テクスチャファイルを選択",
+                    Filter = "画像ファイル|*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.webp|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                _runtime?.SendToRuntime(
+                    $"SET_SKINNED_SPRITE_FIELD:{_currentActorId},{info.SlotIdx},texture_path,{virtualPath}");
+            }));
+
+        // カラー（共通ヘルパー）
+        sp.Children.Add(BuildColorPickerRow(
+            "カラー", info.SpriteR, info.SpriteG, info.SpriteB, info.SpriteA,
+            info.SlotIdx, SkinnedSpriteComponentType, "color",
+            (r, g, b, a) =>
+            {
+                if (_currentActorId < 0) return;
+                _runtime?.SendToRuntime(FormattableString.Invariant(
+                    $"SET_SKINNED_SPRITE_FIELD:{_currentActorId},{info.SlotIdx},color,{r},{g},{b},{a}"));
+            }));
+
+        // レイヤー（描画優先度。SpriteComponent と同じ規約）
+        var rowLayer = BuildResettableFloatRow(
+            info.SlotIdx, SkinnedSpriteComponentType, "レイヤー", info.SpriteLayer, "layer",
+            SpriteLayerNumberFormat,
+            v =>
+            {
+                if (_currentActorId < 0) return;
+                var layer = (int)MathF.Round(v);
+                _runtime?.SendToRuntime(FormattableString.Invariant(
+                    $"SET_SKINNED_SPRITE_FIELD:{_currentActorId},{info.SlotIdx},layer,{layer}"));
+            });
+        if (rowLayer is FrameworkElement layerFe)
+            layerFe.ToolTip = "描画優先度。大きいほど手前に描画されます。\n通常のスプライトと同じ土俵で比較されます。";
+        sp.Children.Add(rowLayer);
+
+        // ボーン解決の状態表示（読み取り専用。編集 UI は Phase A2）
+        sp.Children.Add(new TextBlock
+        {
+            Text = info.SkinBoneOverrideCount > 0
+                ? $"ボーン対応: 明示指定 {info.SkinBoneOverrideCount} 件"
+                : "ボーン対応: 自動解決（メッシュのボーン名と同名の子アクター）",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize     = 11,
+            Margin       = new Thickness(0, 6, 0, 2),
+            TextWrapping = TextWrapping.Wrap,
+        });
+
+        return sp;
+    }
+
     // ── SpriteComponent inspector ─────────────────────────────
 
     /// <summary>SpriteComponent のインスペクター UI を構築して返す。</summary>
@@ -4559,75 +4755,16 @@ public partial class InspectorPanel : UserControl
                 _runtime?.SendToRuntime($"SET_SPRITE_POSTFX:{_currentActorId},{info.SlotIdx},{virtualPath}");
             }));
 
-        // カラーピッカーボタン（現在色のスウォッチ表示）
-        // クリックで ColorPickerWindow を開き、結果を即時送信する。
-        float curR = info.SpriteR, curG = info.SpriteG, curB = info.SpriteB, curA = info.SpriteA;
-
-        var colorSwatch = new Border
-        {
-            Width           = 120,
-            Height          = 22,
-            Margin          = new Thickness(0, 2, 0, 2),
-            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
-            BorderThickness = new Thickness(1),
-            Background      = new SolidColorBrush(
-                Color.FromArgb((byte)(curA * 255), LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB))),
-            Cursor          = Cursors.Hand,
-        };
-
-        // 市松背景（透明部の視覚化）
-        var checkerGrid = new Grid();
-        for (int ci = 0; ci < 2; ci++)
-            checkerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        for (int ri = 0; ri < 2; ri++)
-            checkerGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        for (int ri = 0; ri < 2; ri++)
-            for (int ci = 0; ci < 2; ci++)
+        // カラーピッカー行（共通ヘルパー。市松背景つきスウォッチ + 既定値リセット）
+        sp.Children.Add(BuildColorPickerRow(
+            "カラー", info.SpriteR, info.SpriteG, info.SpriteB, info.SpriteA,
+            info.SlotIdx, SpriteComponentType, "color",
+            (r, g, b, a) =>
             {
-                bool dark = (ri + ci) % 2 == 0;
-                var cell = new Border { Background = dark
-                    ? new SolidColorBrush(Color.FromRgb(0x60, 0x60, 0x60))
-                    : new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99)) };
-                Grid.SetRow(cell, ri); Grid.SetColumn(cell, ci);
-                checkerGrid.Children.Add(cell);
-            }
-        var swatchOverlay = new Border
-        {
-            Background = new SolidColorBrush(
-                Color.FromArgb((byte)(curA * 255), LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB))),
-        };
-        var swatchPanel = new Grid();
-        swatchPanel.Children.Add(checkerGrid);
-        swatchPanel.Children.Add(swatchOverlay);
-        colorSwatch.Child = swatchPanel;
-
-        var colorRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
-        var colorLabel = new TextBlock
-        {
-            Text              = "カラー",
-            Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
-            FontSize          = 11,
-            VerticalAlignment = VerticalAlignment.Center,
-            Width             = 52,
-        };
-        colorRow.Children.Add(colorLabel);
-        colorRow.Children.Add(colorSwatch);
-        // 色は値域表の対象外（アルファ込み 4 成分・HDR 許容）だが、既定値へ戻す操作は提供する。
-        sp.Children.Add(WithFieldReset(colorRow, info.SlotIdx, SpriteComponentType, "color", "カラー"));
-
-        colorSwatch.MouseLeftButtonUp += (_, _) =>
-        {
-            var win = Window.GetWindow(this);
-            var result = ColorPickerWindow.ShowDialog(win, curR, curG, curB, curA);
-            if (result is null) return;
-            (curR, curG, curB, curA) = result.Value;
-            // スウォッチ色を更新する
-            swatchOverlay.Background = new SolidColorBrush(
-                Color.FromArgb((byte)(curA * 255), LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB)));
-            if (_currentActorId < 0) return;
-            _runtime?.SendToRuntime(FormattableString.Invariant(
-                $"SET_SPRITE_COLOR:{_currentActorId},{info.SlotIdx},{curR},{curG},{curB},{curA}"));
-        };
+                if (_currentActorId < 0) return;
+                _runtime?.SendToRuntime(FormattableString.Invariant(
+                    $"SET_SPRITE_COLOR:{_currentActorId},{info.SlotIdx},{r},{g},{b},{a}"));
+            }));
 
         // 幅・高さフィールド
         var rowW = BuildLabeledNumberRow("幅",  info.SpriteW);

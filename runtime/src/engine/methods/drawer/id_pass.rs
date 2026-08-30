@@ -33,6 +33,8 @@ use super::{
     pipeline::{DrawPipelines, CanvasIdUniform},
 };
 use crate::engine::core::loader::model::CullFace;
+use crate::engine::core::renderer::sprite_skin::SkinnedSpriteDraw;
+use std::sync::Arc;
 
 // ピクセルあたりのバイト数 (Rgba32Float = 4 × 4bytes)
 const BYTES_PER_PIXEL: usize = 16;
@@ -190,6 +192,7 @@ impl IdBuffer {
 /// - `ss_items` / `ss_tex_bgs`: SS アイテムとテクスチャ BG（ortho カメラ使用）
 /// - `ws_camera_bg`: WS 用カメラ BG（perspective または 2D ortho）
 /// - `ss_camera_bg`: SS 用 2D ortho カメラ BG（None なら SS アイテムは描画しない）
+#[allow(clippy::too_many_arguments)]
 pub fn draw_canvas_id_items<'pass>(
     render_pass:  &mut wgpu::RenderPass<'pass>,
     pipelines:    &'pass DrawPipelines,
@@ -197,22 +200,59 @@ pub fn draw_canvas_id_items<'pass>(
     ss_camera_bg: Option<&'pass wgpu::BindGroup>,
     ws_items:     &'pass [(wgpu::Buffer, wgpu::BindGroup)],
     ws_tex_bgs:   &[&'pass wgpu::BindGroup],
+    // アイテムごとのスキンメッシュ（None = ユニットクワッド）。
+    // 空スライスを渡すと全アイテムがクワッド扱いになる（メッシュを持たない経路用）。
+    ws_meshes:    &'pass [Option<Arc<SkinnedSpriteDraw>>],
     ss_items:     &'pass [(wgpu::Buffer, wgpu::BindGroup)],
     ss_tex_bgs:   &[&'pass wgpu::BindGroup],
+    ss_meshes:    &'pass [Option<Arc<SkinnedSpriteDraw>>],
 ) {
     if ws_items.is_empty() && ss_items.is_empty() { return; }
 
     render_pass.set_pipeline(&pipelines.canvas_id.pipeline);
-    // スプライトパイプラインのユニットクワッド頂点バッファを共有する
+
+    // 1 アイテムを描く共通処理。
+    //
+    // mesh が Some なら「変形済み頂点＋インデックス」で描く
+    // （＝ ピック形状が見た目のメッシュ形状と一致する）。
+    // None ならスプライトパイプラインのユニットクワッドを共有する。
+    // slot0_is_mesh は「直前にメッシュ用バッファを差したか」を持ち回り、
+    // 必要なときだけクワッドへ戻す（冗長な set_vertex_buffer を避ける）。
+    fn draw_one<'p>(
+        rp: &mut wgpu::RenderPass<'p>,
+        pipelines: &'p DrawPipelines,
+        mesh: Option<&'p Arc<SkinnedSpriteDraw>>,
+        slot0_is_mesh: &mut bool,
+    ) {
+        match mesh {
+            Some(m) => {
+                rp.set_vertex_buffer(0, m.vertex_buffer.slice(..));
+                rp.set_index_buffer(m.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                rp.draw_indexed(0..m.index_count, 0, 0..1);
+                *slot0_is_mesh = true;
+            }
+            None => {
+                if *slot0_is_mesh {
+                    rp.set_vertex_buffer(0, pipelines.sprite.unit_quad_vbuf.slice(..));
+                    *slot0_is_mesh = false;
+                }
+                rp.draw(0..6, 0..1);
+            }
+        }
+    }
+
+    // スプライトパイプラインのユニットクワッド頂点バッファを共有する（既定の slot0）
     render_pass.set_vertex_buffer(0, pipelines.sprite.unit_quad_vbuf.slice(..));
+    let mut slot0_is_mesh = false;
 
     // ワールドスペース（perspective / WS ortho カメラ）
     if !ws_items.is_empty() {
         render_pass.set_bind_group(0, ws_camera_bg, &[]);
-        for ((_, bg), &tex_bg) in ws_items.iter().zip(ws_tex_bgs.iter()) {
+        for (i, ((_, bg), &tex_bg)) in ws_items.iter().zip(ws_tex_bgs.iter()).enumerate() {
             render_pass.set_bind_group(1, bg, &[]);
             render_pass.set_bind_group(2, tex_bg, &[]);
-            render_pass.draw(0..6, 0..1);
+            draw_one(render_pass, pipelines,
+                     ws_meshes.get(i).and_then(|m| m.as_ref()), &mut slot0_is_mesh);
         }
     }
 
@@ -220,10 +260,11 @@ pub fn draw_canvas_id_items<'pass>(
     if let Some(ss_bg) = ss_camera_bg {
         if !ss_items.is_empty() {
             render_pass.set_bind_group(0, ss_bg, &[]);
-            for ((_, bg), &tex_bg) in ss_items.iter().zip(ss_tex_bgs.iter()) {
+            for (i, ((_, bg), &tex_bg)) in ss_items.iter().zip(ss_tex_bgs.iter()).enumerate() {
                 render_pass.set_bind_group(1, bg, &[]);
                 render_pass.set_bind_group(2, tex_bg, &[]);
-                render_pass.draw(0..6, 0..1);
+                draw_one(render_pass, pipelines,
+                         ss_meshes.get(i).and_then(|m| m.as_ref()), &mut slot0_is_mesh);
             }
         }
     }

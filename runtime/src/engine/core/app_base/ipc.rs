@@ -426,6 +426,9 @@ pub enum IpcCommand {
     SetSpriteLayer { actor_dfs_id: u32, slot_idx: u32, layer: i32 },
     /// AudioComponent のフィールドを更新する（key: path/volume/loop/play_on_start/spatial/min_distance/max_distance/pan）
     SetAudioField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// SkinnedSpriteComponent のフィールドを更新する
+    /// （key: mesh_path / texture_path / color / layer。Phase A1）
+    SetSkinnedSpriteField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// LightComponent のフィールドを更新する
     /// （key: kind/color/intensity/range/inner_angle/outer_angle/rect_width/rect_height/cast_shadows）
     SetLightField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
@@ -1839,6 +1842,17 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             parse2u_tail(&s["SET_AUDIO_FIELD:".len()..]).and_then(|(a, sl, tail)| {
                                 let (key, value) = tail.split_once(',')?;
                                 Some(IpcCommand::SetAudioField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
+                        }
+                        s if s.starts_with("SET_SKINNED_SPRITE_FIELD:") => {
+                            // フォーマット: SET_SKINNED_SPRITE_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+                            // value に "," を含む color を扱うため tail をそのまま value にする。
+                            parse2u_tail(&s["SET_SKINNED_SPRITE_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetSkinnedSpriteField {
                                     actor_dfs_id: a, slot_idx: sl,
                                     key: key.to_string(), value: value.to_string(),
                                 })

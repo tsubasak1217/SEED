@@ -658,6 +658,12 @@ pub fn build_actor(
                 });
                 actor.add_slot_typed::<SpriteComponent>(slot_name, ComponentKind::Sprite, slot_entity);
             }
+            ComponentData::SkinnedSpriteComponent(sc_data) => {
+                use crate::engine::components::SkinnedSpriteComponent;
+                world.insert(slot_entity, SkinnedSpriteComponent::from_data(sc_data));
+                actor.add_slot_typed::<SkinnedSpriteComponent>(
+                    slot_name, ComponentKind::SkinnedSprite, slot_entity);
+            }
             ComponentData::InputMapComponent(ic_data) => {
                 use crate::engine::components::InputMapComponent;
                 world.insert(slot_entity, InputMapComponent { asset_path: ic_data.asset_path });

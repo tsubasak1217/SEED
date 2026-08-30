@@ -160,6 +160,11 @@ pub struct DrawContext {
     /// スプライトを 1 ドローコールへ束ねる。DrawContext は `&self` 共有のため
     /// フレーム内で scratch/バッファを可変にできるよう RefCell で包む。
     pub sprites:          RefCell<SpriteBatcher>,
+    /// スキンスプライト（`.sprite_mesh`）の GPU 資源キャッシュ（Phase A1）。
+    /// メッシュはパス単位・変形バッファはスロット Entity 単位でキャッシュするため、
+    /// 同じメッシュを複数体が使っても各体が自分のボーンパレットを引く。
+    /// 内部可変（RefCell）は SpriteSkinCache 自身が内包するのでここでは素で持つ。
+    pub sprite_skin:      crate::engine::core::renderer::SpriteSkinCache,
 }
 
 impl DrawContext {
@@ -236,6 +241,7 @@ impl DrawContext {
         };
         // スプライトバッチャ（Phase R6）: 永続インスタンスバッファを初期容量で確保する。
         let sprites = RefCell::new(SpriteBatcher::new(&device));
+        let sprite_skin = crate::engine::core::renderer::SpriteSkinCache::new();
         Self {
             device,
             queue,
@@ -260,6 +266,7 @@ impl DrawContext {
             model_cache:      RefCell::new(HashMap::new()),
             sprite_tex_cache: RefCell::new(HashMap::new()),
             sprites,
+            sprite_skin,
         }
     }
 
