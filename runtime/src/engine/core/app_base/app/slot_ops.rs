@@ -194,6 +194,24 @@ impl App {
                 let Ok(v) = value.trim().parse::<u8>() else { return };
                 mc.render_tag = v & crate::engine::core::renderer::surface_id::RENDER_TAG_MASK;
             }
+            // ── 描画オフセット（位置/回転/スケール）───────────────────────
+            // 値は "x,y,z"（カンマ区切りの 3 成分）。JointAttachComponent の
+            // offset_pos / offset_rot / offset_scale と同じ書式・同じキー名に揃えてある。
+            // パースできない値は「何もしない」（部分適用しない）。
+            // アクタの Transform・instance_mats・物理コライダーは一切変更しない
+            // （描画だけの補正であり、適用は frame_renderer の行列合成 1 箇所で行う）。
+            "offset_pos" => {
+                let Some(v) = parse_model_offset_vec3(value) else { return };
+                mc.offset_position = v;
+            }
+            "offset_rot" => {
+                let Some(v) = parse_model_offset_vec3(value) else { return };
+                mc.offset_rotation = v;
+            }
+            "offset_scale" => {
+                let Some(v) = parse_model_offset_vec3(value) else { return };
+                mc.offset_scale = v;
+            }
             _ => return,
         }
 
@@ -622,6 +640,10 @@ impl App {
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                         render_tag:      mc_data.render_tag,
+                        // 描画オフセット（旧 .scene には無いため ModelComponentData 側で既定＝恒等）。
+                        offset_position:      mc_data.offset_position,
+                        offset_rotation:      mc_data.offset_rotation,
+                        offset_scale:      mc_data.offset_scale,
                         batch_instance_id: crate::engine::components::next_batch_instance_id(),
                     }
                 } else {
@@ -669,6 +691,10 @@ impl App {
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                         render_tag:      mc_data.render_tag,
+                        // 描画オフセット（旧 .scene には無いため ModelComponentData 側で既定＝恒等）。
+                        offset_position:      mc_data.offset_position,
+                        offset_rotation:      mc_data.offset_rotation,
+                        offset_scale:      mc_data.offset_scale,
                         batch_instance_id: crate::engine::components::next_batch_instance_id(),
                     }
                 };
@@ -1255,6 +1281,10 @@ impl App {
                             material_overrides: mc_data.material_overrides,
                             // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                             render_tag:      mc_data.render_tag,
+                            // 描画オフセット（旧 .scene には無いため ModelComponentData 側で既定＝恒等）。
+                            offset_position:      mc_data.offset_position,
+                            offset_rotation:      mc_data.offset_rotation,
+                            offset_scale:      mc_data.offset_scale,
                             batch_instance_id: crate::engine::components::next_batch_instance_id(),
                         }
                     } else {
@@ -1299,6 +1329,10 @@ impl App {
                             material_overrides: mc_data.material_overrides,
                             // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                             render_tag:      mc_data.render_tag,
+                            // 描画オフセット（旧 .scene には無いため ModelComponentData 側で既定＝恒等）。
+                            offset_position:      mc_data.offset_position,
+                            offset_rotation:      mc_data.offset_rotation,
+                            offset_scale:      mc_data.offset_scale,
                             batch_instance_id: crate::engine::components::next_batch_instance_id(),
                         }
                     };
@@ -1612,4 +1646,22 @@ impl App {
             ipc.send("SCENE_MODIFIED");
         }
     }
+}
+
+
+/// `"x,y,z"`（カンマ区切りの 3 成分）を `[f32; 3]` へパースする。失敗時は `None`。
+///
+/// `SET_MODEL_FIELD` の描画オフセット（offset_pos / offset_rot / offset_scale）専用。
+/// jointattach_ops::parse_vec3 と同仕様だが、あちらは private なので同じ規約で持つ
+/// （成分数が 3 でない・数値でない場合は部分適用せず全体を無視する）。
+fn parse_model_offset_vec3(s: &str) -> Option<[f32; 3]> {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    Some([
+        parts[0].trim().parse::<f32>().ok()?,
+        parts[1].trim().parse::<f32>().ok()?,
+        parts[2].trim().parse::<f32>().ok()?,
+    ])
 }

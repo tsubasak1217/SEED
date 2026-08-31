@@ -589,6 +589,10 @@ pub fn build_actor(
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                         render_tag:      mc_data.render_tag,
+                        // 描画オフセット（旧 .scene には無いため ModelComponentData 側で既定＝恒等）。
+                        offset_position:      mc_data.offset_position,
+                        offset_rotation:      mc_data.offset_rotation,
+                        offset_scale:      mc_data.offset_scale,
                         batch_instance_id: crate::engine::components::next_batch_instance_id(),
                     });
                 } else {
@@ -628,6 +632,10 @@ pub fn build_actor(
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                         render_tag:      mc_data.render_tag,
+                        // 描画オフセット（旧 .scene には無いため ModelComponentData 側で既定＝恒等）。
+                        offset_position:      mc_data.offset_position,
+                        offset_rotation:      mc_data.offset_rotation,
+                        offset_scale:      mc_data.offset_scale,
                         batch_instance_id: crate::engine::components::next_batch_instance_id(),
                     });
                 }

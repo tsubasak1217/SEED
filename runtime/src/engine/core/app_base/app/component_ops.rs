@@ -216,6 +216,10 @@ impl App {
                     material_overrides: Vec::new(),
                     // 新規追加アクタはタグ無しから始まる。
                     render_tag:      crate::engine::core::renderer::surface_id::RENDER_TAG_NONE,
+                    // 描画オフセットは既定＝恒等（描画は従来どおり）。
+                    offset_position:      crate::engine::components::model_component::OFFSET_POSITION_DEFAULT,
+                    offset_rotation:      crate::engine::components::model_component::OFFSET_ROTATION_DEFAULT,
+                    offset_scale:      crate::engine::components::model_component::OFFSET_SCALE_DEFAULT,
                     batch_instance_id: crate::engine::components::next_batch_instance_id(),
                 };
 
@@ -341,10 +345,17 @@ impl App {
                     // 影を落とすか／セマンティックタグをインスペクター用に送信する
                     // （cast_shadows は LightComponent.cast_shadows と同一慣例。
                     //   render_tag は 0..RENDER_TAG_MASK の整数で、0 = タグ無し）。
+                    // 描画オフセット（位置/回転(度)/スケール）。インスペクタの「オフセット」節が
+                    // 初期値として表示し、SET_MODEL_FIELD:offset_pos/offset_rot/offset_scale で書き戻す。
+                    // 旧ランタイム互換のためキーが無い場合の既定はエディタ側でも持つ（0/0/1）。
+                    let [opx, opy, opz] = d.offset_position;
+                    let [orx, ory, orz] = d.offset_rotation;
+                    let [osx, osy, osz] = d.offset_scale;
                     ("ModelComponent", format!(
-                        r#","model_path":{path_json},"animations":{anims_json},"materials":{materials_json},"joints":{joints_json},"cast_shadows":{},"render_tag":{}"#,
+                        r#","model_path":{path_json},"animations":{anims_json},"materials":{materials_json},"joints":{joints_json},"cast_shadows":{},"render_tag":{},"offset_px":{:.4},"offset_py":{:.4},"offset_pz":{:.4},"offset_rx":{:.4},"offset_ry":{:.4},"offset_rz":{:.4},"offset_sx":{:.4},"offset_sy":{:.4},"offset_sz":{:.4}"#,
                         d.cast_shadows as u8,
                         d.render_tag,
+                        opx, opy, opz, orx, ory, orz, osx, osy, osz,
                     ))
                 }
                 ComponentData::ScriptComponent(d) => {
@@ -897,6 +908,10 @@ impl App {
                         material_overrides: Vec::new(),
                         // 新規追加アクタはタグ無しから始まる。
                         render_tag:      crate::engine::core::renderer::surface_id::RENDER_TAG_NONE,
+                        // 描画オフセットは既定＝恒等（描画は従来どおり）。
+                        offset_position:      crate::engine::components::model_component::OFFSET_POSITION_DEFAULT,
+                        offset_rotation:      crate::engine::components::model_component::OFFSET_ROTATION_DEFAULT,
+                        offset_scale:      crate::engine::components::model_component::OFFSET_SCALE_DEFAULT,
                         batch_instance_id: crate::engine::components::next_batch_instance_id(),
                     }
                 };

@@ -583,6 +583,10 @@ pub(super) fn apply_component_data_in_place(
             };
             mc.cast_shadows = d.cast_shadows;
             mc.render_tag = d.render_tag;
+            // 描画オフセット（インスペクタの「オフセット」節・Undo/Redo で戻る値）。
+            mc.offset_position = d.offset_position;
+            mc.offset_rotation = d.offset_rotation;
+            mc.offset_scale = d.offset_scale;
             mc.instance_mats = d.instances.clone();
             mc.instance_meta = d.meta.clone();
             mc.group_meta = d.groups.clone();
@@ -1416,6 +1420,10 @@ mod tests {
                 cast_shadows: true,
                 material_overrides: Vec::new(),
                 render_tag: 0,
+                // 描画オフセットは既定（恒等）。テストの関心外だが構造体の全フィールドは必須。
+                offset_position: [0.0, 0.0, 0.0],
+                offset_rotation: [0.0, 0.0, 0.0],
+                offset_scale:    [1.0, 1.0, 1.0],
             }),
         };
         strip_field_edit_irrelevant(&mut snap);

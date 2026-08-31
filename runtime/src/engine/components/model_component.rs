@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use crate::engine::ecs::Component;
+use crate::engine::components::Transform;
 use crate::engine::core::loader::model::Model;
+use crate::engine::methods::gizmo_interact::mat4x4_mul;
 use crate::engine::methods::drawer::{GpuModel, InstancedModelBatch};
 use super::material_override::{MaterialOverride, MaterialOverrideKind, overrides_signature};
 
@@ -54,6 +56,31 @@ fn default_next_group_id() -> u32 { GROUP_ID_BASE }
 /// （LightComponent.cast_shadows と同一の慣例。旧 .scene には存在しない
 /// フィールドのため、欠落時は #[serde(default = ...)] でこの値にフォールバックする）。
 fn default_cast_shadows() -> bool { true }
+
+// ─── 描画オフセットトランスフォーム（既定値） ────────────────────────────────
+//
+// 【何のための機能か】
+// アクタの Transform（ワールド）はそのままに、**モデルの描画だけ**をローカルに
+// ずらす・回す・拡縮するための補正値。用途は主に 2 つ:
+//   - モデルの原点ズレ補正（glTF の原点が足元でなく中心にある等）
+//   - 「持ち手」合わせ（釣り竿を手にアタッチした際のグリップ位置合わせ）
+//
+// 【適用範囲】描画のみ。物理コライダー・Transform・instance_mats には一切影響しない
+// （詳細は `ModelComponent::render_matrix` のコメント参照）。
+
+/// offset_position の既定値（＝ずらさない）。
+pub const OFFSET_POSITION_DEFAULT: [f32; 3] = [0.0, 0.0, 0.0];
+/// offset_rotation の既定値（YXZ オイラー角・度。＝回さない）。
+pub const OFFSET_ROTATION_DEFAULT: [f32; 3] = [0.0, 0.0, 0.0];
+/// offset_scale の既定値（＝拡縮しない）。
+pub const OFFSET_SCALE_DEFAULT: [f32; 3] = [1.0, 1.0, 1.0];
+
+/// 旧 `.scene`（オフセット未導入）互換のための serde 既定値（位置）。
+fn default_offset_position() -> [f32; 3] { OFFSET_POSITION_DEFAULT }
+/// 旧 `.scene` 互換のための serde 既定値（回転・度）。
+fn default_offset_rotation() -> [f32; 3] { OFFSET_ROTATION_DEFAULT }
+/// 旧 `.scene` 互換のための serde 既定値（スケール）。
+fn default_offset_scale() -> [f32; 3] { OFFSET_SCALE_DEFAULT }
 
 // ─── InstanceMeta ─────────────────────────────────────────────────────────────
 
@@ -109,6 +136,16 @@ pub struct ModelComponentData {
     /// 旧 .scene にはフィールドが無いため欠落時は 0（＝タグ無し・従来と完全に同じ描画）。
     #[serde(default)]
     pub render_tag: u8,
+    /// 描画オフセット: 位置（アクタのローカル空間・既定 [0,0,0]）。
+    /// 旧 .scene には無いため欠落時は既定へフォールバックし、従来と完全に同じ描画になる。
+    #[serde(default = "default_offset_position")]
+    pub offset_position: [f32; 3],
+    /// 描画オフセット: 回転（YXZ オイラー角・度・既定 [0,0,0]）。
+    #[serde(default = "default_offset_rotation")]
+    pub offset_rotation: [f32; 3],
+    /// 描画オフセット: スケール（既定 [1,1,1]）。
+    #[serde(default = "default_offset_scale")]
+    pub offset_scale: [f32; 3],
 }
 
 // ─── ModelAnimDrive ─────────────────────────────────────────────────────────
@@ -169,6 +206,17 @@ pub struct ModelComponent {
     /// 有効ビット幅は `renderer::surface_id::RENDER_TAG_BITS`。範囲外の値は
     /// GPU へ渡す直前にマスクされる（隣のビットを侵食しない）。
     pub render_tag:      u8,
+    /// 描画オフセット: 位置（アクタのローカル空間。既定 [0,0,0] ＝ずらさない）。
+    ///
+    /// アクタの `Transform` は動かさず、**このモデルの描画だけ**をローカルにずらす。
+    /// 適用は `render_matrix()` 1 箇所に集約されており、通常描画・スキン・LOD・
+    /// シャドウ・RT(BLAS/TLAS)・ID ピッキング・アウトラインの全経路が同じ行列を通る。
+    pub offset_position: [f32; 3],
+    /// 描画オフセット: 回転（YXZ オイラー角・度。既定 [0,0,0]）。
+    /// 回転規約は `Transform`（正典）と同一。
+    pub offset_rotation: [f32; 3],
+    /// 描画オフセット: スケール（既定 [1,1,1]）。
+    pub offset_scale: [f32; 3],
     /// この MC を一意に識別する揮発 ID（非シリアライズ）。
     /// インラインオーバーライドを持つ MC の `batch_key()` に使い、値編集でキーが変わらない
     /// 「安定バッチキー」を実現する（詳細は `next_batch_instance_id` のコメント参照）。
@@ -192,6 +240,10 @@ impl ModelComponent {
             material_overrides: Vec::new(),
             // タグ無し（既定）。0 は「未設定」を表す予約値。
             render_tag:      crate::engine::core::renderer::surface_id::RENDER_TAG_NONE,
+            // 描画オフセットは既定＝恒等（従来と 1 ビットも変わらない描画）。
+            offset_position: OFFSET_POSITION_DEFAULT,
+            offset_rotation: OFFSET_ROTATION_DEFAULT,
+            offset_scale:    OFFSET_SCALE_DEFAULT,
             batch_instance_id: next_batch_instance_id(),
         }
     }
@@ -306,6 +358,60 @@ impl ModelComponent {
         }
     }
 
+    // ─── 描画オフセット（表示だけをローカルに補正する） ────────────
+
+    /// 描画オフセットが既定（恒等）かどうか。
+    ///
+    /// 既定なら `render_matrix()` は入力行列をそのまま返す（浮動小数の丸めすら発生しない）ため、
+    /// オフセット未使用のシーンは従来と**ビット単位で同一**の行列で描画される。
+    #[inline]
+    pub fn has_offset(&self) -> bool {
+        self.offset_position != OFFSET_POSITION_DEFAULT
+            || self.offset_rotation != OFFSET_ROTATION_DEFAULT
+            || self.offset_scale != OFFSET_SCALE_DEFAULT
+    }
+
+    /// 描画オフセットの TRS 行列（行優先）を返す。
+    ///
+    /// 回転規約（YXZ オイラー角・度）を `Transform`（正典）へ委譲することで、
+    /// アクタ Transform とオフセットで回転の解釈がズレないようにしている。
+    #[inline]
+    pub fn offset_matrix(&self) -> [[f32; 4]; 4] {
+        Transform {
+            position: self.offset_position,
+            rotation: self.offset_rotation,
+            scale:    self.offset_scale,
+        }
+        .to_mat4()
+    }
+
+    /// アクタのワールド行列（＝`instance_mats` の 1 要素）へ描画オフセットを適用し、
+    /// **GPU へ渡す最終インスタンス行列**を返す【適用の唯一の集約点】。
+    ///
+    ///   instance = actor_world * offset_trs
+    ///
+    /// 右から掛けるので、オフセットは「アクタのローカル空間での補正」になる
+    /// （アクタが回っていればオフセットも一緒に回る。原点ズレ補正・持ち手合わせの直感どおり）。
+    ///
+    /// 【なぜここ 1 箇所なのか】描画は通常モデル・スキン・LOD・シャドウ・RT(BLAS/TLAS)・
+    /// ID ピッキング・アウトラインまで、すべて `frame_renderer` の統合バッチ
+    /// （`shared_model_batches`）へ積まれた行列を共有する。したがって統合バッチへ
+    /// 積む瞬間にこの関数を通せば、全経路へ一貫して効く。
+    ///
+    /// 【物理には効かない（仕様）】オフセットは `instance_mats` にも `Transform` にも
+    /// 書き戻さない。したがってコライダー・レイキャスト・JointAttach・アニメーションは
+    /// 一切影響を受けない（見た目だけの補正）。また `.scene` に保存されるのは
+    /// オフセット値そのものだけで、ワールド空間で保存される `instance_mats`
+    /// （プレハブの再基準化が前提とする値）へは焼き込まれないため、
+    /// 保存 → ロードで二重適用されることもない。
+    #[inline]
+    pub fn render_matrix(&self, actor_world: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+        if !self.has_offset() {
+            return actor_world;
+        }
+        mat4x4_mul(actor_world, self.offset_matrix())
+    }
+
     // ─── シリアライズ ─────────────────────────────────────────
 
     /// シリアライズ用データに変換する。
@@ -319,6 +425,9 @@ impl ModelComponent {
             cast_shadows:  self.cast_shadows,
             material_overrides: self.material_overrides.clone(),
             render_tag:    self.render_tag,
+            offset_position: self.offset_position,
+            offset_rotation: self.offset_rotation,
+            offset_scale:    self.offset_scale,
         }
     }
 }
@@ -431,6 +540,10 @@ mod override_serde_tests {
             next_group_id: GROUP_ID_BASE,
             cast_shadows:  true,
             render_tag:    3,
+            // 非既定値を入れて往復漏れを検出する。
+            offset_position: [1.5, -2.0, 0.25],
+            offset_rotation: [10.0, 20.0, 30.0],
+            offset_scale:    [2.0, 0.5, 3.0],
             material_overrides: vec![
                 // インライン: 全フィールドを非 None で埋める（往復漏れの検出のため）。
                 MaterialOverride {
@@ -520,5 +633,130 @@ mod override_serde_tests {
             serde_json::from_str(old_json).expect("旧 .scene が読めること（serde default 必須）");
         assert!(data.material_overrides.is_empty(), "欠落時は空 Vec へフォールバック");
         assert!(data.cast_shadows, "欠落時は cast_shadows=true へフォールバック");
+        // 描画オフセット（後から追加したフィールド）も既定へフォールバックすること。
+        assert_eq!(data.offset_position, OFFSET_POSITION_DEFAULT, "欠落時は位置オフセット 0");
+        assert_eq!(data.offset_rotation, OFFSET_ROTATION_DEFAULT, "欠落時は回転オフセット 0");
+        assert_eq!(data.offset_scale,    OFFSET_SCALE_DEFAULT,    "欠落時はスケールオフセット 1");
+    }
+
+    /// 描画オフセットの往復を個別にも検証する（JSON 比較のすり抜け防止）。
+    #[test]
+    fn offset_transform_roundtrip() {
+        let mut mc = ModelComponent::empty();
+        mc.source_path      = "a.glb".into();
+        mc.offset_position  = [1.0, 2.0, 3.0];
+        mc.offset_rotation  = [0.0, 90.0, 0.0];
+        mc.offset_scale     = [1.0, 2.0, 1.0];
+        let json = serde_json::to_string(&mc.to_data()).expect("serialize");
+        let back: ModelComponentData = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.offset_position, [1.0, 2.0, 3.0]);
+        assert_eq!(back.offset_rotation, [0.0, 90.0, 0.0]);
+        assert_eq!(back.offset_scale,    [1.0, 2.0, 1.0]);
+    }
+}
+
+// ============================================================
+//  テスト（描画オフセットの行列合成 — 純関数）
+//
+//  `render_matrix()` は「アクタのワールド行列 → GPU へ渡す最終インスタンス行列」
+//  の唯一の集約点であり、全描画経路（通常/スキン/LOD/シャドウ/RT/ID/アウトライン）
+//  がここを通る。したがってこの純関数のテストが行列合成の正しさを代表する。
+// ============================================================
+
+#[cfg(test)]
+mod offset_matrix_tests {
+    use super::*;
+
+    /// 平行移動だけのアクタワールド行列を作る。
+    fn translate(x: f32, y: f32, z: f32) -> [[f32; 4]; 4] {
+        [[1.0, 0.0, 0.0, x],
+         [0.0, 1.0, 0.0, y],
+         [0.0, 0.0, 1.0, z],
+         [0.0, 0.0, 0.0, 1.0]]
+    }
+
+    fn approx(a: [[f32; 4]; 4], b: [[f32; 4]; 4], eps: f32) {
+        for i in 0..4 {
+            for j in 0..4 {
+                assert!((a[i][j] - b[i][j]).abs() < eps,
+                    "行列 [{i}][{j}] 不一致: {} vs {}", a[i][j], b[i][j]);
+            }
+        }
+    }
+
+    /// オフセット既定（恒等）なら入力行列がそのまま返る＝従来の描画と完全一致。
+    #[test]
+    fn identity_offset_returns_input_unchanged() {
+        let mc = ModelComponent::empty();
+        let world = translate(3.0, 4.0, 5.0);
+        assert!(!mc.has_offset(), "既定はオフセット無しと判定されること");
+        assert_eq!(mc.render_matrix(world), world, "恒等オフセットは入力をビット一致で返すこと");
+    }
+
+    /// 位置オフセット: 回転無しのアクタなら平行移動が単純加算される。
+    #[test]
+    fn offset_position_translates() {
+        let mut mc = ModelComponent::empty();
+        mc.offset_position = [1.0, 2.0, 3.0];
+        let m = mc.render_matrix(translate(10.0, 20.0, 30.0));
+        assert!((m[0][3] - 11.0).abs() < 1e-5);
+        assert!((m[1][3] - 22.0).abs() < 1e-5);
+        assert!((m[2][3] - 33.0).abs() < 1e-5);
+    }
+
+    /// 位置オフセットは**アクタのローカル空間**で効く（アクタが回れば一緒に回る）。
+    /// Y 90 度回転したアクタに +X オフセットを与えると、ワールドでは -Z 方向へ動く
+    /// （YXZ 規約の rotation_basis: 右列 = (cosY, 0, -sinY) → Y=90° で (0,0,-1)）。
+    #[test]
+    fn offset_position_is_in_actor_local_space() {
+        let mut mc = ModelComponent::empty();
+        mc.offset_position = [1.0, 0.0, 0.0];
+        let actor = Transform { position: [0.0; 3], rotation: [0.0, 90.0, 0.0], scale: [1.0; 3] }
+            .to_mat4();
+        let m = mc.render_matrix(actor);
+        assert!(m[0][3].abs() < 1e-5,            "X 成分は 0 になること（実際: {}）", m[0][3]);
+        assert!((m[2][3] + 1.0).abs() < 1e-5,    "Z 成分は -1 になること（実際: {}）", m[2][3]);
+    }
+
+    /// スケールオフセットは行列の基底列の長さを倍にする（回転無しなら対角成分そのもの）。
+    #[test]
+    fn offset_scale_scales_basis() {
+        let mut mc = ModelComponent::empty();
+        mc.offset_scale = [2.0, 3.0, 4.0];
+        let m = mc.render_matrix(translate(0.0, 0.0, 0.0));
+        assert!((m[0][0] - 2.0).abs() < 1e-5);
+        assert!((m[1][1] - 3.0).abs() < 1e-5);
+        assert!((m[2][2] - 4.0).abs() < 1e-5);
+        // 平行移動は変わらない（原点のまま）。
+        assert!(m[0][3].abs() < 1e-5 && m[1][3].abs() < 1e-5 && m[2][3].abs() < 1e-5);
+    }
+
+    /// 回転オフセットは Transform（正典）の TRS と一致する
+    /// ＝ 単位アクタ行列に対して render_matrix は offset_matrix そのものになる。
+    #[test]
+    fn offset_rotation_matches_transform_convention() {
+        let mut mc = ModelComponent::empty();
+        mc.offset_rotation = [15.0, 30.0, 45.0];
+        let expected = Transform {
+            position: OFFSET_POSITION_DEFAULT,
+            rotation: [15.0, 30.0, 45.0],
+            scale:    OFFSET_SCALE_DEFAULT,
+        }.to_mat4();
+        approx(mc.render_matrix(translate(0.0, 0.0, 0.0)), expected, 1e-5);
+    }
+
+    /// 合成順序が actor_world * offset であること
+    /// （逆順 offset * actor_world との差が出るケースで検証する）。
+    #[test]
+    fn composition_order_is_actor_then_offset() {
+        let mut mc = ModelComponent::empty();
+        mc.offset_position = [1.0, 0.0, 0.0];
+        mc.offset_scale    = [2.0, 2.0, 2.0];
+        let actor = Transform { position: [5.0, 0.0, 0.0], rotation: [0.0; 3], scale: [3.0, 3.0, 3.0] }
+            .to_mat4();
+        let m = mc.render_matrix(actor);
+        // actor_world * offset: 平行移動 = 5 + 3*1 = 8、スケール = 3*2 = 6。
+        assert!((m[0][3] - 8.0).abs() < 1e-5, "平行移動はアクタスケールを受けること（実際: {}）", m[0][3]);
+        assert!((m[0][0] - 6.0).abs() < 1e-5, "スケールは乗算されること（実際: {}）", m[0][0]);
     }
 }

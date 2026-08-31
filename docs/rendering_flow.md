@@ -457,6 +457,51 @@ group0 = カメラ、group4 = ライト複合（`light_common.wgsl` 由来。RT 
 
 ---
 
+## 2.9. モデルの描画オフセット（ModelComponent の offset トランスフォーム）
+
+`ModelComponent` は `offset_position` / `offset_rotation`（YXZ オイラー角・度）/ `offset_scale`
+を持ち、**アクタの `Transform` を動かさずにモデルの描画だけ**をローカルにずらす・回す・拡縮できる。
+用途はモデルの原点ズレ補正と、アタッチした道具（釣り竿など）の持ち手位置合わせ。
+
+**合成式と適用点（1 箇所に集約）**
+
+```
+instance = actor_world * offset_trs
+```
+
+- 実装: `ModelComponent::render_matrix()`（`runtime/src/engine/components/model_component.rs`）
+- 唯一の呼び出し点: `frame_renderer.rs` の統合バッチ（`shared_model_batches`）構築ループ
+  — `amc.instance_mats` を `MergeInfo::mats` へ積む箇所。
+
+描画は通常モデル・スキン・LOD・シャドウマップ・RT（BLAS/TLAS）・ID ピッキング・
+アウトラインまで**すべて統合バッチの行列を共有する**ため、この 1 箇所を通せば全経路に一貫して効く
+（per-MC の `instanced_batch` は Phase R7 以降どの描画経路からも参照されない死フィールド）。
+オフセットが既定（位置 0 / 回転 0 / スケール 1）の MC では `render_matrix()` が入力行列を
+そのまま返すので、従来の描画とビット単位で同一になる。
+
+**効かないもの（仕様）**
+
+- **物理コライダー・レイキャスト・キャラクターコントローラー**: 一切影響しない。
+  当たり判定をずらしたい場合はコライダー側のオフセットを使う。
+- `Transform` / `instance_mats` / JointAttach / アニメーション: オフセットは**書き戻さない**。
+  `.scene` に保存されるのはオフセット値そのものだけで、ワールド空間で保存される
+  `instance_mats`（プレハブの再基準化が前提とする値）へは焼き込まれない
+  ＝保存 → ロードでの二重適用は構造的に起こらない。
+- ギズモ（移動・回転ハンドル）の表示位置: アクタの `Transform` 側に出る。
+  ギズモが編集するのはアクタの `Transform` であり、オフセットではないため。
+  一方、**クリック判定（ID ピッキング）・矩形選択・選択枠（アウトライン）はオフセット後の
+  見た目に一致する**。
+
+**編集経路**
+
+| 経路 | 実装 |
+|---|---|
+| インスペクタ「オフセット」節（位置/回転/スケール） | `SET_MODEL_FIELD:{actor},{slot},offset_pos\|offset_rot\|offset_scale,{x},{y},{z}` → `slot_ops::handle_set_model_field` |
+| Undo / Redo / ⟲ デフォルトに戻す | `field_edit.rs` の共通機構（`SetModelField` はフィールド名込みのマージキーで `Slot` 分類済み） |
+| C# スクリプト | `gameObject.GetComponent<Model>()` の `OffsetPosition` / `OffsetRotation` / `OffsetScale` |
+
+---
+
 ## 3. ライティング段の切り替え（機能マトリクス）
 
 `SET_POST_FX` IPC の `features` オブジェクトが `RenderFeatures` へデシリアライズされ、

@@ -877,6 +877,13 @@ public partial class InspectorPanel : UserControl
         // 合成/演出でグループ指定に使うため G-Buffer へ焼かれる値で、
         // 有効範囲は ModelRenderTagMin..ModelRenderTagMax（ランタイムの RENDER_TAG_BITS と一致）。
         int ModelRenderTag = 0,
+        // ModelComponent 用フィールド（描画オフセットトランスフォーム）。
+        // アクターの Transform はそのままに「モデルの描画だけ」をローカルにずらす補正値。
+        // 位置=0 / 回転(YXZ オイラー角・度)=0 / スケール=1 が既定（＝オフセット無し）。
+        // 物理コライダーには影響しない（描画のみ）。
+        float ModelOffPX = 0f, float ModelOffPY = 0f, float ModelOffPZ = 0f,
+        float ModelOffRX = 0f, float ModelOffRY = 0f, float ModelOffRZ = 0f,
+        float ModelOffSX = 1f, float ModelOffSY = 1f, float ModelOffSZ = 1f,
         // JointAttachComponent 用フィールド（追従先ジョイント名・親モデルのジョイント一覧・
         // 位置/回転(YXZオイラー角・度)/スケールのオフセット）。
         // Joints が空/null の場合は「親アクターに Model がありません」の警告を表示する。
@@ -1265,6 +1272,19 @@ public partial class InspectorPanel : UserControl
             var modelRenderTag = comp.TryGetProperty("render_tag", out var mrt) && mrt.TryGetInt32(out var mrtv)
                 ? Math.Clamp(mrtv, ModelRenderTagMin, ModelRenderTagMax)
                 : ModelRenderTagMin;
+            // ModelComponent 用: 描画オフセット（位置/回転(度)/スケール）。
+            // 旧ランタイムはキーを送らないため、欠落時は既定（0/0/1）＝オフセット無しとする。
+            float ReadOffset(string key, float fallback)
+                => comp.TryGetProperty(key, out var ov) && ov.TryGetSingle(out var f) ? f : fallback;
+            var modelOffPX = ReadOffset("offset_px", 0f);
+            var modelOffPY = ReadOffset("offset_py", 0f);
+            var modelOffPZ = ReadOffset("offset_pz", 0f);
+            var modelOffRX = ReadOffset("offset_rx", 0f);
+            var modelOffRY = ReadOffset("offset_ry", 0f);
+            var modelOffRZ = ReadOffset("offset_rz", 0f);
+            var modelOffSX = ReadOffset("offset_sx", 1f);
+            var modelOffSY = ReadOffset("offset_sy", 1f);
+            var modelOffSZ = ReadOffset("offset_sz", 1f);
             // CanvasComponent 用: 幅・高さ・スケールモード
             var width          = comp.TryGetProperty("width",           out var wd)  ? wd.GetSingle()  : 0f;
             var height         = comp.TryGetProperty("height",          out var ht)  ? ht.GetSingle()  : 0f;
@@ -1619,6 +1639,9 @@ public partial class InspectorPanel : UserControl
                 LightBounceIntensity: lightBounce,
                 ModelCastShadows: modelCastShadows,
                 ModelRenderTag: modelRenderTag,
+                ModelOffPX: modelOffPX, ModelOffPY: modelOffPY, ModelOffPZ: modelOffPZ,
+                ModelOffRX: modelOffRX, ModelOffRY: modelOffRY, ModelOffRZ: modelOffRZ,
+                ModelOffSX: modelOffSX, ModelOffSY: modelOffSY, ModelOffSZ: modelOffSZ,
                 JointName: jaJointName, Joints: jaJoints,
                 JaOffPX: jaOffPX, JaOffPY: jaOffPY, JaOffPZ: jaOffPZ,
                 JaOffEX: jaOffEX, JaOffEY: jaOffEY, JaOffEZ: jaOffEZ,
@@ -3800,6 +3823,51 @@ public partial class InspectorPanel : UserControl
         rowTag.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitRenderTag(); e.Handled = true; } };
         rowTag.textBox.LostFocus += (_, _) => CommitRenderTag();
         NumericDragBehavior.SetOnDrag(rowTag.textBox, CommitRenderTag);
+
+        // ── オフセット（描画だけをローカルに補正するトランスフォーム）──────────
+        // アクターの Transform は動かさず、このモデルの**見た目だけ**をずらす／回す／拡縮する。
+        // 用途: モデルの原点ズレ補正、手に持たせた道具（釣り竿など）のグリップ位置合わせ。
+        // 【重要】物理コライダー・レイキャストには影響しない（描画のみ）。
+        // UI 部品・送信規約は JointAttachComponent のオフセット 3 行と完全に同じ
+        // （BuildXYZRowSimple + 数値ドラッグ + "x,y,z" 形式で 1 行 1 コマンド送信）。
+        // Undo は SET_MODEL_FIELD がフィールド名込みのマージキーで共通機構に載るため自動で効く。
+        sp.Children.Add(new TextBlock
+        {
+            Text = "オフセット（描画のみ・物理には影響しません）",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 10, Margin = new Thickness(0, 8, 0, 2),
+        });
+
+        // XYZ 3 成分をまとめて "x,y,z" でコミットする共通処理。
+        // resetField は Rust の ModelComponentData の serde フィールド名（⟲ ボタン用）。
+        // SET キー（offset_pos）と serde 名（offset_position）は綴りが違うため別引数で受ける。
+        void AddModelOffsetRow(string label, float x, float y, float z, string key, string resetField)
+        {
+            var row = BuildXYZRowSimple(label, x, y, z);
+            sp.Children.Add(WithFieldReset(row.element, info.SlotIdx, ModelComponentType, resetField, label));
+            void Commit()
+            {
+                if (_currentActorId < 0) return;
+                if (!float.TryParse(row.tx.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vx)) return;
+                if (!float.TryParse(row.ty.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vy)) return;
+                if (!float.TryParse(row.tz.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vz)) return;
+                _runtime?.SendToRuntime(FormattableString.Invariant(
+                    $"SET_MODEL_FIELD:{_currentActorId},{info.SlotIdx},{key},{vx},{vy},{vz}"));
+            }
+            foreach (var tb in new[] { row.tx, row.ty, row.tz })
+            {
+                tb.LostFocus += (_, _) => Commit();
+                tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
+                NumericDragBehavior.SetOnDrag(tb, Commit);
+            }
+        }
+
+        AddModelOffsetRow("位置", info.ModelOffPX, info.ModelOffPY, info.ModelOffPZ,
+            "offset_pos", "offset_position");
+        AddModelOffsetRow("回転", info.ModelOffRX, info.ModelOffRY, info.ModelOffRZ,
+            "offset_rot", "offset_rotation");
+        AddModelOffsetRow("スケール", info.ModelOffSX, info.ModelOffSY, info.ModelOffSZ,
+            "offset_scale", "offset_scale");
 
         // ── マテリアル一覧（Phase R7: .mat マテリアル＋マルチマテリアル編集） ──────
         // materials 配列が無い/空の場合は後方互換のため何も表示しない。

@@ -151,6 +151,10 @@ impl App {
                                 let all_mcs = collect_mcs_in_world_line(&scene.actors, &scene.world, wl);
                                 for (_base, dfs_id, _slot_i, mc) in all_mcs {
                                     let in_rect = mc.instance_mats.iter().any(|m| {
+                                        // 描画オフセット適用後（＝見た目）の位置で判定する。
+                                        // 判定と見た目がズレると「描かれている場所を囲んでも選べない」
+                                        // ことになるため、レンダラと同じ render_matrix を通す。
+                                        let m = mc.render_matrix(*m);
                                         let world_pos = [m[0][3], m[1][3], m[2][3]];
                                         world_to_screen(world_pos, &view.data, &proj.data, vp_w, vp_h)
                                             .map(|(sx, sy)| sx >= sx_min && sx <= sx_max && sy >= sy_min && sy <= sy_max)

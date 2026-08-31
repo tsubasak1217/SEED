@@ -1830,8 +1830,19 @@ impl App {
                                 (dfs_id, slot_i),
                                 (batch_key, merged_start, n_insts),
                             );
+                            // ── 描画オフセットの適用【全描画経路で唯一の合成点】────────────
+                            // ModelComponent の offset_position/rotation/scale を
+                            //   instance = actor_world * offset_trs
+                            // として合成する。ここで積まれた行列は統合バッチ
+                            // （shared_model_batches）を経由して、通常モデル・スキン・LOD・
+                            // シャドウマップ・RT(BLAS/TLAS)・ID ピッキング・アウトラインの
+                            // すべてが共有するため、この 1 箇所だけで全経路に一貫して効く。
+                            // オフセットが既定（恒等）の MC では `render_matrix` が入力を
+                            // そのまま返すので、従来の描画とビット単位で同一になる。
+                            // なお `instance_mats`（ワールド行列・.scene 保存対象）へは
+                            // 書き戻さないため、保存 → ロードでの二重適用は起こらない。
                             for (inst_i, &mat) in amc.instance_mats.iter().enumerate() {
-                                e.mats.push(mat);
+                                e.mats.push(amc.render_matrix(mat));
                                 e.time_overrides.push(mc_time_override);
                                 // abs_id = MC の id_base + このインスタンスのオフセット
                                 e.abs_ids.push(id_base + inst_i as u32);

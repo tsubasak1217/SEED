@@ -33,8 +33,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::engine::components::{
     AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, InputMapComponent,
-    LineRendererComponent, ParticleEmitterComponent, SkinnedSpriteComponent, SpriteComponent,
-    TextAlign, TextComponent, TextVerticalAlign, Transform, WaterLinkComponent,
+    LineRendererComponent, ModelComponent, ParticleEmitterComponent, SkinnedSpriteComponent,
+    SpriteComponent, TextAlign, TextComponent, TextVerticalAlign, Transform, WaterLinkComponent,
     WaterVolumeComponent, MAX_LINE_POINTS,
 };
 use crate::engine::core::input::action_map::{ActionMap, ActionRuntime};
@@ -584,6 +584,20 @@ fn read_floats(
                 _          => None,
             }
         }
+        // ── モデル描画オフセット（スロット格納型: locate で解決）──
+        // アクタの Transform はそのままに「モデルの見た目だけ」をローカルにずらす補正値。
+        // 物理コライダー・Transform には一切影響しない（描画専用）。
+        "Model" => {
+            let e = locate::<ModelComponent>(world, entity)?;
+            let m = world.get::<ModelComponent>(e)?;
+            match field {
+                "offset_position" => put(out, &m.offset_position),
+                // YXZ オイラー角・度（Transform.rotation と同一規約）
+                "offset_rotation" => put(out, &m.offset_rotation),
+                "offset_scale"    => put(out, &m.offset_scale),
+                _                 => None,
+            }
+        }
         // ── 2D キャンバストランスフォーム ──
         "CanvasTransform" => {
             let t = world.get::<CanvasTransform>(entity)?;
@@ -850,6 +864,20 @@ fn write_floats(
                         None    => false,
                     }
                 }
+            }
+        }
+        // ── モデル描画オフセット（スロット格納型: locate で解決）──
+        // 値を書くだけでよい。適用は frame_renderer の行列合成 1 箇所（render_matrix）で
+        // 毎フレーム行われるため、instance_mats の同期も dirty 化も不要
+        // （instance_mats へ焼き込むと .scene 保存値と二重適用になるので、絶対に書き戻さない）。
+        "Model" => {
+            let Some(e) = locate::<ModelComponent>(world, entity) else { return false };
+            let Some(m) = world.get_mut::<ModelComponent>(e) else { return false };
+            match field {
+                "offset_position" => take(v).map(|a| m.offset_position = a).is_some(),
+                "offset_rotation" => take(v).map(|a| m.offset_rotation = a).is_some(),
+                "offset_scale"    => take(v).map(|a| m.offset_scale    = a).is_some(),
+                _                 => false,
             }
         }
         // ── 2D キャンバストランスフォーム ──
@@ -1221,6 +1249,7 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
     match component {
         "Transform"       => world.get::<Transform>(entity).is_some(),
         "CanvasTransform" => world.get::<CanvasTransform>(entity).is_some(),
+        "Model"           => locate::<ModelComponent>(world, entity).is_some(),
         "Sprite"          => locate::<SpriteComponent>(world, entity).is_some(),
         "SkinnedSprite"   => locate::<SkinnedSpriteComponent>(world, entity).is_some(),
         "Camera"          => locate::<CameraComponent>(world, entity).is_some(),

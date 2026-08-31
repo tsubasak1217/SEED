@@ -1750,6 +1750,10 @@ fn make_terrain_model_component(
         material_overrides: Vec::new(),
         // 地形チャンクはセマンティックタグを持たない（合成側は地形を別経路で判別する）。
         render_tag: crate::engine::core::renderer::surface_id::RENDER_TAG_NONE,
+        // 描画オフセットは既定＝恒等（描画は従来どおり）。
+        offset_position: crate::engine::components::model_component::OFFSET_POSITION_DEFAULT,
+        offset_rotation: crate::engine::components::model_component::OFFSET_ROTATION_DEFAULT,
+        offset_scale: crate::engine::components::model_component::OFFSET_SCALE_DEFAULT,
         batch_instance_id: next_batch_instance_id(),
     }
 }

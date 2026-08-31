@@ -55,6 +55,8 @@ internal static class ReferenceKindCatalog
     /// </summary>
     private static readonly Dictionary<string, string> SlotComponentTypeByKind = new()
     {
+        // 3D モデル（描画オフセットのスクリプト公開に伴い追加）
+        ["Model"]           = "ModelComponent",
         ["Sprite"]          = "SpriteComponent",
         ["SkinnedSprite"]   = "SkinnedSpriteComponent",
         [CameraKind]        = "CameraComponent",
@@ -81,6 +83,7 @@ internal static class ReferenceKindCatalog
         [GameObjectKind]      = "アクター",
         [TransformKind]       = "Transform（3D アクター）",
         [CanvasTransformKind] = "CanvasTransform（2D アクター）",
+        ["Model"]             = "Model（3D モデル）",
         ["Sprite"]            = "Sprite",
         ["SkinnedSprite"]     = "SkinnedSprite",
         [CameraKind]          = "Camera",

@@ -619,7 +619,7 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width">
+<section id="sec-components" data-keywords="Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -650,6 +650,18 @@ transform.Position += transform.Forward * 5f * <span class="t">SEED.Time</span>.
   <div class="api"><code class="sig">ct.Pivot</code><span class="desc">Vector2（get/set。回転・スケール基準点。正規化 [0,1]、(0.5,0.5)=中央）</span></div>
   <div class="api"><code class="sig">ct.Anchor</code><span class="desc">Vector2（get/set。親 Canvas 内の position 基準点。(0,0)=左上 (1,1)=右下）</span></div>
   <div class="api"><code class="sig">ct.ScreenPosition</code><span class="desc">Vector2（get のみ。ウィンドウ左上原点のスクリーン座標・ピクセル。アンカー・スケールモード・親チェーンをすべて反映した絶対位置）</span></div>
+
+  <h3 id="cmp-model">Model（3D モデルの描画オフセット）</h3>
+  <div class="api"><code class="sig">model.OffsetPosition</code><span class="desc">Vector3（get/set。アクターのローカル空間・既定 (0,0,0)）</span></div>
+  <div class="api"><code class="sig">model.OffsetRotation</code><span class="desc">Vector3（get/set。YXZ オイラー角・度・既定 (0,0,0)）</span></div>
+  <div class="api"><code class="sig">model.OffsetScale</code><span class="desc">Vector3（get/set。既定 (1,1,1)）</span></div>
+  <div class="api"><code class="sig">gameObject.GetComponent&lt;Model&gt;()</code><span class="desc">アクターの Transform は動かさず、モデルの<b>描画だけ</b>をローカルにずらす／回す／拡縮する補正値（原点ズレ補正・持ち手合わせ用）。<b>物理コライダーには影響しない</b></span></div>
+<pre><span class="c">// 例: 釣り竿の持ち手を手の位置へ合わせる</span>
+<span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">Model</span>&gt;() <span class="k">is</span> { } model)
+{
+    model.OffsetPosition = <span class="k">new</span> <span class="t">Vector3</span>(0f, -0.15f, 0.4f);
+    model.OffsetRotation = <span class="k">new</span> <span class="t">Vector3</span>(0f, 0f, 25f);
+}</pre>
 
   <h3 id="cmp-sprite">Sprite（2D スプライト表示）</h3>
   <div class="api"><code class="sig">sprite.TexturePath</code><span class="desc">string（get/set。<code>assets://</code> 仮想パス。空文字=単色表示）</span></div>
@@ -851,6 +863,7 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><th>コンポーネント名</th><th>取得</th><th>内容</th></tr>
     <tr><td><code>Transform</code></td><td><code>gameObject.GetComponent&lt;Transform&gt;()</code> / <code>transform</code></td><td>3D 位置・回転・スケール</td></tr>
     <tr><td><code>CanvasTransform</code></td><td><code>gameObject.GetComponent&lt;CanvasTransform&gt;()</code></td><td>2D キャンバス上の位置・回転・スケール・ピボット・アンカー</td></tr>
+    <tr><td><code>Model</code></td><td><code>gameObject.GetComponent&lt;Model&gt;()</code></td><td>3D モデルの描画オフセット（位置・回転・スケール）。描画のみで物理には影響しない</td></tr>
     <tr><td><code>Sprite</code></td><td><code>gameObject.GetComponent&lt;Sprite&gt;()</code></td><td>テクスチャパス・色・サイズ・レイヤー・ポインタ判定対象（RaycastTarget）</td></tr>
 <tr><td><code>SkinnedSprite</code></td><td><code>gameObject.GetComponent&lt;SkinnedSprite&gt;()</code></td><td>メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー・ポインタ判定対象。ボーンは子アクターの CanvasTransform で動かす</td></tr>
     <tr><td><code>Camera</code></td><td><code>gameObject.GetComponent&lt;Camera&gt;()</code></td><td>FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度</td></tr>
