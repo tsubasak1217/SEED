@@ -94,8 +94,21 @@ public readonly struct Vector3 : IEquatable<Vector3>
         float cos = Mathf.Clamped(Dot(a, b) / denom, -1f, 1f);
         return Mathf.Acos(cos) * Mathf.Rad2Deg;
     }
-    /// <summary>成分ごとの最小値。</summary>
-    public static Vector3 Min(Vector3 a, Vector3 b)
+
+    public static Vector3 FromPitchYaw(float pitch, float yaw)
+    {
+        float radPitch = pitch * Mathf.Deg2Rad;
+        float radYaw = yaw * Mathf.Deg2Rad;
+        float cosPitch = Mathf.Cos(radPitch);
+        return new Vector3(
+            cosPitch * Mathf.Sin(radYaw),
+            Mathf.Sin(radPitch),
+            cosPitch * Mathf.Cos(radYaw)
+        );
+	}
+
+	/// <summary>成分ごとの最小値。</summary>
+	public static Vector3 Min(Vector3 a, Vector3 b)
         => new(Mathf.Min(a.x, b.x), Mathf.Min(a.y, b.y), Mathf.Min(a.z, b.z));
     /// <summary>成分ごとの最大値。</summary>
     public static Vector3 Max(Vector3 a, Vector3 b)

@@ -54,6 +54,17 @@ public static class Mathf {
 	public static int CeilToInt(float x) => (int)MathF.Ceiling(x);
 	public static int RoundToInt(float x) => (int)MathF.Round(x);
 
+	// ─ 正規化 ───────────────────────────────────────────────
+	public static Vector2 Normalize(Vector2 v) {
+		float m = v.Magnitude;
+		return m > Epsilon ? new Vector2(v.x / m, v.y / m) : Vector2.Zero;
+	}
+
+	public static Vector3 Normalize(Vector3 v) {
+		float m = v.Magnitude;
+		return m > Epsilon ? new Vector3(v.x / m, v.y / m, v.z / m) : Vector3.Zero;
+	}
+
 	// ── 最小・最大・クランプ ─────────────────────────────────
 	public static float Min(float a, float b) => a < b ? a : b;
 	public static int Min(int a, int b) => a < b ? a : b;
