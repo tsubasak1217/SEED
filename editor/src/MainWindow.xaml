@@ -1525,6 +1525,35 @@
 
                                                 <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
 
+                                                <!-- その場デシメート（全チャンクのメッシュ頂点数を削減）。
+                                                     強度スライダー（0〜1）＋適用ボタン。
+                                                     密度場（SDF）は変えないので、強度 0 で適用すれば元へ戻る。 -->
+                                                <TextBlock Text="デシメート強度" Foreground="#AAAAAA" FontSize="11"
+                                                           VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                                <Slider x:Name="SldTerrainDecimate"
+                                                        Width="90" VerticalAlignment="Center"
+                                                        Minimum="0" Maximum="1" Value="0"
+                                                        Margin="0,0,4,0"
+                                                        ToolTip="デシメートの強度（0＝解除してフル解像度へ戻す／1＝最大削減）"/>
+                                                <TextBlock x:Name="TxtTerrainDecimate" Text="0.00"
+                                                           Foreground="#CCCCCC" FontSize="11"
+                                                           FontFamily="Consolas"
+                                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                <Button x:Name="BtnTerrainDecimate"
+                                                        Style="{StaticResource TerrainActionBtnStyle}"
+                                                        ToolTip="全チャンクのメッシュ頂点数を、強度に応じて削減する（描画・物理・レイトレの負荷が下がる）&#10;チャンク境界の頂点は動かさないので継ぎ目は開かない。&#10;ボクセル密度（SDF）は変更しないため非破壊：強度 0 で適用し直せば完全に元へ戻る。&#10;結果のメッシュは .tvox に保存されず、強度だけが地形フォルダに記録されて次回ロードで再適用される。"
+                                                        Click="OnTerrainDecimate">
+                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <ctrl:AppIcon IconKey="Icon.SpriteRig.Retriangulate"
+                                                                      Width="{StaticResource TerrainIconSize}"
+                                                                      Height="{StaticResource TerrainIconSize}"/>
+                                                        <TextBlock Text="デシメート" Margin="4,0,0,0"
+                                                                   VerticalAlignment="Center"/>
+                                                    </StackPanel>
+                                                </Button>
+
+                                                <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
+
                                                 <!-- 地形設定ウィンドウ（レイヤ定義などをまとめて編集する別ウィンドウ）-->
                                                 <Button x:Name="BtnTerrainSettings"
                                                         Style="{StaticResource TerrainActionBtnStyle}"
@@ -1570,19 +1599,23 @@
                                                     <TextBlock Text="ブラシ"
                                                                Style="{StaticResource TerrainSideHeaderStyle}"/>
 
-                                                    <!-- ブラシ半径（0.5〜8m）。全ツール共通。 -->
-                                                    <DockPanel LastChildFill="True">
-                                                        <TextBlock Text="半径" DockPanel.Dock="Left"
-                                                                   Style="{StaticResource TerrainSideCaptionStyle}"/>
-                                                        <TextBlock x:Name="TxtTerrainRadius" Text="3.0m"
-                                                                   Style="{StaticResource TerrainSideValueStyle}"/>
-                                                    </DockPanel>
-                                                    <Slider x:Name="SldTerrainRadius"
-                                                            Width="{StaticResource TerrainSideControlWidth}"
-                                                            HorizontalAlignment="Left"
-                                                            Margin="0,2,0,8"
-                                                            Minimum="0.5" Maximum="8" Value="3"
-                                                            ToolTip="ブラシ半径（メートル）"/>
+                                                    <!-- ブラシ半径（0.5〜8m）。ブラシ系ツール共通。
+                                                         コリジョンツール（対象はチャンク 1 枚）では意味を持たないため、
+                                                         OnTerrainToolChanged がパネルごと隠す。 -->
+                                                    <StackPanel x:Name="TerrainRadiusPanel">
+                                                        <DockPanel LastChildFill="True">
+                                                            <TextBlock Text="半径" DockPanel.Dock="Left"
+                                                                       Style="{StaticResource TerrainSideCaptionStyle}"/>
+                                                            <TextBlock x:Name="TxtTerrainRadius" Text="3.0m"
+                                                                       Style="{StaticResource TerrainSideValueStyle}"/>
+                                                        </DockPanel>
+                                                        <Slider x:Name="SldTerrainRadius"
+                                                                Width="{StaticResource TerrainSideControlWidth}"
+                                                                HorizontalAlignment="Left"
+                                                                Margin="0,2,0,8"
+                                                                Minimum="0.5" Maximum="8" Value="3"
+                                                                ToolTip="ブラシ半径（メートル）"/>
+                                                    </StackPanel>
 
                                                     <!-- ブラシ強度（0〜1）。
                                                          散布ツール選択時は意味を持たないため、パネルごと隠す
@@ -1798,6 +1831,22 @@
                                                                           Width="{StaticResource TerrainIconSize}"
                                                                           Height="{StaticResource TerrainIconSize}"/>
                                                             <TextBlock Text="カバー" Margin="6,0,0,0"
+                                                                       VerticalAlignment="Center"/>
+                                                        </StackPanel>
+                                                    </RadioButton>
+
+                                                    <!-- コリジョン: チャンク単位で当たり判定 ON/OFF を切り替える。
+                                                         形状もレイヤも見た目も変えず、物理コライダーの登録だけを外す。 -->
+                                                    <RadioButton x:Name="BtnTerrainCollision"
+                                                                 GroupName="TerrainTools"
+                                                                 Style="{StaticResource TerrainToolBtnStyle}"
+                                                                 ToolTip="コリジョン（チャンク単位で当たり判定を ON/OFF する。見た目は変わらない）&#10;選択中はチャンク境界を枠で表示する（緑=当たり判定あり／赤=なし）。クリックで反転。"
+                                                                 Checked="OnTerrainToolChanged">
+                                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                            <ctrl:AppIcon IconKey="Icon.Component.Collider"
+                                                                          Width="{StaticResource TerrainIconSize}"
+                                                                          Height="{StaticResource TerrainIconSize}"/>
+                                                            <TextBlock Text="コリジョン" Margin="6,0,0,0"
                                                                        VerticalAlignment="Center"/>
                                                         </StackPanel>
                                                     </RadioButton>

@@ -111,6 +111,12 @@ pub(super) mod terrain_cover_ops;
 pub(super) mod terrain_cover_brush_ops;
 /// 地形ペイント系ブラシの形状マスク（TERRAIN_BRUSH_MASK の状態とキャッシュ解決）。
 pub(super) mod terrain_brush_mask_ops;
+/// チャンク単位の当たり判定 ON/OFF（エディタ専用機能）。
+pub(super) mod terrain_collision_ops;
+/// その場デシメート（地形メッシュの頂点数削減）。
+pub(super) mod terrain_decimate_ops;
+/// 地形フォルダの付随メタデータ（terrain_meta.json）の入出力。
+pub(super) mod terrain_meta_ops;
 /// カバーエミッタ（CoverEmitterComponent）のインスペクタ更新（SET_COVER_FIELD。I3.1）
 mod cover_emitter_ops;
 /// カバーエミッタの「降る範囲」のビューポート可視化（選択中アクターのみ）

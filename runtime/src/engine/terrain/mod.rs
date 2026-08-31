@@ -20,9 +20,13 @@ pub mod heightmap;
 pub mod layers;
 pub mod lod;
 pub mod marching_cubes;
+/// 地形フォルダの付随メタデータ（チャンク単位の当たり判定 ON/OFF・デシメート強度）。純関数のみ。
+pub mod meta;
 pub mod paint;
 pub mod scatter;
 pub mod settings;
+/// チャンクメッシュのその場デシメート（QEM ハーフエッジコラプス）。純関数のみ。
+pub mod simplify;
 pub mod tvox;
 
 #[cfg(test)]
@@ -39,6 +43,14 @@ mod tests_brush_mask;
 /// 地形フォルダ参照（保存先の任意化）専用のユニットテスト。
 #[cfg(test)]
 mod tests_dir_ref;
+
+/// 地形メタデータ（当たり判定 ON/OFF・デシメート強度の永続化）専用のユニットテスト。
+#[cfg(test)]
+mod tests_meta;
+
+/// その場デシメート（メッシュ簡略化）専用のユニットテスト。
+#[cfg(test)]
+mod tests_simplify;
 
 /// 編集ホットパスの CPU 計測（#[ignore] 付き。通常のテスト実行では走らない）。
 #[cfg(test)]
@@ -66,6 +78,15 @@ pub use cover::{
 pub use marching_cubes::{
     TerrainMesh, TerrainVertexEdge, generate, generate_standalone, interp_vertex_paint,
 };
+// 地形メタデータ（当たり判定 ON/OFF・デシメート強度）。
+#[allow(unused_imports)]
+pub use meta::{
+    DECIMATE_STRENGTH_MAX, DECIMATE_STRENGTH_MIN, TERRAIN_META_FILE_NAME, TERRAIN_META_VERSION,
+    TerrainMeta, clamp_strength, read_meta, write_meta,
+};
+// その場デシメート（メッシュ簡略化）。
+#[allow(unused_imports)]
+pub use simplify::{SimplifyStats, is_boundary_vertex, simplify_mesh};
 pub use paint::{PaintField, apply_paint, apply_paint_with_mask};
 pub use settings::{
     MAX_CHUNK_CELLS, MAX_GROUND_CHUNKS, MAX_TOTAL_CHUNKS, MAX_VOXEL_SIZE, MIN_CHUNK_CELLS,

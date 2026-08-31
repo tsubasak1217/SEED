@@ -562,7 +562,7 @@ const SMOKE_DEFAULT_VOXEL_SIZE: f32 = 0.5;
 
 /// terrain 専用 undo スタックの最大保持数。これを超えたら最古のエントリを破棄する
 /// （無制限に保持すると 1 チャンク ≒ 143KB のスナップショットが積み上がり続けるため）。
-const TERRAIN_UNDO_MAX: usize = 32;
+pub(super) const TERRAIN_UNDO_MAX: usize = 32;
 
 // ============================================================
 //  TerrainState — 地形の実行時状態
@@ -603,6 +603,14 @@ pub struct TerrainEdit {
     pub cover_before: HashMap<ChunkCoord, CoverField>,
     /// ストローク終了時点のカバー場（`cover_before` と同じキー集合）。
     pub cover_after: HashMap<ChunkCoord, CoverField>,
+    /// 操作前のチャンク当たり判定フラグ（**変更したチャンクだけ**。true=有効）。
+    ///
+    /// コリジョンツールのトグルは 1 クリック = 1 エントリで、密度・カバーとは
+    /// 同じストロークに混ざらない（ツールが排他なので）。それでも同じ `TerrainEdit` に
+    /// 相乗りさせるのは、地形編集モードの Ctrl+Z が 1 本のスタックしか見ないためである。
+    pub collision_before: HashMap<ChunkCoord, bool>,
+    /// 操作後のチャンク当たり判定フラグ（`collision_before` と同じキー集合）。
+    pub collision_after: HashMap<ChunkCoord, bool>,
 }
 
 /// undo/redo 用の 1 チャンク分スナップショット（密度＋スプラット）。
@@ -940,6 +948,33 @@ pub struct TerrainState {
     pub gpu_retire_queue: std::collections::VecDeque<(u64, Option<GpuModel>, Option<InstancedModelBatch>)>,
     /// 遅延退役の判定に使う単調フレームカウンタ（`process_terrain_gpu_retire` が毎フレーム +1）。
     pub gpu_retire_frame: u64,
+
+    // ─── チャンク単位の当たり判定 ON/OFF（エディタ専用機能）────────────────
+    /// 物理コライダーを **登録しない** チャンクの集合（既定は空＝全チャンク有効）。
+    ///
+    /// 「無効なものだけ」を持つのは、チャンクを追加したときに既定が自動で有効になり、
+    /// かつ旧データ（この機能より前の地形フォルダ）が「全チャンク有効」として
+    /// そのまま開けるからである。描画には一切影響しない（見た目は変わらず衝突だけ消える）。
+    /// 永続化先は地形フォルダの `terrain_meta.json`（`terrain::meta`）。
+    pub collision_disabled: HashSet<ChunkCoord>,
+    /// ビューポートにチャンク境界の当たり判定オーバーレイを描くか。
+    ///
+    /// エディタで「コリジョン」ツールを選んでいる間だけ true になる（UI の状態であって
+    /// 地形データではないので、保存対象ではない）。
+    pub collision_overlay: bool,
+
+    // ─── その場デシメート（頂点数削減）────────────────────────────────────
+    /// 現在適用中のデシメート強度（0〜1。0 = 無効）。
+    ///
+    /// `build_chunk_cpu_model` が LOD0 メッシュへ適用する。**密度場（SDF）は変えない**ので、
+    /// この値を 0 に戻して再メッシュすれば元の頂点数へ完全に戻る（非破壊）。
+    /// 地形フォルダの `terrain_meta.json` に記録し、ロード後に自動で再適用する。
+    pub decimate_strength: f32,
+    /// 地形メタ（当たり判定 ON/OFF・デシメート強度）が未保存かどうか。
+    ///
+    /// 密度の `dirty` と同じ役割の、メタ専用のダーティ印。シーン保存（Ctrl+S）の
+    /// 差分経路が「変わっていなければ 1 バイトも書かない」を守るために要る。
+    pub meta_dirty: bool,
 }
 
 /// 地形コライダー用 entity_id のベース値。
@@ -1020,6 +1055,12 @@ impl Default for TerrainState {
             // 破棄されるが、そのタイミングでは対象 GpuModel は既に GPU 完了済みのため安全。
             gpu_retire_queue: std::collections::VecDeque::new(),
             gpu_retire_frame: 0,
+            // 当たり判定は既定で全チャンク有効（無効リストは空）。
+            collision_disabled: HashSet::new(),
+            collision_overlay: false,
+            // デシメートは既定で無効（フル解像度メッシュ）。
+            decimate_strength: 0.0,
+            meta_dirty: false,
         }
     }
 }
@@ -1360,6 +1401,7 @@ fn build_chunk_render(
     layers: &TerrainLayerSet,
     ctx: &DrawContext,
     coord: ChunkCoord,
+    decimate_strength: f32,
 ) -> Option<(Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>, Arc<Vec<TerrainVertexEdge>>)> {
     // CPU メッシュ生成（純粋部）とアップロード（GPU 部）は分離してある。
     // ここは「1 チャンクを単独で作り直す」旧来の呼び出し側（初期化・チャンク追加・
@@ -1369,7 +1411,7 @@ fn build_chunk_render(
     // これを登録しておくと、そのチャンクは最初のペイントから高速パスに乗れる。
     // 単発ビルド（初期化・チャンク追加・ロード復元）は常に LOD0 で作る。
     // 遠近に応じた LOD 切替は毎フレームの `tick_terrain_lod` が担う。
-    let (model, is_empty, edges) = build_chunk_cpu_model(chunks, settings, layers, coord, 0)?;
+    let (model, is_empty, edges) = build_chunk_cpu_model(chunks, settings, layers, coord, 0, decimate_strength)?;
     let (gpu, batch) = upload_chunk_model(ctx, &model, is_empty);
     Some((model, gpu, batch, edges))
 }
@@ -1397,6 +1439,7 @@ fn build_chunk_cpu_model(
     layers: &TerrainLayerSet,
     coord: ChunkCoord,
     lod: u8,
+    decimate_strength: f32,
 ) -> Option<(Arc<Model>, bool, Arc<Vec<TerrainVertexEdge>>)> {
     let chunk = chunks.get(&coord)?;
     let cells = settings.chunk_cells as i32;
@@ -1431,6 +1474,25 @@ fn build_chunk_cpu_model(
             (m, true)
         }
     };
+
+    // ─── その場デシメート（頂点数削減）────────────────────────────────
+    //   LOD0（フル解像度）のメッシュにだけ掛ける。LOD>=1 は既に密度グリッドを間引いた
+    //   低ポリメッシュで、さらにスカート（境界面から下ろす幕）が混ざっており、
+    //   簡略化のロック条件（境界頂点＝隣と共有）が成り立たないためである。
+    //   遠景は LOD が受け持ち、近景の頂点数はデシメートが受け持つ、という分担にする。
+    //
+    //   【密度場は 1 ビットも変えない】これはメッシュだけの操作なので、強度を 0 に戻して
+    //   再メッシュすれば元の頂点数へ完全に戻る（＝非破壊）。スカルプトを続けても
+    //   常に元の密度から作り直したメッシュへ、その時点の強度で掛け直される。
+    //
+    //   【継ぎ目】チャンク境界面に載る頂点は簡略化で固定される（`simplify_mesh` の保証）。
+    //   隣接チャンクが同じ境界頂点を同じ位置に持ち続けるので、継ぎ目は開かない。
+    if is_lod0 && decimate_strength > 0.0 {
+        let extent = settings.chunk_extent();
+        let (simplified, _stats) =
+            terrain::simplify_mesh(&mesh, extent, decimate_strength);
+        mesh = simplified;
+    }
 
     // 由来辺（頂点がどの辺のどこで生まれたか）は LOD0 のときだけ意味を持つ。
     // ペイント高速パスがマーチングキューブスを再実行せずにスプラットを引き直すための唯一の手掛かり。
@@ -1471,6 +1533,7 @@ fn build_chunk_collider_shape(
     chunks: &HashMap<ChunkCoord, TerrainChunkData>,
     settings: &TerrainSettings,
     coord: ChunkCoord,
+    decimate_strength: f32,
 ) -> Option<ColliderShape> {
     let chunk = chunks.get(&coord)?;
     let cells = settings.chunk_cells as i32;
@@ -1480,6 +1543,14 @@ fn build_chunk_collider_shape(
     let mesh = terrain::generate(chunk, settings, |lx, ly, lz| {
         read_global_impl(chunks, cells, clamp, base[0] + lx, base[1] + ly, base[2] + lz)
     });
+    // 描画メッシュが引けないときのフォールバック経路でも、**描画と同じ強度**で
+    // デシメートを掛ける。掛けないと「見た目は粗いのに当たり判定だけ細かい」チャンクが
+    // 混ざり、めり込み・浮きの原因になる（描画とコライダーの一致がこの関数の存在意義）。
+    let mesh = if decimate_strength > 0.0 {
+        terrain::simplify_mesh(&mesh, settings.chunk_extent(), decimate_strength).0
+    } else {
+        mesh
+    };
     // 空メッシュ（三角形 0）はコライダーを作らない。
     if mesh.indices.is_empty() {
         return None;
@@ -1857,11 +1928,20 @@ impl App {
         //   地形を作り直したらブラシの形だけ黙って円へ戻る、という挙動は説明がつかない。
         //   デコード済みキャッシュ（mask_cache）のほうは捨ててよい（次のストロークで
         //   `ensure_terrain_brush_mask` が読み直す）。
+        //
+        //   **デシメート強度も持ち越す**。ブラシ形状マスクと同じ「今エディタで選んでいる
+        //   道具の設定」であって地形データではない。逆に**チャンク単位の当たり判定フラグは
+        //   持ち越さない**（あちらは特定のチャンクに紐づく地形データであり、
+        //   チャンクを作り直したら意味を失う）。作り直した地形は全チャンク当たり判定ありで始まる。
         let settings = self.terrain.settings.clone();
         let brush_mask_path = std::mem::take(&mut self.terrain.brush_mask_path);
+        let decimate_strength = self.terrain.decimate_strength;
         self.terrain = TerrainState::default();
         self.terrain.settings = settings.clone();
         self.terrain.brush_mask_path = brush_mask_path;
+        self.terrain.decimate_strength = decimate_strength;
+        // 当たり判定フラグを捨てた（＝保存済みメタと食い違う）ので、次の保存で必ず書き直す。
+        self.terrain.meta_dirty = true;
         let scene_name = self.scene.as_ref().map(|s| s.name.clone()).unwrap_or_default();
         self.terrain.scene_name = scene_name.clone();
         // 地形フォルダ参照をシーンから取り込む（未設定シーンは従来の `terrain/<シーン名>`）。
@@ -1902,7 +1982,11 @@ impl App {
         //   `par_iter().map().collect()` は入力順を保存するため出力は逐次実行と完全一致（決定的）。
         let cpu_models: Vec<Option<(Arc<Model>, bool, Arc<Vec<TerrainVertexEdge>>)>> = coords
             .par_iter()
-            .map(|&coord| build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, coord, 0))
+            .map(|&coord| {
+                build_chunk_cpu_model(
+                    &self.terrain.chunks, &settings, &layers, coord, 0, decimate_strength,
+                )
+            })
             .collect();
 
         // ── フェーズ 2b: GPU アップロードは直列（DrawContext は Sync でないため並列化しない）──
@@ -2327,11 +2411,14 @@ impl App {
         // `chunks` から取り消す）で、実体の無いチャンクの辺だけが残ってしまう。
         let mut prebuilt_edges: Vec<(ChunkCoord, Arc<Vec<TerrainVertexEdge>>)> =
             Vec::with_capacity(new_coords.len());
+        // 追加チャンクにも現在のデシメート強度を掛ける（既存チャンクと粗さをそろえる）。
+        let decimate_strength = self.terrain.decimate_strength;
         {
             let ctx = self.draw_ctx.as_ref().unwrap();
             for &coord in &new_coords {
-                if let Some((model, gpu, batch, edges)) =
-                    build_chunk_render(&self.terrain.chunks, &settings, &layers, ctx, coord)
+                if let Some((model, gpu, batch, edges)) = build_chunk_render(
+                    &self.terrain.chunks, &settings, &layers, ctx, coord, decimate_strength,
+                )
                 {
                     prebuilt.push((coord, model, gpu, batch));
                     prebuilt_edges.push((coord, edges));
@@ -3139,7 +3226,7 @@ impl App {
     ///     ・`immediate()`      … ブラシ確定・undo/redo・チャンク追加・一括収束（全部その場でやる）
     ///     ・`lod_transition()` … 毎フレームの LOD 遷移（GPU 解放は退役キュー・コライダーは触らない）
     ///     ・`with_deferred_side_effects(true)` … ストローク中（付随処理を確定時へ回す）
-    fn remesh_chunks(&mut self, coords: &[ChunkCoord], opts: RemeshOptions) {
+    pub(super) fn remesh_chunks(&mut self, coords: &[ChunkCoord], opts: RemeshOptions) {
         let RemeshOptions { defer_side_effects, defer_gpu_release, sync_colliders } = opts;
         if self.draw_ctx.is_none() || coords.is_empty() {
             return;
@@ -3163,6 +3250,8 @@ impl App {
         let t_total = Instant::now();
         let settings = self.terrain.settings.clone();
         let layers = self.terrain.layers.clone();
+        // その場デシメート強度。0 なら簡略化は一切走らない（従来と完全同一の経路）。
+        let decimate_strength = self.terrain.decimate_strength;
 
         // ── フェーズ 0: CPU メッシュ生成（rayon でチャンク間並列） ──
         //   `build_chunk_cpu_model` は共有参照しか取らない純粋関数なので、複数チャンクを
@@ -3175,7 +3264,9 @@ impl App {
             .map(|&coord| {
                 // このチャンクの現在の目標 LOD（未登録＝LOD0）でメッシュ化する。
                 let lod = self.terrain.chunk_lod.get(&coord).copied().unwrap_or(0);
-                build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, coord, lod)
+                build_chunk_cpu_model(
+                    &self.terrain.chunks, &settings, &layers, coord, lod, decimate_strength,
+                )
             })
             .collect();
         let cpu_ms = t_cpu.elapsed().as_secs_f64() * MILLIS_PER_SEC;
@@ -3415,14 +3506,20 @@ impl App {
         }
         let t_total = Instant::now();
         let settings = self.terrain.settings.clone();
+        // MC フォールバック経路にも描画と同じ簡略化を掛けるための強度。
+        let decimate_strength = self.terrain.decimate_strength;
 
         // ── ① 各チャンクの (entity_id, position, 描画Model?) をシリアルに集める ──
         //   entity_id 採番（`alloc_terrain_collider_id`）は self.terrain を可変借用するため
         //   並列化できない。ここでは軽い処理（HashMap 参照・Arc ポインタ複製）だけを行い、
         //   重い形状構築は次段の並列パートへ回す。
         //   決定性のため coord をソートしてから採番する（HashMap 走査順は実行ごとに変わる）。
-        let mut coords: Vec<ChunkCoord> = self.terrain.chunks.keys().copied().collect();
-        coords.sort_by_key(|c| (c.x, c.y, c.z));
+        // 当たり判定を無効にしたチャンクを除き、決定的な順（x,y,z）に並べる。
+        // 選択ロジックは純関数へ切り出してあり、単体テストで直接検証できる。
+        let coords = super::terrain_collision_ops::collider_target_coords(
+            self.terrain.chunks.keys().copied(),
+            &self.terrain.collision_disabled,
+        );
 
         // (entity_id, ワールド原点, coord, 描画Model の複製 or None)
         let mut jobs: Vec<(u64, [f32; 3], ChunkCoord, Option<Arc<Model>>)> =
@@ -3479,7 +3576,10 @@ impl App {
                     // 本命: 描画メッシュから写す（MC なし）。空メッシュなら None。
                     Some(m) => (collider_shape_from_model(m)?, false),
                     // フォールバック: 描画メッシュが無いチャンクだけ MC で作る。
-                    None => (build_chunk_collider_shape(chunks, &settings, *coord)?, true),
+                    None => (
+                        build_chunk_collider_shape(chunks, &settings, *coord, decimate_strength)?,
+                        true,
+                    ),
                 };
                 let obj = terrain_collider_object(*id, *pos, shape);
                 // ここで Rapier トライメッシュ QBVH を並列構築する（従来はメインスレッド直列だった）。
@@ -3522,7 +3622,7 @@ impl App {
     /// entity_id で AddObject する。掘り切って空になったチャンクは削除のみ（再登録しない）。
     /// 物理スレッドはコマンドを 1 ドレインで Remove→Add の順に処理するため、同一 id の
     /// 削除→追加が安全に成立する。
-    fn sync_terrain_chunk_collider(&mut self, coord: ChunkCoord) {
+    pub(super) fn sync_terrain_chunk_collider(&mut self, coord: ChunkCoord) {
         if self.physics_thread.is_none() {
             return;
         }
@@ -3531,6 +3631,12 @@ impl App {
         if let Some(&old_id) = self.terrain.chunk_collider_ids.get(&coord) {
             // 物理スレッドとキャラクター衝突ミラーの両方から削除する。
             self.physics_remove_object(old_id);
+        }
+        // ── 当たり判定を無効にしたチャンクは、削除だけして再登録しない ──
+        //   ここより上の RemoveObject は必ず通るので、有効→無効へ切り替えた直後の
+        //   remesh／トグルで既存コライダーが確実に消える。
+        if self.terrain.collision_disabled.contains(&coord) {
+            return;
         }
         // 新メッシュを構築。空（掘り切り・チャンク消滅）なら再登録しない。
         //
@@ -3557,7 +3663,12 @@ impl App {
         };
         let shape = match model.as_deref() {
             Some(m) => collider_shape_from_model(m),
-            None => build_chunk_collider_shape(&self.terrain.chunks, &settings, coord),
+            None => build_chunk_collider_shape(
+                &self.terrain.chunks,
+                &settings,
+                coord,
+                self.terrain.decimate_strength,
+            ),
         };
         let Some(shape) = shape else {
             return;
@@ -4041,7 +4152,15 @@ impl App {
                 }
             }
 
-            self.terrain.undo_stack.push(TerrainEdit { before, after, cover_before, cover_after });
+            self.terrain.undo_stack.push(TerrainEdit {
+                before,
+                after,
+                cover_before,
+                cover_after,
+                // ブラシストロークは当たり判定フラグを触らない（専用ツールの管轄）。
+                collision_before: HashMap::new(),
+                collision_after: HashMap::new(),
+            });
             // 上限を超えたら最古のエントリを破棄する（無制限にメモリを食わせない）。
             if self.terrain.undo_stack.len() > TERRAIN_UNDO_MAX {
                 self.terrain.undo_stack.remove(0);
@@ -4089,6 +4208,9 @@ impl App {
         //   メイン履歴の undo と同じ 1 本の経路（`restore_cover_snapshots`）を通す。
         //   カバー場は密度を一切変えないので、ここで再メッシュは要らない。
         self.restore_cover_snapshots(&edit.cover_before);
+        // ── チャンク当たり判定フラグを操作前へ戻す（コリジョンツールの Undo）──
+        //   密度もメッシュも変わらないので再メッシュは不要。物理コライダーだけ追従させる。
+        self.restore_collision_flags(&edit.collision_before);
         // 密度が戻った＝ショアフィールドの焼き直し対象（Phase W1.5）。
         // カバーだけのエントリ（カバーブラシのストローク）では密度が 1 ビットも
         // 変わっていないので、焼き直しを要求しない（無駄な再計算を誘発しない）。
@@ -4116,6 +4238,8 @@ impl App {
         self.restick_scatter_for_chunks(&touched);
         // カバーブラシのぶんを「編集後」へ進める（undo の対称）。
         self.restore_cover_snapshots(&edit.cover_after);
+        // 当たり判定フラグを操作後へ進める（undo の対称）。
+        self.restore_collision_flags(&edit.collision_after);
         // undo と同じ理由（Phase W1.5。カバーだけのエントリでは密度が変わらない）。
         if !touched.is_empty() {
             self.terrain_edit_version += 1;
@@ -4226,6 +4350,9 @@ impl App {
         // 全件モード（dirty_only=false）で書くのは .tvox と同じ理由。
         let (scatter_written, scatter_removed) = self.save_terrain_scatter(&dir, false);
         let (cover_written, cover_removed) = self.save_terrain_cover(&dir, false);
+        // 地形メタ（当たり判定 ON/OFF・デシメート強度）も必ず一緒に移す。
+        // 移し忘れると「別名保存した地形だけ当たり判定設定が抜ける」ことになる。
+        let meta_written = self.save_terrain_meta(&dir, false);
 
         // ── 3. チャンクコンポーネントの .tvox パスを新フォルダへ張り替える ──
         let mut relinked = 0u32;
@@ -4265,7 +4392,7 @@ impl App {
         // 保存先が変わったのでエディタの表示（ツールチップ・ダイアログ初期値）を更新する。
         self.send_terrain_dir();
         eprintln!(
-            "[SEED terrain] save-as: dir={} tvox={count} relinked={relinked}              tscatter written={scatter_written} removed={scatter_removed}              tcover written={cover_written} removed={cover_removed}",
+            "[SEED terrain] save-as: dir={} tvox={count} relinked={relinked}              tscatter written={scatter_written} removed={scatter_removed}              tcover written={cover_written} removed={cover_removed} terrain_meta={meta_written}",
             crate::engine::terrain::dir_ref::dir_virtual_path(&dir_rel)
         );
     }
@@ -4317,12 +4444,16 @@ impl App {
         //   （残すと次回ロードで消したはずの雪が復活する）。
         let (cover_written, cover_removed) = self.save_terrain_cover(&dir, false);
 
+        // ── 地形メタ（当たり判定 ON/OFF・デシメート強度）を .tvox の隣へ保存する ──
+        //   全保存なのでダーティに関わらず必ず書く（ロード時の確実な復元が目的）。
+        let meta_written = self.save_terrain_meta(&dir, false);
+
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("TERRAIN_SAVE_OK:{count}"));
         }
         if *PERF_TERRAIN_LOG_ENABLED {
             eprintln!(
-                "[SEED terrain] save: tvox={count} tscatter written={scatter_written} removed={scatter_removed}                  tcover written={cover_written} removed={cover_removed}"
+                "[SEED terrain] save: tvox={count} tscatter written={scatter_written} removed={scatter_removed}                  tcover written={cover_written} removed={cover_removed} terrain_meta={meta_written}"
             );
         }
     }
@@ -4363,6 +4494,7 @@ impl App {
         if self.terrain.dirty.is_empty()
             && self.terrain.scatter_dirty.is_empty()
             && (self.terrain.cover_dirty.is_empty() || !cover_persistable)
+            && !self.terrain.meta_dirty
         {
             return Ok(0);
         }
@@ -4398,12 +4530,18 @@ impl App {
         let (scatter_written, scatter_removed) = self.save_terrain_scatter(&dir, true);
         let (cover_written, cover_removed) =
             if cover_persistable { self.save_terrain_cover(&dir, true) } else { (0, 0) };
-        let total =
-            voxel_written + scatter_written + scatter_removed + cover_written + cover_removed;
+        // 地形メタも差分だけ（変わっていなければ 1 バイトも書かない）。
+        let meta_written = self.save_terrain_meta(&dir, true);
+        let total = voxel_written
+            + scatter_written
+            + scatter_removed
+            + cover_written
+            + cover_removed
+            + meta_written;
 
         if *PERF_TERRAIN_LOG_ENABLED {
             eprintln!(
-                "[SEED terrain] scene-save flush: tvox={voxel_written} tscatter written={scatter_written} removed={scatter_removed} tcover written={cover_written} removed={cover_removed}"
+                "[SEED terrain] scene-save flush: tvox={voxel_written} tscatter written={scatter_written} removed={scatter_removed} tcover written={cover_written} removed={cover_removed} terrain_meta={meta_written}"
             );
         }
         Ok(total)
@@ -4624,6 +4762,14 @@ impl App {
         }
         let io_ms = t_io.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 
+        // ── フェーズ 1.4: 地形メタ（当たり判定 ON/OFF・デシメート強度）を読む ──
+        //   **メッシュ化（フェーズ 2）より前**に読む必要がある。デシメート強度は
+        //   メッシュ生成時に効くパラメータであり、後から読んでも今回の生成には間に合わない
+        //   （＝ロード直後だけフル解像度で描かれ、次の編集で急に粗くなる）。
+        //   ファイルが無いのはエラーではない（既定＝全チャンク有効・デシメート無し）。
+        let terrain_dir = self.terrain.terrain_dir.clone();
+        self.load_terrain_meta(&terrain_dir);
+
         // ── フェーズ 1.5: 散布データ（.tscatter）を読む ──
         //   ファイルが無いのは **エラーではない**（散布機能より前に保存された
         //   シーンには存在しない）。欠落チャンクは単に散布 0 本として扱う。
@@ -4659,9 +4805,16 @@ impl App {
         //   rayon の IndexedParallelIterator により**入力順を保存する**ため、出力の並びは
         //   並列度・スケジューリングに依らず逐次実行と完全に一致する（決定的）。
         let t_mc = Instant::now();
+        // ロード時に地形メタから復元したデシメート強度をそのまま適用する
+        // （保存時の見た目でシーンが開く＝ロード後の自動再適用）。
+        let decimate_strength = self.terrain.decimate_strength;
         let cpu_models: Vec<Option<(Arc<Model>, bool, Arc<Vec<TerrainVertexEdge>>)>> = loaded
             .par_iter()
-            .map(|(coord, _mc_slot)| build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, *coord, 0))
+            .map(|(coord, _mc_slot)| {
+                build_chunk_cpu_model(
+                    &self.terrain.chunks, &settings, &layers, *coord, 0, decimate_strength,
+                )
+            })
             .collect();
         let mc_ms = t_mc.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 
@@ -5691,7 +5844,7 @@ mod tests {
         // +1 で埋める＝全 AIR。等値面が生じないので None が返るべき。
         chunks.insert(coord, TerrainChunkData::new_filled(&settings, 1.0));
         assert!(
-            build_chunk_collider_shape(&chunks, &settings, coord).is_none(),
+            build_chunk_collider_shape(&chunks, &settings, coord, 0.0).is_none(),
             "空メッシュのチャンクはコライダーを持たない"
         );
     }
@@ -5715,7 +5868,7 @@ mod tests {
         let mut chunks = HashMap::new();
         chunks.insert(coord, chunk);
 
-        let shape = build_chunk_collider_shape(&chunks, &settings, coord)
+        let shape = build_chunk_collider_shape(&chunks, &settings, coord, 0.0)
             .expect("等値面のあるチャンクはコライダーを返す");
         let ColliderShape::TriangleMeshIndexed { vertices, indices } = shape else {
             panic!("地形コライダーは TriangleMeshIndexed でなければならない");
@@ -5749,7 +5902,7 @@ mod tests {
         let mut chunks = HashMap::new();
         chunks.insert(coord, chunk);
         let ColliderShape::TriangleMeshIndexed { vertices, .. } =
-            build_chunk_collider_shape(&chunks, &settings, coord).expect("有効メッシュ")
+            build_chunk_collider_shape(&chunks, &settings, coord, 0.0).expect("有効メッシュ")
         else {
             panic!("TriangleMeshIndexed");
         };
@@ -5827,7 +5980,7 @@ mod tests {
             let t = Instant::now();
             let mut a_count = 0usize;
             for &coord in &coords {
-                if build_chunk_collider_shape(&chunks, &settings, coord).is_some() {
+                if build_chunk_collider_shape(&chunks, &settings, coord, 0.0).is_some() {
                     a_count += 1;
                 }
             }
@@ -5837,7 +5990,7 @@ mod tests {
             let t = Instant::now();
             let b: Vec<_> = coords
                 .par_iter()
-                .map(|&coord| build_chunk_collider_shape(&chunks, &settings, coord))
+                .map(|&coord| build_chunk_collider_shape(&chunks, &settings, coord, 0.0))
                 .collect();
             let b_ms = t.elapsed().as_secs_f64() * MILLIS_PER_SEC;
             let b_count = b.iter().filter(|s| s.is_some()).count();
@@ -5889,7 +6042,7 @@ mod tests {
 
         // ── 正典: MC 経路のコライダー ──
         let ColliderShape::TriangleMeshIndexed { vertices: mc_v, indices: mc_i } =
-            build_chunk_collider_shape(&chunks, &settings, coord).expect("有効メッシュ")
+            build_chunk_collider_shape(&chunks, &settings, coord, 0.0).expect("有効メッシュ")
         else {
             panic!("TriangleMeshIndexed");
         };

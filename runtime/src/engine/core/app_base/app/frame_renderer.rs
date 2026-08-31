@@ -3126,6 +3126,38 @@ impl App {
                         })
                     } else { None };
 
+                    // 地形チャンクの当たり判定オーバーレイ（terrain の「コリジョン」ツール選択中のみ）。
+                    //   チャンク AABB のワイヤ枠を、当たり判定 有効=薄緑／無効=薄赤 で描く。
+                    //   Edit（in_editor）のみ描画し、Play では出さない（ブラシプレビューと同じ規約）。
+                    //   線の色と枠は `collision_overlay_chunks()` が一括で用意する（判定はランタイム側に集約）。
+                    let terrain_collision_batch = if in_editor {
+                        let chunks =
+                            super::terrain_collision_ops::collision_overlay_chunks(&self.terrain);
+                        if chunks.is_empty() {
+                            None
+                        } else {
+                            let mut lb = LineBatch::new();
+                            for (mn, mx, color) in chunks {
+                                // AABB の 12 辺（下面 4・上面 4・柱 4）。
+                                let v = [
+                                    [mn[0], mn[1], mn[2]], [mx[0], mn[1], mn[2]],
+                                    [mx[0], mx[1], mn[2]], [mn[0], mx[1], mn[2]],
+                                    [mn[0], mn[1], mx[2]], [mx[0], mn[1], mx[2]],
+                                    [mx[0], mx[1], mx[2]], [mn[0], mx[1], mx[2]],
+                                ];
+                                const EDGES: [(usize, usize); 12] = [
+                                    (0, 1), (1, 2), (2, 3), (3, 0),
+                                    (4, 5), (5, 6), (6, 7), (7, 4),
+                                    (0, 4), (1, 5), (2, 6), (3, 7),
+                                ];
+                                for (a, b) in EDGES {
+                                    lb.add_line(v[a], v[b], color);
+                                }
+                            }
+                            Some(lb.build(&draw_ctx.device))
+                        }
+                    } else { None };
+
                     // コントロールポイント（汎用パス）のギズモを GPU バッファ化する。
                     // 頂点自体はレンダラ借用前に組んである（control_point_lines）。
                     // 区間ライン（太線）と点キューブ／プレビューマーカー（従来の細線）で
@@ -6773,6 +6805,17 @@ impl App {
                         {
                             draw_line_batch(
                                 &mut pass, preview_batch,
+                                &camera_buf.bind_group, line_bg,
+                                &draw_ctx.pipelines,
+                            );
+                        }
+
+                        // 地形チャンクの当たり判定オーバーレイ（チャンク境界のワイヤ枠）描画。
+                        if let (Some(collision_batch), Some((_, line_bg))) =
+                            (&terrain_collision_batch, &self.line_model_buf)
+                        {
+                            draw_line_batch(
+                                &mut pass, collision_batch,
                                 &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );

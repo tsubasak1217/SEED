@@ -173,6 +173,24 @@ pub enum IpcCommand {
     /// ブラシ範囲プレビューを非表示にする（terrain モード離脱時）。
     /// ワイヤ形式: `TERRAIN_BRUSH_PREVIEW_OFF`（引数なし）
     TerrainBrushPreviewOff,
+    /// クリックしたチャンクの**当たり判定**（物理コライダー登録）を反転する。
+    ///
+    /// ワイヤ形式: `TERRAIN_COLLISION_TOGGLE:{screen_x},{screen_y}`（f32×2）
+    /// 描画には影響しない（見た目はそのままで衝突だけ消える／戻る）。
+    /// 応答は `TERRAIN_COLLISION_OK:{x},{y},{z},{0|1}` または `TERRAIN_COLLISION_MISS`。
+    TerrainCollisionToggle { screen_x: f32, screen_y: f32 },
+    /// チャンク境界の当たり判定オーバーレイ（有効=薄緑／無効=薄赤の枠）の表示を切り替える。
+    ///
+    /// ワイヤ形式: `TERRAIN_COLLISION_OVERLAY:{0|1}`
+    /// エディタが「コリジョン」ツールを選択／解除したときに送る表示状態であり、
+    /// 地形データではない（保存もしないし Undo にも載らない）。
+    TerrainCollisionOverlay { on: bool },
+    /// 全チャンクのメッシュへ**その場デシメート**（頂点数削減）を適用する。
+    ///
+    /// ワイヤ形式: `TERRAIN_DECIMATE:{strength}`（f32・0〜1。0 で解除＝フル解像度へ戻す）
+    /// 密度場（SDF）は変えないので非破壊。応答は
+    /// `TERRAIN_DECIMATE_OK:{強度},{適用前頂点数},{適用後頂点数}`。
+    TerrainDecimate { strength: f32 },
     /// terrain 専用 undo（Ctrl+Z 相当。シーン全体の Undo/Redo とは別スタック）。
     /// ワイヤ形式: `TERRAIN_UNDO`（引数なし）
     TerrainUndo,
@@ -1065,6 +1083,23 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
                 v[i] = p.trim().parse::<i32>().ok()?;
             }
             Some(IpcCommand::TerrainAddChunks { min_x: v[0], min_z: v[1], max_x: v[2], max_z: v[3] })
+        }
+        // 当たり判定トグル: "screen_x,screen_y"（f32×2）。
+        //   `TERRAIN_COLLISION_OVERLAY:` とは語頭が異なるので判定順に依存しない。
+        s if s.starts_with("TERRAIN_COLLISION_TOGGLE:") => {
+            parse_nf::<2>(&s["TERRAIN_COLLISION_TOGGLE:".len()..]).map(|fs| {
+                IpcCommand::TerrainCollisionToggle { screen_x: fs[0], screen_y: fs[1] }
+            })
+        }
+        // 当たり判定オーバーレイ表示: "0" か "1"。
+        s if s.starts_with("TERRAIN_COLLISION_OVERLAY:") => {
+            let v = s["TERRAIN_COLLISION_OVERLAY:".len()..].trim();
+            Some(IpcCommand::TerrainCollisionOverlay { on: v == "1" })
+        }
+        // その場デシメート: "strength"（f32・0〜1）。値域はランタイム側でクランプする。
+        s if s.starts_with("TERRAIN_DECIMATE:") => {
+            parse_nf::<1>(&s["TERRAIN_DECIMATE:".len()..])
+                .map(|fs| IpcCommand::TerrainDecimate { strength: fs[0] })
         }
         // ブラシプレビュー更新: "screen_x,screen_y,radius,strength"（f32×4）。
         s if s.starts_with("TERRAIN_BRUSH_PREVIEW:") => {

@@ -329,6 +329,13 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::TerrainSaveAs { .. }
         | IpcCommand::TerrainBrushPreview { .. }
         | IpcCommand::TerrainBrushPreviewOff
+        // チャンク当たり判定のトグルは terrain 専用 Undo スタック（1 クリック = 1 手）の
+        // 管轄であり、メイン履歴のフィールド編集としては扱わない（二重記録を避ける）。
+        | IpcCommand::TerrainCollisionToggle { .. }
+        // オーバーレイ表示とデシメートは「道具・表示の設定」であってシーンの値ではない
+        // （ブラシ半径スライダーが Undo に載らないのと同じ扱い）。
+        | IpcCommand::TerrainCollisionOverlay { .. }
+        | IpcCommand::TerrainDecimate { .. }
         | IpcCommand::TerrainUndo
         | IpcCommand::TerrainRedo
         | IpcCommand::TerrainStrokeEnd

@@ -397,6 +397,15 @@ impl App {
                     // へ反映される。
                     self.handle_terrain_brush_preview(screen_x, screen_y, radius, strength);
                 }
+                IpcCommand::TerrainCollisionToggle { screen_x, screen_y } => {
+                    self.handle_terrain_collision_toggle(screen_x, screen_y);
+                }
+                IpcCommand::TerrainCollisionOverlay { on } => {
+                    self.handle_terrain_collision_overlay(on);
+                }
+                IpcCommand::TerrainDecimate { strength } => {
+                    self.handle_terrain_decimate(strength);
+                }
                 IpcCommand::TerrainBrushPreviewOff => {
                     // ブラシ範囲プレビューを非表示にする。
                     self.handle_terrain_brush_preview_off();

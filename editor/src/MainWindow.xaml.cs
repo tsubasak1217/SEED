@@ -391,6 +391,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _runtimeManager.TerrainHeightmapCompleted     += OnTerrainHeightmapCompleted;
         _runtimeManager.TerrainAddChunksCompleted     += OnTerrainAddChunksCompleted;
         _runtimeManager.TerrainScatterCompleted       += OnTerrainScatterCompleted;
+        // チャンク当たり判定トグル／その場デシメートの結果もステータス表示へ反映する。
+        _runtimeManager.TerrainCollisionResult        += OnTerrainCollisionResult;
+        _runtimeManager.TerrainDecimateCompleted      += OnTerrainDecimateCompleted;
 
         PanelHierarchy.SetRuntime(_runtimeManager);
         PanelHierarchy.SetAssetsPath(AssetsPath);

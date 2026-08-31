@@ -63,6 +63,8 @@ CATALOG = [
     # 地形編集モードのツールバー／縦パネル専用。ツール選択トグルと
     # グローバル操作（ハイトマップ読込）で使う。初期化は Icon.Reset、
     # 保存は Icon.Save を流用するのでここには置かない。
+    # 同じ理由で、コリジョンツール = Icon.Component.Collider（当たり判定の形＝shape-outline）、
+    # デシメート = Icon.SpriteRig.Retriangulate（三角形の張り直し＝vector-triangle）も流用する。
     ("── 地形（terrain）編集ツール ──", None),
     ("Icon.Terrain.Raise", "elevation-rise"),
     ("Icon.Terrain.Carve", "shovel"),

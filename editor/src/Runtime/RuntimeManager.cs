@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -341,6 +341,20 @@ public sealed class RuntimeManager : IDisposable
 
     /// <summary>地形ブラシ結果通知。true=命中（引数="hx,hy,hz"）/ false=非命中（引数="")。</summary>
     public event Action<bool, string>? TerrainBrushResult;
+
+    /// <summary>
+    /// チャンク当たり判定トグルの結果通知
+    /// （TERRAIN_COLLISION_OK:x,y,z,enabled / TERRAIN_COLLISION_MISS）。
+    /// true=命中（引数="x,y,z,0|1"。末尾 1 = 当たり判定あり）/ false=非命中（引数=""）。
+    /// </summary>
+    public event Action<bool, string>? TerrainCollisionResult;
+
+    /// <summary>
+    /// その場デシメートの完了通知
+    /// （TERRAIN_DECIMATE_OK:strength,before,after / TERRAIN_DECIMATE_ERROR:msg）。
+    /// true=成功（引数="強度,適用前頂点数,適用後頂点数"）/ false=失敗（引数=エラーメッセージ）。
+    /// </summary>
+    public event Action<bool, string>? TerrainDecimateCompleted;
 
     /// <summary>ハイトマップ反映完了通知（TERRAIN_HEIGHTMAP_OK:ms / TERRAIN_HEIGHTMAP_ERROR:msg）。true=成功（引数=処理時間ms）/ false=失敗（引数=エラーメッセージ）。</summary>
     public event Action<bool, string>? TerrainHeightmapCompleted;
@@ -1454,6 +1468,30 @@ public sealed class RuntimeManager : IDisposable
         else if (msg == "TERRAIN_BRUSH_MISS")
         {
             TerrainBrushResult?.Invoke(false, "");
+        }
+        // チャンク当たり判定トグル（コリジョンツールのクリック 1 回ごと）。
+        else if (msg.StartsWith("TERRAIN_COLLISION_OK:", StringComparison.Ordinal))
+        {
+            var body = msg["TERRAIN_COLLISION_OK:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_COLLISION_OK {body}");
+            TerrainCollisionResult?.Invoke(true, body);
+        }
+        else if (msg == "TERRAIN_COLLISION_MISS")
+        {
+            TerrainCollisionResult?.Invoke(false, "");
+        }
+        // その場デシメート（全チャンク一括）の完了通知。
+        else if (msg.StartsWith("TERRAIN_DECIMATE_OK:", StringComparison.Ordinal))
+        {
+            var body = msg["TERRAIN_DECIMATE_OK:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_DECIMATE_OK {body}");
+            TerrainDecimateCompleted?.Invoke(true, body);
+        }
+        else if (msg.StartsWith("TERRAIN_DECIMATE_ERROR:", StringComparison.Ordinal))
+        {
+            var err = msg["TERRAIN_DECIMATE_ERROR:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_DECIMATE_ERROR {err}");
+            TerrainDecimateCompleted?.Invoke(false, err);
         }
         else if (msg.StartsWith("TERRAIN_HEIGHTMAP_OK:", StringComparison.Ordinal))
         {

@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  MainWindow.Terrain.cs — 地形（terrain）編集モードのエディタ UI
 //
 //  担当:
@@ -65,6 +65,15 @@ public partial class MainWindow
     /// TERRAIN_COVER_BRUSH を送る（積もった雪・落ち葉を消す／敷く専用コマンド）。
     /// </summary>
     private const int TerrainOpCover = 102;
+
+    /// <summary>
+    /// 疑似ツール ID: コリジョン（チャンク単位の当たり判定 ON/OFF）。
+    ///
+    /// 密度ブラシ op（0〜3）・ペイント（100）・散布（101）・カバー（102）と衝突しない値。
+    /// クリックは TERRAIN_BRUSH ではなく TERRAIN_COLLISION_TOGGLE を送る。
+    /// ブラシではないのでドラッグ追従（連続送信）はせず、押下ごとに 1 回だけ送る。
+    /// </summary>
+    private const int TerrainOpCollision = 103;
 
     /// <summary>ブラシの消去フラグ値（IPC 文字列の erase 引数。ランタイムと一致させる）。</summary>
     private const int TerrainScatterEraseOff = 0;
@@ -191,6 +200,13 @@ public partial class MainWindow
         {
             SldTerrainCoverAmount.ValueChanged += (_, _) => UpdateTerrainCoverAmountLabel();
             UpdateTerrainCoverAmountLabel();
+        }
+        if (SldTerrainDecimate != null)
+        {
+            // 値の変更では何も送らない（適用はボタンを押したときだけ）。
+            // 掛かる処理が全チャンク再メッシュなので、スライダー追従で走らせてはいけない。
+            SldTerrainDecimate.ValueChanged += (_, _) => UpdateTerrainDecimateLabel();
+            UpdateTerrainDecimateLabel();
         }
         // レイヤ選択コンボは layers.json（レイヤ総数自由）から動的に作る。
         RefreshTerrainLayerCombo();
@@ -386,6 +402,13 @@ public partial class MainWindow
     /// 消去中は素材・目標量が使われないため隠す
     /// （選択に無関係なパラメータは出さない、というインスペクタ方針に合わせる）。
     /// </summary>
+    /// <summary>デシメート強度スライダーの数値ラベルを更新する。</summary>
+    private void UpdateTerrainDecimateLabel()
+    {
+        if (TxtTerrainDecimate != null && SldTerrainDecimate != null)
+            TxtTerrainDecimate.Text = SldTerrainDecimate.Value.ToString("F2", CultureInfo.InvariantCulture);
+    }
+
     private void OnTerrainCoverEraseChanged(object sender, RoutedEventArgs e)
         => UpdateTerrainCoverPaintParamVisibility();
 
@@ -455,6 +478,14 @@ public partial class MainWindow
                         // ディスパッチャ経由で実行する。
                         Dispatcher.BeginInvoke(ClearTextInputFocusForViewportClick);
 
+                        // コリジョンツールは「ブラシ」ではなく 1 クリック 1 トグル。
+                        // ストローク状態にしないので、ドラッグしても連続反転しない
+                        // （押しっぱなしで隣のチャンクまで消える事故を防ぐ）。
+                        if (_terrainOp == TerrainOpCollision)
+                        {
+                            SendTerrainCollisionToggleAtCursor();
+                            return (nint)1;
+                        }
                         _terrainStroking = true;
                         _terrainBrushThrottle.Restart();
                         SendTerrainBrushAtCursor();
@@ -568,6 +599,41 @@ public partial class MainWindow
     /// ブラシ半径/強度を用いて TERRAIN_BRUSH を送信する。
     /// カーソルがビューポート矩形外なら送信しない。
     /// </summary>
+    /// <summary>
+    /// カーソル位置のチャンクの当たり判定を反転する（TERRAIN_COLLISION_TOGGLE）。
+    ///
+    /// コリジョンツール選択中の左クリックで 1 回だけ送る。ランタイムはレイマーチで
+    /// 地表の着弾点を求め、そのチャンクのフラグを反転して物理コライダーを追従させる。
+    /// 見た目（描画メッシュ）は一切変わらない。
+    /// </summary>
+    private void SendTerrainCollisionToggleAtCursor()
+    {
+        if (!TryGetViewportLocalCursor(out int lx, out int ly)) return;
+        var ci = CultureInfo.InvariantCulture;
+        _runtimeManager?.SendToRuntime(
+            $"TERRAIN_COLLISION_TOGGLE:{lx.ToString(ci)},{ly.ToString(ci)}");
+    }
+
+    /// <summary>
+    /// マウスカーソルのビューポート内ローカル座標を取得する。
+    /// ビューポート外／ホスト未生成なら false（呼び出し側は何も送らない）。
+    ///
+    /// ブラシ送信とコリジョントグルで同じ座標変換を使うため、1 か所へ切り出してある。
+    /// </summary>
+    private bool TryGetViewportLocalCursor(out int lx, out int ly)
+    {
+        lx = 0;
+        ly = 0;
+        if (_viewportHost == null) return false;
+        GetCursorPos(out var cursor);
+        GetWindowRect(_viewportHost.ContainerHwnd, out var rect);
+        lx = cursor.X - rect.Left;
+        ly = cursor.Y - rect.Top;
+        return lx >= 0 && ly >= 0
+            && lx < rect.Right - rect.Left
+            && ly < rect.Bottom - rect.Top;
+    }
+
     private void SendTerrainBrushAtCursor()
     {
         if (_viewportHost == null || _runtimeManager == null) return;
@@ -634,6 +700,8 @@ public partial class MainWindow
     private void UpdateTerrainBrushPreview()
     {
         if (_viewportHost == null || _runtimeManager == null) return;
+        // コリジョンツールはブラシ範囲を持たない（対象はチャンク 1 枚）ので球は出さない。
+        if (_terrainOp == TerrainOpCollision) return;
 
         if (!IsMouseOverViewportHwnd())
         {
@@ -726,6 +794,13 @@ public partial class MainWindow
                 _terrainPreviewActive = false;
                 _runtimeManager?.SendToRuntime("TERRAIN_BRUSH_PREVIEW_OFF");
             }
+            // 当たり判定オーバーレイも消す（terrain モード専用の表示なので残さない）。
+            SendTerrainCollisionOverlay(false);
+        }
+        else
+        {
+            // モードへ入り直したときは、現在のツール選択に合わせて表示状態を復元する。
+            SendTerrainCollisionOverlay(_terrainOp == TerrainOpCollision);
         }
 
         if (TxtTerrainStatus != null) TxtTerrainStatus.Text = "";
@@ -741,6 +816,7 @@ public partial class MainWindow
         else if (BtnTerrainPaint?.IsChecked == true)   _terrainOp = TerrainOpPaint;
         else if (BtnTerrainScatter?.IsChecked == true) _terrainOp = TerrainOpScatter;
         else if (BtnTerrainCover?.IsChecked == true)   _terrainOp = TerrainOpCover;
+        else if (BtnTerrainCollision?.IsChecked == true) _terrainOp = TerrainOpCollision;
 
         // レイヤ選択 UI はペイントツールのときだけ意味を持つため、それ以外では隠す
         // （選択に無関係なパラメータは出さない、というインスペクタ方針に合わせる）。
@@ -766,11 +842,42 @@ public partial class MainWindow
 
         // 強度スライダーは散布ツールでは使わない（密度スライダーが代わりを務める）。
         // カバーツールでは「1 発でどれだけ消す／敷くか」として使うので表示したままにする。
+        // コリジョンツールもブラシではない（1 クリック 1 トグル）ので隠す。
         if (TerrainStrengthPanel != null)
         {
             TerrainStrengthPanel.Visibility =
-                _terrainOp == TerrainOpScatter ? Visibility.Collapsed : Visibility.Visible;
+                _terrainOp == TerrainOpScatter || _terrainOp == TerrainOpCollision
+                    ? Visibility.Collapsed
+                    : Visibility.Visible;
         }
+
+        // 半径スライダーもコリジョンツールでは意味を持たない（対象はチャンク 1 枚）。
+        if (TerrainRadiusPanel != null)
+        {
+            TerrainRadiusPanel.Visibility =
+                _terrainOp == TerrainOpCollision ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        // チャンク境界オーバーレイは、コリジョンツールを選んでいる間だけ出す。
+        SendTerrainCollisionOverlay(_terrainOp == TerrainOpCollision);
+
+        // ブラシプレビュー（ワイヤスフィア）はコリジョンツールでは無意味なので消す。
+        if (_terrainOp == TerrainOpCollision && _terrainPreviewActive)
+        {
+            _terrainPreviewActive = false;
+            _runtimeManager?.SendToRuntime("TERRAIN_BRUSH_PREVIEW_OFF");
+        }
+    }
+
+    /// <summary>
+    /// チャンク境界の当たり判定オーバーレイ表示をランタイムへ指示する。
+    ///
+    /// 表示状態であって地形データではないので、保存もされないし Undo にも載らない。
+    /// terrain モードを抜けるときにも false を送る（他モードで枠が残らないように）。
+    /// </summary>
+    private void SendTerrainCollisionOverlay(bool on)
+    {
+        _runtimeManager?.SendToRuntime(on ? "TERRAIN_COLLISION_OVERLAY:1" : "TERRAIN_COLLISION_OVERLAY:0");
     }
 
     /// <summary>
@@ -1017,6 +1124,83 @@ public partial class MainWindow
     {
         Dispatcher.BeginInvoke(() =>
             SetTerrainStatus(ok ? $"散布しました（{arg} インスタンス）" : $"散布失敗: {arg}", ok));
+    }
+
+    /// <summary>
+    /// 「デシメート」ボタン: 全チャンクのメッシュへその場デシメートを適用する。
+    ///
+    /// 強度 0 で押すと簡略化が解除され、フル解像度のメッシュへ戻る（非破壊の確認手段）。
+    /// Play 中は地形メッシュを作り直せない（コライダーと BLAS が同時に動く）ため Edit 限定。
+    /// </summary>
+    private void OnTerrainDecimate(object sender, RoutedEventArgs e)
+    {
+        if (_runtimeManager?.State != EditorState.Edit)
+        {
+            SetTerrainStatus("Edit モードで実行してください", ok: false);
+            return;
+        }
+        double strength = SldTerrainDecimate?.Value ?? 0.0;
+        SetTerrainStatus("デシメート中…", ok: true);
+        _runtimeManager.SendToRuntime(
+            $"TERRAIN_DECIMATE:{strength.ToString(CultureInfo.InvariantCulture)}");
+    }
+
+    /// <summary>
+    /// デシメート完了通知（TERRAIN_DECIMATE_OK:強度,適用前頂点数,適用後頂点数）。
+    /// 頂点数の前後と削減率をステータスへ出す。
+    /// </summary>
+    private void OnTerrainDecimateCompleted(bool ok, string arg)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (!ok)
+            {
+                SetTerrainStatus($"デシメート失敗: {arg}", ok: false);
+                return;
+            }
+            // "強度,適用前,適用後"。数値が読めない場合は素の文字列を出す（握り潰さない）。
+            var parts = arg.Split(',');
+            var ci = CultureInfo.InvariantCulture;
+            if (parts.Length == 3
+                && long.TryParse(parts[1], NumberStyles.Integer, ci, out long before)
+                && long.TryParse(parts[2], NumberStyles.Integer, ci, out long after))
+            {
+                double pct = before > 0 ? (before - after) * 100.0 / before : 0.0;
+                SetTerrainStatus(
+                    $"デシメート: 頂点 {before:N0} → {after:N0}（{pct:F1}% 削減・強度 {parts[0]}）",
+                    ok: true);
+            }
+            else
+            {
+                SetTerrainStatus($"デシメート完了（{arg}）", ok: true);
+            }
+        });
+    }
+
+    /// <summary>
+    /// チャンク当たり判定トグルの結果通知（TERRAIN_COLLISION_OK:x,y,z,enabled）。
+    /// どのチャンクがどちらになったかをステータスへ出す。
+    /// </summary>
+    private void OnTerrainCollisionResult(bool hit, string arg)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (!hit)
+            {
+                SetTerrainStatus("地形に当たりませんでした", ok: false);
+                return;
+            }
+            var p = arg.Split(',');
+            if (p.Length == 4)
+            {
+                string state = p[3] == "1" ? "当たり判定あり" : "当たり判定なし";
+                SetTerrainStatus($"チャンク ({p[0]}, {p[1]}, {p[2]}) → {state}", ok: p[3] == "1");
+            }
+            else
+            {
+                SetTerrainStatus($"当たり判定を切り替えました（{arg}）", ok: true);
+            }
+        });
     }
 
     /// <summary>
