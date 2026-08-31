@@ -123,6 +123,7 @@ CATALOG = [
     ("Icon.Component.JointAttach", "bone"),
     ("Icon.Component.ParticleEmitter", "shimmer"),
     ("Icon.Component.ControlPoint", "vector-polyline"),
+    ("Icon.Component.LineRenderer", "vector-line"),
     ("Icon.Component.Camera", "camera"),
     ("Icon.Component.Collider", "shape-outline"),
     ("Icon.Component.Collider2d", "vector-rectangle"),

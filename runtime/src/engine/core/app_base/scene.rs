@@ -694,6 +694,13 @@ pub fn build_actor(
                 world.insert(slot_entity, AudioComponent::from_data(ac_data));
                 actor.add_slot_typed::<AudioComponent>(slot_name, ComponentKind::Audio, slot_entity);
             }
+            ComponentData::LineRendererComponent(lr_data) => {
+                // 3D ポリラインを ECS ワールドに挿入してスロットを登録する
+                use crate::engine::components::LineRendererComponent;
+                world.insert(slot_entity, LineRendererComponent::from_data(lr_data));
+                actor.add_slot_typed::<LineRendererComponent>(
+                    slot_name, ComponentKind::LineRenderer, slot_entity);
+            }
             ComponentData::WaterVolumeComponent(wv_data) => {
                 // 水ボリュームコンポーネントを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::WaterVolumeComponent;

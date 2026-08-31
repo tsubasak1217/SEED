@@ -33,8 +33,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::engine::components::{
     AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, InputMapComponent,
-    ParticleEmitterComponent, SkinnedSpriteComponent, SpriteComponent, Transform,
-    WaterLinkComponent, WaterVolumeComponent,
+    LineRendererComponent, ParticleEmitterComponent, SkinnedSpriteComponent, SpriteComponent,
+    Transform, WaterLinkComponent, WaterVolumeComponent, MAX_LINE_POINTS,
 };
 use crate::engine::core::input::action_map::{ActionMap, ActionRuntime};
 use crate::engine::core::input::{Input, InputState};
@@ -236,7 +236,18 @@ pub fn take_audio_commands() -> Vec<ScriptAudioCommand> {
 // ─── float 配列の定数 ────────────────────────────────────────
 
 /// float フィールドの最大要素数（RGBA カラーの 4 要素が最大）。
+///
+/// **読み取り側**の上限。`ffi_get_floats` はこの長さのスタックバッファ 1 本で
+/// 受けるため、固定小サイズを保つ（配列フィールドの一括読み出しは提供しない）。
 pub const MAX_FLOAT_FIELD_LEN: usize = 4;
+
+/// float フィールドへ **1 回で書き込める** 最大要素数。
+///
+/// 読み取りと違いスタックバッファを介さず C# 側のメモリを直接スライスで見るため、
+/// 長い配列フィールドを 1 回の FFI で渡せる。`LineRenderer.points` のように
+/// 「点列を丸ごと差し替える」フィールドがこれを使う（Vec3 なので点数 × 3）。
+/// C# 側 `ScriptHost.MaxFloatWriteLen` と必ず一致させること。
+pub const MAX_FLOAT_WRITE_LEN: usize = MAX_LINE_POINTS * 3;
 
 // ─── スロットエンティティ解決 ─────────────────────────────────
 
@@ -313,6 +324,7 @@ const KIND_AUDIO: &str = "Audio";
 const KIND_ANIMATOR: &str = "Animator";
 const KIND_PARTICLE: &str = "ParticleEmitter";
 const KIND_INPUT_MAP: &str = "InputMap";
+const KIND_LINE_RENDERER: &str = "LineRenderer";
 
 // ─── 水面シェーダパラメータの動的フィールド名（Phase W8.2）────────
 //  `WaterVolume` の `shader_params` は**アセットが決める名前**のマップなので、
@@ -340,6 +352,7 @@ fn slot_is_kind(world: &World, slot: &ComponentSlot, kind: &str) -> bool {
         KIND_ANIMATOR => world.get::<AnimatorComponent>(slot.entity).is_some(),
         KIND_PARTICLE => world.get::<ParticleEmitterComponent>(slot.entity).is_some(),
         KIND_INPUT_MAP => world.get::<InputMapComponent>(slot.entity).is_some(),
+        KIND_LINE_RENDERER => world.get::<LineRendererComponent>(slot.entity).is_some(),
         _ => false,
     }
 }
@@ -625,6 +638,23 @@ fn read_floats(
                 _               => None,
             }
         }
+        // ── 3D ポリライン（スロット格納型: locate で解決）──
+        // points（配列）は読み取り対象にしない。読み取りは固定長 4 要素の
+        // スタックバッファ経由（MAX_FLOAT_FIELD_LEN）で、数百要素を返せないため。
+        // 点数を知りたいときは point_count を読む。
+        "LineRenderer" => {
+            let e = locate::<LineRendererComponent>(world, entity)?;
+            let l = world.get::<LineRendererComponent>(e)?;
+            match field {
+                "width"       => put(out, &[l.width]),
+                "color"       => put(out, &l.color),
+                "local_space" => put(out, &[if l.local_space { 1.0 } else { 0.0 }]),
+                "depth_test"  => put(out, &[if l.depth_test { 1.0 } else { 0.0 }]),
+                "visible"     => put(out, &[if l.visible { 1.0 } else { 0.0 }]),
+                "point_count" => put(out, &[l.points.len() as f32]),
+                _             => None,
+            }
+        }
         // ── 3D カメラ（スロット格納型: locate で解決）──
         "Camera" => {
             let e = locate::<CameraComponent>(world, entity)?;
@@ -864,6 +894,35 @@ fn write_floats(
                 "min_distance"  => take::<1>(v).map(|x| a.min_distance = x[0].max(0.0)).is_some(),
                 "max_distance"  => take::<1>(v).map(|x| a.max_distance = x[0].max(0.0)).is_some(),
                 _               => false,
+            }
+        }
+        // ── 3D ポリライン（スロット格納型: locate で解決）──
+        "LineRenderer" => {
+            let Some(e) = locate::<LineRendererComponent>(world, entity) else { return false };
+            let Some(l) = world.get_mut::<LineRendererComponent>(e) else { return false };
+            match field {
+                // 点列の一括差し替え（[x,y,z, x,y,z, ...]）。
+                // 要素数が 3 の倍数でない／点数が上限超過なら失敗させる
+                // （黙って丸めると C# 側の詰め忘れを検出できなくなるため）。
+                "points" => {
+                    if v.len() % 3 != 0 || v.len() / 3 > MAX_LINE_POINTS {
+                        return false;
+                    }
+                    l.points.clear();
+                    l.points.extend(v.chunks_exact(3).map(|c| [c[0], c[1], c[2]]));
+                    true
+                }
+                // 点数の切り詰め。0 を書けば線を消せる（SetPoints(空) の実体）。
+                // 現在の点数より大きい値は「切り詰め不要」として何もしない。
+                "point_count" => take::<1>(v)
+                    .map(|a| l.points.truncate(a[0].max(0.0) as usize))
+                    .is_some(),
+                "width"       => take::<1>(v).map(|a| l.width = a[0].max(0.0)).is_some(),
+                "color"       => take(v).map(|a| l.color = a).is_some(),
+                "local_space" => take::<1>(v).map(|a| l.local_space = a[0] != 0.0).is_some(),
+                "depth_test"  => take::<1>(v).map(|a| l.depth_test = a[0] != 0.0).is_some(),
+                "visible"     => take::<1>(v).map(|a| l.visible = a[0] != 0.0).is_some(),
+                _             => false,
             }
         }
         // ── 3D カメラ（スロット格納型: locate で解決）──
@@ -1112,6 +1171,7 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
         "Animator"        => locate::<AnimatorComponent>(world, entity).is_some(),
         "ParticleEmitter" => locate::<ParticleEmitterComponent>(world, entity).is_some(),
         "InputMap"        => locate::<InputMapComponent>(world, entity).is_some(),
+        "LineRenderer"    => locate::<LineRendererComponent>(world, entity).is_some(),
         // 水位グラフ（Phase W2.5）
         "WaterLink"       => locate::<WaterLinkComponent>(world, entity).is_some(),
         "WaterVolume"     => locate::<WaterVolumeComponent>(world, entity).is_some(),
@@ -1158,7 +1218,9 @@ unsafe extern "system" fn ffi_set_floats(
     inp: *const f32, count: i32,
 ) -> i32 {
     let ptr = WORLD_PTR.with(|p| p.get());
-    if ptr.is_null() || inp.is_null() || count <= 0 || count as usize > MAX_FLOAT_FIELD_LEN {
+    // 書き込みは配列フィールド（LineRenderer.points）を 1 回で渡せるよう
+    // 読み取りより長い上限を許す（スタックバッファを介さないため安全）。
+    if ptr.is_null() || inp.is_null() || count <= 0 || count as usize > MAX_FLOAT_WRITE_LEN {
         return 0;
     }
     let world = &mut *ptr;

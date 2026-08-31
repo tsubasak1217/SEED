@@ -436,6 +436,11 @@ pub fn slot_to_data(world: &World, slot: &ComponentSlot) -> Option<ComponentSlot
             world.get::<crate::engine::components::AudioComponent>(slot.entity)
                 .map(|ac| ComponentData::AudioComponent(ac.to_data()))
         }
+        ComponentKind::LineRenderer => {
+            // 3D ポリライン（釣り糸・ロープ）をシリアライズ用データに変換する
+            world.get::<crate::engine::components::LineRendererComponent>(slot.entity)
+                .map(|lr| ComponentData::LineRendererComponent(lr.to_data()))
+        }
         ComponentKind::WaterVolume => {
             // 水ボリュームコンポーネントをシリアライズ用データに変換する
             world.get::<crate::engine::components::WaterVolumeComponent>(slot.entity)

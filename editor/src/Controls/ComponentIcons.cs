@@ -56,6 +56,7 @@ internal static class ComponentIcons
         ["Collider2dComponent"]         = "Icon.Component.Collider2d",
         // サウンド
         ["AudioComponent"]              = "Icon.Component.Audio",
+        ["LineRendererComponent"]       = "Icon.Component.LineRenderer",
         // アニメーション
         ["AnimatorComponent"]           = "Icon.Component.Animator",
         // 入力

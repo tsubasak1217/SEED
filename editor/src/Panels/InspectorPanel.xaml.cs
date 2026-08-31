@@ -838,6 +838,13 @@ public partial class InspectorPanel : UserControl
         bool AudioLoop = false, bool AudioPlayOnStart = false, bool AudioSpatial = false,
         float AudioMinDistance = 2f, float AudioMaxDistance = 50f,
         float AudioPan = 0f,
+        // LineRendererComponent 用フィールド
+        // （幅・色 RGBA・座標系フラグ・深度テスト・表示・点数。点列そのものはスクリプト駆動なので
+        //   件数だけを受け取り、インスペクタでは編集しない）
+        float LineWidth = 0.02f,
+        float LineR = 1f, float LineG = 1f, float LineB = 1f, float LineA = 1f,
+        bool LineLocalSpace = true, bool LineDepthTest = true, bool LineVisible = true,
+        int LinePointCount = 0,
         // AnimatorComponent 用フィールド（clips は JSON 配列文字列 [{"name":..,"path":..},...] のまま保持し、
         // UI 構築時にパースする。値そのものは Rust 側 AnimatorComponentData と同一構造）
         string AnimClipsJson = "[]",
@@ -1336,6 +1343,18 @@ public partial class InspectorPanel : UserControl
             var audioMinDistance = comp.TryGetProperty("min_distance",  out var amn) ? amn.GetSingle() : 2f;
             var audioMaxDistance = comp.TryGetProperty("max_distance",  out var amx) ? amx.GetSingle() : 50f;
             var audioPan         = comp.TryGetProperty("pan",           out var apn) ? apn.GetSingle() : 0f;
+            // LineRendererComponent 用: 幅・色 RGBA・座標系・深度テスト・表示・点数。
+            // 色キーは "lr_r".."lr_a"（ライトの "lr" 等と衝突しない専用の綴り）。
+            // 表示フラグは "line_visible"（スロット共通ラッパの "enabled"/"visible" と重複させない）。
+            var lineWidth      = comp.TryGetProperty("width",       out var lwd) ? lwd.GetSingle() : 0.02f;
+            var lineR          = comp.TryGetProperty("lr_r",        out var lrr) ? lrr.GetSingle() : 1f;
+            var lineG          = comp.TryGetProperty("lr_g",        out var lrg2) ? lrg2.GetSingle() : 1f;
+            var lineB          = comp.TryGetProperty("lr_b",        out var lrb) ? lrb.GetSingle() : 1f;
+            var lineA          = comp.TryGetProperty("lr_a",        out var lra) ? lra.GetSingle() : 1f;
+            var lineLocalSpace = comp.TryGetProperty("local_space", out var lls) ? ReadJsonBool(lls, true) : true;
+            var lineDepthTest  = comp.TryGetProperty("depth_test",  out var ldt) ? ReadJsonBool(ldt, true) : true;
+            var lineVisible    = comp.TryGetProperty("line_visible", out var lvs) ? ReadJsonBool(lvs, true) : true;
+            var linePointCount = comp.TryGetProperty("point_count", out var lpc) ? lpc.GetInt32() : 0;
             // AnimatorComponent 用: クリップ一覧（生 JSON のまま保持）・既定クリップ・自動再生・速度
             var animClipsJson    = comp.TryGetProperty("clips",         out var acj) ? acj.GetRawText() : "[]";
             var animDefaultClip  = comp.TryGetProperty("default_clip",  out var adc) ? adc.GetString() ?? "" : "";
@@ -1560,6 +1579,10 @@ public partial class InspectorPanel : UserControl
                 AudioLoop: audioLoop, AudioPlayOnStart: audioPlayOnStart, AudioSpatial: audioSpatial,
                 AudioMinDistance: audioMinDistance, AudioMaxDistance: audioMaxDistance,
                 AudioPan: audioPan,
+                LineWidth: lineWidth,
+                LineR: lineR, LineG: lineG, LineB: lineB, LineA: lineA,
+                LineLocalSpace: lineLocalSpace, LineDepthTest: lineDepthTest,
+                LineVisible: lineVisible, LinePointCount: linePointCount,
                 AnimClipsJson: animClipsJson, AnimDefaultClip: animDefaultClip,
                 AnimPlayOnStart: animPlayOnStart, AnimSpeed: animSpeed,
                 LightKind: lightKind,
@@ -1779,6 +1802,7 @@ public partial class InspectorPanel : UserControl
         "InteractionSourceComponent" => Color.FromRgb(0x18, 0x30, 0x18), // 暗い緑（草・環境への干渉）
         "CoverEmitterComponent" => Color.FromRgb(0x2E, 0x2E, 0x38), // 明るめの灰青（雪・地表を覆うもの）
         "ControlPointComponent" => Color.FromRgb(0x24, 0x1E, 0x38), // 暗い紫（汎用パス。水の暗青・草の暗緑と識別できる色）
+        "LineRendererComponent" => Color.FromRgb(0x1E, 0x2E, 0x24), // 暗い青緑（線描画。パス系の紫と区別する）
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
     };
@@ -1805,6 +1829,7 @@ public partial class InspectorPanel : UserControl
         "InteractionSourceComponent" => "Interaction Source",
         "CoverEmitterComponent" => "Cover Emitter",
         "ControlPointComponent" => "Control Point",
+        "LineRendererComponent" => "Line Renderer",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                     => typeId,
@@ -2071,6 +2096,7 @@ public partial class InspectorPanel : UserControl
             "InteractionSourceComponent" => BuildInteractionSourceSlotContent(info),
             "CoverEmitterComponent" => BuildCoverEmitterSlotContent(info),
             "ControlPointComponent" => BuildControlPointSlotContent(info),
+            "LineRendererComponent" => BuildLineRendererSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
             "Collider2dComponent" => BuildCollider2dSlotContent(info),
@@ -8163,6 +8189,101 @@ public partial class InspectorPanel : UserControl
     /// <summary>制御点リストを spline_points の送信形式（"x,y,z;x,y,z;..."）へ直列化する。空リスト = 空文字列。</summary>
     private static string SerializeSplinePoints(List<(float x, float y, float z)> points) =>
         string.Join(";", points.Select(p => FormattableString.Invariant($"{p.x},{p.y},{p.z}")));
+
+    // ── LineRendererComponent inspector ───────────────────────
+
+    /// <summary>幅の数値表示フォーマット（ワールド単位。糸のように細い値を扱う）。</summary>
+    private const string LineWidthNumberFormat = "F3";
+
+    /// <summary>
+    /// LineRendererComponent のインスペクター UI を構築して返す。
+    ///
+    /// 幅・色・座標系・深度テスト・表示を編集し、変更時は
+    /// SET_LINE_RENDERER_FIELD:{actor},{slot},{key},{value} を送信する。
+    /// 点列は「毎フレームスクリプトから差し替える」運用のため、
+    /// ここでは **件数の表示のみ** を行い編集手段は提供しない。
+    /// </summary>
+    private UIElement BuildLineRendererSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // フィールド変更をランタイムへ送信するローカル関数
+        // （key ∈ width / color / local_space / depth_test / visible）
+        void SendField(string key, string value)
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_LINE_RENDERER_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
+        }
+
+        // ── 太さ（ワールド単位）──────────────────────────────
+        // 上限が無い（用途によりロープ〜糸まで幅広い）ため数値入力行になる。
+        sp.Children.Add(BuildResettableFloatRow(
+            info.SlotIdx, LineRendererComponentType, "太さ(m)", info.LineWidth, "width",
+            LineWidthNumberFormat,
+            // 負の太さは無効なので下限でクランプしてから送る（ランタイム側でも二重にクランプ）。
+            v => SendField("width", MathF.Max(0f, v).ToString(CultureInfo.InvariantCulture))));
+
+        // ── 色（RGBA。アルファで半透明の糸にできる）─────────────
+        sp.Children.Add(BuildColorPickerRow(
+            "色", info.LineR, info.LineG, info.LineB, info.LineA,
+            info.SlotIdx, LineRendererComponentType, "color",
+            (r, g, b, a) => SendField("color", FormattableString.Invariant($"{r},{g},{b},{a}"))));
+
+        // ── チェックボックス行 ────────────────────────────────
+        // ラベル + CheckBox の横並び行を生成して IPC を送信するローカル関数
+        void AddCheckRow(string label, bool isChecked, string key, string tooltip)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+            row.Children.Add(new TextBlock
+            {
+                Text              = label,
+                Foreground        = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                FontSize          = 11,
+                Width             = InspectorRowLabelWidth,
+                VerticalAlignment = VerticalAlignment.Center,
+                ToolTip           = tooltip,
+            });
+            var check = new CheckBox
+            {
+                IsChecked         = isChecked,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(4, 0, 0, 0),
+                ToolTip           = tooltip,
+            };
+            // bool 値は "1"/"0" で送信する
+            check.Checked   += (_, _) => SendField(key, "1");
+            check.Unchecked += (_, _) => SendField(key, "0");
+            row.Children.Add(check);
+            sp.Children.Add(row);
+        }
+        AddCheckRow("表示", info.LineVisible, "visible",
+            "オフにするとスロットを消さずに線だけ隠せます");
+        AddCheckRow("ローカル座標", info.LineLocalSpace, "local_space",
+            "オン: 点列をこのアクターの Transform 基準で解釈\nオフ: 点列をワールド座標として解釈");
+        AddCheckRow("深度テスト", info.LineDepthTest, "depth_test",
+            "オン: 手前の物体に隠れる\nオフ: 常に最前面へ描く");
+
+        // ── 点数の表示（編集不可）────────────────────────────
+        sp.Children.Add(new TextBlock
+        {
+            Text         = $"点数: {info.LinePointCount}",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize     = 11,
+            Margin       = new Thickness(0, 6, 0, 2),
+        });
+        sp.Children.Add(new TextBlock
+        {
+            Text         = "点列はスクリプトから gameObject.GetComponent<LineRenderer>().SetPoints(...) で毎フレーム更新します",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 2, 0, 2),
+        });
+
+        return sp;
+    }
+
+    // ── AudioComponent inspector（本体）───────────────────────
 
     /// <summary>
     /// AudioComponent のインスペクター UI を構築して返す。

@@ -21,6 +21,16 @@ public static unsafe class ScriptHost
     /// <summary>float フィールドの最大要素数（RGBA カラーの 4 要素、Rust 側と一致させる）。</summary>
     private const int MaxFloatFieldLen = 4;
 
+    /// <summary>
+    /// float フィールドへ <b>1 回で書き込める</b> 最大要素数
+    /// （Rust 側 <c>host_api::MAX_FLOAT_WRITE_LEN</c> と一致させること）。
+    ///
+    /// 読み取りは固定長スタックバッファ経由なので <see cref="MaxFloatFieldLen"/> のままだが、
+    /// 書き込みは C# 側のメモリを直接スライスで渡すため長い配列を 1 回で送れる。
+    /// <c>LineRenderer.SetPoints</c>（点列 512 点 × Vector3 = 1536 要素）がこれを使う。
+    /// </summary>
+    public const int MaxFloatWriteLen = 512 * 3;
+
     /// <summary>文字列取得の初期バッファサイズ（バイト）。パス程度なら 1 回で収まる長さ。</summary>
     private const int InitialStringBufferSize = 260;
 
@@ -60,11 +70,17 @@ public static unsafe class ScriptHost
             return _api.GetFloats(e.Index, e.Generation, cp, cl, fp, fl, bp, buf.Length);
     }
 
-    /// <summary>指定コンポーネントの数値フィールドへ値（1〜4 要素）を書き込む。失敗時は false。</summary>
+    /// <summary>
+    /// 指定コンポーネントの数値フィールドへ値を書き込む。失敗時は false。
+    /// 通常のフィールドは 1〜4 要素、配列フィールド（LineRenderer.points）は
+    /// <see cref="MaxFloatWriteLen"/> 要素まで。
+    /// </summary>
     public static bool TrySetFloats(Entity e, string component, string field, ReadOnlySpan<float> values)
     {
         if (!_available || _api.SetFloats == null || !e.IsValid) return false;
-        if (values.Length is <= 0 or > MaxFloatFieldLen) return false;
+        // 書き込みは配列フィールド（LineRenderer.points）も通るため、
+        // 上限は書き込み用の MaxFloatWriteLen で判定する（Rust 側と同じ基準）。
+        if (values.Length is <= 0 or > MaxFloatWriteLen) return false;
 
         int cl = Encoding.UTF8.GetByteCount(component);
         int fl = Encoding.UTF8.GetByteCount(field);

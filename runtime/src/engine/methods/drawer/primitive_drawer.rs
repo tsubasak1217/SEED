@@ -1643,3 +1643,42 @@ pub fn draw_thick_line_batch<'pass>(
         render_pass.draw(0..batch.line_count, 0..1);
     }
 }
+
+
+// ============================================================
+//  draw_line_ribbon_batch — LineRenderer のリボンを描画
+// ============================================================
+
+/// `line_ribbon::expand_polyline_ribbon` が展開した頂点（`GpuLineBatch` に載せた
+/// ColorVertex 列）を、リボン用パイプラインで描画する。
+///
+/// `GpuLineBatch` は「ColorVertex の頂点バッファ + 頂点数」でしかなく、
+/// トポロジはパイプライン側が決めるため、TriangleList のリボンにもそのまま使える
+/// （専用の GPU リソース型を増やさない）。
+///
+/// `depth_test` で 2 つのパイプラインを選ぶ:
+/// - true : `ribbon_depth_pipeline`（depth_compare=LessEqual）— 不透明物に隠れる
+/// - false: `ribbon_nodepth_pipeline`（depth_compare=Always）— 常に最前面
+///
+/// カメラ・モデルのバインドグループは 1px ライン描画と同じものを渡すこと
+/// （頂点は既にワールド空間なので `model_bg` は恒等モデル行列であること）。
+pub fn draw_line_ribbon_batch<'pass>(
+    render_pass: &mut wgpu::RenderPass<'pass>,
+    batch:       &'pass GpuLineBatch,
+    camera_bg:   &'pass wgpu::BindGroup,
+    model_bg:    &'pass wgpu::BindGroup,
+    pipelines:   &'pass DrawPipelines,
+    depth_test:  bool,
+) {
+    if batch.vertex_count == 0 { return; }
+    let pipeline = if depth_test {
+        &pipelines.unlit_line.ribbon_depth_pipeline
+    } else {
+        &pipelines.unlit_line.ribbon_nodepth_pipeline
+    };
+    render_pass.set_pipeline(pipeline);
+    render_pass.set_bind_group(0, camera_bg, &[]);
+    render_pass.set_bind_group(1, model_bg,  &[]);
+    render_pass.set_vertex_buffer(0, batch.vertex_buffer.slice(..));
+    render_pass.draw(0..batch.vertex_count, 0..1);
+}

@@ -86,6 +86,8 @@ pub(crate) mod control_point_ops;
 /// コントロールポイントのビューポート可視化（点キューブ＋区間ライン。Edit モード限定）
 pub(crate) mod control_point_scene_gizmo;
 mod animation_ops;
+/// 3D ポリライン（LineRendererComponent）のインスペクタ編集とリボン頂点収集
+pub(crate) mod line_renderer_ops;
 pub(crate) mod light_ops;
 pub(crate) mod skybox_ops;
 pub(crate) mod particle_ops;

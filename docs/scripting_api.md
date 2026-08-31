@@ -837,6 +837,88 @@ if (gameObject.GetComponent<WaterVolume>() is { } water)
 
 > **重要**: `WaterVolume.WaterLevel` は**読み取り専用**です。直接代入できると体積保存が破れて水位グラフの前提が壊れるため、水を足す／抜く演出は `WaterLink.Openness` の開閉で表現します。`WaterLink` の接続先（volume_a / volume_b）も実行中は変更できません（インスペクタで設定します）。
 
+### LineRenderer（3D の線を描く：釣り糸・ロープ・軌跡）
+
+点列を結ぶ 1 本の線をワールド空間に描きます。太さは**ワールド単位（m）**で、線は常にカメラを向くリボンとして描かれます（遠いほど細く見えます）。点列は毎フレーム `SetPoints` で丸ごと差し替える使い方が基本です。
+
+```csharp
+if (gameObject.GetComponent<LineRenderer>() is { } line)
+{
+    line.Width       // float（get/set。線の太さ。ワールド単位 m。0 で非表示）
+    line.Color       // Color（get/set。RGBA。アルファ < 1 で半透明）
+    line.Visible     // bool（get/set。false でスロットを消さずに線だけ隠す）
+    line.LocalSpace  // bool（get/set。true=点列はアクター Transform 基準 / false=ワールド座標）
+    line.DepthTest   // bool（get/set。true=手前の物体に隠れる / false=常に最前面）
+    line.PointCount  // int（get のみ。現在の点数）
+
+    line.SetPoints(points);   // Vector3[] / ReadOnlySpan<Vector3> を丸ごと差し替え
+    line.Clear();             // 点列を空にして線を消す
+}
+```
+
+> **重要**: `SetPoints` に渡せる点数の上限は `LineRenderer.MaxPoints`（512）です。超えると `false` を返して何も変わりません。点列そのものは読み出せません（点数だけ `PointCount` で取れます）。
+
+### LineHelper（線の点列を作る補助・純 C#）
+
+`LineRenderer.SetPoints` に渡す点列を組み立てる静的ヘルパーです。エンジンへのアクセスを伴わないので、どこからでも呼べます。
+
+```csharp
+// 始点→終点を結ぶ、下向きにたわんだカテナリー（懸垂線）状の点列
+Vector3[] pts = LineHelper.Catenary(start, end, slack, segments);
+//   start    : 始点（ワールド座標。例: 竿先）
+//   end      : 終点（ワールド座標。例: ウキ）
+//   slack    : 中央でのたわみ量（m）。0 で直線、大きいほど深く垂れる
+//   segments : 分割数。返る点数は segments + 1（端点は start / end と厳密に一致）
+```
+
+#### レシピ: 竿先 → ウキの釣り糸を描く
+
+竿先アクターに `LineRenderer` を付け、`LocalSpace = false`（ワールド座標）にしてから、毎フレーム竿先とウキのワールド位置を結びます。糸の張り具合を距離から決めると、引き寄せたときに自然にたわみます。
+
+```csharp
+using SEEDEditor.Scripting;
+
+public class FishingLine : SEEDScript
+{
+    // 竿先とウキを参照フィールドで差す（Hierarchy からドロップ）
+    [SerializeField(Label = "竿先")] private SEED.Transform rodTip;
+    [SerializeField(Label = "ウキ")] private SEED.Transform bobber;
+
+    /// <summary>糸の全長（m）。これより両端が近ければ余った長さがたわみになる。</summary>
+    private const float LineLength = 6f;
+    /// <summary>糸の分割数（多いほど滑らか）。</summary>
+    private const int Segments = 24;
+    /// <summary>余り長さのうちどれだけをたわみ深さにするかの係数。</summary>
+    private const float SlackRatio = 0.5f;
+
+    public override void OnStart()
+    {
+        if (gameObject.GetComponent<SEED.LineRenderer>() is { } line)
+        {
+            line.LocalSpace = false;                                  // 点列をワールド座標で渡す
+            line.Width      = 0.015f;                                 // 釣り糸の太さ（m）
+            line.Color      = new SEED.Color(0.9f, 0.9f, 0.85f, 0.8f);
+        }
+    }
+
+    public override void Update(ref NativeFrameContext ctx)
+    {
+        if (gameObject.GetComponent<SEED.LineRenderer>() is not { } line) return;
+        // 竿先かウキが未設定・破棄済みなら糸を消す
+        if (!rodTip.IsValid || !bobber.IsValid) { line.Clear(); return; }
+
+        var a = rodTip.Position;
+        var b = bobber.Position;
+
+        // 余った糸の長さぶんだけたわませる（張りきったら直線になる）
+        float dist  = SEED.Vector3.Distance(a, b);
+        float slack = SEED.Mathf.Max(0f, LineLength - dist) * SlackRatio;
+
+        line.SetPoints(SEED.LineHelper.Catenary(a, b, slack, Segments));
+    }
+}
+```
+
 ### 利用可能なコンポーネント一覧
 
 | コンポーネント名 | 取得 | 内容 |
@@ -852,6 +934,7 @@ if (gameObject.GetComponent<WaterVolume>() is { } water)
 | `InputMap` | `gameObject.GetComponent<InputMap>()` | 入力アクション評価（Bool / Axis1D / Axis2D。Key / GamepadButton / GamepadAxis） |
 | `WaterVolume` | `gameObject.GetComponent<WaterVolume>()` | 現在水位（読み取り専用）・設定水位・水位シミュレーションの有効／無効・水面シェーダのパラメータ（SetShaderParam / GetShaderParamFloat / GetShaderParamVector3） |
 | `WaterLink` | `gameObject.GetComponent<WaterLink>()` | 水位グラフの開口。**開閉率（バルブ）**・開口寸法・流量係数 |
+| `LineRenderer` | `gameObject.GetComponent<LineRenderer>()` | 3D の線（釣り糸・ロープ・軌跡）。点列（SetPoints）・太さ・色・表示・座標系・深度テスト |
 
 > **重要**: `GetComponent<T>()` は `T?` を返し、同種コンポーネントを複数スロット持てます。`GetComponent<T>()`＝0 番目、`GetComponent<T>(index)`＝index 番目、`GetComponent<T>("Name")`＝スロット名一致。
 
@@ -896,7 +979,7 @@ public class FollowCamera : SEEDScript
 |---|---|
 | `SEED.GameObject` / `SEED.GameObject?` | アクター本体への参照 |
 | `SEED.Transform` / `SEED.CanvasTransform`（＋ `?`） | アクターのルートに直付けされた Transform 系への参照 |
-| `SEED.Sprite` / `SEED.Camera` / `SEED.AudioSource` / `SEED.Animator` / `SEED.ParticleEmitter` / `SEED.InputMap`（＋ `?`） | アクター内の**コンポーネントスロット**への参照 |
+| `SEED.Sprite` / `SEED.Camera` / `SEED.AudioSource` / `SEED.Animator` / `SEED.ParticleEmitter` / `SEED.InputMap` / `SEED.LineRenderer`（＋ `?`） | アクター内の**コンポーネントスロット**への参照 |
 
 > **重要**: 参照フィールドは**常に参照（ハンドル）**です（「値としての Transform」は作れません。値で持つなら `SEED.Vector3`）。**`null` は「未設定」のみ**を意味し Nullable（`T?`）宣言でしか起きません。**`IsValid` は「参照先が生きているか」**で、未解決・破棄済みのどちらでも `false` です。非 Nullable（`T`）宣言は未設定でも null にならず `IsValid == false` の無効ハンドルになります。参照は**アクタ名（＋スロット名）**で保存されますが、エディタでアクタをリネームすると**旧名一致の参照は自動で新名に追従**します（同名アクタが複数ある場合は旧名一致の参照がすべて書き換わる点に注意。コンパイルエラー中のスクリプトの参照は型判定できないため追従しません）。解決は Play 開始時／Instantiate 時に **`OnStart` より前の一度きり**です。
 

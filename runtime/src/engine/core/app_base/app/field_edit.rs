@@ -124,6 +124,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             slot(*actor_dfs_id, *slot_idx, "SetLightField", key),
         IpcCommand::SetAudioField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetAudioField", key),
+        IpcCommand::SetLineRendererField { actor_dfs_id, slot_idx, key, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetLineRendererField", key),
         IpcCommand::SetSkinnedSpriteField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetSkinnedSpriteField", key),
         IpcCommand::SetSpriteField { actor_dfs_id, slot_idx, key, .. } =>
@@ -642,6 +644,11 @@ pub(super) fn apply_component_data_in_place(
             world.insert(entity, AudioComponent::from_data(d.clone()));
             SlotApply::Applied
         }
+        // 3D ポリラインは純粋な値（点列・幅・色・フラグ）のみなので詰め替えで復元できる。
+        ComponentData::LineRendererComponent(d) => {
+            world.insert(entity, LineRendererComponent::from_data(d.clone()));
+            SlotApply::Applied
+        }
         ComponentData::AnimatorComponent(d) => {
             world.insert(entity, AnimatorComponent::from_data(d.clone()));
             SlotApply::Applied
@@ -958,6 +965,7 @@ pub(super) fn component_kind_of(data: &ComponentData) -> ComponentKind {
         ComponentData::InteractionSourceComponent(_) => ComponentKind::InteractionSource,
         ComponentData::CoverEmitterComponent(_) => ComponentKind::CoverEmitter,
         ComponentData::ControlPointComponent(_) => ComponentKind::ControlPoint,
+        ComponentData::LineRendererComponent(_) => ComponentKind::LineRenderer,
     }
 }
 

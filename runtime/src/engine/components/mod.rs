@@ -42,6 +42,8 @@ pub mod interaction_source_component;
 pub mod cover_emitter_component;
 /// コントロールポイント（汎用パス: 川・巡回ルート・カメラパスの共通土台）
 pub mod control_point_component;
+/// 3D ポリライン描画（釣り糸・ロープ・軌跡。スクリプトから毎フレーム点列を差し替える）
+pub mod line_renderer_component;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -80,6 +82,9 @@ pub use cover_emitter_component::{
 pub use control_point_component::{
     ControlPoint, ControlPointComponent, ControlPointComponentData, ControlPointInterp,
     DEFAULT_TIME_STEP as CONTROL_POINT_DEFAULT_TIME_STEP, MAX_CONTROL_POINTS,
+};
+pub use line_renderer_component::{
+    LineRendererComponent, LineRendererComponentData, MAX_LINE_POINTS,
 };
 pub use particle_emitter_component::{
     ParticleEmitterComponent, ParticleEmitterComponentData,
@@ -146,6 +151,8 @@ pub enum ComponentKind {
     CoverEmitter,
     /// コントロールポイント（汎用パス。川・巡回ルート・カメラパスが共用する点列）
     ControlPoint,
+    /// 3D ポリライン描画（釣り糸・ロープ・軌跡）
+    LineRenderer,
 }
 
 impl ComponentKind {
@@ -175,6 +182,7 @@ impl ComponentKind {
             Self::InteractionSource => "InteractionSourceComponent",
             Self::CoverEmitter => "CoverEmitterComponent",
             Self::ControlPoint => "ControlPointComponent",
+            Self::LineRenderer => "LineRendererComponent",
         }
     }
 }
@@ -227,4 +235,6 @@ pub enum ComponentData {
     CoverEmitterComponent(CoverEmitterComponentData),
     /// コントロールポイント（汎用パスの点列）
     ControlPointComponent(ControlPointComponentData),
+    /// 3D ポリライン描画（釣り糸・ロープ・軌跡）
+    LineRendererComponent(LineRendererComponentData),
 }

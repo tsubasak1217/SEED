@@ -618,7 +618,7 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh">
+<section id="sec-components" data-keywords="コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -775,6 +775,56 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <b>重要</b>: <code>WaterVolume.WaterLevel</code> は<b>読み取り専用</b>です。直接代入できると体積保存が破れて水位グラフの前提が壊れるため、水を足す／抜く演出は <code>WaterLink.Openness</code> の開閉で表現します。<code>WaterLink</code> の接続先（volume_a / volume_b）も実行中は変更できません（インスペクタで設定）。
   </div>
 
+  <h3 id="cmp-linerenderer">LineRenderer（3D の線を描く：釣り糸・ロープ・軌跡）</h3>
+  <p class="section-note">点列を結ぶ 1 本の線をワールド空間に描きます。太さは<b>ワールド単位（m）</b>で、線は常にカメラを向くリボンとして描かれます（遠いほど細く見えます）。点列は毎フレーム <code>SetPoints</code> で丸ごと差し替える使い方が基本です。</p>
+  <div class="api"><code class="sig">line.Width</code><span class="desc">float（get/set。線の太さ。ワールド単位 m。0 で非表示）</span></div>
+  <div class="api"><code class="sig">line.Color</code><span class="desc">Color（get/set。RGBA。アルファ &lt; 1 で半透明）</span></div>
+  <div class="api"><code class="sig">line.Visible</code><span class="desc">bool（get/set。false でスロットを消さずに線だけ隠す）</span></div>
+  <div class="api"><code class="sig">line.LocalSpace</code><span class="desc">bool（get/set。true=点列はアクター Transform 基準 / false=ワールド座標）</span></div>
+  <div class="api"><code class="sig">line.DepthTest</code><span class="desc">bool（get/set。true=手前の物体に隠れる / false=常に最前面）</span></div>
+  <div class="api"><code class="sig">line.PointCount</code><span class="desc">int（<b>get のみ</b>。現在の点数）</span></div>
+  <div class="api"><code class="sig">line.SetPoints(points)</code><span class="desc">Vector3[] / ReadOnlySpan&lt;Vector3&gt; を丸ごと差し替え。上限 <code>LineRenderer.MaxPoints</code>（512）</span></div>
+  <div class="api"><code class="sig">line.Clear()</code><span class="desc">点列を空にして線を消す</span></div>
+  <div class="api"><code class="sig">LineHelper.Catenary(start, end, slack, segments)</code><span class="desc">Vector3[]（純 C#。start→end を結ぶたわんだ懸垂線の点列。slack=中央のたわみ量 m、点数=segments+1、端点は厳密一致）</span></div>
+<pre><span class="c">// レシピ: 竿先 → ウキの釣り糸を毎フレーム描く</span>
+<span class="k">public class</span> <span class="t">FishingLine</span> : <span class="t">SEEDScript</span>
+{
+    [SerializeField(Label = <span class="s">"竿先"</span>)] <span class="k">private</span> <span class="t">SEED.Transform</span> rodTip;
+    [SerializeField(Label = <span class="s">"ウキ"</span>)] <span class="k">private</span> <span class="t">SEED.Transform</span> bobber;
+
+    <span class="k">private const</span> <span class="t">float</span> LineLength = 6f;   <span class="c">// 糸の全長（m）</span>
+    <span class="k">private const</span> <span class="t">int</span>   Segments   = 24;   <span class="c">// 分割数</span>
+    <span class="k">private const</span> <span class="t">float</span> SlackRatio = 0.5f; <span class="c">// 余り長さ→たわみ深さの係数</span>
+
+    <span class="k">public override void</span> OnStart()
+    {
+        <span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">SEED.LineRenderer</span>&gt;() <span class="k">is</span> { } line)
+        {
+            line.LocalSpace = <span class="k">false</span>;   <span class="c">// 点列をワールド座標で渡す</span>
+            line.Width      = 0.015f;
+            line.Color      = <span class="k">new</span> <span class="t">SEED.Color</span>(0.9f, 0.9f, 0.85f, 0.8f);
+        }
+    }
+
+    <span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx)
+    {
+        <span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">SEED.LineRenderer</span>&gt;() <span class="k">is not</span> { } line) <span class="k">return</span>;
+        <span class="k">if</span> (!rodTip.IsValid || !bobber.IsValid) { line.Clear(); <span class="k">return</span>; }
+
+        <span class="k">var</span> a = rodTip.Position;
+        <span class="k">var</span> b = bobber.Position;
+
+        <span class="c">// 余った糸の長さぶんだけたわませる（張りきったら直線になる）</span>
+        <span class="t">float</span> dist  = <span class="t">SEED.Vector3</span>.Distance(a, b);
+        <span class="t">float</span> slack = <span class="t">SEED.Mathf</span>.Max(0f, LineLength - dist) * SlackRatio;
+
+        line.SetPoints(<span class="t">SEED.LineHelper</span>.Catenary(a, b, slack, Segments));
+    }
+}</pre>
+  <div class="warn">
+    <b>重要</b>: <code>SetPoints</code> の点数上限は <code>LineRenderer.MaxPoints</code>（512）です。超えると <code>false</code> を返して何も変わりません。点列そのものは読み出せません（点数だけ <code>PointCount</code> で取れます）。
+  </div>
+
   <h3>利用可能なコンポーネント一覧</h3>
   <table>
     <tr><th>コンポーネント名</th><th>取得</th><th>内容</th></tr>
@@ -789,6 +839,7 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><td><code>InputMap</code></td><td><code>gameObject.GetComponent&lt;InputMap&gt;()</code></td><td>入力アクション評価（Bool / Axis1D / Axis2D。Key / GamepadButton / GamepadAxis）</td></tr>
     <tr><td><code>WaterVolume</code></td><td><code>gameObject.GetComponent&lt;WaterVolume&gt;()</code></td><td>現在水位（読み取り専用）・設定水位・水位シミュレーションの有効／無効・水面シェーダのパラメータ（SetShaderParam / GetShaderParamFloat / GetShaderParamVector3）</td></tr>
     <tr><td><code>WaterLink</code></td><td><code>gameObject.GetComponent&lt;WaterLink&gt;()</code></td><td>水位グラフの開口。<b>開閉率（バルブ）</b>・開口寸法・流量係数</td></tr>
+    <tr><td><code>LineRenderer</code></td><td><code>gameObject.GetComponent&lt;LineRenderer&gt;()</code></td><td>3D の線（釣り糸・ロープ・軌跡）。点列（SetPoints）・太さ・色・表示・座標系・深度テスト</td></tr>
   </table>
   <p class="section-note">他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定です。</p>
 

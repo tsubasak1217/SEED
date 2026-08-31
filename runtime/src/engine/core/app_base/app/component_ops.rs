@@ -450,6 +450,18 @@ impl App {
                         d.min_distance, d.max_distance, d.pan,
                     ))
                 }
+                ComponentData::LineRendererComponent(d) => {
+                    // 3D ポリライン: 幅・色・フラグに加え、点列は **件数だけ** を送る。
+                    // 点列そのものはスクリプトが毎フレーム差し替える運用（数百点になり得る）で、
+                    // インスペクタに全点を出す意味がなく、IPC 文字列も肥大するため。
+                    ("LineRendererComponent", format!(
+                        r#","width":{:.4},"lr_r":{:.4},"lr_g":{:.4},"lr_b":{:.4},"lr_a":{:.4},"local_space":{},"depth_test":{},"line_visible":{},"point_count":{}"#,
+                        d.width,
+                        d.color[0], d.color[1], d.color[2], d.color[3],
+                        d.local_space as u8, d.depth_test as u8, d.visible as u8,
+                        d.points.len(),
+                    ))
+                }
                 ComponentData::InteractionSourceComponent(d) => {
                     // インタラクションソース: 半径・強さ・有効フラグをインスペクタへ送る。
                     // 【重要】キー名は "source_enabled"。スロット共通ラッパが既に
@@ -1053,6 +1065,38 @@ impl App {
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<AudioComponent>(name, ComponentKind::Audio, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "LineRendererComponent" => {
+                // デフォルト（点なし・幅 0.02・白・ローカル空間・深度あり・表示）の
+                // LineRendererComponent をアクターに追加する。
+                // 点列はスクリプトの SetPoints で流し込む運用が前提。
+                use crate::engine::components::LineRendererComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, LineRendererComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<LineRendererComponent>(
+                            name, ComponentKind::LineRenderer, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

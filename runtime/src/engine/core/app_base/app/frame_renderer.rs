@@ -68,7 +68,7 @@ use crate::engine::methods::drawer::{
     draw_model_indirect, draw_id_pass, draw_canvas_id_items, draw_collider_pick_items, prepare_canvas_id_bg,
     draw_outline_multi, draw_stencil_mask_multi,
     extract_frustum_planes, GizmoBatch, draw_gizmo_batch,
-    LineBatch, draw_line_batch, draw_thick_line_batch,
+    LineBatch, draw_line_batch, draw_thick_line_batch, draw_line_ribbon_batch,
     draw_sprite_batches, draw_sprite_outline_batches, GpuSpriteTexture,
     // group 4（ライト＋シャドウ＋クラスタ複合 BG）を「どのカメラのパスか」で選ぶ型。
     // カメラ固有資源（CSM・クラスタ）の取り違えを防ぐため、BG は必ずこれ経由で取る。
@@ -1279,6 +1279,19 @@ impl App {
         // レンダラを可変借用する前に `&self` で組んでおき、GPU バッファ化だけを
         // 描画ブロック内で行う（借用の衝突を避けるため）。
         let control_point_lines = self.build_control_point_line_batch();
+
+        // ── LineRenderer（3D ポリライン: 釣り糸・ロープ・軌跡）の頂点収集 ──────
+        // ゲーム内オブジェクトなので Play/Edit を問わず収集する（ギズモではない）。
+        // リボンはカメラを向くよう展開するため、確定済みのカメラ位置を渡す。
+        // control_point_lines と同様、`&mut self.renderer` を借りる前に `&self` で
+        // 組んでおき、描画ブロック内では GPU バッファ化だけを行う。
+        let line_ribbon_verts = if let Some(scene) = &self.scene {
+            super::line_renderer_ops::collect_line_ribbons(
+                &scene.actors, &scene.world, self.active_world_line, saved_camera_pos,
+            )
+        } else {
+            super::line_renderer_ops::LineRibbonVertices::default()
+        };
 
         // ── ライト収集（メッシュシェーディング用 GPU ライト配列）──────────────
         // シーンの Light スロットを Transform とともに収集する。Play/Edit 両方で反映。
@@ -3104,6 +3117,14 @@ impl App {
                     let control_point_thick_batch = control_point_lines.as_ref()
                         .filter(|b| !b.segment_lines.is_empty())
                         .map(|b| b.segment_lines.build_thick(&draw_ctx.device));
+
+                    // LineRenderer のリボン頂点を GPU バッファ化する（深度あり／なしで 2 本）。
+                    // 頂点は既にワールド空間・TriangleList 並びなので、
+                    // GpuLineBatch（ColorVertex 頂点バッファ）へそのまま載せる。
+                    let line_ribbon_depth_batch = (!line_ribbon_verts.depth_tested.is_empty())
+                        .then(|| crate::engine::methods::drawer::GpuLineBatch::new(&draw_ctx.device, &line_ribbon_verts.depth_tested));
+                    let line_ribbon_nodepth_batch = (!line_ribbon_verts.always_on_top.is_empty())
+                        .then(|| crate::engine::methods::drawer::GpuLineBatch::new(&draw_ctx.device, &line_ribbon_verts.always_on_top));
 
                     // 「描画/シーンギズモ・カメラプレビュー」区間ここまで。
                     drop(_prof_scene_gizmo);
@@ -6571,6 +6592,51 @@ impl App {
                         // 以降このスコープの `pass` はオーバーレイパスを指す（メインパスは drop 済み）。
                         let _prof_overlay = ScopeGuard::new("描画/エディタオーバーレイ");
                         let mut pass = frame.begin_overlay_pass_to(hdr_view);
+
+                        // ── LineRenderer（釣り糸・ロープ等）のリボン描画 ────────────────
+                        // 【なぜオーバーレイパスなのか】
+                        // メインパス内に描くと、WBOIT 合成のフルスクリーン no_depth クアッドに
+                        // 上書きされて半透明被覆のある画面座標で消えてしまう。合成の後に描く
+                        // このパスなら 3D 前後関係を保ったまま確実に残る。
+                        // 【ビューポート】
+                        // これはエディタ表示ではなくゲーム内オブジェクトなので、Play の
+                        // レターボックス時はゲーム領域へ収める必要がある（オーバーレイパスは
+                        // 既定ではターゲット全面）。他 9 箇所と同一条件でビューポートを当て、
+                        // 描画後に全面へ戻して後続のエディタオーバーレイの挙動を変えない。
+                        if !line_ribbon_verts.is_empty() {
+                            if let Some((_, line_bg)) = &self.line_model_buf {
+                                let vp_applied =
+                                    self.mode == RuntimeMode::Play && !self.paused && play_viewport_ok;
+                                if vp_applied {
+                                    let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                    pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                    pass.set_scissor_rect(
+                                        vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                                }
+                                // 深度テストあり（不透明物に隠れる）→ なし（常に最前面）の順で描く。
+                                if let Some(batch) = &line_ribbon_depth_batch {
+                                    draw_line_ribbon_batch(
+                                        &mut pass, batch,
+                                        &camera_buf.bind_group, line_bg,
+                                        &draw_ctx.pipelines, true,
+                                    );
+                                }
+                                if let Some(batch) = &line_ribbon_nodepth_batch {
+                                    draw_line_ribbon_batch(
+                                        &mut pass, batch,
+                                        &camera_buf.bind_group, line_bg,
+                                        &draw_ctx.pipelines, false,
+                                    );
+                                }
+                                // 既定（ターゲット全面）へ戻す。以降のエディタオーバーレイは
+                                // 従来どおり全面ビューポートで描かれる。
+                                if vp_applied {
+                                    pass.set_viewport(
+                                        0.0, 0.0, rt_surf_w as f32, rt_surf_h as f32, 0.0, 1.0);
+                                    pass.set_scissor_rect(0, 0, rt_surf_w, rt_surf_h);
+                                }
+                            }
+                        }
 
                         // ドロッププレビュー球体描画（ドラッグ中のみ）
                         if let (Some(preview_batch), Some((_, line_bg))) =

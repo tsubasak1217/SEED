@@ -458,6 +458,10 @@ impl App {
                         use crate::engine::components::AudioComponent;
                         scene.world.remove::<AudioComponent>(slot_entity);
                     }
+                    ComponentKind::LineRenderer => {
+                        use crate::engine::components::LineRendererComponent;
+                        scene.world.remove::<LineRendererComponent>(slot_entity);
+                    }
                     ComponentKind::Animator => {
                         use crate::engine::components::AnimatorComponent;
                         scene.world.remove::<AnimatorComponent>(slot_entity);
@@ -925,6 +929,27 @@ impl App {
                 }
                 true
             }
+            ComponentData::LineRendererComponent(lr_data) => {
+                // 3D ポリラインを複製する（新しいスロット専用エンティティへ挿入）
+                use crate::engine::components::LineRendererComponent;
+                let slot_entity = scene.world.spawn();
+                scene
+                    .world
+                    .insert(slot_entity, LineRendererComponent::from_data(lr_data));
+                let mut c = 0u32;
+                if let Some(actor) =
+                    find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c)
+                {
+                    actor.add_slot_typed::<LineRendererComponent>(
+                        slot_data.name,
+                        ComponentKind::LineRenderer,
+                        slot_entity,
+                    );
+                } else {
+                    scene.world.despawn(slot_entity);
+                }
+                true
+            }
             ComponentData::InteractionSourceComponent(is_data) => {
                 // インタラクションソースを複製する（新しいスロット専用エンティティへ挿入）
                 use crate::engine::components::InteractionSourceComponent;
@@ -1384,6 +1409,18 @@ impl App {
                     new_slots.push(ComponentSlot::new::<AudioComponent>(
                         slot_data.name,
                         ComponentKind::Audio,
+                        slot_entity,
+                    ));
+                }
+                ComponentData::LineRendererComponent(lr_data) => {
+                    // 3D ポリラインをスロット専用エンティティへ復元する
+                    use crate::engine::components::LineRendererComponent;
+                    scene
+                        .world
+                        .insert(slot_entity, LineRendererComponent::from_data(lr_data));
+                    new_slots.push(ComponentSlot::new::<LineRendererComponent>(
+                        slot_data.name,
+                        ComponentKind::LineRenderer,
                         slot_entity,
                     ));
                 }

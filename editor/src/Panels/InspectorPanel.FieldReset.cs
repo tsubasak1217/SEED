@@ -75,6 +75,8 @@ public partial class InspectorPanel
     private const string AnimatorComponentType = "AnimatorComponent";
     /// <summary>モデル（マテリアル上書きの親）の型名。</summary>
     private const string ModelComponentType = "ModelComponent";
+    /// <summary>3D ポリライン（釣り糸・ロープ）の型名。</summary>
+    private const string LineRendererComponentType = "LineRendererComponent";
 
     // ── 行ラベルの幅 ─────────────────────────────────────────────
     // 行ビルダごとに数値リテラルを散らすと、同じセクション内で行ごとにラベル位置が

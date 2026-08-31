@@ -1,0 +1,24 @@
+# LineRendererComponent のリボン描画。深度テストなし（常に最前面）。
+#
+# LineRendererComponent の depth_test = false のときに使う。
+# 幾何・シェーダ・ブレンドは line_ribbon_depth.toml と同一で、深度比較だけが違う。
+# 照準線・UI 的な補助線など「壁越しでも必ず見せたい線」向け。
+#
+# depth_write=false / depth_compare=Always:
+#   遮蔽を無視して常に描く。深度は書かないので後続の描画には影響しない。
+shader_sources  = ["unlit.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_main"
+vertex_slots    = ["color_vertex"]
+
+topology        = "TriangleList"
+# リボンは裏表どちらからも見えるべきなのでカリングしない。
+cull_mode       = "None"
+front_face      = "Ccw"
+
+depth_write     = false
+depth_compare   = "Always"
+
+color_format    = "surface"
+blend           = "AlphaBlending"
+write_mask      = "all"

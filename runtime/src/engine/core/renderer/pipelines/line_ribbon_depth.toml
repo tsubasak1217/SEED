@@ -1,0 +1,27 @@
+# LineRendererComponent（釣り糸・ロープ等）のリボン描画。深度テストあり。
+#
+# 頂点は CPU 側（methods/drawer/line_ribbon.rs）でカメラ向きクワッドへ展開済みなので、
+# シェーダは unlit.wgsl（位置 + 頂点色をそのまま出すだけ）を流用する。
+# 専用 WGSL を増やさないのは、展開ロジックが CPU 側の純関数として
+# ユニットテスト可能な形に閉じているため。
+#
+# depth_write=false / depth_compare=LessEqual:
+#   不透明物の背後では隠れるが、深度は書かない（半透明の線が
+#   後続の描画を遮らないようにするため。ワイヤ・太線と同じ流儀）。
+shader_sources  = ["unlit.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_main"
+vertex_slots    = ["color_vertex"]
+
+topology        = "TriangleList"
+# リボンは裏表どちらからも見えるべきなのでカリングしない
+# （カメラ向き展開でも点列の並び次第で表裏が入れ替わる）。
+cull_mode       = "None"
+front_face      = "Ccw"
+
+depth_write     = false
+depth_compare   = "LessEqual"
+
+color_format    = "surface"
+blend           = "AlphaBlending"
+write_mask      = "all"

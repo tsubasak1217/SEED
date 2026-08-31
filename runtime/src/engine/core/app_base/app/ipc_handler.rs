@@ -1338,6 +1338,9 @@ impl App {
                 IpcCommand::SetAudioField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_audio_field(actor_dfs_id, slot_idx, &key, &value);
                 }
+                IpcCommand::SetLineRendererField { actor_dfs_id, slot_idx, key, value } => {
+                    self.handle_set_line_renderer_field(actor_dfs_id, slot_idx, &key, &value);
+                }
                 IpcCommand::SetSkinnedSpriteField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_skinned_sprite_field(actor_dfs_id, slot_idx, &key, &value);
                 }

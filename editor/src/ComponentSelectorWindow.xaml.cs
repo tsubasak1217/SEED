@@ -98,6 +98,10 @@ public partial class ComponentSelectorWindow : Window
         {
             new("CameraComponent", "Camera", "Play モードで使用するゲームカメラ", ActorTarget.Actor3D),
         }),
+        ("描画", new()
+        {
+            new("LineRendererComponent", "Line Renderer", "点列を結ぶ 3D の線を描く（釣り糸・ロープ・軌跡）。点列はスクリプトから毎フレーム更新できる", ActorTarget.Actor3D),
+        }),
         ("物理", new()
         {
             new("ColliderComponent",   "Collider",    "衝突判定形状・リジッドボディをアクターにアタッチ（Box・Sphere・Capsule、重力有無は内部で設定）", ActorTarget.Actor3D),
@@ -394,6 +398,7 @@ public partial class ComponentSelectorWindow : Window
         "InteractionSourceComponent" => "Interaction",
         "CoverEmitterComponent"       => "CoverEmitter",
         "ControlPointComponent"      => "ControlPoint",
+        "LineRendererComponent"      => "LineRenderer",
         // Plugin:{name} → プラグイン名をデフォルト名とする
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                    => typeId,

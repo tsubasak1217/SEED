@@ -365,7 +365,8 @@ impl RtMeshPipelines {
 /// デバッグ描画（ライン・ギズモ）用のライトなしパイプライン一式。
 ///
 /// 1px ライン（LineList）、ギズモ用の太線（TriangleList クアッド展開）、選択強調の太線、
-/// ソリッドギズモ三角形の 4 パイプラインを保持する。
+/// ソリッドギズモ三角形、および LineRendererComponent のリボン（深度あり／なし）の
+/// 6 パイプラインを保持する。
 pub struct UnlitPipeline {
     pub pipeline:           wgpu::RenderPipeline,  // LineList, ColorVertex
     pub gizmo_line_pipeline: wgpu::RenderPipeline, // TriangleList, GizmoVertex (太線, depth=Always)
@@ -374,6 +375,12 @@ pub struct UnlitPipeline {
     /// （ギズモの depth=Always とは異なり、可視物の背後では隠れる）。
     pub thick_line_pipeline: wgpu::RenderPipeline, // TriangleList, GizmoVertex (太線, depth=LessEqual)
     pub gizmo_tri_pipeline:  wgpu::RenderPipeline, // TriangleList, ColorVertex (ソリッド)
+    /// LineRendererComponent のリボン描画（深度テストあり）。
+    /// CPU 展開済みのカメラ向きクワッド（ColorVertex/TriangleList）を描く。
+    /// gizmo_tri（depth=Always）とは深度比較だけが異なる。
+    pub ribbon_depth_pipeline:   wgpu::RenderPipeline,
+    /// LineRendererComponent のリボン描画（深度テストなし＝常に最前面）。
+    pub ribbon_nodepth_pipeline: wgpu::RenderPipeline,
     pub camera_bgl:          wgpu::BindGroupLayout,
     pub model_bgl:           wgpu::BindGroupLayout,
 }
@@ -393,8 +400,14 @@ impl UnlitPipeline {
         let (gizmo_line_pipeline, _) = build(include_str!("pipelines/gizmo_line.toml"));
         let (thick_line_pipeline, _) = build(include_str!("pipelines/unlit_thick_line.toml"));
         let (gizmo_tri_pipeline, _)  = build(include_str!("pipelines/gizmo_tri.toml"));
+        // LineRenderer のリボン（深度あり／なしの 2 変種）。
+        let (ribbon_depth_pipeline, _)   = build(include_str!("pipelines/line_ribbon_depth.toml"));
+        let (ribbon_nodepth_pipeline, _) = build(include_str!("pipelines/line_ribbon_nodepth.toml"));
 
-        Self { pipeline, gizmo_line_pipeline, thick_line_pipeline, gizmo_tri_pipeline, camera_bgl, model_bgl }
+        Self {
+            pipeline, gizmo_line_pipeline, thick_line_pipeline, gizmo_tri_pipeline,
+            ribbon_depth_pipeline, ribbon_nodepth_pipeline, camera_bgl, model_bgl,
+        }
     }
 }
 

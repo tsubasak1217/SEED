@@ -7,6 +7,8 @@ mod model_drawer;
 pub mod id_pass;
 mod outline;
 mod primitive_drawer;
+/// ポリライン → カメラ向きリボンの頂点展開（LineRendererComponent の描画実体）
+pub mod line_ribbon;
 mod sprite_drawer;
 
 // drawing files が use super::gpu_resources::... 等で参照できるようモジュール別名を作成
@@ -48,7 +50,9 @@ use crate::engine::core::renderer::ddgi::GiResources;
 pub use model_drawer::draw_model_indirect;
 pub use id_pass::{IdBuffer, draw_id_pass, draw_canvas_id_items, draw_collider_pick_items, prepare_canvas_id_bg};
 pub use outline::{draw_outline, draw_stencil_mask, draw_outline_multi, draw_stencil_mask_multi};
-pub use primitive_drawer::{LineBatch, GizmoBatch, draw_line_batch, draw_gizmo_batch, draw_thick_line_batch};
+pub use primitive_drawer::{LineBatch, GizmoBatch, draw_line_batch, draw_gizmo_batch, draw_thick_line_batch, draw_line_ribbon_batch};
+// ポリラインのリボン展開（純関数）。LineRendererComponent の収集側が使う。
+pub use line_ribbon::expand_polyline_ribbon;
 pub use sprite_drawer::{
     GpuSpriteTexture, SpriteVertex, load_sprite_texture,
 };

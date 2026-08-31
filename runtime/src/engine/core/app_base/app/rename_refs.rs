@@ -237,7 +237,9 @@ fn rewrite_refs_in_slots(
             // カバーエミッタは素材 ID（cover_materials.json のキー）しか参照せず、
             // アクター名参照は持たないので、リネームで書き換えるものは無い。
             | ComponentKind::CoverEmitter
-            | ComponentKind::ControlPoint => {}
+            | ComponentKind::ControlPoint
+            // 3D ポリラインは点列と色しか持たず、アクター名参照は無い。
+            | ComponentKind::LineRenderer => {}
         }
     }
 
