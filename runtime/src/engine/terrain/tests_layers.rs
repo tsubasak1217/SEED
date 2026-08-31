@@ -1208,3 +1208,132 @@ fn chunk_palette_selects_dominant_layers_from_vertex_weights() {
         "弱い層が残っている: {palette:?}"
     );
 }
+
+// ============================================================
+//  新規レイヤ追加による自動ペイント汚染（不具合再発防止）
+// ============================================================
+
+/// エディタ「レイヤ追加」で作られる新規レイヤの優先度。
+/// エディタ側定数 `TerrainLayerDefaults.NewLayerPriority`（C#）と一致必須。
+const NEW_LAYER_PRIORITY: f32 = 0.0;
+
+/// 自動ペイントで「全域に効く下地」として使うレイヤの優先度（テスト用）。
+const BASE_LAYER_PRIORITY: f32 = 2.0;
+
+/// 平地（法線 +Y）を表す法線 Y 成分。
+const FLAT_NORMAL_Y: f32 = 1.0;
+/// テスト評価に使うワールド高度（どのレイヤの高度ウィンドウにも入る値）。
+const TEST_WORLD_Y: f32 = 0.0;
+
+/// テクスチャ未設定の新規レイヤを模した定義を作る。
+///
+/// ルールは `LayerRule::default()`（斜度 0〜90 度・高度無制限）のままで、
+/// 優先度だけを引数で与える。エディタが作る `{"name": "new_layer_1"}` と
+/// 同じ「全フィールド既定値」のレイヤを表現している。
+fn placeholder_layer(name: &str, priority: f32) -> TerrainLayer {
+    TerrainLayer {
+        name: name.to_string(),
+        rule: LayerRule {
+            priority,
+            ..LayerRule::default()
+        },
+        ..TerrainLayer::default()
+    }
+}
+
+/// 【不具合再発防止】既定ルールのまま優先度 1 でレイヤを追加すると、
+/// 地形全域の自動ペイントがその無地レイヤに食われる（＝灰色化する）こと。
+///
+/// このテストは「壊れた側」の挙動を固定するためのものではなく、
+/// 次のテスト（優先度 0 なら食われない）と対にして
+/// **エディタが新規レイヤへ優先度 0 を与えなければならない理由**を明文化する。
+#[test]
+fn placeholder_layer_with_default_priority_steals_auto_paint_weight() {
+    let set = TerrainLayerSet {
+        layers: vec![
+            // 全域に効く下地（テクスチャ付きレイヤ相当）。
+            placeholder_layer("beach", BASE_LAYER_PRIORITY),
+            // 「レイヤ追加」直後の無地レイヤ 2 枚（優先度は既定の 1.0）。
+            placeholder_layer("new_layer_1", 1.0),
+            placeholder_layer("new_layer_2", 1.0),
+        ],
+    };
+
+    let w = set.rule_weights_all(FLAT_NORMAL_Y, TEST_WORLD_Y);
+    // 2 : 1 : 1 → 下地は半分しか残らない。
+    assert!(
+        (w[0] - 0.5).abs() < WEIGHT_EPS,
+        "下地レイヤが無地レイヤに食われていない前提が崩れた: {w:?}"
+    );
+    assert!(
+        w[1] > WEIGHT_EPS && w[2] > WEIGHT_EPS,
+        "無地レイヤが自動ペイントに載っていない: {w:?}"
+    );
+}
+
+/// 優先度 0（エディタが新規レイヤへ与える値）のレイヤは、
+/// 既定ルール（全域で成立）のままでも自動ペイントへ一切載らないこと。
+#[test]
+fn new_layer_priority_keeps_auto_paint_untouched() {
+    let set = TerrainLayerSet {
+        layers: vec![
+            placeholder_layer("beach", BASE_LAYER_PRIORITY),
+            placeholder_layer("new_layer_1", NEW_LAYER_PRIORITY),
+            placeholder_layer("new_layer_2", NEW_LAYER_PRIORITY),
+        ],
+    };
+
+    let w = set.rule_weights_all(FLAT_NORMAL_Y, TEST_WORLD_Y);
+    assert!(
+        (w[0] - 1.0).abs() < WEIGHT_EPS,
+        "新規レイヤ追加で下地の自動ペイント重みが変わった: {w:?}"
+    );
+    for (i, &v) in w.iter().enumerate().skip(1) {
+        assert!(
+            v < WEIGHT_EPS,
+            "優先度 0 のレイヤ {i} が自動ペイントに載っている: {w:?}"
+        );
+    }
+}
+
+/// 優先度 0 でも **手動ペイントなら** そのレイヤを 100% まで塗れること。
+///
+/// 「自動ペイントから外す」ことと「そのレイヤを使えなくする」ことは別物であり、
+/// 前者だけを満たしているかを確認する。ペイント量 1.0（＝手動で塗り切った状態）で
+/// 合成すると、ルール重みは完全に無視されて手ペイントのスロットが残る。
+#[test]
+fn priority_zero_layer_is_still_paintable_by_hand() {
+    /// 手で塗る対象レイヤ番号（優先度 0 の新規レイヤ）。
+    const HAND_PAINTED: usize = 1;
+    /// 塗り切った状態のペイント量。
+    const FULL_PAINT_AMOUNT: f32 = 1.0;
+
+    let set = TerrainLayerSet {
+        layers: vec![
+            placeholder_layer("beach", BASE_LAYER_PRIORITY),
+            placeholder_layer("new_layer_1", NEW_LAYER_PRIORITY),
+            placeholder_layer("new_layer_2", NEW_LAYER_PRIORITY),
+        ],
+    };
+
+    // 自動ペイント（ルール）だけの重み。
+    let rule = set.rule_weights_all(FLAT_NORMAL_Y, TEST_WORLD_Y);
+
+    // 手動ペイント: 対象レイヤを強度 1 で塗った状態のスロット。
+    let mut paint = BlendSlots::default();
+    paint.index[0] = HAND_PAINTED as u32;
+    paint.weight[0] = 1.0;
+    for slot in 1..TERRAIN_BLEND_SLOTS {
+        paint.weight[slot] = 0.0;
+    }
+
+    let blended = blend_rule_and_paint_all(&rule, &paint, FULL_PAINT_AMOUNT);
+    assert!(
+        (blended[HAND_PAINTED] - 1.0).abs() < WEIGHT_EPS,
+        "優先度 0 のレイヤが手動ペイントで塗れていない: {blended:?}"
+    );
+    assert!(
+        blended[0] < WEIGHT_EPS,
+        "手動ペイント量 1.0 なのにルール重みが残っている: {blended:?}"
+    );
+}

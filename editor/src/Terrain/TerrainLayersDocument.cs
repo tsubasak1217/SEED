@@ -175,9 +175,20 @@ internal sealed class TerrainLayerEdit
     /// <summary>
     /// 新規レイヤ（未知フィールド無し）を作る。
     /// </summary>
+    /// <remarks>
+    /// 優先度だけは既定値（1.0）ではなく <see cref="TerrainLayerDefaults.NewLayerPriority"/>（0）で作る。
+    /// 既定ルールは地形全域で成立するため、優先度 1 のまま追加すると
+    /// 「追加した瞬間に地形全体の自動ペイントへ無地グレーが混ざる」からである
+    /// （詳細な理由は <see cref="TerrainLayerDefaults.NewLayerPriority"/> のコメント）。
+    /// 0 は既定値と異なるので <see cref="WriteBack"/> が rule.priority を必ず出力する。
+    /// </remarks>
     /// <param name="name">レイヤ名。</param>
     public static TerrainLayerEdit CreateNew(string name)
-        => new(new JsonObject()) { Name = name };
+        => new(new JsonObject())
+        {
+            Name = name,
+            Priority = TerrainLayerDefaults.NewLayerPriority,
+        };
 
     /// <summary>
     /// このレイヤの複製を作る（未知フィールドも含めて複製される）。
