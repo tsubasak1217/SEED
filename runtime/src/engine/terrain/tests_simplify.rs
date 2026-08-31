@@ -650,3 +650,132 @@ fn fuzz_watertight() {
     );
     assert_eq!(fail, 0, "ファズで穴が開いた");
 }
+
+// ─── 向き（巻き順）一貫性のインバリアント ───────────────────────────────
+
+// 【採用しなかった判定について】
+//   「2 枚の面が共有する辺は (a,b) と (b,a) の逆向きペアで現れる」という
+//   組み合わせ的な向き一貫性は、**このエンジンでは不変条件にならない**。
+//   マーチングキューブス出力そのものが乱数地形で 300 本規模の同方向ペアを持つ
+//   （`push_triangle` は面ごとに独立して頂点法線と突き合わせて向きを決めるため）。
+//   規約は組み合わせ的なものではなく「面ごとに平均頂点法線と突き合わせる」ものなので、
+//   下の `backfacing_triangles` が唯一の正しい判定である。
+
+/// **エンジンの巻き順規約に違反している（＝裏返っている）三角形**を数える。
+///
+/// 規約は `marching_cubes::push_triangle` が全三角形に課しているもので、
+/// `dot(cross(b-a, c-a), 頂点法線の平均) <= 0`。
+/// これが正のものは背面カリングで抜けて見え、下から覗くとその面だけが見える。
+/// `terrain_gbuffer_write.wgsl` の front_facing 判定もこの規約に依存している。
+///
+/// マーチングキューブスの出力は構成上この違反が 0 枚なので、
+/// デシメート後に 1 枚でも出たらデシメートが裏返したということ。
+fn backfacing_triangles(mesh: &TerrainMesh) -> usize {
+    let mut count = 0usize;
+    for t in mesh.indices.chunks_exact(3) {
+        let (pa, pb, pc) = (
+            mesh.positions[t[0] as usize],
+            mesh.positions[t[1] as usize],
+            mesh.positions[t[2] as usize],
+        );
+        let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+        let geo = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        let (na, nb, nc) = (
+            mesh.normals[t[0] as usize],
+            mesh.normals[t[1] as usize],
+            mesh.normals[t[2] as usize],
+        );
+        let avg = [na[0] + nb[0] + nc[0], na[1] + nb[1] + nc[1], na[2] + nb[2] + nc[2]];
+        if geo[0] * avg[0] + geo[1] * avg[1] + geo[2] * avg[2] > 0.0 {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// **デシメートは三角形を裏返さない**（向き一貫性インバリアント・解析地形）。
+///
+/// 実機で見えていた「三角形状の抜け」は穴ではなく巻き順の反転だった。
+/// 表からは背面カリングで抜けて見え、下から覗くとその面だけが見える、という症状である。
+/// デシメート前に食い違っていた辺の本数を超えないことを要求する。
+#[test]
+fn simplify_never_flips_winding() {
+    let settings = test_settings();
+    let extent = settings.chunk_extent();
+    for (label, chunk) in watertight_cases(&settings) {
+        let mesh = generate_standalone(&chunk, &settings);
+        assert_eq!(
+            backfacing_triangles(&mesh),
+            0,
+            "{label}: テスト前提（MC 出力に規約違反の面は無い）"
+        );
+        for strength in [0.25f32, 0.5, 0.75, 1.0] {
+            let (out, _) = simplify_mesh(&mesh, extent, strength);
+            assert_eq!(
+                backfacing_triangles(&out),
+                0,
+                "{label} strength={strength}: 規約違反（裏返り）の三角形が出た"
+            );
+        }
+    }
+}
+
+/// **乱数密度場でも三角形を裏返さない**（向き一貫性の本命テスト）。
+///
+/// `fuzz_watertight` と同じ固定シードの乱数地形 40 個 × 強度 2 段に掛ける。
+/// 荒い密度場でこそ薄い三角形が出て、幾何法線の符号判定が不安定になる。
+#[test]
+fn fuzz_orientation_is_preserved() {
+    let settings = TerrainSettings {
+        chunk_cells: 16,
+        voxel_size: 0.5,
+        ..TerrainSettings::default()
+    };
+    let extent = settings.chunk_extent();
+    let s = settings.samples_per_axis();
+    let mut state: u64 = 0x1234_5678_9abc_def0;
+    let mut rng = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f32 / (1u64 << 53) as f32
+    };
+    let (mut fail, mut flipped_total) = (0usize, 0usize);
+    for seed in 0..40 {
+        let mut chunk = TerrainChunkData::new_filled(&settings, 0.0);
+        for iz in 0..s {
+            for iy in 0..s {
+                for ix in 0..s {
+                    let y = iy as f32 * settings.voxel_size;
+                    let h = 4.0 + 2.0 * (rng() - 0.5);
+                    chunk.set_sample(ix, iy, iz, y - h);
+                }
+            }
+        }
+        let mesh = generate_standalone(&chunk, &settings);
+        if mesh.positions.len() < 20 {
+            continue;
+        }
+        assert_eq!(
+            backfacing_triangles(&mesh),
+            0,
+            "seed={seed}: テスト前提（MC 出力に規約違反の面は無い）"
+        );
+        for strength in [0.5f32, 1.0] {
+            let (out, _) = simplify_mesh(&mesh, extent, strength);
+            let back = backfacing_triangles(&out);
+            if back > 0 {
+                fail += 1;
+                flipped_total += back;
+                println!("seed={seed} strength={strength}: 規約違反(裏面) 三角形 {back} 枚");
+            }
+        }
+    }
+    println!("fuzz_orientation: 失敗ケース {fail} / 80、増えた食い違い辺 合計 {flipped_total}");
+    assert_eq!(fail, 0, "ファズで面が裏返った");
+}

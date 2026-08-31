@@ -47,7 +47,7 @@
 
 use std::collections::{BinaryHeap, HashSet};
 
-use super::marching_cubes::TerrainMesh;
+use super::marching_cubes::{TerrainMesh, orient_to_winding_convention};
 
 /// 「頂点がチャンク境界面に載っている」と判定する許容誤差（extent に対する割合）。
 ///
@@ -581,8 +581,13 @@ fn can_collapse(
                 }
             }
         }
+        // 潰す前から縮退している面は、比較すべき法線が定義できない。
+        //   以前はここを読み飛ばしていたが、それでは「向きの情報を持たない面」が
+        //   潰しで面積を得たときに、向きが何の検査も受けずに決まってしまう。
+        //   縮退面は数がごく少ない（乱数地形 80 ケースで 24 回）ので、
+        //   読み飛ばさず潰しを却下するほうが安全で、削減率もほぼ変わらない。
         let Some((n_before, _)) = face_normal_area(positions, t) else {
-            continue;
+            return false;
         };
         let moved = [
             if t[0] == from { to } else { t[0] },
@@ -605,6 +610,14 @@ fn can_collapse(
 ///
 /// 頂点属性（法線・スプラット・由来辺）は **元の頂点のものをそのまま**運ぶ
 /// （ハーフエッジコラプスなので生き残る頂点は必ず元の頂点である）。
+///
+/// 【巻き順の作り直し】
+///   潰しは生き残った三角形の頂点を差し替えるので、その三角形の幾何法線も
+///   平均頂点法線も変わる。元の巻き順のまま出すとエンジンの巻き順規約
+///   （`orient_to_winding_convention`）を破る面が生まれ、**背面カリングで抜けて見える**
+///   （表からは穴に見え、下から覗くとその面だけが見える）。
+///   そこでマーチングキューブス出力と同じ規約をここで掛け直す。
+///   MC と同一の関数を通すので、両者の巻き順の定義は原理的に食い違わない。
 fn rebuild(src: &TerrainMesh, tris: &[[u32; 3]], tri_alive: &[bool]) -> TerrainMesh {
     let vcount = src.positions.len();
     // 旧頂点番号 → 新頂点番号（未使用は u32::MAX）。
@@ -636,8 +649,12 @@ fn rebuild(src: &TerrainMesh, tris: &[[u32; 3]], tri_alive: &[bool]) -> TerrainM
         if !seen_faces.insert(key) {
             continue;
         }
+        // 潰しで頂点が入れ替わった面は幾何法線・平均頂点法線がどちらも変わっているので、
+        // MC 出力と同じ規約で巻き順を張り直す（ここが唯一の是正点）。
+        // 旧頂点番号のまま判定できるよう、詰め直し（remap）の前に掛ける。
+        let oriented = orient_to_winding_convention(&src.positions, &src.normals, *t);
         let mut new_tri = [0u32; 3];
-        for (k, &v) in t.iter().enumerate() {
+        for (k, &v) in oriented.iter().enumerate() {
             let vi = v as usize;
             if remap[vi] == u32::MAX {
                 remap[vi] = out.positions.len() as u32;

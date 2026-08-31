@@ -465,9 +465,37 @@ pub fn interp_vertex_sharpness(chunk: &TerrainChunkData, edge: &TerrainVertexEdg
 ///  terrain_gbuffer_write.wgsl の front_facing 反転で法線が丸ごと反転し、
 ///  ライト方向に対する陰影の反転とシャドウアクネを引き起こしていた。）
 fn push_triangle(mesh: &mut TerrainMesh, a: u32, b: u32, c: u32) {
-    let pa = mesh.positions[a as usize];
-    let pb = mesh.positions[b as usize];
-    let pc = mesh.positions[c as usize];
+    let t = orient_to_winding_convention(&mesh.positions, &mesh.normals, [a, b, c]);
+    mesh.indices.extend_from_slice(&t);
+}
+
+/// **エンジンの巻き順規約に合うように三角形の頂点順を整える**（規約の唯一の定義）。
+///
+/// 規約は `dot(cross(b-a, c-a), 3 頂点の平均解析法線) <= 0`。
+/// 満たしていれば入力のまま、破っていれば後ろ 2 頂点を入れ替えて返す。
+///
+/// 【なぜ共有関数なのか】
+///   この規約を課す場所は 2 つある。
+///     1. マーチングキューブスの出力（`push_triangle`）
+///     2. デシメートの出力（`simplify::rebuild`）
+///   デシメートは頂点を別の頂点へ潰すので、生き残った三角形の **幾何法線も
+///   平均頂点法線も両方変わる**。元の巻き順のまま出すと規約を破る三角形が生まれ、
+///   背面カリングで抜けて見える（下から覗くとその面だけ見える）。
+///   規約の定義が 2 箇所に散ると必ず片方だけ直され、この種の食い違いが再発するため、
+///   定義をこの 1 関数に集約し、両方がこれを通す。
+///
+/// 法線配列が位置配列と長さ違い（法線を持たないメッシュ）の場合は判定できないので、
+/// 入力の巻き順をそのまま返す。
+pub fn orient_to_winding_convention(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    tri: [u32; 3],
+) -> [u32; 3] {
+    if normals.len() != positions.len() {
+        return tri;
+    }
+    let (ia, ib, ic) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+    let (pa, pb, pc) = (positions[ia], positions[ib], positions[ic]);
 
     // ─── 幾何法線 = (b-a) × (c-a) ───
     let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
@@ -479,9 +507,7 @@ fn push_triangle(mesh: &mut TerrainMesh, a: u32, b: u32, c: u32) {
     ];
 
     // ─── 3 頂点の平均解析法線 ───
-    let na = mesh.normals[a as usize];
-    let nb = mesh.normals[b as usize];
-    let nc = mesh.normals[c as usize];
+    let (na, nb, nc) = (normals[ia], normals[ib], normals[ic]);
     let avg = [
         na[0] + nb[0] + nc[0],
         na[1] + nb[1] + nc[1],
@@ -490,15 +516,11 @@ fn push_triangle(mesh: &mut TerrainMesh, a: u32, b: u32, c: u32) {
 
     let dot = geo[0] * avg[0] + geo[1] * avg[1] + geo[2] * avg[2];
     if dot <= 0.0 {
-        // 外積が外向き法線と逆 → エンジン規約どおり。そのまま出す。
-        mesh.indices.push(a);
-        mesh.indices.push(b);
-        mesh.indices.push(c);
+        // 外積が外向き法線と逆 → エンジン規約どおり。
+        tri
     } else {
-        // 外積が外向き法線と同じ向き → 規約違反。b と c を入れ替えて反転する。
-        mesh.indices.push(a);
-        mesh.indices.push(c);
-        mesh.indices.push(b);
+        // 外積が外向き法線と同じ向き → 規約違反。後ろ 2 頂点を入れ替えて反転する。
+        [tri[0], tri[2], tri[1]]
     }
 }
 
