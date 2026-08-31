@@ -427,6 +427,10 @@ pub enum IpcCommand {
     /// SpriteComponent の描画優先度レイヤーを設定する（大きいほど手前）
     /// フォーマット: SET_SPRITE_LAYER:{actor_dfs_id},{slot_idx},{layer}
     SetSpriteLayer { actor_dfs_id: u32, slot_idx: u32, layer: i32 },
+    /// SpriteComponent の汎用フィールドを更新する（key: raycast_target）。
+    /// 専用コマンド（PATH/COLOR/SIZE/LAYER）が無い単純フィールドはこちらを使う。
+    /// フォーマット: SET_SPRITE_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+    SetSpriteField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// AudioComponent のフィールドを更新する（key: path/volume/loop/play_on_start/spatial/min_distance/max_distance/pan）
     SetAudioField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// SkinnedSpriteComponent のフィールドを更新する
@@ -1846,6 +1850,16 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 let layer: i32 = tail.trim().parse().ok()?;
                                 Some(IpcCommand::SetSpriteLayer {
                                     actor_dfs_id: a, slot_idx: sl, layer,
+                                })
+                            })
+                        }
+                        s if s.starts_with("SET_SPRITE_FIELD:") => {
+                            // フォーマット: SET_SPRITE_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+                            parse2u_tail(&s["SET_SPRITE_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetSpriteField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
                                 })
                             })
                         }

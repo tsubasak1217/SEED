@@ -61,6 +61,10 @@ pub struct SkinnedSpriteComponentData {
     /// 空 = すべて自動解決（メッシュ内のボーン名と同名の子孫アクターを探す）。
     #[serde(default)]
     pub bone_overrides: BTreeMap<String, String>,
+    /// ポインタイベント（OnPointerEnter/Down/Click 等）のヒットテスト対象にするか。
+    /// 既定 false（オプトイン）。旧データ互換のため #[serde(default)]。
+    #[serde(default)]
+    pub raycast_target: bool,
 }
 
 impl Default for SkinnedSpriteComponentData {
@@ -71,6 +75,7 @@ impl Default for SkinnedSpriteComponentData {
             color: default_color(),
             layer: 0,
             bone_overrides: BTreeMap::new(),
+            raycast_target: false,
         }
     }
 }
@@ -93,6 +98,11 @@ pub struct SkinnedSpriteComponent {
     pub layer: i32,
     /// ボーン名 → アクター相対パスの明示対応表（空 = 全自動解決）。
     pub bone_overrides: BTreeMap<String, String>,
+    /// ポインタイベント（OnPointerEnter/Down/Click 等）のヒットテスト対象にするか。
+    ///
+    /// 既定 false のオプトイン方式。SpriteComponent の同名フィールドと同一規約で、
+    /// true のときだけ Play 中のポインタ判定（変形後メッシュの三角形判定）に参加する。
+    pub raycast_target: bool,
 }
 
 impl SkinnedSpriteComponent {
@@ -105,6 +115,7 @@ impl SkinnedSpriteComponent {
             color: data.color,
             layer: data.layer,
             bone_overrides: data.bone_overrides,
+            raycast_target: data.raycast_target,
         }
     }
 
@@ -116,6 +127,7 @@ impl SkinnedSpriteComponent {
             color: self.color,
             layer: self.layer,
             bone_overrides: self.bone_overrides.clone(),
+            raycast_target: self.raycast_target,
         }
     }
 

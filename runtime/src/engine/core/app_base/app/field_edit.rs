@@ -126,6 +126,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             slot(*actor_dfs_id, *slot_idx, "SetAudioField", key),
         IpcCommand::SetSkinnedSpriteField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetSkinnedSpriteField", key),
+        IpcCommand::SetSpriteField { actor_dfs_id, slot_idx, key, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetSpriteField", key),
         // ボーン対応表は「1 フィールド（bone_overrides）の一括差し替え」なので
         // フィールドキーを固定文字列にして 1 スロット 1 件の Undo にまとめる。
         IpcCommand::SetSkinnedSpriteBoneOverrides { actor_dfs_id, slot_idx, .. } =>

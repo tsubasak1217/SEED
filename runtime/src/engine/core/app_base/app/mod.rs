@@ -51,6 +51,8 @@ mod transform_ops;
 mod camera_ops;
 mod gizmo_handler;
 mod pick_2d;
+/// Play 中のキャンバス UI ポインタイベント（OnPointerEnter/Down/Click 等）の判定と配信。
+mod pointer_events;
 mod canvas_drop;
 mod render;
 mod frame_renderer;
@@ -663,6 +665,9 @@ pub struct App {
     /// 2D ピックの巡回選択状態（同一地点の連続クリックで次候補へ回すため）。
     /// (直前クリックのスクリーン座標, 優先度順の候補 DFS リスト, 現在選択インデックス)。
     pick_2d_cycle:      Option<([f32; 2], Vec<usize>, usize)>,
+    /// Play 中のキャンバス UI ポインタ状態（ホバー中・押下中のアクター）。
+    /// Play 開始／終了・シーン遷移でリセットする（破棄済みエンティティを持ち越さないため）。
+    pointer:            pointer_events::PointerState,
     /// 直前フレームのカーソル座標（ビューポートローカル）。
     last_cursor_pos:    Option<(f32, f32)>,
     /// ギズモ描画用の単位行列モデルバッファ。
@@ -1296,6 +1301,7 @@ impl App {
             selected_instances: Vec::new(),
             pending_pick:       None,
             pick_2d_cycle:      None,
+            pointer:            pointer_events::PointerState::default(),
             last_cursor_pos:    None,
             line_model_buf:     None,
             tool_mode:          ToolMode::Select,

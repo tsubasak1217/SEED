@@ -202,6 +202,14 @@ impl Input {
         }
     }
 
+    /// カーソル座標の前フレーム比の差分を返す（`CursorMoved` 由来）。
+    ///
+    /// `mouse_vector`（Raw Input）は埋め込み Play で届かないことがあるため、
+    /// 「必ず取れるフレーム移動量」が要る用途（マウスジェスチャ判定）はこちらを使う。
+    pub fn mouse_position_delta(&self) -> Vector2<f32> {
+        self.mouse.position_delta()
+    }
+
     /// マウスの移動方向（正規化済み）を返す（C++: GetMouseDirection）
     pub fn mouse_direction(&self, state: InputState) -> Vector2<f32> {
         self.mouse_vector(state).normalize()

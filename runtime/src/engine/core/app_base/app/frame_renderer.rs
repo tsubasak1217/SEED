@@ -677,6 +677,15 @@ impl App {
                 crate::profile_scope!("アニメーション評価");
                 self.update_animations(ctx.delta_time);
             }
+            // キャンバス UI のポインタイベント（OnPointerEnter/Down/Up/Click/Exit）を配信する。
+            // 物理イベントと同じく**スクリプトフェーズより前**に発火させることで、
+            // 「このフレームのクリックはこのフレームの Update から見える」を保証する。
+            // 内部で publish_input / publish_physics_sender を自前に行うため、
+            // 下の publish_input より前（フェーズ公開区間の外）で呼ぶ。
+            {
+                crate::profile_scope!("UI/ポインタイベント");
+                self.update_pointer_events();
+            }
             // スクリプトの Input API 用に入力状態への読み取り専用ポインタを公開する。
             // 入力イベントの処理はイベントハンドラ側で行われるため、
             // フェーズ実行中に self.input が変更されることはない。

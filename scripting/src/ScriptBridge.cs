@@ -190,6 +190,14 @@ public static unsafe class ScriptBridge
     private const int PhysicsEventTriggerExit    = 4;
     private const int PhysicsEventTriggerStay    = 5;
 
+    // ポインタイベント種別（Rust 側 scripting/mod.rs の POINTER_EVENT_* 定数と一致させる）。
+    // 物理イベントと同じ FFI 経路に相乗りしており、other は常に Entity.None。
+    private const int PointerEventEnter = 6;
+    private const int PointerEventExit  = 7;
+    private const int PointerEventDown  = 8;
+    private const int PointerEventUp    = 9;
+    private const int PointerEventClick = 10;
+
     /// <summary>
     /// 物理イベント（衝突・トリガー）をスクリプトへ通知する。
     /// Rust の update_physics がイベント受信時に呼ぶ。
@@ -211,6 +219,12 @@ public static unsafe class ScriptBridge
                 case PhysicsEventTriggerEnter:   ss.OnTriggerEnter(other);   break;
                 case PhysicsEventTriggerExit:    ss.OnTriggerExit(other);    break;
                 case PhysicsEventTriggerStay:    ss.OnTriggerStay(other);    break;
+                // ── キャンバス UI のポインタイベント（相手アクターの概念は無い）──
+                case PointerEventEnter:          ss.OnPointerEnter();        break;
+                case PointerEventExit:           ss.OnPointerExit();         break;
+                case PointerEventDown:           ss.OnPointerDown();         break;
+                case PointerEventUp:             ss.OnPointerUp();           break;
+                case PointerEventClick:          ss.OnPointerClick();        break;
             }
         }
         catch (Exception ex)

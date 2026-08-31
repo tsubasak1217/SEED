@@ -56,6 +56,9 @@ impl App {
     /// キャッシュ・レンダラには一切触れない。物理スレッドは次フレームで frame_renderer の
     /// 「Play 初回フレーム末尾起動」ロジックが現シーンのコライダーから自動起動する。
     pub(super) fn enter_play(&mut self) {
+        // ポインタ状態を捨てる（前回 Play のホバー/押下対象は破棄済みエンティティ）。
+        // 二重開始のべき等パスより前に置いて、どの経路でも必ず初期化されるようにする。
+        self.pointer.reset();
         // 二重開始防止: 既に Play なら応答だけ返す（べき等）。
         if self.mode == RuntimeMode::Play {
             if let Some(ipc) = &self.ipc { ipc.send("PLAY_ENTERED"); }
@@ -160,6 +163,8 @@ impl App {
     /// ENTER_PLAY で取ったスナップショットから wl0 非地形アクターを再構築し、mode を
     /// Edit へ戻す。地形・散布・GPU リソースには触れない（Keep 分は現物のまま）。
     pub(super) fn exit_play(&mut self) {
+        // ポインタ状態を捨てる（Edit へ戻ったあとに Exit が飛ばないようにする）。
+        self.pointer.reset();
         // Play でなければ mode だけ Edit に寄せて応答（べき等）。
         if self.mode != RuntimeMode::Play {
             self.mode = RuntimeMode::Edit;

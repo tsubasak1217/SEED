@@ -78,6 +78,12 @@ impl App {
                     ss.layer = v;
                 }
             }
+            // ポインタイベントのヒットテスト対象か（"0" / "1" で送られてくる）
+            "raycast_target" => {
+                if let Ok(v) = value.trim().parse::<i32>() {
+                    ss.raycast_target = v != 0;
+                }
+            }
             _ => {}
         }
 

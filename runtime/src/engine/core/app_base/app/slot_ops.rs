@@ -762,17 +762,8 @@ impl App {
             ComponentData::SpriteComponent(sc_data) => {
                 // SpriteComponent を複製して新スロット専用エンティティに insert
                 let slot_entity = scene.world.spawn();
-                scene.world.insert(
-                    slot_entity,
-                    SpriteComponent {
-                        texture_path: sc_data.texture_path,
-                        color: sc_data.color,
-                        width: sc_data.width,
-                        height: sc_data.height,
-                        layer: sc_data.layer,
-                        postfx_path: sc_data.postfx_path,
-                    },
-                );
+                // 復元は必ず from_data 経由（フィールド追加時の写し漏れを原理的に防ぐ）
+                scene.world.insert(slot_entity, SpriteComponent::from_data(sc_data));
                 let mut c = 0u32;
                 if let Some(actor) =
                     find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c)

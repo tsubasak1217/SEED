@@ -88,4 +88,27 @@ public abstract class SEEDScript : IScriptComponent
     public virtual void OnTriggerStay(SEED.GameObject other)    {}
     /// <summary>トリガーコライダーからの退出時に呼ばれる（トリガー側・相手側の両方）。</summary>
     public virtual void OnTriggerExit(SEED.GameObject other)    {}
+
+    // ── ポインタ（キャンバス UI）イベントコールバック ──────────
+    // Play 中、自分のアクターが持つ Sprite / SkinnedSprite の
+    // **raycast_target = true**（インスペクタの「ポインタ判定対象」）のときだけ届く。
+    // 判定は毎フレーム 1 回、最前面（描画ゾーン → layer → ヒエラルキー順）の
+    // 1 アクターに対してのみ行われる。対象はスクリーンスペースキャンバスのみ
+    //（3D ワールド内キャンバスは未対応）。
+    // 呼ばれるのはスクリプトフェーズ（Update 等）より前なので、同じフレームの
+    // Update から結果を参照できる。
+
+    /// <summary>カーソルがこのアクターへ乗った最初のフレームに呼ばれる。</summary>
+    public virtual void OnPointerEnter() {}
+    /// <summary>カーソルがこのアクターから外れた最初のフレームに呼ばれる。</summary>
+    public virtual void OnPointerExit()  {}
+    /// <summary>このアクターの上で左ボタンが押された瞬間に呼ばれる。</summary>
+    public virtual void OnPointerDown()  {}
+    /// <summary>このアクターの上で左ボタンが離された瞬間に呼ばれる。</summary>
+    public virtual void OnPointerUp()    {}
+    /// <summary>
+    /// 押下と解放が同一アクター上で完結したときに、<see cref="OnPointerUp"/> の直後に呼ばれる。
+    /// ボタンの上で押して別の場所で離した場合は呼ばれない（＝クリックのキャンセル）。
+    /// </summary>
+    public virtual void OnPointerClick() {}
 }

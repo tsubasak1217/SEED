@@ -52,9 +52,11 @@ public static class Input
     private const int KindRelease = 2; // 離された瞬間
 
     // ── マウス状態種別（Rust 側 MOUSE_STATE_* と一致させる）──
-    private const int MousePosition = 0;
-    private const int MouseDelta = 1;
+    private const int MousePositionKind = 0;
+    private const int MouseDeltaKind = 1;
     private const int MouseScrollKind = 2;
+    private const int MouseCanvasPositionKind = 3;
+    private const int MousePositionDeltaKind = 4;
 
     // ── キーボード ───────────────────────────────────────────
 
@@ -81,13 +83,36 @@ public static class Input
     // ── マウス状態 ───────────────────────────────────────────
 
     /// <summary>マウスのスクリーン座標（ピクセル。左上原点）。</summary>
-    public static Vector2 MousePos => ScriptHost.InputMouseVec2(MousePosition);
+    public static Vector2 MousePos => ScriptHost.InputMouseVec2(MousePositionKind);
 
     /// <summary>マウスの相対移動量（今フレーム）。</summary>
-    public static Vector2 MouseMove => ScriptHost.InputMouseVec2(MouseDelta);
+    public static Vector2 MouseMove => ScriptHost.InputMouseVec2(MouseDeltaKind);
 
     /// <summary>マウスホイールのスクロール量（今フレーム。上=正）。</summary>
     public static float MouseScroll => ScriptHost.InputMouseScroll(MouseScrollKind);
+
+    /// <summary>マウスのスクリーン座標（ピクセル。左上原点）。<see cref="MousePos"/> の別名。</summary>
+    public static Vector2 MousePosition => MousePos;
+
+    /// <summary>
+    /// マウスの前フレーム比移動量（ピクセル。右=+X / 下=+Y）。
+    ///
+    /// カーソル座標の差分から求めるため、エディタに埋め込まれた Play でも**必ず取れる**
+    /// （<see cref="MouseMove"/> は OS の Raw Input 由来で、埋め込み時に届かないことがある）。
+    /// マウスジェスチャ（引いて振る等）の判定にはこちらを使うこと。
+    /// カーソルが画面端で止まると 0 になる点だけ注意。
+    /// </summary>
+    public static Vector2 MouseDelta => ScriptHost.InputMouseVec2(MousePositionDeltaKind);
+
+    /// <summary>
+    /// マウスのキャンバス座標。スクリーンスペースキャンバスの座標系
+    /// （画面中央が原点・Y 下向き・1 単位 = 1px）で返す。
+    ///
+    /// UI のポインタ判定（OnPointerEnter 等）が使うのと**同じ座標系**なので、
+    /// CanvasTransform.Position と直接比較できる。
+    /// キャンバス世界線でない・Play 外では (0, 0)。
+    /// </summary>
+    public static Vector2 MousePositionCanvas => ScriptHost.InputMouseVec2(MouseCanvasPositionKind);
 
     // ── 簡易軸入力 ───────────────────────────────────────────
 

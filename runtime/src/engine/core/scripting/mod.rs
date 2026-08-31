@@ -21,7 +21,8 @@ pub mod host_api;
 pub mod input_bridge;
 pub use host_api::{
     with_world, with_actors, take_scene_commands, take_audio_commands,
-    publish_input, publish_physics_sender, advance_script_frame, with_on_destroy_guard,
+    publish_input, publish_physics_sender, publish_canvas_mouse_position,
+    advance_script_frame, with_on_destroy_guard,
     ScriptSceneCommand, ScriptAudioCommand,
 };
 
@@ -71,6 +72,22 @@ pub const PHYSICS_EVENT_COLLISION_EXIT:  i32 = 2;
 pub const PHYSICS_EVENT_TRIGGER_ENTER:   i32 = 3;
 pub const PHYSICS_EVENT_TRIGGER_EXIT:    i32 = 4;
 pub const PHYSICS_EVENT_TRIGGER_STAY:    i32 = 5;
+
+// ─── ポインタイベント種別（キャンバス UI のマウス操作）───────────
+//
+// 物理イベントと同じ FFI 経路（RawPhysicsEvent / run_physics_event_raw）に相乗りする。
+// 「自分 = イベント対象アクター」「相手 = 未使用（Entity.None）」で送る。
+// C# 側 ScriptBridge の PointerEvent* 定数と一致させること。
+/// カーソルがこのアクターへ入った最初のフレーム。
+pub const POINTER_EVENT_ENTER: i32 = 6;
+/// カーソルがこのアクターから出た最初のフレーム。
+pub const POINTER_EVENT_EXIT:  i32 = 7;
+/// このアクターの上で左ボタンが押された瞬間。
+pub const POINTER_EVENT_DOWN:  i32 = 8;
+/// このアクターの上で左ボタンが離された瞬間。
+pub const POINTER_EVENT_UP:    i32 = 9;
+/// 押下と解放が同一アクター上で完結した瞬間（Up の直後に送る）。
+pub const POINTER_EVENT_CLICK: i32 = 10;
 
 /// C# 側 NativePhysicsEvent と同じメモリレイアウト（#[repr(C)]）。
 /// 物理イベント（衝突・トリガー）をスクリプトへ通知するときに渡す。

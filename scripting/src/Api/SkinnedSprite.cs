@@ -66,4 +66,14 @@ public readonly struct SkinnedSprite : IComponentHandle<SkinnedSprite>
         get => ScriptHost.TryGetFloat(_entity, Comp, "layer", out var v) ? (int)v : 0;
         set => ScriptHost.TrySetFloat(_entity, Comp, "layer", value);
     }
+
+    /// <summary>
+    /// ポインタイベント（OnPointerEnter / Down / Up / Click / Exit）の判定対象にするか。
+    /// 既定 false のオプトイン。true にしたスプライトだけがクリック判定に参加する。
+    /// </summary>
+    public bool RaycastTarget
+    {
+        get => ScriptHost.TryGetBool(_entity, Comp, "raycast_target", out var b) && b;
+        set => ScriptHost.TrySetBool(_entity, Comp, "raycast_target", value);
+    }
 }

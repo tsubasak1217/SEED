@@ -791,6 +791,9 @@ public partial class InspectorPanel : UserControl
         float SpriteW = 100f, float SpriteH = 100f,
         // SpriteComponent 用描画優先度レイヤー（大きいほど手前・同値はヒエラルキー順）
         int SpriteLayer = 0,
+        // Sprite / SkinnedSprite 用: ポインタイベント（OnPointerEnter/Down/Click 等）の判定対象か。
+        // 既定 false のオプトイン。true のスプライトだけが Play 中のクリック判定に参加する。
+        bool SpriteRaycastTarget = false,
         // SpriteComponent 用: テクスチャ単位ポストエフェクト（.postfx アセット）参照。空文字列 = 未設定
         string PostFxPath = "",
         // SkinnedSpriteComponent 用: メッシュアセット（.sprite_mesh）参照。空文字列 = 未設定
@@ -1280,6 +1283,8 @@ public partial class InspectorPanel : UserControl
             var sprH = comp.TryGetProperty("sprite_h", out var sh) ? sh.GetSingle() : 100f;
             // SpriteComponent 用: 描画優先度レイヤー
             var sprLayer = comp.TryGetProperty("layer", out var slj) ? slj.GetInt32() : 0;
+            // Sprite / SkinnedSprite 用: ポインタイベントの判定対象か（オプトイン・既定 false）
+            var sprRaycast = comp.TryGetProperty("raycast_target", out var srt) && ReadJsonBool(srt, false);
             // SkinnedSpriteComponent 用: メッシュパス・ボーン対応表の件数
             var skinMeshPath = comp.TryGetProperty("mesh_path", out var smp) ? smp.GetString() ?? "" : "";
             var skinBoneOverrides = comp.TryGetProperty("bone_override_count", out var sboc) ? sboc.GetInt32() : 0;
@@ -1535,6 +1540,7 @@ public partial class InspectorPanel : UserControl
                 TexturePath: texPath, SpriteR: sprR, SpriteG: sprG, SpriteB: sprB, SpriteA: sprA,
                 SpriteW: sprW, SpriteH: sprH,
                 SpriteLayer: sprLayer,
+                SpriteRaycastTarget: sprRaycast,
                 PostFxPath: postFxPath,
                 SkinMeshPath: skinMeshPath, SkinBoneOverrideCount: skinBoneOverrides,
                 SkinBonesRaw: skinBones, SkinBoneCandidatesRaw: skinBoneCands,
@@ -4702,6 +4708,18 @@ public partial class InspectorPanel : UserControl
             layerFe.ToolTip = "描画優先度。大きいほど手前に描画されます。\n通常のスプライトと同じ土俵で比較されます。";
         sp.Children.Add(rowLayer);
 
+        // ポインタ判定対象（OnPointerEnter/Down/Up/Click/Exit をこのアクターへ配信するか）
+        var rowRaycast = BuildCheckRow("ポインタ判定", info.SpriteRaycastTarget, v =>
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_SKINNED_SPRITE_FIELD:{_currentActorId},{info.SlotIdx},raycast_target,{(v ? 1 : 0)}"));
+        });
+        if (rowRaycast is FrameworkElement raycastFe)
+            raycastFe.ToolTip =
+                "ON にすると Play 中のマウス判定対象になり、\nこのアクターのスクリプトへ OnPointerEnter / Down / Up / Click / Exit が届きます。\n判定は最前面の 1 枚だけに届きます（既定 OFF）。";
+        sp.Children.Add(rowRaycast);
+
         // ボーン対応表（Phase A2。InspectorPanel.SpriteBones.cs）
         sp.Children.Add(BuildSkinnedSpriteBoneTable(info));
 
@@ -4813,6 +4831,18 @@ public partial class InspectorPanel : UserControl
         if (rowLayer is FrameworkElement layerFe)
             layerFe.ToolTip = "描画優先度。大きいほど手前に描画されます。\n同じ値はヒエラルキー順。同一描画ゾーン内で比較されます。";
         sp.Children.Add(rowLayer);
+
+        // ポインタ判定対象（OnPointerEnter/Down/Up/Click/Exit をこのアクターへ配信するか）
+        var rowRaycast = BuildCheckRow("ポインタ判定", info.SpriteRaycastTarget, v =>
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_SPRITE_FIELD:{_currentActorId},{info.SlotIdx},raycast_target,{(v ? 1 : 0)}"));
+        });
+        if (rowRaycast is FrameworkElement raycastFe)
+            raycastFe.ToolTip =
+                "ON にすると Play 中のマウス判定対象になり、\nこのアクターのスクリプトへ OnPointerEnter / Down / Up / Click / Exit が届きます。\n判定は最前面の 1 枚だけに届きます（既定 OFF）。";
+        sp.Children.Add(rowRaycast);
 
         return sp;
     }

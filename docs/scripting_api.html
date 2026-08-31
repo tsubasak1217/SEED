@@ -319,7 +319,7 @@
 </section>
 
 <!-- ════════════════ 2. ライフサイクル ════════════════ -->
-<section id="sec-lifecycle" data-keywords="ライフサイクル 更新 フレーム 物理イベント 衝突 コールバック OnStart OnDestroy 初期化 破棄 生成 OnTriggerStay トリガー 例外 エラー クラッシュ 落ちる SCRIPT ERROR NullReference 未処理例外 スタックトレース デバッガ">
+<section id="sec-lifecycle" data-keywords="ライフサイクル 更新 フレーム 物理イベント 衝突 コールバック OnStart OnDestroy 初期化 破棄 生成 OnTriggerStay トリガー 例外 エラー クラッシュ 落ちる SCRIPT ERROR NullReference 未処理例外 スタックトレース デバッガ ポインタ ポインター クリック ボタン UI OnPointerEnter OnPointerExit OnPointerDown OnPointerUp OnPointerClick raycast_target ポインタ判定 マウス タイトル リザルト ショップ">
   <h2>2. ライフサイクル関数</h2>
   <p class="section-note"><code>SEEDScript</code> を継承して override。1 フレーム内で以下の順に呼ばれます。不要なものは override 不要。</p>
   <div class="api"><code class="sig">BeginFrame(ref ctx)</code><span class="desc">フレーム開始時。入力取得や状態リセット向け</span></div>
@@ -369,6 +369,34 @@
         <span class="t">SEED.Debug</span>.Log($<span class="s">"取得: {other.IsValid}"</span>);
         gameObject.Destroy();   <span class="c">// 自分を消す</span>
     }
+}</pre>
+
+  <h3>ポインタイベントコールバック（キャンバス UI のクリック）</h3>
+  <p class="section-note">自分のアクターの <code>Sprite</code> / <code>SkinnedSprite</code> で <b>「ポインタ判定」（raycast_target）を ON</b> にすると、Play 中のマウス操作が届きます。既定は OFF のオプトインです。判定は毎フレーム 1 回で、<b>最前面の 1 アクターにだけ</b>届きます（描画ゾーン → Layer が大きい方 → ヒエラルキー順で後）。</p>
+  <div class="api"><code class="sig">OnPointerEnter()</code><span class="desc">カーソルがこのアクターへ乗った最初のフレーム</span></div>
+  <div class="api"><code class="sig">OnPointerExit()</code><span class="desc">カーソルがこのアクターから外れた最初のフレーム</span></div>
+  <div class="api"><code class="sig">OnPointerDown()</code><span class="desc">このアクターの上で左ボタンが押された瞬間</span></div>
+  <div class="api"><code class="sig">OnPointerUp()</code><span class="desc">このアクターの上で左ボタンが離された瞬間</span></div>
+  <div class="api"><code class="sig">OnPointerClick()</code><span class="desc">押下と解放が同一アクターで完結したとき（OnPointerUp の直後）</span></div>
+  <p class="section-note">対応するのは<b>スクリーンスペースキャンバス</b>（Actor2D + Canvas）だけです。3D ワールド内キャンバス（Actor3D + Canvas）には届きません。非アクティブなアクター・無効化したスロットのスプライトも判定対象外です。</p>
+<pre><span class="c">// ボタンの作り方（レシピ）: Canvas の子に Sprite → インスペクタで「ポインタ判定」ON → このスクリプトを追加</span>
+<span class="k">public class</span> <span class="t">Button</span> : <span class="t">SEEDScript</span>
+{
+    <span class="k">private static readonly</span> <span class="t">SEED.Color</span> Normal = <span class="t">SEED.Color</span>.White;
+    <span class="k">private static readonly</span> <span class="t">SEED.Color</span> Hover  = <span class="k">new</span> <span class="t">SEED.Color</span>(0.85f, 0.95f, 1f, 1f);
+    <span class="k">private static readonly</span> <span class="t">SEED.Color</span> Press  = <span class="k">new</span> <span class="t">SEED.Color</span>(0.6f, 0.7f, 0.9f, 1f);
+
+    <span class="k">private void</span> Tint(<span class="t">SEED.Color</span> c)
+    {
+        <span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">SEED.Sprite</span>&gt;() <span class="k">is</span> { } s) s.Color = c;
+    }
+
+    <span class="k">public override void</span> OnStart()        =&gt; Tint(Normal);
+    <span class="k">public override void</span> OnPointerEnter() =&gt; Tint(Hover);
+    <span class="k">public override void</span> OnPointerExit()  =&gt; Tint(Normal);
+    <span class="k">public override void</span> OnPointerDown()  =&gt; Tint(Press);
+    <span class="k">public override void</span> OnPointerUp()    =&gt; Tint(Hover);
+    <span class="k">public override void</span> OnPointerClick() =&gt; <span class="t">SEED.Debug</span>.Log(<span class="s">"押された"</span>);
 }</pre>
 
   <h3>スクリプト例外の扱い</h3>
@@ -481,7 +509,7 @@
 </section>
 
 <!-- ════════════════ 6.5 Input ════════════════ -->
-<section id="sec-input" data-keywords="Input 入力 キーボード マウス キー ボタン ホイール WASD">
+<section id="sec-input" data-keywords="Input 入力 キーボード マウス キー ボタン ホイール WASD MouseDelta MousePosition MousePositionCanvas キャンバス座標 ジェスチャ 移動量 振る キャスト">
   <h2>6.5 Input（キーボード・マウス入力）</h2>
   <p class="section-note">判定は 3 種類: 押している間 / 押した瞬間 / 離した瞬間。</p>
   <h3>キーボード</h3>
@@ -493,8 +521,18 @@
   <div class="api"><code class="sig">Input.GetMouseButtonDown(MouseButton.Left)</code><span class="desc">bool: 押された瞬間だけ true</span></div>
   <div class="api"><code class="sig">Input.GetMouseButtonUp(MouseButton.Left)</code><span class="desc">bool: 離された瞬間だけ true</span></div>
   <div class="api"><code class="sig">Input.MousePos</code><span class="desc">Vector2: スクリーン座標（ピクセル・左上原点）</span></div>
-  <div class="api"><code class="sig">Input.MouseMove</code><span class="desc">Vector2: 今フレームの相対移動量</span></div>
+  <div class="api"><code class="sig">Input.MousePosition</code><span class="desc">Vector2: MousePos の別名</span></div>
+  <div class="api"><code class="sig">Input.MouseMove</code><span class="desc">Vector2: 今フレームの相対移動量（OS の Raw Input 由来。エディタ埋め込み Play では届かないことがある）</span></div>
+  <div class="api"><code class="sig">Input.MouseDelta</code><span class="desc">Vector2: 今フレームのカーソル座標差分。埋め込み Play でも必ず取れるので、マウスジェスチャ判定はこちらを積む（画面端で止まると 0）</span></div>
   <div class="api"><code class="sig">Input.MouseScroll</code><span class="desc">float: 今フレームのホイール量（上=正）</span></div>
+  <div class="api"><code class="sig">Input.MousePositionCanvas</code><span class="desc">Vector2: キャンバス座標（画面中央が原点・Y 下向き・1 単位=1px）。UI のポインタ判定と同じ座標系で、CanvasTransform.Position と直接比較できる。キャンバス世界線でない・Play 外では (0,0)</span></div>
+<pre><span class="c">// 例: マウスジェスチャ（引いてから前へ振る）の判定</span>
+<span class="k">private</span> <span class="t">SEED.Vector2</span> _swing;
+<span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx)
+{
+    _swing = _swing * 0.8f + <span class="t">SEED.Input</span>.MouseDelta;   <span class="c">// 直近の振りを指数移動平均で蓄える</span>
+    <span class="k">if</span> (_swing.y &lt; -40f) { <span class="c">/* 上方向へ強く振った = キャスト */</span> }
+}</pre>
   <h3>簡易軸入力</h3>
   <div class="api"><code class="sig">Input.MoveAxis()</code><span class="desc">Vector2: WASD/矢印キー → [-1,1]（斜めは正規化しない）</span></div>
 <pre><span class="c">// 例: WASD 移動 + スペースでジャンプ判定</span>
@@ -618,6 +656,7 @@ transform.Position += transform.Forward * 5f * <span class="t">SEED.Time</span>.
   <div class="api"><code class="sig">sprite.Width / sprite.Height</code><span class="desc">float（get/set。キャンバスユニット）</span></div>
   <div class="api"><code class="sig">sprite.Size</code><span class="desc">Vector2（get/set。Width/Height をまとめて）</span></div>
   <div class="api"><code class="sig">sprite.Layer</code><span class="desc">int（get/set。描画優先度。大きいほど手前。既定 0。同値はヒエラルキー順、同一描画ゾーン内で比較）</span></div>
+  <div class="api"><code class="sig">sprite.RaycastTarget</code><span class="desc">bool（get/set。ポインタイベント OnPointerEnter/Down/Up/Click/Exit の判定対象にするか。既定 false のオプトイン）</span></div>
 <pre><span class="c">// 例: 点滅させる</span>
 sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t">SEED.Mathf</span>.PingPong(<span class="t">SEED.Time</span>.ElapsedTime, 1f));</pre>
 
@@ -626,6 +665,7 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
   <div class="api"><code class="sig">skin.TexturePath</code><span class="desc">string（get/set。assets:// 仮想パス。空文字=単色表示）</span></div>
   <div class="api"><code class="sig">skin.Color</code><span class="desc">Color（get/set。RGBA。テクスチャに乗算）</span></div>
   <div class="api"><code class="sig">skin.Layer</code><span class="desc">int（get/set。描画優先度。Sprite と同じ土俵で比較される）</span></div>
+  <div class="api"><code class="sig">skin.RaycastTarget</code><span class="desc">bool（get/set。ポインタイベントの判定対象にするか。既定 false。判定形状は変形後メッシュの三角形）</span></div>
   <div class="api"><code class="sig">（ボーン操作 API は無し）</code><span class="desc">ボーンは普通の 2D 子アクター。そのアクターの CanvasTransform を動かすか .anim で再生する</span></div>
   <h3 id="cmp-camera">Camera（3D カメラ設定）</h3>
   <p class="section-note">カメラの位置・向きは同じ GameObject の <code>transform</code> で動かします。</p>
@@ -740,8 +780,8 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><th>コンポーネント名</th><th>取得</th><th>内容</th></tr>
     <tr><td><code>Transform</code></td><td><code>gameObject.GetComponent&lt;Transform&gt;()</code> / <code>transform</code></td><td>3D 位置・回転・スケール</td></tr>
     <tr><td><code>CanvasTransform</code></td><td><code>gameObject.GetComponent&lt;CanvasTransform&gt;()</code></td><td>2D キャンバス上の位置・回転・スケール・ピボット・アンカー</td></tr>
-    <tr><td><code>Sprite</code></td><td><code>gameObject.GetComponent&lt;Sprite&gt;()</code></td><td>テクスチャパス・色・サイズ・レイヤー</td></tr>
-<tr><td><code>SkinnedSprite</code></td><td><code>gameObject.GetComponent&lt;SkinnedSprite&gt;()</code></td><td>メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー。ボーンは子アクターの CanvasTransform で動かす</td></tr>
+    <tr><td><code>Sprite</code></td><td><code>gameObject.GetComponent&lt;Sprite&gt;()</code></td><td>テクスチャパス・色・サイズ・レイヤー・ポインタ判定対象（RaycastTarget）</td></tr>
+<tr><td><code>SkinnedSprite</code></td><td><code>gameObject.GetComponent&lt;SkinnedSprite&gt;()</code></td><td>メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー・ポインタ判定対象。ボーンは子アクターの CanvasTransform で動かす</td></tr>
     <tr><td><code>Camera</code></td><td><code>gameObject.GetComponent&lt;Camera&gt;()</code></td><td>FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度</td></tr>
     <tr><td><code>AudioSource</code></td><td><code>gameObject.GetComponent&lt;AudioSource&gt;()</code></td><td>音源パス・音量・ループ・3D 減衰・パン + Play/Stop</td></tr>
     <tr><td><code>Animator</code></td><td><code>gameObject.GetComponent&lt;Animator&gt;()</code></td><td>再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume</td></tr>

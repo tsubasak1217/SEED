@@ -134,6 +134,21 @@ impl MouseState {
         self.prev_scroll
     }
 
+    /// カーソル座標の前フレーム比の差分（`CursorMoved` 由来）。
+    ///
+    /// `delta()`（`DeviceEvent::MouseMotion` = Raw Input）との違いが重要:
+    /// Raw Input はランタイムウィンドウがエディタへ WS_CHILD で埋め込まれていると
+    /// フォアグラウンドプロセス側に横取りされて**届かない**。
+    /// こちらは `WindowEvent::CursorMoved` 由来なので埋め込み Play でも必ず動く。
+    /// 代わりにカーソルがウィンドウ端でクランプされると 0 になる（Raw Input は動き続ける）。
+    #[inline]
+    pub fn position_delta(&self) -> Vector2<f32> {
+        Vector2::new(
+            self.position.x - self.prev_position.x,
+            self.position.y - self.prev_position.y,
+        )
+    }
+
     /// このフレームにマウスが動いたか（delta が 0 でないか）
     #[inline]
     pub fn is_moved(&self) -> bool {

@@ -37,6 +37,10 @@ pub struct SpriteComponentData {
     /// （旧データ互換のため #[serde(default)] で空文字列として読み込む）。
     #[serde(default)]
     pub postfx_path: String,
+    /// ポインタイベント（OnPointerEnter/Down/Click 等）のヒットテスト対象にするか。
+    /// 既定 false（オプトイン）。旧データ互換のため #[serde(default)]。
+    #[serde(default)]
+    pub raycast_target: bool,
 }
 
 // ─── SpriteComponent ─────────────────────────────────────────────────────────
@@ -69,6 +73,13 @@ pub struct SpriteComponent {
     /// 指定時はテクスチャに .postfx のエフェクトチェーンを焼き込んで描画する。
     #[serde(default)]
     pub postfx_path: String,
+    /// ポインタイベント（OnPointerEnter/Down/Click 等）のヒットテスト対象にするか。
+    ///
+    /// 既定 false のオプトイン方式。false のスプライトは Play 中のポインタ判定から
+    /// 完全に除外される（背景・装飾がボタンのクリックを食わないようにするため）。
+    /// エディタの選択ピッキングには影響しない（そちらは常に全スプライトが対象）。
+    #[serde(default)]
+    pub raycast_target: bool,
 }
 
 impl SpriteComponent {
@@ -82,6 +93,7 @@ impl SpriteComponent {
             height: data.height,
             layer: data.layer,
             postfx_path: data.postfx_path,
+            raycast_target: data.raycast_target,
         }
     }
 
@@ -94,6 +106,7 @@ impl SpriteComponent {
             height: self.height,
             layer: self.layer,
             postfx_path: self.postfx_path.clone(),
+            raycast_target: self.raycast_target,
         }
     }
 }
@@ -108,6 +121,7 @@ impl Default for SpriteComponent {
             height: 100.0,
             layer: 0,
             postfx_path: String::new(),
+            raycast_target: false,
         }
     }
 }

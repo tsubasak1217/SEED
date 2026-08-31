@@ -96,6 +96,13 @@ thread_local! {
     /// frame_renderer が描画と同一の座標変換チェーンでフレームごとに計算・公開し、
     /// スクリプトの CanvasTransform.ScreenPosition が参照する。
     static SCREEN_POSITIONS: RefCell<Vec<(Entity, [f32; 2])>> = const { RefCell::new(Vec::new()) };
+
+    /// カーソルのキャンバス座標（スクリーンスペースキャンバスの ortho 空間。
+    /// 画面中央が原点・Y 下向き・1 単位 = 1px）。
+    /// ポインタイベント処理（pointer_events.rs）がヒットテストに使った値をそのまま
+    /// 毎フレーム公開し、スクリプトの `Input.MousePositionCanvas` が参照する。
+    /// 未公開フレーム（Play 以外・キャンバス世界線以外）は [0, 0] のまま。
+    static CANVAS_MOUSE_POS: Cell<[f32; 2]> = const { Cell::new([0.0, 0.0]) };
 }
 
 /// World ポインタを設定してクロージャを実行し、終了後に元へ戻す。
@@ -146,6 +153,14 @@ pub fn publish_input(input: Option<&Input>) {
         Some(i) => i as *const Input,
         None    => std::ptr::null(),
     }));
+}
+
+/// カーソルのキャンバス座標（ortho 空間）を公開する。
+///
+/// ポインタイベント処理がヒットテストに使ったのと同じ値を渡すことで、
+/// スクリプトの `Input.MousePositionCanvas` と `OnPointer*` の座標系が必ず一致する。
+pub fn publish_canvas_mouse_position(pos: [f32; 2]) {
+    CANVAS_MOUSE_POS.with(|c| c.set(pos));
 }
 
 /// ゲームロジック開始前に物理スレッドへのコマンド送信チャンネルを公開する（None で解除）。
@@ -577,6 +592,8 @@ fn read_floats(
                 "height" => put(out, &[s.height]),
                 // 描画優先度レイヤー（i32 → f32 変換して返す。Camera の target_width と同様）
                 "layer"  => put(out, &[s.layer as f32]),
+                // ポインタイベントのヒットテスト対象か（bool = 0/1）
+                "raycast_target" => put(out, &[if s.raycast_target { 1.0 } else { 0.0 }]),
                 _        => None,
             }
         }
@@ -588,6 +605,8 @@ fn read_floats(
                 "color" => put(out, &s.color),
                 // 描画優先度レイヤー（i32 → f32 変換して返す。Sprite の layer と同様）
                 "layer" => put(out, &[s.layer as f32]),
+                // ポインタイベントのヒットテスト対象か（bool = 0/1）
+                "raycast_target" => put(out, &[if s.raycast_target { 1.0 } else { 0.0 }]),
                 _       => None,
             }
         }
@@ -810,6 +829,10 @@ fn write_floats(
                 "height" => take::<1>(v).map(|a| s.height = a[0]).is_some(),
                 // 描画優先度レイヤー（f32 → i32 変換して格納。Camera の target_width と同様）
                 "layer"  => take::<1>(v).map(|a| s.layer = a[0] as i32).is_some(),
+                // ポインタイベントのヒットテスト対象か（0/1 → bool）
+                "raycast_target" => {
+                    take::<1>(v).map(|a| s.raycast_target = a[0] != 0.0).is_some()
+                }
                 _        => false,
             }
         }
@@ -821,6 +844,10 @@ fn write_floats(
                 "color" => take(v).map(|a| s.color = a).is_some(),
                 // 描画優先度レイヤー（f32 → i32 変換して格納。Sprite の layer と同様）
                 "layer" => take::<1>(v).map(|a| s.layer = a[0] as i32).is_some(),
+                // ポインタイベントのヒットテスト対象か（0/1 → bool）
+                "raycast_target" => {
+                    take::<1>(v).map(|a| s.raycast_target = a[0] != 0.0).is_some()
+                }
                 _       => false,
             }
         }
@@ -1343,7 +1370,8 @@ unsafe extern "system" fn ffi_input_mouse_button(kind: i32, button_id: u32) -> i
 
 /// マウス状態（座標・移動量・ホイール）を取得する。out へ書いた要素数を返す（失敗=0）。
 ///
-/// kind: 0=スクリーン座標(2要素) / 1=相対移動量(2要素) / 2=ホイール量(1要素)。
+/// kind: 0=スクリーン座標(2要素) / 1=相対移動量(Raw Input・2要素) / 2=ホイール量(1要素) /
+///       3=キャンバス座標(2要素) / 4=カーソル座標差分(2要素)。
 /// out は 2 要素以上の容量を C# 側が保証する。
 unsafe extern "system" fn ffi_input_mouse_state(kind: i32, out: *mut f32) -> i32 {
     let ptr = INPUT_PTR.with(|p| p.get());
@@ -1365,6 +1393,21 @@ unsafe extern "system" fn ffi_input_mouse_state(kind: i32, out: *mut f32) -> i32
         input_bridge::MOUSE_STATE_SCROLL => {
             *out = input.mouse_scroll(InputState::Current);
             1
+        }
+        // カーソル座標差分（CursorMoved 由来。Raw Input が届かない埋め込み Play でも動く）
+        input_bridge::MOUSE_STATE_POSITION_DELTA => {
+            let v = input.mouse_position_delta();
+            *out        = v.x;
+            *out.add(1) = v.y;
+            2
+        }
+        // キャンバス座標は Input ではなくポインタイベント処理が公開する値を返す
+        //（ウィンドウサイズとキャンバスのレイアウト規約が必要なため）。
+        input_bridge::MOUSE_STATE_CANVAS_POSITION => {
+            let v = CANVAS_MOUSE_POS.with(|c| c.get());
+            *out        = v[0];
+            *out.add(1) = v[1];
+            2
         }
         _ => 0,
     }

@@ -648,14 +648,8 @@ pub fn build_actor(
             }
             ComponentData::SpriteComponent(sc_data) => {
                 use crate::engine::components::SpriteComponent;
-                world.insert(slot_entity, SpriteComponent {
-                    texture_path: sc_data.texture_path,
-                    color:        sc_data.color,
-                    width:        sc_data.width,
-                    height:       sc_data.height,
-                    layer:        sc_data.layer,
-                    postfx_path:  sc_data.postfx_path,
-                });
+                // 復元は必ず from_data 経由（フィールド追加時の写し漏れを原理的に防ぐ）
+                world.insert(slot_entity, SpriteComponent::from_data(sc_data));
                 actor.add_slot_typed::<SpriteComponent>(slot_name, ComponentKind::Sprite, slot_entity);
             }
             ComponentData::SkinnedSpriteComponent(sc_data) => {

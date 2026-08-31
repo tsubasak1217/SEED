@@ -40,21 +40,60 @@ const CANVAS_WORLD_SCALE: f32 = 1.0 / 100.0;
 
 /// ピック候補の種別（優先度: Sprite > Canvas）。
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum PickKind2d {
+pub(super) enum PickKind2d {
     Sprite,
     Canvas,
 }
 
 /// クリック点に当たった 2D ピック候補。優先度ソート用のメタ情報を持つ。
-struct PickCand2d {
+///
+/// エディタの選択ピック（pick_2d_canvas）と Play 中のポインタイベント
+/// （pointer_events.rs）で同じ候補型・同じ走査を共有する。
+pub(super) struct PickCand2d {
     /// アクター DFS ID（選択に使用）
-    dfs: usize,
+    pub dfs: usize,
+    /// 候補アクターのルートエンティティ（ポインタイベントの配信先解決に使用）
+    pub entity: Entity,
     /// Sprite / Canvas 種別（Sprite 最優先）
-    kind: PickKind2d,
+    pub kind: PickKind2d,
     /// 描画ゾーン（前面優先）
-    zone: CanvasDrawZone,
+    pub zone: CanvasDrawZone,
     /// 階層の深さ（大きいほど子＝優先）
-    depth: u32,
+    pub depth: u32,
+    /// スプライトの描画レイヤー（大きいほど手前。Canvas 候補は 0）
+    pub layer: i32,
+}
+
+/// 候補収集ウォークの絞り込み条件。
+///
+/// エディタの選択ピックと Play 中のポインタイベントで「拾いたいもの」が違うため、
+/// 走査本体（walk_pick_candidates_2d）は 1 つに保ったままここで振る舞いを切り替える。
+#[derive(Clone, Copy)]
+pub(super) struct PickFilter2d {
+    /// true: `raycast_target = true` のスプライトだけを候補にする（ポインタイベント用）。
+    /// false: 全スプライトを候補にする（エディタ選択用・従来動作）。
+    pub require_raycast_target: bool,
+    /// true: 非アクティブアクター・無効スロットを除外する（＝描画されているものだけ）。
+    /// false: 非表示でも選択できる（エディタ選択用・従来動作）。
+    pub respect_visibility: bool,
+    /// true: CanvasComponent の矩形も候補に含める（エディタ選択用・従来動作）。
+    /// false: スプライトだけを候補にする（ポインタイベント用）。
+    pub include_canvas: bool,
+}
+
+impl PickFilter2d {
+    /// エディタの選択ピック用（従来動作を完全に維持する）。
+    pub(super) const EDITOR_SELECT: Self = Self {
+        require_raycast_target: false,
+        respect_visibility: false,
+        include_canvas: true,
+    };
+    /// Play 中のポインタイベント用（オプトインかつ可視のスプライトのみ）。
+    pub(super) const POINTER_EVENT: Self = Self {
+        require_raycast_target: true,
+        respect_visibility: true,
+        include_canvas: false,
+    };
 }
 
 impl App {
@@ -131,6 +170,7 @@ impl App {
                 &root_auto,
                 design_space,
                 &mesh_of,
+                PickFilter2d::EDITOR_SELECT,
                 &mut cands,
             );
         }
@@ -225,7 +265,7 @@ fn kind_rank(k: PickKind2d) -> u8 {
 }
 
 /// 描画ゾーンランク: 前面（Foreground）を背面（Background）より優先。
-fn zone_rank(z: CanvasDrawZone) -> u8 {
+pub(super) fn zone_rank(z: CanvasDrawZone) -> u8 {
     match z {
         CanvasDrawZone::Foreground => 0,
         CanvasDrawZone::Background => 1,
@@ -333,7 +373,7 @@ fn point_in_triangle(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool
 /// 描画される矩形とヒット判定を一致させる。SS ピック専用のため canvas_scale=1・
 /// y_sign=1（ortho 空間）で計算する。
 #[allow(clippy::too_many_arguments)]
-fn walk_pick_candidates_2d(
+pub(super) fn walk_pick_candidates_2d(
     actors: &[Actor],
     world: &World,
     wl: u32,
@@ -351,6 +391,8 @@ fn walk_pick_candidates_2d(
     design_space: bool,
     // `.sprite_mesh` を CPU キャッシュから引くローダ（スキンスプライトの三角形判定用）
     mesh_of: &dyn Fn(&str) -> Option<std::sync::Arc<SpriteMesh>>,
+    // 候補の絞り込み条件（エディタ選択 / ポインタイベントで切り替える）
+    filter: PickFilter2d,
     out: &mut Vec<PickCand2d>,
 ) {
     for actor in actors {
@@ -359,6 +401,15 @@ fn walk_pick_candidates_2d(
         }
         let my_dfs = *counter as usize;
         *counter += 1;
+
+        // 非アクティブアクター（ポインタイベント時のみ）: 自身と全子孫を候補から外す。
+        // 描画（collect_sprite_items）が同じ条件でサブツリーごと省くため、
+        // 「見えていないものはクリックできない」を描画と一致させられる。
+        // DFS 番号だけは正典どおり消費する（番号ズレ = 誤配信の原因）。
+        if filter.respect_visibility && !actor.active {
+            skip_dfs_subtree(&actor.children, counter);
+            continue;
+        }
 
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
         let Some(ct) = ct_opt else {
@@ -477,16 +528,25 @@ fn walk_pick_candidates_2d(
         // ── Sprite ヒット（最優先候補）────────────────────────────────────────
         for slot in actor.slots() {
             if slot.kind == ComponentKind::Sprite {
+                if filter.respect_visibility && !slot.enabled {
+                    continue;
+                }
                 if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
+                    // ポインタイベントはオプトイン（raycast_target = true のみ判定対象）
+                    if filter.require_raycast_target && !sc.raycast_target {
+                        continue;
+                    }
                     let eff_w = sc.width * size_sc_x;
                     let eff_h = sc.height * size_sc_y;
                     let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(eff_w, eff_h));
                     if hit_test_rect_2d(canvas_x, canvas_y, &m, eff_w, eff_h) {
                         out.push(PickCand2d {
                             dfs: my_dfs,
+                            entity: actor.entity,
                             kind: PickKind2d::Sprite,
                             zone: my_zone,
                             depth,
+                            layer: sc.layer,
                         });
                     }
                 }
@@ -504,6 +564,10 @@ fn walk_pick_candidates_2d(
             let Some(ss) = world.get::<SkinnedSpriteComponent>(slot.entity) else {
                 continue;
             };
+            // ポインタイベントはオプトイン（raycast_target = true のみ判定対象）
+            if filter.require_raycast_target && !ss.raycast_target {
+                continue;
+            }
             let Some(mesh) = mesh_of(&ss.mesh_path) else {
                 continue;
             };
@@ -513,23 +577,27 @@ fn walk_pick_candidates_2d(
             if hit_test_mesh_2d(canvas_x, canvas_y, &m, &mesh, &bone_mats) {
                 out.push(PickCand2d {
                     dfs: my_dfs,
+                    entity: actor.entity,
                     kind: PickKind2d::Sprite,
                     zone: my_zone,
                     depth,
+                    layer: ss.layer,
                 });
                 break;
             }
         }
 
         // ── Canvas 矩形ヒット（補助候補）──────────────────────────────────────
-        if let Some(_cc) = my_canvas {
+        if filter.include_canvas && my_canvas.is_some() {
             let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(my_eff_w, my_eff_h));
             if hit_test_rect_2d(canvas_x, canvas_y, &m, my_eff_w, my_eff_h) {
                 out.push(PickCand2d {
                     dfs: my_dfs,
+                    entity: actor.entity,
                     kind: PickKind2d::Canvas,
                     zone: my_zone,
                     depth,
+                    layer: 0,
                 });
             }
         }
@@ -580,6 +648,7 @@ fn walk_pick_candidates_2d(
             root_auto_sizes,
             design_space,
             mesh_of,
+            filter,
             out,
         );
     }

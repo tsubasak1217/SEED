@@ -22,6 +22,13 @@ pub const INPUT_KIND_RELEASE: i32 = 2; // 離された瞬間
 pub const MOUSE_STATE_POSITION: i32 = 0; // スクリーン座標（2 要素）
 pub const MOUSE_STATE_DELTA: i32 = 1; // 相対移動量（2 要素）
 pub const MOUSE_STATE_SCROLL: i32 = 2; // ホイール量（1 要素）
+/// キャンバス座標（2 要素）。スクリーンスペースキャンバスの ortho 空間
+/// （画面中央が原点・Y 下向き・1 単位 = 1px）で表したカーソル位置。
+/// UI のヒットテスト（ポインタイベント）と完全に同じ座標系。
+pub const MOUSE_STATE_CANVAS_POSITION: i32 = 3;
+/// カーソル座標差分（2 要素）。`CursorMoved` 由来の「前フレームからの移動量」。
+/// Raw Input（MOUSE_STATE_DELTA）と違い、エディタ埋め込み Play でも必ず取れる。
+pub const MOUSE_STATE_POSITION_DELTA: i32 = 4;
 
 // ─── キーコード対応表 ────────────────────────────────────────
 

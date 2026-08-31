@@ -410,9 +410,10 @@ impl App {
                     let path_json   = serde_json::to_string(&d.texture_path).unwrap_or_default();
                     let postfx_json = serde_json::to_string(&d.postfx_path).unwrap_or_default();
                     ("SpriteComponent", format!(
-                        r#","texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"sprite_w":{:.4},"sprite_h":{:.4},"layer":{},"postfx_path":{postfx_json}"#,
+                        r#","texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"sprite_w":{:.4},"sprite_h":{:.4},"layer":{},"postfx_path":{postfx_json},"raycast_target":{}"#,
                         d.color[0], d.color[1], d.color[2], d.color[3], d.width, d.height,
                         d.layer,
+                        d.raycast_target as u8,
                     ))
                 }
                 ComponentData::SkinnedSpriteComponent(d) => {
@@ -428,9 +429,10 @@ impl App {
                     let bones_json =
                         self.skinned_sprite_bone_json(&comp, actor, dfs_id, &scene.world);
                     ("SkinnedSpriteComponent", format!(
-                        r#","mesh_path":{mesh_json},"texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"layer":{},"bone_override_count":{}{bones_json}"#,
+                        r#","mesh_path":{mesh_json},"texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"layer":{},"raycast_target":{},"bone_override_count":{}{bones_json}"#,
                         d.color[0], d.color[1], d.color[2], d.color[3],
                         d.layer,
+                        d.raycast_target as u8,
                         d.bone_overrides.len(),
                     ))
                 }

@@ -1253,6 +1253,9 @@ impl App {
                 IpcCommand::SetSpriteLayer { actor_dfs_id, slot_idx, layer } => {
                     self.handle_set_sprite_layer(actor_dfs_id, slot_idx, layer);
                 }
+                IpcCommand::SetSpriteField { actor_dfs_id, slot_idx, key, value } => {
+                    self.handle_set_sprite_field(actor_dfs_id, slot_idx, &key, &value);
+                }
                 IpcCommand::SetLightField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_light_field(actor_dfs_id, slot_idx, &key, &value);
                 }

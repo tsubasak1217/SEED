@@ -212,6 +212,57 @@ public class Coin : SEEDScript
 }
 ```
 
+### ポインタイベントコールバック（キャンバス UI のクリック）
+
+自分のアクターが持つ `Sprite` / `SkinnedSprite` の **`raycast_target`（インスペクタの「ポインタ判定」チェック）を ON** にすると、Play 中のマウス操作が以下のコールバックで届きます。既定は OFF なので、ボタンにしたいスプライトだけを明示的に ON にします。
+
+| 関数 | 呼ばれるタイミング |
+|------|--------------------|
+| `OnPointerEnter()` | カーソルがこのアクターへ乗った最初のフレーム |
+| `OnPointerExit()`  | カーソルがこのアクターから外れた最初のフレーム |
+| `OnPointerDown()`  | このアクターの上で左ボタンが押された瞬間 |
+| `OnPointerUp()`    | このアクターの上で左ボタンが離された瞬間 |
+| `OnPointerClick()` | 押下と解放が同一アクターで完結したとき（`OnPointerUp` の直後） |
+
+```csharp
+public class TitleButton : SEEDScript
+{
+    public override void OnPointerEnter() { /* ハイライト */ }
+    public override void OnPointerExit()  { /* 戻す */ }
+    public override void OnPointerClick() { SEED.Scene.Load("assets://scenes/game.scene"); }
+}
+```
+
+> **重要**: 判定は毎フレーム 1 回だけ行われ、**最前面の 1 アクターにだけ**イベントが届きます（重なり順は「描画ゾーン → `Layer` が大きい方 → ヒエラルキー順で後」）。判定形状は Sprite が表示矩形、SkinnedSprite が変形後メッシュの三角形で、どちらも見た目と一致します。
+
+> **重要**: 対応するのは**スクリーンスペースキャンバス**（Actor2D + Canvas）だけです。3D ワールド内に置いたキャンバス（Actor3D + Canvas）にはポインタイベントは届きません。また非アクティブなアクター・無効化したスロットのスプライトは判定対象外です（＝見えていないものはクリックできません）。
+
+```csharp
+// ボタンの作り方（レシピ）
+// 1. Canvas 配下に Sprite を持つ子アクターを作る
+// 2. インスペクタで Sprite の「ポインタ判定」を ON にする（= raycast_target）
+// 3. 同じアクターへスクリプトを追加して OnPointer* を実装する
+public class Button : SEEDScript
+{
+    // 色はスクリプトから変えるだけで「押した感じ」が作れる（エンジンに Button 型は無い）
+    private static readonly SEED.Color Normal = SEED.Color.White;
+    private static readonly SEED.Color Hover  = new SEED.Color(0.85f, 0.95f, 1f, 1f);
+    private static readonly SEED.Color Press  = new SEED.Color(0.6f, 0.7f, 0.9f, 1f);
+
+    private void Tint(SEED.Color c)
+    {
+        if (gameObject.GetComponent<SEED.Sprite>() is { } s) s.Color = c;
+    }
+
+    public override void OnStart()        => Tint(Normal);
+    public override void OnPointerEnter() => Tint(Hover);
+    public override void OnPointerExit()  => Tint(Normal);
+    public override void OnPointerDown()  => Tint(Press);
+    public override void OnPointerUp()    => Tint(Hover);
+    public override void OnPointerClick() => SEED.Debug.Log("押された");
+}
+```
+
 ### スクリプト例外の扱い
 
 ライフサイクル関数・物理イベントコールバックの中で**未処理の例外**（`Nullable` の `.Value`、`NullReferenceException`、`IndexOutOfRangeException` など）が発生しても、**ランタイムプロセスは落ちません**。エンジン側がすべてのコールバック境界で例外を捕捉します。
@@ -362,8 +413,23 @@ Input.GetMouseButtonUp(MouseButton.Left)
 
 // マウス状態
 Input.MousePos        // Vector2: スクリーン座標（ピクセル・左上原点）
-Input.MouseMove       // Vector2: 今フレームの相対移動量
+Input.MousePosition   // Vector2: MousePos の別名
+Input.MouseMove       // Vector2: 今フレームの相対移動量（OS の Raw Input 由来。
+                      //          エディタ埋め込み Play では届かないことがある）
+Input.MouseDelta      // Vector2: 今フレームのカーソル座標差分（埋め込み Play でも必ず取れる。
+                      //          ジェスチャ判定はこちらを積む。画面端で止まると 0）
 Input.MouseScroll     // float:   今フレームのホイール量（上=正）
+Input.MousePositionCanvas // Vector2: キャンバス座標（画面中央が原点・Y 下向き・1 単位=1px）
+                          //          UI のポインタ判定と同じ座標系。CanvasTransform.Position と直接比較できる
+                          //          キャンバス世界線でない・Play 外では (0,0)
+
+// 例: マウスジェスチャ（引いてから前へ振る）の判定
+private SEED.Vector2 _swing;
+public override void Update(ref NativeFrameContext ctx)
+{
+    _swing = _swing * 0.8f + SEED.Input.MouseDelta;   // 直近の振りを指数移動平均で蓄える
+    if (_swing.y < -40f) { /* 上方向へ強く振った = キャスト */ }
+}
 
 // 簡易軸入力（WASD/矢印 → [-1,1]。斜めは正規化しない）
 Input.MoveAxis()      // Vector2
@@ -571,6 +637,8 @@ if (gameObject.GetComponent<Sprite>() is { } sprite)   // Sprite?（未アタッ
     sprite.Size            // Vector2（get/set。Width/Height をまとめて）
     sprite.Layer           // int（get/set。描画優先度。大きいほど手前。既定 0。
                            //     同値はヒエラルキー順。同一描画ゾーン内で比較される）
+    sprite.RaycastTarget   // bool（get/set。ポインタイベント OnPointerEnter/Down/Up/Click/Exit の
+                           //      判定対象にするか。既定 false のオプトイン）
 
     // 例: 点滅させる
     sprite.Color = SEED.Color.White.WithAlpha(SEED.Mathf.PingPong(SEED.Time.ElapsedTime, 1f));
@@ -591,6 +659,8 @@ if (gameObject.GetComponent<SkinnedSprite>() is { } skin)   // SkinnedSprite?（
     skin.TexturePath       // string（get/set。assets:// 仮想パス。空文字=単色表示）
     skin.Color             // Color（get/set。RGBA。テクスチャに乗算）
     skin.Layer             // int（get/set。描画優先度。Sprite と同じ土俵で比較される）
+    skin.RaycastTarget     // bool（get/set。ポインタイベントの判定対象にするか。既定 false。
+                           //      判定形状は変形後メッシュの三角形）
 
     // 例: ボーン（アクター名 "elbow"）を回して腕を振る
     var elbow = SEED.GameObject.Find("elbow");
@@ -773,8 +843,8 @@ if (gameObject.GetComponent<WaterVolume>() is { } water)
 |---|---|---|
 | `Transform` | `gameObject.GetComponent<Transform>()` / `transform` | 3D 位置・回転・スケール |
 | `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー |
-| `Sprite` | `gameObject.GetComponent<Sprite>()` | テクスチャパス・色・サイズ・レイヤー |
-| `SkinnedSprite` | `gameObject.GetComponent<SkinnedSprite>()` | メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー。ボーンは子アクターの CanvasTransform で動かす |
+| `Sprite` | `gameObject.GetComponent<Sprite>()` | テクスチャパス・色・サイズ・レイヤー・ポインタ判定対象（RaycastTarget） |
+| `SkinnedSprite` | `gameObject.GetComponent<SkinnedSprite>()` | メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー・ポインタ判定対象。ボーンは子アクターの CanvasTransform で動かす |
 | `Camera` | `gameObject.GetComponent<Camera>()` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |
 | `AudioSource` | `gameObject.GetComponent<AudioSource>()` | 音源パス・音量・ループ・3D 減衰・パン + Play/Stop |
 | `Animator` | `gameObject.GetComponent<Animator>()` | 再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume |

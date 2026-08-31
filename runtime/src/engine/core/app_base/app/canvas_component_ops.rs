@@ -498,6 +498,46 @@ impl App {
         }
     }
 
+    /// SpriteComponent の汎用フィールドを更新する（専用コマンドを持たない単純な値）。
+    ///
+    /// 対応キー:
+    /// - `raycast_target`: ポインタイベント（OnPointerEnter/Down/Click 等）の判定対象か（"0" / "1"）
+    ///
+    /// 未知のキーは黙って無視する（エディタ側の実装ミスでシーンを壊さないため）。
+    pub(super) fn handle_set_sprite_field(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx: u32,
+        key: &str,
+        value: &str,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Sprite)
+                .map(|s| s.entity)
+        };
+        let Some(entity) = slot_entity else { return };
+        {
+            let Some(scene) = &mut self.scene else { return };
+            let Some(sc) = scene.world.get_mut::<SpriteComponent>(entity) else { return };
+            match key {
+                "raycast_target" => {
+                    let Ok(v) = value.trim().parse::<i32>() else { return };
+                    sc.raycast_target = v != 0;
+                }
+                _ => return,
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
+    }
+
     // ── CanvasComponent プロパティ設定 ────────────────────────────
 
     /// CanvasComponent の描画ゾーンを更新する（ビューポート・ルートキャンバス用）。
