@@ -134,6 +134,14 @@ struct SceneData {
     /// project_settings.json 側の設定（`App::load_graphics_settings`）がそのまま効く。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     settings: Option<SceneSettingsData>,
+    /// 地形一式（`.tvox` / `.tscatter` / `.tcover`）を置く「地形フォルダ」への参照。
+    ///
+    /// アセットルート相対のスラッシュ区切りパス（例 `terrain/Scene1`・`levels/forest/ground`）。
+    /// 正規化と既定値の解決は `engine::terrain::dir_ref` が一手に担う。
+    /// 旧 `.scene` にはこのキーが無いため `None` のまま読め、その場合は従来の固定パス
+    /// `terrain/<シーン名>` が使われる（後方互換）。未設定なら出力時もキーごと省略する。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terrain_dir: Option<String>,
     actors: Vec<ActorData>,
 }
 
@@ -171,6 +179,13 @@ pub struct Scene {
     /// None は「このシーンには設定が無い」＝旧シーン。その場合は起動時に読んだ
     /// project_settings.json の設定がそのまま使われる（フォールバック）。
     pub settings: Option<SceneSettingsData>,
+    /// 地形一式を置く「地形フォルダ」への参照（アセットルート相対・スラッシュ区切り）。
+    ///
+    /// `None` は「このシーンには参照が無い」＝旧シーン。その場合は
+    /// `terrain::dir_ref::default_for_scene`（＝`terrain/<シーン名>`）が使われる。
+    /// 「名前を付けて保存」（`TERRAIN_SAVE_AS`）がここを書き換え、以後の保存・読込は
+    /// すべてこの参照に従う。
+    pub terrain_dir: Option<String>,
 }
 
 impl Scene {
@@ -182,7 +197,9 @@ impl Scene {
         // シーン設定は既定で未設定（project_settings.json 側の設定が使われる）
         Self { name: name.into(), world: World::new(), actors: Vec::new(), schedule, shading_asset: None,
                shading_params: std::collections::BTreeMap::new(),
-               shading_bindings: std::collections::BTreeMap::new(), settings: None }
+               shading_bindings: std::collections::BTreeMap::new(), settings: None,
+               // 地形フォルダ参照は既定で未設定（terrain/<シーン名> が使われる）
+               terrain_dir: None }
     }
 
     pub fn add_actor(&mut self, actor: Actor) {
@@ -388,6 +405,8 @@ impl Scene {
             shading_bindings: self.shading_bindings.clone(),
             // シーン単位のビューポート／レンダリング設定（未設定なら None のまま出力を省略する）
             settings:      self.settings.clone(),
+            // 地形フォルダ参照（未設定なら None のまま出力を省略する＝旧 .scene と同じ形）
+            terrain_dir:   self.terrain_dir.clone(),
             actors:       self.actors.iter().map(|a| a.to_data(&self.world)).collect(),
         };
         let json = serde_json::to_string_pretty(&data)?;
@@ -456,6 +475,8 @@ impl Scene {
         // 実際の適用は呼び出し側（App::load_play_scene / IPC LOAD_SCENE ハンドラ）が
         // App::apply_scene_settings で行う。
         scene.settings = data.settings;
+        // 地形フォルダ参照を復元する（旧 .scene には無いので None のまま＝従来の既定パス）。
+        scene.terrain_dir = data.terrain_dir;
         for actor_data in data.actors {
             let actor = build_actor(actor_data, ctx, &mut scene.world, scripting_host, None)?;
             scene.actors.push(actor);

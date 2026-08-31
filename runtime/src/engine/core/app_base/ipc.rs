@@ -156,6 +156,16 @@ pub enum IpcCommand {
     /// ボクセル地形の全チャンクを .tvox としてアセット配下へ保存する。
     /// ワイヤ形式: `TERRAIN_SAVE`（引数なし）
     TerrainSave,
+    /// 地形一式（.tvox / .tscatter / .tcover）を**別の地形フォルダ**へ保存し、
+    /// 以後の保存先とシーンの参照をそこへ切り替える（「名前を付けて保存」）。
+    ///
+    /// ワイヤ形式: `TERRAIN_SAVE_AS:{dir}`
+    ///   dir: アセットルート相対のフォルダパス（例 `levels/forest/ground`）。
+    ///
+    /// **パス専用の引数**なので、`TERRAIN_BRUSH_MASK` と同じくコロン以降は
+    /// すべて dir として扱う（カンマを含むフォルダ名でも壊れない）。
+    /// アセットルート外（絶対パス・`..` を含む）はランタイム側で拒否する。
+    TerrainSaveAs { dir: String },
     /// ブラシ範囲プレビュー（Edit モードのホバー位置にワイヤスフィアを描く）を更新する。
     /// ワイヤ形式: `TERRAIN_BRUSH_PREVIEW:{screen_x},{screen_y},{radius},{strength}`
     /// strength はプレビュー球の色（低強度=水色〜高強度=オレンジ）に反映される。
@@ -1013,7 +1023,7 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
         // ── 引数なしコマンド ──
         // 地形初期化（旧形式・引数なし）。現在の設定をそのまま使う。
         "TERRAIN_INIT" => Some(IpcCommand::TerrainInit { config: None }),
-        // 地形保存。
+        // 地形保存。TERRAIN_SAVE_AS: より先に判定する（完全一致なので取り違えない）。
         "TERRAIN_SAVE" => Some(IpcCommand::TerrainSave),
         // レイヤ定義（layers.json）の再読込＋全チャンク再メッシュ。
         "TERRAIN_RELOAD_LAYERS" => Some(IpcCommand::TerrainReloadLayers),
@@ -1041,6 +1051,10 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
                 .map(|config| IpcCommand::TerrainInit { config: Some(config) })
         }
         // チャンク追加: "min_x,min_z,max_x,max_z"（i32×4・両端含む）。
+        // 地形の別名保存: コロン以降をすべてフォルダパスとして扱う（カンマ可）。
+        s if s.starts_with("TERRAIN_SAVE_AS:") => {
+            Some(IpcCommand::TerrainSaveAs { dir: s["TERRAIN_SAVE_AS:".len()..].to_string() })
+        }
         s if s.starts_with("TERRAIN_ADD_CHUNKS:") => {
             let parts: Vec<&str> = s["TERRAIN_ADD_CHUNKS:".len()..].split(',').collect();
             if parts.len() != 4 {
@@ -2736,6 +2750,11 @@ mod tests {
     fn parses_argument_less_terrain_commands() {
         assert!(matches!(parse_terrain_command("TERRAIN_INIT"),        Some(IpcCommand::TerrainInit { config: None })));
         assert!(matches!(parse_terrain_command("TERRAIN_SAVE"),        Some(IpcCommand::TerrainSave)));
+        // 別名保存はコロン以降をそのままフォルダパスとして受ける（カンマを含んでも壊れない）。
+        assert!(matches!(
+            parse_terrain_command("TERRAIN_SAVE_AS:levels/a,b/ground"),
+            Some(IpcCommand::TerrainSaveAs { ref dir }) if dir == "levels/a,b/ground"
+        ));
         assert!(matches!(parse_terrain_command("TERRAIN_UNDO"),        Some(IpcCommand::TerrainUndo)));
         assert!(matches!(parse_terrain_command("TERRAIN_REDO"),        Some(IpcCommand::TerrainRedo)));
         assert!(matches!(parse_terrain_command("TERRAIN_STROKE_END"),  Some(IpcCommand::TerrainStrokeEnd)));

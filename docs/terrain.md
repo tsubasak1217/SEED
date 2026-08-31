@@ -322,7 +322,30 @@ v1 = 28 バイト）。`read_chunk` は magic/version を検証し、
 **スロット数が変わったとき**: ファイルの `slot_count`（v2 では `layer_count`）が現在の
 `TERRAIN_BLEND_SLOTS` と異なる場合、共通する先頭 `min(S_file, S_now)` 個だけを読み、
 残りは 0 で埋める（定義の増減でロード不能にしない）。
-保存先: `<assets_root>/terrain/<scene>/chunk_X_Y_Z.tvox`（`std::fs::create_dir_all`＋`std::fs::write`。読みは `asset_fs::read_bytes` で PAK 対応）。
+保存先: `<assets_root>/<地形フォルダ>/chunk_X_Y_Z.tvox`（`std::fs::create_dir_all`＋`std::fs::write`。読みは `asset_fs::read_bytes` で PAK 対応）。
+
+#### 地形フォルダ（保存先の任意化）
+
+地形一式（`.tvox` / `.tscatter` / `.tcover`）は **1 つのフォルダにまとまって**置かれる。
+そのフォルダを指す参照が `.scene` の **`terrain_dir`** キー（`Scene::terrain_dir`）で、
+アセットルート相対・スラッシュ区切りの正準形（例 `terrain/Scene1`・`levels/forest/ground`）。
+
+| 状態 | 解決される保存先 |
+|---|---|
+| `terrain_dir` あり | その値（`terrain::dir_ref::normalize` で正規化） |
+| `terrain_dir` なし（旧 `.scene`） | `terrain/<シーン名>`（本機能以前の固定パスと同一） |
+| `terrain_dir` なし＋チャンクが別フォルダを指す | チャンクの `tvox_path` から逆算したフォルダ |
+| `terrain_dir` が不正（絶対パス・`..`） | 既定パスへフォールバック（読み込みは止めない） |
+
+規則はすべて `runtime/src/engine/terrain/dir_ref.rs`（純関数・単体テスト付き）に閉じている。
+**アセットルート外は保存先にできない**（絶対パス・`..` を含むパスは拒否）。パッケージング
+（`assets.pak`）がルート配下しか取り込まないため、ルート外へ書くと「エディタでは動くのに
+ビルドした実行ファイルで地形が消える」という壊れ方をするからである。
+
+読込は常に `TerrainChunkComponent::tvox_path` を手掛かりにするため、フォルダを移しても
+参照さえ張り替われば（`TERRAIN_SAVE_AS` が行う）そのまま読める。Play 開始時の一時シーン保存
+（`SaveCurrentSceneToTempAsync`）にも `terrain_dir` が含まれるので、Edit と Play で保存先が
+食い違うことはない。
 
 ---
 
@@ -340,6 +363,7 @@ serde/JSON ではない。地形コマンドは以下の 3 つ。エディタ側
 | `TERRAIN_PAINT:{layer},{screen_x},{screen_y},{radius},{strength}` | `layer`:u32（塗る対象レイヤ番号・0 起点／`layers.json` の並び順）／他 f32 | ヒット時 `TERRAIN_PAINT_OK:{layer},{hx},{hy},{hz}`／非ヒット `TERRAIN_PAINT_MISS` |
 | `TERRAIN_BRUSH_MASK:{path}` | `path`=グレースケール画像のパス（`assets://` 仮想パス・絶対パスのどちらも可）。**空文字で解除**。コロン以降はすべて path（カンマ・空白を含んでよい） | `TERRAIN_BRUSH_MASK_OK:{path}`／読み込み失敗時 `TERRAIN_BRUSH_MASK_ERROR:{path}`（下記 §9.9） |
 | `TERRAIN_SAVE` | なし | `TERRAIN_SAVE_OK:{count}`（保存チャンク数）／`TERRAIN_SAVE_ERROR:{msg}` |
+| `TERRAIN_SAVE_AS:{dir}` | `dir`=保存先の地形フォルダ。アセットルート相対（`levels/forest/ground`）でも、ルート配下の絶対パスでもよい。**コロン以降はすべて dir**（カンマを含んでよい） | `TERRAIN_SAVE_AS_OK:{dir},{count}`（**最後のカンマ**で分割）／`TERRAIN_SAVE_AS_ERROR:{msg}` |
 | `TERRAIN_BRUSH_PREVIEW:{screen_x},{screen_y},{radius},{strength}` | 全 f32。ホバー中（非押下）に送る。`strength` はプレビュー球の色（強度連動）にのみ使う | 応答なし（高頻度・ホバー用）。レイマーチのヒット点にブラシ半径のワイヤスフィアを描く |
 | `TERRAIN_BRUSH_PREVIEW_OFF` | なし | 応答なし。プレビュー（ワイヤスフィア）を非表示にする |
 | `TERRAIN_UNDO` | なし | 応答なし。地形専用 undo スタックを 1 ストローク分戻す（下記 §9.1） |
@@ -357,7 +381,14 @@ serde/JSON ではない。地形コマンドは以下の 3 つ。エディタ側
   ペイントは形状を変えないが頂点属性（頂点カラー＝レイヤ重み）が変わるため、影響チャンクは再メッシュされる。
 - `TERRAIN_BRUSH_MASK`: ブラシの **形状マスク**（ブラシテクスチャ）を設定・解除する状態設定コマンド。
   半径・強度と同じ「ツールの現在設定」であり、ブラシ 1 発ごとの IPC には載せない（§9.9）。
-- `TERRAIN_SAVE`: 全チャンクの tvox（＋ .tscatter / .tcover）を書き出す。
+- `TERRAIN_SAVE`: 全チャンクの tvox（＋ .tscatter / .tcover）を**現在の地形フォルダ**へ書き出す。
+- `TERRAIN_SAVE_AS`: 地形一式を**別の地形フォルダ**へ書き出し、以後の保存先を切り替える。
+  ① 参照を正規化・検証（アセットルート外は拒否）② 新フォルダへ全チャンクを書く
+  ③ 全 `TerrainChunkComponent::tvox_path` を新フォルダ基準へ張り替える
+  ④ `Scene::terrain_dir` を更新（`.scene` 保存で永続化）。**元のフォルダは消さない**（バックアップ）。
+  ③ を飛ばすと次回ロードが旧フォルダを読むため、②〜④ は必ずセットで行う。
+- ランタイム → エディタの push `TERRAIN_DIR:{dir}`: 現在の地形フォルダ参照。地形初期化・シーンロード・
+  別名保存のたびに送られ、エディタは保存ボタンのツールチップと「別名で保存」ダイアログの初期値に使う。
 - **シーン保存（`SAVE_SCENE`）も地形をフラッシュする**。こちらは `App::flush_dirty_terrain` が
   **ダーティなチャンクだけ**を書く（`TERRAIN_SAVE` は無条件に全チャンク）。
   地形の実体は .scene の外にあるため、これが無いと「Ctrl+S したのに掘った地形が消える」ことになる。
@@ -652,7 +683,8 @@ IPC を叩けない環境（エディタ非接続）で地形生成・編集を�
 | ブラシ半径スライダー | 0.5〜8 m（`TERRAIN_BRUSH` の radius）|
 | ブラシ強度スライダー | 0〜1（`TERRAIN_BRUSH` の strength）|
 | 「地形を初期化」ボタン | `TERRAIN_INIT` を送る。再初期化時は確認ダイアログを出す（既存地形は作り直される）|
-| 「地形を保存」ボタン | `TERRAIN_SAVE` を送る。結果（保存チャンク数/エラー）をステータス表示 |
+| 「地形を保存」ボタン | `TERRAIN_SAVE` を送る（現在の地形フォルダへ上書き）。結果（保存チャンク数/エラー）をステータス表示。ツールチップに現在の保存先を出す |
+| 「別名で保存」ボタン | `TerrainSaveAsWindow`（親フォルダ選択＋フォルダ名入力・アセットルート内限定）で保存先を決め、`TERRAIN_SAVE_AS:{dir}` を送る。成功時はシーンをダーティにする（参照の変更を `.scene` へ落とさせるため） |
 
 ### ブラシ入力（マウス）
 
@@ -1298,7 +1330,7 @@ terrain ツールバー右端の **「⚙ 設定」** ボタンで開く**独立
 `read_chunk` は本体長が `instance_count × 40` バイトちょうどでなければ `CountMismatch` を返す
 （余分な末尾バイトも許さない＝壊れたファイルを黙って読まない）。
 
-**パス規約**: `assets://terrain/<scene>/chunk_X_Y_Z.tscatter`（`.tvox` の隣に置く）。
+**パス規約**: `assets://<地形フォルダ>/chunk_X_Y_Z.tscatter`（`.tvox` の隣に置く）。
 ロード時は `TerrainChunkComponent::tvox_path` の拡張子を `.tscatter` へ差し替えて導出する
 （`tscatter_path_from_tvox`。シーン名からパスを組み立て直すと規則が 2 か所に分かれて壊れやすいため）。
 **ファイルが無いのはエラーではない**（散布機能より前に保存されたシーンには `.tscatter` が存在しない。

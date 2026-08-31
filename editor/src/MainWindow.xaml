@@ -1486,6 +1486,20 @@
                                                     </StackPanel>
                                                 </Button>
 
+                                                <!-- 地形の別名保存（保存先フォルダを選び直して一式を書き出す）-->
+                                                <Button x:Name="BtnTerrainSaveAs"
+                                                        Style="{StaticResource TerrainActionBtnStyle}"
+                                                        ToolTip="地形一式（.tvox / .tscatter / .tcover）を別のフォルダへ保存し、シーンの参照をそこへ切り替える"
+                                                        Click="OnTerrainSaveAs">
+                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <ctrl:AppIcon IconKey="Icon.SaveAs"
+                                                                      Width="{StaticResource TerrainIconSize}"
+                                                                      Height="{StaticResource TerrainIconSize}"/>
+                                                        <TextBlock Text="別名で保存" Margin="4,0,0,0"
+                                                                   VerticalAlignment="Center"/>
+                                                    </StackPanel>
+                                                </Button>
+
                                                 <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
 
                                                 <!-- ハイトマップ読込（高さスケール入力＋読込ボタン）-->

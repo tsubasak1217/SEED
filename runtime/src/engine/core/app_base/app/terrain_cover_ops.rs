@@ -1501,7 +1501,8 @@ impl App {
 
 /// チャンクの .tcover ファイル名（`chunk_X_Y_Z.tcover`）を返す。
 pub(super) fn tcover_file_name(coord: ChunkCoord) -> String {
-    format!("chunk_{}_{}_{}.tcover", coord.x, coord.y, coord.z)
+    use crate::engine::terrain::dir_ref;
+    format!("{}{}", dir_ref::chunk_stem(coord), dir_ref::TCOVER_EXT)
 }
 
 /// .tvox の仮想パスから、隣に置かれた .tcover の仮想パスを導く。
@@ -1510,11 +1511,12 @@ pub(super) fn tcover_file_name(coord: ChunkCoord) -> String {
 /// 拡張子だけを差し替えることで tvox 側のパス規則に自動で追従する
 /// （`tscatter_path_from_tvox` と同じ設計）。
 pub(super) fn tcover_path_from_tvox(tvox_path: &str) -> String {
-    match tvox_path.strip_suffix(".tvox") {
-        Some(stem) => format!("{stem}.tcover"),
-        None => format!("{tvox_path}.tcover"),
-    }
+    crate::engine::terrain::dir_ref::sibling_path(
+        tvox_path,
+        crate::engine::terrain::dir_ref::TCOVER_EXT,
+    )
 }
+
 
 // ============================================================
 //  エミッタ収集（ECS 走査。ワールド解決前の生データ）

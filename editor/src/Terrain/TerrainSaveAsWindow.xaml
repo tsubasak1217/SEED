@@ -1,0 +1,133 @@
+<Window x:Class="SEEDEditor.Terrain.TerrainSaveAsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ctrl="clr-namespace:SEEDEditor.Controls"
+        Title="地形を名前を付けて保存"
+        Height="260" Width="560"
+        MinHeight="240" MinWidth="440"
+        ResizeMode="CanResize"
+        WindowStartupLocation="CenterOwner"
+        Background="#1E1E1E"
+        Foreground="#DDDDDD"
+        FontSize="12">
+
+    <!--
+        地形一式（.tvox / .tscatter / .tcover）の保存先を決める小ダイアログ。
+
+        「親フォルダ選択 ＋ フォルダ名入力」の 2 段構成にしてあるのは、
+        地形が単一ファイルではなく **フォルダ 1 つ** で表される資産だから
+        （SaveFileDialog では表現できない）。選べる範囲はアセットルート内に
+        限定する（パッケージング時に PAK へ入らない場所を選ばせないため）。
+    -->
+
+    <Window.Resources>
+        <!-- ダイアログ内ボタン共通スタイル（地形設定ウィンドウの ToolButtonStyle に合わせる）。 -->
+        <Style x:Key="DialogButtonStyle" TargetType="Button">
+            <Setter Property="Background"      Value="#333333"/>
+            <Setter Property="Foreground"      Value="#CCCCCC"/>
+            <Setter Property="BorderBrush"     Value="#454545"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding"         Value="10,4"/>
+            <Setter Property="Margin"          Value="0,0,6,0"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="2">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#3E3E42"/>
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Foreground" Value="#666666"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- 入力欄共通スタイル。 -->
+        <Style x:Key="DialogTextBoxStyle" TargetType="TextBox">
+            <Setter Property="Background"      Value="#2D2D30"/>
+            <Setter Property="Foreground"      Value="#DDDDDD"/>
+            <Setter Property="BorderBrush"     Value="#454545"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding"         Value="4,3"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>  <!-- 親フォルダ -->
+            <RowDefinition Height="Auto"/>  <!-- 地形フォルダ名 -->
+            <RowDefinition Height="Auto"/>  <!-- 保存先プレビュー -->
+            <RowDefinition Height="*"/>     <!-- 余白 / エラー表示 -->
+            <RowDefinition Height="Auto"/>  <!-- ボタン列 -->
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- ── 親フォルダ（アセットルート内に限定）── -->
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="親フォルダ"
+                   VerticalAlignment="Center" Margin="0,0,8,6"/>
+        <TextBox x:Name="TxtParentFolder" Grid.Row="0" Grid.Column="1"
+                 Style="{StaticResource DialogTextBoxStyle}"
+                 Margin="0,0,6,6"
+                 ToolTip="アセットルートからの相対パス。空欄ならアセットルート直下。"/>
+        <Button x:Name="BtnBrowse" Grid.Row="0" Grid.Column="2"
+                Style="{StaticResource DialogButtonStyle}"
+                Margin="0,0,0,6"
+                ToolTip="フォルダを選ぶ（アセットルート内のみ）"
+                Click="OnBrowse">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <ctrl:AppIcon IconKey="Icon.Browse" Width="14" Height="14"/>
+                <TextBlock Text="参照" Margin="4,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+        </Button>
+
+        <!-- ── 地形フォルダ名 ── -->
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="フォルダ名"
+                   VerticalAlignment="Center" Margin="0,0,8,6"/>
+        <TextBox x:Name="TxtFolderName" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2"
+                 Style="{StaticResource DialogTextBoxStyle}"
+                 Margin="0,0,0,6"
+                 ToolTip="地形一式（.tvox / .tscatter / .tcover）を入れるフォルダの名前"/>
+
+        <!-- ── 保存先プレビュー（実際に書かれる場所を必ず見せる）── -->
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="保存先"
+                   VerticalAlignment="Center" Margin="0,0,8,0"/>
+        <TextBlock x:Name="TxtPreview" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2"
+                   Foreground="#88CC88" TextWrapping="Wrap"
+                   VerticalAlignment="Center"/>
+
+        <!-- ── エラー表示（アセットルート外・空名など）── -->
+        <TextBlock x:Name="TxtError" Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="3"
+                   Foreground="#DD8888" TextWrapping="Wrap"
+                   Margin="0,8,0,0" VerticalAlignment="Top"/>
+
+        <!-- ── 決定 / 取消 ── -->
+        <StackPanel Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="3"
+                    Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="BtnOk" Style="{StaticResource DialogButtonStyle}"
+                    IsDefault="True" Click="OnOk">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <ctrl:AppIcon IconKey="Icon.SaveAs" Width="14" Height="14"/>
+                    <TextBlock Text="保存" Margin="4,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Button>
+            <Button x:Name="BtnCancel" Style="{StaticResource DialogButtonStyle}"
+                    IsCancel="True" Margin="0" Content="キャンセル"/>
+        </StackPanel>
+    </Grid>
+</Window>

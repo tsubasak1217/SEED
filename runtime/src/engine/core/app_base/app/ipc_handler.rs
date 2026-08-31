@@ -384,8 +384,12 @@ impl App {
                     self.handle_terrain_brush_mask(path);
                 }
                 IpcCommand::TerrainSave => {
-                    // ボクセル地形の全チャンクを .tvox として保存する。
+                    // ボクセル地形の全チャンクを .tvox として保存する（現在の地形フォルダへ）。
                     self.handle_terrain_save();
+                }
+                IpcCommand::TerrainSaveAs { dir } => {
+                    // 地形一式を別フォルダへ保存し、シーンの地形フォルダ参照を切り替える。
+                    self.handle_terrain_save_as(dir);
                 }
                 IpcCommand::TerrainBrushPreview { screen_x, screen_y, radius, strength } => {
                     // ホバー位置のブラシ範囲プレビュー（ワイヤスフィア）を更新する。

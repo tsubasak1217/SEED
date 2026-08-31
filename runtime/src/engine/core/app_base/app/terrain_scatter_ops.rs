@@ -853,7 +853,8 @@ fn load_scatter_model(
 /// terrain_ops.rs の `tvox_file_name` と同じ命名規則にしてある
 /// （同じディレクトリに拡張子違いで隣り合うため）。
 pub(super) fn tscatter_file_name(coord: ChunkCoord) -> String {
-    format!("chunk_{}_{}_{}.tscatter", coord.x, coord.y, coord.z)
+    use crate::engine::terrain::dir_ref;
+    format!("{}{}", dir_ref::chunk_stem(coord), dir_ref::TSCATTER_EXT)
 }
 
 /// チャンクの .tscatter 仮想パス（`assets://terrain/<scene>/chunk_X_Y_Z.tscatter`）。
@@ -880,12 +881,12 @@ pub(super) fn tscatter_virtual_path(scene: &str, coord: ChunkCoord) -> String {
 /// （シーン名を別途組み立てるとパス生成の規則が 2 か所に分かれて壊れやすい）。
 /// 拡張子だけを差し替えることで、tvox 側のパス規則に自動で追従する。
 pub(super) fn tscatter_path_from_tvox(tvox_path: &str) -> String {
-    match tvox_path.strip_suffix(".tvox") {
-        Some(stem) => format!("{stem}.tscatter"),
-        // 拡張子が想定外なら素直に足す（読み込みに失敗して空配列になるだけ）。
-        None => format!("{tvox_path}.tscatter"),
-    }
+    crate::engine::terrain::dir_ref::sibling_path(
+        tvox_path,
+        crate::engine::terrain::dir_ref::TSCATTER_EXT,
+    )
 }
+
 
 // ============================================================
 //  App — 散布のエンジン統合

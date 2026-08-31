@@ -326,6 +326,7 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         // （半径・強度スライダーが Undo に載らないのと同じ扱い）。
         | IpcCommand::TerrainBrushMask { .. }
         | IpcCommand::TerrainSave
+        | IpcCommand::TerrainSaveAs { .. }
         | IpcCommand::TerrainBrushPreview { .. }
         | IpcCommand::TerrainBrushPreviewOff
         | IpcCommand::TerrainUndo

@@ -215,6 +215,7 @@ image.Source = FileTypeIcons.GetFolderImage(isEmpty);
 | アイコンキー | MDI アイコン名 |
 |---|---|
 | `Icon.Save` | `content-save` |
+| `Icon.SaveAs` | `content-save-edit-outline` |
 | `Icon.Undo` | `undo` |
 | `Icon.Redo` | `redo` |
 | `Icon.Add` | `plus` |
@@ -259,7 +260,7 @@ image.Source = FileTypeIcons.GetFolderImage(isEmpty);
 #### 地形（terrain）編集ツール
 
 ビューポート左の地形縦パネル（ツール選択トグル）と、上部の地形操作バーで使う。
-初期化は `Icon.Reset`、保存は `Icon.Save` を流用するのでここには無い。
+初期化は `Icon.Reset`、保存は `Icon.Save`、別名保存は `Icon.SaveAs` を流用するのでここには無い。
 
 | アイコンキー | MDI アイコン名 | 用途 |
 |---|---|---|

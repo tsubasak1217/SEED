@@ -12,6 +12,8 @@ pub mod brush;
 pub mod brush_mask;
 pub mod chunk_coord;
 pub mod chunk_data;
+/// 「地形フォルダ」参照の正規化・解決（保存先の任意化。純関数のみ）。
+pub mod dir_ref;
 /// 地表カバー場（I3.1: 雪・落ち葉・泥・濡れ）。正典は docs/cover_field.md。
 pub mod cover;
 pub mod heightmap;
@@ -33,6 +35,10 @@ mod tests_layers;
 /// ブラシ形状マスク専用のユニットテスト（役割単位でファイル分割）。
 #[cfg(test)]
 mod tests_brush_mask;
+
+/// 地形フォルダ参照（保存先の任意化）専用のユニットテスト。
+#[cfg(test)]
+mod tests_dir_ref;
 
 /// 編集ホットパスの CPU 計測（#[ignore] 付き。通常のテスト実行では走らない）。
 #[cfg(test)]

@@ -325,6 +325,20 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>地形の保存完了通知（TERRAIN_SAVE_OK:count / TERRAIN_SAVE_ERROR:msg）。true=成功（引数=保存チャンク数）/ false=失敗（引数=エラーメッセージ）。</summary>
     public event Action<bool, string>? TerrainSaveCompleted;
 
+    /// <summary>
+    /// 地形の別名保存完了通知（TERRAIN_SAVE_AS_OK:dir,count / TERRAIN_SAVE_AS_ERROR:msg）。
+    /// true=成功（第2引数=保存先の地形フォルダ参照・第3引数=保存チャンク数）/
+    /// false=失敗（第2引数=エラーメッセージ・第3引数は空）。
+    /// </summary>
+    public event Action<bool, string, string>? TerrainSaveAsCompleted;
+
+    /// <summary>
+    /// 現在の地形フォルダ参照の通知（TERRAIN_DIR:dir）。
+    /// アセットルート相対のパス（例 `terrain/Scene1`）。地形の初期化・シーンロード・
+    /// 別名保存のたびにランタイムから push される。
+    /// </summary>
+    public event Action<string>? TerrainDirChanged;
+
     /// <summary>地形ブラシ結果通知。true=命中（引数="hx,hy,hz"）/ false=非命中（引数="")。</summary>
     public event Action<bool, string>? TerrainBrushResult;
 
@@ -1409,6 +1423,29 @@ public sealed class RuntimeManager : IDisposable
             var err = msg["TERRAIN_SAVE_ERROR:".Length..];
             EditorLog.Write($"[Runtime→Editor] TERRAIN_SAVE_ERROR {err}");
             TerrainSaveCompleted?.Invoke(false, err);
+        }
+        else if (msg.StartsWith("TERRAIN_SAVE_AS_OK:", StringComparison.Ordinal))
+        {
+            // 引数は "フォルダ参照,チャンク数"。フォルダ名にカンマが入りうるので
+            // **最後のカンマ**で分割する（ランタイム側の組み立てと対）。
+            var body  = msg["TERRAIN_SAVE_AS_OK:".Length..];
+            int comma = body.LastIndexOf(',');
+            var dir   = comma < 0 ? body : body[..comma];
+            var count = comma < 0 ? ""   : body[(comma + 1)..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_SAVE_AS_OK dir={dir} count={count}");
+            TerrainSaveAsCompleted?.Invoke(true, dir, count);
+        }
+        else if (msg.StartsWith("TERRAIN_SAVE_AS_ERROR:", StringComparison.Ordinal))
+        {
+            var err = msg["TERRAIN_SAVE_AS_ERROR:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_SAVE_AS_ERROR {err}");
+            TerrainSaveAsCompleted?.Invoke(false, err, "");
+        }
+        else if (msg.StartsWith("TERRAIN_DIR:", StringComparison.Ordinal))
+        {
+            var dir = msg["TERRAIN_DIR:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_DIR {dir}");
+            TerrainDirChanged?.Invoke(dir);
         }
         else if (msg.StartsWith("TERRAIN_BRUSH_OK:", StringComparison.Ordinal))
         {

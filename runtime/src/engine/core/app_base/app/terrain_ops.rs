@@ -658,8 +658,22 @@ pub struct TerrainState {
     /// `build_chunk_cpu_model` に渡す LOD を決める（＝どの解像度でメッシュ化するか）。
     /// 地形を作り直す経路（`TerrainState::default()`）で丸ごと消え、全チャンク LOD0 から始まる。
     pub chunk_lod: HashMap<ChunkCoord, u8>,
-    /// 現在の地形が属するシーン名（.tvox の保存フォルダ・合成 source_path に使う）。
+    /// 現在の地形が属するシーン名（チャンクの合成 source_path `terrain://<scene>/...` に使う）。
+    ///
+    /// 【保存先とは別物になった】本フィールドは以前 `.tvox` の保存フォルダ名も兼ねていたが、
+    /// 保存先を任意化した現在は `terrain_dir` がその役目を持つ。ここはあくまで
+    /// 描画・RT のバッチキー（実在しない合成パス）を作るためだけに使う。
     pub scene_name: String,
+    /// 地形一式（`.tvox` / `.tscatter` / `.tcover`）を置く「地形フォルダ」参照。
+    ///
+    /// アセットルート相対・スラッシュ区切りの正準形（例 `terrain/Scene1`）。
+    /// 正規化・既定値解決は `engine::terrain::dir_ref` が担い、ここには
+    /// **必ず正準形だけ**が入る（空文字は「未解決」を意味する初期値）。
+    ///
+    /// 実体の持ち主は `.scene` の `terrain_dir` キー（`Scene::terrain_dir`）で、
+    /// ここはそれをランタイムへ取り込んだ作業用コピー。保存（`handle_terrain_save` /
+    /// `flush_dirty_terrain`）も読込（`rebuild_terrain_after_load`）もこの値に従う。
+    pub terrain_dir: String,
     /// 編集されて未保存のチャンク集合（handle_terrain_save でクリア）。
     pub dirty: HashSet<ChunkCoord>,
     /// **再メッシュ待ち**のチャンク集合（ダーティ集約）。
@@ -943,6 +957,8 @@ impl Default for TerrainState {
             chunk_slot_entity: HashMap::new(),
             chunk_lod: HashMap::new(),
             scene_name: String::new(),
+            // 地形フォルダは未解決（初期化・シーンロードのたびに解決し直す）
+            terrain_dir: String::new(),
             dirty: HashSet::new(),
             pending_remesh: HashSet::new(),
             pending_paint: HashSet::new(),
@@ -1300,18 +1316,30 @@ fn terrain_source_path(scene: &str, coord: ChunkCoord) -> String {
     )
 }
 
-/// チャンクの .tvox 仮想パス（`assets://terrain/<scene>/chunk_X_Y_Z.tvox`）を返す。
-fn tvox_virtual_path(scene: &str, coord: ChunkCoord) -> String {
-    format!(
-        "{}terrain/{}/chunk_{}_{}_{}.tvox",
-        crate::engine::asset_fs::ASSETS_SCHEME,
-        scene, coord.x, coord.y, coord.z
-    )
+/// チャンクの .tvox 仮想パス（`assets://<地形フォルダ>/chunk_X_Y_Z.tvox`）を返す。
+///
+/// 地形フォルダはシーンごとに任意へ変更できる（`Scene::terrain_dir`）。
+/// 組み立て規則は `terrain::dir_ref` に一本化してあり、ここは薄い委譲。
+fn tvox_virtual_path(terrain_dir: &str, coord: ChunkCoord) -> String {
+    crate::engine::terrain::dir_ref::tvox_virtual_path(terrain_dir, coord)
+}
+
+/// 地形フォルダ参照（アセットルート相対）を OS の絶対パスへ落とす。
+///
+/// `asset_fs` には書き込み API が無いため、保存経路は `std::fs` を直接使う。
+/// 区切り文字だけ OS 依存へ直せばよい（参照は正準形＝ルート内であることが
+/// `dir_ref::normalize` で保証済み）。
+fn terrain_dir_abs(root: &std::path::Path, terrain_dir: &str) -> std::path::PathBuf {
+    root.join(terrain_dir.replace('/', std::path::MAIN_SEPARATOR_STR))
 }
 
 /// チャンクの .tvox ファイル名（`chunk_X_Y_Z.tvox`）を返す。
+///
+/// ファイル名の規則（基本名・拡張子）は `terrain::dir_ref` に集約してあり、
+/// ここはその組み立てを行うだけ（散布 `.tscatter`・カバー `.tcover` も同様）。
 fn tvox_file_name(coord: ChunkCoord) -> String {
-    format!("chunk_{}_{}_{}.tvox", coord.x, coord.y, coord.z)
+    use crate::engine::terrain::dir_ref;
+    format!("{}{}", dir_ref::chunk_stem(coord), dir_ref::TVOX_EXT)
 }
 
 /// 1 チャンクをメッシュ化して GPU アップロードし、(CPU モデル, GpuModel?, インスタンスバッチ?) を返す。
@@ -1693,6 +1721,7 @@ fn collect_new_chunk_coords(
 fn spawn_chunk_actor(
     world: &mut crate::engine::ecs::World,
     scene_name: &str,
+    terrain_dir: &str,
     settings: &TerrainSettings,
     coord: ChunkCoord,
     model: Arc<Model>,
@@ -1736,7 +1765,7 @@ fn spawn_chunk_actor(
             chunk_x: coord.x,
             chunk_y: coord.y,
             chunk_z: coord.z,
-            tvox_path: tvox_virtual_path(scene_name, coord),
+            tvox_path: tvox_virtual_path(terrain_dir, coord),
         },
     );
     mesh_actor.add_slot_typed::<TerrainChunkComponent>(
@@ -1835,6 +1864,16 @@ impl App {
         self.terrain.brush_mask_path = brush_mask_path;
         let scene_name = self.scene.as_ref().map(|s| s.name.clone()).unwrap_or_default();
         self.terrain.scene_name = scene_name.clone();
+        // 地形フォルダ参照をシーンから取り込む（未設定シーンは従来の `terrain/<シーン名>`）。
+        // 地形を作り直しても保存先は変えない（作り直し＝データの入れ替えであって
+        // 置き場所の変更ではない）ため、既存の参照をそのまま引き継ぐ。
+        let terrain_dir = crate::engine::terrain::dir_ref::resolve_or_default(
+            self.scene.as_ref().and_then(|s| s.terrain_dir.as_deref()),
+            &scene_name,
+        );
+        self.terrain.terrain_dir = terrain_dir.clone();
+        // 解決した保存先をエディタへ知らせる（初期化直後にツールチップが正しくなる）。
+        self.send_terrain_dir();
 
         // ── レイヤ定義（layers.json）を読み込み、GPU バインドグループを用意する ──
         //   TerrainState::default() でクリアされているため毎回作り直す。
@@ -1899,7 +1938,7 @@ impl App {
                 // チャンク 1 枚分のアクター構造は spawn_chunk_actor へ集約している
                 // （チャンク追加（TERRAIN_ADD_CHUNKS）と完全に同じ構造にするため）。
                 let (folder, mc_slot) = spawn_chunk_actor(
-                    &mut scene.world, &scene_name, &settings, coord, model, gpu, batch,
+                    &mut scene.world, &scene_name, &terrain_dir, &settings, coord, model, gpu, batch,
                 );
                 slot_map.push((coord, mc_slot));
                 root_actor.add_child(folder);
@@ -2305,6 +2344,10 @@ impl App {
         //   World への spawn/insert（&mut scene.world）と、ルートアクターの探索
         //   （&mut scene.actors）は別フィールドなので順に行えばよい。
         let scene_name = self.terrain.scene_name.clone();
+        // 追加チャンクの .tvox も現在の地形フォルダへ入れる（既存チャンクと同じ場所）。
+        // 空文字（未解決）のままパスを組み立てるとアセットルート直下へ散らばるため、
+        // 必ずフォールバック付きの getter を通す。
+        let terrain_dir = self.current_terrain_dir();
         let mut slot_map: Vec<(ChunkCoord, Entity)> = Vec::with_capacity(prebuilt.len());
         {
             let Some(scene) = self.scene.as_mut() else {
@@ -2314,7 +2357,7 @@ impl App {
             let mut folders: Vec<Actor> = Vec::with_capacity(prebuilt.len());
             for (coord, model, gpu, batch) in prebuilt {
                 let (folder, mc_slot) = spawn_chunk_actor(
-                    &mut scene.world, &scene_name, &settings, coord, model, gpu, batch,
+                    &mut scene.world, &scene_name, &terrain_dir, &settings, coord, model, gpu, batch,
                 );
                 slot_map.push((coord, mc_slot));
                 folders.push(folder);
@@ -4080,23 +4123,170 @@ impl App {
         self.terrain.undo_stack.push(edit);
     }
 
+    /// 現在有効な地形フォルダ参照（アセットルート相対の正準形）を返す。
+    ///
+    /// 通常は `TerrainState::terrain_dir` に解決済みの値が入っている。
+    /// 万一空（地形の初期化もシーンロードも通っていない経路）だった場合に備え、
+    /// シーンの `terrain_dir` → 既定パスの順でその場で解決し直す。
+    /// これにより「保存先が空文字＝アセットルート直下へばら撒く」事故が起きない。
+    pub(super) fn current_terrain_dir(&self) -> String {
+        if !self.terrain.terrain_dir.is_empty() {
+            return self.terrain.terrain_dir.clone();
+        }
+        let scene_name = self
+            .scene
+            .as_ref()
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| self.terrain.scene_name.clone());
+        crate::engine::terrain::dir_ref::resolve_or_default(
+            self.scene.as_ref().and_then(|s| s.terrain_dir.as_deref()),
+            &scene_name,
+        )
+    }
+
+    /// 現在の地形フォルダ参照をエディタへ通知する（`TERRAIN_DIR:{dir}`）。
+    ///
+    /// エディタは「別名で保存」ダイアログの初期値と、保存ボタンのツールチップ表示に使う。
+    /// 参照はランタイム側が正（シーンから解決する）なので、地形が入れ替わる／保存先が
+    /// 変わるたびに push する（エディタから問い合わせる往復を作らない）。
+    pub(super) fn send_terrain_dir(&self) {
+        if let Some(ipc) = &self.ipc {
+            ipc.send(&format!("TERRAIN_DIR:{}", self.current_terrain_dir()));
+        }
+    }
+
+    /// 地形一式を **別の地形フォルダ**へ保存し、以後の保存先をそこへ切り替える
+    /// （「名前を付けて保存」＝ `TERRAIN_SAVE_AS`）。
+    ///
+    /// 手順は次の 4 段。途中で失敗したら参照を書き換えないまま帰る
+    /// （＝失敗しても現在の保存先は壊れない）。
+    ///   1. 参照の正規化と検証（アセットルート外は拒否する）
+    ///   2. 新フォルダを作り、全チャンクの .tvox / .tscatter / .tcover を書き出す
+    ///   3. 各 TerrainChunkComponent の `tvox_path` を新フォルダ基準へ張り替える
+    ///      （読込はこのパスだけを手掛かりにするため、ここを直さないと次回ロードで
+    ///        旧フォルダを読んでしまう）
+    ///   4. シーンの `terrain_dir` を更新する（`.scene` 保存で永続化される）
+    ///
+    /// 【元のフォルダは消さない】旧データはバックアップとして残す。消すかどうかは
+    /// ユーザーがファイラで決めるべきで、保存操作が黙ってファイルを削除してはならない。
+    pub(super) fn handle_terrain_save_as(&mut self, raw_dir: String) {
+        // ── 1. 参照の正規化・検証 ──
+        //   アセットルートの所在を知っているのはランタイムだけなので、
+        //   「ルート内か」の最終判定はここで行う（エディタ側の検証は UX のための前段）。
+        let Some(root) = crate::engine::asset_fs::root() else {
+            if let Some(ipc) = &self.ipc {
+                ipc.send("TERRAIN_SAVE_AS_ERROR:assets root unresolved");
+            }
+            return;
+        };
+        // 相対参照はそのまま、絶対パス（エディタのフォルダ選択が返す形）は
+        // アセットルート基準の相対へ落としてから受け入れる。ルート外なら Err。
+        let normalized = match crate::engine::terrain::dir_ref::normalize(&raw_dir) {
+            Ok(d) => Ok(d),
+            Err(crate::engine::terrain::dir_ref::TerrainDirError::Absolute) => {
+                crate::engine::terrain::dir_ref::to_relative_under_root(
+                    &root.to_string_lossy(),
+                    &raw_dir,
+                )
+            }
+            Err(e) => Err(e),
+        };
+        let dir_rel = match normalized {
+            Ok(d) => d,
+            Err(e) => {
+                if let Some(ipc) = &self.ipc {
+                    ipc.send(&format!("TERRAIN_SAVE_AS_ERROR:{}", e.reason()));
+                }
+                return;
+            }
+        };
+        let dir = terrain_dir_abs(root, &dir_rel);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            if let Some(ipc) = &self.ipc {
+                ipc.send(&format!("TERRAIN_SAVE_AS_ERROR:{e}"));
+            }
+            return;
+        }
+
+        // ── 2. 全チャンクを新フォルダへ書き出す ──
+        //   `handle_terrain_save` と同じく **全チャンク無条件**で書く。
+        //   差分だけ書くと新フォルダに歯抜けの地形ができてしまう。
+        let settings = self.terrain.settings.clone();
+        let mut count = 0u32;
+        for (&coord, chunk) in &self.terrain.chunks {
+            let bytes = tvox::write_chunk(chunk, coord, &settings);
+            let path = dir.join(tvox_file_name(coord));
+            match std::fs::write(&path, &bytes) {
+                Ok(()) => count += 1,
+                Err(e) => eprintln!("[SEED terrain] save-as failed: {path:?} err={e}"),
+            }
+        }
+        self.terrain.dirty.clear();
+        // 散布・カバーも同時に（片方だけ移ると地形と草・雪がずれる）。
+        // 全件モード（dirty_only=false）で書くのは .tvox と同じ理由。
+        let (scatter_written, scatter_removed) = self.save_terrain_scatter(&dir, false);
+        let (cover_written, cover_removed) = self.save_terrain_cover(&dir, false);
+
+        // ── 3. チャンクコンポーネントの .tvox パスを新フォルダへ張り替える ──
+        let mut relinked = 0u32;
+        if let Some(scene) = self.scene.as_mut() {
+            // アクターツリーを歩いて TerrainChunk スロットを全部拾う。
+            fn collect(actor: &Actor, out: &mut Vec<Entity>) {
+                for slot in actor.slots() {
+                    if slot.kind == ComponentKind::TerrainChunk {
+                        out.push(slot.entity);
+                    }
+                }
+                for child in actor.children() {
+                    collect(child, out);
+                }
+            }
+            let mut slots: Vec<Entity> = Vec::new();
+            for actor in &scene.actors {
+                collect(actor, &mut slots);
+            }
+            for e in slots {
+                if let Some(tc) = scene.world.get_mut::<TerrainChunkComponent>(e) {
+                    let coord = ChunkCoord::new(tc.chunk_x, tc.chunk_y, tc.chunk_z);
+                    tc.tvox_path = tvox_virtual_path(&dir_rel, coord);
+                    relinked += 1;
+                }
+            }
+            // ── 4. シーンの参照を更新する（.scene 保存で永続化される）──
+            scene.terrain_dir = Some(dir_rel.clone());
+        }
+        self.terrain.terrain_dir = dir_rel.clone();
+
+        if let Some(ipc) = &self.ipc {
+            // 引数は「フォルダ参照,チャンク数」。フォルダ参照にカンマは入りうるが、
+            // エディタ側は **最後のカンマ**で分割するため取り違えは起きない。
+            ipc.send(&format!("TERRAIN_SAVE_AS_OK:{dir_rel},{count}"));
+        }
+        // 保存先が変わったのでエディタの表示（ツールチップ・ダイアログ初期値）を更新する。
+        self.send_terrain_dir();
+        eprintln!(
+            "[SEED terrain] save-as: dir={} tvox={count} relinked={relinked}              tscatter written={scatter_written} removed={scatter_removed}              tcover written={cover_written} removed={cover_removed}",
+            crate::engine::terrain::dir_ref::dir_virtual_path(&dir_rel)
+        );
+    }
+
     /// 全チャンクを .tvox としてアセット配下（terrain/<scene>/）へ書き出す。
     ///
     /// TERRAIN_SAVE コマンドから呼ばれる。編集有無に関わらず全チャンクを保存し、
     /// ロード時に全チャンクが確実に復元できるようにする。保存後にダーティ集合をクリアする。
     pub(super) fn handle_terrain_save(&mut self) {
         let settings = self.terrain.settings.clone();
-        let scene = self.terrain.scene_name.clone();
-
-        // アセットルート直下の terrain/<scene>/ を保存先にする（asset_fs には書き込み API が
-        // 無いため std::fs を直接使う。scene.rs の save と同じ流儀）。
+        // 保存先は「現在の地形フォルダ参照」（`.scene` の terrain_dir。未設定シーンは
+        // 従来どおり terrain/<シーン名>）。asset_fs には書き込み API が無いため
+        // std::fs を直接使う（scene.rs の save と同じ流儀）。
+        let terrain_dir = self.current_terrain_dir();
         let Some(root) = crate::engine::asset_fs::root() else {
             if let Some(ipc) = &self.ipc {
                 ipc.send("TERRAIN_SAVE_ERROR:assets root unresolved");
             }
             return;
         };
-        let dir = root.join("terrain").join(&scene);
+        let dir = terrain_dir_abs(root, &terrain_dir);
         if let Err(e) = std::fs::create_dir_all(&dir) {
             if let Some(ipc) = &self.ipc {
                 ipc.send(&format!("TERRAIN_SAVE_ERROR:{e}"));
@@ -4178,11 +4368,12 @@ impl App {
         }
 
         let settings = self.terrain.settings.clone();
-        let scene = self.terrain.scene_name.clone();
+        // 保存先は「現在の地形フォルダ参照」（handle_terrain_save と必ず同じ場所）。
+        let terrain_dir = self.current_terrain_dir();
         let Some(root) = crate::engine::asset_fs::root() else {
             return Err("assets root unresolved".to_string());
         };
-        let dir = root.join("terrain").join(&scene);
+        let dir = terrain_dir_abs(root, &terrain_dir);
         if let Err(e) = std::fs::create_dir_all(&dir) {
             return Err(e.to_string());
         }
@@ -4236,7 +4427,16 @@ impl App {
         self.terrain = TerrainState::default();
         self.terrain.brush_mask_path = brush_mask_path;
         let scene_name = match self.scene.as_ref() { Some(s) => s.name.clone(), None => return };
-        self.terrain.scene_name = scene_name;
+        self.terrain.scene_name = scene_name.clone();
+        // 地形フォルダ参照をシーンから取り込む（この時点では参照が無い旧シーンの可能性が
+        // あるので既定パス。下のチャンク走査で実際の .tvox パスから上書き補正する）。
+        self.terrain.terrain_dir = crate::engine::terrain::dir_ref::resolve_or_default(
+            self.scene.as_ref().and_then(|s| s.terrain_dir.as_deref()),
+            &scene_name,
+        );
+        // 地形チャンクが 1 枚も無いシーン（この先で early return する）でも、
+        // エディタの保存先表示が前のシーンのまま残らないよう先に 1 度知らせる。
+        self.send_terrain_dir();
 
         // ── 旧シーン（アクター親子版 terrain）→ フォルダ版への移行 ──
         //   本機能導入前に保存された .scene では terrain ルート・チャンク器が
@@ -4316,6 +4516,23 @@ impl App {
         if found.is_empty() {
             return;
         }
+
+        // ── 地形フォルダ参照が無い旧シーンの補正 ──
+        //   `terrain_dir` キーが無いシーンでも、チャンクコンポーネントの `tvox_path` は
+        //   昔から保存されている。そこからフォルダを逆算しておけば、既定パス以外の場所に
+        //   置かれた旧地形でも「読んだ場所と同じ場所へ保存し直す」ことができる
+        //   （既定パスへ決め打ちすると、上書き保存が別フォルダへ書いてしまう）。
+        //   参照を持つ新シーンでは何もしない（シーンの宣言を正とする）。
+        if self.scene.as_ref().and_then(|s| s.terrain_dir.as_deref()).is_none() {
+            if let Some(dir) = found
+                .first()
+                .and_then(|(_, path, _)| crate::engine::terrain::dir_ref::dir_from_tvox_path(path))
+            {
+                self.terrain.terrain_dir = dir;
+            }
+        }
+        // 解決（＋旧シーン補正）後の保存先をエディタへ知らせる。
+        self.send_terrain_dir();
 
         // ── フェーズ 1: 全チャンクの .tvox を読み込んで map へ入れる（欠落はスキップ）──
         //

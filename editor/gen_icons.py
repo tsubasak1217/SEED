@@ -24,6 +24,7 @@ CATALOG = [
 
     ("── 汎用編集操作 ──", None),
     ("Icon.Save", "content-save"),
+    ("Icon.SaveAs", "content-save-edit-outline"),
     ("Icon.Undo", "undo"),
     ("Icon.Redo", "redo"),
     ("Icon.Add", "plus"),

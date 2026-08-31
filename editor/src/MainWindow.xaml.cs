@@ -385,6 +385,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // 地形（terrain）編集: 初期化/保存/ブラシの結果をステータス表示へ反映する。
         _runtimeManager.TerrainInitCompleted          += OnTerrainInitCompleted;
         _runtimeManager.TerrainSaveCompleted          += OnTerrainSaveCompleted;
+        _runtimeManager.TerrainSaveAsCompleted        += OnTerrainSaveAsCompleted;
+        _runtimeManager.TerrainDirChanged             += OnTerrainDirChanged;
         _runtimeManager.TerrainBrushResult            += OnTerrainBrushResult;
         _runtimeManager.TerrainHeightmapCompleted     += OnTerrainHeightmapCompleted;
         _runtimeManager.TerrainAddChunksCompleted     += OnTerrainAddChunksCompleted;

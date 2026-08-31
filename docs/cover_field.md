@@ -316,7 +316,7 @@ ECS / GPU / ファイル IO への依存を一切持たない（JSON 文字列 i
 
 ### 3.4 `.tcover` フォーマット（TCOVER v2・リトルエンディアン）
 
-`.tvox` / `.tscatter` と同じディレクトリ（`assets/terrain/<scene>/`）に
+`.tvox` / `.tscatter` と同じディレクトリ（シーンの地形フォルダ。既定は `assets/terrain/<scene>/`）に
 `chunk_X_Y_Z.tcover` として置く。
 
 | オフセット | 型 | 内容 |

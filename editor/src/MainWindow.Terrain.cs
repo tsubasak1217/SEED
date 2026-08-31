@@ -91,6 +91,14 @@ public partial class MainWindow
     /// <summary>ハイトマップ高さスケール入力欄が空/不正なときのデフォルト値（メートル）。</summary>
     private const double TerrainHeightScaleDefault = 10.0;
 
+    /// <summary>「地形を保存」ボタンのツールチップ基底文言（末尾に現在の保存先を追記する）。</summary>
+    private const string TerrainSaveTooltipBase =
+        "全チャンクの地形データ（.tvox / .tscatter / .tcover）を現在の地形フォルダへ保存する";
+
+    /// <summary>「別名で保存」ボタンのツールチップ基底文言（末尾に現在の保存先を追記する）。</summary>
+    private const string TerrainSaveAsTooltipBase =
+        "地形一式を別のフォルダへ保存し、シーンの参照をそこへ切り替える（アセットフォルダ内のみ）";
+
     /// <summary>マウスホイールの 1 ノッチ分の mouseData 値（Win32 標準）。</summary>
     private const int WheelDeltaPerNotch = 120;
 
@@ -138,6 +146,15 @@ public partial class MainWindow
     /// </summary>
     private string? _terrainBrushMaskPath;
 
+    /// <summary>
+    /// 現在の地形フォルダ参照（アセットルート相対・スラッシュ区切り。例 `terrain/Scene1`）。
+    ///
+    /// 実体の持ち主はシーン（`.scene` の `terrain_dir`）で、ここはランタイムが
+    /// `TERRAIN_DIR:` で push してくる値のキャッシュ。保存ボタンのツールチップ表示と
+    /// 「別名で保存」ダイアログの初期値に使う。空 = 未通知（地形未初期化）。
+    /// </summary>
+    private string _terrainDir = string.Empty;
+
     /// <summary>低レベルマウスフックのコールバック（GC 回収防止のためフィールド保持）。</summary>
     private LowLevelMouseProc? _terrainMouseProc;
 
@@ -183,6 +200,8 @@ public partial class MainWindow
         RefreshTerrainCoverMaterialCombo();
         // 既定は消去モードなので、素材／目標量の表示可否を初期状態へ合わせる。
         UpdateTerrainCoverPaintParamVisibility();
+        // 保存先の表示（まだランタイムから通知が来ていないので「未確定」で始まる）。
+        UpdateTerrainSaveTooltips();
     }
 
     /// <summary>
@@ -834,6 +853,33 @@ public partial class MainWindow
     }
 
     /// <summary>
+    /// 「別名で保存」ボタン: 保存先フォルダを選ばせ、TERRAIN_SAVE_AS を送る。
+    ///
+    /// 選択できる範囲はアセットルート内に限定する（ダイアログ側で検証し、
+    /// ランタイム側でも最終判定する）。保存に成功するとランタイムがシーンの
+    /// 地形フォルダ参照を書き換えるため、シーンをダーティにして
+    /// 「Ctrl+S でその参照が .scene へ落ちる」状態にする。
+    /// </summary>
+    private void OnTerrainSaveAs(object sender, RoutedEventArgs e)
+    {
+        if (_runtimeManager?.State != EditorState.Edit)
+        {
+            SetTerrainStatus("Edit モードで実行してください", ok: false);
+            return;
+        }
+
+        var dialog = new SEEDEditor.Terrain.TerrainSaveAsWindow(AssetsPath, _terrainDir)
+        {
+            Owner = this,
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        // コロン以降をすべてパスとして扱う IPC 形式なので、カンマを含むフォルダ名でも壊れない。
+        _runtimeManager.SendToRuntime($"TERRAIN_SAVE_AS:{dialog.ResultDir}");
+        SetTerrainStatus($"地形を保存中...（assets://{dialog.ResultDir}）", ok: true);
+    }
+
+    /// <summary>
     /// 「ハイトマップ読込」ボタン: 画像ファイルを選択し、高さスケール（m）とともに
     /// TERRAIN_HEIGHTMAP をランタイムへ送る。既存地形は読み込んだ高さマップで上書きされる。
     /// </summary>
@@ -886,6 +932,61 @@ public partial class MainWindow
     {
         Dispatcher.BeginInvoke(() =>
             SetTerrainStatus(ok ? $"地形を保存しました（{arg} チャンク）" : $"保存失敗: {arg}", ok));
+    }
+
+    /// <summary>
+    /// 別名保存の完了通知（TERRAIN_SAVE_AS_OK:dir,count / TERRAIN_SAVE_AS_ERROR:msg）。
+    ///
+    /// 成功時はシーンの地形フォルダ参照が変わっているのでシーンをダーティにする
+    /// （参照の変更自体は Undo 対象ではないが、保存し忘れると次回ロードで
+    ///  旧フォルダを読んでしまうため、未保存であることは必ず示す）。
+    /// </summary>
+    private void OnTerrainSaveAsCompleted(bool ok, string arg, string count)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (ok)
+            {
+                _terrainDir = arg;
+                UpdateTerrainSaveTooltips();
+                MarkDirty();
+                SetTerrainStatus($"地形を assets://{arg} へ保存しました（{count} チャンク）", ok: true);
+            }
+            else
+            {
+                SetTerrainStatus($"別名保存に失敗: {arg}", ok: false);
+            }
+        });
+    }
+
+    /// <summary>
+    /// 現在の地形フォルダ参照の通知（TERRAIN_DIR:dir）。保存ボタンのツールチップへ反映する。
+    /// </summary>
+    private void OnTerrainDirChanged(string dir)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            _terrainDir = dir;
+            UpdateTerrainSaveTooltips();
+        });
+    }
+
+    /// <summary>
+    /// 保存系ボタンのツールチップへ「今どこへ保存されるか」を追記する。
+    ///
+    /// 地形の保存先はシーンごとに変えられるようになったため、ボタンの文言だけでは
+    /// どのフォルダへ書かれるか分からない。押す前に確認できる場所がここしかない。
+    /// </summary>
+    private void UpdateTerrainSaveTooltips()
+    {
+        string where = string.IsNullOrEmpty(_terrainDir)
+            ? "（保存先未確定：地形を初期化するかシーンを読み込んでください）"
+            : $"{Environment.NewLine}保存先: assets://{_terrainDir}";
+
+        if (BtnTerrainSave != null)
+            BtnTerrainSave.ToolTip = TerrainSaveTooltipBase + where;
+        if (BtnTerrainSaveAs != null)
+            BtnTerrainSaveAs.ToolTip = TerrainSaveAsTooltipBase + where;
     }
 
     /// <summary>
