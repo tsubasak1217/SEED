@@ -431,3 +431,222 @@ fn measure_reduction_rates() {
         }
     }
 }
+
+// ─── 水密性（穴を開けない）インバリアント ───────────────────────────────
+
+/// 内部に球状の空洞（洞窟）を持つ地面チャンクを作る。
+///
+/// 平坦・起伏だけでは「1 枚の高さ場」しか試せず、閉じた曲面（すべての辺が 2 枚の面に
+/// 共有される形）が現れない。穴あきバグは閉曲面でこそ露見するため、空洞ケースを用意する。
+fn cave_ground_chunk(
+    settings: &TerrainSettings,
+    base_y: f32,
+    cave_center: [f32; 3],
+    cave_radius: f32,
+) -> TerrainChunkData {
+    let s = settings.samples_per_axis();
+    let v = settings.voxel_size;
+    let mut chunk = TerrainChunkData::new_filled(settings, 0.0);
+    for iz in 0..s {
+        let z = iz as f32 * v;
+        for iy in 0..s {
+            let y = iy as f32 * v;
+            for ix in 0..s {
+                let x = ix as f32 * v;
+                // 地面（y < base_y が solid）。
+                let ground = y - base_y;
+                // 空洞（球の内側が air = 正）。max で球の内側だけを air に彫る。
+                let d = ((x - cave_center[0]).powi(2)
+                    + (y - cave_center[1]).powi(2)
+                    + (z - cave_center[2]).powi(2))
+                .sqrt();
+                let cave = cave_radius - d;
+                chunk.set_sample(ix, iy, iz, ground.max(cave));
+            }
+        }
+    }
+    chunk
+}
+
+/// 各無向辺を参照する三角形の枚数を数える。
+fn edge_face_counts(mesh: &TerrainMesh) -> std::collections::HashMap<(u32, u32), u32> {
+    let mut counts: std::collections::HashMap<(u32, u32), u32> = std::collections::HashMap::new();
+    for t in mesh.indices.chunks_exact(3) {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            let key = if a <= b { (a, b) } else { (b, a) };
+            *counts.entry(key).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+/// 辺 → 共有面数を、辺の両端の **位置ビット列** をキーにして集める。
+///
+/// デシメート前後で頂点番号は変わるので、番号ではなく位置で突き合わせる。
+/// 同じ位置ペアに複数の辺が対応した場合（＝同一位置の重複頂点があるメッシュ）は
+/// 枚数を合算する。溶接後の見た目のトポロジを見たいのでこれが正しい。
+type EdgePosKey = ((u32, u32, u32), (u32, u32, u32));
+fn edge_face_counts_by_pos(mesh: &TerrainMesh) -> std::collections::HashMap<EdgePosKey, u32> {
+    let key = |v: u32| {
+        let p = mesh.positions[v as usize];
+        (p[0].to_bits(), p[1].to_bits(), p[2].to_bits())
+    };
+    let mut out: std::collections::HashMap<EdgePosKey, u32> = std::collections::HashMap::new();
+    for ((a, b), n) in edge_face_counts(mesh) {
+        let (ka, kb) = (key(a), key(b));
+        let k = if ka <= kb { (ka, kb) } else { (kb, ka) };
+        *out.entry(k).or_insert(0) += n;
+    }
+    out
+}
+
+/// 荒れた（高周波・急峻な）地形チャンクを作る。
+///
+/// 実機のスカルプト済み地形は正弦波よりずっと荒く、MC が曖昧セル構成
+/// （非多様体辺・薄いシート）を大量に踏む。穴あきはそこで出るので、
+/// テストにも「荒い」ケースを入れる。
+fn rough_ground_chunk(settings: &TerrainSettings, base_y: f32) -> TerrainChunkData {
+    let s = settings.samples_per_axis();
+    let v = settings.voxel_size;
+    let mut chunk = TerrainChunkData::new_filled(settings, 0.0);
+    for iz in 0..s {
+        let z = iz as f32 * v;
+        for iy in 0..s {
+            let y = iy as f32 * v;
+            for ix in 0..s {
+                let x = ix as f32 * v;
+                // 多周波の重ね合わせ。高周波成分がセルサイズ近辺の起伏を生む。
+                let h = base_y
+                    + 1.2 * (x * 0.9).sin() * (z * 1.1).cos()
+                    + 0.6 * (x * 2.3 + 1.0).sin()
+                    + 0.6 * (z * 2.7 + 2.0).cos()
+                    + 0.35 * (x * 5.1).sin() * (z * 4.7).sin();
+                chunk.set_sample(ix, iy, iz, y - h);
+            }
+        }
+    }
+    chunk
+}
+
+/// テストに使う全地形ケース。
+fn watertight_cases(settings: &TerrainSettings) -> Vec<(&'static str, TerrainChunkData)> {
+    vec![
+        ("平坦", flat_ground_chunk(settings, 0.0, 4.0)),
+        ("起伏", wavy_ground_chunk(settings, [0.0, 0.0, 0.0], 4.0, 0.9)),
+        (
+            "洞窟あり",
+            cave_ground_chunk(settings, 5.0, [4.0, 3.0, 4.0], 2.0),
+        ),
+        ("荒い起伏", rough_ground_chunk(settings, 4.0)),
+    ]
+}
+
+/// **デシメートは穴を開けない**（水密性インバリアント）。
+///
+/// 各辺（両端の位置で同定）について、デシメート前に 2 枚以上の面に共有されていた
+/// ならデシメート後も 2 枚以上であること。1 枚に落ちた辺＝そこで面が 1 枚欠けた＝
+/// 三角形サイズの穴が開いた、ということになる。
+/// 地形チャンクはチャンク境界で切られた開曲面なので、元から 1 枚の辺（外周）は存在する。
+/// それらは境界ロックにより消えも増えもしないはずで、判定対象外にする。
+#[test]
+fn simplify_never_opens_holes() {
+    let settings = test_settings();
+    let extent = settings.chunk_extent();
+    for (label, chunk) in watertight_cases(&settings) {
+        let mesh = generate_standalone(&chunk, &settings);
+        assert!(mesh.positions.len() > 50, "{label}: テスト前提の頂点数が不足");
+        let before = edge_face_counts_by_pos(&mesh);
+        for strength in [0.25f32, 0.5, 0.75, 1.0] {
+            let (out, _) = simplify_mesh(&mesh, extent, strength);
+            let after = edge_face_counts_by_pos(&out);
+            // デシメート後に残っている辺のうち、「前は閉じていたのに後で 1 枚」のもの。
+            let opened: Vec<_> = after
+                .iter()
+                .filter(|(k, n)| **n < 2 && before.get(*k).copied().unwrap_or(0) >= 2)
+                .collect();
+            assert!(
+                opened.is_empty(),
+                "{label} strength={strength}: デシメートで {} 本の辺が開いた（穴）。例: {:?}",
+                opened.len(),
+                opened.iter().take(3).collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+/// **ランダム密度場でのファズ（水密性の回帰テスト）**。
+///
+/// 解析的に滑らかな地形（正弦波・球）は MC が素直な多様体メッシュを出すので、
+/// 折り返し（四面体構成）がほとんど現れず、穴あきバグを再現できなかった。
+/// 実機のスカルプト済み地形はセルサイズ近辺で density が上下する荒い場であり、
+/// そこで初めて四面体構成が大量に出る。この乱数地形はそれを再現するためのもの。
+/// 固定シードの xorshift なので結果は完全に決定的（＝CI で揺れない）。
+#[test]
+fn fuzz_watertight() {
+    let settings = TerrainSettings {
+        chunk_cells: 16,
+        voxel_size: 0.5,
+        ..TerrainSettings::default()
+    };
+    let extent = settings.chunk_extent();
+    let s = settings.samples_per_axis();
+    let mut state: u64 = 0x1234_5678_9abc_def0;
+    let mut rng = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f32 / (1u64 << 53) as f32
+    };
+    let mut fail = 0;
+    let (mut sum_before, mut sum_after) = (0usize, 0usize);
+    for seed in 0..40 {
+        let mut chunk = TerrainChunkData::new_filled(&settings, 0.0);
+        for iz in 0..s {
+            for iy in 0..s {
+                for ix in 0..s {
+                    // 完全ランダムだと穴だらけの薄膜になるので、高さ場＋強いノイズにする。
+                    let y = iy as f32 * settings.voxel_size;
+                    let h = 4.0 + 2.0 * (rng() - 0.5);
+                    chunk.set_sample(ix, iy, iz, y - h);
+                }
+            }
+        }
+        let mesh = generate_standalone(&chunk, &settings);
+        if mesh.positions.len() < 20 {
+            continue;
+        }
+        let before = edge_face_counts_by_pos(&mesh);
+        let nonmanifold_before = before.values().filter(|&&n| n > 2).count();
+        let open_before = before.values().filter(|&&n| n < 2).count();
+        for strength in [0.5f32, 1.0] {
+            let (out, st) = simplify_mesh(&mesh, extent, strength);
+            sum_before += st.vertices_before;
+            sum_after += st.vertices_after;
+            let label = format!("乱数地形 seed={seed} strength={strength}");
+            assert_mesh_is_consistent(&out, &label);
+            assert_no_duplicate_faces(&out, &label);
+            assert_eq!(
+                boundary_key_set(&out, extent),
+                boundary_key_set(&mesh, extent),
+                "{label}: 境界頂点集合が変化した"
+            );
+            let after = edge_face_counts_by_pos(&out);
+            let opened = after
+                .iter()
+                .filter(|(k, n)| **n < 2 && before.get(*k).copied().unwrap_or(0) >= 2)
+                .count();
+            if opened > 0 {
+                fail += 1;
+                println!(
+                    "seed={seed} strength={strength}: opened={opened} (入力: 非多様体辺={nonmanifold_before} 開辺={open_before})"
+                );
+            }
+        }
+    }
+    println!(
+        "fuzz_watertight: 失敗ケース {fail} / 80、合計頂点 {sum_before} -> {sum_after} ({:.1}% 削減)",
+        (sum_before - sum_after) as f32 / sum_before as f32 * 100.0
+    );
+    assert_eq!(fail, 0, "ファズで穴が開いた");
+}

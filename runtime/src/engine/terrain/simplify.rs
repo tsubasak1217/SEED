@@ -31,9 +31,13 @@
 //    「境界頂点集合が変わらない」＝「継ぎ目が開かない」がそのまま成り立つ。
 //    ロック頂点どうしのエッジも潰さない（境界線上の頂点が減ると隣と食い違うため）。
 //
-//  【非多様体を作らないための 2 つのガード】
-//    - リンク条件: a と b の 1 近傍が共有する頂点の数が、辺 (a,b) を含む三角形数と
+//  【非多様体を作らないための 3 つのガード】
+//    - リンク条件（頂点版）: a と b の 1 近傍が共有する頂点の数が、辺 (a,b) を含む三角形数と
 //      一致するときだけ潰す。これを満たさない潰しは非多様体辺／穴を生む。
+//    - 面重複ガード（リンク条件の辺版）: 潰した結果、既存の面と 3 頂点が完全に一致する面が
+//      できるなら潰さない。頂点版のリンク条件は「共有されるのが辺」のケース
+//      （四面体構成 {a, b, x, y}）を素通ししてしまい、そこを潰すと面が 2 枚重なる。
+//      重なった面は組み直しで 1 枚に落とされるため、結果として**三角形 1 枚ぶんの穴**が開く。
 //    - 法線反転ガード: 潰したあと、a に接していた三角形の法線が 90 度以上倒れるなら潰さない。
 //
 //  【この関数がしないこと】
@@ -487,7 +491,7 @@ fn push_directed_candidates(
     push(b, a);
 }
 
-/// 頂点 `from` を `to` へ潰してよいか（非多様体化と法線反転を防ぐ 2 つのガード）。
+/// 頂点 `from` を `to` へ潰してよいか（非多様体化・面重複・法線反転を防ぐ 3 つのガード）。
 fn can_collapse(
     tris: &[[u32; 3]],
     tri_alive: &[bool],
@@ -523,9 +527,41 @@ fn can_collapse(
         return false;
     }
 
-    // ── ガード 2: 法線反転 ──
+    // ── ガード 2: 面の重複（折り返し）──
+    //   【これが穴の直接原因だった】
+    //   リンク条件の「共有頂点数」版は、共有されるのが頂点だけでなく **辺** である場合を
+    //   見逃す。典型が四面体構成 {from, to, x, y}（面 (from,to,x) (from,to,y) (from,x,y)
+    //   (to,x,y) の 4 枚）で、共有頂点は {x, y} の 2 個・辺 (from,to) の面も 2 枚なので
+    //   ガード 1 を素通りしてしまう。しかし from→to と潰すと (from,x,y) が (to,x,y) に
+    //   化けて、まったく同じ 3 頂点の面が 2 枚重なる（折り返し）。
+    //   `rebuild` はその重複を 1 枚に落とすので、結果として **三角形 1 枚ぶんの穴**が開く。
+    //
+    //   正しい判定は「lk(from) ∩ lk(to) == lk(辺 from-to)」（辺も含めた link condition）で、
+    //   これは「潰した後に既存の面と 3 頂点が完全一致する面ができないこと」と等価である。
+    //   ここでは後者を直接検査する（近傍が小さいので総当たりで十分速い）。
+    //
+    //   まず to に接する生存面から「to を除いた 2 頂点」の組を集める
+    //   （辺 (from,to) を含む面は潰しで消えるため対象外）。
+    let mut to_opposite_pairs: Vec<(u32, u32)> = Vec::new();
+    for &ti in &vert_tris[to as usize] {
+        if !tri_alive[ti as usize] {
+            continue;
+        }
+        let t = tris[ti as usize];
+        if t.contains(&from) {
+            continue;
+        }
+        let mut others = t.iter().copied().filter(|&v| v != to);
+        let (Some(a), Some(b)) = (others.next(), others.next()) else {
+            continue;
+        };
+        to_opposite_pairs.push(ordered_pair(a, b));
+    }
+
+    // ── ガード 3: 法線反転 ──
     //   from を to へ動かしたとき、from に接する（辺 (from,to) を含まない）面の
     //   向きが 90 度以上倒れるなら潰さない。
+    //   ガード 2 の重複検査も、同じ面集合を舐めるこのループの中で済ませる。
     for &ti in &vert_tris[from as usize] {
         if !tri_alive[ti as usize] {
             continue;
@@ -534,6 +570,16 @@ fn can_collapse(
         if t.contains(&to) {
             // この面は潰しで消えるので判定対象外。
             continue;
+        }
+        // 【ガード 2】この面は潰しで (to, x, y) になる。同じ (x, y) を持つ面が
+        // 既に to にぶら下がっていれば、潰すと面が 2 枚重なる → 却下。
+        {
+            let mut others = t.iter().copied().filter(|&v| v != from);
+            if let (Some(x), Some(y)) = (others.next(), others.next()) {
+                if to_opposite_pairs.contains(&ordered_pair(x, y)) {
+                    return false;
+                }
+            }
         }
         let Some((n_before, _)) = face_normal_area(positions, t) else {
             continue;
