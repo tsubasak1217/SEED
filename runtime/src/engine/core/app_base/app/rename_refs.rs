@@ -239,7 +239,9 @@ fn rewrite_refs_in_slots(
             | ComponentKind::CoverEmitter
             | ComponentKind::ControlPoint
             // 3D ポリラインは点列と色しか持たず、アクター名参照は無い。
-            | ComponentKind::LineRenderer => {}
+            | ComponentKind::LineRenderer
+            // テキストは文字列と見た目の設定しか持たず、アクター名参照は無い。
+            | ComponentKind::Text => {}
         }
     }
 

@@ -438,6 +438,12 @@ pub enum IpcCommand {
     /// points はスクリプト駆動が前提でインスペクタからは編集しない。
     /// フォーマット: SET_LINE_RENDERER_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
     SetLineRendererField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// TextComponent のフィールドを更新する
+    /// （key: content / font_size / color / align / vertical_align / line_spacing / layer）。
+    /// content 内の改行はバックスラッシュ + n の 2 文字にエスケープして送ること
+    /// （IPC は 1 行 1 コマンドのテキストプロトコルのため生の改行を送れない）。
+    /// フォーマット: SET_TEXT_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+    SetTextField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// SkinnedSpriteComponent のフィールドを更新する
     /// （key: mesh_path / texture_path / color / layer。Phase A1）
     SetSkinnedSpriteField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
@@ -1883,6 +1889,17 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             parse2u_tail(&s["SET_LINE_RENDERER_FIELD:".len()..]).and_then(|(a, sl, tail)| {
                                 let (key, value) = tail.split_once(',')?;
                                 Some(IpcCommand::SetLineRendererField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
+                        }
+                        s if s.starts_with("SET_TEXT_FIELD:") => {
+                            // フォーマット: SET_TEXT_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+                            // value（content）は "," を含みうるため split_once で先頭 1 個だけ割る。
+                            parse2u_tail(&s["SET_TEXT_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetTextField {
                                     actor_dfs_id: a, slot_idx: sl,
                                     key: key.to_string(), value: value.to_string(),
                                 })

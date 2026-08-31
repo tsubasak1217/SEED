@@ -77,6 +77,8 @@ public partial class InspectorPanel
     private const string ModelComponentType = "ModelComponent";
     /// <summary>3D ポリライン（釣り糸・ロープ）の型名。</summary>
     private const string LineRendererComponentType = "LineRendererComponent";
+    /// <summary>キャンバステキスト（HUD の数値・ラベル）の型名。</summary>
+    private const string TextComponentType = "TextComponent";
 
     // ── 行ラベルの幅 ─────────────────────────────────────────────
     // 行ビルダごとに数値リテラルを散らすと、同じセクション内で行ごとにラベル位置が

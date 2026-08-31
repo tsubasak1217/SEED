@@ -845,6 +845,15 @@ public partial class InspectorPanel : UserControl
         float LineR = 1f, float LineG = 1f, float LineB = 1f, float LineA = 1f,
         bool LineLocalSpace = true, bool LineDepthTest = true, bool LineVisible = true,
         int LinePointCount = 0,
+        // TextComponent 用フィールド（表示文字列・サイズ・色 RGBA・整列・行送り・レイヤー）
+        // 色キーは "text_r".."text_a"、レイヤーキーは "text_layer"（他コンポーネントの
+        // "layer" とキーが衝突しないよう専用の綴りにしている）。
+        string TextContent = "",
+        float TextFontSize = 24f,
+        float TextR = 1f, float TextG = 1f, float TextB = 1f, float TextA = 1f,
+        string TextAlign = "left", string TextVerticalAlign = "top",
+        float TextLineSpacing = 1.2f,
+        int TextLayer = 0,
         // AnimatorComponent 用フィールド（clips は JSON 配列文字列 [{"name":..,"path":..},...] のまま保持し、
         // UI 構築時にパースする。値そのものは Rust 側 AnimatorComponentData と同一構造）
         string AnimClipsJson = "[]",
@@ -1355,6 +1364,17 @@ public partial class InspectorPanel : UserControl
             var lineDepthTest  = comp.TryGetProperty("depth_test",  out var ldt) ? ReadJsonBool(ldt, true) : true;
             var lineVisible    = comp.TryGetProperty("line_visible", out var lvs) ? ReadJsonBool(lvs, true) : true;
             var linePointCount = comp.TryGetProperty("point_count", out var lpc) ? lpc.GetInt32() : 0;
+            // TextComponent 用: 文字列・サイズ・色 RGBA・整列・行送り・レイヤー。
+            var textContent    = comp.TryGetProperty("content",        out var txc) ? txc.GetString() ?? "" : "";
+            var textFontSize   = comp.TryGetProperty("font_size",      out var txs) ? txs.GetSingle() : 24f;
+            var textR          = comp.TryGetProperty("text_r",         out var txr) ? txr.GetSingle() : 1f;
+            var textG          = comp.TryGetProperty("text_g",         out var txg) ? txg.GetSingle() : 1f;
+            var textB          = comp.TryGetProperty("text_b",         out var txb) ? txb.GetSingle() : 1f;
+            var textA          = comp.TryGetProperty("text_a",         out var txa) ? txa.GetSingle() : 1f;
+            var textAlign      = comp.TryGetProperty("align",          out var txal) ? txal.GetString() ?? "left" : "left";
+            var textVAlign     = comp.TryGetProperty("vertical_align", out var txva) ? txva.GetString() ?? "top" : "top";
+            var textLineSpacing= comp.TryGetProperty("line_spacing",   out var txls) ? txls.GetSingle() : 1.2f;
+            var textLayer      = comp.TryGetProperty("text_layer",     out var txly) ? txly.GetInt32() : 0;
             // AnimatorComponent 用: クリップ一覧（生 JSON のまま保持）・既定クリップ・自動再生・速度
             var animClipsJson    = comp.TryGetProperty("clips",         out var acj) ? acj.GetRawText() : "[]";
             var animDefaultClip  = comp.TryGetProperty("default_clip",  out var adc) ? adc.GetString() ?? "" : "";
@@ -1583,6 +1603,10 @@ public partial class InspectorPanel : UserControl
                 LineR: lineR, LineG: lineG, LineB: lineB, LineA: lineA,
                 LineLocalSpace: lineLocalSpace, LineDepthTest: lineDepthTest,
                 LineVisible: lineVisible, LinePointCount: linePointCount,
+                TextContent: textContent, TextFontSize: textFontSize,
+                TextR: textR, TextG: textG, TextB: textB, TextA: textA,
+                TextAlign: textAlign, TextVerticalAlign: textVAlign,
+                TextLineSpacing: textLineSpacing, TextLayer: textLayer,
                 AnimClipsJson: animClipsJson, AnimDefaultClip: animDefaultClip,
                 AnimPlayOnStart: animPlayOnStart, AnimSpeed: animSpeed,
                 LightKind: lightKind,
@@ -1803,6 +1827,7 @@ public partial class InspectorPanel : UserControl
         "CoverEmitterComponent" => Color.FromRgb(0x2E, 0x2E, 0x38), // 明るめの灰青（雪・地表を覆うもの）
         "ControlPointComponent" => Color.FromRgb(0x24, 0x1E, 0x38), // 暗い紫（汎用パス。水の暗青・草の暗緑と識別できる色）
         "LineRendererComponent" => Color.FromRgb(0x1E, 0x2E, 0x24), // 暗い青緑（線描画。パス系の紫と区別する）
+        "TextComponent"       => Color.FromRgb(0x2A, 0x24, 0x38), // 暗い藤色（UI 系。Sprite と並べても識別できるトーン）
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
     };
@@ -1830,6 +1855,7 @@ public partial class InspectorPanel : UserControl
         "CoverEmitterComponent" => "Cover Emitter",
         "ControlPointComponent" => "Control Point",
         "LineRendererComponent" => "Line Renderer",
+        "TextComponent"       => "Text",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                     => typeId,
@@ -2097,6 +2123,7 @@ public partial class InspectorPanel : UserControl
             "CoverEmitterComponent" => BuildCoverEmitterSlotContent(info),
             "ControlPointComponent" => BuildControlPointSlotContent(info),
             "LineRendererComponent" => BuildLineRendererSlotContent(info),
+            "TextComponent" => BuildTextSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
             "Collider2dComponent" => BuildCollider2dSlotContent(info),
@@ -8282,6 +8309,150 @@ public partial class InspectorPanel : UserControl
 
         return sp;
     }
+
+    // ── TextComponent inspector ───────────────────────────────
+
+    /// <summary>フォントサイズ・行送りの数値表示フォーマット。</summary>
+    private const string TextNumberFormat = "F2";
+
+    /// <summary>content 入力欄の高さ（複数行を編集できる程度）。</summary>
+    private const double TextContentBoxHeight = 56;
+
+    /// <summary>水平整列の選択肢（値キー, 表示ラベル）。値キーは Rust 側と一致必須。</summary>
+    private static readonly (string Value, string Label)[] TextAlignOptions =
+    {
+        ("left",   "左"),
+        ("center", "中央"),
+        ("right",  "右"),
+    };
+
+    /// <summary>垂直整列の選択肢（値キー, 表示ラベル）。値キーは Rust 側と一致必須。</summary>
+    private static readonly (string Value, string Label)[] TextVerticalAlignOptions =
+    {
+        ("top",    "上"),
+        ("middle", "中央"),
+        ("bottom", "下"),
+    };
+
+    /// <summary>
+    /// TextComponent のインスペクター UI を構築して返す。
+    ///
+    /// 表示文字列・フォントサイズ・色・整列・行送り・レイヤーを編集し、
+    /// 変更時は SET_TEXT_FIELD:{actor},{slot},{key},{value} を送信する。
+    /// content の改行は IPC が 1 行 1 コマンドのためバックスラッシュ + n へエスケープして送る。
+    /// </summary>
+    private UIElement BuildTextSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // フィールド変更をランタイムへ送信するローカル関数。
+        void SendField(string key, string value)
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_TEXT_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
+        }
+
+        // ── 表示文字列（複数行編集可）───────────────────────────
+        sp.Children.Add(new TextBlock
+        {
+            Text       = "内容",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize   = 11,
+            Margin     = new Thickness(0, 2, 0, 2),
+        });
+        var contentBox = new TextBox
+        {
+            Text            = info.TextContent,
+            AcceptsReturn   = true,
+            TextWrapping    = TextWrapping.Wrap,
+            Height          = TextContentBoxHeight,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            FontSize        = 12,
+            Margin          = new Thickness(0, 0, 0, 4),
+            ToolTip         = "表示する文字列。改行できます。スクリプトからは "
+                              + "gameObject.GetComponent<Text>().Content で毎フレーム差し替えられます",
+        };
+        // フォーカスが外れた時点で確定して送る（1 文字ごとに IPC を撃たない）。
+        contentBox.LostFocus += (_, _) => SendField("content", EscapeIpcText(contentBox.Text));
+        sp.Children.Add(contentBox);
+
+        // ── フォントサイズ（キャンバスピクセル）──────────────────
+        sp.Children.Add(BuildResettableFloatRow(
+            info.SlotIdx, TextComponentType, "サイズ(px)", info.TextFontSize, "font_size",
+            TextNumberFormat,
+            v => SendField("font_size", v.ToString(CultureInfo.InvariantCulture))));
+
+        // ── 色（RGBA）─────────────────────────────────────────
+        sp.Children.Add(BuildColorPickerRow(
+            "色", info.TextR, info.TextG, info.TextB, info.TextA,
+            info.SlotIdx, TextComponentType, "color",
+            (r, g, b, a) => SendField("color", FormattableString.Invariant($"{r},{g},{b},{a}"))));
+
+        // ── 整列（水平・垂直）──────────────────────────────────
+        // ラベル + ComboBox の横並び行を生成して IPC を送信するローカル関数。
+        void AddAlignRow(string label, (string Value, string Label)[] options, string current,
+                         string key, string tooltip)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+            row.Children.Add(new TextBlock
+            {
+                Text              = label,
+                Foreground        = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                FontSize          = 11,
+                Width             = InspectorRowLabelWidth,
+                VerticalAlignment = VerticalAlignment.Center,
+                ToolTip           = tooltip,
+            });
+            var combo = new ComboBox { Width = 110, FontSize = 11, ToolTip = tooltip };
+            foreach (var (value, text) in options)
+            {
+                var item = new ComboBoxItem { Content = text, Tag = value };
+                combo.Items.Add(item);
+                if (string.Equals(value, current, StringComparison.Ordinal))
+                    combo.SelectedItem = item;
+            }
+            // 保存値が未知だった場合は先頭を選ぶ（UI が空欄のまま固まらないようにする）。
+            if (combo.SelectedItem is null && combo.Items.Count > 0) combo.SelectedIndex = 0;
+            combo.SelectionChanged += (_, _) =>
+            {
+                if (combo.SelectedItem is ComboBoxItem it && it.Tag is string v) SendField(key, v);
+            };
+            row.Children.Add(combo);
+            sp.Children.Add(row);
+        }
+        AddAlignRow("水平位置", TextAlignOptions, info.TextAlign, "align",
+            "アクター位置に対して行のどこを合わせるか");
+        AddAlignRow("垂直位置", TextVerticalAlignOptions, info.TextVerticalAlign, "vertical_align",
+            "アクター位置に対してテキストブロックのどこを合わせるか");
+
+        // ── 行送り（フォントサイズ倍率）──────────────────────────
+        sp.Children.Add(BuildResettableFloatRow(
+            info.SlotIdx, TextComponentType, "行送り", info.TextLineSpacing, "line_spacing",
+            TextNumberFormat,
+            v => SendField("line_spacing", v.ToString(CultureInfo.InvariantCulture))));
+
+        // ── 描画レイヤー（Sprite と同じ規約で前後関係が決まる）─────
+        sp.Children.Add(BuildResettableFloatRow(
+            info.SlotIdx, TextComponentType, "レイヤー", info.TextLayer, "layer",
+            "F0",
+            v => SendField("layer", ((int)MathF.Round(v)).ToString(CultureInfo.InvariantCulture))));
+
+        return sp;
+    }
+
+    /// <summary>
+    /// IPC のテキストコマンドへ埋め込める形へ文字列をエスケープする。
+    ///
+    /// IPC は「1 行 = 1 コマンド」のテキストプロトコルなので、生の改行を含む値は送れない。
+    /// バックスラッシュ自体も 2 文字へ増やしてから改行・タブを置換することで、
+    /// Rust 側 <c>text_ops::unescape_content</c> で正確に元へ戻せる。
+    /// </summary>
+    private static string EscapeIpcText(string raw)
+        => raw.Replace("\\", "\\\\")
+              .Replace("\r\n", "\\n")
+              .Replace("\n", "\\n")
+              .Replace("\r", "\\n")
+              .Replace("\t", "\\t");
 
     // ── AudioComponent inspector（本体）───────────────────────
 

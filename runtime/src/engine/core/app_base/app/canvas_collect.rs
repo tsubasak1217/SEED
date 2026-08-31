@@ -15,8 +15,9 @@ use std::sync::Arc;
 use crate::engine::components::{
     AspectRatioAxis, CameraComponent, CanvasComponent, CanvasDrawZone, CanvasTransform,
     CanvasViewportRef, ComponentKind, ScalingMode, SkinnedSpriteComponent, SpriteComponent,
-    Transform as ActorTransform,
+    TextComponent, Transform as ActorTransform,
 };
+use crate::engine::core::font::canvas_text::CanvasTextItem;
 use crate::engine::core::loader::sprite_mesh::SpriteMesh;
 use crate::engine::core::renderer::SpriteDrawItem;
 use crate::engine::core::renderer::sprite_skin::{SkinnedSpriteDraw, resolve_bone};
@@ -451,6 +452,10 @@ pub(super) fn collect_sprite_items(
     // true のときルートキャンバス左上をワールド原点に一致させる（センタリングしない）。
     design_space: bool,
     out: &mut Vec<SpriteDrawItem>,
+    // テキスト描画アイテムの収集先。スプライトと**同じ走査・同じ変換連鎖**で積むため、
+    // 別関数に分けず 1 回の DFS でまとめて収集する（両者の位置ズレを構造的に防ぐ）。
+    // テキストは専用パイプライン（フォントアトラス）で描くため出力先だけを分ける。
+    text_out: &mut Vec<CanvasTextItem>,
 ) {
     for actor in actors {
         if actor.world_line != wl {
@@ -734,6 +739,43 @@ pub(super) fn collect_sprite_items(
                 });
             }
 
+            // TextComponent スロットを走査してテキスト描画アイテムを収集する。
+            //
+            // 座標系: グリフのクアッドは**キャンバスピクセル実寸**で組まれるため、
+            // スキンメッシュと同じく「親キャンバス由来の追加スケールのみ」を掛ける
+            // （to_mesh_mat4）。スプライト（to_sprite_mat4）はユニットクワッドを
+            // 実寸へ引き伸ばす別用途なので使わない。
+            for slot in actor.slots() {
+                if slot.kind != ComponentKind::Text || !slot.enabled {
+                    continue;
+                }
+                let Some(tc) = world.get::<TextComponent>(slot.entity) else {
+                    continue;
+                };
+                // 空文字は頂点を作らないので収集段階で捨てる（毎フレームの無駄を省く）。
+                if tc.content.is_empty() {
+                    continue;
+                }
+                let text_world = mat4x4_mul(
+                    parent_world_rs,
+                    eff_ct.to_mesh_mat4(size_scale_x, size_scale_y),
+                );
+                text_out.push(CanvasTextItem {
+                    text: tc.content.clone(),
+                    // フォントサイズは**素の値**を渡す。キャンバスの拡縮
+                    // （size_scale_x/y）は上の to_mesh_mat4 が行列側で効かせるため、
+                    // ここで掛けると二重にスケールされる。
+                    font_size: tc.font_size,
+                    color: tc.color,
+                    align: tc.align,
+                    vertical_align: tc.vertical_align,
+                    line_spacing: tc.line_spacing,
+                    model: canvas_mat_to_gpu(text_world, canvas_scale, y_sign),
+                    zone: my_zone,
+                    layer: tc.layer,
+                });
+            }
+
             // 子アクターへの基準 Canvas サイズと auto_scale を構築する
             // （子のアンカー基準サイズにも自動解像度上書きを反映する）。
             // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
@@ -780,6 +822,7 @@ pub(super) fn collect_sprite_items(
                 my_zone,
                 design_space,
                 out,
+                text_out,
             );
         }
     }

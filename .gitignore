@@ -111,3 +111,10 @@ runtime/assets/**/*.tvox
 runtime/assets/project_settings.json
 runtime/assets/**/*.blend
 runtime/assets/**/*.zip
+
+# =========================
+# セーブデータ（ゲーム進行の永続化。開発者ごとのローカル状態なので追跡しない）
+# エディタ Play 時の保存先は runtime/save/save.json（save/path.rs の規約）
+# =========================
+runtime/save/
+*.json.tmp

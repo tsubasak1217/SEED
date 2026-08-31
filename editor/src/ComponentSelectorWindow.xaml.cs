@@ -76,6 +76,7 @@ public partial class ComponentSelectorWindow : Window
             new("CanvasComponent", "Canvas", "UI 矩形領域をアクタにアタッチ（幅・高さ指定）。3D アクタにアタッチするとワールド空間に配置", ActorTarget.Common),
             new("SpriteComponent", "Sprite", "2D スプライト画像をキャンバスに表示",          ActorTarget.Common),
             new("SkinnedSpriteComponent", "Skinned Sprite", ".sprite_mesh のメッシュを子アクター（ボーン）で変形して表示する 2D スプライト", ActorTarget.Common),
+            new("TextComponent", "Text", "キャンバスに文字列を表示（HUD の数値・ラベル）。内容はスクリプトから毎フレーム差し替えられる", ActorTarget.Common),
         }),
         ("ライト", new()
         {
@@ -399,6 +400,7 @@ public partial class ComponentSelectorWindow : Window
         "CoverEmitterComponent"       => "CoverEmitter",
         "ControlPointComponent"      => "ControlPoint",
         "LineRendererComponent"      => "LineRenderer",
+        "TextComponent"              => "Text",
         // Plugin:{name} → プラグイン名をデフォルト名とする
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                    => typeId,

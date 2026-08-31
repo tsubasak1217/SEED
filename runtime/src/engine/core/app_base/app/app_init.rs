@@ -98,6 +98,23 @@ impl App {
         self.id_buffer = Some(id_buffer);
         self.line_model_buf = Some(line_model_buf);
 
+        // キャンバステキスト描画器（TextComponent 用）。
+        // 軸ギズモと違い **Edit / Play の両方**で必要なので mode で分岐しない
+        // （HUD の数値表示はゲーム本編の描画物である）。
+        // 描画先はメインパス / キャンバスオーバーレイパスのどちらも
+        // HDR カラー + 共通深度なので、フォーマットは軸ギズモと同じで良い。
+        {
+            use crate::engine::core::font::canvas_text::CanvasTextRenderer;
+            let dev = &self.draw_ctx.as_ref().unwrap().device;
+            let scene_fmt = crate::engine::core::renderer::HDR_FORMAT;
+            self.canvas_text =
+                CanvasTextRenderer::new(dev, scene_fmt, renderer.depth_format());
+            eprintln!(
+                "[SEED INIT] canvas_text created (ok={})",
+                self.canvas_text.is_some()
+            );
+        }
+
         // 軸ギズモ・アイコンオーバーレイ（エディタモードのみ初期化）
         if self.mode == RuntimeMode::Edit {
             use crate::engine::core::font::axis_gizmo::AxisGizmo;

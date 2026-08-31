@@ -462,6 +462,19 @@ impl App {
                         d.points.len(),
                     ))
                 }
+                ComponentData::TextComponent(d) => {
+                    // キャンバステキスト: 文字列・サイズ・色・整列・行送り・レイヤーを送る。
+                    // content は任意の文字列（改行・引用符・日本語を含みうる）ため
+                    // 必ず serde_json でエスケープしてから埋め込む。
+                    let content_json = serde_json::to_string(&d.content).unwrap_or_default();
+                    ("TextComponent", format!(
+                        r#","content":{content_json},"font_size":{:.4},"text_r":{:.4},"text_g":{:.4},"text_b":{:.4},"text_a":{:.4},"align":"{}","vertical_align":"{}","line_spacing":{:.4},"text_layer":{}"#,
+                        d.font_size,
+                        d.color[0], d.color[1], d.color[2], d.color[3],
+                        d.align.key(), d.vertical_align.key(),
+                        d.line_spacing, d.layer,
+                    ))
+                }
                 ComponentData::InteractionSourceComponent(d) => {
                     // インタラクションソース: 半径・強さ・有効フラグをインスペクタへ送る。
                     // 【重要】キー名は "source_enabled"。スロット共通ラッパが既に
@@ -1097,6 +1110,37 @@ impl App {
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<LineRendererComponent>(
                             name, ComponentKind::LineRenderer, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "TextComponent" => {
+                // デフォルト（"Text"・24px・白・左上揃え）の TextComponent を追加する。
+                // キャンバス配下のアクターに置く前提のコンポーネント（HUD の数値・ラベル）。
+                use crate::engine::components::TextComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, TextComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<TextComponent>(
+                            name, ComponentKind::Text, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

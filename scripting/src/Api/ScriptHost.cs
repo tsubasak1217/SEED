@@ -525,6 +525,134 @@ public static unsafe class ScriptHost
             return _api.Profiler(kind, np, nl) != 0;
     }
 
+    // ── セーブデータ（SEED.SaveData の低レベル層）─────────────────
+    //
+    // 実体は Rust 側の JSON ストア。C# はここを通すだけでファイル IO は行わない
+    // （保存先の決定・自動フラッシュはエンジンのライフサイクルが持つ）。
+
+    /// <summary>
+    /// セーブデータの整数値を読み書きする。
+    /// kind: 0=Set（value を書く）/ 1=Get（out へ読む）。
+    /// Get でキーが無い・型が変換不能なら false（result は 0）。
+    /// </summary>
+    public static bool SaveInt(int kind, string key, long value, out long result)
+    {
+        result = 0;
+        if (!_available || _api.SaveInt == null || string.IsNullOrEmpty(key)) return false;
+
+        int kl = Encoding.UTF8.GetByteCount(key);
+        Span<byte> kb = stackalloc byte[kl];
+        Encoding.UTF8.GetBytes(key, kb);
+
+        long r = 0;
+        int ok;
+        fixed (byte* kp = kb)
+            ok = _api.SaveInt(kind, kp, kl, value, &r);
+        result = r;
+        return ok != 0;
+    }
+
+    /// <summary>
+    /// セーブデータの実数値を読み書きする（規約は <see cref="SaveInt"/> と同じ）。
+    /// </summary>
+    public static bool SaveFloat(int kind, string key, float value, out float result)
+    {
+        result = 0f;
+        if (!_available || _api.SaveFloat == null || string.IsNullOrEmpty(key)) return false;
+
+        int kl = Encoding.UTF8.GetByteCount(key);
+        Span<byte> kb = stackalloc byte[kl];
+        Encoding.UTF8.GetBytes(key, kb);
+
+        float r = 0f;
+        int ok;
+        fixed (byte* kp = kb)
+            ok = _api.SaveFloat(kind, kp, kl, value, &r);
+        result = r;
+        return ok != 0;
+    }
+
+    /// <summary>セーブデータへ文字列を書き込む。成功時 true。</summary>
+    public static bool SaveSetString(string key, string value)
+    {
+        if (!_available || _api.SaveString == null || string.IsNullOrEmpty(key)) return false;
+
+        int kl = Encoding.UTF8.GetByteCount(key);
+        int vl = Encoding.UTF8.GetByteCount(value ?? "");
+        Span<byte> kb = stackalloc byte[kl];
+        Encoding.UTF8.GetBytes(key, kb);
+        // 空文字列も「空を書く」として有効。長さ 0 の stackalloc は避けて 1 バイト確保する。
+        Span<byte> vb = stackalloc byte[vl > 0 ? vl : 1];
+        if (vl > 0) Encoding.UTF8.GetBytes(value!, vb);
+
+        fixed (byte* kp = kb)
+        fixed (byte* vp = vb)
+            return _api.SaveString(SaveStringKindSet, kp, kl, vp, vl, null, 0) != 0;
+    }
+
+    /// <summary>
+    /// セーブデータから文字列を読む。キーが無い・値が文字列でないなら false。
+    /// 必要長を返す 2 段階プロトコル（<see cref="TryGetString"/> と同じ）。
+    /// </summary>
+    public static bool SaveGetString(string key, out string value)
+    {
+        value = "";
+        if (!_available || _api.SaveString == null || string.IsNullOrEmpty(key)) return false;
+
+        int kl = Encoding.UTF8.GetByteCount(key);
+        Span<byte> kb = stackalloc byte[kl];
+        Encoding.UTF8.GetBytes(key, kb);
+
+        // 1 回目: 初期バッファで試す
+        Span<byte> stack = stackalloc byte[InitialStringBufferSize];
+        int needed;
+        fixed (byte* kp = kb)
+        fixed (byte* sp = stack)
+            needed = _api.SaveString(SaveStringKindGet, kp, kl, null, 0, sp, stack.Length);
+
+        if (needed < 0) return false;                       // キーが無い / 文字列でない
+        if (needed <= stack.Length)
+        {
+            value = Encoding.UTF8.GetString(stack[..needed]);
+            return true;
+        }
+
+        // 2 回目: 必要長ちょうどのヒープバッファで再取得する
+        var heap = new byte[needed];
+        int written;
+        fixed (byte* kp = kb)
+        fixed (byte* hp = heap)
+            written = _api.SaveString(SaveStringKindGet, kp, kl, null, 0, hp, heap.Length);
+
+        if (written < 0 || written > heap.Length) return false;
+        value = Encoding.UTF8.GetString(heap, 0, written);
+        return true;
+    }
+
+    /// <summary>
+    /// セーブデータの制御操作。
+    /// kind: 0=Has / 1=DeleteKey / 2=DeleteAll / 3=Save。
+    /// DeleteAll と Save は key を使わない（null 可）。
+    /// </summary>
+    public static bool SaveControl(int kind, string? key)
+    {
+        if (!_available || _api.SaveCtl == null) return false;
+
+        if (string.IsNullOrEmpty(key))
+            return _api.SaveCtl(kind, null, 0) != 0;
+
+        int kl = Encoding.UTF8.GetByteCount(key);
+        Span<byte> kb = stackalloc byte[kl];
+        Encoding.UTF8.GetBytes(key, kb);
+        fixed (byte* kp = kb)
+            return _api.SaveCtl(kind, kp, kl) != 0;
+    }
+
+    /// <summary>SaveString の kind: 書き込み（Rust 側 SAVE_STR_KIND_SET と一致）。</summary>
+    private const int SaveStringKindSet = 0;
+    /// <summary>SaveString の kind: 読み取り（Rust 側 SAVE_STR_KIND_GET と一致）。</summary>
+    private const int SaveStringKindGet = 1;
+
     // ── 物理（Raycast）──────────────────────────────────────────
 
     /// <summary>
@@ -657,4 +785,12 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, float*, int, int> InputActionAxis;
     /// <summary>(kind, name, nameLen) → 1/0（プロファイラ手動計測。kind: 0=Begin/1=End。End は name を無視）</summary>
     public delegate* unmanaged[Cdecl]<int, byte*, int, int> Profiler;
+    /// <summary>(kind, key, keyLen, value, out long*) → 1/0（セーブデータ整数。kind: 0=Set/1=Get）</summary>
+    public delegate* unmanaged[Cdecl]<int, byte*, int, long, long*, int> SaveInt;
+    /// <summary>(kind, key, keyLen, value, out float*) → 1/0（セーブデータ実数。kind: 0=Set/1=Get）</summary>
+    public delegate* unmanaged[Cdecl]<int, byte*, int, float, float*, int> SaveFloat;
+    /// <summary>(kind, key, keyLen, value, valueLen, out byte*, cap) → Set:1/0 Get:必要バイト長（失敗=-1）。kind: 0=Set/1=Get</summary>
+    public delegate* unmanaged[Cdecl]<int, byte*, int, byte*, int, byte*, int, int> SaveString;
+    /// <summary>(kind, key, keyLen) → 1/0（セーブデータ制御。kind: 0=Has/1=DeleteKey/2=DeleteAll/3=Save）</summary>
+    public delegate* unmanaged[Cdecl]<int, byte*, int, int> SaveCtl;
 }

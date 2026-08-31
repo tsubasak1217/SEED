@@ -44,6 +44,8 @@ pub mod cover_emitter_component;
 pub mod control_point_component;
 /// 3D ポリライン描画（釣り糸・ロープ・軌跡。スクリプトから毎フレーム点列を差し替える）
 pub mod line_renderer_component;
+/// キャンバス用テキスト表示（HUD の数値・ラベル。SDF フォント描画を流用）
+pub mod text_component;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -85,6 +87,9 @@ pub use control_point_component::{
 };
 pub use line_renderer_component::{
     LineRendererComponent, LineRendererComponentData, MAX_LINE_POINTS,
+};
+pub use text_component::{
+    TextComponent, TextComponentData, TextAlign, TextVerticalAlign, MAX_TEXT_CHARS,
 };
 pub use particle_emitter_component::{
     ParticleEmitterComponent, ParticleEmitterComponentData,
@@ -153,6 +158,8 @@ pub enum ComponentKind {
     ControlPoint,
     /// 3D ポリライン描画（釣り糸・ロープ・軌跡）
     LineRenderer,
+    /// キャンバス用テキスト表示（HUD の数値・ラベル）
+    Text,
 }
 
 impl ComponentKind {
@@ -183,6 +190,7 @@ impl ComponentKind {
             Self::CoverEmitter => "CoverEmitterComponent",
             Self::ControlPoint => "ControlPointComponent",
             Self::LineRenderer => "LineRendererComponent",
+            Self::Text        => "TextComponent",
         }
     }
 }
@@ -237,4 +245,6 @@ pub enum ComponentData {
     ControlPointComponent(ControlPointComponentData),
     /// 3D ポリライン描画（釣り糸・ロープ・軌跡）
     LineRendererComponent(LineRendererComponentData),
+    /// キャンバス用テキスト表示（HUD の数値・ラベル）
+    TextComponent(TextComponentData),
 }

@@ -163,6 +163,11 @@ impl App {
     /// ENTER_PLAY で取ったスナップショットから wl0 非地形アクターを再構築し、mode を
     /// Edit へ戻す。地形・散布・GPU リソースには触れない（Keep 分は現物のまま）。
     pub(super) fn exit_play(&mut self) {
+        // セーブデータを自動フラッシュする（Play 中にスクリプトが Set した進行を守る）。
+        // セーブはシーンの編集データではなくゲーム進行なので、Edit へ戻しても
+        // 巻き戻さず実ファイルへ確定させる（save/mod.rs の方針コメント参照）。
+        // Play でなかった場合（べき等パス）も dirty なら書き出すため先頭に置く。
+        crate::engine::core::save::flush_if_dirty();
         // ポインタ状態を捨てる（Edit へ戻ったあとに Exit が飛ばないようにする）。
         self.pointer.reset();
         // Play でなければ mode だけ Edit に寄せて応答（べき等）。

@@ -858,6 +858,34 @@ if (gameObject.GetComponent<LineRenderer>() is { } line)
 
 > **重要**: `SetPoints` に渡せる点数の上限は `LineRenderer.MaxPoints`（512）です。超えると `false` を返して何も変わりません。点列そのものは読み出せません（点数だけ `PointCount` で取れます）。
 
+### Text（キャンバスに文字を表示：HUD の数値・ラベル）
+
+キャンバス（Actor2D、または CanvasComponent を持つ Actor3D）の配下に置いたアクターへ文字列を表示します。位置・回転・スケール・アンカーは `CanvasTransform` が決め、Sprite とまったく同じ変換で描かれます。`Content` の代入は文字列を差し替えるだけなので、毎フレーム呼んで構いません。
+
+```csharp
+if (gameObject.GetComponent<Text>() is { } label)
+{
+    label.Content        // string（get/set。表示文字列。"\n" で改行）
+    label.FontSize       // float（get/set。キャンバスピクセル）
+    label.Color          // Color（get/set。RGBA。アルファ 0 で非表示）
+    label.LineSpacing    // float（get/set。行送り = フォントサイズ × この倍率）
+    label.Layer          // int（get/set。大きいほど手前。Sprite と共通の順序）
+    label.Align          // string（get/set。"left" / "center" / "right"）
+    label.VerticalAlign  // string（get/set。"top" / "middle" / "bottom"）
+}
+```
+
+```csharp
+// 例: 所持金の表示を毎フレーム更新する
+public void Update()
+{
+    if (gameObject.GetComponent<Text>() is { } label)
+        label.Content = $"所持金: {SaveData.GetInt("money")} 円";
+}
+```
+
+> **重要**: `Align` / `VerticalAlign` に未知の文字列を代入しても無視され、既存の値が保たれます（typo で表示が崩れません）。1 つの Text が描ける文字数の上限は 4096 文字で、超えた分は切り捨てられます。
+
 ### LineHelper（線の点列を作る補助・純 C#）
 
 `LineRenderer.SetPoints` に渡す点列を組み立てる静的ヘルパーです。エンジンへのアクセスを伴わないので、どこからでも呼べます。
@@ -935,6 +963,7 @@ public class FishingLine : SEEDScript
 | `WaterVolume` | `gameObject.GetComponent<WaterVolume>()` | 現在水位（読み取り専用）・設定水位・水位シミュレーションの有効／無効・水面シェーダのパラメータ（SetShaderParam / GetShaderParamFloat / GetShaderParamVector3） |
 | `WaterLink` | `gameObject.GetComponent<WaterLink>()` | 水位グラフの開口。**開閉率（バルブ）**・開口寸法・流量係数 |
 | `LineRenderer` | `gameObject.GetComponent<LineRenderer>()` | 3D の線（釣り糸・ロープ・軌跡）。点列（SetPoints）・太さ・色・表示・座標系・深度テスト |
+| `Text` | `gameObject.GetComponent<Text>()` | キャンバス上の文字表示（HUD の数値・ラベル）。内容・サイズ・色・整列・行送り・レイヤー |
 
 > **重要**: `GetComponent<T>()` は `T?` を返し、同種コンポーネントを複数スロット持てます。`GetComponent<T>()`＝0 番目、`GetComponent<T>(index)`＝index 番目、`GetComponent<T>("Name")`＝スロット名一致。
 
@@ -1058,6 +1087,61 @@ public void Update()
 - `Begin` と `End` の対応が崩れてもエンジン側の計測は壊れません（`End` は自分が開いた区間しか閉じず、
   閉じ忘れは親区間の終了時にまとめて閉じられます）。
 - 詳細（パネルの見方・計測方式・オーバーヘッド）は **docs/profiler.md** を参照してください。
+
+---
+
+## 7.7 SaveData（セーブデータ：ゲーム進行の永続化）
+
+資金・強化レベル・図鑑・ハイスコアのように「シーンを切り替えても、ゲームを終了して起動し直しても残したい値」をキー・バリューで保存します。実体は Rust ランタイムが持つ JSON 1 ファイルで、スクリプト側はファイルパスもファイル IO も意識しません。
+
+```csharp
+// 書き込み（メモリ上のストアへ。毎フレーム呼んでも安い）
+SaveData.SetInt("money", 1200);
+SaveData.SetLong("total_score", 12345678901);   // int に収まらない値用
+SaveData.SetFloat("best_size_bass", 41.5f);
+SaveData.SetString("player_name", "kani");
+SaveData.SetBool("tutorial_done", true);
+
+// 読み取り（キーが無い・型が合わない場合は既定値）
+int    money = SaveData.GetInt("money", 0);
+long   score = SaveData.GetLong("total_score", 0);
+float  best  = SaveData.GetFloat("best_size_bass", 0f);
+string name  = SaveData.GetString("player_name", "no name");
+bool   done  = SaveData.GetBool("tutorial_done", false);
+
+// 問い合わせ・削除
+SaveData.Has("money");        // bool（型は問わずキーの有無）
+SaveData.DeleteKey("money");  // bool（削除した=true / 元から無かった=false）
+SaveData.DeleteAll();         // ニューゲーム用（全キー削除）
+
+// ディスクへ書き出す（明示保存）
+SaveData.Save();              // bool（成功=true）
+```
+
+```csharp
+// 例: 魚を釣った瞬間に図鑑と資金を更新して保存する
+void OnCatch(string fishId, float sizeCm, int price)
+{
+    // その魚の最大サイズを更新（初回は 0 と比較される）
+    string key = $"best_{fishId}";
+    if (sizeCm > SaveData.GetFloat(key, 0f)) SaveData.SetFloat(key, sizeCm);
+
+    SaveData.SetInt("money", SaveData.GetInt("money", 0) + price);
+    SaveData.Save();   // 区切りの良いところで明示保存する
+}
+```
+
+> **重要**: `Set*` はメモリ上のストアを書き換えるだけです。ディスクへ書き出すのは `Save()` を呼んだときと、Play 終了時・アプリ終了時の自動保存だけなので、進行の区切り（魚を釣った直後・購入した直後）で `Save()` を呼んでください。
+
+> **重要**: 整数と実数は相互に読み替えられます（実数 → 整数は 0 方向へ切り捨て）。文字列と数値は**相互変換しません** — 型を間違えた読み取りは既定値を返すので、書いたときと同じ型で読んでください。
+
+| 保存先 | パス |
+|---|---|
+| パッケージ実行（配布ビルド） | 実行ファイルと同じ階層の `save/save.json` |
+| エディタから Play | `runtime/save/save.json`（Git 追跡外） |
+| 環境変数 `SEED_SAVE_DIR` 指定時 | そのディレクトリの `save.json`（最優先） |
+
+> **重要**: セーブデータは Play を終了して Edit へ戻しても**巻き戻りません**（ゲームの進行であってシーンの編集データではないため）。テストで初期状態へ戻したいときは `SaveData.DeleteAll()` + `SaveData.Save()` を呼ぶか、保存先の `save.json` を削除してください。
 
 ---
 

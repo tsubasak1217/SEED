@@ -114,6 +114,7 @@ CATALOG = [
     ("Icon.Component.CoverEmitter", "snowflake"),
     ("Icon.Component.Canvas", "rectangle-outline"),
     ("Icon.Component.Sprite", "image-outline"),
+    ("Icon.Component.Text", "format-text"),
     ("Icon.Component.SkinnedSprite", "vector-polygon"),
     ("Icon.File.SpriteMesh", "vector-triangle"),
     # スキンスプライトのボーン操作（インスペクタの「ボーンアクターを生成」ボタン等）。

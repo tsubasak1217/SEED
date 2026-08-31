@@ -129,7 +129,11 @@ impl App {
                 IpcCommand::PauseRender        => self.render_paused = true,
                 // AI 応答完了後にレンダリングを再開する
                 IpcCommand::ResumeRender       => self.render_paused = false,
-                IpcCommand::Stop               => event_loop.exit(),
+                // 未保存のセーブデータを書き出してから終了する（明示 Save() の取りこぼし対策）。
+                IpcCommand::Stop               => {
+                    crate::engine::core::save::flush_if_dirty();
+                    event_loop.exit();
+                }
                 // 内蔵デバッガのアタッチ/デタッチに応じてブレークポイント停止ガードを切り替える。
                 IpcCommand::SetDebugGuard(v)   => self.clock.set_debug_guard(v),
                 IpcCommand::CamKeyDown(k)      => self.cam_input.set_key(&k, true),
@@ -1340,6 +1344,9 @@ impl App {
                 }
                 IpcCommand::SetLineRendererField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_line_renderer_field(actor_dfs_id, slot_idx, &key, &value);
+                }
+                IpcCommand::SetTextField { actor_dfs_id, slot_idx, key, value } => {
+                    self.handle_set_text_field(actor_dfs_id, slot_idx, &key, &value);
                 }
                 IpcCommand::SetSkinnedSpriteField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_skinned_sprite_field(actor_dfs_id, slot_idx, &key, &value);

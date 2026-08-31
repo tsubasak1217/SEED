@@ -701,6 +701,13 @@ pub fn build_actor(
                 actor.add_slot_typed::<LineRendererComponent>(
                     slot_name, ComponentKind::LineRenderer, slot_entity);
             }
+            ComponentData::TextComponent(t_data) => {
+                // キャンバステキストを ECS ワールドに挿入してスロットを登録する
+                use crate::engine::components::TextComponent;
+                world.insert(slot_entity, TextComponent::from_data(t_data));
+                actor.add_slot_typed::<TextComponent>(
+                    slot_name, ComponentKind::Text, slot_entity);
+            }
             ComponentData::WaterVolumeComponent(wv_data) => {
                 // 水ボリュームコンポーネントを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::WaterVolumeComponent;

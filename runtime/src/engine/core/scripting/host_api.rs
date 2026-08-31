@@ -34,7 +34,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::engine::components::{
     AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, InputMapComponent,
     LineRendererComponent, ParticleEmitterComponent, SkinnedSpriteComponent, SpriteComponent,
-    Transform, WaterLinkComponent, WaterVolumeComponent, MAX_LINE_POINTS,
+    TextAlign, TextComponent, TextVerticalAlign, Transform, WaterLinkComponent,
+    WaterVolumeComponent, MAX_LINE_POINTS,
 };
 use crate::engine::core::input::action_map::{ActionMap, ActionRuntime};
 use crate::engine::core::input::{Input, InputState};
@@ -610,6 +611,20 @@ fn read_floats(
                 _        => None,
             }
         }
+        // ── キャンバステキスト（スロット格納型: locate で解決）──
+        // 文字列（content）と整列（align / vertical_align）は文字列 API 側で扱う。
+        "Text" => {
+            let e = locate::<TextComponent>(world, entity)?;
+            let t = world.get::<TextComponent>(e)?;
+            match field {
+                "color"        => put(out, &t.color),
+                "font_size"    => put(out, &[t.font_size]),
+                "line_spacing" => put(out, &[t.line_spacing]),
+                // 描画優先度レイヤー（i32 → f32 変換して返す。Sprite の layer と同様）
+                "layer"        => put(out, &[t.layer as f32]),
+                _              => None,
+            }
+        }
         // ── メッシュ変形スキニング 2D スプライト（スロット格納型: locate で解決）──
         "SkinnedSprite" => {
             let e = locate::<SkinnedSpriteComponent>(world, entity)?;
@@ -866,6 +881,19 @@ fn write_floats(
                 _        => false,
             }
         }
+        // ── キャンバステキスト（スロット格納型: locate で解決）──
+        "Text" => {
+            let Some(e) = locate::<TextComponent>(world, entity) else { return false };
+            let Some(t) = world.get_mut::<TextComponent>(e) else { return false };
+            match field {
+                "color"        => take(v).map(|a| t.color = a).is_some(),
+                "font_size"    => take::<1>(v).map(|a| t.font_size = a[0]).is_some(),
+                "line_spacing" => take::<1>(v).map(|a| t.line_spacing = a[0]).is_some(),
+                // 描画優先度レイヤー（f32 → i32 変換して格納。Sprite の layer と同様）
+                "layer"        => take::<1>(v).map(|a| t.layer = a[0] as i32).is_some(),
+                _              => false,
+            }
+        }
         // ── メッシュ変形スキニング 2D スプライト（スロット格納型: locate で解決）──
         "SkinnedSprite" => {
             let Some(e) = locate::<SkinnedSpriteComponent>(world, entity) else { return false };
@@ -1074,6 +1102,17 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
                 _              => None,
             }
         }
+        // キャンバステキスト: 表示文字列と整列（列挙は小文字キー文字列でやり取りする）。
+        "Text" => {
+            let e = locate::<TextComponent>(world, entity)?;
+            let t = world.get::<TextComponent>(e)?;
+            match field {
+                "content"        => Some(t.content.clone()),
+                "align"          => Some(t.align.key().to_string()),
+                "vertical_align" => Some(t.vertical_align.key().to_string()),
+                _                => None,
+            }
+        }
         "SkinnedSprite" => {
             let e = locate::<SkinnedSpriteComponent>(world, entity)?;
             let s = world.get::<SkinnedSpriteComponent>(e)?;
@@ -1136,6 +1175,24 @@ fn write_string(
                 _              => false,
             }
         }
+        // キャンバステキスト: 毎フレームの文字列差し替え（HUD の数値表示）が主用途。
+        "Text" => {
+            let Some(e) = locate::<TextComponent>(world, entity) else { return false };
+            let Some(t) = world.get_mut::<TextComponent>(e) else { return false };
+            match field {
+                "content" => { t.content = value.to_string(); true }
+                // 未知のキーは既存値を保つ（typo で左寄せに戻らないようにする）。
+                "align" => match TextAlign::from_key(value) {
+                    Some(a) => { t.align = a; true }
+                    None    => false,
+                },
+                "vertical_align" => match TextVerticalAlign::from_key(value) {
+                    Some(a) => { t.vertical_align = a; true }
+                    None    => false,
+                },
+                _ => false,
+            }
+        }
         "Audio" => {
             let Some(e) = locate::<AudioComponent>(world, entity) else { return false };
             let Some(a) = world.get_mut::<AudioComponent>(e) else { return false };
@@ -1172,6 +1229,7 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
         "ParticleEmitter" => locate::<ParticleEmitterComponent>(world, entity).is_some(),
         "InputMap"        => locate::<InputMapComponent>(world, entity).is_some(),
         "LineRenderer"    => locate::<LineRendererComponent>(world, entity).is_some(),
+        "Text"            => locate::<TextComponent>(world, entity).is_some(),
         // 水位グラフ（Phase W2.5）
         "WaterLink"       => locate::<WaterLinkComponent>(world, entity).is_some(),
         "WaterVolume"     => locate::<WaterVolumeComponent>(world, entity).is_some(),
@@ -2045,6 +2103,144 @@ unsafe extern "system" fn ffi_profiler(kind: i32, name: *const u8, name_len: i32
     }
 }
 
+// ─── セーブデータ（SEED.SaveData）────────────────────────────
+//
+// 資金・強化レベル・図鑑・ハイスコアなど「シーンをまたいで残す進行データ」を
+// キー・バリューで読み書きする FFI。実体は `engine::core::save`（JSON 1 ファイル）。
+//
+// C# にファイル IO をさせず必ずここを通す理由:
+//   - 保存先の決定（パッケージ実行 / エディタ Play）を Rust 側の 1 箇所に閉じる
+//   - Play 終了・アプリ終了時の自動フラッシュをエンジンのライフサイクルに乗せる
+//
+// 値の型ごとに関数を分けているのは、i64 の精度を f32 経由で失わないため
+// （所持金や累計スコアは 2^24 を超えうる）。
+
+/// `ffi_save_int` / `ffi_save_float` の `kind`: 値を書き込む。
+const SAVE_KIND_SET: i32 = 0;
+/// `ffi_save_int` / `ffi_save_float` の `kind`: 値を読み取る。
+const SAVE_KIND_GET: i32 = 1;
+
+/// `ffi_save_string` の `kind`: 文字列を書き込む。
+const SAVE_STR_KIND_SET: i32 = 0;
+/// `ffi_save_string` の `kind`: 文字列を読み取る（必要長を返す 2 段階プロトコル）。
+const SAVE_STR_KIND_GET: i32 = 1;
+
+/// `ffi_save_ctl` の `kind`: キーの存在判定。
+const SAVE_CTL_HAS: i32 = 0;
+/// `ffi_save_ctl` の `kind`: キーを 1 つ削除。
+const SAVE_CTL_DELETE_KEY: i32 = 1;
+/// `ffi_save_ctl` の `kind`: 全キーを削除。
+const SAVE_CTL_DELETE_ALL: i32 = 2;
+/// `ffi_save_ctl` の `kind`: ディスクへ書き出す（明示保存）。
+const SAVE_CTL_SAVE: i32 = 3;
+
+/// セーブデータの整数値を読み書きする。
+///
+/// - `kind` = `SAVE_KIND_SET`: `value` を `key` へ書く。戻り値 1。
+/// - `kind` = `SAVE_KIND_GET`: `key` の値を `out` へ書く。
+///   取得できた=1 / キーが無い・型が変換不能=0（0 のとき `out` は触らない）。
+unsafe extern "system" fn ffi_save_int(
+    kind: i32,
+    key: *const u8, key_len: i32,
+    value: i64,
+    out: *mut i64,
+) -> i32 {
+    use crate::engine::core::save;
+    let key_s = str_from(key, key_len);
+    if key_s.is_empty() { return 0; }
+    match kind {
+        SAVE_KIND_SET => { save::set_int(key_s, value); 1 }
+        SAVE_KIND_GET => {
+            if out.is_null() { return 0; }
+            match save::get_int(key_s) {
+                Some(v) => { *out = v; 1 }
+                None    => 0,
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// セーブデータの実数値を読み書きする（規約は `ffi_save_int` と同じ）。
+unsafe extern "system" fn ffi_save_float(
+    kind: i32,
+    key: *const u8, key_len: i32,
+    value: f32,
+    out: *mut f32,
+) -> i32 {
+    use crate::engine::core::save;
+    let key_s = str_from(key, key_len);
+    if key_s.is_empty() { return 0; }
+    match kind {
+        SAVE_KIND_SET => { save::set_float(key_s, value); 1 }
+        SAVE_KIND_GET => {
+            if out.is_null() { return 0; }
+            match save::get_float(key_s) {
+                Some(v) => { *out = v; 1 }
+                None    => 0,
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// セーブデータの文字列値を読み書きする。
+///
+/// - `kind` = `SAVE_STR_KIND_SET`: `value`（UTF-8）を `key` へ書く。戻り値 1。
+/// - `kind` = `SAVE_STR_KIND_GET`: UTF-8 バイト列の**必要長**を返す（キーが無い・
+///   値が文字列でない場合は -1）。必要長 <= `cap` のときだけ `out` へ書き込む。
+///   ここは `ffi_get_string` と同じ 2 段階プロトコル（C# 側は不足時に再呼び出し）。
+unsafe extern "system" fn ffi_save_string(
+    kind: i32,
+    key: *const u8, key_len: i32,
+    value: *const u8, value_len: i32,
+    out: *mut u8, cap: i32,
+) -> i32 {
+    use crate::engine::core::save;
+    let key_s = str_from(key, key_len);
+    if key_s.is_empty() { return if kind == SAVE_STR_KIND_GET { -1 } else { 0 }; }
+    match kind {
+        SAVE_STR_KIND_SET => {
+            // value_len=0 は「空文字列を書く」として許容する（str_from が空文字を返す）
+            save::set_string(key_s, str_from(value, value_len));
+            1
+        }
+        SAVE_STR_KIND_GET => match save::get_string(key_s) {
+            Some(s) => {
+                let bytes = s.as_bytes();
+                if !out.is_null() && cap >= 0 && bytes.len() <= cap as usize {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+                }
+                bytes.len() as i32
+            }
+            None => -1,
+        },
+        _ => -1,
+    }
+}
+
+/// セーブデータの制御操作（存在判定・削除・保存）。
+///
+/// 戻り値: 1 = 真 / 成功、0 = 偽 / 失敗。
+/// `SAVE_CTL_DELETE_ALL` と `SAVE_CTL_SAVE` は `key` を使わない。
+unsafe extern "system" fn ffi_save_ctl(kind: i32, key: *const u8, key_len: i32) -> i32 {
+    use crate::engine::core::save;
+    let key_s = str_from(key, key_len);
+    match kind {
+        SAVE_CTL_HAS => {
+            if key_s.is_empty() { return 0; }
+            save::has(key_s) as i32
+        }
+        SAVE_CTL_DELETE_KEY => {
+            if key_s.is_empty() { return 0; }
+            save::delete_key(key_s) as i32
+        }
+        SAVE_CTL_DELETE_ALL => { save::delete_all(); 1 }
+        SAVE_CTL_SAVE       => save::save() as i32,
+        _ => 0,
+    }
+}
+
 // ─── C# へ渡す関数ポインタ表 ─────────────────────────────────
 
 /// C# の #[StructLayout(Sequential)] ScriptHostApi と同一レイアウト。
@@ -2083,6 +2279,12 @@ pub struct ScriptHostApi {
     // プロファイラ系（SEED.Profiler.Begin / End）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     profiler:               unsafe extern "system" fn(i32, *const u8, i32) -> i32,
+    // セーブデータ系（SEED.SaveData）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    save_int:               unsafe extern "system" fn(i32, *const u8, i32, i64, *mut i64) -> i32,
+    save_float:             unsafe extern "system" fn(i32, *const u8, i32, f32, *mut f32) -> i32,
+    save_string:            unsafe extern "system" fn(i32, *const u8, i32, *const u8, i32, *mut u8, i32) -> i32,
+    save_ctl:               unsafe extern "system" fn(i32, *const u8, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -2111,6 +2313,10 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     input_action:           ffi_input_action,
     input_action_axis:      ffi_input_action_axis,
     profiler:               ffi_profiler,
+    save_int:               ffi_save_int,
+    save_float:             ffi_save_float,
+    save_string:            ffi_save_string,
+    save_ctl:               ffi_save_ctl,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

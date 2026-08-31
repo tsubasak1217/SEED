@@ -47,6 +47,8 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::CloseRequested if !self.is_embedded() => {
+                // 未保存のセーブデータを書き出してから終了する（明示 Save() の取りこぼし対策）。
+                crate::engine::core::save::flush_if_dirty();
                 if let Some(ipc) = &self.ipc { ipc.send("STOPPED"); }
                 event_loop.exit();
             }

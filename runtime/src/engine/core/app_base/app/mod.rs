@@ -88,6 +88,8 @@ pub(crate) mod control_point_scene_gizmo;
 mod animation_ops;
 /// 3D ポリライン（LineRendererComponent）のインスペクタ編集とリボン頂点収集
 pub(crate) mod line_renderer_ops;
+/// TextComponent のエディタ操作（インスペクタからのフィールド更新）
+pub(crate) mod text_ops;
 pub(crate) mod light_ops;
 pub(crate) mod skybox_ops;
 pub(crate) mod particle_ops;
@@ -710,6 +712,9 @@ pub struct App {
     axis_gizmo: Option<crate::engine::core::font::axis_gizmo::AxisGizmo>,
     /// アイコンオーバーレイ（エディタモードのみ使用）。
     icon_overlay: Option<crate::engine::core::font::icon_overlay::IconOverlay>,
+    /// キャンバステキスト描画器（TextComponent 用）。Edit / Play の両方で使う。
+    /// フォント初期化に失敗した場合のみ None（テキストが出ないだけで他は動く）。
+    canvas_text: Option<crate::engine::core::font::canvas_text::CanvasTextRenderer>,
     /// 平滑化済み FPS（表示値）。0.0 = 未計算。
     fps_display: f32,
     /// FPS 計測ウィンドウ内のフレーム完了カウント。
@@ -1322,6 +1327,7 @@ impl App {
             pause_cam_warp_pending: 0,
             first_frame_sent:       false,
             axis_gizmo:            None,
+            canvas_text:           None,
             icon_overlay:          None,
             fps_display:           0.0,
             fps_frame_count:       0,

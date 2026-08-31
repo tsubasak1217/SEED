@@ -71,6 +71,15 @@ pub fn root() -> Option<&'static PathBuf> {
     ASSETS_ROOT.get()
 }
 
+/// パッケージ実行（assets.pak を読み込んで動作している）かを返す。
+///
+/// PAK が存在する = エディタから起動されたリポジトリ内実行ではなく、
+/// 配布された実行ファイルとして動いている、という判定に使う。
+/// セーブデータの保存先切り替え（`core::save::path`）がこれを見る。
+pub fn is_packaged() -> bool {
+    matches!(PAK.get(), Some(Some(_)))
+}
+
 /// 仮想パスかどうかを判定する。
 pub fn is_virtual(path: &str) -> bool {
     path.starts_with(ASSETS_SCHEME)

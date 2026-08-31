@@ -12,6 +12,8 @@
 
 pub mod atlas;
 pub mod axis_gizmo;
+/// キャンバス上の TextComponent 描画（CPU で NDC まで変換して既存パイプラインへ流す）
+pub mod canvas_text;
 pub mod icon_overlay;
 pub mod pipeline;
 pub mod rasterizer;
@@ -145,6 +147,33 @@ impl TextBatch {
 
             pen_x += info.advance;
         }
+    }
+
+    /// NDC 座標を直接指定してクアッド 1 枚（2 三角形）を追加する。
+    ///
+    /// `corners` は左上→右上→右下→左下 の順（時計回り）。
+    /// `add_text_screen` が内部でやっている「スクリーン → NDC」変換を
+    /// 呼び出し側が済ませている場合に使う（キャンバステキストが CPU で
+    /// カメラ VP まで通した結果を積むための入口）。
+    pub fn add_quad_ndc(
+        &mut self,
+        corners: [[f32; 3]; 4],
+        uv_min: [f32; 2],
+        uv_max: [f32; 2],
+        color: [f32; 4],
+    ) {
+        let base = self.vertices.len() as u32;
+        let uvs = [
+            [uv_min[0], uv_min[1]],
+            [uv_max[0], uv_min[1]],
+            [uv_max[0], uv_max[1]],
+            [uv_min[0], uv_max[1]],
+        ];
+        for (position, uv) in corners.into_iter().zip(uvs) {
+            self.vertices.push(TextVertex { position, uv, color });
+        }
+        self.indices
+            .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 }
 

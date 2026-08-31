@@ -225,6 +225,7 @@
     <a href="#sec-gameobject">GameObject</a>
     <a href="#sec-components">コンポーネント</a>
     <a href="#sec-scene">Scene</a>
+    <a href="#sec-savedata">SaveData</a>
     <a href="#sec-libs">ライブラリ</a>
     <a href="#sec-shading">シェーディング (WGSL)</a>
   </nav>
@@ -618,7 +619,7 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width">
+<section id="sec-components" data-keywords="コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -775,6 +776,26 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <b>重要</b>: <code>WaterVolume.WaterLevel</code> は<b>読み取り専用</b>です。直接代入できると体積保存が破れて水位グラフの前提が壊れるため、水を足す／抜く演出は <code>WaterLink.Openness</code> の開閉で表現します。<code>WaterLink</code> の接続先（volume_a / volume_b）も実行中は変更できません（インスペクタで設定）。
   </div>
 
+  <h3 id="cmp-text">Text（キャンバスに文字を表示：HUD の数値・ラベル）</h3>
+  <p class="section-note">キャンバス（Actor2D、または CanvasComponent を持つ Actor3D）の配下に置いたアクターへ文字列を表示します。位置・回転・スケール・アンカーは <code>CanvasTransform</code> が決め、Sprite とまったく同じ変換で描かれます。<code>Content</code> の代入は文字列を差し替えるだけなので、毎フレーム呼んで構いません。</p>
+  <div class="api"><code class="sig">label.Content</code><span class="desc">string（get/set。表示文字列。"\n" で改行）</span></div>
+  <div class="api"><code class="sig">label.FontSize</code><span class="desc">float（get/set。キャンバスピクセル）</span></div>
+  <div class="api"><code class="sig">label.Color</code><span class="desc">Color（get/set。RGBA。アルファ 0 で非表示）</span></div>
+  <div class="api"><code class="sig">label.LineSpacing</code><span class="desc">float（get/set。行送り = フォントサイズ × この倍率）</span></div>
+  <div class="api"><code class="sig">label.Layer</code><span class="desc">int（get/set。大きいほど手前。Sprite と共通の順序）</span></div>
+  <div class="api"><code class="sig">label.Align</code><span class="desc">string（get/set。"left" / "center" / "right"）</span></div>
+  <div class="api"><code class="sig">label.VerticalAlign</code><span class="desc">string（get/set。"top" / "middle" / "bottom"）</span></div>
+<pre><span class="c">// 所持金の表示を毎フレーム更新する</span>
+<span class="k">public override void</span> Update()
+{
+    <span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">Text</span>&gt;() <span class="k">is</span> { } label)
+        label.Content = $<span class="s">"所持金: {SaveData.GetInt("money")} 円"</span>;
+}</pre>
+  <div class="warn">
+    <b>Align / VerticalAlign に未知の文字列を代入しても無視され、既存の値が保たれます</b>（typo で表示が崩れません）。<br>
+    1 つの Text が描ける文字数の上限は <b>4096 文字</b>で、超えた分は切り捨てられます。
+  </div>
+
   <h3 id="cmp-linerenderer">LineRenderer（3D の線を描く：釣り糸・ロープ・軌跡）</h3>
   <p class="section-note">点列を結ぶ 1 本の線をワールド空間に描きます。太さは<b>ワールド単位（m）</b>で、線は常にカメラを向くリボンとして描かれます（遠いほど細く見えます）。点列は毎フレーム <code>SetPoints</code> で丸ごと差し替える使い方が基本です。</p>
   <div class="api"><code class="sig">line.Width</code><span class="desc">float（get/set。線の太さ。ワールド単位 m。0 で非表示）</span></div>
@@ -840,6 +861,7 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><td><code>WaterVolume</code></td><td><code>gameObject.GetComponent&lt;WaterVolume&gt;()</code></td><td>現在水位（読み取り専用）・設定水位・水位シミュレーションの有効／無効・水面シェーダのパラメータ（SetShaderParam / GetShaderParamFloat / GetShaderParamVector3）</td></tr>
     <tr><td><code>WaterLink</code></td><td><code>gameObject.GetComponent&lt;WaterLink&gt;()</code></td><td>水位グラフの開口。<b>開閉率（バルブ）</b>・開口寸法・流量係数</td></tr>
     <tr><td><code>LineRenderer</code></td><td><code>gameObject.GetComponent&lt;LineRenderer&gt;()</code></td><td>3D の線（釣り糸・ロープ・軌跡）。点列（SetPoints）・太さ・色・表示・座標系・深度テスト</td></tr>
+    <tr><td><code>Text</code></td><td><code>gameObject.GetComponent&lt;Text&gt;()</code></td><td>キャンバス上の文字表示（HUD の数値・ラベル）。内容・サイズ・色・整列・行送り・レイヤー</td></tr>
   </table>
   <p class="section-note">他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定です。</p>
 
@@ -935,6 +957,54 @@ SolvePath();
     <b>名前は固定文字列にしてください。</b> 名前の種類には上限（256）があり、<code>Begin($"敵{i}")</code> のようにループ変数を埋め込むと上限に達し、それ以降の名前が計測されなくなります。<br>
     Begin と End の対応が崩れてもエンジン側の計測は壊れません（End は自分が開いた区間しか閉じません）。
   </div>
+</section>
+
+<!-- ════════════════ 7.7 SaveData ════════════════ -->
+<section id="sec-savedata" data-keywords="SaveData セーブ セーブデータ 保存 ロード 永続化 進行 資金 お金 money ハイスコア 図鑑 強化 レベル SetInt GetInt SetFloat GetFloat SetString GetString SetBool GetBool Has DeleteKey DeleteAll Save JSON save.json SEED_SAVE_DIR">
+  <h2>7.7 SaveData（セーブデータ：ゲーム進行の永続化）</h2>
+  <p class="section-note">
+    資金・強化レベル・図鑑・ハイスコアのように「シーンを切り替えても、ゲームを終了して起動し直しても残したい値」を
+    キー・バリューで保存します。実体は Rust ランタイムが持つ <b>JSON 1 ファイル</b>で、
+    スクリプト側はファイルパスもファイル IO も意識しません。
+  </p>
+  <div class="api"><code class="sig">SaveData.SetInt(key, value)</code><span class="desc">整数を保存（同じキーの既存値は型ごと置き換え）</span></div>
+  <div class="api"><code class="sig">SaveData.SetLong(key, value)</code><span class="desc">64bit 整数を保存（累計スコアなど int に収まらない値用）</span></div>
+  <div class="api"><code class="sig">SaveData.SetFloat(key, value)</code><span class="desc">実数を保存</span></div>
+  <div class="api"><code class="sig">SaveData.SetString(key, value)</code><span class="desc">文字列を保存</span></div>
+  <div class="api"><code class="sig">SaveData.SetBool(key, value)</code><span class="desc">真偽値を保存（内部表現は整数 0/1）</span></div>
+  <div class="api"><code class="sig">SaveData.GetInt(key, default = 0)</code><span class="desc">int。キーが無い / 文字列が入っている場合は default</span></div>
+  <div class="api"><code class="sig">SaveData.GetLong(key, default = 0)</code><span class="desc">long</span></div>
+  <div class="api"><code class="sig">SaveData.GetFloat(key, default = 0f)</code><span class="desc">float</span></div>
+  <div class="api"><code class="sig">SaveData.GetString(key, default = "")</code><span class="desc">string。数値が入っている場合は default</span></div>
+  <div class="api"><code class="sig">SaveData.GetBool(key, default = false)</code><span class="desc">bool（0 以外を true とみなす）</span></div>
+  <div class="api"><code class="sig">SaveData.Has(key)</code><span class="desc">bool（型は問わずキーの有無）</span></div>
+  <div class="api"><code class="sig">SaveData.DeleteKey(key)</code><span class="desc">bool（削除した=true / 元から無かった=false）</span></div>
+  <div class="api"><code class="sig">SaveData.DeleteAll()</code><span class="desc">全キー削除（ニューゲーム用）。ファイルは Save するまで残る</span></div>
+  <div class="api"><code class="sig">SaveData.Save()</code><span class="desc">bool（ディスクへ書き出す明示保存。成功=true）</span></div>
+<pre><span class="c">// 魚を釣った瞬間に図鑑と資金を更新して保存する</span>
+<span class="k">void</span> OnCatch(<span class="t">string</span> fishId, <span class="t">float</span> sizeCm, <span class="t">int</span> price)
+{
+    <span class="c">// その魚の最大サイズを更新（初回は 0 と比較される）</span>
+    <span class="t">string</span> key = $<span class="s">"best_{fishId}"</span>;
+    <span class="k">if</span> (sizeCm &gt; <span class="t">SaveData</span>.GetFloat(key, 0f)) <span class="t">SaveData</span>.SetFloat(key, sizeCm);
+
+    <span class="t">SaveData</span>.SetInt(<span class="s">"money"</span>, <span class="t">SaveData</span>.GetInt(<span class="s">"money"</span>, 0) + price);
+    <span class="t">SaveData</span>.Save();   <span class="c">// 区切りの良いところで明示保存する</span>
+}</pre>
+  <div class="warn">
+    <b>Set* はメモリ上のストアを書き換えるだけです。</b> ディスクへ書き出すのは <code>Save()</code> を呼んだときと、
+    Play 終了時・アプリ終了時の自動保存だけなので、進行の区切り（魚を釣った直後・購入した直後）で <code>Save()</code> を呼んでください。<br>
+    <b>整数と実数は相互に読み替えられます</b>（実数 → 整数は 0 方向へ切り捨て）。
+    <b>文字列と数値は相互変換しません</b> — 型を間違えた読み取りは既定値を返すので、書いたときと同じ型で読んでください。<br>
+    セーブデータは Play を終了して Edit へ戻しても<b>巻き戻りません</b>（ゲームの進行であってシーンの編集データではないため）。
+    初期状態へ戻すには <code>SaveData.DeleteAll()</code> + <code>SaveData.Save()</code> か、保存先の <code>save.json</code> を削除します。
+  </div>
+  <table>
+    <tr><th>実行のしかた</th><th>保存先</th></tr>
+    <tr><td>パッケージ実行（配布ビルド）</td><td>実行ファイルと同じ階層の <code>save/save.json</code></td></tr>
+    <tr><td>エディタから Play</td><td><code>runtime/save/save.json</code>（Git 追跡外）</td></tr>
+    <tr><td>環境変数 <code>SEED_SAVE_DIR</code> 指定時</td><td>そのディレクトリの <code>save.json</code>（最優先）</td></tr>
+  </table>
 </section>
 
 <!-- ════════════════ 8. シェーディングアセット (WGSL) ════════════════ -->

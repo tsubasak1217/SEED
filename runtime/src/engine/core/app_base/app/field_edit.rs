@@ -126,6 +126,10 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             slot(*actor_dfs_id, *slot_idx, "SetAudioField", key),
         IpcCommand::SetLineRendererField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetLineRendererField", key),
+        // テキスト（内容・サイズ・色・整列・行送り・レイヤー）。
+        // マージキーに key を含めるので、フォントサイズのドラッグは 1 手にまとまる。
+        IpcCommand::SetTextField { actor_dfs_id, slot_idx, key, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetTextField", key),
         IpcCommand::SetSkinnedSpriteField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetSkinnedSpriteField", key),
         IpcCommand::SetSpriteField { actor_dfs_id, slot_idx, key, .. } =>
@@ -649,6 +653,11 @@ pub(super) fn apply_component_data_in_place(
             world.insert(entity, LineRendererComponent::from_data(d.clone()));
             SlotApply::Applied
         }
+        // テキストも純粋な値（文字列・サイズ・色・整列）のみ。GPU 資源を持たない。
+        ComponentData::TextComponent(d) => {
+            world.insert(entity, TextComponent::from_data(d.clone()));
+            SlotApply::Applied
+        }
         ComponentData::AnimatorComponent(d) => {
             world.insert(entity, AnimatorComponent::from_data(d.clone()));
             SlotApply::Applied
@@ -966,6 +975,7 @@ pub(super) fn component_kind_of(data: &ComponentData) -> ComponentKind {
         ComponentData::CoverEmitterComponent(_) => ComponentKind::CoverEmitter,
         ComponentData::ControlPointComponent(_) => ComponentKind::ControlPoint,
         ComponentData::LineRendererComponent(_) => ComponentKind::LineRenderer,
+        ComponentData::TextComponent(_) => ComponentKind::Text,
     }
 }
 

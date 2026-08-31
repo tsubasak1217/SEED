@@ -218,6 +218,7 @@ fn terrain_world_bounds(
 /// - vp_w/h: ゲーム描画領域のサイズ
 /// - proj_aspect: 射影行列に渡すアスペクト比
 /// - fov_y_rad: 射影行列に渡す実効縦 FOV（ラジアン）
+use crate::engine::core::font::canvas_text::CanvasTextItem;
 use super::canvas_collect::{
     collect_sprite_items, collect_canvas_rects, collect_canvas_id_items, CanvasIdItem,
     collect_3d_canvas_child_id_items, sprite_world_corners,
@@ -841,6 +842,17 @@ impl App {
         // 統合バッチ更新で使うためここで宣言しておく（begin_frame ブロック外でも参照できるよう）
         let mut saved_frustum_planes: [[f32; 4]; 6] = [[0.0; 4]; 6];
         let mut saved_camera_pos:     [f32; 3]       = [0.0; 3];
+        // メインカメラのビュー射影（行優先）。キャンバステキストを CPU で NDC まで
+        // 変換するために、カメラ更新ブロックの外へ控えておく。
+        let mut saved_view_proj: [[f32; 4]; 4] = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        // シーン SS の 2D オルソオーバーレイカメラのビュー射影（行優先）。
+        // scene_canvas_ss のときだけ更新される（None = そのフレームでは使わない）。
+        let mut saved_canvas_overlay_vp: Option<[[f32; 4]; 4]> = None;
         // シャドウ（Phase R2）用のアクティブカメラ情報（3D パースペクティブ時のみ Some）。
         // (view 行列, near, far, fov_y[rad], aspect)。CSM のカスケード分割・視錐台計算に使う。
         // 2D オルソ・正射カメラ時は None（方向光 CSM は透視カメラ前提のため影を落とさない）。
@@ -1094,6 +1106,8 @@ impl App {
                     let cv  = Mat4x4::look_at_lh(eye_c, center_c, up_c);
                     let cp2 = Mat4x4::orthographic_lh(-half_w, half_w, half_h, -half_h, 0.0, 200.0);
                     let cvp = cp2 * cv;
+                    // キャンバステキストの CPU 射影用に控える（行優先のまま保持する）。
+                    saved_canvas_overlay_vp = Some(cvp.data);
                     // 2D オルソオーバーレイカメラはデファードのライティングパス対象外だが、
                     // CameraUniform 構造体を埋める必要があるため一律で逆行列を計算する。
                     let cvp_inv = cvp.inverse().unwrap_or_else(Mat4x4::identity);
@@ -1121,6 +1135,7 @@ impl App {
             // 統合バッチ更新のためにブロック外へ保存する
             saved_frustum_planes = frustum_planes;
             saved_camera_pos     = camera_pos;
+            saved_view_proj      = view_proj.data;
             // 次フレーム先頭の地形 LOD 選択（tick_terrain_lod）が使うカメラ位置を控える。
             self.last_camera_pos = camera_pos;
 
@@ -2572,7 +2587,11 @@ impl App {
                                         None, &std::collections::HashMap::new(),
                                         &std::collections::HashMap::new(),
                                         // 3D ワールドキャンバス配下は常に親サイズ Some のためルート分岐に入らず design_space 無関係
+                                        // カメラプレビュー（インスペクタの小窓）はテキストを描かない。
+                                        // フォントバッチの構築コストをプレビューのためだけに毎フレーム
+                                        // 払う価値がないため、収集先は捨てバッファにする。
                                         CanvasDrawZone::Foreground, false, &mut items,
+                                        &mut Vec::new(),
                                     );
                                     items[canvas_start..].sort_by_key(|it| it.layer);
                                 }
@@ -3801,12 +3820,19 @@ impl App {
                     // 「描画/コライダー・ピック面生成」区間ここまで。
                     drop(_prof_collider);
 
-                    let (sprite_prepared_2d_bg, sprite_prepared_2d_fg, sprite_prepared_3d) = {
+                    let (
+                        sprite_prepared_2d_bg, sprite_prepared_2d_fg, sprite_prepared_3d,
+                        text_items_2d_bg, text_items_2d_fg, text_items_3d_sorted,
+                    ) = {
                         crate::profile_scope!("描画/スプライト収集・ソート");
                         // 2D キャンバスアクターのスプライト（オルソ／ワールドスペース 2D 用）
                         let mut items_2d = Vec::new();
                         // 3D Canvas（Actor3D + CanvasComponent）の子スプライト（3D 透視カメラ用）
                         let mut items_3d = Vec::new();
+                        // テキスト（TextComponent）。スプライトと同じ走査で同時に集まる。
+                        // 描画は専用のフォントパイプラインなのでリストだけ分けて持つ。
+                        let mut text_items_2d: Vec<CanvasTextItem> = Vec::new();
+                        let mut text_items_3d: Vec<CanvasTextItem> = Vec::new();
 
                         if let Some(scene) = &self.scene {
                             let wl = self.active_world_line;
@@ -3843,6 +3869,7 @@ impl App {
                                     None, IDENTITY, [1.0, 1.0],
                                     canvas_scale, y_sign, viewport_size, &canvas_vp_overrides,
                                     &root_auto_sizes, CanvasDrawZone::Foreground, edit_view_2d, &mut items_2d,
+                                    &mut text_items_2d,
                                 );
                             }
 
@@ -3887,6 +3914,7 @@ impl App {
                                 // このキャンバス内の追加分をレイヤー昇順で安定ソートする
                                 // （ワールドキャンバスのレイヤーはキャンバス内で完結する）
                                 let canvas_start = items_3d.len();
+                                let text_canvas_start = text_items_3d.len();
                                 collect_sprite_items(
                                     &actor.children, &scene.world, wl, draw_ctx,
                                     Some([cc.width, cc.height]),
@@ -3897,8 +3925,12 @@ impl App {
                                     &std::collections::HashMap::new(),
                                     // 3D ワールドキャンバス配下は常に親サイズ Some のためルート分岐に入らず design_space 無関係
                                     CanvasDrawZone::Foreground, false, &mut items_3d,
+                                    &mut text_items_3d,
                                 );
                                 items_3d[canvas_start..].sort_by_key(|it| it.layer);
+                                // テキストもこのキャンバス内でレイヤー昇順に安定ソートする
+                                // （スプライトと同じ規約。ゾーン概念はワールドキャンバスに無い）。
+                                text_items_3d[text_canvas_start..].sort_by_key(|it| it.layer);
                             }
                         }
 
@@ -3916,12 +3948,21 @@ impl App {
                         // ここでは begin＋3 リスト分の push のみ行い、upload は後段（選択アウトラインを
                         // 積み終えた後）で 1 度だけ行う（Phase R6, 同一 main バッファへ連続配置）。
                         // 各 push はテクスチャ境界でバッチ分割し、描画順（ソート済み）は保つ。
+                        // ── テキストも同じ規約（ゾーンで分割 → ゾーン内をレイヤーで安定ソート）──
+                        // スプライトと同じ順序規則にしておくことで、同じレイヤー値を持つ
+                        // スプライトとテキストの前後関係がユーザーの直感どおりになる。
+                        let (mut text_2d_bg, mut text_2d_fg): (Vec<_>, Vec<_>) =
+                            text_items_2d.into_iter()
+                                .partition(|it| it.zone == CanvasDrawZone::Background);
+                        text_2d_bg.sort_by_key(|it| it.layer);
+                        text_2d_fg.sort_by_key(|it| it.layer);
+
                         let mut sb = draw_ctx.sprites.borrow_mut();
                         sb.main.begin();
                         let list_bg = sb.main.push(items_2d_bg);
                         let list_fg = sb.main.push(items_2d_fg);
                         let list_3d = sb.main.push(items_3d);
-                        (list_bg, list_fg, list_3d)
+                        (list_bg, list_fg, list_3d, text_2d_bg, text_2d_fg, text_items_3d)
                     };
 
                     // CanvasComponent 矩形アウトラインバッチ（エディタモード + 2D キャンバス世界線のみ）
@@ -4248,6 +4289,31 @@ impl App {
                     };
 
 
+
+                    // ── キャンバステキストの GPU バッチ構築（TextComponent）─────────
+                    // グリフ頂点は CPU で NDC まで変換するので、使うカメラごとに
+                    // 別バッチを作る必要がある:
+                    //   - 2D 背景 / 前面: scene_canvas_ss なら 2D オルソオーバーレイカメラ、
+                    //     それ以外（アクター編集タブ・2D シーンビュー・ワールドスペース）は
+                    //     メインカメラ。スプライトのカメラ選択とまったく同じ規則。
+                    //   - 3D キャンバス配下: 常にメインカメラ。
+                    // フォント初期化に失敗している場合は全て None（テキストだけ出ない）。
+                    let (text_gpu_2d_bg, text_gpu_2d_fg, text_gpu_3d) = {
+                        // 2D キャンバスが使う VP を決める（スプライトと同じ分岐）。
+                        let vp_2d = if scene_canvas_ss {
+                            saved_canvas_overlay_vp.unwrap_or(saved_view_proj)
+                        } else {
+                            saved_view_proj
+                        };
+                        match self.canvas_text.as_mut() {
+                            Some(ct) => (
+                                ct.build(&draw_ctx.device, &draw_ctx.queue, &text_items_2d_bg, &vp_2d),
+                                ct.build(&draw_ctx.device, &draw_ctx.queue, &text_items_2d_fg, &vp_2d),
+                                ct.build(&draw_ctx.device, &draw_ctx.queue, &text_items_3d_sorted, &saved_view_proj),
+                            ),
+                            None => (None, None, None),
+                        }
+                    };
 
                     // アイコンオーバーレイバッチ（エディタモードのみ）
                     // 全選択アクター（マルチ選択対応）の 3D Transform 位置をスクリーン投影してアイコンを表示する。
@@ -6123,6 +6189,15 @@ impl App {
                             }
                         }
 
+                        // 背景ゾーンのキャンバステキスト（スプライトと同じ位置・同じ条件）。
+                        // 頂点は既に 2D オーバーレイカメラで NDC 化済みなので
+                        // カメラバインドグループは不要。
+                        if scene_canvas_ss {
+                            if let (Some(gpu), Some(ct)) = (&text_gpu_2d_bg, &self.canvas_text) {
+                                ct.draw(gpu, &mut pass);
+                            }
+                        }
+
                         // 全 MC を統合バッチで描画（N_actors → N_unique_models 回の draw call）
                         // 2D シーンビューでは 3D モデルを描画しない（3D シーン非表示）
                         let _perf_t_draw = std::time::Instant::now();
@@ -6501,6 +6576,25 @@ impl App {
                                     &main_inst_buf,
                                     &sprite_prepared_2d_fg,
                                 );
+                            }
+                        }
+
+                        // ── キャンバステキスト（メインパス側）───────────────────────
+                        // 3D キャンバス配下のテキストは scene_canvas_ss に関わらずここで描く
+                        //（スプライトの sprite_prepared_3d と同じ扱い）。
+                        // 2D キャンバスのテキストは、スプライトと同様に
+                        // scene_canvas_ss でないときだけ（bg → fg の順で）ここで描く。
+                        if let Some(ct) = &self.canvas_text {
+                            if let Some(gpu) = &text_gpu_3d {
+                                ct.draw(gpu, &mut pass);
+                            }
+                            if !scene_canvas_ss {
+                                if let Some(gpu) = &text_gpu_2d_bg {
+                                    ct.draw(gpu, &mut pass);
+                                }
+                                if let Some(gpu) = &text_gpu_2d_fg {
+                                    ct.draw(gpu, &mut pass);
+                                }
                             }
                         }
 
@@ -7194,6 +7288,12 @@ impl App {
                                     &main_inst_buf,
                                     &sprite_prepared_2d_fg,
                                 );
+                            }
+
+                            // 前面ゾーンのキャンバステキスト（スプライトの直後 = アウトラインより前）。
+                            // 頂点は 2D オーバーレイカメラで NDC 化済みなのでカメラ BG は使わない。
+                            if let (Some(gpu), Some(ct)) = (&text_gpu_2d_fg, &self.canvas_text) {
+                                ct.draw(gpu, &mut overlay_pass);
                             }
 
                             // CanvasComponent 矩形アウトライン

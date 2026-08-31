@@ -441,6 +441,11 @@ pub fn slot_to_data(world: &World, slot: &ComponentSlot) -> Option<ComponentSlot
             world.get::<crate::engine::components::LineRendererComponent>(slot.entity)
                 .map(|lr| ComponentData::LineRendererComponent(lr.to_data()))
         }
+        ComponentKind::Text => {
+            // キャンバステキストをシリアライズ用データに変換する
+            world.get::<crate::engine::components::TextComponent>(slot.entity)
+                .map(|tc| ComponentData::TextComponent(tc.to_data()))
+        }
         ComponentKind::WaterVolume => {
             // 水ボリュームコンポーネントをシリアライズ用データに変換する
             world.get::<crate::engine::components::WaterVolumeComponent>(slot.entity)
