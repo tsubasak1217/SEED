@@ -15,6 +15,13 @@
 // surface.wgsl / surface_gather.wgsl は連結しない（Surface を経由せず直接 MRT を作るため。
 // 地形はマテリアルテクスチャではなくレイヤ配列テクスチャを読むので gather_surface が使えない）。
 //
+// ## 法線シャープネスペイント（T4）
+// 頂点が `tangent.w` に載せてきた配合率 w（0=スムーズ、1=面法線）で、
+// SDF 勾配由来のスムーズ法線とフラグメントの面法線（dFdx/dFdy の外積）を混ぜる。
+// 岩場は w=1 でファセット状に、砂地は w=0 で滑らかに、と塗り分けられる。
+// **RT / GI 経路（BLAS の頂点法線）は w を見ないので常にスムーズのまま**である
+// （制約は docs/terrain.md に明記）。
+//
 // ## G-Buffer レイアウト（gbuffer_write.wgsl と同一。正典はそちら）
 //   RT0 Rgba8Unorm  : albedo.rgb + occlusion.a
 //   RT1 Rgba16Float : world normal.xyz + 0
@@ -125,6 +132,19 @@ const MACRO_NOISE_BIAS_TO_SIGNED:  f32 = 1.0;
 
 /// roughness の下限（完全鏡面によるスペキュラ発散を防ぐ）。
 const TERRAIN_ROUGHNESS_MIN: f32 = 0.04;
+
+/// 面法線（フラット法線）の長さがこの値以下なら、面法線の算出を諦めてスムーズ法線を使う。
+///
+/// `cross(dpdx(p), dpdy(p))` は、画面上で潰れて見える三角形（真横から見た面・
+/// 極端に小さい面）で 0 ベクトルへ縮退する。そのまま normalize すると NaN が
+/// G-Buffer へ書かれて黒／白の点として残るため、必ずこの下限で落とす。
+const TERRAIN_FACE_NORMAL_MIN_LEN: f32 = 1e-12;
+
+/// 法線シャープネスがこの値以下なら、面法線の算出そのものを行わない。
+///
+/// シャープネスを塗っていない地形（＝既定の全面）はこの分岐に入らないため、
+/// この機能の導入前と**ビット単位で同じ**フラグメント出力になる。
+const TERRAIN_SHARPNESS_EPSILON: f32 = 0.0009;
 
 /// G-Buffer RT1.w へ書く「authored 法線」フラグ値（1=有効）。
 /// 地形は閉じたハイトフィールドで triplanar 合成した信頼できる地表法線を持つため、
@@ -453,6 +473,51 @@ fn triplanar_normal(
 }
 
 // ============================================================
+//  法線シャープネス（スムーズ法線 ⇔ 面法線の配合）
+// ============================================================
+
+/// ワールド座標の画面微分から、このフラグメントが載っている**面法線**を求める。
+///
+/// `cross(dpdx(p), dpdy(p))` は三角形の平面に垂直なベクトルになる。ただし向きは
+/// 画面上での頂点の並び（巻き）に依存するので、そのままでは表裏が定まらない。
+/// そこで基準となるスムーズ法線 `smooth_n` と内積を取り、逆向きなら反転して
+/// 「見えている側」へ揃える。
+///
+/// 縮退（画面上で潰れた面 → 外積が 0 ベクトル）のときは `smooth_n` を返す。
+/// これは「面法線が定義できないなら滑らかなままにしておく」という安全側の縮退で、
+/// NaN 法線を G-Buffer へ書き込まないための必須のガードである。
+fn terrain_face_normal(dpdx_p: vec3<f32>, dpdy_p: vec3<f32>, smooth_n: vec3<f32>) -> vec3<f32> {
+    let c = cross(dpdx_p, dpdy_p);
+    let len = length(c);
+    if len < TERRAIN_FACE_NORMAL_MIN_LEN {
+        return smooth_n;
+    }
+    let n = c / len;
+    // 向きをスムーズ法線側へ揃える（巻き・カリング設定に依存しない形にする）。
+    return select(-n, n, dot(n, smooth_n) >= 0.0);
+}
+
+/// スムーズ法線と面法線を配合率 `w` で混ぜる（0=スムーズ、1=面法線）。
+///
+/// `w` が 0 のときは `smooth_n` をそのまま返す（面法線の計算にも入らない）ため、
+/// 塗っていない地形の出力は導入前と完全に一致する。
+fn terrain_shaded_normal(
+    smooth_n: vec3<f32>, dpdx_p: vec3<f32>, dpdy_p: vec3<f32>, w: f32,
+) -> vec3<f32> {
+    if w <= TERRAIN_SHARPNESS_EPSILON {
+        return smooth_n;
+    }
+    let face_n = terrain_face_normal(dpdx_p, dpdy_p, smooth_n);
+    let mixed  = mix(smooth_n, face_n, clamp(w, 0.0, 1.0));
+    let len    = length(mixed);
+    // 反対向きのベクトルを 50% で混ぜた等の縮退（長さ 0）ではスムーズ法線へ戻す。
+    if len < TRIPLANAR_MIN_SUM {
+        return smooth_n;
+    }
+    return mixed / len;
+}
+
+// ============================================================
 //  フラグメント本体
 // ============================================================
 
@@ -462,17 +527,26 @@ fn fs_terrain_gbuffer(
     in: VertexOutput,
     @builtin(front_facing) front_facing: bool,
 ) -> TerrainGBufferOut {
-    // ── ジオメトリ法線 ──
+    // ── ジオメトリ法線（SDF 勾配由来のスムーズ法線）──
     //   両面描画（cull_face=None）なので裏面フラグメントでは法線を反転して
     //   「見えている側の法線」に揃える（surface_gather.wgsl と同じ規約）。
     let facing_sign = select(-1.0, 1.0, front_facing);
-    let geo_n = normalize(in.world_normal) * facing_sign;
+    let smooth_n = normalize(in.world_normal) * facing_sign;
 
     // ── ワールド座標の画面微分（必ず一様制御フローで取る）──
     //   以降のサンプルはすべて textureSampleGrad なので、暗黙 derivative は使わない。
     //   ここで一度だけ取った値を UV スケール倍して各サンプルへ配る。
+    //   **面法線もこの微分から作る**（三角形の平面へ垂直なベクトル）。
     let dpdx_p = dpdx(in.world_pos);
     let dpdy_p = dpdy(in.world_pos);
+
+    // ── 法線シャープネスペイント（T4）──
+    //   頂点が接線 w に載せてきた配合率で、スムーズ法線と面法線を混ぜる。
+    //   塗っていない地形（w=0）では smooth_n がそのまま返るため、
+    //   triplanar・法線マップ・G-Buffer 出力のすべてが従来と一致する。
+    //   ここで作った `geo_n` を以降の全処理が使う（＝ライティングだけでなく
+    //   triplanar の面選択・法線マップの合成もパキっとした面に追従する）。
+    let geo_n = terrain_shaded_normal(smooth_n, dpdx_p, dpdy_p, in.sharpness);
 
     // ── スプラット重み（頂点カラー RGBA = スロット 0..3）を正規化する ──
     //   ラスタライザの重心補間で総和が 1 から僅かにずれるため必ず正規化し直す。

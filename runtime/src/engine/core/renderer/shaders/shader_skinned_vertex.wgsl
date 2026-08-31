@@ -63,6 +63,8 @@ fn vs_main(v: VertexInput, @builtin(instance_index) inst_idx: u32) -> VertexOutp
     out.uv0          = v.uv0;
     out.uv1          = v.uv1;
     out.color        = v.color;
+    // 法線シャープネス（地形のみ意味を持つ。通常メッシュでは必ず 0 に落ちる）。
+    out.sharpness    = decode_vertex_sharpness(v.tangent.w);
     // アクタ単位のセマンティックタグ（インスタンス拡張スロット＝normal_matrix の 4 列目）。
     // スキンの場合も法線変換は `normal_matrix * (skin * vec4(n, 0.0))` の形であり、
     // `skin` はアフィン行列（アップロード規約上 col_i.w = 0 for i<3）なので内側の結果も

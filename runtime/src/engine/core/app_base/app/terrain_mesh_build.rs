@@ -49,13 +49,46 @@ use crate::engine::terrain::cover::{
     COVER_FIELD_RESOLUTION, CoverMaterialSet, CoverNeighborhood,
 };
 
-/// 接線の既定値（xyz=+X 軸, w=+1 ハンドネス）。地形は法線マップを持たないためダミー。
-const DEFAULT_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+/// 接線 xyz の既定値（+X 軸）。地形は法線マップを持たないためダミー。
+const DEFAULT_TANGENT_XYZ: [f32; 3] = [1.0, 0.0, 0.0];
+
+/// 法線シャープネスを載せる接線 w のバイアス（＝シャープネス 0 のときの w）。
+///
+/// 【なぜ tangent.w に載せるのか — T4 の設計判断】
+///   頂点フォーマット（`Vertex` / mesh_vertex レイアウト）はエンジン内の全パイプラインが
+///   共有しており、1 成分でも増やすと 20 以上のパイプラインへ波及する（T2 のレイヤ重みを
+///   頂点カラーへ載せたのとまったく同じ制約）。地形は法線マップを持たないため接線が
+///   完全に未使用であり、ここが唯一残っていた空き成分である。
+///
+/// 【なぜ 0 起点ではなく 1 起点なのか（重要）】
+///   共有頂点シェーダは従法線を `normalize(cross(N, T) * tangent.w)` で作る。
+///   w を 0..1 の生値にすると、シャープネス 0（＝既定）の頂点で
+///   `normalize(0 ベクトル)` となり従法線が NaN になる。1..2 の範囲に載せれば
+///   w は常に正で、`normalize` が長さを捨てるため **従来（w=+1）とビット単位で
+///   同じ従法線**が得られる。復号は `clamp(tangent.w - 1, 0, 1)` の 1 命令。
+///   通常メッシュの w（±1 のハンドネス）はこの復号で必ず 0 に落ちるため、
+///   地形以外は「シャープネス 0＝完全スムーズ」＝従来の挙動になる。
+///   WGSL 側 `VERTEX_SHARPNESS_TANGENT_BIAS`（shader_common.wgsl）と一致必須。
+const TANGENT_W_SHARPNESS_BIAS: f32 = 1.0;
 /// 法線が欠けている頂点の代替値（真上向き）。positions と normals の長さは常に
 /// 一致する前提だが、崩れても黒落ち・NaN を出さないための防御値。
 const DEFAULT_NORMAL: [f32; 3] = [0.0, 1.0, 0.0];
 /// UV の既定値（頂点 UV 未使用。シェーダ側 triplanar がワールド座標から UV を作る）。
 const DEFAULT_UV: [f32; 2] = [0.0, 0.0];
+
+/// 法線シャープネス（0..=1）を地形頂点の接線ベクトルへ符号化する。
+///
+/// 生成経路（`terrain_mesh_to_model`）と差分更新経路（`rebuild_terrain_model_with_colors`）の
+/// **両方がこの 1 関数を使う**ことで、両者の符号化が食い違わない。
+#[inline]
+pub fn encode_sharpness_tangent(sharpness: f32) -> [f32; 4] {
+    [
+        DEFAULT_TANGENT_XYZ[0],
+        DEFAULT_TANGENT_XYZ[1],
+        DEFAULT_TANGENT_XYZ[2],
+        TANGENT_W_SHARPNESS_BIAS + sharpness.clamp(0.0, 1.0),
+    ]
+}
 
 /// TerrainMesh を単一ノード・単一プリミティブの Model へ変換する。
 ///
@@ -93,10 +126,12 @@ pub fn terrain_mesh_to_model(
     let mut vertices: Vec<Vertex> = Vec::with_capacity(mesh.positions.len());
     for (i, pos) in mesh.positions.iter().enumerate() {
         let normal = mesh.normals.get(i).copied().unwrap_or(DEFAULT_NORMAL);
+        // 法線シャープネス（0=スムーズ〜1=面法線）は接線 w へ載せる（上の設計判断を参照）。
+        let sharpness = mesh.sharpness.get(i).copied().unwrap_or(0.0);
         vertices.push(Vertex {
             position: *pos,
             normal,
-            tangent: DEFAULT_TANGENT,
+            tangent: encode_sharpness_tangent(sharpness),
             uv0: DEFAULT_UV,
             uv1: DEFAULT_UV,
             // 頂点カラー = パレット内スロット重み（RGBA = palette[0..3] の各層）。
@@ -242,7 +277,8 @@ pub fn compute_layer_colors(
     (colors, palette)
 }
 
-/// 既存の地形チャンク Model から「頂点カラーとパレットだけを差し替えた」新しい Model を作る。
+/// 既存の地形チャンク Model から「頂点カラー・法線シャープネス・パレットだけを
+/// 差し替えた」新しい Model を作る。
 ///
 /// 【なぜ新規に作るのか — `Arc::make_mut` が使えない理由】
 ///   ペイント高速パスは CPU 側モデル（`ModelComponent::model: Arc<Model>`）の頂点カラーも
@@ -258,9 +294,12 @@ pub fn compute_layer_colors(
 ///   （形状生成・法線の勾配評価・辺キャッシュ）は一切走らない。地形チャンクは
 ///   LOD もメッシュレットも持たないため、それ以外に複製すべき重いデータも無い。
 ///
-/// - `src_vertices`: 元モデルの頂点列。位置・法線・接線・UV はそのまま引き継ぐ。
+/// - `src_vertices`: 元モデルの頂点列。位置・法線・UV はそのまま引き継ぐ
+///                   （接線 w だけはシャープネスの運び手なので差し替える）。
 /// - `indices`:      元モデルのインデックス列（ペイントでは不変）。
 /// - `colors`:       新しい頂点カラー。`src_vertices` と同じ長さでなければならない。
+/// - `sharpness`:    新しい法線シャープネス（0..=1）。`src_vertices` と同じ長さ必須。
+///                   接線 w へ符号化して載せる（`encode_sharpness_tangent`）。
 /// - `layers`:       レイヤ定義一式（チャンク平均アルベドの再計算に使う）。
 ///
 /// 長さが食い違う場合は `None` を返す（呼び出し側はフル再メッシュへフォールバックする）。
@@ -273,16 +312,22 @@ pub fn rebuild_terrain_model_with_colors(
     indices: &[u32],
     name: &str,
     colors: &[[f32; 4]],
+    sharpness: &[f32],
     palette: [u32; TERRAIN_BLEND_SLOTS],
     layers: &TerrainLayerSet,
 ) -> Option<Model> {
-    if src_vertices.len() != colors.len() {
+    if src_vertices.len() != colors.len() || src_vertices.len() != sharpness.len() {
         return None;
     }
     let vertices: Vec<Vertex> = src_vertices
         .iter()
         .zip(colors.iter())
-        .map(|(v, c)| Vertex { color: *c, ..*v })
+        .zip(sharpness.iter())
+        .map(|((v, c), &w)| Vertex {
+            color: *c,
+            tangent: encode_sharpness_tangent(w),
+            ..*v
+        })
         .collect();
     let avg_albedo = chunk_avg_albedo(colors, palette, layers);
     let (model, _palette) =
@@ -705,6 +750,56 @@ fn build_terrain_model(
 mod tests {
     use super::*;
     use crate::engine::terrain::layers::{BlendSlots, TerrainLayer, TerrainLayerSet};
+
+    /// 法線シャープネスの符号化バイアスが Rust ↔ WGSL で一致することを検証する。
+    ///
+    /// 不一致だと地形の全頂点が「1 ぶんずれたシャープネス」を運ぶことになり、
+    /// 塗っていない地形が丸ごとファセット表示になる（あるいはその逆）。
+    /// 実行時には気付きにくい種類の破綻なので、文字列一致でビルド時に固定する。
+    #[test]
+    fn sharpness_tangent_bias_matches_shader() {
+        let src = include_str!(
+            "../../../../engine/core/renderer/shaders/shader_common.wgsl"
+        );
+        let expected = format!(
+            "const VERTEX_SHARPNESS_TANGENT_BIAS: f32 = {TANGENT_W_SHARPNESS_BIAS:?};"
+        );
+        assert!(
+            src.contains(&expected),
+            "shader_common.wgsl に `{expected}` が無い（Rust 側定数と不一致）"
+        );
+    }
+
+    /// 接線 w への符号化が「バイアス + クランプ済みシャープネス」であること。
+    ///
+    /// WGSL 側の復号 `clamp(w - bias, 0, 1)` と往復して元の値へ戻るかを、
+    /// 同じ式を Rust で書いて突き合わせる（境界値と範囲外を含む）。
+    #[test]
+    fn sharpness_tangent_encoding_roundtrips() {
+        // WGSL の decode_vertex_sharpness と同一の式。
+        let decode = |w: f32| (w - TANGENT_W_SHARPNESS_BIAS).clamp(0.0, 1.0);
+
+        for input in [0.0f32, 0.25, 0.5, 1.0] {
+            let t = encode_sharpness_tangent(input);
+            assert!(
+                (decode(t[3]) - input).abs() < EPS,
+                "シャープネス {input} が往復しない: tangent.w={}",
+                t[3]
+            );
+            // xyz は常に既定の接線（地形は法線マップを持たない）。
+            assert_eq!([t[0], t[1], t[2]], DEFAULT_TANGENT_XYZ);
+            // w は必ず正（0 だと従法線 normalize(cross(N,T)*w) が NaN になる）。
+            assert!(t[3] > 0.0, "接線 w が 0 以下: {}", t[3]);
+        }
+
+        // 範囲外の入力はクランプされる。
+        assert!((decode(encode_sharpness_tangent(-1.0)[3]) - 0.0).abs() < EPS);
+        assert!((decode(encode_sharpness_tangent(2.0)[3]) - 1.0).abs() < EPS);
+
+        // 通常メッシュのハンドネス（±1）は復号すると必ず 0＝完全スムーズになる。
+        assert!(decode(1.0).abs() < EPS);
+        assert!(decode(-1.0).abs() < EPS);
+    }
 
     /// テスト用チャンク原点（高度ルールの影響を切るため常に 0）。
     const TEST_ORIGIN: [f32; 3] = [0.0, 0.0, 0.0];
@@ -1245,11 +1340,16 @@ mod tests {
         let new_colors: Vec<[f32; 4]> = (0..src.vertices.len())
             .map(|i| [i as f32, 0.25, 0.5, 0.75])
             .collect();
+        // 法線シャープネスも「元と明確に違う値」を入れて、接線 w への符号化を検証する。
+        let new_sharpness: Vec<f32> = (0..src.vertices.len())
+            .map(|i| (i % 2) as f32)
+            .collect();
         let rebuilt = rebuild_terrain_model_with_colors(
             &src.vertices,
             &src.indices,
             "chunk",
             &new_colors,
+            &new_sharpness,
             palette,
             &layers,
         )
@@ -1265,6 +1365,12 @@ mod tests {
             assert_eq!(a.position, b.position, "頂点 {i} の位置が変わった");
             assert_eq!(a.normal, b.normal, "頂点 {i} の法線が変わった");
             assert_eq!(b.color, new_colors[i], "頂点 {i} の色が差し替わっていない");
+            // シャープネスは接線 w へ「バイアス + 値」で載る（encode_sharpness_tangent）。
+            assert_eq!(
+                b.tangent,
+                encode_sharpness_tangent(new_sharpness[i]),
+                "頂点 {i} のシャープネス（接線 w）が差し替わっていない"
+            );
         }
 
         // 長さ不一致は None（呼び出し側はフル再メッシュへフォールバックする）。
@@ -1274,6 +1380,7 @@ mod tests {
                 &src.indices,
                 "chunk",
                 &new_colors[..1],
+                &new_sharpness[..1],
                 palette,
                 &layers,
             )
@@ -1339,12 +1446,15 @@ mod tests {
         let mut c = [0.0f32; TERRAIN_BLEND_SLOTS];
         c[target_slot] = 1.0;
         let new_colors: Vec<[f32; 4]> = vec![c; src.vertices.len()];
+        // このテストの関心は平均アルベドなので、シャープネスは既定（0）で通す。
+        let new_sharpness: Vec<f32> = vec![0.0; src.vertices.len()];
 
         let rebuilt = rebuild_terrain_model_with_colors(
             &src.vertices,
             &src.indices,
             "chunk",
             &new_colors,
+            &new_sharpness,
             palette,
             &layers,
         )

@@ -1635,20 +1635,65 @@
                                                                 ToolTip="ブラシ強度（0〜1）"/>
                                                     </StackPanel>
 
-                                                    <!-- レイヤ選択（ペイントツール選択時のみ表示）。
-                                                         項目は assets/terrain/layers.json から動的生成
-                                                         （RefreshTerrainLayerCombo）。レイヤ総数は自由なので
-                                                         XAML に固定項目は置かない。 -->
+                                                    <!-- ペイントツール専用パネル（ペイントツール選択時のみ表示）。
+                                                         「塗り対象」で レイヤ / 法線 を切り替え、
+                                                         下段の子パネルをどちらか一方だけ出す
+                                                         （選択に無関係なパラメータは出さない方針）。 -->
                                                     <StackPanel x:Name="TerrainLayerPanel"
                                                                 Visibility="Collapsed">
-                                                        <TextBlock Text="レイヤ"
+                                                        <TextBlock Text="塗り対象"
                                                                    Style="{StaticResource TerrainSideCaptionStyle}"/>
-                                                        <ComboBox x:Name="CmbTerrainLayer"
+                                                        <ComboBox x:Name="CmbTerrainPaintTarget"
                                                                   Width="{StaticResource TerrainSideControlWidth}"
                                                                   HorizontalAlignment="Left"
-                                                                  Margin="0,2,0,8"
+                                                                  Margin="0,2,0,6"
                                                                   FontSize="11"
-                                                                  ToolTip="塗る対象の地形レイヤ（layers.json の並び順）"/>
+                                                                  SelectedIndex="0"
+                                                                  ToolTip="ペイントブラシが編集する対象（レイヤ重み / 法線シャープネス）"
+                                                                  SelectionChanged="OnTerrainPaintTargetChanged">
+                                                            <ComboBoxItem Content="レイヤ" Tag="layer"/>
+                                                            <ComboBoxItem Content="法線"   Tag="normal"/>
+                                                        </ComboBox>
+
+                                                        <!-- 塗り対象＝レイヤ: 項目は assets/terrain/layers.json から
+                                                             動的生成（RefreshTerrainLayerCombo）。レイヤ総数は自由なので
+                                                             XAML に固定項目は置かない。 -->
+                                                        <StackPanel x:Name="TerrainPaintLayerPanel">
+                                                            <TextBlock Text="レイヤ"
+                                                                       Style="{StaticResource TerrainSideCaptionStyle}"/>
+                                                            <ComboBox x:Name="CmbTerrainLayer"
+                                                                      Width="{StaticResource TerrainSideControlWidth}"
+                                                                      HorizontalAlignment="Left"
+                                                                      Margin="0,2,0,8"
+                                                                      FontSize="11"
+                                                                      ToolTip="塗る対象の地形レイヤ（layers.json の並び順）"/>
+                                                        </StackPanel>
+
+                                                        <!-- 塗り対象＝法線: スムーズ法線⇔面法線の配合率を塗る。
+                                                             1.0 でパキっとした岩場、0.0 で滑らかな砂地になる。 -->
+                                                        <StackPanel x:Name="TerrainSharpnessPanel"
+                                                                    Visibility="Collapsed">
+                                                            <DockPanel LastChildFill="True">
+                                                                <TextBlock x:Name="LblTerrainSharpness" Text="目標値"
+                                                                           DockPanel.Dock="Left"
+                                                                           Style="{StaticResource TerrainSideCaptionStyle}"/>
+                                                                <TextBlock x:Name="TxtTerrainSharpness" Text="1.00"
+                                                                           Style="{StaticResource TerrainSideValueStyle}"/>
+                                                            </DockPanel>
+                                                            <Slider x:Name="SldTerrainSharpness"
+                                                                    Width="{StaticResource TerrainSideControlWidth}"
+                                                                    HorizontalAlignment="Left"
+                                                                    Margin="0,2,0,6"
+                                                                    Minimum="0" Maximum="1" Value="1"
+                                                                    ToolTip="法線シャープネスの目標値（0=スムーズな砂地〜1=パキっとした岩場）。なぞった場所はこの値へ収束する"/>
+
+                                                            <CheckBox x:Name="ChkTerrainSharpnessErase"
+                                                                      Content="消去" Foreground="#CCCCCC" FontSize="11"
+                                                                      Margin="0,0,0,8"
+                                                                      ToolTip="ONにすると、目標値によらず 0（完全スムーズ）へ戻す"
+                                                                      Checked="OnTerrainSharpnessEraseChanged"
+                                                                      Unchecked="OnTerrainSharpnessEraseChanged"/>
+                                                        </StackPanel>
                                                     </StackPanel>
 
                                                     <!-- プロップ選択＋密度＋消去モード（散布ツール選択時のみ表示）。

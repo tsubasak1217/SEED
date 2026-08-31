@@ -115,6 +115,8 @@ pub fn decimate_chunk(
                 let slots = chunk.paint_slots(sx, sy, sz);
                 lod.set_paint_slots(ix, iy, iz, &slots);
                 lod.set_paint_amount(ix, iy, iz, chunk.paint_amount(sx, sy, sz));
+                // 法線シャープネスも同様に間引いて運ぶ（遠景で岩場が急に滑らかへ戻らないように）。
+                lod.set_sharpness(ix, iy, iz, chunk.sharpness(sx, sy, sz));
             }
         }
     }
@@ -227,6 +229,9 @@ fn push_skirt_quad(
         .get(top_b as usize)
         .copied()
         .unwrap_or(0.0);
+    // スカートは真下へ落ちる幕であり、上端の質感をそのまま垂らすのが自然。
+    let sharp_a = mesh.sharpness.get(top_a as usize).copied().unwrap_or(0.0);
+    let sharp_b = mesh.sharpness.get(top_b as usize).copied().unwrap_or(0.0);
     let dummy_edge = TerrainVertexEdge {
         lo: [0, 0, 0],
         axis: 0,
@@ -238,6 +243,7 @@ fn push_skirt_quad(
     mesh.normals.push(face_normal);
     mesh.paint.push(paint_a);
     mesh.paint_amount.push(amount_a);
+    mesh.sharpness.push(sharp_a);
     mesh.edges.push(dummy_edge);
 
     let idx_bb = mesh.positions.len() as u32;
@@ -245,6 +251,7 @@ fn push_skirt_quad(
     mesh.normals.push(face_normal);
     mesh.paint.push(paint_b);
     mesh.paint_amount.push(amount_b);
+    mesh.sharpness.push(sharp_b);
     mesh.edges.push(dummy_edge);
 
     // 四角形 (top_a, top_b, bot_b, bot_a) を 2 三角形で。背面カリング対策に両巻きで出す。

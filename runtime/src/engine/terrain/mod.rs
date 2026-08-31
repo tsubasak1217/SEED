@@ -25,6 +25,8 @@ pub mod meta;
 pub mod paint;
 pub mod scatter;
 pub mod settings;
+/// 法線シャープネス（スムーズ法線⇔面法線の配合率）のブラシ編集。純関数のみ。
+pub mod sharpness;
 /// チャンクメッシュのその場デシメート（QEM ハーフエッジコラプス）。純関数のみ。
 pub mod simplify;
 pub mod tvox;
@@ -52,6 +54,10 @@ mod tests_meta;
 #[cfg(test)]
 mod tests_simplify;
 
+/// 法線シャープネスペイント専用のユニットテスト（役割単位でファイル分割）。
+#[cfg(test)]
+mod tests_sharpness;
+
 /// 編集ホットパスの CPU 計測（#[ignore] 付き。通常のテスト実行では走らない）。
 #[cfg(test)]
 mod bench;
@@ -77,6 +83,7 @@ pub use cover::{
 };
 pub use marching_cubes::{
     TerrainMesh, TerrainVertexEdge, generate, generate_standalone, interp_vertex_paint,
+    interp_vertex_sharpness,
 };
 // 地形メタデータ（当たり判定 ON/OFF・デシメート強度）。
 #[allow(unused_imports)]
@@ -88,6 +95,11 @@ pub use meta::{
 #[allow(unused_imports)]
 pub use simplify::{SimplifyStats, is_boundary_vertex, simplify_mesh};
 pub use paint::{PaintField, apply_paint, apply_paint_with_mask};
+// 法線シャープネス（T4）。
+#[allow(unused_imports)]
+pub use sharpness::{
+    SharpnessField, apply_sharpness, apply_sharpness_with_mask, approach_target,
+};
 pub use settings::{
     MAX_CHUNK_CELLS, MAX_GROUND_CHUNKS, MAX_TOTAL_CHUNKS, MAX_VOXEL_SIZE, MIN_CHUNK_CELLS,
     MIN_GROUND_CHUNKS, MIN_VOXEL_SIZE, TerrainSettings,

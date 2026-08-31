@@ -16,7 +16,8 @@
 //         `TerrainVertexEdge`（頂点の由来辺）をそのまま引き継げる。
 //         由来辺はレイヤペイント高速パスの唯一の手掛かりであり、
 //         新しい位置の頂点を作ると由来辺が定義できず高速パスが死ぬ。
-//      2. 同じ理由で法線・スプラット（paint / paint_amount）も引き継げる。
+//      2. 同じ理由で法線・スプラット（paint / paint_amount）・法線シャープネスも
+//         引き継げる。
 //         とくに法線は密度勾配から作った高品位なもので、面から作り直すと
 //         **隣接チャンクと境界頂点の法線が食い違い、陰影の継ぎ目が出る**。
 //         元の値を持ち回ればその心配が原理的に無い。
@@ -214,7 +215,8 @@ pub fn is_boundary_vertex(pos: [f32; 3], extent: f32) -> bool {
 ///   - `extent` の境界面に載る頂点は 1 つも消えず、位置も動かない。
 ///   - 出力インデックスは必ず出力頂点数の範囲内（整合）。
 ///   - 縮退三角形（同一頂点を 2 つ以上含む面）を出力しない。
-///   - `positions` / `normals` / `paint` / `paint_amount` / `edges` の長さは常に一致する。
+///   - `positions` / `normals` / `paint` / `paint_amount` / `sharpness` / `edges` の長さは
+///     常に一致する。
 pub fn simplify_mesh(mesh: &TerrainMesh, extent: f32, strength: f32) -> (TerrainMesh, SimplifyStats) {
     let mut stats = SimplifyStats {
         vertices_before: mesh.positions.len(),
@@ -569,6 +571,9 @@ fn rebuild(src: &TerrainMesh, tris: &[[u32; 3]], tri_alive: &[bool]) -> TerrainM
     let has_edges = src.edges.len() == vcount;
     let has_paint = src.paint.len() == vcount;
     let has_amount = src.paint_amount.len() == vcount;
+    // 法線シャープネスも生存頂点の値をそのまま継承する（ハーフエッジコラプスなので
+    // 残る頂点は必ず元の MC 頂点そのもの＝値を作り直す必要が無い）。
+    let has_sharpness = src.sharpness.len() == vcount;
     let has_normals = src.normals.len() == vcount;
 
     for (ti, t) in tris.iter().enumerate() {
@@ -600,6 +605,9 @@ fn rebuild(src: &TerrainMesh, tris: &[[u32; 3]], tri_alive: &[bool]) -> TerrainM
                 if has_amount {
                     out.paint_amount.push(src.paint_amount[vi]);
                 }
+                if has_sharpness {
+                    out.sharpness.push(src.sharpness[vi]);
+                }
                 if has_edges {
                     out.edges.push(src.edges[vi]);
                 }
@@ -619,6 +627,7 @@ fn clone_mesh(src: &TerrainMesh) -> TerrainMesh {
         indices: src.indices.clone(),
         paint: src.paint.clone(),
         paint_amount: src.paint_amount.clone(),
+        sharpness: src.sharpness.clone(),
         edges: src.edges.clone(),
     }
 }

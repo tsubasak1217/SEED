@@ -322,6 +322,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::TerrainAddChunks { .. }
         | IpcCommand::TerrainBrush { .. }
         | IpcCommand::TerrainPaint { .. }
+        // 法線シャープネスペイントも地形専用 Undo スタック（ストローク単位）の管轄。
+        | IpcCommand::TerrainSharpness { .. }
         // ブラシ形状マスクは「道具の設定」であってシーンの値ではないため Undo 対象外
         // （半径・強度スライダーが Undo に載らないのと同じ扱い）。
         | IpcCommand::TerrainBrushMask { .. }

@@ -143,6 +143,11 @@ pub enum IpcCommand {
     ///   layer: 塗る対象レイヤ番号（0 起点。layers.json の並び順に対応）
     /// 密度は変えず、レイヤ重み（スプラット）だけを押し上げる。
     TerrainPaint { layer: u32, screen_x: f32, screen_y: f32, radius: f32, strength: f32 },
+    /// ボクセル地形に法線シャープネスペイントブラシを適用する（Terrain T4）。
+    /// ワイヤ形式: `TERRAIN_SHARPNESS:{target},{screen_x},{screen_y},{radius},{strength}`
+    ///   target: 目標シャープネス（0=スムーズ法線〜1=面法線）。0 を送れば消去になる。
+    /// 密度もレイヤ重みも変えず、法線の配合率だけを目標値へ寄せる。
+    TerrainSharpness { target: f32, screen_x: f32, screen_y: f32, radius: f32, strength: f32 },
     /// 地形ペイント系ブラシの形状マスク画像を設定・解除する。
     ///
     /// ワイヤ形式: `TERRAIN_BRUSH_MASK:{path}`（`path` が空文字なら解除）
@@ -1210,6 +1215,17 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
                     radius:   fs[2],
                     strength: fs[3],
                 }
+            })
+        }
+        // 地形の法線シャープネスペイント: "target,screen_x,screen_y,radius,strength"（f32×5）。
+        // 先頭がレイヤ番号（整数）ではなく目標値（実数）なので parse_nf を使う。
+        s if s.starts_with("TERRAIN_SHARPNESS:") => {
+            parse_nf::<5>(&s["TERRAIN_SHARPNESS:".len()..]).map(|fs| IpcCommand::TerrainSharpness {
+                target:   fs[0],
+                screen_x: fs[1],
+                screen_y: fs[2],
+                radius:   fs[3],
+                strength: fs[4],
             })
         }
         _ => None,
@@ -2836,6 +2852,27 @@ mod tests {
             }
             _ => panic!("TerrainBrushPreview を期待した"),
         }
+    }
+
+    /// 法線シャープネスペイントの引数並び（f32×5）が仕様どおりに解釈されること。
+    ///
+    /// レイヤペイントと違い先頭が「レイヤ番号（整数）」ではなく「目標値（実数）」
+    /// である点が唯一の差なので、そこを取り違えていないかを固定する。
+    #[test]
+    fn parses_terrain_sharpness_arguments() {
+        match parse_terrain_command("TERRAIN_SHARPNESS:0.75,10,20,2.5,0.5") {
+            Some(IpcCommand::TerrainSharpness { target, screen_x, screen_y, radius, strength }) => {
+                assert_eq!(target,   0.75);
+                assert_eq!(screen_x, 10.0);
+                assert_eq!(screen_y, 20.0);
+                assert_eq!(radius,   2.5);
+                assert_eq!(strength, 0.5);
+            }
+            _ => panic!("TerrainSharpness を期待した"),
+        }
+        // フィールド数が合わない入力は受け付けない（黙って別の解釈をしない）。
+        assert!(parse_terrain_command("TERRAIN_SHARPNESS:1,2,3,4").is_none());
+        assert!(parse_terrain_command("TERRAIN_SHARPNESS:1,2,3,4,5,6").is_none());
     }
 
     /// ブラシ／ペイントの引数並びが従来どおりであること。

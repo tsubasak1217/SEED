@@ -85,6 +85,16 @@ public partial class MainWindow
     /// <summary>目標量スライダーが未生成のときのフォールバック目標量（0〜1）。</summary>
     private const double TerrainCoverAmountFallback = 1.0;
 
+    /// <summary>ペイントツールの塗り対象: レイヤ重み（従来動作）。</summary>
+    private const int TerrainPaintTargetLayer = 0;
+    /// <summary>ペイントツールの塗り対象: 法線シャープネス（スムーズ法線⇔面法線の配合率）。</summary>
+    private const int TerrainPaintTargetNormal = 1;
+
+    /// <summary>シャープネススライダーが未生成のときのフォールバック目標値（0〜1）。</summary>
+    private const double TerrainSharpnessFallback = 1.0;
+    /// <summary>「消去」チェック時に送る法線シャープネスの目標値（＝完全スムーズ）。</summary>
+    private const double TerrainSharpnessEraseTarget = 0.0;
+
     /// <summary>プロップ選択コンボが空／未選択のときに使う散布ブラシのフォールバック prop_id（空＝ランタイム側で無効扱い）。</summary>
     private const string TerrainScatterFallbackPropId = "";
 
@@ -118,6 +128,13 @@ public partial class MainWindow
 
     /// <summary>現在選択中のブラシ演算（TerrainOpRaise 等）。</summary>
     private int _terrainOp = TerrainOpRaise;
+
+    /// <summary>
+    /// ペイントツールの塗り対象（レイヤ重み / 法線シャープネス）。
+    /// 「塗り対象」コンボの選択で切り替わり、送信する IPC コマンドが変わる
+    /// （レイヤ = TERRAIN_PAINT / 法線 = TERRAIN_SHARPNESS）。
+    /// </summary>
+    private int _terrainPaintTarget = TerrainPaintTargetLayer;
 
     /// <summary>左ボタンでブラシストローク中かどうか（ドラッグ判定）。</summary>
     private bool _terrainStroking;
@@ -201,6 +218,11 @@ public partial class MainWindow
             SldTerrainCoverAmount.ValueChanged += (_, _) => UpdateTerrainCoverAmountLabel();
             UpdateTerrainCoverAmountLabel();
         }
+        if (SldTerrainSharpness != null)
+        {
+            SldTerrainSharpness.ValueChanged += (_, _) => UpdateTerrainSharpnessLabel();
+            UpdateTerrainSharpnessLabel();
+        }
         if (SldTerrainDecimate != null)
         {
             // 値の変更では何も送らない（適用はボタンを押したときだけ）。
@@ -216,6 +238,8 @@ public partial class MainWindow
         RefreshTerrainCoverMaterialCombo();
         // 既定は消去モードなので、素材／目標量の表示可否を初期状態へ合わせる。
         UpdateTerrainCoverPaintParamVisibility();
+        // 塗り対象コンボの初期選択（レイヤ）に合わせて、下段パネルの表示を揃える。
+        UpdateTerrainPaintTargetVisibility();
         // 保存先の表示（まだランタイムから通知が来ていないので「未確定」で始まる）。
         UpdateTerrainSaveTooltips();
     }
@@ -395,6 +419,50 @@ public partial class MainWindow
     {
         if (TxtTerrainCoverAmount != null && SldTerrainCoverAmount != null)
             TxtTerrainCoverAmount.Text = $"{SldTerrainCoverAmount.Value:F2}";
+    }
+
+    /// <summary>法線シャープネスの目標値スライダーの数値ラベルを更新する。</summary>
+    private void UpdateTerrainSharpnessLabel()
+    {
+        if (TxtTerrainSharpness != null && SldTerrainSharpness != null)
+            TxtTerrainSharpness.Text = $"{SldTerrainSharpness.Value:F2}";
+    }
+
+    /// <summary>「塗り対象」コンボ（レイヤ / 法線）の選択変更。</summary>
+    private void OnTerrainPaintTargetChanged(object sender, SelectionChangedEventArgs e)
+    {
+        _terrainPaintTarget = (CmbTerrainPaintTarget?.SelectedItem as ComboBoxItem)?.Tag as string == "normal"
+            ? TerrainPaintTargetNormal
+            : TerrainPaintTargetLayer;
+        UpdateTerrainPaintTargetVisibility();
+    }
+
+    /// <summary>
+    /// 法線シャープネスの「消去」チェックが切り替わったときの表示更新。
+    /// 消去中は目標値スライダーが使われないため隠す
+    /// （選択に無関係なパラメータは出さない、というインスペクタ方針に合わせる）。
+    /// </summary>
+    private void OnTerrainSharpnessEraseChanged(object sender, RoutedEventArgs e)
+        => UpdateTerrainPaintTargetVisibility();
+
+    /// <summary>
+    /// ペイントツールの塗り対象に応じて、下段の子パネル（レイヤ選択 / シャープネス）の
+    /// 表示可否を決める。シャープネス側は「消去」チェック時に目標値スライダーも隠す。
+    /// </summary>
+    private void UpdateTerrainPaintTargetVisibility()
+    {
+        bool normal = _terrainPaintTarget == TerrainPaintTargetNormal;
+        if (TerrainPaintLayerPanel != null)
+            TerrainPaintLayerPanel.Visibility = normal ? Visibility.Collapsed : Visibility.Visible;
+        if (TerrainSharpnessPanel != null)
+            TerrainSharpnessPanel.Visibility = normal ? Visibility.Visible : Visibility.Collapsed;
+
+        // 消去中は目標値が使われない（常に 0 を送る）ので、スライダーとラベルを隠す。
+        bool erasing = ChkTerrainSharpnessErase?.IsChecked == true;
+        var paramVisibility = erasing ? Visibility.Collapsed : Visibility.Visible;
+        if (LblTerrainSharpness != null) LblTerrainSharpness.Visibility = paramVisibility;
+        if (TxtTerrainSharpness != null) TxtTerrainSharpness.Visibility = paramVisibility;
+        if (SldTerrainSharpness != null) SldTerrainSharpness.Visibility = paramVisibility;
     }
 
     /// <summary>
@@ -653,6 +721,18 @@ public partial class MainWindow
         // 半径/強度スライダーとストローク（undo 単位）の扱いは密度ブラシと共通。
         if (_terrainOp == TerrainOpPaint)
         {
+            // 塗り対象＝法線: レイヤ重みではなく「スムーズ法線⇔面法線の配合率」を編集する。
+            // 半径／強度スライダーとストローク（undo 単位）の扱いはレイヤペイントと共通。
+            if (_terrainPaintTarget == TerrainPaintTargetNormal)
+            {
+                double target = ChkTerrainSharpnessErase?.IsChecked == true
+                    ? TerrainSharpnessEraseTarget
+                    : (SldTerrainSharpness?.Value ?? TerrainSharpnessFallback);
+                _runtimeManager.SendToRuntime(
+                    $"TERRAIN_SHARPNESS:{target.ToString(ci)},{lx},{ly},"
+                    + $"{radius.ToString(ci)},{strength.ToString(ci)}");
+                return;
+            }
             _runtimeManager.SendToRuntime(
                 $"TERRAIN_PAINT:{GetSelectedTerrainLayer()},{lx},{ly},{radius.ToString(ci)},{strength.ToString(ci)}");
             return;
@@ -824,6 +904,8 @@ public partial class MainWindow
         {
             TerrainLayerPanel.Visibility =
                 _terrainOp == TerrainOpPaint ? Visibility.Visible : Visibility.Collapsed;
+            // パネルを出すときは、塗り対象（レイヤ / 法線）に応じた中身へ揃え直す。
+            if (_terrainOp == TerrainOpPaint) UpdateTerrainPaintTargetVisibility();
         }
 
         // プロップ選択・密度・消去は散布ツールのときだけ意味を持つため、同じ方針で隠す。

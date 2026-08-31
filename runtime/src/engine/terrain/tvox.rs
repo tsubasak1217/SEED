@@ -6,22 +6,28 @@
 //    直列化 / 復元する。ファイル IO は行わない（純粋な bytes in/out）。
 //    ファイル読み書きはエンジン層の責務。
 //
-//  【オンディスク仕様（TVOX v3・リトルエンディアン）】
+//  【オンディスク仕様（TVOX v4・リトルエンディアン）】
 //    オフセット  型            内容
 //    0           u8[4]         マジック "TVOX"
-//    4           u32           バージョン（現在 3）
+//    4           u32           バージョン（現在 4）
 //    8           i32           チャンク座標 x
 //    12          i32           チャンク座標 y
 //    16          i32           チャンク座標 z
 //    20          u32           samples_per_axis（1 軸のサンプル数, 例 33）
 //    24          f32           voxel_size（メートル）
-//    28          u32           slot_count（1 サンプルのブレンドスロット数。v3 では 4）
+//    28          u32           slot_count（1 サンプルのブレンドスロット数。v3/v4 では 4）
 //    32          f32 * N       密度サンプル（N = samples_per_axis³, row-major）
 //    …           u8  * N*S     スロットのレイヤ番号（S = slot_count）
 //    …           u8  * N*S     スロットの重み（u8 量子化）
 //    …           u8  * N       ペイント量（0=未ペイント〜255=完全に手描き優先）
+//    …           u8  * N       法線シャープネス（0=スムーズ法線〜255=面法線。v4 で追加）
 //
 //    全数値はリトルエンディアン。密度は f32 ビット表現をそのまま格納する。
+//
+//  【v3 との後方互換】
+//    v3 は法線シャープネスのブロックを持たない。v3 を読んだ場合は全サンプルの
+//    シャープネスを 0（＝完全スムーズ法線）として復元する。これは
+//    「法線シャープネスペイント導入前の見た目」とビット単位で一致する。
 //
 //  【v2 との後方互換】
 //    v2 は「レイヤ番号なし・レイヤ 0..L-1 の重みを密に並べる」形式だった。
@@ -47,8 +53,10 @@ use super::settings::TerrainSettings;
 
 /// TVOX フォーマットのマジックバイト。
 pub const TVOX_MAGIC: [u8; 4] = *b"TVOX";
-/// TVOX フォーマットの現行バージョン（v3 = レイヤ番号付きスロット）。書き出しは常にこれ。
-pub const TVOX_VERSION: u32 = 3;
+/// TVOX フォーマットの現行バージョン（v4 = v3 + 法線シャープネス）。書き出しは常にこれ。
+pub const TVOX_VERSION: u32 = 4;
+/// 法線シャープネス非対応の旧バージョン（レイヤ番号付きスロットまで）。読み込み時のみ受け付ける。
+pub const TVOX_VERSION_V3: u32 = 3;
 /// レイヤ番号なしスプラットの旧バージョン。読み込み時のみ受け付ける。
 pub const TVOX_VERSION_V2: u32 = 2;
 /// スプラット非対応の旧バージョン（密度のみ）。読み込み時のみ受け付ける。
@@ -60,6 +68,8 @@ const HEADER_LEN_V1: usize = 4 + 4 + 4 * 3 + 4 + 4;
 const HEADER_LEN_V2: usize = HEADER_LEN_V1 + 4;
 /// v3 ヘッダ長（v2 と同じレイアウト。28 バイト目が slot_count に変わるだけ）。
 const HEADER_LEN_V3: usize = HEADER_LEN_V2;
+/// v4 ヘッダ長（v3 と同一。本体末尾にシャープネスブロックが増えるだけ）。
+const HEADER_LEN_V4: usize = HEADER_LEN_V3;
 
 /// TVOX の読み込みエラー。
 #[derive(Debug, PartialEq, Eq)]
@@ -96,10 +106,22 @@ impl TvoxHeader {
     }
 }
 
+/// 読み込みを受け付けるバージョンか（現行 + 旧版すべて）。
+///
+/// バージョン判定を 1 箇所に集約しておくことで、新バージョンを足したときに
+/// 「ヘッダだけ読める／本体は読めない」といった片側漏れが起きないようにする。
+#[inline]
+fn is_supported_version(version: u32) -> bool {
+    matches!(
+        version,
+        TVOX_VERSION | TVOX_VERSION_V3 | TVOX_VERSION_V2 | TVOX_VERSION_V1
+    )
+}
+
 /// TVOX バイト列の**ヘッダのみ**を読む（本体は検証しない）。
 ///
 /// マジックとバージョンだけ検証し、座標・サンプル数・ボクセルサイズを返す。
-/// v1 / v2 / v3 いずれも先頭 28 バイトのレイアウトが共通なので同じ経路で読める。
+/// v1 / v2 / v3 / v4 いずれも先頭 28 バイトのレイアウトが共通なので同じ経路で読める。
 pub fn read_header(bytes: &[u8]) -> Result<TvoxHeader, TvoxError> {
     if bytes.len() < HEADER_LEN_V1 {
         return Err(TvoxError::Truncated);
@@ -108,7 +130,7 @@ pub fn read_header(bytes: &[u8]) -> Result<TvoxHeader, TvoxError> {
         return Err(TvoxError::BadMagic);
     }
     let version = read_u32_le(bytes, 4);
-    if version != TVOX_VERSION && version != TVOX_VERSION_V2 && version != TVOX_VERSION_V1 {
+    if !is_supported_version(version) {
         return Err(TvoxError::BadVersion);
     }
     Ok(TvoxHeader {
@@ -122,7 +144,7 @@ pub fn read_header(bytes: &[u8]) -> Result<TvoxHeader, TvoxError> {
     })
 }
 
-/// チャンク（密度＋スプラット）を TVOX v3 バイト列へ直列化する。
+/// チャンク（密度＋スプラット＋法線シャープネス）を TVOX v4 バイト列へ直列化する。
 pub fn write_chunk(
     chunk: &TerrainChunkData,
     coord: ChunkCoord,
@@ -133,13 +155,15 @@ pub fn write_chunk(
     let paint_index = chunk.raw_paint_index();
     let paint_weight = chunk.raw_paint_weight();
     let paint_amount = chunk.raw_paint_amount();
+    let sharpness = chunk.raw_sharpness();
 
-    // ─── ヘッダ + 密度 + スプラット（番号・重み・量）ぶんを確保 ───
+    // ─── ヘッダ + 密度 + スプラット（番号・重み・量）+ シャープネス ぶんを確保 ───
     let body_len = density.len() * 4
         + paint_index.len() * TERRAIN_BLEND_SLOTS
         + paint_weight.len() * TERRAIN_BLEND_SLOTS
-        + paint_amount.len();
-    let mut out = Vec::with_capacity(HEADER_LEN_V3 + body_len);
+        + paint_amount.len()
+        + sharpness.len();
+    let mut out = Vec::with_capacity(HEADER_LEN_V4 + body_len);
 
     // ─── ヘッダ書き込み（すべてリトルエンディアン） ───
     out.extend_from_slice(&TVOX_MAGIC);
@@ -169,10 +193,13 @@ pub fn write_chunk(
     // ─── ペイント量（サンプルごとに 1 バイト）───
     out.extend_from_slice(paint_amount);
 
+    // ─── 法線シャープネス（サンプルごとに 1 バイト。v4 で追加）───
+    out.extend_from_slice(sharpness);
+
     out
 }
 
-/// TVOX バイト列からチャンクを復元する（v1 / v2 / v3 のいずれも受け付ける）。
+/// TVOX バイト列からチャンクを復元する（v1 / v2 / v3 / v4 のいずれも受け付ける）。
 ///
 /// 復元されるチャンクの voxel_size / チャンク数は呼び出し側の
 /// TerrainSettings と組み合わせて使う想定（このヘッダは samples と
@@ -190,7 +217,7 @@ pub fn read_chunk(bytes: &[u8]) -> Result<(TerrainChunkData, ChunkCoord), TvoxEr
 
     // ─── バージョン検証（v1 / v2 / v3 のみ受け付ける）───
     let version = read_u32_le(bytes, 4);
-    if version != TVOX_VERSION && version != TVOX_VERSION_V2 && version != TVOX_VERSION_V1 {
+    if !is_supported_version(version) {
         return Err(TvoxError::BadVersion);
     }
 
@@ -202,9 +229,9 @@ pub fn read_chunk(bytes: &[u8]) -> Result<(TerrainChunkData, ChunkCoord), TvoxEr
     let voxel_size = read_f32_le(bytes, 24);
 
     // ─── v2/v3 のみ 28 バイト目のカウントを読む（v1 はスプラット無し = 0 扱い）───
-    //   v2 では「レイヤ数 L」、v3 では「スロット数 S」を意味する。どちらも
+    //   v2 では「レイヤ数 L」、v3/v4 では「スロット数 S」を意味する。どちらも
     //   「1 サンプルあたりの重みバイト数」であることは共通。
-    let (header_len, file_slots) = if version == TVOX_VERSION || version == TVOX_VERSION_V2 {
+    let (header_len, file_slots) = if version != TVOX_VERSION_V1 {
         if bytes.len() < HEADER_LEN_V2 {
             return Err(TvoxError::Truncated);
         }
@@ -224,9 +251,11 @@ pub fn read_chunk(bytes: &[u8]) -> Result<(TerrainChunkData, ChunkCoord), TvoxEr
     //   v1: density のみ
     //   v2: density + weight(S bytes/sample) + amount(1 byte/sample)
     //   v3: density + index(S) + weight(S) + amount(1) bytes/sample
+    //   v4: v3 + sharpness(1) bytes/sample
     let density_bytes = total.checked_mul(4).ok_or(TvoxError::DimMismatch)?;
     let per_sample_splat = match version {
-        TVOX_VERSION => file_slots * 2 + 1,
+        TVOX_VERSION => file_slots * 2 + 1 + 1,
+        TVOX_VERSION_V3 => file_slots * 2 + 1,
         TVOX_VERSION_V2 => file_slots + 1,
         _ => 0,
     };
@@ -272,8 +301,8 @@ pub fn read_chunk(bytes: &[u8]) -> Result<(TerrainChunkData, ChunkCoord), TvoxEr
         let mut index = vec![[0u8; TERRAIN_BLEND_SLOTS]; total];
         let mut weight = vec![[0u8; TERRAIN_BLEND_SLOTS]; total];
 
-        // v3 は index → weight の順で並ぶ。v2 は index ブロックが存在しない。
-        let (index_base, weight_base) = if version == TVOX_VERSION {
+        // v3/v4 は index → weight の順で並ぶ。v2 は index ブロックが存在しない。
+        let (index_base, weight_base) = if version != TVOX_VERSION_V2 {
             (Some(density_bytes), density_bytes + total * file_slots)
         } else {
             (None, density_bytes)
@@ -302,6 +331,14 @@ pub fn read_chunk(bytes: &[u8]) -> Result<(TerrainChunkData, ChunkCoord), TvoxEr
         chunk.set_raw_paint_index(index);
         chunk.set_raw_paint_weight(weight);
         chunk.set_raw_paint_amount(body[amount_base..amount_base + total].to_vec());
+
+        // ─── 法線シャープネス（v4 のみ）───
+        //   v2 / v3 にはこのブロックが無い。new_filled が入れた 0（＝完全スムーズ法線）が
+        //   そのまま残るので、旧セーブデータは導入前とまったく同じ見た目で開ける。
+        if version == TVOX_VERSION {
+            let sharp_base = amount_base + total;
+            chunk.set_raw_sharpness(body[sharp_base..sharp_base + total].to_vec());
+        }
     }
 
     Ok((chunk, ChunkCoord::new(x, y, z)))
@@ -324,9 +361,27 @@ fn read_f32_le(b: &[u8], off: usize) -> f32 {
     f32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
 }
 
+/// テスト・移行ツール用に v3（法線シャープネスなし）形式で直列化する。
+///
+/// 本番の保存経路では使わない（保存は常に v4）。v3→v4 の後方互換テストが
+/// 「本物の v3 バイト列」を作るために必要なので、書き手をここに残しておく。
+pub fn write_chunk_v3(
+    chunk: &TerrainChunkData,
+    coord: ChunkCoord,
+    settings: &TerrainSettings,
+) -> Vec<u8> {
+    // v4 との差分は「バージョン番号」と「末尾のシャープネスブロックの有無」だけ。
+    // 重複を避けるため v4 を作ってから末尾を切り落とし、バージョンを書き換える。
+    let mut out = write_chunk(chunk, coord, settings);
+    let total = chunk.raw_sharpness().len();
+    out.truncate(out.len() - total);
+    out[4..8].copy_from_slice(&TVOX_VERSION_V3.to_le_bytes());
+    out
+}
+
 /// テスト・移行ツール用に v2（レイヤ番号なしスプラット）形式で直列化する。
 ///
-/// 本番の保存経路では使わない（保存は常に v3）。v2→v3 の後方互換テストが
+/// 本番の保存経路では使わない（保存は常に v4）。v2→v4 の後方互換テストが
 /// 「本物の v2 バイト列」を作るために必要なので、書き手をここに残しておく。
 ///
 /// `dense_weights[flat][layer]` はレイヤ番号を添字とする u8 量子化重み
@@ -367,7 +422,7 @@ pub fn write_chunk_v2(
 
 /// テスト・移行ツール用に v1（密度のみ）形式で直列化する。
 ///
-/// 本番の保存経路では使わない（保存は常に v3）。tvox v1 の後方互換テストが
+/// 本番の保存経路では使わない（保存は常に v4）。tvox v1 の後方互換テストが
 /// 「本物の v1 バイト列」を作るために必要なので、書き手をここに残しておく。
 pub fn write_chunk_v1(
     chunk: &TerrainChunkData,

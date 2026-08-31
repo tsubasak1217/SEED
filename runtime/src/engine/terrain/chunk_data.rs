@@ -30,11 +30,23 @@
 //      paint_weight u8  × 4（スロット重み）  = 143.7 KB
 //      paint_amount u8  × 1（ペイント量）    =  35.9 KB
 //      ────────────────────────────────────────────
-//      合計                                   = 467.0 KB/チャンク
+//      sharpness    u8  × 1（法線シャープネス）=  35.9 KB
+//      ────────────────────────────────────────────
+//      合計                                   = 502.9 KB/チャンク
 //    既定の地面 4×4×3 = 48 チャンクで約 22.4 MB。u8 量子化を採用したのは、
 //    f32 のままだと paint だけで 575 KB/チャンクとなり density の 4 倍に
 //    膨らむため（重みは 0..1 の被覆率であり 8bit で視覚的に十分）。
 //    レイヤ番号も u8 で足りる（TERRAIN_MAX_LAYERS = 16 << 255）。
+//
+//  【法線シャープネスの表現決定 — T4】
+//    「スムーズ法線（SDF 勾配）と面法線をどの比率で混ぜるか」を表す 0..=1 の重みを、
+//    密度・スプラットと同じ 33³ グリッド上に持つ。**頂点ではなくサンプルに持つ**のが
+//    要点で、こうするとレイヤペイントとまったく同じ性質が自動的に手に入る:
+//      - 再メッシュしてもグリッド側に残るので値が引き継がれる（頂点は作り直される）
+//      - チャンク境界サンプルは重複所有で同期されるため継ぎ目が割れない
+//      - ブラシ・undo スナップショット・.tvox 永続化が既存の枠組みへそのまま乗る
+//    量子化は重みと同じ u8（0=完全スムーズ、255=完全な面法線）。見た目の配合率に
+//    8bit を超える精度は要らない。
 // ============================================================
 
 use super::chunk_coord::ChunkCoord;
@@ -59,6 +71,9 @@ pub struct TerrainChunkData {
     paint_weight: Vec<[u8; TERRAIN_BLEND_SLOTS]>,
     /// 各サンプルのペイント量（0 = 未ペイント＝ルール任せ、255 = 完全に手描き優先）。
     paint_amount: Vec<u8>,
+    /// 各サンプルの法線シャープネス（0 = スムーズ法線、255 = 面法線）。u8 量子化。
+    /// 既定は 0（＝従来どおり SDF 勾配の完全スムーズ法線）。
+    sharpness: Vec<u8>,
 }
 
 impl TerrainChunkData {
@@ -74,6 +89,8 @@ impl TerrainChunkData {
             paint_index: vec![[0u8; TERRAIN_BLEND_SLOTS]; total],
             paint_weight: vec![[0u8; TERRAIN_BLEND_SLOTS]; total],
             paint_amount: vec![0u8; total],
+            // 法線シャープネスは「全面スムーズ」で初期化する（＝従来と同じ見た目）。
+            sharpness: vec![0u8; total],
         }
     }
 
@@ -178,6 +195,38 @@ impl TerrainChunkData {
     pub fn set_paint_amount(&mut self, ix: usize, iy: usize, iz: usize, a: f32) {
         let i = self.index(ix, iy, iz);
         self.paint_amount[i] = quantize_weight(a);
+    }
+
+    // ─── 法線シャープネス（スムーズ法線⇔面法線の配合率）のアクセサ ─────────
+
+    /// 指定サンプルの法線シャープネス（0=スムーズ〜1=面法線）を読む。
+    #[inline]
+    pub fn sharpness(&self, ix: usize, iy: usize, iz: usize) -> f32 {
+        dequantize_weight(self.sharpness[self.index(ix, iy, iz)])
+    }
+
+    /// 指定サンプルの法線シャープネスを書き込む（0..=1 前提・u8 へ量子化される）。
+    #[inline]
+    pub fn set_sharpness(&mut self, ix: usize, iy: usize, iz: usize, w: f32) {
+        let i = self.index(ix, iy, iz);
+        self.sharpness[i] = quantize_weight(w);
+    }
+
+    /// 法線シャープネス配列全体への読み取り参照（永続化・undo スナップショットで使用）。
+    pub fn raw_sharpness(&self) -> &[u8] {
+        &self.sharpness
+    }
+
+    /// 法線シャープネス配列全体を書き換える（undo/redo 復元・.tvox 読込で使用）。
+    pub fn set_raw_sharpness(&mut self, w: Vec<u8>) {
+        debug_assert_eq!(
+            w.len(),
+            self.sharpness.len(),
+            "set_raw_sharpness length mismatch: {} != {}",
+            w.len(),
+            self.sharpness.len()
+        );
+        self.sharpness = w;
     }
 
     /// ペイントのレイヤ番号配列全体への読み取り参照（永続化・undo スナップショットで使用）。

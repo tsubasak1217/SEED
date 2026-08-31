@@ -38,9 +38,9 @@ use crate::engine::physics::{ColliderShape, PhysicsObject, CharacterWorld};
 use crate::engine::physics::char_world::PrebuiltMirrorCollider;
 use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::{
-    self, interp_vertex_paint, BlendSlots, BrushOp, ChunkCoord, PaintField, SampleField,
-    SphereBrush, TerrainChunkData, TerrainLayerSet, TerrainSettings, TerrainVertexEdge,
-    TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS, tvox,
+    self, interp_vertex_paint, interp_vertex_sharpness, BlendSlots, BrushOp, ChunkCoord,
+    PaintField, SampleField, SharpnessField, SphereBrush, TerrainChunkData, TerrainLayerSet,
+    TerrainSettings, TerrainVertexEdge, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS, tvox,
 };
 
 // 散布プロップ（Terrain T3）。状態の器だけをここで持ち、処理は terrain_scatter_ops.rs にある。
@@ -613,7 +613,7 @@ pub struct TerrainEdit {
     pub collision_after: HashMap<ChunkCoord, bool>,
 }
 
-/// undo/redo 用の 1 チャンク分スナップショット（密度＋スプラット）。
+/// undo/redo 用の 1 チャンク分スナップショット（密度＋スプラット＋法線シャープネス）。
 ///
 /// 密度ブラシ（TERRAIN_BRUSH）とペイントブラシ（TERRAIN_PAINT）を同じ undo スタックに
 /// 載せるため、両方の状態をひとまとめに控える。片方しか変わらないストロークでも
@@ -628,6 +628,8 @@ pub struct ChunkSnapshot {
     pub paint_weight: Vec<[u8; TERRAIN_BLEND_SLOTS]>,
     /// ペイント量（u8 × samples³）。
     pub paint_amount: Vec<u8>,
+    /// 法線シャープネス（u8 × samples³。0=スムーズ法線〜255=面法線）。
+    pub sharpness: Vec<u8>,
 }
 
 impl ChunkSnapshot {
@@ -638,6 +640,7 @@ impl ChunkSnapshot {
             paint_index:  chunk.raw_paint_index().to_vec(),
             paint_weight: chunk.raw_paint_weight().to_vec(),
             paint_amount: chunk.raw_paint_amount().to_vec(),
+            sharpness:    chunk.raw_sharpness().to_vec(),
         }
     }
 
@@ -647,6 +650,7 @@ impl ChunkSnapshot {
         chunk.set_raw_paint_index(self.paint_index.clone());
         chunk.set_raw_paint_weight(self.paint_weight.clone());
         chunk.set_raw_paint_amount(self.paint_amount.clone());
+        chunk.set_raw_sharpness(self.sharpness.clone());
     }
 }
 
@@ -1159,12 +1163,13 @@ fn try_read_sample_global(
     gx: i32,
     gy: i32,
     gz: i32,
-) -> Option<(f32, BlendSlots, f32)> {
+) -> Option<(f32, BlendSlots, f32, f32)> {
     let (chunk, lx, ly, lz) = find_owner(chunks, cells, gx, gy, gz)?;
     Some((
         chunk.sample(lx, ly, lz),
         chunk.paint_slots(lx, ly, lz),
         chunk.paint_amount(lx, ly, lz),
+        chunk.sharpness(lx, ly, lz),
     ))
 }
 
@@ -1237,6 +1242,50 @@ fn write_paint_global_impl(
                 if let Some(chunk) = chunks.get_mut(&coord) {
                     chunk.set_paint_slots(ox[i].1, oy[j].1, oz[k].1, slots);
                     chunk.set_paint_amount(ox[i].1, oy[j].1, oz[k].1, amount);
+                }
+            }
+        }
+    }
+}
+
+/// グローバルサンプル座標の法線シャープネス（0..=1）を読む。
+///
+/// 密度・スプラットと同じ所有規約（境界サンプルは複数チャンクが重複所有）。
+/// どのチャンクも存在しない（地形外）場合は 0（＝完全スムーズ）を返す。
+fn read_sharpness_global_impl(
+    chunks: &HashMap<ChunkCoord, TerrainChunkData>,
+    cells: i32,
+    gx: i32,
+    gy: i32,
+    gz: i32,
+) -> f32 {
+    match find_owner(chunks, cells, gx, gy, gz) {
+        Some((chunk, lx, ly, lz)) => chunk.sharpness(lx, ly, lz),
+        None => 0.0,
+    }
+}
+
+/// グローバルサンプル座標へ法線シャープネスを書く。
+///
+/// 境界で重複する全チャンクへ同一値を書き込む（同期）。これを怠るとチャンク境界で
+/// 法線の配合率が食い違い、継ぎ目に陰影の段差が出る。
+fn write_sharpness_global_impl(
+    chunks: &mut HashMap<ChunkCoord, TerrainChunkData>,
+    cells: i32,
+    gx: i32,
+    gy: i32,
+    gz: i32,
+    w: f32,
+) {
+    let (ox, nx) = axis_owners(gx, cells);
+    let (oy, ny) = axis_owners(gy, cells);
+    let (oz, nz) = axis_owners(gz, cells);
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                let coord = ChunkCoord::new(ox[i].0, oy[j].0, oz[k].0);
+                if let Some(chunk) = chunks.get_mut(&coord) {
+                    chunk.set_sharpness(ox[i].1, oy[j].1, oz[k].1, w);
                 }
             }
         }
@@ -1336,6 +1385,31 @@ impl<'a> PaintField for FieldView<'a> {
     fn write_paint_global(&mut self, gx: i32, gy: i32, gz: i32, slots: &BlendSlots, amount: f32) {
         let cells = self.settings.chunk_cells as i32;
         write_paint_global_impl(self.chunks, cells, gx, gy, gz, slots, amount);
+    }
+
+    fn world_of_global(&self, gx: i32, gy: i32, gz: i32) -> [f32; 3] {
+        let vs = self.settings.voxel_size;
+        [gx as f32 * vs, gy as f32 * vs, gz as f32 * vs]
+    }
+}
+
+/// 法線シャープネスブラシ（terrain::sharpness::apply_sharpness）用の SharpnessField 実装。
+///
+/// 密度用 SampleField・スプラット用 PaintField と同じ FieldView に相乗りさせている
+/// （依存が「設定 + チャンク集合」で完全に同じであり、分けても得が無い）。
+impl<'a> SharpnessField for FieldView<'a> {
+    fn settings(&self) -> &TerrainSettings {
+        self.settings
+    }
+
+    fn read_sharpness_global(&self, gx: i32, gy: i32, gz: i32) -> f32 {
+        let cells = self.settings.chunk_cells as i32;
+        read_sharpness_global_impl(self.chunks, cells, gx, gy, gz)
+    }
+
+    fn write_sharpness_global(&mut self, gx: i32, gy: i32, gz: i32, w: f32) {
+        let cells = self.settings.chunk_cells as i32;
+        write_sharpness_global_impl(self.chunks, cells, gx, gy, gz, w);
     }
 
     fn world_of_global(&self, gx: i32, gy: i32, gz: i32) -> [f32; 3] {
@@ -1737,12 +1811,13 @@ fn sync_new_chunk_boundary(
                 }
                 let g = [base[0] + lx as i32, base[1] + ly as i32, base[2] + lz as i32];
                 // 既存チャンクがこのサンプルを所有していれば、その値を正として引き写す。
-                if let Some((density, slots, amount)) =
+                if let Some((density, slots, amount, sharpness)) =
                     try_read_sample_global(existing, cells, g[0], g[1], g[2])
                 {
                     data.set_sample(lx, ly, lz, density);
                     data.set_paint_slots(lx, ly, lz, &slots);
                     data.set_paint_amount(lx, ly, lz, amount);
+                    data.set_sharpness(lx, ly, lz, sharpness);
                 }
             }
         }
@@ -2279,6 +2354,112 @@ impl App {
         //   `pending_paint` へ積む。実際の反映は密度ブラシと同じく
         //   `flush_terrain_pending_remesh` が 1 フレーム 1 回にまとめて行う。
         //   未保存マーク（dirty）は編集時点で立てる（理由は handle_terrain_brush_world と同じ）。
+        self.terrain.dirty.extend(affected.iter().copied());
+        self.terrain.pending_paint.extend(affected);
+    }
+
+    /// 法線シャープネスペイントブラシ（TERRAIN_SHARPNESS）。
+    ///
+    /// スクリーン座標からレイマーチで地表の着弾点を求め、そこを中心とした球ブラシで
+    /// 「スムーズ法線⇔面法線の配合率」を目標値 `target` へ寄せる。密度もレイヤ重みも
+    /// 一切変えない。undo は密度ブラシ・レイヤペイントと同じストローク単位
+    /// （TERRAIN_STROKE_END で確定）に載る。
+    ///
+    /// `target = 0` を渡せば「消去」（＝完全スムーズへ戻す）になる。
+    pub(super) fn handle_terrain_sharpness_paint(
+        &mut self,
+        target: f32,
+        screen_x: f32,
+        screen_y: f32,
+        radius: f32,
+        strength: f32,
+    ) {
+        // 地形未初期化なら何もしない（レイヤペイントと同じ応答形式）。
+        if self.terrain.chunks.is_empty() {
+            if let Some(ipc) = &self.ipc {
+                ipc.send("TERRAIN_SHARPNESS_MISS");
+            }
+            return;
+        }
+        let Some(center) = self.terrain_raymarch_hit(screen_x, screen_y) else {
+            if let Some(ipc) = &self.ipc {
+                ipc.send("TERRAIN_SHARPNESS_MISS");
+            }
+            return;
+        };
+
+        self.handle_terrain_sharpness_paint_world(target, center, radius, strength);
+
+        // プレビュー球をペイント着弾点へ追従させる（密度ブラシと同じ扱い）。
+        self.terrain.brush_preview = Some((center, radius, strength));
+
+        if let Some(ipc) = &self.ipc {
+            ipc.send(&format!(
+                "TERRAIN_SHARPNESS_OK:{},{},{},{}",
+                target, center[0], center[1], center[2]
+            ));
+        }
+    }
+
+    /// ワールド座標中心で法線シャープネスペイントを適用し、影響チャンクの頂点属性を更新する。
+    ///
+    /// 手順は `handle_terrain_paint_world` と完全に対称（ストローク開始スナップショット →
+    /// ブラシ適用 → 影響チャンクをペイント高速パスへ積む）。シャープネスは密度を変えないので
+    /// レイヤペイントとまったく同じ高速パス（`apply_terrain_paint_colors`）に乗る。
+    pub(super) fn handle_terrain_sharpness_paint_world(
+        &mut self,
+        target: f32,
+        center: [f32; 3],
+        radius: f32,
+        strength: f32,
+    ) {
+        if self.draw_ctx.is_none() || self.terrain.chunks.is_empty() {
+            return;
+        }
+        // ブラシ形状マスクを（指定されていれば）デコード済みにしておく。
+        self.ensure_terrain_brush_mask();
+        let settings = self.terrain.settings.clone();
+        let brush = SphereBrush { center, radius, strength };
+
+        // ── ① undo 用ストローク開始（暗黙）＆ 編集前スナップショット ──
+        //   密度ブラシ・レイヤペイントと同じ stroke_before を共有するため、
+        //   それらを混ぜたストロークも 1 エントリとして正しく巻き戻せる。
+        self.terrain.stroke_active = true;
+        {
+            let touch_candidates = terrain::brush::chunks_in_brush_aabb(&brush, &settings);
+            let terrain = &mut self.terrain;
+            for coord in touch_candidates {
+                if terrain.stroke_before.contains_key(&coord) {
+                    continue;
+                }
+                if let Some(chunk) = terrain.chunks.get(&coord) {
+                    terrain.stroke_before.insert(coord, ChunkSnapshot::capture(chunk));
+                }
+            }
+        }
+
+        // ── ② 球ブラシをシャープネス場へ適用 ──
+        let affected: Vec<ChunkCoord> = {
+            let terrain = &mut self.terrain;
+            let mask = super::terrain_brush_mask_ops::resolve_brush_mask(
+                &terrain.mask_cache,
+                &terrain.brush_mask_path,
+            );
+            let mut view = FieldView {
+                settings: &terrain.settings,
+                chunks: &mut terrain.chunks,
+            };
+            terrain::sharpness::apply_sharpness_with_mask(
+                &mut view, &brush, target, BRUSH_DT, mask,
+            )
+        };
+        if affected.is_empty() {
+            return;
+        }
+
+        // ── ③ 影響チャンクを「頂点属性更新待ち」へ積む（ペイント高速パス） ──
+        //   シャープネスも密度を変えないため、頂点位置・法線・インデックスは不変であり、
+        //   変わるのは頂点属性（接線 w）だけ。マーチングキューブスを回す必要は無い。
         self.terrain.dirty.extend(affected.iter().copied());
         self.terrain.pending_paint.extend(affected);
     }
@@ -3693,8 +3874,8 @@ impl App {
         id
     }
 
-    /// レイヤペイント専用の高速パス。**メッシュを一切再生成せず**、頂点カラー（レイヤ重み）
-    /// と GPU 頂点バッファだけを差し替える。
+    /// レイヤペイント／法線シャープネスペイント専用の高速パス。**メッシュを一切再生成せず**、
+    /// 頂点カラー（レイヤ重み）・接線 w（法線シャープネス）と GPU 頂点バッファだけを差し替える。
     ///
     /// 【成立する理由】
     ///   ペイント（TERRAIN_PAINT）はスプラット場（手ペイント重み・ペイント量）しか
@@ -3792,6 +3973,12 @@ impl App {
             };
             let paint: Vec<BlendSlots> = interpolated.iter().map(|p| p.0).collect();
             let paint_amount: Vec<f32> = interpolated.iter().map(|p| p.1).collect();
+            // 法線シャープネスも同じ由来辺から引き直す（フル生成経路と同一関数なので
+            // 結果はフル再メッシュとビット一致する）。
+            let sharpness: Vec<f32> = {
+                let chunk = self.terrain.chunks.get(&coord).unwrap();
+                edges.par_iter().map(|edge| interp_vertex_sharpness(chunk, edge)).collect()
+            };
             recalc_ms += t_recalc.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 
             // ── ⑥⑦ 頂点カラーとパレットを求め、パレット変化を判定する ──
@@ -3860,7 +4047,8 @@ impl App {
                     continue;
                 }
                 rebuild_terrain_model_with_colors(
-                    &prim.vertices, &prim.indices, &model.name, &colors, palette, &layers,
+                    &prim.vertices, &prim.indices, &model.name, &colors, &sharpness, palette,
+                    &layers,
                 )
             };
             colors_ms += t_colors.elapsed().as_secs_f64() * MILLIS_PER_SEC;

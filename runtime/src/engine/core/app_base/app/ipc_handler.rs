@@ -379,6 +379,10 @@ impl App {
                     // 地形レイヤペイント（密度は変えずスプラット重みだけを押し上げる）。
                     self.handle_terrain_paint(layer as usize, screen_x, screen_y, radius, strength);
                 }
+                IpcCommand::TerrainSharpness { target, screen_x, screen_y, radius, strength } => {
+                    // 地形の法線シャープネスペイント（密度もレイヤ重みも変えない）。
+                    self.handle_terrain_sharpness_paint(target, screen_x, screen_y, radius, strength);
+                }
                 IpcCommand::TerrainBrushMask { path } => {
                     // 地形ペイント系ブラシの形状マスクを設定・解除する（空文字で解除）。
                     self.handle_terrain_brush_mask(path);

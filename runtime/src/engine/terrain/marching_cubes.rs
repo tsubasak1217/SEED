@@ -89,6 +89,9 @@ pub struct TerrainMesh {
     pub paint: Vec<BlendSlots>,
     /// 各頂点のペイント量（0=未ペイント〜1=完全に手描き優先）。positions と同じ長さ。
     pub paint_amount: Vec<f32>,
+    /// 各頂点の法線シャープネス（0=スムーズ法線〜1=面法線。辺の両端サンプルから線形補間）。
+    /// positions と同じ長さ。シェーディング時に `mix(smooth_n, face_n, w)` の重みになる。
+    pub sharpness: Vec<f32>,
     /// 頂点がどの辺から生まれたか（lo サンプル座標・軸・補間係数 t）。
     /// positions と同じ長さ・同じ順序。
     pub edges: Vec<TerrainVertexEdge>,
@@ -293,12 +296,15 @@ fn generate_core(
                             t,
                         };
                         let (paint, paint_amount) = interp_vertex_paint(chunk, &edge_desc);
+                        // 法線シャープネスも同じ辺・同じ t で補間する（スプラットと同じ規約）。
+                        let sharpness = interp_vertex_sharpness(chunk, &edge_desc);
 
                         let new_idx = mesh.positions.len() as u32;
                         mesh.positions.push(pos);
                         mesh.normals.push(normal);
                         mesh.paint.push(paint);
                         mesh.paint_amount.push(paint_amount);
+                        mesh.sharpness.push(sharpness);
                         mesh.edges.push(edge_desc);
                         edge_cache[slot] = new_idx;
                         new_idx
@@ -415,6 +421,30 @@ pub fn interp_vertex_paint(
     let paint_amount = a_lo + t * (a_hi - a_lo);
 
     (paint, paint_amount)
+}
+
+/// 指定した辺（lo, axis, t）における法線シャープネスを、チャンクの現在の
+/// シャープネス場から線形補間して求める。
+///
+/// `generate_core`（フルメッシュ生成）と、ペイント時の頂点属性差分更新の
+/// **両方がこの 1 関数を使う**ことで、両経路の結果が定義上必ず一致する
+/// （`interp_vertex_paint` とまったく同じ役割）。
+///
+/// シャープネスは 1 本のスカラーなので、レイヤ重みのような密ベクトル展開は不要で
+/// 単純な lerp でよい（スロット番号とレイヤ番号の対応ずれという問題が存在しない）。
+pub fn interp_vertex_sharpness(chunk: &TerrainChunkData, edge: &TerrainVertexEdge) -> f32 {
+    // ─── lo / hi のサンプル座標を復元する（hi = lo + unit(axis)）───
+    let lo = [
+        edge.lo[0] as usize,
+        edge.lo[1] as usize,
+        edge.lo[2] as usize,
+    ];
+    let mut hi = lo;
+    hi[edge.axis as usize] += 1;
+
+    let w_lo = chunk.sharpness(lo[0], lo[1], lo[2]);
+    let w_hi = chunk.sharpness(hi[0], hi[1], hi[2]);
+    w_lo + edge.t * (w_hi - w_lo)
 }
 
 /// 三角形を、エンジンのフロントフェイス規約に一致する巻き順で push する。

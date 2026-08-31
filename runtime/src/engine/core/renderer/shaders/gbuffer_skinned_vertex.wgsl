@@ -101,6 +101,8 @@ fn vs_main(v: VertexInput, @builtin(instance_index) inst_idx: u32) -> VertexOutp
     out.uv0          = v.uv0;
     out.uv1          = v.uv1;
     out.color        = v.color;
+    // 法線シャープネス（地形のみ意味を持つ。通常メッシュでは必ず 0 に落ちる）。
+    out.sharpness    = decode_vertex_sharpness(v.tangent.w);
     out.render_tag   = instance_render_tag(u_model);
     out.curr_clip    = clip;
     out.prev_clip    = u_camera.prev_view_proj * prev_world_pos4;

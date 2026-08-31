@@ -173,6 +173,29 @@ struct VertexOutput {
     /// 前フレームのクリップ座標（`prev_view_proj * prev_world_pos`）。
     /// 速度を書かないパイプライン（フォワード）では `curr_clip` と同値（＝速度 0）。
     @location(9) prev_clip: vec4<f32>,
+
+    /// 法線シャープネス（0=スムーズ法線をそのまま使う〜1=面法線へ完全に寄せる）。
+    ///
+    /// 頂点属性 `tangent.w` から `decode_vertex_sharpness` で復号した値。
+    /// **地形（terrain_gbuffer_write.wgsl）だけが参照する**。通常メッシュの
+    /// `tangent.w` は ±1 のハンドネスなので復号すると必ず 0 になり、
+    /// この機能の導入前とビット単位で同じ絵になる。
+    @location(10) sharpness: f32,
+}
+
+/// 法線シャープネスを載せている接線 w のバイアス。
+/// Rust 側 `TANGENT_W_SHARPNESS_BIAS`（terrain_mesh_build.rs）と一致必須。
+///
+/// 生値 0..1 ではなく 1..2 に載せる理由は Rust 側のコメントを参照
+/// （w=0 だと従法線 `normalize(cross(N,T) * w)` が NaN になるため）。
+const VERTEX_SHARPNESS_TANGENT_BIAS: f32 = 1.0;
+
+/// 接線 w から法線シャープネス（0..=1）を復号する。
+///
+/// 通常メッシュの w（+1 / -1 のハンドネス）は clamp によって必ず 0 へ落ちる
+/// （+1 → 0、-1 → -2 を 0 へクランプ）。よって地形以外は常にスムーズ法線。
+fn decode_vertex_sharpness(tangent_w: f32) -> f32 {
+    return clamp(tangent_w - VERTEX_SHARPNESS_TANGENT_BIAS, 0.0, 1.0);
 }
 
 // ─── PBR ヘルパー関数は pbr_common.wgsl へ移設 ───────────────
