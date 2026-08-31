@@ -28,7 +28,7 @@ use std::collections::HashMap;
 
 use image::RgbaImage;
 
-use crate::engine::terrain::layers::{TERRAIN_MAX_LAYERS, TerrainLayerSet};
+use crate::engine::terrain::layers::{texture_path, TERRAIN_MAX_LAYERS, TerrainLayerSet};
 
 // ─── 調整用定数（マジックナンバー禁止）──────────────────────────────────────
 
@@ -87,14 +87,16 @@ impl TerrainLayerTextureArrays {
         let mut cache: HashMap<String, RgbaImage> = HashMap::new();
 
         // ─── 各マップのレイヤ画像列を作る ───
+        //   texture_path を通すのは「空文字列＝未設定」規約を守るため。
+        //   これがないと "" をファイルパスとして開こうとし、毎回警告が出る。
         let base_imgs = collect_layer_images(set, &mut cache, DEFAULT_BASE_COLOR_PIXEL, |l| {
-            l.base_color_texture.as_deref()
+            texture_path(&l.base_color_texture)
         });
         let normal_imgs = collect_layer_images(set, &mut cache, DEFAULT_NORMAL_PIXEL, |l| {
-            l.normal_texture.as_deref()
+            texture_path(&l.normal_texture)
         });
         let rough_imgs = collect_layer_images(set, &mut cache, DEFAULT_ROUGHNESS_PIXEL, |l| {
-            l.roughness_texture.as_deref()
+            texture_path(&l.roughness_texture)
         });
 
         // ─── GPU へアップロード ───

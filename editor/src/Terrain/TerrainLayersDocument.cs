@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  TerrainLayersDocument.cs — layers.json の読み書き（差分更新モデル）
 //
 //  【責務】
@@ -146,9 +146,9 @@ internal sealed class TerrainLayerEdit
         Roughness        = ReadDouble(source, KeyRoughness,      TerrainLayerDefaults.Roughness);
         Metallic         = ReadDouble(source, KeyMetallic,       TerrainLayerDefaults.Metallic);
         UvScale          = ReadDouble(source, KeyUvScale,        TerrainLayerDefaults.UvScale);
-        BaseColorTexture = ReadString(source, KeyBaseColorTexture);
-        NormalTexture    = ReadString(source, KeyNormalTexture);
-        RoughnessTexture = ReadString(source, KeyRoughnessTexture);
+        BaseColorTexture = ReadPath(source, KeyBaseColorTexture);
+        NormalTexture    = ReadPath(source, KeyNormalTexture);
+        RoughnessTexture = ReadPath(source, KeyRoughnessTexture);
         Detile           = ReadString(source, KeyDetile) ?? TerrainLayerDefaults.Detile;
         DetileStrength   = ReadDouble(source, KeyDetileStrength, TerrainLayerDefaults.DetileStrength);
 
@@ -255,6 +255,17 @@ internal sealed class TerrainLayerEdit
     /// <summary>文字列キーを読む。存在しない／null の場合は null を返す。</summary>
     private static string? ReadString(JsonObject obj, string key)
         => obj[key] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+    /// <summary>
+    /// 任意（未設定可）のパス文字列キーを読む。
+    /// キーなし・null・空文字列（空白のみを含む）はすべて「未設定」として null へ正規化する。
+    /// これにより、過去に空文字列で保存された layers.json も UI 上「未設定」として扱われる。
+    /// </summary>
+    private static string? ReadPath(JsonObject obj, string key)
+    {
+        var raw = ReadString(obj, key);
+        return string.IsNullOrWhiteSpace(raw) ? null : raw;
+    }
 
     /// <summary>
     /// RGB 配列キーを読む。要素数が足りない／数値でない成分は既定値で埋める。

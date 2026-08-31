@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  TerrainSettingsWindow.xaml.cs — 地形設定ウィンドウ
 //
 //  【責務】
@@ -737,6 +737,10 @@ public partial class TerrainSettingsWindow : Window
     /// テクスチャ参照の行を作る。参照ボタンとドラッグ＆ドロップの双方を
     /// FileRefBuilder（インスペクタと共通）で用意し、選ばれた絶対パスを
     /// assets ルート基準の相対パスへ変換して保存する。
+    ///
+    /// 行末には参照を未設定へ戻す「×」ボタン（Icon.Close）を出す。
+    /// 未設定に戻すと layers.json の当该キーは null（元からあった場合）
+    /// または省略となり、ランタイムは base_color の単色レイヤへフォールバックする。
     /// </summary>
     private UIElement MakeTextureRow(string label, string? current, Action<string?> onChanged)
     {
@@ -762,12 +766,18 @@ public partial class TerrainSettingsWindow : Window
                 onChanged(ToAssetRelativePath(path));
                 // 表示（ファイル名・ツールチップ）を更新するため行ごと作り直す。
                 RebuildPropertyPanel();
+            },
+            // 行末の「×」ボタン（Icon.Close）で参照を未設定へ戻す。
+            // null を渡すと layers.json 側はキー自体を落とす（元からあった場合は明示的 null）。
+            onClear: () =>
+            {
+                onChanged(null);
+                RebuildPropertyPanel();
             });
 
-        // FileRefBuilder は「解除」手段を持たないため、右クリックでクリアできるようにする。
+        // 旧 UI 互換：右クリックでも解除できる（ボタンを覚えていない利用者向けのショートカット）。
         if (row is FrameworkElement fe)
         {
-            fe.ToolTip = (fe.ToolTip as string) ?? "右クリックでテクスチャ指定を解除";
             fe.MouseRightButtonUp += (_, e) =>
             {
                 onChanged(null);

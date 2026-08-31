@@ -223,6 +223,48 @@ impl LayerRule {
 }
 
 // ============================================================
+//  テクスチャ参照の正規化（未設定表現の吸収）
+// ============================================================
+
+/// 任意のテクスチャパスを「未設定 = None」へ正規化して読む。
+///
+/// 【なぜ必要か】
+/// layers.json における「未設定」の表現は歴史的に 3 通りある：
+///   1. キーごと省略（推奨。エディタの新規保存はこれ）
+///   2. `"base_color_texture": null`（参照をクリアした既存ファイル）
+///   3. `"base_color_texture": ""`（手書き・旧ツールが残した空文字列）
+/// 3 をそのまま Some("") として保持すると、GPU 側の has-texture フラグが
+/// 立ち、存在しないパスを毎回ロードしようとして警告を吐き続ける。
+/// 読み取り段階で 3 を 1/2 と同じ None へ潰しておくことで、
+/// 下流（テクスチャ配列構築・uniform フラグ）に分岐を持ち込まずに済む。
+///
+/// 前後の空白も取り除く（ファイラからのコピペで混入しがちなため）。
+fn deserialize_optional_path<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    Ok(normalize_optional_path(raw))
+}
+
+/// 保持されているテクスチャ参照を「実際に使えるパス」として取り出す。
+///
+/// デシリアライズ経由なら `deserialize_optional_path` で既に正規化済みだが、
+/// コードから直接組まれたレイヤ（テスト・ツール経由）では空文字列が入り得るため、
+/// GPU リソース構築側は常にこの関数を通して参照する（存在しないパスのロード試行を防ぐ）。
+#[inline]
+pub fn texture_path(opt: &Option<String>) -> Option<&str> {
+    opt.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// パス文字列を「未設定 = None」へ正規化する（空・空白のみ → None）。
+///
+/// デシリアライズ経由でなくコードからレイヤを組んだ場合でも同じ規約を適用できるよう pub にする。
+pub fn normalize_optional_path(raw: Option<String>) -> Option<String> {
+    raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+// ============================================================
 //  TerrainLayer — 1 レイヤのマテリアル定義
 // ============================================================
 
@@ -247,14 +289,26 @@ pub struct TerrainLayer {
     /// triplanar UV スケール（ワールド 1m あたりの UV 進み量）。
     #[serde(default = "default_layer_uv_scale")]
     pub uv_scale: f32,
-    /// ベースカラーテクスチャのアセット相対パス（省略時は単色レイヤ）。
-    #[serde(default)]
+    /// ベースカラーテクスチャのアセット相対パス（未設定なら単色レイヤ）。
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_path",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub base_color_texture: Option<String>,
-    /// 法線マップのアセット相対パス（省略時は法線マップ無し＝ジオメトリ法線のまま）。
-    #[serde(default)]
+    /// 法線マップのアセット相対パス（未設定なら法線マップ無し＝ジオメトリ法線のまま）。
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_path",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub normal_texture: Option<String>,
-    /// ラフネスマップのアセット相対パス（省略時はスカラ `roughness` を使う）。
-    #[serde(default)]
+    /// ラフネスマップのアセット相対パス（未設定ならスカラ `roughness` を使う）。
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_path",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub roughness_texture: Option<String>,
     /// タイリング解消モード（省略時は None＝従来どおり単純タイリング）。
     #[serde(default)]

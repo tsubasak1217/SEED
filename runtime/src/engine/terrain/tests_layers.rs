@@ -19,7 +19,7 @@ use super::layers::{
     BlendSlots, DetileMode, LayerRule, LayerWeights, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS,
     TerrainLayer, TerrainLayerSet, blend_rule_and_paint_all, blend_rule_and_paint_all_into,
     dequantize_weight, expand_slots, expand_slots_into, normalize_weights_slice, quantize_weight,
-    select_top_slots,
+    select_top_slots, texture_path,
 };
 use super::paint::{PaintField, apply_paint};
 use super::settings::TerrainSettings;
@@ -1336,4 +1336,89 @@ fn priority_zero_layer_is_still_paintable_by_hand() {
         blended[0] < WEIGHT_EPS,
         "手動ペイント量 1.0 なのにルール重みが残っている: {blended:?}"
     );
+}
+
+// ============================================================
+//  テクスチャ参照のクリア（未設定へ戻す）— 表現 3 通りを吸収する
+// ============================================================
+
+/// 「未設定」の 3 表現（キー省略 / null / 空文字列）がすべて None として読めること。
+///
+/// エディタの地形設定ウィンドウでテクスチャ参照を「×」でクリアすると
+/// layers.json 側は null（元にキーがあった場合）またはキー省略になる。
+/// 手書きや旧ツールが残した空文字列も同じ「未設定」として扱わなければ、
+/// GPU 側の has-texture フラグが立って存在しないパスを開こうとし続ける。
+#[test]
+fn cleared_texture_refs_are_read_as_unset() {
+    let json = r#"{
+        "layers": [
+            { "name": "omitted" },
+            { "name": "explicit_null",
+              "base_color_texture": null, "normal_texture": null, "roughness_texture": null },
+            { "name": "empty_string",
+              "base_color_texture": "", "normal_texture": "", "roughness_texture": "" },
+            { "name": "whitespace",
+              "base_color_texture": "   ", "normal_texture": " ", "roughness_texture": "  " }
+        ]
+    }"#;
+    let set = TerrainLayerSet::from_json_str(json).expect("クリア済み layers.json が読めない");
+    assert_eq!(set.layers.len(), 4);
+
+    for layer in &set.layers {
+        assert!(
+            layer.base_color_texture.is_none(),
+            "{} の base_color_texture が未設定になっていない: {:?}",
+            layer.name,
+            layer.base_color_texture
+        );
+        assert!(layer.normal_texture.is_none(), "{}", layer.name);
+        assert!(layer.roughness_texture.is_none(), "{}", layer.name);
+        // GPU 側の分岐と同じ判定も None であること。
+        assert!(texture_path(&layer.base_color_texture).is_none(), "{}", layer.name);
+    }
+}
+
+/// テクスチャ未設定レイヤは base_color の単色へフォールバックすること
+/// （＝クリア直後でも塗りが崩れず、存在しないパスを参照しない）。
+#[test]
+fn unset_texture_layer_falls_back_to_solid_base_color() {
+    let json = r#"{ "layers": [ { "name": "solid", "base_color": [0.2, 0.4, 0.6],
+                                   "base_color_texture": "" } ] }"#;
+    let set = TerrainLayerSet::from_json_str(json).expect("読み込み失敗");
+    let layer = &set.layers[0];
+
+    assert!(texture_path(&layer.base_color_texture).is_none());
+    assert!((layer.base_color[0] - 0.2).abs() < WEIGHT_EPS);
+    assert!((layer.base_color[1] - 0.4).abs() < WEIGHT_EPS);
+    assert!((layer.base_color[2] - 0.6).abs() < WEIGHT_EPS);
+}
+
+/// クリアしたテクスチャ参照は直列化結果からキーごと落ちること
+/// （layers.json に "base_color_texture": null が溢れていかない）。
+#[test]
+fn unset_texture_refs_are_omitted_when_serialized() {
+    let set = TerrainLayerSet {
+        layers: vec![TerrainLayer {
+            name: "cleared".to_string(),
+            ..TerrainLayer::default()
+        }],
+    };
+    let json = serde_json::to_string(&set).expect("直列化に失敗");
+    assert!(
+        !json.contains("base_color_texture"),
+        "未設定のテクスチャキーが出力されている: {json}"
+    );
+    assert!(!json.contains("normal_texture"), "{json}");
+    assert!(!json.contains("roughness_texture"), "{json}");
+
+    // 設定済みなら当然出力される（省略が効きすぎていないことの確認）。
+    let set = TerrainLayerSet {
+        layers: vec![TerrainLayer {
+            name: "textured".to_string(),
+            base_color_texture: Some("terrain/grass.png".to_string()),
+            ..TerrainLayer::default()
+        }],
+    };
+    let json = serde_json::to_string(&set).expect("直列化に失敗");
+    assert!(json.contains("terrain/grass.png"), "{json}");
 }

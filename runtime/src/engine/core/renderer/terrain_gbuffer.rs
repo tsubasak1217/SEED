@@ -37,7 +37,7 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::engine::core::loader::model::{CullFace, Model, CULL_FACE_VARIANTS};
-use crate::engine::terrain::layers::{TerrainLayerSet, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS};
+use crate::engine::terrain::layers::{texture_path, TerrainLayerSet, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS};
 use crate::engine::terrain::cover::{CoverMaterialSet, TERRAIN_MAX_COVER_MATERIALS};
 
 use super::pipeline::{get_shader_source, CullPipelineSet, MeshPipeline};
@@ -138,9 +138,11 @@ fn build_layer_params(set: &TerrainLayerSet) -> [TerrainLayerParamsGpu; TERRAIN_
     for (i, l) in set.layers.iter().take(TERRAIN_MAX_LAYERS).enumerate() {
         // テクスチャの有無フラグ。シェーダはこれで「単色レイヤ」へ分岐する
         // （＝テクスチャ未指定でも T2 までと同じ絵になる＝後方互換）。
-        let has_base   = has_texture_flag(l.base_color_texture.is_some());
-        let has_normal = has_texture_flag(l.normal_texture.is_some());
-        let has_rough  = has_texture_flag(l.roughness_texture.is_some());
+        // 空文字列は「未設定」と同義。texture_path を通すことで、
+        // テクスチャ配列側（collect_layer_images）と判定が必ず一致する。
+        let has_base   = has_texture_flag(texture_path(&l.base_color_texture).is_some());
+        let has_normal = has_texture_flag(texture_path(&l.normal_texture).is_some());
+        let has_rough  = has_texture_flag(texture_path(&l.roughness_texture).is_some());
 
         layers[i] = TerrainLayerParamsGpu {
             base_color: [l.base_color[0], l.base_color[1], l.base_color[2], has_base],
