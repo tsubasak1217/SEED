@@ -1,0 +1,723 @@
+{
+  "name": "Untitled",
+  "debug_camera": {
+    "position": [
+      -7.1659985,
+      2.080602,
+      0.36850524
+    ],
+    "yaw": 2.485882,
+    "pitch": 1.0252055,
+    "fov_deg": 45.0,
+    "far": 1000.0,
+    "speed": 0.56
+  },
+  "shading_asset": "assets://shaders/toon.wgsl",
+  "settings": {
+    "debug_camera": {
+      "fov": 45.0,
+      "far": 1000.0,
+      "speed": 0.56,
+      "ortho_2d": false
+    },
+    "rendering": {
+      "bloom": false,
+      "bloom_intensity": 0.021514826,
+      "fxaa": true,
+      "transparency": "wboit",
+      "deferred": true,
+      "refract_sequential_grab": true,
+      "gi_intensity": 0.89286524,
+      "reflection_intensity": 0.85971427,
+      "ao_intensity": 2.0,
+      "features": {
+        "shadow": "rt",
+        "gi": "rt",
+        "reflection": "rt",
+        "ao": "rt",
+        "translucency": "rt"
+      },
+      "ambient_color": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "ambient_intensity": 0.05
+    },
+    "physics": {
+      "edit_physics": false,
+      "edit_physics_rigidbody": false
+    }
+  },
+  "actors": [
+    {
+      "name": "sponza_main",
+      "transform": {
+        "position": [
+          0.0,
+          0.247,
+          0.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\main_sponza\\NewSponza_Main_glTF_003.gltf",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.247
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": 1000003,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                },
+                {
+                  "id": 1000001,
+                  "name": "Group",
+                  "parent": null
+                },
+                {
+                  "id": 1000002,
+                  "name": "Group",
+                  "parent": null
+                },
+                {
+                  "id": 1000003,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000004,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "sponza_curtain",
+      "transform": {
+        "position": [
+          0.0,
+          0.247,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\pkg_a_curtains\\NewSponza_Curtains_glTF.gltf",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0000192,
+                    -4.4703484e-8,
+                    0.24699822
+                  ],
+                  [
+                    0.0,
+                    4.4703484e-8,
+                    1.0000192,
+                    -3.017485e-7
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": 1000003,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                },
+                {
+                  "id": 1000001,
+                  "name": "Group",
+                  "parent": null
+                },
+                {
+                  "id": 1000002,
+                  "name": "Group",
+                  "parent": null
+                },
+                {
+                  "id": 1000003,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000004,
+              "cast_shadows": true,
+              "material_overrides": [
+                {
+                  "slot": 1,
+                  "kind": {
+                    "kind": "inline",
+                    "base_color": [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    "metallic": 1.0,
+                    "roughness": 1.0,
+                    "emissive": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ],
+                    "alpha_mode": "opaque",
+                    "alpha_cutoff": 0.5,
+                    "ior": 2.5,
+                    "transmission": 1.0,
+                    "diffuse_transmission": 1.0,
+                    "mr_tex_ignore": true,
+                    "cull_face": "none",
+                    "shading_model": null
+                  }
+                }
+              ],
+              "render_tag": 0
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "PointLight",
+      "transform": {
+        "position": [
+          -7.146956,
+          1.4214295,
+          -0.93354356
+        ],
+        "rotation": [
+          12.431699,
+          20.59565,
+          -179.9999
+        ],
+        "scale": [
+          0.9999995,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Light",
+          "component": {
+            "type": "LightComponent",
+            "data": {
+              "kind": "point",
+              "color": [
+                1.0,
+                1.0,
+                1.0
+              ],
+              "intensity": 100.8,
+              "range": 13.1,
+              "inner_angle_deg": 8.6,
+              "outer_angle_deg": 13.5,
+              "rect_width": 0.0,
+              "rect_height": 0.3,
+              "cast_shadows": true,
+              "soft_radius": 0.1,
+              "bounce_intensity": 0.0
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "DirectionalLight",
+      "transform": {
+        "position": [
+          -0.971,
+          8.566,
+          1.2739999
+        ],
+        "rotation": [
+          70.15461,
+          -4.0683928,
+          -1.3408097
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          0.99999976
+        ]
+      },
+      "components": [
+        {
+          "name": "Light",
+          "component": {
+            "type": "LightComponent",
+            "data": {
+              "kind": "directional",
+              "color": [
+                1.0,
+                0.5547606,
+                0.26528972
+              ],
+              "intensity": 149.1,
+              "range": 1.8,
+              "inner_angle_deg": 8.6,
+              "outer_angle_deg": 13.5,
+              "rect_width": 0.0,
+              "rect_height": 0.3,
+              "cast_shadows": true,
+              "soft_radius": 0.1,
+              "bounce_intensity": 0.0
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "RectLight",
+      "transform": {
+        "position": [
+          -0.86050177,
+          2.485929,
+          0.115793586
+        ],
+        "rotation": [
+          62.96743,
+          -61.538227,
+          -77.77559
+        ],
+        "scale": [
+          0.9999997,
+          0.99999946,
+          0.9999998
+        ]
+      },
+      "components": [
+        {
+          "name": "Light",
+          "component": {
+            "type": "LightComponent",
+            "data": {
+              "kind": "rect",
+              "color": [
+                0.061699994,
+                1.0,
+                0.20518994
+              ],
+              "intensity": 21.0,
+              "range": 6.4,
+              "inner_angle_deg": 19.8,
+              "outer_angle_deg": 18.3,
+              "rect_width": 1.8,
+              "rect_height": 0.8,
+              "cast_shadows": true,
+              "soft_radius": 0.25,
+              "bounce_intensity": 0.0
+            }
+          },
+          "enabled": false
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "SpotLight",
+      "transform": {
+        "position": [
+          3.189913,
+          4.2729897,
+          1.5899444
+        ],
+        "rotation": [
+          43.848732,
+          -33.645252,
+          -43.85182
+        ],
+        "scale": [
+          0.99999994,
+          0.99999976,
+          0.9999999
+        ]
+      },
+      "components": [
+        {
+          "name": "Light",
+          "component": {
+            "type": "LightComponent",
+            "data": {
+              "kind": "spot",
+              "color": [
+                0.061708584,
+                0.54938567,
+                1.0
+              ],
+              "intensity": 27.5,
+              "range": 6.4,
+              "inner_angle_deg": 19.8,
+              "outer_angle_deg": 18.3,
+              "rect_width": 0.0,
+              "rect_height": 0.3,
+              "cast_shadows": true,
+              "soft_radius": 0.25,
+              "bounce_intensity": 0.0
+            }
+          },
+          "enabled": false
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "camera",
+      "transform": {
+        "position": [
+          -7.680192,
+          1.2307024,
+          -2.30516
+        ],
+        "rotation": [
+          31.381136,
+          43.226746,
+          -1.080445
+        ],
+        "scale": [
+          0.9999999,
+          0.9999997,
+          0.9999997
+        ]
+      },
+      "components": [
+        {
+          "name": "Camera",
+          "component": {
+            "type": "CameraComponent",
+            "data": {
+              "fov_y_deg": 61.8,
+              "near": 0.1,
+              "far": 1000.0,
+              "is_main": false,
+              "clear_color": [
+                0.1,
+                0.1,
+                0.1,
+                1.0
+              ],
+              "scaling_mode": "vert_minus",
+              "target_width": 1280,
+              "target_height": 720,
+              "bar_color": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ],
+              "projection": "perspective",
+              "ortho_height": 10.0,
+              "shading_asset": null,
+              "shading_params": {},
+              "shading_bindings": {}
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "glass",
+      "transform": {
+        "position": [
+          -6.652004,
+          1.0179033,
+          -0.947986
+        ],
+        "rotation": [
+          0.5740003,
+          20.565004,
+          -0.2700003
+        ],
+        "scale": [
+          3.0000007,
+          3.0000007,
+          2.9999998
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\sampleModels\\ABeautifulGame\\glTF\\ABeautifulGame.gltf",
+              "instances": [
+                [
+                  [
+                    2.808743,
+                    0.023793122,
+                    1.0537566,
+                    -6.652004
+                  ],
+                  [
+                    -0.014136424,
+                    2.9998167,
+                    -0.030054081,
+                    1.0179033
+                  ],
+                  [
+                    -1.0539297,
+                    0.023172462,
+                    2.8086817,
+                    -0.947986
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": 1000003,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                },
+                {
+                  "id": 1000001,
+                  "name": "Group",
+                  "parent": null
+                },
+                {
+                  "id": 1000002,
+                  "name": "Group",
+                  "parent": null
+                },
+                {
+                  "id": 1000003,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000004,
+              "cast_shadows": true,
+              "material_overrides": [
+                {
+                  "slot": 9,
+                  "kind": {
+                    "kind": "inline",
+                    "base_color": [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    "metallic": 1.0,
+                    "roughness": 1.0,
+                    "emissive": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ],
+                    "alpha_mode": "opaque",
+                    "alpha_cutoff": 0.5,
+                    "ior": 1.0,
+                    "transmission": 0.0,
+                    "diffuse_transmission": 0.0,
+                    "mr_tex_ignore": true,
+                    "cull_face": "back",
+                    "shading_model": null
+                  }
+                },
+                {
+                  "slot": 4,
+                  "kind": {
+                    "kind": "inline",
+                    "base_color": [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    "metallic": 1.0,
+                    "roughness": 1.0,
+                    "emissive": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ],
+                    "alpha_mode": "opaque",
+                    "alpha_cutoff": 0.5,
+                    "ior": 1.0,
+                    "transmission": 0.0,
+                    "diffuse_transmission": 0.0,
+                    "mr_tex_ignore": true,
+                    "cull_face": "back",
+                    "shading_model": 0
+                  }
+                },
+                {
+                  "slot": 1,
+                  "kind": {
+                    "kind": "inline",
+                    "base_color": [
+                      0.0,
+                      1.0,
+                      0.84736156,
+                      1.0
+                    ],
+                    "metallic": 1.0,
+                    "roughness": 0.2593516,
+                    "emissive": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ],
+                    "alpha_mode": "blend",
+                    "alpha_cutoff": -25.9,
+                    "ior": 1.1,
+                    "transmission": 0.3,
+                    "diffuse_transmission": 0.0,
+                    "mr_tex_ignore": true,
+                    "cull_face": "back",
+                    "shading_model": 0
+                  }
+                }
+              ],
+              "render_tag": 0
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "skybox",
+      "transform": {
+        "position": [
+          1.5611879,
+          13.703711,
+          2.7572145
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Skybox",
+          "component": {
+            "type": "SkyboxComponent",
+            "data": {
+              "texture_path": "assets://skybox/kloofendal_48d_partly_cloudy_puresky_2k.hdr",
+              "mode": "camera_locked",
+              "intensity": 1.0,
+              "tint": [
+                1.0,
+                1.0,
+                1.0
+              ]
+            }
+          }
+        }
+      ],
+      "children": []
+    }
+  ]
+}

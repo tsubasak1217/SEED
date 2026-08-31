@@ -1,0 +1,2306 @@
+{
+  "name": "Untitled",
+  "debug_camera": {
+    "position": [
+      0.7419312,
+      3.4289956,
+      -17.44483
+    ],
+    "yaw": 0.0,
+    "pitch": 0.0,
+    "fov_deg": 45.0,
+    "far": 1000.0,
+    "speed": 5.0
+  },
+  "settings": {
+    "debug_camera": {
+      "fov": 45.0,
+      "far": 1000.0,
+      "speed": 5.0,
+      "ortho_2d": false
+    },
+    "rendering": {
+      "bloom": true,
+      "bloom_intensity": 0.021514826,
+      "fxaa": true,
+      "transparency": "wboit",
+      "deferred": true,
+      "refract_sequential_grab": true,
+      "gi_intensity": 0.89286524,
+      "reflection_intensity": 0.85971427,
+      "ao_intensity": 2.0,
+      "features": {
+        "shadow": "rt",
+        "gi": "rt",
+        "reflection": "rt",
+        "ao": "rt",
+        "translucency": "rt"
+      },
+      "ambient_color": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "ambient_intensity": 0.05
+    },
+    "physics": {
+      "edit_physics": false,
+      "edit_physics_rigidbody": false
+    }
+  },
+  "actors": [
+    {
+      "name": "NewActor(1)",
+      "transform": {
+        "position": [
+          1.1893787,
+          0.96700007,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    1.1893787
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    0.96700007
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy)",
+      "transform": {
+        "position": [
+          -2.0304933,
+          0.96700007,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    -2.0304933
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    0.96700007
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy)",
+      "transform": {
+        "position": [
+          4.678041,
+          0.96700007,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    4.678041
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    0.96700007
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy)",
+      "transform": {
+        "position": [
+          8.256462,
+          0.96700007,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    8.256462
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    0.96700007
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy) (copy)",
+      "transform": {
+        "position": [
+          -5.3693104,
+          0.96700007,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    -5.3693104
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    0.96700007
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy)",
+      "transform": {
+        "position": [
+          1.1893787,
+          3.602975,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    1.1893787
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    3.602975
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy)",
+      "transform": {
+        "position": [
+          -2.0304933,
+          3.602975,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    -2.0304933
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    3.602975
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy)",
+      "transform": {
+        "position": [
+          4.678041,
+          3.602975,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    4.678041
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    3.602975
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy) (copy)",
+      "transform": {
+        "position": [
+          8.256462,
+          3.602975,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    8.256462
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    3.602975
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy) (copy) (copy)",
+      "transform": {
+        "position": [
+          -5.3693104,
+          3.602975,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    -5.3693104
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    3.602975
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy)",
+      "transform": {
+        "position": [
+          1.1893787,
+          -1.2510853,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    1.1893787
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    -1.2510853
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy)",
+      "transform": {
+        "position": [
+          -2.0304933,
+          -1.2510853,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    -2.0304933
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    -1.2510853
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy)",
+      "transform": {
+        "position": [
+          4.678041,
+          -1.2510853,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    4.678041
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    -1.2510853
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy) (copy)",
+      "transform": {
+        "position": [
+          8.256462,
+          -1.2510853,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    8.256462
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    -1.2510853
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy) (copy) (copy)",
+      "transform": {
+        "position": [
+          -5.3693104,
+          -1.2510853,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    -5.3693104
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    -1.2510853
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy)",
+      "transform": {
+        "position": [
+          1.1893787,
+          -3.5949774,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    1.1893787
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    -3.5949774
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy)",
+      "transform": {
+        "position": [
+          -2.0304933,
+          -3.5949774,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    -2.0304933
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    -3.5949774
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy)",
+      "transform": {
+        "position": [
+          4.678041,
+          -3.5949774,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    4.678041
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    -3.5949774
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy) (copy)",
+      "transform": {
+        "position": [
+          8.256462,
+          -3.5949774,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    8.256462
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    -3.5949774
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy) (copy) (copy)",
+      "transform": {
+        "position": [
+          -5.3693104,
+          -3.5949774,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    -5.3693104
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    -3.5949774
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy)",
+      "transform": {
+        "position": [
+          1.1893787,
+          6.227135,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    1.1893787
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    6.227135
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy)",
+      "transform": {
+        "position": [
+          -2.0304933,
+          6.227135,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    -2.0304933
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    6.227135
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy)",
+      "transform": {
+        "position": [
+          4.678041,
+          6.227135,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    4.678041
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    6.227135
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy) (copy)",
+      "transform": {
+        "position": [
+          8.256462,
+          6.227135,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    8.256462
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    6.227135
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor(1) (copy) (copy) (copy) (copy)",
+      "transform": {
+        "position": [
+          -5.3693104,
+          6.227135,
+          1.8450001
+        ],
+        "rotation": [
+          -10.699999,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.5,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.5,
+                    0.0,
+                    0.0,
+                    -5.3693104
+                  ],
+                  [
+                    0.0,
+                    0.9826128,
+                    0.1856666,
+                    6.227135
+                  ],
+                  [
+                    0.0,
+                    -0.1856666,
+                    0.9826128,
+                    1.8450001
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000001,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0
+            }
+          }
+        },
+        {
+          "name": "InputMap",
+          "component": {
+            "type": "InputMapComponent",
+            "data": {
+              "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Camera",
+      "transform": {
+        "position": [
+          -8.673246,
+          2.2095077,
+          -6.2369633
+        ],
+        "rotation": [
+          48.834858,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Camera",
+          "component": {
+            "type": "CameraComponent",
+            "data": {
+              "fov_y_deg": 45.0,
+              "near": 0.1,
+              "far": 1000.0,
+              "is_main": true,
+              "clear_color": [
+                0.1,
+                0.1,
+                0.1,
+                1.0
+              ],
+              "scaling_mode": "vert_minus",
+              "target_width": 1920,
+              "target_height": 1080,
+              "bar_color": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ],
+              "projection": "perspective",
+              "ortho_height": 10.0,
+              "shading_asset": null,
+              "shading_params": {},
+              "shading_bindings": {}
+            }
+          }
+        },
+        {
+          "name": "Light",
+          "component": {
+            "type": "LightComponent",
+            "data": {
+              "kind": "directional",
+              "color": [
+                1.0,
+                1.0,
+                1.0
+              ],
+              "intensity": 2.4,
+              "range": 10.0,
+              "inner_angle_deg": 25.0,
+              "outer_angle_deg": 35.0,
+              "rect_width": 1.0,
+              "rect_height": 1.0,
+              "cast_shadows": true,
+              "soft_radius": 0.25,
+              "bounce_intensity": 0.0
+            }
+          }
+        }
+      ],
+      "children": []
+    }
+  ]
+}

@@ -1,0 +1,170 @@
+{
+  "_comment": "地形散布プロップ定義（Terrain T3）。最大64種（TERRAIN_MAX_PROPS）。kind=grass は手続き生成の草でメッシュアセット不要（grass の数値だけで見た目が決まる）。kind=model は model_path の実アセットを参照するが、T3第1段では散布データの生成・保存のみ行い描画はしない。rule は斜度(度)・高度(ワールドY・メートル)・レイヤ重み(layers.json の name 参照)のウィンドウで自動散布の確率を決める。値を書き換えるだけで草原の見た目と生え方が変わる（コード変更不要）。tree_pine の model_path が null なのは、現時点の assets/models/ に樹木アセットが存在しない（A.gltf / BrainStem.glb のみ）ためである。樹木 glb を追加したらここへパスを書けばよい。",
+  "props": [
+    {
+      "id": "grass_field",
+      "name": "Grass Field",
+      "kind": "grass",
+      "model_path": null,
+      "grass": {
+        "width": 0.03,
+        "height": 0.5,
+        "height_variance": 1,
+        "segments": 5,
+        "cross_planes": true,
+        "bend": 0.5,
+        "color_bottom": [
+          0.020670685917139053,
+          0.0690801814198494,
+          0.010380086489021778
+        ],
+        "color_top": [
+          0.1637420505285263,
+          0.41099315881729126,
+          0.028777575120329857
+        ],
+        "roughness": 0.9,
+        "tip_alpha_cutoff": 0,
+        "normal_up_blend": 0.7
+      },
+      "wind": {
+        "strength": 0.2,
+        "speed": 1.5,
+        "frequency": 1,
+        "gust_strength": 0.35,
+        "gust_speed": 1
+      },
+      "scatter": {
+        "density": 64,
+        "scale_min": 0.25,
+        "scale_max": 1.3,
+        "align_to_normal": true,
+        "tilt_max_deg": 10,
+        "random_yaw": true
+      },
+      "rule": {
+        "slope_min_deg": 0,
+        "slope_max_deg": 30,
+        "slope_fade_deg": 8,
+        "layer_conditions": [
+          {
+            "layer": "grass",
+            "min_weight": 0.6
+          }
+        ],
+        "threshold": 0.02
+      }
+    },
+    {
+      "id": "grass_dry",
+      "name": "Dry Grass",
+      "kind": "grass",
+      "model_path": null,
+      "grass": {
+        "width": 0.035,
+        "height": 0.28,
+        "height_variance": 0.45,
+        "segments": 4,
+        "cross_planes": false,
+        "bend": 0.4,
+        "color_bottom": [
+          0.2,
+          0.15,
+          0.05
+        ],
+        "color_top": [
+          0.62,
+          0.52,
+          0.18
+        ],
+        "roughness": 0.95,
+        "tip_alpha_cutoff": 0,
+        "normal_up_blend": 0.7
+      },
+      "wind": {
+        "strength": 0.24,
+        "speed": 1.8,
+        "frequency": 0.45,
+        "gust_strength": 0.5,
+        "gust_speed": 1
+      },
+      "scatter": {
+        "density": 4,
+        "scale_min": 0.7,
+        "scale_max": 1.2,
+        "align_to_normal": true,
+        "tilt_max_deg": 14,
+        "random_yaw": true
+      },
+      "rule": {
+        "slope_min_deg": 0,
+        "slope_max_deg": 38,
+        "slope_fade_deg": 10,
+        "layer_conditions": [
+          {
+            "layer": "dirt",
+            "min_weight": 0.35
+          }
+        ],
+        "threshold": 0.04
+      }
+    },
+    {
+      "id": "tree_pine",
+      "name": "Pine Tree",
+      "kind": "model",
+      "model_path": null,
+      "grass": {},
+      "wind": {},
+      "scatter": {
+        "density": 0.02,
+        "scale_min": 0.8,
+        "scale_max": 1.4,
+        "align_to_normal": false,
+        "tilt_max_deg": 4,
+        "random_yaw": true
+      },
+      "rule": {
+        "slope_min_deg": 0,
+        "slope_max_deg": 20,
+        "slope_fade_deg": 8,
+        "layer_conditions": [
+          {
+            "layer": "grass",
+            "min_weight": 0.6
+          }
+        ],
+        "threshold": 0.2
+      }
+    },
+    {
+      "id": "tree",
+      "name": "Treee",
+      "kind": "model",
+      "model_path": "terrain/models/tree.glb",
+      "wind": {
+        "strength": 0.2,
+        "speed": 1,
+        "frequency": 1,
+        "gust_strength": 0.5,
+        "gust_speed": 1
+      },
+      "rule": {
+        "layer_conditions": [
+          {
+            "layer": "grass",
+            "min_weight": 0.8
+          }
+        ],
+        "slope_max_deg": 3,
+        "slope_min_deg": 0
+      },
+      "scatter": {
+        "scale_min": 0.75,
+        "scale_max": 1,
+        "density": 0.1,
+        "align_to_normal": false
+      }
+    }
+  ]
+}

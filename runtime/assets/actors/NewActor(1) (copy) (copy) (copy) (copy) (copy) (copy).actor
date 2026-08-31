@@ -1,0 +1,130 @@
+{
+  "name": "NewActor(1) (copy) (copy) (copy) (copy) (copy) (copy)",
+  "transform": {
+    "position": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "rotation": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  "components": [
+    {
+      "name": "Model",
+      "component": {
+        "type": "ModelComponent",
+        "data": {
+          "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+          "instances": [
+            [
+              [
+                0.7862566,
+                0.38907441,
+                -0.4800223,
+                10.353452
+              ],
+              [
+                -0.105664544,
+                0.85008013,
+                0.51594454,
+                3.3750825
+              ],
+              [
+                0.60879827,
+                -0.35494357,
+                0.70949256,
+                -1.0406034
+              ],
+              [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            ]
+          ],
+          "meta": [
+            {
+              "name": "Instance_0",
+              "parent": null,
+              "anim_seed": 0
+            }
+          ],
+          "groups": [],
+          "next_group_id": 1000000
+        }
+      }
+    },
+    {
+      "name": "InputMap",
+      "component": {
+        "type": "InputMapComponent",
+        "data": {
+          "asset_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\input\\playerInput.inputmap"
+        }
+      }
+    },
+    {
+      "name": "Collider",
+      "component": {
+        "type": "ColliderComponent",
+        "data": {
+          "shape": {
+            "type": "Box",
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "is_trigger": false,
+          "physics_layer": 1,
+          "layer_mask": 0,
+          "use_rigidbody": true,
+          "mass": 1.0,
+          "restitution": 0.3,
+          "friction": 0.5,
+          "linear_damping": 0.01,
+          "angular_damping": 0.05,
+          "gravity_scale": 1.0,
+          "is_kinematic": false,
+          "freeze_position": [
+            false,
+            false,
+            false
+          ],
+          "freeze_rotation": [
+            false,
+            false,
+            false
+          ],
+          "initial_linear_velocity": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "initial_angular_velocity": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      }
+    }
+  ],
+  "children": []
+}

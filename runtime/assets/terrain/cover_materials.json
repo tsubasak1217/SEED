@@ -1,0 +1,41 @@
+{
+  "_comment": "地表カバー素材（Phase I3.1 / 轍は I3.2）。CoverEmitterComponent.material_id からこの id を参照する。正典は docs/cover_field.md。albedo はリニア RGB、displacement は量 1.0 のときに地表を持ち上げる高さ(m)。footprint_persistence は足跡の残りやすさ(0..1)、refill_rate は降っている間に轍が均される速さ(量/秒)、trample_darkening は踏み固めた所をどれだけ暗くするか(0..1)、rim_ratio は踏んだぶんの素材が縁へ押しのけられて盛り上がる比(0..1)、trample_cavity は溝の中がどれだけ環境光を遮られるか(0..1)。",
+  "materials": [
+    {
+      "id": "snow",
+      "name": "雪",
+      "albedo": [0.86, 0.90, 0.95],
+      "roughness": 0.75,
+      "displacement": 0.22,
+      "refill_rate": 0.02,
+      "footprint_persistence": 0.9,
+      "trample_darkening": 0.32,
+      "rim_ratio": 0.5,
+      "trample_cavity": 0.7
+    },
+    {
+      "id": "wet",
+      "name": "濡れ",
+      "albedo": [0.06, 0.06, 0.07],
+      "roughness": 0.18,
+      "displacement": 0.0,
+      "refill_rate": 0.0,
+      "footprint_persistence": 0.0,
+      "trample_darkening": 0.0,
+      "rim_ratio": 0.0,
+      "trample_cavity": 0.0
+    },
+    {
+      "id": "mud",
+      "name": "泥",
+      "albedo": [0.09, 0.07, 0.04],
+      "roughness": 0.55,
+      "displacement": 0.05,
+      "refill_rate": 0.0,
+      "footprint_persistence": 1.0,
+      "trample_darkening": 0.45,
+      "rim_ratio": 0.35,
+      "trample_cavity": 0.6
+    }
+  ]
+}

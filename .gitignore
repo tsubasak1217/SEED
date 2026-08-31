@@ -80,5 +80,34 @@ editor/settings/
 # ランタイムのモデルキャッシュ（生成物。コミット禁止）
 runtime/cache/
 
-# アセットは D:\SEED_assets に実体を置き junction 経由で参照（LFS容量対策で追跡外）
-runtime/assets/
+# アセット: テキスト系(シーン/JSON/anim/sprite_mesh等)は追跡する。
+# 重いバイナリ(画像/モデル/音声/キャッシュ)のみ除外(実体は D:\SEED_assets、junction参照)
+runtime/assets/**/*.png
+runtime/assets/**/*.jpg
+runtime/assets/**/*.jpeg
+runtime/assets/**/*.tga
+runtime/assets/**/*.bmp
+runtime/assets/**/*.gif
+runtime/assets/**/*.hdr
+runtime/assets/**/*.exr
+runtime/assets/**/*.webp
+runtime/assets/**/*.dds
+runtime/assets/**/*.ktx2
+runtime/assets/**/*.glb
+runtime/assets/**/*.gltf
+runtime/assets/**/*.bin
+runtime/assets/**/*.fbx
+runtime/assets/**/*.obj
+runtime/assets/**/*.max
+runtime/assets/**/*.usda
+runtime/assets/**/*.smd1
+runtime/assets/**/*.smdl
+runtime/assets/**/*.wav
+runtime/assets/**/*.mp3
+runtime/assets/**/*.ogg
+runtime/assets/**/*.flac
+runtime/assets/**/*.tcover
+runtime/assets/**/*.tvox
+runtime/assets/project_settings.json
+runtime/assets/**/*.blend
+runtime/assets/**/*.zip

@@ -1,0 +1,803 @@
+{
+  "name": "Untitled",
+  "debug_camera": {
+    "position": [
+      -1.3281455,
+      1.3844208,
+      -11.735056
+    ],
+    "yaw": 0.24520354,
+    "pitch": 0.3000002,
+    "fov_deg": 45.0,
+    "far": 1000.0,
+    "speed": 5.0
+  },
+  "actors": [
+    {
+      "name": "3DCanvas",
+      "transform": {
+        "position": [
+          -0.188,
+          -0.049,
+          -0.177
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Canvas",
+          "component": {
+            "type": "CanvasComponent",
+            "data": {
+              "width": 640.0,
+              "height": 360.0,
+              "auto_scale": false,
+              "viewport_ref": {
+                "type": "window"
+              },
+              "gravity_mode": "world_down",
+              "draw_zone": "foreground",
+              "pivot": [
+                0.5,
+                0.5
+              ]
+            }
+          }
+        }
+      ],
+      "children": [
+        {
+          "name": "Sprite",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://textures/symmetryORE1.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0
+                  ],
+                  "width": 100.0,
+                  "height": 100.0,
+                  "layer": 0
+                }
+              }
+            }
+          ],
+          "children": []
+        }
+      ]
+    },
+    {
+      "name": "Actor(1)",
+      "transform": {
+        "position": [
+          0.18012476,
+          0.29973102,
+          -7.6854844
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Camera",
+          "component": {
+            "type": "CameraComponent",
+            "data": {
+              "fov_y_deg": 45.0,
+              "near": 0.1,
+              "far": 1000.0,
+              "is_main": true,
+              "clear_color": [
+                0.1,
+                0.1,
+                0.1,
+                1.0
+              ],
+              "scaling_mode": "letter_pillar_box",
+              "target_width": 16,
+              "target_height": 9,
+              "bar_color": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ],
+              "projection": "perspective",
+              "ortho_height": 10.0
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor2D",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Canvas",
+          "component": {
+            "type": "CanvasComponent",
+            "data": {
+              "width": 1920.0,
+              "height": 1080.0,
+              "auto_scale": true,
+              "viewport_ref": {
+                "type": "main_camera"
+              },
+              "gravity_mode": "world_down",
+              "draw_zone": "foreground",
+              "pivot": [
+                0.0,
+                0.0
+              ]
+            }
+          }
+        }
+      ],
+      "children": [
+        {
+          "name": "Sprite",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\textures\\symmetryORE2.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0
+                  ],
+                  "width": 256.0,
+                  "height": 256.0,
+                  "layer": 0
+                }
+              }
+            },
+            {
+              "name": "Collider 2D",
+              "component": {
+                "type": "Collider2dComponent",
+                "data": {
+                  "shape": {
+                    "type": "Box",
+                    "half_extents": [
+                      128.0,
+                      128.0
+                    ]
+                  },
+                  "offset": [
+                    0.0,
+                    0.0
+                  ],
+                  "is_trigger": false,
+                  "physics_layer": 1,
+                  "layer_mask": 0,
+                  "use_rigidbody": true,
+                  "mass": 1.0,
+                  "restitution": 0.3,
+                  "friction": 0.5,
+                  "linear_damping": 0.01,
+                  "angular_damping": 0.05,
+                  "gravity_scale": 1.0,
+                  "is_kinematic": false,
+                  "freeze_position": [
+                    false,
+                    false
+                  ],
+                  "freeze_rotation": false,
+                  "initial_linear_velocity": [
+                    0.0,
+                    0.0
+                  ],
+                  "initial_angular_velocity": 0.0,
+                  "keep_aspect_ratio": false,
+                  "aspect_ratio_axis": "width"
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "NewActor2D",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              1210.8501,
+              911.59436
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Canvas",
+              "component": {
+                "type": "CanvasComponent",
+                "data": {
+                  "width": 1920.0,
+                  "height": 1080.0,
+                  "auto_scale": true,
+                  "viewport_ref": {
+                    "type": "window"
+                  },
+                  "gravity_mode": "world_down",
+                  "draw_zone": "foreground",
+                  "pivot": [
+                    0.0,
+                    0.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "Sprite",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\textures\\symmetryORE2.png",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                      ],
+                      "width": 256.0,
+                      "height": 256.0,
+                      "layer": 0
+                    }
+                  }
+                },
+                {
+                  "name": "Collider 2D",
+                  "component": {
+                    "type": "Collider2dComponent",
+                    "data": {
+                      "shape": {
+                        "type": "Box",
+                        "half_extents": [
+                          128.0,
+                          128.0
+                        ]
+                      },
+                      "offset": [
+                        0.0,
+                        0.0
+                      ],
+                      "is_trigger": false,
+                      "physics_layer": 1,
+                      "layer_mask": 0,
+                      "use_rigidbody": true,
+                      "mass": 1.0,
+                      "restitution": 0.3,
+                      "friction": 0.5,
+                      "linear_damping": 0.01,
+                      "angular_damping": 0.05,
+                      "gravity_scale": 1.0,
+                      "is_kinematic": false,
+                      "freeze_position": [
+                        false,
+                        false
+                      ],
+                      "freeze_rotation": false,
+                      "initial_linear_velocity": [
+                        0.0,
+                        0.0
+                      ],
+                      "initial_angular_velocity": 0.0,
+                      "keep_aspect_ratio": false,
+                      "aspect_ratio_axis": "width"
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "Actor",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.0,
+                  1.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Collider 2D",
+                  "component": {
+                    "type": "Collider2dComponent",
+                    "data": {
+                      "shape": {
+                        "type": "Box",
+                        "half_extents": [
+                          960.0,
+                          50.0
+                        ]
+                      },
+                      "offset": [
+                        0.0,
+                        0.0
+                      ],
+                      "is_trigger": false,
+                      "physics_layer": 1,
+                      "layer_mask": 0,
+                      "use_rigidbody": false,
+                      "mass": 1.0,
+                      "restitution": 0.3,
+                      "friction": 0.5,
+                      "linear_damping": 0.01,
+                      "angular_damping": 0.05,
+                      "gravity_scale": 1.0,
+                      "is_kinematic": false,
+                      "freeze_position": [
+                        false,
+                        false
+                      ],
+                      "freeze_rotation": false,
+                      "initial_linear_velocity": [
+                        0.0,
+                        0.0
+                      ],
+                      "initial_angular_velocity": 0.0,
+                      "keep_aspect_ratio": false,
+                      "aspect_ratio_axis": "width"
+                    }
+                  }
+                },
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                      ],
+                      "width": 1920.0,
+                      "height": 100.0,
+                      "layer": 0
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "Actor (copy)",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  1.0
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Collider 2D",
+                  "component": {
+                    "type": "Collider2dComponent",
+                    "data": {
+                      "shape": {
+                        "type": "Box",
+                        "half_extents": [
+                          960.0,
+                          50.0
+                        ]
+                      },
+                      "offset": [
+                        0.0,
+                        0.0
+                      ],
+                      "is_trigger": false,
+                      "physics_layer": 1,
+                      "layer_mask": 0,
+                      "use_rigidbody": false,
+                      "mass": 1.0,
+                      "restitution": 0.3,
+                      "friction": 0.5,
+                      "linear_damping": 0.01,
+                      "angular_damping": 0.05,
+                      "gravity_scale": 1.0,
+                      "is_kinematic": false,
+                      "freeze_position": [
+                        false,
+                        false
+                      ],
+                      "freeze_rotation": false,
+                      "initial_linear_velocity": [
+                        0.0,
+                        0.0
+                      ],
+                      "initial_angular_velocity": 0.0,
+                      "keep_aspect_ratio": false,
+                      "aspect_ratio_axis": "width"
+                    }
+                  }
+                },
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                      ],
+                      "width": 1920.0,
+                      "height": 100.0,
+                      "layer": 0
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "Actor (copy) (copy)",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  1.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Collider 2D",
+                  "component": {
+                    "type": "Collider2dComponent",
+                    "data": {
+                      "shape": {
+                        "type": "Box",
+                        "half_extents": [
+                          50.0,
+                          540.0
+                        ]
+                      },
+                      "offset": [
+                        0.0,
+                        0.0
+                      ],
+                      "is_trigger": false,
+                      "physics_layer": 1,
+                      "layer_mask": 0,
+                      "use_rigidbody": false,
+                      "mass": 1.0,
+                      "restitution": 0.3,
+                      "friction": 0.5,
+                      "linear_damping": 0.01,
+                      "angular_damping": 0.05,
+                      "gravity_scale": 1.0,
+                      "is_kinematic": false,
+                      "freeze_position": [
+                        false,
+                        false
+                      ],
+                      "freeze_rotation": false,
+                      "initial_linear_velocity": [
+                        0.0,
+                        0.0
+                      ],
+                      "initial_angular_velocity": 0.0,
+                      "keep_aspect_ratio": false,
+                      "aspect_ratio_axis": "width"
+                    }
+                  }
+                },
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                      ],
+                      "width": 100.0,
+                      "height": 1080.0,
+                      "layer": 0
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "Actor (copy) (copy) (copy)",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  1.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Collider 2D",
+                  "component": {
+                    "type": "Collider2dComponent",
+                    "data": {
+                      "shape": {
+                        "type": "Box",
+                        "half_extents": [
+                          50.0,
+                          540.0
+                        ]
+                      },
+                      "offset": [
+                        0.0,
+                        0.0
+                      ],
+                      "is_trigger": false,
+                      "physics_layer": 1,
+                      "layer_mask": 0,
+                      "use_rigidbody": false,
+                      "mass": 1.0,
+                      "restitution": 0.3,
+                      "friction": 0.5,
+                      "linear_damping": 0.01,
+                      "angular_damping": 0.05,
+                      "gravity_scale": 1.0,
+                      "is_kinematic": false,
+                      "freeze_position": [
+                        false,
+                        false
+                      ],
+                      "freeze_rotation": false,
+                      "initial_linear_velocity": [
+                        0.0,
+                        0.0
+                      ],
+                      "initial_angular_velocity": 0.0,
+                      "keep_aspect_ratio": false,
+                      "aspect_ratio_axis": "width"
+                    }
+                  }
+                },
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                      ],
+                      "width": 100.0,
+                      "height": 1080.0,
+                      "layer": 0
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

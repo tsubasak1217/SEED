@@ -1,0 +1,23 @@
+{
+  "game_name": "CameraTest",
+  "windows": {
+    "output_path": "C:\\Users\\k023g\\Downloads",
+    "build_type": "Release",
+    "arch": "X64"
+  },
+  "macos": {
+    "output_path": "",
+    "build_type": "Release",
+    "arch": "Arm64"
+  },
+  "android": {
+    "output_path": "",
+    "build_type": "Release",
+    "arch": "Arm64V8a",
+    "ndk_path": ""
+  },
+  "ios": {
+    "output_path": "",
+    "build_type": "Release"
+  }
+}

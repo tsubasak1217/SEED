@@ -1,0 +1,3467 @@
+{
+  "name": "Untitled",
+  "debug_camera": {
+    "position": [
+      -3.3519094,
+      5.1136427,
+      -4.4719405
+    ],
+    "yaw": 0.71599996,
+    "pitch": 0.3980003,
+    "fov_deg": 45.0,
+    "far": 1000.0,
+    "speed": 3.095869
+  },
+  "actors": [
+    {
+      "name": "Actor_0_0",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_0_1",
+      "transform": {
+        "position": [
+          2.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_0_2",
+      "transform": {
+        "position": [
+          4.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_0_3",
+      "transform": {
+        "position": [
+          6.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_0_4",
+      "transform": {
+        "position": [
+          8.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_1_0",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          2.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_1_1",
+      "transform": {
+        "position": [
+          2.0,
+          0.0,
+          2.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_1_2",
+      "transform": {
+        "position": [
+          4.0,
+          0.0,
+          2.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_1_3",
+      "transform": {
+        "position": [
+          6.0,
+          0.0,
+          2.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_1_4",
+      "transform": {
+        "position": [
+          8.0,
+          0.0,
+          2.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_2_0",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          4.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_2_1",
+      "transform": {
+        "position": [
+          2.0,
+          0.0,
+          4.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_2_2",
+      "transform": {
+        "position": [
+          4.0,
+          0.0,
+          4.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_2_3",
+      "transform": {
+        "position": [
+          6.0,
+          0.0,
+          4.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_2_4",
+      "transform": {
+        "position": [
+          8.0,
+          0.0,
+          4.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_3_0",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_3_1",
+      "transform": {
+        "position": [
+          2.0,
+          0.0,
+          6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_3_2",
+      "transform": {
+        "position": [
+          4.0,
+          0.0,
+          6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_3_3",
+      "transform": {
+        "position": [
+          6.0,
+          0.0,
+          6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_3_4",
+      "transform": {
+        "position": [
+          8.0,
+          0.0,
+          6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_4_0",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          8.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_4_1",
+      "transform": {
+        "position": [
+          2.0,
+          0.0,
+          8.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_4_2",
+      "transform": {
+        "position": [
+          4.0,
+          0.0,
+          8.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_4_3",
+      "transform": {
+        "position": [
+          6.0,
+          0.0,
+          8.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_4_4",
+      "transform": {
+        "position": [
+          8.0,
+          0.0,
+          8.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_0_0 (copy)",
+      "transform": {
+        "position": [
+          0.0,
+          1.8147542,
+          0.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_0_1 (copy)",
+      "transform": {
+        "position": [
+          2.0,
+          1.8147542,
+          0.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_0_2 (copy)",
+      "transform": {
+        "position": [
+          4.0,
+          1.8147542,
+          0.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_0_3 (copy)",
+      "transform": {
+        "position": [
+          6.0,
+          1.8147542,
+          0.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_0_4 (copy)",
+      "transform": {
+        "position": [
+          8.0,
+          1.8147542,
+          0.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_1_0 (copy)",
+      "transform": {
+        "position": [
+          0.0,
+          1.8147542,
+          2.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_1_1 (copy)",
+      "transform": {
+        "position": [
+          2.0,
+          1.8147542,
+          2.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_1_2 (copy)",
+      "transform": {
+        "position": [
+          4.0,
+          1.8147542,
+          2.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_1_3 (copy)",
+      "transform": {
+        "position": [
+          6.0,
+          1.8147542,
+          2.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_1_4 (copy)",
+      "transform": {
+        "position": [
+          8.0,
+          1.8147542,
+          2.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_2_0 (copy)",
+      "transform": {
+        "position": [
+          0.0,
+          1.8147542,
+          4.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_2_1 (copy)",
+      "transform": {
+        "position": [
+          2.0,
+          1.8147542,
+          4.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_2_2 (copy)",
+      "transform": {
+        "position": [
+          4.0,
+          1.8147542,
+          4.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_2_3 (copy)",
+      "transform": {
+        "position": [
+          6.0,
+          1.8147542,
+          4.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_2_4 (copy)",
+      "transform": {
+        "position": [
+          8.0,
+          1.8147542,
+          4.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_3_0 (copy)",
+      "transform": {
+        "position": [
+          0.0,
+          1.8147542,
+          6.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_3_1 (copy)",
+      "transform": {
+        "position": [
+          2.0,
+          1.8147542,
+          6.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_3_2 (copy)",
+      "transform": {
+        "position": [
+          4.0,
+          1.8147542,
+          6.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_3_3 (copy)",
+      "transform": {
+        "position": [
+          6.0,
+          1.8147542,
+          6.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_3_4 (copy)",
+      "transform": {
+        "position": [
+          8.0,
+          1.8147542,
+          6.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_4_0 (copy)",
+      "transform": {
+        "position": [
+          0.0,
+          1.8147542,
+          8.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_4_1 (copy)",
+      "transform": {
+        "position": [
+          2.0,
+          1.8147542,
+          8.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    2.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_4_2 (copy)",
+      "transform": {
+        "position": [
+          4.0,
+          1.8147542,
+          8.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    4.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_4_3 (copy)",
+      "transform": {
+        "position": [
+          6.0,
+          1.8147542,
+          8.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    6.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "Actor_4_4 (copy)",
+      "transform": {
+        "position": [
+          8.0,
+          1.8147542,
+          8.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "ModelComponent",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.8147542
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    8.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    }
+  ]
+}

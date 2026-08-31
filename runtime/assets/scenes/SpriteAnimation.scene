@@ -1,0 +1,97 @@
+{
+  "name": "NewScene",
+  "debug_camera": {
+    "position": [
+      0.0,
+      2.0,
+      -10.0
+    ],
+    "yaw": 0.008000002,
+    "pitch": 0.016000021,
+    "fov_deg": 45.0,
+    "far": 1000.0,
+    "speed": 5.0
+  },
+  "actors": [
+    {
+      "name": "Actor(1)",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Canvas",
+          "component": {
+            "type": "CanvasComponent",
+            "data": {
+              "width": 1920.0,
+              "height": 1080.0,
+              "auto_scale": true,
+              "viewport_ref": {
+                "type": "main_camera"
+              },
+              "gravity_mode": "world_down",
+              "draw_zone": "foreground",
+              "pivot": [
+                0.0,
+                0.0
+              ]
+            }
+          }
+        }
+      ],
+      "children": [
+        {
+          "name": "Actor",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [],
+          "children": []
+        }
+      ]
+    }
+  ]
+}

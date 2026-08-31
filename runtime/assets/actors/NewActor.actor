@@ -1,0 +1,52 @@
+{
+  "name": "NewActor",
+  "components": [
+    {
+      "name": "Model",
+      "component": {
+        "type": "ModelComponent",
+        "data": {
+          "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\bunny\\bunny.obj",
+          "instances": [
+            [
+              [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            ]
+          ],
+          "meta": [
+            {
+              "name": "Instance_0",
+              "parent": null,
+              "anim_seed": 0
+            }
+          ],
+          "groups": [],
+          "next_group_id": 1000000
+        }
+      }
+    }
+  ],
+  "children": []
+}

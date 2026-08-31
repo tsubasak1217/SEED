@@ -1,0 +1,52 @@
+{
+  "version": 2,
+  "actions": [
+    {
+      "name": "CameraMove",
+      "value_type": 2,
+      "normalize": true,
+      "x": {
+        "positive": [
+          {
+            "platform": "PC",
+            "input_type": "Key",
+            "value": "RightArrow"
+          },
+          {
+            "platform": "PC",
+            "input_type": "GamepadAxis",
+            "value": "RightStickX"
+          }
+        ],
+        "negative": [
+          {
+            "platform": "PC",
+            "input_type": "Key",
+            "value": "LeftArrow"
+          }
+        ]
+      },
+      "y": {
+        "positive": [
+          {
+            "platform": "PC",
+            "input_type": "Key",
+            "value": "DownArrow"
+          }
+        ],
+        "negative": [
+          {
+            "platform": "PC",
+            "input_type": "Key",
+            "value": "UpArrow"
+          },
+          {
+            "platform": "PC",
+            "input_type": "GamepadAxis",
+            "value": "RightStickY"
+          }
+        ]
+      }
+    }
+  ]
+}

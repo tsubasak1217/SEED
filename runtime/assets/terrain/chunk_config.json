@@ -1,0 +1,6 @@
+{
+  "chunks_x": 16,
+  "chunks_z": 16,
+  "chunk_cells": 32,
+  "voxel_size": 0.25
+}

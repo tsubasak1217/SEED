@@ -1,0 +1,238 @@
+{
+  "name": "Untitled",
+  "debug_camera": {
+    "position": [
+      -8.150593,
+      3.387714,
+      -19.756239
+    ],
+    "yaw": 0.36600268,
+    "pitch": 0.29999918,
+    "fov_deg": 45.0,
+    "far": 1000.0,
+    "speed": 5.0
+  },
+  "actors": [
+    {
+      "name": "NewActor",
+      "transform": {
+        "position": [
+          -3.0751524,
+          3.497725,
+          0.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\bunny\\bunny.obj",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    -3.0751524
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.497725
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor",
+      "transform": {
+        "position": [
+          7.073,
+          1.626,
+          0.0
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          20.0,
+          1.0,
+          20.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\bunny\\bunny.obj",
+              "instances": [
+                [
+                  [
+                    19.999977,
+                    0.0,
+                    0.0,
+                    7.073004
+                  ],
+                  [
+                    0.0,
+                    0.99999875,
+                    0.0,
+                    -0.37399638
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    19.999977,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "NewActor2D",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Canvas",
+          "component": {
+            "type": "CanvasComponent",
+            "data": {
+              "width": 1920.0,
+              "height": 1080.0,
+              "scale_size": false,
+              "scale_transform": true,
+              "auto_scale": true
+            }
+          }
+        }
+      ],
+      "children": [
+        {
+          "name": "Sprite",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              -100.0,
+              -100.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              1.0,
+              1.0
+            ],
+            "anchor": [
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\textures\\symmetryORE2.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0
+                  ],
+                  "width": 1000.0,
+                  "height": 1000.0
+                }
+              }
+            }
+          ],
+          "children": []
+        }
+      ]
+    }
+  ]
+}

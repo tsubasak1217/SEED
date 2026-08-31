@@ -1,0 +1,95 @@
+{
+  "name": "Untitled",
+  "debug_camera": {
+    "position": [
+      -1.188155,
+      1.9069775,
+      -1.9457839
+    ],
+    "yaw": 0.54399985,
+    "pitch": 0.40000004,
+    "fov_deg": 45.0,
+    "far": 1000.0,
+    "speed": 5.0
+  },
+  "actors": [
+    {
+      "name": "Actor",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\models\\BrainStem.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    -0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000
+            }
+          }
+        },
+        {
+          "name": "Script",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\scripts\\Test.cs"
+            }
+          }
+        }
+      ],
+      "children": []
+    }
+  ]
+}
