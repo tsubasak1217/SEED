@@ -16,6 +16,8 @@ pub mod axis_gizmo;
 pub mod canvas_text;
 pub mod icon_overlay;
 pub mod pipeline;
+/// カーソル脇に出すスクリーンスペース操作ガイド（配置モード等の「いま何ができるか」）
+pub mod screen_hint;
 pub mod rasterizer;
 
 use ab_glyph::{FontArc, InvalidFont};

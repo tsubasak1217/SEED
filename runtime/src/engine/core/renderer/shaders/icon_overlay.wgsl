@@ -8,11 +8,14 @@
 struct VertIn {
     @location(0) position : vec2<f32>,
     @location(1) uv       : vec2<f32>,
+    // 乗算色（RGBA）。仮スポーンのマーカーを半透明で描き分けるために使う。
+    @location(2) tint     : vec4<f32>,
 }
 
 struct VertOut {
     @builtin(position) clip_pos : vec4<f32>,
     @location(0)       uv       : vec2<f32>,
+    @location(1)       tint     : vec4<f32>,
 }
 
 @group(0) @binding(0) var t_icon : texture_2d<f32>;
@@ -23,12 +26,13 @@ fn vs_main(in: VertIn) -> VertOut {
     var out : VertOut;
     out.clip_pos = vec4<f32>(in.position, 0.0, 1.0);
     out.uv       = in.uv;
+    out.tint     = in.tint;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertOut) -> @location(0) vec4<f32> {
-    let color = textureSample(t_icon, s_icon, in.uv);
+    let color = textureSample(t_icon, s_icon, in.uv) * in.tint;
     if color.a < 0.01 { discard; }
     return color;
 }

@@ -730,6 +730,9 @@ pub struct App {
     axis_gizmo: Option<crate::engine::core::font::axis_gizmo::AxisGizmo>,
     /// アイコンオーバーレイ（エディタモードのみ使用）。
     icon_overlay: Option<crate::engine::core::font::icon_overlay::IconOverlay>,
+    /// カーソル脇の操作ガイド（エディタモードのみ使用。ロジック配置モード等が使う）。
+    /// フォント初期化に失敗した場合のみ None（ガイドが出ないだけで他は動く）。
+    screen_hint: Option<crate::engine::core::font::screen_hint::ScreenHintOverlay>,
     /// キャンバステキスト描画器（TextComponent 用）。Edit / Play の両方で使う。
     /// フォント初期化に失敗した場合のみ None（テキストが出ないだけで他は動く）。
     canvas_text: Option<crate::engine::core::font::canvas_text::CanvasTextRenderer>,
@@ -1358,6 +1361,7 @@ impl App {
             axis_gizmo:            None,
             canvas_text:           None,
             icon_overlay:          None,
+            screen_hint:           None,
             fps_display:           0.0,
             fps_frame_count:       0,
             fps_frame_start:       std::time::Instant::now(),

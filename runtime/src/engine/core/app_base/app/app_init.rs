@@ -131,7 +131,17 @@ impl App {
                 scene_fmt,
                 renderer.depth_format(),
             ));
-            eprintln!("[SEED INIT] axis_gizmo + icon_overlay created");
+            // カーソル脇の操作ガイド（ロジック配置モード等が使う）。
+            // 軸ギズモとは表示 ON/OFF が独立なので、専用のフォントシステムを持つ。
+            self.screen_hint = crate::engine::core::font::screen_hint::ScreenHintOverlay::new(
+                dev,
+                scene_fmt,
+                renderer.depth_format(),
+            );
+            eprintln!(
+                "[SEED INIT] axis_gizmo + icon_overlay created (screen_hint ok={})",
+                self.screen_hint.is_some()
+            );
         }
 
         self.renderer = Some(renderer);

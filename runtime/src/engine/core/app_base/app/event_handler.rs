@@ -211,13 +211,16 @@ impl App {
         // 取消は「置くのをやめる」という最も頻度の高い操作なので、
         // カメラ回転（RMB ドラッグ）と衝突する場合は取消を採る。
         // モード中に視点を変えたいときは、いったん取り消してから動かす。
+        //
+        // 左ボタンは**押下と解放の両方**を見る。円形パターンは
+        // 「押下で中心固定 → ドラッグで半径調整 → 解放で確定」に使うため、
+        // 押した時点では確定しない（押してすぐ離せばクリック扱いで従来どおり）。
         if self.placement_mode_active() {
-            if pressed {
-                match button {
-                    MouseButton::Left  => self.confirm_placement(),
-                    MouseButton::Right => self.cancel_placement(),
-                    _ => {}
-                }
+            match (button, pressed) {
+                (MouseButton::Left,  true)  => self.on_placement_left_press(),
+                (MouseButton::Left,  false) => self.on_placement_left_release(),
+                (MouseButton::Right, true)  => self.cancel_placement(),
+                _ => {}
             }
             return;
         }

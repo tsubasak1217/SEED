@@ -25,6 +25,14 @@ public partial class MainWindow
     private const string PlacementHintText = "配置モード: 左クリックで配置 / 右クリック・Esc で取消";
 
     /// <summary>
+    /// 半径ドラッグで決めた半径として受け入れる下限 [m]。
+    ///
+    /// ランタイム側も 0 にはしないが、IPC で壊れた値が来た場合に
+    /// ダイアログの前回値を壊さないための最後の砦。
+    /// </summary>
+    private const float PlacementMinRadius = 0.001f;
+
+    /// <summary>
     /// ランタイムからの配置モード進行状態通知（<c>PLACEMENT_STATE:0|1</c>）を受ける。
     ///
     /// IPC 受信はバックグラウンドスレッドなので、フラグ（volatile）だけ即座に更新し、
@@ -57,4 +65,37 @@ public partial class MainWindow
     ///   「モード中なのにヒントが消えている」不整合が残る）。
     /// </summary>
     private void SendPlacementCancel() => _runtimeManager?.SendToRuntime("PLACEMENT_CANCEL");
+
+    /// <summary>
+    /// ビューポート上の半径ドラッグで決まった半径（<c>PLACEMENT_RADIUS:{値}</c>）を受ける。
+    ///
+    /// <para>
+    /// ダイアログの「前回値」（<see cref="EditorPreferences.LogicPlacement"/>）へ書き戻し、
+    /// 次に開いたときの初期値にする。ダイアログはこの時点で既に閉じているので、
+    /// 設定オブジェクトを直接更新して保存するのが唯一の経路である。
+    /// </para>
+    ///
+    /// <para>
+    /// 前回値がまだ無い（＝一度も「配置」していない）場合は、既定値の
+    /// <see cref="Placement.Patterns.PlacementSpec"/> を作ってそこへ入れる。
+    /// </para>
+    /// </summary>
+    /// <param name="radius">ドラッグで確定した半径 [m]。</param>
+    private void OnPlacementRadiusChanged(float radius)
+    {
+        if (!(radius >= PlacementMinRadius) || float.IsInfinity(radius)) return; // NaN もここで弾く
+
+        void Apply()
+        {
+            var spec = EditorPreferences.Instance.LogicPlacement ?? new Placement.Patterns.PlacementSpec();
+            spec.Radius = radius;
+            EditorPreferences.Instance.LogicPlacement = spec;
+            EditorPreferences.Save();
+        }
+
+        // IPC 受信はバックグラウンドスレッド。設定の保存は UI スレッドへ寄せる
+        // （EditorPreferences は他の UI 操作からも触られるため）。
+        if (Dispatcher.CheckAccess()) Apply();
+        else                          Dispatcher.BeginInvoke(Apply);
+    }
 }

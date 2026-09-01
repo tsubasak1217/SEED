@@ -20,6 +20,31 @@ static ICON_BYTES: &[u8] =
 pub struct IconOverlayVertex {
     pub position: [f32; 2],
     pub uv: [f32; 2],
+    /// 乗算する色（RGBA）。通常の選択マーカーは白の不透明、
+    /// ロジック配置の「仮スポーン」は水色寄りの半透明にして区別する。
+    pub tint: [f32; 4],
+}
+
+// ── IconOverlayItem ──────────────────────────────────────────
+
+/// アイコン 1 個ぶんの描画指定。
+///
+/// 「どこに」だけでなく「どんな色で」も指定できるようにしてあるのは、
+/// 確定済みの選択マーカーと、まだ確定していない仮スポーンのマーカーを
+/// 同じ 1 パスで描き分けるため（2 パスに割ると描画順の管理が増える）。
+#[derive(Copy, Clone, Debug)]
+pub struct IconOverlayItem {
+    /// スクリーン座標 [px]（左上原点）。ピンの先端がここに来る。
+    pub screen: (f32, f32),
+    /// 乗算する色（RGBA）。
+    pub tint: [f32; 4],
+}
+
+impl IconOverlayItem {
+    /// 通常の選択マーカー（白・不透明）。
+    pub fn selected(screen: (f32, f32)) -> Self {
+        Self { screen, tint: [1.0, 1.0, 1.0, 1.0] }
+    }
 }
 
 // ── GpuIconOverlayBatch ──────────────────────────────────────
@@ -169,6 +194,11 @@ impl IconOverlay {
                             offset: 8,
                             shader_location: 1,
                         },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 16,
+                            shader_location: 2,
+                        },
                     ],
                 }],
                 compilation_options: Default::default(),
@@ -207,17 +237,17 @@ impl IconOverlay {
         }
     }
 
-    /// 選択インスタンスのスクリーン座標からバッチを構築する。
+    /// アイコン描画指定の列からバッチを構築する。
     ///
-    /// `positions_screen`: `world_to_screen` で得たピクセル座標のリスト。
+    /// `items`: `world_to_screen` で得たピクセル座標と色の組。
     /// ピンの先端（底辺中央）を各座標に合わせ、アイコンは上方向に展開する。
     pub fn build(
-        positions_screen: &[(f32, f32)],
+        items: &[IconOverlayItem],
         vp_w: f32,
         vp_h: f32,
         device: &wgpu::Device,
     ) -> Option<GpuIconOverlayBatch> {
-        if positions_screen.is_empty() {
+        if items.is_empty() {
             return None;
         }
 
@@ -225,9 +255,11 @@ impl IconOverlay {
         let hw = (ICON_SIZE_PX * 0.5) / vp_w * 2.0;
         let hh = ICON_SIZE_PX / vp_h * 2.0;
 
-        let mut verts: Vec<IconOverlayVertex> = Vec::with_capacity(positions_screen.len() * 6);
+        let mut verts: Vec<IconOverlayVertex> = Vec::with_capacity(items.len() * 6);
 
-        for &(sx, sy) in positions_screen {
+        for item in items {
+            let (sx, sy) = item.screen;
+            let tint = item.tint;
             // スクリーン座標 → NDC（ピン先端 = 底辺中央）
             let cx = sx / vp_w * 2.0 - 1.0;
             let cy = 1.0 - sy / vp_h * 2.0;
@@ -238,31 +270,13 @@ impl IconOverlay {
             let br = [cx + hw, cy];
 
             // 三角形 1: TL → TR → BR
-            verts.push(IconOverlayVertex {
-                position: tl,
-                uv: [0.0, 0.0],
-            });
-            verts.push(IconOverlayVertex {
-                position: tr,
-                uv: [1.0, 0.0],
-            });
-            verts.push(IconOverlayVertex {
-                position: br,
-                uv: [1.0, 1.0],
-            });
+            verts.push(IconOverlayVertex { position: tl, uv: [0.0, 0.0], tint });
+            verts.push(IconOverlayVertex { position: tr, uv: [1.0, 0.0], tint });
+            verts.push(IconOverlayVertex { position: br, uv: [1.0, 1.0], tint });
             // 三角形 2: TL → BR → BL
-            verts.push(IconOverlayVertex {
-                position: tl,
-                uv: [0.0, 0.0],
-            });
-            verts.push(IconOverlayVertex {
-                position: br,
-                uv: [1.0, 1.0],
-            });
-            verts.push(IconOverlayVertex {
-                position: bl,
-                uv: [0.0, 1.0],
-            });
+            verts.push(IconOverlayVertex { position: tl, uv: [0.0, 0.0], tint });
+            verts.push(IconOverlayVertex { position: br, uv: [1.0, 1.0], tint });
+            verts.push(IconOverlayVertex { position: bl, uv: [0.0, 1.0], tint });
         }
 
         let vertex_count = verts.len() as u32;

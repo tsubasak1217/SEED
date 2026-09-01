@@ -367,6 +367,9 @@ impl App {
         // 2D 配置の基準点は GPU 読み戻しを要さないので、ここで毎フレーム更新する
         //（3D は ID パスの読み戻し後に解決する。下の readback 節を参照）。
         self.update_placement_hover_2d();
+        // 仮スポーンしたプレビュー群をカーソル（または半径ドラッグ）へ追従させる。
+        // 基準点が実際に動いたフレームだけ動かすので、静止中はコストが掛からない。
+        self.tick_placement_preview();
 
         // フレーム凍結ウォッチドッグを初回に 1 度だけ起動する。
         ensure_frame_watchdog();
@@ -1343,6 +1346,11 @@ impl App {
         // ロジック配置モードのプレビュー線（位置マーカー＋向き線）。
         // control_point_lines と同様、レンダラの可変借用前に頂点を組む。
         let placement_preview_lines = self.build_placement_preview_line_batch();
+        // 仮スポーン中アクタのワールド位置（アイコンオーバーレイ用）と、
+        // カーソル脇の操作ガイド文言。どちらも `&self` を要するので、
+        // レンダラを可変借用する前にここで確定させておく。
+        let placement_icon_worlds = self.placement_preview_icon_positions();
+        let placement_guide_lines = self.placement_guide_lines();
         // ロジック配置モード（3D）がこのフレームで要求する読み戻し座標。
         // 描画ブロックの中では `self` を不変借用できない（レンダラを可変借用しているため）
         // ので、ここで先に確定させておく。
@@ -4456,7 +4464,7 @@ impl App {
                         let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
                         let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
                         let (view, proj) = (self.camera.view_matrix(), self.camera.projection_matrix());
-                        let positions: Vec<(f32, f32)> = if !self.selected_instances.is_empty() {
+                        let selected_screen: Vec<(f32, f32)> = if !self.selected_instances.is_empty() {
                             // レガシーインスタンス選択（ModelComponent クリック）
                             selected_mc
                                 .map(|mc| {
@@ -4493,10 +4501,52 @@ impl App {
                         } else {
                             Vec::new()
                         };
-                        crate::engine::core::font::icon_overlay::IconOverlay::build(
-                            &positions, vp_w, vp_h, &draw_ctx.device,
-                        )
+                        // ── アイコン描画指定を組む ──
+                        // 選択アクタ（白・不透明）に加えて、ロジック配置モードで
+                        // **仮スポーン中**のアクタにも同じ人型アイコンを出す。
+                        // 空アクタは見た目を持たないので、これが無いと
+                        // 「何個どこに置かれるか」がプレビューで一切見えない。
+                        // 選択状態にはせず、色で「まだ仮」であることを示す。
+                        use crate::engine::core::font::icon_overlay::{IconOverlay, IconOverlayItem};
+                        let mut icon_items: Vec<IconOverlayItem> =
+                            selected_screen.into_iter().map(IconOverlayItem::selected).collect();
+                        for world in placement_icon_worlds.iter().copied() {
+                            if let Some(screen) =
+                                world_to_screen(world, &view.data, &proj.data, vp_w, vp_h)
+                            {
+                                icon_items.push(IconOverlayItem {
+                                    screen,
+                                    tint: super::placement_mode::PREVIEW_ICON_TINT,
+                                });
+                            }
+                        }
+                        IconOverlay::build(&icon_items, vp_w, vp_h, &draw_ctx.device)
                     } else { None };
+
+                    // ── 操作ガイド（カーソル脇のスクリーンスペーステキスト）──
+                    // いまはロジック配置モードだけが使う。モード外では None になり
+                    // 何も描かれない（バッチを組むコストも掛からない）。
+                    let hint_batch = {
+                        let lines = &placement_guide_lines;
+                        let cursor = self.last_cursor_pos;
+                        match (lines.is_empty(), cursor, self.screen_hint.as_mut()) {
+                            (false, Some((cx, cy)), Some(hint)) => {
+                                use crate::engine::core::font::screen_hint::{
+                                    HINT_CURSOR_OFFSET_X, HINT_CURSOR_OFFSET_Y,
+                                };
+                                let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
+                                let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
+                                hint.build(
+                                    lines,
+                                    cx + HINT_CURSOR_OFFSET_X,
+                                    cy + HINT_CURSOR_OFFSET_Y,
+                                    vp_w, vp_h,
+                                    &draw_ctx.device, &draw_ctx.queue,
+                                )
+                            }
+                            _ => None,
+                        }
+                    };
 
                     // 「描画/アウトライン・アイコン生成」区間ここまで。
                     drop(_prof_outline);
@@ -7303,6 +7353,14 @@ impl App {
                             io.draw(batch, &mut pass);
                         }
 
+                        // 操作ガイド（カーソル脇。アイコンよりさらに前面）
+                        // scene_canvas_ss 時は軸ギズモと同じくオーバーレイパス側で描く。
+                        if !scene_canvas_ss {
+                            if let (Some(batch), Some(sh)) = (&hint_batch, &self.screen_hint) {
+                                sh.draw(batch, &mut pass);
+                            }
+                        }
+
                         // オーバーレイパスの drop() 時間を計測する（旧構成のメインパス drop 計測を継承）。
                         // wgpu デバッグモードでは drop() 時に全コマンドの検証が走るため、
                         // 多数のアクターがある場合にここが大きなボトルネックになりうる。
@@ -7531,6 +7589,10 @@ impl App {
                                 ag.draw(batch, &mut overlay_pass);
                             }
 
+                            // 操作ガイド（カーソル脇。オーバーレイ最前面）
+                            if let (Some(batch), Some(sh)) = (&hint_batch, &self.screen_hint) {
+                                sh.draw(batch, &mut overlay_pass);
+                            }
                         }
                     }
 
@@ -8514,11 +8576,30 @@ impl App {
         //（次フレームで再度カーソル位置から要求し直すため、古い座標で描く必要が無い）。
         if did_placement_readback {
             if let Some((cx, cy)) = self.last_cursor_pos {
-                let gpu_hit = if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
-                    id_buf.read_pixel(&draw_ctx.device).0
-                } else {
-                    None
-                };
+                let (mut gpu_hit, raw) =
+                    if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
+                        id_buf.read_pixel(&draw_ctx.device)
+                    } else {
+                        (None, 0)
+                    };
+                // ── 自分自身（仮スポーンしたプレビュー）へのヒットは捨てる ─────────
+                //
+                // プレビューは**実物のアクタ**なので ID パスにも描かれる。素通しすると
+                // 「カーソルのレイがプレビュー自身の表面に当たる → その分だけ手前へ移動
+                //  → 次フレームはさらに手前」という自己参照のループになり、
+                // プレビューがカメラへ向かって際限なく這い寄ってしまう。
+                // プレビューのサブツリーは DFS 順で連続した範囲を占めるので、
+                // ピックした DFS id がその範囲に入っていれば「何にも当たっていない」と扱い、
+                // 地形ヒットまたはカメラ距離のフォールバックへ倒す。
+                if raw > 0 {
+                    let global = raw - 1;
+                    let hit_dfs = wl_mc_pick_infos.iter()
+                        .find(|&&(base, _, _, count)| global >= base && (global - base) < count as u32)
+                        .map(|&(_, dfs_id, _, _)| dfs_id);
+                    if hit_dfs.is_some_and(|d| self.placement_dfs_is_preview(d)) {
+                        gpu_hit = None;
+                    }
+                }
                 self.resolve_placement_hover(gpu_hit, cx.max(0.0) as u32, cy.max(0.0) as u32);
             }
         }

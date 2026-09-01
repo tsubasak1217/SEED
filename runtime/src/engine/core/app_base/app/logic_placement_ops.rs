@@ -332,20 +332,21 @@ impl App {
 
     // ── ① 新規アクタ群の生成 ────────────────────────────────
 
-    /// 点列にアクタを生成し、新しいグループフォルダ配下へ収める。
+    /// 点列にアクタを生成し、新しいグループフォルダ配下へ**シーンへ挿入するだけ**行う。
     ///
-    /// `origin` は点列を足し込むワールド基準点（配置モードならカーソルの着弾位置、
-    /// 2D ならキャンバス座標を `[x, 0, y]` に写したもの）。
+    /// Undo 記録・ヒエラルキー送信・`SCENE_MODIFIED`・選択のいずれも行わない。
+    /// これらは呼び出し側の都合（確定なのか、配置モードの仮スポーンなのか）で
+    /// 変わるためである。仮スポーンと確定生成で**まったく同じ物が出来る**ことを
+    /// 構造的に保証するため、生成そのものは必ず本関数 1 か所に通す。
     ///
-    /// Undo は `ActorTreeSnapshotCommand` 1 件（グループ生成ごと戻る）。
-    /// 生成に成功したら**生成した全アクタを選択状態**にしてエディタへ通知する
-    /// （置いた直後にそのままギズモで動かせるようにするため）。
-    pub(super) fn place_actors(
+    /// 戻り値は `(グループのエンティティ, 生成した子アクタのエンティティ列)`。
+    /// 1 体も作れなかった場合は `None`（シーンには何も残さない）。
+    pub(super) fn spawn_placement_actors(
         &mut self,
         req:    &LogicPlaceRequest,
         points: &[PlacementPoint],
         origin: [f32; 3],
-    ) {
+    ) -> Option<(crate::engine::ecs::Entity, Vec<crate::engine::ecs::Entity>)> {
         let wl = self.active_world_line;
 
         // ── ワールド位置を先に確定する（接地は地形を不変借用するため、
@@ -380,7 +381,7 @@ impl App {
                     self.notify_placement_error(&format!(
                         "配置元アクタファイルを読めません '{path}': {e}"
                     ));
-                    return;
+                    return None;
                 }
             },
             None => None,
@@ -388,15 +389,14 @@ impl App {
         // アクタファイルからの構築には描画コンテキストが要る（テクスチャ・メッシュ生成）。
         if source.is_some() && self.draw_ctx.is_none() {
             self.notify_placement_error("描画の初期化前はアクタファイルから配置できません");
-            return;
+            return None;
         }
 
-        let before_actors = self.snapshot_actors_for_wl(wl);
         let host = self.scripting_host.clone();
         let is_2d = req.is_2d;
         // scene を先に取り出してから draw_ctx を借りる（self の可変借用と
         // 不変借用が重ならないようにするため。DrawContext は Clone できない）。
-        let Some(mut scene) = self.scene.take() else { return };
+        let Some(mut scene) = self.scene.take() else { return None };
         let draw_ctx = self.draw_ctx.as_ref();
 
         let (group, build_failed) = assemble_placement_group(
@@ -429,11 +429,12 @@ impl App {
                     "配置元アクタファイルの構築に失敗したため何も生成しませんでした",
                 );
             }
-            return;
+            return None;
         }
 
         // 生成した子アクタのエンティティを控えてからツリーへ挿入する
         // （挿入で group は move されるため、先に取り出しておく）。
+        let group_entity = group.entity;
         let created_entities: Vec<_> = group.children().iter().map(|a| a.entity).collect();
         insert_group_actor(&mut scene.actors, wl, group, req.parent_dfs, &[]);
         self.scene = Some(scene);
@@ -443,6 +444,29 @@ impl App {
                 "配置元アクタファイルの構築に途中で失敗したため、一部の点を生成できませんでした",
             );
         }
+
+        Some((group_entity, created_entities))
+    }
+
+    /// 点列にアクタを生成し、**確定操作として**シーンへ反映する。
+    ///
+    /// `origin` は点列を足し込むワールド基準点。
+    /// Undo は `ActorTreeSnapshotCommand` 1 件（グループ生成ごと戻る）。
+    /// 生成に成功したら**生成した全アクタを選択状態**にしてエディタへ通知する
+    /// （置いた直後にそのままギズモで動かせるようにするため）。
+    ///
+    /// 配置モード（`placement_mode.rs`）は仮スポーンを先に済ませているので
+    /// 本関数を通らず、`spawn_placement_actors` ＋ 独自の確定処理を使う。
+    pub(super) fn place_actors(
+        &mut self,
+        req:    &LogicPlaceRequest,
+        points: &[PlacementPoint],
+        origin: [f32; 3],
+    ) {
+        let wl = self.active_world_line;
+        let before_actors = self.snapshot_actors_for_wl(wl);
+        let Some((_group, created_entities)) = self.spawn_placement_actors(req, points, origin)
+        else { return };
 
         // ── Undo 1 件（グループ生成ごと戻る）──
         let after_actors = self.snapshot_actors_for_wl(wl);
@@ -466,7 +490,7 @@ impl App {
     /// DFS id はツリー挿入後にしか確定しないので、エンティティから引き直す。
     /// プライマリ（インスペクタに出る 1 体）は**最後の 1 体**にする
     ///（`SelectMulti` の受け口と同じ規則。連番の末尾＝直感的に「最後に置いたもの」）。
-    fn select_placed_actors(&mut self, wl: u32, entities: &[crate::engine::ecs::Entity]) {
+    pub(super) fn select_placed_actors(&mut self, wl: u32, entities: &[crate::engine::ecs::Entity]) {
         if entities.is_empty() { return; }
         let Some(scene) = self.scene.as_ref() else { return };
         let dfs_ids: Vec<usize> = dfs_ids_for_entities(&scene.actors, wl, entities)

@@ -410,6 +410,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _runtimeManager.ModalTransformStateChanged    += SetModalTransformActive;
         // ロジック配置の配置モード。Esc の行き先とヒント表示だけを切り替える。
         _runtimeManager.PlacementStateChanged         += OnPlacementStateChanged;
+        _runtimeManager.PlacementRadiusChanged        += OnPlacementRadiusChanged;
         _runtimeManager.ActorEditStarted              += OnActorEditStarted;
         _runtimeManager.ActorEditEnded                += OnActorEditEnded;
         // キャンバス編集タブ開始応答（EDIT_CANVAS_BEGIN → CANVAS_EDIT_WL）

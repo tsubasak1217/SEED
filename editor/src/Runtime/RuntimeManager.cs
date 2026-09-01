@@ -303,6 +303,14 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public event Action<bool>? PlacementStateChanged;
 
+    /// <summary>
+    /// ロジック配置の配置モードで、半径ドラッグにより確定した半径 [m]。
+    ///
+    /// 円形パターンをビューポート上でドラッグして決めた値をダイアログの
+    /// 前回値へ書き戻し、次に開いたときの初期値にするために使う。
+    /// </summary>
+    public event Action<float>? PlacementRadiusChanged;
+
     /// <summary>アクター編集モードに切り替わったときに発火する。</summary>
     public event Action? ActorEditStarted;
 
@@ -1692,6 +1700,16 @@ public sealed class RuntimeManager : IDisposable
         {
             // ロジック配置の配置モードの進行状態通知（1 = 開始 / 0 = 終了）。
             PlacementStateChanged?.Invoke(msg["PLACEMENT_STATE:".Length..] == "1");
+        }
+        else if (msg.StartsWith("PLACEMENT_RADIUS:", StringComparison.Ordinal))
+        {
+            // 半径ドラッグで確定した半径 [m]。Rust 側は不変文化圏の書式で送る。
+            var payload = msg["PLACEMENT_RADIUS:".Length..];
+            if (float.TryParse(payload, System.Globalization.NumberStyles.Float,
+                               System.Globalization.CultureInfo.InvariantCulture, out var radius))
+            {
+                PlacementRadiusChanged?.Invoke(radius);
+            }
         }
         else if (msg.StartsWith("TOOL_MODE:", StringComparison.Ordinal))
         {
