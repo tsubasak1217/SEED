@@ -12,6 +12,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using SEEDEditor;
+using SEEDEditor.Assets;
 using SEEDEditor.Panels.ScriptEditor;
 
 namespace SEEDEditor.Panels;
@@ -161,16 +162,108 @@ public partial class ProjectPanel : UserControl
     /// </summary>
     public event Action<string>? SpriteMeshFileOpened;
 
+    /// <summary>
+    /// アセットフォルダの可用性が変化したときに発火する（true = 利用可能になった）。
+    /// MainWindow が受け取り、アセット不在で保留していた初期化（ランタイム起動など）を
+    /// 再開するために使う。
+    /// </summary>
+    public event Action<bool>? AssetsAvailabilityChanged;
+
+    /// <summary>直近の可用性判定結果。警告表示と再試行の判断に使う。</summary>
+    private AssetsRootProbeResult _assetsProbe;
+
+    /// <summary>アセットフォルダが実際に読める状態か（直近の判定結果）。</summary>
+    public bool IsAssetsAvailable => _assetsProbe.IsAvailable;
+
     public void SetAssetsPath(string assetsPath)
     {
         _assetsRoot  = assetsPath;
         _currentPath = assetsPath;
-        BuildFolderTree();
-        // タブ機構を初期化する（ルートフォルダを開いた 1 枚だけの状態から始める）
-        InitTabs(assetsPath);
-        RefreshFileGrid();
-        StartWatcher();
+        // 可用性を判定してから中身を構築する。判定が NG なら警告表示に切り替え、
+        // ツリー構築・監視開始は一切行わない（列挙で落ちるのを未然に防ぐ）。
+        RefreshAssetsAvailability(notifyChange: false);
     }
+
+    /// <summary>
+    /// アセットルートの可用性を判定し直し、通常表示／警告表示を切り替える。
+    /// </summary>
+    /// <param name="notifyChange">
+    /// 可用性が前回から変化したときに <see cref="AssetsAvailabilityChanged"/> を発火するか。
+    /// 初回（SetAssetsPath）は購読者がまだ配線前なので false で呼ぶ。
+    /// </param>
+    private void RefreshAssetsAvailability(bool notifyChange)
+    {
+        bool wasAvailable = _assetsProbe.IsAvailable;
+
+        var probe = AssetsRootProbe.Check(_assetsRoot);
+        _assetsProbe = probe;
+        EditorLog.Write($"アセットルート判定 — {probe.LogLine}");
+
+        if (!probe.IsAvailable)
+        {
+            StopWatcher();
+            ShowAssetsUnavailable(probe);
+        }
+        else
+        {
+            try
+            {
+                HideAssetsUnavailable();
+                BuildFolderTree();
+                // タブ機構を初期化する（ルートフォルダを開いた 1 枚だけの状態から始める）
+                InitTabs(_assetsRoot);
+                RefreshFileGrid();
+                StartWatcher();
+            }
+            catch (Exception ex)
+            {
+                // 判定と構築の間にアセットが消える／構築中に I/O が失敗した場合でも
+                // 起動を止めない。警告表示へフォールバックする。
+                EditorLog.Write($"アセットフォルダの表示構築に失敗しました: {ex.Message}");
+                StopWatcher();
+                _assetsProbe = probe with
+                {
+                    Status = AssetsRootStatus.Missing,
+                    Reason = "アセットフォルダの読み取り中にエラーが発生しました。",
+                    Detail = ex.Message,
+                };
+                ShowAssetsUnavailable(_assetsProbe);
+            }
+        }
+
+        if (notifyChange && wasAvailable != _assetsProbe.IsAvailable)
+            AssetsAvailabilityChanged?.Invoke(_assetsProbe.IsAvailable);
+    }
+
+    /// <summary>アセット不在の警告オーバーレイを表示する（ツリー・一覧は空にする）。</summary>
+    /// <param name="probe">表示する判定結果。</param>
+    private void ShowAssetsUnavailable(AssetsRootProbeResult probe)
+    {
+        FolderTree.Items.Clear();
+        FileGrid.Children.Clear();
+        TabBar.Children.Clear();
+        TxtBreadcrumb.Text = "Assets";
+        BtnBack.IsEnabled  = false;
+        BtnCreate.IsEnabled = false;
+
+        TxtAssetsUnavailablePath.Text   = probe.Path;
+        TxtAssetsUnavailableReason.Text = "理由: " + probe.Reason;
+        AssetsUnavailableOverlay.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>アセット不在の警告オーバーレイを隠して通常表示へ戻す。</summary>
+    private void HideAssetsUnavailable()
+    {
+        AssetsUnavailableOverlay.Visibility = Visibility.Collapsed;
+        BtnCreate.IsEnabled = true;
+    }
+
+    /// <summary>
+    /// 警告表示の「再試行」ボタン。ドライブを接続し直した後にこれを押せば、
+    /// エディタを再起動せずに通常表示へ復帰できる。
+    /// </summary>
+    private void OnAssetsRetryClick(object sender, RoutedEventArgs e)
+        => RefreshAssetsAvailability(notifyChange: true);
 
     /// <summary>
     /// Runtime 参照を注入する。Hierarchy からドラッグされたアクタを
@@ -334,6 +427,44 @@ public partial class ProjectPanel : UserControl
         FolderTree.Items.Add(root);
     }
 
+    /// <summary>
+    /// サブフォルダを 1 つでも持つかを、例外を投げずに調べる。
+    /// 壊れたジャンクション・削除直後・権限不足のフォルダでは false を返す
+    /// （Directory.Exists が true でも列挙は失敗しうるため、必ずこの関数を通す）。
+    /// </summary>
+    /// <param name="dir">調べるフォルダ。</param>
+    /// <returns>サブフォルダが 1 つ以上あれば true。</returns>
+    private static bool HasSubdirectorySafe(DirectoryInfo dir)
+    {
+        try { return dir.EnumerateDirectories().Any(); }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"フォルダ列挙に失敗しました（スキップ）: {dir.FullName} — {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// フォルダ配下のエントリ一覧を、例外を投げずに取得する（失敗時は空配列）。
+    /// </summary>
+    /// <param name="path">対象フォルダ。</param>
+    /// <param name="directories">true=サブフォルダ / false=ファイル。</param>
+    /// <returns>名前順に並べたパスの配列。失敗した場合は空。</returns>
+    private static string[] EnumerateSafe(string path, bool directories)
+    {
+        try
+        {
+            var items = directories ? Directory.GetDirectories(path) : Directory.GetFiles(path);
+            Array.Sort(items, StringComparer.Ordinal);
+            return items;
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"フォルダ列挙に失敗しました（スキップ）: {path} — {ex.Message}");
+            return Array.Empty<string>();
+        }
+    }
+
     private TreeViewItem BuildTreeNode(DirectoryInfo dir)
     {
         var item = new TreeViewItem
@@ -341,7 +472,7 @@ public partial class ProjectPanel : UserControl
             Header = BuildFolderHeader(dir.Name, isRoot: dir.FullName == _assetsRoot),
             Tag    = dir.FullName,
         };
-        if (dir.EnumerateDirectories().Any())
+        if (HasSubdirectorySafe(dir))
         {
             item.Items.Add(NewDummy());
             item.Expanded += OnNodeExpanded;
@@ -370,7 +501,7 @@ public partial class ProjectPanel : UserControl
         item.Items.Clear();
         if (item.Tag is string path && Directory.Exists(path))
         {
-            foreach (var sub in Directory.GetDirectories(path).OrderBy(p => p))
+            foreach (var sub in EnumerateSafe(path, directories: true))
                 item.Items.Add(BuildTreeNode(new DirectoryInfo(sub)));
         }
     }
@@ -420,10 +551,10 @@ public partial class ProjectPanel : UserControl
 
         if (!Directory.Exists(_currentPath)) return;
 
-        foreach (var dir in Directory.GetDirectories(_currentPath).OrderBy(p => p))
+        foreach (var dir in EnumerateSafe(_currentPath, directories: true))
             FileGrid.Children.Add(BuildDirItem(new DirectoryInfo(dir)));
 
-        foreach (var file in Directory.GetFiles(_currentPath).OrderBy(p => p))
+        foreach (var file in EnumerateSafe(_currentPath, directories: false))
             FileGrid.Children.Add(BuildFileItem(new FileInfo(file)));
 
         // タブ切替・ジャンプ要求で指定されたファイルを選択状態にして可視域へ入れる。
@@ -1487,19 +1618,43 @@ public partial class ProjectPanel : UserControl
 
     // ── FileSystemWatcher ─────────────────────────────────────────
 
+    /// <summary>
+    /// アセットフォルダのファイル監視を開始する。
+    /// アセットが利用不可（未接続ドライブ・壊れたリンク等）のときは監視を張らない
+    /// ——— FileSystemWatcher のコンストラクタ自体が例外を投げるため、
+    /// 判定（<see cref="AssetsRootProbe"/>）を通してからでないと呼んではいけない。
+    /// </summary>
     private void StartWatcher()
     {
-        _watcher?.Dispose();
-        if (!Directory.Exists(_assetsRoot)) return;
-        _watcher = new FileSystemWatcher(_assetsRoot)
+        StopWatcher();
+        if (!_assetsProbe.IsAvailable) return;
+        try
         {
-            IncludeSubdirectories = true,
-            NotifyFilter          = NotifyFilters.FileName | NotifyFilters.DirectoryName,
-            EnableRaisingEvents   = true,
-        };
-        _watcher.Created += OnFsChanged;
-        _watcher.Deleted += OnFsChanged;
-        _watcher.Renamed += OnFsChanged;
+            _watcher = new FileSystemWatcher(_assetsRoot)
+            {
+                IncludeSubdirectories = true,
+                NotifyFilter          = NotifyFilters.FileName | NotifyFilters.DirectoryName,
+                EnableRaisingEvents   = true,
+            };
+            _watcher.Created += OnFsChanged;
+            _watcher.Deleted += OnFsChanged;
+            _watcher.Renamed += OnFsChanged;
+        }
+        catch (Exception ex)
+        {
+            // 監視が張れなくても編集自体は続けられる（手動更新にフォールバック）。
+            EditorLog.Write($"アセットフォルダの監視を開始できませんでした: {ex.Message}");
+            _watcher = null;
+        }
+    }
+
+    /// <summary>ファイル監視を停止して破棄する。</summary>
+    private void StopWatcher()
+    {
+        if (_watcher is null) return;
+        _watcher.EnableRaisingEvents = false;
+        _watcher.Dispose();
+        _watcher = null;
     }
 
     private void OnFsChanged(object sender, FileSystemEventArgs e)

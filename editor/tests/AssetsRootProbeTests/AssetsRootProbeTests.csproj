@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    アセットルート可用性判定（AssetsRootProbe）の単体テスト。
+
+    SpriteRigTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+        （ここに列挙したファイルが WPF 型を使い始めたらビルドが壊れ、それが設計崩れの検知器になる）
+
+    テストランナー（TestHarness / Check）は SpriteRigTests のものを再利用する。
+    実行方法: dotnet run  project=editor/tests/AssetsRootProbeTests
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.AssetsRoot</RootNamespace>
+    <AssemblyName>AssetsRootProbeTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象（WPF 非依存） -->
+    <Compile Include="..\..\src\Assets\*.cs">
+      <Link>Linked\Assets\%(Filename)%(Extension)</Link>
+    </Compile>
+    <!-- テストランナー（SpriteRigTests と共用） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

@@ -243,6 +243,26 @@ impl App {
             .map(|dir| dir.join("assets.pak"))
             .filter(|p| p.exists());
 
+        // アセットルートが実際に読めるかを 1 回の read_dir で確かめる。
+        //
+        // 【なぜ exists() ではなく read_dir か】
+        // assets が別ドライブへのジャンクションで、そのドライブが未接続の場合、
+        // `Path::exists()` はリンク自体を見て true を返すが、開こうとすると失敗する。
+        // ここで落ちるのではなく stderr へ 1 行だけ原因を出し、以降は
+        // 「アセットが 1 件も読めない」状態として通常のフォールバック
+        //（既定ウィンドウサイズ・プラグイン 0 件・シーン未ロード）で起動を続ける。
+        // PAK モードのときはアセットフォルダが無いのが正常なので警告しない。
+        if pak_path.is_none() {
+            if let Err(e) = std::fs::read_dir(&assets_root) {
+                eprintln!(
+                    "[App][ERROR] アセットフォルダを開けません: {} — {} \
+                     （未接続ドライブへのジャンクション／フォルダ不在の可能性。アセットは一切読み込めません）",
+                    assets_root.display(),
+                    e
+                );
+            }
+        }
+
         asset_fs::init(assets_root, pak_path.as_deref());
     }
 

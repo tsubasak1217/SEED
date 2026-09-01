@@ -247,7 +247,16 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             : exeDir;
 
         var assetsDir = Path.Combine(runtimeRoot, "assets");
-        Directory.CreateDirectory(assetsDir);
+        // フォルダが無ければ作る。ただしここで失敗しても起動は続ける。
+        // assets が別ドライブへのジャンクションで、そのドライブが未接続の場合、
+        // CreateDirectory は「既に存在する」と判断できずに例外を投げる。
+        // 静的フィールド初期化子から呼ばれるため、投げると TypeInitializationException で
+        // エディタが起動すらできなくなる。可用性の判定は AssetsRootProbe が行う。
+        try { Directory.CreateDirectory(assetsDir); }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"アセットフォルダを作成/確認できませんでした: {assetsDir} — {ex.Message}");
+        }
         return assetsDir;
     }
 
@@ -406,6 +415,13 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelInspector.SetAssetsPath(AssetsPath);
         PanelInspector.TransformCommitted += MarkDirty;
         PanelProject.SetAssetsPath(AssetsPath);
+        // プロジェクトパネルの「再試行」でアセットフォルダが復帰したら、
+        // アセット不在で見送っていたランタイム起動をここでやり直す（エディタ再起動は不要）。
+        PanelProject.AssetsAvailabilityChanged += available =>
+        {
+            EditorLog.Write($"アセットフォルダの可用性が変化しました: available={available}");
+            if (available) TryStartEditRuntime();
+        };
         // Hierarchy からドラッグしたアクタをアクタファイル化（EXPORT_ACTOR 送信）するため Runtime を注入
         PanelProject.SetRuntime(_runtimeManager);
         PanelProject.SceneFileOpened    += OnSceneFileOpened;
@@ -747,6 +763,42 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         int exStyle = GetWindowLong(helper.Handle, GWL_EXSTYLE);
         SetWindowLong(helper.Handle, GWL_EXSTYLE, exStyle | WS_EX_TRANSPARENT);
 
+        // アセットフォルダが使えない状態でランタイムを起動しても、
+        // シーン・テクスチャ・project_settings.json のいずれも読めず即座に失敗する。
+        // ここで止めてビューポートへ理由を出し、アセットが復帰したら起動し直す。
+        _pendingRuntimeContainerHwnd = hwnd;
+        TryStartEditRuntime();
+    }
+
+    /// <summary>
+    /// ランタイム起動を待たせているビューポートコンテナの HWND。
+    /// アセット不在で起動を見送った場合、復帰後の再起動に使う。0 = 未生成。
+    /// </summary>
+    private nint _pendingRuntimeContainerHwnd;
+
+    /// <summary>ランタイムを一度でも起動したか（アセット復帰時の二重起動を防ぐ）。</summary>
+    private bool _editRuntimeStarted;
+
+    /// <summary>
+    /// Edit ランタイム（SEED.exe）の起動を試みる。
+    /// アセットフォルダが利用できない場合は起動せず、ビューポートへ理由を表示する。
+    /// </summary>
+    /// <returns>起動処理を開始したら true。アセット不在などで見送ったら false。</returns>
+    private bool TryStartEditRuntime()
+    {
+        if (_editRuntimeStarted)             return false;
+        if (_pendingRuntimeContainerHwnd == 0) return false;
+
+        var probe = SEEDEditor.Assets.AssetsRootProbe.Check(AssetsPath);
+        if (!probe.IsAvailable)
+        {
+            EditorLog.Write($"ランタイム起動を見送りました（アセット不在）— {probe.LogLine}");
+            TxtViewportStatus.Text = "アセットフォルダが利用できないためランタイムを起動していません — " + probe.Reason;
+            return false;
+        }
+
+        _editRuntimeStarted = true;
+        var hwnd = _pendingRuntimeContainerHwnd;
         _ = Task.Run(async () =>
         {
             EditorLog.Write("Task.Run — calling StartEditAsync");
@@ -763,6 +815,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                         MessageBoxButton.OK, MessageBoxImage.Error));
             }
         });
+        return true;
     }
 
     // ── ボタンイベント ────────────────────────────────────────────
@@ -800,6 +853,20 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         var state = _runtimeManager.State;
         if (state == EditorState.Edit)
         {
+            // アセットフォルダが使えない状態では Play しても何も読み込めない。
+            // 起動して即失敗させるより、理由を明示してここで止める。
+            var assets = SEEDEditor.Assets.AssetsRootProbe.Check(AssetsPath);
+            if (!assets.IsAvailable)
+            {
+                EditorLog.Write($"Play を中止しました（アセット不在）— {assets.LogLine}");
+                TxtViewportStatus.Text = "アセットフォルダが利用できないため実行できません — " + assets.Reason;
+                MessageBox.Show(
+                    $"アセットフォルダが利用できないため実行できません。\n\n{assets.Path}\n\n理由: {assets.Reason}",
+                    "SEED Editor — 実行できません",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
             // スクリプトの全体コンパイルを検証し、エラーがあれば実行をブロックする。
             // ランタイムは全 .cs を 1 アセンブリに一括コンパイルするため、
             // エラーが 1 つでもあると全スクリプトが実行されない（サイレント故障）。

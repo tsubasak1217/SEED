@@ -258,5 +258,72 @@
             </Grid>
         </Grid>
 
+        <!-- ── アセットフォルダが利用できないときの警告オーバーレイ ────────
+             ツリー／ファイル一覧の上に全面をかぶせて表示する。
+             ジャンクション先ドライブを繋ぎ直したあとに「再試行」で復帰できるため、
+             エディタの再起動は不要。可視/不可視は ProjectPanel.xaml.cs の
+             ApplyAssetsAvailability が切り替える。 -->
+        <Grid x:Name="AssetsUnavailableOverlay"
+              Grid.Column="0" Grid.ColumnSpan="3"
+              Background="#1E1E1E"
+              Visibility="Collapsed">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                        MaxWidth="520" Margin="20">
+                <TextBlock Text="アセットフォルダが見つかりません"
+                           Foreground="#E0A030" FontSize="15" FontWeight="SemiBold"
+                           HorizontalAlignment="Center"
+                           Margin="0,0,0,10"/>
+                <TextBlock x:Name="TxtAssetsUnavailablePath"
+                           Foreground="#CCCCCC" FontSize="12"
+                           TextWrapping="Wrap" TextAlignment="Center"
+                           Margin="0,0,0,6"/>
+                <TextBlock x:Name="TxtAssetsUnavailableReason"
+                           Foreground="#999999" FontSize="12"
+                           TextWrapping="Wrap" TextAlignment="Center"
+                           Margin="0,0,0,16"/>
+                <Button x:Name="BtnAssetsRetry"
+                        HorizontalAlignment="Center"
+                        Height="26" Padding="18,0"
+                        Cursor="Hand"
+                        ToolTip="アセットフォルダをもう一度確認する（ドライブを接続し直した後に押す）"
+                        Click="OnAssetsRetryClick">
+                    <Button.Style>
+                        <Style TargetType="Button">
+                            <Setter Property="Background"      Value="#1E2D40"/>
+                            <Setter Property="Foreground"      Value="#80BBEE"/>
+                            <Setter Property="BorderBrush"     Value="#3A6A9A"/>
+                            <Setter Property="BorderThickness" Value="1"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border x:Name="Bd"
+                                                Background="{TemplateBinding Background}"
+                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                CornerRadius="3"
+                                                Padding="{TemplateBinding Padding}">
+                                            <TextBlock Text="再試行" FontSize="12"
+                                                       Foreground="{TemplateBinding Foreground}"
+                                                       VerticalAlignment="Center"/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Bd" Property="Background"  Value="#2A4A6A"/>
+                                                <Setter TargetName="Bd" Property="BorderBrush" Value="#5599CC"/>
+                                                <Setter Property="Foreground"                  Value="#AADDFF"/>
+                                            </Trigger>
+                                            <Trigger Property="IsPressed" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="#1A3A55"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </Button.Style>
+                </Button>
+            </StackPanel>
+        </Grid>
+
     </Grid>
 </UserControl>
