@@ -13,6 +13,8 @@
 //  本モジュールはその「入力不変」を判定してスキップするためのゲートを提供する。
 // ============================================================
 
+use crate::engine::core::renderer::skin_system::SkinAnimPose;
+
 /// 入力不変が「何フレーム連続したら」スキップに入るかのしきい値。
 ///
 /// **2 でなければならない理由（速度バッファの整定）**:
@@ -42,9 +44,10 @@ pub(crate) struct MergeBatchInputs<'a> {
     pub abs_ids: &'a [u32],
     /// 統合インスタンス i のセマンティックタグ（`MergeInfo::render_tags`）。
     pub render_tags: &'a [u8],
-    /// 統合インスタンス i の Animator 駆動権威時刻（`MergeInfo::time_overrides`）。
-    /// スキンのアニメ時刻アップロードの入力。
-    pub time_overrides: &'a [Option<f32>],
+    /// 統合インスタンス i の Animator 駆動再生指定（`MergeInfo::pose_overrides`）。
+    /// スキンの再生指定アップロードの入力。**クロスフェードの weight やフェード元まで
+    /// 含む**ので、行列が静止したままブレンドだけが進むフレームでもスキップに入らない。
+    pub pose_overrides: &'a [Option<SkinAnimPose>],
 }
 
 /// 直近フレームの入力を保持するスナップショット（所有）。
@@ -56,7 +59,7 @@ struct MergeBatchSnapshot {
     mats:           Vec<[[f32; 4]; 4]>,
     abs_ids:        Vec<u32>,
     render_tags:    Vec<u8>,
-    time_overrides: Vec<Option<f32>>,
+    pose_overrides: Vec<Option<SkinAnimPose>>,
 }
 
 impl MergeBatchSnapshot {
@@ -65,7 +68,7 @@ impl MergeBatchSnapshot {
         self.mats.as_slice()           == i.mats
             && self.abs_ids.as_slice()        == i.abs_ids
             && self.render_tags.as_slice()    == i.render_tags
-            && self.time_overrides.as_slice() == i.time_overrides
+            && self.pose_overrides.as_slice() == i.pose_overrides
     }
 
     /// 与えられた入力でスナップショットを取り直す（確保は「変化したフレーム」だけ）。
@@ -73,7 +76,7 @@ impl MergeBatchSnapshot {
         self.mats.clear();           self.mats.extend_from_slice(i.mats);
         self.abs_ids.clear();        self.abs_ids.extend_from_slice(i.abs_ids);
         self.render_tags.clear();    self.render_tags.extend_from_slice(i.render_tags);
-        self.time_overrides.clear(); self.time_overrides.extend_from_slice(i.time_overrides);
+        self.pose_overrides.clear(); self.pose_overrides.extend_from_slice(i.pose_overrides);
     }
 }
 
@@ -133,18 +136,18 @@ mod tests {
         mats:           Vec<[[f32; 4]; 4]>,
         abs_ids:        Vec<u32>,
         render_tags:    Vec<u8>,
-        time_overrides: Vec<Option<f32>>,
+        pose_overrides: Vec<Option<SkinAnimPose>>,
     }
 
     impl Fixture {
-        fn new(x: f32, id: u32, tag: u8, t: Option<f32>) -> Self {
+        fn new(x: f32, id: u32, tag: u8, t: Option<SkinAnimPose>) -> Self {
             let mut m = [[0.0f32; 4]; 4];
             m[3][0] = x;
             Self {
                 mats:           vec![m],
                 abs_ids:        vec![id],
                 render_tags:    vec![tag],
-                time_overrides: vec![t],
+                pose_overrides: vec![t],
             }
         }
         fn inputs(&self) -> MergeBatchInputs<'_> {
@@ -152,13 +155,13 @@ mod tests {
                 mats:           &self.mats,
                 abs_ids:        &self.abs_ids,
                 render_tags:    &self.render_tags,
-                time_overrides: &self.time_overrides,
+                pose_overrides: &self.pose_overrides,
             }
         }
     }
 
     /// テスト用の最小入力を作る短縮形。
-    fn sig_of(x: f32, id: u32, tag: u8, t: Option<f32>) -> Fixture {
+    fn sig_of(x: f32, id: u32, tag: u8, t: Option<SkinAnimPose>) -> Fixture {
         Fixture::new(x, id, tag, t)
     }
 
@@ -199,7 +202,7 @@ mod tests {
         for changed in [
             sig_of(1.0, 9, 0, None),          // abs_ids が変化（ピッキング ID バッファが陳腐化）
             sig_of(1.0, 0, 3, None),          // render_tags が変化（ワールド行列キャッシュへ焼き込む値）
-            sig_of(1.0, 0, 0, Some(0.5)),     // アニメ権威時刻が変化（スキン時刻アップロード）
+            sig_of(1.0, 0, 0, Some(SkinAnimPose::single(0, 0.5))),     // アニメ権威時刻が変化（スキン時刻アップロード）
         ] {
             let mut gate = MergeBatchGate::default();
             let base = sig_of(1.0, 0, 0, None);
@@ -207,6 +210,24 @@ mod tests {
             assert!(gate.decide(&base.inputs(), true, false), "前提: スキップ状態");
             assert!(!gate.decide(&changed.inputs(), true, false), "入力変化で再計算");
         }
+    }
+
+    /// クロスフェード中は「行列も時刻も同じで weight だけが進む」フレームがある。
+    /// この差分を取りこぼすとブレンドが GPU へ上がらず、混合途中のポーズで固まる。
+    #[test]
+    fn changed_blend_weight_alone_forces_update() {
+        let pose_a = SkinAnimPose { anim_a: 0, time_a: 0.5, anim_b: 1, time_b: 0.25, weight: 0.3 };
+        let mut pose_b = pose_a;
+        pose_b.weight = 0.6; // weight だけが進んだフレーム
+
+        let mut gate = MergeBatchGate::default();
+        let base = sig_of(1.0, 0, 0, Some(pose_a));
+        for _ in 0..3 { gate.decide(&base.inputs(), true, false); }
+        assert!(gate.decide(&base.inputs(), true, false), "前提: スキップ状態");
+        assert!(
+            !gate.decide(&sig_of(1.0, 0, 0, Some(pose_b)).inputs(), true, false),
+            "weight だけの変化でも再計算へ倒れる"
+        );
     }
 
     /// LOD バケット割り当てが変わったフレームはスキップしない（カメラ移動で LOD が切り替わる場合）。

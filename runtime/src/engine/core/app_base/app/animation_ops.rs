@@ -148,13 +148,10 @@ impl App {
                     // glTF 内蔵アニメ名 → インデックス + duration を解決する
                     let resolved: Option<(Entity, usize, f32)> = model_entity.and_then(|me| {
                         world.get::<ModelComponent>(me).and_then(|mc| {
-                            mc.model.as_ref().and_then(|model| {
-                                model
-                                    .animations
-                                    .iter()
-                                    .position(|a| a.name == cref.anim)
-                                    .map(|idx| (me, idx, model.animations[idx].duration))
-                            })
+                            mc.model
+                                .as_ref()
+                                .and_then(|model| resolve_model_anim(model, &cref.anim))
+                                .map(|(idx, dur)| (me, idx, dur))
                         })
                     });
 
@@ -171,43 +168,73 @@ impl App {
                     if playing {
                         time += dt * speed;
                     }
-                    let (sample_time, still_playing) = match cref.loop_mode {
-                        // ループ: rem_euclid で負時刻も巻き戻す（常に再生継続）
-                        AnimClipLoop::Loop => {
-                            let d = duration.max(1e-4);
-                            (time.rem_euclid(d), true)
-                        }
-                        // ワンショット: 末尾で停止して最終ポーズを保持する
-                        AnimClipLoop::Once => {
-                            if time >= duration {
-                                (duration, false)
-                            } else {
-                                (time.max(0.0), true)
+                    let (sample_time, still_playing) =
+                        normalize_model_time(cref.loop_mode, time, duration);
+
+                    // ── クロスフェード元（あれば）を解決する ────────────────
+                    // フェード元も Model クリップのときだけブレンドする（Keyframe は補間対象外）。
+                    // 解決できない場合はフェードを諦めて現在クリップのみで駆動する（見た目は即時切替）。
+                    let fade_src: Option<(String, f32, f32)> = world
+                        .get::<AnimatorComponent>(slot_entity)
+                        .and_then(|a| {
+                            a.fade_from_clip
+                                .as_ref()
+                                .map(|n| (n.clone(), a.fade_from_time, a.fade_weight))
+                        });
+                    let fade_from: Option<(usize, f32)> = fade_src.as_ref().and_then(
+                        |(src_name, src_time, _)| {
+                            let src_ref = world
+                                .get::<AnimatorComponent>(slot_entity)?
+                                .clips
+                                .iter()
+                                .find(|c| &c.name == src_name)
+                                .cloned()?;
+                            if src_ref.kind != AnimClipKind::Model {
+                                return None;
                             }
-                        }
+                            let (src_idx, src_dur) = world
+                                .get::<ModelComponent>(me)?
+                                .model
+                                .as_ref()
+                                .and_then(|m| resolve_model_anim(m, &src_ref.anim))?;
+                            let (t, _) =
+                                normalize_model_time(src_ref.loop_mode, *src_time, src_dur);
+                            Some((src_idx, t))
+                        },
+                    );
+                    // フェード元を解決できたときだけ weight を効かせる（それ以外は 1.0 = 現在クリップのみ）
+                    let weight = match (&fade_from, &fade_src) {
+                        (Some(_), Some((_, _, w))) => w.clamp(0.0, 1.0),
+                        _ => 1.0,
                     };
 
-                    // GPU スキニングは Model::animations[0] のみ再生可能なため、
-                    // anim_idx != 0 は権威駆動できない（警告してモデルは静止のまま）。
-                    if anim_idx == 0 {
-                        if let Some(mc) = world.get_mut::<ModelComponent>(me) {
-                            mc.anim_drive = Some(ModelAnimDrive {
-                                anim_idx,
-                                time: sample_time,
-                                playing,
-                            });
-                        }
-                    } else {
-                        eprintln!(
-                            "[SEED anim] Model クリップ '{}' は内蔵アニメ index {}（'{}'）を指すが、現状の GPU スキニングは index 0 のみ再生可能。モデルは静止します（複数アニメ選択は今後の対応）。",
-                            current_name, anim_idx, cref.anim
-                        );
+                    // 任意の内蔵アニメ index を権威駆動する（GPU は全アニメをパッキング済み）。
+                    if let Some(mc) = world.get_mut::<ModelComponent>(me) {
+                        mc.anim_drive = Some(ModelAnimDrive {
+                            anim_idx,
+                            time: sample_time,
+                            playing,
+                            fade_from,
+                            weight,
+                        });
                     }
 
-                    // 再生状態を書き戻す
+                    // 再生状態を書き戻し、フェードを 1 フレーム進める。
+                    // advance_fade は「このフレームの再生状態」で判定させたいので、
+                    // playing を書き戻す前に呼ぶ（Pause 中は進まない契約）。
                     if let Some(a) = world.get_mut::<AnimatorComponent>(slot_entity) {
+                        a.advance_fade(dt);
                         a.time = time;
                         a.playing = playing && still_playing;
+                        // Once クリップが末尾で停止したら、フェードを打ち切って
+                        // そのクリップ自身の最終ポーズを保持する
+                        // （停止後は weight が進まないため、放置すると中途半端な混合で固まる）。
+                        if !still_playing {
+                            a.fade_from_clip = None;
+                            a.fade_from_time = 0.0;
+                            a.fade_weight = 1.0;
+                            a.fade_rate = 0.0;
+                        }
                     }
                 }
             }
@@ -312,9 +339,9 @@ impl App {
                                 || a.cache.contains_key(&a.default_clip))
                     });
                 if a.play_on_start && default_playable {
-                    a.current_clip = Some(a.default_clip.clone());
-                    a.time = 0.0;
-                    a.playing = true;
+                    // 自動再生の初回はフェード元が存在しないため常に即時開始になる。
+                    let name = a.default_clip.clone();
+                    a.begin_clip(&name, 0.0);
                 }
             }
         }
@@ -496,6 +523,53 @@ impl App {
     /// エディタが .anim 保存後に送る。次回の ANIM_PREVIEW で再ロードされる。
     pub(super) fn handle_anim_reload(&mut self, clip_path: &str) {
         self.anim_preview_cache.remove(clip_path);
+    }
+}
+
+// ─── Model クリップ解決ヘルパー ──────────────────────────────
+
+/// glTF 内蔵アニメ名 → `(index, duration)` を解決する。
+///
+/// 【旧シーン互換】`anim` が空文字（kind=model だがアニメ名未指定＝旧シーン）のときは
+/// 先頭アニメ（index 0）へフォールバックする。従来の「animations[0] しか再生できない」
+/// 時代のシーンは、この経路で以前とまったく同じアニメを再生し続ける。
+fn resolve_model_anim(
+    model: &crate::engine::core::loader::model::Model,
+    anim_name: &str,
+) -> Option<(usize, f32)> {
+    if model.animations.is_empty() {
+        return None;
+    }
+    let idx = if anim_name.is_empty() {
+        0
+    } else {
+        model.animations.iter().position(|a| a.name == anim_name)?
+    };
+    Some((idx, model.animations[idx].duration))
+}
+
+/// Model クリップの再生時刻をループ種別に従って正規化する。
+///
+/// 戻り値: `(サンプル時刻, 再生継続か)`。
+/// - Loop: `rem_euclid` で負時刻も巻き戻す（常に継続）。
+/// - Once: 末尾で停止して最終ポーズを保持する。
+fn normalize_model_time(
+    loop_mode: AnimClipLoop,
+    time: f32,
+    duration: f32,
+) -> (f32, bool) {
+    match loop_mode {
+        AnimClipLoop::Loop => {
+            let d = duration.max(1e-4);
+            (time.rem_euclid(d), true)
+        }
+        AnimClipLoop::Once => {
+            if time >= duration {
+                (duration, false)
+            } else {
+                (time.max(0.0), true)
+            }
+        }
     }
 }
 

@@ -217,8 +217,8 @@ struct SkinBlasEntry {
 /// スキン変形の出力は
 ///   （元頂点＋スキン属性）×（ジョイント行列 `jmats[joint_base..]`）
 /// で決まり、ジョイント行列は再生時刻から毎フレーム同じ計算で作られる。
-/// `SkinComputeSystem` は **モデルの animations[0] を 1 本だけ**焼き込んでおり、
-/// 別のクリップへ差し替わるときはシステムごと作り直され `skin_generation` が変わる。
+/// `SkinComputeSystem` はモデルの**全アニメ**を焼き込んでおり、どのアニメをどの時刻で
+/// どれだけ混ぜるかは `pose_bits`（再生指定そのもの）が完全に表す。
 /// したがってここに挙げた 5 つが一致すれば、変形後頂点は 1 ビット違わず同一になる。
 ///
 /// - `layout_sig`: エントリを構成する **全プリミティブ**（頂点・スキン属性・インデックス）の
@@ -226,14 +226,18 @@ struct SkinBlasEntry {
 ///   持つため、単一の `prim_generation` ではなく結合ハッシュを署名要素にする。
 /// - `skin_generation`: ジョイント行列バッファを持つスキンシステムの実体世代。
 /// - `lod` / `compact_idx`: どのジョイント行列スロットを読むか（`joint_base` の決定要素）。
-/// - `anim_bits`: 再生時刻のビット表現（Animator 非駆動は番兵値＝静止）。
+/// - `pose_bits`: 再生指定（フェード元アニメ index/時刻・現在アニメ index/時刻・ブレンド率）の
+///   ビット表現（`SkinAnimPose::sig_bits`。Animator 非駆動は番兵値＝静止）。
+///   **ブレンド状態まで含めるのが要点**で、これが無いとクロスフェード中に
+///   「行列もマテリアルも変わらないのにポーズだけ変わる」フレームで署名が固定され、
+///   RT 上のキャラだけが混合途中のポーズで止まる。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct SkinPoseSignature {
     pub layout_sig:      u64,
     pub skin_generation: u64,
     pub lod:             usize,
     pub compact_idx:     u32,
-    pub anim_bits:       u32,
+    pub pose_bits:       [u32; 5],
 }
 
 /// このエントリの変形 compute ＋ BLAS 再構築が必要かを判定する純関数。
@@ -370,7 +374,8 @@ impl RtSkinBlasManager {
     /// - `prims`: このノードを構成するプリミティブ列。**この順序が BLAS のジオメトリ順**になる。
     /// - `skin`: このバッチのスキンシステム（ジョイント行列バッファの供給元）。
     /// - `lod` / `compact_idx`: ジョイント行列の位置。`joint_base = compact_idx * MAX_JOINTS`。
-    /// - `anim_bits`: 再生時刻のビット表現（ポーズ署名の要素。呼び出し元が算出する）。
+    /// - `pose_bits`: 再生指定（アニメ index・時刻・ブレンド率）のビット表現
+    ///   （ポーズ署名の要素。呼び出し元が `skin_system::pose_sig_bits` で算出する）。
     ///
     /// 返り値は `SkinEntryStatus`。`Rejected` 以外なら TLAS へ載せてよく、
     /// `NeedsRebuild` のときだけ変形 compute を積み BLAS を構築し直す必要がある。
@@ -392,7 +397,7 @@ impl RtSkinBlasManager {
         skin:        &SkinComputeSystem,
         lod:         usize,
         compact_idx: u32,
-        anim_bits:   u32,
+        pose_bits:   [u32; 5],
     ) -> SkinEntryStatus {
         let key = SkinBlasKey::new(batch_key, node_idx, inst_idx, class_id);
 
@@ -507,7 +512,7 @@ impl RtSkinBlasManager {
             skin_generation: skin.generation,
             lod,
             compact_idx,
-            anim_bits,
+            pose_bits,
         };
         entry.pose_sig_current = sig;
         let needs_rebuild = pose_needs_rebuild(entry.pose_sig_built, sig);
@@ -991,7 +996,7 @@ mod tests {
             skin_generation: 20,
             lod:             1,
             compact_idx:     3,
-            anim_bits:       0.5f32.to_bits(),
+            pose_bits:       [0, 0.5f32.to_bits(), 1, 0.25f32.to_bits(), 1.0f32.to_bits()],
         };
         // 未構築（初回）は必ず構築する。構築していない BLAS を TLAS へ載せると落ちるため。
         assert!(pose_needs_rebuild(None, base), "未構築なら必ず再構築");
@@ -999,12 +1004,14 @@ mod tests {
         assert!(!pose_needs_rebuild(Some(base), base), "入力不変ならスキップできる");
 
         // 各要素を単独で変えたら、必ず再構築へ倒れること。
-        let mut anim = base;   anim.anim_bits = 0.75f32.to_bits();      // 再生時刻が進んだ
+        let mut anim = base;   anim.pose_bits[3] = 0.75f32.to_bits();   // 再生時刻が進んだ
+        let mut blend = base;  blend.pose_bits[4] = 0.5f32.to_bits();    // クロスフェードの weight が進んだ
+        let mut src = base;    src.pose_bits[0] = 7;                     // フェード元アニメが変わった
         let mut prim = base;   prim.layout_sig += 1;                    // モデル実体／構成の差し替え
         let mut skin = base;   skin.skin_generation += 1;               // スキンシステム再生成
         let mut lod  = base;   lod.lod += 1;                            // LOD が切り替わった
         let mut idx  = base;   idx.compact_idx += 1;                    // ジョイント行列スロット移動
-        for changed in [anim, prim, skin, lod, idx] {
+        for changed in [anim, blend, src, prim, skin, lod, idx] {
             assert!(
                 pose_needs_rebuild(Some(base), changed),
                 "入力が変われば再構築が必要: {changed:?}"

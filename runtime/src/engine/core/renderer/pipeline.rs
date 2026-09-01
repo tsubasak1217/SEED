@@ -578,7 +578,9 @@ pub struct SkinComputePipeline {
 }
 
 impl SkinComputePipeline {
-    fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
+    /// パイプラインを生成する（`DrawPipelines` 構築時に 1 回）。
+    /// 実 GPU テストからも直接生成できるよう pub（`SkinDeformPipeline::new` と同じ流儀）。
+    pub fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label:  Some("Skin Compute Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/skin_compute.wgsl").into()),
@@ -625,6 +627,10 @@ impl SkinComputePipeline {
                 ro_storage(0), ro_storage(1), ro_storage(2), ro_storage(3),
                 ro_storage(4), ro_storage(5), ro_storage(6), ro_storage(7),
                 ro_storage(8), ro_storage(9), ro_storage(10), ro_storage(11),
+                // 12 = アニメテーブル（全アニメを連結したチャンネル列の範囲表）。
+                // storage ではなく uniform で渡す（storage は 12 本で上限に張り付いており、
+                // 13 本目を要求すると上限ちょうどのアダプタで起動できなくなるため）。
+                uniform_entry(12),
             ],
         });
         let output_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

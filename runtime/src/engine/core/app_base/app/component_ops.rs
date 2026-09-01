@@ -636,8 +636,8 @@ impl App {
                     let clips_json         = serde_json::to_string(&d.clips).unwrap_or_else(|_| "[]".to_string());
                     let default_clip_json  = serde_json::to_string(&d.default_clip).unwrap_or_default();
                     ("AnimatorComponent", format!(
-                        r#","clips":{clips_json},"default_clip":{default_clip_json},"play_on_start":{},"speed":{:.4}"#,
-                        d.play_on_start as u8, d.speed,
+                        r#","clips":{clips_json},"default_clip":{default_clip_json},"play_on_start":{},"speed":{:.4},"default_fade_seconds":{:.4}"#,
+                        d.play_on_start as u8, d.speed, d.default_fade_seconds,
                     ))
                 }
                 ComponentData::LightComponent(d) => {

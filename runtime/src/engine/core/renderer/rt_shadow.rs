@@ -471,12 +471,11 @@ impl RtShadowResources {
         if skin_deform.is_some() {
             for (caster_i, (_path, gpu, batch)) in casters.iter().enumerate() {
                 batch.rt_enumerate_skinned(|g| {
-                    // ポーズ依存値（再生時刻）。Animator 非駆動（None）は静止扱いなので
-                    // 実値と衝突しない番兵ビットを使う。
-                    let anim_bits = batch.anim_time_overrides.get(g.inst_idx)
-                        .and_then(|o| *o)
-                        .map(f32::to_bits)
-                        .unwrap_or(ANIM_TIME_NONE_BITS);
+                    // ポーズ依存値（アニメ index・時刻・クロスフェードの weight）。
+                    // Animator 非駆動（None）は静止扱いで、実値と衝突しない番兵ビットになる。
+                    let pose_bits = crate::engine::core::renderer::skin_system::pose_sig_bits(
+                        batch.anim_pose_overrides.get(g.inst_idx).copied().flatten(),
+                    );
                     // マスク別に振り分ける（並び順は列挙順を保つ＝ジオメトリ順の決定性）。
                     for mask in [RT_MASK_OPAQUE, RT_MASK_NON_OPAQUE] {
                         let prims: Vec<RtSkinnedPrimRef> = g.prims.iter().copied()
@@ -491,7 +490,7 @@ impl RtShadowResources {
                             transform:   g.transform,
                             lod:         g.lod,
                             compact_idx: g.compact_idx,
-                            anim_bits,
+                            pose_bits,
                             prims,
                         });
                     }
@@ -565,7 +564,7 @@ impl RtShadowResources {
             // 変わらないのにポーズだけが変わる」フレームが普通に発生する。ポーズ依存値を
             // 混ぜないとシグネチャが不変のまま静止スキップが発火し、変形 compute も
             // BLAS 再構築も走らず、**RT 上のキャラだけが姿勢を固めたまま止まる**。
-            // よって再生時刻（anim_time_overrides）と、行列位置を決める lod/compact_idx を
+            // よって再生指定（anim_pose_overrides: アニメ index・時刻・ブレンド率）と、行列位置を決める lod/compact_idx を
             // 必ず含める。
             hasher.write_u8(SKIN_SIG_MARKER); // 非スキン部との境界（連結の曖昧さを消す）
             for c in &skin_cands {
@@ -577,7 +576,7 @@ impl RtShadowResources {
                 hasher.write_u8(c.mask);
                 hasher.write_usize(c.lod);
                 hasher.write_u32(c.compact_idx);
-                hasher.write_u32(c.anim_bits);
+                for b in c.pose_bits { hasher.write_u32(b); }
                 for v in &c.transform { hasher.write_u32(v.to_bits()); }
                 // プリミティブ列（＝BLAS のジオメトリ順・レコードの並び順）。件数も混ぜて
                 // 連結の曖昧さを消す。順序が変わればレコード対応が変わるので必ず再構築させる。
@@ -666,11 +665,11 @@ impl RtShadowResources {
                         })
                         .collect();
                     if prims.is_empty() { continue; }
-                    // ポーズ署名（anim_bits）を渡し、前回構築時と完全一致するエントリは
+                    // ポーズ署名（pose_bits）を渡し、前回構築時と完全一致するエントリは
                     // 変形 compute も BLAS 再構築も省かせる（per-actor の静止スキップ）。
                     let status = self.skin_blas.ensure_entry(
                         device, queue, deform, path, c.node_idx, c.inst_idx, c.mask as u32,
-                        &prims, skin, c.lod, c.compact_idx, c.anim_bits,
+                        &prims, skin, c.lod, c.compact_idx, c.pose_bits,
                     );
                     if status.accepted() {
                         skin_accepted.push((
@@ -1040,8 +1039,9 @@ struct SkinEntryInfo {
     lod:         usize,
     /// LOD 内のコンパクト添字（`joint_base = compact_idx * MAX_JOINTS`）。
     compact_idx: u32,
-    /// 再生時刻のビット表現（静止シーン判定のシグネチャに含める）。
-    anim_bits:   u32,
+    /// 再生指定（アニメ index・時刻・ブレンド率）のビット表現。
+    /// 静止シーン判定のシグネチャに含める（クロスフェード中も毎フレーム変化する）。
+    pose_bits:   [u32; 5],
     /// このエントリを構成するプリミティブ列（BLAS のジオメトリ順＝レコードの並び順）。
     prims:       Vec<RtSkinnedPrimRef>,
 }
@@ -1120,10 +1120,6 @@ fn build_hit_record(
 /// シグネチャ内でスキン部の開始／各エントリの区切りを示すマーカーバイト。
 /// 非スキン部の区切り（0xff）と同じ役割で、可変長要素の連結が偶然一致するのを防ぐ。
 const SKIN_SIG_MARKER: u8 = 0xfe;
-
-/// `anim_time_overrides` が `None`（Animator 非駆動＝静止）のときにシグネチャへ混ぜる番兵。
-/// f32 の NaN ビットパターンなので、実際の再生時刻（有限値）と衝突しない。
-const ANIM_TIME_NONE_BITS: u32 = 0x7fc0_0000;
 
 // ─── BLAS 構築ヘルパー ───────────────────────────────────────
 

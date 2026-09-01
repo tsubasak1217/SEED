@@ -157,17 +157,33 @@ pub struct ModelComponentData {
 /// 権威時刻として使う。`None` のとき（Animator 無し／非再生）モデルは静止する
 /// （animations[0] の t=0 で凍結。旧仕様のグローバルクロックによるデモ再生は廃止済み）。
 ///
-/// 【現状の制約】GPU スキニング（`SkinComputeSystem`）は `Model::animations[0]`
-/// のみを再生するため、駆動可能なのは `anim_idx == 0` の場合のみ。`anim_idx != 0`
-/// は上流（update_animations）で警告して静止（非駆動）にフォールバックさせる想定。
-#[derive(Clone, Copy)]
+/// 【複数アニメ】GPU スキニング（`SkinComputeSystem`）はモデル内の全アニメを
+/// パッキング済みなので、`anim_idx` には任意の index を指定できる
+/// （同一モデルのインスタンスごとに別アニメを再生できる）。
+///
+/// 【クロスフェード】クリップ切替中は `fade_from`（フェード元アニメの index と時刻）と
+/// `weight`（0→1 で現在クリップへ遷移）を併せて持つ。`fade_from == None` かつ
+/// `weight == 1.0` がフェード無しの通常再生で、従来と同一のポーズになる。
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelAnimDrive {
-    /// 再生対象アニメの Model::animations インデックス
+    /// 再生対象アニメの Model::animations インデックス（現在クリップ＝フェード先）
     pub anim_idx: usize,
     /// 権威再生時刻（秒。ループ/クランプ後の 0..=duration 正規化済み）
     pub time:     f32,
     /// 再生中フラグ（false = 一時停止・停止でこの時刻を保持）
     pub playing:  bool,
+    /// フェード元アニメの (index, 正規化済み時刻)。None = フェードしていない。
+    pub fade_from: Option<(usize, f32)>,
+    /// ブレンド率（0 = フェード元のみ / 1 = 現在クリップのみ）。
+    /// `fade_from` が None のときは常に 1.0。
+    pub weight:   f32,
+}
+
+impl ModelAnimDrive {
+    /// フェード無し（単一クリップ）の駆動状態を作る。
+    pub fn single(anim_idx: usize, time: f32, playing: bool) -> Self {
+        Self { anim_idx, time, playing, fade_from: None, weight: 1.0 }
+    }
 }
 
 // ─── ModelComponent ───────────────────────────────────────────────────────────

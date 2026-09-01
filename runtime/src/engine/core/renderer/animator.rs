@@ -61,38 +61,10 @@ pub fn compute_node_world_matrices(
     anim_idx: usize,
     time: f32,
 ) -> Vec<[[f32; 4]; 4]> {
-    let id = identity();
     let n_nodes = model.nodes.len();
 
     // ── ① アニメーション補間後の TRS を収集（有効な anim_idx のときのみ）──
-    let mut node_trs: Vec<Option<Trs>> = (0..n_nodes).map(|_| None).collect();
-    if anim_idx < model.animations.len() {
-        let anim = &model.animations[anim_idx];
-        for ch in &anim.channels {
-            let ni = ch.target_node_index;
-            if ni >= n_nodes {
-                continue;
-            }
-            let trs = node_trs[ni].get_or_insert_with(Trs::identity);
-            let s = &ch.sampler;
-            let t = time.clamp(
-                s.timestamps.first().copied().unwrap_or(0.0),
-                s.timestamps.last().copied().unwrap_or(0.0),
-            );
-            match &s.outputs {
-                AnimationOutputs::Translations(v) => {
-                    trs.translation = sample_vec3(s.interpolation, &s.timestamps, v, t);
-                }
-                AnimationOutputs::Rotations(v) => {
-                    trs.rotation = sample_quat(s.interpolation, &s.timestamps, v, t);
-                }
-                AnimationOutputs::Scales(v) => {
-                    trs.scale = sample_vec3(s.interpolation, &s.timestamps, v, t);
-                }
-                _ => {}
-            }
-        }
-    }
+    let node_trs = sample_node_trs(model, anim_idx, time);
 
     // ── ② ノードローカル行列（TRS 無し＝バインドポーズの local_matrix）──
     let local_mats: Vec<[[f32; 4]; 4]> = (0..n_nodes)
@@ -105,11 +77,123 @@ pub fn compute_node_world_matrices(
         .collect();
 
     // ── ③ ワールド行列（シーングラフ走査。ルートは単位行列）──
-    let mut world_mats = vec![id; n_nodes];
+    world_from_locals(model, &local_mats)
+}
+
+/// クロスフェード（2 クリップ混合）版のノードワールド行列。
+///
+/// GPU スキニング（skin_compute.wgsl）と**同じ規則**でポーズを混ぜる:
+///   - 各ノードの TRS を A・B それぞれで評価する（未アニメのノードはバインドポーズ）
+///   - 平行移動/スケールは線形補間、回転は符号合わせ付きの正規化線形補間
+///   - `weight = 1` なら B のみ（＝`compute_node_world_matrices` と完全に同じ結果）
+///
+/// ジョイントアタッチ（ソケット）が、フェード中も描画と同じ姿勢へ追従するために使う。
+pub fn compute_node_world_matrices_blend(
+    model: &Model,
+    anim_a: usize,
+    time_a: f32,
+    anim_b: usize,
+    time_b: f32,
+    weight: f32,
+) -> Vec<[[f32; 4]; 4]> {
+    let w = weight.clamp(0.0, 1.0);
+    // フェードしていない（B のみ）ときは単一クリップ経路へ委ねる（結果はビット単位で同一）。
+    if w >= 1.0 {
+        return compute_node_world_matrices(model, anim_b, time_b);
+    }
+
+    let n_nodes = model.nodes.len();
+    let trs_a = sample_node_trs(model, anim_a, time_a);
+    let trs_b = sample_node_trs(model, anim_b, time_b);
+
+    let local_mats: Vec<[[f32; 4]; 4]> = (0..n_nodes)
+        .map(|i| match (&trs_a[i], &trs_b[i]) {
+            // どちらのクリップも触らないノードはバインドポーズのまま
+            (None, None) => model.nodes[i].local_matrix,
+            _ => {
+                // 片側だけがアニメするノードは、もう片方をバインドポーズとして混ぜる
+                //（そうしないと「A だけが動かす腕」がフェード後も戻らない）。
+                let bind = bind_trs(model, i);
+                let a = trs_a[i].as_ref().unwrap_or(&bind);
+                let b = trs_b[i].as_ref().unwrap_or(&bind);
+                trs_to_matrix(&blend_trs(a, b, w))
+            }
+        })
+        .collect();
+
+    world_from_locals(model, &local_mats)
+}
+
+/// ノードローカル行列列からワールド行列列（モデル空間）を求める。
+fn world_from_locals(model: &Model, local_mats: &[[[f32; 4]; 4]]) -> Vec<[[f32; 4]; 4]> {
+    let id = identity();
+    let mut world_mats = vec![id; model.nodes.len()];
     for &root in &model.root_nodes {
-        compute_world(root, &id, &local_mats, &model.nodes, &mut world_mats);
+        compute_world(root, &id, local_mats, &model.nodes, &mut world_mats);
     }
     world_mats
+}
+
+/// アニメ `anim_idx` を時刻 `time` で評価し、ノードごとの TRS オーバーライドを返す。
+/// `None` の要素は「このアニメが触らないノード」＝バインドポーズを意味する。
+/// `anim_idx` が範囲外（例: `usize::MAX`）なら全要素 `None`（＝バインドポーズ）。
+fn sample_node_trs(model: &Model, anim_idx: usize, time: f32) -> Vec<Option<Trs>> {
+    let n_nodes = model.nodes.len();
+    let mut node_trs: Vec<Option<Trs>> = (0..n_nodes).map(|_| None).collect();
+    if anim_idx >= model.animations.len() {
+        return node_trs;
+    }
+    let anim = &model.animations[anim_idx];
+    for ch in &anim.channels {
+        let ni = ch.target_node_index;
+        if ni >= n_nodes {
+            continue;
+        }
+        // 初期値はバインドポーズ（このチャンネルが触らない成分を単位値で潰さないため）
+        let bind = bind_trs(model, ni);
+        let trs = node_trs[ni].get_or_insert(bind);
+        let s = &ch.sampler;
+        let t = time.clamp(
+            s.timestamps.first().copied().unwrap_or(0.0),
+            s.timestamps.last().copied().unwrap_or(0.0),
+        );
+        match &s.outputs {
+            AnimationOutputs::Translations(v) => {
+                trs.translation = sample_vec3(s.interpolation, &s.timestamps, v, t);
+            }
+            AnimationOutputs::Rotations(v) => {
+                trs.rotation = sample_quat(s.interpolation, &s.timestamps, v, t);
+            }
+            AnimationOutputs::Scales(v) => {
+                trs.scale = sample_vec3(s.interpolation, &s.timestamps, v, t);
+            }
+            _ => {}
+        }
+    }
+    node_trs
+}
+
+/// ノードのバインドポーズ TRS（glTF の node.translation/rotation/scale）。
+fn bind_trs(model: &Model, node_idx: usize) -> Trs {
+    let n = &model.nodes[node_idx];
+    Trs {
+        translation: n.translation,
+        rotation: n.rotation,
+        scale: n.scale,
+    }
+}
+
+/// 2 つの TRS をブレンドする純関数（GPU 側 skin_compute.wgsl と同一規則）。
+///
+/// - 平行移動 / スケール: 線形補間
+/// - 回転: 符号合わせ（内積が負なら b を反転）付きの正規化線形補間＝最短経路
+/// - `w = 0` で a、`w = 1` で b と厳密に一致する
+pub fn blend_trs(a: &Trs, b: &Trs, w: f32) -> Trs {
+    Trs {
+        translation: lerp3(a.translation, b.translation, w),
+        rotation: nlerp(a.rotation, b.rotation, w),
+        scale: lerp3(a.scale, b.scale, w),
+    }
 }
 
 fn compute_world(
@@ -132,14 +216,16 @@ fn compute_world(
 
 /// アニメーション補間の中間表現（平行移動・回転・スケール）。
 /// チャンネルごとの補間結果を集約し、`trs_to_matrix` でローカル行列へ変換するために使う。
-struct Trs {
-    translation: [f32; 3],
-    rotation: [f32; 4], // [x, y, z, w]
-    scale: [f32; 3],
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Trs {
+    pub translation: [f32; 3],
+    pub rotation: [f32; 4], // [x, y, z, w]
+    pub scale: [f32; 3],
 }
 
 impl Trs {
-    fn identity() -> Self {
+    /// 恒等 TRS（平行移動 0・無回転・等倍）。
+    pub fn identity() -> Self {
         Self {
             translation: [0.0, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0, 1.0],
@@ -377,5 +463,93 @@ mod tests {
             world[1][1][3]
         );
         assert!((world[1][2][3] - 0.0).abs() < 1e-5);
+    }
+
+    // ── TRS ブレンド（クロスフェード）の純関数テスト ────────────
+
+    /// weight の端点（0 / 1）でブレンド結果が入力そのものと一致する。
+    /// ここが崩れると「フェード開始直後」「完了直後」に姿勢が飛ぶ。
+    #[test]
+    fn blend_trs_endpoints_match_inputs() {
+        let a = Trs {
+            translation: [1.0, 2.0, 3.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+        };
+        // 90° 回転（Z 軸）
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let b = Trs {
+            translation: [-1.0, 0.0, 5.0],
+            rotation: [0.0, 0.0, s, s],
+            scale: [2.0, 2.0, 2.0],
+        };
+
+        let at0 = blend_trs(&a, &b, 0.0);
+        assert_eq!(at0.translation, a.translation);
+        assert_eq!(at0.scale, a.scale);
+        for i in 0..4 {
+            assert!((at0.rotation[i] - a.rotation[i]).abs() < 1e-6);
+        }
+
+        let at1 = blend_trs(&a, &b, 1.0);
+        assert_eq!(at1.translation, b.translation);
+        assert_eq!(at1.scale, b.scale);
+        for i in 0..4 {
+            assert!((at1.rotation[i] - b.rotation[i]).abs() < 1e-6);
+        }
+
+        // 中点は各成分の中間（回転は正規化されている）
+        let mid = blend_trs(&a, &b, 0.5);
+        assert!((mid.translation[0] - 0.0).abs() < 1e-6);
+        assert!((mid.scale[0] - 1.5).abs() < 1e-6);
+        let len: f32 = mid.rotation.iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!((len - 1.0).abs() < 1e-5, "回転は常に正規化される: {len}");
+    }
+
+    /// クォータニオンの符号合わせ（最短経路補間）。
+    ///
+    /// q と -q は同じ姿勢なので、内積が負の組み合わせでは b を反転してから補間しないと
+    /// 「遠回り」して 1 フレームで回転が暴れる。
+    #[test]
+    fn blend_trs_takes_shortest_rotation_path() {
+        let ident = Trs::identity();
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let q = [0.0, 0.0, s, s]; // Z 90°
+        let a = Trs { rotation: q, ..ident };
+        // 同じ姿勢を表す符号反転クォータニオン
+        let b = Trs { rotation: [-q[0], -q[1], -q[2], -q[3]], ..ident };
+
+        // 符号合わせが効いていれば、同一姿勢どうしの補間は姿勢を変えない
+        let mid = blend_trs(&a, &b, 0.5);
+        for i in 0..4 {
+            assert!(
+                (mid.rotation[i] - q[i]).abs() < 1e-5,
+                "符号合わせが無いと中点で姿勢が壊れる: {:?}",
+                mid.rotation
+            );
+        }
+    }
+
+    /// weight = 1 のブレンド解決は単一クリップ解決とビット単位で一致する
+    /// （＝クロスフェード導入で従来の見た目が 1 ビットも変わらない）。
+    #[test]
+    fn blend_with_full_weight_matches_single_clip_path() {
+        let model = Model {
+            name: "t".into(),
+            nodes: vec![
+                node("root", [1.0, 0.0, 0.0], vec![1]),
+                node("child", [0.0, 2.0, 0.0], vec![]),
+            ],
+            root_nodes: vec![0],
+            meshes: vec![],
+            materials: vec![],
+            textures: vec![],
+            animations: vec![],
+            skins: vec![],
+        };
+        let single = compute_node_world_matrices(&model, usize::MAX, 0.0);
+        let blended =
+            compute_node_world_matrices_blend(&model, usize::MAX, 0.0, usize::MAX, 0.0, 1.0);
+        assert_eq!(single, blended);
     }
 }

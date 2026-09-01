@@ -865,6 +865,7 @@ public partial class InspectorPanel : UserControl
         string AnimDefaultClip = "",
         bool AnimPlayOnStart = true,
         float AnimSpeed = 1f,
+        float AnimDefaultFadeSeconds = 0f,
         // LightComponent 用フィールド（種別・色・強度・range・スポット内外角・rect サイズ・影フラグ）
         string LightKind = "directional",
         float LightR = 1f, float LightG = 1f, float LightB = 1f,
@@ -1409,6 +1410,7 @@ public partial class InspectorPanel : UserControl
             var animDefaultClip  = comp.TryGetProperty("default_clip",  out var adc) ? adc.GetString() ?? "" : "";
             var animPlayOnStart  = comp.TryGetProperty("play_on_start", out var apos) ? ReadJsonBool(apos, true) : true;
             var animSpeed        = comp.TryGetProperty("speed",         out var asp2) ? asp2.GetSingle() : 1f;
+            var animDefaultFade  = comp.TryGetProperty("default_fade_seconds", out var adf) ? adf.GetSingle() : 0f;
             // LightComponent 用: 種別・色（リニア RGB）・強度・range・スポット内外角・rect サイズ・影フラグ
             var lightKind        = comp.TryGetProperty("kind",         out var lki) ? lki.GetString() ?? "directional" : "directional";
             var lightR           = comp.TryGetProperty("lr",           out var llr) ? llr.GetSingle() : 1f;
@@ -1643,6 +1645,7 @@ public partial class InspectorPanel : UserControl
                 TextLineSpacing: textLineSpacing, TextLayer: textLayer,
                 AnimClipsJson: animClipsJson, AnimDefaultClip: animDefaultClip,
                 AnimPlayOnStart: animPlayOnStart, AnimSpeed: animSpeed,
+                AnimDefaultFadeSeconds: animDefaultFade,
                 LightKind: lightKind,
                 LightR: lightR, LightG: lightG, LightB: lightB,
                 LightIntensity: lightIntensity, LightRange: lightRange,
@@ -5088,6 +5091,7 @@ public partial class InspectorPanel : UserControl
         var curDefaultClip = info.AnimDefaultClip;
         var curPlayOnStart = info.AnimPlayOnStart;
         var curSpeed       = info.AnimSpeed;
+        var curDefaultFade = info.AnimDefaultFadeSeconds;
 
         // ── clips/default_clip/play_on_start/speed をまとめて 1 メッセージで送信するローカル関数 ──
         // kind/anim/loop_mode は keyframe クリップでも明示送信する（ラウンドトリップで情報を落とさないため）。
@@ -5103,6 +5107,7 @@ public partial class InspectorPanel : UserControl
                 default_clip = curDefaultClip,
                 play_on_start = curPlayOnStart,
                 speed        = curSpeed,
+                default_fade_seconds = curDefaultFade,
             };
             var json = JsonSerializer.Serialize(payload);
             _runtime?.SendToRuntime($"SET_ANIMATOR_CLIPS:{_currentActorId},{info.SlotIdx},{json}");
@@ -5312,19 +5317,10 @@ public partial class InspectorPanel : UserControl
                 for (int i = 0; i < modelAnims.Count; i++)
                 {
                     var animName = modelAnims[i];
-                    var isFirst  = i == 0;
                     var label    = string.IsNullOrEmpty(animName) ? $"(無名アニメ #{i})" : animName;
-                    var menuItem = new MenuItem
-                    {
-                        Header = isFirst ? label : $"{label}  ※先頭以外は現行GPU非対応",
-                        // 先頭以外は薄字にして現行の制約（GPUスキニングは Model::animations[0] のみ再生可能）を示す
-                        Foreground = isFirst
-                            ? null
-                            : new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
-                        ToolTip = isFirst
-                            ? null
-                            : "現行GPUは Model 内の先頭アニメ (index 0) のみ再生可能です。このアニメは再生時にフォールバックされます。",
-                    };
+                    // GPU スキニングはモデル内の全アニメをパッキング済みなので、
+                    // どのアニメを選んでもそのまま再生できる（インスタンスごとに別アニメも可）。
+                    var menuItem = new MenuItem { Header = label };
                     menuItem.Click += (_, _) =>
                     {
                         // {name: anim名, kind:"model", anim: anim名, loop_mode:"loop"} で追加する
@@ -5371,6 +5367,15 @@ public partial class InspectorPanel : UserControl
             info.SlotIdx, AnimatorComponentType, "速度", curSpeed, "speed",
             AnimatorNumberFormat,
             v => { curSpeed = v; CommitAnimator(); }));
+
+        // ── 既定フェード時間 ──────────────────────────────────
+        // Play（フェード時間の明示指定なし）でのクリップ切替に使うクロスフェード秒数。
+        // 0 = 即時切替（従来挙動）。補間されるのはモデル内蔵アニメ同士の切替のみで、
+        // .anim キーフレームクリップが絡む切替は常に即時になる。
+        sp.Children.Add(BuildResettableFloatRow(
+            info.SlotIdx, AnimatorComponentType, "既定フェード(秒)", curDefaultFade, "default_fade_seconds",
+            AnimatorNumberFormat,
+            v => { curDefaultFade = Math.Max(0f, v); CommitAnimator(); }));
 
         // ── タイムラインで編集 ──────────────────────────────────
         var editTimelineBtn = new Button

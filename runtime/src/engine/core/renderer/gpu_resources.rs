@@ -8,7 +8,7 @@ use crate::engine::core::loader::model::{
 };
 use super::uniforms::{CameraUniform, ModelUniform, PrevModelUniform, MaterialUniform, JointUniform,
                       ColorVertex, GpuCullData, GizmoVertex};
-use super::skin_system::SkinComputeSystem;
+use super::skin_system::{SkinAnimPose, SkinComputeSystem};
 use super::pipeline::{SkinComputePipeline, MeshletCullPipeline};
 use super::material_asset;
 use crate::engine::components::material_override::{MaterialOverride, MaterialOverrideKind};
@@ -1822,11 +1822,12 @@ pub struct InstancedModelBatch {
     /// 静的スキップ）は再描画へ倒れるだけなので見た目に影響しない。
     content_generation: u64,
 
-    /// インスタンスごとの Animator 駆動権威時刻（元インスタンスインデックス順）。
-    /// `Some(t)` のインスタンスは `t` を再生時刻として使う（`ModelComponent::anim_drive` 由来）。
-    /// `None` または要素なしのインスタンスは静止（先頭フレームで凍結）。
-    /// 毎フレーム `set_anim_time_overrides` で更新する。
-    pub anim_time_overrides: Vec<Option<f32>>,
+    /// インスタンスごとの Animator 駆動再生指定（元インスタンスインデックス順）。
+    /// `Some(pose)` のインスタンスはそのアニメ index・時刻・ブレンド率で再生する
+    /// （`ModelComponent::anim_drive` 由来）。
+    /// `None` または要素なしのインスタンスは静止（先頭アニメの先頭フレームで凍結）。
+    /// 毎フレーム `set_anim_pose_overrides` で更新する。
+    pub anim_pose_overrides: Vec<Option<SkinAnimPose>>,
 
     /// インスタンスごとのセマンティックタグ（元インスタンスインデックス順・0 = タグ無し）。
     /// `ModelComponent::render_tag` を統合バッチのインスタンス順に並べたもので、
@@ -2183,7 +2184,7 @@ impl InstancedModelBatch {
             dirty: true,
             // 生成直後は「まだ何もアップロードしていない」固有世代を持つ。
             content_generation: next_gpu_generation(),
-            anim_time_overrides: Vec::new(),
+            anim_pose_overrides: Vec::new(),
             // タグ列は初回 update() で埋まる（空 = 全インスタンス タグ無し扱い）。
             render_tags:         Vec::new(),
         }
@@ -2193,11 +2194,11 @@ impl InstancedModelBatch {
     /// 次の `update()` でワールド行列・AABB が再計算される。
     pub fn mark_dirty(&mut self) { self.dirty = true; }
 
-    /// Animator 駆動の権威時刻配列を同期する（元インスタンスインデックス順）。
+    /// Animator 駆動の再生指定配列を同期する（元インスタンスインデックス順）。
     /// `update()` の前に毎フレーム呼び出す。空配列を渡すと全インスタンスが静止（先頭フレーム凍結）になる。
-    pub fn set_anim_time_overrides(&mut self, overrides: &[Option<f32>]) {
-        self.anim_time_overrides.clear();
-        self.anim_time_overrides.extend_from_slice(overrides);
+    pub fn set_anim_pose_overrides(&mut self, overrides: &[Option<SkinAnimPose>]) {
+        self.anim_pose_overrides.clear();
+        self.anim_pose_overrides.extend_from_slice(overrides);
     }
 
     /// GPU へアップロード済みの内容の版番号（`update()` のたびに採り直される）。
@@ -2561,13 +2562,14 @@ impl InstancedModelBatch {
                 queue.write_buffer(&self.lod_id_buffers[lod], 0, bytemuck::cast_slice(&ids));
             }
 
-            // スキンシステムへの anim_times 転送（GPU スキニング計算の入力）
-            // anim_time_overrides が指定されたインスタンスは Animator 駆動の権威時刻、
-            // それ以外は静止（先頭フレーム凍結）となる。
+            // スキンシステムへの再生指定転送（GPU スキニング計算の入力）
+            // anim_pose_overrides が指定されたインスタンスは Animator 駆動の権威指定
+            //（アニメ index・時刻・クロスフェードのブレンド率）、
+            // それ以外は静止（先頭アニメの先頭フレーム凍結）となる。
             if let Some(skin) = &self.skin {
-                skin.upload_lod_times(
+                skin.upload_lod_poses(
                     queue, lod, &self.lod_compact_insts[lod],
-                    &self.anim_time_overrides,
+                    &self.anim_pose_overrides,
                 );
             }
         }

@@ -1787,9 +1787,11 @@ impl App {
                     struct MergeInfo {
                         cpu_model: std::sync::Arc<crate::engine::core::loader::model::Model>,
                         mats:      Vec<[[f32; 4]; 4]>,
-                        /// 統合インスタンス i の Animator 駆動権威時刻（None = 静止・先頭フレーム凍結）。
-                        /// ModelComponent::anim_drive 由来。同一 MC の全インスタンスに同じ値を複製する。
-                        time_overrides: Vec<Option<f32>>,
+                        /// 統合インスタンス i の Animator 駆動再生指定（None = 静止・先頭フレーム凍結）。
+                        /// ModelComponent::anim_drive 由来で、アニメ index・時刻に加えて
+                        /// クロスフェードのフェード元と weight まで含む。
+                        /// 同一 MC の全インスタンスに同じ値を複製する。
+                        pose_overrides: Vec<Option<crate::engine::core::renderer::skin_system::SkinAnimPose>>,
                         /// 統合インスタンス i の絶対 ID（元 MC の id_base + 元インスタンス idx）
                         abs_ids:   Vec<u32>,
                         /// 統合インスタンス i のセマンティックタグ（0..15。0 = タグ無し）。
@@ -1825,13 +1827,29 @@ impl App {
                                 .or_insert_with(|| MergeInfo {
                                     cpu_model: arc_m.clone(),
                                     mats:      Vec::new(),
-                                    time_overrides: Vec::new(),
+                                    pose_overrides: Vec::new(),
                                     abs_ids:   Vec::new(),
                                     render_tags: Vec::new(),
                                 });
                             // この MC が Animator 駆動中なら権威時刻を、そうでなければ None を
                             // 全インスタンス分複製する（インスタンスは同一アニメを共有再生する）。
-                            let mc_time_override = amc.anim_drive.map(|d| d.time);
+                            // Animator 駆動の再生指定（アニメ index・時刻・ブレンド状態）を
+                            // レンダラ用の POD へ落とす。フェード元が無ければ weight=1 の単一クリップ。
+                            let mc_pose_override = amc.anim_drive.map(|d| {
+                                use crate::engine::core::renderer::skin_system::SkinAnimPose;
+                                match d.fade_from {
+                                    // クロスフェード中: A=フェード元 / B=現在クリップ を weight で混ぜる
+                                    Some((a_idx, a_time)) => SkinAnimPose {
+                                        anim_a: a_idx as u32,
+                                        time_a: a_time,
+                                        anim_b: d.anim_idx as u32,
+                                        time_b: d.time,
+                                        weight: d.weight,
+                                    },
+                                    // 通常再生: 単一クリップ（weight=1）＝従来と同一のポーズ
+                                    None => SkinAnimPose::single(d.anim_idx as u32, d.time),
+                                }
+                            });
                             // このMCが統合バッチに追加される前の先頭インデックスを記録する
                             let merged_start = e.mats.len() as u32;
                             let n_insts      = amc.instance_mats.len() as u32;
@@ -1852,7 +1870,7 @@ impl App {
                             // 書き戻さないため、保存 → ロードでの二重適用は起こらない。
                             for (inst_i, &mat) in amc.instance_mats.iter().enumerate() {
                                 e.mats.push(amc.render_matrix(mat));
-                                e.time_overrides.push(mc_time_override);
+                                e.pose_overrides.push(mc_pose_override);
                                 // abs_id = MC の id_base + このインスタンスのオフセット
                                 e.abs_ids.push(id_base + inst_i as u32);
                                 // タグは MC 単位の属性なので、この MC の全インスタンスへ同値を複製する。
@@ -1906,7 +1924,7 @@ impl App {
                                 mats:           &info.mats,
                                 abs_ids:        &info.abs_ids,
                                 render_tags:    &info.render_tags,
-                                time_overrides: &info.time_overrides,
+                                pose_overrides: &info.pose_overrides,
                             };
                             let lod_unchanged = sd.batch.lod_buckets_unchanged(saved_camera_pos);
                             // 速度リセット要求フレーム（Play⇄Edit 切替・シーンロード・RT リサイズ）は
@@ -1920,7 +1938,7 @@ impl App {
                                 let batch     = &mut sd.batch;
                                 let cpu_model = &sd.cpu_model;
                                 // Animator 駆動の権威時刻を反映する（非駆動インスタンスは静止）。
-                                batch.set_anim_time_overrides(&info.time_overrides);
+                                batch.set_anim_pose_overrides(&info.pose_overrides);
                                 batch.mark_dirty();
                                 // 速度バッファ: フレーム間の連続性が切れたフレーム
                                 // （Play⇄Edit 切替・ポーズ切替・RT リサイズ）は

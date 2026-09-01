@@ -23,6 +23,7 @@ public readonly struct Animator : IComponentHandle<Animator>
     private const int ActionStop   = 1;
     private const int ActionPause  = 2;
     private const int ActionResume = 3;
+    private const int ActionCrossFade = 4;
 
     internal Animator(Entity entity) { _entity = entity; }
 
@@ -44,22 +45,37 @@ public readonly struct Animator : IComponentHandle<Animator>
 
     // ── 再生操作 ─────────────────────────────────────────────
 
-    /// <summary>指定クリップを先頭（time=0）から再生する。再生速度は変更しない。</summary>
+    /// <summary>
+    /// 指定クリップを先頭（time=0）から再生する。再生速度は変更しない。
+    /// フェード時間は <see cref="DefaultFadeSeconds"/>（既定 0 = 即時切替）を使う。
+    /// </summary>
     public void Play(string clipName)
-        => ScriptHost.AnimatorComponentAction(ActionPlay, _entity, clipName, float.NaN);
+        => ScriptHost.AnimatorComponentAction(ActionPlay, _entity, clipName, float.NaN, float.NaN);
 
     /// <summary>指定クリップを先頭（time=0）から再生し、再生速度も同時に設定する。</summary>
     public void Play(string clipName, float speed)
-        => ScriptHost.AnimatorComponentAction(ActionPlay, _entity, clipName, speed);
+        => ScriptHost.AnimatorComponentAction(ActionPlay, _entity, clipName, speed, float.NaN);
 
-    /// <summary>再生を停止し、再生位置を先頭（time=0）へ戻す。</summary>
-    public void Stop() => ScriptHost.AnimatorComponentAction(ActionStop, _entity, "", 0f);
+    /// <summary>再生速度とクロスフェード時間を同時に指定して再生する。</summary>
+    public void Play(string clipName, float speed, float fadeSeconds)
+        => ScriptHost.AnimatorComponentAction(ActionPlay, _entity, clipName, speed, fadeSeconds);
 
-    /// <summary>現在の再生位置を保持したまま一時停止する。</summary>
-    public void Pause() => ScriptHost.AnimatorComponentAction(ActionPause, _entity, "", 0f);
+    /// <summary>
+    /// 指定クリップへ <paramref name="fadeSeconds"/> 秒かけてクロスフェードする（再生速度は変更しない）。
+    /// 0 以下を渡すと即時切替。補間されるのは glTF 内蔵アニメ（モデルクリップ）同士のときだけで、
+    /// .anim キーフレームクリップが絡む切替は常に即時になる。
+    /// </summary>
+    public void CrossFade(string clipName, float fadeSeconds)
+        => ScriptHost.AnimatorComponentAction(ActionCrossFade, _entity, clipName, float.NaN, fadeSeconds);
+
+    /// <summary>再生を停止し、再生位置を先頭（time=0）へ戻す（フェード中ならフェードも破棄）。</summary>
+    public void Stop() => ScriptHost.AnimatorComponentAction(ActionStop, _entity, "", 0f, 0f);
+
+    /// <summary>現在の再生位置とフェード状態を保持したまま一時停止する。</summary>
+    public void Pause() => ScriptHost.AnimatorComponentAction(ActionPause, _entity, "", 0f, 0f);
 
     /// <summary>一時停止していた再生を再開する（再生対象クリップが無ければ何もしない）。</summary>
-    public void Resume() => ScriptHost.AnimatorComponentAction(ActionResume, _entity, "", 0f);
+    public void Resume() => ScriptHost.AnimatorComponentAction(ActionResume, _entity, "", 0f, 0f);
 
     // ── 状態プロパティ ───────────────────────────────────────
 
@@ -84,4 +100,21 @@ public readonly struct Animator : IComponentHandle<Animator>
         get => ScriptHost.TryGetFloat(_entity, Comp, "speed", out var v) ? v : 1f;
         set => ScriptHost.TrySetFloat(_entity, Comp, "speed", value);
     }
+
+    /// <summary>
+    /// <see cref="Play(string)"/> がフェード時間を明示されなかったときに使う既定クロスフェード時間（秒）。
+    /// 0 = 即時切替（既定）。インスペクタからも編集できる。負値は 0 にクランプされる。
+    /// </summary>
+    public float DefaultFadeSeconds
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "default_fade_seconds", out var v) ? v : 0f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "default_fade_seconds", value);
+    }
+
+    /// <summary>
+    /// 進行中クロスフェードのブレンド率（get のみ。0 = フェード元のみ / 1 = 現在クリップのみ）。
+    /// フェードしていないときは常に 1。
+    /// </summary>
+    public float FadeWeight
+        => ScriptHost.TryGetFloat(_entity, Comp, "fade_weight", out var v) ? v : 1f;
 }

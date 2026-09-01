@@ -24,7 +24,7 @@
 
 use crate::engine::components::{ComponentKind, JointAttachComponent, ModelComponent, Transform};
 use crate::engine::core::loader::model::Model;
-use crate::engine::core::renderer::animator::{compute_node_world_matrices, mat4_mul};
+use crate::engine::core::renderer::animator::{compute_node_world_matrices_blend, mat4_mul};
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
 
@@ -219,11 +219,20 @@ impl App {
                 world.get::<ModelComponent>(job.model_slot).and_then(|mc| {
                     mc.model.as_ref().map(|m| {
                         // 時刻源: anim_drive（Play の Animator 権威時刻）。無ければ静止＝バインドポーズ。
-                        let (anim_idx, time) = match mc.anim_drive {
-                            Some(d) => (d.anim_idx, d.time),
-                            None => (usize::MAX, 0.0), // 無効 anim_idx → local_matrix（バインドポーズ）
+                        // クロスフェード中は描画（GPU スキニング）と同じ 2 クリップ混合で解決する。
+                        let (anim_a, time_a, anim_b, time_b, weight) = match mc.anim_drive {
+                            Some(d) => {
+                                let (a_idx, a_t) = d.fade_from.unwrap_or((d.anim_idx, d.time));
+                                let w = if d.fade_from.is_some() { d.weight } else { 1.0 };
+                                (a_idx, a_t, d.anim_idx, d.time, w)
+                            }
+                            // 無効 anim_idx → local_matrix（バインドポーズ）
+                            None => (usize::MAX, 0.0, usize::MAX, 0.0, 1.0),
                         };
-                        (m.clone(), compute_node_world_matrices(m, anim_idx, time))
+                        (
+                            m.clone(),
+                            compute_node_world_matrices_blend(m, anim_a, time_a, anim_b, time_b, weight),
+                        )
                     })
                 })
             });

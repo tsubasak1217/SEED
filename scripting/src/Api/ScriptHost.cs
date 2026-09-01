@@ -455,12 +455,13 @@ public static unsafe class ScriptHost
     // ── アニメーター ─────────────────────────────────────────────
 
     /// <summary>
-    /// AnimatorComponent を操作する（action: 0=Play/1=Stop/2=Pause/3=Resume）。
+    /// AnimatorComponent を操作する（action: 0=Play/1=Stop/2=Pause/3=Resume/4=CrossFade）。
     /// clipName は Play 時のみ使用（他 action では無視されるので null 可）。
     /// speed は Play 時の再生速度指定（<see cref="float.NaN"/> なら既存の speed を変更しない）。
+    /// fade はクロスフェード時間（秒。<see cref="float.NaN"/> なら Animator の DefaultFadeSeconds を使う）。
     /// 成功なら true（Play はクリップ未登録・未ロードだと false）。
     /// </summary>
-    public static bool AnimatorComponentAction(int action, Entity e, string clipName, float speed)
+    public static bool AnimatorComponentAction(int action, Entity e, string clipName, float speed, float fade)
     {
         if (!_available || _api.AnimatorComponent == null || !e.IsValid) return false;
         clipName ??= "";
@@ -469,7 +470,7 @@ public static unsafe class ScriptHost
         Span<byte> nb = nl > 0 ? stackalloc byte[nl] : default;
         if (nl > 0) Encoding.UTF8.GetBytes(clipName, nb);
         fixed (byte* np = nb)
-            return _api.AnimatorComponent(action, e.Index, e.Generation, np, nl, speed) != 0;
+            return _api.AnimatorComponent(action, e.Index, e.Generation, np, nl, speed, fade) != 0;
     }
 
     /// <summary>
@@ -770,7 +771,7 @@ public unsafe struct ScriptHostApi
     /// <summary>(idx, gen, out float[2]) → 1/0（2D アクターのスクリーン座標）</summary>
     public delegate* unmanaged[Cdecl]<uint, uint, float*, int> ScreenPosition;
     /// <summary>(action, idx, gen, clipName, clipNameLen, speed) → 1/0（action: 0=Play/1=Stop/2=Pause/3=Resume）</summary>
-    public delegate* unmanaged[Cdecl]<int, uint, uint, byte*, int, float, int> AnimatorComponent;
+    public delegate* unmanaged[Cdecl]<int, uint, uint, byte*, int, float, float, int> AnimatorComponent;
     /// <summary>(action, idx, gen, count) → 1/0（action: 0=Play/1=Stop/2=Burst。count は Burst の放出個数）</summary>
     public delegate* unmanaged[Cdecl]<int, uint, uint, int, int> ParticleComponent;
     /// <summary>(idx, gen, pos float[3]) → 1/0（キャラクターを衝突無視で瞬間移動。Transform.Teleport）</summary>

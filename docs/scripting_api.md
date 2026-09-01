@@ -734,27 +734,34 @@ if (gameObject.GetComponent<AudioSource>() is { } audio)   // AudioSource?（未
 - 距離減衰は線形（MinDistance 以内 100% → MaxDistance で 0%）。リスナーは `is_main` のメインカメラ。
 - `Spatial = true` では音源方向に応じて左右パンが自動で振られます（手動 `Pan` は無効）。
 
-### Animator（キーフレームアニメーション再生）
+### Animator（キーフレーム / モデル内蔵アニメ再生・クロスフェード）
 
-エディタの「コンポーネント追加 → アニメーター」で追加し、インスペクタで再生対象クリップ（`clips`）を登録します。実際のトラック評価・書き込みはエンジン側の AnimationSystem が毎フレーム自動で行うため、スクリプトからは再生の開始・停止・状態参照のみ行います。
+エディタの「コンポーネント追加 → アニメーター」で追加し、インスペクタで再生対象クリップ（`clips`）を登録します。クリップは 2 種類あり、`.anim` キーフレームクリップと、glTF モデル内蔵アニメ（インスペクタの「モデル内蔵アニメを追加」で登録。**モデル内のどのアニメでも選べます**）です。実際の評価・書き込みはエンジン側の AnimationSystem が毎フレーム自動で行うため、スクリプトからは再生の開始・停止・状態参照のみ行います。
 
 ```csharp
 if (gameObject.GetComponent<Animator>() is { } anim)   // Animator?（未アタッチは null）
 {
-    anim.Play("Walk");     // 指定クリップを先頭（time=0）から再生（速度は変更しない）
-    anim.Play("Walk", 1.5f); // 再生速度も同時に指定して再生
-    anim.Stop();           // 停止して time=0 に戻す
-    anim.Pause();          // 再生位置を保持したまま一時停止
-    anim.Resume();         // 一時停止を再開（再生対象クリップが無ければ無視）
+    anim.Play("Walk");            // 指定クリップを先頭（time=0）から再生（速度は変更しない）
+    anim.Play("Walk", 1.5f);      // 再生速度も同時に指定して再生
+    anim.Play("Walk", 1.5f, 0.2f);// 速度とクロスフェード時間（秒）を同時に指定
+    anim.CrossFade("Walk", 0.25f);// 0.25 秒かけて現在のクリップから滑らかに切り替える
+    anim.Stop();                  // 停止して time=0 に戻す（フェード状態も破棄）
+    anim.Pause();                 // 再生位置とフェード状態を保持したまま一時停止
+    anim.Resume();                // 一時停止を再開（再生対象クリップが無ければ無視）
 
-    anim.IsPlaying         // bool（get のみ。再生中か）
-    anim.CurrentClip       // string（get のみ。再生中のクリップ名。未再生は空文字）
-    anim.Time              // float（get/set。再生位置・秒。書き込みでシーク可能）
-    anim.Speed             // float（get/set。再生速度倍率。1.0=等倍、負値で逆再生）
+    anim.IsPlaying                // bool（get のみ。再生中か）
+    anim.CurrentClip              // string（get のみ。再生中のクリップ名。未再生は空文字）
+    anim.Time                     // float（get/set。再生位置・秒。書き込みでシーク可能）
+    anim.Speed                    // float（get/set。再生速度倍率。1.0=等倍、負値で逆再生）
+    anim.DefaultFadeSeconds       // float（get/set。Play がフェード時間未指定のとき使う既定値。0=即時切替）
+    anim.FadeWeight               // float（get のみ。フェード進行度。0=フェード元のみ / 1=フェードなし）
 }
 ```
 
-- `Play` で指定するクリップ名は、そのアクターの Animator に登録済み（`clips` 一覧に存在し、既にロード済み）である必要があります。未登録・未ロードの名前を指定すると警告ログを出して無視されます（例外は発生しません）。
+> **重要**: クロスフェードで補間されるのは **glTF モデル内蔵アニメ（モデルクリップ）同士の切替だけ**です。`.anim` キーフレームクリップが絡む切替（Keyframe↔Model / Keyframe↔Keyframe）は、フェード時間を指定しても常に即時切替になります（警告は出ません）。
+
+- フェード中にさらに切替を呼ぶと、そのときの「現在クリップ」が新しいフェード元になり、ブレンド率は 0 から再開します（3 本以上を同時に混ぜることはありません）。
+- `Play` で指定するクリップ名は、そのアクターの Animator に登録済み（`clips` 一覧に存在し、キーフレームクリップなら既にロード済み）である必要があります。未登録・未ロードの名前を指定すると警告ログを出して無視されます（例外は発生しません）。
 - クリップは Play モード開始時（初回フレーム、スクリプトの `Update` 等より前）に自動ロードされるため、通常のスクリプトライフサイクル関数から呼ぶ限り「まだロードされていない」状況は発生しません。
 
 ### ParticleEmitter（GPU パーティクル放出源）
@@ -1014,7 +1021,7 @@ public class FishingLine : SEEDScript
 | `SkinnedSprite` | `gameObject.GetComponent<SkinnedSprite>()` | メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー・ポインタ判定対象。ボーンは子アクターの CanvasTransform で動かす |
 | `Camera` | `gameObject.GetComponent<Camera>()` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |
 | `AudioSource` | `gameObject.GetComponent<AudioSource>()` | 音源パス・音量・ループ・3D 減衰・パン + Play/Stop |
-| `Animator` | `gameObject.GetComponent<Animator>()` | 再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume |
+| `Animator` | `gameObject.GetComponent<Animator>()` | 再生中クリップ・再生位置・速度・フェード + Play/CrossFade/Stop/Pause/Resume |
 | `ParticleEmitter` | `gameObject.GetComponent<ParticleEmitter>()` | 放出レート・ループ・抵抗・拡散角 + Play/Stop/Burst |
 | `InputMap` | `gameObject.GetComponent<InputMap>()` | 入力アクション評価（Bool / Axis1D / Axis2D。Key / GamepadButton / GamepadAxis） |
 | `WaterVolume` | `gameObject.GetComponent<WaterVolume>()` | 現在水位（読み取り専用）・設定水位・水位シミュレーションの有効／無効・水面シェーダのパラメータ（SetShaderParam / GetShaderParamFloat / GetShaderParamVector3） |

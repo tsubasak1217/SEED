@@ -1766,7 +1766,7 @@ impl TerrainState {
                     mats:           &visible,
                     abs_ids:        &[],
                     render_tags:    &[],
-                    time_overrides: &[],
+                    pose_overrides: &[],
                 };
                 let lod_unchanged = res.batch.lod_buckets_unchanged(camera_pos);
                 if res.merge_gate.decide(&gate_inputs, lod_unchanged, false) {

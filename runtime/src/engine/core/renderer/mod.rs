@@ -465,6 +465,12 @@ impl Renderer {
                                      | if supports_partially_bound { wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY } else { wgpu::Features::empty() }
                                    } else { wgpu::Features::empty() },
                 required_limits:   wgpu::Limits {
+                    // GPU スキニングの静的 BG が最大の消費者（storage 12 本）。
+                    // 【なぜ複数アニメ対応でも 12 のままか】アニメテーブル（binding 12）は
+                    // storage ではなく **uniform** で渡している。storage の要求本数を 13 へ
+                    // 上げると、上限ちょうど 12 のアダプタでデバイス生成そのものが失敗して
+                    // 起動しなくなるため、別プールである uniform 側（既定 12 本中 1 本使用）
+                    // へ逃がした。テーブルは MAX_ANIMS 件の固定長で 1KB に収まる。
                     max_storage_buffers_per_shader_stage: 12,
                     max_bind_groups: 5,
                     // ── G-Buffer MRT 5 枚（速度バッファ追加）に必要なカラーアタッチメント帯域 ──

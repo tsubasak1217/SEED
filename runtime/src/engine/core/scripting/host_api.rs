@@ -32,7 +32,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::engine::components::{
-    AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, InputMapComponent,
+    AnimClipKind, AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform,
+    InputMapComponent,
     LineRendererComponent, ModelComponent, ParticleEmitterComponent, SkinnedSpriteComponent,
     SkyboxComponent, SpriteComponent, TextAlign, TextComponent, TextVerticalAlign, Transform,
     WaterLinkComponent, WaterVolumeComponent, MAX_LINE_POINTS, SKY_ADJUST_MAX, SKY_ADJUST_MIN,
@@ -729,6 +730,10 @@ fn read_floats(
                 "time"    => put(out, &[a.time]),
                 "speed"   => put(out, &[a.speed]),
                 "playing" => put(out, &[if a.playing { 1.0 } else { 0.0 }]),
+                // 既定クロスフェード時間（秒）。Play がフェード時間未指定のとき使う値。
+                "default_fade_seconds" => put(out, &[a.default_fade_seconds]),
+                // 進行中のクロスフェードのブレンド率（1.0 = フェードしていない）
+                "fade_weight" => put(out, &[a.fade_weight]),
                 _         => None,
             }
         }
@@ -1048,6 +1053,10 @@ fn write_floats(
             match field {
                 "time"  => take::<1>(v).map(|x| a.time = x[0].max(0.0)).is_some(),
                 "speed" => take::<1>(v).map(|x| a.speed = x[0]).is_some(),
+                // 負値は 0（＝即時切替）へクランプする
+                "default_fade_seconds" => {
+                    take::<1>(v).map(|x| a.default_fade_seconds = x[0].max(0.0)).is_some()
+                }
                 _       => false,
             }
         }
@@ -1935,6 +1944,7 @@ const ANIMATOR_COMPONENT_PLAY: i32   = 0; // clip 名 + speed（NaN = 変更な�
 const ANIMATOR_COMPONENT_STOP: i32   = 1; // 停止して time=0
 const ANIMATOR_COMPONENT_PAUSE: i32  = 2; // playing=false のまま time は維持
 const ANIMATOR_COMPONENT_RESUME: i32 = 3; // current_clip があれば playing=true に戻す
+const ANIMATOR_COMPONENT_CROSSFADE: i32 = 4; // fade 秒を明示してクロスフェード再生
 
 /// AnimatorComponent を操作する。成功=1 / 失敗=0。
 ///
@@ -1943,12 +1953,14 @@ const ANIMATOR_COMPONENT_RESUME: i32 = 3; // current_clip があれば playing=t
 /// read_floats/write_floats（time・speed・playing の単純な数値フィールドのみ）とは別に
 /// この専用 FFI で扱う。
 ///
-/// clip_name/clip_name_len: Play 時のクリップ名（それ以外の action では無視）。
+/// clip_name/clip_name_len: Play / CrossFade 時のクリップ名（それ以外の action では無視）。
 /// speed: Play 時の再生速度指定（NaN なら既存の speed を変更しない）。それ以外の action では無視。
+/// fade: クロスフェード時間（秒）。NaN なら **コンポーネントの default_fade_seconds** を使う。
+///   0 以下は即時切替。CrossFade は明示値、Play は既定値を使うのが標準の使い分け。
 unsafe extern "system" fn ffi_animator_component(
     action: i32, idx: u32, generation: u32,
     clip_name: *const u8, clip_name_len: i32,
-    speed: f32,
+    speed: f32, fade: f32,
 ) -> i32 {
     let ptr = WORLD_PTR.with(|p| p.get());
     if ptr.is_null() { return 0; }
@@ -1959,31 +1971,37 @@ unsafe extern "system" fn ffi_animator_component(
     let Some(a) = world.get_mut::<AnimatorComponent>(slot) else { return 0 };
 
     match action {
-        ANIMATOR_COMPONENT_PLAY => {
+        ANIMATOR_COMPONENT_PLAY | ANIMATOR_COMPONENT_CROSSFADE => {
             let name = str_from(clip_name, clip_name_len);
-            // ロード済みキャッシュ（init_animators がフレーム先頭で clips を全ロード済み）に無ければ失敗
-            if !a.cache.contains_key(name) {
+            // 再生可能条件はクリップ種別で異なる:
+            //   - Keyframe: ロード済みキャッシュに存在すること（init_animators がフレーム先頭で全ロード）
+            //   - Model   : .anim を持たないため clips に kind=Model の同名クリップがあれば可
+            let playable = match a.find_clip(name) {
+                Some(c) => matches!(c.kind, AnimClipKind::Model) || a.cache.contains_key(name),
+                None => false,
+            };
+            if !playable {
                 eprintln!("[SEED script] Animator.Play: クリップ '{name}' が見つかりません（clips 未登録 or 未ロード）");
                 return 0;
             }
-            a.current_clip = Some(name.to_string());
-            a.time = 0.0;
-            a.playing = true;
+            // フェード時間: 明示値（有限）を優先し、NaN なら既定値（default_fade_seconds）。
+            let fade_seconds = if fade.is_nan() { a.default_fade_seconds } else { fade };
+            a.begin_clip(name, fade_seconds);
             if !speed.is_nan() { a.speed = speed; }
             1
         }
         ANIMATOR_COMPONENT_STOP => {
-            a.playing = false;
-            a.time = 0.0;
+            // フェード状態も破棄する（再開時に古いブレンドが復活しない）
+            a.stop();
             1
         }
         ANIMATOR_COMPONENT_PAUSE => {
-            a.playing = false;
+            a.pause();
             1
         }
         ANIMATOR_COMPONENT_RESUME => {
             // 再生対象クリップが無いまま resume しても無害（システム側が current_clip 未設定を無視する）
-            if a.current_clip.is_some() { a.playing = true; }
+            a.resume();
             1
         }
         _ => 0,
@@ -2354,7 +2372,7 @@ pub struct ScriptHostApi {
     audio:             unsafe extern "system" fn(i32, *const u8, i32, f32, i32) -> i32,
     audio_component:   unsafe extern "system" fn(i32, u32, u32) -> i32,
     screen_position:   unsafe extern "system" fn(u32, u32, *mut f32) -> i32,
-    animator_component: unsafe extern "system" fn(i32, u32, u32, *const u8, i32, f32) -> i32,
+    animator_component: unsafe extern "system" fn(i32, u32, u32, *const u8, i32, f32, f32) -> i32,
     particle_component: unsafe extern "system" fn(i32, u32, u32, i32) -> i32,
     // キャラクターコントローラー系（Transform.Teleport / Physics.IsGrounded）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
