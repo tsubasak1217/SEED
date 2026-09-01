@@ -618,3 +618,124 @@ fn collect_model_slot_entities(actor: &Actor, out: &mut Vec<Entity>) {
         collect_model_slot_entities(child, out);
     }
 }
+
+// ─── インスペクタ表示用ラベル生成 ────────────────────────────
+
+/// glTF 内蔵アニメ名の一覧から、インスペクタのドロップダウン表示用ラベル一覧を作る。
+///
+/// 解決キー（`AnimClipRef.anim`）は **アニメ名そのもの** なので、ラベルは表示専用の
+/// 派生値である（エディタが値を送るときは必ず元の名前を使う）。次の 2 ケースを
+/// 人が区別できる形にする:
+///
+/// - 無名アニメ（glTF でアニメ名が空）: `(無名アニメ #i)`（i = 一覧内インデックス）
+/// - 同名アニメが複数: 2 本目以降に ` (n)` を付ける（例 `Walk`, `Walk (2)`, `Walk (3)`）
+///
+/// 【注意】同名アニメは `resolve_model_anim` が先頭一致で解決するため、ラベル上で
+/// 区別できても再生されるのは常に先頭の 1 本になる。ラベルは「同名が複数ある」ことに
+/// 気付かせるための表示であり、個別選択の手段ではない。
+///
+/// 戻り値は入力と同じ長さ・同じ順序（インデックスで元の名前と 1:1 対応する）。
+pub(crate) fn model_anim_display_labels(names: &[String]) -> Vec<String> {
+    // 同名の出現回数を数えながらラベルを組み立てる
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            if name.is_empty() {
+                // 無名アニメはインデックスでしか区別できない
+                return format!("(無名アニメ #{i})");
+            }
+            let count = seen.entry(name.as_str()).or_insert(0);
+            *count += 1;
+            if *count == 1 {
+                name.clone()
+            } else {
+                format!("{name} ({count})")
+            }
+        })
+        .collect()
+}
+
+/// ACTOR_COMPONENTS の ModelComponent に載せるアニメ一覧フィールドを組み立てる。
+///
+/// 戻り値は `"animations":[...],"anim_labels":[...]` という **キーを含む断片**で、
+/// 呼び出し側（component_ops）はこれを JSON オブジェクトの途中へそのまま差し込む。
+/// 2 つの配列は常に同じ長さ・同じ順序で、`animations` が解決キー（raw 名）、
+/// `anim_labels` が表示専用ラベル。
+pub(crate) fn model_anim_json_fields(names: &[String]) -> String {
+    let names_json = serde_json::to_string(names).unwrap_or_else(|_| "[]".to_string());
+    let labels = model_anim_display_labels(names);
+    let labels_json = serde_json::to_string(&labels).unwrap_or_else(|_| "[]".to_string());
+    format!(r#""animations":{names_json},"anim_labels":{labels_json}"#)
+}
+
+// ============================================================
+//  テスト（インスペクタ表示用ラベル生成 / JSON 断片）
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 空の一覧は空のラベル一覧になる（モデル無し／未ロード）。
+    #[test]
+    fn empty_list_yields_empty_labels() {
+        assert!(model_anim_display_labels(&[]).is_empty());
+    }
+
+    /// 一意な名前はそのまま表示名になる。
+    #[test]
+    fn unique_names_pass_through() {
+        let names = vec!["Idle".to_string(), "Cast".to_string()];
+        assert_eq!(model_anim_display_labels(&names), vec!["Idle", "Cast"]);
+    }
+
+    /// 同名は 2 本目以降に (n) が付き、順序と件数は保たれる。
+    #[test]
+    fn duplicate_names_get_index_suffix() {
+        let names = vec![
+            "Walk".to_string(),
+            "Idle".to_string(),
+            "Walk".to_string(),
+            "Walk".to_string(),
+        ];
+        assert_eq!(
+            model_anim_display_labels(&names),
+            vec!["Walk", "Idle", "Walk (2)", "Walk (3)"]
+        );
+    }
+
+    /// 無名アニメはインデックス付きラベルになる（複数あっても衝突しない）。
+    #[test]
+    fn unnamed_animations_use_index_labels() {
+        let names = vec![String::new(), "Idle".to_string(), String::new()];
+        assert_eq!(
+            model_anim_display_labels(&names),
+            vec!["(無名アニメ #0)", "Idle", "(無名アニメ #2)"]
+        );
+    }
+
+    /// JSON 断片に animations / anim_labels の両方が載り、
+    /// オブジェクトへ差し込んだときに正しくパースできる（キー名と対応関係の固定）。
+    #[test]
+    fn json_fields_carry_names_and_labels() {
+        let names = vec!["Walk".to_string(), "Walk".to_string(), String::new()];
+        let obj = format!("{{{}}}", model_anim_json_fields(&names));
+        let v: serde_json::Value = serde_json::from_str(&obj).expect("有効な JSON であること");
+        assert_eq!(v["animations"], serde_json::json!(["Walk", "Walk", ""]));
+        assert_eq!(
+            v["anim_labels"],
+            serde_json::json!(["Walk", "Walk (2)", "(無名アニメ #2)"])
+        );
+    }
+
+    /// モデル無し／未ロード（空一覧）でも空配列 2 本が必ず載る（C# 側の欠落分岐を減らす）。
+    #[test]
+    fn json_fields_are_empty_arrays_when_no_model() {
+        let obj = format!("{{{}}}", model_anim_json_fields(&[]));
+        let v: serde_json::Value = serde_json::from_str(&obj).expect("有効な JSON であること");
+        assert_eq!(v["animations"], serde_json::json!([]));
+        assert_eq!(v["anim_labels"], serde_json::json!([]));
+    }
+}

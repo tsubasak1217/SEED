@@ -5132,6 +5132,37 @@ public partial class InspectorPanel : UserControl
         };
         var defaultClipCombo = new ComboBox { Margin = new Thickness(0, 4, 0, 2), FontSize = 11, Height = 22 };
 
+        // ── モデル内蔵アニメ一覧（追加メニューと「アニメ名」ドロップダウンで共有する）──
+        // ACTOR_COMPONENTS の ModelComponent が送る animations / anim_labels が唯一のソース。
+        // モデル未設定・未ロードのときは空リストで、モデルがロードされると Rust 側が
+        // ACTOR_COMPONENTS を再送するのでインスペクタ再構築時に自動で埋まる。
+        var modelAnims = GetModelSlotAnimEntries();
+
+        // ── 選択中クリップが kind=model のときだけ表示するアニメ名選択行 ──
+        // AnimClipRef.anim（glTF 内蔵アニメ名）をモデルの実在アニメから選ばせる。
+        // 空文字 = 先頭アニメ（index 0）フォールバックというランタイム仕様をそのまま項目にする。
+        var modelAnimRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        modelAnimRow.Children.Add(new TextBlock
+        {
+            Text = "アニメ名 (モデル)", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 100, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var modelAnimCombo = new ComboBox
+        {
+            Width = 150, FontSize = 11, Height = 20, VerticalAlignment = VerticalAlignment.Center,
+        };
+        // 一覧が空のときは無効化するが、理由を伝えるツールチップは出したいので明示的に許可する
+        // （WPF は既定では無効コントロールのツールチップを表示しない）。
+        ToolTipService.SetShowOnDisabled(modelAnimCombo, true);
+        modelAnimRow.Children.Add(modelAnimCombo);
+
+        // 一覧に無い名前（モデル差し替え後の孤児名）を目立たせる警告色
+        var orphanAnimBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0x8A, 0x3A));
+
         // ── 選択中クリップが kind=model のときだけ表示するループ種別編集行 ──
         var modelLoopRow = new StackPanel
         {
@@ -5156,7 +5187,13 @@ public partial class InspectorPanel : UserControl
             {
                 if (c.Kind == "model")
                 {
-                    var animLabel = string.IsNullOrEmpty(c.Anim) ? "(無名アニメ)" : c.Anim;
+                    // 空 = 先頭アニメ（index 0）フォールバック。一覧が取れているのに
+                    // その中に無い名前は「モデル差し替え後の孤児名」なので ⚠ を付ける。
+                    var animLabel = string.IsNullOrEmpty(c.Anim)
+                        ? "(未設定=先頭アニメ)"
+                        : (modelAnims.Count > 0 && !modelAnims.Any(a => a.Name == c.Anim)
+                            ? $"⚠ {c.Anim}"
+                            : c.Anim);
                     clipList.Items.Add($"🎬 {animLabel}  (モデル内蔵・{c.LoopMode})");
                 }
                 else
@@ -5177,7 +5214,95 @@ public partial class InspectorPanel : UserControl
             defaultClipCombo.SelectedIndex = idx >= 0 ? idx + 1 : 0;
             defaultClipCombo.SelectionChanged += OnDefaultClipChanged;
 
+            UpdateModelAnimRow();
             UpdateModelLoopRow();
+        }
+
+        // 選択中クリップが model のときだけアニメ名行を表示し、現在値を反映する。
+        // 項目構成: 「(未設定=先頭アニメ)」＋モデルの実在アニメ（表示はラベル、値は raw 名）
+        //           ＋（現在値が一覧に無ければ）孤児名の警告項目。
+        void UpdateModelAnimRow()
+        {
+            var idx = clipList.SelectedIndex;
+            if (idx < 0 || idx >= clips.Count || clips[idx].Kind != "model")
+            {
+                modelAnimRow.Visibility = Visibility.Collapsed;
+                return;
+            }
+            modelAnimRow.Visibility = Visibility.Visible;
+
+            var curAnim = clips[idx].Anim;
+            modelAnimCombo.SelectionChanged -= OnModelAnimChanged;
+            modelAnimCombo.Items.Clear();
+
+            // 先頭: 未設定（ランタイムは空文字を index 0 フォールバックとして扱う）
+            modelAnimCombo.Items.Add(new ComboBoxItem
+            {
+                Content = "(未設定=先頭アニメ)", Tag = "",
+                ToolTip = "アニメ名を空にすると、モデルの先頭アニメ（index 0）を再生します",
+            });
+            foreach (var (name, label) in modelAnims)
+                modelAnimCombo.Items.Add(new ComboBoxItem { Content = label, Tag = name });
+
+            // 現在値の解決: 空 → 先頭項目 / 一覧内 → その項目 / 一覧外 → 孤児名項目を足して選ぶ
+            var selectIdx = 0;
+            if (!string.IsNullOrEmpty(curAnim))
+            {
+                var found = modelAnims.FindIndex(a => a.Name == curAnim);
+                if (found >= 0)
+                {
+                    selectIdx = found + 1;
+                }
+                else
+                {
+                    // 一覧に無い名前。消さずに項目として残し、現在値が見える状態を保つ。
+                    // 一覧が空（モデル未ロード）のときは「存在しない」とは断定できないので文言を分ける。
+                    var isOrphan = modelAnims.Count > 0;
+                    modelAnimCombo.Items.Add(new ComboBoxItem
+                    {
+                        Content = isOrphan ? $"⚠ {curAnim}（モデルに存在しません）" : curAnim,
+                        Tag = curAnim,
+                        Foreground = isOrphan ? orphanAnimBrush : modelAnimCombo.Foreground,
+                        ToolTip = isOrphan
+                            ? "現在のモデルに無いアニメ名です。再生時に解決できず静止します。一覧から選び直してください。"
+                            : "モデル未ロードのため実在するか確認できません",
+                    });
+                    selectIdx = modelAnimCombo.Items.Count - 1;
+                }
+            }
+            modelAnimCombo.SelectedIndex = selectIdx;
+
+            // モデル未設定／未ロードで一覧が空のときは選択させない（理由をツールチップで示す）
+            if (modelAnims.Count == 0)
+            {
+                modelAnimCombo.IsEnabled = false;
+                modelAnimCombo.ToolTip =
+                    "同アクターの Model スロットが無い、またはモデルが未ロードのためアニメ一覧を取得できません。"
+                    + "モデルを設定するとこの一覧は自動で更新されます。";
+            }
+            else
+            {
+                modelAnimCombo.IsEnabled = true;
+                modelAnimCombo.ToolTip = "モデル（glTF）に含まれるアニメーションから選びます";
+            }
+
+            modelAnimCombo.SelectionChanged += OnModelAnimChanged;
+        }
+
+        // アニメ名ドロップダウンの選択を clips へ反映して送信する。
+        // クリップ名（AnimClipRef.name）は default_clip やスクリプトの Play が参照する識別子なので
+        // ここでは変更しない（アニメ差し替えで既存参照が切れるのを防ぐ）。
+        void OnModelAnimChanged(object? s, SelectionChangedEventArgs e)
+        {
+            var idx = clipList.SelectedIndex;
+            if (idx < 0 || idx >= clips.Count || clips[idx].Kind != "model") return;
+            if (modelAnimCombo.SelectedItem is not ComboBoxItem item || item.Tag is not string anim) return;
+            var c = clips[idx];
+            if (c.Anim == anim) return;
+            clips[idx] = (c.Name, c.Kind, c.Path, anim, c.LoopMode);
+            RebuildClipUi();
+            clipList.SelectedIndex = idx;
+            CommitAnimator();
         }
 
         // 選択中クリップが model のときだけループ種別行を表示し、現在値を反映する
@@ -5210,7 +5335,8 @@ public partial class InspectorPanel : UserControl
             CommitAnimator();
         }
 
-        clipList.SelectionChanged += (_, _) => UpdateModelLoopRow();
+        // 選択クリップが変わったら model 専用行（アニメ名 / ループ種別）を作り直す
+        clipList.SelectionChanged += (_, _) => { UpdateModelAnimRow(); UpdateModelLoopRow(); };
 
         void OnDefaultClipChanged(object? s, SelectionChangedEventArgs e)
         {
@@ -5253,6 +5379,7 @@ public partial class InspectorPanel : UserControl
         };
 
         sp.Children.Add(clipList);
+        sp.Children.Add(modelAnimRow);
         sp.Children.Add(modelLoopRow);
 
         var clipBtnRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 0) };
@@ -5292,9 +5419,8 @@ public partial class InspectorPanel : UserControl
         sp.Children.Add(clipBtnRow);
 
         // ── モデル内蔵アニメを追加 ────────────────────────────
-        // 同アクターの Model スロットが ACTOR_COMPONENTS で送ってくる animations 一覧（glTF 内蔵アニメ名）を
+        // 「アニメ名」ドロップダウンと同じ modelAnims（GetModelSlotAnimEntries の結果）を
         // ポップアップメニューで列挙し、選択で model クリップを追加する。Model スロットが無い/アニメ0件なら無効化する。
-        var modelAnims = GetModelSlotAnimations();
         var addModelClipBtn = new Button
         {
             Content = "モデル内蔵アニメを追加",
@@ -5314,10 +5440,8 @@ public partial class InspectorPanel : UserControl
             addModelClipBtn.Click += (_, _) =>
             {
                 var menu = new ContextMenu();
-                for (int i = 0; i < modelAnims.Count; i++)
+                foreach (var (animName, label) in modelAnims)
                 {
-                    var animName = modelAnims[i];
-                    var label    = string.IsNullOrEmpty(animName) ? $"(無名アニメ #{i})" : animName;
                     // GPU スキニングはモデル内の全アニメをパッキング済みなので、
                     // どのアニメを選んでもそのまま再生できる（インスタンスごとに別アニメも可）。
                     var menuItem = new MenuItem { Header = label };
@@ -5421,14 +5545,21 @@ public partial class InspectorPanel : UserControl
     public event Action<string>? TimelineEditRequested;
 
     /// <summary>
-    /// 現在のアクターが持つ Model スロットの glTF 内蔵アニメ名一覧を取得する。
+    /// 現在のアクターが持つ Model スロットの glTF 内蔵アニメ一覧（解決名 + 表示ラベル）を取得する。
     /// ACTOR_COMPONENTS（<see cref="_lastComponentsJson"/>）内の ModelComponent が送ってくる
-    /// "animations" 配列（component_ops.rs 側で付与）を読み取る。複数 Model スロットがある場合は
-    /// 最初にアニメを持つスロットのものを採用する（このアクターに 1 Model スロットのみの想定が主用途）。
+    /// "animations"（解決キー = AnimClipRef.anim にそのまま入れる raw 名）と
+    /// "anim_labels"（無名/同名を区別するための表示専用ラベル）を読み取る。
+    /// 両配列は Rust 側で必ず同じ長さ・同じ順序で送られるが、旧ランタイム互換のため
+    /// anim_labels が無い/短い場合は raw 名をそのままラベルとして使う。
+    /// 複数 Model スロットがある場合は最初にアニメを持つスロットのものを採用する
+    /// （このアクターに 1 Model スロットのみの想定が主用途。ランタイムの Model クリップ解決も
+    ///   「最初の有効 Model スロット」を見る）。
+    /// この 1 メソッドが Animator インスペクタのアニメ一覧の唯一の入口で、
+    /// 「モデル内蔵アニメを追加」メニューと Model クリップの「アニメ名」ドロップダウンが共有する。
     /// </summary>
-    private List<string> GetModelSlotAnimations()
+    private List<(string Name, string Label)> GetModelSlotAnimEntries()
     {
-        var result = new List<string>();
+        var result = new List<(string Name, string Label)>();
         if (string.IsNullOrEmpty(_lastComponentsJson)) return result;
         try
         {
@@ -5439,8 +5570,26 @@ public partial class InspectorPanel : UserControl
                 var type = comp.TryGetProperty("type", out var tp) ? tp.GetString() ?? "" : "";
                 if (type != "ModelComponent") continue;
                 if (!comp.TryGetProperty("animations", out var animsEl) || animsEl.ValueKind != JsonValueKind.Array) continue;
+
+                // 表示ラベル（旧ランタイムには無いので欠落を許容する）
+                var labels = new List<string>();
+                if (comp.TryGetProperty("anim_labels", out var labelsEl) && labelsEl.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var l in labelsEl.EnumerateArray())
+                        labels.Add(l.GetString() ?? "");
+                }
+
+                var i = 0;
                 foreach (var a in animsEl.EnumerateArray())
-                    result.Add(a.GetString() ?? "");
+                {
+                    var name  = a.GetString() ?? "";
+                    // ラベル欠落時のフォールバック（無名アニメはインデックス表示にする）
+                    var label = i < labels.Count && !string.IsNullOrEmpty(labels[i])
+                        ? labels[i]
+                        : (string.IsNullOrEmpty(name) ? $"(無名アニメ #{i})" : name);
+                    result.Add((name, label));
+                    i++;
+                }
                 if (result.Count > 0) break;
             }
         }

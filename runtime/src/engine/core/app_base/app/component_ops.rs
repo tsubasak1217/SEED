@@ -321,14 +321,19 @@ impl App {
                         .filter_map(|s| scene.world.get::<ModelComponent>(s.entity))
                         .find(|mc| mc.source_path == d.model_path);
 
-                    // glTF モデル内蔵アニメ名一覧を添付する（C# の「内蔵アニメを追加」UI 用）。
+                    // glTF モデル内蔵アニメ名一覧を添付する。
+                    // Animator インスペクタはこの 1 か所を唯一のソースとして使う
+                    // （「内蔵アニメを追加」メニューと Model クリップの「アニメ名」ドロップダウンの両方）。
                     // 名前は解決キー（AnimClipRef.anim）と一致させるため raw 値をそのまま送る
-                    // （無名アニメは空文字。C# 側での表示・重複扱いは C# ウェーブで対応）。
+                    // （無名アニメは空文字。モデル無し／未ロードは空配列）。
                     let anims: Vec<String> = mc_opt
                         .and_then(|mc| mc.model.as_ref())
                         .map(|m| m.animations.iter().map(|a| a.name.clone()).collect())
                         .unwrap_or_default();
-                    let anims_json = serde_json::to_string(&anims).unwrap_or_else(|_| "[]".to_string());
+                    // `"animations":[...],"anim_labels":[...]` の断片を組み立てる。
+                    // anim_labels は無名アニメ・同名アニメを人が区別するための表示専用ラベルで、
+                    // animations と同じ長さ・順序（値の送信に使うのは常に animations の raw 名）。
+                    let anims_fields = super::animation_ops::model_anim_json_fields(&anims);
 
                     // マテリアルスロット一覧（Phase R7: .mat マテリアル＋マルチマテリアル編集）。
                     // 各スロットの現在の実効値（オーバーライド適用後、無ければ glTF 埋込値）を送る。
@@ -352,7 +357,7 @@ impl App {
                     let [orx, ory, orz] = d.offset_rotation;
                     let [osx, osy, osz] = d.offset_scale;
                     ("ModelComponent", format!(
-                        r#","model_path":{path_json},"animations":{anims_json},"materials":{materials_json},"joints":{joints_json},"cast_shadows":{},"render_tag":{},"offset_px":{:.4},"offset_py":{:.4},"offset_pz":{:.4},"offset_rx":{:.4},"offset_ry":{:.4},"offset_rz":{:.4},"offset_sx":{:.4},"offset_sy":{:.4},"offset_sz":{:.4}"#,
+                        r#","model_path":{path_json},{anims_fields},"materials":{materials_json},"joints":{joints_json},"cast_shadows":{},"render_tag":{},"offset_px":{:.4},"offset_py":{:.4},"offset_pz":{:.4},"offset_rx":{:.4},"offset_ry":{:.4},"offset_rz":{:.4},"offset_sx":{:.4},"offset_sy":{:.4},"offset_sz":{:.4}"#,
                         d.cast_shadows as u8,
                         d.render_tag,
                         opx, opy, opz, orx, ory, orz, osx, osy, osz,
