@@ -623,6 +623,23 @@ pub enum IpcCommand {
     /// 多数件に割れる。「1 コマンド = 1 Undo」を守るため一括で渡す
     /// （エディタの俯瞰プレビューは同アルゴリズムの写しで描くだけ）。
     LogicPlace { json: String },
+    /// ロジック配置の**配置モード開始**（placement_mode.rs が処理）。
+    /// フォーマット: LOGIC_PLACE_BEGIN:{json}
+    ///
+    /// json は `LOGIC_PLACE` と同じ `LogicPlaceRequest`。違いは
+    /// 「即座に生成せず、カーソル追従プレビューへ入る」点だけである。
+    /// 基準点はカーソルの着弾位置で決まるため json には含まれない。
+    ///
+    /// `target` が `control_points` の場合は配置モードへ入らず、
+    /// 従来どおり即時追記（`LOGIC_PLACE` と同じ処理）へ回す。
+    LogicPlaceBegin { json: String },
+    /// 配置モードの取消（placement_mode.rs が処理）。
+    /// フォーマット: PLACEMENT_CANCEL
+    ///
+    /// 埋め込み Edit モードでは Esc がエディタのキーフックへ届くため、
+    /// エディタが「削除ダイアログではなく配置の取消」と判断してこれを送る
+    ///（モーダルトランスフォームの `MODAL:CANCEL` と同じ役割）。
+    PlacementCancel,
     /// ControlPointComponent の点列を **JSON でまるごと置き換える**（control_point_ops.rs が処理）。
     /// フォーマット: SET_CONTROL_POINTS:{actor_dfs_id},{slot_idx},{json}
     /// json は `[{"position":[x,y,z],"rotation":[x,y,z],"time":t,"interp":"CatmullRom"},...]`。
@@ -2254,6 +2271,15 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 })
                             })
                         }
+                        s if s.starts_with("LOGIC_PLACE_BEGIN:") => {
+                            // フォーマット: LOGIC_PLACE_BEGIN:{json}
+                            // "LOGIC_PLACE:" より**先に**判定すること
+                            //（前方一致では区別できないため）。
+                            Some(IpcCommand::LogicPlaceBegin {
+                                json: s["LOGIC_PLACE_BEGIN:".len()..].to_string(),
+                            })
+                        }
+                        "PLACEMENT_CANCEL" => Some(IpcCommand::PlacementCancel),
                         s if s.starts_with("LOGIC_PLACE:") => {
                             // フォーマット: LOGIC_PLACE:{json}
                             // 本体はまるごと JSON なので、接頭辞を落として素通しする

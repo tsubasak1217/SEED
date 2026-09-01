@@ -47,10 +47,17 @@ public static class Program
         harness.Add("同じシードなら完全に同じ点列になる", SameSeedIsDeterministic);
         harness.Add("シードを変えると結果が変わる", DifferentSeedDiffers);
         harness.Add("上限超過は切り詰めて警告する", MaxPointsTruncates);
+        harness.Add("アンカー 0/0.5/1 が各角を基準点に合わせる", AnchorAlignsCorners);
+        harness.Add("アンカーは軸ごとに独立し、範囲外は丸められる", AnchorIsIndependentAndClamped);
+        harness.Add("段（Y）はアンカーの影響を受けず上へ積む", AnchorDoesNotAffectLayers);
+        harness.Add("直線のアンカーは線に沿って滑らせる", AnchorSlidesTheLine);
+        harness.Add("旧 center_align の JSON はアンカーへ翻訳される", LegacyCenterAlignMapsToAnchor);
+        harness.Add("[Rust 一致] アンカーの既知ベクタ", AnchorKnownVectorMatchesRust);
         harness.Add("[Rust 一致] splitmix64 の既知列", RngKnownVectorMatchesRust);
         harness.Add("[Rust 一致] 円形の既知ベクタ", CircleKnownVectorMatchesRust);
         harness.Add("[Rust 一致] ランダム散布の既知ベクタ", RandomKnownVectorMatchesRust);
         harness.Add("LOGIC_PLACE の JSON が 1 行で必要な項目を含む", IpcCommandShape);
+        harness.Add("LOGIC_PLACE_BEGIN は同じ本体で配置モードへ入る", BeginIpcCommandShape);
 
         return harness.Run();
     }
@@ -134,7 +141,7 @@ public static class Program
         var spec = SpecFor(PlacementPattern.Grid);
         spec.Rows = 3; spec.Cols = 4; spec.Layers = 2;
         spec.SpacingX = 2f; spec.SpacingZ = 3f; spec.SpacingY = 5f;
-        spec.CenterAlign = false;
+        spec.AnchorX = 0f; spec.AnchorY = 0f;
         var r = PlacementGenerator.Generate(spec);
 
         Check.Equal(3 * 4 * 2, r.Points.Count, "行×列×段の点数");
@@ -144,12 +151,13 @@ public static class Program
         Check.Close(5.0, r.Points[12].Y, Tolerance, "段方向の間隔");
     }
 
-    /// <summary>中心揃えでグリッドの重心が原点に来ること。</summary>
+    /// <summary>アンカー 0.5/0.5（中心揃え）でグリッドの重心が原点に来ること。</summary>
     private static void GridCenterAlign()
     {
         var spec = SpecFor(PlacementPattern.Grid);
         spec.Rows = 3; spec.Cols = 3; spec.Layers = 1;
-        spec.SpacingX = 2f; spec.SpacingZ = 2f; spec.CenterAlign = true;
+        spec.SpacingX = 2f; spec.SpacingZ = 2f;
+        spec.AnchorX = 0.5f; spec.AnchorY = 0.5f;
         var r = PlacementGenerator.Generate(spec);
 
         double cx = r.Points.Average(p => (double)p.X);
@@ -166,7 +174,7 @@ public static class Program
         var spec = SpecFor(PlacementPattern.Grid);
         spec.Rows = 2; spec.Cols = 2; spec.Layers = 1;
         spec.SpacingX = 4f; spec.SpacingZ = 4f;
-        spec.CenterAlign = false; spec.CheckerOffset = true;
+        spec.AnchorX = 0f; spec.AnchorY = 0f; spec.CheckerOffset = true;
         var r = PlacementGenerator.Generate(spec);
 
         Check.Close(0.0, r.Points[0].X, Tolerance, "0 行目はずれない");
@@ -179,7 +187,7 @@ public static class Program
     private static void LineAlongPositiveZ()
     {
         var spec = SpecFor(PlacementPattern.Line);
-        spec.Count = 4; spec.LineAngle = 0f; spec.LineSpacing = 2.5f; spec.CenterAlign = false;
+        spec.Count = 4; spec.LineAngle = 0f; spec.LineSpacing = 2.5f; spec.AnchorX = 0f;
         var r = PlacementGenerator.Generate(spec);
 
         Check.Equal(4, r.Points.Count, "点数");
@@ -190,14 +198,14 @@ public static class Program
         }
     }
 
-    /// <summary>方向 90 度は +X 方向、中心揃えで線の中心が原点に来ること。</summary>
+    /// <summary>方向 90 度は +X 方向、アンカー 0.5 で線の中心が原点に来ること。</summary>
     private static void LineCenterAlignAndDirection()
     {
         var spec = SpecFor(PlacementPattern.Line);
-        spec.Count = 3; spec.LineAngle = 90f; spec.LineSpacing = 2f; spec.CenterAlign = true;
+        spec.Count = 3; spec.LineAngle = 90f; spec.LineSpacing = 2f; spec.AnchorX = 0.5f;
         var r = PlacementGenerator.Generate(spec);
 
-        Check.Close(-2.0, r.Points[0].X, Tolerance, "中心揃えで始点は -2");
+        Check.Close(-2.0, r.Points[0].X, Tolerance, "アンカー 0.5 で始点は -2");
         Check.Close(0.0, r.Points[1].X, Tolerance, "中央の点が原点");
         Check.Close(2.0, r.Points[2].X, Tolerance, "終点は +2");
         foreach (var p in r.Points) Check.Close(0.0, p.Z, Tolerance, "90 度の直線は Z が 0");
@@ -379,7 +387,6 @@ public static class Program
             Target     = LogicPlaceRequest.TargetActors,
             Is2D       = false,
             ParentDfs  = 7,
-            Base       = LogicPlaceRequest.BaseParent,
             GroupName  = "円形配置",
             NamePrefix = "円形配置",
             Ground     = true,
@@ -395,12 +402,203 @@ public static class Program
         var root = doc.RootElement;
         Check.Equal("actors", root.GetProperty("target").GetString(), "target");
         Check.Equal(7, root.GetProperty("parent_dfs").GetInt32(), "parent_dfs");
-        Check.Equal("parent", root.GetProperty("base").GetString(), "base");
         Check.Equal("円形配置", root.GetProperty("group_name").GetString(), "group_name（非 ASCII が壊れないこと）");
         Check.Equal(true, root.GetProperty("ground").GetBoolean(), "ground");
         // spec はネストして送る。パターンは Rust の serde 表現（バリアント名の文字列）。
         var spec = root.GetProperty("spec");
         Check.Equal("Grid", spec.GetProperty("pattern").GetString(), "spec.pattern");
         Check.Equal(4, spec.GetProperty("rows").GetInt32(), "spec.rows");
+    }
+
+    // ── 基準位置アンカー ─────────────────────────────────────
+    //
+    // アンカーは「パターンのどこを基準点（＝ビューポートのカーソル位置）に
+    // 合わせるか」を 0..1 で指定する。(0,0) が -X/-Z 側の角（2D の左上）、
+    // (1,1) が +X/+Z 側の角（2D の右下）、(0.5,0.5) が中心。
+
+    /// <summary>アンカー検証用の 3×3・間隔 2 のグリッド spec（幅は X/Z とも 4）。</summary>
+    private static PlacementSpec AnchorGridSpec(float ax, float ay)
+    {
+        var spec = SpecFor(PlacementPattern.Grid);
+        spec.Rows = 3; spec.Cols = 3; spec.Layers = 1;
+        spec.SpacingX = 2f; spec.SpacingZ = 2f;
+        spec.AnchorX = ax; spec.AnchorY = ay;
+        return spec;
+    }
+
+    /// <summary>グリッドの XZ 範囲（minX, maxX, minZ, maxZ）を返す。</summary>
+    private static (double, double, double, double) GridBounds(PlacementResult r)
+    {
+        double minX = double.MaxValue, maxX = double.MinValue;
+        double minZ = double.MaxValue, maxZ = double.MinValue;
+        foreach (var p in r.Points)
+        {
+            minX = Math.Min(minX, p.X); maxX = Math.Max(maxX, p.X);
+            minZ = Math.Min(minZ, p.Z); maxZ = Math.Max(maxZ, p.Z);
+        }
+        return (minX, maxX, minZ, maxZ);
+    }
+
+    /// <summary>アンカー 0 / 0.5 / 1 がそれぞれ手前の角・中心・奥の角を基準点に合わせること。</summary>
+    private static void AnchorAlignsCorners()
+    {
+        var (minX0, maxX0, minZ0, maxZ0) = GridBounds(PlacementGenerator.Generate(AnchorGridSpec(0f, 0f)));
+        Check.Close(0.0, minX0, Tolerance, "アンカー0: -X 側の辺が基準点");
+        Check.Close(0.0, minZ0, Tolerance, "アンカー0: -Z 側の辺が基準点");
+        Check.Close(4.0, maxX0, Tolerance, "幅は (n-1)*spacing = 4");
+        Check.Close(4.0, maxZ0, Tolerance, "幅は (n-1)*spacing = 4");
+
+        var (minXh, maxXh, minZh, maxZh) = GridBounds(PlacementGenerator.Generate(AnchorGridSpec(0.5f, 0.5f)));
+        Check.Close(-2.0, minXh, Tolerance, "アンカー0.5: X は -2");
+        Check.Close( 2.0, maxXh, Tolerance, "アンカー0.5: X は +2");
+        Check.Close(-2.0, minZh, Tolerance, "アンカー0.5: Z は -2");
+        Check.Close( 2.0, maxZh, Tolerance, "アンカー0.5: Z は +2");
+
+        var (minX1, maxX1, minZ1, maxZ1) = GridBounds(PlacementGenerator.Generate(AnchorGridSpec(1f, 1f)));
+        Check.Close(0.0, maxX1, Tolerance, "アンカー1: +X 側の辺が基準点");
+        Check.Close(0.0, maxZ1, Tolerance, "アンカー1: +Z 側の辺が基準点");
+        Check.Close(-4.0, minX1, Tolerance, "反対の辺は -4");
+        Check.Close(-4.0, minZ1, Tolerance, "反対の辺は -4");
+    }
+
+    /// <summary>アンカーが軸ごとに独立して効き、範囲外・NaN は 0..1 へ丸められること。</summary>
+    private static void AnchorIsIndependentAndClamped()
+    {
+        var (minX, maxX, minZ, maxZ) = GridBounds(PlacementGenerator.Generate(AnchorGridSpec(1f, 0f)));
+        Check.Close(0.0, maxX, Tolerance, "X は +X 側が基準点");
+        Check.Close(-4.0, minX, Tolerance, "X の反対側は -4");
+        Check.Close(0.0, minZ, Tolerance, "Z は -Z 側が基準点");
+        Check.Close(4.0, maxZ, Tolerance, "Z の反対側は +4");
+
+        Check.Close(0.0, PlacementSpec.ClampAnchor(-5f), Tolerance, "負値は 0 に丸める");
+        Check.Close(1.0, PlacementSpec.ClampAnchor(9f), Tolerance, "1 超は 1 に丸める");
+        Check.Close(0.5, PlacementSpec.ClampAnchor(float.NaN), Tolerance, "NaN は中心揃えへ倒す");
+
+        // 丸めは生成器の中でも効くこと（範囲外の spec でパターンが吹き飛ばない）。
+        var wild = GridBounds(PlacementGenerator.Generate(AnchorGridSpec(-5f, -5f)));
+        var zero = GridBounds(PlacementGenerator.Generate(AnchorGridSpec(0f, 0f)));
+        Check.Close(zero.Item1, wild.Item1, Tolerance, "範囲外でもアンカー 0 と同じ結果");
+        Check.Close(zero.Item3, wild.Item3, Tolerance, "範囲外でもアンカー 0 と同じ結果");
+    }
+
+    /// <summary>段（Y）はアンカーの影響を受けず、常に基準 Y から上へ積むこと。</summary>
+    private static void AnchorDoesNotAffectLayers()
+    {
+        foreach (var a in new[] { 0f, 0.5f, 1f })
+        {
+            var spec = SpecFor(PlacementPattern.Grid);
+            spec.Rows = 1; spec.Cols = 1; spec.Layers = 3; spec.SpacingY = 4f;
+            spec.AnchorX = a; spec.AnchorY = a;
+            var r = PlacementGenerator.Generate(spec);
+            Check.Close(0.0, r.Points[0].Y, Tolerance, "最下段は基準 Y");
+            Check.Close(4.0, r.Points[1].Y, Tolerance, "上へ 1 段");
+            Check.Close(8.0, r.Points[2].Y, Tolerance, "上へ 2 段");
+        }
+    }
+
+    /// <summary>直線は AnchorX を「線に沿ったアンカー」として使うこと。</summary>
+    private static void AnchorSlidesTheLine()
+    {
+        PlacementResult Line(float a)
+        {
+            var spec = SpecFor(PlacementPattern.Line);
+            spec.Count = 3; spec.LineAngle = 90f; spec.LineSpacing = 2f; spec.AnchorX = a;
+            return PlacementGenerator.Generate(spec);
+        }
+        var r0 = Line(0f);
+        Check.Close(0.0, r0.Points[0].X, Tolerance, "アンカー0: 始点が基準点");
+        Check.Close(4.0, r0.Points[2].X, Tolerance, "アンカー0: 終点は +4");
+
+        var rh = Line(0.5f);
+        Check.Close(-2.0, rh.Points[0].X, Tolerance, "アンカー0.5: 始点は -2");
+        Check.Close(0.0, rh.Points[1].X, Tolerance, "アンカー0.5: 中央が基準点");
+
+        var r1 = Line(1f);
+        Check.Close(-4.0, r1.Points[0].X, Tolerance, "アンカー1: 始点は -4");
+        Check.Close(0.0, r1.Points[2].X, Tolerance, "アンカー1: 終点が基準点");
+    }
+
+    /// <summary>
+    /// 旧「中心揃え」（center_align）で保存された前回値がアンカーへ翻訳されること。
+    /// アンカー導入前の editor_preferences.json を読んでも配置が変わらないための互換。
+    /// </summary>
+    private static void LegacyCenterAlignMapsToAnchor()
+    {
+        var on = JsonSerializer.Deserialize<PlacementSpec>("{\"center_align\":true}")!;
+        Check.Close(0.5, on.AnchorX, Tolerance, "center_align:true → アンカー 0.5");
+        Check.Close(0.5, on.AnchorY, Tolerance, "center_align:true → アンカー 0.5");
+
+        var off = JsonSerializer.Deserialize<PlacementSpec>("{\"center_align\":false}")!;
+        Check.Close(0.0, off.AnchorX, Tolerance, "center_align:false → アンカー 0");
+        Check.Close(0.0, off.AnchorY, Tolerance, "center_align:false → アンカー 0");
+
+        // 書き出し・IPC には現れないこと（ランタイムはアンカーしか読まない）。
+        var json = JsonSerializer.Serialize(new PlacementSpec());
+        Check.True(!json.Contains("center_align", StringComparison.Ordinal),
+                   "旧フィールドを書き戻さないこと");
+        Check.True(json.Contains("anchor_x", StringComparison.Ordinal), "anchor_x を書くこと");
+    }
+
+    /// <summary>
+    /// <b>Rust 実装との一致を固定する既知ベクタ（アンカー）</b>。
+    /// runtime の <c>known_vector_anchor_matches_csharp_mirror</c> と同じ数値。
+    /// </summary>
+    private static void AnchorKnownVectorMatchesRust()
+    {
+        var spec = SpecFor(PlacementPattern.Grid);
+        spec.Rows = 2; spec.Cols = 2; spec.Layers = 1;
+        spec.SpacingX = 3f; spec.SpacingZ = 3f;
+        spec.AnchorX = 0.25f; spec.AnchorY = 0.75f;
+        var r = PlacementGenerator.Generate(spec);
+
+        // オフセット: X = 3*0.25 = 0.75 / Z = 3*0.75 = 2.25
+        var expected = new[]
+        {
+            (-0.75, -2.25),
+            ( 2.25, -2.25),
+            (-0.75,  0.75),
+            ( 2.25,  0.75),
+        };
+        Check.Equal(expected.Length, r.Points.Count, "点数");
+        for (int i = 0; i < expected.Length; i++)
+        {
+            Check.Close(expected[i].Item1, r.Points[i].X, Tolerance, $"既知ベクタ X[{i}]");
+            Check.Close(expected[i].Item2, r.Points[i].Z, Tolerance, $"既知ベクタ Z[{i}]");
+        }
+    }
+
+    /// <summary>
+    /// <c>LOGIC_PLACE_BEGIN</c> が同じ本体（基準点を含まない）で 1 行になること。
+    ///
+    /// 配置モードの基準点はカーソルの着弾位置で決まるので、
+    /// リクエストに基準点フィールドが**残っていない**ことも併せて固定する。
+    /// </summary>
+    private static void BeginIpcCommandShape()
+    {
+        var req = new LogicPlaceRequest
+        {
+            Target     = LogicPlaceRequest.TargetActors,
+            Is2D       = false,
+            ParentDfs  = 3,
+            GroupName  = "グリッド配置",
+            NamePrefix = "グリッド配置",
+            Ground     = true,
+        };
+        req.Spec.Pattern = PlacementPattern.Grid;
+        req.Spec.AnchorX = 0f;
+        req.Spec.AnchorY = 1f;
+
+        var cmd = req.ToBeginIpcCommand();
+        Check.True(cmd.StartsWith("LOGIC_PLACE_BEGIN:", StringComparison.Ordinal), "接頭辞");
+        Check.True(!cmd.Contains('\n') && !cmd.Contains('\r'), "改行を含まないこと（IPC は行区切り）");
+
+        using var doc = JsonDocument.Parse(cmd["LOGIC_PLACE_BEGIN:".Length..]);
+        var root = doc.RootElement;
+        Check.Equal("actors", root.GetProperty("target").GetString(), "target");
+        Check.Equal(3, root.GetProperty("parent_dfs").GetInt32(), "parent_dfs");
+        Check.True(!root.TryGetProperty("base", out _), "基準点フィールドは廃止されていること");
+        var spec = root.GetProperty("spec");
+        Check.Close(0.0, spec.GetProperty("anchor_x").GetDouble(), Tolerance, "spec.anchor_x");
+        Check.Close(1.0, spec.GetProperty("anchor_y").GetDouble(), Tolerance, "spec.anchor_y");
     }
 }

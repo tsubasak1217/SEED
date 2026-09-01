@@ -71,6 +71,16 @@ impl App {
                 _ => {}
             }
 
+            // ── ロジック配置モード ──────────────────────────────────
+            // Esc で取消。それ以外のキーはモード中すべて飲み込む
+            //（Ctrl+Z 等が中途半端な状態で走らないようにする。モーダルと同じ方針）。
+            if self.placement_mode_active() {
+                if pressed && key == KeyCode::Escape {
+                    self.cancel_placement();
+                }
+                return;
+            }
+
             // ── モーダルトランスフォーム（Blender 風 G/R/S）─────────────
             // 開始キーと、モーダル中の全キーをここで消費する。
             // Ctrl 併用時は既存ショートカット（Ctrl+Z/Y 等）を優先するため通さない。
@@ -194,6 +204,24 @@ impl App {
         let pressed = state == ElementState::Pressed;
         self.input.process_mouse_button(button, pressed);
 
+        // ── ロジック配置モード中の排他処理 ──────────────────────────
+        // 左クリックで確定 / 右クリックで取消。それ以外のボタンは無視する。
+        //
+        // **右クリックをカメラ grab より優先する**のがここの要点。
+        // 取消は「置くのをやめる」という最も頻度の高い操作なので、
+        // カメラ回転（RMB ドラッグ）と衝突する場合は取消を採る。
+        // モード中に視点を変えたいときは、いったん取り消してから動かす。
+        if self.placement_mode_active() {
+            if pressed {
+                match button {
+                    MouseButton::Left  => self.confirm_placement(),
+                    MouseButton::Right => self.cancel_placement(),
+                    _ => {}
+                }
+            }
+            return;
+        }
+
         // ── モーダルトランスフォーム中の排他処理 ────────────────────
         // 左クリックで確定 / 右クリックで取消。それ以外のボタンは無視する。
         // 通常の選択クリック・ギズモドラッグ・カメラ grab へは一切流さない。
@@ -310,8 +338,9 @@ impl App {
     /// マウスホイール処理（スクロール量をカメラ入力に積算する）。
     pub(super) fn on_mouse_wheel(&mut self, delta: MouseScrollDelta) {
         self.input.process_scroll(&delta);
-        // モーダル中はカメラ操作を無効化する（ズームでピボット投影がずれるのを防ぐ）
-        if self.modal_transform_active() {
+        // モーダル中はカメラ操作を無効化する（ズームでピボット投影がずれるのを防ぐ）。
+        // ロジック配置モードも同様に止める（モード中は視点を固定する方針）。
+        if self.modal_transform_active() || self.placement_mode_active() {
             return;
         }
         let lines = match delta {

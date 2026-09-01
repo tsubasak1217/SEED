@@ -99,6 +99,10 @@ impl App {
         if self.modal_transform.is_some() {
             return false;
         }
+        // ロジック配置モードとは排他（モード中はクリックもキーも配置側が消費する）。
+        if self.placement_mode_active() {
+            return false;
+        }
         if !(self.mode == RuntimeMode::Edit || self.paused) {
             return false;
         }

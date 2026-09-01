@@ -176,10 +176,28 @@
                             <TextBlock Grid.Row="1" Grid.Column="4" x:Name="LblGridSpacingY" Text="間隔Y" Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
                             <TextBox   Grid.Row="1" Grid.Column="5" x:Name="TxtGridSpacingY" Margin="0,2"/>
                         </Grid>
+                        <Grid Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="基準アンカーX" Style="{StaticResource LabelStyle}"/>
+                            <TextBox   Grid.Column="1" x:Name="TxtAnchorX" Margin="0,2"
+                                       ToolTip="0 = 左端が基準点 / 0.5 = 中心 / 1 = 右端が基準点"/>
+                            <TextBlock Grid.Column="2" x:Name="LblAnchorY" Text="アンカーZ" Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
+                            <TextBox   Grid.Column="3" x:Name="TxtAnchorY" Margin="0,2"
+                                       ToolTip="0 = 手前端が基準点 / 0.5 = 中心 / 1 = 奥端が基準点"/>
+                        </Grid>
                         <StackPanel Orientation="Horizontal">
-                            <CheckBox x:Name="ChkGridCenter"  Content="中心揃え" Margin="0,3,14,3"/>
-                            <CheckBox x:Name="ChkGridChecker" Content="市松オフセット"/>
+                            <Button x:Name="BtnAnchorTopLeft" Content="左上"   Width="52" Margin="0,4,4,0" Click="OnAnchorPreset" Tag="0,0"/>
+                            <Button x:Name="BtnAnchorCenter"  Content="中央"   Width="52" Margin="0,4,4,0" Click="OnAnchorPreset" Tag="0.5,0.5"/>
+                            <Button x:Name="BtnAnchorBottomRight" Content="右下" Width="52" Margin="0,4,12,0" Click="OnAnchorPreset" Tag="1,1"/>
+                            <CheckBox x:Name="ChkGridChecker" Content="市松オフセット" VerticalAlignment="Center"/>
                         </StackPanel>
+                        <TextBlock x:Name="TxtAnchorHint" Style="{StaticResource HintStyle}"
+                                   Text="アンカーは 0〜1。パターンのどこをカーソル位置（基準点）に合わせるかを決めます。段（Y）は常に基準の高さから上へ積みます。"/>
                     </StackPanel>
                 </GroupBox>
 
@@ -202,9 +220,17 @@
                             <TextBlock Grid.Column="4" Text="間隔" Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
                             <TextBox   Grid.Column="5" x:Name="TxtLineSpacing" Margin="0,2"/>
                         </Grid>
-                        <CheckBox x:Name="ChkLineCenter" Content="基準点を線の中心にする"/>
+                        <Grid Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="基準アンカー" Style="{StaticResource LabelStyle}"/>
+                            <TextBox   Grid.Column="1" x:Name="TxtLineAnchor" Margin="0,2"
+                                       ToolTip="0 = 始点が基準点 / 0.5 = 線の中心 / 1 = 終点が基準点"/>
+                        </Grid>
                         <TextBlock Style="{StaticResource HintStyle}"
-                                   Text="方向は度。0 で奥（+Z）方向、90 で右（+X）方向へ伸びます。"/>
+                                   Text="方向は度。0 で奥（+Z）方向、90 で右（+X）方向へ伸びます。アンカーは線に沿った 0〜1（0=始点 / 0.5=中心 / 1=終点）。"/>
                     </StackPanel>
                 </GroupBox>
 
@@ -293,13 +319,12 @@
                     </StackPanel>
                 </GroupBox>
 
-                <!-- 基準点（ControlPoint への追加時は非表示） -->
+                <!-- 基準点の説明（ControlPoint への追加時は非表示）。
+                     基準点は常に「ビューポートのカーソル位置」なので選択肢は無い。 -->
                 <GroupBox x:Name="BaseGroup" Header="基準点">
                     <StackPanel>
-                        <StackPanel Orientation="Horizontal">
-                            <RadioButton x:Name="RadioBaseParent" Content="対象アクタの位置" GroupName="Base"/>
-                            <RadioButton x:Name="RadioBaseOrigin" Content="ワールド原点" GroupName="Base" IsChecked="True"/>
-                        </StackPanel>
+                        <TextBlock x:Name="TxtBaseHint" Style="{StaticResource HintStyle}"
+                                   Text="「配置」を押すとビューポートが配置モードになります。カーソル位置（メッシュ・地形の表面。何も無ければカメラ前方）にプレビューが追従し、左クリックで確定・右クリック / Esc で取消します。"/>
                     </StackPanel>
                 </GroupBox>
 
@@ -329,7 +354,7 @@
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" x:Name="TxtSummary" Style="{StaticResource LabelStyle}"/>
-            <Button Grid.Column="1" x:Name="BtnAdd"    Content="追加"     Width="90" Click="OnAdd"    Margin="0,0,8,0"/>
+            <Button Grid.Column="1" x:Name="BtnAdd"    Content="配置"     Width="90" Click="OnAdd"    Margin="0,0,8,0"/>
             <Button Grid.Column="2" x:Name="BtnCancel" Content="キャンセル" Width="90" Click="OnCancel"/>
         </Grid>
     </Grid>

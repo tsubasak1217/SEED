@@ -535,7 +535,7 @@ fn can_push_control_point(current_len: usize) -> bool {
 ///
 /// 距離は**二乗**で比べる（平方根は単調増加なので大小関係が変わらず、計算が無駄）。
 /// 片方だけが Some ならそれをそのまま採る。
-fn nearer_hit(cam: [f32; 3], a: Option<[f32; 3]>, b: Option<[f32; 3]>) -> Option<[f32; 3]> {
+pub(super) fn nearer_hit(cam: [f32; 3], a: Option<[f32; 3]>, b: Option<[f32; 3]>) -> Option<[f32; 3]> {
     /// カメラからの距離の二乗。
     fn dist_sq(cam: [f32; 3], p: [f32; 3]) -> f32 {
         let d = [p[0] - cam[0], p[1] - cam[1], p[2] - cam[2]];

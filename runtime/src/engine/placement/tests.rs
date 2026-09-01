@@ -110,7 +110,7 @@ fn grid_count_and_spacing() {
     let spec = PlacementSpec {
         rows: 3, cols: 4, layers: 2,
         spacing_x: 2.0, spacing_z: 3.0, spacing_y: 5.0,
-        center_align: false,
+        anchor_x: 0.0, anchor_y: 0.0,
         ..spec_for(PlacementPattern::Grid)
     };
     let r = generate_points(&spec);
@@ -123,13 +123,13 @@ fn grid_count_and_spacing() {
     assert!((r.points[12].position[1] - 5.0).abs() < EPS, "段方向の間隔 = spacing_y");
 }
 
-/// 中心揃えでグリッドの重心が原点に来ること。
+/// アンカー 0.5/0.5（中心揃え）でグリッドの重心が原点に来ること。
 #[test]
 fn grid_center_align_centers_on_origin() {
     let spec = PlacementSpec {
         rows: 3, cols: 3, layers: 1,
         spacing_x: 2.0, spacing_z: 2.0,
-        center_align: true,
+        anchor_x: 0.5, anchor_y: 0.5,
         ..spec_for(PlacementPattern::Grid)
     };
     let r = generate_points(&spec);
@@ -148,7 +148,7 @@ fn grid_checker_offset_shifts_odd_rows() {
     let spec = PlacementSpec {
         rows: 2, cols: 2, layers: 1,
         spacing_x: 4.0, spacing_z: 4.0,
-        center_align: false, checker_offset: true,
+        anchor_x: 0.0, anchor_y: 0.0, checker_offset: true,
         ..spec_for(PlacementPattern::Grid)
     };
     let r = generate_points(&spec);
@@ -162,7 +162,7 @@ fn grid_checker_offset_shifts_odd_rows() {
 #[test]
 fn line_along_positive_z_at_zero_angle() {
     let spec = PlacementSpec {
-        count: 4, line_angle: 0.0, line_spacing: 2.5, center_align: false,
+        count: 4, line_angle: 0.0, line_spacing: 2.5, anchor_x: 0.0,
         ..spec_for(PlacementPattern::Line)
     };
     let r = generate_points(&spec);
@@ -173,11 +173,11 @@ fn line_along_positive_z_at_zero_angle() {
     }
 }
 
-/// 方向 90 度は +X 方向、かつ中心揃えで線の中心が原点に来ること。
+/// 方向 90 度は +X 方向、かつアンカー 0.5 で線の中心が原点に来ること。
 #[test]
 fn line_center_align_and_direction() {
     let spec = PlacementSpec {
-        count: 3, line_angle: 90.0, line_spacing: 2.0, center_align: true,
+        count: 3, line_angle: 90.0, line_spacing: 2.0, anchor_x: 0.5,
         ..spec_for(PlacementPattern::Line)
     };
     let r = generate_points(&spec);
@@ -395,6 +395,154 @@ fn known_vector_random_matches_csharp_mirror() {
         [-0.5573535,     0.0, 2.6289433],
         [-2.1449137,     0.0, 2.9399657],
     ];
+    for (p, e) in r.points.iter().zip(expected.iter()) {
+        for k in 0..3 {
+            assert!((p.position[k] - e[k]).abs() < EPS,
+                    "既知ベクタ不一致: {:?} vs {:?}", p.position, e);
+        }
+    }
+}
+
+// ─── 基準位置アンカー ─────────────────────────────────────────
+//
+// アンカーは「パターンのどの位置を基準点（＝カーソル位置）に合わせるか」を
+// 0..1 で指定する。(0,0) が -X/-Z 側の角、(1,1) が +X/+Z 側の角、
+// (0.5,0.5) が中心。**C# ミラーと同じ既知ベクタ**をここで固定する。
+
+/// アンカーのテストに使う 3×3・間隔 2 のグリッド spec（幅は X/Z とも 4）。
+fn anchor_grid_spec(ax: f32, ay: f32) -> PlacementSpec {
+    PlacementSpec {
+        rows: 3, cols: 3, layers: 1,
+        spacing_x: 2.0, spacing_z: 2.0,
+        anchor_x: ax, anchor_y: ay,
+        ..spec_for(PlacementPattern::Grid)
+    }
+}
+
+/// グリッドの XZ 範囲（min_x, max_x, min_z, max_z）を返す。
+fn grid_bounds(points: &[super::spec::PlacementPoint]) -> (f32, f32, f32, f32) {
+    let mut b = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for p in points {
+        b.0 = b.0.min(p.position[0]);
+        b.1 = b.1.max(p.position[0]);
+        b.2 = b.2.min(p.position[2]);
+        b.3 = b.3.max(p.position[2]);
+    }
+    b
+}
+
+/// **アンカー (0,0)**: グリッドの -X/-Z 側の角（2D の左上）が基準点に一致すること。
+#[test]
+fn anchor_zero_puts_min_corner_on_origin() {
+    let r = generate_points(&anchor_grid_spec(0.0, 0.0));
+    let (min_x, max_x, min_z, max_z) = grid_bounds(&r.points);
+    assert!(min_x.abs() < EPS, "-X 側の辺が基準点: {min_x}");
+    assert!(min_z.abs() < EPS, "-Z 側の辺が基準点: {min_z}");
+    assert!((max_x - 4.0).abs() < EPS && (max_z - 4.0).abs() < EPS, "幅は (n-1)*spacing = 4");
+}
+
+/// **アンカー (1,1)**: グリッドの +X/+Z 側の角（2D の右下）が基準点に一致すること。
+#[test]
+fn anchor_one_puts_max_corner_on_origin() {
+    let r = generate_points(&anchor_grid_spec(1.0, 1.0));
+    let (min_x, max_x, min_z, max_z) = grid_bounds(&r.points);
+    assert!(max_x.abs() < EPS, "+X 側の辺が基準点: {max_x}");
+    assert!(max_z.abs() < EPS, "+Z 側の辺が基準点: {max_z}");
+    assert!((min_x + 4.0).abs() < EPS && (min_z + 4.0).abs() < EPS, "反対の辺は -4");
+}
+
+/// **アンカー (0.5,0.5)**: 中心が基準点に一致すること（旧「中心揃え」と同じ）。
+#[test]
+fn anchor_half_centers_the_grid() {
+    let r = generate_points(&anchor_grid_spec(0.5, 0.5));
+    let (min_x, max_x, min_z, max_z) = grid_bounds(&r.points);
+    assert!((min_x + 2.0).abs() < EPS && (max_x - 2.0).abs() < EPS, "X は ±2");
+    assert!((min_z + 2.0).abs() < EPS && (max_z - 2.0).abs() < EPS, "Z は ±2");
+}
+
+/// アンカーは軸ごとに独立して効くこと（X だけ +X 側・Z は -Z 側、など）。
+#[test]
+fn anchor_axes_are_independent() {
+    let r = generate_points(&anchor_grid_spec(1.0, 0.0));
+    let (min_x, max_x, min_z, max_z) = grid_bounds(&r.points);
+    assert!(max_x.abs() < EPS && (min_x + 4.0).abs() < EPS, "X は +X 側が基準点");
+    assert!(min_z.abs() < EPS && (max_z - 4.0).abs() < EPS, "Z は -Z 側が基準点");
+}
+
+/// 範囲外・NaN のアンカーは 0..1 へ丸められること（パターンが吹き飛ばないこと）。
+#[test]
+fn anchor_is_clamped_to_unit_range() {
+    let r_low  = generate_points(&anchor_grid_spec(-5.0, -5.0));
+    let r_zero = generate_points(&anchor_grid_spec(0.0, 0.0));
+    assert_eq!(r_low.points, r_zero.points, "負値は 0 に丸められること");
+
+    let r_high = generate_points(&anchor_grid_spec(9.0, 9.0));
+    let r_one  = generate_points(&anchor_grid_spec(1.0, 1.0));
+    assert_eq!(r_high.points, r_one.points, "1 超は 1 に丸められること");
+
+    let r_nan  = generate_points(&anchor_grid_spec(f32::NAN, f32::NAN));
+    let r_half = generate_points(&anchor_grid_spec(0.5, 0.5));
+    assert_eq!(r_nan.points, r_half.points, "NaN は中心揃えへ倒すこと");
+}
+
+/// **段（Y）はアンカーの影響を受けず、常に基準 Y から上へ積む**こと。
+///
+/// 旧「中心揃え」は段も中央寄せしていたので、これは意図した挙動変更である。
+#[test]
+fn anchor_does_not_affect_layers() {
+    for anchor in [0.0_f32, 0.5, 1.0] {
+        let spec = PlacementSpec {
+            rows: 1, cols: 1, layers: 3, spacing_y: 4.0,
+            anchor_x: anchor, anchor_y: anchor,
+            ..spec_for(PlacementPattern::Grid)
+        };
+        let r = generate_points(&spec);
+        let ys: Vec<f32> = r.points.iter().map(|p| p.position[1]).collect();
+        assert!((ys[0]).abs() < EPS,       "最下段は基準 Y: {ys:?}");
+        assert!((ys[1] - 4.0).abs() < EPS, "上へ 1 段: {ys:?}");
+        assert!((ys[2] - 8.0).abs() < EPS, "上へ 2 段: {ys:?}");
+    }
+}
+
+/// 直線は `anchor_x` を「線に沿ったアンカー」として使うこと。
+#[test]
+fn anchor_x_slides_the_line_along_its_direction() {
+    let line = |a: f32| PlacementSpec {
+        count: 3, line_angle: 90.0, line_spacing: 2.0, anchor_x: a,
+        ..spec_for(PlacementPattern::Line)
+    };
+    // 0 = 始点が基準点
+    let r0 = generate_points(&line(0.0));
+    assert!(r0.points[0].position[0].abs() < EPS && (r0.points[2].position[0] - 4.0).abs() < EPS);
+    // 0.5 = 線の中心が基準点
+    let rh = generate_points(&line(0.5));
+    assert!((rh.points[0].position[0] + 2.0).abs() < EPS && rh.points[1].position[0].abs() < EPS);
+    // 1 = 終点が基準点
+    let r1 = generate_points(&line(1.0));
+    assert!((r1.points[0].position[0] + 4.0).abs() < EPS && r1.points[2].position[0].abs() < EPS);
+}
+
+/// **[C# 一致] アンカーの既知ベクタ**。
+///
+/// `editor/tests/PlacementTests` が同じ spec に対して同じ値を要求する。
+/// 2×2・間隔 3（幅 3）のグリッドをアンカー (0.25, 0.75) で置いたときの点列。
+#[test]
+fn known_vector_anchor_matches_csharp_mirror() {
+    let spec = PlacementSpec {
+        rows: 2, cols: 2, layers: 1,
+        spacing_x: 3.0, spacing_z: 3.0,
+        anchor_x: 0.25, anchor_y: 0.75,
+        ..spec_for(PlacementPattern::Grid)
+    };
+    let r = generate_points(&spec);
+    // オフセット: X = 3*0.25 = 0.75 / Z = 3*0.75 = 2.25
+    let expected = [
+        [-0.75_f32, 0.0, -2.25],
+        [ 2.25,     0.0, -2.25],
+        [-0.75,     0.0,  0.75],
+        [ 2.25,     0.0,  0.75],
+    ];
+    assert_eq!(r.points.len(), expected.len());
     for (p, e) in r.points.iter().zip(expected.iter()) {
         for k in 0..3 {
             assert!((p.position[k] - e[k]).abs() < EPS,

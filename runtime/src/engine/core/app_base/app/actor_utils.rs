@@ -181,6 +181,45 @@ pub(super) fn find_actor_by_dfs<'a>(
     None
 }
 
+/// 指定エンティティ群の **DFS id** を一括で解決する。
+///
+/// `find_actor_by_dfs` と**同じ走査順**（世界線一致のルートを順に、各ルートは
+/// 自身 → 子を深さ優先）で番号を振るので、ここで得た id は
+/// `SELECTED_MULTI` やインスペクタの参照にそのまま使える。
+///
+/// 1 体ずつ `find_actor_by_dfs` を呼ぶと生成数 N に対して O(N × ツリー全体) に
+/// なるため、**1 回の走査でまとめて**引く（数百体の一括生成が実用速度で終わる）。
+/// 戻り値は入力 `entities` と同じ並び。見つからなかった要素は `None`。
+pub(super) fn dfs_ids_for_entities(
+    actors:   &[Actor],
+    wl:       u32,
+    entities: &[Entity],
+) -> Vec<Option<u32>> {
+    let mut found: HashMap<Entity, u32> = HashMap::new();
+    let mut counter = 0u32;
+    for actor in actors.iter() {
+        if actor.world_line != wl { continue; }
+        collect_dfs_ids(actor, &mut counter, entities, &mut found);
+    }
+    entities.iter().map(|e| found.get(e).copied()).collect()
+}
+
+/// `dfs_ids_for_entities` の再帰実装（自身に番号を振ってから子へ降りる）。
+fn collect_dfs_ids(
+    actor:    &Actor,
+    counter:  &mut u32,
+    wanted:   &[Entity],
+    found:    &mut HashMap<Entity, u32>,
+) {
+    if wanted.contains(&actor.entity) {
+        found.insert(actor.entity, *counter);
+    }
+    *counter += 1;
+    for child in actor.children().iter() {
+        collect_dfs_ids(child, counter, wanted, found);
+    }
+}
+
 /// find_actor_by_dfs の再帰実装（子ノード用）。
 fn find_actor_child_by_dfs<'a>(
     actor:   &'a Actor,

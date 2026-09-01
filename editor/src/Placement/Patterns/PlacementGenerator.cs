@@ -128,6 +128,9 @@ public static class PlacementGenerator
     /// <summary>
     /// グリッド（行 × 列 × 段）。走査順は <b>段 y → 行 z → 列 x</b> で固定する
     /// （この順が生成アクタの連番 _01, _02, … の順序になる）。
+    ///
+    /// <para>平面上のどこを基準点に合わせるかは <c>AnchorX</c> / <c>AnchorY</c>（各 0..1）で決まる。
+    /// 段（Y）はアンカーの対象外で、常に基準 Y から上へ積む。</para>
     /// </summary>
     private static PlacementResult GenerateGrid(PlacementSpec spec)
     {
@@ -136,10 +139,13 @@ public static class PlacementGenerator
         int rows   = (int)Math.Max(spec.Rows, 1u);
         int layers = (int)Math.Max(spec.Layers, 1u);
 
-        float Off(int n, float spacing) => spec.CenterAlign ? (n - 1) * 0.5f * spacing : 0f;
-        float offX = Off(cols, spec.SpacingX);
-        float offZ = Off(rows, spec.SpacingZ);
-        float offY = Off(layers, spec.SpacingY);
+        // 全体の広がり（(n-1)*spacing）にアンカー比を掛けたぶんだけ手前へ寄せる。
+        //   0 → 手前側の辺（-X / -Z）が基準点 / 0.5 → 中心 / 1 → 奥側の辺（+X / +Z）
+        static float AnchorOffset(int n, float spacing, float anchor) => (n - 1) * spacing * anchor;
+        float offX = AnchorOffset(cols, spec.SpacingX, PlacementSpec.ClampAnchor(spec.AnchorX));
+        float offZ = AnchorOffset(rows, spec.SpacingZ, PlacementSpec.ClampAnchor(spec.AnchorY));
+        // 段（Y）はアンカーの対象外。基準 Y から上へ積む。
+        const float offY = 0f;
 
         for (int ly = 0; ly < layers; ly++)
         {
@@ -161,7 +167,7 @@ public static class PlacementGenerator
 
     // ── 直線 ────────────────────────────────────────────────
 
-    /// <summary>直線（方向角 + 間隔 × 個数）。中心揃えなら線の中心が基準点に来る。</summary>
+    /// <summary>直線（方向角 + 間隔 × 個数）。<c>AnchorX</c> が線に沿ったアンカー。</summary>
     private static PlacementResult GenerateLine(PlacementSpec spec)
     {
         var r = new PlacementResult();
@@ -172,7 +178,9 @@ public static class PlacementGenerator
         // ヨー規約 yaw = atan2(x, z) に合わせ、方向ベクトルは (sin, cos)。
         float dx = (float)Math.Sin(rad);
         float dz = (float)Math.Cos(rad);
-        float start = spec.CenterAlign ? -(count - 1) * 0.5f * spec.LineSpacing : 0f;
+        // 線に沿ったアンカー（0 = 始点が基準点 / 0.5 = 線の中心 / 1 = 終点が基準点）。
+        // 直線は 1 次元なので AnchorX だけを使う（AnchorY は意味を持たない）。
+        float start = -(count - 1) * spec.LineSpacing * PlacementSpec.ClampAnchor(spec.AnchorX);
         // 直線は点の並ぶ向きが自明なので、進行方向はここで確定させる
         // （間隔 0 でも向きが定まる点が一般則より正確）。
         float yaw = spec.FaceForward ? spec.LineAngle : 0f;

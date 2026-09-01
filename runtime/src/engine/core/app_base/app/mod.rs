@@ -106,6 +106,7 @@ pub(crate) mod particle_scene_gizmo;
 mod prefab_ops;
 /// ロジック配置（LOGIC_PLACE）: パターン生成 → 接地 → アクタ生成／制御点追記
 mod logic_placement_ops;
+mod placement_mode;
 pub(crate) mod camera_scene_gizmo;
 pub(super) mod terrain_ops;
 pub(crate) mod terrain_mesh_build;
@@ -1064,6 +1065,15 @@ pub struct App {
     /// CONTROL_POINT_DRAG_END で必ず None に戻す。
     control_point_drop_preview: Option<[f32; 3]>,
 
+    // ── ロジック配置の配置モード ───────────────────────────────
+    /// 進行中のロジック配置（カーソル追従プレビュー → 左クリックで確定）。
+    ///
+    /// `Some` のあいだは通常の選択クリック・ギズモ・モーダルトランスフォーム・
+    /// カメラ操作をすべて止める（右クリックは「取消」に割り当てるため、
+    /// 右ドラッグのカメラ回転とは共存できない）。
+    /// Play 開始・シーン破棄・タブ切り替えでは `tick_placement_mode_guard` が捨てる。
+    placement_mode: Option<placement_mode::PlacementMode>,
+
     // ── プラグインシステム ─────────────────────────────────────────
     /// ロード済みプラグインのレジストリ。
     /// 起動時に handle_resumed で初期化される。
@@ -1446,6 +1456,7 @@ impl App {
             pending_control_point_drop: None,
             pending_control_point_hover: None,
             control_point_drop_preview: None,
+            placement_mode: None,
             plugin_registry:  crate::engine::plugin::registry::PluginRegistry::empty(),
             physics_thread:   None,
             character_world:  None,

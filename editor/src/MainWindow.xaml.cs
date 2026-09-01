@@ -57,6 +57,17 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     /// </summary>
     private volatile bool _modalTransformActive = false;
 
+    /// <summary>
+    /// ランタイム側のロジック配置（配置モード）が進行中か。
+    ///
+    /// キーフック（UI スレッド）と IPC 受信（バックグラウンドスレッド）の
+    /// 両方から触るため volatile。<b>ランタイムが唯一の正</b>で、
+    /// エディタは PLACEMENT_STATE 通知でしか変更しない
+    /// （マウス操作はランタイムの子ウィンドウが直接受け取るため、
+    ///  エディタが先回りして状態を立てる必要が無い）。
+    /// </summary>
+    private volatile bool _placementModeActive = false;
+
     private bool _clampInPlay                  = false;
     private bool _isDragging                   = false;
     private bool _ctrlHeld                     = false;
@@ -397,6 +408,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // 進行状態はフラグだけでなくグローバルマウスフックの設置/解除も伴うため、
         // 必ず SetModalTransformActive を通す（MainWindow.ModalTransform.cs）。
         _runtimeManager.ModalTransformStateChanged    += SetModalTransformActive;
+        // ロジック配置の配置モード。Esc の行き先とヒント表示だけを切り替える。
+        _runtimeManager.PlacementStateChanged         += OnPlacementStateChanged;
         _runtimeManager.ActorEditStarted              += OnActorEditStarted;
         _runtimeManager.ActorEditEnded                += OnActorEditEnded;
         // キャンバス編集タブ開始応答（EDIT_CANVAS_BEGIN → CANVAS_EDIT_WL）

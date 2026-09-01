@@ -42,8 +42,10 @@ fn default_grid_axis() -> u32 { 3 }
 fn default_grid_layers() -> u32 { 1 }
 /// 間隔の既定値 [m]。
 fn default_spacing() -> f32 { 2.0 }
-/// 中心揃えの既定値（グリッド・直線とも既定でオン）。
+/// 真の既定値（ランダム散布の範囲形状が既定で「円」）。
 fn default_true() -> bool { true }
+/// 基準位置アンカーの既定値（0.5 = 中心揃え）。
+fn default_anchor() -> f32 { 0.5 }
 /// ランダム散布の範囲サイズ既定値 [m]。
 fn default_area_size() -> f32 { 10.0 }
 /// スケールばらつきの既定値（0 = ばらつかない）。
@@ -149,10 +151,24 @@ pub struct PlacementSpec {
     /// Y 方向（段）の間隔 [m]。
     #[serde(default = "default_spacing")]
     pub spacing_y: f32,
-    /// 基準点をグリッドの中心に置くか（false なら基準点が隅になる）。
-    /// 直線パターンでも「線の中心を基準点に置くか」として共用する。
-    #[serde(default = "default_true")]
-    pub center_align: bool,
+    /// 基準位置アンカー X（0..1）。パターンの X 方向のどこを基準点に合わせるか。
+    ///
+    /// 【座標規約】0 = グリッドの **-X 側の辺**が基準点に一致、
+    /// 1 = **+X 側の辺**が基準点に一致、0.5 = 中心揃え。
+    /// 直線パターンでは「線に沿った方向」のアンカーとして共用する
+    /// （0 = 始点が基準点、1 = 終点が基準点、0.5 = 線の中心）。
+    #[serde(default = "default_anchor")]
+    pub anchor_x: f32,
+    /// 基準位置アンカー Y（0..1）。パターン平面の**第 2 軸**のアンカー。
+    ///
+    /// 【座標規約】3D では Z 軸に対応し、0 = **-Z 側の辺**が基準点に一致、
+    /// 1 = **+Z 側の辺**、0.5 = 中心揃え。
+    /// 2D ではキャンバス Y（下向き正）に写るので、0 = **上辺**、1 = **下辺**となる。
+    /// つまり (0,0) はグリッドの**左上**、(1,1) は**右下**が基準点に来る。
+    ///
+    /// 直線パターンでは使わない（線は 1 次元なので `anchor_x` だけで決まる）。
+    #[serde(default = "default_anchor")]
+    pub anchor_y: f32,
     /// 市松オフセット（奇数行を X 方向へ半間隔ずらす）。
     #[serde(default)]
     pub checker_offset: bool,
@@ -208,7 +224,8 @@ impl Default for PlacementSpec {
             spacing_x:       default_spacing(),
             spacing_z:       default_spacing(),
             spacing_y:       default_spacing(),
-            center_align:    default_true(),
+            anchor_x:        default_anchor(),
+            anchor_y:        default_anchor(),
             checker_offset:  false,
             line_angle:      0.0,
             line_spacing:    default_spacing(),
@@ -221,6 +238,28 @@ impl Default for PlacementSpec {
             scale_variance:  default_zero(),
         }
     }
+}
+
+impl PlacementSpec {
+    /// 基準位置アンカーの下限（0 = パターンの手前側の辺が基準点）。
+    pub const ANCHOR_MIN: f32 = 0.0;
+    /// 基準位置アンカーの上限（1 = パターンの奥側の辺が基準点）。
+    pub const ANCHOR_MAX: f32 = 1.0;
+
+    /// アンカー X を 0..1 に丸めて返す。
+    ///
+    /// UI やファイルから範囲外の値が来ても「パターンが基準点から吹き飛ぶ」ことが
+    /// 無いようにここで必ず通す（NaN は中心揃えへ倒す）。
+    pub fn clamped_anchor_x(&self) -> f32 { clamp_anchor(self.anchor_x) }
+
+    /// アンカー Y を 0..1 に丸めて返す（規約は `clamped_anchor_x` と同じ）。
+    pub fn clamped_anchor_y(&self) -> f32 { clamp_anchor(self.anchor_y) }
+}
+
+/// アンカー値を 0..1 に丸める（NaN は 0.5 ＝ 中心揃えとして扱う）。
+fn clamp_anchor(v: f32) -> f32 {
+    if v.is_nan() { return default_anchor(); }
+    v.clamp(PlacementSpec::ANCHOR_MIN, PlacementSpec::ANCHOR_MAX)
 }
 
 // ─── PlacementPoint / PlacementResult ─────────────────────────

@@ -221,6 +221,18 @@ public partial class MainWindow
             }
         }
 
+        // ── ロジック配置の配置モード ──────────────────────────────────
+        //
+        // 進行中は Esc を「削除ダイアログ」ではなく「配置の取消」へ回す
+        //（モーダルトランスフォームの Esc とまったく同じ扱い）。
+        // それ以外のキーはランタイム側が飲み込むので、ここでは横取りしない。
+        if (isDown && _placementModeActive && vk == 0x1B
+            && _runtimeManager?.State == EditorState.Edit)
+        {
+            SendPlacementCancel();
+            return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+        }
+
         // ── モーダルトランスフォーム（Blender 風 G/R/S）とツールホットキー ──────
         //
         // 【なぜエディタ側で拾うか】
@@ -307,6 +319,7 @@ public partial class MainWindow
         if (isDown && (vk == 0x1B || vk == 0x2E) && !_ctrlHeld
             && _runtimeManager?.State == EditorState.Edit
             && viewportFocused
+            && !_placementModeActive   // 配置モード中の Esc は取消（上で処理済み）
             && !_deleteDialogOpen)
         {
             Dispatcher.BeginInvoke(TryDeleteSelected);

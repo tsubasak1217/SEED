@@ -1,3 +1,4 @@
+using System;
 using System.Text.Json.Serialization;
 
 namespace SEEDEditor.Placement.Patterns;
@@ -73,6 +74,24 @@ public sealed class PlacementResult
 /// </summary>
 public sealed class PlacementSpec
 {
+    // ── アンカーの定数（Rust 側 PlacementSpec と一致させること）──────
+
+    /// <summary>基準位置アンカーの既定値（0.5 = 中心揃え）。</summary>
+    public const float DefaultAnchor = 0.5f;
+
+    /// <summary>基準位置アンカーの下限。</summary>
+    public const float AnchorMin = 0f;
+
+    /// <summary>基準位置アンカーの上限。</summary>
+    public const float AnchorMax = 1f;
+
+    /// <summary>
+    /// アンカー値を 0..1 に丸める（NaN は 0.5 ＝ 中心揃えへ倒す）。
+    /// Rust 側 <c>clamp_anchor</c> と同じ規則。
+    /// </summary>
+    public static float ClampAnchor(float v)
+        => float.IsNaN(v) ? DefaultAnchor : Math.Clamp(v, AnchorMin, AnchorMax);
+
     // ── パターン種別 ────────────────────────────────────────
 
     /// <summary>使用するパターン。</summary>
@@ -147,11 +166,52 @@ public sealed class PlacementSpec
     public float SpacingY { get; set; } = 2f;
 
     /// <summary>
-    /// 基準点をグリッドの中心に置くか（false なら基準点が隅になる）。
-    /// 直線パターンでも「線の中心を基準点に置くか」として共用する。
+    /// 基準位置アンカー X（0..1）。パターンの X 方向のどこを基準点に合わせるか。
+    ///
+    /// <para><b>座標規約</b>: 0 = グリッドの -X 側の辺が基準点に一致、
+    /// 1 = +X 側の辺が基準点に一致、0.5 = 中心揃え。
+    /// 直線パターンでは「線に沿った方向」のアンカーとして共用する
+    /// （0 = 始点が基準点 / 1 = 終点が基準点 / 0.5 = 線の中心）。</para>
+    /// </summary>
+    [JsonPropertyName("anchor_x")]
+    public float AnchorX { get; set; } = DefaultAnchor;
+
+    /// <summary>
+    /// 基準位置アンカー Y（0..1）。パターン平面の<b>第 2 軸</b>のアンカー。
+    ///
+    /// <para><b>座標規約</b>: 3D では Z 軸に対応し、0 = -Z 側の辺、1 = +Z 側の辺、
+    /// 0.5 = 中心。2D ではキャンバス Y（下向き正）に写るので、0 = 上辺、1 = 下辺。
+    /// つまり (0,0) はグリッドの<b>左上</b>、(1,1) は<b>右下</b>が基準点に来る。</para>
+    ///
+    /// <para>直線パターンでは使わない（線は 1 次元なので <see cref="AnchorX"/> だけで決まる）。</para>
+    /// </summary>
+    [JsonPropertyName("anchor_y")]
+    public float AnchorY { get; set; } = DefaultAnchor;
+
+    /// <summary>
+    /// 旧「中心揃え」チェックの読み込み専用ブリッジ（後方互換）。
+    ///
+    /// <para>
+    /// アンカー導入前に <see cref="EditorPreferences"/> へ保存された前回値は
+    /// <c>center_align</c>（bool）を持つ。読み込み時だけそれをアンカーへ翻訳する
+    /// （true → 0.5 = 中心揃え / false → 0 = 手前の隅）。
+    /// getter は常に null なので、<b>書き出しにも IPC にも現れない</b>
+    /// （<see cref="JsonIgnoreCondition.WhenWritingNull"/>）。
+    /// </para>
     /// </summary>
     [JsonPropertyName("center_align")]
-    public bool CenterAlign { get; set; } = true;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? LegacyCenterAlign
+    {
+        get => null;
+        set
+        {
+            if (value is null) return;
+            float a = value.Value ? DefaultAnchor : 0f;
+            AnchorX = a;
+            AnchorY = a;
+        }
+    }
 
     /// <summary>市松オフセット（奇数行を X 方向へ半間隔ずらす）。</summary>
     [JsonPropertyName("checker_offset")]

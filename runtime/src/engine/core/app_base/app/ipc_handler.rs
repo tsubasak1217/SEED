@@ -863,6 +863,9 @@ impl App {
                     );
                 }
                 IpcCommand::LoadScene(path) => {
+                    // シーンが入れ替わると配置モードの前提（親 DFS・地形・世界線）が
+                    // すべて崩れるので、読み込む前に必ず取り消す。
+                    self.cancel_placement();
                     // アクター編集中なら現在のカメラを退避してからシーンモードに切り替える
                     {
                         let pos = self.camera.base.transform.position;
@@ -1321,6 +1324,14 @@ impl App {
                 }
                 IpcCommand::LogicPlace { json } => {
                     self.handle_logic_place(&json);
+                }
+                IpcCommand::LogicPlaceBegin { json } => {
+                    // 配置モードへ入るだけ（シーンにも Undo にも触れない）。
+                    // 実生成はカーソル位置での左クリック確定時に行う。
+                    self.handle_logic_place_begin(&json);
+                }
+                IpcCommand::PlacementCancel => {
+                    self.cancel_placement();
                 }
                 IpcCommand::SetControlPoints { actor_dfs_id, slot_idx, json } => {
                     self.handle_set_control_points(actor_dfs_id, slot_idx, &json);

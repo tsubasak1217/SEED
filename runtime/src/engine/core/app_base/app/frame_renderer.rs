@@ -236,6 +236,14 @@ const CAM2D_ORTHO_HALF_H_MIN: f32 = 0.5;
 /// 描画範囲（見える世界の広さ）の制限。従来 1000.0 を約 5 倍へ拡張。
 const CAM2D_ORTHO_HALF_H_MAX: f32 = 5000.0;
 
+/// ID バッファに当たらなかったときの、カーソルのレイに沿った代替距離 [m]。
+///
+/// アクタ D&D のスポーン位置と、ロジック配置の配置モードで**共有**する
+///（「空をクリックしたときにどこへ置くか」は 1 か所で決める）。
+use super::placement_mode::surface_or_fallback;
+
+pub(super) const SPAWN_FALLBACK_DIST: f32 = 10.0;
+
 impl App {
     /// スクリーン座標のワールドスポーン位置を IDバッファ読み取りで解決する。
     ///
@@ -246,9 +254,6 @@ impl App {
     /// 取得できない場合はレイキャスト（カメラ前方 DEFAULT_DIST）にフォールバックする。
     /// D&D（pending_drop）とコンテキストメニュー追加（pending_add_actor）の両方で使用する。
     fn resolve_spawn_pos(&self, sx: u32, sy: u32, did_pick: bool) -> Option<[f32; 3]> {
-        /// IDバッファがない・メッシュに当たらない場合のレイ方向への代替距離
-        const DEFAULT_DIST: f32 = 10.0;
-
         // ピック処理がバッファを使用済みのため今フレームでは読み取れない
         if did_pick { return None; }
 
@@ -261,33 +266,60 @@ impl App {
         };
 
         // ワールド座標が取れた場合はそのまま使い、なければレイキャストにフォールバック
-        Some(world_pos.unwrap_or_else(|| {
-            let cam_v = self.camera.position();
-            let cam   = [cam_v.x, cam_v.y, cam_v.z];
-            if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
-                let view = self.camera.view_matrix();
-                let proj = self.camera.projection_matrix();
-                let (_ro, rd) = screen_to_ray(
-                    sx as f32, sy as f32,
-                    ws.width as f32, ws.height as f32,
-                    &view.data, &proj.data, cam,
-                );
-                [
-                    cam[0] + rd[0] * DEFAULT_DIST,
-                    cam[1] + rd[1] * DEFAULT_DIST,
-                    cam[2] + rd[2] * DEFAULT_DIST,
-                ]
-            } else {
-                // ウィンドウサイズが取れない場合はカメラ前方向に配置する
-                let yaw   = self.camera.yaw.to_radians();
-                let pitch = self.camera.pitch.to_radians();
-                [
-                    cam[0] + yaw.sin() * pitch.cos() * DEFAULT_DIST,
-                    cam[1] + pitch.sin()              * DEFAULT_DIST,
-                    cam[2] + yaw.cos() * pitch.cos() * DEFAULT_DIST,
-                ]
-            }
-        }))
+        Some(world_pos.unwrap_or_else(|| self.camera_ray_point(sx, sy, SPAWN_FALLBACK_DIST)))
+    }
+
+    /// カーソルのレイに沿って `dist` [m] 進んだ点を返す（何にも当たらないときの置き場所）。
+    ///
+    /// D&D のスポーン位置と配置モードの基準点で**同じ距離定数・同じ式**を使うために
+    /// 切り出してある。ウィンドウサイズが取れない場合はカメラ前方向で代用する。
+    pub(super) fn camera_ray_point(&self, sx: u32, sy: u32, dist: f32) -> [f32; 3] {
+        let cam_v = self.camera.position();
+        let cam   = [cam_v.x, cam_v.y, cam_v.z];
+        if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
+            let view = self.camera.view_matrix();
+            let proj = self.camera.projection_matrix();
+            let (_ro, rd) = screen_to_ray(
+                sx as f32, sy as f32,
+                ws.width as f32, ws.height as f32,
+                &view.data, &proj.data, cam,
+            );
+            [
+                cam[0] + rd[0] * dist,
+                cam[1] + rd[1] * dist,
+                cam[2] + rd[2] * dist,
+            ]
+        } else {
+            // ウィンドウサイズが取れない場合はカメラ前方向に配置する
+            let yaw   = self.camera.yaw.to_radians();
+            let pitch = self.camera.pitch.to_radians();
+            [
+                cam[0] + yaw.sin() * pitch.cos() * dist,
+                cam[1] + pitch.sin()             * dist,
+                cam[2] + yaw.cos() * pitch.cos() * dist,
+            ]
+        }
+    }
+
+    /// カーソル下の**表面**（メッシュ／水面 = GPU ヒット、地形 = CPU レイマーチ）を
+    /// 1 点に決める。どちらにも当たらなければ「カメラから一定距離」へフォールバックする。
+    ///
+    /// アクタ D&D（`resolve_spawn_pos`）と**同じ距離定数**を使う。違いは地形も候補に
+    /// 入れる点だけで、これは地形が ID パスに描かれない（GPU ピックの対象外な）ためである。
+    pub(super) fn resolve_surface_or_camera_dist(
+        &self,
+        gpu_hit: Option<[f32; 3]>,
+        sx: u32,
+        sy: u32,
+    ) -> [f32; 3] {
+        let terrain_hit = self.terrain_raymarch_hit(sx as f32, sy as f32);
+        let cam_v = self.camera.position();
+        surface_or_fallback(
+            [cam_v.x, cam_v.y, cam_v.z],
+            gpu_hit,
+            terrain_hit,
+            self.camera_ray_point(sx, sy, SPAWN_FALLBACK_DIST),
+        )
     }
 
     /// フォーカスが無い間はフレームレートを抑える。
@@ -328,6 +360,13 @@ impl App {
         // モーダルトランスフォーム（G/R/S）の前提条件を点検する。
         // Play 開始・シーン再読み込みでモーダルが宙に浮いたまま残らないようにする。
         self.tick_modal_transform_guard();
+
+        // ロジック配置モードの前提条件を点検する（Play 開始・シーン破棄・
+        // タブ切り替えでモードが宙に浮いたまま残らないようにする）。
+        self.tick_placement_mode_guard();
+        // 2D 配置の基準点は GPU 読み戻しを要さないので、ここで毎フレーム更新する
+        //（3D は ID パスの読み戻し後に解決する。下の readback 節を参照）。
+        self.update_placement_hover_2d();
 
         // フレーム凍結ウォッチドッグを初回に 1 度だけ起動する。
         ensure_frame_watchdog();
@@ -1235,6 +1274,8 @@ impl App {
         // 今フレームの ID バッファ読み戻しがコントロールポイントの**ホバー**
         //（配置予定マーカー）のためだったか。ドロップ用フラグとは排他。
         let mut did_control_point_hover_readback = false;
+        // ロジック配置モード（3D）の基準点解決のために読み戻しを取れたか。
+        let mut did_placement_readback = false;
 
         // ピック結果デコード用 MC 情報 (base, dfs_id, slot_i, instance_count)
         let wl_mc_pick_infos: Vec<(u32, u32, usize, usize)> = {
@@ -1298,6 +1339,18 @@ impl App {
         // レンダラを可変借用する前に `&self` で組んでおき、GPU バッファ化だけを
         // 描画ブロック内で行う（借用の衝突を避けるため）。
         let control_point_lines = self.build_control_point_line_batch();
+
+        // ロジック配置モードのプレビュー線（位置マーカー＋向き線）。
+        // control_point_lines と同様、レンダラの可変借用前に頂点を組む。
+        let placement_preview_lines = self.build_placement_preview_line_batch();
+        // ロジック配置モード（3D）がこのフレームで要求する読み戻し座標。
+        // 描画ブロックの中では `self` を不変借用できない（レンダラを可変借用しているため）
+        // ので、ここで先に確定させておく。
+        let placement_readback_pos = if self.placement_needs_id_readback() {
+            self.last_cursor_pos.map(|(x, y)| (x.max(0.0) as u32, y.max(0.0) as u32))
+        } else {
+            None
+        };
 
         // モーダルトランスフォーム（G/R/S）の軸拘束線。
         // 拘束中だけピボットを貫く 1 本の線を描く（X=赤 / Y=緑 / Z=青）。
@@ -3206,6 +3259,11 @@ impl App {
                     let control_point_thick_batch = control_point_lines.as_ref()
                         .filter(|b| !b.segment_lines.is_empty())
                         .map(|b| b.segment_lines.build_thick(&draw_ctx.device));
+
+                    // ロジック配置モードのプレビュー線を GPU バッファ化する。
+                    let placement_preview_batch = placement_preview_lines.as_ref()
+                        .filter(|b| !b.is_empty())
+                        .map(|b| b.build(&draw_ctx.device));
 
                     // モーダルトランスフォームの軸拘束線を GPU バッファ化する。
                     let modal_axis_batch = modal_axis_lines.as_ref()
@@ -6842,6 +6900,18 @@ impl App {
                             );
                         }
 
+                        // ロジック配置モードのプレビュー描画（位置マーカー＋向き線）。
+                        // 他のシーンギズモと同じ 1px ライン経路に合流させる。
+                        if let (Some(place_batch), Some((_, line_bg))) =
+                            (&placement_preview_batch, &self.line_model_buf)
+                        {
+                            draw_line_batch(
+                                &mut pass, place_batch,
+                                &camera_buf.bind_group, line_bg,
+                                &draw_ctx.pipelines,
+                            );
+                        }
+
                         // モーダルトランスフォーム（G/R/S）の軸拘束線描画。
                         // 拘束中だけ出る 1 本の線で、他のシーンギズモと同じ細線経路に合流させる。
                         if let (Some(axis_batch), Some((_, line_bg))) =
@@ -7501,6 +7571,10 @@ impl App {
                     //
                     // 【なぜ ID パスより「前」に計算するのか】ID パスの唯一の消費者がこの読み戻しなので、
                     // 「要求があるフレームだけ描く」オンデマンド化の判定材料になる（should_draw_id_pass）。
+                    // ロジック配置モード（3D）のカーソル追従。モードは他のすべての
+                    // 編集操作と排他なので、読み戻しは**最優先**で取る
+                    //（取りこぼすとプレビューがカーソルに遅れて追従して見える）。
+                    let placement_pos = placement_readback_pos;
                     let drop_pos = self.pending_drop
                         .as_ref()
                         .map(|&(_, sx, sy)| (sx, sy));
@@ -7518,7 +7592,7 @@ impl App {
                             // 2D アクターはスポーン位置不要なので readback しない
                             if is_2d { None } else { Some((sx, sy)) }
                         });
-                    let readback_pos = drop_pos.or(cp_pos).or(cp_hover_pos)
+                    let readback_pos = placement_pos.or(drop_pos).or(cp_pos).or(cp_hover_pos)
                         .or(add_actor_pos).or(pick_pos);
 
                     // Edit / Pause 中は「読み戻し要求があるフレームだけ」描く（オンデマンド化）。
@@ -8037,15 +8111,20 @@ impl App {
                                     &id_buf.texture, px, py, &id_buf.readback_buf,
                                 );
                                 // readback が drop/control_point/add_actor ではなく pick のためかを記録するフラグ
-                                did_pick = drop_pos.is_none() && cp_pos.is_none()
+                                did_pick = placement_pos.is_none() && drop_pos.is_none()
+                                    && cp_pos.is_none()
                                     && cp_hover_pos.is_none()
                                     && add_actor_pos.is_none() && pick_pos.is_some();
-                                // ホバーが読み戻しを取れたか（上位 2 つが立っていないこと）。
-                                did_control_point_hover_readback =
-                                    drop_pos.is_none() && cp_pos.is_none() && cp_hover_pos.is_some();
+                                // ホバーが読み戻しを取れたか（上位が立っていないこと）。
+                                did_control_point_hover_readback = placement_pos.is_none()
+                                    && drop_pos.is_none() && cp_pos.is_none() && cp_hover_pos.is_some();
                                 // readback がコントロールポイント D&D のためだったか。
                                 // did_pick とは**同時に true にならない**（＝読み戻しの二重消費が起きない）。
-                                did_control_point_readback = drop_pos.is_none() && cp_pos.is_some();
+                                did_control_point_readback = placement_pos.is_none()
+                                    && drop_pos.is_none() && cp_pos.is_some();
+                                // readback がロジック配置モードのためだったか（最優先なので
+                                // 要求が立っていれば必ず取れている）。
+                                did_placement_readback = placement_pos.is_some();
                             }
                         }
                     }
@@ -8426,6 +8505,22 @@ impl App {
                 self.send_actor_components(dfs as u32, self.actor_virtual_selected_slot_idx);
             }
             self.send_scene_shading_params();
+        }
+
+        // ── ロジック配置モードの基準点解決（GPU サブミット後）─────────────
+        //
+        // 読み戻し優先度の順（placement > drop > control_point > add_actor > pick）に
+        // 合わせ、消費もここで最初に行う。取れなかったフレームは**再キューせず捨てる**
+        //（次フレームで再度カーソル位置から要求し直すため、古い座標で描く必要が無い）。
+        if did_placement_readback {
+            if let Some((cx, cy)) = self.last_cursor_pos {
+                let gpu_hit = if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
+                    id_buf.read_pixel(&draw_ctx.device).0
+                } else {
+                    None
+                };
+                self.resolve_placement_hover(gpu_hit, cx.max(0.0) as u32, cy.max(0.0) as u32);
+            }
         }
 
         // ── ドロップ処理（GPU サブミット後）─────────────

@@ -292,6 +292,17 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public event Action<bool>? ModalTransformStateChanged;
 
+    /// <summary>
+    /// ロジック配置の<b>配置モード</b>（カーソル追従プレビュー → クリック確定）の
+    /// 進行状態が変わったときに発火する。
+    /// 引数: true = 進行中 / false = 終了（確定・取消・自動取消）。
+    ///
+    /// エディタは「Esc を削除ダイアログではなく配置の取消へ回す」判断と、
+    /// 操作ヒントの表示に使う。マウス操作はランタイムの子ウィンドウが直接受け取るので、
+    /// モーダルトランスフォームのようなグローバルマウスフックは要らない。
+    /// </summary>
+    public event Action<bool>? PlacementStateChanged;
+
     /// <summary>アクター編集モードに切り替わったときに発火する。</summary>
     public event Action? ActorEditStarted;
 
@@ -1676,6 +1687,11 @@ public sealed class RuntimeManager : IDisposable
         {
             // モーダルトランスフォームの進行状態通知（1 = 開始 / 0 = 終了）。
             ModalTransformStateChanged?.Invoke(msg["MODAL_STATE:".Length..] == "1");
+        }
+        else if (msg.StartsWith("PLACEMENT_STATE:", StringComparison.Ordinal))
+        {
+            // ロジック配置の配置モードの進行状態通知（1 = 開始 / 0 = 終了）。
+            PlacementStateChanged?.Invoke(msg["PLACEMENT_STATE:".Length..] == "1");
         }
         else if (msg.StartsWith("TOOL_MODE:", StringComparison.Ordinal))
         {

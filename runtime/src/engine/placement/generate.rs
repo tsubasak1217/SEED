@@ -158,18 +158,28 @@ fn generate_circle(spec: &PlacementSpec) -> PlacementResult {
 ///
 /// 走査順は **段 y → 行 z → 列 x** で固定する（この順が生成アクタの
 /// 連番 `_01, _02, …` の順序になる）。
+///
+/// 平面上のどこを基準点に合わせるかは `anchor_x` / `anchor_y`（各 0..1）で決まる。
+/// 段（Y）はアンカーの対象外で、常に基準 Y から上へ積む。
 fn generate_grid(spec: &PlacementSpec) -> PlacementResult {
     let cols   = spec.cols.max(1) as usize;
     let rows   = spec.rows.max(1) as usize;
     let layers = spec.layers.max(1) as usize;
 
-    // 中心揃えのオフセット（(n-1)/2 個ぶん手前へ寄せる）。
-    let off = |n: usize, spacing: f32| -> f32 {
-        if spec.center_align { (n as f32 - 1.0) * 0.5 * spacing } else { 0.0 }
+    // ── 基準位置アンカーのオフセット ──────────────────────────
+    // 全体の広がり（(n-1)*spacing）に対しアンカー比を掛けたぶんだけ手前へ寄せる。
+    //   アンカー 0   → オフセット 0        … 手前側の辺（-X / -Z）が基準点に一致
+    //   アンカー 0.5 → オフセット 幅/2     … 中心が基準点に一致（旧「中心揃え」）
+    //   アンカー 1   → オフセット 幅       … 奥側の辺（+X / +Z）が基準点に一致
+    let anchor_offset = |n: usize, spacing: f32, anchor: f32| -> f32 {
+        (n as f32 - 1.0) * spacing * anchor
     };
-    let off_x = off(cols, spec.spacing_x);
-    let off_z = off(rows, spec.spacing_z);
-    let off_y = off(layers, spec.spacing_y);
+    let off_x = anchor_offset(cols, spec.spacing_x, spec.clamped_anchor_x());
+    let off_z = anchor_offset(rows, spec.spacing_z, spec.clamped_anchor_y());
+    // 段（Y）はアンカーの対象外。**基準 Y から上へ積む**（地面に置いた山を
+    // 積み上げる直感に合わせる）。アンカーは「平面上のどこを基準点に合わせるか」
+    // という 2 次元の概念なので、高さ方向へは持ち込まない。
+    let off_y = 0.0f32;
 
     let mut points = Vec::with_capacity(cols * rows * layers);
     for ly in 0..layers {
@@ -193,7 +203,7 @@ fn generate_grid(spec: &PlacementSpec) -> PlacementResult {
 
 /// 直線（方向角 + 間隔 × 個数）。
 ///
-/// `center_align` が真なら線の中心が基準点に来るように前へ寄せる。
+/// `anchor_x` が線に沿ったアンカー（0 = 始点 / 0.5 = 中心 / 1 = 終点が基準点）。
 fn generate_line(spec: &PlacementSpec) -> PlacementResult {
     let count = spec.count as usize;
     let mut points = Vec::with_capacity(count);
@@ -202,11 +212,9 @@ fn generate_line(spec: &PlacementSpec) -> PlacementResult {
     let rad = to_radians(spec.line_angle);
     // ヨー規約 `yaw = atan2(x, z)` に合わせ、方向ベクトルは (sin, cos)。
     let (dx, dz) = (rad.sin(), rad.cos());
-    let start = if spec.center_align {
-        -(count as f32 - 1.0) * 0.5 * spec.line_spacing
-    } else {
-        0.0
-    };
+    // 線に沿ったアンカー（0 = 始点が基準点 / 0.5 = 線の中心 / 1 = 終点が基準点）。
+    // 直線は 1 次元なので `anchor_x` だけを使う（`anchor_y` は意味を持たない）。
+    let start = -(count as f32 - 1.0) * spec.line_spacing * spec.clamped_anchor_x();
     // 直線は「点の並ぶ向き」が自明なので、進行方向指定はここで確定させる
     // （apply_face_forward の一般則より正確：間隔 0 でも向きが定まる）。
     let yaw = if spec.face_forward { spec.line_angle } else { 0.0 };

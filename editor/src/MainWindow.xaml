@@ -962,6 +962,16 @@
                             ToolTip="Settings">
                         <ctrl:AppIcon IconKey="Icon.Settings" Width="16" Height="16"/>
                     </Button>
+                    <!-- ロジック配置の配置モード中に出す操作ヒント。
+                         ビューポートは HwndHost なので上に WPF を重ねられない（エアスペース）。
+                         純 WPF 領域であるこのバーに出す。 -->
+                    <TextBlock x:Name="TxtPlacementHint"
+                               Text=""
+                               Foreground="#8FE0A0"
+                               FontSize="11"
+                               VerticalAlignment="Center"
+                               Margin="10,0,0,0"
+                               Visibility="Collapsed"/>
                     <!-- FPS 表示（ランタイム側の計測値） -->
                     <TextBlock x:Name="TxtFps"
                                Text=""

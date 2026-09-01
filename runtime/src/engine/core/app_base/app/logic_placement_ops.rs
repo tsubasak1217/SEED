@@ -51,9 +51,10 @@ use crate::engine::placement::{generate_points, PlacementPoint, PlacementSpec};
 use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::scatter::{surface_hit_down, ScatterField};
 
+use super::actor_utils::dfs_ids_for_entities;
 use super::prefab_ops::load_actor_data;
 use super::terrain_scatter_ops::TerrainScatterField;
-use super::{find_actor_by_dfs, insert_group_actor, App};
+use super::{insert_group_actor, App};
 
 // ============================================================
 //  定数（マジックナンバー禁止）
@@ -75,19 +76,20 @@ const GROUND_PROBE_DOWN: f32 = 200.0;
 /// 配置対象: 新規アクタ群を生成する。
 const TARGET_ACTORS: &str = "actors";
 /// 配置対象: ControlPoint の点列へ追記する。
-const TARGET_CONTROL_POINTS: &str = "control_points";
-
-/// 基準点: 右クリック対象アクタの位置。
-const BASE_PARENT: &str = "parent";
+pub(super) const TARGET_CONTROL_POINTS: &str = "control_points";
 
 // ============================================================
 //  リクエスト（IPC の JSON 表現）
 // ============================================================
 
-/// `LOGIC_PLACE:{json}` の本体。
+/// `LOGIC_PLACE:{json}` / `LOGIC_PLACE_BEGIN:{json}` の本体。
 ///
 /// 全フィールドに `#[serde(default)]` を付け、エディタが一部を送らなくても
 /// 既定値で動くようにする（IPC の後方互換の要）。
+///
+/// **基準点（ワールド原点）は含まない**。新規アクタ配置の基準点は
+/// 「配置モード中のカーソル位置」で決まり（`placement_mode.rs`）、
+/// ControlPoint への追記はアクタ相対座標なので基準点そのものが存在しない。
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct LogicPlaceRequest {
     /// 配置対象（`actors` / `control_points`）。
@@ -99,9 +101,6 @@ pub struct LogicPlaceRequest {
     /// 右クリック対象アクタの DFS id（グループの親／基準点の解決に使う）。
     #[serde(default)]
     pub parent_dfs: Option<u32>,
-    /// 基準点の取り方（`parent` = 対象アクタ位置 / それ以外 = 原点）。
-    #[serde(default)]
-    pub base: String,
     /// 生成するグループフォルダ名。
     #[serde(default)]
     pub group_name: String,
@@ -316,43 +315,18 @@ impl App {
             self.place_control_points(&req, &result.points);
         } else {
             debug_assert!(req.target.is_empty() || req.target == TARGET_ACTORS);
-            self.place_actors(&req, &result.points);
+            // 基準点を伴わない直接生成（配置モードを経由しない旧経路・自動化用）。
+            // 通常のエディタ操作は `LOGIC_PLACE_BEGIN` → 配置モード → カーソル位置確定
+            // を通るので、ここへ来るのはワールド原点基準で良い場合に限られる。
+            self.place_actors(&req, &result.points, [0.0, 0.0, 0.0]);
         }
     }
 
     /// エディタへ警告・エラーを通知する（既存のトースト経路へ相乗り）。
-    fn notify_placement_error(&self, message: &str) {
+    pub(super) fn notify_placement_error(&self, message: &str) {
         eprintln!("[LogicPlace] {message}");
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("LOAD_ERROR:{message}"));
-        }
-    }
-
-    /// 基準点（点列を足し込むワールド原点）を求める。
-    ///
-    /// `base == "parent"` かつ対象アクタが解決できるときはそのアクタの位置、
-    /// それ以外はワールド原点（2D ではキャンバス原点）。
-    ///
-    /// 3D の子アクタ Transform は**ワールド空間で保持**される設計なので
-    /// （prefab_ops のコメント参照）、親を辿らずその場の position で足りる。
-    fn resolve_placement_origin(&self, req: &LogicPlaceRequest) -> [f32; 3] {
-        if req.base != BASE_PARENT { return [0.0, 0.0, 0.0]; }
-        let (Some(scene), Some(pid)) = (self.scene.as_ref(), req.parent_dfs) else {
-            return [0.0, 0.0, 0.0];
-        };
-        let mut c = 0u32;
-        let Some(actor) = find_actor_by_dfs(&scene.actors, self.active_world_line, pid, &mut c)
-        else {
-            return [0.0, 0.0, 0.0];
-        };
-        if req.is_2d {
-            scene.world.get::<CanvasTransform>(actor.entity)
-                .map(|t| [t.position[0], 0.0, t.position[1]])
-                .unwrap_or([0.0, 0.0, 0.0])
-        } else {
-            scene.world.get::<Transform>(actor.entity)
-                .map(|t| t.position)
-                .unwrap_or([0.0, 0.0, 0.0])
         }
     }
 
@@ -360,10 +334,19 @@ impl App {
 
     /// 点列にアクタを生成し、新しいグループフォルダ配下へ収める。
     ///
+    /// `origin` は点列を足し込むワールド基準点（配置モードならカーソルの着弾位置、
+    /// 2D ならキャンバス座標を `[x, 0, y]` に写したもの）。
+    ///
     /// Undo は `ActorTreeSnapshotCommand` 1 件（グループ生成ごと戻る）。
-    fn place_actors(&mut self, req: &LogicPlaceRequest, points: &[PlacementPoint]) {
+    /// 生成に成功したら**生成した全アクタを選択状態**にしてエディタへ通知する
+    /// （置いた直後にそのままギズモで動かせるようにするため）。
+    pub(super) fn place_actors(
+        &mut self,
+        req:    &LogicPlaceRequest,
+        points: &[PlacementPoint],
+        origin: [f32; 3],
+    ) {
         let wl = self.active_world_line;
-        let origin = self.resolve_placement_origin(req);
 
         // ── ワールド位置を先に確定する（接地は地形を不変借用するため、
         //    シーンの可変借用より前に済ませる）──
@@ -449,6 +432,9 @@ impl App {
             return;
         }
 
+        // 生成した子アクタのエンティティを控えてからツリーへ挿入する
+        // （挿入で group は move されるため、先に取り出しておく）。
+        let created_entities: Vec<_> = group.children().iter().map(|a| a.entity).collect();
         insert_group_actor(&mut scene.actors, wl, group, req.parent_dfs, &[]);
         self.scene = Some(scene);
 
@@ -468,6 +454,36 @@ impl App {
 
         self.send_hierarchy();
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+
+        // ── 生成した全アクタを選択状態にする ──
+        // ヒエラルキー送信の**後**に行う（エディタ側が先に行を作っていないと
+        // SELECTED_MULTI の仮想 ID を解決できず、選択が反映されないため）。
+        self.select_placed_actors(wl, &created_entities);
+    }
+
+    /// 一括生成したアクタ群をまとめて選択状態にし、エディタへ通知する。
+    ///
+    /// DFS id はツリー挿入後にしか確定しないので、エンティティから引き直す。
+    /// プライマリ（インスペクタに出る 1 体）は**最後の 1 体**にする
+    ///（`SelectMulti` の受け口と同じ規則。連番の末尾＝直感的に「最後に置いたもの」）。
+    fn select_placed_actors(&mut self, wl: u32, entities: &[crate::engine::ecs::Entity]) {
+        if entities.is_empty() { return; }
+        let Some(scene) = self.scene.as_ref() else { return };
+        let dfs_ids: Vec<usize> = dfs_ids_for_entities(&scene.actors, wl, entities)
+            .into_iter()
+            .flatten()
+            .map(|id| id as usize)
+            .collect();
+        if dfs_ids.is_empty() { return; }
+
+        self.actor_virtual_selected_idx = dfs_ids.last().copied();
+        self.selected_actor_dfs_ids     = dfs_ids;
+        // MC インスタンス単位の選択とは排他（アクタ選択へ倒す）。
+        self.selected_instances.clear();
+        self.send_selected();
+        if let Some(idx) = self.actor_virtual_selected_idx {
+            self.send_actor_components(idx as u32, self.actor_virtual_selected_slot_idx);
+        }
     }
 
     // ── ② ControlPoint 点列への追記 ─────────────────────────
@@ -789,5 +805,60 @@ mod tests {
         assert_eq!(placement_actor_name("Tree", 0), "Tree_01");
         assert_eq!(placement_actor_name("Tree", 9), "Tree_10");
         assert_eq!(placement_actor_name("Tree", 99), "Tree_100");
+    }
+
+    // ─── 生成物の選択（確定後に全件が選ばれること）─────────
+
+    /// **確定後の選択集合が生成アクタ全件**になること。
+    ///
+    /// 選択は DFS id で送るので、ツリーへ挿入したあとに
+    /// 「生成した子アクタのエンティティ → DFS id」を全件引けることが要になる。
+    /// ここが 1 件でも欠けると、置いた直後にまとめて動かせない。
+    #[test]
+    fn placed_actors_all_resolve_to_dfs_ids_for_selection() {
+        let mut world = World::new();
+        let spec = PlacementSpec {
+            pattern: PlacementPattern::Grid,
+            rows: 2, cols: 3, layers: 1,
+            ..Default::default()
+        };
+        let points = generate_points(&spec).points;
+        let positions: Vec<[f32; 3]> = points.iter().map(|p| p.position).collect();
+
+        let (group, _) = assemble_placement_group(
+            &mut world, TEST_WL, false, "グリッド配置", "Tree",
+            &points, &positions,
+            |w| Ok(spawn_empty_actor(w, false)),
+        );
+        let created: Vec<_> = group.children().iter().map(|a| a.entity).collect();
+        assert_eq!(created.len(), 6);
+
+        // 既存アクタが 1 体いる（＝グループが DFS の先頭に来ない）状況で確かめる。
+        let existing = world.spawn();
+        let mut root = Actor::new(existing, "既存");
+        root.world_line = TEST_WL;
+        let mut actors = vec![root];
+        insert_group_actor(&mut actors, TEST_WL, group, None, &[]);
+
+        let ids = dfs_ids_for_entities(&actors, TEST_WL, &created);
+        assert!(ids.iter().all(|id| id.is_some()), "生成した全アクタの DFS id が引けること: {ids:?}");
+        let ids: Vec<u32> = ids.into_iter().flatten().collect();
+        assert_eq!(ids.len(), created.len(), "選択集合が生成アクタ全件であること");
+        // DFS 順は [既存(0), グループ(1), 子(2..8)]。子は連番になる。
+        assert_eq!(ids, vec![2, 3, 4, 5, 6, 7], "挿入後の DFS id が走査順どおりであること");
+    }
+
+    /// 未知のエンティティは `None` になり、他の要素の解決を巻き添えにしないこと。
+    #[test]
+    fn dfs_id_lookup_reports_missing_entities_as_none() {
+        let mut world = World::new();
+        let present = world.spawn();
+        let absent  = world.spawn();
+        let mut root = Actor::new(present, "居る");
+        root.world_line = TEST_WL;
+        let actors = vec![root];
+
+        let ids = dfs_ids_for_entities(&actors, TEST_WL, &[absent, present]);
+        assert_eq!(ids, vec![None, Some(0)]);
     }
 }

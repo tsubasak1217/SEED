@@ -30,12 +30,6 @@ public sealed class LogicPlaceRequest
     /// <summary>配置対象: ControlPoint の点列へ追記する。</summary>
     public const string TargetControlPoints = "control_points";
 
-    /// <summary>基準点: 右クリック対象アクタの位置。</summary>
-    public const string BaseParent = "parent";
-
-    /// <summary>基準点: ワールド原点（2D ではキャンバス中心）。</summary>
-    public const string BaseOrigin = "origin";
-
     // ── フィールド ────────────────────────────────────────────
 
     /// <summary>配置対象（<see cref="TargetActors"/> / <see cref="TargetControlPoints"/>）。</summary>
@@ -49,10 +43,6 @@ public sealed class LogicPlaceRequest
     /// <summary>右クリック対象アクタの DFS id（ルート配置なら null）。</summary>
     [JsonPropertyName("parent_dfs")]
     public uint? ParentDfs { get; set; }
-
-    /// <summary>基準点の取り方（<see cref="BaseParent"/> / <see cref="BaseOrigin"/>）。</summary>
-    [JsonPropertyName("base")]
-    public string Base { get; set; } = BaseOrigin;
 
     /// <summary>生成するグループフォルダ名。</summary>
     [JsonPropertyName("group_name")]
@@ -98,6 +88,23 @@ public sealed class LogicPlaceRequest
 
     /// <summary>
     /// ランタイムへ送る 1 行のコマンド文字列（<c>LOGIC_PLACE:{json}</c>）を組み立てる。
+    ///
+    /// <para>
+    /// こちらは<b>即時生成</b>（基準点を伴わない）経路で、ControlPoint への点列追記に使う。
+    /// 新規アクタ配置はカーソル位置を基準点にするため <see cref="ToBeginIpcCommand"/> を使う。
+    /// </para>
     /// </summary>
     public string ToIpcCommand() => "LOGIC_PLACE:" + JsonSerializer.Serialize(this, IpcJsonOptions);
+
+    /// <summary>
+    /// ランタイムを<b>配置モード</b>へ入れるコマンド（<c>LOGIC_PLACE_BEGIN:{json}</c>）を組み立てる。
+    ///
+    /// <para>
+    /// ペイロードは <see cref="ToIpcCommand"/> とまったく同じ（基準点は含まない）。
+    /// 受け取ったランタイムはカーソル追従のプレビューを出し、左クリックで確定・
+    /// 右クリック / Esc で取消する。<b>基準点はカーソルの着弾位置</b>で決まる。
+    /// </para>
+    /// </summary>
+    public string ToBeginIpcCommand()
+        => "LOGIC_PLACE_BEGIN:" + JsonSerializer.Serialize(this, IpcJsonOptions);
 }

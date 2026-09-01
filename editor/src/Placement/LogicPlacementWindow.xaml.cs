@@ -153,15 +153,12 @@ public partial class LogicPlacementWindow : Window
         {
             LblGridSpacingZ.Text = "間隔Y";
             LblAreaSizeZ.Text    = "幅Y";
-            RadioBaseOrigin.Content = "キャンバス中心";
-        }
-
-        // 親アクタが無い（ルートへの追加）なら「対象アクタの位置」は選べない。
-        if (_ctx.ParentDfs is null)
-        {
-            RadioBaseParent.IsEnabled = false;
-            RadioBaseParent.ToolTip   = "アクタを右クリックして開いた場合のみ選べます";
-            RadioBaseOrigin.IsChecked = true;
+            LblAnchorY.Text      = "アンカーY";
+            TxtAnchorHint.Text   = "アンカーは 0〜1。(0,0) がパターンの左上、(1,1) が右下、"
+                                 + "(0.5,0.5) が中心をカーソル位置（基準点）に合わせます。";
+            TxtBaseHint.Text     = "「配置」を押すとビューポートが配置モードになります。"
+                                 + "カーソルのキャンバス位置にプレビューが追従し、"
+                                 + "左クリックで確定・右クリック / Esc で取消します。";
         }
     }
 
@@ -210,13 +207,14 @@ public partial class LogicPlacementWindow : Window
         TxtGridSpacingX.Text = Num(_spec.SpacingX);
         TxtGridSpacingZ.Text = Num(_spec.SpacingZ);
         TxtGridSpacingY.Text = Num(_spec.SpacingY);
-        ChkGridCenter.IsChecked  = _spec.CenterAlign;
+        TxtAnchorX.Text = Num(PlacementSpec.ClampAnchor(_spec.AnchorX));
+        TxtAnchorY.Text = Num(PlacementSpec.ClampAnchor(_spec.AnchorY));
         ChkGridChecker.IsChecked = _spec.CheckerOffset;
 
         TxtLineCount.Text   = Num(_spec.Count);
         TxtLineAngle.Text   = Num(_spec.LineAngle);
         TxtLineSpacing.Text = Num(_spec.LineSpacing);
-        ChkLineCenter.IsChecked = _spec.CenterAlign;
+        TxtLineAnchor.Text  = Num(PlacementSpec.ClampAnchor(_spec.AnchorX));
 
         RadioAreaCircle.IsChecked = _spec.AreaCircle;
         RadioAreaRect.IsChecked   = !_spec.AreaCircle;
@@ -258,7 +256,8 @@ public partial class LogicPlacementWindow : Window
             TxtCircleCount, TxtCircleRadius, TxtCircleStart, TxtCircleSpan,
             TxtGridRows, TxtGridCols, TxtGridLayers,
             TxtGridSpacingX, TxtGridSpacingZ, TxtGridSpacingY,
-            TxtLineCount, TxtLineAngle, TxtLineSpacing,
+            TxtAnchorX, TxtAnchorY,
+            TxtLineCount, TxtLineAngle, TxtLineSpacing, TxtLineAnchor,
             TxtAreaRadius, TxtAreaSizeX, TxtAreaSizeZ,
             TxtRandomCount, TxtRandomMinSpacing, TxtScaleVariance,
             TxtJitterPos, TxtJitterRot, TxtSeed,
@@ -267,7 +266,7 @@ public partial class LogicPlacementWindow : Window
 
         var checks = new[]
         {
-            ChkFaceCenter, ChkGridCenter, ChkGridChecker, ChkLineCenter,
+            ChkFaceCenter, ChkGridChecker,
             ChkRandomRotation, ChkFaceForward, ChkGround,
         };
         foreach (var c in checks)
@@ -340,9 +339,17 @@ public partial class LogicPlacementWindow : Window
             PlacementPattern.Random => ReadUInt(TxtRandomCount, _spec.Count),
             _                       => ReadUInt(TxtCircleCount, _spec.Count),
         };
-        _spec.CenterAlign = _spec.Pattern == PlacementPattern.Line
-            ? ChkLineCenter.IsChecked == true
-            : ChkGridCenter.IsChecked == true;
+        // 基準位置アンカーもパターンごとに別の入力欄を持つ（グリッドは XY 2 軸、
+        // 直線は線に沿った 1 軸）。表示中のパターンの欄だけを読む。
+        if (_spec.Pattern == PlacementPattern.Line)
+        {
+            _spec.AnchorX = PlacementSpec.ClampAnchor(ReadFloat(TxtLineAnchor, _spec.AnchorX));
+        }
+        else
+        {
+            _spec.AnchorX = PlacementSpec.ClampAnchor(ReadFloat(TxtAnchorX, _spec.AnchorX));
+            _spec.AnchorY = PlacementSpec.ClampAnchor(ReadFloat(TxtAnchorY, _spec.AnchorY));
+        }
 
         _spec.JitterPos   = ReadFloat(TxtJitterPos, _spec.JitterPos);
         _spec.JitterRot   = ReadFloat(TxtJitterRot, _spec.JitterRot);
@@ -515,6 +522,24 @@ public partial class LogicPlacementWindow : Window
         ApplySourceVisibility();
     }
 
+    /// <summary>
+    /// アンカーのプリセットボタン（左上 / 中央 / 右下）。
+    ///
+    /// 値は XAML の <c>Tag</c> に "x,y" 形式で持たせてある
+    /// （ボタンごとにハンドラを増やさず、増減を XAML 側だけで完結させるため）。
+    /// </summary>
+    private void OnAnchorPreset(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string tag }) return;
+        var parts = tag.Split(',');
+        if (parts.Length != 2) return;
+        if (!float.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var ax)) return;
+        if (!float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var ay)) return;
+        TxtAnchorX.Text = Num(PlacementSpec.ClampAnchor(ax));
+        TxtAnchorY.Text = Num(PlacementSpec.ClampAnchor(ay));
+        UpdatePreview();
+    }
+
     /// <summary>シードを引き直す（同じパラメータで別の散らばりを見るための操作）。</summary>
     private void OnRandomizeSeed(object sender, RoutedEventArgs e)
     {
@@ -543,10 +568,14 @@ public partial class LogicPlacementWindow : Window
     private void OnCancel(object sender, RoutedEventArgs e) => DialogResult = false;
 
     /// <summary>
-    /// 「追加」。ランタイムへ <c>LOGIC_PLACE</c> を 1 発送り、パラメータを記憶して閉じる。
+    /// 「配置」。ランタイムへ指定を 1 発送り、パラメータを記憶して閉じる。
     ///
-    /// 実際の生成（点列・接地・アクタ）はランタイムが行うので、
-    /// ここでは<b>指定を組み立てて送るだけ</b>。
+    /// <para>
+    /// 新規アクタ配置は <c>LOGIC_PLACE_BEGIN</c> を送って<b>配置モード</b>へ入れる。
+    /// ダイアログはここで閉じ、以降はビューポート上で
+    /// 「カーソル追従プレビュー → 左クリックで確定 / 右クリック・Esc で取消」となる。
+    /// 制御点への追記は基準点を持たないので、従来どおり <c>LOGIC_PLACE</c> で即時追記する。
+    /// </para>
     /// </summary>
     private void OnAdd(object sender, RoutedEventArgs e)
     {
@@ -559,9 +588,6 @@ public partial class LogicPlacementWindow : Window
                 : LogicPlaceRequest.TargetActors,
             Is2D       = _ctx.Is2D,
             ParentDfs  = _ctx.ParentDfs,
-            Base       = (!_ctx.IsControlPointMode && RadioBaseParent.IsChecked == true)
-                ? LogicPlaceRequest.BaseParent
-                : LogicPlaceRequest.BaseOrigin,
             GroupName  = BuildGroupName(),
             NamePrefix = _spec.PatternDisplayName,
             SourcePath = (!_ctx.IsControlPointMode && RadioSourceFile.IsChecked == true) ? _sourcePath : null,
@@ -570,7 +596,11 @@ public partial class LogicPlacementWindow : Window
             SlotIdx    = _ctx.SlotIdx,
             Spec       = _spec,
         };
-        _runtime?.SendToRuntime(req.ToIpcCommand());
+        // 制御点への追記はカーソル位置と無関係（アクタ相対座標）なので即時追記。
+        // 新規アクタ配置はランタイムを配置モードへ入れ、カーソル位置で確定させる。
+        _runtime?.SendToRuntime(_ctx.IsControlPointMode
+            ? req.ToIpcCommand()
+            : req.ToBeginIpcCommand());
 
         // 次回の初期値として記憶する（パラメータを毎回入れ直さずに済むように）。
         EditorPreferences.Instance.LogicPlacement = _spec.Clone();

@@ -289,6 +289,9 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         // （アクタ生成なら ActorTreeSnapshotCommand、制御点追記なら
         //   ComponentSlotsSnapshotCommand）。ここで記録すると二重になる。
         | IpcCommand::LogicPlace { .. }
+        // 配置モードの開始・取消はシーンを一切変更しない（Undo の対象にならない）。
+        | IpcCommand::LogicPlaceBegin { .. }
+        | IpcCommand::PlacementCancel
         | IpcCommand::SelectControlPoint { .. }
         | IpcCommand::AddControlPointAtScreen { .. }
         | IpcCommand::ControlPointDragHover { .. }
