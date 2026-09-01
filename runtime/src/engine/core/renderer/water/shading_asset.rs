@@ -999,9 +999,10 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
     /// LOAD_ERROR が出る、という意味なので必ず固定しておく。
     #[test]
     fn bundled_sample_assets_pass_naga_validation() {
-        const SAMPLES: [(&str, &str); 2] = [
-            ("magma.wgsl",  include_str!("../../../../../assets/shaders/magma.wgsl")),
-            ("poison.wgsl", include_str!("../../../../../assets/shaders/poison.wgsl")),
+        const SAMPLES: [(&str, &str); 3] = [
+            ("magma.wgsl",     include_str!("../../../../../assets/shaders/magma.wgsl")),
+            ("poison.wgsl",    include_str!("../../../../../assets/shaders/poison.wgsl")),
+            ("pop_ocean.wgsl", include_str!("../../../../../assets/shaders/pop_ocean.wgsl")),
         ];
         for (name, src) in SAMPLES {
             assert_eq!(parse_contract_version(src), Some(WATER_SHADING_CONTRACT_VERSION),
@@ -1027,9 +1028,10 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
     /// 機能の入口が見えなくなる退行として検出する。
     #[test]
     fn bundled_samples_declare_inspector_params() {
-        const SAMPLES: [(&str, &str); 2] = [
-            ("magma.wgsl",  include_str!("../../../../../assets/shaders/magma.wgsl")),
-            ("poison.wgsl", include_str!("../../../../../assets/shaders/poison.wgsl")),
+        const SAMPLES: [(&str, &str); 3] = [
+            ("magma.wgsl",     include_str!("../../../../../assets/shaders/magma.wgsl")),
+            ("poison.wgsl",    include_str!("../../../../../assets/shaders/poison.wgsl")),
+            ("pop_ocean.wgsl", include_str!("../../../../../assets/shaders/pop_ocean.wgsl")),
         ];
         for (name, src) in SAMPLES {
             let set = parse_params(src);
@@ -1044,6 +1046,50 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
                     "{name}: パラメータ `{}` が宣言のみで使われていない", p.name);
             }
         }
+    }
+
+    /// `pop_ocean.wgsl`（ポップな海）の宣言が、名前・型・範囲・既定値まで
+    /// 意図どおりに解析されること。
+    ///
+    /// インスペクタ行の見た目（カラーピッカー／スライダー）と初期値は
+    /// **パーサの解釈がそのまま**なので、ここが崩れると
+    /// 「スライダーの範囲が違う」「差した瞬間の色が違う」という形で表に出る。
+    /// 宣言数が上限ちょうど（`SHADE_PARAM_MAX`）である点も固定する
+    /// （1 個足すと黙って無視されるのではなく LOAD_ERROR になる境界のため）。
+    #[test]
+    fn pop_ocean_declares_expected_inspector_params() {
+        use super::super::shade_params::{ShadeParamKind, SHADE_PARAM_MAX};
+        const SRC: &str = include_str!("../../../../../assets/shaders/pop_ocean.wgsl");
+        let set = parse_params(SRC);
+        assert!(set.warnings.is_empty(), "注釈の警告が出ている: {:?}", set.warnings);
+        assert_eq!(set.params.len(), SHADE_PARAM_MAX,
+            "宣言数が上限ちょうどでない（{} 個）", set.params.len());
+
+        // (名前, 種別, 既定値の第 1 成分, ラベル)。順序＝スロット番号なので順序も固定する。
+        let expected: [(&str, ShadeParamKind, f32); SHADE_PARAM_MAX] = [
+            ("mid_color",        ShadeParamKind::Color,                       0.06),
+            ("band_count",       ShadeParamKind::Range { min: 1.0, max: 4.0 },  3.0),
+            ("depth_range",      ShadeParamKind::Range { min: 0.5, max: 40.0 }, 6.0),
+            ("foam_width",       ShadeParamKind::Range { min: 0.0, max: 1.0 },  0.16),
+            ("foam_threshold",   ShadeParamKind::Range { min: 0.0, max: 1.0 },  0.45),
+            ("specular_steps",   ShadeParamKind::Range { min: 1.0, max: 6.0 },  2.0),
+            ("sparkle_color",    ShadeParamKind::Color,                       2.4),
+            ("saturation_boost", ShadeParamKind::Range { min: 0.0, max: 2.0 },  0.55),
+        ];
+        for (i, (name, kind, first)) in expected.iter().enumerate() {
+            let p = &set.params[i];
+            assert_eq!(&p.name, name, "スロット {i} の名前");
+            assert_eq!(p.kind, *kind, "`{name}` の種別／範囲");
+            assert!((p.default[0] - first).abs() < 1e-6,
+                "`{name}` の既定値: {} != {first}", p.default[0]);
+            assert!(p.resettable, "`{name}` に @reset が付いていない");
+            assert!(!p.bindable, "`{name}` に意図しない @ref が付いている");
+            assert!(!p.label.is_empty() && &p.label != name,
+                "`{name}` に日本語ラベル（行末コメント）が無い");
+        }
+        // 色の宣言は 3 成分すべてが読めていること（xyz が 0 のままだと真っ黒になる）。
+        assert!(set.params[0].default[1] > 0.0 && set.params[0].default[2] > 0.0,
+            "mid_color の既定値が 3 成分読めていない: {:?}", set.params[0].default);
     }
 
     // ── 5. インメモリ検証（エディタの未保存バッファ） ───────
