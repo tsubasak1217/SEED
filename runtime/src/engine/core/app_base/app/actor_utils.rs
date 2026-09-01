@@ -1121,3 +1121,196 @@ pub(super) fn get_3d_canvas_world_mat(
     Some(mat4x4_mul(tf.to_mat4(), local_mat))
 }
 
+// ============================================================
+//  グループ（フォルダ）アクタ生成
+// ============================================================
+
+/// 生成済みのグループアクタをツリーへ挿入し、指定した子アクタ群をその配下へ移す。
+///
+/// ヒエラルキー表示の正典は **アクタツリー**（`Scene::actors` → `collect_actor_nodes`）
+/// であり、ModelComponent 側の `group_meta` は旧実装の遺物で表示に使われない。
+/// そのため「グループフォルダを作成」は実アクタ（フォルダノード or 2D アクタ）を
+/// 1 体生やすことで実現する。
+///
+/// # 引数
+/// - `actors`:       対象ツリー（`Scene::actors`）
+/// - `wl`:           対象世界線（DFS id の数え上げはこの世界線のアクタのみが対象）
+/// - `group`:        呼び出し側で生成済みのグループアクタ（entity / 種別設定済み）
+/// - `parent_dfs`:   グループの親アクタ DFS id（None ならルート直下）
+/// - `children_dfs`: グループ配下へ移す子アクタの DFS id 列（空でも可）
+///
+/// # 実装上の注意
+/// 子の取り出しは **DFS id ではなく Entity 基準**で行う。DFS id は 1 体取り出す
+/// たびにズレるため、先に Entity へ解決してから取り出すことで補正計算を不要にする。
+/// 既に取り出したサブツリーへ含まれていた子（＝祖先ごと移動済み）は Entity 解決に
+/// 失敗するため自然にスキップされる。
+///
+/// # 戻り値
+/// 挿入できたら true（`group` を消費するため、現状は常に true）。
+pub(super) fn insert_group_actor(
+    actors:       &mut Vec<Actor>,
+    wl:           u32,
+    mut group:    Actor,
+    parent_dfs:   Option<u32>,
+    children_dfs: &[u32],
+) -> bool {
+    // ── 1. DFS id を Entity へ解決する（ツリーを触る前に済ませる） ──
+    let parent_entity = parent_dfs.and_then(|pid| {
+        let mut c = 0u32;
+        find_actor_by_dfs(actors, wl, pid, &mut c).map(|a| a.entity)
+    });
+    let mut child_entities: Vec<Entity> = Vec::new();
+    for &cdfs in children_dfs {
+        let mut c = 0u32;
+        if let Some(a) = find_actor_by_dfs(actors, wl, cdfs, &mut c) {
+            if !child_entities.contains(&a.entity) {
+                child_entities.push(a.entity);
+            }
+        }
+    }
+
+    // ── 2. 子サブツリーを取り出してグループ配下へ移す ──
+    group.world_line = wl;
+    for ce in child_entities {
+        // 挿入先の親自身を子として取り込むと親子関係が壊れるので除外する
+        if Some(ce) == parent_entity { continue; }
+        if let Some(child) = extract_actor_by_entity(actors, ce) {
+            group.children_mut().push(child);
+        }
+    }
+
+    // ── 3. グループ本体を親（またはルート）へ挿入する ──
+    if let Some(pe) = parent_entity {
+        if let Some(parent) = find_actor_by_entity_mut(actors, pe) {
+            parent.children_mut().push(group);
+            return true;
+        }
+        // 親が見つからない（取り出しで消えた等）場合はルートへフォールバックする
+        actors.push(group);
+        return true;
+    }
+    actors.push(group);
+    true
+}
+
+// ============================================================
+//  テスト — グループ（フォルダ）アクタ生成のツリー操作
+// ============================================================
+#[cfg(test)]
+mod group_actor_tests {
+    use super::*;
+    use crate::engine::ecs::World;
+
+    /// world_line=wl のルートアクタを名前付きで作る（テスト用ヘルパ）。
+    fn root(world: &mut World, wl: u32, name: &str) -> Actor {
+        let mut a = Actor::new(world.spawn(), name);
+        a.world_line = wl;
+        a
+    }
+
+    /// グループ用フォルダアクタを作る（テスト用ヘルパ）。
+    fn folder(world: &mut World, wl: u32, name: &str) -> Actor {
+        let mut g = Actor::new_folder(world.spawn(), name);
+        g.world_line = wl;
+        g
+    }
+
+    /// ModelComponent が 1 つも無いツリー（＝旧実装で何も起きなかったケース）でも
+    /// グループアクタが生えることを検証する。
+    #[test]
+    fn create_group_on_tree_without_model_component() {
+        let mut world  = World::new();
+        let mut actors = vec![root(&mut world, 0, "Camera")];
+        let group      = folder(&mut world, 0, "Group");
+
+        assert!(insert_group_actor(&mut actors, 0, group, None, &[]));
+
+        assert_eq!(actors.len(), 2);
+        assert_eq!(actors[1].name, "Group");
+        assert!(actors[1].is_folder());
+    }
+
+    /// 選択した子（兄弟複数）をまとめてグループ配下へ移せることを検証する。
+    /// DFS id は取り出しのたびにズレるため、Entity 解決が効いているかの確認でもある。
+    #[test]
+    fn create_group_with_multiple_children() {
+        let mut world = World::new();
+        let mut actors = vec![
+            root(&mut world, 0, "A"),
+            root(&mut world, 0, "B"),
+            root(&mut world, 0, "C"),
+        ];
+        let group = folder(&mut world, 0, "Group");
+
+        // DFS id: A=0 / B=1 / C=2。B と C をグループへ入れる。
+        assert!(insert_group_actor(&mut actors, 0, group, None, &[1, 2]));
+
+        // ルートは A と Group の 2 体、Group の下に B・C が選択順で入る
+        assert_eq!(actors.len(), 2);
+        assert_eq!(actors[0].name, "A");
+        assert_eq!(actors[1].name, "Group");
+        let kids: Vec<&str> = actors[1].children().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(kids, vec!["B", "C"]);
+    }
+
+    /// 親子関係にある 2 体（親 P と子 C）を同時に選んでも壊れないことを検証する。
+    /// P を取り出した時点で C は P のサブツリーに含まれるため、C は二重に移動しない。
+    #[test]
+    fn create_group_with_ancestor_and_descendant_selected() {
+        let mut world = World::new();
+        let mut p = root(&mut world, 0, "P");
+        let mut c = Actor::new(world.spawn(), "C");
+        c.world_line = 0;
+        p.children_mut().push(c);
+        let mut actors = vec![p];
+        let group = folder(&mut world, 0, "Group");
+
+        // DFS id: P=0 / C=1
+        assert!(insert_group_actor(&mut actors, 0, group, None, &[0, 1]));
+
+        assert_eq!(actors.len(), 1);
+        assert_eq!(actors[0].name, "Group");
+        assert_eq!(actors[0].children().len(), 1);
+        assert_eq!(actors[0].children()[0].name, "P");
+        assert_eq!(actors[0].children()[0].children()[0].name, "C");
+    }
+
+    /// 親 DFS id を指定した場合、そのアクタの子としてグループが生えることを検証する。
+    #[test]
+    fn create_group_under_parent() {
+        let mut world  = World::new();
+        let mut actors = vec![root(&mut world, 0, "P"), root(&mut world, 0, "Q")];
+        let group      = folder(&mut world, 0, "Group");
+
+        // DFS id: P=0 / Q=1。P の子としてグループを作る。
+        assert!(insert_group_actor(&mut actors, 0, group, Some(0), &[]));
+
+        assert_eq!(actors.len(), 2);
+        assert_eq!(actors[0].children().len(), 1);
+        assert_eq!(actors[0].children()[0].name, "Group");
+    }
+
+    /// 別世界線のアクタは DFS 数え上げの対象外であることを検証する
+    /// （アクター編集タブで作ったグループがシーン側のアクタを巻き込まない）。
+    #[test]
+    fn create_group_ignores_other_world_lines() {
+        let mut world = World::new();
+        let mut actors = vec![
+            root(&mut world, 0, "SceneA"),
+            root(&mut world, 1, "EditRoot"),
+            root(&mut world, 1, "EditChild"),
+        ];
+        let group = folder(&mut world, 1, "Group");
+
+        // wl=1 内の DFS id: EditRoot=0 / EditChild=1。EditChild だけを入れる。
+        assert!(insert_group_actor(&mut actors, 1, group, None, &[1]));
+
+        assert_eq!(actors.len(), 3);
+        assert_eq!(actors[0].name, "SceneA");
+        assert_eq!(actors[1].name, "EditRoot");
+        assert_eq!(actors[2].name, "Group");
+        assert_eq!(actors[2].world_line, 1);
+        assert_eq!(actors[2].children()[0].name, "EditChild");
+    }
+}
+

@@ -9,7 +9,7 @@ use crate::engine::core::app_base::ipc::IpcCommand;
 use crate::engine::core::app_base::scene::{Scene, DebugCameraData, CanvasCameraData};
 use crate::engine::core::app_base::app::RuntimeMode;
 use crate::engine::core::app_base::undo::TransformCommand;
-use crate::engine::components::{ModelComponent, GroupMeta, GROUP_ID_BASE};
+use crate::engine::components::ModelComponent;
 use winit::event_loop::ActiveEventLoop;
 
 use super::{
@@ -333,34 +333,15 @@ impl App {
                     }
                     self.send_hierarchy();
                 }
+                // グループ（フォルダ）作成は実アクタを 1 体生やす方式へ統一した。
+                // 旧実装は ModelComponent::group_meta へ積んでいたが、ヒエラルキー送信は
+                // アクタツリーしか見ないため画面に出ず、さらに世界線に ModelComponent が
+                // 無いシーンでは何も起きなかった（詳細は handle_create_group のコメント）。
                 IpcCommand::CreateGroup { name, parent } => {
-                    if let Some(scene) = &mut self.scene {
-                        if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(self.active_world_line) {
-                            let id = mc.next_group_id;
-                            mc.next_group_id += 1;
-                            mc.group_meta.push(GroupMeta { id, name, parent });
-                        }
-                    }
-                    self.send_hierarchy();
+                    self.handle_create_group(name, parent, Vec::new());
                 }
                 IpcCommand::CreateGroupWithChildren { name, parent, children } => {
-                    if let Some(scene) = &mut self.scene {
-                        if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(self.active_world_line) {
-                            let gid = mc.next_group_id;
-                            mc.next_group_id += 1;
-                            mc.group_meta.push(GroupMeta { id: gid, name, parent });
-                            for child in children {
-                                if child >= GROUP_ID_BASE {
-                                    if let Some(g) = mc.group_meta.iter_mut().find(|g| g.id == child) {
-                                        g.parent = Some(gid);
-                                    }
-                                } else if (child as usize) < mc.instance_meta.len() {
-                                    mc.instance_meta[child as usize].parent = Some(gid);
-                                }
-                            }
-                        }
-                    }
-                    self.send_hierarchy();
+                    self.handle_create_group(name, parent, children);
                 }
                 IpcCommand::SaveScene(path) => {
                     // ── 地形の実体（.tvox / .tscatter / .tcover）も一緒にフラッシュする ──

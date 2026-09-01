@@ -32,7 +32,7 @@ fn is_image_path(path: &str) -> bool {
 use super::{
     App, actor_subtree_size, collect_entities_for_wl, despawn_actor_recursive,
     extract_actor_by_dfs, extract_actor_by_dfs_with_origin, find_actor_by_dfs,
-    find_actor_by_dfs_mut, find_actor_by_entity_mut, remove_actor_by_dfs,
+    find_actor_by_dfs_mut, find_actor_by_entity_mut, insert_group_actor, remove_actor_by_dfs,
 };
 
 impl App {
@@ -963,6 +963,93 @@ impl App {
             } else {
                 insert_with_anchor(&mut scene.actors, child_actor);
             }
+        }
+
+        let after_actors = self.snapshot_actors_for_wl(wl);
+        self.undo_history.record(Box::new(ActorTreeSnapshotCommand {
+            world_line: wl,
+            before_actors,
+            after_actors,
+        }));
+
+        self.send_hierarchy();
+        if let Some(ipc) = &self.ipc {
+            ipc.send("SCENE_MODIFIED");
+        }
+    }
+
+    /// ヒエラルキーの「グループフォルダを作成」を処理する。
+    ///
+    /// # 経緯（重要）
+    /// 旧実装は `ModelComponent::group_meta` へ GroupMeta を push していたが、
+    /// ヒエラルキー送信（`do_send_hierarchy`）は **アクタツリーだけ**を走査する仕様へ
+    /// 移行済みで group_meta を一切読まない。そのためグループは画面に現れず、
+    /// さらに世界線に ModelComponent が 1 つも無いシーンでは push 自体が起きなかった。
+    /// ここではグループを **実アクタ**として生やし、ヒエラルキーの正典（アクタツリー）に
+    /// 一本化する。
+    ///
+    /// # 生成するアクタの種別
+    /// - 通常（3D 側）: `Actor::new_folder`（Transform 非保持の透過フォルダノード）。
+    ///   子のワールド変換に一切影響しないため、まとめても見た目が動かない。
+    /// - 2D 側（親が 2D、または子に 2D が含まれる）: `Actor::new_2d` + 既定の
+    ///   `CanvasTransform`。2D の描画収集（canvas_collect）は CanvasTransform を
+    ///   持たないアクタでサブツリーを打ち切るため、フォルダノードで包むと
+    ///   スプライトが描画対象から外れてしまう。
+    ///
+    /// 2D と 3D の子が混在する選択はどちらの器でも破綻するため拒否する。
+    ///
+    /// 操作は Undo/Redo の対象（ActorTreeSnapshotCommand）。
+    pub(super) fn handle_create_group(
+        &mut self,
+        name:       String,
+        parent_dfs: Option<u32>,
+        children:   Vec<u32>,
+    ) {
+        let wl = self.active_world_line;
+        if self.scene.is_none() { return; }
+
+        // ── 種別判定（ツリーを触る前に行う） ──────────────────────
+        let (group_is_2d, mixed_kind) = {
+            let scene = self.scene.as_ref().unwrap();
+            let parent_is_2d = parent_dfs
+                .and_then(|pid| {
+                    let mut c = 0u32;
+                    find_actor_by_dfs(&scene.actors, wl, pid, &mut c).map(|a| a.is_2d())
+                })
+                .unwrap_or(false);
+            let mut any_2d = false;
+            let mut any_3d = false;
+            for &cdfs in &children {
+                let mut c = 0u32;
+                if let Some(a) = find_actor_by_dfs(&scene.actors, wl, cdfs, &mut c) {
+                    if a.is_2d() { any_2d = true; } else { any_3d = true; }
+                }
+            }
+            (parent_is_2d || any_2d, any_2d && any_3d)
+        };
+        if mixed_kind {
+            if let Some(ipc) = &self.ipc {
+                ipc.send("LOAD_ERROR:2Dアクターと3Dアクターは同じグループにまとめられません");
+            }
+            return;
+        }
+
+        let before_actors = self.snapshot_actors_for_wl(wl);
+
+        {
+            let scene = self.scene.as_mut().unwrap();
+            // グループ用のエンティティを払い出す。
+            // Actor::with_name() の Entity::default() は index=0 で全アクタと衝突するため使わない。
+            let entity = scene.world.spawn();
+            let group = if group_is_2d {
+                // 2D グループ: 既定の CanvasTransform（原点・等倍）を持たせて透過的にする
+                scene.world.insert(entity, CanvasTransform::default());
+                Actor::new_2d(entity, name)
+            } else {
+                // 3D グループ: Transform を持たないフォルダノード（子の変換に影響しない）
+                Actor::new_folder(entity, name)
+            };
+            insert_group_actor(&mut scene.actors, wl, group, parent_dfs, &children);
         }
 
         let after_actors = self.snapshot_actors_for_wl(wl);

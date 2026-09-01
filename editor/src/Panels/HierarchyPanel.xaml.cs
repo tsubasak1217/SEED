@@ -346,7 +346,10 @@ public partial class HierarchyPanel : UserControl
             {
                 var name = _pendingRenameGroupName;
                 _pendingRenameGroupName = null;
-                var node = GetAllNodes(_roots).FirstOrDefault(n => n.Name == name && n.IsGroup);
+                // グループは実アクタとして生成される。3D グループはフォルダノード
+                // （IsGroup=true）だが、2D グループは通常の 2D アクタ（IsGroup=false）
+                // になるため、IsGroup では絞り込まず名前一致だけで探す。
+                var node = GetAllNodes(_roots).FirstOrDefault(n => n.Name == name);
                 if (node != null)
                     Dispatcher.BeginInvoke(() => StartRename(node.Id), DispatcherPriority.Background);
             }
@@ -1147,9 +1150,12 @@ public partial class HierarchyPanel : UserControl
     /// </summary>
     public void CreateActorAtRoot()
     {
-        var name = GetUniqueName("Actor", -1);
-        _pendingRenameGroupName = name;
-        _runtime?.SendToRuntime($"CREATE_GROUP:-1,{name}");
+        // CREATE_GROUP はフォルダノード（Transform 非保持）を作るコマンドなので、
+        // 「空の Actor を作る」ここでは通常のアクタ追加（ADD_ACTOR）を使う。
+        // 作成後のインライン名前変更は既存の PrepareRenameAfterAdd 経路に任せる。
+        PrepareRenameAfterAdd();
+        var cmd = _isActor2DMode ? "ADD_ACTOR_2D" : "ADD_ACTOR";
+        _runtime?.SendToRuntime($"{cmd}:{_activeWorldLine},-1");
     }
 
     /// <summary>右クリック "アクタファイル化" が選択されたときの処理。</summary>
