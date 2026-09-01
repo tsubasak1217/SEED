@@ -196,6 +196,7 @@ C# の表を `include_str!` で読み、**双方向**
 | `ComponentSlotsSnapshotCommand` | コンポーネントの追加・削除・複製、制御点リスト |
 | `SelectionCommand` / `ActorDfsSelectionCommand` | 選択状態 |
 | `CompositeCommand` | 複数コマンドを 1 操作にまとめる |
+| `CompositeCommand`（カメラ反映） | インスペクタ Camera の「デバッグカメラの値を反映」。`ActorGroupTransformCommand`＋`SlotFieldEditCommand` を 1 手に束ねる（`app/camera_apply_debug.rs`） |
 | **`SlotFieldEditCommand`** | **インスペクタのフィールド編集（汎用。上記 1.）** |
 | **`ActorActiveCommand`** | **アクターの active フラグ** |
 

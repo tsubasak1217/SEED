@@ -754,6 +754,18 @@ pub enum IpcCommand {
     /// CameraComponent の正射投影の縦描画範囲（ワールド単位・全高）を設定する
     /// フォーマット: SET_CAMERA_ORTHO_HEIGHT:{actor_dfs_id},{slot_idx},{value}
     SetCameraComponentOrthoHeight { actor_dfs_id: u32, slot_idx: u32, value: f32 },
+    /// エディタのデバッグカメラ（メインビューポートを映しているカメラ）の視点・
+    /// 投影パラメータを、指定した CameraComponent とその所有アクタへ焼き付ける。
+    ///
+    /// フォーマット: CAMERA_APPLY_DEBUG:{actor_dfs_id},{slot_idx}
+    ///
+    /// 書き込む内容:
+    ///   - アクタ Transform の position / rotation（SEED の Transform はワールド空間）
+    ///   - CameraComponent の fov_y_deg / near / far / projection / ortho_height
+    /// アスペクト比表記（target_width / target_height）は**据え置く**。
+    /// これはウィンドウ解像度に依存する別概念で、「ウィンドウアスペクト比を適用」
+    /// ボタンの責務だからである。
+    CameraApplyDebug { actor_dfs_id: u32, slot_idx: u32 },
     /// CameraComponent のシェーディングアセット（WGSL ファイル）のパスを設定する
     /// フォーマット: SET_CAMERA_SHADING_ASSET:{actor_dfs_id},{slot_idx},{path}
     /// path は assets:// 仮想パスまたは絶対パス。空文字は未設定（None）を意味する。
@@ -2535,6 +2547,16 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 .map(|(a, sl, v)| IpcCommand::SetCameraComponentOrthoHeight {
                                     actor_dfs_id: a, slot_idx: sl, value: v,
                                 })
+                        }
+                        s if s.starts_with("CAMERA_APPLY_DEBUG:") => {
+                            // フォーマット: CAMERA_APPLY_DEBUG:{actor_dfs_id},{slot_idx}
+                            let rest = &s["CAMERA_APPLY_DEBUG:".len()..];
+                            rest.split_once(',').and_then(|(a, sl)| {
+                                Some(IpcCommand::CameraApplyDebug {
+                                    actor_dfs_id: a.trim().parse::<u32>().ok()?,
+                                    slot_idx:     sl.trim().parse::<u32>().ok()?,
+                                })
+                            })
                         }
                         s if s.starts_with("SET_CAMERA_SHADING_ASSET:") => {
                             // フォーマット: SET_CAMERA_SHADING_ASSET:{actor_dfs_id},{slot_idx},{path}

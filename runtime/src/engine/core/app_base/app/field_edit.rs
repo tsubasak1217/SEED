@@ -299,6 +299,11 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         // ボーンアクターの一括生成はアクターツリーの構造変更であり、
         // ハンドラ側が ActorTreeSnapshotCommand を 1 件積む（二重記録を避けるため対象外）。
         | IpcCommand::CreateSpriteBoneActors { .. }
+        // 「デバッグカメラの値を反映」はアクタ Transform とカメラスロットを同時に書き換える。
+        // Slot 分類のスナップショットでは Transform を取りこぼすため、ハンドラ側が
+        // CompositeCommand（ActorGroupTransformCommand + SlotFieldEditCommand）を
+        // 1 件だけ積む（二重記録を避けるためここでは対象外）。
+        | IpcCommand::CameraApplyDebug { .. }
         | IpcCommand::WrapActor { .. }
         | IpcCommand::RemoveActor(..)
         | IpcCommand::RenameActor { .. }

@@ -1489,6 +1489,9 @@ impl App {
                 IpcCommand::SetCameraComponentOrthoHeight { actor_dfs_id, slot_idx, value } => {
                     self.handle_set_camera_ortho_height(actor_dfs_id, slot_idx, value);
                 }
+                IpcCommand::CameraApplyDebug { actor_dfs_id, slot_idx } => {
+                    self.handle_camera_apply_debug(actor_dfs_id, slot_idx);
+                }
                 IpcCommand::SetCameraComponentShadingAsset { actor_dfs_id, slot_idx, path } => {
                     let p = path.clone();
                     self.handle_set_camera_shading_asset(actor_dfs_id, slot_idx, &p);

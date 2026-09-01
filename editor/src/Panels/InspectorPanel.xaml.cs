@@ -716,6 +716,11 @@ public partial class InspectorPanel : UserControl
 
     /// <summary>アコーディオンのセクションヘッダーに置くアイコンの一辺サイズ（px）。</summary>
     private const double SectionHeaderIconSize = 12;
+
+    /// <summary>カメラインスペクタの操作ボタンに置くアイコンの一辺サイズ（px）。</summary>
+    private const double CameraActionIconSize = 12;
+    /// <summary>カメラインスペクタの操作ボタンのアイコンキー（MDI ベクター）。</summary>
+    private const string CameraActionIconKey = "Icon.Component.Camera";
     /// <summary>セクションヘッダーの種別アイコン色。</summary>
     private static readonly SolidColorBrush SectionHeaderIconBrush = new(Color.FromRgb(0x55, 0xAA, 0xFF));
     /// <summary>コンポーネント削除ボタンの通常色。</summary>
@@ -2523,6 +2528,44 @@ public partial class InspectorPanel : UserControl
     private UIElement BuildCameraSlotContent(SlotInfo info)
     {
         var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // ── 「デバッグカメラの値を反映」ボタン ──────────────────────────
+        // エディタのメインビューポートを映しているデバッグカメラの視点・投影設定を、
+        // このアクタの Transform と CameraComponent へ 1 手で焼き付ける。
+        // アスペクト比表記は据え置く（ウィンドウ依存のため、下の
+        // 「ウィンドウアスペクト比を適用」ボタンの責務）。
+        // Play 中はシーンの編集ではないので無効化する（ランタイム側でも無視される）。
+        var btnApplyDebugCamera = new Button
+        {
+            Padding             = new Thickness(8, 3, 8, 3),
+            Margin              = new Thickness(0, 0, 0, 6),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            IsEnabled           = _runtime?.State == EditorState.Edit,
+            ToolTip             = "ビューポートのデバッグカメラの位置・向き・FOV・Near/Far・投影方式を\n"
+                                + "このカメラへコピーします（アスペクト比は変更しません）。\n"
+                                + "Ctrl+Z で 1 回戻せます。Play 中は使用できません。",
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Children =
+                {
+                    SEEDEditor.Controls.AppIcon.Create(CameraActionIconKey, CameraActionIconSize),
+                    new TextBlock
+                    {
+                        Text              = "デバッグカメラの値を反映",
+                        Margin            = new Thickness(4, 0, 0, 0),
+                        VerticalAlignment = VerticalAlignment.Center,
+                        FontSize          = 11,
+                    },
+                },
+            },
+        };
+        btnApplyDebugCamera.Click += (_, _) =>
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"CAMERA_APPLY_DEBUG:{_currentActorId},{info.SlotIdx}");
+        };
+        sp.Children.Add(btnApplyDebugCamera);
 
         // ── 投影方式（透視 / 正射）────────────────────────────────────
         // 透視時は FOV、正射時は正射高さフィールドを表示切替する。

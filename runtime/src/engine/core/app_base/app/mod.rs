@@ -48,6 +48,7 @@ mod ai_ops;
 mod component_ops;
 mod canvas_component_ops;
 mod camera_component_ops;
+mod camera_apply_debug;
 mod physics_component_ops;
 mod physics2d_ops;
 mod physics2d_component_ops;
