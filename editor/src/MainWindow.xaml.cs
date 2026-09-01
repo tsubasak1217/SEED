@@ -394,7 +394,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // ランタイム側のツールホットキー（Q/W/E/T）とツールバーの表示を同期する。
         _runtimeManager.ToolModeChanged               += OnRuntimeToolModeChanged;
         // モーダルトランスフォーム（G/R/S）の進行状態。キーフックの分岐に使う。
-        _runtimeManager.ModalTransformStateChanged    += active => _modalTransformActive = active;
+        // 進行状態はフラグだけでなくグローバルマウスフックの設置/解除も伴うため、
+        // 必ず SetModalTransformActive を通す（MainWindow.ModalTransform.cs）。
+        _runtimeManager.ModalTransformStateChanged    += SetModalTransformActive;
         _runtimeManager.ActorEditStarted              += OnActorEditStarted;
         _runtimeManager.ActorEditEnded                += OnActorEditEnded;
         // キャンバス編集タブ開始応答（EDIT_CANVAS_BEGIN → CANVAS_EDIT_WL）
@@ -600,6 +602,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         LocationChanged                     += (_, _) => UpdateFrozenFramePreviewRect();
 
         InstallKeyboardHook();
+        // モーダルトランスフォーム中にエディタが非アクティブ化（Alt+Tab 等）したら
+        // 変形を取消して安全側へ倒す。
+        Deactivated += OnWindowDeactivatedCancelModal;
         // 地形ブラシ入力用の低レベルマウスフック。常設だが terrain モード時のみ作用する
         // （ビューポート上の左ドラッグを地形ブラシに転用し、選択/ギズモへ届く左クリックを飲み込む）。
         InstallTerrainMouseHook();
@@ -1115,6 +1120,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         ReleasePlayClamp();
         UninstallKeyboardHook();
         UninstallTerrainMouseHook();
+        // モーダル中に終了された場合でもフックを残さない。
+        UninstallModalMouseHook();
         ReleaseAllCamKeys();
         if (_viewportHost != null) RevokeDragDrop(_viewportHost.ContainerHwnd);
         _vpDragOverlay?.Close();

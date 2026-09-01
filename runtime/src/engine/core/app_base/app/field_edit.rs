@@ -376,6 +376,7 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         // IPC コマンド単位ではここで記録しない（二重記録になる）。
         | IpcCommand::ModalBegin(..)
         | IpcCommand::ModalAxis(..)
+        | IpcCommand::ModalCursor { .. }
         | IpcCommand::ModalConfirm
         | IpcCommand::ModalCancel
         | IpcCommand::SetGizmoSpace(..)

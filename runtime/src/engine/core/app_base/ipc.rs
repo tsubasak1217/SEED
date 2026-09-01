@@ -134,6 +134,17 @@ pub enum IpcCommand {
     /// モーダル中の軸拘束キー（押すたびに ワールド → ローカル → 解除）。
     /// フォーマット: MODAL:AXIS:X / Y / Z
     ModalAxis(ModalTransformAxis),
+    /// モーダル中のカーソル座標（エディタのグローバル追跡由来）。
+    /// フォーマット: MODAL:CURSOR:{x},{y}（ビューポートのクライアント座標、f32）
+    ///
+    /// 【なぜ必要か】
+    /// OS はマウスイベントをカーソル直下のウィンドウにしか配送しないため、
+    /// カーソルがランタイム子ウィンドウの外へ出るとランタイムには
+    /// CursorMoved が届かず、モーダルの更新が止まってしまう。
+    /// エディタはモーダル中だけ低レベルマウスフックでカーソルを追跡し、
+    /// クライアント座標へ変換して転送する。
+    /// **ウィンドウ外を表す負値・幅/高さ超えの値も正当な入力**として扱う。
+    ModalCursor { x: f32, y: f32 },
     /// モーダルの確定（Enter）。
     ModalConfirm,
     /// モーダルの取消（Esc）。
@@ -1493,6 +1504,20 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         "MODAL:AXIS:X"       => Some(IpcCommand::ModalAxis(ModalTransformAxis::X)),
                         "MODAL:AXIS:Y"       => Some(IpcCommand::ModalAxis(ModalTransformAxis::Y)),
                         "MODAL:AXIS:Z"       => Some(IpcCommand::ModalAxis(ModalTransformAxis::Z)),
+                        // モーダル中のカーソル座標。ウィンドウ外（負値・幅超え）も許容する。
+                        s if s.starts_with("MODAL:CURSOR:") => {
+                            let body = &s["MODAL:CURSOR:".len()..];
+                            let mut it = body.split(',');
+                            match (
+                                it.next().and_then(|v| v.trim().parse::<f32>().ok()),
+                                it.next().and_then(|v| v.trim().parse::<f32>().ok()),
+                            ) {
+                                (Some(x), Some(y)) if x.is_finite() && y.is_finite() => {
+                                    Some(IpcCommand::ModalCursor { x, y })
+                                }
+                                _ => None,
+                            }
+                        }
                         "MODAL:CONFIRM"      => Some(IpcCommand::ModalConfirm),
                         "MODAL:CANCEL"       => Some(IpcCommand::ModalCancel),
                         "GIZMO_SPACE:WORLD" => Some(IpcCommand::SetGizmoSpace(GizmoSpace::World)),

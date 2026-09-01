@@ -168,6 +168,9 @@ impl App {
                     };
                     self.modal_transform_press_axis(a);
                 }
+                // エディタが追跡したグローバルカーソル（クライアント座標へ変換済み）。
+                // 子ウィンドウ外の座標も含め、モーダル中はこれを唯一の座標源とする。
+                IpcCommand::ModalCursor { x, y } => self.on_modal_external_cursor(x, y),
                 // 確定・取消は App 側で MODAL_STATE:0 を送るので、ここでは呼ぶだけ。
                 IpcCommand::ModalConfirm       => self.confirm_modal_transform(),
                 IpcCommand::ModalCancel        => self.cancel_modal_transform(),

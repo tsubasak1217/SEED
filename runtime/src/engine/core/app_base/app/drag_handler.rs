@@ -58,7 +58,12 @@ impl App {
         // 矩形選択・ホバー判定・通常のギズモドラッグへは一切流さず、
         // モーダル専用の更新だけを行う（排他）。
         if self.modal_transform_active() {
-            self.update_modal_transform(cx, cy);
+            // エディタから MODAL:CURSOR が届き始めている場合は、そちらを唯一の
+            // 座標源とする（子ウィンドウ上ではこの CursorMoved と MODAL:CURSOR の
+            // 両方が来るため、両方を積むと同じ移動を二重に処理してしまう）。
+            if self.modal_accepts_window_cursor() {
+                self.update_modal_transform(cx, cy);
+            }
             return;
         }
 

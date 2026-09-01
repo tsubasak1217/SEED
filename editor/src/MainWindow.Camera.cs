@@ -722,7 +722,7 @@ public partial class MainWindow
         // モーダルトランスフォーム（G/R/S）の進行フラグは状態遷移で必ず落とす。
         // 落とさないと MODAL_STATE:0 を取りこぼした場合にキー入力を
         // 永久にモーダルへ回し続けてしまう（キーが効かなくなる）。
-        _modalTransformActive = false;
+        SetModalTransformActive(false);
         Dispatcher.BeginInvoke(() =>
         {
             ApplyUiState(state);

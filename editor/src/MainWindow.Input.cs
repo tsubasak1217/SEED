@@ -247,11 +247,11 @@ public partial class MainWindow
                     case 0x5A: _runtimeManager?.SendToRuntime("MODAL:AXIS:Z"); return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
                     case 0x0D: // Enter
                         _runtimeManager?.SendToRuntime("MODAL:CONFIRM");
-                        _modalTransformActive = false;
+                        SetModalTransformActive(false);
                         return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
                     case 0x1B: // Esc（削除ダイアログより優先する）
                         _runtimeManager?.SendToRuntime("MODAL:CANCEL");
-                        _modalTransformActive = false;
+                        SetModalTransformActive(false);
                         return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
                 }
                 // それ以外のキーはモーダル中は無効。ただしカメラキー（WASDQE/Shift）の
@@ -270,7 +270,9 @@ public partial class MainWindow
                 };
                 if (begin is not null)
                 {
-                    _modalTransformActive = true;
+                    // フラグを立てると同時にグローバルカーソル追跡フックが設置される
+                    // （シーンパネル外へカーソルが出ても変形を続けるため）。
+                    SetModalTransformActive(true);
                     _runtimeManager?.SendToRuntime(begin);
                     // G / R は他用途がないのでここで打ち切る。
                     // S はカメラ後退キーでもあるため、下の転送処理へ素通しする。

@@ -355,6 +355,18 @@ pub struct ModalTransform {
     pub prev_angle: Option<f32>,
     /// 前回のピボットからのスクリーン距離（拡縮用）。
     pub prev_dist: Option<f32>,
+
+    // ── カーソル座標の供給源 ──────────────────────────────────
+    /// エディタから外部カーソル座標（`MODAL:CURSOR:x,y`）を受け取ったか。
+    ///
+    /// 【なぜ必要か】
+    /// OS はマウスイベントをカーソル直下のウィンドウにしか配送しないため、
+    /// カーソルがランタイム子ウィンドウの外（エディタの他パネル上など）へ
+    /// 出ると、ランタイムには `CursorMoved` が一切届かず更新が止まる。
+    /// そこでエディタ側がモーダル中だけグローバルなカーソル位置を追跡し、
+    /// IPC で送ってくる。一度でも外部座標が来たら**そちらを正**とし、
+    /// 自前の `CursorMoved` は無視する（同じ移動を二重に積まないため）。
+    pub external_cursor: bool,
 }
 
 impl ModalTransform {
@@ -385,7 +397,23 @@ impl ModalTransform {
             prev_axis_t: None,
             prev_angle: None,
             prev_dist: None,
+            external_cursor: false,
         }
+    }
+
+    /// 外部カーソル座標（エディタ由来）を受け取ったことを記録する。
+    ///
+    /// これ以降、このモーダルが終わるまでウィンドウ自前のカーソルイベントは
+    /// 採用しない（`accepts_window_cursor()` が false を返す）。
+    pub fn mark_external_cursor(&mut self) {
+        self.external_cursor = true;
+    }
+
+    /// ウィンドウ自前の `CursorMoved` を採用してよいか。
+    ///
+    /// 外部座標源へ切り替わっていない間だけ true。
+    pub fn accepts_window_cursor(&self) -> bool {
+        !self.external_cursor
     }
 
     /// 累積量と前回参照値をリセットする（＝開始時の姿勢に戻す）。
@@ -871,5 +899,176 @@ mod tests {
         let restored =
             crate::engine::methods::gizmo_interact::mat4x4_mul(m.delta_matrix(), start);
         assert_mat_near(restored, start, 1.0e-6);
+    }
+
+    // ============================================================
+    //  ウィンドウ外カーソル（負値・幅/高さ超え）での継続性
+    //
+    //  エディタがグローバル追跡したカーソルは、ビューポートのクライアント
+    //  座標へ変換した結果が負値や幅超えになる。これらの座標でも
+    //  G / R / S の計算が破綻せず滑らかに続くことを検証する。
+    // ============================================================
+
+    /// テスト用のビューポートサイズ。
+    const TEST_VP_W: f32 = 800.0;
+    const TEST_VP_H: f32 = 600.0;
+
+    /// テスト用のモーダル状態（ピボットは原点、カメラは -Z から +Z を向く）。
+    fn test_modal(kind: ModalKind) -> ModalTransform {
+        ModalTransform::new(
+            kind,
+            [0.0, 0.0, 0.0],
+            (TEST_VP_W * 0.5, TEST_VP_H * 0.5),
+            [0.0, 0.0, 1.0],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        )
+    }
+
+    #[test]
+    fn rotate_continues_outside_viewport() {
+        // ピボット中心に反時計回りで 4 点を回る。2 点目以降は
+        // すべてビューポート外（負値 / 幅超え / 高さ超え）にある。
+        let mut m = test_modal(ModalKind::Rotate);
+        let cx = TEST_VP_W * 0.5;
+        let cy = TEST_VP_H * 0.5;
+        let r = 900.0_f32; // 画面をはみ出す半径
+        let mut prev_accum = 0.0_f32;
+        for step in 0..8 {
+            let th = std::f32::consts::TAU * (step as f32) / 8.0;
+            let px = cx + r * th.cos();
+            let py = cy + r * th.sin();
+            // 2 点目以降は必ずビューポート外であること（テスト前提の確認）
+            if step > 0 {
+                assert!(
+                    px < 0.0 || py < 0.0 || px > TEST_VP_W || py > TEST_VP_H,
+                    "step {step}: ({px}, {py}) はビューポート外であるべき"
+                );
+            }
+            let angle = screen_angle(m.pivot_screen, (px, py));
+            m.accumulate_rotation(angle, 1.0, 1.0);
+            if step > 1 {
+                // 1 ステップ = 45 度ずつ、跳ねずに単調増加すること
+                let d = m.accum_angle - prev_accum;
+                assert!(
+                    (d - std::f32::consts::FRAC_PI_4).abs() < 1.0e-4,
+                    "step {step}: 角度差 {d} が 45 度ではない"
+                );
+            }
+            prev_accum = m.accum_angle;
+        }
+        // 7 ステップ分 = 315 度
+        assert!((m.accum_angle - std::f32::consts::FRAC_PI_4 * 7.0).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn scale_continues_outside_viewport() {
+        // ピボットから遠ざかる（画面外へ出る）に従って倍率が単調増加すること。
+        let mut m = test_modal(ModalKind::Scale);
+        let cy = TEST_VP_H * 0.5;
+        // 画面内 → 右端超え → さらに遠く
+        let xs = [TEST_VP_W * 0.5 + 100.0, TEST_VP_W + 400.0, TEST_VP_W + 900.0];
+        let mut prev = 1.0_f32;
+        for (i, x) in xs.iter().enumerate() {
+            let dist = screen_distance(m.pivot_screen, (*x, cy));
+            m.accumulate_scale(dist, 1.0);
+            if i > 0 {
+                assert!(
+                    m.accum_scale > prev,
+                    "i={i}: 画面外でも倍率が増え続けるべき ({} <= {prev})",
+                    m.accum_scale
+                );
+            }
+            prev = m.accum_scale;
+        }
+        // 開始距離 100 に対し最終距離は 900+400=... 実測比で 10 倍超
+        assert!(m.accum_scale > 5.0, "accum_scale={}", m.accum_scale);
+    }
+
+    #[test]
+    fn scale_continues_with_negative_coords() {
+        // 負値（ウィンドウ左上を越えた側）でも距離が正しく求まり、破綻しないこと。
+        let mut m = test_modal(ModalKind::Scale);
+        m.accumulate_scale(screen_distance(m.pivot_screen, (-100.0, -100.0)), 1.0);
+        let d0 = m.prev_dist.unwrap();
+        m.accumulate_scale(screen_distance(m.pivot_screen, (-500.0, -500.0)), 1.0);
+        assert!(d0 > 0.0 && m.accum_scale > 1.0, "accum_scale={}", m.accum_scale);
+        assert!(m.accum_scale.is_finite());
+    }
+
+    #[test]
+    fn axis_move_continues_outside_viewport() {
+        // 軸拘束移動（G→X）で、カーソルがビューポート右外へ出ても
+        // 軸上パラメータが増え続けること。
+        // レイはギズモと同じ screen_to_ray で作る（クランプが無いことの確認も兼ねる）。
+        use crate::engine::methods::gizmo_interact::screen_to_ray;
+
+        // カメラは (0, 0, -10) から +Z を向く（row-major の view / proj を直接組む）。
+        let view = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 10.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        // f = cot(fov/2) = 1.0（fov_y = 90 度）、aspect = 4/3
+        let proj = [
+            [1.0 / (TEST_VP_W / TEST_VP_H), 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        let cam_pos = [0.0, 0.0, -10.0];
+
+        let mut m = test_modal(ModalKind::Move);
+        m.press_axis(ModalAxis::X);
+        let dir = m.constraint_dir().expect("X 軸拘束");
+
+        let cy = TEST_VP_H * 0.5;
+        // 画面中央 → 右端 → 右端の外 → さらに外
+        let xs = [
+            TEST_VP_W * 0.5,
+            TEST_VP_W,
+            TEST_VP_W + 500.0,
+            TEST_VP_W + 1500.0,
+        ];
+        let mut prev_t = f32::NEG_INFINITY;
+        for (i, x) in xs.iter().enumerate() {
+            let (ro, rd) = screen_to_ray(*x, cy, TEST_VP_W, TEST_VP_H, &view, &proj, cam_pos);
+            let t = ray_line_closest_t(ro, rd, m.pivot, dir).expect("軸と平行ではない");
+            assert!(t.is_finite(), "i={i}: t が有限でない");
+            assert!(t > prev_t, "i={i}: t={t} が単調増加していない (prev={prev_t})");
+            prev_t = t;
+            m.accumulate_move_axis(t, dir, 1.0);
+        }
+        // 累積は X 方向のみ、かつ画面外まで動かした分だけ大きい
+        assert!(m.accum_translation[0] > 0.0);
+        assert!(m.accum_translation[1].abs() < 1.0e-5);
+        assert!(m.accum_translation[2].abs() < 1.0e-5);
+    }
+
+    // ============================================================
+    //  外部カーソル座標源への切替
+    // ============================================================
+
+    #[test]
+    fn external_cursor_source_switch() {
+        let mut m = test_modal(ModalKind::Move);
+        // 既定ではウィンドウ自前の CursorMoved を採用する
+        assert!(m.accepts_window_cursor());
+        assert!(!m.external_cursor);
+
+        // エディタからの座標を一度受け取ったら、以降は自前を採用しない
+        m.mark_external_cursor();
+        assert!(!m.accepts_window_cursor());
+
+        // 軸拘束の切り替え（累積リセット）でも座標源は元に戻らない
+        // （戻ると子ウィンドウ上で二重適用が復活してしまう）
+        m.press_axis(ModalAxis::Z);
+        assert!(!m.accepts_window_cursor());
+        m.reset_accumulation();
+        assert!(!m.accepts_window_cursor());
+
+        // 新しいモーダルでは自前の座標源から始まる
+        let fresh = test_modal(ModalKind::Move);
+        assert!(fresh.accepts_window_cursor());
     }
 }
