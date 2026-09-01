@@ -402,6 +402,46 @@ group0 = カメラ、group4 = ライト複合（`light_common.wgsl` 由来。RT 
 | パス内の順序 | 帯塗り（`:4780-4812`）→ スカイボックス（`:4828`）→ 背景ゾーン 2D スプライト（`:4843`）→ 不透明フォワード（`:4862`、deferred 無効時のみ）→ 半透明距離ソート（`:4886`）→ グリッド（`:5000`）→ 3D スプライトアウトライン（`:5013`）→ 3D スプライト（`:5028`）→ 2D スプライト（`:5041`、非 SS のみ） |
 | Edit / Play | Play（非 Pause）かつ `play_viewport_ok` のとき `game_viewport` の viewport/scissor を適用（`:4817-4821`）。LetterBox / PillarBox のときは viewport 設定「前」に帯エリアを `BarFillPipeline` で塗る。Edit のクリアカラーはダークグレー／2D は紺色、Play はゲームカメラのクリアカラー |
 
+#### 2.17.1 空の色調整（色相 / 彩度 / 明度 / コントラスト）
+
+`SkyboxComponent` が持つ 4 つの色調整パラメータ。**背景に描かれる空と、反射に映る空へ同時に効く**。
+
+| パラメータ | serde 名 / SET キー | 値域 | 既定 | 意味 |
+|---|---|---|---|---|
+| 色相シフト | `hue_shift` | -180〜180（度） | 0 | 輝度を保ったまま色相環を回す（Rec.709 輝度基準の回転行列） |
+| 彩度 | `saturation` | 0〜2 | 1 | 同輝度グレーとの線形補間。0＝グレースケール / >1 は外挿 |
+| 明度 | `brightness` | 0〜2 | 1 | 色への単純乗算（`intensity` とは独立の色調整側ゲイン） |
+| コントラスト | `contrast` | 0〜2 | 1 | 中間グレー（リニア 0.5）を軸にした線形補間／外挿 |
+
+- **適用順**: 色相 → 彩度 → 明度 → コントラスト → 負値クランプ。そのあとに `tint × intensity` を掛ける
+  （先に `tint`/`intensity` を掛けるとコントラストの中間グレー基準がズレ、背景と反射で色が食い違う）。
+- **既定値は完全な無変換**: 各段は「既定値との差が `SKY_ADJ_EPS` 以下なら計算ごと飛ばす」分岐を持ち、
+  既定値（0,1,1,1）では従来の出力と**ビット一致**する。負値クランプも「何か掛けたときだけ」行う。
+- **HDR 安全**: 色相・彩度は線形空間の輝度基準（HSV への往復をしない）、コントラストは中間値基準の
+  線形補間なので、1.0 超の太陽ディスクを含む HDR パノラマでも破綻しない。負値のみ 0 で止める
+  （Bloom / トーンマップでの NaN 源を断つため）。
+
+**実装は 1 箇所だけ**: `shaders/sky_reflection_common.wgsl` の `sky_apply_color_adjust()`。
+天球テクスチャをサンプルする経路は engine 全体で次の 2 つしか無く、どちらもこの関数を通る。
+
+| # | 空をサンプルする場所 | 経由 | 使うパス |
+|---|---|---|---|
+| 1 | `skybox.wgsl::fs_main` | `sky_apply_color_adjust()` を直接呼ぶ（`skybox.toml` が共有モジュールを連結） | 背景描画（メインパス） |
+| 2 | `sky_reflection_common.wgsl::sky_refl_sample` | 同関数を内部で呼ぶ | `reflection_common.wgsl::reflection_sky_miss`（D6 SSR / RT のミス）と `water_reflection_common.wgsl::water_refl_skybox`（水面 SSR / RT のミス） |
+
+GI（DDGI `ddgi_probe_update.wgsl`）のミス経路はシーンのアンビエント色
+（`LightMeta.ambient_color × ambient_intensity`）を返し、天球テクスチャを一切読まないため対象外である。
+RT 影 / RT-AO / 屈折 RT のミス経路も色を返さない（遮蔽なし・画面背景へ委譲）。
+
+**GPU への転送**: `SkyboxUniform.adjust`（offset 96・vec4・112B 構造体）と
+`ReflectionSkyUniform.adjust`（offset 64・vec4・80B 構造体）。後者は
+`skybox.rs::sky_uniform_for_reflection` が前者から**そのままコピー**する
+（背景と反射で違う値が入らないようにするため、再計算・再解釈をしない）。
+
+CPU 側には同じ式のミラー `renderer/sky_color_adjust.rs::apply` があり、
+既定値の恒等性・彩度 0 のグレー化・色相 360° の恒等性・コントラストの中間値不変・
+定数の一致を単体テストで固定している（式を変えるときは WGSL と両方直すこと）。
+
 ### 2.18 WBOIT
 
 | 項目 | 内容 |

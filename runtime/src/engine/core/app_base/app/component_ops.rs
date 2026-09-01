@@ -708,14 +708,16 @@ impl App {
                     ))
                 }
                 ComponentData::SkyboxComponent(d) => {
-                    // スカイボックス: テクスチャ参照・配置モード・強度・色味をインスペクター用に送信する。
+                    // スカイボックス: テクスチャ参照・配置モード・強度・色味・色調整を
+                    // インスペクター用に送信する。
                     // texture_path は JSON 文字列としてエスケープする（audio_path / model_path と同流儀）。
                     let path_json = serde_json::to_string(&d.texture_path).unwrap_or_else(|_| "\"\"".to_string());
                     ("SkyboxComponent", format!(
-                        r#","texture_path":{path_json},"mode":"{}","intensity":{:.4},"tr":{:.4},"tg":{:.4},"tb":{:.4}"#,
+                        r#","texture_path":{path_json},"mode":"{}","intensity":{:.4},"tr":{:.4},"tg":{:.4},"tb":{:.4},"hue_shift":{:.4},"saturation":{:.4},"brightness":{:.4},"contrast":{:.4}"#,
                         d.mode.as_str(),
                         d.intensity,
                         d.tint[0], d.tint[1], d.tint[2],
+                        d.hue_shift, d.saturation, d.brightness, d.contrast,
                     ))
                 }
                 ComponentData::CameraComponent(d) => {

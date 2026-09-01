@@ -8,15 +8,23 @@
 //    SkyboxSystem が担う（particle_system と同じ構成。ここではデータ編集のみ）。
 // ============================================================
 
-use crate::engine::components::{ComponentKind, SkyboxComponent, SkyboxMode};
+use crate::engine::components::{
+    ComponentKind, SkyboxComponent, SkyboxMode,
+    SKY_ADJUST_MAX, SKY_ADJUST_MIN, SKY_HUE_SHIFT_MAX_DEG, SKY_HUE_SHIFT_MIN_DEG,
+};
 
 use super::App;
 
 impl App {
     /// インスペクタからの SkyboxComponent フィールド更新（SET_SKYBOX_FIELD IPC）。
     ///
-    /// key: texture_path / mode / intensity / tint。
+    /// key: texture_path / mode / intensity / tint /
+    ///      hue_shift / saturation / brightness / contrast。
     /// tint は "r,g,b"（リニア）形式。不正な key・value は無視する。
+    ///
+    /// 色調整 4 種の clamp 値域は `skybox_component.rs` の `SKY_*` 定数が正典であり、
+    /// エディタの値域表（ComponentFieldRanges.cs）はこれと同じ値を持つ
+    /// （UI のスライダー端＝ランタイムが受け付ける端、をズラさないため）。
     pub(super) fn handle_set_skybox_field(
         &mut self,
         actor_dfs_id: u32,
@@ -56,6 +64,27 @@ impl App {
             "intensity" => {
                 if let Ok(v) = value.parse::<f32>() {
                     sb.intensity = v.max(0.0);
+                }
+            }
+            // ── 色調整（既定値のときは描画側で計算ごと飛ばされ、従来と同一出力になる）──
+            "hue_shift" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    sb.hue_shift = v.clamp(SKY_HUE_SHIFT_MIN_DEG, SKY_HUE_SHIFT_MAX_DEG);
+                }
+            }
+            "saturation" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    sb.saturation = v.clamp(SKY_ADJUST_MIN, SKY_ADJUST_MAX);
+                }
+            }
+            "brightness" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    sb.brightness = v.clamp(SKY_ADJUST_MIN, SKY_ADJUST_MAX);
+                }
+            }
+            "contrast" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    sb.contrast = v.clamp(SKY_ADJUST_MIN, SKY_ADJUST_MAX);
                 }
             }
             "tint" => {

@@ -23,6 +23,14 @@
 //    D6 SSR : [sky_reflection_common, reflection_common, ddgi_common, reflection_ssr]
 //    D6 RT  : [cluster_common, sky_reflection_common, reflection_common, ddgi_common, reflection_rt, …]
 //    水面    : [water_height_field, …, sky_reflection_common, water_reflection_common, …]
+//    背景描画: [sky_reflection_common, skybox.wgsl]（skybox.toml の shader_sources）
+//
+//  ## 色調整（色相／彩度／明度／コントラスト）もここが正典
+//  「背景に映る空」と「反射に映る空」で色が食い違わないことが本モジュールの存在理由なので、
+//  色調整（`sky_apply_color_adjust`）も**このファイル 1 本**に置き、
+//  背景描画（`skybox.wgsl::fs_main`）も反射のミス経路（`sky_refl_sample`）も同じ関数を通す。
+//  そのため本ファイルは天球を描く `skybox.toml` にも連結される（バインディングを
+//  一切宣言しないので、どのパイプラインへ連結しても副作用が無い）。
 // ============================================================
 
 // ─── 定数（マジックナンバー禁止のためすべて命名する）───────────
@@ -34,6 +42,108 @@ const SKY_REFL_INV_PI: f32 = 0.31830988618379;
 /// 有効フラグ（`tint_enabled.w`）の判定しきい値。
 /// 値は 0（無効）か 1（有効）しか入らないので中点で判定する。
 const SKY_REFL_ENABLED_EPS: f32 = 0.5;
+
+// ─── 色調整の定数 ────────────────────────────────────────────
+
+/// 「既定値（無変換）とみなす」許容幅。
+/// これより内側のパラメータは**計算そのものを飛ばす**。丸め誤差すら混ぜず、
+/// 既定値では従来の出力とビット一致にするための分岐である（単なる高速化ではない）。
+const SKY_ADJ_EPS: f32 = 1.0e-6;
+/// 度 → ラジアン（色相シフト用）。
+const SKY_ADJ_DEG_TO_RAD: f32 = 0.017453292519943295;
+/// 輝度係数 R（Rec.709 相当。彩度・色相回転の基準輝度に使う）。
+const SKY_ADJ_LUMA_R: f32 = 0.213;
+/// 輝度係数 G。
+const SKY_ADJ_LUMA_G: f32 = 0.715;
+/// 輝度係数 B。
+const SKY_ADJ_LUMA_B: f32 = 0.072;
+/// 1 - SKY_ADJ_LUMA_R（色相回転行列の係数。実行時に引き算しないため定数化する）。
+const SKY_ADJ_LUMA_R_INV: f32 = 0.787;
+/// 1 - SKY_ADJ_LUMA_G。
+const SKY_ADJ_LUMA_G_INV: f32 = 0.285;
+/// 1 - SKY_ADJ_LUMA_B。
+const SKY_ADJ_LUMA_B_INV: f32 = 0.928;
+/// 色相回転行列の非輝度項（G 行）。標準の hue-rotate 行列（SVG feColorMatrix
+/// type="hueRotate" と同一）の定数で、輝度を保ったまま色相環を回すために必要。
+const SKY_ADJ_HUE_GR: f32 = 0.143;
+/// 同（G 行・G 列）。
+const SKY_ADJ_HUE_GG: f32 = 0.140;
+/// 同（G 行・B 列）。
+const SKY_ADJ_HUE_GB: f32 = 0.283;
+/// コントラストの基準点（中間グレー）。**リニア空間の 0.5** を軸に伸縮する。
+const SKY_ADJ_CONTRAST_PIVOT: f32 = 0.5;
+/// 色調整後の下限（負値クランプ）。彩度 >1・コントラスト >1 は容易に負へ振れ、
+/// 負の放射輝度は Bloom / トーンマップで黒い斑や NaN の原因になるため必ず落とす。
+/// 上限は設けない（HDR の太陽をそのまま通す）。
+const SKY_ADJ_MIN_RGB: f32 = 0.0;
+
+// ─── 色調整（背景描画・反射・水面反射で共有する唯一の実装）────
+
+/// 空の色に色調整（色相シフト／彩度／明度／コントラスト）を掛ける。
+///
+/// **HDR 前提**の実装である。色相と彩度は線形空間の輝度基準（Rec.709）で、
+/// HSV への往復のような 0..1 前提の変換を通さない（1.0 超の太陽が壊れないため）。
+/// コントラストは中間グレー基準の線形補間なので、これも 1.0 超で破綻しない。
+///
+/// - `color` … 天球テクスチャの生の色（tint / intensity を掛ける**前**）。
+/// - `adj`   … x=色相シフト[度] / y=彩度 / z=明度 / w=コントラスト。
+///
+/// 適用順は 色相 → 彩度 → 明度 → コントラスト。既定値
+/// （0, 1, 1, 1）では**どの段も実行されず入力をそのまま返す**（ビット一致）。
+fn sky_apply_color_adjust(color: vec3<f32>, adj: vec4<f32>) -> vec3<f32> {
+    var c = color;
+    var changed = false;
+
+    // ── 1. 色相シフト（輝度保存の回転行列。線形空間で完結する）──
+    if abs(adj.x) > SKY_ADJ_EPS {
+        let a  = adj.x * SKY_ADJ_DEG_TO_RAD;
+        let cs = cos(a);
+        let sn = sin(a);
+        // 標準の hue-rotate 行列（行ベクトル 3 本）。cs=1, sn=0 で厳密に単位行列になる。
+        let r0 = vec3<f32>(
+            SKY_ADJ_LUMA_R + cs * SKY_ADJ_LUMA_R_INV - sn * SKY_ADJ_LUMA_R,
+            SKY_ADJ_LUMA_G - cs * SKY_ADJ_LUMA_G     - sn * SKY_ADJ_LUMA_G,
+            SKY_ADJ_LUMA_B - cs * SKY_ADJ_LUMA_B     + sn * SKY_ADJ_LUMA_B_INV,
+        );
+        let r1 = vec3<f32>(
+            SKY_ADJ_LUMA_R - cs * SKY_ADJ_LUMA_R     + sn * SKY_ADJ_HUE_GR,
+            SKY_ADJ_LUMA_G + cs * SKY_ADJ_LUMA_G_INV + sn * SKY_ADJ_HUE_GG,
+            SKY_ADJ_LUMA_B - cs * SKY_ADJ_LUMA_B     - sn * SKY_ADJ_HUE_GB,
+        );
+        let r2 = vec3<f32>(
+            SKY_ADJ_LUMA_R - cs * SKY_ADJ_LUMA_R     - sn * SKY_ADJ_LUMA_R_INV,
+            SKY_ADJ_LUMA_G - cs * SKY_ADJ_LUMA_G     + sn * SKY_ADJ_LUMA_G,
+            SKY_ADJ_LUMA_B + cs * SKY_ADJ_LUMA_B_INV + sn * SKY_ADJ_LUMA_B,
+        );
+        c = vec3<f32>(dot(r0, c), dot(r1, c), dot(r2, c));
+        changed = true;
+    }
+
+    // ── 2. 彩度（同輝度のグレーとの線形補間。>1 の外挿も許す）──
+    if abs(adj.y - 1.0) > SKY_ADJ_EPS {
+        let luma = dot(c, vec3<f32>(SKY_ADJ_LUMA_R, SKY_ADJ_LUMA_G, SKY_ADJ_LUMA_B));
+        c = mix(vec3<f32>(luma, luma, luma), c, adj.y);
+        changed = true;
+    }
+
+    // ── 3. 明度（単純乗算。intensity と直交する“色調整側”のゲイン）──
+    if abs(adj.z - 1.0) > SKY_ADJ_EPS {
+        c = c * adj.z;
+        changed = true;
+    }
+
+    // ── 4. コントラスト（中間グレー基準の線形補間／外挿）──
+    if abs(adj.w - 1.0) > SKY_ADJ_EPS {
+        c = (c - vec3<f32>(SKY_ADJ_CONTRAST_PIVOT)) * adj.w + vec3<f32>(SKY_ADJ_CONTRAST_PIVOT);
+        changed = true;
+    }
+
+    // 何か掛けたときだけ負値を落とす（既定値のビット一致を壊さないため）。
+    if changed {
+        c = max(c, vec3<f32>(SKY_ADJ_MIN_RGB));
+    }
+    return c;
+}
 
 // ─── 型 ──────────────────────────────────────────────────────
 
@@ -53,6 +163,9 @@ struct ReflectionSkyUniform {
     rot_inv_2: vec4<f32>,
     /// rgb = tint × intensity（実効色の乗算項）／**a = 有効フラグ（0 でスカイボックス無し）**。
     tint_enabled: vec4<f32>,
+    /// 色調整（x=色相シフト[度] / y=彩度 / z=明度 / w=コントラスト）。
+    /// `skybox.wgsl::SkyboxUniform.adjust` と同じ値が入る（背景と反射で必ず一致させる）。
+    adjust: vec4<f32>,
 }
 
 /// 天球サンプルの結果。`valid = false` は「このシーンにスカイボックスが無い」の意で、
@@ -95,7 +208,12 @@ fn sky_refl_sample(
     ));
     let u = atan2(d.z, d.x) * SKY_REFL_INV_2PI + 0.5;
     let v = acos(clamp(d.y, -1.0, 1.0)) * SKY_REFL_INV_PI;
-    s.color = textureSampleLevel(tex, smp, vec2<f32>(u, v), 0.0).rgb * sky.tint_enabled.rgb;
+    // 生のテクスチャ色 → 色調整 → 実効色（tint × intensity）の順。
+    // この順序は `skybox.wgsl::fs_main` と厳密に一致させること
+    //（先に tint/intensity を掛けるとコントラストの中間グレー基準がズレ、
+    //  背景の空と反射の空で色が食い違う）。
+    let tex_rgb = textureSampleLevel(tex, smp, vec2<f32>(u, v), 0.0).rgb;
+    s.color = sky_apply_color_adjust(tex_rgb, sky.adjust) * sky.tint_enabled.rgb;
     s.valid = true;
     return s;
 }

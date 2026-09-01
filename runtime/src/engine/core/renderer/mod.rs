@@ -76,6 +76,10 @@ pub(crate) mod reflection;
 /// 反射のミス経路（レイが空へ抜けたとき）に映すスカイボックスの入力データ。
 /// D6 不透明反射（`reflection`）と W5.2 水面反射（`water_reflection`）が共用する。
 pub(crate) mod reflection_sky;
+/// 空の色調整（色相／彩度／明度／コントラスト）の CPU 側ミラーと恒等値。
+/// 実体（毎ピクセルの計算）は `shaders/sky_reflection_common.wgsl` にあり、
+/// 本モジュールはその式の契約を単体テストで固定するためにある。
+pub(crate) mod sky_color_adjust;
 /// 水面反射パス（Phase W5.2）。D6 のハイブリッド RT 反射を水面の格子へ流用し、
 /// 反射色を専用 RT へ焼く（水面パスはそれを 1 枚読むだけ）。
 pub(crate) mod water_reflection;

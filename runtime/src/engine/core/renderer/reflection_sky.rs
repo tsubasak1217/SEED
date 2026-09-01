@@ -21,7 +21,9 @@
 //  値・意味・レイアウトはどちらも完全に同一である。
 // ============================================================
 
-/// 反射のミス経路が使うスカイボックス uniform（WGSL `ReflectionSkyUniform` と 1:1・64B）。
+use super::sky_color_adjust::SKY_COLOR_ADJUST_IDENTITY;
+
+/// 反射のミス経路が使うスカイボックス uniform（WGSL `ReflectionSkyUniform` と 1:1・80B）。
 ///
 /// **`skybox.rs::SkyboxUniform`（描画用・96B）とは別物**である。あちらは球メッシュを
 /// 配置するための行列を持つが、こちらが要るのは「ワールド方向 → 天球ローカル方向」の
@@ -38,6 +40,11 @@ pub struct ReflectionSkyUniform {
     pub rot_inv_2: [f32; 4],
     /// rgb = tint × intensity ／ **a = 有効フラグ（0 = スカイボックス無し）**。
     pub tint_enabled: [f32; 4],
+    /// 色調整（x=色相シフト[度] / y=彩度 / z=明度 / w=コントラスト）。
+    ///
+    /// 描画用 `SkyboxUniform.adjust` と**同じ値**が入る。反射だけ別値にすると
+    /// 「背景の空と反射の空で色が違う」という、このモジュールが防いでいる不具合そのものになる。
+    pub adjust: [f32; 4],
 }
 
 impl ReflectionSkyUniform {
@@ -49,6 +56,7 @@ impl ReflectionSkyUniform {
             rot_inv_1: [0.0, 1.0, 0.0, 0.0],
             rot_inv_2: [0.0, 0.0, 1.0, 0.0],
             tint_enabled: [0.0, 0.0, 0.0, 0.0],
+            adjust:       SKY_COLOR_ADJUST_IDENTITY,
         }
     }
 }
@@ -68,11 +76,19 @@ pub struct ReflectionSkySource<'a> {
 mod tests {
     use super::*;
 
-    /// `ReflectionSkyUniform` は 64B（WGSL の `ReflectionSkyUniform` = vec4 × 4 と一致）。
+    /// `ReflectionSkyUniform` は 80B（WGSL の `ReflectionSkyUniform` = vec4 × 5 と一致）。
     /// ここがズレると uniform／storage どちらの読み口でも値が化ける。
     #[test]
-    fn reflection_sky_uniform_is_64_bytes() {
-        assert_eq!(std::mem::size_of::<ReflectionSkyUniform>(), 64);
+    fn reflection_sky_uniform_is_80_bytes() {
+        assert_eq!(std::mem::size_of::<ReflectionSkyUniform>(), 80);
+        assert_eq!(std::mem::offset_of!(ReflectionSkyUniform, adjust), 64);
+    }
+
+    /// 無効値（スカイボックス無し）でも色調整は恒等（0,1,1,1）であること。
+    /// ここが 0 埋めだと、あとで有効化したときに彩度 0・明度 0 の空になる。
+    #[test]
+    fn disabled_sky_has_identity_color_adjust() {
+        assert_eq!(ReflectionSkyUniform::disabled().adjust, SKY_COLOR_ADJUST_IDENTITY);
     }
 
     /// 既定（スカイボックス無し）は有効フラグ 0 であること。

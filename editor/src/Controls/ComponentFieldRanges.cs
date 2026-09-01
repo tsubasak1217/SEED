@@ -90,6 +90,18 @@ internal static class ComponentFieldRanges
         ["LightComponent.inner_angle_deg"] = (0f, 89f),
         ["LightComponent.outer_angle_deg"] = (0f, 89f),
 
+        // ── SkyboxComponent（空の色調整）────────────────────────
+        // 根拠: runtime/src/engine/core/app_base/app/skybox_ops.rs
+        //       "hue_shift"  => `v.clamp(SKY_HUE_SHIFT_MIN_DEG, SKY_HUE_SHIFT_MAX_DEG)`（-180..180）
+        //       "saturation" / "brightness" / "contrast"
+        //                    => `v.clamp(SKY_ADJUST_MIN, SKY_ADJUST_MAX)`（0..2）
+        //       定数の定義は runtime/src/engine/components/skybox_component.rs。
+        // ※ intensity / tint は上限が無い（HDR 許容）ため載せない＝数値入力行のまま。
+        ["SkyboxComponent.hue_shift"]  = (-180f, 180f),
+        ["SkyboxComponent.saturation"] = (0f, 2f),
+        ["SkyboxComponent.brightness"] = (0f, 2f),
+        ["SkyboxComponent.contrast"]   = (0f, 2f),
+
         // ── CameraComponent ─────────────────────────────────────
         // 根拠: runtime/src/engine/core/app_base/app/camera_component_ops.rs
         //       `value.clamp(1.0, 179.0)`（垂直画角の度数）

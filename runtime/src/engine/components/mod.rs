@@ -74,7 +74,10 @@ pub use terrain_component::{TerrainChunkComponent, TerrainChunkComponentData, TE
 pub use animator_component::{AnimatorComponent, AnimatorComponentData, AnimClipRef, AnimClipKind, AnimClipLoop};
 pub use light_component::{LightComponent, LightComponentData, LightKind};
 pub use jointattach_component::{JointAttachComponent, JointAttachComponentData};
-pub use skybox_component::{SkyboxComponent, SkyboxComponentData, SkyboxMode};
+pub use skybox_component::{
+    SkyboxComponent, SkyboxComponentData, SkyboxMode,
+    SKY_ADJUST_MAX, SKY_ADJUST_MIN, SKY_HUE_SHIFT_MAX_DEG, SKY_HUE_SHIFT_MIN_DEG,
+};
 pub use water_volume_component::{WaterVolumeComponent, WaterVolumeComponentData, WaterVolumeKind};
 pub use water_link_component::{WaterLinkComponent, WaterLinkComponentData};
 pub use interaction_source_component::{InteractionSourceComponent, InteractionSourceComponentData};

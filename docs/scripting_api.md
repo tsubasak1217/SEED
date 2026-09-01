@@ -906,6 +906,42 @@ public void Update()
 
 > **重要**: `Align` / `VerticalAlign` に未知の文字列を代入しても無視され、既存の値が保たれます（typo で表示が崩れません）。1 つの Text が描ける文字数の上限は 4096 文字で、超えた分は切り捨てられます。
 
+### Skybox（天球の色調整：時間帯・天候の演出）
+
+equirectangular 画像 1 枚を天球として描く `Skybox` コンポーネントを、実行時に読み書きします。
+**色調整（色相シフト／彩度／明度／コントラスト）は、背景の空だけでなく、鏡面反射・水面反射に映る空へも同時に効きます**。
+
+```csharp
+if (gameObject.GetComponent<Skybox>() is { } sky)
+{
+    sky.TexturePath = "assets://sky/dusk.hdr"; // equirectangular 画像（assets:// 仮想パス）
+    sky.Intensity   = 1.5f;                    // 強度（1 = 素の色。1 超で Bloom と連動）
+    sky.Tint        = new Vector3(1f, 0.9f, 0.8f); // 色味（リニア RGB 乗算）
+
+    sky.HueShift    = -30f;  // 色相シフト（度。-180〜180。0 = 無変換）
+    sky.Saturation  = 1.3f;  // 彩度（0〜2。0 = グレースケール / 1 = 無変換）
+    sky.Brightness  = 0.8f;  // 明度（0〜2。色への乗算。1 = 無変換）
+    sky.Contrast    = 1.2f;  // コントラスト（0〜2。中間グレー基準。1 = 無変換）
+}
+```
+
+#### レシピ: 時間帯に応じて夕焼けへ寄せる
+
+```csharp
+public override void Update(ref NativeFrameContext ctx)
+{
+    if (gameObject.GetComponent<SEED.Skybox>() is not { } sky) return;
+
+    // 0（昼）→ 1（夕方）へ進む係数
+    float t = SEED.Mathf.Clamp01(dayProgress);
+    sky.HueShift   = SEED.Mathf.Lerp(0f, -35f, t);  // 青 → 橙へ色相をずらす
+    sky.Saturation = SEED.Mathf.Lerp(1f, 1.4f, t);  // 夕焼けは彩度を上げる
+    sky.Brightness = SEED.Mathf.Lerp(1f, 0.7f, t);  // 全体を落とす
+}
+```
+
+> **重要**: 色調整の値域はエンジン側でクランプされます（色相 -180〜180 度、彩度／明度／コントラスト 0〜2）。既定値（0 / 1 / 1 / 1）では計算そのものが飛ばされ、調整なしと**完全に同じ**出力になります。
+
 ### LineHelper（線の点列を作る補助・純 C#）
 
 `LineRenderer.SetPoints` に渡す点列を組み立てる静的ヘルパーです。エンジンへのアクセスを伴わないので、どこからでも呼べます。
@@ -985,6 +1021,7 @@ public class FishingLine : SEEDScript
 | `WaterLink` | `gameObject.GetComponent<WaterLink>()` | 水位グラフの開口。**開閉率（バルブ）**・開口寸法・流量係数 |
 | `LineRenderer` | `gameObject.GetComponent<LineRenderer>()` | 3D の線（釣り糸・ロープ・軌跡）。点列（SetPoints）・太さ・色・表示・座標系・深度テスト |
 | `Text` | `gameObject.GetComponent<Text>()` | キャンバス上の文字表示（HUD の数値・ラベル）。内容・サイズ・色・整列・行送り・レイヤー |
+| `Skybox` | `gameObject.GetComponent<Skybox>()` | 天球（equirectangular）のテクスチャパス・強度・色味と、**色調整**（色相シフト・彩度・明度・コントラスト）。調整は背景・反射・水面反射の空すべてに効く |
 
 > **重要**: `GetComponent<T>()` は `T?` を返し、同種コンポーネントを複数スロット持てます。`GetComponent<T>()`＝0 番目、`GetComponent<T>(index)`＝index 番目、`GetComponent<T>("Name")`＝スロット名一致。
 

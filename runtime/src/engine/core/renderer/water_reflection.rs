@@ -973,13 +973,14 @@ mod tests {
         }
     }
 
-    /// スカイボックス uniform の WGSL / Rust レイアウトが一致すること（64B・4 本の vec4）。
+    /// スカイボックス uniform の WGSL / Rust レイアウトが一致すること（80B・5 本の vec4）。
+    /// 5 本目は色調整（色相／彩度／明度／コントラスト）。
     #[test]
     fn water_sky_uniform_layout_matches_the_shader() {
-        assert_eq!(std::mem::size_of::<ReflectionSkyUniform>(), 64);
+        assert_eq!(std::mem::size_of::<ReflectionSkyUniform>(), 80);
         // 構造体定義は共有モジュール（D6 反射と共用）にある。
         let shared = get_shader_source("sky_reflection_common.wgsl");
-        for field in ["rot_inv_0", "rot_inv_1", "rot_inv_2", "tint_enabled"] {
+        for field in ["rot_inv_0", "rot_inv_1", "rot_inv_2", "tint_enabled", "adjust"] {
             assert!(shared.contains(field), "WGSL 側に {field} が無い（レイアウト不一致）");
         }
         // 水面パスは group3 に **storage** で挿す（binding_array と uniform は同居できない）。

@@ -34,8 +34,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::engine::components::{
     AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, InputMapComponent,
     LineRendererComponent, ModelComponent, ParticleEmitterComponent, SkinnedSpriteComponent,
-    SpriteComponent, TextAlign, TextComponent, TextVerticalAlign, Transform, WaterLinkComponent,
-    WaterVolumeComponent, MAX_LINE_POINTS,
+    SkyboxComponent, SpriteComponent, TextAlign, TextComponent, TextVerticalAlign, Transform,
+    WaterLinkComponent, WaterVolumeComponent, MAX_LINE_POINTS, SKY_ADJUST_MAX, SKY_ADJUST_MIN,
+    SKY_HUE_SHIFT_MAX_DEG, SKY_HUE_SHIFT_MIN_DEG,
 };
 use crate::engine::core::input::action_map::{ActionMap, ActionRuntime};
 use crate::engine::core::input::{Input, InputState};
@@ -667,6 +668,23 @@ fn read_floats(
                 _               => None,
             }
         }
+        // ── スカイボックス（スロット格納型: locate で解決）──
+        // 空の色調整（色相/彩度/明度/コントラスト）を実行時に動かすための公開。
+        // 時間帯演出（夕焼けへ色相シフト）などをスクリプトから駆動できる。
+        // 値は**背景の空・反射の空・水面の空へ同時に**効く（GPU 側で共通関数を通るため）。
+        "Skybox" => {
+            let e = locate::<SkyboxComponent>(world, entity)?;
+            let s = world.get::<SkyboxComponent>(e)?;
+            match field {
+                "intensity"  => put(out, &[s.intensity]),
+                "tint"       => put(out, &s.tint),
+                "hue_shift"  => put(out, &[s.hue_shift]),
+                "saturation" => put(out, &[s.saturation]),
+                "brightness" => put(out, &[s.brightness]),
+                "contrast"   => put(out, &[s.contrast]),
+                _            => None,
+            }
+        }
         // ── 3D ポリライン（スロット格納型: locate で解決）──
         // points（配列）は読み取り対象にしない。読み取りは固定長 4 要素の
         // スタックバッファ経由（MAX_FLOAT_FIELD_LEN）で、数百要素を返せないため。
@@ -952,6 +970,29 @@ fn write_floats(
                 _               => false,
             }
         }
+        // ── スカイボックス（スロット格納型: locate で解決）──
+        // clamp 値域は skybox_component.rs の SKY_* 定数が正典（SET_SKYBOX_FIELD と同一）。
+        // スクリプトから範囲外を書いても UI のスライダー端と同じ値に収まる。
+        "Skybox" => {
+            let Some(e) = locate::<SkyboxComponent>(world, entity) else { return false };
+            let Some(s) = world.get_mut::<SkyboxComponent>(e) else { return false };
+            match field {
+                "intensity"  => take::<1>(v).map(|a| s.intensity = a[0].max(0.0)).is_some(),
+                "tint"       => take(v).map(|a: [f32; 3]| {
+                    s.tint = [a[0].max(0.0), a[1].max(0.0), a[2].max(0.0)]
+                }).is_some(),
+                "hue_shift"  => take::<1>(v)
+                    .map(|a| s.hue_shift = a[0].clamp(SKY_HUE_SHIFT_MIN_DEG, SKY_HUE_SHIFT_MAX_DEG))
+                    .is_some(),
+                "saturation" => take::<1>(v)
+                    .map(|a| s.saturation = a[0].clamp(SKY_ADJUST_MIN, SKY_ADJUST_MAX)).is_some(),
+                "brightness" => take::<1>(v)
+                    .map(|a| s.brightness = a[0].clamp(SKY_ADJUST_MIN, SKY_ADJUST_MAX)).is_some(),
+                "contrast"   => take::<1>(v)
+                    .map(|a| s.contrast = a[0].clamp(SKY_ADJUST_MIN, SKY_ADJUST_MAX)).is_some(),
+                _            => false,
+            }
+        }
         // ── 3D ポリライン（スロット格納型: locate で解決）──
         "LineRenderer" => {
             let Some(e) = locate::<LineRendererComponent>(world, entity) else { return false };
@@ -1158,6 +1199,15 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
                 _            => None,
             }
         }
+        // スカイボックス: equirectangular 画像の差し替え（昼夜の天球切替など）。
+        "Skybox" => {
+            let e = locate::<SkyboxComponent>(world, entity)?;
+            let s = world.get::<SkyboxComponent>(e)?;
+            match field {
+                "texture_path" => Some(s.texture_path.clone()),
+                _              => None,
+            }
+        }
         "Camera" => {
             let e = locate::<CameraComponent>(world, entity)?;
             let c = world.get::<CameraComponent>(e)?;
@@ -1229,6 +1279,15 @@ fn write_string(
                 _            => false,
             }
         }
+        // スカイボックス: equirectangular 画像の差し替え（昼夜の天球切替など）。
+        "Skybox" => {
+            let Some(e) = locate::<SkyboxComponent>(world, entity) else { return false };
+            let Some(s) = world.get_mut::<SkyboxComponent>(e) else { return false };
+            match field {
+                "texture_path" => { s.texture_path = value.to_string(); true }
+                _              => false,
+            }
+        }
         "Camera" => {
             let Some(e) = locate::<CameraComponent>(world, entity) else { return false };
             let Some(c) = world.get_mut::<CameraComponent>(e) else { return false };
@@ -1258,6 +1317,7 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
         "ParticleEmitter" => locate::<ParticleEmitterComponent>(world, entity).is_some(),
         "InputMap"        => locate::<InputMapComponent>(world, entity).is_some(),
         "LineRenderer"    => locate::<LineRendererComponent>(world, entity).is_some(),
+        "Skybox"          => locate::<SkyboxComponent>(world, entity).is_some(),
         "Text"            => locate::<TextComponent>(world, entity).is_some(),
         // 水位グラフ（Phase W2.5）
         "WaterLink"       => locate::<WaterLinkComponent>(world, entity).is_some(),

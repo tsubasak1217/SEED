@@ -62,10 +62,11 @@ const HDR_TEXEL_MAX_FINITE: f32 = 65504.0;
 
 // ─── SkyboxUniform（uniform, 96 バイト）───────────────────────
 
-/// スカイボックスの描画パラメータ uniform（skybox.wgsl の SkyboxUniform と一致）。
+/// スカイボックスの描画パラメータ uniform（skybox.wgsl の SkyboxUniform と一致・112B）。
 ///
-/// std140：vec3 tint の 4 番目スロットに intensity が同居する。repr(C) の自然オフセットが
-/// std140 オフセットと一致する（layout_tests で固定検証）。
+/// std140：vec3 tint の 4 番目スロットに intensity が同居し、色調整 vec4 は 16B 境界の
+/// offset 96 に置かれる。repr(C) の自然オフセットが std140 オフセットと一致する
+/// （layout_tests で固定検証）。
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct SkyboxUniform {
@@ -81,6 +82,11 @@ pub struct SkyboxUniform {
     pub _pad0: u32,
     pub _pad1: u32,
     pub _pad2: u32,
+    /// 色調整（x=色相シフト[度] / y=彩度 / z=明度 / w=コントラスト）。offset 96
+    ///
+    /// 反射用 `ReflectionSkyUniform.adjust` と**同じ値**を入れること（`sky_uniform_for_reflection`
+    /// がここからコピーする）。背景と反射で違う値を入れると、水際で空の色に境目が出る。
+    pub adjust: [f32; 4],
 }
 
 // ─── SkyboxPipelines（パイプライン＋共有メッシュ・DrawPipelines が保持）──
@@ -476,6 +482,9 @@ fn sky_uniform_for_reflection(
         rot_inv_1:    rows[1],
         rot_inv_2:    rows[2],
         tint_enabled: [tint[0], tint[1], tint[2], SKY_ENABLED],
+        // 色調整は描画用からそのままコピーする（背景と反射で必ず同じ値にするため、
+        // ここで再計算・再解釈は一切しない）。
+        adjust:       u.adjust,
     }
 }
 
@@ -763,6 +772,10 @@ fn gather_skyboxes(
                     _pad0: 0,
                     _pad1: 0,
                     _pad2: 0,
+                    // 色調整はコンポーネントが持つ 4 値をそのまま渡す（クランプは
+                    // skybox_ops.rs の SET 受け口で済んでいる）。並びの正典は
+                    // SkyboxComponent::color_adjust()。
+                    adjust: sb.color_adjust(),
                 },
             });
         }
@@ -838,14 +851,46 @@ mod layout_tests {
     use super::*;
     use std::mem::{offset_of, size_of};
 
-    /// SkyboxUniform は 96 バイト。vec3 tint の 4 番目スロットに intensity が同居する。
+    /// SkyboxUniform は 112 バイト。vec3 tint の 4 番目スロットに intensity が同居し、
+    /// 色調整 vec4 は std140 の 16B 境界（offset 96）に載る。
     #[test]
     fn skybox_uniform_layout() {
-        assert_eq!(size_of::<SkyboxUniform>(), 96, "SkyboxUniform は 96 バイト");
+        assert_eq!(size_of::<SkyboxUniform>(), 112, "SkyboxUniform は 112 バイト");
         assert_eq!(offset_of!(SkyboxUniform, model), 0);
         assert_eq!(offset_of!(SkyboxUniform, tint), 64);
         assert_eq!(offset_of!(SkyboxUniform, intensity), 76);
         assert_eq!(offset_of!(SkyboxUniform, mode), 80);
+        assert_eq!(offset_of!(SkyboxUniform, adjust), 96);
+    }
+
+    /// 描画用 uniform の色調整が、反射用 uniform へ**そのまま**渡ること。
+    /// ここが崩れると「背景の空だけ色が変わり、反射の空は元の色」になる。
+    #[test]
+    fn reflection_uniform_carries_the_same_color_adjust() {
+        let u = SkyboxUniform {
+            model: IDENTITY4,
+            tint: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            mode: SkyboxMode::CameraLocked.to_code(),
+            _pad0: 0, _pad1: 0, _pad2: 0,
+            adjust: [30.0, 1.5, 0.8, 1.2],
+        };
+        let r = sky_uniform_for_reflection(&u, SkyboxMode::CameraLocked);
+        assert_eq!(r.adjust, u.adjust);
+    }
+
+    /// skybox.toml が共有モジュールを **skybox.wgsl より前に** 連結していること。
+    /// 順序が逆だと `sky_apply_color_adjust` が未宣言参照になり、実機起動時に落ちる。
+    #[test]
+    fn skybox_pipeline_concatenates_shared_module_first() {
+        let toml = include_str!("pipelines/skybox.toml");
+        let line = toml
+            .lines()
+            .find(|l| l.trim_start().starts_with("shader_sources"))
+            .expect("skybox.toml に shader_sources が無い");
+        let i_shared = line.find("sky_reflection_common.wgsl").expect("共有モジュールが未連結");
+        let i_skybox = line.find("\"skybox.wgsl\"").expect("skybox.wgsl が未連結");
+        assert!(i_shared < i_skybox, "共有モジュールは skybox.wgsl より前に連結すること");
     }
 
     /// UV 球の頂点数・インデックス数が格子数から決まる本数であること。
@@ -974,11 +1019,20 @@ mod layout_tests {
 // ─── WGSL 静的検証（naga parse + validate）─────────────────────
 #[cfg(test)]
 mod shader_tests {
-    /// skybox.wgsl を naga で parse + validate する（自己完結でパース可能）。
+    /// 背景描画の**連結後**の WGSL を naga で parse + validate する。
+    ///
+    /// skybox.wgsl は単体では完結しない（色調整の共有実装 `sky_apply_color_adjust` は
+    /// sky_reflection_common.wgsl にあり、skybox.toml が両者を連結する）。
+    /// 実機と同じ連結順で検証すること。
     #[test]
     fn skybox_shader_parses_and_validates() {
-        let src = include_str!("shaders/skybox.wgsl");
-        let module = naga::front::wgsl::parse_str(src)
+        let src = [
+            include_str!("shaders/sky_reflection_common.wgsl"),
+            include_str!("shaders/skybox.wgsl"),
+        ]
+        .join("
+");
+        let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[skybox] WGSL parse 失敗: {e:?}"));
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),

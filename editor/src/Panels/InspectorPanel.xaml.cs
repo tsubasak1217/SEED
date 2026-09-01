@@ -896,6 +896,10 @@ public partial class InspectorPanel : UserControl
         string SkyboxMode = "camera_locked",
         float SkyboxIntensity = 1f,
         float SkyboxTintR = 1f, float SkyboxTintG = 1f, float SkyboxTintB = 1f,
+        // Skybox の色調整（色相シフト[度] / 彩度 / 明度 / コントラスト）。
+        // 既定値は「無変換」（ランタイム skybox_component.rs の Default と一致させる）。
+        float SkyboxHueShift = 0f, float SkyboxSaturation = 1f,
+        float SkyboxBrightness = 1f, float SkyboxContrast = 1f,
         // ParticleEmitterComponent 用フィールド（形状・出現範囲・放出制御・寿命・速度・方向・物理・
         // 回転・サイズ・テクスチャ・ブレンド・空間）。デフォルト値は Rust 側
         // ParticleEmitterComponentData と一致させる（受信欠落時のフォールバックにも使用）。
@@ -1439,6 +1443,11 @@ public partial class InspectorPanel : UserControl
             var skyboxTintR       = comp.TryGetProperty("tr",           out var sktr) ? sktr.GetSingle() : 1f;
             var skyboxTintG       = comp.TryGetProperty("tg",           out var sktg) ? sktg.GetSingle() : 1f;
             var skyboxTintB       = comp.TryGetProperty("tb",           out var sktb) ? sktb.GetSingle() : 1f;
+            // 色調整（旧ランタイムからの JSON にキーが無い場合は「無変換」の既定値へ落とす）
+            var skyboxHueShift    = comp.TryGetProperty("hue_shift",  out var skhs) ? skhs.GetSingle() : 0f;
+            var skyboxSaturation  = comp.TryGetProperty("saturation", out var sksa) ? sksa.GetSingle() : 1f;
+            var skyboxBrightness  = comp.TryGetProperty("brightness", out var skbr) ? skbr.GetSingle() : 1f;
+            var skyboxContrast    = comp.TryGetProperty("contrast",   out var skct) ? skct.GetSingle() : 1f;
             // ParticleEmitterComponent 用: 形状・出現範囲・放出制御・寿命・速度・方向・物理・回転・
             // サイズ・テクスチャ・ブレンド・空間を受け取る。欠落時は Rust 側デフォルトと一致する
             // フォールバック値を用いる（カーブ JSON は今回未実装のカーブエディタでは未使用のため保持しない）。
@@ -1649,6 +1658,8 @@ public partial class InspectorPanel : UserControl
                 SkyboxTexturePath: skyboxTexturePath, SkyboxMode: skyboxMode,
                 SkyboxIntensity: skyboxIntensity,
                 SkyboxTintR: skyboxTintR, SkyboxTintG: skyboxTintG, SkyboxTintB: skyboxTintB,
+                SkyboxHueShift: skyboxHueShift, SkyboxSaturation: skyboxSaturation,
+                SkyboxBrightness: skyboxBrightness, SkyboxContrast: skyboxContrast,
                 PeMaxParticles: peMaxParticles,
                 PeShape: peShape, PeShapeModelPath: peShapeModelPath,
                 PeSpawnVolume: peSpawnVolume,
@@ -7653,6 +7664,24 @@ public partial class InspectorPanel : UserControl
         };
         // 色は値域表の対象外（HDR 許容で上限が無い）。⟲ だけ添える。
         sp.Children.Add(WithFieldReset(tintRow, info.SlotIdx, SkyboxComponentType, "tint", "ティント"));
+
+        // ── 色調整（色相 / 彩度 / 明度 / コントラスト）────────────────
+        // 4 本とも ComponentFieldRanges に値域があるので自動でスライダー行になる
+        //（ドラッグ編集・Undo・⟲ リセットは共通入口 BuildResettableFloatRow が面倒を見る）。
+        // ここで編集した値は背景の空だけでなく、反射・水面反射に映る空へも同時に効く
+        //（GPU 側で全経路が共通関数 sky_apply_color_adjust を通るため）。
+        // SET キーは serde 名と同一なので、値域表・⟲・SET の 3 者でキーがズレない。
+        void AddAdjustRow(string label, float value, string key)
+        {
+            sp.Children.Add(BuildResettableFloatRow(
+                info.SlotIdx, SkyboxComponentType, label, value, key,
+                SkyboxNumberFormat,
+                v => SendField(key, v.ToString(CultureInfo.InvariantCulture))));
+        }
+        AddAdjustRow("色相シフト",   info.SkyboxHueShift,   "hue_shift");
+        AddAdjustRow("彩度",         info.SkyboxSaturation, "saturation");
+        AddAdjustRow("明度",         info.SkyboxBrightness, "brightness");
+        AddAdjustRow("コントラスト", info.SkyboxContrast,   "contrast");
 
         return sp;
     }

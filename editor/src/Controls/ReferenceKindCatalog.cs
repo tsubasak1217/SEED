@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 
 namespace SEEDEditor.Controls;
 
@@ -62,6 +62,7 @@ internal static class ReferenceKindCatalog
         [CameraKind]        = "CameraComponent",
         ["Audio"]           = "AudioComponent",
         ["LineRenderer"]    = "LineRendererComponent",
+        ["Skybox"]          = "SkyboxComponent",
         ["Text"]            = "TextComponent",
         ["Animator"]        = "AnimatorComponent",
         ["ParticleEmitter"] = "ParticleEmitterComponent",
@@ -89,6 +90,7 @@ internal static class ReferenceKindCatalog
         [CameraKind]          = "Camera",
         ["Audio"]             = "AudioSource",
         ["LineRenderer"]      = "LineRenderer",
+        ["Skybox"]            = "Skybox",
         ["Text"]              = "Text",
         ["Animator"]          = "Animator",
         ["ParticleEmitter"]   = "ParticleEmitter",

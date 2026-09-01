@@ -14,7 +14,12 @@
 # 本 TOML の depth_write 既定は CameraLocked 用に false とする。
 # カリングなし（内向き球のため、また内部へ入り込んでも破綻しないように両面描画）。
 
-shader_sources = ["skybox.wgsl"]
+# 色調整（色相/彩度/明度/コントラスト）の共有実装 sky_apply_color_adjust は
+# sky_reflection_common.wgsl が正典なので、背景描画もそれを連結して同じ関数を通す
+# （反射・水面反射と式が分岐しないようにするため）。バインディングを持たない
+# 純定義のファイルなので、連結してもこのパイプラインのレイアウトは変わらない。
+# 連結順は「共有定義 → 利用側」（WGSL は宣言前の識別子を参照できない）。
+shader_sources = ["sky_reflection_common.wgsl", "skybox.wgsl"]
 vertex_entry   = "vs_main"
 fragment_entry = "fs_main"
 vertex_slots   = ["pos3"]

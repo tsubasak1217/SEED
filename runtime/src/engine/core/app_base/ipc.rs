@@ -658,7 +658,8 @@ pub enum IpcCommand {
     /// JointAttachComponent のフィールドを更新する
     /// （key: joint_name / offset_pos / offset_rot / offset_scale。offset_* は "x,y,z" 形式）
     SetJointAttachField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
-    /// SkyboxComponent のフィールドを更新する（key: texture_path/mode/intensity/tint。skybox_ops.rs が処理）
+    /// SkyboxComponent のフィールドを更新する
+    /// （key: texture_path/mode/intensity/tint/hue_shift/saturation/brightness/contrast。skybox_ops.rs が処理）
     SetSkyboxField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// ParticleEmitterComponent のフィールドを更新する
     /// （key: max_particles/shape/spawn_volume/emit_mode/lifetime_min/... 等。particle_ops.rs が処理）

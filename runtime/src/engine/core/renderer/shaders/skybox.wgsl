@@ -41,6 +41,9 @@ struct SkyboxUniform {
     _pad0:     u32,
     _pad1:     u32,
     _pad2:     u32,
+    // 色調整（x=色相シフト[度] / y=彩度 / z=明度 / w=コントラスト）。
+    // sky_reflection_common.wgsl の ReflectionSkyUniform.adjust と同じ値が入る。
+    adjust:    vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> u_skybox:  SkyboxUniform;
 @group(1) @binding(1) var          t_skybox:  texture_2d<f32>;
@@ -100,7 +103,11 @@ fn fs_main(in: VsOut4) -> @location(0) vec4<f32> {
     let v = acos(clamp(d.y, -1.0, 1.0)) * INV_PI;
     // ミップ derivative の継ぎ目アーティファクトを避けるため level 0 固定でサンプルする。
     let tex = textureSampleLevel(t_skybox, s_skybox, vec2<f32>(u, v), 0.0).rgb;
-    // unlit: テクスチャ × tint × intensity（HDR。intensity>1 で発光的＝Bloom 連動）。
-    let color = tex * u_skybox.tint * u_skybox.intensity;
+    // 色調整（色相／彩度／明度／コントラスト）を掛ける。実装は反射・水面反射と**共有**の
+    // sky_reflection_common.wgsl::sky_apply_color_adjust（skybox.toml が連結している）。
+    // ここで自前の式を書くと「背景の空だけ色が変わって反射の空は元のまま」になる。
+    let adjusted = sky_apply_color_adjust(tex, u_skybox.adjust);
+    // unlit: 調整後の色 × tint × intensity（HDR。intensity>1 で発光的＝Bloom 連動）。
+    let color = adjusted * u_skybox.tint * u_skybox.intensity;
     return vec4<f32>(color, 1.0);
 }
