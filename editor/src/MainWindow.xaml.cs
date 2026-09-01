@@ -48,6 +48,15 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
     private readonly HashSet<uint> _pressedVks = new();
 
+    /// <summary>
+    /// ランタイム側のモーダルトランスフォーム（Blender 風 G/R/S）が進行中か。
+    ///
+    /// キーフック（UI スレッド）と IPC 受信（バックグラウンドスレッド）の
+    /// 両方から触るため volatile。開始キー送信時に先行して立て、
+    /// ランタイムからの MODAL_STATE 通知で確定させる。
+    /// </summary>
+    private volatile bool _modalTransformActive = false;
+
     private bool _clampInPlay                  = false;
     private bool _isDragging                   = false;
     private bool _ctrlHeld                     = false;
@@ -382,6 +391,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _runtimeManager.EditPhysicsStateReceived      += OnEditPhysicsStateReceived;
         _runtimeManager.HierarchyUpdated              += _ => MarkDirtyFromHierarchy();
         _runtimeManager.SceneModified                 += MarkDirty;
+        // ランタイム側のツールホットキー（Q/W/E/T）とツールバーの表示を同期する。
+        _runtimeManager.ToolModeChanged               += OnRuntimeToolModeChanged;
+        // モーダルトランスフォーム（G/R/S）の進行状態。キーフックの分岐に使う。
+        _runtimeManager.ModalTransformStateChanged    += active => _modalTransformActive = active;
         _runtimeManager.ActorEditStarted              += OnActorEditStarted;
         _runtimeManager.ActorEditEnded                += OnActorEditEnded;
         // キャンバス編集タブ開始応答（EDIT_CANVAS_BEGIN → CANVAS_EDIT_WL）

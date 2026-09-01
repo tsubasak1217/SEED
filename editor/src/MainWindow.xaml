@@ -1985,7 +1985,7 @@
                                                     <RadioButton x:Name="BtnToolScale"
                                                                  GroupName="EditorTools"
                                                                  Style="{StaticResource ToolBtnStyle}"
-                                                                 ToolTip="Scale (R)"
+                                                                 ToolTip="Scale (T)"
                                                                  Click="OnToolScale">
                                                         <Image Source="pack://application:,,,/resources/icons/toolbar/scale.png"
                                                                Width="20" Height="20"/>

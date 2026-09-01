@@ -370,6 +370,14 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::SetRtShadows(..)
         // 【エディタのセッション状態】シーンに永続しない。
         | IpcCommand::SetToolMode(..)
+        | IpcCommand::SetToolModeFromHotkey(..)
+        // 【モーダルトランスフォーム】Undo はギズモドラッグと同じ経路
+        // （finish_gizmo_drag_and_record）で確定時に 1 件だけ記録するので、
+        // IPC コマンド単位ではここで記録しない（二重記録になる）。
+        | IpcCommand::ModalBegin(..)
+        | IpcCommand::ModalAxis(..)
+        | IpcCommand::ModalConfirm
+        | IpcCommand::ModalCancel
         | IpcCommand::SetGizmoSpace(..)
         | IpcCommand::SetShowGrid(..)
         | IpcCommand::SetShowAxisGizmo(..)

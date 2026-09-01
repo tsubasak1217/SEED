@@ -32,6 +32,27 @@ public partial class MainWindow
     private void OnToolScale(object sender, RoutedEventArgs e)
         => _runtimeManager?.SendToRuntime("TOOL:SCALE");
 
+    /// <summary>
+    /// ランタイム側のツールホットキー（Q=選択 / W=移動 / E=回転 / T=拡縮）で
+    /// ツールモードが変わったときに、ツールバーのラジオボタン表示を同期する。
+    ///
+    /// IsChecked の代入では Click イベントは発火しないため、
+    /// TOOL: コマンドがランタイムへ返送されることはない（無限ループしない）。
+    /// </summary>
+    private void OnRuntimeToolModeChanged(string mode)
+    {
+        Dispatcher.InvokeAsync(() =>
+        {
+            switch (mode)
+            {
+                case "SELECT": BtnToolSelect.IsChecked = true; break;
+                case "MOVE":   BtnToolMove.IsChecked   = true; break;
+                case "ROTATE": BtnToolRotate.IsChecked = true; break;
+                case "SCALE":  BtnToolScale.IsChecked  = true; break;
+            }
+        });
+    }
+
     private void OnClampCursorChanged(object sender, RoutedEventArgs e)
     {
         _clampInPlay = ChkClampCursor.IsChecked == true;

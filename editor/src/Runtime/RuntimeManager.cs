@@ -279,6 +279,19 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>ランタイム側でシーンが変更されたときに発火する（ギズモドラッグ完了など）。</summary>
     public event Action? SceneModified;
 
+    /// <summary>
+    /// ランタイム側のホットキー（Q/W/E/T）でツールモードが変わったときに発火する。
+    /// 引数: "SELECT" / "MOVE" / "ROTATE" / "SCALE"。ツールバーの表示同期に使う。
+    /// </summary>
+    public event Action<string>? ToolModeChanged;
+
+    /// <summary>
+    /// モーダルトランスフォーム（Blender 風 G/R/S）の進行状態が変わったときに発火する。
+    /// 引数: true = 進行中 / false = 終了（確定・取消・開始拒否）。
+    /// エディタのキーフックが「X/Y/Z・Enter・Esc をモーダルへ回すか」の判断に使う。
+    /// </summary>
+    public event Action<bool>? ModalTransformStateChanged;
+
     /// <summary>アクター編集モードに切り替わったときに発火する。</summary>
     public event Action? ActorEditStarted;
 
@@ -1658,6 +1671,17 @@ public sealed class RuntimeManager : IDisposable
         else if (msg == "SCENE_MODIFIED")
         {
             SceneModified?.Invoke();
+        }
+        else if (msg.StartsWith("MODAL_STATE:", StringComparison.Ordinal))
+        {
+            // モーダルトランスフォームの進行状態通知（1 = 開始 / 0 = 終了）。
+            ModalTransformStateChanged?.Invoke(msg["MODAL_STATE:".Length..] == "1");
+        }
+        else if (msg.StartsWith("TOOL_MODE:", StringComparison.Ordinal))
+        {
+            // ランタイム側のツールホットキー（Q/W/E/T）による切り替え通知。
+            var payload = msg["TOOL_MODE:".Length..];
+            ToolModeChanged?.Invoke(payload);
         }
         else if (msg.StartsWith("EDIT_PHYSICS_STATE:", StringComparison.Ordinal))
         {

@@ -28,6 +28,10 @@ pub(crate) type SpriteMeshCpuCache = std::rc::Rc<
 >;
 
 mod drag_state;
+/// Blender 風モーダルトランスフォーム（G/R/S）の状態機械と純粋な数学関数
+mod modal_transform_state;
+/// モーダルトランスフォームの App 統合（開始・更新・確定・取消・軸線表示）
+mod modal_transform;
 /// インスペクタのフィールド編集を汎用的に Undo/Redo へ載せる機構（分類表・スナップショット・適用）
 mod field_edit;
 /// インスペクタ各行の「⟲ デフォルトに戻す」を賄うコンポーネント非依存のリセット機構
@@ -694,6 +698,10 @@ pub struct App {
     undo_history:       UndoHistory,
     /// Ctrl キーが押されているか。
     ctrl_held:          bool,
+    /// Shift キーが押されているか（モーダルトランスフォームの微調整判定に使う）。
+    shift_held:         bool,
+    /// 進行中のモーダルトランスフォーム（G/R/S）。None = 非モーダル。
+    modal_transform:    Option<modal_transform_state::ModalTransform>,
     /// ヒエラルキー更新が保留中（スロットリング用）。
     hierarchy_dirty:     bool,
     /// 最後にヒエラルキーを送信した時刻（スロットリング用）。
@@ -1323,6 +1331,8 @@ impl App {
             hovered_gizmo_part: None,
             undo_history:       UndoHistory::new(),
             ctrl_held:          false,
+            shift_held:         false,
+            modal_transform:    None,
             hierarchy_dirty:     false,
             last_hierarchy_send: None,
             clipboard:           Vec::new(),

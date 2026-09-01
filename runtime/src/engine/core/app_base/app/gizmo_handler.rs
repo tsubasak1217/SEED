@@ -195,6 +195,15 @@ impl App {
         if self.gizmo_space != GizmoSpace::Local {
             return None;
         }
+        self.primary_actor_local_axes()
+    }
+
+    /// 選択中プライマリアクター（3D）のローカル回転基底 [ax, ay, az] を返す。
+    ///
+    /// `selected_local_axes` と違い **GizmoSpace には依存しない**。
+    /// モーダルトランスフォームの「同じ軸キー 2 度押し＝ローカル軸拘束」は
+    /// ツールバーの World/Local トグルとは独立に効くため、こちらを使う。
+    pub(super) fn primary_actor_local_axes(&self) -> Option<[[f32; 3]; 3]> {
         let scene = self.scene.as_ref()?;
         let wl = self.active_world_line;
         let primary = self

@@ -32,6 +32,31 @@ impl Default for ToolMode {
 }
 
 // ============================================================
+//  ModalTransformKind / ModalTransformAxis
+//  — モーダルトランスフォーム（Blender 風 G/R/S）の IPC 引数
+// ============================================================
+
+/// モーダルトランスフォームの種別（IPC 転送用）。
+/// アプリ側の `ModalKind` へ 1:1 で対応させる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModalTransformKind {
+    /// G: 移動
+    Move,
+    /// R: 回転
+    Rotate,
+    /// S: 拡縮
+    Scale,
+}
+
+/// モーダルトランスフォームの軸拘束キー（IPC 転送用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModalTransformAxis {
+    X,
+    Y,
+    Z,
+}
+
+// ============================================================
 //  GizmoSpace — 移動/回転/スケールギズモの座標系モード
 // ============================================================
 
@@ -91,6 +116,28 @@ pub enum IpcCommand {
     PlayClamp(bool),
     /// ツールモード切り替え
     SetToolMode(ToolMode),
+    /// ツールモード切り替え（ホットキー Q/W/E/T 由来）。
+    /// フォーマット: TOOL_HOTKEY:SELECT / MOVE / ROTATE / SCALE
+    ///
+    /// `SetToolMode`（ツールバーのボタン）と分けているのは、
+    /// ホットキーだけ「RMB でカメラ操作中は無視する／モーダル中は無視する」
+    /// という追加条件があり、切り替え結果をツールバーへ返送する必要があるため。
+    SetToolModeFromHotkey(ToolMode),
+    /// モーダルトランスフォーム開始（Blender 風 G/R/S）。
+    /// フォーマット: MODAL:BEGIN:MOVE / ROTATE / SCALE
+    ///
+    /// 【なぜ IPC 経由か】
+    /// 埋め込み Edit モードではキーボードフォーカスがエディタ側にあり、
+    /// ランタイムの子ウィンドウへ WM_KEYDOWN が届かない。そのため
+    /// エディタのキーフックが拾って IPC で転送する（CAM_KEY_DOWN と同じ方式）。
+    ModalBegin(ModalTransformKind),
+    /// モーダル中の軸拘束キー（押すたびに ワールド → ローカル → 解除）。
+    /// フォーマット: MODAL:AXIS:X / Y / Z
+    ModalAxis(ModalTransformAxis),
+    /// モーダルの確定（Enter）。
+    ModalConfirm,
+    /// モーダルの取消（Esc）。
+    ModalCancel,
     /// ギズモ座標系モード切り替え（World / Local）
     /// フォーマット: GIZMO_SPACE:WORLD / GIZMO_SPACE:LOCAL
     SetGizmoSpace(GizmoSpace),
@@ -1434,6 +1481,20 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         "TOOL:MOVE"    => Some(IpcCommand::SetToolMode(ToolMode::Move)),
                         "TOOL:ROTATE"  => Some(IpcCommand::SetToolMode(ToolMode::Rotate)),
                         "TOOL:SCALE"   => Some(IpcCommand::SetToolMode(ToolMode::Scale)),
+                        // ── ツール切替ホットキー（Q/W/E/T）────────────────────────
+                        "TOOL_HOTKEY:SELECT" => Some(IpcCommand::SetToolModeFromHotkey(ToolMode::Select)),
+                        "TOOL_HOTKEY:MOVE"   => Some(IpcCommand::SetToolModeFromHotkey(ToolMode::Move)),
+                        "TOOL_HOTKEY:ROTATE" => Some(IpcCommand::SetToolModeFromHotkey(ToolMode::Rotate)),
+                        "TOOL_HOTKEY:SCALE"  => Some(IpcCommand::SetToolModeFromHotkey(ToolMode::Scale)),
+                        // ── モーダルトランスフォーム（Blender 風 G/R/S）────────────
+                        "MODAL:BEGIN:MOVE"   => Some(IpcCommand::ModalBegin(ModalTransformKind::Move)),
+                        "MODAL:BEGIN:ROTATE" => Some(IpcCommand::ModalBegin(ModalTransformKind::Rotate)),
+                        "MODAL:BEGIN:SCALE"  => Some(IpcCommand::ModalBegin(ModalTransformKind::Scale)),
+                        "MODAL:AXIS:X"       => Some(IpcCommand::ModalAxis(ModalTransformAxis::X)),
+                        "MODAL:AXIS:Y"       => Some(IpcCommand::ModalAxis(ModalTransformAxis::Y)),
+                        "MODAL:AXIS:Z"       => Some(IpcCommand::ModalAxis(ModalTransformAxis::Z)),
+                        "MODAL:CONFIRM"      => Some(IpcCommand::ModalConfirm),
+                        "MODAL:CANCEL"       => Some(IpcCommand::ModalCancel),
                         "GIZMO_SPACE:WORLD" => Some(IpcCommand::SetGizmoSpace(GizmoSpace::World)),
                         "GIZMO_SPACE:LOCAL" => Some(IpcCommand::SetGizmoSpace(GizmoSpace::Local)),
                         "UNDO"         => Some(IpcCommand::Undo),

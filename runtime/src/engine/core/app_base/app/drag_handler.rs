@@ -54,6 +54,14 @@ impl App {
         self.input.process_cursor_moved(cx, cy);
         self.last_cursor_pos = Some((cx, cy));
 
+        // ── モーダルトランスフォーム中 ──────────────────────────────
+        // 矩形選択・ホバー判定・通常のギズモドラッグへは一切流さず、
+        // モーダル専用の更新だけを行う（排他）。
+        if self.modal_transform_active() {
+            self.update_modal_transform(cx, cy);
+            return;
+        }
+
         // ── Pause モードカメラ回転 ───────────────────────────────────
         // Pause 中は Runtime が WS_CHILD として親プロセス内に埋め込まれており、
         // DeviceEvent::MouseMotion（Raw Input）がフォアグラウンドプロセス（エディタ）に
@@ -252,6 +260,31 @@ impl App {
         }
 
         if let Some(new_mat) = new_mat_opt {
+            self.apply_gizmo_new_mat(new_mat);
+        }
+    }
+
+    // ============================================================
+    //  apply_gizmo_new_mat
+    // ============================================================
+
+    /// ギズモの「新しい変換行列」をシーンへ書き戻す。
+    ///
+    /// `new_mat` はギズモ重心（`drag.start_mat`）に対する変換後の行列で、
+    /// 実際に適用されるのは `delta = new_mat * inv(start_mat)` である。
+    /// 書き戻し先は
+    ///   - プライマリの MC インスタンス行列（ルート／子孫）と ActorTransform
+    ///   - 選択スロット以外の MC スロット
+    ///   - MC なしアクタの Transform / CanvasTransform
+    ///   - 子孫アクタ（Model の有無を問わず）
+    ///   - マルチ選択の非プライマリアクタ
+    /// の全てで、いずれもドラッグ開始スナップショットに delta を掛けて求める。
+    ///
+    /// **モーダルトランスフォーム（G/R/S）もこの関数を共用する**。
+    /// 単位デルタ（`new_mat == start_mat`）を渡すと、全対象が開始
+    /// スナップショットの値へ完全復元されるため、モーダルの取消にも使える。
+    pub(super) fn apply_gizmo_new_mat(&mut self, new_mat: [[f32; 4]; 4]) {
+        {
             if let Some(drag) = &self.drag.gizmo_drag {
                 let delta        = mat4x4_mul(new_mat, mat4x4_inv(drag.start_mat));
                 let wl           = self.active_world_line;
@@ -562,11 +595,37 @@ impl App {
                     self.drag.gizmo_drag = Some(drag);
                     return;
                 }
-                let wl              = self.active_world_line;
-                let selected_dfs    = self.actor_virtual_selected_idx;
-                let selected_slot_i = self.actor_virtual_selected_slot_idx;
-                self.drag.multi_actor_drag_starts.clear();
-                if let Some(scene) = self.scene.as_ref() {
+                self.collect_transform_drag_starts();
+                self.drag.gizmo_drag = Some(drag);
+            } else if self.try_pick_control_point(cx, cy) {
+                // 制御点キューブを掴んだ。この後の release では通常のオブジェクトピックを
+                // 行わない（行うとアクタ選択が更新され、選んだばかりの点が消える）。
+                self.drag.control_point_picked = true;
+            }
+        }
+    }
+
+    // ============================================================
+    //  collect_transform_drag_starts
+    // ============================================================
+
+    /// 選択中アクタ群の「変形開始時スナップショット」を一括収集する。
+    ///
+    /// 収集先はすべて `self.drag`（DragState）で、内訳は
+    ///   - プライマリ MC のルート／子孫インスタンス行列
+    ///   - 選択スロット以外の MC スロットの全インスタンス行列
+    ///   - 子孫アクタ（Model の有無を問わず全件）
+    ///   - MC なしアクタの Transform / CanvasTransform
+    ///   - マルチ選択の非プライマリアクタの行列
+    /// である。`apply_gizmo_new_mat` はここで集めた開始値にデルタを掛けて
+    /// 書き戻すため、**ギズモドラッグ開始とモーダルトランスフォーム開始の
+    /// 両方がこの関数を共用する**。
+    pub(super) fn collect_transform_drag_starts(&mut self) {
+        let wl              = self.active_world_line;
+        let selected_dfs    = self.actor_virtual_selected_idx;
+        let selected_slot_i = self.actor_virtual_selected_slot_idx;
+        self.drag.multi_actor_drag_starts.clear();
+        if let Some(scene) = self.scene.as_ref() {
                     // 選択スロット entity を取得する
                     let mc_entity: Option<crate::engine::ecs::Entity> =
                         selected_dfs.and_then(|dfs| {
@@ -658,13 +717,6 @@ impl App {
                             }
                         }
                     }
-                }
-                self.drag.gizmo_drag = Some(drag);
-            } else if self.try_pick_control_point(cx, cy) {
-                // 制御点キューブを掴んだ。この後の release では通常のオブジェクトピックを
-                // 行わない（行うとアクタ選択が更新され、選んだばかりの点が消える）。
-                self.drag.control_point_picked = true;
-            }
         }
     }
 
@@ -734,7 +786,20 @@ impl App {
             return;
         }
 
-        // ドラッグで変化があれば Undo 履歴に一括記録
+        // ドラッグで変化があれば Undo 履歴に一括記録する
+        self.finish_gizmo_drag_and_record();
+    }
+
+    // ============================================================
+    //  finish_gizmo_drag_and_record
+    // ============================================================
+
+    /// 進行中のギズモドラッグを終了し、変化があれば Undo 履歴へ
+    /// **1 エントリだけ**記録する（複数選択は CompositeCommand で束ねる）。
+    ///
+    /// **モーダルトランスフォームの確定もこの関数を呼ぶ**ため、
+    /// 記録方式（1 操作 = Undo 1 件）はギズモドラッグと完全に一致する。
+    pub(super) fn finish_gizmo_drag_and_record(&mut self) {
         let mut primary_recorded = false;
         if self.drag.gizmo_drag.is_some() {
             // CanvasTransform ドラッグ終了処理: 必ず take() してステール状態を防ぐ。

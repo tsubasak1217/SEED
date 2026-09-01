@@ -221,6 +221,84 @@ public partial class MainWindow
             }
         }
 
+        // ── モーダルトランスフォーム（Blender 風 G/R/S）とツールホットキー ──────
+        //
+        // 【なぜエディタ側で拾うか】
+        // 埋め込み Edit モードではランタイムの子 HWND がキーボードフォーカスを
+        // 持たない（Play 時だけ SetFocus する）。そのため winit の KeyboardInput が
+        // 届かず、キー入力はこのフックが拾って IPC で転送するしかない。
+        //
+        // 【キーの割り当て】
+        //   G / R / S       … モーダル移動 / 回転 / 拡縮の開始
+        //   X / Y / Z       … モーダル中の軸拘束（押すたび ワールド→ローカル→解除）
+        //   Enter / Esc     … モーダルの確定 / 取消（左右クリックでも同じ）
+        //   Q / W / E / T   … ツール切替（選択 / 移動 / 回転 / 拡縮）
+        //                     拡縮が T なのは R をモーダル回転へ明け渡したため。
+        if (isDown && !_ctrlHeld && viewportFocused
+            && _runtimeManager?.State == EditorState.Edit)
+        {
+            if (_modalTransformActive)
+            {
+                // モーダル進行中: 軸拘束と確定/取消だけを受け付ける。
+                switch (vk)
+                {
+                    case 0x58: _runtimeManager?.SendToRuntime("MODAL:AXIS:X"); return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                    case 0x59: _runtimeManager?.SendToRuntime("MODAL:AXIS:Y"); return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                    case 0x5A: _runtimeManager?.SendToRuntime("MODAL:AXIS:Z"); return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                    case 0x0D: // Enter
+                        _runtimeManager?.SendToRuntime("MODAL:CONFIRM");
+                        _modalTransformActive = false;
+                        return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                    case 0x1B: // Esc（削除ダイアログより優先する）
+                        _runtimeManager?.SendToRuntime("MODAL:CANCEL");
+                        _modalTransformActive = false;
+                        return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                }
+                // それ以外のキーはモーダル中は無効。ただしカメラキー（WASDQE/Shift）の
+                // DOWN/UP 対応が崩れないよう、下の転送処理には素通しする。
+            }
+            else
+            {
+                // モーダル開始キー。実際に開始できたかはランタイムが
+                // MODAL_STATE で返してくるので、ここでは先行して立てておく。
+                string? begin = vk switch
+                {
+                    0x47 => "MODAL:BEGIN:MOVE",   // G
+                    0x52 => "MODAL:BEGIN:ROTATE", // R
+                    0x53 => "MODAL:BEGIN:SCALE",  // S
+                    _    => null,
+                };
+                if (begin is not null)
+                {
+                    _modalTransformActive = true;
+                    _runtimeManager?.SendToRuntime(begin);
+                    // G / R は他用途がないのでここで打ち切る。
+                    // S はカメラ後退キーでもあるため、下の転送処理へ素通しする。
+                    if (vk != 0x53) return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                }
+                else
+                {
+                    // ツール切替ホットキー。RMB でのカメラ操作中は
+                    // ランタイム側が無視するので、ここでは条件を持たない。
+                    string? tool = vk switch
+                    {
+                        0x51 => "SELECT", // Q
+                        0x57 => "MOVE",   // W
+                        0x45 => "ROTATE", // E
+                        0x54 => "SCALE",  // T
+                        _    => null,
+                    };
+                    if (tool is not null)
+                    {
+                        _runtimeManager?.SendToRuntime($"TOOL_HOTKEY:{tool}");
+                        // T はカメラキーではないのでここで打ち切る。
+                        // Q / W / E はカメラ上下・前後キーでもあるため素通しする。
+                        if (vk == 0x54) return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                    }
+                }
+            }
+        }
+
         // ESC / Del → 選択インスタンス削除（ダイアログあり）。
         // シーンビューポートにフォーカスがあるときだけ。テキスト編集中の Del/ESC で
         // シーンオブジェクトが消えないようにする。

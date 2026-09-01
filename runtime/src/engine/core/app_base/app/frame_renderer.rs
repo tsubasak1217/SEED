@@ -325,6 +325,10 @@ impl App {
         let dbg = dbg_frame < DEBUG_LOG_FRAMES;
         if dbg { eprintln!("[SEED FRAME {dbg_frame}] start  mode={:?}  paused={}", self.mode, self.paused); }
 
+        // モーダルトランスフォーム（G/R/S）の前提条件を点検する。
+        // Play 開始・シーン再読み込みでモーダルが宙に浮いたまま残らないようにする。
+        self.tick_modal_transform_guard();
+
         // フレーム凍結ウォッチドッグを初回に 1 度だけ起動する。
         ensure_frame_watchdog();
         // 「ループが生きている」信号: フレーム開始を記録する。ここを毎回更新することで、
@@ -1294,6 +1298,11 @@ impl App {
         // レンダラを可変借用する前に `&self` で組んでおき、GPU バッファ化だけを
         // 描画ブロック内で行う（借用の衝突を避けるため）。
         let control_point_lines = self.build_control_point_line_batch();
+
+        // モーダルトランスフォーム（G/R/S）の軸拘束線。
+        // 拘束中だけピボットを貫く 1 本の線を描く（X=赤 / Y=緑 / Z=青）。
+        // control_point_lines と同様、レンダラの可変借用前に頂点を組む。
+        let modal_axis_lines = self.build_modal_axis_line_batch();
 
         // ── LineRenderer（3D ポリライン: 釣り糸・ロープ・軌跡）の頂点収集 ──────
         // ゲーム内オブジェクトなので Play/Edit を問わず収集する（ギズモではない）。
@@ -3179,6 +3188,11 @@ impl App {
                     let control_point_thick_batch = control_point_lines.as_ref()
                         .filter(|b| !b.segment_lines.is_empty())
                         .map(|b| b.segment_lines.build_thick(&draw_ctx.device));
+
+                    // モーダルトランスフォームの軸拘束線を GPU バッファ化する。
+                    let modal_axis_batch = modal_axis_lines.as_ref()
+                        .filter(|b| !b.is_empty())
+                        .map(|b| b.build(&draw_ctx.device));
 
                     // LineRenderer のリボン頂点を GPU バッファ化する（深度あり／なしで 2 本）。
                     // 頂点は既にワールド空間・TriangleList 並びなので、
@@ -6805,6 +6819,18 @@ impl App {
                         {
                             draw_thick_line_batch(
                                 &mut pass, cp_thick_batch,
+                                &camera_buf.bind_group, line_bg,
+                                &draw_ctx.pipelines,
+                            );
+                        }
+
+                        // モーダルトランスフォーム（G/R/S）の軸拘束線描画。
+                        // 拘束中だけ出る 1 本の線で、他のシーンギズモと同じ細線経路に合流させる。
+                        if let (Some(axis_batch), Some((_, line_bg))) =
+                            (&modal_axis_batch, &self.line_model_buf)
+                        {
+                            draw_line_batch(
+                                &mut pass, axis_batch,
                                 &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );

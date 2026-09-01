@@ -14,6 +14,7 @@ use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
+use crate::engine::core::app_base::ipc::ToolMode;
 use crate::engine::methods::drawer::IdBuffer;
 
 use super::{
@@ -62,10 +63,44 @@ impl App {
         if let PhysicalKey::Code(key) = event.physical_key {
             self.input.process_key(key, pressed);
 
+            // 修飾キーの押下状態は、モーダルへ渡す前に必ず更新する
+            // （モーダル中は他のキーを飲み込むため、ここで漏らすと Shift が効かない）。
             match key {
-                KeyCode::ControlLeft | KeyCode::ControlRight => {
-                    self.ctrl_held = pressed;
+                KeyCode::ControlLeft | KeyCode::ControlRight => self.ctrl_held = pressed,
+                KeyCode::ShiftLeft | KeyCode::ShiftRight => self.shift_held = pressed,
+                _ => {}
+            }
+
+            // ── モーダルトランスフォーム（Blender 風 G/R/S）─────────────
+            // 開始キーと、モーダル中の全キーをここで消費する。
+            // Ctrl 併用時は既存ショートカット（Ctrl+Z/Y 等）を優先するため通さない。
+            if pressed && !self.ctrl_held && self.handle_modal_transform_key(key) {
+                return;
+            }
+            // モーダル中はキーリリースも含めて以降の処理を行わない
+            if self.modal_transform_active() {
+                return;
+            }
+
+            // ── ツール切り替えホットキー ────────────────────────────────
+            // Q=選択 / W=移動 / E=回転 / T=拡縮。
+            // 拡縮が R ではなく T なのは、R をモーダル回転に明け渡したため。
+            if pressed && !self.ctrl_held {
+                if let Some(tool) = match key {
+                    KeyCode::KeyQ => Some(ToolMode::Select),
+                    KeyCode::KeyW => Some(ToolMode::Move),
+                    KeyCode::KeyE => Some(ToolMode::Rotate),
+                    KeyCode::KeyT => Some(ToolMode::Scale),
+                    _ => None,
+                } {
+                    if self.mode == RuntimeMode::Edit || self.paused {
+                        self.set_tool_mode_from_hotkey(tool);
+                        return;
+                    }
                 }
+            }
+
+            match key {
                 KeyCode::Escape if pressed => {
                     // Esc: コントロールポイントの選択を解除する
                     //（アクタの選択は解除しない。点だけを手放して、
@@ -112,6 +147,40 @@ impl App {
     }
 
     // ============================================================
+    //  set_tool_mode_from_hotkey
+    // ============================================================
+
+    /// ホットキー（Q/W/E/T）でツールモードを切り替え、エディタへ通知する。
+    ///
+    /// ランタイム側だけで切り替えるとツールバーのラジオボタンがずれるため、
+    /// `TOOL_MODE:<名前>` を送ってエディタの表示を同期させる。
+    ///
+    /// 【無視する条件】
+    /// - RMB でのカメラ操作中（Q/W/E は上下・前後移動キーを兼ねるため）
+    /// - モーダルトランスフォーム進行中（モーダルはツール切替と排他）
+    pub(super) fn set_tool_mode_from_hotkey(&mut self, tool: ToolMode) {
+        if self.cam_input.rmb || self.modal_transform_active() {
+            return;
+        }
+        if !(self.mode == RuntimeMode::Edit || self.paused) {
+            return;
+        }
+        if self.tool_mode == tool {
+            return;
+        }
+        self.tool_mode = tool;
+        let name = match tool {
+            ToolMode::Select => "SELECT",
+            ToolMode::Move => "MOVE",
+            ToolMode::Rotate => "ROTATE",
+            ToolMode::Scale => "SCALE",
+        };
+        if let Some(ipc) = &self.ipc {
+            ipc.send(&format!("TOOL_MODE:{name}"));
+        }
+    }
+
+    // ============================================================
     //  on_mouse_button
     // ============================================================
 
@@ -124,6 +193,20 @@ impl App {
     pub(super) fn on_mouse_button(&mut self, button: MouseButton, state: ElementState) {
         let pressed = state == ElementState::Pressed;
         self.input.process_mouse_button(button, pressed);
+
+        // ── モーダルトランスフォーム中の排他処理 ────────────────────
+        // 左クリックで確定 / 右クリックで取消。それ以外のボタンは無視する。
+        // 通常の選択クリック・ギズモドラッグ・カメラ grab へは一切流さない。
+        if self.modal_transform_active() {
+            if pressed {
+                match button {
+                    MouseButton::Left => self.confirm_modal_transform(),
+                    MouseButton::Right => self.cancel_modal_transform(),
+                    _ => {}
+                }
+            }
+            return;
+        }
 
         if button == MouseButton::Left {
             if pressed && (self.mode == RuntimeMode::Edit || self.paused) && !self.cam_input.rmb {
@@ -227,6 +310,10 @@ impl App {
     /// マウスホイール処理（スクロール量をカメラ入力に積算する）。
     pub(super) fn on_mouse_wheel(&mut self, delta: MouseScrollDelta) {
         self.input.process_scroll(&delta);
+        // モーダル中はカメラ操作を無効化する（ズームでピボット投影がずれるのを防ぐ）
+        if self.modal_transform_active() {
+            return;
+        }
         let lines = match delta {
             MouseScrollDelta::LineDelta(_, y) => y,
             MouseScrollDelta::PixelDelta(p) => p.y as f32 / 20.0,

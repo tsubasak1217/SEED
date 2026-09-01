@@ -18,6 +18,7 @@ use super::{
     release_window_clamp,
 };
 use super::field_edit::{FieldEditTarget, field_edit_target, is_recording_suppressed};
+use super::modal_transform_state::{ModalAxis, ModalKind};
 
 // ── フレーム途絶中の IPC ポンプ（about_to_wait 経路）のチューニング定数 ──────────
 //
@@ -143,6 +144,33 @@ impl App {
                 // される（any_move_key が真のため）」という不具合になる。
                 IpcCommand::CamKeysClear       => self.cam_input.clear_keys(),
                 IpcCommand::SetToolMode(m)     => self.tool_mode = m,
+                IpcCommand::SetToolModeFromHotkey(m) => self.set_tool_mode_from_hotkey(m),
+                // ── モーダルトランスフォーム（Blender 風 G/R/S）────────────
+                // 埋め込み Edit ではキーボードフォーカスがエディタ側にあるため、
+                // キー入力はエディタのフックが拾って IPC で転送してくる。
+                IpcCommand::ModalBegin(kind)   => {
+                    let k = match kind {
+                        crate::engine::core::app_base::ipc::ModalTransformKind::Move   => ModalKind::Move,
+                        crate::engine::core::app_base::ipc::ModalTransformKind::Rotate => ModalKind::Rotate,
+                        crate::engine::core::app_base::ipc::ModalTransformKind::Scale  => ModalKind::Scale,
+                    };
+                    // 開始成功時は try_begin 側が MODAL_STATE:1 を送る。
+                    // 拒否された場合は、エディタが立てた先行フラグを下ろさせる。
+                    if !self.try_begin_modal_transform(k) {
+                        self.send_modal_transform_state(false);
+                    }
+                }
+                IpcCommand::ModalAxis(axis)    => {
+                    let a = match axis {
+                        crate::engine::core::app_base::ipc::ModalTransformAxis::X => ModalAxis::X,
+                        crate::engine::core::app_base::ipc::ModalTransformAxis::Y => ModalAxis::Y,
+                        crate::engine::core::app_base::ipc::ModalTransformAxis::Z => ModalAxis::Z,
+                    };
+                    self.modal_transform_press_axis(a);
+                }
+                // 確定・取消は App 側で MODAL_STATE:0 を送るので、ここでは呼ぶだけ。
+                IpcCommand::ModalConfirm       => self.confirm_modal_transform(),
+                IpcCommand::ModalCancel        => self.cancel_modal_transform(),
                 IpcCommand::SetGizmoSpace(s)   => self.gizmo_space = s,
                 IpcCommand::PlayClamp(v)       => {
                     self.play_clamp = v;
