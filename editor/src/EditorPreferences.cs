@@ -61,6 +61,25 @@ public sealed class EditorPreferences
     [JsonPropertyName("play_shader_hot_reload")]
     public bool PlayShaderHotReload { get; set; } = true;
 
+    /// <summary>
+    /// ロジック配置ダイアログで最後に使ったパターン指定。
+    ///
+    /// 「円形に 12 個」「5×5 グリッド」といった指定は同じ設定を続けて使うことが多く、
+    /// 毎回入れ直させるのは操作コストが高い。次に開いたときの初期値として復元する。
+    /// null（＝一度も使っていない）なら既定値で開く。
+    /// </summary>
+    [JsonPropertyName("logic_placement")]
+    public Placement.Patterns.PlacementSpec? LogicPlacement { get; set; }
+
+    /// <summary>
+    /// ロジック配置ダイアログの「地形に接地させる」の前回値。
+    ///
+    /// パターン指定（<see cref="LogicPlacement"/>）とは別に持つ。接地はパターンの
+    /// 一部ではなく「置き方」の設定であり、ランタイムへも spec とは別フィールドで送るため。
+    /// </summary>
+    [JsonPropertyName("logic_placement_ground")]
+    public bool LogicPlacementGround { get; set; }
+
     // ── シングルトン・永続化 ──────────────────────────────────
 
     /// <summary>読み込み済みの環境設定（Init 前は既定値）。</summary>

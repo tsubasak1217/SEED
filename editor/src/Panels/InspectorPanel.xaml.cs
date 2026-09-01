@@ -7062,6 +7062,40 @@ public partial class InspectorPanel : UserControl
         addPointBtn.PreviewMouseLeftButtonUp += (_, _) => addBtnPressPos = null;
 
         body.Children.Add(addPointBtn);
+
+        // ── 「ロジック配置で点を追加…」（円形・グリッド・直線・ランダムで一括追加）──
+        // 1 点ずつ置くのが現実的でないパス（円周上に 24 点・格子状のスポーン地点など）を
+        // ダイアログ 1 回で作れるようにする。生成はランタイムが LOGIC_PLACE 1 発で行い、
+        // Undo も 1 件にまとまる（点ごとに SET_CONTROL_POINTS を撃たない）。
+        var logicPlaceBtn = new Button
+        {
+            Content = "ロジック配置で点を追加…", FontSize = 11, Width = 170, Height = 22,
+            HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 2),
+            ToolTip = "円形・グリッド・直線・ランダムのパターンで、この点列の末尾へまとめて追加します。",
+        };
+        logicPlaceBtn.Click += (_, _) =>
+        {
+            if (_currentActorId < 0) return;
+            var ctx = new SEEDEditor.Placement.LogicPlacementContext
+            {
+                // 制御点は「アクタ相対の座標データ」なので、常に 3D 座標系で扱う
+                // （2D アクタに付いていても点の position は [x,y,z] のまま）。
+                Is2D                          = false,
+                IsControlPointMode            = true,
+                ActorDfsId                    = (uint)_currentActorId,
+                SlotIdx                       = (uint)info.SlotIdx,
+                RemainingControlPointCapacity = Math.Max(ControlPointMaxCount - points.Count, 0),
+            };
+            var win = new SEEDEditor.Placement.LogicPlacementWindow(ctx, _runtime)
+            {
+                Owner = Window.GetWindow(this),
+            };
+            win.ShowDialog();
+            // 追加後の点列はランタイムが ACTOR_COMPONENTS を再送してくるので、
+            // ここで UI を作り直す必要は無い（二重更新を避ける）。
+        };
+        body.Children.Add(logicPlaceBtn);
+
         body.Children.Add(limitHint);
         body.Children.Add(MakeHint(
             "ボタンをビューポートへドラッグ＆ドロップすると、落とした先の地形・メッシュ・水面上に点を追加します（続けてドロップすれば連続で置けます）。"));

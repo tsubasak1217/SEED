@@ -18,3 +18,5 @@ pub mod path;
 pub mod water;
 /// インタラクションフィールド（Phase I）: 書き手（InteractionSource）の収集と速度算出
 pub mod interaction;
+/// ロジック配置: 円形・グリッド・直線・ランダムのパターンから決定的に点列を生成する純粋層
+pub mod placement;

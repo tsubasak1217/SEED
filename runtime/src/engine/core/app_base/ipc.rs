@@ -612,6 +612,17 @@ pub enum IpcCommand {
     /// key: volume_a / volume_b / opening_bottom / opening_height /
     ///      opening_width / openness / flow_coefficient。
     SetWaterLinkField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// ロジック配置（logic_placement_ops.rs が処理）。
+    /// フォーマット: LOGIC_PLACE:{json}
+    ///
+    /// json は `LogicPlaceRequest`（配置対象・基準点・配置元アクタファイル・
+    /// 地形接地の有無・パターン指定 `spec`）。
+    ///
+    /// **なぜ 1 コマンドで送るのか**: 点列の生成・地形接地・アクタ生成は
+    /// いずれもランタイム側にしか材料が無く、点ごとに往復させると Undo が
+    /// 多数件に割れる。「1 コマンド = 1 Undo」を守るため一括で渡す
+    /// （エディタの俯瞰プレビューは同アルゴリズムの写しで描くだけ）。
+    LogicPlace { json: String },
     /// ControlPointComponent の点列を **JSON でまるごと置き換える**（control_point_ops.rs が処理）。
     /// フォーマット: SET_CONTROL_POINTS:{actor_dfs_id},{slot_idx},{json}
     /// json は `[{"position":[x,y,z],"rotation":[x,y,z],"time":t,"interp":"CatmullRom"},...]`。
@@ -2241,6 +2252,14 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     actor_dfs_id: a, slot_idx: sl,
                                     key: key.to_string(), value: value.to_string(),
                                 })
+                            })
+                        }
+                        s if s.starts_with("LOGIC_PLACE:") => {
+                            // フォーマット: LOGIC_PLACE:{json}
+                            // 本体はまるごと JSON なので、接頭辞を落として素通しする
+                            // （中身の検証は logic_placement_ops の serde に任せる）。
+                            Some(IpcCommand::LogicPlace {
+                                json: s["LOGIC_PLACE:".len()..].to_string(),
                             })
                         }
                         s if s.starts_with("SET_CONTROL_POINTS:") => {

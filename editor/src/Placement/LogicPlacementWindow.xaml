@@ -1,0 +1,336 @@
+﻿<Window x:Class="SEEDEditor.Placement.LogicPlacementWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ロジック配置"
+        Width="780" Height="620"
+        MinWidth="700" MinHeight="520"
+        WindowStyle="ToolWindow"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="#1E1E1E"
+        PreviewKeyDown="OnWindowPreviewKeyDown">
+
+    <!-- ════════════════════════════════════════════════════════════════
+         ロジック配置ダイアログ
+
+         左: パラメータ（パターンごとに表示切替）/ 右: 俯瞰プレビュー。
+         プレビューは C# 側 PlacementGenerator（Rust の写し）で即時描画し、
+         実際の生成はランタイムへ LOGIC_PLACE を 1 発送って任せる。
+
+         配色はエディタ全体のダークテーマに合わせる。ComboBox だけは
+         App.xaml の暗黙スタイルが当たるので、ここでは指定しない。
+         ════════════════════════════════════════════════════════════════ -->
+    <Window.Resources>
+        <!-- 見出し・ラベル -->
+        <Style x:Key="LabelStyle" TargetType="TextBlock">
+            <Setter Property="Foreground"         Value="#CCCCCC"/>
+            <Setter Property="FontSize"           Value="11"/>
+            <Setter Property="VerticalAlignment"  Value="Center"/>
+            <Setter Property="Margin"             Value="0,0,6,0"/>
+        </Style>
+        <!-- 補足説明（薄い色・小さめ） -->
+        <Style x:Key="HintStyle" TargetType="TextBlock">
+            <Setter Property="Foreground"    Value="#888888"/>
+            <Setter Property="FontSize"      Value="10"/>
+            <Setter Property="TextWrapping"  Value="Wrap"/>
+            <Setter Property="Margin"        Value="0,2,0,4"/>
+        </Style>
+        <!-- 数値・テキスト入力 -->
+        <Style TargetType="TextBox">
+            <Setter Property="Background"        Value="#2A2A2A"/>
+            <Setter Property="Foreground"        Value="#DCDCDC"/>
+            <Setter Property="BorderBrush"       Value="#3F3F46"/>
+            <Setter Property="BorderThickness"   Value="1"/>
+            <Setter Property="Padding"           Value="4,2"/>
+            <Setter Property="FontSize"          Value="11"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <!-- チェックボックス・ラジオボタン -->
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="FontSize"   Value="11"/>
+            <Setter Property="Margin"     Value="0,3,0,3"/>
+        </Style>
+        <Style TargetType="RadioButton">
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="FontSize"   Value="11"/>
+            <Setter Property="Margin"     Value="0,3,12,3"/>
+        </Style>
+        <!-- セクション枠 -->
+        <Style TargetType="GroupBox">
+            <Setter Property="Foreground"      Value="#9FBFDF"/>
+            <Setter Property="BorderBrush"     Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Margin"          Value="0,0,0,8"/>
+            <Setter Property="Padding"         Value="8,4,8,6"/>
+            <Setter Property="FontSize"        Value="11"/>
+        </Style>
+        <!-- ボタン -->
+        <Style TargetType="Button">
+            <Setter Property="Background"      Value="#333338"/>
+            <Setter Property="Foreground"      Value="#DCDCDC"/>
+            <Setter Property="BorderBrush"     Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding"         Value="10,4"/>
+            <Setter Property="FontSize"        Value="11"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="10">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="390"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ── 左: パラメータ ──────────────────────────────────── -->
+        <ScrollViewer Grid.Row="0" Grid.Column="0" VerticalScrollBarVisibility="Auto" Margin="0,0,10,0">
+            <StackPanel>
+
+                <!-- 配置元（ControlPoint への追加時は非表示） -->
+                <GroupBox x:Name="SourceGroup" Header="配置元">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton x:Name="RadioSourceEmpty" Content="空アクタ" IsChecked="True"
+                                         GroupName="Source" Checked="OnSourceKindChanged"/>
+                            <RadioButton x:Name="RadioSourceFile"  Content="アクタファイル"
+                                         GroupName="Source" Checked="OnSourceKindChanged"/>
+                        </StackPanel>
+                        <Grid x:Name="SourcePathRow" Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="TxtSourcePath" Grid.Column="0" IsReadOnly="True"
+                                     Text="" ToolTip="配置元のアクタファイル（未選択なら空アクタ）"/>
+                            <Button Grid.Column="1" Content="参照…" Margin="6,0,0,0" Click="OnBrowseSourceFile"/>
+                        </Grid>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- パターン選択 -->
+                <GroupBox Header="パターン">
+                    <StackPanel>
+                        <ComboBox x:Name="CmbPattern" SelectionChanged="OnPatternChanged" Height="24"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- 円形／円弧 -->
+                <GroupBox x:Name="CircleGroup" Header="円形／円弧">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="個数"     Style="{StaticResource LabelStyle}"/>
+                            <TextBox   Grid.Row="0" Grid.Column="1" x:Name="TxtCircleCount"  Margin="0,2"/>
+                            <TextBlock Grid.Row="0" Grid.Column="2" Text="半径"     Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
+                            <TextBox   Grid.Row="0" Grid.Column="3" x:Name="TxtCircleRadius" Margin="0,2"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="開始角"   Style="{StaticResource LabelStyle}"/>
+                            <TextBox   Grid.Row="1" Grid.Column="1" x:Name="TxtCircleStart"  Margin="0,2"/>
+                            <TextBlock Grid.Row="1" Grid.Column="2" Text="角度範囲" Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
+                            <TextBox   Grid.Row="1" Grid.Column="3" x:Name="TxtCircleSpan"   Margin="0,2"/>
+                        </Grid>
+                        <CheckBox x:Name="ChkFaceCenter" Content="中心を向く"/>
+                        <TextBlock Style="{StaticResource HintStyle}"
+                                   Text="角度範囲 360 で全周。360 未満なら円弧になり、両端に点が置かれます。"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- グリッド -->
+                <GroupBox x:Name="GridGroup" Header="グリッド">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="行"  Style="{StaticResource LabelStyle}"/>
+                            <TextBox   Grid.Row="0" Grid.Column="1" x:Name="TxtGridRows"   Margin="0,2"/>
+                            <TextBlock Grid.Row="0" Grid.Column="2" Text="列"  Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
+                            <TextBox   Grid.Row="0" Grid.Column="3" x:Name="TxtGridCols"   Margin="0,2"/>
+                            <TextBlock Grid.Row="0" Grid.Column="4" x:Name="LblGridLayers" Text="段" Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
+                            <TextBox   Grid.Row="0" Grid.Column="5" x:Name="TxtGridLayers" Margin="0,2"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="間隔X" Style="{StaticResource LabelStyle}"/>
+                            <TextBox   Grid.Row="1" Grid.Column="1" x:Name="TxtGridSpacingX" Margin="0,2"/>
+                            <TextBlock Grid.Row="1" Grid.Column="2" x:Name="LblGridSpacingZ" Text="間隔Z" Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
+                            <TextBox   Grid.Row="1" Grid.Column="3" x:Name="TxtGridSpacingZ" Margin="0,2"/>
+                            <TextBlock Grid.Row="1" Grid.Column="4" x:Name="LblGridSpacingY" Text="間隔Y" Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
+                            <TextBox   Grid.Row="1" Grid.Column="5" x:Name="TxtGridSpacingY" Margin="0,2"/>
+                        </Grid>
+                        <StackPanel Orientation="Horizontal">
+                            <CheckBox x:Name="ChkGridCenter"  Content="中心揃え" Margin="0,3,14,3"/>
+                            <CheckBox x:Name="ChkGridChecker" Content="市松オフセット"/>
+                        </StackPanel>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- 直線 -->
+                <GroupBox x:Name="LineGroup" Header="直線">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="個数" Style="{StaticResource LabelStyle}"/>
+                            <TextBox   Grid.Column="1" x:Name="TxtLineCount"   Margin="0,2"/>
+                            <TextBlock Grid.Column="2" Text="方向" Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
+                            <TextBox   Grid.Column="3" x:Name="TxtLineAngle"   Margin="0,2"/>
+                            <TextBlock Grid.Column="4" Text="間隔" Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
+                            <TextBox   Grid.Column="5" x:Name="TxtLineSpacing" Margin="0,2"/>
+                        </Grid>
+                        <CheckBox x:Name="ChkLineCenter" Content="基準点を線の中心にする"/>
+                        <TextBlock Style="{StaticResource HintStyle}"
+                                   Text="方向は度。0 で奥（+Z）方向、90 で右（+X）方向へ伸びます。"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- ランダム散布 -->
+                <GroupBox x:Name="RandomGroup" Header="ランダム散布">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton x:Name="RadioAreaCircle" Content="円範囲" IsChecked="True"
+                                         GroupName="Area" Checked="OnAreaKindChanged"/>
+                            <RadioButton x:Name="RadioAreaRect"   Content="矩形範囲"
+                                         GroupName="Area" Checked="OnAreaKindChanged"/>
+                        </StackPanel>
+                        <Grid x:Name="AreaCircleRow">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="半径" Style="{StaticResource LabelStyle}"/>
+                            <TextBox   Grid.Column="1" x:Name="TxtAreaRadius" Margin="0,2"/>
+                        </Grid>
+                        <Grid x:Name="AreaRectRow">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="幅X" Style="{StaticResource LabelStyle}"/>
+                            <TextBox   Grid.Column="1" x:Name="TxtAreaSizeX" Margin="0,2"/>
+                            <TextBlock Grid.Column="2" x:Name="LblAreaSizeZ" Text="幅Z" Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
+                            <TextBox   Grid.Column="3" x:Name="TxtAreaSizeZ" Margin="0,2"/>
+                        </Grid>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="個数"     Style="{StaticResource LabelStyle}"/>
+                            <TextBox   Grid.Column="1" x:Name="TxtRandomCount"   Margin="0,2"/>
+                            <TextBlock Grid.Column="2" Text="最小間隔" Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
+                            <TextBox   Grid.Column="3" x:Name="TxtRandomMinSpacing" Margin="0,2"/>
+                        </Grid>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="スケールばらつき" Style="{StaticResource LabelStyle}"/>
+                            <TextBox   Grid.Column="1" x:Name="TxtScaleVariance" Margin="0,2"
+                                       ToolTip="±の割合。0.2 なら 0.8〜1.2 倍"/>
+                        </Grid>
+                        <CheckBox x:Name="ChkRandomRotation" Content="回転をランダムにする"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- 共通 -->
+                <GroupBox Header="共通">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="位置ジッター" Style="{StaticResource LabelStyle}"/>
+                            <TextBox   Grid.Column="1" x:Name="TxtJitterPos" Margin="0,2"/>
+                            <TextBlock Grid.Column="2" Text="回転ジッター" Style="{StaticResource LabelStyle}" Margin="8,0,6,0"/>
+                            <TextBox   Grid.Column="3" x:Name="TxtJitterRot" Margin="0,2"/>
+                        </Grid>
+                        <Grid Margin="0,2,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="シード" Style="{StaticResource LabelStyle}"/>
+                            <TextBox   Grid.Column="1" x:Name="TxtSeed"/>
+                            <Button    Grid.Column="2" Content="ランダム" Margin="6,0,0,0" Click="OnRandomizeSeed"/>
+                        </Grid>
+                        <CheckBox x:Name="ChkFaceForward" Content="進行方向を向く"/>
+                        <CheckBox x:Name="ChkGround"      Content="地形に接地させる"
+                                  ToolTip="地表が見つからない点は基準の高さのままになります（3D のみ）"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- 基準点（ControlPoint への追加時は非表示） -->
+                <GroupBox x:Name="BaseGroup" Header="基準点">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton x:Name="RadioBaseParent" Content="対象アクタの位置" GroupName="Base"/>
+                            <RadioButton x:Name="RadioBaseOrigin" Content="ワールド原点" GroupName="Base" IsChecked="True"/>
+                        </StackPanel>
+                    </StackPanel>
+                </GroupBox>
+
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- ── 右: 俯瞰プレビュー ──────────────────────────────── -->
+        <Grid Grid.Row="0" Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="プレビュー（真上から見た図）" Style="{StaticResource LabelStyle}" Margin="0,0,0,4"/>
+            <Border Grid.Row="1" Background="#141414" BorderBrush="#3F3F46" BorderThickness="1">
+                <Canvas x:Name="PreviewCanvas" ClipToBounds="True" SizeChanged="OnPreviewCanvasSizeChanged"/>
+            </Border>
+            <TextBlock Grid.Row="2" x:Name="TxtWarning" Style="{StaticResource HintStyle}"
+                       Foreground="#E0A030" Margin="0,4,0,0"/>
+        </Grid>
+
+        <!-- ── 下: 件数表示とボタン ────────────────────────────── -->
+        <Grid Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" x:Name="TxtSummary" Style="{StaticResource LabelStyle}"/>
+            <Button Grid.Column="1" x:Name="BtnAdd"    Content="追加"     Width="90" Click="OnAdd"    Margin="0,0,8,0"/>
+            <Button Grid.Column="2" x:Name="BtnCancel" Content="キャンセル" Width="90" Click="OnCancel"/>
+        </Grid>
+    </Grid>
+</Window>

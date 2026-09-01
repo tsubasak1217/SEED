@@ -1,0 +1,37 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ロジック配置（パターン生成）のアルゴリズム単体テスト。
+
+    SpriteRigTests と同じ方針:
+      1. 外部パッケージ（xunit 等）に依存させず、素のコンソールアプリ + 自前アサート
+         → NuGet の追加取得なしで `dotnet run` だけで回せる
+      2. SEEDEditor 本体（WPF / WinExe）を参照せず、対象ソースをリンクで取り込む
+         → ここに列挙されるファイルは WPF 型を使ってはならず、
+           使った瞬間に本テストがビルドできなくなる（＝設計崩れの検知器）
+
+    本テストの最重要の役割は「Rust 側 engine::placement との一致の固定」。
+    同じ既知入力に対して両者が同じ点列を返すことを、双方のテストが
+    同一の期待値で押さえる（片方だけ直すと必ずどちらかが落ちる）。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.Placement</RootNamespace>
+    <AssemblyName>PlacementTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象（WPF 非依存のパターン生成ロジック一式） -->
+    <Compile Include="..\..\src\Placement\Patterns\*.cs">
+      <Link>Linked\Patterns\%(Filename)%(Extension)</Link>
+    </Compile>
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

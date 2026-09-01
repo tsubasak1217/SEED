@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -991,7 +991,66 @@ public partial class HierarchyPanel : UserControl
 
         sub.Items.Add(item3D);
         sub.Items.Add(item2D);
+        // ロジック配置は「1 クリックで 1 体足す」通常操作とは性質が違う（ダイアログを開く）
+        // ので、同じ階層に並べつつ 1 段下げる。通常の追加は従来どおり 1 クリックのまま。
+        sub.Items.Add(BuildLogicPlacementSubMenu(
+            asChild && _rightClickedNode is not null ? (uint)_rightClickedNode.Id : null,
+            disallowRoot3D ? "キャンバス編集中はルートに3Dアクターを追加できません" : null));
         return sub;
+    }
+
+    /// <summary>
+    /// 「ロジック配置」サブメニューを生成する。
+    ///
+    /// 円形・グリッド・直線・ランダムのパターンでアクタ群を一括生成するダイアログを開く。
+    /// 生成はランタイム側が 1 コマンドで行い、Undo も 1 件にまとまる。
+    /// </summary>
+    /// <param name="parentDfs">生成するグループを収める親アクタの DFS id（ルートなら null）。</param>
+    /// <param name="disallow3DReason">
+    /// 3D 配置を禁止する理由（禁止しないなら null）。理由をそのままツールチップに出すので、
+    /// 「なぜ選べないのか」が操作者に伝わる。
+    /// </param>
+    /// <param name="disallow2DReason">2D 配置を禁止する理由（禁止しないなら null）。</param>
+    private MenuItem BuildLogicPlacementSubMenu(
+        uint? parentDfs, string? disallow3DReason, string? disallow2DReason = null)
+    {
+        var sub = new MenuItem { Header = "ロジック配置" };
+
+        var item3D = new MenuItem { Header = "3D アクタ", IsEnabled = disallow3DReason is null };
+        if (disallow3DReason is not null) item3D.ToolTip = disallow3DReason;
+        item3D.Click += (_, _) => { if (item3D.IsEnabled) ShowLogicPlacementDialog(parentDfs, is2D: false); };
+
+        var item2D = new MenuItem { Header = "2D アクタ", IsEnabled = disallow2DReason is null };
+        if (disallow2DReason is not null) item2D.ToolTip = disallow2DReason;
+        item2D.Click += (_, _) => { if (item2D.IsEnabled) ShowLogicPlacementDialog(parentDfs, is2D: true); };
+
+        sub.Items.Add(item3D);
+        sub.Items.Add(item2D);
+        return sub;
+    }
+
+    /// <summary>
+    /// ロジック配置ダイアログを開く。
+    ///
+    /// グループフォルダ名の重複回避はヒエラルキーの命名規則
+    /// （<see cref="GetUniqueName"/>）へ委ね、ダイアログ側に再実装しない。
+    /// </summary>
+    /// <param name="parentDfs">生成するグループを収める親アクタの DFS id（ルートなら null）。</param>
+    /// <param name="is2D">2D アクタとして配置するか。</param>
+    private void ShowLogicPlacementDialog(uint? parentDfs, bool is2D)
+    {
+        var ctx = new Placement.LogicPlacementContext
+        {
+            Is2D                = is2D,
+            ParentDfs           = parentDfs,
+            IsControlPointMode  = false,
+            MakeUniqueGroupName = baseName => GetUniqueName(baseName, -1),
+        };
+        var win = new Placement.LogicPlacementWindow(ctx, _runtime)
+        {
+            Owner = Window.GetWindow(this),
+        };
+        win.ShowDialog();
     }
 
     /// <summary>
@@ -1079,6 +1138,20 @@ public partial class HierarchyPanel : UserControl
             m3d.Items.Add(child3d);
             sub.Items.Add(m3d);
         }
+
+        // ── ロジック配置（対象アクタの子として、パターンでまとめて生成）──────
+        // 生成物は必ずグループフォルダにまとまるため、「親としてラップ」に相当する
+        // 選択肢は持たない（ラップは 1 体を包む操作で、群の生成とは意味が違う）。
+        // 対象が 2D なら 3D は子にできないため、2D 配置だけを出す。
+        // 種別の可否は上の「子として追加」と同じ規則にそろえる:
+        //   ・対象が 2D  → 3D は子にできない
+        //   ・対象が Canvas 無しの 3D → 2D は子にできない
+        sub.Items.Add(BuildLogicPlacementSubMenu(
+            (uint)target.Id,
+            target.Is2D ? "3Dアクターは2Dアクターの子にできません" : null,
+            (!target.Is2D && !target.HasCanvas)
+                ? "Canvasを持たない3Dアクターに2Dアクターは追加できません"
+                : null));
 
         return sub;
     }

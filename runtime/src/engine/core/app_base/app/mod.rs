@@ -104,6 +104,8 @@ pub(crate) mod jointattach_scene_gizmo;
 pub(crate) mod skybox_scene_gizmo;
 pub(crate) mod particle_scene_gizmo;
 mod prefab_ops;
+/// ロジック配置（LOGIC_PLACE）: パターン生成 → 接地 → アクタ生成／制御点追記
+mod logic_placement_ops;
 pub(crate) mod camera_scene_gizmo;
 pub(super) mod terrain_ops;
 pub(crate) mod terrain_mesh_build;

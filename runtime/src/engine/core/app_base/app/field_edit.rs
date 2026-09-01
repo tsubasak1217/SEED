@@ -285,6 +285,10 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::EndTransformDrag
         | IpcCommand::SetControlPoints { .. }
         | IpcCommand::SetControlPointPos { .. }
+        // ロジック配置はハンドラ側が Undo を 1 件積む
+        // （アクタ生成なら ActorTreeSnapshotCommand、制御点追記なら
+        //   ComponentSlotsSnapshotCommand）。ここで記録すると二重になる。
+        | IpcCommand::LogicPlace { .. }
         | IpcCommand::SelectControlPoint { .. }
         | IpcCommand::AddControlPointAtScreen { .. }
         | IpcCommand::ControlPointDragHover { .. }
