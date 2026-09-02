@@ -1339,6 +1339,11 @@ impl App {
                 IpcCommand::SetControlPointPos { actor_dfs_id, slot_idx, index, x, y, z } => {
                     self.handle_set_control_point_pos(actor_dfs_id, slot_idx, index, [x, y, z]);
                 }
+                IpcCommand::SetControlPointField { actor_dfs_id, slot_idx, key, value } => {
+                    // 点列以外のパス設定（closed など）のインスペクタ更新。
+                    // Undo は field_edit.rs の共通機構が担当する（ここでは記録しない）。
+                    self.handle_set_control_point_field(actor_dfs_id, slot_idx, &key, &value);
+                }
                 IpcCommand::SelectControlPoint { actor_dfs_id, slot_idx, index } => {
                     self.handle_select_control_point(actor_dfs_id, slot_idx, index);
                 }

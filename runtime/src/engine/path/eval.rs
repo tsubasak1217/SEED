@@ -27,7 +27,9 @@
 //  本 API 以外を触らずに済むようにしてある。
 // ============================================================
 
-use crate::engine::components::control_point_component::{ControlPoint, ControlPointInterp};
+use crate::engine::components::control_point_component::{
+    ControlPoint, ControlPointComponent, ControlPointInterp, DEFAULT_TIME_STEP,
+};
 use crate::engine::components::Transform;
 use crate::engine::methods::gizmo_interact::mat4x4_mul;
 
@@ -53,6 +55,14 @@ pub const PATH_MIN_STEP_M: f32 = 0.01;
 
 /// パスが「区間を持つ」ために必要な最小の点数。
 pub const PATH_MIN_POINTS_FOR_SEGMENT: usize = 2;
+
+/// 閉ループ（`closed = true`）で「最後の点 → 最初の点」を結ぶ区間の所要時刻。
+///
+/// 制御点 1 つぶんの既定時間（`DEFAULT_TIME_STEP`）をそのまま採る。
+/// こうすると「点を追加順に置いただけのパス」を閉じたとき、
+/// **閉じる区間だけ速い／遅い**という不自然さが出ない
+/// （既定では全区間が 1 ステップずつの等時間になる）。
+pub const PATH_CLOSING_SEGMENT_DURATION: f32 = DEFAULT_TIME_STEP;
 
 // ─── ResolvedControlPoint ─────────────────────────────────────
 
@@ -94,14 +104,36 @@ pub struct PathSample {
 pub struct PathEval {
     /// 解決済みの制御点列（順序 = パスの順序）。
     points: Vec<ResolvedControlPoint>,
+    /// 始点と終点を接続する（閉ループ）か。
+    ///
+    /// true のとき「最後の点 → 最初の点」の区間が 1 つ増え、
+    /// 時刻の問い合わせは端でクランプせず**周回**する。
+    closed: bool,
 }
 
 impl PathEval {
-    /// アクタ相対の制御点列と、そのアクタの Transform からワールド空間のパスを構築する。
+    /// `ControlPointComponent`（点列＋閉ループ設定）とアクタ Transform からパスを構築する。
+    ///
+    /// **コンポーネントを持っている呼び出し側はこれを使うこと。**
+    /// `from_points` は `closed` を渡し忘れると黙って開いたパスになるため、
+    /// 「データにある閉ループ設定を取りこぼさない」入口をこちらに用意してある。
+    pub fn from_component(comp: &ControlPointComponent, actor: &Transform) -> Self {
+        Self::from_points_closed(&comp.points, actor, comp.closed)
+    }
+
+    /// アクタ相対の制御点列と、そのアクタの Transform から**開いた**パスを構築する。
     ///
     /// 点が 0 個でも構築は成功する（問い合わせが一律 `None` を返すだけ）。
     /// 「点が足りない」ことを呼び出し側でいちいち分岐させないための設計。
     pub fn from_points(points: &[ControlPoint], actor: &Transform) -> Self {
+        Self::from_points_closed(points, actor, false)
+    }
+
+    /// 閉ループ指定つきでパスを構築する。
+    ///
+    /// `closed = true` のとき「最後の点 → 最初の点」の区間が 1 つ増える
+    /// （点が 2 個未満のときは区間が作れないので `closed` は無視される）。
+    pub fn from_points_closed(points: &[ControlPoint], actor: &Transform, closed: bool) -> Self {
         let actor_mat = actor.to_mat4();
         let resolved = points.iter().map(|p| {
             // 点のローカル行列（位置・回転・**拡縮**）を作り、アクタ行列と合成してから
@@ -123,7 +155,7 @@ impl PathEval {
                 interp:   p.interp,
             }
         }).collect();
-        Self { points: resolved }
+        Self { points: resolved, closed }
     }
 
     /// 解決済み制御点列への参照（描画・ピッキングが点そのものを必要とする）。
@@ -135,14 +167,50 @@ impl PathEval {
     /// 制御点が 1 つも無いか。
     pub fn is_empty(&self) -> bool { self.points.is_empty() }
 
-    /// 時刻の範囲（最初の点の time, 最後の点の time）。点が無ければ None。
+    /// 閉ループ（始点と終点が接続されている）か。
     ///
-    /// 点列の `time` が単調でない場合でも「先頭と末尾」をそのまま返す
+    /// 点が 2 個未満のときは区間が作れないので、指定に関わらず false を返す
+    /// （「閉じているのに線が 1 本も無い」という矛盾した状態を作らないため）。
+    pub fn is_closed(&self) -> bool {
+        self.closed && self.points.len() >= PATH_MIN_POINTS_FOR_SEGMENT
+    }
+
+    /// **区間（線分）の数**。開いたパスは `点数 - 1`、閉ループは `点数`。
+    ///
+    /// 描画も折れ線化も評価も、区間の走査は必ずこの値を使うこと
+    /// （`points.len() - 1` を直に書くと閉じる区間が抜ける）。
+    /// 点が 2 個未満なら 0。
+    pub fn segment_count(&self) -> usize {
+        let n = self.points.len();
+        if n < PATH_MIN_POINTS_FOR_SEGMENT { return 0; }
+        if self.is_closed() { n } else { n - 1 }
+    }
+
+    /// 区間 `index` の**終点**にあたる制御点の添字。
+    ///
+    /// 開いたパスでは `index + 1`、閉ループの最終区間だけ 0（＝先頭へ戻る）。
+    fn segment_end_index(&self, index: usize) -> usize {
+        (index + 1) % self.points.len().max(1)
+    }
+
+    /// 時刻の範囲（パスの開始時刻, 終了時刻）。点が無ければ None。
+    ///
+    /// 点列の `time` が単調でない場合でも「先頭と末尾」をそのまま使う
     /// （並べ替えはしない ＝ 添字の順序がパスの順序であるという契約を守る）。
+    ///
+    /// **閉ループのときは終了時刻に `PATH_CLOSING_SEGMENT_DURATION` を足す**
+    /// （最後の点の時刻 + 1 ステップで最初の点へ戻り、そこが 1 周ぶんの終わり）。
+    /// この定義のおかげで `duration()` がそのまま「1 周の長さ」になり、
+    /// 進捗 1.0 と時刻 `t0 + duration` がどちらも始点へ戻る。
     pub fn time_range(&self) -> Option<(f32, f32)> {
         let first = self.points.first()?;
         let last  = self.points.last()?;
-        Some((first.time, last.time))
+        let end = if self.is_closed() {
+            last.time + PATH_CLOSING_SEGMENT_DURATION
+        } else {
+            last.time
+        };
+        Some((first.time, end))
     }
 
     /// パス全体の所要時間（末尾 time − 先頭 time）。点が無ければ None。
@@ -152,7 +220,9 @@ impl PathEval {
 
     /// 指定時刻におけるパス上の位置・姿勢を返す。
     ///
-    /// 区間外はクランプする（先頭より前は先頭、末尾より後は末尾）。
+    /// 開いたパスでは区間外をクランプする（先頭より前は先頭、末尾より後は末尾）。
+    /// **閉ループではクランプせず周回する**（1 周ぶんの時刻で剰余を取る）ので、
+    /// 呼び出し側は時刻を増やし続けるだけでループ再生になる。
     /// 点が 0 個のときのみ None。点が 1 個ならその点を常に返す。
     pub fn sample_at_time(&self, t: f32) -> Option<PathSample> {
         let (index, u) = self.locate_time(t)?;
@@ -166,23 +236,30 @@ impl PathEval {
 
     /// 進捗 0..1 におけるパス上の位置・姿勢を返す。
     ///
-    /// 進捗は**時刻の範囲**へ写す（0 = 先頭の time、1 = 末尾の time）。
-    /// 所要時間が 0（全点が同時刻）の場合のみ、**区間の添字空間**へ写す
-    /// （0 = 先頭の点、1 = 末尾の点）。時刻を設定していない点列でも
-    /// 「等間隔にパスを辿る」用途が壊れないようにするための退避規則。
+    /// 進捗は**時刻の範囲**へ写す（0 = 先頭の time、1 = 末尾の time。
+    /// 閉ループでは 1 = 1 周して先頭へ戻ったところ）。
+    /// **点列の時刻が全点同一**（＝時刻を設定していない）場合のみ、
+    /// **区間の添字空間**へ写す（0 = 先頭の点、1 = 末尾の区間の終わり）。
+    /// 時刻を設定していない点列でも「等間隔にパスを辿る」用途が壊れないようにする退避規則。
     pub fn sample_at_progress(&self, progress: f32) -> Option<PathSample> {
         let n = self.points.len();
         if n == 0 { return None; }
         let p = progress.clamp(0.0, 1.0);
         let (t0, t1) = self.time_range()?;
-        if (t1 - t0).abs() > PATH_EPSILON {
+        // 退避規則の判定には **点の時刻の広がり**（末尾 − 先頭）を使う。
+        // `time_range` は閉ループだと閉じる区間ぶんを足すため、これで判定すると
+        // 「全点が同時刻の閉ループ」が時刻空間へ落ちて、最初の区間が
+        // 所要時刻 0 になり進捗のほとんどが閉じる区間に食われてしまう。
+        let points_time_span = self.points[n - 1].time - self.points[0].time;
+        if points_time_span.abs() > PATH_EPSILON {
             return self.sample_at_time(t0 + (t1 - t0) * p);
         }
         // 時刻が全点同一 → 区間の添字空間で等分する。
+        // 区間数は閉ループなら 1 つ多い（閉じる区間ぶんも等分の対象にする）。
         if n < PATH_MIN_POINTS_FOR_SEGMENT {
             return Some(self.eval_segment(0, 0.0));
         }
-        let span_count = n - 1;
+        let span_count = self.segment_count();
         let scaled = p * span_count as f32;
         let index  = (scaled.floor() as usize).min(span_count - 1);
         let u      = (scaled - index as f32).clamp(0.0, 1.0);
@@ -216,12 +293,14 @@ impl PathEval {
         let step = step_m.max(PATH_MIN_STEP_M);
 
         // ── ① 区間ごとの分割数を決める（Catmull-Rom のみ分割する）──
-        let span_count = n - 1;
+        // 区間数は `segment_count()`（閉ループなら閉じる区間ぶん 1 つ多い）。
+        let span_count = self.segment_count();
         let mut divisions: Vec<usize> = Vec::with_capacity(span_count);
         for i in 0..span_count {
+            let end = self.segment_end_index(i);
             let div = match self.points[i].interp {
                 ControlPointInterp::CatmullRom => {
-                    let chord = distance3(self.points[i].position, self.points[i + 1].position);
+                    let chord = distance3(self.points[i].position, self.points[end].position);
                     ((chord / step).ceil() as usize).max(1)
                 }
                 // 直線・階段は分割しても頂点が増えるだけで形は変わらない。
@@ -240,6 +319,7 @@ impl PathEval {
 
         // ── ② 区間内を [0,1) で刻み、最後に終端の点を 1 つだけ足す ──
         //     （区間境界で頂点が重複しないようにするため）。
+        //     閉ループの終端は**最初の点**（＝線が輪として閉じる）。
         let mut out: Vec<[f32; 3]> = Vec::with_capacity(divisions.iter().sum::<usize>() + 1);
         for (i, &div) in divisions.iter().enumerate() {
             for s in 0..div {
@@ -247,7 +327,7 @@ impl PathEval {
                 out.push(self.eval_segment(i, u).position);
             }
         }
-        out.push(self.points[n - 1].position);
+        out.push(if self.is_closed() { self.points[0].position } else { self.points[n - 1].position });
         out
     }
 
@@ -257,15 +337,16 @@ impl PathEval {
     /// （`sample_polyline` は区間境界の重複を避けるため終端を含めないので、用途が異なる）。
     /// 区間ごとに色や線種を変えて描くビューポート表示のために用意している。
     ///
-    /// 区間が存在しない添字なら空を返す。
+    /// 区間が存在しない添字なら空を返す
+    /// （閉ループでは最終区間の添字が `点数 - 1`＝「最後の点 → 最初の点」になる）。
     pub fn segment_polyline(&self, index: usize, step_m: f32) -> Vec<[f32; 3]> {
-        let n = self.points.len();
-        if n < PATH_MIN_POINTS_FOR_SEGMENT || index + 1 >= n { return Vec::new(); }
+        if index >= self.segment_count() { return Vec::new(); }
+        let end  = self.segment_end_index(index);
         let step = step_m.max(PATH_MIN_STEP_M);
 
         let div = match self.points[index].interp {
             ControlPointInterp::CatmullRom => {
-                let chord = distance3(self.points[index].position, self.points[index + 1].position);
+                let chord = distance3(self.points[index].position, self.points[end].position);
                 ((chord / step).ceil() as usize)
                     .max(1)
                     .min(PATH_MAX_POLYLINE_SEGMENTS)
@@ -278,7 +359,7 @@ impl PathEval {
         for s in 0..div {
             out.push(self.eval_segment(index, s as f32 / div as f32).position);
         }
-        out.push(self.points[index + 1].position);
+        out.push(self.points[end].position);
         out
     }
 
@@ -286,13 +367,41 @@ impl PathEval {
 
     /// 時刻 `t` が属する区間の添字と、その区間内パラメータ u ∈ [0,1] を求める。
     ///
-    /// 点が 1 個なら (0, 0.0)。区間外はクランプ。
+    /// 点が 1 個なら (0, 0.0)。開いたパスの区間外はクランプ。
     /// `time` が単調増加でない点列では、先頭から走査して**最初に該当した区間**を採る
     /// （それでも見つからなければ末尾へクランプする）。
+    ///
+    /// 閉ループでは 1 周ぶんの時刻
+    /// （末尾 time − 先頭 time ＋ `PATH_CLOSING_SEGMENT_DURATION`）で剰余を取り、
+    /// **クランプせず周回**する。負の時刻でも正しく巻き戻るよう `rem_euclid` を使う。
     fn locate_time(&self, t: f32) -> Option<(usize, f32)> {
         let n = self.points.len();
         if n == 0 { return None; }
         if n < PATH_MIN_POINTS_FOR_SEGMENT { return Some((0, 0.0)); }
+
+        if self.is_closed() {
+            let t0       = self.points[0].time;
+            let loop_len = (self.points[n - 1].time - t0) + PATH_CLOSING_SEGMENT_DURATION;
+            // 1 周の長さが 0 以下（全点同時刻・時刻が逆行しているなど）なら
+            // 剰余が定義できないので先頭へ寄せる（発散させない）。
+            if loop_len <= PATH_EPSILON { return Some((0, 0.0)); }
+            let wrapped = t0 + (t - t0).rem_euclid(loop_len);
+
+            // 通常区間（点 i → 点 i+1）。
+            for i in 0..n - 1 {
+                let a = self.points[i].time;
+                let b = self.points[i + 1].time;
+                if wrapped >= a && wrapped <= b {
+                    let span = b - a;
+                    let u = if span.abs() > PATH_EPSILON { (wrapped - a) / span } else { 0.0 };
+                    return Some((i, u.clamp(0.0, 1.0)));
+                }
+            }
+            // 閉じる区間（最後の点 → 最初の点）。上のどれにも入らない時刻はここに属する。
+            let a = self.points[n - 1].time;
+            let u = ((wrapped - a) / PATH_CLOSING_SEGMENT_DURATION).clamp(0.0, 1.0);
+            return Some((n - 1, u));
+        }
 
         let last_span = n - PATH_MIN_POINTS_FOR_SEGMENT; // = n - 2（最後の区間の添字）
         if t <= self.points[0].time { return Some((0, 0.0)); }
@@ -320,9 +429,10 @@ impl PathEval {
             let p = self.points[0];
             return PathSample { position: p.position, rotation: p.rotation, scale: p.scale };
         }
-        let i  = index.min(n - PATH_MIN_POINTS_FOR_SEGMENT);
+        // 区間数は閉ループなら 1 つ多い。終点は閉じる区間だけ先頭へ回り込む。
+        let i  = index.min(self.segment_count() - 1);
         let a  = self.points[i];
-        let b  = self.points[i + 1];
+        let b  = self.points[self.segment_end_index(i)];
         let ut = u.clamp(0.0, 1.0);
 
         let position = match a.interp {
@@ -332,9 +442,21 @@ impl PathEval {
             ControlPointInterp::Step       => if ut >= 1.0 { b.position } else { a.position },
             ControlPointInterp::Linear     => lerp3(a.position, b.position, ut),
             ControlPointInterp::CatmullRom => {
-                // 端点は 1 つ外側の点を折り返して複製する（標準的な端点処理）。
-                let p0 = self.points[i.saturating_sub(1)].position;
-                let p3 = self.points[(i + 2).min(n - 1)].position;
+                // 隣接点（p0 / p3）の取り方が開/閉で変わる。
+                //   開いたパス: 端点は 1 つ外側の点を折り返して複製する（標準的な端点処理）
+                //   閉ループ  : 折り返さず**周回**して取る。折り返すと継ぎ目
+                //               （最後の点・最初の点）で接線が不連続になり、輪に角が立つ。
+                let (p0, p3) = if self.is_closed() {
+                    (
+                        self.points[(i + n - 1) % n].position,
+                        self.points[(i + 2) % n].position,
+                    )
+                } else {
+                    (
+                        self.points[i.saturating_sub(1)].position,
+                        self.points[(i + 2).min(n - 1)].position,
+                    )
+                };
                 catmull_rom(p0, a.position, b.position, p3, ut)
             }
         };
@@ -636,6 +758,211 @@ mod tests {
         let mut a2 = a; a2.interp = ControlPointInterp::Step;
         let p2 = PathEval::from_points(&[a2, b], &identity_actor());
         assert!((p2.sample_at_time(0.5).unwrap().scale[0] - 1.0).abs() < 1.0e-3, "Step は保持");
+    }
+
+    // ─── 閉ループ（closed = true）────────────────────────────
+
+    /// テスト用: 閉ループのパスを作る。
+    fn closed_path(pts: &[ControlPoint]) -> PathEval {
+        PathEval::from_points_closed(pts, &identity_actor(), true)
+    }
+
+    /// 正方形の 4 点（Linear）。閉ループの基本形。
+    fn square4() -> [ControlPoint; 4] {
+        [
+            cp([0.0,  0.0, 0.0],  0.0, ControlPointInterp::Linear),
+            cp([10.0, 0.0, 0.0],  1.0, ControlPointInterp::Linear),
+            cp([10.0, 0.0, 10.0], 2.0, ControlPointInterp::Linear),
+            cp([0.0,  0.0, 10.0], 3.0, ControlPointInterp::Linear),
+        ]
+    }
+
+    /// 区間数が閉ループで **ちょうど 1 つ増える**こと（線描画のセグメント数の契約）。
+    #[test]
+    fn closed_adds_exactly_one_segment() {
+        let pts  = square4();
+        let open = PathEval::from_points(&pts, &identity_actor());
+        let clos = closed_path(&pts);
+        assert_eq!(open.segment_count(), 3, "開いたパスは 点数 - 1");
+        assert_eq!(clos.segment_count(), open.segment_count() + 1, "閉ループは +1 区間");
+        assert!(!open.is_closed());
+        assert!(clos.is_closed());
+    }
+
+    /// 折れ線の頂点数も区間 1 つぶん増え、**終端が始点に戻る**こと。
+    #[test]
+    fn closed_polyline_returns_to_first_point() {
+        let pts  = square4();
+        let open = PathEval::from_points(&pts, &identity_actor()).sample_polyline(PATH_DEFAULT_STEP_M);
+        let clos = closed_path(&pts).sample_polyline(PATH_DEFAULT_STEP_M);
+        // Linear は分割されないので「区間数 + 終端」= 4 / 5 頂点。
+        assert_eq!(open.len(), 4);
+        assert_eq!(clos.len(), 5, "閉じる区間ぶん 1 頂点増えること: {clos:?}");
+        assert_eq!(clos.last().copied(), Some(pts[0].position), "終端は始点へ戻ること");
+    }
+
+    /// 閉じる区間の折れ線が「最後の点 → 最初の点」になること。
+    /// 開いたパスでは同じ添字が空を返す（区間が存在しない）。
+    #[test]
+    fn closing_segment_polyline_goes_from_last_to_first() {
+        let pts     = square4();
+        let closing = pts.len() - 1; // 閉じる区間の添字
+        let clos    = closed_path(&pts);
+        let seg     = clos.segment_polyline(closing, PATH_DEFAULT_STEP_M);
+        assert_eq!(seg.first().copied(), Some(pts[closing].position));
+        assert_eq!(seg.last().copied(),  Some(pts[0].position));
+        assert!(clos.segment_polyline(closing + 1, PATH_DEFAULT_STEP_M).is_empty(),
+            "区間数を超える添字は空");
+        assert!(PathEval::from_points(&pts, &identity_actor())
+            .segment_polyline(closing, PATH_DEFAULT_STEP_M).is_empty(),
+            "開いたパスに閉じる区間は無い");
+    }
+
+    /// 時刻範囲が「1 周ぶん」（末尾 time + 閉じる区間の所要時刻）になること。
+    #[test]
+    fn closed_time_range_includes_closing_segment() {
+        let clos = closed_path(&square4());
+        assert_eq!(clos.time_range(), Some((0.0, 3.0 + PATH_CLOSING_SEGMENT_DURATION)));
+        assert_eq!(clos.duration(),   Some(3.0 + PATH_CLOSING_SEGMENT_DURATION));
+    }
+
+    /// **終点 → 始点の補間**: 閉じる区間の中間時刻が、最後の点と最初の点の中点になること。
+    #[test]
+    fn closing_segment_interpolates_from_last_to_first() {
+        let pts    = square4();
+        let clos   = closed_path(&pts);
+        let last_t = pts[pts.len() - 1].time;
+        let mid    = clos.position_at_time(last_t + PATH_CLOSING_SEGMENT_DURATION * 0.5).unwrap();
+        // 最後の点 (0,0,10) と 最初の点 (0,0,0) の中点 = (0,0,5)
+        assert!(mid[0].abs() < 1.0e-4, "{mid:?}");
+        assert!((mid[2] - 5.0).abs() < 1.0e-4, "{mid:?}");
+    }
+
+    /// **周回の連続性**: 時刻がループ長を超えたら巻き戻り、1 周ぶん進めた時刻が同じ位置を返すこと。
+    /// 負の時刻でも正しく巻き戻ること（rem_euclid）。
+    #[test]
+    fn closed_time_wraps_around_instead_of_clamping() {
+        let clos     = closed_path(&square4());
+        let loop_len = clos.duration().unwrap();
+        for &t in &[0.0f32, 0.5, 1.7, 3.3] {
+            let a = clos.position_at_time(t).unwrap();
+            let b = clos.position_at_time(t + loop_len).unwrap();
+            let c = clos.position_at_time(t - loop_len).unwrap();
+            for k in 0..3 {
+                assert!((a[k] - b[k]).abs() < 1.0e-3, "1 周先が同じ位置になること t={t}: {a:?} vs {b:?}");
+                assert!((a[k] - c[k]).abs() < 1.0e-3, "1 周前が同じ位置になること t={t}: {a:?} vs {c:?}");
+            }
+        }
+        // ループ終端は始点へ戻る（＝繋ぎ目が飛ばない）。
+        let end = clos.position_at_time(loop_len).unwrap();
+        assert!(end[0].abs() < 1.0e-4 && end[2].abs() < 1.0e-4, "1 周ちょうどで始点: {end:?}");
+    }
+
+    /// 開いたパスは従来どおり**クランプ**すること（閉ループ対応で既存挙動を壊していない）。
+    #[test]
+    fn open_path_still_clamps_after_closed_support() {
+        let open = PathEval::from_points(&square4(), &identity_actor());
+        assert_eq!(open.position_at_time(999.0).unwrap(),  [0.0, 0.0, 10.0], "末尾でクランプ");
+        assert_eq!(open.position_at_time(-999.0).unwrap(), [0.0, 0.0, 0.0],  "先頭でクランプ");
+        assert_eq!(open.time_range(), Some((0.0, 3.0)), "閉じる区間ぶんを足さないこと");
+    }
+
+    /// 進捗 1.0 が閉ループでは**始点へ戻る**こと（0.0 と一致する）。
+    #[test]
+    fn closed_progress_one_returns_to_start() {
+        let clos = closed_path(&square4());
+        let a = clos.position_at_progress(0.0).unwrap();
+        let b = clos.position_at_progress(1.0).unwrap();
+        for k in 0..3 {
+            assert!((a[k] - b[k]).abs() < 1.0e-3, "進捗 0 と 1 が一致すること: {a:?} vs {b:?}");
+        }
+    }
+
+    /// 時刻が全点同一（＝時刻未設定）でも、進捗が閉じる区間ぶんを含む添字空間へ写ること。
+    #[test]
+    fn closed_progress_index_space_includes_closing_segment() {
+        let pts = [
+            cp([0.0,  0.0, 0.0], 0.0, ControlPointInterp::Linear),
+            cp([10.0, 0.0, 0.0], 0.0, ControlPointInterp::Linear),
+        ];
+        let clos = closed_path(&pts);
+        // 区間は 2 つ（0→1, 1→0）。進捗 0.5 はちょうど 2 点目。
+        assert!((clos.position_at_progress(0.5).unwrap()[0] - 10.0).abs() < 1.0e-4);
+        // 進捗 0.75 は閉じる区間の中点 = (5,0,0)
+        assert!((clos.position_at_progress(0.75).unwrap()[0] - 5.0).abs() < 1.0e-4);
+    }
+
+    /// **Catmull-Rom の隣接点が折り返しではなく周回で取られること**。
+    ///
+    /// 正方形を CatmullRom で閉じると、対称性から全区間の中点が中心から等距離になる。
+    /// 端点を折り返して複製する（開いたパスの規則）と、この対称性が崩れる。
+    #[test]
+    fn closed_catmull_rom_uses_wrapped_neighbors() {
+        let pts: Vec<ControlPoint> = square4().iter()
+            .map(|p| { let mut q = *p; q.interp = ControlPointInterp::CatmullRom; q })
+            .collect();
+        let clos   = closed_path(&pts);
+        let center = [5.0f32, 0.0, 5.0];
+        let dist = |a: [f32; 3]| ((a[0] - center[0]).powi(2) + (a[2] - center[2]).powi(2)).sqrt();
+        // 各区間の折れ線の中ほどの点で中心からの距離を測る。
+        let mid_dist = |e: &PathEval, i: usize| {
+            let poly = e.segment_polyline(i, 0.5);
+            dist(poly[poly.len() / 2])
+        };
+
+        let mids: Vec<f32> = (0..clos.segment_count()).map(|i| mid_dist(&clos, i)).collect();
+        for i in 1..mids.len() {
+            assert!((mids[i] - mids[0]).abs() < 1.0e-3,
+                "全区間が対称であること（周回で隣接点を取っている証拠）: {mids:?}");
+        }
+
+        // 開いたパスでは同じ点列の対称性が崩れること（＝この検証が意味を持つこと）。
+        let open = PathEval::from_points(&pts, &identity_actor());
+        let open_mids: Vec<f32> = (0..open.segment_count()).map(|i| mid_dist(&open, i)).collect();
+        assert!(open_mids.iter().any(|m| (m - open_mids[0]).abs() > 1.0e-3),
+            "開いたパスは端点の折り返しで対称性が崩れるはず: {open_mids:?}");
+    }
+
+    /// 点が 2 個未満なら closed は無視されること（区間が作れない）。
+    #[test]
+    fn closed_is_ignored_below_two_points() {
+        let one = PathEval::from_points_closed(
+            &[cp([1.0, 2.0, 3.0], 0.0, ControlPointInterp::Linear)], &identity_actor(), true);
+        assert!(!one.is_closed());
+        assert_eq!(one.segment_count(), 0);
+        assert_eq!(one.position_at_time(99.0), Some([1.0, 2.0, 3.0]));
+        assert_eq!(one.time_range(), Some((0.0, 0.0)), "閉じる区間ぶんを足さないこと");
+
+        let none = PathEval::from_points_closed(&[], &identity_actor(), true);
+        assert!(!none.is_closed());
+        assert_eq!(none.segment_count(), 0);
+        assert!(none.sample_polyline(PATH_DEFAULT_STEP_M).is_empty());
+    }
+
+    /// 閉ループで 1 周の長さが 0 以下（壊れた時刻）でも発散せず先頭を返すこと。
+    #[test]
+    fn closed_handles_zero_length_loop() {
+        let pts = [
+            cp([0.0,  0.0, 0.0],  0.0, ControlPointInterp::Linear),
+            cp([10.0, 0.0, 0.0], -5.0, ControlPointInterp::Linear), // 時刻が逆行（壊れたデータ）
+        ];
+        let clos = PathEval::from_points_closed(&pts, &identity_actor(), true);
+        // 1 周の長さ = (-5 - 0) + 1 = -4 <= 0 → 先頭へ寄せる
+        assert_eq!(clos.position_at_time(3.0), Some([0.0, 0.0, 0.0]));
+    }
+
+    /// from_component がコンポーネントの closed をそのまま反映すること
+    /// （呼び出し側が閉ループ設定を取りこぼさないための入口）。
+    #[test]
+    fn from_component_carries_closed_flag() {
+        use crate::engine::components::control_point_component::ControlPointComponent;
+        let comp = ControlPointComponent { points: square4().to_vec(), closed: true };
+        let eval = PathEval::from_component(&comp, &identity_actor());
+        assert!(eval.is_closed());
+        assert_eq!(eval.segment_count(), comp.points.len());
+
+        let open_comp = ControlPointComponent { points: square4().to_vec(), closed: false };
+        assert!(!PathEval::from_component(&open_comp, &identity_actor()).is_closed());
     }
 
     /// 姿勢: Linear は軸ごとに線形補間され、Step は保持されること。

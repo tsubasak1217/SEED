@@ -98,7 +98,7 @@ fn resolve_control_polyline(
         .find(|s| s.kind == ComponentKind::ControlPoint && s.enabled)?;
     let comp = world.get::<ControlPointComponent>(slot.entity)?;
     let tf   = world.get::<Transform>(target.entity).cloned().unwrap_or_default();
-    Some(PathEval::from_points(&comp.points, &tf).sample_polyline(PATH_DEFAULT_STEP_M))
+    Some(PathEval::from_component(comp, &tf).sample_polyline(PATH_DEFAULT_STEP_M))
 }
 
 /// collect_water_volumes の再帰実装。
@@ -263,6 +263,8 @@ mod tests {
                 points: points.iter()
                     .map(|&p| ControlPoint { position: p, ..Default::default() })
                     .collect(),
+                // テストの川は開いたパス（閉ループの検証は path::eval 側で行う）。
+                closed: false,
             };
             self.world.insert(slot_entity, comp);
             actor.add_slot_typed::<ControlPointComponent>(

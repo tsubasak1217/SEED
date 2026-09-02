@@ -533,9 +533,10 @@ impl App {
                     // 形式: [{"position":[x,y,z],"rotation":[x,y,z],"time":t,"interp":"CatmullRom"},...]
                     let points_json = serde_json::to_string(&d.points)
                         .unwrap_or_else(|_| "[]".to_string());
+                    // `closed`（始点と終点を接続）はパス全体の設定なので点列とは別キーで送る。
                     ("ControlPointComponent", format!(
-                        r#","points":{points_json},"point_count":{}"#,
-                        d.points.len(),
+                        r#","points":{points_json},"point_count":{},"closed":{}"#,
+                        d.points.len(), d.closed,
                     ))
                 }
                 ComponentData::WaterVolumeComponent(d) => {

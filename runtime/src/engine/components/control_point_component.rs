@@ -30,6 +30,17 @@
 //  `interp` は **その点から次の点へ向かう区間**の補間方法である
 //  （「前の点から来る方法」ではない）。最後の点の `interp` は次の点が無いので
 //  評価に使われないが、点を後ろに足したときの挙動が予測できるよう保持する。
+//  ただし `closed = true`（閉ループ）のときは「最後の点 → 最初の点」の区間が
+//  生まれるため、最後の点の `interp` もそのまま使われる。
+//
+//  ## `closed`（始点と終点を接続）の意味づけ
+//  `closed = true` にすると、点列は輪になる。
+//    ・区間が 1 つ増える（開いたパスの `n - 1` 区間 → 閉ループの `n` 区間）
+//    ・閉じる区間の所要時刻は `DEFAULT_TIME_STEP`
+//      （＝最後の点の時刻 + 1 ステップで最初の点へ戻る）
+//    ・Catmull-Rom の隣接点は折り返しではなく**周回**で取る（継ぎ目が滑らかになる）
+//    ・時刻の問い合わせは端でクランプせず**周回（ラップ）**する
+//  詳細な定義と根拠は docs/control_points.md。
 //
 //  ## シリアライズ
 //  全フィールドに `#[serde(default)]`（非ゼロ既定値は default 関数）を付け、
@@ -172,6 +183,12 @@ pub struct ControlPointComponentData {
     /// （時刻が前後した点列も壊れずに読み込めるようにするため）。
     #[serde(default)]
     pub points: Vec<ControlPoint>,
+    /// 始点と終点を接続する（閉ループにする）か。
+    ///
+    /// 既定 false。`#[serde(default)]` を付けてあるので、
+    /// このフィールドを知らない旧 `.scene` は「開いたパス」として読み込まれる。
+    #[serde(default)]
+    pub closed: bool,
 }
 
 // ─── ControlPointComponent（ランタイム）───────────────────────
@@ -184,6 +201,13 @@ pub struct ControlPointComponentData {
 pub struct ControlPointComponent {
     /// 制御点の並び（アクタ相対座標）。
     pub points: Vec<ControlPoint>,
+    /// 始点と終点を接続する（閉ループにする）か。既定 false。
+    ///
+    /// true にすると **最後の点から最初の点へ戻る区間が 1 つ増える**。
+    /// その区間の補間方法は「最後の点の `interp`」で、所要時刻は
+    /// `DEFAULT_TIME_STEP`（＝1 点ぶんの既定時間）とする。
+    /// 意味づけと評価の実装は `engine::path::PathEval`（データとロジックの分離）。
+    pub closed: bool,
 }
 
 impl ControlPointComponent {
@@ -194,12 +218,12 @@ impl ControlPointComponent {
     pub fn from_data(data: &ControlPointComponentData) -> Self {
         let mut points = data.points.clone();
         points.truncate(MAX_CONTROL_POINTS);
-        Self { points }
+        Self { points, closed: data.closed }
     }
 
     /// ランタイム表現をシリアライズ用データへ変換する（.scene 保存・Undo スナップショット）。
     pub fn to_data(&self) -> ControlPointComponentData {
-        ControlPointComponentData { points: self.points.clone() }
+        ControlPointComponentData { points: self.points.clone(), closed: self.closed }
     }
 
     /// 点を 1 つ末尾に追加するときの既定時刻を返す。
@@ -264,9 +288,42 @@ mod tests {
                 ControlPoint { position: [1.0, 0.0, 0.0], rotation: [0.0, 90.0, 0.0], scale: [2.0, 1.0, 0.5], time: 0.0, interp: ControlPointInterp::Linear },
                 ControlPoint { position: [2.0, 1.0, 0.0], rotation: [0.0, 0.0, 0.0],  scale: [1.0, 1.0, 1.0], time: 1.5, interp: ControlPointInterp::Step },
             ],
+            closed: true,
         };
         let back = ControlPointComponent::from_data(&c.to_data());
         assert_eq!(back.points, c.points);
+        assert_eq!(back.closed, c.closed, "closed も往復すること");
+    }
+
+    /// `closed` の既定は false（開いたパス）であること。
+    #[test]
+    fn closed_defaults_to_open() {
+        assert!(!ControlPointComponent::default().closed);
+        assert!(!ControlPointComponentData::default().closed);
+    }
+
+    /// **`closed` を持たない旧 .scene** が「開いたパス」として読み込めること（serde default の要）。
+    #[test]
+    fn deserializes_legacy_json_without_closed_field() {
+        let d: ControlPointComponentData =
+            serde_json::from_str(r#"{"points":[{"position":[1.0,2.0,3.0]}]}"#)
+                .expect("closed が無い旧データを読めること");
+        assert!(!d.closed, "未指定は開いたパス（既存シーンの挙動を変えない）");
+        assert_eq!(d.points.len(), 1);
+    }
+
+    /// `closed` を含む JSON が往復すること（保存 → 読込で閉ループが失われない）。
+    #[test]
+    fn closed_survives_json_round_trip() {
+        let c = ControlPointComponent {
+            points: vec![ControlPoint::default(); 3],
+            closed: true,
+        };
+        let json = serde_json::to_string(&c.to_data()).expect("直列化できること");
+        let back: ControlPointComponentData =
+            serde_json::from_str(&json).expect("復元できること");
+        assert!(back.closed);
+        assert_eq!(back.points.len(), 3);
     }
 
     /// 点数の上限を超えるデータは切り捨てられること（ランタイムコストの上限保証）。
@@ -274,6 +331,7 @@ mod tests {
     fn from_data_truncates_beyond_max() {
         let data = ControlPointComponentData {
             points: vec![ControlPoint::default(); MAX_CONTROL_POINTS + 10],
+            closed: false,
         };
         let c = ControlPointComponent::from_data(&data);
         assert_eq!(c.points.len(), MAX_CONTROL_POINTS);

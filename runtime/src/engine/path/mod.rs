@@ -7,7 +7,7 @@
 //  **点列のワールド解決と補間をここ 1 箇所に集約**する。
 //
 //    Actor + ControlPointComponent
-//              │  PathEval::from_points（アクタ Transform でワールド解決）
+//              │  PathEval::from_component（アクタ Transform でワールド解決）
 //              ▼
 //          [PathEval]  ←─ 唯一の中間表現
 //        │        │        │
@@ -34,5 +34,6 @@ pub mod eval;
 pub use interp::{catmull_rom, distance3, lerp3, CATMULL_ROM_TENSION, PATH_EPSILON};
 pub use eval::{
     PathEval, PathSample, ResolvedControlPoint,
+    PATH_CLOSING_SEGMENT_DURATION,
     PATH_DEFAULT_STEP_M, PATH_MAX_POLYLINE_SEGMENTS, PATH_MIN_POINTS_FOR_SEGMENT, PATH_MIN_STEP_M,
 };

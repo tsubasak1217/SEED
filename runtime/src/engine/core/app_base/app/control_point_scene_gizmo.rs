@@ -134,7 +134,7 @@ pub fn collect_paths_for_actor(
             let comp = world.get::<ControlPointComponent>(s.entity)?;
             Some(ResolvedPathSlot {
                 slot_idx: i as u32,
-                eval:     PathEval::from_points(&comp.points, &tf),
+                eval:     PathEval::from_component(comp, &tf),
             })
         })
         .collect()
@@ -204,14 +204,17 @@ pub fn build_control_point_lines(
 /// 経路そのものを太線で見せたいので、太さ指定版 `add_line_thick` を使う。
 fn add_path_lines(lb: &mut LineBatch, eval: &PathEval) {
     let pts = eval.points();
-    if pts.len() < 2 { return; }
-    for i in 0..pts.len() - 1 {
+    // 区間数は `segment_count()` から取る。閉ループ（始点と終点を接続）のときは
+    // 「最後の点 → 最初の点」の区間が 1 つ増え、その終点は先頭の点になる。
+    let n = pts.len();
+    for i in 0..eval.segment_count() {
+        let end = (i + 1) % n;
         match pts[i].interp {
             // 階段保持: 「保持 → 飛ぶ」ことが直線と区別できるよう L 字で描く。
             // まず水平（XZ）に送り、そこから垂直（Y）に上げる。
             ControlPointInterp::Step => {
                 let a = pts[i].position;
-                let b = pts[i + 1].position;
+                let b = pts[end].position;
                 let corner = [b[0], a[1], b[2]];
                 lb.add_line_thick(a, corner, SEGMENT_STEP_COLOR, CONTROL_POINT_LINE_THICKNESS_PX);
                 lb.add_line_thick(corner, b, SEGMENT_STEP_COLOR, CONTROL_POINT_LINE_THICKNESS_PX);
@@ -486,6 +489,33 @@ mod tests {
         assert_eq!(pick_scale_factor([0.1, 0.2, 0.3]), 1.0, "縮小しても判定は基準サイズ");
         assert_eq!(pick_scale_factor([0.5, 4.0, 1.0]), 4.0, "最大軸を採る");
         assert_eq!(pick_scale_factor([-5.0, 1.0, 1.0]), 5.0, "負スケールは絶対値で見る");
+    }
+
+    /// **閉ループの経路線が、終点 → 始点のぶんだけ線分 1 本ぶん多く積まれること**
+    /// （`add_path_lines` は純関数なので `LineBatch::line_count()` で直接検証できる）。
+    ///
+    /// Linear 区間は分割されないので「区間 1 つ = 線分 1 本」になり、
+    /// 開いたパスの 3 本に対して閉ループは 4 本ちょうどになる。
+    #[test]
+    fn closed_path_draws_one_more_segment_line() {
+        use crate::engine::components::control_point_component::{ControlPoint, ControlPointInterp};
+
+        let pts: Vec<ControlPoint> = [
+            [0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 0.0, 10.0], [0.0, 0.0, 10.0],
+        ].iter().map(|&position| ControlPoint {
+            position, interp: ControlPointInterp::Linear, ..Default::default()
+        }).collect();
+
+        let mut open_lb = LineBatch::new();
+        add_path_lines(&mut open_lb, &PathEval::from_points(&pts, &Transform::identity()));
+
+        let mut closed_lb = LineBatch::new();
+        add_path_lines(&mut closed_lb, &PathEval::from_points_closed(
+            &pts, &Transform::identity(), true));
+
+        assert_eq!(open_lb.line_count(), 3, "開いたパスは 点数 - 1 本");
+        assert_eq!(closed_lb.line_count(), open_lb.line_count() + 1,
+            "閉ループは終点 → 始点のぶんだけ 1 本多いこと");
     }
 
     /// キューブの半辺長は下限で切られること（遠景で潰れない・近景で消えない）。

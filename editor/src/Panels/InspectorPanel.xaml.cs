@@ -772,6 +772,10 @@ public partial class InspectorPanel : UserControl
     private const int ViewportHighlightPollIntervalMs = 30;
     /// <summary>spline_points からの移行で生成する制御点の time 増分（0,1,2,... の連番にする）。</summary>
     private const float SplineMigrationTimeStep = 1.0f;
+    /// <summary>ControlPointComponent の型名（ACTOR_COMPONENTS の type と同じ綴り）。</summary>
+    private const string ControlPointComponentType = "ControlPointComponent";
+    /// <summary>「始点と終点を接続」（closed）の既定値。Rust 側 ControlPointComponentData の既定と一致させること。</summary>
+    private const bool ControlPointClosedDefault = false;
 
     /// <summary>コンポーネントスロット 1 件分の情報。TypeId ごとに追加フィールドを持つ。</summary>
     private record SlotInfo(int SlotIdx, string Name, string TypeId, string ModelPath,
@@ -1037,6 +1041,8 @@ public partial class InspectorPanel : UserControl
         // 4 属性を持つため、独自の区切り記法（"x,y,z;..." 等）を作るとエスケープと拡張で破綻する。
         // PeColorCurvesJson と同じく JSON をそのまま往復させ、送信時も JSON 配列で全置換する。
         string ControlPointsJson = "[]",
+        // 始点と終点を接続する（閉ループ）か。旧シーン互換のため既定は false。
+        bool ControlPointClosed = ControlPointClosedDefault,
         // ── CoverEmitterComponent 用フィールド（Phase I3.1）──
         // 範囲種別・範囲パラメータ・素材 ID・強度・有効フラグ。
         // 既定値は Rust 側 CoverEmitterComponentData と一致。
@@ -1587,6 +1593,9 @@ public partial class InspectorPanel : UserControl
             // ControlPointComponent 用（フェーズB）: 制御点配列を生 JSON のまま保持する。
             // 要素は {"position":[x,y,z],"rotation":[x,y,z],"time":t,"interp":"..."}。欠落時は空配列。
             var controlPointsJson = comp.TryGetProperty("points", out var cpp) ? cpp.GetRawText() : "[]";
+            // 閉ループ設定。キーが無い（＝closed を知らない旧ランタイム／旧データ）なら開いたパス。
+            var controlPointClosed = comp.TryGetProperty("closed", out var cpc)
+                && cpc.ValueKind == JsonValueKind.True;
             // CoverEmitterComponent 用（Phase I3.1）。欠落時は Rust 側既定値と一致する定数へ。
             var coverRangeKind  = comp.TryGetProperty("range_kind",  out var ck)  ? ck.GetString() ?? CoverRangeKindDefault : CoverRangeKindDefault;
             var coverExtentsX   = comp.TryGetProperty("extents_x",   out var cex) ? cex.GetSingle() : CoverExtentDefault;
@@ -1737,6 +1746,7 @@ public partial class InspectorPanel : UserControl
                 InteractionStampSizeZ: stampSizeZ,
                 // ControlPointComponent 用フィールド
                 ControlPointsJson: controlPointsJson,
+                ControlPointClosed: controlPointClosed,
                 // CoverEmitterComponent 用フィールド（I3.1）
                 CoverRangeKind: coverRangeKind,
                 CoverExtentsX: coverExtentsX, CoverExtentsY: coverExtentsY, CoverExtentsZ: coverExtentsZ,
@@ -6768,6 +6778,36 @@ public partial class InspectorPanel : UserControl
 
         var section = BuildSection("制御点");
         var body    = (StackPanel)section.Child;
+
+        // ── 始点と終点を接続（閉ループ）──────────────────────
+        //   点列そのものではなくパス全体の設定なので、SET_CONTROL_POINTS（全置換）ではなく
+        //   SET_CONTROL_POINT_FIELD（1 キー 1 値）で送る。Undo は Rust 側の共通機構が担当する。
+        //   ⟲ は RESET_COMPONENT_FIELD へ serde 名 "closed" を送る（共通入口 WithFieldReset）。
+        var closedRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 4) };
+        closedRow.Children.Add(new TextBlock
+        {
+            Text = "始点と終点を接続", FontSize = 11, Width = InspectorRowLabelWidth + 20,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var closedCheck = new CheckBox
+        {
+            IsChecked = info.ControlPointClosed,
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = "最後の点から最初の点へ戻る区間を追加して、パスを輪にします"
+                    + "（戻る区間の所要時刻は 1 ステップ。曲線は継ぎ目でも滑らかに繋がります）。",
+        };
+        void SendClosed(bool v)
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime(
+                $"SET_CONTROL_POINT_FIELD:{_currentActorId},{info.SlotIdx},closed,{(v ? "true" : "false")}");
+        }
+        closedCheck.Checked   += (_, _) => SendClosed(true);
+        closedCheck.Unchecked += (_, _) => SendClosed(false);
+        closedRow.Children.Add(closedCheck);
+        body.Children.Add(WithFieldReset(
+            closedRow, info.SlotIdx, ControlPointComponentType, "closed", "始点と終点を接続"));
 
         // 点数表示と上限到達時の注意書き。
         var countText   = MakeHint("");

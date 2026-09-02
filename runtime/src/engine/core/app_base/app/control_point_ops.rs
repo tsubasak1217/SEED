@@ -3,6 +3,7 @@
 //
 //  ・handle_set_control_points   : SET_CONTROL_POINTS（点列の全置換）
 //  ・handle_set_control_point_pos: SET_CONTROL_POINT_POS（1 点の位置更新・軽量）
+//  ・handle_set_control_point_field: SET_CONTROL_POINT_FIELD（点列以外の設定＝closed）
 //  ・点選択状態（ビューポートでどの点を掴んでいるか）の保持と通知
 //
 //  ## なぜ「全置換」と「1 点更新」の 2 経路なのか
@@ -141,6 +142,43 @@ impl App {
         self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
             world_line: wl, actor_dfs_id, before_slots, after_slots,
         }));
+        self.send_actor_components(actor_dfs_id, slot_idx as usize);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    // ─── IPC: 点列以外のパス設定 ─────────────────────────────
+
+    /// 点列以外の ControlPointComponent フィールドを更新する（SET_CONTROL_POINT_FIELD IPC）。
+    ///
+    /// key の一覧:
+    ///   ・`closed` … "true" / "false"。始点と終点を接続する（閉ループにする）か。
+    ///
+    /// 不正な key・value は無視する（インスペクタへの再送信も行わない）。
+    /// **Undo は `field_edit.rs` の共通機構が担当する**（ここで記録すると二重になる。
+    /// 点列の全置換 `handle_set_control_points` が自前でスナップショットを積むのと対照的）。
+    pub(super) fn handle_set_control_point_field(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        key:          &str,
+        value:        &str,
+    ) {
+        // スロット種別の検証込みでエンティティを解決する（誤配を弾く）。
+        let Some(entity) = self.control_point_slot_entity(actor_dfs_id, slot_idx) else { return };
+        let Some(scene) = &mut self.scene else { return };
+        let Some(c) = scene.world.get_mut::<ControlPointComponent>(entity) else { return };
+
+        match key {
+            "closed" => {
+                let Some(v) = parse_bool(value) else { return };
+                // 値が変わらないなら再送信も SCENE_MODIFIED もしない
+                //（チェックボックスの初期化で「未保存」印が付くのを防ぐ）。
+                if c.closed == v { return; }
+                c.closed = v;
+            }
+            _ => return,
+        }
+
         self.send_actor_components(actor_dfs_id, slot_idx as usize);
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
@@ -526,12 +564,24 @@ impl App {
         if slot.kind != ComponentKind::ControlPoint { return None; }
         let comp  = scene.world.get::<ControlPointComponent>(slot.entity)?;
         let tf    = scene.world.get::<Transform>(actor.entity).cloned().unwrap_or_default();
-        let eval  = PathEval::from_points(&comp.points, &tf);
+        let eval  = PathEval::from_component(comp, &tf);
         eval.points().get(sel.index as usize).map(|p| p.position)
     }
 }
 
 // ─── ヘルパー ────────────────────────────────────────────────
+
+/// "true" / "false"（大文字小文字と前後空白を許容）を bool へ。それ以外は None。
+///
+/// C# の `bool.ToString()` は "True"/"False" を返すため、大文字小文字を無視する必要がある
+/// （cover_emitter_ops.rs と同じ規則）。
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true"  => Some(true),
+        "false" => Some(false),
+        _       => None,
+    }
+}
 
 /// 行優先 4x4 行列で点（w = 1）を変換する。
 ///

@@ -146,6 +146,10 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             slot(*actor_dfs_id, *slot_idx, "SetInteractionField", key),
         IpcCommand::SetCoverField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetCoverField", key),
+        // 制御点の **点列** は control_point_ops.rs が自前で Undo を積むが、
+        // パス全体の設定（closed）はここの共通機構に任せる（二重記録にはならない）。
+        IpcCommand::SetControlPointField { actor_dfs_id, slot_idx, key, .. } =>
+            slot(*actor_dfs_id, *slot_idx, "SetControlPointField", key),
         IpcCommand::SetJointAttachField { actor_dfs_id, slot_idx, key, .. } =>
             slot(*actor_dfs_id, *slot_idx, "SetJointAttachField", key),
         IpcCommand::SetParticleField { actor_dfs_id, slot_idx, key, .. } =>

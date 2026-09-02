@@ -650,6 +650,13 @@ pub enum IpcCommand {
     /// フォーマット: SET_CONTROL_POINT_POS:{actor_dfs_id},{slot_idx},{index},{x},{y},{z}
     /// ギズモのドラッグ中に毎フレーム飛ぶため、JSON 全置換より軽い専用経路を用意する。
     SetControlPointPos { actor_dfs_id: u32, slot_idx: u32, index: u32, x: f32, y: f32, z: f32 },
+    /// ControlPointComponent の **点列以外のフィールド**を更新する（control_point_ops.rs が処理）。
+    ///
+    /// key: closed（"true" / "false"。始点と終点を接続する＝閉ループ）。
+    /// フォーマット: `SET_CONTROL_POINT_FIELD:{actor_dfs_id},{slot_idx},{key},{value}`
+    /// 点列そのものは `SET_CONTROL_POINTS`（全置換）が扱うので、こちらは
+    /// パス全体の設定だけを担う（SET_COVER_FIELD 等と同じ「1 キー 1 値」流儀）。
+    SetControlPointField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// インスペクタの点リスト行クリックで、**ビューポート側の点選択を合わせる**
     /// （control_point_ops.rs が処理）。
     /// フォーマット: SELECT_CONTROL_POINT:{actor_dfs_id},{slot_idx},{index}
@@ -2296,6 +2303,18 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 IpcCommand::SetControlPoints {
                                     actor_dfs_id: a, slot_idx: sl, json: tail.to_string(),
                                 }
+                            })
+                        }
+                        s if s.starts_with("SET_CONTROL_POINT_FIELD:") => {
+                            // フォーマット: SET_CONTROL_POINT_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+                            // value に "," は含まれない（現状 bool のみ）が、将来の
+                            // ベクタ系フィールド追加に備えて SET_COVER_FIELD と同じ tail 方式で切る。
+                            parse2u_tail(&s["SET_CONTROL_POINT_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetControlPointField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
                             })
                         }
                         s if s.starts_with("SET_CONTROL_POINT_POS:") => {
