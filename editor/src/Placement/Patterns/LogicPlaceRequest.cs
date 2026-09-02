@@ -90,8 +90,10 @@ public sealed class LogicPlaceRequest
     /// ランタイムへ送る 1 行のコマンド文字列（<c>LOGIC_PLACE:{json}</c>）を組み立てる。
     ///
     /// <para>
-    /// こちらは<b>即時生成</b>（基準点を伴わない）経路で、ControlPoint への点列追記に使う。
-    /// 新規アクタ配置はカーソル位置を基準点にするため <see cref="ToBeginIpcCommand"/> を使う。
+    /// こちらは<b>即時生成</b>（基準点を伴わない＝アクタ原点／ワールド原点基準）の経路。
+    /// エディタの通常操作はアクタ配置・制御点追記のどちらも
+    /// <see cref="ToBeginIpcCommand"/>（配置モード）を通るため、
+    /// 現在この経路を使うのは自動化・外部ツールからの一括投入だけである。
     /// </para>
     /// </summary>
     public string ToIpcCommand() => "LOGIC_PLACE:" + JsonSerializer.Serialize(this, IpcJsonOptions);

@@ -251,15 +251,19 @@ fn assemble_placement_group(
 
 /// 生成点列を既存の制御点列の末尾へ追記する。
 ///
-/// 制御点は**アクタ相対**座標なので、パターン座標をそのままローカル座標として使う
-/// （基準点の解決も地形接地も行わない）。時刻は既存点の続きから
-/// `DEFAULT_TIME_STEP` 刻みで振る（インスペクタの「＋ 制御点を追加」と同じ規則）。
+/// 制御点は**アクタ相対**座標なので、`origin_local`（＝カーソル位置をアクタの
+/// ローカル空間へ変換した基準点）にパターン座標を足したものがそのまま点の位置になる
+/// （地形接地は行わない。制御点は地面に乗る物ではない）。
+/// 配置モードを経由しない旧経路は `origin_local = [0,0,0]` を渡す。
+/// 時刻は既存点の続きから `DEFAULT_TIME_STEP` 刻みで振る
+/// （インスペクタの「＋ 制御点を追加」と同じ規則）。
 ///
 /// 上限 `MAX_CONTROL_POINTS` を超えるぶんは追記せず、戻り値で件数を返す。
 /// 戻り値は `(追記した数, 切り詰めた数)`。
 fn append_control_points(
     existing:  &mut Vec<ControlPoint>,
     generated: &[PlacementPoint],
+    origin_local: [f32; 3],
     start_time: f32,
 ) -> (usize, usize) {
     let capacity = MAX_CONTROL_POINTS.saturating_sub(existing.len());
@@ -268,7 +272,11 @@ fn append_control_points(
     let mut t = start_time;
     for p in generated.iter().take(take) {
         existing.push(ControlPoint {
-            position: p.position,
+            position: [
+                origin_local[0] + p.position[0],
+                origin_local[1] + p.position[1],
+                origin_local[2] + p.position[2],
+            ],
             rotation: p.rotation,
             scale:    p.scale,
             time:     t,
@@ -312,7 +320,10 @@ impl App {
         // 既定は新規アクタ生成。空文字・未知の値も `TARGET_ACTORS` として扱う
         //（エディタが古いままでも「アクタが置ける」側へ倒すほうが安全なため）。
         if req.target == TARGET_CONTROL_POINTS {
-            self.place_control_points(&req, &result.points);
+            // 基準点を伴わない直接追記（配置モードを経由しない旧経路・自動化用）。
+            // 通常のエディタ操作は `LOGIC_PLACE_BEGIN` → 配置モード → カーソル位置確定
+            // を通るので、ここへ来るのはアクタ原点基準で良い場合に限られる。
+            self.place_control_points(&req, &result.points, [0.0, 0.0, 0.0]);
         } else {
             debug_assert!(req.target.is_empty() || req.target == TARGET_ACTORS);
             // 基準点を伴わない直接生成（配置モードを経由しない旧経路・自動化用）。
@@ -514,8 +525,16 @@ impl App {
 
     /// 生成点列を既存の ControlPoint スロットの末尾へ追記する。
     ///
+    /// `origin_local` は**対象アクタのローカル空間での基準点**。配置モードから来た
+    /// 場合はカーソル着弾点をアクタローカルへ変換した値、旧経路は `[0,0,0]`。
+    ///
     /// Undo は `ComponentSlotsSnapshotCommand` 1 件（既存の点編集と同じ分類）。
-    fn place_control_points(&mut self, req: &LogicPlaceRequest, points: &[PlacementPoint]) {
+    pub(super) fn place_control_points(
+        &mut self,
+        req: &LogicPlaceRequest,
+        points: &[PlacementPoint],
+        origin_local: [f32; 3],
+    ) {
         let Some(entity) = self.control_point_slot_entity(req.actor_dfs_id, req.slot_idx) else {
             self.notify_placement_error("対象の ControlPoint スロットが見つかりません");
             return;
@@ -531,7 +550,7 @@ impl App {
                 return;
             };
             let start_time = c.next_default_time();
-            append_control_points(&mut c.points, points, start_time)
+            append_control_points(&mut c.points, points, origin_local, start_time)
         };
 
         if dropped > 0 {
@@ -769,7 +788,7 @@ mod tests {
             PlacementPoint { position: [1.0, 0.0, 0.0], ..Default::default() },
             PlacementPoint { position: [2.0, 0.0, 0.0], ..Default::default() },
         ];
-        let (added, dropped) = append_control_points(&mut existing, &generated, 0.0);
+        let (added, dropped) = append_control_points(&mut existing, &generated, [0.0; 3], 0.0);
         assert_eq!((added, dropped), (2, 0));
         assert_eq!(existing[0].time, 0.0);
         assert_eq!(existing[1].time, DEFAULT_TIME_STEP);
@@ -781,7 +800,7 @@ mod tests {
     fn control_points_are_appended_to_the_tail() {
         let mut existing = vec![ControlPoint { position: [9.0, 9.0, 9.0], time: 5.0, ..Default::default() }];
         let generated = vec![PlacementPoint { position: [1.0, 0.0, 0.0], ..Default::default() }];
-        append_control_points(&mut existing, &generated, 6.0);
+        append_control_points(&mut existing, &generated, [0.0; 3], 6.0);
         assert_eq!(existing.len(), 2);
         assert_eq!(existing[0].position, [9.0, 9.0, 9.0], "既存点が先頭のまま残ること");
         assert_eq!(existing[1].time, 6.0, "渡した開始時刻から振られること");
@@ -792,7 +811,7 @@ mod tests {
     fn control_points_truncate_at_max() {
         let mut existing = vec![ControlPoint::default(); MAX_CONTROL_POINTS - 2];
         let generated = vec![PlacementPoint::default(); 10];
-        let (added, dropped) = append_control_points(&mut existing, &generated, 0.0);
+        let (added, dropped) = append_control_points(&mut existing, &generated, [0.0; 3], 0.0);
         assert_eq!(added, 2, "空きぶんだけ入ること");
         assert_eq!(dropped, 8, "溢れた件数を返すこと（黙って捨てない）");
         assert_eq!(existing.len(), MAX_CONTROL_POINTS);
@@ -803,9 +822,43 @@ mod tests {
     fn control_points_add_nothing_when_full() {
         let mut existing = vec![ControlPoint::default(); MAX_CONTROL_POINTS];
         let generated = vec![PlacementPoint::default(); 3];
-        let (added, dropped) = append_control_points(&mut existing, &generated, 0.0);
+        let (added, dropped) = append_control_points(&mut existing, &generated, [0.0; 3], 0.0);
         assert_eq!((added, dropped), (0, 3));
         assert_eq!(existing.len(), MAX_CONTROL_POINTS);
+    }
+
+    /// **基準点が点の位置へ足される**こと（配置モードのカーソル位置が効く経路）。
+    ///
+    /// 基準点はアクタローカルなので、そのままパターン座標へ足せば点の位置になる。
+    #[test]
+    fn control_points_are_offset_by_the_local_origin() {
+        let mut existing: Vec<ControlPoint> = Vec::new();
+        let generated = vec![
+            PlacementPoint { position: [1.0, 0.0, 0.0], ..Default::default() },
+            PlacementPoint { position: [0.0, 0.0, 2.0], ..Default::default() },
+        ];
+        let (added, dropped) =
+            append_control_points(&mut existing, &generated, [10.0, -3.0, 5.0], 0.0);
+        assert_eq!((added, dropped), (2, 0));
+        assert_eq!(existing[0].position, [11.0, -3.0, 5.0], "基準点 + パターン座標");
+        assert_eq!(existing[1].position, [10.0, -3.0, 7.0]);
+    }
+
+    /// 基準点付きでも**末尾追記と上限切り詰め**の規則が変わらないこと。
+    #[test]
+    fn control_points_with_origin_still_append_and_truncate() {
+        let mut existing = vec![
+            ControlPoint { position: [0.0; 3], time: 1.0, ..Default::default() };
+            MAX_CONTROL_POINTS - 1
+        ];
+        let generated = vec![PlacementPoint { position: [1.0, 1.0, 1.0], ..Default::default() }; 5];
+        let (added, dropped) =
+            append_control_points(&mut existing, &generated, [100.0; 3], 9.0);
+        assert_eq!((added, dropped), (1, 4), "空き 1 点ぶんだけ入り、4 点は切り詰め");
+        assert_eq!(existing.len(), MAX_CONTROL_POINTS);
+        let last = existing.last().expect("末尾へ追記されていること");
+        assert_eq!(last.position, [101.0; 3], "追記された 1 点にも基準点が効くこと");
+        assert_eq!(last.time, 9.0, "時刻は渡した開始値から");
     }
 
     // ─── リクエストの JSON 互換 ───────────────────────────

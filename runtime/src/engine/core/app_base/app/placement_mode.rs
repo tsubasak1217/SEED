@@ -60,7 +60,8 @@ use crate::engine::structs::objects::{Actor, actor::ActorData};
 use super::actor_utils::{
     despawn_actor_recursive, dfs_ids_for_entities, extract_actor_by_entity, find_actor_by_entity_mut,
 };
-use super::control_point_ops::nearer_hit;
+use super::control_point_ops::{nearer_hit, transform_point};
+use crate::engine::methods::gizmo_interact::mat4x4_inv;
 use super::logic_placement_ops::{ground_positions_with, LogicPlaceRequest, TARGET_CONTROL_POINTS};
 use super::terrain_scatter_ops::TerrainScatterField;
 use super::{App, RuntimeMode};
@@ -90,6 +91,13 @@ const RADIUS_CIRCLE_SEGMENTS: usize = 64;
 
 /// 仮スポーン中のアクタに出すアイコンの色（水色寄り・半透明＝「まだ仮」）。
 pub(super) const PREVIEW_ICON_TINT: [f32; 4] = [0.55, 0.85, 1.0, 0.6];
+
+/// 制御点プレビューのアイコン色（黄橙寄り・半透明）。
+///
+/// アクタ配置（水色）と**必ず違う色**にする。どちらの配置モードに居るのかは
+/// アイコンの色でしか判別できず、取り違えると「アクタを置いたつもりが点だった」
+/// という取り消しづらい事故になる。
+pub(super) const CONTROL_POINT_PREVIEW_ICON_TINT: [f32; 4] = [1.0, 0.78, 0.30, 0.75];
 
 /// 「押してすぐ離した」をクリックと見なすカーソル移動量の上限 [px]。
 ///
@@ -122,6 +130,18 @@ pub(super) struct RadiusDrag {
     pub dragged: bool,
 }
 
+/// 制御点への配置（`target = control_points`）の対象スロット。
+///
+/// アクタ配置と違い**実体を仮スポーンしない**ので、モードが握るのは
+/// 「どのアクタの・どのスロットへ入れるか」の 2 つだけで足りる。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) struct ControlPointPlacement {
+    /// 対象アクタの DFS id。
+    pub actor_dfs_id: u32,
+    /// 対象スロットの添字。
+    pub slot_idx: u32,
+}
+
 /// 配置モードの状態。
 ///
 /// **点列は開始時に 1 回だけ生成して持ち回る**。毎フレーム引き直すと、
@@ -134,7 +154,14 @@ pub(super) struct PlacementMode {
     pub req: LogicPlaceRequest,
     /// 生成済みの点列（基準点相対）。開始時に固定する。
     pub points: Vec<PlacementPoint>,
-    /// 直近フレームに解決したカーソルの着弾点（ワールド座標。2D は `[x,0,y]`）。
+    /// 直近フレームに解決したカーソルの着弾点。
+    ///
+    /// 座標系は**配置対象で変わる**:
+    ///   ・アクタ配置   … ワールド座標（2D は `[x, 0, y]`）
+    ///   ・制御点への配置 … **対象アクタのローカル座標**
+    /// 制御点はアクタ相対のデータなので、ローカルで持っておけば点列の合成
+    /// （`placement_world_positions`）も半径ドラッグもそのまま使い回せる。
+    /// ワールドが要るのは描画のときだけで、そこで対象アクタの行列を掛ける。
     ///
     /// `None` は「まだ 1 度も解決できていない」。
     pub base: Option<[f32; 3]>,
@@ -156,6 +183,8 @@ pub(super) struct PlacementMode {
     pub applied_origin: Option<[f32; 3]>,
     /// 半径ドラッグの状態（`None` なら通常のカーソル追従中）。
     pub radius_drag: Option<RadiusDrag>,
+    /// 制御点への配置なら対象スロット、新規アクタ配置なら `None`。
+    pub control_point: Option<ControlPointPlacement>,
 }
 
 impl PlacementMode {
@@ -217,6 +246,30 @@ pub(super) fn placement_world_positions(
         .collect()
 }
 
+/// ワールド座標を、与えられたアクタ行列のローカル空間へ落とす。
+///
+/// 制御点は**アクタ相対**のデータなので、カーソルのワールド着弾点は必ずここを通す。
+/// 親子付け・回転・スケールはすべて `actor_mat`（＝アクタのワールド行列）に
+/// 畳み込まれているため、逆行列を 1 回掛けるだけで正しいローカルになる。
+pub(super) fn world_to_actor_local(actor_mat: [[f32; 4]; 4], world: [f32; 3]) -> [f32; 3] {
+    transform_point(&mat4x4_inv(actor_mat), world)
+}
+
+/// アクタローカル座標をワールドへ持ち上げる（プレビュー描画用）。
+pub(super) fn actor_local_to_world(actor_mat: &[[f32; 4]; 4], local: [f32; 3]) -> [f32; 3] {
+    transform_point(actor_mat, local)
+}
+
+/// 制御点配置モードを続けてよいか。
+///
+/// 一般条件（`placement_mode_still_valid`）に加えて、**入れ先のスロットが
+/// 生きていること**を要求する。配置モード中に対象アクタを消された場合、
+/// 確定しても行き場が無いので、その場で取り消して知らせるほうが親切である
+/// （黙って「クリックしても何も起きない」が最も分かりにくい）。
+pub(super) fn control_point_mode_still_valid(general_valid: bool, target_alive: bool) -> bool {
+    general_valid && target_alive
+}
+
 /// このパターンが「押下で中心固定 → ドラッグで半径調整」に対応するか。
 ///
 /// 円形／円弧だけ。他のパターンは半径という概念そのものが無いので従来のクリック配置。
@@ -273,14 +326,17 @@ pub(super) fn guide_lines_for(
     pattern:  PlacementPattern,
     dragging: bool,
     radius:   f32,
+    is_control_point: bool,
 ) -> Vec<String> {
+    // 「何が置かれるのか」を毎行で言い換えず、動詞 1 語だけ差し替える。
+    let verb = if is_control_point { "制御点を追加" } else { "配置" };
     if dragging {
         return vec![
             format!("ドラッグ: 半径 {radius:.2} m"),
-            "離す: 配置".to_string(),
+            format!("離す: {verb}"),
         ];
     }
-    let mut lines = vec!["左クリック: 配置 / 右クリック: 取消".to_string()];
+    let mut lines = vec![format!("左クリック: {verb} / 右クリック: 取消")];
     if pattern_supports_radius_drag(pattern) {
         lines.push("左ドラッグ: 半径を調整".to_string());
     }
@@ -326,13 +382,6 @@ impl App {
                 return;
             }
         };
-        // 制御点への追記はカーソル位置と無関係（アクタ相対座標）なので、
-        // 配置モードには入らず従来どおり即時追記へ回す。
-        if req.target == TARGET_CONTROL_POINTS {
-            self.handle_logic_place(json);
-            return;
-        }
-
         let result = generate_points(&req.spec);
         if let Some(w) = &result.warning {
             self.notify_placement_error(w);
@@ -346,6 +395,13 @@ impl App {
         //（ダイアログを開き直した場合。捨てるだけでは前回の仮アクタが残る）。
         if self.placement_mode.is_some() {
             self.cancel_placement();
+        }
+
+        // 制御点への配置は実体を持たないので、専用の開始処理へ分ける
+        //（仮スポーンもツリー・Undo のスナップショットも要らない）。
+        if req.target == TARGET_CONTROL_POINTS {
+            self.begin_control_point_placement(req, result.points);
+            return;
         }
 
         // 開始直前のツリーを控える（確定時の Undo `before`）。
@@ -376,12 +432,67 @@ impl App {
             preview_dfs_range,
             applied_origin: Some(origin),
             radius_drag: None,
+            control_point: None,
         });
         // 掴み途中のギズモ・ホバー表示を落として、モードの排他を見た目にも反映する。
         self.hovered_gizmo_part = None;
         // 仮スポーンをツリーへ 1 回だけ反映する（毎フレームは送らない）。
         self.send_hierarchy();
         self.send_placement_state(true);
+    }
+
+    /// 制御点への配置モードへ入る（`target = control_points`）。
+    ///
+    /// アクタ配置との違いは 3 点だけ:
+    ///   ・**実アクタを仮スポーンしない**（点は座標データであり実体を持たない。
+    ///     仮の実体を置くと、取消し損ねたときにシーンへゴミが残る）
+    ///   ・基準点は対象アクタの**ローカル座標**で持つ（点の座標系に合わせる）
+    ///   ・プレビューはアイコン＋十字だけで描く
+    ///
+    /// 対象スロットが見つからない場合はモードへ入らない（先に弾く）。
+    fn begin_control_point_placement(&mut self, req: LogicPlaceRequest, points: Vec<PlacementPoint>) {
+        let target = ControlPointPlacement {
+            actor_dfs_id: req.actor_dfs_id,
+            slot_idx:     req.slot_idx,
+        };
+        if self.control_point_slot_entity(target.actor_dfs_id, target.slot_idx).is_none() {
+            self.notify_placement_error("対象の ControlPoint スロットが見つかりません");
+            return;
+        }
+
+        let wl = self.active_world_line;
+        // 初回の基準点はカーソル位置から概算する（アクタ配置と同じ理由）。
+        // ワールドで求めてから対象アクタのローカルへ落とす。
+        let origin_world = self.initial_placement_origin(&req);
+        let origin = self.world_to_placement_local(target.actor_dfs_id, origin_world);
+
+        self.placement_mode = Some(PlacementMode {
+            req,
+            points,
+            base: Some(origin),
+            world_line: wl,
+            before_actors: Vec::new(), // 仮スポーンしないので Undo の before は要らない
+            preview_group: None,
+            preview_entities: Vec::new(),
+            preview_dfs_range: None,
+            applied_origin: None,
+            radius_drag: None,
+            control_point: Some(target),
+        });
+        self.hovered_gizmo_part = None;
+        self.send_placement_state(true);
+    }
+
+    /// ワールド座標を対象アクタのローカル座標へ落とす（制御点配置の座標変換）。
+    ///
+    /// 対象アクタの行列が引けない場合はワールド座標をそのまま返す
+    /// （＝単位行列とみなす）。モードは `tick_placement_mode_guard` が
+    /// 次のフレームで畳むので、ここで失敗を握り潰しても点は入らない。
+    fn world_to_placement_local(&self, actor_dfs_id: u32, world: [f32; 3]) -> [f32; 3] {
+        match self.control_point_actor_matrix(actor_dfs_id) {
+            Some(m) => world_to_actor_local(m, world),
+            None    => world,
+        }
     }
 
     /// 仮スポーンしたグループのサブツリーが占める DFS id の範囲 `[start, end)` を求める。
@@ -432,11 +543,25 @@ impl App {
     }
 
     /// 読み戻し結果（GPU ヒット）から基準点を解決して保持する（3D 専用）。
+    ///
+    /// 制御点配置では、解決したワールド座標を**対象アクタのローカルへ変換して**持つ
+    /// （点の座標系に合わせる。詳細は `PlacementMode::base` のコメント）。
     pub(super) fn resolve_placement_hover(&mut self, gpu_hit: Option<[f32; 3]>, sx: u32, sy: u32) {
         if self.placement_mode.is_none() { return; }
-        let base = self.resolve_surface_or_camera_dist(gpu_hit, sx, sy);
+        let world = self.resolve_surface_or_camera_dist(gpu_hit, sx, sy);
+        let base = self.placement_base_from_world(world);
         if let Some(mode) = self.placement_mode.as_mut() {
             mode.base = Some(base);
+        }
+    }
+
+    /// カーソルのワールド着弾点を、いまのモードの基準点座標系へ写す。
+    ///
+    /// アクタ配置はワールドのまま、制御点配置は対象アクタのローカルへ。
+    fn placement_base_from_world(&self, world: [f32; 3]) -> [f32; 3] {
+        match self.placement_mode.as_ref().and_then(|m| m.control_point) {
+            Some(cp) => self.world_to_placement_local(cp.actor_dfs_id, world),
+            None     => world,
         }
     }
 
@@ -446,8 +571,9 @@ impl App {
         if !mode.req.is_2d { return; }
         let Some((cx, cy)) = self.last_cursor_pos else { return };
         let p = self.window_to_canvas_2d(cx, cy);
+        let base = self.placement_base_from_world([p[0], 0.0, p[1]]);
         if let Some(mode) = self.placement_mode.as_mut() {
-            mode.base = Some([p[0], 0.0, p[1]]);
+            mode.base = Some(base);
         }
     }
 
@@ -466,6 +592,8 @@ impl App {
         self.update_placement_drag_radius();
 
         // ── ② 基準点が動いていれば仮スポーン群を移す ──
+        // 制御点配置には仮スポーンが無いので、ここから先はまるごと不要。
+        if self.placement_mode.as_ref().is_some_and(|m| m.control_point.is_some()) { return; }
         let Some(mode) = self.placement_mode.as_ref() else { return };
         let Some(origin) = mode.origin() else { return };
         if mode.applied_origin.is_some_and(|a| same_position(a, origin)) { return; }
@@ -546,11 +674,31 @@ impl App {
     pub(super) fn placement_preview_icon_positions(&self) -> Vec<[f32; 3]> {
         let Some(mode) = self.placement_mode.as_ref() else { return Vec::new() };
         if mode.req.is_2d { return Vec::new() }
+
+        // ── 制御点配置: 実体が無いので、生成予定の点をその場で組んで返す ──
+        // 点はアクタローカルなので、対象アクタの行列でワールドへ持ち上げる。
+        if let Some(cp) = mode.control_point {
+            let Some(origin) = mode.origin() else { return Vec::new() };
+            let Some(m) = self.control_point_actor_matrix(cp.actor_dfs_id) else { return Vec::new() };
+            return placement_world_positions(origin, &mode.points, usize::MAX)
+                .into_iter()
+                .map(|p| actor_local_to_world(&m, p))
+                .collect();
+        }
+
         let Some(scene) = self.scene.as_ref() else { return Vec::new() };
         mode.preview_entities
             .iter()
             .filter_map(|e| scene.world.get::<Transform>(*e).map(|t| t.position))
             .collect()
+    }
+
+    /// プレビューアイコンの色。配置対象で色を変えて取り違えを防ぐ。
+    pub(super) fn placement_preview_icon_tint(&self) -> [f32; 4] {
+        match self.placement_mode.as_ref().and_then(|m| m.control_point) {
+            Some(_) => CONTROL_POINT_PREVIEW_ICON_TINT,
+            None    => PREVIEW_ICON_TINT,
+        }
     }
 
     // ============================================================
@@ -642,6 +790,13 @@ impl App {
         let Some(mode) = self.placement_mode.take() else { return };
         self.send_placement_state(false);
 
+        // 制御点への配置は既存の追記経路へ流す（Undo 1 件・上限切り詰め警告つき）。
+        if mode.control_point.is_some() {
+            let origin = mode.origin().unwrap_or([0.0; 3]);
+            self.place_control_points(&mode.req, &mode.points, origin);
+            return;
+        }
+
         let wl = mode.world_line;
         let entities = mode.preview_entities.clone();
 
@@ -665,6 +820,12 @@ impl App {
     pub(super) fn cancel_placement(&mut self) {
         let Some(mode) = self.placement_mode.take() else { return };
         self.send_placement_state(false);
+
+        // 制御点への配置は何も置いていないので、状態を捨てるだけで元通り。
+        // ここで選択を解除してはいけない（対象アクタの選択が外れると、
+        // 既存の点キューブまで消えて「取り消したら点が全部消えた」ように見える）。
+        if mode.control_point.is_some() { return; }
+
         self.despawn_placement_preview(mode.preview_group);
 
         // 仮スポーンが選択されたまま残らないようにする。
@@ -697,7 +858,15 @@ impl App {
             mode.world_line,
             self.active_world_line,
         );
-        if still_valid { return; }
+        // 制御点配置は「対象スロットが生きていること」も前提に加わる。
+        // 配置モード中に対象アクタを消された／コンポーネントを外された場合、
+        // 確定しても入れ先が無いので、その場で取り消す
+        //（気付かずクリックして「何も起きない」となるほうが分かりにくい）。
+        let target_alive = match mode.control_point {
+            Some(cp) => self.control_point_slot_entity(cp.actor_dfs_id, cp.slot_idx).is_some(),
+            None     => true,
+        };
+        if control_point_mode_still_valid(still_valid, target_alive) { return; }
         self.cancel_placement();
     }
 
@@ -719,19 +888,34 @@ impl App {
         let origin = mode.origin()?;
         let is_2d = mode.req.is_2d;
 
+        // 制御点配置では基準点も点列もアクタローカルなので、描く直前に
+        // 対象アクタの行列でワールドへ持ち上げる（アクタ配置では恒等変換）。
+        let to_world = self.placement_local_to_world_matrix();
+        let lift = |p: [f32; 3]| match &to_world {
+            Some(m) => actor_local_to_world(m, p),
+            None    => p,
+        };
+
         let mut lb = LineBatch::new();
         // 基準点（カーソルの着弾点）を大きめの十字で。パターンのどこが
         // カーソルに吸い付いているか（＝アンカー）が一目で分かるようにする。
-        let base_draw = if is_2d { [origin[0], origin[2], 0.0] } else { origin };
-        let base_half = self.placement_marker_half(origin, is_2d) * BASE_MARKER_SCALE;
+        let origin_world = lift(origin);
+        let base_draw = if is_2d { [origin_world[0], origin_world[2], 0.0] } else { origin_world };
+        let base_half = self.placement_marker_half(origin_world, is_2d) * BASE_MARKER_SCALE;
         add_marker(&mut lb, base_draw, base_half, is_2d, BASE_COLOR);
 
         // 半径ドラッグ中は、いま決めている半径の円を描く。
         if mode.radius_drag.is_some() {
-            add_radius_circle(&mut lb, origin, mode.req.spec.radius, is_2d);
+            add_radius_circle(&mut lb, origin, mode.req.spec.radius, is_2d, &lift);
         }
 
         if lb.is_empty() { None } else { Some(lb) }
+    }
+
+    /// 基準点・点列の座標系をワールドへ写す行列（アクタ配置なら `None` ＝恒等）。
+    fn placement_local_to_world_matrix(&self) -> Option<[[f32; 4]; 4]> {
+        let cp = self.placement_mode.as_ref()?.control_point?;
+        self.control_point_actor_matrix(cp.actor_dfs_id)
     }
 
     /// マーカーの半径（画面上の見かけの大きさが一定になるよう距離・ズームへ追従させる）。
@@ -756,7 +940,12 @@ impl App {
     pub(super) fn placement_guide_lines(&self) -> Vec<String> {
         let Some(mode) = self.placement_mode.as_ref() else { return Vec::new() };
         let dragging = mode.radius_drag.as_ref().is_some_and(|d| d.dragged);
-        guide_lines_for(mode.req.spec.pattern, dragging, mode.req.spec.radius)
+        guide_lines_for(
+            mode.req.spec.pattern,
+            dragging,
+            mode.req.spec.radius,
+            mode.control_point.is_some(),
+        )
     }
 }
 
@@ -783,14 +972,26 @@ fn add_marker(lb: &mut LineBatch, center: [f32; 3], half: f32, is_2d: bool, colo
 /// 半径ドラッグ中の円を追加する（中心 `center`・半径 `radius`）。
 ///
 /// パターンは XZ 平面に載るので、3D は XZ 平面の円、2D はキャンバス XY の円を描く。
-fn add_radius_circle(lb: &mut LineBatch, center: [f32; 3], radius: f32, is_2d: bool) {
+///
+/// `lift` はパターン座標系 → ワールドの変換。制御点配置ではパターンが
+/// **アクタのローカル空間**に載るため、円もアクタと一緒に回っていないと
+/// 「見えている円と実際に入る点」がずれる。アクタ配置では恒等関数を渡す。
+fn add_radius_circle(
+    lb:     &mut LineBatch,
+    center: [f32; 3],
+    radius: f32,
+    is_2d:  bool,
+    lift:   &impl Fn([f32; 3]) -> [f32; 3],
+) {
     let step = std::f32::consts::TAU / RADIUS_CIRCLE_SEGMENTS as f32;
-    // 描画空間の中心（2D はパターンの Z がキャンバス Y に写る）。
-    let c = if is_2d { [center[0], center[2], 0.0] } else { center };
+    // パターン座標 → ワールド → 描画空間（2D はパターンの Z がキャンバス Y に写る）。
+    let to_draw = |p: [f32; 3]| -> [f32; 3] {
+        let w = lift(p);
+        if is_2d { [w[0], w[2], 0.0] } else { w }
+    };
     let point_at = |a: f32| -> [f32; 3] {
         let (s, co) = (a.sin(), a.cos());
-        if is_2d { [c[0] + s * radius, c[1] + co * radius, c[2]] }
-        else     { [c[0] + s * radius, c[1], c[2] + co * radius] }
+        to_draw([center[0] + s * radius, center[1], center[2] + co * radius])
     };
     let mut prev = point_at(0.0);
     for i in 1..=RADIUS_CIRCLE_SEGMENTS {
@@ -799,7 +1000,7 @@ fn add_radius_circle(lb: &mut LineBatch, center: [f32; 3], radius: f32, is_2d: b
         prev = next;
     }
     // 中心から円周へ 1 本引いて「これが半径」であることを示す。
-    lb.add_line(c, point_at(0.0), RADIUS_CIRCLE_COLOR);
+    lb.add_line(to_draw(center), point_at(0.0), RADIUS_CIRCLE_COLOR);
 }
 
 // ============================================================
@@ -837,6 +1038,7 @@ mod tests {
             preview_dfs_range: None,
             applied_origin: None,
             radius_drag: None,
+            control_point: None,
         }
     }
 
@@ -862,6 +1064,7 @@ mod tests {
             preview_dfs_range: None,
             applied_origin: None,
             radius_drag: None,
+            control_point: None,
         }
     }
 
@@ -1010,7 +1213,7 @@ mod tests {
     /// 通常時のガイドは「左クリック: 配置 / 右クリック: 取消」を出すこと。
     #[test]
     fn guide_shows_click_and_cancel_by_default() {
-        let lines = guide_lines_for(PlacementPattern::Grid, false, 5.0);
+        let lines = guide_lines_for(PlacementPattern::Grid, false, 5.0, false);
         assert_eq!(lines.len(), 1, "半径ドラッグ非対応パターンは 1 行だけ");
         assert!(lines[0].contains("左クリック") && lines[0].contains("右クリック"));
     }
@@ -1018,7 +1221,7 @@ mod tests {
     /// 円形パターンでは、ドラッグ前でも半径ドラッグができることを知らせること。
     #[test]
     fn guide_advertises_radius_drag_for_circles() {
-        let lines = guide_lines_for(PlacementPattern::Circle, false, 5.0);
+        let lines = guide_lines_for(PlacementPattern::Circle, false, 5.0, false);
         assert_eq!(lines.len(), 2);
         assert!(lines[1].contains("半径"), "半径ドラッグの案内が出ること");
     }
@@ -1026,7 +1229,7 @@ mod tests {
     /// 半径ドラッグ中は、いまの半径の数値と「離す: 配置」を出すこと。
     #[test]
     fn guide_shows_the_live_radius_while_dragging() {
-        let lines = guide_lines_for(PlacementPattern::Circle, true, 12.345);
+        let lines = guide_lines_for(PlacementPattern::Circle, true, 12.345, false);
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("12.35"), "小数 2 桁で現在値が出ること: {}", lines[0]);
         assert!(lines[1].contains("離す"), "離せば配置される旨が出ること");
@@ -1120,5 +1323,172 @@ mod tests {
         assert!(same_position([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]));
         assert!(same_position([1.0, 2.0, 3.0], [1.0 + PREVIEW_EPSILON * 0.5, 2.0, 3.0]));
         assert!(!same_position([1.0, 2.0, 3.0], [1.1, 2.0, 3.0]));
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  制御点への配置モード
+    // ════════════════════════════════════════════════════════
+
+    /// テスト用の対象スロット。
+    const TEST_CP: ControlPointPlacement = ControlPointPlacement { actor_dfs_id: 3, slot_idx: 1 };
+
+    /// 3×3 グリッドの**制御点配置**モードを作る（基準点はアクタローカル）。
+    fn cp_mode(base: Option<[f32; 3]>) -> PlacementMode {
+        let mut m = mode_with_base(base);
+        m.req.target = TARGET_CONTROL_POINTS.to_string();
+        m.req.actor_dfs_id = TEST_CP.actor_dfs_id;
+        m.req.slot_idx = TEST_CP.slot_idx;
+        m.control_point = Some(TEST_CP);
+        m
+    }
+
+    /// 位置・回転（度）・スケールからアクタのワールド行列を作る。
+    fn actor_mat(position: [f32; 3], rotation: [f32; 3], scale: [f32; 3]) -> [[f32; 4]; 4] {
+        Transform { position, rotation, scale, ..Default::default() }.to_mat4()
+    }
+
+    /// 2 点がほぼ一致すること（浮動小数の比較）。
+    fn assert_close(a: [f32; 3], b: [f32; 3], what: &str) {
+        for k in 0..3 {
+            assert!((a[k] - b[k]).abs() < 1.0e-3, "{what}: {a:?} != {b:?}");
+        }
+    }
+
+    // ─── 状態遷移（begin → hover → confirm / cancel）───────
+
+    /// **begin**: 実体を仮スポーンせず、対象スロットだけを握ること。
+    #[test]
+    fn cp_begin_spawns_nothing_and_remembers_the_slot() {
+        let m = cp_mode(None);
+        assert_eq!(m.control_point, Some(TEST_CP), "対象スロットを保持すること");
+        assert!(m.preview_group.is_none(), "仮スポーンのグループを作らないこと");
+        assert!(m.preview_entities.is_empty(), "実アクタを 1 体も作らないこと");
+        assert!(m.preview_dfs_range.is_none(), "自己ヒット除外の範囲も不要");
+        assert!(m.before_actors.is_empty(), "ツリーのスナップショットを取らないこと");
+        assert_eq!(m.points.len(), 9, "点列は開始時に確定していること");
+    }
+
+    /// **hover**: 基準点（ローカル）が入れば、全点がそこから展開されること。
+    #[test]
+    fn cp_hover_expands_points_from_the_local_base() {
+        let m = cp_mode(Some([2.0, 1.0, -3.0]));
+        let base = m.origin().expect("基準点は解決済み");
+        let local = placement_world_positions(base, &m.points, usize::MAX);
+        assert_eq!(local.len(), 9);
+        // アンカー 0.5/0.5 の 3×3 なので、基準点そのものに乗る点が 1 つある。
+        assert!(local.iter().any(|p| (p[0] - 2.0).abs() < 1.0e-4 && (p[2] + 3.0).abs() < 1.0e-4));
+    }
+
+    /// **confirm/cancel の分岐条件**: 制御点モードかどうかで確定・取消の経路が変わること。
+    ///
+    /// 実際の確定は `App` を要するのでここでは呼べないが、分岐の根拠になる
+    /// フラグ（`control_point`）が両モードで排他であることは固定しておく。
+    #[test]
+    fn cp_and_actor_modes_are_mutually_exclusive() {
+        assert!(cp_mode(None).control_point.is_some(), "制御点モード");
+        assert!(mode_with_base(None).control_point.is_none(), "アクタ配置モード");
+    }
+
+    /// **対象アクタ消失で自動取消**: 一般条件が満たされていても、
+    /// スロットが消えていればモードを続けないこと。
+    #[test]
+    fn cp_mode_is_cancelled_when_the_target_disappears() {
+        assert!(control_point_mode_still_valid(true, true), "対象が生きていれば継続");
+        assert!(!control_point_mode_still_valid(true, false), "対象が消えたら取消");
+        assert!(!control_point_mode_still_valid(false, true), "Play 開始等でも取消");
+    }
+
+    // ─── ワールド → アクタローカル変換 ───────────────────
+
+    /// 平行移動だけのアクタでは、ローカル＝ワールド − アクタ位置になること。
+    #[test]
+    fn world_to_local_subtracts_the_actor_translation() {
+        let m = actor_mat([10.0, 5.0, -2.0], [0.0; 3], [1.0; 3]);
+        assert_close(world_to_actor_local(m, [12.0, 5.0, 0.0]), [2.0, 0.0, 2.0], "平行移動");
+    }
+
+    /// **回転ありのアクタ**: ワールドの +X はアクタ Y 軸 90° 回転でローカル -Z になること。
+    ///
+    /// SEED の前方向は +Z・左手系で、Y 回転 90° は +Z を +X へ向ける。
+    /// よって逆変換ではワールド +X がローカル +Z … ではなく、
+    /// 「行って戻る」ことだけを検証して回転規約への二重管理を避ける。
+    #[test]
+    fn world_to_local_round_trips_through_rotation() {
+        let m = actor_mat([3.0, -1.0, 4.0], [0.0, 90.0, 0.0], [1.0; 3]);
+        let world = [7.0, 2.0, -5.0];
+        let local = world_to_actor_local(m, world);
+        assert_ne!(local, world, "回転していれば座標は変わること");
+        assert_close(actor_local_to_world(&m, local), world, "往復で元へ戻ること");
+    }
+
+    /// **親あり・回転・スケール込み**でも往復すること。
+    ///
+    /// 親子付けはアクタのワールド行列に畳み込まれているので、
+    /// 「親の分だけ別に足す」処理は不要である（それが必要になっていたら回帰）。
+    #[test]
+    fn world_to_local_round_trips_with_rotation_and_scale() {
+        let m = actor_mat([-8.0, 12.0, 0.5], [15.0, -40.0, 25.0], [2.0, 0.5, 3.0]);
+        for world in [[0.0; 3], [1.0, 2.0, 3.0], [-30.0, 7.5, 100.0]] {
+            let local = world_to_actor_local(m, world);
+            assert_close(actor_local_to_world(&m, local), world, "往復");
+        }
+    }
+
+    /// スケール付きアクタでは、ローカルの 1 単位がワールドのスケール倍になること
+    /// （＝パターンの間隔がアクタのスケールに追従する）。
+    #[test]
+    fn local_units_follow_the_actor_scale() {
+        let m = actor_mat([0.0; 3], [0.0; 3], [2.0, 1.0, 1.0]);
+        assert_close(actor_local_to_world(&m, [1.0, 0.0, 0.0]), [2.0, 0.0, 0.0], "X 2 倍");
+        assert_close(world_to_actor_local(m, [2.0, 0.0, 0.0]), [1.0, 0.0, 0.0], "逆も 1/2");
+    }
+
+    // ─── 半径ドラッグ（制御点モードでも同一挙動）───────────
+
+    /// 制御点モードでも、押下時の中心が固定されること。
+    #[test]
+    fn cp_radius_drag_freezes_the_center_like_actor_placement() {
+        let mut m = cp_mode(Some([0.0; 3]));
+        m.req.spec.pattern = PlacementPattern::Circle;
+        m.radius_drag = Some(RadiusDrag {
+            center: [1.0, 0.0, 2.0],
+            press_cursor: (50.0, 50.0),
+            start_radius: 3.0,
+            dragged: true,
+        });
+        m.base = Some([40.0, 0.0, 40.0]); // カーソルは遠くへ
+        assert_eq!(m.origin(), Some([1.0, 0.0, 2.0]), "基準点は押下時の中心のまま");
+        // 半径はローカル空間の水平距離で決まる（アクタ配置と同じ関数）。
+        let r = radius_from_drag([1.0, 0.0, 2.0], [4.0, 0.0, 6.0]);
+        assert!((r - 5.0).abs() < 1.0e-4, "3-4-5: {r}");
+    }
+
+    // ─── ガイド文言 ───────────────────────────────────────
+
+    /// 制御点モードのガイドは「配置」ではなく「制御点を追加」と言うこと。
+    #[test]
+    fn cp_guide_says_it_adds_control_points() {
+        let lines = guide_lines_for(PlacementPattern::Grid, false, 5.0, true);
+        assert!(lines[0].contains("制御点を追加"), "何が起きるか明示すること: {}", lines[0]);
+        assert!(lines[0].contains("右クリック"), "取消の案内も残ること");
+        let dragging = guide_lines_for(PlacementPattern::Circle, true, 2.0, true);
+        assert!(dragging[1].contains("制御点を追加"), "離したときの結果も制御点であること");
+    }
+
+    /// アクタ配置のガイド文言は変わっていないこと（回帰）。
+    #[test]
+    fn actor_guide_text_is_unchanged() {
+        let lines = guide_lines_for(PlacementPattern::Grid, false, 5.0, false);
+        assert_eq!(lines[0], "左クリック: 配置 / 右クリック: 取消");
+    }
+
+    // ─── プレビューの色分け ───────────────────────────────
+
+    /// 2 つのプレビュー色が実際に違うこと（取り違え防止の担保）。
+    #[test]
+    fn preview_tints_differ_between_targets() {
+        assert_ne!(PREVIEW_ICON_TINT, CONTROL_POINT_PREVIEW_ICON_TINT);
+        // どちらも半透明（＝「まだ仮」）であること。
+        assert!(PREVIEW_ICON_TINT[3] < 1.0 && CONTROL_POINT_PREVIEW_ICON_TINT[3] < 1.0);
     }
 }

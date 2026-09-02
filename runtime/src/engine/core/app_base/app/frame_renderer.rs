@@ -1350,6 +1350,8 @@ impl App {
         // カーソル脇の操作ガイド文言。どちらも `&self` を要するので、
         // レンダラを可変借用する前にここで確定させておく。
         let placement_icon_worlds = self.placement_preview_icon_positions();
+        // アイコンの色は配置対象で変える（アクタ=水色 / 制御点=黄橙）。
+        let placement_icon_tint = self.placement_preview_icon_tint();
         let placement_guide_lines = self.placement_guide_lines();
         // ロジック配置モード（3D）がこのフレームで要求する読み戻し座標。
         // 描画ブロックの中では `self` を不変借用できない（レンダラを可変借用しているため）
@@ -4516,7 +4518,7 @@ impl App {
                             {
                                 icon_items.push(IconOverlayItem {
                                     screen,
-                                    tint: super::placement_mode::PREVIEW_ICON_TINT,
+                                    tint: placement_icon_tint,
                                 });
                             }
                         }

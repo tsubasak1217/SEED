@@ -58,6 +58,7 @@ public static class Program
         harness.Add("[Rust 一致] ランダム散布の既知ベクタ", RandomKnownVectorMatchesRust);
         harness.Add("LOGIC_PLACE の JSON が 1 行で必要な項目を含む", IpcCommandShape);
         harness.Add("LOGIC_PLACE_BEGIN は同じ本体で配置モードへ入る", BeginIpcCommandShape);
+        harness.Add("制御点への配置も LOGIC_PLACE_BEGIN で対象スロットを送る", ControlPointBeginIpcCommandShape);
 
         return harness.Run();
     }
@@ -600,5 +601,36 @@ public static class Program
         var spec = root.GetProperty("spec");
         Check.Close(0.0, spec.GetProperty("anchor_x").GetDouble(), Tolerance, "spec.anchor_x");
         Check.Close(1.0, spec.GetProperty("anchor_y").GetDouble(), Tolerance, "spec.anchor_y");
+    }
+
+    /// <summary>
+    /// 制御点への配置も <c>LOGIC_PLACE_BEGIN</c> で送られ、対象スロットの
+    /// 識別子（<c>actor_dfs_id</c> / <c>slot_idx</c>）が本体に含まれること。
+    ///
+    /// ランタイムはこの 2 値だけで入れ先を引くので、どちらかが欠けると
+    /// 配置モードへ入った直後に「対象スロットが見つかりません」で弾かれる。
+    /// </summary>
+    private static void ControlPointBeginIpcCommandShape()
+    {
+        var req = new LogicPlaceRequest
+        {
+            Target     = LogicPlaceRequest.TargetControlPoints,
+            Is2D       = false,
+            ActorDfsId = 12,
+            SlotIdx    = 2,
+        };
+        req.Spec.Pattern = PlacementPattern.Circle;
+        req.Spec.Count = 8;
+
+        var cmd = req.ToBeginIpcCommand();
+        Check.True(cmd.StartsWith("LOGIC_PLACE_BEGIN:", StringComparison.Ordinal), "接頭辞");
+        Check.True(!cmd.Contains('\n') && !cmd.Contains('\r'), "改行を含まないこと（IPC は行区切り）");
+
+        using var doc = JsonDocument.Parse(cmd["LOGIC_PLACE_BEGIN:".Length..]);
+        var root = doc.RootElement;
+        Check.Equal("control_points", root.GetProperty("target").GetString(), "target");
+        Check.Equal(12, root.GetProperty("actor_dfs_id").GetInt32(), "actor_dfs_id");
+        Check.Equal(2, root.GetProperty("slot_idx").GetInt32(), "slot_idx");
+        Check.Equal("Circle", root.GetProperty("spec").GetProperty("pattern").GetString(), "spec.pattern");
     }
 }

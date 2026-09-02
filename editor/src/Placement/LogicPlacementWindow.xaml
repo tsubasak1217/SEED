@@ -319,8 +319,8 @@
                     </StackPanel>
                 </GroupBox>
 
-                <!-- 基準点の説明（ControlPoint への追加時は非表示）。
-                     基準点は常に「ビューポートのカーソル位置」なので選択肢は無い。 -->
+                <!-- 基準点の説明。基準点は常に「ビューポートのカーソル位置」なので
+                     選択肢は無く、文言だけを対象（アクタ／制御点）に応じて差し替える。 -->
                 <GroupBox x:Name="BaseGroup" Header="基準点">
                     <StackPanel>
                         <TextBlock x:Name="TxtBaseHint" Style="{StaticResource HintStyle}"

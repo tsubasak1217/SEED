@@ -90,6 +90,28 @@ impl App {
             .map(|s| s.entity)
     }
 
+    /// 対象アクタの「アクタローカル → ワールド」変換行列を返す。
+    ///
+    /// 制御点は**アクタ相対**の座標データなので、ビューポート上の位置（ワールド）と
+    /// 行き来するには必ずこの行列（と逆行列）が要る。
+    ///
+    /// 3D アクタは `Transform` がワールド行列そのものを表す。2D アクタ
+    /// （`Transform` を持たず `CanvasTransform` だけを持つ）は、キャンバス平面の
+    /// 行列を代わりに使う。どちらも持たないアクタは単位行列扱いにせず None を返す
+    /// （「原点にあることにする」と、ずれた場所へ点が入って原因が分からなくなる）。
+    pub(super) fn control_point_actor_matrix(&self, actor_dfs_id: u32) -> Option<[[f32; 4]; 4]> {
+        use super::find_actor_by_dfs;
+        use crate::engine::components::CanvasTransform;
+
+        let scene = self.scene.as_ref()?;
+        let mut c = 0u32;
+        let actor = find_actor_by_dfs(&scene.actors, self.active_world_line, actor_dfs_id, &mut c)?;
+        if let Some(tf) = scene.world.get::<Transform>(actor.entity) {
+            return Some(tf.to_mat4());
+        }
+        scene.world.get::<CanvasTransform>(actor.entity).map(|ct| ct.to_mat4())
+    }
+
     // ─── IPC: 点列の全置換 ───────────────────────────────────
 
     /// インスペクタからの点列全置換（SET_CONTROL_POINTS IPC）。
@@ -515,7 +537,7 @@ impl App {
 ///
 /// `mat4x4_mul` は行列同士の積なので、点 1 個の変換のためだけに
 /// 平行移動行列を組み立てるのは無駄が大きい。ここで直接展開する。
-fn transform_point(m: &[[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
+pub(super) fn transform_point(m: &[[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
     [
         m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
         m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],

@@ -128,15 +128,24 @@ public partial class LogicPlacementWindow : Window
     /// <summary>
     /// 呼び出し元の文脈に応じて、意味を持たない入力欄を隠す。
     ///
-    /// - 制御点モード: 「配置元」「基準点」「地形接地」は無関係なので非表示
+    /// - 制御点モード: 「配置元」「地形接地」は無関係なので非表示
     ///   （制御点はアクタ相対の座標データであり、実体も地形も持たない）。
+    ///   「基準点」は**残す**。制御点もアクタ配置と同じくビューポートの
+    ///   カーソル位置を基準に置くようになったため、説明が必要になる。
     /// - 2D: 段（Y 方向）と地形接地は存在しないので非表示。
     /// </summary>
     private void ApplyContextVisibility()
     {
         bool cp = _ctx.IsControlPointMode;
         SourceGroup.Visibility = cp ? Visibility.Collapsed : Visibility.Visible;
-        BaseGroup.Visibility   = cp ? Visibility.Collapsed : Visibility.Visible;
+        BaseGroup.Visibility   = Visibility.Visible;
+        if (cp)
+        {
+            TxtBaseHint.Text = "「配置」を押すとビューポートが配置モードになります。"
+                             + "カーソル位置（メッシュ・地形の表面。何も無ければカメラ前方）を"
+                             + "対象アクタのローカル座標へ変換した点を基準に、"
+                             + "点列が末尾へ追加されます。左クリックで確定・右クリック / Esc で取消します。";
+        }
 
         // 地形接地は「3D の実アクタ配置」のときだけ意味を持つ。
         ChkGround.Visibility = (!cp && !_ctx.Is2D) ? Visibility.Visible : Visibility.Collapsed;
@@ -571,10 +580,11 @@ public partial class LogicPlacementWindow : Window
     /// 「配置」。ランタイムへ指定を 1 発送り、パラメータを記憶して閉じる。
     ///
     /// <para>
-    /// 新規アクタ配置は <c>LOGIC_PLACE_BEGIN</c> を送って<b>配置モード</b>へ入れる。
-    /// ダイアログはここで閉じ、以降はビューポート上で
+    /// 配置対象（新規アクタ／制御点）によらず <c>LOGIC_PLACE_BEGIN</c> を送って
+    /// <b>配置モード</b>へ入れる。ダイアログはここで閉じ、以降はビューポート上で
     /// 「カーソル追従プレビュー → 左クリックで確定 / 右クリック・Esc で取消」となる。
-    /// 制御点への追記は基準点を持たないので、従来どおり <c>LOGIC_PLACE</c> で即時追記する。
+    /// 制御点の場合はカーソルのワールド着弾点を対象アクタのローカル座標へ変換した点が
+    /// 基準点になる（変換はランタイム側が行う）。
     /// </para>
     /// </summary>
     private void OnAdd(object sender, RoutedEventArgs e)
@@ -596,11 +606,8 @@ public partial class LogicPlacementWindow : Window
             SlotIdx    = _ctx.SlotIdx,
             Spec       = _spec,
         };
-        // 制御点への追記はカーソル位置と無関係（アクタ相対座標）なので即時追記。
-        // 新規アクタ配置はランタイムを配置モードへ入れ、カーソル位置で確定させる。
-        _runtime?.SendToRuntime(_ctx.IsControlPointMode
-            ? req.ToIpcCommand()
-            : req.ToBeginIpcCommand());
+        // ランタイムを配置モードへ入れ、ビューポートのカーソル位置で確定させる。
+        _runtime?.SendToRuntime(req.ToBeginIpcCommand());
 
         // 次回の初期値として記憶する（パラメータを毎回入れ直さずに済むように）。
         EditorPreferences.Instance.LogicPlacement = _spec.Clone();

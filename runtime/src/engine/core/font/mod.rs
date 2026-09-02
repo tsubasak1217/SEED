@@ -14,6 +14,8 @@ pub mod atlas;
 pub mod axis_gizmo;
 /// キャンバス上の TextComponent 描画（CPU で NDC まで変換して既存パイプラインへ流す）
 pub mod canvas_text;
+/// 操作ガイドの背景プレート（角丸クアッド。screen_hint 専用の極小パイプライン）
+pub mod hint_plate;
 pub mod icon_overlay;
 pub mod pipeline;
 /// カーソル脇に出すスクリーンスペース操作ガイド（配置モード等の「いま何ができるか」）
