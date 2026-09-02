@@ -883,6 +883,9 @@ public partial class InspectorPanel : UserControl
         float LightBounceIntensity = 0f,
         // ModelComponent 用フィールド（影を落とすか。シャドウマップレンダリングで使用）
         bool ModelCastShadows = true,
+        // ModelComponent 用フィールド（距離 LOD を適用しないか。true で常に LOD0＝最高品質）。
+        // 旧ランタイム／旧シーンではキーが欠落しうるため既定 false（＝従来どおり LOD を適用）。
+        bool ModelDisableLod = false,
         // ModelComponent 用フィールド（セマンティックな描画タグ。0 = タグ無し）。
         // 合成/演出でグループ指定に使うため G-Buffer へ焼かれる値で、
         // 有効範囲は ModelRenderTagMin..ModelRenderTagMax（ランタイムの RENDER_TAG_BITS と一致）。
@@ -1283,6 +1286,8 @@ public partial class InspectorPanel : UserControl
             var modelPath = comp.TryGetProperty("model_path", out var mp) ? mp.GetString() ?? "" : "";
             // ModelComponent 用: 影を落とすか（シャドウマップレンダリングで使用。既定 true）
             var modelCastShadows = comp.TryGetProperty("cast_shadows", out var mcs) ? ReadJsonBool(mcs, true) : true;
+            // ModelComponent 用: 距離 LOD を適用しないか（既定 false = 従来どおり適用）
+            var modelDisableLod = comp.TryGetProperty("disable_lod", out var mdl) && ReadJsonBool(mdl, false);
             // ModelComponent 用: セマンティックな描画タグ（0 = タグ無し）。
             // 旧ランタイム／旧シーンではキーが欠落しうるため、その場合は既定 0 とする。
             var modelRenderTag = comp.TryGetProperty("render_tag", out var mrt) && mrt.TryGetInt32(out var mrtv)
@@ -1664,6 +1669,7 @@ public partial class InspectorPanel : UserControl
                 LightSoftRadius: lightSoftRadius,
                 LightBounceIntensity: lightBounce,
                 ModelCastShadows: modelCastShadows,
+                ModelDisableLod: modelDisableLod,
                 ModelRenderTag: modelRenderTag,
                 ModelOffPX: modelOffPX, ModelOffPY: modelOffPY, ModelOffPZ: modelOffPZ,
                 ModelOffRX: modelOffRX, ModelOffRY: modelOffRY, ModelOffRZ: modelOffRZ,
@@ -3845,6 +3851,11 @@ public partial class InspectorPanel : UserControl
     private const string ModelRenderTagTooltip =
         "合成/演出でグループ指定に使う描画タグ（0=なし）。第3層アセットから読める";
 
+    /// <summary>「LODを適用しない」チェックのツールチップ。</summary>
+    private const string ModelDisableLodTooltip =
+        "ON にすると、カメラからの距離に関係なく常に LOD0（フル解像度）で描画します。\n" +
+        "切替距離はシーン設定の「LOD」カテゴリで変更できます。";
+
     private UIElement BuildModelSlotContent(SlotInfo info)
     {
         var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
@@ -3867,6 +3878,27 @@ public partial class InspectorPanel : UserControl
         shadowCheck.Unchecked += (_, _) => _runtime?.SendToRuntime($"SET_MODEL_FIELD:{_currentActorId},{info.SlotIdx},cast_shadows,0");
         shadowRow.Children.Add(shadowCheck);
         sp.Children.Add(shadowRow);
+
+        // ── LOD を適用しない（常に LOD0 = 最高品質で描画）──────────
+        // 「影を落とす」行と同じスタイル・同じ SET_MODEL_FIELD 経路で送る
+        // （＝ランタイム側でフィールド編集の Undo/Redo に自動的に載る）。
+        var lodRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        lodRow.Children.Add(new TextBlock
+        {
+            Text = "LODを適用しない", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        var lodCheck = new CheckBox
+        {
+            IsChecked = info.ModelDisableLod, VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 0, 0),
+            ToolTip = ModelDisableLodTooltip,
+        };
+        lodCheck.Checked   += (_, _) => _runtime?.SendToRuntime($"SET_MODEL_FIELD:{_currentActorId},{info.SlotIdx},disable_lod,1");
+        lodCheck.Unchecked += (_, _) => _runtime?.SendToRuntime($"SET_MODEL_FIELD:{_currentActorId},{info.SlotIdx},disable_lod,0");
+        lodRow.Children.Add(lodCheck);
+        sp.Children.Add(lodRow);
 
         // ── レンダータグ（セマンティックタグ）─────────────────────
         // 整数入力（ModelRenderTagMin..ModelRenderTagMax）。SpriteComponent の「レイヤー」行と

@@ -1672,29 +1672,12 @@ fn compute_model_aabb(model: &Model) -> ([f32; 3], [f32; 3]) {
 //  InstancedModelBatch — CPU フラスタムカリング + LOD + Indirect Draw
 // ============================================================
 
-/// LOD レベル数（0 = フル解像度、1〜3 = 簡略化済み）。
-pub const NUM_LODS: usize = 4;
-
-/// LOD 切り替え距離の二乗値。`dist_sq < LOD_DIST_SQ[i]` なら LOD i を使用。
-/// [LOD0→LOD1, LOD1→LOD2, LOD2→LOD3] の境界距離の二乗。
-const LOD_DIST_SQ: [f32; 3] = [
-    10.0 * 10.0,   // 10 ユニット以内: LOD0（フル）
-    30.0 * 30.0,   // 30 ユニット以内: LOD1（50%）
-    60.0 * 60.0,   // 60 ユニット以内: LOD2（25%）
-                   // 60 ユニット以遠: LOD3（10%）
-];
-
-/// カメラからの距離の二乗を距離 LOD バケット番号（0..NUM_LODS-1）へ写す純関数。
-///
-/// `update()` の LOD 振り分けと、`lod_buckets_unchanged()` の再判定が
-/// **必ず同じ式を使う**ようにするため、判定を 1 か所へ集約している
-/// （両者がずれると「スキップしたのに本来は LOD が変わっていた」＝見た目の変化になる）。
-fn lod_bucket_for_dist_sq(dist_sq: f32) -> usize {
-    if dist_sq < LOD_DIST_SQ[0] { 0 }
-    else if dist_sq < LOD_DIST_SQ[1] { 1 }
-    else if dist_sq < LOD_DIST_SQ[2] { 2 }
-    else { 3 }
-}
+// LOD 段数（NUM_LODS）と切替距離、および距離→バケットの判定関数は
+// `renderer::lod_settings` が正典として持つ（切替距離はシーン設定で可変のため、
+// 定数ではなくプロセスグローバルなアトミック値になっている）。
+// ここでは従来どおり `gpu_resources::NUM_LODS` で参照できるよう再輸出する。
+pub use super::lod_settings::NUM_LODS;
+use super::lod_settings::lod_bucket_for_instance;
 
 /// ワールド AABB の中心とカメラ位置から距離の二乗を求める純関数（LOD 振り分けの入力）。
 fn lod_dist_sq_from_aabb(aabb_min: [f32; 3], aabb_max: [f32; 3], camera_pos: [f32; 3]) -> f32 {
@@ -1837,6 +1820,14 @@ pub struct InstancedModelBatch {
     /// 再計算されない。タグだけが変わった（アクタは動いていない）場合も焼き直しが要るため、
     /// `update()` は前フレームのタグ列と比較して差分があれば `dirty` を立てる。
     render_tags: Vec<u8>,
+
+    /// 「LOD を適用しない」フラグ（元インスタンスインデックス順・`render_tags` と同順・同長）。
+    ///
+    /// true のインスタンスはカメラ距離に関係なく常に LOD0（最高品質）へ振り分けられる。
+    /// `ModelComponent::disable_lod` が統合バッチ経由でここへ複製される（MC 単位の値を
+    /// その MC の全インスタンスへ展開）。長さが合わない／空のときは全インスタンス false
+    /// （＝従来どおり距離 LOD を適用）として扱う。
+    disable_lod_flags: Vec<bool>,
 
     // ── GPU メッシュレットカリング（第1弾）─────────────────────
     /// `node_prim_list`（ソート後）と同順・同長。メッシュレットを持つ非スキンプリミティブに
@@ -2187,12 +2178,38 @@ impl InstancedModelBatch {
             anim_pose_overrides: Vec::new(),
             // タグ列は初回 update() で埋まる（空 = 全インスタンス タグ無し扱い）。
             render_tags:         Vec::new(),
+            // LOD 無効フラグは呼び出し元が set_disable_lod_flags で与える
+            // （空 = 全インスタンスへ距離 LOD を適用＝従来と同一）。
+            disable_lod_flags:   Vec::new(),
         }
     }
 
     /// 変換が変化したことを通知する。
     /// 次の `update()` でワールド行列・AABB が再計算される。
     pub fn mark_dirty(&mut self) { self.dirty = true; }
+
+    /// 「LOD を適用しない」フラグ配列を同期する（元インスタンスインデックス順）。
+    ///
+    /// `update()` および `lod_buckets_unchanged()` の**前に**呼ぶこと（両者が同じフラグで
+    /// 振り分けを行う必要があるため）。空配列を渡すと全インスタンスへ距離 LOD を適用する
+    /// （＝この機能を使わない呼び出し元は従来と完全に同じ挙動になる）。
+    pub fn set_disable_lod_flags(&mut self, flags: &[bool]) {
+        // 定常状態でのヒープ確保を避けるため、内容が同じなら何もしない。
+        if self.disable_lod_flags.as_slice() == flags { return; }
+        self.disable_lod_flags.clear();
+        self.disable_lod_flags.extend_from_slice(flags);
+    }
+
+    /// 指定インスタンスの LOD バケットを決める（距離 LOD ＋「LOD を適用しない」の合成）。
+    ///
+    /// **LOD 振り分けの唯一の入口**。`update()` の振り分けと `lod_buckets_unchanged()` の
+    /// 再判定が必ずここを通ることで、両者の判定がずれない（ずれると「更新をスキップした
+    /// のに本来は LOD が変わっていた」＝見た目の変化になる）。
+    fn lod_bucket_of(&self, inst_idx: usize, dist_sq: f32) -> usize {
+        // 長さ不一致（フラグ未設定の呼び出し元）は false 扱い＝従来どおり距離 LOD。
+        let disable = self.disable_lod_flags.get(inst_idx).copied().unwrap_or(false);
+        lod_bucket_for_instance(disable, dist_sq)
+    }
 
     /// Animator 駆動の再生指定配列を同期する（元インスタンスインデックス順）。
     /// `update()` の前に毎フレーム呼び出す。空配列を渡すと全インスタンスが静止（先頭フレーム凍結）になる。
@@ -2258,7 +2275,7 @@ impl InstancedModelBatch {
         // 現在のカメラ位置で振り直して 1 つでも違えば「変化あり」。
         for (inst_idx, aabb) in self.world_aabbs.iter().enumerate() {
             let dist_sq = lod_dist_sq_from_aabb(aabb.aabb_min, aabb.aabb_max, camera_pos);
-            if lod_bucket_for_dist_sq(dist_sq) != assigned[inst_idx] { return false; }
+            if self.lod_bucket_of(inst_idx, dist_sq) != assigned[inst_idx] { return false; }
         }
         true
     }
@@ -2520,7 +2537,8 @@ impl InstancedModelBatch {
 
         for (inst_idx, aabb) in self.world_aabbs.iter().enumerate() {
             let dist_sq = lod_dist_sq_from_aabb(aabb.aabb_min, aabb.aabb_max, camera_pos);
-            let lod = lod_bucket_for_dist_sq(dist_sq);
+            // 距離 LOD ＋「LOD を適用しない」の合成（disable_lod なら常に LOD0）。
+            let lod = self.lod_bucket_of(inst_idx, dist_sq);
 
             lod_visible_insts[lod].push(inst_idx);
             for pos in 0..n_mesh_nodes {

@@ -21,6 +21,7 @@ use crate::engine::core::app_base::scene::DebugCameraData;
 use crate::engine::core::renderer::{
     PostFxSettings, RenderFeatures, TransparencyMode,
     DEFAULT_AMBIENT_COLOR, DEFAULT_AMBIENT_INTENSITY,
+    DEFAULT_LOD_DISTANCES, LOD_DISTANCE_COUNT,
 };
 
 // ============================================================
@@ -50,6 +51,8 @@ fn default_ao_intensity() -> f32 { PostFxSettings::default().ao_intensity }
 fn default_ambient_color() -> [f32; 3] { DEFAULT_AMBIENT_COLOR }
 /// 環境光強度の既定値。
 fn default_ambient_intensity() -> f32 { DEFAULT_AMBIENT_INTENSITY }
+/// モデル LOD 切替距離の既定値（レンダラの既定＝旧ハードコード値と同一）。
+fn default_lod_distances() -> Vec<f32> { DEFAULT_LOD_DISTANCES.to_vec() }
 
 // ============================================================
 //  DebugCameraSettings — シーンビューのデバッグカメラ設定
@@ -164,6 +167,57 @@ impl Default for RenderingSettings {
 }
 
 // ============================================================
+//  LodSettings — モデル LOD の切替距離
+// ============================================================
+
+/// モデル LOD（距離による簡略メッシュ切替）の設定。
+///
+/// 切替距離はこれまでレンダラのハードコード定数だったが、シーンの規模
+/// （ミニチュア vs 広大なフィールド）で最適値が大きく変わるためシーン設定へ移した。
+/// 既定値は旧ハードコード値と完全に一致するので、`lod` 節を持たない旧 `.scene` は
+/// 従来とビット単位で同じ LOD 振り分けになる。
+///
+/// 適用先は `renderer::lod_settings`（プロセスグローバル）。シーンロード時に
+/// `App::apply_scene_settings` が、Edit 中のライブ変更は IPC `SET_LOD_DISTANCES` が流し込む。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct LodSettings {
+    /// LOD 切替距離（ワールド単位・昇順）。要素数は `LOD_DISTANCE_COUNT`（＝LOD 段数 - 1）。
+    ///
+    /// `distances[i]` 未満の距離が LOD i、最後の要素以上が最終 LOD になる。
+    /// 要素数が合わない／昇順が崩れている／非有限値を含む場合は、適用時に
+    /// `renderer::sanitize_lod_distances` が補正する（壊れた `.scene` でも落とさない）。
+    #[serde(default = "default_lod_distances")]
+    pub distances: Vec<f32>,
+}
+
+impl Default for LodSettings {
+    fn default() -> Self {
+        Self { distances: default_lod_distances() }
+    }
+}
+
+impl LodSettings {
+    /// レンダラへ渡せる固定長配列へ変換する。
+    ///
+    /// 要素数が足りない／多い場合は既定値で埋める・切り詰める（値そのものの妥当性検証は
+    /// `renderer::sanitize_lod_distances` の責務なので、ここでは長さだけを整える）。
+    pub fn to_array(&self) -> [f32; LOD_DISTANCE_COUNT] {
+        let mut out = DEFAULT_LOD_DISTANCES;
+        for i in 0..LOD_DISTANCE_COUNT {
+            if let Some(&v) = self.distances.get(i) {
+                out[i] = v;
+            }
+        }
+        out
+    }
+
+    /// 固定長配列から生成する（IPC 受信値の保存用）。
+    pub fn from_array(values: [f32; LOD_DISTANCE_COUNT]) -> Self {
+        Self { distances: values.to_vec() }
+    }
+}
+
+// ============================================================
 //  PhysicsSettings — 編集時物理（エディタ専用）設定
 // ============================================================
 
@@ -198,6 +252,9 @@ pub struct SceneSettingsData {
     /// レンダリング設定。
     #[serde(default)]
     pub rendering: RenderingSettings,
+    /// モデル LOD の切替距離。
+    #[serde(default)]
+    pub lod: LodSettings,
     /// 編集時物理設定（エディタ専用。ランタイムは保存／復元のみ行う）。
     #[serde(default)]
     pub physics: PhysicsSettings,
@@ -230,6 +287,7 @@ mod tests {
                               "ao": "off", "translucency": "raster" },
                 "ambient_color": [0.1, 0.2, 0.3], "ambient_intensity": 0.5
             },
+            "lod": { "distances": [4.0, 8.0, 16.0] },
             "physics": { "edit_physics": true, "edit_physics_rigidbody": true }
         }"#;
         let s: SceneSettingsData = serde_json::from_str(json).expect("解析に失敗");
@@ -244,6 +302,31 @@ mod tests {
         assert_eq!(s.rendering.features.ao, AoMode::Off);
         assert_eq!(s.rendering.features.translucency, TranslucencyMode::Raster);
         assert!(s.physics.edit_physics_rigidbody);
+        assert_eq!(s.lod.distances, vec![4.0, 8.0, 16.0]);
+        assert_eq!(s.lod.to_array(), [4.0, 8.0, 16.0]);
+    }
+
+    /// `lod` 節が無い旧 `.scene` は既定（＝旧ハードコード値）へフォールバックすること。
+    #[test]
+    fn missing_lod_section_falls_back_to_legacy_distances() {
+        let s: SceneSettingsData =
+            serde_json::from_str(r#"{"rendering":{"bloom":true}}"#).expect("解析に失敗");
+        assert_eq!(s.lod.to_array(), DEFAULT_LOD_DISTANCES);
+    }
+
+    /// 要素数が足りない／多い `distances` でも固定長配列化で破綻しないこと。
+    #[test]
+    fn lod_distance_array_length_is_normalized() {
+        let short: SceneSettingsData =
+            serde_json::from_str(r#"{"lod":{"distances":[5.0]}}"#).expect("解析に失敗");
+        let a = short.lod.to_array();
+        assert_eq!(a[0], 5.0, "指定された分は反映される");
+        assert_eq!(a[1], DEFAULT_LOD_DISTANCES[1], "足りない分は既定で埋める");
+
+        let long: SceneSettingsData =
+            serde_json::from_str(r#"{"lod":{"distances":[1.0,2.0,3.0,4.0,5.0]}}"#)
+                .expect("解析に失敗");
+        assert_eq!(long.lod.to_array(), [1.0, 2.0, 3.0]);
     }
 
     /// 空オブジェクト・部分指定でも読めること（旧 .scene / 部分保存の後方互換）。

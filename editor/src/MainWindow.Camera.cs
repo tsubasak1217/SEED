@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  MainWindow.Camera.cs — シーン設定とデバッグカメラ制御
 //
 //  担当:
@@ -201,6 +201,11 @@ public partial class MainWindow
             case SceneSettingsChangeKind.RenderingAll:
                 SendPostFx();
                 SendAmbient();
+                break;
+
+            case SceneSettingsChangeKind.Lod:
+            case SceneSettingsChangeKind.LodAll:
+                SendLodDistances();
                 break;
 
             case SceneSettingsChangeKind.Physics:
@@ -435,6 +440,22 @@ public partial class MainWindow
     }
 
     /// <summary>
+    /// モデル LOD の切替距離をランタイムへ送信する（SET_LOD_DISTANCES:{d0},{d1},{d2}）。
+    ///
+    /// SET_SCENE_SETTINGS は保存用データの格納しか行わないため、ライブ反映はこの専用
+    /// コマンドが担当する（SET_POST_FX / SET_AMBIENT と同じ役割分担）。
+    /// 値の最終的な検証（昇順・範囲）はランタイム側でも行われる。
+    /// </summary>
+    private void SendLodDistances()
+    {
+        if (!_viewportSettingsInitialized) return;
+        var ci = CultureInfo.InvariantCulture;
+        var values = string.Join(",", Array.ConvertAll(
+            _sceneSettings.Lod.Distances, d => d.ToString(ci)));
+        _runtimeManager?.SendToRuntime($"SET_LOD_DISTANCES:{values}");
+    }
+
+    /// <summary>
     /// 現在のシーン設定を .scene へ保存させる（ランタイムが settings 節へ書き込み、
     /// SCENE_MODIFIED を返してエディタのダーティ表示が更新される）。
     /// JSON は改行を含まない圧縮形式で送る（IPC は 1 コマンド 1 行のため）。
@@ -495,6 +516,8 @@ public partial class MainWindow
         // ポストプロセス設定・環境光を再同期する
         SendPostFx();
         SendAmbient();
+        // モデル LOD の切替距離（ランタイムは既定値で起動するため必ず送り直す）
+        SendLodDistances();
 
         // 編集時物理設定は Edit runtime にのみ送信する（Play runtime へ送ると物理スレッドが停止する）
         if (_runtimeManager?.State == EditorState.Edit)

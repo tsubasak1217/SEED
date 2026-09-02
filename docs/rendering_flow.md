@@ -542,6 +542,67 @@ instance = actor_world * offset_trs
 
 ---
 
+## 2.10. モデル LOD（距離による簡略メッシュ切替）
+
+不透明・半透明を問わず、モデルは 4 段（`NUM_LODS = 4`）の LOD を持つ。
+LOD0 がフル解像度で、LOD1/2/3 はロード時に生成される簡略インデックスバッファを使う
+（頂点バッファは共有し、インデックスだけが差し替わる）。
+
+**振り分けの場所**
+
+| 項目 | 実装 |
+|---|---|
+| 段数・切替距離・判定関数（正典） | `runtime/src/engine/core/renderer/lod_settings.rs` |
+| 振り分けの実行 | `InstancedModelBatch::update()`（`gpu_resources.rs`）— インスタンスのワールド AABB 中心とカメラ位置の距離² で決める |
+| ダーティゲートの再判定 | `InstancedModelBatch::lod_buckets_unchanged()` — 同じ判定関数を通す |
+| 描画 | 各パス（G-Buffer / シャドウ / 半透明 / ID / アウトライン）が `lod_visible_counts[lod]` を共有して LOD ごとに `draw_indexed` |
+
+判定は **CPU 側のみ**で、LOD 距離を GPU（WGSL）へ渡している箇所は無い。
+`lod_bucket_for_dist_sq()` / `lod_bucket_for_instance()` が唯一の判定点であり、
+`update()` と `lod_buckets_unchanged()` が必ず同じ式を通ることで
+「更新をスキップしたのに本来は LOD が変わっていた」＝見た目の変化が起きないようになっている。
+
+### 切替距離のシーン設定
+
+切替距離はハードコード定数だったが、シーンの規模で最適値が変わるためシーン設定へ移した。
+
+- 保存先: `.scene` の `settings.lod.distances`（要素数 3 ＝ 段数 - 1・ワールド単位・昇順）
+- 既定値: `[10, 30, 60]`（旧ハードコード値と同一。`lod` 節が無い旧 `.scene` は従来と同じ振り分け）
+- 意味: `distances[i]` **未満**が LOD i、最後の要素以上が最終 LOD（LOD3）
+- 編集 UI: シーン設定ウィンドウの「LOD」カテゴリ（数値行 3 本 + デフォルトに戻す）
+- 検証: 昇順が崩れていたら警告のうえ自動で昇順ソート（エディタ側 `LodSettings.IsAscending`）。
+  範囲外・非有限値・要素数不足はランタイム側 `sanitize_lod_distances()` が
+  クランプ／既定値で補修する（壊れた `.scene` でも落ちない）
+
+| 経路 | 実装 |
+|---|---|
+| Edit 中のライブ反映 | `SET_LOD_DISTANCES:{d0},{d1},{d2}` → `renderer::set_lod_distances()`（プロセスグローバル） |
+| `.scene` への永続化 | 既存の `SET_SCENE_SETTINGS`（`settings.lod` 節） |
+| シーンロード時の適用 | `App::apply_scene_settings()` が `settings.lod` を同じ関数へ流し込む |
+| ランタイム再接続時 | `SyncViewportSettings()` が `SET_LOD_DISTANCES` を再送（ランタイムは既定値で起動するため） |
+
+反映に特別な無効化処理は要らない。次フレームの `lod_buckets_unchanged()` が新しい距離で
+バケットを振り直し、変化したバッチだけが自動的に `update()` へ落ちる。
+
+### LOD を適用しない（`ModelComponent::disable_lod`）
+
+`ModelComponent` の `disable_lod`（既定 false）を ON にすると、その MC の全インスタンスは
+**カメラ距離に関係なく常に LOD0** で描かれる。近景で常に最高品質を保ちたいアセットや、
+簡略化で形が崩れるモデルの救済用。
+
+- 配管: `ModelComponent::disable_lod` → 統合バッチ構築の `MergeInfo::disable_lods`（MC 単位の値を
+  その MC の全インスタンスへ複製）→ `InstancedModelBatch::set_disable_lod_flags()` → 振り分け
+- 一貫性: 振り分け結果（`lod_visible_counts` / `lod_compact_insts`）は G-Buffer・シャドウマップ・
+  半透明・ID パス・アウトラインが共有するため、この 1 フラグが全ラスタ経路へ同時に効く。
+  RT（BLAS）はもともと LOD0 のインデックスバッファのみで構築されるので、この設定にかかわらず常に LOD0
+- 統合バッチのダーティゲート: `MergeBatchInputs::disable_lods` に含まれるため、行列が静止したまま
+  チェックだけを切り替えたフレームでも必ず `update()` が走る（＝即座に画面へ反映される）
+- インスペクタ: ModelComponent の「LODを適用しない」チェック
+  → `SET_MODEL_FIELD:{actor},{slot},disable_lod,{0|1}`（Undo / Redo / ⟲ は `field_edit.rs` の共通機構に載る）
+- スクリプト API では公開していない
+
+---
+
 ## 3. ライティング段の切り替え（機能マトリクス）
 
 `SET_POST_FX` IPC の `features` オブジェクトが `RenderFeatures` へデシリアライズされ、

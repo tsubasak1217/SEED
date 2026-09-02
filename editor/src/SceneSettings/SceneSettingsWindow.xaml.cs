@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  SceneSettingsWindow.xaml.cs — シーン設定ウィンドウ
 //
 //  ビューポート左下の歯車ボタンから開く、シーン単位の設定ウィンドウ。
@@ -51,6 +51,8 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
     private const string CategoryDebugCamera = "debug_camera";
     /// <summary>レンダリング設定パネルのカテゴリ ID。</summary>
     private const string CategoryRendering = "rendering";
+    /// <summary>モデル LOD 設定パネルのカテゴリ ID。</summary>
+    private const string CategoryLod = "lod";
     /// <summary>物理設定パネルのカテゴリ ID。</summary>
     private const string CategoryPhysics = "physics";
 
@@ -65,6 +67,7 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
     {
         new(CategoryDebugCamera, "デバッグカメラ"),
         new(CategoryRendering,   "レンダリング"),
+        new(CategoryLod,         "LOD"),
         new(CategoryPhysics,     "物理"),
     };
 
@@ -398,6 +401,7 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
         SettingsContent.Content = categoryId switch
         {
             CategoryRendering => BuildRenderingPanel(),
+            CategoryLod       => BuildLodPanel(),
             CategoryPhysics   => BuildPhysicsPanel(),
             _                 => BuildDebugCameraPanel(),
         };
@@ -710,6 +714,75 @@ public partial class SceneSettingsWindow : Window, ISceneSettingsPanelHost
                 ShadingAssetChanged?.Invoke(string.Empty);
                 SelectCategory(_selectedCategoryId);
             });
+    }
+
+    // ── モデル LOD 設定パネル ─────────────────────────────────
+
+    /// <summary>LOD 切替距離の行ラベル（境界 i は「LOD i → LOD i+1」の距離）。</summary>
+    private static readonly string[] LodDistanceLabels =
+        { "LOD0 → LOD1", "LOD1 → LOD2", "LOD2 → LOD3" };
+
+    /// <summary>
+    /// 「LOD」カテゴリのパネルを構築する。
+    /// モデルの距離 LOD 切替境界（ワールド距離）をシーン単位で設定する。
+    ///
+    /// 昇順バリデーション: 値を確定した時点で昇順（非減少）が崩れていたら、
+    /// 警告を出したうえで自動的に昇順へ並べ替える（拒否すると「入力できない」だけで
+    /// 意図した値へ到達できず、部分適用の中途半端な状態も残るため）。
+    /// </summary>
+    private UIElement BuildLodPanel()
+    {
+        var panel = new StackPanel();
+        panel.Children.Add(SceneSettingsControls.PanelHeader(
+            "モデル LOD",
+            "カメラからの距離でモデルの簡略メッシュ（LOD）を切り替える境界です。\n" +
+            "小さいほど早く簡略化されて軽くなり、大きいほど遠くまで高品質になります。\n" +
+            "個別のモデルは ModelComponent の「LODを適用しない」で除外できます。"));
+
+        panel.Children.Add(SceneSettingsControls.SectionHeader("切替距離（ワールド単位）"));
+        panel.Children.Add(SceneSettingsControls.HintText(
+            "各行の距離「未満」がその LOD の担当範囲で、最後の距離以上は最も簡略な LOD になります。\n" +
+            "値は必ず昇順である必要があります（崩れた場合は自動で並べ替えます）。"));
+
+        for (int i = 0; i < LodSettings.DistanceCount; i++)
+        {
+            var index = i;   // クロージャ捕捉用にループ変数を退避する
+            panel.Children.Add(SceneSettingsControls.NumberRow(
+                this, LodDistanceLabels[index],
+                LodSettings.DistanceMin, LodSettings.DistanceMax,
+                "この距離未満のモデルが LOD" + index + " で描画されます。",
+                () => _data.Lod.Distances[index],
+                v  => _data.Lod.SetDistance(index, v),
+                () => CommitLodChange()));
+        }
+
+        panel.Children.Add(SceneSettingsControls.ResetButton(() =>
+        {
+            _data.Lod.ResetToDefault();
+            RefreshDisplay();
+            SettingChanged?.Invoke(SceneSettingsChangeKind.LodAll);
+        }));
+
+        return panel;
+    }
+
+    /// <summary>
+    /// LOD 切替距離の変更を確定する。昇順が崩れていれば警告して自動的に並べ替えたうえで、
+    /// ランタイムへの反映と .scene への永続化を要求する。
+    /// </summary>
+    private void CommitLodChange()
+    {
+        if (!_data.Lod.IsAscending())
+        {
+            _data.Lod.SortAscending();
+            RefreshDisplay();
+            MessageBox.Show(
+                this,
+                "LOD 切替距離が昇順ではなかったため、自動的に昇順へ並べ替えました。",
+                "シーン設定 — LOD",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        SettingChanged?.Invoke(SceneSettingsChangeKind.Lod);
     }
 
     // ── 物理設定パネル ────────────────────────────────────────

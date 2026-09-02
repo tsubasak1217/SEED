@@ -858,6 +858,11 @@ pub enum IpcCommand {
     /// フォーマット: SET_SCENE_SETTINGS:{json}
     /// json は `scene_settings::SceneSettingsData` の JSON 全体（カンマを含む）。
     SetSceneSettings { json: String },
+    /// モデル LOD の切替距離をライブ変更する（シーン設定「LOD」節のライブ反映）。
+    /// フォーマット: SET_LOD_DISTANCES:{d0},{d1},{d2}
+    /// 要素数は LOD 段数 - 1（`renderer::LOD_DISTANCE_COUNT`）。単位はワールド距離。
+    /// 値の検証（昇順・範囲）はランタイム側 `renderer::sanitize_lod_distances` が行う。
+    SetLodDistances { distances: Vec<f32> },
     /// アクターのアクティブ切替（Unity の SetActive 相当）。
     /// フォーマット: SET_ACTOR_ACTIVE:{dfs_id},{0|1}
     SetActorActive { dfs_id: u32, active: bool },
@@ -2656,6 +2661,16 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 }
                                 _ => None,
                             }
+                        }
+                        s if s.starts_with("SET_LOD_DISTANCES:") => {
+                            // フォーマット: SET_LOD_DISTANCES:{d0},{d1},{d2}
+                            // パースできない要素が 1 つでもあれば「部分適用」を避けて丸ごと捨てる。
+                            let rest = &s["SET_LOD_DISTANCES:".len()..];
+                            let parsed: Option<Vec<f32>> = rest
+                                .split(',')
+                                .map(|t| t.trim().parse::<f32>().ok())
+                                .collect();
+                            parsed.map(|distances| IpcCommand::SetLodDistances { distances })
                         }
                         s if s.starts_with("SET_SCENE_SETTINGS:") => {
                             // フォーマット: SET_SCENE_SETTINGS:{json}

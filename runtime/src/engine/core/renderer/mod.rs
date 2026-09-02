@@ -36,6 +36,8 @@ pub mod postfx;
 pub(crate) mod view_mode;
 /// G-Buffer リソース＋MRT ジオメトリパイプライン（Phase D3 Deferred Phase A）
 pub(crate) mod gbuffer;
+/// モデル LOD の段数と切替距離（シーン設定で可変・LOD 選択の唯一の判定点）。
+pub mod lod_settings;
 /// G-Buffer の空きチャンネルへ詰める「サーフェス識別情報」のビット規約
 /// （セマンティックタグ／シェーディングモデル ID／ユーザーデータ）。
 pub mod surface_id;
@@ -107,6 +109,9 @@ pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel
                         InstancedModelBatch, NodePrimDraw, GpuLineBatch, GpuGizmoBatch,
                         DefaultTextures, CameraBuffer,
                         extract_frustum_planes, NUM_LODS};
+pub use lod_settings::{DEFAULT_LOD_DISTANCES, LOD_DISTANCE_COUNT, LOD_DISTANCE_MAX,
+                       LOD_DISTANCE_MIN, lod_bucket_for_dist_sq, lod_distances,
+                       sanitize_lod_distances, set_lod_distances};
 pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, DrawPipelines,
                    SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
                    SpritePipeline, SpriteOutlinePipeline, CanvasIdPipeline, CanvasIdUniform,

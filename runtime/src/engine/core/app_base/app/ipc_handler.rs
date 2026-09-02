@@ -1542,6 +1542,35 @@ impl App {
                     // シェーディングアセットの未保存 WGSL を検証して診断を返す（保存・GPU 不要）。
                     self.handle_validate_wgsl(request_id, &source);
                 }
+                IpcCommand::SetLodDistances { distances } => {
+                    // モデル LOD 切替距離のライブ反映。
+                    //
+                    // SET_SCENE_SETTINGS が「保存用データの格納のみ」を行うのと対になる
+                    // ライブ適用側のコマンド（SET_POST_FX / SET_AMBIENT と同じ役割）。
+                    // 値はプロセスグローバルの `renderer::lod_settings` へ流し込むだけでよく、
+                    // 次フレームの統合バッチ更新でバケット再判定が走って自動的に反映される
+                    // （`lod_buckets_unchanged` が新しい距離で振り直すため）。
+                    use crate::engine::core::renderer::{LOD_DISTANCE_COUNT, set_lod_distances};
+                    let mut values = crate::engine::core::renderer::DEFAULT_LOD_DISTANCES;
+                    for i in 0..LOD_DISTANCE_COUNT {
+                        if let Some(&v) = distances.get(i) { values[i] = v; }
+                    }
+                    let (applied, repaired) = set_lod_distances(values);
+                    if repaired {
+                        eprintln!(
+                            "[SEED IPC] SET_LOD_DISTANCES: 値を補正しました（昇順／範囲外）: {:?} -> {:?}",
+                            distances, applied,
+                        );
+                    }
+                    // 保存用データ（.scene の settings 節）にも同じ値を反映しておく。
+                    // SET_SCENE_SETTINGS はエディタが直後に送るが、順序に依存させないため
+                    // ここでも書いておく（両者は同じ値になる）。
+                    if let Some(scene) = self.scene.as_mut() {
+                        let settings = scene.settings.get_or_insert_with(Default::default);
+                        settings.lod = crate::engine::core::app_base::scene_settings::LodSettings
+                            ::from_array(applied);
+                    }
+                }
                 IpcCommand::SetSceneSettings { json } => {
                     // シーン単位のビューポート／レンダリング設定（.scene の settings 節）を更新する。
                     //

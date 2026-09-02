@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  SceneSettingsControls.cs — シーン設定ウィンドウの共通コントロール生成
 //
 //  シーン設定ウィンドウの右パネルに並べる「ラベル + 入力」行を組み立てる静的ファクトリ。
@@ -257,6 +257,58 @@ internal static class SceneSettingsControls
         AddCell(grid, labelBlock, 0);
         AddCell(grid, slider,     1);
         AddCell(grid, box,        2);
+        return grid;
+    }
+
+    /// <summary>
+    /// 「ラベル + 数値入力」の行を生成する（スライダー無し）。
+    /// LOD 切替距離のように取り得る範囲が桁で変わる値に使う（スライダーでは指定できないため）。
+    /// Enter / フォーカス喪失で確定し、範囲外はクランプ、不正入力は現在値へ戻す。
+    /// </summary>
+    public static UIElement NumberRow(
+        ISceneSettingsPanelHost host, string label,
+        double min, double max, string? tooltip,
+        Func<double> get, Action<double> set, Action onChanged)
+    {
+        var grid = NewRowGrid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(LabelColumnWidth) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        if (tooltip != null) grid.ToolTip = tooltip;
+
+        var box = new TextBox
+        {
+            Text              = Format(get(), integer: false),
+            Style             = host.TextBoxStyle,
+            TextAlignment     = TextAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        void Commit()
+        {
+            if (host.Suppressed) return;
+            if (!double.TryParse(box.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+            {
+                box.Text = Format(get(), integer: false);   // 不正入力は現在値へ戻す
+                return;
+            }
+            var value = Math.Clamp(parsed, min, max);
+            box.Text = Format(value, integer: false);        // クランプ結果を表示へ反映
+            if (value == get()) return;                      // 変化なしなら通知しない
+            set(value);
+            onChanged();
+        }
+        box.LostFocus += (_, _) => Commit();
+        box.KeyDown   += (_, e) =>
+        {
+            if (e.Key != Key.Enter) return;
+            Commit();
+            e.Handled = true;
+        };
+
+        host.RegisterRefresh(() => box.Text = Format(get(), integer: false));
+
+        AddCell(grid, NewLabel(label), 0);
+        AddCell(grid, box,             1);
         return grid;
     }
 

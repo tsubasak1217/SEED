@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  SceneSettingsData.cs — シーン単位のビューポート／レンダリング設定データ
 //
 //  .scene ファイルの "settings" 節に保存される設定のエディタ側モデル。
@@ -267,6 +267,72 @@ public sealed class RenderingSettings
 }
 
 /// <summary>
+/// モデル LOD（距離による簡略メッシュ切替）の設定。
+/// ランタイムの scene_settings::LodSettings と JSON キー名・既定値を厳密に一致させること。
+///
+/// Distances[i] 未満の距離が LOD i、最後の要素以上が最終 LOD になる。
+/// 既定値はランタイムの旧ハードコード値（10 / 30 / 60）と同一で、
+/// この節を持たない旧 .scene は従来と同じ LOD 振り分けになる。
+/// </summary>
+public sealed class LodSettings
+{
+    /// <summary>LOD 切替境界の本数（ランタイムの LOD_DISTANCE_COUNT = 段数 4 - 1）。</summary>
+    public const int DistanceCount = 3;
+    /// <summary>切替距離として許す最小値（ランタイムの LOD_DISTANCE_MIN と一致）。</summary>
+    public const double DistanceMin = 0.01;
+    /// <summary>切替距離として許す最大値（ランタイムの LOD_DISTANCE_MAX と一致）。</summary>
+    public const double DistanceMax = 1.0e6;
+    /// <summary>切替距離の既定値（ランタイムの DEFAULT_LOD_DISTANCES と一致）。</summary>
+    public static readonly double[] DefaultDistances = { 10.0, 30.0, 60.0 };
+
+    /// <summary>LOD 切替距離（ワールド単位・昇順）。要素数は常に DistanceCount。</summary>
+    public double[] Distances { get; set; } = (double[])DefaultDistances.Clone();
+
+    /// <summary>この節を既定値へ戻す。</summary>
+    public void ResetToDefault() => Distances = (double[])DefaultDistances.Clone();
+
+    /// <summary>
+    /// 現在の距離列が昇順（非減少）かどうか。
+    /// 崩れている場合は呼び出し側が警告のうえ <see cref="SortAscending"/> で修復する。
+    /// </summary>
+    public bool IsAscending()
+    {
+        for (int i = 1; i < Distances.Length; i++)
+            if (Distances[i] < Distances[i - 1]) return false;
+        return true;
+    }
+
+    /// <summary>距離列を昇順へ並べ替える（昇順バリデーションの自動修復）。</summary>
+    public void SortAscending() => Array.Sort(Distances);
+
+    /// <summary>1 要素を範囲内へクランプして設定する。</summary>
+    public void SetDistance(int index, double value)
+    {
+        if (index < 0 || index >= Distances.Length) return;
+        Distances[index] = Math.Clamp(value, DistanceMin, DistanceMax);
+    }
+
+    /// <summary>JSON ノードから値を読み込む（キーが無い項目は現在値を維持する）。</summary>
+    public void ReadFrom(JsonObject node)
+    {
+        if (node["distances"] is not JsonArray array) return;
+        var parsed = (double[])DefaultDistances.Clone();
+        for (int i = 0; i < parsed.Length && i < array.Count; i++)
+            parsed[i] = Math.Clamp(
+                SceneSettingsJson.ToDouble(array[i], parsed[i]), DistanceMin, DistanceMax);
+        Distances = parsed;
+    }
+
+    /// <summary>ランタイムのスキーマに一致する JsonObject を生成する。</summary>
+    public JsonObject ToJson()
+    {
+        var array = new JsonArray();
+        foreach (var d in Distances) array.Add(d);
+        return new JsonObject { ["distances"] = array };
+    }
+}
+
+/// <summary>
 /// 編集時物理（Edit モードで物理シミュレーションを走らせる機能）の設定。
 /// エディタ専用の設定であり、ランタイムは .scene への保存・復元のみを行う。
 /// </summary>
@@ -322,6 +388,8 @@ public sealed class SceneSettingsData
     public DebugCameraSettings DebugCamera { get; set; } = new();
     /// <summary>レンダリング設定。</summary>
     public RenderingSettings Rendering { get; set; } = new();
+    /// <summary>モデル LOD の切替距離設定。</summary>
+    public LodSettings Lod { get; set; } = new();
     /// <summary>編集時物理設定。</summary>
     public PhysicsSettings Physics { get; set; } = new();
 
@@ -367,6 +435,7 @@ public sealed class SceneSettingsData
     {
         if (node["debug_camera"] is JsonObject debugCamera) DebugCamera.ReadFrom(debugCamera);
         if (node["rendering"]    is JsonObject rendering)   Rendering.ReadFrom(rendering);
+        if (node["lod"]          is JsonObject lod)         Lod.ReadFrom(lod);
         if (node["physics"]      is JsonObject physics)     Physics.ReadFrom(physics);
     }
 
@@ -389,6 +458,7 @@ public sealed class SceneSettingsData
     {
         ["debug_camera"] = DebugCamera.ToJson(),
         ["rendering"]    = Rendering.ToJson(),
+        ["lod"]          = Lod.ToJson(),
         ["physics"]      = Physics.ToJson(),
     };
 
