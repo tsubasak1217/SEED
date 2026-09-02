@@ -61,6 +61,12 @@ impl ApplicationHandler for App {
             // 遮蔽時の present 即時リターンによる暴走ループ（毎秒数千フレーム）を防ぐ。
             WindowEvent::Focused(focused) => {
                 self.window_focused = focused;
+                // フォーカスを失うとボタンの解放イベントが届かなくなることがあり、
+                // カメラ操作中だとカーソルが非表示のまま取り残される。
+                // 押下状態を落として閉じ込め・非表示を必ず解除する。
+                if !focused {
+                    self.force_restore_camera_cursor();
+                }
             }
 
             WindowEvent::KeyboardInput { event, .. } => {

@@ -43,101 +43,20 @@ public partial class ComponentSelectorWindow : Window
 
     private readonly HashSet<string> _collapsedCategories = new();
 
-    /// <summary>コンポーネントが対応するアクター種別。</summary>
-    private enum ActorTarget
-    {
-        /// <summary>2D/3D 両方に追加可能。</summary>
-        Common,
-        /// <summary>3D アクター専用。</summary>
-        Actor3D,
-        /// <summary>2D アクター専用。</summary>
-        Actor2D,
-    }
-
-    /// <summary>コンポーネント選択リストの1エントリ（型ID・表示名・説明・対応アクター種別）。</summary>
-    private record ComponentEntry(string TypeId, string Label, string Description, ActorTarget Target = ActorTarget.Common);
-
-    private static readonly List<(string Category, List<ComponentEntry> Items)> Categories = new()
-    {
-        ("レンダリング", new()
-        {
-            new("ModelComponent", "Model", "3D モデルをアクタにアタッチ", ActorTarget.Actor3D),
-            new("SkyboxComponent", "Skybox", "equirectangular（正距円筒）画像1枚を天球として描画。CameraLocked/WorldAnchored", ActorTarget.Actor3D),
-        }),
-        ("環境", new()
-        {
-            new("WaterVolumeComponent", "Water Volume", "海・池などの水領域。水面描画と水中判定を提供", ActorTarget.Actor3D),
-            new("WaterLinkComponent", "Water Link", "2つの水域をつなぐ開口（扉・窓・穴・バルブ）。水位グラフで水が行き来する", ActorTarget.Actor3D),
-            new("InteractionSourceComponent", "Interaction Source", "動く物に付ける。移動速度を共有フィールドへ焼き、草を押し倒す（将来は水の波紋・雪泥の轍も）", ActorTarget.Actor3D),
-            new("CoverEmitterComponent", "Cover Emitter", "地表へ雪・落ち葉・濡れを積もらせる。範囲は全域/直方体/マスク画像から選ぶ", ActorTarget.Actor3D),
-        }),
-        ("UI", new()
-        {
-            new("CanvasComponent", "Canvas", "UI 矩形領域をアクタにアタッチ（幅・高さ指定）。3D アクタにアタッチするとワールド空間に配置", ActorTarget.Common),
-            new("SpriteComponent", "Sprite", "2D スプライト画像をキャンバスに表示",          ActorTarget.Common),
-            new("SkinnedSpriteComponent", "Skinned Sprite", ".sprite_mesh のメッシュを子アクター（ボーン）で変形して表示する 2D スプライト", ActorTarget.Common),
-            new("TextComponent", "Text", "キャンバスに文字列を表示（HUD の数値・ラベル）。内容はスクリプトから毎フレーム差し替えられる", ActorTarget.Common),
-        }),
-        ("ライト", new()
-        {
-            new("LightComponent", "Light", "光源（directional / point / spot / rect）をアクターにアタッチ。向き・位置は Transform から", ActorTarget.Actor3D),
-            new("JointAttachComponent", "ジョイントアタッチ", "モデルのジョイント（ボーン）へ追従するソケット", ActorTarget.Actor3D),
-        }),
-        ("エフェクト", new()
-        {
-            new("ParticleEmitterComponent", "Particle Emitter", "GPUパーティクルエミッタ。放出レート・寿命・色・サイズ補間などをデータドリブンに設定", ActorTarget.Actor3D),
-        }),
-        // 「ツール」カテゴリ: シーン編集の道具として使う汎用コンポーネント。
-        // ControlPoint は川・巡回ルート・カメラフライスルーなど用途に依存しない
-        // 「順序付き点列」そのものを提供する土台なので、特定用途の「環境」ではなく
-        // 用途中立の「ツール」に置く（将来の同種コンポーネントもここへ集める）。
-        ("ツール", new()
-        {
-            new("ControlPointComponent", "Control Point", "シーン上に順序付きの点列を置く汎用パス。川・巡回ルート・カメラパスなどの共通土台", ActorTarget.Actor3D),
-        }),
-        ("カメラ", new()
-        {
-            new("CameraComponent", "Camera", "Play モードで使用するゲームカメラ", ActorTarget.Actor3D),
-        }),
-        ("描画", new()
-        {
-            new("LineRendererComponent", "Line Renderer", "点列を結ぶ 3D の線を描く（釣り糸・ロープ・軌跡）。点列はスクリプトから毎フレーム更新できる", ActorTarget.Actor3D),
-        }),
-        ("物理", new()
-        {
-            new("ColliderComponent",   "Collider",    "衝突判定形状・リジッドボディをアクターにアタッチ（Box・Sphere・Capsule、重力有無は内部で設定）", ActorTarget.Actor3D),
-            new("Collider2dComponent", "Collider 2D", "2D コライダー・リジッドボディをアクターにアタッチ（Box・Circle・Capsule、ピクセル単位）",         ActorTarget.Common),
-        }),
-        ("サウンド", new()
-        {
-            new("AudioComponent", "Audio Source", "BGM/SE の再生。3D 距離減衰・パン対応", ActorTarget.Common),
-        }),
-        ("アニメーション", new()
-        {
-            new("AnimatorComponent", "Animator", "キーフレームアニメーションクリップ（.anim）の再生", ActorTarget.Common),
-        }),
-        ("入力", new()
-        {
-            new("InputMapComponent", "InputMap", ".inputmap アセットをアクタにアタッチ", ActorTarget.Common),
-        }),
-        ("スクリプト", new()
-        {
-            new("ScriptComponent", "Script", "スクリプトをアクタにアタッチ", ActorTarget.Common),
-        }),
-    };
+    // ── コンポーネント一覧の情報源 ────────────────────────────────
+    //
+    // 種別・表示名・既定名・説明・対応アクター種別は ComponentCatalog（WPF 非依存）が
+    // 唯一の情報源として持つ。以前はこのファイル内に一覧と「既定名を返す switch」の
+    // 2 つの表があり、両者が食い違ったせいで
+    // 「追加したコンポーネントの既定名が別のコンポーネント名になる」不具合が出ていた。
+    // このウィンドウは表示と入力だけを担当し、名前の決定はカタログへ委ねる。
 
     /// <summary>
     /// ロード済みプラグインリストから動的にカテゴリエントリを生成して返す。
     /// プラグインがない場合は空のカテゴリを返す（「今後追加」として表示される）。
     /// </summary>
     private List<ComponentEntry> BuildPluginEntries() =>
-        _pluginNames
-            .Select(name => new ComponentEntry(
-                $"Plugin:{name}",
-                name,
-                $"{name} プラグインをアクターにアタッチ",
-                ActorTarget.Common))
-            .ToList();
+        ComponentCatalog.PluginEntries(_pluginNames);
 
     /// <summary>コンポーネント種別アイコンの一辺サイズ（px）。</summary>
     private const double ItemIconSize = 14.0;
@@ -185,8 +104,10 @@ public partial class ComponentSelectorWindow : Window
     /// Common はどちらにも表示、Actor2D/Actor3D は対応する種別のみ表示。
     /// </summary>
     private bool EntryMatchesActor(ComponentEntry entry) =>
-        entry.Target == ActorTarget.Common ||
-        (_isActor2D ? entry.Target == ActorTarget.Actor2D : entry.Target == ActorTarget.Actor3D);
+        entry.Target == ComponentActorTarget.Common ||
+        (_isActor2D
+            ? entry.Target == ComponentActorTarget.Actor2D
+            : entry.Target == ComponentActorTarget.Actor3D);
 
     private void BuildCategoryList(string filter)
     {
@@ -199,7 +120,7 @@ public partial class ComponentSelectorWindow : Window
         // プラグインカテゴリを動的追加して全カテゴリを対象に検索する
         if (!string.IsNullOrEmpty(filter))
         {
-            var matches = Categories
+            var matches = ComponentCatalog.Categories
                 .SelectMany(c => c.Items)
                 .Concat(BuildPluginEntries())
                 .Where(i => EntryMatchesActor(i)
@@ -232,8 +153,10 @@ public partial class ComponentSelectorWindow : Window
 
         // 通常表示: カテゴリヘッダー + 開閉
         // 静的カテゴリリストにプラグインカテゴリを動的追加して結合する
-        var allCategories = Categories
-            .Append(("プラグイン", BuildPluginEntries()))
+        // 静的カタログの要素型に合わせてプラグインカテゴリを結合する
+        // （Categories は IReadOnlyList<ComponentEntry> を要素に持つ）。
+        var allCategories = ComponentCatalog.Categories
+            .Append(("プラグイン", (IReadOnlyList<ComponentEntry>)BuildPluginEntries()))
             .ToList();
         foreach (var (catName, items) in allCategories)
         {
@@ -366,45 +289,17 @@ public partial class ComponentSelectorWindow : Window
         _selectedBorder  = row;
         row.Background   = BrushSelected;
 
-        // 前の型のデフォルト名を保存してから型を更新する（自動リネーム判定に使用）
+        // 前の型を控えてから型を更新する（自動リネーム判定に使用）。
         var prevType  = _selectedType;
         _selectedType = entry.TypeId;
 
-        // テキストが空、または前回選択した型のデフォルト名のままであれば新しい型のデフォルト名に更新する
-        TbName.Text      = string.IsNullOrEmpty(TbName.Text) || TbName.Text == GetDefaultName(prevType ?? "")
-            ? entry.Label
-            : TbName.Text;
+        // 名前欄が空、または「直前に選んだ型の既定名のまま」＝ユーザー未編集なら、
+        // 新しい型の既定名へ差し替える。判定と書き込みは同じ ComponentCatalog の
+        // 既定名を使うため、種別を選び直しても前の種別の名前が残ることはない。
+        TbName.Text = ComponentCatalog.NextDefaultName(TbName.Text, prevType, entry.TypeId);
 
         BtnConfirm.IsEnabled = true;
     }
-
-    private static string GetDefaultName(string typeId) => typeId switch
-    {
-        "ModelComponent"     => "Model",
-        "ScriptComponent"    => "Script",
-        "CanvasComponent"    => "Canvas",
-        "SpriteComponent"    => "Sprite",
-        "SkinnedSpriteComponent" => "SkinnedSprite",
-        "InputMapComponent"  => "InputMap",
-        "CameraComponent"    => "Camera",
-        "ColliderComponent"   => "Collider",
-        "Collider2dComponent" => "Collider2D",
-        "AudioComponent"      => "Audio",
-        "AnimatorComponent"   => "Animator",
-        "LightComponent"      => "Light",
-        "SkyboxComponent"     => "Skybox",
-        "ParticleEmitterComponent" => "ParticleEmitter",
-        "WaterVolumeComponent"     => "Water",
-        "WaterLinkComponent"       => "WaterLink",
-        "InteractionSourceComponent" => "Interaction",
-        "CoverEmitterComponent"       => "CoverEmitter",
-        "ControlPointComponent"      => "ControlPoint",
-        "LineRendererComponent"      => "LineRenderer",
-        "TextComponent"              => "Text",
-        // Plugin:{name} → プラグイン名をデフォルト名とする
-        _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
-        _                    => typeId,
-    };
 
     // ── イベント ─────────────────────────────────────────────
 
@@ -481,7 +376,7 @@ public partial class ComponentSelectorWindow : Window
             return;
         }
         var name = TbName.Text.Trim();
-        if (string.IsNullOrEmpty(name)) name = GetDefaultName(_selectedType);
+        if (string.IsNullOrEmpty(name)) name = ComponentCatalog.DefaultNameOf(_selectedType);
 
         // 空の状態で追加（パスなし）。インスペクター上で後から設定する。
         _runtime.SendToRuntime($"ADD_COMPONENT:{_actorDfsId},{_selectedType},{name},");

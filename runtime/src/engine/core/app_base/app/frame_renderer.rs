@@ -244,6 +244,45 @@ use super::placement_mode::surface_or_fallback;
 
 pub(super) const SPAWN_FALLBACK_DIST: f32 = 10.0;
 
+
+// ============================================================
+//  描画ペアの整合チェック
+// ============================================================
+
+/// `(GpuModel, InstancedModelBatch)` を描画リストへ載せてよいか検査する。
+///
+/// バッチの `node_prim_list` は生成時の CPU モデル由来の添字表で、描画側は
+/// その添字で `GpuModel::meshes[mesh_idx].primitives[prim_idx]` を引く。
+/// つまり両者が同じ CPU モデルから作られていることが前提であり、破れると
+/// 添字の範囲外アクセスや `skin_vertex_buffer` 欠落でパニックする。
+///
+/// 通常はバッチ再生成条件（ジオメトリ署名の変化）が食い違いを未然に潰すが、
+/// ここは**最後の防波堤**として食い違うペアを描画リストから落とす。
+/// 落とした結果はそのモデルが 1 フレーム描かれないだけで、次フレームには
+/// バッチが作り直されて正常な描画へ戻る（クラッシュより遥かに軽い）。
+fn pair_if_consistent<'a>(
+    gpu:   &'a crate::engine::methods::drawer::GpuModel,
+    batch: &'a crate::engine::methods::drawer::InstancedModelBatch,
+) -> Option<(
+    &'a crate::engine::methods::drawer::GpuModel,
+    &'a crate::engine::methods::drawer::InstancedModelBatch,
+)> {
+    if gpu.geometry_signature != batch.geometry_signature() {
+        // 毎フレーム通る経路なので、プロセス中 1 回だけ警告する。
+        // `debug_assert!` にしないのは、dev ビルドでパニックしてしまい
+        // 本改修が消そうとしているクラッシュを別の形で再現してしまうため。
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "[SEED] GpuModel とバッチのジオメトリ署名が不一致のため描画リストから除外した",
+            );
+        }
+        return None;
+    }
+    Some((gpu, batch))
+}
+
 impl App {
     /// スクリーン座標のワールドスポーン位置を IDバッファ読み取りで解決する。
     ///
@@ -1967,9 +2006,31 @@ impl App {
                     // ② 統合バッチ生成/更新（容量不足時は再生成）
                     for (path, info) in &merge_map {
                         let total = info.mats.len();
-                        let need_reinit = self.shared_model_batches.get(path)
-                            .map(|s| s.capacity < total)
-                            .unwrap_or(true);
+                        // この batch_key の CPU モデルのジオメトリ構造。
+                        // キャッシュ済みバッチの添字表（node_prim_list）がこの構造で
+                        // 作られているかを判定するために使う。
+                        let cpu_sig = crate::engine::core::renderer::gpu_resources
+                            ::model_geometry_signature(&info.cpu_model);
+                        // ── 再生成の判定 ─────────────────────────────────────
+                        //  a) 未生成
+                        //  b) 容量不足（インスタンスが増えた）
+                        //  c) **ジオメトリ署名が変わった**
+                        //
+                        // (c) が無いと、同じ batch_key（= モデルパス＋オーバーライド署名）に
+                        // 別構造の CPU モデルが割り当てられたとき、古い添字表のバッチが
+                        // 新しい GpuModel と組まれてしまう。すると
+                        // `node_prim_list.is_skinned=true` なのに GPU 側プリミティブに
+                        // `skin_vertex_buffer` が無い、といった食い違いが生じ、
+                        // シャドウ深度パス（shadow.rs の draw_caster）で unwrap パニックになる。
+                        // アクタの D&D プレビューのようにモデルが差し替わり得る経路で
+                        // 実際にクラッシュしていた。
+                        let need_reinit = crate::engine::core::renderer::gpu_resources
+                            ::batch_needs_reinit(
+                                self.shared_model_batches.get(path)
+                                    .map(|s| (s.capacity, s.batch.geometry_signature())),
+                                total,
+                                cpu_sig,
+                            );
                         if need_reinit {
                             let cap        = (total * 2).max(4);
                             let new_batch  = draw_ctx.create_instanced_batch(
@@ -2111,16 +2172,26 @@ impl App {
                     // 同一 batch_key の全 MC は同一 GPU データ（オーバーライド焼き込み済み）を持つため
                     // どれを代表に選んでも等価。オーバーライド無しなら batch_key==source_path で従来と同一。
                     // キー型は batch_key() が所有 String を返すため &str ではなく String とする。
+                    //
+                    // 【先勝ちにする理由】統合バッチの CPU モデル（merge_map）は
+                    // `or_insert_with` で **最初に現れた MC** のものを採る。ここを
+                    // `collect()`（同一キーは後勝ち）にすると、同じ batch_key に
+                    // 複数 MC がぶら下がったとき CPU モデルと GpuModel が別々の MC
+                    // 由来になり得る。両者は添字表を共有するため、食い違えば
+                    // 描画時に範囲外アクセス／skin バッファ欠落のパニックになる。
+                    // merge_map と同じ「先勝ち」で走査し、代表 MC を必ず一致させる。
                     let gpu_model_by_path: std::collections::HashMap<
                         String,
                         &crate::engine::methods::drawer::GpuModel,
-                    > = all_mcs.iter()
-                        .filter_map(|&(_, _, _, amc)| {
-                            if amc.source_path.is_empty() { return None; }
-                            amc.gpu_model.as_ref()
-                                .map(|gpu| (amc.batch_key(), gpu))
-                        })
-                        .collect();
+                    > = {
+                        let mut map = std::collections::HashMap::new();
+                        for &(_, _, _, amc) in &all_mcs {
+                            if amc.source_path.is_empty() { continue; }
+                            let Some(gpu) = amc.gpu_model.as_ref() else { continue };
+                            map.entry(amc.batch_key()).or_insert(gpu);
+                        }
+                        map
+                    };
                     // ─── 統合モデルバッチ更新 終了 ──────────────────────────────────────────
 
                     // スキンメッシュコンピュート: 全 MC に対して実行
@@ -2749,7 +2820,7 @@ impl App {
                                 &crate::engine::methods::drawer::InstancedModelBatch,
                             )> = self.shared_model_batches.iter()
                                 .filter_map(|(path, sd)| {
-                                    gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
+                                    gpu_model_by_path.get(path.as_str()).and_then(|&gpu| pair_if_consistent(gpu, &sd.batch))
                                 })
                                 .collect();
                             // ── 地形散布モデル（kind=Model プロップ）の半透明プリミティブもプレビュー透明パスへ ──
@@ -2814,7 +2885,7 @@ impl App {
                             )> = self.shared_model_batches.iter()
                                 .filter(|(path, _)| shadow_caster_paths.contains(path.as_str()))
                                 .filter_map(|(path, sd)| {
-                                    gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
+                                    gpu_model_by_path.get(path.as_str()).and_then(|&gpu| pair_if_consistent(gpu, &sd.batch))
                                 })
                                 .collect();
                             if !preview_casters.is_empty() {
@@ -4644,7 +4715,7 @@ impl App {
                             &crate::engine::methods::drawer::InstancedModelBatch,
                         )> = self.shared_model_batches.iter()
                             .filter_map(|(path, sd)| {
-                                gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
+                                gpu_model_by_path.get(path.as_str()).and_then(|&gpu| pair_if_consistent(gpu, &sd.batch))
                             })
                             .collect();
                         // ── 地形散布モデル（kind=Model プロップ）の半透明プリミティブも透明パスへ ──
@@ -5040,7 +5111,7 @@ impl App {
                             )> = self.shared_model_batches.iter()
                                 .filter(|(path, _)| shadow_caster_paths.contains(path.as_str()))
                                 .filter_map(|(path, sd)| {
-                                    gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
+                                    gpu_model_by_path.get(path.as_str()).and_then(|&gpu| pair_if_consistent(gpu, &sd.batch))
                                 })
                                 .collect();
                             // 散布モデル（kind=Model）も影キャスターに加える（Terrain T3 第2段）。
@@ -5115,7 +5186,8 @@ impl App {
                                     .filter(|(path, _)| shadow_caster_paths.contains(path.as_str()))
                                     .filter_map(|(path, sd)| {
                                         gpu_model_by_path.get(path.as_str())
-                                            .map(|&gpu| (path.as_str(), gpu, &sd.batch))
+                                            .and_then(|&gpu| pair_if_consistent(gpu, &sd.batch))
+                                            .map(|(gpu, batch)| (path.as_str(), gpu, batch))
                                     })
                                     .collect();
                                 // 散布モデルを TLAS キャスターに追加する。

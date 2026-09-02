@@ -2,7 +2,7 @@
 //  platform_utils.rs — Windows プラットフォームユーティリティ
 //
 //  【含む処理】
-//  - camera_grab_start: RMB 押下時のカーソルロック（ClipCursor）開始
+//  - camera_grab_start: カメラ操作（中／右）開始時のカーソルロック（ClipCursor）
 //  - camera_grab_end:   カーソルを元のスクリーン座標に戻す
 //  - apply_window_clamp: Play モード中のカーソルをウィンドウ内に固定
 //  - release_window_clamp: ClipCursor を解除する
@@ -12,8 +12,11 @@
 //  カーソルロック / 復元（Windows のみ）
 // ============================================================
 
-/// RMB 押下時: カーソルをビューポート内に ClipCursor で閉じ込め、
-/// 押下前のスクリーン座標を返す。
+/// カメラ操作（中ボタン／右ボタン）開始時: カーソルをビューポート内に
+/// ClipCursor で閉じ込め、押下前のスクリーン座標を返す。
+///
+/// ビューポート外にカーソルが出ると親ウィンドウ（WPF）がカーソルを再表示するため、
+/// 中ボタンのパン中も同じく閉じ込める（中・右で実装を分けない）。
 pub(super) fn camera_grab_start(hwnd: isize) -> Option<(i32, i32)> {
     #[cfg(target_os = "windows")]
     unsafe {
@@ -43,22 +46,16 @@ pub(super) fn camera_grab_start(hwnd: isize) -> Option<(i32, i32)> {
     None
 }
 
-/// MMB 押下時: ビューポートに ClipCursor でカーソルを閉じ込め、押下前の座標を返す。
-///
-/// ビューポート外にカーソルが出ると親ウィンドウ（WPF）がカーソルを再表示するため、
-/// RMB と同様に ClipCursor でウィンドウ内に閉じ込める。
-pub(super) fn mmb_grab_start(hwnd: isize) -> Option<(i32, i32)> {
-    // RMB と同じ実装（ClipCursor あり）
-    camera_grab_start(hwnd)
-}
+// 【MMB 専用ラッパを廃止した理由】
+// 以前は mmb_grab_start / mmb_grab_end という RMB 版への単純な別名があり、
+// 「どちらのボタンが担当か」をボタンごとに持つ実装を助長していた。
+// 中＋右（オービット）の解放順によってはどちらの復元処理も走らず、
+// カーソルが非表示のまま残るバグの温床だったため、
+// 中・右ともに camera_grab_start / camera_grab_end を直接使う形へ統一した。
+// 呼び出し側の入口・出口は App::begin_camera_grab / end_camera_grab の 1 対のみ。
 
-/// MMB リリース時: ClipCursor を解除してカーソルを起点座標へ戻す。
-pub(super) fn mmb_grab_end(x: i32, y: i32) {
-    // RMB と同じ実装
-    camera_grab_end(x, y);
-}
-
-/// RMB リリース時: ClipCursor を解除してカーソルを元の座標へ戻す。
+/// カメラ操作終了時（中・右の**両方**が離れたとき）: ClipCursor を解除して
+/// カーソルを開始時の座標へ戻す。
 pub(super) fn camera_grab_end(x: i32, y: i32) {
     #[cfg(target_os = "windows")]
     unsafe {

@@ -979,6 +979,75 @@ fn compute_smooth_normals(
 
 /// 1 メッシュぶんの GPU 描画リソース。`GpuPrimitive` の集合を保持するだけの薄いラッパー
 /// （CPU 側 `Model.meshes` と 1:1 対応し、`GpuModel::upload` が構築する）。
+/// CPU モデルの**ジオメトリ構造**を一意に表す署名を計算する。
+///
+/// 【何のためにあるか】
+/// 描画は必ず `(GpuModel, InstancedModelBatch)` のペアで行われる。
+/// `InstancedModelBatch::node_prim_list` はバッチ生成時の CPU モデルから作られた
+/// `(node_idx, mesh_idx, prim_idx, is_skinned)` の添字表であり、描画側はその添字で
+/// `GpuModel::meshes[mesh_idx].primitives[prim_idx]` を引く。
+/// したがって**両者が同じ CPU モデルから作られている**ことが暗黙の前提になっている。
+///
+/// この前提が破れると、
+///   - `is_skinned=true` なのに `skin_vertex_buffer` が None（→ `unwrap` でパニック）
+///   - `mesh_idx` / `prim_idx` が範囲外（→ 添字アクセスでパニック）
+/// が起きる。実際、統合バッチ（`shared_model_batches`）は batch_key ごとにキャッシュされ、
+/// 以前は「容量不足」でしか作り直されなかったため、同じ batch_key の CPU モデルが
+/// 差し替わると古い添字表のまま新しい `GpuModel` と組まれ得た。
+///
+/// そこで両者に本署名を持たせ、
+///   ① 署名が変わったらバッチを作り直す（＝古い添字表を残さない）
+///   ② 署名が食い違うペアは描画リストに載せない（＝万一でもパニックさせない）
+/// の 2 段で守る。
+///
+/// 【何を含めるか】添字アクセスの妥当性に効く構造だけを含める。頂点座標などの
+/// 「中身」は含めない（地形の頂点ペイント等で署名が変わるとバッチが毎フレーム
+/// 作り直され、影の静的カスケードスキップまで壊れるため）。
+pub fn model_geometry_signature(model: &Model) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+
+    // ノード構成（node_idx → mesh_idx の対応が変わると添字表が無効になる）。
+    model.nodes.len().hash(&mut h);
+    for node in &model.nodes {
+        node.mesh_index.hash(&mut h);
+    }
+
+    // メッシュ／プリミティブ構成。`is_skinned` は skin_vertex_buffer の有無と
+    // 1:1 対応するので必ず含める（本パニックの直接原因）。
+    model.meshes.len().hash(&mut h);
+    for mesh in &model.meshes {
+        mesh.primitives.len().hash(&mut h);
+        for prim in &mesh.primitives {
+            prim.is_skinned().hash(&mut h);
+            prim.vertices.len().hash(&mut h);
+            prim.indices.len().hash(&mut h);
+            prim.material_index.hash(&mut h);
+            prim.lod_indices.len().hash(&mut h);
+        }
+    }
+
+    h.finish()
+}
+
+/// 統合バッチ（`shared_model_batches`）を作り直すべきか判定する。
+///
+/// - `cached`: 既存エントリの `(確保済み容量, ジオメトリ署名)`。未生成なら `None`。
+/// - `total`:  今フレームで必要なインスタンス数。
+/// - `cpu_sig`: 今フレームの CPU モデルのジオメトリ署名。
+///
+/// 署名の比較を入れているのが要点。以前は容量だけを見ていたため、同じ batch_key に
+/// 別構造の CPU モデルが割り当たっても古い添字表（`node_prim_list`）のバッチが
+/// 生き残り、新しい `GpuModel` と組まれて描画時にパニックしていた。
+pub fn batch_needs_reinit(cached: Option<(usize, u64)>, total: usize, cpu_sig: u64) -> bool {
+    match cached {
+        // 未生成 ⇒ 作る。
+        None => true,
+        // 容量不足 ⇒ 作り直す。／ ジオメトリ構造が変わった ⇒ 添字表が無効なので作り直す。
+        Some((capacity, sig)) => capacity < total || sig != cpu_sig,
+    }
+}
+
 pub struct GpuMesh {
     pub primitives: Vec<GpuPrimitive>,
 }
@@ -999,6 +1068,10 @@ pub enum InlineUpdateResult {
 /// マテリアル別配列・バインドレス割り当てなど）を束ねる、描画コードから参照される中心的な構造体。
 /// `GpuModel::upload` が CPU 側 `Model` から構築し、`draw_gbuffer_indirect` 等の描画関数が読む。
 pub struct GpuModel {
+    /// このリソースを作った CPU モデルのジオメトリ署名
+    /// （`model_geometry_signature`）。`InstancedModelBatch` の同名の値と
+    /// 一致するペアだけが描画リストに載ることを保証するために使う。
+    pub geometry_signature: u64,
     pub meshes:           Vec<GpuMesh>,
     pub materials:        Vec<GpuMaterial>,
     /// マテリアル未指定プリミティブ用のデフォルトマテリアル bind group
@@ -1339,7 +1412,7 @@ impl GpuModel {
             }],
         });
 
-        Self { meshes, materials, default_material, identity_joints_bg, avg_albedos, default_avg_albedo, transmissions, default_transmission, iors, default_ior, textures: gpu_textures, bindless_alloc: None }
+        Self { geometry_signature: model_geometry_signature(model), meshes, materials, default_material, identity_joints_bg, avg_albedos, default_avg_albedo, transmissions, default_transmission, iors, default_ior, textures: gpu_textures, bindless_alloc: None }
     }
 
     /// マテリアルオーバーライドを GPU マテリアルへ焼き込む（Phase R7）。
@@ -1817,6 +1890,11 @@ pub struct NodePrimDraw {
 /// インスタンス変換が変化した場合のみワールド行列・AABB を再計算する。
 /// 視錐台カリング・LOD 選択は毎フレーム実行する（カメラが動くため）。
 pub struct InstancedModelBatch {
+    /// このバッチの `node_prim_list`（添字表）を作った CPU モデルのジオメトリ署名
+    /// （`model_geometry_signature`）。同じ値を持つ `GpuModel` と組んだときだけ
+    /// `mesh_idx` / `prim_idx` / `is_skinned` の解釈が一致する。
+    geometry_signature:     u64,
+
     /// lod_node_data[lod][node_idx] = (storage_buffer, bind_group)。
     /// メッシュを持たないノードは None。
     pub lod_node_data:      Vec<Vec<Option<(wgpu::Buffer, wgpu::BindGroup)>>>,
@@ -2247,6 +2325,10 @@ impl InstancedModelBatch {
 
         let n_mesh_nodes = mesh_node_indices.len();
         Self {
+            // 添字表（node_prim_list）と同じ CPU モデルから採る。
+            // 描画時にこの値が GpuModel 側と一致するかを見て、
+            // 別モデルのリソースと組まれたペアを弾く。
+            geometry_signature: model_geometry_signature(model),
             meshlet_cull,
             lod_node_data,
             lod_node_prev,
@@ -2318,6 +2400,10 @@ impl InstancedModelBatch {
     /// GPU へアップロード済みの内容の版番号（`update()` のたびに採り直される）。
     /// 「値が前フレームと同じ ⇒ このバッチが描く内容は完全に同一」を意味する。
     pub fn content_generation(&self) -> u64 { self.content_generation }
+
+    /// このバッチの添字表を作った CPU モデルのジオメトリ署名。
+    /// `GpuModel::geometry_signature` と突き合わせてペアの整合を確認する。
+    pub fn geometry_signature(&self) -> u64 { self.geometry_signature }
 
     /// **バッチ構成は変わらないまま、描かれる形状（頂点バッファの中身）だけが
     /// 差し替わった**ことを通知する。
@@ -3628,4 +3714,150 @@ mod inline_bake_tests {
         assert_eq!(lod_slot_index(2, 1), Some(0));
     }
 
+}
+
+// ============================================================
+//  ジオメトリ署名 / バッチ再生成判定のテスト
+//
+//  【何を守るテストか】
+//  描画は必ず (GpuModel, InstancedModelBatch) のペアで行われ、両者が同じ CPU
+//  モデル由来であることが暗黙の前提になっている。破れると shadow.rs の
+//  draw_caster で `skin_vertex_buffer.as_ref().unwrap()` がパニックする
+//  （アクタ .actor の D&D ホバー中に実際に発生したクラッシュ）。
+//  GPU デバイスを要するバッチ生成そのものは単体テストできないため、
+//  「食い違いを検出する仕組み」＝署名と再生成判定を固定する。
+// ============================================================
+#[cfg(test)]
+mod geometry_signature_tests {
+    use super::*;
+    use crate::engine::core::loader::model::{Mesh, Model, ModelNode, Primitive, SkinVertex, Vertex};
+    use bytemuck::Zeroable;
+
+    /// テスト用: プリミティブを 1 つ作る。
+    /// `skinned` でスキン頂点の有無（＝`is_skinned()`）を切り替える。
+    fn prim(vert_count: usize, skinned: bool, material_index: Option<usize>) -> Primitive {
+        Primitive {
+            vertices:      vec![Vertex::zeroed(); vert_count],
+            skin_vertices: if skinned { vec![SkinVertex::zeroed(); vert_count] } else { Vec::new() },
+            indices:       vec![0; vert_count],
+            material_index,
+            lod_indices:   Vec::new(),
+            meshlets:          Vec::new(),
+            meshlet_vertices:  Vec::new(),
+            meshlet_triangles: Vec::new(),
+        }
+    }
+
+    /// テスト用: メッシュを 1 つだけ持つ最小モデルを作る。
+    fn model_with(prims: Vec<Primitive>) -> Model {
+        Model {
+            name:       "test".into(),
+            nodes:      vec![ModelNode {
+                name:         "root".into(),
+                local_matrix: ModelNode::identity_matrix(),
+                translation:  [0.0; 3],
+                rotation:     [0.0, 0.0, 0.0, 1.0],
+                scale:        [1.0; 3],
+                mesh_index:   Some(0),
+                skin_index:   None,
+                children:     Vec::new(),
+                parent:       None,
+            }],
+            root_nodes: vec![0],
+            meshes:     vec![Mesh { name: "m".into(), primitives: prims }],
+            materials:  Vec::new(),
+            textures:   Vec::new(),
+            animations: Vec::new(),
+            skins:      Vec::new(),
+        }
+    }
+
+    /// 同一構造のモデルは同じ署名になる（＝無意味な再生成が起きない）。
+    #[test]
+    fn identical_models_share_a_signature() {
+        let a = model_with(vec![prim(3, false, Some(0))]);
+        let b = model_with(vec![prim(3, false, Some(0))]);
+        assert_eq!(model_geometry_signature(&a), model_geometry_signature(&b));
+    }
+
+    /// **本クラッシュの本体**: スキン有無が変われば署名も必ず変わる。
+    /// ここが同じ値になると、is_skinned=true の添字表がスキンバッファ無しの
+    /// GpuModel と組まれ、シャドウ深度パスで unwrap パニックする。
+    #[test]
+    fn skinning_change_changes_the_signature() {
+        let unskinned = model_with(vec![prim(3, false, None)]);
+        let skinned   = model_with(vec![prim(3, true,  None)]);
+        assert_ne!(
+            model_geometry_signature(&unskinned),
+            model_geometry_signature(&skinned),
+            "スキン有無の差は必ず署名に出ること（shadow.rs のパニック条件そのもの）",
+        );
+    }
+
+    /// プリミティブ数が変わると署名が変わる（prim_idx 範囲外アクセスの防止）。
+    #[test]
+    fn primitive_count_change_changes_the_signature() {
+        let one = model_with(vec![prim(3, false, None)]);
+        let two = model_with(vec![prim(3, false, None), prim(3, false, None)]);
+        assert_ne!(model_geometry_signature(&one), model_geometry_signature(&two));
+    }
+
+    /// ノード構成（node_idx → mesh_idx）が変わると署名が変わる。
+    #[test]
+    fn node_layout_change_changes_the_signature() {
+        let a = model_with(vec![prim(3, false, None)]);
+        let mut b = model_with(vec![prim(3, false, None)]);
+        b.nodes[0].mesh_index = None; // メッシュを持たないノードへ変える
+        assert_ne!(model_geometry_signature(&a), model_geometry_signature(&b));
+    }
+
+    /// 頂点数・マテリアル割り当ての差も署名に出る。
+    #[test]
+    fn vertex_count_and_material_changes_are_detected() {
+        let base = model_with(vec![prim(3, false, Some(0))]);
+        let more_verts = model_with(vec![prim(6, false, Some(0))]);
+        let other_mat  = model_with(vec![prim(3, false, Some(1))]);
+        assert_ne!(model_geometry_signature(&base), model_geometry_signature(&more_verts));
+        assert_ne!(model_geometry_signature(&base), model_geometry_signature(&other_mat));
+    }
+
+    /// 未生成なら必ず作る。
+    #[test]
+    fn reinit_when_no_cached_batch() {
+        assert!(batch_needs_reinit(None, 1, 42));
+    }
+
+    /// 容量も署名も足りていれば作り直さない（従来の性能を落とさない）。
+    #[test]
+    fn no_reinit_when_capacity_and_signature_match() {
+        assert!(!batch_needs_reinit(Some((8, 42)), 4, 42));
+        // ちょうど容量いっぱいも再生成不要（capacity < total が条件）。
+        assert!(!batch_needs_reinit(Some((8, 42)), 8, 42));
+    }
+
+    /// 容量不足では従来どおり作り直す。
+    #[test]
+    fn reinit_when_capacity_is_short() {
+        assert!(batch_needs_reinit(Some((4, 42)), 5, 42));
+    }
+
+    /// **回帰テスト**: 容量が足りていても署名が変われば作り直す。
+    /// 旧実装（容量だけを見る）はここで false を返し、古い添字表を残していた。
+    #[test]
+    fn reinit_when_geometry_signature_changed_even_if_capacity_is_enough() {
+        assert!(
+            batch_needs_reinit(Some((64, 42)), 1, 43),
+            "容量が足りていてもジオメトリが差し替わったら必ずバッチを作り直すこと",
+        );
+    }
+
+    /// 実モデルを使った通し確認: スキン付きモデルへ差し替わったフレームでは
+    /// 容量に余裕があってもバッチ再生成が要求される。
+    #[test]
+    fn swapping_to_a_skinned_model_forces_a_rebuild() {
+        let old_model = model_with(vec![prim(3, false, None)]);
+        let new_model = model_with(vec![prim(3, true,  None)]);
+        let cached = Some((64usize, model_geometry_signature(&old_model)));
+        assert!(batch_needs_reinit(cached, 1, model_geometry_signature(&new_model)));
+    }
 }

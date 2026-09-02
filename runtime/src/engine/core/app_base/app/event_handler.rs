@@ -18,7 +18,7 @@ use crate::engine::core::app_base::ipc::ToolMode;
 use crate::engine::methods::drawer::IdBuffer;
 
 use super::{
-    App, RuntimeMode, camera_grab_end, camera_grab_start, mmb_grab_end, mmb_grab_start,
+    App, RuntimeMode, camera_grab_end, camera_grab_start,
     release_window_clamp, warp_cursor_to_local,
 };
 
@@ -252,25 +252,12 @@ impl App {
             self.cam_input.mmb = pressed;
             if self.mode == RuntimeMode::Edit || self.paused {
                 if pressed {
-                    // RMB が先に押されていない場合のみ MMB がカーソルを管理する
-                    // （RMB 中に MMB を追加した場合はカーソルは RMB 管理のまま）
-                    if !self.cam_input.rmb {
-                        self.mmb_grab_screen_pos = mmb_grab_start(self.window_hwnd());
-                        if let Some(window) = &self.window {
-                            window.set_cursor_visible(false);
-                        }
-                    }
-                } else {
-                    // MMB 離し: カーソルを起点に戻して表示する
-                    if let Some((x, y)) = self.mmb_grab_screen_pos.take() {
-                        mmb_grab_end(x, y);
-                        // RMB がまだ押されていなければカーソルを再表示する
-                        if !self.cam_input.rmb {
-                            if let Some(window) = &self.window {
-                                window.set_cursor_visible(true);
-                            }
-                        }
-                    }
+                    // 最初に押されたカメラ操作ボタンだけが ClipCursor を張る。
+                    // 既に張ってあるなら（RMB が先・または連打）二重適用しない。
+                    self.begin_camera_grab();
+                } else if !self.cam_input.rmb {
+                    // 中も右も離れた＝カメラ操作の終了。閉じ込め解除と座標復元を行う。
+                    self.end_camera_grab();
                 }
             }
         }
@@ -281,15 +268,15 @@ impl App {
             // Play モードでは editor 側が ClipCursor を管理するため
             // ここで ClipCursor(null) を呼ばないようにする。
             if self.mode == RuntimeMode::Edit || self.paused {
-                if let Some(window) = &self.window {
+                // ウィンドウが生きているときだけ grab を触る
+                // （カーソルの表示/非表示は末尾の sync_camera_cursor_visibility が一括で行う）。
+                if self.window.is_some() {
                     if pressed {
                         self.rmb_press_pos = self.last_cursor_pos;
                         self.rmb_moved = false;
-                        // MMB 押し込み中はカーソル管理を MMB に任せる（ClipCursor の二重適用を避ける）
-                        if !self.cam_input.mmb {
-                            self.cam_grab_screen_pos = camera_grab_start(self.window_hwnd());
-                            window.set_cursor_visible(false);
-                        }
+                        // 最初に押されたカメラ操作ボタンだけが ClipCursor を張る
+                        // （MMB が先に押されていれば既に張られている＝二重適用しない）。
+                        self.begin_camera_grab();
                         // Pause モード: DeviceEvent::MouseMotion は WS_CHILD に届かないため
                         // CursorMoved ベースのカメラ回転を使う。
                         // ウィンドウ中央をピボットとしてカーソルをワープして固定する。
@@ -303,25 +290,23 @@ impl App {
                             }
                         }
                     } else {
-                        // MMB がまだ押されている場合はカーソル管理を MMB に任せる
-                        if !self.cam_input.mmb {
-                            window.set_cursor_visible(true);
+                        // MMB がまだ押されている間はカメラ操作が継続しているので、
+                        // 閉じ込めも座標復元もしない（全ボタンを離した時点で一括して行う）。
+                        let all_released = !self.cam_input.mmb;
+                        // コンテキストメニューは「右ボタン単独の短押し」だけに出す。
+                        // 中ボタン併用（オービット）からの右解放でメニューが出ると
+                        // 視点操作の途中で操作が奪われるため、単独時に限定する。
+                        let short_click = all_released && !self.rmb_moved;
+                        if all_released {
+                            self.end_camera_grab();
                         }
-                        if let Some((x, y)) = self.cam_grab_screen_pos.take() {
-                            camera_grab_end(x, y);
-                            // 短押し（カーソル移動なし）→ コンテキストメニュー
-                            if !self.rmb_moved {
-                                if let Some(ipc) = &self.ipc {
-                                    ipc.send("CONTEXT_MENU");
-                                }
-                                // アクタ追加時のスポーン位置計算用に座標を保存する
-                                self.context_menu_screen_pos =
-                                    self.last_cursor_pos.map(|(x, y)| (x as u32, y as u32));
+                        if short_click {
+                            if let Some(ipc) = &self.ipc {
+                                ipc.send("CONTEXT_MENU");
                             }
-                        } else {
-                            // RMB_DOWN が処理されていない（コンテキストメニューのポップアップが
-                            // WM_RBUTTONDOWN を横取りした等）。ClipCursor のみ解除する。
-                            release_window_clamp();
+                            // アクタ追加時のスポーン位置計算用に座標を保存する
+                            self.context_menu_screen_pos =
+                                self.last_cursor_pos.map(|(x, y)| (x as u32, y as u32));
                         }
                         self.rmb_press_pos = None;
                         self.rmb_moved = false;
@@ -342,6 +327,73 @@ impl App {
         if matches!(button, MouseButton::Middle | MouseButton::Right) {
             self.update_orbit_on_button(button, pressed);
         }
+
+        // カーソル可視状態の調停（唯一の適用点）。
+        //
+        // 上のブロックで `cam_input.mmb` / `cam_input.rmb` を更新し終えた**後**に、
+        // ボタンの現在状態だけから可視状態を導いて 1 回だけ反映する。
+        // 「どのボタンが隠す担当か」を持たないので、押下順・解放順のどの組合せでも
+        // 全ボタンを離せば必ず表示に戻る（中＋右のカーソル消失バグの根治）。
+        self.sync_camera_cursor_visibility();
+    }
+
+    // ============================================================
+    //  カメラ操作のカーソル管理（中／右で共有する単一の入口・出口）
+    // ============================================================
+
+    /// カメラ操作の開始。まだ確保していなければカーソルをウィンドウ内へ閉じ込め、
+    /// 開始時のスクリーン座標を覚える。すでに確保済みなら何もしない（冪等）。
+    ///
+    /// 中・右のどちらから始まっても同じこの関数を通るため、ClipCursor の
+    /// 二重適用も、担当ボタンの取り違えも起こらない。
+    pub(super) fn begin_camera_grab(&mut self) {
+        if self.cam_grab_screen_pos.is_some() {
+            return;
+        }
+        self.cam_grab_screen_pos = camera_grab_start(self.window_hwnd());
+    }
+
+    /// カメラ操作の終了。閉じ込めを解除し、開始時のスクリーン座標へカーソルを戻す。
+    ///
+    /// **中・右の両方が離れたときにだけ**呼ぶこと。開始座標を持っていない場合
+    /// （押下イベントを他ウィンドウに横取りされた等）でも、閉じ込めだけは必ず解除する。
+    pub(super) fn end_camera_grab(&mut self) {
+        match self.cam_grab_screen_pos.take() {
+            Some((x, y)) => camera_grab_end(x, y),
+            // 開始座標が無い＝復元先が不明。ClipCursor だけは確実に解除する。
+            None => release_window_clamp(),
+        }
+    }
+
+    /// 現在のボタン状態からカーソルの可視状態を決め、変化したときだけ OS へ反映する。
+    ///
+    /// Edit / Pause 以外（Play）ではカーソル管理をエディタ側に委ねるため
+    /// `enabled=false` となり、隠したままモードが変わっても表示へ収束する。
+    pub(super) fn sync_camera_cursor_visibility(&mut self) {
+        let enabled = self.mode == RuntimeMode::Edit || self.paused;
+        let (mmb, rmb) = (self.cam_input.mmb, self.cam_input.rmb);
+        if let Some(visible) = self.camera_cursor.reconcile(enabled, mmb, rmb) {
+            if let Some(window) = &self.window {
+                window.set_cursor_visible(visible);
+            }
+        }
+    }
+
+    /// フォーカス喪失時などにカーソルを強制的に表示へ戻す。
+    ///
+    /// ウィンドウがフォーカスを失うとボタンの解放イベントが届かないことがあり、
+    /// その場合 `sync_camera_cursor_visibility` の入力（押下状態）が更新されない。
+    /// 「隠れたまま操作不能」を避ける最後の砦として、押下状態を無視して復帰させる。
+    pub(super) fn force_restore_camera_cursor(&mut self) {
+        if let Some(visible) = self.camera_cursor.force_show() {
+            if let Some(window) = &self.window {
+                window.set_cursor_visible(visible);
+            }
+        }
+        // 押下状態も落として、次の押下から正しくやり直せるようにする。
+        self.cam_input.mmb = false;
+        self.cam_input.rmb = false;
+        self.end_camera_grab();
     }
 
     // ============================================================

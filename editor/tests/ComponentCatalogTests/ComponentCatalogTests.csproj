@@ -1,0 +1,36 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    コンポーネント追加ダイアログの「既定名」まわりの単体テスト。
+
+    SpriteRigTests / PlacementTests と同じ方針:
+      1. 外部パッケージ（xunit 等）に依存させず、素のコンソールアプリ + 自前アサート
+         → NuGet の追加取得なしで `dotnet run` だけで回せる
+      2. SEEDEditor 本体（WPF / WinExe）を参照せず、対象ソースをリンクで取り込む
+         → ComponentCatalog.cs が WPF 型を使った瞬間に本テストがビルドできなくなる
+           （＝一覧データと UI が再び癒着したことの検知器）
+
+    本テストの主目的は「表示一覧と既定名の単一情報源化」の固定。
+    種別を選び直したときに前の種別の名前が残らないことを、全種別の総当たりで押さえる。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.ComponentCatalog</RootNamespace>
+    <AssemblyName>ComponentCatalogTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象（WPF 非依存のコンポーネント一覧・既定名ロジック） -->
+    <Compile Include="..\..\src\ComponentCatalog.cs">
+      <Link>Linked\ComponentCatalog.cs</Link>
+    </Compile>
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

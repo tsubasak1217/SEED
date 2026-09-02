@@ -474,6 +474,23 @@ fn begin_depth_layer_pass<'a>(
 ///
 /// mesh 深度パイプラインは group 0(camera)+1(model) のみ。
 /// skinned 深度パイプラインは group 0+1+2(空 gap)+3(joints)。
+/// キャスター描画で添字表と GPU リソースの食い違いを検出したときに、
+/// **プロセス中 1 回だけ**警告を出す。
+///
+/// 毎フレーム描画される経路なので、素の `eprintln!` ではログが溢れて
+/// フレームレートまで落ちる。原因調査に必要なのは「起きたか」だけなので
+/// 一度で十分。`debug_assert!` を使わないのは、dev ビルドでパニックしてしまい
+/// 本改修が消そうとしているクラッシュを別の形で再現してしまうため。
+fn warn_caster_mismatch(reason: &str) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "[SEED] shadow: GpuModel とバッチの不一致を検出したためプリミティブを飛ばした（{reason}）",
+        );
+    }
+}
+
 fn draw_caster<'pass>(
     pass:         &mut wgpu::RenderPass<'pass>,
     gpu_model:    &'pass GpuModel,
@@ -493,8 +510,27 @@ fn draw_caster<'pass>(
         for draw in &batch.node_prim_list {
             let Some((_, model_bg)) = batch.lod_node_data[lod][draw.node_idx].as_ref() else { continue };
 
-            let gpu_mesh = &gpu_model.meshes[draw.mesh_idx];
-            let prim     = &gpu_mesh.primitives[draw.prim_idx];
+            // ── 添字表と GPU リソースの整合を確認する ─────────────────────
+            // `node_prim_list` はバッチ生成時の CPU モデル由来の添字表。
+            // 呼び出し側（frame_renderer::pair_if_consistent）が同一モデル由来の
+            // ペアだけを渡すので通常ここは必ず成立するが、深度パスはメインパスより
+            // 先に走るため、万一の食い違いが**最初にここでパニックする**。
+            // クラッシュさせずにそのプリミティブを飛ばす（1 フレーム影が欠けるだけ）。
+            let Some(gpu_mesh) = gpu_model.meshes.get(draw.mesh_idx) else {
+                warn_caster_mismatch("mesh_idx が GpuModel の範囲外");
+                continue;
+            };
+            let Some(prim) = gpu_mesh.primitives.get(draw.prim_idx) else {
+                warn_caster_mismatch("prim_idx が GpuMesh の範囲外");
+                continue;
+            };
+            // スキン指定なのに GPU 側にスキン頂点バッファが無い＝別モデルの添字表。
+            // ここで弾かないと下の set_vertex_buffer が `unwrap` でパニックする
+            // （アクタの D&D プレビュー中に実際に発生していたクラッシュ）。
+            if draw.is_skinned && prim.skin_vertex_buffer.is_none() {
+                warn_caster_mismatch("is_skinned だがスキン頂点バッファが無い");
+                continue;
+            }
 
             // ── パイプライン切り替え（スキン/非スキン）──────────
             if cur_skinned != Some(draw.is_skinned) {
@@ -519,8 +555,12 @@ fn draw_caster<'pass>(
             pass.set_bind_group(1, model_bg, &[]);
 
             pass.set_vertex_buffer(0, prim.vertex_buffer.slice(..));
-            if draw.is_skinned {
-                pass.set_vertex_buffer(1, prim.skin_vertex_buffer.as_ref().unwrap().slice(..));
+            if let Some(skin_vb) = prim.skin_vertex_buffer.as_ref() {
+                // 上で `draw.is_skinned && skin_vertex_buffer.is_none()` を弾いているので、
+                // スキンパイプラインを選んだプリミティブは必ずここへ入る。
+                if draw.is_skinned {
+                    pass.set_vertex_buffer(1, skin_vb.slice(..));
+                }
             }
 
             let (idx_buf, idx_count) = prim.get_lod_index_buffer(lod);

@@ -50,6 +50,7 @@ mod canvas_component_ops;
 mod camera_component_ops;
 mod camera_apply_debug;
 /// デバッグカメラのオービット回転（中ボタン＋右ボタン同時押し）。
+mod camera_cursor;
 mod camera_orbit;
 mod physics_component_ops;
 mod physics2d_ops;
@@ -669,10 +670,15 @@ pub struct App {
     /// Play モードで読み込むシーンパス。None なら project_settings.json の start_scene を使う。
     scene_path: Option<String>,
 
-    /// RMB 押下時のスクリーン座標。カーソルロック解除後に復元する。
+    /// カメラ操作（中ボタン／右ボタン）開始時のスクリーン座標。
+    ///
+    /// **中・右で 1 つを共有する**。以前はボタンごとに別フィールドを持っていたが、
+    /// 「どちらが担当か」を押下時と解放時で別々に判定していたため、
+    /// 中＋右（オービット）で解放順によっては復元処理ごと落ちていた（カーソル消失バグ）。
+    /// 最初に押されたボタンで確保し、**全ボタンを離したときだけ**解放・復元する。
     cam_grab_screen_pos: Option<(i32, i32)>,
-    /// MMB 押下時のスクリーン座標。MMB 離し時にカーソルをここへ戻す。
-    mmb_grab_screen_pos: Option<(i32, i32)>,
+    /// カメラ操作中のカーソル可視状態の単一管理（`camera_cursor` モジュール参照）。
+    camera_cursor: camera_cursor::CameraCursorGrab,
 
     /// エディタから PLAY_CLAMP:1 を受け取ったとき true。
     /// 毎フレーム ClipCursor を貼り直してカーソルをウィンドウ内に閉じ込める。
@@ -1338,7 +1344,7 @@ impl App {
             editor_resources: args.editor_resources,
             scene_path:       args.scene_path,
             cam_grab_screen_pos: None,
-            mmb_grab_screen_pos: None,
+            camera_cursor: Default::default(),
             play_clamp: false,
             id_buffer:          None,
             selected_instances: Vec::new(),
@@ -1646,6 +1652,6 @@ use actor_utils::{
 pub(crate) use actor_utils::find_actor_by_dfs_mut;
 use platform_utils::{
     camera_grab_start, camera_grab_end, apply_window_clamp, release_window_clamp,
-    warp_cursor_to_local, mmb_grab_start, mmb_grab_end,
+    warp_cursor_to_local,
 };
 
