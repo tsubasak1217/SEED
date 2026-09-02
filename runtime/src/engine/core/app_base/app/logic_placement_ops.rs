@@ -49,9 +49,12 @@ use crate::engine::core::transform_sync::set_actor_world_transform;
 use crate::engine::ecs::World;
 use crate::engine::placement::{generate_points, PlacementPoint, PlacementSpec};
 use crate::engine::structs::objects::Actor;
+use crate::engine::methods::gizmo_interact::mat4x4_inv;
 use crate::engine::terrain::scatter::{surface_hit_down, ScatterField};
 
 use super::actor_utils::dfs_ids_for_entities;
+use super::control_point_ops::transform_point;
+use super::placement_mode::placement_world_positions;
 use super::prefab_ops::load_actor_data;
 use super::terrain_scatter_ops::TerrainScatterField;
 use super::{insert_group_actor, App};
@@ -111,6 +114,11 @@ pub struct LogicPlaceRequest {
     #[serde(default)]
     pub source_path: Option<String>,
     /// 地形へ接地させるか（3D のみ有効。接地できない点は基準 Y のまま残す）。
+    ///
+    /// `control_points` でも効く。制御点はアクタローカルで保持されるが、
+    /// 接地はワールドでしか意味を持たないので
+    /// **ローカルで合成 → ワールド化 → 接地 → ローカルへ戻す**の順に通す
+    /// （`control_point_local_positions`）。
     #[serde(default)]
     pub ground: bool,
     /// ControlPoint 追記時の対象アクタ DFS id。
@@ -143,6 +151,35 @@ pub(super) fn ground_positions_with(field: &impl ScatterField, positions: &mut [
             Some((hit, _normal)) => p[1] = hit[1],
             None => missed += 1,
         }
+    }
+    missed
+}
+
+/// **アクタローカル**の点列を、ワールドで接地してからローカルへ戻す。
+///
+/// 制御点は「対象アクタのローカル座標」で保持されるデータだが、地形接地は
+/// ワールド空間でしか意味を持たない（アクタが回転・スケールしていても、
+/// 地面はワールドの Y 方向にある）。そこで
+/// **ローカルで合成 → ワールド化 → 接地 → ローカルへ戻す**の順に通す。
+///
+/// 逆行列は 1 回だけ求める（点ごとに `world_to_actor_local` を呼ぶと
+/// 点数ぶん行列反転が走り、ドラッグ中の毎フレームコストになるため）。
+/// 接地できなかった点はワールド Y が動かないので、往復して**元のローカルへ戻る**
+/// （＝基準 Y のまま）。戻り値は接地できなかった点数。
+pub(super) fn ground_local_positions_with(
+    field:     &impl ScatterField,
+    actor_mat: &[[f32; 4]; 4],
+    locals:    &mut [[f32; 3]],
+) -> usize {
+    let inv = mat4x4_inv(*actor_mat);
+    // ① ローカル → ワールド
+    let mut worlds: Vec<[f32; 3]> =
+        locals.iter().map(|p| transform_point(actor_mat, *p)).collect();
+    // ② ワールドで接地（アクタ配置とまったく同じ関数を通す）
+    let missed = ground_positions_with(field, &mut worlds);
+    // ③ ワールド → ローカル
+    for (l, w) in locals.iter_mut().zip(worlds.iter()) {
+        *l = transform_point(&inv, *w);
     }
     missed
 }
@@ -253,7 +290,7 @@ fn assemble_placement_group(
 ///
 /// 制御点は**アクタ相対**座標なので、`origin_local`（＝カーソル位置をアクタの
 /// ローカル空間へ変換した基準点）にパターン座標を足したものがそのまま点の位置になる
-/// （地形接地は行わない。制御点は地面に乗る物ではない）。
+/// 接地は行わない（接地込みの経路は `append_control_points_at` を使う）。
 /// 配置モードを経由しない旧経路は `origin_local = [0,0,0]` を渡す。
 /// 時刻は既存点の続きから `DEFAULT_TIME_STEP` 刻みで振る
 /// （インスペクタの「＋ 制御点を追加」と同じ規則）。
@@ -266,17 +303,31 @@ fn append_control_points(
     origin_local: [f32; 3],
     start_time: f32,
 ) -> (usize, usize) {
+    let positions = placement_world_positions(origin_local, generated, usize::MAX);
+    append_control_points_at(existing, generated, &positions, start_time)
+}
+
+/// 位置を**外から与えて**制御点を追記する（接地済みの点列を入れる経路）。
+///
+/// `positions_local[i]` が `generated[i]` の最終的なローカル位置になる。
+/// 回転・スケールはパターン側（`generated`）の値をそのまま使う。
+/// 位置と点の対応は添字で取るので、`positions_local` は `generated` と
+/// 同じ長さ以上であること（短ければそこで打ち切る）。
+///
+/// 上限 `MAX_CONTROL_POINTS` を超えるぶんは追記せず、戻り値で件数を返す。
+fn append_control_points_at(
+    existing:        &mut Vec<ControlPoint>,
+    generated:       &[PlacementPoint],
+    positions_local: &[[f32; 3]],
+    start_time:      f32,
+) -> (usize, usize) {
     let capacity = MAX_CONTROL_POINTS.saturating_sub(existing.len());
-    let take = generated.len().min(capacity);
+    let take = generated.len().min(capacity).min(positions_local.len());
 
     let mut t = start_time;
-    for p in generated.iter().take(take) {
+    for (p, position) in generated.iter().zip(positions_local.iter()).take(take) {
         existing.push(ControlPoint {
-            position: [
-                origin_local[0] + p.position[0],
-                origin_local[1] + p.position[1],
-                origin_local[2] + p.position[2],
-            ],
+            position: *position,
             rotation: p.rotation,
             scale:    p.scale,
             time:     t,
@@ -523,6 +574,36 @@ impl App {
 
     // ── ② ControlPoint 点列への追記 ─────────────────────────
 
+    /// 制御点配置の**最終ローカル位置**を求める（接地込み）。
+    ///
+    /// 手順は `ローカルで合成 → ワールド化 → 接地 → ローカルへ戻す`。
+    /// 接地はワールドでしか意味を持たないので、点列の合成（アクタローカル）と
+    /// 接地（ワールド）の間に対象アクタの行列を挟むのが唯一の正しい順序である。
+    ///
+    /// 接地しない場合（`ground = false` / 2D / 対象アクタの行列が引けない）は
+    /// 合成しただけのローカル点列をそのまま返す。
+    /// 戻り値は `(ローカル点列, 接地できなかった点数)`。
+    ///
+    /// **プレビューと確定はこの関数 1 か所を共有する**ので、
+    /// 「人型アイコンが立っている高さに必ず点が入る」が構造的に保証される。
+    pub(super) fn control_point_local_positions(
+        &self,
+        req:          &LogicPlaceRequest,
+        points:       &[PlacementPoint],
+        origin_local: [f32; 3],
+    ) -> (Vec<[f32; 3]>, usize) {
+        let mut locals = placement_world_positions(origin_local, points, usize::MAX);
+        if !req.ground || req.is_2d { return (locals, 0); }
+
+        // 対象アクタの行列が引けなければ接地を諦める（誤った高さへ飛ばさない）。
+        let Some(m) = self.control_point_actor_matrix(req.actor_dfs_id) else {
+            return (locals, 0);
+        };
+        let field = TerrainScatterField::from_state(&self.terrain);
+        let missed = ground_local_positions_with(&field, &m, &mut locals);
+        (locals, missed)
+    }
+
     /// 生成点列を既存の ControlPoint スロットの末尾へ追記する。
     ///
     /// `origin_local` は**対象アクタのローカル空間での基準点**。配置モードから来た
@@ -543,6 +624,15 @@ impl App {
         let wl = self.active_world_line;
         let before_slots = self.snapshot_actor_slots(wl, req.actor_dfs_id);
 
+        // ── 位置を先に確定する（接地は地形を不変借用するので、
+        //    シーンの可変借用より前に済ませる）──
+        let (positions, missed) = self.control_point_local_positions(req, points, origin_local);
+        if missed > 0 {
+            self.notify_placement_error(&format!(
+                "地形接地: {missed} 点で地表が見つからなかったため基準の高さのままにしました"
+            ));
+        }
+
         let (added, dropped) = {
             let Some(scene) = &mut self.scene else { return };
             let Some(c) = scene.world.get_mut::<ControlPointComponent>(entity) else {
@@ -550,7 +640,7 @@ impl App {
                 return;
             };
             let start_time = c.next_default_time();
-            append_control_points(&mut c.points, points, origin_local, start_time)
+            append_control_points_at(&mut c.points, points, &positions, start_time)
         };
 
         if dropped > 0 {
@@ -776,6 +866,123 @@ mod tests {
         assert_eq!(cmd.after_actors[0].children.len(), 3, "グループ配下に 3 体");
         // UndoCommand として扱えること（履歴へ積める型であることの確認）。
         let _boxed: Box<dyn Command> = Box::new(cmd);
+    }
+
+    // ─── 制御点のローカル接地（ローカル → ワールド → 接地 → ローカル）───
+
+    /// テスト用のアクタ行列（平行移動・回転・スケール）。
+    fn actor_mat(position: [f32; 3], rotation: [f32; 3], scale: [f32; 3]) -> [[f32; 4]; 4] {
+        Transform { position, rotation, scale, ..Default::default() }.to_mat4()
+    }
+
+    /// 2 点の各成分がほぼ等しいこと。
+    fn assert_close(a: [f32; 3], b: [f32; 3], what: &str) {
+        for k in 0..3 {
+            assert!((a[k] - b[k]).abs() < 1.0e-3, "{what}: {a:?} != {b:?}");
+        }
+    }
+
+    /// **接地 ON**: アクタが持ち上がっていても、各点はワールドの地表 Y に乗ること。
+    ///
+    /// アクタが Y = +10 に居るので、地表 Y = 3 のローカル Y は −7 になる。
+    /// 「ローカルのまま接地する」実装だと 3 のままになるので、この値が順序を固定する。
+    #[test]
+    fn cp_grounding_lands_points_on_the_terrain_in_world_space() {
+        let field = flat_field(Some(3.0));
+        let m = actor_mat([0.0, 10.0, 0.0], [0.0; 3], [1.0; 3]);
+        let mut locals = [[1.0, 0.0, 0.0], [-2.0, 5.0, 4.0]];
+        let missed = ground_local_positions_with(&field, &m, &mut locals);
+        assert_eq!(missed, 0, "平面地形なら全点が接地すること");
+        for p in &locals {
+            assert!((p[1] + 7.0).abs() < 0.05, "ワールド Y=3 ＝ ローカル Y=-7: {p:?}");
+        }
+        assert_close(locals[0], [1.0, -7.0, 0.0], "XZ は動かないこと");
+    }
+
+    /// **接地失敗**: 地形が無ければローカル座標は 1 mm も動かないこと（基準 Y のまま）。
+    #[test]
+    fn cp_grounding_keeps_local_position_without_terrain() {
+        let field = flat_field(None);
+        let m = actor_mat([4.0, 1.0, -2.0], [0.0, 30.0, 0.0], [2.0, 2.0, 2.0]);
+        let before = [[1.0, 0.5, 0.0], [0.0, -3.0, 2.0]];
+        let mut locals = before;
+        let missed = ground_local_positions_with(&field, &m, &mut locals);
+        assert_eq!(missed, 2, "接地できなかった点数を返すこと");
+        assert_close(locals[0], before[0], "基準の高さのまま");
+        assert_close(locals[1], before[1], "基準の高さのまま");
+    }
+
+    /// **ローカル変換の往復**: 回転・スケール付きのアクタでも、
+    /// 接地後のローカル点をワールドへ戻すと地表 Y に一致すること。
+    #[test]
+    fn cp_grounding_round_trips_through_rotation_and_scale() {
+        let field = flat_field(Some(-2.0));
+        let m = actor_mat([3.0, 6.0, -1.0], [0.0, 45.0, 0.0], [2.0, 0.5, 2.0]);
+        let mut locals = [[1.0, 0.0, 1.0], [-1.0, 2.0, 0.5], [0.0, -4.0, -2.0]];
+        let missed = ground_local_positions_with(&field, &m, &mut locals);
+        assert_eq!(missed, 0);
+        for p in &locals {
+            let world = transform_point(&m, *p);
+            assert!((world[1] + 2.0).abs() < 0.05, "ワールドでは地表 Y=-2: {world:?}");
+        }
+    }
+
+    /// **接地 OFF と同じ出力**: 接地を通さない点列は従来どおり「基準点 + パターン座標」。
+    ///
+    /// `append_control_points`（旧シグネチャの薄いラッパ）と
+    /// `append_control_points_at`（接地済み位置を渡す新経路）が、
+    /// 接地なしのとき**同じ結果**になることを固定する。
+    #[test]
+    fn cp_ungrounded_path_matches_the_legacy_origin_path() {
+        let generated = vec![
+            PlacementPoint { position: [1.0, 0.0, 0.0], ..Default::default() },
+            PlacementPoint { position: [0.0, 2.0, 3.0], ..Default::default() },
+        ];
+        let origin = [10.0, -3.0, 5.0];
+
+        let mut legacy: Vec<ControlPoint> = Vec::new();
+        append_control_points(&mut legacy, &generated, origin, 0.0);
+
+        let positions = placement_world_positions(origin, &generated, usize::MAX);
+        let mut modern: Vec<ControlPoint> = Vec::new();
+        append_control_points_at(&mut modern, &generated, &positions, 0.0);
+
+        assert_eq!(legacy.len(), modern.len());
+        for (a, b) in legacy.iter().zip(modern.iter()) {
+            assert_eq!(a.position, b.position, "接地 OFF なら従来と同一出力");
+            assert_eq!(a.time, b.time);
+        }
+    }
+
+    /// `append_control_points_at` が**位置だけ**を差し替え、
+    /// 回転・スケール・時刻はパターン側の値を保つこと（接地で姿勢が壊れない）。
+    #[test]
+    fn cp_append_at_uses_given_positions_and_keeps_pose() {
+        let generated = vec![PlacementPoint {
+            position: [1.0, 0.0, 0.0],
+            rotation: [0.0, 90.0, 0.0],
+            scale:    [2.0, 2.0, 2.0],
+        }];
+        let mut existing: Vec<ControlPoint> = Vec::new();
+        let (added, dropped) =
+            append_control_points_at(&mut existing, &generated, &[[7.0, -1.0, 4.0]], 2.0);
+        assert_eq!((added, dropped), (1, 0));
+        assert_eq!(existing[0].position, [7.0, -1.0, 4.0], "与えた位置がそのまま入る");
+        assert_eq!(existing[0].rotation, [0.0, 90.0, 0.0], "回転は据え置き");
+        assert_eq!(existing[0].scale, [2.0, 2.0, 2.0], "スケールは据え置き");
+        assert_eq!(existing[0].time, 2.0);
+    }
+
+    /// **アクタ版の接地は不変**: ワールド点列の接地は行列を挟まない従来どおりの結果。
+    #[test]
+    fn actor_grounding_output_is_unchanged() {
+        let field = flat_field(Some(1.5));
+        let mut positions = [[0.0, 20.0, 0.0], [3.0, -20.0, 3.0]];
+        let missed = ground_positions_with(&field, &mut positions);
+        assert_eq!(missed, 0);
+        for p in &positions {
+            assert!((p[1] - 1.5).abs() < 0.05, "地表 Y=1.5 へ落ちること: {p:?}");
+        }
     }
 
     // ─── 制御点の追記 ─────────────────────────────────────

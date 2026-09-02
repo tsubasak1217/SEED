@@ -28,6 +28,10 @@
     <Compile Include="..\..\src\Placement\Patterns\*.cs">
       <Link>Linked\Patterns\%(Filename)%(Extension)</Link>
     </Compile>
+    <!-- ダイアログの表示フィルタ規則（WPF 非依存の文脈オブジェクト） -->
+    <Compile Include="..\..\src\Placement\LogicPlacementContext.cs">
+      <Link>Linked\LogicPlacementContext.cs</Link>
+    </Compile>
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>

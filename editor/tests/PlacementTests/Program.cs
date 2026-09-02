@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Text.Json;
+using SEEDEditor.Placement;
 using SEEDEditor.Placement.Patterns;
 using SpriteRigTests; // テストランナー（TestHarness / Check）を共有する
 
@@ -59,6 +60,8 @@ public static class Program
         harness.Add("LOGIC_PLACE の JSON が 1 行で必要な項目を含む", IpcCommandShape);
         harness.Add("LOGIC_PLACE_BEGIN は同じ本体で配置モードへ入る", BeginIpcCommandShape);
         harness.Add("制御点への配置も LOGIC_PLACE_BEGIN で対象スロットを送る", ControlPointBeginIpcCommandShape);
+        harness.Add("接地チェックの表示規則は 3D 空間に置かれるものだけ", GroundingVisibilityRule);
+        harness.Add("制御点への配置でも ground が JSON に載る", ControlPointGroundIsSent);
 
         return harness.Run();
     }
@@ -632,5 +635,49 @@ public static class Program
         Check.Equal(12, root.GetProperty("actor_dfs_id").GetInt32(), "actor_dfs_id");
         Check.Equal(2, root.GetProperty("slot_idx").GetInt32(), "slot_idx");
         Check.Equal("Circle", root.GetProperty("spec").GetProperty("pattern").GetString(), "spec.pattern");
+    }
+
+    /// <summary>
+    /// **表示フィルタリングの規則**: 「地面に沿わせる」を出すのは
+    /// 3D 空間に置かれるものだけ（アクタ配置・制御点への追加の区別は無い）。
+    ///
+    /// 制御点モードだからという理由で消してはならない（アクタ版と共通化した点）。
+    /// 逆に、2D 配置と 2D アクタ配下の制御点では消す。
+    /// </summary>
+    private static void GroundingVisibilityRule()
+    {
+        // 3D アクタ配置
+        Check.True(new LogicPlacementContext { Is2D = false }.SupportsGrounding,
+                   "3D アクタ配置では出す");
+        // 2D アクタ配置
+        Check.True(!new LogicPlacementContext { Is2D = true }.SupportsGrounding,
+                   "2D アクタ配置では出さない");
+        // 3D アクタ配下の制御点 ← ここが今回の変更点
+        Check.True(new LogicPlacementContext { IsControlPointMode = true }.SupportsGrounding,
+                   "3D アクタの制御点でも出す（アクタ版と同じ）");
+        // 2D アクタ配下の制御点
+        Check.True(!new LogicPlacementContext
+                   { IsControlPointMode = true, TargetIsCanvasActor = true }.SupportsGrounding,
+                   "2D アクタの制御点では出さない");
+    }
+
+    /// <summary>
+    /// 制御点への配置でも <c>ground</c> がそのまま IPC 本体へ載ること。
+    /// ランタイムはこの旗だけを見て接地するので、ここで落ちると接地が効かない。
+    /// </summary>
+    private static void ControlPointGroundIsSent()
+    {
+        var req = new LogicPlaceRequest
+        {
+            Target     = LogicPlaceRequest.TargetControlPoints,
+            Is2D       = false,
+            ActorDfsId = 4,
+            SlotIdx    = 0,
+            Ground     = true,
+        };
+        using var doc = JsonDocument.Parse(req.ToBeginIpcCommand()["LOGIC_PLACE_BEGIN:".Length..]);
+        var root = doc.RootElement;
+        Check.Equal("control_points", root.GetProperty("target").GetString(), "target");
+        Check.True(root.GetProperty("ground").GetBoolean(), "ground が true で送られること");
     }
 }

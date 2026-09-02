@@ -26,10 +26,28 @@ public sealed class LogicPlacementContext
 
     /// <summary>
     /// 制御点への追加モードかどうか。
-    /// true のとき「配置元」「基準点」の選択は意味を持たないので非表示にする
-    /// （制御点はアクタ相対座標で、実体を伴わないため）。
+    /// true のとき非表示にするのは「配置元」だけ（制御点は実体を伴わないので
+    /// 空アクタ／アクタファイルの選択に意味が無い）。基準点・地形接地を含む
+    /// それ以外の項目はアクタ配置とまったく同じものを出す。
     /// </summary>
     public bool IsControlPointMode { get; init; }
+
+    /// <summary>
+    /// 対象アクタがキャンバス上のアクタ（<c>CanvasTransform</c> 持ち＝2D アクタ）かどうか。
+    ///
+    /// <para>
+    /// 制御点は座標データとしては常に 3 成分なので <see cref="Is2D"/> は false のまま扱うが、
+    /// <b>親が 2D アクタなら地形は存在しない</b>ので接地は意味を持たない。
+    /// アクタ配置の「2D なら接地チェックを隠す」規則を、制御点でも同じ形で効かせるための旗。
+    /// </para>
+    /// </summary>
+    public bool TargetIsCanvasActor { get; init; }
+
+    /// <summary>
+    /// 地形接地が意味を持つ文脈か（＝「地面に沿わせる」を出してよいか）。
+    /// 3D 空間に置かれるものだけが対象で、キャンバス上のものは対象外。
+    /// </summary>
+    public bool SupportsGrounding => !Is2D && !TargetIsCanvasActor;
 
     /// <summary>制御点モードでの対象アクタ DFS id。</summary>
     public uint ActorDfsId { get; init; }

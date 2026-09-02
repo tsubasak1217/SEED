@@ -128,11 +128,15 @@ public partial class LogicPlacementWindow : Window
     /// <summary>
     /// 呼び出し元の文脈に応じて、意味を持たない入力欄を隠す。
     ///
-    /// - 制御点モード: 「配置元」「地形接地」は無関係なので非表示
-    ///   （制御点はアクタ相対の座標データであり、実体も地形も持たない）。
-    ///   「基準点」は**残す**。制御点もアクタ配置と同じくビューポートの
-    ///   カーソル位置を基準に置くようになったため、説明が必要になる。
+    /// - 制御点モード: 隠すのは「配置元」だけ。制御点は実体（アクタ）を持たないので
+    ///   空アクタ／アクタファイルの選択に意味が無い。それ以外の項目
+    ///   （パターン・パラメータ・共通・基準点・**地形接地**）は
+    ///   アクタ配置と**まったく同じ経路**を通す。
+    ///   接地はランタイムがワールドで解いてからアクタローカルへ戻すので、
+    ///   点がアクタ相対で保持されることは接地の妨げにならない。
     /// - 2D: 段（Y 方向）と地形接地は存在しないので非表示。
+    ///   接地の判定は <see cref="LogicPlacementContext.SupportsGrounding"/> に一本化してあり、
+    ///   2D アクタ配置でも 2D アクタ配下の制御点でも同じ規則が効く。
     /// </summary>
     private void ApplyContextVisibility()
     {
@@ -144,11 +148,14 @@ public partial class LogicPlacementWindow : Window
             TxtBaseHint.Text = "「配置」を押すとビューポートが配置モードになります。"
                              + "カーソル位置（メッシュ・地形の表面。何も無ければカメラ前方）を"
                              + "対象アクタのローカル座標へ変換した点を基準に、"
-                             + "点列が末尾へ追加されます。左クリックで確定・右クリック / Esc で取消します。";
+                             + "点列が末尾へ追加されます。左クリックで確定・右クリック / Esc で取消します。"
+                             + "「地形に接地させる」を入れると、各点をワールドで地表へ落としてから"
+                             + "ローカル座標へ戻して追加します。";
         }
 
-        // 地形接地は「3D の実アクタ配置」のときだけ意味を持つ。
-        ChkGround.Visibility = (!cp && !_ctx.Is2D) ? Visibility.Visible : Visibility.Collapsed;
+        // 地形接地は「3D 空間に置かれるもの」なら配置対象によらず意味を持つ。
+        // 2D アクタ配置・2D アクタ配下の制御点はキャンバス上なので対象外。
+        ChkGround.Visibility = _ctx.SupportsGrounding ? Visibility.Visible : Visibility.Collapsed;
 
         // 2D は段（Y 方向）を持たない。
         var layerVis = _ctx.Is2D ? Visibility.Collapsed : Visibility.Visible;
@@ -601,7 +608,8 @@ public partial class LogicPlacementWindow : Window
             GroupName  = BuildGroupName(),
             NamePrefix = _spec.PatternDisplayName,
             SourcePath = (!_ctx.IsControlPointMode && RadioSourceFile.IsChecked == true) ? _sourcePath : null,
-            Ground     = !_ctx.IsControlPointMode && !_ctx.Is2D && ChkGround.IsChecked == true,
+            // 接地は 3D 空間に置かれるものなら配置対象（アクタ／制御点）を問わず有効。
+            Ground     = _ctx.SupportsGrounding && ChkGround.IsChecked == true,
             ActorDfsId = _ctx.ActorDfsId,
             SlotIdx    = _ctx.SlotIdx,
             Spec       = _spec,

@@ -7121,6 +7121,9 @@ public partial class InspectorPanel : UserControl
                 // 制御点は「アクタ相対の座標データ」なので、常に 3D 座標系で扱う
                 // （2D アクタに付いていても点の position は [x,y,z] のまま）。
                 Is2D                          = false,
+                // 2D アクタに付いた制御点は地形の上に乗らないので、接地チェックを出さない
+                // （2D アクタ配置と同じ規則。判定は SupportsGrounding に集約してある）。
+                TargetIsCanvasActor           = _isActor2D,
                 IsControlPointMode            = true,
                 ActorDfsId                    = (uint)_currentActorId,
                 SlotIdx                       = (uint)info.SlotIdx,

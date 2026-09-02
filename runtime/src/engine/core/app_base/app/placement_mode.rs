@@ -185,6 +185,13 @@ pub(super) struct PlacementMode {
     pub radius_drag: Option<RadiusDrag>,
     /// 制御点への配置なら対象スロット、新規アクタ配置なら `None`。
     pub control_point: Option<ControlPointPlacement>,
+    /// 制御点配置の**最終ローカル位置**のキャッシュ（接地済み）。
+    ///
+    /// 接地は地形へレイマーチするので点数ぶんのコストが掛かる。アクタ配置が
+    /// `applied_origin` で「基準点が動いたフレームだけ」再計算しているのと同じ規則を
+    /// 制御点にも当て、カーソルを止めている間はコストを掛けない。
+    /// プレビューのアイコンはここを読むだけになる。
+    pub cp_positions: Vec<[f32; 3]>,
 }
 
 impl PlacementMode {
@@ -433,6 +440,7 @@ impl App {
             applied_origin: Some(origin),
             radius_drag: None,
             control_point: None,
+            cp_positions: Vec::new(),
         });
         // 掴み途中のギズモ・ホバー表示を落として、モードの排他を見た目にも反映する。
         self.hovered_gizmo_part = None;
@@ -478,6 +486,7 @@ impl App {
             applied_origin: None,
             radius_drag: None,
             control_point: Some(target),
+            cp_positions: Vec::new(),
         });
         self.hovered_gizmo_part = None;
         self.send_placement_state(true);
@@ -592,8 +601,11 @@ impl App {
         self.update_placement_drag_radius();
 
         // ── ② 基準点が動いていれば仮スポーン群を移す ──
-        // 制御点配置には仮スポーンが無いので、ここから先はまるごと不要。
-        if self.placement_mode.as_ref().is_some_and(|m| m.control_point.is_some()) { return; }
+        // 制御点配置には仮スポーンが無いので、専用の（＝点列だけを引き直す）経路へ。
+        if self.placement_mode.as_ref().is_some_and(|m| m.control_point.is_some()) {
+            self.tick_control_point_preview();
+            return;
+        }
         let Some(mode) = self.placement_mode.as_ref() else { return };
         let Some(origin) = mode.origin() else { return };
         if mode.applied_origin.is_some_and(|a| same_position(a, origin)) { return; }
@@ -601,6 +613,34 @@ impl App {
         let positions = self.placement_world_positions_grounded(origin);
         self.apply_preview_positions(&positions);
         if let Some(mode) = self.placement_mode.as_mut() {
+            mode.applied_origin = Some(origin);
+        }
+    }
+
+    /// 制御点配置のプレビュー点列（接地済みローカル位置）を引き直す。
+    ///
+    /// 基準点が実質動いていないフレームでは**何もしない**（アクタ配置の
+    /// `applied_origin` と同じ規則）。接地は地形レイマーチなので、
+    /// カーソルを止めている間まで毎フレーム走らせない。
+    fn tick_control_point_preview(&mut self) {
+        // 借用を分けるため、まず「再計算が要るか」と結果をイミュータブル借用の中で作る。
+        let Some(origin) = self.placement_mode.as_ref().and_then(|m| m.origin()) else { return };
+        if self
+            .placement_mode
+            .as_ref()
+            .and_then(|m| m.applied_origin)
+            .is_some_and(|a| same_position(a, origin))
+        {
+            return;
+        }
+        let positions = {
+            let Some(mode) = self.placement_mode.as_ref() else { return };
+            // 接地の警告は確定時に 1 回だけ出す（毎フレーム通知しない）。
+            self.control_point_local_positions(&mode.req, &mode.points, origin).0
+        };
+
+        if let Some(mode) = self.placement_mode.as_mut() {
+            mode.cp_positions   = positions;
             mode.applied_origin = Some(origin);
         }
     }
@@ -678,11 +718,13 @@ impl App {
         // ── 制御点配置: 実体が無いので、生成予定の点をその場で組んで返す ──
         // 点はアクタローカルなので、対象アクタの行列でワールドへ持ち上げる。
         if let Some(cp) = mode.control_point {
-            let Some(origin) = mode.origin() else { return Vec::new() };
+            // キャッシュ（＝確定時とまったく同じ関数で作った接地済みローカル位置）を
+            // そのままワールドへ持ち上げる。アイコンが立つ高さ＝実際に入る点の高さ。
             let Some(m) = self.control_point_actor_matrix(cp.actor_dfs_id) else { return Vec::new() };
-            return placement_world_positions(origin, &mode.points, usize::MAX)
-                .into_iter()
-                .map(|p| actor_local_to_world(&m, p))
+            return mode
+                .cp_positions
+                .iter()
+                .map(|p| actor_local_to_world(&m, *p))
                 .collect();
         }
 
@@ -745,8 +787,11 @@ impl App {
                 mode.points = generate_points(&mode.req.spec).points;
                 mode.applied_origin = None;
             }
+            // 仮スポーンの位置を戻すのはアクタ配置だけ（制御点は実体を持たないので
+            // ここで接地レイマーチを走らせても捨てるだけになる。確定時に引き直す）。
+            let is_cp = self.placement_mode.as_ref().is_some_and(|m| m.control_point.is_some());
             let origin = self.placement_mode.as_ref().and_then(|m| m.origin());
-            if let Some(origin) = origin {
+            if let (false, Some(origin)) = (is_cp, origin) {
                 let positions = self.placement_world_positions_grounded(origin);
                 self.apply_preview_positions(&positions);
             }
@@ -1039,6 +1084,7 @@ mod tests {
             applied_origin: None,
             radius_drag: None,
             control_point: None,
+            cp_positions: Vec::new(),
         }
     }
 
@@ -1065,6 +1111,7 @@ mod tests {
             applied_origin: None,
             radius_drag: None,
             control_point: None,
+            cp_positions: Vec::new(),
         }
     }
 

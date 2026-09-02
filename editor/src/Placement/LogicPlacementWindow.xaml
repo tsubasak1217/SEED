@@ -315,7 +315,7 @@
                         </Grid>
                         <CheckBox x:Name="ChkFaceForward" Content="進行方向を向く"/>
                         <CheckBox x:Name="ChkGround"      Content="地形に接地させる"
-                                  ToolTip="地表が見つからない点は基準の高さのままになります（3D のみ）"/>
+                                  ToolTip="各点を地表へ落とします。地表が見つからない点は基準の高さのままです（3D のみ。制御点にも効きます）"/>
                     </StackPanel>
                 </GroupBox>
 
