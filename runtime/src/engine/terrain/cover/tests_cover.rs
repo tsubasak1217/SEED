@@ -807,12 +807,22 @@ fn default_material_ids_match_sample_asset_ids() {
 
 /// **同梱のサンプルアセットが実際にパースできること**。
 ///
-/// `assets/terrain/cover_materials.json` を実ファイルとして取り込んで読む。
 /// アセットを手で編集して壊した場合（キーのタイポ・カンマ抜け・型違い）に、
 /// 実行して初めて「既定セットへ落ちて見た目が変わった」と気付くのを防ぐ。
+///
+/// **取り込み元は `runtime/tests/fixtures/terrain/cover_materials.json` の
+/// テスト専用コピー**である。`runtime/assets/` 直下はユーザーがファイルを自由に
+/// 移動・改名・削除できる作業領域で、そこを `include_str!` すると
+/// アセットを動かした瞬間にクレートがコンパイル不能になる（実際に一度起きている）。
+/// したがってフィクスチャは**正本のスナップショット**であり、担保するのは
+/// 「スナップショット時点の出荷サンプルが壊れていないこと」である。
+///
+/// 正本（コピー元）: `runtime/assets/templates/terrain/cover_materials.json`
+/// **正本を更新したらフィクスチャも同じ内容へコピーし直すこと。**
 #[test]
 fn bundled_sample_asset_parses() {
-    const SAMPLE: &str = include_str!("../../../../assets/terrain/cover_materials.json");
+    const SAMPLE: &str =
+        include_str!("../../../../tests/fixtures/terrain/cover_materials.json");
     let set = CoverMaterialSet::from_json_str(SAMPLE).expect("サンプルアセットが読めること");
     // 組み込み既定と同じ ID が揃っていること（既定 ⇄ アセットの意味の一致）。
     for id in ["snow", "wet"] {

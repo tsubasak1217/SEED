@@ -1938,9 +1938,16 @@ mod tests {
     /// JSON を手で書き換えたときの構文ミス・型ミスを CI で捕まえる
     /// （壊れていても既定セットへフォールバックしてしまうため、
     ///  実行時には気付けない＝テストでしか守れない）。
+    ///
+    /// 取り込み元は `runtime/tests/fixtures/terrain/` のテスト専用コピー
+    /// （正本 = `runtime/assets/templates/terrain/props.json` / `layers.json`）。
+    /// `runtime/assets/` はユーザーがファイルを移動・改名・削除できる作業領域なので、
+    /// 直接 `include_str!` するとアセットを動かした瞬間にビルドが落ちる。
+    /// **フィクスチャは正本のスナップショット**であり、正本を更新したら
+    /// 同じ内容へコピーし直すこと。
     #[test]
     fn shipped_props_json_parses() {
-        let text = include_str!("../../../../../assets/terrain/props.json");
+        let text = include_str!("../../../../../tests/fixtures/terrain/props.json");
         let set = TerrainPropSet::from_json_str(text)
             .expect("assets/terrain/props.json のパースに失敗した");
 
@@ -1970,8 +1977,8 @@ mod tests {
     /// 「なぜか一本も生えない」という無言の失敗になる。ここで捕まえる。
     #[test]
     fn shipped_props_reference_existing_layers() {
-        let props_text = include_str!("../../../../../assets/terrain/props.json");
-        let layers_text = include_str!("../../../../../assets/terrain/layers.json");
+        let props_text = include_str!("../../../../../tests/fixtures/terrain/props.json");
+        let layers_text = include_str!("../../../../../tests/fixtures/terrain/layers.json");
         let props = TerrainPropSet::from_json_str(props_text).unwrap();
         let layers = TerrainLayerSet::from_json_str(layers_text).unwrap();
 
@@ -2278,7 +2285,7 @@ mod tests {
 
         // ─── 出荷 props.json をそのまま使う（実機の密度で測る）───
         let props = TerrainPropSet::from_json_str(include_str!(
-            "../../../../../assets/terrain/props.json"
+            "../../../../../tests/fixtures/terrain/props.json"
         ))
         .expect("props.json parse");
         let prop_indices: Vec<usize> = (0..props.active_count()).collect();

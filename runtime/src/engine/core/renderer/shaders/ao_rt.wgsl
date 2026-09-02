@@ -16,7 +16,10 @@
 // Vogel ディスク（半径 √((i+0.5)/N)・角度 i*黄金角+回転）を接空間ディスクに張り、
 // z=√(1-r²) で半球へ持ち上げる（＝コサイン加重）。ピクセルごとに IGN で回転しバンディングを崩す。
 //
-// 【自己交差回避】原点を法線方向へ RTAO_NORMAL_OFFSET 押し出し、tmin=RTAO_TMIN で下限を切る。
+// 【自己交差回避】原点をシェーディング法線へ RTAO_NORMAL_OFFSET、幾何法線へ
+// RTAO_GEO_CLEARANCE 押し出し（RT 影 rt_shadow_on.wgsl と同一の 2 項）、tmin=RTAO_TMIN で
+// 下限を切る。法線マップの効いた面／曲がったスキンメッシュではシェーディング法線だけの
+// 押し出しが面の裏側に残り、黒い斑点（自己交差）になるため幾何法線項が要る。
 // cull_mask=0x01（不透明のみ）。RAY_FLAG_TERMINATE_ON_FIRST_HIT で最初のヒットで打ち切る。
 // ============================================================
 
@@ -29,6 +32,20 @@ const RTAO_RAY_COUNT:      u32 = 4u;
 const RTAO_TMIN:           f32 = 0.001;
 /// 原点の法線方向オフセット（世界単位。rt_shadow_on.wgsl の RT_SHADOW_NORMAL_BIAS と同値）。
 const RTAO_NORMAL_OFFSET:  f32 = 0.02;
+/// 幾何法線方向の最小クリアランス（rt_shadow_on.wgsl の RT_SHADOW_GEO_CLEARANCE と同値）。
+///
+/// 【なぜ法線オフセットだけでは足りないのか】`RTAO_NORMAL_OFFSET` が押し出す `n` は
+/// **G-Buffer のシェーディング法線**（法線マップ適用後）であり、実際の三角形の向き
+/// （幾何法線 Ng）とは大きくずれうる。法線マップが強い面や、スキンメッシュのように
+/// 面が曲がってポリゴンが縮む箇所では、シェーディング法線方向へ 2cm 押し出しても
+/// **原点が自分の三角形の裏側に残る**ことがあり、そのレイが自分自身に当たって
+/// AO が 0（＝黒い斑点）になる。Ng 方向にも最小クリアランスを足すと、押し出しが
+/// 必ず面の表側へ抜ける。総オフセットは最大でも 0.02 + 0.005 = 0.025 ワールド単位で、
+/// RT 影（rt_shadow_on.wgsl）とまったく同じ量に揃う（AO と影の接地感がずれない）。
+const RTAO_GEO_CLEARANCE:  f32 = 0.005;
+/// G-Buffer 法線が「authored（草・地形など、深度復元 Ng が信用できない面）」かの閾値。
+/// deferred_lighting.wgsl の GBUFFER_NORMAL_AUTHORED_THRESHOLD と同値であること。
+const RTAO_AUTHORED_THRESHOLD: f32 = 0.5;
 /// 影のインスタンスカリングマスク（不透明のみ。rt_shadow_on.wgsl の RT_SHADOW_CULL_MASK と同値）。
 const RTAO_CULL_MASK:      u32 = 0x01u;
 /// AO の効き（ヒット率にかける係数）。intensity ノブ（u_ao.intensity）と併せて最終強度を決める。
@@ -60,23 +77,48 @@ fn fs_rt(in: AoVsOut) -> @location(0) vec4<f32> {
     let uv  = in.uv;
     let pix = ao_full_pix(uv);
 
-    // ── 1) 背景（depth>=1）は AO=1（遮蔽なし）で早期 return ─────────────
-    let depth = textureLoad(t_depth, pix, 0);
+    // ── 1) ワールド位置と画面微分（**早期 return より前**に済ませる）───────
+    // dpdx/dpdy は一様制御フローの中でしか呼べないため、背景判定の分岐より前で
+    // 評価する。背景ピクセルの値は使われないので、無効な world_pos を通しても害はない。
+    let depth     = textureLoad(t_depth, pix, 0);
+    let world_pos = ao_world_pos(uv, depth);
+    let ng_raw    = cross(dpdx(world_pos), dpdy(world_pos));
+
+    // ── 2) 背景（depth>=1）は AO=1（遮蔽なし）で早期 return ─────────────
     if depth >= AO_BACKGROUND_DEPTH {
         return vec4<f32>(1.0, 0.0, 0.0, 1.0);
     }
 
-    // ── 2) ワールド位置＋法線＋接空間基底 ───────────────────────────────
-    let world_pos = ao_world_pos(uv, depth);
-    let n         = normalize(textureLoad(t_gbuffer1, pix, 0).xyz);
+    // ── 3) 法線＋幾何法線＋接空間基底 ───────────────────────────────────
+    let g1        = textureLoad(t_gbuffer1, pix, 0);
+    let n         = normalize(g1.xyz);
     let tangent   = ao_perp(n);
     let bitangent = cross(n, tangent);
     let rot       = ao_ign(in.pos.xy) * 2.0 * AO_PI;
 
-    // 原点を法線方向へ固定量押し出す（自己交差回避）。
-    let o = world_pos + n * RTAO_NORMAL_OFFSET;
+    // 幾何法線 Ng（deferred_lighting.wgsl の復元とまったく同じ規則）:
+    //   - 画面上でほぼゼロ面積（縮退）なら n で代用
+    //   - n と同じ半球へ符号を揃える
+    //   - authored 法線（草・地形。g1.w>=閾値）は深度不連続で暴れる Ng を信用せず n を使う
+    let ng_len = length(ng_raw);
+    var ng: vec3<f32>;
+    if ng_len < 1e-8 {
+        ng = n;
+    } else {
+        ng = ng_raw / ng_len;
+    }
+    if dot(ng, n) < 0.0 {
+        ng = -ng;
+    }
+    if g1.w >= RTAO_AUTHORED_THRESHOLD {
+        ng = n;
+    }
 
-    // ── 3) コサイン半球へ短いレイを分散し、ヒット率を平均する ───────────
+    // 原点をシェーディング法線＋幾何法線の両方向へ固定量押し出す（自己交差回避）。
+    // 総オフセットは最大でも RTAO_NORMAL_OFFSET + RTAO_GEO_CLEARANCE = 0.025 ワールド単位。
+    let o = world_pos + n * RTAO_NORMAL_OFFSET + ng * RTAO_GEO_CLEARANCE;
+
+    // ── 4) コサイン半球へ短いレイを分散し、ヒット率を平均する ───────────
     var hits = 0.0;
     for (var i: u32 = 0u; i < RTAO_RAY_COUNT; i = i + 1u) {
         // Vogel ディスク（接空間）→ z=√(1-r²) で半球へ（コサイン加重）。

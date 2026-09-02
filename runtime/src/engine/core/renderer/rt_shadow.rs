@@ -45,6 +45,7 @@ use wgpu::{
 use super::bindless::{BindlessResources, BindlessInstanceRecord, BINDLESS_FLAG_ELIGIBLE, BINDLESS_FLAG_MASK, BINDLESS_FLAG_GEOM, BINDLESS_DUMMY_TEX_INDEX};
 use super::gpu_resources::{GpuModel, GpuPrimitive, InstancedModelBatch, RtSkinnedPrimRef};
 use super::lighting::LightBuffer;
+use super::lod_settings::NUM_LODS;
 use super::pipeline::SkinDeformPipeline;
 use super::rt_skin_blas::{
     skin_blas_size_desc, RtSkinBlasManager, SkinBlasKey, SkinPrimInput, SKIN_DEFORM_VERTEX_STRIDE,
@@ -200,17 +201,26 @@ fn pack_shadow_alpha_transmission(alpha: f32, transmission: f32) -> f32 {
 
 // ─── BLAS キャッシュキー ─────────────────────────────────────
 
-/// BLAS を一意に識別するキー（共有モデルパス＋メッシュ index＋プリミティブ index）。
-#[derive(Clone, PartialEq, Eq, Hash)]
+/// BLAS を一意に識別するキー（共有モデルパス＋メッシュ index＋プリミティブ index＋LOD）。
+///
+/// 【なぜ LOD を含むのか】ラスタは距離 LOD でインスタンスごとに異なるインデックス列
+/// （簡略化メッシュ）を描く。RT が常に LOD0 を辿ると「画面に見えている面」と
+/// 「レイが当たる面」が数 cm ずれ、レイ原点バイアス（0.02〜0.025）を超えた箇所で
+/// 自己交差の黒斑（LOD0 面が外へ出る側）と影の抜け（内へ引っ込む側）が同時に出る。
+/// LOD ごとに別 BLAS を持てば、ラスタと RT が常に同一形状になる。
+/// 使われていない LOD の BLAS は作らない（キャッシュはオンデマンド）。
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 struct BlasKey {
     source_path: String,
     mesh_idx:    usize,
     prim_idx:    usize,
+    /// このキーの BLAS が畳み込んだインデックス列の LOD 番号（0 = フル解像度）。
+    lod:         usize,
 }
 
 impl BlasKey {
-    fn new(source_path: &str, mesh_idx: usize, prim_idx: usize) -> Self {
-        Self { source_path: source_path.to_string(), mesh_idx, prim_idx }
+    fn new(source_path: &str, mesh_idx: usize, prim_idx: usize, lod: usize) -> Self {
+        Self { source_path: source_path.to_string(), mesh_idx, prim_idx, lod }
     }
 }
 
@@ -392,40 +402,61 @@ impl RtShadowResources {
     ) -> RtBuildStat {
         // ── 1. 新規 BLAS の作成対象を収集（キャッシュ未登録の非スキンプリミティブ）──
         // 借用衝突を避けるため、先に「作成すべきキー＋対象プリミティブ参照」を集める。
-        let mut to_build: Vec<(BlasKey, &GpuPrimitive)> = Vec::new();
-        for (path, gpu, _batch) in casters {
-            for (mesh_idx, mesh) in gpu.meshes.iter().enumerate() {
-                for (prim_idx, prim) in mesh.primitives.iter().enumerate() {
-                    // スキン用頂点を持つプリミティブは v1 対象外
-                    // （静止時姿勢の頂点で BLAS を作っても変形後と一致しないため）。
-                    if prim.skin_vertex_buffer.is_some() { continue; }
-                    let key = BlasKey::new(path, mesh_idx, prim_idx);
-                    if self.blas_cache.contains_key(&key) { continue; }
-                    // 同一フレーム内で同一キーが複数キャスターに現れる場合の重複追加も防ぐ。
-                    if to_build.iter().any(|(k, _)| *k == key) { continue; }
-                    // ── 防御チェック: BLAS 入力バッファの用途検証 ──────────
-                    // 頂点/インデックスバッファに BLAS_INPUT 用途が無いまま
-                    // build_acceleration_structures へ渡すと wgpu の検証パニックで
-                    // アプリ全体が落ちる（実機で発生済み: 'Index Buffer' の用途漏れ）。
-                    // 生成経路の見落とし・将来の新経路追加に備えてここで検証し、
-                    // 不足時は警告ログ＋そのプリミティブをスキップ（RT 影を落とさない
-                    // だけの縮退動作）にする。パニックはさせない。
-                    let vb_ok = prim.vertex_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT);
-                    let ib_ok = prim.index_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT);
-                    if !vb_ok || !ib_ok {
-                        // 同一プリミティブの警告は 1 回だけ（毎フレーム呼ばれるため）。
-                        if self.warned_usage.insert(key.clone()) {
-                            eprintln!(
-                                "[SEED RT] 警告: {} mesh#{} prim#{} のバッファに BLAS_INPUT 用途が\
-                                 ありません（vertex={vb_ok}, index={ib_ok}）。このプリミティブは\
-                                 RT 影を落としません（gpu_resources.rs の生成経路を確認してください）",
-                                key.source_path, key.mesh_idx, key.prim_idx
-                            );
-                        }
-                        continue;
+        // 【LOD 別 BLAS】「そのモデルの全プリミティブ」ではなく
+        // 「今フレームに実際に使われる (プリミティブ, LOD) の組」だけを作る。
+        // 列挙元は TLAS 詰め直し（4 節）とまったく同じ `rt_enumerate` なので、
+        // 「TLAS へ載せたいのに BLAS が無い」という食い違いが構造的に起きない。
+        //
+        // 【なぜ LOD 別にするのか】ラスタは距離 LOD で簡略化インデックス列を描くのに対し、
+        // 従来の BLAS は常に LOD0 を畳み込んでいた。両者の表面はメッシュ簡略化の誤差ぶん
+        // （meshopt の target_error は相対 1e-2）ずれ、レイ原点バイアス 0.02〜0.025 を
+        // 超えた箇所で「LOD0 面が外へ出る側 = 自己交差の黒斑」「内へ引っ込む側 = 影が抜けて
+        // 境界が明るく浮く」が同時に出る。LOD を一致させればこの食い違いは消える。
+        let mut to_build: Vec<(BlasKey, &GpuPrimitive, usize)> = Vec::new();
+        for (path, gpu, batch) in casters {
+            // 今フレームに要る (mesh, prim, lod) を重複無しで集める。
+            let mut needed: std::collections::HashSet<(usize, usize, usize)> =
+                std::collections::HashSet::new();
+            batch.rt_enumerate(|mesh_idx, prim_idx, _material_idx, lod, _transform| {
+                needed.insert((mesh_idx, prim_idx, lod));
+            });
+            // 決定的な順序でビルド待ち行列へ入れる（HashSet の反復順は不定のため整列する）。
+            // 順序が揺れると MAX_BLAS_BUILDS_PER_FRAME の切り捨て対象がフレームごとに
+            // 入れ替わり、バックログが消化されないまま振動しうる。
+            let mut needed: Vec<(usize, usize, usize)> = needed.into_iter().collect();
+            needed.sort_unstable();
+            for (mesh_idx, prim_idx, lod) in needed {
+                let Some(prim) = gpu.meshes.get(mesh_idx)
+                    .and_then(|m| m.primitives.get(prim_idx)) else { continue };
+                // スキン用頂点を持つプリミティブは対象外
+                // （静止時姿勢の頂点で BLAS を作っても変形後と一致しない。スキンは 2.2 節）。
+                if prim.skin_vertex_buffer.is_some() { continue; }
+                // 同一インデックス列に複数の BLAS を作らないよう LOD を正規化する
+                //（LOD 未生成のプリミティブはどの距離でも LOD0 の 1 個だけになる）。
+                let lod = prim.effective_lod(lod);
+                let key = BlasKey::new(path, mesh_idx, prim_idx, lod);
+                if self.blas_cache.contains_key(&key) { continue; }
+                // 同一フレーム内で同一キーが複数キャスターに現れる場合の重複追加も防ぐ。
+                if to_build.iter().any(|(k, _, _)| *k == key) { continue; }
+                // ── 防御チェック: BLAS 入力バッファの用途検証 ──────────
+                // 頂点/インデックスバッファに BLAS_INPUT 用途が無いまま
+                // build_acceleration_structures へ渡すと wgpu の検証パニックで
+                // アプリ全体が落ちる（実機で発生済み: 'Index Buffer' の用途漏れ）。
+                // 検証対象は **その LOD の**インデックスバッファである。
+                let vb_ok = prim.vertex_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT);
+                let ib_ok = prim.get_lod_index_buffer(lod).0
+                    .usage().contains(wgpu::BufferUsages::BLAS_INPUT);
+                if !vb_ok || !ib_ok {
+                    // 同一プリミティブの警告は 1 回だけ（毎フレーム呼ばれるため）。
+                    if self.warned_usage.insert(key.clone()) {
+                        eprintln!(
+                            "[SEED RT] 警告: {} mesh#{} prim#{} LOD{} のバッファに BLAS_INPUT 用途がありません\n                             （vertex={vb_ok}, index={ib_ok}）。このプリミティブは RT 影を落としません\n                             （gpu_resources.rs の生成経路を確認してください）",
+                            key.source_path, key.mesh_idx, key.prim_idx, key.lod
+                        );
                     }
-                    to_build.push((key, prim));
+                    continue;
                 }
+                to_build.push((key, prim, lod));
             }
         }
 
@@ -449,12 +480,13 @@ impl RtShadowResources {
         }
 
         // ── 2. BLAS を create_blas してキャッシュへ挿入（初回のみ・ログ）──
-        for (key, prim) in &to_build {
-            let blas = create_blas_for_prim(device, prim);
+        for (key, prim, lod) in &to_build {
+            let blas = create_blas_for_prim(device, prim, *lod);
             self.blas_cache.insert(key.clone(), blas);
             eprintln!(
-                "[SEED RT] BLAS 構築: {} mesh#{} prim#{}（頂点 {} / インデックス {}）",
-                key.source_path, key.mesh_idx, key.prim_idx, prim.vertex_count, prim.index_count
+                "[SEED RT] BLAS 構築: {} mesh#{} prim#{} LOD{}（頂点 {} / インデックス {}）",
+                key.source_path, key.mesh_idx, key.prim_idx, key.lod,
+                prim.vertex_count, prim.get_lod_index_buffer(*lod).1
             );
         }
 
@@ -517,9 +549,13 @@ impl RtShadowResources {
                 // パスはキャスター単位で 1 回だけ混ぜる（列挙順がグループを保つ）。
                 hasher.write(path.as_bytes());
                 hasher.write_u8(0xff); // 区切り
-                batch.rt_enumerate(|mesh_idx, prim_idx, material_idx, transform| {
+                batch.rt_enumerate(|mesh_idx, prim_idx, material_idx, lod, transform| {
                     hasher.write_usize(mesh_idx);
                     hasher.write_usize(prim_idx);
+                    // LOD 別 BLAS: 距離で LOD が切り替わると **参照する BLAS が変わる**
+                    // （＝TLAS の内容が変わる）。含めないと LOD 切替が静止スキップに
+                    // 飲み込まれ、RT だけ前の LOD 形状のまま固まる。
+                    hasher.write_usize(lod);
                     // インスタンスマスク（alpha_mode 由来）も内容の一部。マテリアル差し替えで
                     // Opaque⇔Blend が変わったときに TLAS 再構築を確実に発火させる。
                     hasher.write_u8(instance_mask_for(gpu.primitive_alpha_mode(material_idx)));
@@ -673,7 +709,7 @@ impl RtShadowResources {
                     );
                     if status.accepted() {
                         skin_accepted.push((
-                            SkinBlasKey::new(path, c.node_idx, c.inst_idx, c.mask as u32),
+                            SkinBlasKey::new(path, c.node_idx, c.inst_idx, c.mask as u32, c.lod),
                             c,
                             status.needs_rebuild(),
                         ));
@@ -693,9 +729,9 @@ impl RtShadowResources {
         // ── 3. 新規 BLAS のビルドエントリを構築 ──────────────────
         // サイズ記述子はビルド呼び出しまで生存させる必要があるため Vec に確保する。
         let size_descs: Vec<BlasTriangleGeometrySizeDescriptor> =
-            to_build.iter().map(|(_, p)| blas_size_desc(p)).collect();
+            to_build.iter().map(|(_, p, lod)| blas_size_desc(p, *lod)).collect();
         let mut blas_entries: Vec<BlasBuildEntry> = to_build.iter().enumerate()
-            .map(|(i, (key, prim))| {
+            .map(|(i, (key, prim, lod))| {
                 let blas = self.blas_cache.get(key).unwrap();
                 BlasBuildEntry {
                     blas,
@@ -704,7 +740,8 @@ impl RtShadowResources {
                         vertex_buffer:           &prim.vertex_buffer,
                         first_vertex:            0,
                         vertex_stride:           VERTEX_STRIDE,
-                        index_buffer:            Some(&prim.index_buffer),
+                        // ラスタが描くのと同じ LOD のインデックス列を畳み込む。
+                        index_buffer:            Some(prim.get_lod_index_buffer(*lod).0),
                         first_index:             Some(0),
                         transform_buffer:        None,
                         transform_buffer_offset: None,
@@ -774,7 +811,9 @@ impl RtShadowResources {
                     // なので二重に確認する。1 ジオメトリでも欠ければ **エントリごと** 見送る
                     //（ジオメトリを抜くと BLAS のサイズ記述子と食い違い、さらに geometry_index と
                     //  レコードの対応もズレるため、部分ビルドは許されない）。
-                    if !prim.index_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT) {
+                    // 検証するのは **このエントリの LOD の**インデックスバッファ。
+                    let (lod_ib, lod_index_count) = prim.get_lod_index_buffer(c.lod);
+                    if !lod_ib.usage().contains(wgpu::BufferUsages::BLAS_INPUT) {
                         return None;
                     }
                     // マテリアルは列挙情報（`info.prims`）側が正典。スロットと同じ
@@ -782,9 +821,13 @@ impl RtShadowResources {
                     let material_idx = c.prims.iter()
                         .find(|p| p.mesh_idx == slot.mesh_idx && p.prim_idx == slot.prim_idx)
                         .and_then(|p| p.material_idx);
+                    // slot.index_count は生成時に同じ LOD で確定させてある（キーに lod を
+                    // 含めるため、LOD が変われば必ず別エントリ＝別スロットになる）。
+                    debug_assert_eq!(slot.index_count, lod_index_count,
+                        "スロットの三角形数と LOD インデックス列が食い違っています");
                     geoms.push(SkinGeomTarget {
                         out_buf:      &slot.out_buffer,
-                        index_bu:     &prim.index_buffer,
+                        index_bu:     lod_ib,
                         vertex_count: slot.vertex_count,
                         index_count:  slot.index_count,
                         material_idx,
@@ -868,12 +911,36 @@ impl RtShadowResources {
 
             let mut overflow = false;
             for (path, gpu, batch) in casters {
-                batch.rt_enumerate(|mesh_idx, prim_idx, material_idx, transform| {
+                batch.rt_enumerate(|mesh_idx, prim_idx, material_idx, lod, transform| {
                     // TLAS スロットとレコードの両方に空きが要る（非スキンは 1 件ずつ消費）。
                     if inst_count >= MAX_RT_INSTANCES as usize
                         || record_count >= MAX_RT_RECORDS as usize { overflow = true; return; }
-                    let key = BlasKey::new(path, mesh_idx, prim_idx);
-                    if let Some(blas) = cache.get(&key) {
+                    // 【LOD 別 BLAS のフォールバック】新規 BLAS のビルドは
+                    // MAX_BLAS_BUILDS_PER_FRAME で分割されるため、LOD が切り替わった直後の
+                    // 数フレームは「その LOD の BLAS がまだ無い」ことがある。そこで落として
+                    // しまうとキャスターの影が数フレーム丸ごと消えて目立つ（ポップ）ので、
+                    // 既に構築済みの LOD0 で代替する。形状が一時的にラスタとずれるだけで、
+                    // 影が消えるより軽い縮退である。バックログが残る間は new_blas_built=true
+                    // なので、本来の LOD が焼き上がった次のフレームで必ず差し替わる。
+                    // 【重要】レコード（index_offset）は **実際に使う BLAS の LOD** で組む。
+                    // ここがずれるとヒット点の UV／法線が別三角形のものになる。
+                    // ビルド側（1 節）と同じ正規化を通してからキーを組む。
+                    let lod = gpu.meshes.get(mesh_idx)
+                        .and_then(|m| m.primitives.get(prim_idx))
+                        .map(|p| p.effective_lod(lod))
+                        .unwrap_or(0);
+                    let key = BlasKey::new(path, mesh_idx, prim_idx, lod);
+                    let resolved = cache.get(&key).map(|b| (b, lod)).or_else(|| {
+                        // 要求 LOD が未ビルド: 既に焼けている別 LOD を代打に使う
+                        //（近い LOD から順に探す＝形状のずれを最小にする）。
+                        let mut cands: Vec<usize> = (0..NUM_LODS).filter(|&l| l != lod).collect();
+                        cands.sort_by_key(|&l| l.abs_diff(lod));
+                        cands.into_iter().find_map(|l| {
+                            cache.get(&BlasKey::new(path, mesh_idx, prim_idx, l))
+                                 .map(|b| (b, l))
+                        })
+                    });
+                    if let Some((blas, lod)) = resolved {
                         // custom_data はインスタンス番号（GI が平均アルベドを引くキーでもある）。
                         // mask は alpha_mode 由来（不透明のみ影レイから見える）。
                         let mask = instance_mask_for(gpu.primitive_alpha_mode(material_idx));
@@ -890,7 +957,7 @@ impl RtShadowResources {
                         // ── レコード生成（平均アルベド＋bindless）は非スキンと共通の関数で行う ──
                         // 非スキンは法線メガバッファが実ジオメトリと一致するので GEOM を許可する。
                         let (alb, rec, geom_registered) = build_hit_record(
-                            gpu, material_idx, mesh_idx, prim_idx, /* allow_geom_flag */ true,
+                            gpu, material_idx, mesh_idx, prim_idx, lod, /* allow_geom_flag */ true,
                         );
                         albedos[record_count] = alb;
                         if !records.is_empty() {
@@ -944,7 +1011,8 @@ impl RtShadowResources {
                     //   再屈折し、ガラス越しのスキンキャラが歪んで見える。
                     //   UV とインデックスは変形で不変なので ELIGIBLE（テクスチャ引き）は有効。
                     let (alb, rec, _) = build_hit_record(
-                        gpu, g.material_idx, g.mesh_idx, g.prim_idx, /* allow_geom_flag */ false,
+                        gpu, g.material_idx, g.mesh_idx, g.prim_idx, c.lod,
+                        /* allow_geom_flag */ false,
                     );
                     albedos[record_count] = alb;
                     if !records.is_empty() { records[record_count] = rec; }
@@ -1066,6 +1134,10 @@ fn build_hit_record(
     material_idx:    Option<usize>,
     mesh_idx:        usize,
     prim_idx:        usize,
+    // `lod`: このインスタンスが辿る BLAS の LOD（`BlasKey::lod` / `SkinBlasKey::lod` と同値）。
+    // ヒットシェーダは `rec.index_offset + primitive_index * 3` で三角形を引くため、
+    // **BLAS が畳み込んだのと同じ LOD のインデックス列**のオフセットを載せる必要がある。
+    lod:             usize,
     allow_geom_flag: bool,
 ) -> ([f32; 4], BindlessInstanceRecord, bool) {
     // 平均アルベド（Phase RT-GI）。
@@ -1085,12 +1157,14 @@ fn build_hit_record(
     // eligible = UV/index 登録済み かつ albedo テクスチャ登録済み（tex≠0）。
     // どちらか欠ければ flags=0 で、ヒットシェーダは平均色（avg_albedo）へ縮退する。
     let tex_index = gpu.primitive_bindless_albedo_tex_index(material_idx);
+    // その LOD のインデックス列が登録済みでなければ「ジオメトリ非登録」へ縮退する
+    // （別 LOD のオフセットを載せると、まったく別の三角形の UV／法線を引いてしまう）。
     let geom = gpu.meshes.get(mesh_idx)
         .and_then(|m| m.primitives.get(prim_idx))
-        .map(|gp| (gp.bindless_eligible, gp.bindless_uv_offset,
-                   gp.bindless_index_offset, gp.bindless_normal_offset))
+        .and_then(|gp| gp.bindless_index_offset_for_lod(lod)
+            .map(|idx_off| (true, gp.bindless_uv_offset, idx_off, gp.bindless_normal_offset)))
         .unwrap_or((false, 0, 0, 0));
-    let geom_registered = geom.0; // UV/index/法線をメガバッファへ登録済みか。
+    let geom_registered = geom.0; // UV/index/法線をメガバッファへ登録済みか（当該 LOD ぶん）。
     let elig = geom_registered && tex_index != BINDLESS_DUMMY_TEX_INDEX;
     // Mask マテリアル（アルファテスト）は色付き影の第 2 クエリでテクスチャ α を
     // alpha_cutoff と比較して葉の形の影を落とす（B3）。flag を立て cutoff を積む。
@@ -1136,20 +1210,24 @@ const SKIN_SIG_MARKER: u8 = 0xfe;
 /// 「ヒット三角形のマテリアル・UV・テクスチャ」を引くには bindless が必要で現状は非現実的。
 /// 代わりに半透明・アルファテストのプリミティブは TLAS インスタンスマスク
 /// （RT_MASK_NON_OPAQUE）で影レイから除外している（上記マスク定数のコメント参照）。
-fn blas_size_desc(prim: &GpuPrimitive) -> BlasTriangleGeometrySizeDescriptor {
+///
+/// `lod` はラスタが実際に描くインデックス列の LOD 番号（`GpuPrimitive::get_lod_index_buffer`
+/// と同一の解決規則）。頂点バッファは LOD 間で共有なので、変わるのは三角形数だけである。
+fn blas_size_desc(prim: &GpuPrimitive, lod: usize) -> BlasTriangleGeometrySizeDescriptor {
+    let (_, index_count) = prim.get_lod_index_buffer(lod);
     BlasTriangleGeometrySizeDescriptor {
         vertex_format: wgpu::VertexFormat::Float32x3,
         vertex_count:  prim.vertex_count,
         index_format:  Some(wgpu::IndexFormat::Uint32),
-        index_count:   Some(prim.index_count),
+        index_count:   Some(index_count),
         flags:         AccelerationStructureGeometryFlags::OPAQUE,
     }
 }
 
 /// プリミティブ 1 個分の BLAS を生成する（ビルドは呼び出し側の
 /// build_acceleration_structures で行う）。
-fn create_blas_for_prim(device: &wgpu::Device, prim: &GpuPrimitive) -> wgpu::Blas {
-    let size = blas_size_desc(prim);
+fn create_blas_for_prim(device: &wgpu::Device, prim: &GpuPrimitive, lod: usize) -> wgpu::Blas {
+    let size = blas_size_desc(prim, lod);
     device.create_blas(
         &CreateBlasDescriptor {
             label:       Some("RT Shadow BLAS"),
@@ -1645,4 +1723,49 @@ mod tests {
                 .unwrap_or_else(|e| panic!("[{name}] WGSL validate 失敗: {e:?}"));
         }
     }
+
+    /// BLAS キャッシュキーは LOD まで含めて一意であること（LOD 別 BLAS の前提）。
+    ///
+    /// 【これが無いと何が壊れるか】キーに LOD が無いと、最初に要求された LOD の BLAS が
+    /// 全距離で使い回される。ラスタは距離で簡略化メッシュを描くので、画面に見えている面と
+    /// レイが当たる面がメッシュ簡略化の誤差ぶん（meshopt の相対誤差 1e-2）ずれ、
+    /// レイ原点バイアス（0.02〜0.025）を超えた箇所で自己交差の黒斑と影の抜けが同時に出る。
+    #[test]
+    fn blas_key_distinguishes_lod() {
+        let base = BlasKey::new("model.glb", 1, 2, 0);
+        assert_eq!(base, BlasKey::new("model.glb", 1, 2, 0), "全要素一致なら同一キー");
+        assert_ne!(base, BlasKey::new("model.glb", 1, 2, 1), "LOD が違えば別 BLAS");
+        assert_ne!(base, BlasKey::new("model.glb", 1, 3, 0), "プリミティブが違えば別 BLAS");
+        assert_ne!(base, BlasKey::new("model.glb", 2, 2, 0), "メッシュが違えば別 BLAS");
+        assert_ne!(base, BlasKey::new("other.glb", 1, 2, 0), "モデルが違えば別 BLAS");
+    }
+
+    /// スキン変形（RT）とラスタのスキニングが **同一のジョイント行列配列** を、
+    /// **同一の刻み幅** で読むこと。
+    ///
+    /// RT の変形 compute（skin_deform.wgsl）はラスタのスキン compute が書いた
+    /// `sk_jmats_lod{N}` をそのまま入力にしており、ポーズの二重評価は行っていない。
+    /// したがって両者が食い違いうる唯一の点は「1 インスタンスあたりの行列本数」である。
+    /// ここがずれると `joint_base` の刻みが食い違い、**別インスタンスのポーズで変形**される
+    /// （＝RT 上の姿勢だけが別人になり、影・AO がラスタとまったく合わなくなる）。
+    /// ラスタ側の頂点シェーダも含めて 3 者の定数一致を固定する。
+    #[test]
+    fn skin_joint_stride_matches_across_raster_and_rt() {
+        /// WGSL ソースから `const <name>: u32 = <値>u;` を読み取る。
+        fn wgsl_const_u32(src: &str, name: &str) -> u32 {
+            let pat = format!("const {name}: u32 = ");
+            let i = src.find(&pat).unwrap_or_else(|| panic!("{name} が見つかりません"));
+            let rest = &src[i + pat.len()..];
+            let end = rest.find('u').expect("u32 リテラルの接尾辞 u");
+            rest[..end].trim().parse().expect("u32 リテラル")
+        }
+        let rust = crate::engine::core::renderer::skin_system::MAX_JOINTS as u32;
+        let deform = wgsl_const_u32(
+            include_str!("shaders/skin_deform.wgsl"), "MAX_JOINTS");
+        let raster = wgsl_const_u32(
+            include_str!("shaders/gbuffer_skinned_vertex.wgsl"), "MAX_JOINTS");
+        assert_eq!(rust, deform, "Rust と RT 変形 compute の MAX_JOINTS が不一致");
+        assert_eq!(rust, raster, "Rust とラスタ頂点シェーダの MAX_JOINTS が不一致");
+    }
+
 }

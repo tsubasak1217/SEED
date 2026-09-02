@@ -1111,6 +1111,25 @@ impl BindlessResources {
         }
     }
 
+    /// LOD 別インデックス列（三角形リスト）だけをメガバッファへ登録する。
+    ///
+    /// LOD 別 BLAS（rt_shadow.rs）の対になる登録である。UV と法線は **頂点番号で引く**
+    /// ため LOD 間で共有でき、LOD ごとに追加で要るのはインデックス列だけである。
+    /// 確保できなければ `None` を返す（呼び出し側はその LOD を「ジオメトリ非登録」として
+    /// 扱い、平均色へ縮退させること。誤った三角形を引くより安全側）。
+    /// `alloc` に領域を記録するので、モデル破棄時に RAII で解放される。
+    pub fn register_lod_indices(
+        &mut self,
+        queue:   &wgpu::Queue,
+        indices: &[u32],
+        alloc:   &mut BindlessModelAlloc,
+    ) -> Option<u32> {
+        if indices.is_empty() { return None; }
+        let off = self.append_indices(queue, indices)?;
+        alloc.record_index(off, indices.len() as u32);
+        Some(off)
+    }
+
     // ── アクセサ（B2 消費用）────────────────────────────────
 
     /// 色付き影（B3）用 group3 BindGroup を（インスタンステーブル/UV/index/テクスチャ配列/

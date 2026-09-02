@@ -145,11 +145,22 @@ pub struct SkinBlasKey {
     /// 1 つの BLAS へ混ぜると「半透明部位が不透明の影を落とす」等の退行になる。
     /// 分類が違えば別 BLAS（別 TLAS インスタンス）に分ける、という規約をキーで表す。
     pub class_id:  u32,
+    /// このエントリの BLAS が畳み込むインデックス列の LOD 番号（0 = フル解像度）。
+    ///
+    /// 【なぜキーに含むのか】BLAS のサイズ記述子（三角形数）は `create_blas` 時に確定し、
+    /// あとから変えられない。LOD が変われば三角形数が変わるので、**エントリごと作り直す**
+    /// 必要がある。キーに含めれば LOD 切替は自然に別エントリになり、旧 LOD のエントリは
+    /// `prune_unused` が解放する。
+    /// また RT が辿る形状をラスタの描画形状（`get_lod_index_buffer(lod)`）と一致させるのが
+    /// 本フィールドの目的である（不一致は自己交差の黒斑と影の抜けを同時に生む）。
+    pub lod:       usize,
 }
 
 impl SkinBlasKey {
-    pub fn new(batch_key: &str, node_idx: usize, inst_idx: usize, class_id: u32) -> Self {
-        Self { batch_key: batch_key.to_string(), node_idx, inst_idx, class_id }
+    pub fn new(batch_key: &str, node_idx: usize, inst_idx: usize, class_id: u32, lod: usize)
+        -> Self
+    {
+        Self { batch_key: batch_key.to_string(), node_idx, inst_idx, class_id, lod }
     }
 }
 
@@ -399,14 +410,14 @@ impl RtSkinBlasManager {
         compact_idx: u32,
         pose_bits:   [u32; 5],
     ) -> SkinEntryStatus {
-        let key = SkinBlasKey::new(batch_key, node_idx, inst_idx, class_id);
+        let key = SkinBlasKey::new(batch_key, node_idx, inst_idx, class_id, lod);
 
         // ── 1. プリミティブごとの適格性判定（BLAS へ入れられるものだけ残す）──
         // ここで弾かれるのは「そもそも BLAS を作れない／作る意味が無い」プリミティブだけで、
         // 残ったプリミティブは 1 つの BLAS のジオメトリ配列としてまとめて扱う。
         let mut accepted: Vec<&SkinPrimInput<'_>> = Vec::with_capacity(prims.len());
         for p in prims {
-            if self.prim_is_eligible(batch_key, p) {
+            if self.prim_is_eligible(batch_key, p, lod) {
                 accepted.push(p);
             }
         }
@@ -460,7 +471,7 @@ impl RtSkinBlasManager {
             self.entries.get(&key).map(|e| e.layout_sig), layout_sig,
         );
         if need_new_entry {
-            let entry = create_entry(device, pipeline, &accepted, layout_sig, &key);
+            let entry = create_entry(device, pipeline, &accepted, layout_sig, &key, lod);
             self.entries.insert(key.clone(), entry);
         }
 
@@ -533,15 +544,17 @@ impl RtSkinBlasManager {
     ///   - 変形 compute と BLAS が要求するバッファ用途（STORAGE / BLAS_INPUT）
     /// 用途が足りないまま BindGroup を作ると wgpu の検証エラーでアプリが落ちるため、
     /// 非スキン側の BLAS_INPUT 検証（rt_shadow.rs）と同じ流儀でここも防御する。
-    fn prim_is_eligible(&mut self, batch_key: &str, p: &SkinPrimInput<'_>) -> bool {
+    fn prim_is_eligible(&mut self, batch_key: &str, p: &SkinPrimInput<'_>, lod: usize) -> bool {
         let prim = p.prim;
+        // このエントリが実際に畳み込むインデックス列（LOD 別）。
+        let (lod_ib, lod_index_count) = prim.get_lod_index_buffer(lod);
         // スキン属性バッファが無ければ変形できない。
         let Some(skin_vb) = prim.skin_vertex_buffer.as_ref() else { return false };
 
         // インデックス 0 のプリミティブは三角形が 1 枚も無く BLAS を作る意味が無い
         // （index_count=0 のサイズ記述子の扱いはバックエンド依存なので手前で弾く）。
         if prim.vertex_count == 0
-            || prim.index_count == 0
+            || lod_index_count == 0
             || prim.vertex_count > MAX_RT_SKIN_VERTICES
         {
             let wk = (batch_key.to_string(), p.mesh_idx, p.prim_idx);
@@ -550,7 +563,7 @@ impl RtSkinBlasManager {
                     "[SEED RT] 警告: {batch_key} mesh#{} prim#{} の頂点数 {} / インデックス数 {} が\
                      RT スキン BLAS の制約（頂点 1〜{MAX_RT_SKIN_VERTICES}・インデックス 1 以上）を\
                      満たしません。このプリミティブは RT（影/反射/GI/水面反射）に映りません",
-                    p.mesh_idx, p.prim_idx, prim.vertex_count, prim.index_count
+                    p.mesh_idx, p.prim_idx, prim.vertex_count, lod_index_count
                 );
             }
             return false;
@@ -558,7 +571,7 @@ impl RtSkinBlasManager {
 
         let vb_ok  = prim.vertex_buffer.usage().contains(wgpu::BufferUsages::STORAGE);
         let svb_ok = skin_vb.usage().contains(wgpu::BufferUsages::STORAGE);
-        let ib_ok  = prim.index_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT);
+        let ib_ok  = lod_ib.usage().contains(wgpu::BufferUsages::BLAS_INPUT);
         if !vb_ok || !svb_ok || !ib_ok {
             let wk = (batch_key.to_string(), p.mesh_idx, p.prim_idx);
             if self.warned_usage.insert(wk) {
@@ -713,12 +726,14 @@ fn create_slot(
     device:   &wgpu::Device,
     pipeline: &SkinDeformPipeline,
     p:        &SkinPrimInput<'_>,
+    lod:      usize,
 ) -> SkinPrimSlot {
     let prim = p.prim;
     let skin_vb = prim.skin_vertex_buffer.as_ref()
         .expect("prim_is_eligible がスキン属性バッファの存在を保証している");
+    // 頂点は LOD 間で共有（変形 compute は全頂点を書く）。LOD で変わるのは三角形数だけ。
     let vertex_count = prim.vertex_count;
-    let index_count  = prim.index_count;
+    let index_count  = prim.get_lod_index_buffer(lod).1;
 
     // 変形後ローカル位置バッファ。compute の出力（STORAGE）かつ BLAS の頂点入力（BLAS_INPUT）。
     let out_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -773,9 +788,10 @@ fn create_entry(
     accepted:   &[&SkinPrimInput<'_>],
     layout_sig: u64,
     key:        &SkinBlasKey,
+    lod:        usize,
 ) -> SkinBlasEntry {
     let slots: Vec<SkinPrimSlot> = accepted.iter()
-        .map(|p| create_slot(device, pipeline, p))
+        .map(|p| create_slot(device, pipeline, p, lod))
         .collect();
 
     // 【ビルドフラグの根拠】スキン BLAS は毎フレーム内容が変わるため、
@@ -801,8 +817,8 @@ fn create_entry(
 
     let total_verts: u64 = slots.iter().map(|s| s.vertex_count as u64).sum();
     eprintln!(
-        "[SEED RT] スキン BLAS 生成: {} node#{} inst#{}（ジオメトリ {} 個 / 合計頂点 {}）",
-        key.batch_key, key.node_idx, key.inst_idx, slots.len(), total_verts
+        "[SEED RT] スキン BLAS 生成: {} node#{} inst#{} LOD{}（ジオメトリ {} 個 / 合計頂点 {}）",
+        key.batch_key, key.node_idx, key.inst_idx, key.lod, slots.len(), total_verts
     );
 
     SkinBlasEntry {
@@ -1062,15 +1078,17 @@ mod tests {
     fn key_granularity_is_node_instance() {
         const CLASS_OPAQUE: u32 = 0x01;
         const CLASS_BLEND:  u32 = 0x02;
-        let a = SkinBlasKey::new("batch", 3, 7, CLASS_OPAQUE);
-        let b = SkinBlasKey::new("batch", 3, 7, CLASS_OPAQUE);
+        let a = SkinBlasKey::new("batch", 3, 7, CLASS_OPAQUE, 0);
+        let b = SkinBlasKey::new("batch", 3, 7, CLASS_OPAQUE, 0);
         assert_eq!(a, b, "同じ (batch, node, inst, class) は同一キーであること");
         // ノードが違えば別キー（別ワールド変換 = 別 BLAS でなければならない）。
-        assert_ne!(a, SkinBlasKey::new("batch", 4, 7, CLASS_OPAQUE), "ノードが違えば別エントリ");
+        assert_ne!(a, SkinBlasKey::new("batch", 4, 7, CLASS_OPAQUE, 0), "ノードが違えば別エントリ");
         // インスタンスが違えば別キー（ポーズが違う = 頂点が違う）。
-        assert_ne!(a, SkinBlasKey::new("batch", 3, 8, CLASS_OPAQUE), "インスタンスが違えば別エントリ");
+        assert_ne!(a, SkinBlasKey::new("batch", 3, 8, CLASS_OPAQUE, 0), "インスタンスが違えば別エントリ");
         // 分類（インスタンスマスク）が違えば別キー（マスクは TLAS インスタンス単位の属性）。
-        assert_ne!(a, SkinBlasKey::new("batch", 3, 7, CLASS_BLEND), "分類が違えば別エントリ");
+        assert_ne!(a, SkinBlasKey::new("batch", 3, 7, CLASS_BLEND, 0), "分類が違えば別エントリ");
+        // LOD 別 BLAS: 三角形数（BLAS のサイズ記述子）が変わるのでエントリごと作り直す。
+        assert_ne!(a, SkinBlasKey::new("batch", 3, 7, CLASS_OPAQUE, 1), "LOD が違えば別エントリ");
     }
 
     /// 1 体が複数分類（不透明＋半透明）へ割れるときの **原子的な予約**。
@@ -1136,7 +1154,7 @@ mod tests {
         // 列挙はインスタンス major（gpu_resources::rt_enumerate_skinned と同じ順序）。
         const CLASS_OPAQUE: u32 = 0x01; // 全プリミティブが不透明な体（BrainStem 相当）
         for inst in 0..ACTORS {
-            let key = SkinBlasKey::new("batch", 0, inst, CLASS_OPAQUE);
+            let key = SkinBlasKey::new("batch", 0, inst, CLASS_OPAQUE, 0);
             let already = live.contains(&key);
             if !capacity_allows(live.len(), already) { continue; }
             // 1 体に何プリミティブあっても、消費するのは 1 件だけ。

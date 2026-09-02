@@ -615,6 +615,17 @@ pub struct GpuPrimitive {
     pub bindless_index_offset: u32,
     /// 登録したインデックス要素数（= index_count）。
     pub bindless_index_count:  u32,
+    /// LOD1〜3 のインデックス メガバッファ先頭要素オフセット（`lod_index_buffers` と同順・同長）。
+    ///
+    /// 【なぜ LOD ごとに要るのか】バインドレスのヒットシェーダは
+    /// `bindless_idx[rec.index_offset + primitive_index * 3 + corner]` で三角形を引く。
+    /// `primitive_index` は **BLAS が畳み込んだインデックス列の三角形番号**なので、
+    /// LOD 別 BLAS を使うなら参照するインデックス列も同じ LOD のものでなければ
+    /// 「まったく別の三角形の UV／法線」を引いてしまう。LOD ごとに登録し、
+    /// TLAS インスタンスのレコードへ **そのインスタンスの LOD の**オフセットを載せる。
+    pub bindless_lod_index_offsets: Vec<u32>,
+    /// 登録した LOD インデックス要素数（`lod_index_counts` と同値。RAII 解放の整合検証用）。
+    pub bindless_lod_index_counts:  Vec<u32>,
     /// 法線メガバッファ内の先頭要素オフセット（八面体 u32 単位・頂点順）。非対応/未登録は 0。
     /// RT 屈折の界面法線復元に使う（UV/index と同じ頂点番号で引く）。
     pub bindless_normal_offset: u32,
@@ -653,15 +664,70 @@ pub fn next_gpu_generation() -> u64 {
     GPU_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// LOD 番号 → `lod_index_buffers` の添字を解決する **唯一の規則**（純関数）。
+///
+/// 戻り値 `None` = LOD0（フル解像度の `index_buffer`）を使う。
+/// `Some(i)` = `lod_index_buffers[i]`（`i = 0` が LOD1）を使う。
+/// 生成できた LOD 段数が要求より少ないときは、利用可能な最高 LOD へフォールバックする。
+///
+/// 【なぜ関数に切り出すのか】この規則は
+///   - ラスタ描画（`get_lod_index_buffer`）
+///   - RT の BLAS 入力（`rt_shadow.rs` が同じ関数を使う）
+///   - バインドレスのインデックス オフセット（`bindless_index_offset_for_lod`）
+/// の 3 か所で **完全に一致** していなければならない。ずれると「BLAS が畳み込んだ三角形」と
+/// 「シェーダが引く三角形」が食い違い、ヒット点の UV／法線が別三角形のものになる。
+/// 判定を 1 本にまとめ、GPU 無しでテストできる形にしておく。
+pub fn lod_slot_index(lod: usize, lod_buffer_count: usize) -> Option<usize> {
+    if lod == 0 || lod_buffer_count == 0 { return None; }
+    Some((lod - 1).min(lod_buffer_count - 1))
+}
+
 impl GpuPrimitive {
     /// `lod` 番号に対応するインデックスバッファとインデックス数を返す。
     /// 対応する LOD データが存在しない場合は利用可能な最高 LOD（最も簡略化済み）を使用。
     pub fn get_lod_index_buffer(&self, lod: usize) -> (&wgpu::Buffer, u32) {
-        if lod == 0 || self.lod_index_buffers.is_empty() {
-            return (&self.index_buffer, self.index_count);
+        match lod_slot_index(lod, self.lod_index_buffers.len()) {
+            None      => (&self.index_buffer, self.index_count),
+            Some(idx) => (&self.lod_index_buffers[idx], self.lod_index_counts[idx]),
         }
-        let idx = (lod - 1).min(self.lod_index_buffers.len() - 1);
-        (&self.lod_index_buffers[idx], self.lod_index_counts[idx])
+    }
+
+    /// 要求 LOD を、このプリミティブが実際に使う LOD 番号へ正規化する。
+    ///
+    /// 簡略化できずに LOD が 1 段も生成されなかったプリミティブ（地形チャンク・
+    /// 三角形数が少ないプリミティブ）は、どの LOD を要求されても LOD0 のインデックス列を
+    /// 使う。生成段数が足りないときは利用可能な最高 LOD へ丸める。
+    ///
+    /// 【なぜ必要か】RT の BLAS キャッシュキーは LOD を含む。正規化せずに要求 LOD を
+    /// そのままキーにすると、**まったく同じインデックス列に対して LOD 数ぶんの BLAS が
+    /// 別々に作られる**（地形チャンクのように大きいプリミティブでは VRAM の無駄が大きい）。
+    /// 正規化してからキーを組めば、同一形状は必ず同一キーに畳まれる。
+    pub fn effective_lod(&self, lod: usize) -> usize {
+        match lod_slot_index(lod, self.lod_index_buffers.len()) {
+            None      => 0,
+            Some(idx) => idx + 1,
+        }
+    }
+
+    /// `lod` 番号に対応する **バインドレス インデックス メガバッファ**の先頭要素オフセットを返す。
+    ///
+    /// `get_lod_index_buffer` と **必ず同じ LOD 解決規則**（存在しない LOD は利用可能な
+    /// 最高 LOD へフォールバック）に従う。両者がずれると BLAS の三角形番号と
+    /// メガバッファの三角形が食い違い、ヒット点の UV／法線が別の三角形のものになる。
+    ///
+    /// 戻り値 `None` = その LOD のインデックスを登録できていない（容量あふれ・非対応 GPU）。
+    /// 呼び出し側はレコードを「ジオメトリ非登録」（平均色へ縮退）として組み立てること。
+    pub fn bindless_index_offset_for_lod(&self, lod: usize) -> Option<u32> {
+        if !self.bindless_eligible { return None; }
+        // 解決規則は get_lod_index_buffer と同一（lod_slot_index が単一の判断箇所）。
+        let Some(idx) = lod_slot_index(lod, self.lod_index_buffers.len()) else {
+            return Some(self.bindless_index_offset);
+        };
+        // 登録に失敗した LOD は 0 件で埋めてある（＝使えない）。
+        match self.bindless_lod_index_counts.get(idx) {
+            Some(&c) if c > 0 => self.bindless_lod_index_offsets.get(idx).copied(),
+            _ => None,
+        }
     }
 
     fn upload(device: &wgpu::Device, prim: &Primitive) -> Self {
@@ -743,13 +809,20 @@ impl GpuPrimitive {
             usage:    index_usage,
         });
 
-        // LOD インデックスバッファをアップロード
-        // （BLAS は LOD0 の index_buffer のみを使うため、LOD1〜3 に BLAS_INPUT は不要）
+        // LOD インデックスバッファをアップロード。
+        // 【BLAS_INPUT を足す理由（LOD 別 BLAS）】RT の BLAS は「ラスタが実際に描く形状」と
+        // 同一でなければならない。以前は BLAS が常に LOD0 の index_buffer を使っていたため、
+        // 距離 LOD で LOD1〜3 が描かれるインスタンスでは
+        //   ラスタ = 簡略化メッシュ / RT = フル解像度メッシュ
+        // という食い違いが生じ、両者の表面が数 cm ずれる。その差はレイ原点バイアス
+        // （0.02〜0.025）を容易に超えるため、AO/影レイが自分自身に当たって黒斑になり
+        // （LOD0 面がラスタ面より外に出る箇所）、逆に内側へ引っ込む箇所では影が抜けて
+        // 境界が明るく浮く。LOD ごとに BLAS を作るには LOD1〜3 にも BLAS_INPUT が要る。
         let lod_index_buffers: Vec<wgpu::Buffer> = prim.lod_indices.iter()
             .map(|lod_idx| device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label:    Some("LOD Index Buffer"),
                 contents: bytemuck::cast_slice(lod_idx),
-                usage:    wgpu::BufferUsages::INDEX,
+                usage:    index_usage,
             }))
             .collect();
         let lod_index_counts: Vec<u32> = prim.lod_indices.iter()
@@ -778,6 +851,8 @@ impl GpuPrimitive {
             // バインドレス登録は GpuModel::register_bindless が後段で埋める（既定は非対象）。
             bindless_uv_offset:    0,
             bindless_uv_count:     0,
+            bindless_lod_index_offsets: Vec::new(),
+            bindless_lod_index_counts:  Vec::new(),
             bindless_index_offset: 0,
             bindless_index_count:  0,
             bindless_normal_offset: 0,
@@ -1174,6 +1249,28 @@ impl GpuModel {
                 gp.bindless_index_count   = if elig { prim.indices.len() as u32 } else { 0 };
                 gp.bindless_normal_offset = nrm_off;
                 gp.bindless_eligible      = elig;
+
+                // ── LOD1〜3 のインデックス列も登録する（LOD 別 BLAS の対）──────────
+                // BLAS を LOD ごとに作ると `primitive_index` はその LOD のインデックス列の
+                // 三角形番号になるため、同じ LOD のインデックス列をメガバッファに置かないと
+                // ヒット点の UV／法線が別三角形のものになる。UV／法線は **頂点番号で引く**
+                // ので LOD 間で共有でき、追加で要るのはインデックス列だけである。
+                // 確保できなかった LOD は count=0 のまま残し、その LOD のインスタンスは
+                // 「ジオメトリ非登録」（平均色へ縮退）として扱う（誤った三角形を引くより安全）。
+                gp.bindless_lod_index_offsets.clear();
+                gp.bindless_lod_index_counts.clear();
+                for lod_idx in prim.lod_indices.iter() {
+                    let (off, cnt) = if elig {
+                        match bindless.register_lod_indices(queue, lod_idx, &mut alloc) {
+                            Some(o) => (o, lod_idx.len() as u32),
+                            None    => (0, 0),
+                        }
+                    } else {
+                        (0, 0)
+                    };
+                    gp.bindless_lod_index_offsets.push(off);
+                    gp.bindless_lod_index_counts.push(cnt);
+                }
             }
         }
 
@@ -2696,11 +2793,29 @@ impl InstancedModelBatch {
         Some((mn, mx))
     }
 
-    pub fn rt_enumerate<F: FnMut(usize, usize, Option<usize>, [f32; 12])>(&self, mut f: F) {
+    /// コールバック引数は `(mesh_idx, prim_idx, material_idx, lod, 3x4 行優先ワールド変換)`。
+    ///
+    /// 【`lod` を渡す理由（LOD 別 BLAS）】RT が辿る形状は **ラスタが実際に描く形状**と
+    /// 同一でなければならない。距離 LOD でインスタンスごとに描かれる形状が変わるため、
+    /// 呼び出し側（rt_shadow.rs）は「そのインスタンスの LOD」の BLAS を引く必要がある。
+    /// LOD の決定は `update()` が詰めた `lod_compact_insts` が正典であり、
+    /// `rt_enumerate_skinned` の逆引きとまったく同じ規則で解決する（両者がずれると
+    /// スキン／非スキンで別の LOD を辿ることになる）。
+    ///
+    /// `update()` 前（`lod_compact_insts` が空）のインスタンスは LOD0 として扱う。
+    pub fn rt_enumerate<F: FnMut(usize, usize, Option<usize>, usize, [f32; 12])>(&self, mut f: F) {
         // ワールド行列キャッシュが未生成（update 未実行）なら何もしない。
         if self.world_mats_cache.is_empty() || self.n_mesh_nodes == 0 { return; }
         let n_inst = self.num_instances as usize;
+        // inst_idx → lod の逆引き（rt_enumerate_skinned と同一の作り方）。
+        let mut inst_lod: Vec<usize> = vec![0; n_inst];
+        for (lod, insts) in self.lod_compact_insts.iter().enumerate() {
+            for &orig in insts.iter() {
+                if orig < n_inst { inst_lod[orig] = lod; }
+            }
+        }
         for inst in 0..n_inst {
+            let lod = inst_lod[inst];
             for draw in &self.node_prim_list {
                 if draw.is_skinned { continue; }
                 let Some(pos) = self.node_pos_map[draw.node_idx] else { continue };
@@ -2710,6 +2825,7 @@ impl InstancedModelBatch {
                     draw.mesh_idx,
                     draw.prim_idx,
                     draw.material_idx,
+                    lod,
                     model_uniform_to_tlas_transform(&mu.model),
                 );
             }
@@ -3488,4 +3604,28 @@ mod inline_bake_tests {
         ];
         assert_eq!(t, [0.0, 1.0, 1.0], "α=1,tr=1 の透過率 T はシアン（R を遮り G/B を通す色影。黒ではない）");
     }
+
+    /// LOD 番号 → インデックスバッファ添字の解決規則（`lod_slot_index`）。
+    ///
+    /// この規則は「ラスタが描く形状」「RT の BLAS が畳み込む形状」「バインドレスが引く
+    /// インデックス列」の 3 者を一致させる唯一の判断箇所であり、ずれると
+    ///   - RT の自己交差（黒斑）と影の抜け（ラスタと BLAS の形状不一致）
+    ///   - ヒット点の UV／法線が別三角形のもの（BLAS とメガバッファの不一致）
+    /// が同時に起きる。純関数なので GPU 無しで固定できる。
+    #[test]
+    fn lod_slot_index_resolution_rule() {
+        use super::lod_slot_index;
+        // LOD0 は常にフル解像度の index_buffer（None）。
+        assert_eq!(lod_slot_index(0, 3), None, "LOD0 は常に index_buffer");
+        // LOD が生成されていないプリミティブ（簡略化できなかった）は常に LOD0 へ縮退。
+        assert_eq!(lod_slot_index(2, 0), None, "LOD 未生成なら LOD0 へ縮退");
+        // LOD1..3 → lod_index_buffers[0..2]。
+        assert_eq!(lod_slot_index(1, 3), Some(0), "LOD1 は lod_index_buffers[0]");
+        assert_eq!(lod_slot_index(2, 3), Some(1));
+        assert_eq!(lod_slot_index(3, 3), Some(2));
+        // 生成できた段数が足りないときは利用可能な最高 LOD へフォールバックする。
+        assert_eq!(lod_slot_index(3, 1), Some(0), "1 段しか無ければ LOD1 へフォールバック");
+        assert_eq!(lod_slot_index(2, 1), Some(0));
+    }
+
 }

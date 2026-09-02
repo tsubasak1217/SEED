@@ -992,17 +992,30 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
         }
     }
 
-    /// リポジトリ同梱のサンプルアセット 2 点が naga 検証を通ること。
+    /// リポジトリ同梱のサンプルアセット 3 点が naga 検証を通ること。
     ///
-    /// アセットは `runtime/assets/shaders/` の実ファイルで、エディタから
-    /// そのまま差せる状態のものである。ここが落ちる＝ユーザーが差した瞬間に
-    /// LOAD_ERROR が出る、という意味なので必ず固定しておく。
+    /// アセットは「エディタからそのまま差せる状態」のシェーダである。ここが落ちる＝
+    /// ユーザーが差した瞬間に LOAD_ERROR が出る、という意味なので必ず固定しておく。
+    ///
+    /// **取り込み元は `runtime/tests/fixtures/shaders/` のテスト専用コピー**である。
+    /// `runtime/assets/` 直下はユーザーがファイルを自由に移動・改名・削除できる作業領域で、
+    /// そこを `include_str!` するとアセットを動かした瞬間にクレートがコンパイル不能になる
+    /// （実際に一度起きている）。そのためフィクスチャは**正本のスナップショット**であり、
+    /// 「出荷サンプルが今この瞬間も壊れていないこと」ではなく
+    /// 「スナップショット時点の出荷サンプルが壊れていないこと」を担保する。
+    ///
+    /// 正本（コピー元）:
+    /// - `runtime/assets/templates/shaders/magma.wgsl`
+    /// - `runtime/assets/templates/shaders/poison.wgsl`
+    /// - `runtime/assets/mainGame/shaders/pop_ocean.wgsl`
+    ///
+    /// **正本を更新したらフィクスチャも同じ内容へコピーし直すこと**（バイト一致が前提）。
     #[test]
     fn bundled_sample_assets_pass_naga_validation() {
         const SAMPLES: [(&str, &str); 3] = [
-            ("magma.wgsl",     include_str!("../../../../../assets/shaders/magma.wgsl")),
-            ("poison.wgsl",    include_str!("../../../../../assets/shaders/poison.wgsl")),
-            ("pop_ocean.wgsl", include_str!("../../../../../assets/shaders/pop_ocean.wgsl")),
+            ("magma.wgsl",     include_str!("../../../../../tests/fixtures/shaders/magma.wgsl")),
+            ("poison.wgsl",    include_str!("../../../../../tests/fixtures/shaders/poison.wgsl")),
+            ("pop_ocean.wgsl", include_str!("../../../../../tests/fixtures/shaders/pop_ocean.wgsl")),
         ];
         for (name, src) in SAMPLES {
             assert_eq!(parse_contract_version(src), Some(WATER_SHADING_CONTRACT_VERSION),
@@ -1029,9 +1042,9 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
     #[test]
     fn bundled_samples_declare_inspector_params() {
         const SAMPLES: [(&str, &str); 3] = [
-            ("magma.wgsl",     include_str!("../../../../../assets/shaders/magma.wgsl")),
-            ("poison.wgsl",    include_str!("../../../../../assets/shaders/poison.wgsl")),
-            ("pop_ocean.wgsl", include_str!("../../../../../assets/shaders/pop_ocean.wgsl")),
+            ("magma.wgsl",     include_str!("../../../../../tests/fixtures/shaders/magma.wgsl")),
+            ("poison.wgsl",    include_str!("../../../../../tests/fixtures/shaders/poison.wgsl")),
+            ("pop_ocean.wgsl", include_str!("../../../../../tests/fixtures/shaders/pop_ocean.wgsl")),
         ];
         for (name, src) in SAMPLES {
             let set = parse_params(src);
@@ -1059,7 +1072,7 @@ fn water_shade(input: WaterShadeInput) -> vec4<f32> {
     #[test]
     fn pop_ocean_declares_expected_inspector_params() {
         use super::super::shade_params::{ShadeParamKind, SHADE_PARAM_MAX};
-        const SRC: &str = include_str!("../../../../../assets/shaders/pop_ocean.wgsl");
+        const SRC: &str = include_str!("../../../../../tests/fixtures/shaders/pop_ocean.wgsl");
         let set = parse_params(SRC);
         assert!(set.warnings.is_empty(), "注釈の警告が出ている: {:?}", set.warnings);
         assert_eq!(set.params.len(), SHADE_PARAM_MAX,
