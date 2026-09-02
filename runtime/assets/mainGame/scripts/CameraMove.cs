@@ -76,10 +76,27 @@ public class CameraMove : SEEDScript
     [SerializeField(Label = "開始時に目標へスナップ")]
     private bool snapOnStart = true;
 
+    // ─── ロール（移動に応じた傾き）───────────────────────────
+
+    /// <summary>
+    /// 移動に応じたロール（Z軸回転＝バンク）の強さ。
+    /// プレイヤーの横方向速度 1 m/s あたりの傾き（度）。0 で無効。
+    /// カメラから見て右へ動いているときに右へ傾く（画面が進行方向へ倒れ込む）。
+    /// </summary>
+    [Header("移動ロール"), SerializeField(Label = "傾きの強さ(度/(m/s))")]
+    private float rollStrength = 2.5f;
+
+    /// <summary>ロールの上限（度）。速く動いてもこれ以上は傾かない。</summary>
+    [SerializeField(Label = "最大傾き(度)")]
+    private float maxRollDegrees = 10f;
+
     // ─── 内部状態 ─────────────────────────────────────────────
 
     /// <summary>まだ一度も追従していないか（<see cref="snapOnStart"/> の判定に使う）。</summary>
     private bool isFirstFollow = true;
+
+    /// <summary>前フレームのプレイヤー位置。速度（移動デルタ/dt）を出すために保持。null=未観測。</summary>
+    private SEED.Vector3? previousPlayerPosition = null;
 
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
@@ -144,6 +161,11 @@ public class CameraMove : SEEDScript
         // 4) 注視: 「補間後のカメラ位置」からプレイヤー（+注視高さ）を見る姿勢を目標に、
         //    回転も指数補間する。回り込み中も視線がプレイヤーから外れない。
         var goalRot = LookAtEuler(transform.Position, p.Position);
+
+        // 4.5) 移動ロール: プレイヤーの横方向速度（カメラの右方向成分）に比例して
+        //      目標ロール（Z軸）を与える。画面が進行方向へ自然に倒れ込み、
+        //      停止すれば目標が 0 になるので既存の補間で水平へ戻る。
+        goalRot = new SEED.Vector3(goalRot.x, goalRot.y, ComputeMovementRoll(p.Position, goalRot.y, ctx.DeltaTime));
         float rk = ExponentialBlend(rotationLerpRate, ctx.DeltaTime);
         if (rk > 0f)
         {
@@ -177,6 +199,37 @@ public class CameraMove : SEEDScript
         var dir = to - from;
         if (dir.SqrMagnitude < SqrEpsilon) { return transform.Rotation; }
         return SEED.Quaternion.LookRotation(dir.Normalized).EulerAngles;
+    }
+
+    /// <summary>
+    /// 移動に応じた目標ロール（度）を返す。
+    ///
+    /// プレイヤーの速度（前フレームからの移動/dt）の水平成分を、
+    /// カメラのヨーから求めた<b>右方向</b>へ射影し、横方向速度 × 強さ を上限クランプ。
+    /// 右へ流れているときに正（右へ傾く）。停止・初回・dt 異常時は 0。
+    /// </summary>
+    /// <param name="playerPos">今フレームのプレイヤー位置。</param>
+    /// <param name="cameraYawDeg">目標姿勢のヨー（度）。右方向ベクトルの算出に使う。</param>
+    /// <param name="deltaTime">経過秒。</param>
+    private float ComputeMovementRoll(SEED.Vector3 playerPos, float cameraYawDeg, float deltaTime)
+    {
+        // 前フレーム位置を更新しつつ速度を求める（初回は 0 扱い）
+        var prev = previousPlayerPosition;
+        previousPlayerPosition = playerPos;
+        if (rollStrength <= 0f || deltaTime <= 0f) { return 0f; }
+        if (prev is not { } prevPos) { return 0f; }
+
+        var delta = playerPos - prevPos;
+        // カメラヨーの右方向（ワールド）: R_y(yaw) * (1,0,0)
+        float yawRad = cameraYawDeg * DegToRad;
+        var right = new SEED.Vector3(SEED.Mathf.Cos(yawRad), 0f, -SEED.Mathf.Sin(yawRad));
+
+        // 横方向速度（m/s）＝ 水平デルタの右方向成分 / dt
+        float lateralSpeed = (delta.x * right.x + delta.z * right.z) / deltaTime;
+
+        float roll = lateralSpeed * rollStrength;
+        float limit = SEED.Mathf.Abs(maxRollDegrees);
+        return SEED.Mathf.Clamped(roll, -limit, limit);
     }
 
     /// <summary>フレームレート非依存の指数補間係数 <c>1 - exp(-rate * dt)</c>（0〜1）。</summary>
