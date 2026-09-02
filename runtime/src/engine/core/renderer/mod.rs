@@ -69,6 +69,11 @@ pub(crate) mod screenshot;
 pub(crate) mod terrain_layer_textures;
 /// フルスクリーン・ライティングパイプライン（G-Buffer 復元, Phase D3 Deferred Phase A）
 pub(crate) mod deferred;
+
+/// GPU スキニング再生経路（pack_animations → AnimSample → skin_compute）の
+/// CPU 写しによる通し回帰テスト。GPU 非依存で「アニメが再生されない」系を切り分ける。
+#[cfg(test)]
+mod tests_skin_playback;
 // 速度バッファ（モーションベクタ）のデバッグ可視化（SEED_DEBUG_VELOCITY=1 のときだけ構築）。
 pub(crate) mod velocity_debug;
 /// G-Buffer 各チャンネルのデバッグ可視化（シーンビュー表示モード「G-Buffer: 〜」）。

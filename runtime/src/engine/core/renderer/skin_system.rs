@@ -99,6 +99,47 @@ pub const MAX_TOTAL_KEYS: usize = 1 << 21;
 /// Animator 非駆動インスタンスの静止時刻（animations[0] の先頭フレームで凍結）。
 pub const FROZEN_POSE_TIME: f32 = 0.0;
 
+/// 「このチャンネルは動いていない」と判定する出力値の許容差。
+///
+/// glTF エクスポータは値が完全一致でも丸め誤差で下位ビットが揺れることがあるため、
+/// ビット一致ではなく絶対差で判定する。ポーズの意味のある変化（ボーンの回転
+/// クォータニオン成分やメートル単位の平行移動）はこの桁より遥かに大きい。
+const MOTIONLESS_EPSILON: f32 = 1e-6;
+
+/// アニメーション 1 本が「実質的に動きを持たない」かどうかを判定する。
+///
+/// 【なぜ要るか】DCC ツールからの書き出し設定ミス（Blender の glTF エクスポートで
+/// アクションのキーが載らない等）で、**キーは 2 本あるが値が始点＝終点で同一**という
+/// アニメーションが出力されることがある。この場合エンジンは「正しく再生した結果として
+/// バインドポーズが出る」ため、描画・スキニング側には一切の異常が現れず、
+/// 「アニメ一覧には並ぶのに再生されない」という切り分け困難な症状だけが残る。
+/// ロード時にここで検出して警告することで、原因をアセット側へ即座に切り分けられる。
+///
+/// 判定: **全チャンネルの出力値が先頭キーと同一**なら動きなし。
+/// 1 チャンネルでも値が変わるものがあれば動きありとみなす（安全側）。
+/// CUBICSPLINE は接線も出力値列に含まれるため、接線だけが違う場合も「動きあり」になる。
+pub fn animation_is_motionless(anim: &Animation) -> bool {
+    /// 値列の全要素が先頭要素と（イプシロン内で）一致するか。
+    fn all_same<const N: usize>(vals: &[[f32; N]]) -> bool {
+        let Some(first) = vals.first() else { return true };
+        vals.iter().all(|v| {
+            v.iter()
+                .zip(first.iter())
+                .all(|(a, b)| (a - b).abs() <= MOTIONLESS_EPSILON)
+        })
+    }
+
+    anim.channels.iter().all(|ch| match &ch.sampler.outputs {
+        AnimationOutputs::Translations(v) => all_same(v),
+        AnimationOutputs::Rotations(v) => all_same(v),
+        AnimationOutputs::Scales(v) => all_same(v),
+        AnimationOutputs::MorphWeights(v) => v
+            .first()
+            .map(|f| v.iter().all(|x| (x - f).abs() <= MOTIONLESS_EPSILON))
+            .unwrap_or(true),
+    })
+}
+
 /// Animator 非駆動（静止）インスタンスの再生指定。
 /// アニメ 0 の先頭フレームをブレンド無しで固定する。
 pub const FROZEN_POSE: SkinAnimPose = SkinAnimPose {
@@ -185,6 +226,9 @@ pub struct PackedAnimations {
     pub scale_vals: Vec<[f32; 4]>,
     /// 上限超過で 1 本でも打ち切ったか（診断用）
     pub truncated: bool,
+    /// **登録はできたが全チャンネルが定数**＝再生しても何も動かないアニメの名前一覧（診断用）。
+    /// 判定は `animation_is_motionless`。エクスポート設定ミスの早期発見に使う。
+    pub motionless: Vec<String>,
 }
 
 impl PackedAnimations {
@@ -296,6 +340,24 @@ pub fn pack_animations(animations: &[Animation], model_label: &str) -> PackedAni
             duration: anim.duration.max(1e-4),
             _pad: 0,
         });
+
+        // ── 動きなしアニメの検出（アセット側の書き出しミス診断）──────────────
+        // 登録自体は正常に行う（再生経路はそのまま動く）。ここで拾うのは
+        // 「再生しているのに絵が変わらない」という切り分け困難な症状の原因だけである。
+        if animation_is_motionless(anim) {
+            out.motionless.push(anim.name.clone());
+        }
+    }
+
+    // 動きなしアニメがあれば 1 回だけまとめて警告する
+    //（1 本ずつ出すと 7 本モデルで 7 行になり、他のログに埋もれるため）。
+    if !out.motionless.is_empty() {
+        eprintln!(
+            "[SEED skin] {model_label}: アニメ {:?} は全チャンネルが定数値（始点＝終点）で、\
+             再生しても一切ポーズが変化しません。glTF/GLB の書き出し設定（アクションのキーが\
+             載っているか・NLA/アクションの選択）を確認してください。",
+            out.motionless
+        );
     }
 
     // 空バッファ防止（wgpu は 0 バイトのバッファを作れない）。
