@@ -471,6 +471,48 @@ mod tests {
             "影の屈折オフセットに深度フェードを掛けてはいけない");
     }
 
+    /// 水中判定の厳密化（追補）が WGSL に入っていること。
+    ///
+    /// ここで守りたい規則は 3 つ:
+    ///   (1) 水域の下端（`wave_axis.w`）より下は水中ではない（Region の AABB 判定）
+    ///   (2) 影の屈折オフセットは最小水深 `CAUSTICS_SHADOW_MIN_DEPTH_M` を満たす画素だけに出す
+    ///       （海面 Y よりわずかに低い陸地を水中扱いして影を毎フレーム振り回さないため）
+    ///   (3) (2) の判定は**光（集光模様）には掛けない**（浅い水たまりでも模様は出したい）
+    #[test]
+    fn submerge_test_is_tightened_for_shadow_offset() {
+        let src = get_shader_source("caustics.wgsl");
+        // (1) 下端判定（負値＝下端なしはスキップ）。
+        assert!(
+            src.contains("let bottom_depth = q.wave_axis.w;")
+                && src.contains("if (bottom_depth >= 0.0 && below > bottom_depth)"),
+            "水域の下端（wave_axis.w）による水中判定が入っていない"
+        );
+        // (2) 影オフセットの最小水深ゲート。既定値も固定する（緩めたら気付けるように）。
+        assert!(
+            src.contains("if (d >= CAUSTICS_SHADOW_MIN_DEPTH_M) {"),
+            "影オフセットの最小水深ゲートが入っていない"
+        );
+        assert!(
+            src.contains("const CAUSTICS_SHADOW_MIN_DEPTH_M: f32 = 0.5;"),
+            "最小水深の既定が 0.5m から変わっている（意図的なら本テストも更新すること）"
+        );
+        // クランプ上限は 5cm（実屈折ずれ 2〜3cm の 2 倍弱）。
+        assert!(
+            src.contains("const CAUSTICS_SHADOW_OFFSET_MAX_M: f32 = 0.05;"),
+            "影オフセットのクランプ上限が 0.05m から変わっている"
+        );
+        // (3) 光（transmission / strength）は最小水深ゲートの内側で計算されていないこと。
+        let gate = src
+            .split("if (d >= CAUSTICS_SHADOW_MIN_DEPTH_M) {")
+            .nth(1)
+            .expect("最小水深ゲートが見つからない");
+        let body = gate.split('}').next().unwrap();
+        assert!(
+            !body.contains("strength") && !body.contains("transmission"),
+            "最小水深ゲートの中に集光の光が入っている（浅瀬で模様が消えてしまう）"
+        );
+    }
+
     /// WGSL 側 `CausticsUniform` の naga 実測サイズが Rust と一致すること。
     #[test]
     fn wgsl_caustics_uniform_size_matches_rust() {

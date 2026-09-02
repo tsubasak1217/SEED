@@ -150,6 +150,8 @@ pub struct WaterParams {
     ///
     /// `wave_direction_deg` をここで cos/sin へ焼いておくのは、
     /// 毎フラグメントで sin/cos を回さないため（値は水域単位の定数）。
+    /// **w = 水面から水域の下端までの深さ（m）**。負値（`WATER_SUBMERGE_DEPTH_UNBOUNDED`）は
+    /// 「下端なし」＝Ocean・川。コースティクス生成パスの水中判定だけが読む。
     pub wave_axis: [f32; 4],
     /// 川リボン 1 分割の**関節タンジェント**（Phase W6.2）。
     /// x,y = 上流ノード／z,w = 下流ノードの進行方向（XZ 単位ベクトル）。
@@ -174,6 +176,34 @@ pub struct WaterParams {
     /// W1.5・W5.3 と同じく末尾へ vec4 を 1 本追加している。
     /// **`water_height_field.wgsl` の `struct WaterParams` と順序・意味を同期すること。**
     pub wave_noise: [f32; 4],
+}
+
+/// `wave_axis.w`（水面から水域の下端までの深さ, m）の「下端なし」を表す値。
+///
+/// Ocean は水面より下がすべて水（`water/query.rs::volume_contains` の Ocean 規則）、
+/// 川は別経路（リボン）で扱うため、どちらも下端を持たない。負値ならシェーダは下端判定を
+/// 丸ごとスキップする。WGSL 側 `CAUSTICS_SUBMERGE_DEPTH_UNBOUNDED`（caustics.wgsl）と一致必須。
+pub const WATER_SUBMERGE_DEPTH_UNBOUNDED: f32 = -1.0;
+
+/// 水域の「水面から下端までの深さ」（m）を求める（`wave_axis.w` へ焼く値）。
+///
+/// GPU 側のコースティクス水中判定を CPU 側の正典（`engine::water::query::volume_contains`）と
+/// 揃えるためのパラメータ。Region だけが AABB の下端を持つ:
+///   `bottom_y = center_y − half_extent_y` → 深さ = `surface_y − bottom_y`
+/// Ocean / 川（Spline）は下端なし＝`WATER_SUBMERGE_DEPTH_UNBOUNDED`。
+///
+/// 水面が AABB の下端より下にある（＝水が一滴も入っていない）異常設定では 0 を返し、
+/// 「水面ちょうど以外はすべて水域外」に縮退させる（負値＝下端なしと誤読させない）。
+pub fn submerge_depth_limit(
+    kind: WaterVolumeKind,
+    surface_y: f32,
+    center_y: f32,
+    half_extent_y: f32,
+) -> f32 {
+    match kind {
+        WaterVolumeKind::Region => (surface_y - (center_y - half_extent_y.abs())).max(0.0),
+        _ => WATER_SUBMERGE_DEPTH_UNBOUNDED,
+    }
 }
 
 /// ショアフィールドを持たない水域を表すレイヤ番号（負値）。
@@ -287,14 +317,22 @@ impl WaterParams {
             //   Ocean は「カメラ追従の巨大クアッド」なので一様分割では近傍が粗すぎるが、
             //   Region / 川は面積相応の一様分割で足りるうえ、ワープを掛けると
             //   水域の中央だけ異様に細かくなって頂点が無駄になる。
-            // w は予約（0）。
+            // w = 水面から水域の下端までの深さ（m。負＝下端なし）。コースティクス生成パスの
+            //     水中判定が CPU 側の正典（`water/query.rs::volume_contains`）と一致するよう、
+            //     Region の AABB 下端をここへ焼く（旧「予約(0)」枠を転用。ストライド不変）。
             wave_axis: {
                 let rad = vis.wave_direction_deg.to_radians();
                 let warp = match v.kind {
                     WaterVolumeKind::Ocean => WATER_GRID_WARP_ON,
                     _                      => WATER_GRID_WARP_OFF,
                 };
-                [rad.cos(), rad.sin(), warp, 0.0]
+                let bottom = submerge_depth_limit(
+                    v.kind,
+                    v.surface_y,
+                    v.center[1],
+                    v.half_extents[1],
+                );
+                [rad.cos(), rad.sin(), warp, bottom]
             },
             // クアッド（Ocean / Region）は川のフィールドを使わない。
             river_p0:      [0.0; 4],
@@ -371,6 +409,10 @@ impl WaterParams {
         // 隣接する分割は共有する関節で同じ値を受け取るため、頂点間で補間した流れの向きが
         // 区間境界で連続になり、水面模様の継ぎ目が消える。
         p.river_tangent = [a.tangent[0], a.tangent[1], b.tangent[0], b.tangent[1]];
+        // 川リボンは AABB の下端を持たない（水中判定は別経路＝リボンの深さ帯で行う）。
+        // コースティクス生成パスはクアッドしか走査しないので実際には読まれないが、
+        // 「クアッドの下端」を意味する値が残らないよう明示的に無効値を入れる。
+        p.wave_axis[3] = WATER_SUBMERGE_DEPTH_UNBOUNDED;
         p
     }
 
@@ -503,6 +545,55 @@ mod tests {
         assert_eq!(q.fresnel[3], RIPPLE_FOAM_THRESHOLD_MIN, "しきい値 0 は下限へ");
     }
 
+    // ── 水中判定用の下端深さ（wave_axis.w）────────────────────────
+
+    /// Region は「水面 − AABB 下端」を返す（CPU 正典 `water/query.rs::volume_contains` の
+    /// `bottom_y = center_y − half_extents_y` と同じ式であること）。
+    #[test]
+    fn submerge_depth_limit_matches_cpu_region_rule() {
+        // 水面 5.0 / 箱中心 2.0 / 半高 1.5 → 下端 0.5 → 深さ 4.5
+        let d = submerge_depth_limit(WaterVolumeKind::Region, 5.0, 2.0, 1.5);
+        assert!((d - 4.5).abs() < 1e-6, "深さは surface_y − (center_y − half) のはず: {d}");
+        // 半高は絶対値で扱う（resolved 側も abs 済みだが二重に守る）。
+        assert_eq!(
+            submerge_depth_limit(WaterVolumeKind::Region, 5.0, 2.0, -1.5),
+            submerge_depth_limit(WaterVolumeKind::Region, 5.0, 2.0, 1.5)
+        );
+    }
+
+    /// Ocean / 川は「下端なし」の無効値（負）を返す＝シェーダは下端判定をスキップする。
+    #[test]
+    fn submerge_depth_limit_is_unbounded_for_ocean_and_river() {
+        assert_eq!(
+            submerge_depth_limit(WaterVolumeKind::Ocean, 5.0, 2.0, 1.5),
+            WATER_SUBMERGE_DEPTH_UNBOUNDED
+        );
+        assert_eq!(
+            submerge_depth_limit(WaterVolumeKind::Spline, 5.0, 2.0, 1.5),
+            WATER_SUBMERGE_DEPTH_UNBOUNDED
+        );
+        assert!(WATER_SUBMERGE_DEPTH_UNBOUNDED < 0.0, "無効値は負であること（判定が負で分岐する）");
+    }
+
+    /// 水面が AABB 下端より下（水が入っていない異常設定）でも負を返さない
+    /// ＝「下端なし」と誤読されない（0 なら水面ちょうど以外すべて水域外に縮退する）。
+    #[test]
+    fn submerge_depth_limit_never_returns_negative_for_region() {
+        let d = submerge_depth_limit(WaterVolumeKind::Region, -10.0, 2.0, 1.0);
+        assert_eq!(d, 0.0, "異常設定では 0 へ縮退すること（負＝下端なしにしない）");
+    }
+
+    /// WGSL 側の無効値定数が Rust と一致すること（値ズレ防止）。
+    #[test]
+    fn wgsl_submerge_unbounded_matches_rust() {
+        let src = include_str!("../shaders/caustics.wgsl");
+        assert!(
+            src.contains("const CAUSTICS_SUBMERGE_DEPTH_UNBOUNDED: f32 = -1.0;"),
+            "caustics.wgsl の無効値が Rust の WATER_SUBMERGE_DEPTH_UNBOUNDED(-1.0) と不一致"
+        );
+        assert_eq!(WATER_SUBMERGE_DEPTH_UNBOUNDED, -1.0);
+    }
+
     /// 波の方位角は cos/sin へ焼かれて `wave_axis` に入ること（Phase W6.3）。
     ///
     /// 規約（0 = +Z へ進む／正で +X 側へ回る）はシェーダ側の回転式と対で意味を持つ。
@@ -539,7 +630,8 @@ mod tests {
         assert!(p.wave_axis[0].abs() < 1e-6, "cos(90°) ≒ 0（実際 {}）", p.wave_axis[0]);
         assert!((p.wave_axis[1] - 1.0).abs() < 1e-6, "sin(90°) = 1（実際 {}）", p.wave_axis[1]);
         // z = 放射状ワープフラグ（Region なので無効）／w は予約（0）。
-        assert_eq!([p.wave_axis[2], p.wave_axis[3]], [WATER_GRID_WARP_OFF, 0.0]);
+        // wave_axis[3] は「水面から下端までの深さ」（Region: surface_y 0 − (center_y 0 − 1) = 1）。
+        assert_eq!([p.wave_axis[2], p.wave_axis[3]], [WATER_GRID_WARP_OFF, 1.0]);
 
         // 既定 0 度は無回転（cos=1, sin=0）＝旧シーンの見た目がそのまま保たれる。
         let mut zero = visual;

@@ -149,8 +149,29 @@ const CAUSTICS_MAX_GAIN: f32 = 4.0;
 /// オフセットは「水面勾配 × 深さ × 屈折係数 × 誇張倍率」なので、深い水域で誇張倍率を
 /// 大きくすると数十 m 級まで発散しうる。そこまでずらすと影が完全に別の場所の遮蔽物を
 /// 拾い、CSM のカスケード境界も跨いで破綻する（物理的な上限ではなく**破綻防止のクランプ**）。
-/// 揺らぎとして意味があるのは高々「遮蔽物の見かけの大きさ」程度なので 2m で止める。
-const CAUSTICS_SHADOW_OFFSET_MAX_M: f32 = 2.0;
+///
+/// 【2.0m → 0.05m に絞った理由】現実の屈折ずれは水深 2m・勾配 0.05 でも 2〜3cm 程度
+/// （下の ④ のコメント参照）。2m という逃げ幅は「誇張倍率をいくら上げても破綻しない」ための
+/// 上限だったが、実際には**水中と誤判定されたピクセル**（海面 Y より低い陸上など）で影の
+/// レイ原点を毎フレーム ±2m 振り回し、Play 中のチカチカの主因になっていた。物理値の 2 倍弱を
+/// 逃げ幅とする 5cm なら、誤判定が残っても影のずれは知覚できない大きさに収まる。
+const CAUSTICS_SHADOW_OFFSET_MAX_M: f32 = 0.05;
+
+/// 影の屈折オフセットを出すのに必要な最小水深（m。水面 Y からの深さ）。
+///
+/// 【なぜ必要か】水中判定は「水域クアッドの XZ 内かつ水面 Y より下」なので、Ocean のように
+/// XZ が巨大な水域では**海面 Y よりわずかに低い陸地に立つキャラクタ**まで水中扱いになる。
+/// 岸辺・海抜以下の低地がこれに該当し、その影がフレームごとに揺れてチカチカに見えていた。
+/// 「水面のすぐ下」は屈折ずれ自体もほぼゼロ（ずれ ∝ 深さ）なので、浅いところを捨てても
+/// 演出上の損失はない。0.5m は「膝下の浅瀬では揺らさない」相当のしきい値。
+///
+/// **この判定が効くのは影オフセットだけ**で、集光（網目模様）の光は従来どおり水面直下から
+/// 出す（30cm の水たまりでも模様は見えてほしいため）。
+const CAUSTICS_SHADOW_MIN_DEPTH_M: f32 = 0.5;
+
+/// `wave_axis.w` に入る「水域の下端までの深さ」の無効値（負＝下端なし＝Ocean・川）。
+/// Rust 側 `WATER_SUBMERGE_DEPTH_UNBOUNDED`（water/params.rs）と一致させること。
+const CAUSTICS_SUBMERGE_DEPTH_UNBOUNDED: f32 = -1.0;
 
 // ─── フルスクリーン三角形 ────────────────────────────────────
 //
@@ -244,6 +265,14 @@ fn fs_caustics(@builtin(position) frag: vec4<f32>) -> CausticsOut {
         if (below <= 0.0) {
             continue;
         }
+        // 水域の**下端**より上か（Region の AABB 判定。CPU 側 `water/query.rs::volume_contains`
+        // の Region 規則「y <= surface_y かつ y >= bottom_y」と同一）。
+        // `wave_axis.w` = 水面から下端までの深さ（m）。負値（Ocean・川）は「下端なし」。
+        // これが無いと、池の**真下にある洞窟や地下室**まで水中扱いになっていた。
+        let bottom_depth = q.wave_axis.w;
+        if (bottom_depth >= 0.0 && below > bottom_depth) {
+            continue;
+        }
         p     = q;
         d     = below;
         found = true;
@@ -325,11 +354,21 @@ fn fs_caustics(@builtin(position) frag: vec4<f32>) -> CausticsOut {
     //    **0 なら完全にゼロ**＝クリア値と同値になり、影は従来と 1 ビットも変わらない。
     //    集光強度と違い深度フェード（fade）は掛けない。屈折そのものは深いほど強くなる現象で、
     //    「深いほど揺らぎが大きい」方が水中の見え方として正しいためである。
-    let shadow_offset = clamp(
-        (sxz - world_pos.xz) * p.caustics.w,
-        vec2<f32>(-CAUSTICS_SHADOW_OFFSET_MAX_M),
-        vec2<f32>( CAUSTICS_SHADOW_OFFSET_MAX_M),
-    );
+    //
+    //    【水中判定の厳密化（追補）】上の①は「XZ 矩形内かつ水面より下（かつ水域の下端より上）」
+    //    でしかない。Ocean は XZ が巨大なので、**海面 Y よりわずかに低い陸地**に立つキャラクタも
+    //    ①を通ってしまう。時間駆動のオフセットがそこへ掛かると影のレイ原点が毎フレーム動き、
+    //    Play 中のチカチカになる。そこで**オフセットに限り**最小水深を要求する
+    //    （集光の光は浅瀬でも出したいので①のままにする＝この判定は光には掛けない）。
+    //    条件を満たさなければ 0＝クリア値と同値＝影は従来と 1 ビットも変わらない。
+    var shadow_offset = vec2<f32>(0.0, 0.0);
+    if (d >= CAUSTICS_SHADOW_MIN_DEPTH_M) {
+        shadow_offset = clamp(
+            (sxz - world_pos.xz) * p.caustics.w,
+            vec2<f32>(-CAUSTICS_SHADOW_OFFSET_MAX_M),
+            vec2<f32>( CAUSTICS_SHADOW_OFFSET_MAX_M),
+        );
+    }
 
     var out: CausticsOut;
     out.light         = vec4<f32>(transmission, strength);

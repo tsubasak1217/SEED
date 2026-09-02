@@ -208,11 +208,19 @@ fn default_caustics_scale() -> f32 { 1.0 }
 fn default_caustics_depth_fade() -> f32 { 6.0 }
 /// shadow_refraction_strength の既定値（水中に落ちる影の屈折ゆらぎ誇張倍率）。
 ///
-/// **1.0 = 物理どおり**（水面勾配 × 深さ × (1 − 1/n) だけ影のサンプル位置をずらす）。
-/// **0 で完全無効**＝影は従来どおりワールド座標そのままで評価され、回帰ゼロになる。
-/// 1.0 を超える値は「物理より大げさに揺らす」演出用のノブである
-/// （現実の屈折ずれは水深 2m・勾配 0.05 でも 2〜3cm 程度で、見た目にはほぼ出ないため）。
-fn default_shadow_refraction_strength() -> f32 { 1.0 }
+/// **既定は 0（無効）**。1.0 = 物理どおり（水面勾配 × 深さ × (1 − 1/n) だけ影のサンプル位置を
+/// ずらす）で、1.0 を超える値は「物理より大げさに揺らす」演出用のノブである。
+/// **0 なら影は従来どおりワールド座標そのままで評価され、1 ビットも変わらない。**
+///
+/// 【なぜ既定を 1.0 から 0 へ落としたか（Play 中のチカチカの真因）】
+/// オフセットは `u_camera.time` 駆動なので毎フレーム動く。ところがコースティクスの水中判定は
+/// 「水域クアッドの XZ 内かつ水面 Y より下」だけなので、**海面 Y より低い場所に立っている
+/// 陸上のキャラクタまで「水中」と判定**され、その影のレイ原点が毎フレーム振り回されていた
+/// （旧 `CAUSTICS_SHADOW_OFFSET_MAX_M=2.0` で最大 ±2m）。水中判定の厳密化とクランプ縮小
+/// （2.0m→0.05m）も同時に入れたが、既定で有効にしておく価値のある演出ではないため
+/// **オプトイン**（明示的に > 0 を設定した水域だけ有効）へ倒す。
+/// 既存シーンで値を明示していない水域は影の揺らぎがオフになる（意図的な挙動変更）。
+fn default_shadow_refraction_strength() -> f32 { 0.0 }
 
 // ─── 岸波（ショアフィールド。Phase W1.5）の既定値 ────────────
 //
@@ -955,8 +963,8 @@ mod tests {
         assert_eq!(d.caustics_intensity, 0.6);
         assert_eq!(d.caustics_scale, 1.0);
         assert_eq!(d.caustics_depth_fade, 6.0);
-        // 既定は物理どおり（1.0）。0 なら従来と同一の影になる。
-        assert_eq!(d.shadow_refraction_strength, 1.0);
+        // 既定は 0（無効＝従来と 1 ビット同一の影）。明示指定した水域だけ揺らぐオプトイン。
+        assert_eq!(d.shadow_refraction_strength, 0.0);
         assert_eq!(d.shore_wave_strength, def.shore_wave_strength);
         assert_eq!(d.shore_wave_length, def.shore_wave_length);
         assert_eq!(d.shore_wave_period, def.shore_wave_period);

@@ -87,7 +87,10 @@ struct WaterParams {
     river_normal:     vec4<f32>,
     /// 解析波の**全体回転**（Phase W6.3）。
     /// x = cos(方位角)／y = sin(方位角)／
-    /// **z = 放射状ワープの有効フラグ（Phase W5.1。1 = Ocean）**／w = 予約（0）。
+    /// **z = 放射状ワープの有効フラグ（Phase W5.1。1 = Ocean）**／
+    /// **w = 水面から水域の下端までの深さ（m。負＝下端なし＝Ocean・川）**。
+    /// w を読むのはコースティクス生成パス（`caustics.wgsl`）の水中判定だけで、
+    /// CPU 側の正典（`water/query.rs::volume_contains` の Region 規則）と一致させるためにある。
     wave_axis:        vec4<f32>,
     /// 川リボン 1 分割の**関節タンジェント**（Phase W6.2）。
     /// x,y = 上流ノード／z,w = 下流ノードの進行方向（XZ 単位ベクトル）。
