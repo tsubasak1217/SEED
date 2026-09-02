@@ -708,6 +708,11 @@ impl App {
                 self.update_camera_snap_anim(ctx.delta_time);
                 // 透視↔正射の投影切替を 0.3 秒かけて補間する
                 self.camera.update_projection_anim(ctx.delta_time);
+                // オービット（中＋右同時押し）を通常のカメラ更新より**先**に適用する。
+                // オービットが使ったマウスデルタは 0 に落とされるので、後段の
+                // 視点回転・MMB パンは「動いていないフレーム」として素通りする
+                //（二重適用の防止）。WASDQE 移動・ホイールのドリーはそのまま効く。
+                self.tick_camera_orbit();
                 self.camera.update(&self.cam_input, ctx.delta_time);
             }
         }
@@ -1279,6 +1284,10 @@ impl App {
         let mut did_control_point_hover_readback = false;
         // ロジック配置モード（3D）の基準点解決のために読み戻しを取れたか。
         let mut did_placement_readback = false;
+        // オービット（中＋右同時押し）のピボット解決のために読み戻しを取れたか。
+        // 配置モードとは排他（配置モード中はオービットに入れない）だが、
+        // 読み戻しバッファは 1 フレーム 1 回しか読めないので同じ規約で扱う。
+        let mut did_orbit_readback = false;
 
         // ピック結果デコード用 MC 情報 (base, dfs_id, slot_i, instance_count)
         let wl_mc_pick_infos: Vec<(u32, u32, usize, usize)> = {
@@ -1361,6 +1370,10 @@ impl App {
         } else {
             None
         };
+        // オービットのピボット解決がこのフレームで要求する読み戻し座標。
+        // カーソルの現在地ではなく**同時押しが成立した瞬間の座標**を使う
+        //（掴んだ点をピボットにするため。ここで現在地を使うと中心が毎フレーム飛ぶ）。
+        let orbit_readback_pos = self.orbit_needs_id_readback();
 
         // モーダルトランスフォーム（G/R/S）の軸拘束線。
         // 拘束中だけピボットを貫く 1 本の線を描く（X=赤 / Y=緑 / Z=青）。
@@ -7639,6 +7652,11 @@ impl App {
                     // 編集操作と排他なので、読み戻しは**最優先**で取る
                     //（取りこぼすとプレビューがカーソルに遅れて追従して見える）。
                     let placement_pos = placement_readback_pos;
+                    // オービットのピボット解決。配置モードとは排他なので順序に実害は
+                    // 無いが、「モード的な操作 → 単発の操作」という既存の並びに合わせて
+                    // 配置モードの直後・ドロップの直前へ置く。掴んでから 1 フレームで
+                    // 決まらないとオービット開始が目に見えて遅れるため、優先度は高くする。
+                    let orbit_pos = orbit_readback_pos;
                     let drop_pos = self.pending_drop
                         .as_ref()
                         .map(|&(_, sx, sy)| (sx, sy));
@@ -7656,8 +7674,8 @@ impl App {
                             // 2D アクターはスポーン位置不要なので readback しない
                             if is_2d { None } else { Some((sx, sy)) }
                         });
-                    let readback_pos = placement_pos.or(drop_pos).or(cp_pos).or(cp_hover_pos)
-                        .or(add_actor_pos).or(pick_pos);
+                    let readback_pos = placement_pos.or(orbit_pos).or(drop_pos).or(cp_pos)
+                        .or(cp_hover_pos).or(add_actor_pos).or(pick_pos);
 
                     // Edit / Pause 中は「読み戻し要求があるフレームだけ」描く（オンデマンド化）。
                     // Play 中は既定でスキップし、`SEED_ID_PASS_IN_PLAY` が設定されたときだけ
@@ -8175,20 +8193,27 @@ impl App {
                                     &id_buf.texture, px, py, &id_buf.readback_buf,
                                 );
                                 // readback が drop/control_point/add_actor ではなく pick のためかを記録するフラグ
-                                did_pick = placement_pos.is_none() && drop_pos.is_none()
+                                did_pick = placement_pos.is_none() && orbit_pos.is_none()
+                                    && drop_pos.is_none()
                                     && cp_pos.is_none()
                                     && cp_hover_pos.is_none()
                                     && add_actor_pos.is_none() && pick_pos.is_some();
                                 // ホバーが読み戻しを取れたか（上位が立っていないこと）。
                                 did_control_point_hover_readback = placement_pos.is_none()
+                                    && orbit_pos.is_none()
                                     && drop_pos.is_none() && cp_pos.is_none() && cp_hover_pos.is_some();
                                 // readback がコントロールポイント D&D のためだったか。
                                 // did_pick とは**同時に true にならない**（＝読み戻しの二重消費が起きない）。
                                 did_control_point_readback = placement_pos.is_none()
+                                    && orbit_pos.is_none()
                                     && drop_pos.is_none() && cp_pos.is_some();
                                 // readback がロジック配置モードのためだったか（最優先なので
                                 // 要求が立っていれば必ず取れている）。
                                 did_placement_readback = placement_pos.is_some();
+                                // readback がオービットのピボット解決のためだったか
+                                //（配置モードの次に優先度が高い）。
+                                did_orbit_readback =
+                                    placement_pos.is_none() && orbit_pos.is_some();
                             }
                         }
                     }
@@ -8604,6 +8629,22 @@ impl App {
                 }
                 self.resolve_placement_hover(gpu_hit, cx.max(0.0) as u32, cy.max(0.0) as u32);
             }
+        }
+
+        // ── オービットのピボット解決（GPU サブミット後）─────────────────
+        //
+        // 同時押しが成立した座標のピクセルを読み、当たっていればその点を中心に
+        // オービットへ入る（`resolve_orbit_hit` が地形ヒットとの近い方を採る）。
+        // 当たっていなければオービットには入らず、後押しボタンの操作を続ける。
+        // 読み戻しを取れなかったフレームは**再キューしない**（`Pending` が残るので
+        // 次フレームで同じ座標から再度要求する。座標は固定なので古くならない）。
+        if did_orbit_readback {
+            let gpu_hit = if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
+                id_buf.read_pixel(&draw_ctx.device).0
+            } else {
+                None
+            };
+            self.resolve_orbit_hit(gpu_hit);
         }
 
         // ── ドロップ処理（GPU サブミット後）─────────────

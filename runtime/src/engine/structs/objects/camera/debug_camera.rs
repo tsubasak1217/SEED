@@ -122,6 +122,13 @@ pub struct DebugCamera {
 /// 投影切り替えの補間時間（秒）。0.3 秒で透視↔正射をなめらかに補間する。
 pub const CAMERA_ORTHO_ANIM_SECONDS: f32 = 0.3;
 
+/// ピッチ（X 回転）の許容範囲（ラジアン）。真上／真下の手前で止めてジンバルロックを防ぐ。
+///
+/// 視点回転（`update_rotation`）とオービット回転（`app/camera_orbit.rs`）で
+/// **同じ値を共有する**。片方だけ変えると、オービット中と通常回転で
+/// 止まる角度が食い違い、切り替わった瞬間にカメラが跳ねる。
+pub const DEBUG_CAMERA_PITCH_LIMIT: f32 = FRAC_PI_2 - 0.02;
+
 /// ホイール1ノッチあたりの移動速度倍率（フライ移動中の速度調整用）。
 /// scroll 量を指数として `SPEED_ADJUST_FACTOR^scroll` 倍する。
 const SPEED_ADJUST_FACTOR: f32 = 1.2;
@@ -213,8 +220,9 @@ impl DebugCamera {
         self.yaw += cam.mouse_dx * self.mouse_sensitivity;
         self.pitch += cam.mouse_dy * self.mouse_sensitivity;
 
-        const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.02;
-        self.pitch = self.pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        self.pitch = self
+            .pitch
+            .clamp(-DEBUG_CAMERA_PITCH_LIMIT, DEBUG_CAMERA_PITCH_LIMIT);
 
         let yaw_q = Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), self.yaw);
         let pitch_q = Quaternion::from_axis_angle(Vector3::new(1.0, 0.0, 0.0), self.pitch);

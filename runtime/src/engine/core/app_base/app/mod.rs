@@ -49,6 +49,8 @@ mod component_ops;
 mod canvas_component_ops;
 mod camera_component_ops;
 mod camera_apply_debug;
+/// デバッグカメラのオービット回転（中ボタン＋右ボタン同時押し）。
+mod camera_orbit;
 mod physics_component_ops;
 mod physics2d_ops;
 mod physics2d_component_ops;
@@ -627,6 +629,9 @@ pub struct App {
     preloaded_scene: Option<(String, Scene, Option<DebugCameraData>)>,
     cam_input:      CameraInput,
     camera:         DebugCamera,
+    /// デバッグカメラのオービット回転（中＋右同時押し）の状態。
+    /// 状態遷移と数式は `camera_orbit.rs` が正典。
+    orbit:          camera_orbit::OrbitPhase,
     clock:          Clock,
     draw_ctx:       Option<DrawContext>,
     scene:          Option<Scene>,
@@ -1313,6 +1318,7 @@ impl App {
             preloaded_scene: None,
             cam_input:      CameraInput::default(),
             camera:         DebugCamera::default(),
+            orbit:          camera_orbit::OrbitPhase::default(),
             clock:          Clock::new(),
             draw_ctx:       None,
             scene:          None,
