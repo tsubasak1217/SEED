@@ -32,6 +32,23 @@ public class PlayerMove : SEEDScript
     /// <summary>1 回転（度）。角度を周期に畳み込むのに使う。</summary>
     private const float FullTurnDegrees = 360f;
 
+    /// <summary>入力マッピングの符号「そのまま」。前後入力の +y が経路の時刻を進める向き。</summary>
+    private const float MappingForward = 1f;
+
+    /// <summary>入力マッピングの符号「反転」。前後入力の +y が経路の時刻を戻す向き。</summary>
+    private const float MappingReversed = -1f;
+
+    /// <summary>
+    /// 接線の符号ガードが働く、1 フレームの経路上の移動距離のしきい値（メートル）。
+    ///
+    /// 経路の進行方向（接線）が 1 フレームで反転したとき、
+    /// <b>ほとんど動いていないのに反転した</b>なら、それは経路の形ではなく
+    /// 数値微分のブレなので採用しない。逆に、この距離以上進んでいるなら
+    /// ヘアピン（本当に折り返す経路）を通過した可能性があるので反転を受け入れる。
+    /// 60fps で毎秒 0.6m 相当。歩行速度（数 m/s）ならガードに掛からない。
+    /// </summary>
+    private const float TangentFlipGuardDistance = 0.01f;
+
     // ─── 自由移動パラメータ ───────────────────────────────────
 
     [Header("移動パラメータ"), SerializeField]
@@ -63,6 +80,32 @@ public class PlayerMove : SEEDScript
     /// </summary>
     [SerializeField(Label = "経路の高さに追従")]
     private bool followPathHeight = true;
+
+    // ─── カメラアンカー（周回方向による切替）─────────────────────
+
+    /// <summary>
+    /// カメラが実際に追う Transform。<b>このスクリプトが毎フレーム、
+    /// 周回方向に応じて選んだアンカーのポーズをここへ書き込む。</b>
+    ///
+    /// CameraMove 側はこの 1 つを指数追従するだけでよい（切替を知らなくてよい）。
+    /// 未設定なら書き込みを行わない（カメラ切替を使わない構成でも壊れない）。
+    /// </summary>
+    [Header("カメラ（周回方向でアンカーを切替）"), SerializeField(Label = "カメラの追従目標")]
+    private SEED.Transform? cameraTarget = null;
+
+    /// <summary>
+    /// 経路の時刻が<b>進む</b>向き（＝正方向 / ここでは「反時計回り」と呼ぶ）に
+    /// 走っているときに使うカメラ位置。プレイヤーの子アクタとして置くと扱いやすい。
+    /// </summary>
+    [SerializeField(Label = "正方向（反時計回り）アンカー")]
+    private SEED.Transform? forwardAnchor = null;
+
+    /// <summary>
+    /// 経路の時刻が<b>戻る</b>向き（＝逆方向 / ここでは「時計回り」と呼ぶ）に
+    /// 走っているときに使うカメラ位置。
+    /// </summary>
+    [SerializeField(Label = "逆方向（時計回り）アンカー")]
+    private SEED.Transform? backwardAnchor = null;
 
     // ─── 回転補間 ─────────────────────────────────────────────
 
@@ -117,6 +160,38 @@ public class PlayerMove : SEEDScript
     /// </summary>
     private float? targetYaw = null;
 
+    /// <summary>
+    /// 前後入力の符号を経路方向へ写す<b>マッピング符号</b>（+1 = そのまま / -1 = 反転）。
+    ///
+    /// 進行方向が反転するとカメラが反対側へ回り込み、画面上の「前」が入れ替わるので、
+    /// 入力の意味も入れ替える必要がある。詳しくは <see cref="UpdateInputLatch"/>。
+    /// </summary>
+    private float inputMapping = MappingForward;
+
+    /// <summary>
+    /// 前フレームに前後入力が押されていたか（押下 → 解放のエッジ検出に使う）。
+    /// </summary>
+    private bool wasInputHeld = false;
+
+    /// <summary>
+    /// 直近に<b>実際に走った</b>経路上の向き（+1 = 時刻が進む / -1 = 時刻が戻る）。
+    /// 入力を離しても保持するので、止まった瞬間にカメラが反対側へ戻らない。
+    /// null は「まだ一度も動いていない」。
+    /// </summary>
+    private float? travelSign = null;
+
+    /// <summary>
+    /// 前フレームの経路の接線（進行方向）。接線の符号ガードに使う。
+    /// null は「まだ有効な接線を得ていない」。
+    /// </summary>
+    private SEED.Vector3? previousTangent = null;
+
+    /// <summary>
+    /// <see cref="previousTangent"/> を採用してからの経路上の移動距離（メートル）。
+    /// 接線の符号ガードが「本物の折り返し」と「微分のブレ」を見分けるのに使う。
+    /// </summary>
+    private float distanceSinceTangent = 0f;
+
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
     {
@@ -132,13 +207,18 @@ public class PlayerMove : SEEDScript
     {
         // 経路が設定・生存していればレール移動、そうでなければ従来の自由移動。
         // 点が 0 個の経路は評価すると原点へ飛ぶので、自由移動へ退避する。
-        bool moving = (path is { } p && p.IsValid && p.PointCount > 0)
-            ? UpdatePathMovement(ref ctx, p)
+        bool onPath = path is { } p && p.IsValid && p.PointCount > 0;
+        bool moving = onPath
+            ? UpdatePathMovement(ref ctx, path!.Value)
             : UpdateFreeMovement(ref ctx);
 
         // 目標ヨーへの補間は移動モードに依らず毎フレーム行う
         // （入力を離した後も回りきってから止まるので、向きが途中で固まらない）
         UpdateRotation(ctx.DeltaTime);
+
+        // カメラのアンカー切替は経路モードだけの機能（自由移動では周回方向が定義できない）。
+        // 回転を反映した「後」に書くので、アンカーが子アクタでも今フレームの向きに追従する。
+        if (onPath) { UpdateCameraAnchor(); }
 
         // 移動状態が変わったフレームだけアニメを切り替える（毎フレーム Play すると先頭に戻り続けるため）
         UpdateAnimation(moving);
@@ -158,7 +238,12 @@ public class PlayerMove : SEEDScript
         if (gameObject.GetComponent<SEED.InputMap>() is not { } im) { return false; }
 
         // 前後入力だけを使う（左右は経路に沿う移動では意味を持たない）
-        float axis = im.GetVector2("Move").y;
+        float rawAxis = im.GetVector2("Move").y;
+
+        // 入力ラッチを更新し、「経路に対して実際に効かせる入力」へ写す。
+        // ここより後ろは effectiveAxis だけを見る（生の入力は使わない）。
+        UpdateInputLatch(rawAxis);
+        float effectiveAxis = rawAxis * inputMapping;
 
         // 初回は経路の開始時刻へ合わせる（時刻の原点は制御点が決めるので 0 とは限らない）
         if (!pathTimeInitialized)
@@ -167,11 +252,23 @@ public class PlayerMove : SEEDScript
             pathTimeInitialized = true;
         }
 
+        // 実際に走っている向きを覚えておく（カメラのアンカー選択とラッチの更新に使う）。
+        // 入力が無いフレームでは更新しないので、止まってもカメラが戻らない。
+        if (SEED.Mathf.Abs(effectiveAxis) > InputEpsilon)
+        {
+            travelSign = SEED.Mathf.Sign(effectiveAxis);
+        }
+
         // 経路上の時刻を進める。閉ループならエンジン側で周回し、開経路なら両端でクランプされる。
-        pathTime += axis * pathSpeed * ctx.DeltaTime;
+        var previousPosition = transform.Position;
+        pathTime += effectiveAxis * pathSpeed * ctx.DeltaTime;
 
         // 保持している時刻を経路の範囲へ畳み込む（畳み込んでも評価結果は変わらない）。
         // 閉ループ: 1 周ぶんで巻き戻す ／ 開経路: 両端でクランプする。
+        //
+        // ※ Duration は閉ループでは制御点の配置に依存する（閉じる区間の所要時刻が
+        //   距離比例で決まるため。docs/control_points.md「閉じる区間の時刻の定義」）。
+        //   定数 1.0 を前提に自前計算せず、毎フレーム問い合わせること。
         float duration = p.Duration;
         if (duration > 0f)
         {
@@ -188,16 +285,134 @@ public class PlayerMove : SEEDScript
             : new SEED.Vector3(onPath.x, transform.Position.y, onPath.z);
 
         // 進行方向（接線）から目標ヨーを更新する。逆走中は接線を反転する。
-        if (SEED.Mathf.Abs(axis) > InputEpsilon)
+        if (SEED.Mathf.Abs(effectiveAxis) > InputEpsilon)
         {
-            var tangent = p.SampleTangent(pathTime);
-            if (tangent.SqrMagnitude > SqrEpsilon)
+            var tangent = GuardedTangent(p.SampleTangent(pathTime), previousPosition, transform.Position);
+            if (tangent is { } dir && dir.SqrMagnitude > SqrEpsilon)
             {
-                UpdateTargetYaw(axis < 0f ? tangent * -1f : tangent);
+                UpdateTargetYaw(effectiveAxis < 0f ? dir * -1f : dir);
             }
         }
 
-        return SEED.Mathf.Abs(axis) > moveThreshold;
+        return SEED.Mathf.Abs(effectiveAxis) > moveThreshold;
+    }
+
+    /// <summary>
+    /// 前後入力のマッピング符号（<see cref="inputMapping"/>）を更新する。
+    ///
+    /// <b>解きたい問題</b>: プレイヤーが逆向きに走り出すとカメラが反対側へ回り込むので、
+    /// 画面上の「前」が入れ替わる。入力の意味を入れ替えないと、
+    /// 「前へ進もうとして下を入れる」という不自然な操作になる。
+    ///
+    /// <b>ただし切り替えていいタイミングは限られる</b>: 反転のきっかけになった入力を
+    /// 押している最中に意味を入れ替えると、押しっぱなしのまま挙動が前後に振れて
+    /// その場で往復してしまう。そこで<b>入力を離すまでマッピングを凍結する</b>。
+    ///
+    /// <b>状態機械</b>（状態は「マッピング符号」と「押されているか」の 2 つだけ）:
+    /// <code>
+    ///   押されている間 ────────── マッピングは凍結（何が起きても変えない）
+    ///   押下 → 解放のエッジ ───── マッピング := 直近に実際に走った向き（travelSign）
+    ///   解放されている間 ──────── 何もしない
+    /// </code>
+    ///
+    /// <b>「解放時に travelSign を採る」で正しくなる理由</b>:
+    /// カメラは travelSign 側のアンカーに付いている ＝ 画面上の「前」は
+    /// 経路の travelSign 方向。よってマッピングを travelSign にすれば、
+    /// 次に上入力（+1）を押したとき effectiveAxis = travelSign となり、
+    /// <b>画面の前へ進む</b>。
+    ///
+    /// <b>例</b>（マッピング +1 で正方向に走行中）:
+    /// 下入力（-1）→ effective = -1 で逆走開始・カメラが反対側へ →
+    /// 押している間はずっと effective = -1 のまま（＝画面の前へ進み続ける）→
+    /// 離した瞬間にマッピング := -1 → 次は上入力（+1）で effective = -1、
+    /// つまり同じ向きに走り続ける。
+    /// </summary>
+    /// <param name="rawAxis">InputMap から取った生の前後入力。</param>
+    private void UpdateInputLatch(float rawAxis)
+    {
+        bool isHeld = SEED.Mathf.Abs(rawAxis) > moveThreshold;
+
+        // 押下 → 解放のエッジでだけマッピングを更新する
+        if (wasInputHeld && !isHeld && travelSign is { } sign)
+        {
+            inputMapping = sign >= 0f ? MappingForward : MappingReversed;
+        }
+
+        wasInputHeld = isHeld;
+    }
+
+    /// <summary>
+    /// 経路の接線に<b>符号ガード</b>を掛けて返す。ガードに掛かった場合は null。
+    ///
+    /// 接線は経路上の位置の数値微分なので、経路の形が急に変わる場所では
+    /// 1 フレームで大きく向きが変わることがある。向きが<b>逆を向いた</b>のに
+    /// プレイヤーがほとんど動いていないなら、それは経路の形（ヘアピン）ではなく
+    /// 微分のブレなので、目標ヨーを更新しない
+    /// （更新すると最短回りの補間が 180 度回してしまい、「クルっと回る」）。
+    ///
+    /// 逆に <see cref="TangentFlipGuardDistance"/> 以上動いているなら、
+    /// 本当に折り返す経路を通過した可能性があるので反転をそのまま受け入れる
+    /// （＝ヘアピンのある経路を壊さない）。
+    /// </summary>
+    /// <param name="tangent">今フレームの接線（長さ 0 なら向き無し）。</param>
+    /// <param name="previousPosition">移動前のワールド位置。</param>
+    /// <param name="currentPosition">移動後のワールド位置。</param>
+    /// <returns>採用する接線。採用しない場合は null。</returns>
+    private SEED.Vector3? GuardedTangent(
+        SEED.Vector3 tangent, SEED.Vector3 previousPosition, SEED.Vector3 currentPosition)
+    {
+        if (tangent.SqrMagnitude <= SqrEpsilon) { return null; }   // 向きが定まらない区間
+
+        // 「前回採用した接線からどれだけ進んだか」を積算する。
+        // 1 フレームぶんの距離で判定すると、ゆっくり進んでいるあいだ反転が
+        // 永久に却下され続け、本物の折り返しで向きを変えられなくなる。
+        distanceSinceTangent += SEED.Vector3.Distance(previousPosition, currentPosition);
+
+        if (previousTangent is { } previous)
+        {
+            // 内積が負 ＝ 前回採用した接線と逆を向いた
+            bool flipped = SEED.Vector3.Dot(previous, tangent) < 0f;
+            bool movedEnough = distanceSinceTangent > TangentFlipGuardDistance;
+
+            if (flipped && !movedEnough)
+            {
+                // ほとんど動いていないのに反転した ＝ 経路の形ではないので採用しない。
+                // previousTangent は更新せず、積算距離も持ち越す
+                // （進み続ければいずれ movedEnough になり、本物の折り返しは通る）。
+                return null;
+            }
+        }
+
+        previousTangent = tangent;
+        distanceSinceTangent = 0f;
+        return tangent;
+    }
+
+    /// <summary>
+    /// 周回方向に応じて選んだアンカーのポーズを、カメラの追従目標へ書き込む。
+    ///
+    /// カメラ側から「今どちら回りか」を問い合わせる手段が無い
+    /// （スクリプト間参照が無い。CameraMove のクラスコメント参照）ので、
+    /// <b>方向を知っているこちらが目標を書く</b>。
+    /// 目標が別アンカーへ瞬間的に切り替わっても、CameraMove の指数追従が
+    /// 滑らかに繋ぐので、ここで補間する必要はない。
+    ///
+    /// アンカーが未設定・追従目標が未設定なら何もしない。
+    /// </summary>
+    private void UpdateCameraAnchor()
+    {
+        if (cameraTarget is not { } target || !target.IsValid) { return; }
+
+        // まだ一度も動いていないあいだは正方向のアンカーを既定にする
+        bool useForward = travelSign is not { } sign || sign >= 0f;
+        var anchor = useForward ? forwardAnchor : backwardAnchor;
+
+        // 選んだ側が未設定ならもう片方で代用する（片側だけ設定した構成でも動く）
+        anchor ??= useForward ? backwardAnchor : forwardAnchor;
+        if (anchor is not { } a || !a.IsValid) { return; }
+
+        target.Position = a.Position;
+        target.Rotation = a.Rotation;
     }
 
     /// <summary>

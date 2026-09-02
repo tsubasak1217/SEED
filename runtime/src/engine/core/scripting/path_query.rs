@@ -277,3 +277,393 @@ mod tests {
         assert!(path_tangent_at(&eval, 0.5).is_none(), "同一座標では向きが定まらない");
     }
 }
+
+// ============================================================
+//  継ぎ目（閉ループの「最後の点 → 最初の点」）の連続性テスト
+//
+//  経路移動の体感バグの再現テスト。
+//    ・「継ぎ目の通過に時間がかかる／そこだけ突進する」 → **速度の不連続**
+//    ・「一度クルっと回ってもう一度前を向く」           → **接線の反転（カスプ）**
+//
+//  ## 調査でわかったこと（2 つの疑いのうち、実際に壊れていたのは 1 つ）
+//  ・速度の不連続は**実在した**。閉じる区間の所要時刻が固定 1 秒だったため、
+//    弦長が他区間と違うパスで継ぎ目の平均速度が 3〜5 倍ずれていた（下のテストが再現する）。
+//  ・接線の反転は**再現しなかった**。閉ループの Catmull-Rom は隣接点を `% n` で
+//    正しく周回して取っており、1ms 刻みで 1 周走査しても内積は 0.99 を下回らない
+//    （粗く 50ms 刻みで測ると跳んで見えるが、それはサンプリングの粗さであって
+//    曲線の不連続ではない）。見えていた「クルっと回る」は速度の跳ねの副作用
+//    ＝ 継ぎ目で数倍速く走るぶん進行方向が 1 フレームで大きく変わり、
+//    最短回りの補間が逆回りを選ぶ、という筋。接線の連続性テストは
+//    「今は壊れていない」ことを固定する退行防止として残す。
+//
+//  ## 何を基準にするか
+//  補間方法そのものが持つ不連続（Linear は制御点で必ず角ばる、CatmullRom は
+//  区間ごとに時刻で正規化するので点上で速さが変わる）は仕様であってバグではない。
+//  検証したいのは「**継ぎ目だけが他の点より悪くない**」ことなので、
+//  継ぎ目での跳ね幅を**内側の制御点での跳ね幅の最大値**と比べる。
+//  こうすると「閉じる区間の所要時刻が固定値」というバグだけを狙って落とせる。
+// ============================================================
+
+#[cfg(test)]
+mod seam_continuity {
+    use super::*;
+    use crate::engine::components::control_point_component::{
+        ControlPoint, ControlPointComponent, ControlPointInterp,
+    };
+    use crate::engine::components::Transform;
+
+    // ─── 測定パラメータ（マジックナンバー禁止）───────────────
+
+    /// 制御点の直前・直後で速度を測るときの、制御点からの離し幅（秒）。
+    /// 中央差分が制御点をまたがない程度に小さく、かつ f32 で差が潰れない大きさ。
+    const KNOT_PROBE_OFFSET: f32 = 2.0e-3;
+
+    /// 速度を測る中央差分の半幅（秒）。`KNOT_PROBE_OFFSET` より小さいこと。
+    const PROBE_H: f32 = 5.0e-4;
+
+    /// 「継ぎ目が内側の制御点より悪くない」と認める許容倍率。
+    /// f32 の丸めと、閉じる区間だけ隣接点の取り方が違うぶんの誤差を吸収する。
+    const SEAM_TOLERANCE: f32 = 1.05;
+
+    /// 閉じる区間の平均速度が通常区間の平均速度と「揃っている」と認める比の上限。
+    ///
+    /// 道のりを折れ線で近似しているぶんの誤差（数 %）を吸収する幅。
+    /// 固定 1 秒だった従来実装では、間隔の不揃いなパスでこの比が 4〜5 倍に達する。
+    const SEAM_AVERAGE_SPEED_RATIO_MAX: f32 = 1.10;
+
+    /// 曲線を走査する刻み幅（秒）。区間内で一気に進んでも取りこぼさない細かさにする。
+    const SCAN_STEP: f32 = 1.0e-3;
+
+    /// 隣り合うサンプル（`SCAN_STEP` = 1ms ぶん）の接線が「連続に繋がっている」と
+    /// みなす内積の下限。約 8 度まで許す。
+    ///
+    /// 制御点 1 つぶんが既定 1 秒なので、1ms は区間の 1/1000。滑らかな曲線なら
+    /// どんなに急な曲がりでもこの間に 1 度も回らない。これを割るのは
+    /// **カスプ（速度が 0 に潰れて向きが飛ぶ点）がある**ときだけで、
+    /// それが「一度クルっと回ってもう一度前を向く」の候補だった症状にあたる。
+    const TANGENT_DOT_MIN: f32 = 0.99;
+
+    /// 速度比の判定から外す下限速度（実質停止しているサンプル）。
+    const SPEED_MIN: f32 = 1.0e-3;
+
+    // ─── ヘルパ ─────────────────────────────────────────────
+
+    /// 位置の列から「時刻 = 添字」「指定の補間方法」の閉ループを作る。
+    fn closed_loop(positions: &[[f32; 3]], interp: ControlPointInterp) -> ControlPointComponent {
+        ControlPointComponent {
+            points: positions
+                .iter()
+                .enumerate()
+                .map(|(i, p)| ControlPoint {
+                    position: *p,
+                    time: i as f32,
+                    interp,
+                    ..Default::default()
+                })
+                .collect(),
+            closed: true,
+        }
+    }
+
+    /// XZ 平面の正 n 角形（半径 r）。等間隔＝継ぎ目も他区間と同条件になる基準ケース。
+    fn regular_polygon(n: usize, r: f32) -> Vec<[f32; 3]> {
+        let angles: Vec<f32> = (0..n)
+            .map(|i| (i as f32) / (n as f32) * std::f32::consts::TAU)
+            .collect();
+        ring(&angles, r)
+    }
+
+    /// 半径 r の円周上に、指定した角度（度）の順で点を置いた輪。
+    ///
+    /// 角度の間隔を変えることで「区間の弦長だけが不揃いな、素直な凸ループ」を作れる。
+    /// **行って戻るだけのヘアピン経路を検証に使ってはいけない**: 折り返し点では
+    /// 進行方向が本当に 180 度反転するので、バグでない反転を検出してしまう。
+    fn ring(angles_rad: &[f32], r: f32) -> Vec<[f32; 3]> {
+        angles_rad.iter().map(|a| [r * a.cos(), 0.0, r * a.sin()]).collect()
+    }
+
+    /// 度 → ラジアン（テストの読みやすさのため）。
+    fn deg(d: f32) -> f32 {
+        d.to_radians()
+    }
+
+    /// 時刻 t における経路上の速さ（|dP/dt|）を中央差分で測る。
+    fn speed_at(eval: &PathEval, t: f32) -> f32 {
+        let a = eval.position_at_time(t - PROBE_H).expect("位置が取れること");
+        let b = eval.position_at_time(t + PROBE_H).expect("位置が取れること");
+        let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / (2.0 * PROBE_H)
+    }
+
+    /// 制御点（時刻 `t`）をまたぐ速さの跳ね幅（`速い側 / 遅い側`、1.0 が完全連続）。
+    fn speed_jump_at_knot(eval: &PathEval, t: f32) -> f32 {
+        let before = speed_at(eval, t - KNOT_PROBE_OFFSET);
+        let after = speed_at(eval, t + KNOT_PROBE_OFFSET);
+        if before <= SPEED_MIN || after <= SPEED_MIN {
+            return 1.0; // 実質停止している点は比が意味を持たない
+        }
+        before.max(after) / before.min(after)
+    }
+
+    /// **継ぎ目の速度の跳ね幅が、内側の制御点の跳ね幅を超えないこと**を表明する。
+    ///
+    /// 継ぎ目は 2 箇所ある（最後の点で閉じる区間へ入るところ、
+    /// 最初の点で通常区間へ戻るところ）ので両方を見る。
+    fn assert_seam_speed_no_worse_than_interior(name: &str, comp: &ControlPointComponent) {
+        let eval = PathEval::from_component(comp, &Transform::identity());
+        let n = comp.points.len();
+
+        // 内側の制御点（点 1 〜 点 n-2）での跳ね幅の最大値 ＝ このパス固有の「普通の悪さ」。
+        let interior = (1..n - 1)
+            .map(|i| speed_jump_at_knot(&eval, comp.points[i].time))
+            .fold(1.0f32, f32::max);
+
+        // 継ぎ目の 2 箇所。1 周の終わり（= 最初の点へ戻るところ）は duration の位置。
+        let last_time = comp.points[n - 1].time;
+        let loop_end = comp.points[0].time + eval.duration().expect("1 周時間");
+        let seam_in = speed_jump_at_knot(&eval, last_time);
+        let seam_out = speed_jump_at_knot(&eval, loop_end);
+        let seam = seam_in.max(seam_out);
+
+        let limit = interior * SEAM_TOLERANCE;
+        assert!(
+            seam <= limit,
+            "[{name}] 継ぎ目だけ速度が跳んでいる: 継ぎ目 {seam:.3}（入り {seam_in:.3} / 出口 {seam_out:.3}）\
+             > 内側の制御点の最大 {interior:.3} × 許容 {SEAM_TOLERANCE}\
+             ＝ 継ぎ目だけ突進する／足踏みする",
+        );
+    }
+
+    /// **閉じる区間の平均速度が、通常区間の平均速度と一致すること**を表明する。
+    ///
+    /// 「継ぎ目の通過に時間がかかる／そこだけ突進する」は区間まるごとの体感なので、
+    /// 瞬間速度ではなく**区間の平均速度**で見るのが症状に対応した測り方。
+    /// 瞬間速度の連続性まで求めると、区間ごとに時刻で正規化する Catmull-Rom では
+    /// 原理的に達成できない（区間の弦長で時刻を割り当て直す＝別の設計になる）。
+    fn assert_seam_average_speed_matches(name: &str, comp: &ControlPointComponent) {
+        let eval = PathEval::from_component(comp, &Transform::identity());
+        let n = comp.points.len();
+        let t0 = comp.points[0].time;
+        let last_time = comp.points[n - 1].time;
+
+        // 区間の道のりを折れ線で測る（時刻で等分してサンプルする）。
+        let travelled = |from: f32, to: f32| -> f32 {
+            const SAMPLES: usize = 64;
+            let mut len = 0.0;
+            let mut prev = eval.position_at_time(from).expect("位置");
+            for s in 1..=SAMPLES {
+                let t = from + (to - from) * (s as f32 / SAMPLES as f32);
+                let p = eval.position_at_time(t).expect("位置");
+                let d = [p[0] - prev[0], p[1] - prev[1], p[2] - prev[2]];
+                len += (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                prev = p;
+            }
+            len
+        };
+
+        let interior_speed = travelled(t0, last_time) / (last_time - t0);
+        let closing = eval.closing_duration();
+        // 継ぎ目の直前・直後をわずかに避けてサンプルする（境界での丸め対策）。
+        let closing_speed = travelled(last_time, last_time + closing) / closing;
+
+        let ratio = closing_speed.max(interior_speed) / closing_speed.min(interior_speed);
+        assert!(
+            ratio <= SEAM_AVERAGE_SPEED_RATIO_MAX,
+            "[{name}] 閉じる区間の平均速度が他区間と揃っていない: \
+             閉じる区間 {closing_speed:.3} / 通常区間 {interior_speed:.3}（比 {ratio:.3} > {SEAM_AVERAGE_SPEED_RATIO_MAX}）\
+             ＝ 継ぎ目だけ突進する／通過に時間がかかる",
+        );
+    }
+
+    /// **1 周を通して接線が連続であること**を表明する（CatmullRom 専用）。
+    ///
+    /// Linear は制御点で必ず角ばる（＝接線が跳ぶ）ので、この判定の対象外。
+    ///
+    /// 継ぎ目を特別扱いせず 1 周まるごと走査するのは、
+    /// 「継ぎ目だけ直しても他の点でカスプが残れば同じ症状が出る」ため。
+    fn assert_no_cusp(name: &str, comp: &ControlPointComponent) {
+        let eval = PathEval::from_component(comp, &Transform::identity());
+        let dur = eval.duration().expect("1 周時間");
+        let t0 = comp.points[0].time;
+
+        let mut prev: Option<[f32; 3]> = None;
+        let mut t = t0;
+        while t <= t0 + dur {
+            let tan = path_tangent_at(&eval, t).expect("1 周を通して向きが定まること");
+            if let Some(p) = prev {
+                let dot: f32 = p[0] * tan[0] + p[1] * tan[1] + p[2] * tan[2];
+                assert!(
+                    dot >= TANGENT_DOT_MIN,
+                    "[{name}] 時刻 {t:.3} で接線が跳んだ（内積 {dot:.5} < {TANGENT_DOT_MIN}）: \
+                     {p:?} → {tan:?} ＝ 曲線にカスプ／輪ができており、\
+                     目標ヨーが大きく回る（「クルっと回る」）",
+                );
+            }
+            prev = Some(tan);
+            t += SCAN_STEP;
+        }
+    }
+
+    // ─── 疑い (a): 閉じる区間の所要時刻が固定値だった問題 ───────
+
+    /// 閉じる区間の所要時刻が**弦長に比例**すること（新しい時刻定義そのものの表明）。
+    ///
+    /// 等速で並べた 3 点（10m/s）＋ 長さ 20m の閉じる弦 → 閉じる区間は 2 秒。
+    #[test]
+    fn closing_duration_is_proportional_to_chord_length() {
+        let comp = closed_loop(
+            &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [20.0, 0.0, 0.0]],
+            ControlPointInterp::Linear,
+        );
+        let eval = PathEval::from_component(&comp, &Transform::identity());
+        let closing = eval.closing_duration();
+        assert!(
+            (closing - 2.0).abs() < 1.0e-3,
+            "閉じる区間は平均速度 10m/s で 20m ＝ 2 秒になること（実際: {closing}）",
+        );
+        assert!(
+            (eval.duration().expect("1 周時間") - 4.0).abs() < 1.0e-3,
+            "1 周 = 2 秒（通常区間） + 2 秒（閉じる区間）",
+        );
+    }
+
+    /// **等間隔の輪では従来どおり 1 秒**であること（既定の点列の見え方を変えていない）。
+    #[test]
+    fn closing_duration_matches_default_step_on_uniform_loop() {
+        let comp = closed_loop(&regular_polygon(8, 10.0), ControlPointInterp::Linear);
+        let eval = PathEval::from_component(&comp, &Transform::identity());
+        assert!(
+            (eval.closing_duration() - 1.0).abs() < 1.0e-3,
+            "等間隔・等時間なら閉じる区間も 1 秒（実際: {}）",
+            eval.closing_duration(),
+        );
+    }
+
+    /// **最後の点が最初の点とほぼ重なる**輪で、継ぎ目に足踏みが生じないこと。
+    ///
+    /// 「手で輪を閉じたうえで closed も立てた」よくある作り方。
+    /// 固定 1 秒だと、ほぼ 0m の区間に丸 1 秒かかって必ずその場で止まって見える。
+    #[test]
+    fn duplicated_endpoint_does_not_stall() {
+        let comp = closed_loop(
+            &[
+                [10.0, 0.0, 0.0],
+                [0.0, 0.0, 10.0],
+                [-10.0, 0.0, 0.0],
+                [0.0, 0.0, -10.0],
+                [10.0, 0.0, 0.0], // 先頭と同じ位置
+            ],
+            ControlPointInterp::Linear,
+        );
+        let eval = PathEval::from_component(&comp, &Transform::identity());
+        let closing = eval.closing_duration();
+        assert!(
+            closing < 0.01,
+            "重なった端点の区間は実質ゼロ秒であること（実際: {closing} 秒）",
+        );
+        assert!(closing > 0.0, "ゼロ除算を避けるため正であること（実際: {closing}）");
+    }
+
+    /// **閉じる弦が他区間より長い輪**で、継ぎ目だけ速度が跳ばないこと。
+    /// 固定 1 秒だと閉じる区間で数倍に突進する。
+    #[test]
+    fn long_closing_chord_speed_is_no_worse_than_interior() {
+        // 円周上の 0°/40°/80°/120°/160° に点を密に置く。
+        // 残りの 160° → 360°（＝閉じる区間）だけが他の 5 倍の弧になる。
+        let pts = ring(&[deg(0.0), deg(40.0), deg(80.0), deg(120.0), deg(160.0)], 10.0);
+        for interp in [ControlPointInterp::Linear, ControlPointInterp::CatmullRom] {
+            assert_seam_average_speed_matches(
+                &format!("閉じる弦が長い輪 / {interp:?}"),
+                &closed_loop(&pts, interp),
+            );
+        }
+        // 直線補間では瞬間速度まで連続になること（区間内で速さが一定なので厳密に測れる）。
+        assert_seam_speed_no_worse_than_interior(
+            "閉じる弦が長い輪 / Linear",
+            &closed_loop(&pts, ControlPointInterp::Linear),
+        );
+    }
+
+    /// **閉じる弦が他区間より短い輪**で、継ぎ目だけ速度が落ちないこと
+    /// （固定 1 秒だと継ぎ目で足踏みする ＝「通過に時間がかかる」の直接の再現）。
+    #[test]
+    fn short_closing_chord_speed_is_no_worse_than_interior() {
+        // 円周上の 0°/120°/240°/330° に点を置く。最後の 330° → 360° が
+        // 閉じる区間で、他の区間（120° ぶん）の 1/4 しかない。
+        let pts = ring(&[deg(0.0), deg(120.0), deg(240.0), deg(330.0)], 10.0);
+        for interp in [ControlPointInterp::Linear, ControlPointInterp::CatmullRom] {
+            assert_seam_average_speed_matches(
+                &format!("閉じる弦が短い輪 / {interp:?}"),
+                &closed_loop(&pts, interp),
+            );
+        }
+        assert_seam_speed_no_worse_than_interior(
+            "閉じる弦が短い輪 / Linear",
+            &closed_loop(&pts, ControlPointInterp::Linear),
+        );
+    }
+
+    /// **等間隔の円**（既定の「1 点 = 1 秒」）で継ぎ目の速度が連続であること（退行防止）。
+    #[test]
+    fn uniform_circle_seam_speed_is_continuous() {
+        for interp in [ControlPointInterp::Linear, ControlPointInterp::CatmullRom] {
+            assert_seam_speed_no_worse_than_interior(
+                &format!("等間隔の円 / {interp:?}"),
+                &closed_loop(&regular_polygon(8, 10.0), interp),
+            );
+        }
+    }
+
+    // ─── 疑い (b): Catmull-Rom のカスプで接線が反転する問題 ─────
+
+    /// **等間隔の円**では 1 周を通して接線が滑らかに回ること（基準ケース）。
+    #[test]
+    fn uniform_circle_has_no_cusp() {
+        assert_no_cusp(
+            "等間隔の円 / CatmullRom",
+            &closed_loop(&regular_polygon(8, 10.0), ControlPointInterp::CatmullRom),
+        );
+    }
+
+    /// **間隔が不揃いな輪**を Catmull-Rom で閉じても接線が反転しないこと。
+    ///
+    /// uniform Catmull-Rom（α = 0）は隣接区間の弦長が大きく違う点の周りで輪を描き、
+    /// 進行方向が一瞬逆を向く。中心求心（α = 0.5）版ならカスプも自己交差も生じない。
+    #[test]
+    fn nonuniform_loop_has_no_cusp() {
+        // 前半に点を密集させ、閉じる区間だけ大きく空けた輪。
+        // uniform Catmull-Rom はこの「間隔が急変する点」の周りで輪を描く。
+        let pts = ring(&[deg(0.0), deg(40.0), deg(80.0), deg(120.0), deg(160.0)], 10.0);
+        assert_no_cusp(
+            "間隔が不揃いな輪 / CatmullRom",
+            &closed_loop(&pts, ControlPointInterp::CatmullRom),
+        );
+    }
+
+    /// **点が極端に密集した輪**でも接線が連続であること。
+    ///
+    /// 円周の 0°/5°/10° に 3 点を固めて置き、残りを 180° の 1 点で結ぶ輪。
+    /// 隣接区間の弦長が 20 倍以上違う極端な配置で、Catmull-Rom の隣接点の
+    /// 取り方（閉ループの `% n` 周回）が壊れると真っ先に破綻する形。
+    #[test]
+    fn clustered_points_have_no_cusp() {
+        let pts = ring(&[deg(0.0), deg(5.0), deg(10.0), deg(180.0)], 10.0);
+        assert_no_cusp(
+            "密集した点の輪 / CatmullRom",
+            &closed_loop(&pts, ControlPointInterp::CatmullRom),
+        );
+    }
+
+    /// **縦横比の大きい楕円**でも接線が連続であること。
+    #[test]
+    fn ellipse_has_no_cusp() {
+        let pts: Vec<[f32; 3]> = (0..8)
+            .map(|i| {
+                let a = (i as f32) / 8.0 * std::f32::consts::TAU;
+                [20.0 * a.cos(), 0.0, 5.0 * a.sin()]
+            })
+            .collect();
+        assert_no_cusp("楕円 / CatmullRom", &closed_loop(&pts, ControlPointInterp::CatmullRom));
+    }
+}
+

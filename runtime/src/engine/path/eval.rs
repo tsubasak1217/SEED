@@ -56,13 +56,35 @@ pub const PATH_MIN_STEP_M: f32 = 0.01;
 /// パスが「区間を持つ」ために必要な最小の点数。
 pub const PATH_MIN_POINTS_FOR_SEGMENT: usize = 2;
 
-/// 閉ループ（`closed = true`）で「最後の点 → 最初の点」を結ぶ区間の所要時刻。
+/// 閉ループの「最後の点 → 最初の点」区間の所要時刻の**フォールバック値**。
 ///
-/// 制御点 1 つぶんの既定時間（`DEFAULT_TIME_STEP`）をそのまま採る。
-/// こうすると「点を追加順に置いただけのパス」を閉じたとき、
-/// **閉じる区間だけ速い／遅い**という不自然さが出ない
-/// （既定では全区間が 1 ステップずつの等時間になる）。
+/// 通常この区間の所要時刻は「他の区間の平均速度で、この区間の弦長を走り切る時間」
+/// として**距離比例で決める**（[`PathEval::closing_duration`]）。
+/// 平均速度が定義できないパス（全点が同時刻／点列の時刻が逆行／全点が同一座標）でだけ、
+/// 制御点 1 つぶんの既定時間（`DEFAULT_TIME_STEP`）へ退避する。
+///
+/// **なぜ固定値をやめたか**: 固定 1 秒にすると、閉じる区間の弦長が他の区間と違うパスで
+/// 継ぎ目だけ速度が跳ぶ（弦が長ければ突進し、短ければその場で足踏みする）。
+/// 経路移動では「継ぎ目の通過に時間がかかる」「速度が不連続に変わる」として体感される。
 pub const PATH_CLOSING_SEGMENT_DURATION: f32 = DEFAULT_TIME_STEP;
+
+/// 閉じる区間の所要時刻の下限（秒）。
+///
+/// 「最後の点と最初の点がほぼ同一座標」（手で輪を閉じたうえで `closed` も立てた）パスでは
+/// 距離比例の所要時刻が 0 に潰れる。0 のままだと時刻の剰余（`locate_time`）でゼロ除算になるので、
+/// 検知可能な最小の正値で切る。実時間としては無視できる長さなので、
+/// 「重なった点で足踏みしない」という期待どおりの挙動になる。
+pub const PATH_MIN_CLOSING_DURATION: f32 = 1.0e-4;
+
+/// 閉じる区間の所要時刻を距離比例で決めるとき、曲線区間の**長さ**を測る分割数。
+///
+/// 弦長（両端の直線距離）で代用すると、曲がりの強い区間ほど実際の道のりを過小評価する。
+/// 継ぎ目だけ大きく曲がるパス（点を前半に密集させた輪など）では、弦長基準だと
+/// 継ぎ目で 1.7 倍ほど速度が跳ねる。8 分割の折れ線近似で、その跳ねが
+/// 内側の制御点と同程度（誤差数 %）まで落ちる。
+///
+/// 直線・階段の区間は弦長がそのまま道のりなので分割しない（＝この定数は使わない）。
+pub const PATH_ARC_LENGTH_SAMPLES: usize = 8;
 
 // ─── ResolvedControlPoint ─────────────────────────────────────
 
@@ -109,6 +131,13 @@ pub struct PathEval {
     /// true のとき「最後の点 → 最初の点」の区間が 1 つ増え、
     /// 時刻の問い合わせは端でクランプせず**周回**する。
     closed: bool,
+    /// 閉じる区間の所要時刻（秒）。構築時に**距離比例**で 1 度だけ求めてキャッシュする。
+    ///
+    /// 毎回の時刻問い合わせで点列を走査し直すと `locate_time` が O(n) から
+    /// 「O(n) の前処理 + O(n) の探索」になる（接線 1 本で 2 回サンプルするので効く）。
+    /// 点列は構築後に変わらないので、ここで固定してよい。
+    /// 開いたパス・点が 2 個未満のときは使われない（0.0）。
+    closing_duration: f32,
 }
 
 impl PathEval {
@@ -155,7 +184,86 @@ impl PathEval {
                 interp:   p.interp,
             }
         }).collect();
-        Self { points: resolved, closed }
+        let mut out = Self { points: resolved, closed, closing_duration: 0.0 };
+        out.closing_duration = out.compute_closing_duration();
+        out
+    }
+
+    /// 閉じる区間の所要時刻を**距離比例**で求める（構築時に 1 度だけ呼ばれる）。
+    ///
+    /// ## 定義
+    /// 通常区間（点 0 → … → 点 n-1）の平均速度
+    /// `Σ道のり / (末尾 time − 先頭 time)` で、閉じる区間の道のりを走り切る時間を採る。
+    ///
+    /// ```text
+    /// closing_duration = len(閉じる区間) / (Σ len(通常区間 i) / (t[n-1] - t[0]))
+    /// ```
+    ///
+    /// これで**閉じる区間の平均速度が他区間の平均速度と一致**し、継ぎ目で速度が跳ばない。
+    /// 等間隔・等時間のパス（既定の「1 点 = 1 秒」）ではちょうど `DEFAULT_TIME_STEP` になるので、
+    /// 従来の見え方は変わらない。
+    ///
+    /// 「道のり」は弦長ではなく[`PathEval::segment_arc_length`]（曲線は折れ線近似）で測る。
+    /// 弦長で代用すると、継ぎ目だけ大きく曲がるパスで速度が跳ねたままになる。
+    ///
+    /// ## 退避
+    /// 平均速度が定義できないとき（開いたパス／点が 2 個未満／時刻の幅が 0 以下／
+    /// 通常区間の道のりの合計が 0）は `PATH_CLOSING_SEGMENT_DURATION` を返す。
+    /// 求まった値は `PATH_MIN_CLOSING_DURATION` で下限を切る（重複端点でのゼロ除算回避）。
+    fn compute_closing_duration(&self) -> f32 {
+        let n = self.points.len();
+        if !self.closed || n < PATH_MIN_POINTS_FOR_SEGMENT {
+            return 0.0;
+        }
+        let time_span = self.points[n - 1].time - self.points[0].time;
+        if time_span <= PATH_EPSILON {
+            return PATH_CLOSING_SEGMENT_DURATION;
+        }
+        // 通常区間は添字 0..n-2（閉じる区間 n-1 を除く）。
+        let length_sum: f32 = (0..n - 1).map(|i| self.segment_arc_length(i)).sum();
+        if length_sum <= PATH_EPSILON {
+            return PATH_CLOSING_SEGMENT_DURATION;
+        }
+        let average_speed = length_sum / time_span;
+        let closing_length = self.segment_arc_length(n - 1);
+        (closing_length / average_speed).max(PATH_MIN_CLOSING_DURATION)
+    }
+
+    /// 区間 `index` の道のり（ワールド単位）。
+    ///
+    /// - `Linear` / `Step` … 弦長がそのまま道のり（曲がらないので分割不要）。
+    /// - `CatmullRom` … `PATH_ARC_LENGTH_SAMPLES` 分割の折れ線で近似する。
+    ///
+    /// 曲線を弦長で代用しないのは、曲がりの強い区間ほど道のりを過小評価し、
+    /// 「その区間だけ速い」時刻配分になってしまうため。
+    fn segment_arc_length(&self, index: usize) -> f32 {
+        if index >= self.segment_count() {
+            return 0.0;
+        }
+        let end = self.segment_end_index(index);
+        match self.points[index].interp {
+            ControlPointInterp::Linear | ControlPointInterp::Step => {
+                distance3(self.points[index].position, self.points[end].position)
+            }
+            ControlPointInterp::CatmullRom => {
+                let mut length = 0.0;
+                let mut prev = self.eval_segment(index, 0.0).position;
+                for s in 1..=PATH_ARC_LENGTH_SAMPLES {
+                    let u = s as f32 / PATH_ARC_LENGTH_SAMPLES as f32;
+                    let p = self.eval_segment(index, u).position;
+                    length += distance3(prev, p);
+                    prev = p;
+                }
+                length
+            }
+        }
+    }
+
+    /// 閉じる区間（最後の点 → 最初の点）の所要時刻（秒）。開いたパスでは 0。
+    ///
+    /// 定義は [`PathEval::compute_closing_duration`] を参照（距離比例。速度が継ぎ目で連続になる）。
+    pub fn closing_duration(&self) -> f32 {
+        if self.is_closed() { self.closing_duration } else { 0.0 }
     }
 
     /// 解決済み制御点列への参照（描画・ピッキングが点そのものを必要とする）。
@@ -198,15 +306,15 @@ impl PathEval {
     /// 点列の `time` が単調でない場合でも「先頭と末尾」をそのまま使う
     /// （並べ替えはしない ＝ 添字の順序がパスの順序であるという契約を守る）。
     ///
-    /// **閉ループのときは終了時刻に `PATH_CLOSING_SEGMENT_DURATION` を足す**
-    /// （最後の点の時刻 + 1 ステップで最初の点へ戻り、そこが 1 周ぶんの終わり）。
+    /// **閉ループのときは終了時刻に閉じる区間の所要時刻（[`PathEval::closing_duration`]）を足す**
+    /// （最後の点の時刻 + 閉じる区間ぶんで最初の点へ戻り、そこが 1 周ぶんの終わり）。
     /// この定義のおかげで `duration()` がそのまま「1 周の長さ」になり、
     /// 進捗 1.0 と時刻 `t0 + duration` がどちらも始点へ戻る。
     pub fn time_range(&self) -> Option<(f32, f32)> {
         let first = self.points.first()?;
         let last  = self.points.last()?;
         let end = if self.is_closed() {
-            last.time + PATH_CLOSING_SEGMENT_DURATION
+            last.time + self.closing_duration()
         } else {
             last.time
         };
@@ -372,7 +480,7 @@ impl PathEval {
     /// （それでも見つからなければ末尾へクランプする）。
     ///
     /// 閉ループでは 1 周ぶんの時刻
-    /// （末尾 time − 先頭 time ＋ `PATH_CLOSING_SEGMENT_DURATION`）で剰余を取り、
+    /// （末尾 time − 先頭 time ＋ 閉じる区間の所要時刻）で剰余を取り、
     /// **クランプせず周回**する。負の時刻でも正しく巻き戻るよう `rem_euclid` を使う。
     fn locate_time(&self, t: f32) -> Option<(usize, f32)> {
         let n = self.points.len();
@@ -381,7 +489,8 @@ impl PathEval {
 
         if self.is_closed() {
             let t0       = self.points[0].time;
-            let loop_len = (self.points[n - 1].time - t0) + PATH_CLOSING_SEGMENT_DURATION;
+            let closing  = self.closing_duration();
+            let loop_len = (self.points[n - 1].time - t0) + closing;
             // 1 周の長さが 0 以下（全点同時刻・時刻が逆行しているなど）なら
             // 剰余が定義できないので先頭へ寄せる（発散させない）。
             if loop_len <= PATH_EPSILON { return Some((0, 0.0)); }
@@ -399,7 +508,8 @@ impl PathEval {
             }
             // 閉じる区間（最後の点 → 最初の点）。上のどれにも入らない時刻はここに属する。
             let a = self.points[n - 1].time;
-            let u = ((wrapped - a) / PATH_CLOSING_SEGMENT_DURATION).clamp(0.0, 1.0);
+            // `closing` は `compute_closing_duration` が下限を切っているので必ず正。
+            let u = ((wrapped - a) / closing).clamp(0.0, 1.0);
             return Some((n - 1, u));
         }
 
