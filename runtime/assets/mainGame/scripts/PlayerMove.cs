@@ -96,6 +96,18 @@ public class PlayerMove : SEEDScript
     [SerializeField(Label = "経路の高さに追従")]
     private bool followPathHeight = true;
 
+    /// <summary>
+    /// カメラ目標の親（CameraTargetParent）。設定すると、毎フレーム
+    /// <b>経路上の現在位置＋経路接線の向き</b>へ更新する。
+    ///
+    /// 接線は「経路の時刻が進む向き」で入力の正負を掛けない（＝逆走しても
+    /// <b>振り返らない</b>）ので、この親の子に置いたオフセット（カメラの目標点）は
+    /// プレイヤーが反転しても反対側へ回り込まない。
+    /// CameraMove はその子のトランスフォームを目標に補間するだけでよい。
+    /// </summary>
+    [SerializeField(Label = "カメラ目標の親（経路上を追従）")]
+    private SEED.Transform? cameraTargetParent = null;
+
     // ─── 回転補間 ─────────────────────────────────────────────
     //
     // カメラ（CameraMove）は移動方向から自前で視点を安定化させ、逆走しても
@@ -251,6 +263,22 @@ public class PlayerMove : SEEDScript
         transform.Position = followPathHeight
             ? onPath
             : new SEED.Vector3(onPath.x, transform.Position.y, onPath.z);
+
+        // カメラ目標の親を経路上の現在位置＋経路接線の向きへ更新する。
+        // 接線に入力の正負（effectiveAxis）を掛けないのが要点: 逆走しても親は
+        // 振り返らないので、子に置いたカメラ目標点が反対側へ回り込まない。
+        if (cameraTargetParent is { } anchor && anchor.IsValid)
+        {
+            anchor.Position = onPath;
+            if (p.SampleTangent(pathTime) is { } pathDir && pathDir.SqrMagnitude > SqrEpsilon)
+            {
+                // ヨーだけ向ける（エンジン規約: yaw = atan2(x, z)、前方 +Z）。
+                // ピッチ/ロールは 0 のまま（坂でも子のオフセットの高さ関係を崩さない）。
+                float anchorYaw = SEED.Mathf.Atan2(pathDir.x, pathDir.z) * SEED.Mathf.Rad2Deg;
+                anchor.Rotation = new SEED.Vector3(0f, anchorYaw, 0f);
+            }
+            // 接線が定まらない場所（Step 区間・停留点）では直前の向きを維持する
+        }
 
         // 進行方向（接線）から目標ヨーを更新する。逆走中は接線を反転する。
         if (SEED.Mathf.Abs(effectiveAxis) > InputEpsilon)
