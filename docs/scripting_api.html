@@ -619,7 +619,7 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width">
+<section id="sec-components" data-keywords="Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width ControlPointPath ControlPoint コントロールポイント 制御点 経路 パス path レール 巡回 ルート 閉ループ ループ 周回 SamplePosition SampleTangent 接線 進行方向 Duration StartTime PointCount Closed">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -863,6 +863,50 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <b>重要</b>: <code>SetPoints</code> の点数上限は <code>LineRenderer.MaxPoints</code>（512）です。超えると <code>false</code> を返して何も変わりません。点列そのものは読み出せません（点数だけ <code>PointCount</code> で取れます）。
   </div>
 
+  <h3 id="cmp-controlpointpath">ControlPointPath（コントロールポイント経路：巡回・レール移動）</h3>
+  <p class="section-note">シーンに置いた<b>コントロールポイント列</b>（順序付きの点列）を、時刻を与えて評価します。補間・ワールド変換・閉ループの周回はエンジンが行うため、ビューポートに見えている線とまったく同じ経路を辿ります。<b>読み取り専用</b>（点列の編集はエディタで行う）です。</p>
+  <div class="api"><code class="sig">path.PointCount</code><span class="desc">int（<b>get のみ</b>。制御点の数）</span></div>
+  <div class="api"><code class="sig">path.Closed</code><span class="desc">bool（<b>get のみ</b>。閉ループか。制御点が 2 個未満なら false）</span></div>
+  <div class="api"><code class="sig">path.Duration</code><span class="desc">float（<b>get のみ</b>。1 周ぶんの所要時間・秒。閉ループの周回周期）</span></div>
+  <div class="api"><code class="sig">path.StartTime</code><span class="desc">float（<b>get のみ</b>。先頭の制御点の time ＝ 時刻の原点。範囲の終端は StartTime + Duration）</span></div>
+  <div class="api"><code class="sig">path.SamplePosition(time)</code><span class="desc">Vector3（時刻の<b>ワールド位置</b>。閉ループは周回／開経路は両端クランプ。点が無ければ Zero）</span></div>
+  <div class="api"><code class="sig">path.SampleTangent(time)</code><span class="desc">Vector3（時刻の<b>進行方向</b>・単位ベクトル・ワールド。向きが定まらなければ Zero）</span></div>
+<pre><span class="c">// レシピ: 閉ループ経路を進行方向へ向きながら移動する</span>
+<span class="k">public class</span> <span class="t">RailMove</span> : <span class="t">SEEDScript</span>
+{
+    [<span class="t">SerializeField</span>(Label = <span class="s">"経路"</span>)]       <span class="k">private</span> <span class="t">SEED.ControlPointPath</span>? path = <span class="k">null</span>;
+    [<span class="t">SerializeField</span>(Label = <span class="s">"移動速度"</span>)]   <span class="k">private</span> <span class="t">float</span> pathSpeed = 1.0f;
+    [<span class="t">SerializeField</span>(Label = <span class="s">"回転補間率"</span>)] <span class="k">private</span> <span class="t">float</span> turnLerpRate = 10.0f;
+
+    <span class="c">/// 経路上の現在時刻（秒）。閉ループならエンジン側で周回する。</span>
+    <span class="k">private</span> <span class="t">float</span> pathTime = 0f;
+
+    <span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx)
+    {
+        <span class="k">if</span> (path <span class="k">is not</span> { } p || !p.IsValid) <span class="k">return</span>;
+        <span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">SEED.InputMap</span>&gt;() <span class="k">is not</span> { } im) <span class="k">return</span>;
+
+        <span class="t">float</span> axis = im.GetVector2(<span class="s">"Move"</span>).y;              <span class="c">// 前後入力で経路上を進む／戻る</span>
+        pathTime += axis * pathSpeed * ctx.DeltaTime;
+        transform.Position = p.SamplePosition(pathTime);
+
+        <span class="c">// 進行方向（逆走時は符号反転）から目標ヨーを作り、最短回りで補間する</span>
+        <span class="k">var</span> tangent = p.SampleTangent(pathTime);
+        <span class="k">if</span> (tangent.SqrMagnitude &gt; 1e-6f &amp;&amp; <span class="t">SEED.Mathf</span>.Abs(axis) &gt; 1e-3f)
+        {
+            <span class="k">var</span> dir = axis &lt; 0f ? tangent * -1f : tangent;
+            <span class="t">float</span> targetYaw = <span class="t">SEED.Mathf</span>.Atan2(dir.x, dir.z) * <span class="t">SEED.Mathf</span>.Rad2Deg;
+            <span class="t">float</span> yaw = transform.Rotation.y;
+            <span class="t">float</span> delta = <span class="t">SEED.Mathf</span>.Repeat(targetYaw - yaw + 180f, 360f) - 180f;   <span class="c">// 最短回り</span>
+            yaw += delta * <span class="t">SEED.Mathf</span>.Clamped01(turnLerpRate * ctx.DeltaTime);
+            transform.Rotation = <span class="k">new</span> <span class="t">SEED.Vector3</span>(transform.Rotation.x, yaw, transform.Rotation.z);
+        }
+    }
+}</pre>
+  <div class="warn">
+    <b>重要</b>: 座標はすべて<b>ワールド空間</b>です（制御点はアクタ相対で保存されますが、取得時にそのアクタの Transform が合成済み）。時刻の単位・原点は制御点の <code>time</code> に従います（既定は「1 点 = 1 秒」）。閉ループでは時刻が <code>Duration</code> を周期に周回するので、時刻を増やし続けるだけでぐるぐる回れます。
+  </div>
+
   <h3>利用可能なコンポーネント一覧</h3>
   <table>
     <tr><th>コンポーネント名</th><th>取得</th><th>内容</th></tr>
@@ -880,6 +924,7 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><td><code>WaterLink</code></td><td><code>gameObject.GetComponent&lt;WaterLink&gt;()</code></td><td>水位グラフの開口。<b>開閉率（バルブ）</b>・開口寸法・流量係数</td></tr>
     <tr><td><code>LineRenderer</code></td><td><code>gameObject.GetComponent&lt;LineRenderer&gt;()</code></td><td>3D の線（釣り糸・ロープ・軌跡）。点列（SetPoints）・太さ・色・表示・座標系・深度テスト</td></tr>
     <tr><td><code>Text</code></td><td><code>gameObject.GetComponent&lt;Text&gt;()</code></td><td>キャンバス上の文字表示（HUD の数値・ラベル）。内容・サイズ・色・整列・行送り・レイヤー</td></tr>
+    <tr><td><code>ControlPointPath</code></td><td><code>gameObject.GetComponent&lt;ControlPointPath&gt;()</code></td><td>コントロールポイント経路（巡回・レール移動）。点数・閉ループ・1 周時間と、開始時刻と、時刻指定のワールド位置／進行方向サンプル（読み取り専用）</td></tr>
   </table>
   <p class="section-note">他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定です。</p>
 

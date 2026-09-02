@@ -33,19 +33,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::engine::components::{
     AnimClipKind, AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform,
-    InputMapComponent,
+    ControlPointComponent, InputMapComponent,
     LineRendererComponent, ModelComponent, ParticleEmitterComponent, SkinnedSpriteComponent,
     SkyboxComponent, SpriteComponent, TextAlign, TextComponent, TextVerticalAlign, Transform,
     WaterLinkComponent, WaterVolumeComponent, MAX_LINE_POINTS, SKY_ADJUST_MAX, SKY_ADJUST_MIN,
     SKY_HUE_SHIFT_MAX_DEG, SKY_HUE_SHIFT_MIN_DEG,
 };
 use crate::engine::core::input::action_map::{ActionMap, ActionRuntime};
+use crate::engine::path::PathEval;
 use crate::engine::core::input::{Input, InputState};
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::actor::ComponentSlot;
 use crate::engine::structs::objects::Actor;
 
 use super::input_bridge;
+use super::path_query::{path_position_at, path_tangent_at};
 
 // ─── スレッドローカル World ポインタ ──────────────────────────
 
@@ -328,6 +330,10 @@ const KIND_ANIMATOR: &str = "Animator";
 const KIND_PARTICLE: &str = "ParticleEmitter";
 const KIND_INPUT_MAP: &str = "InputMap";
 const KIND_LINE_RENDERER: &str = "LineRenderer";
+/// コントロールポイント列（汎用パス）。
+/// エディタ側 `ReferenceKindCatalog.ControlPointKind` と同じ綴りにすること
+/// （参照ピッカーが同じ種別名でスロットを絞り込むため）。
+const KIND_CONTROL_POINT: &str = "ControlPoint";
 
 // ─── 水面シェーダパラメータの動的フィールド名（Phase W8.2）────────
 //  `WaterVolume` の `shader_params` は**アセットが決める名前**のマップなので、
@@ -356,6 +362,7 @@ fn slot_is_kind(world: &World, slot: &ComponentSlot, kind: &str) -> bool {
         KIND_PARTICLE => world.get::<ParticleEmitterComponent>(slot.entity).is_some(),
         KIND_INPUT_MAP => world.get::<InputMapComponent>(slot.entity).is_some(),
         KIND_LINE_RENDERER => world.get::<LineRendererComponent>(slot.entity).is_some(),
+        KIND_CONTROL_POINT => world.get::<ControlPointComponent>(slot.entity).is_some(),
         _ => false,
     }
 }
@@ -834,6 +841,39 @@ fn read_floats(
                     }).unwrap_or([0.0; 4]);
                     if is_vec3 { put(out, &value[..3]) } else { put(out, &value[..1]) }
                 }
+            }
+        }
+        // ── コントロールポイント（汎用パス。スロット格納型: locate で解決）──
+        // 読み取り専用。時刻指定の位置・接線サンプルは値パラメータを伴うため
+        // このレジストリでは扱えず、専用 FFI（ffi_path_sample）が担当する。
+        "ControlPoint" => {
+            let e = locate::<ControlPointComponent>(world, entity)?;
+            let c = world.get::<ControlPointComponent>(e)?;
+            match field {
+                // 制御点の数（整数を f32 で受け渡す規約）
+                "point_count" => put(out, &[c.points.len() as f32]),
+                // **実効的な**閉ループか（点が 2 個未満なら区間が作れないので false）。
+                // PathEval::is_closed と同じ判定にして「閉じているのに周回しない」矛盾を防ぐ。
+                "closed" => {
+                    let closed = c.closed
+                        && c.points.len() >= crate::engine::path::PATH_MIN_POINTS_FOR_SEGMENT;
+                    put(out, &[if closed { 1.0 } else { 0.0 }])
+                }
+                // 1 周（開いたパスなら端から端まで）の所要時間。
+                // 時刻はアクタ変換の影響を受けないが、規則を二重管理しないため
+                // PathEval に計算させる。点が無ければ 0 を返す。
+                "duration" => {
+                    let eval = control_point_path_eval(world, entity)?;
+                    put(out, &[eval.duration().unwrap_or(0.0)])
+                }
+                // 経路の開始時刻（先頭の制御点の time）。
+                // 時刻の原点は点列が決めるので、消費側が「経路上の時刻」を自前で
+                // 保持するとき（レール移動の現在位置など）に範囲の下端として要る。
+                "start_time" => {
+                    let eval = control_point_path_eval(world, entity)?;
+                    put(out, &[eval.time_range().map(|(t0, _)| t0).unwrap_or(0.0)])
+                }
+                _ => None,
             }
         }
         _ => None,
@@ -1331,8 +1371,63 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
         // 水位グラフ（Phase W2.5）
         "WaterLink"       => locate::<WaterLinkComponent>(world, entity).is_some(),
         "WaterVolume"     => locate::<WaterVolumeComponent>(world, entity).is_some(),
+        // コントロールポイント（汎用パス。Phase: スクリプト経路移動）
+        "ControlPoint"    => locate::<ControlPointComponent>(world, entity).is_some(),
         _ => false,
     }
+}
+
+// ─── コントロールポイント（パス）評価の解決 ───────────────────
+//  スクリプトから見えるのは「スロット entity（GetComponent の戻り）」か
+//  「アクタのルート entity」のどちらかである。どちらで来ても
+//  ①点列を持つスロット ②点列をワールドへ解決するアクタ Transform
+//  の 2 つを揃える必要があるため、ここに解決を 1 本化する。
+
+/// entity（ルート or スロットのどちらでも可）が属するアクタのルート Transform。
+///
+/// 制御点は**アクタ相対**で保存されているため、ワールドへ出すには
+/// 「そのスロットを持つアクタ」の Transform が要る。
+/// ビューポートのギズモ（`control_point_scene_gizmo`）・川（`water::collect`）と
+/// 同じ「アクタのルート entity の Transform」を使うので、
+/// **見えている線とスクリプトが辿る線が一致する**。
+///
+/// アクタツリーが未公開（スクリプトフェーズ外）や、どのアクタにも属さない
+/// entity の場合は単位 Transform を返す（＝ローカル座標をそのまま使う）。
+fn actor_root_transform_of(world: &World, entity: Entity) -> Transform {
+    let actors_ptr = ACTORS_PTR.with(|p| p.get());
+    if actors_ptr.is_null() {
+        return Transform::identity();
+    }
+
+    /// ルート entity かスロット entity のどちらかが一致するアクタを再帰検索する。
+    fn find_owner(actors: &[Actor], e: Entity) -> Option<&Actor> {
+        for a in actors {
+            if a.entity == e || a.slots().iter().any(|s| s.entity == e) {
+                return Some(a);
+            }
+            if let Some(found) = find_owner(a.children(), e) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    // SAFETY: ACTORS_PTR はスクリプトフェーズ実行中のみ非 null で、その間ツリーは不変。
+    let actors = unsafe { &*actors_ptr };
+    find_owner(actors, entity)
+        .and_then(|a| world.get::<Transform>(a.entity).cloned())
+        .unwrap_or_else(Transform::identity)
+}
+
+/// entity（ルート or スロット）から、ワールド解決済みのパスを構築する。
+///
+/// コンポーネントが見つからなければ None。点が 0 個でも構築は成功する
+/// （問い合わせ側が一律 None を受け取る）。
+fn control_point_path_eval(world: &World, entity: Entity) -> Option<PathEval> {
+    let slot = locate::<ControlPointComponent>(world, entity)?;
+    let comp = world.get::<ControlPointComponent>(slot)?;
+    let actor_tf = actor_root_transform_of(world, slot);
+    Some(PathEval::from_component(comp, &actor_tf))
 }
 
 // ─── FFI アクセサ（C# から呼ばれる）──────────────────────────
@@ -2348,6 +2443,49 @@ unsafe extern "system" fn ffi_save_ctl(kind: i32, key: *const u8, key_len: i32) 
     }
 }
 
+// ─── コントロールポイント経路の時刻サンプル FFI ────────────────
+//  「時刻」という**値パラメータ**を伴う問い合わせなので、
+//  フィールド名だけで引く汎用レジストリ（get_floats）では表現できない。
+//  Raycast と同じ「新カテゴリ API」として専用エントリを 1 つ足している。
+//  受け渡しは既存どおり float 配列（Vector3 = 3 要素）。
+
+/// `ffi_path_sample` の問い合わせ種別: ワールド位置。
+/// **C# 側 `ScriptHost.PathQueryPosition` と一致させること。**
+const PATH_QUERY_POSITION: i32 = 0;
+/// `ffi_path_sample` の問い合わせ種別: 進行方向（単位ベクトル）。
+/// **C# 側 `ScriptHost.PathQueryTangent` と一致させること。**
+const PATH_QUERY_TANGENT: i32 = 1;
+
+/// パス上の 1 点を評価して out（3 要素）へ書く。書いた要素数を返す（失敗=0）。
+///
+/// `idx`/`generation` は ControlPoint スロット entity（またはアクタのルート entity）。
+/// `kind` は `PATH_QUERY_*`。`time` の単位・原点は制御点の `time` に従う（既定は秒）。
+/// 閉ループは周回、開いたパスは両端クランプ。向きが定まらない場合の TANGENT は失敗（0）。
+unsafe extern "system" fn ffi_path_sample(
+    idx: u32, generation: u32, kind: i32, time: f32, out: *mut f32, cap: i32,
+) -> i32 {
+    let ptr = WORLD_PTR.with(|p| p.get());
+    if ptr.is_null() || out.is_null() || (cap as usize) < PATH_SAMPLE_LEN {
+        return 0;
+    }
+    let world = &*ptr;
+    let entity = Entity::from_raw(idx, generation);
+
+    let Some(eval) = control_point_path_eval(world, entity) else { return 0 };
+    let value = match kind {
+        PATH_QUERY_POSITION => path_position_at(&eval, time),
+        PATH_QUERY_TANGENT  => path_tangent_at(&eval, time),
+        _ => None,
+    };
+    let Some(v) = value else { return 0 };
+
+    std::ptr::copy_nonoverlapping(v.as_ptr(), out, PATH_SAMPLE_LEN);
+    PATH_SAMPLE_LEN as i32
+}
+
+/// `ffi_path_sample` が返す要素数（Vector3）。
+const PATH_SAMPLE_LEN: usize = 3;
+
 // ─── C# へ渡す関数ポインタ表 ─────────────────────────────────
 
 /// C# の #[StructLayout(Sequential)] ScriptHostApi と同一レイアウト。
@@ -2392,6 +2530,9 @@ pub struct ScriptHostApi {
     save_float:             unsafe extern "system" fn(i32, *const u8, i32, f32, *mut f32) -> i32,
     save_string:            unsafe extern "system" fn(i32, *const u8, i32, *const u8, i32, *mut u8, i32) -> i32,
     save_ctl:               unsafe extern "system" fn(i32, *const u8, i32) -> i32,
+    // コントロールポイント経路の時刻サンプル（SEED.ControlPointPath）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    path_sample:            unsafe extern "system" fn(u32, u32, i32, f32, *mut f32, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -2424,6 +2565,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     save_float:             ffi_save_float,
     save_string:            ffi_save_string,
     save_ctl:               ffi_save_ctl,
+    path_sample:            ffi_path_sample,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

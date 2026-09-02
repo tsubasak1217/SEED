@@ -963,6 +963,65 @@ public override void Update(ref NativeFrameContext ctx)
 
 > **重要**: 色調整の値域はエンジン側でクランプされます（色相 -180〜180 度、彩度／明度／コントラスト 0〜2）。既定値（0 / 1 / 1 / 1）では計算そのものが飛ばされ、調整なしと**完全に同じ**出力になります。
 
+### ControlPointPath（コントロールポイント経路：巡回・レール移動）
+
+シーンに置いた**コントロールポイント列**（順序付きの点列）を、時刻を与えて評価します。補間・ワールド変換・閉ループの周回はすべてエンジンが行うため、**ビューポートに見えている線とまったく同じ経路**を辿ります。読み取り専用（点列の編集はエディタで行う）です。
+
+```csharp
+if (gameObject.GetComponent<ControlPointPath>() is { } path)
+{
+    path.PointCount              // int（get。制御点の数）
+    path.Closed                  // bool（get。閉ループか。点が 2 個未満なら false）
+    path.Duration                // float（get。1 周ぶんの所要時間・秒）
+    path.StartTime               // float（get。先頭の制御点の time＝時刻の原点）
+
+    path.SamplePosition(t)       // Vector3（ワールド位置。閉ループは周回／開経路は両端クランプ）
+    path.SampleTangent(t)        // Vector3（進行方向の単位ベクトル・ワールド。定まらなければ Zero）
+}
+```
+
+> **重要**: 座標はすべて**ワールド空間**です（制御点はアクタ相対で保存されますが、取得時にそのアクタの Transform が合成済み）。時刻の単位・原点は制御点の `time` に従います（既定は「1 点 = 1 秒」）。閉ループでは時刻が `Duration` を周期に**周回**するので、時刻を増やし続けるだけでぐるぐる回れます。開いた経路は両端でクランプされ、経路の外へは出ません。
+
+#### レシピ: 閉ループ経路を進行方向を向きながら移動する
+
+別アクタに置いた経路を `[SerializeField]` で参照し、入力で経路上の時刻を進める／戻すだけで「レールに沿った移動」になります。向きは接線から求めた目標ヨーへ、最短回りで緩やかに補間します。
+
+```csharp
+using SEEDEditor.Scripting;
+
+public class RailMove : SEEDScript
+{
+    [SerializeField(Label = "経路")]      private SEED.ControlPointPath? path = null;
+    [SerializeField(Label = "移動速度")]  private float pathSpeed = 1.0f;
+    [SerializeField(Label = "回転補間率")] private float turnLerpRate = 10.0f;
+
+    /// <summary>経路上の現在時刻（秒）。閉ループならエンジン側で周回する。</summary>
+    private float pathTime = 0f;
+
+    public override void Update(ref NativeFrameContext ctx)
+    {
+        if (path is not { } p || !p.IsValid) return;
+        if (gameObject.GetComponent<SEED.InputMap>() is not { } im) return;
+
+        float axis = im.GetVector2("Move").y;              // 前後入力で経路上を進む／戻る
+        pathTime += axis * pathSpeed * ctx.DeltaTime;
+        transform.Position = p.SamplePosition(pathTime);
+
+        // 進行方向（逆走時は符号反転）から目標ヨーを作り、最短回りで補間する
+        var tangent = p.SampleTangent(pathTime);
+        if (tangent.SqrMagnitude > 1e-6f && SEED.Mathf.Abs(axis) > 1e-3f)
+        {
+            var dir = axis < 0f ? tangent * -1f : tangent;
+            float targetYaw = SEED.Mathf.Atan2(dir.x, dir.z) * SEED.Mathf.Rad2Deg;
+            float yaw = transform.Rotation.y;
+            float delta = SEED.Mathf.Repeat(targetYaw - yaw + 180f, 360f) - 180f;   // 最短回り
+            yaw += delta * SEED.Mathf.Clamped01(turnLerpRate * ctx.DeltaTime);
+            transform.Rotation = new SEED.Vector3(transform.Rotation.x, yaw, transform.Rotation.z);
+        }
+    }
+}
+```
+
 ### LineHelper（線の点列を作る補助・純 C#）
 
 `LineRenderer.SetPoints` に渡す点列を組み立てる静的ヘルパーです。エンジンへのアクセスを伴わないので、どこからでも呼べます。
@@ -1043,6 +1102,7 @@ public class FishingLine : SEEDScript
 | `LineRenderer` | `gameObject.GetComponent<LineRenderer>()` | 3D の線（釣り糸・ロープ・軌跡）。点列（SetPoints）・太さ・色・表示・座標系・深度テスト |
 | `Text` | `gameObject.GetComponent<Text>()` | キャンバス上の文字表示（HUD の数値・ラベル）。内容・サイズ・色・整列・行送り・レイヤー |
 | `Skybox` | `gameObject.GetComponent<Skybox>()` | 天球（equirectangular）のテクスチャパス・強度・色味と、**色調整**（色相シフト・彩度・明度・コントラスト）。調整は背景・反射・水面反射の空すべてに効く |
+| `ControlPointPath` | `gameObject.GetComponent<ControlPointPath>()` | コントロールポイント経路（巡回・レール移動）。点数・閉ループ・1 周時間と、開始時刻と、時刻指定のワールド位置／進行方向サンプル（読み取り専用） |
 
 > **重要**: `GetComponent<T>()` は `T?` を返し、同種コンポーネントを複数スロット持てます。`GetComponent<T>()`＝0 番目、`GetComponent<T>(index)`＝index 番目、`GetComponent<T>("Name")`＝スロット名一致。
 

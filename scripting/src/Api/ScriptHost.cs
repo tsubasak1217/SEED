@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -654,6 +654,37 @@ public static unsafe class ScriptHost
     /// <summary>SaveString の kind: 読み取り（Rust 側 SAVE_STR_KIND_GET と一致）。</summary>
     private const int SaveStringKindGet = 1;
 
+    // ── ControlPoint 経路の時刻サンプル ──────────────────────────
+
+    /// <summary>PathSample の kind: ワールド位置（Rust 側 PATH_QUERY_POSITION と一致）。</summary>
+    public const int PathQueryPosition = 0;
+    /// <summary>PathSample の kind: 進行方向（単位ベクトル）（Rust 側 PATH_QUERY_TANGENT と一致）。</summary>
+    public const int PathQueryTangent = 1;
+
+    /// <summary>ControlPoint 経路の要素数（Vector3。Rust 側 PATH_SAMPLE_LEN と一致）。</summary>
+    private const int PathSampleLen = 3;
+
+    /// <summary>
+    /// ControlPoint 経路を指定時刻で評価する（ワールド空間）。
+    ///
+    /// slot は ControlPoint コンポーネントのスロット entity。
+    /// kind は <see cref="PathQueryPosition"/> / <see cref="PathQueryTangent"/>。
+    /// 評価できない場合（点が無い・向きが定まらない）は false を返し、value は Zero。
+    /// </summary>
+    public static bool TryPathSample(Entity slot, int kind, float time, out Vector3 value)
+    {
+        value = Vector3.Zero;
+        if (!_available || _api.PathSample == null || !slot.IsValid) return false;
+
+        float* buf = stackalloc float[PathSampleLen];
+        if (_api.PathSample(slot.Index, slot.Generation, kind, time, buf, PathSampleLen) != PathSampleLen)
+        {
+            return false;
+        }
+        value = new Vector3(buf[0], buf[1], buf[2]);
+        return true;
+    }
+
     // ── 物理（Raycast）──────────────────────────────────────────
 
     /// <summary>
@@ -794,4 +825,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, byte*, int, byte*, int, byte*, int, int> SaveString;
     /// <summary>(kind, key, keyLen) → 1/0（セーブデータ制御。kind: 0=Has/1=DeleteKey/2=DeleteAll/3=Save）</summary>
     public delegate* unmanaged[Cdecl]<int, byte*, int, int> SaveCtl;
+    /// <summary>(idx, gen, kind, time, out float*, cap) → 書き込んだ要素数（3）/失敗=0。ControlPoint 経路の時刻サンプル（kind: 0=位置/1=進行方向）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, int, float, float*, int, int> PathSample;
 }
