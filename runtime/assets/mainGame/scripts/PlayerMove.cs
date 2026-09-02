@@ -32,12 +32,6 @@ public class PlayerMove : SEEDScript
     /// <summary>1 回転（度）。角度を周期に畳み込むのに使う。</summary>
     private const float FullTurnDegrees = 360f;
 
-    /// <summary>入力マッピングの符号「そのまま」。前後入力の +y が経路の時刻を進める向き。</summary>
-    private const float MappingForward = 1f;
-
-    /// <summary>入力マッピングの符号「反転」。前後入力の +y が経路の時刻を戻す向き。</summary>
-    private const float MappingReversed = -1f;
-
     /// <summary>
     /// 接線の符号ガードが働く、1 フレームの経路上の移動距離のしきい値（メートル）。
     ///
@@ -83,10 +77,9 @@ public class PlayerMove : SEEDScript
 
     // ─── 回転補間 ─────────────────────────────────────────────
     //
-    // カメラのアンカー切替は <b>CameraMove 側で完結する</b>。
-    // CameraMove はプレイヤーの Transform の位置変化を観測して
-    // 「移動方向の後方にあるアンカー」を自分で選ぶので、
-    // このスクリプトはカメラのことを何も知らなくてよい。
+    // カメラ（CameraMove）は移動方向から自前で視点を安定化させ、逆走しても
+    // 回り込まない（常に同じ側から見る）。そのため画面上の「前後」は反転せず、
+    // 入力の意味も常に一定（+y = 経路の正方向）。入力の切替処理は存在しない。
 
     /// <summary>
     /// 進行方向を向くときの回転補間の速さ（1/秒）。
@@ -138,26 +131,6 @@ public class PlayerMove : SEEDScript
     /// 「目標の更新（移動中のみ）」と「目標への補間（毎フレーム）」を分けて保持する。
     /// </summary>
     private float? targetYaw = null;
-
-    /// <summary>
-    /// 前後入力の符号を経路方向へ写す<b>マッピング符号</b>（+1 = そのまま / -1 = 反転）。
-    ///
-    /// 進行方向が反転するとカメラが反対側へ回り込み、画面上の「前」が入れ替わるので、
-    /// 入力の意味も入れ替える必要がある。詳しくは <see cref="UpdateInputLatch"/>。
-    /// </summary>
-    private float inputMapping = MappingForward;
-
-    /// <summary>
-    /// 前フレームに前後入力が押されていたか（押下 → 解放のエッジ検出に使う）。
-    /// </summary>
-    private bool wasInputHeld = false;
-
-    /// <summary>
-    /// 直近に<b>実際に走った</b>経路上の向き（+1 = 時刻が進む / -1 = 時刻が戻る）。
-    /// 入力を離しても保持するので、止まった瞬間にカメラが反対側へ戻らない。
-    /// null は「まだ一度も動いていない」。
-    /// </summary>
-    private float? travelSign = null;
 
     /// <summary>
     /// 前フレームの経路の接線（進行方向）。接線の符号ガードに使う。
@@ -212,26 +185,16 @@ public class PlayerMove : SEEDScript
     {
         if (gameObject.GetComponent<SEED.InputMap>() is not { } im) { return false; }
 
-        // 前後入力だけを使う（左右は経路に沿う移動では意味を持たない）
-        float rawAxis = im.GetVector2("Move").y;
-
-        // 入力ラッチを更新し、「経路に対して実際に効かせる入力」へ写す。
-        // ここより後ろは effectiveAxis だけを見る（生の入力は使わない）。
-        UpdateInputLatch(rawAxis);
-        float effectiveAxis = rawAxis * inputMapping;
+        // 前後入力だけを使う（左右は経路に沿う移動では意味を持たない）。
+        // カメラは逆走でも回り込まない（CameraMove が視点を安定化する）ため、
+        // 入力の意味は常に一定: +y = 経路の正方向。ラッチや反転処理は不要。
+        float effectiveAxis = im.GetVector2("Move").y;
 
         // 初回は経路の開始時刻へ合わせる（時刻の原点は制御点が決めるので 0 とは限らない）
         if (!pathTimeInitialized)
         {
             pathTime = p.StartTime;
             pathTimeInitialized = true;
-        }
-
-        // 実際に走っている向きを覚えておく（入力ラッチの更新に使う）。
-        // 入力が無いフレームでは更新しないので、止まっても「最後に走った向き＝前」を保てる。
-        if (SEED.Mathf.Abs(effectiveAxis) > InputEpsilon)
-        {
-            travelSign = SEED.Mathf.Sign(effectiveAxis);
         }
 
         // 経路上の時刻を進める。閉ループならエンジン側で周回し、開経路なら両端でクランプされる。
@@ -270,51 +233,6 @@ public class PlayerMove : SEEDScript
         }
 
         return SEED.Mathf.Abs(effectiveAxis) > moveThreshold;
-    }
-
-    /// <summary>
-    /// 前後入力のマッピング符号（<see cref="inputMapping"/>）を更新する。
-    ///
-    /// <b>解きたい問題</b>: プレイヤーが逆向きに走り出すとカメラが反対側へ回り込むので、
-    /// 画面上の「前」が入れ替わる。入力の意味を入れ替えないと、
-    /// 「前へ進もうとして下を入れる」という不自然な操作になる。
-    ///
-    /// <b>ただし切り替えていいタイミングは限られる</b>: 反転のきっかけになった入力を
-    /// 押している最中に意味を入れ替えると、押しっぱなしのまま挙動が前後に振れて
-    /// その場で往復してしまう。そこで<b>入力を離すまでマッピングを凍結する</b>。
-    ///
-    /// <b>状態機械</b>（状態は「マッピング符号」と「押されているか」の 2 つだけ）:
-    /// <code>
-    ///   押されている間 ────────── マッピングは凍結（何が起きても変えない）
-    ///   押下 → 解放のエッジ ───── マッピング := 直近に実際に走った向き（travelSign）
-    ///   解放されている間 ──────── 何もしない
-    /// </code>
-    ///
-    /// <b>「解放時に travelSign を採る」で正しくなる理由</b>:
-    /// カメラ（CameraMove）は<b>実際の移動方向の後方にあるアンカー</b>を選ぶので、
-    /// カメラが背中側に付く向き＝直近に実際に走った向き＝travelSign。
-    /// つまり画面上の「前」は経路の travelSign 方向。よってマッピングを travelSign にすれば、
-    /// 次に上入力（+1）を押したとき effectiveAxis = travelSign となり、
-    /// <b>画面の前へ進む</b>。
-    ///
-    /// <b>例</b>（マッピング +1 で正方向に走行中）:
-    /// 下入力（-1）→ effective = -1 で逆走開始・カメラが反対側へ →
-    /// 押している間はずっと effective = -1 のまま（＝画面の前へ進み続ける）→
-    /// 離した瞬間にマッピング := -1 → 次は上入力（+1）で effective = -1、
-    /// つまり同じ向きに走り続ける。
-    /// </summary>
-    /// <param name="rawAxis">InputMap から取った生の前後入力。</param>
-    private void UpdateInputLatch(float rawAxis)
-    {
-        bool isHeld = SEED.Mathf.Abs(rawAxis) > moveThreshold;
-
-        // 押下 → 解放のエッジでだけマッピングを更新する
-        if (wasInputHeld && !isHeld && travelSign is { } sign)
-        {
-            inputMapping = sign >= 0f ? MappingForward : MappingReversed;
-        }
-
-        wasInputHeld = isHeld;
     }
 
     /// <summary>

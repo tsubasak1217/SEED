@@ -138,8 +138,10 @@ public class CameraMove : SEEDScript
         // 1) 目標位置 = プレイヤー位置 + 安定化ヨーで回したローカルオフセット。
         //    ピッチ/ロールは無視してヨーだけで回す（プレイヤーが坂で傾いても
         //    カメラの高さ関係が崩れないようにするため）。
-        //    ヨーは「反転を無視した安定化ヨー」を使う（stableYawDeg のコメント参照）。
-        float stabilized = StabilizeYaw(p.Rotation.y);
+        //    ヨーの基準は「プレイヤーの向き」ではなく「移動方向」から取る。
+        //    向きは回転補間で滑らかに 180 度回るため反転を検出できないが、
+        //    移動方向は逆走の瞬間に 180 度入れ替わるので、mod180 の安定化が正しく効く。
+        float stabilized = StabilizeYaw(p.Position, p.Rotation.y);
         float yawRad = stabilized * DegToRad;
         float sin = SEED.Mathf.Sin(yawRad);
         float cos = SEED.Mathf.Cos(yawRad);
@@ -247,22 +249,42 @@ public class CameraMove : SEEDScript
         return SEED.Mathf.Clamped(roll, -limit, limit);
     }
 
+    /// <summary>移動方向のヨーを採用するのに必要な、1 フレームの最小水平移動量（m）の二乗。</summary>
+    private const float MinMoveSqForYaw = 0.0001f * 0.0001f;
+
     /// <summary>
-    /// プレイヤーの生ヨーから、180 度反転を無視した<b>安定化ヨー</b>を求めて内部状態を更新する。
-    /// 「生ヨー」と「生ヨー+180 度」のうち、現在の安定化ヨーに近い方を採用する。
-    /// 初回は生ヨーで初期化。
+    /// <b>移動方向</b>から 180 度反転を無視した<b>安定化ヨー</b>を求めて内部状態を更新する。
+    ///
+    /// - 移動方向のヨーと「そのヨー+180 度」のうち、現在の安定化ヨーに近い方を採用
+    ///   （＝逆走の瞬間の 180 度反転を無視。カーブに伴う緩やかな変化には追従）
+    /// - 基準にプレイヤーの<b>向き</b>を使わないのは、向きは回転補間で連続的に
+    ///   180 度回るため「小さな変化の連続」となり、反転を区別できないから
+    /// - 停止中（移動がほぼゼロ）は現状維持。初回だけプレイヤーの向きで初期化する
     /// </summary>
-    private float StabilizeYaw(float rawYawDeg)
+    /// <param name="playerPos">今フレームのプレイヤー位置（移動方向の算出用）。</param>
+    /// <param name="initialYawDeg">初回初期化に使うヨー（プレイヤーの向き）。</param>
+    private float StabilizeYaw(SEED.Vector3 playerPos, float initialYawDeg)
     {
+        // 初回はまだ移動方向が無いので、プレイヤーの向きで初期化する
         if (stableYawDeg is not { } stable)
         {
-            stableYawDeg = rawYawDeg;
-            return rawYawDeg;
+            stableYawDeg = initialYawDeg;
+            return initialYawDeg;
         }
 
-        // 生ヨーとその反対向きのうち、現在の安定化ヨーへの回転量が小さい方を選ぶ
-        float dRaw = ShortestAngleDelta(stable, rawYawDeg);
-        float dFlip = ShortestAngleDelta(stable, rawYawDeg + HalfTurnDegrees);
+        // 前フレーム位置が無い/ほぼ動いていないなら現状維持
+        // （previousPlayerPosition はロール計算と共有。更新はロール側で毎フレーム行われる）
+        if (previousPlayerPosition is not { } prevPos) { return stable; }
+        var delta = playerPos - prevPos;
+        float sqXZ = delta.x * delta.x + delta.z * delta.z;
+        if (sqXZ < MinMoveSqForYaw) { return stable; }
+
+        // 移動方向のヨー（エンジン規約: yaw = atan2(x, z)、前方 +Z）
+        float moveYaw = SEED.Mathf.Atan2(delta.x, delta.z) / DegToRad;
+
+        // 移動ヨーとその反対向きのうち、現在の安定化ヨーへの回転量が小さい方を選ぶ
+        float dRaw = ShortestAngleDelta(stable, moveYaw);
+        float dFlip = ShortestAngleDelta(stable, moveYaw + HalfTurnDegrees);
         float chosen = SEED.Mathf.Abs(dRaw) <= SEED.Mathf.Abs(dFlip) ? stable + dRaw : stable + dFlip;
 
         stableYawDeg = chosen;
