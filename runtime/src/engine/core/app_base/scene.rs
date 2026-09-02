@@ -565,6 +565,8 @@ pub fn build_actor(
             ComponentData::ModelComponent(mc_data) => {
                 use std::path::Path;
                 let cast_shadows = mc_data.cast_shadows;
+                // LOD を適用しないか（旧 .scene には無いため既定 false）。
+                let disable_lod  = mc_data.disable_lod;
                 // 【地形チャンクの特例】source_path が `terrain://` 接頭辞の場合は実ファイルが
                 // 存在しないため load_model をスキップする（さもないとシーンロード全体が失敗する）。
                 // model/gpu_model は None のままにし、terrain_ops の rebuild_terrain_after_load が
@@ -586,6 +588,7 @@ pub fn build_actor(
                         next_group_id:   mc_data.next_group_id,
                         anim_drive:      None,
                         cast_shadows,
+                        disable_lod,
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                         render_tag:      mc_data.render_tag,
@@ -629,6 +632,7 @@ pub fn build_actor(
                         next_group_id:   mc_data.next_group_id,
                         anim_drive:      None,
                         cast_shadows,
+                        disable_lod,
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
                         render_tag:      mc_data.render_tag,

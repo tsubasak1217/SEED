@@ -1767,6 +1767,9 @@ impl TerrainState {
                     abs_ids:        &[],
                     render_tags:    &[],
                     pose_overrides: &[],
+                    // 散布モデルは MC 単位の「LOD を適用しない」設定を持たない
+                    // （常に距離 LOD を適用する）。空スライス = 全インスタンス false。
+                    disable_lods:   &[],
                 };
                 let lod_unchanged = res.batch.lod_buckets_unchanged(camera_pos);
                 if res.merge_gate.decide(&gate_inputs, lod_unchanged, false) {

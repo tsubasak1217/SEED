@@ -1874,6 +1874,11 @@ impl App {
                         /// `ModelComponent::render_tag` 由来で、同一 MC の全インスタンスに同じ値を複製する
                         /// （タグはアクタ単位の属性であり、インスタンス個別には持たせない）。
                         render_tags: Vec<u8>,
+                        /// 統合インスタンス i の「LOD を適用しない」フラグ。
+                        /// `ModelComponent::disable_lod` 由来で、同一 MC の全インスタンスへ
+                        /// 同じ値を複製する（LOD 無効はアクタ単位の属性）。
+                        /// true のインスタンスはカメラ距離に関係なく常に LOD0 で描かれる。
+                        disable_lods: Vec<bool>,
                     }
                     // (dfs_id, slot_i) → (source_path, merged_start, n_instances)
                     // アウトライン描画時に統合バッチ内のインスタンス範囲を特定するために使う。
@@ -1906,6 +1911,7 @@ impl App {
                                     pose_overrides: Vec::new(),
                                     abs_ids:   Vec::new(),
                                     render_tags: Vec::new(),
+                                    disable_lods: Vec::new(),
                                 });
                             // この MC が Animator 駆動中なら権威時刻を、そうでなければ None を
                             // 全インスタンス分複製する（インスタンスは同一アニメを共有再生する）。
@@ -1951,6 +1957,8 @@ impl App {
                                 e.abs_ids.push(id_base + inst_i as u32);
                                 // タグは MC 単位の属性なので、この MC の全インスタンスへ同値を複製する。
                                 e.render_tags.push(amc.render_tag);
+                                // LOD 無効も MC 単位の属性（同上）。
+                                e.disable_lods.push(amc.disable_lod);
                             }
                         }
                         map
@@ -2001,7 +2009,12 @@ impl App {
                                 abs_ids:        &info.abs_ids,
                                 render_tags:    &info.render_tags,
                                 pose_overrides: &info.pose_overrides,
+                                disable_lods:   &info.disable_lods,
                             };
+                            // LOD 無効フラグは「LOD 振り分けの入力」なので、バケット再判定
+                            // （lod_buckets_unchanged）より前に必ず同期する。順序が逆だと
+                            // 古いフラグでバケットを比べてしまい、チェック操作が 1 フレーム遅れる。
+                            sd.batch.set_disable_lod_flags(&info.disable_lods);
                             let lod_unchanged = sd.batch.lod_buckets_unchanged(saved_camera_pos);
                             // 速度リセット要求フレーム（Play⇄Edit 切替・シーンロード・RT リサイズ）は
                             // 必ず update を通し、prev=curr を GPU へ反映させる。

@@ -562,6 +562,20 @@ impl App {
         self.render_features                 = r.features;
         self.ambient_color                   = r.ambient_color;
         self.ambient_intensity               = r.ambient_intensity;
+
+        // ── モデル LOD の切替距離 ────────────────────────────────
+        // 適用先はプロセスグローバル（`renderer::lod_settings`）。統合バッチの
+        // LOD 振り分けと、そのダーティゲートの再判定が同じ値を読む唯一の置き場である。
+        // 壊れた値（非昇順・範囲外・非有限）は set_lod_distances 側で補正され、
+        // 補正が起きた場合のみ 1 行ログを出す。
+        let (applied_lod, lod_repaired) =
+            crate::engine::core::renderer::set_lod_distances(s.lod.to_array());
+        if lod_repaired {
+            eprintln!(
+                "[SEED SCENE] LOD 切替距離を補正しました（昇順／範囲外）: {:?} -> {:?}",
+                s.lod.distances, applied_lod,
+            );
+        }
         // 実効モード（降格・未実装の注記込み）をログへ 1 行出す
         self.log_render_features_if_changed();
 

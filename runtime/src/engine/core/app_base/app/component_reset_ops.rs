@@ -377,6 +377,7 @@ mod tests {
             groups:        Vec::new(),
             next_group_id: 0,
             cast_shadows:  true,
+            disable_lod:   false,
             material_overrides: vec![MaterialOverride {
                 slot: 3,
                 kind: MaterialOverrideKind::Inline {
@@ -474,6 +475,7 @@ mod tests {
             groups:        Vec::new(),
             next_group_id: 0,
             cast_shadows:  true,
+            disable_lod:   false,
             // 添字 0 → slot 7 / 添字 1 → slot 1（並びとスロット番号が一致しない配置）。
             material_overrides: vec![inline_metallic(7, 0.10), inline_metallic(1, 0.90)],
             render_tag: 0,
@@ -517,6 +519,7 @@ mod tests {
             groups:        Vec::new(),
             next_group_id: 0,
             cast_shadows:  true,
+            disable_lod:   false,
             material_overrides: vec![MaterialOverride {
                 slot: 0,
                 kind: MaterialOverrideKind::MatAsset { path: "assets://a.mat".into() },

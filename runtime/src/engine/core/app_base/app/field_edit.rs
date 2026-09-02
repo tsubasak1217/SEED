@@ -381,6 +381,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         // **既にライブ適用済み**で、このコマンドは保存用データの格納しかしないためである。
         // データだけ巻き戻すと画面と設定ウィンドウの表示が食い違う（＝直せない状態になる）。
         | IpcCommand::SetSceneSettings { .. }
+        // LOD 切替距離もシーン設定パネルの管轄（SET_POST_FX 等と同じライブ反映系）。
+        | IpcCommand::SetLodDistances { .. }
         | IpcCommand::SetPostFx { .. }
         | IpcCommand::SetAmbient { .. }
         | IpcCommand::SetRtShadows(..)
@@ -608,6 +610,8 @@ pub(super) fn apply_component_data_in_place(
             };
             mc.cast_shadows = d.cast_shadows;
             mc.render_tag = d.render_tag;
+            // LOD 無効フラグ（インスペクタのチェック・Undo/Redo で戻る値）。
+            mc.disable_lod = d.disable_lod;
             // 描画オフセット（インスペクタの「オフセット」節・Undo/Redo で戻る値）。
             mc.offset_position = d.offset_position;
             mc.offset_rotation = d.offset_rotation;
@@ -1443,6 +1447,7 @@ mod tests {
                 groups: Vec::new(),
                 next_group_id: 0,
                 cast_shadows: true,
+                disable_lod: false,
                 material_overrides: Vec::new(),
                 render_tag: 0,
                 // 描画オフセットは既定（恒等）。テストの関心外だが構造体の全フィールドは必須。

@@ -136,6 +136,10 @@ pub struct ModelComponentData {
     /// 旧 .scene にはフィールドが無いため欠落時は 0（＝タグ無し・従来と完全に同じ描画）。
     #[serde(default)]
     pub render_tag: u8,
+    /// LOD（距離による簡略メッシュ切替）を適用しないか。既定 false（＝従来どおり適用）。
+    /// 旧 `.scene` にはフィールドが無いため欠落時は false へフォールバックする。
+    #[serde(default)]
+    pub disable_lod: bool,
     /// 描画オフセット: 位置（アクタのローカル空間・既定 [0,0,0]）。
     /// 旧 .scene には無いため欠落時は既定へフォールバックし、従来と完全に同じ描画になる。
     #[serde(default = "default_offset_position")]
@@ -222,6 +226,19 @@ pub struct ModelComponent {
     /// 有効ビット幅は `renderer::surface_id::RENDER_TAG_BITS`。範囲外の値は
     /// GPU へ渡す直前にマスクされる（隣のビットを侵食しない）。
     pub render_tag:      u8,
+    /// このモデルへ距離 LOD を適用しないか（既定 false ＝従来どおり適用）。
+    ///
+    /// true のとき、この MC の全インスタンスはカメラ距離に関係なく **常に LOD0
+    /// （フル解像度）** で描かれる。近景で常に最高品質を保ちたいヒーローアセットや、
+    /// LOD 生成で形が崩れるモデルの救済用。
+    ///
+    /// 配管経路: 本フィールド → 統合バッチの `disable_lods` →
+    /// `InstancedModelBatch::set_disable_lod_flags` → LOD 振り分け。
+    /// LOD の振り分け結果は通常描画・シャドウマップ・ID パス・アウトライン・
+    /// 半透明のすべてが同じ `lod_visible_counts` を共有するため、この 1 フラグが
+    /// 全ラスタ経路へ一貫して効く。RT（BLAS）はもともと LOD0 のインデックス
+    /// バッファのみで構築されるため、この設定にかかわらず常に LOD0 である。
+    pub disable_lod:     bool,
     /// 描画オフセット: 位置（アクタのローカル空間。既定 [0,0,0] ＝ずらさない）。
     ///
     /// アクタの `Transform` は動かさず、**このモデルの描画だけ**をローカルにずらす。
@@ -256,6 +273,8 @@ impl ModelComponent {
             material_overrides: Vec::new(),
             // タグ無し（既定）。0 は「未設定」を表す予約値。
             render_tag:      crate::engine::core::renderer::surface_id::RENDER_TAG_NONE,
+            // LOD は既定で適用する（従来と 1 ビットも変わらない描画）。
+            disable_lod:     false,
             // 描画オフセットは既定＝恒等（従来と 1 ビットも変わらない描画）。
             offset_position: OFFSET_POSITION_DEFAULT,
             offset_rotation: OFFSET_ROTATION_DEFAULT,
@@ -441,6 +460,7 @@ impl ModelComponent {
             cast_shadows:  self.cast_shadows,
             material_overrides: self.material_overrides.clone(),
             render_tag:    self.render_tag,
+            disable_lod:   self.disable_lod,
             offset_position: self.offset_position,
             offset_rotation: self.offset_rotation,
             offset_scale:    self.offset_scale,
@@ -556,6 +576,8 @@ mod override_serde_tests {
             next_group_id: GROUP_ID_BASE,
             cast_shadows:  true,
             render_tag:    3,
+            // 非既定値を入れて往復漏れを検出する。
+            disable_lod:   true,
             // 非既定値を入れて往復漏れを検出する。
             offset_position: [1.5, -2.0, 0.25],
             offset_rotation: [10.0, 20.0, 30.0],

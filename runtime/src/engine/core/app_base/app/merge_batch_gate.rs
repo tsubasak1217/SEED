@@ -48,6 +48,10 @@ pub(crate) struct MergeBatchInputs<'a> {
     /// スキンの再生指定アップロードの入力。**クロスフェードの weight やフェード元まで
     /// 含む**ので、行列が静止したままブレンドだけが進むフレームでもスキップに入らない。
     pub pose_overrides: &'a [Option<SkinAnimPose>],
+    /// 統合インスタンス i の「LOD を適用しない」フラグ（`MergeInfo::disable_lods`）。
+    /// LOD 振り分けの入力そのものなので、行列が静止したままこのフラグだけが変わった
+    /// フレーム（インスペクタのチェック操作）でもスキップに入らないようにする。
+    pub disable_lods: &'a [bool],
 }
 
 /// 直近フレームの入力を保持するスナップショット（所有）。
@@ -60,6 +64,7 @@ struct MergeBatchSnapshot {
     abs_ids:        Vec<u32>,
     render_tags:    Vec<u8>,
     pose_overrides: Vec<Option<SkinAnimPose>>,
+    disable_lods:   Vec<bool>,
 }
 
 impl MergeBatchSnapshot {
@@ -69,6 +74,7 @@ impl MergeBatchSnapshot {
             && self.abs_ids.as_slice()        == i.abs_ids
             && self.render_tags.as_slice()    == i.render_tags
             && self.pose_overrides.as_slice() == i.pose_overrides
+            && self.disable_lods.as_slice()   == i.disable_lods
     }
 
     /// 与えられた入力でスナップショットを取り直す（確保は「変化したフレーム」だけ）。
@@ -77,6 +83,7 @@ impl MergeBatchSnapshot {
         self.abs_ids.clear();        self.abs_ids.extend_from_slice(i.abs_ids);
         self.render_tags.clear();    self.render_tags.extend_from_slice(i.render_tags);
         self.pose_overrides.clear(); self.pose_overrides.extend_from_slice(i.pose_overrides);
+        self.disable_lods.clear();   self.disable_lods.extend_from_slice(i.disable_lods);
     }
 }
 
@@ -137,10 +144,16 @@ mod tests {
         abs_ids:        Vec<u32>,
         render_tags:    Vec<u8>,
         pose_overrides: Vec<Option<SkinAnimPose>>,
+        disable_lods:   Vec<bool>,
     }
 
     impl Fixture {
         fn new(x: f32, id: u32, tag: u8, t: Option<SkinAnimPose>) -> Self {
+            Self::with_disable_lod(x, id, tag, t, false)
+        }
+        fn with_disable_lod(
+            x: f32, id: u32, tag: u8, t: Option<SkinAnimPose>, disable_lod: bool,
+        ) -> Self {
             let mut m = [[0.0f32; 4]; 4];
             m[3][0] = x;
             Self {
@@ -148,6 +161,7 @@ mod tests {
                 abs_ids:        vec![id],
                 render_tags:    vec![tag],
                 pose_overrides: vec![t],
+                disable_lods:   vec![disable_lod],
             }
         }
         fn inputs(&self) -> MergeBatchInputs<'_> {
@@ -156,6 +170,7 @@ mod tests {
                 abs_ids:        &self.abs_ids,
                 render_tags:    &self.render_tags,
                 pose_overrides: &self.pose_overrides,
+                disable_lods:   &self.disable_lods,
             }
         }
     }
@@ -163,6 +178,19 @@ mod tests {
     /// テスト用の最小入力を作る短縮形。
     fn sig_of(x: f32, id: u32, tag: u8, t: Option<SkinAnimPose>) -> Fixture {
         Fixture::new(x, id, tag, t)
+    }
+
+    /// 「LOD を適用しない」フラグだけが変化しても再計算へ倒れること。
+    /// （インスペクタのチェック操作は行列・ID・タグ・アニメ時刻を一切変えないため、
+    ///   ゲートがこのフラグを見ていないと ON/OFF が画面に反映されない）
+    #[test]
+    fn changed_disable_lod_alone_forces_update() {
+        let mut gate = MergeBatchGate::default();
+        let base = Fixture::with_disable_lod(1.0, 0, 0, None, false);
+        for _ in 0..3 { gate.decide(&base.inputs(), true, false); }
+        assert!(gate.decide(&base.inputs(), true, false), "前提: スキップ状態");
+        let toggled = Fixture::with_disable_lod(1.0, 0, 0, None, true);
+        assert!(!gate.decide(&toggled.inputs(), true, false), "LOD 無効フラグの変化で再計算");
     }
 
     /// 初回フレームは必ず更新する（スナップショット未取得のため）。

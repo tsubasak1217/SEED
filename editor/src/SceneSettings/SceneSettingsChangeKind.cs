@@ -1,4 +1,4 @@
-namespace SEEDEditor.SceneSettings;
+﻿namespace SEEDEditor.SceneSettings;
 
 /// <summary>
 /// シーン設定ウィンドウで変更された設定の種別。
@@ -35,6 +35,11 @@ public enum SceneSettingsChangeKind
     // シーン設定ウィンドウの管轄外のため。
     /// <summary>レンダリングカテゴリを既定値へ戻した（全項目を再送する）。</summary>
     RenderingAll,
+
+    /// <summary>モデル LOD の切替距離。</summary>
+    Lod,
+    /// <summary>LOD カテゴリを既定値へ戻した（全項目を再送する）。</summary>
+    LodAll,
 
     /// <summary>編集時物理の設定。</summary>
     Physics,
