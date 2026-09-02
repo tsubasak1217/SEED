@@ -72,6 +72,15 @@ public class CameraMove : SEEDScript
     [SerializeField(Label = "回転の追従率")]
     private float rotationLerpRate = 8.0f;
 
+    /// <summary>
+    /// 視点ヨー（オフセットの回り込み）の追従の速さ（1/秒）。
+    /// 移動方向は毎フレームの位置デルタから求めるためノイズを含む。
+    /// ここで平滑してからオフセットを回すことで、カメラのかくつきを防ぐ。
+    /// 大きいほどカーブへの回り込みが機敏になり、小さいほど滑らかで遅れる。
+    /// </summary>
+    [SerializeField(Label = "視点回り込みの速さ")]
+    private float yawLerpRate = 5.0f;
+
     /// <summary>true なら最初のフレームだけ補間せず目標位置・注視姿勢へ瞬間移動する。</summary>
     [SerializeField(Label = "開始時に目標へスナップ")]
     private bool snapOnStart = true;
@@ -141,7 +150,7 @@ public class CameraMove : SEEDScript
         //    ヨーの基準は「プレイヤーの向き」ではなく「移動方向」から取る。
         //    向きは回転補間で滑らかに 180 度回るため反転を検出できないが、
         //    移動方向は逆走の瞬間に 180 度入れ替わるので、mod180 の安定化が正しく効く。
-        float stabilized = StabilizeYaw(p.Position, p.Rotation.y);
+        float stabilized = StabilizeYaw(p.Position, p.Rotation.y, ctx.DeltaTime);
         float yawRad = stabilized * DegToRad;
         float sin = SEED.Mathf.Sin(yawRad);
         float cos = SEED.Mathf.Cos(yawRad);
@@ -249,8 +258,12 @@ public class CameraMove : SEEDScript
         return SEED.Mathf.Clamped(roll, -limit, limit);
     }
 
-    /// <summary>移動方向のヨーを採用するのに必要な、1 フレームの最小水平移動量（m）の二乗。</summary>
-    private const float MinMoveSqForYaw = 0.0001f * 0.0001f;
+    /// <summary>
+    /// 移動方向のヨーを採用するのに必要な、1 フレームの最小水平移動量（m）の二乗。
+    /// 停止中・微動（物理の微小揺れなど）で方向がでたらめに振れるのを弾く。
+    /// 1mm/フレーム ≒ 60fps で 6cm/s 未満の移動は「止まっている」とみなす。
+    /// </summary>
+    private const float MinMoveSqForYaw = 0.001f * 0.001f;
 
     /// <summary>
     /// <b>移動方向</b>から 180 度反転を無視した<b>安定化ヨー</b>を求めて内部状態を更新する。
@@ -260,10 +273,14 @@ public class CameraMove : SEEDScript
     /// - 基準にプレイヤーの<b>向き</b>を使わないのは、向きは回転補間で連続的に
     ///   180 度回るため「小さな変化の連続」となり、反転を区別できないから
     /// - 停止中（移動がほぼゼロ）は現状維持。初回だけプレイヤーの向きで初期化する
+    /// - 生の移動方向はフレームごとの位置デルタ由来でノイズを含むため、
+    ///   そのまま使わず<b>指数平滑</b>（<see cref="yawLerpRate"/>）してから返す。
+    ///   オフセット腕の長さでヨーの揺れが増幅される「かくつき」を防ぐ。
     /// </summary>
     /// <param name="playerPos">今フレームのプレイヤー位置（移動方向の算出用）。</param>
     /// <param name="initialYawDeg">初回初期化に使うヨー（プレイヤーの向き）。</param>
-    private float StabilizeYaw(SEED.Vector3 playerPos, float initialYawDeg)
+    /// <param name="deltaTime">経過秒（平滑係数の算出用）。</param>
+    private float StabilizeYaw(SEED.Vector3 playerPos, float initialYawDeg, float deltaTime)
     {
         // 初回はまだ移動方向が無いので、プレイヤーの向きで初期化する
         if (stableYawDeg is not { } stable)
@@ -285,10 +302,14 @@ public class CameraMove : SEEDScript
         // 移動ヨーとその反対向きのうち、現在の安定化ヨーへの回転量が小さい方を選ぶ
         float dRaw = ShortestAngleDelta(stable, moveYaw);
         float dFlip = ShortestAngleDelta(stable, moveYaw + HalfTurnDegrees);
-        float chosen = SEED.Mathf.Abs(dRaw) <= SEED.Mathf.Abs(dFlip) ? stable + dRaw : stable + dFlip;
+        float shortestDelta = SEED.Mathf.Abs(dRaw) <= SEED.Mathf.Abs(dFlip) ? dRaw : dFlip;
 
-        stableYawDeg = chosen;
-        return chosen;
+        // 目標へ一気に飛ばず指数平滑で寄せる（フレームレート非依存）。
+        // 位置デルタ由来のノイズはここで減衰し、カーブの緩やかな変化だけが通る。
+        float smoothed = stable + shortestDelta * ExponentialBlend(yawLerpRate, deltaTime);
+
+        stableYawDeg = smoothed;
+        return smoothed;
     }
 
     /// <summary>フレームレート非依存の指数補間係数 <c>1 - exp(-rate * dt)</c>（0〜1）。</summary>
