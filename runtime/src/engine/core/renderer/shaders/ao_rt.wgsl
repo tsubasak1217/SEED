@@ -26,8 +26,13 @@
 /// group 3 binding 0: RT-AO 用 TLAS（RT 影と共有される加速構造。ライト等は bind しない）。
 @group(3) @binding(0) var ao_tlas: acceleration_structure;
 
-/// 1 フラグメントあたりの遮蔽レイ本数（ヒット率の分母）。少なめ＝低コスト、ブラーで均す前提。
-const RTAO_RAY_COUNT:      u32 = 4u;
+/// 1 フラグメントあたりの遮蔽レイ本数（ヒット率の分母）。ブラーで均す前提の少なめ設定。
+///
+/// 【4→8 に増やした理由】遮蔽率は二値ヒット判定の平均であり、4 本では 5 段階（0/.25/.5/.75/1）に
+/// しか量子化されない。Play 中はスキン BLAS が毎フレーム再構築されて判定の位相が入れ替わるため、
+/// この粗い段差がフレーム間のチカチカとして見える。8 本＝9 段階で 1 段差の振幅が半分になる。
+/// コスト: RTAO は半解像度（AO_RESOLUTION_DIVISOR）で評価されるためフル解像度換算 ×1/4。
+const RTAO_RAY_COUNT:      u32 = 8u;
 /// レイ最小距離（自己交差の下限。法線オフセットと併用。rt_shadow_on.wgsl と同値）。
 const RTAO_TMIN:           f32 = 0.001;
 /// 原点の法線方向オフセット（世界単位。rt_shadow_on.wgsl の RT_SHADOW_NORMAL_BIAS と同値）。

@@ -5843,8 +5843,18 @@ impl App {
                                     mpass.set_bind_group(4, scene_lights_bg, &[]);
                                     mpass.draw(0..3, 0..1);
                                 }
-                                // バイラテラルブラー（各レイヤ mask_raw → mask_a → mask_b, 深度エッジ保持。結果は mask_b）。
-                                smp.blur(&draw_ctx.device, frame.encoder_mut(), &self.shadow_mask_targets);
+                                // バイラテラルブラー＋テンポラル EMA（各レイヤ mask_raw → mask_tmp →
+                                // hist[cur]、深度エッジ保持。結果は result_array_view()）。
+                                // view_proj（saved_view_proj）と選定リストを渡し、カメラが動いた／選定が
+                                // 変わったフレームは履歴を全棄却する（再投影を持たないための割り切り。
+                                // 蓄積が効くのはカメラ静止時のみで、動いている間は EMA 導入前と同一出力）。
+                                smp.blur(
+                                    &draw_ctx.device,
+                                    frame.encoder_mut(),
+                                    &mut self.shadow_mask_targets,
+                                    &saved_view_proj,
+                                    &shadow_mask_selection,
+                                );
                             }
 
                             // AO 結果ビュー（ライティングの group1 binding6 へ渡す）。AO=Off 時は白 1x1（ao=1.0）。
@@ -5865,9 +5875,11 @@ impl App {
                             };
                             let ssgi_sampler = &draw_ctx.pipelines.ssgi.linear_sampler;
                             // シャドウマスク結果ビュー（group1 binding10 へ渡す, Phase RT-Shadow-Denoise）。
-                            // マスク生成したフレームは mask_b の D2Array、非対象フレームはダミー白（-1 スロットで不参照）。
+                            // マスク生成したフレームは EMA 出力 hist[cur] の D2Array（ping-pong のため
+                            // フレームごとに実テクスチャが入れ替わる）、非対象フレームはダミー白
+                            //（-1 スロットで不参照）。
                             let mask_result_view: &wgpu::TextureView = if shadow_mask_active {
-                                self.shadow_mask_targets.b_array_view()
+                                self.shadow_mask_targets.result_array_view()
                             } else {
                                 &draw_ctx.pipelines.deferred.mask_dummy_view
                             };

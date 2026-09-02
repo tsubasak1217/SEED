@@ -156,6 +156,7 @@ pub use ao::{AoPipelines, AoTargets, AoParams, AO_FORMAT, AO_RESOLUTION_DIVISOR,
 pub use ssgi::{SsgiPipelines, SsgiTargets, SsgiParams, SSGI_FORMAT, SSGI_RESOLUTION_DIVISOR};
 pub use shadow_mask::{ShadowMaskPipelines, ShadowMaskTargets, ShadowMaskParams,
                       RT_SHADOW_MASK_LIGHTS, SHADOW_MASK_FORMAT, SHADOW_MASK_RESOLUTION_DIVISOR,
+                      SHADOW_MASK_EMA_ALPHA,
                       select_shadow_mask_lights, assign_shadow_mask_slots};
 pub use shadow_mask_bilateral::{ShadowMaskBilateral, ShadowMaskBilateralParams};
 

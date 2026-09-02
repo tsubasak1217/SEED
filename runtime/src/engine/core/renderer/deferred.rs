@@ -576,6 +576,49 @@ mod tests {
             "深度不連続テクセルの重み({}) < UPSAMPLE_MIN_WEIGHT({min_weight})", depth_weight(10.0, far));
     }
 
+    /// 影マスクアップサンプルの**法線類似度重み**の境界（深度だけでは切れない稜線を切る要）。
+    ///
+    /// 重み = max(dot(N_full, N_half), 0)^k。k は WGSL の SHADOW_MASK_NORMAL_WEIGHT_POWER。
+    /// 同一面（dot≈1）は素通し、直交・背向き（dot<=0）は完全棄却、45° は大きく減衰すること。
+    #[test]
+    fn shadow_mask_upsample_normal_weight_boundaries() {
+        let src = include_str!("shaders/deferred_lighting.wgsl");
+        let line = src
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("const SHADOW_MASK_NORMAL_WEIGHT_POWER"))
+            .expect("deferred_lighting.wgsl に const SHADOW_MASK_NORMAL_WEIGHT_POWER がありません");
+        let num: String = line
+            .split('=')
+            .nth(1)
+            .unwrap()
+            .trim()
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        let k: f32 = num.parse().expect("NORMAL_WEIGHT_POWER を f32 解釈できません");
+        assert!(
+            (1.0..=32.0).contains(&k),
+            "NORMAL_WEIGHT_POWER({k}) は 1..32（弱すぎると稜線を切れず、強すぎると同一面まで棄却する）"
+        );
+
+        // WGSL と同一の法線重み。
+        let normal_weight = |dot: f32| -> f32 { dot.max(0.0).powf(k) };
+
+        // 同一面（法線一致）→ 重み 1（バイリニア＋深度重みだけの従来挙動を平坦面で保つ）。
+        assert_eq!(normal_weight(1.0), 1.0, "法線一致で重みは 1");
+        // 背向き・直交は完全棄却（max(dot,0)=0）。
+        assert_eq!(normal_weight(0.0), 0.0, "直交は棄却");
+        assert_eq!(normal_weight(-0.9), 0.0, "背向きは棄却");
+        // 15°（同一面の法線マップ由来の揺らぎ相当）は大半が残る。
+        let w15 = normal_weight(15.0f32.to_radians().cos());
+        assert!(w15 > 0.5, "15°ズレの重み({w15}) は半分以上残ること");
+        // 90° 稜線の片側（45° 相当）は大きく減衰する。
+        let w45 = normal_weight(45.0f32.to_radians().cos());
+        assert!(w45 < 0.2, "45°ズレの重み({w45}) は十分小さいこと");
+        assert!(w45 < w15, "ズレが大きいほど重みは小さいこと");
+    }
+
     // ========================================================
     //  シェーディング契約 v1（L3-a）の回帰ガード
     // ========================================================

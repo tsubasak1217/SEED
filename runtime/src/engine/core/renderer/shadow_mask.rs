@@ -12,8 +12,9 @@
 //  ## パス順（frame_renderer が制御）
 //    G-Buffer 書き込み → AO 生成
 //      → シャドウマスク生成（G-Buffer＋TLAS → 半解像度 mask_raw の 4 レイヤ。.rgb=透過率/.a=深度）
-//      → バイラテラルブラー（各レイヤ mask_raw → mask_a → mask_b、.a 深度でエッジ保持。結果 mask_b）
-//      → デファードライティング（group1 binding10 に mask_b をバイリニアで供給し、ライトループが
+//      → バイラテラルブラー＋テンポラル EMA（各レイヤ mask_raw → mask_tmp → hist[cur]。.a 深度で
+//         エッジ保持し、V パスで前フレーム結果 hist[1-cur] と mix する。結果 hist[cur]）
+//      → デファードライティング（group1 binding10 に hist[cur] をバイリニアで供給し、ライトループが
 //         light.shadow_mask_slot の指すレイヤをサンプルして遮蔽率にする）
 //
 //  ## なぜ半解像度マスク＋ブラーで根治するか
@@ -29,7 +30,7 @@
 //  RT 対応 GPU（rt_lights_bgl が存在する）でのみ構築される（DrawPipelines.shadow_mask は Option）。
 //
 //  ## フォーマット（Rgba16Float 単一運用。.a に深度同梱）
-//  mask_raw/mask_a/mask_b はすべて IMOS_BLUR_FORMAT=Rgba16Float。storage・filterable・
+//  mask_raw/mask_tmp/hist0/hist1 はすべて IMOS_BLUR_FORMAT=Rgba16Float。storage・filterable・
 //  render-attachment を core 保証で満たす（ao.rs / imos_blur.rs のフォーマット解説と一致）。
 //  .rgb=透過率／.a=half-res ビュー空間深度（別 R32Float アタッチメントは 4×16B=32B に 4B を足すと
 //  max_color_attachment_bytes_per_sample=32 を超過するため不可。未使用の .a へ同梱してバイト予算内に収める）。
@@ -41,7 +42,7 @@ use super::deferred::DeferredLightingPipelines;
 use super::imos_blur::IMOS_BLUR_FORMAT;
 use super::lighting::GpuLight;
 use super::pipeline::get_shader_source;
-use super::shadow_mask_bilateral::ShadowMaskBilateral;
+use super::shadow_mask_bilateral::{ema_params, ShadowMaskBilateral};
 
 // ─── 定数 ────────────────────────────────────────────────────
 
@@ -71,6 +72,22 @@ pub const SHADOW_MASK_RESOLUTION_DIVISOR: u32 = 2;
 /// バイラテラルブラーの半径（半解像度画素）。窓は [-radius, radius]＝(2r+1) タップ。
 /// 小半径（深度エッジ保持のため固定タップ。σ・深度許容は WGSL 側の名前付き定数）。
 pub const SHADOW_MASK_BLUR_RADIUS: i32 = 3;
+
+/// テンポラル EMA の混合率 α（out = mix(history, current, α)）。
+///
+/// 【なぜ必要か】影マスクは二値可視性の N 本平均で 1/N 刻みに量子化される。Play 中は
+/// アニメーションでスキン BLAS が毎フレーム再構築され、二値判定の位相が総入れ替えになるため、
+/// 空間ブラーだけでは取り切れない量子化段差がフレーム間でバタつく（チカチカ）。時間方向の
+/// 指数移動平均で残差を均す。
+///
+/// 【値の根拠】α=0.25 は時定数およそ 4 フレーム（1-α の等比で減衰）。これより小さくすると
+/// 滑らかになる代わりに、履歴が棄却されなかった画素（同一深度のまま動く布・キャラ表面）で
+/// 残像（ゴースト）が目立つ。0.25 は「量子化段差の振幅を約 1/4 に落としつつ、4 フレーム
+/// （60fps で ~67ms）で追従する」妥協点。
+///
+/// 【蓄積が効く条件】カメラ静止かつマスクのライト選定が不変のフレームだけ（`ShadowMaskTargets::
+/// begin_frame` が判定）。カメラが動くフレームは α=1＝EMA 導入前と完全に同一出力になる。
+pub const SHADOW_MASK_EMA_ALPHA: f32 = 0.25;
 
 /// ソフト影ライトが上限を超えたときの警告を 1 度だけ出すためのフラグ（ログ爆発防止）。
 static OVERFLOW_WARNED: AtomicBool = AtomicBool::new(false);
@@ -341,32 +358,51 @@ impl ShadowMaskPipelines {
         })
     }
 
-    /// 各レイヤぶん mask_raw → (mask_a 経由 H→V) → mask_b を separable バイラテラルでブラーする。
-    /// 結果は必ず mask_b。深度ガイドは各レイヤ自身の .a（マスク生成時に同梱した half-res ビュー空間 z）を
-    /// 読み、深度エッジを跨ぐ影値の混合（＝カーテンのフチのハロー）を断つ。texture_2d_array に対し
+    /// 各レイヤぶん mask_raw → (mask_tmp 経由 H→V) → 履歴 ping-pong の「今フレーム側」へ
+    /// separable バイラテラルブラー＋テンポラル EMA を掛ける。
+    ///
+    /// 結果は必ず `targets.result_array_view()` が指すテクスチャ（＝hist[cur]）に残る。
+    /// 深度ガイドは各レイヤ自身の .a（マスク生成時に同梱した half-res ビュー空間 z）を読み、
+    /// 深度エッジを跨ぐ影値の混合（＝カーテンのフチのハロー）を断つ。texture_2d_array に対し
     /// レイヤごとの 2D ビューで RT_SHADOW_MASK_LIGHTS 回掛ける（バイラテラルは単層 2D 前提のため）。
+    ///
+    /// - `view_proj` : 今フレームのカメラ view-proj 行列。前フレームと 1 要素でも違えば履歴を全棄却する
+    ///   （再投影を持たないための割り切り。スキンメッシュの速度バッファは変形分を含まず正確な
+    ///   再投影ができないため、蓄積はカメラ静止時のみ効かせる設計）。
+    /// - `selection`: 今フレームのライト選定（スロット↔ライトの対応）。変わるとレイヤの意味が
+    ///   入れ替わるため履歴を棄却する。
     pub fn blur(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-        targets: &ShadowMaskTargets,
+        targets: &mut ShadowMaskTargets,
+        view_proj: &[[f32; 4]; 4],
+        selection: &[u32],
     ) {
+        // ping-pong を 1 つ進め、履歴が使えるか（カメラ静止＋選定不変＋履歴確立済み）を判定する。
+        let use_history = targets.begin_frame(view_proj, selection);
+        let (ema_alpha, ema_enable) = ema_params(use_history, SHADOW_MASK_EMA_ALPHA);
+        let cur = targets.current_index();
+        let prev = 1 - cur;
         for layer in 0..RT_SHADOW_MASK_LIGHTS as usize {
             self.bilateral.record_layer(
                 device,
                 encoder,
                 targets.raw_layer_view(layer),
-                targets.a_layer_view(layer),
-                targets.b_layer_view(layer),
+                targets.tmp_layer_view(layer),
+                targets.hist_layer_view(cur, layer),
+                targets.hist_layer_view(prev, layer),
                 targets.width() as i32,
                 targets.height() as i32,
                 SHADOW_MASK_BLUR_RADIUS,
+                ema_alpha,
+                ema_enable,
             );
         }
     }
 }
 
-// ─── ShadowMaskTargets（動的リソース: 半解像度 4 レイヤ mask_raw/mask_a/mask_b。App が保持）───
+// ─── ShadowMaskTargets（動的リソース: 半解像度 4 レイヤ mask_raw/mask_tmp/hist0/hist1。App が保持）───
 
 /// レイヤ配列テクスチャ 1 枚＋そのビュー群（レイヤごとの 2D ビュー＋全レイヤ D2Array ビュー）。
 struct LayeredTex {
@@ -378,14 +414,27 @@ struct LayeredTex {
     layer_views: Vec<wgpu::TextureView>,
 }
 
-/// 半解像度 4 レイヤのマスクテクスチャ 3 枚（mask_raw=生成 / mask_a,mask_b=ブラー ping-pong）。
-/// 各レイヤの .rgb=透過率, .a=half-res ビュー空間深度（バイラテラルブラーの深度ガイドを同梱）。
+/// 半解像度 4 レイヤのマスクテクスチャ 4 枚。
+///   - `raw`     : マスク生成パスの MRT 出力（ブラー前）。
+///   - `tmp`     : separable バイラテラルの H パス出力／V パス入力（中間）。
+///   - `hist[2]` : テンポラル EMA の履歴 ping-pong。V パスは hist[cur] へ書き hist[1-cur] を読む
+///     （同一テクスチャの storage 書き込みと sampled 読み出しは同時に成立しないため 2 枚必須）。
+///     hist[cur] がそのまま「今フレームの最終マスク」＝deferred が読むテクスチャになる。
+///
+/// 各レイヤの .rgb=透過率, .a=half-res ビュー空間深度（ブラーの深度ガイド＋次フレームの EMA 棄却判定）。
 /// STORAGE_BINDING を要するため RtPool には載せられず本構造体が専有する（AoTargets の 4 レイヤ版）。
-/// ブラー後の最終マスクは各レイヤとも mask_b に残る（ShadowMaskPipelines::blur の不変条件）。
 pub struct ShadowMaskTargets {
     raw: Option<LayeredTex>,
-    a: Option<LayeredTex>,
-    b: Option<LayeredTex>,
+    tmp: Option<LayeredTex>,
+    hist: [Option<LayeredTex>; 2],
+    /// 今フレームの書き込み先 hist インデックス（0/1。begin_frame が毎フレーム反転する）。
+    cur: usize,
+    /// hist[1-cur] に有効な前フレーム結果が入っているか（初回・リサイズ直後は false）。
+    history_valid: bool,
+    /// 前フレームのカメラ view-proj（履歴の全画素棄却判定に使う。再投影の代わり）。
+    prev_view_proj: Option<[[f32; 4]; 4]>,
+    /// 前フレームのライト選定（スロット↔ライト対応が変わったら履歴を棄却する）。
+    prev_selection: Vec<u32>,
     hw: u32,
     hh: u32,
 }
@@ -401,8 +450,12 @@ impl ShadowMaskTargets {
     pub fn new() -> Self {
         Self {
             raw: None,
-            a: None,
-            b: None,
+            tmp: None,
+            hist: [None, None],
+            cur: 0,
+            history_valid: false,
+            prev_view_proj: None,
+            prev_selection: Vec::new(),
             hw: 0,
             hh: 0,
         }
@@ -423,15 +476,50 @@ impl ShadowMaskTargets {
             hh,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         );
-        // mask_a / mask_b: バイラテラルブラーの storage ping-pong（write）＋次段/サンプル入力。
+        // tmp / hist0 / hist1: storage 書き込み＋次段・サンプル入力。
         let storage = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING;
-        let a = make_layered(device, "shadow_mask_a", hw, hh, storage);
-        let b = make_layered(device, "shadow_mask_b", hw, hh, storage);
+        let tmp = make_layered(device, "shadow_mask_tmp", hw, hh, storage);
+        let hist0 = make_layered(device, "shadow_mask_hist0", hw, hh, storage);
+        let hist1 = make_layered(device, "shadow_mask_hist1", hw, hh, storage);
         self.raw = Some(raw);
-        self.a = Some(a);
-        self.b = Some(b);
+        self.tmp = Some(tmp);
+        self.hist = [Some(hist0), Some(hist1)];
         self.hw = hw;
         self.hh = hh;
+        // 再確保した履歴には前フレームの内容がない（wgpu はゼロクリアで確保する）。
+        // 次の begin_frame で EMA を無効化し、1 フレームだけ従来どおりの出力にする。
+        self.cur = 0;
+        self.history_valid = false;
+        self.prev_view_proj = None;
+        self.prev_selection.clear();
+    }
+
+    /// フレーム開始処理: 履歴 ping-pong を 1 つ進め、テンポラル EMA の履歴が使えるかを返す。
+    ///
+    /// 履歴を使う条件は次の 3 つすべて（1 つでも欠ければ全画素 α=1＝履歴破棄）:
+    ///   1. 履歴が確立済み（初回フレーム／リサイズ直後は false）
+    ///   2. カメラ view-proj が前フレームと**完全一致**（再投影を持たないため、カメラが少しでも
+    ///      動くと履歴は別の位置の値になる。浮動小数の厳密比較で良い＝同じ入力からは同じ行列が出る）
+    ///   3. ライト選定が前フレームと同一（スロット↔ライトの対応が変わるとレイヤの意味が入れ替わる）
+    ///
+    /// 画素単位の棄却（履歴の .a に焼かれた深度との相対差）は WGSL 側（EMA_DEPTH_TOL_FRAC）が担う。
+    pub fn begin_frame(&mut self, view_proj: &[[f32; 4]; 4], selection: &[u32]) -> bool {
+        // 書き込み先を反転（前フレームの書き込み先が、今フレームの履歴になる）。
+        self.cur ^= 1;
+        let camera_static = self.prev_view_proj.as_ref() == Some(view_proj);
+        let same_selection = self.prev_selection.as_slice() == selection;
+        let use_history = self.history_valid && camera_static && same_selection;
+        self.prev_view_proj = Some(*view_proj);
+        self.prev_selection.clear();
+        self.prev_selection.extend_from_slice(selection);
+        // 今フレームの出力（hist[cur]）が次フレームの履歴になる。
+        self.history_valid = true;
+        use_history
+    }
+
+    /// 今フレームの書き込み先 hist インデックス（begin_frame 後に参照すること）。
+    pub fn current_index(&self) -> usize {
+        self.cur
     }
 
     /// 確保済み半解像度幅。
@@ -451,28 +539,27 @@ impl ShadowMaskTargets {
             .expect("ShadowMaskTargets: ensure 未実行（raw）")
             .layer_views[layer]
     }
-    /// mask_a のレイヤ layer の 2D ビュー（ブラー ping）。
-    pub fn a_layer_view(&self, layer: usize) -> &wgpu::TextureView {
+    /// mask_tmp のレイヤ layer の 2D ビュー（H パス出力／V パス入力）。
+    pub fn tmp_layer_view(&self, layer: usize) -> &wgpu::TextureView {
         &self
-            .a
+            .tmp
             .as_ref()
-            .expect("ShadowMaskTargets: ensure 未実行（a）")
+            .expect("ShadowMaskTargets: ensure 未実行（tmp）")
             .layer_views[layer]
     }
-    /// mask_b のレイヤ layer の 2D ビュー（ブラー ping。結果はここに残る）。
-    pub fn b_layer_view(&self, layer: usize) -> &wgpu::TextureView {
-        &self
-            .b
+    /// hist[idx] のレイヤ layer の 2D ビュー（idx=cur が V パス出力、1-cur が EMA の履歴入力）。
+    pub fn hist_layer_view(&self, idx: usize, layer: usize) -> &wgpu::TextureView {
+        &self.hist[idx]
             .as_ref()
-            .expect("ShadowMaskTargets: ensure 未実行（b）")
+            .expect("ShadowMaskTargets: ensure 未実行（hist）")
             .layer_views[layer]
     }
-    /// mask_b の全レイヤ D2Array ビュー＝ブラー後の最終マスク（deferred の binding10 へ渡す）。
-    pub fn b_array_view(&self) -> &wgpu::TextureView {
-        &self
-            .b
+    /// 今フレームの最終マスク（hist[cur]）の全レイヤ D2Array ビュー（deferred の binding10 へ渡す）。
+    /// blur() の後に呼ぶこと（begin_frame の ping-pong 反転を織り込むため）。
+    pub fn result_array_view(&self) -> &wgpu::TextureView {
+        &self.hist[self.cur]
             .as_ref()
-            .expect("ShadowMaskTargets: ensure 未実行（b array）")
+            .expect("ShadowMaskTargets: ensure 未実行（hist array）")
             .array_view
     }
 }
@@ -656,6 +743,69 @@ mod tests {
             surf_slots, RT_SHADOW_MASK_LIGHTS,
             "surface.wgsl SURFACE_SHADOW_MASK_SLOTS と Rust 不一致"
         );
+    }
+
+    // ── ShadowMaskTargets の履歴管理（GPU 不要の純ロジック）───────────────
+
+    /// 単位行列（テストのカメラ行列）。
+    fn ident() -> [[f32; 4]; 4] {
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    }
+
+    /// 初回フレームは履歴なし（false）。2 フレーム目以降はカメラ静止＋選定不変なら true。
+    #[test]
+    fn history_is_invalid_on_first_frame_then_valid() {
+        let mut t = ShadowMaskTargets::new();
+        let vp = ident();
+        assert!(!t.begin_frame(&vp, &[0, 1]), "初回は履歴なしのはず");
+        assert!(t.begin_frame(&vp, &[0, 1]), "2 フレーム目は履歴が使えるはず");
+        assert!(t.begin_frame(&vp, &[0, 1]));
+    }
+
+    /// ping-pong インデックスは毎フレーム反転する（書き込み先と履歴が別テクスチャになる保証）。
+    #[test]
+    fn ping_pong_index_alternates() {
+        let mut t = ShadowMaskTargets::new();
+        let vp = ident();
+        t.begin_frame(&vp, &[]);
+        let a = t.current_index();
+        t.begin_frame(&vp, &[]);
+        let b = t.current_index();
+        t.begin_frame(&vp, &[]);
+        let c = t.current_index();
+        assert_ne!(a, b, "毎フレーム反転するはず");
+        assert_eq!(a, c, "2 フレームで元に戻るはず");
+        assert!(a <= 1 && b <= 1);
+    }
+
+    /// カメラ view-proj が 1 要素でも変われば履歴を棄却する（再投影なしの割り切り）。
+    #[test]
+    fn camera_change_discards_history() {
+        let mut t = ShadowMaskTargets::new();
+        let vp = ident();
+        t.begin_frame(&vp, &[0]);
+        assert!(t.begin_frame(&vp, &[0]), "静止なら履歴あり");
+        let mut moved = ident();
+        moved[3][2] += 0.001; // わずかな平行移動
+        assert!(!t.begin_frame(&moved, &[0]), "カメラが動いたら棄却するはず");
+        // 動いた行列のまま静止すれば、次フレームからまた蓄積が効く。
+        assert!(t.begin_frame(&moved, &[0]));
+    }
+
+    /// ライト選定が変われば（スロットの意味が入れ替わるため）履歴を棄却する。
+    #[test]
+    fn selection_change_discards_history() {
+        let mut t = ShadowMaskTargets::new();
+        let vp = ident();
+        t.begin_frame(&vp, &[0, 1]);
+        assert!(t.begin_frame(&vp, &[0, 1]));
+        assert!(!t.begin_frame(&vp, &[1, 0]), "選定順が変われば棄却するはず");
+        assert!(!t.begin_frame(&vp, &[1]), "灯数が変われば棄却するはず");
     }
 
     /// テスト用のソフト影ライト（soft_radius/intensity 指定）。

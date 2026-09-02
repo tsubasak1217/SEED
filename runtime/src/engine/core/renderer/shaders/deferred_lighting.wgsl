@@ -159,13 +159,29 @@ const GBUFFER_NORMAL_AUTHORED_THRESHOLD: f32 = 0.5;
 /// 深度類似度の許容幅（ビュー空間深度に対する相対割合）。full と half の深度差が
 /// この割合×深度 を超えると重みが急減し、別の深度面（奥の床など）のテクセルを混ぜない。
 /// 相対にするのはシーンのスケール非依存にするため（遠景ほど絶対深度差は大きくなる）。
-const SHADOW_MASK_DEPTH_TOLERANCE_FRAC: f32 = 0.05;
+///
+/// 【0.05→0.01 に絞った理由（影境界の明るいハロー）】5% はビュー深度 10m で 50cm に相当し、
+/// キャラクタのシルエットの向こう側にある壁・床のテクセル（遮蔽されていない＝明るい）まで
+/// 「同一面」とみなして混ぜてしまう。その結果、影の境界の内側に明るい縁（ハロー）が出る。
+/// 1%（10m で 10cm）なら同一面の傾きによる深度変化は通しつつ、シルエットを跨ぐ不連続は落とせる。
+/// これより小さくすると急傾斜の床で全テクセル棄却が頻発し、最近傍 1 テクセル採用（＝階段状の
+/// エイリアス）に落ちる頻度が増える。
+const SHADOW_MASK_DEPTH_TOLERANCE_FRAC: f32 = 0.01;
 /// 相対許容幅の下限（ビュー空間距離・ワールド単位）。極近距離で許容幅が 0 に潰れて
 /// 過敏になる（同一面まで棄却してしまう）のを防ぐ床値。
 const SHADOW_MASK_DEPTH_TOLERANCE_MIN: f32 = 0.05;
 /// 4 テクセルの合計重みがこの値未満なら「全テクセル棄却」とみなし、最も深度が近い 1 テクセル
 /// だけを採用する（にじみゼロを優先。境界の細い特徴で多少のエイリアスが出るのは許容）。
 const SHADOW_MASK_UPSAMPLE_MIN_WEIGHT: f32 = 1e-4;
+/// 法線類似度重みの指数 k（重み = max(dot(N_full, N_half), 0)^k）。
+///
+/// 【なぜ深度だけでは足りないのか】深度が連続でも面の向きが変わる箇所（壁と床が接する入隅、
+/// 箱の稜線）では、片側だけが影の中という状況が普通に起きる。深度差は小さいので深度重みは
+/// 通してしまい、明るい側のテクセルが暗い側へ漏れて境界に明るい縁（ハロー）が残る。
+/// 法線の一致度を掛けると、深度が近くても向きが違うテクセルを落とせる。
+/// k=8 は cos 45°(≈0.707) で重みが約 0.09 まで落ち、cos 15°(≈0.966) なら 0.75 を保つ強さ
+///（同一面の法線マップ由来の揺らぎは通し、稜線は切る）。
+const SHADOW_MASK_NORMAL_WEIGHT_POWER: f32 = 8.0;
 
 // ─── フレームバッファ画素 → ビューポート相対 UV ───────────────────────
 //
@@ -187,11 +203,23 @@ fn deferred_vp_uv_from_pix(pix: vec2<f32>) -> vec2<f32> {
 /// - `hcoord`   : 半解像度テクセル整数座標。
 /// - `half_dims`: 半解像度テクスチャの寸法（textureDimensions(t_shadow_mask)）。
 /// - `full_dims`: フル解像度 G-Buffer の寸法（textureDimensions(t_gbuffer0)）。
-fn mask_half_texel_view_z(hcoord: vec2<i32>, half_dims: vec2<f32>, full_dims: vec2<f32>) -> f32 {
+fn mask_half_texel_full_pix(hcoord: vec2<i32>, half_dims: vec2<f32>, full_dims: vec2<f32>) -> vec2<f32> {
     // 半解像度テクセル中心の UV（fs_mask の vs_fullscreen が出す [0,1] UV 規約と一致）。
     let uv = (vec2<f32>(hcoord) + vec2<f32>(0.5, 0.5)) / half_dims;
-    // fs_mask の mask_full_pix と同一のフル解像度テクセル選択（同じ深度を復元するため）。
-    let fp   = clamp(uv * full_dims, vec2<f32>(0.0, 0.0), full_dims - vec2<f32>(1.0, 1.0));
+    // fs_mask の mask_full_pix と同一のフル解像度テクセル選択（同じ深度・法線を復元するため）。
+    return clamp(uv * full_dims, vec2<f32>(0.0, 0.0), full_dims - vec2<f32>(1.0, 1.0));
+}
+
+/// 半解像度マスクテクセル `hcoord` が評価に使ったフル解像度画素の G-Buffer 法線（ワールド空間）。
+/// 深度復元（mask_half_texel_view_z）と**同一の写像**で引くので、深度重みと法線重みは
+/// 必ず同じテクセルを見る。RT1.xyz は正規化前提だが、量子化のため念のため normalize する。
+fn mask_half_texel_normal(hcoord: vec2<i32>, half_dims: vec2<f32>, full_dims: vec2<f32>) -> vec3<f32> {
+    let fp = mask_half_texel_full_pix(hcoord, half_dims, full_dims);
+    return normalize(textureLoad(t_gbuffer1, vec2<i32>(fp), 0).xyz);
+}
+
+fn mask_half_texel_view_z(hcoord: vec2<i32>, half_dims: vec2<f32>, full_dims: vec2<f32>) -> f32 {
+    let fp   = mask_half_texel_full_pix(hcoord, half_dims, full_dims);
     let d    = textureLoad(t_depth, vec2<i32>(fp), 0);
     // 深度→ワールド→ビュー空間 z（fs_deferred / shadow_mask.wgsl の mask_world_pos と同式・同カメラ）。
     // NDC はビューポート矩形へ写像されるため、フル解像度画素をビューポート相対 UV へ直す。
@@ -372,7 +400,8 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         bw[2] = (1.0 - f.x) * f.y;
         bw[3] = f.x * f.y;
 
-        // 深度類似度重み（相対許容幅）。full と half の深度差が大きいテクセルを排除する。
+        // 深度類似度重み（相対許容幅）× 法線類似度重み。full と half で「深度が離れている」か
+        // 「面の向きが違う」テクセルを排除する（どちらか一方だけでは境界の明るいハローが残る）。
         // 併せて「最も深度が近いテクセル」を全棄却時のフォールバック用に控える。
         let tol = SHADOW_MASK_DEPTH_TOLERANCE_FRAC * max(abs(d_full), SHADOW_MASK_DEPTH_TOLERANCE_MIN);
         var w: array<f32, 4>;
@@ -382,7 +411,10 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         for (var k: i32 = 0; k < 4; k = k + 1) {
             let dz   = mask_half_texel_view_z(coords[k], half_dims, full_dims);
             let diff = abs(dz - d_full);
-            w[k]     = bw[k] * exp(-diff / tol);
+            // 法線類似度: dot を [0,1] に切ってから k 乗（背向きは 0＝完全棄却）。
+            let nz   = mask_half_texel_normal(coords[k], half_dims, full_dims);
+            let wn   = pow(max(dot(nz, N), 0.0), SHADOW_MASK_NORMAL_WEIGHT_POWER);
+            w[k]     = bw[k] * exp(-diff / tol) * wn;
             w_sum    = w_sum + w[k];
             if diff < best_df {
                 best_df = diff;

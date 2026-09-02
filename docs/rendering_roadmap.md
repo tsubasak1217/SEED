@@ -981,15 +981,15 @@ Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward
   **各レイヤの `.rgb`=透過率／`.a`=half-res ビュー空間深度**（バイラテラルブラーの深度ガイドを同梱）。
   別 R32Float アタッチメント方式は 4×Rgba16Float=32B に 4B を足して `max_color_attachment_bytes_per_sample=32` を
   超過して `create_render_pipeline` がパニックするため採らず、未使用だった `.a` へ深度を載せる（f16 精度＝相対
-  ~0.05% で、深度許容幅 相対 5% に対し十分。全レイヤ同じ深度＝画素固有・ライト非依存）。
+  ~0.05% で、深度許容幅 相対 1%（追補で 5% から変更）に対し十分。全レイヤ同じ深度＝画素固有・ライト非依存）。
   **デノイズは影マスク専用の separable バイラテラルブラー**（`shadow_mask_bilateral.rs`＋
   `shaders/shadow_mask_bilateral.wgsl`。半径 3px・ガウス空間重み×深度類似度重み `exp(-|dz-dc|/tol)`）を
-  **レイヤごとに H→V の 2 パス**掛けて `mask_b` へデノイズする（深度ガイドは各レイヤ自身の `.a` を読む。深度自体は
+  **レイヤごとに H→V の 2 パス**掛けて履歴 ping-pong の `hist[cur]`（追補前は `mask_b`）へデノイズする（深度ガイドは各レイヤ自身の `.a` を読む。深度自体は
   ブラーせず出力 `.a` は中心タップの深度を素通し＝次パス・下流の深度基準を維持）。
   **なぜバイラテラルか**: いもす法（累積和）は走査中に窓和を保持する構造上バイラテラル化できず、深度エッジを
   跨いで影値を混ぜてカーテンのフチにハロー（薄い帯）を生む。エッジ保持が必須な影マスクだけ固定タップの
   バイラテラルに切替（AO/SSGI/すりガラスは低周波用途でこの滲みが問題化しないため `imos_blur` を継続使用）。
-  deferred ライティングは `mask_b` を group1 binding10（D2Array・`.rgb`）で**深度考慮の joint bilateral アップサンプル**
+  deferred ライティングは `hist[cur]`（追補前は `mask_b`）を group1 binding10（D2Array・`.rgb`）で**深度考慮の joint bilateral アップサンプル**
   （4 テクセル×バイリニア重み×深度類似度。深度はフル解像度 `t_depth` から生成時と同一写像で復元＝追加 binding
   なし。上流バイラテラルと合わせ上流・下流の両方でエッジを保つ）して `Surface.shadow_mask[slot]`／
   `shadow_mask_valid=1` を載せ、ライトループがマスク対象ライトでレイを飛ばさずこの値を遮蔽率にする。
@@ -1007,6 +1007,54 @@ Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward
   （`shadow_mask`／`shadow_mask_valid`）、`deferred_lighting.wgsl`（group1 binding10/11＋joint bilateral アップサンプル）、
   `lighting_eval.wgsl`（マスク or インライン分岐）、`deferred.rs`（ダミー 4 レイヤ配列＋Filtering サンプラー）、
   `frame_renderer.rs` 配線。
+- **RT 影／RTAO のノイズ制御とテンポラル EMA: 実装済み（Phase RT-Shadow-Denoise 追補）**。
+  上の半解像度マスク＋バイラテラルでも残っていた 2 症状を潰す。
+
+  **症状 A: Play 中だけスキンメッシュの影がチカチカする**
+  RT ソフト影／RTAO の遮蔽率は「二値可視性の N 本平均」なので値は 1/N 刻みに量子化される。
+  ディザは `frag_xy` の IGN（時間項なし）なので Edit（アニメ停止）では模様が凍結して静止画では気付かない。
+  Play 中はアニメーションでスキン BLAS が毎フレーム再構築され（`pose_bits` が署名に入る正しい設計）、
+  二値判定の位相が毎フレーム総入れ替えになるため、量子化段差がフレーム間でバタつく。
+  対策は 2 段:
+  1. **サンプル本数を倍に**（`RT_SHADOW_SAMPLES_MIN` 4→8 / `RTAO_RAY_COUNT` 4→8）。段数が倍になり
+     1 段差の振幅が半分になる。どちらも半解像度パスなのでフル解像度換算の実効コストは本数 ×1/4。
+  2. **影マスクのテンポラル EMA**（根治）。半解像度マスクのバイラテラル V パスに
+     `out = mix(history, current, α)` を融合する（α=`SHADOW_MASK_EMA_ALPHA`=0.25、時定数 ~4 フレーム）。
+
+  **EMA の履歴管理（再投影なしの割り切り）**
+  エンジンにテンポラル蓄積の基盤はなく、スキンメッシュの速度バッファは**変形分を含まない**ため正確な
+  再投影ができない。よって履歴は**同一画素座標**で読み、次の 2 段で棄却する:
+  - **画素単位（GPU）**: 履歴の `.a` に焼かれたビュー深度と現在の相対差が `EMA_DEPTH_TOL_FRAC`（1%）を
+    超えたら α=1（履歴を捨てて現在値をそのまま採用）。シルエットを跨いだ古い影のゴーストを防ぐ。
+    履歴テクスチャのゼロクリア状態（`.a=0`）も必ず棄却されるので初回フレームは自己修復する。
+  - **フレーム単位（CPU）**: カメラ view-proj が前フレームと 1 要素でも違う／ライト選定が変わった／
+    履歴が未確立（初回・リサイズ直後）なら全画素 α=1（`ShadowMaskTargets::begin_frame`）。
+
+  つまり**蓄積が効くのはカメラ静止時のみ**で、カメラが動いている間の出力は EMA 導入前と完全に同一。
+  リソースは履歴 ping-pong の 2 枚（`hist0`/`hist1`）＋中間 1 枚（`tmp`）＋生成 1 枚（`raw`）の 4 枚構成。
+  V パスが `hist[cur]` へ書き `hist[1-cur]` を読む（同一テクスチャの storage 書き込みと sampled 読み出しは
+  同時に成立しないため 2 枚必須）。`hist[cur]` がそのまま deferred が読む最終マスク
+  （`ShadowMaskTargets::result_array_view()`）になる。
+
+  **症状 B: 影の境界に明るいハローが出る**
+  半解像度マスクのアップサンプル／ブラーの深度許容が緩すぎ（ビュー深度 5%＝10m 先で 50cm）、
+  シルエットの向こう側にある「遮蔽されていない明るいテクセル」を同一面として拾っていた。
+  - `SHADOW_MASK_DEPTH_TOLERANCE_FRAC`（`deferred_lighting.wgsl`）と
+    `BILATERAL_DEPTH_TOL_FRAC`（`shadow_mask_bilateral.wgsl`）を **0.05 → 0.01** に絞る。
+  - アップサンプルに**法線類似度重み** `max(dot(N_full, N_half), 0)^k`（k=`SHADOW_MASK_NORMAL_WEIGHT_POWER`=8）
+    を追加。深度が連続でも面の向きが変わる箇所（壁と床の入隅、箱の稜線）は深度重みでは切れないため。
+    法線は深度復元と**同一の写像**（`mask_half_texel_full_pix`）で G-Buffer RT1 から引くので、
+    深度重みと法線重みは必ず同じテクセルを見る。
+
+  **既知の残課題**: AO のブラー（`ao.rs` のいもす法）と消費側バイリニアは依然として深度非考慮なので、
+  輪郭で AO が滲む。AO を `shadow_mask_bilateral` 相当のバイラテラルへ移すには AO 出力の未使用チャンネル
+  （`.a`）へビュー深度を焼く改修が要る（`fs_ssao`/`fs_rt` の両変種）。未着手。
+
+  実装: `shaders/rt_shadow_on.wgsl`（`RT_SHADOW_SAMPLES_MIN`）／`shaders/ao_rt.wgsl`（`RTAO_RAY_COUNT`）／
+  `shaders/shadow_mask_bilateral.wgsl`（EMA 融合・`hist` binding3・`BilateralParams` 16B→32B）／
+  `renderer/shadow_mask_bilateral.rs`（`ema_params`／BGL binding3）／`renderer/shadow_mask.rs`
+  （`SHADOW_MASK_EMA_ALPHA`／`ShadowMaskTargets` の ping-pong と `begin_frame`）／
+  `shaders/deferred_lighting.wgsl`（深度許容 0.01・法線類似度重み）／`frame_renderer.rs` 配線。
 
 ## D3 実機テスト観点（GPU 実機確認が必要。開発環境では cargo build/test までしか検証できない）
 

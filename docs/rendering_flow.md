@@ -49,7 +49,7 @@ flowchart TD
     G2 --> L1
 
     subgraph LIGHT["ライティング段（deferred_active のみ）"]
-      L1["AO 生成 + いもす法ブラー<br/>ao != off"] --> L2["シャドウマスク生成 + バイラテラル<br/>RT影 + ソフト影灯あり"]
+      L1["AO 生成 + いもす法ブラー<br/>ao != off"] --> L2["シャドウマスク生成 + バイラテラル + 時間EMA<br/>RT影 + ソフト影灯あり"]
       L2 --> L3["Deferred ライティングパス<br/>フルスクリーン → scene_hdr"]
       L3 --> L4["SSGI 生成 + ブラー<br/>gi=ssgi・結果は次フレーム使用"]
     end
@@ -338,7 +338,7 @@ WBOIT 3 + オーバーレイ 1 + パーティクル 1 + ブルーム/トーン�
 | 項目 | 内容 |
 |---|---|
 | 目的 | G-Buffer からフルスクリーンで PBR ライティングを復元し HDR シーンへ書く |
-| 入出力 | 入力: g0..g3 / depth / AO(`ao_b`) / SSGI(前フレーム `ssgi_b`) / シャドウマスク(`mask_b`) / ライト・CSM・クラスタ・DDGI。出力: `RT_SCENE_HDR`（`Rgba16Float`） |
+| 入出力 | 入力: g0..g3 / depth / AO(`ao_b`) / SSGI(前フレーム `ssgi_b`) / シャドウマスク(`hist[cur]`＝バイラテラル＋時間 EMA の結果) / ライト・CSM・クラスタ・DDGI。出力: `RT_SCENE_HDR`（`Rgba16Float`） |
 | シェーダ | `deferred_lighting.wgsl`（`fs_deferred`）。連結順は `cluster_common.wgsl` + `pbr_common.wgsl` + `ddgi_common.wgsl` + `light_common.wgsl` + `shadow.wgsl` + `rt_shadow_off.wgsl` または `rt_shadow_on.wgsl`(+`rt_shadow_tint_avg.wgsl` / バインドレス版は `bindless_common.wgsl`+`rt_shadow_tint_bindless.wgsl`) + `surface.wgsl` + `lighting_eval.wgsl` + `deferred_lighting.wgsl` |
 | 実装 | `frame_renderer.rs:4538`（`begin_deferred_lighting_pass_to`）、パイプラインは `renderer/deferred.rs`（`:310-321` / `:336-348` / `:146-150` に連結のユニットテストあり） |
 | Edit / Play | Play では `game_viewport` の viewport/scissor を適用（`:4539-4543`）。`view_mode`（シーンビュー表示モード）は Edit のみ有効で Play は Lit 固定（`:970-980` 付近の `scene_view_mode_code`） |
