@@ -1105,6 +1105,12 @@ pub struct App {
     ///   char_world.rs 冒頭の設計解説を参照）
     pub(super) character_world: Option<crate::engine::physics::CharacterWorld>,
 
+    /// キャラクターコントローラーへのノーコード重力適用の状態（落下速度・接地）。
+    /// `ColliderComponent::apply_gravity` が ON のキャラだけが対象。
+    /// KCC 解決の直前に落下量を積分し、解決後の接地結果でリセットする
+    /// （設計は physics/char_gravity.rs 冒頭を参照）。物理停止時にクリアする。
+    pub(super) character_gravity: crate::engine::physics::CharacterGravity,
+
     /// 編集時の物理シミュレーション有効フラグ。
     /// true のとき Edit モードでも物理スレッドを起動して衝突検出を行う。
     pub(super) edit_physics_enabled: bool,
@@ -1476,6 +1482,7 @@ impl App {
             plugin_registry:  crate::engine::plugin::registry::PluginRegistry::empty(),
             physics_thread:   None,
             character_world:  None,
+            character_gravity: crate::engine::physics::CharacterGravity::new(),
             physics_thread_2d:           None,
             canvas_3d_physics:           std::collections::HashMap::new(),
             edit_physics_2d_enabled:     false,

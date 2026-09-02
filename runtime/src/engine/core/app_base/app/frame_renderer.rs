@@ -847,7 +847,8 @@ impl App {
             // 書いた希望位置を拾い、かつスクリプトの貫通直書きをクランプ済みの補正後位置で上書きする。
             {
                 crate::profile_scope!("物理/キャラクターコントローラ同期");
-                self.sync_character_controllers();
+                // frame_dt はスクリプトの Time.DeltaTime と同一値。重力積分だけに使う。
+                self.sync_character_controllers(ctx.delta_time);
             }
             mark_frame_stage(FrameStage::CharCtrlDone);
             // 入力・物理チャンネルの公開を解除する（フェーズ外でのアクセスを防ぐ）
