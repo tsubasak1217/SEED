@@ -1,86 +1,36 @@
 {
-  "_comment": "地形マテリアルレイヤ定義（Terrain T2）。最大4層（TERRAIN_LAYER_COUNT）。base_color_texture を省略/null にすると base_color の単色レイヤになる。rule は斜度(度)と高度(ワールドY・メートル)のウィンドウで自動下地を決める。値を書き換えるだけで地形の塗り分けが変わる（コード変更不要）。",
   "layers": [
     {
-      "name": "grass",
+      "name": "beach",
       "base_color": [
         1,
         1,
         1
       ],
-      "roughness": 0.95,
-      "metallic": 0,
-      "uv_scale": 0.7,
-      "base_color_texture": "terrain/textures/coast_sand_rocks_02_2k.blend/textures/coast_sand_rocks_02_diff_2k.jpg",
+      "base_color_texture": "templates/terrain/textures/aerial_beach_01_1k.blend/textures/aerial_beach_01_diff_1k.jpg",
+      "roughness_texture": "templates/terrain/textures/aerial_beach_01_1k.blend/textures/aerial_beach_01_rough_1k.jpg",
+      "detile": "macro",
       "rule": {
-        "slope_min_deg": 0,
-        "slope_max_deg": 22,
-        "slope_fade_deg": 10,
-        "priority": 1
+        "priority": 0,
+        "slope_max_deg": 10,
+        "height_max": 0,
+        "height_min": 0
       },
-      "normal_texture": "terrain/textures/coast_sand_rocks_02_2k.blend/textures/coast_sand_rocks_02_nor_dx_2k.jpg",
-      "roughness_texture": "terrain/textures/coast_sand_rocks_02_2k.blend/textures/coast_sand_rocks_02_arm_2k.jpg",
-      "detile": "stochastic"
+      "normal_texture": null,
+      "roughness": 1
     },
     {
-      "name": "dirt",
-      "base_color": [
-        0.13588593900203705,
-        0.5363260507583618,
-        0.041199274361133575
-      ],
-      "roughness": 0.9,
-      "metallic": 0,
-      "uv_scale": 0.25,
-      "base_color_texture": "terrain/textures/rock_pitted_mossy_1k.blend/textures/rock_pitted_mossy_diff_1k.jpg",
+      "name": "new_layer",
+      "base_color_texture": "mainGame/terrain/brush/leaf2.png",
       "rule": {
-        "slope_min_deg": 18,
-        "slope_max_deg": 42,
-        "slope_fade_deg": 10,
-        "priority": 1
+        "slope_min_deg": 90,
+        "priority": 0
       },
-      "detile": "stochastic"
-    },
-    {
-      "name": "rock",
       "base_color": [
         1,
         1,
         1
       ],
-      "roughness": 1,
-      "metallic": 0,
-      "uv_scale": 0.25,
-      "base_color_texture": "terrain/textures/marble_cliff_04_2k.blend/textures/marble_cliff_04_diff_2k.jpg",
-      "rule": {
-        "slope_min_deg": 38,
-        "slope_max_deg": 90,
-        "slope_fade_deg": 10,
-        "priority": 1.2
-      },
-      "normal_texture": "terrain/textures/marble_cliff_04_2k.blend/textures/marble_cliff_04_nor_dx_2k.jpg",
-      "roughness_texture": "terrain/textures/marble_cliff_04_2k.blend/textures/marble_cliff_04_arm_2k.jpg",
-      "detile": "stochastic"
-    },
-    {
-      "name": "sand",
-      "base_color": [
-        1,
-        1,
-        1
-      ],
-      "roughness": 0.85,
-      "metallic": 0,
-      "uv_scale": 0.25,
-      "base_color_texture": "terrain/textures/aerial_beach_01_1k.blend/textures/aerial_beach_01_diff_1k.jpg",
-      "rule": {
-        "slope_min_deg": 0,
-        "slope_max_deg": 25,
-        "slope_fade_deg": 10,
-        "height_max": -2,
-        "height_fade": 1,
-        "priority": 1.5
-      },
       "detile": "stochastic"
     }
   ]

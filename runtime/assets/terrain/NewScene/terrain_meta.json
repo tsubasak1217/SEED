@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "collision_disabled": [
+    [
+      1,
+      0,
+      3
+    ]
+  ],
+  "decimate_strength": 0.0
+}

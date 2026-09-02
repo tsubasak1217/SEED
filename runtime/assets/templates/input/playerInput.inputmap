@@ -1,0 +1,104 @@
+{
+  "version": 2,
+  "actions": [
+    {
+      "name": "Jump",
+      "value_type": 0,
+      "condition": "Press",
+      "bindings": [
+        {
+          "platform": "PC",
+          "input_type": "Key",
+          "value": "Space"
+        }
+      ]
+    },
+    {
+      "name": "Move",
+      "value_type": 2,
+      "normalize": true,
+      "x": {
+        "positive": [
+          {
+            "platform": "PC",
+            "input_type": "Key",
+            "value": "D"
+          },
+          {
+            "platform": "PC",
+            "input_type": "GamepadAxis",
+            "value": "LeftStickX"
+          }
+        ],
+        "negative": [
+          {
+            "platform": "PC",
+            "input_type": "Key",
+            "value": "A"
+          }
+        ]
+      },
+      "y": {
+        "positive": [
+          {
+            "platform": "PC",
+            "input_type": "Key",
+            "value": "W"
+          },
+          {
+            "platform": "PC",
+            "input_type": "GamepadAxis",
+            "value": "LeftStickY"
+          }
+        ],
+        "negative": [
+          {
+            "platform": "PC",
+            "input_type": "Key",
+            "value": "S"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Dash",
+      "value_type": 0,
+      "condition": "Press",
+      "bindings": [
+        {
+          "platform": "PC",
+          "input_type": "Key",
+          "value": "LeftShift"
+        }
+      ]
+    },
+    {
+      "name": "UpDown",
+      "value_type": 1,
+      "positive": [
+        {
+          "platform": "PC",
+          "input_type": "Key",
+          "value": "Q"
+        },
+        {
+          "platform": "PC",
+          "input_type": "GamepadButton",
+          "value": "LeftShoulder"
+        }
+      ],
+      "negative": [
+        {
+          "platform": "PC",
+          "input_type": "Key",
+          "value": "E"
+        },
+        {
+          "platform": "PC",
+          "input_type": "GamepadButton",
+          "value": "RightShoulder"
+        }
+      ]
+    }
+  ]
+}
