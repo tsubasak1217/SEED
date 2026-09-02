@@ -98,6 +98,18 @@ public class CameraMove : SEEDScript
     /// <summary>前フレームのプレイヤー位置。速度（移動デルタ/dt）を出すために保持。null=未観測。</summary>
     private SEED.Vector3? previousPlayerPosition = null;
 
+    /// <summary>
+    /// オフセットの基準に使う<b>安定化ヨー</b>（度）。null=未初期化。
+    ///
+    /// プレイヤーの向きをそのまま使うと、逆走で 180 度反転した瞬間にカメラが
+    /// 反対側へ回り込んでしまう。そこで「プレイヤーのヨーと、その +180 度のうち、
+    /// 現在の安定化ヨーに近い方」を採用して<b>反転を無視</b>する。
+    /// これにより、どちら向きに走っても「島を左・海を右」の視点が維持され、
+    /// 逆走時はプレイヤーがカメラの方を向いて走ってくる構図になる。
+    /// （90 度以内の通常の曲がりには追従する）
+    /// </summary>
+    private float? stableYawDeg = null;
+
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
     {
@@ -123,10 +135,12 @@ public class CameraMove : SEEDScript
     {
         if (player is not { } p || !p.IsValid) { return; }
 
-        // 1) 目標位置 = プレイヤー位置 + ヨーで回したローカルオフセット。
+        // 1) 目標位置 = プレイヤー位置 + 安定化ヨーで回したローカルオフセット。
         //    ピッチ/ロールは無視してヨーだけで回す（プレイヤーが坂で傾いても
         //    カメラの高さ関係が崩れないようにするため）。
-        float yawRad = p.Rotation.y * DegToRad;
+        //    ヨーは「反転を無視した安定化ヨー」を使う（stableYawDeg のコメント参照）。
+        float stabilized = StabilizeYaw(p.Rotation.y);
+        float yawRad = stabilized * DegToRad;
         float sin = SEED.Mathf.Sin(yawRad);
         float cos = SEED.Mathf.Cos(yawRad);
         // ローカル(右=+X, 上=+Y, 後ろ=-Z の -1 倍) をヨー回転でワールドへ。
@@ -227,9 +241,32 @@ public class CameraMove : SEEDScript
         // 横方向速度（m/s）＝ 水平デルタの右方向成分 / dt
         float lateralSpeed = (delta.x * right.x + delta.z * right.z) / deltaTime;
 
-        float roll = lateralSpeed * rollStrength;
+        // 符号は「右へ流れているとき左（負）へ傾く」向き（ユーザー指定で反転）。
+        float roll = -lateralSpeed * rollStrength;
         float limit = SEED.Mathf.Abs(maxRollDegrees);
         return SEED.Mathf.Clamped(roll, -limit, limit);
+    }
+
+    /// <summary>
+    /// プレイヤーの生ヨーから、180 度反転を無視した<b>安定化ヨー</b>を求めて内部状態を更新する。
+    /// 「生ヨー」と「生ヨー+180 度」のうち、現在の安定化ヨーに近い方を採用する。
+    /// 初回は生ヨーで初期化。
+    /// </summary>
+    private float StabilizeYaw(float rawYawDeg)
+    {
+        if (stableYawDeg is not { } stable)
+        {
+            stableYawDeg = rawYawDeg;
+            return rawYawDeg;
+        }
+
+        // 生ヨーとその反対向きのうち、現在の安定化ヨーへの回転量が小さい方を選ぶ
+        float dRaw = ShortestAngleDelta(stable, rawYawDeg);
+        float dFlip = ShortestAngleDelta(stable, rawYawDeg + HalfTurnDegrees);
+        float chosen = SEED.Mathf.Abs(dRaw) <= SEED.Mathf.Abs(dFlip) ? stable + dRaw : stable + dFlip;
+
+        stableYawDeg = chosen;
+        return chosen;
     }
 
     /// <summary>フレームレート非依存の指数補間係数 <c>1 - exp(-rate * dt)</c>（0〜1）。</summary>
