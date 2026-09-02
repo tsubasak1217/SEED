@@ -566,6 +566,19 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             PanelInspector.InvalidateScriptTypeCache(path);
             _runtimeManager?.SendToRuntime("RELOAD_SCRIPTS");
         };
+        // ホットリロード成功時: 型キャッシュを**全件**破棄する。
+        // 保存した .cs だけでなく、基底クラスや [Serializable] ネスト型を共有する
+        // 別スクリプトの [SerializeField] 構成も同時に変わりうるため。
+        // 破棄後、ランタイムが送り直す ACTOR_COMPONENTS でインスペクタが
+        // 新しいフィールド構成に組み直される（＝スクリプトの再アタッチ不要）。
+        if (_runtimeManager is not null)
+        {
+            // 本イベントはパイプ受信スレッドで発火する。ACTOR_COMPONENTS 側も
+            // Dispatcher.InvokeAsync で UI スレッドへ積むため、こちらも同じ経路に乗せる
+            //（同一優先度の FIFO なので「キャッシュ破棄 → UI 再構築」の順序が保たれる）。
+            _runtimeManager.ScriptsReloaded += _ =>
+                Dispatcher.InvokeAsync(() => PanelInspector.InvalidateScriptTypeCache());
+        }
         // スクリプトエディタ: .wgsl タブのライブ検証をランタイム経由で行えるようにする。
         // パネル側は「ソースを渡すと診断が返る関数」しか知らない（IPC はサービスが担当）。
         if (_runtimeManager is not null)

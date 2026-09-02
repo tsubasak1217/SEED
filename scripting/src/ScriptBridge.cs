@@ -489,6 +489,171 @@ public static unsafe class ScriptBridge
         }
     }
 
+    // ─── [SerializeField] 定義のスナップショット（ホットリロードの値引き継ぎ）───
+    //
+    // 【なぜ必要か】
+    // ホットリロード直後、Rust 側は「旧アセンブリ時代に保存した値（名前 → 文字列）」だけを
+    // 持っている。しかし新アセンブリではフィールドが増減・改名・型変更されている可能性がある。
+    // 型情報を持たない Rust だけでは「引き継いでよい値」を判定できない。
+    // そこで、生成直後（＝宣言時初期値のまま）のインスタンスから
+    // 「フィールドパス・型タグ・既定値」を吸い出して渡し、
+    // 引き継ぎ判定そのものは Rust の純粋関数（carry_over_script_fields）に任せる。
+
+    /// <summary>ネスト展開の再帰上限（循環参照・過度な深さの安全弁。ScriptCompiler と同値）。</summary>
+    private const int DescribeMaxNestDepth = 8;
+
+    /// <summary>
+    /// スクリプトインスタンスの [SerializeField] フィールド定義を JSON 配列として書き出す FFI。
+    ///
+    /// 形式: <c>[{"name":"stats.hp","type":"int","default":"10"}, ...]</c>
+    ///  - name    : ドット区切りのフィールドパス（<see cref="SetFieldValue"/> と同じ表記）
+    ///  - type    : float / double / int / long / short / bool / string / reference / unsupported
+    ///  - default : 宣言時初期値の文字列化（reference / unsupported は空文字）
+    ///
+    /// **生成直後のインスタンスに対して呼ぶこと。** 値を書き込んだ後に呼ぶと、
+    /// 「既定値」ではなく「書き込み済みの値」が返ってしまう。
+    ///
+    /// リフレクションのみで World / Actor ツリーへは触れないため、
+    /// スクリプトフェーズ外（IPC 処理中・インスペクタ更新中）でも安全に呼べる。
+    ///
+    /// 戻り値: 書き込んだバイト数（空配列でも "[]" の 2 バイト）。
+    ///         バッファ不足なら **必要バイト数の負値**（呼び出し側は拡張して再試行する）。
+    ///         ハンドル無効・例外時は 0。
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int DescribeSerializeFields(nint h, byte* outBuf, int capacity)
+    {
+        try
+        {
+            var target = Get(h);
+            if (target is null) return 0;
+
+            var sb = new StringBuilder("[");
+            AppendFieldDescriptions(sb, target, target.GetType(), prefix: "", depth: 0);
+            sb.Append(']');
+
+            var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+            if (outBuf is null || capacity < bytes.Length) return -bytes.Length;
+            for (int i = 0; i < bytes.Length; i++) outBuf[i] = bytes[i];
+            return bytes.Length;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] DescribeSerializeFields failed: {ex.Message}");
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// [SerializeField] フィールドを再帰的に走査し、JSON 要素を sb へ追記する。
+    ///
+    /// instance が null（ネストオブジェクトが未生成）の場合は、型から一時インスタンスを
+    /// 生成して宣言時初期値を読む（生成できなければ既定値は空文字になる）。
+    /// </summary>
+    private static void AppendFieldDescriptions(
+        StringBuilder sb, object? instance, Type type, string prefix, int depth)
+    {
+        if (instance is null)
+        {
+            // 既定値読み取り用の一時インスタンス（生成失敗は致命ではないので握り潰す）
+            try { instance = Activator.CreateInstance(type); } catch { instance = null; }
+        }
+
+        foreach (var f in type.GetFields(FieldFlags))
+        {
+            if (!HasAttributeNamed(f, nameof(SerializeFieldAttribute))) continue;
+
+            var path  = prefix + f.Name;
+            var value = instance is null ? null : f.GetValue(instance);
+            var isRef = SEED.ScriptReference.TryGetKind(f.FieldType, out _);
+
+            // [Serializable] ネストクラスは葉ではないので子へ降りる
+            //（参照ハンドルは内部構造を晒さないため展開しない。ScriptCompiler と同じ規則）
+            if (!isRef && depth < DescribeMaxNestDepth && IsNestedSerializableType(f.FieldType))
+            {
+                AppendFieldDescriptions(sb, value, f.FieldType, path + ".", depth + 1);
+                continue;
+            }
+
+            if (sb.Length > 1) sb.Append(',');   // "[" だけのときは区切り不要
+            sb.Append("{\"name\":").Append(JsonString(path))
+              .Append(",\"type\":").Append(JsonString(TypeTagOf(f.FieldType, isRef)))
+              .Append(",\"default\":").Append(JsonString(DefaultValueString(isRef, value)))
+              .Append('}');
+        }
+    }
+
+    /// <summary>
+    /// [Serializable] が付いた、パスを掘り下げるべきネストクラス型かを判定する。
+    /// 判定規則はエディタ側 ScriptCompiler.IsNestedSerializable と一致させること。
+    /// </summary>
+    private static bool IsNestedSerializableType(Type t)
+    {
+        if (t.IsPrimitive || t.IsEnum || t == typeof(string) || t.IsArray) return false;
+        if (!t.IsClass && !(t.IsValueType && !t.IsPrimitive)) return false;
+        // アセンブリ ID 差異を吸収するため属性名で照合する
+        return t.GetCustomAttributesData().Any(a => a.AttributeType.Name == "SerializableAttribute");
+    }
+
+    /// <summary>
+    /// Rust へ渡す型タグ。Rust 側 carry_over_script_fields の型一致判定に使う。
+    /// 対応型は <see cref="ConvertValue"/> と 1 対 1 で対応させること。
+    /// </summary>
+    private static string TypeTagOf(Type t, bool isReference)
+    {
+        if (isReference)         return "reference";
+        if (t == typeof(float))  return "float";
+        if (t == typeof(double)) return "double";
+        if (t == typeof(int))    return "int";
+        if (t == typeof(long))   return "long";
+        if (t == typeof(short))  return "short";
+        if (t == typeof(bool))   return "bool";
+        if (t == typeof(string)) return "string";
+        return "unsupported";
+    }
+
+    /// <summary>
+    /// 宣言時初期値の文字列化（<see cref="ConvertValue"/> が解釈できる表記に合わせる）。
+    /// 参照フィールドはアクター名の文字列として保存されるので、既定は「未設定＝空文字」。
+    /// </summary>
+    private static string DefaultValueString(bool isReference, object? value)
+    {
+        if (isReference || value is null) return "";
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        return value switch
+        {
+            bool b   => b ? "true" : "false",
+            float f  => f.ToString("R", inv),
+            double d => d.ToString("R", inv),
+            string s => s,
+            _        => Convert.ToString(value, inv) ?? "",
+        };
+    }
+
+    /// <summary>文字列を JSON 文字列リテラル（引用符込み）へエスケープする。</summary>
+    private static string JsonString(string s)
+    {
+        var sb = new StringBuilder(s.Length + 2);
+        sb.Append('"');
+        foreach (var c in s)
+        {
+            switch (c)
+            {
+                case '"':  sb.Append("\\\""); break;
+                case '\\': sb.Append(@"\\"); break;
+                case '\n': sb.Append(@"\n");  break;
+                case '\r': sb.Append(@"\r");  break;
+                case '\t': sb.Append(@"\t");  break;
+                default:
+                    if (c < 0x20) sb.Append(@"\u").Append(((int)c).ToString("x4"));
+                    else          sb.Append(c);
+                    break;
+            }
+        }
+        sb.Append('"');
+        return sb.ToString();
+    }
+
     /// <summary>
     /// フィールドに指定名の属性が付いているかを**属性名で**判定する。
     ///

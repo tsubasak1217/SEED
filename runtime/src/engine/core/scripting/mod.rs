@@ -147,6 +147,16 @@ type IsRefFieldFn = unsafe extern "system" fn(isize, *const u8, i32) -> i32;
 /// エディタのインスペクタ更新中でも安全に呼べる。
 type ReadFieldFloatsFn =
     unsafe extern "system" fn(isize, *const u8, i32, *mut f32, i32) -> i32;
+/// 生成直後のスクリプトインスタンスから `[SerializeField]` フィールド定義
+/// （パス・型タグ・既定値）を JSON 配列として書き出す。
+///
+/// 引数: (ハンドル, 書き込み先バッファ, バッファ容量バイト数)
+/// 戻り値: 書き込んだバイト数。バッファ不足なら **必要バイト数の負値**、
+///         ハンドル無効・例外時は 0。
+///
+/// ホットリロード時の「保存済みフィールド値の引き継ぎ」判定に使う。
+/// リフレクションのみで World へ触れないため、フェーズ外でも安全に呼べる。
+type DescribeFieldsFn = unsafe extern "system" fn(isize, *mut u8, i32) -> i32;
 /// コンポーネントアクセス用の関数ポインタ表（HOST_API）を C# へ登録する。
 type RegisterHostApiFn = unsafe extern "system" fn(*const host_api::ScriptHostApi);
 
@@ -183,6 +193,9 @@ pub struct ScriptingHost {
     pub(crate) is_ref_field_fn: IsRefFieldFn,
     /// `[Bindable]` フィールドの実行中の値の読み取り（`@ref` バインドの解決で使用）
     pub(crate) read_field_floats_fn: ReadFieldFloatsFn,
+    /// `[SerializeField]` フィールド定義のスナップショット取得
+    /// （ホットリロード時の値引き継ぎで使用）
+    pub(crate) describe_fields_fn: DescribeFieldsFn,
     register_host_api_fn:    RegisterHostApiFn,
 }
 
@@ -241,6 +254,8 @@ impl ScriptingHost {
             is_ref_field_fn:   get_fn!(fn(isize, *const u8, i32) -> i32,       pdcstr!("IsReferenceField")),
             read_field_floats_fn: get_fn!(fn(isize, *const u8, i32, *mut f32, i32) -> i32,
                                                                               pdcstr!("ReadFieldFloats")),
+            describe_fields_fn: get_fn!(fn(isize, *mut u8, i32) -> i32,
+                                                                              pdcstr!("DescribeSerializeFields")),
             register_host_api_fn: get_fn!(fn(*const host_api::ScriptHostApi),  pdcstr!("RegisterHostApi")),
         }))
     }

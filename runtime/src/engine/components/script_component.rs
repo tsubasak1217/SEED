@@ -31,6 +31,72 @@ pub struct ScriptComponentData {
     pub fields: BTreeMap<String, String>,
 }
 
+// ─── フィールド定義と引き継ぎ（ホットリロード）─────────────────────────────────
+
+/// 新アセンブリ側の `[SerializeField]` フィールド定義 1 件。
+///
+/// CLR の `ScriptBridge.DescribeSerializeFields` が返す JSON 要素に対応する。
+/// - `name`  : ドット区切りのフィールドパス（例 `"stats.hp"`）
+/// - `type_tag`: `float`/`double`/`int`/`long`/`short`/`bool`/`string`/
+///               `reference`/`unsupported`
+/// - `default_value`: 宣言時初期値の文字列化（`reference`/`unsupported` は空文字）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptFieldDef {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_tag: String,
+    #[serde(rename = "default")]
+    pub default_value: String,
+}
+
+/// 保存済みの値が、新しいフィールド定義の型で解釈できるかを判定する。
+///
+/// 型タグは CLR 側 `ConvertValue` の対応型と 1 対 1 に対応させている。
+/// `string` / `reference` は任意の文字列を受け付ける（前者は素の文字列、
+/// 後者はアクター名の文字列として保存されるため）。
+/// `unsupported`（インスペクタが扱えない型）は常に既定値へ落とす。
+fn value_matches_type(type_tag: &str, value: &str) -> bool {
+    match type_tag {
+        "float" | "double"        => value.trim().parse::<f64>().is_ok(),
+        "int" | "long" | "short"  => value.trim().parse::<i64>().is_ok(),
+        "bool"                    => value == "true" || value == "false",
+        "string" | "reference"    => true,
+        _                         => false,
+    }
+}
+
+/// ホットリロード時のフィールド値引き継ぎ（純粋関数）。
+///
+/// 【規則】新しいフィールド定義に**存在し、かつ旧値がその型で解釈できる**ものだけを残す。
+/// - 名前・型ともに一致            → 旧値を引き継ぐ
+/// - 新設フィールド（旧値が無い）  → **含めない**
+/// - 型が変わった（旧値が解釈不能）→ **含めない**
+/// - 定義から消えた（削除・改名）  → **含めない**
+///
+/// 【なぜ「既定値を書き込む」ではなく「含めない」なのか】
+/// `fields` は「ユーザーがインスペクタで**明示的に設定した値**」を表すマップであり、
+/// 未設定フィールドはキーごと存在しないのが従来からの規約である
+/// （インスペクタはキーが無ければスクリプト宣言側の初期値を表示し、
+///  CLR インスタンスも生成直後の初期値のままになる）。
+/// ここで既定値を書き込んでしまうと、その時点の初期値が「設定済みの値」として
+/// 固定され、後からスクリプト側の初期化子を書き換えても反映されなくなる。
+///
+/// 戻り値のキー集合は必ず `defs` のフィールドパス集合の部分集合になる。
+pub fn carry_over_script_fields(
+    old:  &BTreeMap<String, String>,
+    defs: &[ScriptFieldDef],
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for def in defs {
+        if let Some(v) = old.get(&def.name) {
+            if value_matches_type(&def.type_tag, v) {
+                out.insert(def.name.clone(), v.clone());
+            }
+        }
+    }
+    out
+}
+
 // ─── ScriptComponent ──────────────────────────────────────────────────────────
 
 /// C# スクリプトを保持するコンポーネント。
@@ -101,6 +167,70 @@ impl ScriptComponent {
     }
 
     pub fn type_name(&self) -> &str { &self.type_name }
+
+    /// ホットリロード用: 新アセンブリの定義に合わせて保存済みフィールド値を引き継ぎつつ生成する。
+    ///
+    /// 【なぜ new_with_fields と分けるか】
+    /// `new_with_fields` は「保存値をそのまま全部書き込み、fields にもそのまま残す」。
+    /// 再コンパイル後はフィールドが増減・改名・型変更されている可能性があるため、
+    /// そのままでは
+    ///   - 消えたフィールドの値が fields に残り続ける
+    ///   - 型が変わったフィールドで「CLR は既定値・インスペクタ表示は旧値」と食い違う
+    /// という不整合が起きる。ここでは
+    ///   1. まず**既定値のまま**インスタンスを生成し
+    ///   2. CLR から新しいフィールド定義（名前・型タグ・既定値）を吸い出し
+    ///   3. 純粋関数 `carry_over_script_fields` で引き継ぎ後の値を決め
+    ///   4. その結果だけを書き込む
+    /// という手順を踏む。定義を取得できなかった場合（旧 CLR・例外など）は
+    /// 従来どおり保存値をそのまま適用するフォールバックに落ちる。
+    pub fn new_with_carried_fields(
+        host:      Arc<ScriptingHost>,
+        type_name: impl Into<String>,
+        old_fields: BTreeMap<String, String>,
+    ) -> Option<Self> {
+        let mut sc = Self::new(host, type_name)?;
+
+        // 生成直後（＝宣言時初期値のまま）でなければ既定値が読めないので、ここで取得する
+        let merged = match sc.describe_serialize_fields() {
+            Some(defs) => carry_over_script_fields(&old_fields, &defs),
+            None       => old_fields,
+        };
+
+        for (name, value) in &merged {
+            sc.apply_field_ffi(name, value);
+        }
+        sc.fields = merged;
+        Some(sc)
+    }
+
+    /// CLR から `[SerializeField]` フィールド定義のスナップショットを取得する。
+    ///
+    /// 取得できない（CLR がエラーを返した・JSON が壊れている）場合は `None`。
+    /// フィールドが 1 つも無いスクリプトでは `Some(空 Vec)` が返る
+    /// （＝「定義が空」と「取得失敗」を呼び出し側で区別できる）。
+    pub fn describe_serialize_fields(&self) -> Option<Vec<ScriptFieldDef>> {
+        /// 最初に試すバッファ長。大半のスクリプトはこの範囲に収まる。
+        const INITIAL_CAPACITY: usize = 4096;
+
+        let mut buf = vec![0u8; INITIAL_CAPACITY];
+        let mut written = unsafe {
+            (self.host.describe_fields_fn)(self.handle, buf.as_mut_ptr(), buf.len() as i32)
+        };
+
+        // 負値 = バッファ不足。必要量が返るので確保し直して 1 度だけ再試行する。
+        if written < 0 {
+            let needed = (-written) as usize;
+            buf = vec![0u8; needed];
+            written = unsafe {
+                (self.host.describe_fields_fn)(self.handle, buf.as_mut_ptr(), buf.len() as i32)
+            };
+        }
+        if written <= 0 { return None; }
+
+        let json = std::str::from_utf8(&buf[..written as usize]).ok()?;
+        serde_json::from_str::<Vec<ScriptFieldDef>>(json).ok()
+    }
+
 
     /// [SerializeField] フィールドの値を設定し、CLR インスタンスにも即時反映する。
     ///
@@ -321,3 +451,137 @@ impl PlaceholderScriptSlot {
 }
 
 impl Component for PlaceholderScriptSlot {}
+
+// ============================================================
+//  テスト — フィールド値の引き継ぎ（純粋関数のみ。CLR は不要）
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// テスト用のフィールド定義を組み立てる小ヘルパー。
+    fn def(name: &str, type_tag: &str, default_value: &str) -> ScriptFieldDef {
+        ScriptFieldDef {
+            name:          name.to_string(),
+            type_tag:      type_tag.to_string(),
+            default_value: default_value.to_string(),
+        }
+    }
+
+    /// 旧値マップを組み立てる小ヘルパー。
+    fn old(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    /// 名前と型が一致するフィールドは旧値をそのまま引き継ぐ。
+    #[test]
+    fn keeps_value_when_name_and_type_match() {
+        let defs = [
+            def("speed", "float", "1"),
+            def("count", "int", "0"),
+            def("flag", "bool", "false"),
+            def("label", "string", ""),
+        ];
+        let merged = carry_over_script_fields(
+            &old(&[("speed", "12.5"), ("count", "7"), ("flag", "true"), ("label", "hello")]),
+            &defs,
+        );
+        assert_eq!(merged.get("speed").map(String::as_str), Some("12.5"));
+        assert_eq!(merged.get("count").map(String::as_str), Some("7"));
+        assert_eq!(merged.get("flag").map(String::as_str),  Some("true"));
+        assert_eq!(merged.get("label").map(String::as_str), Some("hello"));
+    }
+
+    /// 新設フィールドはマップに含めない（＝スクリプト宣言側の既定値が使われる）。
+    #[test]
+    fn new_field_is_left_unset() {
+        let defs = [def("speed", "float", "1"), def("hp", "int", "100")];
+        let merged = carry_over_script_fields(&old(&[("speed", "12.5")]), &defs);
+        assert!(!merged.contains_key("hp"));
+        assert_eq!(merged.get("speed").map(String::as_str), Some("12.5"));
+    }
+
+    /// 型が変わったフィールドは旧値を捨てる（＝スクリプト宣言側の既定値へ戻る）。
+    #[test]
+    fn type_change_drops_stale_value() {
+        // float → int（"12.5" は整数として解釈できない）
+        let merged = carry_over_script_fields(
+            &old(&[("speed", "12.5")]),
+            &[def("speed", "int", "3")],
+        );
+        assert!(!merged.contains_key("speed"));
+
+        // string → bool（"hello" は真偽値ではない）
+        let merged = carry_over_script_fields(
+            &old(&[("flag", "hello")]),
+            &[def("flag", "bool", "false")],
+        );
+        assert!(!merged.contains_key("flag"));
+    }
+
+    /// int → float は数値として解釈できるので引き継ぐ（値の意味が保たれるため）。
+    #[test]
+    fn widening_numeric_type_keeps_value() {
+        let merged = carry_over_script_fields(
+            &old(&[("hp", "7")]),
+            &[def("hp", "float", "0")],
+        );
+        assert_eq!(merged.get("hp").map(String::as_str), Some("7"));
+    }
+
+    /// 新定義に無いフィールド（削除・改名）は破棄される。
+    #[test]
+    fn removed_field_is_dropped() {
+        let merged = carry_over_script_fields(
+            &old(&[("speed", "12.5"), ("gone", "42")]),
+            &[def("speed", "float", "1")],
+        );
+        assert!(!merged.contains_key("gone"));
+        assert_eq!(merged.len(), 1);
+    }
+
+    /// ネストしたフィールドパスも通常のフィールドと同じ規則で扱う。
+    #[test]
+    fn nested_paths_follow_the_same_rules() {
+        let defs = [def("stats.hp", "int", "100"), def("stats.mp", "int", "50")];
+        let merged = carry_over_script_fields(&old(&[("stats.hp", "12")]), &defs);
+        assert_eq!(merged.get("stats.hp").map(String::as_str), Some("12"));
+        assert!(!merged.contains_key("stats.mp"));
+    }
+
+    /// 参照フィールドは値の妥当性を検証できないので、名前が残っていれば引き継ぐ。
+    #[test]
+    fn reference_field_keeps_actor_name() {
+        let merged = carry_over_script_fields(
+            &old(&[("target", "Player")]),
+            &[def("target", "reference", "")],
+        );
+        assert_eq!(merged.get("target").map(String::as_str), Some("Player"));
+    }
+
+    /// インスペクタが扱えない型（unsupported）は常に引き継がない。
+    #[test]
+    fn unsupported_type_is_dropped() {
+        let merged = carry_over_script_fields(
+            &old(&[("weird", "something")]),
+            &[def("weird", "unsupported", "")],
+        );
+        assert!(merged.is_empty());
+    }
+
+    /// 定義が空なら結果も空（フィールドを全部消したスクリプトのケース）。
+    #[test]
+    fn empty_defs_yield_empty_map() {
+        let merged = carry_over_script_fields(&old(&[("a", "1"), ("b", "2")]), &[]);
+        assert!(merged.is_empty());
+    }
+
+    /// CLR が返す JSON をそのままデシリアライズできる（キー名の契約テスト）。
+    #[test]
+    fn parses_clr_json_shape() {
+        let json = r#"[{"name":"speed","type":"float","default":"1.5"}]"#;
+        let defs: Vec<ScriptFieldDef> = serde_json::from_str(json).unwrap();
+        assert_eq!(defs, vec![def("speed", "float", "1.5")]);
+    }
+}

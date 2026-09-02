@@ -143,7 +143,10 @@ impl App {
         let mut kind_by_entity: std::collections::HashMap<Entity, ComponentKind> =
             std::collections::HashMap::new();
         for info in infos {
-            let created = ScriptComponent::new_with_fields(
+            // 新アセンブリのフィールド定義に合わせて保存値を引き継ぐ。
+            // 名前＋型が一致するものだけ旧値を持ち越し、新設・型変更・削除された
+            // フィールドの値は捨てる（＝スクリプト宣言側の初期値が使われる）。
+            let created = ScriptComponent::new_with_carried_fields(
                 std::sync::Arc::clone(&host),
                 info.path.clone(),
                 info.fields.clone(),
@@ -189,8 +192,24 @@ impl App {
         }
 
         // エディタへ結果を通知する（count: コンパイルされた型数、restored: 再生成数）
+        //
+        // 【順序が重要】先に SCRIPTS_RELOADED を送る。エディタはこれを受けて
+        // スクリプト型キャッシュ（[SerializeField] 定義の抽出結果）を破棄するため、
+        // 後続の ACTOR_COMPONENTS は必ず**新しい定義**で UI を組み直せる。
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("SCRIPTS_RELOADED:{count},{restored}"));
+        }
+
+        // 再コンパイルに成功したときだけ、選択中アクタの ACTOR_COMPONENTS を送り直し、
+        // インスペクタを新しいフィールド構成で再構築させる（＝再アタッチ不要にする）。
+        //
+        // 失敗時（count < 0）に送らないのは、旧アセンブリのままの表示を保つため
+        //（送るとスロットが Placeholder に落ちた姿でインスペクタが作り直されてしまう）。
+        // 選択が無ければ何もしない。ヒエラルキー全体の再送も不要（構成は変わらない）。
+        if count >= 0 {
+            for dfs in self.selected_actor_dfs_ids.clone() {
+                self.send_actor_components(dfs as u32, self.actor_virtual_selected_slot_idx);
+            }
         }
     }
 }

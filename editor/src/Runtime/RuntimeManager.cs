@@ -231,6 +231,17 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>ビューポートで複数選択されたときに発火する（インスタンスインデックスのリスト）。</summary>
     public event Action<IReadOnlyList<int>>? SelectionMultiChanged;
 
+    /// <summary>
+    /// ユーザースクリプトのホットリロード（再コンパイル＋全 ScriptComponent 再生成）が
+    /// **成功**したときに発火する（引数 = コンパイルされたスクリプト型数）。
+    ///
+    /// 受け手はスクリプト型キャッシュ（[SerializeField] 定義の抽出結果）を捨てる。
+    /// 保存した .cs 以外（基底クラスや [Serializable] ネスト型を共有する別スクリプト）の
+    /// 定義も同時に変わりうるため、破棄は**全件**が正しい。
+    /// 失敗時は発火しない（旧定義のまま表示を保つ）。
+    /// </summary>
+    public event Action<int>? ScriptsReloaded;
+
     /// <summary>シーン保存完了時に発火する（ok=true: 成功, ok=false: 失敗メッセージ付き）。</summary>
     public event Action<bool, string>? SaveCompleted;
 
@@ -1426,6 +1437,9 @@ public sealed class RuntimeManager : IDisposable
             if (int.TryParse(countStr, out var compiledCount) && compiledCount >= 0)
             {
                 EditorLog.Write($"[Runtime→Editor] SCRIPTS_RELOADED — {compiledCount} 型をコンパイル・再生成完了");
+                // 型キャッシュ破棄の合図。この直後にランタイムから届く ACTOR_COMPONENTS で
+                // インスペクタが新しいフィールド構成に組み直される（再アタッチ不要）。
+                ScriptsReloaded?.Invoke(compiledCount);
             }
             else
             {
