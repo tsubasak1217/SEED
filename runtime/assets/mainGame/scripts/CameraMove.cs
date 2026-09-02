@@ -9,13 +9,13 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// コンポーネントハンドル（Transform / Camera など）だけで、<b>他スクリプトのインスタンスは
 /// 参照できない</b>（scripting/src/Api/ScriptReference.cs）。
 /// つまりカメラから PlayerMove へ「今どちら回りか」を問い合わせることはできない。
-/// そこで<b>プレイヤーの Transform を毎フレーム観測し、その位置変化（移動方向）から
-/// 自前で方向を決める</b>。カメラ側に 2 つのアンカーがまとまるので、
-/// セットアップ時に「どちらの向きでどこから見るか」を 1 箇所で確認できる。
+/// そこで<b>2 つの目標の中点を毎フレーム観測し、その位置変化（移動方向）から
+/// 自前で方向を決める</b>（アンカーはプレイヤーの子なので中点＝プレイヤーの動き）。
+/// 設定はアンカー 2 参照だけで済み、カメラ側 1 箇所で完結する。
 ///
 /// <b>どちらのアンカーを選ぶか</b>:
 /// カメラはプレイヤーの<b>後ろ</b>から見たい。よって
-/// <c>dot(アンカー位置 - プレイヤー位置, 移動方向) &lt; 0</c>（＝移動方向の後方にある）側を選ぶ。
+/// <c>dot(アンカー位置 - 中点, 移動方向) &lt; 0</c>（＝移動方向の後方にある）側を選ぶ。
 /// アンカーはプレイヤーの子アクタとして前後に置く想定なので、
 /// プレイヤーが逆走して向きが 180 度変われば前後関係も入れ替わり、選択も入れ替わる。
 /// 両方が後方／両方が前方（＝判定が曖昧）なら<b>現状維持</b>する。
@@ -64,14 +64,6 @@ public class CameraMove : SEEDScript
     [SerializeField(Label = "逆方向時の目標")]
     private SEED.Transform? backwardTarget = null;
 
-    /// <summary>
-    /// 方向判定の<b>観測対象</b>。このスクリプトはこの Transform の位置変化だけを見る。
-    /// 未設定なら判定を行わず、常に <see cref="forwardTarget"/> を使う
-    /// （＝切替を使わない単純な追従カメラとしても成立する）。
-    /// </summary>
-    [SerializeField(Label = "プレイヤー")]
-    private SEED.Transform? player = null;
-
     // ─── 追従パラメータ ───────────────────────────────────────
 
     /// <summary>
@@ -108,10 +100,10 @@ public class CameraMove : SEEDScript
     private bool useForwardTarget = true;
 
     /// <summary>
-    /// 前フレームのプレイヤーのワールド位置。null は「まだ観測していない」。
+    /// 前フレームの<b>2 目標の中点</b>のワールド位置。null は「まだ観測していない」。
     /// 移動デルタを取るためだけに保持する。
     /// </summary>
-    private SEED.Vector3? previousPlayerPosition = null;
+    private SEED.Vector3? previousMidpoint = null;
 
     /// <summary>
     /// 最後に方向判定してからの<b>移動デルタの累積</b>（ワールド、メートル）。
@@ -184,41 +176,44 @@ public class CameraMove : SEEDScript
     // ─── 方向判定 ─────────────────────────────────────────────
 
     /// <summary>
-    /// プレイヤーの位置変化を観測し、<see cref="useForwardTarget"/> を更新する。
+    /// <b>2 目標の中点</b>の位置変化を観測し、<see cref="useForwardTarget"/> を更新する。
+    ///
+    /// アンカー 2 つはプレイヤーの子アクタとして前後に置く想定なので、
+    /// その<b>中点はプレイヤーと同じ動き</b>をする。つまり中点を見れば
+    /// プレイヤー参照が無くても移動方向が分かり、設定は 2 参照だけで済む。
     ///
     /// <b>手順</b>:
     /// <code>
-    ///   1. 前フレームからの移動デルタを累積する
+    ///   1. 前フレームからの中点の移動デルタを累積する
     ///   2. 累積が DirectionDecisionDistance 未満なら何もしない（＝ヒステリシス／停止中は現状維持）
     ///   3. 超えたら「移動方向の後方にあるアンカー」を選ぶ
-    ///      （dot(アンカー位置 - プレイヤー位置, 移動方向) &lt; 0 の側）
+    ///      （dot(アンカー位置 - 中点, 移動方向) &lt; 0 の側）
     ///   4. 後方が 1 つに定まらない（両方後方／両方前方）ときは現状維持
     ///   5. 判定したら累積をリセットする
     /// </code>
     ///
-    /// プレイヤーの Rotation から前方を出して内積を取る方法もあるが、
-    /// プレイヤーは常に進行方向を向く仕様（PlayerMove が回転補間で向ける）なので
-    /// 符号が常に前進側になり、正逆の区別には使えない。
-    /// <b>アンカーの相対位置と移動方向の関係</b>なら、向きが 180 度入れ替わったときに
-    /// 前後関係も入れ替わるので、そのまま正逆の判定になる。
+    /// 注意: プレイヤーの向き（Rotation）は使わない。プレイヤーは常に進行方向を向く仕様
+    /// （PlayerMove が回転補間で向ける）なので向きからは正逆を区別できないため、
+    /// <b>アンカーの相対位置と移動方向の関係</b>で判定する。
     /// </summary>
     private void UpdateTargetSelection()
     {
-        // 判定に必要なもの（観測対象と 2 つの目標）が揃っていなければ何もしない。
+        // 判定に必要な 2 つの目標が揃っていなければ何もしない。
         // 片側しか無い構成では ResolveTarget が常にそちらを返すので、判定自体が不要。
-        if (player is not { } p || !p.IsValid) { return; }
         if (forwardTarget is not { } fwd || !fwd.IsValid) { return; }
         if (backwardTarget is not { } bwd || !bwd.IsValid) { return; }
 
-        var current = p.Position;
+        // 2 目標の中点 ≒ プレイヤー位置（アンカーがプレイヤーの子で前後対称に置かれている前提。
+        // 対称でなくても「プレイヤーと一緒に動く点」であれば移動方向の観測には十分）。
+        var current = (fwd.Position + bwd.Position) * 0.5f;
 
         // 初回は前フレームが無いのでデルタを取れない。基準だけ覚えて抜ける。
-        if (previousPlayerPosition is not { } previous)
+        if (previousMidpoint is not { } previous)
         {
-            previousPlayerPosition = current;
+            previousMidpoint = current;
             return;
         }
-        previousPlayerPosition = current;
+        previousMidpoint = current;
 
         // 1) 移動デルタを累積する（1 フレームぶんでは微小すぎて向きが定まらないため）
         accumulatedMove += current - previous;
