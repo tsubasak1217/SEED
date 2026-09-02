@@ -81,33 +81,12 @@ public class PlayerMove : SEEDScript
     [SerializeField(Label = "経路の高さに追従")]
     private bool followPathHeight = true;
 
-    // ─── カメラアンカー（周回方向による切替）─────────────────────
-
-    /// <summary>
-    /// カメラが実際に追う Transform。<b>このスクリプトが毎フレーム、
-    /// 周回方向に応じて選んだアンカーのポーズをここへ書き込む。</b>
-    ///
-    /// CameraMove 側はこの 1 つを指数追従するだけでよい（切替を知らなくてよい）。
-    /// 未設定なら書き込みを行わない（カメラ切替を使わない構成でも壊れない）。
-    /// </summary>
-    [Header("カメラ（周回方向でアンカーを切替）"), SerializeField(Label = "カメラの追従目標")]
-    private SEED.Transform? cameraTarget = null;
-
-    /// <summary>
-    /// 経路の時刻が<b>進む</b>向き（＝正方向 / ここでは「反時計回り」と呼ぶ）に
-    /// 走っているときに使うカメラ位置。プレイヤーの子アクタとして置くと扱いやすい。
-    /// </summary>
-    [SerializeField(Label = "正方向（反時計回り）アンカー")]
-    private SEED.Transform? forwardAnchor = null;
-
-    /// <summary>
-    /// 経路の時刻が<b>戻る</b>向き（＝逆方向 / ここでは「時計回り」と呼ぶ）に
-    /// 走っているときに使うカメラ位置。
-    /// </summary>
-    [SerializeField(Label = "逆方向（時計回り）アンカー")]
-    private SEED.Transform? backwardAnchor = null;
-
     // ─── 回転補間 ─────────────────────────────────────────────
+    //
+    // カメラのアンカー切替は <b>CameraMove 側で完結する</b>。
+    // CameraMove はプレイヤーの Transform の位置変化を観測して
+    // 「移動方向の後方にあるアンカー」を自分で選ぶので、
+    // このスクリプトはカメラのことを何も知らなくてよい。
 
     /// <summary>
     /// 進行方向を向くときの回転補間の速さ（1/秒）。
@@ -216,10 +195,6 @@ public class PlayerMove : SEEDScript
         // （入力を離した後も回りきってから止まるので、向きが途中で固まらない）
         UpdateRotation(ctx.DeltaTime);
 
-        // カメラのアンカー切替は経路モードだけの機能（自由移動では周回方向が定義できない）。
-        // 回転を反映した「後」に書くので、アンカーが子アクタでも今フレームの向きに追従する。
-        if (onPath) { UpdateCameraAnchor(); }
-
         // 移動状態が変わったフレームだけアニメを切り替える（毎フレーム Play すると先頭に戻り続けるため）
         UpdateAnimation(moving);
     }
@@ -252,8 +227,8 @@ public class PlayerMove : SEEDScript
             pathTimeInitialized = true;
         }
 
-        // 実際に走っている向きを覚えておく（カメラのアンカー選択とラッチの更新に使う）。
-        // 入力が無いフレームでは更新しないので、止まってもカメラが戻らない。
+        // 実際に走っている向きを覚えておく（入力ラッチの更新に使う）。
+        // 入力が無いフレームでは更新しないので、止まっても「最後に走った向き＝前」を保てる。
         if (SEED.Mathf.Abs(effectiveAxis) > InputEpsilon)
         {
             travelSign = SEED.Mathf.Sign(effectiveAxis);
@@ -316,8 +291,9 @@ public class PlayerMove : SEEDScript
     /// </code>
     ///
     /// <b>「解放時に travelSign を採る」で正しくなる理由</b>:
-    /// カメラは travelSign 側のアンカーに付いている ＝ 画面上の「前」は
-    /// 経路の travelSign 方向。よってマッピングを travelSign にすれば、
+    /// カメラ（CameraMove）は<b>実際の移動方向の後方にあるアンカー</b>を選ぶので、
+    /// カメラが背中側に付く向き＝直近に実際に走った向き＝travelSign。
+    /// つまり画面上の「前」は経路の travelSign 方向。よってマッピングを travelSign にすれば、
     /// 次に上入力（+1）を押したとき effectiveAxis = travelSign となり、
     /// <b>画面の前へ進む</b>。
     ///
@@ -386,33 +362,6 @@ public class PlayerMove : SEEDScript
         previousTangent = tangent;
         distanceSinceTangent = 0f;
         return tangent;
-    }
-
-    /// <summary>
-    /// 周回方向に応じて選んだアンカーのポーズを、カメラの追従目標へ書き込む。
-    ///
-    /// カメラ側から「今どちら回りか」を問い合わせる手段が無い
-    /// （スクリプト間参照が無い。CameraMove のクラスコメント参照）ので、
-    /// <b>方向を知っているこちらが目標を書く</b>。
-    /// 目標が別アンカーへ瞬間的に切り替わっても、CameraMove の指数追従が
-    /// 滑らかに繋ぐので、ここで補間する必要はない。
-    ///
-    /// アンカーが未設定・追従目標が未設定なら何もしない。
-    /// </summary>
-    private void UpdateCameraAnchor()
-    {
-        if (cameraTarget is not { } target || !target.IsValid) { return; }
-
-        // まだ一度も動いていないあいだは正方向のアンカーを既定にする
-        bool useForward = travelSign is not { } sign || sign >= 0f;
-        var anchor = useForward ? forwardAnchor : backwardAnchor;
-
-        // 選んだ側が未設定ならもう片方で代用する（片側だけ設定した構成でも動く）
-        anchor ??= useForward ? backwardAnchor : forwardAnchor;
-        if (anchor is not { } a || !a.IsValid) { return; }
-
-        target.Position = a.Position;
-        target.Rotation = a.Rotation;
     }
 
     /// <summary>
