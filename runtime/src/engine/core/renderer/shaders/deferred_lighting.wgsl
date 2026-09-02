@@ -133,11 +133,13 @@ const DEFERRED_BACKGROUND_DEPTH: f32 = 1.0;
 ///
 /// ## 何のためのフラグか（草・地形の影がドット状ノイズに壊れる不具合の根治）
 /// deferred のライティングは幾何法線 Ng を**深度バッファの画面微分**
-/// （`cross(dpdx(world_pos), dpdy(world_pos))`）から復元する。これは隣接ピクセルが
+/// （復元座標の `cross(dpdx, dpdy)`）から復元する。これは隣接ピクセルが
 /// 同一サーフェスの間は面法線として正しいが、**深度不連続**（草の細い刃の輪郭・地形の
 /// シルエットや掘削穴のフチ）を跨ぐと微分が別サーフェスへ飛んで Ng が per-pixel に暴れる。
-/// lighting_eval.wgsl の geo_gate は `dot(Ng,L)>0` の**ハードな 0/1** なので、この暴れが
+/// lighting_eval.wgsl の geo_gate はこの Ng で直接光を遮断するため、この暴れが
 /// そのままディザ状のドットノイズ／ビュー依存の黒斑点になる（実機の層分離可視化で確定）。
+/// なお「深度不連続による暴れ」と、別要因である「原点から離れたシーンでの f32 桁落ち」は
+/// 別問題であり、後者は deferred_camera_relative_ivp（カメラ相対座標での微分）で潰してある。
 /// さらに草は G-Buffer 法線を意図的に地表向き（up）へ平坦化しているのに、深度復元 Ng は
 /// 刃の真の（水平・株ごとに別方位の）向きを拾うため、約半数の刃を直接光 0 に落とす。
 ///
@@ -230,15 +232,53 @@ fn mask_half_texel_view_z(hcoord: vec2<i32>, half_dims: vec2<f32>, full_dims: ve
     return (u_camera.view * vec4<f32>(wp, 1.0)).z;
 }
 
+// ── カメラ相対の逆 ViewProjection（幾何法線の桁落ち対策）─────────────────────
+//
+/// 逆 ViewProjection 行列から**平行移動成分（カメラ位置）を取り除いた**行列を作る。
+/// これで復元される座標は「カメラを原点とした相対座標」であり、
+/// `world_pos = camera_relative_pos + u_camera.position` の関係にある。
+///
+/// ## なぜ必要か（f32 の桁落ち＝黒斑点ノイズの根本原因）
+/// 幾何法線 Ng は `cross(dpdx(p), dpdy(p))` で復元するが、`p` に**絶対ワールド座標**を
+/// 使うと桁落ちで Ng が per-pixel に暴れる。原点から 45m 離れたシーンでは f32 の刻み幅が
+/// ulp(45) ≒ 3.8e-6 m もあり、これは「1 画素ぶんの世界差分」（近距離・狭 FOV では 1e-3 m
+/// 程度）に対して 0.4% 規模の**画素ごとにランダムな**丸め誤差になる。外積は 2 本のほぼ
+/// 平行なベクトルの差を取る演算なので、この誤差が角度誤差へ増幅される。
+/// 数値実験（原点から 64m・被写体まで 2m・FOV 20°）では Ng の角度誤差が **4.5°** に達し、
+/// これが lighting_eval.wgsl の `dot(Ng,L) > 0` ゲートで 0/1 の斑点に変換されていた。
+///
+/// ## なぜ「world_pos - camera_pos」ではダメか（重要）
+/// 復元**後**の `world_pos` からカメラ位置を引いても効果はゼロである。`world_pos` は
+/// その時点で既に ulp(45) へ丸められており、引き算（Sterbenz の補題により誤差なし）は
+/// 失われたビットを取り戻さないため。実測でも角度誤差は 4.4694° → 4.4694° と**完全に不変**。
+/// 桁落ちを消すには、大きな値を一度も f32 の最終結果として作らないこと、すなわち
+/// **行列の側で平行移動を落としてから復元する**必要がある。
+/// 行列の減算は全画素で共通の定数なので、その誤差は画面上で滑らかに相関し、
+/// 微分（隣接画素の差）ではほぼ相殺される。これが本手法の要点である。
+///
+/// ## 実装（列優先での平行移動の除去）
+/// `M_rel = T(-cam) * ivp`。列優先 mat4x4 では、各列 j について
+/// `M_rel[j].xyz = ivp[j].xyz - cam * ivp[j].w`、`M_rel[j].w = ivp[j].w` となる。
+/// w 行は不変なので、復元時の除算 w は元の式とビット単位で同一である。
+fn deferred_camera_relative_ivp(ivp: mat4x4<f32>, cam: vec3<f32>) -> mat4x4<f32> {
+    return mat4x4<f32>(
+        vec4<f32>(ivp[0].xyz - cam * ivp[0].w, ivp[0].w),
+        vec4<f32>(ivp[1].xyz - cam * ivp[1].w, ivp[1].w),
+        vec4<f32>(ivp[2].xyz - cam * ivp[2].w, ivp[2].w),
+        vec4<f32>(ivp[3].xyz - cam * ivp[3].w, ivp[3].w),
+    );
+}
+
 @fragment
 fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let pix = vec2<i32>(frag.xy);
 
     // ── 1) 深度読み出し＋ワールド座標復元 ─────────────────────
-    // dpdx/dpdy は使わないため一様制御フローの制約はないが、既存の surface_gather.wgsl の
-    // 流儀（discard より前に必要な値を計算する）に倣い、背景判定の discard より前に
-    // world_pos を計算しておく（本パスでは実害はないが、将来の拡張で微分を挟む場合に
-    // 備えて一貫した書き方にする）。
+    // 幾何法線 Ng のための dpdx/dpdy は**背景判定の discard より前**で評価する
+    // （surface_gather.wgsl と同じ流儀）。WGSL の discard は「ヘルパー化（demote）」で
+    // あり後続コードも実行されるため理屈の上では discard 後でも微分は取れるが、
+    // discard を早期終了として実装しうるドライバでの微分破損を原理的に排除するため、
+    // 微分は必ず一様制御フローの先頭側で済ませておく。
     let depth = textureLoad(t_depth, pix, 0);
 
     // uv: RT 全面基準（AO / SSGI / シャドウマスクは RT 全面で生成されるため、
@@ -248,9 +288,21 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     //      Play のレターボックス時にここを RT 全面で割ると、復元ワールド座標が
     //      水平方向へ数メートル滑り、RT 影のレイ原点が地形内部へ潜って黒く潰れる。
     let uv_vp = deferred_vp_uv_from_pix(frag.xy);
-    let ndc = vec3<f32>(uv_vp.x * 2.0 - 1.0, 1.0 - uv_vp.y * 2.0, depth);
+    let ndc  = vec3<f32>(uv_vp.x * 2.0 - 1.0, 1.0 - uv_vp.y * 2.0, depth);
+    let ndc4 = vec4<f32>(ndc, 1.0);
     let clip = u_camera.inv_view_proj * vec4<f32>(ndc, 1.0);
     let world_pos = clip.xyz / clip.w;
+
+    // ── 1-b) 幾何法線用の**カメラ相対**座標と、その画面微分 ─────────────────
+    // ここで微分まで取り切る（discard より前＝確実に一様制御フロー）。
+    // camera_relative_pos は絶対ワールド座標ではないので桁落ちしない。詳細な根拠は
+    // deferred_camera_relative_ivp のコメントを参照。除算に使う w は上の clip.w と
+    // ビット単位で同一（平行移動の除去は w 行を変えない）。
+    let rel4 = deferred_camera_relative_ivp(u_camera.inv_view_proj, u_camera.position) * ndc4;
+    let camera_relative_pos = rel4.xyz / rel4.w;
+    // 外積は平行移動不変（cross(dpdx(p - c), dpdy(p - c)) == cross(dpdx(p), dpdy(p)) が
+    // 実数演算では厳密に成り立つ）ため、Ng の**意味**は従来と完全に同一。変わるのは精度だけ。
+    let ng_raw = cross(dpdx(camera_relative_pos), dpdy(camera_relative_pos));
 
     // ── 2) 背景ピクセルは discard（クリア色／スカイボックスを保持）───
     if depth >= DEFERRED_BACKGROUND_DEPTH {
@@ -282,12 +334,10 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let surface_id = unpack_surface_id(g3.a);
 
     // ── 4) 幾何法線 Ng の復元 ───────────────────────────────────
-    // G-Buffer には焼いていないため、復元したワールド座標の画面微分から作る
-    // （標準的なデファードの手法）。dpdx/dpdy はフラグメントの一様制御フロー内で
-    // 呼ぶ必要があるが、discard は上で確定済み（depth < 1.0 の分岐にはもう入らない）
-    // ので、このタイミングで呼んでも一様性解析上は問題ない
-    // （discard 自体は分岐後に一度だけ発生し、以降のコードは到達しないため）。
-    let ng_raw = cross(dpdx(world_pos), dpdy(world_pos));
+    // G-Buffer には焼いていないため、復元した座標の画面微分から作る（標準的なデファードの手法）。
+    // ★ 外積 ng_raw は上の 1-b で **カメラ相対座標から**・**discard より前に** 計算済み。
+    //    絶対ワールド座標での微分は f32 の桁落ちで Ng が数度ずれ、黒斑点ノイズになる
+    //    （根拠は deferred_camera_relative_ivp のコメント）。ここでは長さ検査と符号合わせのみ。
     let ng_len = length(ng_raw);
     var Ng: vec3<f32>;
     if ng_len < 1e-8 {

@@ -74,6 +74,10 @@ pub(crate) mod deferred;
 /// CPU 写しによる通し回帰テスト。GPU 非依存で「アニメが再生されない」系を切り分ける。
 #[cfg(test)]
 mod tests_skin_playback;
+/// 幾何法線 Ng の数値精度（f32 の桁落ち）と幾何ゲートの遷移帯に関する回帰テスト。
+/// deferred ライティングの黒斑点ノイズの再発を、シェーダと同一式の CPU 写しで止める。
+#[cfg(test)]
+mod tests_geo_normal_precision;
 // 速度バッファ（モーションベクタ）のデバッグ可視化（SEED_DEBUG_VELOCITY=1 のときだけ構築）。
 pub(crate) mod velocity_debug;
 /// G-Buffer 各チャンネルのデバッグ可視化（シーンビュー表示モード「G-Buffer: 〜」）。

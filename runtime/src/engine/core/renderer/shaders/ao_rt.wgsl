@@ -87,7 +87,12 @@ fn fs_rt(in: AoVsOut) -> @location(0) vec4<f32> {
     // 評価する。背景ピクセルの値は使われないので、無効な world_pos を通しても害はない。
     let depth     = textureLoad(t_depth, pix, 0);
     let world_pos = ao_world_pos(uv, depth);
-    let ng_raw    = cross(dpdx(world_pos), dpdy(world_pos));
+    // 幾何法線の微分は**カメラ相対座標**で取る（絶対ワールド座標だと f32 の桁落ちで
+    // Ng が数度ずれ、レイ原点のクリアランス方向が暴れて AO が黒斑点になる。
+    // 外積は平行移動不変なので Ng の意味は不変・精度だけが上がる。
+    // 根拠は ao_common.wgsl の ao_cam_rel_pos のコメント）。
+    let rel_pos   = ao_cam_rel_pos(uv, depth);
+    let ng_raw    = cross(dpdx(rel_pos), dpdy(rel_pos));
 
     // ── 2) 背景（depth>=1）は AO=1（遮蔽なし）で早期 return ─────────────
     if depth >= AO_BACKGROUND_DEPTH {

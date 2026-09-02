@@ -103,6 +103,38 @@ fn ao_world_pos(uv: vec2<f32>, depth: f32) -> vec3<f32> {
     return clip.xyz / clip.w;
 }
 
+// ─── 深度→**カメラ相対**座標復元（幾何法線の画面微分専用）───────────────────
+//
+/// `ao_world_pos` と同じ点を、カメラを原点とした相対座標で返す
+/// （`ao_world_pos(uv,d) == ao_cam_rel_pos(uv,d) + u_camera.position`）。
+///
+/// ## なぜ絶対ワールド座標で微分してはいけないか（f32 の桁落ち）
+/// 幾何法線を `cross(dpdx(p), dpdy(p))` で作るとき `p` に絶対ワールド座標を使うと、
+/// 原点から離れたシーン（例: 45m）では f32 の刻み幅 ulp(45)≒3.8e-6 m が**画素ごとに
+/// ランダムな**丸め誤差として乗る。1 画素ぶんの世界差分（近距離・狭 FOV で 1e-3 m 程度）
+/// に対して無視できない比率になり、外積で角度誤差へ増幅される（数値実験で最大 4.5°）。
+/// 復元**後**に camera_position を引いても無意味（既に丸められている）。大きな値を
+/// f32 の最終結果として作らないよう、**行列の側で平行移動を落としてから**復元する。
+/// 行列の減算誤差は全画素共通の定数なので、隣接画素の差である微分ではほぼ相殺される。
+///
+/// 列優先 mat4x4 における `T(-cam) * ivp` は、各列 j について
+/// `xyz -= cam * w`（w 行は不変）で得られる。deferred_lighting.wgsl の
+/// `deferred_camera_relative_ivp` と同一の式（両パスで Ng を一致させるため）。
+fn ao_cam_rel_pos(uv: vec2<f32>, depth: f32) -> vec3<f32> {
+    let uv_vp = ao_vp_uv(uv);
+    let ndc4  = vec4<f32>(uv_vp.x * 2.0 - 1.0, 1.0 - uv_vp.y * 2.0, depth, 1.0);
+    let ivp   = u_camera.inv_view_proj;
+    let cam   = u_camera.position;
+    let m = mat4x4<f32>(
+        vec4<f32>(ivp[0].xyz - cam * ivp[0].w, ivp[0].w),
+        vec4<f32>(ivp[1].xyz - cam * ivp[1].w, ivp[1].w),
+        vec4<f32>(ivp[2].xyz - cam * ivp[2].w, ivp[2].w),
+        vec4<f32>(ivp[3].xyz - cam * ivp[3].w, ivp[3].w),
+    );
+    let rel = m * ndc4;
+    return rel.xyz / rel.w;
+}
+
 // ─── UV → フル解像度 G-Buffer 整数座標（textureDimensions ベース。半解像度非依存）───
 fn ao_full_pix(uv: vec2<f32>) -> vec2<i32> {
     let dims = vec2<f32>(textureDimensions(t_gbuffer0));

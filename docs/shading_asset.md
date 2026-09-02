@@ -246,6 +246,8 @@ return sf.base_color * shading_saturate(dot(sf.normal, li.direction)) * radiance
 
 返すのは「そのライト 1 灯ぶんの直接光の寄与（リニア HDR 放射輝度）」。
 アンビエント・エミッシブ・幾何ゲート（`dot(Ng, L) <= 0` の遮断）はエンジンが外側で処理する。
+（幾何ゲートは `dot(Ng, L) <= 0` で厳密に 0。0 のすぐ上に幅 0.02 の遷移帯があるだけで、
+遮断そのものは不変。詳細は `rendering_flow.md` の「幾何ゲートは 0/1 の階段ではなく狭い遷移帯」）
 
 ### ID とマテリアルの対応
 
@@ -873,8 +875,8 @@ fn shade_surface(sf: ShadingSurface, li: LightSample) -> vec3<f32> {
 Lo += geo_gate * shade_surface(sf, li_sample);
 ```
 
-`geo_gate`（`dot(Ng, L) > 0` の幾何ゲート）はエンジン側で掛かるため、アセットは
-「面がライトに背を向けている場合」を自分で処理する必要はない。
+`geo_gate`（幾何ゲート。`dot(Ng, L) <= 0` で厳密に 0、そこから幅 0.02 の遷移帯を経て 1）は
+エンジン側で掛かるため、アセットは「面がライトに背を向けている場合」を自分で処理する必要はない。
 
 ### 11.4 追跡用ファイル一覧
 

@@ -127,6 +127,32 @@ fn mask_world_pos(uv: vec2<f32>, depth: f32) -> vec3<f32> {
     return clip.xyz / clip.w;
 }
 
+// ─── 深度→**カメラ相対**座標復元（幾何法線の画面微分専用）───────────────────
+//
+/// `mask_world_pos` と同じ点をカメラ原点の相対座標で返す
+/// （`mask_world_pos(uv,d) == mask_cam_rel_pos(uv,d) + u_mask_camera.position`）。
+///
+/// 幾何法線を `cross(dpdx(p), dpdy(p))` で作るとき、`p` に絶対ワールド座標を使うと
+/// 原点から離れたシーンで f32 の桁落ち（ulp(45)≒3.8e-6 m の画素ごとランダムな丸め）が
+/// 1 画素ぶんの世界差分に対して無視できず、Ng が数度ずれて影が斑点状に壊れる。
+/// 復元後に camera_position を引いても効果はない（既に丸められているため）。
+/// **行列の側で平行移動を落としてから**復元することで、大きな値を f32 の最終結果に
+/// しない。詳細な根拠は ao_common.wgsl / deferred_lighting.wgsl の同名処理を参照。
+fn mask_cam_rel_pos(uv: vec2<f32>, depth: f32) -> vec3<f32> {
+    let uv_vp = mask_vp_uv(uv);
+    let ndc4  = vec4<f32>(uv_vp.x * 2.0 - 1.0, 1.0 - uv_vp.y * 2.0, depth, 1.0);
+    let ivp   = u_mask_camera.inv_view_proj;
+    let cam   = u_mask_camera.position;
+    let m = mat4x4<f32>(
+        vec4<f32>(ivp[0].xyz - cam * ivp[0].w, ivp[0].w),
+        vec4<f32>(ivp[1].xyz - cam * ivp[1].w, ivp[1].w),
+        vec4<f32>(ivp[2].xyz - cam * ivp[2].w, ivp[2].w),
+        vec4<f32>(ivp[3].xyz - cam * ivp[3].w, ivp[3].w),
+    );
+    let rel = m * ndc4;
+    return rel.xyz / rel.w;
+}
+
 // ─── UV → フル解像度 G-Buffer 整数座標（textureDimensions ベース。半解像度非依存）───
 fn mask_full_pix(uv: vec2<f32>) -> vec2<i32> {
     let dims = vec2<f32>(textureDimensions(t_gbuffer0));
@@ -209,7 +235,11 @@ fn fs_mask(in: MaskVsOut) -> MaskOut {
     out.l3 = vec4<f32>(1.0, 1.0, 1.0, view_z);
 
     let N         = normalize(textureLoad(t_gbuffer1, pix, 0).xyz);
-    let ng_raw    = cross(dpdx(world_pos), dpdy(world_pos));
+    // 微分は**カメラ相対座標**で取る（絶対ワールド座標では f32 の桁落ちで Ng が数度ずれ、
+    // レイ原点のクリアランス方向が画素ごとに暴れて影が斑点状になる）。外積は平行移動
+    // 不変なので Ng の意味は不変・精度だけが上がる。根拠は mask_cam_rel_pos のコメント。
+    let rel_pos   = mask_cam_rel_pos(uv, depth);
+    let ng_raw    = cross(dpdx(rel_pos), dpdy(rel_pos));
     let ng_len    = length(ng_raw);
     var Ng: vec3<f32>;
     if ng_len < 1e-8 {
