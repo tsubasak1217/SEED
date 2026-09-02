@@ -200,6 +200,26 @@ C# の表を `include_str!` で読み、**双方向**
 | **`SlotFieldEditCommand`** | **インスペクタのフィールド編集（汎用。上記 1.）** |
 | **`ActorActiveCommand`** | **アクターの active フラグ** |
 
+### 2.1 `ActorTreeSnapshotCommand` は地形を巻き込まない（Keep ポリシー）
+
+ツリースナップショットの退避（`actor_ops::snapshot_actors_for_wl`）と復元
+（`rebuild_actors_for_wl`）は、**地形ルート（`terrain`）とそのチャンクサブツリーを
+対象外**にする。判定は Play の Enter/Exit と共通の `App::is_terrain_root`。
+
+理由: 地形の実体（Marching Cubes メッシュ・GpuModel・統合バッチ・
+`TerrainState.chunk_slot_entity` の entity 参照）は `ActorData` にシリアライズされない。
+`build_actor` は `terrain://` の `source_path` を見てモデル読込をスキップする
+（`scene.rs`）ため、スナップショットから復元すると
+**コンポーネント（TerrainChunkComponent）だけ戻り、メッシュが空になる**。
+シーンロード経路では `rebuild_terrain_after_load` が .tvox から作り直すが、
+Undo/Redo 経路（`ipc_handler.rs` の `IpcCommand::Undo` / `Redo`）はそれを呼ばない。
+
+そのため「アクタ追加 → Ctrl+Z」で地形メッシュが全消えしていた（地形の密度データは
+`TerrainState` 側に残るので、ヒエラルキーと WaterVolume の岸波だけは正常に見える）。
+現在は地形を **現物保持（Keep）** して復元に巻き込まない。Undo のたびに
+全チャンクを再メッシュする（十数秒）必要も無くなり、退避側も全チャンクの
+serde を行わなくなる。回帰テストは `actor_ops.rs` の `tests`。
+
 インスペクターフィールドのドラッグ（軸ラベルドラッグ）は
 `BEGIN_TRANSFORM_DRAG` → 連続更新（記録なし）→ `END_TRANSFORM_DRAG` で
 1 コマンドにまとめる（`App::inspector_transform_drag`）。

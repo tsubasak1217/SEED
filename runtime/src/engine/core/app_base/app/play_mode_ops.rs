@@ -37,7 +37,11 @@ use super::terrain_ops::TERRAIN_ROOT_NAME;
 impl App {
     /// あるトップレベルアクターが「地形ルート」か（world_line == 0 かつ名前が terrain）。
     /// スナップショット/復元で Keep（現物保持）とすべきかの判定に使う。
-    fn is_terrain_root(actor: &Actor) -> bool {
+    ///
+    /// Play の Enter/Exit だけでなく、Undo/Redo のアクターツリー復元
+    /// （`actor_ops::snapshot_actors_for_wl` / `rebuild_actors_for_wl`）も
+    /// 同じ判定で地形を Keep するため `pub(super)` で共有する。
+    pub(super) fn is_terrain_root(actor: &Actor) -> bool {
         actor.world_line == 0 && actor.name == TERRAIN_ROOT_NAME
     }
 

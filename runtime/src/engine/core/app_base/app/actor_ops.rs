@@ -15,6 +15,8 @@ use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::ActorData;
 
+use super::terrain_ops::TERRAIN_ROOT_NAME;
+
 /// ドロップでスプライト化できる画像ファイルの対応拡張子（小文字・ドットなし）。
 /// runtime/Cargo.toml の image クレート feature（png/jpeg/bmp/tga/webp）と一致させること。
 const DROPPABLE_IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "bmp", "tga", "webp"];
@@ -30,7 +32,7 @@ fn is_image_path(path: &str) -> bool {
 }
 
 use super::{
-    App, actor_subtree_size, collect_entities_for_wl, despawn_actor_recursive,
+    App, actor_subtree_size, despawn_actor_recursive,
     extract_actor_by_dfs, extract_actor_by_dfs_with_origin, find_actor_by_dfs,
     find_actor_by_dfs_mut, find_actor_by_entity_mut, insert_group_actor, remove_actor_by_dfs,
 };
@@ -853,6 +855,28 @@ impl App {
         let wl = self.active_world_line;
         let Some(_scene) = &self.scene else { return };
 
+        // ── 地形サブツリー保護ガード ──
+        //   Undo/Redo のツリー復元は地形ルート配下を「現物保持（Keep）」として
+        //   スナップショットの対象外にしている（2.1 節 / snapshot_actors）。
+        //   そのため地形フォルダの内外をまたぐ親子付けを許すと、Undo 時に
+        //   「Keep された地形配下の実体」と「復元された同じアクター」が二重に現れる。
+        //   構造として成立しない操作なので、ツリーへ触れる前に弾く。
+        if let Some((start, end)) = self.terrain_subtree_dfs_range(wl) {
+            let in_terrain = |dfs: u32| dfs >= start && dfs < end;
+            if in_terrain(child_dfs) {
+                if let Some(ipc) = &self.ipc {
+                    ipc.send("LOAD_ERROR:地形フォルダとそのチャンクは移動できません");
+                }
+                return;
+            }
+            if new_parent_dfs.is_some_and(in_terrain) {
+                if let Some(ipc) = &self.ipc {
+                    ipc.send("LOAD_ERROR:地形フォルダの下へはアクターを移動できません");
+                }
+                return;
+            }
+        }
+
         // ── 種別不整合ガード ──
         // ① 「新しい親が 2D アクターかつ子が 3D アクター」の組み合わせを弾く。
         // ② 「子が 2D アクターかつ新しい親が Canvas を持たない 3D アクター」の組み合わせを弾く。
@@ -1007,6 +1031,20 @@ impl App {
     ) {
         let wl = self.active_world_line;
         if self.scene.is_none() { return; }
+
+        // ── 地形サブツリー保護ガード（handle_reparent_actor と同じ理由） ──
+        //   地形ルートをグループで包むとトップレベルから外れて「地形の Keep 判定」
+        //   （`App::is_terrain_root`）に掛からなくなり、以後の Undo でメッシュごと
+        //   作り直されてしまう。地形配下へのグループ挿入も同様に弾く。
+        if let Some((start, end)) = self.terrain_subtree_dfs_range(wl) {
+            let in_terrain = |dfs: u32| dfs >= start && dfs < end;
+            if children.iter().any(|&c| in_terrain(c)) || parent_dfs.is_some_and(in_terrain) {
+                if let Some(ipc) = &self.ipc {
+                    ipc.send("LOAD_ERROR:地形フォルダはグループにまとめられません");
+                }
+                return;
+            }
+        }
 
         // ── 種別判定（ツリーを触る前に行う） ──────────────────────
         let (group_is_2d, mixed_kind) = {
@@ -1193,21 +1231,43 @@ impl App {
         dfs_id == 0 && self.canvas_edit_sessions.contains_key(&wl)
     }
 
+    /// 地形ルートのサブツリーが占める DFS id の範囲 `[start, end)` を返す。
+    ///
+    /// DFS のカウント規則は `find_actor_by_dfs` と同一
+    /// （トップレベルのみ world_line でフィルタし、子孫は全カウント）。
+    /// 地形はシーン世界線（wl 0）にしか存在しないため、それ以外は常に None。
+    /// 親子付けガードのように「その DFS id が地形配下か」を判定する用途に使う。
+    pub(super) fn terrain_subtree_dfs_range(&self, wl: u32) -> Option<(u32, u32)> {
+        if wl != 0 {
+            return None;
+        }
+        let scene = self.scene.as_ref()?;
+        terrain_subtree_dfs_range_in(&scene.actors, wl)
+    }
+
     /// 指定世界線のアクターツリー全体をデータとしてスナップショットする。
+    ///
+    /// 【地形ルートは対象外（Keep）】
+    /// `TERRAIN_ROOT_NAME` のトップレベルアクターとそのチャンクサブツリーは
+    /// スナップショットに含めない。地形の実体（Marching Cubes メッシュ・GpuModel・
+    /// 統合バッチ・`TerrainState.chunk_slot_entity` の entity 参照）は ActorData に
+    /// シリアライズされないため、スナップショットから作り直すと
+    /// 「コンポーネントだけ戻ってメッシュが消える」。Play の Enter/Exit と同じく
+    /// 現物保持（Keep）とし、`rebuild_actors_for_wl` も地形に触れない。
+    /// 副次効果として、アクター 1 体の追加ごとに全チャンクを serde する
+    /// スナップショットコストも無くなる。
     pub(super) fn snapshot_actors_for_wl(&self, wl: u32) -> Vec<ActorData> {
         self.scene
             .as_ref()
-            .map(|s| {
-                s.actors
-                    .iter()
-                    .filter(|a| a.world_line == wl)
-                    .map(|a| a.to_data(&s.world))
-                    .collect()
-            })
+            .map(|s| snapshot_actors(&s.actors, &s.world, wl))
             .unwrap_or_default()
     }
 
     /// 指定世界線のアクターを data から再構築する（Undo/Redo 用）。
+    ///
+    /// 地形ルート（`snapshot_actors_for_wl` の対象外）は despawn せず現物のまま
+    /// 元の位置に残す。地形の GPU/メッシュ状態は ECS の外（`TerrainState`）が
+    /// entity をキーに保持しており、作り直すと参照が全て無効化されるため。
     pub(super) fn rebuild_actors_for_wl(&mut self, wl: u32, actors_data: Vec<ActorData>) {
         let host = self.scripting_host.clone();
         if self.draw_ctx.is_none() {
@@ -1217,16 +1277,18 @@ impl App {
         // scene を一時的に取り出して draw_ctx との同時借用問題を回避
         let mut scene = self.scene.take().unwrap_or_else(|| Scene::new("main"));
 
-        // 既存の wl アクターエンティティを despawn して削除
-        let old_entities: Vec<_> = collect_entities_for_wl(&scene.actors, wl);
-        for e in old_entities {
-            scene.world.despawn(e);
-        }
-        scene.actors.retain(|a| a.world_line != wl);
+        // 既存の wl アクターエンティティを despawn して削除する。
+        // ただし地形ルートのサブツリーは Keep（entity も Actor もそのまま残す）。
+        clear_actors_for_rebuild(&mut scene, wl);
 
         // 新アクターを構築
         let ctx = self.draw_ctx.as_ref().unwrap();
         for data in actors_data {
+            // 地形ルートはスナップショット対象外。万一データ側に混ざっていても
+            // 作り直さない（メッシュ無しの空の地形ルートが二重に生えるのを防ぐ）。
+            if wl == 0 && data.name == TERRAIN_ROOT_NAME {
+                continue;
+            }
             match build_actor(data, ctx, &mut scene.world, host.as_ref(), None) {
                 Ok(mut a) => {
                     a.set_world_line_recursive(wl);
@@ -1398,5 +1460,196 @@ fn translate_exported_subtree(data: &mut ActorData, t: [f32; 3], is_root: bool) 
     // 子孫へ再帰する
     for child in &mut data.children {
         translate_exported_subtree(child, t, false);
+    }
+}
+
+// ============================================================
+//  Undo/Redo のアクターツリー退避・復元（地形 Keep ポリシーの実体）
+// ============================================================
+
+/// 指定世界線のアクターを ActorData 列へ退避する（`snapshot_actors_for_wl` の実体）。
+///
+/// 地形ルート（`App::is_terrain_root`）は **含めない**。地形の実体である
+/// Marching Cubes メッシュ・GpuModel・統合バッチ・`TerrainState` の entity 参照は
+/// ActorData にシリアライズされないため、スナップショットへ含めて復元すると
+/// 「コンポーネントだけ戻ってメッシュが消える」状態になる。
+/// App から切り出した自由関数にしてあるのは、GPU 無しで単体テストするため。
+pub(super) fn snapshot_actors(
+    actors: &[Actor],
+    world: &crate::engine::ecs::World,
+    wl: u32,
+) -> Vec<ActorData> {
+    actors
+        .iter()
+        .filter(|a| a.world_line == wl && !App::is_terrain_root(a))
+        .map(|a| a.to_data(world))
+        .collect()
+}
+
+/// 地形ルートのサブツリーが占める DFS id の範囲 `[start, end)`（`App::terrain_subtree_dfs_range`
+/// の実体）。地形が無ければ None。App から切り出してあるのは単体テストのため。
+pub(super) fn terrain_subtree_dfs_range_in(actors: &[Actor], wl: u32) -> Option<(u32, u32)> {
+    if wl != 0 {
+        return None;
+    }
+    let mut dfs = 0u32;
+    for actor in actors.iter().filter(|a| a.world_line == wl) {
+        let size = actor_subtree_size(actor);
+        if App::is_terrain_root(actor) {
+            return Some((dfs, dfs + size));
+        }
+        dfs += size;
+    }
+    None
+}
+
+/// 復元前の後始末: 指定世界線の「復元対象アクター」を despawn して取り除く。
+///
+/// 地形ルートとそのサブツリーは despawn せず `scene.actors` の元の位置に残す（Keep）。
+/// 地形の GPU/メッシュ状態は ECS の外（`TerrainState`）が entity をキーに保持しており、
+/// 作り直すと参照が全て無効化されるため（Play の Enter/Exit と同じ方針）。
+pub(super) fn clear_actors_for_rebuild(scene: &mut Scene, wl: u32) {
+    for actor in scene
+        .actors
+        .iter()
+        .filter(|a| a.world_line == wl && !App::is_terrain_root(a))
+    {
+        despawn_actor_recursive(actor, &mut scene.world);
+    }
+    scene
+        .actors
+        .retain(|a| a.world_line != wl || App::is_terrain_root(a));
+}
+
+// ============================================================
+//  テスト
+// ============================================================
+//
+//  Undo/Redo のツリー復元で「地形を巻き込まない」ことを検証する。
+//  復元方向（build_actor）は DrawContext（GPU）を要するため、GPU 非依存の
+//  退避（snapshot_actors）と後始末（clear_actors_for_rebuild）を対象にする。
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::ecs::World;
+
+    /// Transform 付きの通常アクターを 1 体作る。
+    fn make_actor(world: &mut World, name: &str, wl: u32) -> Actor {
+        let e = world.spawn();
+        world.insert(e, ActorTransform::default());
+        let mut a = Actor::new(e, name);
+        a.world_line = wl;
+        a
+    }
+
+    /// 地形ルート + チャンク器（子）を 1 セット作る。
+    /// 子はチャンクメッシュ相当（実 entity を持つ）で、Undo で失われてはならない。
+    fn make_terrain_root(world: &mut World) -> Actor {
+        let root_e = world.spawn();
+        let mut root = Actor::new_folder(root_e, TERRAIN_ROOT_NAME);
+        root.world_line = 0;
+        let chunk_e = world.spawn();
+        world.insert(chunk_e, ActorTransform::default());
+        let mut chunk = Actor::new(chunk_e, "chunk_0_0_0");
+        chunk.world_line = 0;
+        root.add_child(chunk);
+        root
+    }
+
+    /// シーン（地形 + 通常アクター）を組み立てるヘルパ。
+    /// 戻り値は (scene, 地形ルート entity, 地形チャンク entity)。
+    fn make_scene_with_terrain() -> (Scene, Entity, Entity) {
+        let mut scene = Scene::new("test");
+        let terrain = make_terrain_root(&mut scene.world);
+        let root_e = terrain.entity;
+        let chunk_e = terrain.children()[0].entity;
+        let player = make_actor(&mut scene.world, "Player", 0);
+        scene.actors.push(terrain);
+        scene.actors.push(player);
+        (scene, root_e, chunk_e)
+    }
+
+    /// 退避（スナップショット）に地形ルートが含まれないこと。
+    #[test]
+    fn snapshot_excludes_terrain_root() {
+        let (scene, _root_e, _chunk_e) = make_scene_with_terrain();
+        let data = snapshot_actors(&scene.actors, &scene.world, 0);
+        assert_eq!(data.len(), 1, "地形ルートを除いた 1 体だけが退避対象");
+        assert_eq!(data[0].name, "Player");
+        assert!(
+            !data.iter().any(|d| d.name == TERRAIN_ROOT_NAME),
+            "地形ルートはスナップショットへ入れてはならない"
+        );
+    }
+
+    /// 復元前の後始末で地形（ルート・チャンク entity）が消えないこと。
+    /// = アクタ追加 → Ctrl+Z で地形メッシュが全消えする不具合の回帰テスト。
+    #[test]
+    fn clear_for_rebuild_keeps_terrain_alive() {
+        let (mut scene, root_e, chunk_e) = make_scene_with_terrain();
+        // アクタ追加相当（Undo で消える側）を 1 体足しておく。
+        let added = make_actor(&mut scene.world, "Added", 0);
+        let added_e = added.entity;
+        scene.actors.push(added);
+
+        clear_actors_for_rebuild(&mut scene, 0);
+
+        // 地形ルートは Actor としても entity としても残る。
+        assert_eq!(scene.actors.len(), 1, "地形ルートだけが残る");
+        assert_eq!(scene.actors[0].name, TERRAIN_ROOT_NAME);
+        assert!(scene.world.is_alive(root_e), "地形ルート entity が生きている");
+        assert!(
+            scene.world.is_alive(chunk_e),
+            "地形チャンク entity（メッシュ・統合バッチの参照先）が生きている"
+        );
+        // 復元対象（非地形）は despawn 済み。
+        assert!(!scene.world.is_alive(added_e), "追加アクタは除去される");
+    }
+
+    /// 復元対象の世界線以外（アクター編集タブ wl>0）には触れないこと。
+    #[test]
+    fn clear_for_rebuild_only_touches_target_world_line() {
+        let mut scene = Scene::new("test");
+        let tab_actor = make_actor(&mut scene.world, "EditMe", 3);
+        let tab_e = tab_actor.entity;
+        scene.actors.push(tab_actor);
+        let wl0 = make_actor(&mut scene.world, "Player", 0);
+        scene.actors.push(wl0);
+
+        clear_actors_for_rebuild(&mut scene, 0);
+
+        assert_eq!(scene.actors.len(), 1);
+        assert_eq!(scene.actors[0].name, "EditMe");
+        assert!(scene.world.is_alive(tab_e));
+    }
+
+    /// 地形サブツリーの DFS 範囲が正しく求まること（親子付けガードの土台）。
+    /// 並びは [terrain(root=0, chunk=1), Player(2)] なので範囲は [0,2)。
+    #[test]
+    fn terrain_subtree_dfs_range_covers_root_and_chunks() {
+        let (scene, _root_e, _chunk_e) = make_scene_with_terrain();
+        let range = terrain_subtree_dfs_range_in(&scene.actors, 0);
+        assert_eq!(range, Some((0, 2)), "地形ルート + チャンク 1 枚で 2 ノード");
+        // 地形配下（0,1）は移動禁止、Player（2）は許可される。
+        let (s, e) = range.unwrap();
+        assert!((0..2).all(|d| d >= s && d < e));
+        assert!(!(2 >= s && 2 < e), "Player は地形サブツリー外");
+        // 編集タブ（wl>0）には地形が無い。
+        assert_eq!(terrain_subtree_dfs_range_in(&scene.actors, 3), None);
+    }
+
+    /// 地形が無いシーンでは従来どおり全アクターが復元対象になること（退行防止）。
+    #[test]
+    fn snapshot_and_clear_without_terrain() {
+        let mut scene = Scene::new("test");
+        for name in ["A", "B"] {
+            let a = make_actor(&mut scene.world, name, 0);
+            scene.actors.push(a);
+        }
+        let data = snapshot_actors(&scene.actors, &scene.world, 0);
+        assert_eq!(data.len(), 2);
+
+        clear_actors_for_rebuild(&mut scene, 0);
+        assert!(scene.actors.is_empty(), "地形が無ければ全て復元対象");
     }
 }
