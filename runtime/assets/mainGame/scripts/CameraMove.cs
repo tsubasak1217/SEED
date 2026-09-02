@@ -13,12 +13,13 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 自前で方向を決める</b>（アンカーはプレイヤーの子なので中点＝プレイヤーの動き）。
 /// 設定はアンカー 2 参照だけで済み、カメラ側 1 箇所で完結する。
 ///
-/// <b>どちらのアンカーを選ぶか</b>:
-/// カメラはプレイヤーの<b>後ろ</b>から見たい。よって
-/// <c>dot(アンカー位置 - 中点, 移動方向) &lt; 0</c>（＝移動方向の後方にある）側を選ぶ。
-/// アンカーはプレイヤーの子アクタとして前後に置く想定なので、
-/// プレイヤーが逆走して向きが 180 度変われば前後関係も入れ替わり、選択も入れ替わる。
-/// 両方が後方／両方が前方（＝判定が曖昧）なら<b>現状維持</b>する。
+/// <b>どちらのアンカーを選ぶか（旋回方向で判定）</b>:
+/// アンカーは「右斜め後ろ／左斜め後ろ」のように<b>両方とも後方</b>に置かれるため、
+/// 前後関係からは正逆を判別できない。かわりに<b>コースをどちら回りに回っているか</b>
+/// （移動方向の変化＝連続する移動デルタの外積 Y の符号）で判定する。
+/// 円形の周回コースなら常に一定方向へ曲がり続けるので、追加の参照なしで確実に取れる。
+/// 直進中（外積がほぼ 0）は<b>現状維持</b>。左右の対応が逆に感じたら
+/// 「正方向は左回り」チェックを反転するだけでよい。
 ///
 /// 追従が<b>指数補間</b>なのは、目標が別アンカーへ瞬間的に切り替わっても
 /// カメラが飛ばずに滑らかに回り込むため（切替の演出を別途書かなくてよい）。
@@ -47,6 +48,12 @@ public class CameraMove : SEEDScript
     /// <summary>ベクトルの「長さがほぼ 0」を判定する二乗長のしきい値。</summary>
     private const float SqrEpsilon = 1e-6f;
 
+    /// <summary>
+    /// 旋回とみなす外積の下限（|外積Y| / (|前回方向|×|今回方向|) がこの比率未満なら「ほぼ直進」）。
+    /// sin(曲がり角) に相当し、0.02 ≒ 約1.1度。直進区間や数値ノイズでの誤切替を防ぐ。
+    /// </summary>
+    private const float TurnDecisionRatio = 0.02f;
+
     // ─── 追従目標（進行方向で切替）─────────────────────────────
 
     /// <summary>
@@ -63,6 +70,14 @@ public class CameraMove : SEEDScript
     /// </summary>
     [SerializeField(Label = "逆方向時の目標")]
     private SEED.Transform? backwardTarget = null;
+
+    /// <summary>
+    /// 「正方向」をコースの<b>左回り（上から見て反時計回り）</b>とみなすか。
+    /// 実機で正逆の対応が逆に感じたらこのチェックを反転するだけで直る
+    /// （座標系の向きや経路の巻き方向に依存するため、設定で吸収する）。
+    /// </summary>
+    [SerializeField(Label = "正方向は左回り")]
+    private bool forwardIsCounterClockwise = true;
 
     // ─── 追従パラメータ ───────────────────────────────────────
 
@@ -110,6 +125,12 @@ public class CameraMove : SEEDScript
     /// 長さが <see cref="DirectionDecisionDistance"/> を超えたら判定してリセットする。
     /// </summary>
     private SEED.Vector3 accumulatedMove = new SEED.Vector3(0f, 0f, 0f);
+
+    /// <summary>
+    /// 前回の判定で採用した移動方向（正規化はしない）。null は「まだ 1 回も判定していない」。
+    /// 今回の移動方向との<b>外積 Y の符号</b>で旋回方向（左回り/右回り）を得るために保持する。
+    /// </summary>
+    private SEED.Vector3? previousDirection = null;
 
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
@@ -227,13 +248,25 @@ public class CameraMove : SEEDScript
 
         if (direction.SqrMagnitude < SqrEpsilon) { return; }   // 念のための縮退ガード
 
-        // 3) 「移動方向の後方にあるか」を内積の符号で見る
-        bool forwardIsBehind = SEED.Vector3.Dot(fwd.Position - current, direction) < 0f;
-        bool backwardIsBehind = SEED.Vector3.Dot(bwd.Position - current, direction) < 0f;
+        // 3) 前回の移動方向が無ければ（初回）今回を覚えて次に備える
+        if (previousDirection is not { } prevDir)
+        {
+            previousDirection = direction;
+            return;
+        }
+        previousDirection = direction;
 
-        // 4) 後方が 1 つに定まったときだけ切り替える（曖昧なら現状維持）
-        if (forwardIsBehind == backwardIsBehind) { return; }
-        useForwardTarget = forwardIsBehind;
+        // 4) 旋回方向 = 前回方向×今回方向 の外積の Y 成分の符号（XZ 平面での曲がり向き）。
+        //    正規化はせず、大きさの積に対する比率で「ほぼ直進」を弾く（直進中は現状維持）。
+        float crossY = prevDir.z * direction.x - prevDir.x * direction.z;
+        float scale = SEED.Mathf.Sqrt(prevDir.SqrMagnitude * direction.SqrMagnitude);
+        if (scale < SqrEpsilon) { return; }
+        if (SEED.Mathf.Abs(crossY) < TurnDecisionRatio * scale) { return; }   // ほぼ直進 → 現状維持
+
+        // 5) 旋回の符号 → 正方向/逆方向へマッピング。
+        //    座標系や経路の巻き方向に依存するため、対応が逆なら「正方向は左回り」を反転して吸収する。
+        bool turningCcw = crossY > 0f;
+        useForwardTarget = (turningCcw == forwardIsCounterClockwise);
     }
 
     /// <summary>
