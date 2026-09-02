@@ -56,6 +56,52 @@ public class CameraMove : SEEDScript
     [SerializeField(Label = "注視点の高さ")]
     private float lookAtHeight = 1.0f;
 
+    // ─── 視点ヨーの決め方（軌道中心モード）───────────────────
+    //
+    // 島の周回路のように「中心の周りを回る」ステージでは、視点ヨーを
+    // 移動方向（速度の微分）から求めるとノイズ・曲率の脈動がオフセット腕
+    // （offsetBack が大きいほど）で増幅されてかくつく。
+    // 軌道中心からプレイヤーを見た**方位角**でヨーを決めれば、微分を使わないので
+    // プレイヤー位置が滑らかな限りカメラも完全に滑らかになり、
+    // 逆走しても値が変わらない（回り込み防止が自動で成立する）。
+
+    /// <summary>
+    /// true なら視点ヨーを軌道中心の方位角から決める（推奨・既定）。
+    /// false なら従来どおり移動方向から決める（周回しない経路向けフォールバック）。
+    /// </summary>
+    [Header("視点ヨー（軌道中心）"), SerializeField(Label = "軌道中心モード")]
+    private bool useOrbitYaw = true;
+
+    /// <summary>軌道中心のワールド X 座標（島の中心）。</summary>
+    [SerializeField(Label = "軌道中心X")]
+    private float orbitCenterX = 0f;
+
+    /// <summary>軌道中心のワールド Z 座標（島の中心）。</summary>
+    [SerializeField(Label = "軌道中心Z")]
+    private float orbitCenterZ = 0f;
+
+    /// <summary>
+    /// 方位角に足すヨーオフセット（度）。
+    /// +90 = 島が画面の<b>左</b>に見える向き ／ -90 = 島が右に見える向き。
+    /// 0 なら常に島へ背を向け、180 なら常に島の方を向く。
+    /// </summary>
+    [SerializeField(Label = "軌道ヨーオフセット(度)")]
+    private float orbitYawOffset = 90f;
+
+    // ─── 回転オフセット（目標姿勢への追加回転）───────────────
+
+    /// <summary>注視で決まる目標姿勢に足すピッチ（X軸・度）。正で下を向く。</summary>
+    [Header("回転オフセット"), SerializeField(Label = "ピッチ(度)")]
+    private float rotationOffsetPitch = 0f;
+
+    /// <summary>注視で決まる目標姿勢に足すヨー（Y軸・度）。正で右を向く。</summary>
+    [SerializeField(Label = "ヨー(度)")]
+    private float rotationOffsetYaw = 0f;
+
+    /// <summary>注視で決まる目標姿勢に足すロール（Z軸・度）。移動ロールとは加算で併用される。</summary>
+    [SerializeField(Label = "ロール(度)")]
+    private float rotationOffsetRoll = 0f;
+
     // ─── 追従パラメータ ───────────────────────────────────────
 
     /// <summary>
@@ -144,13 +190,15 @@ public class CameraMove : SEEDScript
     {
         if (player is not { } p || !p.IsValid) { return; }
 
-        // 1) 目標位置 = プレイヤー位置 + 安定化ヨーで回したローカルオフセット。
+        // 1) 目標位置 = プレイヤー位置 + 視点ヨーで回したローカルオフセット。
         //    ピッチ/ロールは無視してヨーだけで回す（プレイヤーが坂で傾いても
         //    カメラの高さ関係が崩れないようにするため）。
-        //    ヨーの基準は「プレイヤーの向き」ではなく「移動方向」から取る。
-        //    向きは回転補間で滑らかに 180 度回るため反転を検出できないが、
-        //    移動方向は逆走の瞬間に 180 度入れ替わるので、mod180 の安定化が正しく効く。
-        float stabilized = StabilizeYaw(p.Position, p.Rotation.y, ctx.DeltaTime);
+        //    視点ヨーは既定で軌道中心の方位角から決める（微分を使わないので滑らか・
+        //    逆走不変・初回から確定値）。周回しない経路では従来の移動方向ベースに
+        //    フォールバックできる（useOrbitYaw = false）。
+        float stabilized = useOrbitYaw
+            ? OrbitYaw(p.Position)
+            : StabilizeYaw(p.Position, p.Rotation.y, ctx.DeltaTime);
         float yawRad = stabilized * DegToRad;
         float sin = SEED.Mathf.Sin(yawRad);
         float cos = SEED.Mathf.Cos(yawRad);
@@ -171,7 +219,12 @@ public class CameraMove : SEEDScript
             if (snapOnStart)
             {
                 transform.Position = goalPos;
-                transform.Rotation = LookAtEuler(transform.Position, p.Position);
+                var snapRot = LookAtEuler(transform.Position, p.Position);
+                // 回転オフセットもスナップに含める（開始フレームから最終的な構図で始まる）
+                transform.Rotation = new SEED.Vector3(
+                    snapRot.x + rotationOffsetPitch,
+                    snapRot.y + rotationOffsetYaw,
+                    snapRot.z + rotationOffsetRoll);
                 return;
             }
         }
@@ -190,7 +243,12 @@ public class CameraMove : SEEDScript
         // 4.5) 移動ロール: プレイヤーの横方向速度（カメラの右方向成分）に比例して
         //      目標ロール（Z軸）を与える。画面が進行方向へ自然に倒れ込み、
         //      停止すれば目標が 0 になるので既存の補間で水平へ戻る。
-        goalRot = new SEED.Vector3(goalRot.x, goalRot.y, ComputeMovementRoll(p.Position, goalRot.y, ctx.DeltaTime));
+        // 4.6) 回転オフセット: 注視で決まる姿勢へインスペクタ指定の追加回転を足す
+        //      （構図の微調整用。ロールは移動ロールと加算で併用）。
+        goalRot = new SEED.Vector3(
+            goalRot.x + rotationOffsetPitch,
+            goalRot.y + rotationOffsetYaw,
+            ComputeMovementRoll(p.Position, goalRot.y, ctx.DeltaTime) + rotationOffsetRoll);
         float rk = ExponentialBlend(rotationLerpRate, ctx.DeltaTime);
         if (rk > 0f)
         {
@@ -264,6 +322,32 @@ public class CameraMove : SEEDScript
     /// 1mm/フレーム ≒ 60fps で 6cm/s 未満の移動は「止まっている」とみなす。
     /// </summary>
     private const float MinMoveSqForYaw = 0.001f * 0.001f;
+
+    /// <summary>
+    /// 軌道中心モードの視点ヨー（度）を返す。
+    ///
+    /// ヨー = <b>プレイヤーから見た軌道中心の方位角 + オフセット</b>
+    /// （エンジン規約: yaw = atan2(x, z)、前方 +Z）。
+    /// オフセット +90 なら中心（島）が画面の左に来る。
+    /// 微分（速度）を使わないため、プレイヤー位置が滑らかならヨーも滑らかで、
+    /// 移動の向き・速さに一切依存しない（逆走しても回り込まない）。
+    /// プレイヤーが中心とほぼ同座標のときだけ方位が定まらないので、
+    /// そのときは直前の値（無ければプレイヤーの向き）を維持する。
+    /// </summary>
+    /// <param name="playerPos">今フレームのプレイヤー位置。</param>
+    private float OrbitYaw(SEED.Vector3 playerPos)
+    {
+        float dx = orbitCenterX - playerPos.x;
+        float dz = orbitCenterZ - playerPos.z;
+        if (dx * dx + dz * dz < SqrEpsilon)
+        {
+            // 中心と重なっていて方位が定まらない → 直前の安定値を使う
+            return stableYawDeg is { } held ? held : transform.Rotation.y;
+        }
+        float yaw = SEED.Mathf.Atan2(dx, dz) / DegToRad + orbitYawOffset;
+        stableYawDeg = yaw; // フォールバック切替時・縮退時のためにも保持しておく
+        return yaw;
+    }
 
     /// <summary>
     /// <b>移動方向</b>から 180 度反転を無視した<b>安定化ヨー</b>を求めて内部状態を更新する。
