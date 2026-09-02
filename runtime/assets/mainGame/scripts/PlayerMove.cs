@@ -43,6 +43,27 @@ public class PlayerMove : SEEDScript
     /// </summary>
     private const float TangentFlipGuardDistance = 0.01f;
 
+    // ─── 経路の等速化（弧長補正）────────────────────────────────
+    //
+    // Catmull-Rom は弧長パラメータ化されていないため、時刻を等速で進めても
+    // ワールド上の速度は区間内で脈動する（等間隔の点列でも継ぎ目付近で遅く、
+    // 区間中央で速い。実測 ±8% 程度 → 「等間隔にかくつく」見え方になる）。
+    // そこで「経路全体の平均パラメータ速度 ÷ その場の局所パラメータ速度」を
+    // 時刻の進みに掛けて、ワールド上の移動速度を一定化する。
+    // 平均を分子にするので 1 周にかかる時間は補正前と変わらない（再調整不要）。
+
+    /// <summary>平均パラメータ速度を求めるときの経路の分割数（折れ線近似）。</summary>
+    private const int AverageSpeedSampleCount = 64;
+
+    /// <summary>局所パラメータ速度を中央差分で求めるときの時刻の刻み幅（秒）。</summary>
+    private const float LocalSpeedEpsilonSeconds = 0.01f;
+
+    /// <summary>等速化補正の下限倍率（異常値・数値ノイズで急減速しないための安全弁）。</summary>
+    private const float MinTimeScale = 0.25f;
+
+    /// <summary>等速化補正の上限倍率（停留点・Step 区間で無限加速しないための安全弁）。</summary>
+    private const float MaxTimeScale = 4.0f;
+
     // ─── 自由移動パラメータ ───────────────────────────────────
 
     [Header("移動パラメータ"), SerializeField]
@@ -125,6 +146,13 @@ public class PlayerMove : SEEDScript
     private bool pathTimeInitialized = false;
 
     /// <summary>
+    /// 経路全体の平均パラメータ速度（m/経路秒）。null=未計測。
+    /// 初回に折れ線近似で 1 度だけ計測してキャッシュする
+    /// （スクリプトのホットリロードで状態は破棄されるので、経路を編集したら再計測される）。
+    /// </summary>
+    private float? averageParamSpeed = null;
+
+    /// <summary>
     /// 向きの目標ヨー角（度）。null は「まだ一度も進行方向が決まっていない」。
     ///
     /// 入力が切れた後も最後の目標へ向かって回り続けさせるため、
@@ -198,8 +226,10 @@ public class PlayerMove : SEEDScript
         }
 
         // 経路上の時刻を進める。閉ループならエンジン側で周回し、開経路なら両端でクランプされる。
+        // 等速化補正（弧長補正）を掛け、Catmull-Rom の区間内の速度脈動を打ち消して
+        // ワールド上の移動速度を一定にする（かくつき対策。詳細は定数群のコメント参照）。
         var previousPosition = transform.Position;
-        pathTime += effectiveAxis * pathSpeed * ctx.DeltaTime;
+        pathTime += effectiveAxis * pathSpeed * ComputeConstantSpeedScale(p, pathTime) * ctx.DeltaTime;
 
         // 保持している時刻を経路の範囲へ畳み込む（畳み込んでも評価結果は変わらない）。
         // 閉ループ: 1 周ぶんで巻き戻す ／ 開経路: 両端でクランプする。
@@ -233,6 +263,50 @@ public class PlayerMove : SEEDScript
         }
 
         return SEED.Mathf.Abs(effectiveAxis) > moveThreshold;
+    }
+
+    /// <summary>
+    /// 経路の等速化補正倍率を返す（平均パラメータ速度 ÷ 局所パラメータ速度）。
+    ///
+    /// - 局所速度が平均より<b>遅い</b>場所（継ぎ目付近）では 1 より大きく → 時刻を速く進める
+    /// - 局所速度が平均より<b>速い</b>場所（区間中央）では 1 より小さく → 時刻を遅く進める
+    /// 結果としてワールド上の速度が一定になり、1 周にかかる時間は補正前と同じ。
+    ///
+    /// 平均は初回に 1 度だけ折れ線近似（<see cref="AverageSpeedSampleCount"/> 分割）で計測し、
+    /// 局所は毎フレーム中央差分（±<see cref="LocalSpeedEpsilonSeconds"/> 秒）で求める。
+    /// 停留点（局所速度ほぼ 0）や異常値は <see cref="MinTimeScale"/>〜<see cref="MaxTimeScale"/> で
+    /// クランプして発散させない。
+    /// </summary>
+    /// <param name="p">評価対象の経路。</param>
+    /// <param name="t">現在の経路時刻（秒）。</param>
+    private float ComputeConstantSpeedScale(SEED.ControlPointPath p, float t)
+    {
+        float duration = p.Duration;
+        if (duration <= 0f) { return 1f; }
+
+        // 平均パラメータ速度（キャッシュが無ければ計測する）
+        if (averageParamSpeed is not { } average)
+        {
+            float total = 0f;
+            var prev = p.SamplePosition(p.StartTime);
+            for (int i = 1; i <= AverageSpeedSampleCount; i++)
+            {
+                var cur = p.SamplePosition(p.StartTime + duration * i / AverageSpeedSampleCount);
+                total += SEED.Vector3.Distance(prev, cur);
+                prev = cur;
+            }
+            average = total / duration;
+            averageParamSpeed = average;
+        }
+        if (average <= SqrEpsilon) { return 1f; } // 全点同一座標など、動きの無い経路
+
+        // 局所パラメータ速度（中央差分）。閉ループは時刻が周回するので範囲外でも正しく評価される。
+        var a = p.SamplePosition(t - LocalSpeedEpsilonSeconds);
+        var b = p.SamplePosition(t + LocalSpeedEpsilonSeconds);
+        float local = SEED.Vector3.Distance(a, b) / (2f * LocalSpeedEpsilonSeconds);
+        if (local <= SqrEpsilon) { return MaxTimeScale; } // 停留点・Step 区間は上限倍率で通過
+
+        return SEED.Mathf.Clamped(average / local, MinTimeScale, MaxTimeScale);
     }
 
     /// <summary>
