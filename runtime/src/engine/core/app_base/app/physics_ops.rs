@@ -121,6 +121,9 @@ impl App {
         // 経由で全オブジェクトをスレッドとミラーの**両方**へ登録する（送信箇所の一元化）。
         self.physics_thread = Some(thread);
         self.character_world = Some(CharacterWorld::new());
+        // 落下速度・接地状態を初期化する。前回の再生で溜めた落下速度を持ち越すと
+        // 開始直後にキャラが地面へ叩きつけられるため、キャラミラーと同じタイミングで作り直す。
+        self.character_gravity = crate::engine::physics::CharacterGravity::new();
 
         for obj in objects {
             self.physics_add_object(obj);
@@ -153,6 +156,8 @@ impl App {
         self.physics_thread = None;
         // キャラクター衝突ミラーも破棄する（物理起動中のみ有効）
         self.character_world = None;
+        // 落下速度・接地状態も破棄する（次の Play は静止状態から始める）
+        self.character_gravity = crate::engine::physics::CharacterGravity::new();
     }
 
     // ─── 物理オブジェクト登録の集約ヘルパ ────────────────────────────
@@ -562,19 +567,28 @@ impl App {
     ///   1. 動く物体（非キャラの kinematic/dynamic）のミラー位置を ECS の現在姿勢へ追従させる。
     ///      （キャラ自身のミラー位置は解決の基準なのでここでは触らない — 触ると motion=0 に潰れる。）
     ///   2. クエリパイプラインを更新する。
+    ///   2.5 「重力を適用」が ON のキャラの希望位置 Y へ落下オフセットを**加算**する
+    ///      （スクリプトの水平移動を上書きしない・設計は char_gravity.rs 冒頭）。
     ///   3. 各キャラ: ECS の希望位置を KCC で解決 → 補正後位置を ECS へ反映（子孫伝播）。
-    ///   4. 接地状態を公開する（Physics.IsGrounded 用）。
+    ///   4. 接地状態を公開する（Physics.IsGrounded 用）＋重力状態へ接地結果を戻す。
     ///   5. 補正後キャラ位置を物理スレッドへ一方通行で通知（UpdateKinematic・Raycast/他物体検出用）。
     ///   6. 接触した dynamic へインパルスを送る（押せるようにする・投げっぱなし）。
-    pub(super) fn sync_character_controllers(&mut self) {
+    ///
+    /// `frame_dt` は今フレームの実経過時間 [秒]。重力積分にだけ使う（KCC 自体は固定ステップ）。
+    /// スクリプトが `Time.DeltaTime` で移動量を作るのと同じ時間基準を使うことで、
+    /// フレームレートが変わっても落下と水平移動の比率が崩れないようにする。
+    pub(super) fn sync_character_controllers(&mut self, frame_dt: f32) {
         if self.physics_thread.is_none() || self.character_world.is_none() { return; }
         let wl = self.active_world_line;
 
         // ── 0. テレポートキュー消費（ミラー内キャラの解決基準を移動先へ直接セット）──
         let teleports = crate::engine::core::scripting::host_api::take_character_teleports();
-        if let Some(cw) = &mut self.character_world {
-            for (entity_id, pos, rot) in teleports {
-                cw.teleport_character(entity_id, pos, rot);
+        for (entity_id, pos, rot) in &teleports {
+            // 落下速度もここでリセットする。リスポーン・ワープ後に前の落下速度を
+            // 持ち越すと、移動先で瞬時に高速落下してしまうため。
+            self.character_gravity.reset(*entity_id);
+            if let Some(cw) = &mut self.character_world {
+                cw.teleport_character(*entity_id, *pos, *rot);
             }
         }
 
@@ -582,7 +596,7 @@ impl App {
         // 【内訳計測】「物理/キャラクターコントローラ同期」は自己時間 100% の巨大スコープに
         //   なりやすく、ECS 収集・ミラー追従・空間索引更新・KCC 解決のどれが重いのか
         //   パネルから判別できなかった。以降の各段に子スコープを張って内訳を可視化する。
-        let (movers, desired) = match &self.scene {
+        let (movers, mut desired) = match &self.scene {
             Some(scene) => {
                 crate::profile_scope!("物理/キャラ同期/ECS 収集");
                 (
@@ -599,6 +613,29 @@ impl App {
                 < CHAR_LOG_MAX_FRAMES;
 
         let dt = crate::engine::physics::PHYSICS_FIXED_STEP as f32;
+
+        // 補正後位置を ECS へ書き戻すかどうか（編集時コライダーのみモードでは書き戻さない）。
+        // 重力の適用条件もこれに揃える — Transform を反映しないモードで落下速度だけを
+        // 溜め込むと、再生開始時にキャラが一気に落ちる事故になるため。
+        let should_apply = self.mode != RuntimeMode::Edit || self.edit_physics_with_rigidbody;
+
+        // ── 2.5. 「重力を適用」が ON のキャラの希望位置へ落下オフセットを加算合成する ──
+        // スクリプトが同フレームに書いた水平移動（desired の X/Z）はここでは一切触らない。
+        // Y に落下ぶんを足すだけなので、この後の KCC 解決が水平・垂直をまとめてスイープし、
+        // 段差・斜面・壁ずりは既存の KCC 設定どおりに処理される。
+        {
+            crate::profile_scope!("物理/キャラ同期/重力積分");
+            let gravity_y = crate::engine::physics::DEFAULT_GRAVITY[1];
+            let mut gravity_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+            for update in desired.iter_mut() {
+                if !should_apply || !update.apply_gravity { continue; }
+                gravity_ids.insert(update.entity_id);
+                update.position[1] +=
+                    self.character_gravity.step(update.entity_id, gravity_y, frame_dt);
+            }
+            // 対象から外れたキャラ（削除・チェック OFF・別ワールドライン）の落下状態を掃除する
+            self.character_gravity.retain(&gravity_ids);
+        }
 
         // ── 1〜3. ミラー位置追従 → クエリ更新 → 各キャラ解決（character_world を可変借用）──
         let mut results:  Vec<(u64, [f32; 3], bool)> = Vec::new();
@@ -619,9 +656,11 @@ impl App {
             {
                 // KCC 本体（シェイプキャスト＋スライド反復）。床ずり時に反復が回って支配的になる区間。
                 crate::profile_scope!("物理/キャラ同期/KCC 解決");
-                for (id, dpos, rot) in &desired {
-                    if let Some(res) = cw.resolve_character(*id, *dpos, *rot, dt) {
-                        results.push((*id, res.corrected, res.grounded));
+                for update in &desired {
+                    if let Some(res) = cw.resolve_character(
+                        update.entity_id, update.position, update.rotation, dt,
+                    ) {
+                        results.push((update.entity_id, res.corrected, res.grounded));
                         // 接触 dynamic への押し出し（方向×速度）に実効質量係数を掛けてインパルス化する。
                         for (hit_id, push) in res.dynamic_pushes {
                             impulses.push((hit_id, [
@@ -641,6 +680,15 @@ impl App {
             }
         }
 
+        // ── 4(前段). KCC が出した接地結果を重力状態へ戻す（着地で落下速度リセット）──
+        // 重力 OFF のキャラ（step を呼んでいない＝状態を持たない ID）には触らない。
+        // 触ると OFF のキャラぶんの状態が毎フレーム作られ、retain で消える往復が無駄に走る。
+        for (id, _corrected, grounded) in &results {
+            if self.character_gravity.state_of(*id).is_some() {
+                self.character_gravity.settle(*id, *grounded);
+            }
+        }
+
         // ── 4. 接地状態を公開する（DFS ID → ECS Entity へ変換）──
         if !results.is_empty() {
             let dfs_to_entity = self.scene.as_ref()
@@ -653,9 +701,8 @@ impl App {
         }
 
         // ── 3(反映). 補正後位置を ECS へ書き戻す ──
-        // 編集時コライダーのみモードでは Transform を書き換えない（Play / edit+rigidbody 時のみ）。
+        // 編集時コライダーのみモードでは Transform を書き換えない（should_apply は上で算出済み）。
         // ドラッグ中アクターは gizmo が位置を制御するため反映しない。
-        let should_apply = self.mode != RuntimeMode::Edit || self.edit_physics_with_rigidbody;
         let drag = self.dragging_physics_entity_id;
         if should_apply {
             // 補正後位置の ECS 書き戻し（子孫アクタへの伝播を含む）。
@@ -673,8 +720,8 @@ impl App {
         if let Some(thread) = &self.physics_thread {
             for (id, corrected, _g) in &results {
                 // 回転は今フレームの希望回転（collect_character_step_updates 収集値）を使う。
-                let rot = desired.iter().find(|(d, _, _)| d == id)
-                    .map(|(_, _, r)| *r)
+                let rot = desired.iter().find(|u| u.entity_id == *id)
+                    .map(|u| u.rotation)
                     .unwrap_or([0.0, 0.0, 0.0, 1.0]);
                 thread.send(PhysicsCommand::UpdateKinematic {
                     entity_id: *id, position: *corrected, rotation: rot,
@@ -1036,16 +1083,33 @@ fn apply_physics_transform(
     }
 }
 
+/// キャラクターコントローラー 1 体ぶんの「今フレームの希望姿勢」。
+///
+/// スクリプトが書いた Transform をそのまま写したもので、KCC 解決の入力になる。
+/// タプルではなく構造体にしているのは、重力適用フラグのように**同じ収集 DFS で
+/// 一緒に拾いたい設定が増えても呼び出し側の分解パターンが壊れないようにする**ため。
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CharacterStepUpdate {
+    /// 物理系共通の entity_id（1-indexed DFS 順カウンタ）。
+    pub entity_id: u64,
+    /// スクリプトが書いた希望ワールド位置。
+    pub position: [f32; 3],
+    /// 希望ワールド回転（クォータニオン [x, y, z, w]）。
+    pub rotation: [f32; 4],
+    /// `ColliderComponent::apply_gravity`（ノーコード重力適用が ON か）。
+    pub apply_gravity: bool,
+}
+
 /// キャラクターコントローラーの現在 Transform（希望位置・回転）を DFS 順に収集する。
 ///
 /// collect_physics_objects と同一の DFS 順を使うことで entity_id が対応する。
 /// is_character_controller=true かつ有効な Collider スロットを持つアクターのみが対象。
 /// 収集した希望位置はメインスレッド常駐の CharacterWorld へ渡され、前回解決済み位置との差分が
-/// KCC で衝突解決される。
+/// KCC で衝突解決される。重力適用フラグも同じ走査でまとめて拾う（DFS を 2 度回さない）。
 fn collect_character_step_updates(
     scene:      &Scene,
     world_line: u32,
-) -> Vec<(u64, [f32; 3], [f32; 4])> {
+) -> Vec<CharacterStepUpdate> {
     let mut updates     = Vec::new();
     let mut dfs_counter = 0u32;
 
@@ -1072,7 +1136,12 @@ fn collect_character_step_updates(
         let position = [tf.position[0], tf.position[1], tf.position[2]];
         let rotation = euler_to_quat_arr(tf.rotation);
 
-        updates.push((dfs_id, position, rotation));
+        updates.push(CharacterStepUpdate {
+            entity_id:     dfs_id,
+            position,
+            rotation,
+            apply_gravity: collider.apply_gravity,
+        });
     }
     updates
 }

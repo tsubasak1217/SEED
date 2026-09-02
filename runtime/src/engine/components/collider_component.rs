@@ -199,6 +199,17 @@ pub struct ColliderComponent {
     /// 瞬間移動（衝突無視）は `Transform.Teleport(pos)` を使う。
     #[serde(default)]
     pub is_character_controller: bool,
+
+    /// true ならキャラクターコントローラーに重力を自動適用する（ノーコード落下）。
+    ///
+    /// `is_character_controller = true` のときだけ意味を持つ。ON にすると Play 中の
+    /// 毎フレーム、KCC 解決の直前に落下速度を積分した下方向オフセットが希望位置へ
+    /// **加算**される（スクリプトが同フレームに書いた水平移動は上書きしない）。
+    /// 接地中は落下速度 0、空中で重力加速、着地でリセット。段差・斜面の扱いは
+    /// KCC の既存設定に従う。接地状態はスクリプトから `Physics.IsGrounded()` で読める。
+    /// 実装は physics/char_gravity.rs を参照。
+    #[serde(default)]
+    pub apply_gravity: bool,
 }
 
 // ─── デフォルト値ファクトリ ──────────────────────────────────────────────────
@@ -248,6 +259,7 @@ impl Default for ColliderComponent {
             initial_linear_velocity: [0.0; 3],
             initial_angular_velocity: [0.0; 3],
             is_character_controller:  false,
+            apply_gravity:            false,
         }
     }
 }
@@ -314,6 +326,9 @@ pub struct ColliderComponentData {
     // キャラクターコントローラー設定（旧シーン互換のため default=false）
     #[serde(default)]
     pub is_character_controller: bool,
+    // キャラクターへのノーコード重力適用（旧シーン互換のため default=false）
+    #[serde(default)]
+    pub apply_gravity: bool,
 }
 
 impl From<&ColliderComponent> for ColliderComponentData {
@@ -337,6 +352,7 @@ impl From<&ColliderComponent> for ColliderComponentData {
             initial_linear_velocity: c.initial_linear_velocity,
             initial_angular_velocity: c.initial_angular_velocity,
             is_character_controller:  c.is_character_controller,
+            apply_gravity:            c.apply_gravity,
         }
     }
 }
@@ -362,6 +378,59 @@ impl From<ColliderComponentData> for ColliderComponent {
             initial_linear_velocity: d.initial_linear_velocity,
             initial_angular_velocity: d.initial_angular_velocity,
             is_character_controller:  d.is_character_controller,
+            apply_gravity:            d.apply_gravity,
         }
+    }
+}
+
+// ─── ユニットテスト ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 旧シーン（apply_gravity フィールドが存在しない JSON）が読めること。
+    /// serde(default) が効いていないと、フィールド追加だけで既存シーンが
+    /// 丸ごとロード失敗するため、互換性を回帰テストで固定する。
+    #[test]
+    fn legacy_scene_without_apply_gravity_loads_as_false() {
+        let legacy = r#"{
+            "shape": { "type": "Box", "half_extents": [0.5, 1.0, 0.5] },
+            "offset": [0.0, 0.0, 0.0],
+            "is_trigger": false,
+            "physics_layer": 1,
+            "layer_mask": 0,
+            "is_character_controller": true
+        }"#;
+        let data: ColliderComponentData =
+            serde_json::from_str(legacy).expect("旧シーン JSON のデシリアライズに失敗");
+        assert!(data.is_character_controller);
+        assert!(!data.apply_gravity, "未指定時は重力 OFF が既定");
+
+        // ECS コンポーネントへの変換でも既定値が保たれる
+        let comp = ColliderComponent::from(data);
+        assert!(!comp.apply_gravity);
+    }
+
+    /// apply_gravity が保存・復元（ラウンドトリップ）を通ること。
+    #[test]
+    fn apply_gravity_round_trips_through_serde() {
+        let mut comp = ColliderComponent::default();
+        comp.is_character_controller = true;
+        comp.apply_gravity = true;
+
+        let json = serde_json::to_string(&ColliderComponentData::from(&comp)).unwrap();
+        assert!(json.contains("\"apply_gravity\":true"), "JSON に出力されていない: {json}");
+
+        let back: ColliderComponentData = serde_json::from_str(&json).unwrap();
+        let restored = ColliderComponent::from(back);
+        assert!(restored.apply_gravity);
+        assert!(restored.is_character_controller);
+    }
+
+    /// 既定値は重力 OFF（既存シーンの挙動を変えない）。
+    #[test]
+    fn default_is_gravity_off() {
+        assert!(!ColliderComponent::default().apply_gravity);
     }
 }

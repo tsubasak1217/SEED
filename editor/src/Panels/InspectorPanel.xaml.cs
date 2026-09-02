@@ -2965,6 +2965,7 @@ public partial class InspectorPanel : UserControl
         int    layerMask  = 0;
         // キャラクターコントローラー設定
         bool   isCharCtrl = false;
+        bool   applyGravity = false;
         // リジッドボディ設定
         bool   useRb      = false;
         float  mass = 1f, rest = 0.3f, fric = 0.5f, linDamp = 0.01f, angDamp = 0.05f, gravScale = 1f;
@@ -2993,6 +2994,7 @@ public partial class InspectorPanel : UserControl
             if (root.TryGetProperty("layer_mask",    out var lm))  layerMask = lm.GetInt32();
             // キャラクターコントローラー設定
             if (root.TryGetProperty("is_character_controller", out var cc)) isCharCtrl = cc.GetBoolean();
+            if (root.TryGetProperty("apply_gravity",           out var ag)) applyGravity = ag.GetBoolean();
             // リジッドボディ設定
             if (root.TryGetProperty("use_rigidbody",   out var ur))  useRb       = ur.GetBoolean();
             if (root.TryGetProperty("mass",            out var mv))  mass        = mv.GetSingle();
@@ -3023,6 +3025,7 @@ public partial class InspectorPanel : UserControl
         var curLinDamp    = linDamp;   var curAngD  = angDamp; var curGrav    = gravScale;
         var curKinem      = isKinematic;
         var curCharCtrl   = isCharCtrl;
+        var curApplyGrav  = applyGravity;
         var curFreezeP    = (bool[])freezePos.Clone();
         var curFreezeR    = (bool[])freezeRot.Clone();
         var curLinV       = (float[])initLinVel.Clone();
@@ -3049,6 +3052,7 @@ public partial class InspectorPanel : UserControl
                 $"\"physics_layer\":{curLayer}," +
                 $"\"layer_mask\":{curMask}," +
                 $"\"is_character_controller\":{B(curCharCtrl)}," +
+                $"\"apply_gravity\":{B(curApplyGrav)}," +
                 $"\"use_rigidbody\":{B(curUseRb)}," +
                 $"\"mass\":{F(curMass)}," +
                 $"\"restitution\":{F(curRest)}," +
@@ -3208,10 +3212,37 @@ public partial class InspectorPanel : UserControl
             FontSize = 11, Width = 130, VerticalAlignment = VerticalAlignment.Center,
         });
         var charCtrlCheck = new CheckBox { IsChecked = curCharCtrl, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0) };
-        charCtrlCheck.Checked   += (_, _) => { curCharCtrl = true;  CommitCollider(); };
-        charCtrlCheck.Unchecked += (_, _) => { curCharCtrl = false; CommitCollider(); };
         charCtrlRow.Children.Add(charCtrlCheck);
         sp.Children.Add(charCtrlRow);
+
+        // --- 重力を適用（キャラクターコントローラーのサブ設定） ---
+        // ON にすると Play 中、スクリプトを一切書かずにキャラが落下する。
+        // 落下量はスクリプトが書いた水平移動へ「加算」されるため、移動スクリプトと共存する。
+        // 接地中は落下速度 0、空中で加速、着地でリセット。接地は Physics.IsGrounded() で読める。
+        // キャラクターコントローラーが OFF のときは無意味な設定なので行ごと隠す。
+        var gravityRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin      = new Thickness(16, 2, 0, 2),
+            Visibility  = curCharCtrl ? Visibility.Visible : Visibility.Collapsed,
+        };
+        gravityRow.Children.Add(new TextBlock
+        {
+            Text = "重力を適用", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 114, VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = "キネマティックなキャラクターに重力を自動適用します（スクリプト不要）。\n"
+                    + "スクリプトの水平移動には加算合成されるため、移動処理と併用できます。",
+        });
+        var gravityCheck = new CheckBox { IsChecked = curApplyGrav, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0) };
+        gravityCheck.Checked   += (_, _) => { curApplyGrav = true;  CommitCollider(); };
+        gravityCheck.Unchecked += (_, _) => { curApplyGrav = false; CommitCollider(); };
+        gravityRow.Children.Add(gravityCheck);
+        sp.Children.Add(gravityRow);
+
+        // キャラクターコントローラーのハンドラは gravityRow 参照が確定した後に登録する
+        // （ON/OFF に連動して「重力を適用」行の表示を切り替えるため）。
+        charCtrlCheck.Checked   += (_, _) => { curCharCtrl = true;  gravityRow.Visibility = Visibility.Visible;   CommitCollider(); };
+        charCtrlCheck.Unchecked += (_, _) => { curCharCtrl = false; gravityRow.Visibility = Visibility.Collapsed; CommitCollider(); };
 
         // ────────────────────────────────────────────────────────────────
         // リジッドボディ設定（「リジッドボディを使用」チェックで展開）

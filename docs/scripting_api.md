@@ -470,17 +470,29 @@ Collider インスペクタの「**キャラクターコントローラー**」�
 
 ```csharp
 // キャラクター移動: Transform.Position を希望位置へ書くだけ。地形にめり込めば押し戻される。
-float velocityY = 0f; // フィールドとして保持する
-
 public override void Update(ref NativeFrameContext ctx)
 {
-    // 重力はエンジンが自動適用しないので自前で積分する
-    velocityY += -9.81f * SEED.Time.DeltaTime;
-    if (SEED.Physics.IsGrounded(gameObject) && velocityY < 0f) velocityY = 0f; // 接地で落下停止
-
-    var move = horizontal + new SEED.Vector3(0f, velocityY, 0f) * SEED.Time.DeltaTime;
-    transform.Position += move; // ← これだけ。押し戻しは物理ステップ同期で自動適用される
+    // 水平移動だけ書けばよい（落下は「重力を適用」チェックがエンジン側で処理する）
+    transform.Position += horizontal * moveSpeed * ctx.DeltaTime;
 }
+```
+
+#### 重力を適用（ノーコードで落下させる）
+
+Collider インスペクタの「キャラクターコントローラー」を ON にすると、その直下に「**重力を適用**」チェックボックスが現れます。ここを ON にするだけで、**スクリプトを 1 行も書かずに**キャラクターが落下し、地面で止まります。
+
+- 重力加速度はエンジンの物理設定（`-9.81 m/s²`）を使います。落下は**終端速度 55 m/s** で頭打ちになります（床のすり抜け防止）。
+- 落下量は**スクリプトが同じフレームに書いた移動へ加算合成**されます。水平移動を上書きしないので、上の移動スクリプトとそのまま併用できます。適用順は「スクリプトの Update 群 → 重力 → KCC 衝突解決」です。
+- 接地中は落下速度が 0 にリセットされ、空中で加速、着地でまた 0 に戻ります。接地状態は `SEED.Physics.IsGrounded(gameObject)` で読めます。
+- 段差の乗り越え・斜面の登坂／滑り落ちは KCC の既存設定（段差 0.3m・斜面 45 度）に従います。
+- **ジャンプ**は今までどおりスクリプトで上方向に `transform.Position` を足してください。上向きの移動量が重力ぶんを上回っていれば上昇し、離れたあとは重力が自動で引き戻します。
+- OFF（既定）のときの挙動は従来どおりで、落下させたい場合は自分で速度を積分します。既存シーンの動作は変わりません。
+
+```csharp
+// 「重力を適用」ON のキャラに、ジャンプだけスクリプトで足す例
+if (SEED.Physics.IsGrounded(gameObject) && jumpPressed) { jumpVelocity = 5f; }
+jumpVelocity = SEED.Mathf.Max(0f, jumpVelocity - 9.81f * ctx.DeltaTime); // 上昇ぶんだけ自前で減衰
+transform.Position += new SEED.Vector3(0f, jumpVelocity * ctx.DeltaTime, 0f);
 ```
 
 - 対象アクターは **Collider コンポーネント（カプセル推奨）** を持ち、インスペクタで「キャラクターコントローラー」を ON にしてください。カプセル形状が KCC のシェイプに使われます。
@@ -488,7 +500,7 @@ public override void Update(ref NativeFrameContext ctx)
 - 1 フレーム内で `Position` を何度書いても、物理ステップで **1 回だけまとめて** 解決されます。押し戻しの反映には物理同期の都合上 1 フレームの遅延があります。
 - **`Physics.IsGrounded(gameObject)`**: キャラクターが接地しているかを返します（物理ステップ同期で自動更新）。
 - **`transform.Teleport(pos)`**: 衝突を無視して瞬間移動します（下記 Transform 参照）。ワープ・リスポーン・初期配置に使います。
-- 重力・複数コライダーの合成移動はスクリプト側の責務です（KCC 自体は重力を持ちません）。
+- 重力はインスペクタの「重力を適用」チェックで自動化できます（上記）。OFF のままなら従来どおりスクリプト側の責務です。複数コライダーの合成移動は引き続きスクリプト側で行います。
 
 ---
 

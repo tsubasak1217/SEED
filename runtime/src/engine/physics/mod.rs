@@ -6,6 +6,7 @@
 //    shape.rs   — ColliderShape → Rapier ビルダー変換（thread / char_world 共通部品）
 //    thread.rs  — Rapier3D を使用した 3D 物理スレッド実装
 //    char_world.rs — メインスレッド常駐のキャラクター衝突ミラー（KCC その場解決）
+//    char_gravity.rs — キネマティックキャラへのノーコード重力適用（落下積分・接地リセット）
 //    types2d.rs — 2D メインスレッド・物理スレッド間の共通型定義
 //    thread2d.rs — Rapier2D を使用した 2D 物理スレッド実装
 //
@@ -19,6 +20,7 @@ mod types2d;
 mod shape;
 pub mod thread;
 pub mod char_world;
+pub mod char_gravity;
 pub mod thread2d;
 
 // ── 3D 型・定数の再エクスポート ─────────────────────────────────────────────
@@ -39,6 +41,7 @@ pub use types::{
 
 pub use thread::PhysicsThread;
 pub use char_world::CharacterWorld;
+pub use char_gravity::CharacterGravity;
 
 // ── 2D 型・定数の再エクスポート ─────────────────────────────────────────────
 
