@@ -200,11 +200,13 @@ C# の表を `include_str!` で読み、**双方向**
 | **`SlotFieldEditCommand`** | **インスペクタのフィールド編集（汎用。上記 1.）** |
 | **`ActorActiveCommand`** | **アクターの active フラグ** |
 
-### 2.1 `ActorTreeSnapshotCommand` は地形を巻き込まない（Keep ポリシー）
+### 2.1 `ActorTreeSnapshotCommand` と地形（マーカー方式）
 
-ツリースナップショットの退避（`actor_ops::snapshot_actors_for_wl`）と復元
-（`rebuild_actors_for_wl`）は、**地形ルート（`terrain`）とそのチャンクサブツリーを
-対象外**にする。判定は Play の Enter/Exit と共通の `App::is_terrain_root`。
+ツリースナップショットの退避（`actor_ops::snapshot_actors_for_wl`）は、
+地形ルート（`terrain`）を **「ツリー上の位置を示すマーカー」としてだけ** 記録する。
+すなわちノード自体（名前・フォルダ属性・位置）は退避し、配下のチャンクサブツリーと
+コンポーネントは切り落とす（`snapshot_actors` / `terrain_marker_data` /
+`prune_terrain_subtree`）。
 
 理由: 地形の実体（Marching Cubes メッシュ・GpuModel・統合バッチ・
 `TerrainState.chunk_slot_entity` の entity 参照）は `ActorData` にシリアライズされない。
@@ -213,12 +215,42 @@ C# の表を `include_str!` で読み、**双方向**
 **コンポーネント（TerrainChunkComponent）だけ戻り、メッシュが空になる**。
 シーンロード経路では `rebuild_terrain_after_load` が .tvox から作り直すが、
 Undo/Redo 経路（`ipc_handler.rs` の `IpcCommand::Undo` / `Redo`）はそれを呼ばない。
+これが「アクタ追加 → Ctrl+Z で地形メッシュが全消え」の原因だった。
 
-そのため「アクタ追加 → Ctrl+Z」で地形メッシュが全消えしていた（地形の密度データは
-`TerrainState` 側に残るので、ヒエラルキーと WaterVolume の岸波だけは正常に見える）。
-現在は地形を **現物保持（Keep）** して復元に巻き込まない。Undo のたびに
-全チャンクを再メッシュする（十数秒）必要も無くなり、退避側も全チャンクの
-serde を行わなくなる。回帰テストは `actor_ops.rs` の `tests`。
+#### 復元時の 3 分岐（`rebuild_actors_for_wl`）
+
+マーカーの位置と現在のツリーを突き合わせて、地形の扱いを選び分ける。
+
+| 条件 | 挙動 |
+|---|---|
+| ① マーカーがトップレベル、かつ現在もトップレベルに生きた地形ルートがある | **Keep**（地形には一切触れない）。地形が絡まないアクタ操作（追加・削除・複製・グループ化・散布・プレハブ）の Undo/Redo は必ずここ。再構築コストゼロ |
+| ② マーカーはあるが位置が違う（グループへ入れた／から出した）、または現在ツリーに地形が無い（地形ルート削除後の Undo） | 地形アクターを作り直し、`resync_terrain_actors_after_tree_restore` が実行時状態から**自動再構築** |
+| ③ マーカーが無い（その時点のシーンに地形が無かった。地形ルート削除の Redo など） | 現在の地形サブツリーも消す。密度は `TerrainState` に残るので、再度 Undo すれば ② で戻る |
+
+**ツリー操作の禁止ガードは無い**。地形フォルダの親子付け替え・グループ化・削除は
+すべて自由に行える（一時は LOAD_ERROR で禁止していたが撤廃した）。
+
+#### 自動再構築（②）の中身 — `terrain_ops::resync_terrain_actors_after_tree_restore`
+
+1. 復元されたツリーから地形ルート（トップレベルとは限らない）を探し、配下を空にする
+2. **メモリ上の密度（`TerrainState::chunks`）** から全チャンクをメッシュ化して GPU へ載せる
+3. `spawn_chunk_actor` でチャンクアクターを作り直し、地形ルートへぶら下げる
+4. `chunk_slot_entity` を張り直し、`chunk_vertex_edges` / パレット / 派生キャッシュ
+   （統合バッチ・RT BLAS）を更新する
+5. カバー場（I3.1）を新しい頂点へ焼き直すよう予約する
+
+**`.tvox` は読み直さない。** `TerrainState` は ECS の外にありツリー復元では壊れないので、
+未保存の地形編集（ブラシ・ペイント・カバー・散布）は Undo/Redo をまたいでも失われない。
+チャンク単位の当たり判定フラグ・デシメート強度・LOD も同じ理由で保持される。
+地形コライダーはチャンク座標をキーに登録されており ECS entity に依存しないため、
+形状が変わらないこの経路では触らない（物理も無停止）。
+
+コストは全チャンクのマーチングキューブス＋GPU アップロード 1 回ぶん（ロード時とほぼ同等）。
+地形を含むツリー操作の Undo/Redo でのみ発生し、通常のアクタ操作は ① を通るので無関係。
+
+回帰テストは `actor_ops.rs` の `tests`（退避のマーカー化・Keep 判定・入れ子/削除時の
+Keep 不可判定・世界線の分離）。②の再構築本体は GPU（DrawContext）を要するため
+単体テスト対象外で、実機確認が必要。
 
 インスペクターフィールドのドラッグ（軸ラベルドラッグ）は
 `BEGIN_TRANSFORM_DRAG` → 連続更新（記録なし）→ `END_TRANSFORM_DRAG` で

@@ -1763,6 +1763,25 @@ fn make_terrain_model_component(
 /// 既存の terrain ルートを再初期化前に despawn するために使う。`collect_entities_for_wl`
 /// は world_line 単位でしか収集できず「terrain ルートのサブツリーだけ」を抜けないため、
 /// 単一アクター起点の専用収集をここに置く（マジックナンバー・外部依存なし）。
+/// アクターツリー（トップレベルとは限らない）から地形ルートを探して可変参照を返す。
+///
+/// 地形ルートはグループの中へ移動できる（ツリー操作は禁止していない）ため、
+/// トップレベル走査だけでは見つからない。名前一致（`TERRAIN_ROOT_NAME`）で判定する。
+fn find_terrain_root_mut(actors: &mut [Actor]) -> Option<&mut Actor> {
+    for actor in actors.iter_mut() {
+        // 地形はシーン世界線（wl 0）にしか存在しない。アクター編集タブ（wl > 0）の
+        // 同名アクターを誤って地形ルートとみなさないよう世界線も見る。
+        if actor.name == TERRAIN_ROOT_NAME && actor.world_line == 0 {
+            return Some(actor);
+        }
+        // 借用チェッカの都合で再帰は子スライスに対して行う。
+        if let Some(found) = find_terrain_root_mut(actor.children_mut().as_mut_slice()) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 fn collect_subtree_entities(actor: &Actor, out: &mut Vec<Entity>) {
     out.push(actor.entity);
     // スロット専用エンティティ（ModelComponent / TerrainChunkComponent など）も despawn 対象。
@@ -2123,6 +2142,151 @@ impl App {
 
         self.send_hierarchy();
         true
+    }
+
+    /// Undo/Redo のアクターツリー復元で地形アクターが作り直された後に、
+    /// 地形の実行時状態を ECS へ繋ぎ直す（`actor_ops::rebuild_actors_for_wl` の②経路）。
+    ///
+    /// 【前提】呼ばれた時点でツリーには「地形ルート（マーカー）」だけが復元されており、
+    /// 配下のチャンクアクターは存在しない（スナップショットが位置しか持たないため）。
+    /// 位置はグループの中でもトップレベルでも構わない。
+    ///
+    /// 【密度の出どころは常にメモリ】`TerrainState` は ECS の外にあり、ツリー復元では
+    /// 一切壊れない。よって `.tvox` は読み直さず、メモリ上の密度
+    /// （`TerrainState::chunks`）からメッシュを作り直す。これにより
+    /// **未保存の地形編集が Undo で失われることはない**。
+    /// カバー場・散布・当たり判定フラグ・デシメート強度も同じ理由で保持される。
+    /// 地形コライダーはチャンク座標をキーに登録されており ECS entity に依存しないため、
+    /// 形状が変わらないここでは触らない（＝物理も無停止）。
+    ///
+    /// 【コスト】全チャンクのマーチングキューブス＋GPU アップロードが 1 回走る
+    /// （ロード時とほぼ同じ）。地形をツリー操作したときだけの経路であり、
+    /// 通常のアクタ追加 Undo は Keep 経路を通るのでここへは来ない。
+    pub(super) fn resync_terrain_actors_after_tree_restore(&mut self) {
+        if self.draw_ctx.is_none() || self.scene.is_none() {
+            return;
+        }
+
+        // ── ① 復元されたツリーから地形ルートを探し、配下を空にする ──
+        //   マーカー復元なら元々空だが、（将来の経路も含め）チャンクが残っていた場合に
+        //   二重化しないよう必ず despawn してから作り直す。
+        let root_found = {
+            let scene = self.scene.as_mut().unwrap();
+            let mut stale: Vec<Entity> = Vec::new();
+            let found = if let Some(root) = find_terrain_root_mut(&mut scene.actors) {
+                for child in root.children() {
+                    collect_subtree_entities(child, &mut stale);
+                }
+                root.children_mut().clear();
+                true
+            } else {
+                false
+            };
+            for e in stale {
+                scene.world.despawn(e);
+            }
+            found
+        };
+        if !root_found {
+            eprintln!(
+                "[SEED terrain] tree restore: 地形ルートが見つからないため再構築をスキップした"
+            );
+            return;
+        }
+
+        // ── ② 密度が無い（地形未初期化のシーン）なら器だけで正しい ──
+        if self.terrain.chunks.is_empty() {
+            self.terrain.chunk_slot_entity.clear();
+            self.send_hierarchy();
+            return;
+        }
+
+        // ── ③ メモリ上の密度から全チャンクのメッシュを作る（ロード経路と同じ並列化）──
+        //   チャンク座標は決定的な順序に整える（並びが実行ごとに変わるとヒエラルキーの
+        //   表示順が揺れ、DFS id を鍵にしたエディタ操作が安定しないため）。
+        let mut coords: Vec<ChunkCoord> = self.terrain.chunks.keys().copied().collect();
+        coords.sort_by_key(|c| (c.x, c.y, c.z));
+        let settings = self.terrain.settings.clone();
+        let layers = self.terrain.layers.clone();
+        let decimate_strength = self.terrain.decimate_strength;
+        let cpu_models: Vec<Option<(Arc<Model>, bool, Arc<Vec<TerrainVertexEdge>>)>> = coords
+            .par_iter()
+            .map(|&coord| {
+                // 表示 LOD は編集経路（`remesh_chunks`）と同じく現在値を尊重する。
+                let lod = self.terrain.chunk_lod.get(&coord).copied().unwrap_or(0);
+                build_chunk_cpu_model(
+                    &self.terrain.chunks, &settings, &layers, coord, lod, decimate_strength,
+                )
+            })
+            .collect();
+
+        // ── ④ GPU アップロード（DrawContext は Sync でないため直列）──
+        let mut prebuilt: Vec<(ChunkCoord, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> =
+            Vec::with_capacity(coords.len());
+        let mut prebuilt_edges: Vec<(ChunkCoord, Arc<Vec<TerrainVertexEdge>>)> = Vec::new();
+        {
+            let ctx = self.draw_ctx.as_ref().unwrap();
+            for (&coord, cpu) in coords.iter().zip(cpu_models.into_iter()) {
+                let Some((model, is_empty, edges)) = cpu else { continue };
+                let (gpu, batch) = upload_chunk_model(ctx, &model, is_empty);
+                prebuilt.push((coord, model, gpu, batch));
+                prebuilt_edges.push((coord, edges));
+            }
+        }
+        for (coord, edges) in prebuilt_edges {
+            self.terrain.chunk_vertex_edges.insert(coord, edges);
+        }
+        // 地形チャンクが使うパレットを group3 へ登録する（描画前に済ませる必要がある）。
+        self.ensure_terrain_palettes(prebuilt.iter().map(|p| p.1.as_ref()));
+
+        // ── ⑤ チャンクアクターを作り直して地形ルートへぶら下げる ──
+        let scene_name = self.terrain.scene_name.clone();
+        let terrain_dir = self.terrain.terrain_dir.clone();
+        let mut slot_map: Vec<(ChunkCoord, Entity)> = Vec::with_capacity(prebuilt.len());
+        {
+            let scene = self.scene.as_mut().unwrap();
+            // 地形ルートの world_line（＝復元先の世界線）を子へ引き継ぐ。
+            let mut chunk_actors: Vec<Actor> = Vec::with_capacity(prebuilt.len());
+            for (coord, model, gpu, batch) in prebuilt {
+                let (folder, mc_slot) = spawn_chunk_actor(
+                    &mut scene.world, &scene_name, &terrain_dir, &settings, coord, model, gpu, batch,
+                );
+                slot_map.push((coord, mc_slot));
+                chunk_actors.push(folder);
+            }
+            if let Some(root) = find_terrain_root_mut(&mut scene.actors) {
+                let wl = root.world_line;
+                for mut folder in chunk_actors {
+                    folder.set_world_line_recursive(wl);
+                    root.add_child(folder);
+                }
+            }
+        }
+
+        // ── ⑥ チャンク → メッシュスロット対応を張り直す ──
+        //   復元前の entity は全て無効なので、丸ごと差し替える。
+        self.terrain.chunk_slot_entity.clear();
+        let mut rebuilt_keys: Vec<String> = Vec::with_capacity(slot_map.len());
+        for (coord, entity) in slot_map {
+            self.terrain.chunk_slot_entity.insert(coord, entity);
+            rebuilt_keys.push(terrain_source_path(&scene_name, coord));
+        }
+        // batch_key（合成 source_path）は復元前と同一なので、ジオメトリ由来の派生キャッシュ
+        // （統合バッチ・RT BLAS）は古いままヒットしてしまう。ここで破棄して作り直させる。
+        self.invalidate_geometry_caches(&rebuilt_keys, true);
+
+        // ── ⑦ カバー場（I3.1）を新しいメッシュへ焼き直す ──
+        //   頂点は作り直されたのでカバーの焼き付けは失われている。積もった量そのものは
+        //   `TerrainState.cover` に残っているため、焼き直し予約だけ入れれば復元される。
+        for &coord in &coords {
+            self.invalidate_cover_for_remesh(coord);
+        }
+
+        eprintln!(
+            "[SEED terrain] tree restore: 地形チャンク {} 枚をメモリ上の密度から再構築した",
+            self.terrain.chunk_slot_entity.len()
+        );
+        self.send_hierarchy();
     }
 
     /// レイヤ定義（layers.json）を読み込み、GPU バインドグループを用意する。
