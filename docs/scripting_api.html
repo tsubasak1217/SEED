@@ -537,7 +537,7 @@
 </section>
 
 <!-- ════════════════ 6.5 Input ════════════════ -->
-<section id="sec-input" data-keywords="Input 入力 キーボード マウス キー ボタン ホイール WASD MouseDelta MousePosition MousePositionCanvas キャンバス座標 ジェスチャ 移動量 振る キャスト">
+<section id="sec-input" data-keywords="Input 入力 キーボード マウス キー ボタン ホイール WASD カーソルロック CursorLocked 相対マウス MouseDelta MousePosition MousePositionCanvas キャンバス座標 ジェスチャ 移動量 振る キャスト">
   <h2>6.5 Input（キーボード・マウス入力）</h2>
   <p class="section-note">判定は 3 種類: 押している間 / 押した瞬間 / 離した瞬間。</p>
   <h3>キーボード</h3>
@@ -561,6 +561,10 @@
     _swing = _swing * 0.8f + <span class="t">SEED.Input</span>.MouseDelta;   <span class="c">// 直近の振りを指数移動平均で蓄える</span>
     <span class="k">if</span> (_swing.y &lt; -40f) { <span class="c">/* 上方向へ強く振った = キャスト */</span> }
 }</pre>
+  <h3>カーソルロック（相対マウスモード）</h3>
+  <div class="api"><code class="sig">Input.CursorLocked</code><span class="desc">bool（get/set）: ロック中はカーソルを隠し、毎フレームビューポート中央へ戻す。MouseDelta が画面端でクランプされず取れるようになる</span></div>
+  <div class="api"><code class="sig">Input.SetCursorLock(bool)</code><span class="desc">CursorLocked の別名</span></div>
+  <p class="section-note"><strong>重要</strong>: ロック中はカーソルが<strong>非表示</strong>になり毎フレーム中央へ戻されるため、<code>MouseDelta</code> は画面端で 0 に潰れない（エディタ埋め込み Play は ClipCursor でカーソルが閉じ込められるので、ボタンを押さないマウスジェスチャ判定にはロックがほぼ必須）。反面ロック中は <code>MousePos</code> / <code>MousePositionCanvas</code> が中央に張り付き<strong>意味を持たない</strong>。Play を停止すると自動的に解除される。</p>
   <h3>簡易軸入力</h3>
   <div class="api"><code class="sig">Input.MoveAxis()</code><span class="desc">Vector2: WASD/矢印キー → [-1,1]（斜めは正規化しない）</span></div>
 <pre><span class="c">// 例: WASD 移動 + スペースでジャンプ判定</span>

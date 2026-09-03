@@ -451,6 +451,17 @@ public static unsafe class ScriptHost
         return _api.InputMouseState(kind, buf) == 1 ? buf[0] : 0f;
     }
 
+    /// <summary>
+    /// カーソルロック（相対マウスモード）の取得／設定。
+    /// action: 0=取得 / 1=設定（value: 1=ロック / 0=解除）。
+    /// 設定は Rust 側でフレーム末にまとめて適用される。
+    /// </summary>
+    public static int InputCursorLock(int action, int value)
+    {
+        if (!_available || _api.InputCursorLock == null) return 0;
+        return _api.InputCursorLock(action, value);
+    }
+
     // ── オーディオ ───────────────────────────────────────────────
 
     /// <summary>
@@ -869,4 +880,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<uint, uint, int, float, float*, int, int> PathSample;
     /// <summary>(actorIdx, actorGen, typeName, typeLen, slotName, slotLen, out nint handle) → 1/0（スクリプト参照フィールドのインスタンス解決）</summary>
     public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, byte*, int, nint*, int> ResolveScriptInstance;
+    /// <summary>(action, value) → 1/0（カーソルロック。action: 0=取得/1=設定。設定は次のフレーム末に適用）</summary>
+    public delegate* unmanaged[Cdecl]<int, int, int> InputCursorLock;
 }

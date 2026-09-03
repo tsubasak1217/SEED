@@ -44,6 +44,9 @@ impl App {
             ScriptSceneCommand::TransitionScene { name_or_path } => Some(name_or_path.clone()),
             _ => None,
         }) {
+            // 遷移前にカーソルロックを解除する。新シーンのスクリプトが張り直さない限り
+            // ロックを持ち越さない（前シーンの都合でカーソルが消えたままになるのを防ぐ）。
+            self.release_script_cursor_lock();
             self.apply_script_transition_scene(&name);
             self.send_hierarchy();
             return;

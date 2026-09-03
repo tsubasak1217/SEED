@@ -8882,6 +8882,18 @@ impl App {
             self.apply_script_scene_commands();
         }
 
+        // ── スクリプトのカーソルロック要求を適用し、ロック中はカーソルを中央へ戻す ──
+        // Input を可変で触れるのはスクリプト実行外のここだけ（実行中は読み取り専用ポインタ）。
+        // 今フレームの差分（position_delta）はスクリプトが読み終えているので、
+        // ここで中央へワープしても今フレームの値は壊れない。次フレームの差分は
+        // 「中央からの実移動量」になり、ウィンドウ端クランプで 0 に潰れなくなる。
+        if let Some(window) = self.window.clone() {
+            if let Some(request) = crate::engine::core::scripting::take_cursor_lock_request() {
+                self.input.set_cursor_lock(request, &window);
+            }
+            self.input.update_cursor_lock(&window);
+        }
+
         self.input.end_frame();
         self.cam_input.end_frame();
 

@@ -485,6 +485,11 @@ Input.MousePositionCanvas // Vector2: キャンバス座標（画面中央が原
                           //          UI のポインタ判定と同じ座標系。CanvasTransform.Position と直接比較できる
                           //          キャンバス世界線でない・Play 外では (0,0)
 
+// カーソルロック（相対マウスモード）
+Input.CursorLocked    // bool（get/set）: ロック中はカーソルを隠して毎フレーム画面中央へ戻す。
+                      //   MouseDelta が画面端でクランプされず取れるようになる
+Input.SetCursorLock(true) // CursorLocked = true の別名
+
 // 例: マウスジェスチャ（引いてから前へ振る）の判定
 private SEED.Vector2 _swing;
 public override void Update(ref NativeFrameContext ctx)
@@ -501,6 +506,14 @@ var move = SEED.Input.MoveAxis();
 transform.Position += new SEED.Vector3(move.x, 0f, move.y) * speed * SEED.Time.DeltaTime;
 if (SEED.Input.GetKeyDown(SEED.KeyCode.Space)) { /* ジャンプ */ }
 ```
+
+> **重要**: `Input.CursorLocked = true` の間、カーソルは**非表示**になり毎フレーム
+> ビューポート中央へ戻される。そのため `MouseDelta` は画面端で 0 に潰れず動き続ける
+> （エディタ埋め込み Play では ClipCursor でカーソルが閉じ込められるため、ボタンを
+> 押さないマウスジェスチャの判定にはロックがほぼ必須）。
+> 反面、ロック中は `MousePos` / `MousePositionCanvas` が中央に張り付き**意味を持たない**
+> ので、UI のヒット判定と併用しないこと。
+> Play を停止すると自動的に解除されるため、解除し忘れでカーソルが消えたままにはならない。
 
 `KeyCode` の定義: `A`〜`Z` / `Alpha0`〜`Alpha9`（メイン数字キー）/ `F1`〜`F12` / `UpArrow` `DownArrow` `LeftArrow` `RightArrow` / `Space` `Enter` `Escape` `Tab` `Backspace` `Delete` / `LeftShift` `RightShift` `LeftControl` `RightControl` `LeftAlt` `RightAlt`
 

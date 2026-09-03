@@ -30,6 +30,12 @@ pub const MOUSE_STATE_CANVAS_POSITION: i32 = 3;
 /// Raw Input（MOUSE_STATE_DELTA）と違い、エディタ埋め込み Play でも必ず取れる。
 pub const MOUSE_STATE_POSITION_DELTA: i32 = 4;
 
+// ── カーソルロック操作種別（C# 側 Input.CursorLocked と一致させる）──
+/// 現在のロック状態を取得する。
+pub const CURSOR_LOCK_GET: i32 = 0;
+/// ロック状態を設定する（フレーム末に App が適用）。
+pub const CURSOR_LOCK_SET: i32 = 1;
+
 // ─── キーコード対応表 ────────────────────────────────────────
 
 /// C# の SEED.KeyCode（数値 ID）から winit の KeyCode へ変換する。未定義 ID は None。

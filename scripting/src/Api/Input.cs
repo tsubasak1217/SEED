@@ -58,6 +58,10 @@ public static class Input
     private const int MouseCanvasPositionKind = 3;
     private const int MousePositionDeltaKind = 4;
 
+    // ── カーソルロック操作種別（Rust 側 CURSOR_LOCK_* と一致させる）──
+    private const int CursorLockGet = 0;
+    private const int CursorLockSet = 1;
+
     // ── キーボード ───────────────────────────────────────────
 
     /// <summary>キーが押されている間 true。</summary>
@@ -113,6 +117,34 @@ public static class Input
     /// キャンバス世界線でない・Play 外では (0, 0)。
     /// </summary>
     public static Vector2 MousePositionCanvas => ScriptHost.InputMouseVec2(MouseCanvasPositionKind);
+
+    // ── カーソルロック ───────────────────────────────────────
+
+    /// <summary>
+    /// カーソルロック（相対マウスモード）。
+    ///
+    /// ロック中はカーソルが**非表示**になり、毎フレームビューポート中央へ戻される。
+    /// そのため <see cref="MouseDelta"/> は画面端でクランプされず動き続け、
+    /// ボタンを押さないマウスジェスチャ（引く／押す等）を安定して取れる。
+    /// エディタ埋め込み Play では ClipCursor でカーソルがビューポートに閉じ込められ、
+    /// 端に当たると <see cref="MouseDelta"/> が 0 になるため、ジェスチャ判定中は
+    /// これを true にすること。
+    ///
+    /// ロック中は <see cref="MousePos"/> / <see cref="MousePositionCanvas"/> は
+    /// 中央付近に張り付くので**意味を持たない**（UI のヒット判定には使えない）。
+    ///
+    /// Play を停止すると自動的に解除される（解除し忘れでカーソルが消えたままにならない）。
+    /// 設定はフレーム末にエンジンへ適用されるが、getter は同一フレーム内でも
+    /// 設定した値を返す。
+    /// </summary>
+    public static bool CursorLocked
+    {
+        get => ScriptHost.InputCursorLock(CursorLockGet, 0) != 0;
+        set => ScriptHost.InputCursorLock(CursorLockSet, value ? 1 : 0);
+    }
+
+    /// <summary>カーソルロックの設定（<see cref="CursorLocked"/> の別名）。</summary>
+    public static void SetCursorLock(bool locked) => CursorLocked = locked;
 
     // ── 簡易軸入力 ───────────────────────────────────────────
 

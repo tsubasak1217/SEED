@@ -25,6 +25,7 @@ pub use host_api::{
     with_world, with_actors, take_scene_commands, take_audio_commands,
     publish_input, publish_physics_sender, publish_canvas_mouse_position,
     advance_script_frame, with_on_destroy_guard,
+    take_cursor_lock_request, clear_cursor_lock_request,
     ScriptSceneCommand, ScriptAudioCommand,
 };
 

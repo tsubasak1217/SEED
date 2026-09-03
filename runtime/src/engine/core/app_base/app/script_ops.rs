@@ -75,6 +75,9 @@ impl App {
     ///
     /// スクリプトのプライベート状態（実行中の変数など）は失われる。
     pub(super) fn handle_reload_scripts(&mut self) {
+        // 再コンパイルでスクリプトインスタンスが作り直されるため、
+        // 旧インスタンスが張ったカーソルロックはここで解除する（解除者がいなくなるため）。
+        self.release_script_cursor_lock();
         let Some(host) = self.scripting_host.clone() else {
             if let Some(ipc) = &self.ipc {
                 ipc.send("SCRIPTS_RELOADED:-1,CLR not loaded");

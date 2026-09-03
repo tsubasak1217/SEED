@@ -162,6 +162,17 @@ impl App {
 
     // ── EXIT_PLAY ─────────────────────────────────────────────
 
+    /// スクリプトのカーソルロックを強制解除し、カーソルを表示へ戻す。
+    ///
+    /// Play 停止・シーン遷移など「スクリプトが解除する機会を失う」経路から呼ぶ。
+    /// ロックしていない場合も安全（冪等）。
+    pub(super) fn release_script_cursor_lock(&mut self) {
+        crate::engine::core::scripting::clear_cursor_lock_request();
+        if let Some(window) = self.window.clone() {
+            self.input.set_cursor_lock(false, &window);
+        }
+    }
+
     /// 埋め込みインプレース Play を停止して編集状態へ復帰する（IPC: EXIT_PLAY）。
     ///
     /// ENTER_PLAY で取ったスナップショットから wl0 非地形アクターを再構築し、mode を
@@ -174,6 +185,10 @@ impl App {
         crate::engine::core::save::flush_if_dirty();
         // ポインタ状態を捨てる（Edit へ戻ったあとに Exit が飛ばないようにする）。
         self.pointer.reset();
+        // スクリプトが張ったカーソルロックを必ず解除する（Play 停止で自動解放）。
+        // 解除しないと Edit へ戻ってもカーソルが隠れたまま中央へワープし続け、
+        // エディタが操作不能になる。未処理の要求も同時に捨てる。
+        self.release_script_cursor_lock();
         // Play でなければ mode だけ Edit に寄せて応答（べき等）。
         if self.mode != RuntimeMode::Play {
             self.mode = RuntimeMode::Edit;

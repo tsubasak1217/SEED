@@ -355,6 +355,18 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "ウキの揺れ周期(Hz)")]
     private float bobFrequency = 0.6f;
 
+    /// <summary>
+    /// 釣り中（狙い〜巻き取り）にカーソルをロックするか。
+    ///
+    /// ロック中はカーソルが非表示になり、毎フレーム画面中央へ戻される。
+    /// エディタ埋め込み Play ではカーソルがビューポートに閉じ込められる（ClipCursor）ため、
+    /// ロックしないと端に当たった瞬間 <see cref="SEED.Input.MouseDelta"/> が 0 になり、
+    /// 引く／振るのジェスチャが取れなくなる。巻き取り（マウス移動）でも同じ利点がある。
+    /// UI をマウスで操作したい場面が出たらここをオフにする。
+    /// </summary>
+    [Header("操作"), SerializeField(Label = "狙い中はカーソルをロック")]
+    private bool lockCursorWhileFishing = true;
+
     // ─── 内部状態 ─────────────────────────────────────────────
 
     /// <summary>現在のジェスチャ段階。</summary>
@@ -516,6 +528,9 @@ public class FishingController : SEEDScript
         hookedFish = false;
         ParkFloatAtRodTip();
         CrossFadeBoth(floatClip, playerFloatClip);
+        // 狙い中〜巻き取り中はカーソルをロックしたままにする（Casting / Floating / Reeling も同様）。
+        // これでマウスが画面端で止まっても MouseDelta が 0 に潰れない。
+        ApplyCursorLock(true);
         SEED.Debug.Log("[Fishing] Aiming");
     }
 
@@ -530,7 +545,20 @@ public class FishingController : SEEDScript
         hookedFish = false;
         ParkFloatAtRodTip();
         HideLine();
+        // 釣り状態を抜けたらカーソルを必ず返す（姿勢解除・中断の唯一の出口）。
+        ApplyCursorLock(false);
         SEED.Debug.Log("[Fishing] Idle (キャンセル)");
+    }
+
+    /// <summary>
+    /// カーソルロックの適用。<see cref="lockCursorWhileFishing"/> がオフなら
+    /// ロック要求は無視し、解除だけは必ず通す（設定を切り替えた直後に
+    /// ロックが張られたまま残らないようにするため）。
+    /// </summary>
+    private void ApplyCursorLock(bool locked)
+    {
+        if (locked && !lockCursorWhileFishing) { return; }
+        SEED.Input.CursorLocked = locked;
     }
 
     /// <summary>

@@ -108,6 +108,27 @@ thread_local! {
     /// 毎フレーム公開し、スクリプトの `Input.MousePositionCanvas` が参照する。
     /// 未公開フレーム（Play 以外・キャンバス世界線以外）は [0, 0] のまま。
     static CANVAS_MOUSE_POS: Cell<[f32; 2]> = const { Cell::new([0.0, 0.0]) };
+
+    /// スクリプトが要求したカーソルロック状態（None = 要求なし）。
+    ///
+    /// `INPUT_PTR` は**読み取り専用**（スクリプト実行中は Input を借用できない）ため、
+    /// 設定系はここへ要求だけ積み、App がフレーム末に `take_cursor_lock_request()` で
+    /// 引き取って `Input::set_cursor_lock` を実行する。
+    /// 同一フレーム内の getter は「実際の状態」より「未処理の要求」を優先して返すので、
+    /// スクリプトからは即座に反映されたように見える。
+    static CURSOR_LOCK_REQUEST: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// スクリプトが積んだカーソルロック要求を引き取る（未要求なら None）。
+///
+/// App（frame_renderer）がフレーム末に 1 回だけ呼ぶ。
+pub fn take_cursor_lock_request() -> Option<bool> {
+    CURSOR_LOCK_REQUEST.with(|c| c.take())
+}
+
+/// カーソルロック要求を捨てる（Play 終了などで状態をリセットするときに使う）。
+pub fn clear_cursor_lock_request() {
+    CURSOR_LOCK_REQUEST.with(|c| c.set(None));
 }
 
 /// World ポインタを設定してクロージャを実行し、終了後に元へ戻す。
@@ -1786,6 +1807,33 @@ unsafe extern "system" fn ffi_input_mouse_state(kind: i32, out: *mut f32) -> i32
     }
 }
 
+/// カーソルロック（相対マウスモード）の取得／設定。
+///
+/// action: 0=取得（value 無視。ロック中=1 / 非ロック=0） /
+///         1=設定（value: 1=ロック / 0=解除。常に 1 を返す）。
+///
+/// 設定は即時反映せず `CURSOR_LOCK_REQUEST` へ積み、App がフレーム末に適用する
+///（スクリプト実行中の Input は読み取り専用ポインタでしか触れないため）。
+unsafe extern "system" fn ffi_input_cursor_lock(action: i32, value: i32) -> i32 {
+    match action {
+        // 取得: 未処理の要求があればそれを優先（同一フレーム内での set → get の一貫性）
+        input_bridge::CURSOR_LOCK_GET => {
+            if let Some(pending) = CURSOR_LOCK_REQUEST.with(|c| c.get()) {
+                return if pending { 1 } else { 0 };
+            }
+            let ptr = INPUT_PTR.with(|p| p.get());
+            if ptr.is_null() { return 0; }
+            if (&*ptr).is_cursor_locked() { 1 } else { 0 }
+        }
+        // 設定: 要求を積むだけ（同フレームに複数回来たら最後の値が勝つ）
+        input_bridge::CURSOR_LOCK_SET => {
+            CURSOR_LOCK_REQUEST.with(|c| c.set(Some(value != 0)));
+            1
+        }
+        _ => 0,
+    }
+}
+
 // ─── 物理 FFI（Raycast）──────────────────────────────────────
 
 /// レイキャストのタイムアウト（ミリ秒）。物理スレッドのコマンドドレインは
@@ -2630,6 +2678,9 @@ pub struct ScriptHostApi {
     // スクリプトインスタンス参照（[SerializeField] MyScript other;）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     resolve_script_instance: unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, *mut isize) -> i32,
+    // カーソルロック（SEED.Input.CursorLocked）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    input_cursor_lock:       unsafe extern "system" fn(i32, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -2664,6 +2715,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     save_ctl:               ffi_save_ctl,
     path_sample:            ffi_path_sample,
     resolve_script_instance: ffi_resolve_script_instance,
+    input_cursor_lock:       ffi_input_cursor_lock,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

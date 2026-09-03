@@ -291,6 +291,64 @@ impl Input {
         }
     }
 
+    // ─── カーソルロック（相対マウスモード）──────────────────────
+
+    /// カーソルロック中か（スクリプト API `SEED.Input.CursorLocked` の getter）。
+    #[inline]
+    pub fn is_cursor_locked(&self) -> bool {
+        self.mouse.cursor_locked()
+    }
+
+    /// カーソルロックの ON/OFF。
+    ///
+    /// ON の間はカーソルを隠し、毎フレーム末に `update_cursor_lock` でビューポート
+    /// 中央へ戻す。これにより「ウィンドウ端でカーソルが止まって `position_delta()` が
+    /// 0 になる」問題（エディタ埋め込み Play の ClipCursor 下で顕著）を回避できる。
+    ///
+    /// ロック中は `mouse_position` は中央付近に張り付くため意味を持たない。
+    pub fn set_cursor_lock(&mut self, locked: bool, window: &Window) {
+        let was = self.mouse.cursor_locked();
+        let center = viewport_center(window);
+        self.mouse.set_cursor_lock(locked, center);
+
+        // 可視状態は OS へも反映する（ロック中は隠す / 解除で必ず戻す）。
+        self.mouse.set_cursor_visible(!locked);
+        window.set_cursor_visible(!locked);
+
+        // ロックし始めたフレームで一度中央へ寄せておく（以降は update_cursor_lock）。
+        if locked && !was {
+            self.warp_to_lock_center(window, center);
+        }
+    }
+
+    /// フレーム末に呼ぶ。ロック中ならカーソルをビューポート中央へ戻す。
+    ///
+    /// 「スクリプトが今フレームの差分を読み終えたあと」に呼ぶこと。
+    /// 呼ぶ順序を誤ると、戻した直後の中央座標を差分計算に使ってしまう。
+    pub fn update_cursor_lock(&mut self, window: &Window) {
+        if !self.mouse.cursor_locked() {
+            return;
+        }
+        let center = viewport_center(window);
+        self.warp_to_lock_center(window, center);
+    }
+
+    /// カーソルを中央へワープさせ、成功したときだけ入力状態へ反映する。
+    ///
+    /// 失敗（プラットフォーム未対応など）しても機能を落とすだけなので握り潰すが、
+    /// 原因調査のために初回だけ警告を出す。
+    fn warp_to_lock_center(&mut self, window: &Window, center: Vector2<f32>) {
+        match window.set_cursor_position(PhysicalPosition::new(center.x, center.y)) {
+            Ok(()) => self.mouse.notify_warped_to_center(center),
+            Err(e) => {
+                static WARNED: std::sync::Once = std::sync::Once::new();
+                WARNED.call_once(|| {
+                    eprintln!("[SEED input] カーソルロックのワープに失敗（以降は無視）: {e}");
+                });
+            }
+        }
+    }
+
     // ─── アクティブフラグ ──────────────────────────────────────
 
     /// 入力受付の有効/無効を切り替える（C++: SetIsActive）
@@ -301,4 +359,13 @@ impl Input {
     pub fn is_active(&self) -> bool {
         self.is_active
     }
+}
+
+/// ビューポート（ウィンドウのクライアント領域）中央の物理座標を求める。
+///
+/// `CursorMoved` が返す座標系と同じ「クライアント左上原点の物理ピクセル」なので、
+/// カーソルロックの基準点としてそのまま使える。
+fn viewport_center(window: &Window) -> Vector2<f32> {
+    let size = window.inner_size();
+    Vector2::new(size.width as f32 / 2.0, size.height as f32 / 2.0)
 }
