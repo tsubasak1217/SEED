@@ -1265,15 +1265,24 @@ pub struct App {
     /// キー = (JointAttach スロットの entity, 解決できなかった joint_name)。毎フレーム走査で
     /// 同じ警告を繰り返さないために使う（jointattach_ops::update_joint_attachments が更新）。
     pub(super) joint_attach_warned: std::collections::HashSet<(crate::engine::ecs::Entity, String)>,
-    /// JointAttach で最後に書き込んだ「厳密な」ワールド行列の記録。
-    /// キー = 追従アクター（JointAttach を持つアクター）の entity。
+    /// JointAttach の追従アクターに対する「子孫アクターの相対ローカル行列」キャッシュ。
+    /// キー = (追従アクター（JointAttach 保持）の entity, 子孫アクターの entity)。
+    /// 値   = `local = inv(追従アクターのワールド行列) × 子孫のワールド行列`。
     ///
-    /// 子孫への伝播差分 delta = new * inv(old) を求めるために、前フレームのワールド行列が要る。
-    /// Transform は TRS 分解で保持されるためせん断（非一様スケール × 回転オフセットで発生する）を
-    /// 失う。分解を経た行列を old に使うと毎フレーム誤差が delta に混入して子がドリフトするので、
-    /// 分解前の行列そのものをここに保持する（jointattach_ops::update_joint_attachments が更新）。
-    pub(super) joint_attach_last_world:
-        std::collections::HashMap<crate::engine::ecs::Entity, [[f32; 4]; 4]>,
+    /// 【なぜ差分ではなく絶対ローカルなのか】
+    /// 以前は `delta = new * inv(前フレームの追従ワールド)` を子孫へ伝播していたが、
+    /// 追従アクターの祖先（プレイヤー等）がスクリプトで動くと transform_sync が
+    /// 同じ移動量を子孫へ既に伝播しており、その後の JointAttach 伝播で二重適用になって
+    /// 毎フレーム誤差が蓄積した（竿先が竿から離れて飛んでいく症状）。
+    /// 相対ローカルを一度だけ採取し、毎フレーム `child_world = new_world × local` と
+    /// 絶対値で書き直せば、途中でどれだけ外部から動かされても結果は不変になる。
+    ///
+    /// Play 中にのみ採取・適用し、Play を抜ける／シーン遷移／スクリプト再読込で破棄する
+    /// （jointattach_ops::update_joint_attachments が更新）。
+    pub(super) joint_attach_child_locals: std::collections::HashMap<
+        (crate::engine::ecs::Entity, crate::engine::ecs::Entity),
+        [[f32; 4]; 4],
+    >,
 
     // ── ボクセル地形（Terrain Editor ランタイム）────────────────────
     /// 地形の実行時状態（設定・全チャンクの密度・チャンク→メッシュスロット対応・
@@ -1511,7 +1520,7 @@ impl App {
             anim_preview_cache: HashMap::new(),
             anim_preview_saved: HashMap::new(),
             joint_attach_warned: std::collections::HashSet::new(),
-            joint_attach_last_world: std::collections::HashMap::new(),
+            joint_attach_child_locals: std::collections::HashMap::new(),
             terrain:             terrain_ops::TerrainState::default(),
             play_snapshot:       None,
         }

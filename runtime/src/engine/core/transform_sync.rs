@@ -25,9 +25,11 @@
 //  【対象外（今後の課題）】
 //  アニメーション・物理の書き戻しは本モジュールを経由していない。特に物理は
 //  「親も子も剛体」のとき delta の二重適用で破綻するため、除外ルールの設計が必要（別タスク）。
-//  JointAttach は自アクタの Transform / instance_mats を直接書くが、子孫への伝播だけは
-//  本モジュールの propagate_delta_to_children を使う
-//  （jointattach_ops::propagate_attach_to_descendants を参照）。
+//  JointAttach は自アクタの Transform / instance_mats を直接書き、子孫についても
+//  本モジュールの差分伝播ではなく「追従アクター基準の相対ローカル行列による絶対配置」を
+//  使う（jointattach_ops::update_attached_descendants を参照）。差分伝播だと、祖先の移動が
+//  本モジュールで既に子孫へ届いているところへ JointAttach 側の差分が重ねて効き、
+//  移動量が二重適用されて毎フレーム誤差が蓄積するためである。
 // ============================================================
 
 use crate::engine::components::{ComponentKind, ModelComponent, Transform};

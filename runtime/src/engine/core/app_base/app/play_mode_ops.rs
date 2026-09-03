@@ -63,6 +63,9 @@ impl App {
         // ポインタ状態を捨てる（前回 Play のホバー/押下対象は破棄済みエンティティ）。
         // 二重開始のべき等パスより前に置いて、どの経路でも必ず初期化されるようにする。
         self.pointer.reset();
+        // JointAttach 子孫の相対ローカルは Play 開始時点の姿勢から採り直す
+        // （Edit で竿先を動かした結果を必ず反映させるため）。
+        self.joint_attach_child_locals.clear();
         // 二重開始防止: 既に Play なら応答だけ返す（べき等）。
         if self.mode == RuntimeMode::Play {
             if let Some(ipc) = &self.ipc { ipc.send("PLAY_ENTERED"); }
@@ -189,6 +192,9 @@ impl App {
         // 解除しないと Edit へ戻ってもカーソルが隠れたまま中央へワープし続け、
         // エディタが操作不能になる。未処理の要求も同時に捨てる。
         self.release_script_cursor_lock();
+        // JointAttach 子孫の相対ローカルキャッシュを破棄する（Play 専用の揮発状態）。
+        // 残すと、次の Play で「前回 Play 終了時の相対関係」が使われてしまう。
+        self.joint_attach_child_locals.clear();
         // Play でなければ mode だけ Edit に寄せて応答（べき等）。
         if self.mode != RuntimeMode::Play {
             self.mode = RuntimeMode::Edit;

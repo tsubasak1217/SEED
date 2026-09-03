@@ -47,6 +47,9 @@ impl App {
             // 遷移前にカーソルロックを解除する。新シーンのスクリプトが張り直さない限り
             // ロックを持ち越さない（前シーンの都合でカーソルが消えたままになるのを防ぐ）。
             self.release_script_cursor_lock();
+            // 旧シーンのアクター entity を指す JointAttach 子孫キャッシュを破棄する
+            //（新シーンで entity が再利用されると別実体の相対位置として誤適用される）。
+            self.joint_attach_child_locals.clear();
             self.apply_script_transition_scene(&name);
             self.send_hierarchy();
             return;

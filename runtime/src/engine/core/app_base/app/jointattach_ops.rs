@@ -15,10 +15,24 @@
 //       anim_drive が無ければ静止＝バインドポーズ（t0 相当）で解決する。
 //    3. 描画とまったく同じ空間合成（compose_attached_world）で最終ワールド行列を作り、
 //       自アクターの Transform と Model instance_mats[0] へ書き込む。
-//    4. 追従アクターに子アクターがいれば、今回と前回のワールド行列の差分
-//       delta = new * inv(old) を子孫へ伝播する（propagate_attach_to_descendants）。
-//       SEED の Transform はワールド保持・親子行列合成なしのため、この伝播が無いと
-//       「竿の先端に置いた子アクター」がその場に取り残される。
+//    4. Play 中のみ、追従アクターの子孫アクターを「追従アクター基準の相対ローカル行列」で
+//       絶対的に配置し直す（update_attached_descendants）。SEED の Transform はワールド保持・
+//       親子行列合成なしのため、この処理が無いと「竿の先端に置いた子アクター」が取り残される。
+//       相対ローカルは子孫ごとに 1 回だけ採取してキャッシュする（App::joint_attach_child_locals）。
+//
+//  【なぜ差分伝播ではなく絶対配置なのか（重要）】
+//  以前は delta = new * inv(前フレームの追従ワールド) を子孫へ伝播していた。しかし
+//  追従アクターの祖先（プレイヤー）がスクリプトで動くと、transform_sync が同じ移動量を
+//  すでに子孫（竿・竿先の両方）へ伝播している。その直後に JointAttach が「前フレームの
+//  竿ワールド（＝プレイヤー移動が乗る前）」を基準に delta を作って竿先へ適用するため、
+//  プレイヤーの移動が竿先にだけ二重に効き、毎フレーム誤差が蓄積して竿先が飛んでいった。
+//  絶対配置（child_world = new_world × local）なら、途中で外部から何度動かされようと
+//  結果は local と new_world だけで決まるので、この蓄積が原理的に起こらない。
+//
+//  【1 フレーム遅延について】
+//  スクリプト（プレイヤー移動）は本更新より前に走るため、子孫の配置は常にその
+//  フレームの最新の追従行列に基づく。逆に本更新より後に祖先を動かす経路があれば
+//  子孫は 1 フレーム遅れる（現状そのような経路は無い）。
 //
 //  【空間合成が描画と一致していなければならない理由】
 //  ソケットは「画面に見えているボーンの位置」へ吸着しなければ意味がない。
@@ -35,6 +49,9 @@
 //  パーティクルの常時プレビューと同様、本更新は毎フレーム（モード非依存）で走る。
 //  Edit では anim_drive が無いためモデルは静止し、アタッチもバインドポーズの
 //  ジョイント位置へ吸着する。
+//  ただし **子孫アクターの配置は Play 中のみ** 行う。Edit で配置し直すと、竿先マーカーを
+//  エディタで編集している最中に毎フレーム引き戻されて編集できなくなるためである
+//  （相対ローカルの採取も Play 中のみ＝ユーザーが Edit で置いた位置関係が正となる）。
 // ============================================================
 
 use crate::engine::components::{ComponentKind, JointAttachComponent, ModelComponent, Transform};
@@ -42,7 +59,7 @@ use crate::engine::core::loader::model::Model;
 use crate::engine::core::renderer::animator::{
     compute_node_world_matrices_blend, identity, mat4_mul,
 };
-use crate::engine::core::transform_sync::{propagate_delta_to_children, Mat4};
+use crate::engine::core::transform_sync::Mat4;
 use crate::engine::ecs::{Entity, World};
 use crate::engine::methods::gizmo_interact::{mat4x4_inv, mat4x4_mul};
 use crate::engine::structs::objects::Actor;
@@ -237,11 +254,14 @@ impl App {
     /// frame_renderer のアニメーション評価後・描画インスタンス収集前に呼ばれる。
     pub(super) fn update_joint_attachments(&mut self) {
         let active_wl = self.active_world_line;
+        // 子孫の配置（相対ローカルの採取と適用）は Play 中のみ行う。Edit の挙動は
+        // 本機能導入前と同じに保ち、エディタでの子アクター編集を邪魔しない。
+        let is_play = self.mode == super::RuntimeMode::Play;
         // self の別フィールドを個別に可変借用する（disjoint borrow）
         let warned = &mut self.joint_attach_warned;
-        // 前フレームの厳密ワールド行列（子孫伝播の delta 算出元）。warned とは別フィールドなので
+        // 子孫アクターの相対ローカル行列キャッシュ。warned とは別フィールドなので
         // 同時に可変借用できる（disjoint borrow）。
-        let last_world = &mut self.joint_attach_last_world;
+        let child_locals = &mut self.joint_attach_child_locals;
         let Some(scene) = self.scene.as_mut() else {
             return;
         };
@@ -351,6 +371,11 @@ impl App {
                 &offset_mat,
             );
 
+            // 【採取タイミング】自アクターを上書きする直前に、まだ相対ローカルを持たない
+            // 子孫について `local = inv(上書き前の追従ワールド) × 子孫ワールド` を採取する。
+            // 上書き後に採取すると basis が今フレームの行列になり、1 フレーム分ずれる。
+            let attached_old_world = actor_world_matrix(world, job.attached);
+
             // 自アクターの Transform を更新（インスペクタ・他システム用に TRS 分解して保持）。
             if let Some(tf) = world.get_mut::<Transform>(job.attached.entity) {
                 *tf = Transform::from_mat4(&final_mat);
@@ -359,10 +384,16 @@ impl App {
             //（from_mat4→to_mat4 の丸めを避けるため行列を直接書き込む。registry の
             //  sync_model_instance_mats と同方針）。
             sync_attached_instance_mats(world, job.attached, &final_mat);
-            // 子孫アクター（竿先マーカー等）へワールド差分を伝播する。
-            // 伝播は「親を書いた直後」に行うため、同一パス内で必ず親 → 子孫の順になる。
-            // 子自身が JointAttach を持つ場合は、この後その子のジョブで上書きされる（正しい挙動）。
-            propagate_attach_to_descendants(world, job.attached, last_world, &final_mat);
+            // 子孫アクター（竿先マーカー等）を相対ローカルで絶対配置し直す（Play のみ）。
+            if is_play {
+                update_attached_descendants(
+                    world,
+                    job.attached,
+                    &attached_old_world,
+                    &final_mat,
+                    child_locals,
+                );
+            }
         }
     }
 
@@ -427,24 +458,14 @@ impl App {
     }
 }
 
-// ─── 子孫への伝播 ───────────────────────────────────────────────
-
-/// 行列を「変化なし」とみなす成分ごとの許容誤差。
-/// 静止中のアタッチで無駄な伝播（＝子 Transform の再分解）を起こさないためのゲート。
-const ATTACH_MAT_EQ_EPS: f32 = 1e-6;
+// ─── 子孫アクターの絶対配置 ─────────────────────────────────────
 
 /// 旧ワールド行列が特異（逆行列が不定）とみなす行列式の閾値。
+/// スケール 0 の姿勢では相対ローカルを採取できない（子を原点へ吸い込むため）。
 const ATTACH_SINGULAR_DET_EPS: f32 = 1e-8;
 
-/// 特異行列で伝播をスキップした旨を 1 回だけ警告するためのフラグ。
+/// 特異行列で相対ローカルの採取をスキップした旨を 1 回だけ警告するためのフラグ。
 static ATTACH_SINGULAR_WARNED: std::sync::Once = std::sync::Once::new();
-
-/// 2 つの行列が全成分で `ATTACH_MAT_EQ_EPS` 以内に一致するか。
-fn mat4_approx_eq(a: &Mat4, b: &Mat4) -> bool {
-    a.iter()
-        .zip(b.iter())
-        .all(|(ra, rb)| ra.iter().zip(rb.iter()).all(|(x, y)| (x - y).abs() <= ATTACH_MAT_EQ_EPS))
-}
 
 /// 行列の上 3x3 成分の行列式（＝逆行列が存在するかの判定に使う）。
 fn mat4_upper3_det(m: &Mat4) -> f32 {
@@ -453,66 +474,134 @@ fn mat4_upper3_det(m: &Mat4) -> f32 {
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
 }
 
-/// アタッチで動いた分を子孫アクターへ厳密に伝播する。
+/// アクターの「現在の厳密なワールド行列」を取り出す。
 ///
-/// SEED の Transform はワールド空間保持（親子行列合成なし）なので、親が動いたら
-/// 子孫のワールド値を明示的に動かす必要がある。伝播量は **行列差分**
-///   `delta = new_world * inv(old_world)`
-/// で求める。TRS 差分ではなく行列差分にすることで、非一様スケール × 回転オフセットで
-/// 生じるせん断を含む姿勢でも子の位置が厳密に一致する。
+/// Model スロットを持つなら `instance_mats[0]` を最優先する。JointAttach が書き込む
+/// 最終行列にはせん断（非一様スケール × 回転オフセット）が含まれ得るが、Transform は
+/// TRS 分解で保持するためせん断が失われる。instance_mats[0] は分解を経ていない
+/// 「実際に描画に使われた行列」なので、基準にはこちらが正しい。
+/// Model を持たないアクター（空アクタ・カメラ等）は Transform から復元する。
+fn actor_world_matrix(world: &World, actor: &Actor) -> Mat4 {
+    if let Some(m) = actor
+        .slots()
+        .iter()
+        .find(|s| s.kind == ComponentKind::Model)
+        .and_then(|s| world.get::<ModelComponent>(s.entity))
+        .and_then(|mc| mc.instance_mats.first().copied())
+    {
+        return m;
+    }
+    world
+        .get::<Transform>(actor.entity)
+        .map(|tf| tf.to_mat4())
+        .unwrap_or(crate::engine::core::transform_sync::MAT4_IDENTITY)
+}
+
+/// アクターのワールド行列を **子孫へ伝播せずに** 絶対値で書き込む。
 ///
-/// 適用は `transform_sync::propagate_delta_to_children`（Transform 書き換えと
-/// instance_mats 更新・バッチ dirty 化を集約している既存経路）へ委譲する。
-/// Play 中の毎フレーム更新なので Undo 記録は行わない（変更記録は破棄する）。
+/// 子孫はそれぞれ独自の相対ローカルを持ち、この後の再帰で個別に絶対配置されるため、
+/// ここで差分伝播すると二重適用になる（それが今回直したバグそのもの）。
+fn set_actor_world_matrix_no_propagate(world: &mut World, actor: &Actor, mat: &Mat4) {
+    if let Some(tf) = world.get_mut::<Transform>(actor.entity) {
+        *tf = Transform::from_mat4(mat);
+    }
+    sync_attached_instance_mats(world, actor, mat);
+}
+
+/// アクターが有効な JointAttach スロットを持つか。
+///
+/// 持つ場合、そのアクターは自分自身のジョブで配置されるため、親アタッチ側からは
+/// 配置しない（配置すると同一フレーム内で二重に書き合うことになる）。
+/// その子孫も当該アクターのジョブが面倒を見るので、部分木ごとスキップする。
+fn has_enabled_joint_attach(actor: &Actor) -> bool {
+    actor
+        .slots()
+        .iter()
+        .any(|s| s.kind == ComponentKind::JointAttach && s.enabled)
+}
+
+/// 追従アクターの子孫を「追従アクター基準の相対ローカル行列」で絶対配置する（Play 専用）。
+///
+///   local       = inv(old_world) × child_world   … 子孫ごとに初回 1 回だけ採取
+///   child_world = new_world × local              … 毎フレーム絶対値で書き直す
+///
+/// # 初回 Play フレームで採取した local が正しい理由
+/// Play 開始直後のフレームでは、本更新より前にスクリプトが走ってプレイヤーを動かし、
+/// transform_sync が **追従アクター（竿）と子孫（竿先）の両方へ同じ差分 D** を
+/// すでに適用している。したがって採取値は
+///     inv(D × A) × (D × C) = inv(A) × inv(D) × D × C = inv(A) × C
+/// となり、D に依存しない「Edit で作った本来の相対関係」に一致する。
+/// この D 非依存性こそが、差分伝播方式に無かった性質である（テスト
+/// `local_offset_is_independent_of_external_delta` が回帰として守る）。
 ///
 /// # 引数
-/// - `last_world`: 追従アクター entity → 前フレームに書いた厳密ワールド行列。
-///   Transform から復元すると TRS 分解でせん断が失われ、delta に誤差が乗って
-///   子がドリフトするため、分解前の行列をここから取る。初回のみ Transform で代用する。
-fn propagate_attach_to_descendants(
+/// - `old_world`: 今フレームのアタッチ行列で **上書きする前** の追従アクターのワールド行列。
+///   採取の基準になるため、上書き後の行列を渡してはならない。
+/// - `new_world`: 今フレーム算出したアタッチ行列（追従アクターの新しいワールド行列）。
+/// - `locals`:    (追従アクター entity, 子孫 entity) → 相対ローカル行列のキャッシュ。
+///   破棄されたアクターのエントリは残り得るが、配置はアクター木を辿って行うため
+///   参照されず無害である（Play 終了・シーン遷移・スクリプト再読込で一括破棄する）。
+fn update_attached_descendants(
     world: &mut World,
-    actor: &Actor,
-    last_world: &mut HashMap<Entity, Mat4>,
+    attached: &Actor,
+    old_world: &Mat4,
     new_world: &Mat4,
+    locals: &mut HashMap<(Entity, Entity), Mat4>,
 ) {
-    // 次フレームの delta 算出に備えて、常に最新の行列を記録しておく
-    //（子の有無に関わらず記録する。後から子を追加しても正しい old が使えるように）。
-    let prev = last_world.insert(actor.entity, *new_world);
-
-    // 子がいなければ伝播不要（毎フレーム全アタッチで通るため最初に弾く）
-    if actor.children().is_empty() {
+    // 子がいなければ何もしない（毎フレーム全アタッチで通るため最初に弾く）。
+    if attached.children().is_empty() {
         return;
     }
 
-    // 旧ワールド行列: 記録があればそれ、無ければ（初回）Transform から復元する。
-    let old_world = match prev {
-        Some(m) => m,
-        None => match world.get::<Transform>(actor.entity) {
-            Some(tf) => tf.to_mat4(),
-            None => return, // Transform 不在＝基準が無いので今フレームは伝播しない
-        },
-    };
-
-    // 動いていなければ何もしない（静止時のコストと再分解による丸めを避ける）
-    if mat4_approx_eq(&old_world, new_world) {
-        return;
-    }
-
-    // 特異ガード: 逆行列が不定なら伝播できない（子を原点へ吸い込む破壊を防ぐ）
-    if mat4_upper3_det(&old_world).abs() < ATTACH_SINGULAR_DET_EPS {
+    // 採取用の逆行列。特異（スケール 0 等）なら採取できないので、
+    // 今フレームは「既に採取済みの子孫の配置」だけを行う。
+    let inv_old = if mat4_upper3_det(old_world).abs() < ATTACH_SINGULAR_DET_EPS {
         ATTACH_SINGULAR_WARNED.call_once(|| {
             eprintln!(
-                "[SEED jointattach] 追従アクターのワールド行列が特異（スケール 0 等）のため、子孫への伝播をスキップします。"
+                "[SEED jointattach] 追従アクターのワールド行列が特異（スケール 0 等）のため、子孫の相対位置を採取できません。"
             );
         });
-        return;
-    }
+        None
+    } else {
+        Some(mat4x4_inv(*old_world))
+    };
 
-    let delta = mat4x4_mul(*new_world, mat4x4_inv(old_world));
-    // Play 中の毎フレーム更新なので DFS ID / 変更記録は使わない（Undo 対象外）。
-    let mut dfs_counter = 0u32;
-    let mut changes = Vec::new();
-    propagate_delta_to_children(actor, world, delta, &mut dfs_counter, &mut changes);
+    place_descendants_recursive(world, attached.entity, attached, inv_old.as_ref(), new_world, locals);
+}
+
+/// `node` の子を DFS で辿り、相対ローカルの採取（未採取なら）と絶対配置を行う。
+fn place_descendants_recursive(
+    world: &mut World,
+    attached_entity: Entity,
+    node: &Actor,
+    inv_old: Option<&Mat4>,
+    new_world: &Mat4,
+    locals: &mut HashMap<(Entity, Entity), Mat4>,
+) {
+    for child in node.children() {
+        // 自前の JointAttach を持つ子は、その子自身のジョブが配置する（部分木ごとスキップ）。
+        if has_enabled_joint_attach(child) {
+            continue;
+        }
+
+        let key = (attached_entity, child.entity);
+        // 未採取なら今フレームの「上書き前」基準で採取する（後から生成された子にも対応）。
+        if !locals.contains_key(&key) {
+            if let Some(inv) = inv_old {
+                let child_world = actor_world_matrix(world, child);
+                locals.insert(key, mat4x4_mul(*inv, child_world));
+            }
+        }
+
+        // 採取済みなら絶対配置する（採取できなかった子は今フレーム動かさない）。
+        if let Some(local) = locals.get(&key).copied() {
+            let child_world = mat4x4_mul(*new_world, local);
+            set_actor_world_matrix_no_propagate(world, child, &child_world);
+        }
+
+        // 孫以下も同じ追従アクター基準の相対ローカルを持つ（各自を絶対配置するので二重適用にならない）。
+        place_descendants_recursive(world, attached_entity, child, inv_old, new_world, locals);
+    }
 }
 
 /// 追従アクターの全 Model スロットの instance_mats[0] を `mat` へ同期し、バッチを dirty 化する。
@@ -706,30 +795,73 @@ mod tests {
         );
     }
 
-    /// せん断を含む親姿勢でも、子の位置が delta = new * inv(old) と厳密に一致すること
-    /// （＋同じ old/new での 2 回目は何も動かさない＝冪等であること）。
+    /// 【回帰テスト】相対ローカル方式は、採取と適用の間に外部から加わった移動 D に
+    /// 依存しないこと（旧 delta 伝播方式が壊れていた本質）。
     ///
-    /// 竿（非一様スケール × JointAttach の回転オフセット）にぶら下げた竿先アクターが、
-    /// TRS 分解の誤差なしに追従することのリグレッションテスト。
+    /// シナリオ: 竿 A（非一様スケール × 回転 ⇒ せん断あり）と竿先 C。
+    /// プレイヤー移動により transform_sync が A と C の両方へ同じ D を適用したあと、
+    /// 相対ローカルを採取すると inv(D·A)·(D·C) = inv(A)·C となり D が消える。
+    /// よって新しいアタッチ行列 A1 に対する配置は常に A1 · inv(A)·C になる。
     #[test]
-    fn propagate_matches_matrix_delta_and_is_idempotent() {
-        use crate::engine::core::transform_sync::Mat4;
-        use crate::engine::ecs::World;
-
-        // 親: 非一様スケール ×（親スケール後に効く）回転 ⇒ 合成行列にせん断が乗る姿勢
-        let old_world = mat4x4_mul(
+    fn local_offset_is_independent_of_external_delta() {
+        // 竿の旧ワールド（せん断を含む姿勢）
+        let a0 = mat4x4_mul(
             trs([1.0, 2.0, 3.0], [0.0, 0.0, 0.0], [2.78, 5.56, 2.78]),
             trs([0.0, 0.0, 0.0], [25.0, 40.0, 15.0], [1.0, 1.0, 1.0]),
         );
-        let new_world = mat4x4_mul(
+        // 竿先の旧ワールド
+        let c0 = mat4x4_mul(a0, trs([0.0, 4.5, 0.0], [10.0, 0.0, -5.0], [1.0, 1.0, 1.0]));
+        // 今フレームのアタッチ行列（腕の姿勢が変わった）
+        let a1 = mat4x4_mul(
             trs([4.0, 1.0, -2.0], [0.0, 0.0, 0.0], [2.78, 5.56, 2.78]),
             trs([0.0, 0.0, 0.0], [70.0, -30.0, 5.0], [1.0, 1.0, 1.0]),
         );
 
-        // 親（Transform = old_world 相当）と、その子（竿先）を組む
+        // 外部からの移動（プレイヤーの移動＋回転）が A と C の両方へ適用された場合
+        let d = trs([12.0, -3.0, 7.5], [0.0, 33.0, 0.0], [1.0, 1.0, 1.0]);
+        let local_plain = mat4x4_mul(mat4x4_inv(a0), c0);
+        let local_moved = mat4x4_mul(mat4x4_inv(mat4x4_mul(d, a0)), mat4x4_mul(d, c0));
+
+        for r in 0..4 {
+            for c in 0..4 {
+                assert!(
+                    (local_plain[r][c] - local_moved[r][c]).abs() < EPS,
+                    "相対ローカルが外部移動 D に依存している: {local_plain:?} vs {local_moved:?}"
+                );
+            }
+        }
+
+        // 配置結果も D に依存しない
+        let placed_plain = mat4x4_mul(a1, local_plain);
+        let placed_moved = mat4x4_mul(a1, local_moved);
+        for i in 0..3 {
+            assert!(
+                (translation_of(&placed_plain)[i] - translation_of(&placed_moved)[i]).abs() < EPS,
+                "配置結果が外部移動に依存している"
+            );
+        }
+    }
+
+    /// 相対ローカル方式で、子孫が実際に `new_world × local` の位置へ絶対配置されること
+    /// （＋同じ new_world で 2 回呼んでも結果が変わらない＝冪等であること）。
+    ///
+    /// さらに、1 回目と 2 回目の間に外部から子を動かしても（＝プレイヤー移動の
+    /// 二重適用に相当）、2 回目の配置で正しい位置へ引き戻されることを確認する。
+    #[test]
+    fn descendant_is_placed_absolutely_and_is_idempotent() {
+        let a0 = mat4x4_mul(
+            trs([1.0, 2.0, 3.0], [0.0, 0.0, 0.0], [2.78, 5.56, 2.78]),
+            trs([0.0, 0.0, 0.0], [25.0, 40.0, 15.0], [1.0, 1.0, 1.0]),
+        );
+        let a1 = mat4x4_mul(
+            trs([4.0, 1.0, -2.0], [0.0, 0.0, 0.0], [2.78, 5.56, 2.78]),
+            trs([0.0, 0.0, 0.0], [70.0, -30.0, 5.0], [1.0, 1.0, 1.0]),
+        );
+
+        // 竿（Transform = a0 相当）と竿先を組む
         let mut world = World::new();
         let parent_e = world.spawn();
-        world.insert(parent_e, Transform::from_mat4(&old_world));
+        world.insert(parent_e, Transform::from_mat4(&a0));
         let mut parent = Actor::new(parent_e, "sao");
 
         let child_pos = [7.0, -1.5, 2.5];
@@ -740,33 +872,81 @@ mod tests {
         );
         parent.children_mut().push(Actor::new(child_e, "RodTip"));
 
-        // 期待値: delta = new * inv(old) を子のワールド位置へ適用したもの
-        let delta = mat4x4_mul(new_world, mat4x4_inv(old_world));
-        let expected = [
-            delta[0][0] * child_pos[0] + delta[0][1] * child_pos[1] + delta[0][2] * child_pos[2] + delta[0][3],
-            delta[1][0] * child_pos[0] + delta[1][1] * child_pos[1] + delta[1][2] * child_pos[2] + delta[1][3],
-            delta[2][0] * child_pos[0] + delta[2][1] * child_pos[1] + delta[2][2] * child_pos[2] + delta[2][3],
-        ];
+        // 期待値: local = inv(a0) × child_world、配置後 = a1 × local
+        let child_world0 = Transform {
+            position: child_pos,
+            rotation: [0.0; 3],
+            scale: [1.0; 3],
+        }
+        .to_mat4();
+        let expected = translation_of(&mat4x4_mul(a1, mat4x4_mul(mat4x4_inv(a0), child_world0)));
 
-        // 1 回目: old（記録）→ new へ伝播
-        let mut last: HashMap<Entity, Mat4> = HashMap::new();
-        last.insert(parent_e, old_world);
-        propagate_attach_to_descendants(&mut world, &parent, &mut last, &new_world);
+        let mut locals: HashMap<(Entity, Entity), Mat4> = HashMap::new();
+        update_attached_descendants(&mut world, &parent, &a0, &a1, &mut locals);
 
         let got = world.get::<Transform>(child_e).unwrap().position;
         for i in 0..3 {
             assert!(
                 (got[i] - expected[i]).abs() < EPS,
-                "子の位置が行列差分と一致しない: {got:?} 期待 {expected:?}"
+                "子が new_world × local へ絶対配置されていない: {got:?} 期待 {expected:?}"
             );
         }
 
-        // 2 回目: 同じ new をもう一度渡しても動かない（old == new なのでスキップされる）
-        propagate_attach_to_descendants(&mut world, &parent, &mut last, &new_world);
+        // 外部から子だけを大きく動かしても（誤った二重適用の再現）、
+        // 次の呼び出しで正しい位置へ戻ること＝絶対配置なので状態を持ち越さない。
+        if let Some(tf) = world.get_mut::<Transform>(child_e) {
+            tf.position = [100.0, -50.0, 30.0];
+        }
+        update_attached_descendants(&mut world, &parent, &a1, &a1, &mut locals);
         let got2 = world.get::<Transform>(child_e).unwrap().position;
         for i in 0..3 {
-            assert!((got2[i] - got[i]).abs() < EPS, "冪等でない: {got2:?} vs {got:?}");
+            assert!(
+                (got2[i] - expected[i]).abs() < EPS,
+                "冪等でない（外部移動が残っている）: {got2:?} 期待 {expected:?}"
+            );
         }
+    }
+
+    /// 自前の JointAttach を持つ子は、親アタッチ側から配置されないこと
+    /// （その子自身のジョブで配置されるため。二重書き込みの防止）。
+    #[test]
+    fn child_with_own_joint_attach_is_skipped() {
+        use crate::engine::components::JointAttachComponent;
+        use std::any::TypeId;
+
+        let a0 = trs([0.0, 0.0, 0.0], [0.0; 3], [1.0, 1.0, 1.0]);
+        let a1 = trs([10.0, 0.0, 0.0], [0.0; 3], [1.0, 1.0, 1.0]);
+
+        let mut world = World::new();
+        let parent_e = world.spawn();
+        world.insert(parent_e, Transform::from_mat4(&a0));
+        let mut parent = Actor::new(parent_e, "sao");
+
+        let child_e = world.spawn();
+        world.insert(
+            child_e,
+            Transform { position: [1.0, 0.0, 0.0], rotation: [0.0; 3], scale: [1.0; 3] },
+        );
+        let mut child = Actor::new(child_e, "OtherAttached");
+        let slot_e = world.spawn();
+        world.insert(slot_e, JointAttachComponent::default());
+        child.add_slot(
+            "JointAttach",
+            ComponentKind::JointAttach,
+            TypeId::of::<JointAttachComponent>(),
+            slot_e,
+        );
+        parent.children_mut().push(child);
+
+        let mut locals: HashMap<(Entity, Entity), Mat4> = HashMap::new();
+        update_attached_descendants(&mut world, &parent, &a0, &a1, &mut locals);
+
+        assert!(locals.is_empty(), "JointAttach 持ちの子は採取対象にならない");
+        assert_eq!(
+            world.get::<Transform>(child_e).unwrap().position,
+            [1.0, 0.0, 0.0],
+            "JointAttach 持ちの子は親アタッチから動かされない"
+        );
     }
 
     /// スキンジョイントからは、そのスキンを使うメッシュノードが引けること。

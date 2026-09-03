@@ -78,6 +78,9 @@ impl App {
         // 再コンパイルでスクリプトインスタンスが作り直されるため、
         // 旧インスタンスが張ったカーソルロックはここで解除する（解除者がいなくなるため）。
         self.release_script_cursor_lock();
+        // スクリプト再生成でアクターの姿勢が作り直され得るため、JointAttach 子孫の
+        // 相対ローカルキャッシュも破棄して採り直す。
+        self.joint_attach_child_locals.clear();
         let Some(host) = self.scripting_host.clone() else {
             if let Some(ipc) = &self.ipc {
                 ipc.send("SCRIPTS_RELOADED:-1,CLR not loaded");
