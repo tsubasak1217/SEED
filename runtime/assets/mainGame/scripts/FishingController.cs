@@ -353,6 +353,15 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "最大キャスト角(度)")]
     private float maxCastAngleDegrees = 45f;
 
+    /// <summary>
+    /// ウキのY回転オフセット（度）。
+    /// CastCameraTarget（カメラが追従する子アクタ）はウキの回転に追従するため、
+    /// キャスト方向を向かせて常に沖側（海）を見るようにする際、ウキモデル自体の
+    /// 制作時の正面向きが実際のモデル正面とズレている場合に補正するための値。
+    /// </summary>
+    [SerializeField(Label = "ウキのY回転オフセット(度)")]
+    private float floatYawOffsetDegrees = 0f;
+
     /// <summary>着弾点プレビューの放物線の分割数（点数は分割数＋1）。</summary>
     [SerializeField(Label = "プレビューの弧の分割数")]
     private int previewArcSegments = 24;
@@ -939,6 +948,16 @@ public class FishingController : SEEDScript
 
         flightStart = RodTipPosition();
         flightEnd = LandingPoint(clamped, yaw);
+
+        // ウキをキャスト方向（沖側）へ向ける。
+        // CastCameraTarget はウキの子アクタで、親の回転を継承してカメラの向きを決めるため、
+        // ここでウキのYawをキャスト方向に合わせておくとカメラが常に海を向く。
+        // Casting/Floating/Reeling 中は SetFloatPosition が Position のみを書き換えるので、
+        // この回転はキャスト開始時に一度設定すればそのまま保持される。
+        if (uki is { IsValid: true } floatTf)
+        {
+            floatTf.Rotation = new SEED.Vector3(0f, yaw + floatYawOffsetDegrees, 0f);
+        }
 
         castDistance = clamped;
         flightElapsed = 0f;
