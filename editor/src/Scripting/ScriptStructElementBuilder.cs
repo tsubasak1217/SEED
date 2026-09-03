@@ -26,8 +26,12 @@ internal static class ScriptStructElementBuilder
     /// <summary>メンバ行全体の左インデント（px）。要素の折りたたみ配下であることを示す。</summary>
     private const double MemberIndent = 6;
 
-    /// <summary>メンバ名と入れ子配列の折りたたみキーを繋ぐ区切り（ドットパス表記に合わせる）。</summary>
-    private const string MemberKeySeparator = ".";
+    /// <summary>
+    /// メンバ名と入れ子配列の折りたたみキーを繋ぐ区切り（ドットパス表記に合わせる）。
+    /// 配列ビルダー側も要素の並び替えで「その要素配下の折りたたみ状態」をまとめて動かすために参照するため、
+    /// 綴りを二重管理しないようここを唯一の定義とする。
+    /// </summary>
+    internal const string MemberKeySeparator = ".";
 
     /// <summary>
     /// 要素 1 個ぶんのメンバ行パネルを生成する。

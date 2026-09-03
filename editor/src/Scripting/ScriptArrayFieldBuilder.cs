@@ -16,9 +16,10 @@ namespace SEEDEditor.Scripting;
 ///
 /// 【構成】
 ///   ▼ フィールド名 (件数)          ← 折りたたみ（Expander。状態は ExpandStateStore が保持）
-///       [0] &lt;要素エディタ&gt; [×]
-///       [1] &lt;要素エディタ&gt; [×]
-///       [＋ 要素を追加]
+///       [0] &lt;要素エディタ&gt; [上へ][下へ][削除]
+///       [1] &lt;要素エディタ&gt; [上へ][下へ][削除]
+///       [          追加          ]   ← 行いっぱいの大きめボタン
+/// ボタンはすべてベクターアイコン（Icon.MoveUp / Icon.MoveDown / Icon.Close / Icon.Add）。
 ///
 /// 【値の書き戻し】
 /// 要素の編集・追加・削除のいずれでも、その場で全要素から JSON 配列文字列を組み直し、
@@ -39,11 +40,29 @@ internal static class ScriptArrayFieldBuilder
     /// <summary>要素行・追加ボタンの左インデント（px）。折りたたみ配下であることを示す。</summary>
     private const double ElementIndent = 8;
 
-    /// <summary>削除（×）・追加（＋）ボタンのアイコン一辺サイズ（px）。</summary>
+    /// <summary>削除（×）・並び替え（∧∨）ボタンのアイコン一辺サイズ（px）。</summary>
     private const double RowButtonIconSize = 10;
 
-    /// <summary>削除・追加ボタンの内側余白（px）。</summary>
+    /// <summary>行内ボタン（削除・並び替え）の内側余白（px）。</summary>
     private static readonly Thickness RowButtonPadding = new(5, 1, 5, 1);
+
+    /// <summary>並び替えボタンの内側余白（px）。上下 2 個並ぶので横幅を詰めておく。</summary>
+    private static readonly Thickness MoveButtonPadding = new(3, 1, 3, 1);
+
+    /// <summary>端の要素で押せない並び替えボタンの不透明度（0〜1）。押せないことを見た目で示す。</summary>
+    private const double DisabledButtonOpacity = 0.3;
+
+    /// <summary>追加（＋）ボタンのアイコン一辺サイズ（px）。行内ボタンより明確に大きくする。</summary>
+    private const double AddButtonIconSize = 16;
+
+    /// <summary>追加ボタンの高さ（px）。押しやすさ優先で行 UI より厚くする。</summary>
+    private const double AddButtonHeight = 26;
+
+    /// <summary>追加ボタンの内側余白（px）。</summary>
+    private static readonly Thickness AddButtonPadding = new(6, 2, 6, 2);
+
+    /// <summary>追加ボタンの外側余白（px）。要素行との間を少し空ける。</summary>
+    private static readonly Thickness AddButtonMargin = new(0, 5, 0, 2);
 
     /// <summary>参照要素が未設定のときにピッカーへ出す文言。</summary>
     private const string ReferenceUnsetText = "(未設定)";
@@ -55,6 +74,7 @@ internal static class ScriptArrayFieldBuilder
     private static readonly SolidColorBrush BrushButtonBg     = new(Color.FromRgb(0x2A, 0x2A, 0x2A));
     private static readonly SolidColorBrush BrushButtonBorder = new(Color.FromRgb(0x44, 0x44, 0x44));
     private static readonly SolidColorBrush BrushRemove       = new(Color.FromRgb(0xCC, 0x77, 0x77));
+    private static readonly SolidColorBrush BrushMove         = new(Color.FromRgb(0x99, 0x99, 0x99));
     private static readonly SolidColorBrush BrushAdd          = new(Color.FromRgb(0x77, 0xCC, 0x88));
     private static readonly SolidColorBrush BrushIndex        = new(Color.FromRgb(0x77, 0x77, 0x77));
     private static readonly SolidColorBrush BrushEmptyNote    = new(Color.FromRgb(0x66, 0x66, 0x66));
@@ -117,7 +137,26 @@ internal static class ScriptArrayFieldBuilder
             onChange(SEED.ScriptArray.Encode(elements, arrayInfo.ElementKind));
         }
 
-        // 行 UI を現在の要素リストから作り直す（追加・削除の直後に呼ぶ）
+        // 要素 2 個の位置を入れ替える（並び替えボタン用）。
+        // 値そのものを入れ替えるので、書き戻しは通常の編集とまったく同じ経路に乗る。
+        void Swap(int a, int b)
+        {
+            if (a < 0 || b < 0 || a >= elements.Count || b >= elements.Count || a == b) return;
+            (elements[a], elements[b]) = (elements[b], elements[a]);
+
+            // 構造体要素は「配列キー + 添字」で開閉状態を覚えているため、
+            // 値と一緒に状態も入れ替えて開閉が要素に追従するようにする（入れ子メンバごと移動）。
+            if (isStruct)
+                expandStates?.SwapSubtree(
+                    $"{expandKey}{StructElementKeySeparator}{a}",
+                    $"{expandKey}{StructElementKeySeparator}{b}",
+                    ScriptStructElementBuilder.MemberKeySeparator);
+
+            Rebuild();
+            Commit();
+        }
+
+        // 行 UI を現在の要素リストから作り直す（追加・削除・並び替えの直後に呼ぶ）
         void Rebuild()
         {
             rows.Children.Clear();
@@ -148,6 +187,11 @@ internal static class ScriptArrayFieldBuilder
                         Rebuild();
                         Commit();
                     },
+                    // 1 つ上／下の要素と入れ替える（端の要素では該当ボタンを無効化する）
+                    () => Swap(index, index - 1),
+                    () => Swap(index, index + 1),
+                    canMoveUp:   index > 0,
+                    canMoveDown: index < elements.Count - 1,
                     onRefDrop, assetPathToVirtual,
                     expandStates, expandKey));
             }
@@ -172,7 +216,8 @@ internal static class ScriptArrayFieldBuilder
             ? $"{arrayInfo.ElementReference.Value.Kind} への参照"
             : arrayInfo.ElementType.Name;
         var head = field.Tooltip is null ? "" : field.Tooltip + "\n";
-        return $"{head}要素型: {kindText}\n[＋] で末尾に追加、[×] でその要素を削除します";
+        return $"{head}要素型: {kindText}\n"
+             + "追加ボタンで末尾に追加、各行の削除ボタンでその要素を削除、上下ボタンで並び替えます";
     }
 
     /// <summary>要素が 0 個のときに出す案内行。</summary>
@@ -188,14 +233,22 @@ internal static class ScriptArrayFieldBuilder
     // ── 要素行 ───────────────────────────────────────────────
 
     /// <summary>
-    /// 要素 1 個分の行（[番号] エディタ [×]）を作る。
+    /// 要素 1 個分の行（[番号] エディタ [∧][∨][×]）を作る。
     /// </summary>
+    /// <param name="onMoveUp">1 つ上の要素と入れ替える処理。</param>
+    /// <param name="onMoveDown">1 つ下の要素と入れ替える処理。</param>
+    /// <param name="canMoveUp">上へ動かせるか（先頭要素なら false）。</param>
+    /// <param name="canMoveDown">下へ動かせるか（末尾要素なら false）。</param>
     private static UIElement BuildElementRow(
         ScriptArrayFieldInfo    arrayInfo,
         int                     index,
         string                  value,
         Action<string>          onElementChanged,
         Action                  onRemove,
+        Action                  onMoveUp,
+        Action                  onMoveDown,
+        bool                    canMoveUp,
+        bool                    canMoveDown,
         IReferenceDropResolver? onRefDrop,
         Func<string, string>?   assetPathToVirtual,
         ExpandStateStore?       expandStates,
@@ -205,6 +258,7 @@ internal static class ScriptArrayFieldBuilder
         if (arrayInfo.StructMembers is not null)
             return BuildStructElementGroup(
                 arrayInfo, index, value, onElementChanged, onRemove,
+                onMoveUp, onMoveDown, canMoveUp, canMoveDown,
                 onRefDrop, assetPathToVirtual, expandStates, expandKey);
 
         var (editor, prefix) = BuildElementEditor(arrayInfo, value, onElementChanged, onRefDrop, assetPathToVirtual);
@@ -213,7 +267,7 @@ internal static class ScriptArrayFieldBuilder
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(IndexColumnWidth) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });               // ドラッグハンドル
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });               // 削除ボタン
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });               // 並び替え＋削除ボタン
 
         var indexLabel = new TextBlock
         {
@@ -234,11 +288,39 @@ internal static class ScriptArrayFieldBuilder
         Grid.SetColumn(editor, 2);
         grid.Children.Add(editor);
 
-        var removeBtn = MakeIconButton("Icon.Close", BrushRemove, $"{index} 番目の要素を削除する", onRemove);
-        Grid.SetColumn(removeBtn, 3);
-        grid.Children.Add(removeBtn);
+        var actions = MakeRowActions(index, onRemove, onMoveUp, onMoveDown, canMoveUp, canMoveDown);
+        Grid.SetColumn(actions, 3);
+        grid.Children.Add(actions);
 
         return grid;
+    }
+
+    /// <summary>
+    /// 要素行の右端に並べる操作ボタン群（[∧][∨][×]）を作る。
+    /// 1 次元配列でも構造体配列でも並びを揃えるため、生成をここへ 1 本化している。
+    /// </summary>
+    private static FrameworkElement MakeRowActions(
+        int index, Action onRemove, Action onMoveUp, Action onMoveDown, bool canMoveUp, bool canMoveDown)
+    {
+        var panel = new StackPanel
+        {
+            Orientation       = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var up = MakeIconButton(
+            "Icon.MoveUp", BrushMove, $"{index} 番目の要素を 1 つ上へ移動する", onMoveUp,
+            RowButtonIconSize, MoveButtonPadding, canMoveUp);
+        var down = MakeIconButton(
+            "Icon.MoveDown", BrushMove, $"{index} 番目の要素を 1 つ下へ移動する", onMoveDown,
+            RowButtonIconSize, MoveButtonPadding, canMoveDown);
+        var remove = MakeIconButton(
+            "Icon.Close", BrushRemove, $"{index} 番目の要素を削除する", onRemove);
+
+        panel.Children.Add(up);
+        panel.Children.Add(down);
+        panel.Children.Add(remove);
+        return panel;
     }
 
     /// <summary>
@@ -254,6 +336,10 @@ internal static class ScriptArrayFieldBuilder
         string                  objectJson,
         Action<string>          onElementChanged,
         Action                  onRemove,
+        Action                  onMoveUp,
+        Action                  onMoveDown,
+        bool                    canMoveUp,
+        bool                    canMoveDown,
         IReferenceDropResolver? onRefDrop,
         Func<string, string>?   assetPathToVirtual,
         ExpandStateStore?       expandStates,
@@ -285,10 +371,11 @@ internal static class ScriptArrayFieldBuilder
         Grid.SetColumn(expander, 0);
         grid.Children.Add(expander);
 
-        var removeBtn = MakeIconButton("Icon.Close", BrushRemove, $"{index} 番目の要素を削除する", onRemove);
-        removeBtn.VerticalAlignment = VerticalAlignment.Top;
-        Grid.SetColumn(removeBtn, 1);
-        grid.Children.Add(removeBtn);
+        var actions = MakeRowActions(index, onRemove, onMoveUp, onMoveDown, canMoveUp, canMoveDown);
+        // 中身が縦に伸びるので、操作ボタンはヘッダの高さに合わせて上端へ寄せる
+        actions.VerticalAlignment = VerticalAlignment.Top;
+        Grid.SetColumn(actions, 1);
+        grid.Children.Add(actions);
 
         return grid;
     }
@@ -417,20 +504,46 @@ internal static class ScriptArrayFieldBuilder
 
     // ── ボタン ───────────────────────────────────────────────
 
-    /// <summary>末尾に要素を 1 つ足すボタン行を作る。</summary>
+    /// <summary>
+    /// 末尾に要素を 1 つ足すボタン行を作る。
+    /// 要素行の小さなボタンと違い「配列に対する主操作」なので、
+    /// アイコンを大きく・高さを厚く・横幅を行いっぱいに広げて押しやすくする。
+    /// </summary>
     private static UIElement MakeAddButton(ScriptArrayFieldInfo arrayInfo, Action onAdd)
     {
         var typeName = arrayInfo.ElementReference?.Kind ?? arrayInfo.ElementType.Name;
-        var btn = MakeIconButton("Icon.Add", BrushAdd, $"末尾に {typeName} の要素を 1 つ追加する", onAdd);
-        btn.HorizontalAlignment = HorizontalAlignment.Left;
-        btn.Margin              = new Thickness(0, 3, 0, 1);
+        var btn = MakeIconButton(
+            "Icon.Add", BrushAdd, $"末尾に {typeName} の要素を 1 つ追加する", onAdd,
+            AddButtonIconSize, AddButtonPadding);
+        btn.HorizontalAlignment = HorizontalAlignment.Stretch;   // 行いっぱいに広げる
+        btn.MinHeight           = AddButtonHeight;
+        btn.Margin              = AddButtonMargin;
         return btn;
     }
 
-    /// <summary>インスペクタ共通の見た目を持つ小さなアイコンボタンを作る。</summary>
-    private static Button MakeIconButton(string iconKey, Brush iconBrush, string tooltip, Action onClick)
+    /// <summary>
+    /// インスペクタ共通の見た目を持つアイコンボタンを作る。
+    /// </summary>
+    /// <param name="iconKey">ベクターアイコンのリソースキー（Icons.xaml）。</param>
+    /// <param name="iconBrush">アイコンの色。</param>
+    /// <param name="tooltip">ツールチップ文言。</param>
+    /// <param name="onClick">押されたときの処理。</param>
+    /// <param name="iconSize">アイコン一辺サイズ（px）。既定は行内ボタン用の小さいサイズ。</param>
+    /// <param name="padding">内側余白。null なら行内ボタン用の既定値。</param>
+    /// <param name="isEnabled">
+    /// 押せるかどうか。false のときはクリックを受け付けず、
+    /// 共通テンプレートに無効時の見た目が無いため不透明度で押せないことを示す。
+    /// </param>
+    private static Button MakeIconButton(
+        string     iconKey,
+        Brush      iconBrush,
+        string     tooltip,
+        Action     onClick,
+        double     iconSize  = RowButtonIconSize,
+        Thickness? padding   = null,
+        bool       isEnabled = true)
     {
-        var icon = AppIcon.Create(iconKey, RowButtonIconSize);
+        var icon = AppIcon.Create(iconKey, iconSize);
         icon.SetBrush(iconBrush);
 
         var btn = new Button
@@ -439,12 +552,14 @@ internal static class ScriptArrayFieldBuilder
             Background        = BrushButtonBg,
             BorderBrush       = BrushButtonBorder,
             BorderThickness   = new Thickness(1),
-            Padding           = RowButtonPadding,
+            Padding           = padding ?? RowButtonPadding,
             Margin            = new Thickness(3, 0, 0, 0),
             Cursor            = Cursors.Hand,
             VerticalAlignment = VerticalAlignment.Center,
             Template          = SEEDEditor.Panels.FileRefBuilder.BuildButtonTemplate(),
             ToolTip           = tooltip,
+            IsEnabled         = isEnabled,
+            Opacity           = isEnabled ? 1.0 : DisabledButtonOpacity,
         };
         btn.Click += (_, _) => onClick();
         return btn;

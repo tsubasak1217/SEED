@@ -68,6 +68,48 @@ public sealed class ExpandStateStore
     public void Remove(string key) => _states.Remove(key);
 
     /// <summary>
+    /// 2 つのセクション（とその配下すべて）の展開状態を入れ替える。
+    ///
+    /// 配列要素の並び替えのように「キーが添字で決まるセクションの中身だけが入れ替わる」場面で使う。
+    /// これを呼ばないと開閉状態が要素ではなく添字に貼り付いたままになり、
+    /// 並べ替えた直後に「開いていた要素が閉じ、別の要素が開く」ように見えてしまう。
+    ///
+    /// 配下の判定は「キーが完全一致」または「キー + <paramref name="childSeparator"/> で始まる」。
+    /// 添字キーは前方一致だけだと <c>foo#1</c> が <c>foo#10</c> を巻き込むため、
+    /// 区切り文字までを境界として厳密に判定する。
+    /// </summary>
+    /// <param name="keyA">入れ替え対象その 1 のセクションキー。</param>
+    /// <param name="keyB">入れ替え対象その 2 のセクションキー。</param>
+    /// <param name="childSeparator">配下キーを繋ぐ区切り文字列（既定はドットパス表記の ".").</param>
+    public void SwapSubtree(string keyA, string keyB, string childSeparator = ".")
+    {
+        if (string.Equals(keyA, keyB, StringComparison.Ordinal)) return;
+
+        // 片側の部分木を「keyA/keyB を除いた残りのキー → 値」として抜き出す
+        Dictionary<string, bool> Extract(string root)
+        {
+            var picked = new Dictionary<string, bool>(StringComparer.Ordinal);
+            var childPrefix = root + childSeparator;
+            foreach (var kv in _states)
+            {
+                if (string.Equals(kv.Key, root, StringComparison.Ordinal))
+                    picked[""] = kv.Value;                                  // ルート自身
+                else if (kv.Key.StartsWith(childPrefix, StringComparison.Ordinal))
+                    picked[kv.Key[root.Length..]] = kv.Value;               // 区切りを含む相対部分
+            }
+            foreach (var suffix in picked.Keys) _states.Remove(root + suffix);
+            return picked;
+        }
+
+        var fromA = Extract(keyA);
+        var fromB = Extract(keyB);
+
+        // 相対部分はそのままに、根だけを相手側へ付け替えて書き戻す
+        foreach (var kv in fromA) _states[keyB + kv.Key] = kv.Value;
+        foreach (var kv in fromB) _states[keyA + kv.Key] = kv.Value;
+    }
+
+    /// <summary>
     /// 標準 <see cref="Expander"/> に展開状態の復元・記録を結び付ける。
     /// 生成直後（ビジュアルツリーへ追加する前）に一度呼ぶだけでよい。
     /// </summary>
