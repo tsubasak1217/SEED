@@ -12,13 +12,20 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 [System.Serializable]
 public struct FishLevelEntry
 {
-    /// <summary>中心点からの出現距離の下限（メートル）。レベルが高いほど遠くにする想定。</summary>
-    [SerializeField(Label = "出現距離(最小)")]
-    public float spawnDistanceMin;
+    /// <summary>
+    /// 出現距離の下限を示す<b>マーカーアクタ</b>。
+    /// 「中心点からこのアクタまでの XZ 平面距離」が下限になる。
+    /// シーン上でマーカーを動かすだけで距離を直感的にレベルデザインできる。
+    /// </summary>
+    [SerializeField(Label = "距離マーカー(近)")]
+    public SEED.Transform? distanceMinMarker;
 
-    /// <summary>中心点からの出現距離の上限（メートル）。最小と同値なら正確に円周上に出る。</summary>
-    [SerializeField(Label = "出現距離(最大)")]
-    public float spawnDistanceMax;
+    /// <summary>
+    /// 出現距離の上限を示す<b>マーカーアクタ</b>（中心点からの XZ 平面距離）。
+    /// 近マーカーと同位置なら正確に円周上に出る。
+    /// </summary>
+    [SerializeField(Label = "距離マーカー(遠)")]
+    public SEED.Transform? distanceMaxMarker;
 
     /// <summary>このレベルで出現する魚の .actor ファイルパスのリスト。</summary>
     [SerializeField(Label = "魚prefab(.actorパス)")]
@@ -126,8 +133,10 @@ public class FishManager : SEEDScript
     /// 指定レベルの魚を 1 匹生成する。
     ///
     /// - prefab はそのレベルのリストからランダムに 1 つ選ぶ
-    /// - 位置は「中心点から、出現距離範囲内のランダム距離、ランダム方位」の水面上
-    /// - レベルが範囲外・prefab リストが空・パスが空のときは何もしない（false）
+    /// - 位置は「中心点から、距離マーカー2つで決まる範囲内のランダム距離、
+    ///   ランダム方位」の水面上
+    /// - レベルが範囲外・prefab リストが空・パスが空・マーカー未設定のときは
+    ///   何もしない（false）
     /// </summary>
     /// <param name="levelIndex">レベル（levels の添字、0 始まり）。</param>
     /// <returns>生成できたら true。</returns>
@@ -141,13 +150,20 @@ public class FishManager : SEEDScript
         string path = prefabs[random.Next(prefabs.Count)];
         if (string.IsNullOrWhiteSpace(path)) { return false; }
 
-        // 出現位置: 中心点から「出現距離範囲内のランダム距離」だけ離れたランダム方位の水面上。
-        // 最小 > 最大の設定ミスは入れ替えて許容する（データ入力に寛容にする）。
-        float angle = (float)random.NextDouble() * FullTurnRadians;
-        float near = SEED.Mathf.Min(level.spawnDistanceMin, level.spawnDistanceMax);
-        float far  = SEED.Mathf.Max(level.spawnDistanceMin, level.spawnDistanceMax);
-        float distance = near + (float)random.NextDouble() * (far - near);
+        // 出現距離の範囲 = 中心点から各マーカーまでの XZ 平面距離。
+        // マーカーが未設定・無効なら生成できない（シーン設定の不備を静かに握り潰さない）。
         var center = CenterPosition();
+        if (level.distanceMinMarker is not { } minMarker || !minMarker.IsValid) { return false; }
+        if (level.distanceMaxMarker is not { } maxMarker || !maxMarker.IsValid) { return false; }
+        float distA = DistanceXZ(center, minMarker.Position);
+        float distB = DistanceXZ(center, maxMarker.Position);
+
+        // 出現位置: 範囲内の一様ランダム距離 × ランダム方位の水面上。
+        // 近/遠マーカーの取り違えは入れ替えて許容する（データ入力に寛容にする）。
+        float angle = (float)random.NextDouble() * FullTurnRadians;
+        float near = SEED.Mathf.Min(distA, distB);
+        float far  = SEED.Mathf.Max(distA, distB);
+        float distance = near + (float)random.NextDouble() * (far - near);
         var spawnPos = new SEED.Vector3(
             center.x + SEED.Mathf.Sin(angle) * distance,
             spawnHeight,
@@ -166,5 +182,13 @@ public class FishManager : SEEDScript
     {
         if (centerActor is { } c && c.IsValid) { return c.Position; }
         return new SEED.Vector3(centerX, 0f, centerZ);
+    }
+
+    /// <summary>2 点間の XZ 平面上の距離（高さの差は無視する）。</summary>
+    private static float DistanceXZ(SEED.Vector3 a, SEED.Vector3 b)
+    {
+        float dx = b.x - a.x;
+        float dz = b.z - a.z;
+        return SEED.Mathf.Sqrt(dx * dx + dz * dz);
     }
 }
