@@ -215,9 +215,20 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "逆行の許容量(px)")]
     private float gestureReverseTolerancePx = 12f;
 
-    /// <summary>この秒数だけ有意な動きが無ければジェスチャをリセットする。</summary>
-    [SerializeField(Label = "ジェスチャのタイムアウト(秒)")]
+    /// <summary>
+    /// Pull 段階（引きの途中）でこの秒数だけ有意な動きが無ければジェスチャをリセットする。
+    /// Push 段階（振り抜き待ち）には適用されない（→ <see cref="armedTimeoutSeconds"/>）。
+    /// </summary>
+    [SerializeField(Label = "引き段階のタイムアウト(秒)")]
     private float gestureTimeoutSeconds = 0.6f;
+
+    /// <summary>
+    /// Push 段階（振りかぶりポーズで振り抜き待ち）でこの秒数だけ有意な動きが無ければ
+    /// ジェスチャを最初からリセットする。0 以下なら無制限に待機し続ける
+    /// （振りかぶった姿勢のまま、いつまでも振り抜きを受け付ける）。
+    /// </summary>
+    [SerializeField(Label = "振り待ちのタイムアウト(秒, 0=無制限)")]
+    private float armedTimeoutSeconds = 0f;
 
     // ─── キャストの飛距離・方向 ───────────────────────────────
 
@@ -516,14 +527,23 @@ public class FishingController : SEEDScript
     /// マウスの振りジェスチャを解釈し、成立したらキャストする。
     ///
     /// <b>アルゴリズム（2 段階）</b>
-    /// 1. Pull … 下方向（<c>MouseDelta.y &gt; 0</c>）の移動量を累積し、
-    ///    <see cref="pullThresholdPx"/> を超えたら Push 段階へ。
-    /// 2. Push … 上方向（<c>MouseDelta.y &lt; 0</c>）の移動を<b>ベクトルのまま</b>累積し、
-    ///    上方向成分が <see cref="pushThresholdPx"/> を超えた瞬間にキャストする。
-    ///
-    /// どちらの段階でも、逆方向へ <see cref="gestureReverseTolerancePx"/> を超えて動いたら
-    /// 「振り直し」とみなして最初からやり直す。
-    /// <see cref="gestureTimeoutSeconds"/> のあいだ有意な動きが無い場合も同様。
+    /// 1. Pull（引き）… 下方向（<c>MouseDelta.y &gt; 0</c>）の移動量を累積し、
+    ///    <see cref="pullThresholdPx"/> を超えたら Push 段階（振りかぶり完了＝振り抜き待ち）へ。
+    ///    上方向へ <see cref="gestureReverseTolerancePx"/> を超えて動いたら引きの累積を
+    ///    捨ててやり直す。<see cref="gestureTimeoutSeconds"/> のあいだ有意な動きが無い
+    ///    場合も同様にジェスチャ全体をリセットする。
+    /// 2. Push（振り抜き待ち／実行）… 上方向（<c>MouseDelta.y &lt; 0</c>）の移動を
+    ///    <b>ベクトルのまま</b>累積し、上方向成分が <see cref="pushThresholdPx"/> を
+    ///    超えた瞬間にキャストする。
+    ///    - まだ振り抜きが始まっていない間（<c>-pushAccumPx.y &lt;= 0</c>）の下方向の
+    ///      動きは「引き戻しの一部」として単に無視する（振りかぶりポーズを保ったまま待機）。
+    ///      これにより Pull → Push 切り替え直後のオーバーシュートでリセットされない。
+    ///    - 振り抜きが始まった後（<c>-pushAccumPx.y &gt; 0</c>）に下方向へ
+    ///      <see cref="gestureReverseTolerancePx"/> を超えて戻した場合は「振り直し」として
+    ///      <c>pushAccumPx</c> のみを 0 に戻す（Push 段階・振りかぶりポーズは維持し、
+    ///      <see cref="ResetGesture"/> は呼ばない＝Pull からやり直させない）。
+    ///    - タイムアウトは <see cref="gestureTimeoutSeconds"/> ではなく
+    ///      <see cref="armedTimeoutSeconds"/> を使う（0 以下なら無制限に待機）。
     /// </summary>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     private void UpdateAiming(float deltaTime)
@@ -536,7 +556,19 @@ public class FishingController : SEEDScript
         if (delta.SqrMagnitude < gestureMoveEpsilonPx * gestureMoveEpsilonPx)
         {
             gestureIdleSeconds += deltaTime;
-            if (gestureIdleSeconds > gestureTimeoutSeconds) { ResetGesture(); }
+
+            if (gesturePhase == GesturePhase.Pull)
+            {
+                // Pull 段階: 引きの途中で放置されたら最初からやり直させる
+                if (gestureIdleSeconds > gestureTimeoutSeconds) { ResetGesture(); }
+            }
+            else
+            {
+                // Push 段階（振りかぶり待機中）: armedTimeoutSeconds <= 0 なら無制限に待機。
+                // 0 より大きい場合のみ、その秒数だけ放置されたらリセットする。
+                if (armedTimeoutSeconds > 0f && gestureIdleSeconds > armedTimeoutSeconds) { ResetGesture(); }
+            }
+
             // 動きが無くても予備動作の狙い位置への追従（滑らかな停止）は続ける
             UpdateWindup(deltaTime);
             return;
@@ -579,10 +611,18 @@ public class FishingController : SEEDScript
                         StartCast(new SEED.Vector2(pushAccumPx.x, -pushAccumPx.y));
                     }
                 }
-                else if (delta.y > gestureReverseTolerancePx)
+                else
                 {
-                    // 振り抜きの途中で下へ戻した: 振り直し
-                    ResetGesture();
+                    // 下方向への動き。振り抜きがまだ始まっていなければ、Pull→Push 切り替え
+                    // 直後のオーバーシュートや「引き戻し継続」として単に無視し、
+                    // 振りかぶりポーズを保ったまま待機を続ける（リセットしない）。
+                    bool swingStarted = -pushAccumPx.y > 0f;
+                    if (swingStarted && delta.y > gestureReverseTolerancePx)
+                    {
+                        // 振り抜きの途中で下へ戻した: 振り抜きだけやり直す
+                        // （Push 段階・振りかぶりポーズは維持し、Pull からのやり直しにはしない）
+                        pushAccumPx = SEED.Vector2.Zero;
+                    }
                 }
                 break;
         }
