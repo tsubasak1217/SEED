@@ -149,16 +149,39 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "竿アクタ（竿先追従用）")]
     private SEED.Transform? rodRoot = null;
 
-    /// <summary>竿先の竿ローカルオフセット X（竿の右方向・竿のスケール込み）。</summary>
-    [SerializeField(Label = "竿先オフセットX")]
+    /// <summary>
+    /// 竿アクタの Model コンポーネント（描画オフセットの読み出し元）。
+    ///
+    /// <b>なぜ必要か</b>: ModelComponent は「アクタを動かさずに見た目だけずらす」
+    /// 描画オフセット（offset_position / offset_rotation / offset_scale）を持ち、
+    /// GPU へ渡る最終行列は <c>アクタのワールド行列 × オフセット TRS</c> になる
+    /// （model_component.rs の <c>render_matrix()</c>）。
+    /// このオフセットを含めないと、竿先オフセットを「Blender で見たモデルの座標」で
+    /// 指定できず、竿の実際の先端とズレる。
+    ///
+    /// 未設定ならオフセット無し（恒等）として扱う＝アクタのローカル座標に直接乗る。
+    /// </summary>
+    [SerializeField(Label = "竿の Model")]
+    private SEED.Model? rodModel = null;
+
+    /// <summary>
+    /// 竿先のオフセット X（<b>竿モデル自身のローカル座標</b>＝Blender で読んだ値をそのまま）。
+    /// <see cref="rodModel"/> の描画オフセットと竿アクタのスケール・回転は
+    /// <see cref="ComposeRodTip"/> が合成するので、ここでは素の値を入れる。
+    /// </summary>
+    [SerializeField(Label = "竿先オフセットX(モデルローカル)")]
     private float rodTipOffsetX = 0f;
 
-    /// <summary>竿先の竿ローカルオフセット Y（竿の上方向・竿のスケール込み）。</summary>
-    [SerializeField(Label = "竿先オフセットY")]
+    /// <summary>
+    /// 竿先のオフセット Y（<b>竿モデル自身のローカル座標</b>）。詳細は <see cref="rodTipOffsetX"/>。
+    /// </summary>
+    [SerializeField(Label = "竿先オフセットY(モデルローカル)")]
     private float rodTipOffsetY = 1.0f;
 
-    /// <summary>竿先の竿ローカルオフセット Z（竿の前方向・竿のスケール込み）。</summary>
-    [SerializeField(Label = "竿先オフセットZ")]
+    /// <summary>
+    /// 竿先のオフセット Z（<b>竿モデル自身のローカル座標</b>）。詳細は <see cref="rodTipOffsetX"/>。
+    /// </summary>
+    [SerializeField(Label = "竿先オフセットZ(モデルローカル)")]
     private float rodTipOffsetZ = 0f;
 
     /// <summary>ウキ（浮き）のトランスフォーム。本スクリプトが毎フレーム位置を決める。</summary>
@@ -421,16 +444,27 @@ public class FishingController : SEEDScript
     private float bobFrequency = 0.6f;
 
     /// <summary>
-    /// 釣り中（狙い〜巻き取り）にカーソルをロックするか。
+    /// マウスの振り（ジェスチャ）で操作する区間だけカーソルをロックするか。
     ///
     /// ロック中はカーソルが非表示になり、毎フレーム画面中央へ戻される。
     /// エディタ埋め込み Play ではカーソルがビューポートに閉じ込められる（ClipCursor）ため、
-    /// ロックしないと端に当たった瞬間 <see cref="SEED.Input.MouseDelta"/> が 0 になり、
-    /// 引く／振るのジェスチャが取れなくなる。巻き取り（マウス移動）でも同じ利点がある。
+    /// ロックしないと端に当たった瞬間 <see cref="SEED.Input.MouseDelta"/> が 0 に潰れ、
+    /// 引く／振るのジェスチャが取れなくなる。
+    ///
+    /// <b>ロックするのは <see cref="FishState.Aiming"/> と <see cref="FishState.Windup"/> だけ</b>。
+    /// キャスト以降（Casting / Floating / Reeling / Result）はホイールと A / D しか使わず、
+    /// マウスの振りを見ないので、カーソルを隠したままにする理由が無い。
+    /// 詳細は <see cref="UpdateCursorLock"/>。
     /// UI をマウスで操作したい場面が出たらここをオフにする。
     /// </summary>
-    [Header("操作"), SerializeField(Label = "狙い中はカーソルをロック")]
+    [Header("操作"), SerializeField(Label = "狙い/振りかぶり中はカーソルをロック")]
     private bool lockCursorWhileFishing = true;
+
+    /// <summary>
+    /// 現在エンジンへ適用済みのカーソルロック状態（<see cref="UpdateCursorLock"/> のキャッシュ）。
+    /// 望む状態と一致しているあいだは FFI 越しのセッタを呼ばないための番人。
+    /// </summary>
+    private bool cursorLockApplied = false;
 
     // ─── 内部状態 ─────────────────────────────────────────────
 
@@ -541,6 +575,10 @@ public class FishingController : SEEDScript
         // 竿先は竿のアニメに追従させる（JointAttach は子へ伝播しないので毎フレーム自前で合わせる）
         SyncRodTip();
 
+        // カーソルロックを状態へ同期する。ここで毎フレーム引き直しておけば、
+        // 途中で return する経路（プレイヤー未設定・待機中など）でもロックが残らない。
+        UpdateCursorLock();
+
         // プレイヤー参照が無ければ姿勢の出入りができないので何もしない
         if (playerMove is not { } pm) { return; }
 
@@ -632,9 +670,8 @@ public class FishingController : SEEDScript
         ParkFloatAtRodTip();
         HidePreviewLine();
         CrossFadeBoth(floatClip, playerFloatClip);
-        // 狙い中〜巻き取り中はカーソルをロックしたままにする（Casting / Floating / Reeling も同様）。
-        // これでマウスが画面端で止まっても MouseDelta が 0 に潰れない。
-        ApplyCursorLock(true);
+        // マウスの振りを読む区間へ入ったのでカーソルをロックする（判断は UpdateCursorLock が一元管理）。
+        UpdateCursorLock();
         SEED.Debug.Log("[Fishing] Aiming");
     }
 
@@ -651,7 +688,7 @@ public class FishingController : SEEDScript
         HideLine();
         HidePreviewLine();
         // 釣り状態を抜けたらカーソルを必ず返す（姿勢解除・中断の唯一の出口）。
-        ApplyCursorLock(false);
+        UpdateCursorLock();
         SEED.Debug.Log("[Fishing] Idle (キャンセル)");
     }
 
@@ -668,14 +705,31 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// カーソルロックの適用。<see cref="lockCursorWhileFishing"/> がオフなら
-    /// ロック要求は無視し、解除だけは必ず通す（設定を切り替えた直後に
-    /// ロックが張られたまま残らないようにするため）。
+    /// カーソルロックの望ましい状態。
+    ///
+    /// マウスの振り（<see cref="SEED.Input.MouseDelta"/>）を読む区間＝
+    /// <see cref="FishState.Aiming"/>（振りかぶり待ち）と <see cref="FishState.Windup"/>（振り抜き待ち）
+    /// のあいだだけ true。キャスト以降はホイールと A / D しか使わないので false。
+    /// <see cref="lockCursorWhileFishing"/> がオフなら常に false（解除は必ず通る）。
     /// </summary>
-    private void ApplyCursorLock(bool locked)
+    private bool WantsCursorLock()
+        => lockCursorWhileFishing && (State == FishState.Aiming || State == FishState.Windup);
+
+    /// <summary>
+    /// カーソルロックを現在の状態へ合わせる【適用の唯一の集約点】。
+    ///
+    /// 状態から望ましい値を毎回引き直すので、状態遷移の経路を数える必要が無い
+    /// （巻き取り終了で <see cref="FinishReeling"/> が <see cref="FishState.Aiming"/> へ戻り、
+    /// 左クリックを押しっぱなしのまま次のキャストへ入る経路でも、自動的に再ロックされる）。
+    /// 毎フレーム呼んでも安全なように、実際に変化したときだけ FFI のセッタを叩く。
+    /// </summary>
+    private void UpdateCursorLock()
     {
-        if (locked && !lockCursorWhileFishing) { return; }
-        SEED.Input.CursorLocked = locked;
+        bool desired = WantsCursorLock();
+        if (desired == cursorLockApplied) { return; }
+
+        cursorLockApplied = desired;
+        SEED.Input.CursorLocked = desired;
     }
 
     /// <summary>
@@ -894,6 +948,9 @@ public class FishingController : SEEDScript
         State = FishState.Casting;
         HidePreviewLine();
 
+        // 以降はホイールと A / D だけの操作になるのでカーソルを返す（振りを読む区間の終わり）。
+        UpdateCursorLock();
+
         // 予備動作スクラブ中なら、振りかぶりポーズから途切れず本振りへ継続する。
         // スクラブしていなければ（Animator 未設定等）従来どおり通常のクロスフェードで開始する。
         if (windupActive)
@@ -1040,6 +1097,8 @@ public class FishingController : SEEDScript
         ParkFloatAtRodTip();
         HideLine();
         CrossFadeBoth(floatClip, playerFloatClip);
+        // 再び振りを読む区間へ戻るのでロックし直す（左クリック押しっぱなしでの連続キャスト対応）。
+        UpdateCursorLock();
         SEED.Debug.Log("[Fishing] Aiming（空振り）");
     }
 
@@ -1111,17 +1170,51 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// 竿のワールド姿勢とローカルオフセットから竿先のワールド位置を合成する。
-    /// 方向ベクトルは正規化済みなので、竿のスケールを成分ごとに掛けて実寸へ直す。
+    /// 竿先（モデルローカル座標で指定）のワールド位置を、<b>描画とまったく同じ行列チェーン</b>で合成する。
+    ///
+    /// <b>エンジン側の合成規約（検証済み）</b>
+    /// <code>
+    /// 描画インスタンス行列 = アクタのワールド行列 × オフセット TRS
+    ///   （model_component.rs: render_matrix() = mat4x4_mul(actor_world, offset_matrix())）
+    /// オフセット TRS = T(offset_position) × R_YXZ(offset_rotation[度]) × S(offset_scale)
+    ///   （offset_matrix() は Transform::to_mat4() へ委譲＝アクタ Transform と同一規約）
+    /// </code>
+    /// アクタ側も同じ TRS なので、点 p（モデルローカル）は
+    /// <code>
+    /// world = actorPos + actorRot × (actorScale ⊙ (offsetPos + offsetRot × (offsetScale ⊙ p)))
+    /// </code>
+    /// となる。アクタのスケールがオフセットの平行移動にも掛かる点が要注意
+    /// （model_component.rs のテスト composition_order_is_actor_then_offset が保証）。
+    ///
+    /// <b>アクタ回転の適用方法</b>: C# 側でオイラー→行列を再実装せず、
+    /// <see cref="SEED.Transform.Right"/> / Up / Forward（Rust の rotation_basis() の列そのもの）を使う。
+    /// 回転規約の二重管理を避けるため（Transform.cs のコメントの指示どおり）。
+    ///
+    /// <b>竿は JointAttach 追従</b>: jointattach_ops が最終ワールド行列を竿アクタの Transform へ
+    /// TRS 分解して書き戻すので、ここで読む Position / Rotation / Scale は追従後の姿勢を表す。
     /// </summary>
-    /// <param name="rod">竿アクタのトランスフォーム。</param>
+    /// <param name="rod">竿アクタのトランスフォーム（JointAttach 適用後のワールド姿勢）。</param>
     private SEED.Vector3 ComposeRodTip(SEED.Transform rod)
     {
-        var scale = rod.Scale;
+        // 竿先の指定値（竿モデル自身のローカル座標）
+        var tipLocal = new SEED.Vector3(rodTipOffsetX, rodTipOffsetY, rodTipOffsetZ);
+
+        // ① モデルの描画オフセットを掛けて「アクタのローカル座標」へ移す。
+        //    Model 未設定なら恒等（オフセット無し）＝素通し。
+        var actorLocal = tipLocal;
+        if (rodModel is { } model && model.IsValid)
+        {
+            var scaled = SEED.Vector3.Scale(model.OffsetScale, tipLocal);
+            var rotated = SEED.Quaternion.Euler(model.OffsetRotation) * scaled;  // YXZ・度（Transform と同規約）
+            actorLocal = model.OffsetPosition + rotated;
+        }
+
+        // ② アクタのスケール → 回転 → 平行移動、の順でワールドへ移す。
+        var actorScale = rod.Scale;
         return rod.Position
-             + rod.Right * (rodTipOffsetX * scale.x)
-             + rod.Up * (rodTipOffsetY * scale.y)
-             + rod.Forward * (rodTipOffsetZ * scale.z);
+             + rod.Right * (actorLocal.x * actorScale.x)
+             + rod.Up * (actorLocal.y * actorScale.y)
+             + rod.Forward * (actorLocal.z * actorScale.z);
     }
 
     /// <summary>
