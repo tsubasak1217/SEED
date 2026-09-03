@@ -131,9 +131,10 @@ private float glowPower = 1.0f;
 [SerializeField(Label = "追従対象")]   private SEED.Transform[] followTargets;
 ```
 
-- 要素型は `float` / `double` / `int` / `long` / `short` / `bool` / `string` と、参照フィールドに使える型
-  （`GameObject` / `Transform` / `Camera` などのハンドル型）に対応します。
-  それ以外の要素型（列挙型・`[Serializable]` クラスなど）は従来どおり読み取り専用表示になります。
+- 要素型は `float` / `double` / `int` / `long` / `short` / `bool` / `string`、参照フィールドに使える型
+  （`GameObject` / `Transform` / `Camera` などのハンドル型）、および
+  `[System.Serializable]` を付けた**自作の構造体／クラス**（後述）に対応します。
+  それ以外の要素型（列挙型など）は従来どおり読み取り専用表示になります。
 - 見出しは「フィールド名 (件数)」で、`[＋]` が末尾への追加、行ごとの `[×]` がその要素の削除です。
   追加された要素の初期値は数値なら 0、真偽値なら `false`、文字列・参照は未設定です。
 - 参照要素は単体の参照フィールドと同じく Hierarchy から D&D で設定でき、`OnStart` の直前に解決されます。
@@ -143,6 +144,40 @@ private float glowPower = 1.0f;
 - 保存形式は 1 フィールド = JSON 配列文字列（例 `[1.0,2.5]` / `["a","b"]`）です。
   再コンパイル時の値引き継ぎは、**要素型まで一致するときだけ**行われます
   （`float[]` → `string[]` のような変更では宣言時の初期値に戻ります）。
+
+### 構造体のリスト（`[System.Serializable]` 構造体の配列）
+
+`[System.Serializable]` を付けた構造体／クラスを要素にすると、
+**「1 件ぶんのまとまり」を単位に増やしていけるデータ表**をインスペクタで組めます。
+
+```csharp
+[System.Serializable]
+public struct FishLevelEntry
+{
+    [SerializeField(Label = "出現距離")]        public float spawnDistance;
+    [SerializeField(Label = "魚prefab(.actor)")] public List<string> fishPrefabs;
+}
+
+public class FishManager : SEEDScript
+{
+    [SerializeField(Label = "レベル定義")]
+    private List<FishLevelEntry> levels = new();
+}
+```
+
+- インスペクタでは配列の折りたたみの中に、要素ごとの折りたたみ（`[0]` `[1]` …）が並び、
+  その中に構造体メンバの行が出ます。`[＋]` で 1 件追加、要素右端の `[×]` でその 1 件を削除します。
+- メンバに使えるのは `[SerializeField]` を付けた public / private フィールドで、型は
+  **スカラ型（`float` / `double` / `int` / `long` / `short` / `bool` / `string`）・参照型・
+  それらの `List<>` / 配列**です。メンバの `List<>` は要素の追加・削除まで編集できます。
+- **入れ子は 1 段まで**です。構造体の中に構造体（またはそのリスト）を置くと、
+  そのフィールド全体が対象外になり読み取り専用表示へ落ちます。
+- 追加した要素の初期値は、クラス要素なら宣言時の初期化子、構造体要素なら言語既定値（0 / `false` / 空）です。
+- 保存形式は 1 フィールド = JSON オブジェクト配列文字列
+  （例 `[{"spawnDistance":10.0,"fishPrefabs":["assets://fish.actor"]}]`）です。
+- 再コンパイル時の値引き継ぎは**メンバ名で照合**します。
+  メンバを増やしても既存の値は残り（新メンバは既定値）、削除したメンバの値は無視されます。
+  同名メンバの**型を変えた場合だけ**、そのフィールドが宣言時の初期値へ戻ります。
 
 ---
 

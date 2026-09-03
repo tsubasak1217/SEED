@@ -176,8 +176,25 @@ public static class ScriptInspectorBuilder
         IReferenceDropResolver? onRefDrop)
     {
         values.TryGetValue(path, out var raw);
-        var t       = field.Field.FieldType;
-        var onLeaf  = (Action<string>)(s => onChange(path, s));
+        return BuildValueRow(field, raw, s => onChange(path, s), onRefDrop);
+    }
+
+    /// <summary>
+    /// 「現在値の文字列 1 本」と「変更通知」だけで 1 行を組む（フィールドパスに依存しない版）。
+    ///
+    /// 構造体配列の要素メンバ行のように、値がシーンの値マップではなく
+    /// JSON オブジェクトの中に入っているケースからも同じ行 UI を再利用するための入口。
+    /// 配列メンバ（入れ子の配列）は呼び出し側が
+    /// <see cref="ScriptArrayFieldBuilder"/> を直接使うこと（ここでは扱わない）。
+    /// </summary>
+    /// <param name="field">フィールド情報（ラベル・型・既定値）。</param>
+    /// <param name="raw">現在のシリアライズ値。null なら宣言時初期値を表示する。</param>
+    /// <param name="onLeaf">値変更の通知（シリアライズ値をそのまま渡す）。</param>
+    /// <param name="onRefDrop">参照フィールドのドロップ解決役（null ならドロップ不可）。</param>
+    internal static UIElement? BuildValueRow(
+        ScriptFieldInfo field, string? raw, Action<string> onLeaf, IReferenceDropResolver? onRefDrop)
+    {
+        var t = field.Field.FieldType;
 
         // 参照フィールド（GameObject / Transform / Camera …）は専用の行を作る
         if (field.Reference is { } refKind)

@@ -89,7 +89,13 @@ internal static class ScriptArrayFieldBuilder
 
         // 現在値: 保存値が無ければ宣言時初期値（実配列）を JSON 化して初期表示にする
         var json = rawValue ?? SEED.ScriptArray.EncodeValue(field.DefaultValue, arrayInfo.ElementType);
-        var elements = new List<string>(SEED.ScriptArray.Decode(json));
+
+        // 要素 1 個の文字列表現は、スカラ・参照なら素の値、構造体なら JSON オブジェクト。
+        // どちらも「文字列 1 本のリスト」として同じ手順（追加・削除・束ね直し）で扱える。
+        var isStruct = arrayInfo.StructMembers is not null;
+        var elements = new List<string>(isStruct
+            ? SEED.ScriptStructArray.DecodeObjects(json)
+            : SEED.ScriptArray.Decode(json));
 
         // 要素の並びを行 UI として作り直すためのコンテナ（追加・削除のたびに中身を作り替える）
         var rows = new StackPanel { Margin = new Thickness(ElementIndent, 2, 0, 2) };
@@ -142,7 +148,8 @@ internal static class ScriptArrayFieldBuilder
                         Rebuild();
                         Commit();
                     },
-                    onRefDrop, assetPathToVirtual));
+                    onRefDrop, assetPathToVirtual,
+                    expandStates, expandKey));
             }
 
             rows.Children.Add(MakeAddButton(arrayInfo, () =>
@@ -190,8 +197,16 @@ internal static class ScriptArrayFieldBuilder
         Action<string>          onElementChanged,
         Action                  onRemove,
         IReferenceDropResolver? onRefDrop,
-        Func<string, string>?   assetPathToVirtual)
+        Func<string, string>?   assetPathToVirtual,
+        ExpandStateStore?       expandStates,
+        string                  expandKey)
     {
+        // 構造体要素は 1 行に収まらないので、折りたたみグループ（[i] + メンバ行）にする
+        if (arrayInfo.StructMembers is not null)
+            return BuildStructElementGroup(
+                arrayInfo, index, value, onElementChanged, onRemove,
+                onRefDrop, assetPathToVirtual, expandStates, expandKey);
+
         var (editor, prefix) = BuildElementEditor(arrayInfo, value, onElementChanged, onRefDrop, assetPathToVirtual);
 
         var grid = new Grid { Margin = new Thickness(0, 1, 0, 1) };
@@ -225,6 +240,61 @@ internal static class ScriptArrayFieldBuilder
 
         return grid;
     }
+
+    /// <summary>
+    /// 構造体要素 1 個分の折りたたみグループ（ヘッダ「[i]」＋ 右端の [×]、中身はメンバ行）を作る。
+    ///
+    /// メンバ行の構築は <see cref="ScriptStructElementBuilder"/> に任せる（単一責任）。
+    /// 折りたたみ状態は「配列のキー + 要素番号」で記憶する。要素を削除すると
+    /// 以降の番号がずれるが、開閉状態が 1 つずれるだけで値には影響しない。
+    /// </summary>
+    private static UIElement BuildStructElementGroup(
+        ScriptArrayFieldInfo    arrayInfo,
+        int                     index,
+        string                  objectJson,
+        Action<string>          onElementChanged,
+        Action                  onRemove,
+        IReferenceDropResolver? onRefDrop,
+        Func<string, string>?   assetPathToVirtual,
+        ExpandStateStore?       expandStates,
+        string                  expandKey)
+    {
+        var elementKey = $"{expandKey}{StructElementKeySeparator}{index}";
+
+        var members = ScriptStructElementBuilder.Build(
+            arrayInfo, objectJson, onElementChanged,
+            onRefDrop, assetPathToVirtual, expandStates, elementKey);
+
+        var expander = new Expander
+        {
+            IsExpanded = true,
+            Header     = $"[{index}]",
+            Foreground = BrushText,
+            FontSize   = RowFontSize,
+            Margin     = new Thickness(0, 1, 0, 1),
+            Content    = members,
+            ToolTip    = $"{arrayInfo.ElementType.Name} の {index} 番目の要素",
+        };
+        expandStates?.Track(expander, elementKey, defaultExpanded: true);
+
+        // 折りたたみ（可変幅）と削除ボタン（固定幅）を横並びにする
+        var grid = new Grid { Margin = new Thickness(0, 1, 0, 1) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        Grid.SetColumn(expander, 0);
+        grid.Children.Add(expander);
+
+        var removeBtn = MakeIconButton("Icon.Close", BrushRemove, $"{index} 番目の要素を削除する", onRemove);
+        removeBtn.VerticalAlignment = VerticalAlignment.Top;
+        Grid.SetColumn(removeBtn, 1);
+        grid.Children.Add(removeBtn);
+
+        return grid;
+    }
+
+    /// <summary>要素の折りたたみ状態キーで「配列キー」と「要素番号」を繋ぐ区切り。</summary>
+    private const string StructElementKeySeparator = "#";
 
     /// <summary>
     /// 要素型に応じた入力部品を作る。

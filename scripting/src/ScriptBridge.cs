@@ -507,8 +507,11 @@ public static unsafe class ScriptBridge
     ///
     /// 形式: <c>[{"name":"stats.hp","type":"int","default":"10"}, ...]</c>
     ///  - name    : ドット区切りのフィールドパス（<see cref="SetFieldValue"/> と同じ表記）
-    ///  - type    : float / double / int / long / short / bool / string / reference / unsupported
+    ///  - type    : float / double / int / long / short / bool / string / reference / unsupported、
+    ///              配列フィールドは array:&lt;要素型タグ&gt;（構造体配列は array:struct:&lt;構造体名&gt;）
     ///  - default : 宣言時初期値の文字列化（reference / unsupported は空文字）
+    ///  - members : 構造体配列のときだけ付く、要素構造体のメンバ定義配列
+    ///              （[{"name":..,"label":..,"type":..,"default":..}, ...]）
     ///
     /// **生成直後のインスタンスに対して呼ぶこと。** 値を書き込んだ後に呼ぶと、
     /// 「既定値」ではなく「書き込み済みの値」が返ってしまう。
@@ -583,8 +586,17 @@ public static unsafe class ScriptBridge
             if (sb.Length > 1) sb.Append(',');   // "[" だけのときは区切り不要
             sb.Append("{\"name\":").Append(JsonString(path))
               .Append(",\"type\":").Append(JsonString(TypeTagOf(f.FieldType, isRef)))
-              .Append(",\"default\":").Append(JsonString(DefaultValueString(f.FieldType, isRef, value)))
-              .Append('}');
+              .Append(",\"default\":").Append(JsonString(DefaultValueString(f.FieldType, isRef, value)));
+
+            // 構造体配列（array:struct:Xxx）はメンバのレイアウトも渡す。
+            // Rust 側はこれを見て「メンバ名＋型が合う要素か」を確かめ、引き継ぎ可否を決める。
+            if (!isRef && SEED.ScriptArray.TryGetElementType(f.FieldType, out var structElem, out _) &&
+                SEED.ScriptStructArray.TryGetLayout(structElem, out var structMembers))
+            {
+                sb.Append(",\"members\":").Append(SEED.ScriptStructArray.MembersMetadataJson(structMembers));
+            }
+
+            sb.Append('}');
         }
     }
 
@@ -702,8 +714,14 @@ public static unsafe class ScriptBridge
     {
         if (!TryResolveLeafFieldType(root.GetType(), path, out var leafType)) return false;
         if (SEED.ScriptReference.TryGetKind(leafType, out _)) return true;
-        return SEED.ScriptArray.TryGetElementType(leafType, out var elementType, out _)
-            && SEED.ScriptReference.TryGetKind(elementType, out _);
+        if (!SEED.ScriptArray.TryGetElementType(leafType, out var elementType, out _)) return false;
+        if (SEED.ScriptReference.TryGetKind(elementType, out _)) return true;
+
+        // 構造体配列は「参照メンバ（単体・配列とも）を 1 つでも含む」ときだけ遅延させる。
+        // 参照を含まない構造体配列はその場で組み立てられるので即時適用にする
+        //（遅延キューは OnStart 直前に 1 度しか掃かれないため、不要な遅延は避ける）。
+        return SEED.ScriptStructArray.TryGetLayout(elementType, out var members)
+            && members.Any(m => m.NeedsWorld);
     }
 
     /// <summary>
@@ -717,6 +735,17 @@ public static unsafe class ScriptBridge
         object owner, System.Reflection.FieldInfo leaf, string value)
     {
         var leafType = leaf.FieldType;
+
+        // 構造体配列（参照メンバを含むもの）: メンバ単位で解決して作り直す。
+        // 参照メンバは Resolve、それ以外は通常の ConvertValue と同じ規則で変換する。
+        if (SEED.ScriptArray.TryGetElementType(leafType, out var structElem, out var structIsList) &&
+            SEED.ScriptStructArray.TryGetLayout(structElem, out var structMembers))
+        {
+            var built = SEED.ScriptStructArray.BuildInstance(
+                structElem, structIsList, value, structMembers, ResolveOrConvert);
+            leaf.SetValue(owner, built);
+            return;
+        }
 
         // 参照配列: 要素ごとに解決して T[] / List<T> を作り直す
         if (!SEED.ScriptReference.TryGetKind(leafType, out _) &&
@@ -732,6 +761,15 @@ public static unsafe class ScriptBridge
 
         leaf.SetValue(owner, SEED.ScriptReference.Resolve(leafType, value));
     }
+
+    /// <summary>
+    /// 参照型なら実体へ解決し、それ以外は通常の型変換を行う（構造体配列のメンバ用）。
+    /// World 公開中（<see cref="ResolveReferenceFields"/> 実行中）にのみ呼ぶこと。
+    /// </summary>
+    private static object? ResolveOrConvert(Type type, string value)
+        => SEED.ScriptReference.TryGetKind(type, out _)
+            ? SEED.ScriptReference.Resolve(type, value)
+            : ConvertValue(type, value);
 
     // ─── スクリプト例外の捕捉とログ抑制 ───────────────────────
     //
@@ -979,6 +1017,18 @@ public static unsafe class ScriptBridge
     /// </summary>
     private static object? ConvertValue(Type type, string value)
     {
+        // 構造体配列フィールド: JSON オブジェクト配列文字列 → List<構造体> / 構造体[]
+        // 参照メンバを含む構造体は World が必要なのでここでは扱わない
+        //（NeedsDeferredReferenceResolution が真になり ResolveReferenceFields が担当する）。
+        if (SEED.ScriptArray.TryGetElementType(type, out var structElem, out var structIsList) &&
+            SEED.ScriptStructArray.TryGetLayout(structElem, out var structMembers))
+        {
+            return structMembers.Any(m => m.NeedsWorld)
+                ? null
+                : SEED.ScriptStructArray.BuildInstance(
+                      structElem, structIsList, value, structMembers, ConvertValue);
+        }
+
         // 配列フィールド: JSON 配列文字列 → T[] / List<T>
         if (SEED.ScriptArray.TryGetElementType(type, out var elementType, out var isList) &&
             SEED.ScriptArray.TryGetElementKind(elementType, out _, out var isRefElement) &&

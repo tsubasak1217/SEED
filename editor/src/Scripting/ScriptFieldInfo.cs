@@ -22,7 +22,19 @@ public readonly record struct ScriptArrayFieldInfo(
     bool                                IsList,
     SEED.ScriptArrayElementKind         ElementKind,
     SEED.ScriptReference.ReferenceKind? ElementReference
-);
+)
+{
+    /// <summary>
+    /// 要素が <c>[System.Serializable]</c> 構造体の場合の、そのメンバ一覧。
+    /// スカラ要素・参照要素の配列では null。
+    ///
+    /// 要素 1 個は JSON オブジェクト（<c>{"spawnDistance":10.0,...}</c>）として保存され、
+    /// インスペクタはこのメンバ一覧から「要素の折りたたみ内に並べる行」を組む。
+    /// メンバ行の構築には通常のフィールド行ビルダーをそのまま再利用できるよう、
+    /// メンバも <see cref="ScriptFieldInfo"/> として保持する（正典は <see cref="SEED.ScriptStructArray"/>）。
+    /// </summary>
+    public IReadOnlyList<ScriptFieldInfo>? StructMembers { get; init; }
+}
 
 /// <summary>
 /// インスペクタに表示する [SerializeField] フィールド 1 件の情報。

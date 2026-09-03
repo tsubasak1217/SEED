@@ -320,12 +320,30 @@
 
   <h3>配列・リストのフィールド</h3>
   <p class="section-note"><code>T[]</code> と <code>List&lt;T&gt;</code> のフィールドは、インスペクタで<b>要素を追加・削除できる折りたたみ行</b>になります。見出しは「フィールド名 (件数)」で、<code>[＋]</code> が末尾への追加、行ごとの <code>[×]</code> がその要素の削除です。追加された要素の初期値は数値なら 0、真偽値なら <code>false</code>、文字列・参照は未設定です。</p>
-  <p class="section-note">対応する要素型は <code>float</code> / <code>double</code> / <code>int</code> / <code>long</code> / <code>short</code> / <code>bool</code> / <code>string</code> と、参照フィールドに使える型（<code>GameObject</code> / <code>Transform</code> / <code>Camera</code> などのハンドル型）です。それ以外の要素型（列挙型・<code>[Serializable]</code> クラスなど）と多次元配列・ジャグ配列（<code>float[,]</code> / <code>float[][]</code>）は対象外で、従来どおり読み取り専用表示になります。</p>
+  <p class="section-note">対応する要素型は <code>float</code> / <code>double</code> / <code>int</code> / <code>long</code> / <code>short</code> / <code>bool</code> / <code>string</code>、参照フィールドに使える型（<code>GameObject</code> / <code>Transform</code> / <code>Camera</code> などのハンドル型）、および <code>[System.Serializable]</code> を付けた自作の構造体／クラス（後述）です。それ以外の要素型（列挙型など）と多次元配列・ジャグ配列（<code>float[,]</code> / <code>float[][]</code>）は対象外で、従来どおり読み取り専用表示になります。</p>
   <p class="section-note">参照要素は単体の参照フィールドと同じく Hierarchy から D&amp;D で設定でき、<code>OnStart</code> の直前に解決されます。<code>string</code> 要素の行には Project パネルから <code>.actor</code> ファイルをドロップでき、<code>assets://</code> 仮想パスが入ります（<code>GameObject.Instantiate(path)</code> へそのまま渡せます）。</p>
   <p class="section-note">保存形式は 1 フィールド = JSON 配列文字列（例 <code>[1.0,2.5]</code> / <code>["a","b"]</code>）です。再コンパイル時の値引き継ぎは<b>要素型まで一致するときだけ</b>行われます（<code>float[]</code> → <code>string[]</code> のような変更では宣言時の初期値に戻ります）。</p>
 <pre>[<span class="t">SerializeField</span>(Label = <span class="s">"巡回速度"</span>)]   <span class="k">private float</span>[] patrolSpeeds = { 1.0f, 2.0f };
 [<span class="t">SerializeField</span>(Label = <span class="s">"出現プレハブ"</span>)] <span class="k">private</span> List&lt;<span class="k">string</span>&gt; spawnPrefabs = <span class="k">new</span>();
 [<span class="t">SerializeField</span>(Label = <span class="s">"追従対象"</span>)]   <span class="k">private</span> SEED.Transform[] followTargets;</pre>
+
+  <h3>構造体のリスト（<code>[System.Serializable]</code> 構造体の配列）</h3>
+  <p class="section-note"><code>[System.Serializable]</code> を付けた構造体／クラスを要素にすると、<b>「1 件ぶんのまとまり」を単位に増やしていけるデータ表</b>をインスペクタで組めます。配列の折りたたみの中に、要素ごとの折りたたみ（<code>[0]</code> <code>[1]</code> …）が並び、その中に構造体メンバの行が出ます。<code>[＋]</code> で 1 件追加、要素右端の <code>[×]</code> でその 1 件を削除します。</p>
+  <p class="section-note">メンバに使えるのは <code>[SerializeField]</code> を付けた public / private フィールドで、型は<b>スカラ型（<code>float</code> / <code>double</code> / <code>int</code> / <code>long</code> / <code>short</code> / <code>bool</code> / <code>string</code>）・参照型・それらの <code>List&lt;&gt;</code> / 配列</b>です。メンバの <code>List&lt;&gt;</code> は要素の追加・削除まで編集できます。<b>入れ子は 1 段まで</b>で、構造体の中に構造体（またはそのリスト）を置くと、そのフィールド全体が対象外になり読み取り専用表示へ落ちます。</p>
+  <p class="section-note">追加した要素の初期値は、クラス要素なら宣言時の初期化子、構造体要素なら言語既定値（0 / <code>false</code> / 空）です。保存形式は 1 フィールド = JSON オブジェクト配列文字列（例 <code>[{"spawnDistance":10.0,"fishPrefabs":["assets://fish.actor"]}]</code>）です。</p>
+  <p class="section-note">再コンパイル時の値引き継ぎは<b>メンバ名で照合</b>します。メンバを増やしても既存の値は残り（新メンバは既定値）、削除したメンバの値は無視されます。同名メンバの<b>型を変えた場合だけ</b>、そのフィールドが宣言時の初期値へ戻ります。</p>
+<pre>[<span class="t">System.Serializable</span>]
+<span class="k">public struct</span> <span class="t">FishLevelEntry</span>
+{
+    [<span class="t">SerializeField</span>(Label = <span class="s">"出現距離"</span>)]        <span class="k">public float</span> spawnDistance;
+    [<span class="t">SerializeField</span>(Label = <span class="s">"魚prefab(.actor)"</span>)] <span class="k">public</span> List&lt;<span class="k">string</span>&gt; fishPrefabs;
+}
+
+<span class="k">public class</span> <span class="t">FishManager</span> : <span class="t">SEEDScript</span>
+{
+    [<span class="t">SerializeField</span>(Label = <span class="s">"レベル定義"</span>)]
+    <span class="k">private</span> List&lt;<span class="t">FishLevelEntry</span>&gt; levels = <span class="k">new</span>();
+}</pre>
 </section>
 
 <!-- ════════════════ 2. ライフサイクル ════════════════ -->

@@ -49,6 +49,27 @@ pub struct ScriptFieldDef {
     pub type_tag: String,
     #[serde(rename = "default")]
     pub default_value: String,
+    /// 構造体配列（`array:struct:Xxx`）のときだけ入る、要素構造体のメンバ定義。
+    /// それ以外のフィールドでは空 Vec（CLR も `members` キー自体を出さない）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<ScriptStructMemberDef>,
+}
+
+/// 構造体配列の要素メンバ 1 件の定義（CLR 側 `ScriptStructMemberInfo` に対応）。
+///
+/// - `name`     : JSON オブジェクトのキー（＝メンバのフィールド名）
+/// - `label`    : インスペクタ表示名（Rust では判定に使わないが、往復の情報欠落を避けて保持する）
+/// - `type_tag` : `float`/`int`/`bool`/`string`/`reference` と入れ子配列 `array:<要素型タグ>`
+/// - `default_value`: 宣言時初期値の文字列化
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptStructMemberDef {
+    pub name: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(rename = "type")]
+    pub type_tag: String,
+    #[serde(rename = "default", default)]
+    pub default_value: String,
 }
 
 /// 保存済みの値が、新しいフィールド定義の型で解釈できるかを判定する。
@@ -57,10 +78,14 @@ pub struct ScriptFieldDef {
 /// `string` / `reference` は任意の文字列を受け付ける（前者は素の文字列、
 /// 後者はアクター名の文字列として保存されるため）。
 /// `unsupported`（インスペクタが扱えない型）は常に既定値へ落とす。
-fn value_matches_type(type_tag: &str, value: &str) -> bool {
+fn value_matches_type(type_tag: &str, value: &str, members: &[ScriptStructMemberDef]) -> bool {
     // 配列フィールド（"array:要素型タグ"）は JSON 配列として解釈し、
     // すべての要素が要素型タグに適合するかを見る。
     if let Some(element_tag) = type_tag.strip_prefix(ARRAY_TYPE_TAG_PREFIX) {
+        // 構造体配列（"array:struct:Xxx"）は JSON オブジェクト配列として解釈する
+        if element_tag.starts_with(STRUCT_TYPE_TAG_PREFIX) {
+            return struct_array_value_matches(members, value);
+        }
         return array_value_matches_type(element_tag, value);
     }
 
@@ -75,6 +100,66 @@ fn value_matches_type(type_tag: &str, value: &str) -> bool {
 
 /// 配列フィールドの型タグ接頭辞（C# 側 `SEED.ScriptArray.TypeTagPrefix` と一致させること）。
 const ARRAY_TYPE_TAG_PREFIX: &str = "array:";
+
+/// 構造体要素の型タグ接頭辞（C# 側 `SEED.ScriptStructArray.StructTypeTagPrefix` と一致させること）。
+const STRUCT_TYPE_TAG_PREFIX: &str = "struct:";
+
+/// 保存済みの JSON オブジェクト配列文字列が、構造体配列として引き継げるかを判定する。
+///
+/// 【規則】
+/// - 値全体が JSON 配列で、要素がすべて JSON オブジェクトであること
+/// - 各オブジェクトについて、**宣言に存在するメンバと同名のキー**は
+///   そのメンバの型タグに適合する JSON 値であること
+/// - 宣言に無いキー（削除されたメンバの残骸）は**無視**する
+/// - 宣言にあるがキーが無いメンバ（新設メンバ）は**欠損として許す**
+///   （CLR 側 `ScriptStructArray.DecodeMembers` が宣言時初期値で埋める）
+///
+/// 【なぜ寛容側なのか】
+/// 構造体はメンバを足し引きしながら育てるのが普通で、そのたびに
+/// 「レベル定義リスト全体が消える」のはデータ喪失に等しい。
+/// 一方、同名メンバの型が変わった（`float` → `string` など）場合は
+/// 値の意味が変わるので、非配列フィールドと同じく引き継がず既定値へ戻す。
+///
+/// なお構造体名（`struct:Xxx` の `Xxx`）は旧値側に記録が無く比較できないため、
+/// 一致判定はメンバ名＋型のみで行う（別構造体へ差し替えられた場合は
+/// メンバが噛み合わず、結果として既定値へ落ちる）。
+fn struct_array_value_matches(members: &[ScriptStructMemberDef], value: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value.trim()) else { return false };
+    let serde_json::Value::Array(items) = parsed else { return false };
+
+    items.iter().all(|item| {
+        let Some(obj) = item.as_object() else { return false };
+        members.iter().all(|m| match obj.get(&m.name) {
+            None      => true,   // 新設メンバ（欠損）は既定値で埋まるので許す
+            Some(v)   => json_value_matches_tag(&m.type_tag, v),
+        })
+    })
+}
+
+/// JSON 値 1 個が型タグに適合するかを判定する（構造体メンバ用）。
+///
+/// メンバの入れ子は 1 段まで（`array:<スカラ要素型>`）で、
+/// 構造体の中の構造体は CLR 側が非対応にしているためここでも扱わない。
+fn json_value_matches_tag(type_tag: &str, value: &serde_json::Value) -> bool {
+    if let Some(element_tag) = type_tag.strip_prefix(ARRAY_TYPE_TAG_PREFIX) {
+        let Some(items) = value.as_array() else { return false };
+        return items.iter().all(|item| json_scalar_matches_tag(element_tag, item));
+    }
+    json_scalar_matches_tag(type_tag, value)
+}
+
+/// JSON 値 1 個がスカラ型タグに適合するかを判定する。
+/// 数値・真偽・文字列の判定規則は `array_value_matches_type` と同一にする。
+fn json_scalar_matches_tag(type_tag: &str, value: &serde_json::Value) -> bool {
+    match type_tag {
+        "float" | "double"       => value.is_number(),
+        "int" | "long" | "short" => value.is_i64() || value.is_u64(),
+        "bool"                   => value.is_boolean(),
+        // 参照は未設定を null で書く場合があるので許容する（CLR 側は空文字として読む）
+        "string" | "reference"   => value.is_string() || value.is_null(),
+        _                        => false,
+    }
+}
 
 /// 保存済みの JSON 配列文字列が、要素型タグで解釈できるかを判定する。
 ///
@@ -128,7 +213,7 @@ pub fn carry_over_script_fields(
     let mut out = BTreeMap::new();
     for def in defs {
         if let Some(v) = old.get(&def.name) {
-            if value_matches_type(&def.type_tag, v) {
+            if value_matches_type(&def.type_tag, v, &def.members) {
                 out.insert(def.name.clone(), v.clone());
             }
         }
@@ -505,6 +590,26 @@ mod tests {
             name:          name.to_string(),
             type_tag:      type_tag.to_string(),
             default_value: default_value.to_string(),
+            members:       Vec::new(),
+        }
+    }
+
+    /// 構造体配列フィールド定義を組み立てる小ヘルパー。
+    /// members は (メンバ名, 型タグ) の並びで渡す。
+    fn struct_def(name: &str, struct_name: &str, members: &[(&str, &str)]) -> ScriptFieldDef {
+        ScriptFieldDef {
+            name:          name.to_string(),
+            type_tag:      format!("array:struct:{struct_name}"),
+            default_value: "[]".to_string(),
+            members:       members
+                .iter()
+                .map(|(n, t)| ScriptStructMemberDef {
+                    name:          n.to_string(),
+                    label:         n.to_string(),
+                    type_tag:      t.to_string(),
+                    default_value: String::new(),
+                })
+                .collect(),
         }
     }
 
@@ -727,5 +832,128 @@ mod tests {
         let json = r#"[{"name":"speed","type":"float","default":"1.5"}]"#;
         let defs: Vec<ScriptFieldDef> = serde_json::from_str(json).unwrap();
         assert_eq!(defs, vec![def("speed", "float", "1.5")]);
+    }
+
+    // ── 構造体配列（array:struct:Xxx）の引き継ぎ ───────────────
+
+    /// メンバ名・型が噛み合う JSON オブジェクト配列はそのまま引き継ぐ。
+    #[test]
+    fn struct_array_carries_over_when_members_match() {
+        let defs = [struct_def(
+            "levels",
+            "FishLevelEntry",
+            &[("spawnDistance", "float"), ("fishPrefabs", "array:string")],
+        )];
+        let value = r#"[{"spawnDistance":10.0,"fishPrefabs":["a.actor"]},{"spawnDistance":25,"fishPrefabs":[]}]"#;
+        let merged = carry_over_script_fields(&old(&[("levels", value)]), &defs);
+        assert_eq!(merged.get("levels").map(String::as_str), Some(value));
+    }
+
+    /// 空配列は常に引き継ぐ（要素が無いので型の食い違いが起きない）。
+    #[test]
+    fn empty_struct_array_carries_over() {
+        let defs = [struct_def("levels", "FishLevelEntry", &[("spawnDistance", "float")])];
+        let merged = carry_over_script_fields(&old(&[("levels", "[]")]), &defs);
+        assert_eq!(merged.get("levels").map(String::as_str), Some("[]"));
+    }
+
+    /// 新設メンバ（保存値に無いキー）は欠損として許し、値全体を引き継ぐ。
+    /// 実際の値埋めは CLR 側が宣言時初期値で行う。
+    #[test]
+    fn struct_array_allows_missing_new_member() {
+        let defs = [struct_def(
+            "levels",
+            "FishLevelEntry",
+            &[("spawnDistance", "float"), ("rarity", "int")],   // rarity を後から追加した状況
+        )];
+        let value = r#"[{"spawnDistance":10.0}]"#;
+        let merged = carry_over_script_fields(&old(&[("levels", value)]), &defs);
+        assert_eq!(merged.get("levels").map(String::as_str), Some(value));
+    }
+
+    /// 宣言から消えたメンバの残骸キーは無視して引き継ぐ。
+    #[test]
+    fn struct_array_ignores_removed_member_key() {
+        let defs = [struct_def("levels", "FishLevelEntry", &[("spawnDistance", "float")])];
+        let value = r#"[{"spawnDistance":10.0,"legacyName":"old"}]"#;
+        let merged = carry_over_script_fields(&old(&[("levels", value)]), &defs);
+        assert_eq!(merged.get("levels").map(String::as_str), Some(value));
+    }
+
+    /// 同名メンバの型が変わったら引き継がない（値の意味が変わるため）。
+    #[test]
+    fn struct_array_drops_when_member_type_changed() {
+        // float → string へ変えた
+        let defs = [struct_def("levels", "FishLevelEntry", &[("spawnDistance", "string")])];
+        let merged = carry_over_script_fields(
+            &old(&[("levels", r#"[{"spawnDistance":10.0}]"#)]),
+            &defs,
+        );
+        assert!(!merged.contains_key("levels"));
+
+        // int メンバに小数が入っている（スカラの int と同じ厳しさ）
+        let defs = [struct_def("levels", "FishLevelEntry", &[("rarity", "int")])];
+        let merged = carry_over_script_fields(
+            &old(&[("levels", r#"[{"rarity":1.5}]"#)]),
+            &defs,
+        );
+        assert!(!merged.contains_key("levels"));
+
+        // 入れ子配列メンバの要素型が変わった（string[] → float[]）
+        let defs = [struct_def("levels", "FishLevelEntry", &[("fishPrefabs", "array:float")])];
+        let merged = carry_over_script_fields(
+            &old(&[("levels", r#"[{"fishPrefabs":["a.actor"]}]"#)]),
+            &defs,
+        );
+        assert!(!merged.contains_key("levels"));
+    }
+
+    /// スカラ配列 ⇔ 構造体配列の相互変更では引き継がない。
+    #[test]
+    fn struct_array_and_scalar_array_do_not_mix() {
+        // float[] の値 → 構造体配列へ変更
+        let defs = [struct_def("levels", "FishLevelEntry", &[("spawnDistance", "float")])];
+        let merged = carry_over_script_fields(&old(&[("levels", "[1.0,2.0]")]), &defs);
+        assert!(!merged.contains_key("levels"));
+
+        // 構造体配列の値 → float[] へ変更
+        let merged = carry_over_script_fields(
+            &old(&[("levels", r#"[{"spawnDistance":10.0}]"#)]),
+            &[def("levels", "array:float", "[]")],
+        );
+        assert!(!merged.contains_key("levels"));
+    }
+
+    /// 壊れた JSON・配列でない値は引き継がない。
+    #[test]
+    fn broken_struct_array_value_is_dropped() {
+        let defs = [struct_def("levels", "FishLevelEntry", &[("spawnDistance", "float")])];
+        for broken in [r#"[{"spawnDistance":10.0"#, r#"{"spawnDistance":10.0}"#, "not json"] {
+            let merged = carry_over_script_fields(&old(&[("levels", broken)]), &defs);
+            assert!(!merged.contains_key("levels"), "引き継いではいけない値: {broken}");
+        }
+    }
+
+    /// 参照メンバは未設定を null で書いても引き継げる（CLR は空文字として読む）。
+    #[test]
+    fn struct_array_accepts_null_reference_member() {
+        let defs = [struct_def("slots", "SpawnSlot", &[("target", "reference")])];
+        let value = r#"[{"target":null},{"target":"Player"}]"#;
+        let merged = carry_over_script_fields(&old(&[("slots", value)]), &defs);
+        assert_eq!(merged.get("slots").map(String::as_str), Some(value));
+    }
+
+    /// CLR が返す構造体配列 JSON（members 付き）をそのままデシリアライズできる。
+    #[test]
+    fn parses_clr_struct_json_shape() {
+        let json = r#"[{"name":"levels","type":"array:struct:FishLevelEntry","default":"[]",
+            "members":[{"name":"spawnDistance","label":"出現距離","type":"float","default":"0"},
+                       {"name":"fishPrefabs","label":"魚prefab","type":"array:string","default":"[]"}]}]"#;
+        let defs: Vec<ScriptFieldDef> = serde_json::from_str(json).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].type_tag, "array:struct:FishLevelEntry");
+        assert_eq!(defs[0].members.len(), 2);
+        assert_eq!(defs[0].members[0].name, "spawnDistance");
+        assert_eq!(defs[0].members[1].type_tag, "array:string");
     }
 }

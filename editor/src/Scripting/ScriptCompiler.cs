@@ -293,6 +293,21 @@ public static class ScriptCompiler
                 SEED.ScriptReference.TryGetKind(elemType, out var elemRef) ? elemRef : null);
         }
 
+        // 要素が [Serializable] 構造体の配列（List<FishLevelEntry> など）。
+        // メンバ行は通常のフィールド行ビルダーで組めるよう ScriptFieldInfo として展開しておく。
+        // TryGetLayout が真＝全メンバがスカラ／参照／1 段の配列であることが保証されているので、
+        // ここで展開した子に Children（入れ子の構造体）が現れることはない。
+        if (reference is null && arrayInfo is null
+            && SEED.ScriptArray.TryGetElementType(f.FieldType, out var structElem, out var structIsList)
+            && SEED.ScriptStructArray.TryGetLayout(structElem, out _))
+        {
+            arrayInfo = new ScriptArrayFieldInfo(
+                structElem, structIsList, SEED.ScriptArrayElementKind.Struct, null)
+            {
+                StructMembers = ExtractFields(structElem, depth + 1),
+            };
+        }
+
         // [Serializable] なネストクラスなら子フィールドを再帰展開する。
         // 参照フィールドはハンドル構造体なので展開対象から除外する
         // （ハンドルの内部 entity をインスペクタに晒さないため）。

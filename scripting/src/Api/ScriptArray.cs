@@ -20,6 +20,13 @@ public enum ScriptArrayElementKind
 
     /// <summary>文字列および参照（アクタ名 "Player" / "Player|Slot"）。JSON では引用符付きで書く。</summary>
     Text,
+
+    /// <summary>
+    /// <c>[Serializable]</c> 構造体。要素 1 個の文字列表現がそのまま JSON オブジェクト
+    /// （<c>{"a":1,"b":["x"]}</c>）なので、JSON へは引用符もエスケープも付けずそのまま書く。
+    /// 中身の組み立て・分解は <see cref="ScriptStructArray"/> が担う。
+    /// </summary>
+    Struct,
 }
 
 /// <summary>
@@ -144,6 +151,8 @@ public static class ScriptArray
     public static string? ElementTypeTag(Type elementType)
     {
         if (ScriptReference.TryGetKind(elementType, out _)) return "reference";
+        // [Serializable] 構造体要素は "struct:構造体名"（メンバのレイアウトは別途 members で渡す）
+        if (ScriptStructArray.TryGetLayout(elementType, out _)) return ScriptStructArray.ElementTypeTag(elementType);
         if (elementType == typeof(float))  return "float";
         if (elementType == typeof(double)) return "double";
         if (elementType == typeof(int))    return "int";
@@ -160,6 +169,10 @@ public static class ScriptArray
     /// </summary>
     public static string DefaultElementValue(Type elementType)
     {
+        // 構造体要素は「全メンバを既定値で埋めた JSON オブジェクト」が既定値になる
+        if (ScriptStructArray.TryGetLayout(elementType, out var members))
+            return ScriptStructArray.DefaultObjectJson(members);
+
         if (!TryGetElementKind(elementType, out var kind, out var isRef)) return "";
         if (isRef) return ScriptReference.UnsetValue;
         return kind switch
@@ -279,6 +292,9 @@ public static class ScriptArray
     /// </summary>
     public static string Encode(IReadOnlyList<string> elements, ScriptArrayElementKind kind)
     {
+        // 構造体要素は 1 個の文字列表現がすでに JSON オブジェクトなので、そのまま束ねる
+        if (kind == ScriptArrayElementKind.Struct) return ScriptStructArray.EncodeObjects(elements);
+
         var inv = CultureInfo.InvariantCulture;
         var sb  = new StringBuilder("[");
         for (int i = 0; i < elements.Count; i++)
@@ -313,6 +329,10 @@ public static class ScriptArray
     /// </summary>
     public static string EncodeValue(object? arrayOrList, Type elementType)
     {
+        // 構造体要素は JSON オブジェクト配列として書き出す（メンバごとの値を保つ）
+        if (ScriptStructArray.TryGetLayout(elementType, out var structMembers))
+            return ScriptStructArray.EncodeValue(arrayOrList, structMembers);
+
         if (arrayOrList is not IEnumerable seq) return EmptyJson;
         if (!TryGetElementKind(elementType, out var kind, out var isReference)) return EmptyJson;
 
