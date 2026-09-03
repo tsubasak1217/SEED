@@ -41,6 +41,21 @@ public class CameraMove : SEEDScript
     [SerializeField(Label = "プレイヤー（移動ロール用）")]
     private SEED.Transform? player = null;
 
+    /// <summary>
+    /// プレイヤーの移動スクリプト（<b>状態の参照にのみ</b>使う）。
+    /// 釣り姿勢のあいだだけ目標を <see cref="fishingTarget"/> へ切り替えるために参照する。
+    /// 未設定なら常に <see cref="target"/> を追う（従来どおりの動作）。
+    /// </summary>
+    [SerializeField(Label = "プレイヤー（状態参照）")]
+    private PlayerMove? playerMove = null;
+
+    /// <summary>
+    /// 釣り姿勢中に目指すトランスフォーム（プレイヤーの子に置く想定）。
+    /// 未設定・無効なら釣り姿勢でも <see cref="target"/> を追い続ける。
+    /// </summary>
+    [SerializeField(Label = "釣り時の目標トランスフォーム")]
+    private SEED.Transform? fishingTarget = null;
+
     // ─── 追従パラメータ ───────────────────────────────────────
 
     /// <summary>
@@ -104,7 +119,7 @@ public class CameraMove : SEEDScript
     /// <summary>Update 後の更新。目標トランスフォームが確定した後に追従する。</summary>
     public override void LateUpdate(ref NativeFrameContext ctx)
     {
-        if (target is not { } t || !t.IsValid) { return; }
+        if (SelectGoalTransform() is not { } t || !t.IsValid) { return; }
 
         // 目標 = 目標トランスフォームの位置・回転そのまま。
         // 構図の計算はシーンの親子配置に完全に委ねる（このスクリプトは補間とロールだけを担う）。
@@ -163,6 +178,27 @@ public class CameraMove : SEEDScript
     }
 
     // ─── 内部処理 ─────────────────────────────────────────────
+
+    /// <summary>
+    /// このフレームに追うべき目標トランスフォームを選ぶ。
+    ///
+    /// プレイヤーが釣り姿勢のあいだだけ <see cref="fishingTarget"/>、それ以外は
+    /// <see cref="target"/>。補間処理は共通なので、切り替えても構図は滑らかに繋がる。
+    ///
+    /// 参照スクリプトは毎フレーム見に行く（フィールドへ写して保持しない）。
+    /// スクリプトのホットリロードや対象の破棄で参照が入れ替わるため、
+    /// 別フィールドへキャッシュすると古いインスタンスを掴み続けてしまう。
+    /// </summary>
+    /// <returns>追従先のトランスフォーム。決められなければ null。</returns>
+    private SEED.Transform? SelectGoalTransform()
+    {
+        bool isFishing = playerMove is { } pm
+            && pm.State == PlayerMove.PlayerState.FishingStance;
+
+        if (isFishing && fishingTarget is { } ft && ft.IsValid) { return ft; }
+
+        return target;
+    }
 
     /// <summary>
     /// 移動に応じた目標ロール（度）を返す。

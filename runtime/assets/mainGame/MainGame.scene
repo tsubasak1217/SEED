@@ -423,6 +423,7 @@
                 "followPathHeight": "false",
                 "moveSpeed": "10.000",
                 "path": "ControlPoints|ControlPoint",
+                "rodAnimator": "sao|Animator",
                 "runningClip": "WalkCarry"
               }
             }
@@ -682,6 +683,28 @@
               }
             }
           ],
+          "children": []
+        },
+        {
+          "name": "FishingCameraTarget",
+          "transform": {
+            "position": [
+              38.313176,
+              4.211425,
+              16.309911
+            ],
+            "rotation": [
+              15.0,
+              39.03613,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [],
           "children": []
         }
       ]
@@ -1153,8 +1176,10 @@
             "data": {
               "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\CameraMove.cs",
               "fields": {
+                "fishingTarget": "FishingCameraTarget",
                 "maxRollDegrees": "1.500",
                 "player": "Player",
+                "playerMove": "Player|Script",
                 "positionLerpRate": "6.000",
                 "rollStrength": "1.000",
                 "rotationLerpRate": "6.000",
