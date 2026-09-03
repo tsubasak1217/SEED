@@ -312,6 +312,135 @@ pub fn scale_matrix_axis(pivot: [f32; 3], axis: [f32; 3], factor: f32) -> [[f32;
 }
 
 // ============================================================
+//  数値入力（Blender の「G/R/S のあと数字を打つ」相当）
+// ============================================================
+
+/// 数値入力バッファに積める数字の最大個数（符号・小数点は数えない）。
+///
+/// f32 の有効桁数を大きく超える入力は意味を持たないうえ、
+/// 押しっぱなしのキーリピートでバッファが際限なく伸びるのを防ぐ。
+pub const NUMERIC_MAX_DIGITS: usize = 12;
+
+/// 数値入力で受け付ける小数点文字。
+pub const NUMERIC_DOT: char = '.';
+
+/// 数値入力で受け付ける符号反転文字。
+pub const NUMERIC_SIGN: char = '-';
+
+/// モーダルトランスフォーム中の数値入力バッファ。
+///
+/// 【Blender の挙動に合わせた仕様】
+/// - 数字 `0-9` を打つと末尾に追加される
+/// - 小数点は 1 個まで。2 個目以降は無視する
+/// - `-` はカーソル位置に関係なく **符号のトグル**（先頭でなくてもよい）
+/// - Backspace は 1 文字削除。空になったらマウス駆動へ戻る
+///
+/// 【符号を本体文字列に含めない理由】
+/// Blender の `-` は「文字の挿入」ではなく「符号の反転」なので、
+/// 本体（数字と小数点の並び）とは独立したフラグとして持つ。
+/// こうすると Backspace が符号を巻き込んで消すこともない。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModalNumericInput {
+    /// 入力済みの数字と小数点の並び（符号は含まない）。
+    body: String,
+    /// 符号が負か。
+    negative: bool,
+}
+
+impl ModalNumericInput {
+    /// 空の入力バッファを作る。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 数値入力モードが有効か（＝1 文字でも本体が入っているか）。
+    ///
+    /// `-` だけを押した状態は「まだ数値が無い」ため false。
+    /// この判定が false の間はマウス駆動のままになる。
+    pub fn is_active(&self) -> bool {
+        !self.body.is_empty()
+    }
+
+    /// バッファを空に戻す（符号も解除する）。
+    pub fn clear(&mut self) {
+        self.body.clear();
+        self.negative = false;
+    }
+
+    /// 1 文字を入力として適用する。バッファが変化したら `true`。
+    ///
+    /// 受け付けるのは数字 `0-9` / 小数点 `.` / 符号 `-` のみ。
+    /// それ以外の文字、桁数上限超過、2 個目の小数点は無視して `false` を返す。
+    pub fn apply_char(&mut self, c: char) -> bool {
+        match c {
+            NUMERIC_SIGN => {
+                // Blender と同じく、どの位置で押しても符号のトグル
+                self.negative = !self.negative;
+                true
+            }
+            NUMERIC_DOT => {
+                // 小数点は 1 個まで（2 個目は無視）
+                if self.body.contains(NUMERIC_DOT) {
+                    return false;
+                }
+                self.body.push(NUMERIC_DOT);
+                true
+            }
+            d if d.is_ascii_digit() => {
+                // 桁数上限（小数点は桁数に数えない）
+                if self.body.chars().filter(|ch| ch.is_ascii_digit()).count() >= NUMERIC_MAX_DIGITS
+                {
+                    return false;
+                }
+                self.body.push(d);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 末尾の 1 文字を削除する。削除できたら `true`。
+    ///
+    /// 本体が空になったら符号も解除し、完全に初期状態へ戻す
+    /// （次にマウス駆動へ復帰したあと、また数値入力を始めても
+    ///   前回の符号を引きずらないようにするため）。
+    pub fn backspace(&mut self) -> bool {
+        if self.body.pop().is_none() {
+            // 本体が空でも符号だけ立っている状態は解除できる
+            if self.negative {
+                self.negative = false;
+                return true;
+            }
+            return false;
+        }
+        if self.body.is_empty() {
+            self.negative = false;
+        }
+        true
+    }
+
+    /// 現在の入力値。
+    ///
+    /// `"."` のように数値として解釈できない中間状態や、
+    /// 桁あふれで無限大になる入力は 0.0 として扱う
+    /// （行列生成へ NaN / inf を絶対に流さないため）。
+    pub fn value(&self) -> f32 {
+        let v = self.body.parse::<f32>().unwrap_or(0.0);
+        let v = if v.is_finite() { v } else { 0.0 };
+        if self.negative { -v } else { v }
+    }
+
+    /// 表示用の文字列（`-` + 本体）。エディタ／オーバーレイ表示に使う。
+    pub fn display(&self) -> String {
+        if self.negative {
+            format!("{NUMERIC_SIGN}{}", self.body)
+        } else {
+            self.body.clone()
+        }
+    }
+}
+
+// ============================================================
 //  ModalTransform — モーダル 1 回分の状態
 // ============================================================
 
@@ -367,6 +496,13 @@ pub struct ModalTransform {
     /// IPC で送ってくる。一度でも外部座標が来たら**そちらを正**とし、
     /// 自前の `CursorMoved` は無視する（同じ移動を二重に積まないため）。
     pub external_cursor: bool,
+
+    // ── 数値入力 ──────────────────────────────────────────────
+    /// 数値入力バッファ（Blender の「G/R/S のあと数字を打つ」相当）。
+    ///
+    /// 1 文字でも入ると駆動源がマウスから数値へ切り替わる
+    /// （`numeric_active()` が true の間、マウス移動は累積されない）。
+    pub numeric: ModalNumericInput,
 }
 
 impl ModalTransform {
@@ -398,6 +534,7 @@ impl ModalTransform {
             prev_angle: None,
             prev_dist: None,
             external_cursor: false,
+            numeric: ModalNumericInput::new(),
         }
     }
 
@@ -451,10 +588,76 @@ impl ModalTransform {
         self.constraint_dir().unwrap_or(self.view_forward)
     }
 
+    // ── 数値入力 ──────────────────────────────────────────────
+
+    /// 数値入力を受け付けられる状態か。
+    ///
+    /// 【軸未指定の移動（G だけ）を除外する理由】
+    /// Blender は軸未指定の G でも数値を打てるが、その場合は X/Y/Z の
+    /// 3 フィールドを Tab で渡り歩く別 UI になる。本エディタにはその
+    /// 入力欄表示が無く、単一の数値をどの方向へ適用するかを利用者が
+    /// 判断できないため、**移動は軸拘束済みのときだけ**数値入力を許す。
+    /// 回転（軸未指定＝ビュー方向軸）と拡縮（軸未指定＝全軸均一）は
+    /// 単一の数値で意味が定まるので、軸未指定でも受け付ける。
+    pub fn numeric_enabled(&self) -> bool {
+        !(self.kind == ModalKind::Move && self.constraint.is_none())
+    }
+
+    /// 現在マウスではなく数値入力で駆動されているか。
+    pub fn numeric_active(&self) -> bool {
+        self.numeric_enabled() && self.numeric.is_active()
+    }
+
+    /// 数値入力の 1 文字を適用する。バッファが変化したら `true`。
+    ///
+    /// 受け付けない状態（軸未指定の移動）では何もせず `false`。
+    pub fn apply_numeric_char(&mut self, c: char) -> bool {
+        if !self.numeric_enabled() {
+            return false;
+        }
+        self.numeric.apply_char(c)
+    }
+
+    /// 数値入力を 1 文字削除する。バッファが変化したら `true`。
+    pub fn numeric_backspace(&mut self) -> bool {
+        if !self.numeric_enabled() {
+            return false;
+        }
+        self.numeric.backspace()
+    }
+
+    /// 数値入力から直接デルタ行列を組み立てる（`numeric_active()` 時のみ使う）。
+    ///
+    /// 単位は Blender と同じく G=メートル / R=度 / S=倍率。
+    fn numeric_delta_matrix(&self) -> [[f32; 4]; 4] {
+        let v = self.numeric.value();
+        match self.kind {
+            // 移動: 拘束軸方向へ v[m]。numeric_enabled() が拘束の存在を保証する。
+            ModalKind::Move => {
+                let dir = self.constraint_dir().unwrap_or([0.0, 0.0, 0.0]);
+                translation_matrix([dir[0] * v, dir[1] * v, dir[2] * v])
+            }
+            // 回転: 軸まわりに v[度]（右手系。R X 90 で Blender と同じ向き）
+            ModalKind::Rotate => {
+                rotation_matrix_about(self.pivot, self.rotation_axis(), v.to_radians())
+            }
+            // 拡縮: 倍率 v。0 や負値は既存のスケール処理と同じく
+            // MIN_SCALE_FACTOR で下限クランプされる（行列が潰れないため）。
+            ModalKind::Scale => match self.constraint_dir() {
+                Some(dir) => scale_matrix_axis(self.pivot, dir, v),
+                None => scale_matrix_uniform(self.pivot, v),
+            },
+        }
+    }
+
     /// 累積量から現在のデルタ行列（ピボット基準）を組み立てる。
     ///
     /// 累積がゼロなら単位行列を返す（＝取消時にスナップショットへ完全復元できる）。
+    /// 数値入力中はマウス累積を無視し、打ち込まれた値をそのまま使う。
     pub fn delta_matrix(&self) -> [[f32; 4]; 4] {
+        if self.numeric_active() {
+            return self.numeric_delta_matrix();
+        }
         match self.kind {
             ModalKind::Move => translation_matrix(self.accum_translation),
             ModalKind::Rotate => {
@@ -1070,5 +1273,247 @@ mod tests {
         // 新しいモーダルでは自前の座標源から始まる
         let fresh = test_modal(ModalKind::Move);
         assert!(fresh.accepts_window_cursor());
+    }
+
+    // ── 数値入力バッファ（純関数）─────────────────────────────
+
+    /// 文字列を 1 文字ずつ流し込んだ入力バッファを作る。
+    fn typed(s: &str) -> ModalNumericInput {
+        let mut n = ModalNumericInput::new();
+        for c in s.chars() {
+            n.apply_char(c);
+        }
+        n
+    }
+
+    #[test]
+    fn numeric_empty_is_inactive_and_zero() {
+        let n = ModalNumericInput::new();
+        assert!(!n.is_active(), "空バッファは数値入力モードに入らない");
+        assert_eq!(n.value(), 0.0);
+        assert_eq!(n.display(), "");
+    }
+
+    #[test]
+    fn numeric_accepts_digits() {
+        let n = typed("123");
+        assert!(n.is_active());
+        assert_eq!(n.value(), 123.0);
+        assert_eq!(n.display(), "123");
+    }
+
+    #[test]
+    fn numeric_zero_is_active_and_zero_valued() {
+        // "0" は「値ゼロ」であって「未入力」ではない（S 0 は 0 倍指定）
+        let n = typed("0");
+        assert!(n.is_active());
+        assert_eq!(n.value(), 0.0);
+    }
+
+    #[test]
+    fn numeric_accepts_single_decimal_point_and_ignores_second() {
+        let mut n = ModalNumericInput::new();
+        assert!(n.apply_char('1'));
+        assert!(n.apply_char('.'), "1 個目の小数点は受理される");
+        assert!(n.apply_char('5'));
+        assert!(!n.apply_char('.'), "2 個目の小数点は無視される");
+        assert!(n.apply_char('2'));
+        assert_eq!(n.display(), "1.52");
+        assert!((n.value() - 1.52).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn numeric_leading_decimal_point_parses() {
+        // "." だけでは数値にならないので 0 扱い。数字が続けば通常どおり。
+        let dot_only = typed(".");
+        assert!(dot_only.is_active(), "小数点だけでも入力は始まっている");
+        assert_eq!(dot_only.value(), 0.0);
+
+        let n = typed(".5");
+        assert!((n.value() - 0.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn numeric_trailing_decimal_point_parses() {
+        let n = typed("7.");
+        assert!((n.value() - 7.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn numeric_minus_toggles_sign_anywhere() {
+        // 先頭で押しても途中で押しても符号反転（Blender 準拠）
+        let head = typed("-25");
+        assert_eq!(head.value(), -25.0);
+        assert_eq!(head.display(), "-25");
+
+        let mid = typed("2-5");
+        assert_eq!(mid.value(), -25.0, "途中の - も符号トグルであり挿入ではない");
+
+        let twice = typed("2-5-");
+        assert_eq!(twice.value(), 25.0, "2 回押すと元の符号へ戻る");
+    }
+
+    #[test]
+    fn numeric_minus_alone_does_not_activate() {
+        // 符号だけでは「値が無い」ので、マウス駆動のまま
+        let n = typed("-");
+        assert!(!n.is_active());
+        assert_eq!(n.value(), 0.0);
+    }
+
+    #[test]
+    fn numeric_backspace_removes_one_char() {
+        let mut n = typed("1.25");
+        assert!(n.backspace());
+        assert_eq!(n.display(), "1.2");
+        assert!(n.backspace());
+        assert_eq!(n.display(), "1.");
+        assert!(n.backspace());
+        assert_eq!(n.display(), "1");
+        assert!(n.is_active());
+    }
+
+    #[test]
+    fn numeric_backspace_to_empty_returns_to_mouse_and_clears_sign() {
+        let mut n = typed("-3");
+        assert!(n.backspace());
+        assert!(!n.is_active(), "全部消えたらマウス駆動へ戻る");
+        assert_eq!(n.display(), "", "符号も一緒に解除される");
+        assert_eq!(n.value(), 0.0);
+        assert!(!n.backspace(), "空バッファへの Backspace は何も変えない");
+    }
+
+    #[test]
+    fn numeric_backspace_clears_sign_only_state() {
+        let mut n = typed("-");
+        assert!(n.backspace(), "符号だけの状態も Backspace で解除できる");
+        assert_eq!(n.display(), "");
+        assert!(!n.backspace());
+    }
+
+    #[test]
+    fn numeric_rejects_non_numeric_chars() {
+        let mut n = ModalNumericInput::new();
+        assert!(!n.apply_char('a'));
+        assert!(!n.apply_char('+'));
+        assert!(!n.apply_char(' '));
+        assert!(!n.is_active());
+    }
+
+    #[test]
+    fn numeric_digit_count_is_capped() {
+        let long = "9".repeat(NUMERIC_MAX_DIGITS + 5);
+        let n = typed(&long);
+        let digits = n.display().chars().filter(|c| c.is_ascii_digit()).count();
+        assert_eq!(digits, NUMERIC_MAX_DIGITS, "桁数上限で頭打ちになる");
+        assert!(n.value().is_finite(), "上限内なら必ず有限値");
+    }
+
+    // ── 数値入力とモーダル状態の結合 ──────────────────────────
+
+    #[test]
+    fn numeric_disabled_for_unconstrained_move() {
+        // 軸未指定の G は数値入力を受け付けない（採用仕様）
+        let mut m = test_modal(ModalKind::Move);
+        assert!(!m.numeric_enabled());
+        assert!(!m.apply_numeric_char('5'));
+        assert!(!m.numeric_active());
+
+        // 軸を指定すると受け付けるようになる
+        m.press_axis(ModalAxis::X);
+        assert!(m.numeric_enabled());
+        assert!(m.apply_numeric_char('5'));
+        assert!(m.numeric_active());
+    }
+
+    #[test]
+    fn numeric_enabled_without_axis_for_rotate_and_scale() {
+        // R はビュー方向軸、S は全軸均一なので単一の数値で意味が定まる
+        assert!(test_modal(ModalKind::Rotate).numeric_enabled());
+        assert!(test_modal(ModalKind::Scale).numeric_enabled());
+    }
+
+    #[test]
+    fn numeric_move_translates_along_constrained_axis() {
+        let mut m = test_modal(ModalKind::Move);
+        m.press_axis(ModalAxis::X);
+        for c in "2.5".chars() {
+            m.apply_numeric_char(c);
+        }
+        assert_mat_near(
+            m.delta_matrix(),
+            translation_matrix([2.5, 0.0, 0.0]),
+            1.0e-5,
+        );
+    }
+
+    #[test]
+    fn numeric_overrides_mouse_accumulation() {
+        // マウスで動かしたあとに数字を打つと、数値がそのまま結果になる
+        let mut m = test_modal(ModalKind::Move);
+        m.press_axis(ModalAxis::X);
+        m.accumulate_move_axis(0.0, [1.0, 0.0, 0.0], 1.0);
+        m.accumulate_move_axis(9.0, [1.0, 0.0, 0.0], 1.0);
+        assert!((m.accum_translation[0] - 9.0).abs() < 1.0e-5);
+
+        m.apply_numeric_char('3');
+        assert_mat_near(m.delta_matrix(), translation_matrix([3.0, 0.0, 0.0]), 1.0e-5);
+
+        // Backspace で空にすればマウスの累積量へ戻る
+        m.numeric_backspace();
+        assert!(!m.numeric_active());
+        assert_mat_near(m.delta_matrix(), translation_matrix([9.0, 0.0, 0.0]), 1.0e-5);
+    }
+
+    #[test]
+    fn numeric_rotate_uses_degrees() {
+        let mut m = test_modal(ModalKind::Rotate);
+        m.press_axis(ModalAxis::Z);
+        for c in "90".chars() {
+            m.apply_numeric_char(c);
+        }
+        let d = m.delta_matrix();
+        let expect = rotation_matrix_about(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            std::f32::consts::FRAC_PI_2,
+        );
+        assert_mat_near(d, expect, 1.0e-5);
+    }
+
+    #[test]
+    fn numeric_scale_zero_is_clamped_to_min_factor() {
+        // 0 倍・負値でも行列が潰れない（既存のスケール処理と同じ下限クランプ）
+        let mut zero = test_modal(ModalKind::Scale);
+        zero.apply_numeric_char('0');
+        assert_mat_near(
+            zero.delta_matrix(),
+            scale_matrix_uniform([0.0, 0.0, 0.0], MIN_SCALE_FACTOR),
+            1.0e-6,
+        );
+
+        let mut neg = test_modal(ModalKind::Scale);
+        for c in "-2".chars() {
+            neg.apply_numeric_char(c);
+        }
+        assert_mat_near(
+            neg.delta_matrix(),
+            scale_matrix_uniform([0.0, 0.0, 0.0], MIN_SCALE_FACTOR),
+            1.0e-6,
+        );
+    }
+
+    #[test]
+    fn numeric_survives_axis_change() {
+        // Blender と同じく、軸を切り替えても打ち込んだ数値は保持される
+        let mut m = test_modal(ModalKind::Scale);
+        m.apply_numeric_char('3');
+        m.press_axis(ModalAxis::Y);
+        assert!(m.numeric_active());
+        assert_mat_near(
+            m.delta_matrix(),
+            scale_matrix_axis([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], 3.0),
+            1.0e-6,
+        );
     }
 }

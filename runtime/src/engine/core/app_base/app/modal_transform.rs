@@ -30,8 +30,8 @@ use crate::engine::methods::drawer::LineBatch;
 use crate::engine::methods::gizmo_interact::{GizmoDrag, GizmoPart, mat4x4_mul};
 
 use super::modal_transform_state::{
-    FINE_SENSITIVITY, ModalAxis, ModalKind, ModalTransform, dot3, normalize3, ray_line_closest_t,
-    ray_plane_intersect, screen_angle, screen_distance,
+    FINE_SENSITIVITY, ModalAxis, ModalKind, ModalTransform, NUMERIC_DOT, NUMERIC_SIGN, dot3,
+    normalize3, ray_line_closest_t, ray_plane_intersect, screen_angle, screen_distance,
 };
 use super::{App, RuntimeMode, world_to_screen};
 
@@ -41,6 +41,31 @@ const AXIS_LINE_LENGTH_RATIO: f32 = 40.0;
 
 /// 軸拘束線の最小長（ピボットにカメラが極端に近い場合の下限）。
 const AXIS_LINE_MIN_LENGTH: f32 = 5.0;
+
+/// モーダル中の数値入力キーを 1 文字へ写す（該当しないキーは `None`）。
+///
+/// 数字はメイン列とテンキーの両方、小数点は `.` と テンキー `.`、
+/// 符号は `-` と テンキー `-` を受け付ける（Blender と同じ）。
+/// 単体起動 / インプレース Play のようにランタイムが直接キーを受け取る
+/// 経路で使う。エディタ埋め込み時は同じ文字が IPC (`MODAL:NUM:{c}`) で届く。
+fn modal_numeric_char_from_keycode(key: KeyCode) -> Option<char> {
+    let c = match key {
+        KeyCode::Digit0 | KeyCode::Numpad0 => '0',
+        KeyCode::Digit1 | KeyCode::Numpad1 => '1',
+        KeyCode::Digit2 | KeyCode::Numpad2 => '2',
+        KeyCode::Digit3 | KeyCode::Numpad3 => '3',
+        KeyCode::Digit4 | KeyCode::Numpad4 => '4',
+        KeyCode::Digit5 | KeyCode::Numpad5 => '5',
+        KeyCode::Digit6 | KeyCode::Numpad6 => '6',
+        KeyCode::Digit7 | KeyCode::Numpad7 => '7',
+        KeyCode::Digit8 | KeyCode::Numpad8 => '8',
+        KeyCode::Digit9 | KeyCode::Numpad9 => '9',
+        KeyCode::Period | KeyCode::NumpadDecimal => NUMERIC_DOT,
+        KeyCode::Minus | KeyCode::NumpadSubtract => NUMERIC_SIGN,
+        _ => return None,
+    };
+    Some(c)
+}
 
 impl App {
     // ============================================================
@@ -214,7 +239,19 @@ impl App {
         let vp_h = ws.height as f32;
         // レイ計算は &self 借用なので、modal の可変借用より前に済ませる
         let (ray_o, ray_d) = self.editor_3d_ray(cx, cy, vp_w, vp_h);
-        let sensitivity = self.modal_sensitivity();
+        // 数値入力中はマウスで値を動かさない。ただし「前回参照値」の追跡は
+        // 続ける必要があるため、感度 0 で累積器を空回しする。
+        // （追跡を止めると、Backspace で数値を消してマウス駆動へ戻った瞬間に
+        //   その間のカーソル移動量がまとめて一気に載ってしまう）
+        let sensitivity = if self
+            .modal_transform
+            .as_ref()
+            .is_some_and(|m| m.numeric_active())
+        {
+            0.0
+        } else {
+            self.modal_sensitivity()
+        };
 
         let new_mat = {
             let Some(modal) = self.modal_transform.as_mut() else {
@@ -324,6 +361,40 @@ impl App {
     }
 
     // ============================================================
+    //  数値入力
+    // ============================================================
+
+    /// モーダル中の数値入力（数字 / 小数点 / 符号）を 1 文字適用する。
+    ///
+    /// 適用できたら即座にプレビューを更新する（Blender と同じく
+    /// 打ち込んだ瞬間に結果が見える）。
+    pub(super) fn modal_transform_numeric_char(&mut self, c: char) {
+        let Some(modal) = self.modal_transform.as_mut() else {
+            return;
+        };
+        if !modal.apply_numeric_char(c) {
+            return;
+        }
+        let new_mat = mat4x4_mul(modal.delta_matrix(), modal.start_mat);
+        self.apply_gizmo_new_mat(new_mat);
+    }
+
+    /// モーダル中の数値入力を 1 文字削除する（Backspace）。
+    ///
+    /// 全部消えるとバッファが空になり、以降はマウス駆動へ戻る
+    /// （`delta_matrix()` が累積量ベースへ切り替わる）。
+    pub(super) fn modal_transform_numeric_backspace(&mut self) {
+        let Some(modal) = self.modal_transform.as_mut() else {
+            return;
+        };
+        if !modal.numeric_backspace() {
+            return;
+        }
+        let new_mat = mat4x4_mul(modal.delta_matrix(), modal.start_mat);
+        self.apply_gizmo_new_mat(new_mat);
+    }
+
+    // ============================================================
     //  確定 / 取消
     // ============================================================
 
@@ -418,8 +489,14 @@ impl App {
                 KeyCode::KeyZ => self.modal_transform_press_axis(ModalAxis::Z),
                 KeyCode::Enter | KeyCode::NumpadEnter => self.confirm_modal_transform(),
                 KeyCode::Escape => self.cancel_modal_transform(),
-                // それ以外のキーはモーダル中は無効（飲み込むだけ）
-                _ => {}
+                KeyCode::Backspace => self.modal_transform_numeric_backspace(),
+                // 数値入力（数字 / 小数点 / 符号）。テンキーも同じ扱い。
+                other => {
+                    if let Some(c) = modal_numeric_char_from_keycode(other) {
+                        self.modal_transform_numeric_char(c);
+                    }
+                    // それ以外のキーはモーダル中は無効（飲み込むだけ）
+                }
             }
             return true;
         }

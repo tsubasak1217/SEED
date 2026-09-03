@@ -395,6 +395,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::ModalBegin(..)
         | IpcCommand::ModalAxis(..)
         | IpcCommand::ModalCursor { .. }
+        | IpcCommand::ModalNumericChar(..)
+        | IpcCommand::ModalNumericBackspace
         | IpcCommand::ModalConfirm
         | IpcCommand::ModalCancel
         | IpcCommand::SetGizmoSpace(..)

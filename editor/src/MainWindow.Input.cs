@@ -97,6 +97,56 @@ public partial class MainWindow
         }
     }
 
+    // ── モーダルトランスフォームの数値入力キー ────────────────────
+
+    /// <summary>メイン列の数字キー <c>0</c>-<c>9</c> の仮想キーコード範囲（先頭）。</summary>
+    private const uint VkDigit0 = 0x30;
+
+    /// <summary>メイン列の数字キー <c>0</c>-<c>9</c> の仮想キーコード範囲（末尾）。</summary>
+    private const uint VkDigit9 = 0x39;
+
+    /// <summary>テンキーの数字キー <c>0</c>-<c>9</c> の仮想キーコード範囲（先頭）。</summary>
+    private const uint VkNumpad0 = 0x60;
+
+    /// <summary>テンキーの数字キー <c>0</c>-<c>9</c> の仮想キーコード範囲（末尾）。</summary>
+    private const uint VkNumpad9 = 0x69;
+
+    /// <summary>テンキーの <c>-</c>（VK_SUBTRACT）。</summary>
+    private const uint VkSubtract = 0x6D;
+
+    /// <summary>テンキーの <c>.</c>（VK_DECIMAL）。</summary>
+    private const uint VkDecimal = 0x6E;
+
+    /// <summary>メイン列の <c>-</c>（VK_OEM_MINUS）。</summary>
+    private const uint VkOemMinus = 0xBD;
+
+    /// <summary>メイン列の <c>.</c>（VK_OEM_PERIOD）。</summary>
+    private const uint VkOemPeriod = 0xBE;
+
+    /// <summary>Backspace（VK_BACK）。</summary>
+    private const uint VkBack = 0x08;
+
+    /// <summary>
+    /// モーダルトランスフォーム中のキーを <c>MODAL:NUM:</c> の引数へ写す。
+    /// 数値入力に関係しないキーなら null。
+    ///
+    /// メイン列とテンキーの両方を受け付ける（Blender と同じ）。
+    /// <c>-</c> は符号のトグル、<c>.</c> は小数点（2 個目はランタイム側で無視）、
+    /// <c>BS</c> は 1 文字削除を意味する。
+    /// </summary>
+    private static string? ModalNumericPayloadFromVk(uint vk)
+    {
+        if (vk >= VkDigit0  && vk <= VkDigit9)  return ((char)('0' + (vk - VkDigit0))).ToString();
+        if (vk >= VkNumpad0 && vk <= VkNumpad9) return ((char)('0' + (vk - VkNumpad0))).ToString();
+        return vk switch
+        {
+            VkOemPeriod or VkDecimal  => ".",
+            VkOemMinus  or VkSubtract => "-",
+            VkBack                    => "BS",
+            _                         => null,
+        };
+    }
+
     private nint LLKeyboardCallback(int nCode, nint wParam, nint lParam)
     {
         // ── 転送ゲート（不具合1対策）────────────────────────────────
@@ -265,6 +315,14 @@ public partial class MainWindow
                         _runtimeManager?.SendToRuntime("MODAL:CANCEL");
                         SetModalTransformActive(false);
                         return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                }
+                // 数値入力（Blender の「G/R/S のあと数字を打つ」相当）。
+                // 1 文字ごとに MODAL:NUM を送り、ランタイム側でプレビューを更新させる。
+                string? num = ModalNumericPayloadFromVk(vk);
+                if (num is not null)
+                {
+                    _runtimeManager?.SendToRuntime($"MODAL:NUM:{num}");
+                    return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
                 }
                 // それ以外のキーはモーダル中は無効。ただしカメラキー（WASDQE/Shift）の
                 // DOWN/UP 対応が崩れないよう、下の転送処理には素通しする。

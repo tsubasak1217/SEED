@@ -145,6 +145,16 @@ pub enum IpcCommand {
     /// クライアント座標へ変換して転送する。
     /// **ウィンドウ外を表す負値・幅/高さ超えの値も正当な入力**として扱う。
     ModalCursor { x: f32, y: f32 },
+    /// モーダル中の数値入力 1 文字（Blender の「G/R/S のあと数字を打つ」相当）。
+    /// フォーマット: `MODAL:NUM:{c}`（c は `0`-`9` / `.` / `-`）
+    ///
+    /// `-` は挿入ではなく符号のトグル。小数点は 1 個まで（2 個目は無視される）。
+    ModalNumericChar(char),
+    /// モーダル中の数値入力を 1 文字削除（Backspace）。
+    /// フォーマット: `MODAL:NUM:BS`
+    ///
+    /// 全部消えるとマウス駆動へ戻る。
+    ModalNumericBackspace,
     /// モーダルの確定（Enter）。
     ModalConfirm,
     /// モーダルの取消（Esc）。
@@ -1567,6 +1577,20 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             ) {
                                 (Some(x), Some(y)) if x.is_finite() && y.is_finite() => {
                                     Some(IpcCommand::ModalCursor { x, y })
+                                }
+                                _ => None,
+                            }
+                        }
+                        // モーダル中の数値入力。BS（1 文字削除）を先に判定し、
+                        // 残りは「ちょうど 1 文字の数字 / 小数点 / 符号」だけ受理する。
+                        "MODAL:NUM:BS"       => Some(IpcCommand::ModalNumericBackspace),
+                        s if s.starts_with("MODAL:NUM:") => {
+                            let mut it = s["MODAL:NUM:".len()..].chars();
+                            match (it.next(), it.next()) {
+                                (Some(c), None)
+                                    if c.is_ascii_digit() || c == '.' || c == '-' =>
+                                {
+                                    Some(IpcCommand::ModalNumericChar(c))
                                 }
                                 _ => None,
                             }
