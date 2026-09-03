@@ -27,15 +27,24 @@ public struct FishLevelEntry
     [SerializeField(Label = "距離マーカー(遠)")]
     public SEED.Transform? distanceMaxMarker;
 
-    /// <summary>このレベルで出現する魚の .actor ファイルパスのリスト。</summary>
+    /// <summary>このレベルで出現する<b>通常魚</b>の .actor ファイルパスのリスト。</summary>
     [SerializeField(Label = "魚prefab(.actorパス)")]
     public List<string> fishPrefabs;
 
     /// <summary>
-    /// このレベルの水域に常時泳がせておく魚の数。
+    /// このレベルで出現する<b>レア魚</b>の .actor ファイルパスのリスト。
+    /// レア枠は合計 10%（<see cref="FishManager.RareFishRate"/>）で出現し、
+    /// 枠内は均等割り。残り 90% は通常リスト内で均等割りされる。
+    /// 空なら通常魚のみ（100%）になる。
+    /// </summary>
+    [SerializeField(Label = "レア魚prefab(.actorパス)")]
+    public List<string> rareFishPrefabs;
+
+    /// <summary>
+    /// このレベルの水域に泳がせておく魚の生成総数。
     /// 釣られる・消えるなどで減ったら自動で補充される。0 なら自動生成しない。
     /// </summary>
-    [SerializeField(Label = "維持数")]
+    [SerializeField(Label = "生成総数")]
     public int maintainCount;
 }
 
@@ -57,6 +66,12 @@ public class FishManager : SEEDScript
 
     /// <summary>1 回転（ラジアン）。出現方位の乱数範囲に使う。</summary>
     private const float FullTurnRadians = 2f * 3.14159265f;
+
+    /// <summary>
+    /// レア魚の出現率（レア枠全体の合計。仕様: 10%）。
+    /// 残り（90%）は通常魚リスト内で均等割りされる。
+    /// </summary>
+    private const float RareFishRate = 0.1f;
 
     // ─── 中心点 ───────────────────────────────────────────────
 
@@ -189,10 +204,18 @@ public class FishManager : SEEDScript
         fish = default;
         if (levelIndex < 0 || levelIndex >= levels.Count) { return false; }
         var level = levels[levelIndex];
-        if (level.fishPrefabs is not { Count: > 0 } prefabs) { return false; }
+        bool hasNormal = level.fishPrefabs is { Count: > 0 };
+        bool hasRare   = level.rareFishPrefabs is { Count: > 0 };
+        if (!hasNormal && !hasRare) { return false; }
+
+        // 出現枠の抽選: レア枠は合計 RareFishRate(10%)、残り(90%)は通常枠。
+        // 片方の枠しか無いレベルではその枠が 100% になる。枠内は均等割りなので、
+        // 「レア魚の出現率 10%・残りを残りの魚で割る」という仕様がそのまま成立する。
+        bool pickRare = hasRare && (!hasNormal || random.NextDouble() < RareFishRate);
+        var pool = pickRare ? level.rareFishPrefabs : level.fishPrefabs;
 
         // prefab をランダムに 1 つ選ぶ（空文字は未設定とみなしてスキップ）
-        string path = prefabs[random.Next(prefabs.Count)];
+        string path = pool[random.Next(pool.Count)];
         if (string.IsNullOrWhiteSpace(path)) { return false; }
 
         // 出現距離の範囲 = 中心点から各マーカーまでの XZ 平面距離。
