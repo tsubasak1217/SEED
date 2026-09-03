@@ -1,0 +1,105 @@
+{
+  "name": "iseebi",
+  "transform": {
+    "position": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "rotation": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  "components": [
+    {
+      "name": "Model",
+      "component": {
+        "type": "ModelComponent",
+        "data": {
+          "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\fish\\Lv5\\iseebi.glb",
+          "instances": [
+            [
+              [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            ]
+          ],
+          "meta": [
+            {
+              "name": "Instance_0",
+              "parent": null,
+              "anim_seed": 0
+            }
+          ],
+          "groups": [],
+          "next_group_id": 1000000,
+          "cast_shadows": true,
+          "material_overrides": [],
+          "render_tag": 0,
+          "disable_lod": false,
+          "offset_position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "offset_rotation": [
+            0.0,
+            180.0,
+            0.0
+          ],
+          "offset_scale": [
+            2.3726,
+            2.3726,
+            2.3726
+          ]
+        }
+      }
+    },
+    {
+      "name": "Script",
+      "component": {
+        "type": "ScriptComponent",
+        "data": {
+          "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\Fish.cs",
+          "fields": {
+            "size": "1.000",
+            "stamina": "30.000",
+            "basePower": "50.000",
+            "baitSenseDistance": "5.000",
+            "preferredFish": "",
+            "rampage": "1.000"
+          }
+        }
+      }
+    }
+  ],
+  "children": []
+}

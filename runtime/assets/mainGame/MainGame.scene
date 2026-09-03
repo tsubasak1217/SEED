@@ -2,35 +2,61 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      62.202797,
-      8.52677,
-      34.892185
+      59.72151,
+      11.686386,
+      19.214762
     ],
-    "yaw": -1.280795,
-    "pitch": 0.07879743,
-    "fov_deg": 45.0,
+    "yaw": -1.7363421,
+    "pitch": 0.36178198,
+    "fov_deg": 25.0,
     "far": 1000.0,
-    "speed": 12.441602
+    "speed": 17.93
+  },
+  "shading_params": {
+    "toon_rim_strength": [
+      0.2,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "toon_shadow_floor": [
+      0.1,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "toon_shadow_tint": [
+      0.011395447,
+      0.007577827,
+      0.05984894,
+      0.0
+    ],
+    "toon_steps": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ]
   },
   "settings": {
     "debug_camera": {
-      "fov": 45.0,
+      "fov": 25.0,
       "far": 1000.0,
-      "speed": 7.2,
+      "speed": 17.93024,
       "ortho_2d": false
     },
     "rendering": {
-      "bloom": false,
-      "bloom_intensity": 0.021514826,
+      "bloom": true,
+      "bloom_intensity": 0.005277045,
       "fxaa": true,
       "transparency": "wboit",
       "deferred": true,
       "refract_sequential_grab": true,
-      "gi_intensity": 0.89286524,
+      "gi_intensity": 2.0,
       "reflection_intensity": 0.85971427,
       "ao_intensity": 2.0,
       "features": {
-        "shadow": "rt",
+        "shadow": "shadowmap",
         "gi": "rt",
         "reflection": "rt",
         "ao": "rt",
@@ -42,6 +68,13 @@
         1.0
       ],
       "ambient_intensity": 0.05
+    },
+    "lod": {
+      "distances": [
+        10.0,
+        30.0,
+        60.0
+      ]
     },
     "physics": {
       "edit_physics": false,
@@ -132,11 +165,11 @@
                 0.60588014
               ],
               "deep_color": [
-                0.04193606,
-                0.35161984,
-                0.48986715
+                0.0,
+                0.709256,
+                1.0
               ],
-              "absorption_distance": 0.4,
+              "absorption_distance": 4.0,
               "surface_opacity": 1.0,
               "foam_color": [
                 0.013522931,
@@ -152,9 +185,9 @@
               "wave_noise_strength": 0.35,
               "wave_noise_scale": 1.0,
               "fresnel_power": 3.0,
-              "fresnel_strength": 0.7427869,
+              "fresnel_strength": 0.42543858,
               "reflection_intensity": 0.2,
-              "reflection_roughness": 0.1,
+              "reflection_roughness": 0.096491225,
               "refraction_distortion": 0.2,
               "ripple_strength": 2.2,
               "ripple_foam_threshold": 0.8,
@@ -193,14 +226,14 @@
           32.181522
         ],
         "rotation": [
-          49.45101,
-          13.611441,
-          15.915325
+          48.661423,
+          13.392902,
+          15.626007
         ],
         "scale": [
-          0.9999999,
-          0.9999999,
-          0.9999999
+          0.99999976,
+          0.9999996,
+          0.99999976
         ]
       },
       "components": [
@@ -234,13 +267,13 @@
       "name": "Player",
       "transform": {
         "position": [
-          44.732204,
+          41.36773,
           2.2114255,
-          41.414833
+          17.695442
         ],
         "rotation": [
           -0.0,
-          0.0,
+          39.03613,
           0.0
         ],
         "scale": [
@@ -259,10 +292,10 @@
               "instances": [
                 [
                   [
-                    4.6351805,
+                    3.6003716,
                     0.0,
-                    0.0,
-                    44.732204
+                    2.9192846,
+                    41.36773
                   ],
                   [
                     0.0,
@@ -271,10 +304,10 @@
                     2.2114255
                   ],
                   [
+                    -2.9192846,
                     0.0,
-                    0.0,
-                    4.6351805,
-                    41.414833
+                    3.6003716,
+                    17.695442
                   ],
                   [
                     0.0,
@@ -307,6 +340,7 @@
               "cast_shadows": true,
               "material_overrides": [],
               "render_tag": 0,
+              "disable_lod": true,
               "offset_position": [
                 0.0,
                 0.0,
@@ -371,7 +405,8 @@
                 0.0,
                 0.0
               ],
-              "is_character_controller": true
+              "is_character_controller": true,
+              "apply_gravity": true
             }
           }
         },
@@ -383,10 +418,11 @@
               "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\PlayerMove.cs",
               "fields": {
                 "animator": "Player|Animator",
+                "cameraTargetParent": "CameraTargetParent",
                 "cameraTransform": "MainCamera",
-                "idleClip": "Idle",
+                "followPathHeight": "false",
                 "moveSpeed": "10.000",
-                "moveThreshold": "0.000",
+                "path": "ControlPoints|ControlPoint",
                 "runningClip": "WalkCarry"
               }
             }
@@ -444,6 +480,341 @@
                   "path": "",
                   "anim": "Idle",
                   "loop_mode": "loop"
+                },
+                {
+                  "name": "IdleFree",
+                  "kind": "model",
+                  "path": "",
+                  "anim": "IdleFree",
+                  "loop_mode": "loop"
+                },
+                {
+                  "name": "Walk",
+                  "kind": "model",
+                  "path": "",
+                  "anim": "Walk",
+                  "loop_mode": "loop"
+                }
+              ],
+              "default_clip": "Idle",
+              "play_on_start": true,
+              "speed": 1.0,
+              "default_fade_seconds": 0.1
+            }
+          }
+        }
+      ],
+      "children": [
+        {
+          "name": "sao",
+          "transform": {
+            "position": [
+              44.113644,
+              3.2081,
+              16.384504
+            ],
+            "rotation": [
+              1.2528592,
+              -142.02477,
+              0.0000025793595
+            ],
+            "scale": [
+              2.7811077,
+              5.562216,
+              2.7811074
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sao.glb",
+                  "instances": [
+                    [
+                      [
+                        -2.192283,
+                        -0.074832864,
+                        -1.7108638,
+                        44.113644
+                      ],
+                      [
+                        1.2517086e-7,
+                        5.560886,
+                        -0.060808294,
+                        3.2081
+                      ],
+                      [
+                        1.7112732,
+                        -0.09586758,
+                        -2.1917586,
+                        16.384504
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [
+                    {
+                      "id": 1000000,
+                      "name": "Group",
+                      "parent": null
+                    },
+                    {
+                      "id": 1000001,
+                      "name": "Group",
+                      "parent": null
+                    }
+                  ],
+                  "next_group_id": 1000002,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": true,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    0.3,
+                    0.3,
+                    0.3
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Animator",
+              "component": {
+                "type": "AnimatorComponent",
+                "data": {
+                  "clips": [
+                    {
+                      "name": "Cast_竿",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "Cast_竿",
+                      "loop_mode": "loop"
+                    },
+                    {
+                      "name": "Hooked_竿",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "Hooked_竿",
+                      "loop_mode": "loop"
+                    },
+                    {
+                      "name": "Idle_竿",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "Idle_竿",
+                      "loop_mode": "loop"
+                    },
+                    {
+                      "name": "IdleFishing_竿",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "IdleFishing_竿",
+                      "loop_mode": "loop"
+                    },
+                    {
+                      "name": "Reel_竿",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "Reel_竿",
+                      "loop_mode": "loop"
+                    },
+                    {
+                      "name": "WalkCarry_竿",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "WalkCarry_竿",
+                      "loop_mode": "loop"
+                    }
+                  ],
+                  "default_clip": "Idle_竿",
+                  "play_on_start": true,
+                  "speed": 1.0,
+                  "default_fade_seconds": 0.1
+                }
+              }
+            },
+            {
+              "name": "JointAttach",
+              "component": {
+                "type": "JointAttachComponent",
+                "data": {
+                  "joint_name": "Hand.R",
+                  "offset_pos": [
+                    -0.8,
+                    0.0,
+                    -1.1
+                  ],
+                  "offset_rot_deg": [
+                    0.0,
+                    0.0,
+                    -90.0
+                  ],
+                  "offset_scale": [
+                    2.0,
+                    4.0,
+                    2.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": []
+        }
+      ]
+    },
+    {
+      "name": "Owner",
+      "transform": {
+        "position": [
+          33.289246,
+          4.598044,
+          31.766409
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          4.6351805,
+          4.6351805,
+          4.6351805
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\owner.glb",
+              "instances": [
+                [
+                  [
+                    4.6351805,
+                    0.0,
+                    0.0,
+                    33.289246
+                  ],
+                  [
+                    0.0,
+                    4.6351805,
+                    0.0,
+                    4.598044
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    4.6351805,
+                    31.766409
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [
+                {
+                  "id": 1000000,
+                  "name": "Group",
+                  "parent": null
+                },
+                {
+                  "id": 1000001,
+                  "name": "Group",
+                  "parent": null
+                }
+              ],
+              "next_group_id": 1000002,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0,
+              "disable_lod": true,
+              "offset_position": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "offset_rotation": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "offset_scale": [
+                0.3,
+                0.3,
+                0.3
+              ]
+            }
+          }
+        },
+        {
+          "name": "Animator",
+          "component": {
+            "type": "AnimatorComponent",
+            "data": {
+              "clips": [
+                {
+                  "name": "WalkCarry",
+                  "kind": "model",
+                  "path": "",
+                  "anim": "WalkCarry",
+                  "loop_mode": "loop"
+                },
+                {
+                  "name": "IdleFishing",
+                  "kind": "model",
+                  "path": "",
+                  "anim": "IdleFishing",
+                  "loop_mode": "loop"
+                },
+                {
+                  "name": "Idle",
+                  "kind": "model",
+                  "path": "",
+                  "anim": "Idle",
+                  "loop_mode": "loop"
+                },
+                {
+                  "name": "Walk",
+                  "kind": "model",
+                  "path": "",
+                  "anim": "Walk",
+                  "loop_mode": "loop"
                 }
               ],
               "default_clip": "Idle",
@@ -457,16 +828,283 @@
       "children": []
     },
     {
+      "name": "CameraTargetParent",
+      "transform": {
+        "position": [
+          49.250328,
+          -0.11713767,
+          37.196873
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [],
+      "children": [
+        {
+          "name": "CammeraTarget",
+          "transform": {
+            "position": [
+              63.421864,
+              13.679168,
+              -15.555587
+            ],
+            "rotation": [
+              5.5453844,
+              -368.56915,
+              0.0
+            ],
+            "scale": [
+              0.9493914,
+              0.9493914,
+              0.9493914
+            ]
+          },
+          "components": [
+            {
+              "name": "Camera",
+              "component": {
+                "type": "CameraComponent",
+                "data": {
+                  "fov_y_deg": 25.0,
+                  "near": 0.1,
+                  "far": 1000.0,
+                  "is_main": false,
+                  "clear_color": [
+                    0.1,
+                    0.1,
+                    0.1,
+                    1.0
+                  ],
+                  "scaling_mode": "vert_minus",
+                  "target_width": 1280,
+                  "target_height": 720,
+                  "bar_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ],
+                  "projection": "perspective",
+                  "ortho_height": 10.0,
+                  "shading_asset": null,
+                  "shading_params": {},
+                  "shading_bindings": {}
+                }
+              }
+            }
+          ],
+          "children": []
+        }
+      ]
+    },
+    {
+      "name": "Hut",
+      "transform": {
+        "position": [
+          33.258118,
+          2.6067092,
+          31.692482
+        ],
+        "rotation": [
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Model",
+          "component": {
+            "type": "ModelComponent",
+            "data": {
+              "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\hut.glb",
+              "instances": [
+                [
+                  [
+                    1.0,
+                    0.0,
+                    0.0,
+                    33.258118
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0,
+                    2.6067092
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0,
+                    31.692482
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ]
+              ],
+              "meta": [
+                {
+                  "name": "Instance_0",
+                  "parent": null,
+                  "anim_seed": 0
+                }
+              ],
+              "groups": [],
+              "next_group_id": 1000000,
+              "cast_shadows": true,
+              "material_overrides": [],
+              "render_tag": 0,
+              "disable_lod": false,
+              "offset_position": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "offset_rotation": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "offset_scale": [
+                2.0,
+                2.0,
+                2.0
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cover Emitter",
+          "component": {
+            "type": "ColliderComponent",
+            "data": {
+              "shape": {
+                "type": "Box",
+                "half_extents": [
+                  4.2,
+                  5.0,
+                  3.3
+                ]
+              },
+              "offset": [
+                0.0,
+                4.7,
+                0.0
+              ],
+              "is_trigger": false,
+              "physics_layer": 1,
+              "layer_mask": 0,
+              "use_rigidbody": false,
+              "mass": 1.0,
+              "restitution": 0.3,
+              "friction": 0.5,
+              "linear_damping": 0.01,
+              "angular_damping": 0.05,
+              "gravity_scale": 1.0,
+              "is_kinematic": false,
+              "freeze_position": [
+                false,
+                false,
+                false
+              ],
+              "freeze_rotation": [
+                false,
+                false,
+                false
+              ],
+              "initial_linear_velocity": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "initial_angular_velocity": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "is_character_controller": false,
+              "apply_gravity": false
+            }
+          }
+        }
+      ],
+      "children": [
+        {
+          "name": "light",
+          "transform": {
+            "position": [
+              33.28791,
+              9.97566,
+              31.740917
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.1562562,
+              1.1562562,
+              1.1562562
+            ]
+          },
+          "components": [
+            {
+              "name": "Light",
+              "component": {
+                "type": "LightComponent",
+                "data": {
+                  "kind": "point",
+                  "color": [
+                    1.0,
+                    0.53480947,
+                    0.15205063
+                  ],
+                  "intensity": 124.8,
+                  "range": 5.5,
+                  "inner_angle_deg": 25.0,
+                  "outer_angle_deg": 35.0,
+                  "rect_width": 1.0,
+                  "rect_height": 1.0,
+                  "cast_shadows": true,
+                  "soft_radius": 0.25,
+                  "bounce_intensity": 1.1
+                }
+              }
+            }
+          ],
+          "children": []
+        }
+      ]
+    },
+    {
       "name": "MainCamera",
       "transform": {
         "position": [
-          112.336205,
-          15.329821,
-          15.338021
+          21.707567,
+          9.204105,
+          -2.702838
         ],
         "rotation": [
-          6.5759163,
-          -63.921158,
+          -2.360775,
+          1122.8779,
           0.0
         ],
         "scale": [
@@ -481,7 +1119,7 @@
           "component": {
             "type": "CameraComponent",
             "data": {
-              "fov_y_deg": 17.000002,
+              "fov_y_deg": 25.0,
               "near": 0.1,
               "far": 1000.0,
               "is_main": true,
@@ -505,6 +1143,24 @@
               "shading_asset": null,
               "shading_params": {},
               "shading_bindings": {}
+            }
+          }
+        },
+        {
+          "name": "Script",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\CameraMove.cs",
+              "fields": {
+                "maxRollDegrees": "1.500",
+                "player": "Player",
+                "positionLerpRate": "6.000",
+                "rollStrength": "1.000",
+                "rotationLerpRate": "6.000",
+                "snapOnStart": "true",
+                "target": "CammeraTarget"
+              }
             }
           }
         }
@@ -532,20 +1188,20 @@
       },
       "components": [
         {
-          "name": "Cover Emitter",
+          "name": "ControlPoint",
           "component": {
             "type": "ControlPointComponent",
             "data": {
               "points": [
                 {
                   "position": [
-                    18.97859,
-                    3.772377,
-                    -0.97115135
+                    15.581848,
+                    1.8039703,
+                    0.049907684
                   ],
                   "rotation": [
                     0.0,
-                    0.0,
+                    -0.0,
                     0.0
                   ],
                   "scale": [
@@ -558,13 +1214,13 @@
                 },
                 {
                   "position": [
-                    13.744113,
-                    3.772377,
-                    11.665994
+                    11.076241,
+                    1.6086578,
+                    10.927395
                   ],
                   "rotation": [
                     0.0,
-                    0.0,
+                    -45.0,
                     0.0
                   ],
                   "scale": [
@@ -577,13 +1233,13 @@
                 },
                 {
                   "position": [
-                    1.1069671,
-                    3.772377,
-                    16.90047
+                    0.19875336,
+                    1.6477203,
+                    15.433002
                   ],
                   "rotation": [
                     0.0,
-                    0.0,
+                    -90.0,
                     0.0
                   ],
                   "scale": [
@@ -596,13 +1252,13 @@
                 },
                 {
                   "position": [
-                    -11.530177,
-                    3.772377,
-                    11.665994
+                    -10.678736,
+                    1.7707672,
+                    10.927395
                   ],
                   "rotation": [
                     0.0,
-                    0.0,
+                    -135.0,
                     0.0
                   ],
                   "scale": [
@@ -615,13 +1271,13 @@
                 },
                 {
                   "position": [
-                    -16.764654,
-                    3.772377,
-                    -0.9711529
+                    -15.18434,
+                    1.8440094,
+                    0.049907684
                   ],
                   "rotation": [
                     0.0,
-                    0.0,
+                    179.99998,
                     0.0
                   ],
                   "scale": [
@@ -634,13 +1290,13 @@
                 },
                 {
                   "position": [
-                    -11.530178,
-                    3.772377,
-                    -13.608295
+                    -10.678738,
+                    1.8401031,
+                    -10.8275795
                   ],
                   "rotation": [
                     0.0,
-                    0.0,
+                    135.0,
                     0.0
                   ],
                   "scale": [
@@ -653,13 +1309,13 @@
                 },
                 {
                   "position": [
-                    1.1069682,
-                    3.772377,
-                    -18.842773
+                    0.19875336,
+                    1.7453766,
+                    -15.333185
                   ],
                   "rotation": [
                     0.0,
-                    0.0,
+                    90.0,
                     0.0
                   ],
                   "scale": [
@@ -672,13 +1328,13 @@
                 },
                 {
                   "position": [
-                    13.744112,
-                    3.772377,
-                    -13.608298
+                    11.076241,
+                    1.9201813,
+                    -10.827583
                   ],
                   "rotation": [
                     0.0,
-                    0.0,
+                    45.000004,
                     0.0
                   ],
                   "scale": [
@@ -698,6 +1354,72 @@
       "children": []
     },
     {
+      "name": "Managers",
+      "is_folder": true,
+      "components": [],
+      "children": [
+        {
+          "name": "KamomeManager",
+          "transform": {
+            "position": [
+              32.295666,
+              1.3994483,
+              31.2902
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [],
+          "children": []
+        },
+        {
+          "name": "fishMannager",
+          "transform": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "Script",
+              "component": {
+                "type": "ScriptComponent",
+                "data": {
+                  "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\FishManager.cs",
+                  "fields": {
+                    "centerActor": "Hut",
+                    "levels": "[{\"distanceMinMarker\":\"start\",\"distanceMaxMarker\":\"end\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv1/iwashi.actor\",\"assets://mainGame/actors/Fish/Lv1/kumanomi.actor\",\"assets://mainGame/actors/Fish/Lv1/nanyouhagi.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv1/tatsunootoshigo.actor\"],\"maintainCount\":8},{\"distanceMinMarker\":\"start(1)\",\"distanceMaxMarker\":\"end\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv2/aji.actor\",\"assets://mainGame/actors/Fish/Lv2/kawahagi.actor\",\"assets://mainGame/actors/Fish/Lv2/tobiuo.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv2/sacabambaspis.actor\"],\"maintainCount\":12},{\"distanceMinMarker\":\"start(2)\",\"distanceMaxMarker\":\"end\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv3/akaei.actor\",\"assets://mainGame/actors/Fish/Lv3/ika.actor\",\"assets://mainGame/actors/Fish/Lv3/tako.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv3/mendako.actor\"],\"maintainCount\":16},{\"distanceMinMarker\":\"start(3)\",\"distanceMaxMarker\":\"end\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv4/ishigakidai.actor\",\"assets://mainGame/actors/Fish/Lv4/madai.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv4/chouchinankou.actor\"],\"maintainCount\":24},{\"distanceMinMarker\":\"start(4)\",\"distanceMaxMarker\":\"end\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv5/hamachi.actor\",\"assets://mainGame/actors/Fish/Lv5/katsuo.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv5/iseebi.actor\"],\"maintainCount\":24},{\"distanceMinMarker\":\"start(5)\",\"distanceMaxMarker\":\"end\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv6/maguro.actor\",\"assets://mainGame/actors/Fish/Lv6/napoleonfish.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv6/manta.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(6)\",\"distanceMaxMarker\":\"end\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv7/kajiki.actor\",\"assets://mainGame/actors/Fish/Lv7/manbou.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv7/coelacanth.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(7)\",\"distanceMaxMarker\":\"end\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv8/hohojirozame.actor\",\"assets://mainGame/actors/Fish/Lv8/shumokuzame.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv8/ryuuguunotsukai.actor\"],\"maintainCount\":64},{\"distanceMinMarker\":\"start(8)\",\"distanceMaxMarker\":\"end\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv9/daiouika.actor\",\"assets://mainGame/actors/Fish/Lv9/jinbeezame.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv9/megalodon.actor\"],\"maintainCount\":64},{\"distanceMinMarker\":\"start(9)\",\"distanceMaxMarker\":\"end\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv10/kaiju.actor\"],\"rareFishPrefabs\":[],\"maintainCount\":1}]",
+                    "spawnHeight": "0.000"
+                  }
+                }
+              }
+            }
+          ],
+          "children": []
+        }
+      ]
+    },
+    {
       "name": "trees",
       "is_folder": true,
       "components": [],
@@ -706,9 +1428,9 @@
           "name": "Yasi",
           "transform": {
             "position": [
-              40.117603,
-              2.5861652,
-              30.675205
+              42.74925,
+              2.136509,
+              31.581676
             ],
             "rotation": [
               -0.0,
@@ -734,19 +1456,19 @@
                         1.4285777,
                         0.0,
                         0.0,
-                        40.117603
+                        42.74925
                       ],
                       [
                         0.0,
                         1.4285777,
                         0.0,
-                        2.5861652
+                        2.136509
                       ],
                       [
                         0.0,
                         0.0,
                         1.4285777,
-                        30.675205
+                        31.581676
                       ],
                       [
                         0.0,
@@ -796,6 +1518,553 @@
                     }
                   ],
                   "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Collider",
+              "component": {
+                "type": "ColliderComponent",
+                "data": {
+                  "shape": {
+                    "type": "Capsule",
+                    "radius": 0.6,
+                    "half_height": 2.0
+                  },
+                  "offset": [
+                    0.0,
+                    2.5,
+                    0.0
+                  ],
+                  "is_trigger": false,
+                  "physics_layer": 1,
+                  "layer_mask": 0,
+                  "use_rigidbody": false,
+                  "mass": 1.0,
+                  "restitution": 0.3,
+                  "friction": 0.5,
+                  "linear_damping": 0.01,
+                  "angular_damping": 0.05,
+                  "gravity_scale": 1.0,
+                  "is_kinematic": false,
+                  "freeze_position": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "freeze_rotation": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "initial_linear_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "initial_angular_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "is_character_controller": false,
+                  "apply_gravity": false
+                }
+              }
+            },
+            {
+              "name": "Animator",
+              "component": {
+                "type": "AnimatorComponent",
+                "data": {
+                  "clips": [
+                    {
+                      "name": "Sway",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "Sway",
+                      "loop_mode": "loop"
+                    }
+                  ],
+                  "default_clip": "Sway",
+                  "play_on_start": true,
+                  "speed": 0.5,
+                  "default_fade_seconds": 0.0
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        },
+        {
+          "name": "Yasi(1)",
+          "transform": {
+            "position": [
+              25.961988,
+              2.136509,
+              26.22508
+            ],
+            "rotation": [
+              0.59068155,
+              -61.01152,
+              1.0025309
+            ],
+            "scale": [
+              1.4285778,
+              1.4285779,
+              1.4285778
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\yasi.glb",
+                  "instances": [
+                    [
+                      [
+                        0.6920055,
+                        -0.024993887,
+                        -1.2495352,
+                        25.961988
+                      ],
+                      [
+                        0.024993887,
+                        1.4282832,
+                        -0.014727431,
+                        2.136509
+                      ],
+                      [
+                        1.2495352,
+                        -0.014727429,
+                        0.69230014,
+                        26.22508
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [
+                    {
+                      "slot": 0,
+                      "kind": {
+                        "kind": "inline",
+                        "base_color": [
+                          1.0,
+                          0.644,
+                          0.644,
+                          1.0
+                        ],
+                        "metallic": 0.0,
+                        "roughness": 1.0,
+                        "emissive": [
+                          0.0,
+                          0.0,
+                          0.0
+                        ],
+                        "alpha_mode": "opaque",
+                        "alpha_cutoff": 0.5,
+                        "ior": 1.0,
+                        "transmission": 0.0,
+                        "diffuse_transmission": 0.0,
+                        "mr_tex_ignore": true,
+                        "cull_face": "none",
+                        "shading_model": 0
+                      }
+                    }
+                  ],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Collider",
+              "component": {
+                "type": "ColliderComponent",
+                "data": {
+                  "shape": {
+                    "type": "Capsule",
+                    "radius": 0.6,
+                    "half_height": 2.0
+                  },
+                  "offset": [
+                    0.0,
+                    2.5,
+                    0.0
+                  ],
+                  "is_trigger": false,
+                  "physics_layer": 1,
+                  "layer_mask": 0,
+                  "use_rigidbody": false,
+                  "mass": 1.0,
+                  "restitution": 0.3,
+                  "friction": 0.5,
+                  "linear_damping": 0.01,
+                  "angular_damping": 0.05,
+                  "gravity_scale": 1.0,
+                  "is_kinematic": false,
+                  "freeze_position": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "freeze_rotation": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "initial_linear_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "initial_angular_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "is_character_controller": false,
+                  "apply_gravity": false
+                }
+              }
+            },
+            {
+              "name": "Animator",
+              "component": {
+                "type": "AnimatorComponent",
+                "data": {
+                  "clips": [
+                    {
+                      "name": "Sway",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "Sway",
+                      "loop_mode": "loop"
+                    }
+                  ],
+                  "default_clip": "Sway",
+                  "play_on_start": true,
+                  "speed": 0.5,
+                  "default_fade_seconds": 0.0
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        },
+        {
+          "name": "Yasi(2)",
+          "transform": {
+            "position": [
+              32.44963,
+              2.136509,
+              39.031998
+            ],
+            "rotation": [
+              0.1892034,
+              33.393036,
+              -0.6307813
+            ],
+            "scale": [
+              1.4285777,
+              1.4285777,
+              1.4285778
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\yasi.glb",
+                  "instances": [
+                    [
+                      [
+                        1.1926397,
+                        0.01572711,
+                        0.7862553,
+                        32.44963
+                      ],
+                      [
+                        -0.01572711,
+                        1.4284834,
+                        -0.004717473,
+                        2.136509
+                      ],
+                      [
+                        -0.7862553,
+                        -0.004717474,
+                        1.1927341,
+                        39.031998
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [
+                    {
+                      "slot": 0,
+                      "kind": {
+                        "kind": "inline",
+                        "base_color": [
+                          1.0,
+                          0.644,
+                          0.644,
+                          1.0
+                        ],
+                        "metallic": 0.0,
+                        "roughness": 1.0,
+                        "emissive": [
+                          0.0,
+                          0.0,
+                          0.0
+                        ],
+                        "alpha_mode": "opaque",
+                        "alpha_cutoff": 0.5,
+                        "ior": 1.0,
+                        "transmission": 0.0,
+                        "diffuse_transmission": 0.0,
+                        "mr_tex_ignore": true,
+                        "cull_face": "none",
+                        "shading_model": 0
+                      }
+                    }
+                  ],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Collider",
+              "component": {
+                "type": "ColliderComponent",
+                "data": {
+                  "shape": {
+                    "type": "Capsule",
+                    "radius": 0.6,
+                    "half_height": 2.0
+                  },
+                  "offset": [
+                    0.0,
+                    2.5,
+                    0.0
+                  ],
+                  "is_trigger": false,
+                  "physics_layer": 1,
+                  "layer_mask": 0,
+                  "use_rigidbody": false,
+                  "mass": 1.0,
+                  "restitution": 0.3,
+                  "friction": 0.5,
+                  "linear_damping": 0.01,
+                  "angular_damping": 0.05,
+                  "gravity_scale": 1.0,
+                  "is_kinematic": false,
+                  "freeze_position": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "freeze_rotation": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "initial_linear_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "initial_angular_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "is_character_controller": false,
+                  "apply_gravity": false
+                }
+              }
+            },
+            {
+              "name": "Animator",
+              "component": {
+                "type": "AnimatorComponent",
+                "data": {
+                  "clips": [
+                    {
+                      "name": "Sway",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "Sway",
+                      "loop_mode": "loop"
+                    }
+                  ],
+                  "default_clip": "Sway",
+                  "play_on_start": true,
+                  "speed": 0.5,
+                  "default_fade_seconds": 0.0
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        }
+      ]
+    },
+    {
+      "name": "islands",
+      "is_folder": true,
+      "components": [],
+      "children": [
+        {
+          "name": "island",
+          "transform": {
+            "position": [
+              678.8871,
+              2.6548922,
+              615.0625
+            ],
+            "rotation": [
+              -0.9765789,
+              58.451008,
+              -0.54636365
+            ],
+            "scale": [
+              1.4285778,
+              1.4285779,
+              1.4285777
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\islands\\island_hill.glb",
+                  "instances": [
+                    [
+                      [
+                        0.7476349,
+                        -0.013620801,
+                        1.2172472,
+                        678.8871
+                      ],
+                      [
+                        -0.013620511,
+                        1.4283054,
+                        0.024348238,
+                        2.6548922
+                      ],
+                      [
+                        -1.2172472,
+                        -0.024348075,
+                        0.7473624,
+                        615.0625
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -818,22 +2087,22 @@
           "children": []
         },
         {
-          "name": "Yasi2",
+          "name": "island(1)",
           "transform": {
             "position": [
-              31.650364,
-              2.7026715,
-              35.13366
+              622.923,
+              -0.46175385,
+              -657.0699
             ],
             "rotation": [
-              -0.0,
-              0.0,
-              0.0
+              -0.9765788,
+              -60.64469,
+              -0.5463636
             ],
             "scale": [
-              1.4285777,
-              1.4285777,
-              1.4285777
+              1.7250524,
+              1.7250524,
+              1.7250524
             ]
           },
           "components": [
@@ -842,26 +2111,26 @@
               "component": {
                 "type": "ModelComponent",
                 "data": {
-                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\yasi.glb",
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\islands\\island_hill.glb",
                   "instances": [
                     [
                       [
-                        1.4285777,
-                        0.0,
-                        0.0,
-                        31.650364
+                        0.8453791,
+                        0.03368885,
+                        -1.5033312,
+                        622.923
                       ],
                       [
-                        0.0,
-                        1.4285777,
-                        0.0,
-                        2.7026715
+                        -0.016447192,
+                        1.7247233,
+                        0.02940126,
+                        -0.46175385
                       ],
                       [
-                        0.0,
-                        0.0,
-                        1.4285777,
-                        35.13366
+                        1.5036188,
+                        -0.00007515028,
+                        0.84553915,
+                        -657.0699
                       ],
                       [
                         0.0,
@@ -881,36 +2150,9 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
-                  "material_overrides": [
-                    {
-                      "slot": 0,
-                      "kind": {
-                        "kind": "inline",
-                        "base_color": [
-                          1.0,
-                          0.644,
-                          0.644,
-                          1.0
-                        ],
-                        "metallic": 0.0,
-                        "roughness": 1.0,
-                        "emissive": [
-                          0.0,
-                          0.0,
-                          0.0
-                        ],
-                        "alpha_mode": "opaque",
-                        "alpha_cutoff": 0.5,
-                        "ior": 1.0,
-                        "transmission": 0.0,
-                        "diffuse_transmission": 0.0,
-                        "mr_tex_ignore": true,
-                        "cull_face": "none",
-                        "shading_model": 0
-                      }
-                    }
-                  ],
+                  "material_overrides": [],
                   "render_tag": 0,
+                  "disable_lod": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -933,22 +2175,22 @@
           "children": []
         },
         {
-          "name": "Yasi3",
+          "name": "island(1) (copy)",
           "transform": {
             "position": [
-              33.131207,
-              3.3869803,
-              26.334625
+              288.6111,
+              2.654892,
+              -364.0829
             ],
             "rotation": [
-              -0.0,
-              0.0,
-              0.0
+              -0.9765787,
+              179.14041,
+              -0.54636365
             ],
             "scale": [
-              1.4285777,
-              1.4285777,
-              1.4285777
+              0.46532622,
+              0.46532625,
+              0.46532628
             ]
           },
           "components": [
@@ -957,26 +2199,26 @@
               "component": {
                 "type": "ModelComponent",
                 "data": {
-                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\yasi.glb",
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\islands\\island_hill.glb",
                   "instances": [
                     [
                       [
-                        1.4285777,
-                        0.0,
-                        0.0,
-                        33.131207
+                        -0.46525156,
+                        -0.0045556845,
+                        0.006979765,
+                        288.6111
                       ],
                       [
-                        0.0,
-                        1.4285777,
-                        0.0,
-                        3.3869803
+                        -0.004436567,
+                        0.4652375,
+                        0.007930877,
+                        2.654892
                       ],
                       [
-                        0.0,
-                        0.0,
-                        1.4285777,
-                        26.334625
+                        -0.007056107,
+                        0.007863058,
+                        -0.46520633,
+                        -364.0829
                       ],
                       [
                         0.0,
@@ -996,36 +2238,9 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
-                  "material_overrides": [
-                    {
-                      "slot": 0,
-                      "kind": {
-                        "kind": "inline",
-                        "base_color": [
-                          1.0,
-                          0.644,
-                          0.644,
-                          1.0
-                        ],
-                        "metallic": 0.0,
-                        "roughness": 1.0,
-                        "emissive": [
-                          0.0,
-                          0.0,
-                          0.0
-                        ],
-                        "alpha_mode": "opaque",
-                        "alpha_cutoff": 0.5,
-                        "ior": 1.0,
-                        "transmission": 0.0,
-                        "diffuse_transmission": 0.0,
-                        "mr_tex_ignore": true,
-                        "cull_face": "none",
-                        "shading_model": 0
-                      }
-                    }
-                  ],
+                  "material_overrides": [],
                   "render_tag": 0,
+                  "disable_lod": false,
                   "offset_position": [
                     0.0,
                     0.0,
@@ -1046,6 +2261,3599 @@
             }
           ],
           "children": []
+        },
+        {
+          "name": "island(2)",
+          "transform": {
+            "position": [
+              -611.3396,
+              1.4257052,
+              -315.06552
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              0.52227175,
+              0.52227175,
+              0.52227175
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\islands\\island_rock.glb",
+                  "instances": [
+                    [
+                      [
+                        0.52227175,
+                        0.0,
+                        0.0,
+                        -611.3396
+                      ],
+                      [
+                        0.0,
+                        0.52227175,
+                        0.0,
+                        1.4257052
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.52227175,
+                        -315.06552
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "island(3)",
+          "transform": {
+            "position": [
+              -532.4414,
+              1.4257052,
+              -583.38806
+            ],
+            "rotation": [
+              -0.5738343,
+              -112.78564,
+              -0.15400994
+            ],
+            "scale": [
+              2.1003873,
+              2.100387,
+              2.100387
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\islands\\island_twin.glb",
+                  "instances": [
+                    [
+                      [
+                        -0.81349695,
+                        0.01720744,
+                        -1.9363763,
+                        -532.4414
+                      ],
+                      [
+                        -0.00564551,
+                        2.100274,
+                        0.021035653,
+                        1.4257052
+                      ],
+                      [
+                        1.9364446,
+                        0.0133519545,
+                        -0.8134068,
+                        -583.38806
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "island(5)",
+          "transform": {
+            "position": [
+              412.9641,
+              4.362137,
+              601.5897
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.4285777,
+              1.4285777,
+              1.4285777
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\islands\\reef.glb",
+                  "instances": [
+                    [
+                      [
+                        1.4285777,
+                        0.0,
+                        0.0,
+                        412.9641
+                      ],
+                      [
+                        0.0,
+                        1.4285777,
+                        0.0,
+                        4.362137
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        1.4285777,
+                        601.5897
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": []
+        }
+      ]
+    },
+    {
+      "name": "plants",
+      "is_folder": true,
+      "components": [],
+      "children": [
+        {
+          "name": "hibiscus",
+          "transform": {
+            "position": [
+              38.815796,
+              2.5461123,
+              27.968933
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              2.2393334,
+              2.2393334,
+              2.2393334
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\hibiscus.glb",
+                  "instances": [
+                    [
+                      [
+                        2.2393334,
+                        0.0,
+                        0.0,
+                        38.815796
+                      ],
+                      [
+                        0.0,
+                        2.2393334,
+                        0.0,
+                        2.5461123
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        2.2393334,
+                        27.968933
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Collider",
+              "component": {
+                "type": "ColliderComponent",
+                "data": {
+                  "shape": {
+                    "type": "Box",
+                    "half_extents": [
+                      0.5,
+                      0.5,
+                      0.5
+                    ]
+                  },
+                  "offset": [
+                    0.0,
+                    1.6,
+                    0.0
+                  ],
+                  "is_trigger": true,
+                  "physics_layer": 1,
+                  "layer_mask": 0,
+                  "use_rigidbody": false,
+                  "mass": 1.0,
+                  "restitution": 0.3,
+                  "friction": 0.5,
+                  "linear_damping": 0.01,
+                  "angular_damping": 0.05,
+                  "gravity_scale": 1.0,
+                  "is_kinematic": false,
+                  "freeze_position": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "freeze_rotation": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "initial_linear_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "initial_angular_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "is_character_controller": false,
+                  "apply_gravity": false
+                }
+              }
+            },
+            {
+              "name": "Animator",
+              "component": {
+                "type": "AnimatorComponent",
+                "data": {
+                  "clips": [
+                    {
+                      "name": "Sway",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "Sway",
+                      "loop_mode": "loop"
+                    }
+                  ],
+                  "default_clip": "Sway",
+                  "play_on_start": true,
+                  "speed": 0.5,
+                  "default_fade_seconds": 0.0
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        },
+        {
+          "name": "hibiscus(1)",
+          "transform": {
+            "position": [
+              38.815796,
+              2.5153286,
+              30.383247
+            ],
+            "rotation": [
+              -0.0,
+              80.1007,
+              0.0
+            ],
+            "scale": [
+              2.2393334,
+              2.2393334,
+              2.2393334
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\hibiscus.glb",
+                  "instances": [
+                    [
+                      [
+                        0.38497955,
+                        0.0,
+                        2.205993,
+                        38.815796
+                      ],
+                      [
+                        0.0,
+                        2.2393334,
+                        0.0,
+                        2.5153286
+                      ],
+                      [
+                        -2.205993,
+                        0.0,
+                        0.38497955,
+                        30.383247
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Collider",
+              "component": {
+                "type": "ColliderComponent",
+                "data": {
+                  "shape": {
+                    "type": "Box",
+                    "half_extents": [
+                      0.5,
+                      0.5,
+                      0.5
+                    ]
+                  },
+                  "offset": [
+                    0.0,
+                    1.6,
+                    0.0
+                  ],
+                  "is_trigger": true,
+                  "physics_layer": 1,
+                  "layer_mask": 0,
+                  "use_rigidbody": false,
+                  "mass": 1.0,
+                  "restitution": 0.3,
+                  "friction": 0.5,
+                  "linear_damping": 0.01,
+                  "angular_damping": 0.05,
+                  "gravity_scale": 1.0,
+                  "is_kinematic": false,
+                  "freeze_position": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "freeze_rotation": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "initial_linear_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "initial_angular_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "is_character_controller": false,
+                  "apply_gravity": false
+                }
+              }
+            },
+            {
+              "name": "Animator",
+              "component": {
+                "type": "AnimatorComponent",
+                "data": {
+                  "clips": [
+                    {
+                      "name": "Sway",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "Sway",
+                      "loop_mode": "loop"
+                    }
+                  ],
+                  "default_clip": "Sway",
+                  "play_on_start": true,
+                  "speed": 0.5,
+                  "default_fade_seconds": 0.0
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        },
+        {
+          "name": "hibiscus (copy)",
+          "transform": {
+            "position": [
+              35.92288,
+              2.0778887,
+              22.07709
+            ],
+            "rotation": [
+              -0.0,
+              87.63569,
+              0.0
+            ],
+            "scale": [
+              2.2393334,
+              2.2393332,
+              2.2393334
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\hibiscus.glb",
+                  "instances": [
+                    [
+                      [
+                        0.092379674,
+                        0.0,
+                        2.237427,
+                        35.92288
+                      ],
+                      [
+                        0.0,
+                        2.2393332,
+                        0.0,
+                        2.0778887
+                      ],
+                      [
+                        -2.237427,
+                        0.0,
+                        0.092379674,
+                        22.07709
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Collider",
+              "component": {
+                "type": "ColliderComponent",
+                "data": {
+                  "shape": {
+                    "type": "Box",
+                    "half_extents": [
+                      0.5,
+                      0.5,
+                      0.5
+                    ]
+                  },
+                  "offset": [
+                    0.0,
+                    1.6,
+                    0.0
+                  ],
+                  "is_trigger": true,
+                  "physics_layer": 1,
+                  "layer_mask": 0,
+                  "use_rigidbody": false,
+                  "mass": 1.0,
+                  "restitution": 0.3,
+                  "friction": 0.5,
+                  "linear_damping": 0.01,
+                  "angular_damping": 0.05,
+                  "gravity_scale": 1.0,
+                  "is_kinematic": false,
+                  "freeze_position": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "freeze_rotation": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "initial_linear_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "initial_angular_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "is_character_controller": false,
+                  "apply_gravity": false
+                }
+              }
+            },
+            {
+              "name": "Animator",
+              "component": {
+                "type": "AnimatorComponent",
+                "data": {
+                  "clips": [
+                    {
+                      "name": "Sway",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "Sway",
+                      "loop_mode": "loop"
+                    }
+                  ],
+                  "default_clip": "Sway",
+                  "play_on_start": true,
+                  "speed": 0.5,
+                  "default_fade_seconds": 0.0
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        },
+        {
+          "name": "hibiscus(1) (copy)",
+          "transform": {
+            "position": [
+              38.180576,
+              2.047105,
+              22.17031
+            ],
+            "rotation": [
+              -0.0,
+              167.73639,
+              0.0
+            ],
+            "scale": [
+              2.2393336,
+              2.2393332,
+              2.2393336
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\hibiscus.glb",
+                  "instances": [
+                    [
+                      [
+                        -2.1882336,
+                        0.0,
+                        0.47565615,
+                        38.180576
+                      ],
+                      [
+                        0.0,
+                        2.2393332,
+                        0.0,
+                        2.047105
+                      ],
+                      [
+                        -0.47565615,
+                        0.0,
+                        -2.1882336,
+                        22.17031
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Collider",
+              "component": {
+                "type": "ColliderComponent",
+                "data": {
+                  "shape": {
+                    "type": "Box",
+                    "half_extents": [
+                      0.5,
+                      0.5,
+                      0.5
+                    ]
+                  },
+                  "offset": [
+                    0.0,
+                    1.6,
+                    0.0
+                  ],
+                  "is_trigger": true,
+                  "physics_layer": 1,
+                  "layer_mask": 0,
+                  "use_rigidbody": false,
+                  "mass": 1.0,
+                  "restitution": 0.3,
+                  "friction": 0.5,
+                  "linear_damping": 0.01,
+                  "angular_damping": 0.05,
+                  "gravity_scale": 1.0,
+                  "is_kinematic": false,
+                  "freeze_position": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "freeze_rotation": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "initial_linear_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "initial_angular_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "is_character_controller": false,
+                  "apply_gravity": false
+                }
+              }
+            },
+            {
+              "name": "Animator",
+              "component": {
+                "type": "AnimatorComponent",
+                "data": {
+                  "clips": [
+                    {
+                      "name": "Sway",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "Sway",
+                      "loop_mode": "loop"
+                    }
+                  ],
+                  "default_clip": "Sway",
+                  "play_on_start": true,
+                  "speed": 0.5,
+                  "default_fade_seconds": 0.0
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        },
+        {
+          "name": "hibiscus (copy) (copy)",
+          "transform": {
+            "position": [
+              25.037943,
+              1.5888891,
+              30.958757
+            ],
+            "rotation": [
+              -0.0,
+              178.47386,
+              0.0
+            ],
+            "scale": [
+              2.2393334,
+              2.2393332,
+              2.2393334
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\hibiscus.glb",
+                  "instances": [
+                    [
+                      [
+                        -2.238539,
+                        0.0,
+                        0.05964014,
+                        25.037943
+                      ],
+                      [
+                        0.0,
+                        2.2393332,
+                        0.0,
+                        1.5888891
+                      ],
+                      [
+                        -0.05964014,
+                        0.0,
+                        -2.238539,
+                        30.958757
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Collider",
+              "component": {
+                "type": "ColliderComponent",
+                "data": {
+                  "shape": {
+                    "type": "Box",
+                    "half_extents": [
+                      0.5,
+                      0.5,
+                      0.5
+                    ]
+                  },
+                  "offset": [
+                    0.0,
+                    1.6,
+                    0.0
+                  ],
+                  "is_trigger": true,
+                  "physics_layer": 1,
+                  "layer_mask": 0,
+                  "use_rigidbody": false,
+                  "mass": 1.0,
+                  "restitution": 0.3,
+                  "friction": 0.5,
+                  "linear_damping": 0.01,
+                  "angular_damping": 0.05,
+                  "gravity_scale": 1.0,
+                  "is_kinematic": false,
+                  "freeze_position": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "freeze_rotation": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "initial_linear_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "initial_angular_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "is_character_controller": false,
+                  "apply_gravity": false
+                }
+              }
+            },
+            {
+              "name": "Animator",
+              "component": {
+                "type": "AnimatorComponent",
+                "data": {
+                  "clips": [
+                    {
+                      "name": "Sway",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "Sway",
+                      "loop_mode": "loop"
+                    }
+                  ],
+                  "default_clip": "Sway",
+                  "play_on_start": true,
+                  "speed": 0.5,
+                  "default_fade_seconds": 0.0
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        },
+        {
+          "name": "hibiscus(1) (copy) (copy)",
+          "transform": {
+            "position": [
+              25.098124,
+              1.5581055,
+              28.699938
+            ],
+            "rotation": [
+              -0.0,
+              -101.42544,
+              0.0
+            ],
+            "scale": [
+              2.2393336,
+              2.2393332,
+              2.2393336
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\hibiscus.glb",
+                  "instances": [
+                    [
+                      [
+                        -0.44359523,
+                        0.0,
+                        -2.1949575,
+                        25.098124
+                      ],
+                      [
+                        0.0,
+                        2.2393332,
+                        0.0,
+                        1.5581055
+                      ],
+                      [
+                        2.1949575,
+                        0.0,
+                        -0.44359523,
+                        28.699938
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Collider",
+              "component": {
+                "type": "ColliderComponent",
+                "data": {
+                  "shape": {
+                    "type": "Box",
+                    "half_extents": [
+                      0.5,
+                      0.5,
+                      0.5
+                    ]
+                  },
+                  "offset": [
+                    0.0,
+                    1.6,
+                    0.0
+                  ],
+                  "is_trigger": true,
+                  "physics_layer": 1,
+                  "layer_mask": 0,
+                  "use_rigidbody": false,
+                  "mass": 1.0,
+                  "restitution": 0.3,
+                  "friction": 0.5,
+                  "linear_damping": 0.01,
+                  "angular_damping": 0.05,
+                  "gravity_scale": 1.0,
+                  "is_kinematic": false,
+                  "freeze_position": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "freeze_rotation": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "initial_linear_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "initial_angular_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "is_character_controller": false,
+                  "apply_gravity": false
+                }
+              }
+            },
+            {
+              "name": "Animator",
+              "component": {
+                "type": "AnimatorComponent",
+                "data": {
+                  "clips": [
+                    {
+                      "name": "Sway",
+                      "kind": "model",
+                      "path": "",
+                      "anim": "Sway",
+                      "loop_mode": "loop"
+                    }
+                  ],
+                  "default_clip": "Sway",
+                  "play_on_start": true,
+                  "speed": 0.5,
+                  "default_fade_seconds": 0.0
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        }
+      ]
+    },
+    {
+      "name": "rocks",
+      "is_folder": true,
+      "components": [],
+      "children": [
+        {
+          "name": "rock",
+          "transform": {
+            "position": [
+              39.117317,
+              1.2076652,
+              37.33837
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              2.097605,
+              2.097605,
+              2.097605
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\rock.glb",
+                  "instances": [
+                    [
+                      [
+                        2.097605,
+                        0.0,
+                        0.0,
+                        39.117317
+                      ],
+                      [
+                        0.0,
+                        2.097605,
+                        0.0,
+                        1.2076652
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        2.097605,
+                        37.33837
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Collider",
+              "component": {
+                "type": "ColliderComponent",
+                "data": {
+                  "shape": {
+                    "type": "Capsule",
+                    "radius": 0.6,
+                    "half_height": 0.2
+                  },
+                  "offset": [
+                    0.0,
+                    1.1,
+                    0.0
+                  ],
+                  "is_trigger": false,
+                  "physics_layer": 1,
+                  "layer_mask": 0,
+                  "use_rigidbody": false,
+                  "mass": 1.0,
+                  "restitution": 0.3,
+                  "friction": 0.5,
+                  "linear_damping": 0.01,
+                  "angular_damping": 0.05,
+                  "gravity_scale": 1.0,
+                  "is_kinematic": false,
+                  "freeze_position": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "freeze_rotation": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "initial_linear_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "initial_angular_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "is_character_controller": false,
+                  "apply_gravity": false
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        },
+        {
+          "name": "rock (copy)",
+          "transform": {
+            "position": [
+              37.729122,
+              1.2076652,
+              39.121162
+            ],
+            "rotation": [
+              -0.0,
+              141.93776,
+              0.0
+            ],
+            "scale": [
+              1.1344954,
+              1.1344954,
+              1.1344954
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\rock.glb",
+                  "instances": [
+                    [
+                      [
+                        -0.8932353,
+                        0.0,
+                        0.6994358,
+                        37.729122
+                      ],
+                      [
+                        0.0,
+                        1.1344954,
+                        0.0,
+                        1.2076652
+                      ],
+                      [
+                        -0.6994358,
+                        0.0,
+                        -0.8932353,
+                        39.121162
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Collider",
+              "component": {
+                "type": "ColliderComponent",
+                "data": {
+                  "shape": {
+                    "type": "Capsule",
+                    "radius": 0.6,
+                    "half_height": 0.2
+                  },
+                  "offset": [
+                    0.0,
+                    1.1,
+                    0.0
+                  ],
+                  "is_trigger": false,
+                  "physics_layer": 1,
+                  "layer_mask": 0,
+                  "use_rigidbody": false,
+                  "mass": 1.0,
+                  "restitution": 0.3,
+                  "friction": 0.5,
+                  "linear_damping": 0.01,
+                  "angular_damping": 0.05,
+                  "gravity_scale": 1.0,
+                  "is_kinematic": false,
+                  "freeze_position": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "freeze_rotation": [
+                    false,
+                    false,
+                    false
+                  ],
+                  "initial_linear_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "initial_angular_velocity": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "is_character_controller": false,
+                  "apply_gravity": false
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        }
+      ]
+    },
+    {
+      "name": "shells",
+      "is_folder": true,
+      "components": [],
+      "children": [
+        {
+          "name": "shell",
+          "transform": {
+            "position": [
+              46.466175,
+              1.9359474,
+              35.09855
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              4.581556,
+              4.581556,
+              4.581556
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\shell.glb",
+                  "instances": [
+                    [
+                      [
+                        4.581556,
+                        0.0,
+                        0.0,
+                        46.466175
+                      ],
+                      [
+                        0.0,
+                        4.581556,
+                        0.0,
+                        1.9359474
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        4.581556,
+                        35.09855
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        },
+        {
+          "name": "shell (copy)",
+          "transform": {
+            "position": [
+              19.128927,
+              1.8330672,
+              42.630516
+            ],
+            "rotation": [
+              -0.0,
+              -65.424576,
+              0.0
+            ],
+            "scale": [
+              2.9162378,
+              2.916238,
+              2.9162378
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\shell.glb",
+                  "instances": [
+                    [
+                      [
+                        1.2128363,
+                        0.0,
+                        -2.6520693,
+                        19.128927
+                      ],
+                      [
+                        0.0,
+                        2.916238,
+                        0.0,
+                        1.8330672
+                      ],
+                      [
+                        2.6520693,
+                        0.0,
+                        1.2128363,
+                        42.630516
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        },
+        {
+          "name": "shell (copy)",
+          "transform": {
+            "position": [
+              22.172966,
+              1.6507523,
+              19.731125
+            ],
+            "rotation": [
+              -0.0,
+              -118.53749,
+              0.0
+            ],
+            "scale": [
+              4.581556,
+              4.581556,
+              4.581556
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\conch.glb",
+                  "instances": [
+                    [
+                      [
+                        -2.188764,
+                        0.0,
+                        -4.024918,
+                        22.172966
+                      ],
+                      [
+                        0.0,
+                        4.581556,
+                        0.0,
+                        1.6507523
+                      ],
+                      [
+                        4.024918,
+                        0.0,
+                        -2.188764,
+                        19.731125
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [],
+          "prefab_source": "assets://mainGame/actors/Yasi.actor"
+        }
+      ]
+    },
+    {
+      "name": "fishEmitPoints",
+      "is_folder": true,
+      "components": [],
+      "children": [
+        {
+          "name": "start",
+          "transform": {
+            "position": [
+              32.069,
+              -33.144188,
+              52.277
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                  "instances": [
+                    [
+                      [
+                        1.0,
+                        0.0,
+                        0.0,
+                        32.069
+                      ],
+                      [
+                        0.0,
+                        1.0,
+                        0.0,
+                        -33.144188
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        1.0,
+                        52.277
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "end",
+              "transform": {
+                "position": [
+                  32.069,
+                  -33.144188,
+                  72.277
+                ],
+                "rotation": [
+                  -0.0,
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              "components": [
+                {
+                  "name": "Model",
+                  "component": {
+                    "type": "ModelComponent",
+                    "data": {
+                      "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                      "instances": [
+                        [
+                          [
+                            1.0,
+                            0.0,
+                            0.0,
+                            32.069
+                          ],
+                          [
+                            0.0,
+                            1.0,
+                            0.0,
+                            -33.144188
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            1.0,
+                            72.277
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0
+                          ]
+                        ]
+                      ],
+                      "meta": [
+                        {
+                          "name": "Instance_0",
+                          "parent": null,
+                          "anim_seed": 0
+                        }
+                      ],
+                      "groups": [],
+                      "next_group_id": 1000000,
+                      "cast_shadows": true,
+                      "material_overrides": [],
+                      "render_tag": 0,
+                      "disable_lod": false,
+                      "offset_position": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_rotation": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_scale": [
+                        1.0,
+                        1.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "start(1)",
+          "transform": {
+            "position": [
+              32.069,
+              -28.160511,
+              66.48578
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                  "instances": [
+                    [
+                      [
+                        1.0,
+                        0.0,
+                        0.0,
+                        32.069
+                      ],
+                      [
+                        0.0,
+                        1.0,
+                        0.0,
+                        -28.160511
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        1.0,
+                        66.48578
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "end",
+              "transform": {
+                "position": [
+                  32.069,
+                  -28.160511,
+                  86.48578
+                ],
+                "rotation": [
+                  -0.0,
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              "components": [
+                {
+                  "name": "Model",
+                  "component": {
+                    "type": "ModelComponent",
+                    "data": {
+                      "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                      "instances": [
+                        [
+                          [
+                            1.0,
+                            0.0,
+                            0.0,
+                            32.069
+                          ],
+                          [
+                            0.0,
+                            1.0,
+                            0.0,
+                            -28.160511
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            1.0,
+                            86.48578
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0
+                          ]
+                        ]
+                      ],
+                      "meta": [
+                        {
+                          "name": "Instance_0",
+                          "parent": null,
+                          "anim_seed": 0
+                        }
+                      ],
+                      "groups": [],
+                      "next_group_id": 1000000,
+                      "cast_shadows": true,
+                      "material_overrides": [],
+                      "render_tag": 0,
+                      "disable_lod": false,
+                      "offset_position": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_rotation": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_scale": [
+                        1.0,
+                        1.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "start(2)",
+          "transform": {
+            "position": [
+              32.069,
+              -33.144188,
+              79.74024
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                  "instances": [
+                    [
+                      [
+                        1.0,
+                        0.0,
+                        0.0,
+                        32.069
+                      ],
+                      [
+                        0.0,
+                        1.0,
+                        0.0,
+                        -33.144188
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        1.0,
+                        79.74024
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "end",
+              "transform": {
+                "position": [
+                  32.069,
+                  -33.144188,
+                  99.74024
+                ],
+                "rotation": [
+                  -0.0,
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              "components": [
+                {
+                  "name": "Model",
+                  "component": {
+                    "type": "ModelComponent",
+                    "data": {
+                      "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                      "instances": [
+                        [
+                          [
+                            1.0,
+                            0.0,
+                            0.0,
+                            32.069
+                          ],
+                          [
+                            0.0,
+                            1.0,
+                            0.0,
+                            -33.144188
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            1.0,
+                            99.74024
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0
+                          ]
+                        ]
+                      ],
+                      "meta": [
+                        {
+                          "name": "Instance_0",
+                          "parent": null,
+                          "anim_seed": 0
+                        }
+                      ],
+                      "groups": [],
+                      "next_group_id": 1000000,
+                      "cast_shadows": true,
+                      "material_overrides": [],
+                      "render_tag": 0,
+                      "disable_lod": false,
+                      "offset_position": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_rotation": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_scale": [
+                        1.0,
+                        1.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "start(3)",
+          "transform": {
+            "position": [
+              32.069,
+              -28.160511,
+              93.94902
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                  "instances": [
+                    [
+                      [
+                        1.0,
+                        0.0,
+                        0.0,
+                        32.069
+                      ],
+                      [
+                        0.0,
+                        1.0,
+                        0.0,
+                        -28.160511
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        1.0,
+                        93.94902
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "end",
+              "transform": {
+                "position": [
+                  32.069,
+                  -28.160511,
+                  113.94902
+                ],
+                "rotation": [
+                  -0.0,
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              "components": [
+                {
+                  "name": "Model",
+                  "component": {
+                    "type": "ModelComponent",
+                    "data": {
+                      "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                      "instances": [
+                        [
+                          [
+                            1.0,
+                            0.0,
+                            0.0,
+                            32.069
+                          ],
+                          [
+                            0.0,
+                            1.0,
+                            0.0,
+                            -28.160511
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            1.0,
+                            113.94902
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0
+                          ]
+                        ]
+                      ],
+                      "meta": [
+                        {
+                          "name": "Instance_0",
+                          "parent": null,
+                          "anim_seed": 0
+                        }
+                      ],
+                      "groups": [],
+                      "next_group_id": 1000000,
+                      "cast_shadows": true,
+                      "material_overrides": [],
+                      "render_tag": 0,
+                      "disable_lod": false,
+                      "offset_position": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_rotation": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_scale": [
+                        1.0,
+                        1.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "start(4)",
+          "transform": {
+            "position": [
+              32.069,
+              -33.144188,
+              107.309525
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                  "instances": [
+                    [
+                      [
+                        1.0,
+                        0.0,
+                        0.0,
+                        32.069
+                      ],
+                      [
+                        0.0,
+                        1.0,
+                        0.0,
+                        -33.144188
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        1.0,
+                        107.309525
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "end",
+              "transform": {
+                "position": [
+                  32.069,
+                  -33.144188,
+                  127.309525
+                ],
+                "rotation": [
+                  -0.0,
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              "components": [
+                {
+                  "name": "Model",
+                  "component": {
+                    "type": "ModelComponent",
+                    "data": {
+                      "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                      "instances": [
+                        [
+                          [
+                            1.0,
+                            0.0,
+                            0.0,
+                            32.069
+                          ],
+                          [
+                            0.0,
+                            1.0,
+                            0.0,
+                            -33.144188
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            1.0,
+                            127.309525
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0
+                          ]
+                        ]
+                      ],
+                      "meta": [
+                        {
+                          "name": "Instance_0",
+                          "parent": null,
+                          "anim_seed": 0
+                        }
+                      ],
+                      "groups": [],
+                      "next_group_id": 1000000,
+                      "cast_shadows": true,
+                      "material_overrides": [],
+                      "render_tag": 0,
+                      "disable_lod": false,
+                      "offset_position": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_rotation": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_scale": [
+                        1.0,
+                        1.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "start(5)",
+          "transform": {
+            "position": [
+              32.069,
+              -28.160511,
+              121.5183
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                  "instances": [
+                    [
+                      [
+                        1.0,
+                        0.0,
+                        0.0,
+                        32.069
+                      ],
+                      [
+                        0.0,
+                        1.0,
+                        0.0,
+                        -28.160511
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        1.0,
+                        121.5183
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "end",
+              "transform": {
+                "position": [
+                  32.069,
+                  -28.160511,
+                  141.51831
+                ],
+                "rotation": [
+                  -0.0,
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              "components": [
+                {
+                  "name": "Model",
+                  "component": {
+                    "type": "ModelComponent",
+                    "data": {
+                      "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                      "instances": [
+                        [
+                          [
+                            1.0,
+                            0.0,
+                            0.0,
+                            32.069
+                          ],
+                          [
+                            0.0,
+                            1.0,
+                            0.0,
+                            -28.160511
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            1.0,
+                            141.51831
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0
+                          ]
+                        ]
+                      ],
+                      "meta": [
+                        {
+                          "name": "Instance_0",
+                          "parent": null,
+                          "anim_seed": 0
+                        }
+                      ],
+                      "groups": [],
+                      "next_group_id": 1000000,
+                      "cast_shadows": true,
+                      "material_overrides": [],
+                      "render_tag": 0,
+                      "disable_lod": false,
+                      "offset_position": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_rotation": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_scale": [
+                        1.0,
+                        1.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "start(6)",
+          "transform": {
+            "position": [
+              32.069,
+              -33.144188,
+              134.77277
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                  "instances": [
+                    [
+                      [
+                        1.0,
+                        0.0,
+                        0.0,
+                        32.069
+                      ],
+                      [
+                        0.0,
+                        1.0,
+                        0.0,
+                        -33.144188
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        1.0,
+                        134.77277
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "end",
+              "transform": {
+                "position": [
+                  32.069,
+                  -33.144188,
+                  154.77277
+                ],
+                "rotation": [
+                  -0.0,
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              "components": [
+                {
+                  "name": "Model",
+                  "component": {
+                    "type": "ModelComponent",
+                    "data": {
+                      "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                      "instances": [
+                        [
+                          [
+                            1.0,
+                            0.0,
+                            0.0,
+                            32.069
+                          ],
+                          [
+                            0.0,
+                            1.0,
+                            0.0,
+                            -33.144188
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            1.0,
+                            154.77277
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0
+                          ]
+                        ]
+                      ],
+                      "meta": [
+                        {
+                          "name": "Instance_0",
+                          "parent": null,
+                          "anim_seed": 0
+                        }
+                      ],
+                      "groups": [],
+                      "next_group_id": 1000000,
+                      "cast_shadows": true,
+                      "material_overrides": [],
+                      "render_tag": 0,
+                      "disable_lod": false,
+                      "offset_position": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_rotation": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_scale": [
+                        1.0,
+                        1.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "start(7)",
+          "transform": {
+            "position": [
+              32.069,
+              -28.160511,
+              148.98154
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                  "instances": [
+                    [
+                      [
+                        1.0,
+                        0.0,
+                        0.0,
+                        32.069
+                      ],
+                      [
+                        0.0,
+                        1.0,
+                        0.0,
+                        -28.160511
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        1.0,
+                        148.98154
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "end",
+              "transform": {
+                "position": [
+                  32.069,
+                  -28.160511,
+                  168.98154
+                ],
+                "rotation": [
+                  -0.0,
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              "components": [
+                {
+                  "name": "Model",
+                  "component": {
+                    "type": "ModelComponent",
+                    "data": {
+                      "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                      "instances": [
+                        [
+                          [
+                            1.0,
+                            0.0,
+                            0.0,
+                            32.069
+                          ],
+                          [
+                            0.0,
+                            1.0,
+                            0.0,
+                            -28.160511
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            1.0,
+                            168.98154
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0
+                          ]
+                        ]
+                      ],
+                      "meta": [
+                        {
+                          "name": "Instance_0",
+                          "parent": null,
+                          "anim_seed": 0
+                        }
+                      ],
+                      "groups": [],
+                      "next_group_id": 1000000,
+                      "cast_shadows": true,
+                      "material_overrides": [],
+                      "render_tag": 0,
+                      "disable_lod": false,
+                      "offset_position": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_rotation": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_scale": [
+                        1.0,
+                        1.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "start(8)",
+          "transform": {
+            "position": [
+              32.069,
+              -33.144188,
+              162.84532
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                  "instances": [
+                    [
+                      [
+                        1.0,
+                        0.0,
+                        0.0,
+                        32.069
+                      ],
+                      [
+                        0.0,
+                        1.0,
+                        0.0,
+                        -33.144188
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        1.0,
+                        162.84532
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "end",
+              "transform": {
+                "position": [
+                  32.069,
+                  -33.144188,
+                  182.84532
+                ],
+                "rotation": [
+                  -0.0,
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              "components": [
+                {
+                  "name": "Model",
+                  "component": {
+                    "type": "ModelComponent",
+                    "data": {
+                      "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                      "instances": [
+                        [
+                          [
+                            1.0,
+                            0.0,
+                            0.0,
+                            32.069
+                          ],
+                          [
+                            0.0,
+                            1.0,
+                            0.0,
+                            -33.144188
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            1.0,
+                            182.84532
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0
+                          ]
+                        ]
+                      ],
+                      "meta": [
+                        {
+                          "name": "Instance_0",
+                          "parent": null,
+                          "anim_seed": 0
+                        }
+                      ],
+                      "groups": [],
+                      "next_group_id": 1000000,
+                      "cast_shadows": true,
+                      "material_overrides": [],
+                      "render_tag": 0,
+                      "disable_lod": false,
+                      "offset_position": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_rotation": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_scale": [
+                        1.0,
+                        1.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "start(9)",
+          "transform": {
+            "position": [
+              32.069,
+              -28.160511,
+              182.71062
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "Model",
+              "component": {
+                "type": "ModelComponent",
+                "data": {
+                  "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                  "instances": [
+                    [
+                      [
+                        1.0,
+                        0.0,
+                        0.0,
+                        32.069
+                      ],
+                      [
+                        0.0,
+                        1.0,
+                        0.0,
+                        -28.160511
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        1.0,
+                        182.71062
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    ]
+                  ],
+                  "meta": [
+                    {
+                      "name": "Instance_0",
+                      "parent": null,
+                      "anim_seed": 0
+                    }
+                  ],
+                  "groups": [],
+                  "next_group_id": 1000000,
+                  "cast_shadows": true,
+                  "material_overrides": [],
+                  "render_tag": 0,
+                  "disable_lod": false,
+                  "offset_position": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "end",
+              "transform": {
+                "position": [
+                  32.069,
+                  -28.160511,
+                  223.55898
+                ],
+                "rotation": [
+                  -0.0,
+                  0.0,
+                  0.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              "components": [
+                {
+                  "name": "Model",
+                  "component": {
+                    "type": "ModelComponent",
+                    "data": {
+                      "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\sakanadori.glb",
+                      "instances": [
+                        [
+                          [
+                            1.0,
+                            0.0,
+                            0.0,
+                            32.069
+                          ],
+                          [
+                            0.0,
+                            1.0,
+                            0.0,
+                            -28.160511
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            1.0,
+                            223.55898
+                          ],
+                          [
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0
+                          ]
+                        ]
+                      ],
+                      "meta": [
+                        {
+                          "name": "Instance_0",
+                          "parent": null,
+                          "anim_seed": 0
+                        }
+                      ],
+                      "groups": [],
+                      "next_group_id": 1000000,
+                      "cast_shadows": true,
+                      "material_overrides": [],
+                      "render_tag": 0,
+                      "disable_lod": false,
+                      "offset_position": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_rotation": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "offset_scale": [
+                        1.0,
+                        1.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
         }
       ]
     },
@@ -1125,6 +5933,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -1231,6 +6040,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -1337,6 +6147,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -1443,6 +6254,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -1549,6 +6361,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -1655,6 +6468,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -1761,6 +6575,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -1867,6 +6682,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -1973,6 +6789,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -2079,6 +6896,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -2185,6 +7003,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -2291,6 +7110,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -2397,6 +7217,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -2503,6 +7324,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -2609,6 +7431,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -2715,6 +7538,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -2821,6 +7645,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -2927,6 +7752,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -3033,6 +7859,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -3139,6 +7966,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -3245,6 +8073,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -3351,6 +8180,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -3457,6 +8287,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -3563,6 +8394,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -3669,6 +8501,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -3775,6 +8608,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -3881,6 +8715,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -3987,6 +8822,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4093,6 +8929,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4199,6 +9036,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4305,6 +9143,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4411,6 +9250,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4517,6 +9357,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4623,6 +9464,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4729,6 +9571,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4835,6 +9678,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -4941,6 +9785,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5047,6 +9892,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5153,6 +9999,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5259,6 +10106,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5365,6 +10213,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5471,6 +10320,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5577,6 +10427,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5683,6 +10534,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5789,6 +10641,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -5895,6 +10748,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -6001,6 +10855,7 @@
                       "cast_shadows": true,
                       "material_overrides": [],
                       "render_tag": 0,
+                      "disable_lod": false,
                       "offset_position": [
                         0.0,
                         0.0,
@@ -6042,7 +10897,7 @@
           "components": [],
           "children": [
             {
-              "name": "mesh",
+              "name": "mesh(1)",
               "transform": {
                 "position": [
                   48.0,
@@ -6061,70 +10916,6 @@
                 ]
               },
               "components": [
-                {
-                  "name": "mesh",
-                  "component": {
-                    "type": "ModelComponent",
-                    "data": {
-                      "model_path": "terrain://NewScene/chunk_3_1_3",
-                      "instances": [
-                        [
-                          [
-                            1.0,
-                            0.0,
-                            0.0,
-                            48.0
-                          ],
-                          [
-                            0.0,
-                            1.0,
-                            -0.0,
-                            16.0
-                          ],
-                          [
-                            0.0,
-                            0.0,
-                            1.0,
-                            48.0
-                          ],
-                          [
-                            0.0,
-                            0.0,
-                            0.0,
-                            1.0
-                          ]
-                        ]
-                      ],
-                      "meta": [
-                        {
-                          "name": "chunk",
-                          "parent": null,
-                          "anim_seed": 0
-                        }
-                      ],
-                      "groups": [],
-                      "next_group_id": 1000000,
-                      "cast_shadows": true,
-                      "material_overrides": [],
-                      "render_tag": 0,
-                      "offset_position": [
-                        0.0,
-                        0.0,
-                        0.0
-                      ],
-                      "offset_rotation": [
-                        0.0,
-                        0.0,
-                        0.0
-                      ],
-                      "offset_scale": [
-                        1.0,
-                        1.0,
-                        1.0
-                      ]
-                    }
-                  }
-                },
                 {
                   "name": "chunk",
                   "component": {

@@ -1,0 +1,187 @@
+{
+  "name": "Yasi",
+  "transform": {
+    "position": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "rotation": [
+      -0.0,
+      0.0,
+      0.0
+    ],
+    "scale": [
+      1.4285777,
+      1.4285777,
+      1.4285777
+    ]
+  },
+  "components": [
+    {
+      "name": "Model",
+      "component": {
+        "type": "ModelComponent",
+        "data": {
+          "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\yasi.glb",
+          "instances": [
+            [
+              [
+                1.4285777,
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.4285777,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.4285777,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            ]
+          ],
+          "meta": [
+            {
+              "name": "Instance_0",
+              "parent": null,
+              "anim_seed": 0
+            }
+          ],
+          "groups": [],
+          "next_group_id": 1000000,
+          "cast_shadows": true,
+          "material_overrides": [
+            {
+              "slot": 0,
+              "kind": {
+                "kind": "inline",
+                "base_color": [
+                  1.0,
+                  0.644,
+                  0.644,
+                  1.0
+                ],
+                "metallic": 0.0,
+                "roughness": 1.0,
+                "emissive": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "alpha_mode": "opaque",
+                "alpha_cutoff": 0.5,
+                "ior": 1.0,
+                "transmission": 0.0,
+                "diffuse_transmission": 0.0,
+                "mr_tex_ignore": true,
+                "cull_face": "none",
+                "shading_model": 0
+              }
+            }
+          ],
+          "render_tag": 0,
+          "disable_lod": false,
+          "offset_position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "offset_rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "offset_scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      }
+    },
+    {
+      "name": "Collider",
+      "component": {
+        "type": "ColliderComponent",
+        "data": {
+          "shape": {
+            "type": "Capsule",
+            "radius": 0.6,
+            "half_height": 2.0
+          },
+          "offset": [
+            0.0,
+            2.5,
+            0.0
+          ],
+          "is_trigger": false,
+          "physics_layer": 1,
+          "layer_mask": 0,
+          "use_rigidbody": false,
+          "mass": 1.0,
+          "restitution": 0.3,
+          "friction": 0.5,
+          "linear_damping": 0.01,
+          "angular_damping": 0.05,
+          "gravity_scale": 1.0,
+          "is_kinematic": false,
+          "freeze_position": [
+            false,
+            false,
+            false
+          ],
+          "freeze_rotation": [
+            false,
+            false,
+            false
+          ],
+          "initial_linear_velocity": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "initial_angular_velocity": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "is_character_controller": false
+        }
+      }
+    },
+    {
+      "name": "Animator",
+      "component": {
+        "type": "AnimatorComponent",
+        "data": {
+          "clips": [
+            {
+              "name": "Sway",
+              "kind": "model",
+              "path": "",
+              "anim": "Sway",
+              "loop_mode": "loop"
+            }
+          ],
+          "default_clip": "Sway",
+          "play_on_start": true,
+          "speed": 1.0,
+          "default_fade_seconds": 0.0
+        }
+      }
+    }
+  ],
+  "children": []
+}

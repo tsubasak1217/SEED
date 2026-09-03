@@ -1,32 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LayoutRoot>
   <RootPanel Orientation="Horizontal">
-    <LayoutPanel Orientation="Vertical" DockWidth="1.2234333100303636*">
-      <LayoutDocumentPaneGroup Orientation="Horizontal" DockHeight="0.7321097024030554*">
-        <LayoutDocumentPane Id="8d02b7c3-58b9-4222-8e73-8ca4bd60c7c1" DockWidth="1.5203459720912917*">
-          <LayoutDocument Title="シーン" ContentId="viewport" CanClose="False" CanFloat="False" LastActivationTimeStamp="08/31/2026 09:57:50" />
-          <LayoutDocument Title="Script" ContentId="script_editor" FloatingWidth="960" FloatingHeight="516" CanClose="False" LastActivationTimeStamp="08/26/2026 04:07:32" />
-          <LayoutAnchorable AutoHideMinWidth="100" AutoHideMinHeight="100" Title="スプライトリグ" IsSelected="True" IsLastFocusedDocument="True" ContentId="sprite_rig" FloatingLeft="100" FloatingTop="102" FloatingWidth="472" FloatingHeight="948" LastActivationTimeStamp="08/31/2026 09:59:21" />
+    <LayoutPanel Orientation="Vertical" DockWidth="1.3974034578824903*">
+      <LayoutDocumentPaneGroup Orientation="Horizontal" DockHeight="0.7254787544427349*">
+        <LayoutDocumentPane Id="8d02b7c3-58b9-4222-8e73-8ca4bd60c7c1" DockWidth="1.4534430527112*">
+          <LayoutDocument Title="シーン" ContentId="viewport" CanClose="False" CanFloat="False" LastActivationTimeStamp="09/03/2026 20:31:36" />
+          <LayoutDocument Title="Script" IsSelected="True" IsLastFocusedDocument="True" ContentId="script_editor" FloatingWidth="960" FloatingHeight="516" CanClose="False" LastActivationTimeStamp="09/03/2026 20:33:09" />
+          <LayoutAnchorable AutoHideMinWidth="100" AutoHideMinHeight="100" Title="スプライトリグ" ContentId="sprite_rig" FloatingLeft="100" FloatingTop="102" FloatingWidth="472" FloatingHeight="948" LastActivationTimeStamp="09/03/2026 12:10:46" />
         </LayoutDocumentPane>
-        <LayoutDocumentPane DockWidth="0.38179585342112193*">
-          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Hierarchy" IsSelected="True" ContentId="hierarchy" FloatingLeft="820" FloatingTop="455" FloatingWidth="230" FloatingHeight="948" LastActivationTimeStamp="08/31/2026 09:57:57" />
-          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="タブ" ContentId="open_documents" FloatingLeft="820" FloatingTop="455" FloatingWidth="230" FloatingHeight="948" LastActivationTimeStamp="08/31/2026 00:30:40" />
+        <LayoutDocumentPane DockWidth="0.4486987728012138*">
+          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Hierarchy" IsSelected="True" ContentId="hierarchy" FloatingLeft="820" FloatingTop="455" FloatingWidth="230" FloatingHeight="948" LastActivationTimeStamp="09/03/2026 20:27:08" />
+          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="タブ" ContentId="open_documents" FloatingLeft="820" FloatingTop="455" FloatingWidth="230" FloatingHeight="948" LastActivationTimeStamp="09/03/2026 12:15:44" />
         </LayoutDocumentPane>
       </LayoutDocumentPaneGroup>
-      <LayoutAnchorablePaneGroup Orientation="Horizontal" DockHeight="382">
-        <LayoutAnchorablePane DockWidth="1.5203459720912917*" FloatingWidth="472" FloatingHeight="948" FloatingLeft="615" FloatingTop="824">
-          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Project" IsSelected="True" ContentId="project" FloatingLeft="461" FloatingTop="820" FloatingWidth="472" FloatingHeight="948" LastActivationTimeStamp="08/31/2026 11:47:15" PreviousContainerId="8d02b7c3-58b9-4222-8e73-8ca4bd60c7c1" PreviousContainerIndex="2" />
+      <LayoutAnchorablePaneGroup Orientation="Horizontal" DockHeight="387">
+        <LayoutAnchorablePane DockWidth="1.5203459720912917*" DockHeight="387" FloatingWidth="472" FloatingHeight="948" FloatingLeft="615" FloatingTop="824">
+          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Project" IsSelected="True" ContentId="project" FloatingLeft="461" FloatingTop="820" FloatingWidth="472" FloatingHeight="948" LastActivationTimeStamp="09/03/2026 16:40:49" PreviousContainerId="8d02b7c3-58b9-4222-8e73-8ca4bd60c7c1" PreviousContainerIndex="2" />
           <LayoutAnchorable AutoHideMinWidth="100" AutoHideMinHeight="100" Title="アニメーション: アニメーション" ContentId="animation_timeline" FloatingLeft="615" FloatingTop="824" FloatingWidth="472" FloatingHeight="948" LastActivationTimeStamp="08/31/2026 09:59:06" PreviousContainerId="8d02b7c3-58b9-4222-8e73-8ca4bd60c7c1" PreviousContainerIndex="2" />
-          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="エラー一覧" ContentId="error_list" FloatingLeft="444" FloatingTop="826" FloatingWidth="472" FloatingHeight="948" LastActivationTimeStamp="08/31/2026 09:59:04" PreviousContainerId="8d02b7c3-58b9-4222-8e73-8ca4bd60c7c1" PreviousContainerIndex="2" />
+          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="エラー一覧" ContentId="error_list" FloatingLeft="444" FloatingTop="826" FloatingWidth="472" FloatingHeight="948" LastActivationTimeStamp="09/03/2026 10:00:25" PreviousContainerId="8d02b7c3-58b9-4222-8e73-8ca4bd60c7c1" PreviousContainerIndex="2" />
         </LayoutAnchorablePane>
         <LayoutAnchorablePane DockWidth="0.6922317807421221*" DockHeight="382" DockMinHeight="80" FloatingWidth="1392" FloatingHeight="190" FloatingLeft="719" FloatingTop="918">
-          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Output" IsSelected="True" ContentId="output" FloatingLeft="719" FloatingTop="918" FloatingWidth="1392" FloatingHeight="190" LastActivationTimeStamp="08/26/2026 04:01:00" />
+          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Output" IsSelected="True" ContentId="output" FloatingLeft="719" FloatingTop="918" FloatingWidth="1392" FloatingHeight="190" LastActivationTimeStamp="09/01/2026 23:40:43" />
         </LayoutAnchorablePane>
       </LayoutAnchorablePaneGroup>
     </LayoutPanel>
-    <LayoutAnchorablePane Id="0c76eff8-6d0a-4af6-beef-1c0b04ffbe86" DockWidth="603" DockMinWidth="200" FloatingWidth="960" FloatingHeight="1032" FloatingLeft="960">
+    <LayoutAnchorablePane Id="0c76eff8-6d0a-4af6-beef-1c0b04ffbe86" DockWidth="418" DockMinWidth="200" FloatingWidth="960" FloatingHeight="1032" FloatingLeft="960">
       <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="AI アシスタント" ContentId="ai_assistant" FloatingLeft="1711" FloatingTop="554" FloatingWidth="472" FloatingHeight="948" LastActivationTimeStamp="08/19/2026 23:47:07" />
-      <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Inspector" IsSelected="True" ContentId="inspector" FloatingLeft="960" FloatingWidth="960" FloatingHeight="1032" LastActivationTimeStamp="08/31/2026 09:58:04" />
+      <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Inspector" IsSelected="True" ContentId="inspector" FloatingLeft="960" FloatingWidth="960" FloatingHeight="1032" LastActivationTimeStamp="09/03/2026 20:30:35" />
       <LayoutAnchorable AutoHideMinWidth="100" AutoHideMinHeight="100" Title="プロファイラ" ContentId="profiler" FloatingLeft="1662" FloatingTop="1001" FloatingWidth="472" FloatingHeight="948" LastActivationTimeStamp="08/19/2026 23:46:57" PreviousContainerId="0c76eff8-6d0a-4af6-beef-1c0b04ffbe86" PreviousContainerIndex="2" />
     </LayoutAnchorablePane>
   </RootPanel>
