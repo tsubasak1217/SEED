@@ -11,9 +11,12 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// どちらのモードでも、向きは「進行方向へ最短回りで緩やかに補間」する（急な向き変わりを防ぐ）。
 /// 動いている間は走りアニメ、止まると待機アニメへクロスフェードで切り替える。
 ///
-/// さらに<b>経路移動モードのときだけ</b>、Space キーで釣り姿勢の状態機械が動く:
-/// 通常 →（Space）→ その場で釣り姿勢（海の方を向く） →（Space）→ 通常。
-/// 詳細は <see cref="PlayerState"/> を参照。自由移動モードでは Space は何もしない。
+/// 釣り姿勢（<see cref="PlayerState.FishingStance"/>）への出入りは<b>本スクリプトからは行わない</b>。
+/// 入力の解釈は <see cref="FishingController"/> が一手に引き受け（左クリック押下で開始／離して終了）、
+/// こちらは <see cref="EnterFishingStance"/> / <see cref="ExitFishingStance"/> を
+/// 公開 API として提供するだけである（姿勢の見た目＝向き直し・クリップ切替が本スクリプトの責務）。
+/// なお釣り姿勢は<b>経路移動モードでのみ</b>成立する（自由移動モードでは入れない）。
+/// 詳細は <see cref="PlayerState"/> を参照。
 /// </summary>
 public class PlayerMove : SEEDScript
 {
@@ -261,10 +264,7 @@ public class PlayerMove : SEEDScript
         {
             var activePath = path!.Value;
 
-            // Space による状態遷移（通常⇔釣り姿勢）を先に処理する。
-            // 遷移した結果を同フレームの移動処理へ反映させたいので移動より前に呼ぶ。
-            UpdateFishingStateInput(activePath);
-
+            // 釣り姿勢への出入りは FishingController が担当する（本スクリプトは入力を見ない）。
             moving = State switch
             {
                 // 釣り姿勢中: 移動しない（向きの補間だけ続ける）
@@ -440,42 +440,27 @@ public class PlayerMove : SEEDScript
         ApplyPathTransform(p, pathTime);
     }
 
-    // ─── 釣り姿勢の状態機械 ───────────────────────────────────
+    // ─── 釣り姿勢（出入りは FishingController が呼ぶ公開 API）─────
 
     /// <summary>
-    /// Space キーによる状態遷移を処理する（経路移動モードでのみ呼ばれる）。
+    /// 釣り姿勢へ入る（<see cref="FishingController"/> から呼ばれる公開 API）。
+    /// 海の方（経路進行方向の右手側）へ向き直り、釣りアニメへ切り替える。
     ///
-    /// - 通常     → その場で釣り姿勢へ入る（移動なし。海の方へ向き直るのみ）
-    /// - 釣り姿勢 → 通常へ戻し、待機アニメへ復帰
-    /// </summary>
-    /// <param name="p">評価対象の経路。</param>
-    private void UpdateFishingStateInput(SEED.ControlPointPath p)
-    {
-        if (!SEED.Input.GetKeyDown(SEED.KeyCode.Space)) { return; }
-
-        switch (State)
-        {
-            case PlayerState.Normal:
-                EnterFishingStance(p);
-                break;
-
-            case PlayerState.FishingStance:
-                ExitFishingStance();
-                break;
-        }
-    }
-
-    /// <summary>
-    /// 釣り姿勢へ入る。海の方（経路進行方向の右手側）へ向き直り、釣りアニメへ切り替える。
+    /// <b>経路移動モードでのみ成立する</b>。経路が未設定・点が無い場合は
+    /// 向くべき「海の方向」が決まらないため、姿勢へ入らず false を返す
+    /// （呼び出し側はこの戻り値を見て釣りを開始するかどうかを決める）。
     ///
     /// <b>右手方向の求め方</b>: SEED は左手系で前方 +Z、ヨー 0 のとき右 = (1,0,0)。
     /// 回転行列の列（transform.rs の rotation_basis）はピッチ・ロール 0 のとき
     /// 前 = (sinY, 0, cosY) / 右 = (cosY, 0, -sinY) になる。
     /// よって前方が (x, ?, z) のとき右方向は (z, 0, -x) である。
     /// </summary>
-    /// <param name="p">評価対象の経路。</param>
-    private void EnterFishingStance(SEED.ControlPointPath p)
+    /// <returns>釣り姿勢へ入れたら true（経路移動モードでない場合は false）。</returns>
+    public bool EnterFishingStance()
     {
+        // 経路移動モード以外・点の無い経路では姿勢へ入らない（海の向きが決まらないため）
+        if (path is not { } p || !p.IsValid || p.PointCount <= 0) { return false; }
+
         State = PlayerState.FishingStance;
 
         // 経路の進行方向に対して常に右手側が海。接線から右方向を作って向く。
@@ -487,16 +472,18 @@ public class PlayerMove : SEEDScript
         // 本体と竿を釣りアニメへ。実際の向き直しは UpdateRotation が補間して行う。
         CrossFadeTo(ResolveAnimator(), fishingClip);
         CrossFadeTo(rodAnimator, rodFishingClip);
+        return true;
     }
 
     /// <summary>
-    /// 釣り姿勢を解除して通常状態へ戻す。本体・竿を待機アニメへ戻す。
+    /// 釣り姿勢を解除して通常状態へ戻す（<see cref="FishingController"/> から呼ばれる公開 API）。
+    /// 本体・竿を待機アニメへ戻す。
     ///
     /// <see cref="isRunning"/> を未初期化へ戻すのが要点: 釣り姿勢中は
     /// <see cref="UpdateAnimation"/> を呼んでいないためラッチが実態とずれている。
     /// null にしておけば次のフレームで移動状態に合わせて必ず貼り直される。
     /// </summary>
-    private void ExitFishingStance()
+    public void ExitFishingStance()
     {
         State = PlayerState.Normal;
 

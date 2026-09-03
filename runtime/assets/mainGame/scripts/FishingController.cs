@@ -4,11 +4,18 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 釣りの「キャスト（投げる）→ 着水 → リール（巻く）」を司るコントローラ。
 ///
 /// <b>プレイヤーアクタに付ける</b>（<see cref="PlayerMove"/> と同じアクタ）。
-/// <see cref="PlayerMove"/> が釣り姿勢（<see cref="PlayerMove.PlayerState.FishingStance"/>）の
-/// あいだだけ動作し、姿勢を抜けたら即座に全部キャンセルして待機へ戻る。
+/// <b>釣り姿勢の出入りは本スクリプトが握る</b>: 左クリックの押下／解放を解釈して
+/// <see cref="PlayerMove.EnterFishingStance"/> / <see cref="PlayerMove.ExitFishingStance"/> を呼ぶ
+/// （<see cref="PlayerMove"/> 側は姿勢の見た目だけを担当し、入力を一切見ない）。
 ///
-/// <b>操作</b>
-/// - キャスト … マウスを「下へ引いて → 上へ振る」ジェスチャ（振り幅が飛距離、横成分が方向）
+/// <b>操作（左クリック押しっぱなしで 1 回のキャストが完結する）</b>
+/// - 構える   … 移動中に<b>左クリックを押す</b>と釣り姿勢＋狙い（Aiming）へ
+/// - 振りかぶり… 押したままマウスを<b>左へ振る</b>（累積が
+///   <see cref="windupThresholdPx"/> px を超えると Windup へ。途中まででも姿勢は追従する）
+/// - 飛距離   … Windup 中は着弾点プレビューが最短⇔最長を往復するので、投げたい距離で振る
+/// - キャスト … マウスを<b>右へ振る</b>（累積が <see cref="castSwingThresholdPx"/> px 超で成立）
+/// - 方向     … A / D キーでキャスト角を左右に振る（±<see cref="maxCastAngleDegrees"/> 度）
+/// - 中断     … キャスト前に左クリックを離すと姿勢を解除して移動へ戻る
 /// - リール   … マウスホイール、またはマウス移動量（インスペクタで切替）
 /// - 巻く向き … A / D キーで左右に振れる（島中心方向を基準に ±範囲内）
 ///
@@ -26,6 +33,17 @@ public class FishingController : SEEDScript
     /// <summary>
     /// 釣りの進行状態。
     ///
+    /// <b>遷移表</b>
+    /// <code>
+    /// Idle    --左クリック押下（移動中）--> Aiming
+    /// Aiming  --左へ振る（累積 >= windupThresholdPx）--> Windup
+    /// Aiming  --左クリック解放--> Idle（姿勢解除して移動へ）
+    /// Windup  --右へ振る（累積 >= castSwingThresholdPx）--> Casting
+    /// Windup  --左クリック解放--> Idle（振りかぶりを取り消して移動へ）
+    /// Casting --着水--> Floating --巻き入力--> Reeling --手元まで--> Aiming（空振り）/ Result
+    /// Aiming（巻き取り後）--左クリックを離していれば即--> Idle
+    /// </code>
+    ///
     /// スクリプトはファイル名＝型名で 1 ファイル 1 スクリプトクラスとして扱われるため、
     /// この列挙型は独立ファイルにせず本クラスの入れ子として定義する
     /// （外部からは <c>FishingController.FishState</c> で参照できる）。
@@ -35,8 +53,17 @@ public class FishingController : SEEDScript
         /// <summary>釣り姿勢に入っていない。ウキは竿先に格納し、糸は非表示。</summary>
         Idle,
 
-        /// <summary>釣り姿勢中でキャスト待ち。マウスのジェスチャを待ち受ける。</summary>
+        /// <summary>
+        /// 釣り姿勢中でキャスト待ち。左クリックを押したまま「左へ振る」のを待ち受ける。
+        /// 左への累積がしきい値未満のあいだは、その割合ぶんだけ振りかぶり姿勢を追従表示する。
+        /// </summary>
         Aiming,
+
+        /// <summary>
+        /// 振りかぶり完了。着弾点プレビューが最短⇔最長を往復し、
+        /// 「右へ振る」ジェスチャでキャストが成立する。
+        /// </summary>
+        Windup,
 
         /// <summary>キャスト直後。ウキが放物線を描いて着水点へ飛んでいる。</summary>
         Casting,
@@ -53,19 +80,6 @@ public class FishingController : SEEDScript
 
     /// <summary>現在の釣り状態（他スクリプトから参照する読み取り専用プロパティ）。</summary>
     public FishState State { get; private set; } = FishState.Idle;
-
-    /// <summary>
-    /// キャストのジェスチャ進行段階（内部専用）。
-    /// 「下へ引く（Pull）」→「上へ振る（Push）」の 2 段で 1 回のキャストになる。
-    /// </summary>
-    private enum GesturePhase
-    {
-        /// <summary>下方向へ引いている段階（振りかぶり）。</summary>
-        Pull,
-
-        /// <summary>上方向へ振っている段階（振り抜き）。ここでしきい値を超えるとキャストする。</summary>
-        Push,
-    }
 
     // ゲーム向けエンジン API（Mathf/Vector3/Time/Input/Debug など）は SEED 名前空間にある。
     // System と型名が衝突するため using は付けず「SEED.」で修飾する（docs/scripting_api.md）。
@@ -86,6 +100,18 @@ public class FishingController : SEEDScript
 
     /// <summary>糸の点列の最小分割数（1 ＝ 直線）。</summary>
     private const int MinLineSegments = 1;
+
+    /// <summary>0 除算を避けるための「実質 0」しきい値（しきい値・周期などの分母に使う）。</summary>
+    private const float DivideEpsilon = 1e-4f;
+
+    /// <summary>着弾点プレビューの円（リング）の最小分割数（3 ＝ 三角形）。</summary>
+    private const int MinRingSegments = 3;
+
+    /// <summary>着弾点プレビューの放物線の最小分割数（1 ＝ 直線）。</summary>
+    private const int MinArcSegments = 1;
+
+    /// <summary>ピンポン往復 1 周（往路＋復路）の長さ。<c>PingPong(u, 1)</c> は u が 2 で 1 周する。</summary>
+    private const float PingPongCycleUnits = 2f;
 
     // ─── 参照（インスペクタで割り当てる）───────────────────────
 
@@ -135,6 +161,15 @@ public class FishingController : SEEDScript
     /// <summary>釣り糸の LineRenderer（ウキ側に付ける想定）。未設定なら糸を描かない。</summary>
     [SerializeField(Label = "釣り糸(LineRenderer)")]
     private SEED.LineRenderer? line = null;
+
+    /// <summary>
+    /// 着弾点プレビューの LineRenderer（専用アクタ「CastPreview」に付ける想定）。
+    /// <see cref="FishState.Windup"/> のあいだだけ「竿先→着弾点の放物線＋着弾点の円」を描く。
+    /// 釣り糸とは寿命も見た目も別物なので、糸（<see cref="line"/>）とは別スロットにする。
+    /// 未設定ならプレビューを描かない（操作自体は同じように成立する）。
+    /// </summary>
+    [SerializeField(Label = "着弾点プレビュー(LineRenderer)")]
+    private SEED.LineRenderer? previewLine = null;
 
     /// <summary>
     /// 水面（WaterVolume）。着水点の Y とウキの浮かぶ高さに使う。
@@ -216,70 +251,57 @@ public class FishingController : SEEDScript
     // ─── キャストのジェスチャ ─────────────────────────────────
 
     /// <summary>
-    /// 第 1 段階（下へ引く）の累積移動量のしきい値（px）。
-    /// これを超えると第 2 段階（上へ振る）の受付を開始する。
+    /// 振りかぶり成立に必要な「左方向」への累積マウス移動量（px）。
+    /// <see cref="FishState.Aiming"/> で左へ振った量がこれを超えると
+    /// <see cref="FishState.Windup"/>（振りかぶり完了）へ入る。
+    /// 途中までの量は振りかぶり姿勢のスクラブ比率としてそのまま使う。
     /// </summary>
-    [Header("キャストのジェスチャ"), SerializeField(Label = "引き量のしきい値(px)")]
-    private float pullThresholdPx = 60f;
+    [Header("キャストのジェスチャ"), SerializeField(Label = "振りかぶりのしきい値(px)")]
+    private float windupThresholdPx = 40f;
 
     /// <summary>
-    /// 第 2 段階（上へ振る）の累積上方向移動量のしきい値（px）。
-    /// これを超えた瞬間にキャストが成立する。
+    /// キャスト成立に必要な「右方向」への累積マウス移動量（px）。
+    /// <see cref="FishState.Windup"/> で右へ振った量がこれを超えた瞬間にキャストする。
     /// </summary>
-    [SerializeField(Label = "振り量のしきい値(px)")]
-    private float pushThresholdPx = 80f;
-
-    /// <summary>
-    /// この px 未満のフレーム移動量は「動いていない」とみなす（手ぶれ・センサノイズ対策）。
-    /// </summary>
-    [SerializeField(Label = "移動とみなす最小量(px)")]
-    private float gestureMoveEpsilonPx = 1.0f;
-
-    /// <summary>
-    /// 逆方向へこの px を超えて動いたらジェスチャを最初からやり直す（振り戻しの誤爆防止）。
-    /// </summary>
-    [SerializeField(Label = "逆行の許容量(px)")]
-    private float gestureReverseTolerancePx = 12f;
-
-    /// <summary>
-    /// Pull 段階（引きの途中）でこの秒数だけ有意な動きが無ければジェスチャをリセットする。
-    /// Push 段階（振り抜き待ち）には適用されない（→ <see cref="armedTimeoutSeconds"/>）。
-    /// </summary>
-    [SerializeField(Label = "引き段階のタイムアウト(秒)")]
-    private float gestureTimeoutSeconds = 0.6f;
-
-    /// <summary>
-    /// Push 段階（振りかぶりポーズで振り抜き待ち）でこの秒数だけ有意な動きが無ければ
-    /// ジェスチャを最初からリセットする。0 以下なら無制限に待機し続ける
-    /// （振りかぶった姿勢のまま、いつまでも振り抜きを受け付ける）。
-    /// </summary>
-    [SerializeField(Label = "振り待ちのタイムアウト(秒, 0=無制限)")]
-    private float armedTimeoutSeconds = 0f;
+    [SerializeField(Label = "振り抜きのしきい値(px)")]
+    private float castSwingThresholdPx = 40f;
 
     // ─── キャストの飛距離・方向 ───────────────────────────────
 
-    /// <summary>振り量 1px あたりの飛距離（メートル）。</summary>
-    [Header("キャスト"), SerializeField(Label = "1pxあたりの飛距離(m)")]
-    private float metersPerPixel = 0.05f;
-
-    /// <summary>飛距離の下限（メートル）。</summary>
-    [SerializeField(Label = "最短飛距離(m)")]
+    /// <summary>飛距離の下限（メートル）。プレビューの往復の下端でもある。</summary>
+    [Header("キャスト"), SerializeField(Label = "最短飛距離(m)")]
     private float minCastDistance = 3f;
 
-    /// <summary>飛距離の上限（メートル）。</summary>
+    /// <summary>飛距離の上限（メートル）。プレビューの往復の上端でもある。</summary>
     [SerializeField(Label = "最長飛距離(m)")]
     private float maxCastDistance = 25f;
 
     /// <summary>
-    /// 振りの横成分から方向をどれだけ振るかの倍率
-    /// （1.0 で「振りの角度そのまま」＝真上に振れば正面、斜めに振ればその角度ぶん横へ）。
+    /// 着弾点プレビューが最短⇔最長を 1 往復する秒数（往路＋復路で 1 周）。
+    /// 短いほど狙いがシビアになる。
     /// </summary>
-    [SerializeField(Label = "方向の感度")]
-    private float directionSensitivity = 1.0f;
+    [SerializeField(Label = "プレビューの往復周期(秒)")]
+    private float previewCycleSeconds = 2.0f;
+
+    /// <summary>A / D キーでキャスト方向を振る速さ（度／秒）。</summary>
+    [SerializeField(Label = "キャスト方向転換の速さ(度/秒)")]
+    private float castTurnSpeedDegPerSec = 60f;
 
     /// <summary>正面（プレイヤーの向き）からの左右の最大ずれ角（度）。</summary>
     [SerializeField(Label = "最大キャスト角(度)")]
     private float maxCastAngleDegrees = 45f;
+
+    /// <summary>着弾点プレビューの放物線の分割数（点数は分割数＋1）。</summary>
+    [SerializeField(Label = "プレビューの弧の分割数")]
+    private int previewArcSegments = 24;
+
+    /// <summary>着弾点プレビューの円（着弾点マーカー）の半径（メートル）。</summary>
+    [SerializeField(Label = "プレビューの円の半径(m)")]
+    private float previewRingRadius = 0.3f;
+
+    /// <summary>着弾点プレビューの円の分割数（点数は分割数＋1＝始点を閉じるぶん）。</summary>
+    [SerializeField(Label = "プレビューの円の分割数")]
+    private int previewRingSegments = 16;
 
     /// <summary>
     /// 水面が未設定のときに使う「竿先からの落差」（メートル）。
@@ -369,23 +391,23 @@ public class FishingController : SEEDScript
 
     // ─── 内部状態 ─────────────────────────────────────────────
 
-    /// <summary>現在のジェスチャ段階。</summary>
-    private GesturePhase gesturePhase = GesturePhase.Pull;
-
-    /// <summary>第 1 段階で下方向へ動いた累積量（px、正値）。</summary>
-    private float pullAccumPx = 0f;
-
     /// <summary>
     /// キャスト予備動作（振りかぶりポーズでの停止スクラブ）を実行中か。
     /// true のあいだ竿 Animator の再生速度は 0 に固定し、<see cref="Time"/> を手動で狙い位置へ寄せる。
     /// </summary>
     private bool windupActive = false;
 
-    /// <summary>第 2 段階で動いた累積ベクトル（px。y は画面下向きが正なので振り上げると負になる）。</summary>
-    private SEED.Vector2 pushAccumPx = SEED.Vector2.Zero;
+    /// <summary>左方向へ動いた累積量（px、正値）。<see cref="FishState.Windup"/> 到達で頭打ちにする。</summary>
+    private float windupAccumPx = 0f;
 
-    /// <summary>最後に有意な動きがあってからの経過秒数（タイムアウト判定用）。</summary>
-    private float gestureIdleSeconds = 0f;
+    /// <summary>右方向へ動いた累積量（px、正値）。<see cref="FishState.Windup"/> でのみ積算する。</summary>
+    private float swingAccumPx = 0f;
+
+    /// <summary>着弾点プレビューの往復位相用に積算した秒数（<see cref="FishState.Windup"/> 中のみ進む）。</summary>
+    private float previewElapsed = 0f;
+
+    /// <summary>キャスト方向の基準（プレイヤー正面）からのずれ角（度）。A / D キーで増減する。</summary>
+    private float castAngleOffsetDegrees = 0f;
 
     /// <summary>飛翔開始位置（ワールド。キャスト時の竿先）。</summary>
     private SEED.Vector3 flightStart = SEED.Vector3.Zero;
@@ -428,6 +450,13 @@ public class FishingController : SEEDScript
             l.LocalSpace = false;
             l.Visible = false;
         }
+
+        if (previewLine is { } preview && preview.IsValid)
+        {
+            // プレビューも竿先〜水面のワールド座標を直接渡す（アクタの姿勢に依存させない）。
+            preview.LocalSpace = false;
+            preview.Visible = false;
+        }
     }
 
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
@@ -441,7 +470,7 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// 毎フレームの主更新。竿先の追従 → 釣り姿勢の判定 → 状態ごとの処理、の順に行う。
+    /// 毎フレームの主更新。竿先の追従 → 釣り開始／中断の判定 → 状態ごとの処理、の順に行う。
     ///
     /// ウキの移動をすべてこの Update で終わらせるのが要点。カメラ（CameraMove）は
     /// LateUpdate でウキの子（キャスト時のカメラ目標）を見に来るので、
@@ -452,15 +481,24 @@ public class FishingController : SEEDScript
         // 竿先は竿のアニメに追従させる（JointAttach は子へ伝播しないので毎フレーム自前で合わせる）
         SyncRodTip();
 
-        // 釣り姿勢でなければ全部たたんで待機へ戻す（姿勢解除で途中キャンセルされる）
-        if (!IsPlayerFishing())
+        // プレイヤー参照が無ければ姿勢の出入りができないので何もしない
+        if (playerMove is not { } pm) { return; }
+
+        // 何らかの理由で外部から釣り姿勢を解除された場合は全部たたんで待機へ戻す
+        if (State != FishState.Idle && !IsPlayerFishing())
         {
-            if (State != FishState.Idle) { CancelToIdle(); }
+            CancelToIdle();
             return;
         }
 
-        // 姿勢に入った最初のフレーム: 狙い（ジェスチャ待ち）へ
-        if (State == FishState.Idle) { EnterAiming(); }
+        // 待機中: 移動中に左クリックを押したら釣り姿勢＋狙いへ入る
+        // （経路移動モードでないと EnterFishingStance が false を返し、釣りは始まらない）
+        if (State == FishState.Idle)
+        {
+            if (!SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left)) { return; }
+            if (!pm.EnterFishingStance()) { return; }
+            EnterAiming();
+        }
 
         // ウキの揺れ位相は状態に依らず進めておく（状態遷移で揺れが飛ばないように）
         bobElapsed += ctx.DeltaTime;
@@ -469,6 +507,11 @@ public class FishingController : SEEDScript
         {
             case FishState.Aiming:
                 UpdateAiming(ctx.DeltaTime);
+                ParkFloatAtRodTip();      // キャスト前のウキは竿先に格納しておく
+                break;
+
+            case FishState.Windup:
+                UpdateWindupState(ctx.DeltaTime);
                 ParkFloatAtRodTip();      // キャスト前のウキは竿先に格納しておく
                 break;
 
@@ -527,6 +570,7 @@ public class FishingController : SEEDScript
         ResetGesture();
         hookedFish = false;
         ParkFloatAtRodTip();
+        HidePreviewLine();
         CrossFadeBoth(floatClip, playerFloatClip);
         // 狙い中〜巻き取り中はカーソルをロックしたままにする（Casting / Floating / Reeling も同様）。
         // これでマウスが画面端で止まっても MouseDelta が 0 に潰れない。
@@ -535,8 +579,8 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// 釣りを中断して待機へ戻す（釣り姿勢の解除時に呼ばれる）。
-    /// ウキを竿先へ格納し、糸を隠し、竿のアニメ指定は <see cref="PlayerMove"/> 側へ返す。
+    /// 釣りを中断して待機へ戻す（外部から釣り姿勢を解除された場合の後始末）。
+    /// ウキを竿先へ格納し、糸とプレビューを隠し、竿のアニメ指定は <see cref="PlayerMove"/> 側へ返す。
     /// </summary>
     private void CancelToIdle()
     {
@@ -545,9 +589,22 @@ public class FishingController : SEEDScript
         hookedFish = false;
         ParkFloatAtRodTip();
         HideLine();
+        HidePreviewLine();
         // 釣り状態を抜けたらカーソルを必ず返す（姿勢解除・中断の唯一の出口）。
         ApplyCursorLock(false);
         SEED.Debug.Log("[Fishing] Idle (キャンセル)");
+    }
+
+    /// <summary>
+    /// 左クリックを離してキャスト前に釣りをやめ、移動できる状態へ戻す。
+    /// <see cref="CancelToIdle"/> の後始末に加えて、
+    /// <see cref="PlayerMove.ExitFishingStance"/> を呼んで姿勢自体も解除する
+    /// （＝入力起因の出口はこの 1 本だけにまとめる）。
+    /// </summary>
+    private void ExitToMovement()
+    {
+        CancelToIdle();
+        if (playerMove is { } pm) { pm.ExitFishingStance(); }
     }
 
     /// <summary>
@@ -568,165 +625,214 @@ public class FishingController : SEEDScript
     /// </summary>
     private void ResetGesture()
     {
-        gesturePhase = GesturePhase.Pull;
-        pullAccumPx = 0f;
-        pushAccumPx = SEED.Vector2.Zero;
-        gestureIdleSeconds = 0f;
+        windupAccumPx = 0f;
+        swingAccumPx = 0f;
+        previewElapsed = 0f;
+        castAngleOffsetDegrees = 0f;
         EndWindup(continueToCast: false);
     }
 
     // ─── キャストのジェスチャ判定 ─────────────────────────────
 
     /// <summary>
-    /// マウスの振りジェスチャを解釈し、成立したらキャストする。
+    /// <see cref="FishState.Aiming"/> の毎フレーム更新。
     ///
-    /// <b>アルゴリズム（2 段階）</b>
-    /// 1. Pull（引き）… 下方向（<c>MouseDelta.y &gt; 0</c>）の移動量を累積し、
-    ///    <see cref="pullThresholdPx"/> を超えたら Push 段階（振りかぶり完了＝振り抜き待ち）へ。
-    ///    上方向へ <see cref="gestureReverseTolerancePx"/> を超えて動いたら引きの累積を
-    ///    捨ててやり直す。<see cref="gestureTimeoutSeconds"/> のあいだ有意な動きが無い
-    ///    場合も同様にジェスチャ全体をリセットする。
-    /// 2. Push（振り抜き待ち／実行）… 上方向（<c>MouseDelta.y &lt; 0</c>）の移動を
-    ///    <b>ベクトルのまま</b>累積し、上方向成分が <see cref="pushThresholdPx"/> を
-    ///    超えた瞬間にキャストする。
-    ///    - まだ振り抜きが始まっていない間（<c>-pushAccumPx.y &lt;= 0</c>）の下方向の
-    ///      動きは「引き戻しの一部」として単に無視する（振りかぶりポーズを保ったまま待機）。
-    ///      これにより Pull → Push 切り替え直後のオーバーシュートでリセットされない。
-    ///    - 振り抜きが始まった後（<c>-pushAccumPx.y &gt; 0</c>）に下方向へ
-    ///      <see cref="gestureReverseTolerancePx"/> を超えて戻した場合は「振り直し」として
-    ///      <c>pushAccumPx</c> のみを 0 に戻す（Push 段階・振りかぶりポーズは維持し、
-    ///      <see cref="ResetGesture"/> は呼ばない＝Pull からやり直させない）。
-    ///    - タイムアウトは <see cref="gestureTimeoutSeconds"/> ではなく
-    ///      <see cref="armedTimeoutSeconds"/> を使う（0 以下なら無制限に待機）。
+    /// <b>アルゴリズム</b>
+    /// - 左クリックを離した … キャスト前なので釣りをやめて移動へ戻る（<see cref="ExitToMovement"/>）。
+    /// - マウスが左（<c>MouseDelta.x &lt; 0</c>）へ動いた … その量を
+    ///   <see cref="windupAccumPx"/> へ積算し、振りかぶり姿勢のスクラブを開始／進行させる。
+    ///   累積が <see cref="windupThresholdPx"/> を超えたら <see cref="FishState.Windup"/> へ。
+    /// - 右へ動いた量は無視する（振りかぶる前の振り抜きは受け付けない）。
+    ///
+    /// A / D によるキャスト方向の調整は <see cref="FishState.Windup"/> と同じく毎フレーム効く。
     /// </summary>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     private void UpdateAiming(float deltaTime)
     {
-        // MouseDelta はウィンドウ内カーソル位置の差分（px、右が +X / 下が +Y）。
-        // MouseMove（Raw Input 由来）は埋め込み時に届かないことがあるのでこちらを使う。
-        var delta = SEED.Input.MouseDelta;
+        // 方向合わせはキャスト前ならいつでも受け付ける（プレビューが出る前から狙いを作れる）
+        UpdateCastAngle(deltaTime);
 
-        // 有意な動きが無いフレームはタイムアウトを進めるだけ
-        if (delta.SqrMagnitude < gestureMoveEpsilonPx * gestureMoveEpsilonPx)
+        // キャスト前に左クリックを離したら中断（＝この状態の唯一の終了条件）。
+        // 巻き取り完了で Aiming へ戻ってきたときも、押していなければここで即座に移動へ戻る。
+        if (!SEED.Input.GetMouseButton(SEED.MouseButton.Left))
         {
-            gestureIdleSeconds += deltaTime;
-
-            if (gesturePhase == GesturePhase.Pull)
-            {
-                // Pull 段階: 引きの途中で放置されたら最初からやり直させる
-                if (gestureIdleSeconds > gestureTimeoutSeconds) { ResetGesture(); }
-            }
-            else
-            {
-                // Push 段階（振りかぶり待機中）: armedTimeoutSeconds <= 0 なら無制限に待機。
-                // 0 より大きい場合のみ、その秒数だけ放置されたらリセットする。
-                if (armedTimeoutSeconds > 0f && gestureIdleSeconds > armedTimeoutSeconds) { ResetGesture(); }
-            }
-
-            // 動きが無くても予備動作の狙い位置への追従（滑らかな停止）は続ける
-            UpdateWindup(deltaTime);
+            ExitToMovement();
             return;
         }
-        gestureIdleSeconds = 0f;
 
-        switch (gesturePhase)
+        // MouseDelta はウィンドウ内カーソル位置の差分（px、右が +X / 下が +Y）。
+        // MouseMove（Raw Input 由来）は埋め込み時に届かないことがあるのでこちらを使う。
+        float deltaX = SEED.Input.MouseDelta.x;
+        if (deltaX < 0f)
         {
-            case GesturePhase.Pull:
-                if (delta.y > 0f)
-                {
-                    // 下へ引いている: 引き量を累積し、しきい値超えで振り抜き受付へ
-                    bool wasNotPulling = pullAccumPx <= 0f;
-                    pullAccumPx += delta.y;
+            // 左へ振っている: 振りかぶり量を積算する（最初の 1 フレームでスクラブを開始）
+            bool wasNotWindingUp = windupAccumPx <= 0f;
+            windupAccumPx += -deltaX;
+            if (wasNotWindingUp && !windupActive) { BeginWindup(); }
 
-                    // 引きの累積が 0 から増え始めた最初のフレームで予備動作スクラブを開始する
-                    if (wasNotPulling && pullAccumPx > 0f && !windupActive) { BeginWindup(); }
-
-                    if (pullAccumPx >= pullThresholdPx)
-                    {
-                        gesturePhase = GesturePhase.Push;
-                        pushAccumPx = SEED.Vector2.Zero;
-                    }
-                }
-                else if (-delta.y > gestureReverseTolerancePx)
-                {
-                    // 引く前に上へ大きく動いた: 引きの累積を捨ててやり直す
-                    pullAccumPx = 0f;
-                }
-                break;
-
-            case GesturePhase.Push:
-                if (delta.y < 0f)
-                {
-                    // 上へ振っている: 横成分も含めてベクトルで累積する（方向決めに使う）
-                    pushAccumPx += delta;
-                    if (-pushAccumPx.y >= pushThresholdPx)
-                    {
-                        // 画面座標（下が +Y）→ 振り上げ量が正になる形へ直して渡す
-                        StartCast(new SEED.Vector2(pushAccumPx.x, -pushAccumPx.y));
-                    }
-                }
-                else
-                {
-                    // 下方向への動き。振り抜きがまだ始まっていなければ、Pull→Push 切り替え
-                    // 直後のオーバーシュートや「引き戻し継続」として単に無視し、
-                    // 振りかぶりポーズを保ったまま待機を続ける（リセットしない）。
-                    bool swingStarted = -pushAccumPx.y > 0f;
-                    if (swingStarted && delta.y > gestureReverseTolerancePx)
-                    {
-                        // 振り抜きの途中で下へ戻した: 振り抜きだけやり直す
-                        // （Push 段階・振りかぶりポーズは維持し、Pull からのやり直しにはしない）
-                        pushAccumPx = SEED.Vector2.Zero;
-                    }
-                }
-                break;
+            if (windupAccumPx >= WindupThreshold()) { EnterWindup(); }
         }
 
-        // 予備動作スクラブ中なら、Pull/Push いずれの段階でも狙い位置へ毎フレーム追従させる
-        // （Push 段階では pullAccumPx はしきい値で固定されたままなので、狙い位置は
-        //  castWindupSeconds に張り付いたまま保持される＝振りかぶりポーズで待機）。
+        // 振りかぶり姿勢を累積量の割合へ追従させる（動きが無いフレームも滑らかに止める）
         UpdateWindup(deltaTime);
+    }
+
+    /// <summary>
+    /// 振りかぶり完了（<see cref="FishState.Windup"/>）へ入る。
+    /// 累積をしきい値で頭打ちにして振りかぶり姿勢を保持し、
+    /// 振り抜きの累積とプレビューの位相を新たに開始する。
+    /// </summary>
+    private void EnterWindup()
+    {
+        State = FishState.Windup;
+
+        // 以降 UpdateWindup のスクラブ比率が 1.0 に張り付く＝振りかぶりポーズで待機する
+        windupAccumPx = WindupThreshold();
+        swingAccumPx = 0f;
+        previewElapsed = 0f;
+
+        SEED.Debug.Log("[Fishing] Windup");
+    }
+
+    /// <summary>
+    /// <see cref="FishState.Windup"/> の毎フレーム更新。
+    ///
+    /// - 左クリックを離した … 振りかぶりを取り消して移動へ戻る。
+    /// - マウスが右（<c>MouseDelta.x &gt; 0</c>）へ動いた … その量を
+    ///   <see cref="swingAccumPx"/> へ積算し、<see cref="castSwingThresholdPx"/> を
+    ///   超えた瞬間に「そのときプレビューが示していた距離・方向」でキャストする。
+    /// - 左へ動いた量は無視する（振りかぶりは既に完了しているため）。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateWindupState(float deltaTime)
+    {
+        UpdateCastAngle(deltaTime);
+
+        // 振り抜く前に離したらキャンセル（振りかぶりを解いて移動へ戻る）
+        if (!SEED.Input.GetMouseButton(SEED.MouseButton.Left))
+        {
+            ExitToMovement();
+            return;
+        }
+
+        // 飛距離プレビューの往復位相を進める
+        previewElapsed += deltaTime;
+
+        float deltaX = SEED.Input.MouseDelta.x;
+        if (deltaX > 0f)
+        {
+            swingAccumPx += deltaX;
+            if (swingAccumPx >= castSwingThresholdPx)
+            {
+                // 「見えている着弾点」をそのまま投げる（プレビューと結果を一致させる）
+                StartCast(PreviewDistance(), CastYawDegrees());
+                return;
+            }
+        }
+
+        // 振りかぶりポーズを保持しつつ、着弾点プレビューを描き直す
+        UpdateWindup(deltaTime);
+        UpdatePreviewLine();
+    }
+
+    /// <summary>
+    /// A / D キーでキャスト方向のずれ角（<see cref="castAngleOffsetDegrees"/>）を動かす。
+    /// 範囲は正面から ±<see cref="maxCastAngleDegrees"/> 度。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateCastAngle(float deltaTime)
+    {
+        float turn = 0f;
+        if (SEED.Input.GetKey(SEED.KeyCode.A)) { turn -= 1f; }
+        if (SEED.Input.GetKey(SEED.KeyCode.D)) { turn += 1f; }
+        if (turn == 0f) { return; }
+
+        float limit = SEED.Mathf.Abs(maxCastAngleDegrees);
+        castAngleOffsetDegrees = SEED.Mathf.Clamped(
+            castAngleOffsetDegrees + turn * castTurnSpeedDegPerSec * deltaTime, -limit, limit);
+    }
+
+    /// <summary>
+    /// 振りかぶりのしきい値（px）。0 除算と「0px で即成立」を避けるため下限を設ける。
+    /// </summary>
+    private float WindupThreshold()
+        => SEED.Mathf.Max(windupThresholdPx, DivideEpsilon);
+
+    /// <summary>
+    /// いまキャストしたときの飛距離（メートル）。
+    /// <see cref="previewCycleSeconds"/> を 1 周期として
+    /// <see cref="minCastDistance"/>⇔<see cref="maxCastDistance"/> をピンポン往復する。
+    /// </summary>
+    private float PreviewDistance()
+    {
+        float period = SEED.Mathf.Max(previewCycleSeconds, DivideEpsilon);
+
+        // PingPong(u, 1) は u が 2 進むと 1 往復するので、1 周期ぶんを 2 単位に伸ばす
+        float ratio = SEED.Mathf.PingPong(previewElapsed / period * PingPongCycleUnits, 1f);
+        return SEED.Mathf.Lerp(minCastDistance, maxCastDistance, ratio);
+    }
+
+    /// <summary>
+    /// いまキャストする方向のヨー角（度）。
+    /// プレイヤーの正面（水平化）を基準に <see cref="castAngleOffsetDegrees"/> だけ回した向き。
+    /// 正面が真上／真下に潰れている縮退時は null（起こらない想定の保険）。
+    /// </summary>
+    private float? CastYawDegrees()
+    {
+        var baseDir = new SEED.Vector3(transform.Forward.x, 0f, transform.Forward.z);
+        if (baseDir.SqrMagnitude < SqrEpsilon) { return null; }
+
+        // エンジン規約: yaw = atan2(x, z)、前方 +Z
+        float baseYaw = SEED.Mathf.Atan2(baseDir.x, baseDir.z) * SEED.Mathf.Rad2Deg;
+        float limit = SEED.Mathf.Abs(maxCastAngleDegrees);
+        return baseYaw + SEED.Mathf.Clamped(castAngleOffsetDegrees, -limit, limit);
+    }
+
+    /// <summary>ヨー角（度）から水平方向の単位ベクトルを作る（エンジン規約: 前方 +Z）。</summary>
+    /// <param name="yawDegrees">ヨー角（度）。</param>
+    private static SEED.Vector3 YawToDirection(float yawDegrees)
+    {
+        float yawRad = yawDegrees * SEED.Mathf.Deg2Rad;
+        return new SEED.Vector3(SEED.Mathf.Sin(yawRad), 0f, SEED.Mathf.Cos(yawRad));
+    }
+
+    /// <summary>
+    /// 指定の飛距離・ヨー角の着水点（ワールド）を返す。
+    /// XZ は竿先＋方向×距離、Y は水面。プレビューと本番のキャストで共通に使う。
+    /// </summary>
+    /// <param name="distance">飛距離（メートル）。</param>
+    /// <param name="yawDegrees">キャスト方向のヨー角（度）。</param>
+    private SEED.Vector3 LandingPoint(float distance, float yawDegrees)
+    {
+        var dir = YawToDirection(yawDegrees);
+        var tip = RodTipPosition();
+        return new SEED.Vector3(tip.x + dir.x * distance, WaterSurfaceY(), tip.z + dir.z * distance);
     }
 
     /// <summary>
     /// キャストを開始する（ウキを飛ばし始める）。
     ///
-    /// <b>飛距離</b>: <c>clamp(|push| × metersPerPixel, minCastDistance, maxCastDistance)</c>
-    /// <b>方向</b>  : プレイヤーの正面（水平化）を基準に、振りの傾き
-    ///   <c>atan2(push.x, push.y) × directionSensitivity</c> 度（±maxCastAngleDegrees でクランプ）
-    ///   だけヨーを回した向き。
-    /// <b>着水点</b>: 竿先の XZ ＋ 方向 × 飛距離、Y は水面。
+    /// 飛距離・方向は <see cref="FishState.Windup"/> のプレビューが示していた値をそのまま受け取る
+    /// （＝見えていた着弾点に必ず落ちる）。方向が縮退している場合は何もしない。
     /// </summary>
-    /// <param name="push">振り抜きの累積ベクトル（px。x=右が正 / y=上が正）。</param>
-    private void StartCast(SEED.Vector2 push)
+    /// <param name="distance">飛距離（メートル）。<see cref="minCastDistance"/>〜<see cref="maxCastDistance"/> にクランプする。</param>
+    /// <param name="yawDegrees">キャスト方向のヨー角（度）。null なら縮退のためキャストしない。</param>
+    private void StartCast(float distance, float? yawDegrees)
     {
-        float distance = SEED.Mathf.Clamped(push.Magnitude * metersPerPixel, minCastDistance, maxCastDistance);
+        if (yawDegrees is not { } yaw) { return; }   // 真上／真下を向く縮退（起こらない想定の保険）
 
-        // 基準方向 ＝ プレイヤーの正面を水平化したもの（釣り姿勢では海を向いている）
-        var baseDir = new SEED.Vector3(transform.Forward.x, 0f, transform.Forward.z);
-        if (baseDir.SqrMagnitude < SqrEpsilon) { return; }   // 真上／真下を向く縮退（起こらない想定の保険）
-        float baseYaw = SEED.Mathf.Atan2(baseDir.x, baseDir.z) * SEED.Mathf.Rad2Deg;
-
-        // 振りの傾き（真上へ振れば 0 度、右斜めへ振れば正）を左右のずれ角にする
-        float swingAngle = SEED.Mathf.Atan2(push.x, push.y) * SEED.Mathf.Rad2Deg * directionSensitivity;
-        float limit = SEED.Mathf.Abs(maxCastAngleDegrees);
-        float yaw = baseYaw + SEED.Mathf.Clamped(swingAngle, -limit, limit);
-
-        // ヨー角から水平方向ベクトルへ（エンジン規約: yaw = atan2(x, z)、前方 +Z）
-        float yawRad = yaw * SEED.Mathf.Deg2Rad;
-        var dir = new SEED.Vector3(SEED.Mathf.Sin(yawRad), 0f, SEED.Mathf.Cos(yawRad));
+        float clamped = SEED.Mathf.Clamped(distance, minCastDistance, maxCastDistance);
 
         flightStart = RodTipPosition();
-        flightEnd = new SEED.Vector3(
-            flightStart.x + dir.x * distance,
-            WaterSurfaceY(),
-            flightStart.z + dir.z * distance);
+        flightEnd = LandingPoint(clamped, yaw);
 
-        castDistance = distance;
+        castDistance = clamped;
         flightElapsed = 0f;
         reelAngleOffsetDegrees = 0f;
         reelIdleElapsed = 0f;
 
         State = FishState.Casting;
+        HidePreviewLine();
 
         // 予備動作スクラブ中なら、振りかぶりポーズから途切れず本振りへ継続する。
         // スクラブしていなければ（Animator 未設定等）従来どおり通常のクロスフェードで開始する。
@@ -739,7 +845,7 @@ public class FishingController : SEEDScript
             CrossFadeBoth(castClip, playerCastClip);
         }
 
-        SEED.Debug.Log($"[Fishing] Cast 距離={distance:F1}m 角={yaw - baseYaw:F1}度");
+        SEED.Debug.Log($"[Fishing] Cast 距離={clamped:F1}m 角={castAngleOffsetDegrees:F1}度");
     }
 
     /// <summary>
@@ -756,11 +862,7 @@ public class FishingController : SEEDScript
         // 飛翔時間が 0 以下に設定されていても止まらないよう、即着水として扱う
         float t = flightSeconds > 0f ? SEED.Mathf.Clamped01(flightElapsed / flightSeconds) : 1f;
 
-        var pos = new SEED.Vector3(
-            SEED.Mathf.Lerp(flightStart.x, flightEnd.x, t),
-            SEED.Mathf.Lerp(flightStart.y, flightEnd.y, t) + ParabolaApexCoefficient * flightApexHeight * t * (1f - t),
-            SEED.Mathf.Lerp(flightStart.z, flightEnd.z, t));
-        SetFloatPosition(pos);
+        SetFloatPosition(ArcPoint(flightStart, flightEnd, t));
 
         if (t >= 1f)
         {
@@ -966,6 +1068,87 @@ public class FishingController : SEEDScript
         if (line is { } l && l.IsValid) { l.Visible = false; }
     }
 
+    /// <summary>着弾点プレビューを非表示にする（点列は残したままフラグだけ落とす）。</summary>
+    private void HidePreviewLine()
+    {
+        if (previewLine is { } preview && preview.IsValid) { preview.Visible = false; }
+    }
+
+    // ─── 着弾点プレビュー ─────────────────────────────────────
+
+    /// <summary>
+    /// 放物線（キャストの軌道）上の 1 点を返す。
+    /// XZ は直線補間、Y は「直線補間 ＋ <c>4h·t·(1-t)</c>」で山を作る
+    /// （t=0,1 で 0、t=0.5 で h になるので端点は必ず始点／終点に一致する）。
+    /// 飛翔中のウキとプレビューの弧で<b>同じ式</b>を使い、見た目と結果を一致させる。
+    /// </summary>
+    /// <param name="start">始点（竿先）。</param>
+    /// <param name="end">終点（着水点）。</param>
+    /// <param name="t">進行度（0〜1）。</param>
+    private SEED.Vector3 ArcPoint(SEED.Vector3 start, SEED.Vector3 end, float t)
+        => new(
+            SEED.Mathf.Lerp(start.x, end.x, t),
+            SEED.Mathf.Lerp(start.y, end.y, t) + ParabolaApexCoefficient * flightApexHeight * t * (1f - t),
+            SEED.Mathf.Lerp(start.z, end.z, t));
+
+    /// <summary>
+    /// 着弾点プレビューの点列を張り直す（<see cref="FishState.Windup"/> のあいだ毎フレーム呼ぶ）。
+    ///
+    /// 点列は「竿先→着弾点の放物線」＋「着水点に置く円」を 1 本に連結したもの。
+    /// 円は始点を末尾へ繰り返して閉じる。円の始点は弧の終点（着弾点そのもの）から
+    /// 半径ぶん離れているので、その渡り 1 本ぶんの線が余分に描かれるが、
+    /// 着弾点マーカーとしては十分に読み取れる（LineRenderer は 1 本の折れ線しか持てないため）。
+    ///
+    /// 総点数が <see cref="SEED.LineRenderer.MaxPoints"/> を超えないよう、
+    /// 弧と円の分割数を上限内へ抑える。
+    /// </summary>
+    private void UpdatePreviewLine()
+    {
+        if (previewLine is not { } preview || !preview.IsValid) { return; }
+        if (CastYawDegrees() is not { } yaw) { preview.Visible = false; return; }
+
+        var start = RodTipPosition();
+        var landing = LandingPoint(PreviewDistance(), yaw);
+
+        // 分割数の下限を確保したうえで、点数の合計が LineRenderer の上限に収まるよう詰める。
+        // 点数 ＝ (弧の分割数 + 1) ＋ (円の分割数 + 1)
+        int arcSegments = SEED.Mathf.Max(previewArcSegments, MinArcSegments);
+        int ringSegments = SEED.Mathf.Max(previewRingSegments, MinRingSegments);
+        int overflow = (arcSegments + 1) + (ringSegments + 1) - SEED.LineRenderer.MaxPoints;
+        if (overflow > 0)
+        {
+            // 上限超過ぶんは弧から優先して削る（円は形が崩れると着弾点が読めなくなるため）。
+            // 最小構成（弧 1 分割＋円 3 分割 ＝ 6 点）は上限に必ず収まるので、この 2 段で足りる。
+            int reducible = SEED.Mathf.Min(overflow, arcSegments - MinArcSegments);
+            arcSegments -= reducible;
+            overflow -= reducible;
+            if (overflow > 0) { ringSegments = SEED.Mathf.Max(ringSegments - overflow, MinRingSegments); }
+        }
+
+        var points = new SEED.Vector3[(arcSegments + 1) + (ringSegments + 1)];
+
+        // 弧: 竿先 → 着弾点
+        for (int i = 0; i <= arcSegments; i++)
+        {
+            points[i] = ArcPoint(start, landing, (float)i / arcSegments);
+        }
+
+        // 円: 着弾点を中心に水面上へ描く（末尾は始点を繰り返して閉じる）
+        int ringHead = arcSegments + 1;
+        float radius = SEED.Mathf.Abs(previewRingRadius);
+        for (int i = 0; i <= ringSegments; i++)
+        {
+            float angle = TwoPi * (i % ringSegments) / ringSegments;
+            points[ringHead + i] = new SEED.Vector3(
+                landing.x + SEED.Mathf.Sin(angle) * radius,
+                landing.y,
+                landing.z + SEED.Mathf.Cos(angle) * radius);
+        }
+
+        preview.SetPoints(points);
+        preview.Visible = true;
+    }
+
     /// <summary>
     /// 釣り糸の点列を張り直す。
     ///
@@ -1085,7 +1268,7 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// 予備動作スクラブ中の毎フレーム更新。
-    /// 引き量（<see cref="pullAccumPx"/> ÷ <see cref="pullThresholdPx"/>）に比例した
+    /// 左振り量（<see cref="windupAccumPx"/> ÷ <see cref="windupThresholdPx"/>）に比例した
     /// 狙い再生位置へ、指数ブレンドで滑らかに追従させる（マウスのブレで竿・本体がガクつかないように）。
     /// 竿・本体の両 Animator へ同じ狙い位置・ブレンド係数を適用する
     /// （<see cref="ScrubWindupTime"/> が個別に null／IsValid を判定する）。
@@ -1095,10 +1278,10 @@ public class FishingController : SEEDScript
     {
         if (!windupActive) { return; }
 
-        // 引き量の割合（0〜1）ぶんだけ振りかぶりポーズへ近づける。
-        // Push 段階では pullAccumPx がしきい値で固定されているので、ここは 1.0 に張り付き、
+        // 左振り量の割合（0〜1）ぶんだけ振りかぶりポーズへ近づける。
+        // Windup 状態では windupAccumPx がしきい値で固定されているので、ここは 1.0 に張り付き、
         // 結果として castWindupSeconds の位置で待機し続ける。
-        float ratio = SEED.Mathf.Clamped01(pullAccumPx / pullThresholdPx);
+        float ratio = SEED.Mathf.Clamped01(windupAccumPx / WindupThreshold());
         float targetTime = castWindupSeconds * ratio;
         float blend = ExponentialBlend(windupScrubRate, deltaTime);
 

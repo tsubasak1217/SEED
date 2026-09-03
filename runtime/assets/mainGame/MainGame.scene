@@ -532,12 +532,13 @@
             "data": {
               "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\FishingController.cs",
               "fields": {
-                "castWindupSeconds": "0.400",
+                "castWindupSeconds": "0.500",
                 "islandCenter": "ControlPoints",
                 "line": "Uki|LineRenderer",
                 "lineSegments": "32",
                 "playerAnimator": "Player|Animator",
                 "playerMove": "Player|Script",
+                "previewLine": "CastPreview|LineRenderer",
                 "pullThresholdPx": "5.000",
                 "pushThresholdPx": "10.000",
                 "rodAnimator": "sao|Animator",
@@ -1511,7 +1512,7 @@
           "children": []
         },
         {
-          "name": "fishMannager",
+          "name": "fishManager",
           "transform": {
             "position": [
               0.0,
@@ -11194,6 +11195,48 @@
           "children": []
         }
       ]
+    },
+    {
+      "name": "CastPreview",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "LineRenderer",
+          "component": {
+            "type": "LineRendererComponent",
+            "data": {
+              "points": [],
+              "width": 0.03,
+              "color": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "local_space": false,
+              "depth_test": true,
+              "visible": false
+            }
+          }
+        }
+      ],
+      "children": []
     }
   ]
 }
