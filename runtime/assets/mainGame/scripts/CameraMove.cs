@@ -190,8 +190,8 @@ public class CameraMove : SEEDScript
         // 横方向速度（m/s）＝ 水平デルタの右方向成分 / dt
         float lateralSpeed = (delta.x * right.x + delta.z * right.z) / deltaTime;
 
-        // 符号は「右へ流れているとき左（負）へ傾く」向き（ユーザー指定で反転）。
-        float roll = -lateralSpeed * rollStrength;
+        // 符号は「右へ流れているとき右（正）へ傾く」向き（ユーザーがエディタ上で調整した符号を反映）。
+        float roll = lateralSpeed * rollStrength;
         float limit = SEED.Mathf.Abs(maxRollDegrees);
         return SEED.Mathf.Clamped(roll, -limit, limit);
     }
