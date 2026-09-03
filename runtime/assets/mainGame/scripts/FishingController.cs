@@ -171,6 +171,22 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "切替フェード(秒)")]
     private float fadeSeconds = 0.15f;
 
+    /// <summary>
+    /// キャスト予備動作（引き構え）として <see cref="castClip"/> を止めておく再生位置（秒）。
+    /// Pull 段階のあいだ、この時間まで竿が振りかぶった姿勢を追従表示し、そこで止め置く。
+    /// キャストが成立したら、この位置から通常速度で再生を続ける。
+    /// </summary>
+    [SerializeField(Label = "キャスト予備動作の停止位置(秒)")]
+    private float castWindupSeconds = 0.4f;
+
+    /// <summary>
+    /// 予備動作中、狙いの再生位置（引き量に比例した目標時間）へ追従する速さ。
+    /// 大きいほど追従が速く（マウスのブレをそのまま拾いやすく）、小さいほど滑らかになる。
+    /// <see cref="ExponentialBlend"/> の減衰率として使う（1 秒あたりの追従率の目安、単位は 1/秒）。
+    /// </summary>
+    [SerializeField(Label = "予備動作の追従率")]
+    private float windupScrubRate = 15f;
+
     // ─── キャストのジェスチャ ─────────────────────────────────
 
     /// <summary>
@@ -309,6 +325,12 @@ public class FishingController : SEEDScript
 
     /// <summary>第 1 段階で下方向へ動いた累積量（px、正値）。</summary>
     private float pullAccumPx = 0f;
+
+    /// <summary>
+    /// キャスト予備動作（振りかぶりポーズでの停止スクラブ）を実行中か。
+    /// true のあいだ竿 Animator の再生速度は 0 に固定し、<see cref="Time"/> を手動で狙い位置へ寄せる。
+    /// </summary>
+    private bool windupActive = false;
 
     /// <summary>第 2 段階で動いた累積ベクトル（px。y は画面下向きが正なので振り上げると負になる）。</summary>
     private SEED.Vector2 pushAccumPx = SEED.Vector2.Zero;
@@ -474,13 +496,18 @@ public class FishingController : SEEDScript
         SEED.Debug.Log("[Fishing] Idle (キャンセル)");
     }
 
-    /// <summary>ジェスチャの累積・段階・タイムアウトをすべて初期状態へ戻す。</summary>
+    /// <summary>
+    /// ジェスチャの累積・段階・タイムアウトをすべて初期状態へ戻す。
+    /// 予備動作スクラブ中であれば、それも打ち切って通常の待ちアニメへ戻す
+    /// （タイムアウト・振り戻し・姿勢解除など、キャストに至らなかった全経路がここを通る）。
+    /// </summary>
     private void ResetGesture()
     {
         gesturePhase = GesturePhase.Pull;
         pullAccumPx = 0f;
         pushAccumPx = SEED.Vector2.Zero;
         gestureIdleSeconds = 0f;
+        EndWindup(continueToCast: false);
     }
 
     // ─── キャストのジェスチャ判定 ─────────────────────────────
@@ -510,6 +537,8 @@ public class FishingController : SEEDScript
         {
             gestureIdleSeconds += deltaTime;
             if (gestureIdleSeconds > gestureTimeoutSeconds) { ResetGesture(); }
+            // 動きが無くても予備動作の狙い位置への追従（滑らかな停止）は続ける
+            UpdateWindup(deltaTime);
             return;
         }
         gestureIdleSeconds = 0f;
@@ -520,7 +549,12 @@ public class FishingController : SEEDScript
                 if (delta.y > 0f)
                 {
                     // 下へ引いている: 引き量を累積し、しきい値超えで振り抜き受付へ
+                    bool wasNotPulling = pullAccumPx <= 0f;
                     pullAccumPx += delta.y;
+
+                    // 引きの累積が 0 から増え始めた最初のフレームで予備動作スクラブを開始する
+                    if (wasNotPulling && pullAccumPx > 0f && !windupActive) { BeginWindup(); }
+
                     if (pullAccumPx >= pullThresholdPx)
                     {
                         gesturePhase = GesturePhase.Push;
@@ -552,6 +586,11 @@ public class FishingController : SEEDScript
                 }
                 break;
         }
+
+        // 予備動作スクラブ中なら、Pull/Push いずれの段階でも狙い位置へ毎フレーム追従させる
+        // （Push 段階では pullAccumPx はしきい値で固定されたままなので、狙い位置は
+        //  castWindupSeconds に張り付いたまま保持される＝振りかぶりポーズで待機）。
+        UpdateWindup(deltaTime);
     }
 
     /// <summary>
@@ -594,7 +633,18 @@ public class FishingController : SEEDScript
         reelIdleElapsed = 0f;
 
         State = FishState.Casting;
-        CrossFadeRod(castClip);
+
+        // 予備動作スクラブ中なら、振りかぶりポーズから途切れず本振りへ継続する。
+        // スクラブしていなければ（Animator 未設定等）従来どおり通常のクロスフェードで開始する。
+        if (windupActive)
+        {
+            EndWindup(continueToCast: true);
+        }
+        else
+        {
+            CrossFadeRod(castClip);
+        }
+
         SEED.Debug.Log($"[Fishing] Cast 距離={distance:F1}m 角={yaw - baseYaw:F1}度");
     }
 
@@ -875,4 +925,89 @@ public class FishingController : SEEDScript
 
         anim.CrossFade(clip, fadeSeconds);
     }
+
+    // ─── キャスト予備動作（振りかぶりポーズでの停止スクラブ）─────
+
+    /// <summary>
+    /// キャスト予備動作のスクラブ再生を開始する。
+    /// <see cref="castClip"/> を再生速度 0 でクロスフェード再生させ、以降は
+    /// <see cref="UpdateWindup"/> が手動で <see cref="SEED.Animator.Time"/> を進める。
+    /// </summary>
+    private void BeginWindup()
+    {
+        if (rodAnimator is not { } anim || !anim.IsValid) { return; }
+
+        // 速度 0 で再生開始 = クリップは自動では進まず、Time を手動で操作する下地になる
+        anim.Play(castClip, 0f, fadeSeconds);
+        windupActive = true;
+    }
+
+    /// <summary>
+    /// 予備動作スクラブ中の毎フレーム更新。
+    /// 引き量（<see cref="pullAccumPx"/> ÷ <see cref="pullThresholdPx"/>）に比例した
+    /// 狙い再生位置へ、指数ブレンドで滑らかに追従させる（マウスのブレで竿がガクつかないように）。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateWindup(float deltaTime)
+    {
+        if (!windupActive) { return; }
+        if (rodAnimator is not { } anim || !anim.IsValid) { return; }
+
+        // 引き量の割合（0〜1）ぶんだけ振りかぶりポーズへ近づける。
+        // Push 段階では pullAccumPx がしきい値で固定されているので、ここは 1.0 に張り付き、
+        // 結果として castWindupSeconds の位置で待機し続ける。
+        float ratio = SEED.Mathf.Clamped01(pullAccumPx / pullThresholdPx);
+        float targetTime = castWindupSeconds * ratio;
+
+        float blend = ExponentialBlend(windupScrubRate, deltaTime);
+        float newTime = anim.Time + (targetTime - anim.Time) * blend;
+        anim.Time = SEED.Mathf.Clamped(newTime, 0f, castWindupSeconds);
+    }
+
+    /// <summary>
+    /// 予備動作スクラブを終了する。竿 Animator の再生速度を必ず等倍へ戻すのはここだけで行う
+    /// （0 のまま抜けると <see cref="reelClip"/>／<see cref="floatClip"/> が固まってしまうため）。
+    /// </summary>
+    /// <param name="continueToCast">
+    /// true … キャスト成立。振りかぶりポーズから途切れず本振りへ続ける。
+    /// false … キャスト不成立（タイムアウト・振り戻し・姿勢解除）。待ちアニメへ戻す。
+    /// </param>
+    private void EndWindup(bool continueToCast)
+    {
+        if (!windupActive) { return; }
+        windupActive = false;
+
+        if (rodAnimator is not { } anim || !anim.IsValid) { return; }
+
+        // 速度 0 のスクラブ状態を必ず解除する
+        anim.Speed = 1f;
+
+        if (continueToCast)
+        {
+            if (anim.CurrentClip == castClip)
+            {
+                // 振りかぶり位置から途切れず継続再生（Pause 経由の可能性に備え念のため Resume も呼ぶ）
+                anim.Resume();
+            }
+            else
+            {
+                // 想定外: 予備動作中にクリップが崩れていた場合は通常のクロスフェードへフォールバック
+                CrossFadeRod(castClip);
+            }
+        }
+        else
+        {
+            CrossFadeRod(floatClip);
+        }
+    }
+
+    /// <summary>
+    /// フレームレート非依存の指数ブレンド係数を返す（0〜1）。
+    /// <c>value += (target - value) * ExponentialBlend(rate, dt)</c> の形で使うと、
+    /// <paramref name="rate"/> が大きいほど毎フレームの追従が速くなる。
+    /// </summary>
+    /// <param name="rate">追従率（1/秒）。大きいほど speedy。</param>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private static float ExponentialBlend(float rate, float deltaTime)
+        => 1f - SEED.Mathf.Exp(-rate * deltaTime);
 }
