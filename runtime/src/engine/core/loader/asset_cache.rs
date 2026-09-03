@@ -95,7 +95,17 @@ use super::model::{
 ///     terrain_layers / ignore_vertex_color のような「ランタイム組み立て専用フラグ」と違い、
 ///     作者が設定して保存するデータなので `#[serde(skip)]` にはできない（キャッシュに焼く）。
 ///     bincode のバイナリ表現が変わるため旧 v14 を無効化して再生成させる。
-pub const CACHE_FORMAT_VERSION: u32 = 15;
+/// v16: glTF の `texCoord`（UV セット指定）対応。**`Material` のバイト表現は変えていない**が、
+///     焼かれる**値**が変わるため上げる。
+///     - 頂点の `uv0` / `uv1` に載る UV が「常に TEXCOORD_0/1」から
+///       「マテリアルが参照する TEXCOORD セット」へ変わった（`gltf_loader::UvSetPlan`）。
+///     - `TextureInfo::tex_coord_set` が glTF のセット番号ではなく
+///       エンジンの UV スロット番号（0/1）になった。
+///     旧 v15 キャッシュには修正前の UV（`texCoord >= 1` のマテリアルでは誤ったセット）が
+///     焼かれており、ヘッダのバージョンが一致するとそのまま読まれて修正が効かない。
+///     バイト長が変わらない＝`material_bincode_layout_is_pinned` では検出できない種類の
+///     変更なので、ここで明示的に無効化する。
+pub const CACHE_FORMAT_VERSION: u32 = 16;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";
@@ -1169,7 +1179,9 @@ mod tests {
     #[test]
     fn material_bincode_layout_is_pinned() {
         // 既定値の Material をシリアライズしたバイト長。
-        // CACHE_FORMAT_VERSION 15 時点の表現を固定する。
+        // CACHE_FORMAT_VERSION 16 時点の表現を固定する
+        // （v15 → v16 は UV セット対応で「焼く値」だけが変わり、`Material` のバイト表現は不変。
+        //   そのため期待値は 115 のまま。バージョンを上げた理由は定数側のコメントを参照）。
         //
         // v14（110 byte）からの差分 +5 byte の内訳:
         //   +4 : user_data（f32・汎用ユーザーデータ回線）

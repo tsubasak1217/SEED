@@ -46,8 +46,12 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
         .to_string();
 
     let textures   = load_textures(&document, &buffers, base_dir.as_deref(), virtual_base.as_deref());
-    let materials  = load_materials(&document);
-    let meshes     = load_meshes(&document, &buffers);
+    // マテリアル読み込みは「どの glTF TEXCOORD セットを uv0/uv1 に載せるか」の計画
+    // （UvSetPlan）も同時に決める。メッシュ側はその計画に従って UV を読むため、
+    // 必ず load_materials → load_meshes の順で呼ぶこと（依存の向きが逆になると
+    // texCoord の解決結果とメッシュに載る UV が食い違い、テクスチャがずれる）。
+    let (materials, uv_plans) = load_materials(&document);
+    let meshes     = load_meshes(&document, &buffers, &uv_plans);
     let animations = load_animations(&document, &buffers);
     let skins      = load_skins(&document, &buffers);
     let (nodes, root_nodes) = load_nodes(&document);
@@ -210,35 +214,196 @@ fn conv_wrap(w: gltf::texture::WrappingMode) -> WrapMode {
 }
 
 // ============================================================
+//  UV セット解決（glTF texCoord → エンジンの uv0 / uv1）
+// ============================================================
+//
+// 【背景】
+// glTF は 1 つのメッシュに TEXCOORD_0..n を任意本数持たせられ、マテリアルの各テクスチャが
+// `texCoord`（＝セット番号）でどの本を使うかを個別に指定する。Blender で UV レイヤを
+// 複数持つオブジェクトを書き出すと `texCoord: 2` のようなマテリアルが普通に出てくる。
+//
+// 一方エンジンの頂点フォーマット（`model::Vertex`）は uv0 / uv1 の 2 本しか持たない
+// （頂点サイズは全描画パスの帯域に直結するため増やさない方針）。修正前のローダーは
+// TEXCOORD_0/1 を無条件に読むだけで、`texCoord` の値をレンダラーへ届けてもいなかったため、
+// `texCoord >= 1` のマテリアルは必ず TEXCOORD_0 でサンプリングされて表示が崩れていた。
+//
+// 【方針】
+// 「マテリアルが実際に参照している TEXCOORD セットだけ」を uv0 / uv1 の 2 本へ載せ替え、
+// `TextureInfo::tex_coord_set` を 0/1 の**スロット番号**へ振り直す。レンダラーはこの
+// スロット番号を MaterialUniform.uv_set_bits へ載せ、シェーダが uv0/uv1 を選ぶ。
+
+/// エンジン頂点が持つ UV スロットの本数（`model::Vertex` の uv0 / uv1）。
+const UV_SLOT_COUNT: usize = 2;
+
+/// 解決できなかった（スロット不足で落選した）参照が縮退する先のスロット。
+/// uv0 は修正前の常時サンプリング先であり、最も無難なフォールバックである。
+const UV_SLOT_FALLBACK: u32 = 0;
+
+/// マテリアル 1 個ぶんの「glTF TEXCOORD セット → エンジン UV スロット」割り当て計画。
+///
+/// 【マテリアルはプリミティブ間で共有され得る】
+/// 計画は**マテリアル単位**で決める。プリミティブが持つマテリアルはちょうど 1 個なので
+/// 競合は起きないが、逆に 1 つのマテリアルを複数プリミティブが共有する場合、それらは
+/// すべて同じ計画（同じ TEXCOORD セット番号）で UV を読む。共有側のプリミティブが
+/// その TEXCOORD セットを持っていなければ、そのスロットは `[0,0]` で埋まる
+/// （`read_tex_coords` が None を返すときの既存フォールバックと同じ挙動）。
+/// glTF 的にはマテリアルが要求するセットを全プリミティブが備えているのが正しい形なので、
+/// この縮退は「不正なアセットに対する安全側の既定」であり、意図的にそのままにしている。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UvSetPlan {
+    /// スロット i（0=uv0 / 1=uv1）へ読み込む glTF TEXCOORD セット番号。
+    sources: [u32; UV_SLOT_COUNT],
+}
+
+impl UvSetPlan {
+    /// 恒等計画（uv0 ← TEXCOORD_0 / uv1 ← TEXCOORD_1）。
+    ///
+    /// **これが修正前の読み方そのもの**である。参照セットが 0/1 に収まるモデル（既存アセットの
+    /// ほぼ全部）と、マテリアルを持たないプリミティブはすべてこの計画になるため、
+    /// 既存の描画は 1 ビットも変わらない。
+    const IDENTITY: Self = Self { sources: [0, 1] };
+
+    /// glTF の TEXCOORD セット番号 → エンジン UV スロット番号（0=uv0 / 1=uv1）。
+    /// 計画に載っていない（スロット不足で落選した）セットは `UV_SLOT_FALLBACK` へ縮退する。
+    fn slot_of(&self, gltf_set: u32) -> u32 {
+        self.sources
+            .iter()
+            .position(|&s| s == gltf_set)
+            .map(|i| i as u32)
+            .unwrap_or(UV_SLOT_FALLBACK)
+    }
+}
+
+/// マテリアルが参照する glTF TEXCOORD セット番号を「重要度の高い順」に列挙する（重複あり）。
+///
+/// スロットは 2 本しかないので、3 セット以上を参照するマテリアルでは取捨選択が要る。
+/// その順序をここで固定する: ベースカラー → 法線 → メタリックラフネス → オクルージョン →
+/// エミッシブ。見た目への寄与が大きい順であり、少なくともベースカラーは必ずスロットを得る。
+fn referenced_tex_coord_sets(mat: &gltf::Material<'_>) -> Vec<u32> {
+    let pbr = mat.pbr_metallic_roughness();
+    [
+        pbr.base_color_texture().map(|t| t.tex_coord()),
+        mat.normal_texture().map(|t| t.tex_coord()),
+        pbr.metallic_roughness_texture().map(|t| t.tex_coord()),
+        mat.occlusion_texture().map(|t| t.tex_coord()),
+        mat.emissive_texture().map(|t| t.tex_coord()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// 参照セット列（重要度順・重複可）から UV スロット割り当てを決める純関数。
+///
+/// 戻り値は `(計画, 落選したセット番号の列)`。落選が起きるのは「相異なる参照セットが
+/// 3 つ以上ある」ときだけで、呼び出し側が警告ログを出す（ログを持たせないのはこの関数を
+/// 単体テストしやすく保つため）。
+///
+/// 割り当て規則（決定論的）:
+///   0. 参照が 0/1 に収まるなら**恒等計画をそのまま返す**（＝既存モデルの挙動を完全に温存）。
+///   1. 重要度順に先頭 `UV_SLOT_COUNT` セットだけを採用し、残りは落選させる。
+///   2. 採用したセットのうち 0/1 は恒等の位置（TEXCOORD_0→uv0 / TEXCOORD_1→uv1）へ固定する。
+///      「0 と 2 を使う」モデルでも 0 側が従来と同じスロットに載るので差分が最小になる。
+///   3. 残り（2 以上のセット）を空きスロットへ重要度順に詰める。
+///   4. 誰も使わなかったスロットは恒等ソースのまま（従来どおり同番号の TEXCOORD を読む）。
+fn plan_uv_sets(referenced: &[u32]) -> (UvSetPlan, Vec<u32>) {
+    // 重要度順を保ったまま重複を除く（同じセットを複数テクスチャが使うのは普通）。
+    let mut wanted: Vec<u32> = Vec::with_capacity(referenced.len());
+    for &s in referenced {
+        if !wanted.contains(&s) {
+            wanted.push(s);
+        }
+    }
+
+    // 【後方互換の要】参照が 0/1 に収まるなら恒等計画。既存アセットの大半はここで返る。
+    if wanted.iter().all(|&s| (s as usize) < UV_SLOT_COUNT) {
+        return (UvSetPlan::IDENTITY, Vec::new());
+    }
+
+    // 規則 1: 重要度順で先頭 UV_SLOT_COUNT セットのみ採用。
+    let split = wanted.len().min(UV_SLOT_COUNT);
+    let (chosen, dropped) = wanted.split_at(split);
+
+    let mut assigned: [Option<u32>; UV_SLOT_COUNT] = [None; UV_SLOT_COUNT];
+    // 規則 2: 恒等で置けるもの（0/1）を先に固定する。
+    for &s in chosen {
+        if (s as usize) < UV_SLOT_COUNT && assigned[s as usize].is_none() {
+            assigned[s as usize] = Some(s);
+        }
+    }
+    // 規則 3: 恒等で置けないセット（2 以上）を空きスロットへ重要度順に詰める。
+    for &s in chosen {
+        if (s as usize) < UV_SLOT_COUNT {
+            continue;
+        }
+        if let Some(slot) = assigned.iter().position(|a| a.is_none()) {
+            assigned[slot] = Some(s);
+        }
+    }
+    // 規則 4: 空きスロットは恒等ソースのまま（従来動作の温存）。
+    let mut sources = UvSetPlan::IDENTITY.sources;
+    for (i, a) in assigned.iter().enumerate() {
+        if let Some(s) = *a {
+            sources[i] = s;
+        }
+    }
+    (UvSetPlan { sources }, dropped.to_vec())
+}
+
+// ============================================================
 //  マテリアル
 // ============================================================
 
-fn load_materials(document: &gltf::Document) -> Vec<Material> {
-    document.materials().map(|mat| {
+/// マテリアル列と、マテリアルごとの UV スロット割り当て計画を同時に作る。
+///
+/// 返す `Vec<UvSetPlan>` は `Vec<Material>` と同じ添字（＝glTF のマテリアル番号）で並ぶ。
+/// `load_primitive` がプリミティブのマテリアル番号でこれを引き、どの TEXCOORD セットを
+/// uv0/uv1 へ読むかを決める。
+fn load_materials(document: &gltf::Document) -> (Vec<Material>, Vec<UvSetPlan>) {
+    let mut plans: Vec<UvSetPlan> = Vec::with_capacity(document.materials().len());
+    let materials = document.materials().map(|mat| {
         let pbr  = mat.pbr_metallic_roughness();
+
+        // このマテリアルが参照する TEXCOORD セットを uv0/uv1 の 2 スロットへ割り当てる。
+        // 以降 tex_coord_set には glTF のセット番号ではなく**スロット番号（0/1）**を入れる。
+        let (plan, dropped) = plan_uv_sets(&referenced_tex_coord_sets(&mat));
+        if !dropped.is_empty() {
+            eprintln!(
+                "[SEED gltf] マテリアル '{}' は UV セットを {} 種類参照していますが、\
+                 エンジンの頂点は {} 本しか持てません。セット {:?} は割り当てられず uv0 へ縮退します\
+                 （採用: {:?}）。Blender 側で UV レイヤを {} 枚以内に整理してください",
+                mat.name().unwrap_or("<no name>"),
+                dropped.len() + UV_SLOT_COUNT,
+                UV_SLOT_COUNT,
+                dropped,
+                plan.sources,
+                UV_SLOT_COUNT,
+            );
+        }
+        plans.push(plan);
 
         let base_color_factor = pbr.base_color_factor();
         let base_color_texture = pbr.base_color_texture().map(|t| TextureInfo {
             texture_index: t.texture().index(),
-            tex_coord_set: t.tex_coord(),
+            tex_coord_set: plan.slot_of(t.tex_coord()),
         });
         let metallic_roughness_texture = pbr.metallic_roughness_texture().map(|t| TextureInfo {
             texture_index: t.texture().index(),
-            tex_coord_set: t.tex_coord(),
+            tex_coord_set: plan.slot_of(t.tex_coord()),
         });
         let normal_texture = mat.normal_texture().map(|t| NormalTextureInfo {
             texture_index: t.texture().index(),
-            tex_coord_set: t.tex_coord(),
+            tex_coord_set: plan.slot_of(t.tex_coord()),
             scale:         t.scale(),
         });
         let occlusion_texture = mat.occlusion_texture().map(|t| OcclusionTextureInfo {
             texture_index: t.texture().index(),
-            tex_coord_set: t.tex_coord(),
+            tex_coord_set: plan.slot_of(t.tex_coord()),
             strength:      t.strength(),
         });
         let emissive_texture = mat.emissive_texture().map(|t| TextureInfo {
             texture_index: t.texture().index(),
-            tex_coord_set: t.tex_coord(),
+            tex_coord_set: plan.slot_of(t.tex_coord()),
         });
         let alpha_mode = match mat.alpha_mode() {
             gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
@@ -301,7 +466,8 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
             // 地形パレットは地形以外では未使用。恒等パレットで埋めておく。
             terrain_palette: Material::default().terrain_palette,
         }
-    }).collect()
+    }).collect();
+    (materials, plans)
 }
 
 // ============================================================
@@ -336,13 +502,15 @@ fn rh_to_lh_quat(q: [f32; 4]) -> [f32; 4] {
 //  メッシュ
 // ============================================================
 
+/// `uv_plans` は `load_materials` が返した「マテリアル番号 → UV スロット割り当て計画」表。
 fn load_meshes(
     document: &gltf::Document,
     buffers: &[gltf::buffer::Data],
+    uv_plans: &[UvSetPlan],
 ) -> Vec<Mesh> {
     document.meshes().map(|mesh| {
         let primitives = mesh.primitives().map(|prim| {
-            load_primitive(&prim, buffers)
+            load_primitive(&prim, buffers, uv_plans)
         }).collect();
 
         Mesh {
@@ -355,8 +523,18 @@ fn load_meshes(
 fn load_primitive(
     prim: &gltf::Primitive<'_>,
     buffers: &[gltf::buffer::Data],
+    uv_plans: &[UvSetPlan],
 ) -> Primitive {
     let reader = prim.reader(|b| Some(&*buffers[b.index()]));
+
+    // このプリミティブのマテリアルが決めた UV スロット割り当て計画を引く。
+    // マテリアルを持たないプリミティブ（glTF の既定マテリアル）はテクスチャを一切
+    // 参照しないので恒等計画＝従来どおり TEXCOORD_0/1 をそのまま読む。
+    let uv_plan = prim
+        .material()
+        .index()
+        .and_then(|i| uv_plans.get(i).copied())
+        .unwrap_or(UvSetPlan::IDENTITY);
 
     // ── 位置（必須）────────────────────────────────────────
     let positions: Vec<[f32; 3]> = reader
@@ -376,13 +554,16 @@ fn load_primitive(
         .map(|it| it.collect())
         .unwrap_or_else(|| vec![[1.0, 0.0, 0.0, 1.0]; n]);
 
+    // UV は「割り当て計画が指すセット」を読む（uv_plan.sources[slot] = glTF の TEXCOORD 番号）。
+    // 恒等計画なら sources = [0, 1] なので修正前と同じ読み方になる。
+    // 指定セットがこのプリミティブに存在しなければ従来どおり [0,0] で埋める。
     let uvs0: Vec<[f32; 2]> = reader
-        .read_tex_coords(0)
+        .read_tex_coords(uv_plan.sources[0])
         .map(|v| v.into_f32().collect())
         .unwrap_or_else(|| vec![[0.0; 2]; n]);
 
     let uvs1: Vec<[f32; 2]> = reader
-        .read_tex_coords(1)
+        .read_tex_coords(uv_plan.sources[1])
         .map(|v| v.into_f32().collect())
         .unwrap_or_else(|| vec![[0.0; 2]; n]);
 
@@ -1100,6 +1281,293 @@ mod meshlet_tests {
 // ============================================================
 //  ユニットテスト
 // ============================================================
+
+#[cfg(test)]
+mod uv_set_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    // ── plan_uv_sets（純関数）─────────────────────────────────
+
+    /// 参照が無い／0 と 1 に収まるケースは恒等計画のまま（＝修正前と同じ読み方）。
+    ///
+    /// これが「既存アセットの描画を一切変えない」ことの直接の根拠。
+    /// 既存モデルの圧倒的多数（UV レイヤ 1 枚 / texCoord=0）はこの経路を通る。
+    #[test]
+    fn plan_keeps_identity_for_legacy_uv_layouts() {
+        for referenced in [
+            vec![],            // テクスチャ無しマテリアル
+            vec![0],           // UV レイヤ 1 枚（既存アセットの大半）
+            vec![0, 0, 0],     // 全テクスチャが同じ TEXCOORD_0
+            vec![1],           // ライトマップ的に TEXCOORD_1 だけを使う
+            vec![0, 1],        // 2 枚とも使う
+            vec![1, 0, 1, 0],  // 順序・重複違い
+        ] {
+            let (plan, dropped) = plan_uv_sets(&referenced);
+            assert_eq!(
+                plan, UvSetPlan::IDENTITY,
+                "参照 {referenced:?} は恒等計画（uv0←TEXCOORD_0 / uv1←TEXCOORD_1）であること",
+            );
+            assert!(dropped.is_empty(), "参照 {referenced:?} で落選は起きないこと");
+            // 恒等計画のスロット解決も素通しであること。
+            assert_eq!(plan.slot_of(0), 0);
+            assert_eq!(plan.slot_of(1), 1);
+        }
+    }
+
+    /// texCoord:2 だけを参照するマテリアル（sakanadori.glb の鳥と同じ形）。
+    /// TEXCOORD_2 が uv0 に載り、tex_coord_set は 0 へ振り直される。
+    #[test]
+    fn plan_maps_lone_texcoord2_to_uv0() {
+        let (plan, dropped) = plan_uv_sets(&[2]);
+        assert_eq!(plan.sources[0], 2, "uv0 には TEXCOORD_2 が載ること");
+        assert_eq!(plan.slot_of(2), 0, "tex_coord_set は uv0（=0）へ振り直されること");
+        assert!(dropped.is_empty());
+    }
+
+    /// 0 と 2 を併用するマテリアル: 0 は恒等（uv0）のまま、2 が空いた uv1 へ入る。
+    /// 「既存で正しく描けていた TEXCOORD_0 側は動かさない」という規則の確認。
+    #[test]
+    fn plan_keeps_set0_in_place_and_puts_set2_in_uv1() {
+        // 重要度順: ベースカラー(2) → 法線(0)
+        let (plan, dropped) = plan_uv_sets(&[2, 0]);
+        assert_eq!(plan.sources, [0, 2], "uv0←TEXCOORD_0 / uv1←TEXCOORD_2");
+        assert_eq!(plan.slot_of(0), 0);
+        assert_eq!(plan.slot_of(2), 1);
+        assert!(dropped.is_empty());
+    }
+
+    /// 0/1 を使わない 2 セット（2 と 3）は昇順ではなく**重要度順**で uv0/uv1 に詰まる。
+    #[test]
+    fn plan_packs_two_high_sets_in_priority_order() {
+        let (plan, dropped) = plan_uv_sets(&[3, 2]);
+        assert_eq!(plan.sources, [3, 2], "重要度の高い 3 が uv0 に入ること");
+        assert_eq!(plan.slot_of(3), 0);
+        assert_eq!(plan.slot_of(2), 1);
+        assert!(dropped.is_empty());
+    }
+
+    /// 相異なる参照が 3 種類以上あるときは重要度の低いものが落選し、uv0 へ縮退する。
+    /// 落選した番号は呼び出し側が警告ログに出す。
+    #[test]
+    fn plan_drops_sets_beyond_two_slots() {
+        // 重要度順: ベースカラー(2) → 法線(0) → MR(1)
+        let (plan, dropped) = plan_uv_sets(&[2, 0, 1]);
+        assert_eq!(plan.sources, [0, 2], "先頭 2 セット（2 と 0）だけが採用される");
+        assert_eq!(dropped, vec![1], "落選したのは重要度が最も低い 1");
+        assert_eq!(plan.slot_of(1), UV_SLOT_FALLBACK, "落選セットは uv0 へ縮退する");
+    }
+
+    /// 割り当て結果は必ず「2 スロットが相異なる TEXCOORD セット」を指すこと。
+    /// 同じセットを 2 スロットへ載せると帯域の無駄なうえ、片方のセットが失われる。
+    #[test]
+    fn plan_never_assigns_the_same_set_twice() {
+        for referenced in [
+            vec![2], vec![2, 0], vec![2, 1], vec![0, 2], vec![1, 2],
+            vec![3, 2], vec![2, 3, 4], vec![5], vec![0, 1, 2], vec![2, 1, 0],
+        ] {
+            let (plan, _) = plan_uv_sets(&referenced);
+            assert_ne!(
+                plan.sources[0], plan.sources[1],
+                "参照 {referenced:?} で uv0/uv1 が同じ TEXCOORD セットを指している: {:?}",
+                plan.sources,
+            );
+        }
+    }
+
+    // ── 合成 glTF による結合テスト ────────────────────────────
+
+    /// テスト用の最小 glTF（1 三角形）を組み立てる。
+    ///
+    /// - `uv_set_count`: メッシュが持つ TEXCOORD_n の本数（1..=3）。
+    ///   TEXCOORD_n の値は全頂点で `[n/10, n/10]` にしてあり、**どのセットが
+    ///   どのスロットへ載ったかを値だけで判別できる**（TEXCOORD_2 なら 0.2）。
+    /// - `base_color_tex_coord`: ベースカラーテクスチャの `texCoord`。
+    ///
+    /// バッファは data URI で埋め込むため、外部 .bin は不要。
+    fn build_test_gltf(uv_set_count: usize, base_color_tex_coord: u32) -> String {
+        const VERTS: usize = 3;
+        let mut bin: Vec<u8> = Vec::new();
+        // POSITION（3 頂点 × vec3）
+        let positions: [[f32; 3]; VERTS] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        for p in positions {
+            for v in p {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        // TEXCOORD_n（3 頂点 × vec2）。値でセット番号が分かるようにする。
+        for n in 0..uv_set_count {
+            let marker = n as f32 / 10.0;
+            for _ in 0..VERTS {
+                bin.extend_from_slice(&marker.to_le_bytes());
+                bin.extend_from_slice(&marker.to_le_bytes());
+            }
+        }
+
+        let pos_len = (VERTS * 3 * 4) as usize;
+        let uv_len  = (VERTS * 2 * 4) as usize;
+
+        // bufferView / accessor を UV セット数ぶん並べる（0 番は POSITION）。
+        let mut views = vec![format!(
+            r#"{{"buffer":0,"byteOffset":0,"byteLength":{pos_len}}}"#
+        )];
+        let mut accessors = vec![format!(
+            r#"{{"bufferView":0,"componentType":5126,"count":{VERTS},"type":"VEC3",
+                 "min":[0.0,0.0,0.0],"max":[1.0,1.0,0.0]}}"#
+        )];
+        let mut attrs = vec![r#""POSITION":0"#.to_string()];
+        for n in 0..uv_set_count {
+            let off = pos_len + n * uv_len;
+            views.push(format!(
+                r#"{{"buffer":0,"byteOffset":{off},"byteLength":{uv_len}}}"#
+            ));
+            accessors.push(format!(
+                r#"{{"bufferView":{},"componentType":5126,"count":{VERTS},"type":"VEC2"}}"#,
+                n + 1
+            ));
+            attrs.push(format!(r#""TEXCOORD_{n}":{}"#, n + 1));
+        }
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bin);
+        let total = bin.len();
+        // 画像は 1x1 の適当なバイト列（ローダーはデコードせず供給元を記録するだけ）。
+        let img_b64 = base64::engine::general_purpose::STANDARD.encode([0u8, 1, 2, 3]);
+        format!(
+            r#"{{
+  "asset": {{"version": "2.0"}},
+  "buffers": [{{"byteLength": {total}, "uri": "data:application/octet-stream;base64,{b64}"}}],
+  "bufferViews": [{}],
+  "accessors": [{}],
+  "images": [{{"uri": "data:image/png;base64,{img_b64}"}}],
+  "textures": [{{"source": 0}}],
+  "materials": [{{
+    "name": "uv_test_mat",
+    "pbrMetallicRoughness": {{"baseColorTexture": {{"index": 0, "texCoord": {base_color_tex_coord}}}}}
+  }}],
+  "meshes": [{{"primitives": [{{"attributes": {{{}}}, "material": 0}}]}}],
+  "nodes": [{{"mesh": 0}}],
+  "scenes": [{{"nodes": [0]}}],
+  "scene": 0
+}}"#,
+            views.join(","),
+            accessors.join(","),
+            attrs.join(","),
+        )
+    }
+
+    /// 合成 glTF をテンポラリへ書き出して `load` する（後始末込み）。
+    fn load_test_gltf(tag: &str, uv_set_count: usize, base_color_tex_coord: u32) -> Model {
+        let dir = std::env::temp_dir().join(format!("seed_uv_set_test_{tag}"));
+        std::fs::create_dir_all(&dir).expect("テンポラリ作成に失敗");
+        let path = dir.join("model.gltf");
+        std::fs::write(&path, build_test_gltf(uv_set_count, base_color_tex_coord))
+            .expect("テスト用 glTF の書き出しに失敗");
+        let model = load(&path).expect("テスト用 glTF のロードに失敗");
+        let _ = std::fs::remove_dir_all(&dir);
+        model
+    }
+
+    /// **本不具合の回帰テスト**: `texCoord: 2` のベースカラーテクスチャが
+    /// 正しく TEXCOORD_2 でサンプリングされる状態になること。
+    ///
+    /// 期待:
+    ///   - `uv0` に TEXCOORD_2 の値（0.2）が載る
+    ///   - `tex_coord_set` が 0（＝uv0）へ振り直される
+    /// 修正前は uv0 に TEXCOORD_0（0.0）が載り、tex_coord_set=2 は誰も見ていなかったため
+    /// TEXCOORD_0 でサンプリングされて表示が崩れていた。
+    #[test]
+    fn texcoord2_material_lands_on_uv0() {
+        let model = load_test_gltf("texcoord2", 3, 2);
+        let info = model.materials[0]
+            .base_color_texture
+            .as_ref()
+            .expect("ベースカラーテクスチャが読めていること");
+        assert_eq!(info.tex_coord_set, 0, "tex_coord_set は uv0（=0）へ振り直されること");
+
+        let verts = &model.meshes[0].primitives[0].vertices;
+        assert_eq!(verts.len(), 3);
+        for v in verts {
+            assert_eq!(v.uv0, [0.2, 0.2], "uv0 には TEXCOORD_2 が載ること");
+        }
+    }
+
+    /// **既存の正常ケースの不変性**: UV セットが 1 枚だけ（texCoord:0）のモデルは
+    /// 修正前とまったく同じ結果になること。
+    ///
+    /// - `uv0` に TEXCOORD_0 が載る
+    /// - `uv1` は TEXCOORD_1 が無いので従来どおり `[0,0]`
+    /// - `tex_coord_set` は 0 のまま
+    #[test]
+    fn single_uv_set_model_is_unchanged() {
+        let model = load_test_gltf("single_uv", 1, 0);
+        let info = model.materials[0].base_color_texture.as_ref().unwrap();
+        assert_eq!(info.tex_coord_set, 0);
+
+        for v in &model.meshes[0].primitives[0].vertices {
+            assert_eq!(v.uv0, [0.0, 0.0], "uv0 には TEXCOORD_0 が載ること");
+            assert_eq!(v.uv1, [0.0, 0.0], "TEXCOORD_1 が無いので uv1 は [0,0]（従来どおり）");
+        }
+    }
+
+    /// UV セット 2 枚・texCoord:0 のモデルも従来どおり（uv0←TEXCOORD_0 / uv1←TEXCOORD_1）。
+    /// ライトマップ用に 2 枚持つ既存モデルが動かないことの確認。
+    #[test]
+    fn two_uv_sets_with_texcoord0_keep_identity_layout() {
+        let model = load_test_gltf("two_uv", 2, 0);
+        assert_eq!(model.materials[0].base_color_texture.as_ref().unwrap().tex_coord_set, 0);
+        for v in &model.meshes[0].primitives[0].vertices {
+            assert_eq!(v.uv0, [0.0, 0.0], "uv0 ← TEXCOORD_0");
+            assert_eq!(v.uv1, [0.1, 0.1], "uv1 ← TEXCOORD_1");
+        }
+    }
+
+    /// `texCoord: 1` のマテリアルは恒等計画のまま uv1 を指す（tex_coord_set=1）。
+    /// 修正前は tex_coord_set をレンダラーが見ていなかったため uv0 で描かれていた。
+    #[test]
+    fn texcoord1_material_points_at_uv1() {
+        let model = load_test_gltf("texcoord1", 2, 1);
+        assert_eq!(
+            model.materials[0].base_color_texture.as_ref().unwrap().tex_coord_set, 1,
+            "texCoord:1 は uv1（=1）を指すこと",
+        );
+        for v in &model.meshes[0].primitives[0].vertices {
+            assert_eq!(v.uv1, [0.1, 0.1], "uv1 ← TEXCOORD_1（恒等）");
+        }
+    }
+
+    /// 実アセット `sakanadori.glb`（`baseColorTexture = {index:0, texCoord:2}` の実例）を
+    /// 読み、全マテリアルの `tex_coord_set` が UV スロット（0/1）に収まることを確認する。
+    ///
+    /// アセットはリポジトリ運用で移動・削除され得るため、存在しなければスキップする
+    /// （合成データ側のテストが本体で、こちらは実データでの追加確認）。
+    #[test]
+    fn sakanadori_glb_resolves_tex_coord_sets_into_slots() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/mainGame/models/sakanadori.glb");
+        if !path.exists() {
+            eprintln!("[uv_set_tests] {path:?} が無いためスキップ");
+            return;
+        }
+        let model = load(&path).expect("sakanadori.glb のロードに失敗");
+        for mat in &model.materials {
+            for (label, set) in [
+                ("base_color", mat.base_color_texture.as_ref().map(|t| t.tex_coord_set)),
+                ("normal",     mat.normal_texture.as_ref().map(|t| t.tex_coord_set)),
+                ("mr",         mat.metallic_roughness_texture.as_ref().map(|t| t.tex_coord_set)),
+                ("occlusion",  mat.occlusion_texture.as_ref().map(|t| t.tex_coord_set)),
+                ("emissive",   mat.emissive_texture.as_ref().map(|t| t.tex_coord_set)),
+            ] {
+                if let Some(s) = set {
+                    eprintln!("[uv_set_tests] material '{}' {label}: slot={s}", mat.name);
+                    assert!(
+                        (s as usize) < UV_SLOT_COUNT,
+                        "material '{}' の {label} が UV スロット範囲外: {s}", mat.name,
+                    );
+                }
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

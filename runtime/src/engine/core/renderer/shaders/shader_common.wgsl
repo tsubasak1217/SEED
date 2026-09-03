@@ -101,11 +101,29 @@ struct MaterialUniform {
     // シェーディングモデル ID（offset 84）。0 = DefaultPBR（現状これのみ）。
     // render_tag と一緒に G-Buffer RT3.a へビットパックされる（pack_surface_id 参照）。
     shading_model:      u32,
-    // 予約（offset 88 / 92）。構造体サイズを 96（16 の倍数）に保つためのパディング。
+    // テクスチャ別 UV セット選択ビット（旧 _pad3, offset 88 を転用）。
+    // 5 種のテクスチャそれぞれに 1 ビットを割り当て、0=uv0 を使う / 1=uv1 を使う を表す。
+    // マスク値は下の UV_SET_BIT_* 定数。0（＝全テクスチャ uv0）は旧 _pad3=0 とビット一致で
+    // 後方互換。読むのは material_uv() 1 か所（forward / G-Buffer 共通）。
+    // Rust uniforms::MaterialUniform（offset 88, u32）と 1:1。
+    uv_set_bits:        u32,
+    // 予約（offset 92）。構造体サイズを 96（16 の倍数）に保つためのパディング。
     // 次にマテリアルへ値を足すときはここを転用してサイズを維持すること。
-    _pad3:              u32,
     _pad4:              u32,
 }
+
+// ── UV セット選択ビット（MaterialUniform.uv_set_bits のマスク）────────
+//
+// glTF はテクスチャごとに `texCoord`（どの TEXCOORD セットを使うか）を指定できる。
+// エンジンの頂点は uv0 / uv1 の 2 本しか無いため、ローダーが参照セットをこの 2 本へ
+// 載せ替え、ここには「uv1 を使うなら 1」というビットだけが届く。
+// Rust 側 uniforms::UV_SET_BIT_*（renderer::uniforms）と**値を一致させること**
+// （uniforms::layout_tests::wgsl_mirror_uv_set_bits_match が本ファイルを文字列照合する）。
+const UV_SET_BIT_BASE_COLOR: u32 = 1u;
+const UV_SET_BIT_NORMAL:     u32 = 2u;
+const UV_SET_BIT_MR:         u32 = 4u;
+const UV_SET_BIT_OCCLUSION:  u32 = 8u;
+const UV_SET_BIT_EMISSIVE:   u32 = 16u;
 @group(2) @binding(0)  var<uniform> u_material:          MaterialUniform;
 @group(2) @binding(1)  var          t_base_color:         texture_2d<f32>;
 @group(2) @binding(2)  var          s_base_color:         sampler;
@@ -196,6 +214,18 @@ const VERTEX_SHARPNESS_TANGENT_BIAS: f32 = 1.0;
 /// （+1 → 0、-1 → -2 を 0 へクランプ）。よって地形以外は常にスムーズ法線。
 fn decode_vertex_sharpness(tangent_w: f32) -> f32 {
     return clamp(tangent_w - VERTEX_SHARPNESS_TANGENT_BIAS, 0.0, 1.0);
+}
+
+/// マテリアルの UV セット指定（glTF の texCoord 相当）に従って uv0 / uv1 を選ぶ。
+///
+/// `bit` は UV_SET_BIT_* のいずれか。ビットが 0 なら uv0（従来動作＝既存モデルはすべてこちら）、
+/// 1 なら uv1。テクスチャ採取の全箇所（surface_gather.wgsl）がこの 1 関数を通ることで、
+/// forward / G-Buffer のどちらのパスでも同じ UV が選ばれる（パスごとの見た目のズレを防ぐ）。
+///
+/// 分岐ではなく `select` を使うのは、テクスチャ採取が一様制御フロー（暗黙 LOD 計算）の
+/// 内側に留まる必要があるため。`select` は両辺を評価するだけの値選択なので安全。
+fn material_uv(in: VertexOutput, bit: u32) -> vec2<f32> {
+    return select(in.uv0, in.uv1, (u_material.uv_set_bits & bit) != 0u);
 }
 
 // ─── PBR ヘルパー関数は pbr_common.wgsl へ移設 ───────────────

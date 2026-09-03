@@ -86,9 +86,11 @@ fn gather_surface(in: VertexOutput, front_facing: bool) -> Surface {
     // ── ベースカラー ──────────────────────────────────────────
     // 頂点カラー（in.color）はここで畳み込む。G-Buffer には畳み込んだ結果だけを載せる
     // （頂点カラーは補間属性であり、ライティングパスからは参照できないため）。
+    // UV は material_uv() でテクスチャごとに uv0 / uv1 を選ぶ（glTF の texCoord 対応）。
+    // 既存モデル（texCoord=0）は uv_set_bits=0 なので必ず uv0 が返り、従来と完全に同じ絵になる。
     var base_color = u_material.base_color_factor;
     if u_material.has_base_color_tex != 0u {
-        base_color *= textureSample(t_base_color, s_base_color, in.uv0);
+        base_color *= textureSample(t_base_color, s_base_color, material_uv(in, UV_SET_BIT_BASE_COLOR));
     }
     // 頂点カラーの畳み込み。ignore_vertex_color=1 のときはスキップする（カメラプレビューの
     // 地形簡易描画専用）。地形メッシュの in.color はレイヤブレンド重み（RGB=成分別重み・
@@ -113,7 +115,7 @@ fn gather_surface(in: VertexOutput, front_facing: bool) -> Surface {
     // metallic/roughness factor をそのまま実効値にする（glTF 標準の乗算は既定で維持）。
     // これは forward / G-Buffer 双方が通る唯一の MR 採取箇所なので、両パスへ自動で効く。
     if u_material.has_mr_tex != 0u && u_material.mr_tex_ignore == 0u {
-        let mr = textureSample(t_metallic_roughness, s_metallic_roughness, in.uv0);
+        let mr = textureSample(t_metallic_roughness, s_metallic_roughness, material_uv(in, UV_SET_BIT_MR));
         metallic  *= mr.b;   // glTF: B = metallic
         roughness *= mr.g;   // glTF: G = roughness
     }
@@ -122,13 +124,13 @@ fn gather_surface(in: VertexOutput, front_facing: bool) -> Surface {
     // ── エミッシブ ────────────────────────────────────────────
     var emissive = u_material.emissive_factor;
     if u_material.has_emissive_tex != 0u {
-        emissive *= textureSample(t_emissive, s_emissive, in.uv0).rgb;
+        emissive *= textureSample(t_emissive, s_emissive, material_uv(in, UV_SET_BIT_EMISSIVE)).rgb;
     }
 
     // ── アンビエントオクルージョン ────────────────────────────
     var ao = 1.0;
     if u_material.has_occlusion_tex != 0u {
-        ao = textureSample(t_occlusion, s_occlusion, in.uv0).r;
+        ao = textureSample(t_occlusion, s_occlusion, material_uv(in, UV_SET_BIT_OCCLUSION)).r;
     }
 
     // ── 法線（法線マップ対応）────────────────────────────────
@@ -144,7 +146,7 @@ fn gather_surface(in: VertexOutput, front_facing: bool) -> Surface {
         // BC5 圧縮（RG 2ch）フォーマットは B チャンネルを持たないため直接読めない。
         // 接空間法線は単位ベクトルなので z = sqrt(1 - x^2 - y^2) で復元でき、
         // 非圧縮 RGB 法線マップでも同じ結果になる（後方互換）。
-        let nxy = textureSample(t_normal, s_normal, in.uv0).rg * 2.0 - 1.0;
+        let nxy = textureSample(t_normal, s_normal, material_uv(in, UV_SET_BIT_NORMAL)).rg * 2.0 - 1.0;
         let nz  = sqrt(max(0.0, 1.0 - dot(nxy, nxy)));
         let tn  = vec3<f32>(nxy, nz);
         let T   = normalize(in.world_tan);
@@ -154,7 +156,8 @@ fn gather_surface(in: VertexOutput, front_facing: bool) -> Surface {
     }
 
     // ── Surface へ詰める ──────────────────────────────────────
-    // UV（uv0 / uv1）と接空間（world_tan / world_bitan）はここで役目を終えるため持ち越さない。
+    // UV（uv0 / uv1。material_uv() でテクスチャごとに選択済み）と接空間
+    // （world_tan / world_bitan）はここで役目を終えるため持ち越さない。
     var s: Surface;
     // 水中の直達光変調は deferred 専用機能。透過率（rgb）は**乗算項**なので、
     // ゼロ初期化のままだと直達光が全て消える。フォワードでは必ず中立値

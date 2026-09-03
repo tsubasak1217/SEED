@@ -362,6 +362,11 @@ pub struct GpuMaterial {
     /// ベースカラーテクスチャの `GpuModel.textures` インデックス（テクスチャ無しは None）。
     /// バインドレス登録（B2）で、このマテリアルの albedo テクスチャ view を引くために保持する。
     pub base_color_tex_index: Option<usize>,
+    /// ベースカラーテクスチャが使う UV スロット番号（0 = uv0 / 1 = uv1）。
+    /// `Material` の `base_color_texture.tex_coord_set`（ローダーが振り直したスロット番号）を
+    /// upload 時に複製する（オーバーライド適用後の実効値）。
+    /// バインドレス登録（B2/B3）が、メガバッファへ載せる UV を uv0/uv1 から選ぶのに使う。
+    pub base_color_uv_slot: u32,
     /// バインドレス テクスチャ配列に登録した albedo テクスチャの安定インデックス
     /// （未登録・非対応 GPU は `BINDLESS_DUMMY_TEX_INDEX`=0）。B2 の RT 反射が引く。
     /// `GpuModel::register_bindless` が対応 GPU でのみ非 0 を書き込む。
@@ -432,9 +437,52 @@ pub(crate) fn build_material_uniform(mat: &Material) -> MaterialUniform {
         // シェーディングモデル ID（offset 84）。RT3.a のビット枠（2bit）へ収まるよう
         // 単一の真実source（renderer::surface_id）のマスクで切り詰める。
         shading_model:      (mat.shading_model & super::surface_id::SHADING_MODEL_MASK) as u32,
-        _pad3:              0,
+        // テクスチャ別 UV セット選択ビット（旧 _pad3 を転用, offset 88）。
+        // 既定（全テクスチャが uv0）は 0 なので、旧レイアウトの _pad3=0 とビット一致する。
+        uv_set_bits:        pack_uv_set_bits(mat),
         _pad4:              0,
     }
+}
+
+/// マテリアルの各テクスチャの UV スロット番号（0/1）を 1 本の `u32` へ畳み込む。
+///
+/// 【単一の真実source】「どのテクスチャがどのビットか」の対応をここ 1 か所に集約する
+/// （ビット定義そのものは `uniforms::UV_SET_BIT_*`、WGSL 側のミラーは shader_common.wgsl）。
+///
+/// `tex_coord_set` はローダーが 0/1 へ振り直したスロット番号だが、.mat やオーバーライド、
+/// 旧キャッシュ経由で 2 以上が紛れ込んでも UV スロットは 2 本しか無い。
+/// ここで「0 なら uv0・それ以外は uv1」と解釈して切り詰め、範囲外の値でビットが
+/// 他テクスチャの枠へはみ出さないようにする。
+fn pack_uv_set_bits(mat: &Material) -> u32 {
+    use super::uniforms::{
+        UV_SET_BIT_BASE_COLOR, UV_SET_BIT_EMISSIVE, UV_SET_BIT_MR, UV_SET_BIT_NORMAL,
+        UV_SET_BIT_OCCLUSION,
+    };
+    // スロット番号 → ビット（0=uv0 は立てない / それ以外＝uv1 は立てる）。
+    let bit = |slot: Option<u32>, mask: u32| -> u32 {
+        match slot {
+            Some(s) if s != 0 => mask,
+            _ => 0,
+        }
+    };
+    bit(mat.base_color_texture.as_ref().map(|t| t.tex_coord_set), UV_SET_BIT_BASE_COLOR)
+        | bit(mat.normal_texture.as_ref().map(|t| t.tex_coord_set), UV_SET_BIT_NORMAL)
+        | bit(mat.metallic_roughness_texture.as_ref().map(|t| t.tex_coord_set), UV_SET_BIT_MR)
+        | bit(mat.occlusion_texture.as_ref().map(|t| t.tex_coord_set), UV_SET_BIT_OCCLUSION)
+        | bit(mat.emissive_texture.as_ref().map(|t| t.tex_coord_set), UV_SET_BIT_EMISSIVE)
+}
+
+/// ベースカラーテクスチャが使う UV スロット番号（0=uv0 / 1=uv1）。テクスチャ無しは 0。
+///
+/// バインドレス（RT 反射・色付き影・水面反射）は「プリミティブごとに UV を 1 本だけ」
+/// メガバッファへ載せる設計で、そこで引かれるのはベースカラーだけである。
+/// そのため登録時にこのスロットを見て uv0 / uv1 のどちらを載せるかを決める
+/// （こうすれば RT 側 WGSL は一切変更せずに texCoord 対応が全パスで一貫する）。
+pub(crate) fn base_color_uv_slot(mat: &Material) -> u32 {
+    mat.base_color_texture
+        .as_ref()
+        .map(|t| if t.tex_coord_set != 0 { 1 } else { 0 })
+        .unwrap_or(0)
 }
 
 /// インラインオーバーライドを埋込マテリアルへ焼き込んで「実効マテリアル」を作る純関数。
@@ -546,6 +594,7 @@ impl GpuMaterial {
             terrain_palette: mat.terrain_palette,
             base_color_factor:      mat.base_color_factor,
             base_color_tex_index:   base_color_idx,
+            base_color_uv_slot:     base_color_uv_slot(mat),
             bindless_albedo_tex_index: crate::engine::core::renderer::BINDLESS_DUMMY_TEX_INDEX,
             uniform_buffer,
             textures: Vec::new(),
@@ -1293,6 +1342,12 @@ impl GpuModel {
             self.materials[mi].bindless_albedo_tex_index = idx;
         }
 
+        // マテリアルごとの「ベースカラーが使う UV スロット」を先に取り出しておく
+        // （下のループは self.meshes を可変借用するため、self.materials をその中で
+        //   参照できない。借用を分けるための事前コピー）。
+        let uv_slots: Vec<u32> = self.materials.iter().map(|m| m.base_color_uv_slot).collect();
+        let default_uv_slot = self.default_material.base_color_uv_slot;
+
         // ── プリミティブ: UV とインデックスをメガバッファへ登録 ──────
         // model.meshes と self.meshes は同順・同数（GpuModel::upload が 1:1 で構築）。
         for (mesh_i, mesh) in model.meshes.iter().enumerate() {
@@ -1308,9 +1363,25 @@ impl GpuModel {
                 //     （＝法線復元可能を意味するビット）を立てない。ここで法線を登録するのは
                 //     `register_primitive_geometry` が UV/index/法線を 1 セットで扱う API だから
                 //     であり、登録した法線をスキンで読ませてはならない（読み手側で禁止する）。
-                // UV0 と法線を頂点順に抽出（メガバッファは頂点番号で引くため頂点順が必須）。
+                // UV と法線を頂点順に抽出（メガバッファは頂点番号で引くため頂点順が必須）。
                 // 法線は八面体エンコード u32（4B/頂点）へ畳んで省メモリ化する（RT 屈折の界面法線復元用）。
-                let uvs: Vec<[f32; 2]> = prim.vertices.iter().map(|v| v.uv0).collect();
+                //
+                // 【どの UV セットを載せるか】メガバッファは 1 プリミティブにつき UV を 1 本しか
+                // 持たず、そこから引かれるのはベースカラーだけ（RT 反射・色付き影・水面反射の
+                // ヒットシェーディング）。よってこのマテリアルのベースカラーが使うスロットを
+                // 見て uv0 / uv1 を選ぶ。既定（tex_coord_set=0）は従来どおり uv0 なので、
+                // 既存モデルの RT 経路は一切変わらない。
+                // `register_bindless` は upload / apply_overrides の後に呼ばれるため、
+                // ここで見る GpuMaterial は実効マテリアル（オーバーライド適用後）である。
+                let uv_slot = prim
+                    .material_index
+                    .and_then(|mi| uv_slots.get(mi).copied())
+                    .unwrap_or(default_uv_slot);
+                let uvs: Vec<[f32; 2]> = if uv_slot == 1 {
+                    prim.vertices.iter().map(|v| v.uv1).collect()
+                } else {
+                    prim.vertices.iter().map(|v| v.uv0).collect()
+                };
                 let normals: Vec<u32> = prim.vertices.iter()
                     .map(|v| crate::engine::core::renderer::bindless::oct_encode_normal(v.normal))
                     .collect();
@@ -3487,7 +3558,9 @@ mod cull_tests {
 #[cfg(test)]
 mod inline_bake_tests {
     use super::{bake_inline_material, build_material_uniform};
-    use crate::engine::core::loader::model::{Material, AlphaMode, CullFace};
+    use crate::engine::core::loader::model::{
+        Material, AlphaMode, CullFace, TextureInfo, NormalTextureInfo, OcclusionTextureInfo,
+    };
     use crate::engine::components::material_override::MaterialOverrideKind;
 
     /// 全フィールドを指定したインライン kind を作るヘルパー。
@@ -3627,6 +3700,100 @@ mod inline_bake_tests {
         // シェーダはこの factor をテクスチャ乗算せずそのまま実効値にする。
         assert_eq!(uni.metallic_factor, 0.2, "metallic factor は素通り（実効値＝factor）");
         assert_eq!(uni.roughness_factor, 0.9, "roughness factor は素通り（実効値＝factor）");
+    }
+
+    /// 既定マテリアル（テクスチャ無し）の `uv_set_bits` は 0 で、旧レイアウトの
+    /// `_pad3`（offset 88, u32 0）とビット一致すること。
+    ///
+    /// UV セット対応を足しても既存マテリアルの uniform が 1 ビットも変わらないことの回帰ガード。
+    /// ここが崩れると「UV レイヤ 1 枚のモデルの見た目が変わってはいけない」という
+    /// 最優先の制約を破っていることになる。
+    #[test]
+    fn uv_set_bits_default_is_bit_compatible_with_old_layout() {
+        let uni = build_material_uniform(&Material::default());
+        assert_eq!(uni.uv_set_bits, 0, "テクスチャ無しの既定マテリアルは全ビット 0");
+        let bytes = bytemuck::bytes_of(&uni);
+        assert_eq!(&bytes[88..92], &[0u8; 4], "offset 88 の 4 バイトは旧 _pad3(0) とビット一致");
+    }
+
+    /// `tex_coord_set = 0`（＝uv0。既存アセットのほぼ全部）のテクスチャは
+    /// 5 種すべて揃っていてもビットが 1 本も立たないこと。
+    #[test]
+    fn uv_set_bits_stay_zero_when_every_texture_uses_uv0() {
+        let mut mat = Material::default();
+        mat.base_color_texture         = Some(TextureInfo { texture_index: 0, tex_coord_set: 0 });
+        mat.metallic_roughness_texture = Some(TextureInfo { texture_index: 1, tex_coord_set: 0 });
+        mat.emissive_texture           = Some(TextureInfo { texture_index: 2, tex_coord_set: 0 });
+        mat.normal_texture    = Some(NormalTextureInfo    { texture_index: 3, tex_coord_set: 0, scale: 1.0 });
+        mat.occlusion_texture = Some(OcclusionTextureInfo { texture_index: 4, tex_coord_set: 0, strength: 1.0 });
+        assert_eq!(
+            build_material_uniform(&mat).uv_set_bits, 0,
+            "全テクスチャが uv0 ならビットは立たない（＝従来と同じ絵）",
+        );
+    }
+
+    /// テクスチャごとに独立したビットが立つこと（他テクスチャの枠へはみ出さない）。
+    #[test]
+    fn uv_set_bits_are_per_texture() {
+        use super::super::uniforms::{
+            UV_SET_BIT_BASE_COLOR, UV_SET_BIT_EMISSIVE, UV_SET_BIT_MR, UV_SET_BIT_NORMAL,
+            UV_SET_BIT_OCCLUSION,
+        };
+        // ベースカラーだけ uv1、ほかは uv0。
+        let mut only_bc = Material::default();
+        only_bc.base_color_texture = Some(TextureInfo { texture_index: 0, tex_coord_set: 1 });
+        only_bc.normal_texture = Some(NormalTextureInfo { texture_index: 1, tex_coord_set: 0, scale: 1.0 });
+        assert_eq!(build_material_uniform(&only_bc).uv_set_bits, UV_SET_BIT_BASE_COLOR);
+
+        // 5 種すべて uv1 → 全ビット。
+        let mut all = Material::default();
+        all.base_color_texture         = Some(TextureInfo { texture_index: 0, tex_coord_set: 1 });
+        all.metallic_roughness_texture = Some(TextureInfo { texture_index: 1, tex_coord_set: 1 });
+        all.emissive_texture           = Some(TextureInfo { texture_index: 2, tex_coord_set: 1 });
+        all.normal_texture    = Some(NormalTextureInfo    { texture_index: 3, tex_coord_set: 1, scale: 1.0 });
+        all.occlusion_texture = Some(OcclusionTextureInfo { texture_index: 4, tex_coord_set: 1, strength: 1.0 });
+        assert_eq!(
+            build_material_uniform(&all).uv_set_bits,
+            UV_SET_BIT_BASE_COLOR | UV_SET_BIT_NORMAL | UV_SET_BIT_MR
+                | UV_SET_BIT_OCCLUSION | UV_SET_BIT_EMISSIVE,
+        );
+    }
+
+    /// スロット番号が範囲外（2 以上）でも uv1 として切り詰められ、
+    /// 他テクスチャのビット枠を侵食しないこと。
+    ///
+    /// ローダーは 0/1 しか入れないが、.mat / オーバーライド / 旧データ経由で
+    /// 想定外の値が来ても uniform が壊れないことを保証する。
+    #[test]
+    fn uv_set_bits_clamp_out_of_range_slots() {
+        let mut mat = Material::default();
+        mat.base_color_texture = Some(TextureInfo { texture_index: 0, tex_coord_set: 7 });
+        assert_eq!(
+            build_material_uniform(&mat).uv_set_bits,
+            super::super::uniforms::UV_SET_BIT_BASE_COLOR,
+            "範囲外スロットは uv1 扱いの 1 ビットに収まること",
+        );
+    }
+
+    /// バインドレス（RT 反射・色付き影・水面反射）へ載せる UV スロットの選択。
+    /// ベースカラーが uv1 を指すマテリアルだけが 1 になり、既定は 0（従来どおり uv0）。
+    #[test]
+    fn base_color_uv_slot_follows_base_color_texture() {
+        use super::base_color_uv_slot;
+        // テクスチャ無し → 0（uv0）。
+        assert_eq!(base_color_uv_slot(&Material::default()), 0);
+        // texCoord=0 → 0（既存アセット。RT 経路も従来のまま）。
+        let mut m0 = Material::default();
+        m0.base_color_texture = Some(TextureInfo { texture_index: 0, tex_coord_set: 0 });
+        assert_eq!(base_color_uv_slot(&m0), 0);
+        // texCoord=1 → 1（uv1 をメガバッファへ載せる）。
+        let mut m1 = Material::default();
+        m1.base_color_texture = Some(TextureInfo { texture_index: 0, tex_coord_set: 1 });
+        assert_eq!(base_color_uv_slot(&m1), 1);
+        // 範囲外は uv1 へ切り詰め（uniform 側の解釈と一致させる）。
+        let mut m9 = Material::default();
+        m9.base_color_texture = Some(TextureInfo { texture_index: 0, tex_coord_set: 9 });
+        assert_eq!(base_color_uv_slot(&m9), 1);
     }
 
     /// mr_tex_ignore=false（既定）の uniform は、この機能を追加する前とビット一致する。

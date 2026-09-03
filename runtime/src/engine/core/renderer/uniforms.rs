@@ -319,14 +319,16 @@ impl PrevModelUniform {
 /// | 76        | ignore_vertex_color | 4   |  ← 旧 _pad2 を転用（頂点カラー乗算スキップ, 0/1）
 /// | 80        | user_data         |   4    |  ← 汎用ユーザーデータ回線（0..1, G-Buffer RT2.a へ）
 /// | 84        | shading_model     |   4    |  ← シェーディングモデル ID（0=DefaultPBR, RT3.a へ）
-/// | 88        | _pad3             |   4    |  ← 予約（16 byte 境界合わせ。次の追加はここを転用する）
-/// | 92        | _pad4             |   4    |  ← 予約（同上）
+/// | 88        | uv_set_bits       |   4    |  ← 旧 _pad3 を転用（テクスチャ別 UV セット選択ビット）
+/// | 92        | _pad4             |   4    |  ← 予約（16 byte 境界合わせ。次の追加はここを転用する）
 ///
 /// 【80→96 へ増えた理由と影響】
 /// 旧レイアウトは 80 byte を 1 バイトも余さず使い切っており（過去 4 回の追加は全て
 /// _pad の転用で吸収してきた）、これ以上フィールドを足す余地が無かった。
 /// uniform 構造体のサイズは 16 の倍数である必要があるため 80→96 とし、
-/// 同時に将来のための予備 8 byte（_pad3/_pad4）を確保した。
+/// 同時に将来のための予備 8 byte（旧 _pad3/_pad4）を確保した。
+/// うち offset 88 は UV セット対応で `uv_set_bits` に転用済みで、残る予備は offset 92 の
+/// `_pad4` 1 本（4 byte）だけである。次にフィールドを足すときはここを転用してサイズ 96 を保つこと。
 /// マテリアル uniform は**マテリアルごとに 1 個**しか存在しない（インスタンス数に比例しない）ため、
 /// 16 byte の増加はメモリ・帯域ともに実質無視できる。
 #[repr(C)]
@@ -382,12 +384,47 @@ pub struct MaterialUniform {
     /// （規約は renderer::surface_id）。既定 0＝DefaultPBR。
     pub shading_model:      u32,
 
+    /// テクスチャ別 UV セット選択ビット（旧 `_pad3`, offset 88 を転用）。
+    ///
+    /// 【ビット表現】5 種のテクスチャそれぞれに 1 ビットを割り当て、
+    /// **0 = uv0 を使う / 1 = uv1 を使う** を表す（`UV_SET_BIT_*` 定数がマスク値）。
+    ///
+    /// | ビット | マスク | テクスチャ |
+    /// |--------|--------|-----------|
+    /// | 0      | 0x01   | ベースカラー |
+    /// | 1      | 0x02   | 法線 |
+    /// | 2      | 0x04   | メタリックラフネス |
+    /// | 3      | 0x08   | オクルージョン |
+    /// | 4      | 0x10   | エミッシブ |
+    ///
+    /// スロットが 2 本しかないので 1 テクスチャ 1 ビットで足りる。値 0（全テクスチャ uv0）は
+    /// 旧レイアウトの `_pad3 = 0` とビット一致するため、既存マテリアルの uniform は
+    /// この機能を足す前と 1 ビットも変わらない（後方互換）。
+    /// 値の元は `Material` 各 `TextureInfo::tex_coord_set`（ローダーが 0/1 へ振り直した
+    /// スロット番号）で、`build_material_uniform` が畳み込む。
+    /// 読むのは surface_gather.wgsl の `material_uv()` 1 か所（forward / G-Buffer 共通）。
+    pub uv_set_bits:        u32,
     /// 予約（16 byte 境界合わせ）。次にマテリアルへ値を足すときはここを転用し、
     /// 構造体サイズを 96 のまま維持すること。
-    pub _pad3:              u32,
-    /// 予約（同上）。
     pub _pad4:              u32,
 }
+
+// ── UV セット選択ビット（MaterialUniform.uv_set_bits）────────────────
+//
+// WGSL 側 shader_common.wgsl の同名定数と**値を一致させること**
+// （`uniform_tests::wgsl_mirror_uv_set_bits_match` が照合する）。
+// 各ビットは「そのテクスチャを uv1 でサンプリングする」を意味し、0 なら uv0（従来動作）。
+
+/// ベースカラーテクスチャの UV セット選択ビット。
+pub const UV_SET_BIT_BASE_COLOR: u32 = 1 << 0;
+/// 法線マップの UV セット選択ビット。
+pub const UV_SET_BIT_NORMAL:     u32 = 1 << 1;
+/// メタリックラフネステクスチャの UV セット選択ビット。
+pub const UV_SET_BIT_MR:         u32 = 1 << 2;
+/// オクルージョンテクスチャの UV セット選択ビット。
+pub const UV_SET_BIT_OCCLUSION:  u32 = 1 << 3;
+/// エミッシブテクスチャの UV セット選択ビット。
+pub const UV_SET_BIT_EMISSIVE:   u32 = 1 << 4;
 
 // ── スキニング用ジョイント行列 (Group 3, Binding 0) ───────────
 
@@ -587,7 +624,7 @@ mod layout_tests {
             alpha_cutoff: 0.0, has_base_color_tex: 0, emissive_factor: [0.0; 3],
             has_normal_tex: 0, has_mr_tex: 0, has_occlusion_tex: 0, has_emissive_tex: 0,
             ior: 0.0, transmission: 0.0, mr_tex_ignore: 0, diffuse_transmission: 0.0,
-            ignore_vertex_color: 0, user_data: 0.0, shading_model: 0, _pad3: 0, _pad4: 0,
+            ignore_vertex_color: 0, user_data: 0.0, shading_model: 0, uv_set_bits: 0, _pad4: 0,
         };
         let base = &m as *const _ as usize;
         let off = |p: *const f32| p as usize - base;
@@ -598,6 +635,55 @@ mod layout_tests {
         assert_eq!(&m.ignore_vertex_color as *const u32 as usize - base, 76, "ignore_vertex_color は offset 76");
         assert_eq!(off(&m.user_data),    80, "user_data は offset 80");
         assert_eq!(&m.shading_model as *const u32 as usize - base, 84, "shading_model は offset 84");
+        // UV セット選択ビットは旧 _pad3 の位置（offset 88）を転用している。ここがズレると
+        // シェーダが shading_model や _pad4 を UV 選択ビットとして読み、全マテリアルの
+        // テクスチャがランダムに uv1 を引く（＝全面的な描画崩れ）。
+        assert_eq!(&m.uv_set_bits as *const u32 as usize - base, 88, "uv_set_bits は offset 88");
+    }
+
+    /// UV セット選択ビットの定数が WGSL ミラー（shader_common.wgsl）と一致すること。
+    ///
+    /// Rust 側は `build_material_uniform` でビットを立て、WGSL 側は `material_uv()` で
+    /// 同じマスクを見る。片側だけ値を変えるとコンパイルは通るのに「法線だけ別の UV を引く」
+    /// ような静かな描画バグになるため、文字列で直接照合してズレを検出する。
+    #[test]
+    fn wgsl_mirror_uv_set_bits_match() {
+        // 桁揃えの空白は本質ではないので、連続空白を 1 個に潰してから照合する。
+        let raw = include_str!("shaders/shader_common.wgsl");
+        let wgsl: String = {
+            let mut out = String::with_capacity(raw.len());
+            let mut prev_space = false;
+            for c in raw.chars() {
+                let is_space = c == ' ' || c == '\t';
+                if is_space && prev_space { continue; }
+                out.push(if is_space { ' ' } else { c });
+                prev_space = is_space;
+            }
+            out
+        };
+        for (name, value) in [
+            ("UV_SET_BIT_BASE_COLOR", UV_SET_BIT_BASE_COLOR),
+            ("UV_SET_BIT_NORMAL",     UV_SET_BIT_NORMAL),
+            ("UV_SET_BIT_MR",         UV_SET_BIT_MR),
+            ("UV_SET_BIT_OCCLUSION",  UV_SET_BIT_OCCLUSION),
+            ("UV_SET_BIT_EMISSIVE",   UV_SET_BIT_EMISSIVE),
+        ] {
+            let decl = format!("const {name}: u32 = {value}u;");
+            assert!(
+                wgsl.contains(&decl),
+                "shader_common.wgsl に `{decl}` が見つからない（Rust 側と値がズレている）",
+            );
+        }
+        // uniform フィールド名も一致していること（WGSL 側が _pad3 のままだと値が届かない）。
+        assert!(
+            wgsl.contains("uv_set_bits: u32,"),
+            "shader_common.wgsl の MaterialUniform に uv_set_bits フィールドが無い",
+        );
+        // 選択関数の実在。ここが消えると全テクスチャが uv0 固定に戻る（修正前の不具合）。
+        assert!(
+            wgsl.contains("fn material_uv("),
+            "shader_common.wgsl に material_uv() が無い（UV セット選択が配線されていない）",
+        );
     }
 
     /// ModelUniform が 128 バイトのままであること（インスタンス拡張スロットは

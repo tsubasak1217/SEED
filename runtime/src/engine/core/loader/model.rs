@@ -564,6 +564,15 @@ mod cull_face_tests {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TextureInfo {
     pub texture_index: usize,
+    /// サンプリングに使う**エンジンの UV スロット番号**（0 = `Vertex::uv0` / 1 = `Vertex::uv1`）。
+    ///
+    /// 【glTF の texCoord そのものではない】
+    /// glTF は TEXCOORD_0..n を任意本数持てるが、エンジンの頂点は uv0/uv1 の 2 本だけ。
+    /// そのため `gltf_loader` が「マテリアルが参照する TEXCOORD セット」を 2 本へ載せ替え、
+    /// ここには載せ替え後のスロット番号（0/1）を入れる（詳細は gltf_loader の UvSetPlan）。
+    /// OBJ ローダーやマテリアルオーバーライドは UV を 1 本しか扱わないため常に 0。
+    /// `build_material_uniform` がこの値を MaterialUniform.uv_set_bits へビットで畳み込み、
+    /// シェーダ（surface_gather.wgsl）が uv0/uv1 の選択に使う。
     pub tex_coord_set: u32,
 }
 
@@ -571,6 +580,7 @@ pub struct TextureInfo {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NormalTextureInfo {
     pub texture_index: usize,
+    /// UV スロット番号（0 = uv0 / 1 = uv1）。意味は `TextureInfo::tex_coord_set` と同じ。
     pub tex_coord_set: u32,
     /// 法線強度スケール
     pub scale: f32,
@@ -580,6 +590,7 @@ pub struct NormalTextureInfo {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OcclusionTextureInfo {
     pub texture_index: usize,
+    /// UV スロット番号（0 = uv0 / 1 = uv1）。意味は `TextureInfo::tex_coord_set` と同じ。
     pub tex_coord_set: u32,
     /// AO 強度（0.0 = 無効, 1.0 = フル）
     pub strength: f32,
