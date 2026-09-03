@@ -1243,8 +1243,24 @@ public class FishingController : SEEDScript
     private float WaterSurfaceY()
     {
         if (water is { } w && w.IsValid) { return w.WaterLevel; }
+
+        // ── 未解決フォールバック（1 回だけ警告する）──
+        // ここへ落ちるとウキは「竿先の少し下」に浮くだけになり、
+        // 見た目には「ウキが空中に浮いている」不具合として現れる。
+        // 毎フレーム出すとログが埋まるのでフラグで 1 回に絞る。
+        if (!waterMissingWarned)
+        {
+            waterMissingWarned = true;
+            SEED.Debug.LogWarning(
+                "[FishingController] 水面(WaterVolume) の参照が解決できません。" +
+                "インスペクタの「水面(WaterVolume)」が未設定か、参照先アクタ／スロット名が" +
+                "見つかりません。竿先-" + waterLevelFallbackDrop + "m を仮の水面として使います。");
+        }
         return RodTipPosition().y - waterLevelFallbackDrop;
     }
+
+    /// <summary>水面参照の未解決警告を出したか（ログを 1 回に絞るためのフラグ）。</summary>
+    private bool waterMissingWarned = false;
 
     /// <summary>水面に浮くウキの上下揺れのオフセット（メートル）。</summary>
     private float BobOffset()

@@ -355,6 +355,16 @@ const KIND_LINE_RENDERER: &str = "LineRenderer";
 /// エディタ側 `ReferenceKindCatalog.ControlPointKind` と同じ綴りにすること
 /// （参照ピッカーが同じ種別名でスロットを絞り込むため）。
 const KIND_CONTROL_POINT: &str = "ControlPoint";
+/// モデル（スロット格納型）。C# `SEED.Model` の ComponentKindName と一致。
+const KIND_MODEL: &str = "Model";
+/// スカイボックス（スロット格納型）。C# `SEED.Skybox` の ComponentKindName と一致。
+const KIND_SKYBOX: &str = "Skybox";
+/// テキスト（スロット格納型）。C# `SEED.Text` の ComponentKindName と一致。
+const KIND_TEXT: &str = "Text";
+/// 水位グラフのリンク（スロット格納型）。C# `SEED.WaterLink` の ComponentKindName と一致。
+const KIND_WATER_LINK: &str = "WaterLink";
+/// 水ボリューム（スロット格納型）。C# `SEED.WaterVolume` の ComponentKindName と一致。
+const KIND_WATER_VOLUME: &str = "WaterVolume";
 
 // ─── 水面シェーダパラメータの動的フィールド名（Phase W8.2）────────
 //  `WaterVolume` の `shader_params` は**アセットが決める名前**のマップなので、
@@ -384,6 +394,14 @@ fn slot_is_kind(world: &World, slot: &ComponentSlot, kind: &str) -> bool {
         KIND_INPUT_MAP => world.get::<InputMapComponent>(slot.entity).is_some(),
         KIND_LINE_RENDERER => world.get::<LineRendererComponent>(slot.entity).is_some(),
         KIND_CONTROL_POINT => world.get::<ControlPointComponent>(slot.entity).is_some(),
+        // 【重要】ここの網羅範囲は `has_component`（IsValid の判定先）と一致させること。
+        // 片方にしか無い種別は「IsValid では存在するのに GetComponent / 参照フィールドでは
+        // 解決できない」という非対称な穴になる（実際に WaterVolume でこれが起きていた）。
+        KIND_MODEL => world.get::<ModelComponent>(slot.entity).is_some(),
+        KIND_SKYBOX => world.get::<SkyboxComponent>(slot.entity).is_some(),
+        KIND_TEXT => world.get::<TextComponent>(slot.entity).is_some(),
+        KIND_WATER_LINK => world.get::<WaterLinkComponent>(slot.entity).is_some(),
+        KIND_WATER_VOLUME => world.get::<WaterVolumeComponent>(slot.entity).is_some(),
         _ => false,
     }
 }
@@ -899,8 +917,16 @@ fn read_floats(
                         let base = if w.kind == crate::engine::components::WaterVolumeKind::Ocean {
                             0.0
                         } else {
-                            // アクタのルート entity（= 引数 entity）の Transform を見る。
-                            world.get::<Transform>(entity).map(|t| t.position[1]).unwrap_or(0.0)
+                            // アクタのルート Transform の Y を足す。
+                            //
+                            // 【注意】引数 `entity` は「アクタのルート」とは限らない。
+                            // `GetComponent<WaterVolume>` や参照フィールドで得たハンドルは
+                            // **スロット entity** を持っており、スロット entity に Transform は
+                            // 無い。ルート決め打ちで引くと 0 に落ちて水面が地面高さになるため、
+                            // ルート／スロットのどちらで来ても解決できる
+                            // `actor_root_transform_of` を使う（`water::collect` が使う
+                            // 「アクタのルート entity の Transform」と同じ値になる）。
+                            actor_root_transform_of(world, entity).position[1]
                         };
                         base + w.surface_height
                     });
@@ -2839,4 +2865,35 @@ mod tests {
             assert_eq!(resolve_component_slot(&world, root, "Sprite", None, 0), Some(spr));
         });
     }
+
+    /// 回帰テスト: `slot_is_kind` の網羅漏れで WaterVolume が解決できなかった不具合。
+    ///
+    /// スロット名にスペースを含む（インスペクタ既定名 "Water Volume"）ケースも併せて固定する。
+    /// これが None を返すと、`[SerializeField] WaterVolume? water` が常に null になり、
+    /// スクリプト側のフォールバック（竿先基準の仮水面）へ落ちる。
+    #[test]
+    fn resolve_water_volume_slot_by_name() {
+        let mut world = World::new();
+        let root = world.spawn();
+        world.insert(root, Transform::default());
+        let mut actor = Actor::new(root, "Ocean");
+
+        let wv = world.spawn();
+        world.insert(wv, WaterVolumeComponent::default());
+        actor.add_slot_typed::<WaterVolumeComponent>(
+            "Water Volume", ComponentKind::WaterVolume, wv);
+
+        with_actors(&std::vec![actor], || {
+            // 名前一致（スペース込み）で解決できる
+            assert_eq!(
+                resolve_component_slot(&world, root, "WaterVolume", Some("Water Volume"), -1),
+                Some(wv));
+            // 名前省略（0 番目）でも解決できる
+            assert_eq!(resolve_component_slot(&world, root, "WaterVolume", None, 0), Some(wv));
+            // 種別が違えば解決しない
+            assert_eq!(
+                resolve_component_slot(&world, root, "Camera", Some("Water Volume"), -1), None);
+        });
+    }
+
 }
