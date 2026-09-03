@@ -153,6 +153,18 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "竿の Animator")]
     private SEED.Animator? rodAnimator = null;
 
+    /// <summary>
+    /// プレイヤー本体（sakanadori）の Animator。
+    ///
+    /// <b>竿モデル（sao.glb）のクリップにはアニメーションチャンネルが無く、竿自体は動かない</b>。
+    /// キャストや巻き取りの実際の動きはすべてプレイヤー本体側のクリップが担っており、
+    /// 竿は JointAttach で手のボーンに追従して見た目上ついてくるだけである。
+    /// そのため竿 Animator と本体 Animator は常にペアで同じタイミングのクリップへ切り替える。
+    /// 未設定なら本体側のアニメ切替は行わない（竿だけが動く従来動作にフォールバック）。
+    /// </summary>
+    [SerializeField(Label = "プレイヤー本体の Animator")]
+    private SEED.Animator? playerAnimator = null;
+
     // ─── アニメーション ───────────────────────────────────────
 
     /// <summary>キャストの瞬間に再生する竿クリップ名。</summary>
@@ -167,7 +179,21 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "竿の巻き取りクリップ名")]
     private string reelClip = "Reel_竿";
 
-    /// <summary>竿クリップ切替時のクロスフェード秒数（0 で即時切替）。</summary>
+    // ─── 本体アニメーション ───────────────────────────────────
+
+    /// <summary>キャストの瞬間に再生するプレイヤー本体クリップ名。</summary>
+    [Header("本体アニメーション"), SerializeField(Label = "本体のキャストクリップ名")]
+    private string playerCastClip = "Cast";
+
+    /// <summary>巻き取り中に再生するプレイヤー本体クリップ名。</summary>
+    [SerializeField(Label = "本体の巻き取りクリップ名")]
+    private string playerReelClip = "Reel";
+
+    /// <summary>ウキが浮いているあいだ再生するプレイヤー本体クリップ名。</summary>
+    [SerializeField(Label = "本体の待ちクリップ名")]
+    private string playerFloatClip = "IdleFishing";
+
+    /// <summary>竿クリップ切替時のクロスフェード秒数（0 で即時切替）。竿・本体の両方に使う。</summary>
     [SerializeField(Label = "切替フェード(秒)")]
     private float fadeSeconds = 0.15f;
 
@@ -489,7 +515,7 @@ public class FishingController : SEEDScript
         ResetGesture();
         hookedFish = false;
         ParkFloatAtRodTip();
-        CrossFadeRod(floatClip);
+        CrossFadeBoth(floatClip, playerFloatClip);
         SEED.Debug.Log("[Fishing] Aiming");
     }
 
@@ -682,7 +708,7 @@ public class FishingController : SEEDScript
         }
         else
         {
-            CrossFadeRod(castClip);
+            CrossFadeBoth(castClip, playerCastClip);
         }
 
         SEED.Debug.Log($"[Fishing] Cast 距離={distance:F1}m 角={yaw - baseYaw:F1}度");
@@ -711,7 +737,7 @@ public class FishingController : SEEDScript
         if (t >= 1f)
         {
             State = FishState.Floating;
-            CrossFadeRod(floatClip);
+            CrossFadeBoth(floatClip, playerFloatClip);
             SEED.Debug.Log("[Fishing] Floating");
         }
     }
@@ -737,7 +763,7 @@ public class FishingController : SEEDScript
             if (State != FishState.Reeling)
             {
                 State = FishState.Reeling;
-                CrossFadeRod(reelClip);
+                CrossFadeBoth(reelClip, playerReelClip);
             }
         }
         else
@@ -746,7 +772,7 @@ public class FishingController : SEEDScript
             if (State == FishState.Reeling && reelIdleElapsed > reelIdleSeconds)
             {
                 State = FishState.Floating;
-                CrossFadeRod(floatClip);
+                CrossFadeBoth(floatClip, playerFloatClip);
             }
         }
 
@@ -788,7 +814,7 @@ public class FishingController : SEEDScript
         ResetGesture();
         ParkFloatAtRodTip();
         HideLine();
-        CrossFadeRod(floatClip);
+        CrossFadeBoth(floatClip, playerFloatClip);
         SEED.Debug.Log("[Fishing] Aiming（空振り）");
     }
 
@@ -955,9 +981,40 @@ public class FishingController : SEEDScript
     /// 竿の Animator を指定クリップへクロスフェードする（未設定・無効・空名・再生中は何もしない）。
     /// </summary>
     /// <param name="clip">再生するクリップ名。</param>
-    private void CrossFadeRod(string clip)
+    private void CrossFadeRod(string clip) => CrossFadeClip(rodAnimator, clip);
+
+    /// <summary>
+    /// プレイヤー本体の Animator を指定クリップへクロスフェードする（未設定・無効・空名・再生中は何もしない）。
+    /// </summary>
+    /// <param name="clip">再生するクリップ名。</param>
+    private void CrossFadePlayer(string clip) => CrossFadeClip(playerAnimator, clip);
+
+    /// <summary>
+    /// 竿とプレイヤー本体、両方の Animator を対応するクリップへ同時にクロスフェードする。
+    ///
+    /// 竿モデル（sao.glb）自体にはアニメーションチャンネルが無く、見た目上の動きは
+    /// すべて本体（sakanadori.glb）側のクリップが担う。竿は JointAttach で手のボーンへ
+    /// 追従するだけなので、状態遷移のたびに竿クリップと本体クリップを必ずペアで切り替える。
+    /// 各 Animator は独立に判定する（<see cref="CrossFadeClip"/> 参照）ため、
+    /// 片方が未設定・無効でも、もう片方は正しく切り替わる。
+    /// </summary>
+    /// <param name="rodClip">竿 Animator へ渡すクリップ名。</param>
+    /// <param name="playerClip">本体 Animator へ渡すクリップ名。</param>
+    private void CrossFadeBoth(string rodClip, string playerClip)
     {
-        if (rodAnimator is not { } anim || !anim.IsValid) { return; }
+        CrossFadeRod(rodClip);
+        CrossFadePlayer(playerClip);
+    }
+
+    /// <summary>
+    /// 指定 Animator を指定クリップへクロスフェードする共通処理
+    /// （未設定・無効・空名・同一クリップ再生中は何もしない）。
+    /// </summary>
+    /// <param name="animator">対象の Animator（竿・本体いずれか）。</param>
+    /// <param name="clip">再生するクリップ名。</param>
+    private void CrossFadeClip(SEED.Animator? animator, string clip)
+    {
+        if (animator is not { } anim || !anim.IsValid) { return; }
         if (string.IsNullOrEmpty(clip)) { return; }
 
         // 既に同じクリップが再生中なら再指示しない（先頭へ戻ってしまうのを防ぐ）
@@ -970,43 +1027,76 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// キャスト予備動作のスクラブ再生を開始する。
-    /// <see cref="castClip"/> を再生速度 0 でクロスフェード再生させ、以降は
-    /// <see cref="UpdateWindup"/> が手動で <see cref="SEED.Animator.Time"/> を進める。
+    /// <see cref="castClip"/>（竿）・<see cref="playerCastClip"/>（本体）の両方を
+    /// 再生速度 0 でクロスフェード再生させ、以降は <see cref="UpdateWindup"/> が
+    /// 手動で両 Animator の <see cref="SEED.Animator.Time"/> を進める。
+    ///
+    /// 竿・本体は独立に判定する（どちらか一方が未設定・無効でも、
+    /// もう一方が始動できていれば <see cref="windupActive"/> は true になる）。
+    /// 実際に動くのはほぼ本体側だが、竿 Animator が設定されている場合はそちらも揃えて動かす。
     /// </summary>
     private void BeginWindup()
     {
-        if (rodAnimator is not { } anim || !anim.IsValid) { return; }
+        bool started = false;
 
-        // 速度 0 で再生開始 = クリップは自動では進まず、Time を手動で操作する下地になる
-        anim.Play(castClip, 0f, fadeSeconds);
-        windupActive = true;
+        if (rodAnimator is { } rodAnim && rodAnim.IsValid)
+        {
+            // 速度 0 で再生開始 = クリップは自動では進まず、Time を手動で操作する下地になる
+            rodAnim.Play(castClip, 0f, fadeSeconds);
+            started = true;
+        }
+
+        if (playerAnimator is { } playerAnim && playerAnim.IsValid)
+        {
+            playerAnim.Play(playerCastClip, 0f, fadeSeconds);
+            started = true;
+        }
+
+        windupActive = started;
     }
 
     /// <summary>
     /// 予備動作スクラブ中の毎フレーム更新。
     /// 引き量（<see cref="pullAccumPx"/> ÷ <see cref="pullThresholdPx"/>）に比例した
-    /// 狙い再生位置へ、指数ブレンドで滑らかに追従させる（マウスのブレで竿がガクつかないように）。
+    /// 狙い再生位置へ、指数ブレンドで滑らかに追従させる（マウスのブレで竿・本体がガクつかないように）。
+    /// 竿・本体の両 Animator へ同じ狙い位置・ブレンド係数を適用する
+    /// （<see cref="ScrubWindupTime"/> が個別に null／IsValid を判定する）。
     /// </summary>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     private void UpdateWindup(float deltaTime)
     {
         if (!windupActive) { return; }
-        if (rodAnimator is not { } anim || !anim.IsValid) { return; }
 
         // 引き量の割合（0〜1）ぶんだけ振りかぶりポーズへ近づける。
         // Push 段階では pullAccumPx がしきい値で固定されているので、ここは 1.0 に張り付き、
         // 結果として castWindupSeconds の位置で待機し続ける。
         float ratio = SEED.Mathf.Clamped01(pullAccumPx / pullThresholdPx);
         float targetTime = castWindupSeconds * ratio;
-
         float blend = ExponentialBlend(windupScrubRate, deltaTime);
+
+        ScrubWindupTime(rodAnimator, targetTime, blend);
+        ScrubWindupTime(playerAnimator, targetTime, blend);
+    }
+
+    /// <summary>
+    /// 指定 Animator の再生位置を、指数ブレンドで狙い位置（<paramref name="targetTime"/>）へ寄せる。
+    /// 竿・本体それぞれ独立に呼ばれるため、未設定・無効なら何もしない。
+    /// </summary>
+    /// <param name="animator">対象の Animator（竿・本体いずれか）。</param>
+    /// <param name="targetTime">狙いの再生位置（秒）。</param>
+    /// <param name="blend">このフレームで狙い位置へ寄せる割合（0〜1、<see cref="ExponentialBlend"/> の戻り値）。</param>
+    private void ScrubWindupTime(SEED.Animator? animator, float targetTime, float blend)
+    {
+        if (animator is not { } anim || !anim.IsValid) { return; }
+
         float newTime = anim.Time + (targetTime - anim.Time) * blend;
         anim.Time = SEED.Mathf.Clamped(newTime, 0f, castWindupSeconds);
     }
 
     /// <summary>
-    /// 予備動作スクラブを終了する。竿 Animator の再生速度を必ず等倍へ戻すのはここだけで行う
-    /// （0 のまま抜けると <see cref="reelClip"/>／<see cref="floatClip"/> が固まってしまうため）。
+    /// 予備動作スクラブを終了する。竿・本体それぞれの Animator の再生速度を
+    /// 必ず等倍へ戻すのはここだけで行う（0 のまま抜けると以降のクリップが固まってしまうため）。
+    /// 竿・本体は独立に後始末する（<see cref="FinishWindupFor"/> 参照）。
     /// </summary>
     /// <param name="continueToCast">
     /// true … キャスト成立。振りかぶりポーズから途切れず本振りへ続ける。
@@ -1017,27 +1107,42 @@ public class FishingController : SEEDScript
         if (!windupActive) { return; }
         windupActive = false;
 
-        if (rodAnimator is not { } anim || !anim.IsValid) { return; }
+        FinishWindupFor(rodAnimator, castClip, floatClip, continueToCast);
+        FinishWindupFor(playerAnimator, playerCastClip, playerFloatClip, continueToCast);
+    }
+
+    /// <summary>
+    /// 1 体の Animator について予備動作スクラブの後始末を行う（竿・本体で共通の処理）。
+    /// 速度 0 のスクラブ状態を必ず解除したうえで、キャスト成立なら振りかぶり位置から
+    /// 途切れず本振りへ継続し（Pause 経由の可能性に備え念のため Resume も呼ぶ）、
+    /// 不成立なら待ちクリップへクロスフェードして戻す。
+    /// </summary>
+    /// <param name="animator">対象の Animator（竿・本体いずれか）。未設定・無効なら何もしない。</param>
+    /// <param name="castClipName">この Animator のキャストクリップ名。</param>
+    /// <param name="floatClipName">この Animator の待ちクリップ名。</param>
+    /// <param name="continueToCast">true ならキャスト続行、false なら待ちアニメへ戻す。</param>
+    private void FinishWindupFor(SEED.Animator? animator, string castClipName, string floatClipName, bool continueToCast)
+    {
+        if (animator is not { } anim || !anim.IsValid) { return; }
 
         // 速度 0 のスクラブ状態を必ず解除する
         anim.Speed = 1f;
 
         if (continueToCast)
         {
-            if (anim.CurrentClip == castClip)
+            if (anim.CurrentClip == castClipName)
             {
-                // 振りかぶり位置から途切れず継続再生（Pause 経由の可能性に備え念のため Resume も呼ぶ）
                 anim.Resume();
             }
             else
             {
                 // 想定外: 予備動作中にクリップが崩れていた場合は通常のクロスフェードへフォールバック
-                CrossFadeRod(castClip);
+                CrossFadeClip(anim, castClipName);
             }
         }
         else
         {
-            CrossFadeRod(floatClip);
+            CrossFadeClip(anim, floatClipName);
         }
     }
 
