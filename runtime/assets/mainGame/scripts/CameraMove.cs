@@ -56,6 +56,23 @@ public class CameraMove : SEEDScript
     [SerializeField(Label = "釣り時の目標トランスフォーム")]
     private SEED.Transform? fishingTarget = null;
 
+    /// <summary>
+    /// 釣りの進行スクリプト（<b>状態の参照にのみ</b>使う）。
+    /// ウキが飛んでいる／浮いている／巻いているあいだだけ
+    /// 目標を <see cref="castTarget"/> へ切り替えるために参照する。
+    /// 未設定ならキャスト演出は効かず、従来どおり釣り姿勢の判定だけで動く。
+    /// </summary>
+    [SerializeField(Label = "釣り（FishingController）")]
+    private FishingController? fishing = null;
+
+    /// <summary>
+    /// キャスト中の目標トランスフォーム（ウキの子に置く想定）。
+    /// ウキが動けば子も追従するので、カメラは自然にウキを画面に収め続ける。
+    /// 未設定・無効ならキャスト中も <see cref="fishingTarget"/>／<see cref="target"/> を追う。
+    /// </summary>
+    [SerializeField(Label = "キャスト中の目標トランスフォーム")]
+    private SEED.Transform? castTarget = null;
+
     // ─── 追従パラメータ ───────────────────────────────────────
 
     /// <summary>
@@ -210,6 +227,9 @@ public class CameraMove : SEEDScript
     /// <returns>追従先のトランスフォーム。決められなければ null。</returns>
     private SEED.Transform? SelectGoalTransform()
     {
+        // ウキが外に出ているあいだはウキ側の目標を最優先で追う（キャスト先が画面に入る）
+        if (IsFloatOut() && castTarget is { } ct && ct.IsValid) { return ct; }
+
         if (IsPlayerFishing() && fishingTarget is { } ft && ft.IsValid) { return ft; }
 
         return target;
@@ -221,6 +241,17 @@ public class CameraMove : SEEDScript
     /// </summary>
     private bool IsPlayerFishing()
         => playerMove is { } pm && pm.State == PlayerMove.PlayerState.FishingStance;
+
+    /// <summary>
+    /// ウキが外に出ている（飛翔中・浮遊中・巻き取り中）かを返す。
+    ///
+    /// 参照スクリプトは毎フレーム見に行く（ホットリロードで実インスタンスが差し替わるため、
+    /// 別フィールドへキャッシュしない）。<see cref="fishing"/> 未設定なら常に false。
+    /// </summary>
+    private bool IsFloatOut()
+        => fishing is { } f && f.State is FishingController.FishState.Casting
+                                      or FishingController.FishState.Floating
+                                      or FishingController.FishState.Reeling;
 
     /// <summary>
     /// 移動に応じた目標ロール（度）を返す。
@@ -270,7 +301,9 @@ public class CameraMove : SEEDScript
     {
         if (gameObject.GetComponent<SEED.Camera>() is not { } cam || !cam.IsValid) { return; }
 
-        float goalFov = IsPlayerFishing() ? fishingFov : normalFov;
+        // 釣り姿勢中もキャスト中も同じ寄り（fishingFov）にする。
+        // キャスト専用の FOV は今のところ必要が無く、切替が増えるほど画が落ち着かないため。
+        float goalFov = (IsPlayerFishing() || IsFloatOut()) ? fishingFov : normalFov;
 
         if (snap)
         {

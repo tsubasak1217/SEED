@@ -137,6 +137,17 @@ public class PlayerMove : SEEDScript
     [Header("釣り姿勢（経路移動時のみ）"), SerializeField(Label = "釣り姿勢クリップ名")]
     private string fishingClip = "IdleFishing";
 
+    /// <summary>
+    /// <see cref="MoveTowardWorldPoint"/> の到着判定距離（メートル）。
+    ///
+    /// 目標点までの「経路の進行方向へ射影した距離」がこの値未満なら移動しない。
+    /// 小さくしすぎると、1 フレームの移動量が不感帯を上回って
+    /// 目標点の前後で往復する（＝プレイヤーが小刻みに震える）ので、
+    /// <b>1 フレームの移動距離より十分大きい値</b>にしておくこと。
+    /// </summary>
+    [SerializeField(Label = "追従の到着判定距離(m)")]
+    private float followArriveDistance = 0.5f;
+
     // ─── 回転補間 ─────────────────────────────────────────────
     //
     // カメラ（CameraMove）は移動方向から自前で視点を安定化させ、逆走しても
@@ -380,6 +391,53 @@ public class PlayerMove : SEEDScript
             }
             // 接線が定まらない場所（Step 区間・停留点）では直前の向きを維持する
         }
+    }
+
+    /// <summary>
+    /// 指定したワールド座標に<b>経路上でいちばん近づく向き</b>へ 1 フレームぶん移動する。
+    /// 釣りの巻き取り中に FishingController から毎フレーム呼ばれる外部 API。
+    ///
+    /// <b>経路移動モードのときだけ働く</b>（自由移動モードでは何もしない）。
+    /// 経路から外れて目標へ直進することはなく、あくまで経路上を前後するだけ。
+    ///
+    /// <b>進む向きの決め方</b>: 現在地の経路接線（水平成分）へ「現在地 → 目標」の
+    /// 水平ベクトルを射影し、その符号を進行方向、絶対値を残り距離とみなす。
+    /// 残り距離が <see cref="followArriveDistance"/> 未満なら到着とみなして動かない。
+    ///
+    /// <b>向きとアニメについて</b>: 釣り姿勢中は海を向いたままにしたいので
+    /// <see cref="UpdateTargetYaw"/> は呼ばない（向きは釣り姿勢に入ったときのまま）。
+    /// アニメも釣り姿勢クリップを維持する（滑って見えるが、
+    /// 巻き取り中の専用歩行アニメは今後の課題）。
+    /// </summary>
+    /// <param name="target">目指すワールド座標（Y は無視し水平距離だけを見る）。</param>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    public void MoveTowardWorldPoint(SEED.Vector3 target, float deltaTime)
+    {
+        // 経路移動モード以外・点の無い経路では何もしない（評価すると原点へ飛ぶため）
+        if (path is not { } p || !p.IsValid || p.PointCount <= 0) { return; }
+
+        // 初回は経路の開始時刻へ合わせる（入力移動と同じ初期化規則を使う）
+        if (!pathTimeInitialized)
+        {
+            pathTime = p.StartTime;
+            pathTimeInitialized = true;
+        }
+
+        // 経路の進行方向（水平化・正規化）。向きが定まらない区間では動かさない。
+        var tangent = p.SampleTangent(pathTime);
+        var flatTangent = new SEED.Vector3(tangent.x, 0f, tangent.z);
+        if (flatTangent.SqrMagnitude < SqrEpsilon) { return; }
+        flatTangent = flatTangent.Normalized;
+
+        // 目標までの水平ベクトルを進行方向へ射影 ＝ 経路に沿った残り距離（符号つき）
+        var toTarget = new SEED.Vector3(target.x - transform.Position.x, 0f, target.z - transform.Position.z);
+        float along = SEED.Vector3.Dot(flatTangent, toTarget);
+        if (SEED.Mathf.Abs(along) < followArriveDistance) { return; }   // 到着済み
+
+        // 入力移動と同じ等速化補正を掛けて経路時刻を進める（速度の見え方を揃える）
+        pathTime += SEED.Mathf.Sign(along) * pathSpeed * ComputeConstantSpeedScale(p, pathTime) * deltaTime;
+        pathTime = WrapPathTime(p, pathTime);
+        ApplyPathTransform(p, pathTime);
     }
 
     // ─── 釣り姿勢の状態機械 ───────────────────────────────────
