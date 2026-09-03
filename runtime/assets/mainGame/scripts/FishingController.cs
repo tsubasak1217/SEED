@@ -130,23 +130,26 @@ public class FishingController : SEEDScript
     private PlayerMove? playerMove = null;
 
     /// <summary>
-    /// 竿先のトランスフォーム（糸の始点・キャストの起点・ウキの格納先）。
-    /// <see cref="rodRoot"/> を設定した場合は毎フレーム本スクリプトが位置を上書きする。
+    /// 竿先アクタのトランスフォーム（糸の始点・キャストの起点・ウキの格納先）。<b>これが最優先</b>。
+    ///
+    /// <b>置き方</b>: 竿アクタ（sao）の<b>子</b>として、見た目の竿先の位置に空アクタを置く。
+    /// 竿は JointAttach で手のボーンへ追従するが、その追従はエンジン側
+    /// （jointattach_ops::propagate_attach_to_descendants）で子孫アクタへも行列差分として
+    /// 厳密に伝播するので、子に置いた竿先はせん断（非一様スケール×回転オフセット）込みで正確に付いてくる。
+    /// 本スクリプトはこの値を<b>読むだけ</b>で、書き戻しは行わない（書き戻すとエンジンの伝播と競合する）。
     /// </summary>
-    [SerializeField(Label = "竿先トランスフォーム")]
+    [SerializeField(Label = "竿先アクタ（sao の子・JointAttach に追従）")]
     private SEED.Transform? rodTip = null;
 
     /// <summary>
-    /// 竿アクタ本体のトランスフォーム（sao）。設定すると竿先を
-    /// 「竿の姿勢＋<see cref="rodTipOffsetX"/>〜Z のローカルオフセット」から毎フレーム算出する。
+    /// 竿アクタ本体のトランスフォーム（sao）。<b><see cref="rodTip"/> 未設定時のフォールバック</b>で、
+    /// 竿先を「竿の姿勢＋<see cref="rodTipOffsetX"/>〜Z のローカルオフセット」から合成する。
     ///
-    /// <b>なぜ必要か</b>: 竿は JointAttach で手のボーンに追従するが、
-    /// JointAttach の Transform 更新は transform_sync を経由しないため
-    /// <b>子アクタへ伝播しない</b>（jointattach_ops.rs で自アクタの Transform を直接書くだけ）。
-    /// つまり竿の子に置いただけの竿先は竿に付いてこない。ここで毎フレーム追従させる。
-    /// 未設定なら <see cref="rodTip"/> の位置をそのまま使う（静止した竿先）。
+    /// <b>精度の注意</b>: この合成は竿の Transform を TRS 分解した値（右・上・前ベクトルとスケール）から
+    /// 組み立てるため、非一様スケール × JointAttach の回転オフセットで生じる<b>せん断を再現できない</b>。
+    /// 正確な竿先が要る場合は <see cref="rodTip"/>（sao の子アクタ）を設定すること。
     /// </summary>
-    [SerializeField(Label = "竿アクタ（竿先追従用）")]
+    [SerializeField(Label = "竿アクタ（竿先の代替合成用・rodTip 未設定時のみ）")]
     private SEED.Transform? rodRoot = null;
 
     /// <summary>
@@ -581,9 +584,6 @@ public class FishingController : SEEDScript
     /// </summary>
     public override void Update(ref NativeFrameContext ctx)
     {
-        // 竿先は竿のアニメに追従させる（JointAttach は子へ伝播しないので毎フレーム自前で合わせる）
-        SyncRodTip();
-
         // カーソルロックを状態へ同期する。ここで毎フレーム引き直しておけば、
         // 途中で return する経路（プレイヤー未設定・待機中など）でもロックが残らない。
         UpdateCursorLock();
@@ -643,11 +643,11 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// Update 後の更新。竿先とウキの位置が確定した後に釣り糸を張り直す。
+    /// Update 後の更新。ウキの位置が確定した後に釣り糸を張り直す。
+    /// 竿先アクタはエンジン（JointAttach 伝播）が更新するので、ここでは触らず読むだけ。
     /// </summary>
     public override void LateUpdate(ref NativeFrameContext ctx)
     {
-        SyncRodTip();
         UpdateLine();
     }
 
@@ -1135,14 +1135,14 @@ public class FishingController : SEEDScript
     /// <summary>
     /// 巻き取りの基準点（ワールド）を返す。
     ///
-    /// 通常は竿先（<see cref="RodTipPosition"/> と同じ優先順位: 竿アクタ追従 → 竿先トランスフォーム）。
-    /// <see cref="rodRoot"/> と <see cref="rodTip"/> のどちらも未設定で竿先が定義できない場合だけ、
+    /// 通常は竿先（<see cref="RodTipPosition"/> と同じ優先順位: 竿先アクタ → 竿アクタからの合成）。
+    /// <see cref="rodTip"/> と <see cref="rodRoot"/> のどちらも未設定で竿先が定義できない場合だけ、
     /// <see cref="islandCenter"/>（未設定ならプレイヤー自身の位置）へフォールバックする。
     /// </summary>
     private SEED.Vector3 ReelTargetPosition()
     {
-        if (rodRoot is { } rod && rod.IsValid) { return ComposeRodTip(rod); }
         if (rodTip is { } tip && tip.IsValid) { return tip.Position; }
+        if (rodRoot is { } rod && rod.IsValid) { return ComposeRodTip(rod); }
         if (islandCenter is { } c && c.IsValid) { return c.Position; }
         return transform.Position;
     }
@@ -1175,18 +1175,6 @@ public class FishingController : SEEDScript
     }
 
     // ─── ウキ・竿先・糸 ───────────────────────────────────────
-
-    /// <summary>
-    /// 竿先トランスフォームを竿の姿勢へ追従させる。
-    /// <see cref="rodRoot"/> 未設定なら何もしない（<see cref="rodTip"/> の値をそのまま使う）。
-    /// </summary>
-    private void SyncRodTip()
-    {
-        if (rodRoot is not { } rod || !rod.IsValid) { return; }
-        if (rodTip is not { } tip || !tip.IsValid) { return; }
-
-        tip.Position = ComposeRodTip(rod);
-    }
 
     /// <summary>
     /// 竿先（モデルローカル座標で指定）のワールド位置を、<b>描画とまったく同じ行列チェーン</b>で合成する。
@@ -1238,12 +1226,13 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// 糸の始点となる竿先のワールド位置を返す。
-    /// 竿アクタ → 竿先トランスフォーム → プレイヤー自身、の順にフォールバックする。
+    /// <b>竿先アクタ（sao の子。JointAttach にエンジン側で追従）→ 竿アクタからの合成 → プレイヤー自身</b>
+    /// の順にフォールバックする。竿先アクタの値はエンジンが厳密に更新しているのでそのまま使う。
     /// </summary>
     private SEED.Vector3 RodTipPosition()
     {
-        if (rodRoot is { } rod && rod.IsValid) { return ComposeRodTip(rod); }
         if (rodTip is { } tip && tip.IsValid) { return tip.Position; }
+        if (rodRoot is { } rod && rod.IsValid) { return ComposeRodTip(rod); }
         return transform.Position;
     }
 

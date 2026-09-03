@@ -23,9 +23,11 @@
 //  1 フレーム古い値が返る挙動は、デバッグ困難なバグの温床になるため。
 //
 //  【対象外（今後の課題）】
-//  アニメーション・物理の書き戻し・JointAttach からの Transform 更新は本モジュールを
-//  経由していない。特に物理は「親も子も剛体」のとき delta の二重適用で破綻するため、
-//  除外ルールの設計が必要（別タスク）。
+//  アニメーション・物理の書き戻しは本モジュールを経由していない。特に物理は
+//  「親も子も剛体」のとき delta の二重適用で破綻するため、除外ルールの設計が必要（別タスク）。
+//  JointAttach は自アクタの Transform / instance_mats を直接書くが、子孫への伝播だけは
+//  本モジュールの propagate_delta_to_children を使う
+//  （jointattach_ops::propagate_attach_to_descendants を参照）。
 // ============================================================
 
 use crate::engine::components::{ComponentKind, ModelComponent, Transform};
