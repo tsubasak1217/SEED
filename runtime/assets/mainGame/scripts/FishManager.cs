@@ -12,9 +12,13 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 [System.Serializable]
 public struct FishLevelEntry
 {
-    /// <summary>中心点からの出現距離（メートル）。レベルが高いほど遠くにする想定。</summary>
-    [SerializeField(Label = "出現距離")]
-    public float spawnDistance;
+    /// <summary>中心点からの出現距離の下限（メートル）。レベルが高いほど遠くにする想定。</summary>
+    [SerializeField(Label = "出現距離(最小)")]
+    public float spawnDistanceMin;
+
+    /// <summary>中心点からの出現距離の上限（メートル）。最小と同値なら正確に円周上に出る。</summary>
+    [SerializeField(Label = "出現距離(最大)")]
+    public float spawnDistanceMax;
 
     /// <summary>このレベルで出現する魚の .actor ファイルパスのリスト。</summary>
     [SerializeField(Label = "魚prefab(.actorパス)")]
@@ -73,13 +77,6 @@ public class FishManager : SEEDScript
     [Header("生成"), SerializeField(Label = "生成する高さ(Y)")]
     private float spawnHeight = 0f;
 
-    /// <summary>
-    /// 出現距離の揺らぎ（±メートル）。0 だと正確に円周上に並ぶので、
-    /// 少し散らして自然に見せる。
-    /// </summary>
-    [SerializeField(Label = "距離の揺らぎ(±m)")]
-    private float distanceJitter = 2f;
-
     // ─── 内部状態 ─────────────────────────────────────────────
 
     /// <summary>出現位置の乱数源（方位と距離の揺らぎに使う）。</summary>
@@ -129,7 +126,7 @@ public class FishManager : SEEDScript
     /// 指定レベルの魚を 1 匹生成する。
     ///
     /// - prefab はそのレベルのリストからランダムに 1 つ選ぶ
-    /// - 位置は「中心点から、出現距離±揺らぎ、ランダム方位」の水面上
+    /// - 位置は「中心点から、出現距離範囲内のランダム距離、ランダム方位」の水面上
     /// - レベルが範囲外・prefab リストが空・パスが空のときは何もしない（false）
     /// </summary>
     /// <param name="levelIndex">レベル（levels の添字、0 始まり）。</param>
@@ -144,10 +141,12 @@ public class FishManager : SEEDScript
         string path = prefabs[random.Next(prefabs.Count)];
         if (string.IsNullOrWhiteSpace(path)) { return false; }
 
-        // 出現位置: 中心点から「出現距離±揺らぎ」だけ離れたランダム方位の水面上
+        // 出現位置: 中心点から「出現距離範囲内のランダム距離」だけ離れたランダム方位の水面上。
+        // 最小 > 最大の設定ミスは入れ替えて許容する（データ入力に寛容にする）。
         float angle = (float)random.NextDouble() * FullTurnRadians;
-        float distance = level.spawnDistance
-            + ((float)random.NextDouble() * 2f - 1f) * distanceJitter;
+        float near = SEED.Mathf.Min(level.spawnDistanceMin, level.spawnDistanceMax);
+        float far  = SEED.Mathf.Max(level.spawnDistanceMin, level.spawnDistanceMax);
+        float distance = near + (float)random.NextDouble() * (far - near);
         var center = CenterPosition();
         var spawnPos = new SEED.Vector3(
             center.x + SEED.Mathf.Sin(angle) * distance,
