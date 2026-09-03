@@ -114,6 +114,12 @@ public class FishingController : SEEDScript
     /// <summary>ピンポン往復 1 周（往路＋復路）の長さ。<c>PingPong(u, 1)</c> は u が 2 で 1 周する。</summary>
     private const float PingPongCycleUnits = 2f;
 
+    /// <summary>
+    /// 着水点マーカーの脈動の振幅（基準スケールに対する割合）。
+    /// 0.2 なら 0.8 倍〜1.2 倍のあいだで拡縮する（サイン波が -1〜+1 を取るため）。
+    /// </summary>
+    private const float MarkerPulseAmplitude = 0.2f;
+
     // ─── 参照（インスペクタで割り当てる）───────────────────────
 
     /// <summary>
@@ -171,6 +177,33 @@ public class FishingController : SEEDScript
     /// </summary>
     [SerializeField(Label = "着弾点プレビュー(LineRenderer)")]
     private SEED.LineRenderer? previewLine = null;
+
+    /// <summary>
+    /// 着水点マーカーのトランスフォーム（球モデルを持つ専用アクタ「CastMarker」に付ける想定）。
+    ///
+    /// <see cref="FishState.Windup"/> のあいだだけ着水点へ置き、それ以外では
+    /// <see cref="markerParkY"/> の高さ（水面のはるか下）へ格納して見えなくする。
+    /// <b>モデル／アクタの表示切替 API は存在しない</b>ため、ウキ（<see cref="ParkFloatAtRodTip"/>）と
+    /// 同じく「画面外へ動かす」ことで非表示を表現している。
+    /// 未設定ならマーカーは使わない（プレビュー線だけの従来動作になる）。
+    /// </summary>
+    [SerializeField(Label = "着水点マーカー")]
+    private SEED.Transform? castMarker = null;
+
+    /// <summary>
+    /// マーカーを隠すときに置く Y 座標（ワールド）。水面よりも十分下に取る。
+    /// 表示 API が無いため、この高さへ退避させることで「非表示」を表現する。
+    /// </summary>
+    [SerializeField(Label = "マーカーの格納位置Y")]
+    private float markerParkY = -100f;
+
+    /// <summary>マーカーを水面からどれだけ浮かせて置くか（メートル）。</summary>
+    [SerializeField(Label = "マーカーの水面からの高さ")]
+    private float markerHoverHeight = 0.1f;
+
+    /// <summary>マーカーの脈動（拡縮）の周波数（Hz）。0 にすると実質止まる。</summary>
+    [SerializeField(Label = "マーカーの脈動周期(Hz)")]
+    private float markerPulseFrequency = 2f;
 
     /// <summary>
     /// 水面（WaterVolume）。着水点の Y とウキの浮かぶ高さに使う。
@@ -310,6 +343,16 @@ public class FishingController : SEEDScript
     private int previewRingSegments = 16;
 
     /// <summary>
+    /// 着弾点プレビューの線（放物線＋円）を描くか。
+    ///
+    /// 既定は false。細い線は水面上でほとんど視認できないため、着水点の提示は
+    /// 3D の球モデル（<see cref="castMarker"/>）を主役にしている。
+    /// 線も併用したい場合だけ true にする。
+    /// </summary>
+    [SerializeField(Label = "プレビュー線を表示")]
+    private bool showPreviewLine = false;
+
+    /// <summary>
     /// 水面が未設定のときに使う「竿先からの落差」（メートル）。
     /// この値だけ竿先より下を仮の水面とみなす。
     /// </summary>
@@ -431,6 +474,19 @@ public class FishingController : SEEDScript
     private float bobElapsed = 0f;
 
     /// <summary>
+    /// 着水点マーカーの基準スケール（脈動していない状態の大きさ）。
+    /// 初回表示時のスケールを 1 度だけ控え、以降の脈動と格納時の復元はこの値を基準にする
+    /// （毎フレーム読み直すと、脈動後のスケールを基準にしてしまい発散するため）。
+    /// </summary>
+    private SEED.Vector3 markerBaseScale = SEED.Vector3.One;
+
+    /// <summary><see cref="markerBaseScale"/> を控え済みか。</summary>
+    private bool markerBaseScaleCaptured = false;
+
+    /// <summary>マーカーの脈動の位相用に積算した秒数（表示中のみ進み、格納時に 0 へ戻す）。</summary>
+    private float markerPulseElapsed = 0f;
+
+    /// <summary>
     /// 魚が掛かっているか（<b>ヒット判定は未実装のプレースホルダ</b>）。
     /// true になれば巻き取り完了時に <see cref="FishState.Result"/> へ遷移する。
     /// </summary>
@@ -457,6 +513,10 @@ public class FishingController : SEEDScript
             preview.LocalSpace = false;
             preview.Visible = false;
         }
+
+        // 着水点マーカーは開始時点で必ず格納位置へ落としておく
+        // （シーン上の初期位置に置き忘れても、実行開始と同時に隠れる）。
+        ParkCastMarker();
     }
 
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
@@ -730,9 +790,9 @@ public class FishingController : SEEDScript
             }
         }
 
-        // 振りかぶりポーズを保持しつつ、着弾点プレビューを描き直す
+        // 振りかぶりポーズを保持しつつ、着弾点プレビュー（マーカー＋線）を更新する
         UpdateWindup(deltaTime);
-        UpdatePreviewLine();
+        UpdateCastPreview(deltaTime);
     }
 
     /// <summary>
@@ -1114,10 +1174,63 @@ public class FishingController : SEEDScript
         if (line is { } l && l.IsValid) { l.Visible = false; }
     }
 
-    /// <summary>着弾点プレビューを非表示にする（点列は残したままフラグだけ落とす）。</summary>
+    /// <summary>
+    /// 着弾点プレビューを隠す（線はフラグを落とし、マーカーは格納位置へ退避させる）。
+    /// Windup 以外の全経路（狙い開始・キャンセル・キャスト開始）から呼ばれる唯一の出口。
+    /// </summary>
     private void HidePreviewLine()
     {
         if (previewLine is { } preview && preview.IsValid) { preview.Visible = false; }
+        ParkCastMarker();
+    }
+
+    /// <summary>
+    /// 着水点マーカーを格納位置（<see cref="markerParkY"/>）へ退避させ、脈動を初期化する。
+    ///
+    /// アクタ／モデルの表示切替 API が無いため、これが「非表示」の実装である。
+    /// XZ はその場に残し、Y だけを水面のはるか下へ落とす。
+    /// スケールは控えておいた基準値へ戻す（脈動途中の大きさで固まらないように）。
+    /// </summary>
+    private void ParkCastMarker()
+    {
+        markerPulseElapsed = 0f;
+
+        if (castMarker is not { } marker || !marker.IsValid) { return; }
+
+        var p = marker.Position;
+        marker.Position = new SEED.Vector3(p.x, markerParkY, p.z);
+        if (markerBaseScaleCaptured) { marker.Scale = markerBaseScale; }
+    }
+
+    /// <summary>
+    /// 着水点マーカーを着水点へ置き、脈動（拡縮）させる。
+    ///
+    /// 基準スケールは初回表示時に 1 度だけ控える（<see cref="markerBaseScale"/>）。
+    /// 以降は <c>基準 ×(1 + 振幅·sin(2π·f·t))</c> で
+    /// <c>1 - MarkerPulseAmplitude</c> 倍〜<c>1 + MarkerPulseAmplitude</c> 倍のあいだを往復する。
+    /// </summary>
+    /// <param name="landing">着水点（ワールド）。Y は水面高さ。</param>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateCastMarker(SEED.Vector3 landing, float deltaTime)
+    {
+        if (castMarker is not { } marker || !marker.IsValid) { return; }
+
+        // 初回表示時のスケールを基準として控える（以降は基準からの倍率で動かす）
+        if (!markerBaseScaleCaptured)
+        {
+            markerBaseScale = marker.Scale;
+            markerBaseScaleCaptured = true;
+        }
+
+        marker.Position = new SEED.Vector3(landing.x, landing.y + markerHoverHeight, landing.z);
+
+        markerPulseElapsed += deltaTime;
+        float pulse = 1f + MarkerPulseAmplitude
+                         * SEED.Mathf.Sin(markerPulseElapsed * markerPulseFrequency * TwoPi);
+        marker.Scale = new SEED.Vector3(
+            markerBaseScale.x * pulse,
+            markerBaseScale.y * pulse,
+            markerBaseScale.z * pulse);
     }
 
     // ─── 着弾点プレビュー ─────────────────────────────────────
@@ -1138,7 +1251,28 @@ public class FishingController : SEEDScript
             SEED.Mathf.Lerp(start.z, end.z, t));
 
     /// <summary>
-    /// 着弾点プレビューの点列を張り直す（<see cref="FishState.Windup"/> のあいだ毎フレーム呼ぶ）。
+    /// 着弾点プレビュー全体（マーカー＋線）を更新する。
+    /// <see cref="FishState.Windup"/> のあいだ毎フレーム呼ぶ。
+    ///
+    /// 着水点は「いま投げたら落ちる点」（<see cref="PreviewDistance"/>＋<see cref="CastYawDegrees"/>）で、
+    /// マーカーと線の双方が同じ値を使う（見えているものと結果を必ず一致させる）。
+    /// 方向が縮退している場合はプレビューを丸ごと隠す。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateCastPreview(float deltaTime)
+    {
+        if (CastYawDegrees() is not { } yaw) { HidePreviewLine(); return; }
+
+        var landing = LandingPoint(PreviewDistance(), yaw);
+
+        // 主役は 3D マーカー。線は showPreviewLine が true のときだけ添える。
+        UpdateCastMarker(landing, deltaTime);
+        UpdatePreviewLine(landing);
+    }
+
+    /// <summary>
+    /// 着弾点プレビューの<b>線</b>の点列を張り直す
+    /// （<see cref="showPreviewLine"/> が true のときだけ描く。既定は false）。
     ///
     /// 点列は「竿先→着弾点の放物線」＋「着水点に置く円」を 1 本に連結したもの。
     /// 円は始点を末尾へ繰り返して閉じる。円の始点は弧の終点（着弾点そのもの）から
@@ -1148,13 +1282,13 @@ public class FishingController : SEEDScript
     /// 総点数が <see cref="SEED.LineRenderer.MaxPoints"/> を超えないよう、
     /// 弧と円の分割数を上限内へ抑える。
     /// </summary>
-    private void UpdatePreviewLine()
+    /// <param name="landing">着水点（ワールド）。<see cref="UpdateCastPreview"/> が算出済みの値を渡す。</param>
+    private void UpdatePreviewLine(SEED.Vector3 landing)
     {
+        if (!showPreviewLine) { return; }
         if (previewLine is not { } preview || !preview.IsValid) { return; }
-        if (CastYawDegrees() is not { } yaw) { preview.Visible = false; return; }
 
         var start = RodTipPosition();
-        var landing = LandingPoint(PreviewDistance(), yaw);
 
         // 分割数の下限を確保したうえで、点数の合計が LineRenderer の上限に収まるよう詰める。
         // 点数 ＝ (弧の分割数 + 1) ＋ (円の分割数 + 1)
