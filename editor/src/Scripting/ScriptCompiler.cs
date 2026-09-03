@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -38,6 +39,99 @@ public static class ScriptCompiler
             .ToList();
     }
 
+    // ── 共通コンパイル設定 ─────────────────────────────────
+    // ランタイム（scripting/src/ScriptAssemblyManager.cs）と同一条件にすること。
+    // 条件がずれると「エディタでは通るのに実行時にエラー」等の不一致が起きる。
+
+    /// <summary>ユーザースクリプトの構文解析オプション（言語バージョンは最新固定）。</summary>
+    public static CSharpParseOptions ParseOptions { get; } =
+        CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Latest);
+
+    /// <summary>ロード済みアセンブリから作ったメタデータ参照一覧。</summary>
+    public static IReadOnlyList<MetadataReference> References => _refs;
+
+    /// <summary>
+    /// ユーザースクリプト用のコンパイルオプションを作る。
+    /// `PlayerMove?` 等の null 許容注釈をメタデータへ出力させる（警告は出さない）。
+    /// 参照フィールドの null 許容判定に必要。
+    /// </summary>
+    public static CSharpCompilationOptions CreateCompilationOptions() =>
+        new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
+            .WithNullableContextOptions(NullableContextOptions.Annotations);
+
+    // ── プロジェクト全体の構文木収集（キャッシュ付き）─────────
+
+    /// <summary>構文木キャッシュ 1 件（最終更新時刻とサイズが一致する限り再利用する）。</summary>
+    private readonly record struct CachedTree(DateTime WriteTimeUtc, long Length, SyntaxTree Tree);
+
+    /// <summary>
+    /// ディスク上の .cs → 構文木のキャッシュ（キーは小文字化したフルパス）。
+    /// エディタの入力補完・診断は打鍵のたびに走るため、変更のないファイルの
+    /// 再読込・再パースを避ける。複数スレッドから触るので Concurrent を使う。
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, CachedTree> _treeCache = new();
+
+    /// <summary>キャッシュキー（大文字小文字を無視するためフルパスを小文字化）。</summary>
+    private static string CacheKey(string path)
+    {
+        try { path = Path.GetFullPath(path); } catch { }
+        return path.ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// アセットルート配下の全 .cs を構文解析し、(パス, 構文木) の一覧を返す。
+    ///
+    /// ランタイムはアセットルート配下の全 .cs を 1 アセンブリとしてコンパイルするため、
+    /// 他スクリプトの型（`[SerializeField] PlayerMove? playerMove;` など）を解決するには
+    /// エディタ側も同じ木の集合でコンパイルする必要がある。
+    /// </summary>
+    /// <param name="assetsRoot">アセットルート（存在しなければ override のみを返す）。</param>
+    /// <param name="overrideFile">
+    /// ディスクの内容ではなく <paramref name="overrideText"/> を使うファイル（編集中のタブなど）。
+    /// 同一パスのディスク版はスキップされる（フルパス・大文字小文字無視で比較）。
+    /// </param>
+    /// <param name="overrideText">上記ファイルの現在のテキスト。</param>
+    public static List<(string path, SyntaxTree tree)> CollectProjectSyntaxTrees(
+        string? assetsRoot, string? overrideFile = null, string? overrideText = null)
+    {
+        var trees = new List<(string path, SyntaxTree tree)>();
+
+        // 編集中ファイルはメモリ上のテキストで先に登録する（キャッシュしない）
+        string? overrideKey = null;
+        if (overrideFile is not null && overrideText is not null)
+        {
+            overrideKey = CacheKey(overrideFile);
+            var full = Path.GetFullPath(overrideFile);
+            trees.Add((full, CSharpSyntaxTree.ParseText(overrideText, ParseOptions, path: full)));
+        }
+
+        if (string.IsNullOrEmpty(assetsRoot) || !Directory.Exists(assetsRoot)) return trees;
+
+        foreach (var f in Directory.EnumerateFiles(assetsRoot, "*.cs", SearchOption.AllDirectories))
+        {
+            var key = CacheKey(f);
+            if (key == overrideKey) continue;   // 編集中タブのディスク版は使わない
+
+            try
+            {
+                var info = new FileInfo(f);
+                // 最終更新時刻とサイズが一致すればパース済みの木を再利用する
+                if (_treeCache.TryGetValue(key, out var cached)
+                    && cached.WriteTimeUtc == info.LastWriteTimeUtc && cached.Length == info.Length)
+                {
+                    trees.Add((f, cached.Tree));
+                    continue;
+                }
+
+                var tree = CSharpSyntaxTree.ParseText(File.ReadAllText(f), ParseOptions, path: f);
+                _treeCache[key] = new CachedTree(info.LastWriteTimeUtc, info.Length, tree);
+                trees.Add((f, tree));
+            }
+            catch { /* 読めない/壊れたファイルはスキップ（ランタイム側と同じ扱い） */ }
+        }
+        return trees;
+    }
+
     /// <summary>
     /// 単一の .cs ファイルをコンパイルし、SEEDScript 派生型を返す。
     /// エラー時は (null, エラーメッセージ一覧)。
@@ -45,14 +139,10 @@ public static class ScriptCompiler
     public static (Type? scriptType, IReadOnlyList<string> errors) CompileFile(string filePath)
     {
         var source = File.ReadAllText(filePath);
-        var tree   = CSharpSyntaxTree.ParseText(source);
+        var tree   = CSharpSyntaxTree.ParseText(source, ParseOptions, path: filePath);
         var comp   = CSharpCompilation.Create(
             $"SEEDScript_{Guid.NewGuid():N}",
-            [tree], _refs,
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
-                // ユーザースクリプトの `PlayerMove?` 等の null 許容注釈をメタデータへ出力させる
-                // （警告は出さない）。参照フィールドの null 許容判定に必要。
-                .WithNullableContextOptions(NullableContextOptions.Annotations));
+            [tree], _refs, CreateCompilationOptions());
 
         using var ms = new MemoryStream();
         var result   = comp.Emit(ms);
@@ -95,21 +185,12 @@ public static class ScriptCompiler
         {
             if (!Directory.Exists(assetsRoot)) return Array.Empty<ProjectDiagnostic>();
 
-            var trees = new List<SyntaxTree>();
-            foreach (var f in Directory.EnumerateFiles(assetsRoot, "*.cs", SearchOption.AllDirectories))
-            {
-                try { trees.Add(CSharpSyntaxTree.ParseText(File.ReadAllText(f), path: f)); }
-                catch { /* 読めない/壊れたファイルはスキップ（ランタイム側と同じ扱い） */ }
-            }
+            var trees = CollectProjectSyntaxTrees(assetsRoot);
             if (trees.Count == 0) return Array.Empty<ProjectDiagnostic>();
 
             var comp = CSharpCompilation.Create(
                 $"SEEDScriptProj_{Guid.NewGuid():N}",
-                trees, _refs,
-                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
-                // ユーザースクリプトの `PlayerMove?` 等の null 許容注釈をメタデータへ出力させる
-                // （警告は出さない）。参照フィールドの null 許容判定に必要。
-                .WithNullableContextOptions(NullableContextOptions.Annotations));
+                trees.Select(t => t.tree), _refs, CreateCompilationOptions());
 
             using var ms = new MemoryStream();
             var result   = comp.Emit(ms);
@@ -160,21 +241,12 @@ public static class ScriptCompiler
         {
             if (!Directory.Exists(assetsRoot)) return null;
 
-            var trees = new List<(string path, SyntaxTree tree)>();
-            foreach (var f in Directory.EnumerateFiles(assetsRoot, "*.cs", SearchOption.AllDirectories))
-            {
-                try { trees.Add((f, CSharpSyntaxTree.ParseText(File.ReadAllText(f), path: f))); }
-                catch { /* 読めない/壊れたファイルはスキップ */ }
-            }
+            var trees = CollectProjectSyntaxTrees(assetsRoot);
             if (trees.Count == 0) return null;
 
             var comp = CSharpCompilation.Create(
                 $"SEEDScriptProj_{Guid.NewGuid():N}",
-                trees.Select(t => t.tree), _refs,
-                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
-                // ユーザースクリプトの `PlayerMove?` 等の null 許容注釈をメタデータへ出力させる
-                // （警告は出さない）。参照フィールドの null 許容判定に必要。
-                .WithNullableContextOptions(NullableContextOptions.Annotations));
+                trees.Select(t => t.tree), _refs, CreateCompilationOptions());
 
             using var ms = new MemoryStream();
             if (!comp.Emit(ms).Success) return null;

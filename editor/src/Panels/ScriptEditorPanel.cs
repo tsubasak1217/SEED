@@ -1216,20 +1216,8 @@ public class ScriptEditorPanel : UserControl
 
     // ── 診断（エラー・警告・文法エラー）─────────────────────
 
-    // Roslyn の参照アセンブリはコンパイルごとに再取得すると重いためキャッシュする
-    private static readonly Lazy<List<MetadataReference>> _diagRefs = new(() =>
-    {
-        // SEEDScripting.dll（SEEDScript 基底クラス・SerializeField 属性を含む）の
-        // ロードを強制する。参照アセンブリは遅延ロードのため、これを行わないと
-        // 診断コンパイル時に SEEDScript / SerializeField が「型が見つからない」と
-        // 誤判定されてしまう。
-        _ = typeof(global::SEEDEditor.Scripting.SEEDScript).Assembly;
-
-        return AppDomain.CurrentDomain.GetAssemblies()
-            .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location) && File.Exists(a.Location))
-            .Select(a => (MetadataReference)MetadataReference.CreateFromFile(a.Location))
-            .ToList();
-    });
+    // 診断用の参照アセンブリ・コンパイルオプションは ScriptCompiler に一本化してある
+    // （ランタイムのコンパイル条件と揃えるため。ここで別実装を持たない）。
 
     /// <summary>
     /// エディタのテキストを Roslyn で解析し、エラー・警告の波線を更新する。
@@ -1237,19 +1225,35 @@ public class ScriptEditorPanel : UserControl
     /// </summary>
     private async Task RunDiagnosticsAsync(DocTab doc)
     {
-        var source = doc.Editor.Text;
+        var source     = doc.Editor.Text;
+        var filePath   = doc.FilePath;
+        var assetsRoot = _assetsRoot;
 
         var diags = await Task.Run(() =>
         {
             try
             {
-                var tree = CSharpSyntaxTree.ParseText(source);
+                // ユーザースクリプトはアセットルート配下の全 .cs を 1 アセンブリとして
+                // コンパイルされる（ランタイム・保存時検証と同じ）。診断も同じ木の集合で
+                // 行わないと、他スクリプトの型を参照するフィールド
+                // （`[SerializeField] PlayerMove? playerMove;` など）が
+                // 「型が見つかりません（CS0246）」と誤って赤線になる。
+                //
+                // 編集中のタブはディスクではなくメモリ上のテキストを使う。
+                var trees = ScriptCompiler.CollectProjectSyntaxTrees(assetsRoot, filePath, source);
+                // 先頭が編集中ファイルの木（CollectProjectSyntaxTrees の仕様）
+                var docTree = trees[0].tree;
+
                 var comp = CSharpCompilation.Create(
                     "SEEDScriptDiag",
-                    new[] { tree },
-                    _diagRefs.Value,
-                    new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-                return comp.GetDiagnostics()
+                    trees.Select(t => t.tree),
+                    ScriptCompiler.References,
+                    ScriptCompiler.CreateCompilationOptions());
+
+                // このドキュメントの木だけをバインドして診断を取る。
+                // ・他ファイルのエラーがこのタブの一覧を汚さない
+                // ・全ファイルをバインドしないので打鍵ごとの負荷を抑えられる
+                return comp.GetSemanticModel(docTree).GetDiagnostics()
                     .Where(d => d.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning)
                     .Select(d =>
                     {

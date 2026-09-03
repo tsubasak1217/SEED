@@ -9963,6 +9963,17 @@ public partial class InspectorPanel : UserControl
     {
         if (_scriptTypeCache.TryGetValue(path, out var cached)) return cached;
 
+        // 他スクリプトを参照するフィールド（[SerializeField] PlayerMove? player;）は
+        // 単一ファイルコンパイルでは型を解決できない。まずプロジェクト全体で
+        // コンパイルし、解決できなかった場合のみ単一ファイルコンパイルへ落とす
+        // （非同期側 BuildScriptSection と同じ手順）。
+        var projType = ScriptCompiler.ResolveScriptTypeInProject(path, _assetsPath);
+        if (projType is not null)
+        {
+            _scriptTypeCache[path] = projType;
+            return projType;
+        }
+
         var (type, errors) = ScriptCompiler.CompileFile(path);
         if (type is null)
         {
