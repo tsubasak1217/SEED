@@ -13,8 +13,19 @@
 //       （モデル空間）を計算してキャッシュする（同一モデルへの複数アタッチで共有）。
 //       時刻源は ModelComponent.anim_drive（Play 中の Animator 権威時刻）。
 //       anim_drive が無ければ静止＝バインドポーズ（t0 相当）で解決する。
-//    3. `モデルアクタのワールド行列 × ジョイントのワールド行列 × オフセット行列`
-//       を自アクターの Transform と Model instance_mats[0] へ書き込む。
+//    3. 描画とまったく同じ空間合成（compose_attached_world）で最終ワールド行列を作り、
+//       自アクターの Transform と Model instance_mats[0] へ書き込む。
+//
+//  【空間合成が描画と一致していなければならない理由】
+//  ソケットは「画面に見えているボーンの位置」へ吸着しなければ意味がない。
+//  スキンメッシュの頂点は頂点シェーダで
+//      world = u_model（＝ アクタワールド × 描画オフセット × メッシュノードのバインドワールド）
+//              × スキン行列（＝ ジョイントノードのワールド × 逆バインド行列）
+//              × ローカル座標
+//  として求まる（gbuffer_skinned_vertex.wgsl / gpu_resources::fill_chunk）。
+//  したがってボーンの実姿勢は
+//      アクタワールド × 描画オフセット × メッシュノードのバインドワールド × ジョイントワールド
+//  であり、この 4 つを漏れなく掛けないとソケットはボーンから外れる。
 //
 //  【Edit / Play 両対応】
 //  パーティクルの常時プレビューと同様、本更新は毎フレーム（モード非依存）で走る。
@@ -24,7 +35,9 @@
 
 use crate::engine::components::{ComponentKind, JointAttachComponent, ModelComponent, Transform};
 use crate::engine::core::loader::model::Model;
-use crate::engine::core::renderer::animator::{compute_node_world_matrices_blend, mat4_mul};
+use crate::engine::core::renderer::animator::{
+    compute_node_world_matrices_blend, identity, mat4_mul,
+};
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
 
@@ -115,6 +128,53 @@ fn first_enabled_model_slot(actor: &Actor) -> Option<Entity> {
         .map(|s| s.entity)
 }
 
+// ─── 空間合成（純関数）───────────────────────────────────────
+
+/// アタッチ対象アクターの最終ワールド行列を合成する【空間合成の正典】。
+///
+///   final = actor_world × render_offset × mesh_node_world × joint_world × attach_offset
+///
+/// - `actor_world`   : モデルを持つアクターのワールド行列（Transform 由来）
+/// - `render_offset` : そのモデルの描画オフセット行列（`ModelComponent::offset_matrix`）。
+///   描画インスタンス行列は `actor_world × offset` で作られる（`ModelComponent::render_matrix`）
+///   ため、これを掛けないと「見えているモデル」と別の場所へ吸着してしまう。
+/// - `mesh_node_world` : スキンメッシュノードのバインドポーズワールド行列（モデル空間）。
+///   本エンジンの描画はスキンメッシュにもノードのワールド行列を掛ける
+///   （`gpu_resources::fill_chunk` が `mesh_index` を持つ全ノードの行列を積む）ため、
+///   ボーンの実姿勢にもこれが乗る。スキンに属さないノードへのアタッチでは単位行列を渡す。
+/// - `joint_world`   : ジョイントノードのワールド行列（モデル空間・アニメ適用後）
+/// - `attach_offset` : JointAttachComponent のオフセット行列（ジョイントローカル基準）
+pub fn compose_attached_world(
+    actor_world: &[[f32; 4]; 4],
+    render_offset: &[[f32; 4]; 4],
+    mesh_node_world: &[[f32; 4]; 4],
+    joint_world: &[[f32; 4]; 4],
+    attach_offset: &[[f32; 4]; 4],
+) -> [[f32; 4]; 4] {
+    let m = mat4_mul(actor_world, render_offset);
+    let m = mat4_mul(&m, mesh_node_world);
+    let m = mat4_mul(&m, joint_world);
+    mat4_mul(&m, attach_offset)
+}
+
+/// `joint_node_idx` がスキンのジョイントである場合、そのスキンを使うメッシュノードの
+/// インデックスを返す（スキンに属さないノードなら `None`）。
+///
+/// 描画はスキンメッシュノードのワールド行列をスキン行列へさらに左から掛けるため、
+/// ソケットの合成でも同じノードの行列を挟む必要がある（`compose_attached_world` 参照）。
+/// 同一スキンを複数のメッシュノードが共有する異形モデルでは先頭ノードを採用する
+/// （描画はどちらのノードでも同じスキン行列を使うため、代表 1 個で十分）。
+pub fn skinned_mesh_node_index(model: &Model, joint_node_idx: usize) -> Option<usize> {
+    let skin_idx = model
+        .skins
+        .iter()
+        .position(|s| s.joints.iter().any(|j| j.node_index == joint_node_idx))?;
+    model
+        .nodes
+        .iter()
+        .position(|n| n.mesh_index.is_some() && n.skin_index == Some(skin_idx))
+}
+
 // ─── アタッチジョブ ───────────────────────────────────────────
 
 /// 1 件の追従ジョブ（借用フェーズで収集し、書き込みフェーズで消費する）。
@@ -189,11 +249,11 @@ impl App {
         }
 
         // ── ② モデルごとのノードワールド行列キャッシュ（フレーム内 1 回計算）──
-        // キー = Model スロット entity。値 = (モデル参照, ノードワールド行列列)。
+        // キー = Model スロット entity。値 = (モデル参照, ノードワールド行列列, 描画オフセット行列)。
         // None = モデル未ロード（この Model へのアタッチは今フレームはスキップ）。
         let mut node_world_cache: std::collections::HashMap<
             Entity,
-            Option<(std::sync::Arc<Model>, Vec<[[f32; 4]; 4]>)>,
+            Option<(std::sync::Arc<Model>, Vec<[[f32; 4]; 4]>, [[f32; 4]; 4])>,
         > = std::collections::HashMap::new();
 
         // ── ③ 各ジョブを解決して書き込む ──
@@ -232,11 +292,14 @@ impl App {
                         (
                             m.clone(),
                             compute_node_world_matrices_blend(m, anim_a, time_a, anim_b, time_b, weight),
+                            // 描画オフセット（描画インスタンス行列に必ず掛かる補正）を
+                            // 一緒に取り込む。合成漏れは「見えているモデルからのズレ」になる。
+                            mc.offset_matrix(),
                         )
                     })
                 })
             });
-            let Some((model, node_world)) = entry.as_ref() else {
+            let Some((model, node_world, model_offset)) = entry.as_ref() else {
                 continue;
             }; // モデル未ロード
 
@@ -257,15 +320,26 @@ impl App {
             };
             let joint_world_local = node_world[node_idx];
 
+            // スキンジョイントなら、描画が掛けるメッシュノードのバインドワールド行列も挟む。
+            // 静的ノードへのアタッチ（スキン無し）では単位行列＝従来どおりの合成になる。
+            let mesh_node_world = skinned_mesh_node_index(model, node_idx)
+                .and_then(|i| node_world.get(i).copied())
+                .unwrap_or_else(identity);
+
             // モデルアクターのワールド行列（instance_mats[0] と同じ actor Transform 由来）。
             let model_world = match world.get::<Transform>(job.model_actor) {
                 Some(tf) => tf.to_mat4(),
                 None => continue,
             };
 
-            // 最終ワールド行列 = モデルワールド × ジョイントワールド(モデル空間) × オフセット。
-            let world_joint = mat4_mul(&model_world, &joint_world_local);
-            let final_mat = mat4_mul(&world_joint, &offset_mat);
+            // 最終ワールド行列（描画と同一の空間合成。compose_attached_world のコメント参照）。
+            let final_mat = compose_attached_world(
+                &model_world,
+                model_offset,
+                &mesh_node_world,
+                &joint_world_local,
+                &offset_mat,
+            );
 
             // 自アクターの Transform を更新（インスペクタ・他システム用に TRS 分解して保持）。
             if let Some(tf) = world.get_mut::<Transform>(job.attached.entity) {
@@ -372,4 +446,198 @@ fn parse_vec3(s: &str) -> Option<[f32; 3]> {
     let y = parts[1].trim().parse::<f32>().ok()?;
     let z = parts[2].trim().parse::<f32>().ok()?;
     Some([x, y, z])
+}
+
+// ============================================================
+//  テスト（空間合成の正しさ）
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::core::loader::model::{ModelNode, Skin, SkinJoint};
+
+    /// 位置比較の許容誤差（行列積で蓄積する f32 誤差を吸収する）。
+    const EPS: f32 = 1e-4;
+
+    /// TRS から行優先行列を作る（Transform の回転規約を正典として使う）。
+    fn trs(position: [f32; 3], rotation_deg: [f32; 3], scale: [f32; 3]) -> [[f32; 4]; 4] {
+        Transform { position, rotation: rotation_deg, scale }.to_mat4()
+    }
+
+    /// 行列の平行移動成分（＝合成結果のワールド位置）。
+    fn translation_of(m: &[[f32; 4]; 4]) -> [f32; 3] {
+        [m[0][3], m[1][3], m[2][3]]
+    }
+
+    /// 平行移動のみのノードを作る。
+    fn node(
+        name: &str,
+        t: [f32; 3],
+        children: Vec<usize>,
+        mesh_index: Option<usize>,
+        skin_index: Option<usize>,
+    ) -> ModelNode {
+        ModelNode {
+            name: name.to_string(),
+            local_matrix: trs(t, [0.0; 3], [1.0, 1.0, 1.0]),
+            translation: t,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+            mesh_index,
+            skin_index,
+            children,
+            parent: None,
+        }
+    }
+
+    /// Blender 由来のスキンモデル相当のテストモデルを作る。
+    ///
+    /// ノード 0 = アーマチュア（原点補正 -0.2）/ 1 = スキンメッシュノード（ローカル恒等）/
+    /// 2 = ボーン（アーマチュア相対 +3.0）。ボーンは skin 0 のジョイント。
+    fn skinned_model() -> Model {
+        Model {
+            name: "test".into(),
+            nodes: vec![
+                node("Armature", [0.0, -0.2, 0.0], vec![1, 2], None, None),
+                node("Mesh", [0.0, 0.0, 0.0], vec![], Some(0), Some(0)),
+                node("ForeArm.R", [0.0, 3.0, 0.0], vec![], None, None),
+            ],
+            root_nodes: vec![0],
+            meshes: Vec::new(),
+            materials: Vec::new(),
+            textures: Vec::new(),
+            animations: Vec::new(),
+            skins: vec![Skin {
+                name: "skin".into(),
+                joints: vec![SkinJoint {
+                    node_index: 2,
+                    name: "ForeArm.R".into(),
+                    inverse_bind_matrix: identity(),
+                }],
+                root_joint: Some(0),
+            }],
+        }
+    }
+
+    /// 描画オフセット（アクタローカルの拡縮）を含む合成が、描画と同じ位置になること。
+    ///
+    /// アクタ: 位置 (10,0,0)・スケール 2 / 描画オフセット: スケール 0.5 /
+    /// メッシュノード: (0,-1,0) / ジョイント: (0,4,0) の場合、
+    /// ワールド位置は 10 + 2 * 0.5 * (-1 + 4) = (10, 3, 0) になる。
+    #[test]
+    fn compose_applies_render_offset_and_mesh_node() {
+        let actor = trs([10.0, 0.0, 0.0], [0.0; 3], [2.0, 2.0, 2.0]);
+        let offset = trs([0.0; 3], [0.0; 3], [0.5, 0.5, 0.5]);
+        let mesh_node = trs([0.0, -1.0, 0.0], [0.0; 3], [1.0, 1.0, 1.0]);
+        let joint = trs([0.0, 4.0, 0.0], [0.0; 3], [1.0, 1.0, 1.0]);
+
+        let m = compose_attached_world(&actor, &offset, &mesh_node, &joint, &identity());
+        let p = translation_of(&m);
+        assert!(
+            (p[0] - 10.0).abs() < EPS && (p[1] - 3.0).abs() < EPS && p[2].abs() < EPS,
+            "描画と同じ空間合成になっていない: {p:?}"
+        );
+    }
+
+    /// 描画オフセットを掛け忘れると（＝修正前の合成）位置が大きくずれること。
+    ///
+    /// 同じ入力で描画オフセットを単位行列にすると y = 2 * 4 = 8 になり、
+    /// 正しい y = 3 から 5 単位ずれる。これが「プレイヤーには追従するが
+    /// ボーンから離れて浮く」症状の正体である。
+    #[test]
+    fn omitting_render_offset_displaces_socket() {
+        let actor = trs([10.0, 0.0, 0.0], [0.0; 3], [2.0, 2.0, 2.0]);
+        let offset = trs([0.0; 3], [0.0; 3], [0.5, 0.5, 0.5]);
+        let mesh_node = trs([0.0, -1.0, 0.0], [0.0; 3], [1.0, 1.0, 1.0]);
+        let joint = trs([0.0, 4.0, 0.0], [0.0; 3], [1.0, 1.0, 1.0]);
+
+        let correct = translation_of(&compose_attached_world(
+            &actor, &offset, &mesh_node, &joint, &identity(),
+        ));
+        let buggy = translation_of(&compose_attached_world(
+            &actor, &identity(), &identity(), &joint, &identity(),
+        ));
+        assert!(
+            (buggy[1] - 8.0).abs() < EPS,
+            "オフセット未適用時の y は 8 になるはず: {buggy:?}"
+        );
+        assert!(
+            (buggy[1] - correct[1]).abs() > 1.0,
+            "修正前後で位置が変わらないなら再現になっていない: {buggy:?} vs {correct:?}"
+        );
+    }
+
+    /// 180 度の描画オフセット回転が、ソケットの向き・位置へ正しく反映されること。
+    ///
+    /// アクタ回転 0・描画オフセット Y180 のとき、ジョイントの +X 方向オフセットは
+    /// ワールドでは -X へ向く（見えているモデルの向きに一致する）。
+    #[test]
+    fn compose_applies_offset_rotation() {
+        let actor = trs([0.0; 3], [0.0; 3], [1.0, 1.0, 1.0]);
+        let offset = trs([0.0; 3], [0.0, 180.0, 0.0], [1.0, 1.0, 1.0]);
+        let joint = trs([1.0, 0.0, 0.0], [0.0; 3], [1.0, 1.0, 1.0]);
+
+        let p = translation_of(&compose_attached_world(
+            &actor, &offset, &identity(), &joint, &identity(),
+        ));
+        assert!(
+            (p[0] + 1.0).abs() < EPS && p[1].abs() < EPS && p[2].abs() < EPS,
+            "Y180 の描画オフセットが反映されていない: {p:?}"
+        );
+    }
+
+    /// アタッチオフセットがジョイントローカル基準（最後に右から掛かる）であること。
+    #[test]
+    fn attach_offset_is_joint_local() {
+        let actor = trs([0.0; 3], [0.0, 90.0, 0.0], [1.0, 1.0, 1.0]);
+        let joint = trs([0.0, 1.0, 0.0], [0.0; 3], [1.0, 1.0, 1.0]);
+        let attach = trs([0.0, 0.0, 2.0], [0.0; 3], [1.0, 1.0, 1.0]);
+
+        // アクタが Y+90 度回っているので、ジョイントローカル +Z はワールド +X になる。
+        let p = translation_of(&compose_attached_world(
+            &actor, &identity(), &identity(), &joint, &attach,
+        ));
+        assert!(
+            (p[0] - 2.0).abs() < EPS && (p[1] - 1.0).abs() < EPS && p[2].abs() < EPS,
+            "アタッチオフセットがジョイントローカルで効いていない: {p:?}"
+        );
+    }
+
+    /// スキンジョイントからは、そのスキンを使うメッシュノードが引けること。
+    #[test]
+    fn skinned_mesh_node_is_resolved_for_joint() {
+        let model = skinned_model();
+        assert_eq!(skinned_mesh_node_index(&model, 2), Some(1), "ボーン → メッシュノード");
+        assert_eq!(skinned_mesh_node_index(&model, 0), None, "スキン外ノードは None");
+    }
+
+    /// スキンモデルの実姿勢が「アクタ × オフセット × メッシュノード × ジョイント」で求まること。
+    ///
+    /// 描画（gpu_resources::fill_chunk ＋ gbuffer_skinned_vertex.wgsl）は
+    /// メッシュノードのバインドワールド行列をスキン行列へ左から掛けるため、
+    /// アーマチュアの原点補正 (-0.2) はボーン姿勢に 2 回効く。
+    #[test]
+    fn skinned_joint_world_matches_render_chain() {
+        use crate::engine::core::renderer::animator::compute_node_world_matrices;
+
+        let model = skinned_model();
+        let node_world = compute_node_world_matrices(&model, usize::MAX, 0.0);
+        let mesh_node = node_world[skinned_mesh_node_index(&model, 2).unwrap()];
+        let joint = node_world[2];
+
+        // アクタ: スケール 4・描画オフセット: スケール 0.25 ⇒ 実効スケール 1。
+        let actor = trs([0.0, 0.0, 0.0], [0.0; 3], [4.0, 4.0, 4.0]);
+        let offset = trs([0.0; 3], [0.0; 3], [0.25, 0.25, 0.25]);
+        let p = translation_of(&compose_attached_world(
+            &actor, &offset, &mesh_node, &joint, &identity(),
+        ));
+
+        // メッシュノードワールド = -0.2、ジョイントワールド = -0.2 + 3.0 = 2.8。
+        let expected_y = -0.2 + 2.8;
+        assert!(
+            (p[1] - expected_y).abs() < EPS,
+            "描画の合成順と一致していない: {p:?} (期待 y={expected_y})"
+        );
+    }
 }
