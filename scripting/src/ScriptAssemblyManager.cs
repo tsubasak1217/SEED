@@ -99,6 +99,9 @@ public static class ScriptAssemblyManager
             trees,
             BuildReferences(),
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
+                // ユーザースクリプトの `PlayerMove?` 等の null 許容注釈をメタデータへ出力させる
+                // （警告は出さない）。エディタ側 ScriptCompiler と同一条件にすること。
+                .WithNullableContextOptions(NullableContextOptions.Annotations)
                 .WithOptimizationLevel(OptimizationLevel.Debug));
 
         // 埋め込み PDB 付きで発行する。ソースツリーにファイルパスを設定しているため、

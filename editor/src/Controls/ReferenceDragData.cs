@@ -54,6 +54,12 @@ internal sealed class ComponentDragPayload
     /// <summary>ドラッグしたコンポーネントの種別（ACTOR_COMPONENTS の "type"）。</summary>
     public string TypeId { get; set; } = "";
 
+    /// <summary>
+    /// ドラッグしたコンポーネントが ScriptComponent のときの .cs パス。
+    /// スクリプト参照フィールド（"Script:PlayerMove"）の型判定に必要。
+    /// </summary>
+    public string ScriptPath { get; set; } = "";
+
     /// <summary>所有アクタが 3D の Transform を持つか。</summary>
     public bool HasTransform { get; set; }
 
@@ -62,6 +68,9 @@ internal sealed class ComponentDragPayload
 
     /// <summary>所有アクタの全スロット構成（所有者としての解釈に使う）。</summary>
     public List<ActorComponentEntry> OwnerComponents { get; set; } = new();
+
+    /// <summary>ドラッグしたコンポーネント自身を <see cref="ActorComponentEntry"/> の形に組み直す。</summary>
+    public ActorComponentEntry ToDraggedEntry() => new(TypeId, SlotIdx, SlotName, ScriptPath);
 
     /// <summary>所有アクタ側の情報を <see cref="ActorComponentSnapshot"/> の形に組み直す。</summary>
     public ActorComponentSnapshot ToOwnerSnapshot() => new()

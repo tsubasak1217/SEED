@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 using SEEDEditor.Controls;
 
@@ -65,6 +66,11 @@ public partial class InspectorPanel : IReferenceDropResolver
         // 取れない場合はドラッグ中の判定材料が減るだけで、ドロップ時の IPC 解決は成立する。
         var snapshot = ActorComponentCache.TryGet(_currentActorId);
 
+        // ドラッグ元がスクリプトスロットなら .cs パスも同梱する
+        // （スクリプト参照フィールドは型名まで一致を要求するため）。
+        var draggedEntry = snapshot?.Components
+            .FirstOrDefault(c => c.SlotIdx == slotIdx && c.TypeId == typeId);
+
         var payload = new ComponentDragPayload
         {
             ActorDfsId         = _currentActorId,
@@ -72,10 +78,11 @@ public partial class InspectorPanel : IReferenceDropResolver
             SlotIdx            = slotIdx,
             SlotName           = slotName,
             TypeId             = typeId,
+            ScriptPath         = draggedEntry?.ScriptPath ?? "",
             HasTransform       = snapshot?.HasTransform ?? false,
             HasCanvasTransform = snapshot?.HasCanvasTransform ?? false,
             OwnerComponents    = snapshot is null
-                ? new List<ActorComponentEntry> { new(typeId, slotIdx, slotName) }
+                ? new List<ActorComponentEntry> { new(typeId, slotIdx, slotName, "") }
                 : new List<ActorComponentEntry>(snapshot.Components),
         };
 
@@ -97,7 +104,8 @@ public partial class InspectorPanel : IReferenceDropResolver
         if (ComponentDragPayload.FromDragData(data) is { } payload)
         {
             // ドロップ対象そのものが要求型に一致する
-            if (payload.TypeId == ReferenceKindCatalog.SlotComponentType(spec.Kind))
+            // （スクリプト参照は .cs の型名まで見るので Matches に委ねる）
+            if (ReferenceKindCatalog.Matches(payload.ToDraggedEntry(), spec.Kind))
                 return ReferenceDropVerdict.Accept;
             // 一致しなければ「その所有者（アクタ）」として解釈し直す
             return EvaluateSnapshot(payload.ToOwnerSnapshot(), spec);
@@ -125,9 +133,7 @@ public partial class InspectorPanel : IReferenceDropResolver
                 ? ReferenceDropVerdict.Accept
                 : ReferenceDropVerdict.Reject;
 
-        var wantType = ReferenceKindCatalog.SlotComponentType(spec.Kind);
-        if (wantType is null) return ReferenceDropVerdict.Reject;
-        return snapshot.ComponentsOfType(wantType).Count > 0
+        return snapshot.ComponentsMatching(spec.Kind).Count > 0
             ? ReferenceDropVerdict.Accept
             : ReferenceDropVerdict.Reject;
     }
@@ -142,13 +148,12 @@ public partial class InspectorPanel : IReferenceDropResolver
 
         // ── ① コンポーネント直ドロップ: そのコンポーネント自身が要求型なら即確定 ──
         if (ComponentDragPayload.FromDragData(data) is { } payload &&
-            payload.TypeId == ReferenceKindCatalog.SlotComponentType(spec.Kind))
+            ReferenceKindCatalog.Matches(payload.ToDraggedEntry(), spec.Kind))
         {
             if (string.IsNullOrEmpty(payload.ActorName)) return;
             if (!ValidateActorName(payload.ActorName)) return;
             apply(payload.ActorName, spec.WantSlotName
-                ? ActorComponentSnapshot.SlotDisplayName(
-                      new ActorComponentEntry(payload.TypeId, payload.SlotIdx, payload.SlotName), spec.Kind)
+                ? ReferenceKindCatalog.SlotNameToSave(payload.ToDraggedEntry(), spec.Kind)
                 : null);
             return;
         }
@@ -211,8 +216,7 @@ public partial class InspectorPanel : IReferenceDropResolver
         }
 
         // ── スロット格納型 ──
-        var wantType = ReferenceKindCatalog.SlotComponentType(spec.Kind)!;
-        var matches  = snapshot.ComponentsOfType(wantType);
+        var matches = snapshot.ComponentsMatching(spec.Kind);
         if (matches.Count == 0)
         {
             ShowKindMissingWarning(snapshot.ActorName, kindLabel);
@@ -230,14 +234,21 @@ public partial class InspectorPanel : IReferenceDropResolver
         if (matches.Count == 1)
         {
             pending.Apply(snapshot.ActorName,
-                ActorComponentSnapshot.SlotDisplayName(matches[0], spec.Kind));
+                ReferenceKindCatalog.SlotNameToSave(matches[0], spec.Kind));
             return;
         }
 
         // 同種スロットが複数 → 選択ウィンドウ（次フェーズで 2 ページ目を積める構造）
-        var items = new List<string>(matches.Count);
+        // 表示名（items）と保存値（saveNames）は別物になり得る
+        // （スクリプト参照でスロット名が空のときは保存値 null ＝ 型名で先頭解決）。
+        // 選択結果は「何番目を選んだか」で保存値へ引き当てる。
+        var items     = new List<string>(matches.Count);
+        var saveNames = new List<string?>(matches.Count);
         foreach (var m in matches)
+        {
             items.Add(ActorComponentSnapshot.SlotDisplayName(m, spec.Kind));
+            saveNames.Add(ReferenceKindCatalog.SlotNameToSave(m, spec.Kind));
+        }
 
         var selected = ReferenceSelectorWindow.Show(
             Window.GetWindow(this),
@@ -247,7 +258,10 @@ public partial class InspectorPanel : IReferenceDropResolver
                 + "参照するコンポーネントを選択してください。",
                 items));
         if (selected is { Count: > 0 })
-            pending.Apply(snapshot.ActorName, selected[0]);
+        {
+            var idx = items.IndexOf(selected[0]);
+            pending.Apply(snapshot.ActorName, idx >= 0 ? saveNames[idx] : selected[0]);
+        }
     }
 
     /// <summary>要求型を持っていないアクタが落とされたときの警告。</summary>

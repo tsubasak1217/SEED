@@ -1,4 +1,6 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
 
 namespace SEEDEditor.Controls;
 
@@ -46,6 +48,62 @@ internal static class ReferenceKindCatalog
 
     /// <summary>水域（WaterLink の接続先 A / B が要求する型）。</summary>
     public const string WaterVolumeKind = "WaterVolume";
+
+    // ── ユーザースクリプト参照 ───────────────────────────────────
+    //
+    // 種別名は "Script:型名"（SEED.ScriptReference.ScriptKindPrefix）。
+    // 表に載せず接頭辞で動的に判定するため、スクリプトを増やしても表の更新は不要
+    // （データドリブン: .cs を足すだけで参照フィールドの要求型になる）。
+
+    /// <summary>ScriptComponent スロットの ACTOR_COMPONENTS "type" 文字列。</summary>
+    public const string ScriptComponentTypeId = "ScriptComponent";
+
+    /// <summary>種別名がユーザースクリプト参照か（"Script:PlayerMove" など）。</summary>
+    public static bool IsScriptKind(string kind) => SEED.ScriptReference.IsScriptKind(kind);
+
+    /// <summary>スクリプト参照の種別名から要求スクリプト型名を取り出す（それ以外は null）。</summary>
+    public static string? ScriptTypeName(string kind) => SEED.ScriptReference.ScriptTypeNameOf(kind);
+
+    /// <summary>
+    /// コンポーネントスロット 1 件が、参照フィールドの要求種別を満たすか。
+    ///
+    /// エディタ内で「適合スロットか」を判断する唯一の場所。
+    ///   ・スクリプト参照 … ScriptComponent かつ .cs のファイル名語幹が型名と一致
+    ///     （Rust 側 <c>resolve_script_instance</c> の照合規則と完全に同じにすること）
+    ///   ・それ以外       … ACTOR_COMPONENTS の "type" 文字列が一致
+    /// </summary>
+    public static bool Matches(ActorComponentEntry entry, string kind)
+    {
+        if (ScriptTypeName(kind) is { } scriptType)
+            return entry.TypeId == ScriptComponentTypeId
+                && string.Equals(SafeFileStem(entry.ScriptPath), scriptType, StringComparison.Ordinal);
+
+        return SlotComponentType(kind) is { } typeId && entry.TypeId == typeId;
+    }
+
+    /// <summary>
+    /// 参照値として保存するスロット名を決める。
+    ///
+    /// スクリプト参照でスロット名が空のときだけ null（＝型名だけで先頭スロットへ解決）を返す。
+    /// 空名スロットに対して代替表示名（"PlayerMove[0]"）を保存すると、
+    /// ランタイム側の名前一致で解決できなくなるためである。
+    /// </summary>
+    public static string? SlotNameToSave(ActorComponentEntry entry, string kind)
+    {
+        if (IsScriptKind(kind) && string.IsNullOrEmpty(entry.Name)) return null;
+        return ActorComponentSnapshot.SlotDisplayName(entry, SlotFallbackLabel(kind));
+    }
+
+    /// <summary>スロット名が空のときの代替表示名に使うラベル（スクリプトは型名）。</summary>
+    private static string SlotFallbackLabel(string kind) => ScriptTypeName(kind) ?? kind;
+
+    /// <summary>パスからファイル名の語幹を取り出す（不正パスでも例外を投げない）。</summary>
+    private static string SafeFileStem(string path)
+    {
+        if (string.IsNullOrEmpty(path)) return "";
+        try { return Path.GetFileNameWithoutExtension(path); }
+        catch { return ""; }
+    }
 
     /// <summary>
     /// 種別名 → ACTOR_COMPONENTS JSON の "type" 文字列。
@@ -105,17 +163,24 @@ internal static class ReferenceKindCatalog
     /// この種別がアクタ内の「スロット」に格納されるか（＝スロット選択が必要か）。
     /// false の場合はアクタ名だけで参照が確定する（GameObject / Transform 系）。
     /// </summary>
-    public static bool NeedsSlotSelection(string kind) => SlotComponentTypeByKind.ContainsKey(kind);
+    public static bool NeedsSlotSelection(string kind)
+        => IsScriptKind(kind) || SlotComponentTypeByKind.ContainsKey(kind);
 
     /// <summary>
     /// 種別に対応する ACTOR_COMPONENTS の "type" 文字列。スロット型でなければ null。
     /// </summary>
     public static string? SlotComponentType(string kind)
-        => SlotComponentTypeByKind.TryGetValue(kind, out var t) ? t : null;
+        => IsScriptKind(kind)
+            ? ScriptComponentTypeId
+            : SlotComponentTypeByKind.TryGetValue(kind, out var t) ? t : null;
 
     /// <summary>種別の表示名（未登録なら種別名そのもの）。</summary>
     public static string DisplayName(string kind)
-        => DisplayNameByKind.TryGetValue(kind, out var n) ? n : kind;
+    {
+        // スクリプト参照は表に載らない（型名から動的に作る）
+        if (ScriptTypeName(kind) is { } scriptType) return $"{scriptType}（スクリプト）";
+        return DisplayNameByKind.TryGetValue(kind, out var n) ? n : kind;
+    }
 
     /// <summary>
     /// ルート直付け型（Transform / CanvasTransform / GameObject）の要求を

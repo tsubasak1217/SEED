@@ -11,7 +11,12 @@ namespace SEEDEditor.Controls;
 /// <param name="TypeId">コンポーネント種別（例: "CameraComponent"）。</param>
 /// <param name="SlotIdx">アクタ内のスロット添字。</param>
 /// <param name="Name">スロット名（リネーム可能な表示名。空の場合あり）。</param>
-internal sealed record ActorComponentEntry(string TypeId, int SlotIdx, string Name);
+/// <param name="ScriptPath">
+/// ScriptComponent のときだけ入る .cs パス（ACTOR_COMPONENTS の "model_path"）。
+/// スクリプト参照フィールド（"Script:PlayerMove"）が「どのスクリプトのスロットか」を
+/// 判定するために使う。それ以外の種別では空文字列。
+/// </param>
+internal sealed record ActorComponentEntry(string TypeId, int SlotIdx, string Name, string ScriptPath = "");
 
 /// <summary>
 /// ACTOR_COMPONENTS 応答 JSON から、参照解決に必要な情報だけを抜き出したスナップショット。
@@ -55,7 +60,9 @@ internal sealed class ActorComponentSnapshot
                     if (string.IsNullOrEmpty(typeId)) continue;
                     var slotIdx = comp.TryGetProperty("slot", out var s) && s.TryGetInt32(out var si) ? si : 0;
                     var name    = comp.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
-                    comps.Add(new ActorComponentEntry(typeId, slotIdx, name));
+                    // ScriptComponent スロットは .cs パスを持つ（スクリプト参照の型判定に使う）
+                    var script  = comp.TryGetProperty("model_path", out var mp) ? mp.GetString() ?? "" : "";
+                    comps.Add(new ActorComponentEntry(typeId, slotIdx, name, script));
                 }
             }
 
@@ -80,6 +87,19 @@ internal sealed class ActorComponentSnapshot
         var result = new List<ActorComponentEntry>();
         foreach (var c in Components)
             if (c.TypeId == typeId) result.Add(c);
+        return result;
+    }
+
+    /// <summary>
+    /// 参照フィールドの要求種別（Kind）に適合するコンポーネントを列挙する。
+    /// 判定規則は <see cref="ReferenceKindCatalog.Matches"/> が唯一の正典
+    /// （スクリプト参照はスクリプトパスまで見るため、型 ID の比較だけでは足りない）。
+    /// </summary>
+    public List<ActorComponentEntry> ComponentsMatching(string kind)
+    {
+        var result = new List<ActorComponentEntry>();
+        foreach (var c in Components)
+            if (ReferenceKindCatalog.Matches(c, kind)) result.Add(c);
         return result;
     }
 

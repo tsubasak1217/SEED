@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 
 namespace SEED;
 
@@ -31,6 +32,23 @@ public static class ScriptReference
 
     /// <summary>未設定を表すシリアライズ値（空文字列）。</summary>
     public const string UnsetValue = "";
+
+    /// <summary>
+    /// ユーザースクリプト参照（<c>[SerializeField] PlayerMove player;</c>）の種別名プレフィクス。
+    ///
+    /// 種別名は <c>"Script:" + 型名</c>（例 <c>"Script:PlayerMove"</c>）。
+    /// コンポーネント種別名（"Transform" / "Camera" …）と衝突しないよう、
+    /// C# の識別子に使えない ':' を区切りに用いている。
+    /// エディタ（ReferenceKindCatalog）とランタイム（本ファイル）の双方がこの規約を使う。
+    /// </summary>
+    public const string ScriptKindPrefix = "Script:";
+
+    /// <summary>種別名がユーザースクリプト参照か。</summary>
+    public static bool IsScriptKind(string kind) => kind.StartsWith(ScriptKindPrefix, StringComparison.Ordinal);
+
+    /// <summary>スクリプト参照の種別名から型名を取り出す（スクリプト参照でなければ null）。</summary>
+    public static string? ScriptTypeNameOf(string kind)
+        => IsScriptKind(kind) ? kind[ScriptKindPrefix.Length..] : null;
 
     // ─── 型判定 ───────────────────────────────────────────────
 
@@ -76,9 +94,19 @@ public static class ScriptReference
         var isNullable = underlying is not null;
         var core       = underlying ?? fieldType;
 
-        // 参照ハンドルは必ずこのアセンブリの型。ユーザー型・BCL 型はここで弾く
-        // （キャッシュにユーザー型を残さないための必須ガードでもある）。
-        if (core.Assembly != HandleAssembly) return false;
+        // 他アセンブリの型は「ユーザースクリプト型」だけを受け付ける。
+        //
+        // 【重要】ユーザー型は絶対にキャッシュへ入れない。アンロード可能な
+        // AssemblyLoadContext にロードされるため、静的辞書に握るとホットリロードで
+        // ALC がアンロードできなくなる（＝リーク）。判定は毎回リフレクションで行う。
+        if (core.Assembly != HandleAssembly)
+        {
+            if (!IsUserScriptType(core)) return false;
+            // 種別名は "Script:型名"。Type.Name（名前空間なし）は Rust 側が
+            // .cs パスのファイル名語幹から作る型名と一致する。
+            kind = new ReferenceKind(core, isNullable, ScriptKindPrefix + core.Name);
+            return true;
+        }
 
         string? kindName;
         lock (KindNameByHandleType)
@@ -94,6 +122,53 @@ public static class ScriptReference
         kind = new ReferenceKind(core, isNullable, kindName);
         return true;
     }
+
+    /// <summary>
+    /// フィールド情報から参照種別を判定する（<see cref="TryGetKind(Type)"/> の高精度版）。
+    ///
+    /// 参照型（class）の <c>T?</c> は <see cref="Nullable{T}"/> にならず、
+    /// 型情報だけでは Nullable かどうかを判別できない。そのため
+    /// <see cref="NullabilityInfoContext"/> でフィールドの null 許容注釈を読み、
+    /// <see cref="ReferenceKind.IsNullable"/> を補正する。
+    ///
+    /// null 許容コンテキストが無効なアセンブリでは注釈が出力されない
+    /// （<see cref="NullabilityState.Unknown"/>）ため、その場合は
+    /// 「未設定を null で表せる」= true として扱う
+    /// （スクリプト参照は解決失敗時に必ず null になるため、これが実態と一致する）。
+    /// </summary>
+    public static bool TryGetKind(FieldInfo field, out ReferenceKind kind)
+    {
+        if (!TryGetKind(field.FieldType, out kind)) return false;
+
+        // 値型ハンドル（Transform? など Nullable<T>）は型情報だけで確定しているので触らない
+        if (kind.HandleType.IsValueType) return true;
+
+        bool nullable;
+        try
+        {
+            var info = new NullabilityInfoContext().Create(field);
+            // Unknown（null 許容コンテキスト無効）は「null になり得る」側へ倒す
+            nullable = info.ReadState != NullabilityState.NotNull;
+        }
+        catch
+        {
+            // 注釈を読めない環境では安全側（null になり得る）へ倒す
+            nullable = true;
+        }
+
+        kind = kind with { IsNullable = nullable };
+        return true;
+    }
+
+    /// <summary>
+    /// 参照フィールドにできるユーザースクリプト型か。
+    ///
+    /// 条件は「<see cref="SEEDEditor.Scripting.IScriptComponent"/> を実装する、インスタンス化可能な class」。
+    /// SEEDScript を継承したユーザースクリプトがすべて該当する。
+    /// </summary>
+    private static bool IsUserScriptType(Type core)
+        => core.IsClass && !core.IsAbstract && !core.IsGenericTypeDefinition
+           && typeof(SEEDEditor.Scripting.IScriptComponent).IsAssignableFrom(core);
 
     /// <summary>
     /// 素のハンドル型から種別名を算出する（キャッシュミス時のみ）。参照型でなければ null。
@@ -184,12 +259,44 @@ public static class ScriptReference
     {
         if (!TryGetKind(fieldType, out var kind)) return null;
 
+        // ── ユーザースクリプト参照: 実インスタンス（class）をそのまま返す ──
+        // ハンドル構造体と違い「無効な値」を表現できないため、解決できなければ
+        // T / T? のどちらの宣言でも null になる（利用側は必ず null チェックする）。
+        if (IsScriptKind(kind.Kind)) return ResolveScriptInstance(kind, value);
+
         var entity = ResolveEntity(kind, value);
 
         // 解決できなかった: Nullable は null（未設定）、非 Nullable は無効ハンドル
         if (!entity.IsValid && kind.IsNullable) return null;
 
         return MakeHandle(kind.HandleType, entity);
+    }
+
+    /// <summary>
+    /// スクリプト参照のシリアライズ値から、参照先アクターに載っている
+    /// スクリプトの<b>生きた CLR インスタンス</b>を解決する。
+    ///
+    /// Rust ランタイムが ScriptComponent の GCHandle 値を返し、それを
+    /// <see cref="GCHandle.FromIntPtr"/> で実体へ戻す（＝ホットリロード後も
+    /// 常に「今の」インスタンスが得られる。呼び出し側でキャッシュしてはならない）。
+    ///
+    /// 解決できない（アクター不在・スクリプト未アタッチ・World 非公開）場合は null。
+    /// </summary>
+    private static object? ResolveScriptInstance(ReferenceKind kind, string? value)
+    {
+        var typeName = ScriptTypeNameOf(kind.Kind);
+        if (typeName is null) return null;
+        if (!TryParse(value, out var actorName, out var slotName)) return null;
+        if (!ScriptHost.TryFindActor(actorName, out var actor)) return null;
+        if (!ScriptHost.TryResolveScriptInstance(actor, typeName, slotName, out var handle)) return null;
+
+        object? instance;
+        try { instance = GCHandle.FromIntPtr(handle).Target; }
+        catch { return null; }
+
+        // 同名クラスが別名前空間に存在する場合など、型が食い違ったら未解決扱いにする
+        // （フィールドへ代入すると ArgumentException になるため、ここで弾く）。
+        return kind.HandleType.IsInstanceOfType(instance) ? instance : null;
     }
 
     /// <summary>

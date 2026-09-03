@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::engine::components::{
     AnimClipKind, AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform,
-    ControlPointComponent, InputMapComponent,
+    ComponentKind, ControlPointComponent, InputMapComponent, ScriptComponent,
     LineRendererComponent, ModelComponent, ParticleEmitterComponent, SkinnedSpriteComponent,
     SkyboxComponent, SpriteComponent, TextAlign, TextComponent, TextVerticalAlign, Transform,
     WaterLinkComponent, WaterVolumeComponent, MAX_LINE_POINTS, SKY_ADJUST_MAX, SKY_ADJUST_MIN,
@@ -406,6 +406,66 @@ fn resolve_component_slot(
                 .map(|s| s.entity)
         }
     }
+}
+
+// ─── スクリプトインスタンス参照の解決 ────────────────────────
+
+/// `ScriptComponent.type_name`（.cs パスまたは C# 型名）からスクリプト型名を取り出す。
+///
+/// シーンには `assets://scripts/PlayerMove.cs` のようなパスで保存されるが、
+/// C# 側の参照フィールドが要求するのは型名（`PlayerMove`）である。
+/// 拡張子とディレクトリを落とした「ファイル名の語幹」を型名とみなす
+/// （エディタの ADD_COMPONENT もファイル名の語幹をスロット名の既定値にしており、
+///   「1 ファイル 1 スクリプト型・型名＝ファイル名」という既存の運用規約と一致する）。
+fn script_type_stem(type_name: &str) -> &str {
+    // パス区切りは OS 依存にせず両方を見る（assets:// 形式は常に '/'）。
+    let after_dir = match type_name.rfind(['/', '\\']) {
+        Some(i) => &type_name[i + 1..],
+        None => type_name,
+    };
+    // ".cs" で終わるならファイル名なので拡張子を落とす。
+    // そうでなければ名前空間付き型名（A.B.PlayerMove）とみなし末尾要素を取る
+    // （どちらも C# 側の `Type.Name` と一致する形になる）。
+    if after_dir.len() > SCRIPT_FILE_EXT.len()
+        && after_dir[after_dir.len() - SCRIPT_FILE_EXT.len()..].eq_ignore_ascii_case(SCRIPT_FILE_EXT)
+    {
+        return &after_dir[..after_dir.len() - SCRIPT_FILE_EXT.len()];
+    }
+    match after_dir.rfind('.') {
+        Some(i) => &after_dir[i + 1..],
+        None => after_dir,
+    }
+}
+
+/// スクリプトソースの拡張子（`script_type_stem` の判定に使う）。
+const SCRIPT_FILE_EXT: &str = ".cs";
+
+/// スクリプト参照フィールド（`[SerializeField] PlayerMove player;`）の解決本体。
+///
+/// アクタールート entity のアクターが持つスクリプトスロットを走査し、
+/// - `type_name` … スクリプト型名（`script_type_stem` で正規化して比較）
+/// - `slot_name` … Some のときスロット名も一致すること（None は型名だけで先頭一致）
+///
+/// を満たす最初のスロットの CLR インスタンスハンドル（GCHandle 値）を返す。
+/// 見つからなければ None（C# 側は null を代入する）。
+fn resolve_script_instance(
+    world: &World, root: Entity, type_name: &str, slot_name: Option<&str>,
+) -> Option<isize> {
+    let actor = actor_of_entity(root)?;
+    actor.slots().iter().find_map(|slot| {
+        // スクリプトスロット以外（Placeholder 含む）は対象外
+        if slot.kind != ComponentKind::Script {
+            return None;
+        }
+        // スロット名の指定があれば一致を要求する（同一型を複数持つアクター用）
+        if let Some(n) = slot_name {
+            if slot.name != n {
+                return None;
+            }
+        }
+        let sc = world.get::<ScriptComponent>(slot.entity)?;
+        (script_type_stem(sc.type_name()) == type_name).then_some(sc.handle)
+    })
 }
 
 // ─── InputMap 評価キャッシュ ──────────────────────────────────
@@ -2177,6 +2237,40 @@ unsafe extern "system" fn ffi_resolve_component_slot(
     }
 }
 
+/// スクリプト参照フィールドの解決 FFI。
+///
+/// 引数:
+///  - actor_idx / actor_gen … 参照先アクターのルート entity
+///  - type_name / type_len  … 要求するスクリプト型名（UTF-8。例 "PlayerMove"）
+///  - slot_name / slot_len  … スロット名（len<=0 は「指定なし＝型名だけで先頭一致」）
+///  - out_handle            … 見つかった CLR インスタンスの GCHandle 値の書き込み先
+///
+/// 戻り値: 解決できたら 1、できなければ 0（out_handle は書き換えない）。
+unsafe extern "system" fn ffi_resolve_script_instance(
+    actor_idx: u32, actor_gen: u32,
+    type_name: *const u8, type_len: i32,
+    slot_name: *const u8, slot_len: i32,
+    out_handle: *mut isize,
+) -> i32 {
+    let ptr = WORLD_PTR.with(|p| p.get());
+    if ptr.is_null() || out_handle.is_null() {
+        return 0;
+    }
+    let world = &*ptr;
+    let root = Entity::from_raw(actor_idx, actor_gen);
+    let type_s = str_from(type_name, type_len);
+    // slot_len<=0 は「スロット名指定なし（型名だけで先頭一致）」を意味する
+    let slot_opt = if slot_len > 0 { Some(str_from(slot_name, slot_len)) } else { None };
+
+    match resolve_script_instance(world, root, type_s, slot_opt) {
+        Some(h) => {
+            *out_handle = h;
+            1
+        }
+        None => 0,
+    }
+}
+
 // ─── InputMap 評価 FFI ───────────────────────────────────────
 
 // InputMap アクション評価の kind（C# 側 InputMap.cs の定数と一致必須）。
@@ -2533,6 +2627,9 @@ pub struct ScriptHostApi {
     // コントロールポイント経路の時刻サンプル（SEED.ControlPointPath）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     path_sample:            unsafe extern "system" fn(u32, u32, i32, f32, *mut f32, i32) -> i32,
+    // スクリプトインスタンス参照（[SerializeField] MyScript other;）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    resolve_script_instance: unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, *mut isize) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -2566,6 +2663,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     save_string:            ffi_save_string,
     save_ctl:               ffi_save_ctl,
     path_sample:            ffi_path_sample,
+    resolve_script_instance: ffi_resolve_script_instance,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。
@@ -2581,6 +2679,19 @@ pub fn host_api_ptr() -> *const ScriptHostApi {
 mod tests {
     use super::*;
     use crate::engine::components::ComponentKind;
+
+    /// script_type_stem: .cs パス／型名からスクリプト型名（ファイル名語幹）を取り出す。
+    #[test]
+    fn script_type_stem_extracts_type_name() {
+        // assets:// 仮想パス（'/' 区切り）
+        assert_eq!(script_type_stem("assets://scripts/PlayerMove.cs"), "PlayerMove");
+        // Windows のバックスラッシュ区切り
+        assert_eq!(script_type_stem("C:\\scripts\\PlayerMove.cs"), "PlayerMove");
+        // 拡張子なしの素の型名
+        assert_eq!(script_type_stem("PlayerMove"), "PlayerMove");
+        // 名前空間付き型名は末尾要素（C# の Type.Name と一致）
+        assert_eq!(script_type_stem("Game.Player.PlayerMove"), "PlayerMove");
+    }
 
     /// スロット解決を検証するためのアクター＋World を組み立てる。
     ///

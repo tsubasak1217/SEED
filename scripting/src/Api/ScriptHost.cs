@@ -297,6 +297,46 @@ public static unsafe class ScriptHost
         return true;
     }
 
+    // ── スクリプトインスタンス参照の解決 ───────────────
+
+    /// <summary>
+    /// アクタールート entity から、指定スクリプト型の「生きている CLR インスタンス」の
+    /// GCHandle 値を解決する（<c>[SerializeField] PlayerMove player;</c> の注入用）。
+    ///
+    /// <paramref name="typeName"/> は型名（例 "PlayerMove"）。Rust 側は
+    /// ScriptComponent の .cs パスからファイル名の語幹を取って照合する。
+    /// <paramref name="slotName"/> が非空のときはスロット名一致も要求し、
+    /// 空（null）なら型名が一致する先頭スロットを選ぶ。
+    ///
+    /// World / Actor ツリーが公開されている間（スクリプトのライフサイクル
+    /// フェーズ中）にのみ成功する。失敗時は false（handle = 0）。
+    /// </summary>
+    public static bool TryResolveScriptInstance(
+        Entity actor, string typeName, string? slotName, out nint handle)
+    {
+        handle = 0;
+        if (!_available || _api.ResolveScriptInstance == null || !actor.IsValid) return false;
+
+        int tl = Encoding.UTF8.GetByteCount(typeName);
+        Span<byte> tb = stackalloc byte[tl];
+        Encoding.UTF8.GetBytes(typeName, tb);
+
+        // スロット名指定なしは長さ 0 で渡す（Rust 側は slot_len<=0 を「型名のみ」とみなす）
+        int sl = string.IsNullOrEmpty(slotName) ? 0 : Encoding.UTF8.GetByteCount(slotName);
+        Span<byte> sb = sl > 0 ? stackalloc byte[sl] : default;
+        if (sl > 0) Encoding.UTF8.GetBytes(slotName!, sb);
+
+        nint outHandle = 0;
+        int ok;
+        fixed (byte* tp = tb)
+        fixed (byte* sp = sb)
+            ok = _api.ResolveScriptInstance(actor.Index, actor.Generation, tp, tl, sp, sl, &outHandle);
+
+        if (ok == 0) return false;
+        handle = outHandle;
+        return handle != 0;
+    }
+
     // ── InputMap アクション評価 ───────────────────────────────────
 
     /// <summary>
@@ -827,4 +867,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, byte*, int, int> SaveCtl;
     /// <summary>(idx, gen, kind, time, out float*, cap) → 書き込んだ要素数（3）/失敗=0。ControlPoint 経路の時刻サンプル（kind: 0=位置/1=進行方向）</summary>
     public delegate* unmanaged[Cdecl]<uint, uint, int, float, float*, int, int> PathSample;
+    /// <summary>(actorIdx, actorGen, typeName, typeLen, slotName, slotLen, out nint handle) → 1/0（スクリプト参照フィールドのインスタンス解決）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, byte*, int, nint*, int> ResolveScriptInstance;
 }

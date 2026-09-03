@@ -408,10 +408,15 @@ public static class ScriptInspectorBuilder
             // （GameObject / Transform 系はアクタ名のみ）。
             WantSlotName = ReferenceKindCatalog.NeedsSlotSelection(refKind.Kind),
             UnsetText    = ReferenceUnsetText,
+            // スクリプト参照は「無効ハンドル」を表現できない class 参照なので、
+            // T / T? のどちらの宣言でも未解決時は null になる（利用側は必ず null チェック）。
             ExtraTooltip = (field.Tooltip is null ? "" : field.Tooltip + "\n")
-                         + (refKind.IsNullable
-                             ? "未設定のときスクリプトからは null になります"
-                             : "未設定のときスクリプトからは IsValid == false のハンドルになります"),
+                         + (ReferenceKindCatalog.IsScriptKind(refKind.Kind)
+                             ? "未設定・解決失敗のときスクリプトからは null になります"
+                               + "（IsValid はありません。必ず null チェックしてください）"
+                             : refKind.IsNullable
+                                 ? "未設定のときスクリプトからは null になります"
+                                 : "未設定のときスクリプトからは IsValid == false のハンドルになります"),
         };
 
         var picker = ReferencePicker.Create(spec, actorName, slotName,

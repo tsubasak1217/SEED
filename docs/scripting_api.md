@@ -1210,6 +1210,29 @@ public class FollowCamera : SEEDScript
 | `SEED.GameObject` / `SEED.GameObject?` | アクター本体への参照 |
 | `SEED.Transform` / `SEED.CanvasTransform`（＋ `?`） | アクターのルートに直付けされた Transform 系への参照 |
 | `SEED.Sprite` / `SEED.Camera` / `SEED.AudioSource` / `SEED.Animator` / `SEED.ParticleEmitter` / `SEED.InputMap` / `SEED.LineRenderer`（＋ `?`） | アクター内の**コンポーネントスロット**への参照 |
+| `MyScript` / `MyScript?`（任意の自作スクリプト） | 参照先アクターに付いている**そのスクリプトの実インスタンス**への参照（フィールド・メソッドを直接呼べる） |
+
+**自作スクリプトへの参照**
+
+```csharp
+using SEEDEditor.Scripting;
+
+public class CameraMove : SEEDScript
+{
+    // 参照先アクターに付いている PlayerMove の「生きているインスタンス」が注入される。
+    // 解決できないときは（? の有無にかかわらず）null なので必ず null チェックする。
+    [SerializeField(Label = "プレイヤー")]
+    private PlayerMove? player;
+
+    public override void Update()
+    {
+        if (player is null) return;      // 未設定・参照先破棄・解決失敗
+        var state = player.State;        // public フィールド／プロパティ／メソッドを直接使える
+    }
+}
+```
+
+> **重要**: 自作スクリプトへの参照はハンドル構造体ではなく**実インスタンス（class）**なので、`IsValid` は**ありません**。解決できないとき（未設定・アクター不在・そのスクリプトが付いていない・破棄済み）は `T` 宣言でも `T?` 宣言でも **必ず `null`** になるため、**毎回 null チェックが必須**です。参照先スクリプトの `OnStart` が自分より先に走っている保証は**ありません**（初期化済みの値を読むのは `Update` 以降にしてください）。インスタンスは**ホットリロードのたびに作り直されて再注入**されるので、**別のフィールドへキャッシュしてはいけません**（古いインスタンスを掴み続けます）。同じスクリプトが 1 アクターに複数付いている場合はインスペクタのスロット選択ダイアログで指定できます（未指定なら先頭のスロット）。
 
 > **重要**: 参照フィールドは**常に参照（ハンドル）**です（「値としての Transform」は作れません。値で持つなら `SEED.Vector3`）。**`null` は「未設定」のみ**を意味し Nullable（`T?`）宣言でしか起きません。**`IsValid` は「参照先が生きているか」**で、未解決・破棄済みのどちらでも `false` です。非 Nullable（`T`）宣言は未設定でも null にならず `IsValid == false` の無効ハンドルになります。参照は**アクタ名（＋スロット名）**で保存されますが、エディタでアクタをリネームすると**旧名一致の参照は自動で新名に追従**します（同名アクタが複数ある場合は旧名一致の参照がすべて書き換わる点に注意。コンパイルエラー中のスクリプトの参照は型判定できないため追従しません）。解決は Play 開始時／Instantiate 時に **`OnStart` より前の一度きり**です。
 

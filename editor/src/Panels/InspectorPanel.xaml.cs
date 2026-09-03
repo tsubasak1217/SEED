@@ -9546,9 +9546,19 @@ public partial class InspectorPanel : UserControl
         var path           = info.ModelPath;
         int actorAtRequest = _currentActorId;
         var infoCopy       = info;
+        var assetsRoot     = _assetsPath;
         Task.Run(() =>
             {
-                try { return ScriptCompiler.CompileFile(path); }
+                try
+                {
+                    // 他スクリプトを参照するフィールド（[SerializeField] PlayerMove player;）は
+                    // 単一ファイルコンパイルでは型を解決できない。まずプロジェクト全体で
+                    // コンパイルし、解決できなかった場合のみ単一ファイルコンパイルへ落とす。
+                    var projType = ScriptCompiler.ResolveScriptTypeInProject(path, assetsRoot);
+                    if (projType is not null)
+                        return (projType, (IReadOnlyList<string>)Array.Empty<string>());
+                    return ScriptCompiler.CompileFile(path);
+                }
                 catch (Exception ex) { return ((Type?)null, (IReadOnlyList<string>)new[] { ex.Message }); }
             })
             .ContinueWith(t =>

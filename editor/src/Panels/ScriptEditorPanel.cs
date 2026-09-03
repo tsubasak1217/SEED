@@ -2553,8 +2553,10 @@ public class ScriptEditorPanel : UserControl
             _breakpointStore.Save();
         }
 
-        // Roslyn でコンパイルチェックし、結果を Output パネルに表示する
-        var (type, errors) = ScriptCompiler.CompileFile(doc.FilePath);
+        // Roslyn でコンパイルチェックし、結果を Output パネルに表示する。
+        // 他スクリプトを参照するフィールド（[SerializeField] PlayerMove player;）は
+        // 単一ファイルでは解決できないため、まずプロジェクト全体で型解決を試みる。
+        var (type, errors) = ResolveTypeForSave(doc.FilePath);
         if (type is null)
         {
             EditorLog.Write($"スクリプトコンパイルエラー [{Path.GetFileName(doc.FilePath)}]:");
@@ -2739,4 +2741,21 @@ public class ScriptEditorPanel : UserControl
             }
         }
     }
+    /// <summary>
+    /// 保存時のコンパイルチェック用に、対象ファイルが宣言するスクリプト型を解決する。
+    ///
+    /// 他スクリプトを参照するフィールド・[RequireComponent] などは単一ファイル
+    /// コンパイルでは解決できないため、アセットルートがあればプロジェクト全体で
+    /// 解決し、失敗した場合のみ単一ファイルコンパイル（エラーメッセージ付き）へ落とす。
+    /// </summary>
+    private (Type? type, IReadOnlyList<string> errors) ResolveTypeForSave(string filePath)
+    {
+        if (!string.IsNullOrEmpty(_assetsRoot))
+        {
+            var t = ScriptCompiler.ResolveScriptTypeInProject(filePath, _assetsRoot!);
+            if (t is not null) return (t, System.Array.Empty<string>());
+        }
+        return ScriptCompiler.CompileFile(filePath);
+    }
+
 }

@@ -49,7 +49,10 @@ public static class ScriptCompiler
         var comp   = CSharpCompilation.Create(
             $"SEEDScript_{Guid.NewGuid():N}",
             [tree], _refs,
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
+                // ユーザースクリプトの `PlayerMove?` 等の null 許容注釈をメタデータへ出力させる
+                // （警告は出さない）。参照フィールドの null 許容判定に必要。
+                .WithNullableContextOptions(NullableContextOptions.Annotations));
 
         using var ms = new MemoryStream();
         var result   = comp.Emit(ms);
@@ -103,7 +106,10 @@ public static class ScriptCompiler
             var comp = CSharpCompilation.Create(
                 $"SEEDScriptProj_{Guid.NewGuid():N}",
                 trees, _refs,
-                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
+                // ユーザースクリプトの `PlayerMove?` 等の null 許容注釈をメタデータへ出力させる
+                // （警告は出さない）。参照フィールドの null 許容判定に必要。
+                .WithNullableContextOptions(NullableContextOptions.Annotations));
 
             using var ms = new MemoryStream();
             var result   = comp.Emit(ms);
@@ -165,7 +171,10 @@ public static class ScriptCompiler
             var comp = CSharpCompilation.Create(
                 $"SEEDScriptProj_{Guid.NewGuid():N}",
                 trees.Select(t => t.tree), _refs,
-                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
+                // ユーザースクリプトの `PlayerMove?` 等の null 許容注釈をメタデータへ出力させる
+                // （警告は出さない）。参照フィールドの null 許容判定に必要。
+                .WithNullableContextOptions(NullableContextOptions.Annotations));
 
             using var ms = new MemoryStream();
             if (!comp.Emit(ms).Success) return null;
@@ -276,10 +285,14 @@ public static class ScriptCompiler
         var (rangeMin, rangeMax) = ReadRange(f);
         var defValue             = owner is not null ? f.GetValue(owner) : null;
 
-        // 参照フィールド（GameObject / Transform / Camera … とその Nullable 版）か判定する。
+        // 参照フィールド（GameObject / Transform / Camera / ユーザースクリプト … と
+        // その Nullable 版）か判定する。
         // 判定の正典は SEED.ScriptReference（ランタイム側の注入処理と同じ実装を共有する）。
+        //
+        // FieldInfo を渡すオーバーロードを使う: 参照型（class）の `T?` は Nullable<T> に
+        // ならないため、型情報だけでは null 許容を判別できない（NullabilityInfoContext が要る）。
         SEED.ScriptReference.ReferenceKind? reference =
-            SEED.ScriptReference.TryGetKind(f.FieldType, out var refKind) ? refKind : null;
+            SEED.ScriptReference.TryGetKind(f, out var refKind) ? refKind : null;
 
         // 配列フィールド（T[] / List<T>）は 1 本の JSON 配列文字列として扱う葉。
         // List<T> は BCL で [Serializable] が付いているため、ネスト判定より

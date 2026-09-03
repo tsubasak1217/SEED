@@ -646,7 +646,7 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width ControlPointPath ControlPoint コントロールポイント 制御点 経路 パス path レール 巡回 ルート 閉ループ ループ 周回 SamplePosition SampleTangent 接線 進行方向 Duration StartTime PointCount Closed">
+<section id="sec-components" data-keywords="Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル スクリプト参照 自作スクリプト 他スクリプト 他のスクリプト インスタンス参照 スクリプト間 参照渡し PlayerMove WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width ControlPointPath ControlPoint コントロールポイント 制御点 経路 パス path レール 巡回 ルート 閉ループ ループ 周回 SamplePosition SampleTangent 接線 進行方向 Duration StartTime PointCount Closed">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -988,7 +988,32 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><td><code>SEED.GameObject</code> / <code>SEED.GameObject?</code></td><td>アクター本体への参照</td></tr>
     <tr><td><code>SEED.Transform</code> / <code>SEED.CanvasTransform</code>（＋ <code>?</code>）</td><td>アクターのルートに直付けされた Transform 系への参照</td></tr>
     <tr><td><code>SEED.Sprite</code> / <code>SEED.Camera</code> / <code>SEED.AudioSource</code> / <code>SEED.Animator</code> / <code>SEED.ParticleEmitter</code> / <code>SEED.InputMap</code>（＋ <code>?</code>）</td><td>アクター内の<b>コンポーネントスロット</b>への参照</td></tr>
+    <tr><td><code>MyScript</code> / <code>MyScript?</code>（任意の自作スクリプト）</td><td>参照先アクターに付いている<b>そのスクリプトの実インスタンス</b>への参照（フィールド・メソッドを直接呼べる）</td></tr>
   </table>
+
+  <h4>自作スクリプトへの参照</h4>
+<pre><span class="k">using</span> SEEDEditor.Scripting;
+
+<span class="k">public class</span> <span class="t">CameraMove</span> : <span class="t">SEEDScript</span>
+{
+    <span class="c">// 参照先アクターに付いている PlayerMove の「生きているインスタンス」が注入される</span>
+    [<span class="t">SerializeField</span>(Label = <span class="s">"プレイヤー"</span>)]
+    <span class="k">private</span> <span class="t">PlayerMove</span>? player;
+
+    <span class="k">public override void</span> Update()
+    {
+        <span class="k">if</span> (player <span class="k">is null</span>) <span class="k">return</span>;   <span class="c">// 未設定・参照先破棄・解決失敗</span>
+        <span class="k">var</span> state = player.State;      <span class="c">// public メンバを直接使える</span>
+    }
+}</pre>
+  <div class="warn">
+    <b>自作スクリプト参照の重要な注意</b><br>
+    ハンドル構造体ではなく<b>実インスタンス（class）</b>なので <code>IsValid</code> は<b>ありません</b>。<br>
+    解決できないとき（未設定・アクター不在・そのスクリプトが付いていない・破棄済み）は <code>T</code> 宣言でも <code>T?</code> 宣言でも<b>必ず null</b> になります。<b>毎回 null チェックが必須</b>です。<br>
+    参照先スクリプトの <code>OnStart</code> が自分より先に走っている保証は<b>ありません</b>（初期化済みの値を読むのは <code>Update</code> 以降に）。<br>
+    インスタンスは<b>ホットリロードのたびに作り直されて再注入</b>されます。<b>別のフィールドへキャッシュしてはいけません</b>（古いインスタンスを掴み続けます）。<br>
+    同じスクリプトが 1 アクターに複数付いている場合はスロット選択ダイアログで指定できます（未指定なら先頭のスロット）。
+  </div>
   <p class="section-note">参照フィールドは<b>常に参照（ハンドル）</b>です。「値としての Transform」は作れません。位置や回転を値で持ちたい場合は <code>SEED.Vector3</code> などを使ってください。</p>
   <div class="warn">
     <b>null と IsValid の使い分け</b><br>
