@@ -30,6 +30,13 @@ public struct FishLevelEntry
     /// <summary>このレベルで出現する魚の .actor ファイルパスのリスト。</summary>
     [SerializeField(Label = "魚prefab(.actorパス)")]
     public List<string> fishPrefabs;
+
+    /// <summary>
+    /// このレベルの水域に常時泳がせておく魚の数。
+    /// 釣られる・消えるなどで減ったら自動で補充される。0 なら自動生成しない。
+    /// </summary>
+    [SerializeField(Label = "維持数")]
+    public int maintainCount;
 }
 
 /// <summary>
@@ -89,6 +96,13 @@ public class FishManager : SEEDScript
     /// <summary>出現位置の乱数源（方位と距離の揺らぎに使う）。</summary>
     private readonly System.Random random = new();
 
+    /// <summary>
+    /// レベルごとの生存中の魚のハンドル（添字 = レベル）。
+    /// 釣られる・破棄されると IsValid が false になるので、毎フレーム掃除して
+    /// 「維持数」まで自動補充する（<see cref="EnsurePopulation"/>）。
+    /// </summary>
+    private readonly List<List<SEED.GameObject>> spawnedFish = new();
+
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
     {
@@ -101,10 +115,11 @@ public class FishManager : SEEDScript
 
     /// <summary>
     /// 毎フレーム呼ばれる主更新処理。
-    /// 生成ルール（いつ・何匹・補充）が決まったらここから <see cref="SpawnOne"/> を呼ぶ。
+    /// 各レベルの魚の数を「維持数」まで自動補充する（釣られたら自然に補充される）。
     /// </summary>
     public override void Update(ref NativeFrameContext ctx)
     {
+        EnsurePopulation();
     }
 
     /// <summary>固定タイムステップの更新。物理など時間刻みを一定にしたい処理向け。</summary>
@@ -140,8 +155,38 @@ public class FishManager : SEEDScript
     /// </summary>
     /// <param name="levelIndex">レベル（levels の添字、0 始まり）。</param>
     /// <returns>生成できたら true。</returns>
-    public bool SpawnOne(int levelIndex)
+    public bool SpawnOne(int levelIndex) => TrySpawnOne(levelIndex, out _);
+
+    /// <summary>
+    /// 各レベルの魚の数を「維持数」まで自動補充する。
+    /// 無効になった（釣られた・破棄された）ハンドルは追跡から外す。
+    /// マーカー未設定など生成に失敗するレベルは、そのフレームは諦めて次を見る。
+    /// </summary>
+    private void EnsurePopulation()
     {
+        // レベル数の増加に合わせて追跡リストを拡張する（縮小はしない: 添字の安定を優先）
+        while (spawnedFish.Count < levels.Count) { spawnedFish.Add(new List<SEED.GameObject>()); }
+
+        for (int i = 0; i < levels.Count; i++)
+        {
+            var alive = spawnedFish[i];
+            alive.RemoveAll(f => !f.IsValid);
+
+            int want = levels[i].maintainCount;
+            while (alive.Count < want)
+            {
+                if (!TrySpawnOne(i, out var fish)) { break; }
+                alive.Add(fish);
+            }
+        }
+    }
+
+    /// <summary><see cref="SpawnOne"/> の実体。生成した魚のハンドルも返す（自動補充の追跡用）。</summary>
+    /// <param name="levelIndex">レベル（levels の添字、0 始まり）。</param>
+    /// <param name="fish">生成した魚（失敗時は無効ハンドル）。</param>
+    private bool TrySpawnOne(int levelIndex, out SEED.GameObject fish)
+    {
+        fish = default;
         if (levelIndex < 0 || levelIndex >= levels.Count) { return false; }
         var level = levels[levelIndex];
         if (level.fishPrefabs is not { Count: > 0 } prefabs) { return false; }
@@ -170,7 +215,7 @@ public class FishManager : SEEDScript
             center.z + SEED.Mathf.Cos(angle) * distance);
 
         // 生成して位置を合わせる（Instantiate 失敗時は false）
-        var fish = SEED.GameObject.Instantiate(path);
+        fish = SEED.GameObject.Instantiate(path);
         if (!fish.IsValid) { return false; }
         if (fish.GetComponent<SEED.Transform>() is not { } t || !t.IsValid) { return false; }
         t.Position = spawnPos;
