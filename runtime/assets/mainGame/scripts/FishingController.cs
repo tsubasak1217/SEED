@@ -16,8 +16,9 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// - キャスト … マウスを<b>右へ振る</b>（累積が <see cref="castSwingThresholdPx"/> px 超で成立）
 /// - 方向     … A / D キーでキャスト角を左右に振る（±<see cref="maxCastAngleDegrees"/> 度）
 /// - 中断     … キャスト前に左クリックを離すと姿勢を解除して移動へ戻る
-/// - リール   … マウスホイール、またはマウス移動量（インスペクタで切替）
-/// - 巻く向き … A / D キーで左右に振れる（島中心方向を基準に ±範囲内）
+/// - リール   … マウスホイール回転量 と マウス移動量（じたばた振る）の<b>両方が常時合算</b>される
+///   （<see cref="metersPerWheelUnit"/> / <see cref="metersPerMovePixel"/> を 0 にすればその入力源を無効化できる）
+/// - 巻く向き … A / D キーで左右に振れる（<b>ウキ→竿先</b>方向を基準に ±範囲内。<see cref="islandCenter"/> は竿先が未設定のときのみのフォールバック）
 ///
 /// <b>担当範囲</b>
 /// このスクリプトは「ウキの位置」と「釣り糸の点列」だけを毎フレーム決める。
@@ -179,9 +180,14 @@ public class FishingController : SEEDScript
     private SEED.WaterVolume? water = null;
 
     /// <summary>
-    /// 島の中心（巻き取り方向の基準）。未設定ならプレイヤー自身の位置を中心として使う。
+    /// 島の中心（巻き取り方向の基準の<b>フォールバック</b>）。
+    ///
+    /// 通常は「ウキ→竿先」の方向を巻き取りの基準にするため、この値は使われない。
+    /// <see cref="rodRoot"/> と <see cref="rodTip"/> がどちらも未設定で
+    /// 竿先の位置が実質プレイヤー自身に潰れてしまう場合にだけ、代わりの基準として使う
+    /// （それも未設定ならプレイヤー自身の位置を中心として使う）。
     /// </summary>
-    [SerializeField(Label = "島の中心（巻く方向の基準）")]
+    [SerializeField(Label = "島の中心（巻く方向の代替基準・竿先未設定時のみ使用）")]
     private SEED.Transform? islandCenter = null;
 
     /// <summary>釣り竿の Animator。未設定なら竿のアニメ切替は行わない。</summary>
@@ -339,19 +345,24 @@ public class FishingController : SEEDScript
     // ─── リール（巻き取り）─────────────────────────────────────
 
     /// <summary>
-    /// 巻き取り入力にマウスホイールを使うか。
-    /// true  … <see cref="SEED.Input.MouseScroll"/> の絶対量（どちら回しでも巻ける）
-    /// false … <see cref="SEED.Input.MouseDelta"/> の移動量（グルグル回す操作）
+    /// マウスホイール 1 目盛（<see cref="SEED.Input.MouseScroll"/> の絶対量 1 単位）あたりの巻き取り距離（メートル）。
+    /// 0 にするとホイール入力を無効化できる。
     ///
-    /// ※ 列挙型は [SerializeField] のインスペクタ対応型に含まれない
-    ///   （ScriptBridge の型タグは float/int/bool/string/参照/配列のみ）ため bool で表す。
+    /// マウス移動による巻き取り（<see cref="metersPerMovePixel"/>）と<b>常時併用</b>される
+    /// （毎フレーム両方の入力量を合算して巻く。旧仕様の「ホイール／マウス移動の二択」は廃止した）。
     /// </summary>
-    [Header("リール"), SerializeField(Label = "ホイールで巻く（オフ=マウス移動）")]
-    private bool reelByWheel = true;
+    [Header("リール"), SerializeField(Label = "ホイール1目盛あたりの巻き距離(m)")]
+    private float metersPerWheelUnit = 0.5f;
 
-    /// <summary>入力 1 単位あたりの巻き取り距離（メートル）。ホイール 1 ノッチ／マウス 1px に対する量。</summary>
-    [SerializeField(Label = "入力1単位あたりの巻き量(m)")]
-    private float metersPerUnit = 0.05f;
+    /// <summary>
+    /// マウス移動 1px（<see cref="SEED.Input.MouseDelta"/> の大きさ 1 単位）あたりの巻き取り距離（メートル）。
+    /// 0 にするとマウス移動による巻き取り（じたばた振る操作）を無効化できる。
+    ///
+    /// 釣り中はカーソルをロックしている（<see cref="lockCursorWhileFishing"/>）ため、
+    /// 画面端での MouseDelta 欠落を気にせず安定して拾える。
+    /// </summary>
+    [SerializeField(Label = "マウス移動1pxあたりの巻き距離(m)")]
+    private float metersPerMovePixel = 0.01f;
 
     /// <summary>この秒数だけ巻き入力が無ければ巻き取りを止めて待機（Floating）へ戻る。</summary>
     [SerializeField(Label = "巻き取り停止までの猶予(秒)")]
@@ -878,6 +889,14 @@ public class FishingController : SEEDScript
     ///
     /// 巻き入力があれば Reeling、無入力が <see cref="reelIdleSeconds"/> 続けば Floating へ戻る。
     /// ウキは常に水面高さ（＋上下揺れ）に保つ。
+    ///
+    /// <b>巻き取りの終了判定（元の不具合修正）</b>
+    /// 以前は巻く向きの基準が「ウキ→島の中心」だったため、ウキが竿先の脇や後方を通り抜けても
+    /// 「竿先との水平距離」がたまたま縮まらず、巻き切っても回収されない不具合があった。
+    /// 基準を「ウキ→竿先」へ変更したうえで、
+    /// (1) 毎フレームの移動量を「竿先までの残り水平距離」でクランプして行き過ぎを防ぎ、
+    /// (2) 残り距離が完了距離以下、または進行方向が竿先への方向から 90 度以上外れた
+    ///     （＝内積が 0 以下＝もう竿先へ近づけない）場合は即座に巻き取りを完了させる。
     /// </summary>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     private void UpdateReeling(float deltaTime)
@@ -906,9 +925,36 @@ public class FishingController : SEEDScript
             }
         }
 
-        // 巻く向きを決めて、その向きへ水平に引き寄せる
-        var dir = ComputeReelDirection(floatTf.Position, deltaTime);
-        var next = floatTf.Position + dir * amount;
+        // 巻き取りの基準点（通常は竿先。竿先が実質未設定なら島の中心へフォールバック）
+        var target = ReelTargetPosition();
+
+        // ウキ→基準点の水平ベクトルと、その長さ（＝残りの巻き取り距離）
+        var toTarget = new SEED.Vector3(target.x - floatTf.Position.x, 0f, target.z - floatTf.Position.z);
+        float remaining = SEED.Mathf.Sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+
+        // 安全策: Reeling に入った時点（または既に）残り距離が完了距離以下なら、
+        // 巻く前から手元にあるということなので即座に完了させる（ウキが素通りするのを防ぐ）。
+        if (remaining <= reelEndDistance)
+        {
+            FinishReeling();
+            return;
+        }
+
+        // 巻く向き（A / D による左右のずれを含む、基準方向からの水平単位ベクトル）
+        var dir = ComputeReelDirection(toTarget, deltaTime);
+
+        // 進行方向が基準点への方向から 90 度以上外れている（内積 <= 0）＝
+        // これ以上巻いても基準点へ近づけない向きなので、素通りする前に巻き取りを完了させる。
+        float approach = toTarget.x * dir.x + toTarget.z * dir.z;
+        if (approach <= 0f)
+        {
+            FinishReeling();
+            return;
+        }
+
+        // このフレームの移動量を「残りの水平距離」でクランプし、基準点を追い越さないようにする
+        float step = SEED.Mathf.Min(amount, remaining);
+        var next = floatTf.Position + dir * step;
         SetFloatPosition(new SEED.Vector3(next.x, WaterSurfaceY() + BobOffset(), next.z));
 
         // プレイヤーはウキに一番近い経路上の点へ歩いて付いていく（移動の実装は PlayerMove の責務）
@@ -917,8 +963,8 @@ public class FishingController : SEEDScript
             pm.MoveTowardWorldPoint(floatTf.Position, deltaTime);
         }
 
-        // 手元まで寄ったら 1 回の釣りを終える
-        if (HorizontalDistance(floatTf.Position, RodTipPosition()) <= reelEndDistance)
+        // 移動後の残り距離が完了距離以下になったら 1 回の釣りを終える
+        if (HorizontalDistance(next, target) <= reelEndDistance)
         {
             FinishReeling();
         }
@@ -950,27 +996,43 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// このフレームの巻き取り量（メートル）を読む。
-    /// ホイールは<b>絶対量</b>で扱うので、どちら回しでも巻ける。
+    ///
+    /// マウスホイールの回転量とマウス移動量（じたばた振る操作）の<b>両方を毎フレーム合算</b>する。
+    /// ホイールは絶対量で扱う（どちら回しでも巻ける）。係数を 0 にすればその入力源を無効化できる
+    /// （<see cref="metersPerWheelUnit"/> / <see cref="metersPerMovePixel"/>）。
     /// </summary>
     private float ReadReelAmount()
     {
-        float raw = reelByWheel
-            ? SEED.Mathf.Abs(SEED.Input.MouseScroll)
-            : SEED.Input.MouseDelta.Magnitude;
+        float byWheel = SEED.Mathf.Abs(SEED.Input.MouseScroll) * metersPerWheelUnit;
+        float byMove = SEED.Input.MouseDelta.Magnitude * metersPerMovePixel;
+        return byWheel + byMove;
+    }
 
-        return raw * metersPerUnit;
+    /// <summary>
+    /// 巻き取りの基準点（ワールド）を返す。
+    ///
+    /// 通常は竿先（<see cref="RodTipPosition"/> と同じ優先順位: 竿アクタ追従 → 竿先トランスフォーム）。
+    /// <see cref="rodRoot"/> と <see cref="rodTip"/> のどちらも未設定で竿先が定義できない場合だけ、
+    /// <see cref="islandCenter"/>（未設定ならプレイヤー自身の位置）へフォールバックする。
+    /// </summary>
+    private SEED.Vector3 ReelTargetPosition()
+    {
+        if (rodRoot is { } rod && rod.IsValid) { return ComposeRodTip(rod); }
+        if (rodTip is { } tip && tip.IsValid) { return tip.Position; }
+        if (islandCenter is { } c && c.IsValid) { return c.Position; }
+        return transform.Position;
     }
 
     /// <summary>
     /// 巻く向き（水平・正規化済み）を返す。
     ///
-    /// 基準は「ウキ → 島の中心（未設定ならプレイヤー）」の水平方向。
+    /// 基準は「ウキ → 巻き取りの基準点（<see cref="ReelTargetPosition"/>、通常は竿先）」の水平方向。
     /// そこから A / D キーで <see cref="reelAngleOffsetDegrees"/> を
     /// ±<see cref="reelAngleRangeDegrees"/>/2 の範囲で振れる。
     /// </summary>
-    /// <param name="floatPos">現在のウキ位置（ワールド）。</param>
+    /// <param name="toTarget">ウキ → 基準点の水平ベクトル（Y 成分は無視する。呼び出し側で算出済み）。</param>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
-    private SEED.Vector3 ComputeReelDirection(SEED.Vector3 floatPos, float deltaTime)
+    private SEED.Vector3 ComputeReelDirection(SEED.Vector3 toTarget, float deltaTime)
     {
         // A / D で基準からのずれ角を動かす（範囲外へは出さない）
         float half = SEED.Mathf.Abs(reelAngleRangeDegrees) * 0.5f;
@@ -980,12 +1042,10 @@ public class FishingController : SEEDScript
         reelAngleOffsetDegrees = SEED.Mathf.Clamped(
             reelAngleOffsetDegrees + turn * reelTurnSpeedDegPerSec * deltaTime, -half, half);
 
-        // 基準方向（ウキ → 島の中心）。中心が取れない・真上にある場合は動かさない。
-        var center = islandCenter is { } c && c.IsValid ? c.Position : transform.Position;
-        var toCenter = new SEED.Vector3(center.x - floatPos.x, 0f, center.z - floatPos.z);
-        if (toCenter.SqrMagnitude < SqrEpsilon) { return SEED.Vector3.Zero; }
+        // 基準方向（ウキ → 基準点）。基準点がウキの真上にある等の縮退時は動かさない。
+        if (toTarget.SqrMagnitude < SqrEpsilon) { return SEED.Vector3.Zero; }
 
-        float yaw = SEED.Mathf.Atan2(toCenter.x, toCenter.z) * SEED.Mathf.Rad2Deg + reelAngleOffsetDegrees;
+        float yaw = SEED.Mathf.Atan2(toTarget.x, toTarget.z) * SEED.Mathf.Rad2Deg + reelAngleOffsetDegrees;
         float yawRad = yaw * SEED.Mathf.Deg2Rad;
         return new SEED.Vector3(SEED.Mathf.Sin(yawRad), 0f, SEED.Mathf.Cos(yawRad));
     }
