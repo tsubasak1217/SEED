@@ -16,8 +16,8 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// - キャスト … マウスを<b>右へ振る</b>（累積が <see cref="castSwingThresholdPx"/> px 超で成立）
 /// - 方向     … A / D キーでキャスト角を左右に振る（±<see cref="maxCastAngleDegrees"/> 度）
 /// - 中断     … キャスト前に左クリックを離すと姿勢を解除して移動へ戻る
-/// - リール   … マウスホイール回転量 と マウス移動量（じたばた振る）の<b>両方が常時合算</b>される
-///   （<see cref="metersPerWheelUnit"/> / <see cref="metersPerMovePixel"/> を 0 にすればその入力源を無効化できる）
+/// - リール   … マウスホイール回転量のみで巻き取る
+///   （<see cref="metersPerWheelUnit"/> を 0 にすれば無効化できる）
 /// - 巻く向き … A / D キーで左右に振れる（<b>ウキ→竿先</b>方向を基準に ±範囲内。<see cref="islandCenter"/> は竿先が未設定のときのみのフォールバック）
 ///
 /// <b>担当範囲</b>
@@ -348,21 +348,10 @@ public class FishingController : SEEDScript
     /// マウスホイール 1 目盛（<see cref="SEED.Input.MouseScroll"/> の絶対量 1 単位）あたりの巻き取り距離（メートル）。
     /// 0 にするとホイール入力を無効化できる。
     ///
-    /// マウス移動による巻き取り（<see cref="metersPerMovePixel"/>）と<b>常時併用</b>される
-    /// （毎フレーム両方の入力量を合算して巻く。旧仕様の「ホイール／マウス移動の二択」は廃止した）。
+    /// リールの巻き取り入力はホイールのみ（回転方向は問わず絶対量で扱う）。
     /// </summary>
     [Header("リール"), SerializeField(Label = "ホイール1目盛あたりの巻き距離(m)")]
     private float metersPerWheelUnit = 0.5f;
-
-    /// <summary>
-    /// マウス移動 1px（<see cref="SEED.Input.MouseDelta"/> の大きさ 1 単位）あたりの巻き取り距離（メートル）。
-    /// 0 にするとマウス移動による巻き取り（じたばた振る操作）を無効化できる。
-    ///
-    /// 釣り中はカーソルをロックしている（<see cref="lockCursorWhileFishing"/>）ため、
-    /// 画面端での MouseDelta 欠落を気にせず安定して拾える。
-    /// </summary>
-    [SerializeField(Label = "マウス移動1pxあたりの巻き距離(m)")]
-    private float metersPerMovePixel = 0.01f;
 
     /// <summary>この秒数だけ巻き入力が無ければ巻き取りを止めて待機（Floating）へ戻る。</summary>
     [SerializeField(Label = "巻き取り停止までの猶予(秒)")]
@@ -997,15 +986,12 @@ public class FishingController : SEEDScript
     /// <summary>
     /// このフレームの巻き取り量（メートル）を読む。
     ///
-    /// マウスホイールの回転量とマウス移動量（じたばた振る操作）の<b>両方を毎フレーム合算</b>する。
-    /// ホイールは絶対量で扱う（どちら回しでも巻ける）。係数を 0 にすればその入力源を無効化できる
-    /// （<see cref="metersPerWheelUnit"/> / <see cref="metersPerMovePixel"/>）。
+    /// マウスホイールの回転量のみを入力源とする（絶対量で扱うため、どちら回しでも巻ける）。
+    /// 係数を 0 にすればホイール入力を無効化できる（<see cref="metersPerWheelUnit"/>）。
     /// </summary>
     private float ReadReelAmount()
     {
-        float byWheel = SEED.Mathf.Abs(SEED.Input.MouseScroll) * metersPerWheelUnit;
-        float byMove = SEED.Input.MouseDelta.Magnitude * metersPerMovePixel;
-        return byWheel + byMove;
+        return SEED.Mathf.Abs(SEED.Input.MouseScroll) * metersPerWheelUnit;
     }
 
     /// <summary>
