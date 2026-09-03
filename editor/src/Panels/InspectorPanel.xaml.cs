@@ -9590,7 +9590,10 @@ public partial class InspectorPanel : UserControl
         // （SET_SCRIPT_FIELD のたびに ACTOR_COMPONENTS が再送されてこの UI は作り直される）。
         // キーは「スロット添字 + フィールドのドットパス」。
         expandStates: _expandStates,
-        expandKeyPrefix: $"{ExpandKeyScriptFieldPrefix}{slotIdx}:"));
+        expandKeyPrefix: $"{ExpandKeyScriptFieldPrefix}{slotIdx}:",
+        // string 配列要素へ .actor をドロップしたときの保存値（assets:// 仮想パス）変換。
+        // アセットルート外のファイルは絶対パスのまま返る（VirtualPath.ToVirtual の規約）。
+        assetPathToVirtual: p => VirtualPath.ToVirtual(p, _assetsPath)));
         sp.Children.Add(fieldSection);
     }
 

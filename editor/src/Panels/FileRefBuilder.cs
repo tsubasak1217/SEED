@@ -207,6 +207,12 @@ internal static class FileRefBuilder
         return grid;
     }
 
+    /// <summary>
+    /// ドロップされたデータから、受け付ける拡張子のファイルパスを 1 本取り出す（無ければ null）。
+    /// ファイル参照行以外（スクリプトの文字列配列要素など）からも同じ判定を使えるよう公開している。
+    /// </summary>
+    internal static string? ExtractDroppedPath(DragEventArgs e, string[] exts) => ExtractPath(e, exts);
+
     private static string? ExtractPath(DragEventArgs e, string[] exts)
     {
         if (e.Data.GetDataPresent("SEEDProjectPaths") &&

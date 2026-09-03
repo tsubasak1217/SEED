@@ -287,8 +287,8 @@ public static unsafe class ScriptBridge
             var name  = Encoding.UTF8.GetString(namePtr, nameLen);
             var value = Encoding.UTF8.GetString(valPtr, valLen);
 
-            // 参照フィールドは即時解決できないので保留キューへ積む
-            if (IsReferenceFieldPath(target, name))
+            // 参照フィールド（単体・配列とも）は即時解決できないので保留キューへ積む
+            if (NeedsDeferredReferenceResolution(target, name))
             {
                 QueuePendingReference(h, name, value);
                 return;
@@ -379,7 +379,7 @@ public static unsafe class ScriptBridge
                 // ネスト途中のオブジェクトは必要なら生成してから末端へ書き込む
                 if (!TryResolveLeafField(target, path, createMissing: true, out var owner, out var leaf))
                     continue;
-                leaf.SetValue(owner, SEED.ScriptReference.Resolve(leaf.FieldType, value));
+                ApplyResolvedReference(owner, leaf, value);
             }
         }
         catch (Exception ex)
@@ -567,9 +567,14 @@ public static unsafe class ScriptBridge
             var value = instance is null ? null : f.GetValue(instance);
             var isRef = SEED.ScriptReference.TryGetKind(f.FieldType, out _);
 
+            // 配列フィールド（T[] / List<T>）は 1 本の JSON 配列文字列として扱う葉である。
+            // List<T> は BCL で [Serializable] が付いているため、ネスト判定より先に
+            // 配列判定を行わないと List の内部フィールドへ降りてしまう。
+            var isArray = SEED.ScriptArray.TryGetElementType(f.FieldType, out _, out _);
+
             // [Serializable] ネストクラスは葉ではないので子へ降りる
             //（参照ハンドルは内部構造を晒さないため展開しない。ScriptCompiler と同じ規則）
-            if (!isRef && depth < DescribeMaxNestDepth && IsNestedSerializableType(f.FieldType))
+            if (!isRef && !isArray && depth < DescribeMaxNestDepth && IsNestedSerializableType(f.FieldType))
             {
                 AppendFieldDescriptions(sb, value, f.FieldType, path + ".", depth + 1);
                 continue;
@@ -578,7 +583,7 @@ public static unsafe class ScriptBridge
             if (sb.Length > 1) sb.Append(',');   // "[" だけのときは区切り不要
             sb.Append("{\"name\":").Append(JsonString(path))
               .Append(",\"type\":").Append(JsonString(TypeTagOf(f.FieldType, isRef)))
-              .Append(",\"default\":").Append(JsonString(DefaultValueString(isRef, value)))
+              .Append(",\"default\":").Append(JsonString(DefaultValueString(f.FieldType, isRef, value)))
               .Append('}');
         }
     }
@@ -590,6 +595,10 @@ public static unsafe class ScriptBridge
     private static bool IsNestedSerializableType(Type t)
     {
         if (t.IsPrimitive || t.IsEnum || t == typeof(string) || t.IsArray) return false;
+        // List<T> は BCL で [Serializable] が付いているが、内部フィールドを展開する対象ではない
+        // （配列フィールドとして 1 本の JSON 文字列に畳む）。ScriptCompiler と同じ規則。
+        if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(System.Collections.Generic.List<>))
+            return false;
         if (!t.IsClass && !(t.IsValueType && !t.IsPrimitive)) return false;
         // アセンブリ ID 差異を吸収するため属性名で照合する
         return t.GetCustomAttributesData().Any(a => a.AttributeType.Name == "SerializableAttribute");
@@ -602,6 +611,15 @@ public static unsafe class ScriptBridge
     private static string TypeTagOf(Type t, bool isReference)
     {
         if (isReference)         return "reference";
+
+        // 配列フィールド（T[] / List<T>）は "array:要素型タグ" で表す。
+        // 要素型がインスペクタ非対応なら配列全体を unsupported とする。
+        if (SEED.ScriptArray.TryGetElementType(t, out var elementType, out _))
+        {
+            var elementTag = SEED.ScriptArray.ElementTypeTag(elementType);
+            return elementTag is null ? "unsupported" : SEED.ScriptArray.TypeTagPrefix + elementTag;
+        }
+
         if (t == typeof(float))  return "float";
         if (t == typeof(double)) return "double";
         if (t == typeof(int))    return "int";
@@ -616,8 +634,12 @@ public static unsafe class ScriptBridge
     /// 宣言時初期値の文字列化（<see cref="ConvertValue"/> が解釈できる表記に合わせる）。
     /// 参照フィールドはアクター名の文字列として保存されるので、既定は「未設定＝空文字」。
     /// </summary>
-    private static string DefaultValueString(bool isReference, object? value)
+    private static string DefaultValueString(Type type, bool isReference, object? value)
     {
+        // 配列フィールドは実配列を JSON 配列文字列へ書き出す（未初期化なら "[]"）
+        if (!isReference && SEED.ScriptArray.TryGetElementType(type, out var elementType, out _))
+            return SEED.ScriptArray.EncodeValue(value, elementType);
+
         if (isReference || value is null) return "";
         var inv = System.Globalization.CultureInfo.InvariantCulture;
         return value switch
@@ -671,6 +693,45 @@ public static unsafe class ScriptBridge
     private static bool IsReferenceFieldPath(object root, string path)
         => TryResolveLeafFieldType(root.GetType(), path, out var leafType)
         && SEED.ScriptReference.TryGetKind(leafType, out _);
+
+    /// <summary>
+    /// 指定パスの末端フィールドが「World 公開後でないと解決できない」フィールドかを判定する。
+    /// 参照フィールド単体に加えて、要素が参照型の配列フィールド（<c>Transform[]</c> など）も含む。
+    /// </summary>
+    private static bool NeedsDeferredReferenceResolution(object root, string path)
+    {
+        if (!TryResolveLeafFieldType(root.GetType(), path, out var leafType)) return false;
+        if (SEED.ScriptReference.TryGetKind(leafType, out _)) return true;
+        return SEED.ScriptArray.TryGetElementType(leafType, out var elementType, out _)
+            && SEED.ScriptReference.TryGetKind(elementType, out _);
+    }
+
+    /// <summary>
+    /// 保留中の値をフィールドへ書き込む（参照単体 / 参照配列の両対応）。
+    ///
+    /// 参照配列は JSON 配列文字列を要素ごとに解決してから実配列を組み立てる。
+    /// 解決できない要素は、Nullable 宣言なら null、非 Nullable なら無効ハンドルになる
+    /// （単体の参照フィールドとまったく同じ規則）。
+    /// </summary>
+    private static void ApplyResolvedReference(
+        object owner, System.Reflection.FieldInfo leaf, string value)
+    {
+        var leafType = leaf.FieldType;
+
+        // 参照配列: 要素ごとに解決して T[] / List<T> を作り直す
+        if (!SEED.ScriptReference.TryGetKind(leafType, out _) &&
+            SEED.ScriptArray.TryGetElementType(leafType, out var elementType, out var isList) &&
+            SEED.ScriptReference.TryGetKind(elementType, out _))
+        {
+            var resolved = SEED.ScriptArray.BuildInstance(
+                elementType, isList, value,
+                (elemType, elemValue) => SEED.ScriptReference.Resolve(elemType, elemValue));
+            leaf.SetValue(owner, resolved);
+            return;
+        }
+
+        leaf.SetValue(owner, SEED.ScriptReference.Resolve(leafType, value));
+    }
 
     // ─── スクリプト例外の捕捉とログ抑制 ───────────────────────
     //
@@ -908,9 +969,24 @@ public static unsafe class ScriptBridge
         return true;
     }
 
-    /// <summary>文字列値を対象フィールド型へ変換する（未対応型は null）。</summary>
+    /// <summary>
+    /// 文字列値を対象フィールド型へ変換する（未対応型は null）。
+    ///
+    /// 配列フィールド（T[] / List&lt;T&gt;）は JSON 配列文字列を受け取り、
+    /// 要素ごとに同じ変換規則を適用して実配列を組み立てる。
+    /// 参照要素はここでは解決できない（World が必要）ため対象外
+    /// （<see cref="ResolveReferenceFields"/> が担当する）。
+    /// </summary>
     private static object? ConvertValue(Type type, string value)
     {
+        // 配列フィールド: JSON 配列文字列 → T[] / List<T>
+        if (SEED.ScriptArray.TryGetElementType(type, out var elementType, out var isList) &&
+            SEED.ScriptArray.TryGetElementKind(elementType, out _, out var isRefElement) &&
+            !isRefElement)
+        {
+            return SEED.ScriptArray.BuildInstance(elementType, isList, value, ConvertValue);
+        }
+
         var inv = System.Globalization.CultureInfo.InvariantCulture;
         return type switch
         {

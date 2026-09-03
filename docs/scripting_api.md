@@ -121,6 +121,29 @@ private float glowPower = 1.0f;
 - `[Serializable]` を付けたクラス／構造体型のフィールドに `[SerializeField]` を付けると、インスペクタで**子フィールドが再帰的に展開**されます（入れ子の上限は 8 段）。
 - `GameObject` やコンポーネントハンドル型（`Transform` / `Camera` など）のフィールドに `[SerializeField]` を付けると、**他アクターへの参照フィールド**になります（Hierarchy から D&D で設定）。詳細は第 7 節の「参照フィールド」を参照してください。
 
+### 配列・リストのフィールド
+
+`T[]` と `List<T>` のフィールドは、インスペクタで**要素を追加・削除できる折りたたみ行**になります。
+
+```csharp
+[SerializeField(Label = "巡回速度")]   private float[] patrolSpeeds = { 1.0f, 2.0f };
+[SerializeField(Label = "出現プレハブ")] private List<string> spawnPrefabs = new();
+[SerializeField(Label = "追従対象")]   private SEED.Transform[] followTargets;
+```
+
+- 要素型は `float` / `double` / `int` / `long` / `short` / `bool` / `string` と、参照フィールドに使える型
+  （`GameObject` / `Transform` / `Camera` などのハンドル型）に対応します。
+  それ以外の要素型（列挙型・`[Serializable]` クラスなど）は従来どおり読み取り専用表示になります。
+- 見出しは「フィールド名 (件数)」で、`[＋]` が末尾への追加、行ごとの `[×]` がその要素の削除です。
+  追加された要素の初期値は数値なら 0、真偽値なら `false`、文字列・参照は未設定です。
+- 参照要素は単体の参照フィールドと同じく Hierarchy から D&D で設定でき、`OnStart` の直前に解決されます。
+- `string` 要素の行には Project パネルから `.actor` ファイルをドロップでき、
+  `assets://` 仮想パスが入ります（`GameObject.Instantiate(path)` へそのまま渡せます）。
+- 多次元配列・ジャグ配列（`float[,]` / `float[][]`）は対象外です。
+- 保存形式は 1 フィールド = JSON 配列文字列（例 `[1.0,2.5]` / `["a","b"]`）です。
+  再コンパイル時の値引き継ぎは、**要素型まで一致するときだけ**行われます
+  （`float[]` → `string[]` のような変更では宣言時の初期値に戻ります）。
+
 ---
 
 ## 2. ライフサイクル関数

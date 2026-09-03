@@ -38,7 +38,9 @@ pub struct ScriptComponentData {
 /// CLR の `ScriptBridge.DescribeSerializeFields` が返す JSON 要素に対応する。
 /// - `name`  : ドット区切りのフィールドパス（例 `"stats.hp"`）
 /// - `type_tag`: `float`/`double`/`int`/`long`/`short`/`bool`/`string`/
-///               `reference`/`unsupported`
+///               `reference`/`unsupported`、および配列フィールドの
+///               `array:<要素型タグ>`（例 `array:float` / `array:reference`）。
+///               配列の値は JSON 配列文字列（例 `[1.0,2.5]` / `["a","b"]`）で保存される。
 /// - `default_value`: 宣言時初期値の文字列化（`reference`/`unsupported` は空文字）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScriptFieldDef {
@@ -56,6 +58,12 @@ pub struct ScriptFieldDef {
 /// 後者はアクター名の文字列として保存されるため）。
 /// `unsupported`（インスペクタが扱えない型）は常に既定値へ落とす。
 fn value_matches_type(type_tag: &str, value: &str) -> bool {
+    // 配列フィールド（"array:要素型タグ"）は JSON 配列として解釈し、
+    // すべての要素が要素型タグに適合するかを見る。
+    if let Some(element_tag) = type_tag.strip_prefix(ARRAY_TYPE_TAG_PREFIX) {
+        return array_value_matches_type(element_tag, value);
+    }
+
     match type_tag {
         "float" | "double"        => value.trim().parse::<f64>().is_ok(),
         "int" | "long" | "short"  => value.trim().parse::<i64>().is_ok(),
@@ -63,6 +71,37 @@ fn value_matches_type(type_tag: &str, value: &str) -> bool {
         "string" | "reference"    => true,
         _                         => false,
     }
+}
+
+/// 配列フィールドの型タグ接頭辞（C# 側 `SEED.ScriptArray.TypeTagPrefix` と一致させること）。
+const ARRAY_TYPE_TAG_PREFIX: &str = "array:";
+
+/// 保存済みの JSON 配列文字列が、要素型タグで解釈できるかを判定する。
+///
+/// 【規則】
+/// - 値全体が JSON 配列であること（配列でなければ引き継がない）
+/// - 空配列は常に適合（要素が無いので型の食い違いは起きない）
+/// - 数値要素は JSON の数値、真偽要素は JSON の真偽値、
+///   文字列 / 参照要素は JSON の文字列であること
+/// - 要素型タグ自体が未対応（`unsupported` など）なら常に不適合
+///
+/// 【なぜ要素を 1 つずつ見るのか】
+/// `float[]` → `string[]` のような要素型の変更でも配列としては JSON なので、
+/// 外形だけ見ると通ってしまう。要素の JSON 型まで確かめて初めて
+/// 非配列フィールドと同じ厳しさ（型が変わったら既定値へ戻す）になる。
+fn array_value_matches_type(element_tag: &str, value: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value.trim()) else { return false };
+    let serde_json::Value::Array(items) = parsed else { return false };
+
+    items.iter().all(|item| match element_tag {
+        // 実数は整数値も受け付ける（int[] → float[] は値の意味が保たれる）
+        "float" | "double"       => item.is_number(),
+        // 整数は小数を弾く（スカラの "12.5" → int が引き継がれないのと同じ扱い）
+        "int" | "long" | "short" => item.is_i64() || item.is_u64(),
+        "bool"                   => item.is_boolean(),
+        "string" | "reference"   => item.is_string(),
+        _                        => false,
+    })
 }
 
 /// ホットリロード時のフィールド値引き継ぎ（純粋関数）。
@@ -566,6 +605,111 @@ mod tests {
         let merged = carry_over_script_fields(
             &old(&[("weird", "something")]),
             &[def("weird", "unsupported", "")],
+        );
+        assert!(merged.is_empty());
+    }
+
+    /// 配列フィールドは JSON 配列として要素型まで検証したうえで引き継ぐ。
+    #[test]
+    fn array_fields_carry_over_when_element_types_match() {
+        let defs = [
+            def("speeds",  "array:float",     "[]"),
+            def("counts",  "array:int",       "[]"),
+            def("flags",   "array:bool",      "[]"),
+            def("names",   "array:string",    "[]"),
+            def("targets", "array:reference", "[]"),
+        ];
+        let merged = carry_over_script_fields(
+            &old(&[
+                ("speeds",  "[1.0,2.5]"),
+                ("counts",  "[1,2,3]"),
+                ("flags",   "[true,false]"),
+                ("names",   "[\"a\",\"b\"]"),
+                ("targets", "[\"Player\",\"Enemy|MainCamera\"]"),
+            ]),
+            &defs,
+        );
+        assert_eq!(merged.get("speeds").map(String::as_str),  Some("[1.0,2.5]"));
+        assert_eq!(merged.get("counts").map(String::as_str),  Some("[1,2,3]"));
+        assert_eq!(merged.get("flags").map(String::as_str),   Some("[true,false]"));
+        assert_eq!(merged.get("names").map(String::as_str),   Some("[\"a\",\"b\"]"));
+        assert_eq!(merged.get("targets").map(String::as_str), Some("[\"Player\",\"Enemy|MainCamera\"]"));
+    }
+
+    /// 空配列はどの要素型でも適合する（要素が無いので食い違いようがない）。
+    #[test]
+    fn empty_array_is_accepted_for_any_element_type() {
+        for tag in ["array:float", "array:int", "array:bool", "array:string", "array:reference"] {
+            let merged = carry_over_script_fields(&old(&[("xs", "[]")]), &[def("xs", tag, "[]")]);
+            assert_eq!(merged.get("xs").map(String::as_str), Some("[]"), "tag = {tag}");
+        }
+    }
+
+    /// 要素型が変わった配列は旧値を捨てる（＝スクリプト宣言側の既定値へ戻る）。
+    #[test]
+    fn array_element_type_change_drops_stale_value() {
+        // string[] → float[]
+        let merged = carry_over_script_fields(
+            &old(&[("xs", "[\"a\",\"b\"]")]),
+            &[def("xs", "array:float", "[]")],
+        );
+        assert!(!merged.contains_key("xs"));
+
+        // float[] → int[]（小数は整数として解釈できない）
+        let merged = carry_over_script_fields(
+            &old(&[("xs", "[1.5]")]),
+            &[def("xs", "array:int", "[]")],
+        );
+        assert!(!merged.contains_key("xs"));
+
+        // bool[] → string[]
+        let merged = carry_over_script_fields(
+            &old(&[("xs", "[true]")]),
+            &[def("xs", "array:string", "[]")],
+        );
+        assert!(!merged.contains_key("xs"));
+    }
+
+    /// int[] → float[] は値の意味が保たれるので引き継ぐ（スカラの int → float と同じ規則）。
+    #[test]
+    fn array_widening_numeric_element_keeps_value() {
+        let merged = carry_over_script_fields(
+            &old(&[("xs", "[1,2]")]),
+            &[def("xs", "array:float", "[]")],
+        );
+        assert_eq!(merged.get("xs").map(String::as_str), Some("[1,2]"));
+    }
+
+    /// 非配列 → 配列、配列 → 非配列のいずれも旧値を捨てる。
+    #[test]
+    fn array_and_scalar_are_not_interchangeable() {
+        // float → float[]（"12.5" は JSON 配列ではない）
+        let merged = carry_over_script_fields(
+            &old(&[("x", "12.5")]),
+            &[def("x", "array:float", "[]")],
+        );
+        assert!(!merged.contains_key("x"));
+
+        // float[] → float（"[1.0]" は数値として解釈できない）
+        let merged = carry_over_script_fields(
+            &old(&[("x", "[1.0]")]),
+            &[def("x", "float", "0")],
+        );
+        assert!(!merged.contains_key("x"));
+    }
+
+    /// 壊れた JSON・要素型タグが未対応の配列は引き継がない。
+    #[test]
+    fn broken_array_value_is_dropped() {
+        let merged = carry_over_script_fields(
+            &old(&[("xs", "[1.0,")]),
+            &[def("xs", "array:float", "[]")],
+        );
+        assert!(merged.is_empty());
+
+        let merged = carry_over_script_fields(
+            &old(&[("xs", "[1.0]")]),
+            &[def("xs", "array:unsupported", "[]")],
         );
         assert!(merged.is_empty());
     }

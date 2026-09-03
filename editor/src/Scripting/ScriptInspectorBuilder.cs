@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using SEEDEditor.Controls;
+using static SEEDEditor.Scripting.ScriptFieldWidgets;
 
 namespace SEEDEditor.Scripting;
 
@@ -16,15 +17,6 @@ namespace SEEDEditor.Scripting;
 /// </summary>
 public static class ScriptInspectorBuilder
 {
-    private static readonly SolidColorBrush BrushLabel  = new(Color.FromRgb(0x88, 0x88, 0x88));
-    private static readonly SolidColorBrush BrushText   = new(Color.FromRgb(0xCC, 0xCC, 0xCC));
-    private static readonly SolidColorBrush BrushBg     = new(Color.FromRgb(0x1A, 0x1A, 0x1A));
-    private static readonly SolidColorBrush BrushBorder = new(Color.FromRgb(0x3F, 0x3F, 0x46));
-    private static readonly SolidColorBrush BrushAccent = new(Color.FromRgb(0x55, 0xAA, 0xFF));
-
-    /// <summary>数値ドラッグハンドルのアイコン一辺サイズ（px）。</summary>
-    private const double DragHandleIconSize = 11;
-
     /// <summary>
     /// [SerializeField] フィールド一覧から WPF の StackPanel を生成する。
     /// onValueChanged: (fieldPath, newValueString)。ネストは "parent.child" のドットパス。
@@ -34,6 +26,8 @@ public static class ScriptInspectorBuilder
     /// 呼び出し側（インスペクタ）が保持し、UI 再構築後に復元するためのストアとキー接頭辞。
     /// 値を 1 つ編集するたびにパネルが作り直される呼び出し元では必ず渡すこと
     /// （渡さないと編集の直後にネストが閉じてしまう）。
+    /// assetPathToVirtual: ドロップされた絶対パスを保存用パス（assets:// 仮想パス）へ変換する関数。
+    /// string 配列要素への .actor ファイルドロップに使う（null ならファイルドロップを受け付けない）。
     /// </summary>
     public static StackPanel Build(
         IReadOnlyList<ScriptFieldInfo>      fields,
@@ -41,11 +35,13 @@ public static class ScriptInspectorBuilder
         Action<string, string>              onValueChanged,
         IReferenceDropResolver?             referenceResolver  = null,
         ExpandStateStore?                   expandStates       = null,
-        string                              expandKeyPrefix    = "")
+        string                              expandKeyPrefix    = "",
+        Func<string, string>?               assetPathToVirtual = null)
     {
         var stack = new StackPanel();
         BuildInto(stack, fields, currentValues, onValueChanged, referenceResolver, prefix: "",
-                  expandStates: expandStates, expandKeyPrefix: expandKeyPrefix);
+                  expandStates: expandStates, expandKeyPrefix: expandKeyPrefix,
+                  assetPathToVirtual: assetPathToVirtual);
         return stack;
     }
 
@@ -58,7 +54,8 @@ public static class ScriptInspectorBuilder
         IReferenceDropResolver?             onRefDrop,
         string                              prefix,
         ExpandStateStore?                   expandStates,
-        string                              expandKeyPrefix)
+        string                              expandKeyPrefix,
+        Func<string, string>?               assetPathToVirtual)
     {
         foreach (var field in fields)
         {
@@ -72,7 +69,30 @@ public static class ScriptInspectorBuilder
             if (field.Children is not null)
             {
                 stack.Children.Add(BuildNestedFoldout(
-                    field, fullPath, values, onChange, onRefDrop, expandStates, expandKeyPrefix));
+                    field, fullPath, values, onChange, onRefDrop, expandStates, expandKeyPrefix,
+                    assetPathToVirtual));
+                continue;
+            }
+
+            // 配列フィールド（T[] / List<T>）は専用の折りたたみ UI（要素行 + [＋]/[×]）
+            if (field.Array is not null)
+            {
+                values.TryGetValue(fullPath, out var arrayRaw);
+                UIElement arrayUi = ScriptArrayFieldBuilder.Build(
+                    field, fullPath, arrayRaw,
+                    v => onChange(fullPath, v),
+                    onRefDrop, assetPathToVirtual,
+                    expandStates, expandKeyPrefix + fullPath);
+
+                // [ResetButton] 付きなら「宣言時初期値の配列へ戻す」ボタンを添える
+                // （通常の値編集と同じ経路なので Ctrl+Z で取り消せる）。
+                if (field.ShowResetButton && FormatResetValue(field) is { } arrayDefault)
+                    arrayUi = ResetButtonFactory.Wrap(
+                        arrayUi,
+                        $"「{field.Label}」を宣言時の既定値に戻す（Ctrl+Z で取り消せます）",
+                        () => onChange(fullPath, arrayDefault));
+
+                stack.Children.Add(arrayUi);
                 continue;
             }
 
@@ -119,6 +139,10 @@ public static class ScriptInspectorBuilder
     {
         // 参照フィールドは型に依らず「未設定」へ戻す（✕ ボタンと同じ値）。
         if (field.Reference is not null) return SEED.ScriptReference.UnsetValue;
+
+        // 配列フィールドは宣言時初期値の実配列を JSON 配列文字列へ戻す（未初期化なら空配列）。
+        if (field.Array is { } arrayInfo)
+            return SEED.ScriptArray.EncodeValue(field.DefaultValue, arrayInfo.ElementType);
 
         var t = field.Field.FieldType;
         var d = field.DefaultValue;
@@ -192,12 +216,14 @@ public static class ScriptInspectorBuilder
         ScriptFieldInfo field, string fullPath,
         IReadOnlyDictionary<string, string> values, Action<string, string> onChange,
         IReferenceDropResolver? onRefDrop,
-        ExpandStateStore? expandStates, string expandKeyPrefix)
+        ExpandStateStore? expandStates, string expandKeyPrefix,
+        Func<string, string>? assetPathToVirtual)
     {
         var inner = new StackPanel { Margin = new Thickness(10, 2, 0, 2) };
         // 子は "親パス." を prefix にして再帰構築する
         BuildInto(inner, field.Children!, values, onChange, onRefDrop, prefix: fullPath + ".",
-                  expandStates: expandStates, expandKeyPrefix: expandKeyPrefix);
+                  expandStates: expandStates, expandKeyPrefix: expandKeyPrefix,
+                  assetPathToVirtual: assetPathToVirtual);
 
         var expander = new Expander
         {
@@ -229,7 +255,7 @@ public static class ScriptInspectorBuilder
     private static UIElement BuildFloatRow(ScriptFieldInfo field, float value, Action<string> onChange)
     {
         var tb   = MakeTextBox(Fmt(value));
-        var drag = MakeDragLabel(tb, 0.1, onChange, isInt: false);
+        var drag = MakeDragLabel(tb, DragSpeedFloat, onChange, isInt: false);
         tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitFloat(tb, onChange); e.Handled = true; } };
         tb.LostFocus += (_, _) => CommitFloat(tb, onChange);
         return MakeRow(field.Label, field.Tooltip, drag, tb);
@@ -238,7 +264,7 @@ public static class ScriptInspectorBuilder
     private static UIElement BuildIntRow(ScriptFieldInfo field, int value, Action<string> onChange)
     {
         var tb   = MakeTextBox(value.ToString());
-        var drag = MakeDragLabel(tb, 1.0, onChange, isInt: true);
+        var drag = MakeDragLabel(tb, DragSpeedInt, onChange, isInt: true);
         tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitInt(tb, onChange); e.Handled = true; } };
         tb.LostFocus += (_, _) => CommitInt(tb, onChange);
         return MakeRow(field.Label, field.Tooltip, drag, tb);
@@ -393,111 +419,5 @@ public static class ScriptInspectorBuilder
         return MakeRow(field.Label, field.Tooltip, null, val);
     }
 
-    // ── ウィジェット生成 ──────────────────────────────────────
 
-    private static Grid MakeRow(string label, string? tooltip, UIElement? prefix, UIElement control)
-    {
-        var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });
-        if (prefix is not null)
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-        var lbl = new TextBlock
-        {
-            Text              = label,
-            Foreground        = BrushLabel,
-            FontSize          = 11,
-            VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming      = TextTrimming.CharacterEllipsis,
-            ToolTip           = tooltip,
-        };
-        Grid.SetColumn(lbl, 0);
-        grid.Children.Add(lbl);
-
-        var controlCol = 1;
-        if (prefix is not null)
-        {
-            Grid.SetColumn(prefix, 1);
-            grid.Children.Add(prefix);
-            controlCol = 2;
-        }
-        Grid.SetColumn(control, controlCol);
-        grid.Children.Add(control);
-
-        return grid;
-    }
-
-    private static TextBox MakeTextBox(string text) => new()
-    {
-        Text                     = text,
-        Background               = BrushBg,
-        Foreground               = BrushText,
-        CaretBrush               = BrushText,
-        BorderBrush              = BrushBorder,
-        BorderThickness          = new Thickness(1),
-        FontSize                 = 11,
-        Padding                  = new Thickness(3, 1, 3, 1),
-        Margin                   = new Thickness(2, 1, 0, 1),
-        VerticalContentAlignment = VerticalAlignment.Center,
-    };
-
-    private static SEEDEditor.Controls.AppIcon MakeDragLabel(TextBox target, double speed, Action<string> onChange, bool isInt)
-    {
-        var label = SEEDEditor.Controls.AppIcon.Create("Icon.DragHandle", DragHandleIconSize);
-        label.SetBrush(BrushAccent);
-        label.VerticalAlignment   = VerticalAlignment.Center;
-        label.HorizontalAlignment = HorizontalAlignment.Center;
-        label.Cursor              = Cursors.SizeWE;
-        label.Margin              = new Thickness(2, 0, 2, 0);
-
-        double originX = 0;
-        float  originV = 0;
-
-        label.MouseLeftButtonDown += (_, e) =>
-        {
-            if (float.TryParse(target.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
-            {
-                originX = e.GetPosition(null).X;
-                originV = v;
-                label.CaptureMouse();
-            }
-            e.Handled = true;
-        };
-        label.MouseMove += (_, e) =>
-        {
-            if (!label.IsMouseCaptured) return;
-            var spd    = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? speed * 0.1 : speed;
-            var newVal = originV + (float)((e.GetPosition(null).X - originX) * spd);
-            target.Text = isInt ? ((int)MathF.Round(newVal)).ToString() : Fmt(newVal);
-            onChange(target.Text);
-        };
-        label.MouseLeftButtonUp += (_, e) =>
-        {
-            if (label.IsMouseCaptured) label.ReleaseMouseCapture();
-            e.Handled = true;
-        };
-
-        return label;
-    }
-
-    private static void CommitFloat(TextBox tb, Action<string> onChange)
-    {
-        if (float.TryParse(tb.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
-        {
-            tb.Text = Fmt(v);
-            onChange(tb.Text);
-        }
-    }
-
-    private static void CommitInt(TextBox tb, Action<string> onChange)
-    {
-        if (int.TryParse(tb.Text, out var v))
-        {
-            tb.Text = v.ToString();
-            onChange(tb.Text);
-        }
-    }
-
-    private static string Fmt(float v) => v.ToString("F3", CultureInfo.InvariantCulture);
 }

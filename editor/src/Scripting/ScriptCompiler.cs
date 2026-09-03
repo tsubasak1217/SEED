@@ -281,11 +281,23 @@ public static class ScriptCompiler
         SEED.ScriptReference.ReferenceKind? reference =
             SEED.ScriptReference.TryGetKind(f.FieldType, out var refKind) ? refKind : null;
 
+        // 配列フィールド（T[] / List<T>）は 1 本の JSON 配列文字列として扱う葉。
+        // List<T> は BCL で [Serializable] が付いているため、ネスト判定より
+        // 先に配列判定を行わないと List の内部フィールドへ降りてしまう。
+        ScriptArrayFieldInfo? arrayInfo = null;
+        if (reference is null && SEED.ScriptArray.TryGetElementType(f.FieldType, out var elemType, out var isList)
+            && SEED.ScriptArray.TryGetElementKind(elemType, out var elemKind, out _))
+        {
+            arrayInfo = new ScriptArrayFieldInfo(
+                elemType, isList, elemKind,
+                SEED.ScriptReference.TryGetKind(elemType, out var elemRef) ? elemRef : null);
+        }
+
         // [Serializable] なネストクラスなら子フィールドを再帰展開する。
         // 参照フィールドはハンドル構造体なので展開対象から除外する
         // （ハンドルの内部 entity をインスペクタに晒さないため）。
         IReadOnlyList<ScriptFieldInfo>? children = null;
-        if (reference is null && depth < MaxNestDepth && IsNestedSerializable(f.FieldType))
+        if (reference is null && arrayInfo is null && depth < MaxNestDepth && IsNestedSerializable(f.FieldType))
             children = ExtractFields(f.FieldType, depth + 1);
 
         return new ScriptFieldInfo(f, label ?? PrettifyName(f.Name), tooltip, defValue)
@@ -295,6 +307,7 @@ public static class ScriptCompiler
             RangeMax  = rangeMax,
             Children  = children,
             Reference = reference,
+            Array     = arrayInfo,
             // [Serializable] ネストクラスそのものにはボタンを出さない
             // （子を一括で戻すと Undo が 1 手にまとまらないため。子フィールド個別には付けられる）。
             ShowResetButton = children is null && HasResetButton(f),
@@ -308,6 +321,10 @@ public static class ScriptCompiler
     private static bool IsNestedSerializable(Type t)
     {
         if (t.IsPrimitive || t.IsEnum || t == typeof(string) || t.IsArray) return false;
+        // List<T> は BCL で [Serializable] が付いているが、内部フィールド（_items 等）を
+        // 展開したいわけではないので必ず除外する（配列フィールドとして扱う対象）。
+        if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(System.Collections.Generic.List<>))
+            return false;
         if (!t.IsClass && !(t.IsValueType && !t.IsPrimitive)) return false;
         // System.SerializableAttribute の有無を名前で判定（アセンブリ ID 差異を吸収）
         return t.GetCustomAttributesData()

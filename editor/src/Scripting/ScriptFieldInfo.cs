@@ -1,7 +1,28 @@
+using System;
 using System.Collections.Generic;
 using System.Reflection;
 
 namespace SEEDEditor.Scripting;
+
+/// <summary>
+/// 配列フィールド（<c>T[]</c> / <c>List&lt;T&gt;</c>）1 件分の型情報。
+///
+/// 値は JSON 配列文字列 1 本としてシーンへ保存される（正典は <see cref="SEED.ScriptArray"/>）。
+/// インスペクタは要素の追加・削除のたびに JSON を組み直し、
+/// 非配列フィールドとまったく同じ経路（SET_SCRIPT_FIELD）で書き戻す。
+/// </summary>
+/// <param name="ElementType">要素型（例 <c>float</c> / <c>SEED.Transform</c>）。</param>
+/// <param name="IsList"><c>List&lt;T&gt;</c> なら true、<c>T[]</c> なら false（UI 上の違いは無い）。</param>
+/// <param name="ElementKind">要素の文字列表現の種類（JSON へ書くときの引用符の有無を決める）。</param>
+/// <param name="ElementReference">
+/// 要素が参照型（GameObject / コンポーネントハンドル）の場合の種別情報。参照でなければ null。
+/// </param>
+public readonly record struct ScriptArrayFieldInfo(
+    Type                                ElementType,
+    bool                                IsList,
+    SEED.ScriptArrayElementKind         ElementKind,
+    SEED.ScriptReference.ReferenceKind? ElementReference
+);
 
 /// <summary>
 /// インスペクタに表示する [SerializeField] フィールド 1 件の情報。
@@ -41,4 +62,10 @@ public record ScriptFieldInfo(
     /// 参照フィールドでなければ null。判定は SEED.ScriptReference が正典。
     /// </summary>
     public SEED.ScriptReference.ReferenceKind? Reference { get; init; }
+
+    /// <summary>
+    /// 配列フィールド（<c>T[]</c> / <c>List&lt;T&gt;</c>）の要素型情報。配列でなければ null。
+    /// 判定は <see cref="SEED.ScriptArray"/> が正典（ランタイム側と共有）。
+    /// </summary>
+    public ScriptArrayFieldInfo? Array { get; init; }
 }

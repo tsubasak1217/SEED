@@ -317,6 +317,15 @@
 
   <p class="section-note"><code>[Serializable]</code> を付けたクラス／構造体型のフィールドに <code>[SerializeField]</code> を付けると、インスペクタで<b>子フィールドが再帰的に展開</b>されます（入れ子の上限は 8 段）。</p>
   <p class="section-note"><code>GameObject</code> やコンポーネントハンドル型（<code>Transform</code> / <code>Camera</code> など）のフィールドに <code>[SerializeField]</code> を付けると、<b>他アクターへの参照フィールド</b>になります（Hierarchy から D&amp;D で設定）。詳細は第 7 節の「参照フィールド」を参照してください。</p>
+
+  <h3>配列・リストのフィールド</h3>
+  <p class="section-note"><code>T[]</code> と <code>List&lt;T&gt;</code> のフィールドは、インスペクタで<b>要素を追加・削除できる折りたたみ行</b>になります。見出しは「フィールド名 (件数)」で、<code>[＋]</code> が末尾への追加、行ごとの <code>[×]</code> がその要素の削除です。追加された要素の初期値は数値なら 0、真偽値なら <code>false</code>、文字列・参照は未設定です。</p>
+  <p class="section-note">対応する要素型は <code>float</code> / <code>double</code> / <code>int</code> / <code>long</code> / <code>short</code> / <code>bool</code> / <code>string</code> と、参照フィールドに使える型（<code>GameObject</code> / <code>Transform</code> / <code>Camera</code> などのハンドル型）です。それ以外の要素型（列挙型・<code>[Serializable]</code> クラスなど）と多次元配列・ジャグ配列（<code>float[,]</code> / <code>float[][]</code>）は対象外で、従来どおり読み取り専用表示になります。</p>
+  <p class="section-note">参照要素は単体の参照フィールドと同じく Hierarchy から D&amp;D で設定でき、<code>OnStart</code> の直前に解決されます。<code>string</code> 要素の行には Project パネルから <code>.actor</code> ファイルをドロップでき、<code>assets://</code> 仮想パスが入ります（<code>GameObject.Instantiate(path)</code> へそのまま渡せます）。</p>
+  <p class="section-note">保存形式は 1 フィールド = JSON 配列文字列（例 <code>[1.0,2.5]</code> / <code>["a","b"]</code>）です。再コンパイル時の値引き継ぎは<b>要素型まで一致するときだけ</b>行われます（<code>float[]</code> → <code>string[]</code> のような変更では宣言時の初期値に戻ります）。</p>
+<pre>[<span class="t">SerializeField</span>(Label = <span class="s">"巡回速度"</span>)]   <span class="k">private float</span>[] patrolSpeeds = { 1.0f, 2.0f };
+[<span class="t">SerializeField</span>(Label = <span class="s">"出現プレハブ"</span>)] <span class="k">private</span> List&lt;<span class="k">string</span>&gt; spawnPrefabs = <span class="k">new</span>();
+[<span class="t">SerializeField</span>(Label = <span class="s">"追従対象"</span>)]   <span class="k">private</span> SEED.Transform[] followTargets;</pre>
 </section>
 
 <!-- ════════════════ 2. ライフサイクル ════════════════ -->
