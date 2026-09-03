@@ -88,6 +88,20 @@ public class CameraMove : SEEDScript
     [SerializeField(Label = "最大傾き(度)")]
     private float maxRollDegrees = 10f;
 
+    // ─── 視野角(FOV) ───────────────────────────────────────────
+
+    /// <summary>通常時の視野角（度）。釣り姿勢でないときの目標 FOV。</summary>
+    [Header("視野角(FOV)"), SerializeField(Label = "通常時のFOV(度)")]
+    private float normalFov = 60f;
+
+    /// <summary>釣り時の視野角（度）。プレイヤーが釣り姿勢のあいだの目標 FOV。</summary>
+    [SerializeField(Label = "釣り時のFOV(度)")]
+    private float fishingFov = 45f;
+
+    /// <summary>FOV の追従の速さ（1/秒）。位置・回転と同じ指数補間を使う。0 で FOV を追わなくなる。</summary>
+    [SerializeField(Label = "FOVの追従率")]
+    private float fovLerpRate = 5f;
+
     // ─── 内部状態 ─────────────────────────────────────────────
 
     /// <summary>まだ一度も追従していないか（<see cref="snapOnStart"/> の判定に使う）。</summary>
@@ -144,6 +158,7 @@ public class CameraMove : SEEDScript
             {
                 transform.Position = goalPos;
                 transform.Rotation = goalRot;
+                UpdateFov(ctx.DeltaTime, snap: true);
                 return;
             }
         }
@@ -165,6 +180,9 @@ public class CameraMove : SEEDScript
                 cur.y + ShortestAngleDelta(cur.y, goalRot.y) * rk,
                 cur.z + ShortestAngleDelta(cur.z, goalRot.z) * rk);
         }
+
+        // 視野角(FOV): 釣り姿勢かどうかで目標を切り替え、位置・回転と同じ指数補間で追従する
+        UpdateFov(ctx.DeltaTime, snap: false);
     }
 
     /// <summary>描画フェーズで呼ばれる。描画に関わる処理向け。</summary>
@@ -192,13 +210,17 @@ public class CameraMove : SEEDScript
     /// <returns>追従先のトランスフォーム。決められなければ null。</returns>
     private SEED.Transform? SelectGoalTransform()
     {
-        bool isFishing = playerMove is { } pm
-            && pm.State == PlayerMove.PlayerState.FishingStance;
-
-        if (isFishing && fishingTarget is { } ft && ft.IsValid) { return ft; }
+        if (IsPlayerFishing() && fishingTarget is { } ft && ft.IsValid) { return ft; }
 
         return target;
     }
+
+    /// <summary>
+    /// プレイヤーが釣り姿勢かどうかを返す（目標トランスフォームの選択・FOV 目標の両方で使う共通判定）。
+    /// <see cref="playerMove"/> が未設定なら常に false（釣り演出は一切効かない）。
+    /// </summary>
+    private bool IsPlayerFishing()
+        => playerMove is { } pm && pm.State == PlayerMove.PlayerState.FishingStance;
 
     /// <summary>
     /// 移動に応じた目標ロール（度）を返す。
@@ -230,6 +252,38 @@ public class CameraMove : SEEDScript
         float roll = lateralSpeed * rollStrength;
         float limit = SEED.Mathf.Abs(maxRollDegrees);
         return SEED.Mathf.Clamped(roll, -limit, limit);
+    }
+
+    /// <summary>
+    /// カメラの視野角(FOV)を目標へ更新する。
+    ///
+    /// 目標は <see cref="IsPlayerFishing"/> の結果に応じて <see cref="fishingFov"/> /
+    /// <see cref="normalFov"/> を切り替える（<see cref="SelectGoalTransform"/> と同じ判定を共有し、
+    /// 目標トランスフォームの切替と FOV の切替がズレないようにする）。
+    /// Camera コンポーネントは毎フレーム取得する（ホットリロードや GameObject 差し替えに追従するため。
+    /// 他の参照フィールドをフィールドへキャッシュしない方針と同じ）。
+    /// Camera が未付与・無効なら何もしない（位置・回転の追従には影響しない）。
+    /// </summary>
+    /// <param name="deltaTime">経過秒。</param>
+    /// <param name="snap">true なら補間せず目標へ瞬間的に合わせる（初回スナップ用）。</param>
+    private void UpdateFov(float deltaTime, bool snap)
+    {
+        if (gameObject.GetComponent<SEED.Camera>() is not { } cam || !cam.IsValid) { return; }
+
+        float goalFov = IsPlayerFishing() ? fishingFov : normalFov;
+
+        if (snap)
+        {
+            cam.FieldOfView = goalFov;
+            return;
+        }
+
+        // 位置・回転と同じ指数補間（フレームレート非依存）でブレンドする
+        float k = ExponentialBlend(fovLerpRate, deltaTime);
+        if (k > 0f)
+        {
+            cam.FieldOfView += (goalFov - cam.FieldOfView) * k;
+        }
     }
 
     /// <summary>フレームレート非依存の指数補間係数 <c>1 - exp(-rate * dt)</c>（0〜1）。</summary>

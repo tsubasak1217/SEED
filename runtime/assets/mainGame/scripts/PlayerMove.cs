@@ -12,7 +12,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 動いている間は走りアニメ、止まると待機アニメへクロスフェードで切り替える。
 ///
 /// さらに<b>経路移動モードのときだけ</b>、Space キーで釣り姿勢の状態機械が動く:
-/// 通常 →（Space）→ 釣り位置へ自動移動 → 釣り姿勢 →（Space）→ 通常。
+/// 通常 →（Space）→ その場で釣り姿勢（海の方を向く） →（Space）→ 通常。
 /// 詳細は <see cref="PlayerState"/> を参照。自由移動モードでは Space は何もしない。
 /// </summary>
 public class PlayerMove : SEEDScript
@@ -28,9 +28,6 @@ public class PlayerMove : SEEDScript
     {
         /// <summary>通常。入力で経路上を前後に移動できる。</summary>
         Normal,
-
-        /// <summary>釣り位置へ自動移動中。入力は無視し、一定時間で目標の経路時刻まで進む。</summary>
-        MovingToFishingSpot,
 
         /// <summary>釣り姿勢。入力は無視し、海（経路進行方向の右手側）を向いて待機する。</summary>
         FishingStance,
@@ -136,23 +133,8 @@ public class PlayerMove : SEEDScript
 
     // ─── 釣り姿勢（経路移動モード限定）───────────────────────
 
-    /// <summary>
-    /// 釣り位置までの進み量（度）。閉ループ経路の 1 周を 360 度として扱い、
-    /// 経路の所要時間（Duration）に対する割合へ換算して経路時刻を進める。
-    /// 開経路では終端でクランプされる。
-    /// </summary>
-    [Header("釣り姿勢（経路移動時のみ）"), SerializeField(Label = "釣り位置までの角度(度)")]
-    private float fishingAdvanceDegrees = 10f;
-
-    /// <summary>
-    /// 釣り位置まで移動するのに掛ける時間（秒）。
-    /// 0 以下なら瞬時に到着する（ゼロ除算ガードを兼ねる）。
-    /// </summary>
-    [SerializeField(Label = "釣り位置までの移動時間(秒)")]
-    private float fishingMoveSeconds = 1.0f;
-
     /// <summary>釣り姿勢中に再生するクリップ名（プレイヤー本体の Animator）。</summary>
-    [SerializeField(Label = "釣り姿勢クリップ名")]
+    [Header("釣り姿勢（経路移動時のみ）"), SerializeField(Label = "釣り姿勢クリップ名")]
     private string fishingClip = "IdleFishing";
 
     // ─── 回転補間 ─────────────────────────────────────────────
@@ -246,18 +228,6 @@ public class PlayerMove : SEEDScript
     /// </summary>
     private float distanceSinceTangent = 0f;
 
-    /// <summary>釣り位置への自動移動を開始したときの経路時刻（秒）。</summary>
-    private float fishingStartPathTime = 0f;
-
-    /// <summary>
-    /// 釣り位置への自動移動の目標経路時刻（秒）。<b>畳み込み前の生の値</b>を保持する
-    /// （畳み込むと開始時刻より小さくなり、線形補間が逆走してしまうため）。
-    /// </summary>
-    private float fishingTargetPathTime = 0f;
-
-    /// <summary>釣り位置への自動移動を開始してからの経過秒数。</summary>
-    private float fishingMoveElapsed = 0f;
-
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
     {
@@ -286,8 +256,6 @@ public class PlayerMove : SEEDScript
 
             moving = State switch
             {
-                // 釣り位置へ自動移動中: 入力を無視して経路上を一定時間で進む（走りアニメ）
-                PlayerState.MovingToFishingSpot => UpdateMoveToFishingSpot(ref ctx, activePath),
                 // 釣り姿勢中: 移動しない（向きの補間だけ続ける）
                 PlayerState.FishingStance => false,
                 // 通常: 従来どおりの入力による経路移動
@@ -419,9 +387,8 @@ public class PlayerMove : SEEDScript
     /// <summary>
     /// Space キーによる状態遷移を処理する（経路移動モードでのみ呼ばれる）。
     ///
-    /// - 通常     → 釣り位置へ自動移動を開始
+    /// - 通常     → その場で釣り姿勢へ入る（移動なし。海の方へ向き直るのみ）
     /// - 釣り姿勢 → 通常へ戻し、待機アニメへ復帰
-    /// - 自動移動中は入力を受け付けない（到着してから操作できる）
     /// </summary>
     /// <param name="p">評価対象の経路。</param>
     private void UpdateFishingStateInput(SEED.ControlPointPath p)
@@ -431,89 +398,13 @@ public class PlayerMove : SEEDScript
         switch (State)
         {
             case PlayerState.Normal:
-                BeginMoveToFishingSpot(p);
+                EnterFishingStance(p);
                 break;
 
             case PlayerState.FishingStance:
                 ExitFishingStance();
                 break;
-
-            // 自動移動中の入力は無視する
-            default:
-                break;
         }
-    }
-
-    /// <summary>
-    /// 釣り位置への自動移動を開始する（開始・目標の経路時刻を確定する）。
-    ///
-    /// 目標は「現在の経路時刻＋<see cref="fishingAdvanceDegrees"/> 度ぶん」。
-    /// 1 周 = 360 度 = 経路の Duration として換算する。
-    /// 目標値は<b>畳み込まずに</b>保持する（畳み込むと開始時刻より小さくなり、
-    /// 線形補間が経路を逆走してしまうため。畳み込みは毎フレームの評価直前に行う）。
-    /// </summary>
-    /// <param name="p">評価対象の経路。</param>
-    private void BeginMoveToFishingSpot(SEED.ControlPointPath p)
-    {
-        float duration = p.Duration;
-        if (duration <= 0f) { return; }   // 時間幅の無い経路では釣り位置を決められない
-
-        // まだ一度も動いていない場合に備えて経路時刻を初期化しておく
-        // （通常移動と同じ初期化規則。押しっぱなしでなくても Space だけで開始できる）
-        if (!pathTimeInitialized)
-        {
-            pathTime = p.StartTime;
-            pathTimeInitialized = true;
-        }
-
-        fishingStartPathTime = pathTime;
-        float advance = duration * (fishingAdvanceDegrees / FullTurnDegrees);
-        float rawTarget = fishingStartPathTime + advance;
-
-        // 閉ループは 1 周を超えて進めても畳み込みで正しい位置に乗るのでそのまま保持し、
-        // 開経路は終端を越えられないのでここでクランプする。
-        fishingTargetPathTime = p.Closed
-            ? rawTarget
-            : SEED.Mathf.Clamped(rawTarget, p.StartTime, p.StartTime + duration);
-
-        fishingMoveElapsed = 0f;
-        State = PlayerState.MovingToFishingSpot;
-    }
-
-    /// <summary>
-    /// 釣り位置へ向かう自動移動を 1 フレーム進める。常に true（走りアニメ）を返す。
-    ///
-    /// 経路時刻を開始→目標へ<b>時間で線形</b>に進める（等速化補正は掛けない。
-    /// 「何秒で着く」を保証するほうがカメラ演出と噛み合うため）。
-    /// 到着したフレームで釣り姿勢へ遷移する。
-    /// </summary>
-    /// <param name="ctx">フレームコンテキスト（デルタタイム）。</param>
-    /// <param name="p">評価対象の経路。</param>
-    private bool UpdateMoveToFishingSpot(ref NativeFrameContext ctx, SEED.ControlPointPath p)
-    {
-        fishingMoveElapsed += ctx.DeltaTime;
-
-        // 移動時間が 0 以下なら即到着（ゼロ除算ガードを兼ねる）
-        float ratio = fishingMoveSeconds > 0f
-            ? SEED.Mathf.Clamped01(fishingMoveElapsed / fishingMoveSeconds)
-            : 1f;
-
-        float rawTime = fishingStartPathTime + (fishingTargetPathTime - fishingStartPathTime) * ratio;
-        pathTime = WrapPathTime(p, rawTime);
-        ApplyPathTransform(p, pathTime);
-
-        // 前進方向（+t の接線）を向いて歩く。自動移動中は必ず正方向なので接線は反転しない。
-        if (p.SampleTangent(pathTime) is { } dir && dir.SqrMagnitude > SqrEpsilon)
-        {
-            UpdateTargetYaw(dir);
-        }
-
-        if (ratio >= 1f)
-        {
-            EnterFishingStance(p);
-        }
-
-        return true;   // 自動移動中は走りアニメを再生する
     }
 
     /// <summary>
