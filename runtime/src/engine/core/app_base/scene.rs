@@ -565,6 +565,8 @@ pub fn build_actor(
             ComponentData::ModelComponent(mc_data) => {
                 use std::path::Path;
                 let cast_shadows = mc_data.cast_shadows;
+                // 表示するか（旧 .scene には無いため ModelComponentData 側で既定 true）。
+                let visible      = mc_data.visible;
                 // LOD を適用しないか（旧 .scene には無いため既定 false）。
                 let disable_lod  = mc_data.disable_lod;
                 // 【地形チャンクの特例】source_path が `terrain://` 接頭辞の場合は実ファイルが
@@ -588,6 +590,7 @@ pub fn build_actor(
                         next_group_id:   mc_data.next_group_id,
                         anim_drive:      None,
                         cast_shadows,
+                        visible,
                         disable_lod,
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
@@ -632,6 +635,7 @@ pub fn build_actor(
                         next_group_id:   mc_data.next_group_id,
                         anim_drive:      None,
                         cast_shadows,
+                        visible,
                         disable_lod,
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。

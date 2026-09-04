@@ -208,6 +208,20 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "ウキのトランスフォーム")]
     private SEED.Transform? uki = null;
 
+    /// <summary>
+    /// ウキの <see cref="SEED.Model"/>（ウキアクタの Model コンポーネント）。
+    ///
+    /// キャスト前はこれを <c>Visible = false</c> にして「見えないが位置は竿先に追従している」
+    /// 状態を作る（<see cref="ParkFloatHidden"/>）。ウキを地中へ退避させる旧方式だと、
+    /// ウキの子アクタ <c>CastCameraTarget</c>（カメラの注視点）まで地中へ行ってしまい、
+    /// キャスト開始フレームにカメラが変な場所へ補間される不具合が出ていた。
+    ///
+    /// 未設定なら旧方式（<see cref="markerParkY"/> へ退避）へフォールバックするので、
+    /// インスペクタで割り当てるまでも従来どおり動く。
+    /// </summary>
+    [SerializeField(Label = "ウキの Model")]
+    private SEED.Model? ukiModel = null;
+
     /// <summary>釣り糸の LineRenderer（ウキ側に付ける想定）。未設定なら糸を描かない。</summary>
     [SerializeField(Label = "釣り糸(LineRenderer)")]
     private SEED.LineRenderer? line = null;
@@ -226,8 +240,8 @@ public class FishingController : SEEDScript
     ///
     /// <see cref="FishState.Windup"/> のあいだだけ着水点へ置き、それ以外では
     /// <see cref="markerParkY"/> の高さ（水面のはるか下）へ格納して見えなくする。
-    /// <b>モデル／アクタの表示切替 API は存在しない</b>ため、ウキ（<see cref="ParkFloatHidden"/>）と
-    /// 同じく「画面外へ動かす」ことで非表示を表現している。
+    /// マーカーには表示切替の参照を持たせていないため、「画面外へ動かす」ことで
+    /// 非表示を表現している（ウキは <see cref="ukiModel"/> による表示切替を使う）。
     /// 未設定ならマーカーは使わない（プレビュー線だけの従来動作になる）。
     /// </summary>
     [SerializeField(Label = "着水点マーカー")]
@@ -1079,6 +1093,14 @@ public class FishingController : SEEDScript
             floatTf.Rotation = new SEED.Vector3(0f, yaw + floatYawOffsetDegrees, 0f);
         }
 
+        // ── ウキを「同じフレームのうちに」飛翔開始位置（竿先）へ置く ──────────
+        // CameraMove は LateUpdate でカメラの注視点を CastCameraTarget（ウキの子アクタ）へ
+        // 切り替える。ここで位置を確定させておかないと、注視点が「前フレームの退避位置」
+        // のままカメラが補間され、キャスト開始の一瞬だけ変な場所を向いてしまう。
+        // 表示も同時に戻す（ParkFloatHidden で Visible=false にしてあるため）。
+        ShowFloat();
+        SetFloatPosition(flightStart);
+
         castDistance = clamped;
         flightElapsed = 0f;
         reelAngleOffsetDegrees = 0f;
@@ -1425,15 +1447,40 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// ウキを非表示にする（キャスト前・キャンセル後・釣り終了後）。
-    /// アクター／モデルの表示切替 API は存在しないため、竿先の XZ ＋
-    /// <see cref="markerParkY"/>（マーカー類と同じ格納位置Y）へ動かして
-    /// 画面外へ退避させることで見た目上しまわれた状態にする。
+    ///
+    /// <see cref="ukiModel"/> が設定されていれば <b>描画だけ</b>を切り、位置は竿先に
+    /// 置いたまま追従させる。こうするとウキの子アクタ <c>CastCameraTarget</c>
+    /// （カメラの注視点）が常に妥当な位置に居るので、キャスト開始フレームに
+    /// カメラが地中へ補間される不具合が起きない。
+    ///
+    /// <see cref="ukiModel"/> 未設定のときだけ、旧方式（竿先の XZ ＋
+    /// <see cref="markerParkY"/> へ退避させて画面外へ追いやる）へフォールバックする。
     /// </summary>
     private void ParkFloatHidden()
     {
         var tip = RodTipPosition();
-        SetFloatPosition(new SEED.Vector3(tip.x, markerParkY, tip.z));
+        if (ukiModel is { IsValid: true } model)
+        {
+            // 表示だけを切り、位置は竿先へ置いて追従させ続ける。
+            model.Visible = false;
+            SetFloatPosition(tip);
+        }
+        else
+        {
+            // 旧方式（表示切替の参照が未設定のときのフォールバック）。
+            SetFloatPosition(new SEED.Vector3(tip.x, markerParkY, tip.z));
+        }
         HideLine();
+    }
+
+    /// <summary>
+    /// ウキを表示状態へ戻す（キャスト開始時）。
+    /// <see cref="ukiModel"/> 未設定なら何もしない（旧方式では飛翔中の位置更新で
+    /// そのまま見えるようになるため、追加の処理は要らない）。
+    /// </summary>
+    private void ShowFloat()
+    {
+        if (ukiModel is { IsValid: true } model) { model.Visible = true; }
     }
 
     /// <summary>釣り糸を非表示にする（点列は残したままフラグだけ落とす）。</summary>

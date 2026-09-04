@@ -883,6 +883,9 @@ public partial class InspectorPanel : UserControl
         float LightBounceIntensity = 0f,
         // ModelComponent 用フィールド（影を落とすか。シャドウマップレンダリングで使用）
         bool ModelCastShadows = true,
+        // ModelComponent 用フィールド（描画するか。false でこのモデルだけ描かれなくなる）。
+        // 旧ランタイム／旧シーンではキーが欠落しうるため既定 true（＝従来どおり表示）。
+        bool ModelVisible = true,
         // ModelComponent 用フィールド（距離 LOD を適用しないか。true で常に LOD0＝最高品質）。
         // 旧ランタイム／旧シーンではキーが欠落しうるため既定 false（＝従来どおり LOD を適用）。
         bool ModelDisableLod = false,
@@ -1286,6 +1289,9 @@ public partial class InspectorPanel : UserControl
             var modelPath = comp.TryGetProperty("model_path", out var mp) ? mp.GetString() ?? "" : "";
             // ModelComponent 用: 影を落とすか（シャドウマップレンダリングで使用。既定 true）
             var modelCastShadows = comp.TryGetProperty("cast_shadows", out var mcs) ? ReadJsonBool(mcs, true) : true;
+            // ModelComponent 用: 描画するか（既定 true = 従来どおり表示）。
+            // 旧ランタイムはキーを送らないため、欠落時は表示扱いにする。
+            var modelVisible = !comp.TryGetProperty("visible", out var mvs) || ReadJsonBool(mvs, true);
             // ModelComponent 用: 距離 LOD を適用しないか（既定 false = 従来どおり適用）
             var modelDisableLod = comp.TryGetProperty("disable_lod", out var mdl) && ReadJsonBool(mdl, false);
             // ModelComponent 用: セマンティックな描画タグ（0 = タグ無し）。
@@ -1669,6 +1675,7 @@ public partial class InspectorPanel : UserControl
                 LightSoftRadius: lightSoftRadius,
                 LightBounceIntensity: lightBounce,
                 ModelCastShadows: modelCastShadows,
+                ModelVisible: modelVisible,
                 ModelDisableLod: modelDisableLod,
                 ModelRenderTag: modelRenderTag,
                 ModelOffPX: modelOffPX, ModelOffPY: modelOffPY, ModelOffPZ: modelOffPZ,
@@ -3882,6 +3889,13 @@ public partial class InspectorPanel : UserControl
     private const string ModelRenderTagTooltip =
         "合成/演出でグループ指定に使う描画タグ（0=なし）。第3層アセットから読める";
 
+    /// <summary>「表示」チェックのツールチップ。</summary>
+    private const string ModelVisibleTooltip =
+        "OFF にすると、このモデルだけが描画されなくなります（影も落としません）。\n" +
+        "Transform・親子の追従・JointAttach・コライダー・スクリプトは動き続けるため、\n" +
+        "「見えないが位置は正しく追従していてほしい」オブジェクトを安全に隠せます。\n" +
+        "スクリプトからは model.Visible で同じ切り替えができます。";
+
     /// <summary>「LODを適用しない」チェックのツールチップ。</summary>
     private const string ModelDisableLodTooltip =
         "ON にすると、カメラからの距離に関係なく常に LOD0（フル解像度）で描画します。\n" +
@@ -3891,6 +3905,27 @@ public partial class InspectorPanel : UserControl
     {
         var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
         sp.Children.Add(BuildModelPathRow(info));
+
+        // ── 表示（描画するか）─────────────────────────────────────
+        // 「影を落とす」「LODを適用しない」と同じスタイル・同じ SET_MODEL_FIELD 経路で送る
+        // （＝ランタイム側でフィールド編集の Undo/Redo に自動的に載る）。
+        // OFF でも Transform・親子の追従・JointAttach は止まらない（描画だけを切る）。
+        var visibleRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        visibleRow.Children.Add(new TextBlock
+        {
+            Text = "表示", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var visibleCheck = new CheckBox
+        {
+            IsChecked = info.ModelVisible, VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 0, 0),
+            ToolTip = ModelVisibleTooltip,
+        };
+        visibleCheck.Checked   += (_, _) => _runtime?.SendToRuntime($"SET_MODEL_FIELD:{_currentActorId},{info.SlotIdx},visible,1");
+        visibleCheck.Unchecked += (_, _) => _runtime?.SendToRuntime($"SET_MODEL_FIELD:{_currentActorId},{info.SlotIdx},visible,0");
+        visibleRow.Children.Add(visibleCheck);
+        sp.Children.Add(visibleRow);
 
         // ── 影を落とす（シャドウマップレンダリングで使用）────────────
         // LightComponent の同名チェックボックス（BuildLightSlotContent）とスタイル・配置を揃える。

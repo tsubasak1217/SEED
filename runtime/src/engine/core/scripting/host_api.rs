@@ -703,6 +703,8 @@ fn read_floats(
                 // YXZ オイラー角・度（Transform.rotation と同一規約）
                 "offset_rotation" => put(out, &m.offset_rotation),
                 "offset_scale"    => put(out, &m.offset_scale),
+                // 表示フラグ（bool = 0/1。LineRenderer の "visible" と同流儀）
+                "visible"         => put(out, &[if m.visible { 1.0 } else { 0.0 }]),
                 _                 => None,
             }
         }
@@ -1047,6 +1049,10 @@ fn write_floats(
                 "offset_position" => take(v).map(|a| m.offset_position = a).is_some(),
                 "offset_rotation" => take(v).map(|a| m.offset_rotation = a).is_some(),
                 "offset_scale"    => take(v).map(|a| m.offset_scale    = a).is_some(),
+                // 表示フラグ（0/1）。false でも Transform・親子伝播・JointAttach は
+                // 従来どおり動き続ける（描画から外れるだけ）。
+                // 統合バッチは毎フレーム全 MC から詰め直されるので dirty 化は不要。
+                "visible"         => take::<1>(v).map(|a| m.visible = a[0] != 0.0).is_some(),
                 _                 => false,
             }
         }

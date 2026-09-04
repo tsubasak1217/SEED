@@ -57,6 +57,11 @@ fn default_next_group_id() -> u32 { GROUP_ID_BASE }
 /// フィールドのため、欠落時は #[serde(default = ...)] でこの値にフォールバックする）。
 fn default_cast_shadows() -> bool { true }
 
+/// `visible` の既定値（true = 表示）。
+/// 旧 `.scene` にはフィールドが存在しないため、欠落時は #[serde(default = ...)] で
+/// この値へフォールバックし、従来どおり表示される。
+fn default_visible() -> bool { true }
+
 // ─── 描画オフセットトランスフォーム（既定値） ────────────────────────────────
 //
 // 【何のための機能か】
@@ -128,6 +133,11 @@ pub struct ModelComponentData {
     /// 影を落とすか（シャドウマップレンダリングで使用）。既定 true。
     #[serde(default = "default_cast_shadows")]
     pub cast_shadows: bool,
+    /// 描画するか（false = 非表示）。既定 true。
+    /// 非表示でも Transform・親子伝播・JointAttach は従来どおり更新され続ける
+    /// （「描かない」だけの純粋な表示フラグ）。
+    #[serde(default = "default_visible")]
+    pub visible: bool,
     /// マテリアルスロットごとのオーバーライド（Phase R7）。
     /// 旧 .scene にはフィールドが存在しないため、欠落時は空 Vec（=オーバーライド無し）にフォールバックする。
     #[serde(default)]
@@ -208,6 +218,21 @@ pub struct ModelComponent {
     pub anim_drive:      Option<ModelAnimDrive>,
     /// 影を落とすか（シャドウマップレンダリングで使用）。既定 true。
     pub cast_shadows:    bool,
+    /// このモデルを描画するか（false = 非表示）。既定 true。
+    ///
+    /// 【何をしないか】非表示にしても `Transform`・親子のワールド行列伝播・
+    /// `JointAttach` のソケット追従・コライダー・スクリプトは**一切止まらない**。
+    /// 影響するのは「統合バッチへインスタンス行列を積むかどうか」だけであり、
+    /// 通常描画・シャドウ・RT(BLAS/TLAS)・ID ピッキング・アウトラインは
+    /// すべて統合バッチ経由なので、この 1 フラグで全描画経路から外れる。
+    ///
+    /// 【なぜ「画面外へ動かす」ではダメか】ウキのように「見えないが位置は正しく
+    /// 追従していてほしい」オブジェクト（子アクタがカメラ注視点になっている等）は、
+    /// 座標を退避させると追従先まで壊れる。表示だけを切るこのフラグが必要になる。
+    ///
+    /// 【非表示時のアウトライン】選択アウトラインも統合バッチのインスタンス範囲から
+    /// 引くため、非表示アクタには縁取りが出ない（ギズモ・インスペクタ操作は可能）。
+    pub visible:         bool,
     /// マテリアルスロットごとのオーバーライド（Phase R7）。
     /// GpuModel 構築時にこの内容が `apply_overrides` で焼き込まれる。
     /// `batch_key()` の署名計算にも使われる（インスタンスバッチのマージキー）。
@@ -270,6 +295,8 @@ impl ModelComponent {
             next_group_id:   GROUP_ID_BASE,
             anim_drive:      None,
             cast_shadows:    true,
+            // 既定は表示（従来と 1 ビットも変わらない描画）。
+            visible:         true,
             material_overrides: Vec::new(),
             // タグ無し（既定）。0 は「未設定」を表す予約値。
             render_tag:      crate::engine::core::renderer::surface_id::RENDER_TAG_NONE,
@@ -463,6 +490,7 @@ impl ModelComponent {
             groups:        self.group_meta.clone(),
             next_group_id: self.next_group_id,
             cast_shadows:  self.cast_shadows,
+            visible:       self.visible,
             material_overrides: self.material_overrides.clone(),
             render_tag:    self.render_tag,
             disable_lod:   self.disable_lod,
@@ -580,6 +608,8 @@ mod override_serde_tests {
             groups:        vec![],
             next_group_id: GROUP_ID_BASE,
             cast_shadows:  true,
+            // 非既定値（非表示）を入れて往復漏れを検出する。
+            visible:       false,
             render_tag:    3,
             // 非既定値を入れて往復漏れを検出する。
             disable_lod:   true,
@@ -628,6 +658,7 @@ mod override_serde_tests {
         assert_eq!(json, json_again, "material_overrides の全フィールドが往復すること");
 
         // 主要フィールドを個別にも検証（JSON 比較のすり抜け防止）。
+        assert!(!restored.visible, "visible が往復すること（非既定値 false）");
         assert_eq!(restored.material_overrides.len(), 2);
         match &restored.material_overrides[0].kind {
             MaterialOverrideKind::Inline {
@@ -676,6 +707,7 @@ mod override_serde_tests {
             serde_json::from_str(old_json).expect("旧 .scene が読めること（serde default 必須）");
         assert!(data.material_overrides.is_empty(), "欠落時は空 Vec へフォールバック");
         assert!(data.cast_shadows, "欠落時は cast_shadows=true へフォールバック");
+        assert!(data.visible, "欠落時は visible=true へフォールバック（旧 .scene が消えない保証）");
         // 描画オフセット（後から追加したフィールド）も既定へフォールバックすること。
         assert_eq!(data.offset_position, OFFSET_POSITION_DEFAULT, "欠落時は位置オフセット 0");
         assert_eq!(data.offset_rotation, OFFSET_ROTATION_DEFAULT, "欠落時は回転オフセット 0");

@@ -712,7 +712,7 @@ if (gameObject.GetComponent<CanvasTransform>() is { } ct)   // CanvasTransform?�
 
 > `Position` は**親 Canvas 相対**の座標ですが、`ScreenPosition` はアンカー・スケールモード・親チェーンをすべて反映した**画面上の絶対位置**（ピボット点）を返します。SEED の 3D `Transform.Position` は元々ワールド絶対座標で、書き込み時に子孫へ差分が伝播します（上記「親子の追従」参照）。
 
-### Model（3D モデルの描画オフセット）
+### Model（3D モデルの表示切替・描画オフセット）
 
 アクターの `Transform` は動かさずに、**そのモデルの描画だけ**をローカルにずらす／回す／拡縮する補正値です。
 モデルの原点ズレ補正や、手に持たせた道具（釣り竿など）のグリップ位置合わせに使います。
@@ -723,12 +723,18 @@ if (gameObject.GetComponent<Model>() is { } model)   // Model?（未アタッチ
     model.OffsetPosition   // Vector3（get/set。アクターのローカル空間・既定 (0,0,0)）
     model.OffsetRotation   // Vector3（get/set。YXZ オイラー角・度・既定 (0,0,0)）
     model.OffsetScale      // Vector3（get/set。既定 (1,1,1)）
+    model.Visible          // bool（get/set。既定 true。false でこのモデルだけ描かれなくなる）
+
+    // 例: 座標は追従させたまま見た目だけ隠す（画面外へ退避させる必要はない）
+    model.Visible = false;
 
     // 例: 釣り竿の持ち手を手の位置へ合わせる
     model.OffsetPosition = new Vector3(0f, -0.15f, 0.4f);
     model.OffsetRotation = new Vector3(0f, 0f, 25f);
 }
 ```
+
+> **重要**: `Visible = false` は**描画だけ**を止めます。Transform・親子の追従・JointAttach のソケット追従・コライダー・スクリプトは通常どおり更新され続けるので、子アクタをカメラの注視点にしているような「見えないが位置は正しくいてほしい」オブジェクトを安全に隠せます（非表示中は影も落とさず、選択アウトラインも出ません）。
 
 > **重要**: オフセットは**描画にだけ**効きます（通常描画・スキン・LOD・影・レイトレース・クリック判定・選択枠まで一貫）。物理コライダー・レイキャスト・`Transform` の値は一切変わりません。当たり判定をずらしたい場合はコライダー側のオフセットを使ってください。
 
@@ -1164,7 +1170,7 @@ public class FishingLine : SEEDScript
 |---|---|---|
 | `Transform` | `gameObject.GetComponent<Transform>()` / `transform` | 3D 位置・回転・スケール |
 | `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー |
-| `Model` | `gameObject.GetComponent<Model>()` | 3D モデルの描画オフセット（位置・回転・スケール）。描画のみで物理には影響しない |
+| `Model` | `gameObject.GetComponent<Model>()` | 3D モデルの表示切替（`Visible`）と描画オフセット（位置・回転・スケール）。描画のみで物理・追従には影響しない |
 | `Sprite` | `gameObject.GetComponent<Sprite>()` | テクスチャパス・色・サイズ・レイヤー・ポインタ判定対象（RaycastTarget） |
 | `SkinnedSprite` | `gameObject.GetComponent<SkinnedSprite>()` | メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー・ポインタ判定対象。ボーンは子アクターの CanvasTransform で動かす |
 | `Camera` | `gameObject.GetComponent<Camera>()` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |

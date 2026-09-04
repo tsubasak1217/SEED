@@ -1747,6 +1747,8 @@ fn make_terrain_model_component(
         anim_drive: None,
         // 不透明 + 影キャストで RT 影・反射の対象になる。
         cast_shadows: true,
+        // 地形チャンクは常に表示（非表示にする経路が無い）。
+        visible: true,
         disable_lod: false,
         material_overrides: Vec::new(),
         // 地形チャンクはセマンティックタグを持たない（合成側は地形を別経路で判別する）。

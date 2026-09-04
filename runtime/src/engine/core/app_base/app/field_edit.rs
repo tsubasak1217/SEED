@@ -611,6 +611,8 @@ pub(super) fn apply_component_data_in_place(
                 return SlotApply::NeedsRebuild;
             };
             mc.cast_shadows = d.cast_shadows;
+            // 表示フラグ（インスペクタの「表示」チェック・Undo/Redo で戻る値）。
+            mc.visible = d.visible;
             mc.render_tag = d.render_tag;
             // LOD 無効フラグ（インスペクタのチェック・Undo/Redo で戻る値）。
             mc.disable_lod = d.disable_lod;
@@ -1449,6 +1451,7 @@ mod tests {
                 groups: Vec::new(),
                 next_group_id: 0,
                 cast_shadows: true,
+                visible:      true,
                 disable_lod: false,
                 material_overrides: Vec::new(),
                 render_tag: 0,

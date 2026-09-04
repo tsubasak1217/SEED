@@ -187,6 +187,9 @@ impl App {
 
         match key {
             "cast_shadows" => mc.cast_shadows = value == "1" || value == "true",
+            // 表示するか。値は "1"/"0"（cast_shadows と同流儀）。
+            // false でも Transform・親子伝播・JointAttach は動き続ける（描画から外れるだけ）。
+            "visible" => mc.visible = value == "1" || value == "true",
             // 距離 LOD を適用しない（常に LOD0）。値は "1"/"0"（cast_shadows と同流儀）。
             // 統合バッチのダーティゲートはこのフラグを入力に含むため、
             // ここで書き換えれば次フレームの update() で必ず振り分けが焼き直される。
@@ -629,6 +632,8 @@ impl App {
         let slot_added = match slot_data.component {
             ComponentData::ModelComponent(mc_data) => {
                 let cast_shadows = mc_data.cast_shadows;
+                // 表示するか（旧 .scene には無いため ModelComponentData 側で既定 true）。
+                let visible      = mc_data.visible;
                 // LOD を適用しないか（旧 .scene には無いため既定 false）。
                 let disable_lod  = mc_data.disable_lod;
                 let mc = if mc_data.model_path.is_empty() {
@@ -643,6 +648,7 @@ impl App {
                         next_group_id: mc_data.next_group_id,
                         anim_drive: None,
                         cast_shadows,
+                        visible,
                         disable_lod,
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
@@ -695,6 +701,7 @@ impl App {
                         next_group_id: mc_data.next_group_id,
                         anim_drive: None,
                         cast_shadows,
+                        visible,
                         disable_lod,
                         material_overrides: mc_data.material_overrides,
                         // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
@@ -1274,6 +1281,8 @@ impl App {
             match slot_data.component {
                 ComponentData::ModelComponent(mc_data) => {
                     let cast_shadows = mc_data.cast_shadows;
+                    // 表示するか（旧 .scene には無いため ModelComponentData 側で既定 true）。
+                    let visible      = mc_data.visible;
                 // LOD を適用しないか（旧 .scene には無いため既定 false）。
                 let disable_lod  = mc_data.disable_lod;
                     let mc = if mc_data.model_path.is_empty() {
@@ -1288,6 +1297,7 @@ impl App {
                             next_group_id: mc_data.next_group_id,
                             anim_drive: None,
                             cast_shadows,
+                            visible,
                             disable_lod,
                             material_overrides: mc_data.material_overrides,
                             // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。
@@ -1337,6 +1347,7 @@ impl App {
                             next_group_id: mc_data.next_group_id,
                             anim_drive: None,
                             cast_shadows,
+                            visible,
                             disable_lod,
                             material_overrides: mc_data.material_overrides,
                             // セマンティックタグ（旧 .scene には無いため ModelComponentData 側で既定 0）。

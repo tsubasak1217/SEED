@@ -1468,7 +1468,11 @@ impl App {
             if let Some(scene) = &self.scene {
                 collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line)
                     .into_iter()
-                    .filter(|(_, _, _, mc)| mc.cast_shadows && !mc.source_path.is_empty())
+                    // 非表示（visible=false）の MC は影も落とさない。
+                    // 実際には非表示 MC のインスタンスが統合バッチへ積まれないため
+                    // 影パスからも自動的に消えるが、キャスター集合の意味を
+                    // 「今フレーム影を落とすモデル」に保つためここでも除外する。
+                    .filter(|(_, _, _, mc)| mc.cast_shadows && mc.visible && !mc.source_path.is_empty())
                     // Phase R7: シャドウキャスター集合も batch_key で識別する
                     // （shared_model_batches のキーが batch_key のため一致させる）。
                     .map(|(_, _, _, mc)| mc.batch_key())
@@ -1972,6 +1976,26 @@ impl App {
                                     None => SkinAnimPose::single(d.anim_idx as u32, d.time),
                                 }
                             });
+                            // ── 表示フラグ（ModelComponent::visible）─────────────────
+                            // 非表示 MC は「インスタンス行列を 1 本も積まない」ことで描画から外す。
+                            //
+                            // 【エントリ自体は作ってから抜ける理由】ここで `continue` して
+                            // map にキーごと載せないと、`shared_model_batches` に残っている
+                            // 前フレームのバッチが更新されないまま描かれ続け、stale prune
+                            // （STALE_BATCH_PRUNE_FRAMES フレームの遅延解放）が走るまで
+                            // 消えない。エントリを 0 インスタンスで残せば
+                            // `InstancedModelBatch::update` が n_instances==0 の枝で
+                            // lod_visible_counts を 0 に落とすため、**同じフレームで**確実に消える。
+                            //
+                            // 【代表 CPU モデルは変えない】entry は上で作成済みなので、
+                            // 「先勝ち」で決まる代表 CPU モデルは非表示に関係なく従来と同一。
+                            // 後段の `gpu_model_by_path`（同じ先勝ち規則）と代表がズレないため、
+                            // 添字表と GpuModel の食い違い（パニック要因）は起きない。
+                            //
+                            // 【止まらないもの】Transform・親子伝播・JointAttach・
+                            // スクリプト・コライダーはこの分岐と無関係に更新され続ける。
+                            if !amc.visible { continue; }
+
                             // このMCが統合バッチに追加される前の先頭インデックスを記録する
                             let merged_start = e.mats.len() as u32;
                             let n_insts      = amc.instance_mats.len() as u32;

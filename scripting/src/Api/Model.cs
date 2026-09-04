@@ -60,4 +60,24 @@ public readonly struct Model : IComponentHandle<Model>
         get => ScriptHost.TryGetVec3(_entity, Comp, "offset_scale", out var v) ? v : Vector3.One;
         set => ScriptHost.TrySetVec3(_entity, Comp, "offset_scale", value);
     }
+
+    /// <summary>
+    /// 描画するか（既定 true）。false にするとこのモデルだけが描かれなくなる。
+    ///
+    /// <para><b>止まらないもの</b>: 非表示でも Transform・親子のワールド行列伝播・
+    /// JointAttach のソケット追従・コライダー・スクリプトは通常どおり動き続ける。
+    /// したがって「見えないが位置は正しく追従している」オブジェクト
+    /// （子アクタがカメラの注視点になっている等）を安全に隠せる。
+    /// 座標を画面外へ退避させる旧来の隠し方と違い、追従先が壊れない。</para>
+    ///
+    /// <para>非表示のあいだは影も落とさず、選択アウトラインも出ない。</para>
+    ///
+    /// 読み取りに失敗した場合（Model を持たないエンティティ）はコンポーネントの
+    /// 既定値と同じ true を返す。
+    /// </summary>
+    public bool Visible
+    {
+        get => !ScriptHost.TryGetBool(_entity, Comp, "visible", out var b) || b;
+        set => ScriptHost.TrySetBool(_entity, Comp, "visible", value);
+    }
 }
