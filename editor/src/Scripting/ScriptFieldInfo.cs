@@ -54,6 +54,14 @@ public record ScriptFieldInfo(
     /// <summary>フィールド直前に表示する見出し（[Header]）。無ければ null。</summary>
     public string? Header { get; init; }
 
+    /// <summary>
+    /// ユーザースクリプト上のこのフィールドに書かれた <c>/// &lt;summary&gt;</c> の説明文。
+    /// 無ければ null。属性で明示する <see cref="Tooltip"/> とは独立で、
+    /// ラベルのツールチップに「補足説明」として併記される
+    /// （抽出元は <see cref="ScriptDocComments"/>。リフレクションでは取得できない情報）。
+    /// </summary>
+    public string? Summary { get; init; }
+
     /// <summary>[Range] の最小値。無ければ null。</summary>
     public float? RangeMin { get; init; }
 

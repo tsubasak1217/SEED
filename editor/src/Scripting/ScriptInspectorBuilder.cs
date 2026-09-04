@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Windows;
@@ -39,6 +39,12 @@ public static class ScriptInspectorBuilder
         Func<string, string>?               assetPathToVirtual = null)
     {
         var stack = new StackPanel();
+
+        // ラベル列の幅調停をこのセクション単位で行う。
+        // グループは添付プロパティで子孫へ継承されるので、配列要素の追加などで
+        // 後から作られた行も自動的にこの調停に加わる（＝全行のラベル幅が揃う）。
+        new ScriptLabelColumnGroup().AttachScope(stack);
+
         BuildInto(stack, fields, currentValues, onValueChanged, referenceResolver, prefix: "",
                   expandStates: expandStates, expandKeyPrefix: expandKeyPrefix,
                   assetPathToVirtual: assetPathToVirtual);
@@ -257,14 +263,25 @@ public static class ScriptInspectorBuilder
         return expander;
     }
 
-    /// <summary>[Header] 見出しの TextBlock を生成する。</summary>
+    /// <summary>見出し（[Header]）のフォントサイズ（px）。</summary>
+    private const double HeaderFontSize = 11;
+
+    /// <summary>見出し（[Header]）の上下余白（px）。直前のフィールドとの区切りを付ける。</summary>
+    private static readonly Thickness HeaderMargin = new(0, 8, 0, 2);
+
+    /// <summary>
+    /// [Header] 見出しの TextBlock を生成する。
+    /// 幅が足りないときは「…」で切り詰め、ツールチップで全文を読めるようにする。
+    /// </summary>
     private static UIElement MakeHeader(string text) => new TextBlock
     {
-        Text       = text,
-        Foreground = BrushText,
-        FontWeight = FontWeights.Bold,
-        FontSize   = 11,
-        Margin     = new Thickness(0, 8, 0, 2),
+        Text         = text,
+        Foreground   = BrushText,
+        FontWeight   = FontWeights.Bold,
+        FontSize     = HeaderFontSize,
+        Margin       = HeaderMargin,
+        TextTrimming = TextTrimming.CharacterEllipsis,
+        ToolTip      = text,
     };
 
     // ── 型別ビルダー ─────────────────────────────────────────
@@ -275,7 +292,7 @@ public static class ScriptInspectorBuilder
         var drag = MakeDragLabel(tb, DragSpeedFloat, onChange, isInt: false);
         tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitFloat(tb, onChange); e.Handled = true; } };
         tb.LostFocus += (_, _) => CommitFloat(tb, onChange);
-        return MakeRow(field.Label, field.Tooltip, drag, tb);
+        return MakeRow(field, drag, tb);
     }
 
     private static UIElement BuildIntRow(ScriptFieldInfo field, int value, Action<string> onChange)
@@ -284,7 +301,7 @@ public static class ScriptInspectorBuilder
         var drag = MakeDragLabel(tb, DragSpeedInt, onChange, isInt: true);
         tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitInt(tb, onChange); e.Handled = true; } };
         tb.LostFocus += (_, _) => CommitInt(tb, onChange);
-        return MakeRow(field.Label, field.Tooltip, drag, tb);
+        return MakeRow(field, drag, tb);
     }
 
     /// <summary>[Range] 付き数値フィールド: スライダー + 数値ボックスを表示する。</summary>
@@ -345,7 +362,7 @@ public static class ScriptInspectorBuilder
         grid.Children.Add(slider);
         grid.Children.Add(box);
 
-        return MakeRow(field.Label, field.Tooltip, null, grid);
+        return MakeRow(field, null, grid);
     }
 
     private static UIElement BuildBoolRow(ScriptFieldInfo field, bool value, Action<string> onChange)
@@ -358,7 +375,7 @@ public static class ScriptInspectorBuilder
         };
         cb.Checked   += (_, _) => onChange("true");
         cb.Unchecked += (_, _) => onChange("false");
-        return MakeRow(field.Label, field.Tooltip, null, cb);
+        return MakeRow(field, null, cb);
     }
 
     private static UIElement BuildStringRow(ScriptFieldInfo field, string value, Action<string> onChange)
@@ -366,7 +383,7 @@ public static class ScriptInspectorBuilder
         var tb = MakeTextBox(value);
         tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { onChange(tb.Text); e.Handled = true; } };
         tb.LostFocus += (_, _) => onChange(tb.Text);
-        return MakeRow(field.Label, field.Tooltip, null, tb);
+        return MakeRow(field, null, tb);
     }
 
     // ── 参照フィールド行 ─────────────────────────────────────
@@ -425,7 +442,7 @@ public static class ScriptInspectorBuilder
                 : SEED.ScriptReference.Format(actor, slot)),
             onRefDrop);
 
-        return MakeRow(field.Label, field.Tooltip, null, picker.Element);
+        return MakeRow(field, null, picker.Element);
     }
 
     private static UIElement BuildReadOnlyRow(ScriptFieldInfo field)
@@ -438,7 +455,7 @@ public static class ScriptInspectorBuilder
             FontStyle         = FontStyles.Italic,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        return MakeRow(field.Label, field.Tooltip, null, val);
+        return MakeRow(field, null, val);
     }
 
 

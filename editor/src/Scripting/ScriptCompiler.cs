@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -140,6 +140,11 @@ public static class ScriptCompiler
     {
         var source = File.ReadAllText(filePath);
         var tree   = CSharpSyntaxTree.ParseText(source, ParseOptions, path: filePath);
+
+        // インスペクタのツールチップ用に、このファイルのドキュメントコメントを索引へ入れる
+        // （プロジェクト全体コンパイルが失敗してこの経路へ落ちた場合の受け皿）。
+        ScriptDocComments.IndexSingle(tree);
+
         var comp   = CSharpCompilation.Create(
             $"SEEDScript_{Guid.NewGuid():N}",
             [tree], _refs, CreateCompilationOptions());
@@ -243,6 +248,10 @@ public static class ScriptCompiler
 
             var trees = CollectProjectSyntaxTrees(assetsRoot);
             if (trees.Count == 0) return null;
+
+            // インスペクタのツールチップ用に [SerializeField] の /// <summary> を索引化する。
+            // 構文木は既にここで揃っており、木ごとに結果をキャッシュするので追加コストは小さい。
+            ScriptDocComments.Index(trees);
 
             var comp = CSharpCompilation.Create(
                 $"SEEDScriptProj_{Guid.NewGuid():N}",
@@ -400,8 +409,13 @@ public static class ScriptCompiler
         if (reference is null && arrayInfo is null && depth < MaxNestDepth && IsNestedSerializable(f.FieldType))
             children = ExtractFields(f.FieldType, depth + 1);
 
+        // フィールドの /// <summary> ドキュメントコメント（リフレクションでは取れないので
+        // 構文木から作った索引を引く。索引が無ければ null＝説明なしとして扱う）。
+        var summary = ScriptDocComments.Lookup(f.DeclaringType?.Name, f.Name);
+
         return new ScriptFieldInfo(f, label ?? PrettifyName(f.Name), tooltip, defValue)
         {
+            Summary   = summary,
             Header    = header,
             RangeMin  = rangeMin,
             RangeMax  = rangeMax,

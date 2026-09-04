@@ -26,7 +26,11 @@ internal static class ScriptFieldWidgets
 
     // ── レイアウト定数 ───────────────────────────────────────
 
-    /// <summary>フィールド名ラベル列の幅（px）。行の左端を全フィールドで揃える。</summary>
+    /// <summary>
+    /// フィールド名ラベル列の初期幅（px）。
+    /// 実際の幅は <see cref="ScriptLabelColumnGroup"/> がセクション内の全ラベルを見て
+    /// 決め直す（ラベル優先で幅を配る）。ここはグループへ参加する前の暫定値。
+    /// </summary>
     public const double LabelColumnWidth = 90;
 
     /// <summary>行内の共通フォントサイズ（px）。</summary>
@@ -50,12 +54,32 @@ internal static class ScriptFieldWidgets
     // ── 行レイアウト ─────────────────────────────────────────
 
     /// <summary>
+    /// フィールド情報から「ラベル ＋ （任意の前置要素） ＋ コントロール」の 1 行を組む。
+    /// ラベルには完全名と説明（[Tooltip] / <c>/// &lt;summary&gt;</c>）のツールチップが付く。
+    /// </summary>
+    public static Grid MakeRow(ScriptFieldInfo field, UIElement? prefix, UIElement control)
+        => MakeRow(field.Label, ScriptFieldTooltip.Build(field), prefix, control);
+
+    /// <summary>
     /// 「ラベル ＋ （任意の前置要素） ＋ コントロール」の 1 行を組む。
     /// </summary>
-    public static Grid MakeRow(string label, string? tooltip, UIElement? prefix, UIElement control)
+    /// <param name="label">ラベル文字列（列幅が足りなければ「…」で切り詰めて表示する）。</param>
+    /// <param name="tooltip">ラベルのツールチップ内容（文字列でも UI 要素でも可。null なら付けない）。</param>
+    /// <param name="prefix">ラベルと入力欄の間に挟む要素（数値ドラッグハンドルなど）。</param>
+    /// <param name="control">入力欄本体。</param>
+    public static Grid MakeRow(string label, object? tooltip, UIElement? prefix, UIElement control)
     {
         var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(LabelColumnWidth) });
+
+        // ラベル列は「内容に合わせて広げる」列。実際の幅は行の生成後に
+        // ScriptLabelColumnGroup がセクション全体で揃えて決める（ラベル優先で配分）。
+        // グループが見つからない場合の暴走防止として px 上限だけは常に掛けておく。
+        var labelColumn = new ColumnDefinition
+        {
+            Width    = new GridLength(LabelColumnWidth),
+            MaxWidth = ScriptLabelColumnGroup.MaxLabelWidth,
+        };
+        grid.ColumnDefinitions.Add(labelColumn);
         if (prefix is not null)
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -69,8 +93,19 @@ internal static class ScriptFieldWidgets
             TextTrimming      = TextTrimming.CharacterEllipsis,
             ToolTip           = tooltip,
         };
+        if (tooltip is not null)
+        {
+            // 説明はやや長くなるので、出るまでは短く・出てからは長く表示する
+            ToolTipService.SetInitialShowDelay(lbl, ScriptFieldTooltip.InitialShowDelayMs);
+            ToolTipService.SetShowDuration(lbl, ScriptFieldTooltip.ShowDurationMs);
+        }
         Grid.SetColumn(lbl, 0);
         grid.Children.Add(lbl);
+
+        // ラベルを「折り返さずに表示するのに必要な幅」を、まだツリーに載っていない
+        // この時点で測っておく（レイアウト中の再測定を避けるため）。
+        lbl.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        ScriptLabelColumnGroup.AttachRow(grid, labelColumn, lbl.DesiredSize.Width);
 
         var controlCol = 1;
         if (prefix is not null)
