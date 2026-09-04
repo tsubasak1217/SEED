@@ -2,15 +2,15 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      -12.70795,
-      1.4265957,
-      60.635643
+      49.514133,
+      10.938668,
+      -3.104155
     ],
-    "yaw": -2.9604626,
-    "pitch": 0.049780417,
+    "yaw": -0.3178075,
+    "pitch": 0.13133223,
     "fov_deg": 25.0,
     "far": 1000.0,
-    "speed": 14.929924
+    "speed": 25.798912
   },
   "shading_params": {
     "toon_rim_strength": [
@@ -140,9 +140,9 @@
           0.0
         ],
         "scale": [
-          1.1052151,
-          1.1052151,
-          1.1052151
+          1.0743412,
+          1.0743412,
+          1.0743412
         ]
       },
       "components": [
@@ -267,19 +267,19 @@
       "name": "Player",
       "transform": {
         "position": [
-          47.60007,
-          2.1599,
-          32.32579
+          47.60229,
+          2.1594324,
+          32.328568
         ],
         "rotation": [
           -0.0,
-          89.979904,
+          89.97983,
           0.0
         ],
         "scale": [
-          4.6351805,
-          4.6351805,
-          4.6351805
+          4.6353135,
+          4.6339383,
+          4.6353135
         ]
       },
       "components": [
@@ -338,6 +338,7 @@
               ],
               "next_group_id": 1000002,
               "cast_shadows": true,
+              "visible": true,
               "material_overrides": [],
               "render_tag": 0,
               "disable_lod": true,
@@ -550,20 +551,21 @@
                 "castMarker": "CastMarker",
                 "castMarkerSprite": "CastMarkerArrow|Sprite",
                 "castWindupSeconds": "0.500",
-                "islandCenter": "ControlPoints",
                 "line": "Uki|LineRenderer",
                 "lineSegments": "32",
+                "maxCastDistance": "40.000",
+                "minCastDistance": "10.000",
                 "playerAnimator": "Player|Animator",
                 "playerMove": "Player|Script",
-                "previewLine": "CastPreview|LineRenderer",
-                "pullThresholdPx": "5.000",
-                "pushThresholdPx": "10.000",
                 "reelArrow": "ReelArrow",
+                "reelArrowBaseOpacity": "0.300",
+                "reelArrowExtraOpacity": "0.600",
+                "reelArrowPulseFrequency": "0.300",
                 "reelArrowSprite": "ReelArrowSprite|Sprite",
                 "rodAnimator": "sao|Animator",
-                "rodRoot": "sao",
                 "rodTip": "RodTip",
                 "uki": "Uki",
+                "ukiModel": "Uki|Model",
                 "water": "Ocean|Water Volume",
                 "windupScrubRate": "15.000"
               }
@@ -576,19 +578,19 @@
           "name": "sao",
           "transform": {
             "position": [
-              46.79294,
-              3.4011743,
-              28.50436
+              46.795135,
+              3.400374,
+              28.507027
             ],
             "rotation": [
-              1.2528592,
-              -91.081,
-              0.0000025793595
+              1.2524877,
+              -91.08107,
+              0.0000025785946
             ],
             "scale": [
-              2.7811077,
-              5.562216,
-              2.7811074
+              2.7811875,
+              5.5607257,
+              2.7811868
             ]
           },
           "components": [
@@ -601,22 +603,22 @@
                   "instances": [
                     [
                       [
-                        -0.05246825,
-                        -0.12159476,
-                        -2.7799475,
-                        46.79294
+                        -0.052473404,
+                        -0.12159824,
+                        -2.7800274,
+                        46.795135
                       ],
                       [
-                        1.2517086e-7,
-                        5.560886,
-                        -0.060808294,
-                        3.4011743
+                        1.2513732e-7,
+                        5.559396,
+                        -0.060792,
+                        3.400374
                       ],
                       [
-                        2.7806127,
-                        -0.0022946994,
-                        -0.052455734,
-                        28.50436
+                        2.7806926,
+                        -0.0022949248,
+                        -0.052460887,
+                        28.507027
                       ],
                       [
                         0.0,
@@ -647,6 +649,7 @@
                   ],
                   "next_group_id": 1000002,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": true,
@@ -788,7 +791,7 @@
               0.0
             ],
             "scale": [
-              1.0000025,
+              1.0000024,
               0.99985856,
               1.0000025
             ]
@@ -835,9 +838,9 @@
       "name": "Owner",
       "transform": {
         "position": [
-          33.289246,
-          4.598044,
-          31.766409
+          33.570194,
+          4.97957,
+          31.201475
         ],
         "rotation": [
           -0.0,
@@ -845,9 +848,9 @@
           0.0
         ],
         "scale": [
-          4.6351805,
-          4.6351805,
-          4.6351805
+          1.0,
+          1.0,
+          1.0
         ]
       },
       "components": [
@@ -860,22 +863,22 @@
               "instances": [
                 [
                   [
-                    4.6351805,
+                    1.0,
                     0.0,
                     0.0,
-                    33.289246
+                    33.570194
                   ],
                   [
                     0.0,
-                    4.6351805,
+                    1.0,
                     0.0,
-                    4.598044
+                    4.97957
                   ],
                   [
                     0.0,
                     0.0,
-                    4.6351805,
-                    31.766409
+                    1.0,
+                    31.201475
                   ],
                   [
                     0.0,
@@ -906,6 +909,7 @@
               ],
               "next_group_id": 1000002,
               "cast_shadows": true,
+              "visible": true,
               "material_overrides": [],
               "render_tag": 0,
               "disable_lod": true,
@@ -920,9 +924,9 @@
                 0.0
               ],
               "offset_scale": [
-                0.3,
-                0.3,
-                0.3
+                1.2,
+                1.2,
+                1.2
               ]
             }
           }
@@ -1114,6 +1118,7 @@
               "groups": [],
               "next_group_id": 1000000,
               "cast_shadows": true,
+              "visible": true,
               "material_overrides": [],
               "render_tag": 0,
               "disable_lod": false,
@@ -1512,14 +1517,14 @@
           21.527441
         ],
         "rotation": [
-          0.0,
+          -0.0,
           0.0,
           0.0
         ],
         "scale": [
-          1.5,
-          1.5,
-          1.5
+          1.5324916,
+          1.5324916,
+          1.5324916
         ]
       },
       "components": [
@@ -1528,8 +1533,8 @@
           "component": {
             "type": "CanvasComponent",
             "data": {
-              "width": 100.0,
-              "height": 100.0,
+              "width": 150.0,
+              "height": 150.0,
               "auto_scale": false,
               "viewport_ref": {
                 "type": "window"
@@ -1538,7 +1543,7 @@
               "draw_zone": "foreground",
               "pivot": [
                 0.5,
-                0.5
+                1.0
               ]
             }
           }
@@ -1551,7 +1556,7 @@
           "canvas_transform": {
             "position": [
               0.0,
-              0.0
+              8.859375
             ],
             "rotation": 0.0,
             "scale": [
@@ -1584,8 +1589,8 @@
                     1.0,
                     0.9
                   ],
-                  "width": 100.0,
-                  "height": 100.0,
+                  "width": 150.0,
+                  "height": 120.0,
                   "layer": 0,
                   "postfx_path": "",
                   "raycast_target": false
@@ -1695,13 +1700,13 @@
       "name": "Uki",
       "transform": {
         "position": [
-          65.9026,
-          4.27412,
-          21.52722
+          30.035,
+          4.274,
+          27.104
         ],
         "rotation": [
-          0.0,
-          89.9799,
+          -0.0,
+          89.98,
           0.0
         ],
         "scale": [
@@ -1720,22 +1725,22 @@
               "instances": [
                 [
                   [
-                    0.00035090843,
-                    0.0,
-                    0.99999994,
-                    65.90334
-                  ],
-                  [
+                    0.0003488817,
                     0.0,
                     1.0,
-                    0.0,
-                    4.27412
+                    30.034996
                   ],
                   [
-                    -0.99999994,
                     0.0,
-                    0.00035090843,
-                    21.527433
+                    0.9999998,
+                    0.0,
+                    4.2739983
+                  ],
+                  [
+                    -1.0000004,
+                    0.0,
+                    0.00034888196,
+                    27.104013
                   ],
                   [
                     0.0,
@@ -1755,6 +1760,7 @@
               "groups": [],
               "next_group_id": 1000000,
               "cast_shadows": true,
+              "visible": true,
               "material_overrides": [],
               "render_tag": 0,
               "disable_lod": true,
@@ -1967,19 +1973,19 @@
           "name": "CastCameraTarget",
           "transform": {
             "position": [
-              56.105343,
-              9.015582,
-              21.523993
+              20.237015,
+              9.015459,
+              27.100603
             ],
             "rotation": [
-              24.999968,
-              89.97986,
+              24.999945,
+              89.979965,
               0.0
             ],
             "scale": [
-              1.0,
-              12.591574,
-              0.9999999
+              0.99999994,
+              39.197777,
+              1.0000001
             ]
           },
           "components": [],
@@ -2122,6 +2128,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [
                     {
                       "slot": 0,
@@ -2311,6 +2318,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [
                     {
                       "slot": 0,
@@ -2500,6 +2508,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [
                     {
                       "slot": 0,
@@ -2696,6 +2705,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -2784,6 +2794,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -2872,6 +2883,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -2960,6 +2972,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -3048,6 +3061,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -3136,6 +3150,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -3231,6 +3246,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -3395,6 +3411,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -3559,6 +3576,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -3723,6 +3741,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -3887,6 +3906,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -4051,6 +4071,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -4222,6 +4243,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -4362,6 +4384,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -4509,6 +4532,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -4598,6 +4622,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -4687,6 +4712,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -4783,6 +4809,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -4870,6 +4897,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -4960,6 +4988,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -5047,6 +5076,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -5137,6 +5167,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -5224,6 +5255,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -5314,6 +5346,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -5401,6 +5434,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -5491,6 +5525,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -5578,6 +5613,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -5668,6 +5704,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -5755,6 +5792,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -5845,6 +5883,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -5932,6 +5971,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -6022,6 +6062,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -6109,6 +6150,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -6199,6 +6241,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -6286,6 +6329,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -6376,6 +6420,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": true,
+                  "visible": true,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": false,
@@ -6463,6 +6508,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -6565,6 +6611,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -6672,6 +6719,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -6779,6 +6827,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -6886,6 +6935,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -6993,6 +7043,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -7100,6 +7151,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -7207,6 +7259,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -7314,6 +7367,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -7421,6 +7475,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -7528,6 +7583,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -7635,6 +7691,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -7742,6 +7799,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -7849,6 +7907,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -7956,6 +8015,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -8063,6 +8123,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -8170,6 +8231,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -8277,6 +8339,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -8384,6 +8447,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -8491,6 +8555,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -8598,6 +8663,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -8705,6 +8771,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -8812,6 +8879,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -8919,6 +8987,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -9026,6 +9095,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -9133,6 +9203,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -9240,6 +9311,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -9347,6 +9419,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -9454,6 +9527,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -9561,6 +9635,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -9668,6 +9743,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -9775,6 +9851,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -9882,6 +9959,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -9989,6 +10067,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -10096,6 +10175,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -10203,6 +10283,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -10310,6 +10391,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -10417,6 +10499,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -10524,6 +10607,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -10631,6 +10715,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -10738,6 +10823,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -10845,6 +10931,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -10952,6 +11039,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -11059,6 +11147,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -11166,6 +11255,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -11273,6 +11363,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -11380,6 +11471,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,
@@ -11487,6 +11579,7 @@
                       "groups": [],
                       "next_group_id": 1000000,
                       "cast_shadows": true,
+                      "visible": true,
                       "material_overrides": [],
                       "render_tag": 0,
                       "disable_lod": false,

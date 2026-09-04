@@ -12,13 +12,19 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// - 構える   … 移動中に<b>左クリックを押す</b>と釣り姿勢＋狙い（Aiming）へ
 /// - 振りかぶり… 押したままマウスを<b>左へ振る</b>（累積が
 ///   <see cref="windupThresholdPx"/> px を超えると Windup へ。途中まででも姿勢は追従する）
-/// - 飛距離   … Windup 中は着弾点プレビューが最短⇔最長を往復するので、投げたい距離で振る
+/// - 飛距離   … Windup 中は着水点マーカー（CastMarker）が最短⇔最長を往復するので、投げたい距離で振る
 /// - キャスト … マウスを<b>右へ振る</b>（累積が <see cref="castSwingThresholdPx"/> px 超で成立）
 /// - 方向     … プレイヤーの正面（沖側）が常にキャスト方向。左右の角度調整はできない
 /// - 中断     … キャスト前に左クリックを離すと姿勢を解除して移動へ戻る
 /// - リール   … マウスホイール回転量のみで巻き取る
 ///   （<see cref="metersPerWheelUnit"/> を 0 にすれば無効化できる）
-/// - 巻く向き … A / D キーで左右に振れる（<b>ウキ→竿先</b>方向を基準に ±範囲内。<see cref="islandCenter"/> は竿先が未設定のときのみのフォールバック）
+/// - 巻く向き … A / D キーで左右に振れる（<b>ウキ→竿先</b>方向を基準に ±範囲内）
+///
+/// <b>竿先の取得</b>
+/// 竿先は <see cref="rodTip"/>（竿アクタ sao の子アクタ「RodTip」）を<b>読むだけ</b>で得る。
+/// 竿は JointAttach で手のボーンへ追従し、その追従はエンジン側
+/// （jointattach_ops::propagate_attach_to_descendants）が子孫アクタへ行列差分として
+/// 厳密に伝播するので、スクリプト側で竿先を合成する必要はない。
 ///
 /// <b>担当範囲</b>
 /// このスクリプトは「ウキの位置」と「釣り糸の点列」だけを毎フレーム決める。
@@ -61,7 +67,7 @@ public class FishingController : SEEDScript
         Aiming,
 
         /// <summary>
-        /// 振りかぶり完了。着弾点プレビューが最短⇔最長を往復し、
+        /// 振りかぶり完了。着水点マーカーが最短⇔最長を往復し、
         /// 「右へ振る」ジェスチャでキャストが成立する。
         /// </summary>
         Windup,
@@ -105,12 +111,6 @@ public class FishingController : SEEDScript
     /// <summary>0 除算を避けるための「実質 0」しきい値（しきい値・周期などの分母に使う）。</summary>
     private const float DivideEpsilon = 1e-4f;
 
-    /// <summary>着弾点プレビューの円（リング）の最小分割数（3 ＝ 三角形）。</summary>
-    private const int MinRingSegments = 3;
-
-    /// <summary>着弾点プレビューの放物線の最小分割数（1 ＝ 直線）。</summary>
-    private const int MinArcSegments = 1;
-
     /// <summary>ピンポン往復 1 周（往路＋復路）の長さ。<c>PingPong(u, 1)</c> は u が 2 で 1 周する。</summary>
     private const float PingPongCycleUnits = 2f;
 
@@ -147,62 +147,18 @@ public class FishingController : SEEDScript
     private PlayerMove? playerMove = null;
 
     /// <summary>
-    /// 竿先アクタのトランスフォーム（糸の始点・キャストの起点・ウキの格納先）。<b>これが最優先</b>。
+    /// 竿先アクタのトランスフォーム（糸の始点・キャストの起点・ウキの格納先・巻き取りの基準点）。
     ///
     /// <b>置き方</b>: 竿アクタ（sao）の<b>子</b>として、見た目の竿先の位置に空アクタを置く。
     /// 竿は JointAttach で手のボーンへ追従するが、その追従はエンジン側
     /// （jointattach_ops::propagate_attach_to_descendants）で子孫アクタへも行列差分として
     /// 厳密に伝播するので、子に置いた竿先はせん断（非一様スケール×回転オフセット）込みで正確に付いてくる。
     /// 本スクリプトはこの値を<b>読むだけ</b>で、書き戻しは行わない（書き戻すとエンジンの伝播と競合する）。
+    ///
+    /// 未設定の場合はプレイヤー自身の位置を竿先の代わりに使う（1 回だけ警告を出す）。
     /// </summary>
     [SerializeField(Label = "竿先アクタ（sao の子・JointAttach に追従）")]
     private SEED.Transform? rodTip = null;
-
-    /// <summary>
-    /// 竿アクタ本体のトランスフォーム（sao）。<b><see cref="rodTip"/> 未設定時のフォールバック</b>で、
-    /// 竿先を「竿の姿勢＋<see cref="rodTipOffsetX"/>〜Z のローカルオフセット」から合成する。
-    ///
-    /// <b>精度の注意</b>: この合成は竿の Transform を TRS 分解した値（右・上・前ベクトルとスケール）から
-    /// 組み立てるため、非一様スケール × JointAttach の回転オフセットで生じる<b>せん断を再現できない</b>。
-    /// 正確な竿先が要る場合は <see cref="rodTip"/>（sao の子アクタ）を設定すること。
-    /// </summary>
-    [SerializeField(Label = "竿アクタ（竿先の代替合成用・rodTip 未設定時のみ）")]
-    private SEED.Transform? rodRoot = null;
-
-    /// <summary>
-    /// 竿アクタの Model コンポーネント（描画オフセットの読み出し元）。
-    ///
-    /// <b>なぜ必要か</b>: ModelComponent は「アクタを動かさずに見た目だけずらす」
-    /// 描画オフセット（offset_position / offset_rotation / offset_scale）を持ち、
-    /// GPU へ渡る最終行列は <c>アクタのワールド行列 × オフセット TRS</c> になる
-    /// （model_component.rs の <c>render_matrix()</c>）。
-    /// このオフセットを含めないと、竿先オフセットを「Blender で見たモデルの座標」で
-    /// 指定できず、竿の実際の先端とズレる。
-    ///
-    /// 未設定ならオフセット無し（恒等）として扱う＝アクタのローカル座標に直接乗る。
-    /// </summary>
-    [SerializeField(Label = "竿の Model")]
-    private SEED.Model? rodModel = null;
-
-    /// <summary>
-    /// 竿先のオフセット X（<b>竿モデル自身のローカル座標</b>＝Blender で読んだ値をそのまま）。
-    /// <see cref="rodModel"/> の描画オフセットと竿アクタのスケール・回転は
-    /// <see cref="ComposeRodTip"/> が合成するので、ここでは素の値を入れる。
-    /// </summary>
-    [SerializeField(Label = "竿先オフセットX(モデルローカル)")]
-    private float rodTipOffsetX = 0f;
-
-    /// <summary>
-    /// 竿先のオフセット Y（<b>竿モデル自身のローカル座標</b>）。詳細は <see cref="rodTipOffsetX"/>。
-    /// </summary>
-    [SerializeField(Label = "竿先オフセットY(モデルローカル)")]
-    private float rodTipOffsetY = 1.0f;
-
-    /// <summary>
-    /// 竿先のオフセット Z（<b>竿モデル自身のローカル座標</b>）。詳細は <see cref="rodTipOffsetX"/>。
-    /// </summary>
-    [SerializeField(Label = "竿先オフセットZ(モデルローカル)")]
-    private float rodTipOffsetZ = 0f;
 
     /// <summary>ウキ（浮き）のトランスフォーム。本スクリプトが毎フレーム位置を決める。</summary>
     [SerializeField(Label = "ウキのトランスフォーム")]
@@ -227,22 +183,14 @@ public class FishingController : SEEDScript
     private SEED.LineRenderer? line = null;
 
     /// <summary>
-    /// 着弾点プレビューの LineRenderer（専用アクタ「CastPreview」に付ける想定）。
-    /// <see cref="FishState.Windup"/> のあいだだけ「竿先→着弾点の放物線＋着弾点の円」を描く。
-    /// 釣り糸とは寿命も見た目も別物なので、糸（<see cref="line"/>）とは別スロットにする。
-    /// 未設定ならプレビューを描かない（操作自体は同じように成立する）。
-    /// </summary>
-    [SerializeField(Label = "着弾点プレビュー(LineRenderer)")]
-    private SEED.LineRenderer? previewLine = null;
-
-    /// <summary>
-    /// 着水点マーカーのトランスフォーム（球モデルを持つ専用アクタ「CastMarker」に付ける想定）。
+    /// 着水点マーカーのトランスフォーム（矢印スプライトを載せた 3D キャンバス「CastMarker」に付ける想定）。
+    /// <b>着水点の提示はこのマーカーが唯一の手段である</b>（線によるプレビューは廃止済み）。
     ///
     /// <see cref="FishState.Windup"/> のあいだだけ着水点へ置き、それ以外では
     /// <see cref="markerParkY"/> の高さ（水面のはるか下）へ格納して見えなくする。
     /// マーカーには表示切替の参照を持たせていないため、「画面外へ動かす」ことで
     /// 非表示を表現している（ウキは <see cref="ukiModel"/> による表示切替を使う）。
-    /// 未設定ならマーカーは使わない（プレビュー線だけの従来動作になる）。
+    /// 未設定なら着水点の提示は行われない（操作自体は同じように成立する）。
     /// </summary>
     [SerializeField(Label = "着水点マーカー")]
     private SEED.Transform? castMarker = null;
@@ -369,17 +317,6 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "水面(WaterVolume)")]
     private SEED.WaterVolume? water = null;
 
-    /// <summary>
-    /// 島の中心（巻き取り方向の基準の<b>フォールバック</b>）。
-    ///
-    /// 通常は「ウキ→竿先」の方向を巻き取りの基準にするため、この値は使われない。
-    /// <see cref="rodRoot"/> と <see cref="rodTip"/> がどちらも未設定で
-    /// 竿先の位置が実質プレイヤー自身に潰れてしまう場合にだけ、代わりの基準として使う
-    /// （それも未設定ならプレイヤー自身の位置を中心として使う）。
-    /// </summary>
-    [SerializeField(Label = "島の中心（巻く方向の代替基準・竿先未設定時のみ使用）")]
-    private SEED.Transform? islandCenter = null;
-
     /// <summary>釣り竿の Animator。未設定なら竿のアニメ切替は行わない。</summary>
     [SerializeField(Label = "竿の Animator")]
     private SEED.Animator? rodAnimator = null;
@@ -475,19 +412,19 @@ public class FishingController : SEEDScript
 
     // ─── キャストの飛距離・方向 ───────────────────────────────
 
-    /// <summary>飛距離の下限（メートル）。プレビューの往復の下端でもある。</summary>
+    /// <summary>飛距離の下限（メートル）。着水点マーカーの往復の下端でもある。</summary>
     [Header("キャスト"), SerializeField(Label = "最短飛距離(m)")]
     private float minCastDistance = 3f;
 
-    /// <summary>飛距離の上限（メートル）。プレビューの往復の上端でもある。</summary>
+    /// <summary>飛距離の上限（メートル）。着水点マーカーの往復の上端でもある。</summary>
     [SerializeField(Label = "最長飛距離(m)")]
     private float maxCastDistance = 25f;
 
     /// <summary>
-    /// 着弾点プレビューが最短⇔最長を 1 往復する秒数（往路＋復路で 1 周）。
+    /// 着水点マーカーが最短⇔最長を 1 往復する秒数（往路＋復路で 1 周）。
     /// 短いほど狙いがシビアになる。
     /// </summary>
-    [SerializeField(Label = "プレビューの往復周期(秒)")]
+    [SerializeField(Label = "着水点の往復周期(秒)")]
     private float previewCycleSeconds = 2.0f;
 
     /// <summary>
@@ -498,28 +435,6 @@ public class FishingController : SEEDScript
     /// </summary>
     [SerializeField(Label = "ウキのY回転オフセット(度)")]
     private float floatYawOffsetDegrees = 0f;
-
-    /// <summary>着弾点プレビューの放物線の分割数（点数は分割数＋1）。</summary>
-    [SerializeField(Label = "プレビューの弧の分割数")]
-    private int previewArcSegments = 24;
-
-    /// <summary>着弾点プレビューの円（着弾点マーカー）の半径（メートル）。</summary>
-    [SerializeField(Label = "プレビューの円の半径(m)")]
-    private float previewRingRadius = 0.3f;
-
-    /// <summary>着弾点プレビューの円の分割数（点数は分割数＋1＝始点を閉じるぶん）。</summary>
-    [SerializeField(Label = "プレビューの円の分割数")]
-    private int previewRingSegments = 16;
-
-    /// <summary>
-    /// 着弾点プレビューの線（放物線＋円）を描くか。
-    ///
-    /// 既定は false。細い線は水面上でほとんど視認できないため、着水点の提示は
-    /// 3D の球モデル（<see cref="castMarker"/>）を主役にしている。
-    /// 線も併用したい場合だけ true にする。
-    /// </summary>
-    [SerializeField(Label = "プレビュー線を表示")]
-    private bool showPreviewLine = false;
 
     /// <summary>
     /// 水面が未設定のときに使う「竿先からの落差」（メートル）。
@@ -626,7 +541,7 @@ public class FishingController : SEEDScript
     /// <summary>右方向へ動いた累積量（px、正値）。<see cref="FishState.Windup"/> でのみ積算する。</summary>
     private float swingAccumPx = 0f;
 
-    /// <summary>着弾点プレビューの往復位相用に積算した秒数（<see cref="FishState.Windup"/> 中のみ進む）。</summary>
+    /// <summary>着水点マーカーの往復位相用に積算した秒数（<see cref="FishState.Windup"/> 中のみ進む）。</summary>
     private float previewElapsed = 0f;
 
     /// <summary>飛翔開始位置（ワールド。キャスト時の竿先）。</summary>
@@ -693,13 +608,6 @@ public class FishingController : SEEDScript
             // 竿先（プレイヤー側）とウキ（別アクタ）を結ぶので、点列はワールド座標で渡す。
             l.LocalSpace = false;
             l.Visible = false;
-        }
-
-        if (previewLine is { } preview && preview.IsValid)
-        {
-            // プレビューも竿先〜水面のワールド座標を直接渡す（アクタの姿勢に依存させない）。
-            preview.LocalSpace = false;
-            preview.Visible = false;
         }
 
         // 着水点マーカーは開始時点で必ず格納位置へ落としておく
@@ -837,7 +745,7 @@ public class FishingController : SEEDScript
         ResetGesture();
         hookedFish = false;
         ParkFloatHidden();
-        HidePreviewLine();
+        HideCastPreview();
         // 直前に PlayerMove.EnterFishingStance が本体アニメを触っているのでラッチを捨てる
         ResetPlayerClipLatch();
         CrossFadeBoth(floatClip, playerFloatClip);
@@ -848,7 +756,7 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// 釣りを中断して待機へ戻す（外部から釣り姿勢を解除された場合の後始末）。
-    /// ウキを非表示にし、糸とプレビューを隠し、竿のアニメ指定は <see cref="PlayerMove"/> 側へ返す。
+    /// ウキを非表示にし、糸と着水点マーカーを隠し、竿のアニメ指定は <see cref="PlayerMove"/> 側へ返す。
     /// </summary>
     private void CancelToIdle()
     {
@@ -859,7 +767,7 @@ public class FishingController : SEEDScript
         ResetPlayerClipLatch();
         ParkFloatHidden();
         HideLine();
-        HidePreviewLine();
+        HideCastPreview();
         ParkReelArrow();
         // 釣り状態を抜けたらカーソルを必ず返す（姿勢解除・中断の唯一の出口）。
         UpdateCursorLock();
@@ -1010,7 +918,7 @@ public class FishingController : SEEDScript
             }
         }
 
-        // 振りかぶりポーズを保持しつつ、着弾点プレビュー（マーカー＋線）を更新する
+        // 振りかぶりポーズを保持しつつ、着水点マーカーを更新する
         UpdateWindup(deltaTime);
         UpdateCastPreview();
     }
@@ -1111,7 +1019,7 @@ public class FishingController : SEEDScript
         reelIdleElapsed = 0f;
 
         State = FishState.Casting;
-        HidePreviewLine();
+        HideCastPreview();
 
         // 以降はホイールと A / D だけの操作になるのでカーソルを返す（振りを読む区間の終わり）。
         UpdateCursorLock();
@@ -1196,7 +1104,7 @@ public class FishingController : SEEDScript
             }
         }
 
-        // 巻き取りの基準点（通常は竿先。竿先が実質未設定なら島の中心へフォールバック）
+        // 巻き取りの基準点（＝竿先。未設定時のフォールバックは RodTipPosition が受け持つ）
         var target = ReelTargetPosition();
 
         // ウキ→基準点の水平ベクトルと、その長さ（＝残りの巻き取り距離）
@@ -1315,19 +1223,12 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// 巻き取りの基準点（ワールド）を返す。
+    /// 巻き取りの基準点（ワールド）を返す。＝竿先（<see cref="RodTipPosition"/>）。
     ///
-    /// 通常は竿先（<see cref="RodTipPosition"/> と同じ優先順位: 竿先アクタ → 竿アクタからの合成）。
-    /// <see cref="rodTip"/> と <see cref="rodRoot"/> のどちらも未設定で竿先が定義できない場合だけ、
-    /// <see cref="islandCenter"/>（未設定ならプレイヤー自身の位置）へフォールバックする。
+    /// 「ウキ → 竿先」がそのまま巻く向きの基準になるので、専用の基準アクタは持たない
+    /// （竿先が未設定のときのフォールバックは <see cref="RodTipPosition"/> が一元的に受け持つ）。
     /// </summary>
-    private SEED.Vector3 ReelTargetPosition()
-    {
-        if (rodTip is { } tip && tip.IsValid) { return tip.Position; }
-        if (rodRoot is { } rod && rod.IsValid) { return ComposeRodTip(rod); }
-        if (islandCenter is { } c && c.IsValid) { return c.Position; }
-        return transform.Position;
-    }
+    private SEED.Vector3 ReelTargetPosition() => RodTipPosition();
 
     /// <summary>
     /// 巻く向き（水平・正規化済み）を返す。
@@ -1374,64 +1275,31 @@ public class FishingController : SEEDScript
     // ─── ウキ・竿先・糸 ───────────────────────────────────────
 
     /// <summary>
-    /// 竿先（モデルローカル座標で指定）のワールド位置を、<b>描画とまったく同じ行列チェーン</b>で合成する。
+    /// 糸の始点・キャストの起点・巻き取りの基準点となる竿先のワールド位置を返す。
     ///
-    /// <b>エンジン側の合成規約（検証済み）</b>
-    /// <code>
-    /// 描画インスタンス行列 = アクタのワールド行列 × オフセット TRS
-    ///   （model_component.rs: render_matrix() = mat4x4_mul(actor_world, offset_matrix())）
-    /// オフセット TRS = T(offset_position) × R_YXZ(offset_rotation[度]) × S(offset_scale)
-    ///   （offset_matrix() は Transform::to_mat4() へ委譲＝アクタ Transform と同一規約）
-    /// </code>
-    /// アクタ側も同じ TRS なので、点 p（モデルローカル）は
-    /// <code>
-    /// world = actorPos + actorRot × (actorScale ⊙ (offsetPos + offsetRot × (offsetScale ⊙ p)))
-    /// </code>
-    /// となる。アクタのスケールがオフセットの平行移動にも掛かる点が要注意
-    /// （model_component.rs のテスト composition_order_is_actor_then_offset が保証）。
-    ///
-    /// <b>アクタ回転の適用方法</b>: C# 側でオイラー→行列を再実装せず、
-    /// <see cref="SEED.Transform.Right"/> / Up / Forward（Rust の rotation_basis() の列そのもの）を使う。
-    /// 回転規約の二重管理を避けるため（Transform.cs のコメントの指示どおり）。
-    ///
-    /// <b>竿は JointAttach 追従</b>: jointattach_ops が最終ワールド行列を竿アクタの Transform へ
-    /// TRS 分解して書き戻すので、ここで読む Position / Rotation / Scale は追従後の姿勢を表す。
-    /// </summary>
-    /// <param name="rod">竿アクタのトランスフォーム（JointAttach 適用後のワールド姿勢）。</param>
-    private SEED.Vector3 ComposeRodTip(SEED.Transform rod)
-    {
-        // 竿先の指定値（竿モデル自身のローカル座標）
-        var tipLocal = new SEED.Vector3(rodTipOffsetX, rodTipOffsetY, rodTipOffsetZ);
-
-        // ① モデルの描画オフセットを掛けて「アクタのローカル座標」へ移す。
-        //    Model 未設定なら恒等（オフセット無し）＝素通し。
-        var actorLocal = tipLocal;
-        if (rodModel is { } model && model.IsValid)
-        {
-            var scaled = SEED.Vector3.Scale(model.OffsetScale, tipLocal);
-            var rotated = SEED.Quaternion.Euler(model.OffsetRotation) * scaled;  // YXZ・度（Transform と同規約）
-            actorLocal = model.OffsetPosition + rotated;
-        }
-
-        // ② アクタのスケール → 回転 → 平行移動、の順でワールドへ移す。
-        var actorScale = rod.Scale;
-        return rod.Position
-             + rod.Right * (actorLocal.x * actorScale.x)
-             + rod.Up * (actorLocal.y * actorScale.y)
-             + rod.Forward * (actorLocal.z * actorScale.z);
-    }
-
-    /// <summary>
-    /// 糸の始点となる竿先のワールド位置を返す。
-    /// <b>竿先アクタ（sao の子。JointAttach にエンジン側で追従）→ 竿アクタからの合成 → プレイヤー自身</b>
-    /// の順にフォールバックする。竿先アクタの値はエンジンが厳密に更新しているのでそのまま使う。
+    /// 竿先アクタ（<see cref="rodTip"/>＝sao の子「RodTip」）の値は
+    /// エンジンの JointAttach 伝播が毎フレーム厳密に更新しているので、そのまま読んで使う。
+    /// 未設定・破棄済みならプレイヤー自身の位置へフォールバックする
+    /// （竿先がプレイヤー原点に潰れるため、着水点も糸も明らかにずれる。1 回だけ警告を出す）。
     /// </summary>
     private SEED.Vector3 RodTipPosition()
     {
         if (rodTip is { } tip && tip.IsValid) { return tip.Position; }
-        if (rodRoot is { } rod && rod.IsValid) { return ComposeRodTip(rod); }
+
+        // ── 未解決フォールバック（1 回だけ警告する）──
+        if (!rodTipMissingWarned)
+        {
+            rodTipMissingWarned = true;
+            SEED.Debug.LogWarning(
+                "[FishingController] 竿先アクタ（rodTip）の参照が解決できません。" +
+                "インスペクタの「竿先アクタ」に sao の子アクタ RodTip を割り当ててください。" +
+                "プレイヤー自身の位置を竿先の代わりに使います。");
+        }
         return transform.Position;
     }
+
+    /// <summary>竿先参照の未解決警告を出したか（ログを 1 回に絞るためのフラグ）。</summary>
+    private bool rodTipMissingWarned = false;
 
     /// <summary>
     /// 現在の水面 Y（ワールド）を返す。
@@ -1516,14 +1384,10 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// 着弾点プレビューを隠す（線はフラグを落とし、マーカーは格納位置へ退避させる）。
+    /// 着水点の提示を隠す（マーカーを格納位置へ退避させる）。
     /// Windup 以外の全経路（狙い開始・キャンセル・キャスト開始）から呼ばれる唯一の出口。
     /// </summary>
-    private void HidePreviewLine()
-    {
-        if (previewLine is { } preview && preview.IsValid) { preview.Visible = false; }
-        ParkCastMarker();
-    }
+    private void HideCastPreview() => ParkCastMarker();
 
     /// <summary>
     /// 着水点マーカーを格納位置（<see cref="markerParkY"/>）へ退避させる。
@@ -1701,7 +1565,7 @@ public class FishingController : SEEDScript
         reelArrowShownThisFrame = true;
     }
 
-    // ─── 着弾点プレビュー ─────────────────────────────────────
+    // ─── 着水点の提示（キャンバスのマーカー）───────────────────
 
     /// <summary>
     /// 放物線（キャストの軌道）上の 1 点を返す。
@@ -1719,81 +1583,18 @@ public class FishingController : SEEDScript
             SEED.Mathf.Lerp(start.z, end.z, t));
 
     /// <summary>
-    /// 着弾点プレビュー全体（マーカー＋線）を更新する。
+    /// 着水点の提示（キャンバスの着水点マーカー）を更新する。
     /// <see cref="FishState.Windup"/> のあいだ毎フレーム呼ぶ。
     ///
     /// 着水点は「いま投げたら落ちる点」（<see cref="PreviewDistance"/>＋<see cref="CastYawDegrees"/>）で、
-    /// マーカーと線の双方が同じ値を使う（見えているものと結果を必ず一致させる）。
-    /// 方向が縮退している場合はプレビューを丸ごと隠す。
+    /// <see cref="StartCast"/> が実際に使う値と同じ計算経路を通す（見えているものと結果を必ず一致させる）。
+    /// 方向が縮退している場合はマーカーを隠す。
     /// </summary>
     private void UpdateCastPreview()
     {
-        if (CastYawDegrees() is not { } yaw) { HidePreviewLine(); return; }
+        if (CastYawDegrees() is not { } yaw) { HideCastPreview(); return; }
 
-        var landing = LandingPoint(PreviewDistance(), yaw);
-
-        // 主役は 3D マーカー。線は showPreviewLine が true のときだけ添える。
-        UpdateCastMarker(landing);
-        UpdatePreviewLine(landing);
-    }
-
-    /// <summary>
-    /// 着弾点プレビューの<b>線</b>の点列を張り直す
-    /// （<see cref="showPreviewLine"/> が true のときだけ描く。既定は false）。
-    ///
-    /// 点列は「竿先→着弾点の放物線」＋「着水点に置く円」を 1 本に連結したもの。
-    /// 円は始点を末尾へ繰り返して閉じる。円の始点は弧の終点（着弾点そのもの）から
-    /// 半径ぶん離れているので、その渡り 1 本ぶんの線が余分に描かれるが、
-    /// 着弾点マーカーとしては十分に読み取れる（LineRenderer は 1 本の折れ線しか持てないため）。
-    ///
-    /// 総点数が <see cref="SEED.LineRenderer.MaxPoints"/> を超えないよう、
-    /// 弧と円の分割数を上限内へ抑える。
-    /// </summary>
-    /// <param name="landing">着水点（ワールド）。<see cref="UpdateCastPreview"/> が算出済みの値を渡す。</param>
-    private void UpdatePreviewLine(SEED.Vector3 landing)
-    {
-        if (!showPreviewLine) { return; }
-        if (previewLine is not { } preview || !preview.IsValid) { return; }
-
-        var start = RodTipPosition();
-
-        // 分割数の下限を確保したうえで、点数の合計が LineRenderer の上限に収まるよう詰める。
-        // 点数 ＝ (弧の分割数 + 1) ＋ (円の分割数 + 1)
-        int arcSegments = SEED.Mathf.Max(previewArcSegments, MinArcSegments);
-        int ringSegments = SEED.Mathf.Max(previewRingSegments, MinRingSegments);
-        int overflow = (arcSegments + 1) + (ringSegments + 1) - SEED.LineRenderer.MaxPoints;
-        if (overflow > 0)
-        {
-            // 上限超過ぶんは弧から優先して削る（円は形が崩れると着弾点が読めなくなるため）。
-            // 最小構成（弧 1 分割＋円 3 分割 ＝ 6 点）は上限に必ず収まるので、この 2 段で足りる。
-            int reducible = SEED.Mathf.Min(overflow, arcSegments - MinArcSegments);
-            arcSegments -= reducible;
-            overflow -= reducible;
-            if (overflow > 0) { ringSegments = SEED.Mathf.Max(ringSegments - overflow, MinRingSegments); }
-        }
-
-        var points = new SEED.Vector3[(arcSegments + 1) + (ringSegments + 1)];
-
-        // 弧: 竿先 → 着弾点
-        for (int i = 0; i <= arcSegments; i++)
-        {
-            points[i] = ArcPoint(start, landing, (float)i / arcSegments);
-        }
-
-        // 円: 着弾点を中心に水面上へ描く（末尾は始点を繰り返して閉じる）
-        int ringHead = arcSegments + 1;
-        float radius = SEED.Mathf.Abs(previewRingRadius);
-        for (int i = 0; i <= ringSegments; i++)
-        {
-            float angle = TwoPi * (i % ringSegments) / ringSegments;
-            points[ringHead + i] = new SEED.Vector3(
-                landing.x + SEED.Mathf.Sin(angle) * radius,
-                landing.y,
-                landing.z + SEED.Mathf.Cos(angle) * radius);
-        }
-
-        preview.SetPoints(points);
-        preview.Visible = true;
+        UpdateCastMarker(LandingPoint(PreviewDistance(), yaw));
     }
 
     /// <summary>
