@@ -19,7 +19,8 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// Approach --食いつき距離以内 → biteDelay 待ち → BeginNibbling 成功--> Nibbling
 /// Nibbling --合わせ成功（コントローラが OnHooked）--> Bite
 /// Nibbling --合わせ失敗／中断（ReleaseFromHook）--> Escape
-/// Bite     --釣り上げ／リリース（ReleaseFromHook）--> Escape
+/// Bite     --リリース（ReleaseFromHook）--> Escape
+/// Bite     --釣り上げ成立（OnCaught）--> Caught（AI 停止。演出の終わりに破棄）
 /// Escape   --escapeSeconds 逃げ切る--> Roam（クールダウン付き）
 /// </code>
 /// 餌の位置・判定距離はすべて <see cref="FishingController.Current"/> から読む
@@ -40,6 +41,11 @@ public class Fish : SEEDScript
 
     /// <summary>「距離が実質 0」とみなすしきい値（0 除算・方位の不定を避ける）。</summary>
     private const float DistanceEpsilon = 1e-4f;
+
+    /// <summary>
+    /// サイズ倍率の下限クランプ（0 以下や負の倍率でモデルが潰れる／裏返るのを防ぐ番人値）。
+    /// </summary>
+    private const float MinSizeMultiplier = 0.01f;
 
     /// <summary>
     /// 餌（の少し下）へ<b>完全に張り付く</b>距離（メートル）。
@@ -86,6 +92,16 @@ public class Fish : SEEDScript
         /// <see cref="escapeSeconds"/> のあいだ全速で泳いで離れる（見た目に分かりやすくする）。
         /// </summary>
         Escape,
+
+        /// <summary>
+        /// <b>釣り上げられた</b>（釣果演出中）。AI は完全に止まり、位置・向き・スケールは
+        /// すべて外部（<see cref="CatchPresenter"/>）が決める。
+        ///
+        /// この状態からは自力で抜けない（演出の終わりに個体ごと破棄される）。
+        /// <see cref="FishManager"/> の円環クランプの除外登録も、破棄されるまで
+        /// <b>外さない</b>（外すと演出中の魚が出現円環へ引き戻されてしまう）。
+        /// </summary>
+        Caught,
     }
 
     /// <summary>現在の行動状態（デバッグ・他スクリプトからの参照用）。</summary>
@@ -129,6 +145,27 @@ public class Fish : SEEDScript
     /// </summary>
     [SerializeField(Label = "表示名")]
     private string fishName = "";
+
+    // ─── サイズの個体差（釣果表示用）───────────────────────────
+
+    /// <summary>
+    /// 個体ごとのサイズ倍率の下限。生成時（<see cref="OnStart"/>）に
+    /// [下限, 上限] の一様乱数を 1 度だけ引き、<see cref="SizeMultiplier"/> に控える。
+    /// </summary>
+    [Header("サイズの個体差"), SerializeField(Label = "サイズ倍率の下限")]
+    private float sizeMultiplierMin = 0.8f;
+
+    /// <summary>個体ごとのサイズ倍率の上限。</summary>
+    [SerializeField(Label = "サイズ倍率の上限")]
+    private float sizeMultiplierMax = 1.3f;
+
+    /// <summary>
+    /// 釣果表示に添える長さの単位ラベル。
+    /// <see cref="size"/> は本来「大きさスコアの元になる無次元の値」なので、
+    /// 表示上の単位はデータ側（prefab / インスペクタ）で決められるようにしてある。
+    /// </summary>
+    [SerializeField(Label = "サイズの単位ラベル")]
+    private string sizeUnitLabel = "cm";
 
     // ─── 泳ぎ方（簡易回遊）───────────────────────────────────
 
@@ -203,7 +240,7 @@ public class Fish : SEEDScript
     /// 「min(この速さ × dt, 残り距離)」で刻むことでその瞬間移動を無くす。
     /// </summary>
     [SerializeField(Label = "餌への追従速度(m/s)")]
-    private float attachSpeed = 3f;
+    private float attachSpeed = 8f;
 
     /// <summary>
     /// 合わせ失敗・リリース後に餌から全速で逃げる秒数。
@@ -304,6 +341,57 @@ public class Fish : SEEDScript
     /// </summary>
     public SEED.GameObject Actor => gameObject;
 
+    /// <summary>
+    /// このスクリプトが乗っているアクタのトランスフォーム
+    /// （<c>transform</c> は protected なので公開する）。
+    /// 釣果演出（<see cref="CatchPresenter"/>）が位置・向き・スケールを直接決めるために使う。
+    /// </summary>
+    public SEED.Transform Transform => transform;
+
+    /// <summary>
+    /// この個体のサイズ倍率（<see cref="sizeMultiplierMin"/>〜<see cref="sizeMultiplierMax"/>）。
+    /// 出現時に 1 度だけ抽選し、以後は変わらない。見た目のスケールと釣果表示の両方に効く。
+    /// </summary>
+    public float SizeMultiplier { get; private set; } = 1f;
+
+    /// <summary>釣果表示用のサイズ（＝<see cref="Size"/> × <see cref="SizeMultiplier"/>）。</summary>
+    public float DisplaySize => size * SizeMultiplier;
+
+    /// <summary>釣果表示に添える単位ラベル（例: "cm"）。</summary>
+    public string SizeUnitLabel => sizeUnitLabel;
+
+    /// <summary>
+    /// 出現時のスケール（＝シーン／prefab のスケール × <see cref="SizeMultiplier"/>）。
+    /// 釣果演出のポップ（0 → 原寸）の<b>原寸</b>がこの値。
+    /// </summary>
+    public SEED.Vector3 CaughtScale { get; private set; } = SEED.Vector3.One;
+
+    /// <summary>
+    /// 見た目の大きさ指標（＝<see cref="CaughtScale"/> の最大成分）。
+    /// 釣果カメラを魚の大きさに応じて後ろへ引く量の算出に使う
+    /// （<see cref="CatchPresenter"/>）。サイズ倍率は既に掛かっているので二重に掛けないこと。
+    /// </summary>
+    public float VisualSizeMetric
+        => SEED.Mathf.Max(CaughtScale.x, SEED.Mathf.Max(CaughtScale.y, CaughtScale.z));
+
+    /// <summary>
+    /// 生成直後の初期化。個体ごとのサイズ倍率を抽選し、見た目のスケールへ反映する。
+    ///
+    /// スケールは「シーン／prefab に保存されたスケール × 倍率」で上書きし、その結果を
+    /// <see cref="CaughtScale"/> へ控える（釣果演出のポップはこの値を原寸として使う）。
+    /// </summary>
+    public override void OnStart()
+    {
+        // 下限＞上限のデータ入力ミスでも壊れないよう、必ず [min, max] へ整える
+        float min = sizeMultiplierMin;
+        float max = SEED.Mathf.Max(sizeMultiplierMin, sizeMultiplierMax);
+        SizeMultiplier = SEED.Mathf.Max(SEED.Random.Range(min, max), MinSizeMultiplier);
+
+        var scaled = transform.Scale * SizeMultiplier;
+        transform.Scale = scaled;
+        CaughtScale = scaled;
+    }
+
     /// <summary>フレーム開始時に呼ばれる。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
     {
@@ -331,6 +419,10 @@ public class Fish : SEEDScript
 
         float dt = ctx.DeltaTime;
         if (dt <= 0f) { return; }
+
+        // 釣り上げられた個体は AI を完全に止める（位置・向き・スケールは CatchPresenter が決める）。
+        // 状態遷移も移動も行わないので、演出中に回遊へ戻ったり逃げ出したりしない。
+        if (State == BehaviorState.Caught) { return; }
 
         // 興味を失っているあいだのクールダウンを進める（状態に依らず常に進める）
         if (loseInterestRemaining > 0f) { loseInterestRemaining -= dt; }
@@ -369,6 +461,9 @@ public class Fish : SEEDScript
     /// <param name="dt">このフレームの経過秒数。</param>
     private void UpdateBehaviorState(float dt)
     {
+        // 釣り上げられた個体は状態遷移しない（Update 側でも弾いているが、唯一の集約点にも置く）
+        if (State == BehaviorState.Caught) { return; }
+
         // 逃走中は時間経過だけで抜ける（この間は餌に反応しない）
         if (State == BehaviorState.Escape)
         {
@@ -665,6 +760,17 @@ public class Fish : SEEDScript
     public void OnHooked() => State = BehaviorState.Bite;
 
     /// <summary>
+    /// 釣り上げ成立時にコントローラから呼ばれる。AI を止めて
+    /// <see cref="BehaviorState.Caught"/> へ移す（以後は <see cref="CatchPresenter"/> が
+    /// 位置・向き・スケールを決める）。
+    ///
+    /// 円環クランプの除外登録（<see cref="FishingController.RegisterEngaged"/>）は
+    /// <b>外さない</b>。演出中の魚が <see cref="FishManager"/> に出現円環内へ
+    /// 引き戻されるのを防ぐためで、登録は破棄時（<see cref="OnDestroy"/>）に外れる。
+    /// </summary>
+    public void OnCaught() => State = BehaviorState.Caught;
+
+    /// <summary>
     /// リリース・合わせ失敗・釣り中断でコントローラから呼ばれる共通の出口。
     ///
     /// 餌に関わっていた（つつき中・食いつき中）なら、まず餌と反対方向へ全速で逃げ
@@ -673,6 +779,8 @@ public class Fish : SEEDScript
     /// </summary>
     public void ReleaseFromHook()
     {
+        // 釣り上げ済み（演出中）の個体は逃がさない（演出の終わりに破棄される）
+        if (State == BehaviorState.Caught) { return; }
         if (State is BehaviorState.Nibbling or BehaviorState.Bite) { BeginEscape(); return; }
         BackToRoam(withCooldown: true);
     }

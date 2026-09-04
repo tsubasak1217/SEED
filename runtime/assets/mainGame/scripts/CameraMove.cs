@@ -73,6 +73,24 @@ public class CameraMove : SEEDScript
     [SerializeField(Label = "キャスト中の目標トランスフォーム")]
     private SEED.Transform? castTarget = null;
 
+    /// <summary>
+    /// 釣り上げ演出の「寄り」フェーズ（<see cref="CatchPresenter.CatchPhase.ApproachCamera"/>）の
+    /// 目標トランスフォーム（トップレベルの空アクタ「CatchCameraTarget」を割り当てる想定）。
+    /// 位置・向きは <see cref="CatchPresenter"/> が毎フレーム「魚を見る姿勢」へ置き直す。
+    /// 未設定なら寄りの構図は効かない（従来の目標を追い続ける）。
+    /// </summary>
+    [SerializeField(Label = "釣り上げ寄りの目標トランスフォーム")]
+    private SEED.Transform? catchTarget = null;
+
+    /// <summary>
+    /// 釣果表示の目標トランスフォーム（プレイヤーの子アクタ「ResultCameraTarget」を割り当てる想定）。
+    /// <see cref="CatchPresenter.CatchPhase.WhiteOut"/> 以降のあいだ使う。
+    /// 切り替えは真っ白の裏で <see cref="RequestSnap"/> により<b>カット</b>されるので、
+    /// 構図が飛ぶところは見えない。未設定なら釣果の構図は切り替わらない。
+    /// </summary>
+    [SerializeField(Label = "釣果表示の目標トランスフォーム")]
+    private SEED.Transform? resultTarget = null;
+
     // ─── 追従パラメータ ───────────────────────────────────────
 
     /// <summary>
@@ -127,6 +145,12 @@ public class CameraMove : SEEDScript
     /// <summary>前フレームのプレイヤー位置。速度（移動デルタ/dt）を出すために保持。null=未観測。</summary>
     private SEED.Vector3? previousPlayerPosition = null;
 
+    /// <summary>
+    /// 次の追従で補間せず目標へ瞬間移動するか（<see cref="RequestSnap"/> が立てる）。
+    /// 1 回のスナップで必ず落とすので、要求が残り続けることはない。
+    /// </summary>
+    private bool snapRequested = false;
+
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
     {
@@ -180,6 +204,17 @@ public class CameraMove : SEEDScript
             }
         }
 
+        // 明示的なカット要求（RequestSnap）: 補間せず目標へ飛ぶ。
+        // 要求は必ずここで落とすので、次フレームからは通常の補間へ戻る。
+        if (snapRequested)
+        {
+            snapRequested = false;
+            transform.Position = goalPos;
+            transform.Rotation = goalRot;
+            UpdateFov(ctx.DeltaTime, snap: true);
+            return;
+        }
+
         // 位置を指数補間（フレームレート非依存）
         float pk = ExponentialBlend(positionLerpRate, ctx.DeltaTime);
         if (pk > 0f)
@@ -201,6 +236,15 @@ public class CameraMove : SEEDScript
         // 視野角(FOV): 釣り姿勢かどうかで目標を切り替え、位置・回転と同じ指数補間で追従する
         UpdateFov(ctx.DeltaTime, snap: false);
     }
+
+    /// <summary>
+    /// 次の追従を<b>補間せず</b>目標へ瞬間移動させる（カット）。
+    ///
+    /// 目標トランスフォームを切り替える瞬間に画面が隠れている（釣り上げ演出の
+    /// ホワイトアウトなど）場面で呼ぶと、視点の飛びが見えないままカットできる。
+    /// 呼んだ次の <see cref="LateUpdate"/> 1 回だけ効く。
+    /// </summary>
+    public void RequestSnap() => snapRequested = true;
 
     /// <summary>描画フェーズで呼ばれる。描画に関わる処理向け。</summary>
     public override void Render(ref NativeFrameContext ctx)
@@ -227,12 +271,40 @@ public class CameraMove : SEEDScript
     /// <returns>追従先のトランスフォーム。決められなければ null。</returns>
     private SEED.Transform? SelectGoalTransform()
     {
+        // 釣り上げ演出中はフェーズ専用の構図が最優先。
+        // ApproachCamera = 水面の魚へ寄る / WhiteOut 以降 = プレイヤーを振り返って見る。
+        if (SelectCatchGoal() is { } catchGoal) { return catchGoal; }
+
         // ウキが外に出ているあいだはウキ側の目標を最優先で追う（キャスト先が画面に入る）
         if (IsFloatOut() && castTarget is { } ct && ct.IsValid) { return ct; }
 
         if (IsPlayerFishing() && fishingTarget is { } ft && ft.IsValid) { return ft; }
 
         return target;
+    }
+
+    /// <summary>
+    /// 釣り上げ演出中に追うべき目標トランスフォームを返す（演出中でなければ null）。
+    ///
+    /// フェーズは順序どおりに並んでいるので、判定は
+    /// 「<see cref="CatchPresenter.CatchPhase.ApproachCamera"/> なら寄り、
+    /// それ以外（None を除く）なら釣果」の 2 分岐で済む。
+    /// 割り当てが無いフェーズでは null を返し、呼び出し側が従来の選択へ落ちる。
+    /// </summary>
+    private SEED.Transform? SelectCatchGoal()
+    {
+        if (fishing is not { } f) { return null; }
+        if (f.State != FishingController.FishState.Catching) { return null; }
+
+        var phase = f.CatchPhase;
+        if (phase == CatchPresenter.CatchPhase.None) { return null; }
+
+        if (phase == CatchPresenter.CatchPhase.ApproachCamera)
+        {
+            return catchTarget is { IsValid: true } ct ? ct : null;
+        }
+
+        return resultTarget is { IsValid: true } rt ? rt : null;
     }
 
     /// <summary>

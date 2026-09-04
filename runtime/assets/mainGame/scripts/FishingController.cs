@@ -71,7 +71,7 @@ public class FishingController : SEEDScript
     /// Aiming  --左クリック解放--> Idle（姿勢解除して移動へ）
     /// Windup  --右へ振る（累積 >= castSwingThresholdPx）--> Casting
     /// Windup  --左クリック解放--> Idle（振りかぶりを取り消して移動へ）
-    /// Casting --着水--> Floating --巻き入力--> Reeling --手元まで--> Aiming（空振り）/ Result
+    /// Casting --着水--> Floating --巻き入力--> Reeling --手元まで--> Aiming（空振り）/ Catching
     /// Floating/Reeling --魚が BeginNibbling--> Nibbling（前アタリ）
     /// Nibbling --前アタリを撃ち切り＋1 間隔--> HookWindow（本アタリ・反応受付）
     /// Nibbling --早すぎる合わせ--> Floating（Miss。魚は逃げる）
@@ -137,13 +137,20 @@ public class FishingController : SEEDScript
         /// 魚が食いついている（ヒット中）。
         /// 巻き取りの操作は <see cref="Reeling"/> と完全に同じで、
         /// ウキが <c>食いつき時のウキ沈み量</c> だけ沈み、掛かった魚がウキに追従する。
-        /// 手元まで巻き切ると <see cref="Result"/>（釣果）へ遷移する。
+        /// 手元まで巻き切ると <see cref="Catching"/>（釣り上げ演出）へ遷移する。
         /// 糸のテンション／HP は未実装（釣り仕様の後続タスク）。
         /// </summary>
         Hooked,
 
-        /// <summary>釣果の演出中（<see cref="resultSeconds"/> 後に狙いへ自動復帰する暫定実装）。</summary>
-        Result,
+        /// <summary>
+        /// 釣り上げ演出中。進行は <see cref="CatchPresenter"/> が握り、本スクリプトは
+        /// 毎フレーム <see cref="CatchPresenter.Tick"/> を呼ぶだけになる
+        /// （カメラ寄り → ホワイトアウト → 魚のポップ／釣果表示 → クリックで閉じる）。
+        /// 演出が終わる（<see cref="CatchPresenter.Phase"/> が
+        /// <see cref="CatchPresenter.CatchPhase.None"/> に戻る）と、釣り姿勢を解いて
+        /// <see cref="Idle"/>（移動）へ復帰する。
+        /// </summary>
+        Catching,
     }
 
     /// <summary>
@@ -187,6 +194,14 @@ public class FishingController : SEEDScript
 
     /// <summary>現在の釣り状態（他スクリプトから参照する読み取り専用プロパティ）。</summary>
     public FishState State { get; private set; } = FishState.Idle;
+
+    /// <summary>
+    /// 釣り上げ演出のフェーズ（<see cref="CameraMove"/> がカメラ目標の切替に使う）。
+    /// プレゼンタ未設定・演出していないときは <see cref="CatchPresenter.CatchPhase.None"/>。
+    /// 参照スクリプトは毎フレーム見に行く（ホットリロードで実インスタンスが差し替わるため）。
+    /// </summary>
+    public CatchPresenter.CatchPhase CatchPhase
+        => presenter is { } p ? p.Phase : CatchPresenter.CatchPhase.None;
 
     /// <summary>
     /// 直近の合わせ判定（糸 HP ボーナスなど後続仕様のための公開値）。
@@ -838,12 +853,14 @@ public class FishingController : SEEDScript
     private SEED.Sprite? judgeMissSprite = null;
 
     /// <summary>
-    /// 釣果表示（<see cref="FishState.Result"/>）を維持する秒数。
-    /// 経過したら自動で狙い（<see cref="FishState.Aiming"/>）へ戻り、続けて釣れるようにする。
-    /// <b>本来の釣果画面が入るまでの暫定処理</b>。
+    /// 釣り上げ演出（<see cref="FishState.Catching"/>）を進行させるプレゼンタ。
+    /// 同じアクタ（プレイヤー）に 2 本目のスクリプトスロット「Catch」として置き、ここへ割り当てる。
+    ///
+    /// <b>未設定でも釣りは成立する</b>: 演出を飛ばして魚を消し、そのまま移動へ戻る
+    /// （<see cref="FinishReeling"/> のフォールバック）。
     /// </summary>
-    [SerializeField(Label = "釣果表示の秒数")]
-    private float resultSeconds = 2f;
+    [SerializeField(Label = "釣り上げ演出(CatchPresenter)")]
+    private CatchPresenter? presenter = null;
 
     // ─── 効果音 ─────────────────────────────
 
@@ -882,9 +899,6 @@ public class FishingController : SEEDScript
     /// <see cref="TryHook"/> で束縛し、釣り上げ・リリース・キャンセルで必ず解除する。
     /// </summary>
     private Fish? hookedFish = null;
-
-    /// <summary>釣果表示の残り秒数（<see cref="FishState.Result"/> のあいだだけ減る）。</summary>
-    private float resultElapsed = 0f;
 
     // ─── アタリ／合わせの内部状態 ─────────────────────────────
 
@@ -1198,8 +1212,8 @@ public class FishingController : SEEDScript
                 UpdateBiteTiming(ctx.DeltaTime);
                 break;
 
-            case FishState.Result:
-                UpdateResult(ctx.DeltaTime);
+            case FishState.Catching:
+                UpdateCatching(ctx.DeltaTime);
                 break;
         }
 
@@ -1273,6 +1287,7 @@ public class FishingController : SEEDScript
         CancelHop();                   // 姿勢解除・中断でも跳ねを畳む（フラグの持ち越し防止）
         AbortBiteTiming();             // 姿勢解除・中断でもアタリ進行を打ち切る
         ReleaseHook();                 // 姿勢解除・中断でも必ず魚を逃がす
+        presenter?.Abort();            // 釣り上げ演出中なら畳む（魚の破棄・白／テキストの消去も込み）
         HideJudgement();               // 判定画像も消す
         // この後 PlayerMove 側（ExitFishingStance・通常移動のアニメ）が本体を触るのでラッチを捨てる
         ResetPlayerClipLatch();
@@ -1303,7 +1318,10 @@ public class FishingController : SEEDScript
     /// 飛翔中（<see cref="FishState.Casting"/>）・着水後の待機
     /// （<see cref="FishState.Floating"/>）・巻き取り中（<see cref="FishState.Reeling"/>）・
     /// アタリ中（<see cref="FishState.Nibbling"/> / <see cref="FishState.HookWindow"/>）・
-    /// ヒット中（<see cref="FishState.Hooked"/>）・釣果表示（<see cref="FishState.Result"/>）が該当する。
+    /// ヒット中（<see cref="FishState.Hooked"/>）が該当する。
+    /// 釣り上げ演出（<see cref="FishState.Catching"/>）は<b>寄りのフェーズだけ</b>該当する:
+    /// ホワイトアウトで構図を切り替えたあとは、沖のウキと釣り糸が釣果の画に映り込まないよう
+    /// ウキを手元へ畳むため（<see cref="UpdateCatching"/>）。
     /// 逆に <see cref="FishState.Idle"/> / <see cref="FishState.Aiming"/> /
     /// <see cref="FishState.Windup"/> ではウキは非表示で手元にある。
     ///
@@ -1315,7 +1333,9 @@ public class FishingController : SEEDScript
     private bool IsFloatOut()
         => State is FishState.Casting or FishState.Floating or FishState.Reeling
                  or FishState.Nibbling or FishState.HookWindow
-                 or FishState.Hooked or FishState.Result;
+                 or FishState.Hooked
+        || (State == FishState.Catching
+            && CatchPhase == CatchPresenter.CatchPhase.ApproachCamera);
 
     /// <summary>
     /// カーソルロックの望ましい状態。
@@ -1726,7 +1746,7 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// 巻き取り完了時の分岐。
-    /// 魚が掛かっていれば釣果（<see cref="FishState.Result"/>）、
+    /// 魚が掛かっていれば釣り上げ演出（<see cref="FishState.Catching"/>）、
     /// 何も掛かっていなければ再びキャスト待ちへ戻る。
     /// </summary>
     private void FinishReeling()
@@ -1736,17 +1756,25 @@ public class FishingController : SEEDScript
         // ── 釣り上げ成立 ──
         if (hookedFish is { } caught)
         {
-            SEED.Debug.Log($"[Fishing] 釣り上げ: {caught.DisplayName}（大きさ {caught.Size:F2}）");
+            SEED.Debug.Log($"[Fishing] 釣り上げ: {caught.DisplayName}（大きさ {caught.DisplaySize:F1} {caught.SizeUnitLabel}）");
 
-            // 釣り上げた魚はシーンから消す（破棄はフレーム末尾に遅延適用される）。
-            // 破棄前に円環クランプの除外登録も外しておく。
-            var caughtObject = caught.Actor;
-            UnregisterEngaged(caughtObject);
-            caughtObject.Destroy();
+            // 魚の AI を止める（以後の位置・向き・スケールは CatchPresenter が決める）。
+            // 円環クランプの除外登録は<b>外さない</b>: 外すと演出中の魚が FishManager に
+            // 出現円環内へ引き戻されてしまう。登録は魚の破棄時に自動で外れる。
+            caught.OnCaught();
+            hookedFish = null;           // ReleaseFromHook は呼ばない（この個体は演出側が持つ）
 
-            hookedFish = null;           // ReleaseFromHook は呼ばない（この個体は消えるため）
-            State = FishState.Result;
-            resultElapsed = 0f;
+            State = FishState.Catching;
+            // 演出中はマウスの振りを読まないのでカーソルロックを引き直す（解除される）。
+            UpdateCursorLock();
+
+            // 演出プレゼンタが未設定なら演出を飛ばす（魚を消して移動へ戻すだけ）
+            if (presenter is { } p) { p.Begin(caught); }
+            else
+            {
+                caught.Actor.Destroy();
+                ExitToMovement();
+            }
             return;
         }
 
@@ -1762,25 +1790,33 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// 釣果表示（<see cref="FishState.Result"/>）の更新。
+    /// 釣り上げ演出（<see cref="FishState.Catching"/>）の更新。
     ///
-    /// <b>本来の釣果画面が入るまでの暫定処理</b>: <see cref="resultSeconds"/> 経過したら
-    /// 自動で狙い（<see cref="FishState.Aiming"/>）へ戻し、続けて釣れるようにする。
+    /// 進行そのものは <see cref="CatchPresenter"/> が持つので、ここは
+    /// 「1 フレーム進める」→「終わっていたら移動へ戻す」の 2 行だけを担う
+    /// （演出の内容が変わっても本スクリプトを触らずに済ませる）。
+    /// プレゼンタ未設定なら演出できないので、即座に移動へ戻す。
     /// </summary>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
-    private void UpdateResult(float deltaTime)
+    private void UpdateCatching(float deltaTime)
     {
-        resultElapsed += deltaTime;
-        if (resultElapsed < resultSeconds) { return; }
+        if (presenter is not { } p)
+        {
+            ExitToMovement();
+            return;
+        }
 
-        // 空振り時と同じ後片付けで狙いへ戻る。
-        State = FishState.Aiming;
-        ResetGesture();
-        ParkFloatHidden();
-        HideLine();
-        CrossFadeBoth(floatClip, playerFloatClip);
-        UpdateCursorLock();
-        SEED.Debug.Log("[Fishing] Aiming（釣果表示おわり）");
+        p.Tick(deltaTime);
+
+        // 寄りのフェーズを抜けた（＝白で覆われている）以降はウキを手元へ畳む。
+        // ParkFloatHidden は表示フラグと位置を引き直すだけなので毎フレーム呼んで安全。
+        if (p.Phase != CatchPresenter.CatchPhase.ApproachCamera) { ParkFloatHidden(); }
+
+        // Phase が None に戻った ＝ 演出完了（魚もプレゼンタ側で破棄済み）
+        if (p.Phase != CatchPresenter.CatchPhase.None) { return; }
+
+        ExitToMovement();
+        SEED.Debug.Log("[Fishing] Idle（釣り上げ演出おわり）");
     }
 
     /// <summary>
