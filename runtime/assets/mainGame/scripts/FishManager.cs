@@ -109,13 +109,9 @@ public class FishManager : SEEDScript
     // ─── 生成パラメータ ───────────────────────────────────────
 
     /// <summary>
-    /// 生成する魚の高さ（ワールド Y）へ加算するオフセット。
-    ///
-    /// 基準の Y は「距離マーカー(近)/(遠) の Y を出現距離で線形補間した値」であり
-    /// （<see cref="TrySpawnOne"/> 参照）、このフィールドはそこからの微調整に使う。
-    /// 0 ならマーカーが示す高さちょうどに出る。
+    /// 生成する魚の水面高さ（ワールド Y）。
     /// </summary>
-    [Header("生成"), SerializeField(Label = "高さオフセット(Y)")]
+    [Header("生成"), SerializeField(Label = "生成する高さ(Y)")]
     private float spawnHeight = 0f;
 
     // ─── 内部状態 ─────────────────────────────────────────────
@@ -192,8 +188,7 @@ public class FishManager : SEEDScript
     ///
     /// - prefab はそのレベルのリストからランダムに 1 つ選ぶ
     /// - 位置は「中心点から、距離マーカー2つで決まる範囲内のランダム距離、
-    ///   ランダム方位」。高さ(Y)は 2 つの距離マーカーの Y を出現距離で線形補間し、
-    ///   さらに「高さオフセット(Y)」を足した値になる
+    ///   ランダム方位」。高さ(Y)は「生成する高さ(Y)」の固定値になる
     /// - レベルが範囲外・prefab リストが空・パスが空・マーカー未設定のときは
     ///   何もしない（false）
     /// </summary>
@@ -257,15 +252,10 @@ public class FishManager : SEEDScript
         float span = ring.Far - ring.Near;
         float distance = ring.Near + (float)random.NextDouble() * span;
 
-        // 高さ: 近マーカーの Y ⇔ 遠マーカーの Y を「出現距離の範囲内の位置」で線形補間する。
-        // これで距離マーカーを上下させるだけで、距離に応じた深さをシーン上で設定できる。
-        // 近／遠が同距離（span ≒ 0）のときは補間できないので近マーカーの Y をそのまま使う。
-        float heightRatio = span > DistanceEpsilon ? (distance - ring.Near) / span : 0f;
-        float spawnY = SEED.Mathf.Lerp(ring.NearY, ring.FarY, heightRatio) + spawnHeight;
-
+        // 高さ: 「生成する高さ(Y)」の固定値をそのまま使う。
         var spawnPos = new SEED.Vector3(
             center.x + SEED.Mathf.Sin(angle) * distance,
-            spawnY,
+            spawnHeight,
             center.z + SEED.Mathf.Cos(angle) * distance);
 
         // 生成して位置を合わせる（Instantiate 失敗時は false）
@@ -279,7 +269,7 @@ public class FishManager : SEEDScript
     // ─── 円環（出現範囲）の解決・検証・維持 ───────────────────
 
     /// <summary>
-    /// 1 レベルぶんの出現範囲（中心点からの XZ 距離の円環）と、その両端の高さ。
+    /// 1 レベルぶんの出現範囲（中心点からの XZ 距離の円環）。
     /// 距離マーカー 2 つから毎回この値を作り、生成にも「はみ出しの押し戻し」にも使う。
     /// </summary>
     private readonly struct SpawnRing
@@ -290,19 +280,11 @@ public class FishManager : SEEDScript
         /// <summary>円環の外側半径（中心からの XZ 距離）。</summary>
         public readonly float Far;
 
-        /// <summary>内側マーカーの高さ（ワールド Y）。</summary>
-        public readonly float NearY;
-
-        /// <summary>外側マーカーの高さ（ワールド Y）。</summary>
-        public readonly float FarY;
-
         /// <summary>各値を指定して円環を作る。</summary>
-        public SpawnRing(float near, float far, float nearY, float farY)
+        public SpawnRing(float near, float far)
         {
             Near = near;
             Far = far;
-            NearY = nearY;
-            FarY = farY;
         }
     }
 
@@ -349,7 +331,7 @@ public class FishManager : SEEDScript
             return false;
         }
 
-        ring = new SpawnRing(near, far, nearPos.y, farPos.y);
+        ring = new SpawnRing(near, far);
         return true;
     }
 
@@ -380,7 +362,7 @@ public class FishManager : SEEDScript
             }
 
             SEED.Debug.Log($"[FishManager] Lv{i + 1}: 出現範囲 {ring.Near:F1}m 〜 {ring.Far:F1}m"
-                + $"（高さ {ring.NearY:F1} 〜 {ring.FarY:F1}）維持数={levels[i].maintainCount}");
+                + $" 維持数={levels[i].maintainCount}");
 
             // 直前のレベルと範囲が重なっていれば、そのレベルの魚が混ざって出現する
             if (hasPrevious && ring.Near < previousFar - DistanceEpsilon)

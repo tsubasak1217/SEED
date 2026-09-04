@@ -51,7 +51,7 @@ public class FishingController : SEEDScript
     /// </summary>
     public enum FishState
     {
-        /// <summary>釣り姿勢に入っていない。ウキは竿先に格納し、糸は非表示。</summary>
+        /// <summary>釣り姿勢に入っていない。ウキは非表示、糸も非表示。</summary>
         Idle,
 
         /// <summary>
@@ -226,7 +226,7 @@ public class FishingController : SEEDScript
     ///
     /// <see cref="FishState.Windup"/> のあいだだけ着水点へ置き、それ以外では
     /// <see cref="markerParkY"/> の高さ（水面のはるか下）へ格納して見えなくする。
-    /// <b>モデル／アクタの表示切替 API は存在しない</b>ため、ウキ（<see cref="ParkFloatAtRodTip"/>）と
+    /// <b>モデル／アクタの表示切替 API は存在しない</b>ため、ウキ（<see cref="ParkFloatHidden"/>）と
     /// 同じく「画面外へ動かす」ことで非表示を表現している。
     /// 未設定ならマーカーは使わない（プレビュー線だけの従来動作になる）。
     /// </summary>
@@ -722,12 +722,12 @@ public class FishingController : SEEDScript
         {
             case FishState.Aiming:
                 UpdateAiming(ctx.DeltaTime);
-                ParkFloatAtRodTip();      // キャスト前のウキは竿先に格納しておく
+                ParkFloatHidden();        // キャスト前のウキは非表示にしておく
                 break;
 
             case FishState.Windup:
                 UpdateWindupState(ctx.DeltaTime);
-                ParkFloatAtRodTip();      // キャスト前のウキは竿先に格納しておく
+                ParkFloatHidden();        // キャスト前のウキは非表示にしておく
                 break;
 
             case FishState.Casting:
@@ -791,7 +791,7 @@ public class FishingController : SEEDScript
         State = FishState.Aiming;
         ResetGesture();
         hookedFish = false;
-        ParkFloatAtRodTip();
+        ParkFloatHidden();
         HidePreviewLine();
         // 直前に PlayerMove.EnterFishingStance が本体アニメを触っているのでラッチを捨てる
         ResetPlayerClipLatch();
@@ -803,7 +803,7 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// 釣りを中断して待機へ戻す（外部から釣り姿勢を解除された場合の後始末）。
-    /// ウキを竿先へ格納し、糸とプレビューを隠し、竿のアニメ指定は <see cref="PlayerMove"/> 側へ返す。
+    /// ウキを非表示にし、糸とプレビューを隠し、竿のアニメ指定は <see cref="PlayerMove"/> 側へ返す。
     /// </summary>
     private void CancelToIdle()
     {
@@ -812,7 +812,7 @@ public class FishingController : SEEDScript
         hookedFish = false;
         // この後 PlayerMove 側（ExitFishingStance・通常移動のアニメ）が本体を触るのでラッチを捨てる
         ResetPlayerClipLatch();
-        ParkFloatAtRodTip();
+        ParkFloatHidden();
         HideLine();
         HidePreviewLine();
         ParkReelArrow();
@@ -1256,10 +1256,10 @@ public class FishingController : SEEDScript
             return;
         }
 
-        // 空振り: ウキを竿先へ格納し、糸を隠して次のキャストを待つ
+        // 空振り: ウキを非表示にし、糸を隠して次のキャストを待つ
         State = FishState.Aiming;
         ResetGesture();
-        ParkFloatAtRodTip();
+        ParkFloatHidden();
         HideLine();
         CrossFadeBoth(floatClip, playerFloatClip);
         // 再び振りを読む区間へ戻るのでロックし直す（左クリック押しっぱなしでの連続キャスト対応）。
@@ -1424,13 +1424,15 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// ウキを竿先へ格納する。
-    /// アクター／モデルの表示切替 API は存在しないため、
-    /// 「竿先に重ねて糸を消す」ことで見た目上しまわれた状態にする。
+    /// ウキを非表示にする（キャスト前・キャンセル後・釣り終了後）。
+    /// アクター／モデルの表示切替 API は存在しないため、竿先の XZ ＋
+    /// <see cref="markerParkY"/>（マーカー類と同じ格納位置Y）へ動かして
+    /// 画面外へ退避させることで見た目上しまわれた状態にする。
     /// </summary>
-    private void ParkFloatAtRodTip()
+    private void ParkFloatHidden()
     {
-        SetFloatPosition(RodTipPosition());
+        var tip = RodTipPosition();
+        SetFloatPosition(new SEED.Vector3(tip.x, markerParkY, tip.z));
         HideLine();
     }
 
@@ -1711,7 +1713,7 @@ public class FishingController : SEEDScript
     /// 釣り糸の点列を張り直す。
     ///
     /// ウキが外に出ている状態（Casting / Floating / Reeling / Result）のときだけ描く。
-    /// Idle / Aiming ではウキが竿先に格納されているので線に意味が無く、非表示にする。
+    /// Idle / Aiming / Windup ではウキが非表示になっているので線に意味が無く、非表示にする。
     /// たるみは飛翔中は固定量、着水後は飛距離に比例（上限つき）。
     /// </summary>
     private void UpdateLine()
