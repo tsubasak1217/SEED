@@ -180,6 +180,17 @@ public class Fish : SEEDScript
     [SerializeField(Label = "逃走の秒数(秒)")]
     private float escapeSeconds = 1.5f;
 
+    /// <summary>
+    /// 逃げ切った瞬間（<see cref="escapeSeconds"/> 経過時）に魚自身を消すか。
+    /// true（既定）: <see cref="SEED.GameObject.Destroy"/> で消える。
+    /// FishManager の自動補充（EnsurePopulation）が次フレームでこれを検知し、
+    /// 同じレベルの円環内のランダムな位置へ別個体を生成し直す。
+    /// false: 従来どおり回遊（<see cref="BehaviorState.Roam"/>）へ
+    /// クールダウン付きで戻るだけ（個体は消えない）。
+    /// </summary>
+    [SerializeField(Label = "逃げた後に消える")]
+    private bool despawnAfterEscape = true;
+
     // ─── 内部状態 ─────────────────────────────────────────────
 
     /// <summary>回遊の中心（生成地点）。null = 未初期化（最初の Update で現在地を採る）。</summary>
@@ -321,7 +332,11 @@ public class Fish : SEEDScript
         if (State == BehaviorState.Escape)
         {
             escapeRemaining -= dt;
-            if (escapeRemaining <= 0f) { BackToRoam(withCooldown: true); }
+            if (escapeRemaining <= 0f)
+            {
+                if (despawnAfterEscape) { DespawnAfterEscape(); }
+                else { BackToRoam(withCooldown: true); }
+            }
             return;
         }
 
@@ -584,6 +599,23 @@ public class Fish : SEEDScript
                 escapeHeadingRad = SEED.Mathf.Atan2(dx, dz);
             }
         }
+    }
+
+    /// <summary>
+    /// 逃げ切った（<see cref="escapeSeconds"/> 経過）ときに魚を消す
+    /// （<see cref="despawnAfterEscape"/> が true のときの既定の抜け方）。
+    ///
+    /// 餌との関わり登録は <see cref="BeginEscape"/> で既に解除済みだが、
+    /// 「破棄前に必ず外れている」ことを保証するため念のためここでも呼ぶ
+    /// （<see cref="SetEngaged"/> は登録状態が変わらなければ何もしない）。
+    /// 登録解除は破棄要求より<b>前</b>に行う: <see cref="OnDestroy"/> は
+    /// 破棄処理中に呼ばれ、その時点でのシーンアクセスは保証されないため
+    /// （docs/scripting_api.md 参照）、後始末は破棄前に済ませておく。
+    /// </summary>
+    private void DespawnAfterEscape()
+    {
+        SetEngaged(FishingController.Current, engaged: false);
+        gameObject.Destroy();
     }
 
     /// <summary>
