@@ -39,7 +39,8 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///   （<c>ComputeAutoLayout</c> / <c>ApplyResultCameraFraming</c>）、未設定なら従来の
 ///   固定オフセット（<c>fishHoldOffsetX/Y/Z</c>）＋引き量へフォールバックする
 /// - 魚のスケールを 0 にする（Show のポップの開始値）
-/// - プレイヤー本体・竿を釣り上げポーズのクリップへ切り替える
+/// - プレイヤー本体・竿を持ち上げ（LIFT）クリップへ切り替える。<c>liftSeconds</c> 秒後に
+///   維持（HOLD）クリップへクロスフェードする（<see cref="UpdateShow"/> が判定する）
 /// </summary>
 public class CatchPresenter : SEEDScript
 {
@@ -90,8 +91,17 @@ public class CatchPresenter : SEEDScript
     /// <summary>「半分」を表す係数（AABB の中心・視野角の半角など、2 で割る場面の共通定数）。</summary>
     private const float Half = 0.5f;
 
-    /// <summary>半回転（度）。魚をカメラへ向ける（プレイヤーの真逆を向く）のに使う。</summary>
+    /// <summary>
+    /// 半回転（度）。魚をカメラへ向ける（プレイヤーの真逆を向く＝正面）向きに使う。
+    /// <see cref="fishFacingYawOffsetDegrees"/> の「正面」側の値（＝180）。
+    /// </summary>
     private const float HalfTurnDegrees = 180f;
+
+    /// <summary>
+    /// 四分の一回転（度）。魚をカメラへ対して横向きにするのに使う。
+    /// <see cref="fishFacingYawOffsetDegrees"/> の既定値（＝90＝横向き）。
+    /// </summary>
+    private const float QuarterTurnDegrees = 90f;
 
     /// <summary>easeOutBack / easeInBack の跳ね返り係数 c1（標準値）。</summary>
     private const float BackEaseC1 = 1.70158f;
@@ -245,10 +255,20 @@ public class CatchPresenter : SEEDScript
 
     /// <summary>
     /// 掲げた魚のヨー角オフセット（度）。プレイヤーのヨー ＋ この値を魚のヨーにする。
-    /// 既定 180 度＝プレイヤーの真逆＝振り返って見ているカメラの方を向く。
+    /// カメラに対して横向き＝90、正面（プレイヤーの真逆＝振り返って見ているカメラの方を
+    /// 向く）＝180。既定は 90（横向き）＝魚を横から見せて体高・体長のシルエットが
+    /// 見えるようにする。
+    ///
+    /// <b>幅のフレーミングとの整合について</b>: <see cref="ApplyResultCameraFraming"/> が
+    /// 画面へ収める幅 <see cref="fishScaledWidth"/> は
+    /// <c>max(実寸サイズ.x, 実寸サイズ.z)</c>（<see cref="ComputeAutoLayout"/>）で、
+    /// ヨーがどちらでも画面からはみ出さないよう X・Z の大きい方を安全側で採る設計に
+    /// なっている。そのため 90 度（横向き＝ローカル X 側が正面）でも 180 度
+    /// （正面＝ローカル Z 側が正面）でも、この幅計算をそのまま使い回せる
+    /// （＝この値だけを差し替えれば向きが変わり、フレーミングの他コードは変更不要）。
     /// </summary>
     [SerializeField(Label = "魚のヨーオフセット(度)")]
-    private float fishFacingYawOffsetDegrees = HalfTurnDegrees;
+    private float fishFacingYawOffsetDegrees = QuarterTurnDegrees;
 
     /// <summary>魚が 0 から原寸へ膨らむのに掛ける秒数（easeOutBack）。</summary>
     [SerializeField(Label = "魚のポップ(秒)")]
@@ -259,23 +279,60 @@ public class CatchPresenter : SEEDScript
     private float fishCloseSeconds = 0.35f;
 
     /// <summary>
-    /// 釣り上げポーズで再生するプレイヤー本体のクリップ名。
+    /// 持ち上げ（LIFT）で 1 回だけ再生するプレイヤー本体のクリップ名。
+    /// <see cref="SwitchToResultComposition"/>（真っ白の瞬間）で再生を始め、
+    /// <see cref="liftSeconds"/> 経過後に <see cref="playerHoldClip"/> へ
+    /// クロスフェードする（<see cref="UpdateShow"/> / <see cref="ApplyHoldClips"/>）。
+    /// クリップの長さを取得する API が無いため、経過秒数の決め打ちで切り替えている。
+    ///
+    /// <b>ループ設定について</b>: このクリップはシーン側（Animator のクリップ設定）で
+    /// <c>loop_mode</c> を「一度きり」として登録すること。ループするかどうかは
+    /// あくまでシーンの設定が決め、本スクリプトはクロスフェードのタイミングだけを管理する。
     ///
     /// <b>暫定</b>: sakanadori.glb には「掲げる」専用のクリップがまだ無い
     /// （収録済み: Walk / Idle / WalkCarry / IdleFishing / Cast / Reel / Hooked /
     ///  IdleFree / WalkFishingL / WalkFishingR）。本来のクリップを追加したら
     /// インスペクタでこの値を差し替えること。
     /// </summary>
-    [SerializeField(Label = "本体の釣り上げクリップ名")]
+    [SerializeField(Label = "本体の持ち上げクリップ名")]
     private string playerCatchClip = "IdleFree";
 
-    /// <summary>釣り上げポーズで再生する竿のクリップ名。</summary>
-    [SerializeField(Label = "竿の釣り上げクリップ名")]
+    /// <summary>
+    /// 持ち上げ後に維持し続けるプレイヤー本体のクリップ名（HOLD）。
+    /// <see cref="liftSeconds"/> 経過後に <see cref="playerCatchClip"/> から
+    /// クロスフェードする。空文字なら切り替えず持ち上げクリップのまま維持する。
+    /// このクリップはシーン側で <c>loop_mode</c> を「ループ」として登録すること。
+    /// </summary>
+    [SerializeField(Label = "本体の維持クリップ名")]
+    private string playerHoldClip = "IdleFree";
+
+    /// <summary>
+    /// 持ち上げ（LIFT）で 1 回だけ再生する竿のクリップ名。詳細は
+    /// <see cref="playerCatchClip"/> と同じ（ループ設定・切り替えタイミング）。
+    /// </summary>
+    [SerializeField(Label = "竿の持ち上げクリップ名")]
     private string rodCatchClip = "Idle_竿";
+
+    /// <summary>
+    /// 持ち上げ後に維持し続ける竿のクリップ名（HOLD）。詳細は
+    /// <see cref="playerHoldClip"/> と同じ（空文字なら持ち上げクリップを維持）。
+    /// </summary>
+    [SerializeField(Label = "竿の維持クリップ名")]
+    private string rodHoldClip = "Idle_竿";
 
     /// <summary>クリップ切替時のクロスフェード秒数（0 で即時切替）。</summary>
     [SerializeField(Label = "切替フェード(秒)")]
     private float catchFadeSeconds = 0.15f;
+
+    /// <summary>
+    /// 持ち上げ（LIFT）クリップを再生してから維持（HOLD）クリップへ切り替えるまでの秒数。
+    /// クリップの長さを取得する API が無いためこの秒数で決め打ちする。起点は
+    /// <see cref="SwitchToResultComposition"/>（真っ白の瞬間、LIFT の再生開始）で、
+    /// フェーズをまたいで（WhiteOut の保持中でも）数え続ける（<see cref="liftElapsedSeconds"/>）。
+    /// 判定自体は <see cref="CatchPhase.Show"/> の更新（<see cref="UpdateShow"/>）で行う。
+    /// </summary>
+    [SerializeField(Label = "持ち上げの秒数")]
+    private float liftSeconds = 0.8f;
 
     // ─── 釣果カメラの引き（魚が大きいほど後ろへ下がる）─────────
 
@@ -465,6 +522,23 @@ public class CatchPresenter : SEEDScript
     /// </summary>
     private bool loggedResultComposition = false;
 
+    /// <summary>
+    /// 持ち上げ（LIFT）クリップの再生開始（<see cref="SwitchToResultComposition"/>）
+    /// からの経過秒数。フェーズをまたいで（WhiteOut の保持中も）<see cref="Tick"/> で
+    /// 数え続け、<see cref="liftSeconds"/> と比較して維持（HOLD）クリップへの
+    /// 切り替えタイミングを判定する（<see cref="UpdateShow"/>）。
+    /// <see cref="Begin"/> で 0 に、<see cref="SwitchToResultComposition"/> で
+    /// 再度 0 にリセットする（後者が実質の起点）。
+    /// </summary>
+    private float liftElapsedSeconds = 0f;
+
+    /// <summary>
+    /// 維持（HOLD）クリップへの切り替えを適用済みか。1 回の釣果につき 1 回だけ
+    /// 切り替えるためのガード。<see cref="Begin"/> と <see cref="Finish"/>
+    /// （＝<see cref="Abort"/> の内部でも通る）でリセットする。
+    /// </summary>
+    private bool holdApplied = false;
+
     // ─── ライフサイクル ───────────────────────────────────────
 
     /// <summary>生成直後の初期化。白と釣果テキストは必ず消えた状態から始める。</summary>
@@ -545,6 +619,10 @@ public class CatchPresenter : SEEDScript
         loggedResultComposition = false;
         // 前回の魚の寸法を持ち越さない（魚ごとに真っ白の瞬間へ計算し直す）
         autoLayoutReady = false;
+        // LIFT→HOLD 切り替えの状態も魚ごとにリセットする（実質の起点は
+        // SwitchToResultComposition で再度リセットされる）
+        liftElapsedSeconds = 0f;
+        holdApplied = false;
         EnterPhase(CatchPhase.ApproachCamera);
 
         SEED.Debug.Log($"[Catch] 演出開始: {fish.DisplayName}");
@@ -562,6 +640,9 @@ public class CatchPresenter : SEEDScript
         if (Phase == CatchPhase.None) { return; }
 
         phaseElapsed += deltaTime;
+        // LIFT クリップ開始からの経過秒数。フェーズをまたいで数える（起点は
+        // SwitchToResultComposition が liftElapsedSeconds を 0 にリセットする瞬間）。
+        liftElapsedSeconds += deltaTime;
 
         switch (Phase)
         {
@@ -642,6 +723,17 @@ public class CatchPresenter : SEEDScript
 
         // 魚の位置・向きは毎フレーム置き直す（プレイヤーが微動しても頭上に付いてくる）
         PlaceFishAbovePlayer();
+
+        // LIFT → HOLD の切り替え。liftElapsedSeconds は真っ白の瞬間
+        // （SwitchToResultComposition）からフェーズをまたいで数えているので、
+        // WhiteOut の保持中にすでに liftSeconds を超えていれば、Show へ入った
+        // 最初のこの更新で即座に切り替わる（＝Show が短くても取りこぼさない）。
+        // holdApplied は Begin / Finish でリセットする 1 回きりガード。
+        if (!holdApplied && liftElapsedSeconds >= SEED.Mathf.Max(liftSeconds, 0f))
+        {
+            ApplyHoldClips();
+            holdApplied = true;
+        }
 
         // ポップ（easeOutBack で 0 → 原寸）
         float popSeconds = SEED.Mathf.Max(fishPopSeconds, DivideEpsilon);
@@ -743,7 +835,10 @@ public class CatchPresenter : SEEDScript
                 $"[Catch] 差し替え直後: fishPos={fishPos} playerPos={playerPos} fishTargetScale={fishTargetScale}");
         }
 
-        // 4. 釣り上げポーズ
+        // 4. 持ち上げ（LIFT）ポーズの再生を開始する。liftSeconds 経過後に
+        //    UpdateShow が維持（HOLD）クリップへクロスフェードするので、
+        //    ここで経過秒数を 0 リセットして起点を揃える。
+        liftElapsedSeconds = 0f;
         CrossFade(playerAnimator, playerCatchClip);
         CrossFade(rodAnimator, rodCatchClip);
     }
@@ -768,6 +863,10 @@ public class CatchPresenter : SEEDScript
         HideTexts();
         RestoreResultCameraTarget();
         autoLayoutReady = false;
+        // LIFT→HOLD 切り替えのガードもここでリセットする（Abort は本メソッドを経由するので、
+        // Begin / Finish（Abort 含む）の両方でリセットされる）。
+        holdApplied = false;
+        liftElapsedSeconds = 0f;
     }
 
     // ─── カメラ目標の計算 ─────────────────────────────────────
@@ -1197,6 +1296,19 @@ public class CatchPresenter : SEEDScript
     }
 
     // ─── 汎用ヘルパー ─────────────────────────────────────────
+
+    /// <summary>
+    /// LIFT クリップから HOLD クリップへ切り替える【HOLD 切り替えの唯一の実行箇所】。
+    /// プレイヤー本体・竿それぞれ、維持クリップ名が空文字なら何もしない
+    /// （＝再生中の持ち上げクリップをそのまま維持する。<see cref="CrossFade"/> は
+    /// 同一クリップ再生中も何もしないので、二重に呼んでも安全ではあるが、
+    /// 空文字を渡すと不正なクリップ名として扱われかねないため呼ばないのが正しい）。
+    /// </summary>
+    private void ApplyHoldClips()
+    {
+        if (!string.IsNullOrEmpty(playerHoldClip)) { CrossFade(playerAnimator, playerHoldClip); }
+        if (!string.IsNullOrEmpty(rodHoldClip)) { CrossFade(rodAnimator, rodHoldClip); }
+    }
 
     /// <summary>
     /// 指定 Animator を指定クリップへクロスフェードする
