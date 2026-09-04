@@ -93,6 +93,13 @@ public class FishingController : SEEDScript
     /// <summary>1 周（ラジアン）。ウキの上下揺れ（サイン波）の位相計算に使う。</summary>
     private const float TwoPi = SEED.Mathf.PI * 2f;
 
+    /// <summary>
+    /// 4 分の 1 周（ラジアン、＝90°）。巻き方向インジケータの追加不透明度で、
+    /// 許容範囲いっぱいまで倒したときに |sin θ| が 1（最大）になるよう、
+    /// ずれ角の比率 [0,1] をこの角度へ写像するのに使う（<see cref="UpdateReelArrow"/> 参照）。
+    /// </summary>
+    private const float QuarterTurnRadians = SEED.Mathf.PI * 0.5f;
+
     /// <summary>放物線の頂点係数。<c>4h·t·(1-t)</c> は t=0.5 で h になる（h＝最高点の高さ）。</summary>
     private const float ParabolaApexCoefficient = 4f;
 
@@ -313,8 +320,9 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// 巻き方向インジケータの追加不透明度。
-    /// 実効不透明度 ＝ clamp01(基準 ＋ 追加 × |sin θ|)（θ ＝ A/D によるずれ角）。
-    /// ずれ角が大きいほど濃くなり、「今どれだけ曲げているか」が見た目で分かる。
+    /// 実効不透明度 ＝ clamp01(基準 ＋ 追加 × |sin θ|)（θ ＝ <see cref="reelAngleOffsetDegrees"/> の
+    /// ずれ量を <see cref="reelAngleRangeDegrees"/> の全幅（steerFactor による絞り込み前）で正規化し、
+    /// 90° へ写像した角度）。許容範囲いっぱいまで倒したとき、この追加不透明度が丸ごと加算される。
     /// </summary>
     [SerializeField(Label = "巻き方向インジケータの追加不透明度")]
     private float reelArrowExtraOpacity = 0.5f;
@@ -1633,8 +1641,10 @@ public class FishingController : SEEDScript
     /// Y 回転は「巻く向きの方位角 ＋ <see cref="reelArrowYawOffsetDegrees"/>」。
     /// 方位角と矢印の向きの対応は <see cref="ReelArrowPitchDegrees"/> のコメントで導出している。
     ///
-    /// <b>不透明度</b>: <c>clamp01(基準 ＋ 追加 × |sin θ|) × steerFactor</c>（θ ＝ A/D による基準方向からの
-    /// ずれ角、steerFactor ＝ 岸際の直進巻き係数）。まっすぐ巻いているときは薄く、大きく曲げているほど濃くなり、
+    /// <b>不透明度</b>: <c>clamp01(基準 ＋ 追加 × sin θ) × steerFactor</c>（θ ＝ A/D による基準方向からの
+    /// ずれ量を <see cref="reelAngleRangeDegrees"/> の全幅（steerFactor で絞り込む前の値）で正規化した
+    /// 比率 [0,1] を 90° へ写像した角度、steerFactor ＝ 岸際の直進巻き係数）。まっすぐ巻いているときは薄く、
+    /// 許容範囲いっぱいまで倒すと追加不透明度が丸ごと乗る濃さになり、
     /// 岸（<see cref="straightReelDistance"/>）へ近づくほど steerFactor で全体がフェードアウトする。
     /// なお steerFactor が 0 の呼び出しはこの関数が呼ばれる前（<see cref="UpdateReeling"/>）で
     /// スキップされ、その場合はフレーム末尾の「表示されなかったら格納」経路（<see cref="ParkReelArrow"/>）
@@ -1671,9 +1681,16 @@ public class FishingController : SEEDScript
         // 板の一辺の長さ（メートル）。キャンバス平面は X/Y なので Z は 1 のまま。
         arrow.Scale = new SEED.Vector3(reelArrowLength, reelArrowLength, 1f);
 
-        float theta = reelAngleOffsetDegrees * SEED.Mathf.Deg2Rad;
-        float opacity = (reelArrowBaseOpacity
-                      + reelArrowExtraOpacity * SEED.Mathf.Abs(SEED.Mathf.Sin(theta))) * steerFactor;
+        // ずれ角を「全幅（steerFactor で絞り込む前の reelAngleRangeDegrees）の半分」で正規化し、
+        // 許容範囲いっぱいまで倒したときに sin θ が 1（最大）になるよう 90° へ写像する。
+        // steerFactor で許容範囲そのものが縮んでいても、ここでは絞り込み前の全幅を基準にするため
+        // 追加不透明度が実際に視認できる大きさまで立ち上がる。
+        float halfFull = SEED.Mathf.Abs(reelAngleRangeDegrees) * 0.5f;
+        float ratio = SEED.Mathf.Clamped01(
+            SEED.Mathf.Abs(reelAngleOffsetDegrees) / SEED.Mathf.Max(halfFull, DivideEpsilon));
+        float theta = ratio * QuarterTurnRadians;
+        float opacity = SEED.Mathf.Clamped01(reelArrowBaseOpacity
+                      + reelArrowExtraOpacity * SEED.Mathf.Sin(theta)) * steerFactor;
         ApplySpriteOpacity(reelArrowSprite, opacity);
 
         reelArrowShownThisFrame = true;
