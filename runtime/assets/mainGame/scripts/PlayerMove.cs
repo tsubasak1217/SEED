@@ -209,21 +209,24 @@ public class PlayerMove : SEEDScript
     [SerializeField(Label = "竿の待機クリップ名")]
     private string rodIdleClip = "Idle_竿";
 
-    // ─── 足音（距離ベースで再生）───────────────────────────────
+    // ─── 足音（時間ベースで再生）───────────────────────────────
     //
-    // 「歩数」を時間ではなく<b>実際に移動した水平距離</b>で数える方式。
-    // 経路移動・自由移動・釣り中の横歩き（MoveTowardWorldPoint）のいずれでも
-    // プレイヤーの位置は最終的に transform.Position に反映されるため、
-    // 「フレーム開始時の位置」と「Update 終了時の位置」の差分（水平成分）を
-    // 1 箇所（Update の末尾）で見るだけで、移動経路によらず共通に計測できる。
+    // 距離の積算（位置の前後フレーム差分）は、経路の巻き戻し・瞬間移動・
+    // 縮退接線などのブレでフレームまたぎの移動量が跳ねると誤検知しやすく、
+    // 足音が連発する不具合の原因になっていた。
+    // そこで「歩いているかどうか」という<b>状態</b>だけを見て、歩いている間は
+    // 一定時間（1 / footstepsPerSecond）ごとに 1 回再生する方式に切り替える。
+    // 「歩いている」の判定は、通常移動が UpdateAnimation(moving) に渡している
+    // moving フラグ（経路移動・自由移動）に加えて、MoveTowardWorldPoint による
+    // 釣り中の横歩き（戻り値が LateralLeft/Right のとき）の両方を OR で見る。
 
     /// <summary>足音 SE のアセットパス（空文字なら足音を再生しない）。</summary>
     [Header("足音"), SerializeField(Label = "足音 SE のパス")]
     private string footstepSePath = "assets://mainGame/audios/footsteps.mp3";
 
-    /// <summary>1 歩とみなす水平移動距離（メートル）。この距離進むたびに SE を 1 回再生する。</summary>
-    [SerializeField(Label = "足音の歩幅(m)")]
-    private float footstepStepDistance = 0.9f;
+    /// <summary>1 秒あたりの歩数。歩いている間、この頻度で SE を再生する（0 以下なら無音）。</summary>
+    [SerializeField(Label = "1秒あたりの歩数")]
+    private float footstepsPerSecond = 2.2f;
 
     /// <summary>足音 SE の音量の下限（<see cref="SEED.Random.Range(float, float)"/> でこの範囲から毎回抽選する）。</summary>
     [SerializeField(Label = "足音の音量(最小)")]
@@ -234,23 +237,15 @@ public class PlayerMove : SEEDScript
     private float footstepVolumeMax = 1.0f;
 
     /// <summary>
-    /// 動き始めてから最初の 1 歩を鳴らすまでの助走距離（メートル）。
+    /// 歩き始めてから最初の 1 歩を鳴らすまでの助走時間（秒）。
     ///
-    /// 歩数の積算をこの分だけ先取りしておく（＝アキュムレータの初期値ではなく、
-    /// 「止まっていた状態から動き出した瞬間」に一度だけ差し引く先行距離）ことで、
-    /// ちょんと押しただけの微小な移動でいきなり足音が鳴るのを防ぐ。
-    /// 0 にすると「止まっている状態から動いた瞬間、歩幅の半分進んだ扱いで始まる」
-    /// （＝アキュムレータを footstepStepDistance * 0.5 から始めるのと同じ効果）。
+    /// 「止まっている → 歩き出した」の立ち上がりフレームで、歩数タイマーを
+    /// 「1 歩分の間隔 − この助走時間」から開始する（＝以後この時間ぶん経過した
+    /// タイミングで最初の 1 歩が鳴る）ことで、入力を一瞬押しただけの微小な移動で
+    /// いきなり足音が鳴るのを防ぐ。
     /// </summary>
-    [SerializeField(Label = "足音: 最初の一歩までの助走距離(m)")]
-    private float footstepFirstStepDelay = 0.15f;
-
-    /// <summary>
-    /// 移動しているとみなす、1 フレームの水平移動距離のしきい値（メートル）。
-    /// これ未満なら「止まっている」として歩数の積算をリセットする
-    /// （止まった直後に前回の積算が残っていて足音が鳴るのを防ぐ）。
-    /// </summary>
-    private const float FootstepMovingEpsilon = 1e-4f;
+    [SerializeField(Label = "足音: 最初の一歩までの助走時間(秒)")]
+    private float footstepFirstStepDelaySeconds = 0.1f;
 
     /// <summary>足音の左右交互の音量バイアス（自然なばらつき演出）。偶数歩を弱めに鳴らす。</summary>
     private const float FootstepAlternateVolumeScale = 0.9f;
@@ -298,21 +293,28 @@ public class PlayerMove : SEEDScript
     private float distanceSinceTangent = 0f;
 
     /// <summary>
-    /// 前フレーム終了時点（＝このフレーム開始時点）のワールド座標。null は「まだ計測していない」
-    /// （初回フレームは基準が無いので距離を積算しない）。
-    /// 経路移動・自由移動・釣り中の <see cref="MoveTowardWorldPoint"/> による横歩き、
-    /// すべての移動要因を区別せず、結果として動いた距離をまとめて拾うために使う。
+    /// このフレーム、通常移動（経路移動・自由移動）が「動いている」と報告したか。
+    /// <see cref="Update"/> の末尾で書き込み、同フレームの <see cref="LateUpdate"/> で読む
+    /// （＝ <see cref="UpdateAnimation(bool)"/> に渡しているのと同じ moving フラグ）。
     /// </summary>
-    private SEED.Vector3? footstepLastPosition = null;
-
-    /// <summary>足音の歩数カウント用に積算している水平移動距離（メートル）。</summary>
-    private float footstepAccumulatedDistance = 0f;
+    private bool movingThisFrameForFootsteps = false;
 
     /// <summary>
-    /// 「止まっている → 動き出した」の立ち上がりで <see cref="footstepFirstStepDelay"/> を
-    /// 一度だけ差し引いたか。動いている間は true のまま、止まったフレームで false に戻す。
+    /// このフレーム、<see cref="MoveTowardWorldPoint"/>（釣り中の横歩き）が実際に
+    /// 動いた（戻り値が <see cref="LateralLeft"/>／<see cref="LateralRight"/>）か。
+    /// <see cref="MoveTowardWorldPoint"/> 側でセットし、<see cref="LateUpdate"/> で
+    /// 消費してリセットする（次フレームへ持ち越さない）。
     /// </summary>
-    private bool footstepFirstStepDelayApplied = false;
+    private bool sideWalkedThisFrame = false;
+
+    /// <summary>
+    /// 直前フレームで「歩いている」と判定していたか。歩数タイマーの立ち上がり
+    /// （止まっている → 歩き出した）検出に使う。
+    /// </summary>
+    private bool footstepWasWalking = false;
+
+    /// <summary>歩数タイマー（秒）。歩いている間だけ進み、1 歩分の間隔に達するたびに SE を再生する。</summary>
+    private float footstepTimer = 0f;
 
     /// <summary>これまでに再生した足音の回数（左右交互の音量バイアスに使う）。</summary>
     private int footstepStepIndex = 0;
@@ -364,6 +366,10 @@ public class PlayerMove : SEEDScript
         {
             UpdateAnimation(moving);
         }
+
+        // 足音の「歩いているか」判定に使う moving フラグを記録する
+        // （同フレームの LateUpdate で MoveTowardWorldPoint 分と OR して評価する）。
+        movingThisFrameForFootsteps = moving;
     }
 
     /// <summary>
@@ -533,6 +539,10 @@ public class PlayerMove : SEEDScript
         var forward = transform.Forward;
         var right = new SEED.Vector3(forward.z, 0f, -forward.x);
         float lateral = SEED.Vector3.Dot(moveDirWorld, right);
+
+        // 実際に動いた（早期リターンしなかった）ので、足音の「歩いているか」判定用に記録する。
+        sideWalkedThisFrame = true;
+
         return lateral < 0f ? LateralLeft : LateralRight;
     }
 
@@ -801,68 +811,60 @@ public class PlayerMove : SEEDScript
     /// <summary>Update 後の更新。追従カメラなど他更新の結果を使う処理向け。</summary>
     ///
     /// <remarks>
-    /// 足音 SE をここで鳴らす。Update（経路/自由移動）・<see cref="MoveTowardWorldPoint"/>
-    /// （釣り中の横歩き、FishingController から呼ばれる）のどちらで動いても、
-    /// 最終的な移動結果は必ず <c>transform.Position</c> に反映されている。
-    /// そこで個々の移動処理へ計測コードを埋め込まず、<b>1 フレームぶんの位置の差分を
-    /// ここで一括して見る</b>ことで、移動要因を問わず共通に「歩いた距離」を拾う。
+    /// 足音 SE をここで鳴らす。Update（経路/自由移動）の moving フラグと、
+    /// <see cref="MoveTowardWorldPoint"/>（釣り中の横歩き、FishingController から
+    /// 呼ばれる）の <see cref="sideWalkedThisFrame"/> を OR して、このフレーム
+    /// 「歩いているか」をまとめて判定する。両方が Update までに出揃うタイミングで
+    /// 評価するため、位置の差分ではなく状態ベースで見る（詳細は <see cref="UpdateFootsteps"/>）。
     /// </remarks>
     public override void LateUpdate(ref NativeFrameContext ctx)
     {
-        UpdateFootsteps();
+        bool walkingThisFrame = movingThisFrameForFootsteps || sideWalkedThisFrame;
+        sideWalkedThisFrame = false;   // 消費してリセット（次フレームへ持ち越さない）
+
+        UpdateFootsteps(walkingThisFrame, ctx.DeltaTime);
     }
 
     /// <summary>
-    /// 距離ベースで足音 SE を再生する。
+    /// 時間ベースで足音 SE を再生する。
     ///
-    /// 前フレーム終了時点の位置との差分（水平成分のみ。Y は無視して、
-    /// ジャンプや段差での上下動だけでは足音を鳴らさない）を積算し、
-    /// <see cref="footstepStepDistance"/> に達するたびに 1 回再生して差し引く
-    /// （1 フレームで複数歩ぶん進む極端なケースにも対応できるよう while で回す）。
-    ///
-    /// 移動量がほぼ 0 のフレームでは積算をリセットする（止まった後に前回の
-    /// 積算が残っていて足音が鳴ってしまうのを防ぐ）とともに、次に動き出した
-    /// ときに再び <see cref="footstepFirstStepDelay"/> ぶんの助走を要求する。
+    /// 歩いている間は歩数タイマーを進め、1 歩分の間隔（1 / <see cref="footstepsPerSecond"/>）
+    /// に達するたびに 1 回再生して差し引く（極端な低フレームレートで複数歩ぶん経過した
+    /// ケースにも対応できるよう while で回す）。歩いていないフレームではタイマーと
+    /// 左右パリティをリセットする。
     /// </summary>
-    private void UpdateFootsteps()
+    /// <param name="walkingThisFrame">このフレーム、歩いているとみなすか。</param>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateFootsteps(bool walkingThisFrame, float deltaTime)
     {
-        var currentPosition = transform.Position;
-
-        // 初回フレームは比較対象が無いので、基準位置を記録するだけで終える。
-        if (footstepLastPosition is not { } lastPosition)
+        if (!walkingThisFrame)
         {
-            footstepLastPosition = currentPosition;
-            return;
-        }
-        footstepLastPosition = currentPosition;
-
-        // 水平成分だけの移動距離（Y を無視するのは、坂・段差での上下動だけで
-        // 足音が鳴らないようにするため。経路の高さ追従や重力落下と独立させる）。
-        var delta = new SEED.Vector3(
-            currentPosition.x - lastPosition.x, 0f, currentPosition.z - lastPosition.z);
-        float distance = delta.Magnitude;
-
-        if (distance < FootstepMovingEpsilon)
-        {
-            // 止まっている: 積算をリセットし、次の動き出しでは助走からやり直す。
-            footstepAccumulatedDistance = 0f;
-            footstepFirstStepDelayApplied = false;
+            // 止まっている: タイマーと左右パリティをリセットし、次に歩き出したら助走からやり直す。
+            footstepTimer = 0f;
+            footstepStepIndex = 0;
+            footstepWasWalking = false;
             return;
         }
 
-        // 「止まっていた → 動き出した」立ち上がりの一度だけ、助走ぶんを差し引いておく
-        // （＝最初の一歩は footstepStepDistance + footstepFirstStepDelay 進んで鳴る）。
-        if (!footstepFirstStepDelayApplied)
+        if (footstepsPerSecond <= 0f) { return; }   // 歩数レートが 0 以下なら常に無音
+
+        float interval = 1f / footstepsPerSecond;
+
+        if (!footstepWasWalking)
         {
-            footstepAccumulatedDistance -= footstepFirstStepDelay;
-            footstepFirstStepDelayApplied = true;
+            // 「止まっていた → 歩き出した」立ち上がりの一度だけ、助走ぶん先取りしたタイマーで始める
+            // （＝最初の一歩は footstepFirstStepDelaySeconds ぶん経過してから鳴る）。
+            footstepTimer = interval - footstepFirstStepDelaySeconds;
+            footstepWasWalking = true;
+        }
+        else
+        {
+            footstepTimer += deltaTime;
         }
 
-        footstepAccumulatedDistance += distance;
-
-        while (footstepAccumulatedDistance >= footstepStepDistance)
+        while (footstepTimer >= interval)
         {
-            footstepAccumulatedDistance -= footstepStepDistance;
+            footstepTimer -= interval;
             PlayFootstepSe();
         }
     }
