@@ -736,12 +736,21 @@ public class FishingController : SEEDScript
         {
             case FishState.Aiming:
                 UpdateAiming(ctx.DeltaTime);
-                ParkFloatHidden();        // キャスト前のウキは非表示にしておく
+                // UpdateAiming は Windup/Idle へしか遷移しない（Casting への直接遷移はない）が、
+                // 念のため「まだ Aiming のままか」を確認してから隠す。同フレーム内で
+                // Windup へ遷移していた場合でも、この直後 switch には戻らないため
+                // ここで隠しても Windup 側の表示状態には影響しない。
+                if (State == FishState.Aiming) { ParkFloatHidden(); }        // キャスト前のウキは非表示にしておく
                 break;
 
             case FishState.Windup:
                 UpdateWindupState(ctx.DeltaTime);
-                ParkFloatHidden();        // キャスト前のウキは非表示にしておく
+                // UpdateWindupState は StartCast() を呼ぶことがあり、その中で State が
+                // Casting に変わり ShowFloat() でウキが竿先に表示される。ここで無条件に
+                // ParkFloatHidden() を呼ぶと、Casting へ遷移した同じフレームでウキを
+                // 再び非表示に戻してしまい、キャスト中ずっと見えなくなるバグになる。
+                // そのため「まだ Windup のままか」を確認してから隠す。
+                if (State == FishState.Windup) { ParkFloatHidden(); }        // キャスト前のウキは非表示にしておく
                 break;
 
             case FishState.Casting:
