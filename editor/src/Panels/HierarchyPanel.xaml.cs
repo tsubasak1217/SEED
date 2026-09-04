@@ -339,7 +339,7 @@ public partial class HierarchyPanel : UserControl
             _selectedIds.Clear();
             if (_selectedId >= 0) _selectedIds.Add(_selectedId);
             _anchorId = _selectedId;
-            RebuildTree(_roots);
+            ApplyHierarchyUpdate(_roots);
 
             // グループ作成直後のリネーム
             if (_pendingRenameGroupName != null)
@@ -509,6 +509,163 @@ public partial class HierarchyPanel : UserControl
             if (item != null) ActorTree.Items.Add(item);
         }
         if (_selectedId >= 0) SelectTreeItem(_selectedId);
+    }
+
+    // ── 差分更新（インクリメンタル）────────────────────────────
+    //
+    // Play 中はスクリプトの Instantiate/Destroy のたびにヒエラルキー全体（数百ノード）が
+    // 届く。毎回 TreeViewItem を全破棄して作り直すと、ベクターアイコン生成とレイアウトで
+    // UI スレッドが数百 ms 占有され、エディタが目に見えて重くなる。
+    // そこで安定キー（StableKey）で既存 TreeViewItem と新ツリーを突き合わせ、
+    // 「一致 → 再利用」「新規 → 挿入」「消滅 → 削除」だけを行う差分更新を用意する。
+
+    /// <summary>差分更新にかかった時間がこの ms を超えたときだけログへ残す（常時ログはノイズになる）。</summary>
+    private const double SlowTreeUpdateLogMs = 30.0;
+
+    /// <summary>
+    /// ルート階層で既存項目と一致した割合がこの比率を下回る場合は、
+    /// 差分更新をあきらめて全再構築へフォールバックする（シーン切り替え等の全面差し替え）。
+    /// </summary>
+    private const double IncrementalRootMatchRatio = 0.5;
+
+    /// <summary>
+    /// ヒエラルキー受信時のツリー反映。可能なら差分更新し、そうでなければ全再構築する。
+    /// </summary>
+    private void ApplyHierarchyUpdate(List<ActorNode> roots)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // 検索フィルタ中はノードの取捨選択が入り差分の対応付けが複雑になるため全再構築する。
+        var filter = TxtSearch.Text.Trim();
+        bool incremental = string.IsNullOrEmpty(filter) && ActorTree.Items.Count > 0;
+
+        if (incremental)
+        {
+            // 安定キーを先に振り直してからルート階層の一致率を見る。
+            AssignStableKeys(roots, ExpandKeyRootParent);
+            incremental = RootKeysMostlyMatch(roots);
+        }
+
+        if (incremental)
+        {
+            SyncLevel(ActorTree.Items, roots);
+            RestoreSelectionAfterSync();
+        }
+        else
+        {
+            RebuildTree(roots);
+        }
+
+        sw.Stop();
+        if (sw.Elapsed.TotalMilliseconds > SlowTreeUpdateLogMs)
+        {
+            SEEDEditor.EditorLog.Write(
+                $"[Hierarchy.TreeUpdate] {(incremental ? "差分" : "全再構築")} " +
+                $"{sw.Elapsed.TotalMilliseconds:F1}ms roots={roots.Count}");
+        }
+    }
+
+    /// <summary>
+    /// ルート階層の安定キーが既存ツリーと十分に一致するかを判定する。
+    /// 一致率が低い＝シーン差し替え相当なので、差分更新より全再構築の方が安全かつ速い。
+    /// </summary>
+    private bool RootKeysMostlyMatch(List<ActorNode> roots)
+    {
+        if (roots.Count == 0) return false;
+
+        var existingKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (TreeViewItem item in ActorTree.Items)
+            if (item.Tag is ActorNode n) existingKeys.Add(n.StableKey);
+
+        int matched = roots.Count(r => existingKeys.Contains(r.StableKey));
+        return matched >= roots.Count * IncrementalRootMatchRatio;
+    }
+
+    /// <summary>
+    /// 1 階層分の TreeViewItem 群を新しいノード列へ合わせ込む（再帰）。
+    ///
+    /// 手順:
+    ///  1. 既存項目を安定キーで引ける辞書にする（同一階層内でキーは一意）。
+    ///  2. 新ノードを先頭から順に見て、一致する既存項目があれば所定の位置へ移動して再利用、
+    ///     無ければ新規に作って挿入する。
+    ///  3. ループ後、末尾に押し出された未使用の既存項目（＝消えたノード）を削除する。
+    /// </summary>
+    private void SyncLevel(ItemCollection items, List<ActorNode> nodes)
+    {
+        // 1. 既存項目のキー索引
+        var existing = new Dictionary<string, TreeViewItem>(StringComparer.Ordinal);
+        foreach (TreeViewItem item in items)
+            if (item.Tag is ActorNode n && !existing.ContainsKey(n.StableKey))
+                existing[n.StableKey] = item;
+
+        // 2. 新ノード順に整列させる
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            var node = nodes[i];
+            if (existing.TryGetValue(node.StableKey, out var item))
+            {
+                // 位置がずれていれば移動（同じインスタンスなので展開・選択状態は保たれる）
+                int current = items.IndexOf(item);
+                if (current != i)
+                {
+                    items.RemoveAt(current);
+                    items.Insert(i, item);
+                }
+                UpdateItemForNode(item, node);
+                SyncLevel(item.Items, node.Children);
+            }
+            else
+            {
+                // 新規ノード: フィルタ無しの通常構築（差分更新はフィルタ非適用時のみ動く）
+                var created = BuildTreeItem(node, "");
+                if (created != null) items.Insert(i, created);
+            }
+        }
+
+        // 3. 余った末尾（＝今回のツリーに存在しないノード）を削除する
+        while (items.Count > nodes.Count)
+            items.RemoveAt(items.Count - 1);
+    }
+
+    /// <summary>
+    /// 再利用する TreeViewItem へ新しいノードを結び付ける。
+    /// ヘッダーの見た目に効くフィールドが変わったときだけ Header を作り直す
+    /// （アイコンは Visual を生成するため、無条件の作り直しは差分更新の意味を失わせる）。
+    /// </summary>
+    private static void UpdateItemForNode(TreeViewItem item, ActorNode node)
+    {
+        var old = item.Tag as ActorNode;
+        item.Tag = node;
+
+        // インラインリネーム中の項目は Header が TextBox を含む StackPanel に差し替わっている。
+        // ここで作り直すと編集中の入力が消えるため触らない。
+        if (item.Header is not TextBlock) return;
+
+        if (old == null || HeaderDiffers(old, node))
+            item.Header = BuildItemHeader(node);
+    }
+
+    /// <summary>
+    /// <see cref="BuildItemHeader"/> の出力に影響するフィールドが変化したかを判定する。
+    /// </summary>
+    private static bool HeaderDiffers(ActorNode a, ActorNode b)
+        => !string.Equals(a.Name, b.Name, StringComparison.Ordinal)
+        || a.IsFolder != b.IsFolder
+        || a.IsGroup  != b.IsGroup
+        || a.Is2D     != b.Is2D
+        || a.IsPrefab != b.IsPrefab
+        || a.Active   != b.Active;
+
+    /// <summary>
+    /// 差分更新後の選択復元。既に同じ DFS ID の項目が選択済みなら何もしない
+    /// （毎回 BringIntoView するとヒエラルキー受信のたびに勝手にスクロールしてしまう）。
+    /// </summary>
+    private void RestoreSelectionAfterSync()
+    {
+        if (_selectedId < 0) return;
+        if (ActorTree.SelectedItem is TreeViewItem { Tag: ActorNode sel } && sel.Id == _selectedId)
+            return;
+        SelectTreeItem(_selectedId);
     }
 
     private TreeViewItem? BuildTreeItem(ActorNode node, string filter)

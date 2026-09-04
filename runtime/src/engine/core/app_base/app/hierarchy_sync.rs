@@ -9,9 +9,32 @@ use crate::engine::components::ModelComponent;
 use crate::engine::structs::tensor::Mat4x4;
 use crate::engine::structs::transforms::Quaternion;
 
-use super::{App, build_hierarchy_json, collect_actor_nodes};
+use super::{App, RuntimeMode, build_hierarchy_json, collect_actor_nodes};
+
+// ── ヒエラルキー送信スロットリング定数 ────────────────────────────
+//
+// ヒエラルキーは「シーン全木の完全 JSON」を毎回送る作りで、エディタ側も
+// 受信のたびにツリーを更新する。編集操作（ドラッグ・複製など）は即応性が
+// 要るので短い間隔にするが、Play 中はスクリプトの Instantiate/Destroy が
+// 連続するため、間隔を伸ばして送信をまとめる（フラッシュは frame_renderer 側）。
+
+/// 編集モードでのヒエラルキー送信の最小間隔（ミリ秒）。
+const HIERARCHY_SEND_INTERVAL_EDIT_MS: u128 = 100;
+
+/// Play モードでのヒエラルキー送信の最小間隔（ミリ秒）。
+/// 生成／破棄が毎フレーム発生しても、この間隔までは 1 回にまとめる。
+const HIERARCHY_SEND_INTERVAL_PLAY_MS: u128 = 400;
 
 impl App {
+    /// 現在のモードに応じたヒエラルキー送信の最小間隔（ミリ秒）を返す。
+    /// `send_hierarchy` と frame_renderer の遅延フラッシュで同じ値を使うための単一情報源。
+    pub(super) fn hierarchy_send_interval_ms(&self) -> u128 {
+        match self.mode {
+            RuntimeMode::Edit => HIERARCHY_SEND_INTERVAL_EDIT_MS,
+            RuntimeMode::Play => HIERARCHY_SEND_INTERVAL_PLAY_MS,
+        }
+    }
+
     /// ヒエラルキーを JSON にシリアライズしてエディタへ送信する（実装本体）。
     pub(super) fn do_send_hierarchy(&self) {
         let Some(ipc) = &self.ipc else { return };
@@ -34,11 +57,13 @@ impl App {
     }
 
     /// ヒエラルキー送信（スロットリング付き）。
-    /// 100ms 以内に連続呼び出しされた場合はフラグを立てて遅延送信する。
+    /// 最小間隔（`hierarchy_send_interval_ms`）以内に連続呼び出しされた場合は
+    /// ダーティフラグを立てて遅延送信する（frame_renderer が間隔経過後にフラッシュする）。
     pub(super) fn send_hierarchy(&mut self) {
         let now = std::time::Instant::now();
+        let interval = self.hierarchy_send_interval_ms();
         if let Some(last) = self.last_hierarchy_send {
-            if now.duration_since(last).as_millis() < 100 {
+            if now.duration_since(last).as_millis() < interval {
                 self.hierarchy_dirty = true;
                 return;
             }

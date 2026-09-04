@@ -594,8 +594,10 @@ impl App {
         // ヒエラルキー遅延フラッシュ（スロットリングで保留されていた送信）
         if self.hierarchy_dirty {
             let now = std::time::Instant::now();
+            // 最小間隔はモード依存（編集は短く、Play は長くまとめる）。
+            let interval = self.hierarchy_send_interval_ms();
             let ready = self.last_hierarchy_send
-                .map(|t| now.duration_since(t).as_millis() >= 100)
+                .map(|t| now.duration_since(t).as_millis() >= interval)
                 .unwrap_or(true);
             if ready {
                 self.hierarchy_dirty = false;
