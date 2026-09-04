@@ -1,4 +1,3 @@
-using System.Collections.Generic;             // 合わせ検出のスライディングウィンドウ（List<SwingSample>）
 using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
 
 /// <summary>
@@ -38,18 +37,19 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 魚が餌へ届くと <see cref="BeginNibbling"/> で前アタリ（コツコツ）が 1〜4 回起き、
 /// ウキが <see cref="nibbleDipDepth"/> だけ小さく沈む。撃ち切ってさらに 1 間隔経つと
 /// 本アタリ（<see cref="biteDipDepth"/> の大きな沈み込み）と反応受付
-/// （<see cref="FishState.HookWindow"/>）が始まる。マウスを振る（合わせる）と
+/// （<see cref="FishState.HookWindow"/>）が始まる。<b>左クリック</b>する（合わせる）と
 /// 反応時間から Excellent / Great / Nice / Miss を判定し、成功なら従来の
 /// ヒット（<see cref="FishState.Hooked"/>）へ、失敗なら魚が逃げて待機へ戻る。
 /// 判定は <see cref="LastJudgement"/> に残り、画面中央へ判定画像を出す。
 /// アタリ〜合わせのあいだ巻き取り入力（ホイール・A/D）は受け付けない。
 ///
-/// <b>自由な竿振り（どうぶつの森方式の「いつでも振れる」）</b>
+/// <b>合わせ＝左クリック（自由な竿振り／どうぶつの森方式の「いつでも振れる」）</b>
 /// 餌が水にあるあいだ（<see cref="FishState.Floating"/> /
 /// <see cref="FishState.Reeling"/> / <see cref="FishState.Nibbling"/> /
 /// <see cref="FishState.HookWindow"/>）は、状態に関わらず
-/// <see cref="UpdateSwingDetection"/> がマウスの振りを読む。振りの<b>意味</b>だけが
-/// 状態ごとに変わる:
+/// <see cref="UpdateSwingDetection"/> が<b>左クリックの押下</b>を読む
+/// （マウスの振り上げ検出は廃止。押下フレームだけを見る単純な 1 クリック操作）。
+/// 振りの<b>意味</b>だけが状態ごとに変わる:
 /// - Floating / Reeling … <b>空振り</b>。ウキが竿先方向へ小さく跳ねる
 ///   （<see cref="hopSeconds"/> / <see cref="hopPullDistance"/> / <see cref="hopHeight"/>）。
 ///   跳ねているあいだ巻き取り入力（ホイール・A/D）は受け付けないが、糸は張られたまま。
@@ -197,7 +197,7 @@ public class FishingController : SEEDScript
     /// <summary>
     /// 竿を振った回数の通し番号【魚が「振られた」ことを知る唯一の手掛かり】。
     ///
-    /// <see cref="UpdateSwingDetection"/> が振りを検出するたびに、どの状態
+    /// <see cref="UpdateSwingDetection"/> が左クリックの押下を検出するたびに、どの状態
     /// （Floating / Reeling / Nibbling / HookWindow）でも 1 だけ増える。
     /// 魚（<see cref="Fish"/>）は前フレームに見た番号を覚えておき、値が変わっていたら
     /// 「竿が振られた」と判断する（イベント購読の仕組みが無いためのポーリング方式。
@@ -230,16 +230,6 @@ public class FishingController : SEEDScript
 
     /// <summary>「ウキが沈んでいない」ことを表す沈みタイマーの番人値（負値＝無効）。</summary>
     private const float NoDipElapsed = -1f;
-
-    /// <summary>合わせ判定で「マウスが動いた」とみなす 1 フレームの最小移動量（px）。これ以下は手ぶれとして捨てる。</summary>
-    private const float SwingMoveEpsilonPx = 0.5f;
-
-    /// <summary>
-    /// 合わせ検出のスライディングウィンドウに保持する最大サンプル数。
-    /// 通常は時間（<see cref="swingWindowSeconds"/>）で捨てられるが、
-    /// deltaTime が 0 になる異常フレームが続いてもリストが際限なく伸びないための上限。
-    /// </summary>
-    private const int MaxSwingSamples = 256;
 
     /// <summary>SEED.Random.Range(int, int) の上限は排他なので、回数の上限に足す 1。</summary>
     private const int InclusiveUpperBound = 1;
@@ -653,26 +643,14 @@ public class FishingController : SEEDScript
     /// ロックしないと端に当たった瞬間 <see cref="SEED.Input.MouseDelta"/> が 0 に潰れ、
     /// 引く／振るのジェスチャが取れなくなる。
     ///
-    /// <b>ここでロックするのは <see cref="FishState.Aiming"/> と <see cref="FishState.Windup"/> だけ</b>。
-    /// 着水後もロックしたい場合は <see cref="lockCursorWhileFloatOut"/> をオンにする。
+    /// <b>ロックするのは <see cref="FishState.Aiming"/> と <see cref="FishState.Windup"/> だけ</b>。
+    /// 着水後（Floating / Reeling / Nibbling / HookWindow）は合わせが左クリック 1 回になり
+    /// マウスの移動量を読まなくなったため、ロックする理由が無い（カーソルは出したまま）。
     /// 詳細は <see cref="UpdateCursorLock"/>。
     /// UI をマウスで操作したい場面が出たらここをオフにする。
     /// </summary>
     [Header("操作"), SerializeField(Label = "狙い/振りかぶり中はカーソルをロック")]
     private bool lockCursorWhileFishing = true;
-
-    /// <summary>
-    /// ウキが水に出ているあいだ（Floating / Reeling / Nibbling / HookWindow）も
-    /// カーソルをロックするか。
-    ///
-    /// この区間は合わせ（振り上げ）を読むが、ロックしていないとカーソルが
-    /// ビューポート端に張り付いた瞬間 <see cref="SEED.Input.MouseDelta"/> が 0 に潰れ、
-    /// 速いフリックほど拾えなくなる。オンにすると端の影響を受けずに読めるが、
-    /// 代わりに巻き取り中もカーソルが非表示になる（UI をつつけなくなる）。
-    /// 好みで選べるようにオプションにしてある（既定はオフ＝カーソルを見せる）。
-    /// </summary>
-    [SerializeField(Label = "ウキ着水中もカーソルをロック")]
-    private bool lockCursorWhileFloatOut = false;
 
     /// <summary>
     /// 現在エンジンへ適用済みのカーソルロック状態（<see cref="UpdateCursorLock"/> のキャッシュ）。
@@ -792,49 +770,17 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "前アタリの沈み時間(秒)")]
     private float nibbleDipSeconds = 0.25f;
 
-    // ─── 合わせ（フッキング）─────────────────────────────────
-
-    /// <summary>
-    /// 合わせ成立に必要な、時間窓（<see cref="swingWindowSeconds"/>）内での
-    /// <b>上方向</b>の累積マウス移動量（px）。
-    ///
-    /// 「竿を振り上げる」動作を読むので、上（スクリーン −Y）へ動いた分だけを積む。
-    /// ゆっくり動かしても窓から古いサンプルが抜けていくため到達せず、
-    /// 短時間で振り上げたときだけ到達する（＝フリック検出）。
-    /// </summary>
-    [Header("合わせ"), SerializeField(Label = "合わせの振り上げ量(px/0.1秒)")]
-    private float hookSwingPx = 60f;
-
-    /// <summary>
-    /// 振り上げ量を積算する時間窓の幅（秒）。
-    /// 小さくするほど「速い振り」しか通らなくなり、大きくするほど緩やかな動きでも成立する。
-    /// </summary>
-    [SerializeField(Label = "合わせの時間窓(秒)")]
-    private float swingWindowSeconds = 0.1f;
-
-    /// <summary>
-    /// 上方向の支配率。<c>上方向の累積 &gt;= 横方向の累積 × この値</c> を満たさないと合わせにしない。
-    /// 横へカーソルを擦っただけの動き（＝振り上げではない）を弾くための条件。
-    /// 0 にすると横方向を一切見なくなる。
-    /// </summary>
-    [SerializeField(Label = "上方向の支配率")]
-    private float swingUpDominance = 0.5f;
-
-    /// <summary>
-    /// 合わせが成立してから次の合わせを受け付けるまでの待ち時間（秒）。
-    /// 1 回の振りで窓が連続して条件を満たし、二重発火するのを防ぐ。
-    /// </summary>
-    [SerializeField(Label = "合わせのクールダウン(秒)")]
-    private float swingCooldownSeconds = 0.3f;
-
     // ─── 空振り（ウキの跳ね）─────────────────────────────────
     //
     // 「まだ魚がアタっていない」状態（Floating / Reeling）で竿を振ったときの演出。
-    // 竿は<b>いつでも</b>振れる（＝おいでよ／とびだせ系の自由な竿振り）ので、
+    // 竿は<b>いつでも</b>振れる（＝左クリック 1 回でいつでも合わせられる）ので、
     // アタリが無いときの振りはウキが手前へ小さく跳ねるだけの空振りになる。
+    //
+    // 合わせの操作は「左クリックの押下」そのものなので、しきい値・時間窓・
+    // クールダウンといった調整パラメータは持たない（旧フリック検出は廃止）。
 
     /// <summary>ウキの跳ね 1 回に掛ける秒数。この間は巻き取り入力（ホイール・A/D）を受け付けない。</summary>
-    [SerializeField(Label = "ウキの跳ね時間(秒)")]
+    [Header("合わせ"), SerializeField(Label = "ウキの跳ね時間(秒)")]
     private float hopSeconds = 0.35f;
 
     /// <summary>
@@ -919,9 +865,10 @@ public class FishingController : SEEDScript
     private float hookSeVolume = 1f;
 
     /// <summary>
-    /// 竿を振った瞬間（<see cref="UpdateSwingDetection"/> が成立した瞬間）に鳴らす効果音のアセットパス。
-    /// 空文字なら鳴らさない。振りはどの状態（Floating / Reeling / Nibbling / HookWindow）でも
-    /// 同じ 1 か所で検出するので、効果音もそこ 1 か所から鳴らす。
+    /// 竿を振った瞬間（<see cref="UpdateSwingDetection"/> が左クリックを拾った瞬間）に鳴らす
+    /// 効果音のアセットパス。空文字なら鳴らさない。振りはどの状態
+    /// （Floating / Reeling / Nibbling / HookWindow）でも同じ 1 か所で検出するので、
+    /// 効果音もそこ 1 か所から鳴らす。
     /// </summary>
     [SerializeField(Label = "竿振りの効果音")]
     private string swingSePath = "";
@@ -958,45 +905,6 @@ public class FishingController : SEEDScript
 
     /// <summary>本アタリからの経過秒数（＝合わせの反応時間）。</summary>
     private float reactionElapsed = 0f;
-
-    /// <summary>
-    /// 合わせ検出の 1 フレーム分のマウス移動サンプル。
-    /// 時間窓（<see cref="swingWindowSeconds"/>）から外れたものを捨てるために時刻を持つ。
-    /// </summary>
-    private readonly struct SwingSample
-    {
-        /// <summary>このサンプルを取った時刻（<see cref="swingClock"/> 基準の秒数）。</summary>
-        public readonly float Time;
-
-        /// <summary>このフレームの上方向移動量（px、常に 0 以上）。スクリーンの上は −Y。</summary>
-        public readonly float Up;
-
-        /// <summary>このフレームの横方向移動量の絶対値（px）。左右どちらでも正で積む。</summary>
-        public readonly float Horizontal;
-
-        /// <summary>サンプルを作る。</summary>
-        /// <param name="time">取得時刻（秒）。</param>
-        /// <param name="up">上方向移動量（px、0 以上）。</param>
-        /// <param name="horizontal">横方向移動量の絶対値（px）。</param>
-        public SwingSample(float time, float up, float horizontal)
-        {
-            Time = time;
-            Up = up;
-            Horizontal = horizontal;
-        }
-    }
-
-    /// <summary>
-    /// 合わせ検出のスライディングウィンドウ（古い順に並ぶ）。
-    /// 先頭から <see cref="swingWindowSeconds"/> より古いサンプルを捨てていく。
-    /// </summary>
-    private readonly List<SwingSample> swingSamples = new();
-
-    /// <summary>合わせ検出用の単調増加時計（秒）。サンプルの新旧比較にだけ使う。</summary>
-    private float swingClock = 0f;
-
-    /// <summary>合わせのクールダウン残り秒数（0 より大きいあいだは新たな合わせを取らない）。</summary>
-    private float swingCooldownElapsed = 0f;
 
     /// <summary>ウキの跳ね（空振り演出）を再生中か。true のあいだ <see cref="UpdateReeling"/> は走らせない。</summary>
     private bool hopActive = false;
@@ -1149,7 +1057,6 @@ public class FishingController : SEEDScript
         nibbleTimer = NextNibbleInterval();
         nibbleDipElapsed = NoDipElapsed;
         reactionElapsed = 0f;
-        ResetHookSwing();
 
         SEED.Debug.Log($"[Fishing] 前アタリ開始: {fish.DisplayName}（{nibbleRemaining} 回）");
         return true;
@@ -1273,7 +1180,7 @@ public class FishingController : SEEDScript
                 // 餌が水にあるあいだは、アタリが無くても竿を振れる（自由な竿振り）。
                 // 振ればウキが手前へ小さく跳ねる空振りになり、跳ねているあいだは
                 // 巻き取り入力（ホイール・A/D）を受け付けない。
-                if (UpdateSwingDetection(ctx.DeltaTime)) { TryStartHop(); }
+                if (UpdateSwingDetection()) { TryStartHop(); }
 
                 if (hopActive) { UpdateHop(ctx.DeltaTime); }
                 else { UpdateReeling(ctx.DeltaTime); }
@@ -1417,27 +1324,12 @@ public class FishingController : SEEDScript
     /// <see cref="FishState.Aiming"/>（振りかぶり待ち）と <see cref="FishState.Windup"/>（振り抜き待ち）
     /// だけ（<see cref="lockCursorWhileFishing"/> がオフなら常に false ＝解除は必ず通る）。
     ///
-    /// 加えて <see cref="lockCursorWhileFloatOut"/> がオンなら、合わせ（振り上げ）を読む区間
-    /// （Floating / Reeling / Nibbling / HookWindow）でもロックする。
-    /// ロック中は <see cref="SEED.Input.MouseDelta"/> が画面端で 0 に潰れないため、
-    /// 速いフリックを取りこぼさなくなる（代わりにカーソルは見えなくなる）。
+    /// 着水後（Floating / Reeling / Nibbling / HookWindow）は合わせが左クリック 1 回になり
+    /// マウスの移動量を一切読まないので、ロックしない（カーソルは出したままにする）。
     /// </summary>
     private bool WantsCursorLock()
-    {
-        // キャストのジェスチャ区間（既定でロックする区間）
-        if (lockCursorWhileFishing && (State == FishState.Aiming || State == FishState.Windup)) { return true; }
-
-        // 合わせのジェスチャ区間（オプトインでロックする区間）。
-        // ヒット中（Hooked）と釣果（Result）は振りを読まないのでロックしない。
-        if (lockCursorWhileFloatOut
-            && State is FishState.Floating or FishState.Reeling
-                     or FishState.Nibbling or FishState.HookWindow)
-        {
-            return true;
-        }
-
-        return false;
-    }
+        // キャストのジェスチャ区間（ロックする唯一の区間）
+        => lockCursorWhileFishing && (State == FishState.Aiming || State == FishState.Windup);
 
     /// <summary>
     /// カーソルロックを現在の状態へ合わせる【適用の唯一の集約点】。
@@ -1466,11 +1358,8 @@ public class FishingController : SEEDScript
         windupAccumPx = 0f;
         swingAccumPx = 0f;
         previewElapsed = 0f;
-        // 合わせの時間窓も捨てる。検出器は「ウキが水にある区間」でしか回らず、そのあいだ
-        // 内部時計 swingClock も止まるため、捨てずに置くと前回の振りかけが次のキャストへ
-        // 持ち越されて（＝古いサンプルが窓内のまま復活して）暴発しうる。
-        ResetHookSwing();
-        swingCooldownElapsed = 0f;
+        // 合わせは左クリックの押下フレームだけを見る「状態を持たない」判定になったので、
+        // ここで捨てるべき合わせ側の累積は無い（旧: 振り上げウィンドウの掃除）。
         EndWindup(continueToCast: false);
     }
 
@@ -2092,9 +1981,9 @@ public class FishingController : SEEDScript
             if (nibbleDipElapsed >= nibbleDipSeconds) { nibbleDipElapsed = NoDipElapsed; }
         }
 
-        // 2) 合わせ（マウスの振り）の検出。検出そのものは Floating / Reeling と共通で、
+        // 2) 合わせ（左クリック）の検出。検出そのものは Floating / Reeling と共通で、
         //    ここでは「アタリ中の振り＝合わせ」として解釈する（跳ねさせない）。
-        bool swung = UpdateSwingDetection(deltaTime);
+        bool swung = UpdateSwingDetection();
 
         // 3) 前アタリ中
         if (State == FishState.Nibbling)
@@ -2150,7 +2039,6 @@ public class FishingController : SEEDScript
         State = FishState.HookWindow;
         reactionElapsed = 0f;
         nibbleDipElapsed = NoDipElapsed;
-        ResetHookSwing();
         PlaySe(hookSePath, hookSeVolume);
         SEED.Debug.Log($"[Fishing] 本アタリ! {fish.DisplayName}");
     }
@@ -2237,7 +2125,6 @@ public class FishingController : SEEDScript
         nibbleTimer = 0f;
         nibbleDipElapsed = NoDipElapsed;
         reactionElapsed = 0f;
-        ResetHookSwing();
     }
 
     /// <summary>次のアタリまでの間隔（秒）を抽選する。</summary>
@@ -2245,113 +2132,28 @@ public class FishingController : SEEDScript
         => SEED.Random.Range(nibbleIntervalMin, SEED.Mathf.Max(nibbleIntervalMin, nibbleIntervalMax));
 
     /// <summary>
-    /// 合わせ検出のスライディングウィンドウを空にする
-    /// （アタリの開始・終了・合わせ成立など、振りの積算を持ち越したくない場面で呼ぶ）。
-    /// クールダウンはここでは触らない（成立直後のリセットで待ち時間が消えないように）。
-    /// </summary>
-    private void ResetHookSwing() => swingSamples.Clear();
-
-    /// <summary>
-    /// このフレームのマウス移動量（px）を取る。
-    ///
-    /// <see cref="SEED.Input.MouseDelta"/> はカーソル座標の差分なので<b>埋め込み Play でも必ず取れる</b>
-    /// 反面、カーソルがビューポート端に張り付くと 0 に潰れる（速いフリックほど消えやすい）。
-    /// <see cref="SEED.Input.MouseMove"/> は OS の Raw Input 由来で<b>端の影響を受けない</b>反面、
-    /// エディタ埋め込み Play では届かず 0 のことがある。
-    ///
-    /// どちらか一方に決め打つと必ず片方の環境で取りこぼすので、
-    /// 「大きさが大きいほう」を採用する。0 に潰れているほうは自動的に負けるため、
-    /// スタンドアロン（Raw Input が来る）でも埋め込み（来ない）でも同じコードで動く。
-    /// </summary>
-    /// <returns>採用したマウス移動量（右が +X / 下が +Y、px）。</returns>
-    private static SEED.Vector2 CurrentMouseMovePx()
-    {
-        var cursorDelta = SEED.Input.MouseDelta;
-        var rawMove = SEED.Input.MouseMove;
-
-        float cursorLenSq = cursorDelta.x * cursorDelta.x + cursorDelta.y * cursorDelta.y;
-        float rawLenSq = rawMove.x * rawMove.x + rawMove.y * rawMove.y;
-
-        return rawLenSq > cursorLenSq ? rawMove : cursorDelta;
-    }
-
-    /// <summary>
-    /// 合わせ（竿の振り上げ）の検出＝<b>上方向フリック検出器</b>。
-    ///
-    /// アルゴリズム:
-    /// 1. このフレームの移動量を <see cref="CurrentMouseMovePx"/> で取る。
-    /// 2. 上方向成分 <c>max(0, −y)</c>（スクリーンの上は −Y）と横方向成分 <c>|x|</c> を
-    ///    時刻付きでウィンドウへ積む。
-    /// 3. <see cref="swingWindowSeconds"/> より古いサンプルを捨てる（＝直近の窓だけが残る）。
-    /// 4. 窓内の上方向合計が <see cref="hookSwingPx"/> 以上、かつ
-    ///    上方向合計 &gt;= 横方向合計 × <see cref="swingUpDominance"/> なら成立。
-    /// 5. 成立したら窓を空にし、<see cref="swingCooldownSeconds"/> のクールダウンを張って二重発火を防ぐ。
-    ///
-    /// 旧実装（方向を問わない累積＋無操作でリセット）は、ゆっくり動かし続けるだけで
-    /// しきい値に到達して暴発し、逆に画面端では <see cref="SEED.Input.MouseDelta"/> が
-    /// 0 に潰れて速い振りを落としていた。時間窓と方向条件でその両方を潰している。
-    /// </summary>
-    /// <param name="deltaTime">このフレームの経過秒数。</param>
-    /// <returns>このフレームに振りが成立したら true。</returns>
-    private bool AccumulateHookSwing(float deltaTime)
-    {
-        swingClock += deltaTime;
-
-        // クールダウン中は積算しない（1 回の振りを 2 回に数えないため、窓も空のままにする）
-        if (swingCooldownElapsed > 0f)
-        {
-            swingCooldownElapsed -= deltaTime;
-            swingSamples.Clear();
-            return false;
-        }
-
-        // ── 1) このフレームの移動量をサンプルとして積む ──
-        var move = CurrentMouseMovePx();
-        float moved = SEED.Mathf.Sqrt(move.x * move.x + move.y * move.y);
-        if (moved > SwingMoveEpsilonPx)
-        {
-            // スクリーンの上は −Y。下向きの動きは「振り上げ」ではないので 0 として捨てる。
-            float up = SEED.Mathf.Max(0f, -move.y);
-            float horizontal = SEED.Mathf.Abs(move.x);
-            swingSamples.Add(new SwingSample(swingClock, up, horizontal));
-
-            // 異常フレーム（deltaTime が進まない等）でリストが伸び続けないための保険
-            if (swingSamples.Count > MaxSwingSamples) { swingSamples.RemoveAt(0); }
-        }
-
-        // ── 2) 時間窓から外れた古いサンプルを先頭から捨てる ──
-        float oldest = swingClock - SEED.Mathf.Max(swingWindowSeconds, DivideEpsilon);
-        int expired = 0;
-        while (expired < swingSamples.Count && swingSamples[expired].Time < oldest) { expired++; }
-        if (expired > 0) { swingSamples.RemoveRange(0, expired); }
-
-        // ── 3) 窓内の上方向／横方向を合計する ──
-        float upSum = 0f;
-        float horizontalSum = 0f;
-        for (int i = 0; i < swingSamples.Count; i++)
-        {
-            upSum += swingSamples[i].Up;
-            horizontalSum += swingSamples[i].Horizontal;
-        }
-
-        // ── 4) しきい値と方向条件の両方を満たしたときだけ成立 ──
-        if (upSum < hookSwingPx) { return false; }
-        if (upSum < horizontalSum * swingUpDominance) { return false; }   // 横擦りは合わせにしない
-
-        // ── 5) 成立: 窓を空にしてクールダウンを張る ──
-        swingSamples.Clear();
-        swingCooldownElapsed = swingCooldownSeconds;
-        return true;
-    }
-
-    /// <summary>
-    /// 竿振りの検出【振りを読む唯一の入口】。
+    /// 竿振り（＝合わせ）の検出【振りを読む唯一の入口】。
     ///
     /// 餌が水に有るあいだ（<see cref="FishState.Floating"/> /
     /// <see cref="FishState.Reeling"/> / <see cref="FishState.Nibbling"/> /
     /// <see cref="FishState.HookWindow"/>）は、状態に関わらずこの関数で振りを読む。
-    /// しきい値・時間窓の判定そのものは <see cref="AccumulateHookSwing"/> が持ち、
-    /// ここでは「振りが成立した瞬間に必ず起きること」だけを足す:
+    ///
+    /// <b>操作は「左クリックを押した瞬間」だけ</b>。
+    /// <see cref="SEED.Input.GetMouseButtonDown"/> は押下フレームでしか true を返さないので、
+    /// しきい値・時間窓・クールダウンといった内部状態を一切持たずに、
+    /// 1 回のクリックがちょうど 1 回の振りになる
+    /// （旧実装の上方向フリック検出は、ゆっくり動かしただけの暴発とカーソルロック依存を
+    ///   抱えていたため廃止した）。
+    ///
+    /// <b>釣り姿勢に入るクリックを合わせとして食わない理由</b>:
+    /// 姿勢に入るのは <see cref="FishState.Idle"/> で押下した<b>そのフレーム</b>だけで、
+    /// その時点で状態は <see cref="FishState.Aiming"/>（＝ウキは手元にあり水に出ていない）。
+    /// この関数は Floating / Reeling / Nibbling / HookWindow でしか呼ばれないので、
+    /// 姿勢に入る押下がここへ届くことはない。キャストは左クリックを押したまま成立し、
+    /// 押しっぱなしのあいだは押下フレームが来ないため、着水後に<b>改めて押し直した</b>
+    /// クリックだけが合わせになる。
+    ///
+    /// ここで足すのは「振りが成立した瞬間に必ず起きること」だけ:
     /// <see cref="SwingSerial"/> の加算（魚への通知）と効果音。
     ///
     /// <b>振りの結果は呼び出し側が決める</b>（状態ごとに意味が違うため）:
@@ -2359,11 +2161,10 @@ public class FishingController : SEEDScript
     /// - Nibbling           … 早合わせ（Miss。魚は逃げる）
     /// - HookWindow         … 合わせ判定（Excellent / Great / Nice / Miss）
     /// </summary>
-    /// <param name="deltaTime">このフレームの経過秒数。</param>
     /// <returns>このフレームに振りが成立したら true。</returns>
-    private bool UpdateSwingDetection(float deltaTime)
+    private bool UpdateSwingDetection()
     {
-        if (!AccumulateHookSwing(deltaTime)) { return false; }
+        if (!SEED.Input.GetMouseButtonDown(SEED.MouseButton.Left)) { return false; }
 
         // 番号は「どの状態で振ったか」に依らず増やす（魚は状態を見ずに変化だけを見る）
         SwingSerial++;

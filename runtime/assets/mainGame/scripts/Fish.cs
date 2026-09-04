@@ -41,6 +41,17 @@ public class Fish : SEEDScript
     /// <summary>「距離が実質 0」とみなすしきい値（0 除算・方位の不定を避ける）。</summary>
     private const float DistanceEpsilon = 1e-4f;
 
+    /// <summary>
+    /// 餌（の少し下）へ<b>完全に張り付く</b>距離（メートル）。
+    ///
+    /// 掛かって巻かれている（<see cref="BehaviorState.Bite"/>）あいだ、これ以下まで
+    /// 詰められたら座標を目標点そのものへ揃える。こうしないと、ウキが毎フレーム
+    /// 動いているあいだ <see cref="attachSpeed"/> の追従が常にわずかに遅れ、
+    /// 魚がウキから微妙にずれたまま引かれているように見える。
+    /// 逆に <see cref="BehaviorState.Nibbling"/>（まだ掛かっていない）では張り付かせない。
+    /// </summary>
+    private const float AttachSnapDistance = 0.05f;
+
     // ─── 行動状態 ─────────────────────────────────────────────
 
     /// <summary>
@@ -178,6 +189,21 @@ public class Fish : SEEDScript
     /// <summary>食いついているあいだ、餌（ウキ）から何メートル下に居るか。</summary>
     [SerializeField(Label = "ヒット中の沈み量(m)")]
     private float hookedDepthOffset = 0.3f;
+
+    /// <summary>
+    /// 餌への追従速度（m/s）。
+    ///
+    /// つつき中・ヒット中（<see cref="UpdateBite"/>）は、この速さで
+    /// 目標点「餌 −(0, <see cref="hookedDepthOffset"/>, 0)」へ<b>3 次元的に</b>寄る。
+    /// 接近中（<see cref="UpdateApproach"/>）でも、同じ速さで高さ（Y）だけを
+    /// 目標の深さへ寄せていく（XZ の泳ぎは <see cref="approachSpeed"/> のまま）。
+    ///
+    /// 以前は座標を目標点へ直接代入していたため、餌の影響圏に入った瞬間に
+    /// 遊泳深度から水面直下まで一瞬でワープしていた。移動量を
+    /// 「min(この速さ × dt, 残り距離)」で刻むことでその瞬間移動を無くす。
+    /// </summary>
+    [SerializeField(Label = "餌への追従速度(m/s)")]
+    private float attachSpeed = 3f;
 
     /// <summary>
     /// 合わせ失敗・リリース後に餌から全速で逃げる秒数。
@@ -477,6 +503,12 @@ public class Fish : SEEDScript
             targetHeadingRad = SEED.Mathf.Atan2(dx, dz);
         }
 
+        // 高さは XZ の詰め方に関係なく、常に目標深度（餌の hookedDepthOffset m 下）へ
+        // attachSpeed で少しずつ寄せる。これにより、食いつく頃には既にその深さまで
+        // 浮上し終えていて、UpdateBite へ移った瞬間に Y が飛ぶことがなくなる。
+        float targetY = bait.y - hookedDepthOffset;
+        float easedY = MoveTowards(pos.y, targetY, attachSpeed * dt);
+
         // 餌が十分近い（homingDistance 以内）場合は旋回半径のある SwimTowardHeading を使わず、
         // 餌へ向けて直進させる。SwimTowardHeading のまま食いつき距離まで詰めようとすると
         // 旋回が追いつかず餌の周りを周回し続けてしまうため。
@@ -488,24 +520,36 @@ public class Fish : SEEDScript
 
             // 移動は水平単位ベクトル方向へ、行き過ぎない距離だけ直進させる
             float step = SEED.Mathf.Min(approachSpeed * dt, distance);
+            float nextX = pos.x;
+            float nextZ = pos.z;
             if (distance > DistanceEpsilon)
             {
                 float invDistance = 1f / distance;
-                transform.Position = new SEED.Vector3(
-                    pos.x + dx * invDistance * step,
-                    pos.y,
-                    pos.z + dz * invDistance * step);
+                nextX += dx * invDistance * step;
+                nextZ += dz * invDistance * step;
             }
+            transform.Position = new SEED.Vector3(nextX, easedY, nextZ);
             return;
         }
 
+        // 遠い間は従来どおり旋回付きで泳ぎ（XZ）、高さだけを別途寄せる
         SwimTowardHeading(targetHeadingRad, approachSpeed, dt);
+        var swum = transform.Position;
+        transform.Position = new SEED.Vector3(swum.x, easedY, swum.z);
     }
 
     /// <summary>
     /// つつき中（<see cref="BehaviorState.Nibbling"/>）・食いつき中
     /// （<see cref="BehaviorState.Bite"/>）の追従。餌（ウキ）の
-    /// <see cref="hookedDepthOffset"/> m 下に張り付き、餌のある向きを向く。
+    /// <see cref="hookedDepthOffset"/> m 下を目標点に、<see cref="attachSpeed"/> で
+    /// 3 次元的に寄りながら、餌のある向きを向く。
+    ///
+    /// <b>ここは以前ワープしていた場所</b>: 目標点を <c>transform.Position</c> へ直接
+    /// 代入していたため、前アタリが始まった最初の 1 フレームで、遊泳深度から
+    /// 水面直下（餌の少し下）まで一瞬で飛んでいた。移動量を
+    /// 「min(<see cref="attachSpeed"/> × dt, 残り距離)」に刻むことで解消する。
+    /// 完全に張り付くのは「掛かって巻かれていて（<see cref="BehaviorState.Bite"/>）、
+    /// かつ残り距離が <see cref="AttachSnapDistance"/> 以下」のときだけ。
     /// </summary>
     /// <param name="dt">このフレームの経過秒数。</param>
     private void UpdateBite(float dt)
@@ -524,8 +568,26 @@ public class Fish : SEEDScript
         }
         transform.Rotation = new SEED.Vector3(0f, SmoothYawRad(targetHeadingRad, dt) / DegToRad, 0f);
 
-        // 位置は餌へ完全追従（少し下）。ここだけは補間せず張り付かせる。
-        transform.Position = new SEED.Vector3(bait.x, bait.y - hookedDepthOffset, bait.z);
+        // 目標点＝餌の hookedDepthOffset m 下（Y も含めた 3 次元の 1 点）
+        float toX = bait.x - pos.x;
+        float toY = (bait.y - hookedDepthOffset) - pos.y;
+        float toZ = bait.z - pos.z;
+        float distance = SEED.Mathf.Sqrt(toX * toX + toY * toY + toZ * toZ);
+
+        // 掛かって巻かれている最中に十分詰められたら、ズレを残さず目標点へ揃える
+        if (State == BehaviorState.Bite && distance <= AttachSnapDistance)
+        {
+            transform.Position = new SEED.Vector3(bait.x, bait.y - hookedDepthOffset, bait.z);
+            return;
+        }
+
+        // それ以外は行き過ぎない距離だけ目標点へ近づく（＝瞬間移動しない）
+        if (distance <= DistanceEpsilon) { return; }
+        float step = SEED.Mathf.Min(attachSpeed * dt, distance) / distance;
+        transform.Position = new SEED.Vector3(
+            pos.x + toX * step,
+            pos.y + toY * step,
+            pos.z + toZ * step);
     }
 
     /// <summary>
@@ -567,6 +629,21 @@ public class Fish : SEEDScript
         float currentYawRad = transform.Rotation.y * DegToRad;
         float delta = SEED.Mathf.Repeat(headingRad - currentYawRad + HalfTurnRadians, FullTurnRadians) - HalfTurnRadians;
         return currentYawRad + delta * SEED.Mathf.Clamped01(turnLerpRate * dt);
+    }
+
+    /// <summary>
+    /// スカラ値を目標へ「行き過ぎない一定量だけ」近づける（Unity の Mathf.MoveTowards 相当）。
+    /// 高さ（Y）を毎フレーム少しずつ寄せるために使う。
+    /// </summary>
+    /// <param name="current">現在値。</param>
+    /// <param name="target">目標値。</param>
+    /// <param name="maxDelta">このフレームに動かしてよい最大量（0 以上）。</param>
+    /// <returns>目標へ近づけた後の値（目標を追い越さない）。</returns>
+    private static float MoveTowards(float current, float target, float maxDelta)
+    {
+        float diff = target - current;
+        if (SEED.Mathf.Abs(diff) <= maxDelta) { return target; }
+        return current + (diff > 0f ? maxDelta : -maxDelta);
     }
 
     /// <summary>2 点間の XZ 平面上の距離（高さの差は無視する）。</summary>
