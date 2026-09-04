@@ -476,11 +476,30 @@ public class Fish : SEEDScript
             return;
         }
 
-        // つつき中・食いつき中はコントローラ側（合わせの成否／釣り上げ／リリース）からしか抜けない。
+        // つつき中はコントローラ側（合わせの成否）からしか抜けない。
         // ただし餌そのものが消えた場合だけは自力で回遊へ戻る（固まり防止）。
-        if (State is BehaviorState.Nibbling or BehaviorState.Bite)
+        if (State == BehaviorState.Nibbling)
         {
             if (FishingController.Current is not { BaitActive: true }) { BackToRoam(withCooldown: false); }
+            return;
+        }
+
+        // 食いつき中（ヒット〜巻き取り〜釣り上げ演出開始まで）はコントローラ側
+        // （釣り上げ成立／リリース）からしか抜けない。
+        //
+        // ここで BaitActive を見てはいけない: BaitActive は Floating/Reeling/Nibbling/
+        // HookWindow のときだけ true で、掛かった瞬間（TryHook が State を Hooked へ
+        // 進める）から false になる。もし BaitActive で判定すると、掛かった直後・
+        // 巻いている最中の魚が「餌が消えた」と誤認して毎フレーム回遊へ戻ってしまい、
+        // 巻いても魚が付いてこない（置き去りになる）バグになる。
+        // 代わりに「コントローラがまだこの魚を掛けた状態として保持しているか」
+        // （<see cref="FishingController.IsHooked"/>）を見る。掛かっている個体の解除は
+        // 必ず <see cref="ReleaseFromHook"/>（Escape へ）か <see cref="OnCaught"/>
+        // （Caught へ）のどちらかを経由するので、この自力回帰は「両方とも呼ばれずに
+        // hookedFish だけが外れた」異常系のみを拾う保険。
+        if (State == BehaviorState.Bite)
+        {
+            if (FishingController.Current is not { IsHooked: true }) { BackToRoam(withCooldown: false); }
             return;
         }
 
