@@ -862,6 +862,24 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "釣り上げ演出(CatchPresenter)")]
     private CatchPresenter? presenter = null;
 
+    /// <summary>
+    /// ヒット中のやり取り（テンションゲージ・糸 HP）を司るスクリプト。
+    /// 同じアクタ（プレイヤー）に 3 本目のスクリプトスロット「Fight」として置き、ここへ割り当てる。
+    ///
+    /// <b>未設定でも釣りは成立する</b>: 糸は切れず、魚もウキを引かない
+    /// （＝従来どおり巻けば必ず釣れる）。
+    /// </summary>
+    [SerializeField(Label = "釣りバトル(FishingFight)")]
+    private FishingFight? fight = null;
+
+    /// <summary>
+    /// 魚がウキを沖へ引ける限界の、最長飛距離からの余裕（メートル）。
+    /// 竿先からの水平距離が <see cref="maxCastDistance"/> ＋ この値を超えないようにする
+    /// （魚に無限に引かれてウキが世界の外へ行かないための安全弁）。
+    /// </summary>
+    [SerializeField(Label = "引きの限界余裕(m)")]
+    private float floatDragMarginDistance = 5f;
+
     // ─── 効果音 ─────────────────────────────
 
     /// <summary>前アタリ（ウキが小さく沈む瞬間）に鳴らす効果音のアセットパス。空文字なら鳴らさない。</summary>
@@ -992,6 +1010,7 @@ public class FishingController : SEEDScript
     {
         AbortBiteTiming();
         ReleaseHook();
+        fight?.EndFight();
         engagedFish.Clear();
         if (ReferenceEquals(Current, this)) { Current = null; }
     }
@@ -1040,6 +1059,9 @@ public class FishingController : SEEDScript
         // ヒット中はマウスの振りを読まないのでカーソルロックを引き直す（解除される）。
         UpdateCursorLock();
         CrossFadeBoth(hookedClip, playerHookedClip);
+        // やり取り（テンションゲージ・糸 HP）を開始する。
+        // 初期ゲージは直前に確定した合わせ判定（LastJudgement）で決まる。
+        fight?.BeginFight(fish, LastJudgement);
         SEED.Debug.Log($"[Fishing] ヒット! {fish.DisplayName}（大きさ {fish.Size:F2}）");
         return true;
     }
@@ -1203,6 +1225,11 @@ public class FishingController : SEEDScript
             case FishState.Hooked:
                 // ヒット中も巻き取りの操作系（ホイール・A/D 操舵）はまったく同じ。
                 // ただし竿振りは読まない（ヒット中の振りは未仕様）ので跳ねもしない。
+                //
+                // 先にやり取り（テンションゲージ・糸 HP）を 1 フレーム進める。
+                // 糸が切れたらこのフレームは巻き取りへ進まず、糸切れ処理で締める。
+                UpdateFight(ctx.DeltaTime);
+                if (State != FishState.Hooked) { break; }
                 UpdateReeling(ctx.DeltaTime);
                 break;
 
@@ -1266,6 +1293,7 @@ public class FishingController : SEEDScript
         CancelHop();                   // 跳ね中に狙いへ戻ったら跳ねも畳む
         AbortBiteTiming();             // アタリ進行中の魚が居れば逃がす
         ReleaseHook();                 // 掛かったままの魚が居れば逃がす
+        fight?.EndFight();             // やり取りの UI・内部値も畳む
         ParkFloatHidden();
         HideCastPreview();
         // 直前に PlayerMove.EnterFishingStance が本体アニメを触っているのでラッチを捨てる
@@ -1287,6 +1315,7 @@ public class FishingController : SEEDScript
         CancelHop();                   // 姿勢解除・中断でも跳ねを畳む（フラグの持ち越し防止）
         AbortBiteTiming();             // 姿勢解除・中断でもアタリ進行を打ち切る
         ReleaseHook();                 // 姿勢解除・中断でも必ず魚を逃がす
+        fight?.EndFight();             // 姿勢解除・中断でもやり取りを畳む
         presenter?.Abort();            // 釣り上げ演出中なら畳む（魚の破棄・白／テキストの消去も込み）
         HideJudgement();               // 判定画像も消す
         // この後 PlayerMove 側（ExitFishingStance・通常移動のアニメ）が本体を触るのでラッチを捨てる
@@ -1619,6 +1648,53 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
+    /// ヒット中のやり取り（<see cref="FishingFight"/>）を 1 フレーム進める。
+    ///
+    /// 巻き取り量は <see cref="ReadReelAmount"/> をそのまま渡す
+    /// （<see cref="UpdateReeling"/> と同じ入力を見る）。残り距離の表示も
+    /// ここで一括して更新する。糸が切れたら <see cref="BreakLine"/> で締める
+    /// （この呼び出しの後、状態は <see cref="FishState.Aiming"/> になっている）。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateFight(float deltaTime)
+    {
+        if (fight is not { } f) { return; }
+
+        f.Tick(deltaTime, ReadReelAmount());
+
+        // 残り距離（ウキ→竿先の水平距離）の表示。ウキが無ければ 0 を出す。
+        float remaining = uki is { IsValid: true } floatTf
+            ? HorizontalDistance(floatTf.Position, ReelTargetPosition())
+            : 0f;
+        f.UpdateDistanceDisplay(remaining);
+
+        if (f.LineBroken) { BreakLine(); }
+    }
+
+    /// <summary>
+    /// 糸が切れたときの締め【糸切れの唯一の出口】。
+    /// 魚を逃がし、判定表示の Miss を流用して失敗を示し、狙い（キャスト待ち）へ戻す。
+    /// </summary>
+    private void BreakLine()
+    {
+        fight?.EndFight();
+        CancelHop();
+        ReleaseHook();                 // 掛かっていた魚を逃がす（Escape → 退場）
+
+        LastJudgement = HookJudgement.Miss;
+        ShowJudgement(HookJudgement.Miss);
+
+        State = FishState.Aiming;
+        ResetGesture();
+        ParkFloatHidden();
+        HideLine();
+        CrossFadeBoth(floatClip, playerFloatClip);
+        // 再び振りを読む区間へ戻るのでカーソルロックを引き直す。
+        UpdateCursorLock();
+        SEED.Debug.Log("[Fishing] 糸が切れた");
+    }
+
+    /// <summary>
     /// 着水後の待機と巻き取りを処理する（<see cref="FishState.Floating"/> と
     /// <see cref="FishState.Reeling"/> の共通処理）。
     ///
@@ -1705,6 +1781,19 @@ public class FishingController : SEEDScript
         // このフレームの移動量を「残りの水平距離」でクランプし、基準点を追い越さないようにする
         float step = SEED.Mathf.Min(amount, remaining);
         var next = floatTf.Position + dir * step;
+
+        // ── ヒット中の「魚の引き」──────────────────────────
+        // 巻いていないあいだは魚がウキを沖（＝竿先の反対＝ -dir）へ引く。
+        // 竿先からの水平距離が「最長飛距離 ＋ 余裕」を超えないようにクランプし、
+        // 引かれ続けてウキが世界の外へ出るのを防ぐ。
+        if (IsHooked && fight is { Active: true } activeFight && activeFight.FloatDragSpeed > 0f)
+        {
+            float dragLimit = maxCastDistance + floatDragMarginDistance;
+            float allowed = SEED.Mathf.Max(dragLimit - HorizontalDistance(next, target), 0f);
+            float drag = SEED.Mathf.Min(activeFight.FloatDragSpeed * deltaTime, allowed);
+            next -= dir * drag;
+        }
+
         SetFloatPosition(new SEED.Vector3(next.x, FloatSurfaceY(), next.z));
 
         // プレイヤーはウキに一番近い経路上の点へ歩いて付いていく（移動の実装は PlayerMove の責務）。
@@ -1752,6 +1841,7 @@ public class FishingController : SEEDScript
     private void FinishReeling()
     {
         CancelHop();                   // 巻き取りが終わったら跳ねも必ず畳む
+        fight?.EndFight();             // やり取り（ゲージ・糸HP）は成否にかかわらずここで畳む
 
         // ── 釣り上げ成立 ──
         if (hookedFish is { } caught)

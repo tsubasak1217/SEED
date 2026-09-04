@@ -317,6 +317,18 @@ public class Fish : SEEDScript
         return basePower * sizeScore * (currentRampage ?? rampage);
     }
 
+    /// <summary>
+    /// 基礎パワー（釣りバトル側 <see cref="FishingFight"/> が戦闘力の算出に使う）。
+    /// 竿パワーと同じ単位。
+    /// </summary>
+    public float BasePower => basePower;
+
+    /// <summary>
+    /// 暴れ度の規定値（釣りバトル側 <see cref="FishingFight"/> が参照する）。
+    /// バトル中の「暴れる／ひるむ」による変動はバトル側が倍率として掛ける。
+    /// </summary>
+    public float Rampage => rampage;
+
     /// <summary>スタミナ（釣りバトル側から参照する）。</summary>
     public float Stamina => stamina;
 
