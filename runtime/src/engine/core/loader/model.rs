@@ -34,7 +34,50 @@ impl Model {
     pub fn is_animated(&self) -> bool { !self.animations.is_empty() }
     /// スキンデータを持つかどうか（スケルタルアニメーション）
     pub fn is_skinned(&self)  -> bool { !self.skins.is_empty() }
+
+    /// **モデルローカル空間**の軸平行境界ボックス（AABB）を全メッシュ頂点から求める。
+    ///
+    /// 戻り値は `(min, max)`。座標系はローダーの右手→左手変換（Z 反転）**適用後**の
+    /// モデル空間で、ノードのローカル行列・アクターの Transform・`ModelComponent` の
+    /// 描画オフセットはいずれも掛かっていない生の頂点範囲である
+    /// （＝呼び出し側がスケールやオフセットを合成する前提の「素材寸法」）。
+    ///
+    /// スキンメッシュの頂点はバインドポーズのまま格納されているため、本 AABB は
+    /// バインドポーズの寸法になる（アニメーションによる変形は反映しない）。
+    ///
+    /// 頂点が 1 つも無いモデル（空・ライトのみ等）は縮退を避けるため
+    /// 単位立方体（`DEGENERATE_AABB_MIN` / `DEGENERATE_AABB_MAX`）を返す。
+    ///
+    /// 【計算コストとキャッシュ方針】全頂点を 1 度走査する O(頂点数)。結果を
+    /// `Model` のフィールドとして持たないのは、`Model` が bincode の派生キャッシュ
+    /// （`.smdl`）へ丸ごと直列化されるため、フィールドを 1 つ足すだけで既存キャッシュが
+    /// 全て無効化される（`asset_cache::CACHE_FORMAT_VERSION` のコメント参照）から。
+    /// 毎フレーム参照する用途では**呼び出し側が結果を控える**こと
+    /// （GPU バッチはモデル構築時に 1 度だけ、スクリプト API は釣果演出の開始時に
+    ///   1 度だけ呼ぶ運用）。
+    pub fn local_aabb(&self) -> ([f32; 3], [f32; 3]) {
+        let mut min = [f32::MAX; 3];
+        let mut max = [f32::MIN; 3];
+        let mut found = false;
+        for mesh in &self.meshes {
+            for prim in &mesh.primitives {
+                for v in &prim.vertices {
+                    found = true;
+                    for i in 0..3 {
+                        min[i] = min[i].min(v.position[i]);
+                        max[i] = max[i].max(v.position[i]);
+                    }
+                }
+            }
+        }
+        if found { (min, max) } else { (DEGENERATE_AABB_MIN, DEGENERATE_AABB_MAX) }
+    }
 }
+
+/// 頂点を 1 つも持たないモデルへ返す既定 AABB の最小側（縮退回避の単位立方体）。
+pub const DEGENERATE_AABB_MIN: [f32; 3] = [-1.0, -1.0, -1.0];
+/// 頂点を 1 つも持たないモデルへ返す既定 AABB の最大側（縮退回避の単位立方体）。
+pub const DEGENERATE_AABB_MAX: [f32; 3] = [1.0, 1.0, 1.0];
 
 // ============================================================
 //  シーングラフ
@@ -809,4 +852,66 @@ pub struct SkinJoint {
     pub name:       String,
     /// インバースバインド行列（行優先・列ベクトル規約）
     pub inverse_bind_matrix: [[f32; 4]; 4],
+}
+
+
+// ============================================================
+//  ローカル AABB のテスト
+// ============================================================
+
+#[cfg(test)]
+mod local_aabb_tests {
+    use super::*;
+
+    /// 指定頂点だけを持つ最小構成のモデルを作る（AABB 計算の入力用）。
+    fn model_with_positions(positions: &[[f32; 3]]) -> Model {
+        let vertices = positions
+            .iter()
+            .map(|p| Vertex { position: *p, ..Default::default() })
+            .collect::<Vec<_>>();
+        Model {
+            name:       String::from("test"),
+            nodes:      Vec::new(),
+            root_nodes: Vec::new(),
+            meshes: vec![Mesh {
+                name: String::from("mesh"),
+                primitives: vec![Primitive {
+                    vertices,
+                    skin_vertices: Vec::new(),
+                    indices:       Vec::new(),
+                    material_index: None,
+                    lod_indices:   Vec::new(),
+                    meshlets:          Vec::new(),
+                    meshlet_vertices:  Vec::new(),
+                    meshlet_triangles: Vec::new(),
+                }],
+            }],
+            materials:  Vec::new(),
+            textures:   Vec::new(),
+            animations: Vec::new(),
+            skins:      Vec::new(),
+        }
+    }
+
+    /// 全頂点を包む最小の AABB になること（原点が中心でないモデルも正しく扱えること）。
+    #[test]
+    fn local_aabb_covers_all_vertices() {
+        let model = model_with_positions(&[
+            [-1.0, 0.0, 2.0],
+            [ 3.0, 5.0, -1.0],
+            [ 0.5, 2.0, 0.0],
+        ]);
+        let (min, max) = model.local_aabb();
+        assert_eq!(min, [-1.0, 0.0, -1.0]);
+        assert_eq!(max, [ 3.0, 5.0,  2.0]);
+    }
+
+    /// 頂点が無いモデルは縮退せず単位立方体を返すこと（0 除算・0 サイズ表示の防止）。
+    #[test]
+    fn local_aabb_falls_back_to_unit_cube_when_empty() {
+        let model = model_with_positions(&[]);
+        let (min, max) = model.local_aabb();
+        assert_eq!(min, DEGENERATE_AABB_MIN);
+        assert_eq!(max, DEGENERATE_AABB_MAX);
+    }
 }

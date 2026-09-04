@@ -1891,22 +1891,11 @@ fn transform_aabb(
 }
 
 /// モデルの全頂点から AABB（ローカル空間）を計算する。
+///
+/// 実体は `Model::local_aabb`（ローダー層が正典）。スクリプト API の
+/// `Model.bounds_min/bounds_max` と**同一の値**を返すよう、計算をここで二重化しない。
 fn compute_model_aabb(model: &Model) -> ([f32; 3], [f32; 3]) {
-    let mut min = [f32::MAX; 3];
-    let mut max = [f32::MIN; 3];
-    let mut found = false;
-    for mesh in &model.meshes {
-        for prim in &mesh.primitives {
-            for v in &prim.vertices {
-                found = true;
-                for i in 0..3 {
-                    min[i] = min[i].min(v.position[i]);
-                    max[i] = max[i].max(v.position[i]);
-                }
-            }
-        }
-    }
-    if found { (min, max) } else { ([-1.0; 3], [1.0; 3]) }
+    model.local_aabb()
 }
 
 // ============================================================

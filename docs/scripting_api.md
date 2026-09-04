@@ -725,6 +725,10 @@ if (gameObject.GetComponent<Model>() is { } model)   // Model?（未アタッチ
     model.OffsetScale      // Vector3（get/set。既定 (1,1,1)）
     model.Visible          // bool（get/set。既定 true。false でこのモデルだけ描かれなくなる）
 
+    model.LocalBoundsMin   // Vector3（get のみ。モデルローカル AABB の最小側）
+    model.LocalBoundsMax   // Vector3（get のみ。モデルローカル AABB の最大側）
+    model.LocalBoundsSize  // Vector3（get のみ。Max − Min ＝ 各軸の長さ）
+
     // 例: 座標は追従させたまま見た目だけ隠す（画面外へ退避させる必要はない）
     model.Visible = false;
 
@@ -737,6 +741,26 @@ if (gameObject.GetComponent<Model>() is { } model)   // Model?（未アタッチ
 > **重要**: `Visible = false` は**描画だけ**を止めます。Transform・親子の追従・JointAttach のソケット追従・コライダー・スクリプトは通常どおり更新され続けるので、子アクタをカメラの注視点にしているような「見えないが位置は正しくいてほしい」オブジェクトを安全に隠せます（非表示中は影も落とさず、選択アウトラインも出ません）。
 
 > **重要**: オフセットは**描画にだけ**効きます（通常描画・スキン・LOD・影・レイトレース・クリック判定・選択枠まで一貫）。物理コライダー・レイキャスト・`Transform` の値は一切変わりません。当たり判定をずらしたい場合はコライダー側のオフセットを使ってください。
+
+> **`LocalBounds*` はモデル空間の「素材寸法」です**（読み取り専用）。`OffsetPosition/Rotation/Scale` も
+> アクターの `Transform`（位置・回転・スケール）も**掛かっていない**、読み込んだメッシュの生の頂点範囲を返します。
+> 実際の見た目の大きさが要るときは呼び出し側で合成してください
+> （例: `Vector3.Scale(Vector3.Scale(model.LocalBoundsSize, model.OffsetScale), transform.Scale)`。
+> `Vector3` 同士の乗算演算子は無いので成分ごとの積は `Vector3.Scale` を使います）。
+> スキンメッシュは**バインドポーズ**の寸法で、アニメーション変形は反映しません。
+> モデルが未ロード（またはこのアクターに Model が無い）なら `Vector3.Zero` を返すので、
+> 0 除算を避けたい計算では必ずゼロ判定を挟んでください。
+> 全頂点を走査する計算なので、毎フレーム使う場合は**結果を控えて**使い回してください。
+
+```csharp
+// 例: モデルの実寸（高さ）を求めて、頭上に置く高さを自動で決める
+if (gameObject.GetComponent<Model>() is { } m)
+{
+    var scaled = Vector3.Scale(m.LocalBoundsSize, m.OffsetScale);     // 成分ごとの積
+    var size = Vector3.Scale(scaled, transform.Scale);
+    float height = size.y;                                            // 見た目の高さ（m）
+}
+```
 
 ### Sprite（2D スプライト表示）
 

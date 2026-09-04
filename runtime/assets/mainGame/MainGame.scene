@@ -2,15 +2,15 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      29.622639,
-      10.160844,
-      2.0465112
+      59.038708,
+      5.781117,
+      33.127026
     ],
-    "yaw": 0.014191466,
-    "pitch": 0.13733213,
+    "yaw": -1.6411462,
+    "pitch": 0.030525595,
     "fov_deg": 25.0,
     "far": 1000.0,
-    "speed": 8.640001
+    "speed": 8.64
   },
   "shading_params": {
     "toon_rim_strength": [
@@ -531,6 +531,13 @@
                   "path": "",
                   "anim": "WalkFishingR",
                   "loop_mode": "loop"
+                },
+                {
+                  "name": "ShowOff",
+                  "kind": "model",
+                  "path": "",
+                  "anim": "ShowOff",
+                  "loop_mode": "loop"
                 }
               ],
               "default_clip": "Idle",
@@ -567,6 +574,7 @@
                 "nibbleDipSeconds": "0.250",
                 "playerAnimator": "Player|Animator",
                 "playerMove": "Player|Script",
+                "presenter": "Player|Catch",
                 "reelArrow": "ReelArrow",
                 "reelArrowBaseOpacity": "0.300",
                 "reelArrowExtraOpacity": "0.600",
@@ -577,8 +585,7 @@
                 "uki": "Uki",
                 "ukiModel": "Uki|Model",
                 "water": "Ocean|Water Volume",
-                "windupScrubRate": "15.000",
-                "presenter": "Player|Catch"
+                "windupScrubRate": "15.000"
               }
             }
           }
@@ -590,19 +597,24 @@
             "data": {
               "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\CatchPresenter.cs",
               "fields": {
+                "bestText": "CatchBest|Text",
                 "cameraMove": "MainCamera|Script",
                 "cameraTransform": "MainCamera",
                 "catchCameraTarget": "CatchCameraTarget",
-                "resultCameraTarget": "ResultCameraTarget",
-                "playerTransform": "Player",
-                "playerAnimator": "Player|Animator",
-                "rodAnimator": "sao|Animator",
-                "whiteoutSprite": "Whiteout|Sprite",
+                "fishHoldOffsetY": "2.200",
+                "headAnchor": "HeadAnchor",
                 "nameText": "CatchName|Text",
-                "sizeText": "CatchSize|Text",
+                "playerAnimator": "Player|Animator",
+                "playerCatchClip": "ShowOff",
+                "playerTransform": "Player",
+                "promptText": "CatchPrompt|Text",
                 "rankText": "CatchRank|Text",
-                "bestText": "CatchBest|Text",
-                "promptText": "CatchPrompt|Text"
+                "resultCamPullBase": "4.000",
+                "resultCamPullPerSize": "1.000",
+                "resultCameraTarget": "ResultCameraTarget",
+                "rodAnimator": "sao|Animator",
+                "sizeText": "CatchSize|Text",
+                "whiteoutSprite": "Whiteout|Sprite"
               }
             }
           }
@@ -872,7 +884,7 @@
           "transform": {
             "position": [
               50.60229,
-              3.7594324,
+              3.7594323,
               32.329624
             ],
             "rotation": [
@@ -887,6 +899,53 @@
             ]
           },
           "components": [],
+          "children": []
+        },
+        {
+          "name": "HeadAnchor",
+          "transform": {
+            "position": [
+              47.60229,
+              3.8594322,
+              32.328568
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "JointAttach",
+              "component": {
+                "type": "JointAttachComponent",
+                "data": {
+                  "joint_name": "Head",
+                  "offset_pos": [
+                    0.0,
+                    0.25,
+                    0.0
+                  ],
+                  "offset_rot_deg": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "offset_scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              }
+            }
+          ],
           "children": []
         }
       ]
@@ -1361,6 +1420,7 @@
               "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\CameraMove.cs",
               "fields": {
                 "castTarget": "CastCameraTarget",
+                "catchTarget": "CatchCameraTarget",
                 "fishing": "Player|Fishing",
                 "fishingTarget": "FishingCameraTarget",
                 "maxRollDegrees": "1.500",
@@ -1368,12 +1428,11 @@
                 "player": "Player",
                 "playerMove": "Player|Script",
                 "positionLerpRate": "6.000",
+                "resultTarget": "ResultCameraTarget",
                 "rollStrength": "1.000",
                 "rotationLerpRate": "6.000",
                 "snapOnStart": "true",
-                "target": "CammeraTarget",
-                "catchTarget": "CatchCameraTarget",
-                "resultTarget": "ResultCameraTarget"
+                "target": "CammeraTarget"
               }
             }
           }

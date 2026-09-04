@@ -705,6 +705,14 @@ fn read_floats(
                 "offset_scale"    => put(out, &m.offset_scale),
                 // 表示フラグ（bool = 0/1。LineRenderer の "visible" と同流儀）
                 "visible"         => put(out, &[if m.visible { 1.0 } else { 0.0 }]),
+                // ── モデルローカル AABB（read のみ・3 成分）──
+                // 読み込み済み CPU モデル（Arc<Model>）の全頂点範囲をそのまま返す。
+                // **オフセット（offset_position/rotation/scale）もアクターの Transform.Scale も
+                // 掛かっていない素材寸法**であり、合成は呼び出し側（スクリプト）の責務。
+                // モデル未ロード（Option が None）なら None を返す ＝ C# 側は false を受けて
+                // 既定値（Vector3.Zero）にフォールバックする。
+                "bounds_min"      => { let (mn, _) = m.model.as_ref()?.local_aabb(); put(out, &mn) }
+                "bounds_max"      => { let (_, mx) = m.model.as_ref()?.local_aabb(); put(out, &mx) }
                 _                 => None,
             }
         }

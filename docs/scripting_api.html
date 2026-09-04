@@ -687,6 +687,8 @@ transform.Position += transform.Forward * 5f * <span class="t">SEED.Time</span>.
   <div class="api"><code class="sig">model.OffsetRotation</code><span class="desc">Vector3（get/set。YXZ オイラー角・度・既定 (0,0,0)）</span></div>
   <div class="api"><code class="sig">model.OffsetScale</code><span class="desc">Vector3（get/set。既定 (1,1,1)）</span></div>
   <div class="api"><code class="sig">model.Visible</code><span class="desc">bool（get/set。既定 true）。false でこのモデルだけが描かれなくなる。<b>Transform・親子の追従・JointAttach・コライダーは動き続ける</b>ので、座標を画面外へ退避させずに見た目だけ隠せる（非表示中は影も落とさず、選択アウトラインも出ない）</span></div>
+  <div class="api"><code class="sig">model.LocalBoundsMin / model.LocalBoundsMax</code><span class="desc">Vector3（get のみ。<b>モデルローカル空間</b>の AABB。<b>オフセットも Transform.Scale も掛かっていない素材寸法</b>。スキンメッシュはバインドポーズ。未ロード時は <code>Vector3.Zero</code>）</span></div>
+  <div class="api"><code class="sig">model.LocalBoundsSize</code><span class="desc">Vector3（get のみ。Max − Min ＝ 各軸の長さ。実寸は <code>Vector3.Scale(Vector3.Scale(LocalBoundsSize, OffsetScale), transform.Scale)</code> のように呼び出し側で合成する。全頂点走査のため毎フレーム使うなら結果を控えること）</span></div>
   <div class="api"><code class="sig">gameObject.GetComponent&lt;Model&gt;()</code><span class="desc">アクターの Transform は動かさず、モデルの<b>描画だけ</b>をローカルにずらす／回す／拡縮する補正値（原点ズレ補正・持ち手合わせ用）。<b>物理コライダーには影響しない</b></span></div>
 <pre><span class="c">// 例: 釣り竿の持ち手を手の位置へ合わせる</span>
 <span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">Model</span>&gt;() <span class="k">is</span> { } model)
@@ -695,6 +697,10 @@ transform.Position += transform.Forward * 5f * <span class="t">SEED.Time</span>.
     model.OffsetRotation = <span class="k">new</span> <span class="t">Vector3</span>(0f, 0f, 25f);
     <span class="c">// 座標は追従させたまま見た目だけ隠す</span>
     model.Visible = <span class="k">false</span>;
+
+    <span class="c">// 見た目の実寸（高さ）を求める: 素材寸法 × 描画オフセット × アクタースケール</span>
+    <span class="t">Vector3</span> size = <span class="t">Vector3</span>.Scale(<span class="t">Vector3</span>.Scale(model.LocalBoundsSize, model.OffsetScale), transform.Scale);
+    <span class="k">float</span> height = size.y;
 }</pre>
 
   <h3 id="cmp-sprite">Sprite（2D スプライト表示）</h3>

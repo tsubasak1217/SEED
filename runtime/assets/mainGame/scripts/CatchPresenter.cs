@@ -33,7 +33,10 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 画面が完全に白いあいだにカット（構図の切り替え）を済ませるので、視点の飛びが見えない。
 /// - カメラ目標を <see cref="resultCameraTarget"/> へ切り替え、<see cref="CameraMove.RequestSnap"/> で
 ///   補間せず瞬間移動させる
-/// - 魚をウキから外し、プレイヤーの頭上（<c>fishHoldOffsetX/Y/Z</c>）へ運んでカメラを向かせる
+/// - 魚をウキから外して頭上へ運び、カメラを向かせる。頭のアンカー（<c>headAnchor</c>）が
+///   設定されていれば「頭の位置 × 魚の実寸」から置く高さとカメラ距離を自動計算し
+///   （<c>ComputeAutoLayout</c> / <c>ApplyResultCameraFraming</c>）、未設定なら従来の
+///   固定オフセット（<c>fishHoldOffsetX/Y/Z</c>）＋引き量へフォールバックする
 /// - 魚のスケールを 0 にする（Show のポップの開始値）
 /// - プレイヤー本体・竿を釣り上げポーズのクリップへ切り替える
 /// </summary>
@@ -79,6 +82,12 @@ public class CatchPresenter : SEEDScript
 
     /// <summary>ラジアン→度変換係数。</summary>
     private const float RadToDeg = HalfTurnDegrees / SEED.Mathf.PI;
+
+    /// <summary>度→ラジアン変換係数（視野角の半角を三角関数へ渡すのに使う）。</summary>
+    private const float DegToRad = SEED.Mathf.PI / HalfTurnDegrees;
+
+    /// <summary>「半分」を表す係数（AABB の中心・視野角の半角など、2 で割る場面の共通定数）。</summary>
+    private const float Half = 0.5f;
 
     /// <summary>半回転（度）。魚をカメラへ向ける（プレイヤーの真逆を向く）のに使う。</summary>
     private const float HalfTurnDegrees = 180f;
@@ -272,6 +281,61 @@ public class CatchPresenter : SEEDScript
     [SerializeField(Label = "サイズあたりの引き量(m)")]
     private float resultCamPullPerSize = 0.6f;
 
+    // ─── 釣果構図の自動レイアウト（頭の位置 × 魚の実寸）─────────
+
+    /// <summary>
+    /// プレイヤーの頭に追従する空アクタ（Player の子「HeadAnchor」。JointAttach で
+    /// ボーン "Head" へ吸着させてある）のトランスフォーム。
+    ///
+    /// <b>これが設定されているときだけ</b>釣果の構図が自動計算になる:
+    /// 魚は「頭のてっぺん ＋ <see cref="headClearance"/> ＋ 魚の実寸高さの半分」へ置かれ、
+    /// カメラは魚の実寸が画面へ収まる距離まで自動で下がる（<see cref="ComputeAutoLayout"/>）。
+    ///
+    /// <b>未設定なら従来動作</b>（<c>fishHoldOffsetX/Y/Z</c> の固定オフセットと
+    /// <c>resultCamPullBase/PerSize</c> の引き量）にそのままフォールバックする。
+    /// </summary>
+    [Header("釣果構図の自動レイアウト"), SerializeField(Label = "頭のアンカー")]
+    private SEED.Transform? headAnchor = null;
+
+    /// <summary>頭のてっぺんと魚の下端のあいだに空ける余白（メートル）。</summary>
+    [SerializeField(Label = "頭上の余白(m)")]
+    private float headClearance = 0.15f;
+
+    /// <summary>
+    /// 画面に対して魚のまわりへ足す余白の比率（魚の寸法に対する割合）。
+    /// 0.25 なら「魚の 1.25 倍の大きさが画面へ収まる」距離まで下がる。
+    /// </summary>
+    [SerializeField(Label = "画面余白の比率")]
+    private float screenMarginRatio = 0.25f;
+
+    /// <summary>自動計算したカメラ距離の下限（メートル）。小さい魚で寄りすぎるのを防ぐ。</summary>
+    [SerializeField(Label = "カメラ最小距離(m)")]
+    private float resultCamMinDistance = 2.5f;
+
+    /// <summary>
+    /// カメラの高さをアンカー（0.0）と魚の中心（1.0）のあいだのどこに置くかの比率。
+    /// 0.5 なら「頭と魚の中心の中間の高さ」から見る。
+    /// </summary>
+    [SerializeField(Label = "カメラの高さ比率")]
+    private float resultCamHeightRatio = 0.5f;
+
+    /// <summary>
+    /// 画角の計算に使うカメラ（<b>読むだけ</b>。垂直 FOV と基準解像度からアスペクト比を得る）。
+    /// 未設定・無効なら <see cref="fallbackFovDegrees"/> と <see cref="assumedAspect"/> を使う。
+    /// </summary>
+    [SerializeField(Label = "カメラ(Camera)")]
+    private SEED.Camera? resultCamera = null;
+
+    /// <summary><see cref="resultCamera"/> が読めないときに使う垂直視野角（度）。</summary>
+    [SerializeField(Label = "FOVの代替値(度)")]
+    private float fallbackFovDegrees = 45f;
+
+    /// <summary>
+    /// カメラの基準解像度が読めないときに使うアスペクト比（横 ÷ 縦）。既定は 16:9。
+    /// </summary>
+    [SerializeField(Label = "アスペクト比の代替値")]
+    private float assumedAspect = 16f / 9f;
+
     // ─── サイズランク ─────────────────────────────────────────
 
     /// <summary>ランク S になるサイズ倍率の下限。</summary>
@@ -332,11 +396,41 @@ public class CatchPresenter : SEEDScript
     private float whiteoutAlpha = 0f;
 
     /// <summary>
-    /// 釣果カメラ目標の押し出し前の位置（<see cref="CatchPhase.Show"/> 開始時に控える）。
-    /// 演出の終わりに必ずここへ戻すので、引きが次回へ蓄積することはない。
-    /// null = まだ押し出していない。
+    /// 釣果カメラ目標の書き換え前の位置（シーンで作った構図の値）。
+    /// 演出の終わりに必ずここへ戻すので、引き・自動フレーミングが次回へ蓄積することはない。
+    /// null = まだ書き換えていない。
     /// </summary>
     private SEED.Vector3? resultCameraBasePosition = null;
+
+    /// <summary>
+    /// 釣果カメラ目標の書き換え前の回転（シーンで作った構図の値）。
+    /// 自動フレーミングは回転も書き換えるため、位置と対で控えて必ず戻す。
+    /// </summary>
+    private SEED.Vector3 resultCameraBaseRotation = SEED.Vector3.Zero;
+
+    // ─── 自動レイアウトの計算結果（真っ白の瞬間に 1 回だけ求めて使い回す）───
+
+    /// <summary>
+    /// 自動レイアウトが成立しているか（<see cref="headAnchor"/> と魚の実寸が取れたか）。
+    /// false のあいだは従来の固定オフセット＋引き量にフォールバックする。
+    /// </summary>
+    private bool autoLayoutReady = false;
+
+    /// <summary>魚の実寸の高さ（原寸スケール適用後・メートル）。<see cref="ComputeAutoLayout"/> が求める。</summary>
+    private float fishScaledHeight = 0f;
+
+    /// <summary>
+    /// 魚の実寸の幅（原寸スケール適用後・メートル）。ヨーで向きが変わるので
+    /// X と Z の大きい方を採り、どちらを向いても画面からはみ出さないようにする。
+    /// </summary>
+    private float fishScaledWidth = 0f;
+
+    /// <summary>
+    /// 魚のモデル原点から見た「実寸 AABB の中心」の高さ（メートル）。
+    /// モデルの原点が中心に無い（足元原点など）魚でも、狙った位置に中心が来るよう
+    /// アクターの位置からこの分を引く。
+    /// </summary>
+    private float fishCenterOffsetY = 0f;
 
     /// <summary>
     /// <see cref="SwitchToResultComposition"/> のデバッグログを出力済みか。
@@ -423,6 +517,8 @@ public class CatchPresenter : SEEDScript
         SetWhiteoutAlpha(0f);
         HideTexts();
         loggedResultComposition = false;
+        // 前回の魚の寸法を持ち越さない（魚ごとに真っ白の瞬間へ計算し直す）
+        autoLayoutReady = false;
         EnterPhase(CatchPhase.ApproachCamera);
 
         SEED.Debug.Log($"[Catch] 演出開始: {fish.DisplayName}");
@@ -565,10 +661,12 @@ public class CatchPresenter : SEEDScript
         switch (next)
         {
             case CatchPhase.Show:
-                // 釣果カメラを魚の大きさに応じて後方へ押し出し、テキストを出す。
-                // 押し出しは Show の頭で確定させ、フェーズ中は動かさない
-                // （CameraMove の通常補間で滑らかに後退して見える）。
-                ApplyResultCameraPull();
+                // 釣果カメラの構図を確定させ、テキストを出す。
+                // 自動レイアウトが成立しているときは真っ白の瞬間
+                // （SwitchToResultComposition）で確定済みなので触らない。
+                // 従来の引き量フォールバックだけをここで適用する
+                // （押し出しは Show の頭で確定させ、フェーズ中は動かさない）。
+                if (!autoLayoutReady) { ApplyResultCameraPull(); }
                 ShowTexts();
                 break;
 
@@ -590,7 +688,13 @@ public class CatchPresenter : SEEDScript
     /// </summary>
     private void SwitchToResultComposition()
     {
+        // 0. 魚の実寸を測り、頭の位置を基準にした構図を組み立てる
+        //    （魚ごとに大きさが違うので、置く高さもカメラ距離もここで決め直す）。
+        autoLayoutReady = ComputeAutoLayout();
+
         // 1. カメラをカット（この時点で SelectGoalTransform は resultTarget を返す）
+        //    カットの前に釣果カメラ目標を最終構図へ置く（スナップ先が正しい構図になる）。
+        if (autoLayoutReady) { ApplyResultCameraFraming(); }
         if (cameraMove is { } cam) { cam.RequestSnap(); }
 
         // 2 / 3. 魚を頭上へ運び、スケール 0 から膨らませる下地を作る
@@ -636,7 +740,8 @@ public class CatchPresenter : SEEDScript
         phaseElapsed = 0f;
         SetWhiteoutAlpha(0f);
         HideTexts();
-        RestoreResultCameraPull();
+        RestoreResultCameraTarget();
+        autoLayoutReady = false;
     }
 
     // ─── カメラ目標の計算 ─────────────────────────────────────
@@ -672,6 +777,134 @@ public class CatchPresenter : SEEDScript
     }
 
     /// <summary>
+    /// 魚の実寸から釣果の構図を組み立てる【自動レイアウトの計算の唯一の場所】。
+    ///
+    /// <code>
+    /// 実寸スケール = 魚の原寸スケール（Fish.CaughtScale）× モデルの描画オフセットスケール
+    /// 実寸サイズ   = モデルローカル AABB のサイズ × 実寸スケール（成分ごと）
+    /// 高さ H       = 実寸サイズ.y
+    /// 幅   W       = max(実寸サイズ.x, 実寸サイズ.z)   ← ヨーで向きが変わるので安全側
+    /// 中心の高さ   = (AABB.min.y + AABB.max.y) / 2 × 実寸スケール.y
+    /// </code>
+    ///
+    /// <see cref="headAnchor"/> が未設定、魚に <see cref="SEED.Model"/> が無い、
+    /// モデル未ロードで AABB が縮退している場合は false を返し、呼び出し側は
+    /// 従来の固定オフセット＋引き量へフォールバックする。
+    /// </summary>
+    /// <returns>自動レイアウトが成立したか。</returns>
+    private bool ComputeAutoLayout()
+    {
+        if (headAnchor is not { IsValid: true }) { return false; }
+        if (shownFish is not { } fish || !fish.Actor.IsValid) { return false; }
+        if (fish.Actor.GetComponent<SEED.Model>() is not { } model || !model.IsValid) { return false; }
+
+        var boundsMin = model.LocalBoundsMin;
+        var boundsMax = model.LocalBoundsMax;
+        var boundsSize = boundsMax - boundsMin;
+
+        // モデル未ロード（AABB がゼロ）なら実寸が測れない ＝ 自動レイアウトは成立しない
+        if (boundsSize.SqrMagnitude < SqrEpsilon) { return false; }
+
+        // 原寸スケール（サイズ倍率込み）× 描画オフセットスケール ＝ 画面に出る実寸の倍率
+        var scale = SEED.Vector3.Scale(fishTargetScale, model.OffsetScale);
+        var scaledSize = SEED.Vector3.Scale(boundsSize, scale);
+
+        fishScaledHeight = SEED.Mathf.Abs(scaledSize.y);
+        fishScaledWidth = SEED.Mathf.Max(SEED.Mathf.Abs(scaledSize.x), SEED.Mathf.Abs(scaledSize.z));
+        fishCenterOffsetY = (boundsMin.y + boundsMax.y) * Half * scale.y;
+
+        return fishScaledHeight > DivideEpsilon;
+    }
+
+    /// <summary>
+    /// 自動レイアウトでの魚の表示中心（ワールド座標）を求める。
+    /// 頭のアンカーの真上に「余白 ＋ 実寸高さの半分」だけ上げた点＝魚の中心。
+    /// </summary>
+    /// <param name="anchorPosition">頭のアンカーのワールド位置。</param>
+    private SEED.Vector3 FishDisplayCenter(SEED.Vector3 anchorPosition)
+        => anchorPosition + SEED.Vector3.Up * (headClearance + fishScaledHeight * Half);
+
+    /// <summary>
+    /// 釣果カメラの目標を、魚の実寸が画面へ収まる位置・向きへ置く【自動フレーミング】。
+    ///
+    /// <code>
+    /// 必要距離 d = max( カメラ最小距離,
+    ///                   (H × (1 + 余白比) / 2) / tan(FOV/2),                 ← 縦で決まる距離
+    ///                   (W × (1 + 余白比) / 2) / (tan(FOV/2) × アスペクト比) ) ← 横で決まる距離
+    /// 位置 = 魚の中心 ＋ プレイヤーの前方 × d ＋ 上 × (高さ比 − 1) × (魚の中心 − アンカーの高さ)
+    /// 回転 = 魚の中心を見る向き
+    /// </code>
+    ///
+    /// <b>プレイヤーの「前方」側にカメラを置く</b>のは、釣果の構図が
+    /// 「プレイヤーを正面から振り返って見る」ものだから（シーンの ResultCameraTarget も
+    /// プレイヤーの前方に置かれている）。魚は <see cref="fishFacingYawOffsetDegrees"/> で
+    /// この構図に正対する。
+    ///
+    /// 元の位置・回転は控えて演出の終わりに必ず戻す（<see cref="RestoreResultCameraTarget"/>）。
+    /// </summary>
+    private void ApplyResultCameraFraming()
+    {
+        if (resultCameraTarget is not { } goal || !goal.IsValid) { return; }
+        if (headAnchor is not { IsValid: true } anchor) { return; }
+        if (ResolvePlayerTransform() is not { } player) { return; }
+
+        // シーンで作った構図の値を控える（多重適用でも基準がずれないよう、控えていなければ今の値）
+        var basePos = resultCameraBasePosition ?? goal.Position;
+        if (resultCameraBasePosition is null) { resultCameraBaseRotation = goal.Rotation; }
+        resultCameraBasePosition = basePos;
+
+        var anchorPos = anchor.Position;
+        var center = FishDisplayCenter(anchorPos);
+
+        float distance = ComputeFramingDistance();
+
+        // 前方（水平化）＝ プレイヤーが向いている側。縮退したらシーンの構図のまま何もしない。
+        var forward = player.Forward;
+        var horizontal = new SEED.Vector3(forward.x, 0f, forward.z);
+        if (horizontal.SqrMagnitude < SqrEpsilon) { return; }
+        var dir = horizontal.Normalized;
+
+        // 高さ: 比率 0 ＝ アンカーの高さ / 1 ＝ 魚の中心の高さ（そのあいだを線形に）
+        float heightBlend = (resultCamHeightRatio - 1f) * (center.y - anchorPos.y);
+
+        var camPos = center + dir * distance + SEED.Vector3.Up * heightBlend;
+        goal.Position = camPos;
+        goal.Rotation = LookRotation(center - camPos);
+    }
+
+    /// <summary>
+    /// 魚の実寸（高さ・幅）と画角から、魚が画面へ収まる最短距離を求める。
+    /// 縦・横それぞれで必要な距離を出し、大きい方（＝両方収まる方）と最小距離の最大を採る。
+    /// </summary>
+    private float ComputeFramingDistance()
+    {
+        // 画角（垂直・度）とアスペクト比（横 ÷ 縦）はカメラから読む。読めなければ代替値。
+        float fovDegrees = fallbackFovDegrees;
+        float aspect = assumedAspect;
+        if (resultCamera is { IsValid: true } cam)
+        {
+            if (cam.FieldOfView > DivideEpsilon) { fovDegrees = cam.FieldOfView; }
+            if (cam.TargetWidth > 0 && cam.TargetHeight > 0)
+            {
+                aspect = (float)cam.TargetWidth / cam.TargetHeight;
+            }
+        }
+        if (aspect <= DivideEpsilon) { aspect = assumedAspect; }
+
+        // tan(FOV/2)。極端な値でも 0 除算しないよう下限で守る。
+        float halfTan = SEED.Mathf.Tan(SEED.Mathf.Max(fovDegrees, DivideEpsilon) * Half * DegToRad);
+        halfTan = SEED.Mathf.Max(halfTan, DivideEpsilon);
+
+        float margin = 1f + SEED.Mathf.Max(screenMarginRatio, 0f);
+        float distanceForHeight = fishScaledHeight * margin * Half / halfTan;
+        float distanceForWidth = fishScaledWidth * margin * Half / (halfTan * aspect);
+
+        return SEED.Mathf.Max(
+            SEED.Mathf.Max(resultCamMinDistance, distanceForHeight),
+            distanceForWidth);
+    }
+
+    /// <summary>
     /// 釣果カメラの目標を、魚の見た目の大きさに応じて<b>後方へ</b>押し出す。
     ///
     /// <code>
@@ -686,8 +919,10 @@ public class CatchPresenter : SEEDScript
         if (resultCameraTarget is not { } goal || !goal.IsValid) { return; }
         if (shownFish is not { } fish) { return; }
 
-        // 元位置を控える（多重適用しても基準がずれないよう、控えていなければ今の値を採る）
+        // 元位置を控える（多重適用しても基準がずれないよう、控えていなければ今の値を採る）。
+        // 回転も対で控える（自動フレーミングと復元処理を共有するため）。
         var basePos = resultCameraBasePosition ?? goal.Position;
+        if (resultCameraBasePosition is null) { resultCameraBaseRotation = goal.Rotation; }
         resultCameraBasePosition = basePos;
 
         float pull = resultCamPullBase + resultCamPullPerSize * fish.VisualSizeMetric;
@@ -702,34 +937,53 @@ public class CatchPresenter : SEEDScript
     }
 
     /// <summary>
-    /// 釣果カメラの押し出しを元の位置へ戻す（演出の終わり・中断の共通出口）。
-    /// 控えが無ければ何もしない（押し出していない ＝ 戻す必要が無い）。
+    /// 釣果カメラの目標をシーンで作った構図（位置・回転）へ戻す
+    /// 【演出の終わり・中断の共通出口】。
+    /// 引きの押し出しも自動フレーミングもここで元へ戻るので、次回へ蓄積しない。
+    /// 控えが無ければ何もしない（書き換えていない ＝ 戻す必要が無い）。
     /// </summary>
-    private void RestoreResultCameraPull()
+    private void RestoreResultCameraTarget()
     {
         if (resultCameraBasePosition is not { } basePos) { return; }
         resultCameraBasePosition = null;
 
         if (resultCameraTarget is not { } goal || !goal.IsValid) { return; }
         goal.Position = basePos;
+        goal.Rotation = resultCameraBaseRotation;
     }
 
     // ─── 魚の配置・スケール ───────────────────────────────────
 
     /// <summary>
-    /// 魚をプレイヤーの頭上（<c>fishHoldOffsetX/Y/Z</c>）へ置き、カメラの方へ向ける。
-    /// オフセットはプレイヤーのローカル軸（右／上／前）で解釈する。
+    /// 魚を頭上へ置き、カメラの方へ向ける（毎フレーム呼ばれる＝頭に追従する）。
+    ///
+    /// <b>自動レイアウト</b>（<see cref="autoLayoutReady"/> が true）のときは
+    /// 「頭のアンカー ＋ 余白 ＋ 実寸高さの半分」を魚の<b>中心</b>とし、そこから
+    /// モデル原点と中心のズレ（<see cref="fishCenterOffsetY"/>）を引いた位置へアクタを置く。
+    /// これで原点が中心に無い魚でも、狙った高さに魚の中心が来る
+    /// （水平方向のズレはヨーで回るため無視する。魚モデルは前後に長く上下左右の偏りが小さい）。
+    ///
+    /// <b>フォールバック</b>（アンカー未設定・実寸が測れない）のときは従来どおり
+    /// プレイヤーのローカル軸で <c>fishHoldOffsetX/Y/Z</c> ぶんずらした固定位置に置く。
     /// </summary>
     private void PlaceFishAbovePlayer()
     {
         if (shownFish is not { } fish || !fish.Actor.IsValid) { return; }
         if (ResolvePlayerTransform() is not { } player) { return; }
 
-        var basePos = player.Position;
-        var pos = basePos
+        SEED.Vector3 pos;
+        if (autoLayoutReady && headAnchor is { IsValid: true } anchor)
+        {
+            // 表示中心を求め、モデル原点とのズレぶん下げた位置をアクタ位置にする
+            pos = FishDisplayCenter(anchor.Position) - SEED.Vector3.Up * fishCenterOffsetY;
+        }
+        else
+        {
+            pos = player.Position
                 + player.Right * fishHoldOffsetX
                 + player.Up * fishHoldOffsetY
                 + player.Forward * fishHoldOffsetZ;
+        }
 
         var fishTf = fish.Transform;
         fishTf.Position = pos;

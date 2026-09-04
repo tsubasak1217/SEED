@@ -61,6 +61,38 @@ public readonly struct Model : IComponentHandle<Model>
         set => ScriptHost.TrySetVec3(_entity, Comp, "offset_scale", value);
     }
 
+    // ── モデルローカル境界ボックス（read のみ）──────────────────
+
+    /// <summary>
+    /// モデルローカル空間の境界ボックス（AABB）の最小側（<b>読み取り専用</b>）。
+    ///
+    /// <para><b>どの空間の値か</b>: 読み込んだ 3D モデルの全メッシュ頂点の範囲そのもので、
+    /// <see cref="OffsetPosition"/> / <see cref="OffsetRotation"/> / <see cref="OffsetScale"/> も
+    /// アクターの <see cref="Transform"/>（位置・回転・スケール）も<b>一切掛かっていない</b>。
+    /// 実寸を求めるには呼び出し側で <c>LocalBoundsSize × OffsetScale × Transform.Scale</c> のように
+    /// 合成すること。</para>
+    ///
+    /// <para>スキンメッシュはバインドポーズの寸法を返す（アニメーション変形は反映しない）。</para>
+    ///
+    /// <para>モデル未ロード・Model 未アタッチのときは <see cref="Vector3.Zero"/> を返す。</para>
+    /// </summary>
+    public Vector3 LocalBoundsMin
+        => ScriptHost.TryGetVec3(_entity, Comp, "bounds_min", out var v) ? v : Vector3.Zero;
+
+    /// <summary>
+    /// モデルローカル空間の境界ボックス（AABB）の最大側（<b>読み取り専用</b>）。
+    /// 空間・注意点は <see cref="LocalBoundsMin"/> と同じ。未ロード時は <see cref="Vector3.Zero"/>。
+    /// </summary>
+    public Vector3 LocalBoundsMax
+        => ScriptHost.TryGetVec3(_entity, Comp, "bounds_max", out var v) ? v : Vector3.Zero;
+
+    /// <summary>
+    /// モデルローカル空間の境界ボックスの各軸の長さ（＝<see cref="LocalBoundsMax"/> − <see cref="LocalBoundsMin"/>）。
+    /// 「このモデルは素材として何メートル四方か」を 1 行で得るための利便プロパティ。
+    /// 未ロード時は <see cref="Vector3.Zero"/>。
+    /// </summary>
+    public Vector3 LocalBoundsSize => LocalBoundsMax - LocalBoundsMin;
+
     /// <summary>
     /// 描画するか（既定 true）。false にするとこのモデルだけが描かれなくなる。
     ///
