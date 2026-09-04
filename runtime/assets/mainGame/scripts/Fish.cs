@@ -15,6 +15,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// <code>
 /// Roam     --餌が「感知距離＋餌の影響半径」以内--> Approach
 /// Approach --餌が消えた／前アタリを断られた--> Roam（loseInterestSeconds のクールダウン付き）
+/// Approach --竿を振られた（FishingController.SwingSerial が変化）--> Escape（驚いて逃げる）
 /// Approach --食いつき距離以内 → biteDelay 待ち → BeginNibbling 成功--> Nibbling
 /// Nibbling --合わせ成功（コントローラが OnHooked）--> Bite
 /// Nibbling --合わせ失敗／中断（ReleaseFromHook）--> Escape
@@ -52,7 +53,12 @@ public class Fish : SEEDScript
         /// <summary>回遊中（既定の振る舞い）。生成地点の周りを気ままに泳ぐ。</summary>
         Roam,
 
-        /// <summary>餌に気づいて近づいている最中。</summary>
+        /// <summary>
+        /// 餌に気づいて近づいている最中。
+        /// この最中に竿を振られる（<see cref="FishingController.SwingSerial"/> が変化する）と
+        /// 驚いて <see cref="Escape"/> へ逃げる。回遊中（<see cref="Roam"/>）の個体は
+        /// まだ餌に反応していないので竿振りを無視する。
+        /// </summary>
         Approach,
 
         /// <summary>
@@ -221,6 +227,15 @@ public class Fish : SEEDScript
     private float escapeHeadingRad = 0f;
 
     /// <summary>
+    /// 最後に見た竿振りの通し番号（<see cref="FishingController.SwingSerial"/>）。
+    ///
+    /// <see cref="BehaviorState.Approach"/> へ入る瞬間に必ず現在値へ同期するので、
+    /// 「寄り始める前に振られた分」を数えてしまうことはない。接近中はこの値と
+    /// コントローラ側の値を毎フレーム比べ、変わっていたら驚いて逃げる。
+    /// </summary>
+    private int lastSeenSwingSerial = 0;
+
+    /// <summary>
     /// <see cref="FishingController.RegisterEngaged"/> に登録済みか。
     /// 二重登録・登録漏れを避けるため、登録／解除は必ずこのフラグ経由で行う。
     /// </summary>
@@ -366,7 +381,18 @@ public class Fish : SEEDScript
 
             State = BehaviorState.Approach;
             biteWaitStarted = false;
+            // 寄り始める前に振られた竿振りを数えないよう、この瞬間の番号へ揃えておく
+            lastSeenSwingSerial = fc.SwingSerial;
             SetEngaged(fc, engaged: true);
+            return;
+        }
+
+        // 接近中: 竿を振られたら驚いて逃げる（餌に反応している個体だけが驚く）。
+        // 番号（SwingSerial）は振るたびに増えるので、変化の有無だけを見れば取りこぼしがない。
+        if (fc.SwingSerial != lastSeenSwingSerial)
+        {
+            lastSeenSwingSerial = fc.SwingSerial;
+            BeginEscape();             // 逃走 → 逃げ切りで despawnAfterEscape に従って消える
             return;
         }
 
@@ -575,7 +601,9 @@ public class Fish : SEEDScript
     }
 
     /// <summary>
-    /// 逃走（<see cref="BehaviorState.Escape"/>）へ入る。
+    /// 逃走（<see cref="BehaviorState.Escape"/>）へ入る【逃走開始の唯一の入口】。
+    /// 合わせ失敗・リリース（<see cref="ReleaseFromHook"/>）に加えて、
+    /// 接近中に竿を振られて驚いたときもここを通る。
     /// 餌と反対の方位を固定し、<see cref="escapeSeconds"/> のあいだ全速で離れる。
     /// 餌の位置が取れない場合は今の向きのまま逃げる。
     /// </summary>

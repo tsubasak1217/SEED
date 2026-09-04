@@ -19,6 +19,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// - リール   … マウスホイール回転量のみで巻き取る
 ///   （<see cref="metersPerWheelUnit"/> を 0 にすれば無効化できる）
 /// - 巻く向き … A / D キーで左右に振れる（<b>ウキ→竿先</b>方向を基準に ±範囲内）
+/// - 竿を振る … 着水後はいつでもマウスを振れる（<b>自由な竿振り</b>。詳細は下記）
 ///
 /// <b>竿先の取得</b>
 /// 竿先は <see cref="rodTip"/>（竿アクタ sao の子アクタ「RodTip」）を<b>読むだけ</b>で得る。
@@ -41,6 +42,21 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// ヒット（<see cref="FishState.Hooked"/>）へ、失敗なら魚が逃げて待機へ戻る。
 /// 判定は <see cref="LastJudgement"/> に残り、画面中央へ判定画像を出す。
 /// アタリ〜合わせのあいだ巻き取り入力（ホイール・A/D）は受け付けない。
+///
+/// <b>自由な竿振り（どうぶつの森方式の「いつでも振れる」）</b>
+/// 餌が水にあるあいだ（<see cref="FishState.Floating"/> /
+/// <see cref="FishState.Reeling"/> / <see cref="FishState.Nibbling"/> /
+/// <see cref="FishState.HookWindow"/>）は、状態に関わらず
+/// <see cref="UpdateSwingDetection"/> がマウスの振りを読む。振りの<b>意味</b>だけが
+/// 状態ごとに変わる:
+/// - Floating / Reeling … <b>空振り</b>。ウキが竿先方向へ小さく跳ねる
+///   （<see cref="hopSeconds"/> / <see cref="hopPullDistance"/> / <see cref="hopHeight"/>）。
+///   跳ねているあいだ巻き取り入力（ホイール・A/D）は受け付けないが、糸は張られたまま。
+/// - Nibbling … 早合わせ（<see cref="HookJudgement.Miss"/>。魚は逃げる）
+/// - HookWindow … 合わせ判定（Excellent / Great / Nice / Miss）
+/// - Hooked … 振りを読まない（ヒット中の竿振りは未仕様）
+/// どの状態で振っても <see cref="SwingSerial"/> が 1 増えるので、魚（<see cref="Fish"/>）は
+/// これを見て「餌に寄っている最中に振られたら驚いて逃げる」反応を取る。
 /// </summary>
 public class FishingController : SEEDScript
 {
@@ -58,6 +74,7 @@ public class FishingController : SEEDScript
     /// Floating/Reeling --魚が BeginNibbling--> Nibbling（前アタリ）
     /// Nibbling --前アタリを撃ち切り＋1 間隔--> HookWindow（本アタリ・反応受付）
     /// Nibbling --早すぎる合わせ--> Floating（Miss。魚は逃げる）
+    /// Floating/Reeling --竿を振る（アタリ無し）--> 同じ状態のままウキが跳ねる（空振り）
     /// HookWindow --niceSeconds 以内に合わせ--> Hooked（Excellent/Great/Nice）
     /// HookWindow --遅い合わせ／時間切れ--> Floating（Miss。魚は逃げる）
     /// Aiming（巻き取り後）--左クリックを離していれば即--> Idle
@@ -87,7 +104,11 @@ public class FishingController : SEEDScript
         /// <summary>キャスト直後。ウキが放物線を描いて着水点へ飛んでいる。</summary>
         Casting,
 
-        /// <summary>着水後。ウキが水面で待機している（アタリ待ち）。</summary>
+        /// <summary>
+        /// 着水後。ウキが水面で待機している（アタリ待ち）。
+        /// この状態で竿を振ると空振りになり、ウキが手前へ小さく跳ねる
+        /// （跳ねているあいだだけ巻き取り入力を受け付けない）。
+        /// </summary>
         Floating,
 
         /// <summary>
@@ -105,7 +126,10 @@ public class FishingController : SEEDScript
         /// </summary>
         HookWindow,
 
-        /// <summary>巻き取り中。ウキが手前へ寄り、プレイヤーもウキの方へ歩く。</summary>
+        /// <summary>
+        /// 巻き取り中。ウキが手前へ寄り、プレイヤーもウキの方へ歩く。
+        /// <see cref="Floating"/> と同じく竿を振れて、振れば空振りの跳ねが入る。
+        /// </summary>
         Reeling,
 
         /// <summary>
@@ -168,6 +192,17 @@ public class FishingController : SEEDScript
     /// 前アタリ開始時に <see cref="HookJudgement.None"/> へ戻し、合わせの成否で確定する。
     /// </summary>
     public HookJudgement LastJudgement { get; private set; } = HookJudgement.None;
+
+    /// <summary>
+    /// 竿を振った回数の通し番号【魚が「振られた」ことを知る唯一の手掛かり】。
+    ///
+    /// <see cref="UpdateSwingDetection"/> が振りを検出するたびに、どの状態
+    /// （Floating / Reeling / Nibbling / HookWindow）でも 1 だけ増える。
+    /// 魚（<see cref="Fish"/>）は前フレームに見た番号を覚えておき、値が変わっていたら
+    /// 「竿が振られた」と判断する（イベント購読の仕組みが無いためのポーリング方式。
+    /// 番号なので取りこぼしても「変わった」ことだけは必ず伝わる）。
+    /// </summary>
+    public int SwingSerial { get; private set; } = 0;
 
     // ゲーム向けエンジン API（Mathf/Vector3/Time/Input/Debug など）は SEED 名前空間にある。
     // System と型名が衝突するため using は付けず「SEED.」で修飾する（docs/scripting_api.md）。
@@ -753,6 +788,28 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "合わせ累積のリセット時間(秒)")]
     private float swingResetSeconds = 0.15f;
 
+    // ─── 空振り（ウキの跳ね）─────────────────────────────────
+    //
+    // 「まだ魚がアタっていない」状態（Floating / Reeling）で竿を振ったときの演出。
+    // 竿は<b>いつでも</b>振れる（＝おいでよ／とびだせ系の自由な竿振り）ので、
+    // アタリが無いときの振りはウキが手前へ小さく跳ねるだけの空振りになる。
+
+    /// <summary>ウキの跳ね 1 回に掛ける秒数。この間は巻き取り入力（ホイール・A/D）を受け付けない。</summary>
+    [SerializeField(Label = "ウキの跳ね時間(秒)")]
+    private float hopSeconds = 0.35f;
+
+    /// <summary>
+    /// ウキの跳ねで竿先方向へ引き寄せる水平距離（メートル）。
+    /// 「竿先までの残り距離 −<see cref="reelEndDistance"/>」でクランプするので、
+    /// 跳ねだけで巻き取りが完了してしまうことはない。
+    /// </summary>
+    [SerializeField(Label = "ウキの跳ねの引き寄せ距離(m)")]
+    private float hopPullDistance = 1f;
+
+    /// <summary>ウキの跳ねの最高到達高さ（メートル、水面からの相対）。放物線 4h·t·(1−t) の h。</summary>
+    [SerializeField(Label = "ウキの跳ねの高さ(m)")]
+    private float hopHeight = 0.4f;
+
     /// <summary>Excellent と判定される反応時間の上限（秒）。</summary>
     [SerializeField(Label = "Excellent の反応時間(秒)")]
     private float excellentSeconds = 0.25f;
@@ -823,6 +880,18 @@ public class FishingController : SEEDScript
     private float hookSeVolume = 1f;
 
     /// <summary>
+    /// 竿を振った瞬間（<see cref="UpdateSwingDetection"/> が成立した瞬間）に鳴らす効果音のアセットパス。
+    /// 空文字なら鳴らさない。振りはどの状態（Floating / Reeling / Nibbling / HookWindow）でも
+    /// 同じ 1 か所で検出するので、効果音もそこ 1 か所から鳴らす。
+    /// </summary>
+    [SerializeField(Label = "竿振りの効果音")]
+    private string swingSePath = "";
+
+    /// <summary>竿振り効果音の音量（0〜1）。</summary>
+    [SerializeField(Label = "竿振りの音量")]
+    private float swingSeVolume = 1f;
+
+    /// <summary>
     /// 現在掛かっている魚（null = 掛かっていない）。
     /// <see cref="TryHook"/> で束縛し、釣り上げ・リリース・キャンセルで必ず解除する。
     /// </summary>
@@ -856,6 +925,18 @@ public class FishingController : SEEDScript
 
     /// <summary>マウスがほぼ動いていない連続秒数（<see cref="swingResetSeconds"/> で累積を捨てる）。</summary>
     private float swingIdleElapsed = 0f;
+
+    /// <summary>ウキの跳ね（空振り演出）を再生中か。true のあいだ <see cref="UpdateReeling"/> は走らせない。</summary>
+    private bool hopActive = false;
+
+    /// <summary>ウキの跳ねの経過秒数（0〜<see cref="hopSeconds"/>）。</summary>
+    private float hopElapsed = 0f;
+
+    /// <summary>跳ね開始時のウキの水平位置（Y は使わない）。</summary>
+    private SEED.Vector3 hopStart = SEED.Vector3.Zero;
+
+    /// <summary>跳ね終了時のウキの水平位置（竿先方向へ <see cref="hopPullDistance"/> だけ寄せた点。Y は使わない）。</summary>
+    private SEED.Vector3 hopEnd = SEED.Vector3.Zero;
 
     /// <summary>いま表示している判定（<see cref="HookJudgement.None"/> = 非表示）。</summary>
     private HookJudgement judgeDisplay = HookJudgement.None;
@@ -987,6 +1068,7 @@ public class FishingController : SEEDScript
         nibblingFish = fish;
         State = FishState.Nibbling;
         LastJudgement = HookJudgement.None;
+        CancelHop();                   // 跳ねの最中に前アタリが始まったら跳ねを打ち切る
 
         // 前アタリの回数（下限〜上限、上限を含む）と最初の間隔を抽選する
         int minCount = SEED.Mathf.Max(0, nibbleCountMin);
@@ -1116,8 +1198,18 @@ public class FishingController : SEEDScript
 
             case FishState.Floating:
             case FishState.Reeling:
+                // 餌が水にあるあいだは、アタリが無くても竿を振れる（自由な竿振り）。
+                // 振ればウキが手前へ小さく跳ねる空振りになり、跳ねているあいだは
+                // 巻き取り入力（ホイール・A/D）を受け付けない。
+                if (UpdateSwingDetection(ctx.DeltaTime)) { TryStartHop(); }
+
+                if (hopActive) { UpdateHop(ctx.DeltaTime); }
+                else { UpdateReeling(ctx.DeltaTime); }
+                break;
+
             case FishState.Hooked:
                 // ヒット中も巻き取りの操作系（ホイール・A/D 操舵）はまったく同じ。
+                // ただし竿振りは読まない（ヒット中の振りは未仕様）ので跳ねもしない。
                 UpdateReeling(ctx.DeltaTime);
                 break;
 
@@ -1178,6 +1270,7 @@ public class FishingController : SEEDScript
     {
         State = FishState.Aiming;
         ResetGesture();
+        CancelHop();                   // 跳ね中に狙いへ戻ったら跳ねも畳む
         AbortBiteTiming();             // アタリ進行中の魚が居れば逃がす
         ReleaseHook();                 // 掛かったままの魚が居れば逃がす
         ParkFloatHidden();
@@ -1198,6 +1291,7 @@ public class FishingController : SEEDScript
     {
         State = FishState.Idle;
         ResetGesture();
+        CancelHop();                   // 姿勢解除・中断でも跳ねを畳む（フラグの持ち越し防止）
         AbortBiteTiming();             // 姿勢解除・中断でもアタリ進行を打ち切る
         ReleaseHook();                 // 姿勢解除・中断でも必ず魚を逃がす
         HideJudgement();               // 判定画像も消す
@@ -1633,6 +1727,8 @@ public class FishingController : SEEDScript
     /// </summary>
     private void FinishReeling()
     {
+        CancelHop();                   // 巻き取りが終わったら跳ねも必ず畳む
+
         // ── 釣り上げ成立 ──
         if (hookedFish is { } caught)
         {
@@ -1881,8 +1977,9 @@ public class FishingController : SEEDScript
             if (nibbleDipElapsed >= nibbleDipSeconds) { nibbleDipElapsed = NoDipElapsed; }
         }
 
-        // 2) 合わせ（マウスの振り）の検出
-        bool swung = AccumulateHookSwing(deltaTime);
+        // 2) 合わせ（マウスの振り）の検出。検出そのものは Floating / Reeling と共通で、
+        //    ここでは「アタリ中の振り＝合わせ」として解釈する（跳ねさせない）。
+        bool swung = UpdateSwingDetection(deltaTime);
 
         // 3) 前アタリ中
         if (State == FishState.Nibbling)
@@ -2068,6 +2165,114 @@ public class FishingController : SEEDScript
 
         hookSwingAccumPx = 0f;
         return true;
+    }
+
+    /// <summary>
+    /// 竿振りの検出【振りを読む唯一の入口】。
+    ///
+    /// 餌が水に有るあいだ（<see cref="FishState.Floating"/> /
+    /// <see cref="FishState.Reeling"/> / <see cref="FishState.Nibbling"/> /
+    /// <see cref="FishState.HookWindow"/>）は、状態に関わらずこの関数で振りを読む。
+    /// しきい値・時間窓の判定そのものは <see cref="AccumulateHookSwing"/> が持ち、
+    /// ここでは「振りが成立した瞬間に必ず起きること」だけを足す:
+    /// <see cref="SwingSerial"/> の加算（魚への通知）と効果音。
+    ///
+    /// <b>振りの結果は呼び出し側が決める</b>（状態ごとに意味が違うため）:
+    /// - Floating / Reeling … ウキが跳ねる空振り（<see cref="TryStartHop"/>）
+    /// - Nibbling           … 早合わせ（Miss。魚は逃げる）
+    /// - HookWindow         … 合わせ判定（Excellent / Great / Nice / Miss）
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    /// <returns>このフレームに振りが成立したら true。</returns>
+    private bool UpdateSwingDetection(float deltaTime)
+    {
+        if (!AccumulateHookSwing(deltaTime)) { return false; }
+
+        // 番号は「どの状態で振ったか」に依らず増やす（魚は状態を見ずに変化だけを見る）
+        SwingSerial++;
+        PlaySe(swingSePath, swingSeVolume);
+        return true;
+    }
+
+    // ─── 空振り（ウキの跳ね）─────────────────────────────────
+
+    /// <summary>
+    /// ウキの跳ね（空振り演出）を開始する【跳ね開始の唯一の入口】。
+    ///
+    /// アタリが無い状態（<see cref="FishState.Floating"/> /
+    /// <see cref="FishState.Reeling"/>）で竿を振ったときだけ成立する。
+    /// アタリ中（Nibbling / HookWindow）とヒット中（Hooked）は振りの意味が
+    /// まったく別なので、ここで弾いて絶対に跳ねさせない。
+    ///
+    /// 引き寄せ距離は「竿先までの残り水平距離 −<see cref="reelEndDistance"/>」で
+    /// クランプするので、跳ねだけで巻き取りが完了することはない
+    /// （＝跳ねが <see cref="FinishReeling"/> を誘発しない）。
+    /// </summary>
+    private void TryStartHop()
+    {
+        // 跳ねてよい状態か（アタリ中・ヒット中は不可）
+        if (State is not (FishState.Floating or FishState.Reeling)) { return; }
+        if (IsHooked || nibblingFish is not null) { return; }
+        if (hopActive) { return; }                                   // 跳ね中の多重発火は無視する
+        if (hopSeconds <= DivideEpsilon) { return; }                 // 0 秒の跳ねは演出にならないので行わない
+        if (uki is not { IsValid: true } floatTf) { return; }
+
+        // ウキ→竿先の水平ベクトル（＝引き寄せる向き）と残り距離
+        var target = ReelTargetPosition();
+        var toTarget = new SEED.Vector3(target.x - floatTf.Position.x, 0f, target.z - floatTf.Position.z);
+        float remaining = SEED.Mathf.Sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+
+        // 引き寄せ量: 要求値を「巻き取りが完了しない範囲」へクランプする（負なら 0 ＝その場で跳ねるだけ）
+        float pull = SEED.Mathf.Max(0f, SEED.Mathf.Min(hopPullDistance, remaining - reelEndDistance));
+
+        hopStart = floatTf.Position;
+        hopEnd = remaining > DivideEpsilon
+            ? hopStart + new SEED.Vector3(toTarget.x / remaining, 0f, toTarget.z / remaining) * pull
+            : hopStart;                                              // 竿先に重なっている異常時はその場で跳ねる
+        hopElapsed = 0f;
+        hopActive = true;
+    }
+
+    /// <summary>
+    /// ウキの跳ねの毎フレーム更新（<see cref="hopActive"/> のあいだ
+    /// <see cref="UpdateReeling"/> の代わりに走る）。
+    ///
+    /// 水平は開始点→終了点の線形補間、垂直は水面から <c>4h·t·(1−t)</c> の放物線で、
+    /// t=1（＝<see cref="hopSeconds"/> 経過）でちょうど水面へ戻って跳ねが終わる。
+    /// 釣り糸は従来どおり <see cref="LateUpdate"/> の <see cref="UpdateLine"/> が
+    /// ウキの位置から引き直すので、跳ねているあいだも糸は繋がったままになる。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateHop(float deltaTime)
+    {
+        hopElapsed += deltaTime;
+
+        // 進行度 t（0〜1）。hopSeconds は TryStartHop で 0 でないことを保証済みだが、
+        // インスペクタで実行中に 0 へ書き換えられても壊れないよう分母を守る。
+        float t = SEED.Mathf.Clamped01(hopElapsed / SEED.Mathf.Max(hopSeconds, DivideEpsilon));
+
+        // 水平: 開始点 → 終了点の線形補間
+        var horizontal = hopStart + (hopEnd - hopStart) * t;
+
+        // 垂直: 水面（通常のウキ高さ）＋ 放物線の持ち上げ。t=0 と t=1 で持ち上げは 0 になる。
+        float lift = ParabolaApexCoefficient * hopHeight * t * (1f - t);
+        SetFloatPosition(new SEED.Vector3(horizontal.x, FloatSurfaceY() + lift, horizontal.z));
+
+        if (t >= 1f) { CancelHop(); }
+    }
+
+    /// <summary>
+    /// 跳ねを終了・中断する【跳ね解除の唯一の出口】。
+    /// 自然終了（着水）だけでなく、状態が Floating / Reeling を離れるとき
+    /// （キャンセル・狙いへの復帰・前アタリ開始・巻き取り完了）にも呼び、
+    /// 「跳ねフラグが立ったまま別の状態へ持ち越される」ことを防ぐ。
+    /// ウキの Y は次フレームの通常更新（<see cref="FloatSurfaceY"/>）が水面へ戻すので、
+    /// ここでは位置を触らない。
+    /// </summary>
+    private void CancelHop()
+    {
+        hopActive = false;
+        hopElapsed = 0f;
     }
 
     // ─── 判定表示（スクリーンスペース UI）─────────────────────
