@@ -611,6 +611,7 @@
                 "rankText": "CatchRank|Text",
                 "resultCamPullBase": "4.000",
                 "resultCamPullPerSize": "1.000",
+                "resultCamera": "MainCamera|Camera",
                 "resultCameraTarget": "ResultCameraTarget",
                 "rodAnimator": "sao|Animator",
                 "sizeText": "CatchSize|Text",
