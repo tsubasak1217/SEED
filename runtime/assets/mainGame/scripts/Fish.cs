@@ -146,6 +146,23 @@ public class Fish : SEEDScript
     private float biteDelayMax = 2f;
 
     /// <summary>
+    /// 餌の直進ホーミングに切り替える水平距離（メートル）。
+    /// 旋回半径付きの <see cref="SwimTowardHeading"/> のままだと、餌の近くで
+    /// 旋回しきれず周回してしまい <see cref="FishingController.BiteDistance"/> 以内へ
+    /// 入れないことがあるため、この距離以下では旋回を無視して餌へ直進させる。
+    /// </summary>
+    [SerializeField(Label = "餌の直進ホーミング距離(m)")]
+    private float homingDistance = 2.0f;
+
+    /// <summary>
+    /// 食いつき待ちを解除するヒステリシス倍率。
+    /// 待ちが開始した後は、距離が「<see cref="FishingController.BiteDistance"/> ×
+    /// この倍率」を超えるまで待ちを解除しない。境界付近の微小な出入りで
+    /// 待ちタイマーがリセットされ続けて食いつきに至らない事態を防ぐ。
+    /// </summary>
+    private const float BiteLeaveMultiplier = 3.0f;
+
+    /// <summary>
     /// 餌に興味を失ってから再び反応するまでのクールダウン（秒）。
     /// 他の魚に先を越された・逃がされた直後に即座に食いつき直すのを防ぐ。
     /// </summary>
@@ -339,9 +356,14 @@ public class Fish : SEEDScript
         }
 
         // 接近中: 食いつき距離まで届いたら待ち時間を数え、経過したら食いつきを試みる
-        if (distance > fc.BiteDistance)
+        //
+        // ヒステリシス: 待ちが一度始まったら、境界付近の微小な出入り（旋回の揺れなど）で
+        // 毎フレーム解除されないよう、BiteDistance × BiteLeaveMultiplier を超えて
+        // 離れるまでは待ちを維持する。
+        float leaveDistance = biteWaitStarted ? fc.BiteDistance * BiteLeaveMultiplier : fc.BiteDistance;
+        if (distance > leaveDistance)
         {
-            // まだ届いていないあいだは待ちを解除しておく（近づき直しで再抽選される）
+            // 一度も届いていない（またはしきい値を大きく超えて離れた）あいだは待ちを解除しておく
             biteWaitStarted = false;
             return;
         }
@@ -406,11 +428,34 @@ public class Fish : SEEDScript
         var bait = fc.BaitPosition;
         float dx = bait.x - pos.x;
         float dz = bait.z - pos.z;
+        float sqDistance = dx * dx + dz * dz;
 
         // 真上に重なっているときは方位が定まらないので、いまの向きのまま進む
-        if (dx * dx + dz * dz > DistanceEpsilon * DistanceEpsilon)
+        if (sqDistance > DistanceEpsilon * DistanceEpsilon)
         {
             targetHeadingRad = SEED.Mathf.Atan2(dx, dz);
+        }
+
+        // 餌が十分近い（homingDistance 以内）場合は旋回半径のある SwimTowardHeading を使わず、
+        // 餌へ向けて直進させる。SwimTowardHeading のまま食いつき距離まで詰めようとすると
+        // 旋回が追いつかず餌の周りを周回し続けてしまうため。
+        float distance = SEED.Mathf.Sqrt(sqDistance);
+        if (distance <= homingDistance)
+        {
+            // 向きだけは従来どおり滑らかに餌の方位へ補間する（見た目のための回頭）
+            transform.Rotation = new SEED.Vector3(0f, SmoothYawRad(targetHeadingRad, dt) / DegToRad, 0f);
+
+            // 移動は水平単位ベクトル方向へ、行き過ぎない距離だけ直進させる
+            float step = SEED.Mathf.Min(approachSpeed * dt, distance);
+            if (distance > DistanceEpsilon)
+            {
+                float invDistance = 1f / distance;
+                transform.Position = new SEED.Vector3(
+                    pos.x + dx * invDistance * step,
+                    pos.y,
+                    pos.z + dz * invDistance * step);
+            }
+            return;
         }
 
         SwimTowardHeading(targetHeadingRad, approachSpeed, dt);
