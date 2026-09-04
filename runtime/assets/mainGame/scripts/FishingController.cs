@@ -93,13 +93,6 @@ public class FishingController : SEEDScript
     /// <summary>1 周（ラジアン）。ウキの上下揺れ（サイン波）の位相計算に使う。</summary>
     private const float TwoPi = SEED.Mathf.PI * 2f;
 
-    /// <summary>
-    /// 4 分の 1 周（ラジアン、＝90°）。巻き方向インジケータの追加不透明度で、
-    /// 許容範囲いっぱいまで倒したときに |sin θ| が 1（最大）になるよう、
-    /// ずれ角の比率 [0,1] をこの角度へ写像するのに使う（<see cref="UpdateReelArrow"/> 参照）。
-    /// </summary>
-    private const float QuarterTurnRadians = SEED.Mathf.PI * 0.5f;
-
     /// <summary>放物線の頂点係数。<c>4h·t·(1-t)</c> は t=0.5 で h になる（h＝最高点の高さ）。</summary>
     private const float ParabolaApexCoefficient = 4f;
 
@@ -319,13 +312,17 @@ public class FishingController : SEEDScript
     private float reelArrowBaseOpacity = 0.35f;
 
     /// <summary>
-    /// 巻き方向インジケータの追加不透明度。
-    /// 実効不透明度 ＝ clamp01(基準 ＋ 追加 × |sin θ|)（θ ＝ <see cref="reelAngleOffsetDegrees"/> の
-    /// ずれ量を <see cref="reelAngleRangeDegrees"/> の全幅（steerFactor による絞り込み前）で正規化し、
-    /// 90° へ写像した角度）。許容範囲いっぱいまで倒したとき、この追加不透明度が丸ごと加算される。
+    /// 巻き方向インジケータの追加不透明度（時間で |sin| 往復する振幅）。
+    /// 実効不透明度 ＝ clamp01(基準 ＋ 追加 × |sin(2π · f · t)|)（f ＝
+    /// <see cref="reelArrowPulseFrequency"/>、t ＝ インジケータを表示し続けている経過秒数
+    /// <see cref="reelArrowPulseElapsed"/>）。角度には依存せず、表示中は常に明滅する。
     /// </summary>
     [SerializeField(Label = "巻き方向インジケータの追加不透明度")]
     private float reelArrowExtraOpacity = 0.5f;
+
+    /// <summary>巻き方向インジケータの明滅周波数（Hz）。<see cref="UpdateReelArrow"/> 参照。</summary>
+    [SerializeField(Label = "インジケータの明滅周波数(Hz)")]
+    private float reelArrowPulseFrequency = 1f;
 
     /// <summary>
     /// 巻き方向インジケータの一辺の長さ（メートル）。アクタの Transform.Scale の X/Y に入れる
@@ -659,6 +656,14 @@ public class FishingController : SEEDScript
     /// （＝「表示したフレーム以外は必ず隠す」を 1 か所で保証する唯一の出口）。
     /// </summary>
     private bool reelArrowShownThisFrame = false;
+
+    /// <summary>
+    /// 巻き方向インジケータを表示し続けている経過秒数（明滅の位相 t）。
+    /// <see cref="UpdateReelArrow"/> が呼ばれるフレームごとに deltaTime を加算し、
+    /// <see cref="ParkReelArrow"/> で格納されるタイミングで 0 にリセットする
+    /// （＝再表示されるたびに基準不透明度から明滅を始める）。
+    /// </summary>
+    private float reelArrowPulseElapsed = 0f;
 
     /// <summary>
     /// 名前検索で解決したカメラのトランスフォーム（<see cref="cameraTransform"/> 未設定時のみ使う）。
@@ -1228,7 +1233,7 @@ public class FishingController : SEEDScript
         // steerFactor が 0（直進距離以内）ならインジケータは表示せず格納する。
         if (steerFactor > 0f)
         {
-            UpdateReelArrow(floatTf.Position, dir, steerFactor);
+            UpdateReelArrow(floatTf.Position, dir, steerFactor, deltaTime);
         }
 
         // このフレームの移動量を「残りの水平距離」でクランプし、基準点を追い越さないようにする
@@ -1623,6 +1628,9 @@ public class FishingController : SEEDScript
     /// </summary>
     private void ParkReelArrow()
     {
+        // 次に表示されたとき明滅を基準不透明度から再開させる。
+        reelArrowPulseElapsed = 0f;
+
         if (reelArrow is not { } arrow || !arrow.IsValid) { return; }
 
         var p = arrow.Position;
@@ -1641,14 +1649,14 @@ public class FishingController : SEEDScript
     /// Y 回転は「巻く向きの方位角 ＋ <see cref="reelArrowYawOffsetDegrees"/>」。
     /// 方位角と矢印の向きの対応は <see cref="ReelArrowPitchDegrees"/> のコメントで導出している。
     ///
-    /// <b>不透明度</b>: <c>clamp01(基準 ＋ 追加 × sin θ) × steerFactor</c>（θ ＝ A/D による基準方向からの
-    /// ずれ量を <see cref="reelAngleRangeDegrees"/> の全幅（steerFactor で絞り込む前の値）で正規化した
-    /// 比率 [0,1] を 90° へ写像した角度、steerFactor ＝ 岸際の直進巻き係数）。まっすぐ巻いているときは薄く、
-    /// 許容範囲いっぱいまで倒すと追加不透明度が丸ごと乗る濃さになり、
-    /// 岸（<see cref="straightReelDistance"/>）へ近づくほど steerFactor で全体がフェードアウトする。
-    /// なお steerFactor が 0 の呼び出しはこの関数が呼ばれる前（<see cref="UpdateReeling"/>）で
-    /// スキップされ、その場合はフレーム末尾の「表示されなかったら格納」経路（<see cref="ParkReelArrow"/>）
-    /// でインジケータが自動的に隠される。
+    /// <b>不透明度</b>: <c>clamp01(基準 ＋ 追加 × |sin(2π · f · t)|) × steerFactor</c>
+    /// （f ＝ <see cref="reelArrowPulseFrequency"/>、t ＝ インジケータを表示し続けている経過秒数
+    /// <see cref="reelArrowPulseElapsed"/>、steerFactor ＝ 岸際の直進巻き係数）。角度には依存しない
+    /// 時間ベースの明滅で、岸（<see cref="straightReelDistance"/>）へ近づくほど steerFactor で
+    /// 全体がフェードアウトする。なお steerFactor が 0 の呼び出しはこの関数が呼ばれる前
+    /// （<see cref="UpdateReeling"/>）でスキップされ、その場合はフレーム末尾の
+    /// 「表示されなかったら格納」経路（<see cref="ParkReelArrow"/>）でインジケータが自動的に隠され、
+    /// 明滅の経過秒数も 0 へリセットされる。
     ///
     /// <b>大きさ</b>: <see cref="reelArrowLength"/> を Transform.Scale の X/Y に入れる
     /// （3D キャンバスは 100px = 1m 換算。Z はキャンバス平面に効かないので 1 固定）。
@@ -1656,7 +1664,8 @@ public class FishingController : SEEDScript
     /// <param name="floatPosition">ウキのワールド位置（XZ だけ使う）。</param>
     /// <param name="reelDirection">巻く向き（水平・正規化済み。ウキから竿先へ向かう方向）。</param>
     /// <param name="steerFactor">岸際の直進巻き係数（1＝遠くて操舵フル、0＝直進距離以内で操舵ゼロ）。不透明度の乗数にも使う。</param>
-    private void UpdateReelArrow(SEED.Vector3 floatPosition, SEED.Vector3 reelDirection, float steerFactor)
+    /// <param name="deltaTime">このフレームの経過秒数（明滅の位相を進めるのに使う）。</param>
+    private void UpdateReelArrow(SEED.Vector3 floatPosition, SEED.Vector3 reelDirection, float steerFactor, float deltaTime)
     {
         if (reelArrow is not { } arrow || !arrow.IsValid) { return; }
         // 向きが縮退しているフレームは表示しない（このあと Update 末尾で格納される）。
@@ -1681,16 +1690,12 @@ public class FishingController : SEEDScript
         // 板の一辺の長さ（メートル）。キャンバス平面は X/Y なので Z は 1 のまま。
         arrow.Scale = new SEED.Vector3(reelArrowLength, reelArrowLength, 1f);
 
-        // ずれ角を「全幅（steerFactor で絞り込む前の reelAngleRangeDegrees）の半分」で正規化し、
-        // 許容範囲いっぱいまで倒したときに sin θ が 1（最大）になるよう 90° へ写像する。
-        // steerFactor で許容範囲そのものが縮んでいても、ここでは絞り込み前の全幅を基準にするため
-        // 追加不透明度が実際に視認できる大きさまで立ち上がる。
-        float halfFull = SEED.Mathf.Abs(reelAngleRangeDegrees) * 0.5f;
-        float ratio = SEED.Mathf.Clamped01(
-            SEED.Mathf.Abs(reelAngleOffsetDegrees) / SEED.Mathf.Max(halfFull, DivideEpsilon));
-        float theta = ratio * QuarterTurnRadians;
+        // 表示され続けている経過秒数を進め、時間ベースの明滅位相を求める。
+        // |sin(2π f t)| は角度に依存せず、表示中は常に基準⇔基準+追加の間で往復する。
+        reelArrowPulseElapsed += deltaTime;
+        float phase = TwoPi * reelArrowPulseFrequency * reelArrowPulseElapsed;
         float opacity = SEED.Mathf.Clamped01(reelArrowBaseOpacity
-                      + reelArrowExtraOpacity * SEED.Mathf.Sin(theta)) * steerFactor;
+                      + reelArrowExtraOpacity * SEED.Mathf.Abs(SEED.Mathf.Sin(phase))) * steerFactor;
         ApplySpriteOpacity(reelArrowSprite, opacity);
 
         reelArrowShownThisFrame = true;
