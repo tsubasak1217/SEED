@@ -10,6 +10,16 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 泳ぎは「生成地点の周りを気ままに回遊する」最小実装:
 /// 数秒ごとにランダムに向きを変え、行動半径から出そうになったら中心へ向き直す。
 /// 魚ごとの固有の泳ぎ方・暴れ方は、このスクリプトを継承 or 差し替えて拡張する想定。
+///
+/// [餌への反応]（<see cref="BehaviorState"/>）
+/// <code>
+/// Roam     --餌が「感知距離＋餌の影響半径」以内--> Approach
+/// Approach --餌が消えた／食いつきに失敗--> Roam（loseInterestSeconds のクールダウン付き）
+/// Approach --食いつき距離以内 → biteDelay 待ち → TryHook 成功--> Bite
+/// Bite     --釣り上げ／リリース（ReleaseFromHook）--> Roam
+/// </code>
+/// 餌の位置・判定距離はすべて <see cref="FishingController.Current"/> から読む
+/// （魚は prefab から動的生成されるため、参照フィールドでコントローラを注入できない）。
 /// </summary>
 public class Fish : SEEDScript
 {
@@ -20,6 +30,34 @@ public class Fish : SEEDScript
 
     /// <summary>1 回転（ラジアン）。ランダム方位の生成に使う。</summary>
     private const float FullTurnRadians = 2f * 3.14159265f;
+
+    /// <summary>半回転（ラジアン）。角度差を ±π の範囲へ畳むのに使う。</summary>
+    private const float HalfTurnRadians = 3.14159265f;
+
+    /// <summary>「距離が実質 0」とみなすしきい値（0 除算・方位の不定を避ける）。</summary>
+    private const float DistanceEpsilon = 1e-4f;
+
+    // ─── 行動状態 ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 魚の行動状態。スクリプトはファイル名＝型名で 1 ファイル 1 クラスとして扱われるため、
+    /// この列挙型は独立ファイルにせず本クラスの入れ子として定義する
+    /// （外部からは <c>Fish.BehaviorState</c> で参照できる）。
+    /// </summary>
+    public enum BehaviorState
+    {
+        /// <summary>回遊中（既定の振る舞い）。生成地点の周りを気ままに泳ぐ。</summary>
+        Roam,
+
+        /// <summary>餌に気づいて近づいている最中。</summary>
+        Approach,
+
+        /// <summary>餌に食いついている（釣られている）。位置は餌に追従する。</summary>
+        Bite,
+    }
+
+    /// <summary>現在の行動状態（デバッグ・他スクリプトからの参照用）。</summary>
+    public BehaviorState State { get; private set; } = BehaviorState.Roam;
 
     // ─── 共通パラメータ（釣り仕様）───────────────────────────
 
@@ -53,6 +91,13 @@ public class Fish : SEEDScript
     [SerializeField(Label = "暴れ度(規定1)")]
     private float rampage = 1f;
 
+    /// <summary>
+    /// 表示名（釣果ログ・UI 用）。空なら <see cref="DefaultDisplayName"/> を使う。
+    /// prefab ごとに魚の名前を入れる想定。
+    /// </summary>
+    [SerializeField(Label = "表示名")]
+    private string fishName = "";
+
     // ─── 泳ぎ方（簡易回遊）───────────────────────────────────
 
     /// <summary>泳ぐ速さ（m/s）。</summary>
@@ -71,6 +116,31 @@ public class Fish : SEEDScript
     [SerializeField(Label = "旋回の速さ")]
     private float turnLerpRate = 2f;
 
+    // ─── 餌への反応 ───────────────────────────────────────────
+
+    /// <summary>餌へ寄っていくときの速さ（m/s）。回遊より少し速い想定。</summary>
+    [Header("餌への反応"), SerializeField(Label = "接近の速さ(m/s)")]
+    private float approachSpeed = 2.25f;
+
+    /// <summary>食いつくまでの待ち時間の下限（秒）。実際の待ち時間はこの範囲の一様乱数。</summary>
+    [SerializeField(Label = "食いつき待ちの最小(秒)")]
+    private float biteDelayMin = 0.5f;
+
+    /// <summary>食いつくまでの待ち時間の上限（秒）。</summary>
+    [SerializeField(Label = "食いつき待ちの最大(秒)")]
+    private float biteDelayMax = 2f;
+
+    /// <summary>
+    /// 餌に興味を失ってから再び反応するまでのクールダウン（秒）。
+    /// 他の魚に先を越された・逃がされた直後に即座に食いつき直すのを防ぐ。
+    /// </summary>
+    [SerializeField(Label = "興味を失う時間(秒)")]
+    private float loseInterestSeconds = 3f;
+
+    /// <summary>食いついているあいだ、餌（ウキ）から何メートル下に居るか。</summary>
+    [SerializeField(Label = "ヒット中の沈み量(m)")]
+    private float hookedDepthOffset = 0.3f;
+
     // ─── 内部状態 ─────────────────────────────────────────────
 
     /// <summary>回遊の中心（生成地点）。null = 未初期化（最初の Update で現在地を採る）。</summary>
@@ -84,6 +154,21 @@ public class Fish : SEEDScript
 
     /// <summary>方位の乱数源。</summary>
     private readonly System.Random random = new();
+
+    /// <summary>食いつきまでの残り待ち時間（秒）。<see cref="BehaviorState.Approach"/> で餌に届いてから減る。</summary>
+    private float biteWaitRemaining = 0f;
+
+    /// <summary>食いつき待ちに入っているか（<see cref="biteWaitRemaining"/> が有効か）。</summary>
+    private bool biteWaitStarted = false;
+
+    /// <summary>餌へ反応しないクールダウンの残り秒数。0 以下で再び反応できる。</summary>
+    private float loseInterestRemaining = 0f;
+
+    /// <summary>
+    /// <see cref="FishingController.RegisterEngaged"/> に登録済みか。
+    /// 二重登録・登録漏れを避けるため、登録／解除は必ずこのフラグ経由で行う。
+    /// </summary>
+    private bool engagedRegistered = false;
 
     /// <summary>
     /// 戦闘力 = 基礎パワー × 大きさスコア × 暴れ度（仕様の算出式）。
@@ -107,6 +192,21 @@ public class Fish : SEEDScript
     /// <summary>好みの魚の名前（わらしべ判定用）。</summary>
     public string PreferredFish => preferredFish;
 
+    /// <summary>大きさ（釣果ログ・UI から参照する）。</summary>
+    public float Size => size;
+
+    /// <summary>表示名。未設定なら既定名を返す。</summary>
+    public string DisplayName => string.IsNullOrWhiteSpace(fishName) ? DefaultDisplayName : fishName;
+
+    /// <summary>表示名が未設定のときに使う既定名。</summary>
+    private const string DefaultDisplayName = "魚";
+
+    /// <summary>
+    /// このスクリプトが乗っているアクタ（<c>gameObject</c> は protected なので公開する）。
+    /// 釣り上げ時に <see cref="FishingController"/> が破棄するために使う。
+    /// </summary>
+    public SEED.GameObject Actor => gameObject;
+
     /// <summary>フレーム開始時に呼ばれる。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
     {
@@ -117,7 +217,10 @@ public class Fish : SEEDScript
     {
     }
 
-    /// <summary>毎フレームの回遊処理。</summary>
+    /// <summary>
+    /// 毎フレームの行動更新。
+    /// 餌の状況を見て行動状態（回遊／接近／食いつき）を決め、その状態の移動を行う。
+    /// </summary>
     public override void Update(ref NativeFrameContext ctx)
     {
         // 初回: 生成地点を回遊の中心として記憶し、ランダムな方位で泳ぎ始める
@@ -132,6 +235,95 @@ public class Fish : SEEDScript
         float dt = ctx.DeltaTime;
         if (dt <= 0f) { return; }
 
+        // 興味を失っているあいだのクールダウンを進める（状態に依らず常に進める）
+        if (loseInterestRemaining > 0f) { loseInterestRemaining -= dt; }
+
+        // 行動状態を更新してから、その状態の移動を行う（判断と移動で責務を分ける）
+        UpdateBehaviorState(dt);
+
+        switch (State)
+        {
+            case BehaviorState.Bite:
+                UpdateBite(dt);
+                break;
+
+            case BehaviorState.Approach:
+                UpdateApproach(dt);
+                break;
+
+            default:
+                UpdateRoam(dt, home);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 餌の状況から行動状態を決める【状態遷移の唯一の集約点】。
+    ///
+    /// 餌が無効になった／コントローラが居ない場合は必ず回遊へ戻すので、
+    /// 「餌へ寄ったまま固まる」状態は生まれない。
+    /// </summary>
+    /// <param name="dt">このフレームの経過秒数。</param>
+    private void UpdateBehaviorState(float dt)
+    {
+        // 食いつき中はコントローラ側（釣り上げ／リリース）からしか抜けない
+        if (State == BehaviorState.Bite) { return; }
+
+        // 餌が無い（コントローラ未起動・キャスト前・飛翔中）なら回遊へ戻す
+        if (FishingController.Current is not { BaitActive: true } fc)
+        {
+            BackToRoam(withCooldown: false);
+            return;
+        }
+
+        var bait = fc.BaitPosition;
+        float distance = HorizontalDistance(transform.Position, bait);
+
+        // 回遊中: 「自分の感知距離 ＋ 餌の影響半径」以内へ入ったら寄っていく
+        if (State == BehaviorState.Roam)
+        {
+            if (loseInterestRemaining > 0f) { return; }
+            if (distance > baitSenseDistance + fc.BaitInfluenceRadius) { return; }
+
+            State = BehaviorState.Approach;
+            biteWaitStarted = false;
+            SetEngaged(fc, engaged: true);
+            return;
+        }
+
+        // 接近中: 食いつき距離まで届いたら待ち時間を数え、経過したら食いつきを試みる
+        if (distance > fc.BiteDistance)
+        {
+            // まだ届いていないあいだは待ちを解除しておく（近づき直しで再抽選される）
+            biteWaitStarted = false;
+            return;
+        }
+
+        if (!biteWaitStarted)
+        {
+            biteWaitStarted = true;
+            biteWaitRemaining = SEED.Random.Range(biteDelayMin, SEED.Mathf.Max(biteDelayMin, biteDelayMax));
+        }
+
+        biteWaitRemaining -= dt;
+        if (biteWaitRemaining > 0f) { return; }
+
+        // 食いつきを試みる。既に別の魚が掛かっていれば false が返るので興味を失う。
+        if (fc.TryHook(this))
+        {
+            State = BehaviorState.Bite;
+            biteWaitStarted = false;
+            return;
+        }
+
+        BackToRoam(withCooldown: true);
+    }
+
+    /// <summary>回遊（既定の振る舞い）の移動。生成地点の周りを気ままに泳ぐ。</summary>
+    /// <param name="dt">このフレームの経過秒数。</param>
+    /// <param name="home">回遊の中心（生成地点）。</param>
+    private void UpdateRoam(float dt, SEED.Vector3 home)
+    {
         // 一定間隔でランダムに転回する
         turnTimer -= dt;
         if (turnTimer <= 0f)
@@ -149,16 +341,157 @@ public class Fish : SEEDScript
             targetHeadingRad = SEED.Mathf.Atan2(-dx, -dz);
         }
 
-        // 向きを目標方位へ指数補間し、その向きへ前進（高さは変えない）
-        float currentYawRad = transform.Rotation.y * DegToRad;
-        float delta = SEED.Mathf.Repeat(targetHeadingRad - currentYawRad + 3.14159265f, FullTurnRadians) - 3.14159265f;
-        float newYawRad = currentYawRad + delta * SEED.Mathf.Clamped01(turnLerpRate * dt);
+        SwimTowardHeading(targetHeadingRad, swimSpeed, dt);
+    }
+
+    /// <summary>
+    /// 餌へ近づく移動。餌の方位へ向き直しながら <see cref="approachSpeed"/> で前進する。
+    ///
+    /// 行動半径のクランプは掛けない（餌が行動半径の外にあっても寄れるようにする）。
+    /// FishManager の円環クランプについても <see cref="SetEngaged"/> で対象外にしてある。
+    /// </summary>
+    /// <param name="dt">このフレームの経過秒数。</param>
+    private void UpdateApproach(float dt)
+    {
+        if (FishingController.Current is not { BaitActive: true } fc) { return; }
+
+        var pos = transform.Position;
+        var bait = fc.BaitPosition;
+        float dx = bait.x - pos.x;
+        float dz = bait.z - pos.z;
+
+        // 真上に重なっているときは方位が定まらないので、いまの向きのまま進む
+        if (dx * dx + dz * dz > DistanceEpsilon * DistanceEpsilon)
+        {
+            targetHeadingRad = SEED.Mathf.Atan2(dx, dz);
+        }
+
+        SwimTowardHeading(targetHeadingRad, approachSpeed, dt);
+    }
+
+    /// <summary>
+    /// 食いつき中の追従。餌（ウキ）の <see cref="hookedDepthOffset"/> m 下に張り付き、
+    /// 餌のある向き（＝巻かれていく向き）を向く。
+    /// </summary>
+    /// <param name="dt">このフレームの経過秒数。</param>
+    private void UpdateBite(float dt)
+    {
+        if (FishingController.Current is not { } fc) { return; }
+
+        var pos = transform.Position;
+        var bait = fc.BaitPosition;
+
+        // 餌の方向（＝自分が引かれている向き）へ向き直す
+        float dx = bait.x - pos.x;
+        float dz = bait.z - pos.z;
+        if (dx * dx + dz * dz > DistanceEpsilon * DistanceEpsilon)
+        {
+            targetHeadingRad = SEED.Mathf.Atan2(dx, dz);
+        }
+        transform.Rotation = new SEED.Vector3(0f, SmoothYawRad(targetHeadingRad, dt) / DegToRad, 0f);
+
+        // 位置は餌へ完全追従（少し下）。ここだけは補間せず張り付かせる。
+        transform.Position = new SEED.Vector3(bait.x, bait.y - hookedDepthOffset, bait.z);
+    }
+
+    /// <summary>
+    /// 指定方位へ向きを補間しつつ、その向きへ前進する（高さは変えない）。
+    /// 回遊・接近で共通の移動処理。
+    /// </summary>
+    /// <param name="headingRad">目標方位（ラジアン、yaw = atan2(x, z) 規約）。</param>
+    /// <param name="speed">前進の速さ（m/s）。</param>
+    /// <param name="dt">このフレームの経過秒数。</param>
+    private void SwimTowardHeading(float headingRad, float speed, float dt)
+    {
+        float newYawRad = SmoothYawRad(headingRad, dt);
+        var pos = transform.Position;
 
         transform.Rotation = new SEED.Vector3(0f, newYawRad / DegToRad, 0f);
         transform.Position = new SEED.Vector3(
-            pos.x + SEED.Mathf.Sin(newYawRad) * swimSpeed * dt,
+            pos.x + SEED.Mathf.Sin(newYawRad) * speed * dt,
             pos.y,
-            pos.z + SEED.Mathf.Cos(newYawRad) * swimSpeed * dt);
+            pos.z + SEED.Mathf.Cos(newYawRad) * speed * dt);
+    }
+
+    /// <summary>
+    /// 現在の yaw を目標方位へ指数補間した結果（ラジアン）を返す。
+    /// 角度差は ±π へ畳んでから補間するので、遠回りに回らない。
+    /// </summary>
+    /// <param name="headingRad">目標方位（ラジアン）。</param>
+    /// <param name="dt">このフレームの経過秒数。</param>
+    private float SmoothYawRad(float headingRad, float dt)
+    {
+        float currentYawRad = transform.Rotation.y * DegToRad;
+        float delta = SEED.Mathf.Repeat(headingRad - currentYawRad + HalfTurnRadians, FullTurnRadians) - HalfTurnRadians;
+        return currentYawRad + delta * SEED.Mathf.Clamped01(turnLerpRate * dt);
+    }
+
+    /// <summary>2 点間の XZ 平面上の距離（高さの差は無視する）。</summary>
+    /// <param name="a">始点。</param>
+    /// <param name="b">終点。</param>
+    private static float HorizontalDistance(SEED.Vector3 a, SEED.Vector3 b)
+    {
+        float dx = b.x - a.x;
+        float dz = b.z - a.z;
+        return SEED.Mathf.Sqrt(dx * dx + dz * dz);
+    }
+
+    // ─── 餌との関わりの出入り ─────────────────────────────────
+
+    /// <summary>
+    /// 釣り上げ・リリース時にコントローラから呼ばれる。回遊へ戻し、
+    /// しばらく餌へ反応しないクールダウンを掛ける。
+    /// </summary>
+    public void ReleaseFromHook() => BackToRoam(withCooldown: true);
+
+    /// <summary>
+    /// 回遊へ戻す【Roam 復帰の唯一の出口】。餌との関わり登録も必ずここで外す。
+    /// </summary>
+    /// <param name="withCooldown">true なら <see cref="loseInterestSeconds"/> のクールダウンを掛ける。</param>
+    private void BackToRoam(bool withCooldown)
+    {
+        // 既に回遊中なら、登録解除だけ確認して抜ける（毎フレーム中心が動くのを防ぐ）
+        if (State == BehaviorState.Roam)
+        {
+            biteWaitStarted = false;
+            SetEngaged(FishingController.Current, engaged: false);
+            return;
+        }
+
+        State = BehaviorState.Roam;
+        if (withCooldown) { loseInterestRemaining = loseInterestSeconds; }
+        biteWaitStarted = false;
+        SetEngaged(FishingController.Current, engaged: false);
+
+        // 回遊の中心（生成地点）は<b>書き換えない</b>。
+        // 餌を追って出現円環の外まで出ている可能性があるが、中心を現在地へ移すと
+        // 「FishManager が円環内へ押し戻す ⇔ 魚が円環外の中心へ戻ろうとする」で
+        // 縁に張り付いてしまう。生成地点は必ず円環内なので、そのまま戻らせるのが正しい。
+    }
+
+    /// <summary>
+    /// 「餌に関わっている魚」としての登録／解除を切り替える。
+    /// 登録されているあいだ、<see cref="FishManager"/> の円環クランプの対象から外れる。
+    /// </summary>
+    /// <param name="fc">釣りコントローラ（null なら登録フラグを落とすだけ）。</param>
+    /// <param name="engaged">true = 登録 / false = 解除。</param>
+    private void SetEngaged(FishingController? fc, bool engaged)
+    {
+        if (engaged == engagedRegistered) { return; }
+
+        engagedRegistered = engaged;
+        if (fc is null) { return; }
+
+        if (engaged) { fc.RegisterEngaged(gameObject); }
+        else { fc.UnregisterEngaged(gameObject); }
+    }
+
+    /// <summary>
+    /// 破棄直前の後始末。餌との関わり登録を外す（釣り上げで破棄されるときの登録漏れを防ぐ）。
+    /// </summary>
+    public override void OnDestroy()
+    {
+        SetEngaged(FishingController.Current, engaged: false);
     }
 
     /// <summary>固定タイムステップの更新。</summary>

@@ -81,9 +81,33 @@ public class FishingController : SEEDScript
         /// <summary>巻き取り中。ウキが手前へ寄り、プレイヤーもウキの方へ歩く。</summary>
         Reeling,
 
-        /// <summary>釣果の演出中（ヒット機構の実装待ちのプレースホルダ）。</summary>
+        /// <summary>
+        /// 魚が食いついている（ヒット中）。
+        /// 巻き取りの操作は <see cref="Reeling"/> と完全に同じで、
+        /// ウキが <c>食いつき時のウキ沈み量</c> だけ沈み、掛かった魚がウキに追従する。
+        /// 手元まで巻き切ると <see cref="Result"/>（釣果）へ遷移する。
+        /// 糸のテンション／HP は未実装（釣り仕様の後続タスク）。
+        /// </summary>
+        Hooked,
+
+        /// <summary>釣果の演出中（<see cref="resultSeconds"/> 後に狙いへ自動復帰する暫定実装）。</summary>
         Result,
     }
+
+    // ─── 他スクリプトからの参照点（静的アクセサ）───────────────
+
+    /// <summary>
+    /// 現在シーンで動いている釣りコントローラ（実質シングルトン）。
+    ///
+    /// 魚は prefab から <c>GameObject.Instantiate</c> で動的生成されるため、
+    /// インスペクタの参照フィールドでコントローラを注入できない。そこで
+    /// <see cref="OnStart"/> で自分を登録し、<see cref="OnDestroy"/> で解除する。
+    ///
+    /// <b>ホットリロード</b>: スクリプトアセンブリが差し替わると静的フィールドごと
+    /// 作り直され、各スクリプトの <see cref="OnStart"/> が再実行されるので、
+    /// この参照も新しいインスタンスで貼り直される（古い値が残ることはない）。
+    /// </summary>
+    public static FishingController? Current { get; private set; } = null;
 
     /// <summary>現在の釣り状態（他スクリプトから参照する読み取り専用プロパティ）。</summary>
     public FishState State { get; private set; } = FishState.Idle;
@@ -372,6 +396,14 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "本体の左横歩きクリップ名")]
     private string playerWalkFishingLeftClip = "WalkFishingL";
 
+    /// <summary>魚が食いついているあいだ再生する竿クリップ名（竿 Animator に登録済み）。</summary>
+    [SerializeField(Label = "竿のヒットクリップ名")]
+    private string hookedClip = "Hooked_竿";
+
+    /// <summary>魚が食いついているあいだ再生するプレイヤー本体クリップ名（本体 Animator に登録済み）。</summary>
+    [SerializeField(Label = "本体のヒットクリップ名")]
+    private string playerHookedClip = "Hooked";
+
     /// <summary>竿クリップ切替時のクロスフェード秒数（0 で即時切替）。竿・本体の両方に使う。</summary>
     [SerializeField(Label = "切替フェード(秒)")]
     private float fadeSeconds = 0.15f;
@@ -589,11 +621,59 @@ public class FishingController : SEEDScript
     /// <summary><see cref="resolvedCameraTransform"/> の検索を試行済みか（失敗も含め 1 度だけ）。</summary>
     private bool cameraLookupAttempted = false;
 
+    // ─── 餌（魚の食いつき）───────────────────────────────────
+
     /// <summary>
-    /// 魚が掛かっているか（<b>ヒット判定は未実装のプレースホルダ</b>）。
-    /// true になれば巻き取り完了時に <see cref="FishState.Result"/> へ遷移する。
+    /// 餌（ウキ）の影響半径（メートル）。
+    /// 魚は「自分の餌の感知距離 ＋ この値」以内に入った餌に気づいて寄ってくる
+    /// （餌そのものの匂いの強さにあたる、釣り側のパラメータ）。
     /// </summary>
-    private bool hookedFish = false;
+    [Header("餌"), SerializeField(Label = "餌の影響半径(m)")]
+    private float baitInfluenceRadius = 2f;
+
+    /// <summary>
+    /// 食いつき距離（メートル）。魚と餌の水平距離がこれ以下になると
+    /// 食いつき待ち（<c>Fish</c> 側の待ち時間）へ入る。
+    /// </summary>
+    [SerializeField(Label = "食いつき距離(m)")]
+    private float biteDistance = 0.4f;
+
+    /// <summary>
+    /// 食いつき時のウキ沈み量（メートル）。ヒット中はウキの水面高さから
+    /// この分だけ下げて「引き込まれている」見た目を作る。
+    /// </summary>
+    [SerializeField(Label = "食いつき時のウキ沈み量(m)")]
+    private float biteDipDepth = 0.15f;
+
+    /// <summary>
+    /// 釣果表示（<see cref="FishState.Result"/>）を維持する秒数。
+    /// 経過したら自動で狙い（<see cref="FishState.Aiming"/>）へ戻り、続けて釣れるようにする。
+    /// <b>本来の釣果画面が入るまでの暫定処理</b>。
+    /// </summary>
+    [SerializeField(Label = "釣果表示の秒数")]
+    private float resultSeconds = 2f;
+
+    /// <summary>
+    /// 現在掛かっている魚（null = 掛かっていない）。
+    /// <see cref="TryHook"/> で束縛し、釣り上げ・リリース・キャンセルで必ず解除する。
+    /// </summary>
+    private Fish? hookedFish = null;
+
+    /// <summary>釣果表示の残り秒数（<see cref="FishState.Result"/> のあいだだけ減る）。</summary>
+    private float resultElapsed = 0f;
+
+    /// <summary>
+    /// いま餌に関わっている（寄っている・掛かっている）魚のエンティティ集合。
+    ///
+    /// <see cref="FishManager"/> は魚を出現円環の内側へ毎フレーム押し戻すため、
+    /// 餌へ寄っている魚まで引き戻されてしまう。魚は <see cref="RegisterEngaged"/> /
+    /// <see cref="UnregisterEngaged"/> で自分を登録し、FishManager は
+    /// <see cref="IsEngaged"/> が true の個体をクランプ対象から外す。
+    ///
+    /// キーは (エンティティ添字, 世代) の組。<c>SEED.GameObject</c> は等価比較を
+    /// 実装していないため、値型タプルで確実に一致判定できるようにしている。
+    /// </summary>
+    private readonly System.Collections.Generic.HashSet<(uint Index, uint Generation)> engagedFish = new();
 
     // ─── ライフサイクル ───────────────────────────────────────
 
@@ -603,6 +683,9 @@ public class FishingController : SEEDScript
     /// </summary>
     public override void OnStart()
     {
+        // 動的生成される魚から参照できるよう、自分を静的アクセサへ登録する。
+        Current = this;
+
         if (line is { } l && l.IsValid)
         {
             // 竿先（プレイヤー側）とウキ（別アクタ）を結ぶので、点列はワールド座標で渡す。
@@ -616,6 +699,103 @@ public class FishingController : SEEDScript
         // 巻き方向インジケータも同様に隠しておく。
         ParkReelArrow();
     }
+
+    /// <summary>
+    /// 破棄直前の後始末。掛かっている魚を解放し、静的アクセサの参照を落とす。
+    /// 別インスタンスが既に登録済みなら上書きしない（自分の分だけ取り消す）。
+    /// </summary>
+    public override void OnDestroy()
+    {
+        ReleaseHook();
+        engagedFish.Clear();
+        if (ReferenceEquals(Current, this)) { Current = null; }
+    }
+
+    // ─── 魚から参照する公開 API ───────────────────────────────
+
+    /// <summary>
+    /// 餌（ウキ）が水中にあって、魚が食いつける状態か。
+    /// 着水後の待機（<see cref="FishState.Floating"/>）と巻き取り中
+    /// （<see cref="FishState.Reeling"/>）だけが対象で、飛翔中やキャスト前は false。
+    /// </summary>
+    public bool BaitActive
+        => State is FishState.Floating or FishState.Reeling
+        && uki is { IsValid: true };
+
+    /// <summary>餌（ウキ）のワールド位置。<see cref="BaitActive"/> が false のときの値は無意味。</summary>
+    public SEED.Vector3 BaitPosition
+        => uki is { IsValid: true } floatTf ? floatTf.Position : SEED.Vector3.Zero;
+
+    /// <summary>餌の影響半径（メートル）。魚の感知距離に加算される。</summary>
+    public float BaitInfluenceRadius => baitInfluenceRadius;
+
+    /// <summary>食いつき距離（メートル）。</summary>
+    public float BiteDistance => biteDistance;
+
+    /// <summary>いま魚が掛かっているか。</summary>
+    public bool IsHooked => hookedFish is not null;
+
+    /// <summary>
+    /// 魚が餌に食いつこうとしたときに呼ぶ。掛かれば true。
+    ///
+    /// 餌が有効でない、または既に別の魚が掛かっている場合は false を返す
+    /// （呼んだ側は回遊へ戻る）。成立時はヒット状態（<see cref="FishState.Hooked"/>）へ
+    /// 遷移し、竿・本体をヒット用クリップへ切り替える。
+    /// </summary>
+    /// <param name="fish">食いつこうとしている魚。</param>
+    /// <returns>掛かったら true。</returns>
+    public bool TryHook(Fish fish)
+    {
+        if (!BaitActive || IsHooked) { return false; }
+
+        hookedFish = fish;
+        State = FishState.Hooked;
+        // ヒット中はマウスの振りを読まないのでカーソルロックを引き直す（解除される）。
+        UpdateCursorLock();
+        CrossFadeBoth(hookedClip, playerHookedClip);
+        SEED.Debug.Log($"[Fishing] ヒット! {fish.DisplayName}（大きさ {fish.Size:F2}）");
+        return true;
+    }
+
+    /// <summary>
+    /// 掛かっている魚を逃がす（外部・内部の共通出口）。掛かっていなければ何もしない。
+    /// 状態は変えない（呼び出し側が Idle / Aiming などへ遷移させる）。
+    /// </summary>
+    public void ReleaseHook()
+    {
+        if (hookedFish is not { } fish) { return; }
+
+        hookedFish = null;
+        fish.ReleaseFromHook();
+    }
+
+    /// <summary>
+    /// 餌に関わっている魚として登録する（円環クランプの除外対象になる）。
+    /// 同じ魚を重ねて登録しても安全。
+    /// </summary>
+    /// <param name="fish">登録する魚のアクタ。</param>
+    public void RegisterEngaged(SEED.GameObject fish)
+    {
+        if (!fish.IsValid) { return; }
+        engagedFish.Add((fish.Entity.Index, fish.Entity.Generation));
+    }
+
+    /// <summary>餌に関わっている魚の登録を外す（回遊へ戻ったとき・破棄されたとき）。</summary>
+    /// <param name="fish">登録を外す魚のアクタ。</param>
+    public void UnregisterEngaged(SEED.GameObject fish)
+    {
+        if (!fish.IsValid) { return; }
+        engagedFish.Remove((fish.Entity.Index, fish.Entity.Generation));
+    }
+
+    /// <summary>
+    /// 指定の魚が餌に関わっている（寄っている・掛かっている）か。
+    /// <see cref="FishManager"/> の円環クランプが除外判定に使う。
+    /// </summary>
+    /// <param name="fish">判定する魚のアクタ。</param>
+    /// <returns>関わっていれば true。</returns>
+    public bool IsEngaged(SEED.GameObject fish)
+        => fish.IsValid && engagedFish.Contains((fish.Entity.Index, fish.Entity.Generation));
 
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
@@ -689,11 +869,13 @@ public class FishingController : SEEDScript
 
             case FishState.Floating:
             case FishState.Reeling:
+            case FishState.Hooked:
+                // ヒット中も巻き取りの操作系（ホイール・A/D 操舵）はまったく同じ。
                 UpdateReeling(ctx.DeltaTime);
                 break;
 
             case FishState.Result:
-                // 釣果演出（ヒット機構の実装待ち）。今は何もしない。
+                UpdateResult(ctx.DeltaTime);
                 break;
         }
 
@@ -743,7 +925,7 @@ public class FishingController : SEEDScript
     {
         State = FishState.Aiming;
         ResetGesture();
-        hookedFish = false;
+        ReleaseHook();                 // 掛かったままの魚が居れば逃がす
         ParkFloatHidden();
         HideCastPreview();
         // 直前に PlayerMove.EnterFishingStance が本体アニメを触っているのでラッチを捨てる
@@ -762,7 +944,7 @@ public class FishingController : SEEDScript
     {
         State = FishState.Idle;
         ResetGesture();
-        hookedFish = false;
+        ReleaseHook();                 // 姿勢解除・中断でも必ず魚を逃がす
         // この後 PlayerMove 側（ExitFishingStance・通常移動のアニメ）が本体を触るのでラッチを捨てる
         ResetPlayerClipLatch();
         ParkFloatHidden();
@@ -1084,11 +1266,13 @@ public class FishingController : SEEDScript
 
         float amount = ReadReelAmount();
 
-        // 巻き入力の有無で Floating ⇔ Reeling を往復する
+        // 巻き入力の有無で Floating ⇔ Reeling を往復する。
+        // ヒット中（Hooked）は状態もクリップもヒット用のまま固定し、往復させない
+        // （巻き取りの移動処理だけを同じロジックで走らせる）。
         if (amount > ReelInputEpsilon)
         {
             reelIdleElapsed = 0f;
-            if (State != FishState.Reeling)
+            if (!IsHooked && State != FishState.Reeling)
             {
                 State = FishState.Reeling;
                 CrossFadeBoth(reelClip, playerReelClip);
@@ -1097,7 +1281,7 @@ public class FishingController : SEEDScript
         else
         {
             reelIdleElapsed += deltaTime;
-            if (State == FishState.Reeling && reelIdleElapsed > reelIdleSeconds)
+            if (!IsHooked && State == FishState.Reeling && reelIdleElapsed > reelIdleSeconds)
             {
                 State = FishState.Floating;
                 CrossFadeBoth(floatClip, playerFloatClip);
@@ -1147,11 +1331,11 @@ public class FishingController : SEEDScript
         // このフレームの移動量を「残りの水平距離」でクランプし、基準点を追い越さないようにする
         float step = SEED.Mathf.Min(amount, remaining);
         var next = floatTf.Position + dir * step;
-        SetFloatPosition(new SEED.Vector3(next.x, WaterSurfaceY() + BobOffset(), next.z));
+        SetFloatPosition(new SEED.Vector3(next.x, FloatSurfaceY(), next.z));
 
         // プレイヤーはウキに一番近い経路上の点へ歩いて付いていく（移動の実装は PlayerMove の責務）。
         // 戻り値は「正面から見てどちらへ動いたか」なので、そのまま横歩きアニメの選択に使う。
-        if (State == FishState.Reeling && playerMove is { } pm)
+        if ((State == FishState.Reeling || IsHooked) && playerMove is { } pm)
         {
             int lateral = pm.MoveTowardWorldPoint(floatTf.Position, deltaTime);
             UpdatePlayerReelBodyClip(lateral, amount);
@@ -1181,22 +1365,32 @@ public class FishingController : SEEDScript
         if (lateral == PlayerMove.LateralRight) { SetPlayerClip(playerWalkFishingRightClip); return; }
         if (lateral == PlayerMove.LateralLeft) { SetPlayerClip(playerWalkFishingLeftClip); return; }
 
-        // 停止中: 巻いていれば巻き取りアニメ、巻いていなければ待ちアニメへ戻す
+        // 停止中: ヒット中はヒットアニメ固定。それ以外は巻き入力の有無で巻き取り／待ちへ。
+        if (IsHooked) { SetPlayerClip(playerHookedClip); return; }
         SetPlayerClip(reelAmount > ReelInputEpsilon ? playerReelClip : playerFloatClip);
     }
 
     /// <summary>
     /// 巻き取り完了時の分岐。
-    /// 魚が掛かっていれば釣果演出（<see cref="FishState.Result"/>）、
+    /// 魚が掛かっていれば釣果（<see cref="FishState.Result"/>）、
     /// 何も掛かっていなければ再びキャスト待ちへ戻る。
     /// </summary>
     private void FinishReeling()
     {
-        // ── ヒット機構の実装待ち: ここが「釣れた」分岐になる ──
-        if (hookedFish)
+        // ── 釣り上げ成立 ──
+        if (hookedFish is { } caught)
         {
+            SEED.Debug.Log($"[Fishing] 釣り上げ: {caught.DisplayName}（大きさ {caught.Size:F2}）");
+
+            // 釣り上げた魚はシーンから消す（破棄はフレーム末尾に遅延適用される）。
+            // 破棄前に円環クランプの除外登録も外しておく。
+            var caughtObject = caught.Actor;
+            UnregisterEngaged(caughtObject);
+            caughtObject.Destroy();
+
+            hookedFish = null;           // ReleaseFromHook は呼ばない（この個体は消えるため）
             State = FishState.Result;
-            SEED.Debug.Log("[Fishing] Result（釣果演出）");
+            resultElapsed = 0f;
             return;
         }
 
@@ -1209,6 +1403,28 @@ public class FishingController : SEEDScript
         // 再び振りを読む区間へ戻るのでロックし直す（左クリック押しっぱなしでの連続キャスト対応）。
         UpdateCursorLock();
         SEED.Debug.Log("[Fishing] Aiming（空振り）");
+    }
+
+    /// <summary>
+    /// 釣果表示（<see cref="FishState.Result"/>）の更新。
+    ///
+    /// <b>本来の釣果画面が入るまでの暫定処理</b>: <see cref="resultSeconds"/> 経過したら
+    /// 自動で狙い（<see cref="FishState.Aiming"/>）へ戻し、続けて釣れるようにする。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateResult(float deltaTime)
+    {
+        resultElapsed += deltaTime;
+        if (resultElapsed < resultSeconds) { return; }
+
+        // 空振り時と同じ後片付けで狙いへ戻る。
+        State = FishState.Aiming;
+        ResetGesture();
+        ParkFloatHidden();
+        HideLine();
+        CrossFadeBoth(floatClip, playerFloatClip);
+        UpdateCursorLock();
+        SEED.Debug.Log("[Fishing] Aiming（釣果表示おわり）");
     }
 
     /// <summary>
@@ -1330,6 +1546,13 @@ public class FishingController : SEEDScript
     /// <summary>水面に浮くウキの上下揺れのオフセット（メートル）。</summary>
     private float BobOffset()
         => bobAmplitude * SEED.Mathf.Sin(bobElapsed * bobFrequency * TwoPi);
+
+    /// <summary>
+    /// ウキを置くべき Y（ワールド）を返す【ウキ高さの唯一の算出点】。
+    /// 水面 ＋ 上下揺れ。ヒット中は <see cref="biteDipDepth"/> だけ沈める。
+    /// </summary>
+    private float FloatSurfaceY()
+        => WaterSurfaceY() + BobOffset() - (IsHooked ? biteDipDepth : 0f);
 
     /// <summary>ウキを指定ワールド位置へ移動する（未設定・無効なら何もしない）。</summary>
     /// <param name="position">移動先のワールド位置。</param>

@@ -424,10 +424,18 @@ public class FishManager : SEEDScript
     /// 魚は Fish スクリプトが「生成地点±行動半径」で自由に回遊するため、
     /// 円環の縁で生成された個体は隣の水域へ出てしまう。ここで中心からの方位は
     /// 保ったまま距離だけ [内側半径, 外側半径] にクランプする（高さは触らない）。
+    ///
+    /// <b>ただし餌に関わっている魚は除外する</b>。餌（ウキ）へ寄っている・食いついている
+    /// 個体をここで押し戻すと、円環の外にある餌へ永久に届かない・ヒット中に魚が
+    /// ウキから引き剥がされる、といった不具合になる。除外対象かどうかは
+    /// <see cref="FishingController.IsEngaged"/> に問い合わせる
+    /// （魚は動的生成なので、参照は静的アクセサ <c>FishingController.Current</c> から得る）。
     /// </summary>
     private void ClampFishToRings()
     {
         var center = CenterPosition();
+        // 釣りコントローラ（未起動なら null）。毎フレーム引き直す（ホットリロードで実体が変わるため）。
+        var fishing = FishingController.Current;
         int levelCount = spawnedFish.Count < levels.Count ? spawnedFish.Count : levels.Count;
         for (int i = 0; i < levelCount; i++)
         {
@@ -436,6 +444,9 @@ public class FishManager : SEEDScript
             var alive = spawnedFish[i];
             for (int k = 0; k < alive.Count; k++)
             {
+                // 餌に寄っている／食いついている魚はクランプしない（上のコメント参照）
+                if (fishing is { } fc && fc.IsEngaged(alive[k])) { continue; }
+
                 if (alive[k].GetComponent<SEED.Transform>() is not { } t || !t.IsValid) { continue; }
 
                 var pos = t.Position;

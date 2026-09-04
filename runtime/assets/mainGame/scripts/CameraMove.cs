@@ -251,7 +251,8 @@ public class CameraMove : SEEDScript
     private bool IsFloatOut()
         => fishing is { } f && f.State is FishingController.FishState.Casting
                                       or FishingController.FishState.Floating
-                                      or FishingController.FishState.Reeling;
+                                      or FishingController.FishState.Reeling
+                                      or FishingController.FishState.Hooked;
 
     /// <summary>
     /// 移動に応じた目標ロール（度）を返す。
