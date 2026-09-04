@@ -803,6 +803,25 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "釣果表示の秒数")]
     private float resultSeconds = 2f;
 
+    // ─── 効果音 ─────────────────────────────
+
+    /// <summary>前アタリ（ウキが小さく沈む瞬間）に鳴らす効果音のアセットパス。空文字なら鳴らさない。</summary>
+    [Header("効果音")]
+    [SerializeField(Label = "前アタリの効果音")]
+    private string nibbleSePath = "assets://mainGame/audios/tstsuki.mp3";
+
+    /// <summary>前アタリ効果音の音量（0〜1）。</summary>
+    [SerializeField(Label = "前アタリの音量")]
+    private float nibbleSeVolume = 1f;
+
+    /// <summary>本アタリ（<see cref="FishState.HookWindow"/> 開始）に鳴らす効果音のアセットパス。空文字なら鳴らさない。</summary>
+    [SerializeField(Label = "本アタリの効果音")]
+    private string hookSePath = "assets://mainGame/audios/hit.mp3";
+
+    /// <summary>本アタリ効果音の音量（0〜1）。</summary>
+    [SerializeField(Label = "本アタリの音量")]
+    private float hookSeVolume = 1f;
+
     /// <summary>
     /// 現在掛かっている魚（null = 掛かっていない）。
     /// <see cref="TryHook"/> で束縛し、釣り上げ・リリース・キャンセルで必ず解除する。
@@ -1884,6 +1903,7 @@ public class FishingController : SEEDScript
                 nibbleRemaining--;
                 nibbleDipElapsed = 0f;
                 nibbleTimer = NextNibbleInterval();
+                PlaySe(nibbleSePath, nibbleSeVolume);
                 return;
             }
 
@@ -1919,7 +1939,20 @@ public class FishingController : SEEDScript
         reactionElapsed = 0f;
         nibbleDipElapsed = NoDipElapsed;
         ResetHookSwing();
+        PlaySe(hookSePath, hookSeVolume);
         SEED.Debug.Log($"[Fishing] 本アタリ! {fish.DisplayName}");
+    }
+
+    /// <summary>
+    /// アタリ演出用の単発効果音を再生する共通ヘルパー。
+    /// <paramref name="path"/> が空文字／null の場合は何もしない（未設定＝無音を許容するため）。
+    /// </summary>
+    /// <param name="path">再生するアセットパス（例: "assets://mainGame/audios/hit.mp3"）。</param>
+    /// <param name="volume">再生音量（0〜1）。</param>
+    private static void PlaySe(string path, float volume)
+    {
+        if (string.IsNullOrEmpty(path)) { return; }
+        SEED.Audio.Play(path, volume);
     }
 
     /// <summary>
