@@ -10,7 +10,7 @@
     "pitch": 0.13133223,
     "fov_deg": 25.0,
     "far": 1000.0,
-    "speed": 25.798912
+    "speed": 5.0
   },
   "shading_params": {
     "toon_rim_strength": [
@@ -551,6 +551,10 @@
                 "castMarker": "CastMarker",
                 "castMarkerSprite": "CastMarkerArrow|Sprite",
                 "castWindupSeconds": "0.500",
+                "judgeExcellentSprite": "JudgeExcellent|Sprite",
+                "judgeGreatSprite": "JudgeGreat|Sprite",
+                "judgeMissSprite": "JudgeMiss|Sprite",
+                "judgeNiceSprite": "JudgeNice|Sprite",
                 "line": "Uki|LineRenderer",
                 "lineSegments": "32",
                 "maxCastDistance": "40.000",
@@ -2048,7 +2052,7 @@
                   "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\FishManager.cs",
                   "fields": {
                     "centerActor": "Hut",
-                    "levels": "[{\"distanceMinMarker\":\"start\",\"distanceMaxMarker\":\"end(1)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv1/iwashi.actor\",\"assets://mainGame/actors/Fish/Lv1/kumanomi.actor\",\"assets://mainGame/actors/Fish/Lv1/nanyouhagi.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv1/tatsunootoshigo.actor\"],\"maintainCount\":8},{\"distanceMinMarker\":\"start(1)\",\"distanceMaxMarker\":\"end(2)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv2/aji.actor\",\"assets://mainGame/actors/Fish/Lv2/kawahagi.actor\",\"assets://mainGame/actors/Fish/Lv2/tobiuo.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv2/sacabambaspis.actor\"],\"maintainCount\":12},{\"distanceMinMarker\":\"start(2)\",\"distanceMaxMarker\":\"end(3)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv3/akaei.actor\",\"assets://mainGame/actors/Fish/Lv3/ika.actor\",\"assets://mainGame/actors/Fish/Lv3/tako.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv3/mendako.actor\"],\"maintainCount\":16},{\"distanceMinMarker\":\"start(3)\",\"distanceMaxMarker\":\"end(4)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv4/ishigakidai.actor\",\"assets://mainGame/actors/Fish/Lv4/madai.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv4/chouchinankou.actor\"],\"maintainCount\":24},{\"distanceMinMarker\":\"start(4)\",\"distanceMaxMarker\":\"end(5)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv5/hamachi.actor\",\"assets://mainGame/actors/Fish/Lv5/katsuo.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv5/iseebi.actor\"],\"maintainCount\":24},{\"distanceMinMarker\":\"start(5)\",\"distanceMaxMarker\":\"end(6)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv6/maguro.actor\",\"assets://mainGame/actors/Fish/Lv6/napoleonfish.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv6/manta.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(6)\",\"distanceMaxMarker\":\"end(7)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv7/kajiki.actor\",\"assets://mainGame/actors/Fish/Lv7/manbou.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv7/coelacanth.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(7)\",\"distanceMaxMarker\":\"end(8)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv8/hohojirozame.actor\",\"assets://mainGame/actors/Fish/Lv8/shumokuzame.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv8/ryuuguunotsukai.actor\"],\"maintainCount\":64},{\"distanceMinMarker\":\"start(8)\",\"distanceMaxMarker\":\"end(9)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv9/daiouika.actor\",\"assets://mainGame/actors/Fish/Lv9/jinbeezame.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv9/megalodon.actor\"],\"maintainCount\":64},{\"distanceMinMarker\":\"start(9)\",\"distanceMaxMarker\":\"end(10)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv10/kaiju.actor\"],\"rareFishPrefabs\":[],\"maintainCount\":1}]",
+                    "levels": "[{\"distanceMinMarker\":\"start\",\"distanceMaxMarker\":\"end(1)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv1/iwashi.actor\",\"assets://mainGame/actors/Fish/Lv1/kumanomi.actor\",\"assets://mainGame/actors/Fish/Lv1/nanyouhagi.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv1/tatsunootoshigo.actor\"],\"maintainCount\":24},{\"distanceMinMarker\":\"start(1)\",\"distanceMaxMarker\":\"end(2)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv2/aji.actor\",\"assets://mainGame/actors/Fish/Lv2/kawahagi.actor\",\"assets://mainGame/actors/Fish/Lv2/tobiuo.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv2/sacabambaspis.actor\"],\"maintainCount\":12},{\"distanceMinMarker\":\"start(2)\",\"distanceMaxMarker\":\"end(3)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv3/akaei.actor\",\"assets://mainGame/actors/Fish/Lv3/ika.actor\",\"assets://mainGame/actors/Fish/Lv3/tako.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv3/mendako.actor\"],\"maintainCount\":16},{\"distanceMinMarker\":\"start(3)\",\"distanceMaxMarker\":\"end(4)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv4/ishigakidai.actor\",\"assets://mainGame/actors/Fish/Lv4/madai.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv4/chouchinankou.actor\"],\"maintainCount\":24},{\"distanceMinMarker\":\"start(4)\",\"distanceMaxMarker\":\"end(5)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv5/hamachi.actor\",\"assets://mainGame/actors/Fish/Lv5/katsuo.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv5/iseebi.actor\"],\"maintainCount\":24},{\"distanceMinMarker\":\"start(5)\",\"distanceMaxMarker\":\"end(6)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv6/maguro.actor\",\"assets://mainGame/actors/Fish/Lv6/napoleonfish.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv6/manta.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(6)\",\"distanceMaxMarker\":\"end(7)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv7/kajiki.actor\",\"assets://mainGame/actors/Fish/Lv7/manbou.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv7/coelacanth.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(7)\",\"distanceMaxMarker\":\"end(8)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv8/hohojirozame.actor\",\"assets://mainGame/actors/Fish/Lv8/shumokuzame.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv8/ryuuguunotsukai.actor\"],\"maintainCount\":64},{\"distanceMinMarker\":\"start(8)\",\"distanceMaxMarker\":\"end(9)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv9/daiouika.actor\",\"assets://mainGame/actors/Fish/Lv9/jinbeezame.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv9/megalodon.actor\"],\"maintainCount\":64},{\"distanceMinMarker\":\"start(9)\",\"distanceMaxMarker\":\"end(10)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv10/kaiju.actor\"],\"rareFishPrefabs\":[],\"maintainCount\":1}]",
                     "spawnHeight": "0.000"
                   }
                 }
@@ -11659,6 +11663,257 @@
               "children": []
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "FishingUI",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Canvas",
+          "component": {
+            "type": "CanvasComponent",
+            "data": {
+              "width": 1920.0,
+              "height": 1080.0,
+              "auto_scale": true,
+              "viewport_ref": {
+                "type": "main_camera"
+              },
+              "gravity_mode": "world_down",
+              "draw_zone": "foreground",
+              "pivot": [
+                0.0,
+                0.0
+              ]
+            }
+          }
+        }
+      ],
+      "children": [
+        {
+          "name": "JudgeExcellent",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/judge_excellent.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 348.0,
+                  "height": 70.0,
+                  "layer": 0,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "JudgeGreat",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/judge_great.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 211.0,
+                  "height": 70.0,
+                  "layer": 0,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "JudgeNice",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/judge_nice.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 150.0,
+                  "height": 70.0,
+                  "layer": 0,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "JudgeMiss",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/judge_miss.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 175.0,
+                  "height": 70.0,
+                  "layer": 0,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
         }
       ]
     }

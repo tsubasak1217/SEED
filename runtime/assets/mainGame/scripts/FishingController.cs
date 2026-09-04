@@ -32,8 +32,15 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// カメラ構図は CameraMove が本スクリプトの <see cref="State"/> を見て切り替える
 /// （単一責任: 移動＝PlayerMove / 構図＝CameraMove / 釣り＝本スクリプト）。
 ///
-/// <b>ヒット判定は未実装</b>。<see cref="hookedFish"/> のプレースホルダと
-/// <see cref="FishState.Result"/> への分岐だけを用意してある。
+/// <b>アタリと合わせ（どうぶつの森方式）</b>
+/// 魚が餌へ届くと <see cref="BeginNibbling"/> で前アタリ（コツコツ）が 1〜4 回起き、
+/// ウキが <see cref="nibbleDipDepth"/> だけ小さく沈む。撃ち切ってさらに 1 間隔経つと
+/// 本アタリ（<see cref="biteDipDepth"/> の大きな沈み込み）と反応受付
+/// （<see cref="FishState.HookWindow"/>）が始まる。マウスを振る（合わせる）と
+/// 反応時間から Excellent / Great / Nice / Miss を判定し、成功なら従来の
+/// ヒット（<see cref="FishState.Hooked"/>）へ、失敗なら魚が逃げて待機へ戻る。
+/// 判定は <see cref="LastJudgement"/> に残り、画面中央へ判定画像を出す。
+/// アタリ〜合わせのあいだ巻き取り入力（ホイール・A/D）は受け付けない。
 /// </summary>
 public class FishingController : SEEDScript
 {
@@ -48,6 +55,11 @@ public class FishingController : SEEDScript
     /// Windup  --右へ振る（累積 >= castSwingThresholdPx）--> Casting
     /// Windup  --左クリック解放--> Idle（振りかぶりを取り消して移動へ）
     /// Casting --着水--> Floating --巻き入力--> Reeling --手元まで--> Aiming（空振り）/ Result
+    /// Floating/Reeling --魚が BeginNibbling--> Nibbling（前アタリ）
+    /// Nibbling --前アタリを撃ち切り＋1 間隔--> HookWindow（本アタリ・反応受付）
+    /// Nibbling --早すぎる合わせ--> Floating（Miss。魚は逃げる）
+    /// HookWindow --niceSeconds 以内に合わせ--> Hooked（Excellent/Great/Nice）
+    /// HookWindow --遅い合わせ／時間切れ--> Floating（Miss。魚は逃げる）
     /// Aiming（巻き取り後）--左クリックを離していれば即--> Idle
     /// </code>
     ///
@@ -78,6 +90,21 @@ public class FishingController : SEEDScript
         /// <summary>着水後。ウキが水面で待機している（アタリ待ち）。</summary>
         Floating,
 
+        /// <summary>
+        /// 前アタリ（コツコツ）の最中。魚が餌をつついてウキが小さく沈む。
+        /// <b>まだ食っていない</b>ので、ここで合わせると早合わせ＝<see cref="HookJudgement.Miss"/>。
+        /// この状態のあいだ巻き取り入力（ホイール・A/D）は一切受け付けない。
+        /// </summary>
+        Nibbling,
+
+        /// <summary>
+        /// 本アタリ（大きくウキが沈んだ）直後の反応受付。
+        /// <see cref="niceSeconds"/> 以内にマウスを振る（合わせる）と反応時間で
+        /// Excellent / Great / Nice を判定してヒットへ移る。時間切れは Miss。
+        /// この状態のあいだ巻き取り入力（ホイール・A/D）は一切受け付けない。
+        /// </summary>
+        HookWindow,
+
         /// <summary>巻き取り中。ウキが手前へ寄り、プレイヤーもウキの方へ歩く。</summary>
         Reeling,
 
@@ -92,6 +119,30 @@ public class FishingController : SEEDScript
 
         /// <summary>釣果の演出中（<see cref="resultSeconds"/> 後に狙いへ自動復帰する暫定実装）。</summary>
         Result,
+    }
+
+    /// <summary>
+    /// 合わせ（フッキング）の判定結果。
+    /// 反応時間が短いほど良い評価になり、糸 HP ボーナスなどの後続仕様で参照する。
+    /// <see cref="FishState"/> と同じ理由で本クラスの入れ子として定義する
+    /// （外部からは <c>FishingController.HookJudgement</c>）。
+    /// </summary>
+    public enum HookJudgement
+    {
+        /// <summary>未判定（まだ 1 度も合わせていない／表示なし）。</summary>
+        None,
+
+        /// <summary>最速の合わせ（<see cref="excellentSeconds"/> 以内）。</summary>
+        Excellent,
+
+        /// <summary>速い合わせ（<see cref="greatSeconds"/> 以内）。</summary>
+        Great,
+
+        /// <summary>間に合った合わせ（<see cref="niceSeconds"/> 以内）。</summary>
+        Nice,
+
+        /// <summary>早合わせ・遅すぎ・時間切れ（魚は逃げる）。</summary>
+        Miss,
     }
 
     // ─── 他スクリプトからの参照点（静的アクセサ）───────────────
@@ -111,6 +162,12 @@ public class FishingController : SEEDScript
 
     /// <summary>現在の釣り状態（他スクリプトから参照する読み取り専用プロパティ）。</summary>
     public FishState State { get; private set; } = FishState.Idle;
+
+    /// <summary>
+    /// 直近の合わせ判定（糸 HP ボーナスなど後続仕様のための公開値）。
+    /// 前アタリ開始時に <see cref="HookJudgement.None"/> へ戻し、合わせの成否で確定する。
+    /// </summary>
+    public HookJudgement LastJudgement { get; private set; } = HookJudgement.None;
 
     // ゲーム向けエンジン API（Mathf/Vector3/Time/Input/Debug など）は SEED 名前空間にある。
     // System と型名が衝突するため using は付けず「SEED.」で修飾する（docs/scripting_api.md）。
@@ -134,6 +191,15 @@ public class FishingController : SEEDScript
 
     /// <summary>0 除算を避けるための「実質 0」しきい値（しきい値・周期などの分母に使う）。</summary>
     private const float DivideEpsilon = 1e-4f;
+
+    /// <summary>「ウキが沈んでいない」ことを表す沈みタイマーの番人値（負値＝無効）。</summary>
+    private const float NoDipElapsed = -1f;
+
+    /// <summary>合わせ判定で「マウスが動いた」とみなす 1 フレームの最小移動量（px）。</summary>
+    private const float SwingMoveEpsilonPx = 0.5f;
+
+    /// <summary>SEED.Random.Range(int, int) の上限は排他なので、回数の上限に足す 1。</summary>
+    private const int InclusiveUpperBound = 1;
 
     /// <summary>ピンポン往復 1 周（往路＋復路）の長さ。<c>PingPong(u, 1)</c> は u が 2 で 1 周する。</summary>
     private const float PingPongCycleUnits = 2f;
@@ -645,6 +711,90 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "食いつき時のウキ沈み量(m)")]
     private float biteDipDepth = 0.15f;
 
+    // ─── アタリ（前アタリ〜本アタリ）───────────────────────────
+
+    /// <summary>前アタリ（コツコツ）の回数の下限。実回数はこの範囲の一様乱数。</summary>
+    [Header("アタリ"), SerializeField(Label = "前アタリの最小回数")]
+    private int nibbleCountMin = 1;
+
+    /// <summary>前アタリの回数の上限（この値を含む）。</summary>
+    [SerializeField(Label = "前アタリの最大回数")]
+    private int nibbleCountMax = 4;
+
+    /// <summary>前アタリ 1 回ごとの間隔の下限（秒）。本アタリまでの間隔にも使う。</summary>
+    [SerializeField(Label = "アタリ間隔の最小(秒)")]
+    private float nibbleIntervalMin = 0.6f;
+
+    /// <summary>前アタリ 1 回ごとの間隔の上限（秒）。</summary>
+    [SerializeField(Label = "アタリ間隔の最大(秒)")]
+    private float nibbleIntervalMax = 1.6f;
+
+    /// <summary>前アタリ 1 回でウキが沈む量（メートル）。本アタリより小さくする。</summary>
+    [SerializeField(Label = "前アタリのウキ沈み量(m)")]
+    private float nibbleDipDepth = 0.08f;
+
+    /// <summary>前アタリ 1 回の沈み〜浮き上がりに掛ける秒数（山なりに沈んで戻る）。</summary>
+    [SerializeField(Label = "前アタリの沈み時間(秒)")]
+    private float nibbleDipSeconds = 0.25f;
+
+    // ─── 合わせ（フッキング）─────────────────────────────────
+
+    /// <summary>
+    /// 合わせ成立に必要な、短い時間窓での累積マウス移動量（px）。
+    /// 方向は問わず <see cref="SEED.Input.MouseDelta"/> の長さを積算する。
+    /// </summary>
+    [Header("合わせ"), SerializeField(Label = "合わせのしきい値(px)")]
+    private float hookSwingPx = 40f;
+
+    /// <summary>
+    /// この秒数だけマウスがほぼ動かないと合わせの累積を 0 に戻す（＝時間窓の幅）。
+    /// ゆっくりカーソルを動かしただけで合わせが暴発しないようにするための値。
+    /// </summary>
+    [SerializeField(Label = "合わせ累積のリセット時間(秒)")]
+    private float swingResetSeconds = 0.15f;
+
+    /// <summary>Excellent と判定される反応時間の上限（秒）。</summary>
+    [SerializeField(Label = "Excellent の反応時間(秒)")]
+    private float excellentSeconds = 0.25f;
+
+    /// <summary>Great と判定される反応時間の上限（秒）。</summary>
+    [SerializeField(Label = "Great の反応時間(秒)")]
+    private float greatSeconds = 0.5f;
+
+    /// <summary>Nice と判定される反応時間の上限（秒）。＝反応受付そのものの制限時間。</summary>
+    [SerializeField(Label = "Nice の反応時間(秒)")]
+    private float niceSeconds = 0.9f;
+
+    // ─── 判定表示（スクリーンスペース UI）─────────────────────
+
+    /// <summary>判定画像を表示し続ける秒数。</summary>
+    [Header("判定表示"), SerializeField(Label = "判定表示の秒数")]
+    private float judgeShowSeconds = 1.2f;
+
+    /// <summary>判定画像の「ポップ」（拡大から等倍へ戻る）に掛ける秒数。0 でポップ無し。</summary>
+    [SerializeField(Label = "判定ポップの秒数")]
+    private float judgePopSeconds = 0.15f;
+
+    /// <summary>判定画像のポップ開始倍率（この倍率から 1.0 へ縮む）。</summary>
+    [SerializeField(Label = "判定ポップの拡大率")]
+    private float judgePopScale = 1.2f;
+
+    /// <summary>Excellent 判定の画像（スクリーンスペースキャンバスの子スプライト）。</summary>
+    [SerializeField(Label = "判定Sprite(Excellent)")]
+    private SEED.Sprite? judgeExcellentSprite = null;
+
+    /// <summary>Great 判定の画像。</summary>
+    [SerializeField(Label = "判定Sprite(Great)")]
+    private SEED.Sprite? judgeGreatSprite = null;
+
+    /// <summary>Nice 判定の画像。</summary>
+    [SerializeField(Label = "判定Sprite(Nice)")]
+    private SEED.Sprite? judgeNiceSprite = null;
+
+    /// <summary>Miss 判定の画像。</summary>
+    [SerializeField(Label = "判定Sprite(Miss)")]
+    private SEED.Sprite? judgeMissSprite = null;
+
     /// <summary>
     /// 釣果表示（<see cref="FishState.Result"/>）を維持する秒数。
     /// 経過したら自動で狙い（<see cref="FishState.Aiming"/>）へ戻り、続けて釣れるようにする。
@@ -661,6 +811,44 @@ public class FishingController : SEEDScript
 
     /// <summary>釣果表示の残り秒数（<see cref="FishState.Result"/> のあいだだけ減る）。</summary>
     private float resultElapsed = 0f;
+
+    // ─── アタリ／合わせの内部状態 ─────────────────────────────
+
+    /// <summary>いま前アタリ〜本アタリを起こしている魚（null = アタリ進行中でない）。</summary>
+    private Fish? nibblingFish = null;
+
+    /// <summary>残りの前アタリ回数。0 になった次の間隔で本アタリへ移る。</summary>
+    private int nibbleRemaining = 0;
+
+    /// <summary>次のアタリ（前アタリ or 本アタリ）までの残り秒数。</summary>
+    private float nibbleTimer = 0f;
+
+    /// <summary>
+    /// 前アタリの沈みアニメの経過秒数。<see cref="NoDipElapsed"/> のあいだは沈んでいない。
+    /// <see cref="nibbleDipSeconds"/> を超えたら無効値へ戻す。
+    /// </summary>
+    private float nibbleDipElapsed = NoDipElapsed;
+
+    /// <summary>本アタリからの経過秒数（＝合わせの反応時間）。</summary>
+    private float reactionElapsed = 0f;
+
+    /// <summary>合わせ判定用に積算しているマウス移動量（px）。</summary>
+    private float hookSwingAccumPx = 0f;
+
+    /// <summary>マウスがほぼ動いていない連続秒数（<see cref="swingResetSeconds"/> で累積を捨てる）。</summary>
+    private float swingIdleElapsed = 0f;
+
+    /// <summary>いま表示している判定（<see cref="HookJudgement.None"/> = 非表示）。</summary>
+    private HookJudgement judgeDisplay = HookJudgement.None;
+
+    /// <summary>判定画像を表示し始めてからの経過秒数。</summary>
+    private float judgeElapsed = 0f;
+
+    /// <summary>
+    /// 表示中の判定スプライトの元サイズ（ポップで書き換える前の値）。
+    /// null = ポップ中でない。非表示にするとき必ずこの値へ戻す。
+    /// </summary>
+    private SEED.Vector2? judgeBaseSize = null;
 
     /// <summary>
     /// いま餌に関わっている（寄っている・掛かっている）魚のエンティティ集合。
@@ -698,6 +886,8 @@ public class FishingController : SEEDScript
         ParkCastMarker();
         // 巻き方向インジケータも同様に隠しておく。
         ParkReelArrow();
+        // 判定画像は 4 枚ともアルファ 0（非表示）から始める。
+        HideJudgement();
     }
 
     /// <summary>
@@ -706,6 +896,7 @@ public class FishingController : SEEDScript
     /// </summary>
     public override void OnDestroy()
     {
+        AbortBiteTiming();
         ReleaseHook();
         engagedFish.Clear();
         if (ReferenceEquals(Current, this)) { Current = null; }
@@ -715,11 +906,13 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// 餌（ウキ）が水中にあって、魚が食いつける状態か。
-    /// 着水後の待機（<see cref="FishState.Floating"/>）と巻き取り中
-    /// （<see cref="FishState.Reeling"/>）だけが対象で、飛翔中やキャスト前は false。
+    /// 着水後の待機（<see cref="FishState.Floating"/>）・巻き取り中
+    /// （<see cref="FishState.Reeling"/>）・アタリ中（<see cref="FishState.Nibbling"/> /
+    /// <see cref="FishState.HookWindow"/>）が対象で、飛翔中やキャスト前は false。
     /// </summary>
     public bool BaitActive
         => State is FishState.Floating or FishState.Reeling
+                 or FishState.Nibbling or FishState.HookWindow
         && uki is { IsValid: true };
 
     /// <summary>餌（ウキ）のワールド位置。<see cref="BaitActive"/> が false のときの値は無意味。</summary>
@@ -754,6 +947,38 @@ public class FishingController : SEEDScript
         UpdateCursorLock();
         CrossFadeBoth(hookedClip, playerHookedClip);
         SEED.Debug.Log($"[Fishing] ヒット! {fish.DisplayName}（大きさ {fish.Size:F2}）");
+        return true;
+    }
+
+    /// <summary>
+    /// 魚が餌をつつき始めた（前アタリ開始）ときに呼ぶ。受け付けたら true。
+    ///
+    /// 餌が無効・既に別の魚が掛かっている／つついている場合は false を返す
+    /// （呼んだ側は興味を失って回遊へ戻る）。成立すると前アタリの回数と間隔を抽選し、
+    /// <see cref="FishState.Nibbling"/> へ遷移してウキが小さく沈み始める。
+    /// </summary>
+    /// <param name="fish">つつき始めた魚。</param>
+    /// <returns>前アタリを受け付けたら true。</returns>
+    public bool BeginNibbling(Fish fish)
+    {
+        // 餌が水にあり、かつ「まだ誰もアタっていない」ときだけ受け付ける
+        if (State is not (FishState.Floating or FishState.Reeling)) { return false; }
+        if (!BaitActive || IsHooked || nibblingFish is not null) { return false; }
+
+        nibblingFish = fish;
+        State = FishState.Nibbling;
+        LastJudgement = HookJudgement.None;
+
+        // 前アタリの回数（下限〜上限、上限を含む）と最初の間隔を抽選する
+        int minCount = SEED.Mathf.Max(0, nibbleCountMin);
+        int maxCount = SEED.Mathf.Max(minCount, nibbleCountMax);
+        nibbleRemaining = SEED.Random.Range(minCount, maxCount + InclusiveUpperBound);
+        nibbleTimer = NextNibbleInterval();
+        nibbleDipElapsed = NoDipElapsed;
+        reactionElapsed = 0f;
+        ResetHookSwing();
+
+        SEED.Debug.Log($"[Fishing] 前アタリ開始: {fish.DisplayName}（{nibbleRemaining} 回）");
         return true;
     }
 
@@ -820,6 +1045,9 @@ public class FishingController : SEEDScript
         // 途中で return する経路（プレイヤー未設定・待機中など）でもロックが残らない。
         UpdateCursorLock();
 
+        // 判定画像の表示は釣り状態に依らず進める（早期 return の経路でも必ず消える）。
+        UpdateJudgementUi(ctx.DeltaTime);
+
         // プレイヤー参照が無ければ姿勢の出入りができないので何もしない
         if (playerMove is not { } pm) { return; }
 
@@ -874,6 +1102,12 @@ public class FishingController : SEEDScript
                 UpdateReeling(ctx.DeltaTime);
                 break;
 
+            case FishState.Nibbling:
+            case FishState.HookWindow:
+                // アタリ〜合わせの受付中。巻き取り入力（ホイール・A/D）は一切見ない。
+                UpdateBiteTiming(ctx.DeltaTime);
+                break;
+
             case FishState.Result:
                 UpdateResult(ctx.DeltaTime);
                 break;
@@ -925,6 +1159,7 @@ public class FishingController : SEEDScript
     {
         State = FishState.Aiming;
         ResetGesture();
+        AbortBiteTiming();             // アタリ進行中の魚が居れば逃がす
         ReleaseHook();                 // 掛かったままの魚が居れば逃がす
         ParkFloatHidden();
         HideCastPreview();
@@ -944,7 +1179,9 @@ public class FishingController : SEEDScript
     {
         State = FishState.Idle;
         ResetGesture();
+        AbortBiteTiming();             // 姿勢解除・中断でもアタリ進行を打ち切る
         ReleaseHook();                 // 姿勢解除・中断でも必ず魚を逃がす
+        HideJudgement();               // 判定画像も消す
         // この後 PlayerMove 側（ExitFishingStance・通常移動のアニメ）が本体を触るのでラッチを捨てる
         ResetPlayerClipLatch();
         ParkFloatHidden();
@@ -1549,10 +1786,345 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// ウキを置くべき Y（ワールド）を返す【ウキ高さの唯一の算出点】。
-    /// 水面 ＋ 上下揺れ。ヒット中は <see cref="biteDipDepth"/> だけ沈める。
+    /// 水面 ＋ 上下揺れ − 現在の沈み量（<see cref="CurrentDipDepth"/>）。
     /// </summary>
     private float FloatSurfaceY()
-        => WaterSurfaceY() + BobOffset() - (IsHooked ? biteDipDepth : 0f);
+        => WaterSurfaceY() + BobOffset() - CurrentDipDepth();
+
+    /// <summary>
+    /// 現在のウキの沈み量（メートル）【沈みの唯一の算出点】。
+    ///
+    /// - ヒット中（<see cref="FishState.Hooked"/>）… <see cref="biteDipDepth"/> で沈みっぱなし
+    /// - 本アタリ（<see cref="FishState.HookWindow"/>）… <see cref="nibbleDipSeconds"/> を掛けて
+    ///   <see cref="biteDipDepth"/> まで滑らかに沈み、そのまま保持する
+    /// - 前アタリの沈み中 … <see cref="nibbleDipDepth"/> まで sin 半周で沈んで戻る（山なり）
+    /// - それ以外 … 0
+    /// </summary>
+    private float CurrentDipDepth()
+    {
+        if (IsHooked) { return biteDipDepth; }
+
+        if (State == FishState.HookWindow)
+        {
+            // 0→1 へ滑らかに沈み込み、以降は 1（＝沈みきったまま）で保持する
+            float sinkRatio = SEED.Mathf.Clamped01(
+                reactionElapsed / SEED.Mathf.Max(nibbleDipSeconds, DivideEpsilon));
+            return biteDipDepth * SmoothStep01(sinkRatio);
+        }
+
+        if (nibbleDipElapsed < 0f) { return 0f; }
+
+        // 山なりの沈み: t=0 と t=1 で 0、t=0.5 で最大（sin(πt)）
+        float t = SEED.Mathf.Clamped01(
+            nibbleDipElapsed / SEED.Mathf.Max(nibbleDipSeconds, DivideEpsilon));
+        return nibbleDipDepth * SEED.Mathf.Sin(SEED.Mathf.PI * t);
+    }
+
+    /// <summary>
+    /// 0〜1 の値を滑らかな S 字（3t²-2t³）へ変換する。沈み込みの緩急に使う。
+    /// </summary>
+    /// <param name="t">0〜1 の進行度（範囲外はクランプ済みを想定）。</param>
+    private static float SmoothStep01(float t) => t * t * (3f - 2f * t);
+
+    // ─── アタリ（前アタリ→本アタリ）と合わせ判定 ─────────────
+
+    /// <summary>
+    /// <see cref="FishState.Nibbling"/> / <see cref="FishState.HookWindow"/> の毎フレーム更新。
+    ///
+    /// <b>やること</b>
+    /// 1. ウキはその場に留め置く（XZ は動かさず、Y だけ沈みアニメを反映する）
+    /// 2. マウスの振り（合わせ）を検出する
+    /// 3. 前アタリ … 合わせがあれば早合わせ（Miss）。無ければ次の前アタリ／本アタリへ進める
+    /// 4. 本アタリ … 反応時間を積算し、合わせがあれば判定、<see cref="niceSeconds"/> 超過で時間切れ Miss
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateBiteTiming(float deltaTime)
+    {
+        // アタリの主が居なくなった（魚が破棄されたなど）ら待機へ戻す
+        if (nibblingFish is not { } fish)
+        {
+            ClearBiteTiming();
+            State = FishState.Floating;
+            return;
+        }
+
+        // 1) ウキはその場（XZ 固定）。沈みアニメだけ Y に乗せる。
+        if (uki is { IsValid: true } floatTf)
+        {
+            var p = floatTf.Position;
+            SetFloatPosition(new SEED.Vector3(p.x, FloatSurfaceY(), p.z));
+        }
+
+        // 前アタリの沈みアニメを進める（時間切れで無効値へ戻す）
+        if (nibbleDipElapsed >= 0f)
+        {
+            nibbleDipElapsed += deltaTime;
+            if (nibbleDipElapsed >= nibbleDipSeconds) { nibbleDipElapsed = NoDipElapsed; }
+        }
+
+        // 2) 合わせ（マウスの振り）の検出
+        bool swung = AccumulateHookSwing(deltaTime);
+
+        // 3) 前アタリ中
+        if (State == FishState.Nibbling)
+        {
+            if (swung)
+            {
+                // まだ食っていないのに合わせた＝早合わせ
+                FailBite("早合わせ");
+                return;
+            }
+
+            nibbleTimer -= deltaTime;
+            if (nibbleTimer > 0f) { return; }
+
+            if (nibbleRemaining > 0)
+            {
+                // 前アタリを 1 回打つ（ウキが小さく沈んで戻る）
+                nibbleRemaining--;
+                nibbleDipElapsed = 0f;
+                nibbleTimer = NextNibbleInterval();
+                return;
+            }
+
+            // 前アタリを撃ち切ってさらに 1 間隔経過 → 本アタリ
+            BeginHookWindow(fish);
+            return;
+        }
+
+        // 4) 本アタリの反応受付
+        reactionElapsed += deltaTime;
+
+        if (swung)
+        {
+            JudgeHook(fish, reactionElapsed);
+            return;
+        }
+
+        if (reactionElapsed > niceSeconds)
+        {
+            // 反応できなかった（時間切れ）
+            FailBite("時間切れ");
+        }
+    }
+
+    /// <summary>
+    /// 本アタリ（<see cref="FishState.HookWindow"/>）へ入る。
+    /// ウキが <see cref="biteDipDepth"/> まで大きく沈み、反応時間の計測が始まる。
+    /// </summary>
+    /// <param name="fish">アタっている魚（ログ用）。</param>
+    private void BeginHookWindow(Fish fish)
+    {
+        State = FishState.HookWindow;
+        reactionElapsed = 0f;
+        nibbleDipElapsed = NoDipElapsed;
+        ResetHookSwing();
+        SEED.Debug.Log($"[Fishing] 本アタリ! {fish.DisplayName}");
+    }
+
+    /// <summary>
+    /// 反応時間から判定を決めて結果へ分岐する【合わせ成立時の唯一の出口】。
+    /// </summary>
+    /// <param name="fish">アタっている魚。</param>
+    /// <param name="reactionSeconds">本アタリからの経過秒数。</param>
+    private void JudgeHook(Fish fish, float reactionSeconds)
+    {
+        HookJudgement judgement =
+            reactionSeconds <= excellentSeconds ? HookJudgement.Excellent :
+            reactionSeconds <= greatSeconds ? HookJudgement.Great :
+            reactionSeconds <= niceSeconds ? HookJudgement.Nice :
+            HookJudgement.Miss;
+
+        if (judgement == HookJudgement.Miss)
+        {
+            FailBite("遅すぎ");
+            return;
+        }
+
+        // ── ヒット成立 ──
+        ClearBiteTiming();
+        LastJudgement = judgement;
+        ShowJudgement(judgement);
+
+        if (TryHook(fish))
+        {
+            fish.OnHooked();
+            SEED.Debug.Log($"[Fishing] 合わせ成功: {judgement}（反応 {reactionSeconds:F3} 秒）");
+            return;
+        }
+
+        // ここへ来るのは餌が無効化された等の例外だけ。魚を逃がして待機へ戻す。
+        State = FishState.Floating;
+        fish.ReleaseFromHook();
+    }
+
+    /// <summary>
+    /// 合わせ失敗【Miss の唯一の出口】。魚を逃がし、餌はそのままで待機へ戻す。
+    /// </summary>
+    /// <param name="reason">ログに出す失敗理由（早合わせ／遅すぎ／時間切れ）。</param>
+    private void FailBite(string reason)
+    {
+        var fish = nibblingFish;
+        ClearBiteTiming();
+        LastJudgement = HookJudgement.Miss;
+        State = FishState.Floating;
+        ShowJudgement(HookJudgement.Miss);
+        fish?.ReleaseFromHook();       // 魚は逃げる（Escape → クールダウン付きで回遊へ）
+        SEED.Debug.Log($"[Fishing] Miss（{reason}）");
+    }
+
+    /// <summary>
+    /// アタリ進行を外部都合で打ち切る（釣り姿勢の解除・スクリプト破棄など）。
+    /// 判定は表示せず、魚だけ逃がす。
+    /// </summary>
+    private void AbortBiteTiming()
+    {
+        var fish = nibblingFish;
+        ClearBiteTiming();
+        fish?.ReleaseFromHook();
+    }
+
+    /// <summary>アタリ進行の内部状態をすべて初期化する（状態遷移は行わない）。</summary>
+    private void ClearBiteTiming()
+    {
+        nibblingFish = null;
+        nibbleRemaining = 0;
+        nibbleTimer = 0f;
+        nibbleDipElapsed = NoDipElapsed;
+        reactionElapsed = 0f;
+        ResetHookSwing();
+    }
+
+    /// <summary>次のアタリまでの間隔（秒）を抽選する。</summary>
+    private float NextNibbleInterval()
+        => SEED.Random.Range(nibbleIntervalMin, SEED.Mathf.Max(nibbleIntervalMin, nibbleIntervalMax));
+
+    /// <summary>合わせの累積量と無操作時間をリセットする。</summary>
+    private void ResetHookSwing()
+    {
+        hookSwingAccumPx = 0f;
+        swingIdleElapsed = 0f;
+    }
+
+    /// <summary>
+    /// 合わせ（竿を振る操作）の検出。
+    ///
+    /// 方向を問わず <see cref="SEED.Input.MouseDelta"/> の長さを積算し、
+    /// <see cref="swingResetSeconds"/> のあいだ動きが無ければ累積を捨てる
+    /// （＝短い時間窓のスライディング積算）。累積が <see cref="hookSwingPx"/> を
+    /// 超えた瞬間に 1 回の「振り」として true を返し、累積を 0 へ戻す。
+    /// カーソルロックは行わない（既存のロック方針を変えない）。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    /// <returns>このフレームに振りが成立したら true。</returns>
+    private bool AccumulateHookSwing(float deltaTime)
+    {
+        var delta = SEED.Input.MouseDelta;
+        float moved = SEED.Mathf.Sqrt(delta.x * delta.x + delta.y * delta.y);
+
+        if (moved <= SwingMoveEpsilonPx)
+        {
+            swingIdleElapsed += deltaTime;
+            if (swingIdleElapsed >= swingResetSeconds) { hookSwingAccumPx = 0f; }
+            return false;
+        }
+
+        swingIdleElapsed = 0f;
+        hookSwingAccumPx += moved;
+        if (hookSwingAccumPx < hookSwingPx) { return false; }
+
+        hookSwingAccumPx = 0f;
+        return true;
+    }
+
+    // ─── 判定表示（スクリーンスペース UI）─────────────────────
+
+    /// <summary>判定画像の表示を開始する（表示中なら差し替えて再生し直す）。</summary>
+    /// <param name="judgement">表示する判定。</param>
+    private void ShowJudgement(HookJudgement judgement)
+    {
+        if (judgement == HookJudgement.None) { return; }
+
+        // 直前の表示のポップを元へ戻してから切り替える（サイズの取りこぼしを防ぐ）
+        RestoreJudgeSize();
+
+        judgeDisplay = judgement;
+        judgeElapsed = 0f;
+        if (JudgeSprite(judgement) is { IsValid: true } sprite) { judgeBaseSize = sprite.Size; }
+        ApplyJudgeVisibility(judgement, 1f);
+    }
+
+    /// <summary>
+    /// 判定画像の毎フレーム更新（表示時間の経過とポップの縮小）。
+    /// 表示していないあいだは何もしない。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateJudgementUi(float deltaTime)
+    {
+        if (judgeDisplay == HookJudgement.None) { return; }
+
+        judgeElapsed += deltaTime;
+        if (judgeElapsed >= judgeShowSeconds)
+        {
+            HideJudgement();
+            return;
+        }
+
+        // ポップ: judgePopScale → 1.0 へ judgePopSeconds かけて縮む
+        if (judgeBaseSize is { } baseSize && judgePopSeconds > DivideEpsilon)
+        {
+            float t = SEED.Mathf.Clamped01(judgeElapsed / judgePopSeconds);
+            float scale = SEED.Mathf.Lerp(judgePopScale, 1f, SmoothStep01(t));
+            if (JudgeSprite(judgeDisplay) is { IsValid: true } sprite)
+            {
+                sprite.Size = new SEED.Vector2(baseSize.x * scale, baseSize.y * scale);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 判定画像をすべて隠す【非表示の唯一の出口】。ポップで変えたサイズも元へ戻す。
+    /// </summary>
+    private void HideJudgement()
+    {
+        RestoreJudgeSize();
+        judgeDisplay = HookJudgement.None;
+        judgeElapsed = 0f;
+        ApplyJudgeVisibility(HookJudgement.None, 0f);
+    }
+
+    /// <summary>ポップで書き換えた表示サイズを元の値へ戻す（戻す対象が無ければ何もしない）。</summary>
+    private void RestoreJudgeSize()
+    {
+        if (judgeBaseSize is not { } baseSize) { return; }
+        if (JudgeSprite(judgeDisplay) is { IsValid: true } sprite) { sprite.Size = baseSize; }
+        judgeBaseSize = null;
+    }
+
+    /// <summary>
+    /// 4 枚の判定画像の不透明度をまとめて設定する
+    /// （指定の 1 枚だけ <paramref name="opacity"/>、残りは 0）。
+    /// </summary>
+    /// <param name="visible">表示する判定（None ならすべて非表示）。</param>
+    /// <param name="opacity">表示する 1 枚の不透明度。</param>
+    private void ApplyJudgeVisibility(HookJudgement visible, float opacity)
+    {
+        ApplySpriteOpacity(judgeExcellentSprite, visible == HookJudgement.Excellent ? opacity : 0f);
+        ApplySpriteOpacity(judgeGreatSprite, visible == HookJudgement.Great ? opacity : 0f);
+        ApplySpriteOpacity(judgeNiceSprite, visible == HookJudgement.Nice ? opacity : 0f);
+        ApplySpriteOpacity(judgeMissSprite, visible == HookJudgement.Miss ? opacity : 0f);
+    }
+
+    /// <summary>判定に対応するスプライト（未設定なら null）。</summary>
+    /// <param name="judgement">判定。</param>
+    private SEED.Sprite? JudgeSprite(HookJudgement judgement) => judgement switch
+    {
+        HookJudgement.Excellent => judgeExcellentSprite,
+        HookJudgement.Great => judgeGreatSprite,
+        HookJudgement.Nice => judgeNiceSprite,
+        HookJudgement.Miss => judgeMissSprite,
+        _ => null,
+    };
 
     /// <summary>ウキを指定ワールド位置へ移動する（未設定・無効なら何もしない）。</summary>
     /// <param name="position">移動先のワールド位置。</param>

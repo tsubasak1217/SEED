@@ -252,6 +252,8 @@ public class CameraMove : SEEDScript
         => fishing is { } f && f.State is FishingController.FishState.Casting
                                       or FishingController.FishState.Floating
                                       or FishingController.FishState.Reeling
+                                      or FishingController.FishState.Nibbling
+                                      or FishingController.FishState.HookWindow
                                       or FishingController.FishState.Hooked;
 
     /// <summary>

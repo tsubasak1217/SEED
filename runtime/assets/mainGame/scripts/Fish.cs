@@ -14,9 +14,12 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// [餌への反応]（<see cref="BehaviorState"/>）
 /// <code>
 /// Roam     --餌が「感知距離＋餌の影響半径」以内--> Approach
-/// Approach --餌が消えた／食いつきに失敗--> Roam（loseInterestSeconds のクールダウン付き）
-/// Approach --食いつき距離以内 → biteDelay 待ち → TryHook 成功--> Bite
-/// Bite     --釣り上げ／リリース（ReleaseFromHook）--> Roam
+/// Approach --餌が消えた／前アタリを断られた--> Roam（loseInterestSeconds のクールダウン付き）
+/// Approach --食いつき距離以内 → biteDelay 待ち → BeginNibbling 成功--> Nibbling
+/// Nibbling --合わせ成功（コントローラが OnHooked）--> Bite
+/// Nibbling --合わせ失敗／中断（ReleaseFromHook）--> Escape
+/// Bite     --釣り上げ／リリース（ReleaseFromHook）--> Escape
+/// Escape   --escapeSeconds 逃げ切る--> Roam（クールダウン付き）
 /// </code>
 /// 餌の位置・判定距離はすべて <see cref="FishingController.Current"/> から読む
 /// （魚は prefab から動的生成されるため、参照フィールドでコントローラを注入できない）。
@@ -52,8 +55,20 @@ public class Fish : SEEDScript
         /// <summary>餌に気づいて近づいている最中。</summary>
         Approach,
 
+        /// <summary>
+        /// 餌をつついている（前アタリ〜本アタリ）。位置は餌に追従するが、
+        /// まだ掛かってはいない。抜け方はコントローラ側（合わせの成否）が決める。
+        /// </summary>
+        Nibbling,
+
         /// <summary>餌に食いついている（釣られている）。位置は餌に追従する。</summary>
         Bite,
+
+        /// <summary>
+        /// 逃走中。合わせ失敗・リリース直後に、餌と反対方向へ
+        /// <see cref="escapeSeconds"/> のあいだ全速で泳いで離れる（見た目に分かりやすくする）。
+        /// </summary>
+        Escape,
     }
 
     /// <summary>現在の行動状態（デバッグ・他スクリプトからの参照用）。</summary>
@@ -141,6 +156,13 @@ public class Fish : SEEDScript
     [SerializeField(Label = "ヒット中の沈み量(m)")]
     private float hookedDepthOffset = 0.3f;
 
+    /// <summary>
+    /// 合わせ失敗・リリース後に餌から全速で逃げる秒数。
+    /// この間は <see cref="approachSpeed"/> で餌と反対方向へ泳ぐ。
+    /// </summary>
+    [SerializeField(Label = "逃走の秒数(秒)")]
+    private float escapeSeconds = 1.5f;
+
     // ─── 内部状態 ─────────────────────────────────────────────
 
     /// <summary>回遊の中心（生成地点）。null = 未初期化（最初の Update で現在地を採る）。</summary>
@@ -163,6 +185,12 @@ public class Fish : SEEDScript
 
     /// <summary>餌へ反応しないクールダウンの残り秒数。0 以下で再び反応できる。</summary>
     private float loseInterestRemaining = 0f;
+
+    /// <summary>逃走（<see cref="BehaviorState.Escape"/>）の残り秒数。</summary>
+    private float escapeRemaining = 0f;
+
+    /// <summary>逃走中に向かう方位（ラジアン）。逃走開始時に「餌の反対側」で固定する。</summary>
+    private float escapeHeadingRad = 0f;
 
     /// <summary>
     /// <see cref="FishingController.RegisterEngaged"/> に登録済みか。
@@ -243,8 +271,14 @@ public class Fish : SEEDScript
 
         switch (State)
         {
+            case BehaviorState.Nibbling:
             case BehaviorState.Bite:
+                // つつき中もヒット中も「餌の少し下に張り付いて餌の方を向く」で同じ。
                 UpdateBite(dt);
+                break;
+
+            case BehaviorState.Escape:
+                UpdateEscape(dt);
                 break;
 
             case BehaviorState.Approach:
@@ -266,8 +300,21 @@ public class Fish : SEEDScript
     /// <param name="dt">このフレームの経過秒数。</param>
     private void UpdateBehaviorState(float dt)
     {
-        // 食いつき中はコントローラ側（釣り上げ／リリース）からしか抜けない
-        if (State == BehaviorState.Bite) { return; }
+        // 逃走中は時間経過だけで抜ける（この間は餌に反応しない）
+        if (State == BehaviorState.Escape)
+        {
+            escapeRemaining -= dt;
+            if (escapeRemaining <= 0f) { BackToRoam(withCooldown: true); }
+            return;
+        }
+
+        // つつき中・食いつき中はコントローラ側（合わせの成否／釣り上げ／リリース）からしか抜けない。
+        // ただし餌そのものが消えた場合だけは自力で回遊へ戻る（固まり防止）。
+        if (State is BehaviorState.Nibbling or BehaviorState.Bite)
+        {
+            if (FishingController.Current is not { BaitActive: true }) { BackToRoam(withCooldown: false); }
+            return;
+        }
 
         // 餌が無い（コントローラ未起動・キャスト前・飛翔中）なら回遊へ戻す
         if (FishingController.Current is not { BaitActive: true } fc)
@@ -308,10 +355,10 @@ public class Fish : SEEDScript
         biteWaitRemaining -= dt;
         if (biteWaitRemaining > 0f) { return; }
 
-        // 食いつきを試みる。既に別の魚が掛かっていれば false が返るので興味を失う。
-        if (fc.TryHook(this))
+        // 前アタリ（コツコツ）を始める。既に別の魚がアタっていれば false が返るので興味を失う。
+        if (fc.BeginNibbling(this))
         {
-            State = BehaviorState.Bite;
+            State = BehaviorState.Nibbling;
             biteWaitStarted = false;
             return;
         }
@@ -370,8 +417,9 @@ public class Fish : SEEDScript
     }
 
     /// <summary>
-    /// 食いつき中の追従。餌（ウキ）の <see cref="hookedDepthOffset"/> m 下に張り付き、
-    /// 餌のある向き（＝巻かれていく向き）を向く。
+    /// つつき中（<see cref="BehaviorState.Nibbling"/>）・食いつき中
+    /// （<see cref="BehaviorState.Bite"/>）の追従。餌（ウキ）の
+    /// <see cref="hookedDepthOffset"/> m 下に張り付き、餌のある向きを向く。
     /// </summary>
     /// <param name="dt">このフレームの経過秒数。</param>
     private void UpdateBite(float dt)
@@ -392,6 +440,15 @@ public class Fish : SEEDScript
 
         // 位置は餌へ完全追従（少し下）。ここだけは補間せず張り付かせる。
         transform.Position = new SEED.Vector3(bait.x, bait.y - hookedDepthOffset, bait.z);
+    }
+
+    /// <summary>
+    /// 逃走中の移動。開始時に決めた「餌と反対方向」へ <see cref="approachSpeed"/> で泳ぎ続ける。
+    /// </summary>
+    /// <param name="dt">このフレームの経過秒数。</param>
+    private void UpdateEscape(float dt)
+    {
+        SwimTowardHeading(escapeHeadingRad, approachSpeed, dt);
     }
 
     /// <summary>
@@ -439,10 +496,50 @@ public class Fish : SEEDScript
     // ─── 餌との関わりの出入り ─────────────────────────────────
 
     /// <summary>
-    /// 釣り上げ・リリース時にコントローラから呼ばれる。回遊へ戻し、
-    /// しばらく餌へ反応しないクールダウンを掛ける。
+    /// 合わせの成功時にコントローラから呼ばれる。つつき中から食いつき中へ移す
+    /// （位置の追従は同じなので、状態ラベルだけが変わる）。
     /// </summary>
-    public void ReleaseFromHook() => BackToRoam(withCooldown: true);
+    public void OnHooked() => State = BehaviorState.Bite;
+
+    /// <summary>
+    /// リリース・合わせ失敗・釣り中断でコントローラから呼ばれる共通の出口。
+    ///
+    /// 餌に関わっていた（つつき中・食いつき中）なら、まず餌と反対方向へ全速で逃げ
+    /// （<see cref="BehaviorState.Escape"/>）、逃げ切ってから回遊へ戻る。
+    /// それ以外（既に回遊中など）はクールダウン付きで回遊へ戻すだけ。
+    /// </summary>
+    public void ReleaseFromHook()
+    {
+        if (State is BehaviorState.Nibbling or BehaviorState.Bite) { BeginEscape(); return; }
+        BackToRoam(withCooldown: true);
+    }
+
+    /// <summary>
+    /// 逃走（<see cref="BehaviorState.Escape"/>）へ入る。
+    /// 餌と反対の方位を固定し、<see cref="escapeSeconds"/> のあいだ全速で離れる。
+    /// 餌の位置が取れない場合は今の向きのまま逃げる。
+    /// </summary>
+    private void BeginEscape()
+    {
+        State = BehaviorState.Escape;
+        escapeRemaining = escapeSeconds;
+        biteWaitStarted = false;
+        SetEngaged(FishingController.Current, engaged: false);
+
+        // 餌 → 自分 の向き（＝餌から遠ざかる向き）を逃走方位にする
+        escapeHeadingRad = transform.Rotation.y * DegToRad;
+        if (FishingController.Current is { } fc)
+        {
+            var pos = transform.Position;
+            var bait = fc.BaitPosition;
+            float dx = pos.x - bait.x;
+            float dz = pos.z - bait.z;
+            if (dx * dx + dz * dz > DistanceEpsilon * DistanceEpsilon)
+            {
+                escapeHeadingRad = SEED.Mathf.Atan2(dx, dz);
+            }
+        }
+    }
 
     /// <summary>
     /// 回遊へ戻す【Roam 復帰の唯一の出口】。餌との関わり登録も必ずここで外す。
@@ -459,6 +556,7 @@ public class Fish : SEEDScript
         }
 
         State = BehaviorState.Roam;
+        escapeRemaining = 0f;
         if (withCooldown) { loseInterestRemaining = loseInterestSeconds; }
         biteWaitStarted = false;
         SetEngaged(FishingController.Current, engaged: false);
