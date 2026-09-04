@@ -125,10 +125,19 @@ public class FishManager : SEEDScript
 
     /// <summary>
     /// レベルごとの生存中の魚のハンドル（添字 = レベル）。
-    /// 釣られる・破棄されると IsValid が false になるので、毎フレーム掃除して
+    /// 釣られる・破棄されると実体が消えるので、毎フレーム掃除して
     /// 「維持数」まで自動補充する（<see cref="EnsurePopulation"/>）。
     /// </summary>
     private readonly List<List<SEED.GameObject>> spawnedFish = new();
+
+    /// <summary>
+    /// 設定不備の警告をすでに出したレベルの添字。
+    /// 毎フレーム同じ警告でログが埋まるのを防ぐ（1 レベルにつき 1 回だけ出す）。
+    /// </summary>
+    private readonly HashSet<int> warnedLevels = new();
+
+    /// <summary>レベル定義の一括検証（<see cref="ValidateLevelsOnce"/>）を実施済みか。</summary>
+    private bool validated = false;
 
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
@@ -146,6 +155,7 @@ public class FishManager : SEEDScript
     /// </summary>
     public override void Update(ref NativeFrameContext ctx)
     {
+        ValidateLevelsOnce();
         EnsurePopulation();
     }
 
@@ -154,9 +164,15 @@ public class FishManager : SEEDScript
     {
     }
 
-    /// <summary>Update 後の更新。</summary>
+    /// <summary>
+    /// Update 後の更新。
+    /// 各魚（Fish スクリプトが自由に回遊する）が自分のレベルの円環から
+    /// はみ出していたら、中心からの方位はそのままに距離だけ円環内へ戻す。
+    /// Fish 側の回遊処理（Update）の後に効かせたいので LateUpdate で行う。
+    /// </summary>
     public override void LateUpdate(ref NativeFrameContext ctx)
     {
+        ClampFishToRings();
     }
 
     /// <summary>描画フェーズで呼ばれる。描画に関わる処理向け。</summary>
@@ -198,7 +214,7 @@ public class FishManager : SEEDScript
         for (int i = 0; i < levels.Count; i++)
         {
             var alive = spawnedFish[i];
-            alive.RemoveAll(f => !f.IsValid);
+            alive.RemoveAll(f => !IsAlive(f));
 
             int want = levels[i].maintainCount;
             while (alive.Count < want)
@@ -231,34 +247,21 @@ public class FishManager : SEEDScript
         string path = pool[random.Next(pool.Count)];
         if (string.IsNullOrWhiteSpace(path)) { return false; }
 
-        // 出現距離の範囲 = 中心点から各マーカーまでの XZ 平面距離。
-        // マーカーが未設定・無効なら生成できない（シーン設定の不備を静かに握り潰さない）。
+        // 出現距離の範囲（円環）= 中心点から各マーカーまでの XZ 平面距離。
+        // マーカー未設定・近遠が逆などの設定不備なら生成しない（静かに握り潰さない）。
         var center = CenterPosition();
-        if (level.distanceMinMarker is not { } minMarker || !minMarker.IsValid) { return false; }
-        if (level.distanceMaxMarker is not { } maxMarker || !maxMarker.IsValid) { return false; }
-        var minMarkerPos = minMarker.Position;
-        var maxMarkerPos = maxMarker.Position;
-        float distA = DistanceXZ(center, minMarkerPos);
-        float distB = DistanceXZ(center, maxMarkerPos);
+        if (!TryGetRing(levelIndex, out var ring)) { return false; }
 
-        // 出現位置: 範囲内の一様ランダム距離 × ランダム方位。
-        // 近/遠マーカーの取り違えは入れ替えて許容する（データ入力に寛容にする）。
-        // 高さもマーカーの Y を使うので、入れ替えるときは Y も一緒に連れて行く。
-        bool swapped = distB < distA;
-        float near   = swapped ? distB : distA;
-        float far    = swapped ? distA : distB;
-        float nearY  = swapped ? maxMarkerPos.y : minMarkerPos.y;
-        float farY   = swapped ? minMarkerPos.y : maxMarkerPos.y;
-
+        // 出現位置: 円環内の一様ランダム距離 × ランダム方位。
         float angle = (float)random.NextDouble() * FullTurnRadians;
-        float span = far - near;
-        float distance = near + (float)random.NextDouble() * span;
+        float span = ring.Far - ring.Near;
+        float distance = ring.Near + (float)random.NextDouble() * span;
 
         // 高さ: 近マーカーの Y ⇔ 遠マーカーの Y を「出現距離の範囲内の位置」で線形補間する。
         // これで距離マーカーを上下させるだけで、距離に応じた深さをシーン上で設定できる。
         // 近／遠が同距離（span ≒ 0）のときは補間できないので近マーカーの Y をそのまま使う。
-        float heightRatio = span > DistanceEpsilon ? (distance - near) / span : 0f;
-        float spawnY = SEED.Mathf.Lerp(nearY, farY, heightRatio) + spawnHeight;
+        float heightRatio = span > DistanceEpsilon ? (distance - ring.Near) / span : 0f;
+        float spawnY = SEED.Mathf.Lerp(ring.NearY, ring.FarY, heightRatio) + spawnHeight;
 
         var spawnPos = new SEED.Vector3(
             center.x + SEED.Mathf.Sin(angle) * distance,
@@ -271,6 +274,223 @@ public class FishManager : SEEDScript
         if (fish.GetComponent<SEED.Transform>() is not { } t || !t.IsValid) { return false; }
         t.Position = spawnPos;
         return true;
+    }
+
+    // ─── 円環（出現範囲）の解決・検証・維持 ───────────────────
+
+    /// <summary>
+    /// 1 レベルぶんの出現範囲（中心点からの XZ 距離の円環）と、その両端の高さ。
+    /// 距離マーカー 2 つから毎回この値を作り、生成にも「はみ出しの押し戻し」にも使う。
+    /// </summary>
+    private readonly struct SpawnRing
+    {
+        /// <summary>円環の内側半径（中心からの XZ 距離）。</summary>
+        public readonly float Near;
+
+        /// <summary>円環の外側半径（中心からの XZ 距離）。</summary>
+        public readonly float Far;
+
+        /// <summary>内側マーカーの高さ（ワールド Y）。</summary>
+        public readonly float NearY;
+
+        /// <summary>外側マーカーの高さ（ワールド Y）。</summary>
+        public readonly float FarY;
+
+        /// <summary>各値を指定して円環を作る。</summary>
+        public SpawnRing(float near, float far, float nearY, float farY)
+        {
+            Near = near;
+            Far = far;
+            NearY = nearY;
+            FarY = farY;
+        }
+    }
+
+    /// <summary>
+    /// 指定レベルの円環（出現範囲）を距離マーカーから求める。
+    ///
+    /// マーカー未設定／無効、あるいは「遠マーカーが近マーカーより内側」のときは
+    /// <b>入れ替えて救済せず</b> false を返す。近遠が逆になるのはシーン設定の不備
+    /// （マーカーの取り違え・同名アクタへの誤解決）であり、黙って入れ替えると
+    /// レベル同士の円環が重なって「浅瀬に大物が出る」といった不具合の原因が隠れるため。
+    /// </summary>
+    /// <param name="levelIndex">レベル（levels の添字、0 始まり）。</param>
+    /// <param name="ring">求めた円環（失敗時は既定値）。</param>
+    /// <returns>円環を求められたら true。</returns>
+    private bool TryGetRing(int levelIndex, out SpawnRing ring)
+    {
+        ring = default;
+        if (levelIndex < 0 || levelIndex >= levels.Count) { return false; }
+        var level = levels[levelIndex];
+
+        if (level.distanceMinMarker is not { } minMarker || !minMarker.IsValid)
+        {
+            WarnLevelOnce(levelIndex, "距離マーカー(近) が未設定、または参照先アクタが見つかりません。");
+            return false;
+        }
+        if (level.distanceMaxMarker is not { } maxMarker || !maxMarker.IsValid)
+        {
+            WarnLevelOnce(levelIndex, "距離マーカー(遠) が未設定、または参照先アクタが見つかりません。");
+            return false;
+        }
+
+        var center = CenterPosition();
+        var nearPos = minMarker.Position;
+        var farPos = maxMarker.Position;
+        float near = DistanceXZ(center, nearPos);
+        float far = DistanceXZ(center, farPos);
+
+        if (far - near < DistanceEpsilon)
+        {
+            WarnLevelOnce(levelIndex,
+                $"距離マーカー(遠)={far:F1}m が (近)={near:F1}m より内側です。"
+                + "マーカーの取り違えか、同名アクタが複数あって参照が別のマーカーへ解決されています"
+                + "（参照はアクタ名の DFS 最初の一致で解決されるため、名前は一意にしてください）。");
+            return false;
+        }
+
+        ring = new SpawnRing(near, far, nearPos.y, farPos.y);
+        return true;
+    }
+
+    /// <summary>
+    /// レベル定義を 1 度だけ一括検証し、結果をログへ出す。
+    ///
+    /// 「シーンで見えている円と実際の出現範囲が違う」不具合の大半は、
+    /// マーカーの<b>アクタ名の重複</b>（参照が DFS 最初の一致へ吸われる）で起きる。
+    /// そこで各レベルの実効レンジを列挙し、レンジの重なり・マーカー座標の一致を警告する。
+    /// </summary>
+    private void ValidateLevelsOnce()
+    {
+        if (validated) { return; }
+        validated = true;
+
+        var center = CenterPosition();
+        SEED.Debug.Log($"[FishManager] 中心点=({center.x:F1}, {center.z:F1}) / レベル数={levels.Count}");
+
+        float previousFar = 0f;
+        bool hasPrevious = false;
+        for (int i = 0; i < levels.Count; i++)
+        {
+            if (!TryGetRing(i, out var ring))
+            {
+                SEED.Debug.LogError($"[FishManager] Lv{i + 1}: 出現範囲を決められないため生成しません。");
+                hasPrevious = false;
+                continue;
+            }
+
+            SEED.Debug.Log($"[FishManager] Lv{i + 1}: 出現範囲 {ring.Near:F1}m 〜 {ring.Far:F1}m"
+                + $"（高さ {ring.NearY:F1} 〜 {ring.FarY:F1}）維持数={levels[i].maintainCount}");
+
+            // 直前のレベルと範囲が重なっていれば、そのレベルの魚が混ざって出現する
+            if (hasPrevious && ring.Near < previousFar - DistanceEpsilon)
+            {
+                SEED.Debug.LogWarning($"[FishManager] Lv{i + 1} の出現範囲が Lv{i} と重なっています"
+                    + $"（Lv{i} は {previousFar:F1}m まで、Lv{i + 1} は {ring.Near:F1}m から）。"
+                    + "上位レベルの魚が手前の水域へ出ます。");
+            }
+            previousFar = ring.Far;
+            hasPrevious = true;
+        }
+
+        WarnDuplicatedMarkers();
+    }
+
+    /// <summary>
+    /// 距離マーカーの参照が別レベル間で同じアクタへ解決されていないか検査する。
+    ///
+    /// 参照はアクタ名で保存され、同名アクタが複数あるとヒエラルキーの DFS 順で
+    /// 最初の 1 つへ全部吸われる。ハンドルの同一性は取れないので、
+    /// 「ワールド座標が完全に一致する」ことを同一マーカーの証拠として警告する。
+    /// </summary>
+    private void WarnDuplicatedMarkers()
+    {
+        for (int i = 0; i < levels.Count; i++)
+        {
+            for (int j = i + 1; j < levels.Count; j++)
+            {
+                WarnIfSameMarker(i, j, levels[i].distanceMinMarker, levels[j].distanceMinMarker, "近");
+                WarnIfSameMarker(i, j, levels[i].distanceMaxMarker, levels[j].distanceMaxMarker, "遠");
+            }
+        }
+    }
+
+    /// <summary>2 レベルの同種マーカーが同一座標なら、名前重複の疑いとして警告する。</summary>
+    /// <param name="levelA">比較元のレベル添字。</param>
+    /// <param name="levelB">比較先のレベル添字。</param>
+    /// <param name="a">比較元のマーカー。</param>
+    /// <param name="b">比較先のマーカー。</param>
+    /// <param name="kind">マーカーの種別表示（"近" / "遠"）。</param>
+    private static void WarnIfSameMarker(int levelA, int levelB, SEED.Transform? a, SEED.Transform? b, string kind)
+    {
+        if (a is not { } ta || !ta.IsValid) { return; }
+        if (b is not { } tb || !tb.IsValid) { return; }
+        var pa = ta.Position;
+        var pb = tb.Position;
+        if (SEED.Mathf.Abs(pa.x - pb.x) > DistanceEpsilon) { return; }
+        if (SEED.Mathf.Abs(pa.y - pb.y) > DistanceEpsilon) { return; }
+        if (SEED.Mathf.Abs(pa.z - pb.z) > DistanceEpsilon) { return; }
+
+        SEED.Debug.LogWarning($"[FishManager] Lv{levelA + 1} と Lv{levelB + 1} の距離マーカー({kind}) が"
+            + "同じ座標です。同名アクタが複数あり、参照が同一アクタへ解決されている可能性が高いです"
+            + "（マーカーのアクタ名を一意にしてから参照を設定し直してください）。");
+    }
+
+    /// <summary>
+    /// 生成済みの魚を自分のレベルの円環内へ押し戻す。
+    ///
+    /// 魚は Fish スクリプトが「生成地点±行動半径」で自由に回遊するため、
+    /// 円環の縁で生成された個体は隣の水域へ出てしまう。ここで中心からの方位は
+    /// 保ったまま距離だけ [内側半径, 外側半径] にクランプする（高さは触らない）。
+    /// </summary>
+    private void ClampFishToRings()
+    {
+        var center = CenterPosition();
+        int levelCount = spawnedFish.Count < levels.Count ? spawnedFish.Count : levels.Count;
+        for (int i = 0; i < levelCount; i++)
+        {
+            if (!TryGetRing(i, out var ring)) { continue; }
+
+            var alive = spawnedFish[i];
+            for (int k = 0; k < alive.Count; k++)
+            {
+                if (alive[k].GetComponent<SEED.Transform>() is not { } t || !t.IsValid) { continue; }
+
+                var pos = t.Position;
+                float dx = pos.x - center.x;
+                float dz = pos.z - center.z;
+                float distance = SEED.Mathf.Sqrt(dx * dx + dz * dz);
+                float clamped = SEED.Mathf.Clamped(distance, ring.Near, ring.Far);
+                if (SEED.Mathf.Abs(clamped - distance) < DistanceEpsilon) { continue; }
+
+                // 中心に重なっているときは方位を決められないので、既定の方位(+X)で外へ出す
+                float dirX = distance > DistanceEpsilon ? dx / distance : 1f;
+                float dirZ = distance > DistanceEpsilon ? dz / distance : 0f;
+                t.Position = new SEED.Vector3(center.x + dirX * clamped, pos.y, center.z + dirZ * clamped);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 魚がまだシーンに生きているか。
+    ///
+    /// <c>GameObject.IsValid</c> は「ハンドルが束縛されているか」しか見ず、破棄後も true のままなので
+    /// 補充判定には使えない。Transform の有無（＝エンティティの実在）で生存を判定する。
+    /// </summary>
+    /// <param name="fish">判定する魚。</param>
+    /// <returns>生きていれば true。</returns>
+    private static bool IsAlive(SEED.GameObject fish)
+        => fish.IsValid
+        && fish.GetComponent<SEED.Transform>() is { } t
+        && t.IsValid;
+
+    /// <summary>同じレベルについて 1 度だけ警告を出す（毎フレームのログ汚染を防ぐ）。</summary>
+    /// <param name="levelIndex">レベル（levels の添字、0 始まり）。</param>
+    /// <param name="message">警告本文。</param>
+    private void WarnLevelOnce(int levelIndex, string message)
+    {
+        if (!warnedLevels.Add(levelIndex)) { return; }
+        SEED.Debug.LogWarning($"[FishManager] Lv{levelIndex + 1}: {message}");
     }
 
     /// <summary>中心点のワールド座標（XZ）。中心アクタがあればその位置、無ければ設定値。</summary>
