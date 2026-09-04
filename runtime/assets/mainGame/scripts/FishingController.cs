@@ -327,6 +327,26 @@ public class FishingController : SEEDScript
     private float reelArrowLength = 2f;
 
     /// <summary>
+    /// 岸際（竿先）に近づいたときの直進巻きに関する設定群。
+    ///
+    /// 竿先までの残り水平距離 <c>remaining</c> から
+    /// <c>steerFactor = clamp01((remaining - straightReelDistance) / straightFadeBand)</c>
+    /// を求め、1（遠い＝操舵フル）→0（<see cref="straightReelDistance"/> 以内＝直進のみ）へ
+    /// 滑らかに補間する。詳細な適用箇所は <see cref="ComputeReelDirection"/> と
+    /// <see cref="UpdateReelArrow"/> のコメントを参照。
+    /// </summary>
+    [Header("岸際の直進巻き")]
+    [SerializeField(Label = "直進のみになる距離(m)")]
+    private float straightReelDistance = 6f;
+
+    /// <summary>
+    /// <see cref="straightReelDistance"/> の外側に設ける、操舵が徐々に弱まるフェード帯の幅（メートル）。
+    /// この帯の中では A/D によるずれ角の上限が線形に絞られていき、既存のずれも自然に 0 へ寄せられる。
+    /// </summary>
+    [SerializeField(Label = "フェード帯の幅(m)")]
+    private float straightFadeBand = 3f;
+
+    /// <summary>
     /// マーカーを隠すときに置く Y 座標（ワールド）。水面よりも十分下に取る。
     /// 表示 API が無いため、この高さへ退避させることで「非表示」を表現する。
     /// </summary>
@@ -1178,8 +1198,14 @@ public class FishingController : SEEDScript
             return;
         }
 
+        // 岸際の直進巻き係数（1＝遠くて操舵フル、0＝直進距離以内で操舵ゼロ）。
+        // remaining はこの関数で既に算出済みなので、ここで一度だけ求めて
+        // ComputeReelDirection / UpdateReelArrow の両方へ使い回す（距離計算の重複を避ける）。
+        float steerFactor = SEED.Mathf.Clamped01(
+            (remaining - straightReelDistance) / SEED.Mathf.Max(straightFadeBand, DivideEpsilon));
+
         // 巻く向き（A / D による左右のずれを含む、基準方向からの水平単位ベクトル）
-        var dir = ComputeReelDirection(toTarget, deltaTime);
+        var dir = ComputeReelDirection(toTarget, deltaTime, steerFactor);
 
         // 進行方向が基準点への方向から 90 度以上外れている（内積 <= 0）＝
         // これ以上巻いても基準点へ近づけない向きなので、素通りする前に巻き取りを完了させる。
@@ -1191,7 +1217,11 @@ public class FishingController : SEEDScript
         }
 
         // 巻く向きが確定したので、ウキの足元へインジケータを寝かせて置く。
-        UpdateReelArrow(floatTf.Position, dir);
+        // steerFactor が 0（直進距離以内）ならインジケータは表示せず格納する。
+        if (steerFactor > 0f)
+        {
+            UpdateReelArrow(floatTf.Position, dir, steerFactor);
+        }
 
         // このフレームの移動量を「残りの水平距離」でクランプし、基準点を追い越さないようにする
         float step = SEED.Mathf.Min(amount, remaining);
@@ -1292,18 +1322,31 @@ public class FishingController : SEEDScript
     /// 基準は「ウキ → 巻き取りの基準点（<see cref="ReelTargetPosition"/>、通常は竿先）」の水平方向。
     /// そこから A / D キーで <see cref="reelAngleOffsetDegrees"/> を
     /// ±<see cref="reelAngleRangeDegrees"/>/2 の範囲で振れる。
+    ///
+    /// <b>岸際の直進巻き</b>: <paramref name="steerFactor"/>（1＝操舵フル、0＝直進のみ）に応じて
+    /// 許容範囲そのものを ±(<see cref="reelAngleRangeDegrees"/>/2 × steerFactor) へ絞る。
+    /// これにより steerFactor が 0 に近づくほど A/D の効きが弱まるだけでなく、
+    /// 既に付いていたずれ角もこのクランプによって自動的に 0 へ寄せられ、
+    /// 岸へ近づくにつれて滑らかに直進へ収束する。
     /// </summary>
     /// <param name="toTarget">ウキ → 基準点の水平ベクトル（Y 成分は無視する。呼び出し側で算出済み）。</param>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
-    private SEED.Vector3 ComputeReelDirection(SEED.Vector3 toTarget, float deltaTime)
+    /// <param name="steerFactor">岸際の直進巻き係数（1＝遠くて操舵フル、0＝直進距離以内で操舵ゼロ）。</param>
+    private SEED.Vector3 ComputeReelDirection(SEED.Vector3 toTarget, float deltaTime, float steerFactor)
     {
         // A / D で基準からのずれ角を動かす（範囲外へは出さない）。
         // ずれ角は「ウキ → 竿先」を基準にした角度なので、ウキ側から見ると左右が反転する。
         // プレイヤーの操作感（D でウキが右へ寄る）に合わせて符号を逆に取る。
-        float half = SEED.Mathf.Abs(reelAngleRangeDegrees) * 0.5f;
+        // steerFactor で範囲を絞るので、岸際では A/D 入力自体をここで無視する
+        // （steerFactor <= 0 のときは範囲が ±0 になり turn を加えても即クランプされるが、
+        //   入力の意図を明確にするため先に無視しておく）。
+        float half = SEED.Mathf.Abs(reelAngleRangeDegrees) * 0.5f * steerFactor;
         float turn = 0f;
-        if (SEED.Input.GetKey(SEED.KeyCode.A)) { turn += 1f; }   // A: ウキを左へ寄せる
-        if (SEED.Input.GetKey(SEED.KeyCode.D)) { turn -= 1f; }   // D: ウキを右へ寄せる
+        if (steerFactor > 0f)
+        {
+            if (SEED.Input.GetKey(SEED.KeyCode.A)) { turn += 1f; }   // A: ウキを左へ寄せる
+            if (SEED.Input.GetKey(SEED.KeyCode.D)) { turn -= 1f; }   // D: ウキを右へ寄せる
+        }
         reelAngleOffsetDegrees = SEED.Mathf.Clamped(
             reelAngleOffsetDegrees + turn * reelTurnSpeedDegPerSec * deltaTime, -half, half);
 
@@ -1590,15 +1633,20 @@ public class FishingController : SEEDScript
     /// Y 回転は「巻く向きの方位角 ＋ <see cref="reelArrowYawOffsetDegrees"/>」。
     /// 方位角と矢印の向きの対応は <see cref="ReelArrowPitchDegrees"/> のコメントで導出している。
     ///
-    /// <b>不透明度</b>: <c>clamp01(基準 ＋ 追加 × |sin θ|)</c>（θ ＝ A/D による基準方向からの
-    /// ずれ角）。まっすぐ巻いているときは薄く、大きく曲げているほど濃くなる。
+    /// <b>不透明度</b>: <c>clamp01(基準 ＋ 追加 × |sin θ|) × steerFactor</c>（θ ＝ A/D による基準方向からの
+    /// ずれ角、steerFactor ＝ 岸際の直進巻き係数）。まっすぐ巻いているときは薄く、大きく曲げているほど濃くなり、
+    /// 岸（<see cref="straightReelDistance"/>）へ近づくほど steerFactor で全体がフェードアウトする。
+    /// なお steerFactor が 0 の呼び出しはこの関数が呼ばれる前（<see cref="UpdateReeling"/>）で
+    /// スキップされ、その場合はフレーム末尾の「表示されなかったら格納」経路（<see cref="ParkReelArrow"/>）
+    /// でインジケータが自動的に隠される。
     ///
     /// <b>大きさ</b>: <see cref="reelArrowLength"/> を Transform.Scale の X/Y に入れる
     /// （3D キャンバスは 100px = 1m 換算。Z はキャンバス平面に効かないので 1 固定）。
     /// </summary>
     /// <param name="floatPosition">ウキのワールド位置（XZ だけ使う）。</param>
     /// <param name="reelDirection">巻く向き（水平・正規化済み。ウキから竿先へ向かう方向）。</param>
-    private void UpdateReelArrow(SEED.Vector3 floatPosition, SEED.Vector3 reelDirection)
+    /// <param name="steerFactor">岸際の直進巻き係数（1＝遠くて操舵フル、0＝直進距離以内で操舵ゼロ）。不透明度の乗数にも使う。</param>
+    private void UpdateReelArrow(SEED.Vector3 floatPosition, SEED.Vector3 reelDirection, float steerFactor)
     {
         if (reelArrow is not { } arrow || !arrow.IsValid) { return; }
         // 向きが縮退しているフレームは表示しない（このあと Update 末尾で格納される）。
@@ -1624,8 +1672,8 @@ public class FishingController : SEEDScript
         arrow.Scale = new SEED.Vector3(reelArrowLength, reelArrowLength, 1f);
 
         float theta = reelAngleOffsetDegrees * SEED.Mathf.Deg2Rad;
-        float opacity = reelArrowBaseOpacity
-                      + reelArrowExtraOpacity * SEED.Mathf.Abs(SEED.Mathf.Sin(theta));
+        float opacity = (reelArrowBaseOpacity
+                      + reelArrowExtraOpacity * SEED.Mathf.Abs(SEED.Mathf.Sin(theta))) * steerFactor;
         ApplySpriteOpacity(reelArrowSprite, opacity);
 
         reelArrowShownThisFrame = true;
