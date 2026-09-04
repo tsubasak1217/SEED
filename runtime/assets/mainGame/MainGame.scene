@@ -2,15 +2,15 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      -26.273125,
-      24.367277,
-      18.271482
+      -12.70795,
+      1.4265957,
+      60.635643
     ],
-    "yaw": 1.2924788,
-    "pitch": 0.48933056,
+    "yaw": -2.9604626,
+    "pitch": 0.049780417,
     "fov_deg": 25.0,
     "far": 1000.0,
-    "speed": 5.0
+    "speed": 14.929924
   },
   "shading_params": {
     "toon_rim_strength": [
@@ -515,6 +515,20 @@
                   "kind": "model",
                   "path": "",
                   "anim": "Hooked",
+                  "loop_mode": "loop"
+                },
+                {
+                  "name": "WalkFishingL",
+                  "kind": "model",
+                  "path": "",
+                  "anim": "WalkFishingL",
+                  "loop_mode": "loop"
+                },
+                {
+                  "name": "WalkFishingR",
+                  "kind": "model",
+                  "path": "",
+                  "anim": "WalkFishingR",
                   "loop_mode": "loop"
                 }
               ],

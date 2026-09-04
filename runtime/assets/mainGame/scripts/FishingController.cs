@@ -385,6 +385,17 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "本体の待ちクリップ名")]
     private string playerFloatClip = "IdleFishing";
 
+    /// <summary>
+    /// 巻き取り中、プレイヤーから見て<b>右</b>へ移動しているあいだ再生する本体クリップ名。
+    /// 釣り姿勢では海を向いたまま経路上を前後するので、移動は必ず横歩きになる。
+    /// </summary>
+    [SerializeField(Label = "本体の右横歩きクリップ名")]
+    private string playerWalkFishingRightClip = "WalkFishingR";
+
+    /// <summary>巻き取り中、プレイヤーから見て<b>左</b>へ移動しているあいだ再生する本体クリップ名。</summary>
+    [SerializeField(Label = "本体の左横歩きクリップ名")]
+    private string playerWalkFishingLeftClip = "WalkFishingL";
+
     /// <summary>竿クリップ切替時のクロスフェード秒数（0 で即時切替）。竿・本体の両方に使う。</summary>
     [SerializeField(Label = "切替フェード(秒)")]
     private float fadeSeconds = 0.15f;
@@ -782,6 +793,8 @@ public class FishingController : SEEDScript
         hookedFish = false;
         ParkFloatAtRodTip();
         HidePreviewLine();
+        // 直前に PlayerMove.EnterFishingStance が本体アニメを触っているのでラッチを捨てる
+        ResetPlayerClipLatch();
         CrossFadeBoth(floatClip, playerFloatClip);
         // マウスの振りを読む区間へ入ったのでカーソルをロックする（判断は UpdateCursorLock が一元管理）。
         UpdateCursorLock();
@@ -797,6 +810,8 @@ public class FishingController : SEEDScript
         State = FishState.Idle;
         ResetGesture();
         hookedFish = false;
+        // この後 PlayerMove 側（ExitFishingStance・通常移動のアニメ）が本体を触るのでラッチを捨てる
+        ResetPlayerClipLatch();
         ParkFloatAtRodTip();
         HideLine();
         HidePreviewLine();
@@ -1190,10 +1205,12 @@ public class FishingController : SEEDScript
         var next = floatTf.Position + dir * step;
         SetFloatPosition(new SEED.Vector3(next.x, WaterSurfaceY() + BobOffset(), next.z));
 
-        // プレイヤーはウキに一番近い経路上の点へ歩いて付いていく（移動の実装は PlayerMove の責務）
+        // プレイヤーはウキに一番近い経路上の点へ歩いて付いていく（移動の実装は PlayerMove の責務）。
+        // 戻り値は「正面から見てどちらへ動いたか」なので、そのまま横歩きアニメの選択に使う。
         if (State == FishState.Reeling && playerMove is { } pm)
         {
-            pm.MoveTowardWorldPoint(floatTf.Position, deltaTime);
+            int lateral = pm.MoveTowardWorldPoint(floatTf.Position, deltaTime);
+            UpdatePlayerReelBodyClip(lateral, amount);
         }
 
         // 移動後の残り距離が完了距離以下になったら 1 回の釣りを終える
@@ -1201,6 +1218,27 @@ public class FishingController : SEEDScript
         {
             FinishReeling();
         }
+    }
+
+    /// <summary>
+    /// 巻き取り中のプレイヤー本体クリップを決める。
+    ///
+    /// 横移動しているあいだは左右の横歩きクリップ、止まっているあいだは
+    /// 巻き入力の有無に応じて巻き取り／待ちクリップへ戻す。
+    /// 実際の切替は <see cref="SetPlayerClip"/> がラッチで間引くので毎フレーム呼んでよい。
+    /// </summary>
+    /// <param name="lateral">
+    /// <see cref="PlayerMove.MoveTowardWorldPoint"/> の戻り値
+    /// （+1 = 右へ移動 / -1 = 左へ移動 / 0 = 停止）。
+    /// </param>
+    /// <param name="reelAmount">このフレームの巻き取り量（メートル）。停止時の分岐に使う。</param>
+    private void UpdatePlayerReelBodyClip(int lateral, float reelAmount)
+    {
+        if (lateral == PlayerMove.LateralRight) { SetPlayerClip(playerWalkFishingRightClip); return; }
+        if (lateral == PlayerMove.LateralLeft) { SetPlayerClip(playerWalkFishingLeftClip); return; }
+
+        // 停止中: 巻いていれば巻き取りアニメ、巻いていなければ待ちアニメへ戻す
+        SetPlayerClip(reelAmount > ReelInputEpsilon ? playerReelClip : playerFloatClip);
     }
 
     /// <summary>
@@ -1266,11 +1304,14 @@ public class FishingController : SEEDScript
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     private SEED.Vector3 ComputeReelDirection(SEED.Vector3 toTarget, float deltaTime)
     {
-        // A / D で基準からのずれ角を動かす（範囲外へは出さない）
+        // A / D で基準からのずれ角を動かす（範囲外へは出さない）。
+        // ずれ角は「ウキ → 竿先」を基準にした角度なので、ウキ側から見ると左右が反転する。
+        // プレイヤーの操作感（D でウキが右へ寄る）に合わせて符号を逆に取る。
+        // キャスト角（UpdateCastAngle）はプレイヤー正面が基準で反転しないため、そちらは変更しない。
         float half = SEED.Mathf.Abs(reelAngleRangeDegrees) * 0.5f;
         float turn = 0f;
-        if (SEED.Input.GetKey(SEED.KeyCode.A)) { turn -= 1f; }
-        if (SEED.Input.GetKey(SEED.KeyCode.D)) { turn += 1f; }
+        if (SEED.Input.GetKey(SEED.KeyCode.A)) { turn += 1f; }   // A: ウキを左へ寄せる
+        if (SEED.Input.GetKey(SEED.KeyCode.D)) { turn -= 1f; }   // D: ウキを右へ寄せる
         reelAngleOffsetDegrees = SEED.Mathf.Clamped(
             reelAngleOffsetDegrees + turn * reelTurnSpeedDegPerSec * deltaTime, -half, half);
 
@@ -1712,6 +1753,37 @@ public class FishingController : SEEDScript
     private void CrossFadeRod(string clip) => CrossFadeClip(rodAnimator, clip);
 
     /// <summary>
+    /// 本体 Animator へ<b>いま指示してあるクリップ名</b>（ラッチ）。未指示・不明なら null。
+    /// <see cref="SetPlayerClip"/> がここと比較して、同じクリップを毎フレーム
+    /// CrossFade し直す（＝先頭へ戻り続ける）のを防ぐ。
+    /// <see cref="PlayerMove"/> 側が本体アニメを触りうる区間の出入りでは
+    /// <see cref="ResetPlayerClipLatch"/> で null に戻し、次の指示を必ず通す。
+    /// </summary>
+    private string? currentPlayerClip = null;
+
+    /// <summary>
+    /// プレイヤー本体のクリップ指示を一元化する窓口。
+    /// 直前の指示と同じなら何もしない（横歩き⇔巻き取りの切替を毎フレーム出しても安全にする）。
+    /// 本体側のクロスフェードはすべてこの関数を通す（竿側は従来どおり直接切り替える）。
+    /// </summary>
+    /// <param name="clip">再生したいクリップ名。</param>
+    private void SetPlayerClip(string clip)
+    {
+        if (string.IsNullOrEmpty(clip)) { return; }
+        if (currentPlayerClip == clip) { return; }
+
+        currentPlayerClip = clip;
+        CrossFadePlayer(clip);
+    }
+
+    /// <summary>
+    /// 本体クリップのラッチを未指示（null）へ戻す。
+    /// <see cref="PlayerMove"/> が本体アニメを差し替えうる区間（釣り姿勢の出入り）をまたぐと
+    /// ラッチが実態とずれるため、その前後で必ず呼んで次の指示を通す。
+    /// </summary>
+    private void ResetPlayerClipLatch() => currentPlayerClip = null;
+
+    /// <summary>
     /// プレイヤー本体の Animator を指定クリップへクロスフェードする（未設定・無効・空名・再生中は何もしない）。
     /// </summary>
     /// <param name="clip">再生するクリップ名。</param>
@@ -1731,7 +1803,7 @@ public class FishingController : SEEDScript
     private void CrossFadeBoth(string rodClip, string playerClip)
     {
         CrossFadeRod(rodClip);
-        CrossFadePlayer(playerClip);
+        SetPlayerClip(playerClip);   // 本体側は必ずラッチ経由（毎フレーム再指示を防ぐ）
     }
 
     /// <summary>
@@ -1777,6 +1849,7 @@ public class FishingController : SEEDScript
         if (playerAnimator is { } playerAnim && playerAnim.IsValid)
         {
             playerAnim.Play(playerCastClip, 0f, fadeSeconds);
+            currentPlayerClip = playerCastClip;   // Play で直接指示したのでラッチも合わせる
             started = true;
         }
 
@@ -1835,8 +1908,8 @@ public class FishingController : SEEDScript
         if (!windupActive) { return; }
         windupActive = false;
 
-        FinishWindupFor(rodAnimator, castClip, floatClip, continueToCast);
-        FinishWindupFor(playerAnimator, playerCastClip, playerFloatClip, continueToCast);
+        FinishWindupFor(rodAnimator, castClip, floatClip, continueToCast, isPlayerBody: false);
+        FinishWindupFor(playerAnimator, playerCastClip, playerFloatClip, continueToCast, isPlayerBody: true);
     }
 
     /// <summary>
@@ -1849,7 +1922,12 @@ public class FishingController : SEEDScript
     /// <param name="castClipName">この Animator のキャストクリップ名。</param>
     /// <param name="floatClipName">この Animator の待ちクリップ名。</param>
     /// <param name="continueToCast">true ならキャスト続行、false なら待ちアニメへ戻す。</param>
-    private void FinishWindupFor(SEED.Animator? animator, string castClipName, string floatClipName, bool continueToCast)
+    /// <param name="isPlayerBody">
+    /// true … 本体 Animator（クリップ指示はラッチ <see cref="currentPlayerClip"/> を経由・更新する）。
+    /// false … 竿 Animator（ラッチの対象外）。
+    /// </param>
+    private void FinishWindupFor(
+        SEED.Animator? animator, string castClipName, string floatClipName, bool continueToCast, bool isPlayerBody)
     {
         if (animator is not { } anim || !anim.IsValid) { return; }
 
@@ -1861,12 +1939,22 @@ public class FishingController : SEEDScript
             if (anim.CurrentClip == castClipName)
             {
                 anim.Resume();
+                if (isPlayerBody) { currentPlayerClip = castClipName; }   // 継続再生もラッチへ反映
+            }
+            else if (isPlayerBody)
+            {
+                // 想定外: 予備動作中にクリップが崩れていた場合は通常のクロスフェードへフォールバック
+                ResetPlayerClipLatch();
+                SetPlayerClip(castClipName);
             }
             else
             {
-                // 想定外: 予備動作中にクリップが崩れていた場合は通常のクロスフェードへフォールバック
                 CrossFadeClip(anim, castClipName);
             }
+        }
+        else if (isPlayerBody)
+        {
+            SetPlayerClip(floatClipName);
         }
         else
         {

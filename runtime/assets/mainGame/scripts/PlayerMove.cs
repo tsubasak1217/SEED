@@ -90,6 +90,15 @@ public class PlayerMove : SEEDScript
     /// <summary>等速化補正の上限倍率（停留点・Step 区間で無限加速しないための安全弁）。</summary>
     private const float MaxTimeScale = 4.0f;
 
+    /// <summary><see cref="MoveTowardWorldPoint"/> の戻り値: このフレームは動いていない。</summary>
+    public const int LateralNone = 0;
+
+    /// <summary><see cref="MoveTowardWorldPoint"/> の戻り値: プレイヤーから見て右へ動いた。</summary>
+    public const int LateralRight = 1;
+
+    /// <summary><see cref="MoveTowardWorldPoint"/> の戻り値: プレイヤーから見て左へ動いた。</summary>
+    public const int LateralLeft = -1;
+
     // ─── 自由移動パラメータ ───────────────────────────────────
 
     [Header("移動パラメータ"), SerializeField]
@@ -404,17 +413,28 @@ public class PlayerMove : SEEDScript
     /// 水平ベクトルを射影し、その符号を進行方向、絶対値を残り距離とみなす。
     /// 残り距離が <see cref="followArriveDistance"/> 未満なら到着とみなして動かない。
     ///
-    /// <b>向きとアニメについて</b>: 釣り姿勢中は海を向いたままにしたいので
+    /// <b>向きについて</b>: 釣り姿勢中は海を向いたままにしたいので
     /// <see cref="UpdateTargetYaw"/> は呼ばない（向きは釣り姿勢に入ったときのまま）。
-    /// アニメも釣り姿勢クリップを維持する（滑って見えるが、
-    /// 巻き取り中の専用歩行アニメは今後の課題）。
+    ///
+    /// <b>戻り値（横歩きアニメ用）</b>: 進んだ向きが「プレイヤーの正面から見て」
+    /// 左右どちらだったかを返す。釣り姿勢では海（＝正面）を向いたまま経路上を
+    /// 前後するので、見た目には必ず左右への横歩きになる。アニメの選択は
+    /// 呼び出し側（FishingController）の責務とし、ここでは向きだけを返す。
+    ///
+    /// <b>右方向の求め方</b>: SEED は左手系・前方 +Z なので、
+    /// 前方が (x, ?, z) のとき右方向は (z, 0, -x)（<see cref="EnterFishingStance"/> と同じ規約）。
     /// </summary>
     /// <param name="target">目指すワールド座標（Y は無視し水平距離だけを見る）。</param>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
-    public void MoveTowardWorldPoint(SEED.Vector3 target, float deltaTime)
+    /// <returns>
+    /// <see cref="LateralRight"/>(+1) … 正面から見て右へ動いた /
+    /// <see cref="LateralLeft"/>(-1) … 左へ動いた /
+    /// <see cref="LateralNone"/>(0) … 動いていない（到着済み・経路無効など）。
+    /// </returns>
+    public int MoveTowardWorldPoint(SEED.Vector3 target, float deltaTime)
     {
         // 経路移動モード以外・点の無い経路では何もしない（評価すると原点へ飛ぶため）
-        if (path is not { } p || !p.IsValid || p.PointCount <= 0) { return; }
+        if (path is not { } p || !p.IsValid || p.PointCount <= 0) { return LateralNone; }
 
         // 初回は経路の開始時刻へ合わせる（入力移動と同じ初期化規則を使う）
         if (!pathTimeInitialized)
@@ -426,18 +446,28 @@ public class PlayerMove : SEEDScript
         // 経路の進行方向（水平化・正規化）。向きが定まらない区間では動かさない。
         var tangent = p.SampleTangent(pathTime);
         var flatTangent = new SEED.Vector3(tangent.x, 0f, tangent.z);
-        if (flatTangent.SqrMagnitude < SqrEpsilon) { return; }
+        if (flatTangent.SqrMagnitude < SqrEpsilon) { return LateralNone; }
         flatTangent = flatTangent.Normalized;
 
         // 目標までの水平ベクトルを進行方向へ射影 ＝ 経路に沿った残り距離（符号つき）
         var toTarget = new SEED.Vector3(target.x - transform.Position.x, 0f, target.z - transform.Position.z);
         float along = SEED.Vector3.Dot(flatTangent, toTarget);
-        if (SEED.Mathf.Abs(along) < followArriveDistance) { return; }   // 到着済み
+        if (SEED.Mathf.Abs(along) < followArriveDistance) { return LateralNone; }   // 到着済み
 
         // 入力移動と同じ等速化補正を掛けて経路時刻を進める（速度の見え方を揃える）
-        pathTime += SEED.Mathf.Sign(along) * pathSpeed * ComputeConstantSpeedScale(p, pathTime) * deltaTime;
+        float direction = SEED.Mathf.Sign(along);
+        pathTime += direction * pathSpeed * ComputeConstantSpeedScale(p, pathTime) * deltaTime;
         pathTime = WrapPathTime(p, pathTime);
         ApplyPathTransform(p, pathTime);
+
+        // 実際に進んだワールド方向（経路接線 × 進む符号）を、正面基準の右方向へ射影して
+        // 左右どちらへ動いたかを判定する。射影が 0 ちょうど（真正面／真後ろ）になる
+        // 縮退時は「右」に倒す（釣り姿勢では起こらない想定の保険）。
+        var moveDirWorld = flatTangent * direction;
+        var forward = transform.Forward;
+        var right = new SEED.Vector3(forward.z, 0f, -forward.x);
+        float lateral = SEED.Vector3.Dot(moveDirWorld, right);
+        return lateral < 0f ? LateralLeft : LateralRight;
     }
 
     // ─── 釣り姿勢（出入りは FishingController が呼ぶ公開 API）─────

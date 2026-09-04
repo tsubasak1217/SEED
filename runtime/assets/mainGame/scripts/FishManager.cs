@@ -73,6 +73,12 @@ public class FishManager : SEEDScript
     /// </summary>
     private const float RareFishRate = 0.1f;
 
+    /// <summary>
+    /// 距離の一致とみなす微小量（メートル）。
+    /// 近／遠マーカーが同距離のときの 0 除算を避けるための下限に使う。
+    /// </summary>
+    private const float DistanceEpsilon = 0.0001f;
+
     // ─── 中心点 ───────────────────────────────────────────────
 
     /// <summary>
@@ -102,8 +108,14 @@ public class FishManager : SEEDScript
 
     // ─── 生成パラメータ ───────────────────────────────────────
 
-    /// <summary>生成する魚の水面高さ（ワールド Y）。水面の高さに合わせる。</summary>
-    [Header("生成"), SerializeField(Label = "生成する高さ(Y)")]
+    /// <summary>
+    /// 生成する魚の高さ（ワールド Y）へ加算するオフセット。
+    ///
+    /// 基準の Y は「距離マーカー(近)/(遠) の Y を出現距離で線形補間した値」であり
+    /// （<see cref="TrySpawnOne"/> 参照）、このフィールドはそこからの微調整に使う。
+    /// 0 ならマーカーが示す高さちょうどに出る。
+    /// </summary>
+    [Header("生成"), SerializeField(Label = "高さオフセット(Y)")]
     private float spawnHeight = 0f;
 
     // ─── 内部状態 ─────────────────────────────────────────────
@@ -164,7 +176,8 @@ public class FishManager : SEEDScript
     ///
     /// - prefab はそのレベルのリストからランダムに 1 つ選ぶ
     /// - 位置は「中心点から、距離マーカー2つで決まる範囲内のランダム距離、
-    ///   ランダム方位」の水面上
+    ///   ランダム方位」。高さ(Y)は 2 つの距離マーカーの Y を出現距離で線形補間し、
+    ///   さらに「高さオフセット(Y)」を足した値になる
     /// - レベルが範囲外・prefab リストが空・パスが空・マーカー未設定のときは
     ///   何もしない（false）
     /// </summary>
@@ -223,18 +236,33 @@ public class FishManager : SEEDScript
         var center = CenterPosition();
         if (level.distanceMinMarker is not { } minMarker || !minMarker.IsValid) { return false; }
         if (level.distanceMaxMarker is not { } maxMarker || !maxMarker.IsValid) { return false; }
-        float distA = DistanceXZ(center, minMarker.Position);
-        float distB = DistanceXZ(center, maxMarker.Position);
+        var minMarkerPos = minMarker.Position;
+        var maxMarkerPos = maxMarker.Position;
+        float distA = DistanceXZ(center, minMarkerPos);
+        float distB = DistanceXZ(center, maxMarkerPos);
 
-        // 出現位置: 範囲内の一様ランダム距離 × ランダム方位の水面上。
+        // 出現位置: 範囲内の一様ランダム距離 × ランダム方位。
         // 近/遠マーカーの取り違えは入れ替えて許容する（データ入力に寛容にする）。
+        // 高さもマーカーの Y を使うので、入れ替えるときは Y も一緒に連れて行く。
+        bool swapped = distB < distA;
+        float near   = swapped ? distB : distA;
+        float far    = swapped ? distA : distB;
+        float nearY  = swapped ? maxMarkerPos.y : minMarkerPos.y;
+        float farY   = swapped ? minMarkerPos.y : maxMarkerPos.y;
+
         float angle = (float)random.NextDouble() * FullTurnRadians;
-        float near = SEED.Mathf.Min(distA, distB);
-        float far  = SEED.Mathf.Max(distA, distB);
-        float distance = near + (float)random.NextDouble() * (far - near);
+        float span = far - near;
+        float distance = near + (float)random.NextDouble() * span;
+
+        // 高さ: 近マーカーの Y ⇔ 遠マーカーの Y を「出現距離の範囲内の位置」で線形補間する。
+        // これで距離マーカーを上下させるだけで、距離に応じた深さをシーン上で設定できる。
+        // 近／遠が同距離（span ≒ 0）のときは補間できないので近マーカーの Y をそのまま使う。
+        float heightRatio = span > DistanceEpsilon ? (distance - near) / span : 0f;
+        float spawnY = SEED.Mathf.Lerp(nearY, farY, heightRatio) + spawnHeight;
+
         var spawnPos = new SEED.Vector3(
             center.x + SEED.Mathf.Sin(angle) * distance,
-            spawnHeight,
+            spawnY,
             center.z + SEED.Mathf.Cos(angle) * distance);
 
         // 生成して位置を合わせる（Instantiate 失敗時は false）
