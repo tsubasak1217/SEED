@@ -786,8 +786,19 @@ public class Fish : SEEDScript
     /// 円環クランプの除外登録（<see cref="FishingController.RegisterEngaged"/>）は
     /// <b>外さない</b>。演出中の魚が <see cref="FishManager"/> に出現円環内へ
     /// 引き戻されるのを防ぐためで、登録は破棄時（<see cref="OnDestroy"/>）に外れる。
+    ///
+    /// ここで改めて <see cref="SetEngaged"/> を呼び登録し直す（<see cref="engagedRegistered"/>
+    /// が false のときだけ実際に登録されるので冪等）。これは、合わせ直前に
+    /// 一旦 <see cref="BehaviorState.Roam"/> へフォールバックして登録が外れたまま
+    /// 掛かってしまった個体を保険的に拾うため: 登録が外れたままだと
+    /// <see cref="FishManager"/> の円環クランプ処理が演出中の魚を出現円環内へ
+    /// 引き戻してしまい、頭上に見えるはずの魚が消える／ズレる不具合になる。
     /// </summary>
-    public void OnCaught() => State = BehaviorState.Caught;
+    public void OnCaught()
+    {
+        State = BehaviorState.Caught;
+        SetEngaged(FishingController.Current, engaged: true);
+    }
 
     /// <summary>
     /// リリース・合わせ失敗・釣り中断でコントローラから呼ばれる共通の出口。

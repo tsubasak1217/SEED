@@ -338,6 +338,13 @@ public class CatchPresenter : SEEDScript
     /// </summary>
     private SEED.Vector3? resultCameraBasePosition = null;
 
+    /// <summary>
+    /// <see cref="SwitchToResultComposition"/> のデバッグログを出力済みか。
+    /// 1 回の釣果につき 1 回だけ出す（<see cref="Begin"/> でリセットする）ためのガード。
+    /// 頭上に魚が見えない不具合の切り分け用で、以後も必要なら残してよい。
+    /// </summary>
+    private bool loggedResultComposition = false;
+
     // ─── ライフサイクル ───────────────────────────────────────
 
     /// <summary>生成直後の初期化。白と釣果テキストは必ず消えた状態から始める。</summary>
@@ -415,6 +422,7 @@ public class CatchPresenter : SEEDScript
         whiteoutAlpha = 0f;
         SetWhiteoutAlpha(0f);
         HideTexts();
+        loggedResultComposition = false;
         EnterPhase(CatchPhase.ApproachCamera);
 
         SEED.Debug.Log($"[Catch] 演出開始: {fish.DisplayName}");
@@ -588,6 +596,22 @@ public class CatchPresenter : SEEDScript
         // 2 / 3. 魚を頭上へ運び、スケール 0 から膨らませる下地を作る
         PlaceFishAbovePlayer();
         SetFishScale(0f);
+
+        // デバッグ用: 「頭上に魚が見えない」不具合の切り分け用に、差し替え直後の
+        // 魚位置・プレイヤー位置・原寸スケールを 1 回だけログへ出す（毎フレーム出ると
+        // 埋もれるので loggedResultComposition で釣果 1 回につき 1 回に絞る）。
+        if (!loggedResultComposition)
+        {
+            loggedResultComposition = true;
+            var fishPos = shownFish is { } loggedFish && loggedFish.Actor.IsValid
+                ? loggedFish.Transform.Position
+                : SEED.Vector3.Zero;
+            var playerPos = ResolvePlayerTransform() is { } loggedPlayer
+                ? loggedPlayer.Position
+                : SEED.Vector3.Zero;
+            SEED.Debug.Log(
+                $"[Catch] 差し替え直後: fishPos={fishPos} playerPos={playerPos} fishTargetScale={fishTargetScale}");
+        }
 
         // 4. 釣り上げポーズ
         CrossFade(playerAnimator, playerCatchClip);
