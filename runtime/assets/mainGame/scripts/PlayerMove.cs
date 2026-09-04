@@ -209,6 +209,52 @@ public class PlayerMove : SEEDScript
     [SerializeField(Label = "竿の待機クリップ名")]
     private string rodIdleClip = "Idle_竿";
 
+    // ─── 足音（距離ベースで再生）───────────────────────────────
+    //
+    // 「歩数」を時間ではなく<b>実際に移動した水平距離</b>で数える方式。
+    // 経路移動・自由移動・釣り中の横歩き（MoveTowardWorldPoint）のいずれでも
+    // プレイヤーの位置は最終的に transform.Position に反映されるため、
+    // 「フレーム開始時の位置」と「Update 終了時の位置」の差分（水平成分）を
+    // 1 箇所（Update の末尾）で見るだけで、移動経路によらず共通に計測できる。
+
+    /// <summary>足音 SE のアセットパス（空文字なら足音を再生しない）。</summary>
+    [Header("足音"), SerializeField(Label = "足音 SE のパス")]
+    private string footstepSePath = "assets://mainGame/audios/footsteps.mp3";
+
+    /// <summary>1 歩とみなす水平移動距離（メートル）。この距離進むたびに SE を 1 回再生する。</summary>
+    [SerializeField(Label = "足音の歩幅(m)")]
+    private float footstepStepDistance = 0.9f;
+
+    /// <summary>足音 SE の音量の下限（<see cref="SEED.Random.Range(float, float)"/> でこの範囲から毎回抽選する）。</summary>
+    [SerializeField(Label = "足音の音量(最小)")]
+    private float footstepVolumeMin = 0.6f;
+
+    /// <summary>足音 SE の音量の上限。</summary>
+    [SerializeField(Label = "足音の音量(最大)")]
+    private float footstepVolumeMax = 1.0f;
+
+    /// <summary>
+    /// 動き始めてから最初の 1 歩を鳴らすまでの助走距離（メートル）。
+    ///
+    /// 歩数の積算をこの分だけ先取りしておく（＝アキュムレータの初期値ではなく、
+    /// 「止まっていた状態から動き出した瞬間」に一度だけ差し引く先行距離）ことで、
+    /// ちょんと押しただけの微小な移動でいきなり足音が鳴るのを防ぐ。
+    /// 0 にすると「止まっている状態から動いた瞬間、歩幅の半分進んだ扱いで始まる」
+    /// （＝アキュムレータを footstepStepDistance * 0.5 から始めるのと同じ効果）。
+    /// </summary>
+    [SerializeField(Label = "足音: 最初の一歩までの助走距離(m)")]
+    private float footstepFirstStepDelay = 0.15f;
+
+    /// <summary>
+    /// 移動しているとみなす、1 フレームの水平移動距離のしきい値（メートル）。
+    /// これ未満なら「止まっている」として歩数の積算をリセットする
+    /// （止まった直後に前回の積算が残っていて足音が鳴るのを防ぐ）。
+    /// </summary>
+    private const float FootstepMovingEpsilon = 1e-4f;
+
+    /// <summary>足音の左右交互の音量バイアス（自然なばらつき演出）。偶数歩を弱めに鳴らす。</summary>
+    private const float FootstepAlternateVolumeScale = 0.9f;
+
     // ─── 内部状態 ─────────────────────────────────────────────
 
     /// <summary>現在再生を要求しているのが走りか（true=Running / false=Idle / null=未初期化）。</summary>
@@ -250,6 +296,26 @@ public class PlayerMove : SEEDScript
     /// 接線の符号ガードが「本物の折り返し」と「微分のブレ」を見分けるのに使う。
     /// </summary>
     private float distanceSinceTangent = 0f;
+
+    /// <summary>
+    /// 前フレーム終了時点（＝このフレーム開始時点）のワールド座標。null は「まだ計測していない」
+    /// （初回フレームは基準が無いので距離を積算しない）。
+    /// 経路移動・自由移動・釣り中の <see cref="MoveTowardWorldPoint"/> による横歩き、
+    /// すべての移動要因を区別せず、結果として動いた距離をまとめて拾うために使う。
+    /// </summary>
+    private SEED.Vector3? footstepLastPosition = null;
+
+    /// <summary>足音の歩数カウント用に積算している水平移動距離（メートル）。</summary>
+    private float footstepAccumulatedDistance = 0f;
+
+    /// <summary>
+    /// 「止まっている → 動き出した」の立ち上がりで <see cref="footstepFirstStepDelay"/> を
+    /// 一度だけ差し引いたか。動いている間は true のまま、止まったフレームで false に戻す。
+    /// </summary>
+    private bool footstepFirstStepDelayApplied = false;
+
+    /// <summary>これまでに再生した足音の回数（左右交互の音量バイアスに使う）。</summary>
+    private int footstepStepIndex = 0;
 
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
@@ -733,8 +799,93 @@ public class PlayerMove : SEEDScript
     }
 
     /// <summary>Update 後の更新。追従カメラなど他更新の結果を使う処理向け。</summary>
+    ///
+    /// <remarks>
+    /// 足音 SE をここで鳴らす。Update（経路/自由移動）・<see cref="MoveTowardWorldPoint"/>
+    /// （釣り中の横歩き、FishingController から呼ばれる）のどちらで動いても、
+    /// 最終的な移動結果は必ず <c>transform.Position</c> に反映されている。
+    /// そこで個々の移動処理へ計測コードを埋め込まず、<b>1 フレームぶんの位置の差分を
+    /// ここで一括して見る</b>ことで、移動要因を問わず共通に「歩いた距離」を拾う。
+    /// </remarks>
     public override void LateUpdate(ref NativeFrameContext ctx)
     {
+        UpdateFootsteps();
+    }
+
+    /// <summary>
+    /// 距離ベースで足音 SE を再生する。
+    ///
+    /// 前フレーム終了時点の位置との差分（水平成分のみ。Y は無視して、
+    /// ジャンプや段差での上下動だけでは足音を鳴らさない）を積算し、
+    /// <see cref="footstepStepDistance"/> に達するたびに 1 回再生して差し引く
+    /// （1 フレームで複数歩ぶん進む極端なケースにも対応できるよう while で回す）。
+    ///
+    /// 移動量がほぼ 0 のフレームでは積算をリセットする（止まった後に前回の
+    /// 積算が残っていて足音が鳴ってしまうのを防ぐ）とともに、次に動き出した
+    /// ときに再び <see cref="footstepFirstStepDelay"/> ぶんの助走を要求する。
+    /// </summary>
+    private void UpdateFootsteps()
+    {
+        var currentPosition = transform.Position;
+
+        // 初回フレームは比較対象が無いので、基準位置を記録するだけで終える。
+        if (footstepLastPosition is not { } lastPosition)
+        {
+            footstepLastPosition = currentPosition;
+            return;
+        }
+        footstepLastPosition = currentPosition;
+
+        // 水平成分だけの移動距離（Y を無視するのは、坂・段差での上下動だけで
+        // 足音が鳴らないようにするため。経路の高さ追従や重力落下と独立させる）。
+        var delta = new SEED.Vector3(
+            currentPosition.x - lastPosition.x, 0f, currentPosition.z - lastPosition.z);
+        float distance = delta.Magnitude;
+
+        if (distance < FootstepMovingEpsilon)
+        {
+            // 止まっている: 積算をリセットし、次の動き出しでは助走からやり直す。
+            footstepAccumulatedDistance = 0f;
+            footstepFirstStepDelayApplied = false;
+            return;
+        }
+
+        // 「止まっていた → 動き出した」立ち上がりの一度だけ、助走ぶんを差し引いておく
+        // （＝最初の一歩は footstepStepDistance + footstepFirstStepDelay 進んで鳴る）。
+        if (!footstepFirstStepDelayApplied)
+        {
+            footstepAccumulatedDistance -= footstepFirstStepDelay;
+            footstepFirstStepDelayApplied = true;
+        }
+
+        footstepAccumulatedDistance += distance;
+
+        while (footstepAccumulatedDistance >= footstepStepDistance)
+        {
+            footstepAccumulatedDistance -= footstepStepDistance;
+            PlayFootstepSe();
+        }
+    }
+
+    /// <summary>
+    /// 足音 SE を 1 回再生する。音量は <see cref="footstepVolumeMin"/>〜<see cref="footstepVolumeMax"/>
+    /// からランダムに抽選し、さらに歩数を偶奇で数えて偶数歩をわずかに弱めることで
+    /// 左右の足音らしい自然なばらつきを演出する（簡易的な近似。厳密な左右判定は行わない）。
+    /// パスが空文字なら無音（再生しない）。
+    /// </summary>
+    private void PlayFootstepSe()
+    {
+        if (string.IsNullOrEmpty(footstepSePath)) { return; }   // 未設定なら無音
+
+        float volume = SEED.Random.Range(footstepVolumeMin, footstepVolumeMax);
+
+        footstepStepIndex++;
+        if (footstepStepIndex % 2 == 0)
+        {
+            volume *= FootstepAlternateVolumeScale;
+        }
+
+        SEED.Audio.Play(footstepSePath, volume);
     }
 
     /// <summary>描画フェーズで呼ばれる。描画に関わる処理向け。</summary>
