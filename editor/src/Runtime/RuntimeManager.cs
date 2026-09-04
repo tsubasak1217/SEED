@@ -707,8 +707,16 @@ public sealed class RuntimeManager : IDisposable
             return;
         }
 
+        // 埋め込みインプレース Play 中は、ランタイムウィンドウは既にシーンパネルの
+        // コンテナへ子として収まっている。ここで EmbedRuntimeWindow を呼ぶと
+        // SW_RESTORE / GetWindowRect により子ウィンドウの矩形が
+        // _runtimeRectBeforeEmbed に混入し、対になる Resume の
+        // DetachRuntimeWindow がウィンドウをトップレベルへ切り離してしまう。
+        // 埋め込み Play ではウィンドウ操作を一切行わず、ランタイム内部の
+        // 一時停止（IPC: PAUSE）だけを行う。
         _pipe?.Send("PAUSE");
-        EmbedRuntimeWindow();
+        if (!_inEmbeddedPlay) EmbedRuntimeWindow();
+        else EditorLog.Write("Pause — 埋め込み Play 中のためウィンドウ埋め込みをスキップ");
         ChangeState(EditorState.Pause);
     }
 
@@ -717,7 +725,11 @@ public sealed class RuntimeManager : IDisposable
     {
         EditorLog.Write($"Resume — state={_state}  hwnd=0x{_runtimeHwnd:X}");
         if (_state != EditorState.Pause) return;
-        DetachRuntimeWindow();
+        // 埋め込みインプレース Play 中は切り離さない（Pause と対称）。
+        // ここで SetParent(NULL) すると、ランタイムがタスクバー上の独立ウィンドウとなり、
+        // シーンパネルのコンテナは子を失って真っ白（空の HwndHost）になる。
+        if (!_inEmbeddedPlay) DetachRuntimeWindow();
+        else EditorLog.Write("Resume — 埋め込み Play 中のためウィンドウ切り離しをスキップ");
         _pipe?.Send("RESUME");
         ChangeState(EditorState.Play);
     }
@@ -941,7 +953,7 @@ public sealed class RuntimeManager : IDisposable
             return;
         }
 
-        if (_state == EditorState.Pause) DetachRuntimeWindow();
+        if (_state == EditorState.Pause && !_inEmbeddedPlay) DetachRuntimeWindow();
 
         // Play ランタイムを Kill せず、描画停止＋非表示で常駐保持へ退避する
         HidePlayRuntime();
@@ -1380,6 +1392,10 @@ public sealed class RuntimeManager : IDisposable
             // PLAY_ENTERED が届く前に Stop された場合の保険としてここでも解除する。
             _isLaunching    = false;
             _inEmbeddedPlay = false;
+            // 安全網: 何らかの経路でウィンドウがコンテナから外れていたら Edit 復帰時に戻す
+            // （外れたままだとシーンパネルが空の HwndHost となり真っ白になる）。
+            // 本メッセージはパイプ受信スレッドで処理されるため UI スレッドへマーシャルする。
+            Application.Current?.Dispatcher.InvokeAsync(EnsureRuntimeEmbedded);
             ChangeState(EditorState.Edit);
         }
         else if (msg.StartsWith("WGSL_DIAG:", StringComparison.Ordinal))
@@ -2065,6 +2081,21 @@ public sealed class RuntimeManager : IDisposable
                 SWP_NOZORDER | SWP_FRAMECHANGED);
     }
 
+    /// <summary>
+    /// ランタイムウィンドウが確実にシーンパネルのコンテナへ埋め込まれている状態を保証する。
+    /// 何らかの経路（Pause/Resume の誤動作・例外など）で親が外れていた場合のみ再埋め込みする。
+    /// 親が既にコンテナならば何もしない（毎回 SetParent し直すとサーフェス再生成を誘発するため）。
+    /// UI スレッドから呼ぶこと。
+    /// </summary>
+    private void EnsureRuntimeEmbedded()
+    {
+        if (_runtimeHwnd == IntPtr.Zero || _viewportContainerHwnd == IntPtr.Zero) return;
+        var parent = Win32.GetParent(_runtimeHwnd);
+        if (parent == _viewportContainerHwnd) return;
+        EditorLog.Write($"EnsureRuntimeEmbedded — 親が外れているため再埋め込み（parent=0x{parent:X}）");
+        EmbedRuntimeWindow();
+    }
+
     private void DetachRuntimeWindow()
     {
         EditorLog.Write($"DetachRuntimeWindow — hwnd=0x{_runtimeHwnd:X}");
@@ -2221,6 +2252,10 @@ public sealed class RuntimeManager : IDisposable
 
         [DllImport("user32.dll")]
         internal static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
+
+        /// <summary>指定ウィンドウの親ウィンドウを返す（親が無ければ 0）。</summary>
+        [DllImport("user32.dll")]
+        internal static extern IntPtr GetParent(IntPtr hWnd);
 
         [DllImport("user32.dll")]
         internal static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
