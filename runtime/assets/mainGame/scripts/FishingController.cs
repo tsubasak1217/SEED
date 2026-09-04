@@ -267,8 +267,22 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "巻き方向インジケータのSprite")]
     private SEED.Sprite? reelArrowSprite = null;
 
+    /// <summary>
+    /// 巻き方向インジケータの配置オフセット群。
+    /// 基準位置はウキの XZ ＋（<paramref name="reelDirection"/> 方向へ <see cref="reelArrowForwardOffset"/>）
+    /// ＋（その右方向へ <see cref="reelArrowSideOffset"/>）で、Y は水面 ＋ <see cref="reelArrowHoverHeight"/>。
+    /// 詳細な合成は <see cref="UpdateReelArrow"/> を参照。
+    /// </summary>
+    [Header("巻き方向インジケータの配置")]
+    [SerializeField(Label = "インジケータの前方オフセット(m)")]
+    private float reelArrowForwardOffset = 1.5f;
+
+    /// <summary>巻き方向インジケータをウキから見て巻く向きの右方向へどれだけずらすか（メートル）。</summary>
+    [SerializeField(Label = "インジケータの横オフセット(m)")]
+    private float reelArrowSideOffset = 0f;
+
     /// <summary>巻き方向インジケータを水面からどれだけ浮かせるか（メートル）。</summary>
-    [SerializeField(Label = "巻き方向インジケータの浮き高さ")]
+    [SerializeField(Label = "インジケータの高さオフセット(m)")]
     private float reelArrowHoverHeight = 0.05f;
 
     /// <summary>
@@ -1505,7 +1519,12 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// 巻き方向インジケータをウキの位置の水面すぐ上へ寝かせて置き、巻く向きへ回す。
+    /// 巻き方向インジケータをウキより手前（プレイヤー側）の水面すぐ上へ置き、巻く向きへ回す。
+    ///
+    /// <b>位置</b>: ウキの XZ を基準に、<paramref name="reelDirection"/>（＝竿先へ向かう巻く向き）
+    /// へ <see cref="reelArrowForwardOffset"/>、その右方向
+    /// （<c>(reelDirection.z, 0, -reelDirection.x)</c>）へ <see cref="reelArrowSideOffset"/> だけ
+    /// ずらす。Y は水面 ＋ <see cref="reelArrowHoverHeight"/>。
     ///
     /// <b>姿勢</b>: X 回転は <see cref="ReelArrowPitchDegrees"/> 固定（板が水面に寝て上を向く）、
     /// Y 回転は「巻く向きの方位角 ＋ <see cref="reelArrowYawOffsetDegrees"/>」。
@@ -1518,15 +1537,24 @@ public class FishingController : SEEDScript
     /// （3D キャンバスは 100px = 1m 換算。Z はキャンバス平面に効かないので 1 固定）。
     /// </summary>
     /// <param name="floatPosition">ウキのワールド位置（XZ だけ使う）。</param>
-    /// <param name="reelDirection">巻く向き（水平・正規化済み）。</param>
+    /// <param name="reelDirection">巻く向き（水平・正規化済み。ウキから竿先へ向かう方向）。</param>
     private void UpdateReelArrow(SEED.Vector3 floatPosition, SEED.Vector3 reelDirection)
     {
         if (reelArrow is not { } arrow || !arrow.IsValid) { return; }
         // 向きが縮退しているフレームは表示しない（このあと Update 末尾で格納される）。
         if (reelDirection.SqrMagnitude < SqrEpsilon) { return; }
 
+        // ウキから見て「前方＝巻く向き」「右＝前方を時計回りに90度回した向き」で配置をオフセットする。
+        var right = new SEED.Vector3(reelDirection.z, 0f, -reelDirection.x);
+        float baseX = floatPosition.x
+                    + reelDirection.x * reelArrowForwardOffset
+                    + right.x * reelArrowSideOffset;
+        float baseZ = floatPosition.z
+                    + reelDirection.z * reelArrowForwardOffset
+                    + right.z * reelArrowSideOffset;
+
         arrow.Position = new SEED.Vector3(
-            floatPosition.x, WaterSurfaceY() + reelArrowHoverHeight, floatPosition.z);
+            baseX, WaterSurfaceY() + reelArrowHoverHeight, baseZ);
 
         float yaw = SEED.Mathf.Atan2(reelDirection.x, reelDirection.z) * SEED.Mathf.Rad2Deg;
         arrow.Rotation = new SEED.Vector3(
