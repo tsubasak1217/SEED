@@ -14,7 +14,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///   <see cref="windupThresholdPx"/> px を超えると Windup へ。途中まででも姿勢は追従する）
 /// - 飛距離   … Windup 中は着弾点プレビューが最短⇔最長を往復するので、投げたい距離で振る
 /// - キャスト … マウスを<b>右へ振る</b>（累積が <see cref="castSwingThresholdPx"/> px 超で成立）
-/// - 方向     … A / D キーでキャスト角を左右に振る（±<see cref="maxCastAngleDegrees"/> 度）
+/// - 方向     … プレイヤーの正面（沖側）が常にキャスト方向。左右の角度調整はできない
 /// - 中断     … キャスト前に左クリックを離すと姿勢を解除して移動へ戻る
 /// - リール   … マウスホイール回転量のみで巻き取る
 ///   （<see cref="metersPerWheelUnit"/> を 0 にすれば無効化できる）
@@ -465,14 +465,6 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "プレビューの往復周期(秒)")]
     private float previewCycleSeconds = 2.0f;
 
-    /// <summary>A / D キーでキャスト方向を振る速さ（度／秒）。</summary>
-    [SerializeField(Label = "キャスト方向転換の速さ(度/秒)")]
-    private float castTurnSpeedDegPerSec = 60f;
-
-    /// <summary>正面（プレイヤーの向き）からの左右の最大ずれ角（度）。</summary>
-    [SerializeField(Label = "最大キャスト角(度)")]
-    private float maxCastAngleDegrees = 45f;
-
     /// <summary>
     /// ウキのY回転オフセット（度）。
     /// CastCameraTarget（カメラが追従する子アクタ）はウキの回転に追従するため、
@@ -611,9 +603,6 @@ public class FishingController : SEEDScript
 
     /// <summary>着弾点プレビューの往復位相用に積算した秒数（<see cref="FishState.Windup"/> 中のみ進む）。</summary>
     private float previewElapsed = 0f;
-
-    /// <summary>キャスト方向の基準（プレイヤー正面）からのずれ角（度）。A / D キーで増減する。</summary>
-    private float castAngleOffsetDegrees = 0f;
 
     /// <summary>飛翔開始位置（ワールド。キャスト時の竿先）。</summary>
     private SEED.Vector3 flightStart = SEED.Vector3.Zero;
@@ -894,7 +883,6 @@ public class FishingController : SEEDScript
         windupAccumPx = 0f;
         swingAccumPx = 0f;
         previewElapsed = 0f;
-        castAngleOffsetDegrees = 0f;
         EndWindup(continueToCast: false);
     }
 
@@ -909,15 +897,10 @@ public class FishingController : SEEDScript
     ///   <see cref="windupAccumPx"/> へ積算し、振りかぶり姿勢のスクラブを開始／進行させる。
     ///   累積が <see cref="windupThresholdPx"/> を超えたら <see cref="FishState.Windup"/> へ。
     /// - 右へ動いた量は無視する（振りかぶる前の振り抜きは受け付けない）。
-    ///
-    /// A / D によるキャスト方向の調整は <see cref="FishState.Windup"/> と同じく毎フレーム効く。
     /// </summary>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     private void UpdateAiming(float deltaTime)
     {
-        // 方向合わせはキャスト前ならいつでも受け付ける（プレビューが出る前から狙いを作れる）
-        UpdateCastAngle(deltaTime);
-
         // キャスト前に左クリックを離したら中断（＝この状態の唯一の終了条件）。
         // 巻き取り完了で Aiming へ戻ってきたときも、押していなければここで即座に移動へ戻る。
         if (!SEED.Input.GetMouseButton(SEED.MouseButton.Left))
@@ -972,8 +955,6 @@ public class FishingController : SEEDScript
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     private void UpdateWindupState(float deltaTime)
     {
-        UpdateCastAngle(deltaTime);
-
         // 振り抜く前に離したらキャンセル（振りかぶりを解いて移動へ戻る）
         if (!SEED.Input.GetMouseButton(SEED.MouseButton.Left))
         {
@@ -1002,23 +983,6 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// A / D キーでキャスト方向のずれ角（<see cref="castAngleOffsetDegrees"/>）を動かす。
-    /// 範囲は正面から ±<see cref="maxCastAngleDegrees"/> 度。
-    /// </summary>
-    /// <param name="deltaTime">このフレームの経過秒数。</param>
-    private void UpdateCastAngle(float deltaTime)
-    {
-        float turn = 0f;
-        if (SEED.Input.GetKey(SEED.KeyCode.A)) { turn -= 1f; }
-        if (SEED.Input.GetKey(SEED.KeyCode.D)) { turn += 1f; }
-        if (turn == 0f) { return; }
-
-        float limit = SEED.Mathf.Abs(maxCastAngleDegrees);
-        castAngleOffsetDegrees = SEED.Mathf.Clamped(
-            castAngleOffsetDegrees + turn * castTurnSpeedDegPerSec * deltaTime, -limit, limit);
-    }
-
-    /// <summary>
     /// 振りかぶりのしきい値（px）。0 除算と「0px で即成立」を避けるため下限を設ける。
     /// </summary>
     private float WindupThreshold()
@@ -1040,7 +1004,7 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// いまキャストする方向のヨー角（度）。
-    /// プレイヤーの正面（水平化）を基準に <see cref="castAngleOffsetDegrees"/> だけ回した向き。
+    /// プレイヤーの正面（水平化）そのもの。
     /// 正面が真上／真下に潰れている縮退時は null（起こらない想定の保険）。
     /// </summary>
     private float? CastYawDegrees()
@@ -1049,9 +1013,7 @@ public class FishingController : SEEDScript
         if (baseDir.SqrMagnitude < SqrEpsilon) { return null; }
 
         // エンジン規約: yaw = atan2(x, z)、前方 +Z
-        float baseYaw = SEED.Mathf.Atan2(baseDir.x, baseDir.z) * SEED.Mathf.Rad2Deg;
-        float limit = SEED.Mathf.Abs(maxCastAngleDegrees);
-        return baseYaw + SEED.Mathf.Clamped(castAngleOffsetDegrees, -limit, limit);
+        return SEED.Mathf.Atan2(baseDir.x, baseDir.z) * SEED.Mathf.Rad2Deg;
     }
 
     /// <summary>ヨー角（度）から水平方向の単位ベクトルを作る（エンジン規約: 前方 +Z）。</summary>
@@ -1132,7 +1094,7 @@ public class FishingController : SEEDScript
             CrossFadeBoth(castClip, playerCastClip);
         }
 
-        SEED.Debug.Log($"[Fishing] Cast 距離={clamped:F1}m 角={castAngleOffsetDegrees:F1}度");
+        SEED.Debug.Log($"[Fishing] Cast 距離={clamped:F1}m 角={yawDegrees:F1}度");
     }
 
     /// <summary>
@@ -1338,7 +1300,6 @@ public class FishingController : SEEDScript
         // A / D で基準からのずれ角を動かす（範囲外へは出さない）。
         // ずれ角は「ウキ → 竿先」を基準にした角度なので、ウキ側から見ると左右が反転する。
         // プレイヤーの操作感（D でウキが右へ寄る）に合わせて符号を逆に取る。
-        // キャスト角（UpdateCastAngle）はプレイヤー正面が基準で反転しないため、そちらは変更しない。
         float half = SEED.Mathf.Abs(reelAngleRangeDegrees) * 0.5f;
         float turn = 0f;
         if (SEED.Input.GetKey(SEED.KeyCode.A)) { turn += 1f; }   // A: ウキを左へ寄せる
