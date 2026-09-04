@@ -2,15 +2,15 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      59.038708,
-      5.781117,
-      33.127026
+      63.990215,
+      8.270781,
+      34.281193
     ],
-    "yaw": -1.6411462,
-    "pitch": 0.030525595,
+    "yaw": -1.690082,
+    "pitch": 0.2695251,
     "fov_deg": 25.0,
     "far": 1000.0,
-    "speed": 8.64
+    "speed": 5.0
   },
   "shading_params": {
     "toon_rim_strength": [
@@ -603,9 +603,11 @@
                 "catchCameraTarget": "CatchCameraTarget",
                 "fishHoldOffsetY": "2.200",
                 "headAnchor": "HeadAnchor",
+                "headClearance": "2.000",
                 "nameText": "CatchName|Text",
                 "playerAnimator": "Player|Animator",
                 "playerCatchClip": "ShowOff",
+                "playerModel": "Player|Model",
                 "playerTransform": "Player",
                 "promptText": "CatchPrompt|Text",
                 "rankText": "CatchRank|Text",
@@ -906,19 +908,19 @@
           "name": "HeadAnchor",
           "transform": {
             "position": [
-              47.60229,
-              3.8594322,
-              32.328568
+              47.678402,
+              4.4229426,
+              32.328594
             ],
             "rotation": [
-              0.0,
-              0.0,
-              0.0
+              -0.7586146,
+              -90.02016,
+              -1.8087846e-7
             ],
             "scale": [
-              1.0,
-              1.0,
-              1.0
+              1.3905941,
+              1.3901813,
+              1.390594
             ]
           },
           "components": [

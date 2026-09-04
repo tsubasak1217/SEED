@@ -34,7 +34,8 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// - カメラ目標を <see cref="resultCameraTarget"/> へ切り替え、<see cref="CameraMove.RequestSnap"/> で
 ///   補間せず瞬間移動させる
 /// - 魚をウキから外して頭上へ運び、カメラを向かせる。頭のアンカー（<c>headAnchor</c>）が
-///   設定されていれば「頭の位置 × 魚の実寸」から置く高さとカメラ距離を自動計算し
+///   設定されていれば「頭の位置 × 魚の実寸」から置く高さを、「プレイヤーの全身 ＋ 頭上の魚」
+///   が収まる距離としてカメラ距離を自動計算し
 ///   （<c>ComputeAutoLayout</c> / <c>ApplyResultCameraFraming</c>）、未設定なら従来の
 ///   固定オフセット（<c>fishHoldOffsetX/Y/Z</c>）＋引き量へフォールバックする
 /// - 魚のスケールを 0 にする（Show のポップの開始値）
@@ -146,6 +147,16 @@ public class CatchPresenter : SEEDScript
     /// </summary>
     [SerializeField(Label = "プレイヤーのトランスフォーム")]
     private SEED.Transform? playerTransform = null;
+
+    /// <summary>
+    /// プレイヤー本体の <see cref="SEED.Model"/>（<b>読むだけ</b>）。
+    /// 釣果構図の自動レイアウトで「プレイヤーの全身 ＋ 頭上の魚」を画面へ収めるために、
+    /// プレイヤーの実寸（高さ・幅・足元の高さ）を測るのに使う。
+    /// 未設定なら足元＝<see cref="playerTransform"/> の位置、幅 0 として扱う
+    /// （＝魚の実寸だけでフレーミングした従来に近い構図になる）。
+    /// </summary>
+    [SerializeField(Label = "プレイヤーの Model")]
+    private SEED.Model? playerModel = null;
 
     /// <summary>プレイヤー本体の Animator（釣り上げポーズの再生先）。未設定なら本体アニメを触らない。</summary>
     [SerializeField(Label = "プレイヤー本体の Animator")]
@@ -289,7 +300,8 @@ public class CatchPresenter : SEEDScript
     ///
     /// <b>これが設定されているときだけ</b>釣果の構図が自動計算になる:
     /// 魚は「頭のてっぺん ＋ <see cref="headClearance"/> ＋ 魚の実寸高さの半分」へ置かれ、
-    /// カメラは魚の実寸が画面へ収まる距離まで自動で下がる（<see cref="ComputeAutoLayout"/>）。
+    /// カメラは<b>プレイヤーの足元から魚の上端まで</b>が画面へ収まる距離まで自動で下がる
+    /// （<see cref="ComputeAutoLayout"/> / <see cref="ApplyResultCameraFraming"/>）。
     ///
     /// <b>未設定なら従来動作</b>（<c>fishHoldOffsetX/Y/Z</c> の固定オフセットと
     /// <c>resultCamPullBase/PerSize</c> の引き量）にそのままフォールバックする。
@@ -302,22 +314,23 @@ public class CatchPresenter : SEEDScript
     private float headClearance = 0.15f;
 
     /// <summary>
-    /// 画面に対して魚のまわりへ足す余白の比率（魚の寸法に対する割合）。
-    /// 0.25 なら「魚の 1.25 倍の大きさが画面へ収まる」距離まで下がる。
+    /// 画面に対してフレーム箱（プレイヤー＋魚）のまわりへ足す余白の比率（箱の寸法に対する割合）。
+    /// 0.25 なら「箱の 1.25 倍の大きさが画面へ収まる」距離まで下がる。
     /// </summary>
     [SerializeField(Label = "画面余白の比率")]
     private float screenMarginRatio = 0.25f;
 
-    /// <summary>自動計算したカメラ距離の下限（メートル）。小さい魚で寄りすぎるのを防ぐ。</summary>
+    /// <summary>自動計算したカメラ距離の下限（メートル）。被写体が小さいときの寄りすぎを防ぐ。</summary>
     [SerializeField(Label = "カメラ最小距離(m)")]
     private float resultCamMinDistance = 2.5f;
 
     /// <summary>
-    /// カメラの高さをアンカー（0.0）と魚の中心（1.0）のあいだのどこに置くかの比率。
-    /// 0.5 なら「頭と魚の中心の中間の高さ」から見る。
+    /// カメラの高さの微調整オフセット（メートル）。
+    /// 基準はフレーム箱（足元〜魚の上端）の中心の高さで、0 ならその高さから水平に見る。
+    /// 正で上から、負で下から見る構図になる。
     /// </summary>
-    [SerializeField(Label = "カメラの高さ比率")]
-    private float resultCamHeightRatio = 0.5f;
+    [SerializeField(Label = "カメラの高さオフセット(m)")]
+    private float resultCamHeightOffset = 0f;
 
     /// <summary>
     /// 画角の計算に使うカメラ（<b>読むだけ</b>。垂直 FOV と基準解像度からアスペクト比を得る）。
@@ -431,6 +444,19 @@ public class CatchPresenter : SEEDScript
     /// アクターの位置からこの分を引く。
     /// </summary>
     private float fishCenterOffsetY = 0f;
+
+    /// <summary>
+    /// プレイヤーの足元の高さ（<see cref="playerTransform"/> の位置からの相対、メートル）。
+    /// 実寸 AABB の下端をアクター座標系へ持ち上げた値で、通常は負（原点より下に足がある）。
+    /// <see cref="playerModel"/> 未設定なら 0（＝アクターの位置をそのまま足元とみなす）。
+    /// </summary>
+    private float playerBottomOffsetY = 0f;
+
+    /// <summary>
+    /// プレイヤーの実寸の幅（メートル）。魚と同じくヨーで向きが変わるので X と Z の大きい方を採る。
+    /// <see cref="playerModel"/> 未設定なら 0（＝幅の制約は魚だけで決まる）。
+    /// </summary>
+    private float playerScaledWidth = 0f;
 
     /// <summary>
     /// <see cref="SwitchToResultComposition"/> のデバッグログを出力済みか。
@@ -813,7 +839,48 @@ public class CatchPresenter : SEEDScript
         fishScaledWidth = SEED.Mathf.Max(SEED.Mathf.Abs(scaledSize.x), SEED.Mathf.Abs(scaledSize.z));
         fishCenterOffsetY = (boundsMin.y + boundsMax.y) * Half * scale.y;
 
+        // プレイヤーの実寸（全身を画面へ収めるのに要る）も同じ瞬間に測っておく
+        ComputePlayerExtent();
+
         return fishScaledHeight > DivideEpsilon;
+    }
+
+    /// <summary>
+    /// プレイヤーの実寸から「足元の高さ」と「幅」を求める【プレイヤー寸法の唯一の計測点】。
+    ///
+    /// <code>
+    /// ワールドの寸法 = モデルローカル AABB のサイズ × Model.OffsetScale × Transform.Scale（成分ごと）
+    /// 足元の相対高さ = (AABB.min.y × OffsetScale.y + OffsetPosition.y) × Transform.Scale.y
+    /// 幅 Wp         = max(ワールド寸法.x, ワールド寸法.z)   ← ヨーで向きが変わるので安全側
+    /// </code>
+    ///
+    /// 描画は「アクターの行列 × 描画オフセットの行列 × モデルローカル」の順に掛かるので、
+    /// AABB にはオフセットのスケール／位置を先に、アクターのスケールを後に掛ける。
+    /// <see cref="playerModel"/> 未設定・モデル未ロード（AABB が縮退）なら
+    /// 足元 0・幅 0 にリセットし、魚の実寸だけでフレーミングする。
+    /// </summary>
+    private void ComputePlayerExtent()
+    {
+        playerBottomOffsetY = 0f;
+        playerScaledWidth = 0f;
+
+        if (playerModel is not { IsValid: true } model) { return; }
+        if (ResolvePlayerTransform() is not { } player) { return; }
+
+        var boundsMin = model.LocalBoundsMin;
+        var boundsMax = model.LocalBoundsMax;
+        var boundsSize = boundsMax - boundsMin;
+        if (boundsSize.SqrMagnitude < SqrEpsilon) { return; }
+
+        var offsetScale = model.OffsetScale;
+        var offsetPosition = model.OffsetPosition;
+        var actorScale = player.Scale;
+
+        // 各軸の実寸（オフセットスケール → アクタースケールの順に掛ける）
+        var scaledSize = SEED.Vector3.Scale(SEED.Vector3.Scale(boundsSize, offsetScale), actorScale);
+
+        playerScaledWidth = SEED.Mathf.Max(SEED.Mathf.Abs(scaledSize.x), SEED.Mathf.Abs(scaledSize.z));
+        playerBottomOffsetY = (boundsMin.y * offsetScale.y + offsetPosition.y) * actorScale.y;
     }
 
     /// <summary>
@@ -825,14 +892,21 @@ public class CatchPresenter : SEEDScript
         => anchorPosition + SEED.Vector3.Up * (headClearance + fishScaledHeight * Half);
 
     /// <summary>
-    /// 釣果カメラの目標を、魚の実寸が画面へ収まる位置・向きへ置く【自動フレーミング】。
+    /// 釣果カメラの目標を、<b>プレイヤーの全身と頭上の魚がまとめて</b>画面へ収まる
+    /// 位置・向きへ置く【自動フレーミング】。
     ///
     /// <code>
+    /// 下端 bottom = プレイヤーの位置.y ＋ 足元の相対高さ（playerBottomOffsetY）
+    /// 上端 top    = 魚の中心.y ＋ 魚の実寸高さ Hf / 2      ← 余白 headClearance は中心に織り込み済み
+    /// 箱の高さ Ht = top − bottom
+    /// 箱の幅   Wt = max(プレイヤーの幅 Wp, 魚の幅 Wf)
+    /// 箱の中心    = (プレイヤーの XZ, (top + bottom) / 2)  ← 魚はプレイヤーの真上なので XZ は共通
+    ///
     /// 必要距離 d = max( カメラ最小距離,
-    ///                   (H × (1 + 余白比) / 2) / tan(FOV/2),                 ← 縦で決まる距離
-    ///                   (W × (1 + 余白比) / 2) / (tan(FOV/2) × アスペクト比) ) ← 横で決まる距離
-    /// 位置 = 魚の中心 ＋ プレイヤーの前方 × d ＋ 上 × (高さ比 − 1) × (魚の中心 − アンカーの高さ)
-    /// 回転 = 魚の中心を見る向き
+    ///                   (Ht × (1 + 余白比) / 2) / tan(FOV/2),                 ← 縦で決まる距離
+    ///                   (Wt × (1 + 余白比) / 2) / (tan(FOV/2) × アスペクト比) ) ← 横で決まる距離
+    /// 位置 = 箱の中心 ＋ プレイヤーの前方(水平) × d ＋ 上 × 高さオフセット
+    /// 回転 = 箱の中心を見る向き
     /// </code>
     ///
     /// <b>プレイヤーの「前方」側にカメラを置く</b>のは、釣果の構図が
@@ -853,10 +927,19 @@ public class CatchPresenter : SEEDScript
         if (resultCameraBasePosition is null) { resultCameraBaseRotation = goal.Rotation; }
         resultCameraBasePosition = basePos;
 
-        var anchorPos = anchor.Position;
-        var center = FishDisplayCenter(anchorPos);
+        var playerPos = player.Position;
+        var fishCenter = FishDisplayCenter(anchor.Position);
 
-        float distance = ComputeFramingDistance();
+        // フレーム箱（足元 〜 魚の上端）を組み立てる
+        float bottom = playerPos.y + playerBottomOffsetY;
+        float top = fishCenter.y + fishScaledHeight * Half;
+        float frameHeight = SEED.Mathf.Max(top - bottom, DivideEpsilon);
+        float frameWidth = SEED.Mathf.Max(playerScaledWidth, fishScaledWidth);
+
+        // 箱の中心。魚はプレイヤーの真上に置かれるので水平位置はプレイヤーに合わせる。
+        var frameCenter = new SEED.Vector3(playerPos.x, (top + bottom) * Half, playerPos.z);
+
+        float distance = ComputeFramingDistance(frameHeight, frameWidth);
 
         // 前方（水平化）＝ プレイヤーが向いている側。縮退したらシーンの構図のまま何もしない。
         var forward = player.Forward;
@@ -864,19 +947,18 @@ public class CatchPresenter : SEEDScript
         if (horizontal.SqrMagnitude < SqrEpsilon) { return; }
         var dir = horizontal.Normalized;
 
-        // 高さ: 比率 0 ＝ アンカーの高さ / 1 ＝ 魚の中心の高さ（そのあいだを線形に）
-        float heightBlend = (resultCamHeightRatio - 1f) * (center.y - anchorPos.y);
-
-        var camPos = center + dir * distance + SEED.Vector3.Up * heightBlend;
+        var camPos = frameCenter + dir * distance + SEED.Vector3.Up * resultCamHeightOffset;
         goal.Position = camPos;
-        goal.Rotation = LookRotation(center - camPos);
+        goal.Rotation = LookRotation(frameCenter - camPos);
     }
 
     /// <summary>
-    /// 魚の実寸（高さ・幅）と画角から、魚が画面へ収まる最短距離を求める。
+    /// フレーム箱の実寸（高さ・幅）と画角から、その箱が画面へ収まる最短距離を求める。
     /// 縦・横それぞれで必要な距離を出し、大きい方（＝両方収まる方）と最小距離の最大を採る。
     /// </summary>
-    private float ComputeFramingDistance()
+    /// <param name="frameHeight">収めたい箱の高さ（メートル）。</param>
+    /// <param name="frameWidth">収めたい箱の幅（メートル）。</param>
+    private float ComputeFramingDistance(float frameHeight, float frameWidth)
     {
         // 画角（垂直・度）とアスペクト比（横 ÷ 縦）はカメラから読む。読めなければ代替値。
         float fovDegrees = fallbackFovDegrees;
@@ -896,8 +978,8 @@ public class CatchPresenter : SEEDScript
         halfTan = SEED.Mathf.Max(halfTan, DivideEpsilon);
 
         float margin = 1f + SEED.Mathf.Max(screenMarginRatio, 0f);
-        float distanceForHeight = fishScaledHeight * margin * Half / halfTan;
-        float distanceForWidth = fishScaledWidth * margin * Half / (halfTan * aspect);
+        float distanceForHeight = frameHeight * margin * Half / halfTan;
+        float distanceForWidth = frameWidth * margin * Half / (halfTan * aspect);
 
         return SEED.Mathf.Max(
             SEED.Mathf.Max(resultCamMinDistance, distanceForHeight),
