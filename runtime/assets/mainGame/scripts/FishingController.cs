@@ -115,10 +115,27 @@ public class FishingController : SEEDScript
     private const float PingPongCycleUnits = 2f;
 
     /// <summary>
-    /// 着水点マーカーの脈動の振幅（基準スケールに対する割合）。
-    /// 0.2 なら 0.8 倍〜1.2 倍のあいだで拡縮する（サイン波が -1〜+1 を取るため）。
+    /// 巻き方向インジケータ（3D ワールドキャンバス）に与える X 回転（度）。
+    ///
+    /// 3D キャンバスはアクタのローカル XY 平面に張られ、面の法線はローカル +Z である
+    /// （エンジンの canvas_to_world: キャンバス X+ → ローカル X+ /
+    ///  キャンバス Y+（＝2D の下方向）→ ローカル Y-）。
+    /// YXZ 規約で X=-90 度を与えると各ローカル軸のワールド向きは
+    ///   ローカル X = ( cos yaw, 0, -sin yaw)
+    ///   ローカル Y = (-sin yaw, 0, -cos yaw)   ← 水平
+    ///   ローカル Z = (0, +1, 0)                ← 真上（＝板が水面に寝て上を向く）
+    /// になる。テクスチャの矢印は画像の下（＝キャンバス Y+ ＝ ローカル -Y）を指すので、
+    /// 矢印のワールド方向は -ローカルY = (sin yaw, 0, cos yaw) ＝ エンジンの yaw 前方そのもの。
+    /// つまり yaw に「巻く向きの方位角」をそのまま入れれば矢印が巻く向きを指すため、
+    /// <see cref="reelArrowYawOffsetDegrees"/> の既定値は 0 でよい。
     /// </summary>
-    private const float MarkerPulseAmplitude = 0.2f;
+    private const float ReelArrowPitchDegrees = -90f;
+
+    /// <summary>ビルボード計算で「カメラがほぼ真上／真下」とみなす水平距離の下限（m）。</summary>
+    private const float BillboardMinHorizontal = 1e-4f;
+
+    /// <summary><see cref="cameraTransform"/> 未設定時にフォールバックで探すアクタ名。</summary>
+    private const string MainCameraActorName = "MainCamera";
 
     // ─── 参照（インスペクタで割り当てる）───────────────────────
 
@@ -217,6 +234,71 @@ public class FishingController : SEEDScript
     private SEED.Transform? castMarker = null;
 
     /// <summary>
+    /// 着水点マーカーの矢印スプライト（<see cref="castMarker"/> の 3D キャンバス配下にある
+    /// SpriteComponent）。<see cref="castMarkerOpacity"/> を毎フレーム色のアルファへ書き込む。
+    /// 未設定なら不透明度を触らない（シーンに保存された色のまま表示される）。
+    /// </summary>
+    [SerializeField(Label = "着水点マーカーのSprite")]
+    private SEED.Sprite? castMarkerSprite = null;
+
+    /// <summary>着水点マーカーの不透明度（0〜1）。</summary>
+    [SerializeField(Label = "着水点マーカーの不透明度")]
+    private float castMarkerOpacity = 0.9f;
+
+    /// <summary>
+    /// ビルボードの向き基準にするカメラのトランスフォーム。
+    /// 未設定なら <see cref="MainCameraActorName"/> という名前のアクタを<b>1 度だけ</b>探して使う。
+    /// どちらも解決できない場合はビルボード回転を行わない（位置だけ更新する）。
+    /// </summary>
+    [SerializeField(Label = "カメラ")]
+    private SEED.Transform? cameraTransform = null;
+
+    /// <summary>
+    /// 巻き方向インジケータのトランスフォーム（3D キャンバス「ReelArrow」に付ける想定）。
+    ///
+    /// <see cref="FishState.Floating"/> / <see cref="FishState.Reeling"/> のあいだだけ
+    /// ウキの位置の水面すぐ上へ寝かせて置き、それ以外では <see cref="markerParkY"/> へ格納する
+    /// （表示切替 API が無いため、マーカーと同じ「画面外へ動かす」方式）。
+    /// </summary>
+    [SerializeField(Label = "巻き方向インジケータ")]
+    private SEED.Transform? reelArrow = null;
+
+    /// <summary>巻き方向インジケータの矢印スプライト（不透明度の書き込み先）。</summary>
+    [SerializeField(Label = "巻き方向インジケータのSprite")]
+    private SEED.Sprite? reelArrowSprite = null;
+
+    /// <summary>巻き方向インジケータを水面からどれだけ浮かせるか（メートル）。</summary>
+    [SerializeField(Label = "巻き方向インジケータの浮き高さ")]
+    private float reelArrowHoverHeight = 0.05f;
+
+    /// <summary>
+    /// 巻き方向インジケータの Y 回転オフセット（度）。既定 0 で矢印が巻く向きを指す
+    /// （導出は <see cref="ReelArrowPitchDegrees"/> のコメント）。
+    /// テクスチャを差し替えて矢印の向きが変わったときだけ調整する。
+    /// </summary>
+    [SerializeField(Label = "巻き方向インジケータの角度オフセット(度)")]
+    private float reelArrowYawOffsetDegrees = 0f;
+
+    /// <summary>巻き方向インジケータの基準不透明度（A/D を振っていないときの値）。</summary>
+    [SerializeField(Label = "巻き方向インジケータの基準不透明度")]
+    private float reelArrowBaseOpacity = 0.35f;
+
+    /// <summary>
+    /// 巻き方向インジケータの追加不透明度。
+    /// 実効不透明度 ＝ clamp01(基準 ＋ 追加 × |sin θ|)（θ ＝ A/D によるずれ角）。
+    /// ずれ角が大きいほど濃くなり、「今どれだけ曲げているか」が見た目で分かる。
+    /// </summary>
+    [SerializeField(Label = "巻き方向インジケータの追加不透明度")]
+    private float reelArrowExtraOpacity = 0.5f;
+
+    /// <summary>
+    /// 巻き方向インジケータの一辺の長さ（メートル）。アクタの Transform.Scale の X/Y に入れる
+    /// （3D キャンバスは 100px = 1m 換算なので、100x100px のスプライトではこの値が実寸になる）。
+    /// </summary>
+    [SerializeField(Label = "巻き方向インジケータの長さ(m)")]
+    private float reelArrowLength = 2f;
+
+    /// <summary>
     /// マーカーを隠すときに置く Y 座標（ワールド）。水面よりも十分下に取る。
     /// 表示 API が無いため、この高さへ退避させることで「非表示」を表現する。
     /// </summary>
@@ -226,10 +308,6 @@ public class FishingController : SEEDScript
     /// <summary>マーカーを水面からどれだけ浮かせて置くか（メートル）。</summary>
     [SerializeField(Label = "マーカーの水面からの高さ")]
     private float markerHoverHeight = 0.1f;
-
-    /// <summary>マーカーの脈動（拡縮）の周波数（Hz）。0 にすると実質止まる。</summary>
-    [SerializeField(Label = "マーカーの脈動周期(Hz)")]
-    private float markerPulseFrequency = 2f;
 
     /// <summary>
     /// 水面（WaterVolume）。着水点の Y とウキの浮かぶ高さに使う。
@@ -520,17 +598,20 @@ public class FishingController : SEEDScript
     private float bobElapsed = 0f;
 
     /// <summary>
-    /// 着水点マーカーの基準スケール（脈動していない状態の大きさ）。
-    /// 初回表示時のスケールを 1 度だけ控え、以降の脈動と格納時の復元はこの値を基準にする
-    /// （毎フレーム読み直すと、脈動後のスケールを基準にしてしまい発散するため）。
+    /// このフレームに巻き方向インジケータを更新（表示）したか。
+    /// <see cref="Update"/> の末尾でこのフラグが false なら必ず格納する
+    /// （＝「表示したフレーム以外は必ず隠す」を 1 か所で保証する唯一の出口）。
     /// </summary>
-    private SEED.Vector3 markerBaseScale = SEED.Vector3.One;
+    private bool reelArrowShownThisFrame = false;
 
-    /// <summary><see cref="markerBaseScale"/> を控え済みか。</summary>
-    private bool markerBaseScaleCaptured = false;
+    /// <summary>
+    /// 名前検索で解決したカメラのトランスフォーム（<see cref="cameraTransform"/> 未設定時のみ使う）。
+    /// 毎フレーム探索するのを避けるため 1 度だけ引いて控える。
+    /// </summary>
+    private SEED.Transform? resolvedCameraTransform = null;
 
-    /// <summary>マーカーの脈動の位相用に積算した秒数（表示中のみ進み、格納時に 0 へ戻す）。</summary>
-    private float markerPulseElapsed = 0f;
+    /// <summary><see cref="resolvedCameraTransform"/> の検索を試行済みか（失敗も含め 1 度だけ）。</summary>
+    private bool cameraLookupAttempted = false;
 
     /// <summary>
     /// 魚が掛かっているか（<b>ヒット判定は未実装のプレースホルダ</b>）。
@@ -563,6 +644,8 @@ public class FishingController : SEEDScript
         // 着水点マーカーは開始時点で必ず格納位置へ落としておく
         // （シーン上の初期位置に置き忘れても、実行開始と同時に隠れる）。
         ParkCastMarker();
+        // 巻き方向インジケータも同様に隠しておく。
+        ParkReelArrow();
     }
 
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
@@ -635,6 +718,13 @@ public class FishingController : SEEDScript
                 // 釣果演出（ヒット機構の実装待ち）。今は何もしない。
                 break;
         }
+
+        // ── 巻き方向インジケータの表示／非表示の唯一の出口 ──────────────
+        // このフレームに UpdateReelArrow が走らなかった（＝表示すべき状況ではない、
+        // または向きが確定しなかった）なら必ず格納する。状態遷移や早期 return が
+        // 増えても「表示しっぱなし」にならないよう、判定をここ 1 か所に集約する。
+        if (!reelArrowShownThisFrame) { ParkReelArrow(); }
+        reelArrowShownThisFrame = false;
     }
 
     /// <summary>固定タイムステップの更新。物理など時間刻みを一定にしたい処理向け。</summary>
@@ -696,6 +786,7 @@ public class FishingController : SEEDScript
         ParkFloatAtRodTip();
         HideLine();
         HidePreviewLine();
+        ParkReelArrow();
         // 釣り状態を抜けたらカーソルを必ず返す（姿勢解除・中断の唯一の出口）。
         UpdateCursorLock();
         SEED.Debug.Log("[Fishing] Idle (キャンセル)");
@@ -855,7 +946,7 @@ public class FishingController : SEEDScript
 
         // 振りかぶりポーズを保持しつつ、着弾点プレビュー（マーカー＋線）を更新する
         UpdateWindup(deltaTime);
-        UpdateCastPreview(deltaTime);
+        UpdateCastPreview();
     }
 
     /// <summary>
@@ -1076,6 +1167,9 @@ public class FishingController : SEEDScript
             FinishReeling();
             return;
         }
+
+        // 巻く向きが確定したので、ウキの足元へインジケータを寝かせて置く。
+        UpdateReelArrow(floatTf.Position, dir);
 
         // このフレームの移動量を「残りの水平距離」でクランプし、基準点を追い越さないようにする
         float step = SEED.Mathf.Min(amount, remaining);
@@ -1302,52 +1396,151 @@ public class FishingController : SEEDScript
     }
 
     /// <summary>
-    /// 着水点マーカーを格納位置（<see cref="markerParkY"/>）へ退避させ、脈動を初期化する。
+    /// 着水点マーカーを格納位置（<see cref="markerParkY"/>）へ退避させる。
     ///
     /// アクタ／モデルの表示切替 API が無いため、これが「非表示」の実装である。
     /// XZ はその場に残し、Y だけを水面のはるか下へ落とす。
-    /// スケールは控えておいた基準値へ戻す（脈動途中の大きさで固まらないように）。
     /// </summary>
     private void ParkCastMarker()
     {
-        markerPulseElapsed = 0f;
-
         if (castMarker is not { } marker || !marker.IsValid) { return; }
 
         var p = marker.Position;
         marker.Position = new SEED.Vector3(p.x, markerParkY, p.z);
-        if (markerBaseScaleCaptured) { marker.Scale = markerBaseScale; }
     }
 
     /// <summary>
-    /// 着水点マーカーを着水点へ置き、脈動（拡縮）させる。
+    /// 着水点マーカー（矢印スプライトを載せた 3D キャンバス）を着水点へ置き、
+    /// カメラの方を向くようビルボード回転させる。
     ///
-    /// 基準スケールは初回表示時に 1 度だけ控える（<see cref="markerBaseScale"/>）。
-    /// 以降は <c>基準 ×(1 + 振幅·sin(2π·f·t))</c> で
-    /// <c>1 - MarkerPulseAmplitude</c> 倍〜<c>1 + MarkerPulseAmplitude</c> 倍のあいだを往復する。
+    /// キャンバスの面はアクタのローカル XY 平面（法線＝ローカル +Z）なので、
+    /// 「+Z をカメラへ向ける」＝「板をカメラ正面に立てる」になる。
+    /// テクスチャの矢印は画像の下（＝キャンバス Y+ ＝ ローカル -Y）を向くので、
+    /// ロール 0 のビルボードでは画面上でも下＝着水点を指したままになる。
     /// </summary>
     /// <param name="landing">着水点（ワールド）。Y は水面高さ。</param>
-    /// <param name="deltaTime">このフレームの経過秒数。</param>
-    private void UpdateCastMarker(SEED.Vector3 landing, float deltaTime)
+    private void UpdateCastMarker(SEED.Vector3 landing)
     {
         if (castMarker is not { } marker || !marker.IsValid) { return; }
 
-        // 初回表示時のスケールを基準として控える（以降は基準からの倍率で動かす）
-        if (!markerBaseScaleCaptured)
+        marker.Position = new SEED.Vector3(landing.x, landing.y + markerHoverHeight, landing.z);
+        BillboardToward(marker);
+        ApplySpriteOpacity(castMarkerSprite, castMarkerOpacity);
+    }
+
+    /// <summary>
+    /// アクタの +Z（＝3D キャンバスの面法線）がカメラを向くよう、YXZ オイラー角を書き込む。
+    ///
+    /// <b>向きの導出</b>: エンジンの回転規約（YXZ・+Z 前方）では
+    /// <c>forward = (sin Y · cos X, -sin X, cos Y · cos X)</c> である。
+    /// 目標方向 d（アクタ → カメラ・単位化前）に対して
+    ///   Y = atan2(d.x, d.z)          … 水平成分の方位角（forward.x / forward.z が一致）
+    ///   X = asin(-d.y / |d|)         … forward.y = -sin X = d.y / |d| が成り立つ
+    /// とすれば forward が d と一致する。ロール（Z）は 0 のまま＝画面上の上下が保たれる。
+    /// カメラが真上／真下にあり水平成分が消える縮退時は方位角を更新しない
+    /// （atan2(0,0) の不定値でマーカーがちらつくのを防ぐ）。
+    /// </summary>
+    /// <param name="target">向きを書き込む対象（着水点マーカーなど）。</param>
+    private void BillboardToward(SEED.Transform target)
+    {
+        if (ResolveCameraTransform() is not { } cam) { return; }
+
+        var d = cam.Position - target.Position;
+        float lenSq = d.x * d.x + d.y * d.y + d.z * d.z;
+        if (lenSq < SqrEpsilon) { return; }
+
+        float len = SEED.Mathf.Sqrt(lenSq);
+        float horizontal = SEED.Mathf.Sqrt(d.x * d.x + d.z * d.z);
+        if (horizontal < BillboardMinHorizontal) { return; }
+
+        float yaw = SEED.Mathf.Atan2(d.x, d.z) * SEED.Mathf.Rad2Deg;
+        float pitch = SEED.Mathf.Asin(SEED.Mathf.Clamped(-d.y / len, -1f, 1f)) * SEED.Mathf.Rad2Deg;
+        target.Rotation = new SEED.Vector3(pitch, yaw, 0f);
+    }
+
+    /// <summary>
+    /// ビルボードの基準にするカメラを返す。
+    /// インスペクタ指定（<see cref="cameraTransform"/>）が最優先で、
+    /// 未設定なら <see cref="MainCameraActorName"/> のアクタを 1 度だけ名前検索して控える。
+    /// どちらも取れなければ null（呼び出し側はビルボードを諦める）。
+    /// </summary>
+    private SEED.Transform? ResolveCameraTransform()
+    {
+        if (cameraTransform is { } assigned && assigned.IsValid) { return assigned; }
+
+        // 名前検索は 1 度だけ（毎フレーム引くとシーン全体の DFS を繰り返すことになる）。
+        if (!cameraLookupAttempted)
         {
-            markerBaseScale = marker.Scale;
-            markerBaseScaleCaptured = true;
+            cameraLookupAttempted = true;
+            var found = SEED.GameObject.Find(MainCameraActorName);
+            if (found.IsValid) { resolvedCameraTransform = found.GetComponent<SEED.Transform>(); }
         }
 
-        marker.Position = new SEED.Vector3(landing.x, landing.y + markerHoverHeight, landing.z);
+        if (resolvedCameraTransform is { } cached && cached.IsValid) { return cached; }
+        return null;
+    }
 
-        markerPulseElapsed += deltaTime;
-        float pulse = 1f + MarkerPulseAmplitude
-                         * SEED.Mathf.Sin(markerPulseElapsed * markerPulseFrequency * TwoPi);
-        marker.Scale = new SEED.Vector3(
-            markerBaseScale.x * pulse,
-            markerBaseScale.y * pulse,
-            markerBaseScale.z * pulse);
+    /// <summary>
+    /// スプライトの色のアルファだけを書き換える（RGB はシーンで設定した色を保つ）。
+    /// スプライト未設定・破棄済みなら何もしない。
+    /// </summary>
+    /// <param name="sprite">対象スプライト（未設定可）。</param>
+    /// <param name="opacity">不透明度（0〜1 へクランプする）。</param>
+    private void ApplySpriteOpacity(SEED.Sprite? sprite, float opacity)
+    {
+        if (sprite is not { } s || !s.IsValid) { return; }
+        s.Color = s.Color.WithAlpha(SEED.Mathf.Clamped01(opacity));
+    }
+
+    /// <summary>
+    /// 巻き方向インジケータを格納位置（<see cref="markerParkY"/>）へ退避させる。
+    /// マーカーと同じく「画面外へ動かす」ことで非表示を表現する。
+    /// </summary>
+    private void ParkReelArrow()
+    {
+        if (reelArrow is not { } arrow || !arrow.IsValid) { return; }
+
+        var p = arrow.Position;
+        arrow.Position = new SEED.Vector3(p.x, markerParkY, p.z);
+    }
+
+    /// <summary>
+    /// 巻き方向インジケータをウキの位置の水面すぐ上へ寝かせて置き、巻く向きへ回す。
+    ///
+    /// <b>姿勢</b>: X 回転は <see cref="ReelArrowPitchDegrees"/> 固定（板が水面に寝て上を向く）、
+    /// Y 回転は「巻く向きの方位角 ＋ <see cref="reelArrowYawOffsetDegrees"/>」。
+    /// 方位角と矢印の向きの対応は <see cref="ReelArrowPitchDegrees"/> のコメントで導出している。
+    ///
+    /// <b>不透明度</b>: <c>clamp01(基準 ＋ 追加 × |sin θ|)</c>（θ ＝ A/D による基準方向からの
+    /// ずれ角）。まっすぐ巻いているときは薄く、大きく曲げているほど濃くなる。
+    ///
+    /// <b>大きさ</b>: <see cref="reelArrowLength"/> を Transform.Scale の X/Y に入れる
+    /// （3D キャンバスは 100px = 1m 換算。Z はキャンバス平面に効かないので 1 固定）。
+    /// </summary>
+    /// <param name="floatPosition">ウキのワールド位置（XZ だけ使う）。</param>
+    /// <param name="reelDirection">巻く向き（水平・正規化済み）。</param>
+    private void UpdateReelArrow(SEED.Vector3 floatPosition, SEED.Vector3 reelDirection)
+    {
+        if (reelArrow is not { } arrow || !arrow.IsValid) { return; }
+        // 向きが縮退しているフレームは表示しない（このあと Update 末尾で格納される）。
+        if (reelDirection.SqrMagnitude < SqrEpsilon) { return; }
+
+        arrow.Position = new SEED.Vector3(
+            floatPosition.x, WaterSurfaceY() + reelArrowHoverHeight, floatPosition.z);
+
+        float yaw = SEED.Mathf.Atan2(reelDirection.x, reelDirection.z) * SEED.Mathf.Rad2Deg;
+        arrow.Rotation = new SEED.Vector3(
+            ReelArrowPitchDegrees, yaw + reelArrowYawOffsetDegrees, 0f);
+
+        // 板の一辺の長さ（メートル）。キャンバス平面は X/Y なので Z は 1 のまま。
+        arrow.Scale = new SEED.Vector3(reelArrowLength, reelArrowLength, 1f);
+
+        float theta = reelAngleOffsetDegrees * SEED.Mathf.Deg2Rad;
+        float opacity = reelArrowBaseOpacity
+                      + reelArrowExtraOpacity * SEED.Mathf.Abs(SEED.Mathf.Sin(theta));
+        ApplySpriteOpacity(reelArrowSprite, opacity);
+
+        reelArrowShownThisFrame = true;
     }
 
     // ─── 着弾点プレビュー ─────────────────────────────────────
@@ -1375,15 +1568,14 @@ public class FishingController : SEEDScript
     /// マーカーと線の双方が同じ値を使う（見えているものと結果を必ず一致させる）。
     /// 方向が縮退している場合はプレビューを丸ごと隠す。
     /// </summary>
-    /// <param name="deltaTime">このフレームの経過秒数。</param>
-    private void UpdateCastPreview(float deltaTime)
+    private void UpdateCastPreview()
     {
         if (CastYawDegrees() is not { } yaw) { HidePreviewLine(); return; }
 
         var landing = LandingPoint(PreviewDistance(), yaw);
 
         // 主役は 3D マーカー。線は showPreviewLine が true のときだけ添える。
-        UpdateCastMarker(landing, deltaTime);
+        UpdateCastMarker(landing);
         UpdatePreviewLine(landing);
     }
 
