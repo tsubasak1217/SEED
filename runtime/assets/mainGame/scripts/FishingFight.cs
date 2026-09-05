@@ -169,7 +169,7 @@ public class FishingFight : SEEDScript
     /// 大きいほど楽になる（＝ゲージがゆっくり動く）。
     /// </summary>
     [Header("装備"), SerializeField(Label = "竿パワー")]
-    private float rodPower = 1f;
+    private float rodPower = 10f;
 
     /// <summary>
     /// 糸パワー。大きいほど回復区間（安全帯）と円弧の開き角が広がる。
@@ -221,7 +221,7 @@ public class FishingFight : SEEDScript
     /// ＋ 側では「操作しない」、− 側では「巻く」ことでこの速度が適用される。
     /// </summary>
     [SerializeField(Label = "ゲージの回復速度(/秒)")]
-    private float gaugeRecoverySpeed = 0.4f;
+    private float gaugeRecoverySpeed = 0.3f;
 
     /// <summary>
     /// ゲージの上昇／下降速度の基準値（/秒）。
@@ -230,7 +230,7 @@ public class FishingFight : SEEDScript
     /// 「等価 ＝ 回復速度と上昇／下降速度が同じ」を数値で表現しているため。
     /// </summary>
     [SerializeField(Label = "ゲージの基準速度(/秒)")]
-    private float gaugeBaseRate = 0.4f;
+    private float gaugeBaseRate = 0.2f;
 
     /// <summary>
     /// 戦闘力の差がゲージ速度へ効く強さ。
@@ -242,7 +242,7 @@ public class FishingFight : SEEDScript
     /// いずれの値でも「等価なら倍率 1（＝基準速度＝回復速度）」は保たれる。
     /// </summary>
     [SerializeField(Label = "戦闘力差の効き")]
-    private float powerDiffRateScale = 1f;
+    private float powerDiffRateScale = 0.5f;
 
     /// <summary>ゲージ速度倍率の下限（竿が強すぎても止まらないようにする）。</summary>
     [SerializeField(Label = "ゲージ速度倍率の下限")]
@@ -250,7 +250,7 @@ public class FishingFight : SEEDScript
 
     /// <summary>ゲージ速度倍率の上限（魚が強すぎても即死にならないようにする）。</summary>
     [SerializeField(Label = "ゲージ速度倍率の上限")]
-    private float rateMultiplierMax = 3f;
+    private float rateMultiplierMax = 2f;
 
     /// <summary>
     /// ゲージが中央（0）付近に居るときの「通常の増減速度」への倍率（下限側）。
