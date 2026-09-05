@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  MainWindow.Scene.cs — シーン保存・メニュー・ダーティ状態管理
 //
 //  担当:
@@ -251,7 +251,16 @@ public partial class MainWindow
     /// <summary>IPC でシーン保存コマンドを送出し、パスを記録する。</summary>
     private void ExecuteSave(string path)
     {
+        // 「名前を付けて保存」で保存先が変わる場合は、ビュー状態の保存キーも新しいパスへ移す。
+        // 移さないと、この後の操作が旧シーンのエントリへ書き込まれてしまう。
+        // 展開状態は破棄せず現在の状態を新キーへ引き継ぐ（保存でツリーが畳まれると驚きになる）。
+        bool pathChanged = !string.Equals(_currentScenePath, path, StringComparison.OrdinalIgnoreCase);
         _currentScenePath = path;
+        if (pathChanged)
+        {
+            PanelHierarchy.MoveSceneViewKey(path);
+            PersistToolbarViewState();
+        }
         _runtimeManager?.SendToRuntime($"SAVE_SCENE:{path}");
         EditorLog.Write($"ExecuteSave — SAVE_SCENE:{path}");
     }

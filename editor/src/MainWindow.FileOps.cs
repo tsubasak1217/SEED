@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  MainWindow.FileOps.cs — シーン・アクター・InputMap のファイル操作
 //
 //  担当:
@@ -378,6 +378,13 @@ public partial class MainWindow
         _isDirty = false;
         SEEDEditor.ProjectSettings.RecentProjectsManager.AddProject(path);
         SendNavCommand($"LOAD_SCENE:{path}");
+
+        // シーンごとのビュー状態を切り替える。
+        //  - Hierarchy: このシーンの保存済み展開キーを読み直す（保存が無ければ全折りたたみ）
+        //  - 上部トグル: このシーンの保存値（無ければ既定）へ戻す
+        // どちらもランタイムへの再送は直後の SyncViewportSettings に任せる。
+        PanelHierarchy.SetSceneViewKey(path);
+        LoadToolbarViewStateForCurrentScene();
 
         // シーン設定（.scene の settings 節）を新しいシーンから読み直し、ランタイムへ全項目を再送する。
         // LOAD_SCENE はランタイムへ非同期に届くが IPC の順序は保たれるため、

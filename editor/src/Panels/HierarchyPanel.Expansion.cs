@@ -1,24 +1,31 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using SEEDEditor.Settings;
 
 namespace SEEDEditor.Panels;
 
 /// <summary>
-/// HierarchyPanel の「ツリー展開状態（折りたたみ）の永続化」機能。
+/// HierarchyPanel の「ツリー展開状態（折りたたみ）の保持と永続化」機能。
 ///
-/// Hierarchy は Rust ランタイムから HIERARCHY を受けるたびに TreeViewItem を全破棄して
-/// 作り直す（RebuildTree）。TreeViewItem は毎回新規生成されるため、そのまま作ると
-/// 展開状態が失われる ＝ 複製や並べ替えのたびに閉じていたグループが勝手に開いてしまう。
+/// Hierarchy は Rust ランタイムから HIERARCHY を受けるたびに TreeViewItem を作り直す
+/// （RebuildTree。差分更新が効く場合は SyncLevel で再利用する）。TreeViewItem を新規生成する
+/// 経路では素の IsExpanded 初期値しか持たないため、そのままでは複製・並べ替えのたびに
+/// 開閉状態が失われる。そこで「展開されているノードの安定キー集合」をパネル側に退避し、
+/// 構築のたびに復元する。
 ///
-/// そこで「折りたたまれているノードの安定キー集合」をパネル側に退避しておき、
-/// 再構築のたびに復元する。
+/// 【なぜ「折りたたみ」ではなく「展開」を覚えるのか】
+/// 既定は折りたたみである。深い階層のシーンを開いた直後に全ノードが展開されていると
+/// 目的のアクタを探せないため、「明示的に開いたものだけを覚えて開く」方が実用的で、
+/// かつ新規に現れたノード（複製・スクリプトの Instantiate）が勝手に開くこともない。
 ///
-/// 【なぜ「展開」ではなく「折りたたみ」を覚えるのか】
-/// 既定は展開（従来挙動）である。未知のノード＝新規に現れたノードは展開状態で作られるため、
-/// 「複製で生まれた子が親を勝手に開く」ことはなく（親が閉じていれば親の下に隠れる）、
-/// かつシーンを開いた直後の見え方も従来と変わらない。
+/// 【永続化】
+/// 展開キー集合は <see cref="EditorViewState"/> 経由で editor/settings/view_state.json へ
+/// シーン単位で保存する。シーンを開き直しても・エディタを再起動しても復元される。
+/// 保存対象のシーンは <see cref="SetSceneViewKey"/> で MainWindow から指定する。
 ///
 /// 【安定キーの設計】
 /// ノードの Id は DFS 通し番号なので、並べ替え・複製・削除で値がズレる ＝ キーに使えない。
@@ -26,8 +33,8 @@ namespace SEEDEditor.Panels;
 ///     /Root#0/Child#1/Grandchild#0
 /// 各セグメントは「名前 ＋ 同名兄弟内での出現番号」で構成する。出現番号を付けるのは、
 /// 同名の兄弟が並んでいても衝突しないようにするため。
-/// この方式はリネームでキーが変わる（＝そのノードの折りたたみ状態を忘れる）が、
-/// 目的である「複製・並べ替えで開いてしまう」問題には影響しない。
+/// この方式はリネームでキーが変わる（＝そのノードの展開状態を忘れる）が、
+/// 目的である「複製・並べ替え・再起動で開閉が壊れる」問題には影響しない。
 /// </summary>
 public partial class HierarchyPanel
 {
@@ -45,19 +52,28 @@ public partial class HierarchyPanel
     // ── 退避データ ────────────────────────────────────────────────
 
     /// <summary>
-    /// 現在「折りたたまれている」ノードの安定キー集合。
-    /// ここに無いノードは展開扱い（既定）になる。
-    ///
-    /// シーンやアクター編集タブを切り替えても意図的にクリアしない。
-    /// キーは名前パスなので別ツリーと衝突しにくく、同じシーンへ戻ったときに
-    /// 折りたたみ状態が残っている方が使い勝手が良いため。
+    /// 現在「展開されている」ノードの安定キー集合。
+    /// ここに無いノードは折りたたみ扱い（既定）になる。
     /// </summary>
-    private readonly HashSet<string> _collapsedKeys = new();
+    private readonly HashSet<string> _expandedKeys = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 展開状態の保存先シーンキー（<see cref="EditorViewState.MakeSceneKey"/> の戻り値）。
+    /// null は「未保存の新規シーン」等で永続化しない状態を表す（セッション内では保持される）。
+    /// </summary>
+    private string? _expandSceneKey;
+
+    /// <summary>
+    /// 次回のヒエラルキー反映で差分更新を使わず全再構築させるフラグ。
+    /// シーン切り替え直後は「既存 TreeViewItem のライブな開閉状態」ではなく
+    /// 新しいシーンの保存値を使わなければならないため、ここで一度作り直す。
+    /// </summary>
+    private bool _forceFullTreeRebuild;
 
     // ── 初期化 ────────────────────────────────────────────────────
 
     /// <summary>
-    /// ツリー全体の展開／折りたたみイベントを購読して <see cref="_collapsedKeys"/> を追従させる。
+    /// ツリー全体の展開／折りたたみイベントを購読して <see cref="_expandedKeys"/> を追従させる。
     /// TreeViewItem.Expanded/Collapsed はバブリングするため、個々の項目ではなく
     /// TreeView 側で一括購読し、発生元（OriginalSource）のノードを見て更新する。
     /// </summary>
@@ -67,18 +83,71 @@ public partial class HierarchyPanel
         ActorTree.AddHandler(TreeViewItem.CollapsedEvent, new RoutedEventHandler(OnTreeItemCollapsed));
     }
 
-    /// <summary>ユーザーがノードを開いた（または RevealActor が開いた）: 折りたたみ記録から外す。</summary>
+    /// <summary>ユーザーがノードを開いた（または RevealActor が開いた）: 展開として記録する。</summary>
     private void OnTreeItemExpanded(object sender, RoutedEventArgs e)
     {
-        if (e.OriginalSource is TreeViewItem { Tag: ActorNode node } && node.StableKey.Length > 0)
-            _collapsedKeys.Remove(node.StableKey);
+        if (e.OriginalSource is TreeViewItem { Tag: ActorNode node } && node.StableKey.Length > 0
+            && _expandedKeys.Add(node.StableKey))
+            PersistExpansion();
     }
 
-    /// <summary>ユーザーがノードを閉じた: 折りたたみとして記録する。</summary>
+    /// <summary>ユーザーがノードを閉じた: 展開記録から外す。</summary>
     private void OnTreeItemCollapsed(object sender, RoutedEventArgs e)
     {
-        if (e.OriginalSource is TreeViewItem { Tag: ActorNode node } && node.StableKey.Length > 0)
-            _collapsedKeys.Add(node.StableKey);
+        if (e.OriginalSource is TreeViewItem { Tag: ActorNode node } && node.StableKey.Length > 0
+            && _expandedKeys.Remove(node.StableKey))
+            PersistExpansion();
+    }
+
+    // ── 永続化 ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 表示中シーンの展開状態を切り替える。MainWindow がシーンを読み込んだ直後に呼ぶ。
+    ///
+    /// 直前のシーンの状態はすでに <see cref="PersistExpansion"/> で保存済みなので、
+    /// ここでは新しいシーンの保存値を読み直して、次の反映で全再構築させるだけでよい。
+    /// </summary>
+    /// <param name="scenePath">開いたシーンファイルのパス（未保存なら null）。</param>
+    public void SetSceneViewKey(string? scenePath)
+    {
+        var key = EditorViewState.MakeSceneKey(scenePath);
+        if (string.Equals(key, _expandSceneKey, StringComparison.Ordinal)) return;
+
+        _expandSceneKey = key;
+        _expandedKeys.Clear();
+        // 保存が無いシーン（初めて開く／未保存の新規シーン）は「すべて折りたたみ」で始める。
+        var saved = EditorViewState.TryGetScene(key);
+        if (saved is not null)
+            foreach (var k in saved.HierarchyExpanded) _expandedKeys.Add(k);
+
+        _forceFullTreeRebuild = true;
+    }
+
+    /// <summary>
+    /// 展開状態を破棄せずに保存先シーンキーだけを付け替える。
+    /// 「名前を付けて保存」でシーンのパスが変わったときに使う（保存しただけでツリーが
+    /// 畳まれるのを避けるため、現在の展開状態をそのまま新しいキーへ引き継ぐ）。
+    /// </summary>
+    /// <param name="scenePath">新しいシーンファイルのパス。</param>
+    public void MoveSceneViewKey(string? scenePath)
+    {
+        var key = EditorViewState.MakeSceneKey(scenePath);
+        if (string.Equals(key, _expandSceneKey, StringComparison.Ordinal)) return;
+
+        _expandSceneKey = key;
+        PersistExpansion();
+    }
+
+    /// <summary>
+    /// 現在の展開キー集合をビュー状態ストアへ書き戻し、保存を予約する（デバウンス）。
+    /// </summary>
+    private void PersistExpansion()
+    {
+        var entry = EditorViewState.GetOrCreateScene(_expandSceneKey);
+        if (entry is null) return;   // 未保存シーンはセッション内保持のみ
+        // 差分順で並ぶと毎回ファイル内容が入れ替わって差分が読みづらいので整列して書く
+        entry.HierarchyExpanded = _expandedKeys.OrderBy(k => k, StringComparer.Ordinal).ToList();
+        EditorViewState.RequestSave();
     }
 
     // ── 安定キーの割り当て ────────────────────────────────────────
@@ -115,12 +184,13 @@ public partial class HierarchyPanel
 
     /// <summary>
     /// ツリー構築時にこのノードを展開状態で作るべきかを返す。
+    /// 保存（またはセッション中の操作）で展開と記録されたノードだけを開く。
     /// </summary>
     /// <param name="node">対象ノード。</param>
     /// <param name="forceExpandAll">
-    /// 検索フィルタ中など、折りたたみを無視して全展開したい場合に true。
+    /// 検索フィルタ中など、保存状態を無視して全展開したい場合に true。
     /// 閉じたグループの中の一致ノードが見えなくなるのを防ぐため、検索時は強制展開する。
     /// </param>
     private bool ShouldExpandOnBuild(ActorNode node, bool forceExpandAll)
-        => forceExpandAll || !_collapsedKeys.Contains(node.StableKey);
+        => forceExpandAll || _expandedKeys.Contains(node.StableKey);
 }

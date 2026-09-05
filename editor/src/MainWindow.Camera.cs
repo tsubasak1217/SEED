@@ -509,6 +509,8 @@ public partial class MainWindow
         SendShowGrid();
         SendShowAxisGizmo();
         SendShowSpriteBones();
+        // ギズモ座標系（World/Local）もランタイムは World で起動するため送り直す
+        SendGizmoSpace();
         SendCameraSpeed();
         // 2D（正射投影）の状態も再送する（ランタイムは透視投影で起動するため）
         _runtimeManager?.SendToRuntime(
@@ -616,6 +618,7 @@ public partial class MainWindow
         _showGrid = !_showGrid;
         SendShowGrid();
         UpdateGridToggleVisual();
+        PersistToolbarViewState();
     }
 
     /// <summary>
@@ -627,6 +630,7 @@ public partial class MainWindow
         _showAxisGizmo = !_showAxisGizmo;
         SendShowAxisGizmo();
         UpdateAxisGizmoToggleVisual();
+        PersistToolbarViewState();
     }
 
     /// <summary>「グリッド」トグルボタンの見た目を現在の状態に合わせて更新する。</summary>
@@ -644,6 +648,7 @@ public partial class MainWindow
         _showSpriteBones = !_showSpriteBones;
         SendShowSpriteBones();
         UpdateSpriteBoneToggleVisual();
+        PersistToolbarViewState();
     }
 
     /// <summary>「ボーン」トグルボタンの見た目を現在の状態に合わせて更新する。</summary>
@@ -682,7 +687,82 @@ public partial class MainWindow
 
     /// <summary>タブバー「World/Local」ボタン: 押すたびに World⇄Local をトグルする。</summary>
     private void OnGizmoSpaceToggleClicked(object sender, RoutedEventArgs e)
-        => SetGizmoSpace(!_gizmoLocalSpace);
+    {
+        SetGizmoSpace(!_gizmoLocalSpace);
+        PersistToolbarViewState();
+    }
+
+    /// <summary>
+    /// 現在のギズモ座標系をランタイムへ送る。ランタイムは常に World で起動するため、
+    /// 接続時／Play→Edit 復帰時にも送り直す必要がある（SyncViewportSettings から呼ぶ）。
+    /// </summary>
+    private void SendGizmoSpace()
+        => _runtimeManager?.SendToRuntime(_gizmoLocalSpace ? "GIZMO_SPACE:LOCAL" : "GIZMO_SPACE:WORLD");
+
+    // ── シーンパネル上部トグルのシーン単位永続化 ──────────────────
+    //
+    // グリッド／軸／ボーン／World-Local は「どう見えているか」であってシーンの内容ではない。
+    // .scene へ書くとトグルを触るだけでシーンがダーティになるため、エディタ側の
+    // view_state.json（EditorViewState）へシーン単位で保存する。
+    // 2D（正射投影）トグルだけはここでは扱わない。あれは .scene の settings 節
+    // （DebugCamera.Ortho2d）に既にシーン単位で保存されており、二重管理になるため。
+
+    /// <summary>ギズモ座標系の既定（true = World 軸整列。従来挙動）。</summary>
+    private const bool DefaultGizmoWorldSpace = true;
+
+    /// <summary>保存が無いシーン用の既定トグル状態を作る（現在の初期状態と同じ値）。</summary>
+    private static SEEDEditor.Settings.ToolbarViewState CreateDefaultToolbarViewState() => new()
+    {
+        World = DefaultGizmoWorldSpace,
+        Axis  = DefaultShowGuide,
+        Bone  = DefaultShowGuide,
+        Grid  = DefaultShowGuide,
+    };
+
+    /// <summary>
+    /// 現在のシーンに保存されたトグル状態を読み込み、エディタ側の状態とボタンの見た目へ反映する。
+    /// 保存が無いシーンは既定値（すべて ON / World）になる。
+    ///
+    /// ランタイムへの再送はここでは行わない。シーン読み込み直後の
+    /// <see cref="SyncViewportSettings"/>（ランタイム未接続なら接続時のもの）が
+    /// この状態を読んで一括送信するため、そこに一本化する。
+    /// </summary>
+    private void LoadToolbarViewStateForCurrentScene()
+    {
+        var saved = SEEDEditor.Settings.EditorViewState
+            .TryGetScene(SEEDEditor.Settings.EditorViewState.MakeSceneKey(_currentScenePath))?.Toolbar;
+        var toolbar = saved ?? CreateDefaultToolbarViewState();
+
+        _showGrid        = toolbar.Grid;
+        _showAxisGizmo   = toolbar.Axis;
+        _showSpriteBones = toolbar.Bone;
+        _gizmoLocalSpace = !toolbar.World;
+
+        UpdateGridToggleVisual();
+        UpdateAxisGizmoToggleVisual();
+        UpdateSpriteBoneToggleVisual();
+        UpdateGizmoSpaceToggleVisual();
+    }
+
+    /// <summary>
+    /// 現在のトグル状態を、現在のシーンのビュー状態として保存予約する（デバウンス）。
+    /// 未保存の新規シーン（パス未確定）は保存先キーが作れないためセッション内保持のみ。
+    /// </summary>
+    private void PersistToolbarViewState()
+    {
+        var entry = SEEDEditor.Settings.EditorViewState
+            .GetOrCreateScene(SEEDEditor.Settings.EditorViewState.MakeSceneKey(_currentScenePath));
+        if (entry is null) return;
+
+        entry.Toolbar = new SEEDEditor.Settings.ToolbarViewState
+        {
+            World = !_gizmoLocalSpace,
+            Axis  = _showAxisGizmo,
+            Bone  = _showSpriteBones,
+            Grid  = _showGrid,
+        };
+        SEEDEditor.Settings.EditorViewState.RequestSave();
+    }
 
     // ── カメラ状態受信 ────────────────────────────────────────────
 

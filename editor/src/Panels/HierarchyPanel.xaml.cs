@@ -536,8 +536,14 @@ public partial class HierarchyPanel : UserControl
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         // 検索フィルタ中はノードの取捨選択が入り差分の対応付けが複雑になるため全再構築する。
+        // シーン切り替え直後（_forceFullTreeRebuild）は差分更新を禁止する。
+        // 差分更新は既存 TreeViewItem のライブな開閉状態をそのまま引き継ぐため、
+        // 新しいシーンの保存済み展開状態が反映されないままになるのを防ぐ。
         var filter = TxtSearch.Text.Trim();
-        bool incremental = string.IsNullOrEmpty(filter) && ActorTree.Items.Count > 0;
+        bool incremental = string.IsNullOrEmpty(filter)
+                        && ActorTree.Items.Count > 0
+                        && !_forceFullTreeRebuild;
+        _forceFullTreeRebuild = false;
 
         if (incremental)
         {

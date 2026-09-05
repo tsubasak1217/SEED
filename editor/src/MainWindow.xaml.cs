@@ -518,6 +518,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelScriptEditor.InitSettings(SettingsDir);
         // エディタ全体の環境設定（タッチパッドスクロール係数など）を読み込む
         EditorPreferences.Init(SettingsDir);
+        // シーンごとのビュー状態（Hierarchy の展開状態・上部トグル）を読み込む。
+        // 実際の適用はシーン読み込み時（LoadScene）とランタイム接続時に行う。
+        SEEDEditor.Settings.EditorViewState.Init(SettingsDir);
         // Play 実行方式を永続化設定から復元する。既定は埋め込み（WindowPlay=false）。
         // 埋め込み = !WindowPlay。チェックボックスにも反映する（IsChecked 変更で
         // OnWindowPlayChanged が発火しても同値の再保存になるだけで問題ない）。
@@ -1144,6 +1147,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelScriptEditor.ClearRecovery();
 
         SaveLayout();
+        // シーンごとのビュー状態はデバウンス保存なので、終了時に確実に書き出す
+        SEEDEditor.Settings.EditorViewState.Flush();
         ReleasePlayClamp();
         UninstallKeyboardHook();
         UninstallTerrainMouseHook();
