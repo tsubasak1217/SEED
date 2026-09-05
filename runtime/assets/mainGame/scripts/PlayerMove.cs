@@ -160,6 +160,35 @@ public class PlayerMove : SEEDScript
     [SerializeField(Label = "追従の到着判定距離(m)")]
     private float followArriveDistance = 0.5f;
 
+    /// <summary>
+    /// 釣り姿勢中（構え〜振りかぶり）に A/D で振れる向きの範囲（度、±）。
+    /// <see cref="stanceBaseYaw"/>（海の正面）を中心に、この範囲内でだけプレイヤー自身が回転する。
+    /// </summary>
+    [SerializeField(Label = "構え中の回転範囲(±度)")]
+    private float stanceTurnRangeDegrees = 45f;
+
+    /// <summary>釣り姿勢中に A/D で向きを振る速さ（度/秒）。</summary>
+    [SerializeField(Label = "構え中の回転速度(度/秒)")]
+    private float stanceTurnSpeedDegPerSec = 90f;
+
+    /// <summary>
+    /// 釣り姿勢へ入った瞬間の基準ヨー角（度）＝海の正面（経路進行方向の右手側）。
+    /// <see cref="TurnInStance"/> はこの角度を中心に <see cref="stanceYawOffset"/> だけ振れる。
+    /// <see cref="EnterFishingStance"/> でのみ書き換える。
+    /// </summary>
+    private float stanceBaseYaw = 0f;
+
+    /// <summary>
+    /// <see cref="stanceBaseYaw"/> からの現在のずれ角（度）。<see cref="TurnInStance"/> が
+    /// ±<see cref="stanceTurnRangeDegrees"/> の範囲でクランプしながら積算する。
+    /// <see cref="EnterFishingStance"/> / <see cref="ExitFishingStance"/> で 0 へ戻す
+    /// （次に構えたときは必ず海の正面から始まる）。
+    /// </summary>
+    private float stanceYawOffset = 0f;
+
+    /// <summary>現在の構え中の振れ角（度）。<see cref="FishingController"/> がキャスト方向計算などに読める。</summary>
+    public float StanceYawOffsetDegrees => stanceYawOffset;
+
     // ─── 回転補間 ─────────────────────────────────────────────
     //
     // カメラ（CameraMove）は移動方向から自前で視点を安定化させ、逆走しても
@@ -569,10 +598,16 @@ public class PlayerMove : SEEDScript
 
         State = PlayerState.FishingStance;
 
+        // 構え直すたびに振れ角をリセットする（前回のキャストの振れが持ち越らないように）。
+        stanceYawOffset = 0f;
+
         // 経路の進行方向に対して常に右手側が海。接線から右方向を作って向く。
         if (p.SampleTangent(pathTime) is { } dir && dir.SqrMagnitude > SqrEpsilon)
         {
             UpdateTargetYaw(new SEED.Vector3(dir.z, 0f, -dir.x));
+            // UpdateTargetYaw が targetYaw を確定させた直後なので、これを構えの基準角として保持する
+            // （以降 TurnInStance はこの角度を中心に ±stanceTurnRangeDegrees だけ振る）。
+            stanceBaseYaw = targetYaw ?? stanceBaseYaw;
         }
 
         // 本体と竿を釣りアニメへ。実際の向き直しは UpdateRotation が補間して行う。
@@ -593,10 +628,45 @@ public class PlayerMove : SEEDScript
     {
         State = PlayerState.Normal;
 
+        // 次に構えたときに海の正面から始まるよう、振れ角を戻しておく
+        // （EnterFishingStance でも 0 にするが、念のため解除側でも保証する）。
+        stanceYawOffset = 0f;
+
         CrossFadeTo(ResolveAnimator(), idleClip);
         CrossFadeTo(rodAnimator, rodIdleClip);
 
         isRunning = null;
+    }
+
+    /// <summary>
+    /// 釣り姿勢中（構え〜振りかぶり）に A/D でプレイヤー自身を左右へ振る
+    /// （<see cref="FishingController"/> の Aiming / Windup 更新から毎フレーム呼ばれる）。
+    ///
+    /// <see cref="stanceBaseYaw"/>（海の正面）を中心に、<see cref="stanceYawOffset"/> を
+    /// ±<see cref="stanceTurnRangeDegrees"/> の範囲でクランプしながら積算し、
+    /// それを新しい目標ヨー角として <see cref="targetYaw"/> にセットする
+    /// （実際の回転は既存の <see cref="UpdateRotation"/> が毎フレーム補間して行う）。
+    ///
+    /// キャスト方向は <see cref="FishingController.CastYawDegrees"/> がプレイヤーの現在の
+    /// 前方（<c>transform.Forward</c>）から毎フレーム求めるので、ここで向きを変えれば
+    /// 着水点プレビュー・実際のキャスト方向の両方に自動で反映される。
+    /// </summary>
+    /// <param name="direction">
+    /// 振る方向。+1 で右（プレイヤー視点）、-1 で左。0 は入力なし（積算しない）。
+    /// </param>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    public void TurnInStance(float direction, float deltaTime)
+    {
+        // 構え中（Aiming/Windup）以外では効かない。State は FishingController 側の
+        // 状態遷移と独立にここでも確認し、誤呼び出しに対して安全にする。
+        if (State != PlayerState.FishingStance) { return; }
+
+        stanceYawOffset = SEED.Mathf.Clamped(
+            stanceYawOffset + direction * stanceTurnSpeedDegPerSec * deltaTime,
+            -stanceTurnRangeDegrees,
+            stanceTurnRangeDegrees);
+
+        targetYaw = stanceBaseYaw + stanceYawOffset;
     }
 
     /// <summary>

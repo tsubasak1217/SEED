@@ -1441,6 +1441,10 @@ public class FishingController : SEEDScript
             return;
         }
 
+        // A/D でプレイヤー自身を海の正面から左右へ振る（キャスト方向はプレイヤーの正面＝
+        // transform.Forward に追従するので、CastYawDegrees / 着水点プレビューには何もしなくても反映される）。
+        UpdateStanceTurn(deltaTime);
+
         // MouseDelta はウィンドウ内カーソル位置の差分（px、右が +X / 下が +Y）。
         // MouseMove（Raw Input 由来）は埋め込み時に届かないことがあるのでこちらを使う。
         float deltaX = SEED.Input.MouseDelta.x;
@@ -1456,6 +1460,30 @@ public class FishingController : SEEDScript
 
         // 振りかぶり姿勢を累積量の割合へ追従させる（動きが無いフレームも滑らかに止める）
         UpdateWindup(deltaTime);
+    }
+
+    /// <summary>
+    /// 構え中（<see cref="FishState.Aiming"/> / <see cref="FishState.Windup"/>）だけ有効な
+    /// A/D 入力を読み、<see cref="PlayerMove.TurnInStance"/> でプレイヤー自身を振る。
+    ///
+    /// <b>符号</b>: D を押すとプレイヤー視点で右へ、A で左へ回る。これはリールの操舵
+    /// （<see cref="ComputeReelDirection"/>）が「プレイヤーの操作感として D で右」に
+    /// なるよう符号を反転しているのと結果として同じ操作感になるが、あちらは
+    /// 「ウキ→竿先」を基準にした角度への変換で符号が反転しているのに対し、
+    /// こちらはプレイヤー自身のヨー角を直接動かすため反転は不要（+yaw が
+    /// そのままプレイヤー視点の右回転になる）。キャストの角度オフセットは廃止し、
+    /// プレイヤーの正面（<c>transform.Forward</c>）がそのままキャスト方向になる。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void UpdateStanceTurn(float deltaTime)
+    {
+        if (playerMove is not { } pm) { return; }
+
+        float turn = 0f;
+        if (SEED.Input.GetKey(SEED.KeyCode.A)) { turn -= 1f; }   // A: 左（プレイヤー視点）
+        if (SEED.Input.GetKey(SEED.KeyCode.D)) { turn += 1f; }   // D: 右（プレイヤー視点）
+
+        pm.TurnInStance(turn, deltaTime);
     }
 
     /// <summary>
@@ -1493,6 +1521,10 @@ public class FishingController : SEEDScript
             ExitToMovement();
             return;
         }
+
+        // 振りかぶり中も引き続き A/D で振れる（着水点マーカーはプレイヤーの正面に
+        // 追従するので、UpdateCastPreview 側は何も変えなくてよい）。
+        UpdateStanceTurn(deltaTime);
 
         // 飛距離プレビューの往復位相を進める
         previewElapsed += deltaTime;
