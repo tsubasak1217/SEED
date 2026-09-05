@@ -155,6 +155,13 @@ public class FishingFight : SEEDScript
     /// <summary>状態倍率の基準値（1 ＝ 平常）。暴れ度によるスケールの基点にも使う。</summary>
     private const float NeutralMultiplier = 1f;
 
+    /// <summary>
+    /// 「中央付近の変動倍率」（<see cref="gaugeCenterRateScale"/>）の下限。
+    /// 0 だと中央（gauge＝0）ちょうどで通常の増減速度が完全に 0 になり、
+    /// ゲージが 0 から動けなくなってしまうためのガード。
+    /// </summary>
+    private const float GaugeCenterRateScaleMin = 0.001f;
+
     // ─── 装備パラメータ ───────────────────────────────────
 
     /// <summary>
@@ -244,6 +251,26 @@ public class FishingFight : SEEDScript
     /// <summary>ゲージ速度倍率の上限（魚が強すぎても即死にならないようにする）。</summary>
     [SerializeField(Label = "ゲージ速度倍率の上限")]
     private float rateMultiplierMax = 3f;
+
+    /// <summary>
+    /// ゲージが中央（0）付近に居るときの「通常の増減速度」への倍率（下限側）。
+    /// <see cref="AmplitudeScale"/> 参照。0 だと中央ちょうどで速度が 0 になり
+    /// ゲージが動けなくなるため、<see cref="GaugeCenterRateScaleMin"/> で下限クランプする。
+    ///
+    /// <b>効く範囲</b>: <see cref="UpdateGauge"/> の「巻いていれば ＋、操作しなければ −」という
+    /// <b>通常の増減</b>にのみ掛かる。中央への<b>回復</b>（<see cref="gaugeRecoverySpeed"/>）や
+    /// 暴れの<b>攻撃による押し込み</b>（<see cref="AttackPush"/>）には掛からない
+    /// （回復は常に一定速度で 0 へ届く必要があり、攻撃の押し込みは仕様通りの威力を保つため）。
+    /// </summary>
+    [SerializeField(Label = "中央付近の変動倍率(0で最小)")]
+    private float gaugeCenterRateScale = 0.3f;
+
+    /// <summary>
+    /// <see cref="AmplitudeScale"/> の補間カーブの指数。
+    /// 1 なら線形、1 より大きいと中央付近がより緩やかに、1 未満だと端に近い領域まで緩やかになる。
+    /// </summary>
+    [SerializeField(Label = "変動倍率カーブの指数")]
+    private float gaugeRateCurvePower = 1f;
 
     // ─── 合わせランクによる初期ゲージ ─────────────────────────
 
@@ -513,6 +540,44 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "残り距離テキストの不透明度")]
     private float distanceTextOpacity = 1f;
 
+    // ─── デバッグ表示（暴れ状態の可視化・調整用の一時機能）──────────
+
+    /// <summary>
+    /// デバッグ用: マーカーの色・サイズ・中心テキストへ魚の行動状態を反映するか。
+    /// 調整が終わったら false にして常設 UI へ戻せるよう Inspector から切り替えられる
+    /// （一時的な確認用機能。恒久的な演出になったら専用の仕組みへ差し替える想定）。
+    /// </summary>
+    [Header("デバッグ: 暴れ状態の可視化"), SerializeField(Label = "デバッグ: 暴れ状態を表示")]
+    private bool debugShowFishAction = true;
+
+    /// <summary>通常（暴れていない状態が来た場合のフォールバック）のマーカー色（RGB）。</summary>
+    [SerializeField(Label = "デバッグ色: 通常(白)")]
+    private SEED.Vector3 debugColorNormal = new SEED.Vector3(1f, 1f, 1f);
+
+    /// <summary>「暴れ」中のマーカー色（RGB）。</summary>
+    [SerializeField(Label = "デバッグ色: 暴れ(橙)")]
+    private SEED.Vector3 debugColorRage = new SEED.Vector3(1f, 0.6f, 0.1f);
+
+    /// <summary>「大暴れ」中のマーカー色（RGB）。</summary>
+    [SerializeField(Label = "デバッグ色: 大暴れ(赤)")]
+    private SEED.Vector3 debugColorBigRage = new SEED.Vector3(1f, 0.15f, 0.15f);
+
+    /// <summary>「ステイ」中のマーカー色（RGB）。</summary>
+    [SerializeField(Label = "デバッグ色: ステイ(青)")]
+    private SEED.Vector3 debugColorStay = new SEED.Vector3(0.4f, 0.6f, 1f);
+
+    /// <summary>「待機（ひるみ）」中のマーカー色（RGB）。</summary>
+    [SerializeField(Label = "デバッグ色: 待機/ひるみ(灰)")]
+    private SEED.Vector3 debugColorWait = new SEED.Vector3(0.5f, 0.5f, 0.5f);
+
+    /// <summary>「暴れ」中にマーカーへ掛ける拡大倍率（<see cref="markerBaseSize"/> への倍率）。</summary>
+    [SerializeField(Label = "デバッグ: 暴れ時のマーカー拡大率")]
+    private float debugMarkerScaleRage = 1.6f;
+
+    /// <summary>「大暴れ」中にマーカーへ掛ける拡大倍率（<see cref="markerBaseSize"/> への倍率）。</summary>
+    [SerializeField(Label = "デバッグ: 大暴れ時のマーカー拡大率")]
+    private float debugMarkerScaleBigRage = 2f;
+
     // ─── 実行時の状態 ─────────────────────────────────────
 
     /// <summary>バトル進行中か（<see cref="BeginFight"/> 〜 <see cref="EndFight"/>）。</summary>
@@ -666,6 +731,16 @@ public class FishingFight : SEEDScript
     /// <summary>セグメントの配置・色を最後に計算したときの安全帯の半幅。</summary>
     private float cachedZoneHalfWidth = UncachedSentinel;
 
+    /// <summary>
+    /// <see cref="gaugeMarker"/> の元々のサイズ（デバッグ拡大表示の基準値）。
+    /// <see cref="BeginFight"/> で 1 度だけ読み取り、<see cref="ResetRuntimeState"/> で必ず書き戻す
+    /// （＝暴れ演出で拡大したままバトルが終わって次回以降サイズが狂う、を防ぐ）。
+    /// </summary>
+    private SEED.Vector2 markerBaseSize = default;
+
+    /// <summary><see cref="markerBaseSize"/> を読み取り済みか（未読のまま書き戻さないためのガード）。</summary>
+    private bool markerBaseSizeCaptured = false;
+
     // ─── ライフサイクル ───────────────────────────────────
 
     /// <summary>開始時に UI を隠す（バトル中以外は一切見せない）。</summary>
@@ -736,6 +811,13 @@ public class FishingFight : SEEDScript
         isTired = false;
         rageTimer = 0f;
         PickRage();
+
+        // マーカーの元サイズを 1 度だけ読み取る（デバッグの拡大表示の基準・終了時に書き戻す）
+        if (gaugeMarker is { } marker && marker.IsValid)
+        {
+            markerBaseSize = marker.Size;
+            markerBaseSizeCaptured = true;
+        }
 
         // 隠していたぶんセグメントは必ず作り直す（キャッシュを無効化する）
         InvalidateArcCache();
@@ -897,6 +979,26 @@ public class FishingFight : SEEDScript
 
     /// <summary>このフレームのゲージ上昇／下降速度（/秒）。</summary>
     private float GaugeRate() => gaugeBaseRate * PowerRatioClamped();
+
+    /// <summary>
+    /// ゲージの現在位置による「通常の増減速度」への倍率【中央ほど遅く・端ほど速くする唯一の算出点】。
+    ///
+    /// <c>AmplitudeScale(g) = Lerp(gaugeCenterRateScale, 1, |g|^gaugeRateCurvePower)</c>
+    /// ＝ 中央（|g|＝0）で <see cref="gaugeCenterRateScale"/>、端（|g|＝1）で等倍（1）になる。
+    /// <see cref="gaugeCenterRateScale"/> は 0 だと中央で完全停止してしまうため
+    /// <see cref="GaugeCenterRateScaleMin"/> で下限をクランプしてから使う
+    /// （＝ゲージがちょうど 0 からでも必ず動き出せる）。
+    ///
+    /// <b>適用範囲の注意</b>: この倍率は <see cref="UpdateGauge"/> の<b>通常の増減</b>にのみ掛ける。
+    /// 中央への<b>回復</b>と暴れの<b>攻撃の押し込み</b>には掛けない（クラス側コメント参照）。
+    /// </summary>
+    /// <param name="gauge">現在のゲージ値（−1〜1）。</param>
+    private float AmplitudeScale(float gauge)
+    {
+        float centerScale = SEED.Mathf.Max(gaugeCenterRateScale, GaugeCenterRateScaleMin);
+        float t = SEED.Mathf.Pow(SEED.Mathf.Clamped01(SEED.Mathf.Abs(gauge)), SEED.Mathf.Max(gaugeRateCurvePower, DivideEpsilon));
+        return SEED.Mathf.Lerp(centerScale, 1f, t);
+    }
 
     /// <summary>
     /// 回復区間（安全帯）の半幅。糸パワーが 1 を超えた分だけ広がる。
@@ -1153,13 +1255,19 @@ public class FishingFight : SEEDScript
     ///
     /// - 巻いている   … ＋ 側へ上昇。ただし − 側に居るあいだは中央へ<b>回復</b>
     /// - 操作していない… − 側へ下降。ただし ＋ 側に居るあいだは中央へ<b>回復</b>
+    ///
+    /// 通常の増減（上昇／下降）だけ <see cref="AmplitudeScale"/> を掛けて、
+    /// 中央付近ほどゆっくり・端に近いほど素早く動くようにする
+    /// （＝中央からの「離れ始め」が穏やかになり、操作の起点をつかみやすくする）。
+    /// 中央への<b>回復</b>は仕様上「回復は必ず一定速度で 0 へ届く」ことが前提なので、
+    /// この倍率を<b>掛けない</b>（掛けると回復が中央付近で止まりかけてしまう）。
     /// </summary>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     /// <param name="reeling">このフレームに巻いているか。</param>
     private void UpdateGauge(float deltaTime, bool reeling)
     {
-        float rate = GaugeRate();
-        float recovery = gaugeRecoverySpeed * deltaTime;
+        float rate = GaugeRate() * AmplitudeScale(Gauge);
+        float recovery = gaugeRecoverySpeed * deltaTime;   // ← 回復は倍率を掛けない（常に一定速度）
 
         if (reeling)
         {
@@ -1246,6 +1354,13 @@ public class FishingFight : SEEDScript
         isTired = false;
         stamina = 0f;
         staminaMax = 0f;
+
+        // デバッグ拡大で書き換えたマーカーサイズを元へ戻す（拡大したまま終わらないように）
+        if (markerBaseSizeCaptured && gaugeMarker is { } marker && marker.IsValid)
+        {
+            marker.Size = markerBaseSize;
+        }
+        markerBaseSizeCaptured = false;
     }
 
     // ─── UI ─────────────────────────────────────────────
@@ -1269,8 +1384,10 @@ public class FishingFight : SEEDScript
             cachedZoneHalfWidth = zone;
         }
 
-        // マーカー: ゲージ値（−1〜1）を角度 θ ＝ gauge × 表示半角 へ写して円周上へ置く
-        ApplySpriteOpacity(gaugeMarker, gaugeMarkerOpacity);
+        // マーカー: ゲージ値（−1〜1）を角度 θ ＝ gauge × 表示半角 へ写して円周上へ置く。
+        // 色は通常は白のまま、デバッグ表示 ON なら魚の行動状態で着色する（ApplyMarkerDebugTint 参照）。
+        ApplyMarkerDebugTint();
+        ApplyMarkerDebugScale();
         if (gaugeMarkerTransform is { } markerTf && markerTf.IsValid)
         {
             float degrees = Gauge * halfAngle;
@@ -1278,15 +1395,71 @@ public class FishingFight : SEEDScript
             markerTf.Rotation = degrees;
         }
 
-        // 糸 HP と魚のスタミナ: 円の中心にパーセント表示（スタミナはチューニング用）
+        // 糸 HP と魚のスタミナ: 円の中心にパーセント表示（スタミナはチューニング用）。
+        // デバッグ表示 ON なら先頭へ現在の行動状態（暴れ! / 大暴れ!! / 休み / ひるみ）を付ける。
         if (hpText is { } label && label.IsValid)
         {
-            label.Content = $"HP {SEED.Mathf.RoundToInt(LineHp01 * PercentScale)}%"
+            string prefix = debugShowFishAction ? DebugActionPrefix() : string.Empty;
+            label.Content = $"{prefix}HP {SEED.Mathf.RoundToInt(LineHp01 * PercentScale)}%"
                           + $"  ST {SEED.Mathf.RoundToInt(Stamina01 * PercentScale)}%"
                           + $"  魚 {SEED.Mathf.RoundToInt(FishHp01 * PercentScale)}%";
             label.Color = label.Color.WithAlpha(SEED.Mathf.Clamped01(hpTextOpacity));
         }
     }
+
+    // ─── デバッグ表示: 暴れ状態の可視化 ─────────────────────
+
+    /// <summary>
+    /// マーカーの色を魚の行動状態で着色する【デバッグ着色の唯一の適用点】。
+    /// <see cref="debugShowFishAction"/> が false のときは常に白（着色しない）に戻す。
+    /// </summary>
+    private void ApplyMarkerDebugTint()
+    {
+        if (gaugeMarker is not { } marker || !marker.IsValid) { return; }
+
+        SEED.Vector3 rgb = debugShowFishAction ? DebugActionColorRgb() : debugColorNormal;
+        marker.Color = ToColor(rgb, SEED.Mathf.Clamped01(gaugeMarkerOpacity));
+    }
+
+    /// <summary>
+    /// マーカーのサイズを行動状態で拡大する【デバッグ拡大の唯一の適用点】。
+    /// 暴れ／大暴れのときだけ <see cref="markerBaseSize"/> へ倍率を掛け、
+    /// それ以外（デバッグ OFF を含む）は元のサイズへ戻す。
+    /// </summary>
+    private void ApplyMarkerDebugScale()
+    {
+        if (gaugeMarker is not { } marker || !marker.IsValid || !markerBaseSizeCaptured) { return; }
+
+        float scale = debugShowFishAction
+            ? action switch
+            {
+                FishAction.Rage => debugMarkerScaleRage,
+                FishAction.BigRage => debugMarkerScaleBigRage,
+                _ => 1f,
+            }
+            : 1f;
+        marker.Size = markerBaseSize * scale;
+    }
+
+    /// <summary>行動状態に対応するデバッグ色（RGB）。</summary>
+    private SEED.Vector3 DebugActionColorRgb() => action switch
+    {
+        FishAction.Rage => debugColorRage,
+        FishAction.BigRage => debugColorBigRage,
+        FishAction.Stay => debugColorStay,
+        FishAction.Wait => debugColorWait,
+        _ => debugColorNormal,
+    };
+
+    /// <summary>糸 HP テキストの先頭へ付ける行動状態のラベル（末尾に半角スペースを含む）。</summary>
+    private string DebugActionPrefix() => action switch
+    {
+        FishAction.Rage => "暴れ! ",
+        FishAction.BigRage => "大暴れ!! ",
+        FishAction.Stay => "休み ",
+        FishAction.Wait => "ひるみ ",
+        _ => string.Empty,
+    };
 
     /// <summary>
     /// 円弧のセグメントを配置・着色し直す。
