@@ -23,6 +23,17 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// Bite     --釣り上げ成立（OnCaught）--> Caught（AI 停止。演出の終わりに破棄）
 /// Escape   --escapeSeconds 逃げ切る--> Roam（クールダウン付き）
 /// </code>
+///
+/// [わらしべ連鎖]
+/// 「餌」はルアー（ウキ）だけとは限らない。ルアーが無効で、かつ別の魚が掛かっている
+/// あいだ（<see cref="FishingController.HookedFishBaitActive"/>）は、
+/// <b>掛かっている魚そのものが餌</b>になる（<see cref="TryGetBaitTarget"/>）。
+/// 捕食できるかは <see cref="CanPreyOn"/>（サイズ比のみ）で決まり、
+/// 好みの魚（<see cref="preferredFish"/>）は <see cref="ChainSenseMultiplier"/> により
+/// <b>感知距離を広げる</b>だけで、可否には影響しない。
+/// 連鎖の感知距離 ＝ (餌の感知距離 ＋ 連鎖餌の影響半径) × 好みの魚の感知倍率。
+/// 以降の Approach → Nibbling → Bite の流れは、ルアーのときとまったく同じ。
+///
 /// 餌の位置・判定距離はすべて <see cref="FishingController.Current"/> から読む
 /// （魚は prefab から動的生成されるため、参照フィールドでコントローラを注入できない）。
 /// </summary>
@@ -57,6 +68,19 @@ public class Fish : SEEDScript
     /// 逆に <see cref="BehaviorState.Nibbling"/>（まだ掛かっていない）では張り付かせない。
     /// </summary>
     private const float AttachSnapDistance = 0.05f;
+
+    /// <summary>
+    /// 捕食できる最小サイズ比の<b>下限</b>（＝「相手と同じ大きさ」）。
+    /// <see cref="preyMinSizeRatio"/> にこれ未満（1 未満）を入れると、自分より大きい魚まで
+    /// 食べられてしまい「わらしべ」が成立しなくなるので、番人値としてここでクランプする。
+    /// </summary>
+    private const float MinPreySizeRatio = 1f;
+
+    /// <summary>
+    /// 感知距離の倍率の基準値（＝倍率なし）。ルアー（ウキ）への感知と、
+    /// 好みの魚でない獲物への感知に使う。
+    /// </summary>
+    private const float NeutralSenseMultiplier = 1f;
 
     // ─── 行動状態 ─────────────────────────────────────────────
 
@@ -127,10 +151,33 @@ public class Fish : SEEDScript
 
     /// <summary>
     /// 好みの魚（餌として好む魚の名前。空 = 特になし）。
-    /// わらしべ要素: 釣った魚を餌にすると好みの魚が釣れやすくなる想定。
+    ///
+    /// わらしべ連鎖（掛かっている魚を餌に、より大きい魚が食いに来る仕組み）では
+    /// <b>捕食できるかどうかの条件ではない</b>。捕食の可否はサイズ比
+    /// （<see cref="preyMinSizeRatio"/>）だけで決まり、好みの魚は
+    /// <see cref="ChainSenseMultiplier"/> によって<b>感知距離を広げる</b>要素として働く。
     /// </summary>
     [SerializeField(Label = "好みの魚")]
     private string preferredFish = "";
+
+    /// <summary>
+    /// 捕食できる最小サイズ比。相手（獲物）の <see cref="DisplaySize"/> に対して
+    /// 自分の <see cref="DisplaySize"/> がこの倍率以上あるときだけ捕食できる
+    /// （＝明確に大きい魚しか、掛かっている魚を食いに来ない）。
+    /// 下限は <see cref="MinPreySizeRatio"/> でクランプする。
+    /// </summary>
+    [SerializeField(Label = "捕食できる最小サイズ比")]
+    private float preyMinSizeRatio = 1.3f;
+
+    /// <summary>
+    /// 好みの魚（<see cref="preferredFish"/>）が餌になっているときの感知距離の倍率。
+    /// わらしべ連鎖の感知距離は
+    /// <c>(<see cref="baitSenseDistance"/> ＋ 連鎖餌の影響半径) × この倍率</c> で決まる
+    /// （名前が一致しない獲物・ルアー（ウキ）に対しては
+    /// <see cref="NeutralSenseMultiplier"/> ＝ 倍率なし）。
+    /// </summary>
+    [SerializeField(Label = "好みの魚の感知倍率")]
+    private float preferredSenseMultiplier = 2f;
 
     /// <summary>
     /// 暴れ度の規定値（仕様では規定 1）。釣りバトル中は状態に応じて
@@ -338,6 +385,55 @@ public class Fish : SEEDScript
     /// <summary>好みの魚の名前（わらしべ判定用）。</summary>
     public string PreferredFish => preferredFish;
 
+    // ─── わらしべ連鎖（掛かっている魚を餌にする）─────────────────
+
+    /// <summary>
+    /// 指定の魚を<b>捕食できるか</b>【捕食可否の唯一の判定点】。
+    ///
+    /// 判定は<b>サイズ比だけ</b>で行う:
+    /// 自分の <see cref="DisplaySize"/> ≧ 相手の <see cref="DisplaySize"/> ×
+    /// <see cref="preyMinSizeRatio"/>（下限 <see cref="MinPreySizeRatio"/>）。
+    /// <see cref="preferredFish"/>（好みの魚）は可否には一切関与せず、
+    /// <see cref="ChainSenseMultiplier"/> で感知距離を広げるだけである。
+    ///
+    /// 自分自身と、釣り上げ演出中（<see cref="BehaviorState.Caught"/>）の個体は常に対象外。
+    /// なお「掛かっている魚」は必ず <see cref="BehaviorState.Bite"/> なので、
+    /// Bite を除外してはならない（除外すると連鎖が一切成立しない）。
+    /// </summary>
+    /// <param name="prey">獲物の候補（掛かっている魚）。</param>
+    /// <returns>捕食できるなら true。</returns>
+    public bool CanPreyOn(Fish? prey)
+    {
+        if (prey is null) { return false; }
+        if (ReferenceEquals(prey, this)) { return false; }
+
+        // 釣り上げ演出へ入った個体は、もうプレイヤーの獲物なので餌にならない
+        if (prey.State == BehaviorState.Caught) { return false; }
+
+        float ratio = SEED.Mathf.Max(preyMinSizeRatio, MinPreySizeRatio);
+        return DisplaySize >= prey.DisplaySize * ratio;
+    }
+
+    /// <summary>
+    /// わらしべ連鎖での感知距離の倍率【好みの魚の効果の唯一の適用点】。
+    /// 獲物の表示名が <see cref="preferredFish"/> と（大文字小文字を無視して）一致すれば
+    /// <see cref="preferredSenseMultiplier"/>、それ以外は <see cref="NeutralSenseMultiplier"/>。
+    /// </summary>
+    /// <param name="prey">獲物（掛かっている魚）。</param>
+    /// <returns>感知距離に掛ける倍率。</returns>
+    public float ChainSenseMultiplier(Fish? prey)
+    {
+        if (prey is null) { return NeutralSenseMultiplier; }
+        if (string.IsNullOrWhiteSpace(preferredFish)) { return NeutralSenseMultiplier; }
+        if (!string.Equals(preferredFish.Trim(), prey.DisplayName, System.StringComparison.OrdinalIgnoreCase))
+        {
+            return NeutralSenseMultiplier;
+        }
+
+        // 好みの魚が餌になっている: 感知距離を広げる（倍率が 1 未満なら効果なしへ丸める）
+        return SEED.Mathf.Max(preferredSenseMultiplier, NeutralSenseMultiplier);
+    }
+
     /// <summary>大きさ（釣果ログ・UI から参照する）。</summary>
     public float Size => size;
 
@@ -490,9 +586,17 @@ public class Fish : SEEDScript
 
         // つつき中はコントローラ側（合わせの成否）からしか抜けない。
         // ただし餌そのものが消えた場合だけは自力で回遊へ戻る（固まり防止）。
+        //
+        // 判定に <see cref="FishingController.BaitActive"/> を使ってはいけない:
+        // わらしべ連鎖のアタリ（ChainNibbling / ChainHookWindow）では BaitActive が false に
+        // なるため、連鎖でつつきに来た個体が毎フレーム回遊へ戻ってしまう。
+        // 「コントローラがこの個体をアタリの主として保持しているか」を直接聞く。
         if (State == BehaviorState.Nibbling)
         {
-            if (FishingController.Current is not { BaitActive: true }) { BackToRoam(withCooldown: false); }
+            if (FishingController.Current is not { } nfc || !nfc.IsNibbling(this))
+            {
+                BackToRoam(withCooldown: false);
+            }
             return;
         }
 
@@ -515,27 +619,37 @@ public class Fish : SEEDScript
             return;
         }
 
-        // 餌が無い（コントローラ未起動・キャスト前・飛翔中）なら回遊へ戻す
-        if (FishingController.Current is not { BaitActive: true } fc)
+        // 餌が無い（コントローラ未起動・キャスト前・飛翔中・自分には食えない獲物）なら回遊へ戻す
+        if (FishingController.Current is not { } fc
+         || !TryGetBaitTarget(fc, out var bait, out float senseRadius))
         {
             BackToRoam(withCooldown: false);
             return;
         }
 
-        var bait = fc.BaitPosition;
         float distance = HorizontalDistance(transform.Position, bait);
 
-        // 回遊中: 「自分の感知距離 ＋ 餌の影響半径」以内へ入ったら寄っていく
+        // 回遊中: 感知距離（ルアーなら「感知距離＋影響半径」、わらしべ連鎖ならさらに
+        // 好みの魚の倍率が掛かる。算出は TryGetBaitTarget に集約）以内へ入ったら寄っていく
         if (State == BehaviorState.Roam)
         {
             if (loseInterestRemaining > 0f) { return; }
-            if (distance > baitSenseDistance + fc.BaitInfluenceRadius) { return; }
+            if (distance > senseRadius) { return; }
 
             State = BehaviorState.Approach;
             biteWaitStarted = false;
             // 寄り始める前に振られた竿振りを数えないよう、この瞬間の番号へ揃えておく
             lastSeenSwingSerial = fc.SwingSerial;
             SetEngaged(fc, engaged: true);
+
+            // わらしべ連鎖で寄り始めた場合だけ、何を狙って寄ったのかを残す
+            if (!fc.BaitActive && fc.HookedFishBait is { } chainPrey)
+            {
+                SEED.Debug.Log(
+                    $"[Fish] わらしべ: {DisplayName}（{DisplaySize:F1}）が"
+                  + $" 掛かっている {chainPrey.DisplayName}（{chainPrey.DisplaySize:F1}）へ接近"
+                  + $"（感知 {senseRadius:F1}m / 距離 {distance:F1}m）");
+            }
             return;
         }
 
@@ -581,6 +695,47 @@ public class Fish : SEEDScript
         BackToRoam(withCooldown: true);
     }
 
+    /// <summary>
+    /// いま自分が狙うべき餌の位置と感知距離を求める【餌選択の唯一の集約点】。
+    ///
+    /// <b>優先順</b>
+    /// 1. ルアー（ウキ）が有効（<see cref="FishingController.BaitActive"/>）ならそれ。
+    ///    感知距離 ＝ <see cref="baitSenseDistance"/> ＋ 餌の影響半径（倍率なし）。
+    /// 2. ルアーが無効で、掛かっている魚が餌になっている
+    ///    （<see cref="FishingController.HookedFishBaitActive"/>）＝わらしべ連鎖。
+    ///    自分がその魚を捕食できる（<see cref="CanPreyOn"/>）ときだけ対象になり、
+    ///    感知距離 ＝ (<see cref="baitSenseDistance"/> ＋ 連鎖餌の影響半径)
+    ///              × <see cref="ChainSenseMultiplier"/>（好みの魚なら広がる）。
+    /// 3. どちらでもなければ false（＝餌なし）。
+    /// </summary>
+    /// <param name="fc">釣りコントローラ。</param>
+    /// <param name="position">求まった餌のワールド位置。</param>
+    /// <param name="senseRadius">この餌に気づける水平距離（メートル）。</param>
+    /// <returns>狙える餌があれば true。</returns>
+    private bool TryGetBaitTarget(FishingController fc, out SEED.Vector3 position, out float senseRadius)
+    {
+        // 1) ルアー（ウキ）
+        if (fc.BaitActive)
+        {
+            position = fc.BaitPosition;
+            senseRadius = (baitSenseDistance + fc.BaitInfluenceRadius) * NeutralSenseMultiplier;
+            return true;
+        }
+
+        // 2) わらしべ連鎖: 掛かっている魚そのものが餌
+        if (fc.HookedFishBaitActive && fc.HookedFishBait is { } prey && CanPreyOn(prey))
+        {
+            position = fc.HookedFishBaitPosition;
+            senseRadius = (baitSenseDistance + fc.ChainInfluenceRadius) * ChainSenseMultiplier(prey);
+            return true;
+        }
+
+        // 3) 餌なし
+        position = SEED.Vector3.Zero;
+        senseRadius = 0f;
+        return false;
+    }
+
     /// <summary>回遊（既定の振る舞い）の移動。生成地点の周りを気ままに泳ぐ。</summary>
     /// <param name="dt">このフレームの経過秒数。</param>
     /// <param name="home">回遊の中心（生成地点）。</param>
@@ -615,10 +770,11 @@ public class Fish : SEEDScript
     /// <param name="dt">このフレームの経過秒数。</param>
     private void UpdateApproach(float dt)
     {
-        if (FishingController.Current is not { BaitActive: true } fc) { return; }
+        // 狙う餌はルアー／わらしべ連鎖の獲物どちらもあり得るので、選択は TryGetBaitTarget に任せる
+        if (FishingController.Current is not { } fc) { return; }
+        if (!TryGetBaitTarget(fc, out var bait, out _)) { return; }
 
         var pos = transform.Position;
-        var bait = fc.BaitPosition;
         float dx = bait.x - pos.x;
         float dz = bait.z - pos.z;
         float sqDistance = dx * dx + dz * dz;

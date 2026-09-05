@@ -56,6 +56,18 @@
 /// - Nibbling … 早合わせ（<see cref="HookJudgement.Miss"/>。魚は逃げる）
 /// - HookWindow … 合わせ判定（Excellent / Great / Nice / Miss）
 /// - Hooked … 振りを読まない（ヒット中の竿振りは未仕様）
+/// - ChainNibbling / ChainHookWindow … わらしべ連鎖の合わせ。意味は Nibbling / HookWindow と同じで、
+///   成功すると掛かっている魚が食われて、より大きい魚へ乗り換わる
+///
+/// <b>わらしべ連鎖</b>
+/// ヒット中（<see cref="FishState.Hooked"/>）は、掛かっている魚そのものが餌になる
+/// （<see cref="HookedFishBaitActive"/>）。<see cref="Fish.CanPreyOn"/> でその魚を捕食できる
+/// （＝明確に大きい）個体だけが寄って来て、通常とまったく同じ
+/// 前アタリ → 本アタリ → 左クリックの合わせを行う。合わせに成功すると
+/// <see cref="SwapHookedFish"/> で魚が乗り換わり（前の魚は食われて消滅）、失敗すると
+/// 連鎖の魚だけが逃げて元のやり取りが再開する。連鎖中のやり取りは
+/// <see cref="FishingFight.Paused"/> で凍結され、巻き取りも引きも起きない。
+/// 乗り換えた後の魚がまた餌になるので、連鎖は何段でも続く。
 /// どの状態で振っても <see cref="SwingSerial"/> が 1 増えるので、魚（<see cref="Fish"/>）は
 /// これを見て「餌に寄っている最中に振られたら驚いて逃げる」反応を取る。
 /// </summary>
@@ -79,6 +91,13 @@ public class FishingController : SEEDScript
     /// HookWindow --niceSeconds 以内に合わせ--> Hooked（Excellent/Great/Nice）
     /// HookWindow --遅い合わせ／時間切れ--> Floating（Miss。魚は逃げる）
     /// Aiming（巻き取り後）--左クリックを離していれば即--> Idle
+    ///
+    /// ── わらしべ連鎖（掛かっている魚を餌に、より大きい魚が食いに来る）──
+    /// Hooked          --より大きい魚が BeginNibbling--> ChainNibbling（やり取りは一時停止）
+    /// ChainNibbling   --前アタリを撃ち切り＋1 間隔--> ChainHookWindow
+    /// ChainNibbling   --早すぎる合わせ--> Hooked（Miss。連鎖の魚だけ逃げる）
+    /// ChainHookWindow --niceSeconds 以内に合わせ--> Hooked（魚が乗り換わる。前の魚は食われて消滅）
+    /// ChainHookWindow --遅い合わせ／時間切れ--> Hooked（Miss。連鎖の魚だけ逃げる）
     /// </code>
     ///
     /// スクリプトはファイル名＝型名で 1 ファイル 1 スクリプトクラスとして扱われるため、
@@ -151,6 +170,42 @@ public class FishingController : SEEDScript
         /// <see cref="Idle"/>（移動）へ復帰する。
         /// </summary>
         Catching,
+
+        /// <summary>
+        /// <b>わらしべ連鎖</b>の前アタリ。掛かっている魚（<see cref="Hooked"/> の獲物）を餌として、
+        /// より大きい魚がつつきに来ている状態。<see cref="Nibbling"/> の完全な写しで、
+        /// 違いは「失敗しても <see cref="Floating"/> ではなく <see cref="Hooked"/> へ戻る」ことだけ。
+        ///
+        /// このあいだ、やり取り（<see cref="FishingFight"/>）は
+        /// <see cref="FishingFight.Paused"/> で凍結され、巻き取り入力も一切受け付けない。
+        /// ウキ・掛かっている魚はその場に留まり、連鎖の魚はウキの下へ寄ってくる。
+        /// </summary>
+        ChainNibbling,
+
+        /// <summary>
+        /// <b>わらしべ連鎖</b>の本アタリ（反応受付）。<see cref="HookWindow"/> の写しで、
+        /// 成功すると掛かっている魚が食われて<b>より大きい魚へ乗り換わる</b>
+        /// （<see cref="SwapHookedFish"/>）。失敗・時間切れなら連鎖の魚だけが逃げて
+        /// <see cref="Hooked"/>（元の魚とのやり取り）へ戻る。
+        /// </summary>
+        ChainHookWindow,
+    }
+
+    /// <summary>
+    /// いま魚を引き寄せている「餌」の種類。魚（<see cref="Fish"/>）が
+    /// 何を狙って寄るかの判断に使う。
+    /// <see cref="FishState"/> と同じ理由で本クラスの入れ子として定義する。
+    /// </summary>
+    public enum BaitKind
+    {
+        /// <summary>餌なし（キャスト前・飛翔中・連鎖のアタリ受付中など）。</summary>
+        None,
+
+        /// <summary>ルアー（ウキ）。通常の釣り。</summary>
+        Lure,
+
+        /// <summary>掛かっている魚そのもの（わらしべ連鎖）。</summary>
+        HookedFish,
     }
 
     /// <summary>
@@ -752,6 +807,14 @@ public class FishingController : SEEDScript
     private float baitInfluenceRadius = 2f;
 
     /// <summary>
+    /// <b>わらしべ連鎖</b>の餌（＝掛かっている魚）の影響半径（メートル）。
+    /// 意味は <see cref="baitInfluenceRadius"/> と同じで、掛かった魚を餌と見なすときに使う。
+    /// ルアーとは別に調整できるよう独立したパラメータにしてある（既定値は同じ）。
+    /// </summary>
+    [SerializeField(Label = "連鎖餌の影響半径(m)")]
+    private float chainInfluenceRadius = 2f;
+
+    /// <summary>
     /// 食いつき距離（メートル）。魚と餌の水平距離がこれ以下になると
     /// 食いつき待ち（<c>Fish</c> 側の待ち時間）へ入る。
     /// </summary>
@@ -929,6 +992,17 @@ public class FishingController : SEEDScript
     /// <summary>いま前アタリ〜本アタリを起こしている魚（null = アタリ進行中でない）。</summary>
     private Fish? nibblingFish = null;
 
+    /// <summary>
+    /// <b>わらしべ連鎖</b>で、掛かっている魚（<see cref="hookedFish"/>）をつつきに来ている魚
+    /// （null = 連鎖のアタリ進行中でない）。同時に 1 匹だけ受け付ける。
+    ///
+    /// これが非 null のあいだは <see cref="FishState.ChainNibbling"/> /
+    /// <see cref="FishState.ChainHookWindow"/> で、やり取りは一時停止している。
+    /// 合わせ成功で <see cref="SwapHookedFish"/> により <see cref="hookedFish"/> へ昇格し、
+    /// 失敗・中断では <see cref="ReleaseChainNibbler"/> で逃がす。
+    /// </summary>
+    private Fish? chainNibbler = null;
+
     /// <summary>残りの前アタリ回数。0 になった次の間隔で本アタリへ移る。</summary>
     private int nibbleRemaining = 0;
 
@@ -1041,11 +1115,64 @@ public class FishingController : SEEDScript
     /// <summary>餌の影響半径（メートル）。魚の感知距離に加算される。</summary>
     public float BaitInfluenceRadius => baitInfluenceRadius;
 
-    /// <summary>食いつき距離（メートル）。</summary>
+    /// <summary>わらしべ連鎖の餌（＝掛かっている魚）の影響半径（メートル）。</summary>
+    public float ChainInfluenceRadius => chainInfluenceRadius;
+
+    /// <summary>食いつき距離（メートル）。ルアー・わらしべ連鎖のどちらでも共通。</summary>
     public float BiteDistance => biteDistance;
 
     /// <summary>いま魚が掛かっているか。</summary>
     public bool IsHooked => hookedFish is not null;
+
+    // ─── わらしべ連鎖（掛かっている魚が次の餌になる）───────────
+
+    /// <summary>
+    /// <b>掛かっている魚が餌として有効か</b>【連鎖の成立条件の唯一の定義】。
+    ///
+    /// ヒット中（<see cref="FishState.Hooked"/>）で魚が掛かっており、かつ
+    /// まだ誰も連鎖のアタリを起こしていない（<see cref="chainNibbler"/> が null）とき。
+    /// 連鎖のアタリ中（ChainNibbling / ChainHookWindow）に false になるので、
+    /// 2 匹目・3 匹目が同時に寄ってくることはない。
+    /// </summary>
+    public bool HookedFishBaitActive
+        => State == FishState.Hooked && hookedFish is not null && chainNibbler is null;
+
+    /// <summary>
+    /// 餌になっている「掛かっている魚」（null = 連鎖の餌なし）。
+    /// 魚はこれに対して <see cref="Fish.CanPreyOn"/> で捕食可否を判断する。
+    /// </summary>
+    public Fish? HookedFishBait => HookedFishBaitActive ? hookedFish : null;
+
+    /// <summary>
+    /// 連鎖の餌（掛かっている魚）のワールド位置。
+    /// <see cref="HookedFishBaitActive"/> が false のときの値は無意味。
+    /// </summary>
+    public SEED.Vector3 HookedFishBaitPosition
+        => hookedFish is { } fish && fish.Transform is { IsValid: true } t
+            ? t.Position
+            : SEED.Vector3.Zero;
+
+    /// <summary>
+    /// いま魚を引き寄せている餌の種類【餌の種類の唯一の判定点】。
+    /// ルアーが優先で、ルアーが無効なときだけ連鎖の餌を見る。
+    /// </summary>
+    public BaitKind CurrentBaitKind
+        => BaitActive ? BaitKind.Lure
+         : HookedFishBaitActive ? BaitKind.HookedFish
+         : BaitKind.None;
+
+    /// <summary>
+    /// 指定の魚が、いまアタリの主（通常の前アタリ or 連鎖の前アタリ）として
+    /// コントローラに保持されているか。
+    ///
+    /// 魚側（<see cref="Fish.BehaviorState.Nibbling"/>）が「自分はまだつつき中か」を
+    /// 確かめるために使う。状態の列挙（BaitActive など）で代用すると連鎖の状態を
+    /// 取りこぼすので、保持している参照そのもので判定する。
+    /// </summary>
+    /// <param name="fish">確かめる魚。</param>
+    /// <returns>アタリの主なら true。</returns>
+    public bool IsNibbling(Fish fish)
+        => ReferenceEquals(nibblingFish, fish) || ReferenceEquals(chainNibbler, fish);
 
     /// <summary>
     /// 魚が餌に食いつこうとしたときに呼ぶ。掛かれば true。
@@ -1083,6 +1210,10 @@ public class FishingController : SEEDScript
     /// <returns>前アタリを受け付けたら true。</returns>
     public bool BeginNibbling(Fish fish)
     {
+        // ── わらしべ連鎖 ──
+        // ヒット中は、掛かっている魚そのものが餌になる。より大きい魚が食いに来た場合だけ受け付ける。
+        if (State == FishState.Hooked) { return BeginChainNibbling(fish); }
+
         // 餌が水にあり、かつ「まだ誰もアタっていない」ときだけ受け付ける
         if (State is not (FishState.Floating or FishState.Reeling)) { return false; }
         if (!BaitActive || IsHooked || nibblingFish is not null) { return false; }
@@ -1091,7 +1222,52 @@ public class FishingController : SEEDScript
         State = FishState.Nibbling;
         LastJudgement = HookJudgement.None;
         CancelHop();                   // 跳ねの最中に前アタリが始まったら跳ねを打ち切る
+        RollNibbleSequence();
 
+        SEED.Debug.Log($"[Fishing] 前アタリ開始: {fish.DisplayName}（{nibbleRemaining} 回）");
+        return true;
+    }
+
+    /// <summary>
+    /// <b>わらしべ連鎖</b>の前アタリを開始する【連鎖開始の唯一の入口】。
+    ///
+    /// 成立条件は「ヒット中」「連鎖の魚がまだ居ない」「掛かっている魚を
+    /// <see cref="Fish.CanPreyOn"/> で捕食できる」の 3 つ。
+    /// 成立すると <see cref="FishState.ChainNibbling"/> へ移り、
+    /// やり取り（<see cref="FishingFight"/>）を <see cref="FishingFight.Paused"/> で凍結する。
+    /// 以後の進行（前アタリ → 本アタリ → 合わせ判定）は通常のアタリと完全に同じ経路
+    /// （<see cref="UpdateBiteTiming"/>）を通る。
+    /// </summary>
+    /// <param name="fish">掛かっている魚を狙って来た魚。</param>
+    /// <returns>連鎖の前アタリを受け付けたら true。</returns>
+    private bool BeginChainNibbling(Fish fish)
+    {
+        if (hookedFish is not { } prey) { return false; }
+        if (chainNibbler is not null) { return false; }         // 連鎖の魚は同時に 1 匹だけ
+        if (ReferenceEquals(fish, prey)) { return false; }      // 自分自身は食えない
+        if (!fish.CanPreyOn(prey)) { return false; }            // 明確に大きい魚だけが食いに来る
+
+        chainNibbler = fish;
+        State = FishState.ChainNibbling;
+        LastJudgement = HookJudgement.None;
+        CancelHop();                   // ヒット中は跳ねないが、フラグの持ち越しを防ぐため必ず畳む
+        RollNibbleSequence();
+
+        // やり取りを凍結する（ゲージ・糸 HP・スタミナ・引きは進まず、UI だけ出したまま）
+        if (fight is { } f) { f.Paused = true; }
+
+        SEED.Debug.Log(
+            $"[Fishing] わらしべ前アタリ開始: {fish.DisplayName}（{fish.DisplaySize:F1}）が"
+          + $" {prey.DisplayName}（{prey.DisplaySize:F1}）を狙う（{nibbleRemaining} 回）");
+        return true;
+    }
+
+    /// <summary>
+    /// 前アタリの回数と最初の間隔を抽選し、アタリ用のタイマ類を初期化する
+    /// （通常のアタリと連鎖のアタリで共通）。
+    /// </summary>
+    private void RollNibbleSequence()
+    {
         // 前アタリの回数（下限〜上限、上限を含む）と最初の間隔を抽選する
         int minCount = SEED.Mathf.Max(0, nibbleCountMin);
         int maxCount = SEED.Mathf.Max(minCount, nibbleCountMax);
@@ -1099,9 +1275,83 @@ public class FishingController : SEEDScript
         nibbleTimer = NextNibbleInterval();
         nibbleDipElapsed = NoDipElapsed;
         reactionElapsed = 0f;
+    }
 
-        SEED.Debug.Log($"[Fishing] 前アタリ開始: {fish.DisplayName}（{nibbleRemaining} 回）");
-        return true;
+    /// <summary>
+    /// 連鎖の魚を逃がす【連鎖の魚の解放の唯一の出口】。居なければ何もしない。
+    /// 状態は変えない（呼び出し側が <see cref="FishState.Hooked"/> などへ遷移させる）。
+    /// </summary>
+    private void ReleaseChainNibbler()
+    {
+        if (chainNibbler is not { } fish) { return; }
+
+        chainNibbler = null;
+        fish.ReleaseFromHook();
+    }
+
+    /// <summary>
+    /// 掛かっている魚を、連鎖で食いついた魚へ<b>乗り換える</b>【わらしべ成立の唯一の出口】。
+    ///
+    /// 元の魚は食われた扱いで破棄する（<see cref="FishManager"/> は生存チェックで
+    /// 欠けた枠を自動的に補充するので、個体数は勝手に戻る）。
+    /// 新しい魚を掛け直し、やり取りは一度畳んでから新しい魚のパラメータで開始する
+    /// （＝ゲージ・糸 HP・スタミナは新しい魚基準でリセットされ、
+    ///   初期ゲージは今回の合わせランクで決まる）。
+    /// </summary>
+    /// <param name="newFish">新しく掛かる魚（連鎖でアタっていた魚）。</param>
+    /// <param name="judgement">今回の合わせ判定（新しいやり取りの初期ゲージに使う）。</param>
+    private void SwapHookedFish(Fish newFish, HookJudgement judgement)
+    {
+        if (hookedFish is not { } eaten) { return; }
+
+        SEED.Debug.Log(
+            $"[Fishing] わらしべ成立: {newFish.DisplayName}（{newFish.DisplaySize:F1}）が"
+          + $" {eaten.DisplayName}（{eaten.DisplaySize:F1}）を食べた");
+
+        // 食われた魚: AI を止め、円環クランプの除外登録を外してから破棄する
+        // （登録解除は破棄より前に行う。破棄処理中のシーンアクセスは保証されないため）
+        eaten.OnCaught();
+        UnregisterEngaged(eaten.Actor);
+        eaten.Actor.Destroy();
+
+        // 新しい魚を掛け直す
+        hookedFish = newFish;
+        chainNibbler = null;
+        newFish.OnHooked();
+        State = FishState.Hooked;
+
+        // やり取りを畳んでから、新しい魚で開始し直す（Paused も EndFight で解除される）
+        if (fight is { } f)
+        {
+            f.EndFight();
+            f.BeginFight(newFish, judgement);
+        }
+
+        // ヒット用クリップを引き直し（既に同じクリップならラッチで間引かれる）、カーソルロックも同期
+        CrossFadeBoth(hookedClip, playerHookedClip);
+        UpdateCursorLock();
+    }
+
+    /// <summary>
+    /// 連鎖のアタリを畳んで、元の魚とのやり取り（<see cref="FishState.Hooked"/>）へ戻す
+    /// 【連鎖失敗時の唯一の出口】。
+    ///
+    /// 掛かっている魚が何らかの理由で失われていた場合は、ヒット中を続けられないので
+    /// <see cref="FishState.Floating"/>（餌だけが浮いている状態）へ落とす。
+    /// </summary>
+    private void ResumeHookedFromChain()
+    {
+        chainNibbler = null;
+        if (fight is { } f) { f.Paused = false; }
+
+        if (!IsHooked)
+        {
+            // 異常系: 掛かっていた魚が消えている。ヒット中を続けられないので待機へ落とす。
+            State = FishState.Floating;
+            return;
+        }
+
+        State = FishState.Hooked;
     }
 
     /// <summary>
@@ -1245,6 +1495,15 @@ public class FishingController : SEEDScript
                 UpdateBiteTiming(ctx.DeltaTime);
                 break;
 
+            case FishState.ChainNibbling:
+            case FishState.ChainHookWindow:
+                // わらしべ連鎖のアタリ受付中。進行は通常のアタリとまったく同じ経路を通る。
+                // やり取りは FishingFight.Paused で凍結されているが、UI（ゲージ・糸 HP・
+                // 残り距離）は出したままにしたいので UpdateFight は毎フレーム呼ぶ。
+                UpdateFight(ctx.DeltaTime);
+                UpdateBiteTiming(ctx.DeltaTime);
+                break;
+
             case FishState.Catching:
                 UpdateCatching(ctx.DeltaTime);
                 break;
@@ -1353,6 +1612,8 @@ public class FishingController : SEEDScript
     /// 飛翔中（<see cref="FishState.Casting"/>）・着水後の待機
     /// （<see cref="FishState.Floating"/>）・巻き取り中（<see cref="FishState.Reeling"/>）・
     /// アタリ中（<see cref="FishState.Nibbling"/> / <see cref="FishState.HookWindow"/>）・
+    /// わらしべ連鎖のアタリ中（<see cref="FishState.ChainNibbling"/> /
+    /// <see cref="FishState.ChainHookWindow"/>）・
     /// ヒット中（<see cref="FishState.Hooked"/>）が該当する。
     /// 釣り上げ演出（<see cref="FishState.Catching"/>）は<b>寄りのフェーズだけ</b>該当する:
     /// ホワイトアウトで構図を切り替えたあとは、沖のウキと釣り糸が釣果の画に映り込まないよう
@@ -1368,6 +1629,7 @@ public class FishingController : SEEDScript
     private bool IsFloatOut()
         => State is FishState.Casting or FishState.Floating or FishState.Reeling
                  or FishState.Nibbling or FishState.HookWindow
+                 or FishState.ChainNibbling or FishState.ChainHookWindow
                  or FishState.Hooked
         || (State == FishState.Catching
             && CatchPhase == CatchPresenter.CatchPhase.ApproachCamera);
@@ -1715,8 +1977,9 @@ public class FishingController : SEEDScript
     /// </summary>
     private void BreakLine()
     {
-        fight?.EndFight();
+        fight?.EndFight();             // Paused も EndFight で必ず解除される
         CancelHop();
+        ReleaseChainNibbler();         // 連鎖でつつきに来ていた魚が居れば一緒に逃がす
         ReleaseHook();                 // 掛かっていた魚を逃がす（Escape → 退場）
 
         LastJudgement = HookJudgement.Miss;
@@ -1888,6 +2151,7 @@ public class FishingController : SEEDScript
     private void FinishReeling()
     {
         CancelHop();                   // 巻き取りが終わったら跳ねも必ず畳む
+        ReleaseChainNibbler();         // 連鎖でつつきに来ていた魚が居れば逃がす（釣り上げに巻き込まない）
         fight?.EndFight();             // やり取り（ゲージ・糸HP）は成否にかかわらずここで畳む
 
         // ── 釣り上げ成立 ──
@@ -2091,25 +2355,32 @@ public class FishingController : SEEDScript
     ///   <see cref="biteDipDepth"/> まで滑らかに沈み、そのまま保持する
     /// - 前アタリの沈み中 … <see cref="nibbleDipDepth"/> まで sin 半周で沈んで戻る（山なり）
     /// - それ以外 … 0
+    ///
+    /// わらしべ連鎖（<see cref="FishState.ChainNibbling"/> /
+    /// <see cref="FishState.ChainHookWindow"/>）では、ヒット中の沈み
+    /// （<see cref="biteDipDepth"/>）を土台に、上記のアタリの沈みを<b>加算</b>する。
     /// </summary>
     private float CurrentDipDepth()
     {
-        if (IsHooked) { return biteDipDepth; }
+        // ヒット中（＝わらしべ連鎖のアタリ中も含む）は、まず biteDipDepth だけ沈んでいる。
+        // 連鎖のアタリの沈みは、その上へ<b>重ねて</b>乗せる（掛かった魚の分の沈みは維持する）。
+        // ヒット中でなければ 0 なので、通常のアタリの挙動は従来とまったく同じ。
+        float baseDip = IsHooked ? biteDipDepth : 0f;
 
-        if (State == FishState.HookWindow)
+        if (State is FishState.HookWindow or FishState.ChainHookWindow)
         {
             // 0→1 へ滑らかに沈み込み、以降は 1（＝沈みきったまま）で保持する
             float sinkRatio = SEED.Mathf.Clamped01(
                 reactionElapsed / SEED.Mathf.Max(nibbleDipSeconds, DivideEpsilon));
-            return biteDipDepth * SmoothStep01(sinkRatio);
+            return baseDip + biteDipDepth * SmoothStep01(sinkRatio);
         }
 
-        if (nibbleDipElapsed < 0f) { return 0f; }
+        if (nibbleDipElapsed < 0f) { return baseDip; }
 
         // 山なりの沈み: t=0 と t=1 で 0、t=0.5 で最大（sin(πt)）
         float t = SEED.Mathf.Clamped01(
             nibbleDipElapsed / SEED.Mathf.Max(nibbleDipSeconds, DivideEpsilon));
-        return nibbleDipDepth * SEED.Mathf.Sin(SEED.Mathf.PI * t);
+        return baseDip + nibbleDipDepth * SEED.Mathf.Sin(SEED.Mathf.PI * t);
     }
 
     /// <summary>
@@ -2121,7 +2392,14 @@ public class FishingController : SEEDScript
     // ─── アタリ（前アタリ→本アタリ）と合わせ判定 ─────────────
 
     /// <summary>
-    /// <see cref="FishState.Nibbling"/> / <see cref="FishState.HookWindow"/> の毎フレーム更新。
+    /// <see cref="FishState.Nibbling"/> / <see cref="FishState.HookWindow"/> と、
+    /// わらしべ連鎖の <see cref="FishState.ChainNibbling"/> /
+    /// <see cref="FishState.ChainHookWindow"/> の毎フレーム更新
+    /// 【アタリ進行の唯一の更新点。通常も連鎖も同じ経路を通る】。
+    ///
+    /// 通常と連鎖の違いは 2 点だけ:
+    /// アタリの主が <see cref="nibblingFish"/> か <see cref="chainNibbler"/> かと、
+    /// 決着後に戻る状態が <see cref="FishState.Floating"/> か <see cref="FishState.Hooked"/> か。
     ///
     /// <b>やること</b>
     /// 1. ウキはその場に留め置く（XZ は動かさず、Y だけ沈みアニメを反映する）
@@ -2132,11 +2410,16 @@ public class FishingController : SEEDScript
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     private void UpdateBiteTiming(float deltaTime)
     {
-        // アタリの主が居なくなった（魚が破棄されたなど）ら待機へ戻す
-        if (nibblingFish is not { } fish)
+        // 通常のアタリと、わらしべ連鎖のアタリで「主」の置き場所だけが違う
+        bool chain = IsChainBite;
+        var current = chain ? chainNibbler : nibblingFish;
+
+        // アタリの主が居なくなった（魚が破棄されたなど）ら元の状態へ戻す
+        if (current is not { } fish)
         {
             ClearBiteTiming();
-            State = FishState.Floating;
+            if (chain) { ResumeHookedFromChain(); }
+            else { State = FishState.Floating; }
             return;
         }
 
@@ -2158,8 +2441,8 @@ public class FishingController : SEEDScript
         //    ここでは「アタリ中の振り＝合わせ」として解釈する（跳ねさせない）。
         bool swung = UpdateSwingDetection();
 
-        // 3) 前アタリ中
-        if (State == FishState.Nibbling)
+        // 3) 前アタリ中（通常・連鎖のどちらも同じ進行）
+        if (State is FishState.Nibbling or FishState.ChainNibbling)
         {
             if (swung)
             {
@@ -2209,12 +2492,20 @@ public class FishingController : SEEDScript
     /// <param name="fish">アタっている魚（ログ用）。</param>
     private void BeginHookWindow(Fish fish)
     {
-        State = FishState.HookWindow;
+        bool chain = IsChainBite;
+        State = chain ? FishState.ChainHookWindow : FishState.HookWindow;
         reactionElapsed = 0f;
         nibbleDipElapsed = NoDipElapsed;
         PlaySe(hookSePath, hookSeVolume);
-        SEED.Debug.Log($"[Fishing] 本アタリ! {fish.DisplayName}");
+        SEED.Debug.Log($"[Fishing] {(chain ? "わらしべ本アタリ!" : "本アタリ!")} {fish.DisplayName}");
     }
+
+    /// <summary>
+    /// いま進行しているのが<b>わらしべ連鎖</b>のアタリか
+    /// 【通常のアタリと連鎖のアタリを見分ける唯一の判定点】。
+    /// </summary>
+    private bool IsChainBite
+        => State is FishState.ChainNibbling or FishState.ChainHookWindow;
 
     /// <summary>
     /// アタリ演出用の単発効果音を再生する共通ヘルパー。
@@ -2248,9 +2539,18 @@ public class FishingController : SEEDScript
         }
 
         // ── ヒット成立 ──
+        bool chain = IsChainBite;
         ClearBiteTiming();
         LastJudgement = judgement;
         ShowJudgement(judgement);
+
+        // わらしべ連鎖の合わせ成功: 掛かっている魚が食われ、この魚へ乗り換わる
+        if (chain)
+        {
+            SwapHookedFish(fish, judgement);
+            SEED.Debug.Log($"[Fishing] わらしべ合わせ成功: {judgement}（反応 {reactionSeconds:F3} 秒）");
+            return;
+        }
 
         if (TryHook(fish))
         {
@@ -2270,13 +2570,18 @@ public class FishingController : SEEDScript
     /// <param name="reason">ログに出す失敗理由（早合わせ／遅すぎ／時間切れ）。</param>
     private void FailBite(string reason)
     {
-        var fish = nibblingFish;
+        bool chain = IsChainBite;
+        var fish = chain ? chainNibbler : nibblingFish;
         ClearBiteTiming();
         LastJudgement = HookJudgement.Miss;
-        State = FishState.Floating;
         ShowJudgement(HookJudgement.Miss);
+
+        // 連鎖の失敗は「元の魚とのやり取りへ戻る」、通常の失敗は「餌だけが浮いた待機へ戻る」
+        if (chain) { ResumeHookedFromChain(); }
+        else { State = FishState.Floating; }
+
         fish?.ReleaseFromHook();       // 魚は逃げる（Escape → クールダウン付きで回遊へ）
-        SEED.Debug.Log($"[Fishing] Miss（{reason}）");
+        SEED.Debug.Log($"[Fishing] {(chain ? "わらしべ Miss" : "Miss")}（{reason}）");
     }
 
     /// <summary>
@@ -2285,15 +2590,19 @@ public class FishingController : SEEDScript
     /// </summary>
     private void AbortBiteTiming()
     {
+        // 通常のアタリ・わらしべ連鎖のアタリのどちらも、居る方だけが逃げる
         var fish = nibblingFish;
+        var chained = chainNibbler;
         ClearBiteTiming();
         fish?.ReleaseFromHook();
+        chained?.ReleaseFromHook();
     }
 
     /// <summary>アタリ進行の内部状態をすべて初期化する（状態遷移は行わない）。</summary>
     private void ClearBiteTiming()
     {
         nibblingFish = null;
+        chainNibbler = null;
         nibbleRemaining = 0;
         nibbleTimer = 0f;
         nibbleDipElapsed = NoDipElapsed;

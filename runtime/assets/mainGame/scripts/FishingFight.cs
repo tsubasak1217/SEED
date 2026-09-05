@@ -457,6 +457,18 @@ public class FishingFight : SEEDScript
     /// <summary>バトル進行中か（<see cref="BeginFight"/> 〜 <see cref="EndFight"/>）。</summary>
     public bool Active { get; private set; } = false;
 
+    /// <summary>
+    /// バトルの一時停止フラグ【わらしべ連鎖のアタリ中に使う】。
+    ///
+    /// true のあいだ <see cref="Tick"/> はゲージ・糸 HP・スタミナ・引き（<see cref="FloatDragSpeed"/>）を
+    /// 一切進めず、UI の再描画だけを行う（＝画面からゲージが消えず、値も動かない）。
+    /// 掛かっている魚を餌に別の魚がつつきに来ているあいだ、やり取りを凍結するための仕組みで、
+    /// 連鎖の決着（乗り換え成功／失敗）でコントローラが false へ戻す。
+    /// <see cref="EndFight"/>（<see cref="ResetRuntimeState"/>）でも必ず false へ戻るので、
+    /// 一時停止したままバトルが終わって次のバトルが止まる、という持ち越しは起きない。
+    /// </summary>
+    public bool Paused { get; set; } = false;
+
     /// <summary>現在のテンションゲージ（−1 〜 +1）。</summary>
     public float Gauge { get; private set; } = 0f;
 
@@ -646,6 +658,15 @@ public class FishingFight : SEEDScript
     public void Tick(float deltaTime, float reelAmount)
     {
         if (!Active || target is null) { return; }
+
+        // 一時停止中（わらしべ連鎖のアタリ受付中）は内部値を一切進めない。
+        // 引きも 0 にしてウキが沖へ出ないようにし、UI だけ現在値のまま描き直す。
+        if (Paused)
+        {
+            FloatDragSpeed = 0f;
+            ApplyUi();
+            return;
+        }
 
         bool reeling = reelAmount > ReelInputEpsilon;
 
@@ -1011,6 +1032,7 @@ public class FishingFight : SEEDScript
     private void ResetRuntimeState()
     {
         Active = false;
+        Paused = false;                // 一時停止の持ち越しを防ぐ（次のバトルが凍ったまま始まらないように）
         LineBroken = false;
         FloatDragSpeed = 0f;
         Gauge = GaugeCenter;

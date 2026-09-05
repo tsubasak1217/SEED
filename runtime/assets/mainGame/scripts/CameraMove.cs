@@ -326,6 +326,9 @@ public class CameraMove : SEEDScript
                                       or FishingController.FishState.Reeling
                                       or FishingController.FishState.Nibbling
                                       or FishingController.FishState.HookWindow
+                                      // わらしべ連鎖のアタリ中もウキは沖に出たまま（構図は釣り中のまま維持する）
+                                      or FishingController.FishState.ChainNibbling
+                                      or FishingController.FishState.ChainHookWindow
                                       or FishingController.FishState.Hooked;
 
     /// <summary>
