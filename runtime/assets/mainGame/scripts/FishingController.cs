@@ -1,4 +1,4 @@
-using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
+﻿using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
 
 /// <summary>
 /// 釣りの「キャスト（投げる）→ 着水 → リール（巻く）」を司るコントローラ。
@@ -236,6 +236,12 @@ public class FishingController : SEEDScript
 
     /// <summary>この値以下のリール入力量（メートル）は「入力なし」とみなす。</summary>
     private const float ReelInputEpsilon = 1e-4f;
+
+    /// <summary>
+    /// 巻き速度に減衰を掛けないときの倍率（＝魚が掛かっていない通常の巻き速度）。
+    /// ヒット中は <see cref="FishingFight.ReelSpeedScale"/> がこの値の代わりに使われる。
+    /// </summary>
+    private const float NoReelPenaltyScale = 1f;
 
     /// <summary>糸の点列の最小分割数（1 ＝ 直線）。</summary>
     private const int MinLineSegments = 1;
@@ -1778,12 +1784,21 @@ public class FishingController : SEEDScript
             UpdateReelArrow(floatTf.Position, dir, steerFactor, deltaTime);
         }
 
+        // ── 巻き速度（ヒット中は力量差で遅くなる）────────────────
+        // 掛かっていないときは入力量そのまま。ヒット中は FishingFight.ReelSpeedScale
+        // （＝(竿パワー − 魚の総合力) ÷ 竿パワー）を掛ける。
+        // 魚のほうが強い（負値）ときは巻き取り 0 とし、沖へ出ていく分は下の「魚の引き」で扱う。
+        float reelScale = IsHooked && fight is { Active: true } scaleFight
+            ? SEED.Mathf.Max(scaleFight.ReelSpeedScale, 0f)
+            : NoReelPenaltyScale;
+
         // このフレームの移動量を「残りの水平距離」でクランプし、基準点を追い越さないようにする
-        float step = SEED.Mathf.Min(amount, remaining);
+        float step = SEED.Mathf.Min(amount * reelScale, remaining);
         var next = floatTf.Position + dir * step;
 
         // ── ヒット中の「魚の引き」──────────────────────────
-        // 巻いていないあいだは魚がウキを沖（＝竿先の反対＝ -dir）へ引く。
+        // 巻いていないあいだ（および巻いていても魚のほうが強いとき）は
+        // 魚がウキを沖（＝竿先の反対＝ -dir）へ引く。
         // 竿先からの水平距離が「最長飛距離 ＋ 余裕」を超えないようにクランプし、
         // 引かれ続けてウキが世界の外へ出るのを防ぐ。
         if (IsHooked && fight is { Active: true } activeFight && activeFight.FloatDragSpeed > 0f)

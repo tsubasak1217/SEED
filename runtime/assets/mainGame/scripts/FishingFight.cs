@@ -40,11 +40,28 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// - 魚が強い     … 差が大きいほど急激に動く（＝厳しい）
 /// - 竿が強い     … 差が大きいほど変化量が少ない（＝楽）
 ///
-/// ■ 戦闘力
-/// - 魚   ＝ 基礎パワー × 大きさスコア × 暴れ度
+/// ■ 総合力（戦闘力）
+/// - 魚   ＝ 基礎パワー × 大きさスコア × 状態倍率 × スタミナ倍率
 ///   （大きさスコアは個体差 <see cref="Fish.SizeMultiplier"/> を 0.9〜1.1 へ写像。
-///    暴れ度は暴れると 1.5・ひるむと 0.2・規定 1）
+///    状態倍率は 暴れ 1.5 / 大暴れ 2.0 / ステイ 0.6 / 待機（ひるみ）0.2 で、
+///    暴れ・大暴れは魚の暴れ度で (倍率 − 1) × 暴れ度 + 1 にスケールされる。
+///    スタミナ倍率は Lerp(<see cref="staminaFactorMin"/>, 1, スタミナ割合)
+///    ＝ スタミナが少ないほど総合力にマイナス倍率が掛かる）
 /// - 装備 ＝ 竿パワー 1 本（強化は将来）
+///
+/// ■ 魚の行動（フローチャート仕様 2026-09-05・毎フレーム評価）
+/// <code>
+/// 待機タイマー &gt; 0 → 待機（漂流物で付与。未実装なので通常は通らない）
+/// else スタミナ 0  → 疲労 ON → ステイ（回復）
+/// else 疲労中      → 復帰しきい値未満ならステイ / 達したら疲労解除 → 暴れ
+/// else             → 暴れ or 大暴れ（重み 70:30・継続時間はランダム。
+///                     継続中はスタミナを消費し、切れたら次フレームでステイへ）
+/// </code>
+///
+/// ■ 巻き速度（<see cref="ReelSpeedScale"/>）
+/// (竿パワー − 魚の総合力) ÷ 竿パワー を −maxOutScale〜1 でクランプした値。
+/// 総合力 0（＝掛かっていないとき）で 1.0、竿パワーに近づくほど 0（＝巻けない）、
+/// 超えると負（＝巻いてもウキが沖へ出ていく）。
 ///
 /// ■ 合わせランクの影響
 /// 合わせが悪いほど初期テンションゲージが ＋ 側（危険側）へ寄る。
@@ -97,6 +114,15 @@ public class FishingFight : SEEDScript
 
     /// <summary>キャッシュ未計算を表す番兵値（実値として現れない負の大きな値）。</summary>
     private const float UncachedSentinel = -9999f;
+
+    /// <summary><see cref="ReelSpeedScale"/> の上限（＝掛かっていないときと同じ巻き速度）。</summary>
+    private const float ReelScaleMax = 1f;
+
+    /// <summary>スタミナ倍率の上限（スタミナ満タン時の総合力倍率）。</summary>
+    private const float StaminaFactorMax = 1f;
+
+    /// <summary>状態倍率の基準値（1 ＝ 平常）。暴れ度によるスケールの基点にも使う。</summary>
+    private const float NeutralMultiplier = 1f;
 
     // ─── 装備パラメータ ───────────────────────────────────
 
@@ -226,47 +252,97 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "サイズ倍率の基準上限")]
     private float sizeMultiplierRefMax = 1.3f;
 
-    // ─── 暴れ度 ──────────────────────────────────────────
-
-    /// <summary>暴れているあいだの暴れ度倍率（仕様: 1.5）。</summary>
-    [Header("暴れ度"), SerializeField(Label = "暴れ中の倍率")]
-    private float rageMultiplier = 1.5f;
-
-    /// <summary>ひるんでいるあいだの暴れ度倍率（仕様: 0.2）。</summary>
-    [SerializeField(Label = "ひるみ中の倍率")]
-    private float flinchMultiplier = 0.2f;
+    // ─── 魚の行動（暴れ／大暴れ／スタミナ切れ／ひるみ）────────────
 
     /// <summary>
-    /// 暴れ出すまでの間隔の下限（秒）。
-    /// 実際の間隔は魚の暴れ度（<see cref="Fish.Rampage"/>）で<b>割られる</b>ので、
-    /// 暴れ度が高い魚ほど頻繁に暴れる。
+    /// 「暴れ」を引く重み。<see cref="bigRageWeight"/> との比で抽選される
+    /// （既定 70 : 30 ＝ 暴れ 70% / 大暴れ 30%）。
     /// </summary>
-    [SerializeField(Label = "暴れ間隔の下限(秒)")]
-    private float rageIntervalMin = 3f;
+    [Header("魚の行動"), SerializeField(Label = "暴れの重み")]
+    private float rageWeight = 70f;
 
-    /// <summary>暴れ出すまでの間隔の上限（秒）。魚の暴れ度で割られる。</summary>
-    [SerializeField(Label = "暴れ間隔の上限(秒)")]
-    private float rageIntervalMax = 7f;
+    /// <summary>「大暴れ」を引く重み（<see cref="rageWeight"/> との比で抽選）。</summary>
+    [SerializeField(Label = "大暴れの重み")]
+    private float bigRageWeight = 30f;
 
-    /// <summary>1 回の暴れが続く秒数の下限。</summary>
+    /// <summary>1 回の「暴れ」が続く秒数の下限。</summary>
     [SerializeField(Label = "暴れ時間の下限(秒)")]
-    private float rageDurationMin = 0.8f;
+    private float rageDurationMin = 1.5f;
 
-    /// <summary>1 回の暴れが続く秒数の上限。</summary>
+    /// <summary>1 回の「暴れ」が続く秒数の上限。</summary>
     [SerializeField(Label = "暴れ時間の上限(秒)")]
-    private float rageDurationMax = 1.8f;
+    private float rageDurationMax = 3f;
 
-    /// <summary>暴れ終わりに「ひるみ」へ移行する確率（0〜1）。</summary>
-    [SerializeField(Label = "ひるみに移る確率")]
-    private float flinchChance = 0.3f;
+    /// <summary>1 回の「大暴れ」が続く秒数の下限。</summary>
+    [SerializeField(Label = "大暴れ時間の下限(秒)")]
+    private float bigRageDurationMin = 0.8f;
 
-    /// <summary>1 回のひるみが続く秒数の下限。</summary>
-    [SerializeField(Label = "ひるみ時間の下限(秒)")]
-    private float flinchDurationMin = 0.5f;
+    /// <summary>1 回の「大暴れ」が続く秒数の上限。</summary>
+    [SerializeField(Label = "大暴れ時間の上限(秒)")]
+    private float bigRageDurationMax = 1.6f;
 
-    /// <summary>1 回のひるみが続く秒数の上限。</summary>
-    [SerializeField(Label = "ひるみ時間の上限(秒)")]
-    private float flinchDurationMax = 1.2f;
+    /// <summary>「暴れ」中の状態倍率（仕様: 1.5）。魚の暴れ度でスケールされる。</summary>
+    [SerializeField(Label = "暴れ中の倍率")]
+    private float rageMultiplier = 1.5f;
+
+    /// <summary>「大暴れ」中の状態倍率（仕様: 2.0）。魚の暴れ度でスケールされる。</summary>
+    [SerializeField(Label = "大暴れ中の倍率")]
+    private float bigRageMultiplier = 2f;
+
+    /// <summary>「待機（ひるみ）」中の状態倍率（仕様: 0.2）。漂流物などで与えられる隙。</summary>
+    [SerializeField(Label = "待機(ひるみ)中の倍率")]
+    private float flinchMultiplier = 0.2f;
+
+    /// <summary>「ステイ（スタミナ回復）」中の状態倍率（仕様: 0.6）。</summary>
+    [SerializeField(Label = "ステイ中の倍率")]
+    private float stayMultiplier = 0.6f;
+
+    // ─── スタミナ ────────────────────────────────────────
+
+    /// <summary>「暴れ」中に 1 秒あたり消費するスタミナ。</summary>
+    [Header("スタミナ"), SerializeField(Label = "暴れのスタミナ消費(/秒)")]
+    private float rageStaminaDrainPerSec = 12f;
+
+    /// <summary>「大暴れ」中に 1 秒あたり消費するスタミナ。</summary>
+    [SerializeField(Label = "大暴れのスタミナ消費(/秒)")]
+    private float bigRageStaminaDrainPerSec = 25f;
+
+    /// <summary>「ステイ」中に 1 秒あたり回復するスタミナ。</summary>
+    [SerializeField(Label = "ステイのスタミナ回復(/秒)")]
+    private float stayRecoverPerSec = 15f;
+
+    /// <summary>
+    /// 疲労状態から復帰する（再び暴れ出す）スタミナ割合（0〜1）。
+    /// スタミナが 0 になると疲労状態に入り、この割合まで回復するまでステイし続ける。
+    /// </summary>
+    [SerializeField(Label = "疲労からの復帰しきい値(0〜1)")]
+    private float recoverThreshold01 = 0.4f;
+
+    /// <summary>
+    /// スタミナが 0 のときに総合力へ掛かる倍率（仕様: スタミナが少ないほどマイナス倍率）。
+    /// スタミナ満タンで 1.0、0 でこの値まで線形に落ちる。
+    /// </summary>
+    [SerializeField(Label = "スタミナ0時の総合力倍率")]
+    private float staminaFactorMin = 0.5f;
+
+    /// <summary>
+    /// 魚の <see cref="Fish.Stamina"/> が 0 以下（未設定）のときに使うスタミナ最大値。
+    /// </summary>
+    [SerializeField(Label = "スタミナ最大値の既定値")]
+    private float defaultStaminaMax = 100f;
+
+    /// <summary>
+    /// 魚のスタミナ値へ一律に掛ける倍率（バトルの長さを一括で調整するためのつまみ）。
+    /// </summary>
+    [SerializeField(Label = "スタミナ倍率")]
+    private float staminaScale = 1f;
+
+    /// <summary>
+    /// 魚のほうが強いときに、巻いてもウキが沖へ出ていく速さの上限係数
+    /// （<see cref="ReelSpeedScale"/> の負側のクランプ幅）。
+    /// </summary>
+    [SerializeField(Label = "引き出され速度の上限係数")]
+    private float maxOutScale = 1f;
 
     // ─── ウキの引き（魚が沖へ引く力）───────────────────────────
 
@@ -397,9 +473,34 @@ public class FishingFight : SEEDScript
 
     /// <summary>
     /// このフレームに魚がウキを沖へ引く速度（m/秒）。
-    /// 巻いているあいだは 0、巻いていないあいだは戦闘力比に応じた引き速度。
+    /// <see cref="Tick"/> が「そのフレームに巻いていたか」を見て決める
+    /// （巻いている＋魚のほうが強い → 巻いていても出ていく／巻いていない → 総合力比で出ていく）。
+    /// 値の作り方は <see cref="ComputeFloatDragSpeed"/> を参照。
     /// </summary>
     public float FloatDragSpeed { get; private set; } = 0f;
+
+    /// <summary>現在のスタミナの割合（0〜1）。UI・チューニング表示用。</summary>
+    public float Stamina01 => staminaMax > DivideEpsilon
+        ? SEED.Mathf.Clamped01(stamina / staminaMax)
+        : 0f;
+
+    /// <summary>
+    /// 巻き速度の倍率【巻きの仕様の中核】。
+    ///
+    /// ＝ (竿パワー − 魚の総合力) ÷ 竿パワー を
+    /// −<see cref="maxOutScale"/> 〜 1 でクランプした値。
+    /// - 魚の総合力 0（＝掛かっていない状態と同じ）… 1.0 ＝ 通常の巻き速度
+    /// - 総合力が竿パワーに近づくほど 0 へ … 力量差があるほど巻くのが遅い
+    /// - 総合力が竿パワーを超える … 負値 ＝ 巻いてもウキが沖へ出ていく
+    /// </summary>
+    public float ReelSpeedScale
+    {
+        get
+        {
+            float rod = SEED.Mathf.Max(rodPower, DivideEpsilon);
+            return SEED.Mathf.Clamped((rod - CurrentFishPower()) / rod, -maxOutScale, ReelScaleMax);
+        }
+    }
 
     /// <summary>糸切れの効果音パス（コントローラ側から鳴らす場合の参照用）。</summary>
     public string LineBreakSePath => lineBreakSePath;
@@ -416,24 +517,45 @@ public class FishingFight : SEEDScript
     /// <summary>魚の暴れ度の基準値（インスタンスは差し替わり得るので毎回読む）。</summary>
     private float TargetRampage => target is { } fish ? fish.Rampage : DefaultRampage;
 
-    /// <summary>暴れ／ひるみの進行状態。</summary>
-    private enum RampageState
+    /// <summary>
+    /// 魚の行動状態（フローチャート仕様 2026-09-05）。
+    /// 判定順は「待機 → スタミナ切れ → 疲労中 → 暴れ抽選」で、毎フレーム評価する。
+    /// </summary>
+    private enum FishAction
     {
-        /// <summary>平常（暴れ度は規定値）。</summary>
-        Calm,
-
-        /// <summary>暴れている（暴れ度 × <see cref="rageMultiplier"/>）。</summary>
+        /// <summary>暴れている（状態倍率 <see cref="rageMultiplier"/>）。</summary>
         Rage,
 
-        /// <summary>ひるんでいる（暴れ度 × <see cref="flinchMultiplier"/>）。</summary>
-        Flinch,
+        /// <summary>大暴れしている（状態倍率 <see cref="bigRageMultiplier"/>）。</summary>
+        BigRage,
+
+        /// <summary>ステイ（スタミナ回復中。状態倍率 <see cref="stayMultiplier"/>）。</summary>
+        Stay,
+
+        /// <summary>待機＝ひるみ（漂流物などで隙ができた状態。倍率 <see cref="flinchMultiplier"/>）。</summary>
+        Wait,
     }
 
-    /// <summary>現在の暴れ状態。</summary>
-    private RampageState rampageState = RampageState.Calm;
+    /// <summary>現在の魚の行動状態。</summary>
+    private FishAction action = FishAction.Rage;
 
-    /// <summary>現在の暴れ状態が終わるまでの残り秒数（Calm なら次に暴れ出すまでの残り）。</summary>
-    private float rampageTimer = 0f;
+    /// <summary>ログを出した最後の行動状態（状態が変わったときだけ 1 回ログするための控え）。</summary>
+    private FishAction loggedAction = FishAction.Rage;
+
+    /// <summary>現在の暴れ／大暴れが終わるまでの残り秒数（0 以下で次を抽選し直す）。</summary>
+    private float rageTimer = 0f;
+
+    /// <summary>待機（ひるみ）の残り秒数。0 より大きいあいだは他の判定より優先される。</summary>
+    private float flinchTimer = 0f;
+
+    /// <summary>疲労中か（スタミナが 0 になってから復帰しきい値まで回復するまで true）。</summary>
+    private bool isTired = false;
+
+    /// <summary>現在のスタミナ（内部値）。</summary>
+    private float stamina = 0f;
+
+    /// <summary>このバトルでのスタミナ最大値（<see cref="BeginFight"/> で魚から決まる）。</summary>
+    private float staminaMax = 0f;
 
     /// <summary>
     /// セグメントの配置・色を最後に計算したときの表示半角（度）。
@@ -481,9 +603,17 @@ public class FishingFight : SEEDScript
         lineHp = SEED.Mathf.Max(lineHpMax, 0f);
         Gauge = SEED.Mathf.Clamped(InitialGauge(judge), GaugeMin, GaugeMax);
 
-        // 暴れの抽選をリセットし、最初の「暴れ出すまで」を引く
-        rampageState = RampageState.Calm;
-        rampageTimer = NextRageInterval();
+        // スタミナを満タンから始める（最大値は魚のパラメータ × 倍率。未設定なら既定値）
+        staminaMax = SEED.Mathf.Max(
+            (fish.Stamina > 0f ? fish.Stamina : defaultStaminaMax) * staminaScale,
+            DivideEpsilon);
+        stamina = staminaMax;
+
+        // 行動状態をリセットし、最初の暴れ／大暴れを抽選する
+        flinchTimer = 0f;
+        isTired = false;
+        rageTimer = 0f;
+        PickRage();
 
         // 隠していたぶんセグメントは必ず作り直す（キャッシュを無効化する）
         InvalidateArcCache();
@@ -519,14 +649,30 @@ public class FishingFight : SEEDScript
 
         bool reeling = reelAmount > ReelInputEpsilon;
 
-        UpdateRampage(deltaTime);
+        UpdateFishAction(deltaTime);
         UpdateGauge(deltaTime, reeling);
         UpdateLineHp(deltaTime);
 
-        // ウキを沖へ引く速度。巻いているあいだは引かれない（＝プレイヤーが勝っている）。
-        FloatDragSpeed = reeling ? 0f : fishPullSpeed * PowerRatioClamped();
+        // ウキを沖へ引く速度（このフレームの巻き入力の有無で決まる）
+        FloatDragSpeed = ComputeFloatDragSpeed(reeling);
 
         ApplyUi();
+    }
+
+    /// <summary>
+    /// 待機（ひるみ）を与える【隙を作る唯一の入口】。
+    ///
+    /// 漂流物アイテムを当てたときにコントローラ側から呼ぶ想定の API
+    /// （<b>漂流物そのものは未実装</b>なので、現時点では誰も呼ばない）。
+    /// 待機中は他のどの判定よりも優先され、状態倍率が
+    /// <see cref="flinchMultiplier"/> まで落ちる（＝巻きやすくなる）。
+    /// 既に待機中なら残り秒数へ<b>加算</b>する（連続ヒットで伸びる）。
+    /// </summary>
+    /// <param name="seconds">与える待機の秒数（0 以下なら何もしない）。</param>
+    public void ApplyFlinch(float seconds)
+    {
+        if (!Active || seconds <= 0f) { return; }
+        flinchTimer += seconds;
     }
 
     /// <summary>
@@ -551,14 +697,23 @@ public class FishingFight : SEEDScript
     // ─── 内部処理: 戦闘力 ──────────────────────────────────
 
     /// <summary>
-    /// 現在の魚の戦闘力 ＝ 基礎パワー × 大きさスコア × 暴れ度倍率。
+    /// 現在の魚の総合力
+    /// ＝ 基礎パワー × 大きさスコア × 状態倍率 × スタミナ倍率。
+    ///
     /// 魚が居なければ竿パワーと同値（＝等価）を返し、速度が暴れないようにする。
     /// </summary>
     private float CurrentFishPower()
     {
         if (target is not { } fish) { return rodPower; }
-        return fish.BasePower * SizeScore(fish) * CurrentRampageValue();
+        return fish.BasePower * SizeScore(fish) * CurrentActionMultiplier() * StaminaFactor();
     }
+
+    /// <summary>
+    /// スタミナ倍率 ＝ Lerp(<see cref="staminaFactorMin"/>, 1, スタミナ割合)。
+    /// スタミナが少ないほど総合力にマイナス倍率が掛かる（仕様）。
+    /// </summary>
+    private float StaminaFactor()
+        => SEED.Mathf.Lerp(staminaFactorMin, StaminaFactorMax, Stamina01);
 
     /// <summary>
     /// 大きさスコア。個体差 <see cref="Fish.SizeMultiplier"/>（既定 0.8〜1.3）を
@@ -572,15 +727,27 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
-    /// 現在の暴れ度 ＝ 魚の暴れ度（規定 1）× 状態倍率
-    /// （暴れ中 1.5 / ひるみ中 0.2 / 平常 1）。
+    /// 現在の状態倍率（総合力へ掛かる係数）。
+    ///
+    /// - 暴れ / 大暴れ … <see cref="ScaledByRampage"/> で魚の暴れ度によりスケールされる
+    ///   （暴れ度 1 ならインスペクタ値そのまま、2 なら 1.5 → 2.0 のように誇張される）
+    /// - ステイ / 待機 … 「隙」の大きさは個体差で変えたくないので倍率をそのまま使う
     /// </summary>
-    private float CurrentRampageValue() => rampageState switch
+    private float CurrentActionMultiplier() => action switch
     {
-        RampageState.Rage => TargetRampage * rageMultiplier,
-        RampageState.Flinch => TargetRampage * flinchMultiplier,
-        _ => TargetRampage,
+        FishAction.Rage => ScaledByRampage(rageMultiplier),
+        FishAction.BigRage => ScaledByRampage(bigRageMultiplier),
+        FishAction.Stay => stayMultiplier,
+        _ => flinchMultiplier,
     };
+
+    /// <summary>
+    /// 状態倍率を魚の暴れ度でスケールする ＝ (倍率 − 1) × 暴れ度 + 1。
+    /// 暴れ度 1（規定）ならインスペクタ値そのまま、0 なら平常（1）へ潰れる。
+    /// </summary>
+    /// <param name="multiplier">スケール前の状態倍率。</param>
+    private float ScaledByRampage(float multiplier)
+        => (multiplier - NeutralMultiplier) * TargetRampage + NeutralMultiplier;
 
     /// <summary>
     /// ゲージ速度の倍率 ＝ 1 + (魚の戦闘力 ÷ 竿パワー − 1) × <see cref="powerDiffRateScale"/>。
@@ -618,57 +785,146 @@ public class FishingFight : SEEDScript
         return SEED.Mathf.Clamped(raw, 0f, ArcHalfAngleLimit);
     }
 
-    // ─── 内部処理: 暴れ度の進行 ────────────────────────────
+    // ─── 内部処理: 魚の行動（状態遷移）─────────────────────
 
     /// <summary>
-    /// 暴れ／ひるみのタイマーを進める。
-    /// 平常 →（間隔経過）→ 暴れ →（暴れ時間経過）→ 確率でひるみ／平常 → …
-    /// 間隔は魚の暴れ度で割られるので、暴れ度が高い魚ほど頻繁に暴れる。
+    /// 魚の行動状態を 1 フレーム進める【状態遷移の唯一の集約点】。
+    ///
+    /// 判定順（フローチャート仕様）:
+    /// <code>
+    /// 待機タイマー &gt; 0        → 待機（タイマーを減らすだけ。倍率 0.2）
+    /// else スタミナ == 0      → 疲労フラグ ON → ステイ（少し回復。倍率 0.6）
+    /// else 疲労中             → 復帰しきい値未満ならステイ / 達したら疲労解除して暴れへ
+    /// else                    → 暴れ or 大暴れ（重み抽選・時間切れで引き直し）
+    /// </code>
+    /// 漂流物アイテムの命中は <see cref="ApplyFlinch"/>（外部から呼ばれる API）で
+    /// 待機タイマーへ加算される。漂流物自体は未実装。
     /// </summary>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
-    private void UpdateRampage(float deltaTime)
+    private void UpdateFishAction(float deltaTime)
     {
-        rampageTimer -= deltaTime;
-        if (rampageTimer > 0f) { return; }
-
-        switch (rampageState)
+        // 1) 待機（ひるみ）… 最優先。時間を消化するだけで何もしない
+        if (flinchTimer > 0f)
         {
-            case RampageState.Calm:
-                // 平常の待ち時間が尽きたので暴れ出す
-                rampageState = RampageState.Rage;
-                rampageTimer = SEED.Random.Range(rageDurationMin, rageDurationMax);
-                break;
-
-            case RampageState.Rage:
-                // 暴れ終わり。確率でひるみへ、外れたら平常へ戻って次の暴れを待つ
-                if (SEED.Random.Value < flinchChance)
-                {
-                    rampageState = RampageState.Flinch;
-                    rampageTimer = SEED.Random.Range(flinchDurationMin, flinchDurationMax);
-                }
-                else
-                {
-                    rampageState = RampageState.Calm;
-                    rampageTimer = NextRageInterval();
-                }
-                break;
-
-            default:
-                // ひるみ終わり。平常へ戻して次の暴れを待つ
-                rampageState = RampageState.Calm;
-                rampageTimer = NextRageInterval();
-                break;
+            flinchTimer -= deltaTime;
+            SetAction(FishAction.Wait);
+            return;
         }
+
+        // 2) スタミナ切れ … 疲労状態へ入り、ステイで回復し始める
+        if (stamina <= 0f)
+        {
+            isTired = true;
+            EnterStay(deltaTime);
+            return;
+        }
+
+        // 3) 疲労中 … 復帰しきい値まではステイを続け、達したら暴れへ戻る
+        if (isTired)
+        {
+            if (stamina < RecoverThresholdStamina())
+            {
+                EnterStay(deltaTime);
+                return;
+            }
+            isTired = false;
+        }
+
+        // 4) 暴れ／大暴れ … 状態でなければ抽選、時間切れでも引き直す
+        if (action is not (FishAction.Rage or FishAction.BigRage) || rageTimer <= 0f)
+        {
+            PickRage();
+        }
+
+        rageTimer -= deltaTime;
+        stamina = SEED.Mathf.Max(stamina - CurrentRageDrainPerSec() * deltaTime, 0f);
     }
 
     /// <summary>
-    /// 次に暴れ出すまでの秒数を抽選する。
-    /// 魚の暴れ度（規定 1）で割るので、暴れ度 2 の魚は約 2 倍の頻度で暴れる。
+    /// ステイ（スタミナ回復）へ入り、このフレームぶん回復する。
+    /// 暴れの残り時間は捨てる（ステイから戻るときは必ず抽選し直すため）。
     /// </summary>
-    private float NextRageInterval()
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void EnterStay(float deltaTime)
     {
-        float raw = SEED.Random.Range(rageIntervalMin, rageIntervalMax);
-        return raw / SEED.Mathf.Max(TargetRampage, DivideEpsilon);
+        SetAction(FishAction.Stay);
+        rageTimer = 0f;
+        stamina = SEED.Mathf.Min(stamina + stayRecoverPerSec * deltaTime, staminaMax);
+    }
+
+    /// <summary>
+    /// 暴れ／大暴れを重み抽選し、その継続秒数を引く。
+    /// 重みが両方 0 のようなデータでも成立するよう、合計が 0 なら「暴れ」を選ぶ。
+    /// </summary>
+    private void PickRage()
+    {
+        float total = SEED.Mathf.Max(rageWeight, 0f) + SEED.Mathf.Max(bigRageWeight, 0f);
+        bool big = total > DivideEpsilon && SEED.Random.Range(0f, total) >= SEED.Mathf.Max(rageWeight, 0f);
+
+        SetAction(big ? FishAction.BigRage : FishAction.Rage);
+        rageTimer = big
+            ? SEED.Random.Range(bigRageDurationMin, SEED.Mathf.Max(bigRageDurationMin, bigRageDurationMax))
+            : SEED.Random.Range(rageDurationMin, SEED.Mathf.Max(rageDurationMin, rageDurationMax));
+    }
+
+    /// <summary>現在の状態のスタミナ消費（/秒）。暴れ・大暴れ以外は消費しない。</summary>
+    private float CurrentRageDrainPerSec() => action switch
+    {
+        FishAction.Rage => rageStaminaDrainPerSec,
+        FishAction.BigRage => bigRageStaminaDrainPerSec,
+        _ => 0f,
+    };
+
+    /// <summary>疲労から復帰するスタミナの実値（＝最大値 × <see cref="recoverThreshold01"/>）。</summary>
+    private float RecoverThresholdStamina()
+        => staminaMax * SEED.Mathf.Clamped01(recoverThreshold01);
+
+    /// <summary>
+    /// 行動状態を切り替える【状態変更の唯一の出口】。
+    /// 変わったときだけ 1 回ログを出す（チューニング用。毎フレーム出さない）。
+    /// </summary>
+    /// <param name="next">次の行動状態。</param>
+    private void SetAction(FishAction next)
+    {
+        action = next;
+        if (loggedAction == next) { return; }
+
+        loggedAction = next;
+        SEED.Debug.Log($"[Fight] {ActionLabel(next)} / ST {SEED.Mathf.RoundToInt(Stamina01 * PercentScale)}%"
+                     + $" / 総合力 {CurrentFishPower():F2} / 巻き倍率 {ReelSpeedScale:F2}");
+    }
+
+    /// <summary>ログ表示用の行動状態の名前。</summary>
+    /// <param name="value">行動状態。</param>
+    private static string ActionLabel(FishAction value) => value switch
+    {
+        FishAction.Rage => "暴れ",
+        FishAction.BigRage => "大暴れ",
+        FishAction.Stay => "stay",
+        _ => "待機",
+    };
+
+    // ─── 内部処理: ウキの引き ─────────────────────────────
+
+    /// <summary>
+    /// このフレームにウキが沖へ引かれる速度（m/秒）を求める。
+    ///
+    /// - 巻いている … <see cref="ReelSpeedScale"/> が負（＝魚のほうが強い）ときだけ、
+    ///   その絶対値ぶん出ていく。巻き勝っているあいだ（0 以上）は 0。
+    /// - 巻いていない … 「魚の総合力 ÷ 竿パワー」に比例して出ていく
+    ///   （総合力 0 なら 0 ＝ 引かれない）。
+    /// </summary>
+    /// <param name="reeling">このフレームに巻いているか。</param>
+    private float ComputeFloatDragSpeed(bool reeling)
+    {
+        if (reeling)
+        {
+            float scale = ReelSpeedScale;
+            return scale < 0f ? -scale * fishPullSpeed : 0f;
+        }
+
+        float ratio = CurrentFishPower() / SEED.Mathf.Max(rodPower, DivideEpsilon);
+        return SEED.Mathf.Max(ratio, 0f) * fishPullSpeed;
     }
 
     // ─── 内部処理: ゲージと糸 HP ───────────────────────────
@@ -760,8 +1016,13 @@ public class FishingFight : SEEDScript
         Gauge = GaugeCenter;
         lineHp = 0f;
         target = null;
-        rampageState = RampageState.Calm;
-        rampageTimer = 0f;
+        action = FishAction.Rage;
+        loggedAction = FishAction.Rage;
+        rageTimer = 0f;
+        flinchTimer = 0f;
+        isTired = false;
+        stamina = 0f;
+        staminaMax = 0f;
     }
 
     // ─── UI ─────────────────────────────────────────────
@@ -794,10 +1055,11 @@ public class FishingFight : SEEDScript
             markerTf.Rotation = degrees;
         }
 
-        // 糸 HP: 円の中心にパーセント表示
+        // 糸 HP と魚のスタミナ: 円の中心にパーセント表示（スタミナはチューニング用）
         if (hpText is { } label && label.IsValid)
         {
-            label.Content = $"HP {SEED.Mathf.RoundToInt(LineHp01 * PercentScale)}%";
+            label.Content = $"HP {SEED.Mathf.RoundToInt(LineHp01 * PercentScale)}%"
+                          + $"  ST {SEED.Mathf.RoundToInt(Stamina01 * PercentScale)}%";
             label.Color = label.Color.WithAlpha(SEED.Mathf.Clamped01(hpTextOpacity));
         }
     }
