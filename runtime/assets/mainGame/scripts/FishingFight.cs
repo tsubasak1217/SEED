@@ -272,6 +272,21 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "変動倍率カーブの指数")]
     private float gaugeRateCurvePower = 1f;
 
+    /// <summary>
+    /// 「巻いている」とみなす保持時間（秒）【マウスホイール入力の離散性を吸収する唯一のつまみ】。
+    ///
+    /// マウスホイールは巻き取り量を「ノッチが来たフレームだけ」離散的に渡してくる。
+    /// これをそのまま <c>reelAmount &gt; 0</c> で「巻いている／いない」に使うと、
+    /// ノッチの来ないフレーム（大半）が「操作していない」扱いになってしまい、
+    /// − 側（巻くことでしか回復しない側）のゲージが回復できず沖側へ流れ続けるバグになる。
+    /// そこで「ノッチが来たら本値の秒数だけ巻いている状態を保持する」ホールド式にして、
+    /// 連続してホイールを回している限り <see cref="IsReeling"/> が途切れないようにする
+    /// （＝糸 HP の減少に使う実巻き取り量そのものは離散のまま。ここで滑らかにするのは
+    /// 「巻いている／いない」の状態判定だけ）。
+    /// </summary>
+    [SerializeField(Label = "巻き入力の保持時間(秒)")]
+    private float reelHoldSeconds = 0.35f;
+
     // ─── 合わせランクによる初期ゲージ ─────────────────────────
 
     /// <summary>Excellent で合わせたときの初期ゲージ値。</summary>
@@ -598,6 +613,14 @@ public class FishingFight : SEEDScript
     /// <summary>現在のテンションゲージ（−1 〜 +1）。</summary>
     public float Gauge { get; private set; } = 0f;
 
+    /// <summary>
+    /// 「巻いている」とみなされているか（<see cref="reelHoldSeconds"/> のホールド込み）。
+    /// マウスホイールの離散ノッチをそのまま使わず、直近のノッチから本値の秒数が
+    /// 経つまでは true を維持する。ゲージの増減・暴れの回避判定・UI 表示はすべてこれを使う
+    /// （糸切れに直結する糸 HP の増減だけは実際の <c>reelAmount</c> を使い続ける）。
+    /// </summary>
+    public bool IsReeling { get; private set; } = false;
+
     /// <summary>糸 HP の割合（0〜1）。UI と外部表示用。</summary>
     public float LineHp01 => lineHpMax > DivideEpsilon
         ? SEED.Mathf.Clamped01(lineHp / lineHpMax)
@@ -675,6 +698,13 @@ public class FishingFight : SEEDScript
     /// 1 回の暴れにつき押し込みは 1 度だけなので、失敗を適用したら true にする。
     /// </summary>
     private bool attackResolved = false;
+
+    /// <summary>
+    /// 「巻いている」ホールドの残り秒数（<see cref="reelHoldSeconds"/> 参照）。
+    /// ノッチが来るたびに満タンへ戻し、そうでないフレームは <c>deltaTime</c> ぶん減らす。
+    /// 0 より大きいあいだ <see cref="IsReeling"/> が true になる。
+    /// </summary>
+    private float reelHoldRemaining = 0f;
 
     /// <summary>戦っている魚（null ＝ 非戦闘中）。位置・状態は一切触らず、パラメータだけ読む。</summary>
     private Fish? target = null;
@@ -810,6 +840,8 @@ public class FishingFight : SEEDScript
         flinchTimer = 0f;
         isTired = false;
         rageTimer = 0f;
+        reelHoldRemaining = 0f;     // 前回バトルの巻き入力を持ち越さない
+        IsReeling = false;
         PickRage();
 
         // マーカーの元サイズを 1 度だけ読み取る（デバッグの拡大表示の基準・終了時に書き戻す）
@@ -862,13 +894,26 @@ public class FishingFight : SEEDScript
             return;
         }
 
-        bool reeling = reelAmount > ReelInputEpsilon;
+        // マウスホイールは「ノッチが来たフレームだけ」離散的に reelAmount を渡してくるため、
+        // これをそのまま「巻いている／いない」に使うとノッチの来ない大半のフレームが
+        // 「操作していない」扱いになってしまう（− 側は「巻く」ことでしか回復できないため詰む）。
+        // ノッチが来たらホールド時間を満タンへ戻し、そうでなければ減らしていくことで
+        // 「巻き続けている」とみなせる区間を作る（＝ IsReeling）。
+        if (reelAmount > ReelInputEpsilon)
+        {
+            reelHoldRemaining = reelHoldSeconds;
+        }
+        else
+        {
+            reelHoldRemaining -= deltaTime;
+        }
+        IsReeling = reelHoldRemaining > 0f;
 
         UpdateFishAction(deltaTime);
-        UpdateGauge(deltaTime, reeling);
-        UpdateAttack(reeling);
+        UpdateGauge(deltaTime, IsReeling);
+        UpdateAttack(IsReeling);
         UpdateLineHp(deltaTime);
-        UpdateFishHp(reelAmount);
+        UpdateFishHp(reelAmount);   // ← 糸 HP に直結する減少量は実際の巻き取り量（離散）のまま使う
 
         ApplyUi();
     }
@@ -1201,7 +1246,7 @@ public class FishingFight : SEEDScript
     /// − 側に居るなら「巻く」のが回避。失敗した瞬間に 1 度だけゲージを危険側へ押し込む。
     /// 暴れ 1 回につき 1 度きり（<see cref="attackResolved"/>）。
     /// </summary>
-    /// <param name="reeling">このフレームに巻いているか。</param>
+    /// <param name="reeling">巻いているとみなせるか（<see cref="IsReeling"/>。ホールド込み）。</param>
     private void UpdateAttack(bool reeling)
     {
         if (attackResolved) { return; }
@@ -1263,7 +1308,7 @@ public class FishingFight : SEEDScript
     /// この倍率を<b>掛けない</b>（掛けると回復が中央付近で止まりかけてしまう）。
     /// </summary>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
-    /// <param name="reeling">このフレームに巻いているか。</param>
+    /// <param name="reeling">巻いているとみなせるか（<see cref="IsReeling"/>。ホールド込み）。</param>
     private void UpdateGauge(float deltaTime, bool reeling)
     {
         float rate = GaugeRate() * AmplitudeScale(Gauge);
@@ -1354,6 +1399,8 @@ public class FishingFight : SEEDScript
         isTired = false;
         stamina = 0f;
         staminaMax = 0f;
+        reelHoldRemaining = 0f;        // 巻き入力のホールドも次バトルへ持ち越さない
+        IsReeling = false;
 
         // デバッグ拡大で書き換えたマーカーサイズを元へ戻す（拡大したまま終わらないように）
         if (markerBaseSizeCaptured && gaugeMarker is { } marker && marker.IsValid)
