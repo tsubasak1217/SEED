@@ -4,7 +4,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 魚 1 匹の共通パラメータと簡易遊泳（釣り仕様 2026-09-03 準拠）。
 ///
 /// [共通パラメータ]（仕様書どおり）
-/// - 大きさ / スタミナ / 基礎パワー / 餌の感知距離 / 好みの魚 / 暴れ度（規定 1）
+/// - 大きさ / スタミナ / 基礎パワー / 基礎HP / 餌の感知距離 / 好みの魚 / 暴れ度（規定 1）
 /// [戦闘力] = 基礎パワー × 大きさスコア × 暴れ度（<see cref="CombatPower"/>）
 ///
 /// 泳ぎは「生成地点の周りを気ままに回遊する」最小実装:
@@ -144,6 +144,16 @@ public class Fish : SEEDScript
     /// <summary>基礎パワー。竿パワーと同じ単位で比較される戦闘力の基礎値。</summary>
     [SerializeField(Label = "基礎パワー")]
     private float basePower = 10f;
+
+    /// <summary>
+    /// 基礎HP。釣りバトル（<see cref="FishingFight"/>）で削り切ると釣り上げ成立になる体力の基礎値。
+    ///
+    /// 実際の魚HP最大値は「基礎HP ＋ 基礎HP × 魚の取り分（＝力量差から決まるボーナス）」で、
+    /// 掛かった瞬間の距離が<b>この基礎HP ぶんの距離</b>に対応する
+    /// （＝ボーナス HP のぶんだけ、掛かった直後はウキが沖へ引かれていく）。
+    /// </summary>
+    [SerializeField(Label = "基礎HP")]
+    private float baseHp = 100f;
 
     /// <summary>餌の感知距離（メートル）。この距離まで餌（浮き）に気づく。</summary>
     [SerializeField(Label = "餌の感知距離")]
@@ -369,6 +379,12 @@ public class Fish : SEEDScript
     /// 竿パワーと同じ単位。
     /// </summary>
     public float BasePower => basePower;
+
+    /// <summary>
+    /// 基礎HP（釣りバトル側 <see cref="FishingFight"/> が魚HP最大値と
+    /// 「HP 1 あたりの距離」の算出に使う）。
+    /// </summary>
+    public float BaseHp => baseHp;
 
     /// <summary>
     /// 暴れ度の規定値（釣りバトル側 <see cref="FishingFight"/> が参照する）。

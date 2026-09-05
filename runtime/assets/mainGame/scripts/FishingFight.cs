@@ -12,7 +12,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 本スクリプトが持つのは「テンションゲージ」「糸 HP」「魚の暴れ度」「その UI 表示」だけ。
 /// ウキの移動・状態遷移・魚の解放は <see cref="FishingController"/> の責務で、
 /// 本スクリプトは<b>毎フレーム値を進めて結果（<see cref="LineBroken"/> /
-/// <see cref="FloatDragSpeed"/>）を返すだけ</b>。自前の Update は持たず、
+/// <see cref="ComputeFloatDistanceStep"/>）を返すだけ</b>。自前の Update は持たず、
 /// すべてコントローラ側から <see cref="Tick"/> で駆動される
 /// （ヒット中だけ進む＝実行順の曖昧さを持ち込まないため）。
 ///
@@ -33,6 +33,39 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// ■ 糸パワー
 /// 上げると回復区間の半幅（安全帯）が広がり、同時に UI の円弧の開き角も広がる。
 /// 投げるごとにリセットされる想定（強化漂流物は未実装なのでインスペクタ値がそのまま使われる）。
+///
+/// ■ 魚 HP（2026-09-06 改定：テクニックがあればどんなに強い魚でも釣れる）
+/// 巻き取りは「力比べ」ではなく<b>魚 HP を削る作業</b>になった。
+/// <code>
+/// 掛かった瞬間の魚の総合力 p0 ＝ 基礎パワー × 大きさスコア（状態倍率 1・スタミナ満タン）
+/// 魚の取り分 share    ＝ p0 ÷ (竿パワー ＋ p0)          … 99:1 なら約 0.01 / 1:99 なら約 0.99
+/// ボーナス HP         ＝ 基礎HP × share
+/// 魚HP最大            ＝ 基礎HP ＋ ボーナス HP
+/// 1HP あたりの距離     ＝ 掛かった瞬間の距離 ÷ 基礎HP      （距離は hookDistanceMin で下限クランプ）
+/// 目標距離            ＝ 現在の魚HP × 1HP あたりの距離
+/// 巻き効率            ＝ 竿パワー ÷ (竿パワー ＋ 現在の魚の総合力)  … 等価で 0.5・格上でも 0 より大きい
+/// 巻き 1m あたりの HP  ＝ 巻き効率 ÷ 1HP あたりの距離        （<see cref="ReelHpPerUnit"/>）
+/// </code>
+/// 巻けば<b>必ず</b>魚 HP が減る（＝どれだけ格上でも時間さえ掛ければ削り切れる）。
+/// 一方、掛けた直後は 目標距離（魚HP最大 × 1HP あたりの距離）が現在の距離より<b>遠い</b>ので、
+/// ウキはまず沖へ引かれていく（＝「沖へ持っていかれる」演出はこのボーナス HP の分）。
+/// 魚 HP が 0 になった瞬間が釣り上げ成立。
+///
+/// ■ ウキの距離制御（<see cref="ComputeFloatDistanceStep"/>）
+/// ウキ→竿先の水平距離を<b>目標距離へ寄せる</b>だけの単純な制御にした。
+/// - 目標が現在より遠い … 魚が沖へ引く（<see cref="fishPullSpeed"/> × 戦闘力比）
+/// - 目標が現在より近い … 手元へ寄る（上限 <see cref="reelInSpeedMax"/> m/秒）
+/// どちらも目標を追い越さない。符号は ＋ が沖・− が手元。
+///
+/// ■ 暴れ＝回避すべき「攻撃」（2026-09-06 追加）
+/// 暴れ／大暴れの<b>1 回につき 1 度だけ</b>、プレイヤーの操作が判定される。
+/// <code>
+/// ゲージが ＋ 側（0 を含む）で「巻いている」    → 回避失敗: ゲージ ＋= 押し込み量
+/// ゲージが − 側で「巻いていない」               → 回避失敗: ゲージ −= 押し込み量
+/// 押し込み量 ＝ 基準値 × (1 + 効き × (魚の総合力 ÷ 竿パワー − 1)) × (大暴れなら大暴れ倍率)
+/// </code>
+/// ゲージちょうど 0 は<b>＋ 側として扱う</b>（＝巻くほうが危険側。仕様として明示）。
+/// 暴れが終わるまで失敗しなければ回避成功（ログのみ）。
 ///
 /// ■ 増減速度（戦闘力の比較）
 /// 装備と魚の戦闘力を同じ単位で算出し、その<b>比</b>でゲージの動く速さを決める。
@@ -57,11 +90,6 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// else             → 暴れ or 大暴れ（重み 70:30・継続時間はランダム。
 ///                     継続中はスタミナを消費し、切れたら次フレームでステイへ）
 /// </code>
-///
-/// ■ 巻き速度（<see cref="ReelSpeedScale"/>）
-/// (竿パワー − 魚の総合力) ÷ 竿パワー を −maxOutScale〜1 でクランプした値。
-/// 総合力 0（＝掛かっていないとき）で 1.0、竿パワーに近づくほど 0（＝巻けない）、
-/// 超えると負（＝巻いてもウキが沖へ出ていく）。
 ///
 /// ■ 合わせランクの影響
 /// 合わせが悪いほど初期テンションゲージが ＋ 側（危険側）へ寄る。
@@ -115,8 +143,11 @@ public class FishingFight : SEEDScript
     /// <summary>キャッシュ未計算を表す番兵値（実値として現れない負の大きな値）。</summary>
     private const float UncachedSentinel = -9999f;
 
-    /// <summary><see cref="ReelSpeedScale"/> の上限（＝掛かっていないときと同じ巻き速度）。</summary>
-    private const float ReelScaleMax = 1f;
+    /// <summary>押し込み量（暴れの攻撃）の下限。負の押し込み＝逆方向への救済にならないよう 0 で止める。</summary>
+    private const float MinAttackPush = 0f;
+
+    /// <summary>魚 HP の下限（これ以下で釣り上げ成立）。</summary>
+    private const float FishHpZero = 0f;
 
     /// <summary>スタミナ倍率の上限（スタミナ満タン時の総合力倍率）。</summary>
     private const float StaminaFactorMax = 1f;
@@ -337,22 +368,52 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "スタミナ倍率")]
     private float staminaScale = 1f;
 
-    /// <summary>
-    /// 魚のほうが強いときに、巻いてもウキが沖へ出ていく速さの上限係数
-    /// （<see cref="ReelSpeedScale"/> の負側のクランプ幅）。
-    /// </summary>
-    [SerializeField(Label = "引き出され速度の上限係数")]
-    private float maxOutScale = 1f;
-
-    // ─── ウキの引き（魚が沖へ引く力）───────────────────────────
+    // ─── ウキの距離制御（目標距離への追従）─────────────────────
 
     /// <summary>
-    /// 巻いていないあいだに魚がウキを沖へ引く速度の基準値（m/秒）。
+    /// 目標距離が現在より<b>遠い</b>とき、魚がウキを沖へ引く速度の基準値（m/秒）。
     /// 実際の速度は「魚の戦闘力 ÷ 竿パワー」を掛けた値になる
     /// （倍率は <see cref="rateMultiplierMin"/>〜<see cref="rateMultiplierMax"/> でクランプ）。
     /// </summary>
-    [Header("ウキの引き"), SerializeField(Label = "魚の引き速度(m/秒)")]
+    [Header("ウキの距離制御"), SerializeField(Label = "魚の引き速度(m/秒)")]
     private float fishPullSpeed = 1.5f;
+
+    /// <summary>
+    /// 目標距離が現在より<b>近い</b>とき、ウキが手元へ寄る速度の上限（m/秒）。
+    /// 魚 HP を削った分だけ目標距離が縮むので、その差をこの速度で追いかける
+    /// （＝巻いた手応えが見た目に出る速さ。目標は追い越さない）。
+    /// </summary>
+    [SerializeField(Label = "寄せ速度の上限(m/秒)")]
+    private float reelInSpeedMax = 6f;
+
+    // ─── 魚 HP ───────────────────────────────────────────
+
+    /// <summary>
+    /// 掛かった瞬間の距離（ウキ→竿先）の下限（メートル）。
+    /// 手元で掛かったときに「1HP あたりの距離」が 0 に潰れるのを防ぐ番人値。
+    /// </summary>
+    [Header("魚HP"), SerializeField(Label = "掛かった距離の下限(m)")]
+    private float hookDistanceMin = 2f;
+
+    // ─── 暴れの攻撃（回避判定）─────────────────────────────
+
+    /// <summary>
+    /// 回避失敗時にゲージを危険側へ押し込む量の基準値（等価の相手・暴れのとき）。
+    /// </summary>
+    [Header("暴れの攻撃"), SerializeField(Label = "押し込み量の基準")]
+    private float attackPushBase = 0.35f;
+
+    /// <summary>
+    /// 戦闘力差が押し込み量へ効く強さ。
+    /// 押し込み量 ＝ 基準 × (1 + 本値 × (魚の総合力 ÷ 竿パワー − 1))。
+    /// 0 なら戦闘力差を無視、1 ならそのまま比例。
+    /// </summary>
+    [SerializeField(Label = "押し込みへの戦闘力差の効き")]
+    private float attackPushPowerScale = 0.5f;
+
+    /// <summary>「大暴れ」の攻撃に掛かる押し込み量の倍率。</summary>
+    [SerializeField(Label = "大暴れの押し込み倍率")]
+    private float bigRageAttackScale = 1.6f;
 
     // ─── 効果音 ──────────────────────────────────────────
 
@@ -460,8 +521,8 @@ public class FishingFight : SEEDScript
     /// <summary>
     /// バトルの一時停止フラグ【わらしべ連鎖のアタリ中に使う】。
     ///
-    /// true のあいだ <see cref="Tick"/> はゲージ・糸 HP・スタミナ・引き（<see cref="FloatDragSpeed"/>）を
-    /// 一切進めず、UI の再描画だけを行う（＝画面からゲージが消えず、値も動かない）。
+    /// true のあいだ <see cref="Tick"/> はゲージ・糸 HP・スタミナ・魚 HP を一切進めず、
+    /// ウキの移動量（<see cref="ComputeFloatDistanceStep"/>）も 0 にして、UI の再描画だけを行う（＝画面からゲージが消えず、値も動かない）。
     /// 掛かっている魚を餌に別の魚がつつきに来ているあいだ、やり取りを凍結するための仕組みで、
     /// 連鎖の決着（乗り換え成功／失敗）でコントローラが false へ戻す。
     /// <see cref="EndFight"/>（<see cref="ResetRuntimeState"/>）でも必ず false へ戻るので、
@@ -483,36 +544,45 @@ public class FishingFight : SEEDScript
     /// </summary>
     public bool LineBroken { get; private set; } = false;
 
-    /// <summary>
-    /// このフレームに魚がウキを沖へ引く速度（m/秒）。
-    /// <see cref="Tick"/> が「そのフレームに巻いていたか」を見て決める
-    /// （巻いている＋魚のほうが強い → 巻いていても出ていく／巻いていない → 総合力比で出ていく）。
-    /// 値の作り方は <see cref="ComputeFloatDragSpeed"/> を参照。
-    /// </summary>
-    public float FloatDragSpeed { get; private set; } = 0f;
-
     /// <summary>現在のスタミナの割合（0〜1）。UI・チューニング表示用。</summary>
     public float Stamina01 => staminaMax > DivideEpsilon
         ? SEED.Mathf.Clamped01(stamina / staminaMax)
         : 0f;
 
+    /// <summary>現在の魚 HP の割合（0〜1）。UI 表示用。</summary>
+    public float FishHp01 => fishHpMax > DivideEpsilon
+        ? SEED.Mathf.Clamped01(fishHp / fishHpMax)
+        : 0f;
+
     /// <summary>
-    /// 巻き速度の倍率【巻きの仕様の中核】。
-    ///
-    /// ＝ (竿パワー − 魚の総合力) ÷ 竿パワー を
-    /// −<see cref="maxOutScale"/> 〜 1 でクランプした値。
-    /// - 魚の総合力 0（＝掛かっていない状態と同じ）… 1.0 ＝ 通常の巻き速度
-    /// - 総合力が竿パワーに近づくほど 0 へ … 力量差があるほど巻くのが遅い
-    /// - 総合力が竿パワーを超える … 負値 ＝ 巻いてもウキが沖へ出ていく
+    /// 魚 HP を削り切ったか（＝釣り上げ成立）。
+    /// バトル中だけ true になり得る（<see cref="EndFight"/> で必ず落ちる）。
     /// </summary>
-    public float ReelSpeedScale
+    public bool FishDefeated => Active && fishHp <= FishHpZero;
+
+    /// <summary>
+    /// 巻き取り 1m あたりに削れる魚 HP【巻きの仕様の中核】。
+    /// ＝ 巻き効率（竿パワー ÷ (竿パワー ＋ 現在の魚の総合力)）÷ 1HP あたりの距離。
+    ///
+    /// 巻き効率は魚がどれだけ強くても<b>必ず 0 より大きい</b>ので、
+    /// 「格上でも巻き続ければ削り切れる（テクニックで釣れる）」が成立する。
+    /// </summary>
+    public float ReelHpPerUnit
     {
         get
         {
             float rod = SEED.Mathf.Max(rodPower, DivideEpsilon);
-            return SEED.Mathf.Clamped((rod - CurrentFishPower()) / rod, -maxOutScale, ReelScaleMax);
+            float efficiency = rod / SEED.Mathf.Max(rod + CurrentFishPower(), DivideEpsilon);
+            return efficiency / SEED.Mathf.Max(metersPerHp, DivideEpsilon);
         }
     }
+
+    /// <summary>
+    /// いまウキが居るべき距離（ウキ→竿先の水平距離、メートル）
+    /// ＝ 現在の魚 HP × 1HP あたりの距離。
+    /// 掛かった直後は現在の距離より遠い（＝沖へ引かれる）。
+    /// </summary>
+    public float DesiredFloatDistance => SEED.Mathf.Max(fishHp, FishHpZero) * metersPerHp;
 
     /// <summary>糸切れの効果音パス（コントローラ側から鳴らす場合の参照用）。</summary>
     public string LineBreakSePath => lineBreakSePath;
@@ -522,6 +592,24 @@ public class FishingFight : SEEDScript
 
     /// <summary>現在の糸 HP（内部値）。</summary>
     private float lineHp = 0f;
+
+    /// <summary>現在の魚 HP（内部値）。0 で釣り上げ成立。</summary>
+    private float fishHp = 0f;
+
+    /// <summary>このバトルでの魚 HP の最大値（＝基礎HP ＋ ボーナス HP）。</summary>
+    private float fishHpMax = 0f;
+
+    /// <summary>
+    /// 魚 HP 1 あたりの距離（メートル）＝ 掛かった瞬間の距離 ÷ 魚の基礎HP。
+    /// 魚 HP と「ウキ→竿先の距離」を相互変換する唯一の係数。
+    /// </summary>
+    private float metersPerHp = 0f;
+
+    /// <summary>
+    /// いまの暴れ／大暴れの攻撃判定が既に決着したか。
+    /// 1 回の暴れにつき押し込みは 1 度だけなので、失敗を適用したら true にする。
+    /// </summary>
+    private bool attackResolved = false;
 
     /// <summary>戦っている魚（null ＝ 非戦闘中）。位置・状態は一切触らず、パラメータだけ読む。</summary>
     private Fish? target = null;
@@ -606,14 +694,36 @@ public class FishingFight : SEEDScript
     /// </summary>
     /// <param name="fish">掛かった魚（パラメータを読むだけで一切動かさない）。</param>
     /// <param name="judge">合わせ判定（初期ゲージの決定に使う）。</param>
-    public void BeginFight(Fish fish, FishingController.HookJudgement judge)
+    /// <param name="hookDistance">
+    /// 掛かった瞬間のウキ→竿先の水平距離（メートル）。
+    /// 「魚 HP 1 あたりの距離」の基準になる（<see cref="hookDistanceMin"/> で下限クランプ）。
+    /// </param>
+    public void BeginFight(Fish fish, FishingController.HookJudgement judge, float hookDistance)
     {
         target = fish;
         Active = true;
         LineBroken = false;
-        FloatDragSpeed = 0f;
         lineHp = SEED.Mathf.Max(lineHpMax, 0f);
         Gauge = SEED.Mathf.Clamped(InitialGauge(judge), GaugeMin, GaugeMax);
+
+        // 開始時点では「保留中の攻撃なし」＝決着済み扱いにしておく。
+        // 直後の PickRage が最初の暴れを引いた時点で false へ開け直される
+        // （こうしないと開始直後に「回避成功」のログが 1 回出てしまう）。
+        attackResolved = true;
+
+        // 魚 HP: 掛かった瞬間の総合力（状態倍率 1・スタミナ満タン）で「魚の取り分」を出し、
+        // その割合ぶんだけ基礎HP へボーナスを乗せる（99:1 なら約 +1% / 1:99 なら約 +99%）。
+        float rod = SEED.Mathf.Max(rodPower, DivideEpsilon);
+        float hookPower = SEED.Mathf.Max(fish.BasePower * SizeScore(fish), 0f);
+        float fishShare = hookPower / SEED.Mathf.Max(rod + hookPower, DivideEpsilon);
+        float baseHp = SEED.Mathf.Max(fish.BaseHp, DivideEpsilon);
+        fishHpMax = baseHp + baseHp * fishShare;
+        fishHp = fishHpMax;
+
+        // 距離との対応付け: 掛かった距離を「基礎HP ぶんの距離」とみなす。
+        // ボーナス HP はその外側なので、掛かった直後の目標距離は現在の距離より遠くなり、
+        // 魚がウキを沖へ引いていく（＝「沖へ持っていかれる」演出の実体）。
+        metersPerHp = SEED.Mathf.Max(hookDistance, hookDistanceMin) / baseHp;
 
         // スタミナを満タンから始める（最大値は魚のパラメータ × 倍率。未設定なら既定値）
         staminaMax = SEED.Mathf.Max(
@@ -632,6 +742,8 @@ public class FishingFight : SEEDScript
         ApplyUi();
 
         SEED.Debug.Log($"[Fight] 開始: {fish.DisplayName} / 戦闘力 {CurrentFishPower():F2} vs 竿 {rodPower:F2}"
+                     + $" / 魚HP {fishHpMax:F1}（取り分 {fishShare:P0}）"
+                     + $" / 掛かった距離 {hookDistance:F1}m → 目標 {DesiredFloatDistance:F1}m"
                      + $" / 初期ゲージ {Gauge:F2} / 安全帯 ±{RecoveryZoneHalfWidth():F2}"
                      + $" / 円弧 ±{ArcHalfAngle():F0}度");
     }
@@ -660,10 +772,10 @@ public class FishingFight : SEEDScript
         if (!Active || target is null) { return; }
 
         // 一時停止中（わらしべ連鎖のアタリ受付中）は内部値を一切進めない。
-        // 引きも 0 にしてウキが沖へ出ないようにし、UI だけ現在値のまま描き直す。
+        // 距離の目標も動かないので（ComputeFloatDistanceStep は呼ばれない前提ではなく、
+        // 呼ばれても目標が変わらないだけ）、UI だけ現在値のまま描き直す。
         if (Paused)
         {
-            FloatDragSpeed = 0f;
             ApplyUi();
             return;
         }
@@ -672,10 +784,9 @@ public class FishingFight : SEEDScript
 
         UpdateFishAction(deltaTime);
         UpdateGauge(deltaTime, reeling);
+        UpdateAttack(reeling);
         UpdateLineHp(deltaTime);
-
-        // ウキを沖へ引く速度（このフレームの巻き入力の有無で決まる）
-        FloatDragSpeed = ComputeFloatDragSpeed(reeling);
+        UpdateFishHp(reelAmount);
 
         ApplyUi();
     }
@@ -828,6 +939,7 @@ public class FishingFight : SEEDScript
         if (flinchTimer > 0f)
         {
             flinchTimer -= deltaTime;
+            ResolveRageEnd();          // 暴れの途中でひるんだ場合も攻撃はそこで終わり
             SetAction(FishAction.Wait);
             return;
         }
@@ -868,6 +980,7 @@ public class FishingFight : SEEDScript
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     private void EnterStay(float deltaTime)
     {
+        ResolveRageEnd();              // 暴れからステイへ移る＝その攻撃はここで終わる
         SetAction(FishAction.Stay);
         rageTimer = 0f;
         stamina = SEED.Mathf.Min(stamina + stayRecoverPerSec * deltaTime, staminaMax);
@@ -879,6 +992,9 @@ public class FishingFight : SEEDScript
     /// </summary>
     private void PickRage()
     {
+        // 前の暴れ（＝攻撃）を締めてから次を引く。回避成功のログもここで出る。
+        ResolveRageEnd();
+
         float total = SEED.Mathf.Max(rageWeight, 0f) + SEED.Mathf.Max(bigRageWeight, 0f);
         bool big = total > DivideEpsilon && SEED.Random.Range(0f, total) >= SEED.Mathf.Max(rageWeight, 0f);
 
@@ -912,7 +1028,9 @@ public class FishingFight : SEEDScript
 
         loggedAction = next;
         SEED.Debug.Log($"[Fight] {ActionLabel(next)} / ST {SEED.Mathf.RoundToInt(Stamina01 * PercentScale)}%"
-                     + $" / 総合力 {CurrentFishPower():F2} / 巻き倍率 {ReelSpeedScale:F2}");
+                     + $" / 総合力 {CurrentFishPower():F2}"
+                     + $" / 魚HP {SEED.Mathf.RoundToInt(FishHp01 * PercentScale)}%"
+                     + $" / 巻き効率 {ReelHpPerUnit * metersPerHp:F2}");
     }
 
     /// <summary>ログ表示用の行動状態の名前。</summary>
@@ -925,27 +1043,107 @@ public class FishingFight : SEEDScript
         _ => "待機",
     };
 
-    // ─── 内部処理: ウキの引き ─────────────────────────────
+    // ─── 内部処理: ウキの距離制御 ───────────────────────────
 
     /// <summary>
-    /// このフレームにウキが沖へ引かれる速度（m/秒）を求める。
+    /// このフレームにウキ→竿先の距離を動かす量（メートル・符号つき）を返す
+    /// 【ウキの移動量の唯一の算出点】。
     ///
-    /// - 巻いている … <see cref="ReelSpeedScale"/> が負（＝魚のほうが強い）ときだけ、
-    ///   その絶対値ぶん出ていく。巻き勝っているあいだ（0 以上）は 0。
-    /// - 巻いていない … 「魚の総合力 ÷ 竿パワー」に比例して出ていく
-    ///   （総合力 0 なら 0 ＝ 引かれない）。
+    /// ＋ ＝ 沖へ（距離が増える） / − ＝ 手元へ（距離が減る）。
+    /// - 目標距離が現在より<b>遠い</b> … 魚が引く。速度 ＝ <see cref="fishPullSpeed"/> × 戦闘力比
+    /// - 目標距離が現在より<b>近い</b> … 巻けた分だけ寄る。速度上限 ＝ <see cref="reelInSpeedMax"/>
+    /// どちらも<b>目標を追い越さない</b>ようにクランプする。
+    /// 非アクティブ・一時停止中は 0（ウキを動かさない）。
     /// </summary>
-    /// <param name="reeling">このフレームに巻いているか。</param>
-    private float ComputeFloatDragSpeed(bool reeling)
+    /// <param name="currentDistance">現在のウキ→竿先の水平距離（メートル）。</param>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    /// <returns>距離の増減量（＋ が沖／− が手元）。</returns>
+    public float ComputeFloatDistanceStep(float currentDistance, float deltaTime)
     {
-        if (reeling)
+        if (!Active || Paused || target is null) { return 0f; }
+
+        float difference = DesiredFloatDistance - currentDistance;
+
+        // 目標のほうが遠い: 魚が沖へ引く（戦闘力比ぶん速い）
+        if (difference > 0f)
         {
-            float scale = ReelSpeedScale;
-            return scale < 0f ? -scale * fishPullSpeed : 0f;
+            float outward = fishPullSpeed * PowerRatioClamped() * deltaTime;
+            return SEED.Mathf.Min(outward, difference);
         }
 
+        // 目標のほうが近い: 手元へ寄せる（上限速度でクランプ・目標は追い越さない）
+        float inward = reelInSpeedMax * deltaTime;
+        return -SEED.Mathf.Min(inward, -difference);
+    }
+
+    // ─── 内部処理: 魚 HP ────────────────────────────────
+
+    /// <summary>
+    /// 魚 HP を 1 フレームぶん削る。
+    /// 削れる量 ＝ このフレームの巻き取り量（m）× <see cref="ReelHpPerUnit"/>。
+    /// 巻いていなければ削れない（回復もしない＝削った分は戻らない）。
+    /// </summary>
+    /// <param name="reelAmount">このフレームの巻き取り量（メートル）。</param>
+    private void UpdateFishHp(float reelAmount)
+    {
+        if (reelAmount <= ReelInputEpsilon) { return; }
+        fishHp = SEED.Mathf.Max(fishHp - reelAmount * ReelHpPerUnit, FishHpZero);
+    }
+
+    // ─── 内部処理: 暴れの攻撃（回避判定）───────────────────
+
+    /// <summary>
+    /// 暴れ／大暴れ中の「攻撃」に対する回避判定【押し込みの唯一の適用点】。
+    ///
+    /// ＋ 側（0 を含む）に居るなら「巻かない」のが回避、
+    /// − 側に居るなら「巻く」のが回避。失敗した瞬間に 1 度だけゲージを危険側へ押し込む。
+    /// 暴れ 1 回につき 1 度きり（<see cref="attackResolved"/>）。
+    /// </summary>
+    /// <param name="reeling">このフレームに巻いているか。</param>
+    private void UpdateAttack(bool reeling)
+    {
+        if (attackResolved) { return; }
+        if (action is not (FishAction.Rage or FishAction.BigRage)) { return; }
+
+        // ゲージちょうど 0 は ＋ 側として扱う（＝巻くほうが危険側という仕様）
+        bool plusSide = Gauge >= GaugeCenter;
+        bool failed = plusSide ? reeling : !reeling;
+        if (!failed) { return; }
+
+        float push = AttackPush();
+        Gauge = SEED.Mathf.Clamped(plusSide ? Gauge + push : Gauge - push, GaugeMin, GaugeMax);
+        attackResolved = true;
+
+        SEED.Debug.Log($"[Fight] 回避失敗（{ActionLabel(action)}）"
+                     + $" / 押し込み {push:F2} → ゲージ {Gauge:F2}");
+    }
+
+    /// <summary>
+    /// 回避失敗時の押し込み量
+    /// ＝ <see cref="attackPushBase"/> × (1 + <see cref="attackPushPowerScale"/> ×
+    ///    (魚の総合力 ÷ 竿パワー − 1)) × (大暴れなら <see cref="bigRageAttackScale"/>)。
+    /// 戦闘力比が小さいと負になり得るので <see cref="MinAttackPush"/> で下限クランプする。
+    /// </summary>
+    private float AttackPush()
+    {
         float ratio = CurrentFishPower() / SEED.Mathf.Max(rodPower, DivideEpsilon);
-        return SEED.Mathf.Max(ratio, 0f) * fishPullSpeed;
+        float scaled = NeutralMultiplier + attackPushPowerScale * (ratio - EquivalentPowerRatio);
+        float big = action == FishAction.BigRage ? bigRageAttackScale : NeutralMultiplier;
+        return SEED.Mathf.Max(attackPushBase * scaled * big, MinAttackPush);
+    }
+
+    /// <summary>
+    /// 暴れ（＝攻撃）が終わるときの締め【回避成功の唯一の判定点】。
+    /// 失敗が一度も起きないまま暴れが終わったら回避成功としてログを残し、
+    /// 次の暴れのために判定フラグを開け直す。
+    /// </summary>
+    private void ResolveRageEnd()
+    {
+        if ((action is FishAction.Rage or FishAction.BigRage) && !attackResolved)
+        {
+            SEED.Debug.Log($"[Fight] 回避成功（{ActionLabel(action)}）");
+        }
+        attackResolved = false;
     }
 
     // ─── 内部処理: ゲージと糸 HP ───────────────────────────
@@ -1034,9 +1232,12 @@ public class FishingFight : SEEDScript
         Active = false;
         Paused = false;                // 一時停止の持ち越しを防ぐ（次のバトルが凍ったまま始まらないように）
         LineBroken = false;
-        FloatDragSpeed = 0f;
         Gauge = GaugeCenter;
         lineHp = 0f;
+        fishHp = 0f;
+        fishHpMax = 0f;
+        metersPerHp = 0f;
+        attackResolved = true;         // 保留中の攻撃なし（次の PickRage で開け直される）
         target = null;
         action = FishAction.Rage;
         loggedAction = FishAction.Rage;
@@ -1081,7 +1282,8 @@ public class FishingFight : SEEDScript
         if (hpText is { } label && label.IsValid)
         {
             label.Content = $"HP {SEED.Mathf.RoundToInt(LineHp01 * PercentScale)}%"
-                          + $"  ST {SEED.Mathf.RoundToInt(Stamina01 * PercentScale)}%";
+                          + $"  ST {SEED.Mathf.RoundToInt(Stamina01 * PercentScale)}%"
+                          + $"  魚 {SEED.Mathf.RoundToInt(FishHp01 * PercentScale)}%";
             label.Color = label.Color.WithAlpha(SEED.Mathf.Clamped01(hpTextOpacity));
         }
     }

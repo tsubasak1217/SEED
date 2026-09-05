@@ -292,12 +292,6 @@ public class FishingController : SEEDScript
     /// <summary>この値以下のリール入力量（メートル）は「入力なし」とみなす。</summary>
     private const float ReelInputEpsilon = 1e-4f;
 
-    /// <summary>
-    /// 巻き速度に減衰を掛けないときの倍率（＝魚が掛かっていない通常の巻き速度）。
-    /// ヒット中は <see cref="FishingFight.ReelSpeedScale"/> がこの値の代わりに使われる。
-    /// </summary>
-    private const float NoReelPenaltyScale = 1f;
-
     /// <summary>糸の点列の最小分割数（1 ＝ 直線）。</summary>
     private const int MinLineSegments = 1;
 
@@ -1192,9 +1186,10 @@ public class FishingController : SEEDScript
         // ヒット中はマウスの振りを読まないのでカーソルロックを引き直す（解除される）。
         UpdateCursorLock();
         CrossFadeBoth(hookedClip, playerHookedClip);
-        // やり取り（テンションゲージ・糸 HP）を開始する。
-        // 初期ゲージは直前に確定した合わせ判定（LastJudgement）で決まる。
-        fight?.BeginFight(fish, LastJudgement);
+        // やり取り（テンションゲージ・糸 HP・魚 HP）を開始する。
+        // 初期ゲージは直前に確定した合わせ判定（LastJudgement）で決まり、
+        // 掛かった瞬間の距離は「魚 HP 1 あたりの距離」の基準になる。
+        fight?.BeginFight(fish, LastJudgement, CurrentFloatDistance());
         SEED.Debug.Log($"[Fishing] ヒット! {fish.DisplayName}（大きさ {fish.Size:F2}）");
         return true;
     }
@@ -1324,7 +1319,7 @@ public class FishingController : SEEDScript
         if (fight is { } f)
         {
             f.EndFight();
-            f.BeginFight(newFish, judgement);
+            f.BeginFight(newFish, judgement, CurrentFloatDistance());
         }
 
         // ヒット用クリップを引き直し（既に同じクリップならラッチで間引かれる）、カーソルロックも同期
@@ -1963,13 +1958,24 @@ public class FishingController : SEEDScript
         f.Tick(deltaTime, ReadReelAmount());
 
         // 残り距離（ウキ→竿先の水平距離）の表示。ウキが無ければ 0 を出す。
-        float remaining = uki is { IsValid: true } floatTf
+        f.UpdateDistanceDisplay(CurrentFloatDistance());
+
+        if (f.LineBroken) { BreakLine(); return; }
+
+        // 魚 HP を削り切ったら釣り上げ成立【新仕様の主たる成功条件】。
+        // 連鎖のアタリ受付中（Paused）は魚 HP が減らないので、ここは Hooked のときだけ通る。
+        if (State == FishState.Hooked && f.FishDefeated) { FinishReeling(); }
+    }
+
+    /// <summary>
+    /// 現在のウキ→竿先の水平距離（メートル）。ウキが無ければ 0。
+    /// やり取りの基準距離（開始時の <see cref="FishingFight.BeginFight"/>・残り距離表示・
+    /// ウキの距離制御）で共通に使う。
+    /// </summary>
+    private float CurrentFloatDistance()
+        => uki is { IsValid: true } floatTf
             ? HorizontalDistance(floatTf.Position, ReelTargetPosition())
             : 0f;
-        f.UpdateDistanceDisplay(remaining);
-
-        if (f.LineBroken) { BreakLine(); }
-    }
 
     /// <summary>
     /// 糸が切れたときの締め【糸切れの唯一の出口】。
@@ -2079,29 +2085,32 @@ public class FishingController : SEEDScript
             UpdateReelArrow(floatTf.Position, dir, steerFactor, deltaTime);
         }
 
-        // ── 巻き速度（ヒット中は力量差で遅くなる）────────────────
-        // 掛かっていないときは入力量そのまま。ヒット中は FishingFight.ReelSpeedScale
-        // （＝(竿パワー − 魚の総合力) ÷ 竿パワー）を掛ける。
-        // 魚のほうが強い（負値）ときは巻き取り 0 とし、沖へ出ていく分は下の「魚の引き」で扱う。
-        float reelScale = IsHooked && fight is { Active: true } scaleFight
-            ? SEED.Mathf.Max(scaleFight.ReelSpeedScale, 0f)
-            : NoReelPenaltyScale;
-
-        // このフレームの移動量を「残りの水平距離」でクランプし、基準点を追い越さないようにする
-        float step = SEED.Mathf.Min(amount * reelScale, remaining);
-        var next = floatTf.Position + dir * step;
-
-        // ── ヒット中の「魚の引き」──────────────────────────
-        // 巻いていないあいだ（および巻いていても魚のほうが強いとき）は
-        // 魚がウキを沖（＝竿先の反対＝ -dir）へ引く。
-        // 竿先からの水平距離が「最長飛距離 ＋ 余裕」を超えないようにクランプし、
-        // 引かれ続けてウキが世界の外へ出るのを防ぐ。
-        if (IsHooked && fight is { Active: true } activeFight && activeFight.FloatDragSpeed > 0f)
+        // ── ウキの移動 ───────────────────────────────────
+        // 掛かっていないとき: 従来どおり「巻いた量そのまま」手前へ寄る
+        //   （残りの水平距離でクランプして基準点を追い越さない）。
+        // ヒット中: 巻き入力はウキを直接動かさず、魚 HP を削る仕事に変わった。
+        //   ウキは FishingFight が持つ「目標距離」へ寄る／引かれるだけなので、
+        //   移動量は ComputeFloatDistanceStep（＋ が沖 / − が手元）に一本化する。
+        SEED.Vector3 next;
+        if (IsHooked && fight is { Active: true } activeFight)
         {
-            float dragLimit = maxCastDistance + floatDragMarginDistance;
-            float allowed = SEED.Mathf.Max(dragLimit - HorizontalDistance(next, target), 0f);
-            float drag = SEED.Mathf.Min(activeFight.FloatDragSpeed * deltaTime, allowed);
-            next -= dir * drag;
+            float signedStep = activeFight.ComputeFloatDistanceStep(remaining, deltaTime);
+
+            // 沖へ出る向きだけは「最長飛距離 ＋ 余裕」でクランプし、
+            // 引かれ続けてウキが世界の外へ出るのを防ぐ。
+            if (signedStep > 0f)
+            {
+                float dragLimit = maxCastDistance + floatDragMarginDistance;
+                signedStep = SEED.Mathf.Min(signedStep, SEED.Mathf.Max(dragLimit - remaining, 0f));
+            }
+
+            // dir は竿先の方向（A / D の操舵込み）。沖へは その逆向きへ動かす。
+            next = floatTf.Position - dir * signedStep;
+        }
+        else
+        {
+            float step = SEED.Mathf.Min(amount, remaining);
+            next = floatTf.Position + dir * step;
         }
 
         SetFloatPosition(new SEED.Vector3(next.x, FloatSurfaceY(), next.z));
