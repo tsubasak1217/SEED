@@ -556,7 +556,6 @@
                 "castWindupSeconds": "0.500",
                 "fight": "Player|Fight",
                 "hitBanner": "HitBanner|Script",
-                "hookSwingPx": "300.000",
                 "hopHeight": "0.800",
                 "hopPullDistance": "0.500",
                 "judgeExcellentSprite": "JudgeExcellent|Sprite",
@@ -635,7 +634,7 @@
               "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\FishingFight.cs",
               "fields": {
                 "beatIconParent": "FishingUI",
-                    "distanceText": "DistanceText|Text",
+                "distanceText": "DistanceText|Text",
                 "gaugeMarker": "GaugeMarker|Sprite",
                 "gaugeMarkerTransform": "GaugeMarker",
                 "hpText": "HpText|Text",
@@ -2631,230 +2630,9 @@
               ]
             }
           }
-        },
-        {
-          "name": "Animator",
-          "component": {
-            "type": "AnimatorComponent",
-            "data": {
-              "clips": [
-                {
-                  "name": "Hit",
-                  "kind": "keyframe",
-                  "path": "assets://mainGame/animations/hit_banner.anim",
-                  "anim": "",
-                  "loop_mode": "once"
-                }
-              ],
-              "default_clip": "",
-              "play_on_start": false,
-              "speed": 1.0,
-              "default_fade_seconds": 0.0
-            }
-          }
         }
       ],
       "children": [
-        {
-          "name": "JudgeExcellent",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              0.0,
-              0.0
-            ],
-            "rotation": 0.0,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.5,
-              0.5
-            ],
-            "anchor": [
-              0.5,
-              0.5
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "components": [
-            {
-              "name": "Sprite",
-              "component": {
-                "type": "SpriteComponent",
-                "data": {
-                  "texture_path": "assets://mainGame/textures/ui/judge_excellent.png",
-                  "color": [
-                    1.0,
-                    1.0,
-                    1.0,
-                    0.0
-                  ],
-                  "width": 348.0,
-                  "height": 70.0,
-                  "layer": 0,
-                  "postfx_path": "",
-                  "raycast_target": false
-                }
-              }
-            }
-          ],
-          "children": []
-        },
-        {
-          "name": "JudgeGreat",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              0.0,
-              0.0
-            ],
-            "rotation": 0.0,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.5,
-              0.5
-            ],
-            "anchor": [
-              0.5,
-              0.5
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "components": [
-            {
-              "name": "Sprite",
-              "component": {
-                "type": "SpriteComponent",
-                "data": {
-                  "texture_path": "assets://mainGame/textures/ui/judge_great.png",
-                  "color": [
-                    1.0,
-                    1.0,
-                    1.0,
-                    0.0
-                  ],
-                  "width": 211.0,
-                  "height": 70.0,
-                  "layer": 0,
-                  "postfx_path": "",
-                  "raycast_target": false
-                }
-              }
-            }
-          ],
-          "children": []
-        },
-        {
-          "name": "JudgeNice",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              0.0,
-              0.0
-            ],
-            "rotation": 0.0,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.5,
-              0.5
-            ],
-            "anchor": [
-              0.5,
-              0.5
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "components": [
-            {
-              "name": "Sprite",
-              "component": {
-                "type": "SpriteComponent",
-                "data": {
-                  "texture_path": "assets://mainGame/textures/ui/judge_nice.png",
-                  "color": [
-                    1.0,
-                    1.0,
-                    1.0,
-                    0.0
-                  ],
-                  "width": 150.0,
-                  "height": 70.0,
-                  "layer": 0,
-                  "postfx_path": "",
-                  "raycast_target": false
-                }
-              }
-            }
-          ],
-          "children": []
-        },
-        {
-          "name": "JudgeMiss",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              0.0,
-              0.0
-            ],
-            "rotation": 0.0,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.5,
-              0.5
-            ],
-            "anchor": [
-              0.5,
-              0.5
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "components": [
-            {
-              "name": "Sprite",
-              "component": {
-                "type": "SpriteComponent",
-                "data": {
-                  "texture_path": "assets://mainGame/textures/ui/judge_miss.png",
-                  "color": [
-                    1.0,
-                    1.0,
-                    1.0,
-                    0.0
-                  ],
-                  "width": 175.0,
-                  "height": 70.0,
-                  "layer": 0,
-                  "postfx_path": "",
-                  "raycast_target": false
-                }
-              }
-            }
-          ],
-          "children": []
-        },
         {
           "name": "Whiteout",
           "actor_kind": "Actor2D",
@@ -2899,296 +2677,6 @@
                   "layer": 10,
                   "postfx_path": "",
                   "raycast_target": false
-                }
-              }
-            }
-          ],
-          "children": []
-        },
-        {
-          "name": "CatchName",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              0.0,
-              -360.0
-            ],
-            "rotation": 0.0,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.5,
-              0.5
-            ],
-            "anchor": [
-              0.5,
-              0.5
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "components": [
-            {
-              "name": "Text",
-              "component": {
-                "type": "TextComponent",
-                "data": {
-                  "content": "魚",
-                  "font_size": 72.0,
-                  "color": [
-                    1.0,
-                    1.0,
-                    1.0,
-                    0.0
-                  ],
-                  "align": "center",
-                  "vertical_align": "middle",
-                  "line_spacing": 1.2,
-                  "layer": 20,
-                  "font_path": "",
-                  "outline_width": 0.0,
-                  "outline_color": [
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0
-                  ]
-                }
-              }
-            }
-          ],
-          "children": []
-        },
-        {
-          "name": "CatchSize",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              0.0,
-              -280.0
-            ],
-            "rotation": 0.0,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.5,
-              0.5
-            ],
-            "anchor": [
-              0.5,
-              0.5
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "components": [
-            {
-              "name": "Text",
-              "component": {
-                "type": "TextComponent",
-                "data": {
-                  "content": "1.2 cm",
-                  "font_size": 48.0,
-                  "color": [
-                    1.0,
-                    1.0,
-                    1.0,
-                    0.0
-                  ],
-                  "align": "center",
-                  "vertical_align": "middle",
-                  "line_spacing": 1.2,
-                  "layer": 20,
-                  "font_path": "",
-                  "outline_width": 0.0,
-                  "outline_color": [
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0
-                  ]
-                }
-              }
-            }
-          ],
-          "children": []
-        },
-        {
-          "name": "CatchRank",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              0.0,
-              -215.0
-            ],
-            "rotation": 0.0,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.5,
-              0.5
-            ],
-            "anchor": [
-              0.5,
-              0.5
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "components": [
-            {
-              "name": "Text",
-              "component": {
-                "type": "TextComponent",
-                "data": {
-                  "content": "ランク: A",
-                  "font_size": 48.0,
-                  "color": [
-                    1.0,
-                    1.0,
-                    1.0,
-                    0.0
-                  ],
-                  "align": "center",
-                  "vertical_align": "middle",
-                  "line_spacing": 1.2,
-                  "layer": 20,
-                  "font_path": "",
-                  "outline_width": 0.0,
-                  "outline_color": [
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0
-                  ]
-                }
-              }
-            }
-          ],
-          "children": []
-        },
-        {
-          "name": "CatchBest",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              0.0,
-              -155.0
-            ],
-            "rotation": 0.0,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.5,
-              0.5
-            ],
-            "anchor": [
-              0.5,
-              0.5
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "components": [
-            {
-              "name": "Text",
-              "component": {
-                "type": "TextComponent",
-                "data": {
-                  "content": "ベスト: 1.3 cm",
-                  "font_size": 36.0,
-                  "color": [
-                    1.0,
-                    1.0,
-                    1.0,
-                    0.0
-                  ],
-                  "align": "center",
-                  "vertical_align": "middle",
-                  "line_spacing": 1.2,
-                  "layer": 20,
-                  "font_path": "",
-                  "outline_width": 0.0,
-                  "outline_color": [
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0
-                  ]
-                }
-              }
-            }
-          ],
-          "children": []
-        },
-        {
-          "name": "CatchPrompt",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              0.0,
-              420.0
-            ],
-            "rotation": 0.0,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.5,
-              0.5
-            ],
-            "anchor": [
-              0.5,
-              0.5
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "components": [
-            {
-              "name": "Text",
-              "component": {
-                "type": "TextComponent",
-                "data": {
-                  "content": "クリックで戻る",
-                  "font_size": 32.0,
-                  "color": [
-                    1.0,
-                    1.0,
-                    1.0,
-                    0.0
-                  ],
-                  "align": "center",
-                  "vertical_align": "middle",
-                  "line_spacing": 1.2,
-                  "layer": 20,
-                  "font_path": "",
-                  "outline_width": 0.0,
-                  "outline_color": [
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0
-                  ]
                 }
               }
             }
@@ -3538,6 +3026,318 @@
             }
           ],
           "children": []
+        },
+        {
+          "name": "HitBannerItems",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Animator",
+              "component": {
+                "type": "AnimatorComponent",
+                "data": {
+                  "clips": [
+                    {
+                      "name": "Hit",
+                      "kind": "keyframe",
+                      "path": "assets://mainGame/animations/hit_banner.anim",
+                      "anim": "",
+                      "loop_mode": "once"
+                    }
+                  ],
+                  "default_clip": "",
+                  "play_on_start": false,
+                  "speed": 1.0,
+                  "default_fade_seconds": 0.0
+                }
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": "HitBanner",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Script",
+                  "component": {
+                    "type": "ScriptComponent",
+                    "data": {
+                      "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\HitBanner.cs",
+                      "fields": {
+                        "animator": "HitBannerItems|Animator",
+                        "hitLabel": "HitTextHit|Text",
+                        "levelLabel": "HitTextLevel|Text"
+                      }
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "HitTextLevel",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  -253.8448,
+                  -232.299
+                ],
+                "rotation": -12.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "Lv? 魚",
+                      "font_size": 120.0,
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                      ],
+                      "align": "left",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 26,
+                      "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                      "outline_width": 8.0,
+                      "outline_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "HitBandBlackTop",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  -58.2153,
+                  -273.8813
+                ],
+                "rotation": -12.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://mainGame/textures/ui/white.png",
+                      "color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ],
+                      "width": 2400.0,
+                      "height": 220.0,
+                      "layer": 25,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "HitTextHit",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  253.8448,
+                  232.299
+                ],
+                "rotation": -12.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "HIT!!!",
+                      "font_size": 160.0,
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                      ],
+                      "align": "right",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 26,
+                      "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                      "outline_width": 8.0,
+                      "outline_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "HitBandBlackBottom",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  58.2153,
+                  273.8813
+                ],
+                "rotation": -12.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://mainGame/textures/ui/white.png",
+                      "color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ],
+                      "width": 2400.0,
+                      "height": 220.0,
+                      "layer": 25,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
         },
         {
           "name": "GaugeSegments",
@@ -5971,7 +5771,7 @@
           ]
         },
         {
-          "name": "HitBannerItems",
+          "name": "judgeUIs",
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
@@ -6000,223 +5800,7 @@
           "components": [],
           "children": [
             {
-              "name": "HitBandBlackTop",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -58.2153,
-                  -273.8813
-                ],
-                "rotation": -12.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.0,
-                        0.0,
-                        0.0,
-                        1.0
-                      ],
-                      "width": 2400.0,
-                      "height": 220.0,
-                      "layer": 25,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "HitBandBlackBottom",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  58.2153,
-                  273.8813
-                ],
-                "rotation": -12.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.0,
-                        0.0,
-                        0.0,
-                        1.0
-                      ],
-                      "width": 2400.0,
-                      "height": 220.0,
-                      "layer": 25,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "HitTextLevel",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -253.8448,
-                  -232.299
-                ],
-                "rotation": -12.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Text",
-                  "component": {
-                    "type": "TextComponent",
-                    "data": {
-                      "content": "Lv? 魚",
-                      "font_size": 120.0,
-                      "color": [
-                        1.0,
-                        1.0,
-                        1.0,
-                        1.0
-                      ],
-                      "align": "left",
-                      "vertical_align": "middle",
-                      "line_spacing": 1.2,
-                      "layer": 26,
-                      "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
-                      "outline_width": 8.0,
-                      "outline_color": [
-                        0.0,
-                        0.0,
-                        0.0,
-                        1.0
-                      ]
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "HitTextHit",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  253.8448,
-                  232.299
-                ],
-                "rotation": -12.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Text",
-                  "component": {
-                    "type": "TextComponent",
-                    "data": {
-                      "content": "HIT!!!",
-                      "font_size": 160.0,
-                      "color": [
-                        1.0,
-                        1.0,
-                        1.0,
-                        1.0
-                      ],
-                      "align": "right",
-                      "vertical_align": "middle",
-                      "line_spacing": 1.2,
-                      "layer": 26,
-                      "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
-                      "outline_width": 8.0,
-                      "outline_color": [
-                        0.0,
-                        0.0,
-                        0.0,
-                        1.0
-                      ]
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "HitBanner",
+              "name": "JudgeExcellent",
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
@@ -6243,16 +5827,493 @@
               },
               "components": [
                 {
-                  "name": "Script",
+                  "name": "Sprite",
                   "component": {
-                    "type": "ScriptComponent",
+                    "type": "SpriteComponent",
                     "data": {
-                      "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\HitBanner.cs",
-                      "fields": {
-                        "animator": "FishingUI|Animator",
-                        "hitLabel": "HitTextHit|Text",
-                        "levelLabel": "HitTextLevel|Text"
-                      }
+                      "texture_path": "assets://mainGame/textures/ui/judge_excellent.png",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        0.0
+                      ],
+                      "width": 348.0,
+                      "height": 70.0,
+                      "layer": 0,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "JudgeGreat",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://mainGame/textures/ui/judge_great.png",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        0.0
+                      ],
+                      "width": 211.0,
+                      "height": 70.0,
+                      "layer": 0,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "JudgeNice",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://mainGame/textures/ui/judge_nice.png",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        0.0
+                      ],
+                      "width": 150.0,
+                      "height": 70.0,
+                      "layer": 0,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "JudgeMiss",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Sprite",
+                  "component": {
+                    "type": "SpriteComponent",
+                    "data": {
+                      "texture_path": "assets://mainGame/textures/ui/judge_miss.png",
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        0.0
+                      ],
+                      "width": 175.0,
+                      "height": 70.0,
+                      "layer": 0,
+                      "postfx_path": "",
+                      "raycast_target": false
+                    }
+                  }
+                }
+              ],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "catchUIs",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "is_folder": true,
+          "components": [],
+          "children": [
+            {
+              "name": "CatchName",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  -360.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "魚",
+                      "font_size": 72.0,
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        0.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 20,
+                      "font_path": "",
+                      "outline_width": 0.0,
+                      "outline_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "CatchSize",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  -280.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "1.2 cm",
+                      "font_size": 48.0,
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        0.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 20,
+                      "font_path": "",
+                      "outline_width": 0.0,
+                      "outline_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "CatchRank",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  -215.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "ランク: A",
+                      "font_size": 48.0,
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        0.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 20,
+                      "font_path": "",
+                      "outline_width": 0.0,
+                      "outline_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "CatchBest",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  -155.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "ベスト: 1.3 cm",
+                      "font_size": 36.0,
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        0.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 20,
+                      "font_path": "",
+                      "outline_width": 0.0,
+                      "outline_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
+                    }
+                  }
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "CatchPrompt",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  420.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.5,
+                  0.5
+                ],
+                "anchor": [
+                  0.5,
+                  0.5
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [
+                {
+                  "name": "Text",
+                  "component": {
+                    "type": "TextComponent",
+                    "data": {
+                      "content": "クリックで戻る",
+                      "font_size": 32.0,
+                      "color": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        0.0
+                      ],
+                      "align": "center",
+                      "vertical_align": "middle",
+                      "line_spacing": 1.2,
+                      "layer": 20,
+                      "font_path": "",
+                      "outline_width": 0.0,
+                      "outline_color": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                      ]
                     }
                   }
                 }

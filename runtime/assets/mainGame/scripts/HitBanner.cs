@@ -3,17 +3,17 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]（衝突しない
 /// <summary>
 /// 魚が掛かった瞬間に一度だけ流す<b>「HIT!!!」の帯演出</b>の<b>再生窓口</b>。
 ///
-/// <b>付ける場所</b>: キャンバス（FishingUI）の子アクタ「HitBanner」。
+/// <b>付ける場所</b>: 演出の親アクタ「HitBannerItems」の子アクタ「HitBanner」。
 /// 見た目を持たない空の Actor2D で構わない。
 ///
 /// <b>演出そのものはキーフレームクリップが持つ</b>
 /// バー・文字の位置／回転／不透明度は、すべて
 /// <c>assets://mainGame/animations/hit_banner.anim</c>（クリップ名 "Hit"）の
-/// プロパティトラックが動かす。クリップは <b>FishingUI に付けた Animator スロット</b>が保持し、
+/// プロパティトラックが動かす。クリップは <b>HitBannerItems に付けた Animator スロット</b>が保持し、
 /// トラックの <c>actor_path</c>（"HitBandBlackTop" / "HitTextHit" など）で
-/// FishingUI の各子アクタを名前で指している
+/// HitBannerItems の各子アクタを名前で指している
 /// （<c>actor_path</c> は Animator 保持アクタからの<b>下向き</b>相対パスで、親や兄弟へは遡れない。
-/// そのため Animator は HitBanner ではなく共通の親である FishingUI に置く）。
+/// そのため Animator は HitBanner ではなく共通の親である HitBannerItems に置く）。
 ///
 /// したがって本スクリプトの責務は次の 3 つだけで、<b>動きの数値は一切持たない</b>:
 /// <list type="number">
@@ -22,7 +22,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]（衝突しない
 ///   <item><see cref="Play"/> で Animator にクリップの再生を依頼する</item>
 /// </list>
 ///
-/// <b>動きを直したいとき</b>: エディタのアニメーションパネルで FishingUI を選び、
+/// <b>動きを直したいとき</b>: エディタのアニメーションパネルで HitBannerItems を選び、
 /// クリップ "Hit" を開いてキーを編集する（＝ <c>hit_banner.anim</c> を直接編集してもよい）。
 /// <b>帯の角度を変えるときはクリップの作り直しが要る</b>: 位置キーは角度 −12° で
 /// 展開済みの実座標であり、回転トラックだけ変えても位置は追従しない。
@@ -47,11 +47,11 @@ public class HitBanner : SEEDScript
     // ─── 参照（シーンで割り当てる） ────────────────────────────
 
     /// <summary>
-    /// 演出クリップを保持する Animator（FishingUI の「Animator」スロット）。
-    /// クリップのトラックが FishingUI 配下の子アクタを名前で指すため、
-    /// <b>FishingUI 自身</b>の Animator を割り当てること。
+    /// 演出クリップを保持する Animator（HitBannerItems の「Animator」スロット）。
+    /// クリップのトラックが HitBannerItems 配下の子アクタを名前で指すため、
+    /// <b>HitBannerItems 自身</b>の Animator を割り当てること。
     /// </summary>
-    [Header("参照"), SerializeField(Label = "演出のAnimator(FishingUI)")]
+    [Header("参照"), SerializeField(Label = "演出のAnimator(HitBannerItems)")]
     private SEED.Animator? animator = null;
 
     /// <summary>「Lv◯ 魚名」のテキスト（文字列とフォントだけを書き換える）。</summary>
