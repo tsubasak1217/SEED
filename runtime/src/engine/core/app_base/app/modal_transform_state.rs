@@ -234,6 +234,62 @@ pub fn scale_factor(start_dist: f32, cur_dist: f32) -> f32 {
 }
 
 // ============================================================
+//  2D キャンバス空間とスクリーン座標の相互変換（純関数）
+// ============================================================
+//
+//  2D 編集のギズモ・ピック・モーダルはすべて `screen_to_ray_ortho` が作る
+//  「キャンバス px 空間」（+X = 画面右 / +Y = 画面下）で計算する。
+//  モーダルの回転角・拡縮距離はピボットの**スクリーン座標**を中心に測るため、
+//  逆向き（キャンバス px → スクリーン）の写像がここに要る。
+//
+//  両者は `half_w = half_h * (vp_w / vp_h)` という関係から
+//  **X と Y で同じ正の倍率**の相似変換になる（反転も歪みもない）。
+//  そのためスクリーン上で測った角度・距離比は、キャンバス px 空間で
+//  測ったものと完全に一致する。
+
+/// スクリーン座標（クライアント px）→ キャンバス px 空間。
+///
+/// `screen_to_ray_ortho` のレイ原点 XY と同一の式。
+/// `pan` は 2D カメラのパン、`half` は `[half_w, half_h]`、`vp` はビューポートサイズ。
+pub fn screen_to_canvas_px(
+    screen: (f32, f32),
+    pan: [f32; 2],
+    half: [f32; 2],
+    vp: [f32; 2],
+) -> [f32; 2] {
+    let ndc_x = 2.0 * screen.0 / vp[0] - 1.0;
+    let ndc_y = 2.0 * screen.1 / vp[1] - 1.0;
+    [pan[0] + ndc_x * half[0], pan[1] + ndc_y * half[1]]
+}
+
+/// キャンバス px 空間 → スクリーン座標（クライアント px）。`screen_to_canvas_px` の逆写像。
+pub fn canvas_px_to_screen(
+    canvas: [f32; 2],
+    pan: [f32; 2],
+    half: [f32; 2],
+    vp: [f32; 2],
+) -> (f32, f32) {
+    // half が 0（縮退したカメラ）でも NaN を返さないよう 1.0 とみなす
+    let hx = if half[0].abs() > 1.0e-6 { half[0] } else { 1.0 };
+    let hy = if half[1].abs() > 1.0e-6 { half[1] } else { 1.0 };
+    let ndc_x = (canvas[0] - pan[0]) / hx;
+    let ndc_y = (canvas[1] - pan[1]) / hy;
+    ((ndc_x + 1.0) * 0.5 * vp[0], (ndc_y + 1.0) * 0.5 * vp[1])
+}
+
+/// 2D モーダル回転の符号。
+///
+/// キャンバス px 空間は +Y = 画面下で、`rotation_matrix_about` に軸 +Z（画面奥）と
+/// 角度 +θ を渡すと点 (1, 0) は (cosθ, sinθ) へ動く ＝ **画面上では時計回り**。
+/// 一方 `screen_angle` も Y-down の atan2 なので、マウスを時計回りに回すと増加する。
+/// したがって両者は既に一致しており、反転は不要（＝ +1）。
+///
+/// これは `CanvasTransform::to_mat4_sized`（col0 = [cos, sin]）の規約、
+/// すなわち「正の `rotation` = 画面上で時計回り」とも一致する
+/// （canvas_gizmo_basis.rs の座標系メモを参照）。
+pub const ROTATION_SIGN_2D: f32 = 1.0;
+
+// ============================================================
 //  デルタ行列の生成（純関数）
 // ============================================================
 
@@ -466,6 +522,16 @@ pub struct ModalTransform {
     pub local_axes: [[f32; 3]; 3],
     /// ギズモドラッグ機構へ渡す開始行列（ピボットを平行移動成分に持つ単位行列）。
     pub start_mat: [[f32; 4]; 4],
+    /// 2D キャンバス編集のモーダルか。
+    ///
+    /// true のとき、`pivot` / `view_forward` / `local_axes` はすべて
+    /// **キャンバス px 空間**（+X = 画面右 / +Y = 画面下 / +Z = 画面奥）の値であり、
+    /// 数学そのものは 3D とまったく同じものが使える（2D ortho カメラのレイが
+    /// この空間の座標をそのまま返すため）。3D と挙動を変えるのは次の 3 点だけ:
+    ///   - 軸拘束は X / Y のみ（Z はキャンバス法線なので意味を持たない）
+    ///   - 回転は常にキャンバス法線まわり（R 中の軸拘束は受け付けない）
+    ///   - 画面上の回り方と回転符号の対応（`App` 側で符号を決める）
+    pub is_2d: bool,
 
     // ── 累積量 ────────────────────────────────────────────────
     /// 累積平行移動量（ワールド）。
@@ -526,6 +592,7 @@ impl ModalTransform {
             view_forward: normalize3(view_forward),
             local_axes,
             start_mat,
+            is_2d: false,
             accum_translation: [0.0; 3],
             accum_angle: 0.0,
             accum_scale: 1.0,
@@ -536,6 +603,27 @@ impl ModalTransform {
             external_cursor: false,
             numeric: ModalNumericInput::new(),
         }
+    }
+
+    /// 2D キャンバス編集用のモーダルとしてマークする（ビルダー）。
+    pub fn into_2d(mut self) -> Self {
+        self.is_2d = true;
+        self
+    }
+
+    /// この軸キーを受け付けるか。
+    ///
+    /// 3D は常に true。2D は次の 2 つを弾く:
+    /// - `Z`: キャンバス法線方向。`CanvasTransform` は XY しか持たないため
+    ///   移動も拡縮も表現できない。
+    /// - 回転（R）中の全軸: 2D の回転軸はキャンバス法線に固定であり、
+    ///   X / Y まわりの回転は `CanvasTransform.rotation`（Z 回転のみ）に
+    ///   書き戻せない。
+    pub fn axis_allowed(&self, axis: ModalAxis) -> bool {
+        if !self.is_2d {
+            return true;
+        }
+        axis != ModalAxis::Z && self.kind != ModalKind::Rotate
     }
 
     /// 外部カーソル座標（エディタ由来）を受け取ったことを記録する。
@@ -568,7 +656,13 @@ impl ModalTransform {
     }
 
     /// 軸キー押下を適用する（拘束状態を巡回させ、累積をリセットする）。
+    ///
+    /// 2D で意味を持たない軸（`axis_allowed` が false）は**完全に無視**する。
+    /// 拘束状態も累積量も変えないため、押しても現在の変形が乱れない。
     pub fn press_axis(&mut self, axis: ModalAxis) {
+        if !self.axis_allowed(axis) {
+            return;
+        }
         self.constraint = cycle_constraint(self.constraint, axis);
         self.reset_accumulation();
     }
@@ -1515,5 +1609,147 @@ mod tests {
             scale_matrix_axis([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], 3.0),
             1.0e-6,
         );
+    }
+    // ========================================================
+    //  2D キャンバス編集モーダルのテスト
+    // ========================================================
+
+    /// テスト用 2D ビュー: WYSIWYG（1 キャンバス px = 1 画面 px）。
+    /// `ortho_half_h = vp_h / 2` はエディタが 2D シーンビュー初期化時に入れる値と同じ。
+    const T2D_VP: [f32; 2] = [1280.0, 720.0];
+    const T2D_HALF: [f32; 2] = [640.0, 360.0];
+    const T2D_PAN: [f32; 2] = [0.0, 0.0];
+
+    /// 2D 用のテストモーダル（ピボット = キャンバス px の原点、ビュー法線 = +Z）。
+    fn test_modal_2d(kind: ModalKind, local_rot_deg: f32) -> ModalTransform {
+        let (sin, cos) = local_rot_deg.to_radians().sin_cos();
+        ModalTransform::new(
+            kind,
+            [0.0, 0.0, 0.0],
+            canvas_px_to_screen([0.0, 0.0], T2D_PAN, T2D_HALF, T2D_VP),
+            [0.0, 0.0, 1.0],
+            // canvas_gizmo_axes_from_rot と同じ基底（ローカル X / Y / キャンバス法線）
+            [[cos, sin, 0.0], [-sin, cos, 0.0], [0.0, 0.0, 1.0]],
+        )
+        .into_2d()
+    }
+
+    /// 設計スケール（1 キャンバス px = 1 画面 px）ではスクリーンデルタが
+    /// そのままキャンバスデルタになる。往復変換も一致する。
+    #[test]
+    fn screen_delta_maps_one_to_one_at_design_scale() {
+        let a = screen_to_canvas_px((100.0, 200.0), T2D_PAN, T2D_HALF, T2D_VP);
+        let b = screen_to_canvas_px((130.0, 180.0), T2D_PAN, T2D_HALF, T2D_VP);
+        assert!((b[0] - a[0] - 30.0).abs() < 1.0e-4, "X デルタは画面と等倍");
+        assert!((b[1] - a[1] + 20.0).abs() < 1.0e-4, "Y デルタも画面と等倍（Y は下向き）");
+        // 逆写像で元のスクリーン座標へ戻る
+        let back = canvas_px_to_screen(a, T2D_PAN, T2D_HALF, T2D_VP);
+        assert!((back.0 - 100.0).abs() < 1.0e-3 && (back.1 - 200.0).abs() < 1.0e-3);
+    }
+
+    /// ズーム 2 倍（ortho 半高が半分）なら、同じ画面移動量でキャンバスデルタは半分になる。
+    #[test]
+    fn screen_delta_scales_with_zoom() {
+        let half = [T2D_HALF[0] * 0.5, T2D_HALF[1] * 0.5];
+        let a = screen_to_canvas_px((100.0, 100.0), T2D_PAN, half, T2D_VP);
+        let b = screen_to_canvas_px((140.0, 100.0), T2D_PAN, half, T2D_VP);
+        assert!((b[0] - a[0] - 20.0).abs() < 1.0e-4, "画面 40px → キャンバス 20px");
+    }
+
+    /// 回転の符号: 画面上で時計回りに動かすと正の角度が溜まり、
+    /// その回転行列はキャンバスの +X を +Y（画面下）側へ送る＝画面上でも時計回り。
+    #[test]
+    fn rotation_sign_2d_is_clockwise_positive() {
+        let mut m = test_modal_2d(ModalKind::Rotate, 0.0);
+        let pivot = m.pivot_screen;
+        // ピボットの右（角度 0）→ 真下（角度 +90°）= 画面上で時計回り
+        m.accumulate_rotation(screen_angle(pivot, (pivot.0 + 100.0, pivot.1)), ROTATION_SIGN_2D, 1.0);
+        m.accumulate_rotation(screen_angle(pivot, (pivot.0, pivot.1 + 100.0)), ROTATION_SIGN_2D, 1.0);
+        assert!(
+            (m.accum_angle - std::f32::consts::FRAC_PI_2).abs() < 1.0e-4,
+            "時計回り 90° = +90°（accum={}）",
+            m.accum_angle.to_degrees()
+        );
+        // 回転行列がキャンバス +X を +Y（画面下）へ送ることを確認する
+        let d = m.delta_matrix();
+        let x = [d[0][0], d[1][0]];
+        assert!(x[0].abs() < 1.0e-4 && (x[1] - 1.0).abs() < 1.0e-4, "+X → +Y: {x:?}");
+    }
+
+    /// 拡縮: ピボットからのスクリーン距離比がそのまま倍率になる。
+    #[test]
+    fn scale_ratio_follows_screen_distance() {
+        let mut m = test_modal_2d(ModalKind::Scale, 0.0);
+        let pivot = m.pivot_screen;
+        m.accumulate_scale(screen_distance(pivot, (pivot.0 + 100.0, pivot.1)), 1.0);
+        m.accumulate_scale(screen_distance(pivot, (pivot.0 + 250.0, pivot.1)), 1.0);
+        assert!(
+            (m.accum_scale - 2.5).abs() < 1.0e-4,
+            "100px → 250px で 2.5 倍（accum={}）",
+            m.accum_scale
+        );
+        // 拘束なしは均一拡縮（X も Y も同じ倍率）
+        let d = m.delta_matrix();
+        assert!((d[0][0] - 2.5).abs() < 1.0e-4 && (d[1][1] - 2.5).abs() < 1.0e-4);
+    }
+
+    /// Local 拘束（アクタが 90° 回転）: X 拘束はキャンバスの +Y 方向へ写る。
+    #[test]
+    fn local_axis_constraint_follows_actor_rotation_90() {
+        let mut m = test_modal_2d(ModalKind::Move, 90.0);
+        m.press_axis(ModalAxis::X); // 1 回目 = World
+        let w = m.constraint_dir().expect("World 拘束");
+        assert!((w[0] - 1.0).abs() < 1.0e-5 && w[1].abs() < 1.0e-5, "World X = キャンバス +X");
+        m.press_axis(ModalAxis::X); // 2 回目 = Local
+        let l = m.constraint_dir().expect("Local 拘束");
+        assert!(
+            l[0].abs() < 1.0e-5 && (l[1] - 1.0).abs() < 1.0e-5,
+            "回転 90° の Local X はキャンバス +Y（画面下）: {l:?}"
+        );
+        // 拡縮でも同じ基底が使われる（軸方向のみ倍率が乗る）
+        let mut sm = test_modal_2d(ModalKind::Scale, 90.0);
+        sm.press_axis(ModalAxis::X);
+        sm.press_axis(ModalAxis::X);
+        sm.apply_numeric_char('2');
+        let d = sm.delta_matrix();
+        // Local X（= キャンバス +Y）方向だけ 2 倍、直交方向は等倍
+        assert!((d[1][1] - 2.0).abs() < 1.0e-4, "キャンバス Y 成分が 2 倍: {}", d[1][1]);
+        assert!((d[0][0] - 1.0).abs() < 1.0e-4, "キャンバス X 成分は等倍: {}", d[0][0]);
+    }
+
+    /// 2D では Z 拘束を受け付けない（CanvasTransform は XY しか持たないため）。
+    #[test]
+    fn z_axis_is_ignored_in_2d() {
+        let mut m = test_modal_2d(ModalKind::Move, 0.0);
+        m.press_axis(ModalAxis::Z);
+        assert!(m.constraint.is_none(), "Z は拘束にならない");
+        // 3D では従来どおり受け付ける
+        let mut m3 = test_modal(ModalKind::Move);
+        m3.press_axis(ModalAxis::Z);
+        assert!(m3.constraint.is_some());
+    }
+
+    /// 2D の回転（R）は軸拘束を受け付けない（回転軸はキャンバス法線に固定）。
+    #[test]
+    fn rotate_ignores_axis_constraints_in_2d() {
+        let mut m = test_modal_2d(ModalKind::Rotate, 30.0);
+        m.press_axis(ModalAxis::X);
+        m.press_axis(ModalAxis::Y);
+        assert!(m.constraint.is_none(), "R 中の X/Y は無視される");
+        // 回転軸は常にキャンバス法線（ビュー法線 +Z）
+        let axis = m.rotation_axis();
+        assert!(axis[2] > 0.999, "回転軸は +Z: {axis:?}");
+    }
+
+    /// 2D 拘束移動の数値入力: 拘束軸方向へ指定 px ぶん動く。
+    #[test]
+    fn numeric_move_along_2d_axis() {
+        let mut m = test_modal_2d(ModalKind::Move, 0.0);
+        m.press_axis(ModalAxis::Y); // World Y = キャンバス +Y（画面下）
+        assert!(m.apply_numeric_char('4'));
+        assert!(m.apply_numeric_char('0'));
+        let d = m.delta_matrix();
+        assert!(d[0][3].abs() < 1.0e-4);
+        assert!((d[1][3] - 40.0).abs() < 1.0e-4, "キャンバス Y に +40px: {}", d[1][3]);
     }
 }

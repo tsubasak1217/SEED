@@ -8132,7 +8132,11 @@ impl App {
                                                 canvas_id_offset,
                                                 // トップレベルは SS サブツリー扱い
                                                 // （Actor3D 通過で false になり 3D キャンバス子を除外）
-                                                CanvasDrawZone::Foreground, true, edit_view_2d, draw_ctx, &mut items,
+                                                CanvasDrawZone::Foreground, true, edit_view_2d, draw_ctx,
+                                                // 選択枠・CPU ピックと同一の実測テキスト枠を渡す
+                                                // （Text アクターを GPU ピックでも掴めるようにする）
+                                                &text_bounds_pre,
+                                                &mut items,
                                             );
                                             // スプライト描画と同一の順序（背景ゾーン → 前面ゾーン、
                                             // 各ゾーン内はレイヤー昇順の安定ソート）へ並べ替える。
@@ -8173,6 +8177,8 @@ impl App {
                                             collect_3d_canvas_child_id_items(
                                                 &scene.actors, &scene.world, wl,
                                                 &mut ctr, canvas_id_offset, draw_ctx,
+                                                // 3D ワールドキャンバス配下の Text も同じ枠でピックさせる
+                                                &text_bounds_pre,
                                                 &mut items, &mut panels,
                                             );
                                             (items, panels)

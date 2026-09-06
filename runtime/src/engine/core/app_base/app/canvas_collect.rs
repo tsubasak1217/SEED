@@ -399,6 +399,69 @@ pub(super) fn canvas_mat_to_gpu(
     ]
 }
 
+/// テキストの実測ローカル枠 `[min, max]` を「ユニットクワッド [0,1]² を覆う」
+/// ローカル行列へ変換する（行優先）。
+///
+/// # なぜ必要か
+/// ID パス（GPU ピッキング）のクワッドは常に `[0,1]²` の頂点で描かれ、モデル行列だけで
+/// 位置・サイズが決まる。一方テキストの枠は `align` / `vertical_align` により
+/// **アクター原点の左・上へはみ出す**（min が負になる）ため、スプライトのように
+/// `to_sprite_mat4(w, h)` では表現できない。
+///
+/// そこで `translate(min) · scale(size)` を作り、テキスト描画と同じ
+/// `to_mesh_mat4`（＝実寸 px のローカル空間）チェーンの**後段**に掛ける。
+/// これで ID クワッドが枠 `[min, max]` にちょうど一致する。
+///
+/// 退化枠（幅か高さが 0。空文字列など）は `None` を返し、ピック対象から外す。
+pub(super) fn text_box_unit_quad_mat(min: [f32; 2], max: [f32; 2]) -> Option<[[f32; 4]; 4]> {
+    let w = max[0] - min[0];
+    let h = max[1] - min[1];
+    // 面積 0 の枠は GPU でも 1px も塗られないので、そもそも積まない
+    if w.abs() < f32::EPSILON || h.abs() < f32::EPSILON {
+        return None;
+    }
+    Some([
+        [w, 0.0, 0.0, min[0]],
+        [0.0, h, 0.0, min[1]],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ])
+}
+
+/// アクターの Text スロットから ID パス用の「ローカル枠行列 + レイヤー」を求める。
+///
+/// 2D（`collect_canvas_id_items`）と 3D ワールドキャンバス（`walk_3d_canvas_children_id`）で
+/// 共有する唯一の判定箇所。返る行列は `to_mesh_mat4` の**後段**に掛けるローカル行列で、
+/// ユニットクワッド `[0,1]²` を実測枠 `[min, max]` へ写す。
+///
+/// `None` を返す条件（＝ピック対象にしない）:
+/// - 有効な Text スロットが無い（`enabled = false` は非表示なので対象外）
+/// - `TextComponent` が引けない
+/// - `text_bounds` に実測結果が無い（フォント未初期化・未描画）
+/// - 実測枠が退化している（幅か高さが 0。空文字列など）
+pub(super) fn text_id_item_local(
+    actor: &Actor,
+    world: &World,
+    text_bounds: &TextBoundsMap,
+) -> Option<([[f32; 4]; 4], i32)> {
+    for slot in actor.slots() {
+        if slot.kind != ComponentKind::Text || !slot.enabled {
+            continue;
+        }
+        let Some(tc) = world.get::<TextComponent>(slot.entity) else {
+            continue;
+        };
+        let Some(bx) = text_bounds.get(&slot.entity) else {
+            continue;
+        };
+        let Some(m) = text_box_unit_quad_mat(bx.min, bx.max) else {
+            continue;
+        };
+        return Some((m, tc.layer));
+    }
+    None
+}
+
 /// テクスチャパスから GPU テクスチャを解決する（SpriteComponent と共通のキャッシュ経路）。
 ///
 /// キャッシュ値: Some(arc)=成功 / None=失敗済み（毎フレームのリトライ・ログ爆発防止）。
@@ -1380,6 +1443,11 @@ pub(super) fn collect_canvas_id_items(
     // 本フレームのスプライト収集（collect_sprite_items）が既にディスパッチ済みの
     // 変形結果をそのまま使う（ID パス用に再変形はしない）。
     draw_ctx: &DrawContext,
+    // テキストの実測枠（Text スロット entity → ローカル境界矩形）。
+    // 選択枠（collect_canvas_rects）・CPU ピック（pick_2d）と同一の表を渡すことで、
+    // 「枠は出るのにクリックできない」というズレを構造的に防ぐ。
+    // 表に無い（＝実測できなかった）Text はピック対象にしない。
+    text_bounds: &TextBoundsMap,
     out: &mut Vec<CanvasIdItem>,
 ) {
     for actor in actors {
@@ -1592,6 +1660,32 @@ pub(super) fn collect_canvas_id_items(
                         break;
                     }
                 }
+                // スプライト系が無いアクターのみ、テキストをピック対象にする。
+                // 形状は実測ブロック枠（text_bounds）そのもの。テキスト描画と同じ
+                // to_mesh_mat4 チェーンに `translate(min)·scale(size)` を掛けて
+                // ユニットクワッドを枠へ一致させる（tex_path=None → 白フォールバックで
+                // 枠全面が alpha=1 ＝ 文字の隙間でも掴める）。
+                if gpu_mat_and_path.is_none() {
+                    if let Some((box_mat, layer)) = text_id_item_local(actor, world, text_bounds) {
+                        let tw = mat4x4_mul(
+                            mat4x4_mul(parent_world_rs, eff_ct.to_mesh_mat4(id_sc_x, id_sc_y)),
+                            box_mat,
+                        );
+                        gpu_mat_and_path = Some((
+                            [
+                                [tw[0][0] * canvas_scale, tw[1][0] * csy, 0.0, 0.0],
+                                [tw[0][1] * canvas_scale, tw[1][1] * csy, 0.0, 0.0],
+                                [0.0, 0.0, 1.0, 0.0],
+                                [tw[0][3] * canvas_scale, tw[1][3] * csy, 0.0, 1.0],
+                            ],
+                            // テクスチャなし = 白フォールバック（枠全面 alpha=1）で
+                            // 文字と文字の隙間もクリックできる
+                            None,
+                            layer,
+                            None,
+                        ));
+                    }
+                }
 
                 if let Some((gpu_mat, tex_path, layer, mesh)) = gpu_mat_and_path {
                     // raw_id = mc_total + my_dfs + 1
@@ -1664,6 +1758,7 @@ pub(super) fn collect_canvas_id_items(
             next_in_ss,
             design_space,
             draw_ctx,
+            text_bounds,
             out,
         );
     }
@@ -1698,6 +1793,9 @@ pub(super) fn collect_3d_canvas_child_id_items(
     // 本フレームの描画収集（collect_sprite_items）が既に compute を回しているので、
     // ここでは `draw_handle` で結果を参照するだけでよい（再ディスパッチしない）。
     draw_ctx: &DrawContext,
+    // テキストの実測枠（2D の collect_canvas_id_items と同一の表を渡す）。
+    // 3D ワールドキャンバス配下のテキストも同じ枠でピックできるようにする。
+    text_bounds: &TextBoundsMap,
     out: &mut Vec<(u32, [[f32; 4]; 4], Option<String>, Option<Arc<SkinnedSpriteDraw>>)>,
     // 3D キャンバス（Actor3D + CanvasComponent）のパネル面そのものをピック対象にする
     // ための面クワッド出力（raw_id, GPU 列優先モデル行列）。透明でも面全体を選択可能に
@@ -1794,6 +1892,7 @@ pub(super) fn collect_3d_canvas_child_id_items(
                         [1.0, 1.0],
                         mc_total,
                         draw_ctx,
+                        text_bounds,
                         &mut canvas_items,
                     );
                     // 安定ソート: 同一レイヤーはヒエラルキー DFS 順を維持する
@@ -1823,6 +1922,7 @@ pub(super) fn collect_3d_canvas_child_id_items(
                 counter,
                 mc_total,
                 draw_ctx,
+                text_bounds,
                 out,
                 panel_out,
             );
@@ -1846,6 +1946,8 @@ fn walk_3d_canvas_children_id(
     parent_cumul_scale: [f32; 2],
     mc_total: u32,
     draw_ctx: &DrawContext,
+    // テキストの実測枠（Text スロット entity → ローカル境界矩形）
+    text_bounds: &TextBoundsMap,
     out: &mut Vec<(
         u32,
         [[f32; 4]; 4],
@@ -2010,7 +2112,21 @@ fn walk_3d_canvas_children_id(
                         Some(mesh_draw),
                         ss.layer,
                     ));
+                    pushed = true;
                     break;
+                }
+            }
+            // スプライト系が無いアクターのみテキストをピック対象にする
+            // （2D の collect_canvas_id_items と同一の優先規約・同一の枠形状）。
+            if !pushed {
+                if let Some((box_mat, layer)) = text_id_item_local(actor, world, text_bounds) {
+                    // to_mesh_mat4（実寸 px ローカル）→ 枠のユニットクワッド化 の順に掛ける
+                    let sw = mat4x4_mul(
+                        mat4x4_mul(parent_world_rs, eff_ct.to_mesh_mat4(size_sc_x, size_sc_y)),
+                        box_mat,
+                    );
+                    // テクスチャなし = 白フォールバック（枠全面 alpha=1）
+                    out.push((mc_total + my_dfs + 1, to_gpu_mat(sw), None, None, layer));
                 }
             }
 
@@ -2042,6 +2158,7 @@ fn walk_3d_canvas_children_id(
             next_cumul_scale,
             mc_total,
             draw_ctx,
+            text_bounds,
             out,
         );
     }
@@ -2890,5 +3007,110 @@ mod tests {
         let folder = make_folder(&mut world, "Folder");
         assert!(!canvas_node_is_transparent(&normal));
         assert!(canvas_node_is_transparent(&folder));
+    }
+
+    // ========================================================
+    //  テスト — Text の ID パスアイテム生成（GPU ピック）
+    // ========================================================
+    //
+    //  ID 収集本体（collect_canvas_id_items）は GPU の DrawContext を要求するため
+    //  ユニットテストできない。そこで 2D / 3D 両経路が共有する唯一の判定点
+    //  `text_id_item_local` を直接検証する。
+
+    /// テスト用テキストの実測枠（左寄せ・上寄せ相当。min が原点と一致しない例）。
+    const TEXT_BOX_MIN: [f32; 2] = [-24.0, -8.0];
+    const TEXT_BOX_MAX: [f32; 2] = [96.0, 40.0];
+    /// テスト用テキストの描画レイヤー。
+    const TEXT_LAYER: i32 = 7;
+
+    /// Text スロットを 1 つ持つ 2D アクターを作り、(アクター, スロット entity) を返す。
+    fn make_text_actor(world: &mut World, name: &str) -> (Actor, Entity) {
+        let entity = world.spawn();
+        world.insert(entity, CanvasTransform::default());
+        let slot = world.spawn();
+        world.insert(
+            slot,
+            TextComponent {
+                layer: TEXT_LAYER,
+                ..TextComponent::default()
+            },
+        );
+        let mut actor = Actor::new_2d(entity, name);
+        actor.world_line = 0;
+        actor.add_slot_typed::<TextComponent>("Text", ComponentKind::Text, slot);
+        (actor, slot)
+    }
+
+    /// 実測枠がある Text アクターは ID アイテムを生成し、
+    /// ユニットクワッド `[0,1]²` を枠 `[min, max]` へ正確に写す行列になる。
+    #[test]
+    fn text_actor_emits_id_item_with_measured_box() {
+        let mut world = World::new();
+        let (actor, slot) = make_text_actor(&mut world, "Label");
+        let mut bounds = TextBoundsMap::new();
+        bounds.insert(
+            slot,
+            crate::engine::core::font::text_layout::TextLocalBox {
+                min: TEXT_BOX_MIN,
+                max: TEXT_BOX_MAX,
+            },
+        );
+
+        let (m, layer) =
+            text_id_item_local(&actor, &world, &bounds).expect("実測枠があれば ID アイテムが出る");
+        assert_eq!(layer, TEXT_LAYER, "レイヤーは TextComponent のものを使う");
+        // ユニットクワッドの (0,0) → 枠の min、(1,1) → 枠の max
+        let apply = |u: f32, v: f32| -> [f32; 2] {
+            [
+                m[0][0] * u + m[0][1] * v + m[0][3],
+                m[1][0] * u + m[1][1] * v + m[1][3],
+            ]
+        };
+        assert_eq!(apply(0.0, 0.0), TEXT_BOX_MIN);
+        assert_eq!(apply(1.0, 1.0), TEXT_BOX_MAX);
+    }
+
+    /// 実測枠が無い（フォント未初期化・未描画）Text は ID アイテムを出さない。
+    #[test]
+    fn text_actor_without_measured_box_emits_nothing() {
+        let mut world = World::new();
+        let (actor, _slot) = make_text_actor(&mut world, "Label");
+        assert!(
+            text_id_item_local(&actor, &world, &TextBoundsMap::new()).is_none(),
+            "実測できていないテキストはピック対象にしない"
+        );
+    }
+
+    /// 退化した枠（幅 0）は ID アイテムを出さない（GPU でも 1px も塗られないため）。
+    #[test]
+    fn degenerate_text_box_emits_nothing() {
+        let mut world = World::new();
+        let (actor, slot) = make_text_actor(&mut world, "Empty");
+        let mut bounds = TextBoundsMap::new();
+        bounds.insert(
+            slot,
+            crate::engine::core::font::text_layout::TextLocalBox {
+                min: [0.0, 0.0],
+                max: [0.0, 24.0],
+            },
+        );
+        assert!(text_id_item_local(&actor, &world, &bounds).is_none());
+    }
+
+    /// 非表示（enabled = false）の Text スロットはピック対象から外れる。
+    #[test]
+    fn disabled_text_slot_emits_nothing() {
+        let mut world = World::new();
+        let (mut actor, slot) = make_text_actor(&mut world, "Hidden");
+        actor.slots_mut()[0].enabled = false;
+        let mut bounds = TextBoundsMap::new();
+        bounds.insert(
+            slot,
+            crate::engine::core::font::text_layout::TextLocalBox {
+                min: TEXT_BOX_MIN,
+                max: TEXT_BOX_MAX,
+            },
+        );
+        assert!(text_id_item_local(&actor, &world, &bounds).is_none());
     }
 }

@@ -321,6 +321,13 @@ impl App {
                     .map(|&(dfs, _)| dfs)
                     .and_then(|dfs| self.actor_2d_layout_ctx(dfs));
 
+                // 2D 書き戻しの分岐に使う実効ツールモード。
+                // 通常のギズモドラッグではツールバーの tool_mode そのものだが、
+                // モーダルトランスフォーム（G/R/S）進行中はモーダル種別が優先される
+                // （ツールバーが Move のまま R で回せるようにするため）。
+                // scene の可変借用に入る前に確定させる。
+                let canvas_tool_mode = self.effective_canvas_tool_mode();
+
                 if let Some(scene) = &mut self.scene {
                     // 選択スロット entity を取得して MC 行列にデルタを適用する
                     let selected_slot_i = self.actor_virtual_selected_slot_idx;
@@ -418,7 +425,7 @@ impl App {
                                             let wz = new_mat[2][3];
                                             let cx = ctw_inv[0][0]*wx + ctw_inv[0][1]*wy + ctw_inv[0][2]*wz + ctw_inv[0][3];
                                             let cy = ctw_inv[1][0]*wx + ctw_inv[1][1]*wy + ctw_inv[1][2]*wz + ctw_inv[1][3];
-                                            match self.tool_mode {
+                                            match canvas_tool_mode {
                                                 crate::engine::core::app_base::ipc::ToolMode::Rotate => {
                                                     // 3D Canvas の Y 反転を考慮して回転方向を逆符号にする
                                                     let delta_angle = new_mat[1][0].atan2(new_mat[0][0]).to_degrees();
@@ -479,7 +486,7 @@ impl App {
                                                 ct.position[0] = new_mat[0][3] * pos_inv_scale - anchor_off[0];
                                                 ct.position[1] = new_mat[1][3] * pos_inv_scale * y_inv_sign - anchor_off[1];
                                             }
-                                            match self.tool_mode {
+                                            match canvas_tool_mode {
                                                 crate::engine::core::app_base::ipc::ToolMode::Rotate => {
                                                     // new_mat = Rz(delta) * T(pos) なので col0 の XY 角度がデルタ回転。
                                                     // ワールドスペース描画時は Y 軸が反転しているため回転方向を逆符号にする。

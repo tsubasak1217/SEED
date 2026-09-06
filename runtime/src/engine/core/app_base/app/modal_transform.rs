@@ -11,6 +11,20 @@
 //  数値計算そのものは modal_transform_state.rs の純関数に置き、
 //  ここでは「カメラ・選択状態・シーン」との接続だけを行う。
 //
+//  【3D と 2D の 2 経路】
+//  3D（Transform アクタ）に加え、2D（CanvasTransform アクタ）でも動く。
+//  2D 編集のギズモ・ピック・ドラッグはすべて `screen_to_ray_ortho` が作る
+//  「キャンバス px 空間」（+X = 画面右 / +Y = 画面下 / +Z = 画面奥）で計算されており、
+//  この空間は 3D ワールドと同じ 3 次元アフィン空間として扱える。
+//  そのため移動・回転・拡縮の数学（レイ×平面 / レイ×直線 / スクリーン角度 /
+//  スクリーン距離比）は**まったく同じものを流用**でき、differ するのは 4 点だけ:
+//    1. レイの作り方（2D ortho か 3D カメラか）
+//    2. ビュー法線（2D は常にキャンバス法線 +Z）
+//    3. 回転の符号（2D は「画面上の時計回り = 正」でそのまま一致する）
+//    4. 軸拘束の可否（2D は X/Y のみ。R 中は軸拘束なし）
+//  書き戻し先の分岐（apply_gizmo_new_mat の 2D パス）は
+//  `App::effective_canvas_tool_mode()` がモーダル種別を返すことで切り替わる。
+//
 //  【既存ギズモ機構の再利用】
 //  書き戻し（MC インスタンス行列・ActorTransform・子孫アクタ・マルチ選択）と
 //  Undo 記録は、ギズモドラッグとまったく同じ経路を通す。
@@ -27,11 +41,15 @@ use winit::keyboard::KeyCode;
 
 use crate::engine::core::app_base::ipc::ToolMode;
 use crate::engine::methods::drawer::LineBatch;
-use crate::engine::methods::gizmo_interact::{GizmoDrag, GizmoPart, mat4x4_mul};
+use crate::engine::methods::gizmo_interact::{
+    GizmoDrag, GizmoPart, mat4x4_mul, screen_to_ray_ortho,
+};
 
+use super::canvas_gizmo_basis::{canvas_gizmo_axes_from_rot, canvas_gizmo_axes_world};
 use super::modal_transform_state::{
-    FINE_SENSITIVITY, ModalAxis, ModalKind, ModalTransform, NUMERIC_DOT, NUMERIC_SIGN, dot3,
-    normalize3, ray_line_closest_t, ray_plane_intersect, screen_angle, screen_distance,
+    FINE_SENSITIVITY, ModalAxis, ModalAxisSpace, ModalKind, ModalTransform, NUMERIC_DOT,
+    NUMERIC_SIGN, ROTATION_SIGN_2D, canvas_px_to_screen, dot3, normalize3, ray_line_closest_t,
+    ray_plane_intersect, screen_angle, screen_distance,
 };
 use super::{App, RuntimeMode, world_to_screen};
 
@@ -41,6 +59,29 @@ const AXIS_LINE_LENGTH_RATIO: f32 = 40.0;
 
 /// 軸拘束線の最小長（ピボットにカメラが極端に近い場合の下限）。
 const AXIS_LINE_MIN_LENGTH: f32 = 5.0;
+
+/// 2D キャンバス編集での軸拘束線の長さ（ortho 半高に対する倍率）。
+/// ビュー高さの数倍にすることで、拘束線が常に画面を貫いて見える。
+const AXIS_LINE_2D_HALF_H_RATIO: f32 = 4.0;
+
+/// 2D カメラ情報が無い世界線のフォールバック ortho 半高。
+/// ギズモのヒットテスト（gizmo_handler）と同じ既定値を使う。
+const CANVAS_FALLBACK_ORTHO_HALF_H: f32 = 10.0;
+
+/// 2D キャンバス編集モーダルが使うビュー情報（2D ortho カメラのパンとズーム）。
+///
+/// スクリーン座標 ↔ キャンバス px 空間の相互変換に必要な最小限の値だけを持つ。
+/// ギズモドラッグ（drag_handler / gizmo_handler）が `screen_to_ray_ortho` へ
+/// 渡している値とまったく同じものを、同じ条件で組み立てる。
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CanvasModalView {
+    pub pan_x: f32,
+    pub pan_y: f32,
+    pub half_w: f32,
+    pub half_h: f32,
+    pub vp_w: f32,
+    pub vp_h: f32,
+}
 
 /// モーダル中の数値入力キーを 1 文字へ写す（該当しないキーは `None`）。
 ///
@@ -94,6 +135,75 @@ impl App {
         }
     }
 
+    /// 2D キャンバス編集モーダルのビュー情報を返す（2D で扱えない場合は None）。
+    ///
+    /// 【Some になる条件】
+    /// 選択プライマリが 2D アクターで、かつ「2D ortho レイで操作する表示状態」
+    /// （= ギズモドラッグの `use_ss_drag` と同一条件）であること。
+    /// 具体的には 2D シーンビュー（View2D は `canvas_screen_space_overlay` を
+    /// 立てる）・アクター編集/キャンバス編集タブ・Play 中・SS オーバーレイ ON。
+    ///
+    /// ワールドスペース表示中の 2D アクター（3D パースカメラで描かれる）は
+    /// None を返す。この状態はギズモドラッグも 3D レイ経路になるため、
+    /// モーダルも従来どおり開始しない。
+    pub(super) fn canvas_modal_view(&self) -> Option<CanvasModalView> {
+        if !self.selected_primary_actor_is_2d() {
+            return None;
+        }
+        let wl = self.active_world_line;
+        let in_editor = self.mode == RuntimeMode::Edit || self.paused;
+        let use_ss = self.canvas_screen_space_overlay
+            || !in_editor
+            || self.actor_edit_canvas_wls.contains(&wl);
+        if !use_ss {
+            return None;
+        }
+        let ws = self.window.as_ref()?.inner_size();
+        let (vp_w, vp_h) = (ws.width as f32, ws.height as f32);
+        if vp_w <= 0.0 || vp_h <= 0.0 {
+            return None;
+        }
+        let cam_2d = self.canvas_cameras.get(&wl);
+        let pan_x = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
+        let pan_y = cam_2d.map(|c| c.pan_y).unwrap_or(0.0);
+        let half_h = cam_2d
+            .map(|c| c.ortho_half_h)
+            .unwrap_or(CANVAS_FALLBACK_ORTHO_HALF_H);
+        Some(CanvasModalView {
+            pan_x,
+            pan_y,
+            half_w: half_h * (vp_w / vp_h),
+            half_h,
+            vp_w,
+            vp_h,
+        })
+    }
+
+    /// 選択プライマリ 2D アクターのローカル軸基底（累積ワールド回転に沿った基底）。
+    ///
+    /// ツールバーの World/Local トグル（`canvas_gizmo_axes_2d`）とは独立に、
+    /// **常にアクター自身の回転**から作る。モーダルの軸拘束は
+    /// 「1 回押す = ワールド軸 / 2 回押す = ローカル軸」という Blender 規約であり、
+    /// ツールバーの状態に左右されてはならないため。
+    fn canvas_modal_local_axes(&self) -> [[f32; 3]; 3] {
+        canvas_gizmo_axes_from_rot(self.selected_canvas_world_rot_rad().unwrap_or(0.0))
+    }
+
+    /// キャンバス（2D）書き戻しで使う実効ツールモード。
+    ///
+    /// `apply_gizmo_new_mat` の 2D 分岐は「移動 / 回転 / 拡縮」をツールバーの
+    /// `tool_mode` で切り替えるが、モーダル中はツールバーではなく
+    /// **モーダル種別（G/R/S）** が変形の種類を決める。
+    /// 3D 分岐はデルタ行列をそのまま適用するためこの区別が要らない。
+    pub(super) fn effective_canvas_tool_mode(&self) -> ToolMode {
+        match self.modal_transform.as_ref().map(|m| m.kind) {
+            Some(ModalKind::Move) => ToolMode::Move,
+            Some(ModalKind::Rotate) => ToolMode::Rotate,
+            Some(ModalKind::Scale) => ToolMode::Scale,
+            None => self.tool_mode,
+        }
+    }
+
     /// モーダル中の感度倍率（Shift 押下中は 1/10 の微調整）。
     ///
     /// Shift 状態は「ランタイム直接のキーイベント」と
@@ -115,10 +225,24 @@ impl App {
     ///
     /// 開始条件:
     /// - Edit モード（または Play の一時停止中）
-    /// - 3D ワールドビュー（2D シーンビュー・アクター編集タブは対象外）
-    /// - アクタが 1 つ以上選択されている（プライマリが 2D アクタでない）
+    /// - アクタが 1 つ以上選択されている
     /// - ギズモドラッグ・カメラ操作・制御点選択が進行中でない
     /// - カーソルがビューポート内にあり、ピボットが画面に投影できる
+    /// - ビューモードによるギズモ抑制（`gizmo_suppressed_by_edit_view`）が掛かっていない
+    ///
+    /// # 3D と 2D の 2 経路
+    /// プライマリ選択が 2D アクタで、かつ 2D ortho 表示（`canvas_modal_view` が Some）
+    /// なら **キャンバス px 空間**のモーダルとして開始する。
+    /// 2D ortho レイはキャンバス px 座標をそのまま返すため、
+    /// 3D 用の数学（レイ×平面 / レイ×直線 / スクリーン角度 / スクリーン距離比）が
+    /// そのまま流用できる。異なるのはレイの作り方・ビュー法線・回転符号だけ。
+    ///
+    /// # マルチ選択・2D3D 混在
+    /// ピボットは 3D と同じく全選択アクタの重心（`current_gizmo_pos`）だが、
+    /// **書き戻しはプライマリ 1 体のみ**に効く。これは 2D ギズモドラッグの
+    /// 既存挙動と同一で（`apply_gizmo_new_mat` の 2D 分岐が
+    /// `canvas_transform_drag_start` だけを見るため）、
+    /// 2D/3D 混在選択でもプライマリの種別の経路しか動かない。
     pub(super) fn try_begin_modal_transform(&mut self, kind: ModalKind) -> bool {
         // ── 前提条件 ──────────────────────────────────────────
         if self.modal_transform.is_some() {
@@ -131,11 +255,19 @@ impl App {
         if !(self.mode == RuntimeMode::Edit || self.paused) {
             return false;
         }
-        // 2D 側（2D シーンビュー / アクター編集・キャンバス編集タブ）は対象外
-        if self.edit_view_is_2d() || self.actor_edit_canvas_wls.contains(&self.active_world_line) {
+        // 2D キャンバス編集の文脈かどうかを判定する。
+        // 2D 文脈なのに 2D ビュー情報が組めない（＝ワールドスペース表示の 2D アクタ等、
+        // ギズモドラッグも 2D ortho レイを使わない状態）ときは従来どおり開始しない。
+        let canvas_view = self.canvas_modal_view();
+        let in_2d_context = self.edit_view_is_2d()
+            || self.actor_edit_canvas_wls.contains(&self.active_world_line)
+            || self.selected_primary_actor_is_2d();
+        if in_2d_context && canvas_view.is_none() {
             return false;
         }
-        if self.selected_primary_actor_is_2d() {
+        // ビューモードによるギズモ抑制（3D ビューでの SS キャンバス・
+        // ビューポートのルートキャンバス等）はモーダルにも等しく効かせる。
+        if self.gizmo_suppressed_by_edit_view() {
             return false;
         }
         // 進行中の他操作とは排他
@@ -170,24 +302,42 @@ impl App {
         };
         let vp_w = ws.width as f32;
         let vp_h = ws.height as f32;
-        let view = self.camera.view_matrix();
-        let proj = self.camera.projection_matrix();
-        // 回転角・拡縮距離の中心。カメラ背面にあると投影できないので開始しない。
-        let Some(pivot_screen) = world_to_screen(pivot, &view.data, &proj.data, vp_w, vp_h) else {
-            return false;
+
+        // 回転角・拡縮距離の中心となるピボットのスクリーン座標と、
+        // 拘束なし時の平面法線 / 回転軸、ローカル軸拘束用の基底を求める。
+        let (pivot_screen, view_forward, local_axes) = if let Some(v) = canvas_view {
+            // 2D: ピボットはキャンバス px 座標。相似変換でスクリーンへ写す。
+            // ビュー法線はキャンバス法線 +Z（画面奥）で固定。
+            let ps = canvas_px_to_screen(
+                [pivot[0], pivot[1]],
+                [v.pan_x, v.pan_y],
+                [v.half_w, v.half_h],
+                [v.vp_w, v.vp_h],
+            );
+            (ps, [0.0f32, 0.0, 1.0], self.canvas_modal_local_axes())
+        } else {
+            let view = self.camera.view_matrix();
+            let proj = self.camera.projection_matrix();
+            // カメラ背面にあると投影できないので開始しない。
+            let Some(ps) = world_to_screen(pivot, &view.data, &proj.data, vp_w, vp_h) else {
+                return false;
+            };
+            let fwd = self.camera.base.transform.forward();
+            // ローカル軸拘束用の軸（取得できない場合はワールド軸で代用する）
+            let axes = self.primary_actor_local_axes().unwrap_or([
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ]);
+            (ps, normalize3([fwd.x, fwd.y, fwd.z]), axes)
         };
 
-        // カメラ前方向（拘束なし時の移動平面法線 / 回転軸）
-        let fwd = self.camera.base.transform.forward();
-        let view_forward = normalize3([fwd.x, fwd.y, fwd.z]);
-        // ローカル軸拘束用の軸（取得できない場合はワールド軸で代用する）
-        let local_axes = self.primary_actor_local_axes().unwrap_or([
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ]);
-
         let modal = ModalTransform::new(kind, pivot, pivot_screen, view_forward, local_axes);
+        let modal = if canvas_view.is_some() {
+            modal.into_2d()
+        } else {
+            modal
+        };
 
         // ── ギズモドラッグ機構へダミーのドラッグを積む ────────
         // 書き戻し・Undo をギズモと共通化するための足場。
@@ -205,7 +355,15 @@ impl App {
             radius: self.editor_3d_gizmo_radius(pivot),
             ref_point: pivot,
             plane_normal: view_forward,
-            axes: None,
+            // 2D の拡縮書き戻し（apply_gizmo_new_mat）は `drag.axes` の方向で
+            // スケール係数を取り出す。開始時はツールバーの World/Local トグルに
+            // 合わせておき、軸拘束キーを押したら拘束の座標系へ同期させる
+            // （modal_transform_press_axis を参照）。
+            axes: if canvas_view.is_some() {
+                self.canvas_gizmo_axes_2d()
+            } else {
+                None
+            },
             full_axes: false,
         };
         // 全選択アクタ分の開始 Transform スナップショットを収集する
@@ -237,8 +395,23 @@ impl App {
         };
         let vp_w = ws.width as f32;
         let vp_h = ws.height as f32;
-        // レイ計算は &self 借用なので、modal の可変借用より前に済ませる
-        let (ray_o, ray_d) = self.editor_3d_ray(cx, cy, vp_w, vp_h);
+        // レイ計算は &self 借用なので、modal の可変借用より前に済ませる。
+        // 2D モーダルはギズモドラッグ（drag_handler）とまったく同じ 2D ortho レイを使う。
+        // このレイの原点 XY はカーソル直下のキャンバス px 座標そのもので、
+        // 方向は常に [0, 0, 1]（画面奥）である。
+        let is_2d_modal = self
+            .modal_transform
+            .as_ref()
+            .is_some_and(|m| m.is_2d);
+        let (ray_o, ray_d) = if is_2d_modal {
+            let Some(v) = self.canvas_modal_view() else {
+                // 表示状態が 2D ortho でなくなった（タブ切替等）→ 今回の更新は捨てる
+                return;
+            };
+            screen_to_ray_ortho(cx, cy, vp_w, vp_h, v.pan_x, v.pan_y, v.half_w, v.half_h)
+        } else {
+            self.editor_3d_ray(cx, cy, vp_w, vp_h)
+        };
         // 数値入力中はマウスで値を動かさない。ただし「前回参照値」の追跡は
         // 続ける必要があるため、感度 0 で累積器を空回しする。
         // （追跡を止めると、Backspace で数値を消してマウス駆動へ戻った瞬間に
@@ -277,10 +450,14 @@ impl App {
                 ModalKind::Rotate => {
                     let angle = screen_angle(modal.pivot_screen, (cx, cy));
                     // 画面上のマウスの回り方と実際の回転方向を一致させる符号。
-                    // 回転軸が画面奥を向く（カメラ前方向と同じ側）なら、
-                    // スクリーン角度（Y-down）の増加は右手系回転の負方向にあたる。
-                    let axis = modal.rotation_axis();
-                    let sign = if dot3(axis, modal.view_forward) >= 0.0 {
+                    let sign = if modal.is_2d {
+                        // 2D: キャンバス px 空間は +Y = 画面下で、スクリーン座標とは
+                        // 反転のない相似変換で結ばれる。よって「マウスの時計回り =
+                        // 正の回転（= 正の CanvasTransform.rotation）」が既に一致する。
+                        ROTATION_SIGN_2D
+                    } else if dot3(modal.rotation_axis(), modal.view_forward) >= 0.0 {
+                        // 3D: 回転軸が画面奥を向く（カメラ前方向と同じ側）なら、
+                        // スクリーン角度（Y-down）の増加は右手系回転の負方向にあたる。
                         -1.0
                     } else {
                         1.0
@@ -356,6 +533,27 @@ impl App {
         };
         modal.press_axis(axis);
         let new_mat = mat4x4_mul(modal.delta_matrix(), modal.start_mat);
+        // 2D の拡縮は「拘束の座標系」と「スケール係数を取り出す基底」が
+        // 一致していなければならない（drag.axes で取り出すため）。
+        // 例: Local 拘束なのに World 基底で取り出すと、回転したアクタで
+        // 倍率が cos 成分ぶん目減りする。ここで両者を同期させる。
+        let axes_2d = if modal.is_2d && modal.kind == ModalKind::Scale {
+            Some(match modal.constraint.map(|c| c.space) {
+                Some(ModalAxisSpace::World) => Some(canvas_gizmo_axes_world()),
+                Some(ModalAxisSpace::Local) => Some(modal.local_axes),
+                // 拘束なし（均一拡縮）は基底に依らず同じ倍率になるため
+                // ツールバーの表示基底へ戻しておく
+                None => None,
+            })
+        } else {
+            None
+        };
+        if let Some(axes) = axes_2d {
+            let axes = axes.or_else(|| self.canvas_gizmo_axes_2d());
+            if let Some(drag) = self.drag.gizmo_drag.as_mut() {
+                drag.axes = axes;
+            }
+        }
         // 累積リセット直後は単位デルタ = 開始スナップショットへの復元
         self.apply_gizmo_new_mat(new_mat);
     }
@@ -411,12 +609,18 @@ impl App {
 
     /// モーダルを取消する（開始時スナップショットへ完全復元し、Undo へは積まない）。
     pub(super) fn cancel_modal_transform(&mut self) {
-        let Some(modal) = self.modal_transform.take() else {
+        let Some(start_mat) = self.modal_transform.as_ref().map(|m| m.start_mat) else {
             return;
         };
         // 単位デルタ（= new_mat が start_mat そのもの）を適用すると、
         // すべての書き戻し先が開始スナップショットの値へ戻る。
-        self.apply_gizmo_new_mat(modal.start_mat);
+        //
+        // 【モーダル状態を落とす前に適用する理由】
+        // 2D（CanvasTransform）の書き戻しは `effective_canvas_tool_mode()` を見て
+        // 移動 / 回転 / 拡縮のどれとして書くかを決める。先に `take()` してしまうと
+        // ツールバーの `tool_mode` で復元することになり、種別が食い違う。
+        self.apply_gizmo_new_mat(start_mat);
+        self.modal_transform = None;
 
         // Undo へ積まずにドラッグ状態だけ破棄する
         self.drag.gizmo_drag = None;
@@ -531,14 +735,24 @@ impl App {
         let modal = self.modal_transform.as_ref()?;
         let constraint = modal.constraint?;
         let dir = modal.constraint_dir()?;
-        // カメラ距離に比例した長さ（ズームしても画面上の長さがほぼ一定になる）
-        let cam = self.camera.base.transform.position;
-        let d = [
-            modal.pivot[0] - cam.x,
-            modal.pivot[1] - cam.y,
-            modal.pivot[2] - cam.z,
-        ];
-        let len = (dot3(d, d).sqrt() * AXIS_LINE_LENGTH_RATIO / 100.0).max(AXIS_LINE_MIN_LENGTH);
+        // 拘束線の長さ。
+        // - 2D: ortho 半高の定数倍（キャンバス px 空間。ズームに追従して画面を貫く）
+        // - 3D: カメラ距離に比例（ズームしても画面上の長さがほぼ一定になる）
+        let len = if modal.is_2d {
+            let half_h = self
+                .canvas_modal_view()
+                .map(|v| v.half_h)
+                .unwrap_or(CANVAS_FALLBACK_ORTHO_HALF_H);
+            (half_h * AXIS_LINE_2D_HALF_H_RATIO).max(AXIS_LINE_MIN_LENGTH)
+        } else {
+            let cam = self.camera.base.transform.position;
+            let d = [
+                modal.pivot[0] - cam.x,
+                modal.pivot[1] - cam.y,
+                modal.pivot[2] - cam.z,
+            ];
+            (dot3(d, d).sqrt() * AXIS_LINE_LENGTH_RATIO / 100.0).max(AXIS_LINE_MIN_LENGTH)
+        };
         let from = [
             modal.pivot[0] - dir[0] * len,
             modal.pivot[1] - dir[1] * len,
