@@ -1078,8 +1078,10 @@ public class FishingFight : SEEDScript
     /// <param name="next">入るフェーズ。</param>
     private void EnterPhase(Phase next)
     {
-        // 回答フェーズを抜けるときは、叩かれなかった打点をすべて Miss として締める
-        if (CurrentPhase == Phase.Answer) { FailRemainingHits(); }
+        // 回答フェーズを抜けても、叩かれなかった打点はここでは Miss にしない。
+        // 受付窓（打点 ＋ niceSeconds）がまだ残っているものは、隙（Rest）に入ってからも
+        // UpdateRest 側の CloseExpiredHits で窓を過ぎた瞬間に Miss として締める
+        // （出題⇔回答の境界と同じく、回答⇔隙の境界でも早期に打ち切らないようにするため）。
 
         CurrentPhase = next;
         phaseBars = PhaseBarsOf(next);
@@ -1092,10 +1094,13 @@ public class FishingFight : SEEDScript
         {
             // 出題ごとにパターンを引き直す
             currentPattern = patterns[SEED.Random.Range(0, patterns.Count)];
-        }
-        else if (next == Phase.Answer)
-        {
-            BuildExpectedHits();
+
+            // 次に来る回答フェーズの期待打点を、出題フェーズに入った時点で先読み生成しておく
+            // （回答フェーズ開始を待って生成すると、出題→回答の境界をまたぐ早打ちが
+            //   「出題中のお手つき」として弾かれてしまうため、境界をまたいでも判定できるように
+            //   出題の時点で先に用意する）
+            int answerBars = PhaseBarsOf(Phase.Answer);
+            BuildExpectedHits(phaseEndTime, answerBars, currentPattern);
         }
 
         SEED.Debug.Log($"[Fight] {PhaseLabel(next)}（{phaseBars}小節）"
@@ -1158,7 +1163,10 @@ public class FishingFight : SEEDScript
     ///
     /// フェーズ内の分割番号が進むたびに、その位置がパターンの打点なら
     /// コントローラへ「前アタリと同じ演出」を依頼する（つつき音＋ウキの沈み）。
-    /// 出題中のクリックは Miss として扱う（テンションが上がる）。
+    ///
+    /// 出題中のクリックは、次に来る回答フェーズの最初の打点より <see cref="niceSeconds"/>
+    /// 以内の早打ちであれば回答フェーズと同じ判定（Excellent/Great/Nice）にし、
+    /// どの期待打点の受付窓にも入らないものだけ Miss（お手つき）として扱う。
     /// </summary>
     private void UpdateCall()
     {
@@ -1173,8 +1181,20 @@ public class FishingFight : SEEDScript
             lastCueSub = sub;
         }
 
-        // 出題中に叩いたら Miss（お手つき）
-        if (ReadTapDown()) { ApplyMiss(); }
+        if (!ReadTapDown()) { return; }
+
+        // 次の回答フェーズぶんの期待打点は出題フェーズ開始時点で既に用意済み（EnterPhase 参照）
+        // なので、境界をまたいだ早打ちもここでそのまま回答と同じ判定にできる。
+        int index = FindNearestPendingHit();
+        if (index >= 0)
+        {
+            PlayAnswerClickSe();
+            JudgeHit(index, clockTime - expectedTimes[index]);
+        }
+        else
+        {
+            ApplyMiss();
+        }
     }
 
     /// <summary>フェーズ開始からの分割番号（8 分音符単位・0 始まり）。</summary>
@@ -1196,20 +1216,32 @@ public class FishingFight : SEEDScript
     /// <summary>
     /// 回答フェーズで期待する打点の一覧を作る【期待打点の唯一の生成点】。
     /// 出題と同じパターンを、回答フェーズの各小節へ並べる。
+    ///
+    /// 出題→回答の境界をまたぐ早打ちを判定できるように、回答フェーズへ入る前
+    /// （出題フェーズ開始時点）で呼ばれる。そのため <c>answerStartTime</c>・
+    /// <c>answerBars</c>・<c>pattern</c> は「これから始まる回答フェーズ」の値を
+    /// 明示的に受け取り、そのときの <see cref="phaseStartTime"/> 等（出題側の値）には依存しない。
     /// </summary>
-    private void BuildExpectedHits()
+    /// <param name="answerStartTime">回答フェーズの開始時刻（＝出題フェーズの終了時刻）。</param>
+    /// <param name="answerBars">回答フェーズの小節数。</param>
+    /// <param name="pattern">出題フェーズで引いたパターン（回答フェーズでも同じものを使う）。</param>
+    private void BuildExpectedHits(float answerStartTime, int answerBars, string pattern)
     {
+        // 安全策: 前サイクルの期待打点がまだ残っていた場合、ここで一覧を作り直す前に
+        // 必ず Miss として締めておく（通常は隙のあいだに CloseExpiredHits で締め切られる
+        // ため到達しないが、取りこぼしたまま黙って消してしまわないための保険）。
+        FailRemainingHits();
         ClearExpectedHits();
-        if (currentPattern.Length != subsPerBar) { return; }
+        if (pattern.Length != subsPerBar) { return; }
 
-        for (int bar = 0; bar < phaseBars; bar++)
+        for (int bar = 0; bar < answerBars; bar++)
         {
             for (int s = 0; s < subsPerBar; s++)
             {
-                if (currentPattern[s] != PatternHitChar) { continue; }
+                if (pattern[s] != PatternHitChar) { continue; }
 
                 int phaseSub = bar * subsPerBar + s;
-                expectedTimes.Add(phaseStartTime + phaseSub * secondsPerSub);
+                expectedTimes.Add(answerStartTime + phaseSub * secondsPerSub);
                 expectedSubs.Add(phaseSub);
                 expectedJudged.Add(false);
                 expectedResults.Add(FishingController.HookJudgement.None);
@@ -1247,15 +1279,8 @@ public class FishingFight : SEEDScript
             else { ApplyMiss(); }
         }
 
-        // 受付窓を過ぎた打点は打ち逃し
-        for (int i = 0; i < expectedTimes.Count; i++)
-        {
-            if (expectedJudged[i]) { continue; }
-            if (clockTime <= expectedTimes[i] + niceSeconds) { continue; }
-
-            MarkHitResult(i, FishingController.HookJudgement.Miss);
-            ApplyMiss();
-        }
+        // 受付窓を過ぎた打点は打ち逃し（境界を越えて隙に入っても続けて呼ばれる）
+        CloseExpiredHits();
     }
 
     /// <summary>
@@ -1327,8 +1352,32 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
-    /// 回答フェーズを抜けるときに、叩かれずに残った打点をすべて Miss で締める。
-    /// （受付窓の判定で拾い切れなかった端の打点を取りこぼさないための保険）
+    /// 受付窓（打点 ＋ <see cref="niceSeconds"/>）を過ぎてもまだ未判定の打点を、
+    /// その場で Miss（打ち逃し）として締める【期限切れ判定の唯一の適用点】。
+    ///
+    /// 出題・回答・隙のいずれのフェーズでも呼んでよい（時刻の絶対値で判定するため
+    /// 現在フェーズに依存しない）。回答フェーズの最後の打点は窓が隙側へはみ出すことが
+    /// あるため、隙フェーズでも引き続き呼び続けて締め切る。
+    /// </summary>
+    private void CloseExpiredHits()
+    {
+        for (int i = 0; i < expectedTimes.Count; i++)
+        {
+            if (expectedJudged[i]) { continue; }
+            if (clockTime <= expectedTimes[i] + niceSeconds) { continue; }
+
+            MarkHitResult(i, FishingController.HookJudgement.Miss);
+            ApplyMiss();
+        }
+    }
+
+    /// <summary>
+    /// 期待打点の一覧を作り直す（新しいサイクルの分を積む）直前に、
+    /// まだ残っている未判定の打点をすべて無条件で Miss として締める【保険専用】。
+    ///
+    /// 通常は隙のあいだに <see cref="CloseExpiredHits"/> が受付窓を過ぎたものから
+    /// 順に締め切るため、ここに未判定のまま残ることは想定していない。それでも
+    /// 一覧をまるごと差し替える前に、取りこぼしを黙って消してしまわないための保険として置く。
     /// </summary>
     private void FailRemainingHits()
     {
@@ -1358,11 +1407,30 @@ public class FishingFight : SEEDScript
 
     /// <summary>
     /// 隙フェーズの更新。テンションが回復し、巻き取りで魚 HP を削れる唯一の区間。
+    ///
+    /// 直前の回答フェーズ最後の打点は受付窓が隙側へはみ出すことがあるので、
+    /// その窓の内側のクリックだけは回答フェーズと同じ判定へ結び付ける
+    /// （窓の外の隙中クリックは、通常の隙の入力として何もせず無視する）。
     /// </summary>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
     /// <param name="reelAmount">このフレームの巻き取り量（メートル）。</param>
     private void UpdateRest(float deltaTime, float reelAmount)
     {
+        if (ReadTapDown())
+        {
+            int index = FindNearestPendingHit();
+            if (index >= 0)
+            {
+                // 回答フェーズからはみ出した受付窓の内側 → 回答フェーズと同じ判定にする
+                PlayAnswerClickSe();
+                JudgeHit(index, clockTime - expectedTimes[index]);
+            }
+            // 受付窓の外のクリックは、隙中の通常入力として何もしない（Miss にもしない）
+        }
+
+        // 受付窓を過ぎてもまだ残っている打点は、ここで打ち逃しとして締め切る
+        CloseExpiredHits();
+
         // テンションの回復（隙のあいだだけ）
         Tension = SEED.Mathf.Max(Tension - SEED.Mathf.Max(tensionRecoverPerSec, 0f) * deltaTime, TensionMin);
 
