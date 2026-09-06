@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
 
 /// <summary>
@@ -195,6 +196,42 @@ public class Fish : SEEDScript
     /// </summary>
     [SerializeField(Label = "暴れ度(規定1)")]
     private float rampage = 1f;
+
+    // ─── リズム（釣りバトルの出題データ）───────────────────────
+
+    /// <summary>
+    /// 釣りバトル（<see cref="FishingFight"/>）で刻むテンポ（BPM）。
+    /// 大きいほど拍が速く、出題も回答も忙しくなる＝難しい魚になる。
+    /// </summary>
+    [Header("リズム(釣りバトル)"), SerializeField(Label = "BPM")]
+    private float rhythmBpm = 100f;
+
+    /// <summary>1 小節の拍数（拍子）。4 なら 4 拍子。</summary>
+    [SerializeField(Label = "拍子(1小節の拍数)")]
+    private int rhythmBeatsPerBar = 4;
+
+    /// <summary>
+    /// 出題に使うリズムパターン（1 要素 ＝ 1 小節ぶん）。
+    ///
+    /// 文字列は<b>8 分音符の並び</b>で、'x' が打点・'.' が休符。
+    /// 長さは必ず「拍子 × 2」文字（4 拍子なら 8 文字）にすること。
+    /// 長さや文字が違う要素は釣りバトル側で捨てられ、警告が 1 度だけ出る。
+    /// 出題のたびにこの中から 1 つがランダムに選ばれる。
+    /// </summary>
+    [SerializeField(Label = "リズムパターン(x=打点/.=休符)")]
+    private List<string> rhythmPatterns = new() { "x.x.x.x.", "x..x..x.", "x.xx..x." };
+
+    /// <summary>出題フェーズの小節数（0 ＝ 釣りバトル側の既定値を使う）。</summary>
+    [SerializeField(Label = "出題の小節数(0で既定)")]
+    private int rhythmCallBars = 0;
+
+    /// <summary>回答フェーズの小節数（0 ＝ 釣りバトル側の既定値を使う）。</summary>
+    [SerializeField(Label = "回答の小節数(0で既定)")]
+    private int rhythmAnswerBars = 0;
+
+    /// <summary>隙フェーズの小節数（0 ＝ 釣りバトル側の既定値を使う）。</summary>
+    [SerializeField(Label = "隙の小節数(0で既定)")]
+    private int rhythmRestBars = 0;
 
     /// <summary>
     /// 表示名（釣果ログ・UI 用）。空なら <see cref="DefaultDisplayName"/> を使う。
@@ -394,6 +431,29 @@ public class Fish : SEEDScript
 
     /// <summary>スタミナ（釣りバトル側から参照する）。</summary>
     public float Stamina => stamina;
+
+    // ─── リズムデータの公開（釣りバトルが読む）─────────────────
+
+    /// <summary>釣りバトルのテンポ（BPM）。</summary>
+    public float RhythmBpm => rhythmBpm;
+
+    /// <summary>釣りバトルの拍子（1 小節の拍数）。</summary>
+    public int RhythmBeatsPerBar => rhythmBeatsPerBar;
+
+    /// <summary>
+    /// 出題に使うリズムパターン（1 要素 ＝ 1 小節ぶん・8 分音符の並び）。
+    /// 検証（長さ・使用文字）は釣りバトル側が行う。
+    /// </summary>
+    public List<string> RhythmPatterns => rhythmPatterns;
+
+    /// <summary>出題フェーズの小節数（0 ＝ 釣りバトル側の既定値）。</summary>
+    public int RhythmCallBars => rhythmCallBars;
+
+    /// <summary>回答フェーズの小節数（0 ＝ 釣りバトル側の既定値）。</summary>
+    public int RhythmAnswerBars => rhythmAnswerBars;
+
+    /// <summary>隙フェーズの小節数（0 ＝ 釣りバトル側の既定値）。</summary>
+    public int RhythmRestBars => rhythmRestBars;
 
     /// <summary>餌の感知距離（釣りバトル側から参照する）。</summary>
     public float BaitSenseDistance => baitSenseDistance;

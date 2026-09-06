@@ -74,6 +74,16 @@ public class CameraMove : SEEDScript
     private SEED.Transform? castTarget = null;
 
     /// <summary>
+    /// リズムのやり取りの<b>回答フェーズ</b>（<see cref="FishingFight.Phase.Answer"/>）で使う
+    /// 目標トランスフォーム（プレイヤーの子アクタ「AnswerCameraTarget」を割り当てる想定）。
+    ///
+    /// プレイヤーを正面斜めから見る構図にしておくと、叩くタイミングに集中させやすい。
+    /// 未設定・無効なら回答中も従来どおり <see cref="castTarget"/> を追う。
+    /// </summary>
+    [SerializeField(Label = "回答中の目標トランスフォーム")]
+    private SEED.Transform? answerTarget = null;
+
+    /// <summary>
     /// 釣り上げ演出の「寄り」フェーズ（<see cref="CatchPresenter.CatchPhase.ApproachCamera"/>）の
     /// 目標トランスフォーム（トップレベルの空アクタ「CatchCameraTarget」を割り当てる想定）。
     /// 位置・向きは <see cref="CatchPresenter"/> が毎フレーム「魚を見る姿勢」へ置き直す。
@@ -275,6 +285,9 @@ public class CameraMove : SEEDScript
         // ApproachCamera = 水面の魚へ寄る / WhiteOut 以降 = プレイヤーを振り返って見る。
         if (SelectCatchGoal() is { } catchGoal) { return catchGoal; }
 
+        // リズムの回答中はプレイヤーを見る構図へ切り替える（叩くタイミングに集中させる）
+        if (IsAnswerPhase() && answerTarget is { } at && at.IsValid) { return at; }
+
         // ウキが外に出ているあいだはウキ側の目標を最優先で追う（キャスト先が画面に入る）
         if (IsFloatOut() && castTarget is { } ct && ct.IsValid) { return ct; }
 
@@ -313,6 +326,18 @@ public class CameraMove : SEEDScript
     /// </summary>
     private bool IsPlayerFishing()
         => playerMove is { } pm && pm.State == PlayerMove.PlayerState.FishingStance;
+
+    /// <summary>
+    /// リズムのやり取りが<b>回答フェーズ</b>かを返す（構図切替の唯一の判定点）。
+    ///
+    /// 魚が掛かっている（<see cref="FishingController.FishState.Hooked"/>）ときだけ見る。
+    /// わらしべ連鎖のアタリ中はやり取りが凍結されており、フェーズも進まないので
+    /// 構図は釣り中のまま維持される。<see cref="fishing"/> 未設定なら常に false。
+    /// </summary>
+    private bool IsAnswerPhase()
+        => fishing is { } f
+        && f.State == FishingController.FishState.Hooked
+        && f.FightPhase == FishingFight.Phase.Answer;
 
     /// <summary>
     /// ウキが外に出ている（飛翔中・浮遊中・巻き取り中）かを返す。

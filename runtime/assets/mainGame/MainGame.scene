@@ -2,12 +2,12 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      63.990215,
-      8.270781,
-      34.281193
+      30.76298,
+      15.740007,
+      -9.248906
     ],
-    "yaw": -1.690082,
-    "pitch": 0.2695251,
+    "yaw": 0.0879207,
+    "pitch": 0.23152484,
     "fov_deg": 25.0,
     "far": 1000.0,
     "speed": 5.0
@@ -422,6 +422,9 @@
                 "cameraTargetParent": "CameraTargetParent",
                 "cameraTransform": "MainCamera",
                 "followPathHeight": "false",
+                "footstepVolumeMax": "1.500",
+                "footstepVolumeMin": "1.000",
+                "footstepsPerSecond": "3.000",
                 "moveSpeed": "10.000",
                 "path": "ControlPoints|ControlPoint",
                 "rodAnimator": "sao|Animator",
@@ -436,23 +439,6 @@
             "type": "InputMapComponent",
             "data": {
               "asset_path": "assets://mainGame/input/playerInput.inputmap"
-            }
-          }
-        },
-        {
-          "name": "Water Link",
-          "component": {
-            "type": "InteractionSourceComponent",
-            "data": {
-              "radius": 0.4,
-              "strength": 1.0,
-              "enabled": true,
-              "stamp_shape": "Circle",
-              "stamp_mask_path": "",
-              "stamp_size": [
-                0.12,
-                0.3
-              ]
             }
           }
         },
@@ -538,6 +524,13 @@
                   "path": "",
                   "anim": "ShowOff",
                   "loop_mode": "loop"
+                },
+                {
+                  "name": "ShowOffHold",
+                  "kind": "model",
+                  "path": "",
+                  "anim": "ShowOffHold",
+                  "loop_mode": "loop"
                 }
               ],
               "default_clip": "Idle",
@@ -565,6 +558,7 @@
                 "hopPullDistance": "0.500",
                 "judgeExcellentSprite": "JudgeExcellent|Sprite",
                 "judgeGreatSprite": "JudgeGreat|Sprite",
+                "judgeHintText": "JudgeHint|Text",
                 "judgeMissSprite": "JudgeMiss|Sprite",
                 "judgeNiceSprite": "JudgeNice|Sprite",
                 "line": "Uki|LineRenderer",
@@ -608,6 +602,7 @@
                 "nameText": "CatchName|Text",
                 "playerAnimator": "Player|Animator",
                 "playerCatchClip": "ShowOff",
+                "playerHoldClip": "ShowOffHold",
                 "playerModel": "Player|Model",
                 "playerTransform": "Player",
                 "promptText": "CatchPrompt|Text",
@@ -911,6 +906,28 @@
             "rotation": [
               10.0,
               269.97983,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [],
+          "children": []
+        },
+        {
+          "name": "AnswerCameraTarget",
+          "transform": {
+            "position": [
+              50.10177,
+              3.7594323,
+              33.82769
+            ],
+            "rotation": [
+              10.0,
+              239.97983,
               0.0
             ],
             "scale": [
@@ -1440,6 +1457,7 @@
             "data": {
               "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\CameraMove.cs",
               "fields": {
+                "answerTarget": "AnswerCameraTarget",
                 "castTarget": "CastCameraTarget",
                 "catchTarget": "CatchCameraTarget",
                 "fishing": "Player|Fishing",
@@ -2133,16 +2151,16 @@
       ]
     },
     {
-      "name": "BeachAmbient",
+      "name": "CatchCameraTarget",
       "transform": {
         "position": [
-          0.0,
-          0.0,
-          0.0
+          47.60229,
+          2.1594324,
+          32.328568
         ],
         "rotation": [
           0.0,
-          0.0,
+          89.97983,
           0.0
         ],
         "scale": [
@@ -2151,58 +2169,7 @@
           1.0
         ]
       },
-      "components": [
-        {
-          "name": "A",
-          "component": {
-            "type": "AudioComponent",
-            "data": {
-              "audio_path": "assets://mainGame/audios/beach.mp3",
-              "volume": 0.6,
-              "loop": false,
-              "play_on_start": false,
-              "spatial": false,
-              "min_distance": 2.0,
-              "max_distance": 50.0,
-              "pan": 0.0
-            }
-          }
-        },
-        {
-          "name": "B",
-          "component": {
-            "type": "AudioComponent",
-            "data": {
-              "audio_path": "assets://mainGame/audios/beach.mp3",
-              "volume": 0.6,
-              "loop": false,
-              "play_on_start": false,
-              "spatial": false,
-              "min_distance": 2.0,
-              "max_distance": 50.0,
-              "pan": 0.0
-            }
-          }
-        },
-        {
-          "name": "Script",
-          "component": {
-            "type": "ScriptComponent",
-            "data": {
-              "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\AmbientLoop.cs",
-              "fields": {
-                "audioPath": "",
-                "clipSeconds": "75.480",
-                "crossfadeSeconds": "1.000",
-                "playOnStart": "true",
-                "sourceA": "BeachAmbient|A",
-                "sourceB": "BeachAmbient|B",
-                "volume": "0.400"
-              }
-            }
-          }
-        }
-      ],
+      "components": [],
       "children": []
     },
     {
@@ -2268,6 +2235,79 @@
             }
           ],
           "children": []
+        },
+        {
+          "name": "BeachAmbient",
+          "transform": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          "components": [
+            {
+              "name": "A",
+              "component": {
+                "type": "AudioComponent",
+                "data": {
+                  "audio_path": "assets://mainGame/audios/beach.mp3",
+                  "volume": 0.6,
+                  "loop": false,
+                  "play_on_start": false,
+                  "spatial": false,
+                  "min_distance": 2.0,
+                  "max_distance": 50.0,
+                  "pan": 0.0
+                }
+              }
+            },
+            {
+              "name": "B",
+              "component": {
+                "type": "AudioComponent",
+                "data": {
+                  "audio_path": "assets://mainGame/audios/beach.mp3",
+                  "volume": 0.6,
+                  "loop": false,
+                  "play_on_start": false,
+                  "spatial": false,
+                  "min_distance": 2.0,
+                  "max_distance": 50.0,
+                  "pan": 0.0
+                }
+              }
+            },
+            {
+              "name": "Script",
+              "component": {
+                "type": "ScriptComponent",
+                "data": {
+                  "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\AmbientLoop.cs",
+                  "fields": {
+                    "audioPath": "",
+                    "clipSeconds": "75.480",
+                    "crossfadeSeconds": "1.000",
+                    "playOnStart": "true",
+                    "sourceA": "BeachAmbient|A",
+                    "sourceB": "BeachAmbient|B",
+                    "volume": "0.400"
+                  }
+                }
+              }
+            }
+          ],
+          "children": []
         }
       ]
     },
@@ -2280,9 +2320,9 @@
           "name": "Yasi",
           "transform": {
             "position": [
-              42.74925,
+              41.19637,
               2.136509,
-              31.581676
+              31.752274
             ],
             "rotation": [
               -0.0,
@@ -2308,7 +2348,7 @@
                         1.4285777,
                         0.0,
                         0.0,
-                        42.74925
+                        41.19637
                       ],
                       [
                         0.0,
@@ -2320,7 +2360,7 @@
                         0.0,
                         0.0,
                         1.4285777,
-                        31.581676
+                        31.752274
                       ],
                       [
                         0.0,
@@ -2470,9 +2510,9 @@
           "name": "Yasi(1)",
           "transform": {
             "position": [
-              25.961988,
+              26.372093,
               2.136509,
-              26.22508
+              27.052889
             ],
             "rotation": [
               0.59068155,
@@ -2498,7 +2538,7 @@
                         0.6920055,
                         -0.024993887,
                         -1.2495352,
-                        25.961988
+                        26.372093
                       ],
                       [
                         0.024993887,
@@ -2510,7 +2550,7 @@
                         1.2495352,
                         -0.014727429,
                         0.69230014,
-                        26.22508
+                        27.052889
                       ],
                       [
                         0.0,
@@ -14924,6 +14964,56 @@
           "children": []
         },
         {
+          "name": "JudgeHint",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              60.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "",
+                  "font_size": 28.0,
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "align": "center",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 20
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
           "name": "DistanceText",
           "actor_kind": "Actor2D",
           "canvas_transform": {
@@ -14974,28 +15064,6 @@
           "children": []
         }
       ]
-    },
-    {
-      "name": "CatchCameraTarget",
-      "transform": {
-        "position": [
-          47.60229,
-          2.1594324,
-          32.328568
-        ],
-        "rotation": [
-          0.0,
-          89.97983,
-          0.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "components": [],
-      "children": []
     }
   ]
 }

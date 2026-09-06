@@ -251,6 +251,15 @@ public class FishingController : SEEDScript
     public FishState State { get; private set; } = FishState.Idle;
 
     /// <summary>
+    /// ヒット中のやり取りのフェーズ（<see cref="FishingFight.CurrentPhase"/> の中継）。
+    ///
+    /// カメラ（<c>CameraMove</c>）が「回答中だけ構図を切り替える」判断に使う。
+    /// やり取りスクリプトが未設定なら常に <see cref="FishingFight.Phase.None"/>。
+    /// </summary>
+    public FishingFight.Phase FightPhase
+        => fight is { } f ? f.CurrentPhase : FishingFight.Phase.None;
+
+    /// <summary>
     /// 釣り上げ演出のフェーズ（<see cref="CameraMove"/> がカメラ目標の切替に使う）。
     /// プレゼンタ未設定・演出していないときは <see cref="CatchPresenter.CatchPhase.None"/>。
     /// 参照スクリプトは毎フレーム見に行く（ホットリロードで実インスタンスが差し替わるため）。
@@ -300,6 +309,9 @@ public class FishingController : SEEDScript
 
     /// <summary>「ウキが沈んでいない」ことを表す沈みタイマーの番人値（負値＝無効）。</summary>
     private const float NoDipElapsed = -1f;
+
+    /// <summary>判定表示（画像・ヒント）を出しているときの不透明度。</summary>
+    private const float JudgeVisibleOpacity = 1f;
 
     /// <summary>SEED.Random.Range(int, int) の上限は排他なので、回数の上限に足す 1。</summary>
     private const int InclusiveUpperBound = 1;
@@ -916,6 +928,24 @@ public class FishingController : SEEDScript
     private SEED.Sprite? judgeMissSprite = null;
 
     /// <summary>
+    /// 判定画像に添える「早い／遅い」のヒント（<c>JudgeHint</c> の Text を割り当てる）。
+    ///
+    /// リズムのやり取り（<see cref="FishingFight"/>）が
+    /// <see cref="ShowFightJudgement"/> で書き込む。表示・非表示は判定画像と完全に同期し、
+    /// 合わせ（HookWindow）の判定では常に空文字になる（＝ヒントを出さない）。
+    /// </summary>
+    [SerializeField(Label = "判定ヒントのText(早い/遅い)")]
+    private SEED.Text? judgeHintText = null;
+
+    /// <summary>「早い（打点より前に叩いた）」ときにヒントへ出す文言。</summary>
+    [SerializeField(Label = "ヒントの文言(早い)")]
+    private string judgeHintEarly = "早い";
+
+    /// <summary>「遅い（打点より後に叩いた）」ときにヒントへ出す文言。</summary>
+    [SerializeField(Label = "ヒントの文言(遅い)")]
+    private string judgeHintLate = "遅い";
+
+    /// <summary>
     /// 釣り上げ演出（<see cref="FishState.Catching"/>）を進行させるプレゼンタ。
     /// 同じアクタ（プレイヤー）に 2 本目のスクリプトスロット「Catch」として置き、ここへ割り当てる。
     ///
@@ -1029,6 +1059,12 @@ public class FishingController : SEEDScript
 
     /// <summary>判定画像を表示し始めてからの経過秒数。</summary>
     private float judgeElapsed = 0f;
+
+    /// <summary>
+    /// いま表示している判定に添えるヒント（"早い" / "遅い"。空文字 ＝ ヒント無し）。
+    /// リズムのやり取りの判定（<see cref="ShowFightJudgement"/>）だけが入れる。
+    /// </summary>
+    private string judgeHint = "";
 
     /// <summary>
     /// 表示中の判定スプライトの元サイズ（ポップで書き換える前の値）。
@@ -1955,6 +1991,15 @@ public class FishingController : SEEDScript
     {
         if (fight is not { } f) { return; }
 
+        // 出題の打点演出（PlayNibbleCue）で使う沈みアニメを進める。
+        // アタリ中（Nibbling / HookWindow / 連鎖）は UpdateBiteTiming が同じタイマーを
+        // 進めるので、二重に進めないよう Hooked のときだけここで進める。
+        if (State == FishState.Hooked && nibbleDipElapsed >= 0f)
+        {
+            nibbleDipElapsed += deltaTime;
+            if (nibbleDipElapsed >= nibbleDipSeconds) { nibbleDipElapsed = NoDipElapsed; }
+        }
+
         f.Tick(deltaTime, ReadReelAmount());
 
         // 残り距離（ウキ→竿先の水平距離）の表示。ウキが無ければ 0 を出す。
@@ -1984,6 +2029,7 @@ public class FishingController : SEEDScript
     private void BreakLine()
     {
         fight?.EndFight();             // Paused も EndFight で必ず解除される
+        nibbleDipElapsed = NoDipElapsed;   // 出題の沈みアニメが途中なら必ず戻す
         CancelHop();
         ReleaseChainNibbler();         // 連鎖でつつきに来ていた魚が居れば一緒に逃がす
         ReleaseHook();                 // 掛かっていた魚を逃がす（Escape → 退場）
@@ -2161,7 +2207,8 @@ public class FishingController : SEEDScript
     {
         CancelHop();                   // 巻き取りが終わったら跳ねも必ず畳む
         ReleaseChainNibbler();         // 連鎖でつつきに来ていた魚が居れば逃がす（釣り上げに巻き込まない）
-        fight?.EndFight();             // やり取り（ゲージ・糸HP）は成否にかかわらずここで畳む
+        fight?.EndFight();             // やり取り（テンション・魚HP）は成否にかかわらずここで畳む
+        nibbleDipElapsed = NoDipElapsed;   // 出題の沈みアニメが途中なら必ず戻す（ウキが沈んだまま残らないように）
 
         // ── 釣り上げ成立 ──
         if (hookedFish is { } caught)
@@ -2748,7 +2795,11 @@ public class FishingController : SEEDScript
 
     /// <summary>判定画像の表示を開始する（表示中なら差し替えて再生し直す）。</summary>
     /// <param name="judgement">表示する判定。</param>
-    private void ShowJudgement(HookJudgement judgement)
+    /// <param name="hint">
+    /// 判定に添えるヒント（"早い" / "遅い"）。空文字ならヒントは出さない。
+    /// 合わせ（<see cref="FishState.HookWindow"/>）の判定では常に空文字。
+    /// </param>
+    private void ShowJudgement(HookJudgement judgement, string hint = "")
     {
         if (judgement == HookJudgement.None) { return; }
 
@@ -2757,8 +2808,49 @@ public class FishingController : SEEDScript
 
         judgeDisplay = judgement;
         judgeElapsed = 0f;
+        judgeHint = hint;
         if (JudgeSprite(judgement) is { IsValid: true } sprite) { judgeBaseSize = sprite.Size; }
-        ApplyJudgeVisibility(judgement, 1f);
+        ApplyJudgeVisibility(judgement, JudgeVisibleOpacity);
+    }
+
+    /// <summary>
+    /// リズムのやり取り（<see cref="FishingFight"/>）の判定を表示する
+    /// 【やり取り側から判定 UI を触る唯一の入口】。
+    ///
+    /// 判定画像は合わせのものをそのまま流用し、加えて「早い／遅い」のヒントを添える。
+    /// Excellent（ぴったり）とヒントを出す意味が無い場合（<paramref name="signedOffsetSeconds"/> が 0）は
+    /// ヒントを空にする。
+    /// </summary>
+    /// <param name="judgement">表示する判定。</param>
+    /// <param name="signedOffsetSeconds">打点との時間差（＋ ＝ 遅い / − ＝ 早い、秒）。</param>
+    public void ShowFightJudgement(HookJudgement judgement, float signedOffsetSeconds)
+    {
+        ShowJudgement(judgement, JudgeHintFor(judgement, signedOffsetSeconds));
+    }
+
+    /// <summary>
+    /// 判定と時間差に対応するヒント文言を返す（出さない場合は空文字）。
+    /// </summary>
+    /// <param name="judgement">判定。</param>
+    /// <param name="signedOffsetSeconds">打点との時間差（＋ ＝ 遅い / − ＝ 早い、秒）。</param>
+    private string JudgeHintFor(HookJudgement judgement, float signedOffsetSeconds)
+    {
+        if (judgement == HookJudgement.Excellent) { return string.Empty; }
+        if (SEED.Mathf.Abs(signedOffsetSeconds) <= DivideEpsilon) { return string.Empty; }
+        return signedOffsetSeconds > 0f ? judgeHintLate : judgeHintEarly;
+    }
+
+    /// <summary>
+    /// リズムのやり取りの「出題」で、前アタリとまったく同じ演出（つつき音＋ウキの沈み）を出す
+    /// 【出題の打点演出の唯一の入口】。
+    ///
+    /// 沈みアニメは前アタリと同じ <see cref="nibbleDipElapsed"/> を使い回すので、
+    /// ヒット中の沈み（<see cref="biteDipDepth"/>）へ<b>加算</b>される形で見える。
+    /// </summary>
+    public void PlayNibbleCue()
+    {
+        nibbleDipElapsed = 0f;
+        PlaySe(nibbleSePath, nibbleSeVolume);
     }
 
     /// <summary>
@@ -2797,6 +2889,7 @@ public class FishingController : SEEDScript
         RestoreJudgeSize();
         judgeDisplay = HookJudgement.None;
         judgeElapsed = 0f;
+        judgeHint = string.Empty;
         ApplyJudgeVisibility(HookJudgement.None, 0f);
     }
 
@@ -2820,6 +2913,14 @@ public class FishingController : SEEDScript
         ApplySpriteOpacity(judgeGreatSprite, visible == HookJudgement.Great ? opacity : 0f);
         ApplySpriteOpacity(judgeNiceSprite, visible == HookJudgement.Nice ? opacity : 0f);
         ApplySpriteOpacity(judgeMissSprite, visible == HookJudgement.Miss ? opacity : 0f);
+
+        // ヒント（早い／遅い）は判定画像と完全に同期させる。
+        // 文言が空（合わせの判定・Excellent など）のときは不透明度も 0 にして必ず消す。
+        if (judgeHintText is not { } hint || !hint.IsValid) { return; }
+
+        bool showHint = visible != HookJudgement.None && !string.IsNullOrEmpty(judgeHint);
+        hint.Content = showHint ? judgeHint : string.Empty;
+        hint.Color = hint.Color.WithAlpha(showHint ? opacity : 0f);
     }
 
     /// <summary>判定に対応するスプライト（未設定なら null）。</summary>
