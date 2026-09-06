@@ -304,7 +304,8 @@ public class HitBanner : SEEDScript
             return BandScaleOpen;
         }
         float exitT = Progress01(elapsed - ExitStartSeconds, SEED.Mathf.Max(exitSeconds, 0f));
-        return BandScaleOpen - EaseOutCubic(exitT);
+        // 退場は出現の逆再生: 帯は中央線へ向かって閉じる（EaseIn＝ゆっくり始まり加速して消える）
+        return BandScaleOpen - EaseInCubic(exitT);
     }
 
     /// <summary>
@@ -324,7 +325,8 @@ public class HitBanner : SEEDScript
         if (elapsed < ExitStartSeconds) { return 1f; }
 
         float exitT = Progress01(elapsed - ExitStartSeconds, SEED.Mathf.Max(exitSeconds, 0f));
-        return 1f - EaseOutCubic(exitT);
+        // 退場は出現の逆再生: 文字は入ってきた側（左上は左へ・右下は右へ）へ EaseIn で戻る
+        return 1f - EaseInCubic(exitT);
     }
 
     /// <summary>区間内の進行度（0〜1）。長さが 0 以下なら即 1（区間を飛ばす）。</summary>
@@ -335,6 +337,13 @@ public class HitBanner : SEEDScript
 
     /// <summary>easeOutCubic（＝ 1 −(1 − t)³）。終わりへ向かってなめらかに減速する。</summary>
     /// <param name="t">進行度（0〜1）。</param>
+    /// <summary>EaseInCubic: t^3。退場（出現の逆再生）用。ゆっくり動き出して加速する。</summary>
+    private static float EaseInCubic(float t)
+    {
+        float c = SEED.Mathf.Clamped01(t);
+        return c * c * c;
+    }
+
     private static float EaseOutCubic(float t)
     {
         float inv = 1f - SEED.Mathf.Clamped01(t);
