@@ -38,6 +38,8 @@ struct TextMeasureReq {
     align: crate::engine::components::TextAlign,
     vertical_align: crate::engine::components::TextVerticalAlign,
     font_path: String,
+    /// 縁取りの太さ（px）。枠は縁取りぶんだけ外へ広がるので計測に渡す。
+    outline_width: f32,
 }
 
 impl App {
@@ -67,6 +69,7 @@ impl App {
                 r.align,
                 r.vertical_align,
                 &r.font_path,
+                r.outline_width,
             ) {
                 map.insert(r.slot_entity, bx);
             }
@@ -100,6 +103,7 @@ fn collect_text_reqs(
             align: tc.align,
             vertical_align: tc.vertical_align,
             font_path: tc.font_path.clone(),
+            outline_width: tc.outline_width,
         });
     }
     for child in actor.children() {

@@ -1144,6 +1144,7 @@ mod tests {
             TEXT_LINE_SPACING,
             align,
             valign,
+            0.0,
         )
         .expect("枠が得られる");
         let mut map = TextBoundsMap::new();

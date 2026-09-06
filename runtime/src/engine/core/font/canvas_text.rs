@@ -20,7 +20,7 @@
 // ============================================================
 
 use super::sdf::outline_px_to_sdf;
-use super::text_layout::{TextLocalBox, measure_text_box};
+use super::text_layout::{TextLocalBox, layout_origin, line_base_x, measure_text_box};
 use super::{FontSystem, GpuTextBatch, TextBatch};
 use crate::engine::components::{CanvasDrawZone, TextAlign, TextVerticalAlign, MAX_TEXT_CHARS};
 
@@ -133,10 +133,19 @@ impl CanvasTextRenderer {
         align: TextAlign,
         vertical_align: TextVerticalAlign,
         font_path: &str,
+        outline_width: f32,
     ) -> Option<TextLocalBox> {
         let font_id = self.font.registry.font_id(font_path);
         let font = self.font.registry.font(font_id);
-        measure_text_box(font, text, font_size, line_spacing, align, vertical_align)
+        measure_text_box(
+            font,
+            text,
+            font_size,
+            line_spacing,
+            align,
+            vertical_align,
+            outline_width,
+        )
     }
 
     /// 焼いたバッチをレンダーパスへ描画する。
@@ -184,26 +193,22 @@ impl CanvasTextRenderer {
         // （グリフごとに計算しても同じ値なので外へ括り出す）。
         let outline_dist = outline_px_to_sdf(item.outline_width, item.font_size);
 
-        // ブロック全体の高さ = 行数 × 行送り。
-        let line_step = item.font_size * item.line_spacing;
-        let block_height = line_step * lines.len() as f32;
-        // 垂直方向オフセット（キャンバス Y は下向き）。
-        let base_y = match item.vertical_align {
-            TextVerticalAlign::Top => 0.0,
-            TextVerticalAlign::Middle => -block_height * 0.5,
-            TextVerticalAlign::Bottom => -block_height,
-        };
+        // レイアウト原点は計測（measure_text_box）と**同じ関数**から得る。
+        // ここを各々で計算すると選択枠・ピック矩形が字とズレる。
+        let origin = layout_origin(
+            item.font_size,
+            item.line_spacing,
+            lines.len(),
+            item.vertical_align,
+        );
 
         for (row, line) in lines.iter().enumerate() {
             // 水平方向オフセット（行ごとに幅が違うので行単位で計算する）。
-            let base_x = match item.align {
-                TextAlign::Left => 0.0,
-                TextAlign::Center => -line.width * 0.5,
-                TextAlign::Right => -line.width,
-            };
-            // ペン Y はベースラインではなく「行の上端」。GlyphInfo.bearing[1] が
-            // 上端からのオフセット（Y 下向き）なので、そのまま足せる。
-            let pen_y = base_y + line_step * row as f32;
+            let base_x = line_base_x(item.align, line.width);
+            // ペン Y は当該行の**ベースライン**。GlyphInfo.bearing[1] は
+            // ベースラインからクアッド左上へのオフセット（上向きが負）なので
+            // そのまま足せる。
+            let pen_y = origin.first_baseline_y + origin.line_step * row as f32;
             let mut pen_x = base_x;
 
             for placed in &line.glyphs {
