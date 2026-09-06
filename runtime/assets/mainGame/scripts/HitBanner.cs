@@ -1,29 +1,42 @@
+using System.Collections.Generic;
 using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]（衝突しない基盤のみ）
 
 /// <summary>
 /// 魚が掛かった瞬間に一度だけ流す<b>「HIT!!!」の帯演出</b>の<b>再生窓口</b>。
 ///
-/// <b>付ける場所</b>: 演出の親アクタ「HitBannerItems」の子アクタ「HitBanner」。
+/// <b>付ける場所</b>: 演出のフォルダ「HitBannerItems」の子アクタ「HitBanner」。
 /// 見た目を持たない空の Actor2D で構わない。
 ///
 /// <b>演出そのものはキーフレームクリップが持つ</b>
-/// バー・文字の位置／回転／不透明度は、すべて
-/// <c>assets://mainGame/animations/hit_banner.anim</c>（クリップ名 "Hit"）の
-/// プロパティトラックが動かす。クリップは <b>HitBannerItems に付けた Animator スロット</b>が保持し、
-/// トラックの <c>actor_path</c>（"HitBandBlackTop" / "HitTextHit" など）で
-/// HitBannerItems の各子アクタを名前で指している
-/// （<c>actor_path</c> は Animator 保持アクタからの<b>下向き</b>相対パスで、親や兄弟へは遡れない。
-/// そのため Animator は HitBanner ではなく共通の親である HitBannerItems に置く）。
+/// バー・文字の位置／回転／不透明度は、すべてキーフレームクリップ（クリップ名 "Hit"）の
+/// プロパティトラックが動かす。本スクリプトは動きの数値を一切持たない。
+///
+/// <b>アイテムごとに Animator を 1 つ持つ</b>（2026-09-07 改定）
+/// 4 つのアイテム（帯 2 本・文字 2 つ）は<b>それぞれ別のアンカー</b>を持つ
+/// （帯上・Lv 文字は左上、帯下・HIT 文字は右下）。アンカーが違うと同じ親相対座標でも
+/// 画面上の意味が変わるため、1 本のクリップで <c>actor_path</c> を使ってまとめて
+/// 動かすことができない。そこで<b>アイテム 1 つにつき Animator スロット 1 つ ＋ 専用クリップ 1 本</b>
+/// に分割し、各クリップは <c>actor_path</c> を空文字（＝ Animator を持つアクタ自身）にして
+/// 自分だけを駆動する。
+/// <code>
+/// HitBandBlackTop    → assets://mainGame/animations/hit_banner_band_top.anim
+/// HitBandBlackBottom → assets://mainGame/animations/hit_banner_band_bottom.anim
+/// HitTextLevel       → assets://mainGame/animations/hit_banner_text_level.anim
+/// HitTextHit         → assets://mainGame/animations/hit_banner_text_hit.anim
+/// </code>
+/// 本スクリプトはその 4 つの Animator を <see cref="animators"/> にまとめて持ち、
+/// <b>同じクリップ名を全員へ同時に流す</b>（＝ 4 つのクリップが 1 つの演出を構成する）。
 ///
 /// したがって本スクリプトの責務は次の 3 つだけで、<b>動きの数値は一切持たない</b>:
 /// <list type="number">
 ///   <item>2 つの Text に文字列（「Lv◯ 魚名」「HIT!!!」）を流し込む</item>
 ///   <item>フォント・縁取りのようにアニメーションしない見た目を <see cref="OnStart"/> で整える</item>
-///   <item><see cref="Play"/> で Animator にクリップの再生を依頼する</item>
+///   <item><see cref="Play"/> で全 Animator にクリップの再生を依頼する</item>
 /// </list>
 ///
-/// <b>動きを直したいとき</b>: エディタのアニメーションパネルで HitBannerItems を選び、
-/// クリップ "Hit" を開いてキーを編集する（＝ <c>hit_banner.anim</c> を直接編集してもよい）。
+/// <b>動きを直したいとき</b>: エディタのアニメーションパネルで<b>動かしたいアイテム自身</b>
+/// （例: HitBandBlackTop）を選び、そのクリップ "Hit" を開いてキーを編集する
+/// （＝ 対応する <c>hit_banner_*.anim</c> を直接編集してもよい）。
 /// <b>帯の角度を変えるときはクリップの作り直しが要る</b>: 位置キーは角度 −12° で
 /// 展開済みの実座標であり、回転トラックだけ変えても位置は追従しない。
 ///
@@ -47,12 +60,15 @@ public class HitBanner : SEEDScript
     // ─── 参照（シーンで割り当てる） ────────────────────────────
 
     /// <summary>
-    /// 演出クリップを保持する Animator（HitBannerItems の「Animator」スロット）。
-    /// クリップのトラックが HitBannerItems 配下の子アクタを名前で指すため、
-    /// <b>HitBannerItems 自身</b>の Animator を割り当てること。
+    /// 演出クリップを保持する Animator の一覧（アイテム 1 つにつき 1 個）。
+    /// 帯 2 本・文字 2 つの Animator スロットを
+    /// <c>HitBandBlackTop|Animator</c> / <c>HitBandBlackBottom|Animator</c> /
+    /// <c>HitTextLevel|Animator</c> / <c>HitTextHit|Animator</c> の順に割り当てる
+    /// （順序に意味は無く、全員へ同じクリップ名を同時に流すだけ）。
+    /// 空でもロジックは成立する（演出が出ないだけで落ちない）。
     /// </summary>
-    [Header("参照"), SerializeField(Label = "演出のAnimator(HitBannerItems)")]
-    private SEED.Animator? animator = null;
+    [Header("参照"), SerializeField(Label = "各アイテムのAnimator")]
+    private List<SEED.Animator> animators = new();
 
     /// <summary>「Lv◯ 魚名」のテキスト（文字列とフォントだけを書き換える）。</summary>
     [SerializeField(Label = "レベル/魚名のText")]
@@ -64,7 +80,7 @@ public class HitBanner : SEEDScript
 
     // ─── 再生設定 ──────────────────────────────────────────
 
-    /// <summary>再生するクリップ名（Animator の clips に登録した名前と一致させる）。</summary>
+    /// <summary>再生するクリップ名（各 Animator の clips に登録した名前と一致させる。4 つとも "Hit"）。</summary>
     [Header("再生"), SerializeField(Label = "クリップ名")]
     private string clipName = "Hit";
 
@@ -100,10 +116,22 @@ public class HitBanner : SEEDScript
 
     /// <summary>
     /// 演出が再生中か。<b>正典は Animator の再生状態</b>（クリップが尺の末尾に達すると
-    /// エンジンが自動で false にする）。Animator 未割り当て・破棄済みのときは常に false。
+    /// エンジンが自動で false にする）。
+    /// 4 つのクリップは同じ尺・同じタイミングで流れるので、
+    /// <b>1 つでも再生中なら演出中</b>とみなす（未割り当て・破棄済みは無視する）。
     /// </summary>
     public bool IsPlaying
-        => animator is { } a && a.IsValid && a.IsPlaying && a.CurrentClip == clipName;
+    {
+        get
+        {
+            for (int i = 0; i < animators.Count; i++)
+            {
+                var a = animators[i];
+                if (a is { IsValid: true } && a.IsPlaying && a.CurrentClip == clipName) { return true; }
+            }
+            return false;
+        }
+    }
 
     // ─── 公開 API ───────────────────────────────────────────
 
@@ -124,8 +152,13 @@ public class HitBanner : SEEDScript
         SetTextContent(levelLabel, string.Format(levelTextFormat, levelPart, fishName));
         SetTextContent(hitLabel, hitText);
 
-        // クリップが位置と不透明度（アルファ 1 → 末尾で 0）をすべて駆動する
-        if (animator is { } a && a.IsValid) { a.Play(clipName); }
+        // クリップが位置と不透明度（アルファ 1 → 末尾で 0）をすべて駆動する。
+        // 4 つのアイテムへ同じクリップ名を同時に流し、1 つの演出として揃える。
+        for (int i = 0; i < animators.Count; i++)
+        {
+            var a = animators[i];
+            if (a is { IsValid: true }) { a.Play(clipName); }
+        }
     }
 
     // ─── ライフサイクル ──────────────────────────────────────

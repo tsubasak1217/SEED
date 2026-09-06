@@ -635,11 +635,8 @@
               "fields": {
                 "beatIconParent": "FishingUI",
                 "distanceText": "DistanceText|Text",
-                "gaugeMarker": "GaugeMarker|Sprite",
-                "gaugeMarkerTransform": "GaugeMarker",
-                "hpText": "HpText|Text",
-                "segmentSprites": "[\"GaugeSeg00|Sprite\", \"GaugeSeg01|Sprite\", \"GaugeSeg02|Sprite\", \"GaugeSeg03|Sprite\", \"GaugeSeg04|Sprite\", \"GaugeSeg05|Sprite\", \"GaugeSeg06|Sprite\", \"GaugeSeg07|Sprite\", \"GaugeSeg08|Sprite\", \"GaugeSeg09|Sprite\", \"GaugeSeg10|Sprite\", \"GaugeSeg11|Sprite\", \"GaugeSeg12|Sprite\", \"GaugeSeg13|Sprite\", \"GaugeSeg14|Sprite\", \"GaugeSeg15|Sprite\", \"GaugeSeg16|Sprite\", \"GaugeSeg17|Sprite\", \"GaugeSeg18|Sprite\", \"GaugeSeg19|Sprite\", \"GaugeSeg20|Sprite\", \"GaugeSeg21|Sprite\", \"GaugeSeg22|Sprite\", \"GaugeSeg23|Sprite\", \"GaugeSeg24|Sprite\", \"GaugeSeg25|Sprite\", \"GaugeSeg26|Sprite\", \"GaugeSeg27|Sprite\", \"GaugeSeg28|Sprite\", \"GaugeSeg29|Sprite\", \"GaugeSeg30|Sprite\", \"GaugeSeg31|Sprite\", \"GaugeSeg32|Sprite\", \"GaugeSeg33|Sprite\", \"GaugeSeg34|Sprite\", \"GaugeSeg35|Sprite\", \"GaugeSeg36|Sprite\", \"GaugeSeg37|Sprite\", \"GaugeSeg38|Sprite\", \"GaugeSeg39|Sprite\", \"GaugeSeg40|Sprite\", \"GaugeSeg41|Sprite\", \"GaugeSeg42|Sprite\", \"GaugeSeg43|Sprite\", \"GaugeSeg44|Sprite\", \"GaugeSeg45|Sprite\", \"GaugeSeg46|Sprite\", \"GaugeSeg47|Sprite\"]",
-                "segmentTransforms": "[\"GaugeSeg00\", \"GaugeSeg01\", \"GaugeSeg02\", \"GaugeSeg03\", \"GaugeSeg04\", \"GaugeSeg05\", \"GaugeSeg06\", \"GaugeSeg07\", \"GaugeSeg08\", \"GaugeSeg09\", \"GaugeSeg10\", \"GaugeSeg11\", \"GaugeSeg12\", \"GaugeSeg13\", \"GaugeSeg14\", \"GaugeSeg15\", \"GaugeSeg16\", \"GaugeSeg17\", \"GaugeSeg18\", \"GaugeSeg19\", \"GaugeSeg20\", \"GaugeSeg21\", \"GaugeSeg22\", \"GaugeSeg23\", \"GaugeSeg24\", \"GaugeSeg25\", \"GaugeSeg26\", \"GaugeSeg27\", \"GaugeSeg28\", \"GaugeSeg29\", \"GaugeSeg30\", \"GaugeSeg31\", \"GaugeSeg32\", \"GaugeSeg33\", \"GaugeSeg34\", \"GaugeSeg35\", \"GaugeSeg36\", \"GaugeSeg37\", \"GaugeSeg38\", \"GaugeSeg39\", \"GaugeSeg40\", \"GaugeSeg41\", \"GaugeSeg42\", \"GaugeSeg43\", \"GaugeSeg44\", \"GaugeSeg45\", \"GaugeSeg46\", \"GaugeSeg47\"]"
+                "gaugeSpace": "HpText",
+                "hpText": "HpText|Text"
               }
             }
           }
@@ -2634,6 +2631,47 @@
       ],
       "children": [
         {
+          "name": "FishRadar",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Script",
+              "component": {
+                "type": "ScriptComponent",
+                "data": {
+                  "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\FishRadar.cs",
+                  "fields": {
+                    "radarSpace": "FishRadar"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
           "name": "Whiteout",
           "actor_kind": "Actor2D",
           "canvas_transform": {
@@ -2675,56 +2713,6 @@
                   "width": 1280.0,
                   "height": 720.0,
                   "layer": 10,
-                  "postfx_path": "",
-                  "raycast_target": false
-                }
-              }
-            }
-          ],
-          "children": []
-        },
-        {
-          "name": "GaugeMarker",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              -78.5287,
-              115.90187
-            ],
-            "rotation": 214.1194,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.5,
-              0.5
-            ],
-            "anchor": [
-              0.5,
-              0.5
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "components": [
-            {
-              "name": "Sprite",
-              "component": {
-                "type": "SpriteComponent",
-                "data": {
-                  "texture_path": "assets://mainGame/textures/ui/white.png",
-                  "color": [
-                    1.0,
-                    1.0,
-                    1.0,
-                    0.0
-                  ],
-                  "width": 14.0,
-                  "height": 14.0,
-                  "layer": 16,
                   "postfx_path": "",
                   "raycast_target": false
                 }
@@ -2908,126 +2896,6 @@
           "children": []
         },
         {
-          "name": "FishRadar",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              110.0,
-              110.0
-            ],
-            "rotation": 0.0,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.5,
-              0.5
-            ],
-            "anchor": [
-              0.0,
-              0.0
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "components": [
-            {
-              "name": "Sprite",
-              "component": {
-                "type": "SpriteComponent",
-                "data": {
-                  "texture_path": "assets://mainGame/textures/ui/radar_bg.png",
-                  "color": [
-                    1.0,
-                    1.0,
-                    1.0,
-                    0.0
-                  ],
-                  "width": 180.0,
-                  "height": 180.0,
-                  "layer": 18,
-                  "postfx_path": "",
-                  "raycast_target": false
-                }
-              }
-            },
-            {
-              "name": "Script",
-              "component": {
-                "type": "ScriptComponent",
-                "data": {
-                  "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\FishRadar.cs",
-                  "fields": {
-                    "bgOpacity": "0.900",
-                    "bgSprite": "FishRadar|Sprite",
-                    "bgTransform": "FishRadar",
-                    "centerSprite": "RadarCenter|Sprite",
-                    "centerTransform": "RadarCenter",
-                    "radarRadiusPx": "80.000",
-                    "radarRangeMeters": "25.000",
-                    "radarSpace": "FishRadar",
-                    "uncatchableAlpha": "0.350"
-                  }
-                }
-              }
-            }
-          ],
-          "children": []
-        },
-        {
-          "name": "RadarCenter",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              110.0,
-              110.0
-            ],
-            "rotation": 0.0,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.5,
-              0.5
-            ],
-            "anchor": [
-              0.0,
-              0.0
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "components": [
-            {
-              "name": "Sprite",
-              "component": {
-                "type": "SpriteComponent",
-                "data": {
-                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
-                  "color": [
-                    0.72,
-                    1.0,
-                    0.24,
-                    0.0
-                  ],
-                  "width": 8.0,
-                  "height": 8.0,
-                  "layer": 19,
-                  "postfx_path": "",
-                  "raycast_target": false
-                }
-              }
-            }
-          ],
-          "children": []
-        },
-        {
           "name": "HitBannerItems",
           "actor_kind": "Actor2D",
           "canvas_transform": {
@@ -3053,29 +2921,8 @@
             "keep_aspect_ratio": false,
             "aspect_ratio_axis": "width"
           },
-          "components": [
-            {
-              "name": "Animator",
-              "component": {
-                "type": "AnimatorComponent",
-                "data": {
-                  "clips": [
-                    {
-                      "name": "Hit",
-                      "kind": "keyframe",
-                      "path": "assets://mainGame/animations/hit_banner.anim",
-                      "anim": "",
-                      "loop_mode": "once"
-                    }
-                  ],
-                  "default_clip": "",
-                  "play_on_start": false,
-                  "speed": 1.0,
-                  "default_fade_seconds": 0.0
-                }
-              }
-            }
-          ],
+          "is_folder": true,
+          "components": [],
           "children": [
             {
               "name": "HitBanner",
@@ -3111,7 +2958,7 @@
                     "data": {
                       "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\HitBanner.cs",
                       "fields": {
-                        "animator": "HitBannerItems|Animator",
+                        "animators": "[\"HitBandBlackTop|Animator\", \"HitBandBlackBottom|Animator\", \"HitTextLevel|Animator\", \"HitTextHit|Animator\"]",
                         "hitLabel": "HitTextHit|Text",
                         "levelLabel": "HitTextLevel|Text"
                       }
@@ -3126,8 +2973,8 @@
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  -253.8448,
-                  -232.299
+                  -511.26276,
+                  350.53406
                 ],
                 "rotation": -12.0,
                 "scale": [
@@ -3139,8 +2986,8 @@
                   0.5
                 ],
                 "anchor": [
-                  0.5,
-                  0.5
+                  0.0,
+                  0.0
                 ],
                 "scale_transform": true,
                 "scale_size": true,
@@ -3148,6 +2995,27 @@
                 "aspect_ratio_axis": "width"
               },
               "components": [
+                {
+                  "name": "Animator",
+                  "component": {
+                    "type": "AnimatorComponent",
+                    "data": {
+                      "clips": [
+                        {
+                          "name": "Hit",
+                          "kind": "keyframe",
+                          "path": "assets://mainGame/animations/hit_banner_text_level.anim",
+                          "anim": "",
+                          "loop_mode": "once"
+                        }
+                      ],
+                      "default_clip": "",
+                      "play_on_start": false,
+                      "speed": 1.0,
+                      "default_fade_seconds": 0.0
+                    }
+                  }
+                },
                 {
                   "name": "Text",
                   "component": {
@@ -3180,12 +3048,12 @@
               "children": []
             },
             {
-              "name": "HitBandBlackTop",
+              "name": "HitTextHit",
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  -58.2153,
-                  -273.8813
+                  553.6914,
+                  -111.70953
                 ],
                 "rotation": -12.0,
                 "scale": [
@@ -3197,8 +3065,8 @@
                   0.5
                 ],
                 "anchor": [
-                  0.5,
-                  0.5
+                  1.0,
+                  1.0
                 ],
                 "scale_transform": true,
                 "scale_size": true,
@@ -3207,55 +3075,26 @@
               },
               "components": [
                 {
-                  "name": "Sprite",
+                  "name": "Animator",
                   "component": {
-                    "type": "SpriteComponent",
+                    "type": "AnimatorComponent",
                     "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.0,
-                        0.0,
-                        0.0,
-                        1.0
+                      "clips": [
+                        {
+                          "name": "Hit",
+                          "kind": "keyframe",
+                          "path": "assets://mainGame/animations/hit_banner_text_hit.anim",
+                          "anim": "",
+                          "loop_mode": "once"
+                        }
                       ],
-                      "width": 2400.0,
-                      "height": 220.0,
-                      "layer": 25,
-                      "postfx_path": "",
-                      "raycast_target": false
+                      "default_clip": "",
+                      "play_on_start": false,
+                      "speed": 1.0,
+                      "default_fade_seconds": 0.0
                     }
                   }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "HitTextHit",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  253.8448,
-                  232.299
-                ],
-                "rotation": -12.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
+                },
                 {
                   "name": "Text",
                   "component": {
@@ -3288,12 +3127,12 @@
               "children": []
             },
             {
-              "name": "HitBandBlackBottom",
+              "name": "HitBandBlackTop",
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
-                  58.2153,
-                  273.8813
+                  0.0,
+                  0.0
                 ],
                 "rotation": -12.0,
                 "scale": [
@@ -3302,11 +3141,11 @@
                 ],
                 "pivot": [
                   0.5,
-                  0.5
+                  1.0
                 ],
                 "anchor": [
-                  0.5,
-                  0.5
+                  0.0,
+                  0.0
                 ],
                 "scale_transform": true,
                 "scale_size": true,
@@ -3314,6 +3153,27 @@
                 "aspect_ratio_axis": "width"
               },
               "components": [
+                {
+                  "name": "Animator",
+                  "component": {
+                    "type": "AnimatorComponent",
+                    "data": {
+                      "clips": [
+                        {
+                          "name": "Hit",
+                          "kind": "keyframe",
+                          "path": "assets://mainGame/animations/hit_banner_band_top.anim",
+                          "anim": "",
+                          "loop_mode": "once"
+                        }
+                      ],
+                      "default_clip": "",
+                      "play_on_start": false,
+                      "speed": 1.0,
+                      "default_fade_seconds": 0.0
+                    }
+                  }
+                },
                 {
                   "name": "Sprite",
                   "component": {
@@ -3336,58 +3196,27 @@
                 }
               ],
               "children": []
-            }
-          ]
-        },
-        {
-          "name": "GaugeSegments",
-          "actor_kind": "Actor2D",
-          "canvas_transform": {
-            "position": [
-              0.0,
-              0.0
-            ],
-            "rotation": 0.0,
-            "scale": [
-              1.0,
-              1.0
-            ],
-            "pivot": [
-              0.0,
-              0.0
-            ],
-            "anchor": [
-              0.0,
-              0.0
-            ],
-            "scale_transform": true,
-            "scale_size": true,
-            "keep_aspect_ratio": false,
-            "aspect_ratio_axis": "width"
-          },
-          "is_folder": true,
-          "components": [],
-          "children": [
+            },
             {
-              "name": "GaugeSeg00",
+              "name": "HitBandBlackBottom",
               "actor_kind": "Actor2D",
               "canvas_transform": {
                 "position": [
                   0.0,
-                  -140.0
+                  0.0
                 ],
-                "rotation": 0.0,
+                "rotation": -12.0,
                 "scale": [
                   1.0,
                   1.0
                 ],
                 "pivot": [
                   0.5,
-                  0.5
+                  0.0
                 ],
                 "anchor": [
-                  0.5,
-                  0.5
+                  1.0,
+                  1.0
                 ],
                 "scale_transform": true,
                 "scale_size": true,
@@ -3396,55 +3225,26 @@
               },
               "components": [
                 {
-                  "name": "Sprite",
+                  "name": "Animator",
                   "component": {
-                    "type": "SpriteComponent",
+                    "type": "AnimatorComponent",
                     "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        1.0,
-                        0.4593386,
-                        0.16994913,
-                        0.0
+                      "clips": [
+                        {
+                          "name": "Hit",
+                          "kind": "keyframe",
+                          "path": "assets://mainGame/animations/hit_banner_band_bottom.anim",
+                          "anim": "",
+                          "loop_mode": "once"
+                        }
                       ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
+                      "default_clip": "",
+                      "play_on_start": false,
+                      "speed": 1.0,
+                      "default_fade_seconds": 0.0
                     }
                   }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg01",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  18.273668,
-                  -138.80228
-                ],
-                "rotation": 7.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
+                },
                 {
                   "name": "Sprite",
                   "component": {
@@ -3452,2314 +3252,14 @@
                     "data": {
                       "texture_path": "assets://mainGame/textures/ui/white.png",
                       "color": [
-                        1.0,
-                        0.4593386,
-                        0.16994913,
-                        0.0
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0
                       ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg02",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  36.234665,
-                  -135.22961
-                ],
-                "rotation": 15.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        1.0,
-                        0.4593386,
-                        0.16994913,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg03",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  53.575684,
-                  -129.34312
-                ],
-                "rotation": 22.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        1.0,
-                        0.4593386,
-                        0.16994913,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg04",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  70.0,
-                  -121.24355
-                ],
-                "rotation": 30.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        1.0,
-                        0.4593386,
-                        0.16994913,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg05",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  85.2266,
-                  -111.069466
-                ],
-                "rotation": 37.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        1.0,
-                        0.4593386,
-                        0.16994913,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg06",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  98.99495,
-                  -98.99495
-                ],
-                "rotation": 45.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        1.0,
-                        0.4593386,
-                        0.16994913,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg07",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  111.069466,
-                  -85.2266
-                ],
-                "rotation": 52.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        1.0,
-                        0.4593386,
-                        0.16994913,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg08",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  121.24356,
-                  -69.99999
-                ],
-                "rotation": 60.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        1.0,
-                        0.4593386,
-                        0.16994913,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg09",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  129.34312,
-                  -53.57568
-                ],
-                "rotation": 67.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        1.0,
-                        0.4593386,
-                        0.16994913,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg10",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  135.22961,
-                  -36.23467
-                ],
-                "rotation": 75.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg11",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  138.80228,
-                  -18.273674
-                ],
-                "rotation": 82.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg12",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  140.0,
-                  0.000006119594
-                ],
-                "rotation": 90.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg13",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  138.80228,
-                  18.27367
-                ],
-                "rotation": 97.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg14",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  135.22961,
-                  36.234665
-                ],
-                "rotation": 105.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg15",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  129.34314,
-                  53.575676
-                ],
-                "rotation": 112.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg16",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  121.24355,
-                  70.00001
-                ],
-                "rotation": 120.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg17",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  111.069466,
-                  85.2266
-                ],
-                "rotation": 127.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg18",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  98.99495,
-                  98.99495
-                ],
-                "rotation": 135.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg19",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  85.2266,
-                  111.069466
-                ],
-                "rotation": 142.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg20",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  70.00001,
-                  121.24355
-                ],
-                "rotation": 150.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg21",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  53.575687,
-                  129.34312
-                ],
-                "rotation": 157.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg22",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  36.23468,
-                  135.22961
-                ],
-                "rotation": 165.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg23",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  18.273685,
-                  138.80228
-                ],
-                "rotation": 172.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg24",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -0.000012239188,
-                  140.0
-                ],
-                "rotation": 180.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg25",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -18.273676,
-                  138.80228
-                ],
-                "rotation": 187.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg26",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -36.23467,
-                  135.22961
-                ],
-                "rotation": 195.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg27",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -53.57568,
-                  129.34312
-                ],
-                "rotation": 202.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg28",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -70.0,
-                  121.24355
-                ],
-                "rotation": 210.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg29",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -85.22659,
-                  111.06947
-                ],
-                "rotation": 217.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg30",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -98.99494,
-                  98.99496
-                ],
-                "rotation": 225.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg31",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -111.06946,
-                  85.22661
-                ],
-                "rotation": 232.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg32",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -121.24356,
-                  69.999985
-                ],
-                "rotation": 240.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg33",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -129.34312,
-                  53.5757
-                ],
-                "rotation": 247.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg34",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -135.22963,
-                  36.234657
-                ],
-                "rotation": 255.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg35",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -138.80228,
-                  18.273695
-                ],
-                "rotation": 262.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg36",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -140.0,
-                  -0.0000016694833
-                ],
-                "rotation": 270.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg37",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -138.80228,
-                  -18.273632
-                ],
-                "rotation": 277.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg38",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -135.22961,
-                  -36.23466
-                ],
-                "rotation": 285.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg39",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -129.34312,
-                  -53.575706
-                ],
-                "rotation": 292.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg40",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -121.24356,
-                  -69.999985
-                ],
-                "rotation": 300.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg41",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -111.06946,
-                  -85.226616
-                ],
-                "rotation": 307.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg42",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -98.994965,
-                  -98.99494
-                ],
-                "rotation": 315.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg43",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -85.22659,
-                  -111.06947
-                ],
-                "rotation": 322.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg44",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -70.00002,
-                  -121.243546
-                ],
-                "rotation": 330.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg45",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -53.57568,
-                  -129.34314
-                ],
-                "rotation": 337.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg46",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -36.2347,
-                  -135.2296
-                ],
-                "rotation": 345.0,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
-                      "postfx_path": "",
-                      "raycast_target": false
-                    }
-                  }
-                }
-              ],
-              "children": []
-            },
-            {
-              "name": "GaugeSeg47",
-              "actor_kind": "Actor2D",
-              "canvas_transform": {
-                "position": [
-                  -18.273672,
-                  -138.80228
-                ],
-                "rotation": 352.5,
-                "scale": [
-                  1.0,
-                  1.0
-                ],
-                "pivot": [
-                  0.5,
-                  0.5
-                ],
-                "anchor": [
-                  0.5,
-                  0.5
-                ],
-                "scale_transform": true,
-                "scale_size": true,
-                "keep_aspect_ratio": false,
-                "aspect_ratio_axis": "width"
-              },
-              "components": [
-                {
-                  "name": "Sprite",
-                  "component": {
-                    "type": "SpriteComponent",
-                    "data": {
-                      "texture_path": "assets://mainGame/textures/ui/white.png",
-                      "color": [
-                        0.25,
-                        0.28,
-                        0.32,
-                        0.0
-                      ],
-                      "width": 16.0,
-                      "height": 10.0,
-                      "layer": 15,
+                      "width": 2400.0,
+                      "height": 220.0,
+                      "layer": 25,
                       "postfx_path": "",
                       "raycast_target": false
                     }

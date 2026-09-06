@@ -1,0 +1,119 @@
+{
+  "name": "Hit",
+  "duration": 1.75,
+  "loop_mode": "once",
+  "tracks": [
+    {
+      "target": {
+        "actor_path": "",
+        "component": "canvas_transform",
+        "property": "position"
+      },
+      "value_type": "vec2",
+      "keys": [
+        {
+          "time": 0.0,
+          "value": [
+            1727.4685,
+            -361.2036
+          ],
+          "interp": "step"
+        },
+        {
+          "time": 0.1,
+          "value": [
+            1727.4685,
+            -361.2036
+          ],
+          "interp": "bezier",
+          "out_tan": [
+            -10060.9466,
+            2138.5206
+          ]
+        },
+        {
+          "time": 0.45,
+          "value": [
+            553.6914,
+            -111.70953
+          ],
+          "interp": "linear",
+          "in_tan": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "time": 1.45,
+          "value": [
+            553.6914,
+            -111.70953
+          ],
+          "interp": "bezier",
+          "out_tan": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "time": 1.75,
+          "value": [
+            -620.0857,
+            137.7845
+          ],
+          "interp": "linear",
+          "in_tan": [
+            -11737.771,
+            2494.9403
+          ]
+        }
+      ]
+    },
+    {
+      "target": {
+        "actor_path": "",
+        "component": "canvas_transform",
+        "property": "rotation"
+      },
+      "value_type": "float",
+      "keys": [
+        {
+          "time": 0.0,
+          "value": -12.0,
+          "interp": "step"
+        }
+      ]
+    },
+    {
+      "target": {
+        "actor_path": "",
+        "component": "text",
+        "property": "color"
+      },
+      "value_type": "color",
+      "keys": [
+        {
+          "time": 0.1,
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "interp": "step"
+        },
+        {
+          "time": 1.75,
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            0.0
+          ],
+          "interp": "step"
+        }
+      ]
+    }
+  ],
+  "events": []
+}

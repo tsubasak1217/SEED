@@ -401,22 +401,51 @@ mod tests {
     use super::*;
     use crate::engine::animation::sampler::sample_track;
 
-    /// HIT 帯演出クリップの実ファイルパス（runtime/assets は junction）。
-    const HIT_BANNER_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/assets/mainGame/animations/hit_banner.anim"
-    );
+    /// HIT 帯演出クリップが置かれているディレクトリ（runtime/assets は junction）。
+    const CLIP_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/mainGame/animations/");
+
+    /// 帯（上）のクリップ名。入場は法線の逆側から降りてくる。
+    const BAND_TOP_CLIP: &str = "hit_banner_band_top.anim";
+
+    /// 帯（下）のクリップ名。入場は法線側から上がってくる。
+    const BAND_BOTTOM_CLIP: &str = "hit_banner_band_bottom.anim";
+
+    /// 「Lv◯ 魚名」文字のクリップ名。
+    const TEXT_LEVEL_CLIP: &str = "hit_banner_text_level.anim";
+
+    /// 「HIT!!!」文字のクリップ名。
+    const TEXT_HIT_CLIP: &str = "hit_banner_text_hit.anim";
+
+    /// 4 つのクリップ（アイテム 1 つにつき 1 ファイル）。
+    const ALL_CLIPS: [&str; 4] = [
+        BAND_TOP_CLIP,
+        BAND_BOTTOM_CLIP,
+        TEXT_LEVEL_CLIP,
+        TEXT_HIT_CLIP,
+    ];
+
+    /// 文字クリップが画面外で静止している時間（秒）。文字の出遅れ表現。
+    const TEXT_DELAY_SECONDS: f32 = 0.10;
+
+    /// 位置の比較に許す誤差（px）。明示タンジェントの丸め誤差ぶんだけ緩める。
+    const POSITION_EPSILON: f32 = 0.5;
+
+    /// クリップを実ファイルから読む（読めない・壊れているならテストを落とす）。
+    fn load(file_name: &str) -> AnimationClip {
+        let path = format!("{CLIP_DIR}{file_name}");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{file_name} が読めること: {e}"));
+        AnimationClip::from_json(&path, &text)
+            .unwrap_or_else(|e| panic!("{file_name} の JSON が解析できること: {e}"))
+    }
 
     /// 指定トラックを探す（見つからなければパニックしてテストを落とす）。
-    fn find_track<'a>(clip: &'a AnimationClip, actor: &str, comp: &str, prop: &str) -> &'a Track {
+    /// アイテムごとにクリップを分けたので、束縛先は常に自分自身（actor_path 空文字）。
+    fn find_track<'a>(clip: &'a AnimationClip, comp: &str, prop: &str) -> &'a Track {
         clip.tracks
             .iter()
-            .find(|t| {
-                t.target.actor_path == actor
-                    && t.target.component == comp
-                    && t.target.property == prop
-            })
-            .unwrap_or_else(|| panic!("{actor}/{comp}.{prop} トラックが無い"))
+            .find(|t| t.target.actor_path.is_empty() && t.target.component == comp && t.target.property == prop)
+            .unwrap_or_else(|| panic!("{comp}.{prop} トラックが無い"))
     }
 
     /// Vec2 の成分を取り出す（値型違いはテスト失敗）。
@@ -427,92 +456,140 @@ mod tests {
         }
     }
 
-    /// 実ファイルを読んで構造（尺・ループ・トラック本数・束縛先）を検証する。
+    /// 4 つの実ファイルを読んで構造（尺・ループ・トラック構成・束縛先）を検証する。
     #[test]
-    fn hit_banner_clip_parses() {
-        let text = std::fs::read_to_string(HIT_BANNER_PATH).expect("hit_banner.anim が読めること");
-        let clip = AnimationClip::from_json(HIT_BANNER_PATH, &text).expect("JSON が解析できること");
+    fn hit_banner_clips_parse() {
+        for file_name in ALL_CLIPS {
+            let clip = load(file_name);
 
-        assert_eq!(clip.name, "Hit");
-        assert_eq!(clip.duration, 1.75);
-        assert_eq!(clip.loop_mode, LoopMode::Once);
-        // バー 2 本 × 3 トラック + 文字 2 つ × 3 トラック
-        assert_eq!(clip.tracks.len(), 12);
+            assert_eq!(clip.name, "Hit", "{file_name}");
+            assert_eq!(clip.duration, 1.75, "{file_name}");
+            assert_eq!(clip.loop_mode, LoopMode::Once, "{file_name}");
+            // 1 アイテムにつき 位置・回転・色 の 3 トラック
+            assert_eq!(clip.tracks.len(), 3, "{file_name}");
 
-        // 文字色トラックが color 型で 2 キー（不透明 → 透明）であること
-        let color = find_track(&clip, "HitTextHit", "text", "color");
-        assert_eq!(color.value_type, ValueType::Color);
-        assert_eq!(color.keys.len(), 2);
-        assert_eq!(color.keys[1].value, AnimValue::Color([1.0, 1.0, 1.0, 0.0]));
+            // すべてのトラックが「Animator を持つアクタ自身」を指すこと
+            // （アンカーが異なるアイテムを 1 本のクリップでまとめて動かせないための分割）
+            for track in &clip.tracks {
+                assert!(track.target.actor_path.is_empty(), "{file_name}");
+            }
+
+            // 傾きは演出中ずっと一定（−12°）
+            let rotation = find_track(&clip, "canvas_transform", "rotation");
+            assert_eq!(rotation.keys.len(), 1, "{file_name}");
+            assert_eq!(rotation.keys[0].value, AnimValue::Float(-12.0), "{file_name}");
+        }
+    }
+
+    /// 色トラックが「不透明 → 尺の末尾で透明」の 2 キーであること
+    /// （帯は sprite.color・文字は text.color を駆動する）。
+    #[test]
+    fn hit_banner_clips_fade_out_at_end() {
+        let cases: [(&str, &str, [f32; 3]); 4] = [
+            (BAND_TOP_CLIP, "sprite", [0.0, 0.0, 0.0]),
+            (BAND_BOTTOM_CLIP, "sprite", [0.0, 0.0, 0.0]),
+            (TEXT_LEVEL_CLIP, "text", [1.0, 1.0, 1.0]),
+            (TEXT_HIT_CLIP, "text", [1.0, 1.0, 1.0]),
+        ];
+
+        for (file_name, component, rgb) in cases {
+            let clip = load(file_name);
+            let color = find_track(&clip, component, "color");
+
+            assert_eq!(color.value_type, ValueType::Color, "{file_name}");
+            assert_eq!(color.keys.len(), 2, "{file_name}");
+            assert_eq!(
+                color.keys[0].value,
+                AnimValue::Color([rgb[0], rgb[1], rgb[2], 1.0]),
+                "{file_name}"
+            );
+            assert_eq!(
+                color.keys[1].value,
+                AnimValue::Color([rgb[0], rgb[1], rgb[2], 0.0]),
+                "{file_name}"
+            );
+        }
     }
 
     /// 入場区間の明示タンジェントが easeOutCubic を再現すること
-    /// （旧 HitBanner.cs の `1 - (1 - t)^3` と一致する）。
+    /// （旧 HitBanner.cs の `1 - (1 - t)^3` と一致する）。4 クリップすべてで確認する。
     #[test]
     fn entrance_tangents_reproduce_ease_out_cubic() {
-        let text = std::fs::read_to_string(HIT_BANNER_PATH).expect("hit_banner.anim が読めること");
-        let clip = AnimationClip::from_json(HIT_BANNER_PATH, &text).unwrap();
-        let track = find_track(&clip, "HitBandBlackTop", "canvas_transform", "position");
+        for file_name in ALL_CLIPS {
+            let clip = load(file_name);
+            let track = find_track(&clip, "canvas_transform", "position");
 
-        let start = vec2_of(track.keys[0].value);
-        let rest = vec2_of(track.keys[1].value);
-        let (t0, t1) = (track.keys[0].time, track.keys[1].time);
+            // 文字クリップは先頭に「画面外で静止する step キー」が 1 つ増えるので、
+            // 入場区間は「最後から 3 番目 → 4 番目」＝ 静止キーの 1 つ手前から始まる。
+            let entrance = track.keys.len() - 4;
+            let start = vec2_of(track.keys[entrance].value);
+            let rest = vec2_of(track.keys[entrance + 1].value);
+            let (t0, t1) = (track.keys[entrance].time, track.keys[entrance + 1].time);
 
-        // 区間内を細かく走査し、easeOutCubic の解析解と一致するか見る
-        for step in 0..=10 {
-            let u = step as f32 / 10.0;
-            let eased = 1.0 - (1.0 - u).powi(3);
-            let got = vec2_of(sample_track(track, t0 + (t1 - t0) * u).unwrap());
-            for c in 0..2 {
-                let want = start[c] + (rest[c] - start[c]) * eased;
-                assert!(
-                    (got[c] - want).abs() < 0.5,
-                    "u={u} 成分{c}: got {} want {}",
-                    got[c],
-                    want
-                );
+            // 区間内を細かく走査し、easeOutCubic の解析解と一致するか見る
+            for step in 0..=10 {
+                let u = step as f32 / 10.0;
+                let eased = 1.0 - (1.0 - u).powi(3);
+                let got = vec2_of(sample_track(track, t0 + (t1 - t0) * u).unwrap());
+                for c in 0..2 {
+                    let want = start[c] + (rest[c] - start[c]) * eased;
+                    assert!(
+                        (got[c] - want).abs() < POSITION_EPSILON,
+                        "{file_name} u={u} 成分{c}: got {} want {}",
+                        got[c],
+                        want
+                    );
+                }
             }
         }
     }
 
-    /// 退場区間の明示タンジェントが easeInCubic（t^3）を再現すること。
+    /// 退場区間の明示タンジェントが easeInCubic（t^3）を再現すること。4 クリップすべてで確認する。
     #[test]
     fn exit_tangents_reproduce_ease_in_cubic() {
-        let text = std::fs::read_to_string(HIT_BANNER_PATH).expect("hit_banner.anim が読めること");
-        let clip = AnimationClip::from_json(HIT_BANNER_PATH, &text).unwrap();
-        let track = find_track(&clip, "HitTextLevel", "canvas_transform", "position");
+        for file_name in ALL_CLIPS {
+            let clip = load(file_name);
+            let track = find_track(&clip, "canvas_transform", "position");
 
-        let last = track.keys.len() - 1;
-        let rest = vec2_of(track.keys[last - 1].value);
-        let exit = vec2_of(track.keys[last].value);
-        let (t0, t1) = (track.keys[last - 1].time, track.keys[last].time);
+            let last = track.keys.len() - 1;
+            let rest = vec2_of(track.keys[last - 1].value);
+            let exit = vec2_of(track.keys[last].value);
+            let (t0, t1) = (track.keys[last - 1].time, track.keys[last].time);
 
-        for step in 0..=10 {
-            let u = step as f32 / 10.0;
-            let eased = u * u * u;
-            let got = vec2_of(sample_track(track, t0 + (t1 - t0) * u).unwrap());
-            for c in 0..2 {
-                let want = rest[c] + (exit[c] - rest[c]) * eased;
-                assert!(
-                    (got[c] - want).abs() < 0.5,
-                    "u={u} 成分{c}: got {} want {}",
-                    got[c],
-                    want
-                );
+            for step in 0..=10 {
+                let u = step as f32 / 10.0;
+                let eased = u * u * u;
+                let got = vec2_of(sample_track(track, t0 + (t1 - t0) * u).unwrap());
+                for c in 0..2 {
+                    let want = rest[c] + (exit[c] - rest[c]) * eased;
+                    assert!(
+                        (got[c] - want).abs() < POSITION_EPSILON,
+                        "{file_name} u={u} 成分{c}: got {} want {}",
+                        got[c],
+                        want
+                    );
+                }
             }
         }
     }
 
-    /// 文字は再生開始から textDelaySeconds（0.10 秒）まで画面外で静止すること（step 区間）。
+    /// 文字は再生開始から TEXT_DELAY_SECONDS（0.10 秒）まで画面外で静止すること（step 区間）。
+    /// 帯には遅れが無いので、この確認は文字クリップだけに行う。
     #[test]
     fn text_holds_offscreen_during_delay() {
-        let text = std::fs::read_to_string(HIT_BANNER_PATH).expect("hit_banner.anim が読めること");
-        let clip = AnimationClip::from_json(HIT_BANNER_PATH, &text).unwrap();
-        let track = find_track(&clip, "HitTextLevel", "canvas_transform", "position");
+        for file_name in [TEXT_LEVEL_CLIP, TEXT_HIT_CLIP] {
+            let clip = load(file_name);
+            let track = find_track(&clip, "canvas_transform", "position");
 
-        let start = vec2_of(track.keys[0].value);
-        for t in [0.0_f32, 0.05, 0.099] {
-            assert_eq!(vec2_of(sample_track(track, t).unwrap()), start, "t={t}");
+            let start = vec2_of(track.keys[0].value);
+            assert_eq!(track.keys[1].time, TEXT_DELAY_SECONDS, "{file_name}");
+            for t in [0.0_f32, 0.05, 0.099] {
+                assert_eq!(
+                    vec2_of(sample_track(track, t).unwrap()),
+                    start,
+                    "{file_name} t={t}"
+                );
+            }
         }
     }
 }

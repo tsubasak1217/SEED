@@ -117,13 +117,17 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// ────────────────────────────────────────────────────────
 ///
 /// <b>UI（円形のリズム時計）</b>
-/// 画面中央の円（<c>GaugeSeg00</c>… の 48 セグメント＋<c>GaugeMarker</c>
+/// 画面中央の円（<b>プリミティブで描くセグメント＋マーカー</b>
 /// ＋ <b>プールした打点アイコン</b>）を時計として使う。
+/// セグメントとマーカーは<b>アクタを持たない</b>（2026-09-07 改定。旧 <c>GaugeSeg00</c>…
+/// の固定 48 枚のスプライトと <c>GaugeMarker</c> を廃止）。<see cref="SEED.Draw"/> で
+/// <see cref="gaugeSpace"/>（キャンバス中央のアクタ）のローカル空間へ毎フレーム描くので、
+/// 分割数はインスペクタ（<see cref="gaugeSegmentCount"/>）だけで変えられる。
 /// - マーカー（針）… <b>フェーズの進行</b>（<see cref="PhaseProgress01"/> × 360 度・
 ///   真上がフェーズ頭・右回り）。出題も回答も 2 小節なので、<b>1 フェーズで針が 1 周</b>する。
-///   隙（1〜2 小節）・余白でも同じく、その区間の長さで 1 周する。
+///   隙（1〜2 小節）・余白でも同じく、その区間の長さで 1 周する。三角形で描く。
 /// - セグメント … 真上から右回りに糸の残りの円弧（<see cref="Line01"/> × 360 度・
-///   減った分だけ空きセグメントに置き換わる）。円弧の色は満タン(緑)→中間(黄)→危険(赤)へ補間。
+///   減った分だけ空き色に置き換わる）。円弧の色は満タン(緑)→中間(黄)→危険(赤)へ補間。
 ///   <b>セグメントは糸ゲージ専用</b>で、打点は一切描かない（旧「拍マーク」は廃止）。
 /// - 打点アイコン … フレーズの打点 1 つにつき 1 枚。
 ///   <b>シーンにアクタを並べず</b>、<see cref="beatIconActorPath"/> の <c>.actor</c> を
@@ -241,8 +245,17 @@ public class FishingFight : SEEDScript
     /// <summary>倍率の基準値（1 ＝ 効果なし）。</summary>
     private const float NeutralMultiplier = 1f;
 
-    /// <summary>色キャッシュの未書き込みを表す番兵アルファ（実値として現れない負値）。</summary>
-    private const float UncachedAlpha = -1f;
+    /// <summary>中心から端までの割合（大きさの半分を求めるための係数）。</summary>
+    private const float HalfScale = 0.5f;
+
+    /// <summary>マーカー（針）を糸ゲージより手前に出すためのレイヤー差。</summary>
+    private const int MarkerLayerOffset = 1;
+
+    /// <summary>マーカーの多角形の頂点数（3 ＝ 三角形の針）。</summary>
+    private const int MarkerVertexCount = 3;
+
+    /// <summary>円の分割数の下限（0 除算とゼロ個描画を避ける）。</summary>
+    private const int MinSegmentCount = 1;
 
     /// <summary>
     /// easeOutBack の跳ね返り係数（一般的な実装値）。
@@ -534,18 +547,22 @@ public class FishingFight : SEEDScript
     // ─── UI 参照 ─────────────────────────────────────────
 
     /// <summary>
-    /// 円を構成するセグメントのスプライト（<c>GaugeSeg00</c>… を順に割り当てる）。
-    /// 個数はそのまま円の分割数になる。未設定でもロジックは成立する。
+    /// 糸ゲージ（円）とマーカーを描く座標空間【ゲージの基準の唯一の置き場】。
+    /// キャンバス中央アンカーのアクタ（<c>HpText</c>）を割り当てる想定で、
+    /// この空間のローカル原点＋<see cref="gaugeCenterOffsetXPx"/>/<see cref="gaugeCenterOffsetYPx"/>
+    /// がゲージの中心になる。
+    /// 未設定ならゲージを描かない（誤った場所へ描かないため）。
     /// </summary>
-    [Header("UI 参照"), SerializeField(Label = "円セグメントのSprite")]
-    private List<SEED.Sprite> segmentSprites = new();
+    [Header("UI 参照"), SerializeField(Label = "ゲージの座標空間(CanvasTransform)")]
+    private SEED.CanvasTransform? gaugeSpace = null;
 
-    /// <summary>
-    /// 円セグメントの CanvasTransform（位置と回転を書き換える）。
-    /// <see cref="segmentSprites"/> と<b>同じ順・同じアクタ</b>を割り当てること。
-    /// </summary>
-    [SerializeField(Label = "円セグメントのCanvasTransform")]
-    private List<SEED.CanvasTransform> segmentTransforms = new();
+    /// <summary>ゲージ中心を <see cref="gaugeSpace"/> の原点からずらす量（X・px）。</summary>
+    [SerializeField(Label = "ゲージ中心のずらしX(px)")]
+    private float gaugeCenterOffsetXPx = 0f;
+
+    /// <summary>ゲージ中心を <see cref="gaugeSpace"/> の原点からずらす量（Y・px・下が正）。</summary>
+    [SerializeField(Label = "ゲージ中心のずらしY(px)")]
+    private float gaugeCenterOffsetYPx = 0f;
 
     /// <summary>
     /// 打点アイコンのプレハブ（<c>.actor</c>）の仮想パス。
@@ -578,17 +595,6 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "打点アイコンの初期プール数")]
     private int initialBeatIconPool = 16;
 
-    /// <summary>小節内の進行を示すマーカーのスプライト（白い小片）。</summary>
-    [SerializeField(Label = "マーカーのSprite")]
-    private SEED.Sprite? gaugeMarker = null;
-
-    /// <summary>
-    /// マーカーの CanvasTransform（円周上の位置を毎フレーム書き換える）。
-    /// <see cref="gaugeMarker"/> と<b>同じアクタ</b>を割り当てること。
-    /// </summary>
-    [SerializeField(Label = "マーカーのCanvasTransform")]
-    private SEED.CanvasTransform? gaugeMarkerTransform = null;
-
     /// <summary>円の中心に出す状態テキスト（フェーズ名／魚 HP ％／疲労 ％）。</summary>
     [SerializeField(Label = "状態のText")]
     private SEED.Text? hpText = null;
@@ -602,6 +608,27 @@ public class FishingFight : SEEDScript
     /// <summary>円の半径（ピクセル）。マーカーとセグメントの配置半径。</summary>
     [Header("UI レイアウト"), SerializeField(Label = "円の半径(px)")]
     private float arcRadiusPx = 140f;
+
+    /// <summary>
+    /// 糸ゲージの円を何個のセグメントに割るか（＝目盛りの粒度）。
+    /// 旧構成のスプライト 48 枚と同じ見た目になるよう既定は 48。
+    /// </summary>
+    [SerializeField(Label = "円セグメントの個数")]
+    private int gaugeSegmentCount = 48;
+
+    /// <summary>
+    /// 糸ゲージ（セグメント）の描画レイヤー。打点アイコン（BeatIcon.actor のレイヤー）より
+    /// 奥に、レーダー・ホワイトアウトより手前になる値にすること。旧スプライトと同じ 15 が既定。
+    /// </summary>
+    [SerializeField(Label = "ゲージのレイヤー")]
+    private int gaugeLayer = 15;
+
+    /// <summary>
+    /// マーカー（針）の大きさ（ピクセル・外接円の半径）。
+    /// 旧マーカースプライトは 14×14 px だったので、その半分の 7 が既定。
+    /// </summary>
+    [SerializeField(Label = "マーカーの大きさ(px)")]
+    private float markerSizePx = 7f;
 
     /// <summary>セグメントの幅（ピクセル）。円周方向の長さ。</summary>
     [SerializeField(Label = "セグメントの幅(px)")]
@@ -1058,11 +1085,12 @@ public class FishingFight : SEEDScript
     /// <summary>打点アイコンへ大きさを書き込んだ枚数（枚数が変わったときだけ書き直すための控え）。</summary>
     private int iconSizeAppliedCount = 0;
 
-    /// <summary>セグメントの配置を計算したときの個数（個数が変わったときだけ組み直す）。</summary>
-    private int cachedSegmentCount = 0;
-
-    /// <summary>各セグメントへ最後に書き込んだ色（差分更新のための控え）。</summary>
-    private readonly List<SEED.Color> cachedSegmentColors = new();
+    /// <summary>
+    /// 糸ゲージを描いてよいか（＝バトル UI を出している最中か）。
+    /// <see cref="ApplyUi"/> で立ち、<see cref="HideUi"/> で下りる。
+    /// プリミティブ描画は「描かない＝消える」ので、非表示はこのフラグだけで足りる。
+    /// </summary>
+    private bool gaugeVisible = false;
 
     // ─── ライフサイクル ───────────────────────────────────
 
@@ -1087,8 +1115,22 @@ public class FishingFight : SEEDScript
         DestroyIconPool();
     }
 
-    // 本スクリプトは自前の毎フレーム更新を持たない。
-    // 進行はすべて FishingController が Tick() で駆動する（実行順の曖昧さを排除するため）。
+    // 進行（拍時計・判定・巻き）は自前で回さず、すべて FishingController が Tick() で駆動する
+    // （実行順の曖昧さを排除するため）。毎フレーム自前で行うのは下の LateUpdate（描画）だけである。
+
+    /// <summary>
+    /// Update 後の更新【糸ゲージとマーカーを描く唯一の場所】。
+    ///
+    /// ゲージはスプライトではなくプリミティブ（<see cref="SEED.Draw"/>）で描くので、
+    /// 出し続けるには毎フレーム積み直す必要がある。積むのはここ 1 か所だけにして、
+    /// <see cref="Tick"/>（コントローラの Update から呼ばれる）で更新した最新の状態を
+    /// 1 フレームに 1 回だけ描く（2 か所で積むと同じ図形が二重に描かれる）。
+    /// </summary>
+    /// <param name="ctx">フレーム情報（未使用）。</param>
+    public override void LateUpdate(ref NativeFrameContext ctx)
+    {
+        DrawGauge();
+    }
 
     // ─── 公開 API ────────────────────────────────────────
 
@@ -1145,7 +1187,7 @@ public class FishingFight : SEEDScript
         //（開始時刻を余白の開始＝いまの clockTime から算出するため、必ずこの順序で呼ぶ）
         SetupDrumLoop();
 
-        InvalidateSegmentCache();
+        InvalidateIconCache();
         ApplyUi();
 
         SEED.Debug.Log($"[Fight] 開始: {fish.DisplayName} / 総合力 {CurrentFishPower():F2} vs 竿 {rodPower:F2}"
@@ -2358,84 +2400,116 @@ public class FishingFight : SEEDScript
 
     /// <summary>
     /// UI をバトル中の見た目へ更新する。
-    /// セグメントの配置は個数が変わったときだけ組み直し、色は差分があるものだけ書き換える。
+    /// 糸ゲージ・マーカーは<b>ここでは描かず</b>、表示フラグを立てるだけにして
+    /// 実際の描画は <see cref="LateUpdate"/> の <see cref="DrawGauge"/> に任せる
+    /// （プリミティブ描画を 1 フレーム 1 回に保つため）。
     /// </summary>
     private void ApplyUi()
     {
-        LayoutSegments();
-        ApplySegmentColors();
+        gaugeVisible = true;
         ApplyBeatIcons();
-        ApplyMarker();
         ApplyStatusText();
     }
 
     /// <summary>
-    /// セグメントを円周へ等間隔に並べる（個数が変わらないかぎり 1 度だけ）。
-    /// セグメント i の角度 ＝ i ÷ 個数 × 360 度（真上が 0・右回り）。
+    /// 糸ゲージ（円）とマーカー（針）をプリミティブで描く
+    /// 【ゲージ描画の唯一の出口】。
+    ///
+    /// ・セグメント … 真上から右回りに <see cref="gaugeSegmentCount"/> 個の小片を並べ、
+    ///   <see cref="Line01"/> × 個数ぶんだけ点灯色（満タン緑 → 中間黄 → 危険赤）で、
+    ///   残りは空き色で描く。1 個の小片は幅 <see cref="segmentWidthPx"/>（円周方向）×
+    ///   高さ <see cref="segmentHeightPx"/>（半径方向）の四角形で、角度ぶん回して置く。
+    /// ・マーカー … <see cref="PhaseProgress01"/>（フェーズ内の進行）の角度に置く三角形。
+    ///   セグメントより 1 レイヤーだけ手前に出す。
+    ///
+    /// 座標は <see cref="gaugeSpace"/> のローカル空間（原点＝そのアクタの位置・
+    /// 単位＝キャンバス px・Y 下向き）で、そこへ中心のずらしを足したところが円の中心になる。
     /// </summary>
-    private void LayoutSegments()
+    private void DrawGauge()
     {
-        int count = segmentSprites.Count;
-        if (count <= 0 || count == cachedSegmentCount) { return; }
+        if (!gaugeVisible) { return; }
+        if (gaugeSpace is not { IsValid: true } space) { return; }
+
+        SEED.Vector2 center = GaugeCenterPx(space);
+        int count = SEED.Mathf.Max(gaugeSegmentCount, MinSegmentCount);
+
+        // 点灯色は糸の残りで決まり、点灯するのは「残り × 個数」より手前のセグメント
+        float alpha = SEED.Mathf.Clamped01(segmentOpacity);
+        SEED.Color litColor = LineDepletionColor(alpha);
+        SEED.Color unlitColor = ToColor(emptyColor, alpha);
+        float lit = SEED.Mathf.Clamped01(Line01) * count;
+
+        float halfWidth = segmentWidthPx * HalfScale;
+        float halfHeight = segmentHeightPx * HalfScale;
 
         for (int i = 0; i < count; i++)
         {
             float degrees = SegmentDegrees(i, count);
+            SEED.Vector2 at = OffsetFrom(center, ArcPoint(degrees));
 
-            if (i < segmentTransforms.Count)
-            {
-                var tf = segmentTransforms[i];
-                if (tf.IsValid)
-                {
-                    tf.Position = ArcPoint(degrees);
-                    tf.Rotation = degrees;
-                }
-            }
-
-            var sprite = segmentSprites[i];
-            if (sprite.IsValid) { sprite.Size = new SEED.Vector2(segmentWidthPx, segmentHeightPx); }
+            // 小片は原点中心の四角形として渡し、SRT（位置＋回転）で円周上へ置く
+            SEED.Draw.Rect(
+                new SEED.Vector2(-halfWidth, -halfHeight),
+                new SEED.Vector2(halfWidth, -halfHeight),
+                new SEED.Vector2(halfWidth, halfHeight),
+                new SEED.Vector2(-halfWidth, halfHeight),
+                new SEED.Transform2D(at, degrees),
+                i < lit ? litColor : unlitColor,
+                layer: gaugeLayer,
+                space: space);
         }
 
-        cachedSegmentCount = count;
-
-        // 色のキャッシュを個数に合わせて張り直す（次の描画で必ず全数書き込まれる）
-        cachedSegmentColors.Clear();
-        for (int i = 0; i < count; i++)
-        {
-            cachedSegmentColors.Add(new SEED.Color(0f, 0f, 0f, UncachedAlpha));
-        }
+        DrawMarker(space, center);
     }
 
     /// <summary>
-    /// セグメントの色を決めて書き込む【糸ゲージの描画の唯一の出口】。
-    ///
-    /// セグメントは<b>糸の残りの円弧専用</b>（真上から右回りに <see cref="Line01"/> × 360 度ぶんだけ
-    /// 点灯。減るほど円弧が短くなる＝空きセグメントが増える）。
-    /// 打点はセグメントではなく打点アイコン（<see cref="ApplyBeatIcons"/>）が担当するので、
-    /// ここでは一切扱わない。
-    /// 値が変わっていないセグメントには書き込まない（毎フレーム 48 回の書き込みを避ける）。
+    /// マーカー（フェーズ内の進行を示す針）を描く。
+    /// 角度 ＝ <see cref="PhaseProgress01"/> × 360 度＝ 1 フェーズで 1 周。
+    /// 色はフェーズ（出題／回答／それ以外）で決まる。
     /// </summary>
-    private void ApplySegmentColors()
+    /// <param name="space">描画する座標空間。</param>
+    /// <param name="center">円の中心（<paramref name="space"/> のローカル座標）。</param>
+    private void DrawMarker(SEED.CanvasTransform space, SEED.Vector2 center)
     {
-        int count = segmentSprites.Count;
-        if (count <= 0) { return; }
+        float degrees = PhaseProgress01 * FullCircleDegrees;
 
-        float alpha = SEED.Mathf.Clamped01(segmentOpacity);
-        float lit = SEED.Mathf.Clamped01(Line01) * count;
-        SEED.Color litColor = LineDepletionColor(alpha);
-
-        for (int i = 0; i < count; i++)
+        SEED.Vector3 rgb = CurrentPhase switch
         {
-            // 糸の残りの円弧（i 番目が円弧の内側なら点灯色、外なら空き色）
-            SEED.Color color = i < lit ? litColor : ToColor(emptyColor, alpha);
+            Phase.Call => markerCallColor,
+            Phase.Answer => markerAnswerColor,
+            _ => markerRestColor,
+        };
 
-            if (i < cachedSegmentColors.Count && SameColor(cachedSegmentColors[i], color)) { continue; }
-
-            var sprite = segmentSprites[i];
-            if (sprite.IsValid) { sprite.Color = color; }
-            if (i < cachedSegmentColors.Count) { cachedSegmentColors[i] = color; }
-        }
+        SEED.Draw.RegularPolygon(
+            OffsetFrom(center, ArcPoint(degrees)),
+            SEED.Mathf.Max(markerSizePx, 0f),
+            MarkerVertexCount,
+            ToColor(rgb, SEED.Mathf.Clamped01(gaugeMarkerOpacity)),
+            rotationDegrees: degrees,
+            layer: gaugeLayer + MarkerLayerOffset,
+            space: space);
     }
+
+    /// <summary>
+    /// ゲージの中心（<paramref name="space"/> のローカル座標）
+    /// 【中心算出の唯一の点】。
+    ///
+    /// エンジンのローカル空間行列（<c>CanvasTransform::to_mesh_mat4</c>）は pivot を
+    /// ピクセル値として平行移動へ効かせるため、ローカル原点はアクタ位置から pivot 分ずれる。
+    /// pivot を足し戻したうえで、インスペクタのずらしを加える。
+    /// </summary>
+    /// <param name="space">描画する座標空間。</param>
+    private SEED.Vector2 GaugeCenterPx(SEED.CanvasTransform space)
+    {
+        SEED.Vector2 pivot = space.Pivot;
+        return new SEED.Vector2(pivot.x + gaugeCenterOffsetXPx, pivot.y + gaugeCenterOffsetYPx);
+    }
+
+    /// <summary>基準点に相対位置を足した点を返す（円周配置の共通処理）。</summary>
+    /// <param name="origin">基準点。</param>
+    /// <param name="offset">相対位置。</param>
+    private static SEED.Vector2 OffsetFrom(SEED.Vector2 origin, SEED.Vector2 offset)
+        => new SEED.Vector2(origin.x + offset.x, origin.y + offset.y);
 
     /// <summary>
     /// 糸の残り（<see cref="Line01"/>）に応じた点灯セグメントの色。
@@ -2718,32 +2792,6 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
-    /// マーカー（<b>フェーズ内</b>の進行を示す針）を更新する。
-    /// 角度 ＝ <see cref="PhaseProgress01"/> × 360 度＝ 1 フェーズで 1 周。
-    /// 色はフェーズ（疲労中は専用色）で決まる。
-    /// </summary>
-    private void ApplyMarker()
-    {
-        float degrees = PhaseProgress01 * FullCircleDegrees;
-
-        if (gaugeMarkerTransform is { } markerTf && markerTf.IsValid)
-        {
-            markerTf.Position = ArcPoint(degrees);
-            markerTf.Rotation = degrees;
-        }
-
-        if (gaugeMarker is not { } marker || !marker.IsValid) { return; }
-
-        SEED.Vector3 rgb = CurrentPhase switch
-        {
-            Phase.Call => markerCallColor,
-            Phase.Answer => markerAnswerColor,
-            _ => markerRestColor,
-        };
-        marker.Color = ToColor(rgb, SEED.Mathf.Clamped01(gaugeMarkerOpacity));
-    }
-
-    /// <summary>
     /// 円の中心テキスト（フェーズ名＋予告／魚 HP ％）を更新する。
     /// 余白（<see cref="Phase.LeadIn"/>）中だけは特別扱いで、残り拍数のカウントダウン
     /// （"4" → "3" → "2" → "1"）だけを大きく出す。
@@ -2812,41 +2860,28 @@ public class FishingFight : SEEDScript
     private static SEED.Color ToColor(SEED.Vector3 rgb, float alpha)
         => new SEED.Color(rgb.x, rgb.y, rgb.z, alpha);
 
-    /// <summary>2 つの色が（差分更新の観点で）同じとみなせるか。</summary>
-    /// <param name="a">色 A。</param>
-    /// <param name="b">色 B。</param>
-    private static bool SameColor(SEED.Color a, SEED.Color b)
-        => SEED.Mathf.Approximately(a.r, b.r)
-        && SEED.Mathf.Approximately(a.g, b.g)
-        && SEED.Mathf.Approximately(a.b, b.b)
-        && SEED.Mathf.Approximately(a.a, b.a);
-
-    /// <summary>次の描画でセグメントと打点アイコンを必ず組み直させる。</summary>
-    private void InvalidateSegmentCache()
+    /// <summary>次の描画で打点アイコンの大きさを必ず書き直させる。</summary>
+    private void InvalidateIconCache()
     {
-        cachedSegmentCount = 0;
-        cachedSegmentColors.Clear();
         iconSizeAppliedCount = 0;
     }
 
     /// <summary>UI をすべて隠す【非表示の唯一の出口】。</summary>
     private void HideUi()
     {
-        for (int i = 0; i < segmentSprites.Count; i++)
-        {
-            ApplySpriteOpacity(segmentSprites[i], 0f);
-        }
+        // 糸ゲージ・マーカーはプリミティブなので「描くのをやめる」だけで消える
+        gaugeVisible = false;
+
         for (int i = 0; i < iconSprites.Count; i++)
         {
             ApplySpriteOpacity(iconSprites[i], 0f);
         }
-        ApplySpriteOpacity(gaugeMarker, 0f);
 
         if (hpText is { } hp && hp.IsValid) { hp.Color = hp.Color.WithAlpha(0f); }
         if (distanceText is { } dist && dist.IsValid) { dist.Color = dist.Color.WithAlpha(0f); }
 
-        // 次に表示するときは必ず配置・着色し直す（隠すためにアルファを潰しているため）
-        InvalidateSegmentCache();
+        // 次に表示するときは必ず大きさを書き直す（枚数が変わっている可能性があるため）
+        InvalidateIconCache();
     }
 
     /// <summary>スプライトのアルファだけを書き換える（RGB はシーン／計算で入れた色を保つ）。</summary>

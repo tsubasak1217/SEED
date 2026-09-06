@@ -1,0 +1,111 @@
+{
+  "name": "Hit",
+  "duration": 1.75,
+  "loop_mode": "once",
+  "tracks": [
+    {
+      "target": {
+        "actor_path": "",
+        "component": "canvas_transform",
+        "property": "position"
+      },
+      "value_type": "vec2",
+      "keys": [
+        {
+          "time": 0.0,
+          "value": [
+            -187.1205,
+            -880.3328
+          ],
+          "interp": "bezier",
+          "out_tan": [
+            2245.446,
+            10563.9936
+          ]
+        },
+        {
+          "time": 0.25,
+          "value": [
+            0.0,
+            0.0
+          ],
+          "interp": "linear",
+          "in_tan": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "time": 1.45,
+          "value": [
+            0.0,
+            0.0
+          ],
+          "interp": "bezier",
+          "out_tan": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "time": 1.75,
+          "value": [
+            -187.1205,
+            -880.3328
+          ],
+          "interp": "linear",
+          "in_tan": [
+            -1871.205,
+            -8803.328
+          ]
+        }
+      ]
+    },
+    {
+      "target": {
+        "actor_path": "",
+        "component": "canvas_transform",
+        "property": "rotation"
+      },
+      "value_type": "float",
+      "keys": [
+        {
+          "time": 0.0,
+          "value": -12.0,
+          "interp": "step"
+        }
+      ]
+    },
+    {
+      "target": {
+        "actor_path": "",
+        "component": "sprite",
+        "property": "color"
+      },
+      "value_type": "color",
+      "keys": [
+        {
+          "time": 0.0,
+          "value": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "interp": "step"
+        },
+        {
+          "time": 1.75,
+          "value": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "interp": "step"
+        }
+      ]
+    }
+  ],
+  "events": []
+}
