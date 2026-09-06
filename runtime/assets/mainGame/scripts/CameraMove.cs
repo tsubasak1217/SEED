@@ -96,6 +96,18 @@ public class CameraMove : SEEDScript
     private SEED.Transform? runTarget = null;
 
     /// <summary>
+    /// リズムのやり取りの<b>出題フェーズ</b>（<see cref="FishingFight.Phase.Call"/>）で使う
+    /// 目標トランスフォーム（トップレベルの空アクタ「CallCameraTarget」を割り当てる想定）。
+    ///
+    /// 位置・向きは <see cref="FishingController.UpdateCallCameraTarget"/> が毎フレーム
+    /// 「<see cref="castTarget"/> と同じ向きのまま、ウキからの距離を縮めた位置」へ置き直す
+    /// （＝魚が出す合図に寄って見せる）。
+    /// 未設定・無効なら出題中も従来どおり <see cref="castTarget"/> を追う。
+    /// </summary>
+    [SerializeField(Label = "出題中の目標トランスフォーム")]
+    private SEED.Transform? callTarget = null;
+
+    /// <summary>
     /// 釣り上げ演出の「寄り」フェーズ（<see cref="CatchPresenter.CatchPhase.ApproachCamera"/>）の
     /// 目標トランスフォーム（トップレベルの空アクタ「CatchCameraTarget」を割り当てる想定）。
     /// 位置・向きは <see cref="CatchPresenter"/> が毎フレーム「魚を見る姿勢」へ置き直す。
@@ -304,6 +316,9 @@ public class CameraMove : SEEDScript
         // リズムの回答中はプレイヤーを見る構図へ切り替える（叩くタイミングに集中させる）
         if (IsAnswerPhase() && answerTarget is { } at && at.IsValid) { return at; }
 
+        // リズムの出題中はウキへ寄った構図（キャスト中と同じ向き・距離だけ縮める）
+        if (IsCallPhase() && callTarget is { } clt && clt.IsValid) { return clt; }
+
         // ウキが外に出ているあいだはウキ側の目標を最優先で追う（キャスト先が画面に入る）
         if (IsFloatOut() && castTarget is { } ct && ct.IsValid) { return ct; }
 
@@ -353,6 +368,17 @@ public class CameraMove : SEEDScript
         => fishing is { } f
         && f.State == FishingController.FishState.Hooked
         && f.FightPhase == FishingFight.Phase.Answer;
+
+    /// <summary>
+    /// リズムのやり取りが<b>出題フェーズ</b>かを返す（構図切替の唯一の判定点）。
+    ///
+    /// 魚が掛かっている（<see cref="FishingController.FishState.Hooked"/>）ときだけ見る。
+    /// <see cref="fishing"/> 未設定なら常に false。
+    /// </summary>
+    private bool IsCallPhase()
+        => fishing is { } f
+        && f.State == FishingController.FishState.Hooked
+        && f.FightPhase == FishingFight.Phase.Call;
 
     /// <summary>
     /// ヒット直後の「引き」フェーズ（<see cref="FishingFight.Phase.LeadIn"/>）中かを返す

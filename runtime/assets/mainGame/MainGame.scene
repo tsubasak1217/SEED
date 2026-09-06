@@ -2,15 +2,15 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      62.6602,
-      10.503859,
-      46.853523
+      78.62782,
+      9.810108,
+      6.7352796
     ],
-    "yaw": -2.5380816,
-    "pitch": 0.29552475,
+    "yaw": -0.7325509,
+    "pitch": 0.020779924,
     "fov_deg": 25.0,
     "far": 1000.0,
-    "speed": 5.0
+    "speed": 6.0
   },
   "shading_params": {
     "toon_rim_strength": [
@@ -548,7 +548,9 @@
               "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\FishingController.cs",
               "fields": {
                 "biteDipDepth": "1.000",
+                "callCameraTarget": "CallCameraTarget",
                 "cameraTransform": "MainCamera",
+                "castCameraTarget": "CastCameraTarget",
                 "castMarker": "CastMarker",
                 "castMarkerSprite": "CastMarkerArrow|Sprite",
                 "castWindupSeconds": "0.500",
@@ -577,6 +579,9 @@
                 "reelArrowSprite": "ReelArrowSprite|Sprite",
                 "rodAnimator": "sao|Animator",
                 "rodTip": "RodTip",
+                "runCamDistance": "12.000",
+                "runCamPhiDegrees": "35.000",
+                "runCamThetaDegrees": "120.000",
                 "runCameraTarget": "RunCameraTarget",
                 "uki": "Uki",
                 "ukiModel": "Uki|Model",
@@ -1494,6 +1499,7 @@
               "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\CameraMove.cs",
               "fields": {
                 "answerTarget": "AnswerCameraTarget",
+                "callTarget": "CallCameraTarget",
                 "castTarget": "CastCameraTarget",
                 "catchTarget": "CatchCameraTarget",
                 "fishing": "Player|Fishing",
@@ -2211,6 +2217,28 @@
     },
     {
       "name": "RunCameraTarget",
+      "transform": {
+        "position": [
+          0.0,
+          5.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [],
+      "children": []
+    },
+    {
+      "name": "CallCameraTarget",
       "transform": {
         "position": [
           0.0,

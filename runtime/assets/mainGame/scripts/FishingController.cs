@@ -410,6 +410,38 @@ public class FishingController : SEEDScript
     private SEED.Transform? runCameraTarget = null;
 
     /// <summary>
+    /// キャスト中のカメラ目標トランスフォーム（ウキの子アクタ「CastCameraTarget」を割り当てる想定）。
+    ///
+    /// これ自体は <see cref="CameraMove"/> がキャスト中の構図として直接追うもので、
+    /// 本スクリプトは<b>読むだけ</b>（位置・向きは一切書き換えない）。
+    /// 出題（<see cref="FishingFight.Phase.Call"/>）中の構図
+    /// （<see cref="callCameraTarget"/>）を「同じ向きのままウキへ寄せた位置」として
+    /// 算出するための基準に使う。
+    /// </summary>
+    [SerializeField(Label = "キャスト中のカメラ目標(CastCameraTarget)")]
+    private SEED.Transform? castCameraTarget = null;
+
+    /// <summary>
+    /// 出題（<see cref="FishingFight.Phase.Call"/>）中のカメラ目標トランスフォーム
+    /// （トップレベルの空アクタ「CallCameraTarget」を割り当てる想定）。
+    ///
+    /// 位置・向きは毎フレーム <see cref="UpdateCallCameraTarget"/> が
+    /// 「<see cref="castCameraTarget"/> と同じ向きのまま、ウキからの距離だけを
+    /// <see cref="callCameraDistanceScale"/> 倍へ縮めた位置」へ置き直す
+    /// （＝ウキ＝魚の出す合図に寄って見せる）。
+    /// 未設定ならこの構図は効かない（<see cref="CameraMove"/> 側が従来の目標へフォールバックする）。
+    /// </summary>
+    [SerializeField(Label = "出題中のカメラ目標(CallCameraTarget)")]
+    private SEED.Transform? callCameraTarget = null;
+
+    /// <summary>
+    /// 出題中のカメラ距離倍率。ウキから <see cref="castCameraTarget"/> までの距離へ掛ける。
+    /// 1 でキャスト中とまったく同じ構図、0.5 で「向きは同じまま距離が半分」＝ウキへ寄る。
+    /// </summary>
+    [SerializeField(Label = "出題中のカメラ距離倍率")]
+    private float callCameraDistanceScale = 0.5f;
+
+    /// <summary>
     /// 巻き方向インジケータのトランスフォーム（3D キャンバス「ReelArrow」に付ける想定）。
     ///
     /// <see cref="FishState.Floating"/> / <see cref="FishState.Reeling"/> のあいだだけ
@@ -1510,6 +1542,7 @@ public class FishingController : SEEDScript
                 UpdateFight(ctx.DeltaTime);
                 if (State != FishState.Hooked) { break; }
                 UpdateRunCameraTarget();    // 引き演出（LeadIn）中だけカメラ目標を置き直す
+                UpdateCallCameraTarget();   // 出題（Call）中だけカメラ目標を置き直す
                 UpdateReeling(ctx.DeltaTime);
                 break;
 
@@ -2089,6 +2122,42 @@ public class FishingController : SEEDScript
 
         camTf.Position = camPos;
         camTf.Rotation = new SEED.Vector3(pitchDeg, yawDeg, 0f);
+    }
+
+    /// <summary>
+    /// 出題（<see cref="FishingFight.Phase.Call"/>）中のカメラ目標を毎フレーム置き直す
+    /// 【出題構図の唯一の算出点】。
+    ///
+    /// 構図はキャスト中（<see cref="castCameraTarget"/>）と<b>同じ視線方向のまま</b>、
+    /// ウキからの距離だけを <see cref="callCameraDistanceScale"/> 倍へ縮めたもの。
+    /// <code>
+    /// 位置 ＝ ウキ位置 ＋ (キャスト目標位置 − ウキ位置) × 距離倍率
+    /// 向き ＝ キャスト目標の向き（そのまま）
+    /// </code>
+    /// ＝ 魚が出す合図（ウキの沈み）が大きく見えるよう寄る、という 1 点だけの効果になる。
+    ///
+    /// 参照（ウキ／キャスト目標／出題目標）のいずれかが欠けていれば何もしない。
+    /// 出題フェーズ以外でも何もしない（フェーズ外で目標を動かすと、
+    /// <see cref="CameraMove"/> が構図を切り替えた瞬間に飛んで見えるため）。
+    /// </summary>
+    private void UpdateCallCameraTarget()
+    {
+        if (callCameraTarget is not { IsValid: true } camTf) { return; }
+        if (FightPhase != FishingFight.Phase.Call) { return; }
+        if (uki is not { IsValid: true } floatTf) { return; }
+        if (castCameraTarget is not { IsValid: true } castTf) { return; }
+
+        var floatPos = floatTf.Position;
+        var castPos = castTf.Position;
+        float scale = callCameraDistanceScale;
+
+        camTf.Position = new SEED.Vector3(
+            floatPos.x + (castPos.x - floatPos.x) * scale,
+            floatPos.y + (castPos.y - floatPos.y) * scale,
+            floatPos.z + (castPos.z - floatPos.z) * scale);
+
+        // 向きはキャスト中の構図をそのまま流用する（視線方向を変えず距離だけ詰めるため）
+        camTf.Rotation = castTf.Rotation;
     }
 
     /// <summary>

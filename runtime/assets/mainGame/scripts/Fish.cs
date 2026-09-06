@@ -143,10 +143,6 @@ public class Fish : SEEDScript
     [Header("釣りパラメータ"), SerializeField(Label = "大きさ")]
     private float size = 1f;
 
-    /// <summary>スタミナ。釣りバトル中に魚が暴れ続けられる体力。</summary>
-    [SerializeField(Label = "スタミナ")]
-    private float stamina = 10f;
-
     /// <summary>基礎パワー。竿パワーと同じ単位で比較される戦闘力の基礎値。</summary>
     [SerializeField(Label = "基礎パワー")]
     private float basePower = 10f;
@@ -316,7 +312,7 @@ public class Fish : SEEDScript
     /// 掛けた値（算出は <see cref="FishingFight"/> 側）。
     /// </summary>
     [SerializeField(Label = "ヒット時に引く距離(m)")]
-    private float hookRunDistance = 6f;
+    private float hookRunDistance = 15f;
 
     /// <summary>ヒット時に沖へ引かれる基準距離（釣りバトル側から参照する）。</summary>
     public float HookRunDistance => hookRunDistance;
@@ -494,9 +490,6 @@ public class Fish : SEEDScript
     /// バトル中の「暴れる／ひるむ」による変動はバトル側が倍率として掛ける。
     /// </summary>
     public float Rampage => rampage;
-
-    /// <summary>スタミナ（釣りバトル側から参照する）。</summary>
-    public float Stamina => stamina;
 
     // ─── リズムデータの公開（釣りバトルが読む）─────────────────
 

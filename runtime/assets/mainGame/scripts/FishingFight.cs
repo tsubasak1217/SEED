@@ -41,7 +41,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// <code>
 /// 余白(LeadIn) → 出題(Call) → 回答(Answer) → 隙(Rest) → 出題 → …
 /// 既定の長さ: 余白 leadInBeats 拍 / 出題 callBars 小節(既定 2) / 回答 answerBars 小節(既定 2)
-///             隙 = 直前の回答の出来で決まる（下表）＋ 疲労中はさらに restBarsWhenTired 小節
+///             隙 = 直前の回答の出来で決まる（下表）
 /// 出題・回答の小節数は魚データ（Fish.RhythmCallBars / RhythmAnswerBars）が 1 以上ならそちらが優先。
 /// 隙の小節数は「回答の出来」で毎回決まるので、魚データの RhythmRestBars は<b>参照しない</b>。
 /// </code>
@@ -49,7 +49,6 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// <code>
 /// 直前の回答が完璧（期待打点が全て Excellent ＆ 余分なクリック 0）→ restBarsPerfect 小節（既定 2）
 /// それ以外                                                        → restBarsNormal  小節（既定 1）
-/// 疲労中はどちらの場合も restBarsWhenTired 小節ぶん<b>加算</b>される
 /// </code>
 /// ＝ うまく叩けたご褒美として巻ける時間が伸びる。
 /// <see cref="Phase.LeadIn"/> はバトル開始直後にだけ 1 度通る特別な区間で、
@@ -97,12 +96,6 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 糸の残り ≦ 0 → 糸が切れる（<see cref="LineBroken"/>）
 /// </code>
 ///
-/// ■ 疲労（0〜1・内側の指標）
-/// 判定成功ごとに溜まり（Excellent 0.12 / Great 0.08 / Nice 0.03）、
-/// 1 に達すると <see cref="IsTired"/> が <see cref="tiredBars"/> 小節のあいだ true になる。
-/// 疲労中は 隙が延び、巻き効率が <see cref="tiredReelBonus"/> 倍になる。
-/// 期間が終わると疲労は 0 へリセットされる。
-///
 /// ■ 魚 HP（巻き取り）
 /// <code>
 /// 掛かった瞬間の魚の総合力 p0 ＝ 基礎パワー × 大きさスコア
@@ -110,7 +103,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 魚HP最大            ＝ 基礎HP ＋ 基礎HP × share
 /// 1HP あたりの距離     ＝ 掛かった瞬間の距離 ÷ 基礎HP（距離は hookDistanceMin で下限クランプ）
 /// 目標距離            ＝ 現在の魚HP × 1HP あたりの距離
-/// 巻き効率            ＝ 竿パワー ÷ (竿パワー ＋ 魚の総合力) × (疲労中なら tiredReelBonus)
+/// 巻き効率            ＝ 竿パワー ÷ (竿パワー ＋ 魚の総合力)
 /// 巻き 1m あたりの HP  ＝ 巻き効率 ÷ 1HP あたりの距離（<see cref="ReelHpPerUnit"/>）
 /// </code>
 /// <b>巻けるのは「隙(Rest)」のあいだだけ</b>。出題・回答中は巻き入力を無視し、
@@ -140,7 +133,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///       Nice 黄 / Miss 赤）で小さく跳ねる。余分なクリックにはアイコンを出さない
 /// 隙  : 受付窓が閉じたところから beatIconFadeSeconds 秒でフェードアウト
 /// </code>
-/// - 中央テキスト … フェーズ名（＋予告）／魚 HP ％／疲労 ％
+/// - 中央テキスト … フェーズ名（＋予告）／魚 HP ％
 /// - 右下テキスト … 残り距離（従来どおり）
 /// </summary>
 public class FishingFight : SEEDScript
@@ -161,9 +154,6 @@ public class FishingFight : SEEDScript
 
     /// <summary>糸の残りの上限（満タン）。</summary>
     private const float Line01Max = 1f;
-
-    /// <summary>疲労の上限（ここに達すると疲労状態へ入る）。</summary>
-    private const float FatigueMax = 1f;
 
     /// <summary>全周の角度（度）。円形 UI の写像に使う。</summary>
     private const float FullCircleDegrees = 360f;
@@ -306,13 +296,6 @@ public class FishingFight : SEEDScript
     private int restBarsNormal = 1;
 
     /// <summary>
-    /// 疲労中に隙へ<b>加算</b>される小節数。
-    /// 完璧／通常のどちらの隙にも上乗せされる（規則が競合しないよう加算に統一している）。
-    /// </summary>
-    [SerializeField(Label = "疲労中に延びる隙の小節数")]
-    private int restBarsWhenTired = 2;
-
-    /// <summary>
     /// バトル開始直後に置く「余白」の長さ（拍）。<see cref="Phase.LeadIn"/> の長さそのもの。
     /// 秒数固定ではなく<b>魚の BPM（<see cref="secondsPerBeat"/>）で数える拍数</b>なので、
     /// 連鎖で乗り換えて BPM が変わった場合も新しい魚の拍でこの余白が取られる
@@ -439,28 +422,6 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "初期の糸の残り(Nice)")]
     private float initialLineNice = 0.8f;
 
-    // ─── 疲労 ────────────────────────────────────────────
-
-    /// <summary>Excellent 1 回で溜まる疲労。</summary>
-    [Header("疲労"), SerializeField(Label = "Excellentの疲労")]
-    private float fatigueExcellent = 0.12f;
-
-    /// <summary>Great 1 回で溜まる疲労。</summary>
-    [SerializeField(Label = "Greatの疲労")]
-    private float fatigueGreat = 0.08f;
-
-    /// <summary>Nice 1 回で溜まる疲労。</summary>
-    [SerializeField(Label = "Niceの疲労")]
-    private float fatigueNice = 0.03f;
-
-    /// <summary>疲労が満タンになってから疲労状態が続く小節数。</summary>
-    [SerializeField(Label = "疲労状態の小節数")]
-    private int tiredBars = 3;
-
-    /// <summary>疲労中の巻き効率の倍率。</summary>
-    [SerializeField(Label = "疲労中の巻き効率倍率")]
-    private float tiredReelBonus = 1.5f;
-
     // ─── 戦闘力（魚側）─────────────────────────────────────
 
     /// <summary>大きさスコアの下限（<see cref="sizeMultiplierRefMin"/> に対応）。</summary>
@@ -519,7 +480,7 @@ public class FishingFight : SEEDScript
     /// 通常は魚データ側（Fish）の値を使うので、これは保険。
     /// </summary>
     [Header("ヒット直後の引き(LeadIn)"), SerializeField(Label = "引き距離の既定値(m)")]
-    private float hookRunDistanceDefault = 6f;
+    private float hookRunDistanceDefault = 15f;
 
     /// <summary>
     /// <see cref="Fish.SizeRank"/> が S（最大サイズ帯）のときに <see cref="Fish.HookRunDistance"/>
@@ -703,10 +664,6 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "マーカーの色(隙)")]
     private SEED.Vector3 markerRestColor = new SEED.Vector3(1f, 1f, 1f);
 
-    /// <summary>疲労中のマーカー色（RGB）。</summary>
-    [SerializeField(Label = "マーカーの色(疲労)")]
-    private SEED.Vector3 markerTiredColor = new SEED.Vector3(0.6f, 1f, 0.6f);
-
     /// <summary>セグメントの不透明度（バトル中）。</summary>
     [SerializeField(Label = "セグメントの不透明度")]
     private float segmentOpacity = 0.9f;
@@ -773,12 +730,6 @@ public class FishingFight : SEEDScript
     /// <summary>現在の糸の残り（1〜0）。満タン 1.0 から一方向に減り、0 で糸が切れる。回復手段は無い。</summary>
     public float Line01 { get; private set; } = Line01Max;
 
-    /// <summary>現在の疲労（0〜1）。</summary>
-    public float Fatigue01 { get; private set; } = 0f;
-
-    /// <summary>疲労状態か（隙が延び、巻き効率が上がる）。</summary>
-    public bool IsTired { get; private set; } = false;
-
     /// <summary>
     /// 糸が切れたか。糸の残り（<see cref="Line01"/>）が 0 に達したフレームで true になる。
     /// コントローラ側が拾ったら <see cref="EndFight"/> で false へ戻る。
@@ -798,7 +749,7 @@ public class FishingFight : SEEDScript
 
     /// <summary>
     /// 巻き取り 1m あたりに削れる魚 HP【巻きの仕様の中核】。
-    /// ＝ 巻き効率（竿パワー ÷ (竿パワー ＋ 魚の総合力) × 疲労ボーナス）÷ 1HP あたりの距離。
+    /// ＝ 巻き効率（竿パワー ÷ (竿パワー ＋ 魚の総合力)）÷ 1HP あたりの距離。
     ///
     /// 巻き効率は魚がどれだけ強くても<b>必ず 0 より大きい</b>ので、
     /// 「格上でも巻き続ければ削り切れる（テクニックで釣れる）」が成立する。
@@ -809,8 +760,7 @@ public class FishingFight : SEEDScript
         {
             float rod = SEED.Mathf.Max(rodPower, DivideEpsilon);
             float efficiency = rod / SEED.Mathf.Max(rod + CurrentFishPower(), DivideEpsilon);
-            float bonus = IsTired ? SEED.Mathf.Max(tiredReelBonus, DivideEpsilon) : NeutralMultiplier;
-            return efficiency * bonus / SEED.Mathf.Max(metersPerHp, DivideEpsilon);
+            return efficiency / SEED.Mathf.Max(metersPerHp, DivideEpsilon);
         }
     }
 
@@ -1028,9 +978,6 @@ public class FishingFight : SEEDScript
     /// <summary>打点アイコンへ大きさを書き込んだ枚数（枚数が変わったときだけ書き直すための控え）。</summary>
     private int iconSizeAppliedCount = 0;
 
-    /// <summary>疲労状態が終わる小節番号（<see cref="IsTired"/> が true のあいだ有効）。</summary>
-    private int tiredEndBar = 0;
-
     /// <summary>セグメントの配置を計算したときの個数（個数が変わったときだけ組み直す）。</summary>
     private int cachedSegmentCount = 0;
 
@@ -1162,7 +1109,6 @@ public class FishingFight : SEEDScript
         UpdateDrumLoop();
         UpdateMetronome();
         UpdatePhaseTransition();
-        UpdateTiredTimer();
 
         switch (CurrentPhase)
         {
@@ -1181,20 +1127,6 @@ public class FishingFight : SEEDScript
 
         // 打点アイコンの出現・フェードはすべて絶対時刻から求めるので、進めるタイマーは無い
         ApplyUi();
-    }
-
-    /// <summary>
-    /// 待機（ひるみ）を与える API の名残【現仕様では効果なし】。
-    ///
-    /// 旧仕様（暴れ／ステイの状態機械）で漂流物アイテムの隙を作るために用意していたが、
-    /// リズム版では魚の行動が拍で決まるため<b>意味を持たない</b>。
-    /// 呼び出し側（漂流物は未実装）を壊さないよう、空実装として残してある。
-    /// リズム版で隙を作る手段を足すときは、疲労を直接足す形へ作り替えるのが筋。
-    /// </summary>
-    /// <param name="seconds">与える待機の秒数（現仕様では無視される）。</param>
-    public void ApplyFlinch(float seconds)
-    {
-        // 現仕様では何もしない（引数は互換のために受けるだけ）。
     }
 
     /// <summary>
@@ -1643,7 +1575,7 @@ public class FishingFight : SEEDScript
 
         SEED.Debug.Log($"[Fight] {PhaseLabel(next)}（{phaseBars}小節"
                      + $"{(next == Phase.Rest ? (lastAnswerPerfect ? "・完璧" : "・通常") : "")}）"
-                     + $" / 糸の残り {Line01:P0} / 疲労 {Fatigue01:P0}{(IsTired ? "（疲労中）" : "")}"
+                     + $" / 糸の残り {Line01:P0}"
                      + $" / 魚HP {FishHp01:P0}");
     }
 
@@ -1786,17 +1718,13 @@ public class FishingFight : SEEDScript
     /// ・隙        … <b>直前の回答の出来</b>で決まる（完璧なら <see cref="restBarsPerfect"/>、
     ///                そうでなければ <see cref="restBarsNormal"/>）。回答の出来で毎回変わる値なので、
     ///                魚データの <c>RhythmRestBars</c> は<b>参照しない</b>。
-    /// ・疲労中は隙にさらに <see cref="restBarsWhenTired"/> 小節を<b>加算</b>する
-    ///   （完璧ボーナスと疲労延長は競合させず、素直に足し合わせる）。
     /// </summary>
     /// <param name="phase">対象のフェーズ。</param>
     private int PhaseBarsOf(Phase phase)
     {
         if (phase == Phase.Rest)
         {
-            int rest = SEED.Mathf.Max(lastAnswerPerfect ? restBarsPerfect : restBarsNormal, MinPhaseBars);
-            if (IsTired) { rest += SEED.Mathf.Max(restBarsWhenTired, 0); }
-            return rest;
+            return SEED.Mathf.Max(lastAnswerPerfect ? restBarsPerfect : restBarsNormal, MinPhaseBars);
         }
 
         int fromFish = target is { } fish
@@ -1988,14 +1916,6 @@ public class FishingFight : SEEDScript
             SubtractLine(offset * linePerSecondOfOffset * LevelScale() / LinePowerFactor());
         }
 
-        // 疲労: きれいに叩けたほど大きく溜まる
-        AddFatigue(judgement switch
-        {
-            FishingController.HookJudgement.Excellent => fatigueExcellent,
-            FishingController.HookJudgement.Great => fatigueGreat,
-            _ => fatigueNice,
-        });
-
         FishingController.Current?.ShowFightJudgement(judgement, signedOffset);
     }
 
@@ -2133,33 +2053,6 @@ public class FishingFight : SEEDScript
         PlayLineBreakSe();
     }
 
-    /// <summary>
-    /// 疲労を溜める【疲労状態へ入る唯一の入口】。
-    /// 満タンに達したら <see cref="tiredBars"/> 小節のあいだ疲労状態にする。
-    /// </summary>
-    /// <param name="amount">増分（負なら何もしない）。</param>
-    private void AddFatigue(float amount)
-    {
-        if (amount <= 0f || IsTired) { return; }
-
-        Fatigue01 = SEED.Mathf.Min(Fatigue01 + amount, FatigueMax);
-        if (Fatigue01 < FatigueMax) { return; }
-
-        IsTired = true;
-        tiredEndBar = BarIndex + SEED.Mathf.Max(tiredBars, MinPhaseBars);
-        SEED.Debug.Log($"[Fight] 魚が疲労した（{SEED.Mathf.Max(tiredBars, MinPhaseBars)}小節・巻き効率 ×{tiredReelBonus:F2}）");
-    }
-
-    /// <summary>疲労状態の残り小節を見て、期間が終わったら疲労を 0 へリセットする。</summary>
-    private void UpdateTiredTimer()
-    {
-        if (!IsTired || BarIndex < tiredEndBar) { return; }
-
-        IsTired = false;
-        Fatigue01 = 0f;
-        SEED.Debug.Log("[Fight] 魚が疲労から復帰した");
-    }
-
     // ─── 内部処理: 戦闘力 ──────────────────────────────────
 
     /// <summary>
@@ -2274,9 +2167,6 @@ public class FishingFight : SEEDScript
         LineBroken = false;
         CurrentPhase = Phase.None;
         Line01 = Line01Max;
-        Fatigue01 = 0f;
-        IsTired = false;
-        tiredEndBar = 0;
         fishHp = 0f;
         fishHpMax = 0f;
         metersPerHp = 0f;
@@ -2582,19 +2472,17 @@ public class FishingFight : SEEDScript
 
         if (gaugeMarker is not { } marker || !marker.IsValid) { return; }
 
-        SEED.Vector3 rgb = IsTired
-            ? markerTiredColor
-            : CurrentPhase switch
-            {
-                Phase.Call => markerCallColor,
-                Phase.Answer => markerAnswerColor,
-                _ => markerRestColor,
-            };
+        SEED.Vector3 rgb = CurrentPhase switch
+        {
+            Phase.Call => markerCallColor,
+            Phase.Answer => markerAnswerColor,
+            _ => markerRestColor,
+        };
         marker.Color = ToColor(rgb, SEED.Mathf.Clamped01(gaugeMarkerOpacity));
     }
 
     /// <summary>
-    /// 円の中心テキスト（フェーズ名＋予告／魚 HP ％／疲労 ％）を更新する。
+    /// 円の中心テキスト（フェーズ名＋予告／魚 HP ％）を更新する。
     /// 余白（<see cref="Phase.LeadIn"/>）中だけは特別扱いで、残り拍数のカウントダウン
     /// （"4" → "3" → "2" → "1"）だけを大きく出す。
     /// </summary>
@@ -2609,12 +2497,11 @@ public class FishingFight : SEEDScript
             return;
         }
 
-        string phaseName = IsTired ? "疲労中" : PhaseLabel(CurrentPhase);
+        string phaseName = PhaseLabel(CurrentPhase);
         string notice = nextPhaseAnnounced ? $" → {PhaseLabel(NextPhase(CurrentPhase))}" : string.Empty;
 
         label.Content = $"{phaseName}{notice}\n"
-                      + $"魚 {SEED.Mathf.RoundToInt(FishHp01 * PercentScale)}%"
-                      + $"  疲労 {SEED.Mathf.RoundToInt(Fatigue01 * PercentScale)}%";
+                      + $"魚 {SEED.Mathf.RoundToInt(FishHp01 * PercentScale)}%";
         label.Color = label.Color.WithAlpha(SEED.Mathf.Clamped01(hpTextOpacity));
     }
 
