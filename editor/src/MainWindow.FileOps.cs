@@ -392,6 +392,11 @@ public partial class MainWindow
         LoadSceneSettingsForCurrentScene();
         if (_viewportSettingsInitialized) SyncViewportSettings();
 
+        // 監視対象を新しいシーンファイルへ張り替える。
+        // 同時に現在の内容をハッシュとして取り込むため、この読み込み直後に
+        // 届く自分由来のイベントは no-op として捨てられる。
+        RetargetSceneAutoReloader();
+
         UpdateTitle();
         EditorLog.Write($"LoadScene — LOAD_SCENE:{path}");
     }

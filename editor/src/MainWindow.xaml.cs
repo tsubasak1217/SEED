@@ -589,6 +589,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // ScriptSaved の購読より後に作っても、上のハンドラは実行時に
         // _scriptAutoReloader を参照するため順序の問題は無い。
         InitScriptAutoReloader();
+        // シーン自動再読込を初期化する（今開いている .scene の外部変更を拾う）。
+        InitSceneAutoReloader();
         // ホットリロード成功時: 型キャッシュを**全件**破棄する。
         // 保存した .cs だけでなく、基底クラスや [Serializable] ネスト型を共有する
         // 別スクリプトの [SerializeField] 構成も同時に変わりうるため。
@@ -1150,13 +1152,26 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             _                               => (ScriptStatusBrushWarn,    message),
         };
 
+        ShowReloadStatusText(brush, text);
+
+        if (status != ScriptReloadStatus.Running)
+            EditorLog.Write($"[ScriptAutoReload] {text}");
+    }
+
+    /// <summary>
+    /// 上部バーの再読込ステータス表示を更新する（スクリプト / シーン共用）。
+    /// 表示欄とタイマーは 1 つしか無いため、後から来た通知が前の表示を置き換える。
+    /// </summary>
+    /// <param name="brush">文字色（状態の色分け）。</param>
+    /// <param name="text">表示文言（ツールチップにも使う）。</param>
+    private void ShowReloadStatusText(Brush brush, string text)
+    {
+        if (TxtScriptReloadStatus is null) return;
+
         TxtScriptReloadStatus.Foreground = brush;
         TxtScriptReloadStatus.Text       = text;
         TxtScriptReloadStatus.ToolTip    = text;
         TxtScriptReloadStatus.Visibility = Visibility.Visible;
-
-        if (status != ScriptReloadStatus.Running)
-            EditorLog.Write($"[ScriptAutoReload] {text}");
 
         // 表示しっぱなしにしない。次の状態が来たらタイマーを張り直す。
         _scriptReloadStatusTimer ??= new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
@@ -1300,6 +1315,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _frozenPreview.Dispose();
         _scriptAutoReloader?.Dispose();
         _scriptAutoReloader = null;
+        _sceneAutoReloader?.Dispose();
+        _sceneAutoReloader = null;
         _scriptReloadStatusTimer?.Stop();
         _runtimeManager?.Dispose();
         ViewportDocumentContent.Content = null;

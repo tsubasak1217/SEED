@@ -78,6 +78,21 @@ public sealed class EditorPreferences
     public bool AutoReloadScripts { get; set; } = true;
 
     /// <summary>
+    /// 今開いている .scene ファイルがディスク上で変更されたときに、
+    /// エディタが自動でシーンを読み直すかどうか。既定はオン。
+    ///
+    /// 外部ツール・別プロセス・手動編集による変更を検出して、
+    /// 「ファイルを開いたとき」と同じ経路で読み直す。
+    /// エディタ自身の保存（SAVE_SCENE）は自己書き込みとして除外する。
+    ///
+    /// 未保存の編集があるときは（破棄になるため）読み直さず通知だけ行い、
+    /// Play 中は Play 終了後に読み直す。
+    /// UI 上の「表示 > シーン > シーンを自動再読込」と 1 対 1 に対応する。
+    /// </summary>
+    [JsonPropertyName("auto_reload_scene")]
+    public bool AutoReloadScene { get; set; } = true;
+
+    /// <summary>
     /// ロジック配置ダイアログで最後に使ったパターン指定。
     ///
     /// 「円形に 12 個」「5×5 グリッド」といった指定は同じ設定を続けて使うことが多く、

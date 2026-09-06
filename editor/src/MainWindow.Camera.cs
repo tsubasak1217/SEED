@@ -841,6 +841,11 @@ public partial class MainWindow
             if (state == EditorState.Edit)
                 PanelScriptEditor.RevalidateWgslDocuments();
 
+            // Play 中に検出したシーンファイルの外部変更は、ここ（Edit 復帰）で取り込む。
+            // Play 中に読み直すと実行中のワールドを壊すため保留にしてある。
+            if (state == EditorState.Edit)
+                _sceneAutoReloader?.NotifyReturnedToEdit();
+
             // 埋め込みインプレース Play の入力フォーカス制御。
             // 埋め込み Play では同じ子 HWND がゲーム描画も担うため、キーボード入力を
             // ランタイム側へ流すには OS フォーカスを子 HWND へ移す必要がある。

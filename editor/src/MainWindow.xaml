@@ -863,6 +863,19 @@
                               IsCheckable="True"
                               Click="OnToggleAutoReloadScripts"/>
                 </MenuItem>
+
+                <!-- シーン: ディスク上のシーンファイル変更の取り込み設定。
+                     オンだと外部ツールなどによる .scene の書き換えを検出して
+                     自動で読み直す。設定は EditorPreferences.AutoReloadScene に永続化。 -->
+                <MenuItem Header="シーン">
+                    <MenuItem x:Name="MenuItemAutoReloadScene"
+                              Header="シーンを自動再読込"
+                              IsCheckable="True"
+                              Click="OnToggleAutoReloadScene"/>
+                    <Separator/>
+                    <MenuItem Header="シーンをディスクから再読込"
+                              Click="OnMenuReloadSceneFromDisk"/>
+                </MenuItem>
             </MenuItem>
 
             <MenuItem Header="デバッグ">

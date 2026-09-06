@@ -118,6 +118,8 @@ public partial class MainWindow
         MenuItemScriptEditor.IsChecked  = IsScriptEditorVisible();
         // スクリプト自動再読込の設定値をチェック状態へ反映する（設定ファイルが正）。
         MenuItemAutoReloadScripts.IsChecked = EditorPreferences.Instance.AutoReloadScripts;
+        // シーン自動再読込の設定値も同様にチェック状態へ反映する（設定ファイルが正）。
+        MenuItemAutoReloadScene.IsChecked = EditorPreferences.Instance.AutoReloadScene;
     }
 
     /// <summary>スクリプトエディタ（LayoutDocument）がレイアウト上に存在するか。</summary>
@@ -263,6 +265,12 @@ public partial class MainWindow
             PanelHierarchy.MoveSceneViewKey(path);
             PersistToolbarViewState();
         }
+        // シーン自動再読込へ「これから自分が書き込む」と伝える。
+        // 実際に .scene を書き出すのはランタイム（SAVE_SCENE の非同期処理）のため、
+        // 保存完了通知（OnSaveCompleted）までを 1 つの自己書き込み窓として扱う。
+        _sceneAutoReloader?.NotifySelfSaveStarted();
+        // 「名前を付けて保存」で保存先が変わったら監視対象も新しいファイルへ移す。
+        if (pathChanged) RetargetSceneAutoReloader();
         _runtimeManager?.SendToRuntime($"SAVE_SCENE:{path}");
         EditorLog.Write($"ExecuteSave — SAVE_SCENE:{path}");
     }
@@ -279,6 +287,10 @@ public partial class MainWindow
     {
         Dispatcher.BeginInvoke(() =>
         {
+            // 成功・失敗どちらでも自己書き込み窓は閉じる（開いたままだと
+            // 以後の外部変更を自分の保存と誤認して取り込めなくなる）。
+            _sceneAutoReloader?.NotifySelfSaveCompleted();
+
             if (ok)
             {
                 EditorLog.Write("OnSaveCompleted — 保存成功");
