@@ -19,6 +19,7 @@ use crate::engine::components::{
 };
 use crate::engine::core::font::canvas_text::CanvasTextItem;
 use crate::engine::core::loader::sprite_mesh::SpriteMesh;
+use crate::engine::core::renderer::primitive2d::PrimitiveSpaceCollector;
 use crate::engine::core::renderer::SpriteDrawItem;
 use crate::engine::core::renderer::sprite_skin::{SkinnedSpriteDraw, resolve_bone};
 use crate::engine::ecs::{Entity, World};
@@ -456,6 +457,12 @@ pub(super) fn collect_sprite_items(
     // 別関数に分けず 1 回の DFS でまとめて収集する（両者の位置ズレを構造的に防ぐ）。
     // テキストは専用パイプライン（フォントアトラス）で描くため出力先だけを分ける。
     text_out: &mut Vec<CanvasTextItem>,
+    // スクリプト 2D プリミティブ（SEED.Draw）の座標空間マップの収集先。
+    // CanvasTransform を持つ全アクターについて「そのアクターのローカル px →
+    // ワールド」の GPU 行列を記録する（＝ 子として置いたスプライト／テキストと
+    // まったく同じ変換連鎖）。3D ワールドキャンバス配下かどうかは呼び出し側が
+    // 収集器の world3d フラグで指定する。
+    space_out: &mut PrimitiveSpaceCollector,
 ) {
     for actor in actors {
         if actor.world_line != wl {
@@ -590,6 +597,22 @@ pub(super) fn collect_sprite_items(
                 .to_mat4_sized(my_eff_w, my_eff_h),
             );
 
+            // このノード自身の「ローカル px → ワールド」GPU 行列（メッシュ空間行列）。
+            // スキンスプライト・テキスト・スクリプトプリミティブが共有する
+            // （各所で別々に組むと 1 か所直し忘れて位置がズレるため 1 本にまとめる）。
+            // スプライト（to_sprite_mat4）はユニットクワッドを実寸へ引き伸ばす別用途なので使わない。
+            let node_mesh_gpu_mat = canvas_mat_to_gpu(
+                mat4x4_mul(
+                    parent_world_rs,
+                    eff_ct.to_mesh_mat4(size_scale_x, size_scale_y),
+                ),
+                canvas_scale,
+                y_sign,
+            );
+            // スクリプト 2D プリミティブの座標空間として登録する
+            // （`SEED.Draw.*(space: canvasTransform)` がこの行列を引く）。
+            space_out.insert(actor.entity, node_mesh_gpu_mat, my_zone);
+
             // SpriteComponent スロットを走査して GPU 行列とテクスチャを収集する
             // （enabled=false のスロットは非表示）
             for slot in actor.slots() {
@@ -720,11 +743,7 @@ pub(super) fn collect_sprite_items(
                 };
 
                 // メッシュローカル → キャンバス → GPU 列優先（スプライトと同一の変換連鎖）
-                let mesh_world = mat4x4_mul(
-                    parent_world_rs,
-                    eff_ct.to_mesh_mat4(size_scale_x, size_scale_y),
-                );
-                let gpu_mat = canvas_mat_to_gpu(mesh_world, canvas_scale, y_sign);
+                let gpu_mat = node_mesh_gpu_mat;
 
                 // テクスチャは SpriteComponent とまったく同じキャッシュ経路で解決する
                 let tex = resolve_sprite_texture(draw_ctx, &ss.texture_path);
@@ -756,10 +775,6 @@ pub(super) fn collect_sprite_items(
                 if tc.content.is_empty() {
                     continue;
                 }
-                let text_world = mat4x4_mul(
-                    parent_world_rs,
-                    eff_ct.to_mesh_mat4(size_scale_x, size_scale_y),
-                );
                 text_out.push(CanvasTextItem {
                     text: tc.content.clone(),
                     // フォントサイズは**素の値**を渡す。キャンバスの拡縮
@@ -770,7 +785,7 @@ pub(super) fn collect_sprite_items(
                     align: tc.align,
                     vertical_align: tc.vertical_align,
                     line_spacing: tc.line_spacing,
-                    model: canvas_mat_to_gpu(text_world, canvas_scale, y_sign),
+                    model: node_mesh_gpu_mat,
                     zone: my_zone,
                     layer: tc.layer,
                     // フォント指定と縁取りはコンポーネントの値をそのまま渡す
@@ -828,6 +843,7 @@ pub(super) fn collect_sprite_items(
                 design_space,
                 out,
                 text_out,
+                space_out,
             );
         }
     }

@@ -30,6 +30,8 @@ pub(crate) mod skybox;
 pub mod material_asset;
 /// 2D メッシュ変形スキニング（Phase A1: `.sprite_mesh` の GPU 変形資源とディスパッチ）
 pub mod sprite_skin;
+/// スクリプト用 2D プリミティブ描画（`SEED.Draw` のイミディエイトモード API）
+pub mod primitive2d;
 /// .postfx ポストエフェクトアセット＋テクスチャ単位ポストプロセス（Phase R3 応用）
 pub mod postfx;
 /// エディタのシーンビュー表示モード（Lit / Unlit / Wireframe）

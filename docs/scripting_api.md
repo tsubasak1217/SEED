@@ -1430,6 +1430,152 @@ void OnCatch(string fishId, float sizeCm, int price)
 
 ---
 
+## 7.8 Draw（2D プリミティブ描画：ゲージ・レーダー・図形 UI）
+
+`SEED.Draw` は**イミディエイトモード**の 2D 図形描画 API です。Update などから**毎フレーム呼ぶ**と、そのフレームだけ図形が描かれます（オブジェクトは作られず、フレーム終了時にコマンドは破棄されます）。Unity の Gizmos / Debug.DrawLine に似ていますが、こちらはデバッグ用ではなく**ゲーム本編の UI として使える描画物**です。
+
+```csharp
+// スクリーンスペース（左上原点・1 単位 = 1px・Y 下向き）へ直接描く
+Draw.Line(new Vector2(100, 100), new Vector2(300, 180), new Color(1, 1, 1, 1), thickness: 2f);
+Draw.Circle(new Vector2(200, 200), 40f, new Color(0.2f, 0.8f, 1f, 0.6f));
+Draw.Rect(new Vector2(200, 400), new Vector2(160, 24), new Color(0, 0, 0, 0.5f));
+```
+
+### 座標空間（`space` 引数）
+
+```csharp
+// space を省略（null）= スクリーンスペース。左上が (0,0)、Y は下向き、単位は px。
+Draw.Circle(new Vector2(64, 64), 20f, color);
+
+// space に CanvasTransform を渡す = そのアクターのローカル空間。
+// アンカー・ピボット・親子スケール・自動解像度が「そのアクターの子スプライト」と
+// まったく同じ規則で効く（＝その位置に子として置いたスプライトと同じ座標系）。
+if (gameObject.GetComponent<CanvasTransform>() is { } ct)
+{
+    Draw.Circle(new Vector2(0, 0), 20f, color, space: ct);   // このアクターの原点に円
+}
+
+// 3D ワールドキャンバス（3D 空間に置いた Canvas）配下のノードを渡すと、
+// そのキャンバス平面上へワールド空間で描かれる（3D シーンに正しく隠れる）。
+Draw.Ring(center, 30f, 40f, color, space: worldCanvasNode);
+```
+
+> **重要**: `space` に渡したアクターがそのフレームに描画されない（非アクティブ・別世界線・CanvasTransform を持たない）場合、その図形は**黙って描画されません**。
+
+### レイヤーと重なり順
+
+```csharp
+Draw.Rect(center, size, bgColor, layer: 10);      // 奥
+Draw.Ring(center, 30, 40, fgColor, layer: 20);    // 手前
+```
+
+`layer` はスプライト（`Sprite.Layer`）・テキスト（`Text.Layer`）と**同じソート軸**で、大きいほど手前です。同じレイヤー値のときの前後は「**スプライト → プリミティブ → テキスト**」の順になります（テキストは常にプリミティブより手前）。描画ゾーン（Canvas の背景／前面）は `space` に渡したキャンバスのゾーンを継承し、スクリーンスペース（`space: null`）は前面ゾーン扱いです。
+
+### 図形一覧
+
+```csharp
+// 四角形（4 点指定 / 中心+サイズの簡易版）
+Draw.Rect(p0, p1, p2, p3, Transform2D.Identity, color, DrawMode.Fill, thickness: 1f, layer: 0, space: null);
+Draw.Rect(center, size, color, DrawMode.Outline, thickness: 2f);
+
+// 三角形
+Draw.Triangle(a, b, c, Transform2D.Identity, color, DrawMode.Fill);
+
+// 直線
+Draw.Line(a, b, color, thickness: 2f, layer: 0, space: null);
+
+// 円・楕円（scale で楕円になる）
+Draw.Circle(center, radius, color, scale: null, DrawMode.Fill, thickness: 1f, layer: 0, space: null);
+Draw.Circle(center, 30f, color, scale: new Vector2(2f, 1f));   // 横長の楕円
+
+// 正多角形（rotationDegrees は時計回り）
+Draw.RegularPolygon(center, radius, vertices: 6, color, rotationDegrees: 0f, scale: null, DrawMode.Fill);
+
+// 円弧（Fill = 太さ thickness のリング / Outline = 太さ thickness の線）
+Draw.Arc(center, radius, startDegrees, endDegrees, color, DrawMode.Fill, thickness: 8f);
+
+// リング（内半径・外半径で指定。innerRadius = 0 なら扇形）
+Draw.Ring(center, innerRadius, outerRadius, color, startDegrees: 0f, endDegrees: 360f, DrawMode.Fill);
+
+// 角丸四角形
+Draw.RoundedRect(center, size, cornerRadius, Transform2D.Identity, color, DrawMode.Fill);
+Draw.RoundedRect(p0, p1, p2, p3, cornerRadius, Transform2D.Identity, color, DrawMode.Fill);
+
+// 折れ線（closed = true で閉じる）
+Draw.Polyline(points, closed: false, color, thickness: 2f, layer: 0, space: null);
+
+// 多角形（塗りは耳刈りで三角形分割。凹多角形も可）
+Draw.Polygon(points, Transform2D.Identity, color, DrawMode.Fill, thickness: 1f, layer: 0, space: null);
+
+// 3 次ベジエ曲線（線のみ）
+Draw.Bezier(p0, p1, p2, p3, color, segments: 32, thickness: 2f);
+```
+
+```csharp
+// DrawMode: 塗り or 輪郭
+DrawMode.Fill      // 内側を塗る（既定）
+DrawMode.Outline   // 輪郭を太さ thickness の線で描く
+
+// Transform2D: 点列へ「スケール → 回転 → 平行移動」の順で適用する SRT
+Transform2D.Identity                       // 何もしない
+new Transform2D(position)                  // 平行移動のみ
+new Transform2D(position, rotationDegrees)             // + 回転（時計回りが正）
+new Transform2D(position, rotationDegrees, scale)      // + スケール
+```
+
+### 例: レーダーに点を打つ
+
+```csharp
+// 画面右上のレーダー（半径 60px）に、周囲の敵を点で表示する
+void DrawRadar(Vector2 radarCenter, Vector2 playerPos, Vector2[] enemies)
+{
+    var frame = new Color(0.2f, 1f, 0.6f, 0.8f);
+    Draw.Circle(radarCenter, 60f, new Color(0f, 0f, 0f, 0.4f), layer: 10);
+    Draw.Circle(radarCenter, 60f, frame, mode: DrawMode.Outline, thickness: 2f, layer: 11);
+
+    const float WorldPerPixel = 4f;    // レーダー 1px が表すワールド距離
+    foreach (var e in enemies)
+    {
+        var d = new Vector2((e.x - playerPos.x) / WorldPerPixel,
+                            (e.y - playerPos.y) / WorldPerPixel);
+        if (Mathf.Sqrt(d.x * d.x + d.y * d.y) > 60f) continue;   // 範囲外は描かない
+        Draw.Circle(new Vector2(radarCenter.x + d.x, radarCenter.y + d.y), 3f,
+            new Color(1f, 0.3f, 0.3f, 1f), layer: 12);
+    }
+}
+```
+
+### 例: 円形のゲージ（テンションゲージ・クールダウン）
+
+```csharp
+// value（0..1）に応じてリングを伸ばす。12 時方向から時計回りに満ちる。
+void DrawRingGauge(Vector2 center, float value)
+{
+    const float StartDegrees = -90f;      // 12 時方向（Y 下向きなので -90）
+    const float FullSweep    = 360f;
+    var bg   = new Color(0f, 0f, 0f, 0.5f);
+    var fill = new Color(1f, 0.8f, 0.2f, 1f);
+
+    Draw.Ring(center, 34f, 42f, bg, 0f, FullSweep, layer: 20);
+    Draw.Ring(center, 34f, 42f, fill,
+        StartDegrees, StartDegrees + FullSweep * Mathf.Clamped01(value), layer: 21);
+}
+```
+
+### 制限
+
+| 項目 | 上限・制限 |
+|---|---|
+| 1 フレームの図形数 | 4096（`Draw.MaxPrimitivesPerFrame`）。超過分は描かれず警告ログが出る |
+| 1 図形の点数 | 1024（`Draw.MaxPointsPerPrimitive`）。超過分は切り捨て |
+| `Polygon` の形状 | 自己交差しない単純多角形のみ（凹は可）。穴あき・自己交差は結果が保証されない |
+| 半透明の太い折れ線 | 角（ジョイント）がわずかに濃くなる（帯が重なるため）。不透明色では見えない |
+| アンチエイリアス | 輪郭の外側 1px のフェザー帯による近似（スクリーンスペースでは 1 画面 px） |
+
+> **重要**: `Draw.*` は「呼んだフレームだけ描く」API です。図形を出し続けたいなら毎フレーム呼んでください。Play していないフレームに積まれたコマンドは破棄されます。
+
+---
+
 ## 8. （メンテナ向け）新しいコンポーネントをスクリプトへ公開する手順
 
 コンポーネントを増やしたら、以下を行うことで **自動的にスクリプト・AI 補完から使える** ようになります。

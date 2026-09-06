@@ -115,6 +115,22 @@ impl App {
             );
         }
 
+        // スクリプト 2D プリミティブ描画器（SEED.Draw 用）。
+        // キャンバステキストと同じ理由で Edit / Play の両方で必要
+        // （HUD の図形はゲーム本編の描画物である）。
+        // 描画先はメインパス / キャンバスオーバーレイパスのどちらも
+        // HDR カラー + 共通深度なのでフォーマットはテキストと同じで良い。
+        {
+            use crate::engine::core::renderer::primitive2d::Primitive2dRenderer;
+            let dev = &self.draw_ctx.as_ref().unwrap().device;
+            let scene_fmt = crate::engine::core::renderer::HDR_FORMAT;
+            self.primitive2d = Some(Primitive2dRenderer::new(
+                dev,
+                scene_fmt,
+                renderer.depth_format(),
+            ));
+        }
+
         // 軸ギズモ・アイコンオーバーレイ（エディタモードのみ初期化）
         if self.mode == RuntimeMode::Edit {
             use crate::engine::core::font::axis_gizmo::AxisGizmo;

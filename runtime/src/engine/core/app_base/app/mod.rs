@@ -747,6 +747,9 @@ pub struct App {
     /// キャンバステキスト描画器（TextComponent 用）。Edit / Play の両方で使う。
     /// フォント初期化に失敗した場合のみ None（テキストが出ないだけで他は動く）。
     canvas_text: Option<crate::engine::core::font::canvas_text::CanvasTextRenderer>,
+    /// スクリプト 2D プリミティブ描画器（`SEED.Draw`）。Edit / Play の両方で使う。
+    /// パイプライン構築に失敗した場合のみ None（図形が出ないだけで他は動く）。
+    primitive2d: Option<crate::engine::core::renderer::primitive2d::Primitive2dRenderer>,
     /// 平滑化済み FPS（表示値）。0.0 = 未計算。
     fps_display: f32,
     /// FPS 計測ウィンドウ内のフレーム完了カウント。
@@ -1396,6 +1399,7 @@ impl App {
             first_frame_sent:       false,
             axis_gizmo:            None,
             canvas_text:           None,
+            primitive2d:           None,
             icon_overlay:          None,
             screen_hint:           None,
             fps_display:           0.0,

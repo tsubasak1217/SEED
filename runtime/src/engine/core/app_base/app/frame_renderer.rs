@@ -221,6 +221,7 @@ fn terrain_world_bounds(
 use crate::engine::core::font::canvas_text::CanvasTextItem;
 use super::canvas_collect::{
     collect_sprite_items, collect_canvas_rects, collect_canvas_id_items, CanvasIdItem,
+    canvas_mat_to_gpu, root_anchor_offset,
     collect_3d_canvas_child_id_items, sprite_world_corners,
     compute_game_viewport, clamp_viewport_to_target, build_ss_layout_maps_free,
 };
@@ -2817,6 +2818,9 @@ impl App {
                                         // 払う価値がないため、収集先は捨てバッファにする。
                                         CanvasDrawZone::Foreground, false, &mut items,
                                         &mut Vec::new(),
+                                        // カメラプレビューはスクリプトプリミティブを描かないため
+                                        // 座標空間も捨てる（本描画側で改めて収集される）。
+                                        &mut crate::engine::core::renderer::primitive2d::PrimitiveSpaceCollector::new(),
                                     );
                                     items[canvas_start..].sort_by_key(|it| it.layer);
                                 }
@@ -4090,6 +4094,9 @@ impl App {
                     let (
                         sprite_prepared_2d_bg, sprite_prepared_2d_fg, sprite_prepared_3d,
                         text_items_2d_bg, text_items_2d_fg, text_items_3d_sorted,
+                        // スクリプト 2D プリミティブ（SEED.Draw）の座標空間マップと
+                        // スクリーンスペース用モデル行列。
+                        prim_spaces, prim_screen_model,
                     ) = {
                         crate::profile_scope!("描画/スプライト収集・ソート");
                         // 2D キャンバスアクターのスプライト（オルソ／ワールドスペース 2D 用）
@@ -4100,6 +4107,43 @@ impl App {
                         // 描画は専用のフォントパイプラインなのでリストだけ分けて持つ。
                         let mut text_items_2d: Vec<CanvasTextItem> = Vec::new();
                         let mut text_items_3d: Vec<CanvasTextItem> = Vec::new();
+                        // スクリプト 2D プリミティブの座標空間（CanvasTransform を持つ
+                        // 全アクター）。スプライトとまったく同じ走査で集める。
+                        let mut prim_spaces =
+                            crate::engine::core::renderer::primitive2d::PrimitiveSpaceCollector::new();
+                        // スクリーンスペース（space=null）のモデル行列。
+                        // 「anchor=(0,0) のルートキャンバスに position=(0,0) で置いた」のと
+                        // 同一の基準（＝左上原点・1 単位 = 1px）にするため
+                        // root_anchor_offset をそのまま平行移動として使う。
+                        let mut prim_screen_model: [[f32; 4]; 4] = [
+                            [1.0, 0.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0, 0.0],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ];
+
+                        // スクリーンスペース（space=null）の基準行列。
+                        // 「anchor=(0,0) のルートキャンバスへ position=(0,0) で置いた」のと
+                        // 同一の基準（左上原点・1 単位 = 1px・Y 下向き）になるよう、
+                        // ルートキャンバスと同じ root_anchor_offset を平行移動として使う。
+                        // 2D キャンバスが 1 つも無いシーンでも screen space は使えるので
+                        // `is_canvas` の外で必ず計算する。
+                        {
+                            let canvas_scale_ss = if use_screen_space { 1.0f32 } else { CANVAS_WORLD_SCALE };
+                            let y_sign_ss = if use_screen_space { 1.0f32 } else { -1.0 };
+                            let sw = window_size.map_or(1280.0, |s| s.width as f32);
+                            let sh = window_size.map_or(720.0, |s| s.height as f32);
+                            let [ox, oy] = root_anchor_offset([0.0, 0.0], sw, sh, edit_view_2d);
+                            prim_screen_model = canvas_mat_to_gpu(
+                                [
+                                    [1.0, 0.0, 0.0, ox],
+                                    [0.0, 1.0, 0.0, oy],
+                                    [0.0, 0.0, 1.0, 0.0],
+                                    [0.0, 0.0, 0.0, 1.0],
+                                ],
+                                canvas_scale_ss, y_sign_ss,
+                            );
+                        }
 
                         if let Some(scene) = &self.scene {
                             let wl = self.active_world_line;
@@ -4131,13 +4175,17 @@ impl App {
                                 } else {
                                     (std::collections::HashMap::new(), std::collections::HashMap::new())
                                 };
+                                // 2D キャンバス配下はスクリーンスペース合成（World3d ではない）
+                                prim_spaces.world3d = false;
                                 collect_sprite_items(
                                     &scene.actors, &scene.world, wl, draw_ctx,
                                     None, IDENTITY, [1.0, 1.0],
                                     canvas_scale, y_sign, viewport_size, &canvas_vp_overrides,
                                     &root_auto_sizes, CanvasDrawZone::Foreground, edit_view_2d, &mut items_2d,
                                     &mut text_items_2d,
+                                    &mut prim_spaces,
                                 );
+
                             }
 
                             // ── 3D Canvas のスプライト（is_canvas に関わらず常に収集）──
@@ -4182,6 +4230,9 @@ impl App {
                                 // （ワールドキャンバスのレイヤーはキャンバス内で完結する）
                                 let canvas_start = items_3d.len();
                                 let text_canvas_start = text_items_3d.len();
+                                // このサブツリーは 3D ワールドキャンバス配下 →
+                                // スクリプトプリミティブもワールド空間・深度テスト付きで描く
+                                prim_spaces.world3d = true;
                                 collect_sprite_items(
                                     &actor.children, &scene.world, wl, draw_ctx,
                                     Some([cc.width, cc.height]),
@@ -4193,7 +4244,9 @@ impl App {
                                     // 3D ワールドキャンバス配下は常に親サイズ Some のためルート分岐に入らず design_space 無関係
                                     CanvasDrawZone::Foreground, false, &mut items_3d,
                                     &mut text_items_3d,
+                                    &mut prim_spaces,
                                 );
+                                prim_spaces.world3d = false;
                                 items_3d[canvas_start..].sort_by_key(|it| it.layer);
                                 // テキストもこのキャンバス内でレイヤー昇順に安定ソートする
                                 // （スプライトと同じ規約。ゾーン概念はワールドキャンバスに無い）。
@@ -4229,7 +4282,8 @@ impl App {
                         let list_bg = sb.main.push(items_2d_bg);
                         let list_fg = sb.main.push(items_2d_fg);
                         let list_3d = sb.main.push(items_3d);
-                        (list_bg, list_fg, list_3d, text_2d_bg, text_2d_fg, text_items_3d)
+                        (list_bg, list_fg, list_3d, text_2d_bg, text_2d_fg, text_items_3d,
+                         prim_spaces, prim_screen_model)
                     };
 
                     // CanvasComponent 矩形アウトラインバッチ（エディタモード + 2D キャンバス世界線のみ）
@@ -4579,6 +4633,88 @@ impl App {
                                 ct.build(&draw_ctx.device, &draw_ctx.queue, &text_items_3d_sorted, &saved_view_proj),
                             ),
                             None => (None, None, None),
+                        }
+                    };
+
+                    // ── スクリプト 2D プリミティブ（SEED.Draw）の GPU バッチ構築 ────
+                    //
+                    // スクリプトが積んだコマンドをここで**丸ごと引き取る**（キューは空になる）。
+                    // → 前フレームの図形は残らず、描画されないフレームに積まれた分は捨てられる。
+                    //
+                    // 振り分け規則:
+                    //   - space=null            → スクリーンスペース（前面ゾーン扱い）
+                    //   - 2D キャンバス配下     → そのキャンバスの描画ゾーン（背景／前面）
+                    //   - 3D ワールドキャンバス → ワールド空間（メインパス・深度テストあり）
+                    //   - 解決できない space    → 破棄（非表示／別世界線のキャンバス）
+                    //
+                    // 並び順はレイヤー昇順の**安定ソート**（スプライト・テキストと同じ規約）。
+                    let (prim_range_2d_bg, prim_range_2d_fg, prim_range_3d) = {
+                        crate::profile_scope!("描画/プリミティブ収集・構築");
+                        use crate::engine::core::renderer::primitive2d::{
+                            take_commands, PrimitiveRange, PrimitiveSpaceTarget,
+                        };
+                        let mut cmds = take_commands();
+                        cmds.sort_by_key(|c| c.layer);
+                        let (mut bg, mut fg, mut w3d) = (Vec::new(), Vec::new(), Vec::new());
+                        for c in cmds {
+                            match c.space {
+                                // スクリーンスペースは UI 最前面（前面ゾーン）として扱う
+                                None => fg.push(c),
+                                Some(e) => match prim_spaces.map.get(&e).map(|s| s.target) {
+                                    Some(PrimitiveSpaceTarget::Canvas2d(
+                                        CanvasDrawZone::Background,
+                                    )) => bg.push(c),
+                                    Some(PrimitiveSpaceTarget::Canvas2d(_)) => fg.push(c),
+                                    Some(PrimitiveSpaceTarget::World3d) => w3d.push(c),
+                                    // 描画対象外のキャンバス（非アクティブ・別世界線）は捨てる
+                                    None => {}
+                                },
+                            }
+                        }
+                        // 2D は（テキストと同じく）2D オーバーレイカメラ、
+                        // 3D ワールドキャンバスはメインカメラで NDC 化する。
+                        // 2D 系（スクリーンスペース + 2D キャンバス）を NDC 化するカメラ行列。
+                        //   - scene_canvas_ss: テキストと同じ 2D オーバーレイカメラ
+                        //   - 2D キャンバスが 1 つも無い & スクリーンスペース表示:
+                        //     オーバーレイカメラが構築されないため、同じ規則の ortho をここで組む
+                        //     （プリミティブは CPU で NDC 化するのでカメラ BG に依存しない）。
+                        //   - それ以外（アクター編集タブ・2D シーンビュー・ワールドスペース表示）:
+                        //     メインカメラ（テキスト・スプライトと同じ）
+                        let vp_2d_prim = if scene_canvas_ss {
+                            saved_canvas_overlay_vp.unwrap_or(saved_view_proj)
+                        } else if !is_canvas && use_screen_space {
+                            let (sw, sh) = window_size.map_or(
+                                (1280.0f32, 720.0f32),
+                                |s| (s.width as f32, s.height as f32),
+                            );
+                            let (hw, hh) = (sw / 2.0, sh / 2.0);
+                            // キャンバスオーバーレイカメラ（frame_renderer 冒頭）と同じ構成
+                            let cv = Mat4x4::look_at_lh(
+                                Vector3::new(0.0, 0.0, -100.0),
+                                Vector3::new(0.0, 0.0, 0.0),
+                                Vector3::new(0.0, 1.0, 0.0),
+                            );
+                            let cp = Mat4x4::orthographic_lh(-hw, hw, hh, -hh, 0.0, 200.0);
+                            (cp * cv).data
+                        } else {
+                            saved_view_proj
+                        };
+                        const EMPTY_RANGE: PrimitiveRange = PrimitiveRange {
+                            first_index: 0,
+                            index_count: 0,
+                            depth_tested: false,
+                        };
+                        match self.primitive2d.as_mut() {
+                            Some(p) => {
+                                p.begin();
+                                let rb = p.push(&bg, &prim_spaces.map, &prim_screen_model, &vp_2d_prim, false);
+                                let rf = p.push(&fg, &prim_spaces.map, &prim_screen_model, &vp_2d_prim, false);
+                                // 3D ワールドキャンバスの図形だけ深度テスト付き
+                                let r3 = p.push(&w3d, &prim_spaces.map, &prim_screen_model, &saved_view_proj, true);
+                                p.upload(&draw_ctx.device, &draw_ctx.queue);
+                                (rb, rf, r3)
+                            }
+                            None => (EMPTY_RANGE, EMPTY_RANGE, EMPTY_RANGE),
                         }
                     };
 
@@ -6511,6 +6647,15 @@ impl App {
                             }
                         }
 
+                        // 背景ゾーンのスクリプトプリミティブ（SEED.Draw）。
+                        // 描画順の規約はテキストと同じ「スプライト → プリミティブ → テキスト」。
+                        // 頂点は 2D オーバーレイカメラで NDC 化済みなのでカメラ BG は不要。
+                        if scene_canvas_ss {
+                            if let Some(p2) = &self.primitive2d {
+                                p2.draw(&prim_range_2d_bg, &mut pass);
+                            }
+                        }
+
                         // 背景ゾーンのキャンバステキスト（スプライトと同じ位置・同じ条件）。
                         // 頂点は既に 2D オーバーレイカメラで NDC 化済みなので
                         // カメラバインドグループは不要。
@@ -6876,6 +7021,14 @@ impl App {
                                 &sprite_prepared_3d,
                             );
                         }
+                        // 3D ワールドキャンバス上のスクリプトプリミティブ（SEED.Draw）。
+                        // 3D キャンバススプライトと同じメインパス・同じ 3D カメラ・
+                        // 同じ深度規則（LessEqual・深度書き込みなし）で描くため、
+                        // 3D シーンの手前／奥の関係が正しく解決される。
+                        if let Some(p2) = &self.primitive2d {
+                            p2.draw(&prim_range_3d, &mut pass);
+                        }
+
                         // 2D キャンバススプライト: scene_canvas_ss の場合はオーバーレイパスで描画する
                         // （背景ゾーンはメインパス冒頭で描画済み）。
                         // 2D シーンビュー・アクター編集タブ・ワールドスペース表示では
@@ -6898,6 +7051,16 @@ impl App {
                                     &main_inst_buf,
                                     &sprite_prepared_2d_fg,
                                 );
+                            }
+                        }
+
+                        // ── スクリプトプリミティブ（メインパス側・2D キャンバス）──────
+                        // 2D キャンバスのテキストと同じ条件（scene_canvas_ss でないとき）に
+                        // 背景 → 前面の順で描く。
+                        if !scene_canvas_ss {
+                            if let Some(p2) = &self.primitive2d {
+                                p2.draw(&prim_range_2d_bg, &mut pass);
+                                p2.draw(&prim_range_2d_fg, &mut pass);
                             }
                         }
 
@@ -7653,6 +7816,12 @@ impl App {
                                     &main_inst_buf,
                                     &sprite_prepared_2d_fg,
                                 );
+                            }
+
+                            // 前面ゾーンのスクリプトプリミティブ（SEED.Draw）。
+                            // スクリーンスペース（space=null）の図形もここに含まれる。
+                            if let Some(p2) = &self.primitive2d {
+                                p2.draw(&prim_range_2d_fg, &mut overlay_pass);
                             }
 
                             // 前面ゾーンのキャンバステキスト（スプライトの直後 = アウトラインより前）。

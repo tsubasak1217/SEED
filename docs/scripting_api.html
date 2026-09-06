@@ -226,6 +226,7 @@
     <a href="#sec-components">コンポーネント</a>
     <a href="#sec-scene">Scene</a>
     <a href="#sec-savedata">SaveData</a>
+    <a href="#sec-draw">Draw（2D 図形）</a>
     <a href="#sec-libs">ライブラリ</a>
     <a href="#sec-shading">シェーディング (WGSL)</a>
   </nav>
@@ -1150,6 +1151,85 @@ SolvePath();
     <tr><td>エディタから Play</td><td><code>runtime/save/save.json</code>（Git 追跡外）</td></tr>
     <tr><td>環境変数 <code>SEED_SAVE_DIR</code> 指定時</td><td>そのディレクトリの <code>save.json</code>（最優先）</td></tr>
   </table>
+</section>
+
+<!-- ════════════════ 7.8 Draw ════════════════ -->
+<section id="sec-draw" data-keywords="Draw 描画 プリミティブ 図形 2D イミディエイト ゲージ リング レーダー UI HUD 線 Line 円 Circle 楕円 矩形 Rect 三角形 Triangle 多角形 Polygon Polyline 折れ線 円弧 Arc Ring リング 角丸 RoundedRect ベジエ Bezier DrawMode Fill Outline Transform2D layer レイヤー space 座標空間 スクリーンスペース キャンバス 3Dキャンバス ワールドキャンバス thickness 太さ アンチエイリアス">
+  <h2>7.8 Draw（2D プリミティブ描画：ゲージ・レーダー・図形 UI）</h2>
+  <p class="section-note">
+    <code>SEED.Draw</code> は<b>イミディエイトモード</b>の 2D 図形描画 API です。
+    Update などから<b>毎フレーム呼ぶ</b>と、そのフレームだけ図形が描かれます
+    （オブジェクトは作られず、フレーム終了時にコマンドは破棄されます）。
+    Unity の Gizmos / Debug.DrawLine に似ていますが、こちらはデバッグ用ではなく
+    <b>ゲーム本編の UI として使える描画物</b>です。
+  </p>
+
+  <h3 id="draw-space">座標空間（space 引数）</h3>
+  <div class="api"><code class="sig">space: null（既定）</code><span class="desc">スクリーンスペース。<b>左上原点・1 単位 = 1px・Y 下向き</b></span></div>
+  <div class="api"><code class="sig">space: canvasTransform</code><span class="desc">そのアクターのローカル空間。アンカー・ピボット・親子スケール・自動解像度が「そのアクターの子スプライト」とまったく同じ規則で効く</span></div>
+  <div class="api"><code class="sig">space: 3D ワールドキャンバス配下のノード</code><span class="desc">そのキャンバス平面上へワールド空間で描かれる（3D シーンに正しく隠れる。3D キャンバススプライトと同じ深度規則）</span></div>
+<pre><span class="c">// スクリーンスペース（左上原点・px）</span>
+<span class="t">Draw</span>.Line(<span class="k">new</span> <span class="t">Vector2</span>(100, 100), <span class="k">new</span> <span class="t">Vector2</span>(300, 180), color, thickness: 2f);
+
+<span class="c">// キャンバスノードのローカル空間（子スプライトと同じ座標系）</span>
+<span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">CanvasTransform</span>&gt;() <span class="k">is</span> { } ct)
+    <span class="t">Draw</span>.Circle(<span class="k">new</span> <span class="t">Vector2</span>(0, 0), 20f, color, space: ct);</pre>
+  <div class="warn">
+    <code>space</code> に渡したアクターがそのフレームに描画されない（非アクティブ・別世界線・
+    CanvasTransform を持たない）場合、その図形は<b>黙って描画されません</b>。
+  </div>
+
+  <h3 id="draw-layer">レイヤーと重なり順</h3>
+  <p class="section-note">
+    <code>layer</code> はスプライト（<code>Sprite.Layer</code>）・テキスト（<code>Text.Layer</code>）と
+    <b>同じソート軸</b>で、大きいほど手前です。同じレイヤー値のときの前後は
+    「<b>スプライト → プリミティブ → テキスト</b>」の順になります。
+    描画ゾーン（Canvas の背景／前面）は <code>space</code> に渡したキャンバスのゾーンを継承し、
+    スクリーンスペース（<code>space: null</code>）は前面ゾーン扱いです。
+  </p>
+
+  <h3 id="draw-shapes">図形一覧</h3>
+  <div class="api"><code class="sig">Draw.Rect(p0, p1, p2, p3, srt, color, mode, thickness, layer, space)</code><span class="desc">4 点指定の四角形</span></div>
+  <div class="api"><code class="sig">Draw.Rect(center, size, color, mode, thickness, layer, space)</code><span class="desc">中心＋サイズの簡易版（軸平行）</span></div>
+  <div class="api"><code class="sig">Draw.Triangle(a, b, c, srt, color, mode, thickness, layer, space)</code><span class="desc">三角形</span></div>
+  <div class="api"><code class="sig">Draw.Line(a, b, color, thickness, layer, space)</code><span class="desc">2 点を結ぶ直線</span></div>
+  <div class="api"><code class="sig">Draw.Circle(center, radius, color, scale, mode, thickness, layer, space)</code><span class="desc">円（scale で楕円）</span></div>
+  <div class="api"><code class="sig">Draw.RegularPolygon(center, radius, vertices, color, rotationDegrees, scale, mode, thickness, layer, space)</code><span class="desc">正多角形</span></div>
+  <div class="api"><code class="sig">Draw.Arc(center, radius, startDegrees, endDegrees, color, mode, thickness, layer, space)</code><span class="desc">円弧。Fill = 太さ thickness のリング / Outline = 太さ thickness の線</span></div>
+  <div class="api"><code class="sig">Draw.Ring(center, innerRadius, outerRadius, color, startDegrees, endDegrees, mode, thickness, layer, space)</code><span class="desc">リング（円環セクタ）。innerRadius = 0 で扇形</span></div>
+  <div class="api"><code class="sig">Draw.RoundedRect(center, size, cornerRadius, srt, color, mode, thickness, layer, space)</code><span class="desc">角丸四角形（4 点指定の多重定義もあり）</span></div>
+  <div class="api"><code class="sig">Draw.Polyline(points, closed, color, thickness, layer, space)</code><span class="desc">折れ線（closed = true で閉じる）</span></div>
+  <div class="api"><code class="sig">Draw.Polygon(points, srt, color, mode, thickness, layer, space)</code><span class="desc">多角形（塗りは耳刈りで三角形分割。凹も可）</span></div>
+  <div class="api"><code class="sig">Draw.Bezier(p0, p1, p2, p3, color, segments, thickness, layer, space)</code><span class="desc">3 次ベジエ曲線（線のみ）</span></div>
+  <div class="api"><code class="sig">DrawMode.Fill / DrawMode.Outline</code><span class="desc">塗り（既定）／太さ thickness の輪郭線</span></div>
+  <div class="api"><code class="sig">Transform2D.Identity / new Transform2D(position[, rotationDegrees[, scale]])</code><span class="desc">点列へ「スケール → 回転 → 平行移動」の順で適用する SRT（回転は時計回りが正）</span></div>
+
+  <h3 id="draw-examples">例：レーダーと円形ゲージ</h3>
+<pre><span class="c">// レーダー：画面上の円に周囲の敵を点で打つ</span>
+<span class="t">Draw</span>.Circle(radarCenter, 60f, <span class="k">new</span> <span class="t">Color</span>(0f, 0f, 0f, 0.4f), layer: 10);
+<span class="t">Draw</span>.Circle(radarCenter, 60f, frame, mode: <span class="t">DrawMode</span>.Outline, thickness: 2f, layer: 11);
+<span class="k">foreach</span> (<span class="k">var</span> e <span class="k">in</span> enemies)
+    <span class="t">Draw</span>.Circle(dotPos, 3f, <span class="k">new</span> <span class="t">Color</span>(1f, 0.3f, 0.3f, 1f), layer: 12);
+
+<span class="c">// 円形ゲージ：value（0..1）に応じて 12 時方向から時計回りに満ちる</span>
+<span class="k">const</span> <span class="t">float</span> StartDegrees = -90f;
+<span class="t">Draw</span>.Ring(center, 34f, 42f, bg,   0f, 360f, layer: 20);
+<span class="t">Draw</span>.Ring(center, 34f, 42f, fill, StartDegrees,
+    StartDegrees + 360f * <span class="t">Mathf</span>.Clamped01(value), layer: 21);</pre>
+
+  <h3 id="draw-limits">制限</h3>
+  <table>
+    <tr><th>項目</th><th>上限・制限</th></tr>
+    <tr><td>1 フレームの図形数</td><td>4096（<code>Draw.MaxPrimitivesPerFrame</code>）。超過分は描かれず警告ログ</td></tr>
+    <tr><td>1 図形の点数</td><td>1024（<code>Draw.MaxPointsPerPrimitive</code>）。超過分は切り捨て</td></tr>
+    <tr><td><code>Polygon</code> の形状</td><td>自己交差しない単純多角形のみ（凹は可）。穴あき・自己交差は結果が保証されない</td></tr>
+    <tr><td>半透明の太い折れ線</td><td>角（ジョイント）がわずかに濃くなる（帯が重なるため）。不透明色では見えない</td></tr>
+    <tr><td>アンチエイリアス</td><td>輪郭の外側 1px のフェザー帯による近似（スクリーンスペースでは 1 画面 px）</td></tr>
+  </table>
+  <div class="warn">
+    <code>Draw.*</code> は<b>呼んだフレームだけ描く</b> API です。図形を出し続けたいなら毎フレーム呼んでください。
+    Play していないフレームに積まれたコマンドは破棄されます。
+  </div>
 </section>
 
 <!-- ════════════════ 8. シェーディングアセット (WGSL) ════════════════ -->

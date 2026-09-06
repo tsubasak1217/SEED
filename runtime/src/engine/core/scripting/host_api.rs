@@ -1886,6 +1886,88 @@ unsafe extern "system" fn ffi_input_cursor_lock(action: i32, value: i32) -> i32 
     }
 }
 
+// ─── 2D プリミティブ描画 FFI（SEED.Draw）────────────────────
+
+/// スクリーンスペースを表す `space_idx`（＝ `Entity::None` の index）。
+/// C# 側 `Draw.cs` の `NoSpaceIndex` と一致必須。
+const DRAW_SPACE_SCREEN: u32 = u32::MAX;
+
+/// `SEED.Draw.*` が積む 2D プリミティブ描画コマンドを受け取る。
+///
+/// # 引数
+/// - `kind`       : 図形種別（`PrimitiveKind` の値。C# 側 `Draw.cs` の定数と一致）
+/// - `space_idx` / `space_gen` : 座標空間の基準アクター（CanvasTransform を持つ
+///   アクターのルートエンティティ）。`space_idx == u32::MAX` でスクリーンスペース。
+/// - `params` / `param_count`  : 共通ヘッダ + 図形別スカラ（`PRIM_PARAM_FLOATS` 個固定）
+/// - `points` / `point_count`  : 点列（float は `point_count * 2` 個）
+///
+/// # 戻り値
+/// 1 = 受理 / 0 = 破棄（引数不正・1 フレーム上限超過）。
+///
+/// コマンドはフレーム描画時に丸ごと引き取られるため、描画されないフレームで
+/// 積まれたものは自動的に捨てられる。
+unsafe extern "system" fn ffi_draw_primitive(
+    kind: i32,
+    space_idx: u32,
+    space_gen: u32,
+    params: *const f32,
+    param_count: i32,
+    points: *const f32,
+    point_count: i32,
+) -> i32 {
+    use crate::engine::core::renderer::primitive2d::{
+        push_command, PrimitiveCommand, PrimitiveDrawMode, PrimitiveKind, Transform2d,
+        MAX_POINTS_PER_PRIMITIVE, PRIM_EXTRA_FLOATS, PRIM_HEADER_FLOATS, PRIM_PARAM_FLOATS,
+    };
+
+    // 図形種別・パラメータ長の検証（C# 側の実装ミスを黙って丸めない）
+    let Some(kind) = PrimitiveKind::from_i32(kind) else {
+        return 0;
+    };
+    if params.is_null() || param_count as usize != PRIM_PARAM_FLOATS {
+        return 0;
+    }
+    let p = std::slice::from_raw_parts(params, PRIM_PARAM_FLOATS);
+
+    // 点列（NULL / 0 個も許容する。図形側で必要数を検査する）
+    let n_points = (point_count.max(0) as usize).min(MAX_POINTS_PER_PRIMITIVE);
+    let pts: Vec<[f32; 2]> = if points.is_null() || n_points == 0 {
+        Vec::new()
+    } else {
+        let raw = std::slice::from_raw_parts(points, n_points * 2);
+        raw.chunks_exact(2).map(|c| [c[0], c[1]]).collect()
+    };
+
+    // 共通ヘッダの読み出し（配置は queue.rs の PRIM_HEADER_FLOATS コメントを参照）
+    let mut extras = [0.0f32; PRIM_EXTRA_FLOATS];
+    extras.copy_from_slice(&p[PRIM_HEADER_FLOATS..PRIM_PARAM_FLOATS]);
+
+    let cmd = PrimitiveCommand {
+        kind,
+        space: if space_idx == DRAW_SPACE_SCREEN {
+            None
+        } else {
+            Some(Entity::from_raw(space_idx, space_gen))
+        },
+        color: [p[0], p[1], p[2], p[3]],
+        mode: PrimitiveDrawMode::from_f32(p[4]),
+        thickness: p[5],
+        layer: p[6] as i32,
+        srt: Transform2d {
+            position: [p[7], p[8]],
+            rotation_deg: p[9],
+            scale: [p[10], p[11]],
+        },
+        extras,
+        points: pts,
+    };
+    if push_command(cmd) {
+        1
+    } else {
+        0
+    }
+}
+
 // ─── 物理 FFI（Raycast）──────────────────────────────────────
 
 /// レイキャストのタイムアウト（ミリ秒）。物理スレッドのコマンドドレインは
@@ -2737,6 +2819,9 @@ pub struct ScriptHostApi {
     // カーソルロック（SEED.Input.CursorLocked）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     input_cursor_lock:       unsafe extern "system" fn(i32, i32) -> i32,
+    // 2D プリミティブ描画（SEED.Draw）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    draw_primitive:          unsafe extern "system" fn(i32, u32, u32, *const f32, i32, *const f32, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -2772,6 +2857,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     path_sample:            ffi_path_sample,
     resolve_script_instance: ffi_resolve_script_instance,
     input_cursor_lock:       ffi_input_cursor_lock,
+    draw_primitive:          ffi_draw_primitive,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

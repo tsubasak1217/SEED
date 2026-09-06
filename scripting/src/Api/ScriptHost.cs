@@ -462,6 +462,28 @@ public static unsafe class ScriptHost
         return _api.InputCursorLock(action, value);
     }
 
+    // ── 2D プリミティブ描画（SEED.Draw）─────────────────────────
+
+    /// <summary>
+    /// 2D プリミティブ描画コマンドを 1 件発行する（イミディエイトモード）。
+    ///
+    /// エンジンは積まれたコマンドをそのフレームの描画時に消費し、キューを空にする。
+    /// </summary>
+    /// <param name="kind">図形種別（SEED.Draw の kind 定数。Rust 側 PrimitiveKind と一致）。</param>
+    /// <param name="space">座標空間の基準エンティティ（Entity.None でスクリーンスペース）。</param>
+    /// <param name="prm">共通ヘッダ + 図形別スカラ（float 配列）。</param>
+    /// <param name="prmCount">prm の要素数（固定長。Rust 側 PRIM_PARAM_FLOATS と一致必須）。</param>
+    /// <param name="pts">点列（x, y の並び）。点が無ければ null。</param>
+    /// <param name="pointCount">点の個数（float 数はこの 2 倍）。</param>
+    /// <returns>受理されたら true（上限超過・引数不正で false）。</returns>
+    public static bool DrawPrimitive(
+        int kind, Entity space, float* prm, int prmCount, float* pts, int pointCount)
+    {
+        if (!_available || _api.DrawPrimitive == null) return false;
+        return _api.DrawPrimitive(
+            kind, space.Index, space.Generation, prm, prmCount, pts, pointCount) != 0;
+    }
+
     // ── オーディオ ───────────────────────────────────────────────
 
     /// <summary>
@@ -884,4 +906,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, byte*, int, nint*, int> ResolveScriptInstance;
     /// <summary>(action, value) → 1/0（カーソルロック。action: 0=取得/1=設定。設定は次のフレーム末に適用）</summary>
     public delegate* unmanaged[Cdecl]<int, int, int> InputCursorLock;
+    /// <summary>2D プリミティブ描画コマンドの発行（SEED.Draw）。Rust 側 draw_primitive と同順。</summary>
+    public delegate* unmanaged[Cdecl]<int, uint, uint, float*, int, float*, int, int> DrawPrimitive;
 }

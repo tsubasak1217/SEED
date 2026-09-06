@@ -17,6 +17,12 @@ public readonly struct CanvasTransform : IComponentHandle<CanvasTransform>
 
     internal CanvasTransform(Entity entity) { _entity = entity; }
 
+    /// <summary>
+    /// この CanvasTransform が指すエンティティ（アセンブリ内部用）。
+    /// SEED.Draw が「この Canvas ノードのローカル空間」を指定するために使う。
+    /// </summary>
+    internal Entity Owner => _entity;
+
     // ── IComponentHandle 実装（GetComponent 経由でのみ使われる）──
     static string IComponentHandle<CanvasTransform>.ComponentKindName => Comp;
     static CanvasTransform IComponentHandle<CanvasTransform>.FromEntity(Entity slotEntity) => new(slotEntity);
