@@ -229,7 +229,11 @@ public class Fish : SEEDScript
     [SerializeField(Label = "回答の小節数(0で既定)")]
     private int rhythmAnswerBars = 0;
 
-    /// <summary>隙フェーズの小節数（0 ＝ 釣りバトル側の既定値を使う）。</summary>
+    /// <summary>
+    /// 隙フェーズの小節数（0 ＝ 釣りバトル側の既定値を使う）。
+    /// <b>2026-09-06 現在の <see cref="FishingFight"/> は本値を参照しない</b>
+    /// （隙の長さは直前の回答の出来で決まるため）。将来また魚ごとに固定したくなったとき用に残してある。
+    /// </summary>
     [SerializeField(Label = "隙の小節数(0で既定)")]
     private int rhythmRestBars = 0;
 
@@ -452,7 +456,10 @@ public class Fish : SEEDScript
     /// <summary>回答フェーズの小節数（0 ＝ 釣りバトル側の既定値）。</summary>
     public int RhythmAnswerBars => rhythmAnswerBars;
 
-    /// <summary>隙フェーズの小節数（0 ＝ 釣りバトル側の既定値）。</summary>
+    /// <summary>
+    /// 隙フェーズの小節数（0 ＝ 釣りバトル側の既定値）。
+    /// 現行の <see cref="FishingFight"/> は参照しない（隙の長さは回答の出来で決まる）。
+    /// </summary>
     public int RhythmRestBars => rhythmRestBars;
 
     /// <summary>餌の感知距離（釣りバトル側から参照する）。</summary>

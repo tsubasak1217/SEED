@@ -29,17 +29,29 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// ■ ドラムループ（<see cref="SetupDrumLoop"/>）
 /// バトル中は BGM 枠でドラムループを鳴らし、再生速度を <c>魚のBPM ÷ 素材のBPM</c> に
 /// 変えて魚の拍と同じテンポにする。開始は余白の頭（余白が拍子の倍数でないときだけ
-/// 次の小節頭まで待つ）、以後は <see cref="drumResyncBars"/> 小節ごとに鳴らし直して
-/// ズレを消す。<see cref="Paused"/> 中は止め、再開時は次のループ境界へ揃えて鳴らし直す。
+/// 次の小節頭まで待つ）。
+/// フェーズ長が可変（隙が 1 小節または 2 小節）になったため、ドラムの 2 小節ループは
+/// 放っておくと出題の頭とズレる。そこで <see cref="drumRestartAtCall"/>（既定 true）で
+/// <b>出題フェーズの頭ごとにループを鳴らし直す</b>ことを既定の同期手段とし、
+/// <see cref="drumResyncBars"/> 小節ごとの定期再同期は任意の補助として残す。
+/// <see cref="Paused"/> 中は止め、再開時は次のループ境界へ揃えて鳴らし直す。
 /// メトロノームと併用する前提だが、メトロノームの音量を 0 にすればドラムだけにもできる。
 ///
 /// ■ フェーズ（LeadIn だけ<b>拍単位</b>・それ以外は<b>小節単位</b>、切り替えは必ず小節頭）
 /// <code>
 /// 余白(LeadIn) → 出題(Call) → 回答(Answer) → 隙(Rest) → 出題 → …
-/// 既定の長さ: 余白 leadInBeats 拍 / 出題 callBars 小節 / 回答 answerBars 小節 / 隙 restBars 小節
-///             （疲労中は隙が restBarsWhenTired 小節ぶん延びる）
-/// 魚データ（Fish.RhythmCallBars など）が 1 以上ならそちらが優先される。
+/// 既定の長さ: 余白 leadInBeats 拍 / 出題 callBars 小節(既定 2) / 回答 answerBars 小節(既定 2)
+///             隙 = 直前の回答の出来で決まる（下表）＋ 疲労中はさらに restBarsWhenTired 小節
+/// 出題・回答の小節数は魚データ（Fish.RhythmCallBars / RhythmAnswerBars）が 1 以上ならそちらが優先。
+/// 隙の小節数は「回答の出来」で毎回決まるので、魚データの RhythmRestBars は<b>参照しない</b>。
 /// </code>
+/// <b>隙の長さの規則（2026-09-06 改定）</b>
+/// <code>
+/// 直前の回答が完璧（期待打点が全て Excellent ＆ 余分なクリック 0）→ restBarsPerfect 小節（既定 2）
+/// それ以外                                                        → restBarsNormal  小節（既定 1）
+/// 疲労中はどちらの場合も restBarsWhenTired 小節ぶん<b>加算</b>される
+/// </code>
+/// ＝ うまく叩けたご褒美として巻ける時間が伸びる。
 /// <see cref="Phase.LeadIn"/> はバトル開始直後にだけ 1 度通る特別な区間で、
 /// メトロノームだけが leadInBeats 拍ぶん鳴り、出題・回答・巻きは一切行わない
 /// （中央テキストには残り拍数「4 3 2 1」を出す）。時計の原点（clockTime == 0）を
@@ -48,13 +60,22 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// ズレずに接続できる（詳細は <see cref="EnterLeadInOrCall"/>）。
 /// 次のフェーズは<b>1 拍前</b>に中央テキストで予告する（LeadIn を除く）。
 ///
+/// ■ フレーズ（出題・回答で共有する打点の並び）
+/// 魚のリズムパターン（8 分音符の並び。'x' が打点・'.' が休符）は<b>1 行 ＝ 1 小節</b>が基本だが、
+/// 小節数ぶんの長さ（例: 2 小節 ＝ 拍子 × 2 × 2 文字）の行もそのまま使える。
+/// 出題フェーズの小節数ぶんの「フレーズ」を、パターンをランダムに（重複可で）
+/// 連結して組み立てる（<see cref="BuildPhrase"/>）。回答フェーズでは同じフレーズを
+/// 先頭から並べ直す（回答が長ければ循環させる）ので、出題と回答で打点位置が一致する。
+///
 /// ■ 出題（Call）
-/// 魚のリズムパターン（8 分音符の並び。'x' が打点・'.' が休符）を 1 つ抽選し、
 /// 打点の時刻ごとに<b>前アタリと同じ演出</b>（つつき音＋ウキの沈み）を出す
-/// （<see cref="FishingController.PlayNibbleCue"/>）。出題中の左クリックは Miss。
+/// （<see cref="FishingController.PlayNibbleCue"/>）。打点の時刻は
+/// 「フェーズ開始時刻 ＋ 分割番号 × 1 分割の秒数」で<b>解析的に</b>先に確定させ、
+/// clockTime がその時刻に達した最初のフレームで鳴らす（1 フレームが長くても取りこぼさない）。
+/// 出題中の左クリックは、次の回答の受付窓に入っていなければ Miss。
 ///
 /// ■ 回答（Answer）
-/// 同じパターンを<b>左クリック</b>で再現する。打点ごとに最も近いクリックとの時間差 |Δt| で
+/// 同じフレーズを<b>左クリック</b>で再現する。打点ごとに最も近いクリックとの時間差 |Δt| で
 /// <code>
 /// |Δt| ≦ excellentSeconds → Excellent   （テンション減）
 /// |Δt| ≦ greatSeconds     → Great
@@ -101,11 +122,24 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// ────────────────────────────────────────────────────────
 ///
 /// <b>UI（円形のリズム時計）</b>
-/// 画面中央の円（<c>GaugeSeg00</c>… の 48 セグメント＋<c>GaugeMarker</c>）を時計として使う。
-/// - マーカー … 小節内の進行（<see cref="BarPhase01"/> × 360 度・真上が小節頭・右回り）
+/// 画面中央の円（<c>GaugeSeg00</c>… の 48 セグメント＋<c>GaugeMarker</c>
+/// ＋ <c>BeatIcon00</c>… の打点アイコン）を時計として使う。
+/// - マーカー（針）… <b>フェーズの進行</b>（<see cref="PhaseProgress01"/> × 360 度・
+///   真上がフェーズ頭・右回り）。出題も回答も 2 小節なので、<b>1 フェーズで針が 1 周</b>する。
+///   隙（1〜2 小節）・余白でも同じく、その区間の長さで 1 周する。
 /// - セグメント … 真上から右回りに糸の残りの円弧（<see cref="Line01"/> × 360 度・
-///   減った分だけ空きセグメントに置き換わる）。円弧の色は満タン(緑)→中間(黄)→危険(赤)へ補間
-///   ＋ パターンの打点位置に拍マーク（出題中は明るく、回答中は暗く、判定した瞬間だけ判定色）
+///   減った分だけ空きセグメントに置き換わる）。円弧の色は満タン(緑)→中間(黄)→危険(赤)へ補間。
+///   <b>セグメントは糸ゲージ専用</b>で、打点は一切描かない（旧「拍マーク」は廃止）。
+/// - 打点アイコン … フレーズの打点 1 つにつき 1 枚（<see cref="beatIconSprites"/>）。
+///   角度は打点の<b>時刻</b>から解析的に求める（θ ＝ (打点時刻 − フェーズ開始) ÷ フェーズ長 × 360 度）
+///   ので、セグメントの分割数には一切依存しない。半径は <see cref="beatIconRadiusPx"/>。
+///   ライフサイクルは下記。
+/// <code>
+/// 出題: 打点の音が鳴った<b>後</b>に 1 枚ずつ出現（easeOutBack で 0→1 に拡大・出題色）
+/// 回答: 同じ位置のまま暗い未判定色へ。判定した瞬間に判定色（Excellent 白 / Great 淡緑 /
+///       Nice 黄 / Miss 赤）で小さく跳ねる。余分なクリックにはアイコンを出さない
+/// 隙  : 受付窓が閉じたところから beatIconFadeSeconds 秒でフェードアウト
+/// </code>
 /// - 中央テキスト … フェーズ名（＋予告）／魚 HP ％／疲労 ％
 /// - 右下テキスト … 残り距離（従来どおり）
 /// </summary>
@@ -192,9 +226,6 @@ public class FishingFight : SEEDScript
     /// <summary>まだ 1 度も拍を鳴らしていないことを表す番兵値。</summary>
     private const int NoBeatPlayed = -1;
 
-    /// <summary>まだ 1 度も打点キューを出していないことを表す番兵値。</summary>
-    private const int NoCueFired = -1;
-
     /// <summary>該当なしを表す添字（<see cref="FindNearestPendingHit"/> の戻り値）。</summary>
     private const int NoIndex = -1;
 
@@ -209,6 +240,27 @@ public class FishingFight : SEEDScript
 
     /// <summary>色キャッシュの未書き込みを表す番兵アルファ（実値として現れない負値）。</summary>
     private const float UncachedAlpha = -1f;
+
+    /// <summary>
+    /// easeOutBack の跳ね返り係数（一般的な実装値）。
+    /// 0→1 の補間の終わりで 1 を少し超えてから戻る「ポップ」感を作る。
+    /// </summary>
+    private const float EaseBackOvershoot = 1.70158f;
+
+    /// <summary>easeOutBack の 3 次項の係数（＝ <see cref="EaseBackOvershoot"/> ＋ 1）。</summary>
+    private const float EaseBackCubic = EaseBackOvershoot + 1f;
+
+    /// <summary>スケールの基準値（1 ＝ 等倍）。</summary>
+    private const float NormalScale = 1f;
+
+    /// <summary>まだ 1 度も打点の音を鳴らしていないことを表す番兵（打点番号）。</summary>
+    private const int NoHitFired = -1;
+
+    /// <summary>「この打点はまだ出現していない」ことを表すポップ開始時刻の番兵。</summary>
+    private const float IconHidden = float.MaxValue;
+
+    /// <summary>フェードしていない（＝完全に不透明側）ことを表すフェード開始時刻の番兵。</summary>
+    private const float NoFadeStart = float.MaxValue;
 
     // ─── 装備パラメータ ───────────────────────────────────
 
@@ -228,19 +280,35 @@ public class FishingFight : SEEDScript
 
     // ─── フェーズの長さ（小節数）─────────────────────────────
 
-    /// <summary>出題（魚が叩く）フェーズの長さ（小節）。魚データが 1 以上ならそちらが優先。</summary>
+    /// <summary>
+    /// 出題（魚が叩く）フェーズの長さ（小節）。魚データが 1 以上ならそちらが優先。
+    /// 既定は 2 小節（＝針が 1 周するあいだに 2 小節ぶんのフレーズを出題する）。
+    /// </summary>
     [Header("フェーズの長さ(小節)"), SerializeField(Label = "出題の小節数")]
-    private int callBars = 1;
+    private int callBars = 2;
 
-    /// <summary>回答（プレイヤーが叩く）フェーズの長さ（小節）。</summary>
+    /// <summary>
+    /// 回答（プレイヤーが叩く）フェーズの長さ（小節）。魚データが 1 以上ならそちらが優先。
+    /// 出題と同じ長さにしておくと、打点アイコンが出題時とまったく同じ角度に並ぶ。
+    /// </summary>
     [SerializeField(Label = "回答の小節数")]
-    private int answerBars = 1;
+    private int answerBars = 2;
 
-    /// <summary>隙（巻きに専念できる）フェーズの長さ（小節）。</summary>
-    [SerializeField(Label = "隙の小節数")]
-    private int restBars = 2;
+    /// <summary>
+    /// 隙（巻きに専念できる）フェーズの長さ（小節）― <b>回答が完璧だったとき</b>。
+    /// 完璧 ＝ 期待打点がすべて Excellent かつ余分なクリックが 0（<see cref="EvaluateAnswerPerfect"/>）。
+    /// </summary>
+    [SerializeField(Label = "隙の小節数(完璧)")]
+    private int restBarsPerfect = 2;
 
-    /// <summary>疲労中に隙へ<b>加算</b>される小節数。</summary>
+    /// <summary>隙フェーズの長さ（小節）― <b>完璧でなかったとき</b>（既定の隙）。</summary>
+    [SerializeField(Label = "隙の小節数(通常)")]
+    private int restBarsNormal = 1;
+
+    /// <summary>
+    /// 疲労中に隙へ<b>加算</b>される小節数。
+    /// 完璧／通常のどちらの隙にも上乗せされる（規則が競合しないよう加算に統一している）。
+    /// </summary>
     [SerializeField(Label = "疲労中に延びる隙の小節数")]
     private int restBarsWhenTired = 2;
 
@@ -292,7 +360,19 @@ public class FishingFight : SEEDScript
     private float drumLoopVolume = 0.8f;
 
     /// <summary>
+    /// 出題（Call）フェーズの頭ごとにドラムループを鳴らし直すか【既定の同期手段】。
+    ///
+    /// 隙の長さが 1 小節／2 小節と変わるため、ループ長（既定 2 小節）と小節線の関係が
+    /// サイクルごとにズレる。出題の頭で必ず鳴らし直せば、<b>各フェーズ＝ループ 1 周</b>が
+    /// 常に保証される（出題 2 小節・素材 2 小節の既定構成の場合）。
+    /// false にすると <see cref="drumResyncBars"/> による定期再同期だけになる。
+    /// </summary>
+    [SerializeField(Label = "出題の頭でループを鳴らし直す")]
+    private bool drumRestartAtCall = true;
+
+    /// <summary>
     /// ドラムループを鳴らし直して位相ズレを消す間隔（小節）。0 なら再同期しない。
+    /// <see cref="drumRestartAtCall"/> が true なら基本的に不要な補助機能。
     /// 実際の再同期はこの小節数<b>以上</b>で、かつ「ループ先頭かつ魚の小節頭」に
     /// なる最小周期の整数倍になる（<see cref="SetupDrumLoop"/> で算出）。
     /// </summary>
@@ -469,6 +549,22 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "円セグメントのCanvasTransform")]
     private List<SEED.CanvasTransform> segmentTransforms = new();
 
+    /// <summary>
+    /// 打点アイコンのスプライト（<c>BeatIcon00</c>… を順に割り当てる）。
+    /// アイコン i は「いまのフレーズの i 番目の<b>打点</b>」に対応する
+    /// （分割番号ではなく打点の通し番号）。フレーズの打点数がこの個数を超えた分は
+    /// アイコンを持たない（＝表示されないだけで判定には影響しない）。未設定でもロジックは成立する。
+    /// </summary>
+    [SerializeField(Label = "打点アイコンのSprite")]
+    private List<SEED.Sprite> beatIconSprites = new();
+
+    /// <summary>
+    /// 打点アイコンの CanvasTransform（位置と拡大率を書き換える）。
+    /// <see cref="beatIconSprites"/> と<b>同じ順・同じアクタ</b>を割り当てること。
+    /// </summary>
+    [SerializeField(Label = "打点アイコンのCanvasTransform")]
+    private List<SEED.CanvasTransform> beatIconTransforms = new();
+
     /// <summary>小節内の進行を示すマーカーのスプライト（白い小片）。</summary>
     [SerializeField(Label = "マーカーのSprite")]
     private SEED.Sprite? gaugeMarker = null;
@@ -518,25 +614,53 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "危険の色(RGB)")]
     private SEED.Vector3 dangerColor = new SEED.Vector3(1f, 0.2f, 0.15f);
 
-    /// <summary>出題中に光る拍マークの色（RGB）。</summary>
-    [SerializeField(Label = "拍マークの色(出題)")]
-    private SEED.Vector3 beatCallColor = new SEED.Vector3(0.4f, 0.85f, 1f);
+    /// <summary>
+    /// 打点アイコンを置く円の半径（ピクセル）。
+    /// 糸ゲージの円（<see cref="arcRadiusPx"/>）の外側に置きたいので、既定は
+    /// 「円の半径 140 ＋ 26」＝ 166。半径だけ独立に動かせるよう別フィールドにしてある。
+    /// </summary>
+    [SerializeField(Label = "打点アイコンの半径(px)")]
+    private float beatIconRadiusPx = 166f;
 
-    /// <summary>回答中の拍マーク（未判定）の色（RGB）。</summary>
-    [SerializeField(Label = "拍マークの色(回答)")]
-    private SEED.Vector3 beatAnswerColor = new SEED.Vector3(0.5f, 0.55f, 0.6f);
+    /// <summary>打点アイコンの一辺の大きさ（ピクセル・正方形）。</summary>
+    [SerializeField(Label = "打点アイコンの大きさ(px)")]
+    private float beatIconSizePx = 22f;
 
-    /// <summary>判定成功の瞬間に拍マークが光る色（RGB）。</summary>
-    [SerializeField(Label = "拍マークの色(判定成功)")]
-    private SEED.Vector3 beatHitColor = new SEED.Vector3(1f, 1f, 1f);
+    /// <summary>打点アイコンが出現するときの拡大アニメの秒数（easeOutBack で 0 → 1）。</summary>
+    [SerializeField(Label = "打点アイコンの出現秒数")]
+    private float beatIconPopSeconds = 0.25f;
 
-    /// <summary>判定失敗（Miss）の瞬間に拍マークが光る色（RGB）。</summary>
-    [SerializeField(Label = "拍マークの色(Miss)")]
-    private SEED.Vector3 beatMissColor = new SEED.Vector3(1f, 0.25f, 0.25f);
+    /// <summary>隙に入ってから打点アイコンが消えるまでの秒数（アルファのフェード）。</summary>
+    [SerializeField(Label = "打点アイコンの消滅秒数")]
+    private float beatIconFadeSeconds = 0.3f;
 
-    /// <summary>判定した拍マークが光り続ける秒数。</summary>
-    [SerializeField(Label = "判定マークの点灯秒数")]
-    private float beatFlashSeconds = 0.25f;
+    /// <summary>出題中に出現した打点アイコンの色（RGB・魚が叩いた合図の色）。</summary>
+    [SerializeField(Label = "打点アイコンの色(出題)")]
+    private SEED.Vector3 beatIconCallColor = new SEED.Vector3(1f, 0.85f, 0.3f);
+
+    /// <summary>回答中でまだ判定していない打点アイコンの色（RGB・暗め）。</summary>
+    [SerializeField(Label = "打点アイコンの色(未判定)")]
+    private SEED.Vector3 beatIconPendingColor = new SEED.Vector3(0.42f, 0.46f, 0.52f);
+
+    /// <summary>Excellent と判定した打点アイコンの色（RGB）。</summary>
+    [SerializeField(Label = "打点アイコンの色(Excellent)")]
+    private SEED.Vector3 beatIconExcellentColor = new SEED.Vector3(1f, 1f, 1f);
+
+    /// <summary>Great と判定した打点アイコンの色（RGB）。</summary>
+    [SerializeField(Label = "打点アイコンの色(Great)")]
+    private SEED.Vector3 beatIconGreatColor = new SEED.Vector3(0.55f, 1f, 0.6f);
+
+    /// <summary>Nice と判定した打点アイコンの色（RGB）。</summary>
+    [SerializeField(Label = "打点アイコンの色(Nice)")]
+    private SEED.Vector3 beatIconNiceColor = new SEED.Vector3(1f, 0.95f, 0.35f);
+
+    /// <summary>Miss（打ち逃し）だった打点アイコンの色（RGB）。</summary>
+    [SerializeField(Label = "打点アイコンの色(Miss)")]
+    private SEED.Vector3 beatIconMissColor = new SEED.Vector3(1f, 0.25f, 0.25f);
+
+    /// <summary>打点アイコンの不透明度（バトル中・フェード前）。</summary>
+    [SerializeField(Label = "打点アイコンの不透明度")]
+    private float beatIconOpacity = 1f;
 
     /// <summary>出題中のマーカー色（RGB）。</summary>
     [SerializeField(Label = "マーカーの色(出題)")]
@@ -700,6 +824,21 @@ public class FishingFight : SEEDScript
         : 0f;
 
     /// <summary>
+    /// <b>いまのフェーズのなかの進行（0〜1）</b>【円形 UI の針の角度の唯一の元】。
+    /// 0 がフェーズ頭・1 がフェーズ終わり。針は 1 フェーズで必ず 1 周する。
+    /// フェーズ長が 0 以下（データ異常）のときは 0 を返す。
+    /// </summary>
+    public float PhaseProgress01
+    {
+        get
+        {
+            float duration = phaseEndTime - phaseStartTime;
+            if (duration <= DivideEpsilon) { return 0f; }
+            return SEED.Mathf.Clamped01((clockTime - phaseStartTime) / duration);
+        }
+    }
+
+    /// <summary>
     /// いまの時刻から見た、最も近い分割線までの<b>符号つき</b>時間差（秒）。
     /// ＋ ＝ 分割線を過ぎている（遅れている） / − ＝ まだ手前（早い）。
     /// </summary>
@@ -784,29 +923,69 @@ public class FishingFight : SEEDScript
     /// <summary>次のフェーズの予告（1 拍前）を済ませたか。</summary>
     private bool nextPhaseAnnounced = false;
 
-    /// <summary>このバトルで使う有効なリズムパターン（1 要素 ＝ 1 小節ぶんの文字列）。</summary>
+    /// <summary>
+    /// このバトルで使う有効なリズムパターン（1 要素 ＝ 1 小節<b>以上</b>ぶんの文字列。
+    /// 長さは必ず <see cref="subsPerBar"/> の正の整数倍）。
+    /// </summary>
     private readonly List<string> patterns = new();
 
-    /// <summary>いま出題／回答しているパターン（1 小節ぶん）。</summary>
-    private string currentPattern = "";
+    /// <summary>
+    /// いま出題／回答しているフレーズ（出題フェーズの小節数ぶんの長さ）。
+    /// パターンを連結して <see cref="BuildPhrase"/> が組み立てる。
+    /// </summary>
+    private string currentPhrase = "";
 
-    /// <summary>出題中に最後に打点キューを出した分割番号（フェーズ内の通し番号）。</summary>
-    private int lastCueSub = NoCueFired;
+    /// <summary>出題フェーズで鳴らす打点の時刻（秒・絶対時刻・昇順）。</summary>
+    private readonly List<float> callHitTimes = new();
+
+    /// <summary>出題フェーズの打点の分割番号（フェーズ内の通し番号。UI の角度算出に使う）。</summary>
+    private readonly List<int> callHitSubs = new();
+
+    /// <summary>
+    /// 出題フェーズで最後に音を鳴らした打点の添字（<see cref="NoHitFired"/> ＝ 未再生）。
+    /// 打点は時刻順なので、この添字より後ろを順に見るだけで取りこぼしなく鳴らせる。
+    /// </summary>
+    private int lastFiredCallHit = NoHitFired;
 
     /// <summary>回答フェーズで期待している打点の時刻（秒・絶対時刻）。</summary>
     private readonly List<float> expectedTimes = new();
 
-    /// <summary>期待打点の分割番号（フェーズ内の通し番号。UI の角度算出に使う）。</summary>
-    private readonly List<int> expectedSubs = new();
-
     /// <summary>期待打点が判定済みか（true ＝ もう結び付かない）。</summary>
     private readonly List<bool> expectedJudged = new();
 
-    /// <summary>期待打点の判定結果（点灯色の決定に使う）。</summary>
+    /// <summary>期待打点の判定結果（アイコン色の決定に使う）。</summary>
     private readonly List<FishingController.HookJudgement> expectedResults = new();
 
-    /// <summary>期待打点の点灯残り秒数（0 以下 ＝ 消灯）。</summary>
-    private readonly List<float> expectedFlash = new();
+    /// <summary>
+    /// このサイクルで発生した「どの打点にも結び付かないクリック」の回数。
+    /// 出題フェーズの頭で 0 に戻り、隙の長さ（完璧判定）に使う。
+    /// </summary>
+    private int extraClickCount = 0;
+
+    /// <summary>直前の回答が完璧（全 Excellent ＆ 余分なクリック 0）だったか。隙の長さを決める。</summary>
+    private bool lastAnswerPerfect = false;
+
+    /// <summary>
+    /// 打点アイコンの出現（ポップ）開始時刻（秒・絶対時刻）。
+    /// <see cref="IconHidden"/> なら「まだ出現していない」。判定した瞬間に判定時刻で上書きして跳ねさせる。
+    /// 添字は<b>打点の通し番号</b>（分割番号ではない）。
+    /// </summary>
+    private readonly List<float> iconPopStartTimes = new();
+
+    /// <summary>打点アイコンの色（RGB）。出題色 → 未判定色 → 判定色と書き換わる。</summary>
+    private readonly List<SEED.Vector3> iconColors = new();
+
+    /// <summary>打点アイコンを置く角度（度・真上が 0・右回り）。フェーズが変わるたびに計算し直す。</summary>
+    private readonly List<float> iconDegrees = new();
+
+    /// <summary>
+    /// 打点アイコンのフェードアウト開始時刻（秒・絶対時刻）。
+    /// <see cref="NoFadeStart"/> ならフェードしていない。
+    /// </summary>
+    private float iconFadeStartTime = NoFadeStart;
+
+    /// <summary>打点アイコンへ大きさを書き込んだ枚数（枚数が変わったときだけ書き直すための控え）。</summary>
+    private int iconSizeAppliedCount = 0;
 
     /// <summary>疲労状態が終わる小節番号（<see cref="IsTired"/> が true のあいだ有効）。</summary>
     private int tiredEndBar = 0;
@@ -956,7 +1135,7 @@ public class FishingFight : SEEDScript
                 break;
         }
 
-        UpdateFlashTimers(deltaTime);
+        // 打点アイコンの出現・フェードはすべて絶対時刻から求めるので、進めるタイマーは無い
         ApplyUi();
     }
 
@@ -1050,7 +1229,7 @@ public class FishingFight : SEEDScript
         if (invalidCount > 0)
         {
             SEED.Debug.LogWarning($"[Fight] {fish.DisplayName} のリズムパターンに無効な行が {invalidCount} 件あります"
-                                + $"（1 行 = {subsPerBar} 文字・'{PatternHitChar}' か '{PatternRestChar}' のみ）");
+                                + $"（1 行 = {subsPerBar} 文字の整数倍・'{PatternHitChar}' か '{PatternRestChar}' のみ）");
         }
 
         if (patterns.Count == 0) { patterns.Add(BuildFallbackPattern()); }
@@ -1061,13 +1240,18 @@ public class FishingFight : SEEDScript
     private float BpmOf(Fish fish) => SEED.Mathf.Max(fish.RhythmBpm, MinBpm);
 
     /// <summary>
-    /// パターン文字列が有効か（長さが 1 小節の分割数と一致し、打点／休符だけで出来ているか）。
+    /// パターン文字列が有効か【パターン検証の唯一の判定点】。
+    ///
+    /// 長さが 1 小節の分割数（<see cref="subsPerBar"/>）の<b>正の整数倍</b>で、
+    /// 打点／休符の文字だけで出来ていること。
+    /// ＝ 1 小節ぶんの行も、2 小節ぶん（拍子 × 2 × 2 文字）以上の行もそのまま使える。
     /// </summary>
     /// <param name="pattern">検証する文字列。</param>
     private bool IsValidPattern(string? pattern)
     {
         if (string.IsNullOrEmpty(pattern)) { return false; }
-        if (pattern.Length != subsPerBar) { return false; }
+        if (subsPerBar <= 0) { return false; }
+        if (pattern.Length % subsPerBar != 0) { return false; }
 
         foreach (char c in pattern)
         {
@@ -1078,7 +1262,47 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
-    /// 有効なパターンが 1 つも無いときに使う安全なパターン（各拍の頭だけを叩く）。
+    /// フレーズ（出題 1 回ぶんの打点の並び）を組み立てる【フレーズ生成の唯一の入口】。
+    ///
+    /// 必要な小節数になるまで、<b>残り小節数に収まるパターンをランダムに（重複可で）</b>
+    /// 選んで後ろへ連結する。2 小節ぶんの長さを持つパターンはそのまま 2 小節として使われる。
+    /// 残りに収まるパターンが 1 つも無い（例: 残り 1 小節・パターンが全部 2 小節）ときだけ、
+    /// 安全なフォールバックパターン（各拍の頭）で 1 小節ぶん埋める。
+    /// </summary>
+    /// <param name="bars">組み立てるフレーズの小節数。</param>
+    /// <returns>長さが <c>bars × <see cref="subsPerBar"/></c> の文字列。</returns>
+    private string BuildPhrase(int bars)
+    {
+        int need = SEED.Mathf.Max(bars, MinPhaseBars);
+        var buffer = new System.Text.StringBuilder(need * subsPerBar);
+        int remaining = need;
+
+        while (remaining > 0)
+        {
+            // 残り小節数に収まる候補だけを集める（毎回作り直すので候補が尽きても破綻しない）
+            var candidates = new List<string>();
+            foreach (string p in patterns)
+            {
+                if (p.Length / subsPerBar <= remaining) { candidates.Add(p); }
+            }
+
+            if (candidates.Count == 0)
+            {
+                buffer.Append(BuildFallbackPattern());
+                remaining--;
+                continue;
+            }
+
+            string picked = candidates[SEED.Random.Range(0, candidates.Count)];
+            buffer.Append(picked);
+            remaining -= picked.Length / subsPerBar;
+        }
+
+        return buffer.ToString();
+    }
+
+    /// <summary>
+    /// 有効なパターンが 1 つも無いときに使う安全なパターン（各拍の頭だけを叩く・1 小節ぶん）。
     /// </summary>
     private string BuildFallbackPattern()
     {
@@ -1303,7 +1527,7 @@ public class FishingFight : SEEDScript
         phaseEndTime = 0f;               // 0 に達した瞬間＝最初の小節頭で Call へ
         phaseBars = MinPhaseBars;        // 小節単位のフェーズではないので参照はされない
         nextPhaseAnnounced = false;
-        lastCueSub = NoCueFired;
+        ClearCallHits();
         lastBeatPlayed = NoBeatPlayed;    // 余白 1 拍目の頭で必ずメトロノームが鳴るようにする
 
         SEED.Debug.Log($"[Fight] {PhaseLabel(Phase.LeadIn)}（{beats}拍）");
@@ -1331,29 +1555,162 @@ public class FishingFight : SEEDScript
         // UpdateRest 側の CloseExpiredHits で窓を過ぎた瞬間に Miss として締める
         // （出題⇔回答の境界と同じく、回答⇔隙の境界でも早期に打ち切らないようにするため）。
 
+        // 隙へ入る瞬間に「直前の回答が完璧だったか」を確定させる。
+        // 隙の長さ（PhaseBarsOf）がこの結果を読むので、必ず長さの算出より前に評価する。
+        if (next == Phase.Rest) { lastAnswerPerfect = EvaluateAnswerPerfect(); }
+
         CurrentPhase = next;
         phaseBars = PhaseBarsOf(next);
         phaseStartTime = CurrentBarStartTime();
         phaseEndTime = phaseStartTime + phaseBars * SecondsPerBar;
         nextPhaseAnnounced = false;
-        lastCueSub = NoCueFired;
 
-        if (next == Phase.Call)
+        switch (next)
         {
-            // 出題ごとにパターンを引き直す
-            currentPattern = patterns[SEED.Random.Range(0, patterns.Count)];
+            case Phase.Call:
+                EnterCallPhase();
+                break;
 
-            // 次に来る回答フェーズの期待打点を、出題フェーズに入った時点で先読み生成しておく
-            // （回答フェーズ開始を待って生成すると、出題→回答の境界をまたぐ早打ちが
-            //   「出題中のお手つき」として弾かれてしまうため、境界をまたいでも判定できるように
-            //   出題の時点で先に用意する）
-            int answerBars = PhaseBarsOf(Phase.Answer);
-            BuildExpectedHits(phaseEndTime, answerBars, currentPattern);
+            case Phase.Answer:
+                // 出題で出したアイコンをそのまま残し、未判定色へ落として位置を回答フェーズ基準へ計算し直す
+                //（出題も回答も同じ長さなら角度は変わらないが、長さが違う魚でも破綻しないようにする）
+                BeginAnswerIcons();
+                break;
+
+            case Phase.Rest:
+                // 受付窓が閉じ切ってからアイコンを消し始める（隙頭より窓のほうが後ろへはみ出す場合がある）
+                iconFadeStartTime = SEED.Mathf.Max(phaseStartTime, LastExpectedWindowCloseTime());
+                break;
         }
 
-        SEED.Debug.Log($"[Fight] {PhaseLabel(next)}（{phaseBars}小節）"
+        SEED.Debug.Log($"[Fight] {PhaseLabel(next)}（{phaseBars}小節"
+                     + $"{(next == Phase.Rest ? (lastAnswerPerfect ? "・完璧" : "・通常") : "")}）"
                      + $" / 糸の残り {Line01:P0} / 疲労 {Fatigue01:P0}{(IsTired ? "（疲労中）" : "")}"
                      + $" / 魚HP {FishHp01:P0}");
+    }
+
+    /// <summary>
+    /// 出題フェーズへ入るときの準備【フレーズ確定の唯一の入口】。
+    ///
+    /// 1. フレーズを引き直す（出題の小節数ぶん）
+    /// 2. 出題で鳴らす打点の時刻を<b>解析的に</b>全て確定させる（<see cref="BuildCallHits"/>）
+    /// 3. 次に来る回答フェーズの期待打点を先読み生成する
+    ///    （回答フェーズ開始を待って生成すると、出題→回答の境界をまたぐ早打ちが
+    ///      「出題中のお手つき」として弾かれてしまうため）
+    /// 4. アイコンを全て未出現へ戻し、余分クリックの数を 0 に戻す
+    /// 5. ドラムループを鳴らし直してループ先頭をフェーズ頭へ揃える
+    ///
+    /// <b>順序の注意</b>: 3 の <see cref="BuildExpectedHits"/> は前サイクルの取りこぼしを
+    /// Miss として締める（＝前サイクルのアイコンを判定色にする）ので、
+    /// アイコンの作り直し（4）は必ずその<b>後</b>に行うこと。逆にすると新しいフレーズの
+    /// アイコンが前サイクルの判定色で光ってしまう。
+    /// </summary>
+    private void EnterCallPhase()
+    {
+        currentPhrase = BuildPhrase(phaseBars);
+        BuildCallHits();
+
+        int nextAnswerBars = PhaseBarsOf(Phase.Answer);
+        BuildExpectedHits(phaseEndTime, nextAnswerBars);
+
+        ResetIcons(callHitSubs.Count);
+        extraClickCount = 0;
+        iconFadeStartTime = NoFadeStart;
+
+        RestartDrumAtCallHead();
+    }
+
+    /// <summary>
+    /// 出題フェーズで鳴らす打点の時刻・分割番号を作る【出題打点の唯一の生成点】。
+    /// 時刻は「フェーズ開始時刻 ＋ 分割番号 × 1 分割の秒数」で、以後この値だけを見て音を鳴らす。
+    /// </summary>
+    private void BuildCallHits()
+    {
+        ClearCallHits();
+
+        for (int s = 0; s < currentPhrase.Length; s++)
+        {
+            if (currentPhrase[s] != PatternHitChar) { continue; }
+
+            callHitSubs.Add(s);
+            callHitTimes.Add(phaseStartTime + s * secondsPerSub);
+        }
+    }
+
+    /// <summary>出題打点の一覧を空にして、再生位置も未再生へ戻す。</summary>
+    private void ClearCallHits()
+    {
+        callHitTimes.Clear();
+        callHitSubs.Clear();
+        lastFiredCallHit = NoHitFired;
+    }
+
+    /// <summary>
+    /// 回答フェーズへ入るときのアイコン更新。
+    /// 出題で出したアイコンを消さずに残したまま、未判定色へ落として角度を回答フェーズ基準で引き直す。
+    /// </summary>
+    private void BeginAnswerIcons()
+    {
+        for (int i = 0; i < iconColors.Count; i++)
+        {
+            iconColors[i] = beatIconPendingColor;
+        }
+        LayoutIconAngles();
+    }
+
+    /// <summary>
+    /// 直前の回答が<b>完璧</b>だったか【隙の長さを決める唯一の判定点】。
+    /// 完璧 ＝ 期待打点が 1 つ以上あり、その<b>すべてが判定済みかつ Excellent</b>で、
+    /// かつ余分なクリック（どの打点にも結び付かないクリック）が 0 回。
+    ///
+    /// 隙へ入る瞬間に評価するため、受付窓が隙側へはみ出したまま未判定で残っている打点は
+    /// 「完璧ではない」と扱う（そのまま叩けば Excellent になり得るが、隙の長さは
+    /// 隙の開始時刻に確定させる必要があるため。既定の 2 小節フレーズでは
+    /// 最後の打点の窓は小節頭より手前で閉じるので、通常この分岐には入らない）。
+    /// </summary>
+    private bool EvaluateAnswerPerfect()
+    {
+        if (extraClickCount > 0) { return false; }
+        if (expectedTimes.Count == 0) { return false; }
+
+        for (int i = 0; i < expectedTimes.Count; i++)
+        {
+            if (!expectedJudged[i]) { return false; }
+            if (expectedResults[i] != FishingController.HookJudgement.Excellent) { return false; }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// 期待打点の受付窓がすべて閉じ切る時刻（秒）。期待打点が無ければ現在時刻。
+    /// アイコンのフェード開始を「窓が閉じてから」にするために使う。
+    /// </summary>
+    private float LastExpectedWindowCloseTime()
+    {
+        float last = clockTime;
+        for (int i = 0; i < expectedTimes.Count; i++)
+        {
+            float close = expectedTimes[i] + SEED.Mathf.Max(niceSeconds, 0f);
+            if (close > last) { last = close; }
+        }
+        return last;
+    }
+
+    /// <summary>
+    /// 出題フェーズの頭でドラムループを鳴らし直す【フェーズとループの位相合わせの唯一の出口】。
+    ///
+    /// 隙の長さが 1 小節／2 小節と変わるため、放置するとループ先頭と出題の頭がズレていく。
+    /// フェーズ頭で鳴らし直せば「1 フェーズ ＝ ループ 1 周」（出題 2 小節・素材 2 小節の既定構成）
+    /// が常に保たれる。一時停止中・開始待ちの最中は触らない（そちらの整列処理に任せる）。
+    /// </summary>
+    private void RestartDrumAtCallHead()
+    {
+        if (!drumRestartAtCall || !drumScheduled) { return; }
+        if (Paused || drumPausedByFight) { return; }
+        if (clockTime + DivideEpsilon < drumStartTime) { return; }   // まだ最初の開始時刻に達していない
+
+        drumStartTime = phaseStartTime;
+        StartDrumLoop();
     }
 
     /// <summary>いまの小節が始まった時刻（秒）。フェーズの開始時刻を小節頭へ揃えるのに使う。</summary>
@@ -1365,32 +1722,37 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
-    /// フェーズの長さ（小節）。魚データの指定（1 以上）があればそれを、
-    /// 無ければバトル側の既定値を使う。隙は疲労中に延びる。
+    /// フェーズの長さ（小節）【フェーズ長の唯一の算出点】。
+    ///
+    /// ・出題／回答 … 魚データの指定（1 以上）があればそれを、無ければバトル側の既定値（既定 2 小節）
+    /// ・隙        … <b>直前の回答の出来</b>で決まる（完璧なら <see cref="restBarsPerfect"/>、
+    ///                そうでなければ <see cref="restBarsNormal"/>）。回答の出来で毎回変わる値なので、
+    ///                魚データの <c>RhythmRestBars</c> は<b>参照しない</b>。
+    /// ・疲労中は隙にさらに <see cref="restBarsWhenTired"/> 小節を<b>加算</b>する
+    ///   （完璧ボーナスと疲労延長は競合させず、素直に足し合わせる）。
     /// </summary>
     /// <param name="phase">対象のフェーズ。</param>
     private int PhaseBarsOf(Phase phase)
     {
+        if (phase == Phase.Rest)
+        {
+            int rest = SEED.Mathf.Max(lastAnswerPerfect ? restBarsPerfect : restBarsNormal, MinPhaseBars);
+            if (IsTired) { rest += SEED.Mathf.Max(restBarsWhenTired, 0); }
+            return rest;
+        }
+
         int fromFish = target is { } fish
             ? phase switch
             {
                 Phase.Call => fish.RhythmCallBars,
                 Phase.Answer => fish.RhythmAnswerBars,
-                Phase.Rest => fish.RhythmRestBars,
                 _ => UseFightDefaultBars,
             }
             : UseFightDefaultBars;
 
-        int fallback = phase switch
-        {
-            Phase.Call => callBars,
-            Phase.Answer => answerBars,
-            _ => restBars,
-        };
+        int fallback = phase == Phase.Call ? callBars : answerBars;
 
-        int bars = SEED.Mathf.Max(fromFish > UseFightDefaultBars ? fromFish : fallback, MinPhaseBars);
-        if (phase == Phase.Rest && IsTired) { bars += SEED.Mathf.Max(restBarsWhenTired, 0); }
-        return bars;
+        return SEED.Mathf.Max(fromFish > UseFightDefaultBars ? fromFish : fallback, MinPhaseBars);
     }
 
     /// <summary>フェーズの表示名。</summary>
@@ -1409,8 +1771,11 @@ public class FishingFight : SEEDScript
     /// <summary>
     /// 出題フェーズの更新【打点キューを出す唯一の出口】。
     ///
-    /// フェーズ内の分割番号が進むたびに、その位置がパターンの打点なら
-    /// コントローラへ「前アタリと同じ演出」を依頼する（つつき音＋ウキの沈み）。
+    /// 打点の時刻（<see cref="callHitTimes"/>）は出題フェーズに入った時点で解析的に確定して
+    /// いるので、ここでは「まだ鳴らしていない打点のうち、時刻に達したもの」を先頭から順に
+    /// 鳴らすだけでよい。1 フレームが長くて複数の打点を跨いだ場合も、そのフレームで
+    /// すべて 1 回ずつ鳴る（取りこぼしも二重再生も起きない）。
+    /// 音を鳴らした打点はその瞬間からアイコンが出現する（＝音より先にアイコンは出ない）。
     ///
     /// 出題中のクリックは、次に来る回答フェーズの最初の打点より <see cref="niceSeconds"/>
     /// 以内の早打ちであれば回答フェーズと同じ判定（Excellent/Great/Nice）にし、
@@ -1418,15 +1783,13 @@ public class FishingFight : SEEDScript
     /// </summary>
     private void UpdateCall()
     {
-        int sub = CurrentPhaseSub();
-        if (sub > lastCueSub)
+        for (int i = lastFiredCallHit + 1; i < callHitTimes.Count; i++)
         {
-            // 1 フレームで複数の分割をまたいだ場合も取りこぼさない
-            for (int s = lastCueSub + 1; s <= sub; s++)
-            {
-                if (IsHitSub(s)) { FishingController.Current?.PlayNibbleCue(); }
-            }
-            lastCueSub = sub;
+            if (clockTime < callHitTimes[i]) { break; }      // 時刻順なので、ここから先はまだ先の打点
+
+            FishingController.Current?.PlayNibbleCue();
+            ShowIconAtHit(i, callHitTimes[i], beatIconCallColor);
+            lastFiredCallHit = i;
         }
 
         if (!ReadTapDown()) { return; }
@@ -1441,60 +1804,46 @@ public class FishingFight : SEEDScript
         }
         else
         {
+            CountExtraClick();
             ApplyMiss();
         }
-    }
-
-    /// <summary>フェーズ開始からの分割番号（8 分音符単位・0 始まり）。</summary>
-    private int CurrentPhaseSub()
-        => secondsPerSub > DivideEpsilon
-            ? SEED.Mathf.FloorToInt((clockTime - phaseStartTime) / secondsPerSub)
-            : 0;
-
-    /// <summary>フェーズ内の分割番号が、いまのパターンの打点にあたるか。</summary>
-    /// <param name="phaseSub">フェーズ開始からの分割番号。</param>
-    private bool IsHitSub(int phaseSub)
-    {
-        if (phaseSub < 0 || currentPattern.Length != subsPerBar) { return false; }
-        return currentPattern[phaseSub % subsPerBar] == PatternHitChar;
     }
 
     // ─── 内部処理: 回答 ───────────────────────────────────
 
     /// <summary>
     /// 回答フェーズで期待する打点の一覧を作る【期待打点の唯一の生成点】。
-    /// 出題と同じパターンを、回答フェーズの各小節へ並べる。
+    /// 出題と同じフレーズ（<see cref="currentPhrase"/>）を回答フェーズの先頭から並べ直す。
+    /// 回答が出題より長い場合はフレーズを循環させ、短い場合は入り切る分だけを使う。
+    ///
+    /// 打点の時刻は出題と同じ式（開始時刻 ＋ 分割番号 × 1 分割の秒数）で<b>解析的に</b>求めるので、
+    /// 出題と回答の小節数が同じなら「フェーズ頭からの相対時刻」が完全に一致する
+    /// ＝ 打点アイコンが出題時とまったく同じ角度に並ぶ。
     ///
     /// 出題→回答の境界をまたぐ早打ちを判定できるように、回答フェーズへ入る前
-    /// （出題フェーズ開始時点）で呼ばれる。そのため <c>answerStartTime</c>・
-    /// <c>answerBars</c>・<c>pattern</c> は「これから始まる回答フェーズ」の値を
-    /// 明示的に受け取り、そのときの <see cref="phaseStartTime"/> 等（出題側の値）には依存しない。
+    /// （出題フェーズ開始時点）で呼ばれる。そのため <c>answerStartTime</c>・<c>answerBars</c> は
+    /// 「これから始まる回答フェーズ」の値を明示的に受け取り、そのときの
+    /// <see cref="phaseStartTime"/> 等（出題側の値）には依存しない。
     /// </summary>
     /// <param name="answerStartTime">回答フェーズの開始時刻（＝出題フェーズの終了時刻）。</param>
     /// <param name="answerBars">回答フェーズの小節数。</param>
-    /// <param name="pattern">出題フェーズで引いたパターン（回答フェーズでも同じものを使う）。</param>
-    private void BuildExpectedHits(float answerStartTime, int answerBars, string pattern)
+    private void BuildExpectedHits(float answerStartTime, int answerBars)
     {
         // 安全策: 前サイクルの期待打点がまだ残っていた場合、ここで一覧を作り直す前に
         // 必ず Miss として締めておく（通常は隙のあいだに CloseExpiredHits で締め切られる
         // ため到達しないが、取りこぼしたまま黙って消してしまわないための保険）。
         FailRemainingHits();
         ClearExpectedHits();
-        if (pattern.Length != subsPerBar) { return; }
+        if (currentPhrase.Length <= 0 || subsPerBar <= 0) { return; }
 
-        for (int bar = 0; bar < answerBars; bar++)
+        int answerSubs = SEED.Mathf.Max(answerBars, MinPhaseBars) * subsPerBar;
+        for (int phaseSub = 0; phaseSub < answerSubs; phaseSub++)
         {
-            for (int s = 0; s < subsPerBar; s++)
-            {
-                if (pattern[s] != PatternHitChar) { continue; }
+            if (currentPhrase[phaseSub % currentPhrase.Length] != PatternHitChar) { continue; }
 
-                int phaseSub = bar * subsPerBar + s;
-                expectedTimes.Add(answerStartTime + phaseSub * secondsPerSub);
-                expectedSubs.Add(phaseSub);
-                expectedJudged.Add(false);
-                expectedResults.Add(FishingController.HookJudgement.None);
-                expectedFlash.Add(0f);
-            }
+            expectedTimes.Add(answerStartTime + phaseSub * secondsPerSub);
+            expectedJudged.Add(false);
+            expectedResults.Add(FishingController.HookJudgement.None);
         }
     }
 
@@ -1502,10 +1851,8 @@ public class FishingFight : SEEDScript
     private void ClearExpectedHits()
     {
         expectedTimes.Clear();
-        expectedSubs.Clear();
         expectedJudged.Clear();
         expectedResults.Clear();
-        expectedFlash.Clear();
     }
 
     /// <summary>
@@ -1523,8 +1870,17 @@ public class FishingFight : SEEDScript
             PlayAnswerClickSe();
 
             int index = FindNearestPendingHit();
-            if (index >= 0) { JudgeHit(index, clockTime - expectedTimes[index]); }
-            else { ApplyMiss(); }
+            if (index >= 0)
+            {
+                JudgeHit(index, clockTime - expectedTimes[index]);
+            }
+            else
+            {
+                // 余分なクリックにはアイコンを出さない（打点の並びを汚さないため）。
+                // 回数だけ数えて、隙の長さ（完璧判定）に反映する。
+                CountExtraClick();
+                ApplyMiss();
+            }
         }
 
         // 受付窓を過ぎた打点は打ち逃し（境界を越えて隙に入っても続けて呼ばれる）
@@ -1585,15 +1941,35 @@ public class FishingFight : SEEDScript
         FishingController.Current?.ShowFightJudgement(judgement, signedOffset);
     }
 
-    /// <summary>期待打点へ判定結果を書き込み、点灯タイマーを開始する。</summary>
-    /// <param name="index">期待打点の添字。</param>
+    /// <summary>
+    /// 期待打点へ判定結果を書き込み、対応する打点アイコンを判定色で跳ねさせる。
+    /// </summary>
+    /// <param name="index">期待打点の添字（＝打点の通し番号なのでアイコンの添字と一致する）。</param>
     /// <param name="judgement">判定結果。</param>
     private void MarkHitResult(int index, FishingController.HookJudgement judgement)
     {
         expectedJudged[index] = true;
         expectedResults[index] = judgement;
-        expectedFlash[index] = SEED.Mathf.Max(beatFlashSeconds, 0f);
+
+        // 判定した瞬間からポップをやり直す（すでに出ているアイコンが小さく跳ねる）
+        ShowIconAtHit(index, clockTime, JudgementIconColor(judgement));
     }
+
+    /// <summary>判定結果に対応する打点アイコンの色（RGB）。</summary>
+    /// <param name="judgement">判定結果。</param>
+    private SEED.Vector3 JudgementIconColor(FishingController.HookJudgement judgement) => judgement switch
+    {
+        FishingController.HookJudgement.Excellent => beatIconExcellentColor,
+        FishingController.HookJudgement.Great => beatIconGreatColor,
+        FishingController.HookJudgement.Nice => beatIconNiceColor,
+        _ => beatIconMissColor,
+    };
+
+    /// <summary>
+    /// どの打点にも結び付かないクリック（空打ち・お手つき）を 1 回数える
+    /// 【余分クリック計上の唯一の入口】。隙の長さ（完璧判定）にだけ影響する。
+    /// </summary>
+    private void CountExtraClick() => extraClickCount++;
 
     /// <summary>
     /// 受付窓（打点 ＋ <see cref="niceSeconds"/>）を過ぎてもまだ未判定の打点を、
@@ -1726,17 +2102,6 @@ public class FishingFight : SEEDScript
         SEED.Debug.Log("[Fight] 魚が疲労から復帰した");
     }
 
-    /// <summary>点灯中の拍マークのタイマーを進める。</summary>
-    /// <param name="deltaTime">このフレームの経過秒数。</param>
-    private void UpdateFlashTimers(float deltaTime)
-    {
-        for (int i = 0; i < expectedFlash.Count; i++)
-        {
-            if (expectedFlash[i] <= 0f) { continue; }
-            expectedFlash[i] = SEED.Mathf.Max(expectedFlash[i] - deltaTime, 0f);
-        }
-    }
-
     // ─── 内部処理: 戦闘力 ──────────────────────────────────
 
     /// <summary>
@@ -1836,14 +2201,19 @@ public class FishingFight : SEEDScript
 
         clockTime = 0f;
         lastBeatPlayed = NoBeatPlayed;
-        lastCueSub = NoCueFired;
         phaseStartTime = 0f;
         phaseEndTime = 0f;
         phaseBars = MinPhaseBars;
         nextPhaseAnnounced = false;
-        currentPattern = "";
+        currentPhrase = "";
         patterns.Clear();
+        ClearCallHits();
         ClearExpectedHits();
+
+        extraClickCount = 0;
+        lastAnswerPerfect = false;
+        ResetIcons(0);
+        iconFadeStartTime = NoFadeStart;
     }
 
     // ─── UI ─────────────────────────────────────────────
@@ -1856,6 +2226,7 @@ public class FishingFight : SEEDScript
     {
         LayoutSegments();
         ApplySegmentColors();
+        ApplyBeatIcons();
         ApplyMarker();
         ApplyStatusText();
     }
@@ -1898,11 +2269,12 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
-    /// セグメントの色を決めて書き込む【円の描画の唯一の出口】。
+    /// セグメントの色を決めて書き込む【糸ゲージの描画の唯一の出口】。
     ///
-    /// 下地は糸の残りの円弧（真上から右回りに <see cref="Line01"/> × 360 度ぶんだけ点灯。
-    /// 減るほど円弧が短くなる＝空きセグメントが増える）。
-    /// その上に、いまのパターンの打点位置へ拍マークを重ねる。
+    /// セグメントは<b>糸の残りの円弧専用</b>（真上から右回りに <see cref="Line01"/> × 360 度ぶんだけ
+    /// 点灯。減るほど円弧が短くなる＝空きセグメントが増える）。
+    /// 打点はセグメントではなく打点アイコン（<see cref="ApplyBeatIcons"/>）が担当するので、
+    /// ここでは一切扱わない。
     /// 値が変わっていないセグメントには書き込まない（毎フレーム 48 回の書き込みを避ける）。
     /// </summary>
     private void ApplySegmentColors()
@@ -1916,11 +2288,8 @@ public class FishingFight : SEEDScript
 
         for (int i = 0; i < count; i++)
         {
-            // 下地: 糸の残りの円弧（i 番目が円弧の内側なら点灯色、外なら空き色）
+            // 糸の残りの円弧（i 番目が円弧の内側なら点灯色、外なら空き色）
             SEED.Color color = i < lit ? litColor : ToColor(emptyColor, alpha);
-
-            // 上書き: 拍マーク
-            if (BeatMarkColor(i, count, alpha) is { } mark) { color = mark; }
 
             if (i < cachedSegmentColors.Count && SameColor(cachedSegmentColors[i], color)) { continue; }
 
@@ -1953,60 +2322,173 @@ public class FishingFight : SEEDScript
         }
     }
 
+    // ─── UI: 打点アイコン ──────────────────────────────────
+
     /// <summary>
-    /// セグメント <paramref name="index"/> に重ねる拍マークの色（重ねないなら null）。
-    ///
-    /// - 出題中 … いまのパターンの打点位置を明るく光らせる
-    /// - 回答中 … 同じ位置を暗く出し、判定した瞬間だけ判定色で光らせる
+    /// 打点アイコンの状態を、打点の個数ぶんだけ「未出現」で作り直す
+    /// 【アイコン状態の唯一の初期化点】。
     /// </summary>
-    /// <param name="index">セグメントの添字。</param>
-    /// <param name="count">セグメントの総数。</param>
-    /// <param name="alpha">不透明度。</param>
-    private SEED.Color? BeatMarkColor(int index, int count, float alpha)
+    /// <param name="hitCount">いまのフレーズの打点数。</param>
+    private void ResetIcons(int hitCount)
     {
-        if (currentPattern.Length != subsPerBar) { return null; }
-        if (CurrentPhase is not (Phase.Call or Phase.Answer)) { return null; }
-        if (SubIndexAt(index, count) is not { } sub) { return null; }
-        if (currentPattern[sub] != PatternHitChar) { return null; }
+        iconPopStartTimes.Clear();
+        iconColors.Clear();
+        iconDegrees.Clear();
 
-        if (CurrentPhase == Phase.Call) { return ToColor(beatCallColor, alpha); }
-
-        // 回答中: 同じ小節内位置の打点で、いま点灯しているものがあれば判定色を優先する
-        for (int i = 0; i < expectedSubs.Count; i++)
+        for (int i = 0; i < hitCount; i++)
         {
-            if (expectedSubs[i] % subsPerBar != sub) { continue; }
-            if (expectedFlash[i] <= 0f) { continue; }
-
-            return ToColor(
-                expectedResults[i] == FishingController.HookJudgement.Miss ? beatMissColor : beatHitColor,
-                alpha);
+            iconPopStartTimes.Add(IconHidden);
+            iconColors.Add(beatIconCallColor);
+            iconDegrees.Add(0f);
         }
-
-        return ToColor(beatAnswerColor, alpha);
+        LayoutIconAngles();
     }
 
     /// <summary>
-    /// セグメント <paramref name="index"/> がちょうど小節内の分割位置に重なるなら、その分割番号。
-    /// 重ならなければ null（＝拍マークを置かない）。
+    /// 打点アイコンの角度を<b>いまのフェーズ基準</b>で計算し直す
+    /// 【アイコンの角度算出の唯一の点】。
+    ///
+    /// θ ＝ (打点時刻 − フェーズ開始時刻) ÷ フェーズ長 × 360 度（真上が 0・右回り）。
+    /// 打点の時刻から直接求めるので、セグメントの分割数（48）には量子化されない。
+    /// 出題中は出題の打点時刻、それ以外（回答・隙）は期待打点の時刻を使う。
     /// </summary>
-    /// <param name="index">セグメントの添字。</param>
-    /// <param name="count">セグメントの総数。</param>
-    private int? SubIndexAt(int index, int count)
+    private void LayoutIconAngles()
     {
-        if (subsPerBar <= 0 || count <= 0) { return null; }
-        if (count % subsPerBar != 0) { return null; }        // 割り切れない構成では拍マークを置かない
+        float duration = phaseEndTime - phaseStartTime;
+        if (duration <= DivideEpsilon) { return; }
 
-        int step = count / subsPerBar;
-        return index % step == 0 ? index / step : null;
+        bool useCall = CurrentPhase == Phase.Call;
+        var times = useCall ? callHitTimes : expectedTimes;
+
+        for (int i = 0; i < iconDegrees.Count && i < times.Count; i++)
+        {
+            iconDegrees[i] = (times[i] - phaseStartTime) / duration * FullCircleDegrees;
+        }
     }
 
     /// <summary>
-    /// マーカー（小節内の進行を示す針）を更新する。
-    /// 角度 ＝ <see cref="BarPhase01"/> × 360 度、色はフェーズ（疲労中は専用色）で決まる。
+    /// 打点アイコン <paramref name="index"/> を出現（または再出現）させる
+    /// 【アイコンのポップ開始の唯一の入口】。
+    /// </summary>
+    /// <param name="index">打点の通し番号（アイコンの添字と同じ）。</param>
+    /// <param name="startTime">ポップを始める時刻（秒・絶対時刻）。出題は打点の時刻、判定時は判定の時刻。</param>
+    /// <param name="rgb">アイコンの色（RGB）。</param>
+    private void ShowIconAtHit(int index, float startTime, SEED.Vector3 rgb)
+    {
+        if (index < 0 || index >= iconPopStartTimes.Count) { return; }
+
+        iconPopStartTimes[index] = startTime;
+        iconColors[index] = rgb;
+    }
+
+    /// <summary>
+    /// 打点アイコンを描く【打点表示の唯一の出口】。
+    ///
+    /// ・出現していないアイコン（<see cref="IconHidden"/>）とフレーズの打点数を超えた予備は
+    ///   アルファ 0 で完全に隠す
+    /// ・出現済みは角度から位置を置き、easeOutBack で 0 → 1 に拡大する
+    /// ・隙に入った後は <see cref="beatIconFadeSeconds"/> 秒でアルファを 0 まで落とす
+    /// </summary>
+    private void ApplyBeatIcons()
+    {
+        int slots = beatIconSprites.Count;
+        if (slots <= 0) { return; }
+
+        ApplyIconSizes(slots);
+
+        // 回答・隙のあいだも角度はフェーズ基準のまま保つ（隙では回答時の角度を凍結して使う）
+        if (CurrentPhase is Phase.Call or Phase.Answer) { LayoutIconAngles(); }
+
+        float fade = IconFadeAlpha01();
+        float baseAlpha = SEED.Mathf.Clamped01(beatIconOpacity) * fade;
+
+        for (int i = 0; i < slots; i++)
+        {
+            bool used = Active && i < iconPopStartTimes.Count && iconPopStartTimes[i] < IconHidden;
+            float scale = used ? IconPopScale01(iconPopStartTimes[i]) : 0f;
+            float alpha = used ? baseAlpha : 0f;
+
+            if (i < beatIconTransforms.Count)
+            {
+                var tf = beatIconTransforms[i];
+                if (tf.IsValid)
+                {
+                    if (used) { tf.Position = ArcPointAt(iconDegrees[i], beatIconRadiusPx); }
+                    tf.Scale = new SEED.Vector2(scale, scale);
+                }
+            }
+
+            var sprite = beatIconSprites[i];
+            if (!sprite.IsValid) { continue; }
+
+            sprite.Color = ToColor(used ? iconColors[i] : beatIconPendingColor, alpha);
+        }
+    }
+
+    /// <summary>
+    /// 打点アイコンの大きさを 1 度だけ書き込む（毎フレーム同じ値を送らないための差分更新）。
+    /// 拡大アニメは <see cref="SEED.CanvasTransform.Scale"/> 側で行うので、Size は不変でよい。
+    /// </summary>
+    /// <param name="slots">アイコンの枚数。</param>
+    private void ApplyIconSizes(int slots)
+    {
+        if (iconSizeAppliedCount == slots) { return; }
+
+        for (int i = 0; i < slots; i++)
+        {
+            var sprite = beatIconSprites[i];
+            if (sprite.IsValid) { sprite.Size = new SEED.Vector2(beatIconSizePx, beatIconSizePx); }
+        }
+        iconSizeAppliedCount = slots;
+    }
+
+    /// <summary>
+    /// 出現アニメの拡大率（0 →（少し 1 を超えて）→ 1）。
+    /// <see cref="beatIconPopSeconds"/> が 0 以下なら即座に等倍。
+    /// </summary>
+    /// <param name="popStartTime">ポップを始めた時刻（秒・絶対時刻）。</param>
+    private float IconPopScale01(float popStartTime)
+    {
+        float duration = SEED.Mathf.Max(beatIconPopSeconds, 0f);
+        if (duration <= DivideEpsilon) { return NormalScale; }
+
+        float t = SEED.Mathf.Clamped01((clockTime - popStartTime) / duration);
+        return EaseOutBack(t);
+    }
+
+    /// <summary>
+    /// easeOutBack（0→1 の終わりで少し行き過ぎてから戻る補間）。
+    /// f(t) = 1 + c3·(t−1)³ + c1·(t−1)²（c1 ＝ <see cref="EaseBackOvershoot"/>、c3 ＝ c1 ＋ 1）。
+    /// </summary>
+    /// <param name="t">進行度（0〜1）。</param>
+    private static float EaseOutBack(float t)
+    {
+        float u = t - NormalScale;
+        return NormalScale + EaseBackCubic * u * u * u + EaseBackOvershoot * u * u;
+    }
+
+    /// <summary>
+    /// 打点アイコンのフェード係数（1 ＝ 完全表示・0 ＝ 消滅）。
+    /// 隙に入って受付窓が閉じたところから <see cref="beatIconFadeSeconds"/> 秒かけて 0 になる。
+    /// </summary>
+    private float IconFadeAlpha01()
+    {
+        if (iconFadeStartTime >= NoFadeStart) { return 1f; }
+
+        float duration = SEED.Mathf.Max(beatIconFadeSeconds, 0f);
+        if (duration <= DivideEpsilon) { return clockTime >= iconFadeStartTime ? 0f : 1f; }
+
+        return 1f - SEED.Mathf.Clamped01((clockTime - iconFadeStartTime) / duration);
+    }
+
+    /// <summary>
+    /// マーカー（<b>フェーズ内</b>の進行を示す針）を更新する。
+    /// 角度 ＝ <see cref="PhaseProgress01"/> × 360 度＝ 1 フェーズで 1 周。
+    /// 色はフェーズ（疲労中は専用色）で決まる。
     /// </summary>
     private void ApplyMarker()
     {
-        float degrees = BarPhase01 * FullCircleDegrees;
+        float degrees = PhaseProgress01 * FullCircleDegrees;
 
         if (gaugeMarkerTransform is { } markerTf && markerTf.IsValid)
         {
@@ -2076,10 +2558,19 @@ public class FishingFight : SEEDScript
     /// キャンバスの Y は<b>下向き</b>なので、上方向は −cos になる。
     /// </summary>
     /// <param name="degrees">頂点からの角度（度。＋ が右回り）。</param>
-    private SEED.Vector2 ArcPoint(float degrees)
+    private SEED.Vector2 ArcPoint(float degrees) => ArcPointAt(degrees, arcRadiusPx);
+
+    /// <summary>
+    /// 半径を指定して円周上の点（キャンバス座標）を返す
+    /// 【円周配置の唯一の計算点】。
+    /// 位置 ＝ 中心 ＋ (sin θ, −cos θ) × 半径（角度 0 が真上・＋ が右回り・キャンバスの Y は下向き）。
+    /// </summary>
+    /// <param name="degrees">頂点からの角度（度。＋ が右回り）。</param>
+    /// <param name="radiusPx">円の半径（ピクセル）。</param>
+    private static SEED.Vector2 ArcPointAt(float degrees, float radiusPx)
     {
         float rad = degrees * SEED.Mathf.Deg2Rad;
-        return new SEED.Vector2(SEED.Mathf.Sin(rad) * arcRadiusPx, -SEED.Mathf.Cos(rad) * arcRadiusPx);
+        return new SEED.Vector2(SEED.Mathf.Sin(rad) * radiusPx, -SEED.Mathf.Cos(rad) * radiusPx);
     }
 
     /// <summary>RGB の Vector3 と不透明度から <see cref="SEED.Color"/> を作る。</summary>
@@ -2097,11 +2588,12 @@ public class FishingFight : SEEDScript
         && SEED.Mathf.Approximately(a.b, b.b)
         && SEED.Mathf.Approximately(a.a, b.a);
 
-    /// <summary>次の描画でセグメントを必ず組み直させる。</summary>
+    /// <summary>次の描画でセグメントと打点アイコンを必ず組み直させる。</summary>
     private void InvalidateSegmentCache()
     {
         cachedSegmentCount = 0;
         cachedSegmentColors.Clear();
+        iconSizeAppliedCount = 0;
     }
 
     /// <summary>UI をすべて隠す【非表示の唯一の出口】。</summary>
@@ -2110,6 +2602,10 @@ public class FishingFight : SEEDScript
         for (int i = 0; i < segmentSprites.Count; i++)
         {
             ApplySpriteOpacity(segmentSprites[i], 0f);
+        }
+        for (int i = 0; i < beatIconSprites.Count; i++)
+        {
+            ApplySpriteOpacity(beatIconSprites[i], 0f);
         }
         ApplySpriteOpacity(gaugeMarker, 0f);
 

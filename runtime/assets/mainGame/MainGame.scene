@@ -2,12 +2,12 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      30.76298,
-      15.740007,
-      -9.248906
+      62.6602,
+      10.503859,
+      46.853523
     ],
-    "yaw": 0.0879207,
-    "pitch": 0.23152484,
+    "yaw": -2.5380816,
+    "pitch": 0.29552475,
     "fov_deg": 25.0,
     "far": 1000.0,
     "speed": 5.0
@@ -625,6 +625,8 @@
             "data": {
               "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\FishingFight.cs",
               "fields": {
+                "beatIconSprites": "[\"BeatIcon00|Sprite\", \"BeatIcon01|Sprite\", \"BeatIcon02|Sprite\", \"BeatIcon03|Sprite\", \"BeatIcon04|Sprite\", \"BeatIcon05|Sprite\", \"BeatIcon06|Sprite\", \"BeatIcon07|Sprite\", \"BeatIcon08|Sprite\", \"BeatIcon09|Sprite\", \"BeatIcon10|Sprite\", \"BeatIcon11|Sprite\", \"BeatIcon12|Sprite\", \"BeatIcon13|Sprite\", \"BeatIcon14|Sprite\", \"BeatIcon15|Sprite\"]",
+                "beatIconTransforms": "[\"BeatIcon00\", \"BeatIcon01\", \"BeatIcon02\", \"BeatIcon03\", \"BeatIcon04\", \"BeatIcon05\", \"BeatIcon06\", \"BeatIcon07\", \"BeatIcon08\", \"BeatIcon09\", \"BeatIcon10\", \"BeatIcon11\", \"BeatIcon12\", \"BeatIcon13\", \"BeatIcon14\", \"BeatIcon15\"]",
                 "distanceText": "DistanceText|Text",
                 "gaugeMarker": "GaugeMarker|Sprite",
                 "gaugeMarkerTransform": "GaugeMarker",
@@ -921,13 +923,13 @@
           "name": "AnswerCameraTarget",
           "transform": {
             "position": [
-              50.10177,
-              3.7594323,
-              33.82769
+              62.6602,
+              10.503859,
+              46.853523
             ],
             "rotation": [
-              10.0,
-              239.97983,
+              16.932322,
+              -145.42137,
               0.0
             ],
             "scale": [
@@ -936,7 +938,40 @@
               1.0
             ]
           },
-          "components": [],
+          "components": [
+            {
+              "name": "Camera",
+              "component": {
+                "type": "CameraComponent",
+                "data": {
+                  "fov_y_deg": 25.0,
+                  "near": 0.1,
+                  "far": 1000.0,
+                  "is_main": false,
+                  "clear_color": [
+                    0.1,
+                    0.1,
+                    0.1,
+                    1.0
+                  ],
+                  "scaling_mode": "vert_minus",
+                  "target_width": 1280,
+                  "target_height": 720,
+                  "bar_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ],
+                  "projection": "perspective",
+                  "ortho_height": 10.0,
+                  "shading_asset": null,
+                  "shading_params": {},
+                  "shading_bindings": {}
+                }
+              }
+            }
+          ],
           "children": []
         },
         {
@@ -14855,6 +14890,806 @@
                   "width": 16.0,
                   "height": 10.0,
                   "layer": 15,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon00",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon01",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon02",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon03",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon04",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon05",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon06",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon07",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon08",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon09",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon10",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon11",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon12",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon13",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon14",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "BeatIcon15",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 22.0,
+                  "height": 22.0,
+                  "layer": 17,
                   "postfx_path": "",
                   "raycast_target": false
                 }
