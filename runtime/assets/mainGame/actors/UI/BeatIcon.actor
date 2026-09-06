@@ -1,0 +1,50 @@
+{
+  "name": "BeatIcon",
+  "actor_kind": "Actor2D",
+  "canvas_transform": {
+    "position": [
+      0.0,
+      0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+      1.0,
+      1.0
+    ],
+    "pivot": [
+      0.5,
+      0.5
+    ],
+    "anchor": [
+      0.5,
+      0.5
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+  },
+  "components": [
+    {
+      "name": "Sprite",
+      "component": {
+        "type": "SpriteComponent",
+        "data": {
+          "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
+          "color": [
+            0.42,
+            0.46,
+            0.52,
+            0.0
+          ],
+          "width": 22.0,
+          "height": 22.0,
+          "layer": 17,
+          "postfx_path": "",
+          "raycast_target": false
+        }
+      }
+    }
+  ],
+  "children": []
+}

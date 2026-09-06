@@ -53,15 +53,30 @@ public readonly struct RadarEntry
 /// </code>
 /// forward はプレイヤーの向き（度）から作るので、<b>常にプレイヤーの正面が上</b>になる。
 ///
-/// [配置]
-/// 背景・点はすべて釣り UI キャンバス（FishingUI）の<b>直下</b>に平置きし、
-/// 点の位置は「背景（<see cref="bgTransform"/>）の位置 ＋ オフセット」で決める。
-/// 入れ子（背景の子として点を置く）でも描画自体は成立するが、
-/// 子アクタのアンカー基準サイズは「CanvasComponent を持つ最も近い祖先」から取られるため、
-/// CanvasComponent を持たない背景アクタの子は基準サイズを失って挙動が読みにくくなる。
-/// 既存のテンションゲージ（GaugeSeg**）と同じ<b>平置き</b>に揃えることで、
-/// 「アンカーは常に FishingUI 基準」という単純な規則を保っている。
-/// レーダーを動かしたいときは背景アクタの位置だけを動かせば点も追従する。
+/// [描画方式]（2026-09-07 改定：点アクタ廃止）
+/// 点は<b>アクタを持たない</b>。毎フレーム <see cref="SEED.Draw.Circle"/> で
+/// 直接描く（イミディエイトモード）。以前は <c>RadarDot00</c>… の固定 24 枚の
+/// スプライトを使い回していたため<b>同時表示 24 個の上限</b>があったが、
+/// プリミティブ描画に移したことで上限が無くなり、シーンからも 24 個のアクタが消えた。
+///
+/// [座標空間]
+/// 点は <see cref="radarSpace"/>（＝レーダー背景アクタ自身の CanvasTransform）の
+/// <b>ローカル空間</b>へ描く。この空間は「そのアクタの子としてスプライトを置いたとき」と
+/// まったく同じ変換連鎖（アンカー・親スケール・自動解像度）を通るので、
+/// 背景アクタを動かせば点もそのまま追従する。
+/// 中心（＝ウキ）はローカル原点であり、点の位置は中心からのオフセット px そのものになる。
+///
+/// [ピボット補正]
+/// エンジンのローカル空間行列（<c>CanvasTransform::to_mesh_mat4</c>）では
+/// pivot が「正規化値 × 追加スケール」＝ 実質<b>ピクセル値</b>として平行移動に効く。
+/// そのため pivot(0.5,0.5) のアクタではローカル原点が中心から 0.5px ずれる。
+/// 描画時に pivot 分を足し戻して打ち消している（<see cref="SpaceOriginPx"/>）。
+///
+/// [描画タイミング]
+/// 点を積むのは <see cref="LateUpdate"/> の 1 か所だけ。
+/// <see cref="UpdateRadar"/> は「何を出すか」を控えるだけで描かない
+/// （イミディエイトモードでは 1 フレームに 2 回積むと同じ図形が二重に描かれるため、
+///   全スクリプトの Update が終わった後の LateUpdate を唯一の描画点にする）。
 /// </summary>
 public class FishRadar : SEEDScript
 {
@@ -95,16 +110,15 @@ public class FishRadar : SEEDScript
     [SerializeField(Label = "背景のCanvasTransform")]
     private SEED.CanvasTransform? bgTransform = null;
 
-    /// <summary>魚を表す点の Sprite（色とアルファを毎フレーム書き換える）。</summary>
-    [SerializeField(Label = "点のSprite")]
-    private List<SEED.Sprite> dotSprites = new();
-
     /// <summary>
-    /// 魚を表す点の CanvasTransform（位置を毎フレーム書き換える）。
-    /// <see cref="dotSprites"/> と<b>同じ順序</b>で並べること（同じ添字が同じ点を指す）。
+    /// 点を描く座標空間（＝レーダー背景アクタ自身の CanvasTransform）。
+    /// この空間のローカル原点がレーダーの中心になり、点は中心からの px オフセットで置かれる。
+    /// 未設定なら <see cref="bgTransform"/> で代用する（通常はどちらも背景アクタを指す）。
+    /// どちらも未設定のときは点を描かない（スクリーン座標へ落とすと自動解像度・
+    /// アンカーが効かず、背景とまったく別の場所に出てしまうため）。
     /// </summary>
-    [SerializeField(Label = "点のCanvasTransform")]
-    private List<SEED.CanvasTransform> dotTransforms = new();
+    [SerializeField(Label = "点の座標空間(CanvasTransform)")]
+    private SEED.CanvasTransform? radarSpace = null;
 
     /// <summary>中心（＝ウキ＝自分）を示す点の Sprite。位置は背景の中心に固定。</summary>
     [SerializeField(Label = "中心点のSprite")]
@@ -127,6 +141,44 @@ public class FishRadar : SEEDScript
     /// <summary>レーダー円の半径（ピクセル）。<see cref="radarRangeMeters"/> がこの長さに対応する。</summary>
     [SerializeField(Label = "レーダー半径(px)")]
     private float radarRadiusPx = 80f;
+
+    /// <summary>
+    /// 点の半径（ピクセル）。旧 <c>RadarDot**</c> スプライトは 10×10 px だったので
+    /// 既定はその半分の 5（＝見た目の大きさを従来どおりに保つ）。
+    /// </summary>
+    [SerializeField(Label = "点の半径(px)")]
+    private float dotRadiusPx = 5f;
+
+    /// <summary>
+    /// 点の描画レイヤー（大きいほど手前）。背景スプライトのレイヤー（シーン設定は 18）より
+    /// 大きい値にすること。旧 <c>RadarDot**</c> スプライトと同じ 19 が既定。
+    /// </summary>
+    [SerializeField(Label = "点のレイヤー")]
+    private int dotLayer = 19;
+
+    /// <summary>
+    /// レーダーの外周リングを点の奥に描くか。
+    /// 背景スプライト（radar_bg.png）が既に円枠を持っているので既定は false。
+    /// 背景テクスチャを使わない構成へ切り替えたいときだけ true にする。
+    /// </summary>
+    [SerializeField(Label = "外周リングを描く")]
+    private bool drawRimRing = false;
+
+    /// <summary>外周リングの太さ（ピクセル・半径方向）。</summary>
+    [SerializeField(Label = "外周リングの太さ(px)")]
+    private float rimRingThicknessPx = 2f;
+
+    /// <summary>外周リングの色（RGB）。</summary>
+    [SerializeField(Label = "外周リングの色(RGB)")]
+    private SEED.Vector3 rimRingColor = new(0.72f, 1f, 0.24f);
+
+    /// <summary>外周リングの不透明度（フェード値が掛かる）。</summary>
+    [SerializeField(Label = "外周リングの不透明度")]
+    private float rimRingOpacity = 0.8f;
+
+    /// <summary>外周リングの描画レイヤー（点より奥＝小さい値にすること）。</summary>
+    [SerializeField(Label = "外周リングのレイヤー")]
+    private int rimRingLayer = 18;
 
     /// <summary>釣れる（乗り換えできる）個体の点の色（RGB）。</summary>
     [SerializeField(Label = "釣れる個体の色(RGB)")]
@@ -246,13 +298,17 @@ public class FishRadar : SEEDScript
     /// <see cref="UpdateRadar"/> で決めるが、<b>フェードの進行だけは自前で持つ</b>
     /// （フェードアウト中は呼び出し側が点を渡してこないため、
     ///   控えた内容（<see cref="cachedEntries"/>）を薄くしながら描き続ける必要がある）。
+    ///
+    /// ここでは<b>描画しない</b>。プリミティブを積むのは <see cref="LateUpdate"/> だけ
+    /// （呼び出し側の Update より先に描くと 1 フレーム古い内容になり、
+    ///   Update と <see cref="UpdateRadar"/> の両方で描くと二重に積まれるため）。
     /// </summary>
     /// <param name="ctx">フレーム情報（経過秒数を読む）。</param>
     public override void Update(ref NativeFrameContext ctx)
     {
         AdvanceFade(ctx.DeltaTime);
 
-        // 完全に消えたら 1 度だけ全 Sprite を隠して以降は何もしない
+        // 完全に消えたら 1 度だけ背景・中心点の Sprite を隠して以降は何もしない
         if (fade01 <= HiddenAlpha)
         {
             visible = false;
@@ -260,9 +316,7 @@ public class FishRadar : SEEDScript
             return;
         }
 
-        // フェード中（および表示中）は控えた内容をそのまま描き直す
         visible = true;
-        Draw();
     }
 
     /// <summary>
@@ -289,9 +343,17 @@ public class FishRadar : SEEDScript
     {
     }
 
-    /// <summary>Update 後の更新。</summary>
+    /// <summary>
+    /// Update 後の更新【レーダーを描く唯一の場所】。
+    ///
+    /// すべてのスクリプトの <c>Update</c>（＝ <see cref="FishingController"/> による
+    /// <see cref="UpdateRadar"/> の呼び出し）が終わってから走るので、
+    /// ここで描けば「最新の内容を 1 フレームに 1 回だけ」積める。
+    /// </summary>
+    /// <param name="ctx">フレーム情報（未使用）。</param>
     public override void LateUpdate(ref NativeFrameContext ctx)
     {
+        Draw();
     }
 
     /// <summary>描画フェーズ。</summary>
@@ -319,7 +381,7 @@ public class FishRadar : SEEDScript
     }
 
     /// <summary>
-    /// レーダーを隠す（背景・中心点・すべての魚の点をアルファ 0 にする）。
+    /// レーダーを隠す（背景・中心点のアルファを 0 にし、点は描くのをやめる）。
     /// 位置は動かさないので、次に <see cref="Show"/> しても基準はずれない。
     /// 何度呼んでも副作用は無い（冪等）。
     /// </summary>
@@ -347,7 +409,8 @@ public class FishRadar : SEEDScript
     }
 
     /// <summary>
-    /// 全 Sprite のアルファを 0 にする（隠し終えているフレームでは何も書かない）。
+    /// 背景・中心点の Sprite のアルファを 0 にする（隠し終えているフレームでは何も書かない）。
+    /// 点はプリミティブ描画なので「描かない＝消える」ため、ここでは扱わない。
     /// </summary>
     private void ApplyHidden()
     {
@@ -355,14 +418,14 @@ public class FishRadar : SEEDScript
         hideApplied = true;
         SetSpriteAlpha(bgSprite, HiddenAlpha, SEED.Vector3.One);
         SetSpriteAlpha(centerSprite, HiddenAlpha, catchableColor);
-        HideDotsFrom(0);
+        // 点はアクタを持たない（毎フレーム描き直すだけ）ので、隠す処理は不要。
     }
 
     /// <summary>
-    /// レーダーの表示内容を更新する【点の配置と色の唯一の決定点】。
+    /// レーダーの表示内容を更新する【表示内容の唯一の受け口】。
     ///
-    /// <see cref="Show"/> していないときは何もしない（表示中だけ動かす）。
-    /// 点の数が足りない場合は先頭から埋め、余った点はアルファ 0 で隠す。
+    /// ここでは<b>控えるだけ</b>で描かない（実際の描画は <see cref="LateUpdate"/>）。
+    /// 点の数に上限は無い（プリミティブ描画なので枠の枚数に縛られない）。
     /// </summary>
     /// <param name="center">レーダーの中心にするワールド座標（＝ウキの位置）。</param>
     /// <param name="forwardYawDeg">上向きに合わせる方位角（度）。プレイヤーの正面。</param>
@@ -374,14 +437,16 @@ public class FishRadar : SEEDScript
         cachedForwardYawDeg = forwardYawDeg;
         cachedEntries.Clear();
         for (int i = 0; i < entries.Count; i++) { cachedEntries.Add(entries[i]); }
-
-        Draw();
     }
 
     /// <summary>
     /// 控えた内容（<see cref="cachedEntries"/>）を現在のフェード値で描く
     /// 【点の配置と色の唯一の書き込み点】。
     /// 完全に消えている（<see cref="fade01"/> が 0）ときは何も描かない。
+    ///
+    /// 点は <see cref="SEED.Draw.Circle"/> のイミディエイト描画なので<b>個数の上限は無い</b>。
+    /// 座標は <see cref="radarSpace"/>（背景アクタ）のローカル空間で、
+    /// 原点＝レーダー中心・単位＝キャンバス px・Y は下向き。
     /// </summary>
     private void Draw()
     {
@@ -396,10 +461,27 @@ public class FishRadar : SEEDScript
         SetSpriteAlpha(bgSprite, SEED.Mathf.Clamped01(bgOpacity) * fade01, SEED.Vector3.One);
         PlaceCenterDot();
 
+        // 点を描く座標空間。未設定ならここで打ち切る（誤った場所へ描かないため）。
+        if (DotSpace() is not { IsValid: true } space) { return; }
+        var origin = SpaceOriginPx(space);
+
         // メートル → ピクセルの換算係数。射程 0 の設定ミスでも 0 除算しない。
         float range = SEED.Mathf.Max(radarRangeMeters, MinPositiveValue);
         float radius = SEED.Mathf.Max(radarRadiusPx, MinPositiveValue);
         float metersToPixels = radius / range;
+
+        // 外周リング（任意）。背景スプライトを使わない構成のための保険なので既定は描かない。
+        if (drawRimRing)
+        {
+            float thickness = SEED.Mathf.Max(rimRingThicknessPx, MinPositiveValue);
+            SEED.Draw.Ring(
+                origin,
+                SEED.Mathf.Max(radius - thickness, 0f),
+                radius,
+                ToColor(rimRingColor, SEED.Mathf.Clamped01(rimRingOpacity) * fade01),
+                layer: rimRingLayer,
+                space: space);
+        }
 
         // エンジン規約: yaw = atan2(x, z)、前方 +Z。
         // forward = (sin, cos)、right（forward を右へ 90° 回した方向）= (cos, -sin)。
@@ -409,11 +491,7 @@ public class FishRadar : SEEDScript
         float rightX = forwardZ;
         float rightZ = -forwardX;
 
-        var origin = RadarCenterPx();
-        int slots = SlotCount();
-        int used = 0;
-
-        for (int i = 0; i < cachedEntries.Count && used < slots; i++)
+        for (int i = 0; i < cachedEntries.Count; i++)
         {
             var e = cachedEntries[i];
 
@@ -436,30 +514,40 @@ public class FishRadar : SEEDScript
                 py *= shrink;
             }
 
-            if (used < dotTransforms.Count && dotTransforms[used] is { IsValid: true } tf)
-            {
-                tf.Position = new SEED.Vector2(origin.x + px, origin.y + py);
-            }
             // 色と不透明度は呼び出し側が決めた値をそのまま描く（レーダーは判断しない）
-            SetSpriteAlpha(
-                used < dotSprites.Count ? dotSprites[used] : null,
-                SEED.Mathf.Clamped01(e.alpha) * fade01,
-                e.color);
-            used++;
+            SEED.Draw.Circle(
+                new SEED.Vector2(origin.x + px, origin.y + py),
+                SEED.Mathf.Max(dotRadiusPx, MinPositiveValue),
+                ToColor(e.color, SEED.Mathf.Clamped01(e.alpha) * fade01),
+                layer: dotLayer,
+                space: space);
         }
-
-        // 使わなかった点は必ず隠す（前フレームの残像が残らないようにする）
-        HideDotsFrom(used);
     }
 
     // ─── 内部処理 ─────────────────────────────────────────────
 
     /// <summary>
-    /// 使える点の数（Sprite と CanvasTransform の<b>少ない方</b>）。
-    /// 片方だけ足りていても「位置は動くが見えない」点になるので、両方揃った数だけ使う。
+    /// 点を描く座標空間【座標空間解決の唯一の点】。
+    /// <see cref="radarSpace"/> が未設定なら <see cref="bgTransform"/> で代用する
+    /// （通常どちらもレーダー背景アクタを指すので、片方だけ設定してあれば足りる）。
     /// </summary>
-    private int SlotCount()
-        => dotSprites.Count < dotTransforms.Count ? dotSprites.Count : dotTransforms.Count;
+    private SEED.CanvasTransform? DotSpace()
+    {
+        if (radarSpace is { IsValid: true }) { return radarSpace; }
+        if (bgTransform is { IsValid: true }) { return bgTransform; }
+        return null;
+    }
+
+    /// <summary>
+    /// 指定した座標空間における「レーダー中心」のローカル座標。
+    ///
+    /// エンジンのローカル空間行列（<c>CanvasTransform::to_mesh_mat4</c>）は
+    /// pivot をピクセル値として平行移動へ効かせるため、ローカル原点は
+    /// アクタ位置から pivot 分だけずれる。pivot を足し戻すと
+    /// 「アクタ位置＝レーダー中心」に一致する（pivot(0.5,0.5) なら 0.5px の補正）。
+    /// </summary>
+    /// <param name="space">点を描く座標空間。</param>
+    private static SEED.Vector2 SpaceOriginPx(SEED.CanvasTransform space) => space.Pivot;
 
     /// <summary>
     /// レーダー中心のキャンバス座標。背景アクタの位置をそのまま使う
@@ -476,15 +564,11 @@ public class FishRadar : SEEDScript
         SetSpriteAlpha(centerSprite, visible ? OpaqueAlpha * fade01 : HiddenAlpha, catchableColor);
     }
 
-    /// <summary>指定の添字から末尾までの点をすべて隠す。</summary>
-    /// <param name="startIndex">隠し始める添字（0 なら全部）。</param>
-    private void HideDotsFrom(int startIndex)
-    {
-        for (int i = startIndex; i < dotSprites.Count; i++)
-        {
-            SetSpriteAlpha(dotSprites[i], HiddenAlpha, catchableColor);
-        }
-    }
+    /// <summary>RGB（Vector3）と不透明度から描画用の色を作る。</summary>
+    /// <param name="rgb">色（RGB・0〜1）。</param>
+    /// <param name="alpha">不透明度（0〜1）。</param>
+    private static SEED.Color ToColor(SEED.Vector3 rgb, float alpha)
+        => new SEED.Color(rgb.x, rgb.y, rgb.z, alpha);
 
     /// <summary>
     /// Sprite の色（RGB）と不透明度をまとめて書き込む【色書き込みの唯一の経路】。

@@ -118,14 +118,19 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 ///
 /// <b>UI（円形のリズム時計）</b>
 /// 画面中央の円（<c>GaugeSeg00</c>… の 48 セグメント＋<c>GaugeMarker</c>
-/// ＋ <c>BeatIcon00</c>… の打点アイコン）を時計として使う。
+/// ＋ <b>プールした打点アイコン</b>）を時計として使う。
 /// - マーカー（針）… <b>フェーズの進行</b>（<see cref="PhaseProgress01"/> × 360 度・
 ///   真上がフェーズ頭・右回り）。出題も回答も 2 小節なので、<b>1 フェーズで針が 1 周</b>する。
 ///   隙（1〜2 小節）・余白でも同じく、その区間の長さで 1 周する。
 /// - セグメント … 真上から右回りに糸の残りの円弧（<see cref="Line01"/> × 360 度・
 ///   減った分だけ空きセグメントに置き換わる）。円弧の色は満タン(緑)→中間(黄)→危険(赤)へ補間。
 ///   <b>セグメントは糸ゲージ専用</b>で、打点は一切描かない（旧「拍マーク」は廃止）。
-/// - 打点アイコン … フレーズの打点 1 つにつき 1 枚（<see cref="beatIconSprites"/>）。
+/// - 打点アイコン … フレーズの打点 1 つにつき 1 枚。
+///   <b>シーンにアクタを並べず</b>、<see cref="beatIconActorPath"/> の <c>.actor</c> を
+///   <see cref="beatIconParent"/> の子として <see cref="initialBeatIconPool"/> 枚だけ
+///   作り置きし、使い回す（2026-09-07 改定。旧 <c>BeatIcon00</c>…<c>BeatIcon15</c> の
+///   固定 16 枚を廃止）。打点数が足りなければプールを増やし、要らない枚はアルファ 0 で隠す
+///   （<b>破棄はしない</b>＝生成・破棄の往復コストを避けるため）。
 ///   角度は打点の<b>時刻</b>から解析的に求める（θ ＝ (打点時刻 − フェーズ開始) ÷ フェーズ長 × 360 度）
 ///   ので、セグメントの分割数には一切依存しない。半径は <see cref="beatIconRadiusPx"/>。
 ///   ライフサイクルは下記。
@@ -543,20 +548,35 @@ public class FishingFight : SEEDScript
     private List<SEED.CanvasTransform> segmentTransforms = new();
 
     /// <summary>
-    /// 打点アイコンのスプライト（<c>BeatIcon00</c>… を順に割り当てる）。
-    /// アイコン i は「いまのフレーズの i 番目の<b>打点</b>」に対応する
-    /// （分割番号ではなく打点の通し番号）。フレーズの打点数がこの個数を超えた分は
-    /// アイコンを持たない（＝表示されないだけで判定には影響しない）。未設定でもロジックは成立する。
+    /// 打点アイコンのプレハブ（<c>.actor</c>）の仮想パス。
+    /// Sprite（テクスチャ・大きさ・レイヤー）と CanvasTransform（アンカー中央・ピボット中央）を
+    /// 持つ 2D アクタであること。空文字ならアイコンを一切生成しない。
     /// </summary>
-    [SerializeField(Label = "打点アイコンのSprite")]
-    private List<SEED.Sprite> beatIconSprites = new();
+    [SerializeField(Label = "打点アイコンのアクタ")]
+    private string beatIconActorPath = "assets://mainGame/actors/UI/BeatIcon.actor";
 
     /// <summary>
-    /// 打点アイコンの CanvasTransform（位置と拡大率を書き換える）。
-    /// <see cref="beatIconSprites"/> と<b>同じ順・同じアクタ</b>を割り当てること。
+    /// 打点アイコンを生成する親アクタ（釣り UI キャンバス＝<c>FishingUI</c>）。
+    /// 2D アクタの親は Canvas を持つアクタ（または 2D アクタ）である必要がある。
+    /// 未設定なら <see cref="beatIconParentName"/> の名前で実行時に探す。
     /// </summary>
-    [SerializeField(Label = "打点アイコンのCanvasTransform")]
-    private List<SEED.CanvasTransform> beatIconTransforms = new();
+    [SerializeField(Label = "打点アイコンの親アクタ")]
+    private SEED.GameObject? beatIconParent = null;
+
+    /// <summary>
+    /// <see cref="beatIconParent"/> が未設定のときに名前で探すためのアクタ名（保険）。
+    /// 空文字なら探さない（＝親が決まらないのでアイコンを生成しない）。
+    /// </summary>
+    [SerializeField(Label = "打点アイコンの親アクタ名(代替)")]
+    private string beatIconParentName = "FishingUI";
+
+    /// <summary>
+    /// 開始時に作り置きする打点アイコンの枚数。
+    /// フレーズの打点数がこれを超えたときは <see cref="ResetIcons"/> がプールを継ぎ足す
+    /// （継ぎ足した分は生成が翌フレーム反映のため 1 フレームだけ出ない）。
+    /// </summary>
+    [SerializeField(Label = "打点アイコンの初期プール数")]
+    private int initialBeatIconPool = 16;
 
     /// <summary>小節内の進行を示すマーカーのスプライト（白い小片）。</summary>
     [SerializeField(Label = "マーカーのSprite")]
@@ -1010,6 +1030,26 @@ public class FishingFight : SEEDScript
     private readonly List<float> iconDegrees = new();
 
     /// <summary>
+    /// 生成済みの打点アイコン（プール本体）。添字は打点の通し番号と対応する。
+    /// <b>使い終わっても破棄しない</b>（アルファ 0 で隠すだけ）。破棄は <see cref="OnDestroy"/> のみ。
+    /// </summary>
+    private readonly List<SEED.GameObject> iconPool = new();
+
+    /// <summary>
+    /// プール内アイコンの Sprite ハンドル（<see cref="iconPool"/> と同じ添字）。
+    /// <c>Instantiate</c> は<b>フレーム末尾</b>にアクタを組み立てるため、生成した直後の
+    /// フレームは <c>GetComponent</c> が null を返す。そこで遅延取得し、
+    /// 取れるようになったフレームで埋める（<see cref="ResolveIconHandles"/>）。
+    /// </summary>
+    private readonly List<SEED.Sprite?> iconSprites = new();
+
+    /// <summary>
+    /// プール内アイコンの CanvasTransform ハンドル（<see cref="iconPool"/> と同じ添字）。
+    /// 取得タイミングの事情は <see cref="iconSprites"/> と同じ。
+    /// </summary>
+    private readonly List<SEED.CanvasTransform?> iconTransforms = new();
+
+    /// <summary>
     /// 打点アイコンのフェードアウト開始時刻（秒・絶対時刻）。
     /// <see cref="NoFadeStart"/> ならフェードしていない。
     /// </summary>
@@ -1026,17 +1066,25 @@ public class FishingFight : SEEDScript
 
     // ─── ライフサイクル ───────────────────────────────────
 
-    /// <summary>開始時に UI を隠す（バトル中以外は一切見せない）。</summary>
+    /// <summary>
+    /// 開始時に UI を隠し（バトル中以外は一切見せない）、打点アイコンを作り置きする。
+    /// アイコンはアルファ 0 の状態で生成されるので、置いた時点では見えない。
+    /// </summary>
     public override void OnStart()
     {
         ResetRuntimeState();
         HideUi();
+        EnsureIconPool(initialBeatIconPool);
     }
 
-    /// <summary>破棄時も UI を隠す（表示しっぱなしを防ぐ）。</summary>
+    /// <summary>
+    /// 破棄時は UI を隠し、プールした打点アイコンをまとめて破棄する
+    /// 【プール破棄の唯一の場所】。
+    /// </summary>
     public override void OnDestroy()
     {
         HideUi();
+        DestroyIconPool();
     }
 
     // 本スクリプトは自前の毎フレーム更新を持たない。
@@ -2412,6 +2460,101 @@ public class FishingFight : SEEDScript
         }
     }
 
+    // ─── UI: 打点アイコンのプール ───────────────────────────
+
+    /// <summary>
+    /// 打点アイコンを <paramref name="count"/> 枚以上になるまで作り足す
+    /// 【アイコン生成の唯一の入口】。
+    ///
+    /// 既に足りているときは何もしない（毎フレーム呼んでも生成は起きない）。
+    /// 生成したアクタは <c>.actor</c> の色（アルファ 0）のまま出てくるので、
+    /// 置いた瞬間から <see cref="ApplyBeatIcons"/> が色を書くまで見えない。
+    /// </summary>
+    /// <param name="count">必要な枚数。</param>
+    private void EnsureIconPool(int count)
+    {
+        int want = SEED.Mathf.Max(count, 0);
+        if (iconPool.Count >= want) { return; }
+        if (string.IsNullOrEmpty(beatIconActorPath)) { return; }
+
+        // 親が決まらないと 2D アクタとして正しい場所に置けないので生成しない
+        if (!TryResolveIconParent(out var parent))
+        {
+            SEED.Debug.LogWarning($"[FishingFight] 打点アイコンの親アクタが見つかりません: {beatIconParentName}");
+            return;
+        }
+
+        while (iconPool.Count < want)
+        {
+            iconPool.Add(SEED.GameObject.Instantiate(beatIconActorPath, parent));
+            iconSprites.Add(null);       // ハンドルは反映後のフレームで拾う
+            iconTransforms.Add(null);
+        }
+
+        // 枚数が変わったので大きさを書き直させる（差分更新の控えを無効化）
+        iconSizeAppliedCount = 0;
+    }
+
+    /// <summary>
+    /// 打点アイコンを生成する親アクタを解決する【親解決の唯一の点】。
+    /// インスペクタ指定を最優先し、未設定なら名前で探す。
+    /// </summary>
+    /// <param name="parent">見つかった親アクタ（見つからないときは無効ハンドル）。</param>
+    /// <returns>親が見つかったか。</returns>
+    private bool TryResolveIconParent(out SEED.GameObject parent)
+    {
+        if (beatIconParent is { IsValid: true } bound)
+        {
+            parent = bound;
+            return true;
+        }
+
+        // 空文字ならどのアクタとも一致しないので、無効ハンドルが返る
+        parent = SEED.GameObject.Find(beatIconParentName);
+        return parent.IsValid;
+    }
+
+    /// <summary>
+    /// まだ取れていないアイコンの Sprite / CanvasTransform ハンドルを拾い直す。
+    ///
+    /// <c>Instantiate</c> はフレーム末尾にアクタを組み立てるため、生成したフレームでは
+    /// <c>GetComponent</c> が null を返す。取れるまで毎フレーム試し、取れたら控える
+    /// （既に有効なハンドルは触らないので、通常フレームのコストはほぼ無い）。
+    /// </summary>
+    private void ResolveIconHandles()
+    {
+        for (int i = 0; i < iconPool.Count; i++)
+        {
+            var go = iconPool[i];
+            if (!go.IsValid) { continue; }
+
+            if (iconSprites[i] is not { IsValid: true })
+            {
+                iconSprites[i] = go.GetComponent<SEED.Sprite>();
+            }
+            if (iconTransforms[i] is not { IsValid: true })
+            {
+                iconTransforms[i] = go.GetComponent<SEED.CanvasTransform>();
+            }
+        }
+    }
+
+    /// <summary>
+    /// プールした打点アイコンをすべて破棄する【破棄の唯一の場所】。
+    /// バトル中は絶対に呼ばない（隠すのはアルファ 0 で行う）。
+    /// </summary>
+    private void DestroyIconPool()
+    {
+        for (int i = 0; i < iconPool.Count; i++)
+        {
+            if (iconPool[i].IsValid) { iconPool[i].Destroy(); }
+        }
+        iconPool.Clear();
+        iconSprites.Clear();
+        iconTransforms.Clear();
+        iconSizeAppliedCount = 0;
+    }
+
     // ─── UI: 打点アイコン ──────────────────────────────────
 
     /// <summary>
@@ -2421,6 +2564,9 @@ public class FishingFight : SEEDScript
     /// <param name="hitCount">いまのフレーズの打点数。</param>
     private void ResetIcons(int hitCount)
     {
+        // 打点数がプールを超えるならここで継ぎ足す（超えない限り生成は起きない）
+        EnsureIconPool(hitCount);
+
         iconPopStartTimes.Clear();
         iconColors.Clear();
         iconDegrees.Clear();
@@ -2481,7 +2627,10 @@ public class FishingFight : SEEDScript
     /// </summary>
     private void ApplyBeatIcons()
     {
-        int slots = beatIconSprites.Count;
+        // 生成が反映されたアイコンのハンドルを拾い直す（生成直後の 1 フレームは null）
+        ResolveIconHandles();
+
+        int slots = iconPool.Count;
         if (slots <= 0) { return; }
 
         ApplyIconSizes(slots);
@@ -2498,18 +2647,13 @@ public class FishingFight : SEEDScript
             float scale = used ? IconPopScale01(iconPopStartTimes[i]) : 0f;
             float alpha = used ? baseAlpha : 0f;
 
-            if (i < beatIconTransforms.Count)
+            if (iconTransforms[i] is { IsValid: true } tf)
             {
-                var tf = beatIconTransforms[i];
-                if (tf.IsValid)
-                {
-                    if (used) { tf.Position = ArcPointAt(iconDegrees[i], beatIconRadiusPx); }
-                    tf.Scale = new SEED.Vector2(scale, scale);
-                }
+                if (used) { tf.Position = ArcPointAt(iconDegrees[i], beatIconRadiusPx); }
+                tf.Scale = new SEED.Vector2(scale, scale);
             }
 
-            var sprite = beatIconSprites[i];
-            if (!sprite.IsValid) { continue; }
+            if (iconSprites[i] is not { IsValid: true } sprite) { continue; }
 
             sprite.Color = ToColor(used ? iconColors[i] : beatIconPendingColor, alpha);
         }
@@ -2526,8 +2670,10 @@ public class FishingFight : SEEDScript
 
         for (int i = 0; i < slots; i++)
         {
-            var sprite = beatIconSprites[i];
-            if (sprite.IsValid) { sprite.Size = new SEED.Vector2(beatIconSizePx, beatIconSizePx); }
+            if (iconSprites[i] is { IsValid: true } sprite)
+            {
+                sprite.Size = new SEED.Vector2(beatIconSizePx, beatIconSizePx);
+            }
         }
         iconSizeAppliedCount = slots;
     }
@@ -2690,9 +2836,9 @@ public class FishingFight : SEEDScript
         {
             ApplySpriteOpacity(segmentSprites[i], 0f);
         }
-        for (int i = 0; i < beatIconSprites.Count; i++)
+        for (int i = 0; i < iconSprites.Count; i++)
         {
-            ApplySpriteOpacity(beatIconSprites[i], 0f);
+            ApplySpriteOpacity(iconSprites[i], 0f);
         }
         ApplySpriteOpacity(gaugeMarker, 0f);
 
