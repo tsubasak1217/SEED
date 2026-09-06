@@ -29,7 +29,8 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 「餌」はルアー（ウキ）だけとは限らない。別の魚が掛かっているあいだ
 /// （<see cref="FishingController.HookedFishBaitActive"/>）は、
 /// <b>掛かっている魚そのものが餌</b>になる（<see cref="TryGetBaitTarget"/>）。
-/// 捕食できるかは <see cref="CanPreyOn"/>（サイズ比のみ）で決まり、
+/// 捕食できるかは <see cref="CanPreyOn"/>（<see cref="Level"/> のレベル差のみ。
+/// どちらかのレベルが不明なときだけ大きさ比較へフォールバック）で決まり、
 /// 好みの魚（<see cref="preferredFish"/>）は <see cref="ChainSenseMultiplier"/> により
 /// <b>感知距離を広げる</b>だけで、可否には影響しない。
 /// 連鎖の感知距離 ＝ (餌の感知距離 ＋ 連鎖餌の影響半径) × 好みの魚の感知倍率。
@@ -76,9 +77,12 @@ public class Fish : SEEDScript
     private const float AttachSnapDistance = 0.05f;
 
     /// <summary>
-    /// 捕食できる最小サイズ比の<b>下限</b>（＝「相手と同じ大きさ」）。
-    /// <see cref="preyMinSizeRatio"/> にこれ未満（1 未満）を入れると、自分より大きい魚まで
-    /// 食べられてしまい「わらしべ」が成立しなくなるので、番人値としてここでクランプする。
+    /// レベル不明時のフォールバック用: 捕食できる最小サイズ比（＝「相手と同じ大きさ以上」）。
+    ///
+    /// 捕食可否は通常 <see cref="Level"/> の差（<see cref="preyMinLevelGap"/>）だけで決まるが、
+    /// 手置きの魚など <see cref="FishManager"/> を経由せず生成された個体は
+    /// <see cref="Level"/> が <see cref="UnknownLevel"/>（0）のままレベル差を比較できない。
+    /// その場合だけ <see cref="CanPreyOn"/> がこの比率で大きさ比較へフォールバックする。
     /// </summary>
     private const float MinPreySizeRatio = 1f;
 
@@ -164,22 +168,23 @@ public class Fish : SEEDScript
     /// <summary>
     /// 好みの魚（餌として好む魚の名前。空 = 特になし）。
     ///
-    /// わらしべ連鎖（掛かっている魚を餌に、より大きい魚が食いに来る仕組み）では
-    /// <b>捕食できるかどうかの条件ではない</b>。捕食の可否はサイズ比
-    /// （<see cref="preyMinSizeRatio"/>）だけで決まり、好みの魚は
+    /// わらしべ連鎖（掛かっている魚を餌に、より格上の魚が食いに来る仕組み）では
+    /// <b>捕食できるかどうかの条件ではない</b>。捕食の可否は <see cref="Level"/> の差
+    /// （<see cref="preyMinLevelGap"/>）だけで決まり、好みの魚は
     /// <see cref="ChainSenseMultiplier"/> によって<b>感知距離を広げる</b>要素として働く。
     /// </summary>
     [SerializeField(Label = "好みの魚")]
     private string preferredFish = "";
 
     /// <summary>
-    /// 捕食できる最小サイズ比。相手（獲物）の <see cref="DisplaySize"/> に対して
-    /// 自分の <see cref="DisplaySize"/> がこの倍率以上あるときだけ捕食できる
-    /// （＝明確に大きい魚しか、掛かっている魚を食いに来ない）。
-    /// 下限は <see cref="MinPreySizeRatio"/> でクランプする。
+    /// 捕食できる最小レベル差。相手（獲物）の <see cref="Level"/> に対して
+    /// 自分の <see cref="Level"/> がこの差以上あるときだけ捕食できる
+    /// （＝10 段階の魚レベルで十分格上の魚しか、掛かっている魚を食いに来ない）。
+    /// どちらかのレベルが <see cref="UnknownLevel"/>（不明）なときはこの値を使わず、
+    /// <see cref="CanPreyOn"/> が大きさ比較（<see cref="MinPreySizeRatio"/>）へフォールバックする。
     /// </summary>
-    [SerializeField(Label = "捕食できる最小サイズ比")]
-    private float preyMinSizeRatio = 1.3f;
+    [SerializeField(Label = "捕食できる最小レベル差")]
+    private int preyMinLevelGap = 1;
 
     /// <summary>
     /// 好みの魚（<see cref="preferredFish"/>）が餌になっているときの感知距離の倍率。
@@ -569,11 +574,18 @@ public class Fish : SEEDScript
     /// <summary>
     /// 指定の魚を<b>捕食できるか</b>【捕食可否の唯一の判定点】。
     ///
-    /// 判定は<b>サイズ比だけ</b>で行う:
-    /// 自分の <see cref="DisplaySize"/> ≧ 相手の <see cref="DisplaySize"/> ×
-    /// <see cref="preyMinSizeRatio"/>（下限 <see cref="MinPreySizeRatio"/>）。
-    /// <see cref="preferredFish"/>（好みの魚）は可否には一切関与せず、
-    /// <see cref="ChainSenseMultiplier"/> で感知距離を広げるだけである。
+    /// 判定は<b>10 段階の魚レベル（<see cref="Level"/>）の差だけ</b>で行う:
+    /// 自分の <see cref="Level"/> ≧ 相手の <see cref="Level"/> ＋
+    /// <see cref="preyMinLevelGap"/>。<see cref="preferredFish"/>（好みの魚）は可否には
+    /// 一切関与せず、<see cref="ChainSenseMultiplier"/> で感知距離を広げるだけである。
+    ///
+    /// レベルはどちらも大きさ倍率の抽選（0.8〜1.3 倍）に左右されない固定値なので、
+    /// 「大きさで比較すると個体差の乱数でほぼ成立しない」問題が起きない。
+    /// ただし、手置きの魚など <see cref="FishManager"/> を経由せず生成された個体は
+    /// <see cref="Level"/> が <see cref="UnknownLevel"/>（0）のままで、レベル差を
+    /// 比較できない。<b>どちらかのレベルが不明なときだけ</b>、旧来の大きさ比較
+    /// （<see cref="DisplaySize"/> が相手以上、下限 <see cref="MinPreySizeRatio"/>）へ
+    /// フォールバックする。
     ///
     /// 自分自身と、釣り上げ演出中（<see cref="BehaviorState.Caught"/>）の個体は常に対象外。
     /// なお「掛かっている魚」は必ず <see cref="BehaviorState.Bite"/> なので、
@@ -589,8 +601,37 @@ public class Fish : SEEDScript
         // 釣り上げ演出へ入った個体は、もうプレイヤーの獲物なので餌にならない
         if (prey.State == BehaviorState.Caught) { return false; }
 
-        float ratio = SEED.Mathf.Max(preyMinSizeRatio, MinPreySizeRatio);
-        return DisplaySize >= prey.DisplaySize * ratio;
+        // 通常はレベル差で判定する（わらしべ本来のルール）。
+        if (Level != UnknownLevel && prey.Level != UnknownLevel)
+        {
+            return Level >= prey.Level + preyMinLevelGap;
+        }
+
+        // どちらかのレベルが不明: レベル差を比較できないので大きさ比較へフォールバックする。
+        return DisplaySize >= prey.DisplaySize * MinPreySizeRatio;
+    }
+
+    /// <summary>
+    /// わらしべ連鎖のレーダー表示で「掛かっている魚より格上か」を判定する
+    /// 【レーダー候補フィルタの唯一の判定点】（<see cref="FishingController"/> から使う）。
+    ///
+    /// <see cref="CanPreyOn"/> と異なり <see cref="preyMinLevelGap"/> は使わず、
+    /// レベルが厳密に高いかどうかだけで判定する（乗り換えの脅威／好機を広めに見せるため）。
+    /// どちらかのレベルが <see cref="UnknownLevel"/>（不明）なときは、同じくレベル差を
+    /// 比較できないため大きさ比較（自分が厳密に大きいか）へフォールバックする。
+    /// </summary>
+    /// <param name="hooked">現在掛かっている魚。</param>
+    /// <returns>掛かっている魚より格上（レーダーに載せる価値がある）なら true。</returns>
+    public bool OutranksForRadar(Fish? hooked)
+    {
+        if (hooked is null) { return false; }
+
+        if (Level != UnknownLevel && hooked.Level != UnknownLevel)
+        {
+            return Level > hooked.Level;
+        }
+
+        return DisplaySize > hooked.DisplaySize;
     }
 
     /// <summary>

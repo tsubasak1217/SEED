@@ -60,7 +60,7 @@
 /// <b>わらしべ連鎖</b>
 /// ヒット中（<see cref="FishState.Hooked"/>）は、掛かっている魚そのものが餌になる
 /// （<see cref="HookedFishBaitActive"/>）。<see cref="Fish.CanPreyOn"/> でその魚を捕食できる
-/// （＝明確に大きい）個体が寄って来る。<b>前アタリ・合わせは一切無い</b>:
+/// （＝魚レベルが十分高い）個体が寄って来る。<b>前アタリ・合わせは一切無い</b>:
 /// 食いつき距離（<see cref="BiteDistance"/>）まで詰めた瞬間に <see cref="TryEatHookedFish"/> を
 /// 試み、<b>やり取りの「隙（<see cref="FishingFight.Phase.Rest"/>）」中だけ</b>即座に食い付いて成立する
 /// （<see cref="SwapHookedFish"/> で乗り換わり、前の魚は食われて消滅。新しい魚で
@@ -1496,7 +1496,7 @@ public class FishingController : SEEDScript
         if (State != FishState.Hooked) { return false; }
         if (hookedFish is not { } prey) { return false; }
         if (ReferenceEquals(eater, prey)) { return false; }         // 自分自身は食えない
-        if (!eater.CanPreyOn(prey)) { return false; }                // 明確に大きい魚だけが食える
+        if (!eater.CanPreyOn(prey)) { return false; }                // 魚レベルが十分高い魚だけが食える
 
         // 隙（Rest）中でなければ食えない（出題・回答中の捕食は許さない）
         if (fight is not { CurrentPhase: FishingFight.Phase.Rest }) { return false; }
@@ -2279,7 +2279,8 @@ public class FishingController : SEEDScript
     /// <code>
     /// ヒット前 … 射程内の魚を<b>全て</b>（釣れる／釣れないの区別はしない＝すべて不透明）
     ///            ＝「餌に反応している魚がどこに居るか」だけが分かればよい区間
-    /// ヒット中 … 掛かっている魚より<b>大きい</b>個体だけ（＝乗り換えの脅威／好機）。
+    /// ヒット中 … 掛かっている魚より<b>魚レベルが高い</b>個体だけ（＝乗り換えの脅威／好機、
+    ///            Fish.OutranksForRadar で判定）。
     ///            Fish.CanPreyOn（いま掛かっている魚を食べられるか）が真なら不透明、偽なら半透明
     /// 共通     … 漂流物（DriftItem）を種類ごとの色で不透明に載せる
     /// </code>
@@ -2330,8 +2331,8 @@ public class FishingController : SEEDScript
             {
                 // 掛かっている本人は中心の点で表しているので載せない
                 if (ReferenceEquals(fish, hookedTarget)) { continue; }
-                // 掛かっている魚より小さい個体は乗り換えに関与しないので載せない
-                if (fish.DisplaySize <= hookedTarget.DisplaySize) { continue; }
+                // 掛かっている魚よりレベルが低い（格下の）個体は乗り換えに関与しないので載せない
+                if (!fish.OutranksForRadar(hookedTarget)) { continue; }
             }
 
             var pos = fishTf.Position;
