@@ -59,7 +59,15 @@ impl App {
     /// 分類してスナップショットし、mode を Play へ切り替える。地形・散布・GPU・モデル
     /// キャッシュ・レンダラには一切触れない。物理スレッドは次フレームで frame_renderer の
     /// 「Play 初回フレーム末尾起動」ロジックが現シーンのコライダーから自動起動する。
+    /// project_settings.json のシーン登録表は Play 開始のたびに読み直す（下記コメント参照）。
     pub(super) fn enter_play(&mut self) {
+        // project_settings.json の scenes 配列はエディタのシーンマネージャで Play 中以外に
+        // 更新される。起動時に一度だけ読み込んだ登録表（self.scene_registry）のままだと、
+        // エディタ起動後に project_settings.json を編集してもスクリプトの
+        // Scene.Load("name") / Scene.Transition("name") が名前解決できず失敗する。
+        // Play を開始するたびに読み直すことで最新のシーン一覧を反映する
+        // （小さな JSON 1 つの読み込みなのでコストは無視できる）。
+        self.load_scene_registry();
         // ポインタ状態を捨てる（前回 Play のホバー/押下対象は破棄済みエンティティ）。
         // 二重開始のべき等パスより前に置いて、どの経路でも必ず初期化されるようにする。
         self.pointer.reset();

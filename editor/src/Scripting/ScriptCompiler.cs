@@ -7,6 +7,7 @@ using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using SEEDEditor.Scripting;
+using SEEDEditor; // VirtualPath 用
 
 namespace SEEDEditor.Scripting;
 
@@ -244,6 +245,11 @@ public static class ScriptCompiler
     {
         try
         {
+            // ScriptComponent.ModelPath は "assets://..." 形式の仮想パスでも保存され得る。
+            // 以降はファイルシステム上の絶対パスとして扱うため、ここで正規化しておく
+            // （絶対パスが渡された場合はそのまま返るので無害）。
+            filePath = VirtualPath.ToAbsolute(filePath, assetsRoot);
+
             if (!Directory.Exists(assetsRoot)) return null;
 
             var trees = CollectProjectSyntaxTrees(assetsRoot);

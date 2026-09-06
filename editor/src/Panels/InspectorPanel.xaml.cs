@@ -9658,13 +9658,21 @@ public partial class InspectorPanel : UserControl
             {
                 try
                 {
+                    // ModelPath は "assets://..." 形式の仮想パスで保存され得る。
+                    // ResolveScriptTypeInProject は内部で正規化するが、単一ファイル
+                    // コンパイル（CompileFile）はファイルパスをそのまま File.ReadAllText へ
+                    // 渡すため、ここで絶対パスへ変換してから渡す。
+                    // （_scriptTypeCache のキーは元の path のままにする＝BuildScriptSlotContent
+                    //   側のキャッシュ参照と一致させるため）
+                    var absPath = VirtualPath.ToAbsolute(path, assetsRoot);
+
                     // 他スクリプトを参照するフィールド（[SerializeField] PlayerMove player;）は
                     // 単一ファイルコンパイルでは型を解決できない。まずプロジェクト全体で
                     // コンパイルし、解決できなかった場合のみ単一ファイルコンパイルへ落とす。
-                    var projType = ScriptCompiler.ResolveScriptTypeInProject(path, assetsRoot);
+                    var projType = ScriptCompiler.ResolveScriptTypeInProject(absPath, assetsRoot);
                     if (projType is not null)
                         return (projType, (IReadOnlyList<string>)Array.Empty<string>());
-                    return ScriptCompiler.CompileFile(path);
+                    return ScriptCompiler.CompileFile(absPath);
                 }
                 catch (Exception ex) { return ((Type?)null, (IReadOnlyList<string>)new[] { ex.Message }); }
             })
@@ -10058,11 +10066,21 @@ public partial class InspectorPanel : UserControl
         }
     }
 
-    /// <summary>2 つのパスを正規化して同一か判定する（大文字小文字・区切りを無視）。</summary>
-    private static bool SamePath(string? a, string? b)
+    /// <summary>
+    /// 2 つのパスを正規化して同一か判定する（大文字小文字・区切りを無視）。
+    /// ModelPath は "assets://..." 仮想パスと絶対パスの両方で保存され得るため、
+    /// 比較前に両辺を VirtualPath.ToAbsolute で絶対パスへ揃える
+    /// （_assetsPath を参照するのでインスタンスメソッドにしている）。
+    /// </summary>
+    private bool SamePath(string? a, string? b)
     {
         if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
-        try { return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase); }
+        try
+        {
+            var absA = VirtualPath.ToAbsolute(a, _assetsPath);
+            var absB = VirtualPath.ToAbsolute(b, _assetsPath);
+            return string.Equals(Path.GetFullPath(absA), Path.GetFullPath(absB), StringComparison.OrdinalIgnoreCase);
+        }
         catch { return string.Equals(a, b, StringComparison.OrdinalIgnoreCase); }
     }
 
@@ -10070,18 +10088,24 @@ public partial class InspectorPanel : UserControl
     {
         if (_scriptTypeCache.TryGetValue(path, out var cached)) return cached;
 
+        // ModelPath は "assets://..." 形式の仮想パスで保存され得る。
+        // ResolveScriptTypeInProject は内部で正規化するが、単一ファイルコンパイル
+        // （CompileFile）は正規化しないため、ここで絶対パスへ変換してから渡す
+        // （_scriptTypeCache のキーは呼び出し元と揃えるため元の path のままにする）。
+        var absPath = VirtualPath.ToAbsolute(path, _assetsPath);
+
         // 他スクリプトを参照するフィールド（[SerializeField] PlayerMove? player;）は
         // 単一ファイルコンパイルでは型を解決できない。まずプロジェクト全体で
         // コンパイルし、解決できなかった場合のみ単一ファイルコンパイルへ落とす
         // （非同期側 BuildScriptSection と同じ手順）。
-        var projType = ScriptCompiler.ResolveScriptTypeInProject(path, _assetsPath);
+        var projType = ScriptCompiler.ResolveScriptTypeInProject(absPath, _assetsPath);
         if (projType is not null)
         {
             _scriptTypeCache[path] = projType;
             return projType;
         }
 
-        var (type, errors) = ScriptCompiler.CompileFile(path);
+        var (type, errors) = ScriptCompiler.CompileFile(absPath);
         if (type is null)
         {
             EditorLog.Write($"Script compile error [{Path.GetFileName(path)}]: {string.Join("; ", errors)}");

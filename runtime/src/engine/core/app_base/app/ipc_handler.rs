@@ -891,92 +891,39 @@ impl App {
                         ))
                     } else { None };
                     match result {
-                        Some(Ok((mut new_scene, cam_data))) => {
-                            // world_line=0 が 2D キャンバスモードかどうかを
-                            // ロードしたアクター（すべて world_line=0）の種別を走査して判定する。
-                            // world_line > 0 のアクターを追加する前にチェックすることで
-                            // アクター編集タブの 2D アクターに誤判定しない。
-                            fn has_any_2d_actor(actors: &[crate::engine::structs::objects::Actor]) -> bool {
-                                actors.iter().any(|a| a.is_2d() || has_any_2d_actor(a.children()))
-                            }
-                            if has_any_2d_actor(&new_scene.actors) {
-                                self.canvas_world_lines.insert(0);
-                            } else {
-                                self.canvas_world_lines.remove(&0);
-                            }
-                            // world_line > 0 のアクター（アクター編集タブ）を保持する
-                            if let Some(old_scene) = self.scene.take() {
-                                for actor in old_scene.actors.into_iter().filter(|a| a.world_line > 0) {
-                                    new_scene.actors.push(actor);
-                                }
-                            }
-                            self.scene = Some(new_scene);
-                            // 速度バッファ: シーン総入れ替え ⇒ 次フレームは prev=curr（速度 0）。
-                            self.request_velocity_reset();
-                            // GPU パーティクルを全解放する（生存エミッタ＋孤児プールとも）。
-                            // 孤児（エミッタ消滅後も寿命まで生き残る粒子群）が旧シーンから
-                            // 新シーンへ持ち越されないようにする。
-                            self.particle_system.clear_all();
-                            // インタラクションソースの位置履歴も捨てる（Phase I1）。
-                            // 残したままシーンが入れ替わると「旧シーンの位置 → 新シーンの位置」の
-                            // 巨大な速度が 1 フレームだけ場へ焼かれ、草が一斉になぎ倒される。
-                            self.interaction_velocity.clear();
+                        Some(Ok((new_scene, cam_data))) => {
+                            // 選択状態は旧シーンの Entity を指しているため、シーンを
+                            // 差し替える前に必ず捨てる（新シーンの別実体を選択したことに
+                            // なってしまうため）。
                             self.selected_instances.clear();
                             self.actor_virtual_selected_idx = None;
                             self.actor_virtual_selected_slot_idx = 0;
-                            // ── プレハブ参照リンクのロード時再展開は「行わない」 ────────
-                            // 【データ損失バグの修正】
-                            // 以前はここで apply_prefab_links_on_load() を呼び、prefab_source を
-                            // 持つアクタの子ツリー・コンポーネントを .actor ファイルの内容で丸ごと
-                            // 差し替えていた。そのため、シーン上でインスタンスに加えた変更
-                            // （Collider の値変更・ScriptComponent の追加・子への Camera 追加など）が
-                            // .scene には正しく保存されているにもかかわらず、シーンを開き直すたびに
-                            // 破棄されていた。
-                            //
-                            // 方針: 「シーンに丸ごと保存されている内容を正とする」。
-                            // ロード時に自動で上書きすることはせず、プレハブ本体の内容を反映したい
-                            // ときだけ、ユーザーが明示的に「プレハブから更新」
-                            // （IPC: PREFAB_REAPPLY → handle_reapply_prefab）を実行する。
-                            // 地形チャンク（TerrainChunkComponent 付き）を .tvox から復元し、
-                            // terrain:// ガードで model=None のまま読まれた ModelComponent を埋める。
-                            self.rebuild_terrain_after_load();
-                            // Play モード（常駐 Play プロセス再利用の LOAD_SCENE）: 地形 LOD を
-                            // メインカメラ位置で事前収束させる。ウィンドウ Play 新規起動
-                            // （app_init.rs load_play_scene）・埋め込み ENTER_PLAY
-                            // （play_mode_ops.rs enter_play）と同じ扱いで、Play 開始直後の
-                            // 一斉 LOD 遷移による低 fps 張り付きを防ぐ。Edit のロードは従来どおり。
-                            if self.mode == RuntimeMode::Play {
-                                let cam_pos = self.play_converge_camera_pos();
-                                self.converge_terrain_lod_blocking(cam_pos);
-                            }
+                            // Undo 履歴も旧シーンの Entity を参照するため破棄する。
                             self.undo_history = crate::engine::core::app_base::undo::UndoHistory::new();
-                            if let Some(cam) = cam_data {
-                                self.apply_camera_data(&cam);
-                            }
-                            // シーン単位のビューポート／レンダリング設定を適用する。
-                            // 起動時に読んだ project_settings.json（load_graphics_settings）の値を
-                            // ここで上書きする。settings 節を持たない旧 .scene では None のため
-                            // project 設定がそのまま残る（フォールバック）。
+                            // シーンの据え付け（キャンバス世界線判定 → 編集タブ引き継ぎ →
+                            // シーン差し替え → カメラ／シーン設定 → 速度・パーティクル破棄 →
+                            // 地形復元 → Play なら地形 LOD 事前収束 → 物理キャッシュ初期化）は
+                            // 共通処理へ集約してある。詳細は app_init.rs の install_loaded_scene を参照。
                             //
-                            // apply_camera_data の「後」に置くこと。apply_camera_data は
-                            // debug_camera 節の fov/far/speed でカメラを上書きするため、先に
-                            // 適用するとシーン設定側の値が潰される（load_play_scene も同じ順序）。
-                            if let Some(s) = self.scene.as_ref().and_then(|sc| sc.settings.clone()) {
-                                self.apply_scene_settings(&s);
-                            }
+                            // なお LOD 事前収束は「Play モードのときだけ」行われる。これは
+                            // 常駐 Play プロセス再利用の LOAD_SCENE を、ウィンドウ Play 新規起動
+                            //（app_init.rs load_play_scene）・埋め込み ENTER_PLAY
+                            //（play_mode_ops.rs enter_play）と揃えるためで、Play 開始直後の
+                            // 一斉 LOD 遷移による低 fps 張り付きを防ぐ。Edit のロードは従来どおり。
+                            self.install_loaded_scene(
+                                new_scene,
+                                cam_data,
+                                super::app_init::SceneInstallOptions {
+                                    // world_line > 0 のアクター（アクター編集タブ）を旧シーンから引き継ぐ
+                                    keep_actor_edit_tabs: true,
+                                    // 全 world_line を作り直して Entity が再生成されるため、
+                                    // タブ物理・速度キャッシュ・物理タイムラインは初期化する
+                                    reset_physics_caches: true,
+                                    ..Default::default()
+                                },
+                            );
                             self.send_selected();
                             self.send_hierarchy();
-                            // 全 world_line を作り直して Entity が再生成されるため、
-                            // タブごとに退避していた物理状態（旧 Entity キー）はすべて破棄する。
-                            // 破棄しないと、別タブ復帰時に旧 Entity のスナップショット・速度で
-                            // ECS を誤って上書きしてしまう。
-                            self.tab_physics.clear();
-                            self.current_vel_cache_3d.clear();
-                            self.current_vel_cache_2d.clear();
-                            self.pending_restore_vel_3d = None;
-                            self.pending_restore_vel_2d = None;
-                            // 物理タイムラインをリセットしてシーンロード後の初期状態に戻す
-                            self.reset_physics_timeline();
                             // 有効な物理スレッドをシーン初期状態で再起動する
                             if self.edit_physics_enabled {
                                 self.stop_physics();

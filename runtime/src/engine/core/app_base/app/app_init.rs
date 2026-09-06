@@ -657,6 +657,144 @@ impl App {
         }
     }
 
+    /// 読み込んだシーンを App へ据え付ける共通後処理。
+    ///
+    /// シーン読み込みには 3 つの経路がある。
+    ///   1. エディタからの IPC `LOAD_SCENE`（ipc_handler.rs）
+    ///   2. ウィンドウ Play 起動時の自動ロード（本ファイル `load_play_scene`）
+    ///   3. スクリプトの `SEED.Scene.Transition`（script_scene_ops.rs）
+    ///
+    /// いずれも `Scene::load` の直後に「キャンバス世界線の再判定・シーンの差し替え・
+    /// カメラ／シーン設定の適用・速度バッファやパーティクルの破棄・地形チャンクの復元・
+    /// 地形 LOD の事前収束」という同じ後始末を必要とする。以前はこれが 3 か所へ
+    /// コピーされており、経路 3（スクリプト遷移）だけ地形復元などが抜けていたため
+    /// 「遷移すると地形が消える」不具合になっていた。ここへ集約して差分を無くす。
+    ///
+    /// 経路ごとの違いは `SceneInstallOptions` で吸収し、経路固有の処理
+    /// （物理スレッドの停止／再起動、undo 履歴の破棄、選択状態のクリア、
+    /// ヒエラルキー送信、IPC 応答など）は呼び出し側の前後で行う。
+    ///
+    /// # 引数
+    /// - `new_scene`: `Scene::load` が返した新しいシーン（未据え付け）。
+    /// - `cam_data` : シーンに保存されたデバッグカメラ情報（無ければ `None`）。
+    /// - `opts`     : 経路ごとの差分オプション。
+    pub(super) fn install_loaded_scene(
+        &mut self,
+        mut new_scene: crate::engine::core::app_base::scene::Scene,
+        cam_data: Option<crate::engine::core::app_base::scene::DebugCameraData>,
+        opts: SceneInstallOptions,
+    ) {
+        // ── 1. world_line=0 が 2D キャンバスモードかどうかを判定する ──────────────
+        // ロードしたアクター（すべて world_line=0）の種別を再帰的に走査して決める。
+        // world_line > 0 のアクター（アクター編集タブ）を追加する「前」にチェックすることで、
+        // 編集タブ側の 2D アクターを誤ってシーン本体の判定に混ぜない。
+        if has_any_2d_actor(&new_scene.actors) {
+            self.canvas_world_lines.insert(0);
+        } else {
+            self.canvas_world_lines.remove(&0);
+        }
+
+        // ── 2. アクター編集タブ（world_line > 0）の引き継ぎ ──────────────────────
+        // エディタはシーン本体と別世界線でアクター単体を編集できる。シーンを差し替えても
+        // 編集中のタブは失われてはいけないので、旧シーンから移し替える。
+        // 引き継がない経路（Play 起動・スクリプト遷移）では旧シーンはここで捨てられ、
+        // World の Drop により旧スクリプトインスタンス（C# 側）も解放される。
+        if let Some(old_scene) = self.scene.take() {
+            if opts.keep_actor_edit_tabs {
+                for actor in old_scene.actors.into_iter().filter(|a| a.world_line > 0) {
+                    new_scene.actors.push(actor);
+                }
+            }
+        }
+
+        // ── 3. シーンの差し替え ──────────────────────────────────────────────
+        // これ以降 `self.scene` は新シーン。地形復元・シーン設定の適用は
+        // 差し替え後でなければ新シーンの内容を見られない。
+        self.scene = Some(new_scene);
+
+        // ── 4. デバッグカメラ → シーン設定 の順で適用する（順序必須）────────────
+        // `apply_camera_data` はシーンに保存されたデバッグカメラ位置を適用する
+        // （Play でメインカメラが無い場合のフォールバックにもなる）。
+        // `apply_scene_settings` は debug_camera 節の fov/far/speed でカメラを上書きするため、
+        // 必ず `apply_camera_data` の「後」に呼ぶこと。逆順にするとシーン設定側の値が潰される。
+        // settings 節を持たない旧 .scene では `None` になり、起動時に読んだ
+        // project_settings.json（load_graphics_settings）の値がそのまま残る（フォールバック）。
+        if let Some(cam) = cam_data {
+            self.apply_camera_data(&cam);
+        }
+        if let Some(s) = self.scene.as_ref().and_then(|sc| sc.settings.clone()) {
+            self.apply_scene_settings(&s);
+        }
+
+        // ── 5. フレーム間の連続性に依存する状態を捨てる ──────────────────────────
+        // 速度バッファ（モーションベクタ）: シーンが総入れ替わるため前フレームとの
+        // 連続性が無い。次フレームは prev=curr（速度 0）にする。
+        self.request_velocity_reset();
+        // GPU パーティクルを全解放する（生存エミッタ＋孤児プールとも）。
+        // 孤児（エミッタ消滅後も寿命まで生き残る粒子群）をシーンを跨いで残さない。
+        self.particle_system.clear_all();
+        // インタラクションソースの位置履歴も捨てる（Phase I1）。
+        // 残したままシーンが入れ替わると「旧シーンの位置 → 新シーンの位置」の
+        // 巨大な速度が 1 フレームだけ場へ焼かれ、草が一斉になぎ倒される。
+        self.interaction_velocity.clear();
+        // キャンバス UI のポインタ状態（hover/press）も捨てる。
+        // 破棄済みエンティティを掴んだままだと、世代違いの別アクターへ Exit が飛ぶ。
+        if opts.reset_pointer {
+            self.pointer.reset();
+        }
+        // コンポーネント音源を停止し、play_on_start の発火記録をリセットする
+        // （新シーンの play_on_start を再発火させるため。BGM は継続する）。
+        if opts.reset_audio_components {
+            if let Some(audio) = &mut self.audio {
+                audio.reset_components();
+            }
+        }
+
+        // ── 6. 地形チャンクの復元 ────────────────────────────────────────────
+        // TerrainChunkComponent 付きのアクターについて .tvox からボクセルを読み直し、
+        // terrain:// ガードで model=None のまま読まれた ModelComponent を埋める。
+        // これを呼ばないとシーン差し替え後に地形が丸ごと消える。
+        //
+        // ── プレハブ参照リンクのロード時再展開は「行わない」 ────────────────────
+        // 【データ損失バグの修正】
+        // 以前はここで apply_prefab_links_on_load() を呼び、prefab_source を持つアクタの
+        // 子ツリー・コンポーネントを .actor ファイルの内容で丸ごと差し替えていた。
+        // そのため、シーン上でインスタンスに加えた変更（Collider の値変更・
+        // ScriptComponent の追加・子への Camera 追加など）が .scene には正しく
+        // 保存されているにもかかわらず、シーンを開き直すたびに破棄されていた。
+        //
+        // 方針: 「シーンに丸ごと保存されている内容を正とする」。ロード時に自動で
+        // 上書きすることはせず、プレハブ本体の内容を反映したいときだけ、ユーザーが
+        // 明示的に「プレハブから更新」（IPC: PREFAB_REAPPLY → handle_reapply_prefab）を実行する。
+        self.rebuild_terrain_after_load();
+
+        // ── 7. 地形 LOD の事前収束（Play 経路のみ）──────────────────────────────
+        // メインカメラ位置基準で全チャンクの目標 LOD を 1 回でまとめて再メッシュし、
+        // 最初の描画フレームで backlog をゼロにする。これにより Play 開始直後の
+        // 毎フレーム分割収束（地形規模によっては十数秒の低 fps 張り付き）を回避し、
+        // ロード時間へ前倒しする。Edit モードのロードは従来どおり収束させない。
+        // `always_converge_terrain_lod` はウィンドウ Play 起動経路用で、従来の
+        // 「モード判定なしで必ず収束させる」挙動をそのまま残すためのフラグ。
+        if opts.always_converge_terrain_lod || self.mode == RuntimeMode::Play {
+            let cam_pos = self.play_converge_camera_pos();
+            self.converge_terrain_lod_blocking(cam_pos);
+        }
+
+        // ── 8. 物理まわりのキャッシュを初期化する ────────────────────────────────
+        // 全 world_line を作り直して Entity が再生成されるため、タブごとに退避していた
+        // 物理状態（旧 Entity キー）はすべて破棄する。破棄しないと、別タブ復帰時に
+        // 旧 Entity のスナップショット・速度で ECS を誤って上書きしてしまう。
+        if opts.reset_physics_caches {
+            self.tab_physics.clear();
+            self.current_vel_cache_3d.clear();
+            self.current_vel_cache_2d.clear();
+            self.pending_restore_vel_3d = None;
+            self.pending_restore_vel_2d = None;
+            // 物理タイムラインをリセットしてシーンロード後の初期状態に戻す
+            self.reset_physics_timeline();
+        }
+    }
+
     pub(super) fn load_play_scene(&mut self) {
         use crate::engine::asset_fs;
 
@@ -698,46 +836,23 @@ impl App {
 
         match result {
             Some(Ok((new_scene, cam_data))) => {
-                // シーンに保存されたデバッグカメラ位置を適用する
-                if let Some(cam) = cam_data {
-                    self.apply_camera_data(&cam);
-                }
-                // 2D アクターが含まれていれば WL 0 をキャンバス世界線として登録する。
-                // IPC の LoadScene 処理と同様に has_any_2d_actor を再帰チェックする。
-                fn has_any_2d_actor(actors: &[crate::engine::structs::objects::Actor]) -> bool {
-                    actors
-                        .iter()
-                        .any(|a| a.is_2d() || has_any_2d_actor(a.children()))
-                }
-                if has_any_2d_actor(&new_scene.actors) {
-                    self.canvas_world_lines.insert(0);
-                } else {
-                    self.canvas_world_lines.remove(&0);
-                }
-                self.scene = Some(new_scene);
-                // シーン単位のビューポート／レンダリング設定を適用する。
-                // 起動時に読んだ project_settings.json（load_graphics_settings）の値を
-                // ここで上書きする＝スタンドアロン Play でもエディタと同じ見た目になる。
-                // settings 節を持たない旧 .scene では None のため project 設定がそのまま残る。
-                // 上の apply_camera_data（debug_camera 節で fov/far/speed を上書きする）より
-                // 「後」に置くこと。先に適用するとシーン設定側の値が潰される。
-                if let Some(s) = self.scene.as_ref().and_then(|sc| sc.settings.clone()) {
-                    self.apply_scene_settings(&s);
-                }
-                // 速度バッファ（モーションベクタ）: シーンが総入れ替わるため
-                // 前フレームとの連続性が無い。次フレームは prev=curr（速度 0）にする。
-                self.request_velocity_reset();
-                // 地形チャンク（TerrainChunkComponent 付き）を .tvox から復元し、
-                // terrain:// ガードで model=None のまま読まれた ModelComponent を埋める。
-                self.rebuild_terrain_after_load();
-
-                // ── Play 開始前の地形 LOD 事前収束（ウィンドウ Play 経路）──────────────
-                // ここは READY 送信・ウィンドウ表示より前のロードフェーズ。メインカメラ位置基準で
-                // 全チャンクの目標 LOD を 1 回でまとめて再メッシュし、最初の描画フレームで
-                // backlog をゼロにする。これにより Play 開始直後の毎フレーム分割収束
-                // （約 20 秒間 8〜10fps）を回避し、起動時間へ前倒しする。
-                let cam_pos = self.play_converge_camera_pos();
-                self.converge_terrain_lod_blocking(cam_pos);
+                // シーンの据え付け（キャンバス世界線判定 → シーン差し替え → カメラ／シーン設定
+                // → 速度・パーティクル破棄 → 地形復元 → 地形 LOD 事前収束）は共通処理へ集約
+                // してある。詳細は install_loaded_scene のコメントを参照。
+                //
+                // ここは READY 送信・ウィンドウ表示より前のロードフェーズであり、呼び出し元が
+                // すでに mode == RuntimeMode::Play を確認しているため、LOD 事前収束は
+                // always_converge_terrain_lod で無条件に行わせる（従来どおりの挙動）。
+                // 起動直後のロードなので、編集タブの引き継ぎ・ポインタ／音源・物理キャッシュの
+                // リセットはいずれも対象が無く不要（既定値の false のまま）。
+                self.install_loaded_scene(
+                    new_scene,
+                    cam_data,
+                    SceneInstallOptions {
+                        always_converge_terrain_lod: true,
+                        ..Default::default()
+                    },
+                );
             }
             Some(Err(e)) => {
                 eprintln!("[SEED INIT] load_play_scene FAILED: {e}");
@@ -745,4 +860,55 @@ impl App {
             None => {}
         }
     }
+}
+
+/// アクターツリーに 2D アクターが 1 つでも含まれるかを再帰的に判定する。
+///
+/// world_line=0 を「2D キャンバスモード」として登録するかどうかの判定に使う。
+/// シーン読み込みの 3 経路すべてが同じ規則で判定する必要があるため関数として共通化してある。
+fn has_any_2d_actor(actors: &[crate::engine::structs::objects::Actor]) -> bool {
+    actors
+        .iter()
+        .any(|a| a.is_2d() || has_any_2d_actor(a.children()))
+}
+
+/// `App::install_loaded_scene` の経路ごとの差分を表すオプション。
+///
+/// 既定値（`Default`）は「追加処理なし」＝ウィンドウ Play 起動時の据え付けに相当する。
+/// 各フィールドは「どの経路で true にするか」と「なぜその経路だけなのか」を明示する。
+#[derive(Clone, Copy, Default)]
+pub(super) struct SceneInstallOptions {
+    /// 旧シーンの world_line > 0 のアクター（アクター編集タブ）を新シーンへ引き継ぐか。
+    ///
+    /// エディタの IPC `LOAD_SCENE` だけ true。エディタはシーン本体とは別世界線で
+    /// アクター単体を編集できるため、シーンを差し替えても編集中のタブは残す必要がある。
+    /// Play 起動・スクリプト遷移では編集タブという概念が無いので false。
+    pub keep_actor_edit_tabs: bool,
+
+    /// キャンバス UI のポインタ状態（hover / press）をリセットするか。
+    ///
+    /// スクリプトのシーン遷移だけ true（従来からの挙動を維持）。旧シーンの
+    /// 破棄済みアクターを掴んだままだと、世代違いの別アクターへ Exit イベントが飛ぶ。
+    pub reset_pointer: bool,
+
+    /// コンポーネント音源を停止し、play_on_start の発火記録をリセットするか。
+    ///
+    /// スクリプトのシーン遷移だけ true（従来からの挙動を維持）。新シーンの
+    /// play_on_start を改めて発火させるための処理で、BGM は対象外（継続する）。
+    pub reset_audio_components: bool,
+
+    /// タブ物理・速度キャッシュ・物理タイムラインを初期化するか。
+    ///
+    /// エディタの `LOAD_SCENE` とスクリプトのシーン遷移で true。どちらも
+    /// 「すでに走っていた状態」からシーンだけを差し替えるため、旧 Entity をキーに持つ
+    /// キャッシュが残っていると新シーンの ECS を誤って上書きしてしまう。
+    /// ウィンドウ Play の初回ロードはこれらが空なので false（無駄な初期化をしない）。
+    pub reset_physics_caches: bool,
+
+    /// 地形 LOD の事前収束を、`RuntimeMode::Play` 判定を待たずに必ず行うか。
+    ///
+    /// ウィンドウ Play 起動経路だけ true。この経路は呼び出し元がすでに
+    /// `mode == RuntimeMode::Play` を確認しており、従来から無条件で収束させていた。
+    /// その挙動をそのまま維持するためのフラグ。
+    pub always_converge_terrain_lod: bool,
 }

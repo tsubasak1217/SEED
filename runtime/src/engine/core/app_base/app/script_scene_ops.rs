@@ -208,8 +208,11 @@ impl App {
     ///
     /// 事前読み込み済み（Preload 済み）ならロードなしで即座に切り替え、
     /// 未読み込みならここで読み込んでから切り替える。
-    /// 旧シーンの破棄（スクリプトインスタンスは ScriptComponent の Drop で CLR 側も解放）、
-    /// 物理スレッドの再起動（起動していた場合のみ）、キャンバス世界線の再判定を行う。
+    /// 旧シーンの破棄（スクリプトインスタンスは ScriptComponent の Drop で CLR 側も解放）と
+    /// 物理スレッドの再起動（起動していた場合のみ）をここで行い、それ以外の後処理
+    /// （キャンバス世界線の再判定・カメラ／シーン設定の適用・地形チャンクの復元・
+    /// 地形 LOD の事前収束・各種キャッシュの初期化）は 3 経路共通の
+    /// `install_loaded_scene`（app_init.rs）に委譲する。
     /// パスは assets:// 仮想パスのまま Scene::load へ渡す（PAK モード対応）。
     fn apply_script_transition_scene(&mut self, name_or_path: &str) {
         if self.draw_ctx.is_none() { return; }
@@ -234,45 +237,36 @@ impl App {
         };
         let Some((new_scene, cam_data)) = loaded else { return };
 
-        // 物理スレッドの起動状態を記録してから停止する（新シーンで再収集するため）
+        // ── 物理スレッドの停止（新シーンの内容で再収集させるため）──────────────
+        // 起動していたかどうかを記録してから止め、据え付け完了後に同じ構成で再起動する。
         let had_physics    = self.physics_thread.is_some();
         let had_physics_2d = self.physics_thread_2d.is_some();
         self.stop_physics();
         self.stop_physics_2d();
 
-        // シーンに保存されたデバッグカメラ位置を適用する（メインカメラ不在時のフォールバック）
-        if let Some(cam) = cam_data {
-            self.apply_camera_data(&cam);
-        }
-        // 2D アクターが含まれていれば WL 0 をキャンバス世界線として登録する
-        fn has_any_2d_actor(actors: &[Actor]) -> bool {
-            actors.iter().any(|a| a.is_2d() || has_any_2d_actor(a.children()))
-        }
-        if has_any_2d_actor(&new_scene.actors) {
-            self.canvas_world_lines.insert(0);
-        } else {
-            self.canvas_world_lines.remove(&0);
-        }
-        // 旧シーンを置き換える（World の Drop で旧スクリプトインスタンスも解放される）
-        self.scene = Some(new_scene);
-        // 速度バッファ: シーン遷移で前フレームとの連続性が切れる ⇒ 次フレームは prev=curr。
-        self.request_velocity_reset();
-
-        // GPU パーティクルを全解放する（生存エミッタ＋孤児プールとも）。
-        // 孤児（エミッタ消滅後も寿命まで生き残る粒子群）はシーンを跨いで残さない。
-        self.particle_system.clear_all();
-        // インタラクションソースの位置履歴も捨てる（Phase I1）。
-        // 残したままシーンが入れ替わると「旧シーンの位置 → 新シーンの位置」の
-        // 巨大な速度が 1 フレームだけ場へ焼かれ、草が一斉になぎ倒される。
-        self.interaction_velocity.clear();
-        // キャンバス UI のポインタ状態も捨てる（旧シーンのアクターへ Exit を飛ばさない）。
-        self.pointer.reset();
-
-        // コンポーネント音源を停止し、play_on_start の発火記録をリセットする
-        //（新シーンの play_on_start を再発火させるため。BGM は継続する）
-        if let Some(audio) = &mut self.audio {
-            audio.reset_components();
-        }
+        // ── シーンの据え付け（3 経路共通の後処理）──────────────────────────────
+        // キャンバス世界線の再判定 → シーン差し替え → カメラ／シーン設定の適用 →
+        // 速度バッファ・パーティクル・インタラクション場の破棄 → 地形チャンクの復元 →
+        // Play なら地形 LOD の事前収束 → 物理キャッシュの初期化、までを行う。
+        // 詳細は app_init.rs の install_loaded_scene を参照。
+        //
+        // 旧シーンは共通処理の中で捨てられ、その World の Drop により旧スクリプト
+        // インスタンス（C# 側）も解放される。
+        // シーン遷移は必ず Play 中に起きるため、LOD 事前収束は共通処理の
+        // mode == Play 判定で自動的に走る（always_converge_terrain_lod は不要）。
+        self.install_loaded_scene(
+            new_scene,
+            cam_data,
+            super::app_init::SceneInstallOptions {
+                // 旧シーンのアクターへ Exit を飛ばさないようポインタ状態を捨てる
+                reset_pointer: true,
+                // 新シーンの play_on_start を再発火させる（BGM は継続する）
+                reset_audio_components: true,
+                // 旧 Entity をキーに持つ物理キャッシュ・タイムラインを持ち込まない
+                reset_physics_caches: true,
+                ..Default::default()
+            },
+        );
 
         // 物理を新シーンの内容で再起動する
         if had_physics    { self.start_physics(); }
