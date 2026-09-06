@@ -493,6 +493,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         };
         // 参照ピッカーの「参照先が消えていないか」判定を Hierarchy のノードモデルへ接続する。
         SEEDEditor.Panels.ActorRefJump.ActorExistsByName = PanelHierarchy.ActorExistsByName;
+        // ScriptEvent の結線先候補（アクタ名 → DFS ID → GET_ACTOR_COMPONENTS）用の変換も同様に接続する。
+        SEEDEditor.Panels.ActorRefJump.ActorDfsIdByName = PanelHierarchy.ActorDfsIdByName;
         // .anim ファイルのダブルクリックでアニメーションタイムラインパネルを開いて読み込む
         PanelProject.AnimFileOpened     += path =>
         {

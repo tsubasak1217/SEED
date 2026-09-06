@@ -40,17 +40,8 @@ internal static class ScriptArrayFieldBuilder
     /// <summary>要素行・追加ボタンの左インデント（px）。折りたたみ配下であることを示す。</summary>
     private const double ElementIndent = 8;
 
-    /// <summary>削除（×）・並び替え（∧∨）ボタンのアイコン一辺サイズ（px）。</summary>
-    private const double RowButtonIconSize = 10;
-
-    /// <summary>行内ボタン（削除・並び替え）の内側余白（px）。</summary>
-    private static readonly Thickness RowButtonPadding = new(5, 1, 5, 1);
-
     /// <summary>並び替えボタンの内側余白（px）。上下 2 個並ぶので横幅を詰めておく。</summary>
     private static readonly Thickness MoveButtonPadding = new(3, 1, 3, 1);
-
-    /// <summary>端の要素で押せない並び替えボタンの不透明度（0〜1）。押せないことを見た目で示す。</summary>
-    private const double DisabledButtonOpacity = 0.3;
 
     /// <summary>追加（＋）ボタンのアイコン一辺サイズ（px）。行内ボタンより明確に大きくする。</summary>
     private const double AddButtonIconSize = 16;
@@ -71,8 +62,6 @@ internal static class ScriptArrayFieldBuilder
     private static readonly string[] ActorPathExtensions = [".actor"];
 
     // ── 配色（削除・追加ボタン） ─────────────────────────────
-    private static readonly SolidColorBrush BrushButtonBg     = new(Color.FromRgb(0x2A, 0x2A, 0x2A));
-    private static readonly SolidColorBrush BrushButtonBorder = new(Color.FromRgb(0x44, 0x44, 0x44));
     private static readonly SolidColorBrush BrushRemove       = new(Color.FromRgb(0xCC, 0x77, 0x77));
     private static readonly SolidColorBrush BrushMove         = new(Color.FromRgb(0x99, 0x99, 0x99));
     private static readonly SolidColorBrush BrushAdd          = new(Color.FromRgb(0x77, 0xCC, 0x88));
@@ -95,15 +84,20 @@ internal static class ScriptArrayFieldBuilder
     /// </param>
     /// <param name="expandStates">折りたたみ状態のストア（UI 再構築をまたいで復元する）。</param>
     /// <param name="expandKey">このフィールドの折りたたみ状態キー。</param>
+    /// <param name="eventCatalog">
+    /// 構造体要素のメンバに ScriptEvent がある場合の、結線先候補の問い合わせ先。
+    /// ここでは使わずメンバ行ビルダーへ素通しするだけ（null なら候補なしで表示のみ）。
+    /// </param>
     public static UIElement Build(
-        ScriptFieldInfo         field,
-        string                  path,
-        string?                 rawValue,
-        Action<string>          onChange,
-        IReferenceDropResolver? onRefDrop,
-        Func<string, string>?   assetPathToVirtual,
-        ExpandStateStore?       expandStates,
-        string                  expandKey)
+        ScriptFieldInfo              field,
+        string                       path,
+        string?                      rawValue,
+        Action<string>               onChange,
+        IReferenceDropResolver?      onRefDrop,
+        Func<string, string>?        assetPathToVirtual,
+        ExpandStateStore?            expandStates,
+        string                       expandKey,
+        IScriptEventCatalogProvider? eventCatalog = null)
     {
         var arrayInfo = field.Array!.Value;
 
@@ -193,7 +187,7 @@ internal static class ScriptArrayFieldBuilder
                     canMoveUp:   index > 0,
                     canMoveDown: index < elements.Count - 1,
                     onRefDrop, assetPathToVirtual,
-                    expandStates, expandKey));
+                    expandStates, expandKey, eventCatalog));
             }
 
             rows.Children.Add(MakeAddButton(arrayInfo, () =>
@@ -249,17 +243,18 @@ internal static class ScriptArrayFieldBuilder
         Action                  onMoveDown,
         bool                    canMoveUp,
         bool                    canMoveDown,
-        IReferenceDropResolver? onRefDrop,
-        Func<string, string>?   assetPathToVirtual,
-        ExpandStateStore?       expandStates,
-        string                  expandKey)
+        IReferenceDropResolver?      onRefDrop,
+        Func<string, string>?        assetPathToVirtual,
+        ExpandStateStore?            expandStates,
+        string                       expandKey,
+        IScriptEventCatalogProvider? eventCatalog)
     {
         // 構造体要素は 1 行に収まらないので、折りたたみグループ（[i] + メンバ行）にする
         if (arrayInfo.StructMembers is not null)
             return BuildStructElementGroup(
                 arrayInfo, index, value, onElementChanged, onRemove,
                 onMoveUp, onMoveDown, canMoveUp, canMoveDown,
-                onRefDrop, assetPathToVirtual, expandStates, expandKey);
+                onRefDrop, assetPathToVirtual, expandStates, expandKey, eventCatalog);
 
         var (editor, prefix) = BuildElementEditor(arrayInfo, value, onElementChanged, onRefDrop, assetPathToVirtual);
 
@@ -340,16 +335,17 @@ internal static class ScriptArrayFieldBuilder
         Action                  onMoveDown,
         bool                    canMoveUp,
         bool                    canMoveDown,
-        IReferenceDropResolver? onRefDrop,
-        Func<string, string>?   assetPathToVirtual,
-        ExpandStateStore?       expandStates,
-        string                  expandKey)
+        IReferenceDropResolver?      onRefDrop,
+        Func<string, string>?        assetPathToVirtual,
+        ExpandStateStore?            expandStates,
+        string                       expandKey,
+        IScriptEventCatalogProvider? eventCatalog)
     {
         var elementKey = $"{expandKey}{StructElementKeySeparator}{index}";
 
         var members = ScriptStructElementBuilder.Build(
             arrayInfo, objectJson, onElementChanged,
-            onRefDrop, assetPathToVirtual, expandStates, elementKey);
+            onRefDrop, assetPathToVirtual, expandStates, elementKey, eventCatalog);
 
         var expander = new Expander
         {
@@ -521,47 +517,4 @@ internal static class ScriptArrayFieldBuilder
         return btn;
     }
 
-    /// <summary>
-    /// インスペクタ共通の見た目を持つアイコンボタンを作る。
-    /// </summary>
-    /// <param name="iconKey">ベクターアイコンのリソースキー（Icons.xaml）。</param>
-    /// <param name="iconBrush">アイコンの色。</param>
-    /// <param name="tooltip">ツールチップ文言。</param>
-    /// <param name="onClick">押されたときの処理。</param>
-    /// <param name="iconSize">アイコン一辺サイズ（px）。既定は行内ボタン用の小さいサイズ。</param>
-    /// <param name="padding">内側余白。null なら行内ボタン用の既定値。</param>
-    /// <param name="isEnabled">
-    /// 押せるかどうか。false のときはクリックを受け付けず、
-    /// 共通テンプレートに無効時の見た目が無いため不透明度で押せないことを示す。
-    /// </param>
-    private static Button MakeIconButton(
-        string     iconKey,
-        Brush      iconBrush,
-        string     tooltip,
-        Action     onClick,
-        double     iconSize  = RowButtonIconSize,
-        Thickness? padding   = null,
-        bool       isEnabled = true)
-    {
-        var icon = AppIcon.Create(iconKey, iconSize);
-        icon.SetBrush(iconBrush);
-
-        var btn = new Button
-        {
-            Content           = icon,
-            Background        = BrushButtonBg,
-            BorderBrush       = BrushButtonBorder,
-            BorderThickness   = new Thickness(1),
-            Padding           = padding ?? RowButtonPadding,
-            Margin            = new Thickness(3, 0, 0, 0),
-            Cursor            = Cursors.Hand,
-            VerticalAlignment = VerticalAlignment.Center,
-            Template          = SEEDEditor.Panels.FileRefBuilder.BuildButtonTemplate(),
-            ToolTip           = tooltip,
-            IsEnabled         = isEnabled,
-            Opacity           = isEnabled ? 1.0 : DisabledButtonOpacity,
-        };
-        btn.Click += (_, _) => onClick();
-        return btn;
-    }
 }

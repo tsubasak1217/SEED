@@ -53,6 +53,13 @@ public sealed class ScriptStructMemberInfo
     /// <summary>メンバ自身が参照型（GameObject / コンポーネントハンドル）か。</summary>
     public bool IsReference { get; init; }
 
+    /// <summary>
+    /// メンバ自身が <see cref="ScriptEvent"/> か。
+    /// 値は「JSON 配列」を生のまま埋め込む（文字列としてクォートしない）ので、
+    /// エンコード／デコードの分岐に使う。
+    /// </summary>
+    public bool IsScriptEvent { get; init; }
+
     /// <summary>配列メンバの要素が参照型か。</summary>
     public bool IsReferenceElement { get; init; }
 
@@ -155,6 +162,9 @@ public static class ScriptStructArray
         if (t.IsPrimitive || t.IsEnum || t == typeof(string) || t.IsArray) return false;
         if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(List<>)) return false;
         if (ScriptReference.TryGetKind(t, out _)) return false;
+        // ScriptEvent は「1 個の値（JSON 配列文字列）」として扱うので、
+        // 内部を展開する構造体要素としては扱わない。
+        if (ScriptEvent.IsScriptEventType(t)) return false;
         if (!t.IsClass && !t.IsValueType) return false;
         // Nullable<T> は「構造体そのもの」ではないので除外する
         if (Nullable.GetUnderlyingType(t) is not null) return false;
@@ -185,6 +195,19 @@ public static class ScriptStructArray
                 TypeTag      = "reference",
                 DefaultValue = ScriptReference.UnsetValue,
                 IsReference  = true,
+            };
+        }
+
+        // ScriptEvent メンバ（結線は実行時に名前で解決するので World は不要＝NeedsWorld=false）
+        if (ScriptEvent.IsScriptEventType(f.FieldType))
+        {
+            return new ScriptStructMemberInfo
+            {
+                Field         = f,
+                Label         = label,
+                TypeTag       = ScriptEvent.TypeTag,
+                DefaultValue  = ScriptEvent.EmptyJson,
+                IsScriptEvent = true,
             };
         }
 
@@ -379,6 +402,10 @@ public static class ScriptStructArray
     /// </summary>
     private static string? MemberTextFromJson(JsonElement value, ScriptStructMemberInfo m)
     {
+        // ScriptEvent は「JSON 配列そのもの」が値。生テキストを取り出して次段へ渡す。
+        if (m.IsScriptEvent)
+            return value.ValueKind == JsonValueKind.Array ? value.GetRawText() : null;
+
         if (m.IsArray)
             return value.ValueKind == JsonValueKind.Array ? value.GetRawText() : null;
 
@@ -419,6 +446,14 @@ public static class ScriptStructArray
             sb.Append(ScriptArray.Quote(m.Name)).Append(':');
 
             var raw = values.TryGetValue(m.Name, out var v) ? (v ?? "") : m.DefaultValue;
+
+            if (m.IsScriptEvent)
+            {
+                // ScriptEvent は JSON 配列を生のまま埋め込む（クォートすると二重エスケープになる）。
+                // 壊れた文字列を埋め込まないよう必ず Normalize を通す。
+                sb.Append(ScriptEvent.Normalize(raw));
+                continue;
+            }
 
             if (m.IsArray)
             {
@@ -520,9 +555,11 @@ public static class ScriptStructArray
                 try { v = m.Field.GetValue(item); } catch { /* 読めないメンバは既定値 */ }
                 values[m.Name] = m switch
                 {
-                    { IsReference: true } => ScriptReference.UnsetValue,
-                    { IsArray: true }     => ScriptArray.EncodeValue(v, m.ElementType!),
-                    _                     => ScalarValueString(v),
+                    { IsReference: true }   => ScriptReference.UnsetValue,
+                    // 結線はインスペクタで作るものなので宣言時初期値は常に「結線なし」
+                    { IsScriptEvent: true } => ScriptEvent.EmptyJson,
+                    { IsArray: true }       => ScriptArray.EncodeValue(v, m.ElementType!),
+                    _                       => ScalarValueString(v),
                 };
             }
             objects.Add(EncodeMembers(values, members));

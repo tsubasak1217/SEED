@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ScriptEvent（UnityEvent 相当）の「結線先候補の除外規則」の単体テスト。
+
+    SpriteRigTests / ComponentCatalogTests と同じ方針:
+      1. 外部パッケージ（xunit 等）に依存させず、素のコンソールアプリ + 自前アサート
+         → NuGet の追加取得なしで `dotnet run` だけで回せる
+      2. SEEDEditor 本体（WPF / WinExe）を参照せず、対象ソースをリンクで取り込む
+         → ScriptEventCatalog が WPF 型を使った瞬間に本テストがビルドできなくなる
+           （＝候補算出と UI が癒着したことの検知器）
+
+    本テストの主目的は「どのメソッドが結線候補になるか」の固定。
+    判定の正典は SEEDScripting 側の SEED.ScriptEvent なので、そちらは
+    プロジェクト参照で本物を使う（表をミラーしていないことの担保）。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.ScriptEventCatalog</RootNamespace>
+    <AssemblyName>ScriptEventCatalogTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 判定の正典（SEED.ScriptEvent / SEEDScript）は本物を使う -->
+    <ProjectReference Include="..\..\..\scripting\SEEDScripting.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- テスト対象（WPF 非依存の候補算出） -->
+    <Compile Include="..\..\src\Scripting\ScriptEventCatalog.cs">
+      <Link>Linked\ScriptEventCatalog.cs</Link>
+    </Compile>
+    <!-- 候補算出が参照する、同じく WPF 非依存のデータ構造・対応表 -->
+    <Compile Include="..\..\src\Controls\ActorComponentSnapshot.cs">
+      <Link>Linked\ActorComponentSnapshot.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Controls\ReferenceKindCatalog.cs">
+      <Link>Linked\ReferenceKindCatalog.cs</Link>
+    </Compile>
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

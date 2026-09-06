@@ -51,6 +51,71 @@ internal static class ScriptFieldWidgets
     /// <summary>float 値の表示書式（小数第 3 位まで）。</summary>
     public const string FloatFormat = "F3";
 
+    // ── 行内アイコンボタン（配列要素・ScriptEvent 行で共有）─────
+
+    /// <summary>行内ボタンの背景色。</summary>
+    public static readonly SolidColorBrush BrushButtonBg = new(Color.FromRgb(0x2A, 0x2A, 0x2A));
+
+    /// <summary>行内ボタンの枠線色。</summary>
+    public static readonly SolidColorBrush BrushButtonBorder = new(Color.FromRgb(0x44, 0x44, 0x44));
+
+    /// <summary>削除（×）・並び替え（∧∨）ボタンのアイコン一辺サイズ（px）。</summary>
+    public const double RowButtonIconSize = 10;
+
+    /// <summary>行内ボタン（削除・並び替え）の内側余白（px）。</summary>
+    public static readonly Thickness RowButtonPadding = new(5, 1, 5, 1);
+
+    /// <summary>押せないボタンの不透明度（0〜1）。押せないことを見た目で示す。</summary>
+    public const double DisabledButtonOpacity = 0.3;
+
+    /// <summary>
+    /// インスペクタ共通の見た目を持つアイコンボタンを作る。
+    ///
+    /// 配列フィールド（<see cref="ScriptArrayFieldBuilder"/>）と ScriptEvent フィールド
+    /// （<see cref="ScriptEventFieldBuilder"/>）の行操作ボタンで見た目・当たり判定を揃えるため、
+    /// 生成をここへ 1 本化している。
+    /// </summary>
+    /// <param name="iconKey">ベクターアイコンのリソースキー（Icons.xaml）。</param>
+    /// <param name="iconBrush">アイコンの色。</param>
+    /// <param name="tooltip">ツールチップ文言。</param>
+    /// <param name="onClick">押されたときの処理。</param>
+    /// <param name="iconSize">アイコン一辺サイズ（px）。既定は行内ボタン用の小さいサイズ。</param>
+    /// <param name="padding">内側余白。null なら行内ボタン用の既定値。</param>
+    /// <param name="isEnabled">
+    /// 押せるかどうか。false のときはクリックを受け付けず、
+    /// 共通テンプレートに無効時の見た目が無いため不透明度で押せないことを示す。
+    /// </param>
+    public static Button MakeIconButton(
+        string     iconKey,
+        Brush      iconBrush,
+        string     tooltip,
+        Action     onClick,
+        double     iconSize  = RowButtonIconSize,
+        Thickness? padding   = null,
+        bool       isEnabled = true)
+    {
+        var icon = SEEDEditor.Controls.AppIcon.Create(iconKey, iconSize);
+        icon.SetBrush(iconBrush);
+
+        var btn = new Button
+        {
+            Content           = icon,
+            Background        = BrushButtonBg,
+            BorderBrush       = BrushButtonBorder,
+            BorderThickness   = new Thickness(1),
+            Padding           = padding ?? RowButtonPadding,
+            Margin            = new Thickness(3, 0, 0, 0),
+            Cursor            = Cursors.Hand,
+            VerticalAlignment = VerticalAlignment.Center,
+            Template          = SEEDEditor.Panels.FileRefBuilder.BuildButtonTemplate(),
+            ToolTip           = tooltip,
+            IsEnabled         = isEnabled,
+            Opacity           = isEnabled ? 1.0 : DisabledButtonOpacity,
+        };
+        btn.Click += (_, _) => onClick();
+        return btn;
+    }
+
     // ── 行レイアウト ─────────────────────────────────────────
 
     /// <summary>

@@ -381,11 +381,18 @@ public static class ScriptCompiler
         SEED.ScriptReference.ReferenceKind? reference =
             SEED.ScriptReference.TryGetKind(f, out var refKind) ? refKind : null;
 
+        // ScriptEvent（UnityEvent 相当）フィールドか。
+        // 参照判定の直後に確定させ、以降の配列判定・ネスト展開をすべて抑止する
+        // （ScriptEvent はハンドルでも配列でもなく、JSON 配列文字列 1 本を持つ独立した葉）。
+        // 判定の正典は SEED.ScriptEvent.IsScriptEventType（ランタイム側と同一実装）。
+        var isScriptEvent = reference is null && SEED.ScriptEvent.IsScriptEventType(f.FieldType);
+
         // 配列フィールド（T[] / List<T>）は 1 本の JSON 配列文字列として扱う葉。
         // List<T> は BCL で [Serializable] が付いているため、ネスト判定より
         // 先に配列判定を行わないと List の内部フィールドへ降りてしまう。
         ScriptArrayFieldInfo? arrayInfo = null;
-        if (reference is null && SEED.ScriptArray.TryGetElementType(f.FieldType, out var elemType, out var isList)
+        if (reference is null && !isScriptEvent
+            && SEED.ScriptArray.TryGetElementType(f.FieldType, out var elemType, out var isList)
             && SEED.ScriptArray.TryGetElementKind(elemType, out var elemKind, out _))
         {
             arrayInfo = new ScriptArrayFieldInfo(
@@ -397,7 +404,7 @@ public static class ScriptCompiler
         // メンバ行は通常のフィールド行ビルダーで組めるよう ScriptFieldInfo として展開しておく。
         // TryGetLayout が真＝全メンバがスカラ／参照／1 段の配列であることが保証されているので、
         // ここで展開した子に Children（入れ子の構造体）が現れることはない。
-        if (reference is null && arrayInfo is null
+        if (reference is null && !isScriptEvent && arrayInfo is null
             && SEED.ScriptArray.TryGetElementType(f.FieldType, out var structElem, out var structIsList)
             && SEED.ScriptStructArray.TryGetLayout(structElem, out _))
         {
@@ -412,7 +419,8 @@ public static class ScriptCompiler
         // 参照フィールドはハンドル構造体なので展開対象から除外する
         // （ハンドルの内部 entity をインスペクタに晒さないため）。
         IReadOnlyList<ScriptFieldInfo>? children = null;
-        if (reference is null && arrayInfo is null && depth < MaxNestDepth && IsNestedSerializable(f.FieldType))
+        if (reference is null && !isScriptEvent && arrayInfo is null
+            && depth < MaxNestDepth && IsNestedSerializable(f.FieldType))
             children = ExtractFields(f.FieldType, depth + 1);
 
         // フィールドの /// <summary> ドキュメントコメント（リフレクションでは取れないので
@@ -428,9 +436,12 @@ public static class ScriptCompiler
             Children  = children,
             Reference = reference,
             Array     = arrayInfo,
+            IsScriptEvent = isScriptEvent,
             // [Serializable] ネストクラスそのものにはボタンを出さない
             // （子を一括で戻すと Undo が 1 手にまとまらないため。子フィールド個別には付けられる）。
-            ShowResetButton = children is null && HasResetButton(f),
+            // ScriptEvent も同様に出さない（結線の並び全体を 1 手で消すのは事故が大きく、
+            // 各行の削除ボタンで十分なため）。
+            ShowResetButton = children is null && !isScriptEvent && HasResetButton(f),
         };
     }
 

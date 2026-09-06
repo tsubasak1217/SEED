@@ -88,4 +88,14 @@ public record ScriptFieldInfo(
     /// 判定は <see cref="SEED.ScriptArray"/> が正典（ランタイム側と共有）。
     /// </summary>
     public ScriptArrayFieldInfo? Array { get; init; }
+
+    /// <summary>
+    /// <c>SEED.ScriptEvent</c>（UnityEvent 相当）フィールドか。
+    ///
+    /// 値は「呼び出し先の JSON 配列文字列」1 本として保存される葉であり、
+    /// 参照でも配列でもネストクラスでもない独立した分類として扱う。
+    /// 判定は <see cref="SEED.ScriptEvent.IsScriptEventType"/> が正典
+    /// （ランタイム側の値注入と同じ実装を共有する）。
+    /// </summary>
+    public bool IsScriptEvent { get; init; }
 }

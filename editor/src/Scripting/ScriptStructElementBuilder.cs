@@ -45,14 +45,18 @@ internal static class ScriptStructElementBuilder
     /// <param name="assetPathToVirtual">絶対パス → assets:// 仮想パスの変換（string 配列メンバのドロップ用）。</param>
     /// <param name="expandStates">折りたたみ状態のストア（入れ子配列メンバ用）。</param>
     /// <param name="expandKey">この要素の折りたたみ状態キー（メンバ名を足して入れ子へ配る）。</param>
+    /// <param name="eventCatalog">
+    /// ScriptEvent メンバの結線先候補の問い合わせ先（null なら候補なしで表示のみ）。
+    /// </param>
     public static UIElement Build(
-        ScriptArrayFieldInfo    arrayInfo,
-        string                  objectJson,
-        Action<string>          onObjectChanged,
-        IReferenceDropResolver? onRefDrop,
-        Func<string, string>?   assetPathToVirtual,
-        ExpandStateStore?       expandStates,
-        string                  expandKey)
+        ScriptArrayFieldInfo         arrayInfo,
+        string                       objectJson,
+        Action<string>               onObjectChanged,
+        IReferenceDropResolver?      onRefDrop,
+        Func<string, string>?        assetPathToVirtual,
+        ExpandStateStore?            expandStates,
+        string                       expandKey,
+        IScriptEventCatalogProvider? eventCatalog = null)
     {
         var panel = new StackPanel { Margin = new Thickness(MemberIndent, 1, 0, 3) };
 
@@ -85,13 +89,16 @@ internal static class ScriptStructElementBuilder
                     member, name, raw,
                     text => CommitMember(name, text),
                     onRefDrop, assetPathToVirtual,
-                    expandStates, expandKey + MemberKeySeparator + name));
+                    expandStates, expandKey + MemberKeySeparator + name, eventCatalog));
                 continue;
             }
 
-            // スカラ・参照メンバは通常のフィールド行をそのまま使う
+            // スカラ・参照・ScriptEvent メンバは通常のフィールド行をそのまま使う。
+            // ScriptEvent は折りたたみを持つので、入れ子配列と同じ規約
+            // （要素キー + "." + メンバ名）で開閉状態のキーを配る。
             var row = ScriptInspectorBuilder.BuildValueRow(
-                member, raw, text => CommitMember(name, text), onRefDrop);
+                member, raw, text => CommitMember(name, text), onRefDrop,
+                eventCatalog, expandStates, expandKey + MemberKeySeparator + name);
             if (row is not null) panel.Children.Add(row);
         }
 

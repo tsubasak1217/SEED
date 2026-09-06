@@ -251,7 +251,7 @@
 </div>
 
 <!-- ════════════════ 1. 基本形 ════════════════ -->
-<section id="sec-basic" data-keywords="スクリプト 基本形 テンプレート SEEDScript SerializeField 継承 class インスペクタ 属性 Header Tooltip Range ResetButton リセット デフォルトに戻す RequireComponent DisallowMultipleComponent Serializable Bindable バインド 参照バインド 水面シェーダ ref">
+<section id="sec-basic" data-keywords="スクリプト 基本形 テンプレート SEEDScript SerializeField 継承 class インスペクタ 属性 Header Tooltip Range ResetButton リセット デフォルトに戻す RequireComponent DisallowMultipleComponent Serializable Bindable バインド 参照バインド 水面シェーダ ref ScriptEvent UnityEvent イベント 結線 コールバック 呼び出し Invoke バインディング 引数 argKind">
   <h2>1. スクリプトの基本形</h2>
   <p class="section-note">C# で書き、<code>SEEDScript</code>（<code>SEEDEditor.Scripting</code> 名前空間）を継承します。</p>
 <pre><span class="k">using</span> SEEDEditor.Scripting;   <span class="c">// SEEDScript・[SerializeField]・NativeFrameContext</span>
@@ -319,6 +319,7 @@
 
   <p class="section-note"><code>[Serializable]</code> を付けたクラス／構造体型のフィールドに <code>[SerializeField]</code> を付けると、インスペクタで<b>子フィールドが再帰的に展開</b>されます（入れ子の上限は 8 段）。</p>
   <p class="section-note"><code>GameObject</code> やコンポーネントハンドル型（<code>Transform</code> / <code>Camera</code> など）のフィールドに <code>[SerializeField]</code> を付けると、<b>他アクターへの参照フィールド</b>になります（Hierarchy から D&amp;D で設定）。詳細は第 7 節の「参照フィールド」を参照してください。</p>
+  <p class="section-note"><code>ScriptEvent</code> 型のフィールドに <code>[SerializeField]</code> を付けると、インスペクタでメソッド呼び出し先を結線できる<b>イベントフィールド</b>（Unity の <code>UnityEvent</code> 相当）になります。詳細は次の「ScriptEvent」を参照してください。</p>
 
   <h3>配列・リストのフィールド</h3>
   <p class="section-note"><code>T[]</code> と <code>List&lt;T&gt;</code> のフィールドは、インスペクタで<b>要素を追加・削除できる折りたたみ行</b>になります。見出しは「フィールド名 (件数)」で、<code>[＋]</code> が末尾への追加、行ごとの <code>[×]</code> がその要素の削除です。追加された要素の初期値は数値なら 0、真偽値なら <code>false</code>、文字列・参照は未設定です。</p>
@@ -331,7 +332,7 @@
 
   <h3>構造体のリスト（<code>[System.Serializable]</code> 構造体の配列）</h3>
   <p class="section-note"><code>[System.Serializable]</code> を付けた構造体／クラスを要素にすると、<b>「1 件ぶんのまとまり」を単位に増やしていけるデータ表</b>をインスペクタで組めます。配列の折りたたみの中に、要素ごとの折りたたみ（<code>[0]</code> <code>[1]</code> …）が並び、その中に構造体メンバの行が出ます。<code>[＋]</code> で 1 件追加、要素右端の <code>[×]</code> でその 1 件を削除します。</p>
-  <p class="section-note">メンバに使えるのは <code>[SerializeField]</code> を付けた public / private フィールドで、型は<b>スカラ型（<code>float</code> / <code>double</code> / <code>int</code> / <code>long</code> / <code>short</code> / <code>bool</code> / <code>string</code>）・参照型・それらの <code>List&lt;&gt;</code> / 配列</b>です。メンバの <code>List&lt;&gt;</code> は要素の追加・削除まで編集できます。<b>入れ子は 1 段まで</b>で、構造体の中に構造体（またはそのリスト）を置くと、そのフィールド全体が対象外になり読み取り専用表示へ落ちます。</p>
+  <p class="section-note">メンバに使えるのは <code>[SerializeField]</code> を付けた public / private フィールドで、型は<b>スカラ型（<code>float</code> / <code>double</code> / <code>int</code> / <code>long</code> / <code>short</code> / <code>bool</code> / <code>string</code>）・参照型・<code>ScriptEvent</code>・それらの <code>List&lt;&gt;</code> / 配列</b>です。メンバの <code>List&lt;&gt;</code> は要素の追加・削除まで編集できます。<b>入れ子は 1 段まで</b>で、構造体の中に構造体（またはそのリスト）を置くと、そのフィールド全体が対象外になり読み取り専用表示へ落ちます。ただし <code>ScriptEvent</code> は内部構造を晒さない<b>葉の型</b>として扱われるため、この制限に関係なく構造体メンバに置けます。</p>
   <p class="section-note">追加した要素の初期値は、クラス要素なら宣言時の初期化子、構造体要素なら言語既定値（0 / <code>false</code> / 空）です。保存形式は 1 フィールド = JSON オブジェクト配列文字列（例 <code>[{"spawnDistance":10.0,"fishPrefabs":["assets://fish.actor"]}]</code>）です。</p>
   <p class="section-note">再コンパイル時の値引き継ぎは<b>メンバ名で照合</b>します。メンバを増やしても既存の値は残り（新メンバは既定値）、削除したメンバの値は無視されます。同名メンバの<b>型を変えた場合だけ</b>、そのフィールドが宣言時の初期値へ戻ります。</p>
 <pre>[<span class="t">System.Serializable</span>]
@@ -346,6 +347,46 @@
     [<span class="t">SerializeField</span>(Label = <span class="s">"レベル定義"</span>)]
     <span class="k">private</span> List&lt;<span class="t">FishLevelEntry</span>&gt; levels = <span class="k">new</span>();
 }</pre>
+
+  <h3 id="cmp-scriptevent">ScriptEvent（インスペクタでメソッド呼び出しを繋ぐ）</h3>
+  <p class="section-note"><code>ScriptEvent</code> 型のフィールドは、Unity の <code>UnityEvent</code> に相当する「インスペクタで結線した呼び出し先を、コードから <code>Invoke()</code> 一発で呼ぶ」仕組みです。</p>
+<pre><span class="k">public class</span> <span class="t">DialogueTrigger</span> : <span class="t">SEEDScript</span>
+{
+    [<span class="t">SerializeField</span>(Label = <span class="s">"会話開始時"</span>)]
+    <span class="k">public</span> <span class="t">ScriptEvent</span> onStart;   <span class="c">// フィールド初期化子は不要</span>
+
+    <span class="k">public override void</span> OnStart()
+    {
+        onStart.Invoke();   <span class="c">// 結線された全メソッドを先頭から順に呼ぶ</span>
+    }
+}</pre>
+  <p class="section-note"><code>ScriptEvent</code> は初期化子を書かなくても<b>null にはなりません</b>（スクリプトのインスタンス生成直後に、結線 0 件の空実体が自動で注入されます）。null チェックは不要です。<code>Invoke()</code> は結線されたバインディングを先頭から順に 1 回ずつ呼びます。結線が 0 件なら何もしません。</p>
+
+  <h4>バインディング 1 件の構成</h4>
+  <p class="section-note">インスペクタで <code>[＋]</code> すると 1 件のバインディング行が増えます。1 件は次の 4 項目で構成されます。</p>
+  <table>
+    <tr><th>項目</th><th>内容</th></tr>
+    <tr><td>対象アクター</td><td>呼び出し先のアクター名（Hierarchy から D&amp;D で設定）</td></tr>
+    <tr><td>スクリプト型</td><td>対象アクターに付いているスクリプトの型（ドロップダウンで選択）</td></tr>
+    <tr><td>メソッド</td><td>呼び出す対象メソッド（ドロップダウンで選択）</td></tr>
+    <tr><td>引数</td><td>メソッドが 1 引数を取る場合のみ、その値を入力する欄が出る</td></tr>
+  </table>
+  <p class="section-note">ドロップダウンの候補に出る（＝呼び出せる）メソッドの条件は次のとおりです。<code>public</code> インスタンスメソッドであること（<code>static</code> / <code>private</code> / <code>protected</code> は対象外）、非ジェネリックメソッドであること、引数は<b>0 個</b>または<b><code>string</code> / <code>float</code> / <code>int</code> / <code>bool</code> / <code>GameObject</code> のいずれか 1 個</b>であること（<code>ref</code> / <code>out</code> 引数は不可）。戻り値の型は問いません（戻り値は捨てられます）。</p>
+
+  <h4>実行時の解決</h4>
+  <p class="section-note"><code>Invoke()</code> が呼ばれるたびに、アクター名 → 対象スクリプトの実インスタンス → メソッドの順に<b>毎回解決</b>してから呼び出します（結果はキャッシュしません）。そのため、<b>実行中に <code>Instantiate</code> で生成したアクターへも結線が届きます</b>（生成後のアクター名がバインディングの対象アクター名と一致すればよい）。同名アクターが複数存在する場合は、ヒエラルキーの<b>DFS で最初に見つかったもの</b>が呼び出し先になります（参照フィールドと同じ規則）。</p>
+  <p class="section-note">対象アクターが未設定（空欄）のバインディングは黙って無視されます。アクターが見つからない・対象スクリプトが見つからない・対象メソッドが見つからないといった<b>解決失敗は、そのバインディングにつき最初の 1 回だけ警告ログ</b>を出します（同じ失敗が続いても 2 回目以降は鳴りません）。呼び出し先メソッドの内部でユーザー例外が発生した場合は、呼び出しを打ち切って <code>SEED.Debug.LogError</code> へ記録します（呼び出し元やエンジン全体は落としません）。</p>
+
+  <h4>インスペクタでの操作</h4>
+  <p class="section-note"><code>[＋]</code> でバインディングを 1 件追加、行右端の <code>[×]</code> で 1 件削除します。対象アクターは、他の参照フィールドと同じく Hierarchy パネルからのドラッグ＆ドロップで設定します。対象アクターを設定すると対象スクリプト型のドロップダウンが選択可能になり、型を選ぶとそのスクリプトの呼び出し可能なメソッドのドロップダウンが選択可能になります。メソッドを選ぶと、そのメソッドが要求する引数の種類に応じて引数入力欄が自動的に切り替わります（0 引数メソッドなら欄は出ません）。</p>
+  <div class="warn">上記のインスペクタ UI は Phase 3 として実装中です。保存形式・実行時解決の仕様は確定済みです。</div>
+
+  <h4>保存形式</h4>
+  <p class="section-note">1 フィールド = JSON 配列文字列です。バインディング 1 件につき、キーは常に 5 個すべてを出力します（<code>actor</code> / <code>script</code> / <code>method</code> / <code>argKind</code> / <code>arg</code>）。未設定（結線 0 件）は <code>[]</code> です。</p>
+<pre>[{<span class="s">"actor"</span>:<span class="s">"DialogueManager"</span>,<span class="s">"script"</span>:<span class="s">"QuestFlow"</span>,<span class="s">"method"</span>:<span class="s">"Begin"</span>,<span class="s">"argKind"</span>:<span class="s">"string"</span>,<span class="s">"arg"</span>:<span class="s">"intro"</span>}]</pre>
+
+  <h4>制限</h4>
+  <p class="section-note">バインディングは<b>アクター名</b>で保存されるため、対象アクターをリネームしても自動で追従しません（構造体リスト内の参照メンバと同じ既存制限。単体の参照フィールドのような自動追従はありません）。<code>List&lt;ScriptEvent&gt;</code>（<code>ScriptEvent</code> の配列・リスト）は非対応です。<code>[ResetButton]</code> は <code>ScriptEvent</code> フィールドには対応していません。対象スクリプトがコンパイル失敗中は、そのスクリプトのメソッドは候補に出ません。プレハブを複数インスタンス化すると同名アクターが複数生まれるため、結線は常に<b>先頭に見つかった</b>同名アクターへ向きます（他のインスタンスには届きません）。<code>[System.Serializable]</code> 構造体の<b>要素メンバ</b>として置けます（内部の結線一覧を展開しない「葉の型」として扱われるため、構造体の入れ子段数制限には影響しません）。</p>
 </section>
 
 <!-- ════════════════ 2. ライフサイクル ════════════════ -->

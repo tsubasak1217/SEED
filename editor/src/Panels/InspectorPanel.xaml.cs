@@ -105,7 +105,14 @@ public partial class InspectorPanel : UserControl
     private int _pendingSplineMigrationWaterSlotIdx = -1;
 
     // ── Script state ─────────────────────────────────────────
-    private readonly Dictionary<string, Type> _scriptTypeCache = new();
+    /// <summary>
+    /// .cs パス → コンパイル済みスクリプト型のキャッシュ。
+    ///
+    /// UI スレッド（インスペクタ構築）に加え、ScriptEvent の候補算出が
+    /// バックグラウンドスレッドから <see cref="GetOrCompileScript"/> 経由で読み書きするため、
+    /// 並行アクセスに耐える ConcurrentDictionary を使う。
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Type> _scriptTypeCache = new();
     private string _lastComponentsJson = "";
 
     /// <summary>「スクリプトを編集」ボタンで .cs を内蔵エディタで開くよう要求する（フルパス）。</summary>
@@ -143,7 +150,7 @@ public partial class InspectorPanel : UserControl
     public void InvalidateScriptTypeCache(string? path = null)
     {
         if (path is null) _scriptTypeCache.Clear();
-        else              _scriptTypeCache.Remove(path);
+        else              _scriptTypeCache.TryRemove(path, out _);
     }
 
     // ── Plugin state ─────────────────────────────────────────
@@ -410,8 +417,14 @@ public partial class InspectorPanel : UserControl
             // どのアクタの応答であっても構成キャッシュへ入れる。
             // 参照ピッカーがドラッグ中に「適合ゼロならドロップ拒否」を判定するために使う。
             var incomingId = TryGetActorComponentsId(json);
-            if (ActorComponentSnapshot.TryParse(json) is { } snapshot)
+            var parsed     = ActorComponentSnapshot.TryParse(json);
+            if (parsed is { } snapshot)
                 ActorComponentCache.Store(snapshot);
+
+            // ScriptEvent の候補取得待ちがあれば先に掃き出す。
+            // 参照ドロップの保留（_pendingReference）とは別の入れ物なので互いに影響しない。
+            // 掃き出しても後段の処理は続ける（この応答は選択中アクタの更新も兼ね得るため）。
+            CompletePendingScriptEventQueries(incomingId, parsed);
 
             // 参照ドロップの解決待ちなら、ドロップされたアクタの構成を参照設定処理へ転用する。
             // ドロップとは無関係な ACTOR_COMPONENTS（選択更新など）を取り違えないよう、
@@ -9718,7 +9731,10 @@ public partial class InspectorPanel : UserControl
         expandKeyPrefix: $"{ExpandKeyScriptFieldPrefix}{slotIdx}:",
         // string 配列要素へ .actor をドロップしたときの保存値（assets:// 仮想パス）変換。
         // アセットルート外のファイルは絶対パスのまま返る（VirtualPath.ToVirtual の規約）。
-        assetPathToVirtual: p => VirtualPath.ToVirtual(p, _assetsPath)));
+        assetPathToVirtual: p => VirtualPath.ToVirtual(p, _assetsPath),
+        // ScriptEvent フィールドの結線先候補（アクタ → スクリプト型 → メソッド）を答える役。
+        // 実装は InspectorPanel.ScriptEvent.cs（IPC とコンパイルを持つのがここだけのため）。
+        eventCatalog: this));
         sp.Children.Add(fieldSection);
     }
 
@@ -10006,7 +10022,7 @@ public partial class InspectorPanel : UserControl
         if (_currentActorId < 0) return;
         // 既存のキャッシュを無効化
         var old = _slotInfos.FirstOrDefault(s => s.SlotIdx == slotIdx)?.ModelPath;
-        if (old is not null) _scriptTypeCache.Remove(old);
+        if (old is not null) _scriptTypeCache.TryRemove(old, out _);
 
         // クラス属性（RequireComponent / DisallowMultipleComponent）を解決する。
         // 他スクリプトを typeof 参照する場合に備え、まず全体コンパイルで解決し、

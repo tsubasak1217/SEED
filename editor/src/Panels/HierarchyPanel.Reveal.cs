@@ -99,6 +99,25 @@ public partial class HierarchyPanel
         return false;
     }
 
+    /// <summary>
+    /// 指定名のアクタの DFS ID を返す（見つからなければ null）。
+    ///
+    /// ScriptEvent の結線先候補（そのアクタが持つスクリプト型の一覧）を引くには
+    /// GET_ACTOR_COMPONENTS が要り、その宛先は DFS ID である。
+    /// 一方 ScriptEvent の保存値はアクタ名なので、名前 → DFS ID の変換窓口が要る。
+    /// <see cref="ActorExistsByName"/> と同じくノードモデル側を走査するため、
+    /// ツリーの表示状態（仮想化・展開）に依存しない。
+    /// 同名アクタが複数ある場合は DFS 順で最初に見つかったものを返す。
+    /// </summary>
+    /// <param name="actorName">対象アクタの名前（完全一致・大文字小文字は区別する）。</param>
+    public int? ActorDfsIdByName(string actorName)
+    {
+        if (string.IsNullOrEmpty(actorName)) return null;
+        foreach (var node in GetAllNodes(_roots))
+            if (node.Name == actorName) return node.Id;
+        return null;
+    }
+
     // ── 実装 ──────────────────────────────────────────────────────
 
     /// <summary>

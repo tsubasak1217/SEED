@@ -38,9 +38,12 @@ pub struct ScriptComponentData {
 /// CLR の `ScriptBridge.DescribeSerializeFields` が返す JSON 要素に対応する。
 /// - `name`  : ドット区切りのフィールドパス（例 `"stats.hp"`）
 /// - `type_tag`: `float`/`double`/`int`/`long`/`short`/`bool`/`string`/
-///               `reference`/`unsupported`、および配列フィールドの
+///               `reference`/`scriptevent`/`unsupported`、および配列フィールドの
 ///               `array:<要素型タグ>`（例 `array:float` / `array:reference`）。
 ///               配列の値は JSON 配列文字列（例 `[1.0,2.5]` / `["a","b"]`）で保存される。
+///               `scriptevent`（C# の `SEED.ScriptEvent` = UnityEvent 相当）も
+///               値は JSON 配列文字列で、要素は結線 1 件を表す JSON オブジェクト
+///               （`[{"actor":"...","script":"...","method":"...","argKind":"none","arg":""}]`）。
 /// - `default_value`: 宣言時初期値の文字列化（`reference`/`unsupported` は空文字）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScriptFieldDef {
@@ -59,7 +62,8 @@ pub struct ScriptFieldDef {
 ///
 /// - `name`     : JSON オブジェクトのキー（＝メンバのフィールド名）
 /// - `label`    : インスペクタ表示名（Rust では判定に使わないが、往復の情報欠落を避けて保持する）
-/// - `type_tag` : `float`/`int`/`bool`/`string`/`reference` と入れ子配列 `array:<要素型タグ>`
+/// - `type_tag` : `float`/`int`/`bool`/`string`/`reference`/`scriptevent` と
+///                入れ子配列 `array:<要素型タグ>`
 /// - `default_value`: 宣言時初期値の文字列化
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScriptStructMemberDef {
@@ -77,6 +81,9 @@ pub struct ScriptStructMemberDef {
 /// 型タグは CLR 側 `ConvertValue` の対応型と 1 対 1 に対応させている。
 /// `string` / `reference` は任意の文字列を受け付ける（前者は素の文字列、
 /// 後者はアクター名の文字列として保存されるため）。
+/// `scriptevent` は「JSON オブジェクトの配列」であることだけを見る
+/// （キーの中身は CLR 側 `ScriptEvent.Decode` が寛容に読むので、
+///  ここで厳しく見ると将来キーを足したときに結線が全消しになる）。
 /// `unsupported`（インスペクタが扱えない型）は常に既定値へ落とす。
 fn value_matches_type(type_tag: &str, value: &str, members: &[ScriptStructMemberDef]) -> bool {
     // 配列フィールド（"array:要素型タグ"）は JSON 配列として解釈し、
@@ -94,8 +101,28 @@ fn value_matches_type(type_tag: &str, value: &str, members: &[ScriptStructMember
         "int" | "long" | "short"  => value.trim().parse::<i64>().is_ok(),
         "bool"                    => value == "true" || value == "false",
         "string" | "reference"    => true,
+        SCRIPT_EVENT_TYPE_TAG     => script_event_value_matches(value),
         _                         => false,
     }
+}
+
+/// ScriptEvent フィールドの型タグ（C# 側 `SEED.ScriptEvent.TypeTag` と一致させること）。
+const SCRIPT_EVENT_TYPE_TAG: &str = "scriptevent";
+
+/// 保存済みの値が ScriptEvent（UnityEvent 相当）として引き継げるかを判定する。
+///
+/// 【規則】JSON 配列で、要素がすべて JSON オブジェクトであること。
+/// 空配列（＝結線なし）は当然適合する。
+///
+/// 【なぜキーの中身を見ないのか】
+/// 結線 1 件のキー集合は将来増える想定（例: 同型スクリプトの複数スロットを指す `"slot"`）で、
+/// CLR 側 `ScriptEvent.Decode` は未知キーを無視し欠損キーを既定値で埋める寛容デコードになっている。
+/// ここでキーを厳密に照合すると、エディタとランタイムの版が少しずれただけで
+/// 「結線が全部消える」データ喪失になるため、外形（オブジェクトの配列）だけを見る。
+fn script_event_value_matches(value: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value.trim()) else { return false };
+    let serde_json::Value::Array(items) = parsed else { return false };
+    items.iter().all(|item| item.is_object())
 }
 
 /// 配列フィールドの型タグ接頭辞（C# 側 `SEED.ScriptArray.TypeTagPrefix` と一致させること）。
@@ -157,6 +184,9 @@ fn json_scalar_matches_tag(type_tag: &str, value: &serde_json::Value) -> bool {
         "bool"                   => value.is_boolean(),
         // 参照は未設定を null で書く場合があるので許容する（CLR 側は空文字として読む）
         "string" | "reference"   => value.is_string() || value.is_null(),
+        // 構造体メンバの ScriptEvent は JSON 配列がそのまま入れ子で埋め込まれている。
+        // 外形（配列であること）だけを見る点は script_event_value_matches と同じ理由。
+        SCRIPT_EVENT_TYPE_TAG    => value.is_array(),
         _                        => false,
     }
 }
@@ -941,6 +971,51 @@ mod tests {
         let value = r#"[{"target":null},{"target":"Player"}]"#;
         let merged = carry_over_script_fields(&old(&[("slots", value)]), &defs);
         assert_eq!(merged.get("slots").map(String::as_str), Some(value));
+    }
+
+    /// ScriptEvent フィールドは、同じ型タグのままなら結線 JSON をそのまま引き継ぐ。
+    /// 未知キー（将来追加される "slot" など）が混じっていても落とさない。
+    #[test]
+    fn keeps_script_event_bindings_when_tag_matches() {
+        let defs = [def("onStart", "scriptevent", "[]")];
+        let value = concat!(
+            r#"[{"actor":"DialogueManager","script":"QuestFlow","method":"Begin","#,
+            r#""argKind":"string","arg":"intro","slot":"A"},"#,
+            r#"{"actor":"","script":"","method":"","argKind":"none","arg":""}]"#
+        );
+        let merged = carry_over_script_fields(&old(&[("onStart", value)]), &defs);
+        assert_eq!(merged.get("onStart").map(String::as_str), Some(value));
+
+        // 空配列（結線なし）も適合する
+        let merged_empty = carry_over_script_fields(&old(&[("onStart", "[]")]), &defs);
+        assert_eq!(merged_empty.get("onStart").map(String::as_str), Some("[]"));
+
+        // 構造体配列のメンバとしての ScriptEvent（入れ子の JSON 配列）も引き継げる
+        let struct_defs = [struct_def("triggers", "TriggerEntry",
+                                      &[("delay", "float"), ("onFire", "scriptevent")])];
+        let nested = r#"[{"delay":2.5,"onFire":[{"actor":"Boss","method":"Begin"}]},{"delay":0.0,"onFire":[]}]"#;
+        let merged_nested = carry_over_script_fields(&old(&[("triggers", nested)]), &struct_defs);
+        assert_eq!(merged_nested.get("triggers").map(String::as_str), Some(nested));
+
+        // メンバの値が配列でなければ（型変更）その構造体配列は引き継がない
+        let broken = r#"[{"delay":2.5,"onFire":"Begin"}]"#;
+        assert!(carry_over_script_fields(&old(&[("triggers", broken)]), &struct_defs).is_empty());
+    }
+
+    /// 型が変わった場合は引き継がない（float の値 → ScriptEvent、および逆方向）。
+    /// オブジェクト以外の要素を含む配列も ScriptEvent としては受け付けない。
+    #[test]
+    fn drops_script_event_when_type_changed() {
+        // float で保存されていた値を scriptevent フィールドへは引き継がない
+        let to_event = [def("onStart", "scriptevent", "[]")];
+        assert!(carry_over_script_fields(&old(&[("onStart", "12.5")]), &to_event).is_empty());
+        // 配列だが要素がオブジェクトでないものも不適合
+        assert!(carry_over_script_fields(&old(&[("onStart", r#"["Begin"]"#)]), &to_event).is_empty());
+
+        // 逆方向: 結線 JSON を float フィールドへは引き継がない
+        let to_float = [def("onStart", "float", "0")];
+        let bindings = r#"[{"actor":"A","script":"B","method":"C","argKind":"none","arg":""}]"#;
+        assert!(carry_over_script_fields(&old(&[("onStart", bindings)]), &to_float).is_empty());
     }
 
     /// CLR が返す構造体配列 JSON（members 付き）をそのままデシリアライズできる。

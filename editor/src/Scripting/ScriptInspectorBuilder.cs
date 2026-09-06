@@ -28,6 +28,8 @@ public static class ScriptInspectorBuilder
     /// （渡さないと編集の直後にネストが閉じてしまう）。
     /// assetPathToVirtual: ドロップされた絶対パスを保存用パス（assets:// 仮想パス）へ変換する関数。
     /// string 配列要素への .actor ファイルドロップに使う（null ならファイルドロップを受け付けない）。
+    /// eventCatalog: ScriptEvent フィールドの結線先候補（スクリプト型・メソッド）の問い合わせ先。
+    /// null の場合、ScriptEvent 行は現在値の表示のみで候補を出せない（値は壊さない）。
     /// </summary>
     public static StackPanel Build(
         IReadOnlyList<ScriptFieldInfo>      fields,
@@ -36,7 +38,8 @@ public static class ScriptInspectorBuilder
         IReferenceDropResolver?             referenceResolver  = null,
         ExpandStateStore?                   expandStates       = null,
         string                              expandKeyPrefix    = "",
-        Func<string, string>?               assetPathToVirtual = null)
+        Func<string, string>?               assetPathToVirtual = null,
+        IScriptEventCatalogProvider?        eventCatalog       = null)
     {
         var stack = new StackPanel();
 
@@ -47,7 +50,7 @@ public static class ScriptInspectorBuilder
 
         BuildInto(stack, fields, currentValues, onValueChanged, referenceResolver, prefix: "",
                   expandStates: expandStates, expandKeyPrefix: expandKeyPrefix,
-                  assetPathToVirtual: assetPathToVirtual);
+                  assetPathToVirtual: assetPathToVirtual, eventCatalog: eventCatalog);
         return stack;
     }
 
@@ -61,7 +64,8 @@ public static class ScriptInspectorBuilder
         string                              prefix,
         ExpandStateStore?                   expandStates,
         string                              expandKeyPrefix,
-        Func<string, string>?               assetPathToVirtual)
+        Func<string, string>?               assetPathToVirtual,
+        IScriptEventCatalogProvider?        eventCatalog)
     {
         foreach (var field in fields)
         {
@@ -71,12 +75,25 @@ public static class ScriptInspectorBuilder
 
             var fullPath = prefix + field.Field.Name;
 
+            // ScriptEvent（UnityEvent 相当）→ 結線一覧の折りたたみ UI。
+            // ネスト・配列のどちらでもない独立した葉なので、他の分岐より先に判定する。
+            if (field.IsScriptEvent)
+            {
+                values.TryGetValue(fullPath, out var eventRaw);
+                stack.Children.Add(ScriptEventFieldBuilder.Build(
+                    field, eventRaw,
+                    v => onChange(fullPath, v),
+                    onRefDrop, eventCatalog,
+                    expandStates, expandKeyPrefix + fullPath));
+                continue;
+            }
+
             // [Serializable] ネストクラス → 折りたたみで子フィールドを再帰表示
             if (field.Children is not null)
             {
                 stack.Children.Add(BuildNestedFoldout(
                     field, fullPath, values, onChange, onRefDrop, expandStates, expandKeyPrefix,
-                    assetPathToVirtual));
+                    assetPathToVirtual, eventCatalog));
                 continue;
             }
 
@@ -88,7 +105,7 @@ public static class ScriptInspectorBuilder
                     field, fullPath, arrayRaw,
                     v => onChange(fullPath, v),
                     onRefDrop, assetPathToVirtual,
-                    expandStates, expandKeyPrefix + fullPath);
+                    expandStates, expandKeyPrefix + fullPath, eventCatalog);
 
                 // [ResetButton] 付きなら「宣言時初期値の配列へ戻す」ボタンを添える
                 // （通常の値編集と同じ経路なので Ctrl+Z で取り消せる）。
@@ -102,7 +119,7 @@ public static class ScriptInspectorBuilder
                 continue;
             }
 
-            var row = BuildRow(field, fullPath, values, onChange, onRefDrop);
+            var row = BuildRow(field, fullPath, values, onChange, onRefDrop, eventCatalog);
             if (row is not null) stack.Children.Add(row);
         }
     }
@@ -118,9 +135,9 @@ public static class ScriptInspectorBuilder
     private static UIElement? BuildRow(
         ScriptFieldInfo field, string path,
         IReadOnlyDictionary<string, string> values, Action<string, string> onChange,
-        IReferenceDropResolver? onRefDrop)
+        IReferenceDropResolver? onRefDrop, IScriptEventCatalogProvider? eventCatalog)
     {
-        var row = BuildRowCore(field, path, values, onChange, onRefDrop);
+        var row = BuildRowCore(field, path, values, onChange, onRefDrop, eventCatalog);
         if (row is null || !field.ShowResetButton) return row;
 
         // 既定値を文字列化できない型（列挙型など未対応の読み取り専用行）はボタンを出さない。
@@ -145,6 +162,11 @@ public static class ScriptInspectorBuilder
     {
         // 参照フィールドは型に依らず「未設定」へ戻す（✕ ボタンと同じ値）。
         if (field.Reference is not null) return SEED.ScriptReference.UnsetValue;
+
+        // ScriptEvent はリセットボタンを出さない（結線の並びを 1 手でまとめて消すのは
+        // 事故が大きく、各行の削除ボタンで足りるため）。ScriptCompiler 側でも
+        // ShowResetButton を落としているが、呼ばれても安全なようにここでも弾く。
+        if (field.IsScriptEvent) return null;
 
         // 配列フィールドは宣言時初期値の実配列を JSON 配列文字列へ戻す（未初期化なら空配列）。
         if (field.Array is { } arrayInfo)
@@ -179,10 +201,11 @@ public static class ScriptInspectorBuilder
     private static UIElement? BuildRowCore(
         ScriptFieldInfo field, string path,
         IReadOnlyDictionary<string, string> values, Action<string, string> onChange,
-        IReferenceDropResolver? onRefDrop)
+        IReferenceDropResolver? onRefDrop, IScriptEventCatalogProvider? eventCatalog)
     {
         values.TryGetValue(path, out var raw);
-        return BuildValueRow(field, raw, s => onChange(path, s), onRefDrop);
+        return BuildValueRow(field, raw, s => onChange(path, s), onRefDrop, eventCatalog,
+                             expandStates: null, expandKey: path);
     }
 
     /// <summary>
@@ -197,14 +220,26 @@ public static class ScriptInspectorBuilder
     /// <param name="raw">現在のシリアライズ値。null なら宣言時初期値を表示する。</param>
     /// <param name="onLeaf">値変更の通知（シリアライズ値をそのまま渡す）。</param>
     /// <param name="onRefDrop">参照フィールドのドロップ解決役（null ならドロップ不可）。</param>
+    /// <param name="eventCatalog">ScriptEvent の結線先候補の問い合わせ先（null なら候補なし）。</param>
+    /// <param name="expandStates">ScriptEvent の折りたたみ状態ストア（null なら記憶しない）。</param>
+    /// <param name="expandKey">ScriptEvent の折りたたみ状態キー。</param>
     internal static UIElement? BuildValueRow(
-        ScriptFieldInfo field, string? raw, Action<string> onLeaf, IReferenceDropResolver? onRefDrop)
+        ScriptFieldInfo field, string? raw, Action<string> onLeaf, IReferenceDropResolver? onRefDrop,
+        IScriptEventCatalogProvider? eventCatalog = null,
+        ExpandStateStore?            expandStates = null,
+        string                       expandKey    = "")
     {
         var t = field.Field.FieldType;
 
         // 参照フィールド（GameObject / Transform / Camera …）は専用の行を作る
         if (field.Reference is { } refKind)
             return BuildReferenceRow(field, refKind, raw, onLeaf, onRefDrop);
+
+        // ScriptEvent（UnityEvent 相当）は結線一覧の折りたたみ UI。
+        // 構造体配列のメンバからもこの入口を通るため、参照判定の直後に置く。
+        if (field.IsScriptEvent)
+            return ScriptEventFieldBuilder.Build(
+                field, raw, onLeaf, onRefDrop, eventCatalog, expandStates, expandKey);
 
         if (t == typeof(float) || t == typeof(double))
         {
@@ -240,13 +275,14 @@ public static class ScriptInspectorBuilder
         IReadOnlyDictionary<string, string> values, Action<string, string> onChange,
         IReferenceDropResolver? onRefDrop,
         ExpandStateStore? expandStates, string expandKeyPrefix,
-        Func<string, string>? assetPathToVirtual)
+        Func<string, string>? assetPathToVirtual,
+        IScriptEventCatalogProvider? eventCatalog)
     {
         var inner = new StackPanel { Margin = new Thickness(10, 2, 0, 2) };
         // 子は "親パス." を prefix にして再帰構築する
         BuildInto(inner, field.Children!, values, onChange, onRefDrop, prefix: fullPath + ".",
                   expandStates: expandStates, expandKeyPrefix: expandKeyPrefix,
-                  assetPathToVirtual: assetPathToVirtual);
+                  assetPathToVirtual: assetPathToVirtual, eventCatalog: eventCatalog);
 
         var expander = new Expander
         {

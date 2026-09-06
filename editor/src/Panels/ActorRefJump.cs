@@ -46,6 +46,17 @@ internal static class ActorRefJump
     public static Func<string, bool>? ActorExistsByName;
 
     /// <summary>
+    /// 「その名前のアクタの DFS ID」を問い合わせるフック。
+    /// MainWindow が HierarchyPanel.ActorDfsIdByName へ接続する。
+    ///
+    /// ScriptEvent の結線先候補は GET_ACTOR_COMPONENTS（宛先は DFS ID）で取るが、
+    /// 保存値はアクタ名なので、その間を埋めるために使う。
+    /// 未接続（null）・該当なしのときは null が返り、候補の取得は諦める
+    /// （保存値の表示は維持されるので値は壊れない）。
+    /// </summary>
+    public static Func<string, int?>? ActorDfsIdByName;
+
+    /// <summary>
     /// 指定要素のダブルクリックで「アクタ名によるジャンプ」を行うよう配線する。
     /// アクタ参照を表示している行（ラベル・ドロップゾーン等）に付ける。
     /// </summary>

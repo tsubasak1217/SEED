@@ -26,3 +26,5 @@ paths:
   「参照は D&D できるのに生存判定できない／スロット絞り込みが出ない」半端な状態になる。
   詳細は add-script-api Skill §3-3。
 - 詳細な追加・変更手順（レジストリ登録／ラッパー／docs 同期／両ビルド検証）は **add-script-api Skill** を使う。
+- **ScriptEvent（UnityEvent 相当）の型判定・JSON 書式・メソッド適合判定の正典は `scripting/src/Api/ScriptEvent.cs`**
+  （`ScriptEventBinding.cs` / `ScriptEventArgKind.cs` も同ファイル群）。エディタ側で同じ判定表をミラーしない。

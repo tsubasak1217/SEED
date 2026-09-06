@@ -39,6 +39,9 @@ public static unsafe class ScriptBridge
                 ?? throw new TypeLoadException($"Script type not found: '{typeName}'");
             var instance = (IScriptComponent)(Activator.CreateInstance(type)
                 ?? throw new InvalidOperationException($"Cannot instantiate: '{typeName}'"));
+            // ScriptEvent フィールドは「未設定でも null にならない」契約なので、
+            // 値の注入前にここで実体を用意しておく（後述 EnsureScriptEventInstances 参照）。
+            EnsureScriptEventInstances(instance, type, 0);
             return GCHandle.ToIntPtr(GCHandle.Alloc(instance));
         }
         catch (Exception ex)
@@ -575,9 +578,14 @@ public static unsafe class ScriptBridge
             // 配列判定を行わないと List の内部フィールドへ降りてしまう。
             var isArray = SEED.ScriptArray.TryGetElementType(f.FieldType, out _, out _);
 
+            // ScriptEvent フィールドも「1 本の JSON 配列文字列」で表す葉である。
+            // 内部の List<ScriptEventBinding> へ降りてしまわないよう、ネスト判定より先に弾く。
+            var isScriptEvent = SEED.ScriptEvent.IsScriptEventType(f.FieldType);
+
             // [Serializable] ネストクラスは葉ではないので子へ降りる
-            //（参照ハンドルは内部構造を晒さないため展開しない。ScriptCompiler と同じ規則）
-            if (!isRef && !isArray && depth < DescribeMaxNestDepth && IsNestedSerializableType(f.FieldType))
+            //（参照ハンドル・ScriptEvent は内部構造を晒さないため展開しない。ScriptCompiler と同じ規則）
+            if (!isRef && !isArray && !isScriptEvent &&
+                depth < DescribeMaxNestDepth && IsNestedSerializableType(f.FieldType))
             {
                 AppendFieldDescriptions(sb, value, f.FieldType, path + ".", depth + 1);
                 continue;
@@ -624,6 +632,10 @@ public static unsafe class ScriptBridge
     {
         if (isReference)         return "reference";
 
+        // ScriptEvent（UnityEvent 相当）は 1 本の JSON 配列文字列として保存する葉。
+        // 配列判定より先に見る（内部実装が List<T> でも配列フィールド扱いにしないため）。
+        if (SEED.ScriptEvent.IsScriptEventType(t)) return SEED.ScriptEvent.TypeTag;
+
         // 配列フィールド（T[] / List<T>）は "array:要素型タグ" で表す。
         // 要素型がインスペクタ非対応なら配列全体を unsupported とする。
         if (SEED.ScriptArray.TryGetElementType(t, out var elementType, out _))
@@ -648,6 +660,11 @@ public static unsafe class ScriptBridge
     /// </summary>
     private static string DefaultValueString(Type type, bool isReference, object? value)
     {
+        // ScriptEvent の結線はインスペクタで作るものなので、宣言時初期値は常に「結線なし」。
+        // （スクリプト側の初期化子で結線を書く用途は想定しない＝データ側の一元管理を保つ）
+        if (!isReference && SEED.ScriptEvent.IsScriptEventType(type))
+            return SEED.ScriptEvent.EmptyJson;
+
         // 配列フィールドは実配列を JSON 配列文字列へ書き出す（未初期化なら "[]"）
         if (!isReference && SEED.ScriptArray.TryGetElementType(type, out var elementType, out _))
             return SEED.ScriptArray.EncodeValue(value, elementType);
@@ -966,6 +983,8 @@ public static unsafe class ScriptBridge
                     Console.Error.WriteLine($"[SEEDScripting] cannot instantiate nested type: {f.FieldType.Name}");
                     return false;
                 }
+                // 生成したネストオブジェクトにも ScriptEvent の非 null 保証を効かせる
+                EnsureScriptEventInstances(child, f.FieldType, 0);
                 f.SetValue(current, child);
             }
             current = child;
@@ -1008,6 +1027,45 @@ public static unsafe class ScriptBridge
     }
 
     /// <summary>
+    /// <c>ScriptEvent</c> 型のフィールドを、まだ null なら空の実インスタンスで埋める。
+    ///
+    /// 【なぜ必要か】
+    /// フィールド値マップ（Rust 側 <c>ScriptComponent.fields</c>）には
+    /// 「インスペクタで明示的に設定した値」しか入らない規約なので、
+    /// 一度も結線していない <c>ScriptEvent</c> フィールドには <c>SetFieldValue</c> が飛んでこない。
+    /// そのままだとスクリプト側の <c>onStart.Invoke()</c> が NullReferenceException になる。
+    /// 「ScriptEvent は非 null」を守るため、インスタンス生成直後にここで実体を作る。
+    /// フィールド初期化子（<c>= new ScriptEvent()</c>）を書いてある場合は何もしない。
+    ///
+    /// ネストした [Serializable] クラスも <see cref="DescribeMaxNestDepth"/> まで同じ規則で辿る
+    /// （降下の判定は <see cref="AppendFieldDescriptions"/> と揃えてある）。
+    /// </summary>
+    private static void EnsureScriptEventInstances(object instance, Type type, int depth)
+    {
+        foreach (var f in type.GetFields(FieldFlags))
+        {
+            if (!HasAttributeNamed(f, nameof(SerializeFieldAttribute))) continue;
+
+            // ScriptEvent フィールド: null なら結線 0 件の実体を入れる
+            if (SEED.ScriptEvent.IsScriptEventType(f.FieldType))
+            {
+                if (f.GetValue(instance) is null) f.SetValue(instance, new SEED.ScriptEvent());
+                continue;
+            }
+
+            // ネストクラスは「既に実体があるもの」だけ辿る
+            //（null のネストは値が来た時点で生成され、その際にも本メソッドが呼ばれる）
+            if (depth >= DescribeMaxNestDepth) continue;
+            if (SEED.ScriptReference.TryGetKind(f.FieldType, out _)) continue;
+            if (SEED.ScriptArray.TryGetElementType(f.FieldType, out _, out _)) continue;
+            if (!IsNestedSerializableType(f.FieldType)) continue;
+
+            if (f.GetValue(instance) is { } child)
+                EnsureScriptEventInstances(child, f.FieldType, depth + 1);
+        }
+    }
+
+    /// <summary>
     /// 文字列値を対象フィールド型へ変換する（未対応型は null）。
     ///
     /// 配列フィールド（T[] / List&lt;T&gt;）は JSON 配列文字列を受け取り、
@@ -1017,6 +1075,12 @@ public static unsafe class ScriptBridge
     /// </summary>
     private static object? ConvertValue(Type type, string value)
     {
+        // ScriptEvent フィールド: JSON 配列文字列 → ScriptEvent 実インスタンス。
+        // World を必要としない即時経路（結線は実行時に名前で解決するため）なので、
+        // NeedsDeferredReferenceResolution の対象にはしない。
+        if (SEED.ScriptEvent.IsScriptEventType(type))
+            return SEED.ScriptEvent.BuildInstance(value);
+
         // 構造体配列フィールド: JSON オブジェクト配列文字列 → List<構造体> / 構造体[]
         // 参照メンバを含む構造体は World が必要なのでここでは扱わない
         //（NeedsDeferredReferenceResolution が真になり ResolveReferenceFields が担当する）。
