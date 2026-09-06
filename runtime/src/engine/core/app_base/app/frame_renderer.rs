@@ -1499,6 +1499,17 @@ impl App {
         // レンダーパス開始前（可変借用前）に事前計算する。3D Canvas 子（canvas_child_axes_pre）
         // が優先されるため、そちらが Some の場合はここでは使用されない。
         let local_axes_pre = self.selected_local_axes();
+        // 2D キャンバスギズモの Local 軸基底も可変借用前に事前計算する。
+        // ヒットテスト（gizmo_handler）と同一関数を使うことで、見た目と当たり判定を必ず一致させる。
+        let canvas_local_axes_2d_pre = self.canvas_gizmo_axes_2d();
+        // テキストの選択枠用にブロック寸法を実測する。フォントレジストリの可変借用が
+        // 要るため、シーンを不変借用する描画ブロックへ入る前にここで表を作る
+        // （ピック側 pick_2d と同じ build_text_bounds_map ＝ 枠とクリック判定が一致する）。
+        let text_bounds_pre = if in_editor {
+            self.build_text_bounds_map()
+        } else {
+            super::canvas_text_bounds::TextBoundsMap::new()
+        };
         // 2D シーンビューのドラッグホバー中キャンバス枠ハイライト線分も
         // 可変借用前に事前計算する（キャンバス矩形バッチ構築時に流し込む）。
         let drag_hover_highlight_lines = if edit_view_2d && self.drag_hover_canvas_entity.is_some() {
@@ -3200,8 +3211,19 @@ impl App {
                                     ToolMode::Scale  => batch.add_gizmo_scale_canvas(pos, radius, hov, ax, ay),
                                     ToolMode::Select => {}
                                 }
+                            } else if let Some([ax, ay, _az]) = canvas_local_axes_2d_pre.filter(|_| gizmo_actor_is_2d) {
+                                // 2D キャンバス編集の Local 座標モード: 選択アクターの累積回転に
+                                // 沿った 2 軸ギズモ（3D Canvas 子と同じ oriented 描画関数を共用）。
+                                // Rotate はキャンバス法線周りの完全円で World と同一形状のため
+                                // 従来の 2D 版をそのまま使う（座標系モードの影響を受けない）。
+                                match self.tool_mode {
+                                    ToolMode::Move   => batch.add_gizmo_translate_canvas(pos, radius, hov, ax, ay),
+                                    ToolMode::Rotate => batch.add_gizmo_rotate_2d(pos, radius, 64, hov),
+                                    ToolMode::Scale  => batch.add_gizmo_scale_canvas(pos, radius, hov, ax, ay),
+                                    ToolMode::Select => {}
+                                }
                             } else if gizmo_actor_is_2d {
-                                // 2D: Z 軸・平面ハンドル不要、Rotate は完全円
+                                // 2D（World 座標モード）: Z 軸・平面ハンドル不要、Rotate は完全円
                                 match self.tool_mode {
                                     ToolMode::Move   => batch.add_gizmo_translate_2d(pos, radius, hov),
                                     ToolMode::Rotate => batch.add_gizmo_rotate_2d(pos, radius, 64, hov),
@@ -4357,6 +4379,7 @@ impl App {
                                 canvas_scale_rect, y_sign_rect, viewport_size_rect, &canvas_vp_overrides_r,
                                 &root_auto_sizes_r, edit_view_2d, outline_step,
                                 bone_ctx.as_ref(),
+                                &text_bounds_pre,
                             );
                             // 2D シーンビューでドラッグホバー中のルートキャンバス枠を
                             // 通常枠より明るく・太くハイライト描画する（Phase 3、事前計算済み）

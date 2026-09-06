@@ -20,7 +20,7 @@ use std::collections::HashMap;
 
 use crate::engine::components::{
     AspectRatioAxis, CanvasComponent, CanvasDrawZone, CanvasTransform, ComponentKind,
-    SkinnedSpriteComponent, SpriteComponent, Transform,
+    SkinnedSpriteComponent, SpriteComponent, TextComponent, Transform,
 };
 use crate::engine::core::loader::sprite_mesh::SpriteMesh;
 use crate::engine::core::renderer::sprite_skin::build_bone_matrices;
@@ -30,6 +30,7 @@ use crate::engine::methods::gizmo_interact::{mat4x4_mul, screen_to_ray};
 use crate::engine::structs::objects::Actor;
 
 use super::App;
+use super::canvas_text_bounds::TextBoundsMap;
 use super::canvas_collect::{canvas_node_is_transparent, root_anchor_offset, skip_dfs_subtree};
 
 /// 巡回選択で「同一地点クリック」とみなすスクリーン座標の許容誤差（ピクセル）。
@@ -126,6 +127,10 @@ impl App {
         let is_actor_edit = self.actor_edit_canvas_wls.contains(&wl);
         let design_space = self.edit_view_is_2d();
 
+        // テキストの実測枠を先に作る（フォントレジストリの可変借用が要るため、
+        // scene を不変借用する候補収集より前に済ませる）。
+        let text_boxes = self.build_text_bounds_map();
+
         // 候補を収集する（scene を読み取り専用で借用して完結させる）
         let mut cands: Vec<PickCand2d> = Vec::new();
         if let Some(scene) = self.scene.as_ref() {
@@ -170,6 +175,7 @@ impl App {
                 &root_auto,
                 design_space,
                 &mesh_of,
+                &text_boxes,
                 PickFilter2d::EDITOR_SELECT,
                 &mut cands,
             );
@@ -300,6 +306,29 @@ pub(super) fn hit_test_rect_2d(
     lx >= 0.0 && lx <= eff_w && ly >= 0.0 && ly <= eff_h
 }
 
+/// キャンバス空間の点 (px, py) が、ローカル境界矩形 [min, max] に入るか判定する。
+///
+/// `hit_test_rect_2d` は原点が矩形の左上である前提（スプライト・キャンバス）だが、
+/// テキストは align / vertical_align によって枠が原点の左や上へはみ出す。
+/// そのため min/max を明示できるこの版を使う。
+pub(super) fn hit_test_local_box_2d(
+    px: f32,
+    py: f32,
+    m: &[[f32; 4]; 4],
+    min: [f32; 2],
+    max: [f32; 2],
+) -> bool {
+    let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+    if det.abs() < 1e-9 {
+        return false;
+    }
+    let dx = px - m[0][3];
+    let dy = py - m[1][3];
+    let lx = (dx * m[1][1] - dy * m[0][1]) / det;
+    let ly = (m[0][0] * dy - m[1][0] * dx) / det;
+    lx >= min[0] && lx <= max[0] && ly >= min[1] && ly <= max[1]
+}
+
 /// キャンバス空間の点 (px, py) が、スキンメッシュの**変形後の三角形**のいずれかに
 /// 入っているか判定する（Phase A2）。
 ///
@@ -391,6 +420,9 @@ pub(super) fn walk_pick_candidates_2d(
     design_space: bool,
     // `.sprite_mesh` を CPU キャッシュから引くローダ（スキンスプライトの三角形判定用）
     mesh_of: &dyn Fn(&str) -> Option<std::sync::Arc<SpriteMesh>>,
+    // テキストの実測枠（Text スロット entity → ローカル境界矩形）。
+    // 空の表を渡せばテキストはヒット対象から外れる（フォント未初期化時など）。
+    text_boxes: &TextBoundsMap,
     // 候補の絞り込み条件（エディタ選択 / ポインタイベントで切り替える）
     filter: PickFilter2d,
     out: &mut Vec<PickCand2d>,
@@ -433,6 +465,7 @@ pub(super) fn walk_pick_candidates_2d(
                 root_auto_sizes,
                 design_space,
                 mesh_of,
+                text_boxes,
                 filter,
                 out,
             );
@@ -615,6 +648,42 @@ pub(super) fn walk_pick_candidates_2d(
             }
         }
 
+        // ── Text ヒット（テキストのレイアウト枠）────────────────────────────
+        // 判定形状は描画と同じ「実測したブロック枠」を to_mesh_mat4 でキャンバス空間へ
+        // 写したもの（スキンスプライトと同じチェーン。フォントサイズは行列側で拡縮する）。
+        // 優先度はスプライトと同一（PickKind2d::Sprite・layer は TextComponent.layer）。
+        //
+        // ポインタイベント（require_raycast_target）では対象外。TextComponent は
+        // raycast_target を持たない＝オプトインできないため、勝手に当たり判定を
+        // 増やさない（Play 中の入力挙動を変えない）。
+        if !filter.require_raycast_target {
+            for slot in actor.slots() {
+                if slot.kind != ComponentKind::Text {
+                    continue;
+                }
+                if filter.respect_visibility && !slot.enabled {
+                    continue;
+                }
+                let Some(bx) = text_boxes.get(&slot.entity) else {
+                    continue;
+                };
+                let Some(tc) = world.get::<TextComponent>(slot.entity) else {
+                    continue;
+                };
+                let m = mat4x4_mul(parent_world_rs, eff_ct.to_mesh_mat4(size_sc_x, size_sc_y));
+                if hit_test_local_box_2d(canvas_x, canvas_y, &m, bx.min, bx.max) {
+                    out.push(PickCand2d {
+                        dfs: my_dfs,
+                        entity: actor.entity,
+                        kind: PickKind2d::Sprite,
+                        zone: my_zone,
+                        depth,
+                        layer: tc.layer,
+                    });
+                }
+            }
+        }
+
         // ── Canvas 矩形ヒット（補助候補）──────────────────────────────────────
         if filter.include_canvas && my_canvas.is_some() {
             let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(my_eff_w, my_eff_h));
@@ -676,6 +745,7 @@ pub(super) fn walk_pick_candidates_2d(
             root_auto_sizes,
             design_space,
             mesh_of,
+            text_boxes,
             filter,
             out,
         );
@@ -824,6 +894,7 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 mod tests {
     use super::*;
     use crate::engine::components::CanvasComponent;
+    use crate::engine::core::font::text_layout::TextLocalBox;
     use crate::engine::core::loader::sprite_mesh::IDENTITY_MAT4;
     use crate::engine::structs::objects::Actor;
 
@@ -935,7 +1006,18 @@ mod tests {
     }
 
     /// 設計空間（design_space=true。ビューポートタブ）でエディタ選択ピックを走らせる。
+    /// テキスト枠を持たないケース用の薄いラッパ。
     fn editor_hits(actors: &[Actor], world: &World, pt: [f32; 2]) -> Vec<PickCand2d> {
+        editor_hits_with_text(actors, world, pt, &TextBoundsMap::new())
+    }
+
+    /// テキスト実測枠を渡してエディタ選択ピックを走らせる。
+    fn editor_hits_with_text(
+        actors: &[Actor],
+        world: &World,
+        pt: [f32; 2],
+        text_boxes: &TextBoundsMap,
+    ) -> Vec<PickCand2d> {
         let empty: HashMap<Entity, [f32; 2]> = HashMap::new();
         let mesh_of = |_: &str| None;
         let mut out = Vec::new();
@@ -957,6 +1039,7 @@ mod tests {
             &empty,
             true,
             &mesh_of,
+            text_boxes,
             PickFilter2d::EDITOR_SELECT,
             &mut out,
         );
@@ -990,6 +1073,131 @@ mod tests {
             "フォルダ（dfs=2）が候補に含まれてはならない"
         );
         assert!(hits.iter().any(|c| c.dfs == 3), "スプライト（dfs=3）は候補になる");
+    }
+
+    // ── TextComponent のピック（2D 編集）─────────────────────────────────
+    //
+    //  テキストは実測したブロック枠（text_layout::measure_text_box）で当たる。
+    //  枠の実測はフォントに依存するので、テストでは描画と同じ組み込みフォントで
+    //  測った値を表に入れて走らせる（＝実行時と同じ経路をたどる）。
+
+    /// テスト用テキストのローカル位置（ルートキャンバス左上からのオフセット）。
+    const TEXT_POSITION: [f32; 2] = [200.0, 120.0];
+    /// テスト用テキストの内容・サイズ。
+    const TEXT_CONTENT: &str = "Score";
+    const TEXT_FONT_SIZE: f32 = 32.0;
+    const TEXT_LINE_SPACING: f32 = 1.2;
+
+    /// FishingUI(1280x720) > Label(TextComponent) のシーンと、実測した枠の表を作る。
+    fn build_text_scene() -> (Vec<Actor>, World, TextBoundsMap, TextLocalBox) {
+        use crate::engine::components::TextComponent;
+        use crate::engine::core::font::text_layout::measure_text_box;
+        use ab_glyph::FontArc;
+
+        let mut world = World::new();
+        // ルートキャンバス
+        let root_entity = world.spawn();
+        world.insert(root_entity, CanvasTransform::default());
+        let root_slot = world.spawn();
+        world.insert(
+            root_slot,
+            CanvasComponent {
+                width: UI_CANVAS[0],
+                height: UI_CANVAS[1],
+                ..CanvasComponent::default()
+            },
+        );
+        let mut root = Actor::new_2d(root_entity, "FishingUI");
+        root.world_line = 0;
+        root.add_slot_typed::<CanvasComponent>("Canvas", ComponentKind::Canvas, root_slot);
+
+        // テキストアクター
+        let text_entity = world.spawn();
+        world.insert(
+            text_entity,
+            CanvasTransform {
+                position: TEXT_POSITION,
+                ..CanvasTransform::default()
+            },
+        );
+        let text_slot = world.spawn();
+        let tc = TextComponent {
+            content: TEXT_CONTENT.to_string(),
+            font_size: TEXT_FONT_SIZE,
+            line_spacing: TEXT_LINE_SPACING,
+            ..TextComponent::default()
+        };
+        let (align, valign) = (tc.align, tc.vertical_align);
+        world.insert(text_slot, tc);
+        let mut label = Actor::new_2d(text_entity, "Label");
+        label.world_line = 0;
+        label.add_slot_typed::<TextComponent>("Text", ComponentKind::Text, text_slot);
+        root.add_child(label);
+
+        // 描画と同じ組み込みフォントで実測する
+        let font = FontArc::try_from_slice(crate::engine::core::font::DEFAULT_FONT_BYTES)
+            .expect("組み込みフォントを読める");
+        let bx = measure_text_box(
+            &font,
+            TEXT_CONTENT,
+            TEXT_FONT_SIZE,
+            TEXT_LINE_SPACING,
+            align,
+            valign,
+        )
+        .expect("枠が得られる");
+        let mut map = TextBoundsMap::new();
+        map.insert(text_slot, bx);
+
+        (vec![root], world, map, bx)
+    }
+
+    /// テキストのブロック枠の内側はピック候補になる（スプライトと同じ優先度）。
+    #[test]
+    fn text_actor_is_picked_inside_its_layout_box() {
+        let (actors, world, boxes, bx) = build_text_scene();
+        // 枠の中心（設計空間 = キャンバス左上原点）
+        let center = [
+            TEXT_POSITION[0] + (bx.min[0] + bx.max[0]) * 0.5,
+            TEXT_POSITION[1] + (bx.min[1] + bx.max[1]) * 0.5,
+        ];
+        let hits = editor_hits_with_text(&actors, &world, center, &boxes);
+        // DFS: 0=FishingUI / 1=Label
+        assert!(
+            hits.iter().any(|c| c.dfs == 1 && c.kind == PickKind2d::Sprite),
+            "テキスト枠の中心はテキストアクター（dfs=1）にヒットする"
+        );
+    }
+
+    /// テキストのブロック枠の外はヒットしない（キャンバス候補だけが残る）。
+    #[test]
+    fn text_actor_is_not_picked_outside_its_layout_box() {
+        let (actors, world, boxes, bx) = build_text_scene();
+        // 枠の右外側（同じ行の高さで、幅ぶん右へ外す）
+        let outside = [
+            TEXT_POSITION[0] + bx.max[0] + (bx.max[0] - bx.min[0]),
+            TEXT_POSITION[1] + (bx.min[1] + bx.max[1]) * 0.5,
+        ];
+        let hits = editor_hits_with_text(&actors, &world, outside, &boxes);
+        assert!(
+            !hits.iter().any(|c| c.dfs == 1),
+            "枠の外ではテキストアクターはヒットしない"
+        );
+    }
+
+    /// 実測枠が無い（フォントが引けない・空文字）テキストはヒットしない。
+    #[test]
+    fn text_without_measured_box_is_not_picked() {
+        let (actors, world, _boxes, bx) = build_text_scene();
+        let center = [
+            TEXT_POSITION[0] + (bx.min[0] + bx.max[0]) * 0.5,
+            TEXT_POSITION[1] + (bx.min[1] + bx.max[1]) * 0.5,
+        ];
+        let hits = editor_hits_with_text(&actors, &world, center, &TextBoundsMap::new());
+        assert!(
+            !hits.iter().any(|c| c.dfs == 1),
+            "枠が測れないテキストはピック対象外"
+        );
     }
 
     /// スプライト矩形の外は、フォルダの有無に関わらずヒットしない。

@@ -103,3 +103,28 @@
    .actor2d 保存時のルート座標 0 化
 4. **Phase 4**: インスペクタの「キャンバスを編集」ボタン（キャンバス編集タブを開く。
    3D ワールドキャンバス・2D キャンバス共通）
+
+## 2D 編集でのピック（クリック選択）対象
+
+CPU ピック（`runtime/src/engine/core/app_base/app/pick_2d.rs` の `walk_pick_candidates_2d`）が
+候補にするコンポーネントと判定形状は次のとおり。優先度は
+「表示物 > Canvas」→「前面ゾーン優先」→「深い階層優先」→「DFS 後方（＝最前面）優先」。
+
+| コンポーネント | 判定形状 | 変換 | ポインタイベント（Play） |
+| --- | --- | --- | --- |
+| `SpriteComponent` | 幅×高さの矩形 | `to_sprite_mat4` | `raycast_target` が true のときのみ |
+| `SkinnedSpriteComponent` | 変形後メッシュの三角形 | `to_mesh_mat4` | `raycast_target` が true のときのみ |
+| `TextComponent` | 実測したテキストブロック枠 | `to_mesh_mat4` | **対象外**（オプトインする項目が無いため） |
+| `CanvasComponent` | キャンバス矩形（補助候補） | `to_mat4_sized` | 対象外 |
+
+テキストの枠は `runtime/src/engine/core/font/text_layout.rs::measure_text_box` が
+`font_size` / `line_spacing` / `align` / `vertical_align` から求める
+（描画 `canvas_text.rs` と同じ規則・同じ送り幅。`FontSystem::advance_em` もこの関数へ委譲）。
+実測にはフォント実体が要るので、走査の前に
+`App::build_text_bounds_map`（`canvas_text_bounds.rs`）が
+「Text スロット entity → ローカル境界矩形」の表を作り、
+ピック（`pick_2d`）と選択アウトライン（`canvas_collect::collect_canvas_rects`）が
+**同じ表**を引く。したがって「枠は出るのにクリックできない」ズレは起きない。
+
+矩形選択（`collect_canvas_actors_in_rect`）は形状ではなく `CanvasTransform.position` の
+点包含で判定するため、テキストを含む全ての 2D アクターが元から対象になっている。

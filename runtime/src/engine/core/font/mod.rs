@@ -38,6 +38,8 @@ pub mod screen_hint;
 pub mod rasterizer;
 /// SDF アトラスの共通定数とアウトライン太さ変換
 pub mod sdf;
+/// テキスト寸法計算（GPU 非依存の純関数。描画とピックで共有する）
+pub mod text_layout;
 
 use ab_glyph::{Font, InvalidFont, PxScale, ScaleFont};
 use wgpu::util::DeviceExt;
@@ -361,8 +363,8 @@ impl FontSystem {
         let font_id = self.registry.font_id(font_path);
         let font = self.registry.font(font_id);
         // 基準 em サイズで引いて em 単位へ正規化する（メトリクスはスケールに線形）。
-        let scaled = font.as_scaled(PxScale::from(SDF_EM_PX));
-        scaled.h_advance(font.glyph_id(ch)) / SDF_EM_PX
+        // 送り幅の定義は text_layout に一本化する（描画とピックで必ず同値にするため）
+        text_layout::advance_em(font, ch)
     }
 
     /// アトラスを GPU にアップロードする（毎フレーム呼ぶ）。

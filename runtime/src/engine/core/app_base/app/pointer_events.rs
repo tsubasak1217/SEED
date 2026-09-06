@@ -37,6 +37,7 @@ use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
 
 use super::pick_2d::{walk_pick_candidates_2d, zone_rank, PickCand2d, PickFilter2d};
+use super::canvas_text_bounds::TextBoundsMap;
 use super::App;
 
 // ─── ポインタ状態（フレーム間で持ち越す最小限）──────────────────
@@ -296,6 +297,9 @@ impl App {
                 // Play の実合成は常に「画面中央原点」（設計空間表示は Edit 専用）。
                 false,
                 &mesh_of,
+                // ポインタイベントはテキストを対象にしない（TextComponent は
+                // raycast_target を持たない）。空の表を渡して明示する。
+                &TextBoundsMap::new(),
                 PickFilter2d::POINTER_EVENT,
                 &mut cands,
             );
@@ -679,6 +683,7 @@ mod tests {
             &empty,
             false,
             &mesh_of,
+            &TextBoundsMap::new(),
             PickFilter2d::POINTER_EVENT,
             &mut out,
         );

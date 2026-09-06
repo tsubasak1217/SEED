@@ -57,7 +57,11 @@ mod physics2d_ops;
 mod physics2d_component_ops;
 mod transform_ops;
 mod camera_ops;
+/// 2D キャンバスギズモの軸基底（World/Local）— 描画とヒットテストで共有する
+mod canvas_gizmo_basis;
 mod gizmo_handler;
+/// TextComponent の表示枠（実測）マップ — ピック・選択枠で共有する
+mod canvas_text_bounds;
 mod pick_2d;
 /// Play 中のキャンバス UI ポインタイベント（OnPointerEnter/Down/Click 等）の判定と配信。
 mod pointer_events;

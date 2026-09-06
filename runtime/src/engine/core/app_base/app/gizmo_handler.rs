@@ -437,6 +437,23 @@ impl App {
                 az,
             );
         }
+        // 2D キャンバス編集の Local 座標モード: 選択アクターの累積回転に沿った
+        // 2 軸ギズモでヒットテストする（有効パーツの制限は 3D Canvas 子と同一のため
+        // hit_test_gizmo_canvas を共用する）。基底は描画と同じ canvas_gizmo_axes_2d。
+        if gizmo_actor_is_2d && use_screen_space {
+            if let Some([ax, ay, az]) = self.canvas_gizmo_axes_2d() {
+                return hit_test_gizmo_canvas(
+                    ray_o,
+                    ray_d,
+                    gizmo_pos,
+                    radius,
+                    self.tool_mode,
+                    ax,
+                    ay,
+                    az,
+                );
+            }
+        }
         // Local 座標モード（通常 3D アクター）: オブジェクトのローカル回転軸に沿ったヒットテスト
         if let Some([ax, ay, az]) = self.selected_local_axes() {
             return hit_test_gizmo_oriented(
@@ -538,6 +555,36 @@ impl App {
                 az,
                 false,
             ));
+        }
+        // 2D キャンバス編集の Local 座標モード: 描画と同一基底（canvas_gizmo_axes_2d）で
+        // ヒットテストし、そのままローカル軸に沿った oriented ドラッグを開始する。
+        // full_axes = false（2 軸限定。Center ハンドルは ax/ay 面内のみスケール）。
+        if gizmo_actor_is_2d && use_screen_space {
+            if let Some([ax, ay, az]) = self.canvas_gizmo_axes_2d() {
+                let part = hit_test_gizmo_canvas(
+                    ray_o,
+                    ray_d,
+                    gizmo_pos,
+                    radius,
+                    self.tool_mode,
+                    ax,
+                    ay,
+                    az,
+                )?;
+                return Some(start_drag_oriented(
+                    part,
+                    self.tool_mode,
+                    ray_o,
+                    ray_d,
+                    gizmo_pos,
+                    radius,
+                    centroid_mat,
+                    ax,
+                    ay,
+                    az,
+                    false,
+                ));
+            }
         }
         // Local 座標モード（通常 3D アクター）: ローカル回転軸に沿った oriented ドラッグ開始を使う
         if let Some([ax, ay, az]) = self.selected_local_axes() {

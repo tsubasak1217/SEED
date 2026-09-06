@@ -1401,7 +1401,7 @@
                                                         BorderBrush="#555555"
                                                         BorderThickness="1"
                                                         Cursor="Hand"
-                                                        ToolTip="移動/回転/スケールギズモの座標系を World（ワールド軸）⇄ Local（選択アクターのローカル軸）で切り替え"
+                                                        ToolTip="移動/回転/スケールギズモの座標系を World（ワールド軸／2D はキャンバス軸）⇄ Local（選択アクターのローカル軸／2D は累積回転）で切り替え。3D・2D どちらの編集にも効く"
                                                         Click="OnGizmoSpaceToggleClicked">
                                                     <Button.Style>
                                                         <Style TargetType="Button">

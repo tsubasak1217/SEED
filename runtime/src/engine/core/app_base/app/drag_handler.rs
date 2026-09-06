@@ -36,6 +36,13 @@ use super::{
     camera_scene_gizmo,
     CANVAS_WORLD_SCALE,
 };
+use super::canvas_gizmo_basis::{
+    axis_scale_factor, canvas_gizmo_axes_world, canvas_world_to_parent_local_pos,
+};
+
+/// CanvasTransform.scale へ書き戻す最小のスケール係数。
+/// これ以下は「ギズモを中心へ潰し切った」状態で符号反転・ゼロ化を招くため無視する。
+const CANVAS_SCALE_MIN_FACTOR: f32 = 0.001;
 
 impl App {
     // ============================================================
@@ -448,24 +455,21 @@ impl App {
                                                 // position を求める（自動解像度・ルート恒等化・
                                                 // ビューポート基準アンカー・auto_scale 対応）。
                                                 // world → 親キャンバスローカル（親累積回転の逆適用）
-                                                let dx = new_mat[0][3] - ctx2d.parent_canvas_origin[0];
-                                                let dy = new_mat[1][3] - ctx2d.parent_canvas_origin[1];
-                                                let (sin_p, cos_p) = ctx2d.parent_world_rot.sin_cos();
-                                                let local_x =  cos_p * dx + sin_p * dy;
-                                                let local_y = -sin_p * dx + cos_p * dy;
-                                                // アンカーオフセットを除去し、
-                                                // sm_transform 時は親累積スケールの逆数を適用する
-                                                let px = local_x - ctx2d.anchor_off[0];
-                                                let py = local_y - ctx2d.anchor_off[1];
-                                                if ctx2d.sm_transform {
-                                                    let sx = if ctx2d.cumul_scale[0].abs() > f32::EPSILON { ctx2d.cumul_scale[0] } else { 1.0 };
-                                                    let sy = if ctx2d.cumul_scale[1].abs() > f32::EPSILON { ctx2d.cumul_scale[1] } else { 1.0 };
-                                                    ct.position[0] = px / sx;
-                                                    ct.position[1] = py / sy;
-                                                } else {
-                                                    ct.position[0] = px;
-                                                    ct.position[1] = py;
-                                                }
+                                                // 逆変換（親原点 → 親回転の逆 → アンカー除去 →
+                                                // sm_transform の逆スケール）は純関数へ集約している。
+                                                // Local モードで回転軸に沿って動かした場合も、
+                                                // ここで親回転・親スケールを外すことで
+                                                // 正しい親ローカル position デルタになる。
+                                                let p = canvas_world_to_parent_local_pos(
+                                                    [new_mat[0][3], new_mat[1][3]],
+                                                    ctx2d.parent_canvas_origin,
+                                                    ctx2d.parent_world_rot,
+                                                    ctx2d.anchor_off,
+                                                    ctx2d.cumul_scale,
+                                                    ctx2d.sm_transform,
+                                                );
+                                                ct.position[0] = p[0];
+                                                ct.position[1] = p[1];
                                             } else {
                                                 // 従来経路（ワールドスペース・アクター編集タブ）
                                                 // ワールドスペースでは平行移動をキャンバスピクセルに変換し、
@@ -485,11 +489,17 @@ impl App {
                                                     ct.scale    = start_ct.scale;
                                                 }
                                                 crate::engine::core::app_base::ipc::ToolMode::Scale => {
-                                                    // new_mat の各列の長さ = centroid 起点のスケール係数
-                                                    let sx = (new_mat[0][0]*new_mat[0][0] + new_mat[1][0]*new_mat[1][0]).sqrt();
-                                                    let sy = (new_mat[0][1]*new_mat[0][1] + new_mat[1][1]*new_mat[1][1]).sqrt();
-                                                    if sx > 0.001 { ct.scale[0] = start_ct.scale[0] * sx; }
-                                                    if sy > 0.001 { ct.scale[1] = start_ct.scale[1] * sy; }
+                                                    // ギズモ基底方向のスケール係数を取り出す。
+                                                    // World モード（軸整列）では従来の「列ベクトル長」と同値、
+                                                    // Local モードでは回転した軸方向の係数が得られる
+                                                    // （列長を使うと軸が斜めのとき誤った倍率になる）。
+                                                    // CanvasTransform.scale は元々ローカル軸のスケールなので、
+                                                    // どちらのモードでも書き戻し先は scale x/y で変わらない。
+                                                    let [gax, gay, _] = drag.axes.unwrap_or_else(canvas_gizmo_axes_world);
+                                                    let sx = axis_scale_factor(&new_mat, gax);
+                                                    let sy = axis_scale_factor(&new_mat, gay);
+                                                    if sx > CANVAS_SCALE_MIN_FACTOR { ct.scale[0] = start_ct.scale[0] * sx; }
+                                                    if sy > CANVAS_SCALE_MIN_FACTOR { ct.scale[1] = start_ct.scale[1] * sy; }
                                                     ct.rotation = start_ct.rotation;
                                                 }
                                                 _ => {

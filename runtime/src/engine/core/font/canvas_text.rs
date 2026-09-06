@@ -20,6 +20,7 @@
 // ============================================================
 
 use super::sdf::outline_px_to_sdf;
+use super::text_layout::{TextLocalBox, measure_text_box};
 use super::{FontSystem, GpuTextBatch, TextBatch};
 use crate::engine::components::{CanvasDrawZone, TextAlign, TextVerticalAlign, MAX_TEXT_CHARS};
 
@@ -115,6 +116,27 @@ impl CanvasTextRenderer {
         // 新しく増えたグリフをアトラスへアップロードする（毎フレーム必須）。
         self.font.flush(queue);
         self.font.build_gpu_batch(&batch, device)
+    }
+
+    /// テキストの表示寸法（キャンバスローカル px の境界矩形）を測る。
+    ///
+    /// 描画（`append_item`）と**同一のレイアウト規則**（`text_layout::measure_text_box`）を
+    /// 使うため、ピックのヒット矩形・選択アウトラインが必ず見た目と一致する。
+    /// フォントは `font_path` から解決する（未ロードならここで読み込まれ、
+    /// 以降はレジストリのキャッシュが効く）。空文字・サイズ 0 は `None`。
+    #[allow(clippy::too_many_arguments)]
+    pub fn measure_text_box(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        line_spacing: f32,
+        align: TextAlign,
+        vertical_align: TextVerticalAlign,
+        font_path: &str,
+    ) -> Option<TextLocalBox> {
+        let font_id = self.font.registry.font_id(font_path);
+        let font = self.font.registry.font(font_id);
+        measure_text_box(font, text, font_size, line_spacing, align, vertical_align)
     }
 
     /// 焼いたバッチをレンダーパスへ描画する。

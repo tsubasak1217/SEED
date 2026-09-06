@@ -28,6 +28,7 @@ use crate::engine::methods::drawer::{
 };
 use crate::engine::methods::gizmo_interact::mat4x4_mul;
 use crate::engine::structs::objects::Actor;
+use super::canvas_text_bounds::TextBoundsMap;
 
 /// キャンバス座標（ピクセル）→ 3D ワールド座標の変換スケール係数。
 /// mod.rs の CANVAS_WORLD_SCALE と同値。
@@ -944,6 +945,9 @@ pub(super) fn collect_canvas_rects(
     // スキンスプライトのボーン可視化（Phase A2）。None = 描かない
     // （Play 中・ビューポートオプションで OFF・メッシュローダが無い場合）。
     bone_overlay: Option<&BoneOverlayCtx<'_>>,
+    // テキストの実測枠（Text スロット entity → ローカル境界矩形）。
+    // ピック（pick_2d）と同一の表を渡すことで、選択枠とクリック判定が必ず一致する。
+    text_bounds: &TextBoundsMap,
 ) {
     for actor in actors {
         if actor.world_line != wl {
@@ -981,6 +985,7 @@ pub(super) fn collect_canvas_rects(
                 design_space,
                 outline_step,
                 bone_overlay,
+                text_bounds,
             );
             continue;
         }
@@ -1207,6 +1212,45 @@ pub(super) fn collect_canvas_rects(
                             selected_dfs_ids,
                         );
                     }
+                    ComponentKind::Text => {
+                        // TextComponent: 選択時のみ、実測したブロック枠を太線で描画する。
+                        // 判定・描画の形状はピック（pick_2d の Text ヒット）と同じ表を使うので、
+                        // 「枠は出ているのにクリックできない」というズレが起きない。
+                        if !selected_dfs_ids.contains(&my_dfs) {
+                            continue;
+                        }
+                        let Some(bx) = text_bounds.get(&slot.entity) else {
+                            continue;
+                        };
+                        // 選択色はキャンバス枠・スプライト枠と共通のオレンジ
+                        const TEXT_OUTLINE_COL: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
+                        // グリフは実寸 px で組まれるため、スプライトではなくメッシュ用
+                        // 変換連鎖（to_mesh_mat4）を使う（描画・ピックと同一）。
+                        let m = mat4x4_mul(
+                            parent_world_rs,
+                            eff_ct.to_mesh_mat4(size_sc_x, size_sc_y),
+                        );
+                        let csy_t = canvas_scale * y_sign;
+                        let tp = |lx: f32, ly: f32| -> [f32; 3] {
+                            [
+                                (m[0][0] * lx + m[0][1] * ly + m[0][3]) * canvas_scale,
+                                (m[1][0] * lx + m[1][1] * ly + m[1][3]) * csy_t,
+                                0.0f32,
+                            ]
+                        };
+                        add_thick_rect(
+                            lb,
+                            [
+                                tp(bx.min[0], bx.min[1]),
+                                tp(bx.max[0], bx.min[1]),
+                                tp(bx.max[0], bx.max[1]),
+                                tp(bx.min[0], bx.max[1]),
+                            ],
+                            TEXT_OUTLINE_COL,
+                            OUTLINE_RINGS_THICK,
+                            outline_step,
+                        );
+                    }
                     _ => {}
                 }
             }
@@ -1255,6 +1299,7 @@ pub(super) fn collect_canvas_rects(
                 design_space,
                 outline_step,
                 bone_overlay,
+                text_bounds,
             );
         } else {
             // CanvasTransform なし（Actor3D 等）: 枠描画対象外だが、DFS 番号は
