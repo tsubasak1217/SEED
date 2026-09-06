@@ -4718,6 +4718,42 @@ impl App {
                         }
                     };
 
+                    // ── スクリプト 3D プリミティブ（SEED.Draw3D）の GPU バッチ構築 ──
+                    //
+                    // 2D 版と同じく、スクリプトが積んだコマンドをここで**丸ごと引き取る**
+                    // （キューは空になる＝前フレームの図形は残らない）。
+                    //
+                    // 座標は最初からワールド空間なので座標空間の解決は不要。
+                    // 深度テストの有無だけで 2 レンジへ振り分ける
+                    // （depth_test=true → 3D シーンに隠れる / false → 常に手前）。
+                    // 描画順はスクリプトが呼んだ順（レイヤーの概念は無い）。
+                    //
+                    // 太さの押し出しに使うカメラ uniform は、ビューポートが確定した後に
+                    // `update_camera` で書き込む（同じ saved_view_proj を使うこと）。
+                    let (prim3d_range_depth, prim3d_range_overlay) = {
+                        crate::profile_scope!("描画/3D プリミティブ収集・構築");
+                        use crate::engine::core::renderer::primitive3d::Primitive3dRange;
+                        let cmds = crate::engine::core::renderer::primitive3d::take_commands();
+                        let (mut depth_on, mut depth_off) = (Vec::new(), Vec::new());
+                        for c in cmds {
+                            if c.depth_test {
+                                depth_on.push(c);
+                            } else {
+                                depth_off.push(c);
+                            }
+                        }
+                        match self.primitive3d.as_mut() {
+                            Some(p) => {
+                                p.begin();
+                                let rd = p.push(&depth_on, &saved_view_proj, true);
+                                let ro = p.push(&depth_off, &saved_view_proj, false);
+                                p.upload(&draw_ctx.device, &draw_ctx.queue);
+                                (rd, ro)
+                            }
+                            None => (Primitive3dRange::EMPTY, Primitive3dRange::EMPTY),
+                        }
+                    };
+
                     // アイコンオーバーレイバッチ（エディタモードのみ）
                     // 全選択アクター（マルチ選択対応）の 3D Transform 位置をスクリーン投影してアイコンを表示する。
                     // キャンバスアクター（2D）はスクリーンスペース描画のため 3D 投影をスキップする。
@@ -5506,6 +5542,14 @@ impl App {
                                 [0.0, 0.0, rt_surf_w as f32, rt_surf_h as f32]
                             };
                             camera_buf.update_viewport(&draw_ctx.queue, vp);
+
+                            // スクリプト 3D プリミティブの線幅・点サイズは「画面 px」なので、
+                            // 頂点シェーダーへ確定後のビューポート px を渡す必要がある。
+                            // 行列は CPU 側の近平面クリップで使ったものと**同一**でなければ
+                            // クリップ位置と描画位置がずれるため、saved_view_proj を使う。
+                            if let Some(p3) = &self.primitive3d {
+                                p3.update_camera(&draw_ctx.queue, &saved_view_proj, [vp[2], vp[3]]);
+                            }
                         }
 
                         // ── Clustered Lighting: クラスタ構築 compute（Phase C1）─────────
@@ -7027,6 +7071,18 @@ impl App {
                         // 3D シーンの手前／奥の関係が正しく解決される。
                         if let Some(p2) = &self.primitive2d {
                             p2.draw(&prim_range_3d, &mut pass);
+                        }
+
+                        // ── スクリプト 3D プリミティブ（SEED.Draw3D）────────────────
+                        // 不透明・水面・半透明・3D キャンバススプライトを描き終えた後、
+                        // 2D キャンバス UI より前のこの位置で描く。
+                        //  - 深度テストあり（LessEqual・書き込み無し）: 3D シーンに正しく隠れる
+                        //  - 深度テストなし（Always）: 常に手前（デバッグ表示向け）
+                        // 後者を先に描くと深度ありの図形に上書きされ得るため、
+                        // 「深度あり → 深度なし」の順で描く。
+                        if let Some(p3) = &self.primitive3d {
+                            p3.draw(&prim3d_range_depth, &mut pass);
+                            p3.draw(&prim3d_range_overlay, &mut pass);
                         }
 
                         // 2D キャンバススプライト: scene_canvas_ss の場合はオーバーレイパスで描画する

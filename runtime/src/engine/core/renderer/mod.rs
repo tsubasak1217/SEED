@@ -32,6 +32,8 @@ pub mod material_asset;
 pub mod sprite_skin;
 /// スクリプト用 2D プリミティブ描画（`SEED.Draw` のイミディエイトモード API）
 pub mod primitive2d;
+/// スクリプト用 3D プリミティブ描画（`SEED.Draw3D` のイミディエイトモード API）
+pub mod primitive3d;
 /// .postfx ポストエフェクトアセット＋テクスチャ単位ポストプロセス（Phase R3 応用）
 pub mod postfx;
 /// エディタのシーンビュー表示モード（Lit / Unlit / Wireframe）

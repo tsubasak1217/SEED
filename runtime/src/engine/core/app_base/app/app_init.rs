@@ -131,6 +131,21 @@ impl App {
             ));
         }
 
+        // スクリプト 3D プリミティブ描画器（SEED.Draw3D 用）。
+        // 描画先はメインパス（HDR カラー + 共通深度）のみ。
+        // 2D 版と同じく Edit / Play の両方で構築する
+        // （Play 中はエディタのシーンビューでも同じ App が描画するため）。
+        {
+            use crate::engine::core::renderer::primitive3d::Primitive3dRenderer;
+            let dev = &self.draw_ctx.as_ref().unwrap().device;
+            let scene_fmt = crate::engine::core::renderer::HDR_FORMAT;
+            self.primitive3d = Some(Primitive3dRenderer::new(
+                dev,
+                scene_fmt,
+                renderer.depth_format(),
+            ));
+        }
+
         // 軸ギズモ・アイコンオーバーレイ（エディタモードのみ初期化）
         if self.mode == RuntimeMode::Edit {
             use crate::engine::core::font::axis_gizmo::AxisGizmo;

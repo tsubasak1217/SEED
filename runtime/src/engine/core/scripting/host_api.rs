@@ -1968,6 +1968,82 @@ unsafe extern "system" fn ffi_draw_primitive(
     }
 }
 
+// ─── 3D プリミティブ描画 FFI（SEED.Draw3D）──────────────────
+
+/// `SEED.Draw3D.*` が積む 3D プリミティブ描画コマンドを受け取る。
+///
+/// 2D 版（`ffi_draw_primitive`）との違いは次の 3 点:
+/// - 座標空間の引数が無い（常にワールド空間）
+/// - 点は Vector3（float 3 個ずつ）
+/// - 深度テストの有無を共通ヘッダで受け取る
+///
+/// # 引数
+/// - `kind`       : 図形種別（`Primitive3dKind` の値。C# 側 `Draw3D.cs` の定数と一致）
+/// - `params` / `param_count` : 共通ヘッダ + 図形別スカラ（`PRIM3D_PARAM_FLOATS` 個固定）
+/// - `points` / `point_count` : 点列（float は `point_count * 3` 個）
+///
+/// # 戻り値
+/// 1 = 受理 / 0 = 破棄（引数不正・1 フレーム上限超過）。
+///
+/// コマンドはフレーム描画時に丸ごと引き取られるため、描画されないフレームで
+/// 積まれたものは自動的に捨てられる。
+unsafe extern "system" fn ffi_draw_primitive3d(
+    kind: i32,
+    params: *const f32,
+    param_count: i32,
+    points: *const f32,
+    point_count: i32,
+) -> i32 {
+    use crate::engine::core::renderer::primitive3d::{
+        push_command, Primitive3dCommand, Primitive3dDrawMode, Primitive3dKind,
+        MAX_POINTS_PER_PRIMITIVE3D, PRIM3D_EXTRA_FLOATS, PRIM3D_HEADER_FLOATS,
+        PRIM3D_PARAM_FLOATS,
+    };
+
+    /// 1 点あたりの float 数（Vector3）。
+    const FLOATS_PER_POINT3: usize = 3;
+
+    // 図形種別・パラメータ長の検証（C# 側の実装ミスを黙って丸めない）
+    let Some(kind) = Primitive3dKind::from_i32(kind) else {
+        return 0;
+    };
+    if params.is_null() || param_count as usize != PRIM3D_PARAM_FLOATS {
+        return 0;
+    }
+    let p = std::slice::from_raw_parts(params, PRIM3D_PARAM_FLOATS);
+
+    // 点列（NULL / 0 個も許容する。図形側で必要数を検査する）
+    let n_points = (point_count.max(0) as usize).min(MAX_POINTS_PER_PRIMITIVE3D);
+    let pts: Vec<[f32; 3]> = if points.is_null() || n_points == 0 {
+        Vec::new()
+    } else {
+        let raw = std::slice::from_raw_parts(points, n_points * FLOATS_PER_POINT3);
+        raw.chunks_exact(FLOATS_PER_POINT3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect()
+    };
+
+    // 共通ヘッダの読み出し（配置は primitive3d/queue.rs の PRIM3D_HEADER_FLOATS を参照）
+    let mut extras = [0.0f32; PRIM3D_EXTRA_FLOATS];
+    extras.copy_from_slice(&p[PRIM3D_HEADER_FLOATS..PRIM3D_PARAM_FLOATS]);
+
+    let cmd = Primitive3dCommand {
+        kind,
+        color: [p[0], p[1], p[2], p[3]],
+        mode: Primitive3dDrawMode::from_f32(p[4]),
+        thickness_px: p[5],
+        // bool は 0.0 / 1.0（データ表現規約）
+        depth_test: p[6] >= 0.5,
+        extras,
+        points: pts,
+    };
+    if push_command(cmd) {
+        1
+    } else {
+        0
+    }
+}
+
 // ─── 物理 FFI（Raycast）──────────────────────────────────────
 
 /// レイキャストのタイムアウト（ミリ秒）。物理スレッドのコマンドドレインは
@@ -2822,6 +2898,9 @@ pub struct ScriptHostApi {
     // 2D プリミティブ描画（SEED.Draw）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     draw_primitive:          unsafe extern "system" fn(i32, u32, u32, *const f32, i32, *const f32, i32) -> i32,
+    // 3D プリミティブ描画（SEED.Draw3D）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    draw_primitive3d:        unsafe extern "system" fn(i32, *const f32, i32, *const f32, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -2858,6 +2937,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     resolve_script_instance: ffi_resolve_script_instance,
     input_cursor_lock:       ffi_input_cursor_lock,
     draw_primitive:          ffi_draw_primitive,
+    draw_primitive3d:        ffi_draw_primitive3d,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

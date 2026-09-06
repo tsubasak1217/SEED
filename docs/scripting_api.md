@@ -1576,6 +1576,142 @@ void DrawRingGauge(Vector2 center, float value)
 
 ---
 
+## 7.9 Draw3D（3D プリミティブ描画：ワールド空間の線・図形）
+
+`SEED.Draw3D` は**ワールド空間**のイミディエイトモード 3D 図形描画 API です。`SEED.Draw`（2D）と同じく Update などから**毎フレーム呼ぶ**と、そのフレームだけ図形が描かれます（オブジェクトは作られません）。釣り糸のたるみ・水面の距離リング・索敵範囲のワイヤ球など、デバッグ表示にも**ゲーム本編の表現にも**使えます。
+
+```csharp
+// ワールド空間に線を 1 本引く（太さは画面 px なので距離で細くならない）
+Draw3D.Line(rodTip, hookPos, new Color(1f, 1f, 1f, 0.8f), thicknessPx: 2f);
+
+// 索敵範囲のワイヤ球（3D シーンに隠れないデバッグ表示）
+Draw3D.WireSphere(transform.Position, 12f, Color.Green, thicknessPx: 1f, depthTest: false);
+```
+
+### 2D 版（`SEED.Draw`）との違い
+
+| | `SEED.Draw`（2D） | `SEED.Draw3D` |
+|---|---|---|
+| 座標 | スクリーン px / キャンバスローカル | **ワールド空間（Vector3）** |
+| 太さ | 描画空間の単位（px） | **画面 px。カメラ距離に依らず一定** |
+| 前後関係 | `layer`（スプライト・テキストと同じ軸） | `depthTest` と**呼び出し順**（レイヤーなし） |
+| 描画位置 | UI（2D キャンバス／スクリーン） | 半透明・3D キャンバススプライトの後、2D UI の前 |
+
+### 深度テスト（`depthTest` 引数）
+
+```csharp
+Draw3D.Line(a, b, color);                        // 既定 true = 3D シーンに正しく隠れる
+Draw3D.Line(a, b, color, depthTest: false);      // 常に手前（デバッグ表示向け）
+```
+
+同じ `depthTest` 内の重なりは**呼び出した順**（後に呼んだものが上）です。深度テストありの図形はすべて、深度テストなしの図形より先に描かれます。
+
+### 平面の指定（`normal` 引数）
+
+`Circle` / `Ring` / `Arc` は「どの平面に乗せるか」を法線で指定します。角度 0 度は法線から自動で決まる基準軸の方向で、角度は右ねじ方向へ増加します。水面へ寝かせたいときは法線に `Vector3.Up` を渡します。
+
+```csharp
+Draw3D.Circle(center, Vector3.Up, radius: 5f, color);          // 水平（水面）の円
+Draw3D.Circle(center, Vector3.Forward, radius: 5f, color);     // 画面奥向きの平面の円
+```
+
+### 図形一覧
+
+```csharp
+// 線
+Draw3D.Line(a, b, color, thicknessPx: 1f, depthTest: true);
+Draw3D.Polyline(points, closed: false, color, thicknessPx: 1f, depthTest: true);
+
+// 円・弧・リング（normal でどの平面に乗せるか決める）
+Draw3D.Circle(center, normal, radius, color, DrawMode.Outline, thicknessPx: 1f, segments: 48, depthTest: true);
+Draw3D.Arc(center, normal, radius, startDegrees, endDegrees, color, thicknessPx: 1f, segments: 48, depthTest: true);
+Draw3D.Ring(center, normal, innerRadius, outerRadius, color, startDegrees: 0f, endDegrees: 360f, segments: 48, depthTest: true);
+
+// ワイヤフレーム
+Draw3D.WireSphere(center, radius, color, thicknessPx: 1f, segments: 48, depthTest: true);
+Draw3D.WireBox(center, size, rotationEulerDegrees, color, thicknessPx: 1f, depthTest: true);
+Draw3D.WireCapsule(p0, p1, radius, color, thicknessPx: 1f, segments: 16, depthTest: true);
+
+// 面（塗りは両面・アンリット）
+Draw3D.Triangle(a, b, c, color, DrawMode.Fill, thicknessPx: 1f, depthTest: true);
+Draw3D.Quad(a, b, c, d, color, DrawMode.Fill, thicknessPx: 1f, depthTest: true);
+
+// 矢印（軸は線・矢尻は塗りの円錐）・点（常に画面を向く正方形）
+Draw3D.Arrow(from, to, color, headLength, headRadius, thicknessPx: 1f, segments: 16, depthTest: true);
+Draw3D.Point(p, sizePx: 6f, color, depthTest: true);
+```
+
+```csharp
+// DrawMode は 2D 版と共通
+DrawMode.Fill      // 内側を塗る（Circle / Triangle / Quad）
+DrawMode.Outline   // 輪郭を太さ thicknessPx の線で描く
+```
+
+### 例: 釣り糸のたるみを折れ線で描く
+
+```csharp
+// 竿先から浮きまでを、たるみ（重力方向のサグ）付きの折れ線で描く。
+const int LinePoints = 16;          // 分割数（多いほど滑らか）
+const float SagMeters = 0.6f;       // 最大たるみ量（張力で 0 に近づける）
+
+void DrawFishingLine(Vector3 rodTip, Vector3 hook, float tension01)
+{
+    var pts = new Vector3[LinePoints];
+    float sag = SagMeters * (1f - Mathf.Clamped01(tension01));
+    for (int i = 0; i < LinePoints; i++)
+    {
+        float t = (float)i / (LinePoints - 1);
+        var straight = Vector3.Lerp(rodTip, hook, t);
+        // 4t(1-t) は両端 0・中央 1 の放物線＝糸のたるみ形状
+        straight = straight + Vector3.Down * (sag * 4f * t * (1f - t));
+        pts[i] = straight;
+    }
+    Draw3D.Polyline(pts, closed: false, new Color(1f, 1f, 1f, 0.9f), thicknessPx: 2f);
+}
+```
+
+### 例: 水面に「ヒットまでの距離リング」を出す
+
+```csharp
+// 水面（y = waterY）へ寝かせたリングで、魚までの残り距離を示す。
+void DrawHookDistanceRing(Vector3 hook, float waterY, float distance)
+{
+    const float RingWidth = 0.25f;      // リングの帯幅（ワールド単位）
+    var center = new Vector3(hook.x, waterY, hook.z);
+    var color  = new Color(0.2f, 0.9f, 1f, 0.5f);
+    // 法線を真上にすると水面へ寝る。内外半径の差が帯幅になる。
+    Draw3D.Ring(center, Vector3.Up, distance - RingWidth, distance, color);
+}
+```
+
+### 例: 索敵範囲をワイヤ球でデバッグ表示
+
+```csharp
+// depthTest: false なら地形に隠れず必ず見えるので、範囲確認に向く。
+void DrawSenseRange(Vector3 center, float range, bool found)
+{
+    Draw3D.WireSphere(center, range, found ? Color.Red : Color.Green,
+        thicknessPx: 1f, segments: 32, depthTest: false);
+}
+```
+
+### 制限
+
+| 項目 | 上限・制限 |
+|---|---|
+| 1 フレームの図形数 | 4096（`Draw3D.MaxPrimitivesPerFrame`）。超過分は描かれず警告ログが出る |
+| 1 図形の点数 | 1024（`Draw3D.MaxPointsPerPrimitive`）。超過分は切り捨て |
+| 線の太さ | 0.5〜256 px にクランプされる |
+| 分割数（`segments`） | 3〜256 にクランプされる |
+| `Quad` / `Polyline` の形状 | 塗りは**凸形状のみ**（頂点 0 を要とする扇分割）。凹形状は自分で三角形へ分けること |
+| カメラ近平面 | 線はカメラ背後側を自動で切り詰めるが、**塗りの三角形は 1 頂点でも背後にあると丸ごと消える** |
+| アンチエイリアス | なし（2D 版のフェザー帯は使わない。細い線は距離によりジャギーが出る） |
+| 角（ジョイント） | 折れ線の角は継ぎ目処理をしていないため、太い線では外側にわずかな欠けが出る |
+
+> **重要**: `Draw3D.*` は「呼んだフレームだけ描く」API です。図形を出し続けたいなら毎フレーム呼んでください。Play していないフレームに積まれたコマンドは破棄されます。
+
+---
+
 ## 8. （メンテナ向け）新しいコンポーネントをスクリプトへ公開する手順
 
 コンポーネントを増やしたら、以下を行うことで **自動的にスクリプト・AI 補完から使える** ようになります。

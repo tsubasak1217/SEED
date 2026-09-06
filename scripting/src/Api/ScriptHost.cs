@@ -484,6 +484,25 @@ public static unsafe class ScriptHost
             kind, space.Index, space.Generation, prm, prmCount, pts, pointCount) != 0;
     }
 
+    /// <summary>
+    /// 3D プリミティブ描画コマンドを 1 件発行する（イミディエイトモード）。
+    ///
+    /// 座標は常にワールド空間。エンジンは積まれたコマンドをそのフレームの
+    /// 描画時に消費し、キューを空にする。
+    /// </summary>
+    /// <param name="kind">図形種別（SEED.Draw3D の kind 定数。Rust 側 Primitive3dKind と一致）。</param>
+    /// <param name="prm">共通ヘッダ + 図形別スカラ（float 配列）。</param>
+    /// <param name="prmCount">prm の要素数（固定長。Rust 側 PRIM3D_PARAM_FLOATS と一致必須）。</param>
+    /// <param name="pts">点列（x, y, z の並び）。点が無ければ null。</param>
+    /// <param name="pointCount">点の個数（float 数はこの 3 倍）。</param>
+    /// <returns>受理されたら true（上限超過・引数不正で false）。</returns>
+    public static bool DrawPrimitive3D(
+        int kind, float* prm, int prmCount, float* pts, int pointCount)
+    {
+        if (!_available || _api.DrawPrimitive3D == null) return false;
+        return _api.DrawPrimitive3D(kind, prm, prmCount, pts, pointCount) != 0;
+    }
+
     // ── オーディオ ───────────────────────────────────────────────
 
     /// <summary>
@@ -908,4 +927,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, int, int> InputCursorLock;
     /// <summary>2D プリミティブ描画コマンドの発行（SEED.Draw）。Rust 側 draw_primitive と同順。</summary>
     public delegate* unmanaged[Cdecl]<int, uint, uint, float*, int, float*, int, int> DrawPrimitive;
+    /// <summary>3D プリミティブ描画コマンドの発行（SEED.Draw3D）。Rust 側 draw_primitive3d と同順。</summary>
+    public delegate* unmanaged[Cdecl]<int, float*, int, float*, int, int> DrawPrimitive3D;
 }
