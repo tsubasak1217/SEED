@@ -1006,14 +1006,23 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "引きの限界余裕(m)")]
     private float floatDragMarginDistance = 30f;
 
-    // ─── 魚レーダー（ヒット中だけ出す） ─────────────────────────
+    // ─── 魚レーダー（着水中とヒット中に出す） ───────────────────
 
     /// <summary>
-    /// ヒット中に画面へ出す魚レーダー（<see cref="FishRadar"/>）。
+    /// 画面へ出す魚レーダー（<see cref="FishRadar"/>）。
     /// 未設定でも釣りは成立する（レーダーが出ないだけ）。
     /// </summary>
     [Header("魚レーダー"), SerializeField(Label = "魚レーダー(FishRadar)")]
     private FishRadar? radar = null;
+
+    /// <summary>
+    /// 着水してからレーダーが出るまでの待ち時間（秒）。
+    /// 投げた直後にいきなり出さず、水面が落ち着いてからフェードインさせるための間。
+    /// ヒット中はこの待ちを無視して出し続ける（<see cref="UpdateFishRadar"/>）。
+    /// フェードそのものの秒数は <see cref="FishRadar"/> 側のインスペクタが持つ。
+    /// </summary>
+    [SerializeField(Label = "レーダーが出るまでの待ち(秒)")]
+    private float radarAppearDelaySeconds = 2f;
 
     /// <summary>
     /// 掛かっている魚から見て「これ以上レベルが離れたら相手にしない」差
@@ -1285,6 +1294,21 @@ public class FishingController : SEEDScript
     public bool IsHooked => hookedFish is not null;
 
     /// <summary>
+    /// ウキのワールド位置【状態に依らず必ず現在値を返す】。
+    /// <see cref="BaitPosition"/> は「餌として有効なときだけ意味がある」値なので、
+    /// ヒット中も含めて位置だけが欲しい用途（漂流物の出現中心・巻き込み判定）はこちらを使う。
+    /// ウキ未設定なら原点を返す。
+    /// </summary>
+    public SEED.Vector3 FloatWorldPosition
+        => uki is { IsValid: true } floatTf ? floatTf.Position : SEED.Vector3.Zero;
+
+    /// <summary>
+    /// 竿先のワールド位置（＝プレイヤーが立つ岸側の基準点）。
+    /// 漂流物の出現位置が岸に寄りすぎないかの判定に使う。
+    /// </summary>
+    public SEED.Vector3 RodTipWorldPosition => RodTipPosition();
+
+    /// <summary>
     /// 掛かっている魚のレベル（1 始まり）。掛かっていない／レベル不明なら
     /// <see cref="Fish.UnknownLevel"/>。魚側の格上カリングの基準になる。
     /// </summary>
@@ -1549,7 +1573,7 @@ public class FishingController : SEEDScript
         UpdateJudgementUi(ctx.DeltaTime);
 
         // 魚レーダーも釣り状態に依らず毎フレーム引き直す（早期 return の経路でも必ず消える）。
-        UpdateFishRadar();
+        UpdateFishRadar(ctx.DeltaTime);
 
         // プレイヤー参照が無ければ姿勢の出入りができないので何もしない
         if (playerMove is not { } pm) { return; }
@@ -1719,6 +1743,8 @@ public class FishingController : SEEDScript
         HideCastPreview();
         ParkReelArrow();
         StopStunEffect();              // 隙の星が出ていたら必ず畳む（早期 return 経路の保険）
+        radar?.HideImmediate();        // 中断はフェードせず即座に消す（次の投げは 0 からフェードイン）
+        radarVisibleElapsed = 0f;      // 着水からの待ち時間も戻す
         // 釣り状態を抜けたらカーソルを必ず返す（姿勢解除・中断の唯一の出口）。
         UpdateCursorLock();
         SEED.Debug.Log("[Fishing] Idle (キャンセル)");
@@ -2102,6 +2128,9 @@ public class FishingController : SEEDScript
 
         f.Tick(deltaTime, ReadReelAmount());
 
+        // 巻いているあいだだけ、ウキが漂流物を巻き込んだかを見る（詳細は UpdateDriftPickup）
+        UpdateDriftPickup(f);
+
         // 残り距離（ウキ→竿先の水平距離）の表示。ウキが無ければ 0 を出す。
         f.UpdateDistanceDisplay(CurrentFloatDistance());
 
@@ -2110,6 +2139,81 @@ public class FishingController : SEEDScript
         // 魚 HP を削り切ったら釣り上げ成立【新仕様の主たる成功条件】。
         if (f.FishDefeated) { FinishReeling(); }
     }
+
+    /// <summary>
+    /// 漂流物（<see cref="DriftItem"/>）の巻き込み判定と効果の適用
+    /// 【漂流物とやり取りを繋ぐ唯一の場所】。
+    ///
+    /// <b>発動条件は「巻き取りながら巻き込んだとき」だけ</b>
+    /// （<see cref="FishingFight.ReelingRecently"/> ＝ 隙（Rest）フェーズで、かつ
+    ///   最後の巻き入力から保持時間以内）。巻いていないあいだにウキの近くを
+    /// 漂っているだけの漂流物はすり抜ける ―― ウキが動くのは巻いているときだけなので、
+    /// 「巻き寄せて拾う」という操作感を判定そのものに一致させるため。
+    ///
+    /// 判定はウキと漂流物の<b>水平距離</b>が漂流物の当たり半径以下かどうか。
+    /// 拾った漂流物は効果を適用し、効果音を鳴らしてから消す。
+    /// </summary>
+    /// <param name="f">進行中のやり取り（効果の適用先）。</param>
+    private void UpdateDriftPickup(FishingFight f)
+    {
+        if (!f.ReelingRecently) { return; }
+        if (DriftItem.All.Count == 0) { return; }
+        if (uki is not { IsValid: true } floatTf) { return; }
+
+        // DriftItem.Kill() は登録簿を書き換えるので、必ず作業用リストへ写してから回す
+        driftWorkItems.Clear();
+        foreach (var item in DriftItem.All) { driftWorkItems.Add(item); }
+
+        var floatPosition = floatTf.Position;
+        for (int i = 0; i < driftWorkItems.Count; i++)
+        {
+            var item = driftWorkItems[i];
+            if (HorizontalDistance(floatPosition, item.Position) > item.HitRadius) { continue; }
+
+            ApplyDriftEffect(f, item);
+            item.PlayHitSe();
+            item.Kill();
+        }
+
+        driftWorkItems.Clear();
+    }
+
+    /// <summary>
+    /// 漂流物の種類に応じた効果をやり取りへ適用する【種類と効果の唯一の対応表】。
+    ///
+    /// <code>
+    /// ひるませ  … 隙（Rest）を効果量ぶんの小節数だけ延長する（FishingFight.AddRestBars）
+    /// 魚回復    … 魚 HP を「最大値 × 効果量」だけ戻す（＝ウキが沖へ引き戻される）
+    /// 糸回復    … 糸の残りへ効果量ぶんを足す（上限 1）
+    /// </code>
+    /// 未知の種類は警告だけ出して何もしない（prefab の設定ミスを黙って握り潰さない）。
+    /// </summary>
+    /// <param name="f">効果の適用先。</param>
+    /// <param name="item">拾った漂流物。</param>
+    private static void ApplyDriftEffect(FishingFight f, DriftItem item)
+    {
+        switch (item.Kind)
+        {
+            case DriftItem.KindStun:
+                f.AddRestBars(SEED.Mathf.RoundToInt(item.EffectAmount));
+                break;
+
+            case DriftItem.KindFishRecover:
+                f.RecoverFishHp(item.EffectAmount);
+                break;
+
+            case DriftItem.KindLineRecover:
+                f.RecoverLine(item.EffectAmount);
+                break;
+
+            default:
+                SEED.Debug.LogWarning($"[FishingController] 未知の漂流物の種類 \"{item.Kind}\" を巻き込みました（効果なし）。");
+                break;
+        }
+    }
+
+    /// <summary>漂流物の走査用リスト（毎フレームの確保を避けて使い回す）。</summary>
+    private readonly System.Collections.Generic.List<DriftItem> driftWorkItems = new();
 
     /// <summary>
     /// 現在のウキ→竿先の水平距離（メートル）。ウキが無ければ 0。
@@ -2156,29 +2260,52 @@ public class FishingController : SEEDScript
         (a, b) => a.SqrDistance.CompareTo(b.SqrDistance);
 
     /// <summary>
-    /// 魚レーダーの表示を更新する【レーダーへ載せる魚を決める唯一の判断点】。
+    /// 魚レーダーの表示を更新する【レーダーへ載せるものを決める唯一の判断点】。
     ///
-    /// ヒット中だけ表示し、それ以外（待機・狙い・キャスト・巻き取り・釣り上げ演出）では隠す。
+    /// [出す区間]
+    /// <code>
+    /// 着水中（Floating / Reeling / Nibbling / HookWindow）
+    ///   … 着水から radarAppearDelaySeconds 秒経ってからフェードインで出す
+    ///     （投げた直後にいきなり出ると、狙いを定める画が忙しくなるため）
+    /// ヒット中（Hooked）
+    ///   … 遅延を待たずに出し続ける（ヒット直後の余白でも消さない）
+    /// それ以外（待機・狙い・キャスト・釣り上げ演出）
+    ///   … 隠す（フェードアウトはレーダー側が持つ）
+    /// </code>
+    /// フェードの秒数と進行は <see cref="FishRadar"/> 側の責務で、ここは
+    /// <see cref="FishRadar.Show"/> / <see cref="FishRadar.Hide"/> を毎フレーム呼ぶだけ。
     ///
-    /// [載せる魚]
-    /// 掛かっている魚より<b>大きい</b>（<see cref="Fish.DisplaySize"/> が上）個体のうち、
-    /// ウキからの水平距離がレーダー射程内のもの。<b>大きい＝乗り換えの脅威／好機</b>であり、
-    /// 小さい魚は乗り換えに関与しないので載せない。
-    ///
-    /// [不透明／半透明]
-    /// <see cref="Fish.CanPreyOn"/>（＝いま掛かっている魚を食べられるか）だけで決める。
-    /// 食べられる個体は不透明（＝乗り換えで釣れる）、食べられない個体は半透明。
-    /// <b>レベル差は不透明度に一切関与しない</b>（レベル差は魚アクタ側の更新・描画の
-    /// カリングにだけ使う。<see cref="RadarSkipLevelGap"/> 参照）。
-    /// カリング中の個体も半透明で載り続けるが、位置更新が止まっているため
-    /// 最後に居た場所に留まって見える（意図した挙動）。
+    /// [載せるもの]
+    /// <code>
+    /// ヒット前 … 射程内の魚を<b>全て</b>（釣れる／釣れないの区別はしない＝すべて不透明）
+    ///            ＝「餌に反応している魚がどこに居るか」だけが分かればよい区間
+    /// ヒット中 … 掛かっている魚より<b>大きい</b>個体だけ（＝乗り換えの脅威／好機）。
+    ///            Fish.CanPreyOn（いま掛かっている魚を食べられるか）が真なら不透明、偽なら半透明
+    /// 共通     … 漂流物（DriftItem）を種類ごとの色で不透明に載せる
+    /// </code>
+    /// 点のプールは有限（既定 24）なので、<b>魚を先に・近い順で</b>詰め、
+    /// 漂流物は残り枠へ近い順で載せる（レーダー側が溢れたぶんを落とす）。
+    /// 色の値そのものはレーダーのインスペクタが持ち、ここはそれを読んで詰めるだけ。
     /// </summary>
-    private void UpdateFishRadar()
+    /// <param name="deltaTime">このフレームの経過秒数（出現までの待ち時間の計測に使う）。</param>
+    private void UpdateFishRadar(float deltaTime)
     {
         if (radar is not { } r) { return; }
 
-        // ヒットしていない／ウキが無い／掛かっている魚が消えたなら隠す
-        if (hookedFish is not { } hooked || uki is not { IsValid: true } floatTf)
+        // ヒット中か（掛かっている魚が居て、ウキも生きている）
+        bool hooked = State == FishState.Hooked && hookedFish is not null;
+
+        // 出す区間から外れた／ウキが無いなら隠して待ち時間も戻す
+        if ((!hooked && !BaitActive) || uki is not { IsValid: true } floatTf)
+        {
+            radarVisibleElapsed = 0f;
+            r.Hide();
+            return;
+        }
+
+        // 着水してからの経過。ヒット中は遅延を待たずに出す（ヒットで初めて見えるのでは遅い）
+        radarVisibleElapsed += deltaTime;
+        if (!hooked && radarVisibleElapsed < SEED.Mathf.Max(radarAppearDelaySeconds, 0f))
         {
             r.Hide();
             return;
@@ -2189,15 +2316,23 @@ public class FishingController : SEEDScript
         var center = floatTf.Position;
         float range = r.RangeMeters;
         float sqrRange = range * range;
+        float opaque = r.OpaqueDotAlpha;
 
+        radarEntries.Clear();
+
+        // ── 1) 魚（近い順・先に枠を取る）──
         radarCandidates.Clear();
         foreach (var fish in Fish.All)
         {
-            // 掛かっている本人は中心の点で表しているので載せない
-            if (ReferenceEquals(fish, hooked)) { continue; }
-            // 掛かっている魚より小さい個体は乗り換えに関与しないので載せない
-            if (fish.DisplaySize <= hooked.DisplaySize) { continue; }
             if (fish.Transform is not { IsValid: true } fishTf) { continue; }
+
+            if (hooked && hookedFish is { } hookedTarget)
+            {
+                // 掛かっている本人は中心の点で表しているので載せない
+                if (ReferenceEquals(fish, hookedTarget)) { continue; }
+                // 掛かっている魚より小さい個体は乗り換えに関与しないので載せない
+                if (fish.DisplaySize <= hookedTarget.DisplaySize) { continue; }
+            }
 
             var pos = fishTf.Position;
             float dx = pos.x - center.x;
@@ -2205,18 +2340,43 @@ public class FishingController : SEEDScript
             float sqrDistance = dx * dx + dz * dz;
             if (sqrDistance > sqrRange) { continue; }   // 射程外は載せない
 
-            radarCandidates.Add(new RadarCandidate(sqrDistance, new RadarEntry(pos, fish.CanPreyOn(hooked))));
+            // ヒット前は区別しない（すべて不透明）。ヒット中だけ「食べられるか」で薄さを変える。
+            float alpha = !hooked || (hookedFish is { } prey && fish.CanPreyOn(prey))
+                ? opaque
+                : r.UncatchableAlpha;
+
+            radarCandidates.Add(new RadarCandidate(sqrDistance, new RadarEntry(pos, r.CatchableColor, alpha)));
         }
 
-        // 点の数には限りがあるので、近い順に詰める（溢れたぶんはレーダー側で落ちる）
         radarCandidates.Sort(RadarNearestFirst);
+        for (int i = 0; i < radarCandidates.Count; i++) { radarEntries.Add(radarCandidates[i].Entry); }
 
-        radarEntries.Clear();
+        // ── 2) 漂流物（近い順・魚の残り枠へ）──
+        radarCandidates.Clear();
+        foreach (var item in DriftItem.All)
+        {
+            var pos = item.Position;
+            float dx = pos.x - center.x;
+            float dz = pos.z - center.z;
+            float sqrDistance = dx * dx + dz * dz;
+            if (sqrDistance > sqrRange) { continue; }
+
+            radarCandidates.Add(new RadarCandidate(sqrDistance, new RadarEntry(pos, r.DriftColorOf(item.Kind), opaque)));
+        }
+
+        radarCandidates.Sort(RadarNearestFirst);
         for (int i = 0; i < radarCandidates.Count; i++) { radarEntries.Add(radarCandidates[i].Entry); }
 
         // プレイヤーの正面を上にする（キャスト方向と同じ「正面のヨー角」を使う）
         r.UpdateRadar(center, CastYawDegrees() ?? 0f, radarEntries);
     }
+
+    /// <summary>
+    /// レーダーを出してよい状態が続いている秒数（着水／ヒットしてからの経過）。
+    /// <see cref="radarAppearDelaySeconds"/> と比べてフェードインの開始を決める。
+    /// 出す区間から外れたフレームで 0 に戻る。
+    /// </summary>
+    private float radarVisibleElapsed = 0f;
 
     // ─── スタン演出（隙フェーズの星） ───────────────────────────
 
@@ -2767,10 +2927,13 @@ public class FishingController : SEEDScript
     private bool rodTipMissingWarned = false;
 
     /// <summary>
-    /// 現在の水面 Y（ワールド）を返す。
+    /// 現在の水面 Y（ワールド）を返す【水面高さの唯一の問い合わせ口】。
     /// <see cref="water"/> 未設定なら「竿先 −<see cref="waterLevelFallbackDrop"/>」を仮の水面とする。
+    ///
+    /// 漂流物（<see cref="DriftItem"/>）も水面に浮くためにこれを読むので <b>public</b>
+    /// （漂流物は動的生成されるため、参照フィールドで水面を注入できない）。
     /// </summary>
-    private float WaterSurfaceY()
+    public float WaterSurfaceY()
     {
         if (water is { } w && w.IsValid) { return w.WaterLevel; }
 

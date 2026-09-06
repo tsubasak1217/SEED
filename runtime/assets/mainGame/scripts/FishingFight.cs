@@ -84,17 +84,19 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// </code>
 /// を判定し、判定画像と「早い／遅い」のヒントを出す（表示はコントローラ側の共通 UI）。
 ///
-/// ■ 糸の残り（1〜0・一方向・回復なし。旧「テンション」を置き換えたもの）
+/// ■ 糸の残り（1〜0。<b>糸HPは固定値で、強化は無い</b>）
 /// <code>
 /// 開始値       : 合わせランクで決まる（Excellent 1.0 / Great 0.9 / Nice 0.8）
-/// 判定ごと     : 糸の残り -= |Δt| × linePerSecondOfOffset × レベル補正 ÷ 糸パワー補正
+/// 判定ごと     : 糸の残り -= |Δt| × linePerSecondOfOffset × レベル補正
 ///                Excellent は減らない
-/// Miss・空打ち : 糸の残り -= missLoss ÷ 糸パワー補正
-/// 回復手段     : 一切無い（隙(Rest)中も回復しない）
+/// Miss・空打ち : 糸の残り -= missLoss
+/// 回復手段     : 漂流物「糸の回復」を巻き込んだときだけ（<see cref="RecoverLine"/>）
 /// レベル補正   = 1 + tensionLevelScale × (魚の総合力 ÷ 竿パワー − 1)（下限 0.5）
-/// 糸パワー補正 = 1 + linePowerLossReduction × (糸パワー − 1)
 /// 糸の残り ≦ 0 → 糸が切れる（<see cref="LineBroken"/>）
 /// </code>
+/// <b>2026-09-06 改定</b>: 「糸パワー」による減り軽減（linePower / linePowerLossReduction）は廃止した。
+/// 糸の強化で全体の難度を下げるのではなく、<b>固定の糸HPを漂流物の回復でやりくりする</b>設計にしたため
+/// （強化要素は漂流物の出現頻度など別の軸へ寄せる）。
 ///
 /// ■ 魚 HP（巻き取り）
 /// <code>
@@ -222,6 +224,12 @@ public class FishingFight : SEEDScript
     /// <summary>「巻いている」とみなす巻き取り量のしきい値（メートル）。</summary>
     private const float ReelInputEpsilon = 0.0001f;
 
+    /// <summary>漂流物「ひるませ」で延長できる隙の小節数の下限（0 小節の延長は無意味なので 1）。</summary>
+    private const int MinExtraRestBars = 1;
+
+    /// <summary>まだ 1 度も巻き入力が無いことを表す時刻の番兵（十分に古い時刻）。</summary>
+    private const float NoReelInputTime = float.MinValue;
+
     /// <summary>戦闘力の基準比（魚 ÷ 竿 がこの値なら「等価」）。</summary>
     private const float EquivalentPowerRatio = 1f;
 
@@ -260,13 +268,6 @@ public class FishingFight : SEEDScript
     /// </summary>
     [Header("装備"), SerializeField(Label = "竿パワー")]
     private float rodPower = 10f;
-
-    /// <summary>
-    /// 糸パワー。大きいほど安全帯（緑の円弧）が広がる。
-    /// 投げるごとにリセットされる想定（強化は将来のフィールド要素）。
-    /// </summary>
-    [SerializeField(Label = "糸パワー")]
-    private float linePower = 1f;
 
     // ─── フェーズの長さ（小節数）─────────────────────────────
 
@@ -397,14 +398,6 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "戦闘力差の効き")]
     private float tensionLevelScale = 1f;
 
-    /// <summary>
-    /// 糸パワーによる減り軽減の強さ。
-    /// 糸パワー補正 ＝ 1 + 本値 × (糸パワー − 1)。糸の減り量はこの補正で割られる
-    /// （糸パワーが高いほど、同じ判定でも糸の減りが小さくなる）。
-    /// </summary>
-    [SerializeField(Label = "糸パワーの減り軽減")]
-    private float linePowerLossReduction = 0.25f;
-
     // ─── 合わせランクによる初期の糸の残り ─────────────────────
 
     /// <summary>Excellent で合わせたときの初期の糸の残り。</summary>
@@ -455,6 +448,16 @@ public class FishingFight : SEEDScript
     /// <summary>目標距離が現在より<b>近い</b>とき、ウキが手元へ寄る速度の上限（m/秒）。</summary>
     [SerializeField(Label = "寄せ速度の上限(m/秒)")]
     private float reelInSpeedMax = 6f;
+
+    /// <summary>
+    /// 「いま巻いている」とみなし続ける保持時間（秒）【漂流物の巻き込み判定の唯一の猶予】。
+    ///
+    /// 巻き入力は連打・こま切れになりやすいので、最後に巻いた時刻からこの秒数のあいだは
+    /// 巻き continuing とみなす（<see cref="ReelingRecently"/>）。
+    /// 0 にすると「そのフレームに巻いていること」が必須になる。
+    /// </summary>
+    [SerializeField(Label = "巻き入力の保持時間(秒)")]
+    private float reelHoldSeconds = 0.35f;
 
     /// <summary>引きの速度倍率（魚 ÷ 竿）の下限。</summary>
     [SerializeField(Label = "引きの速度倍率の下限")]
@@ -770,6 +773,19 @@ public class FishingFight : SEEDScript
     /// </summary>
     public float DesiredFloatDistance => SEED.Mathf.Max(fishHp, FishHpZero) * metersPerHp;
 
+    /// <summary>
+    /// <b>いま巻き取っている最中か</b>【漂流物の巻き込み判定の唯一の条件】。
+    ///
+    /// 隙（<see cref="Phase.Rest"/>）のあいだだけ巻けるので、次の 3 つがすべて成り立つときに true:
+    /// バトル中で一時停止していない／フェーズが隙／最後の巻き入力から
+    /// <see cref="reelHoldSeconds"/> 秒以内。
+    /// 「巻いていないときに漂流物のそばを漂っているだけ」ではすり抜けさせるための判定。
+    /// </summary>
+    public bool ReelingRecently
+        => Active && !Paused && CurrentPhase == Phase.Rest
+        && lastReelInputTime > NoReelInputTime
+        && clockTime - lastReelInputTime <= SEED.Mathf.Max(reelHoldSeconds, 0f);
+
     /// <summary>糸切れの効果音パス（コントローラ側から鳴らす場合の参照用）。</summary>
     public string LineBreakSePath => lineBreakSePath;
 
@@ -955,6 +971,19 @@ public class FishingFight : SEEDScript
 
     /// <summary>直前の回答が完璧（全 Excellent ＆ 余分なクリック 0）だったか。隙の長さを決める。</summary>
     private bool lastAnswerPerfect = false;
+
+    /// <summary>
+    /// 次の隙（Rest）へ持ち越す延長小節数【漂流物「ひるませ」の持ち越し分】。
+    /// 隙以外のフェーズで <see cref="AddRestBars"/> が呼ばれたぶんをここへ貯め、
+    /// 次に隙へ入るときの長さへ足して 0 に戻す。
+    /// </summary>
+    private int pendingExtraRestBars = 0;
+
+    /// <summary>
+    /// 最後に巻き入力があった時刻（<see cref="clockTime"/> と同じ時間軸）。
+    /// <see cref="NoReelInputTime"/> なら「このバトルではまだ 1 度も巻いていない」。
+    /// </summary>
+    private float lastReelInputTime = NoReelInputTime;
 
     /// <summary>
     /// 打点アイコンの出現（ポップ）開始時刻（秒・絶対時刻）。
@@ -1190,6 +1219,76 @@ public class FishingFight : SEEDScript
         // 目標のほうが近い: 手元へ寄せる（上限速度でクランプ・目標は追い越さない）
         float inward = reelInSpeedMax * deltaTime;
         return -SEED.Mathf.Min(inward, -difference);
+    }
+
+    // ─── 公開 API: 漂流物の効果 ─────────────────────────────
+    //
+    // 漂流物（DriftItem）を巻き込んだときの効果は、すべてここに集約する。
+    // 判定（ウキと漂流物が重なったか）と種類ごとの割り振りは FishingController が行い、
+    // 本スクリプトは「値をどう動かすか」だけを担う（単一責任）。
+
+    /// <summary>
+    /// 隙（<see cref="Phase.Rest"/>）を小節単位で延長する【漂流物「ひるませ」の効果】。
+    ///
+    /// ・いま隙の最中なら、その場でフェーズの長さ（<see cref="phaseBars"/>）と
+    ///   終了時刻（<see cref="phaseEndTime"/>）を伸ばす。針の 1 周も伸びた長さで割り直される。
+    /// ・隙以外（出題・回答・余白）なら <see cref="pendingExtraRestBars"/> へ貯め、
+    ///   <b>次に隙へ入るとき</b>にその長さへ足す（<see cref="EnterPhase"/>）。
+    ///   ＝ 巻いている最中にしか拾えない仕様なので通常は前者だが、
+    ///      拾った直後にフェーズが変わった場合でも効果を捨てない。
+    /// </summary>
+    /// <param name="bars">延長する小節数（1 未満は 1 小節として扱う）。</param>
+    public void AddRestBars(int bars)
+    {
+        if (!Active) { return; }
+
+        int extra = SEED.Mathf.Max(bars, MinExtraRestBars);
+
+        if (CurrentPhase == Phase.Rest)
+        {
+            phaseBars += extra;
+            phaseEndTime = phaseStartTime + phaseBars * SecondsPerBar;
+            nextPhaseAnnounced = false;     // 予告済みでも、伸びた終わりで出し直す
+            SEED.Debug.Log($"[Fight] 漂流物: 隙を {extra} 小節延長（合計 {phaseBars} 小節）");
+            return;
+        }
+
+        pendingExtraRestBars += extra;
+        SEED.Debug.Log($"[Fight] 漂流物: 次の隙へ {pendingExtraRestBars} 小節ぶんの延長を持ち越し");
+    }
+
+    /// <summary>
+    /// 魚 HP を割合ぶん回復する【漂流物「魚HPの回復」の効果】。
+    ///
+    /// 魚 HP ＝ min(魚HP最大値, 魚HP ＋ 魚HP最大値 × <paramref name="fraction"/>)。
+    /// 魚 HP が増えると <see cref="DesiredFloatDistance"/>（＝いま居るべき距離）も伸びるので、
+    /// 隙のあいだの距離制御（<see cref="ComputeFloatDistanceStep"/> の
+    /// 「目標のほうが遠い」枝）が <see cref="fishPullSpeed"/> でウキを沖へ引き戻す
+    /// ＝ <b>巻いた距離をそのぶん取り返される</b>。
+    /// </summary>
+    /// <param name="fraction">魚 HP 最大値に対する回復割合（0 以下なら何もしない）。</param>
+    public void RecoverFishHp(float fraction)
+    {
+        if (!Active || fraction <= 0f) { return; }
+
+        float before = fishHp;
+        fishHp = SEED.Mathf.Min(fishHp + fishHpMax * fraction, fishHpMax);
+        SEED.Debug.Log($"[Fight] 漂流物: 魚HP回復 {before:F2} → {fishHp:F2}（{FishHp01:P0}）");
+    }
+
+    /// <summary>
+    /// 糸の残りを割合ぶん回復する【漂流物「糸の回復」の効果・唯一の回復手段】。
+    /// 糸の残り ＝ min(1, 糸の残り ＋ <paramref name="fraction"/>)。
+    /// <b>既に切れている糸は戻せない</b>（切れた瞬間にバトルは終わるため）。
+    /// </summary>
+    /// <param name="fraction">足す割合（0 以下なら何もしない）。</param>
+    public void RecoverLine(float fraction)
+    {
+        if (!Active || LineBroken || fraction <= 0f) { return; }
+
+        float before = Line01;
+        Line01 = SEED.Mathf.Min(Line01 + fraction, Line01Max);
+        SEED.Debug.Log($"[Fight] 漂流物: 糸の残り回復 {before:P0} → {Line01:P0}");
     }
 
     // ─── 内部処理: リズムデータの取り込み ───────────────────
@@ -1551,6 +1650,15 @@ public class FishingFight : SEEDScript
 
         CurrentPhase = next;
         phaseBars = PhaseBarsOf(next);
+
+        // 隙以外のフェーズ中に拾った漂流物「ひるませ」の延長ぶんを、ここで 1 度だけ足し込む
+        // （PhaseBarsOf は副作用を持たない問い合わせのままにしておきたいので、消費はこの場所で行う）
+        if (next == Phase.Rest && pendingExtraRestBars > 0)
+        {
+            phaseBars += pendingExtraRestBars;
+            pendingExtraRestBars = 0;
+        }
+
         phaseStartTime = CurrentBarStartTime();
         phaseEndTime = phaseStartTime + phaseBars * SecondsPerBar;
         nextPhaseAnnounced = false;
@@ -1913,7 +2021,7 @@ public class FishingFight : SEEDScript
         // 糸の残り: Excellent は減らず、それ以外は「ズレの大きさ × 効き ÷ 糸パワー補正」だけ減る
         if (judgement != FishingController.HookJudgement.Excellent)
         {
-            SubtractLine(offset * linePerSecondOfOffset * LevelScale() / LinePowerFactor());
+            SubtractLine(offset * linePerSecondOfOffset * LevelScale());
         }
 
         FishingController.Current?.ShowFightJudgement(judgement, signedOffset);
@@ -1994,7 +2102,7 @@ public class FishingFight : SEEDScript
     /// </summary>
     private void ApplyMiss()
     {
-        SubtractLine(SEED.Mathf.Max(missLoss, 0f) / LinePowerFactor());
+        SubtractLine(SEED.Mathf.Max(missLoss, 0f));
         FishingController.Current?.ShowFightJudgement(FishingController.HookJudgement.Miss, 0f);
     }
 
@@ -2031,6 +2139,9 @@ public class FishingFight : SEEDScript
 
         // 巻き取り: 巻いた距離ぶんだけ魚 HP を削る
         if (reelAmount <= ReelInputEpsilon) { return; }
+
+        // 漂流物の巻き込み判定（ReelingRecently）が読む「最後に巻いた時刻」を控える
+        lastReelInputTime = clockTime;
         fishHp = SEED.Mathf.Max(fishHp - reelAmount * ReelHpPerUnit, FishHpZero);
     }
 
@@ -2119,14 +2230,6 @@ public class FishingFight : SEEDScript
         return SEED.Mathf.Clamped(ratio, pullRateMultiplierMin, pullRateMultiplierMax);
     }
 
-    /// <summary>
-    /// 糸パワーによる糸の減り軽減の倍率。
-    /// ＝ 1 + <see cref="linePowerLossReduction"/> × (糸パワー − 1)。
-    /// 糸の減り量はこの値で割られる（大きいほど減りにくくなる）。
-    /// </summary>
-    private float LinePowerFactor()
-        => SEED.Mathf.Max(NeutralMultiplier + linePowerLossReduction * (linePower - NeutralMultiplier), DivideEpsilon);
-
     /// <summary>合わせ判定に対応する初期の糸の残り（判定が無ければ最も不利な Nice 値）。</summary>
     /// <param name="judge">合わせ判定。</param>
     private float InitialLine(FishingController.HookJudgement judge) => judge switch
@@ -2186,6 +2289,8 @@ public class FishingFight : SEEDScript
 
         extraClickCount = 0;
         lastAnswerPerfect = false;
+        pendingExtraRestBars = 0;
+        lastReelInputTime = NoReelInputTime;
         ResetIcons(0);
         iconFadeStartTime = NoFadeStart;
     }

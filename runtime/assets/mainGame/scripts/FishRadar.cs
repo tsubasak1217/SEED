@@ -2,30 +2,36 @@ using System.Collections.Generic;
 using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
 
 /// <summary>
-/// レーダーに 1 点を表示するための入力データ（1 匹ぶん）。
+/// レーダーに 1 点を表示するための入力データ（点 1 個ぶん）。
 ///
-/// レーダーは「誰を出すか」「釣れるか」を<b>一切判断しない</b>。
-/// 判断は呼び出し側（<see cref="FishingController"/>）が行い、その結果だけを
-/// この構造体で渡す（表示と判断の責務分離）。
+/// レーダーは「誰を出すか」「どんな色で出すか」を<b>一切判断しない</b>。
+/// 判断は呼び出し側（<see cref="FishingController"/>）が行い、その結果
+/// （位置・色・不透明度）だけをこの構造体で渡す（表示と判断の責務分離）。
+///
+/// 色の<b>値そのもの</b>は <see cref="FishRadar"/> のインスペクタが持ち
+/// （<see cref="FishRadar.CatchableColor"/> / <see cref="FishRadar.DriftColorOf"/> など）、
+/// 呼び出し側はそれを読んで詰めるだけ ―― パレットの唯一の置き場をレーダー側に保つ。
 /// </summary>
 public readonly struct RadarEntry
 {
     /// <summary>この点のワールド座標（XZ だけ使う。Y は無視される）。</summary>
     public readonly SEED.Vector3 position;
 
-    /// <summary>
-    /// 「いま掛かっている魚を食べられる＝乗り換えで釣れる」個体か。
-    /// true なら不透明、false なら半透明（<see cref="FishRadar.UncatchableAlpha"/>）で描く。
-    /// </summary>
-    public readonly bool catchable;
+    /// <summary>点の色（RGB）。魚も漂流物もこの値がそのまま描かれる。</summary>
+    public readonly SEED.Vector3 color;
+
+    /// <summary>点の不透明度（0〜1）。魚の「釣れない個体」だけ薄くする使い方をしている。</summary>
+    public readonly float alpha;
 
     /// <summary>各値を指定して 1 点ぶんの入力を作る。</summary>
     /// <param name="position">ワールド座標。</param>
-    /// <param name="catchable">乗り換えで釣れる個体か。</param>
-    public RadarEntry(SEED.Vector3 position, bool catchable)
+    /// <param name="color">点の色（RGB）。</param>
+    /// <param name="alpha">点の不透明度（0〜1）。</param>
+    public RadarEntry(SEED.Vector3 position, SEED.Vector3 color, float alpha)
     {
         this.position = position;
-        this.catchable = catchable;
+        this.color = color;
+        this.alpha = alpha;
     }
 }
 
@@ -130,14 +136,56 @@ public class FishRadar : SEEDScript
     [SerializeField(Label = "釣れない個体の不透明度")]
     private float uncatchableAlpha = 0.35f;
 
+    /// <summary>漂流物「糸の回復」（<see cref="DriftItem.KindLineRecover"/>）の点の色（RGB）。</summary>
+    [SerializeField(Label = "漂流物の色(糸回復)")]
+    private SEED.Vector3 driftLineRecoverColor = new(1f, 0.45f, 0.8f);
+
+    /// <summary>漂流物「ひるませ（スタン）」（<see cref="DriftItem.KindStun"/>）の点の色（RGB）。</summary>
+    [SerializeField(Label = "漂流物の色(ひるませ)")]
+    private SEED.Vector3 driftStunColor = new(1f, 0.95f, 0.3f);
+
+    /// <summary>漂流物「魚HPの回復」（<see cref="DriftItem.KindFishRecover"/>）の点の色（RGB）。</summary>
+    [SerializeField(Label = "漂流物の色(魚回復)")]
+    private SEED.Vector3 driftFishRecoverColor = new(1f, 0.6f, 0.2f);
+
     /// <summary>レーダー背景の不透明度（表示中）。</summary>
     [SerializeField(Label = "背景の不透明度")]
     private float bgOpacity = 0.9f;
+
+    /// <summary>
+    /// 表示／非表示を切り替えるときのフェード秒数（0 なら即座に切り替わる）。
+    /// <see cref="Show"/> / <see cref="Hide"/> は目標値を変えるだけで、
+    /// 実際の不透明度はこの秒数をかけて <see cref="Update"/> が近づける。
+    /// </summary>
+    [SerializeField(Label = "フェード秒数")]
+    private float radarFadeSeconds = 0.5f;
 
     // ─── 内部状態 ─────────────────────────────────────────────
 
     /// <summary>いま表示中か（<see cref="Show"/> / <see cref="Hide"/> が唯一の切替点）。</summary>
     private bool visible = false;
+
+    /// <summary>
+    /// フェードの現在値（0＝完全に消えている／1＝設定どおりの濃さ）。
+    /// 描画するすべての不透明度にこの値を掛ける。
+    /// </summary>
+    private float fade01 = 0f;
+
+    /// <summary>フェードの目標値（<see cref="Show"/> で 1・<see cref="Hide"/> で 0）。</summary>
+    private float fadeTarget = 0f;
+
+    /// <summary>
+    /// 直近に <see cref="UpdateRadar"/> へ渡された点の控え。
+    /// フェードアウト中は呼び出し側が点を渡してこないので、
+    /// この控えを使って「同じ絵を薄くしていく」ために保持する。
+    /// </summary>
+    private readonly List<RadarEntry> cachedEntries = new();
+
+    /// <summary>直近に渡されたレーダー中心（ワールド座標）。</summary>
+    private SEED.Vector3 cachedCenter = SEED.Vector3.Zero;
+
+    /// <summary>直近に渡された「上向きに合わせる方位角」（度）。</summary>
+    private float cachedForwardYawDeg = 0f;
 
     /// <summary>
     /// 非表示の書き込み（全 Sprite のアルファ 0）が済んでいるか。
@@ -153,6 +201,25 @@ public class FishRadar : SEEDScript
 
     /// <summary>釣れない個体の点の不透明度（外部から確認できるように公開する）。</summary>
     public float UncatchableAlpha => uncatchableAlpha;
+
+    /// <summary>釣れる（乗り換えできる）個体の点の色（RGB）。呼び出し側が <see cref="RadarEntry"/> へ詰める。</summary>
+    public SEED.Vector3 CatchableColor => catchableColor;
+
+    /// <summary>完全に不透明な値（点を濃く出すときに呼び出し側が使う）。</summary>
+    public float OpaqueDotAlpha => OpaqueAlpha;
+
+    /// <summary>
+    /// 漂流物の種類（<see cref="DriftItem.KindStun"/> など）に対応する点の色（RGB）
+    /// 【漂流物のレーダー色の唯一の対応表】。未知の種類は釣れる個体の色で描く。
+    /// </summary>
+    /// <param name="kind">漂流物の種類文字列。</param>
+    public SEED.Vector3 DriftColorOf(string kind) => kind switch
+    {
+        DriftItem.KindLineRecover => driftLineRecoverColor,
+        DriftItem.KindStun => driftStunColor,
+        DriftItem.KindFishRecover => driftFishRecoverColor,
+        _ => catchableColor,
+    };
 
     // ─── ライフサイクル ───────────────────────────────────────
 
@@ -173,12 +240,48 @@ public class FishRadar : SEEDScript
     }
 
     /// <summary>
-    /// 毎フレームの更新。
-    /// レーダーは<b>呼び出し側（<see cref="FishingController"/>）の駆動</b>だけで動くので、
-    /// ここでは何もしない（表示・非表示も含めて外部 API 経由に一本化する）。
+    /// 毎フレームの更新【フェードを進める唯一の場所】。
+    ///
+    /// 「何を出すか」は呼び出し側（<see cref="FishingController"/>）が
+    /// <see cref="UpdateRadar"/> で決めるが、<b>フェードの進行だけは自前で持つ</b>
+    /// （フェードアウト中は呼び出し側が点を渡してこないため、
+    ///   控えた内容（<see cref="cachedEntries"/>）を薄くしながら描き続ける必要がある）。
     /// </summary>
+    /// <param name="ctx">フレーム情報（経過秒数を読む）。</param>
     public override void Update(ref NativeFrameContext ctx)
     {
+        AdvanceFade(ctx.DeltaTime);
+
+        // 完全に消えたら 1 度だけ全 Sprite を隠して以降は何もしない
+        if (fade01 <= HiddenAlpha)
+        {
+            visible = false;
+            ApplyHidden();
+            return;
+        }
+
+        // フェード中（および表示中）は控えた内容をそのまま描き直す
+        visible = true;
+        Draw();
+    }
+
+    /// <summary>
+    /// フェードの現在値を目標値へ近づける。
+    /// フェード秒数が 0 以下なら即座に目標値へ飛ぶ（フェード無しの設定）。
+    /// </summary>
+    /// <param name="deltaTime">このフレームの経過秒数。</param>
+    private void AdvanceFade(float deltaTime)
+    {
+        if (radarFadeSeconds <= MinPositiveValue || deltaTime <= 0f)
+        {
+            fade01 = fadeTarget;
+            return;
+        }
+
+        float step = deltaTime / radarFadeSeconds;
+        fade01 = fade01 < fadeTarget
+            ? SEED.Mathf.Min(fade01 + step, fadeTarget)
+            : SEED.Mathf.Max(fade01 - step, fadeTarget);
     }
 
     /// <summary>固定タイムステップの更新。</summary>
@@ -210,10 +313,9 @@ public class FishRadar : SEEDScript
     /// </summary>
     public void Show()
     {
+        fadeTarget = OpaqueAlpha;
         visible = true;
         hideApplied = false;
-        SetSpriteAlpha(bgSprite, SEED.Mathf.Clamped01(bgOpacity), SEED.Vector3.One);
-        PlaceCenterDot();
     }
 
     /// <summary>
@@ -223,9 +325,33 @@ public class FishRadar : SEEDScript
     /// </summary>
     public void Hide()
     {
-        // 既に隠し終えているなら書き込まない（非表示のあいだ毎フレーム呼ばれるため）
-        if (hideApplied) { visible = false; return; }
+        fadeTarget = HiddenAlpha;
+
+        // フェードが残っているあいだは描き続ける（実際に隠れるのは Update 側）
+        if (fade01 > HiddenAlpha) { return; }
+
         visible = false;
+        ApplyHidden();
+    }
+
+    /// <summary>
+    /// レーダーをフェードなしで即座に隠す【キャンセル・釣り上げ時の即時消去】。
+    /// 次に <see cref="Show"/> したときは 0 からのフェードインになる。
+    /// </summary>
+    public void HideImmediate()
+    {
+        fadeTarget = HiddenAlpha;
+        fade01 = HiddenAlpha;
+        visible = false;
+        ApplyHidden();
+    }
+
+    /// <summary>
+    /// 全 Sprite のアルファを 0 にする（隠し終えているフレームでは何も書かない）。
+    /// </summary>
+    private void ApplyHidden()
+    {
+        if (hideApplied) { return; }
         hideApplied = true;
         SetSpriteAlpha(bgSprite, HiddenAlpha, SEED.Vector3.One);
         SetSpriteAlpha(centerSprite, HiddenAlpha, catchableColor);
@@ -243,10 +369,31 @@ public class FishRadar : SEEDScript
     /// <param name="entries">表示する点（呼び出し側が絞り込んだ結果）。</param>
     public void UpdateRadar(SEED.Vector3 center, float forwardYawDeg, IReadOnlyList<RadarEntry> entries)
     {
-        if (!visible) { return; }
+        // 渡された内容は必ず控える（フェードアウト中に描き直すため）
+        cachedCenter = center;
+        cachedForwardYawDeg = forwardYawDeg;
+        cachedEntries.Clear();
+        for (int i = 0; i < entries.Count; i++) { cachedEntries.Add(entries[i]); }
+
+        Draw();
+    }
+
+    /// <summary>
+    /// 控えた内容（<see cref="cachedEntries"/>）を現在のフェード値で描く
+    /// 【点の配置と色の唯一の書き込み点】。
+    /// 完全に消えている（<see cref="fade01"/> が 0）ときは何も描かない。
+    /// </summary>
+    private void Draw()
+    {
+        if (!visible || fade01 <= HiddenAlpha) { return; }
+
+        hideApplied = false;   // 何か描いたら「隠し終えた」ラッチを外す
+
+        var center = cachedCenter;
+        float forwardYawDeg = cachedForwardYawDeg;
 
         // 背景と中心点は毎フレーム引き直す（背景の位置をエディタで動かしても追従させる）
-        SetSpriteAlpha(bgSprite, SEED.Mathf.Clamped01(bgOpacity), SEED.Vector3.One);
+        SetSpriteAlpha(bgSprite, SEED.Mathf.Clamped01(bgOpacity) * fade01, SEED.Vector3.One);
         PlaceCenterDot();
 
         // メートル → ピクセルの換算係数。射程 0 の設定ミスでも 0 除算しない。
@@ -266,9 +413,9 @@ public class FishRadar : SEEDScript
         int slots = SlotCount();
         int used = 0;
 
-        for (int i = 0; i < entries.Count && used < slots; i++)
+        for (int i = 0; i < cachedEntries.Count && used < slots; i++)
         {
-            var e = entries[i];
+            var e = cachedEntries[i];
 
             // 中心からの相対位置（XZ）をプレイヤー基準（正面が上）の座標へ回す
             float relX = e.position.x - center.x;
@@ -293,10 +440,11 @@ public class FishRadar : SEEDScript
             {
                 tf.Position = new SEED.Vector2(origin.x + px, origin.y + py);
             }
+            // 色と不透明度は呼び出し側が決めた値をそのまま描く（レーダーは判断しない）
             SetSpriteAlpha(
                 used < dotSprites.Count ? dotSprites[used] : null,
-                e.catchable ? OpaqueAlpha : SEED.Mathf.Clamped01(uncatchableAlpha),
-                catchableColor);
+                SEED.Mathf.Clamped01(e.alpha) * fade01,
+                e.color);
             used++;
         }
 
@@ -325,7 +473,7 @@ public class FishRadar : SEEDScript
     private void PlaceCenterDot()
     {
         if (centerTransform is { IsValid: true } tf) { tf.Position = RadarCenterPx(); }
-        SetSpriteAlpha(centerSprite, visible ? OpaqueAlpha : HiddenAlpha, catchableColor);
+        SetSpriteAlpha(centerSprite, visible ? OpaqueAlpha * fade01 : HiddenAlpha, catchableColor);
     }
 
     /// <summary>指定の添字から末尾までの点をすべて隠す。</summary>

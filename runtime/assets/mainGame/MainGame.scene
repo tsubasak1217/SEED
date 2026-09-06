@@ -2,15 +2,15 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      78.62782,
-      9.810108,
-      6.7352796
+      143.32324,
+      -4.0774593,
+      79.94711
     ],
-    "yaw": -0.7325509,
-    "pitch": 0.020779924,
+    "yaw": -1.6519784,
+    "pitch": 0.09633049,
     "fov_deg": 25.0,
     "far": 1000.0,
-    "speed": 5.0
+    "speed": 30.958696
   },
   "shading_params": {
     "toon_rim_strength": [
@@ -267,13 +267,13 @@
       "name": "Player",
       "transform": {
         "position": [
-          47.60229,
-          2.1594324,
-          32.328568
+          34.05468,
+          2.0427186,
+          47.558205
         ],
         "rotation": [
           -0.0,
-          89.97983,
+          348.34943,
           0.0
         ],
         "scale": [
@@ -292,22 +292,22 @@
               "instances": [
                 [
                   [
-                    0.0016315749,
+                    4.5378685,
                     0.0,
-                    4.635313,
-                    47.60229
+                    -0.93582386,
+                    34.06176
                   ],
                   [
                     0.0,
-                    4.6339383,
+                    4.6271176,
                     0.0,
-                    2.1594324
+                    2.0422862
                   ],
                   [
-                    -4.635313,
+                    0.93582386,
                     0.0,
-                    0.0016315749,
-                    32.328568
+                    4.5378685,
+                    47.56335
                   ],
                   [
                     0.0,
@@ -651,19 +651,19 @@
           "name": "sao",
           "transform": {
             "position": [
-              46.795135,
-              3.400374,
-              28.507027
+              35.356,
+              3.1440973,
+              49.152466
             ],
             "rotation": [
-              1.2524877,
-              -91.08107,
-              0.0000025785946
+              -16.633705,
+              -5.0126696,
+              7.6209726
             ],
             "scale": [
-              2.7811875,
-              5.5607257,
-              2.7811868
+              2.7811744,
+              5.5608845,
+              2.7811205
             ]
           },
           "components": [
@@ -676,22 +676,22 @@
                   "instances": [
                     [
                       [
-                        -0.052473404,
-                        -0.12159824,
-                        -2.7800274,
-                        46.795135
+                        2.7552962,
+                        -0.5971142,
+                        -0.23283464,
+                        35.356
                       ],
                       [
-                        1.2513732e-7,
-                        5.559396,
-                        -0.060792,
-                        3.400374
+                        0.35338244,
+                        5.2808156,
+                        0.79610157,
+                        3.1440973
                       ],
                       [
-                        2.7806926,
-                        -0.0022949248,
-                        -0.052460887,
-                        28.507027
+                        0.13562864,
+                        -1.637034,
+                        2.654551,
+                        49.152466
                       ],
                       [
                         0.0,
@@ -830,19 +830,19 @@
               "name": "RodTip",
               "transform": {
                 "position": [
-                  46.64926,
-                  11.597984,
-                  28.495577
+                  34.469772,
+                  10.919611,
+                  46.70662
                 ],
                 "rotation": [
-                  -0.0,
-                  0.0,
-                  0.0
+                  -6.9641647,
+                  88.21752,
+                  -18.155903
                 ],
                 "scale": [
-                  1.0,
-                  1.0,
-                  1.0
+                  0.9999719,
+                  1.0000323,
+                  0.9999956
                 ]
               },
               "components": [],
@@ -854,19 +854,19 @@
           "name": "FishingCameraTarget",
           "transform": {
             "position": [
-              39.681694,
-              6.115882,
-              26.91901
+              40.95748,
+              5.9945583,
+              40.8959
             ],
             "rotation": [
-              1.4767239,
-              81.06179,
+              1.472754,
+              -20.566603,
               0.0
             ],
             "scale": [
-              1.0000024,
-              0.99985856,
-              1.0000025
+              0.99975353,
+              0.99825454,
+              0.99980557
             ]
           },
           "components": [
@@ -909,19 +909,19 @@
           "name": "ResultCameraTarget",
           "transform": {
             "position": [
-              50.60229,
-              3.7594323,
-              32.329624
+              33.454624,
+              3.6396527,
+              50.497105
             ],
             "rotation": [
-              10.0,
-              269.97983,
+              9.98801,
+              168.34663,
               0.0
             ],
             "scale": [
-              1.0,
-              1.0,
-              1.0
+              0.9997758,
+              0.99834025,
+              0.9994623
             ]
           },
           "components": [],
@@ -931,19 +931,19 @@
           "name": "AnswerCameraTarget",
           "transform": {
             "position": [
-              62.6602,
-              10.503859,
-              46.853523
+              16.806093,
+              10.375064,
+              59.38513
             ],
             "rotation": [
-              16.932322,
-              -145.42137,
+              16.906101,
+              112.94588,
               0.0
             ],
             "scale": [
-              1.0,
-              1.0,
-              1.0
+              0.99993557,
+              0.99840915,
+              0.9994766
             ]
           },
           "components": [
@@ -986,19 +986,19 @@
           "name": "HeadAnchor",
           "transform": {
             "position": [
-              47.678402,
-              4.4229426,
-              32.328594
+              33.97424,
+              4.315116,
+              47.617706
             ],
             "rotation": [
-              -0.7586146,
-              -90.02016,
-              -1.8087846e-7
+              -1.0853865,
+              166.35481,
+              2.225349
             ],
             "scale": [
-              1.3905941,
-              1.3901813,
-              1.390594
+              1.390593,
+              1.3901819,
+              1.3905939
             ]
           },
           "components": [
@@ -1177,13 +1177,13 @@
       "name": "CameraTargetParent",
       "transform": {
         "position": [
-          47.599083,
-          1.8039703,
-          32.322716
+          34.054607,
+          1.6339906,
+          47.557568
         ],
         "rotation": [
           0.0,
-          -0.020093206,
+          -81.27778,
           0.0
         ],
         "scale": [
@@ -1198,19 +1198,19 @@
           "name": "CammeraTarget",
           "transform": {
             "position": [
-              59.00116,
-              9.964719,
-              -13.928545
+              81.50281,
+              9.794733,
+              51.798065
             ],
             "rotation": [
-              1.1906285,
-              -11.084623,
+              1.1905451,
+              -92.337585,
               0.0
             ],
             "scale": [
-              0.9493916,
-              0.9493914,
-              0.94939435
+              0.9494217,
+              0.9493911,
+              0.9494262
             ]
           },
           "components": [
@@ -1445,14 +1445,14 @@
       "name": "MainCamera",
       "transform": {
         "position": [
-          56.105312,
-          9.257673,
-          21.523989
+          81.5028,
+          9.794732,
+          51.79807
         ],
         "rotation": [
-          24.99996,
-          89.97984,
-          -0.000004290039
+          1.1905385,
+          267.66238,
+          -0.000006509732
         ],
         "scale": [
           1.0,
@@ -1466,7 +1466,7 @@
           "component": {
             "type": "CameraComponent",
             "data": {
-              "fov_y_deg": 44.999992,
+              "fov_y_deg": 25.000004,
               "near": 0.1,
               "far": 1000.0,
               "is_main": true,
@@ -1714,13 +1714,13 @@
       "name": "CastMarker",
       "transform": {
         "position": [
-          66.6795,
+          28.688528,
           -100.0,
-          21.527441
+          80.99155
         ],
         "rotation": [
-          -0.0,
-          0.0,
+          -6.2857685,
+          165.6493,
           0.0
         ],
         "scale": [
@@ -1808,13 +1808,13 @@
       "name": "ReelArrow",
       "transform": {
         "position": [
-          0.0,
+          32.9808,
           -100.0,
-          0.0
+          55.839912
         ],
         "rotation": [
           -90.0,
-          0.0,
+          172.87756,
           0.0
         ],
         "scale": [
@@ -1883,7 +1883,7 @@
                     1.0,
                     1.0,
                     1.0,
-                    0.35
+                    0.027474502
                   ],
                   "width": 100.0,
                   "height": 100.0,
@@ -1902,13 +1902,13 @@
       "name": "Uki",
       "transform": {
         "position": [
-          30.034996,
-          7.0835547,
-          28.517809
+          29.383472,
+          2.789536,
+          50.181408
         ],
         "rotation": [
-          -0.0,
-          89.98,
+          0.0,
+          -11.765346,
           0.0
         ],
         "scale": [
@@ -1927,22 +1927,22 @@
               "instances": [
                 [
                   [
-                    0.0003488817,
+                    0.9786221,
                     0.0,
-                    1.0,
-                    30.034996
+                    -0.20374961,
+                    29.383425
                   ],
                   [
                     0.0,
-                    0.9999998,
+                    0.99938613,
                     0.0,
-                    7.0835547
+                    2.7893999
                   ],
                   [
-                    -1.0000004,
+                    0.20375909,
                     0.0,
-                    0.00034888196,
-                    28.517809
+                    0.9786194,
+                    50.154568
                   ],
                   [
                     0.0,
@@ -1962,7 +1962,7 @@
               "groups": [],
               "next_group_id": 1000000,
               "cast_shadows": true,
-              "visible": true,
+              "visible": false,
               "material_overrides": [],
               "render_tag": 0,
               "disable_lod": true,
@@ -1991,169 +1991,169 @@
             "data": {
               "points": [
                 [
-                  58.87959,
-                  6.263359,
-                  29.314444
+                  37.651337,
+                  9.58199,
+                  51.20611
                 ],
                 [
-                  59.09906,
-                  5.9898453,
-                  29.071093
+                  37.57306,
+                  9.065261,
+                  51.245186
                 ],
                 [
-                  59.318527,
-                  5.742288,
-                  28.827742
+                  37.49478,
+                  8.576883,
+                  51.28426
                 ],
                 [
-                  59.538,
-                  5.5177884,
-                  28.58439
+                  37.416508,
+                  8.113691,
+                  51.323338
                 ],
                 [
-                  59.757465,
-                  5.3138046,
-                  28.341042
+                  37.33823,
+                  7.672908,
+                  51.36241
                 ],
                 [
-                  59.976936,
-                  5.1281185,
-                  28.09769
+                  37.259953,
+                  7.252112,
+                  51.40149
                 ],
                 [
-                  60.196404,
-                  4.9587984,
-                  27.85434
+                  37.181675,
+                  6.8491907,
+                  51.440567
                 ],
                 [
-                  60.415874,
-                  4.804167,
-                  27.610989
+                  37.1034,
+                  6.4623146,
+                  51.47964
                 ],
                 [
-                  60.63534,
-                  4.662778,
-                  27.367638
+                  37.025124,
+                  6.089902,
+                  51.51872
                 ],
                 [
-                  60.854813,
-                  4.533391,
-                  27.124287
+                  36.946846,
+                  5.7306004,
+                  51.557793
                 ],
                 [
-                  61.07428,
-                  4.414955,
-                  26.880936
+                  36.86857,
+                  5.383259,
+                  51.59687
                 ],
                 [
-                  61.29375,
-                  4.3065896,
-                  26.637585
+                  36.79029,
+                  5.0469184,
+                  51.63595
                 ],
                 [
-                  61.513218,
-                  4.2075725,
-                  26.394234
+                  36.712017,
+                  4.720788,
+                  51.675022
                 ],
                 [
-                  61.73269,
-                  4.117326,
-                  26.150885
+                  36.63374,
+                  4.4042377,
+                  51.7141
                 ],
                 [
-                  61.952156,
-                  4.035411,
-                  25.907534
+                  36.55546,
+                  4.0967884,
+                  51.753174
                 ],
                 [
-                  62.171627,
-                  3.9615185,
-                  25.664183
+                  36.477184,
+                  3.798102,
+                  51.79225
                 ],
                 [
-                  62.391098,
-                  3.8954659,
-                  25.420832
+                  36.39891,
+                  3.507978,
+                  51.83133
                 ],
                 [
-                  62.610565,
-                  3.8371913,
-                  25.17748
+                  36.320633,
+                  3.2263503,
+                  51.870403
                 ],
                 [
-                  62.830036,
-                  3.786756,
-                  24.93413
+                  36.242355,
+                  2.9532852,
+                  51.90948
                 ],
                 [
-                  63.049503,
-                  3.7443433,
-                  24.69078
+                  36.164078,
+                  2.688983,
+                  51.948555
                 ],
                 [
-                  63.268974,
-                  3.7102623,
-                  24.44743
+                  36.0858,
+                  2.4337816,
+                  51.987633
                 ],
                 [
-                  63.48844,
-                  3.6849527,
-                  24.204079
+                  36.007526,
+                  2.1881604,
+                  52.026707
                 ],
                 [
-                  63.707912,
-                  3.6689904,
-                  23.960728
+                  35.92925,
+                  1.9527498,
+                  52.065784
                 ],
                 [
-                  63.92738,
-                  3.6630988,
-                  23.717377
+                  35.85097,
+                  1.728339,
+                  52.104862
                 ],
                 [
-                  64.14685,
-                  3.6681578,
-                  23.474026
+                  35.772694,
+                  1.51589,
+                  52.143936
                 ],
                 [
-                  64.36632,
-                  3.6852198,
-                  23.230675
+                  35.694416,
+                  1.3165507,
+                  52.183014
                 ],
                 [
-                  64.585785,
-                  3.715524,
-                  22.987324
+                  35.616142,
+                  1.1316757,
+                  52.222088
                 ],
                 [
-                  64.80526,
-                  3.760517,
-                  22.743973
+                  35.537865,
+                  0.962845,
+                  52.261166
                 ],
                 [
-                  65.02473,
-                  3.821875,
-                  22.500622
+                  35.459587,
+                  0.8118898,
+                  52.300243
                 ],
                 [
-                  65.244194,
-                  3.901531,
-                  22.25727
+                  35.38131,
+                  0.6809206,
+                  52.339317
                 ],
                 [
-                  65.46367,
-                  4.0017037,
-                  22.013922
+                  35.303036,
+                  0.57236236,
+                  52.378395
                 ],
                 [
-                  65.683136,
-                  4.1249337,
-                  21.77057
+                  35.22476,
+                  0.48898733,
+                  52.41747
                 ],
                 [
-                  65.9026,
-                  4.27412,
-                  21.52722
+                  35.14648,
+                  0.43396533,
+                  52.456547
                 ]
               ],
               "width": 0.03,
@@ -2165,7 +2165,7 @@
               ],
               "local_space": false,
               "depth_test": true,
-              "visible": true
+              "visible": false
             }
           }
         }
@@ -2175,19 +2175,19 @@
           "name": "CastCameraTarget",
           "transform": {
             "position": [
-              20.237015,
-              11.825016,
-              28.514404
+              31.379436,
+              7.5268373,
+              40.564724
             ],
             "rotation": [
-              24.999939,
-              89.97994,
+              24.986973,
+              -11.759118,
               0.0
             ],
             "scale": [
-              1.0,
-              39.197777,
-              1.0000001
+              0.999611,
+              39.163895,
+              0.9993632
             ]
           },
           "components": [],
@@ -2199,13 +2199,13 @@
       "name": "CatchCameraTarget",
       "transform": {
         "position": [
-          47.60229,
-          2.1594324,
-          32.328568
+          34.564888,
+          2.0374665,
+          51.733612
         ],
         "rotation": [
-          0.0,
-          89.97983,
+          64.01364,
+          38.81627,
           0.0
         ],
         "scale": [
@@ -2221,13 +2221,13 @@
       "name": "RunCameraTarget",
       "transform": {
         "position": [
-          0.0,
-          5.0,
-          0.0
+          69.17614,
+          33.442596,
+          65.67192
         ],
         "rotation": [
-          0.0,
-          0.0,
+          34.999996,
+          -66.187164,
           0.0
         ],
         "scale": [
@@ -2243,13 +2243,13 @@
       "name": "CallCameraTarget",
       "transform": {
         "position": [
-          0.0,
-          5.0,
-          0.0
+          32.141315,
+          2.763383,
+          58.202103
         ],
         "rotation": [
-          0.0,
-          0.0,
+          24.987053,
+          -11.759405,
           0.0
         ],
         "scale": [
@@ -2320,9 +2320,9 @@
           "name": "StunStar0",
           "transform": {
             "position": [
-              0.6,
+              35.446198,
               -100.0,
-              0.0
+              52.176315
             ],
             "rotation": [
               0.0,
@@ -2330,9 +2330,9 @@
               0.0
             ],
             "scale": [
-              0.25,
-              0.25,
-              0.25
+              1.0,
+              1.0,
+              1.0
             ]
           },
           "components": [
@@ -2345,22 +2345,22 @@
                   "instances": [
                     [
                       [
-                        0.25,
+                        1.0,
                         0.0,
                         0.0,
-                        0.6
+                        35.446194
                       ],
                       [
                         0.0,
-                        0.25,
+                        1.0,
                         0.0,
-                        -100.0
+                        -99.999985
                       ],
                       [
                         0.0,
                         0.0,
-                        0.25,
-                        0.0
+                        1.0,
+                        52.176308
                       ],
                       [
                         0.0,
@@ -2380,7 +2380,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": false,
-                  "visible": true,
+                  "visible": false,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": true,
@@ -2409,9 +2409,9 @@
           "name": "StunStar1",
           "transform": {
             "position": [
-              -0.3,
+              35.14086,
               -100.0,
-              0.52
+              53.169678
             ],
             "rotation": [
               0.0,
@@ -2419,9 +2419,9 @@
               0.0
             ],
             "scale": [
-              0.25,
-              0.25,
-              0.25
+              1.0,
+              1.0,
+              1.0
             ]
           },
           "components": [
@@ -2434,22 +2434,22 @@
                   "instances": [
                     [
                       [
-                        0.25,
+                        1.0,
                         0.0,
                         0.0,
-                        -0.3
+                        35.14086
                       ],
                       [
                         0.0,
-                        0.25,
+                        1.0,
                         0.0,
                         -100.0
                       ],
                       [
                         0.0,
                         0.0,
-                        0.25,
-                        0.52
+                        1.0,
+                        53.169678
                       ],
                       [
                         0.0,
@@ -2469,7 +2469,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": false,
-                  "visible": true,
+                  "visible": false,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": true,
@@ -2498,9 +2498,9 @@
           "name": "StunStar2",
           "transform": {
             "position": [
-              -0.3,
+              34.433254,
               -100.0,
-              -0.52
+              52.40857
             ],
             "rotation": [
               0.0,
@@ -2508,9 +2508,9 @@
               0.0
             ],
             "scale": [
-              0.25,
-              0.25,
-              0.25
+              1.0,
+              1.0,
+              1.0
             ]
           },
           "components": [
@@ -2523,22 +2523,22 @@
                   "instances": [
                     [
                       [
-                        0.25,
+                        1.0,
                         0.0,
                         0.0,
-                        -0.3
+                        34.433254
                       ],
                       [
                         0.0,
-                        0.25,
+                        1.0,
                         0.0,
-                        -100.0
+                        -99.99997
                       ],
                       [
                         0.0,
                         0.0,
-                        0.25,
-                        -0.52
+                        1.0,
+                        52.408554
                       ],
                       [
                         0.0,
@@ -2558,7 +2558,7 @@
                   "groups": [],
                   "next_group_id": 1000000,
                   "cast_shadows": false,
-                  "visible": true,
+                  "visible": false,
                   "material_overrides": [],
                   "render_tag": 0,
                   "disable_lod": true,
@@ -2640,7 +2640,7 @@
                   "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\FishManager.cs",
                   "fields": {
                     "centerActor": "Hut",
-                    "levels": "[{\"distanceMinMarker\":\"start\",\"distanceMaxMarker\":\"end(1)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv1/iwashi.actor\",\"assets://mainGame/actors/Fish/Lv1/kumanomi.actor\",\"assets://mainGame/actors/Fish/Lv1/nanyouhagi.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv1/tatsunootoshigo.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(1)\",\"distanceMaxMarker\":\"end(2)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv2/aji.actor\",\"assets://mainGame/actors/Fish/Lv2/kawahagi.actor\",\"assets://mainGame/actors/Fish/Lv2/tobiuo.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv2/sacabambaspis.actor\"],\"maintainCount\":12},{\"distanceMinMarker\":\"start(2)\",\"distanceMaxMarker\":\"end(3)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv3/akaei.actor\",\"assets://mainGame/actors/Fish/Lv3/ika.actor\",\"assets://mainGame/actors/Fish/Lv3/tako.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv3/mendako.actor\"],\"maintainCount\":16},{\"distanceMinMarker\":\"start(3)\",\"distanceMaxMarker\":\"end(4)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv4/ishigakidai.actor\",\"assets://mainGame/actors/Fish/Lv4/madai.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv4/chouchinankou.actor\"],\"maintainCount\":24},{\"distanceMinMarker\":\"start(4)\",\"distanceMaxMarker\":\"end(5)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv5/hamachi.actor\",\"assets://mainGame/actors/Fish/Lv5/katsuo.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv5/iseebi.actor\"],\"maintainCount\":24},{\"distanceMinMarker\":\"start(5)\",\"distanceMaxMarker\":\"end(6)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv6/maguro.actor\",\"assets://mainGame/actors/Fish/Lv6/napoleonfish.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv6/manta.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(6)\",\"distanceMaxMarker\":\"end(7)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv7/kajiki.actor\",\"assets://mainGame/actors/Fish/Lv7/manbou.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv7/coelacanth.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(7)\",\"distanceMaxMarker\":\"end(8)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv8/hohojirozame.actor\",\"assets://mainGame/actors/Fish/Lv8/shumokuzame.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv8/ryuuguunotsukai.actor\"],\"maintainCount\":64},{\"distanceMinMarker\":\"start(8)\",\"distanceMaxMarker\":\"end(9)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv9/daiouika.actor\",\"assets://mainGame/actors/Fish/Lv9/jinbeezame.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv9/megalodon.actor\"],\"maintainCount\":64},{\"distanceMinMarker\":\"start(9)\",\"distanceMaxMarker\":\"end(10)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv10/kaiju.actor\"],\"rareFishPrefabs\":[],\"maintainCount\":1}]",
+                    "levels": "[{\"distanceMinMarker\":\"start\",\"distanceMaxMarker\":\"end(1)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv1/iwashi.actor\",\"assets://mainGame/actors/Fish/Lv1/kumanomi.actor\",\"assets://mainGame/actors/Fish/Lv1/nanyouhagi.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv1/tatsunootoshigo.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(1)\",\"distanceMaxMarker\":\"end(2)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv2/aji.actor\",\"assets://mainGame/actors/Fish/Lv2/kawahagi.actor\",\"assets://mainGame/actors/Fish/Lv2/tobiuo.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv2/sacabambaspis.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(2)\",\"distanceMaxMarker\":\"end(3)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv3/akaei.actor\",\"assets://mainGame/actors/Fish/Lv3/ika.actor\",\"assets://mainGame/actors/Fish/Lv3/tako.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv3/mendako.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(3)\",\"distanceMaxMarker\":\"end(4)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv4/ishigakidai.actor\",\"assets://mainGame/actors/Fish/Lv4/madai.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv4/chouchinankou.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(4)\",\"distanceMaxMarker\":\"end(5)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv5/hamachi.actor\",\"assets://mainGame/actors/Fish/Lv5/katsuo.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv5/iseebi.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(5)\",\"distanceMaxMarker\":\"end(6)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv6/maguro.actor\",\"assets://mainGame/actors/Fish/Lv6/napoleonfish.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv6/manta.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(6)\",\"distanceMaxMarker\":\"end(7)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv7/kajiki.actor\",\"assets://mainGame/actors/Fish/Lv7/manbou.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv7/coelacanth.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(7)\",\"distanceMaxMarker\":\"end(8)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv8/hohojirozame.actor\",\"assets://mainGame/actors/Fish/Lv8/shumokuzame.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv8/ryuuguunotsukai.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(8)\",\"distanceMaxMarker\":\"end(9)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv9/daiouika.actor\",\"assets://mainGame/actors/Fish/Lv9/jinbeezame.actor\"],\"rareFishPrefabs\":[\"assets://mainGame/actors/Fish/Lv9/megalodon.actor\"],\"maintainCount\":32},{\"distanceMinMarker\":\"start(9)\",\"distanceMaxMarker\":\"end(10)\",\"fishPrefabs\":[\"assets://mainGame/actors/Fish/Lv10/kaiju.actor\"],\"rareFishPrefabs\":[],\"maintainCount\":1}]",
                     "spawnHeight": "0.000"
                   }
                 }
@@ -2675,7 +2675,7 @@
                 "type": "AudioComponent",
                 "data": {
                   "audio_path": "assets://mainGame/audios/beach.mp3",
-                  "volume": 0.6,
+                  "volume": 0.4,
                   "loop": false,
                   "play_on_start": false,
                   "spatial": false,
@@ -2691,7 +2691,7 @@
                 "type": "AudioComponent",
                 "data": {
                   "audio_path": "assets://mainGame/audios/beach.mp3",
-                  "volume": 0.6,
+                  "volume": 0.0,
                   "loop": false,
                   "play_on_start": false,
                   "spatial": false,
@@ -5504,7 +5504,7 @@
                 "position": [
                   32.069,
                   -33.144188,
-                  89.299164
+                  91.55411
                 ],
                 "rotation": [
                   -0.0,
@@ -5542,7 +5542,7 @@
                             0.0,
                             0.0,
                             1.0,
-                            89.299164
+                            91.55411
                           ],
                           [
                             0.0,
@@ -5595,7 +5595,7 @@
             "position": [
               32.069,
               -28.160511,
-              85.055405
+              85.92364
             ],
             "rotation": [
               -0.0,
@@ -5633,7 +5633,7 @@
                         0.0,
                         0.0,
                         1.0,
-                        85.055405
+                        85.92364
                       ],
                       [
                         0.0,
@@ -5683,7 +5683,7 @@
                 "position": [
                   32.069,
                   -28.160511,
-                  105.055405
+                  105.92364
                 ],
                 "rotation": [
                   -0.0,
@@ -5721,7 +5721,7 @@
                             0.0,
                             0.0,
                             1.0,
-                            105.055405
+                            105.92364
                           ],
                           [
                             0.0,
@@ -5774,7 +5774,7 @@
             "position": [
               32.069,
               -33.144188,
-              98.30987
+              100.56481
             ],
             "rotation": [
               -0.0,
@@ -5812,7 +5812,7 @@
                         0.0,
                         0.0,
                         1.0,
-                        98.30987
+                        100.56481
                       ],
                       [
                         0.0,
@@ -5862,7 +5862,7 @@
                 "position": [
                   32.069,
                   -33.144188,
-                  118.30987
+                  120.56481
                 ],
                 "rotation": [
                   -0.0,
@@ -5900,7 +5900,7 @@
                             0.0,
                             0.0,
                             1.0,
-                            118.30987
+                            120.56481
                           ],
                           [
                             0.0,
@@ -5953,7 +5953,7 @@
             "position": [
               32.069,
               -28.160511,
-              112.51865
+              114.77359
             ],
             "rotation": [
               -0.0,
@@ -5991,7 +5991,7 @@
                         0.0,
                         0.0,
                         1.0,
-                        112.51865
+                        114.77359
                       ],
                       [
                         0.0,
@@ -6041,7 +6041,7 @@
                 "position": [
                   32.069,
                   -28.160511,
-                  132.51865
+                  134.77359
                 ],
                 "rotation": [
                   -0.0,
@@ -6079,7 +6079,7 @@
                             0.0,
                             0.0,
                             1.0,
-                            132.51865
+                            134.77359
                           ],
                           [
                             0.0,
@@ -6132,7 +6132,7 @@
             "position": [
               32.069,
               -33.144188,
-              125.87915
+              128.1341
             ],
             "rotation": [
               -0.0,
@@ -6170,7 +6170,7 @@
                         0.0,
                         0.0,
                         1.0,
-                        125.87915
+                        128.1341
                       ],
                       [
                         0.0,
@@ -6220,7 +6220,7 @@
                 "position": [
                   32.069,
                   -33.144188,
-                  145.87915
+                  148.1341
                 ],
                 "rotation": [
                   -0.0,
@@ -6258,7 +6258,7 @@
                             0.0,
                             0.0,
                             1.0,
-                            145.87915
+                            148.1341
                           ],
                           [
                             0.0,
@@ -6311,7 +6311,7 @@
             "position": [
               32.069,
               -28.160511,
-              140.08792
+              142.34286
             ],
             "rotation": [
               -0.0,
@@ -6349,7 +6349,7 @@
                         0.0,
                         0.0,
                         1.0,
-                        140.08792
+                        142.34286
                       ],
                       [
                         0.0,
@@ -6399,7 +6399,7 @@
                 "position": [
                   32.069,
                   -28.160511,
-                  160.08794
+                  162.34288
                 ],
                 "rotation": [
                   -0.0,
@@ -6437,7 +6437,7 @@
                             0.0,
                             0.0,
                             1.0,
-                            160.08794
+                            162.34288
                           ],
                           [
                             0.0,
@@ -6490,7 +6490,7 @@
             "position": [
               32.069,
               -33.144188,
-              153.34239
+              155.59734
             ],
             "rotation": [
               -0.0,
@@ -6528,7 +6528,7 @@
                         0.0,
                         0.0,
                         1.0,
-                        153.34239
+                        155.59734
                       ],
                       [
                         0.0,
@@ -6578,7 +6578,7 @@
                 "position": [
                   32.069,
                   -33.144188,
-                  173.34239
+                  175.59734
                 ],
                 "rotation": [
                   -0.0,
@@ -6616,7 +6616,7 @@
                             0.0,
                             0.0,
                             1.0,
-                            173.34239
+                            175.59734
                           ],
                           [
                             0.0,
@@ -6669,7 +6669,7 @@
             "position": [
               32.069,
               -28.160511,
-              167.55116
+              169.8061
             ],
             "rotation": [
               -0.0,
@@ -6707,7 +6707,7 @@
                         0.0,
                         0.0,
                         1.0,
-                        167.55116
+                        169.8061
                       ],
                       [
                         0.0,
@@ -6757,7 +6757,7 @@
                 "position": [
                   32.069,
                   -28.160511,
-                  187.55116
+                  189.8061
                 ],
                 "rotation": [
                   -0.0,
@@ -6795,7 +6795,7 @@
                             0.0,
                             0.0,
                             1.0,
-                            187.55116
+                            189.8061
                           ],
                           [
                             0.0,
@@ -6848,7 +6848,7 @@
             "position": [
               32.069,
               -33.144188,
-              181.41495
+              183.66989
             ],
             "rotation": [
               -0.0,
@@ -6886,7 +6886,7 @@
                         0.0,
                         0.0,
                         1.0,
-                        181.41495
+                        183.66989
                       ],
                       [
                         0.0,
@@ -6936,7 +6936,7 @@
                 "position": [
                   32.069,
                   -33.144188,
-                  201.41495
+                  203.66989
                 ],
                 "rotation": [
                   -0.0,
@@ -6974,7 +6974,7 @@
                             0.0,
                             0.0,
                             1.0,
-                            201.41495
+                            203.66989
                           ],
                           [
                             0.0,
@@ -7027,7 +7027,7 @@
             "position": [
               32.069,
               -28.160511,
-              201.28024
+              203.53519
             ],
             "rotation": [
               -0.0,
@@ -7065,7 +7065,7 @@
                         0.0,
                         0.0,
                         1.0,
-                        201.28024
+                        203.53519
                       ],
                       [
                         0.0,
@@ -7115,7 +7115,7 @@
                 "position": [
                   32.069,
                   -28.160511,
-                  242.1286
+                  244.38354
                 ],
                 "rotation": [
                   -0.0,
@@ -7153,7 +7153,7 @@
                             0.0,
                             0.0,
                             1.0,
-                            242.1286
+                            244.38354
                           ],
                           [
                             0.0,
@@ -12658,7 +12658,7 @@
               "component": {
                 "type": "TextComponent",
                 "data": {
-                  "content": "",
+                  "content": "魚",
                   "font_size": 72.0,
                   "color": [
                     1.0,
@@ -12708,7 +12708,7 @@
               "component": {
                 "type": "TextComponent",
                 "data": {
-                  "content": "",
+                  "content": "1.2 cm",
                   "font_size": 48.0,
                   "color": [
                     1.0,
@@ -12758,7 +12758,7 @@
               "component": {
                 "type": "TextComponent",
                 "data": {
-                  "content": "",
+                  "content": "ランク: A",
                   "font_size": 48.0,
                   "color": [
                     1.0,
@@ -12808,7 +12808,7 @@
               "component": {
                 "type": "TextComponent",
                 "data": {
-                  "content": "",
+                  "content": "ベスト: 1.3 cm",
                   "font_size": 36.0,
                   "color": [
                     1.0,
@@ -12858,7 +12858,7 @@
               "component": {
                 "type": "TextComponent",
                 "data": {
-                  "content": "",
+                  "content": "クリックで戻る",
                   "font_size": 32.0,
                   "color": [
                     1.0,
@@ -12882,7 +12882,7 @@
           "canvas_transform": {
             "position": [
               0.0,
-              0.0
+              -140.0
             ],
             "rotation": 0.0,
             "scale": [
@@ -12911,8 +12911,8 @@
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
                     1.0,
-                    1.0,
-                    1.0,
+                    0.4593386,
+                    0.16994913,
                     0.0
                   ],
                   "width": 16.0,
@@ -12931,10 +12931,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              18.273668,
+              -138.80228
             ],
-            "rotation": 0.0,
+            "rotation": 7.5,
             "scale": [
               1.0,
               1.0
@@ -12961,8 +12961,8 @@
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
                     1.0,
-                    1.0,
-                    1.0,
+                    0.4593386,
+                    0.16994913,
                     0.0
                   ],
                   "width": 16.0,
@@ -12981,10 +12981,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              36.234665,
+              -135.22961
             ],
-            "rotation": 0.0,
+            "rotation": 15.0,
             "scale": [
               1.0,
               1.0
@@ -13011,8 +13011,8 @@
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
                     1.0,
-                    1.0,
-                    1.0,
+                    0.4593386,
+                    0.16994913,
                     0.0
                   ],
                   "width": 16.0,
@@ -13031,10 +13031,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              53.575684,
+              -129.34312
             ],
-            "rotation": 0.0,
+            "rotation": 22.5,
             "scale": [
               1.0,
               1.0
@@ -13061,8 +13061,8 @@
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
                     1.0,
-                    1.0,
-                    1.0,
+                    0.4593386,
+                    0.16994913,
                     0.0
                   ],
                   "width": 16.0,
@@ -13081,10 +13081,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              70.0,
+              -121.24355
             ],
-            "rotation": 0.0,
+            "rotation": 30.0,
             "scale": [
               1.0,
               1.0
@@ -13111,8 +13111,8 @@
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
                     1.0,
-                    1.0,
-                    1.0,
+                    0.4593386,
+                    0.16994913,
                     0.0
                   ],
                   "width": 16.0,
@@ -13131,10 +13131,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              85.2266,
+              -111.069466
             ],
-            "rotation": 0.0,
+            "rotation": 37.5,
             "scale": [
               1.0,
               1.0
@@ -13161,8 +13161,8 @@
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
                     1.0,
-                    1.0,
-                    1.0,
+                    0.4593386,
+                    0.16994913,
                     0.0
                   ],
                   "width": 16.0,
@@ -13181,10 +13181,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              98.99495,
+              -98.99495
             ],
-            "rotation": 0.0,
+            "rotation": 45.0,
             "scale": [
               1.0,
               1.0
@@ -13211,8 +13211,8 @@
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
                     1.0,
-                    1.0,
-                    1.0,
+                    0.4593386,
+                    0.16994913,
                     0.0
                   ],
                   "width": 16.0,
@@ -13231,10 +13231,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              111.069466,
+              -85.2266
             ],
-            "rotation": 0.0,
+            "rotation": 52.5,
             "scale": [
               1.0,
               1.0
@@ -13261,8 +13261,8 @@
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
                     1.0,
-                    1.0,
-                    1.0,
+                    0.4593386,
+                    0.16994913,
                     0.0
                   ],
                   "width": 16.0,
@@ -13281,10 +13281,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              121.24356,
+              -69.99999
             ],
-            "rotation": 0.0,
+            "rotation": 60.0,
             "scale": [
               1.0,
               1.0
@@ -13311,8 +13311,8 @@
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
                     1.0,
-                    1.0,
-                    1.0,
+                    0.4593386,
+                    0.16994913,
                     0.0
                   ],
                   "width": 16.0,
@@ -13331,10 +13331,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              129.34312,
+              -53.57568
             ],
-            "rotation": 0.0,
+            "rotation": 67.5,
             "scale": [
               1.0,
               1.0
@@ -13361,8 +13361,8 @@
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
                     1.0,
-                    1.0,
-                    1.0,
+                    0.4593386,
+                    0.16994913,
                     0.0
                   ],
                   "width": 16.0,
@@ -13381,10 +13381,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              135.22961,
+              -36.23467
             ],
-            "rotation": 0.0,
+            "rotation": 75.0,
             "scale": [
               1.0,
               1.0
@@ -13410,9 +13410,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -13431,10 +13431,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              138.80228,
+              -18.273674
             ],
-            "rotation": 0.0,
+            "rotation": 82.5,
             "scale": [
               1.0,
               1.0
@@ -13460,9 +13460,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -13481,10 +13481,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              140.0,
+              0.000006119594
             ],
-            "rotation": 0.0,
+            "rotation": 90.0,
             "scale": [
               1.0,
               1.0
@@ -13510,9 +13510,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -13531,10 +13531,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              138.80228,
+              18.27367
             ],
-            "rotation": 0.0,
+            "rotation": 97.5,
             "scale": [
               1.0,
               1.0
@@ -13560,9 +13560,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -13581,10 +13581,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              135.22961,
+              36.234665
             ],
-            "rotation": 0.0,
+            "rotation": 105.0,
             "scale": [
               1.0,
               1.0
@@ -13610,9 +13610,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -13631,10 +13631,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              129.34314,
+              53.575676
             ],
-            "rotation": 0.0,
+            "rotation": 112.5,
             "scale": [
               1.0,
               1.0
@@ -13660,9 +13660,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -13681,10 +13681,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              121.24355,
+              70.00001
             ],
-            "rotation": 0.0,
+            "rotation": 120.0,
             "scale": [
               1.0,
               1.0
@@ -13710,9 +13710,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -13731,10 +13731,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              111.069466,
+              85.2266
             ],
-            "rotation": 0.0,
+            "rotation": 127.5,
             "scale": [
               1.0,
               1.0
@@ -13760,9 +13760,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -13781,10 +13781,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              98.99495,
+              98.99495
             ],
-            "rotation": 0.0,
+            "rotation": 135.0,
             "scale": [
               1.0,
               1.0
@@ -13810,9 +13810,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -13831,10 +13831,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              85.2266,
+              111.069466
             ],
-            "rotation": 0.0,
+            "rotation": 142.5,
             "scale": [
               1.0,
               1.0
@@ -13860,9 +13860,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -13881,10 +13881,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              70.00001,
+              121.24355
             ],
-            "rotation": 0.0,
+            "rotation": 150.0,
             "scale": [
               1.0,
               1.0
@@ -13910,9 +13910,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -13931,10 +13931,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              53.575687,
+              129.34312
             ],
-            "rotation": 0.0,
+            "rotation": 157.5,
             "scale": [
               1.0,
               1.0
@@ -13960,9 +13960,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -13981,10 +13981,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              36.23468,
+              135.22961
             ],
-            "rotation": 0.0,
+            "rotation": 165.0,
             "scale": [
               1.0,
               1.0
@@ -14010,9 +14010,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14031,10 +14031,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              18.273685,
+              138.80228
             ],
-            "rotation": 0.0,
+            "rotation": 172.5,
             "scale": [
               1.0,
               1.0
@@ -14060,9 +14060,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14081,10 +14081,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -0.000012239188,
+              140.0
             ],
-            "rotation": 0.0,
+            "rotation": 180.0,
             "scale": [
               1.0,
               1.0
@@ -14110,9 +14110,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14131,10 +14131,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -18.273676,
+              138.80228
             ],
-            "rotation": 0.0,
+            "rotation": 187.5,
             "scale": [
               1.0,
               1.0
@@ -14160,9 +14160,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14181,10 +14181,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -36.23467,
+              135.22961
             ],
-            "rotation": 0.0,
+            "rotation": 195.0,
             "scale": [
               1.0,
               1.0
@@ -14210,9 +14210,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14231,10 +14231,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -53.57568,
+              129.34312
             ],
-            "rotation": 0.0,
+            "rotation": 202.5,
             "scale": [
               1.0,
               1.0
@@ -14260,9 +14260,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14281,10 +14281,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -70.0,
+              121.24355
             ],
-            "rotation": 0.0,
+            "rotation": 210.0,
             "scale": [
               1.0,
               1.0
@@ -14310,9 +14310,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14331,10 +14331,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -85.22659,
+              111.06947
             ],
-            "rotation": 0.0,
+            "rotation": 217.5,
             "scale": [
               1.0,
               1.0
@@ -14360,9 +14360,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14381,10 +14381,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -98.99494,
+              98.99496
             ],
-            "rotation": 0.0,
+            "rotation": 225.0,
             "scale": [
               1.0,
               1.0
@@ -14410,9 +14410,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14431,10 +14431,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -111.06946,
+              85.22661
             ],
-            "rotation": 0.0,
+            "rotation": 232.5,
             "scale": [
               1.0,
               1.0
@@ -14460,9 +14460,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14481,10 +14481,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -121.24356,
+              69.999985
             ],
-            "rotation": 0.0,
+            "rotation": 240.0,
             "scale": [
               1.0,
               1.0
@@ -14510,9 +14510,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14531,10 +14531,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -129.34312,
+              53.5757
             ],
-            "rotation": 0.0,
+            "rotation": 247.5,
             "scale": [
               1.0,
               1.0
@@ -14560,9 +14560,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14581,10 +14581,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -135.22963,
+              36.234657
             ],
-            "rotation": 0.0,
+            "rotation": 255.0,
             "scale": [
               1.0,
               1.0
@@ -14610,9 +14610,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14631,10 +14631,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -138.80228,
+              18.273695
             ],
-            "rotation": 0.0,
+            "rotation": 262.5,
             "scale": [
               1.0,
               1.0
@@ -14660,9 +14660,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14681,10 +14681,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -140.0,
+              -0.0000016694833
             ],
-            "rotation": 0.0,
+            "rotation": 270.0,
             "scale": [
               1.0,
               1.0
@@ -14710,9 +14710,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14731,10 +14731,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -138.80228,
+              -18.273632
             ],
-            "rotation": 0.0,
+            "rotation": 277.5,
             "scale": [
               1.0,
               1.0
@@ -14760,9 +14760,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14781,10 +14781,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -135.22961,
+              -36.23466
             ],
-            "rotation": 0.0,
+            "rotation": 285.0,
             "scale": [
               1.0,
               1.0
@@ -14810,9 +14810,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14831,10 +14831,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -129.34312,
+              -53.575706
             ],
-            "rotation": 0.0,
+            "rotation": 292.5,
             "scale": [
               1.0,
               1.0
@@ -14860,9 +14860,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14881,10 +14881,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -121.24356,
+              -69.999985
             ],
-            "rotation": 0.0,
+            "rotation": 300.0,
             "scale": [
               1.0,
               1.0
@@ -14910,9 +14910,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14931,10 +14931,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -111.06946,
+              -85.226616
             ],
-            "rotation": 0.0,
+            "rotation": 307.5,
             "scale": [
               1.0,
               1.0
@@ -14960,9 +14960,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -14981,10 +14981,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -98.994965,
+              -98.99494
             ],
-            "rotation": 0.0,
+            "rotation": 315.0,
             "scale": [
               1.0,
               1.0
@@ -15010,9 +15010,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -15031,10 +15031,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -85.22659,
+              -111.06947
             ],
-            "rotation": 0.0,
+            "rotation": 322.5,
             "scale": [
               1.0,
               1.0
@@ -15060,9 +15060,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -15081,10 +15081,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -70.00002,
+              -121.243546
             ],
-            "rotation": 0.0,
+            "rotation": 330.0,
             "scale": [
               1.0,
               1.0
@@ -15110,9 +15110,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -15131,10 +15131,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -53.57568,
+              -129.34314
             ],
-            "rotation": 0.0,
+            "rotation": 337.5,
             "scale": [
               1.0,
               1.0
@@ -15160,9 +15160,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -15181,10 +15181,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -36.2347,
+              -135.2296
             ],
-            "rotation": 0.0,
+            "rotation": 345.0,
             "scale": [
               1.0,
               1.0
@@ -15210,9 +15210,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -15231,10 +15231,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -18.273672,
+              -138.80228
             ],
-            "rotation": 0.0,
+            "rotation": 352.5,
             "scale": [
               1.0,
               1.0
@@ -15260,9 +15260,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/white.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.25,
+                    0.28,
+                    0.32,
                     0.0
                   ],
                   "width": 16.0,
@@ -15282,7 +15282,7 @@
           "canvas_transform": {
             "position": [
               0.0,
-              0.0
+              -166.0
             ],
             "rotation": 0.0,
             "scale": [
@@ -15310,9 +15310,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.42,
+                    0.46,
+                    0.52,
                     0.0
                   ],
                   "width": 22.0,
@@ -15331,8 +15331,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              153.36407,
+              -63.525265
             ],
             "rotation": 0.0,
             "scale": [
@@ -15381,8 +15381,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              117.37945,
+              117.38001
             ],
             "rotation": 0.0,
             "scale": [
@@ -15431,8 +15431,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -0.000014512181,
+              166.0
             ],
             "rotation": 0.0,
             "scale": [
@@ -15481,8 +15481,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -117.37941,
+              117.38004
             ],
             "rotation": 0.0,
             "scale": [
@@ -15531,8 +15531,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -166.0,
+              0.00078957016
             ],
             "rotation": 0.0,
             "scale": [
@@ -15581,8 +15581,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -117.380585,
+              -117.378876
             ],
             "rotation": 0.0,
             "scale": [
@@ -15631,13 +15631,13 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -117.37941,
+              -117.38004
             ],
             "rotation": 0.0,
             "scale": [
-              1.0,
-              1.0
+              0.0,
+              0.0
             ],
             "pivot": [
               0.5,
@@ -15660,9 +15660,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.42,
+                    0.46,
+                    0.52,
                     0.0
                   ],
                   "width": 22.0,
@@ -15686,8 +15686,8 @@
             ],
             "rotation": 0.0,
             "scale": [
-              1.0,
-              1.0
+              0.0,
+              0.0
             ],
             "pivot": [
               0.5,
@@ -15710,9 +15710,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.42,
+                    0.46,
+                    0.52,
                     0.0
                   ],
                   "width": 22.0,
@@ -15736,8 +15736,8 @@
             ],
             "rotation": 0.0,
             "scale": [
-              1.0,
-              1.0
+              0.0,
+              0.0
             ],
             "pivot": [
               0.5,
@@ -15760,9 +15760,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.42,
+                    0.46,
+                    0.52,
                     0.0
                   ],
                   "width": 22.0,
@@ -15786,8 +15786,8 @@
             ],
             "rotation": 0.0,
             "scale": [
-              1.0,
-              1.0
+              0.0,
+              0.0
             ],
             "pivot": [
               0.5,
@@ -15810,9 +15810,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.42,
+                    0.46,
+                    0.52,
                     0.0
                   ],
                   "width": 22.0,
@@ -15836,8 +15836,8 @@
             ],
             "rotation": 0.0,
             "scale": [
-              1.0,
-              1.0
+              0.0,
+              0.0
             ],
             "pivot": [
               0.5,
@@ -15860,9 +15860,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.42,
+                    0.46,
+                    0.52,
                     0.0
                   ],
                   "width": 22.0,
@@ -15886,8 +15886,8 @@
             ],
             "rotation": 0.0,
             "scale": [
-              1.0,
-              1.0
+              0.0,
+              0.0
             ],
             "pivot": [
               0.5,
@@ -15910,9 +15910,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.42,
+                    0.46,
+                    0.52,
                     0.0
                   ],
                   "width": 22.0,
@@ -15936,8 +15936,8 @@
             ],
             "rotation": 0.0,
             "scale": [
-              1.0,
-              1.0
+              0.0,
+              0.0
             ],
             "pivot": [
               0.5,
@@ -15960,9 +15960,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.42,
+                    0.46,
+                    0.52,
                     0.0
                   ],
                   "width": 22.0,
@@ -15986,8 +15986,8 @@
             ],
             "rotation": 0.0,
             "scale": [
-              1.0,
-              1.0
+              0.0,
+              0.0
             ],
             "pivot": [
               0.5,
@@ -16010,9 +16010,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.42,
+                    0.46,
+                    0.52,
                     0.0
                   ],
                   "width": 22.0,
@@ -16036,8 +16036,8 @@
             ],
             "rotation": 0.0,
             "scale": [
-              1.0,
-              1.0
+              0.0,
+              0.0
             ],
             "pivot": [
               0.5,
@@ -16060,9 +16060,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/beat_icon.png",
                   "color": [
-                    1.0,
-                    1.0,
-                    1.0,
+                    0.42,
+                    0.46,
+                    0.52,
                     0.0
                   ],
                   "width": 22.0,
@@ -16081,10 +16081,10 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              0.0,
-              0.0
+              -78.5287,
+              115.90187
             ],
-            "rotation": 0.0,
+            "rotation": 214.1194,
             "scale": [
               1.0,
               1.0
@@ -16158,7 +16158,7 @@
               "component": {
                 "type": "TextComponent",
                 "data": {
-                  "content": "",
+                  "content": "隙\n魚 1%",
                   "font_size": 32.0,
                   "color": [
                     1.0,
@@ -16258,7 +16258,7 @@
               "component": {
                 "type": "TextComponent",
                 "data": {
-                  "content": "",
+                  "content": "1.5m",
                   "font_size": 96.0,
                   "color": [
                     1.0,
@@ -16352,8 +16352,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              110.0,
-              110.0
+              180.2361,
+              122.14493
             ],
             "rotation": 0.0,
             "scale": [
@@ -16381,9 +16381,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -16402,8 +16402,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              110.0,
-              110.0
+              127.24492,
+              31.924576
             ],
             "rotation": 0.0,
             "scale": [
@@ -16431,9 +16431,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -16452,8 +16452,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              110.0,
-              110.0
+              99.00807,
+              30.879372
             ],
             "rotation": 0.0,
             "scale": [
@@ -16481,9 +16481,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -16502,8 +16502,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              110.0,
-              110.0
+              33.77748,
+              86.62303
             ],
             "rotation": 0.0,
             "scale": [
@@ -16531,9 +16531,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -16552,8 +16552,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              110.0,
-              110.0
+              32.10582,
+              127.628494
             ],
             "rotation": 0.0,
             "scale": [
@@ -16581,9 +16581,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -16602,8 +16602,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              110.0,
-              110.0
+              30.1641,
+              108.170975
             ],
             "rotation": 0.0,
             "scale": [
@@ -16631,9 +16631,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -16652,8 +16652,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              110.0,
-              110.0
+              189.44345,
+              100.85059
             ],
             "rotation": 0.0,
             "scale": [
@@ -16681,9 +16681,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -16702,8 +16702,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              110.0,
-              110.0
+              172.23706,
+              64.09621
             ],
             "rotation": 0.0,
             "scale": [
@@ -16731,9 +16731,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -16752,8 +16752,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              110.0,
-              110.0
+              186.0346,
+              93.23051
             ],
             "rotation": 0.0,
             "scale": [
@@ -16781,9 +16781,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -16802,8 +16802,8 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              110.0,
-              110.0
+              39.51857,
+              147.58543
             ],
             "rotation": 0.0,
             "scale": [
@@ -16831,9 +16831,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -16881,9 +16881,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -16931,9 +16931,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -16981,9 +16981,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -17031,9 +17031,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -17081,9 +17081,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -17131,9 +17131,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -17181,9 +17181,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -17231,9 +17231,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -17281,9 +17281,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -17331,9 +17331,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -17381,9 +17381,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -17431,9 +17431,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -17481,9 +17481,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -17531,9 +17531,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 10.0,
@@ -17581,9 +17581,9 @@
                 "data": {
                   "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
                   "color": [
+                    0.72,
                     1.0,
-                    1.0,
-                    1.0,
+                    0.24,
                     0.0
                   ],
                   "width": 8.0,
@@ -17598,6 +17598,51 @@
           "children": []
         }
       ]
+    },
+    {
+      "name": "DriftItems",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Script",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\DriftItemManager.cs",
+              "fields": {
+                "stunPrefabPath": "assets://mainGame/actors/Drift/DriftStun.actor",
+                "fishRecoverPrefabPath": "assets://mainGame/actors/Drift/DriftFishRecover.actor",
+                "lineRecoverPrefabPath": "assets://mainGame/actors/Drift/DriftLineRecover.actor",
+                "maxItems": "6",
+                "spawnIntervalSeconds": "2.500",
+                "spawnRadiusMin": "4.000",
+                "spawnRadiusMax": "14.000",
+                "stunWeight": "1.000",
+                "fishRecoverWeight": "1.000",
+                "lineRecoverWeight": "1.000",
+                "activeOnlyWhileHooked": "true"
+              }
+            }
+          }
+        }
+      ],
+      "children": []
     }
   ]
 }

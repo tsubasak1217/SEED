@@ -1,0 +1,122 @@
+{
+  "name": "DriftStun",
+  "transform": {
+    "position": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "rotation": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale": [
+      0.5,
+      0.5,
+      0.5
+    ]
+  },
+  "components": [
+    {
+      "name": "Model",
+      "component": {
+        "type": "ModelComponent",
+        "data": {
+          "model_path": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\models\\cast_marker.glb",
+          "instances": [
+            [
+              [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            ]
+          ],
+          "meta": [
+            {
+              "name": "Instance_0",
+              "parent": null,
+              "anim_seed": 0
+            }
+          ],
+          "groups": [],
+          "next_group_id": 1000000,
+          "cast_shadows": true,
+          "material_overrides": [
+            {
+              "slot": 0,
+              "kind": {
+                "kind": "inline",
+                "base_color": [
+                  0.3,
+                  0.5,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ],
+          "render_tag": 0,
+          "disable_lod": false,
+          "offset_position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "offset_rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "offset_scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      }
+    },
+    {
+      "name": "Script",
+      "component": {
+        "type": "ScriptComponent",
+        "data": {
+          "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\DriftItem.cs",
+          "fields": {
+            "kind": "stun",
+            "effectAmount": "1.000",
+            "hitRadius": "0.800",
+            "driftSpeed": "0.300",
+            "lifetimeSeconds": "25.000",
+            "bobAmplitude": "0.060",
+            "bobFrequency": "0.600",
+            "waterHeightOffset": "0.000",
+            "hitSePath": "",
+            "hitSeVolume": "1.000"
+          }
+        }
+      }
+    }
+  ],
+  "children": []
+}
