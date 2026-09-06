@@ -239,6 +239,18 @@ public class FishingController : SEEDScript
         => fight is { } f ? f.CurrentPhase : FishingFight.Phase.None;
 
     /// <summary>
+    /// 巻き方向インジケータを出してよい状況か【表示可否の唯一の判断】。
+    ///
+    /// ヒットしていない（ウキを普通に巻いているだけ）ときは従来どおり常に許可する。
+    /// ヒット中は<b>実際に巻ける「隙（<see cref="FishingFight.Phase.Rest"/>）」だけ</b>に絞る
+    /// （出題・回答・余白のあいだは巻いても進まないので、方向を示すと誤解を招くため）。
+    /// false のあいだは <see cref="UpdateReelArrow"/> が呼ばれないので、
+    /// 「このフレームに表示されなかったら格納」の経路が自動でインジケータを隠す。
+    /// </summary>
+    private bool IsReelArrowAllowed
+        => !IsHooked || FightPhase == FishingFight.Phase.Rest;
+
+    /// <summary>
     /// 釣り上げ演出のフェーズ（<see cref="CameraMove"/> がカメラ目標の切替に使う）。
     /// プレゼンタ未設定・演出していないときは <see cref="CatchPresenter.CatchPhase.None"/>。
     /// 参照スクリプトは毎フレーム見に行く（ホットリロードで実インスタンスが差し替わるため）。
@@ -1085,6 +1097,43 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "竿振りの音量")]
     private float swingSeVolume = 1f;
 
+    // ─── スタン演出（隙フェーズ） ───────────────────────────
+
+    /// <summary>
+    /// 「隙（<see cref="FishingFight.Phase.Rest"/>）」のあいだ、魚の頭上で星を回す演出。
+    /// 専用アクタ「StunEffect」のスクリプトスロットを割り当てる（未設定なら演出なし）。
+    /// </summary>
+    [Header("スタン演出"), SerializeField(Label = "スタン演出(StunEffect)")]
+    private StunEffect? stunEffect = null;
+
+    /// <summary>
+    /// 隙フェーズへ入った瞬間に鳴らす効果音のアセットパス。空文字なら鳴らさない。
+    /// </summary>
+    [SerializeField(Label = "スタンの効果音")]
+    private string stunSePath = "assets://mainGame/audios/stan.mp3";
+
+    /// <summary>スタン効果音の音量（0〜1）。</summary>
+    [SerializeField(Label = "スタンの音量")]
+    private float stunSeVolume = 1f;
+
+    /// <summary>
+    /// 星を回す中心を、魚の頭のてっぺんからさらに何メートル上へ置くか。
+    /// </summary>
+    [SerializeField(Label = "星の追加高さ(m)")]
+    private float stunStarHeightOffset = 0.3f;
+
+    /// <summary>
+    /// 魚の高さが測れない（Model 無し・モデル未ロード）ときに使う代替の高さ（m）。
+    /// </summary>
+    [SerializeField(Label = "魚の高さの代替値(m)")]
+    private float stunFallbackFishHeight = 0.5f;
+
+    /// <summary>
+    /// スタン演出を出しているか【<see cref="UpdateStunEffect"/> が持つ唯一の状態】。
+    /// 隙へ入った瞬間の 1 回だけ効果音を鳴らすための立ち上がり検出に使う。
+    /// </summary>
+    private bool stunShown = false;
+
     /// <summary>
     /// 現在掛かっている魚（null = 掛かっていない）。
     /// <see cref="TryHook"/> で束縛し、釣り上げ・リリース・キャンセルで必ず解除する。
@@ -1557,6 +1606,11 @@ public class FishingController : SEEDScript
                 break;
         }
 
+        // ── スタン演出（隙フェーズの星）の唯一の出口 ────────────────
+        // 状態遷移・糸切れ・釣り上げ・キャンセルのどれで抜けても、
+        // ここが毎フレーム「今出すべきか」を見て開始／追従／停止を決める。
+        UpdateStunEffect();
+
         // ── 巻き方向インジケータの表示／非表示の唯一の出口 ──────────────
         // このフレームに UpdateReelArrow が走らなかった（＝表示すべき状況ではない、
         // または向きが確定しなかった）なら必ず格納する。状態遷移や早期 return が
@@ -1637,6 +1691,7 @@ public class FishingController : SEEDScript
         HideLine();
         HideCastPreview();
         ParkReelArrow();
+        StopStunEffect();              // 隙の星が出ていたら必ず畳む（早期 return 経路の保険）
         // 釣り状態を抜けたらカーソルを必ず返す（姿勢解除・中断の唯一の出口）。
         UpdateCursorLock();
         SEED.Debug.Log("[Fishing] Idle (キャンセル)");
@@ -2039,6 +2094,91 @@ public class FishingController : SEEDScript
             ? HorizontalDistance(floatTf.Position, ReelTargetPosition())
             : 0f;
 
+    // ─── スタン演出（隙フェーズの星） ───────────────────────────
+
+    /// <summary>
+    /// 魚の頭上で星を回す「スタン演出」を 1 フレーム分更新する
+    /// 【この演出の開始・追従・停止を決める唯一の場所】。
+    ///
+    /// 出すべき条件は<b>ヒット中かつ隙（<see cref="FishingFight.Phase.Rest"/>）</b>の 1 つだけ。
+    /// 出題・回答・余白へ移った、糸が切れた、釣り上げた、姿勢を解除した——
+    /// どの理由で条件から外れても同じ経路で <see cref="StunEffect.Stop"/> に落ちるので、
+    /// 出しっぱなしにならない。効果音は「条件を満たしていなかった → 満たした」の
+    /// 立ち上がりの 1 回だけ鳴らす。
+    /// </summary>
+    private void UpdateStunEffect()
+    {
+        if (stunEffect is not { } effect) { return; }
+
+        bool shouldShow = State == FishState.Hooked
+                          && IsHooked
+                          && FightPhase == FishingFight.Phase.Rest;
+
+        if (!shouldShow)
+        {
+            // 出ていたぶんだけ畳む（毎フレーム Stop を叩かないよう立ち下がりで判定）
+            if (stunShown)
+            {
+                effect.Stop();
+                stunShown = false;
+            }
+            return;
+        }
+
+        // 隙へ入った瞬間: 効果音を鳴らして演出を開始する
+        if (!stunShown)
+        {
+            PlaySe(stunSePath, stunSeVolume);
+            effect.Show(StunAnchorPosition());
+            stunShown = true;
+            return;
+        }
+
+        // 隙のあいだ: 魚は動き続けるので中心を毎フレーム置き直す
+        effect.SetAnchor(StunAnchorPosition());
+    }
+
+    /// <summary>
+    /// スタン演出を必ず畳む（釣りを中断する経路から呼ぶ後始末）。
+    /// </summary>
+    private void StopStunEffect()
+    {
+        if (!stunShown) { return; }
+        stunEffect?.Stop();
+        stunShown = false;
+    }
+
+    /// <summary>
+    /// 星を回す中心（ワールド座標）＝<b>掛かっている魚の頭のてっぺんの少し上</b>。
+    ///
+    /// <code>
+    /// 中心 = 魚の位置 + 上 × (魚の高さ + stunStarHeightOffset)
+    /// </code>
+    ///
+    /// 魚の高さはモデルのローカル AABB の上端に描画オフセットスケールとアクタースケールを
+    /// 掛けて求める（<see cref="CatchPresenter"/> の実寸算出と同じ考え方）。
+    /// 魚が居ない・Model が無い・モデル未ロードで AABB が縮退している場合は
+    /// <see cref="stunFallbackFishHeight"/> を代替の高さとして使う。
+    /// </summary>
+    private SEED.Vector3 StunAnchorPosition()
+    {
+        if (hookedFish is not { } fish || !fish.Actor.IsValid)
+        {
+            // 魚が居ないなら自分（プレイヤー）の頭上を仮の中心にする（実際には表示条件を満たさない）
+            return transform.Position + SEED.Vector3.Up * (stunFallbackFishHeight + stunStarHeightOffset);
+        }
+
+        float height = stunFallbackFishHeight;
+        if (fish.Actor.GetComponent<SEED.Model>() is { IsValid: true } model)
+        {
+            // AABB 上端 × 描画オフセットスケール × アクタースケール ＝ ワールドでの頭上の高さ
+            float measured = model.LocalBoundsMax.y * model.OffsetScale.y * fish.Transform.Scale.y;
+            if (measured > DivideEpsilon) { height = measured; }
+        }
+
+        return fish.Transform.Position + SEED.Vector3.Up * (height + stunStarHeightOffset);
+    }
+
     /// <summary>
     /// ヒット直後の「引き」演出中（<see cref="FishingFight.Phase.LeadIn"/>）のカメラ目標
     /// （<see cref="runCameraTarget"/>）を毎フレーム置き直す【この構図の唯一の算出点】。
@@ -2263,7 +2403,8 @@ public class FishingController : SEEDScript
 
         // 巻く向きが確定したので、ウキの足元へインジケータを寝かせて置く。
         // steerFactor が 0（直進距離以内）ならインジケータは表示せず格納する。
-        if (steerFactor > 0f)
+        // さらにヒット中は「隙（巻ける区間）」だけに絞る（IsReelArrowAllowed 参照）。
+        if (steerFactor > 0f && IsReelArrowAllowed)
         {
             UpdateReelArrow(floatTf.Position, dir, steerFactor, deltaTime);
         }
