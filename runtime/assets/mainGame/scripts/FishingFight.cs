@@ -57,15 +57,16 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// </code>
 /// を判定し、判定画像と「早い／遅い」のヒントを出す（表示はコントローラ側の共通 UI）。
 ///
-/// ■ テンション（0〜1・一方向。旧「糸 HP」と ±ゲージを置き換えたもの）
+/// ■ 糸の残り（1〜0・一方向・回復なし。旧「テンション」を置き換えたもの）
 /// <code>
-/// 判定ごと     : テンション += |Δt| × tensionPerSecondOfOffset × レベル補正
-///                Excellent は加算せず excellentTensionRelief だけ減る
-/// Miss・空打ち : テンション += missTension
-/// 隙(Rest)中   : テンション −= tensionRecoverPerSec × dt
+/// 開始値       : 合わせランクで決まる（Excellent 1.0 / Great 0.9 / Nice 0.8）
+/// 判定ごと     : 糸の残り -= |Δt| × linePerSecondOfOffset × レベル補正 ÷ 糸パワー補正
+///                Excellent は減らない
+/// Miss・空打ち : 糸の残り -= missLoss ÷ 糸パワー補正
+/// 回復手段     : 一切無い（隙(Rest)中も回復しない）
 /// レベル補正   = 1 + tensionLevelScale × (魚の総合力 ÷ 竿パワー − 1)（下限 0.5）
-/// 安全帯の幅   = safeZoneBase + safeZonePerLinePower × (糸パワー − 1)（表示のみ）
-/// テンション ≧ 1 → 糸が切れる（<see cref="LineBroken"/>）
+/// 糸パワー補正 = 1 + linePowerLossReduction × (糸パワー − 1)
+/// 糸の残り ≦ 0 → 糸が切れる（<see cref="LineBroken"/>）
 /// </code>
 ///
 /// ■ 疲労（0〜1・内側の指標）
@@ -89,13 +90,14 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 魚 HP が 0 になった瞬間が釣り上げ成立（<see cref="FishDefeated"/>）。
 ///
 /// ■ 合わせランクの影響
-/// 合わせが悪いほど初期テンションが高い（＝危険側から始まる）。
+/// 合わせが悪いほど初期の糸の残りが少ない（＝危険側から始まる）。
 /// ────────────────────────────────────────────────────────
 ///
 /// <b>UI（円形のリズム時計）</b>
 /// 画面中央の円（<c>GaugeSeg00</c>… の 48 セグメント＋<c>GaugeMarker</c>）を時計として使う。
 /// - マーカー … 小節内の進行（<see cref="BarPhase01"/> × 360 度・真上が小節頭・右回り）
-/// - セグメント … 真上から右回りにテンションの円弧（安全帯の内側は緑、外は黄→赤）
+/// - セグメント … 真上から右回りに糸の残りの円弧（<see cref="Line01"/> × 360 度・
+///   減った分だけ空きセグメントに置き換わる）。円弧の色は満タン(緑)→中間(黄)→危険(赤)へ補間
 ///   ＋ パターンの打点位置に拍マーク（出題中は明るく、回答中は暗く、判定した瞬間だけ判定色）
 /// - 中央テキスト … フェーズ名（＋予告）／魚 HP ％／疲労 ％
 /// - 右下テキスト … 残り距離（従来どおり）
@@ -113,11 +115,11 @@ public class FishingFight : SEEDScript
     /// <summary>魚 HP の下限（これ以下で釣り上げ成立）。</summary>
     private const float FishHpZero = 0f;
 
-    /// <summary>テンションの下限。</summary>
-    private const float TensionMin = 0f;
+    /// <summary>糸の残りの下限（ここに達すると糸が切れる）。</summary>
+    private const float Line01Min = 0f;
 
-    /// <summary>テンションの上限（ここに達すると糸が切れる）。</summary>
-    private const float TensionMax = 1f;
+    /// <summary>糸の残りの上限（満タン）。</summary>
+    private const float Line01Max = 1f;
 
     /// <summary>疲労の上限（ここに達すると疲労状態へ入る）。</summary>
     private const float FatigueMax = 1f;
@@ -248,56 +250,48 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "Nice の時間差(秒)")]
     private float niceSeconds = 0.2f;
 
-    // ─── テンション ──────────────────────────────────────
+    // ─── 糸の残り ────────────────────────────────────────
 
-    /// <summary>時間差 1 秒あたりに増えるテンション（レベル補正が掛かる）。</summary>
-    [Header("テンション"), SerializeField(Label = "時間差1秒あたりのテンション")]
-    private float tensionPerSecondOfOffset = 0.6f;
+    /// <summary>時間差 1 秒あたりに減る糸の残り（レベル補正・糸パワー補正が掛かる）。</summary>
+    [Header("糸の残り"), SerializeField(Label = "時間差1秒あたりの糸の減り")]
+    private float linePerSecondOfOffset = 0.6f;
 
-    /// <summary>Excellent 1 回で減るテンション。</summary>
-    [SerializeField(Label = "Excellentのテンション回復")]
-    private float excellentTensionRelief = 0.03f;
-
-    /// <summary>Miss（打ち逃し・空打ち）1 回で増えるテンション。</summary>
-    [SerializeField(Label = "Missのテンション増加")]
-    private float missTension = 0.12f;
-
-    /// <summary>隙（Rest）中にテンションが減る速度（/秒）。</summary>
-    [SerializeField(Label = "隙のテンション回復(/秒)")]
-    private float tensionRecoverPerSec = 0.12f;
+    /// <summary>Miss（打ち逃し・空打ち）1 回で減る糸の残り（糸パワー補正が掛かる）。</summary>
+    [SerializeField(Label = "Missの糸の減り")]
+    private float missLoss = 0.12f;
 
     /// <summary>
-    /// 戦闘力差がテンションの増え方へ効く強さ。
+    /// 戦闘力差が糸の減り方へ効く強さ。
     /// レベル補正 ＝ 1 + 本値 × (魚の総合力 ÷ 竿パワー − 1)（下限 <see cref="LevelScaleMin"/>）。
     /// 0 なら戦闘力差を無視する。
     /// </summary>
     [SerializeField(Label = "戦闘力差の効き")]
     private float tensionLevelScale = 1f;
 
-    /// <summary>安全帯（緑の円弧）の幅の基準値（テンション換算・糸パワー 1 のとき）。</summary>
-    [SerializeField(Label = "安全帯の幅(基準)")]
-    private float safeZoneBase = 0.5f;
+    /// <summary>
+    /// 糸パワーによる減り軽減の強さ。
+    /// 糸パワー補正 ＝ 1 + 本値 × (糸パワー − 1)。糸の減り量はこの補正で割られる
+    /// （糸パワーが高いほど、同じ判定でも糸の減りが小さくなる）。
+    /// </summary>
+    [SerializeField(Label = "糸パワーの減り軽減")]
+    private float linePowerLossReduction = 0.25f;
 
-    /// <summary>糸パワー 1 あたりに広がる安全帯の幅。</summary>
-    [SerializeField(Label = "糸パワー1あたりの安全帯増分")]
-    private float safeZonePerLinePower = 0.08f;
+    // ─── 合わせランクによる初期の糸の残り ─────────────────────
 
-    // ─── 合わせランクによる初期テンション ─────────────────────
+    /// <summary>Excellent で合わせたときの初期の糸の残り。</summary>
+    [Header("初期の糸の残り(合わせランク)"), SerializeField(Label = "初期の糸の残り(Excellent)")]
+    private float initialLineExcellent = 1.0f;
 
-    /// <summary>Excellent で合わせたときの初期テンション。</summary>
-    [Header("初期テンション(合わせランク)"), SerializeField(Label = "初期テンション(Excellent)")]
-    private float initialTensionExcellent = 0f;
-
-    /// <summary>Great で合わせたときの初期テンション。</summary>
-    [SerializeField(Label = "初期テンション(Great)")]
-    private float initialTensionGreat = 0.15f;
+    /// <summary>Great で合わせたときの初期の糸の残り。</summary>
+    [SerializeField(Label = "初期の糸の残り(Great)")]
+    private float initialLineGreat = 0.9f;
 
     /// <summary>
-    /// Nice で合わせたときの初期テンション。
+    /// Nice で合わせたときの初期の糸の残り。
     /// 判定が取れていない場合（None など）のフォールバックにも使う（＝最も不利な値）。
     /// </summary>
-    [SerializeField(Label = "初期テンション(Nice)")]
-    private float initialTensionNice = 0.3f;
+    [SerializeField(Label = "初期の糸の残り(Nice)")]
+    private float initialLineNice = 0.8f;
 
     // ─── 疲労 ────────────────────────────────────────────
 
@@ -442,20 +436,20 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "セグメントの高さ(px)")]
     private float segmentHeightPx = 10f;
 
-    /// <summary>テンションの円弧が届いていないセグメントの色（RGB）。</summary>
+    /// <summary>糸の残りが尽きた（円弧が届いていない）セグメントの色（RGB）。</summary>
     [SerializeField(Label = "空きセグメントの色(RGB)")]
     private SEED.Vector3 emptyColor = new SEED.Vector3(0.25f, 0.28f, 0.32f);
 
-    /// <summary>安全帯（テンションが低い領域）の色（RGB）。</summary>
-    [SerializeField(Label = "安全帯の色(RGB)")]
-    private SEED.Vector3 safeColor = new SEED.Vector3(0.2f, 0.9f, 0.3f);
+    /// <summary>糸の残りが満タン（<see cref="Line01"/> ＝ 1）のときの色（RGB）。</summary>
+    [SerializeField(Label = "満タンの色(RGB)")]
+    private SEED.Vector3 fullColor = new SEED.Vector3(0.2f, 0.9f, 0.3f);
 
-    /// <summary>安全帯のすぐ外側（警告）の色（RGB）。</summary>
-    [SerializeField(Label = "警告帯の色(RGB)")]
-    private SEED.Vector3 warnColor = new SEED.Vector3(1f, 0.85f, 0.2f);
+    /// <summary>糸の残りが中間（<see cref="Line01"/> ＝ 0.5）のときの色（RGB）。</summary>
+    [SerializeField(Label = "中間の色(RGB)")]
+    private SEED.Vector3 midColor = new SEED.Vector3(1f, 0.85f, 0.2f);
 
-    /// <summary>テンション上限付近（危険）の色（RGB）。</summary>
-    [SerializeField(Label = "危険帯の色(RGB)")]
+    /// <summary>糸の残りが危険（<see cref="Line01"/> ＝ 0）のときの色（RGB）。</summary>
+    [SerializeField(Label = "危険の色(RGB)")]
     private SEED.Vector3 dangerColor = new SEED.Vector3(1f, 0.2f, 0.15f);
 
     /// <summary>出題中に光る拍マークの色（RGB）。</summary>
@@ -554,8 +548,8 @@ public class FishingFight : SEEDScript
     /// <summary>現在のフェーズ（非バトル中は <see cref="Phase.None"/>）。</summary>
     public Phase CurrentPhase { get; private set; } = Phase.None;
 
-    /// <summary>現在のテンション（0〜1）。1 で糸が切れる。</summary>
-    public float Tension { get; private set; } = 0f;
+    /// <summary>現在の糸の残り（1〜0）。満タン 1.0 から一方向に減り、0 で糸が切れる。回復手段は無い。</summary>
+    public float Line01 { get; private set; } = Line01Max;
 
     /// <summary>現在の疲労（0〜1）。</summary>
     public float Fatigue01 { get; private set; } = 0f;
@@ -564,7 +558,7 @@ public class FishingFight : SEEDScript
     public bool IsTired { get; private set; } = false;
 
     /// <summary>
-    /// 糸が切れたか。テンションが 1 に達したフレームで true になる。
+    /// 糸が切れたか。糸の残り（<see cref="Line01"/>）が 0 に達したフレームで true になる。
     /// コントローラ側が拾ったら <see cref="EndFight"/> で false へ戻る。
     /// </summary>
     public bool LineBroken { get; private set; } = false;
@@ -758,10 +752,10 @@ public class FishingFight : SEEDScript
     ///
     /// 魚のリズムデータ（BPM・拍子・パターン・フェーズ長）を取り込み、
     /// 拍時計を 0 から回し始めて<b>出題フェーズ</b>へ入る。
-    /// 初期テンションは<b>合わせランク</b>から決める（ランクが悪いほど高い＝危険側）。
+    /// 初期の糸の残りは<b>合わせランク</b>から決める（ランクが悪いほど少ない＝危険側）。
     /// </summary>
     /// <param name="fish">掛かった魚（パラメータを読むだけで一切動かさない）。</param>
-    /// <param name="judge">合わせ判定（初期テンションの決定に使う）。</param>
+    /// <param name="judge">合わせ判定（初期の糸の残りの決定に使う）。</param>
     /// <param name="hookDistance">
     /// 掛かった瞬間のウキ→竿先の水平距離（メートル）。
     /// 「魚 HP 1 あたりの距離」の基準になる（<see cref="hookDistanceMin"/> で下限クランプ）。
@@ -772,7 +766,7 @@ public class FishingFight : SEEDScript
 
         target = fish;
         Active = true;
-        Tension = SEED.Mathf.Clamped(InitialTension(judge), TensionMin, TensionMax);
+        Line01 = SEED.Mathf.Clamped(InitialLine(judge), Line01Min, Line01Max);
 
         // 魚 HP: 掛かった瞬間の総合力で「魚の取り分」を出し、その割合ぶんだけ基礎HP へ乗せる
         float rod = SEED.Mathf.Max(rodPower, DivideEpsilon);
@@ -806,7 +800,7 @@ public class FishingFight : SEEDScript
                      + $" / 魚HP {fishHpMax:F1}（取り分 {fishShare:P0}）"
                      + $" / 掛かった距離 {hookDistance:F1}m → 目標 {DesiredFloatDistance:F1}m"
                      + $" / {BpmOf(fish):F0}BPM {beatsPerBar}拍子 / パターン {patterns.Count} 種"
-                     + $" / 初期テンション {Tension:F2}");
+                     + $" / 初期の糸の残り {Line01:F2}");
     }
 
     /// <summary>
@@ -1104,7 +1098,7 @@ public class FishingFight : SEEDScript
         }
 
         SEED.Debug.Log($"[Fight] {PhaseLabel(next)}（{phaseBars}小節）"
-                     + $" / テンション {Tension:P0} / 疲労 {Fatigue01:P0}{(IsTired ? "（疲労中）" : "")}"
+                     + $" / 糸の残り {Line01:P0} / 疲労 {Fatigue01:P0}{(IsTired ? "（疲労中）" : "")}"
                      + $" / 魚HP {FishHp01:P0}");
     }
 
@@ -1320,14 +1314,10 @@ public class FishingFight : SEEDScript
 
         MarkHitResult(index, judgement);
 
-        // テンション: Excellent だけは減り、それ以外は「ズレの大きさ × 効き」だけ増える
-        if (judgement == FishingController.HookJudgement.Excellent)
+        // 糸の残り: Excellent は減らず、それ以外は「ズレの大きさ × 効き ÷ 糸パワー補正」だけ減る
+        if (judgement != FishingController.HookJudgement.Excellent)
         {
-            Tension = SEED.Mathf.Max(Tension - SEED.Mathf.Max(excellentTensionRelief, 0f), TensionMin);
-        }
-        else
-        {
-            AddTension(offset * tensionPerSecondOfOffset * LevelScale());
+            SubtractLine(offset * linePerSecondOfOffset * LevelScale() / LinePowerFactor());
         }
 
         // 疲労: きれいに叩けたほど大きく溜まる
@@ -1392,11 +1382,11 @@ public class FishingFight : SEEDScript
 
     /// <summary>
     /// Miss（打ち逃し・空打ち・出題中のお手つき）の共通処理【Miss の唯一の適用点】。
-    /// テンションを上げ、判定画像（Miss）を出す。
+    /// 糸の残りを減らし、判定画像（Miss）を出す。
     /// </summary>
     private void ApplyMiss()
     {
-        AddTension(SEED.Mathf.Max(missTension, 0f));
+        SubtractLine(SEED.Mathf.Max(missLoss, 0f) / LinePowerFactor());
         FishingController.Current?.ShowFightJudgement(FishingController.HookJudgement.Miss, 0f);
     }
 
@@ -1406,7 +1396,7 @@ public class FishingFight : SEEDScript
     // ─── 内部処理: 隙（巻き取り）─────────────────────────────
 
     /// <summary>
-    /// 隙フェーズの更新。テンションが回復し、巻き取りで魚 HP を削れる唯一の区間。
+    /// 隙フェーズの更新。糸の残りは回復しない（本仕様では回復手段が無い）。巻き取りで魚 HP を削れる唯一の区間。
     ///
     /// 直前の回答フェーズ最後の打点は受付窓が隙側へはみ出すことがあるので、
     /// その窓の内側のクリックだけは回答フェーズと同じ判定へ結び付ける
@@ -1431,27 +1421,24 @@ public class FishingFight : SEEDScript
         // 受付窓を過ぎてもまだ残っている打点は、ここで打ち逃しとして締め切る
         CloseExpiredHits();
 
-        // テンションの回復（隙のあいだだけ）
-        Tension = SEED.Mathf.Max(Tension - SEED.Mathf.Max(tensionRecoverPerSec, 0f) * deltaTime, TensionMin);
-
         // 巻き取り: 巻いた距離ぶんだけ魚 HP を削る
         if (reelAmount <= ReelInputEpsilon) { return; }
         fishHp = SEED.Mathf.Max(fishHp - reelAmount * ReelHpPerUnit, FishHpZero);
     }
 
-    // ─── 内部処理: テンションと疲労 ─────────────────────────
+    // ─── 内部処理: 糸の残りと疲労 ─────────────────────────
 
     /// <summary>
-    /// テンションを増やす【増加の唯一の適用点】。
-    /// 上限に達したら糸切れ（<see cref="LineBroken"/>）を立てて効果音を鳴らす。
+    /// 糸の残りを減らす【減少の唯一の適用点】。回復手段は無い（一方向）。
+    /// 下限（0）に達したら糸切れ（<see cref="LineBroken"/>）を立てて効果音を鳴らす。
     /// </summary>
-    /// <param name="amount">増分（負なら何もしない）。</param>
-    private void AddTension(float amount)
+    /// <param name="amount">減分（負なら何もしない）。</param>
+    private void SubtractLine(float amount)
     {
         if (amount <= 0f) { return; }
 
-        Tension = SEED.Mathf.Min(Tension + amount, TensionMax);
-        if (Tension < TensionMax) { return; }
+        Line01 = SEED.Mathf.Max(Line01 - amount, Line01Min);
+        if (Line01 > Line01Min) { return; }
         if (LineBroken) { return; }             // 既に通知済みなら二重に鳴らさない
 
         LineBroken = true;
@@ -1537,20 +1524,21 @@ public class FishingFight : SEEDScript
         return SEED.Mathf.Clamped(ratio, pullRateMultiplierMin, pullRateMultiplierMax);
     }
 
-    /// <summary>安全帯（緑の円弧）の幅（テンション換算 0〜1）。糸パワーで広がる。</summary>
-    private float SafeZoneWidth()
-    {
-        float raw = safeZoneBase + safeZonePerLinePower * (linePower - 1f);
-        return SEED.Mathf.Clamped01(raw);
-    }
+    /// <summary>
+    /// 糸パワーによる糸の減り軽減の倍率。
+    /// ＝ 1 + <see cref="linePowerLossReduction"/> × (糸パワー − 1)。
+    /// 糸の減り量はこの値で割られる（大きいほど減りにくくなる）。
+    /// </summary>
+    private float LinePowerFactor()
+        => SEED.Mathf.Max(NeutralMultiplier + linePowerLossReduction * (linePower - NeutralMultiplier), DivideEpsilon);
 
-    /// <summary>合わせ判定に対応する初期テンション（判定が無ければ最も不利な Nice 値）。</summary>
+    /// <summary>合わせ判定に対応する初期の糸の残り（判定が無ければ最も不利な Nice 値）。</summary>
     /// <param name="judge">合わせ判定。</param>
-    private float InitialTension(FishingController.HookJudgement judge) => judge switch
+    private float InitialLine(FishingController.HookJudgement judge) => judge switch
     {
-        FishingController.HookJudgement.Excellent => initialTensionExcellent,
-        FishingController.HookJudgement.Great => initialTensionGreat,
-        _ => initialTensionNice,
+        FishingController.HookJudgement.Excellent => initialLineExcellent,
+        FishingController.HookJudgement.Great => initialLineGreat,
+        _ => initialLineNice,
     };
 
     /// <summary>糸切れの効果音を鳴らす（パス未設定なら何もしない）。</summary>
@@ -1574,7 +1562,7 @@ public class FishingFight : SEEDScript
         Paused = false;                // 一時停止の持ち越しを防ぐ
         LineBroken = false;
         CurrentPhase = Phase.None;
-        Tension = TensionMin;
+        Line01 = Line01Max;
         Fatigue01 = 0f;
         IsTired = false;
         tiredEndBar = 0;
@@ -1649,7 +1637,8 @@ public class FishingFight : SEEDScript
     /// <summary>
     /// セグメントの色を決めて書き込む【円の描画の唯一の出口】。
     ///
-    /// 下地はテンションの円弧（真上から右回りに <see cref="Tension"/> × 360 度ぶん）。
+    /// 下地は糸の残りの円弧（真上から右回りに <see cref="Line01"/> × 360 度ぶんだけ点灯。
+    /// 減るほど円弧が短くなる＝空きセグメントが増える）。
     /// その上に、いまのパターンの打点位置へ拍マークを重ねる。
     /// 値が変わっていないセグメントには書き込まない（毎フレーム 48 回の書き込みを避ける）。
     /// </summary>
@@ -1659,16 +1648,13 @@ public class FishingFight : SEEDScript
         if (count <= 0) { return; }
 
         float alpha = SEED.Mathf.Clamped01(segmentOpacity);
-        float zone = SafeZoneWidth();
-        float filled = SEED.Mathf.Clamped01(Tension) * count;
+        float lit = SEED.Mathf.Clamped01(Line01) * count;
+        SEED.Color litColor = LineDepletionColor(alpha);
 
         for (int i = 0; i < count; i++)
         {
-            // 下地: テンションの円弧（i 番目が円弧の内側なら帯色、外なら空き色）
-            float t = count > 1 ? (float)i / count : 0f;
-            SEED.Color color = i < filled
-                ? TensionBandColor(t, zone, alpha)
-                : ToColor(emptyColor, alpha);
+            // 下地: 糸の残りの円弧（i 番目が円弧の内側なら点灯色、外なら空き色）
+            SEED.Color color = i < lit ? litColor : ToColor(emptyColor, alpha);
 
             // 上書き: 拍マーク
             if (BeatMarkColor(i, count, alpha) is { } mark) { color = mark; }
@@ -1682,17 +1668,26 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
-    /// テンションの円弧の帯色。安全帯の内側は緑、外側は 警告色 → 危険色 へ線形補間する。
+    /// 糸の残り（<see cref="Line01"/>）に応じた点灯セグメントの色。
+    /// 満タン(1.0)＝<see cref="fullColor"/> → 中間(0.5)＝<see cref="midColor"/> →
+    /// 危険(0.0)＝<see cref="dangerColor"/> の 2 区間線形補間。
     /// </summary>
-    /// <param name="t">円周上の位置（0＝真上／1＝一周）。テンション換算と同じ尺度。</param>
-    /// <param name="zone">安全帯の幅（0〜1）。</param>
     /// <param name="alpha">不透明度。</param>
-    private SEED.Color TensionBandColor(float t, float zone, float alpha)
+    private SEED.Color LineDepletionColor(float alpha)
     {
-        if (t <= zone) { return ToColor(safeColor, alpha); }
+        float line = SEED.Mathf.Clamped01(Line01);
+        const float Mid = 0.5f;
 
-        float u = SEED.Mathf.Clamped01((t - zone) / SEED.Mathf.Max(1f - zone, DivideEpsilon));
-        return SEED.Color.Lerp(ToColor(warnColor, alpha), ToColor(dangerColor, alpha), u);
+        if (line >= Mid)
+        {
+            float u = (line - Mid) / (Line01Max - Mid);
+            return SEED.Color.Lerp(ToColor(midColor, alpha), ToColor(fullColor, alpha), u);
+        }
+        else
+        {
+            float u = line / Mid;
+            return SEED.Color.Lerp(ToColor(dangerColor, alpha), ToColor(midColor, alpha), u);
+        }
     }
 
     /// <summary>
