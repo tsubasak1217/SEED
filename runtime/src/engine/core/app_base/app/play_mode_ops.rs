@@ -218,7 +218,13 @@ impl App {
         // 残したままシーンが入れ替わると「旧シーンの位置 → 新シーンの位置」の
         // 巨大な速度が 1 フレームだけ場へ焼かれ、草が一斉になぎ倒される。
         self.interaction_velocity.clear();
-        if let Some(audio) = &mut self.audio { audio.reset_components(); }
+        if let Some(audio) = &mut self.audio {
+            audio.reset_components();
+            // スクリプトが鳴らした BGM（駆け引きのドラムループ等）は Play を抜けたら必ず止める。
+            // 速度はスクリプトが変えたまま残るため、次の Play が等倍から始まるよう戻しておく。
+            audio.stop_bgm();
+            audio.set_bgm_speed(1.0);
+        }
 
         // 地表カバー場を Edit の保存状態へ戻す（Play 中に積もったぶんは捨てる。I3.1）。
         self.restore_cover_after_play();

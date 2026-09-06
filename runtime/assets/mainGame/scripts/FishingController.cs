@@ -2076,10 +2076,11 @@ public class FishingController : SEEDScript
             centerZ + horizDirZ * horizComponent);
 
         // 注視は中点固定。yaw はカメラ→中点の水平方向、pitch はカメラ→中点の俯角
-        // （dy はカメラの中点に対する相対高さ。下を向くほど pitch は負）。
+        // （dy は「カメラ→中点」の高さ差。エンジン規約は pitch 正 = 下を向く なので、
+        //   CatchPresenter と同じく 方向ベクトル.y の符号を反転して asin に掛ける）。
         float toCenterX = centerX - camPos.x;
         float toCenterZ = centerZ - camPos.z;
-        float dy = camPos.y - centerY;
+        float dy = centerY - camPos.y;
         float yawDeg = SEED.Mathf.Atan2(toCenterX, toCenterZ) * SEED.Mathf.Rad2Deg;
         float lookDistance = SEED.Mathf.Sqrt(toCenterX * toCenterX + toCenterZ * toCenterZ + dy * dy);
         float pitchDeg = lookDistance > DivideEpsilon
