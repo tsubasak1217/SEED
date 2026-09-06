@@ -1,6 +1,6 @@
 // ============================================================================
 //  PrologueFlow.cs
-//  プロローグシーンの進行（決定入力 → チュートリアルへ）。
+//  プロローグシーンの進行（会話終了 → チュートリアルへ）。
 // ============================================================================
 
 using SEEDEditor.Scripting;
@@ -9,13 +9,17 @@ using SEEDEditor.Scripting;
 /// プロローグシーンの進行スクリプト。
 ///
 /// 【責務】
-///  - 決定入力を待ち、チュートリアルシーンへ遷移する。
+///  - 会話が終わったらチュートリアルシーンへ遷移する。
 ///
-/// フェード演出とシーン切替の手順は SceneFlow が持つ（単一責任）。
+/// 遷移の合図は自分では判断しない。会話の進行は DialogueDirector が持ち、
+/// その「会話終了時」イベント（ScriptEvent）から <see cref="GoToTutorial"/> が
+/// 呼ばれる。フェード演出とシーン切替の手順は SceneFlow が持つ（単一責任）。
 ///
 /// 【シーン側の設定】
-///  - 同じアクターに SceneFlow と本スクリプトを付ける。
+///  - 同じアクター（Flow）に SceneFlow と本スクリプトを付ける。
 ///  - 参照フィールド sceneFlow に、そのアクター自身を指定する。
+///  - DialogueDirector の「会話終了時」に
+///    Flow / PrologueFlow / GoToTutorial（引数なし）を結線する。
 /// </summary>
 public class PrologueFlow : SEEDScript
 {
@@ -30,22 +34,24 @@ public class PrologueFlow : SEEDScript
     [SerializeField(Label = "シーン遷移", Tooltip = "同じアクターに付けた SceneFlow を指定する")]
     public SceneFlow? sceneFlow;
 
-    // ── ライフサイクル ──────────────────────────────────────
+    // ── 公開メソッド（ScriptEvent から呼べる）───────────────
 
     /// <summary>
-    /// 毎フレーム、決定入力を監視して遷移を発行する。
+    /// チュートリアルシーンへ遷移する。
+    /// DialogueDirector の「会話終了時」イベントから呼ばれる想定。
     /// </summary>
-    /// <param name="ctx">フレーム情報（未使用）。</param>
-    public override void Update(ref NativeFrameContext ctx)
+    public void GoToTutorial()
     {
-        // 参照未設定・解決失敗時は必ず null になるため毎回チェックする
-        if (sceneFlow is null) return;
+        // 参照未設定・解決失敗時は必ず null になるためチェックする
+        if (sceneFlow is null)
+        {
+            SEED.Debug.LogWarning("[PrologueFlow] sceneFlow が未設定のため遷移できません。");
+            return;
+        }
 
-        // 遷移演出中の入力は無視する（二重遷移の防止）
+        // 遷移演出中の重複要求は無視する（二重遷移の防止）
         if (sceneFlow.IsTransitioning) return;
 
-        // 決定入力でチュートリアルへ
-        if (!SceneFlow.IsConfirmPressed()) return;
         sceneFlow.GoTo(SceneNameTutorial);
     }
 }
