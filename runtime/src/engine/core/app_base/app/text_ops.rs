@@ -6,7 +6,10 @@
 //  Undo は `field_edit.rs` の共通機構が担当するので、ここでは記録しない。
 // ============================================================
 
-use crate::engine::components::{ComponentKind, TextAlign, TextComponent, TextVerticalAlign};
+use crate::engine::components::{
+    ComponentKind, TextAlign, TextComponent, TextVerticalAlign, MAX_OUTLINE_WIDTH,
+    MIN_OUTLINE_WIDTH,
+};
 
 use super::App;
 
@@ -31,7 +34,7 @@ impl App {
     ///
     /// `key` は
     /// `content` / `font_size` / `color` / `align` / `vertical_align` /
-    /// `line_spacing` / `layer`。
+    /// `line_spacing` / `layer` / `font_path` / `outline_width` / `outline_color`。
     /// パースできない値は無視する（不正入力で既存値を壊さない）。
     pub(super) fn handle_set_text_field(
         &mut self,
@@ -68,20 +71,22 @@ impl App {
                 }
             }
             "color" => {
-                // "r,g,b,a" をパースする。要素数が違えば無視。
-                let parts: Vec<&str> = value.split(',').collect();
-                if parts.len() == COLOR_COMPONENTS {
-                    let mut rgba = [0.0f32; COLOR_COMPONENTS];
-                    let mut ok = true;
-                    for (dst, src) in rgba.iter_mut().zip(parts.iter()) {
-                        match src.trim().parse::<f32>() {
-                            Ok(v) => *dst = v.clamp(COLOR_MIN, COLOR_MAX),
-                            Err(_) => ok = false,
-                        }
-                    }
-                    if ok {
-                        tc.color = rgba;
-                    }
+                if let Some(rgba) = parse_rgba(value) {
+                    tc.color = rgba;
+                }
+            }
+            // 使用フォントのアセットパス。パスに改行は入らないので
+            // content のようなエスケープ解除は行わず、そのまま格納する。
+            // 空文字 = 組み込みフォントへ戻す、という意味を持つ。
+            "font_path" => tc.font_path = value.to_string(),
+            "outline_width" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    tc.outline_width = v.clamp(MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH);
+                }
+            }
+            "outline_color" => {
+                if let Some(rgba) = parse_rgba(value) {
+                    tc.outline_color = rgba;
                 }
             }
             "align" => {
@@ -107,6 +112,22 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// "r,g,b,a" 形式の色文字列を RGBA 配列へパースする。
+///
+/// 要素数が違う・数値にできない要素がある場合は `None`（呼び出し側は既存値を保つ）。
+/// 各成分は 0..1 へクランプする。文字色と縁取り色で同じ規則を使う。
+fn parse_rgba(value: &str) -> Option<[f32; COLOR_COMPONENTS]> {
+    let parts: Vec<&str> = value.split(',').collect();
+    if parts.len() != COLOR_COMPONENTS {
+        return None;
+    }
+    let mut rgba = [0.0f32; COLOR_COMPONENTS];
+    for (dst, src) in rgba.iter_mut().zip(parts.iter()) {
+        *dst = src.trim().parse::<f32>().ok()?.clamp(COLOR_MIN, COLOR_MAX);
+    }
+    Some(rgba)
 }
 
 /// インスペクタから届く文字列のエスケープを解除する。
@@ -144,7 +165,7 @@ fn unescape_content(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::unescape_content;
+    use super::{parse_rgba, unescape_content};
 
     /// `\n` は改行、`\t` はタブ、`\\` はバックスラッシュ 1 文字になる。
     #[test]
@@ -170,5 +191,19 @@ mod tests {
     #[test]
     fn plain_text_passes_through() {
         assert_eq!(unescape_content("所持金: 1200 円"), "所持金: 1200 円");
+    }
+
+    /// 正常な "r,g,b,a" はそのままパースされ、範囲外はクランプされる。
+    #[test]
+    fn parses_and_clamps_rgba() {
+        assert_eq!(parse_rgba("1,0.5,0,1"), Some([1.0, 0.5, 0.0, 1.0]));
+        assert_eq!(parse_rgba(" 2 , -1 , 0.25 , 1 "), Some([1.0, 0.0, 0.25, 1.0]));
+    }
+
+    /// 要素数不足・非数値は None（既存値を壊さない）。
+    #[test]
+    fn rejects_malformed_rgba() {
+        assert_eq!(parse_rgba("1,0,0"), None);
+        assert_eq!(parse_rgba("1,0,0,x"), None);
     }
 }

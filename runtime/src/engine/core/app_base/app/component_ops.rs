@@ -490,12 +490,21 @@ impl App {
                     // content は任意の文字列（改行・引用符・日本語を含みうる）ため
                     // 必ず serde_json でエスケープしてから埋め込む。
                     let content_json = serde_json::to_string(&d.content).unwrap_or_default();
+                    // font_path も任意文字列（パス区切り・日本語を含みうる）なので
+                    // 同様に serde_json でエスケープする。
+                    // 【キー名】縁取りは "outline_*"。他コンポーネントや
+                    // スロット共通ラッパと衝突しないことを確認済み（同一 JSON
+                    // オブジェクト内でキーが重複すると C# 側の解析が壊れるため）。
+                    let font_path_json = serde_json::to_string(&d.font_path).unwrap_or_default();
                     ("TextComponent", format!(
-                        r#","content":{content_json},"font_size":{:.4},"text_r":{:.4},"text_g":{:.4},"text_b":{:.4},"text_a":{:.4},"align":"{}","vertical_align":"{}","line_spacing":{:.4},"text_layer":{}"#,
+                        r#","content":{content_json},"font_size":{:.4},"text_r":{:.4},"text_g":{:.4},"text_b":{:.4},"text_a":{:.4},"align":"{}","vertical_align":"{}","line_spacing":{:.4},"text_layer":{},"font_path":{font_path_json},"outline_width":{:.4},"outline_r":{:.4},"outline_g":{:.4},"outline_b":{:.4},"outline_a":{:.4}"#,
                         d.font_size,
                         d.color[0], d.color[1], d.color[2], d.color[3],
                         d.align.key(), d.vertical_align.key(),
                         d.line_spacing, d.layer,
+                        d.outline_width,
+                        d.outline_color[0], d.outline_color[1],
+                        d.outline_color[2], d.outline_color[3],
                     ))
                 }
                 ComponentData::InteractionSourceComponent(d) => {

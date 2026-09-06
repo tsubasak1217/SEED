@@ -17791,6 +17791,14 @@
                   "align": "left",
                   "vertical_align": "middle",
                   "line_spacing": 1.2,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "outline_width": 8.0,
+                  "outline_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ],
                   "layer": 26
                 }
               }
@@ -17841,6 +17849,14 @@
                   "align": "right",
                   "vertical_align": "middle",
                   "line_spacing": 1.2,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "outline_width": 8.0,
+                  "outline_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                  ],
                   "layer": 26
                 }
               }

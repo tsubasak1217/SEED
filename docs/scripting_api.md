@@ -1020,6 +1020,9 @@ if (gameObject.GetComponent<Text>() is { } label)
     label.Layer          // int（get/set。大きいほど手前。Sprite と共通の順序）
     label.Align          // string（get/set。"left" / "center" / "right"）
     label.VerticalAlign  // string（get/set。"top" / "middle" / "bottom"）
+    label.FontPath       // string（get/set。assets:// 仮想パス。空文字=組み込みフォント）
+    label.OutlineWidth   // float（get/set。縁取りの太さ px。0=縁取りなし）
+    label.OutlineColor   // Color（get/set。縁取りの色。既定=不透明な黒）
 }
 ```
 
@@ -1032,7 +1035,7 @@ public void Update()
 }
 ```
 
-> **重要**: `Align` / `VerticalAlign` に未知の文字列を代入しても無視され、既存の値が保たれます（typo で表示が崩れません）。1 つの Text が描ける文字数の上限は 4096 文字で、超えた分は切り捨てられます。
+> **重要**: `Align` / `VerticalAlign` に未知の文字列を代入しても無視され、既存の値が保たれます（typo で表示が崩れません）。1 つの Text が描ける文字数の上限は 4096 文字で、超えた分は切り捨てられます。縁取りの太さはフォントサイズの約 1/8 が上限で、それを超える指定は上限で頭打ちになります（SDF のスプレッド幅による）。
 
 ### Skybox（天球の色調整：時間帯・天候の演出）
 
@@ -1207,7 +1210,7 @@ public class FishingLine : SEEDScript
 | `WaterVolume` | `gameObject.GetComponent<WaterVolume>()` | 現在水位（読み取り専用）・設定水位・水位シミュレーションの有効／無効・水面シェーダのパラメータ（SetShaderParam / GetShaderParamFloat / GetShaderParamVector3） |
 | `WaterLink` | `gameObject.GetComponent<WaterLink>()` | 水位グラフの開口。**開閉率（バルブ）**・開口寸法・流量係数 |
 | `LineRenderer` | `gameObject.GetComponent<LineRenderer>()` | 3D の線（釣り糸・ロープ・軌跡）。点列（SetPoints）・太さ・色・表示・座標系・深度テスト |
-| `Text` | `gameObject.GetComponent<Text>()` | キャンバス上の文字表示（HUD の数値・ラベル）。内容・サイズ・色・整列・行送り・レイヤー |
+| `Text` | `gameObject.GetComponent<Text>()` | キャンバス上の文字表示（HUD の数値・ラベル）。内容・フォント（assets:// の .otf/.ttf）・サイズ・色・**縁取り**（太さ・色）・整列・行送り・レイヤー |
 | `Skybox` | `gameObject.GetComponent<Skybox>()` | 天球（equirectangular）のテクスチャパス・強度・色味と、**色調整**（色相シフト・彩度・明度・コントラスト）。調整は背景・反射・水面反射の空すべてに効く |
 | `ControlPointPath` | `gameObject.GetComponent<ControlPointPath>()` | コントロールポイント経路（巡回・レール移動）。点数・閉ループ・1 周時間と、開始時刻と、時刻指定のワールド位置／進行方向サンプル（読み取り専用） |
 

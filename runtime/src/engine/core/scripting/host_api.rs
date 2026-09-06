@@ -754,6 +754,9 @@ fn read_floats(
                 "color"        => put(out, &t.color),
                 "font_size"    => put(out, &[t.font_size]),
                 "line_spacing" => put(out, &[t.line_spacing]),
+                // 縁取り（太さはキャンバスピクセル、0 = 縁取りなし）
+                "outline_width" => put(out, &[t.outline_width]),
+                "outline_color" => put(out, &t.outline_color),
                 // 描画優先度レイヤー（i32 → f32 変換して返す。Sprite の layer と同様）
                 "layer"        => put(out, &[t.layer as f32]),
                 _              => None,
@@ -1103,6 +1106,9 @@ fn write_floats(
                 "color"        => take(v).map(|a| t.color = a).is_some(),
                 "font_size"    => take::<1>(v).map(|a| t.font_size = a[0]).is_some(),
                 "line_spacing" => take::<1>(v).map(|a| t.line_spacing = a[0]).is_some(),
+                // 縁取り（太さはキャンバスピクセル、0 = 縁取りなし）
+                "outline_width" => take::<1>(v).map(|a| t.outline_width = a[0]).is_some(),
+                "outline_color" => take(v).map(|a| t.outline_color = a).is_some(),
                 // 描画優先度レイヤー（f32 → i32 変換して格納。Sprite の layer と同様）
                 "layer"        => take::<1>(v).map(|a| t.layer = a[0] as i32).is_some(),
                 _              => false,
@@ -1351,6 +1357,8 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
                 "content"        => Some(t.content.clone()),
                 "align"          => Some(t.align.key().to_string()),
                 "vertical_align" => Some(t.vertical_align.key().to_string()),
+                // 使用フォントの assets:// パス（空文字 = 組み込みフォント）
+                "font_path"      => Some(t.font_path.clone()),
                 _                => None,
             }
         }
@@ -1431,6 +1439,8 @@ fn write_string(
             let Some(t) = world.get_mut::<TextComponent>(e) else { return false };
             match field {
                 "content" => { t.content = value.to_string(); true }
+                // 使用フォントの assets:// パス（空文字 = 組み込みフォントへ戻す）
+                "font_path" => { t.font_path = value.to_string(); true }
                 // 未知のキーは既存値を保つ（typo で左寄せに戻らないようにする）。
                 "align" => match TextAlign::from_key(value) {
                     Some(a) => { t.align = a; true }

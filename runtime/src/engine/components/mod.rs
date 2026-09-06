@@ -93,6 +93,7 @@ pub use line_renderer_component::{
 };
 pub use text_component::{
     TextComponent, TextComponentData, TextAlign, TextVerticalAlign, MAX_TEXT_CHARS,
+    MAX_OUTLINE_WIDTH, MIN_OUTLINE_WIDTH,
 };
 pub use particle_emitter_component::{
     ParticleEmitterComponent, ParticleEmitterComponentData,

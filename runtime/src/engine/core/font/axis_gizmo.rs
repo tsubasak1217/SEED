@@ -384,7 +384,8 @@ impl AxisGizmo {
 
         for ep in endpoints.iter().filter(|e| e.is_pos) {
             let ax = &AXES[ep.axis_i];
-            let glyphs = self.font_system.prepare_glyphs(ax.label, LABEL_SIZE);
+            // ギズモのラベルは組み込みフォント固定（空文字 = 組み込み）。
+            let glyphs = self.font_system.prepare_glyphs(ax.label, "");
             let lx = ep.tip_x - LABEL_SIZE * 0.38;
             let ly = ep.tip_y - LABEL_SIZE * 0.62;
             text_batch.add_text_screen(

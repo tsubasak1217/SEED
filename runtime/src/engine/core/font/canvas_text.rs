@@ -19,6 +19,7 @@
 //  行幅・ブロック高さを先に測ってから `align` / `vertical_align` のオフセットを適用する。
 // ============================================================
 
+use super::sdf::outline_px_to_sdf;
 use super::{FontSystem, GpuTextBatch, TextBatch};
 use crate::engine::components::{CanvasDrawZone, TextAlign, TextVerticalAlign, MAX_TEXT_CHARS};
 
@@ -48,6 +49,12 @@ pub struct CanvasTextItem {
     pub zone: CanvasDrawZone,
     /// 描画レイヤー（大きいほど手前。呼び出し側が安定ソートに使う）。
     pub layer: i32,
+    /// 使用フォントの assets:// 仮想パス。空文字 = 組み込みフォント。
+    pub font_path: String,
+    /// 縁取りの太さ（キャンバスピクセル）。0 = 縁取りなし。
+    pub outline_width: f32,
+    /// 縁取りの色（RGBA 0..1）。
+    pub outline_color: [f32; 4],
 }
 
 // ─── CanvasTextRenderer ───────────────────────────────────────
@@ -71,11 +78,12 @@ impl CanvasTextRenderer {
         color_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
     ) -> Option<Self> {
+        // キャンバステキストは日本語で字種が多いので大きめのアトラスを使う。
         match FontSystem::new(
             device,
             color_format,
             depth_format,
-            super::FontConfig::default(),
+            super::FontConfig::canvas(),
         ) {
             Ok(font) => Some(Self { font }),
             Err(e) => {
@@ -144,11 +152,15 @@ impl CanvasTextRenderer {
         // 送り幅はフォントから別途取得して補う（さもないと空白が詰まる）。
         let mut lines: Vec<LineLayout> = Vec::new();
         for raw_line in text.split('\n') {
-            lines.push(self.layout_line(raw_line, item.font_size));
+            lines.push(self.layout_line(raw_line, item.font_size, &item.font_path));
         }
         if lines.is_empty() {
             return;
         }
+
+        // 縁取りの太さ（px）を SDF テクスチャ単位へ 1 度だけ変換する
+        // （グリフごとに計算しても同じ値なので外へ括り出す）。
+        let outline_dist = outline_px_to_sdf(item.outline_width, item.font_size);
 
         // ブロック全体の高さ = 行数 × 行送り。
         let line_step = item.font_size * item.line_spacing;
@@ -176,10 +188,13 @@ impl CanvasTextRenderer {
                 let advance = placed.advance;
                 if let Some(info) = placed.info {
                     // キャンバスローカル（px）でのクアッド 4 隅。
-                    let x0 = pen_x + info.bearing[0];
-                    let y0 = pen_y + info.bearing[1];
-                    let x1 = x0 + info.size[0];
-                    let y1 = y0 + info.size[1];
+                    // メトリクスは em 単位なのでフォントサイズを掛けて px にする。
+                    let bearing = info.bearing_px(item.font_size);
+                    let size = info.size_px(item.font_size);
+                    let x0 = pen_x + bearing[0];
+                    let y0 = pen_y + bearing[1];
+                    let x1 = x0 + size[0];
+                    let y1 = y0 + size[1];
 
                     // 4 隅を NDC へ変換する。1 頂点でもクリップ外（w<=0）なら
                     // このグリフごと捨てる（カメラ背後の 3D キャンバス対策）。
@@ -193,6 +208,8 @@ impl CanvasTextRenderer {
                         [info.uv_min[0], info.uv_min[1]],
                         [info.uv_max[0], info.uv_max[1]],
                         item.color,
+                        item.outline_color,
+                        outline_dist,
                     );
                 }
                 pen_x += advance;
@@ -201,13 +218,11 @@ impl CanvasTextRenderer {
     }
 
     /// 1 行分のグリフを準備し、行幅を測る。
-    fn layout_line(&mut self, line: &str, font_size: f32) -> LineLayout {
-        use ab_glyph::{Font, ScaleFont};
-
+    ///
+    /// `font_path` は使用フォントのアセットパス（空文字 = 組み込み）。
+    fn layout_line(&mut self, line: &str, font_size: f32, font_path: &str) -> LineLayout {
         // アウトラインを持つ文字のグリフ情報（アトラス登録込み）。
-        let prepared = self.font.prepare_glyphs(line, font_size);
-        // 文字 → GlyphInfo の対応表。同じ文字が複数回出ても引ける。
-        let scaled = self.font.font.as_scaled(font_size);
+        let prepared = self.font.prepare_glyphs(line, font_path);
 
         let mut glyphs = Vec::with_capacity(line.chars().count());
         let mut width = 0.0f32;
@@ -222,8 +237,8 @@ impl CanvasTextRenderer {
             // 送り幅: グリフ情報があればそれを使い、無ければ（スペース等）
             // フォントから直接引く。ここを落とすと空白が消えて字が詰まる。
             let advance = match &info {
-                Some(i) => i.advance,
-                None => scaled.h_advance(scaled.scaled_glyph(ch).id),
+                Some(i) => i.advance_px(font_size),
+                None => self.font.advance_em(font_path, ch) * font_size,
             };
             width += advance;
             glyphs.push(PlacedGlyph { info, advance });

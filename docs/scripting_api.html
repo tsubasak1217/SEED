@@ -844,6 +844,9 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
   <div class="api"><code class="sig">label.Layer</code><span class="desc">int（get/set。大きいほど手前。Sprite と共通の順序）</span></div>
   <div class="api"><code class="sig">label.Align</code><span class="desc">string（get/set。"left" / "center" / "right"）</span></div>
   <div class="api"><code class="sig">label.VerticalAlign</code><span class="desc">string（get/set。"top" / "middle" / "bottom"）</span></div>
+  <div class="api"><code class="sig">label.FontPath</code><span class="desc">string（get/set。assets:// 仮想パス。空文字=組み込みフォント）</span></div>
+  <div class="api"><code class="sig">label.OutlineWidth</code><span class="desc">float（get/set。縁取りの太さ px。0=縁取りなし）</span></div>
+  <div class="api"><code class="sig">label.OutlineColor</code><span class="desc">Color（get/set。縁取りの色。既定=不透明な黒）</span></div>
 <pre><span class="c">// 所持金の表示を毎フレーム更新する</span>
 <span class="k">public override void</span> Update()
 {
@@ -852,7 +855,8 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
 }</pre>
   <div class="warn">
     <b>Align / VerticalAlign に未知の文字列を代入しても無視され、既存の値が保たれます</b>（typo で表示が崩れません）。<br>
-    1 つの Text が描ける文字数の上限は <b>4096 文字</b>で、超えた分は切り捨てられます。
+    1 つの Text が描ける文字数の上限は <b>4096 文字</b>で、超えた分は切り捨てられます。<br>
+    縁取りの太さは<b>フォントサイズの約 1/8 が上限</b>で、それを超える指定は上限で頭打ちになります（SDF のスプレッド幅による）。
   </div>
 
   <h3 id="cmp-linerenderer">LineRenderer（3D の線を描く：釣り糸・ロープ・軌跡）</h3>

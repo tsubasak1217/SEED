@@ -36,6 +36,21 @@ pub const DEFAULT_LINE_SPACING: f32 = 1.2;
 /// 文字色の既定値（不透明な白）。
 pub const DEFAULT_TEXT_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
+/// 縁取り色の既定値（不透明な黒）。
+pub const DEFAULT_OUTLINE_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
+/// 縁取り太さの既定値（0 = 縁取りなし）。
+pub const DEFAULT_OUTLINE_WIDTH: f32 = 0.0;
+
+/// 縁取り太さの下限（負の太さは意味を持たない）。
+pub const MIN_OUTLINE_WIDTH: f32 = 0.0;
+
+/// 縁取り太さの上限（キャンバスピクセル）。
+///
+/// SDF のスプレッドを超える太さは頭打ちになる（`sdf::outline_px_to_sdf`）ので、
+/// 入力段階でも常識的な範囲へ丸めておく。
+pub const MAX_OUTLINE_WIDTH: f32 = 64.0;
+
 /// 1 つの TextComponent が描画できる最大文字数。
 ///
 /// スクリプトが誤って巨大な文字列を毎フレーム設定してもフレームバジェットを
@@ -50,6 +65,9 @@ fn default_line_spacing() -> f32 {
 }
 fn default_color() -> [f32; 4] {
     DEFAULT_TEXT_COLOR
+}
+fn default_outline_color() -> [f32; 4] {
+    DEFAULT_OUTLINE_COLOR
 }
 
 // ─── TextAlign ────────────────────────────────────────────────
@@ -151,6 +169,15 @@ pub struct TextComponentData {
     /// 描画レイヤー（大きいほど手前。SpriteComponent と同じ規約で共通ソートされる）。
     #[serde(default)]
     pub layer: i32,
+    /// 使用フォントの assets:// 仮想パス。空文字 = 組み込みフォント。
+    #[serde(default)]
+    pub font_path: String,
+    /// 縁取りの太さ（キャンバスピクセル）。0 = 縁取りなし。
+    #[serde(default)]
+    pub outline_width: f32,
+    /// 縁取りの色（RGBA 0..1）。
+    #[serde(default = "default_outline_color")]
+    pub outline_color: [f32; 4],
 }
 
 impl Default for TextComponentData {
@@ -163,6 +190,9 @@ impl Default for TextComponentData {
             vertical_align: TextVerticalAlign::default(),
             line_spacing: default_line_spacing(),
             layer: 0,
+            font_path: String::new(),
+            outline_width: DEFAULT_OUTLINE_WIDTH,
+            outline_color: default_outline_color(),
         }
     }
 }
@@ -187,6 +217,12 @@ pub struct TextComponent {
     pub line_spacing: f32,
     /// 描画レイヤー（大きいほど手前）。
     pub layer: i32,
+    /// 使用フォントの assets:// 仮想パス。空文字 = 組み込みフォント。
+    pub font_path: String,
+    /// 縁取りの太さ（キャンバスピクセル）。0 = 縁取りなし。
+    pub outline_width: f32,
+    /// 縁取りの色（RGBA 0..1）。
+    pub outline_color: [f32; 4],
 }
 
 impl TextComponent {
@@ -200,6 +236,9 @@ impl TextComponent {
             vertical_align: data.vertical_align,
             line_spacing: data.line_spacing,
             layer: data.layer,
+            font_path: data.font_path,
+            outline_width: data.outline_width,
+            outline_color: data.outline_color,
         }
     }
 
@@ -213,6 +252,9 @@ impl TextComponent {
             vertical_align: self.vertical_align,
             line_spacing: self.line_spacing,
             layer: self.layer,
+            font_path: self.font_path.clone(),
+            outline_width: self.outline_width,
+            outline_color: self.outline_color,
         }
     }
 }

@@ -230,14 +230,19 @@ impl ScreenHintOverlay {
         for (i, line) in lines.iter().enumerate() {
             let pen_y = line_h * i as f32;
             let mut pen_x = 0.0f32;
-            for (_, info) in self.font_system.prepare_glyphs(line, HINT_FONT_SIZE) {
-                let x0 = pen_x + info.bearing[0];
-                let y0 = pen_y + info.bearing[1];
+            // 操作ガイドは組み込みフォント固定（空文字 = 組み込み）。
+            // 外接矩形には SDF のスプレッド余白を含めない（tight_* を使う）。
+            // 含めるとプレートが文字より一回り大きくなってしまう。
+            for (_, info) in self.font_system.prepare_glyphs(line, "") {
+                let bearing = info.tight_bearing_px(HINT_FONT_SIZE);
+                let size = info.tight_size_px(HINT_FONT_SIZE);
+                let x0 = pen_x + bearing[0];
+                let y0 = pen_y + bearing[1];
                 min_x = min_x.min(x0);
                 min_y = min_y.min(y0);
-                max_x = max_x.max(x0 + info.size[0]);
-                max_y = max_y.max(y0 + info.size[1]);
-                pen_x += info.advance;
+                max_x = max_x.max(x0 + size[0]);
+                max_y = max_y.max(y0 + size[1]);
+                pen_x += info.advance_px(HINT_FONT_SIZE);
                 any = true;
             }
         }

@@ -773,6 +773,11 @@ pub(super) fn collect_sprite_items(
                     model: canvas_mat_to_gpu(text_world, canvas_scale, y_sign),
                     zone: my_zone,
                     layer: tc.layer,
+                    // フォント指定と縁取りはコンポーネントの値をそのまま渡す
+                    // （フォントの読み込みは描画側の FontRegistry がキャッシュする）。
+                    font_path: tc.font_path.clone(),
+                    outline_width: tc.outline_width,
+                    outline_color: tc.outline_color,
                 });
             }
 

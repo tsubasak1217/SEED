@@ -863,6 +863,11 @@ public partial class InspectorPanel : UserControl
         string TextAlign = "left", string TextVerticalAlign = "top",
         float TextLineSpacing = 1.2f,
         int TextLayer = 0,
+        // フォント参照と縁取り。JSON キーは "font_path" / "outline_width" /
+        // "outline_r".."outline_a"（本文色の "text_r".."text_a" と衝突しない専用の綴り）。
+        string TextFontPath = "",
+        float TextOutlineWidth = 0f,
+        float TextOutlineR = 0f, float TextOutlineG = 0f, float TextOutlineB = 0f, float TextOutlineA = 1f,
         // AnimatorComponent 用フィールド（clips は JSON 配列文字列 [{"name":..,"path":..},...] のまま保持し、
         // UI 構築時にパースする。値そのものは Rust 側 AnimatorComponentData と同一構造）
         string AnimClipsJson = "[]",
@@ -1422,6 +1427,13 @@ public partial class InspectorPanel : UserControl
             var textVAlign     = comp.TryGetProperty("vertical_align", out var txva) ? txva.GetString() ?? "top" : "top";
             var textLineSpacing= comp.TryGetProperty("line_spacing",   out var txls) ? txls.GetSingle() : 1.2f;
             var textLayer      = comp.TryGetProperty("text_layer",     out var txly) ? txly.GetInt32() : 0;
+            // フォント参照（空 = 組み込みフォント）と縁取り（太さ 0 = 縁取りなし・色は既定で不透明な黒）。
+            var textFontPath   = comp.TryGetProperty("font_path",      out var txfp) ? txfp.GetString() ?? "" : "";
+            var textOutlineW   = comp.TryGetProperty("outline_width",  out var txow) ? txow.GetSingle() : 0f;
+            var textOutlineR   = comp.TryGetProperty("outline_r",      out var txor) ? txor.GetSingle() : 0f;
+            var textOutlineG   = comp.TryGetProperty("outline_g",      out var txog) ? txog.GetSingle() : 0f;
+            var textOutlineB   = comp.TryGetProperty("outline_b",      out var txob) ? txob.GetSingle() : 0f;
+            var textOutlineA   = comp.TryGetProperty("outline_a",      out var txoa) ? txoa.GetSingle() : 1f;
             // AnimatorComponent 用: クリップ一覧（生 JSON のまま保持）・既定クリップ・自動再生・速度
             var animClipsJson    = comp.TryGetProperty("clips",         out var acj) ? acj.GetRawText() : "[]";
             var animDefaultClip  = comp.TryGetProperty("default_clip",  out var adc) ? adc.GetString() ?? "" : "";
@@ -1663,6 +1675,9 @@ public partial class InspectorPanel : UserControl
                 TextR: textR, TextG: textG, TextB: textB, TextA: textA,
                 TextAlign: textAlign, TextVerticalAlign: textVAlign,
                 TextLineSpacing: textLineSpacing, TextLayer: textLayer,
+                TextFontPath: textFontPath, TextOutlineWidth: textOutlineW,
+                TextOutlineR: textOutlineR, TextOutlineG: textOutlineG,
+                TextOutlineB: textOutlineB, TextOutlineA: textOutlineA,
                 AnimClipsJson: animClipsJson, AnimDefaultClip: animDefaultClip,
                 AnimPlayOnStart: animPlayOnStart, AnimSpeed: animSpeed,
                 AnimDefaultFadeSeconds: animDefaultFade,
@@ -8787,6 +8802,19 @@ public partial class InspectorPanel : UserControl
     /// <summary>content 入力欄の高さ（複数行を編集できる程度）。</summary>
     private const double TextContentBoxHeight = 56;
 
+    /// <summary>フォント参照行が受け付ける拡張子（ドラッグ＆ドロップ判定にも使う）。</summary>
+    private static readonly string[] TextFontExtensions = { ".otf", ".ttf" };
+
+    /// <summary>フォント選択ダイアログのフィルタ文字列。</summary>
+    private const string TextFontDialogFilter = "フォントファイル|*.otf;*.ttf|すべてのファイル|*.*";
+
+    /// <summary>フォント選択ダイアログのタイトル。</summary>
+    private const string TextFontDialogTitle = "フォントファイルを選択";
+
+    /// <summary>フォント参照行のツールチップ（空欄時の挙動を明示する）。</summary>
+    private const string TextFontTooltip =
+        "描画に使うフォント（.otf / .ttf）。空欄 = 組み込みフォントを使用します";
+
     /// <summary>水平整列の選択肢（値キー, 表示ラベル）。値キーは Rust 側と一致必須。</summary>
     private static readonly (string Value, string Label)[] TextAlignOptions =
     {
@@ -8806,7 +8834,8 @@ public partial class InspectorPanel : UserControl
     /// <summary>
     /// TextComponent のインスペクター UI を構築して返す。
     ///
-    /// 表示文字列・フォントサイズ・色・整列・行送り・レイヤーを編集し、
+    /// 表示文字列・フォント（.otf/.ttf の assets:// 参照）・フォントサイズ・色・
+    /// 縁取りの太さ／色・整列・行送り・レイヤーを編集し、
     /// 変更時は SET_TEXT_FIELD:{actor},{slot},{key},{value} を送信する。
     /// content の改行は IPC が 1 行 1 コマンドのためバックスラッシュ + n へエスケープして送る。
     /// </summary>
@@ -8845,6 +8874,34 @@ public partial class InspectorPanel : UserControl
         contentBox.LostFocus += (_, _) => SendField("content", EscapeIpcText(contentBox.Text));
         sp.Children.Add(contentBox);
 
+        // ── フォントファイル選択行（空欄 = 組み込みフォント）──────
+        // 音声セクションと同じ FileRefBuilder + OpenFileDialog + 仮想パス変換の流儀に合わせる。
+        var fontRow = FileRefBuilder.Build(
+            "フォント",
+            info.TextFontPath,
+            TextFontExtensions,
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = TextFontDialogTitle,
+                    Filter = TextFontDialogFilter,
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                // 絶対パスを assets:// 仮想パスへ変換してからランタイムへ送信する。
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                SendField("font_path", virtualPath);
+            },
+            // クリアで組み込みフォントへ戻せるよう空文字を送る。
+            () => SendField("font_path", ""));
+        // FileRefBuilder はツールチップ引数を持たないため、生成後の要素へ設定する。
+        if (fontRow is FrameworkElement fontRowElement) fontRowElement.ToolTip = TextFontTooltip;
+        sp.Children.Add(fontRow);
+
         // ── フォントサイズ（キャンバスピクセル）──────────────────
         sp.Children.Add(BuildResettableFloatRow(
             info.SlotIdx, TextComponentType, "サイズ(px)", info.TextFontSize, "font_size",
@@ -8856,6 +8913,18 @@ public partial class InspectorPanel : UserControl
             "色", info.TextR, info.TextG, info.TextB, info.TextA,
             info.SlotIdx, TextComponentType, "color",
             (r, g, b, a) => SendField("color", FormattableString.Invariant($"{r},{g},{b},{a}"))));
+
+        // ── 縁取りの太さ（キャンバスピクセル。0 = 縁取りなし）──────
+        sp.Children.Add(BuildResettableFloatRow(
+            info.SlotIdx, TextComponentType, "縁取り(px)", info.TextOutlineWidth, "outline_width",
+            TextNumberFormat,
+            v => SendField("outline_width", v.ToString(CultureInfo.InvariantCulture))));
+
+        // ── 縁取りの色（RGBA。既定は不透明な黒）───────────────────
+        sp.Children.Add(BuildColorPickerRow(
+            "縁取り色", info.TextOutlineR, info.TextOutlineG, info.TextOutlineB, info.TextOutlineA,
+            info.SlotIdx, TextComponentType, "outline_color",
+            (r, g, b, a) => SendField("outline_color", FormattableString.Invariant($"{r},{g},{b},{a}"))));
 
         // ── 整列（水平・垂直）──────────────────────────────────
         // ラベル + ComboBox の横並び行を生成して IPC を送信するローカル関数。

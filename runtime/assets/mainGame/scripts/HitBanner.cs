@@ -195,6 +195,21 @@ public class HitBanner : SEEDScript
     [SerializeField(Label = "文字の色(RGB)")]
     private SEED.Vector3 textColor = new(1f, 1f, 1f);
 
+    /// <summary>
+    /// 文字に使うフォントの assets:// 仮想パス（空文字＝組み込みフォント）。
+    /// 「Lv◯ 魚名」「HIT!!!」の両方へ <see cref="OnStart"/> で一度だけ流し込む。
+    /// </summary>
+    [SerializeField(Label = "文字のフォント(パス)")]
+    private string fontPath = "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf";
+
+    /// <summary>文字の縁取りの太さ（キャンバスピクセル・0＝縁取りなし）。</summary>
+    [SerializeField(Label = "文字の縁取り(px)")]
+    private float outlineWidthPx = 8f;
+
+    /// <summary>文字の縁取りの色（RGB・0〜1）。既定は黒。</summary>
+    [SerializeField(Label = "文字の縁取り色(RGB)")]
+    private SEED.Vector3 outlineColor = new(0f, 0f, 0f);
+
     // ─── 実行時の状態 ────────────────────────────────────────
 
     /// <summary>再生中か（<see cref="Play"/> で true・総尺を過ぎると false）。</summary>
@@ -231,6 +246,7 @@ public class HitBanner : SEEDScript
     public override void OnStart()
     {
         ApplyPivots();
+        ApplyTextStyle();
         ApplyStaticLayout();
         Hide();
     }
@@ -382,6 +398,28 @@ public class HitBanner : SEEDScript
         SetPivot(bandWhiteTransform, BandWhitePivot);
         SetPivot(bandBlackTopTransform, BandBlackTopPivot);
         SetPivot(bandBlackBottomTransform, BandBlackBottomPivot);
+    }
+
+    /// <summary>
+    /// 文字の書式（フォント・縁取り）を両方の Text へ流し込む。
+    ///
+    /// 位置や色と違い毎フレーム変わらない設定なので <see cref="OnStart"/> で一度だけ呼ぶ
+    /// （フォントパスの代入は文字列の受け渡しを伴うため、毎フレーム撃つ意味がない）。
+    /// </summary>
+    private void ApplyTextStyle()
+    {
+        SetTextStyle(levelLabel);
+        SetTextStyle(hitLabel);
+    }
+
+    /// <summary>1 つの Text へフォント・縁取りの太さ・縁取り色を設定する。</summary>
+    /// <param name="text">対象（未設定可）。</param>
+    private void SetTextStyle(SEED.Text? text)
+    {
+        if (text is not { } t || !t.IsValid) { return; }
+        t.FontPath      = fontPath;
+        t.OutlineWidth  = outlineWidthPx;
+        t.OutlineColor  = ToColor(outlineColor, AlphaVisible);
     }
 
     /// <summary>全要素を透明にして帯を閉じる（待機状態）。</summary>

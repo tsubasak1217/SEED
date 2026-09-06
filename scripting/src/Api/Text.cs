@@ -58,6 +58,33 @@ public readonly struct Text : IComponentHandle<Text>
         set => ScriptHost.TrySetColor(_entity, Comp, "color", value);
     }
 
+    /// <summary>
+    /// 使用フォントの assets:// 仮想パス（get/set。空文字 = 組み込みフォント）。
+    /// .otf / .ttf を指す。読み込みに失敗した場合は組み込みフォントで描画される。
+    /// </summary>
+    public string FontPath
+    {
+        get => ScriptHost.TryGetString(_entity, Comp, "font_path", out var s) ? s : "";
+        set => ScriptHost.TrySetString(_entity, Comp, "font_path", value ?? "");
+    }
+
+    /// <summary>
+    /// 縁取りの太さ（get/set。キャンバスピクセル。0 = 縁取りなし）。
+    /// フォントサイズの約 1/8 が実効上限で、それを超える値は上限で頭打ちになる。
+    /// </summary>
+    public float OutlineWidth
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "outline_width", out var v) ? v : 0f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "outline_width", value);
+    }
+
+    /// <summary>縁取りの色（get/set。RGBA 0..1。既定は不透明な黒）。</summary>
+    public Color OutlineColor
+    {
+        get => ScriptHost.TryGetColor(_entity, Comp, "outline_color", out var c) ? c : Color.Black;
+        set => ScriptHost.TrySetColor(_entity, Comp, "outline_color", value);
+    }
+
     /// <summary>行送り倍率（get/set。フォントサイズに対する倍率）。</summary>
     public float LineSpacing
     {
