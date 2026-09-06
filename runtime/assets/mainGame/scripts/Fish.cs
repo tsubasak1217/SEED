@@ -26,14 +26,19 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// </code>
 ///
 /// [わらしべ連鎖]
-/// 「餌」はルアー（ウキ）だけとは限らない。ルアーが無効で、かつ別の魚が掛かっている
-/// あいだ（<see cref="FishingController.HookedFishBaitActive"/>）は、
+/// 「餌」はルアー（ウキ）だけとは限らない。別の魚が掛かっているあいだ
+/// （<see cref="FishingController.HookedFishBaitActive"/>）は、
 /// <b>掛かっている魚そのものが餌</b>になる（<see cref="TryGetBaitTarget"/>）。
 /// 捕食できるかは <see cref="CanPreyOn"/>（サイズ比のみ）で決まり、
 /// 好みの魚（<see cref="preferredFish"/>）は <see cref="ChainSenseMultiplier"/> により
 /// <b>感知距離を広げる</b>だけで、可否には影響しない。
 /// 連鎖の感知距離 ＝ (餌の感知距離 ＋ 連鎖餌の影響半径) × 好みの魚の感知倍率。
-/// 以降の Approach → Nibbling → Bite の流れは、ルアーのときとまったく同じ。
+///
+/// <b>前アタリ・合わせは一切無い</b>: Approach で食いつき距離まで詰めた瞬間から毎フレーム
+/// <see cref="FishingController.TryEatHookedFish"/> を試み、相手のやり取りが
+/// 「隙（<c>FishingFight.Phase.Rest</c>）」のときだけ成立して <see cref="BehaviorState.Bite"/> へ
+/// 直接進む（<see cref="OnHooked"/>）。失敗しても興味は失わず、食いつき距離付近に
+/// ホーミングで留まって隙を待ち続け、<see cref="chainWaitTimeoutSeconds"/> を超えたら諦める。
 ///
 /// 餌の位置・判定距離はすべて <see cref="FishingController.Current"/> から読む
 /// （魚は prefab から動的生成されるため、参照フィールドでコントローラを注入できない）。
@@ -191,6 +196,15 @@ public class Fish : SEEDScript
     private float preferredSenseMultiplier = 2f;
 
     /// <summary>
+    /// わらしべ連鎖: 食いつき距離まで詰めたのに相手の「隙（<see cref="FishingFight.Phase.Rest"/>）」が
+    /// 来ず（<see cref="FishingController.TryEatHookedFish"/> が失敗し続け）、
+    /// 待ちきれずに興味を失うまでの秒数。待っているあいだは
+    /// 食いつき距離付近にホーミングで留まり続ける（<see cref="UpdateBehaviorState"/>）。
+    /// </summary>
+    [SerializeField(Label = "わらしべの待ちタイムアウト(秒)")]
+    private float chainWaitTimeoutSeconds = 8f;
+
+    /// <summary>
     /// 暴れ度の規定値（仕様では規定 1）。釣りバトル中は状態に応じて
     /// 「暴れると 1.5 / ひるむと 0.2」のように変動する（変動は釣りバトル側の実装）。
     /// </summary>
@@ -264,6 +278,48 @@ public class Fish : SEEDScript
     /// </summary>
     [SerializeField(Label = "サイズの単位ラベル")]
     private string sizeUnitLabel = "cm";
+
+    /// <summary>
+    /// ランク S になる <see cref="SizeMultiplier"/> の下限【サイズランクの判定閾値の
+    /// 唯一の置き場所】。<see cref="CatchPresenter"/>（釣果表示）と <see cref="FishingFight"/>
+    /// （ヒット直後の引き距離の倍率）の両方が <see cref="SizeRank"/> を参照するので、
+    /// 閾値をここ以外に複製しないこと（複製すると食い違う事故の元になる）。
+    /// </summary>
+    [SerializeField(Label = "ランクSの閾値(サイズ倍率)")]
+    private float sizeRankSThreshold = 1.2f;
+
+    /// <summary>ランク A になる <see cref="SizeMultiplier"/> の下限。</summary>
+    [SerializeField(Label = "ランクAの閾値(サイズ倍率)")]
+    private float sizeRankAThreshold = 1.05f;
+
+    /// <summary>ランク B になる <see cref="SizeMultiplier"/> の下限（これ未満は C）。</summary>
+    [SerializeField(Label = "ランクBの閾値(サイズ倍率)")]
+    private float sizeRankBThreshold = 0.9f;
+
+    /// <summary>
+    /// サイズランク（"S" / "A" / "B" / "C"）【判定の唯一の集約点】。
+    /// <see cref="SizeMultiplier"/>（生成時に 1 度だけ抽選される個体差）を
+    /// <see cref="sizeRankSThreshold"/> 〜 <see cref="sizeRankBThreshold"/> と比べて決まる。
+    /// 表示（<see cref="CatchPresenter"/>）とヒット直後の引き距離の倍率
+    /// （<see cref="FishingFight"/>）の両方がこれを参照する。
+    /// </summary>
+    public string SizeRank
+        => SizeMultiplier >= sizeRankSThreshold ? "S"
+         : SizeMultiplier >= sizeRankAThreshold ? "A"
+         : SizeMultiplier >= sizeRankBThreshold ? "B"
+         : "C";
+
+    /// <summary>
+    /// ヒット時に沖へ引かれる基準距離（メートル）。魚種ごとに prefab で設定する想定
+    /// （大物ほど大きく設定する）。0 以下なら <see cref="FishingFight"/> 側の既定値へ
+    /// フォールバックする。実際に使う距離はこれに <see cref="SizeRank"/> の倍率を
+    /// 掛けた値（算出は <see cref="FishingFight"/> 側）。
+    /// </summary>
+    [SerializeField(Label = "ヒット時に引く距離(m)")]
+    private float hookRunDistance = 6f;
+
+    /// <summary>ヒット時に沖へ引かれる基準距離（釣りバトル側から参照する）。</summary>
+    public float HookRunDistance => hookRunDistance;
 
     // ─── 泳ぎ方（簡易回遊）───────────────────────────────────
 
@@ -377,6 +433,12 @@ public class Fish : SEEDScript
 
     /// <summary>食いつき待ちに入っているか（<see cref="biteWaitRemaining"/> が有効か）。</summary>
     private bool biteWaitStarted = false;
+
+    /// <summary>
+    /// わらしべ連鎖: 食いつき距離付近で「隙（Rest）」を待っている経過秒数。
+    /// <see cref="chainWaitTimeoutSeconds"/> を超えたら諦めて回遊へ戻る。
+    /// </summary>
+    private float chainWaitElapsed = 0f;
 
     /// <summary>餌へ反応しないクールダウンの残り秒数。0 以下で再び反応できる。</summary>
     private float loseInterestRemaining = 0f;
@@ -670,10 +732,8 @@ public class Fish : SEEDScript
         // つつき中はコントローラ側（合わせの成否）からしか抜けない。
         // ただし餌そのものが消えた場合だけは自力で回遊へ戻る（固まり防止）。
         //
-        // 判定に <see cref="FishingController.BaitActive"/> を使ってはいけない:
-        // わらしべ連鎖のアタリ（ChainNibbling / ChainHookWindow）では BaitActive が false に
-        // なるため、連鎖でつつきに来た個体が毎フレーム回遊へ戻ってしまう。
-        // 「コントローラがこの個体をアタリの主として保持しているか」を直接聞く。
+        // 判定には「コントローラがこの個体をアタリの主として保持しているか」
+        // （<see cref="FishingController.IsNibbling"/>）を直接聞く。
         if (State == BehaviorState.Nibbling)
         {
             if (FishingController.Current is not { } nfc || !nfc.IsNibbling(this))
@@ -721,6 +781,7 @@ public class Fish : SEEDScript
 
             State = BehaviorState.Approach;
             biteWaitStarted = false;
+            chainWaitElapsed = 0f;
             // 寄り始める前に振られた竿振りを数えないよう、この瞬間の番号へ揃えておく
             lastSeenSwingSerial = fc.SwingSerial;
             SetEngaged(fc, engaged: true);
@@ -749,15 +810,48 @@ public class Fish : SEEDScript
         //
         // ヒステリシス: 待ちが一度始まったら、境界付近の微小な出入り（旋回の揺れなど）で
         // 毎フレーム解除されないよう、BiteDistance × BiteLeaveMultiplier を超えて
-        // 離れるまでは待ちを維持する。
+        // 離れるまでは待ちを維持する（ルアー・わらしべ連鎖の両方で共通）。
         float leaveDistance = biteWaitStarted ? fc.BiteDistance * BiteLeaveMultiplier : fc.BiteDistance;
         if (distance > leaveDistance)
         {
             // 一度も届いていない（またはしきい値を大きく超えて離れた）あいだは待ちを解除しておく
             biteWaitStarted = false;
+            chainWaitElapsed = 0f;
             return;
         }
 
+        // ── わらしべ連鎖: 掛かっている魚そのものが餌のとき ──
+        //
+        // 前アタリ・合わせは一切経由しない。食いつき距離に届いた瞬間から毎フレーム
+        // <see cref="FishingController.TryEatHookedFish"/> を試み、相手の「隙（Rest）」で
+        // なければ失敗するだけ（＝興味は失わない）。ホーミング（このメソッドの外、
+        // <see cref="UpdateApproach"/>）で位置を保ちながら待ち、
+        // <see cref="chainWaitTimeoutSeconds"/> を超えて待たされたら諦めて回遊へ戻る。
+        if (fc.CurrentBaitKind == FishingController.BaitKind.HookedFish)
+        {
+            biteWaitStarted = true;    // 上のヒステリシス判定にだけ使う（わらしべに食いつき待ち時間は無い）
+
+            chainWaitElapsed += dt;
+            if (chainWaitElapsed > chainWaitTimeoutSeconds)
+            {
+                biteWaitStarted = false;
+                chainWaitElapsed = 0f;
+                SEED.Debug.Log($"[Fish] わらしべ: {DisplayName}（{DisplaySize:F1}）が隙を待ちきれず離れた");
+                BackToRoam(withCooldown: true);
+                return;
+            }
+
+            if (fc.TryEatHookedFish(this))
+            {
+                // 成立すれば TryEatHookedFish → SwapHookedFish → OnHooked が Bite へ進める。
+                biteWaitStarted = false;
+                chainWaitElapsed = 0f;
+            }
+            // 失敗（隙以外・僅差で他の魚に先を越された等）はそのまま待機を続ける。
+            return;
+        }
+
+        // ── ルアー: 従来どおりの食いつき待ち ──
         if (!biteWaitStarted)
         {
             biteWaitStarted = true;
@@ -1078,6 +1172,7 @@ public class Fish : SEEDScript
         State = BehaviorState.Escape;
         escapeRemaining = escapeSeconds;
         biteWaitStarted = false;
+        chainWaitElapsed = 0f;
         SetEngaged(FishingController.Current, engaged: false);
 
         // 餌 → 自分 の向き（＝餌から遠ざかる向き）を逃走方位にする
@@ -1122,6 +1217,7 @@ public class Fish : SEEDScript
         if (State == BehaviorState.Roam)
         {
             biteWaitStarted = false;
+            chainWaitElapsed = 0f;
             SetEngaged(FishingController.Current, engaged: false);
             return;
         }
@@ -1130,6 +1226,7 @@ public class Fish : SEEDScript
         escapeRemaining = 0f;
         if (withCooldown) { loseInterestRemaining = loseInterestSeconds; }
         biteWaitStarted = false;
+        chainWaitElapsed = 0f;
         SetEngaged(FishingController.Current, engaged: false);
 
         // 回遊の中心（生成地点）は<b>書き換えない</b>。

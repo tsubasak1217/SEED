@@ -24,7 +24,7 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// バトル開始と同時に魚の BPM・拍子でメトロノームが走り出す。時間は <c>dt</c> の積算で
 /// 管理する（音の再生位置を問い合わせる API が無いため）。拍が変わるたびに
 /// <see cref="metronomeSePath"/> を鳴らし、小節頭だけ音量を上げる。
-/// <see cref="Paused"/>（わらしべ連鎖のアタリ受付中）のあいだは時計ごと止まる＝無音になる。
+/// <see cref="Paused"/>（外部都合の一時停止フック）のあいだは時計ごと止まる＝無音になる。
 ///
 /// ■ ドラムループ（<see cref="SetupDrumLoop"/>）
 /// バトル中は BGM 枠でドラムループを鳴らし、再生速度を <c>魚のBPM ÷ 素材のBPM</c> に
@@ -512,6 +512,35 @@ public class FishingFight : SEEDScript
     [Header("魚HP"), SerializeField(Label = "掛かった距離の下限(m)")]
     private float hookDistanceMin = 2f;
 
+    // ─── ヒット直後の引き（余白＝LeadIn 中に沖へ走る演出）───────────
+
+    /// <summary>
+    /// <see cref="Fish.HookRunDistance"/> が 0 以下（未設定）だったときのフォールバック値（メートル）。
+    /// 通常は魚データ側（Fish）の値を使うので、これは保険。
+    /// </summary>
+    [Header("ヒット直後の引き(LeadIn)"), SerializeField(Label = "引き距離の既定値(m)")]
+    private float hookRunDistanceDefault = 6f;
+
+    /// <summary>
+    /// <see cref="Fish.SizeRank"/> が S（最大サイズ帯）のときに <see cref="Fish.HookRunDistance"/>
+    /// へ掛ける係数。ランクの閾値そのものは <see cref="Fish"/> 側（<see cref="Fish.SizeRank"/>）に
+    /// 集約してあり、ここには持たない（重複させると閾値だけ食い違う事故の元になる）。
+    /// </summary>
+    [SerializeField(Label = "引き距離倍率(Sランク)")]
+    private float runDistanceRankS = 1.5f;
+
+    /// <summary>Fish.SizeRank が A のときの倍率。</summary>
+    [SerializeField(Label = "引き距離倍率(Aランク)")]
+    private float runDistanceRankA = 1.25f;
+
+    /// <summary>Fish.SizeRank が B のときの倍率。</summary>
+    [SerializeField(Label = "引き距離倍率(Bランク)")]
+    private float runDistanceRankB = 1.0f;
+
+    /// <summary>Fish.SizeRank が C（それ以外）のときの倍率。</summary>
+    [SerializeField(Label = "引き距離倍率(Cランク)")]
+    private float runDistanceRankC = 0.8f;
+
     // ─── 効果音 ──────────────────────────────────────────
 
     /// <summary>糸が切れた瞬間に鳴らす効果音のアセットパス（空なら鳴らさない）。</summary>
@@ -726,12 +755,15 @@ public class FishingFight : SEEDScript
     public bool Active { get; private set; } = false;
 
     /// <summary>
-    /// バトルの一時停止フラグ【わらしべ連鎖のアタリ中に使う】。
+    /// バトルの一時停止フラグ【外部都合で進行を止めたいときの汎用フック】。
     ///
     /// true のあいだ <see cref="Tick"/> は拍時計・テンション・疲労・魚 HP を一切進めず、
     /// メトロノームも鳴らさず、ウキの移動量（<see cref="ComputeFloatDistanceStep"/>）も 0 にして、
-    /// UI の再描画だけを行う。連鎖の決着でコントローラが false へ戻す。
-    /// <see cref="EndFight"/> でも必ず false へ戻る。
+    /// UI の再描画だけを行う。<see cref="EndFight"/> で必ず false へ戻る。
+    ///
+    /// 2026-09-06 現在、わらしべ連鎖は前アタリを経由しなくなった（<c>FishingController.
+    /// TryEatHookedFish</c> が「隙（Rest）」中に即成立させるだけ）ため、これを true にする
+    /// 呼び出し元は無い。将来また進行を止める必要が出たときのためのフックとして残してある。
     /// </summary>
     public bool Paused { get; set; } = false;
 
@@ -864,10 +896,19 @@ public class FishingFight : SEEDScript
     private float fishHpMax = 0f;
 
     /// <summary>
-    /// 魚 HP 1 あたりの距離（メートル）＝ 掛かった瞬間の距離 ÷ 魚の基礎HP。
+    /// 魚 HP 1 あたりの距離（メートル）＝（掛かった瞬間の距離 ＋ 引き距離）÷ 魚 HP 最大値。
     /// 魚 HP と「ウキ→竿先の距離」を相互変換する唯一の係数。
+    /// この定義により、余白（LeadIn）終了時点（＝魚 HP がまだ満タン）でちょうど
+    /// 「距離 ＝ 掛かった瞬間の距離 ＋ 引き距離」（＝<see cref="DesiredFloatDistance"/>）に一致する。
     /// </summary>
     private float metersPerHp = 0f;
+
+    /// <summary>
+    /// 掛かった瞬間のウキ→竿先の距離（下限クランプ済み・メートル）。
+    /// 余白（<see cref="Phase.LeadIn"/>）中に <see cref="DesiredFloatDistance"/> まで
+    /// 滑らかに引き伸ばすときの開始距離として使う。
+    /// </summary>
+    private float leadInStartDistance = 0f;
 
     /// <summary>バトル開始からの経過秒数（拍時計の唯一の時間源）。</summary>
     private float clockTime = 0f;
@@ -1045,8 +1086,11 @@ public class FishingFight : SEEDScript
         fishHpMax = baseHp + baseHp * fishShare;
         fishHp = fishHpMax;
 
-        // 距離との対応付け: 掛かった距離を「基礎HP ぶんの距離」とみなす
-        metersPerHp = SEED.Mathf.Max(hookDistance, hookDistanceMin) / baseHp;
+        // 距離との対応付け: 「掛かった瞬間の距離 ＋ ヒット直後に沖へ引かれる距離」を
+        // 魚 HP 最大値ぶんの距離とみなす（＝余白(LeadIn)終了時点で距離とHPがちょうど対応する）。
+        leadInStartDistance = SEED.Mathf.Max(hookDistance, hookDistanceMin);
+        float runDistance = HookRunDistanceFor(fish);
+        metersPerHp = (leadInStartDistance + runDistance) / SEED.Mathf.Max(fishHpMax, DivideEpsilon);
 
         // 拍時計とパターンを魚データから作る（この魚の BPM で secondsPerBeat が決まる）
         SetupRhythm(fish);
@@ -1177,8 +1221,12 @@ public class FishingFight : SEEDScript
     /// 【ウキの移動量の唯一の算出点】。
     ///
     /// ＋ ＝ 沖へ（距離が増える） / − ＝ 手元へ（距離が減る）。
-    /// <b>隙（Rest）のあいだだけ</b>動かす。出題・回答中はウキを止めておき、
-    /// 拍を読む画面が揺れないようにする。
+    /// <b>隙（Rest）のあいだ</b>は魚 HP に応じた目標距離へ寄る／引かれる。
+    /// 出題・回答中はウキを止めておき、拍を読む画面が揺れないようにする。
+    /// <b>余白（<see cref="Phase.LeadIn"/>）中だけは例外</b>で、掛かった直後に沖へ走る演出として
+    /// <see cref="leadInStartDistance"/> から <see cref="DesiredFloatDistance"/>（＝この時点では
+    /// 魚 HP が満タンなので「掛かった距離 ＋ 引き距離」と一致する）まで、
+    /// <see cref="PhaseProgress01"/> を easeOut で使い滑らかに引き伸ばす。
     /// </summary>
     /// <param name="currentDistance">現在のウキ→竿先の水平距離（メートル）。</param>
     /// <param name="deltaTime">このフレームの経過秒数。</param>
@@ -1186,6 +1234,16 @@ public class FishingFight : SEEDScript
     public float ComputeFloatDistanceStep(float currentDistance, float deltaTime)
     {
         if (!Active || Paused || target is null) { return 0f; }
+
+        if (CurrentPhase == Phase.LeadIn)
+        {
+            // easeOut(2 次): 立ち上がりは速く、余白の終わりに向けて滑らかに減速する。
+            float t = SEED.Mathf.Clamped01(PhaseProgress01);
+            float eased = 1f - (1f - t) * (1f - t);
+            float leadInTarget = SEED.Mathf.Lerp(leadInStartDistance, DesiredFloatDistance, eased);
+            return leadInTarget - currentDistance;
+        }
+
         if (CurrentPhase != Phase.Rest) { return 0f; }
 
         float difference = DesiredFloatDistance - currentDistance;
@@ -2124,6 +2182,31 @@ public class FishingFight : SEEDScript
     }
 
     /// <summary>
+    /// ヒット直後（余白＝LeadIn）に沖へ引かれる実効距離（メートル）
+    /// 【引き距離の唯一の算出点】＝ <see cref="Fish.HookRunDistance"/>（0 以下なら
+    /// <see cref="hookRunDistanceDefault"/> にフォールバック）× <see cref="RunDistanceRankMultiplier"/>。
+    /// ランクの閾値そのものは持たない（<see cref="Fish.SizeRank"/> に一元化してある）。
+    /// </summary>
+    /// <param name="fish">掛かった魚。</param>
+    private float HookRunDistanceFor(Fish fish)
+    {
+        float baseDistance = fish.HookRunDistance > 0f ? fish.HookRunDistance : hookRunDistanceDefault;
+        return SEED.Mathf.Max(baseDistance, 0f) * RunDistanceRankMultiplier(fish.SizeRank);
+    }
+
+    /// <summary>
+    /// <see cref="Fish.SizeRank"/>（"S" / "A" / "B" / それ以外＝"C"）に対応する引き距離の倍率。
+    /// </summary>
+    /// <param name="rank">魚のサイズランク。</param>
+    private float RunDistanceRankMultiplier(string rank) => rank switch
+    {
+        "S" => runDistanceRankS,
+        "A" => runDistanceRankA,
+        "B" => runDistanceRankB,
+        _ => runDistanceRankC,
+    };
+
+    /// <summary>
     /// テンションのレベル補正 ＝ 1 + <see cref="tensionLevelScale"/> × (魚 ÷ 竿 − 1)。
     /// 下限は <see cref="LevelScaleMin"/>（格下の魚でも判定が無意味にならないように）。
     /// </summary>
@@ -2197,6 +2280,7 @@ public class FishingFight : SEEDScript
         fishHp = 0f;
         fishHpMax = 0f;
         metersPerHp = 0f;
+        leadInStartDistance = 0f;
         target = null;
 
         clockTime = 0f;

@@ -84,6 +84,18 @@ public class CameraMove : SEEDScript
     private SEED.Transform? answerTarget = null;
 
     /// <summary>
+    /// ヒット直後の「引き」フェーズ（<see cref="FishingFight.Phase.LeadIn"/>）で使う
+    /// 目標トランスフォーム（トップレベルの空アクタ「RunCameraTarget」を割り当てる想定）。
+    ///
+    /// プレイヤーとウキの両方が画面に収まる斜め上からの構図にしたいため、位置・向きは
+    /// 固定のシーン配置ではなく <see cref="FishingController.UpdateRunCameraTarget"/> が
+    /// 毎フレーム計算して置き直す（<see cref="catchTarget"/> と同じ「アクタは空・中身は
+    /// スクリプトが決める」方式）。未設定・無効なら引き演出中も従来の目標を追い続ける。
+    /// </summary>
+    [SerializeField(Label = "引き中の目標トランスフォーム")]
+    private SEED.Transform? runTarget = null;
+
+    /// <summary>
     /// 釣り上げ演出の「寄り」フェーズ（<see cref="CatchPresenter.CatchPhase.ApproachCamera"/>）の
     /// 目標トランスフォーム（トップレベルの空アクタ「CatchCameraTarget」を割り当てる想定）。
     /// 位置・向きは <see cref="CatchPresenter"/> が毎フレーム「魚を見る姿勢」へ置き直す。
@@ -285,6 +297,10 @@ public class CameraMove : SEEDScript
         // ApproachCamera = 水面の魚へ寄る / WhiteOut 以降 = プレイヤーを振り返って見る。
         if (SelectCatchGoal() is { } catchGoal) { return catchGoal; }
 
+        // ヒット直後の「引き」中はプレイヤー・ウキの両方を映す構図（回答中の構図より優先。
+        // LeadIn は必ず Answer より前に来るので、実際に競合することは無い）。
+        if (IsLeadInPhase() && runTarget is { } rt && rt.IsValid) { return rt; }
+
         // リズムの回答中はプレイヤーを見る構図へ切り替える（叩くタイミングに集中させる）
         if (IsAnswerPhase() && answerTarget is { } at && at.IsValid) { return at; }
 
@@ -331,13 +347,21 @@ public class CameraMove : SEEDScript
     /// リズムのやり取りが<b>回答フェーズ</b>かを返す（構図切替の唯一の判定点）。
     ///
     /// 魚が掛かっている（<see cref="FishingController.FishState.Hooked"/>）ときだけ見る。
-    /// わらしべ連鎖のアタリ中はやり取りが凍結されており、フェーズも進まないので
-    /// 構図は釣り中のまま維持される。<see cref="fishing"/> 未設定なら常に false。
+    /// <see cref="fishing"/> 未設定なら常に false。
     /// </summary>
     private bool IsAnswerPhase()
         => fishing is { } f
         && f.State == FishingController.FishState.Hooked
         && f.FightPhase == FishingFight.Phase.Answer;
+
+    /// <summary>
+    /// ヒット直後の「引き」フェーズ（<see cref="FishingFight.Phase.LeadIn"/>）中かを返す
+    /// （構図切替の唯一の判定点）。<see cref="fishing"/> 未設定なら常に false。
+    /// </summary>
+    private bool IsLeadInPhase()
+        => fishing is { } f
+        && f.State == FishingController.FishState.Hooked
+        && f.FightPhase == FishingFight.Phase.LeadIn;
 
     /// <summary>
     /// ウキが外に出ている（飛翔中・浮遊中・巻き取り中）かを返す。
@@ -351,9 +375,6 @@ public class CameraMove : SEEDScript
                                       or FishingController.FishState.Reeling
                                       or FishingController.FishState.Nibbling
                                       or FishingController.FishState.HookWindow
-                                      // わらしべ連鎖のアタリ中もウキは沖に出たまま（構図は釣り中のまま維持する）
-                                      or FishingController.FishState.ChainNibbling
-                                      or FishingController.FishState.ChainHookWindow
                                       or FishingController.FishState.Hooked;
 
     /// <summary>

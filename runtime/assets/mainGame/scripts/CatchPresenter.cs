@@ -407,21 +407,14 @@ public class CatchPresenter : SEEDScript
     private float assumedAspect = 16f / 9f;
 
     // ─── サイズランク ─────────────────────────────────────────
-
-    /// <summary>ランク S になるサイズ倍率の下限。</summary>
-    [Header("サイズランク"), SerializeField(Label = "S のしきい値(倍率)")]
-    private float rankSThreshold = 1.2f;
-
-    /// <summary>ランク A になるサイズ倍率の下限。</summary>
-    [SerializeField(Label = "A のしきい値(倍率)")]
-    private float rankAThreshold = 1.05f;
-
-    /// <summary>ランク B になるサイズ倍率の下限（これ未満は C）。</summary>
-    [SerializeField(Label = "B のしきい値(倍率)")]
-    private float rankBThreshold = 0.9f;
+    //
+    // ランクの<b>しきい値</b>は <see cref="Fish.SizeRank"/> に一元化してある
+    // （FishingFight もヒット直後の引き距離の算出に同じランクを参照するため、
+    // ここで重複して持つと閾値だけ食い違う事故の元になる）。
+    // ここに残すのは表示用のラベル文字列だけ。
 
     /// <summary>ランク表示のラベル（S / A / B / C）。</summary>
-    [SerializeField(Label = "S のラベル")]
+    [Header("サイズランク（表示ラベル。しきい値は Fish.SizeRank が持つ）"), SerializeField(Label = "S のラベル")]
     private string rankSLabel = "S";
 
     /// <summary>ランク A のラベル。</summary>
@@ -1240,7 +1233,7 @@ public class CatchPresenter : SEEDScript
 
         SetText(nameText, displayName);
         SetText(sizeText, FormatSize(displaySize, unit) + (isNewRecord ? NewRecordSuffix : ""));
-        SetText(rankText, rankLabelPrefix + RankLabel(fish.SizeMultiplier));
+        SetText(rankText, rankLabelPrefix + RankLabel(fish.SizeRank));
         SetText(bestText, bestLabelPrefix + FormatSize(best, unit));
         SetText(promptText, promptMessage);
     }
@@ -1283,17 +1276,17 @@ public class CatchPresenter : SEEDScript
     private static string FormatSize(float size, string unit) => $"{size:F1} {unit}";
 
     /// <summary>
-    /// サイズ倍率からランクのラベルを決める（S ≧ <see cref="rankSThreshold"/> …）。
-    /// しきい値・ラベルはすべてインスペクタで差し替えられる。
+    /// <see cref="Fish.SizeRank"/>（"S" / "A" / "B" / それ以外＝"C"）を表示ラベルへ変換する。
+    /// しきい値の判定自体は Fish 側に一元化してあり、ここではラベル文字列の差し替えだけ担う。
     /// </summary>
-    /// <param name="multiplier">個体のサイズ倍率。</param>
-    private string RankLabel(float multiplier)
+    /// <param name="sizeRank">個体のサイズランク（<see cref="Fish.SizeRank"/>）。</param>
+    private string RankLabel(string sizeRank) => sizeRank switch
     {
-        if (multiplier >= rankSThreshold) { return rankSLabel; }
-        if (multiplier >= rankAThreshold) { return rankALabel; }
-        if (multiplier >= rankBThreshold) { return rankBLabel; }
-        return rankCLabel;
-    }
+        "S" => rankSLabel,
+        "A" => rankALabel,
+        "B" => rankBLabel,
+        _ => rankCLabel,
+    };
 
     // ─── 汎用ヘルパー ─────────────────────────────────────────
 
