@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -60,6 +60,22 @@ public sealed class EditorPreferences
     /// </summary>
     [JsonPropertyName("play_shader_hot_reload")]
     public bool PlayShaderHotReload { get; set; } = true;
+
+    /// <summary>
+    /// アセットルート配下の .cs が変更されたときに、自動でスクリプトを
+    /// 再コンパイル・ホットリロードするかどうか。既定はオン。
+    ///
+    /// オンのとき、内蔵スクリプトエディタでの保存だけでなく、VS Code などの
+    /// 外部エディタでの保存も FileSystemWatcher が検出して自動反映する
+    /// （Unity と同じ「保存したら反映」の体験）。送信前にエディタ側で全 .cs を
+    /// 一括コンパイル検証し、エラーがある間は送信しない（＝ランタイムは
+    /// 直前の正常アセンブリのまま動き続ける）。
+    ///
+    /// オフにすると従来どおり、内蔵スクリプトエディタの保存時のみ再読込する。
+    /// UI 上の「表示 > スクリプト > スクリプトを自動再読込」と 1 対 1 に対応する。
+    /// </summary>
+    [JsonPropertyName("auto_reload_scripts")]
+    public bool AutoReloadScripts { get; set; } = true;
 
     /// <summary>
     /// ロジック配置ダイアログで最後に使ったパターン指定。

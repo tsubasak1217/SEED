@@ -190,6 +190,13 @@ public sealed class RuntimeManager : IDisposable
     public EditorState State => _state;
 
     /// <summary>
+    /// ランタイムとの名前付きパイプが接続済みかどうか。
+    /// 応答を伴うコマンド（RELOAD_SCRIPTS など）を送る前の判定に使う
+    /// （未接続だと送っても黙って捨てられ、応答も返らない）。
+    /// </summary>
+    public bool IsPipeConnected => _pipe is { IsConnected: true };
+
+    /// <summary>
     /// 実行中ランタイムが内蔵デバッガのブレークポイントで停止（メインスレッド凍結）中か。
     /// MainWindow がデバッグセッションの停止/継続に合わせて設定する。
     ///
@@ -241,6 +248,15 @@ public sealed class RuntimeManager : IDisposable
     /// 失敗時は発火しない（旧定義のまま表示を保つ）。
     /// </summary>
     public event Action<int>? ScriptsReloaded;
+
+    /// <summary>
+    /// ユーザースクリプトのホットリロードが**失敗**したときに発火する（引数 = 失敗理由）。
+    ///
+    /// ランタイムは全 .cs を 1 アセンブリでコンパイルするため、失敗するとスクリプトは
+    /// Placeholder のまま実行されない（サイレント故障）。エディタ側でステータス表示に
+    /// 出して気付けるようにするためのイベント。
+    /// </summary>
+    public event Action<string>? ScriptsReloadFailed;
 
     /// <summary>シーン保存完了時に発火する（ok=true: 成功, ok=false: 失敗メッセージ付き）。</summary>
     public event Action<bool, string>? SaveCompleted;
@@ -1466,6 +1482,12 @@ public sealed class RuntimeManager : IDisposable
                 EditorLog.Write("  上記の [ScriptCompileError] 行を確認してください。");
                 EditorLog.Write("  ※ 修正するまでスクリプトは実行されません。");
                 EditorLog.Write("════════════════════════════════════════════════");
+                // 自動再読込のステータス表示など、失敗を UI へ伝える必要がある購読者へ通知する。
+                // payload は "-1,理由" 形式なので、理由部分があればそれを渡す。
+                var reason = payload.Contains(',') ? payload[(payload.IndexOf(',') + 1)..] : "";
+                ScriptsReloadFailed?.Invoke(string.IsNullOrWhiteSpace(reason)
+                    ? "スクリプトの一括コンパイルに失敗（サイレント故障）"
+                    : $"スクリプトの一括コンパイルに失敗: {reason}");
             }
         }
         else if (msg == "CONTEXT_MENU")

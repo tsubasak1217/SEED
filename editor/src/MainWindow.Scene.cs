@@ -116,6 +116,8 @@ public partial class MainWindow
         MenuItemOpenDocuments.IsChecked = IsPanelVisible("open_documents");
         MenuItemErrorList.IsChecked     = IsPanelVisible("error_list");
         MenuItemScriptEditor.IsChecked  = IsScriptEditorVisible();
+        // スクリプト自動再読込の設定値をチェック状態へ反映する（設定ファイルが正）。
+        MenuItemAutoReloadScripts.IsChecked = EditorPreferences.Instance.AutoReloadScripts;
     }
 
     /// <summary>スクリプトエディタ（LayoutDocument）がレイアウト上に存在するか。</summary>

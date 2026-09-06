@@ -19,6 +19,7 @@ using SEEDEditor.AI;
 using SEEDEditor.Native;
 using SEEDEditor.Panels;
 using SEEDEditor.Runtime;
+using SEEDEditor.Scripting;
 using SEEDEditor.Viewport;
 using static SEEDEditor.Native.NativeInterop;
 
@@ -317,6 +318,15 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     /// スクリプトエディタへデリゲートとして注入するため、寿命をウィンドウ側で保持する。
     /// </summary>
     private WgslValidationService? _wgslValidation;
+
+    /// <summary>
+    /// スクリプト自動再読込（アセットルート配下の .cs を監視してホットリロード）。
+    /// 監視の起動に失敗した場合は null のまま＝従来どおり保存時のみ再読込する。
+    /// </summary>
+    private ScriptAutoReloader?    _scriptAutoReloader;
+
+    /// <summary>スクリプト再読込ステータス表示を自動的に消すためのタイマー。</summary>
+    private DispatcherTimer?       _scriptReloadStatusTimer;
     /// <summary>内蔵デバッガ（netcoredbg/DAP）のセッション。アタッチ中のみ非 null。</summary>
     private SEEDEditor.Debugger.ScriptDebugSession? _debugSession;
     /// <summary>
@@ -567,8 +577,18 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelScriptEditor.ScriptSaved += path =>
         {
             PanelInspector.InvalidateScriptTypeCache(path);
+            // 自動再読込が有効なときは、ファイル監視（ScriptAutoReloader）が
+            // 唯一のトリガーになる。内蔵エディタの保存でも監視イベントが発生するため、
+            // ここでも送ると RELOAD_SCRIPTS が二重に飛ぶ。
+            // 無効時（設定オフ・監視の起動に失敗）は従来どおりここで送る。
+            if (_scriptAutoReloader?.IsEnabled == true) return;
             _runtimeManager?.SendToRuntime("RELOAD_SCRIPTS");
         };
+
+        // スクリプト自動再読込を初期化する（外部エディタでの保存も拾う）。
+        // ScriptSaved の購読より後に作っても、上のハンドラは実行時に
+        // _scriptAutoReloader を参照するため順序の問題は無い。
+        InitScriptAutoReloader();
         // ホットリロード成功時: 型キャッシュを**全件**破棄する。
         // 保存した .cs だけでなく、基底クラスや [Serializable] ネスト型を共有する
         // 別スクリプトの [SerializeField] 構成も同時に変わりうるため。
@@ -1052,6 +1072,124 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             $"SET_PLAY_SHADER_HOT_RELOAD:{(EditorPreferences.Instance.PlayShaderHotReload ? 1 : 0)}");
     }
 
+    // ── スクリプト自動再読込 ──────────────────────────────────────
+
+    /// <summary>スクリプト再読込ステータスを表示し続ける時間（ミリ秒）。</summary>
+    private const int ScriptReloadStatusHoldMs = 6000;
+
+    /// <summary>ステータス表示の色（進行中 / 成功 / コンパイルエラー / 失敗）。</summary>
+    private static readonly Brush ScriptStatusBrushRunning = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA));
+    private static readonly Brush ScriptStatusBrushSuccess = new SolidColorBrush(Color.FromRgb(0x8F, 0xE0, 0xA0));
+    private static readonly Brush ScriptStatusBrushError   = new SolidColorBrush(Color.FromRgb(0xFF, 0x6B, 0x6B));
+    private static readonly Brush ScriptStatusBrushWarn    = new SolidColorBrush(Color.FromRgb(0xE8, 0xB4, 0x4A));
+
+    /// <summary>
+    /// スクリプト自動再読込を初期化する。
+    ///
+    /// ScriptAutoReloader はランタイムや UI を知らないため、ここで
+    /// 「設定値」「全体コンパイル検証」「RELOAD_SCRIPTS 送信」「状態表示」を注入する。
+    /// ランタイムからの結果（SCRIPTS_RELOADED）も本メソッドで橋渡しする。
+    /// </summary>
+    private void InitScriptAutoReloader()
+    {
+        _scriptAutoReloader = new ScriptAutoReloader(
+            AssetsPath,
+            Dispatcher,
+            // 設定トグル（表示 > スクリプト > スクリプトを自動再読込）
+            isEnabled: () => EditorPreferences.Instance.AutoReloadScripts,
+            // 全 .cs の一括コンパイル検証。エラー一覧パネルへの反映も同時に行われる。
+            runCompileCheck: () =>
+            {
+                var diags = PanelScriptEditor.RunProjectCompileCheck(AssetsPath);
+                if (diags.Count == 0) return Array.Empty<string>();
+
+                EditorLog.Write("[スクリプトエラー] 自動再読込を中止しました（全体コンパイルに失敗）:");
+                foreach (var d in diags)
+                    EditorLog.Write($"  {Path.GetFileName(d.FilePath)}({d.Line}行目): {d.Message}");
+                EditorLog.Write("  ※ ランタイムは直前の正常なアセンブリのまま動作を継続します。");
+                // 気付けるようにエラー一覧パネルを前面に出す
+                ShowAnchorable("error_list");
+
+                return diags
+                    .Select(d => $"{Path.GetFileName(d.FilePath)}({d.Line}行目): {d.Message}")
+                    .ToList();
+            },
+            // ランタイムへのホットリロード要求（未接続なら送らず false）
+            sendReload: () =>
+            {
+                if (_runtimeManager is null || !_runtimeManager.IsPipeConnected) return false;
+                _runtimeManager.SendToRuntime("RELOAD_SCRIPTS");
+                return true;
+            },
+            report: SetScriptReloadStatus);
+
+        // ランタイムからの結果を自動再読込へ橋渡しする（どちらもパイプ受信スレッドで
+        // 発火するため、UI スレッドへ載せ替えてから通知する）。
+        if (_runtimeManager is not null)
+        {
+            _runtimeManager.ScriptsReloaded += count =>
+                Dispatcher.InvokeAsync(() => _scriptAutoReloader?.NotifyReloadSucceeded(count));
+            _runtimeManager.ScriptsReloadFailed += reason =>
+                Dispatcher.InvokeAsync(() => _scriptAutoReloader?.NotifyReloadFailed(reason));
+        }
+    }
+
+    /// <summary>
+    /// スクリプト再読込の進行状態を上部バーへ表示する（数秒で自動的に消える）。
+    /// ScriptAutoReloader からの通知はすべて UI スレッドで届く。
+    /// </summary>
+    private void SetScriptReloadStatus(ScriptReloadStatus status, string message)
+    {
+        if (TxtScriptReloadStatus is null) return;
+
+        var (brush, text) = status switch
+        {
+            ScriptReloadStatus.Running      => (ScriptStatusBrushRunning, message),
+            ScriptReloadStatus.Success      => (ScriptStatusBrushSuccess, message),
+            ScriptReloadStatus.CompileError => (ScriptStatusBrushError,   $"コンパイルエラー: {message}"),
+            _                               => (ScriptStatusBrushWarn,    message),
+        };
+
+        TxtScriptReloadStatus.Foreground = brush;
+        TxtScriptReloadStatus.Text       = text;
+        TxtScriptReloadStatus.ToolTip    = text;
+        TxtScriptReloadStatus.Visibility = Visibility.Visible;
+
+        if (status != ScriptReloadStatus.Running)
+            EditorLog.Write($"[ScriptAutoReload] {text}");
+
+        // 表示しっぱなしにしない。次の状態が来たらタイマーを張り直す。
+        _scriptReloadStatusTimer ??= new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
+        {
+            Interval = TimeSpan.FromMilliseconds(ScriptReloadStatusHoldMs),
+        };
+        _scriptReloadStatusTimer.Stop();
+        _scriptReloadStatusTimer.Tick -= OnScriptReloadStatusExpired;
+        _scriptReloadStatusTimer.Tick += OnScriptReloadStatusExpired;
+        _scriptReloadStatusTimer.Start();
+    }
+
+    /// <summary>ステータス表示の表示時間が切れたら消す。</summary>
+    private void OnScriptReloadStatusExpired(object? sender, EventArgs e)
+    {
+        _scriptReloadStatusTimer?.Stop();
+        if (TxtScriptReloadStatus is not null)
+            TxtScriptReloadStatus.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// 「表示 > スクリプト > スクリプトを自動再読込」トグル。
+    /// EditorPreferences.AutoReloadScripts へ永続化する。オフにすると
+    /// 従来どおり内蔵スクリプトエディタの保存時のみ再読込する。
+    /// </summary>
+    private void OnToggleAutoReloadScripts(object sender, RoutedEventArgs e)
+    {
+        bool on = MenuItemAutoReloadScripts.IsChecked;
+        EditorPreferences.Instance.AutoReloadScripts = on;
+        EditorPreferences.Save();
+        EditorLog.Write($"AutoReloadScripts = {on}");
+    }
+
     /// <summary>
     /// VS2013 DarkTheme を ResourceDictionary のマージで適用する。
     /// DockingManager.Theme プロパティの型依存を避けるため pack URI 方式を使用する。
@@ -1160,6 +1298,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _debugSession?.Dispose();
         _debugSession = null;
         _frozenPreview.Dispose();
+        _scriptAutoReloader?.Dispose();
+        _scriptAutoReloader = null;
+        _scriptReloadStatusTimer?.Stop();
         _runtimeManager?.Dispose();
         ViewportDocumentContent.Content = null;
     }
