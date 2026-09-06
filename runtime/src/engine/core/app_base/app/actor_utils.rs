@@ -1254,6 +1254,25 @@ mod group_actor_tests {
         g
     }
 
+    /// 2D グループ用フォルダアクタを作る（テスト用ヘルパ）。
+    /// `handle_create_group` の 2D 分岐と同じ手順（単位 CanvasTransform + new_folder_2d）。
+    fn folder_2d(world: &mut World, wl: u32, name: &str) -> Actor {
+        let e = world.spawn();
+        world.insert(e, crate::engine::components::CanvasTransform::default());
+        let mut g = Actor::new_folder_2d(e, name);
+        g.world_line = wl;
+        g
+    }
+
+    /// 2D アクタ（ルート）を作る（テスト用ヘルパ）。
+    fn root_2d(world: &mut World, wl: u32, name: &str) -> Actor {
+        let e = world.spawn();
+        world.insert(e, crate::engine::components::CanvasTransform::default());
+        let mut a = Actor::new_2d(e, name);
+        a.world_line = wl;
+        a
+    }
+
     /// ModelComponent が 1 つも無いツリー（＝旧実装で何も起きなかったケース）でも
     /// グループアクタが生えることを検証する。
     #[test]
@@ -1351,5 +1370,37 @@ mod group_actor_tests {
         assert_eq!(actors[2].world_line, 1);
         assert_eq!(actors[2].children()[0].name, "EditChild");
     }
+    /// 2D アクタをまとめたグループが「2D フォルダノード」になることを検証する。
+    ///
+    /// 旧実装は通常の 2D アクタ（is_folder=false）を作っていたため、ヒエラルキーで
+    /// フォルダとして扱われず Inspector にも Transform が出ていた。現在は
+    /// is_folder=true / Actor2D / 単位 CanvasTransform 保持が不変条件。
+    /// CanvasTransform を持つことは必須（キャンバス系の走査が CanvasTransform 無しの
+    /// アクタでサブツリーを打ち切り、配下のスプライトが描画対象から外れるため）。
+    #[test]
+    fn create_group_for_2d_children_makes_2d_folder() {
+        use crate::engine::components::CanvasTransform;
+        let mut world = World::new();
+        let mut actors = vec![
+            root_2d(&mut world, 0, "SpriteA"),
+            root_2d(&mut world, 0, "SpriteB"),
+        ];
+        let group        = folder_2d(&mut world, 0, "UIGroup");
+        let group_entity = group.entity;
+
+        // DFS id: SpriteA=0 / SpriteB=1。両方をグループへ入れる。
+        assert!(insert_group_actor(&mut actors, 0, group, None, &[0, 1]));
+
+        assert_eq!(actors.len(), 1, "2 体とも Group 配下へ移動しているはず");
+        let g = &actors[0];
+        assert_eq!(g.name, "UIGroup");
+        assert!(g.is_folder(), "2D グループはフォルダノードでなければならない");
+        assert!(g.is_2d(), "2D グループの種別は Actor2D でなければならない");
+        assert!(world.contains::<CanvasTransform>(group_entity),
+                "2D フォルダは単位 CanvasTransform を持たねばならない（走査の打ち切り防止）");
+        let kids: Vec<&str> = g.children().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(kids, vec!["SpriteA", "SpriteB"]);
+    }
+
 }
 
