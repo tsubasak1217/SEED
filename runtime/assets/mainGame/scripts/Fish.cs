@@ -312,7 +312,7 @@ public class Fish : SEEDScript
     /// 掛けた値（算出は <see cref="FishingFight"/> 側）。
     /// </summary>
     [SerializeField(Label = "ヒット時に引く距離(m)")]
-    private float hookRunDistance = 15f;
+    private float hookRunDistance = 30f;
 
     /// <summary>ヒット時に沖へ引かれる基準距離（釣りバトル側から参照する）。</summary>
     public float HookRunDistance => hookRunDistance;
@@ -459,6 +459,47 @@ public class Fish : SEEDScript
     /// 二重登録・登録漏れを避けるため、登録／解除は必ずこのフラグ経由で行う。
     /// </summary>
     private bool engagedRegistered = false;
+
+    // ─── 生存個体のレジストリ（レーダーなどの全体走査用）─────────
+
+    /// <summary>
+    /// いまシーンに生きている <see cref="Fish"/> の全インスタンス
+    /// 【生存個体を列挙する唯一の手段】。
+    ///
+    /// 魚は prefab から動的生成されるため、他スクリプトはインスペクタ参照で
+    /// 個体を集められない。また <c>GameObject</c> からスクリプトインスタンスを
+    /// 引く API も無い（<c>GetComponent&lt;Script&gt;()</c> は存在しない）ので、
+    /// 各個体が <see cref="OnStart"/> で自分を登録し <see cref="OnDestroy"/> で外す。
+    ///
+    /// <b>ホットリロード</b>: スクリプトアセンブリが差し替わると静的フィールドごと
+    /// 作り直され、各個体の <see cref="OnStart"/> が再実行されるので、
+    /// 古いインスタンスが残ることはない。
+    /// </summary>
+    public static readonly HashSet<Fish> All = new();
+
+    /// <summary>
+    /// この個体が属するレベル（1 始まり。0 は未確定＝レベル管理外の個体）。
+    /// <see cref="OnStart"/> で <see cref="FishManager.LevelOf"/> から 1 度だけ引く。
+    /// 「掛かっている魚よりずっと格上の魚の更新・描画を止める」判定に使う。
+    /// </summary>
+    public int Level { get; private set; } = UnknownLevel;
+
+    /// <summary>レベルが確定できなかった個体を表す値（レベル差の判定から除外される）。</summary>
+    public const int UnknownLevel = 0;
+
+    /// <summary>
+    /// この個体の <see cref="SEED.Model"/>（<see cref="OnStart"/> で 1 度だけ引いて控える）。
+    /// 格上すぎる個体の描画を止める（<see cref="UpdateFarLevelCulling"/>）ために使う。
+    /// Model を持たない魚（見た目が子アクタ側にある等）では null になり、その場合は
+    /// 描画の切替を行わない（更新の停止だけ効く）。
+    /// </summary>
+    private SEED.Model? model = null;
+
+    /// <summary>
+    /// 現在「格上すぎるため更新・描画を止めている」か。
+    /// 状態が変わったフレームだけ <see cref="SEED.Model.Visible"/> を書き換えるためのラッチ。
+    /// </summary>
+    private bool farLevelCulled = false;
 
     /// <summary>
     /// 戦闘力 = 基礎パワー × 大きさスコア × 暴れ度（仕様の算出式）。
@@ -636,6 +677,16 @@ public class Fish : SEEDScript
         var scaled = transform.Scale * SizeMultiplier;
         transform.Scale = scaled;
         CaughtScale = scaled;
+
+        // 生存個体のレジストリへ自分を登録する（レーダーなどが全個体を走査するのに使う）
+        All.Add(this);
+
+        // 自分のレベルを 1 度だけ引く。生成マネージャが居ない（手置きの魚など）場合は
+        // UnknownLevel のままで、レベル差による更新スキップの対象外になる。
+        Level = FishManager.Current is { } manager ? manager.LevelOf(gameObject) : UnknownLevel;
+
+        // 描画の切替に使う Model を控える（毎フレーム GetComponent しないため）。
+        model = gameObject.GetComponent<SEED.Model>();
     }
 
     /// <summary>フレーム開始時に呼ばれる。</summary>
@@ -665,6 +716,11 @@ public class Fish : SEEDScript
 
         float dt = ctx.DeltaTime;
         if (dt <= 0f) { return; }
+
+        // 掛かっている魚よりずっと格上の個体は、更新も描画も止める（後述）。
+        // 判定は毎フレーム（比較 2 回ぶんなので安価）行うので、条件から外れた瞬間
+        // （ヒット終了・乗り換えで掛かっている魚のレベルが上がった）に自動で復帰する。
+        if (UpdateFarLevelCulling()) { return; }
 
         // 釣り上げられた個体は AI を完全に止める（位置・向き・スケールは CatchPresenter が決める）。
         // 状態遷移も移動も行わないので、演出中に回遊へ戻ったり逃げ出したりしない。
@@ -696,6 +752,40 @@ public class Fish : SEEDScript
                 UpdateRoam(dt, home);
                 break;
         }
+    }
+
+    /// <summary>
+    /// 「掛かっている魚よりずっと格上（レベル差が大きい）」個体の更新・描画を止める
+    /// 【格上カリングの唯一の判断点】。
+    ///
+    /// ヒット中は、掛かっている魚のレベル ＋
+    /// <see cref="FishingController.RadarSkipLevelGap"/> 以上のレベルの個体を対象に
+    /// <b>AI・移動を止め、さらに <see cref="SEED.Model.Visible"/> も false にする</b>。
+    /// これらの魚は「どうやっても乗り換えられない格上」で、プレイヤーの関心の外にあるため、
+    /// 沖合の大量の魚を丸ごと処理から外せる（ヒット中だけ効く安価なカリング）。
+    ///
+    /// 条件から外れたとき（ヒット終了・乗り換えで掛かっている魚のレベルが上がって差が縮んだ）は
+    /// 描画を戻し、更新も再開する。<see cref="FishManager"/> の円環クランプは
+    /// カリング中の個体にも効き続ける（位置の押し戻しだけなので軽い）。
+    ///
+    /// レベルが確定していない個体（<see cref="UnknownLevel"/>）は常に対象外。
+    /// </summary>
+    /// <returns>カリング中（この個体の更新を止めるべき）なら true。</returns>
+    private bool UpdateFarLevelCulling()
+    {
+        bool cull = Level != UnknownLevel
+                 && FishingController.Current is { IsHooked: true } fc
+                 && fc.HookedFishLevel != UnknownLevel
+                 && Level >= fc.HookedFishLevel + fc.RadarSkipLevelGap;
+
+        // 状態が変わったフレームだけ描画を切り替える（毎フレームの書き込みを避ける）
+        if (cull != farLevelCulled)
+        {
+            farLevelCulled = cull;
+            if (model is { IsValid: true } m) { m.Visible = !cull; }
+        }
+
+        return cull;
     }
 
     /// <summary>
@@ -1251,6 +1341,8 @@ public class Fish : SEEDScript
     public override void OnDestroy()
     {
         SetEngaged(FishingController.Current, engaged: false);
+        // 生存個体のレジストリから外す（外し漏れるとレーダーが死んだ魚を映し続ける）
+        All.Remove(this);
     }
 
     /// <summary>固定タイムステップの更新。</summary>

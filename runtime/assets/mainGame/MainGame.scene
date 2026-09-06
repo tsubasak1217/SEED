@@ -572,6 +572,7 @@
                 "playerAnimator": "Player|Animator",
                 "playerMove": "Player|Script",
                 "presenter": "Player|Catch",
+                "radar": "FishRadar|Script",
                 "reelArrow": "ReelArrow",
                 "reelArrowBaseOpacity": "0.300",
                 "reelArrowExtraOpacity": "0.600",
@@ -16269,6 +16270,1327 @@
                   "vertical_align": "bottom",
                   "line_spacing": 1.2,
                   "layer": 20
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "FishRadar",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_bg.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 180.0,
+                  "height": 180.0,
+                  "layer": 18,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            },
+            {
+              "name": "Script",
+              "component": {
+                "type": "ScriptComponent",
+                "data": {
+                  "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\FishRadar.cs",
+                  "fields": {
+                    "bgOpacity": "0.900",
+                    "bgSprite": "FishRadar|Sprite",
+                    "bgTransform": "FishRadar",
+                    "centerSprite": "RadarCenter|Sprite",
+                    "centerTransform": "RadarCenter",
+                    "dotSprites": "[\"RadarDot00|Sprite\", \"RadarDot01|Sprite\", \"RadarDot02|Sprite\", \"RadarDot03|Sprite\", \"RadarDot04|Sprite\", \"RadarDot05|Sprite\", \"RadarDot06|Sprite\", \"RadarDot07|Sprite\", \"RadarDot08|Sprite\", \"RadarDot09|Sprite\", \"RadarDot10|Sprite\", \"RadarDot11|Sprite\", \"RadarDot12|Sprite\", \"RadarDot13|Sprite\", \"RadarDot14|Sprite\", \"RadarDot15|Sprite\", \"RadarDot16|Sprite\", \"RadarDot17|Sprite\", \"RadarDot18|Sprite\", \"RadarDot19|Sprite\", \"RadarDot20|Sprite\", \"RadarDot21|Sprite\", \"RadarDot22|Sprite\", \"RadarDot23|Sprite\"]",
+                    "dotTransforms": "[\"RadarDot00\", \"RadarDot01\", \"RadarDot02\", \"RadarDot03\", \"RadarDot04\", \"RadarDot05\", \"RadarDot06\", \"RadarDot07\", \"RadarDot08\", \"RadarDot09\", \"RadarDot10\", \"RadarDot11\", \"RadarDot12\", \"RadarDot13\", \"RadarDot14\", \"RadarDot15\", \"RadarDot16\", \"RadarDot17\", \"RadarDot18\", \"RadarDot19\", \"RadarDot20\", \"RadarDot21\", \"RadarDot22\", \"RadarDot23\"]",
+                    "radarRadiusPx": "80.000",
+                    "radarRangeMeters": "25.000",
+                    "uncatchableAlpha": "0.350"
+                  }
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot00",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot01",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot02",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot03",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot04",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot05",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot06",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot07",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot08",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot09",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot10",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot11",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot12",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot13",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot14",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot15",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot16",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot17",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot18",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot19",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot20",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot21",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot22",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarDot23",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 10.0,
+                  "height": 10.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "RadarCenter",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              110.0,
+              110.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/radar_dot.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 8.0,
+                  "height": 8.0,
+                  "layer": 19,
+                  "postfx_path": "",
+                  "raycast_target": false
                 }
               }
             }

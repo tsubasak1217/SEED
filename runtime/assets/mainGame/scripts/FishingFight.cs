@@ -480,7 +480,7 @@ public class FishingFight : SEEDScript
     /// 通常は魚データ側（Fish）の値を使うので、これは保険。
     /// </summary>
     [Header("ヒット直後の引き(LeadIn)"), SerializeField(Label = "引き距離の既定値(m)")]
-    private float hookRunDistanceDefault = 15f;
+    private float hookRunDistanceDefault = 30f;
 
     /// <summary>
     /// <see cref="Fish.SizeRank"/> が S（最大サイズ帯）のときに <see cref="Fish.HookRunDistance"/>

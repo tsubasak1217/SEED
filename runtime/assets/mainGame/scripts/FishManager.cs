@@ -135,6 +135,59 @@ public class FishManager : SEEDScript
     /// <summary>レベル定義の一括検証（<see cref="ValidateLevelsOnce"/>）を実施済みか。</summary>
     private bool validated = false;
 
+    /// <summary>
+    /// 生成した魚のエンティティ → レベル（1 始まり）の対応表
+    /// 【魚が自分のレベルを知る唯一の手段】。
+    ///
+    /// 魚アクタから <see cref="Fish"/> スクリプトのインスタンスを引く API は無いので、
+    /// 生成側（ここ）が「どのエンティティを何レベルで作ったか」を控え、
+    /// 魚側が <see cref="Fish.OnStart"/> で <see cref="LevelOf"/> を 1 度だけ引く。
+    ///
+    /// キーは (エンティティ添字, 世代) の組。<c>SEED.GameObject</c> は等価比較を
+    /// 実装していないため、値型タプルで確実に一致判定できるようにしている
+    /// （<see cref="FishingController"/> の餌関与レジストリと同じ方式）。
+    /// </summary>
+    private readonly Dictionary<(uint Index, uint Generation), int> fishLevels = new();
+
+    // ─── 他スクリプトからの参照点（静的アクセサ）───────────────
+
+    /// <summary>
+    /// 現在シーンで動いている魚マネージャ（実質シングルトン）。
+    ///
+    /// 魚は動的生成されるためインスペクタ参照でマネージャを注入できない。
+    /// そこで <see cref="OnStart"/> で自分を登録し、<see cref="OnDestroy"/> で解除する
+    /// （<see cref="FishingController.Current"/> とまったく同じ方式）。
+    /// ホットリロードでは静的フィールドごと作り直され、各スクリプトの OnStart が
+    /// 再実行されるので、古い参照が残ることはない。
+    /// </summary>
+    public static FishManager? Current { get; private set; } = null;
+
+    /// <summary>生成直後の初期化。動的生成される魚から参照できるよう自分を登録する。</summary>
+    public override void OnStart()
+    {
+        Current = this;
+    }
+
+    /// <summary>破棄直前の後始末。静的アクセサの参照を落とす（自分の分だけ取り消す）。</summary>
+    public override void OnDestroy()
+    {
+        if (ReferenceEquals(Current, this)) { Current = null; }
+    }
+
+    /// <summary>
+    /// 指定の魚アクタが属するレベル（1 始まり）を返す。
+    /// このマネージャが生成していない魚（手置きなど）は <see cref="Fish.UnknownLevel"/>。
+    /// </summary>
+    /// <param name="fish">魚のアクタ。</param>
+    /// <returns>レベル（1 始まり）。未登録なら <see cref="Fish.UnknownLevel"/>。</returns>
+    public int LevelOf(SEED.GameObject fish)
+    {
+        if (!fish.IsValid) { return Fish.UnknownLevel; }
+        return fishLevels.TryGetValue((fish.Entity.Index, fish.Entity.Generation), out int level)
+            ? level
+            : Fish.UnknownLevel;
+    }
+
     /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
     public override void BeginFrame(ref NativeFrameContext ctx)
     {
@@ -209,7 +262,14 @@ public class FishManager : SEEDScript
         for (int i = 0; i < levels.Count; i++)
         {
             var alive = spawnedFish[i];
-            alive.RemoveAll(f => !IsAlive(f));
+            // 死んだ個体は追跡リストからもレベル対応表からも同時に外す
+            // （対応表だけ残すとエンティティの使い回しで別個体へ誤ったレベルが付く）
+            alive.RemoveAll(f =>
+            {
+                if (IsAlive(f)) { return false; }
+                if (f.IsValid) { fishLevels.Remove((f.Entity.Index, f.Entity.Generation)); }
+                return true;
+            });
 
             int want = levels[i].maintainCount;
             while (alive.Count < want)
@@ -263,6 +323,9 @@ public class FishManager : SEEDScript
         if (!fish.IsValid) { return false; }
         if (fish.GetComponent<SEED.Transform>() is not { } t || !t.IsValid) { return false; }
         t.Position = spawnPos;
+
+        // レベル（1 始まり）を対応表へ控える。魚側は OnStart でここから 1 度だけ読む。
+        fishLevels[(fish.Entity.Index, fish.Entity.Generation)] = levelIndex + 1;
         return true;
     }
 

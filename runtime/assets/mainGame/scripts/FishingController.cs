@@ -1004,7 +1004,28 @@ public class FishingController : SEEDScript
     /// （魚に無限に引かれてウキが世界の外へ行かないための安全弁）。
     /// </summary>
     [SerializeField(Label = "引きの限界余裕(m)")]
-    private float floatDragMarginDistance = 5f;
+    private float floatDragMarginDistance = 30f;
+
+    // ─── 魚レーダー（ヒット中だけ出す） ─────────────────────────
+
+    /// <summary>
+    /// ヒット中に画面へ出す魚レーダー（<see cref="FishRadar"/>）。
+    /// 未設定でも釣りは成立する（レーダーが出ないだけ）。
+    /// </summary>
+    [Header("魚レーダー"), SerializeField(Label = "魚レーダー(FishRadar)")]
+    private FishRadar? radar = null;
+
+    /// <summary>
+    /// 掛かっている魚から見て「これ以上レベルが離れたら相手にしない」差
+    /// （<see cref="Fish.Level"/> の差）。
+    ///
+    /// ヒット中、レベルが「掛かっている魚のレベル ＋ この値」以上の個体は
+    /// <b>AI・移動の更新も描画も止める</b>（<see cref="Fish"/> 側のカリング）。
+    /// どうやっても乗り換えられない格上なので、沖合の大量の魚を丸ごと処理から外せる。
+    /// レーダーの不透明度とは無関係（そちらは捕食可否だけで決まる）。
+    /// </summary>
+    [SerializeField(Label = "更新を止めるレベル差")]
+    private int radarSkipLevelGap = 3;
 
     // ─── 引き演出のカメラ（LeadIn 中に <see cref="runCameraTarget"/> を置く構図）───
     // 中点（プレイヤーとウキの中点）を球面座標（方位角θ・仰角φ・距離）で見る構図。
@@ -1263,6 +1284,18 @@ public class FishingController : SEEDScript
     /// <summary>いま魚が掛かっているか。</summary>
     public bool IsHooked => hookedFish is not null;
 
+    /// <summary>
+    /// 掛かっている魚のレベル（1 始まり）。掛かっていない／レベル不明なら
+    /// <see cref="Fish.UnknownLevel"/>。魚側の格上カリングの基準になる。
+    /// </summary>
+    public int HookedFishLevel => hookedFish is { } fish ? fish.Level : Fish.UnknownLevel;
+
+    /// <summary>
+    /// 「掛かっている魚のレベル ＋ この値」以上の魚は更新・描画を止める、そのレベル差。
+    /// 魚（<see cref="Fish"/>）側のカリング判定が読む。
+    /// </summary>
+    public int RadarSkipLevelGap => radarSkipLevelGap;
+
     // ─── わらしべ連鎖（掛かっている魚が次の餌になる）───────────
 
     /// <summary>
@@ -1514,6 +1547,9 @@ public class FishingController : SEEDScript
 
         // 判定画像の表示は釣り状態に依らず進める（早期 return の経路でも必ず消える）。
         UpdateJudgementUi(ctx.DeltaTime);
+
+        // 魚レーダーも釣り状態に依らず毎フレーム引き直す（早期 return の経路でも必ず消える）。
+        UpdateFishRadar();
 
         // プレイヤー参照が無ければ姿勢の出入りができないので何もしない
         if (playerMove is not { } pm) { return; }
@@ -2084,6 +2120,103 @@ public class FishingController : SEEDScript
         => uki is { IsValid: true } floatTf
             ? HorizontalDistance(floatTf.Position, ReelTargetPosition())
             : 0f;
+
+    // ─── 魚レーダー ───────────────────────────────────────────
+
+    /// <summary>
+    /// レーダーへ載せる候補 1 匹ぶん（距離順に並べ替えるための一時データ）。
+    /// 点の数には限りがあるので、近い順に詰めて溢れたぶんを落とす。
+    /// </summary>
+    private readonly struct RadarCandidate
+    {
+        /// <summary>ウキからの水平距離の 2 乗（並べ替えのキー。平方根を取らない）。</summary>
+        public readonly float SqrDistance;
+
+        /// <summary>レーダーへ渡す表示データ。</summary>
+        public readonly RadarEntry Entry;
+
+        /// <summary>各値を指定して候補を作る。</summary>
+        /// <param name="sqrDistance">ウキからの水平距離の 2 乗。</param>
+        /// <param name="entry">レーダーへ渡す表示データ。</param>
+        public RadarCandidate(float sqrDistance, RadarEntry entry)
+        {
+            SqrDistance = sqrDistance;
+            Entry = entry;
+        }
+    }
+
+    /// <summary>レーダー候補の作業用リスト（毎フレームの確保を避けて使い回す）。</summary>
+    private readonly System.Collections.Generic.List<RadarCandidate> radarCandidates = new();
+
+    /// <summary>レーダーへ渡す表示データの作業用リスト（同上）。</summary>
+    private readonly System.Collections.Generic.List<RadarEntry> radarEntries = new();
+
+    /// <summary>候補の並べ替え規則（近い順）。毎フレームのデリゲート確保を避けて静的に持つ。</summary>
+    private static readonly System.Comparison<RadarCandidate> RadarNearestFirst =
+        (a, b) => a.SqrDistance.CompareTo(b.SqrDistance);
+
+    /// <summary>
+    /// 魚レーダーの表示を更新する【レーダーへ載せる魚を決める唯一の判断点】。
+    ///
+    /// ヒット中だけ表示し、それ以外（待機・狙い・キャスト・巻き取り・釣り上げ演出）では隠す。
+    ///
+    /// [載せる魚]
+    /// 掛かっている魚より<b>大きい</b>（<see cref="Fish.DisplaySize"/> が上）個体のうち、
+    /// ウキからの水平距離がレーダー射程内のもの。<b>大きい＝乗り換えの脅威／好機</b>であり、
+    /// 小さい魚は乗り換えに関与しないので載せない。
+    ///
+    /// [不透明／半透明]
+    /// <see cref="Fish.CanPreyOn"/>（＝いま掛かっている魚を食べられるか）だけで決める。
+    /// 食べられる個体は不透明（＝乗り換えで釣れる）、食べられない個体は半透明。
+    /// <b>レベル差は不透明度に一切関与しない</b>（レベル差は魚アクタ側の更新・描画の
+    /// カリングにだけ使う。<see cref="RadarSkipLevelGap"/> 参照）。
+    /// カリング中の個体も半透明で載り続けるが、位置更新が止まっているため
+    /// 最後に居た場所に留まって見える（意図した挙動）。
+    /// </summary>
+    private void UpdateFishRadar()
+    {
+        if (radar is not { } r) { return; }
+
+        // ヒットしていない／ウキが無い／掛かっている魚が消えたなら隠す
+        if (hookedFish is not { } hooked || uki is not { IsValid: true } floatTf)
+        {
+            r.Hide();
+            return;
+        }
+
+        r.Show();
+
+        var center = floatTf.Position;
+        float range = r.RangeMeters;
+        float sqrRange = range * range;
+
+        radarCandidates.Clear();
+        foreach (var fish in Fish.All)
+        {
+            // 掛かっている本人は中心の点で表しているので載せない
+            if (ReferenceEquals(fish, hooked)) { continue; }
+            // 掛かっている魚より小さい個体は乗り換えに関与しないので載せない
+            if (fish.DisplaySize <= hooked.DisplaySize) { continue; }
+            if (fish.Transform is not { IsValid: true } fishTf) { continue; }
+
+            var pos = fishTf.Position;
+            float dx = pos.x - center.x;
+            float dz = pos.z - center.z;
+            float sqrDistance = dx * dx + dz * dz;
+            if (sqrDistance > sqrRange) { continue; }   // 射程外は載せない
+
+            radarCandidates.Add(new RadarCandidate(sqrDistance, new RadarEntry(pos, fish.CanPreyOn(hooked))));
+        }
+
+        // 点の数には限りがあるので、近い順に詰める（溢れたぶんはレーダー側で落ちる）
+        radarCandidates.Sort(RadarNearestFirst);
+
+        radarEntries.Clear();
+        for (int i = 0; i < radarCandidates.Count; i++) { radarEntries.Add(radarCandidates[i].Entry); }
+
+        // プレイヤーの正面を上にする（キャスト方向と同じ「正面のヨー角」を使う）
+        r.UpdateRadar(center, CastYawDegrees() ?? 0f, radarEntries);
+    }
 
     // ─── スタン演出（隙フェーズの星） ───────────────────────────
 
