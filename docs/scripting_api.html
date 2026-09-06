@@ -763,6 +763,17 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
   <div class="api"><code class="sig">anim.FadeWeight</code><span class="desc">float（get のみ。フェード進行度。0=フェード元のみ / 1=フェードなし）</span></div>
   <div class="warn">クロスフェードで補間されるのは <b>glTF モデル内蔵アニメ同士の切替だけ</b>です。<code>.anim</code> キーフレームクリップが絡む切替はフェード時間を指定しても常に即時になります（警告は出ません）。フェード中にさらに切替を呼ぶと、そのときの現在クリップが新しいフェード元になり、ブレンド率は 0 から再開します（3 本以上は同時に混ざりません）。</div>
   <div class="warn">Play で指定するクリップ名は、そのアクターの Animator に登録済み（<code>clips</code> 一覧に存在し、キーフレームクリップなら既にロード済み）である必要があります。未登録・未ロードの名前を指定すると警告ログを出して無視されます（例外は発生しません）。クリップは Play モード開始時（初回フレーム、スクリプトの Update 等より前）に自動ロードされます。</div>
+  <p class="section-note"><code>.anim</code> キーフレームクリップでアニメーションできるプロパティ（トラックの <code>component</code> / <code>property</code> の組。正典は Rust 側 <code>engine/animation/registry.rs</code> の <code>resolve_binding</code>）:</p>
+  <table>
+    <tr><th>component</th><th>property</th><th>value_type</th><th>書き込み先</th></tr>
+    <tr><td><code>actor_transform</code></td><td><code>position</code> / <code>rotation</code> / <code>scale</code></td><td><code>vec3</code></td><td>アクタールートの Transform（rotation は YXZ オイラー角・度）</td></tr>
+    <tr><td><code>canvas_transform</code></td><td><code>position</code> / <code>scale</code></td><td><code>vec2</code></td><td>アクタールートの CanvasTransform</td></tr>
+    <tr><td><code>canvas_transform</code></td><td><code>rotation</code></td><td><code>float</code></td><td>同上（Z 回転・度）</td></tr>
+    <tr><td><code>sprite</code></td><td><code>color</code></td><td><code>color</code></td><td>最初の Sprite スロットの color（RGBA 0〜1）</td></tr>
+    <tr><td><code>text</code></td><td><code>color</code></td><td><code>color</code></td><td>最初の Text スロットの color（RGBA 0〜1）</td></tr>
+    <tr><td><code>text</code></td><td><code>font_size</code></td><td><code>float</code></td><td>最初の Text スロットの font_size（キャンバスピクセル）</td></tr>
+  </table>
+  <div class="warn">トラックの <code>target.actor_path</code> は <b>Animator を持つアクターからの相対パス</b>（<code>/</code> 区切りの子アクタ名。空文字＝Animator 自身）です。親や兄弟へは遡れないため、複数の子をまとめて動かすクリップは共通の親アクターに Animator を置いて各子を名前で指します。</div>
 
   <h3 id="cmp-particleemitter">ParticleEmitter（GPU パーティクル放出源）</h3>
   <p class="section-note">エディタの「コンポーネント追加 → パーティクルエミッタ」で追加し、インスペクタで放出パラメータを設定します。放出位置・向きは同じ GameObject の <code>transform</code> が決めます。</p>

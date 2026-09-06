@@ -307,8 +307,17 @@ impl AnimationClip {
         // ファイル読み込み（PAK / FS フォールバックは asset_fs が処理）
         let text =
             crate::engine::asset_fs::read_string(path).map_err(|e| format!("{path}: {e}"))?;
+        Self::from_json(path, &text)
+    }
+
+    /// .anim の JSON 文字列を型付きクリップへ変換する（I/O を伴わない純関数）。
+    ///
+    /// `label` はエラーメッセージ・警告に出す識別子（通常はアセットパス）。
+    /// ファイル読み込みと分離してあるのは、フォーマットの検証を単体テストできるようにするため。
+    pub fn from_json(label: &str, text: &str) -> Result<AnimationClip, String> {
+        let path = label;
         let raw: RawClip =
-            serde_json::from_str(&text).map_err(|e| format!("{path}: JSON parse error: {e}"))?;
+            serde_json::from_str(text).map_err(|e| format!("{path}: JSON parse error: {e}"))?;
 
         // トラックを型付きへ変換する
         let mut tracks = Vec::new();
@@ -380,5 +389,130 @@ impl AnimationClip {
             tracks,
             events: raw.events,
         })
+    }
+}
+
+// ============================================================
+//  テスト（.anim フォーマットの往復と、明示タンジェントによるイージング再現）
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::animation::sampler::sample_track;
+
+    /// HIT 帯演出クリップの実ファイルパス（runtime/assets は junction）。
+    const HIT_BANNER_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/mainGame/animations/hit_banner.anim"
+    );
+
+    /// 指定トラックを探す（見つからなければパニックしてテストを落とす）。
+    fn find_track<'a>(clip: &'a AnimationClip, actor: &str, comp: &str, prop: &str) -> &'a Track {
+        clip.tracks
+            .iter()
+            .find(|t| {
+                t.target.actor_path == actor
+                    && t.target.component == comp
+                    && t.target.property == prop
+            })
+            .unwrap_or_else(|| panic!("{actor}/{comp}.{prop} トラックが無い"))
+    }
+
+    /// Vec2 の成分を取り出す（値型違いはテスト失敗）。
+    fn vec2_of(v: AnimValue) -> [f32; 2] {
+        match v {
+            AnimValue::Vec2(a) => a,
+            other => panic!("vec2 を期待したが {other:?}"),
+        }
+    }
+
+    /// 実ファイルを読んで構造（尺・ループ・トラック本数・束縛先）を検証する。
+    #[test]
+    fn hit_banner_clip_parses() {
+        let text = std::fs::read_to_string(HIT_BANNER_PATH).expect("hit_banner.anim が読めること");
+        let clip = AnimationClip::from_json(HIT_BANNER_PATH, &text).expect("JSON が解析できること");
+
+        assert_eq!(clip.name, "Hit");
+        assert_eq!(clip.duration, 1.75);
+        assert_eq!(clip.loop_mode, LoopMode::Once);
+        // バー 2 本 × 3 トラック + 文字 2 つ × 3 トラック
+        assert_eq!(clip.tracks.len(), 12);
+
+        // 文字色トラックが color 型で 2 キー（不透明 → 透明）であること
+        let color = find_track(&clip, "HitTextHit", "text", "color");
+        assert_eq!(color.value_type, ValueType::Color);
+        assert_eq!(color.keys.len(), 2);
+        assert_eq!(color.keys[1].value, AnimValue::Color([1.0, 1.0, 1.0, 0.0]));
+    }
+
+    /// 入場区間の明示タンジェントが easeOutCubic を再現すること
+    /// （旧 HitBanner.cs の `1 - (1 - t)^3` と一致する）。
+    #[test]
+    fn entrance_tangents_reproduce_ease_out_cubic() {
+        let text = std::fs::read_to_string(HIT_BANNER_PATH).expect("hit_banner.anim が読めること");
+        let clip = AnimationClip::from_json(HIT_BANNER_PATH, &text).unwrap();
+        let track = find_track(&clip, "HitBandBlackTop", "canvas_transform", "position");
+
+        let start = vec2_of(track.keys[0].value);
+        let rest = vec2_of(track.keys[1].value);
+        let (t0, t1) = (track.keys[0].time, track.keys[1].time);
+
+        // 区間内を細かく走査し、easeOutCubic の解析解と一致するか見る
+        for step in 0..=10 {
+            let u = step as f32 / 10.0;
+            let eased = 1.0 - (1.0 - u).powi(3);
+            let got = vec2_of(sample_track(track, t0 + (t1 - t0) * u).unwrap());
+            for c in 0..2 {
+                let want = start[c] + (rest[c] - start[c]) * eased;
+                assert!(
+                    (got[c] - want).abs() < 0.5,
+                    "u={u} 成分{c}: got {} want {}",
+                    got[c],
+                    want
+                );
+            }
+        }
+    }
+
+    /// 退場区間の明示タンジェントが easeInCubic（t^3）を再現すること。
+    #[test]
+    fn exit_tangents_reproduce_ease_in_cubic() {
+        let text = std::fs::read_to_string(HIT_BANNER_PATH).expect("hit_banner.anim が読めること");
+        let clip = AnimationClip::from_json(HIT_BANNER_PATH, &text).unwrap();
+        let track = find_track(&clip, "HitTextLevel", "canvas_transform", "position");
+
+        let last = track.keys.len() - 1;
+        let rest = vec2_of(track.keys[last - 1].value);
+        let exit = vec2_of(track.keys[last].value);
+        let (t0, t1) = (track.keys[last - 1].time, track.keys[last].time);
+
+        for step in 0..=10 {
+            let u = step as f32 / 10.0;
+            let eased = u * u * u;
+            let got = vec2_of(sample_track(track, t0 + (t1 - t0) * u).unwrap());
+            for c in 0..2 {
+                let want = rest[c] + (exit[c] - rest[c]) * eased;
+                assert!(
+                    (got[c] - want).abs() < 0.5,
+                    "u={u} 成分{c}: got {} want {}",
+                    got[c],
+                    want
+                );
+            }
+        }
+    }
+
+    /// 文字は再生開始から textDelaySeconds（0.10 秒）まで画面外で静止すること（step 区間）。
+    #[test]
+    fn text_holds_offscreen_during_delay() {
+        let text = std::fs::read_to_string(HIT_BANNER_PATH).expect("hit_banner.anim が読めること");
+        let clip = AnimationClip::from_json(HIT_BANNER_PATH, &text).unwrap();
+        let track = find_track(&clip, "HitTextLevel", "canvas_transform", "position");
+
+        let start = vec2_of(track.keys[0].value);
+        for t in [0.0_f32, 0.05, 0.099] {
+            assert_eq!(vec2_of(sample_track(track, t).unwrap()), start, "t={t}");
+        }
     }
 }

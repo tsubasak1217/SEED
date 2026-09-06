@@ -659,7 +659,7 @@
             "rotation": [
               1.2524877,
               167.28851,
-              0.0000025785946
+              2.5785946e-06
             ],
             "scale": [
               2.7811875,
@@ -683,7 +683,7 @@
                         37.960476
                       ],
                       [
-                        1.2513732e-7,
+                        1.2513732e-07,
                         5.559396,
                         -0.060792,
                         3.2836604
@@ -994,7 +994,7 @@
             "rotation": [
               -0.7586146,
               168.34944,
-              -1.8087846e-7
+              -1.8087846e-07
             ],
             "scale": [
               1.3905941,
@@ -1453,7 +1453,7 @@
         "rotation": [
           1.1905385,
           267.66238,
-          -0.000006509732
+          -6.509732e-06
         ],
         "scale": [
           1.0,
@@ -2632,6 +2632,27 @@
               ]
             }
           }
+        },
+        {
+          "name": "Animator",
+          "component": {
+            "type": "AnimatorComponent",
+            "data": {
+              "clips": [
+                {
+                  "name": "Hit",
+                  "kind": "keyframe",
+                  "path": "assets://mainGame/animations/hit_banner.anim",
+                  "anim": "",
+                  "loop_mode": "once"
+                }
+              ],
+              "default_clip": "",
+              "play_on_start": false,
+              "speed": 1.0,
+              "default_fade_seconds": 0.0
+            }
+          }
         }
       ],
       "children": [
@@ -3781,7 +3802,7 @@
           "canvas_transform": {
             "position": [
               140.0,
-              0.000006119594
+              6.119594e-06
             ],
             "rotation": 90.0,
             "scale": [
@@ -4380,7 +4401,7 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              -0.000012239188,
+              -1.2239188e-05,
               140.0
             ],
             "rotation": 180.0,
@@ -4981,7 +5002,7 @@
           "canvas_transform": {
             "position": [
               -140.0,
-              -0.0000016694833
+              -1.6694833e-06
             ],
             "rotation": 270.0,
             "scale": [
@@ -5730,7 +5751,7 @@
           "actor_kind": "Actor2D",
           "canvas_transform": {
             "position": [
-              -0.000014512181,
+              -1.4512181e-05,
               166.0
             ],
             "rotation": 0.0,
@@ -8220,16 +8241,9 @@
                 "data": {
                   "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\HitBanner.cs",
                   "fields": {
-                    "bandBlackBottomSprite": "HitBandBlackBottom|Sprite",
-                    "bandBlackBottomTransform": "HitBandBlackBottom",
-                    "bandBlackTopSprite": "HitBandBlackTop|Sprite",
-                    "bandBlackTopTransform": "HitBandBlackTop",
-                    "bandWhiteSprite": "HitBandWhite|Sprite",
-                    "bandWhiteTransform": "HitBandWhite",
+                    "animator": "FishingUI|Animator",
                     "hitLabel": "HitTextHit|Text",
-                    "hitLabelTransform": "HitTextHit",
-                    "levelLabel": "HitTextLevel|Text",
-                    "levelLabelTransform": "HitTextLevel"
+                    "levelLabel": "HitTextLevel|Text"
                   }
                 }
               }
@@ -9136,7 +9150,7 @@
                       ],
                       [
                         1.5036188,
-                        -0.00007515028,
+                        -7.515028e-05,
                         0.84553915,
                         -657.0699
                       ],

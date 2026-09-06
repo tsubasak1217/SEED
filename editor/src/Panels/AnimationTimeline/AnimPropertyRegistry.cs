@@ -38,6 +38,8 @@ internal static class AnimPropertyRegistry
         new("canvas_transform", "rotation", "float", "CanvasTransform / 回転"),
         new("canvas_transform", "scale",    "vec2",  "CanvasTransform / スケール"),
         new("sprite",           "color",    "color", "Sprite / 色"),
+        new("text",             "color",    "color", "Text / 文字色"),
+        new("text",             "font_size","float", "Text / フォントサイズ"),
     };
 
     /// <summary>component/property から value_type を引く。未登録の組は null を返す。</summary>

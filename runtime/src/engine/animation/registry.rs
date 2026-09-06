@@ -19,9 +19,9 @@
 // ============================================================
 
 use crate::engine::components::{
-    CanvasTransform, ComponentKind, ModelComponent, SpriteComponent, Transform,
+    CanvasTransform, ComponentKind, ModelComponent, SpriteComponent, TextComponent, Transform,
 };
-use crate::engine::ecs::World;
+use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
 
 use super::clip::{AnimValue, ValueType};
@@ -45,6 +45,10 @@ pub enum PropBinding {
     CanvasTransformScale,
     /// SpriteComponent のカラー（color = [f32;4]）— 最初の有効な Sprite スロット
     SpriteColor,
+    /// TextComponent の文字色（color = [f32;4]）— 最初の Text スロット
+    TextColor,
+    /// TextComponent のフォントサイズ（float・キャンバスピクセル）— 最初の Text スロット
+    TextFontSize,
 }
 
 impl PropBinding {
@@ -57,8 +61,8 @@ impl PropBinding {
             PropBinding::CanvasTransformPosition | PropBinding::CanvasTransformScale => {
                 ValueType::Vec2
             }
-            PropBinding::CanvasTransformRotation => ValueType::Float,
-            PropBinding::SpriteColor => ValueType::Color,
+            PropBinding::CanvasTransformRotation | PropBinding::TextFontSize => ValueType::Float,
+            PropBinding::SpriteColor | PropBinding::TextColor => ValueType::Color,
         }
     }
 }
@@ -69,6 +73,7 @@ impl PropBinding {
 /// - actor_transform: position / rotation / scale （すべて vec3）
 /// - canvas_transform: position(vec2) / rotation(float) / scale(vec2)
 /// - sprite: color(color)
+/// - text: color(color) / font_size(float)
 pub fn resolve_binding(component: &str, property: &str) -> Option<PropBinding> {
     match (component, property) {
         ("actor_transform", "position") => Some(PropBinding::ActorTransformPosition),
@@ -78,6 +83,8 @@ pub fn resolve_binding(component: &str, property: &str) -> Option<PropBinding> {
         ("canvas_transform", "rotation") => Some(PropBinding::CanvasTransformRotation),
         ("canvas_transform", "scale") => Some(PropBinding::CanvasTransformScale),
         ("sprite", "color") => Some(PropBinding::SpriteColor),
+        ("text", "color") => Some(PropBinding::TextColor),
+        ("text", "font_size") => Some(PropBinding::TextFontSize),
         _ => None,
     }
 }
@@ -157,19 +164,48 @@ pub fn apply_write(world: &mut World, target: &Actor, binding: PropBinding, valu
         PropBinding::SpriteColor => {
             if let AnimValue::Color(v) = value {
                 // 最初の Sprite スロットへ書き込む
-                if let Some(slot_entity) = target
-                    .slots()
-                    .iter()
-                    .find(|s| s.kind == ComponentKind::Sprite)
-                    .map(|s| s.entity)
-                {
+                if let Some(slot_entity) = first_slot_entity(target, ComponentKind::Sprite) {
                     if let Some(sp) = world.get_mut::<SpriteComponent>(slot_entity) {
                         sp.color = *v;
                     }
                 }
             }
         }
+        // ── Text 文字色（同期不要）──
+        PropBinding::TextColor => {
+            if let AnimValue::Color(v) = value {
+                // 最初の Text スロットへ書き込む（Sprite と同じスロット選択規則）
+                if let Some(slot_entity) = first_slot_entity(target, ComponentKind::Text) {
+                    if let Some(tx) = world.get_mut::<TextComponent>(slot_entity) {
+                        tx.color = *v;
+                    }
+                }
+            }
+        }
+        // ── Text フォントサイズ（同期不要）──
+        PropBinding::TextFontSize => {
+            if let AnimValue::Float(v) = value {
+                if let Some(slot_entity) = first_slot_entity(target, ComponentKind::Text) {
+                    if let Some(tx) = world.get_mut::<TextComponent>(slot_entity) {
+                        tx.font_size = *v;
+                    }
+                }
+            }
+        }
     }
+}
+
+/// 対象アクターの「最初の指定種別スロット」の entity を返す（無ければ None）。
+///
+/// スロット選択規則を apply_write / read_binding で 1 か所に集約するためのヘルパー。
+/// 退避（read）と復元（write）が別スロットを指すと Edit プレビューが壊れるため、
+/// 両者は必ずこの関数を通すこと。
+fn first_slot_entity(target: &Actor, kind: ComponentKind) -> Option<Entity> {
+    target
+        .slots()
+        .iter()
+        .find(|s| s.kind == kind)
+        .map(|s| s.entity)
 }
 
 // ─── 読み取り（Edit プレビューの元値退避用）───────────────────
@@ -198,14 +234,17 @@ pub fn read_binding(world: &World, target: &Actor, binding: PropBinding) -> Opti
         PropBinding::CanvasTransformScale => world
             .get::<CanvasTransform>(target.entity)
             .map(|ct| AnimValue::Vec2(ct.scale)),
-        // apply_write と同じスロット選択規則（最初の Sprite スロット）で読む。
+        // apply_write と同じスロット選択規則（最初の該当スロット）で読む。
         // 退避と復元の対象を一致させるため必須。
-        PropBinding::SpriteColor => target
-            .slots()
-            .iter()
-            .find(|s| s.kind == ComponentKind::Sprite)
-            .and_then(|s| world.get::<SpriteComponent>(s.entity))
+        PropBinding::SpriteColor => first_slot_entity(target, ComponentKind::Sprite)
+            .and_then(|e| world.get::<SpriteComponent>(e))
             .map(|sp| AnimValue::Color(sp.color)),
+        PropBinding::TextColor => first_slot_entity(target, ComponentKind::Text)
+            .and_then(|e| world.get::<TextComponent>(e))
+            .map(|tx| AnimValue::Color(tx.color)),
+        PropBinding::TextFontSize => first_slot_entity(target, ComponentKind::Text)
+            .and_then(|e| world.get::<TextComponent>(e))
+            .map(|tx| AnimValue::Float(tx.font_size)),
     }
 }
 
@@ -236,5 +275,121 @@ fn sync_model_instance_mats(world: &mut World, target: &Actor) {
                 batch.mark_dirty();
             }
         }
+    }
+}
+
+// ============================================================
+//  テスト（プロパティ解決とスロットへの書き込み）
+//
+//  World + Actor を直接組み立てられる範囲（＝ App / レンダラ不要）だけを検証する。
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::components::TextComponent;
+
+    /// Text スロットを 1 つ持つアクターと World を作る。
+    fn actor_with_text() -> (World, Actor) {
+        let mut world = World::new();
+        let actor_entity = world.spawn();
+        let mut actor = Actor::new(actor_entity, "Label");
+        let slot_entity = world.spawn();
+        world.insert(slot_entity, TextComponent::default());
+        actor.add_slot_typed::<TextComponent>("Text", ComponentKind::Text, slot_entity);
+        (world, actor)
+    }
+
+    /// アクターの最初の Text スロットの実体を読む（テスト用）。
+    fn text_of<'a>(world: &'a World, actor: &Actor) -> &'a TextComponent {
+        let e = first_slot_entity(actor, ComponentKind::Text).expect("Text スロットがあること");
+        world.get::<TextComponent>(e).expect("TextComponent が挿入済みであること")
+    }
+
+    /// ("text","color") / ("text","font_size") が束縛へ解決され、期待値型が一致すること。
+    #[test]
+    fn text_bindings_resolve_with_expected_value_types() {
+        assert_eq!(resolve_binding("text", "color"), Some(PropBinding::TextColor));
+        assert_eq!(
+            resolve_binding("text", "font_size"),
+            Some(PropBinding::TextFontSize)
+        );
+        assert_eq!(
+            PropBinding::TextColor.expected_value_type(),
+            ValueType::Color
+        );
+        assert_eq!(
+            PropBinding::TextFontSize.expected_value_type(),
+            ValueType::Float
+        );
+        assert_eq!(resolve_binding("text", "content"), None, "未対応は None");
+    }
+
+    /// Text の色が Text スロットへ書き込まれ、同じ値が読み戻せること。
+    #[test]
+    fn text_color_writes_to_text_slot() {
+        let (mut world, actor) = actor_with_text();
+        let value = AnimValue::Color([0.25, 0.5, 0.75, 0.5]);
+
+        apply_write(&mut world, &actor, PropBinding::TextColor, &value);
+
+        assert_eq!(text_of(&world, &actor).color, [0.25, 0.5, 0.75, 0.5]);
+        assert_eq!(
+            read_binding(&world, &actor, PropBinding::TextColor),
+            Some(value),
+            "read_binding は apply_write と同じスロットを見ること"
+        );
+    }
+
+    /// Text のフォントサイズが書き込め、読み戻せること。
+    #[test]
+    fn text_font_size_writes_to_text_slot() {
+        let (mut world, actor) = actor_with_text();
+
+        apply_write(
+            &mut world,
+            &actor,
+            PropBinding::TextFontSize,
+            &AnimValue::Float(72.0),
+        );
+
+        assert_eq!(text_of(&world, &actor).font_size, 72.0);
+        assert_eq!(
+            read_binding(&world, &actor, PropBinding::TextFontSize),
+            Some(AnimValue::Float(72.0))
+        );
+    }
+
+    /// 値型が違う書き込みは無視される（クラッシュも変更もしない）。
+    #[test]
+    fn text_color_ignores_mismatched_value_type() {
+        let (mut world, actor) = actor_with_text();
+        let before = text_of(&world, &actor).color;
+
+        apply_write(
+            &mut world,
+            &actor,
+            PropBinding::TextColor,
+            &AnimValue::Float(1.0),
+        );
+
+        assert_eq!(text_of(&world, &actor).color, before);
+    }
+
+    /// Text スロットを持たないアクターへの書き込み・読み取りは安全に無視される。
+    #[test]
+    fn text_bindings_are_noop_without_text_slot() {
+        let mut world = World::new();
+        let e = world.spawn();
+        let actor = Actor::new(e, "Empty");
+
+        apply_write(
+            &mut world,
+            &actor,
+            PropBinding::TextColor,
+            &AnimValue::Color([1.0, 0.0, 0.0, 1.0]),
+        );
+
+        assert_eq!(read_binding(&world, &actor, PropBinding::TextColor), None);
     }
 }

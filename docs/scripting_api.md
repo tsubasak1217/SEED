@@ -885,6 +885,19 @@ if (gameObject.GetComponent<Animator>() is { } anim)   // Animator?（未アタ�
 - `Play` で指定するクリップ名は、そのアクターの Animator に登録済み（`clips` 一覧に存在し、キーフレームクリップなら既にロード済み）である必要があります。未登録・未ロードの名前を指定すると警告ログを出して無視されます（例外は発生しません）。
 - クリップは Play モード開始時（初回フレーム、スクリプトの `Update` 等より前）に自動ロードされるため、通常のスクリプトライフサイクル関数から呼ぶ限り「まだロードされていない」状況は発生しません。
 
+**`.anim` キーフレームクリップでアニメーションできるプロパティ**（トラックの `component` / `property` の組。正典は Rust 側 `engine/animation/registry.rs` の `resolve_binding`、エディタのトラック追加 UI は `AnimPropertyRegistry.cs`）:
+
+| component | property | value_type | 書き込み先 |
+|---|---|---|---|
+| `actor_transform` | `position` / `rotation` / `scale` | `vec3` | アクタールートの `Transform`（`rotation` は YXZ オイラー角・度） |
+| `canvas_transform` | `position` / `scale` | `vec2` | アクタールートの `CanvasTransform` |
+| `canvas_transform` | `rotation` | `float` | 同上（Z 回転・度） |
+| `sprite` | `color` | `color` | 最初の Sprite スロットの `color`（RGBA 0〜1） |
+| `text` | `color` | `color` | 最初の Text スロットの `color`（RGBA 0〜1） |
+| `text` | `font_size` | `float` | 最初の Text スロットの `font_size`（キャンバスピクセル） |
+
+トラックの `target.actor_path` は **Animator を持つアクターからの相対パス**（`/` 区切りの子アクタ名。空文字＝Animator 自身）です。親や兄弟へは遡れないため、複数の子をまとめて動かすクリップは**共通の親アクターに Animator を置いて**各子を名前で指します。
+
 ### ParticleEmitter（GPU パーティクル放出源）
 
 エディタの「コンポーネント追加 → パーティクルエミッタ」で追加し、インスペクタで放出パラメータ（レート・寿命・色・ブレンドなど）を設定します。放出位置・向きは同じ GameObject の `transform` が決めます。
