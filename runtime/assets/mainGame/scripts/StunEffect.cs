@@ -78,6 +78,18 @@ public class StunEffect : SEEDScript
     [SerializeField(Label = "格納位置Y")]
     private float parkPositionY = -100f;
 
+    // ─── 効果音（すべて Inspector から調整可能） ─────────────────
+
+    /// <summary>
+    /// 演出を開始した瞬間に鳴らす効果音のアセットパス。空文字なら鳴らさない。
+    /// </summary>
+    [Header("効果音"), SerializeField(Label = "スタンの効果音")]
+    private string stunSePath = "assets://mainGame/audios/stan.mp3";
+
+    /// <summary>スタン効果音の音量（0〜1）。</summary>
+    [SerializeField(Label = "スタンの音量")]
+    private float stunSeVolume = 1f;
+
     // ─── 内部状態 ─────────────────────────────────────
 
     /// <summary>演出中か。<see cref="Show"/> で true、<see cref="Stop"/> で false。</summary>
@@ -129,15 +141,25 @@ public class StunEffect : SEEDScript
     /// 演出を開始する【この演出の唯一の入口】。
     /// 角度・位相を初期化してから、その場で 1 度配置まで済ませる
     /// （呼ばれた瞬間から正しい位置に星が出るようにするため）。
+    /// すでに演出中（<see cref="showing"/> が true）のときは、
+    /// 中心を置き直すだけで効果音は鳴らさない（毎フレーム呼ばれても暴発しないように）。
     /// </summary>
     /// <param name="anchor">回転の中心となるワールド座標（例: 魚の頭上）。</param>
     public void Show(SEED.Vector3 anchor)
     {
+        bool wasShowing = showing;
+
         anchorPosition = anchor;
         orbitAngleDegrees = 0f;
         elapsedSeconds = 0f;
         showing = true;
         ApplyStarLayout();
+
+        // 「畳んでいた → 出す」の立ち上がりでだけ鳴らす（空文字なら無音を許容）
+        if (!wasShowing && !string.IsNullOrEmpty(stunSePath))
+        {
+            SEED.Audio.Play(stunSePath, stunSeVolume);
+        }
     }
 
     /// <summary>

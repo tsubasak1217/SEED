@@ -1107,16 +1107,6 @@ public class FishingController : SEEDScript
     private StunEffect? stunEffect = null;
 
     /// <summary>
-    /// 隙フェーズへ入った瞬間に鳴らす効果音のアセットパス。空文字なら鳴らさない。
-    /// </summary>
-    [SerializeField(Label = "スタンの効果音")]
-    private string stunSePath = "assets://mainGame/audios/stan.mp3";
-
-    /// <summary>スタン効果音の音量（0〜1）。</summary>
-    [SerializeField(Label = "スタンの音量")]
-    private float stunSeVolume = 1f;
-
-    /// <summary>
     /// 星を回す中心を、魚の頭のてっぺんからさらに何メートル上へ置くか。
     /// </summary>
     [SerializeField(Label = "星の追加高さ(m)")]
@@ -1130,7 +1120,8 @@ public class FishingController : SEEDScript
 
     /// <summary>
     /// スタン演出を出しているか【<see cref="UpdateStunEffect"/> が持つ唯一の状態】。
-    /// 隙へ入った瞬間の 1 回だけ効果音を鳴らすための立ち上がり検出に使う。
+    /// 「畳んでいた → 出す」の立ち上がりを検出して <see cref="StunEffect.Show"/> を
+    /// 呼ぶタイミングを 1 回に絞るために使う（効果音自体は StunEffect 側が管理）。
     /// </summary>
     private bool stunShown = false;
 
@@ -2103,8 +2094,8 @@ public class FishingController : SEEDScript
     /// 出すべき条件は<b>ヒット中かつ隙（<see cref="FishingFight.Phase.Rest"/>）</b>の 1 つだけ。
     /// 出題・回答・余白へ移った、糸が切れた、釣り上げた、姿勢を解除した——
     /// どの理由で条件から外れても同じ経路で <see cref="StunEffect.Stop"/> に落ちるので、
-    /// 出しっぱなしにならない。効果音は「条件を満たしていなかった → 満たした」の
-    /// 立ち上がりの 1 回だけ鳴らす。
+    /// 出しっぱなしにならない。効果音は <see cref="StunEffect.Show"/> 側が
+    /// 立ち上がり（畳んでいた → 出す）の 1 回だけ鳴らすので、ここでは意識しない。
     /// </summary>
     private void UpdateStunEffect()
     {
@@ -2125,10 +2116,9 @@ public class FishingController : SEEDScript
             return;
         }
 
-        // 隙へ入った瞬間: 効果音を鳴らして演出を開始する
+        // 隙へ入った瞬間: 演出を開始する（効果音は StunEffect.Show 内で鳴る）
         if (!stunShown)
         {
-            PlaySe(stunSePath, stunSeVolume);
             effect.Show(StunAnchorPosition());
             stunShown = true;
             return;
