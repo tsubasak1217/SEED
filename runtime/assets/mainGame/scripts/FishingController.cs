@@ -963,31 +963,39 @@ public class FishingController : SEEDScript
     private float floatDragMarginDistance = 5f;
 
     // ─── 引き演出のカメラ（LeadIn 中に <see cref="runCameraTarget"/> を置く構図）───
+    // 中点（プレイヤーとウキの中点）を球面座標（方位角θ・仰角φ・距離）で見る構図。
+    // 基準方向は「プレイヤー→ウキ」の水平方向（dirH）：
+    //   θ=0°   … ウキ側（dirH 方向）から中点越しにプレイヤーを見返す。
+    //   θ=180° … プレイヤー側（-dirH 方向）から中点越しに海（ウキ）を見る。
+    //   θ=90°  … 糸に対して右側（right = (dirH.z, 0, -dirH.x)）から見る。
+    //   φ=0°   … 水平、φ=90° … 中点の真上。
 
     /// <summary>
-    /// カメラ〜中点（プレイヤーとウキの中点）の水平距離の下限（メートル）。
-    /// プレイヤーとウキが近いとき（掛かった直後など）でもカメラが寄りすぎないための下限。
+    /// ヒット時カメラの方位角θ（度）。プレイヤー→ウキの水平方向（dirH）を 0° として、
+    /// dirH × cosθ + right × sinθ が水平オフセット方向になる（right は dirH を右へ 90° 回した方向）。
     /// </summary>
-    [Header("引き演出のカメラ"), SerializeField(Label = "カメラ距離の下限(m)")]
-    private float runCamMinDistance = 6f;
+    [Header("引き演出のカメラ"), SerializeField(Label = "ヒット時カメラの方位角θ(度)")]
+    private float runCamThetaDegrees = 180f;
 
     /// <summary>
-    /// プレイヤー→ウキの間隔に応じてカメラ距離を伸ばす倍率。
-    /// カメラ距離 ＝ max(<see cref="runCamMinDistance"/>, 間隔 × この倍率)。
+    /// ヒット時カメラの仰角φ（度）。0°で水平、90°で中点の真上からの見下ろしになる。
     /// </summary>
-    [SerializeField(Label = "カメラ距離の間隔倍率")]
-    private float runCamDistanceScale = 1.2f;
-
-    /// <summary>カメラの基本高さ（メートル）。中点からの上方向オフセットの基準値。</summary>
-    [SerializeField(Label = "カメラ高さの基準(m)")]
-    private float runCamHeight = 4f;
+    [SerializeField(Label = "ヒット時カメラの仰角φ(度)")]
+    private float runCamPhiDegrees = 35f;
 
     /// <summary>
-    /// プレイヤー→ウキの間隔に応じてカメラ高さを足す倍率。
-    /// カメラ高さ ＝ <see cref="runCamHeight"/> ＋ 間隔 × この倍率。
+    /// ヒット時カメラの基本距離（メートル）。中点からカメラまでの実効距離の基準値
+    /// （実効距離 ＝ この値 ＋ 間隔 × <see cref="runCamDistancePerSeparation"/>）。
     /// </summary>
-    [SerializeField(Label = "カメラ高さの間隔倍率")]
-    private float runCamHeightScale = 0.3f;
+    [SerializeField(Label = "ヒット時カメラの距離(m)")]
+    private float runCamDistance = 8f;
+
+    /// <summary>
+    /// プレイヤー→ウキの間隔に応じてカメラ距離を伸ばす比率。
+    /// 間隔が開くほどカメラも遠くなり、プレイヤーとウキの両方が画面に収まりやすくなる。
+    /// </summary>
+    [SerializeField(Label = "距離に加える間隔比率")]
+    private float runCamDistancePerSeparation = 0.6f;
 
     // ─── 効果音 ─────────────────────────────
 
@@ -2002,10 +2010,10 @@ public class FishingController : SEEDScript
     /// ヒット直後の「引き」演出中（<see cref="FishingFight.Phase.LeadIn"/>）のカメラ目標
     /// （<see cref="runCameraTarget"/>）を毎フレーム置き直す【この構図の唯一の算出点】。
     ///
-    /// プレイヤーとウキの<b>中点</b>を、両者を結ぶ水平方向の後方かつ上方から見下ろす位置に
-    /// カメラを置き、中点を注視させる。間隔（プレイヤー↔ウキの水平距離）が開くほど、
-    /// カメラも <see cref="runCamDistanceScale"/> / <see cref="runCamHeightScale"/> ぶん
-    /// 遠く・高くなるので、両者が画面に収まりやすくなる。
+    /// プレイヤーとウキの<b>中点</b>を中心に、<see cref="runCamThetaDegrees"/>（方位角）・
+    /// <see cref="runCamPhiDegrees"/>（仰角）・<see cref="runCamDistance"/>（距離）の球面座標で
+    /// カメラを置き、中点を注視させる。間隔（プレイヤー↔ウキの水平距離）が開くほど
+    /// <see cref="runCamDistancePerSeparation"/> ぶん距離も伸びるので、両者が画面に収まりやすくなる。
     ///
     /// <c>this.transform</c> がそのままプレイヤー位置になる（本スクリプトはプレイヤーアクタに
     /// 付ける前提のため）。LeadIn 以外・参照未設定・ウキ未配置では何もしない
@@ -2021,7 +2029,7 @@ public class FishingController : SEEDScript
         var playerPos = transform.Position;
         var floatPos = floatTf.Position;
 
-        // プレイヤー→ウキの水平方向（正規化）。重なっていて方位が定まらない場合は
+        // プレイヤー→ウキの水平方向（dirH、正規化）。重なっていて方位が定まらない場合は
         // カメラ自身の現在の向きを流用する（真下を向くなどの破綻を避ける）。
         float dx = floatPos.x - playerPos.x;
         float dz = floatPos.z - playerPos.z;
@@ -2043,18 +2051,39 @@ public class FishingController : SEEDScript
         float centerY = (playerPos.y + floatPos.y) * 0.5f;
         float centerZ = (playerPos.z + floatPos.z) * 0.5f;
 
-        float d = SEED.Mathf.Max(runCamMinDistance, horizDistance * runCamDistanceScale);
-        float h = runCamHeight + horizDistance * runCamHeightScale;
+        // dirH を右へ 90° 回した水平方向（θ=90° の方位に対応）。
+        float rightX = dirZ;
+        float rightZ = -dirX;
 
-        // camPos = center − dirH × d + up × h（プレイヤー側・後方・上方から中点を見下ろす）
-        var camPos = new SEED.Vector3(centerX - dirX * d, centerY + h, centerZ - dirZ * d);
+        float thetaRad = runCamThetaDegrees * SEED.Mathf.Deg2Rad;
+        float phiRad = runCamPhiDegrees * SEED.Mathf.Deg2Rad;
+        float cosTheta = SEED.Mathf.Cos(thetaRad);
+        float sinTheta = SEED.Mathf.Sin(thetaRad);
 
-        // 注視は中点固定。yaw はカメラ→中点の水平方向（＝ dirH と同じ）、
-        // pitch はカメラ→中点の俯角（下を向くほど負）。
-        float yawDeg = SEED.Mathf.Atan2(dirX, dirZ) * SEED.Mathf.Rad2Deg;
-        float lookDistance = SEED.Mathf.Sqrt(d * d + h * h);
+        // 水平オフセット方向 ＝ dirH × cosθ + right × sinθ。
+        float horizDirX = dirX * cosTheta + rightX * sinTheta;
+        float horizDirZ = dirZ * cosTheta + rightZ * sinTheta;
+
+        // 実効距離 ＝ 基本距離 ＋ 間隔 × 比率（間隔が開くほど両者が画面に収まるよう遠ざかる）。
+        float dist = runCamDistance + horizDistance * runCamDistancePerSeparation;
+        float horizComponent = dist * SEED.Mathf.Cos(phiRad);
+        float vertComponent = dist * SEED.Mathf.Sin(phiRad);
+
+        // camPos = center + horizDir × (dist・cosφ) + up × (dist・sinφ)
+        var camPos = new SEED.Vector3(
+            centerX + horizDirX * horizComponent,
+            centerY + vertComponent,
+            centerZ + horizDirZ * horizComponent);
+
+        // 注視は中点固定。yaw はカメラ→中点の水平方向、pitch はカメラ→中点の俯角
+        // （dy はカメラの中点に対する相対高さ。下を向くほど pitch は負）。
+        float toCenterX = centerX - camPos.x;
+        float toCenterZ = centerZ - camPos.z;
+        float dy = camPos.y - centerY;
+        float yawDeg = SEED.Mathf.Atan2(toCenterX, toCenterZ) * SEED.Mathf.Rad2Deg;
+        float lookDistance = SEED.Mathf.Sqrt(toCenterX * toCenterX + toCenterZ * toCenterZ + dy * dy);
         float pitchDeg = lookDistance > DivideEpsilon
-            ? -SEED.Mathf.Asin(SEED.Mathf.Clamped(h / lookDistance, -1f, 1f)) * SEED.Mathf.Rad2Deg
+            ? -SEED.Mathf.Asin(SEED.Mathf.Clamped(dy / lookDistance, -1f, 1f)) * SEED.Mathf.Rad2Deg
             : 0f;
 
         camTf.Position = camPos;
