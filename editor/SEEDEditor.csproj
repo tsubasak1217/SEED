@@ -38,21 +38,21 @@
   <!-- WPF の _wpftmp 内部プロジェクトが SeedMcpServer サブディレクトリの     -->
   <!-- obj/ 生成ファイルを拾って属性重複エラーになるのを防ぐ。               -->
   <ItemGroup>
-    <Compile  Remove="SeedMcpServer\**" />
+    <Compile Remove="SeedMcpServer\**" />
     <EmbeddedResource Remove="SeedMcpServer\**" />
-    <None     Remove="SeedMcpServer\**" />
-    <Content  Remove="SeedMcpServer\**" />
-    <Page     Remove="SeedMcpServer\**" />
+    <None Remove="SeedMcpServer\**" />
+    <Content Remove="SeedMcpServer\**" />
+    <Page Remove="SeedMcpServer\**" />
   </ItemGroup>
 
   <!-- アルゴリズム単体テスト（editor/tests/）は独立したコンソールプロジェクトなので、  -->
   <!-- 既定グロブで本体へ取り込まれないように除外する（Main の重複を防ぐ）。          -->
   <ItemGroup>
-    <Compile  Remove="tests\**" />
+    <Compile Remove="tests\**" />
     <EmbeddedResource Remove="tests\**" />
-    <None     Remove="tests\**" />
-    <Content  Remove="tests\**" />
-    <Page     Remove="tests\**" />
+    <None Remove="tests\**" />
+    <Content Remove="tests\**" />
+    <Page Remove="tests\**" />
   </ItemGroup>
 
   <ItemGroup>
@@ -65,6 +65,7 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Features" Version="4.8.0" />
     <!-- スクリプトエディタのシンタックスハイライト用テキストエディタコントロール -->
     <PackageReference Include="AvalonEdit" Version="6.3.0.90" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
   <ItemGroup>
@@ -74,8 +75,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Resource Include="resources\icons\**\*.png"/>
-    <Resource Include="resources\images\**\*.png"/>
+    <Resource Include="resources\icons\**\*.png" />
+    <Resource Include="resources\images\**\*.png" />
   </ItemGroup>
 
   <!-- スクリプトエディタの追加シンタックスハイライト定義（AvalonEdit xshd）。 -->
@@ -100,18 +101,14 @@
   <!-- ProjectReference を使わないことで WPF の _wpftmp 中間プロジェクトとの衝突を回避する。 -->
   <Target Name="BuildAndCopySeedMcpServer" AfterTargets="Build" Condition="'$(CI)'!='true'">
     <!-- SeedMcpServer 自身をビルドする（restore も内部で自動実行される）-->
-    <Exec Command="dotnet build &quot;$(MSBuildProjectDirectory)\SeedMcpServer\SeedMcpServer.csproj&quot; -c $(Configuration)"
-          StandardOutputImportance="low"
-          StandardErrorImportance="normal" />
+    <Exec Command="dotnet build &quot;$(MSBuildProjectDirectory)\SeedMcpServer\SeedMcpServer.csproj&quot; -c $(Configuration)" StandardOutputImportance="low" StandardErrorImportance="normal" />
     <!-- ビルド結果を SEEDEditor.exe と同じディレクトリへ全ファイルコピーする。        -->
     <!-- .exe だけでなく .dll / .runtimeconfig.json / .deps.json も必須。           -->
     <!-- これらが揃っていないと AppHost (.exe) がランタイムを起動できず MCP が失敗する。 -->
     <ItemGroup>
       <_SeedMcpServerFiles Include="$(MSBuildProjectDirectory)\SeedMcpServer\bin\$(Configuration)\net9.0\*.*" />
     </ItemGroup>
-    <Copy SourceFiles="@(_SeedMcpServerFiles)"
-          DestinationFolder="$(OutputPath)"
-          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(_SeedMcpServerFiles)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
   </Target>
 
 </Project>

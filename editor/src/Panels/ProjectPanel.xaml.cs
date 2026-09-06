@@ -1213,6 +1213,7 @@ public partial class ProjectPanel : UserControl
 
         // 単一選択のときだけ、ファイル種別に応じた専用コマンドを先頭に出す
         AddSpriteRigMenuItems(menu);
+        AddAudioMenuItems(menu);   // 音声ファイル（.wav/.mp3）向けの無音カット
 
         Add(menu, "コピー",    "Ctrl+C", DoCopy);
         Add(menu, "切り取り",  "Ctrl+X", DoCut);
