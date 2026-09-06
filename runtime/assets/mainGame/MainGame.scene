@@ -2,15 +2,15 @@
   "name": "NewScene",
   "debug_camera": {
     "position": [
-      143.32324,
-      -4.0774593,
-      79.94711
+      110.076546,
+      11.578121,
+      71.71243
     ],
-    "yaw": -1.6519784,
-    "pitch": 0.09633049,
+    "yaw": -1.8319771,
+    "pitch": 0.054330517,
     "fov_deg": 25.0,
     "far": 1000.0,
-    "speed": 30.958696
+    "speed": 5.0
   },
   "shading_params": {
     "toon_rim_strength": [
@@ -555,6 +555,7 @@
                 "castMarkerSprite": "CastMarkerArrow|Sprite",
                 "castWindupSeconds": "0.500",
                 "fight": "Player|Fight",
+                "hitBanner": "HitBanner|Script",
                 "hookSwingPx": "300.000",
                 "hopHeight": "0.800",
                 "hopPullDistance": "0.500",
@@ -651,19 +652,19 @@
           "name": "sao",
           "transform": {
             "position": [
-              35.356,
-              3.1440973,
-              49.152466
+              37.960476,
+              3.2836604,
+              47.538036
             ],
             "rotation": [
-              -16.633705,
-              -5.0126696,
-              7.6209726
+              1.2524877,
+              167.28851,
+              0.0000025785946
             ],
             "scale": [
-              2.7811744,
-              5.5608845,
-              2.7811205
+              2.7811875,
+              5.5607257,
+              2.7811868
             ]
           },
           "components": [
@@ -676,22 +677,22 @@
                   "instances": [
                     [
                       [
-                        2.7552962,
-                        -0.5971142,
-                        -0.23283464,
-                        35.356
+                        -2.713022,
+                        0.026761722,
+                        0.61183065,
+                        37.960476
                       ],
                       [
-                        0.35338244,
-                        5.2808156,
-                        0.79610157,
-                        3.1440973
+                        1.2513732e-7,
+                        5.559396,
+                        -0.060792,
+                        3.2836604
                       ],
                       [
-                        0.13562864,
-                        -1.637034,
-                        2.654551,
-                        49.152466
+                        -0.611977,
+                        -0.11863898,
+                        -2.712373,
+                        47.538036
                       ],
                       [
                         0.0,
@@ -986,19 +987,19 @@
           "name": "HeadAnchor",
           "transform": {
             "position": [
-              33.97424,
-              4.315116,
-              47.617706
+              34.03931,
+              4.3062286,
+              47.632748
             ],
             "rotation": [
-              -1.0853865,
-              166.35481,
-              2.225349
+              -0.7586146,
+              168.34944,
+              -1.8087846e-7
             ],
             "scale": [
-              1.390593,
-              1.3901819,
-              1.3905939
+              1.3905941,
+              1.3901813,
+              1.390594
             ]
           },
           "components": [
@@ -17596,6 +17597,307 @@
             }
           ],
           "children": []
+        },
+        {
+          "name": "HitBandBlackTop",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              -43.66,
+              -205.41
+            ],
+            "rotation": -12.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              1.0
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/white.png",
+                  "color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "width": 3000.0,
+                  "height": 1400.0,
+                  "layer": 25,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "HitBandBlackBottom",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              43.66,
+              205.41
+            ],
+            "rotation": -12.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.0
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/white.png",
+                  "color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "width": 3000.0,
+                  "height": 1400.0,
+                  "layer": 25,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "HitBandWhite",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": -12.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/white.png",
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "width": 3000.0,
+                  "height": 420.0,
+                  "layer": 25,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "HitTextLevel",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              -556.46,
+              -116.86
+            ],
+            "rotation": -12.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "Lv? 魚",
+                  "font_size": 120.0,
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "align": "left",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 26
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "HitTextHit",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              556.46,
+              116.86
+            ],
+            "rotation": -12.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "HIT!!!",
+                  "font_size": 160.0,
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0
+                  ],
+                  "align": "right",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 26
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "HitBanner",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Script",
+              "component": {
+                "type": "ScriptComponent",
+                "data": {
+                  "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\HitBanner.cs",
+                  "fields": {
+                    "bandBlackBottomSprite": "HitBandBlackBottom|Sprite",
+                    "bandBlackBottomTransform": "HitBandBlackBottom",
+                    "bandBlackTopSprite": "HitBandBlackTop|Sprite",
+                    "bandBlackTopTransform": "HitBandBlackTop",
+                    "bandWhiteSprite": "HitBandWhite|Sprite",
+                    "bandWhiteTransform": "HitBandWhite",
+                    "hitLabel": "HitTextHit|Text",
+                    "hitLabelTransform": "HitTextHit",
+                    "levelLabel": "HitTextLevel|Text",
+                    "levelLabelTransform": "HitTextLevel"
+                  }
+                }
+              }
+            }
+          ],
+          "children": []
         }
       ]
     },
@@ -17626,17 +17928,17 @@
             "data": {
               "type_name": "C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\mainGame\\scripts\\DriftItemManager.cs",
               "fields": {
-                "stunPrefabPath": "assets://mainGame/actors/Drift/DriftStun.actor",
+                "activeOnlyWhileHooked": "true",
                 "fishRecoverPrefabPath": "assets://mainGame/actors/Drift/DriftFishRecover.actor",
+                "fishRecoverWeight": "1.000",
                 "lineRecoverPrefabPath": "assets://mainGame/actors/Drift/DriftLineRecover.actor",
+                "lineRecoverWeight": "1.000",
                 "maxItems": "6",
                 "spawnIntervalSeconds": "2.500",
-                "spawnRadiusMin": "4.000",
                 "spawnRadiusMax": "14.000",
-                "stunWeight": "1.000",
-                "fishRecoverWeight": "1.000",
-                "lineRecoverWeight": "1.000",
-                "activeOnlyWhileHooked": "true"
+                "spawnRadiusMin": "4.000",
+                "stunPrefabPath": "assets://mainGame/actors/Drift/DriftStun.actor",
+                "stunWeight": "1.000"
               }
             }
           }

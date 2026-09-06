@@ -797,6 +797,17 @@ public class FishingFight : SEEDScript
     /// <summary>バトル開始からの経過秒数（<see cref="Paused"/> 中は進まない）。</summary>
     public float ClockTime => clockTime;
 
+    /// <summary>
+    /// <b>いまのフェーズが始まってからの経過秒数</b>（非バトル中は 0）。
+    ///
+    /// フェーズの「入りたて」を判定したい呼び出し側のための公開値。
+    /// たとえば <c>FishingController.TryEatHookedFish</c> は、隙（<see cref="Phase.Rest"/>）へ
+    /// 入った直後の数秒間だけわらしべ連鎖を弾く「猶予」に、この値を使う。
+    /// 拍時計は <see cref="Paused"/> 中は進まないので、この経過秒数も止まる。
+    /// </summary>
+    public float SecondsSincePhaseStart
+        => Active ? SEED.Mathf.Max(clockTime - phaseStartTime, 0f) : 0f;
+
     /// <summary>1 拍の秒数（＝ 60 ÷ BPM）。</summary>
     public float SecondsPerBeat => secondsPerBeat;
 

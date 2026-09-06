@@ -854,6 +854,23 @@ public class FishingController : SEEDScript
     private float chainInfluenceRadius = 2f;
 
     /// <summary>
+    /// <b>わらしべ連鎖の猶予（秒）</b>【隙に入った直後の連鎖を弾く唯一のパラメータ】。
+    ///
+    /// 隙（<see cref="FishingFight.Phase.Rest"/>）へ入ってからこの秒数が経つまでは、
+    /// <see cref="TryEatHookedFish"/> を成立させない。隙へ入った瞬間に横取りされると
+    /// プレイヤーが 1 度も巻けないまま乗り換えが連発してしまうため、
+    /// 「隙に入った → 少し巻ける → そこから横取りされ得る」という間を必ず作る。
+    ///
+    /// 待っている魚は弾かれても回遊へは戻らず、<c>Fish.chainWaitTimeoutSeconds</c> の
+    /// 上限まで待ち続けるので、猶予が明けた次のフレームに改めて成立し得る。
+    /// 乗り換え直後は新しいやり取りが余白（<see cref="FishingFight.Phase.LeadIn"/>）から
+    /// 始まるため、そもそも隙ではなく、この猶予は自動的に効く。
+    /// 0 以下にすると猶予なし（従来どおり隙の頭から成立する）。
+    /// </summary>
+    [SerializeField(Label = "わらしべ連鎖の猶予(秒)")]
+    private float chainEatGraceSeconds = 1.5f;
+
+    /// <summary>
     /// 食いつき距離（メートル）。魚と餌の水平距離がこれ以下になると
     /// 食いつき待ち（<c>Fish</c> 側の待ち時間）へ入る。
     /// </summary>
@@ -997,6 +1014,15 @@ public class FishingController : SEEDScript
     /// </summary>
     [SerializeField(Label = "釣りバトル(FishingFight)")]
     private FishingFight? fight = null;
+
+    /// <summary>
+    /// ヒット直後に「Lv◯ 魚名 ／ HIT!!!」の帯を出す演出スクリプト。
+    /// FishingUI の子アクタ「HitBanner」に置き、ここへ割り当てる。
+    ///
+    /// <b>未設定でも釣りは成立する</b>（演出が出ないだけ）。
+    /// </summary>
+    [SerializeField(Label = "ヒット演出(HitBanner)")]
+    private HitBanner? hitBanner = null;
 
     /// <summary>
     /// 魚がウキを沖へ引ける限界の、最長飛距離からの余裕（メートル）。
@@ -1390,6 +1416,9 @@ public class FishingController : SEEDScript
         // 初期ゲージは直前に確定した合わせ判定（LastJudgement）で決まり、
         // 掛かった瞬間の距離は「魚 HP 1 あたりの距離」の基準になる。
         fight?.BeginFight(fish, LastJudgement, CurrentFloatDistance());
+        // ヒット演出（帯＋「Lv◯ 魚名」「HIT!!!」）を出す。
+        // 演出の総尺は余白（LeadIn）より短く作ってあるので、やり取りの進行は妨げない。
+        ShowHitBanner(fish);
         SEED.Debug.Log($"[Fishing] ヒット! {fish.DisplayName}（大きさ {fish.Size:F2}）");
         return true;
     }
@@ -1474,6 +1503,20 @@ public class FishingController : SEEDScript
         // ヒット用クリップを引き直し（既に同じクリップならラッチで間引かれる）、カーソルロックも同期
         CrossFadeBoth(hookedClip, playerHookedClip);
         UpdateCursorLock();
+
+        // 通常のヒットと同じくヒット演出を出す（乗り換わった「新しい魚」の名前とレベルで）
+        ShowHitBanner(newFish);
+    }
+
+    /// <summary>
+    /// ヒット演出（帯＋「Lv◯ 魚名」「HIT!!!」）を再生する【演出呼び出しの唯一の入口】。
+    /// 演出スクリプトが未設定・破棄済みなら何もしない。
+    /// </summary>
+    /// <param name="fish">ヒットした（乗り換わった）魚。</param>
+    private void ShowHitBanner(Fish fish)
+    {
+        if (hitBanner is not { } banner) { return; }
+        banner.Play(fish.Level, fish.DisplayName);
     }
 
     /// <summary>
@@ -1481,8 +1524,9 @@ public class FishingController : SEEDScript
     /// 【連鎖成立の唯一の入口】。前アタリ・合わせは無く、成立すれば即ヒットが乗り換わる。
     ///
     /// 成立条件は「ヒット中」「掛かっている魚を <see cref="Fish.CanPreyOn"/> で捕食できる」
-    /// に加えて、<b>やり取りの「隙（<see cref="FishingFight.Phase.Rest"/>）」中であること</b>。
-    /// 出題・回答中（Call / Answer）に届いた場合は false を返すだけで、掛かっている魚も
+    /// に加えて、<b>やり取りの「隙（<see cref="FishingFight.Phase.Rest"/>）」中であること</b>、
+    /// さらに<b>隙へ入ってから <see cref="chainEatGraceSeconds"/> 秒が経っていること</b>。
+    /// 出題・回答中（Call / Answer）や猶予中に届いた場合は false を返すだけで、掛かっている魚も
     /// やり取りも一切変化しない（呼び出し側の魚は待機を続ける想定。<see cref="Fish"/> 側の実装）。
     ///
     /// 成立すると <see cref="SwapHookedFish"/> で乗り換え、初期の糸の残りは
@@ -1499,7 +1543,12 @@ public class FishingController : SEEDScript
         if (!eater.CanPreyOn(prey)) { return false; }                // 魚レベルが十分高い魚だけが食える
 
         // 隙（Rest）中でなければ食えない（出題・回答中の捕食は許さない）
-        if (fight is not { CurrentPhase: FishingFight.Phase.Rest }) { return false; }
+        if (fight is not { CurrentPhase: FishingFight.Phase.Rest } activeFight) { return false; }
+
+        // 隙へ入った直後の猶予（chainEatGraceSeconds）が明けるまでは成立させない。
+        // 弾かれた魚は回遊へ戻らず待ち続ける（Fish.chainWaitTimeoutSeconds の上限まで）ので、
+        // 猶予が明けた次のフレームで改めて成立し得る。
+        if (activeFight.SecondsSincePhaseStart < chainEatGraceSeconds) { return false; }
 
         PlaySe(hookSePath, hookSeVolume);
         SwapHookedFish(eater, HookJudgement.Excellent);
