@@ -975,8 +975,24 @@ public class FishingController : SEEDScript
 
     // ─── 効果音 ─────────────────────────────
 
-    /// <summary>前アタリ（ウキが小さく沈む瞬間）に鳴らす効果音のアセットパス。空文字なら鳴らさない。</summary>
+    /// <summary>竿を振ってキャストを開始した瞬間（<see cref="StartCast"/>）に鳴らす効果音のアセットパス。空文字なら鳴らさない。</summary>
     [Header("効果音")]
+    [SerializeField(Label = "キャストの効果音")]
+    private string castSePath = "assets://mainGame/audios/Motion-Swish07-1.mp3";
+
+    /// <summary>キャスト効果音の音量（0〜1）。</summary>
+    [SerializeField(Label = "キャストの音量")]
+    private float castSeVolume = 1f;
+
+    /// <summary>ウキが着水した瞬間（<see cref="UpdateFlight"/> で Casting → Floating へ遷移する瞬間）に鳴らす効果音のアセットパス。空文字なら鳴らさない。</summary>
+    [SerializeField(Label = "着水の効果音")]
+    private string splashSePath = "assets://mainGame/audios/sei_ge_mizu_chapon06.mp3";
+
+    /// <summary>着水効果音の音量（0〜1）。</summary>
+    [SerializeField(Label = "着水の音量")]
+    private float splashSeVolume = 1f;
+
+    /// <summary>前アタリ（ウキが小さく沈む瞬間）に鳴らす効果音のアセットパス。空文字なら鳴らさない。</summary>
     [SerializeField(Label = "前アタリの効果音")]
     private string nibbleSePath = "assets://mainGame/audios/tstsuki.mp3";
 
@@ -1936,6 +1952,7 @@ public class FishingController : SEEDScript
 
         State = FishState.Casting;
         HideCastPreview();
+        PlaySe(castSePath, castSeVolume);
 
         // 以降はホイールと A / D だけの操作になるのでカーソルを返す（振りを読む区間の終わり）。
         UpdateCursorLock();
@@ -1974,6 +1991,7 @@ public class FishingController : SEEDScript
         {
             State = FishState.Floating;
             CrossFadeBoth(floatClip, playerFloatClip);
+            PlaySe(splashSePath, splashSeVolume);
             SEED.Debug.Log("[Fishing] Floating");
         }
     }

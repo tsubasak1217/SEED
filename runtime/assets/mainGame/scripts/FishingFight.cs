@@ -26,14 +26,20 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// <see cref="metronomeSePath"/> を鳴らし、小節頭だけ音量を上げる。
 /// <see cref="Paused"/>（わらしべ連鎖のアタリ受付中）のあいだは時計ごと止まる＝無音になる。
 ///
-/// ■ フェーズ（すべて<b>小節単位</b>・切り替えは必ず小節頭）
+/// ■ フェーズ（LeadIn だけ<b>拍単位</b>・それ以外は<b>小節単位</b>、切り替えは必ず小節頭）
 /// <code>
-/// 出題(Call) → 回答(Answer) → 隙(Rest) → 出題 → …
-/// 既定の長さ: 出題 callBars 小節 / 回答 answerBars 小節 / 隙 restBars 小節
+/// 余白(LeadIn) → 出題(Call) → 回答(Answer) → 隙(Rest) → 出題 → …
+/// 既定の長さ: 余白 leadInBeats 拍 / 出題 callBars 小節 / 回答 answerBars 小節 / 隙 restBars 小節
 ///             （疲労中は隙が restBarsWhenTired 小節ぶん延びる）
 /// 魚データ（Fish.RhythmCallBars など）が 1 以上ならそちらが優先される。
 /// </code>
-/// 次のフェーズは<b>1 拍前</b>に中央テキストで予告する。
+/// <see cref="Phase.LeadIn"/> はバトル開始直後にだけ 1 度通る特別な区間で、
+/// メトロノームだけが leadInBeats 拍ぶん鳴り、出題・回答・巻きは一切行わない
+/// （中央テキストには残り拍数「4 3 2 1」を出す）。時計の原点（clockTime == 0）を
+/// 「余白が終わって最初の Call の小節頭になる瞬間」に置き、余白中は clockTime を
+/// 負の値として扱うことで、余白の長さが拍子の倍数でなくても Call 側の小節頭と
+/// ズレずに接続できる（詳細は <see cref="EnterLeadInOrCall"/>）。
+/// 次のフェーズは<b>1 拍前</b>に中央テキストで予告する（LeadIn を除く）。
 ///
 /// ■ 出題（Call）
 /// 魚のリズムパターン（8 分音符の並び。'x' が打点・'.' が休符）を 1 つ抽選し、
@@ -201,6 +207,16 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "疲労中に延びる隙の小節数")]
     private int restBarsWhenTired = 2;
 
+    /// <summary>
+    /// バトル開始直後に置く「余白」の長さ（拍）。<see cref="Phase.LeadIn"/> の長さそのもの。
+    /// 秒数固定ではなく<b>魚の BPM（<see cref="secondsPerBeat"/>）で数える拍数</b>なので、
+    /// 連鎖で乗り換えて BPM が変わった場合も新しい魚の拍でこの余白が取られる
+    /// （<see cref="BeginFight"/> が毎回 <see cref="SetupRhythm"/> の後に長さを計算し直すため）。
+    /// 0 なら余白なしで即座に出題（Call）から始まる。
+    /// </summary>
+    [SerializeField(Label = "開始時の余白(拍)")]
+    private int leadInBeats = 4;
+
     // ─── メトロノーム ────────────────────────────────────
 
     /// <summary>拍ごとに鳴らすクリック音のアセットパス（空なら鳴らさない）。</summary>
@@ -366,6 +382,17 @@ public class FishingFight : SEEDScript
     [SerializeField(Label = "糸切れの音量")]
     private float lineBreakSeVolume = 1f;
 
+    /// <summary>
+    /// 回答（<see cref="Phase.Answer"/>）中に左クリックするたび鳴らす効果音のアセットパス（空なら鳴らさない）。
+    /// 判定（Excellent/Great/Nice/Miss）に関わらず、クリックそのものの手応えとして毎回鳴らす。
+    /// </summary>
+    [SerializeField(Label = "回答クリックの効果音")]
+    private string answerClickSePath = "assets://mainGame/audios/Motion-Swish07-1.mp3";
+
+    /// <summary>回答クリック効果音の音量（0〜1）。</summary>
+    [SerializeField(Label = "回答クリックの音量")]
+    private float answerClickSeVolume = 0.8f;
+
     // ─── UI 参照 ─────────────────────────────────────────
 
     /// <summary>
@@ -493,6 +520,13 @@ public class FishingFight : SEEDScript
     {
         /// <summary>バトルしていない。</summary>
         None,
+
+        /// <summary>
+        /// 開始直後の余白（<see cref="leadInBeats"/> 拍ぶんメトロノームだけが鳴る）。
+        /// 出題・回答・巻きは一切行わず、ウキも動かさない。この拍数を数え終えた
+        /// 次の拍（＝時計の原点 0）から通常の <see cref="Call"/> が始まる。
+        /// </summary>
+        LeadIn,
 
         /// <summary>出題中（魚がリズムを叩く）。</summary>
         Call,
@@ -751,11 +785,19 @@ public class FishingFight : SEEDScript
         // 距離との対応付け: 掛かった距離を「基礎HP ぶんの距離」とみなす
         metersPerHp = SEED.Mathf.Max(hookDistance, hookDistanceMin) / baseHp;
 
-        // 拍時計とパターンを魚データから作る
+        // 拍時計とパターンを魚データから作る（この魚の BPM で secondsPerBeat が決まる）
         SetupRhythm(fish);
 
-        // 最初のフェーズ（出題）へ入る。時計は 0 から回り始める。
-        EnterPhase(Phase.Call);
+        // 最初のフェーズへ入る。
+        //
+        // 余白（LeadIn）の実装方針: 時計の原点（clockTime == 0）を「余白が終わって
+        // 最初の Call の小節頭になる瞬間」に固定し、余白のあいだは clockTime を
+        // 負の値（-leadInBeats 拍ぶん）から 0 へ向けて進める。
+        // BeatIndex / BarPhase01 などの拍時計はすべて clockTime の単純な割り算・floor で
+        // できているので、負の時刻でも「0 を跨ぐと拍・小節が変わる」という性質はそのまま保たれる。
+        // ＝ 0 に達した瞬間が必ず小節頭になり、Call 側の EnterPhase(CurrentBarStartTime()) と
+        // 完全に一致する（余白の拍数が拍子の倍数でなくてもズレない）。
+        EnterLeadInOrCall();
 
         InvalidateSegmentCache();
         ApplyUi();
@@ -987,10 +1029,43 @@ public class FishingFight : SEEDScript
         EnterPhase(NextPhase(CurrentPhase));
     }
 
-    /// <summary>フェーズの巡回順（出題 → 回答 → 隙 → 出題 …）。</summary>
+    /// <summary>
+    /// バトル開始直後の入り口【<see cref="Phase.LeadIn"/> 生成の唯一の入口】。
+    ///
+    /// <see cref="leadInBeats"/> が 1 以上なら、時計の原点を「余白が終わる瞬間（＝最初の
+    /// Call の小節頭）」に置き、余白のあいだは clockTime を負の値から 0 へ進める形で
+    /// <see cref="Phase.LeadIn"/> へ入る。0 以下なら余白なしで即座に <see cref="Phase.Call"/>
+    /// （通常どおり <see cref="EnterPhase"/> 経由）から始める。
+    /// </summary>
+    private void EnterLeadInOrCall()
+    {
+        int beats = SEED.Mathf.Max(leadInBeats, 0);
+        if (beats <= 0)
+        {
+            clockTime = 0f;
+            EnterPhase(Phase.Call);
+            return;
+        }
+
+        float leadInSeconds = beats * secondsPerBeat;
+
+        CurrentPhase = Phase.LeadIn;
+        clockTime = -leadInSeconds;
+        phaseStartTime = clockTime;
+        phaseEndTime = 0f;               // 0 に達した瞬間＝最初の小節頭で Call へ
+        phaseBars = MinPhaseBars;        // 小節単位のフェーズではないので参照はされない
+        nextPhaseAnnounced = false;
+        lastCueSub = NoCueFired;
+        lastBeatPlayed = NoBeatPlayed;    // 余白 1 拍目の頭で必ずメトロノームが鳴るようにする
+
+        SEED.Debug.Log($"[Fight] {PhaseLabel(Phase.LeadIn)}（{beats}拍）");
+    }
+
+    /// <summary>フェーズの巡回順（余白 → 出題 → 回答 → 隙 → 出題 …）。</summary>
     /// <param name="phase">現在のフェーズ。</param>
     private static Phase NextPhase(Phase phase) => phase switch
     {
+        Phase.LeadIn => Phase.Call,
         Phase.Call => Phase.Answer,
         Phase.Answer => Phase.Rest,
         _ => Phase.Call,
@@ -1069,6 +1144,7 @@ public class FishingFight : SEEDScript
     /// <param name="phase">対象のフェーズ。</param>
     private static string PhaseLabel(Phase phase) => phase switch
     {
+        Phase.LeadIn => "余白",
         Phase.Call => "出題",
         Phase.Answer => "回答",
         Phase.Rest => "隙",
@@ -1163,6 +1239,9 @@ public class FishingFight : SEEDScript
     {
         if (ReadTapDown())
         {
+            // クリックの手応えは判定結果に関わらず毎回鳴らす（空打ち・多重クリックも含む）。
+            PlayAnswerClickSe();
+
             int index = FindNearestPendingHit();
             if (index >= 0) { JudgeHit(index, clockTime - expectedTimes[index]); }
             else { ApplyMiss(); }
@@ -1413,6 +1492,13 @@ public class FishingFight : SEEDScript
         SEED.Audio.Play(lineBreakSePath, lineBreakSeVolume);
     }
 
+    /// <summary>回答フェーズの左クリック 1 回ごとに鳴らす効果音を鳴らす（パス未設定なら何もしない）。</summary>
+    private void PlayAnswerClickSe()
+    {
+        if (string.IsNullOrEmpty(answerClickSePath)) { return; }
+        SEED.Audio.Play(answerClickSePath, answerClickSeVolume);
+    }
+
     /// <summary>実行時の状態をすべて初期値へ戻す（開始前・終了後の共通処理）。</summary>
     private void ResetRuntimeState()
     {
@@ -1617,10 +1703,19 @@ public class FishingFight : SEEDScript
 
     /// <summary>
     /// 円の中心テキスト（フェーズ名＋予告／魚 HP ％／疲労 ％）を更新する。
+    /// 余白（<see cref="Phase.LeadIn"/>）中だけは特別扱いで、残り拍数のカウントダウン
+    /// （"4" → "3" → "2" → "1"）だけを大きく出す。
     /// </summary>
     private void ApplyStatusText()
     {
         if (hpText is not { } label || !label.IsValid) { return; }
+
+        if (CurrentPhase == Phase.LeadIn)
+        {
+            label.Content = $"{LeadInRemainingBeats()}";
+            label.Color = label.Color.WithAlpha(SEED.Mathf.Clamped01(hpTextOpacity));
+            return;
+        }
 
         string phaseName = IsTired ? "疲労中" : PhaseLabel(CurrentPhase);
         string notice = nextPhaseAnnounced ? $" → {PhaseLabel(NextPhase(CurrentPhase))}" : string.Empty;
@@ -1630,6 +1725,18 @@ public class FishingFight : SEEDScript
                       + $"  疲労 {SEED.Mathf.RoundToInt(Fatigue01 * PercentScale)}%";
         label.Color = label.Color.WithAlpha(SEED.Mathf.Clamped01(hpTextOpacity));
     }
+
+    /// <summary>
+    /// 余白（<see cref="Phase.LeadIn"/>）で残っている拍数（表示用。1 以上）。
+    /// 余白中でなければ 0。
+    ///
+    /// clockTime は余白のあいだ「0 に達する（＝最初の Call の小節頭になる）」まで負の値を
+    /// 取るので、<see cref="BeatIndex"/>（<c>floor(clockTime / secondsPerBeat)</c>）も
+    /// 同じ符号で負になる。余白開始時に <c>-leadInBeats</c>、最後の 1 拍で <c>-1</c> になり
+    /// 0 で Call へ切り替わるので、符号を反転するだけで「4 3 2 1」のカウントダウンになる。
+    /// </summary>
+    private int LeadInRemainingBeats()
+        => CurrentPhase == Phase.LeadIn ? SEED.Mathf.Max(-BeatIndex, 0) : 0;
 
     /// <summary>セグメント <paramref name="index"/> の角度（度・真上が 0・右回り）。</summary>
     /// <param name="index">セグメントの添字。</param>
