@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
 use super::drag_state::ChildDragStart;
+use super::canvas_collect::canvas_node_is_transparent;
 use crate::engine::components::{
     ModelComponent, Transform as ActorTransform, ComponentKind,
     CanvasTransform, CanvasComponent,
@@ -338,11 +339,18 @@ fn find_canvas_anchor_in_children(
             return Some(offset);
         }
         *counter += 1;
-        // 子の CanvasComponent サイズを孫へ渡す
-        let child_canvas_size = child.slots().iter()
-            .filter(|s| s.kind == ComponentKind::Canvas)
-            .find_map(|s| world.get::<CanvasComponent>(s.entity))
-            .map(|cc| [cc.width, cc.height]);
+        // 子の CanvasComponent サイズを孫へ渡す。
+        // ただしフォルダノードはレイアウト透明（canvas_node_is_transparent）なので、
+        // 自身のサイズ（持たない = None）ではなく**親のサイズをそのまま**引き継ぐ。
+        // これを怠ると、フォルダ配下の孫のアンカー基準が消えて位置がズレる。
+        let child_canvas_size = if canvas_node_is_transparent(child) {
+            parent_canvas_size
+        } else {
+            child.slots().iter()
+                .filter(|s| s.kind == ComponentKind::Canvas)
+                .find_map(|s| world.get::<CanvasComponent>(s.entity))
+                .map(|cc| [cc.width, cc.height])
+        };
         if let Some(off) = find_canvas_anchor_in_children(child, world, target_dfs, counter, child_canvas_size) {
             return Some(off);
         }
@@ -362,11 +370,15 @@ pub(super) fn collect_canvas_actors_in_rect(
 ) {
     let dfs_id = *counter as usize;
     *counter += 1;
+    // フォルダノードはレイアウト透明（canvas_node_is_transparent）。
+    // サイズも位置も持たないため矩形選択のヒット対象にせず、子孫だけを走査する。
+    if !canvas_node_is_transparent(actor) {
     if let Some(ct) = world.get::<CanvasTransform>(actor.entity) {
         let [px, py] = ct.position;
         if px >= wx_min && px <= wx_max && py >= wy_min && py <= wy_max {
             if !result.contains(&dfs_id) { result.push(dfs_id); }
         }
+    }
     }
     for child in actor.children() {
         collect_canvas_actors_in_rect(child, world, counter, wx_min, wx_max, wy_min, wy_max, result);

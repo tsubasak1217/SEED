@@ -50,7 +50,7 @@
 //    edit_physics_2d_with_rigidbody=true  : 通常の Play 物理と同様（重力・ダイナミクスあり）。
 // ============================================================
 
-use super::canvas_collect::{build_canvas_viewport_map, root_anchor_offset};
+use super::canvas_collect::{build_canvas_viewport_map, canvas_node_is_transparent, root_anchor_offset};
 use super::{App, InspectorTransformDrag, RuntimeMode, find_actor_by_dfs};
 use crate::engine::components::{
     AspectRatioAxis, CanvasComponent, CanvasTransform, Collider2dComponent, ComponentKind,
@@ -201,6 +201,25 @@ pub(crate) fn collect_actor2d_contexts(
         let active = parent_active && actor.active;
         dfs_counter += 1;
         let dfs_id = dfs_counter;
+
+        // ── フォルダノード: レイアウト透明（canvas_node_is_transparent）─────────
+        // フォルダは位置・サイズを持たないグループなので、物理コンテキストを
+        // 一切生成せず、子へは**親の文脈をそのまま**引き継いで積む。
+        // これで canvas_collect.rs 側の描画（フォルダを素通しする）と座標が一致する。
+        // DFS 番号はフォルダ 1 ノードぶんだけ上で消費済み。
+        if canvas_node_is_transparent(actor) {
+            for child in actor.children.iter().rev() {
+                stack.push((
+                    child,
+                    parent_canvas_size,
+                    parent_cumul_scale,
+                    parent_canvas_origin,
+                    parent_world_rot,
+                    active,
+                ));
+            }
+            continue;
+        }
 
         // ── ビューポート・ルートキャンバスの自動解像度上書き（Phase B）───────────
         // Some のとき: 解像度を自動計算値へ置き換え、CanvasTransform を恒等として扱う

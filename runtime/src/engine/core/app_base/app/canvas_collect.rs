@@ -64,6 +64,29 @@ pub(super) fn root_anchor_offset(
     }
 }
 
+// ─── フォルダノード（レイアウト透明ノード）の共通規則 ────────────────────────
+
+/// キャンバスレイアウト上「透明」なノードかを判定する共通ヘルパー。
+///
+/// フォルダノード（`Actor.is_folder()`）は Hierarchy を整理するためのグループで、
+/// 位置・サイズ・アンカーの意味を一切持たない。
+/// 2D フォルダは生成時に恒等 `CanvasTransform` を持つが `CanvasComponent` は持たない
+/// ため、通常ノードとして扱うと「子のアンカー基準サイズが None になる」
+/// （= 孫がルートレベル扱いになり画面外へ飛ぶ）という不整合を起こす。
+///
+/// そこで全てのキャンバス走査は、フォルダに対して次の規則で振る舞う:
+/// - 自身の `CanvasTransform` / `CanvasComponent` を読まない
+/// - 描画・ピック・枠・物理コンテキストなどを一切出力しない
+/// - 子へは**親の文脈をそのまま**引き継いで再帰する（階層が無かったかのように扱う）
+/// - DFS 番号だけはフォルダ 1 ノード分を消費する
+///   （DFS 番号付けの正典 `find_actor_by_dfs` は全アクターを数えるため）
+///
+/// 判定を 1 か所へ集約することで、走査ごとの実装差（直し漏れ）を構造的に防ぐ。
+#[inline]
+pub(super) fn canvas_node_is_transparent(actor: &Actor) -> bool {
+    actor.is_folder()
+}
+
 /// ヒット・描画対象外サブツリーの DFS 番号を消費する共通ヘルパー。
 ///
 /// DFS 番号付けの正典（`find_actor_by_dfs`）は CanvasTransform の有無に関係なく
@@ -472,6 +495,40 @@ pub(super) fn collect_sprite_items(
         // 子孫は本再帰でしか到達しないため、ここで continue すればサブツリー全体が省かれる
         // （この収集は DFS カウンタを持たないためスキップしても番号ズレは起きない）。
         if !actor.active {
+            continue;
+        }
+        // フォルダノード: レイアウト上は存在しないものとして扱う
+        // （canvas_node_is_transparent の規則）。自身は何も出力せず、
+        // 子へは**親の文脈をそのまま**渡して再帰する。これにより
+        // 「フォルダで括っても子の座標・アンカー基準が一切変わらない」を保証する。
+        if canvas_node_is_transparent(actor) {
+            // SEED.Draw の `space` にフォルダの CanvasTransform を渡された場合に備え、
+            // 「フォルダの子が配置される座標空間」＝ 親（祖先キャンバス）のローカル px 空間を
+            // そのまま登録する。フォルダ自身は変換を持たないため親空間と完全に一致する。
+            space_out.insert(
+                actor.entity,
+                canvas_mat_to_gpu(parent_world_rs, canvas_scale, y_sign),
+                parent_zone,
+            );
+            collect_sprite_items(
+                &actor.children,
+                world,
+                wl,
+                draw_ctx,
+                parent_canvas_size,
+                parent_world_rs,
+                parent_cumul_scale,
+                canvas_scale,
+                y_sign,
+                viewport_size,
+                canvas_viewport_overrides,
+                root_auto_sizes,
+                parent_zone,
+                design_space,
+                out,
+                text_out,
+                space_out,
+            );
             continue;
         }
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
@@ -901,6 +958,33 @@ pub(super) fn collect_canvas_rects(
             continue;
         }
 
+        // フォルダノード: レイアウト透明（canvas_node_is_transparent）。
+        // 枠は一切描かず、子へは親の文脈をそのまま渡して再帰する。
+        // DFS 番号は上で自分の 1 つぶんだけ消費済み（子孫は再帰側で消費する）。
+        if canvas_node_is_transparent(actor) {
+            collect_canvas_rects(
+                &actor.children,
+                world,
+                wl,
+                lb,
+                col,
+                selected_dfs_ids,
+                counter,
+                parent_canvas_size,
+                parent_world_rs,
+                parent_cumul_scale,
+                canvas_scale,
+                y_sign,
+                viewport_size,
+                canvas_viewport_overrides,
+                root_auto_sizes,
+                design_space,
+                outline_step,
+                bone_overlay,
+            );
+            continue;
+        }
+
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
         if let Some(ct) = ct_opt {
             // ビューポート・ルートキャンバス: 自動解像度上書き + Transform 恒等化（Phase B）
@@ -1268,10 +1352,15 @@ pub(super) fn collect_canvas_id_items(
         }
 
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
-        // CanvasTransform を持たないアクター配下は SS サブツリー外として扱う
-        let next_in_ss = in_ss_subtree && ct_opt.is_some();
+        // フォルダノードはレイアウト透明（canvas_node_is_transparent）。
+        // ID quad を出力せず、親の文脈（canvas_size / cumul_scale / world_rs / zone）を
+        // そのまま子へ素通しする（下の else 分岐がそのまま該当する）。
+        let is_transparent = canvas_node_is_transparent(actor);
+        // CanvasTransform を持たないアクター配下は SS サブツリー外として扱う。
+        // フォルダは常に素通しなので、親の in_ss をそのまま維持する。
+        let next_in_ss = in_ss_subtree && (is_transparent || ct_opt.is_some());
         let (next_canvas_size, next_cumul_scale, next_world_rs, next_zone) =
-            if let (true, Some(ct)) = (in_ss_subtree, ct_opt) {
+            if let (true, Some(ct)) = (in_ss_subtree && !is_transparent, ct_opt) {
                 // ビューポート・ルートキャンバス: 自動解像度上書き + Transform 恒等化（Phase B）
                 let root_auto = if parent_canvas_size.is_none() {
                     root_auto_sizes.get(&actor.entity).copied()
@@ -1735,7 +1824,10 @@ fn walk_3d_canvas_children_id(
 
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
 
-        let (next_canvas_size, next_world_rs, next_cumul_scale) = if let Some(ct) = ct_opt {
+        // フォルダノードはレイアウト透明（canvas_node_is_transparent）。
+        // 自身は何も出力せず、下の else 分岐と同じく親の文脈をそのまま子へ渡す。
+        let (next_canvas_size, next_world_rs, next_cumul_scale) =
+            if let (false, Some(ct)) = (canvas_node_is_transparent(actor), ct_opt) {
             // スケールモードはこのノード自身の CanvasTransform から読み取る
             let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
                 ct.scale_transform,
@@ -1960,7 +2052,10 @@ pub(super) fn collect_3d_canvas_child_outlines(
 
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
 
-        let (next_canvas_size, next_world_rs, next_cumul_scale) = if let Some(ct) = ct_opt {
+        // フォルダノードはレイアウト透明（canvas_node_is_transparent）。
+        // 自身は何も出力せず、下の else 分岐と同じく親の文脈をそのまま子へ渡す。
+        let (next_canvas_size, next_world_rs, next_cumul_scale) =
+            if let (false, Some(ct)) = (canvas_node_is_transparent(actor), ct_opt) {
             // スケールモードはこのノード自身の CanvasTransform から読み取る
             let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
                 ct.scale_transform,
@@ -2556,4 +2651,199 @@ pub(super) fn build_canvas_viewport_map(
         }
     }
     map
+}
+
+// ============================================================
+//  テスト — フォルダノードのレイアウト透明性
+// ============================================================
+//
+//  フォルダ（`Actor.is_folder()`）はキャンバスレイアウト上「存在しない」ものとして
+//  扱われなければならない（canvas_node_is_transparent）。つまり UI アクターを
+//  フォルダで括っても、括る前とまったく同じ位置・同じ矩形にならなければならない。
+//
+//  検証には座標を直接取り出せる `collect_3d_canvas_child_outlines` を使う
+//  （スプライト収集・ID 収集は GPU の `DrawContext` を要求するためユニットテスト不可）。
+//  この関数はスプライト子走査（`walk_3d_canvas_children_id` / `collect_sprite_items`）と
+//  同一の変換連鎖・同一のフォルダ透過分岐を通るため、ここが一致すれば
+//  同じ規則で書かれた他の走査も一致する。
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::components::CanvasComponent;
+
+    /// 単位行列（親キャンバスのワールド行列として渡す）。
+    const IDENTITY: [[f32; 4]; 4] = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    /// 親キャンバス（FishingUI）の設計解像度。
+    const PARENT_CANVAS: [f32; 2] = [1280.0, 720.0];
+    /// 子ノード（ゲージセグメント）のサイズ。
+    const CHILD_SIZE: [f32; 2] = [200.0, 60.0];
+    /// 子ノードのアンカー（親キャンバス中央基準）。
+    const CHILD_ANCHOR: [f32; 2] = [0.5, 0.5];
+    /// 子ノードのローカル位置（アンカーからのオフセット）。
+    const CHILD_POSITION: [f32; 2] = [0.0, -140.0];
+
+    /// `CanvasComponent` を持つ 2D 子ノード（ゲージセグメント相当）を 1 つ作る。
+    fn make_child(world: &mut World, name: &str) -> Actor {
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            CanvasTransform {
+                position: CHILD_POSITION,
+                anchor: CHILD_ANCHOR,
+                ..CanvasTransform::default()
+            },
+        );
+        let slot = world.spawn();
+        world.insert(
+            slot,
+            CanvasComponent {
+                width: CHILD_SIZE[0],
+                height: CHILD_SIZE[1],
+                ..CanvasComponent::default()
+            },
+        );
+        let mut actor = Actor::new_2d(entity, name);
+        actor.world_line = 0;
+        actor.add_slot_typed::<CanvasComponent>("Canvas", ComponentKind::Canvas, slot);
+        actor
+    }
+
+    /// 2D フォルダノード（生成時に恒等 CanvasTransform を持つ / CanvasComponent なし）を作る。
+    fn make_folder(world: &mut World, name: &str) -> Actor {
+        let entity = world.spawn();
+        world.insert(entity, CanvasTransform::default());
+        let mut folder = Actor::new_folder_2d(entity, name);
+        folder.world_line = 0;
+        folder
+    }
+
+    /// 親キャンバス配下として `actors` を走査し、(枠コーナー, dfs_id) の一覧を返す。
+    fn outlines(actors: &[Actor], world: &World) -> Vec<([[f32; 3]; 4], u32)> {
+        let mut out = Vec::new();
+        let mut counter = 0u32;
+        collect_3d_canvas_child_outlines(
+            actors,
+            world,
+            0,
+            &mut counter,
+            Some(PARENT_CANVAS),
+            IDENTITY,
+            [1.0, 1.0],
+            &mut out,
+        );
+        out
+    }
+
+    /// フォルダで括った子の矩形は、直接の子だったときの矩形と完全に一致する。
+    ///
+    /// これが崩れると、キャンバス配下の UI をフォルダでまとめた瞬間に
+    /// アンカー基準が失われて画面外へ飛ぶ（本テストが再現するリグレッション）。
+    #[test]
+    fn folder_does_not_change_child_layout() {
+        // ── ケース 1: 直接の子 ──
+        let mut world_direct = World::new();
+        let direct = vec![make_child(&mut world_direct, "GaugeSeg00")];
+        let out_direct = outlines(&direct, &world_direct);
+
+        // ── ケース 2: フォルダ配下の子 ──
+        let mut world_folder = World::new();
+        let child = make_child(&mut world_folder, "GaugeSeg00");
+        let mut folder = make_folder(&mut world_folder, "GaugeSegments");
+        folder.add_child(child);
+        let nested = vec![folder];
+        let out_folder = outlines(&nested, &world_folder);
+
+        // フォルダ自身は枠を出さないので、出力はどちらも子 1 件のみ
+        assert_eq!(out_direct.len(), 1, "直接の子: 枠は 1 件");
+        assert_eq!(out_folder.len(), 1, "フォルダ配下: フォルダ自身の枠は出ない");
+
+        // 4 隅の座標が完全一致する（＝ フォルダはレイアウトに影響しない）
+        for (i, (c_direct, c_folder)) in out_direct[0]
+            .0
+            .iter()
+            .zip(out_folder[0].0.iter())
+            .enumerate()
+        {
+            for axis in 0..3 {
+                assert!(
+                    (c_direct[axis] - c_folder[axis]).abs() < 1e-4,
+                    "コーナー{i} 軸{axis} が不一致: 直下={} フォルダ配下={}",
+                    c_direct[axis],
+                    c_folder[axis]
+                );
+            }
+        }
+
+        // アンカー(0.5,0.5) + position(0,-140) が効いていることも確認する
+        // （両者が同じ「間違った値」で一致しても意味がないため絶対値も検証する）。
+        // 枠の左上 = アンカー基準位置（pivot 既定 = [0,0]）
+        let expected_x = PARENT_CANVAS[0] * CHILD_ANCHOR[0] + CHILD_POSITION[0];
+        let expected_y = PARENT_CANVAS[1] * CHILD_ANCHOR[1] + CHILD_POSITION[1];
+        assert!((out_folder[0].0[0][0] - expected_x).abs() < 1e-4);
+        assert!((out_folder[0].0[0][1] - expected_y).abs() < 1e-4);
+    }
+
+    /// ネストしたフォルダでも同じ（何段挟んでもレイアウトは変わらない）。
+    #[test]
+    fn nested_folders_do_not_change_child_layout() {
+        let mut world_direct = World::new();
+        let direct = vec![make_child(&mut world_direct, "GaugeSeg00")];
+        let out_direct = outlines(&direct, &world_direct);
+
+        let mut world_nested = World::new();
+        let child = make_child(&mut world_nested, "GaugeSeg00");
+        let mut inner = make_folder(&mut world_nested, "Inner");
+        inner.add_child(child);
+        let mut outer = make_folder(&mut world_nested, "Outer");
+        outer.add_child(inner);
+        let out_nested = outlines(&vec![outer], &world_nested);
+
+        assert_eq!(out_nested.len(), 1);
+        assert!((out_direct[0].0[0][0] - out_nested[0].0[0][0]).abs() < 1e-4);
+        assert!((out_direct[0].0[0][1] - out_nested[0].0[0][1]).abs() < 1e-4);
+    }
+
+    /// フォルダも DFS 番号を 1 つ消費する（番号付けの正典 `find_actor_by_dfs` と整合させる）。
+    ///
+    /// ここがズレると選択ハイライトが別のアクターに付く。
+    #[test]
+    fn folder_still_consumes_one_dfs_id() {
+        let mut world = World::new();
+        let child = make_child(&mut world, "GaugeSeg00");
+        let mut folder = make_folder(&mut world, "GaugeSegments");
+        folder.add_child(child);
+
+        let mut out = Vec::new();
+        let mut counter = 0u32;
+        collect_3d_canvas_child_outlines(
+            &[folder],
+            &world,
+            0,
+            &mut counter,
+            Some(PARENT_CANVAS),
+            IDENTITY,
+            [1.0, 1.0],
+            &mut out,
+        );
+        // フォルダ(0) + 子(1) = 2 ノードぶん消費される
+        assert_eq!(counter, 2, "フォルダも 1 ノードとして DFS 番号を消費する");
+        // 枠を出したのは子（dfs=1）だけ
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, 1, "枠の dfs_id は子のもの");
+    }
+
+    /// `canvas_node_is_transparent` はフォルダのみを透明扱いにする。
+    #[test]
+    fn only_folders_are_transparent() {
+        let mut world = World::new();
+        let normal = make_child(&mut world, "Normal");
+        let folder = make_folder(&mut world, "Folder");
+        assert!(!canvas_node_is_transparent(&normal));
+        assert!(canvas_node_is_transparent(&folder));
+    }
 }

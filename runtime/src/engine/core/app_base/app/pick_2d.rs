@@ -30,7 +30,7 @@ use crate::engine::methods::gizmo_interact::{mat4x4_mul, screen_to_ray};
 use crate::engine::structs::objects::Actor;
 
 use super::App;
-use super::canvas_collect::{root_anchor_offset, skip_dfs_subtree};
+use super::canvas_collect::{canvas_node_is_transparent, root_anchor_offset, skip_dfs_subtree};
 
 /// 巡回選択で「同一地点クリック」とみなすスクリーン座標の許容誤差（ピクセル）。
 const PICK_CYCLE_TOLERANCE_PX: f32 = 4.0;
@@ -408,6 +408,34 @@ pub(super) fn walk_pick_candidates_2d(
         // DFS 番号だけは正典どおり消費する（番号ズレ = 誤配信の原因）。
         if filter.respect_visibility && !actor.active {
             skip_dfs_subtree(&actor.children, counter);
+            continue;
+        }
+
+        // フォルダノード: レイアウト透明（canvas_node_is_transparent）。
+        // 自身はサイズを持たないためヒット候補にせず（フォルダは決してピックされない）、
+        // 子へは親の文脈をそのまま渡して再帰する。depth も進めない
+        // （深さは重なり解決の優先度に使うため、階層に現れないフォルダで増やさない）。
+        if canvas_node_is_transparent(actor) {
+            walk_pick_candidates_2d(
+                &actor.children,
+                world,
+                wl,
+                canvas_x,
+                canvas_y,
+                counter,
+                parent_world_rs,
+                parent_cumul_scale,
+                parent_canvas_size,
+                depth,
+                parent_zone,
+                viewport_size,
+                overrides,
+                root_auto_sizes,
+                design_space,
+                mesh_of,
+                filter,
+                out,
+            );
             continue;
         }
 
@@ -795,7 +823,190 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::components::CanvasComponent;
     use crate::engine::core::loader::sprite_mesh::IDENTITY_MAT4;
+    use crate::engine::structs::objects::Actor;
+
+    // ── フォルダノード透過（canvas_node_is_transparent）のヒット判定テスト ──────
+    //
+    //  UI アクターをフォルダで括っても、括る前とまったく同じ位置がクリック可能で
+    //  なければならない。フォルダ自身は矩形を持たないため決して候補にならない。
+
+    /// ルートキャンバス（FishingUI 相当）の設計解像度。ビューポートと同値にして
+    /// auto_scale の影響（倍率 1.0）を排除する。
+    const UI_CANVAS: [f32; 2] = [1280.0, 720.0];
+    /// 中間キャンバス（Panel）のサイズ。ルートと**別サイズ**にすることで、
+    /// 「フォルダを不透明に扱うとルートレベル扱いになる」バグを確実に検出できる。
+    const PANEL_SIZE: [f32; 2] = [400.0, 300.0];
+    /// 中間キャンバスのローカル位置（ルート左上からのオフセット）。
+    const PANEL_POSITION: [f32; 2] = [100.0, 50.0];
+    /// テスト用スプライトのサイズ。
+    const SEG_SIZE: [f32; 2] = [40.0, 20.0];
+    /// テスト用スプライトのアンカー（中間キャンバス中央）。
+    const SEG_ANCHOR: [f32; 2] = [0.5, 0.5];
+    /// テスト用スプライトのローカル位置。
+    const SEG_POSITION: [f32; 2] = [0.0, -140.0];
+
+    /// FishingUI(1280x720) > Panel(400x300) > [フォルダ] > GaugeSeg00 のシーンを作る。
+    /// `use_folder=true` のとき、スプライトを 2D フォルダで 1 段包む。
+    fn build_ui_scene(use_folder: bool) -> (Vec<Actor>, World) {
+        let mut world = World::new();
+
+        /// キャンバスアクターを 1 つ作る小ヘルパー。
+        fn make_canvas(
+            world: &mut World,
+            name: &str,
+            size: [f32; 2],
+            position: [f32; 2],
+        ) -> Actor {
+            let entity = world.spawn();
+            world.insert(
+                entity,
+                CanvasTransform {
+                    position,
+                    ..CanvasTransform::default()
+                },
+            );
+            let slot = world.spawn();
+            world.insert(
+                slot,
+                CanvasComponent {
+                    width: size[0],
+                    height: size[1],
+                    ..CanvasComponent::default()
+                },
+            );
+            let mut a = Actor::new_2d(entity, name);
+            a.world_line = 0;
+            a.add_slot_typed::<CanvasComponent>("Canvas", ComponentKind::Canvas, slot);
+            a
+        }
+
+        let mut root = make_canvas(&mut world, "FishingUI", UI_CANVAS, [0.0, 0.0]);
+        let mut panel = make_canvas(&mut world, "Panel", PANEL_SIZE, PANEL_POSITION);
+
+        // スプライト（ゲージセグメント相当）
+        let seg_entity = world.spawn();
+        world.insert(
+            seg_entity,
+            CanvasTransform {
+                position: SEG_POSITION,
+                anchor: SEG_ANCHOR,
+                ..CanvasTransform::default()
+            },
+        );
+        let sprite_slot = world.spawn();
+        world.insert(
+            sprite_slot,
+            SpriteComponent {
+                width: SEG_SIZE[0],
+                height: SEG_SIZE[1],
+                ..SpriteComponent::default()
+            },
+        );
+        let mut seg = Actor::new_2d(seg_entity, "GaugeSeg00");
+        seg.world_line = 0;
+        seg.add_slot_typed::<SpriteComponent>("Sprite", ComponentKind::Sprite, sprite_slot);
+
+        if use_folder {
+            // 2D フォルダ（生成時に恒等 CanvasTransform を持ち CanvasComponent は持たない）
+            let folder_entity = world.spawn();
+            world.insert(folder_entity, CanvasTransform::default());
+            let mut folder = Actor::new_folder_2d(folder_entity, "GaugeSegments");
+            folder.world_line = 0;
+            folder.add_child(seg);
+            panel.add_child(folder);
+        } else {
+            panel.add_child(seg);
+        }
+        root.add_child(panel);
+
+        (vec![root], world)
+    }
+
+    /// スプライト中心の設計空間座標（design_space=true ではキャンバス左上が原点）。
+    fn seg_center() -> [f32; 2] {
+        [
+            PANEL_POSITION[0] + PANEL_SIZE[0] * SEG_ANCHOR[0] + SEG_POSITION[0]
+                + SEG_SIZE[0] * 0.5,
+            PANEL_POSITION[1] + PANEL_SIZE[1] * SEG_ANCHOR[1] + SEG_POSITION[1]
+                + SEG_SIZE[1] * 0.5,
+        ]
+    }
+
+    /// 設計空間（design_space=true。ビューポートタブ）でエディタ選択ピックを走らせる。
+    fn editor_hits(actors: &[Actor], world: &World, pt: [f32; 2]) -> Vec<PickCand2d> {
+        let empty: HashMap<Entity, [f32; 2]> = HashMap::new();
+        let mesh_of = |_: &str| None;
+        let mut out = Vec::new();
+        let mut counter = 0u32;
+        walk_pick_candidates_2d(
+            actors,
+            world,
+            0,
+            pt[0],
+            pt[1],
+            &mut counter,
+            IDENTITY_MAT4,
+            [1.0, 1.0],
+            None,
+            0,
+            CanvasDrawZone::Foreground,
+            Some(UI_CANVAS),
+            &empty,
+            &empty,
+            true,
+            &mesh_of,
+            PickFilter2d::EDITOR_SELECT,
+            &mut out,
+        );
+        out
+    }
+
+    /// フォルダで括ってもスプライトのヒット位置は変わらない（描画位置と一致する）。
+    #[test]
+    fn folder_does_not_move_sprite_hit_area() {
+        let center = seg_center();
+
+        for use_folder in [false, true] {
+            let (actors, world) = build_ui_scene(use_folder);
+            let hits = editor_hits(&actors, &world, center);
+            assert!(
+                hits.iter().any(|c| c.kind == PickKind2d::Sprite),
+                "フォルダ={use_folder}: スプライト中心はヒットしなければならない"
+            );
+        }
+    }
+
+    /// フォルダ自身は矩形を持たないため、決してピック候補にならない。
+    #[test]
+    fn folder_is_never_a_pick_candidate() {
+        let center = seg_center();
+        let (actors, world) = build_ui_scene(true);
+        let hits = editor_hits(&actors, &world, center);
+        // DFS: 0=FishingUI / 1=Panel / 2=GaugeSegments(フォルダ) / 3=GaugeSeg00
+        assert!(
+            hits.iter().all(|c| c.dfs != 2),
+            "フォルダ（dfs=2）が候補に含まれてはならない"
+        );
+        assert!(hits.iter().any(|c| c.dfs == 3), "スプライト（dfs=3）は候補になる");
+    }
+
+    /// スプライト矩形の外は、フォルダの有無に関わらずヒットしない。
+    #[test]
+    fn folder_does_not_widen_hit_area() {
+        // スプライトから十分離れた点（キャンバス内・スプライト外）
+        let c = seg_center();
+        let outside = [c[0] + SEG_SIZE[0], c[1]];
+        for use_folder in [false, true] {
+            let (actors, world) = build_ui_scene(use_folder);
+            let hits = editor_hits(&actors, &world, outside);
+            assert!(
+                !hits.iter().any(|c| c.kind == PickKind2d::Sprite),
+                "フォルダ={use_folder}: 矩形外でスプライトが当たってはならない"
+            );
+        }
+    }
 
     /// 最小の矩形メッシュ（[0,0]-[100,80]・1 ボーン）。
     const QUAD_ONE_BONE: &str =

@@ -39,6 +39,7 @@ use std::collections::HashMap;
 use std::f32::consts::PI;
 
 use super::actor_utils::get_3d_canvas_world_mat;
+use super::canvas_collect::canvas_node_is_transparent;
 use crate::engine::components::{ColliderShape2dData, ComponentKind};
 use crate::engine::core::app_base::scene::Scene;
 use crate::engine::ecs::Entity;
@@ -419,7 +420,9 @@ fn collect_canvas_descendants(
 
         // Actor2D なら対応付ける（Collider2d の有無はここでは問わない。
         // 実際の描画判定は呼び出し側が collider_slot_entity で行う）。
-        if child.is_2d() {
+        // フォルダノードはレイアウト透明（canvas_node_is_transparent）でコライダーを
+        // 持たないため対応付けから除外し、子孫だけをそのまま同じ ctw へ紐づける。
+        if child.is_2d() && !canvas_node_is_transparent(child) {
             map.insert(child.entity, *ctw);
         }
 
