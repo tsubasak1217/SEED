@@ -8,6 +8,13 @@ internal static class EditorLog
 {
     private static readonly string LogPath = ResolveLogPath();
 
+    /// <summary>
+    /// ログファイルの絶対パス（editor/logs/SEEDEditor.log）。
+    /// AI ツール（seed_log）が末尾 N 行を読み出すために公開する。
+    /// ランタイムの stderr も "[STDERR] " 付きでこのファイルへ流れ込む。
+    /// </summary>
+    internal static string FilePath => LogPath;
+
     /// <summary>ファイル書き込みの排他ロック（任意スレッドから Write が呼ばれるため）。</summary>
     private static readonly object _fileLock = new();
 

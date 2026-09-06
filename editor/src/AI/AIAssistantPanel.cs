@@ -1571,7 +1571,10 @@ public class AIAssistantPanel
             getSceneInfoAsync: GetSceneInfoAsync,
             assetsPath:        _assetsPath,
             log:               msg => Application.Current.Dispatcher.BeginInvoke(
-                                   () => AppendToolLog("LOG", msg)));
+                                   () => AppendToolLog("LOG", msg)),
+            // 視覚確認・再生制御系コマンドの窓口。本パネルは MainWindow の
+            // コンストラクタ途中で生成されるため、参照を固定せず呼び出し時に解決する。
+            hostProvider:      () => Application.Current?.MainWindow as IEditorAiHost);
     }
 
     // ── チャット表示ヘルパー ─────────────────────────────────────

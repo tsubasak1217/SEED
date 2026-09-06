@@ -443,6 +443,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _runtimeManager.TerrainCollisionResult        += OnTerrainCollisionResult;
         _runtimeManager.TerrainDecimateCompleted      += OnTerrainDecimateCompleted;
 
+        // AI ツール（MCP / HTTP ブリッジ）向けの状態キャッシュ購読を開始する。
+        // ヒエラルキー・選択はランタイムからの push でしか届かないため、
+        // 最初の push を取りこぼさないよう他パネルの購読と同じタイミングで行う。
+        InitAiHost();
+
         PanelHierarchy.SetRuntime(_runtimeManager);
         PanelHierarchy.SetAssetsPath(AssetsPath);
         PanelHierarchy.ActorDfsSelected += id => PanelInspector.SelectActor(id);

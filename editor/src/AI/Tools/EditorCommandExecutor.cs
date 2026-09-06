@@ -17,7 +17,7 @@ namespace SEEDEditor.AI.Tools;
 /// <summary>
 /// AI ツール呼び出しをエディタ操作に変換して実行するクラス。
 /// </summary>
-public class EditorCommandExecutor
+public partial class EditorCommandExecutor
 {
     // ── フィールド ───────────────────────────────────────────
     /// <summary>ランタイムへ IPC コマンドを送信するデリゲート</summary>
@@ -28,6 +28,18 @@ public class EditorCommandExecutor
     private readonly string                 _assetsPath;
     /// <summary>ツール実行ログ出力デリゲート</summary>
     private readonly Action<string>         _log;
+    /// <summary>
+    /// エディタ本体（MainWindow）への窓口を返すプロバイダ。
+    /// MainWindow はこの Executor より後に完成しうるため、参照を固定せず毎回解決する。
+    /// </summary>
+    private readonly Func<IEditorAiHost?>?  _hostProvider;
+
+    /// <summary>
+    /// エディタ本体への窓口。スクリーンショット・選択・再生制御・保存など、
+    /// ランタイム IPC だけでは実現できない操作に使う。
+    /// 未設定・未完成の場合は null で、該当コマンドはエラー JSON を返す。
+    /// </summary>
+    private IEditorAiHost? Host => _hostProvider?.Invoke();
 
     // ── コンストラクタ ──────────────────────────────────────
 
@@ -38,16 +50,23 @@ public class EditorCommandExecutor
     /// <param name="getSceneInfoAsync">シーン情報取得デリゲート（GET_SCENE_INFO → 応答待ち）</param>
     /// <param name="assetsPath">アセットフォルダの絶対パス</param>
     /// <param name="log">ツール実行ログ出力デリゲート</param>
+    /// <param name="hostProvider">
+    /// エディタ本体への窓口（MainWindow）を返すプロバイダ。視覚確認系コマンド
+    /// （screenshot / play_control / select_actor など）に必要。省略時はそれらの
+    /// コマンドが使えなくなるだけで、既存のシーン編集コマンドは従来どおり動作する。
+    /// </param>
     public EditorCommandExecutor(
         Action<string>      sendToRuntime,
         Func<Task<string>>  getSceneInfoAsync,
         string              assetsPath,
-        Action<string>      log)
+        Action<string>      log,
+        Func<IEditorAiHost?>? hostProvider = null)
     {
         _sendToRuntime    = sendToRuntime;
         _getSceneInfoAsync = getSceneInfoAsync;
         _assetsPath       = assetsPath;
         _log              = log;
+        _hostProvider     = hostProvider;
     }
 
     // ── 公開メソッド ─────────────────────────────────────────
@@ -117,7 +136,10 @@ public class EditorCommandExecutor
                     return ExecuteWriteAssetFile(toolCall.ArgumentsJson);
 
                 default:
-                    return $"エラー: 未知のツール '{toolCall.FunctionName}'";
+                    // 視覚確認・再生制御など MCP 追加分のコマンドは partial 側で処理する。
+                    // そちらでも未知なら null が返るので、その時点でエラーとする。
+                    return await ExecuteVisualToolAsync(toolCall.FunctionName, toolCall.ArgumentsJson)
+                           ?? $"エラー: 未知のツール '{toolCall.FunctionName}'";
             }
         }
         catch (Exception ex)

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "seed-editor": {
+      "type": "stdio",
+      "command": "editor/SeedMcpServer/bin/Debug/net9.0/SeedMcpServer.exe",
+      "args": [],
+      "env": {}
+    }
+  }
+}
