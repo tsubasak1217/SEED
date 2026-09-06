@@ -209,9 +209,15 @@ pub enum ScriptSceneCommand {
     /// .actor ファイルをシーンへ生成する。
     /// entity は ffi_instantiate が予約済みのルートエンティティ
     /// （デフォルト Transform 挿入済みで、スクリプトは即座に Position を設定できる）。
-    Instantiate { path: String, entity: Entity },
+    /// parent が Some のとき、構築したアクターはその親の **末尾の子** として追加される
+    /// （適用時に親が失われていればルートへフォールバックし、[Script] 警告を出す）。
+    Instantiate { path: String, entity: Entity, parent: Option<Entity> },
     /// 指定ルートエンティティの Actor をシーンから破棄する。
     Destroy { entity: Entity },
+    /// 指定ルートエンティティの Actor の親を付け替える（末尾の子として移動）。
+    /// new_parent = None はシーンのルート（トップレベル）へ移動する。
+    /// Instantiate / Destroy と同じ適用パスで、発行順に処理される。
+    Reparent { entity: Entity, new_parent: Option<Entity> },
     /// シーンを事前読み込みする（遷移はしない）。
     /// Transition 前に呼んでおくことで、遷移時のロード時間をなくせる。
     /// name_or_path はシーンマネージャ登録名または assets:// パス。
@@ -1697,6 +1703,39 @@ unsafe extern "system" fn ffi_instantiate(
     SCENE_COMMANDS.with(|q| q.borrow_mut().push(ScriptSceneCommand::Instantiate {
         path:   path_str.to_string(),
         entity,
+        parent: None,
+    }));
+
+    *out         = entity.index();
+    *out.add(1)  = entity.generation();
+    1
+}
+
+/// .actor ファイルから **指定した親の末尾の子として** アクターを生成する。成功=1 / 失敗=0。
+///
+/// ffi_instantiate と同じ遅延モデル（ルートエンティティを即座に予約し、
+/// 本体構築はフレーム末尾）。違いは配置先だけで、適用時に親が破棄済み・種別不整合
+/// （3D をキャンバス無しで 2D 親の下へ等）の場合はルートへフォールバックし
+/// `[Script]` 警告を出す。
+unsafe extern "system" fn ffi_instantiate_under(
+    path: *const u8, path_len: i32,
+    parent_idx: u32, parent_generation: u32,
+    out: *mut u32,
+) -> i32 {
+    if is_in_on_destroy() { return 0; }
+    let ptr = WORLD_PTR.with(|p| p.get());
+    if ptr.is_null() || out.is_null() { return 0; }
+    let path_str = str_from(path, path_len);
+    if path_str.is_empty() { return 0; }
+
+    let world  = &mut *ptr;
+    let entity = world.spawn();
+    world.insert(entity, Transform::default());
+
+    SCENE_COMMANDS.with(|q| q.borrow_mut().push(ScriptSceneCommand::Instantiate {
+        path:   path_str.to_string(),
+        entity,
+        parent: Some(Entity::from_raw(parent_idx, parent_generation)),
     }));
 
     *out         = entity.index();
@@ -1723,6 +1762,76 @@ unsafe extern "system" fn ffi_destroy(idx: u32, generation: u32) -> i32 {
     }
     SCENE_COMMANDS.with(|q| q.borrow_mut().push(ScriptSceneCommand::Destroy { entity }));
     1
+}
+
+/// アクターの親を付け替える（GameObject.SetParent）。受理=1 / 失敗=0。
+///
+/// has_parent = 0 のときはシーンのルートへ移動する（parent_idx / parent_generation は無視）。
+/// 実際の付け替えは Destroy と同じくフレーム末尾へ遅延適用され、
+/// Instantiate / Destroy と発行順に処理される。
+/// ここでの検証は「対象が生存しているか」だけで、循環・種別整合・シーン所属の判定は
+/// 適用時（apply_script_reparent）に行う（判定に必要な Actor ツリーがここでは可変参照できないため）。
+unsafe extern "system" fn ffi_set_parent(
+    idx: u32, generation: u32,
+    parent_idx: u32, parent_generation: u32,
+    has_parent: i32,
+) -> i32 {
+    // OnDestroy 内からのツリー変更は仕様として無視する（解体中のツリーを触らない）
+    if is_in_on_destroy() { return 0; }
+    let ptr = WORLD_PTR.with(|p| p.get());
+    if ptr.is_null() { return 0; }
+    let world  = &*ptr;
+    let entity = Entity::from_raw(idx, generation);
+    // 生存確認: Transform か CanvasTransform を持つものだけ受理する（ffi_destroy と同じ規約）
+    if world.get::<Transform>(entity).is_none()
+        && world.get::<CanvasTransform>(entity).is_none()
+    {
+        return 0;
+    }
+    let new_parent = if has_parent != 0 {
+        Some(Entity::from_raw(parent_idx, parent_generation))
+    } else {
+        None
+    };
+    SCENE_COMMANDS.with(|q| q.borrow_mut().push(ScriptSceneCommand::Reparent { entity, new_parent }));
+    1
+}
+
+/// アクターの現在の親（ルートエンティティ）を返す。親あり=1 / ルート直下・不明=0。
+///
+/// out（[index, generation] の 2 要素）へ親のルートエンティティを書き込む。
+/// Actor ツリーの読み取りのみで、遅延コマンドではなく即座に評価される
+/// （同フレーム中に発行済みの SetParent はまだ反映されていない点に注意）。
+unsafe extern "system" fn ffi_parent_of(
+    idx: u32, generation: u32,
+    out: *mut u32,
+) -> i32 {
+    let actors_ptr = ACTORS_PTR.with(|p| p.get());
+    if actors_ptr.is_null() || out.is_null() { return 0; }
+    let actors = &*actors_ptr;
+    let target = Entity::from_raw(idx, generation);
+
+    /// 子孫に target を持つ直接の親アクターを探す（先行順 DFS）。
+    fn find_parent(actors: &[Actor], target: Entity) -> Option<Entity> {
+        for a in actors.iter() {
+            if a.children().iter().any(|c| c.entity == target) {
+                return Some(a.entity);
+            }
+            if let Some(found) = find_parent(a.children(), target) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    match find_parent(actors, target) {
+        Some(pe) => {
+            *out        = pe.index();
+            *out.add(1) = pe.generation();
+            1
+        }
+        None => 0,
+    }
 }
 
 // ─── シーンコマンド種別（C# 側 Scene クラスの定数と一致させる）───
@@ -2901,6 +3010,11 @@ pub struct ScriptHostApi {
     // 3D プリミティブ描画（SEED.Draw3D）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     draw_primitive3d:        unsafe extern "system" fn(i32, *const f32, i32, *const f32, i32) -> i32,
+    // 階層操作（GameObject.Instantiate(path, parent) / SetParent / Parent）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    instantiate_under:       unsafe extern "system" fn(*const u8, i32, u32, u32, *mut u32) -> i32,
+    set_parent:              unsafe extern "system" fn(u32, u32, u32, u32, i32) -> i32,
+    parent_of:               unsafe extern "system" fn(u32, u32, *mut u32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -2938,6 +3052,9 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     input_cursor_lock:       ffi_input_cursor_lock,
     draw_primitive:          ffi_draw_primitive,
     draw_primitive3d:        ffi_draw_primitive3d,
+    instantiate_under:       ffi_instantiate_under,
+    set_parent:              ffi_set_parent,
+    parent_of:               ffi_parent_of,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

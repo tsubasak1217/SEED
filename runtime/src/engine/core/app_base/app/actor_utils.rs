@@ -7,6 +7,7 @@
 //  - Canvas ユーティリティ（canvas_anchor_offset_for_dfs / collect_canvas_actors_in_rect）
 //  - MC 収集・バッチ更新（collect_mcs_in_world_line / update_all_mc_batches_for_wl）
 //  - エンティティ管理（collect_entities_for_wl / despawn_actor_recursive）
+//  - 親子付け替え（validate_reparent_kind / reparent_actor_by_entity / attach_actor_under）
 //  - 座標・選択ユーティリティ（world_to_screen / selection_centroid）
 //  - ドラッグ時子アクター収集（collect_child_actor_drag_starts / apply_delta_to_actor_children）
 //
@@ -1232,6 +1233,207 @@ pub(super) fn insert_group_actor(
     true
 }
 
+
+// ============================================================
+//  親子付け替え（Reparent）— エディタ / スクリプト共用ロジック
+//
+//  エディタの handle_reparent_actor（DFS id 基準）と、スクリプトの
+//  GameObject.SetParent / Instantiate(path, parent)（Entity 基準）の
+//  両方から使う共通部分をここへ集約する。
+//  「どのツリー操作を許すか」の判断が 2 か所へ分裂すると、片方だけ緩い
+//  経路から不整合なツリー（3D の子を持つ 2D 親など）が生まれるため。
+// ============================================================
+
+/// 親子付け替えの種別整合ルール（2D / 3D）を検証する。
+///
+/// - `child_is_2d`  … 移動する子アクターが Actor2D か
+/// - `new_parent`   … 新しい親の (is_2d, has_canvas)。`None` はルート（親なし）
+///
+/// ルール:
+/// 1. 3D の子を 2D の親の下へは入れられない。
+/// 2. 2D の子は「2D アクター」または「Canvas を持つ 3D アクター」の下にしか入れられない。
+/// 3. ルート（親なし）へはどちらの種別も置ける。
+///
+/// 戻り値の `Err` は利用者向けメッセージ（エディタは IPC の LOAD_ERROR、
+/// スクリプトは `[Script]` 警告としてそのまま出す）。
+pub(super) fn validate_reparent_kind(
+    child_is_2d: bool,
+    new_parent:  Option<(bool, bool)>,
+) -> Result<(), &'static str> {
+    // ① 3D 子 → 2D 親を禁止
+    if new_parent.map(|(is_2d, _)| is_2d).unwrap_or(false) && !child_is_2d {
+        return Err("3Dアクターは2Dアクターの子にできません");
+    }
+    // ② 2D 子 → Canvas を持たない 3D 親を禁止
+    if child_is_2d {
+        if let Some((parent_is_2d, parent_has_canvas)) = new_parent {
+            if !parent_is_2d && !parent_has_canvas {
+                return Err("2DアクターはCanvasを持たない3Dアクターの子にできません");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// ルートエンティティでアクターへの不変参照を取得する（world_line 不問・DFS 順の最初の一致）。
+///
+/// `find_actor_by_entity_mut` の読み取り専用版。種別判定（is_2d / has_canvas）や
+/// 祖先判定のように「探すだけ」の用途で使う。
+pub(super) fn find_actor_by_entity<'a>(
+    actors: &'a [Actor],
+    entity: Entity,
+) -> Option<&'a Actor> {
+    for actor in actors.iter() {
+        if actor.entity == entity {
+            return Some(actor);
+        }
+        if let Some(found) = find_actor_by_entity(actor.children(), entity) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// `actor` 自身またはその子孫に `entity` が含まれるかを判定する。
+///
+/// 親子付け替えで「自分自身または自分の子孫を新しい親に指定する」＝
+/// ツリーが循環（サブツリーの喪失）になるケースを弾くために使う。
+pub(super) fn actor_subtree_contains_entity(actor: &Actor, entity: Entity) -> bool {
+    if actor.entity == entity {
+        return true;
+    }
+    actor.children().iter().any(|c| actor_subtree_contains_entity(c, entity))
+}
+
+/// アクターの種別情報 (is_2d, has_canvas) を取り出す（親候補の検証用）。
+fn actor_kind_info(actor: &Actor) -> (bool, bool) {
+    (actor.is_2d(), actor.has_kind(ComponentKind::Canvas))
+}
+
+/// 親子付け替えの拒否理由。呼び出し側がログ／IPC メッセージを組み立てる。
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ReparentRejection {
+    /// 対象の子アクターが現在のツリーに存在しない（破棄済み等）
+    ChildNotFound,
+    /// 指定された新しい親が現在のツリーに存在しない（破棄済み等）
+    ParentNotFound,
+    /// 新しい親が自分自身または自分の子孫（＝ツリーが循環する）
+    Cycle,
+    /// 2D / 3D の種別が不整合（メッセージは validate_reparent_kind 由来）
+    KindMismatch(&'static str),
+}
+
+impl ReparentRejection {
+    /// ログ表示用の理由文字列。
+    pub(super) fn message(&self) -> &'static str {
+        match self {
+            ReparentRejection::ChildNotFound  => "対象アクターがシーンに存在しません",
+            ReparentRejection::ParentNotFound => "指定した親アクターがシーンに存在しません",
+            ReparentRejection::Cycle          => "自分自身または子孫を親にはできません",
+            ReparentRejection::KindMismatch(m) => m,
+        }
+    }
+}
+
+/// Entity 基準でアクターの親を付け替える（新しい親の **末尾の子** になる）。
+///
+/// スクリプトの `GameObject.SetParent` 用。エディタ経路（DFS id + アンカー兄弟指定）と
+/// 違い、挿入位置は常に末尾で、Undo 記録も行わない純粋なツリー操作。
+///
+/// # 変換について
+/// - 3D: 子アクターの `Transform` は **ワールド空間** で保持されるため、
+///   ツリー上の位置を変えても値を触る必要がない（ワールド変換が自動的に保たれる）。
+/// - 2D: `CanvasTransform` は **親相対** のため、値をそのまま保つと画面上の位置は
+///   新しい親を基準に変わる（ローカル値の維持を仕様とする）。
+///
+/// # 検証
+/// - 子・親がツリーに存在すること
+/// - 新しい親が子自身／子の子孫でないこと（循環防止）
+/// - 2D / 3D の種別整合（`validate_reparent_kind`）
+///
+/// 検証に通らない場合はツリーを一切変更せず `Err` を返す。
+pub(super) fn reparent_actor_by_entity(
+    actors:     &mut Vec<Actor>,
+    child:      Entity,
+    new_parent: Option<Entity>,
+) -> Result<(), ReparentRejection> {
+    // ── 1. 子の存在確認と種別取得（ツリーを触る前に検証を済ませる）──
+    let child_actor = find_actor_by_entity(actors, child)
+        .ok_or(ReparentRejection::ChildNotFound)?;
+    let child_is_2d = child_actor.is_2d();
+
+    // ── 2. 親の存在確認・循環判定・種別整合 ──
+    let parent_info = match new_parent {
+        Some(pe) => {
+            // 自分自身または子孫を親にすると、取り出したサブツリーごと行方不明になる
+            if actor_subtree_contains_entity(child_actor, pe) {
+                return Err(ReparentRejection::Cycle);
+            }
+            let parent_actor = find_actor_by_entity(actors, pe)
+                .ok_or(ReparentRejection::ParentNotFound)?;
+            Some(actor_kind_info(parent_actor))
+        }
+        None => None,
+    };
+    validate_reparent_kind(child_is_2d, parent_info)
+        .map_err(ReparentRejection::KindMismatch)?;
+
+    // ── 3. 取り出して挿入する（ここから先は失敗しない）──
+    let Some(mut extracted) = extract_actor_by_entity(actors, child) else {
+        return Err(ReparentRejection::ChildNotFound);
+    };
+    match new_parent {
+        Some(pe) => {
+            // 親の world_line へ合わせてサブツリー全体を移す
+            //（エディタ経路が active_world_line へ揃えるのと同じ意図）
+            let parent_wl = find_actor_by_entity(actors, pe).map(|a| a.world_line);
+            if let Some(wl) = parent_wl {
+                extracted.set_world_line_recursive(wl);
+            }
+            match find_actor_by_entity_mut(actors, pe) {
+                Some(parent) => parent.children_mut().push(extracted),
+                // 直前に存在を確認済みなので通常は到達しない（保険としてルートへ戻す）
+                None => actors.push(extracted),
+            }
+        }
+        None => actors.push(extracted),
+    }
+    Ok(())
+}
+
+/// 生成済みアクターを指定親の **末尾の子** として取り付ける。
+///
+/// スクリプトの `GameObject.Instantiate(path, parent)` 用。
+/// 親が指定されていない／見つからない／種別が不整合な場合はルート（`actors` 直下）へ
+/// 追加し、`false` を返す（呼び出し側が `[Script]` 警告を出す）。
+/// 成功（親の下へ入った）なら `true`。
+pub(super) fn attach_actor_under(
+    actors: &mut Vec<Actor>,
+    parent: Option<Entity>,
+    actor:  Actor,
+) -> bool {
+    let Some(pe) = parent else {
+        actors.push(actor);
+        return true; // 親指定なし＝ルートが期待どおりの配置
+    };
+    // 種別整合を先に判定する（不整合ならルートへフォールバック）
+    let ok_kind = find_actor_by_entity(actors, pe)
+        .map(|p| validate_reparent_kind(actor.is_2d(), Some(actor_kind_info(p))).is_ok())
+        .unwrap_or(false);
+    if !ok_kind {
+        actors.push(actor);
+        return false;
+    }
+    let mut actor = actor;
+    if let Some(wl) = find_actor_by_entity(actors, pe).map(|a| a.world_line) {
+        actor.set_world_line_recursive(wl);
+    }
+    match find_actor_by_entity_mut(actors, pe) {
+        Some(p) => { p.children_mut().push(actor); true }
+        None    => { actors.push(actor); false }
+    }
+}
+
 // ============================================================
 //  テスト — グループ（フォルダ）アクタ生成のツリー操作
 // ============================================================
@@ -1404,3 +1606,272 @@ mod group_actor_tests {
 
 }
 
+
+// ============================================================
+//  テスト — 親子付け替え（Reparent）共用ロジック
+//
+//  スクリプトの GameObject.Instantiate(path, parent) / SetParent が使う
+//  ツリー操作の適用ロジックを、App（GPU/シーン）非依存の純粋関数として検証する。
+// ============================================================
+#[cfg(test)]
+mod reparent_tests {
+    use super::*;
+    use crate::engine::ecs::World;
+
+    /// 3D アクタ（Transform 保持）を作る。
+    fn actor3d(world: &mut World, name: &str) -> Actor {
+        let e = world.spawn();
+        world.insert(e, ActorTransform::default());
+        Actor::new(e, name)
+    }
+
+    /// 2D アクタ（CanvasTransform 保持）を作る。
+    fn actor2d(world: &mut World, name: &str) -> Actor {
+        let e = world.spawn();
+        world.insert(e, CanvasTransform::default());
+        Actor::new_2d(e, name)
+    }
+
+    /// CanvasComponent を持つ 3D アクタ（3D 空間キャンバス）を作る。
+    /// 2D アクタの親として許可される唯一の 3D 形態。
+    fn actor3d_canvas(world: &mut World, name: &str) -> Actor {
+        let mut a = actor3d(world, name);
+        let slot  = world.spawn();
+        world.insert(slot, CanvasComponent::default());
+        a.add_slot_typed::<CanvasComponent>("Canvas", ComponentKind::Canvas, slot);
+        a
+    }
+
+    /// 子アクタ名の一覧を取り出す（順序検証用）。
+    fn child_names(actor: &Actor) -> Vec<&str> {
+        actor.children().iter().map(|c| c.name.as_str()).collect()
+    }
+
+    // ── Instantiate(path, parent) 相当 ─────────────────────
+
+    /// 親指定で生成したアクタが「末尾の子」として追加されること。
+    #[test]
+    fn attach_appends_as_last_child() {
+        let mut world = World::new();
+        let mut parent = actor3d(&mut world, "Parent");
+        parent.add_child(actor3d(&mut world, "First"));
+        let parent_e = parent.entity;
+        let mut actors = vec![parent];
+
+        let spawned = actor3d(&mut world, "Spawned");
+        assert!(attach_actor_under(&mut actors, Some(parent_e), spawned));
+
+        assert_eq!(actors.len(), 1, "ルートには親 1 体だけが残る");
+        assert_eq!(child_names(&actors[0]), vec!["First", "Spawned"], "末尾へ追加される");
+    }
+
+    /// 親を指定しなければルート直下へ追加され、成功扱いになること。
+    #[test]
+    fn attach_without_parent_goes_to_root() {
+        let mut world  = World::new();
+        let mut actors = vec![actor3d(&mut world, "Existing")];
+        let spawned    = actor3d(&mut world, "Spawned");
+
+        assert!(attach_actor_under(&mut actors, None, spawned));
+        assert_eq!(actors.len(), 2);
+        assert_eq!(actors[1].name, "Spawned");
+    }
+
+    /// 親がシーンに存在しない（破棄済み）ときはルートへフォールバックし false を返すこと。
+    #[test]
+    fn attach_with_dead_parent_falls_back_to_root() {
+        let mut world  = World::new();
+        let mut actors = vec![actor3d(&mut world, "Existing")];
+        let ghost      = world.spawn(); // ツリーに存在しないエンティティ
+        let spawned    = actor3d(&mut world, "Spawned");
+
+        assert!(!attach_actor_under(&mut actors, Some(ghost), spawned),
+                "親が見つからない場合は false（呼び出し側が警告を出す）");
+        assert_eq!(actors.len(), 2, "生成自体は成功しルート直下へ入る");
+        assert_eq!(actors[1].name, "Spawned");
+    }
+
+    /// 種別不整合（3D の子 → 2D の親）はルートへフォールバックすること。
+    #[test]
+    fn attach_kind_mismatch_falls_back_to_root() {
+        let mut world  = World::new();
+        let parent     = actor2d(&mut world, "UIParent");
+        let parent_e   = parent.entity;
+        let mut actors = vec![parent];
+        let spawned    = actor3d(&mut world, "Spawned3D");
+
+        assert!(!attach_actor_under(&mut actors, Some(parent_e), spawned));
+        assert_eq!(actors.len(), 2, "2D 親の下ではなくルートへ入る");
+        assert!(actors[0].children().is_empty());
+    }
+
+    // ── SetParent 相当 ─────────────────────────────────────
+
+    /// ルート直下のアクタを別のアクタの末尾の子へ移動できること。
+    #[test]
+    fn reparent_moves_to_new_parent_as_last_child() {
+        let mut world = World::new();
+        let mut parent = actor3d(&mut world, "Parent");
+        parent.add_child(actor3d(&mut world, "First"));
+        let parent_e = parent.entity;
+        let child    = actor3d(&mut world, "Child");
+        let child_e  = child.entity;
+        let mut actors = vec![parent, child];
+
+        assert_eq!(reparent_actor_by_entity(&mut actors, child_e, Some(parent_e)), Ok(()));
+        assert_eq!(actors.len(), 1);
+        assert_eq!(child_names(&actors[0]), vec!["First", "Child"]);
+    }
+
+    /// 子アクタをルート（親なし）へ戻せること。
+    #[test]
+    fn reparent_to_root_moves_out_of_parent() {
+        let mut world = World::new();
+        let mut parent = actor3d(&mut world, "Parent");
+        let child      = actor3d(&mut world, "Child");
+        let child_e    = child.entity;
+        parent.add_child(child);
+        let mut actors = vec![parent];
+
+        assert_eq!(reparent_actor_by_entity(&mut actors, child_e, None), Ok(()));
+        assert_eq!(actors.len(), 2, "ルート直下へ出る");
+        assert_eq!(actors[1].name, "Child");
+        assert!(actors[0].children().is_empty());
+    }
+
+    /// 自分の子孫を親に指定した場合は拒否され、ツリーが変化しないこと（循環防止）。
+    #[test]
+    fn reparent_rejects_descendant_as_parent() {
+        let mut world  = World::new();
+        let mut parent = actor3d(&mut world, "Parent");
+        let mut mid    = actor3d(&mut world, "Mid");
+        let leaf       = actor3d(&mut world, "Leaf");
+        let leaf_e     = leaf.entity;
+        mid.add_child(leaf);
+        parent.add_child(mid);
+        let parent_e   = parent.entity;
+        let mut actors = vec![parent];
+
+        assert_eq!(
+            reparent_actor_by_entity(&mut actors, parent_e, Some(leaf_e)),
+            Err(ReparentRejection::Cycle)
+        );
+        // ツリーは無変更（Parent > Mid > Leaf のまま）
+        assert_eq!(actors.len(), 1);
+        assert_eq!(child_names(&actors[0]), vec!["Mid"]);
+        assert_eq!(child_names(&actors[0].children()[0]), vec!["Leaf"]);
+    }
+
+    /// 自分自身を親に指定した場合も循環として拒否されること。
+    #[test]
+    fn reparent_rejects_self_as_parent() {
+        let mut world  = World::new();
+        let a          = actor3d(&mut world, "A");
+        let a_e        = a.entity;
+        let mut actors = vec![a];
+
+        assert_eq!(
+            reparent_actor_by_entity(&mut actors, a_e, Some(a_e)),
+            Err(ReparentRejection::Cycle)
+        );
+        assert_eq!(actors.len(), 1);
+    }
+
+    /// 3D アクタを 2D アクタの子にはできないこと。
+    #[test]
+    fn reparent_rejects_3d_child_under_2d_parent() {
+        let mut world  = World::new();
+        let ui         = actor2d(&mut world, "UI");
+        let ui_e       = ui.entity;
+        let obj        = actor3d(&mut world, "Obj3D");
+        let obj_e      = obj.entity;
+        let mut actors = vec![ui, obj];
+
+        let err = reparent_actor_by_entity(&mut actors, obj_e, Some(ui_e)).unwrap_err();
+        assert_eq!(err, ReparentRejection::KindMismatch("3Dアクターは2Dアクターの子にできません"));
+        assert_eq!(actors.len(), 2, "ツリーは変化しない");
+    }
+
+    /// 2D アクタは Canvas を持たない 3D アクタの子にできないこと。
+    #[test]
+    fn reparent_rejects_2d_child_under_plain_3d_parent() {
+        let mut world  = World::new();
+        let obj        = actor3d(&mut world, "Obj3D");
+        let obj_e      = obj.entity;
+        let ui         = actor2d(&mut world, "UI");
+        let ui_e       = ui.entity;
+        let mut actors = vec![obj, ui];
+
+        let err = reparent_actor_by_entity(&mut actors, ui_e, Some(obj_e)).unwrap_err();
+        assert_eq!(
+            err,
+            ReparentRejection::KindMismatch("2DアクターはCanvasを持たない3Dアクターの子にできません")
+        );
+        assert_eq!(actors.len(), 2);
+    }
+
+    /// 2D アクタは Canvas を持つ 3D アクタの子にはできること（3D 空間 UI）。
+    #[test]
+    fn reparent_allows_2d_child_under_canvas_3d_parent() {
+        let mut world  = World::new();
+        let canvas     = actor3d_canvas(&mut world, "WorldCanvas");
+        let canvas_e   = canvas.entity;
+        let ui         = actor2d(&mut world, "UI");
+        let ui_e       = ui.entity;
+        let mut actors = vec![canvas, ui];
+
+        assert_eq!(reparent_actor_by_entity(&mut actors, ui_e, Some(canvas_e)), Ok(()));
+        assert_eq!(actors.len(), 1);
+        assert_eq!(child_names(&actors[0]), vec!["UI"]);
+    }
+
+    /// 対象・親がシーンに存在しない場合はそれぞれの理由で拒否されること。
+    #[test]
+    fn reparent_rejects_missing_actors() {
+        let mut world  = World::new();
+        let a          = actor3d(&mut world, "A");
+        let a_e        = a.entity;
+        let mut actors = vec![a];
+        let ghost      = world.spawn();
+
+        assert_eq!(
+            reparent_actor_by_entity(&mut actors, ghost, None),
+            Err(ReparentRejection::ChildNotFound)
+        );
+        assert_eq!(
+            reparent_actor_by_entity(&mut actors, a_e, Some(ghost)),
+            Err(ReparentRejection::ParentNotFound)
+        );
+        assert_eq!(actors.len(), 1);
+    }
+
+    /// 付け替えても子孫サブツリーは丸ごと保たれること（末尾の子として移動する）。
+    #[test]
+    fn reparent_keeps_subtree_intact() {
+        let mut world  = World::new();
+        let mut child  = actor3d(&mut world, "Child");
+        child.add_child(actor3d(&mut world, "GrandChild"));
+        let child_e    = child.entity;
+        let parent     = actor3d(&mut world, "NewParent");
+        let parent_e   = parent.entity;
+        let mut actors = vec![parent, child];
+
+        assert_eq!(reparent_actor_by_entity(&mut actors, child_e, Some(parent_e)), Ok(()));
+        let moved = &actors[0].children()[0];
+        assert_eq!(moved.name, "Child");
+        assert_eq!(child_names(moved), vec!["GrandChild"]);
+    }
+
+    /// 種別整合ルール（validate_reparent_kind）の真理値表。
+    /// ルートへの移動はどちらの種別でも常に許可される。
+    #[test]
+    fn validate_reparent_kind_truth_table() {
+        assert!(validate_reparent_kind(false, None).is_ok(), "3D → ルート");
+        assert!(validate_reparent_kind(true,  None).is_ok(), "2D → ルート");
+        assert!(validate_reparent_kind(false, Some((false, false))).is_ok(), "3D → 素の 3D");
+        assert!(validate_reparent_kind(false, Some((true,  false))).is_err(), "3D → 2D は不可");
+        assert!(validate_reparent_kind(true,  Some((true,  false))).is_ok(), "2D → 2D");
+        assert!(validate_reparent_kind(true,  Some((false, true ))).is_ok(), "2D → Canvas 付き 3D");
+        assert!(validate_reparent_kind(true,  Some((false, false))).is_err(), "2D → 素の 3D は不可");
+    }
+}

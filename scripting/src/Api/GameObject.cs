@@ -65,6 +65,54 @@ public readonly struct GameObject
         => ScriptHost.TryInstantiate(actorPath, out var e) ? new GameObject(e) : new GameObject(Entity.None);
 
     /// <summary>
+    /// .actor ファイルからアクターを生成し、<paramref name="parent"/> の
+    /// 「末尾の子」として配置する（assets:// 仮想パス）。
+    /// 遅延モデルは <see cref="Instantiate(string)"/> と同じで、戻り値の GameObject には
+    /// 同フレーム中に Transform.Position 等を設定できる。
+    ///
+    /// 親が破棄済み・シーンに無い・2D/3D の種別が不整合（3D を Canvas 無しの 2D 親の下へ等）の
+    /// 場合はルート直下へ生成され、ランタイムが [Script] 警告を出す（生成自体は成功する）。
+    ///
+    /// 注意: 2D アクター（Actor2D）の場合は構築時に Transform が CanvasTransform へ
+    /// 差し替わるため、位置は翌フレーム以降に CanvasTransform.Position で設定する。
+    /// </summary>
+    public static GameObject Instantiate(string actorPath, GameObject parent)
+        => ScriptHost.TryInstantiateUnder(actorPath, parent.Entity, out var e)
+            ? new GameObject(e)
+            : new GameObject(Entity.None);
+
+    // ── 階層操作（親子付け替え）────────────────────────────
+
+    /// <summary>
+    /// このアクターの親を付け替える（新しい親の末尾の子になる）。
+    /// 実際の移動はフレーム末尾に遅延適用される（Destroy と同じモデルで、
+    /// Instantiate / Destroy とは発行順に処理される）。
+    ///
+    /// 次の場合は拒否され、ツリーは変化しない（[Script] 警告のみ）:
+    /// 自分自身または自分の子孫を親に指定した／対象か親がシーンに存在しない／
+    /// 3D アクターを 2D アクターの子にした／2D アクターを Canvas を持たない 3D の子にした。
+    ///
+    /// 変換: 3D は Transform をワールド空間で保持するためワールド位置が保たれる。
+    /// 2D は CanvasTransform が親相対のためローカル値がそのまま維持される
+    /// （＝画面上の位置は新しい親を基準に変わる）。
+    /// </summary>
+    public void SetParent(GameObject parent) => ScriptHost.TrySetParent(_entity, parent.Entity);
+
+    /// <summary>
+    /// このアクターの親を付け替える。null を渡すとシーンのルート（トップレベル）へ移動する。
+    /// ルールは <see cref="SetParent(GameObject)"/> と同じ。
+    /// </summary>
+    public void SetParent(GameObject? parent)
+        => ScriptHost.TrySetParent(_entity, parent?.Entity ?? Entity.None);
+
+    /// <summary>
+    /// 現在の親アクター。ルート直下なら IsValid=false の GameObject を返す。
+    /// 同フレーム中に発行した SetParent はまだ反映されていない（遅延適用のため）。
+    /// </summary>
+    public GameObject Parent
+        => ScriptHost.TryGetParent(_entity, out var e) ? new GameObject(e) : new GameObject(Entity.None);
+
+    /// <summary>
     /// この GameObject（アクター）をシーンから破棄する。
     /// 実際の破棄はフレーム末尾に行われる（Unity の Destroy と同じ遅延モデル）。
     /// </summary>

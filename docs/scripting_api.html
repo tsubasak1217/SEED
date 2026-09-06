@@ -618,7 +618,7 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
 </section>
 
 <!-- ════════════════ 7. GameObject ════════════════ -->
-<section id="sec-gameobject" data-keywords="GameObject gameObject アクター 生成 破棄 検索 Instantiate Destroy Find プレハブ HasComponent">
+<section id="sec-gameobject" data-keywords="GameObject gameObject アクター 生成 破棄 検索 Instantiate Destroy Find プレハブ HasComponent 親 子 親子 階層 ヒエラルキー SetParent Parent 付け替え リペアレント reparent プーリング プール pool 使い回し 再利用">
   <h2>7. GameObject</h2>
   <p class="section-note">スクリプトは自分がアタッチされた GameObject を <code>gameObject</code>、その Transform を <code>transform</code>（短縮）で参照できます。コンポーネントは <code>gameObject.GetComponent&lt;T&gt;()</code> で取得します。戻り値は <code>T?</code>（Nullable）で、<b>未アタッチ・該当なしは null</b>。SEED のアクターは同種を複数スロット持て、スロットには名前があります。</p>
   <div class="api"><code class="sig">gameObject</code><span class="desc">GameObject: このスクリプトが乗るオブジェクト</span></div>
@@ -651,6 +651,65 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
     破棄済み GameObject への読み取りは既定値、書き込みは無視されます（クラッシュしません）。<br>
     現時点の制限: Play 開始後に生成・破棄したアクターの<b>物理コライダーは物理スレッドに反映されません</b>。コライダーの収集は Play 開始時（およびシーン遷移時）の一括処理で、<code>Instantiate</code> / <code>Destroy</code> は物理側の追加・除去を行わないためです。衝突・トリガーの<b>イベント通知</b>自体は実装済みですが（第 2 節）、実行時に生成したアクターはその対象になりません。
   </div>
+
+  <h3 id="go-hierarchy">階層操作（親を指定した生成 / SetParent / Parent）</h3>
+  <div class="api"><code class="sig">GameObject.Instantiate("assets://actors/Icon.actor", parent)</code><span class="desc">生成したアクターを parent の<b>末尾の子</b>として追加。親が無効ならルート直下へフォールバックし <code>[Script]</code> 警告</span></div>
+  <div class="api"><code class="sig">obj.SetParent(parent)</code><span class="desc">void: parent の<b>末尾の子</b>へ移動（フレーム末尾に遅延適用。Instantiate / Destroy と発行順）</span></div>
+  <div class="api"><code class="sig">obj.SetParent(null)</code><span class="desc">void: シーンのルート（トップレベル）へ移動</span></div>
+  <div class="api"><code class="sig">obj.Parent</code><span class="desc">GameObject（get のみ）。現在の親。ルート直下なら <code>IsValid == false</code></span></div>
+<pre><span class="k">var</span> parent = <span class="t">SEED.GameObject</span>.Find(<span class="s">"Canvas"</span>);
+<span class="k">var</span> icon   = <span class="t">SEED.GameObject</span>.Instantiate(<span class="s">"assets://actors/Icon.actor"</span>, parent);
+
+icon.SetParent(parent);   <span class="c">// parent の末尾の子へ移動</span>
+icon.SetParent(<span class="k">null</span>);     <span class="c">// シーンのルートへ移動</span>
+
+<span class="t">SEED.GameObject</span> p = icon.Parent;
+<span class="k">if</span> (p.IsValid) { <span class="t">SEED.Debug</span>.Log(<span class="s">"親あり"</span>); }</pre>
+  <table>
+    <tr><th>項目</th><th>挙動</th></tr>
+    <tr><td>拒否 — 循環</td><td>自分自身・自分の子孫を親に指定した場合は<b>何もしない</b>（<code>[Script]</code> 警告）</td></tr>
+    <tr><td>拒否 — 不在</td><td>対象または親がシーンに存在しない（破棄済み）場合は<b>何もしない</b></td></tr>
+    <tr><td>拒否 — 種別</td><td>3D アクターを 2D アクターの子にはできない／2D アクターは Canvas を持たない 3D アクターの子にできない</td></tr>
+    <tr><td>3D の変換</td><td><code>Transform</code> は<b>ワールド空間</b>で保持されるため、付け替えてもワールド位置・回転・スケールは変わらない</td></tr>
+    <tr><td>2D の変換</td><td><code>CanvasTransform</code> は<b>親相対</b>。ローカル値はそのまま維持されるので、画面上の位置は新しい親を基準に変わる</td></tr>
+  </table>
+  <div class="warn"><code>SetParent</code> は<b>遅延適用</b>（フレーム末尾）です。呼んだ直後に <code>Parent</code> を読んでも<b>まだ古い親</b>が返ります。拒否された場合もツリーは一切変化せず、例外も戻り値も出ません（Play 中のログに <code>[Script] SetParent 拒否: …</code> が出ます）。</div>
+<pre><span class="c">// 例: UI アイコンのプーリング（N 個をキャンバス配下へ生成して使い回す）</span>
+<span class="k">public class</span> <span class="t">IconPool</span> : <span class="t">SEEDScript</span>
+{
+    [SerializeField] <span class="k">string</span> iconActor = <span class="s">"assets://actors/ui/Icon.actor"</span>;
+    [SerializeField] <span class="k">int</span>    poolSize  = 16;
+
+    <span class="t">GameObject</span>[] _pool;
+    <span class="k">int</span>          _used;
+
+    <span class="k">public override void</span> OnStart()
+    {
+        <span class="c">// 自分（Canvas 配下の UI アクター）の子として、まとめて作り置きする</span>
+        _pool = <span class="k">new</span> <span class="t">GameObject</span>[poolSize];
+        <span class="k">for</span> (<span class="k">int</span> i = 0; i &lt; poolSize; i++)
+            _pool[i] = <span class="t">GameObject</span>.Instantiate(iconActor, gameObject);
+    }
+
+    <span class="c">// 1 個借りる（足りなければ IsValid=false）</span>
+    <span class="k">public</span> <span class="t">GameObject</span> Rent(<span class="t">Vector2</span> pos)
+    {
+        <span class="k">if</span> (_used &gt;= _pool.Length) <span class="k">return default</span>;
+        <span class="k">var</span> go = _pool[_used++];
+        <span class="k">if</span> (go.GetComponent&lt;<span class="t">CanvasTransform</span>&gt;() <span class="k">is</span> { } ct) ct.Position = pos;
+        <span class="k">if</span> (go.GetComponent&lt;<span class="t">Sprite</span>&gt;() <span class="k">is</span> { } sp) sp.Color = <span class="t">Color</span>.White;
+        <span class="k">return</span> go;
+    }
+
+    <span class="c">// 全部返却（破棄せず隠すだけ）</span>
+    <span class="k">public void</span> ReturnAll()
+    {
+        <span class="k">for</span> (<span class="k">int</span> i = 0; i &lt; _used; i++)
+            <span class="k">if</span> (_pool[i].GetComponent&lt;<span class="t">Sprite</span>&gt;() <span class="k">is</span> { } sp) sp.Color = <span class="k">new</span> <span class="t">Color</span>(1f, 1f, 1f, 0f);
+        _used = 0;
+    }
+}</pre>
+  <div class="warn"><b>プーリングの要点</b>: 使い終わったアイコンは <code>Destroy</code> せず、<code>Sprite.Color</code> のアルファを 0 にする・画面外へ退避するなどで「隠す」だけにします。<code>Instantiate</code> / <code>Destroy</code> はどちらもフレーム末尾の遅延適用で、毎フレーム作り直すとアクター構築（ファイル読み込み・ECS 挿入）のコストがそのまま積み上がるためです。2D アイコンの親は <b>Canvas を持つアクター</b>（または 2D アクター）である必要があります。</div>
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->

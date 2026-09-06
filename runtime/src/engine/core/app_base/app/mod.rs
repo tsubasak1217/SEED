@@ -1681,6 +1681,9 @@ use actor_utils::{
     find_parent_actor_of_dfs, get_3d_canvas_world_mat,
     extract_actor_by_dfs_with_origin, find_actor_by_entity_mut,
     insert_group_actor,
+    // 親子付け替え（エディタの handle_reparent_actor とスクリプトの SetParent で共用）
+    validate_reparent_kind, reparent_actor_by_entity, attach_actor_under,
+    find_actor_by_entity,
 };
 // undo.rs（app_base 直下の ActorActiveCommand）からも DFS 探索を共有するため再エクスポートする。
 pub(crate) use actor_utils::find_actor_by_dfs_mut;

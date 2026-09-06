@@ -26,7 +26,10 @@ use crate::engine::ecs::{Entity, World};
 use crate::engine::physics::{CollisionEvent, CollisionPhase, TriggerEvent, TriggerPhase};
 use crate::engine::structs::objects::Actor;
 
-use super::{App, despawn_actor_recursive, extract_actor_by_entity};
+use super::{
+    App, attach_actor_under, despawn_actor_recursive, extract_actor_by_entity,
+    find_actor_by_entity, reparent_actor_by_entity,
+};
 
 impl App {
     /// スクリプトが積んだシーン操作コマンド（Instantiate / Destroy）を適用する。
@@ -57,11 +60,14 @@ impl App {
 
         for cmd in commands {
             match cmd {
-                ScriptSceneCommand::Instantiate { path, entity } => {
-                    self.apply_script_instantiate(&path, entity);
+                ScriptSceneCommand::Instantiate { path, entity, parent } => {
+                    self.apply_script_instantiate(&path, entity, parent);
                 }
                 ScriptSceneCommand::Destroy { entity } => {
                     self.apply_script_destroy(entity);
+                }
+                ScriptSceneCommand::Reparent { entity, new_parent } => {
+                    self.apply_script_reparent(entity, new_parent);
                 }
                 ScriptSceneCommand::PreloadScene { name_or_path } => {
                     self.apply_script_preload_scene(&name_or_path);
@@ -77,9 +83,14 @@ impl App {
     /// Instantiate コマンドを適用する: 予約済みルートエンティティへ .actor を構築し、
     /// シーンの Actor ツリーへ追加する。
     ///
+    /// `parent` が Some のときは、その親アクターの **末尾の子** として追加する。
+    /// 親が破棄済み・シーンに無い・2D/3D 種別が不整合の場合はルートへフォールバックし、
+    /// `[Script]` 警告を出す（生成そのものは成功させる。ハンドルが無効化されると
+    /// スクリプト側が同フレームで設定した Transform も無駄になるため）。
+    ///
     /// 読み込みに失敗した場合は予約エンティティを despawn してリークを防ぐ
     /// （スクリプト側のハンドルは無効になり、以降のアクセスは既定値扱い）。
-    fn apply_script_instantiate(&mut self, path: &str, root: Entity) {
+    fn apply_script_instantiate(&mut self, path: &str, root: Entity, parent: Option<Entity>) {
         if self.draw_ctx.is_none() || self.scene.is_none() {
             return;
         }
@@ -126,7 +137,12 @@ impl App {
                         }
                     }
                 }
-                scene.actors.push(actor);
+                // 親指定があれば末尾の子として取り付ける（失敗時はルートへフォールバック）
+                if !attach_actor_under(&mut scene.actors, parent, actor) {
+                    eprintln!(
+                        "[Script] Instantiate: 指定した親が無効（破棄済み／種別不整合）のため                          ルート直下へ生成しました ({path})"
+                    );
+                }
             }
             Err(e) => {
                 // 失敗時: 予約エンティティを破棄してハンドルを無効化する。
@@ -356,6 +372,86 @@ impl App {
             Some(actor) => despawn_actor_recursive(&actor, &mut scene.world),
             None        => scene.world.despawn(entity),
         }
+    }
+
+    /// Reparent コマンドを適用する: アクターを新しい親の末尾の子へ移動する
+    /// （new_parent = None ならシーンのルートへ）。
+    ///
+    /// 判定（存在・循環・2D/3D 種別整合）は `reparent_actor_by_entity` に集約しており、
+    /// エディタの `handle_reparent_actor` と同じルールで動く。拒否された場合は
+    /// ツリーを一切変更せず `[Script]` 警告を出す（no-op）。
+    ///
+    /// # 変換について
+    /// - 3D: 子アクターの Transform はワールド空間で保持されるため、付け替えで
+    ///   ワールド変換は保たれる（値を触る必要がない）。
+    /// - 2D: CanvasTransform は親相対なので、ローカル値をそのまま維持する
+    ///   （＝画面上の位置は新しい親を基準に変わる）。
+    ///
+    /// # キャッシュの無効化
+    /// - JointAttach の子孫相対ローカルキャッシュは「どの祖先に付いていたか」を前提に
+    ///   採取されているため、移動したサブツリーぶんだけ破棄する（放置すると、後で
+    ///   元の親へ戻したときに古い相対位置で貼り付いてしまう）。
+    /// - DFS 順 ID（物理・スクリプトの対応表）は毎フレーム構築されるため無効化不要。
+    /// - canvas_world_lines は「その世界線に 2D アクターが存在するか」だけを表し、
+    ///   付け替えでは増減しないため更新不要（Instantiate 経路のみが更新する）。
+    fn apply_script_reparent(&mut self, entity: Entity, new_parent: Option<Entity>) {
+        // キャンバス編集タブのルート（トップレベル唯一のアクター）は移動させない。
+        // 移動できてしまうと handle_edit_canvas_end の前提（ルート 1 体）が壊れる。
+        if self.is_script_reparent_reserved_root(entity) {
+            eprintln!("[Script] SetParent 拒否: キャンバス編集中のルートは移動できません");
+            return;
+        }
+
+        // 移動対象サブツリーの entity を控える（JointAttach キャッシュ破棄に使う）
+        let moved: Vec<Entity> = {
+            let Some(scene) = self.scene.as_ref() else { return };
+            match find_actor_by_entity(&scene.actors, entity) {
+                Some(a) => {
+                    let mut v = Vec::new();
+                    collect_actor_entities_for_cache(a, &mut v);
+                    v
+                }
+                None => {
+                    eprintln!("[Script] SetParent 拒否: 対象アクターがシーンに存在しません");
+                    return;
+                }
+            }
+        };
+
+        {
+            let Some(scene) = self.scene.as_mut() else { return };
+            if let Err(rej) = reparent_actor_by_entity(&mut scene.actors, entity, new_parent) {
+                eprintln!("[Script] SetParent 拒否: {}", rej.message());
+                return;
+            }
+        }
+
+        // JointAttach の相対ローカルキャッシュから移動したアクターぶんを破棄する
+        self.joint_attach_child_locals
+            .retain(|(_, child), _| !moved.contains(child));
+
+        // エディタのヒエラルキー表示は apply_script_scene_commands が
+        // コマンド適用の最後に send_hierarchy() でまとめて同期する（ここでは呼ばない）。
+    }
+
+    /// 対象アクターが「キャンバス編集タブのルート」かどうかを判定する。
+    ///
+    /// canvas_edit_sessions に登録された world_line ではトップレベルアクターが
+    /// 常に 1 体だけという不変条件があり（is_canvas_edit_root と同じ前提）、
+    /// その 1 体が対象かどうかを Entity で照合する。
+    fn is_script_reparent_reserved_root(&self, entity: Entity) -> bool {
+        let Some(scene) = self.scene.as_ref() else { return false };
+        scene.actors.iter().any(|a| {
+            a.entity == entity && self.canvas_edit_sessions.contains_key(&a.world_line)
+        })
+    }
+}
+
+/// アクター自身と全子孫のルートエンティティを集める（キャッシュ無効化の対象範囲）。
+fn collect_actor_entities_for_cache(actor: &Actor, out: &mut Vec<Entity>) {
+    out.push(actor.entity);
+    for c in actor.children() {
+        collect_actor_entities_for_cache(c, out);
     }
 }
 

@@ -419,6 +419,55 @@ public static unsafe class ScriptHost
         return _api.Destroy(e.Index, e.Generation) != 0;
     }
 
+    /// <summary>
+    /// .actor ファイルからアクターを生成し、指定した親の「末尾の子」として配置する。
+    /// ルートの予約は即座、本体の構築と親への取り付けはフレーム末尾に遅延適用される。
+    /// 適用時に親が失われていた場合はルート直下へフォールバックする（ランタイムが警告を出す）。
+    /// </summary>
+    public static bool TryInstantiateUnder(string actorPath, Entity parent, out Entity entity)
+    {
+        entity = Entity.None;
+        if (!_available || _api.InstantiateUnder == null || string.IsNullOrEmpty(actorPath)) return false;
+
+        int pl = Encoding.UTF8.GetByteCount(actorPath);
+        Span<byte> pb = stackalloc byte[pl];
+        Encoding.UTF8.GetBytes(actorPath, pb);
+
+        uint* outBuf = stackalloc uint[2];
+        int ok;
+        fixed (byte* pp = pb)
+            ok = _api.InstantiateUnder(pp, pl, parent.Index, parent.Generation, outBuf);
+
+        if (ok == 0) return false;
+        entity = new Entity(outBuf[0], outBuf[1]);
+        return true;
+    }
+
+    /// <summary>
+    /// アクターの親を付け替える（フレーム末尾に遅延適用）。
+    /// parent が無効なら「ルートへ移動」の意味になる。受理されたら true。
+    /// </summary>
+    public static bool TrySetParent(Entity e, Entity parent)
+    {
+        if (!_available || _api.SetParent == null || !e.IsValid) return false;
+        int hasParent = parent.IsValid ? 1 : 0;
+        return _api.SetParent(e.Index, e.Generation, parent.Index, parent.Generation, hasParent) != 0;
+    }
+
+    /// <summary>
+    /// アクターの現在の親を取得する。ルート直下なら false（parent は Entity.None）。
+    /// 遅延適用前の SetParent はまだ反映されていない点に注意。
+    /// </summary>
+    public static bool TryGetParent(Entity e, out Entity parent)
+    {
+        parent = Entity.None;
+        if (!_available || _api.ParentOf == null || !e.IsValid) return false;
+        uint* outBuf = stackalloc uint[2];
+        if (_api.ParentOf(e.Index, e.Generation, outBuf) == 0) return false;
+        parent = new Entity(outBuf[0], outBuf[1]);
+        return true;
+    }
+
     // ── 入力（キー・マウス）─────────────────────────────────────
 
     /// <summary>キー入力判定（kind: 0=押下中/1=押した瞬間/2=離した瞬間）。</summary>
@@ -929,4 +978,10 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, uint, uint, float*, int, float*, int, int> DrawPrimitive;
     /// <summary>3D プリミティブ描画コマンドの発行（SEED.Draw3D）。Rust 側 draw_primitive3d と同順。</summary>
     public delegate* unmanaged[Cdecl]<int, float*, int, float*, int, int> DrawPrimitive3D;
+    /// <summary>(path, pathLen, parentIdx, parentGen, out uint[2] entity) → 1/0（親の末尾の子として生成）</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, uint, uint, uint*, int> InstantiateUnder;
+    /// <summary>(idx, gen, parentIdx, parentGen, hasParent) → 1/0（親の付け替え。hasParent=0 でルートへ）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, uint, uint, int, int> SetParent;
+    /// <summary>(idx, gen, out uint[2] parent) → 1/0（現在の親。ルート直下は 0）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, uint*, int> ParentOf;
 }

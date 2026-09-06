@@ -657,6 +657,83 @@ if (player.GetComponent<Transform>() is { } pt) { pt.Position = SEED.Vector3.Zer
 - 破棄済み GameObject への読み取りは既定値、書き込みは無視されます（クラッシュしません）。
 - 現時点の制限: Play 開始後に生成・破棄したアクターの**物理コライダーは物理スレッドに反映されません**。コライダーの収集は Play 開始時（およびシーン遷移時）の一括処理で、`Instantiate` / `Destroy` は物理側の追加・除去を行わないためです。衝突・トリガーの**イベント通知**自体は実装済みですが（第 2 節）、実行時に生成したアクターはその対象になりません。
 
+### 階層操作（親を指定した生成 / SetParent / Parent）
+
+```csharp
+// 親を指定して生成する（生成されたアクターは parent の「末尾の子」になる）
+var parent = SEED.GameObject.Find("Canvas");
+var icon   = SEED.GameObject.Instantiate("assets://actors/Icon.actor", parent);
+
+// 親を付け替える（フレーム末尾に遅延適用。Destroy と同じモデル）
+icon.SetParent(parent);                 // parent の末尾の子へ移動
+icon.SetParent(null);                   // シーンのルート（トップレベル）へ移動
+
+// 現在の親を取得する（ルート直下なら IsValid == false）
+SEED.GameObject p = icon.Parent;
+if (p.IsValid) { SEED.Debug.Log("親あり"); }
+```
+
+| 項目 | 挙動 |
+| --- | --- |
+| `Instantiate(path, parent)` | 構築したアクターを `parent` の**末尾の子**として追加。親が無効なら**ルート直下へフォールバック**し `[Script]` 警告 |
+| `SetParent(parent)` | `parent` の**末尾の子**へ移動（遅延適用。`Instantiate` / `Destroy` と発行順） |
+| `SetParent(null)` | シーンのルート（トップレベル）へ移動 |
+| `Parent` | 現在の親。ルート直下なら `IsValid == false` の GameObject |
+| 拒否 — 循環 | 自分自身・自分の子孫を親に指定した場合は**何もしない**（`[Script]` 警告） |
+| 拒否 — 不在 | 対象または親がシーンに存在しない（破棄済み）場合は**何もしない** |
+| 拒否 — 種別 | 3D アクターを 2D アクターの子にはできない／2D アクターは Canvas を持たない 3D アクターの子にできない |
+| 3D の変換 | `Transform` は**ワールド空間**で保持されるため、付け替えても**ワールド位置・回転・スケールは変わらない** |
+| 2D の変換 | `CanvasTransform` は**親相対**。ローカル値はそのまま維持されるので、**画面上の位置は新しい親を基準に変わる** |
+
+> **重要**: `SetParent` は遅延適用（フレーム末尾）です。呼んだ直後に `Parent` を読んでも**まだ古い親**が返ります。判定は翌フレーム以降に行ってください。拒否された場合もツリーは一切変化せず、例外も戻り値も出ません（Play 中のログに `[Script] SetParent 拒否: …` が出ます）。
+
+```csharp
+// 例: UI アイコンのプーリング（N 個をキャンバス配下へ生成して使い回す）
+using SEED;
+using SEEDEditor.Scripting;
+
+public class IconPool : SEEDScript
+{
+    [SerializeField] string iconActor = "assets://actors/ui/Icon.actor";
+    [SerializeField] int    poolSize  = 16;
+
+    GameObject[] _pool;   // 生成済みアイコン（親 = このアクター）
+    int          _used;   // 今フレームで使った個数
+
+    public override void OnStart()
+    {
+        // 自分（Canvas 配下の UI アクター）の子として、まとめて作り置きする
+        _pool = new GameObject[poolSize];
+        for (int i = 0; i < poolSize; i++)
+        {
+            _pool[i] = GameObject.Instantiate(iconActor, gameObject);
+        }
+    }
+
+    /// <summary>1 個借りて表示位置を設定する。足りなければ IsValid=false が返る。</summary>
+    public GameObject Rent(Vector2 pos)
+    {
+        if (_used >= _pool.Length) return default;
+        var go = _pool[_used++];
+        if (go.GetComponent<CanvasTransform>() is { } ct) ct.Position = pos;   // 親相対の座標
+        if (go.GetComponent<Sprite>() is { } sp) sp.Color = Color.White;       // 表示に戻す
+        return go;
+    }
+
+    /// <summary>全部返却する（破棄せず隠すだけ。Destroy/Instantiate を繰り返さない）。</summary>
+    public void ReturnAll()
+    {
+        for (int i = 0; i < _used; i++)
+        {
+            if (_pool[i].GetComponent<Sprite>() is { } sp) sp.Color = new Color(1f, 1f, 1f, 0f);
+        }
+        _used = 0;
+    }
+}
+```
+
+> **重要 — プーリングの要点**: 使い終わったアイコンは `Destroy` せず、透明化（`Sprite.Color` のアルファを 0 にする）や画面外への退避で「隠す」だけにします。`Instantiate` / `Destroy` はどちらもフレーム末尾の遅延適用で、毎フレーム作り直すとアクター構築（ファイル読み込み・ECS 挿入）のコストがそのまま積み上がるためです。2D アイコンの親は **Canvas を持つアクター**（または 2D アクター）である必要があります。
+
 ### Transform（3D 位置・回転・スケール）
 
 ```csharp

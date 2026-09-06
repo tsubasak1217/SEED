@@ -35,6 +35,7 @@ use super::{
     App, actor_subtree_size, despawn_actor_recursive,
     extract_actor_by_dfs, extract_actor_by_dfs_with_origin, find_actor_by_dfs,
     find_actor_by_dfs_mut, find_actor_by_entity_mut, insert_group_actor, remove_actor_by_dfs,
+    validate_reparent_kind,
 };
 
 impl App {
@@ -866,6 +867,8 @@ impl App {
         //    ルート（new_parent_dfs = None）への 2D 配置は従来どおり許可する。
         // 逆方向・同種同士で上記に該当しないものは許可のまま。
         // ツリーから抽出する前に判定し、違反時は一切ツリーへ触れずに早期 return する。
+        // 判定そのものは actor_utils::validate_reparent_kind に集約している
+        //（スクリプトの GameObject.SetParent / Instantiate(path, parent) と同じルールを使う）。
         {
             let scene = self.scene.as_ref().unwrap();
             let mut c = 0u32;
@@ -879,26 +882,11 @@ impl App {
                     .map(|a| (a.is_2d(), a.has_kind(ComponentKind::Canvas)))
                     .unwrap_or((false, false))
             });
-            let new_parent_is_2d = new_parent_info.map(|(is_2d, _)| is_2d).unwrap_or(false);
-            // ① 3D 子 → 2D 親を禁止
-            if new_parent_is_2d && !child_is_2d {
+            if let Err(msg) = validate_reparent_kind(child_is_2d, new_parent_info) {
                 if let Some(ipc) = &self.ipc {
-                    ipc.send("LOAD_ERROR:3Dアクターは2Dアクターの子にできません");
+                    ipc.send(&format!("LOAD_ERROR:{msg}"));
                 }
                 return;
-            }
-            // ② 2D 子 → Canvas を持たない 3D 親を禁止
-            if child_is_2d {
-                if let Some((parent_is_2d, parent_has_canvas)) = new_parent_info {
-                    if !parent_is_2d && !parent_has_canvas {
-                        if let Some(ipc) = &self.ipc {
-                            ipc.send(
-                                "LOAD_ERROR:2DアクターはCanvasを持たない3Dアクターの子にできません",
-                            );
-                        }
-                        return;
-                    }
-                }
             }
         }
 
