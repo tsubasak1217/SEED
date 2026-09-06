@@ -4,28 +4,42 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// 魚が掛かった瞬間に一度だけ流す<b>「HIT!!!」の帯演出</b>。
 ///
 /// <b>付ける場所</b>: キャンバス（FishingUI）の子アクタ「HitBanner」。
-/// 見た目を持たない空の Actor2D で構わない（本スクリプトは参照した 5 つの要素を動かすだけ）。
+/// 見た目を持たない空の Actor2D で構わない（本スクリプトは参照した要素を動かすだけ）。
 ///
 /// <b>画づくり</b>
-/// 画面を斜め（<see cref="bandAngleDegrees"/> 度）に横切る<b>白い帯</b>を 1 枚置き、
-/// その上下を<b>黒いベタ</b>で塗り潰す（帯の外は黒一色になる）。
-/// 黒の上側に「Lv◯ 魚名」を左から、黒の下側に「HIT!!!」を右からスライドインさせる。
-/// 帯・黒・文字はすべて同じ角度で傾くので、文字も帯に沿って斜めに走る。
+/// 画面を斜め（<see cref="bandAngleDegrees"/> 度）に横切る<b>黒い帯（バー）を 2 本</b>、
+/// 帯の中心線から法線方向へ ±<see cref="barOffsetPx"/> だけ離して平行に置く。
+/// 上のバーには「Lv◯ 魚名」を、下のバーには「HIT!!!」を重ねる。
+/// バーは<b>法線方向</b>（画面外→定位置）へ、文字は<b>帯の長手方向</b>へ走るので、
+/// 「上下から挟み込んで、文字が左右から差し込まれる」動きになる。
+/// 白帯は使わない（旧演出の名残。シーンの割り当てを壊さないよう参照だけ残し、毎フレーム透明にする）。
 ///
 /// <b>座標系</b>
 /// キャンバス座標は <b>Y が下向き</b>（<c>Anchor (0,0)</c> が左上）。よって
 /// 帯の長手方向 <c>d = (cosθ, sinθ)</c>、帯の法線 <c>n = (−sinθ, cosθ)</c> は
-/// 「n が帯の<b>下</b>側を向く」向きになる。位置はすべてこの 2 ベクトルの線形結合で作るので、
-/// 角度を変えても上下の黒・文字の並びは崩れない（シーン側には初期値だけを置く）。
+/// 「d が右（θ が負なら右上がり）」「n が帯の<b>下</b>側」を向く。
+/// 位置はすべてこの 2 ベクトルの線形結合で作るので、角度を変えても上下関係は崩れない。
+///
+/// <b>θ = −12°・既定値での実座標（符号確認用）</b>
+/// <code>
+///   d = ( 0.9781, −0.2079)  … 右へ・少し上へ（右上がり）
+///   n = ( 0.2079,  0.9781)  … 右へ・下へ（＝画面の「下」側）
+///
+///   上バー   = −n × 280            = (− 58.22, −273.88)   … 画面の上（やや左）
+///   下バー   = +n × 280            = (  58.22,  273.88)   … 画面の下（やや右）
+///   上の文字 = −n×280 + d×(−200)   = (−253.84, −232.30)   … 上バーの上を左寄りに
+///   下の文字 = +n×280 + d×(+200)   = ( 253.84,  232.30)   … 下バーの上を右寄りに
+/// </code>
+/// （シーンに置いてある初期値と一致する。＝ 上バーは必ず n の負側＝画面上側になる）
 ///
 /// <b>時間割（すべてインスペクタ指定）</b>
 /// <code>
-///   0                     帯が開く（Y スケール 0→1・easeOut）        bandAppearSeconds
-///   ├─ 文字がスライドイン（画面外 ±textSlideOffsetPx → 定位置）      textSlideSeconds
-///   ├─ 静止                                                          holdSeconds
-///   └─ 文字が戻り、帯が閉じる                                        exitSeconds
+///   0             上下のバーが法線方向にスライドイン（easeOutCubic）    barSlideSeconds
+///   textDelaySeconds 後 ─ 文字が帯方向にスライドイン（easeOutCubic）    textSlideSeconds
+///   両方そろってから ── 静止                                            holdSeconds
+///   最後 ── バーは来た方向へ退場・文字は進行方向へ抜ける（easeInCubic） exitSeconds
 /// </code>
-/// 既定値の合計は 1.85 秒で、<see cref="FishingFight"/> の余白（LeadIn・100BPM で 4 拍＝2.4 秒）
+/// 既定値の合計は 1.75 秒で、<see cref="FishingFight"/> の余白（LeadIn・100BPM で 4 拍＝2.4 秒）
 /// より短い。＝ やり取りが始まる前に必ず演出が終わる。
 ///
 /// <b>担当範囲</b>
@@ -45,57 +59,48 @@ public class HitBanner : SEEDScript
     /// <summary>0 割りを避けるための下限（秒・ピクセルの両方に使う）。</summary>
     private const float DivideEpsilon = 0.0001f;
 
-    /// <summary>帯が閉じ切った状態の Y スケール。</summary>
-    private const float BandScaleClosed = 0f;
+    /// <summary>バー・文字の等倍スケール（この演出では一切伸縮させない）。</summary>
+    private const float NoStretchScale = 1f;
 
-    /// <summary>帯が開き切った状態の Y スケール。</summary>
-    private const float BandScaleOpen = 1f;
+    /// <summary>バーのピボット（中央）。位置＝バーの中心になる。</summary>
+    private static readonly SEED.Vector2 BarPivot = new(0.5f, 0.5f);
 
-    /// <summary>帯・黒ベタの X スケール（長手方向は伸縮させない）。</summary>
-    private const float BandScaleX = 1f;
+    /// <summary>上のバー・上の文字が居る側（法線の負側＝画面の上）。</summary>
+    private const float TopSide = -1f;
 
-    /// <summary>帯の厚みの半分を求める係数。</summary>
-    private const float HalfFactor = 0.5f;
-
-    /// <summary>白い帯のピボット（中央）。上下へ均等に開く。</summary>
-    private static readonly SEED.Vector2 BandWhitePivot = new(0.5f, 0.5f);
-
-    /// <summary>上の黒ベタのピボット（下辺の中央）。ここを基点に上へ伸びる。</summary>
-    private static readonly SEED.Vector2 BandBlackTopPivot = new(0.5f, 1f);
-
-    /// <summary>下の黒ベタのピボット（上辺の中央）。ここを基点に下へ伸びる。</summary>
-    private static readonly SEED.Vector2 BandBlackBottomPivot = new(0.5f, 0f);
+    /// <summary>下のバー・下の文字が居る側（法線の正側＝画面の下）。</summary>
+    private const float BottomSide = 1f;
 
     /// <summary>レベル不明（<see cref="Fish.UnknownLevel"/>）のときに出す代替文字。</summary>
     private const string UnknownLevelLabel = "?";
 
     // ─── 参照（シーンで割り当てる） ────────────────────────────
 
-    /// <summary>白い帯のスプライト（色と不透明度を書き換える）。</summary>
-    [Header("参照"), SerializeField(Label = "白帯のSprite")]
+    /// <summary>【未使用】旧演出の白帯スプライト。毎フレーム透明にするだけ。</summary>
+    [Header("参照"), SerializeField(Label = "白帯のSprite(未使用)")]
     private SEED.Sprite? bandWhiteSprite = null;
 
-    /// <summary>白い帯の CanvasTransform（位置・角度・Y スケールを書き換える）。</summary>
-    [SerializeField(Label = "白帯のCanvasTransform")]
+    /// <summary>【未使用】旧演出の白帯 CanvasTransform。シーンの割り当てを壊さないため残す。</summary>
+    [SerializeField(Label = "白帯のCanvasTransform(未使用)")]
     private SEED.CanvasTransform? bandWhiteTransform = null;
 
-    /// <summary>帯の上側を塗る黒ベタのスプライト。</summary>
-    [SerializeField(Label = "上の黒ベタのSprite")]
+    /// <summary>上のバーのスプライト（サイズ・色を書き換える）。</summary>
+    [SerializeField(Label = "上バーのSprite")]
     private SEED.Sprite? bandBlackTopSprite = null;
 
-    /// <summary>帯の上側を塗る黒ベタの CanvasTransform。</summary>
-    [SerializeField(Label = "上の黒ベタのCanvasTransform")]
+    /// <summary>上のバーの CanvasTransform（位置・角度を書き換える）。</summary>
+    [SerializeField(Label = "上バーのCanvasTransform")]
     private SEED.CanvasTransform? bandBlackTopTransform = null;
 
-    /// <summary>帯の下側を塗る黒ベタのスプライト。</summary>
-    [SerializeField(Label = "下の黒ベタのSprite")]
+    /// <summary>下のバーのスプライト。</summary>
+    [SerializeField(Label = "下バーのSprite")]
     private SEED.Sprite? bandBlackBottomSprite = null;
 
-    /// <summary>帯の下側を塗る黒ベタの CanvasTransform。</summary>
-    [SerializeField(Label = "下の黒ベタのCanvasTransform")]
+    /// <summary>下のバーの CanvasTransform。</summary>
+    [SerializeField(Label = "下バーのCanvasTransform")]
     private SEED.CanvasTransform? bandBlackBottomTransform = null;
 
-    /// <summary>「Lv◯ 魚名」のテキスト（左からスライドイン）。</summary>
+    /// <summary>「Lv◯ 魚名」のテキスト（左から入り、最後は右へ抜ける）。</summary>
     [SerializeField(Label = "レベル/魚名のText")]
     private SEED.Text? levelLabel = null;
 
@@ -103,7 +108,7 @@ public class HitBanner : SEEDScript
     [SerializeField(Label = "レベル/魚名のCanvasTransform")]
     private SEED.CanvasTransform? levelLabelTransform = null;
 
-    /// <summary>「HIT!!!」のテキスト（右からスライドイン）。</summary>
+    /// <summary>「HIT!!!」のテキスト（右から入り、最後は左へ抜ける）。</summary>
     [SerializeField(Label = "HITのText")]
     private SEED.Text? hitLabel = null;
 
@@ -115,58 +120,58 @@ public class HitBanner : SEEDScript
 
     /// <summary>
     /// 帯の傾き（度）。キャンバスの Y は下向きなので、<b>負の値で右上がり</b>になる。
-    /// 帯・黒ベタ・文字のすべてにそのまま適用する。
+    /// バー・文字のすべてにそのまま適用する。
     /// </summary>
     [Header("レイアウト"), SerializeField(Label = "帯の角度(度)")]
     private float bandAngleDegrees = -12f;
 
-    /// <summary>白い帯の厚み（ピクセル）。黒ベタの位置はこの値の半分だけ法線方向へずらす。</summary>
-    [SerializeField(Label = "帯の厚み(px)")]
-    private float bandThicknessPx = 420f;
+    /// <summary>バーの定位置（帯の中心線から法線方向への距離・px）。上バーは負側、下バーは正側。</summary>
+    [SerializeField(Label = "バーの中心からの距離(px)")]
+    private float barOffsetPx = 280f;
 
-    /// <summary>帯・黒ベタの長さ（ピクセル）。画面幅より十分長くして端を見せない。</summary>
-    [SerializeField(Label = "帯の長さ(px)")]
-    private float bandLengthPx = 3000f;
+    /// <summary>バーの長さ（帯の長手方向・px）。画面幅より十分長くして端を見せない。</summary>
+    [SerializeField(Label = "バーの長さ(px)")]
+    private float barLengthPx = 2400f;
 
-    /// <summary>黒ベタが帯の縁から伸びる長さ（ピクセル）。画面外まで届く値にする。</summary>
-    [SerializeField(Label = "黒ベタの伸び(px)")]
-    private float blackExtentPx = 1400f;
+    /// <summary>バーの太さ（帯の法線方向・px）。</summary>
+    [SerializeField(Label = "バーの太さ(px)")]
+    private float barThicknessPx = 220f;
 
-    /// <summary>文字が画面外から入ってくる距離（ピクセル・帯の長手方向）。</summary>
+    /// <summary>バーが画面外から入ってくる距離（法線方向・px）。定位置からさらにこれだけ外側が開始点。</summary>
+    [SerializeField(Label = "バーのスライド距離(px)")]
+    private float barEnterOffsetPx = 900f;
+
+    /// <summary>文字が画面外から入ってくる距離（帯の長手方向・px）。退場でも同じ距離だけ進む。</summary>
     [SerializeField(Label = "文字のスライド距離(px)")]
     private float textSlideOffsetPx = 1200f;
 
-    /// <summary>「Lv◯ 魚名」の定位置（帯の長手方向・負で左）。</summary>
+    /// <summary>「Lv◯ 魚名」の定位置（帯の長手方向・負で左）。法線方向は上バーと同じ位置。</summary>
     [SerializeField(Label = "レベル文字の位置(帯方向px)")]
-    private float levelTextAlongPx = -520f;
+    private float levelTextAlongPx = -200f;
 
-    /// <summary>「Lv◯ 魚名」の定位置（帯の法線方向・負で帯の上側）。</summary>
-    [SerializeField(Label = "レベル文字の位置(法線px)")]
-    private float levelTextAcrossPx = -230f;
-
-    /// <summary>「HIT!!!」の定位置（帯の長手方向・正で右）。</summary>
+    /// <summary>「HIT!!!」の定位置（帯の長手方向・正で右）。法線方向は下バーと同じ位置。</summary>
     [SerializeField(Label = "HIT文字の位置(帯方向px)")]
-    private float hitTextAlongPx = 520f;
-
-    /// <summary>「HIT!!!」の定位置（帯の法線方向・正で帯の下側）。</summary>
-    [SerializeField(Label = "HIT文字の位置(法線px)")]
-    private float hitTextAcrossPx = 230f;
+    private float hitTextAlongPx = 200f;
 
     // ─── 時間割 ────────────────────────────────────────────
 
-    /// <summary>帯が開くまでの秒数（Y スケール 0→1・easeOut）。</summary>
-    [Header("時間割"), SerializeField(Label = "帯が開く秒数")]
-    private float bandAppearSeconds = 0.2f;
+    /// <summary>バーがスライドインする秒数（easeOutCubic）。</summary>
+    [Header("時間割"), SerializeField(Label = "バーのスライド秒数")]
+    private float barSlideSeconds = 0.25f;
+
+    /// <summary>文字が動き出すまでの待ち（秒・再生開始から）。バーより少し遅らせて重なりを作る。</summary>
+    [SerializeField(Label = "文字の遅延秒数")]
+    private float textDelaySeconds = 0.1f;
 
     /// <summary>文字がスライドインする秒数（easeOutCubic）。</summary>
     [SerializeField(Label = "文字のスライド秒数")]
     private float textSlideSeconds = 0.35f;
 
-    /// <summary>全部そろった状態で静止する秒数。</summary>
+    /// <summary>バーと文字が両方そろってから静止する秒数。</summary>
     [SerializeField(Label = "静止秒数")]
     private float holdSeconds = 1f;
 
-    /// <summary>文字が戻り帯が閉じるまでの秒数。</summary>
+    /// <summary>退場（バーは戻り・文字は進む）にかける秒数（easeInCubic）。</summary>
     [SerializeField(Label = "終わりの秒数")]
     private float exitSeconds = 0.3f;
 
@@ -179,26 +184,15 @@ public class HitBanner : SEEDScript
     [Header("文字・色"), SerializeField(Label = "レベル文字の書式")]
     private string levelTextFormat = "Lv{0} {1}";
 
-    /// <summary>右下に出す固定文字列。</summary>
+    /// <summary>下のバーに出す固定文字列。</summary>
     [SerializeField(Label = "HITの文言")]
     private string hitText = "HIT!!!";
 
-    /// <summary>白い帯の色（RGB・0〜1）。<see cref="showWhiteBand"/> が false なら描かない。</summary>
-    [SerializeField(Label = "帯の色(RGB)")]
-    private SEED.Vector3 bandColor = new(1f, 1f, 1f);
-
-    /// <summary>
-    /// 帯（黒ベタに挟まれた中央部分）を白で塗るか。false なら中央は透明のままで、
-    /// 後ろの海の画面がそのまま見える（既定）。
-    /// </summary>
-    [SerializeField(Label = "帯を白で塗る")]
-    private bool showWhiteBand = false;
-
-    /// <summary>黒ベタの色（RGB・0〜1）。</summary>
-    [SerializeField(Label = "黒ベタの色(RGB)")]
+    /// <summary>バーの色（RGB・0〜1）。</summary>
+    [SerializeField(Label = "バーの色(RGB)")]
     private SEED.Vector3 blackColor = new(0f, 0f, 0f);
 
-    /// <summary>文字の色（RGB・0〜1）。黒ベタの上に載るので既定は白。</summary>
+    /// <summary>文字の色（RGB・0〜1）。黒バーの上に載るので既定は白。</summary>
     [SerializeField(Label = "文字の色(RGB)")]
     private SEED.Vector3 textColor = new(1f, 1f, 1f);
 
@@ -249,7 +243,7 @@ public class HitBanner : SEEDScript
 
     // ─── ライフサイクル ──────────────────────────────────────
 
-    /// <summary>初期状態（全要素を透明にして畳んでおく）。</summary>
+    /// <summary>初期状態（ピボット・書式を整え、全要素を透明にしておく）。</summary>
     public override void OnStart()
     {
         ApplyPivots();
@@ -277,56 +271,58 @@ public class HitBanner : SEEDScript
 
     // ─── 内部: 時間割 ────────────────────────────────────────
 
-    /// <summary>演出の総尺（秒）。各区間の合計。</summary>
+    /// <summary>バーと文字が「両方そろう」までの秒数（＝静止区間の開始時刻）。</summary>
+    private float EnterSeconds
+        => SEED.Mathf.Max(
+               SEED.Mathf.Max(barSlideSeconds, 0f),
+               SEED.Mathf.Max(textDelaySeconds, 0f) + SEED.Mathf.Max(textSlideSeconds, 0f));
+
+    /// <summary>演出の総尺（秒）。入り＋静止＋退場。</summary>
     private float TotalSeconds
-        => SEED.Mathf.Max(bandAppearSeconds, 0f)
-         + SEED.Mathf.Max(textSlideSeconds, 0f)
+        => EnterSeconds
          + SEED.Mathf.Max(holdSeconds, 0f)
          + SEED.Mathf.Max(exitSeconds, 0f);
 
-    /// <summary>終わりの区間が始まる時刻（秒）。</summary>
+    /// <summary>退場区間が始まる時刻（秒）。</summary>
     private float ExitStartSeconds => TotalSeconds - SEED.Mathf.Max(exitSeconds, 0f);
 
     /// <summary>
-    /// 帯の開き具合（0＝閉じ切り／1＝開き切り）。
-    /// 開く区間は easeOut で開き、終わりの区間で easeOut のまま閉じる。
+    /// バーの「外側へのはみ出し量」係数（0＝定位置／1＝画面外の開始点）。
+    /// 入りは easeOutCubic で 1→0、退場は easeInCubic で 0→1（＝来た道を戻る）。
     /// </summary>
-    private float BandOpen01()
+    private float BarOutward01()
     {
-        float appear = SEED.Mathf.Max(bandAppearSeconds, 0f);
+        float slide = SEED.Mathf.Max(barSlideSeconds, 0f);
 
-        if (elapsed < appear)
+        if (elapsed < slide)
         {
-            return EaseOutCubic(Progress01(elapsed, appear));
+            return 1f - EaseOutCubic(Progress01(elapsed, slide));
         }
         if (elapsed < ExitStartSeconds)
         {
-            return BandScaleOpen;
+            return 0f;
         }
-        float exitT = Progress01(elapsed - ExitStartSeconds, SEED.Mathf.Max(exitSeconds, 0f));
-        // 退場は出現の逆再生: 帯は中央線へ向かって閉じる（EaseIn＝ゆっくり始まり加速して消える）
-        return BandScaleOpen - EaseInCubic(exitT);
+        return EaseInCubic(Progress01(elapsed - ExitStartSeconds, SEED.Mathf.Max(exitSeconds, 0f)));
     }
 
     /// <summary>
-    /// 文字の入り具合（0＝画面外／1＝定位置）。
-    /// 帯が開き切ってからスライドインし、終わりの区間で同じ道を戻る。
+    /// 文字の進行度（−1＝入場前の位置／0＝定位置／+1＝退場後の位置）。
+    /// 符号は「上の文字（左→定位置→右）」の向きを正とする。下の文字はこれの符号反転で使う。
+    /// 入りは easeOutCubic で −1→0、退場は easeInCubic で 0→+1（＝止まらず進み続ける）。
     /// </summary>
-    private float TextIn01()
+    private float TextTravel()
     {
-        float appear = SEED.Mathf.Max(bandAppearSeconds, 0f);
+        float delay = SEED.Mathf.Max(textDelaySeconds, 0f);
         float slide = SEED.Mathf.Max(textSlideSeconds, 0f);
 
-        if (elapsed < appear) { return 0f; }
-        if (elapsed < appear + slide)
+        if (elapsed < delay) { return -1f; }
+        if (elapsed < delay + slide)
         {
-            return EaseOutCubic(Progress01(elapsed - appear, slide));
+            return EaseOutCubic(Progress01(elapsed - delay, slide)) - 1f;
         }
-        if (elapsed < ExitStartSeconds) { return 1f; }
+        if (elapsed < ExitStartSeconds) { return 0f; }
 
-        float exitT = Progress01(elapsed - ExitStartSeconds, SEED.Mathf.Max(exitSeconds, 0f));
-        // 退場は出現の逆再生: 文字は入ってきた側（左上は左へ・右下は右へ）へ EaseIn で戻る
-        return 1f - EaseInCubic(exitT);
+        return EaseInCubic(Progress01(elapsed - ExitStartSeconds, SEED.Mathf.Max(exitSeconds, 0f)));
     }
 
     /// <summary>区間内の進行度（0〜1）。長さが 0 以下なら即 1（区間を飛ばす）。</summary>
@@ -335,15 +331,16 @@ public class HitBanner : SEEDScript
     private static float Progress01(float value, float length)
         => length <= DivideEpsilon ? 1f : SEED.Mathf.Clamped01(value / length);
 
-    /// <summary>easeOutCubic（＝ 1 −(1 − t)³）。終わりへ向かってなめらかに減速する。</summary>
+    /// <summary>EaseInCubic: t³。退場用（ゆっくり動き出して加速する）。</summary>
     /// <param name="t">進行度（0〜1）。</param>
-    /// <summary>EaseInCubic: t^3。退場（出現の逆再生）用。ゆっくり動き出して加速する。</summary>
     private static float EaseInCubic(float t)
     {
         float c = SEED.Mathf.Clamped01(t);
         return c * c * c;
     }
 
+    /// <summary>easeOutCubic（＝ 1 −(1 − t)³）。終わりへ向かってなめらかに減速する。</summary>
+    /// <param name="t">進行度（0〜1）。</param>
     private static float EaseOutCubic(float t)
     {
         float inv = 1f - SEED.Mathf.Clamped01(t);
@@ -363,29 +360,26 @@ public class HitBanner : SEEDScript
         SEED.Vector2 along = new(SEED.Mathf.Cos(rad), SEED.Mathf.Sin(rad));
         SEED.Vector2 across = new(-SEED.Mathf.Sin(rad), SEED.Mathf.Cos(rad));
 
-        float open = BandOpen01();
-        float halfThickness = bandThicknessPx * HalfFactor * open;
-
         ApplyStaticLayout();
 
-        // 白帯は中心に置いたまま Y だけ伸縮させる
-        ApplyBandPart(bandWhiteTransform, SEED.Vector2.Zero, open);
-        // 黒ベタは「開いた帯の縁」に貼り付く（縁の位置も open に比例して動く）
-        ApplyBandPart(bandBlackTopTransform, across * -halfThickness, open);
-        ApplyBandPart(bandBlackBottomTransform, across * halfThickness, open);
+        // バー: 法線方向のみ。定位置 ±barOffsetPx から、さらに外側へ outward×barEnterOffsetPx。
+        float outward = BarOutward01();
+        float barDistance = barOffsetPx + outward * barEnterOffsetPx;
+        SetPosition(bandBlackTopTransform, across * (TopSide * barDistance));
+        SetPosition(bandBlackBottomTransform, across * (BottomSide * barDistance));
 
-        // 文字はスライド方向（帯の長手方向）だけ動かす。定位置は帯の座標系で指定する。
-        float slide = (1f - TextIn01()) * textSlideOffsetPx;
-        ApplyTextPart(
+        // 文字: 帯の長手方向のみ。法線方向はバーと同じ位置に載せる。
+        // travel は上の文字基準（左→右）なので、下の文字は符号を反転して右→左に走らせる。
+        float travel = TextTravel() * textSlideOffsetPx;
+        SetPosition(
             levelLabelTransform,
-            along * (levelTextAlongPx - slide) + across * levelTextAcrossPx);
-        ApplyTextPart(
+            across * (TopSide * barOffsetPx) + along * (levelTextAlongPx + travel));
+        SetPosition(
             hitLabelTransform,
-            along * (hitTextAlongPx + slide) + across * hitTextAcrossPx);
+            across * (BottomSide * barOffsetPx) + along * (hitTextAlongPx - travel));
 
-        // 色（再生中は不透明）
-        // 帯の白塗りは任意（既定 OFF＝中央は透明で海が見える）
-        SetSpriteColor(bandWhiteSprite, bandColor, showWhiteBand ? AlphaVisible : AlphaHidden);
+        // 色（再生中は不透明）。白帯は使わないので常に透明。
+        SetSpriteColor(bandWhiteSprite, blackColor, AlphaHidden);
         SetSpriteColor(bandBlackTopSprite, blackColor, AlphaVisible);
         SetSpriteColor(bandBlackBottomSprite, blackColor, AlphaVisible);
         SetTextColor(levelLabel, textColor, AlphaVisible);
@@ -393,28 +387,32 @@ public class HitBanner : SEEDScript
     }
 
     /// <summary>
-    /// 角度とサイズのように「時間で変わらない」設定を流し込む。
+    /// 角度・サイズ・スケールのように「時間で変わらない」設定を流し込む。
     /// インスペクタでの値いじりが即座に効くよう毎フレーム呼ぶ（代入だけなので安い）。
     /// </summary>
     private void ApplyStaticLayout()
     {
+        // 白帯は未使用（常に透明）だが、角度だけは揃えておく＝参照が生きていることの確認も兼ねる
         SetRotation(bandWhiteTransform);
+
         SetRotation(bandBlackTopTransform);
         SetRotation(bandBlackBottomTransform);
         SetRotation(levelLabelTransform);
         SetRotation(hitLabelTransform);
 
-        SetSpriteSize(bandWhiteSprite, bandLengthPx, bandThicknessPx);
-        SetSpriteSize(bandBlackTopSprite, bandLengthPx, blackExtentPx);
-        SetSpriteSize(bandBlackBottomSprite, bandLengthPx, blackExtentPx);
+        // バーは常に等倍（伸縮ではなくスライドで見せる演出）
+        SetScale(bandBlackTopTransform);
+        SetScale(bandBlackBottomTransform);
+
+        SetSpriteSize(bandBlackTopSprite, barLengthPx, barThicknessPx);
+        SetSpriteSize(bandBlackBottomSprite, barLengthPx, barThicknessPx);
     }
 
-    /// <summary>ピボットを既定値へ揃える（帯が縁から伸びる向きはピボットで決まる）。</summary>
+    /// <summary>バーのピボットを中央へ揃える（位置＝バーの中心として扱うため）。</summary>
     private void ApplyPivots()
     {
-        SetPivot(bandWhiteTransform, BandWhitePivot);
-        SetPivot(bandBlackTopTransform, BandBlackTopPivot);
-        SetPivot(bandBlackBottomTransform, BandBlackBottomPivot);
+        SetPivot(bandBlackTopTransform, BarPivot);
+        SetPivot(bandBlackBottomTransform, BarPivot);
     }
 
     /// <summary>
@@ -439,40 +437,33 @@ public class HitBanner : SEEDScript
         t.OutlineColor  = ToColor(outlineColor, AlphaVisible);
     }
 
-    /// <summary>全要素を透明にして帯を閉じる（待機状態）。</summary>
+    /// <summary>全要素を透明にする（待機状態）。位置は次の <see cref="Play"/> で作り直す。</summary>
     private void Hide()
     {
-        SetSpriteColor(bandWhiteSprite, bandColor, AlphaHidden);
+        SetSpriteColor(bandWhiteSprite, blackColor, AlphaHidden);
         SetSpriteColor(bandBlackTopSprite, blackColor, AlphaHidden);
         SetSpriteColor(bandBlackBottomSprite, blackColor, AlphaHidden);
         SetTextColor(levelLabel, textColor, AlphaHidden);
         SetTextColor(hitLabel, textColor, AlphaHidden);
-
-        ApplyBandPart(bandWhiteTransform, SEED.Vector2.Zero, BandScaleClosed);
-        ApplyBandPart(bandBlackTopTransform, SEED.Vector2.Zero, BandScaleClosed);
-        ApplyBandPart(bandBlackBottomTransform, SEED.Vector2.Zero, BandScaleClosed);
     }
 
     // ─── 内部: 小さな代入ヘルパ ──────────────────────────────
 
-    /// <summary>帯の 1 枚（白・黒どちらも）へ位置と Y スケールを流し込む。</summary>
+    /// <summary>CanvasTransform の位置を設定する。</summary>
     /// <param name="transform">対象（未設定可）。</param>
     /// <param name="position">キャンバス座標（アンカー中央基準）。</param>
-    /// <param name="openY">Y スケール（0＝閉じ切り）。</param>
-    private static void ApplyBandPart(SEED.CanvasTransform? transform, SEED.Vector2 position, float openY)
+    private static void SetPosition(SEED.CanvasTransform? transform, SEED.Vector2 position)
     {
         if (transform is not { } tf || !tf.IsValid) { return; }
         tf.Position = position;
-        tf.Scale = new SEED.Vector2(BandScaleX, openY);
     }
 
-    /// <summary>文字の 1 つへ位置を流し込む（文字は伸縮させない）。</summary>
+    /// <summary>CanvasTransform のスケールを等倍へ固定する。</summary>
     /// <param name="transform">対象（未設定可）。</param>
-    /// <param name="position">キャンバス座標（アンカー中央基準）。</param>
-    private static void ApplyTextPart(SEED.CanvasTransform? transform, SEED.Vector2 position)
+    private static void SetScale(SEED.CanvasTransform? transform)
     {
         if (transform is not { } tf || !tf.IsValid) { return; }
-        tf.Position = position;
+        tf.Scale = new SEED.Vector2(NoStretchScale, NoStretchScale);
     }
 
     /// <summary>CanvasTransform の回転を帯の角度へ揃える。</summary>
