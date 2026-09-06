@@ -14,6 +14,7 @@ public static class Audio
     private const int CmdPlayBgm = 1;
     private const int CmdStopBgm = 2;
     private const int CmdSetBgmVolume = 3;
+    private const int CmdSetBgmSpeed = 4;
 
     /// <summary>
     /// 効果音を再生する（多重再生可）。
@@ -39,4 +40,17 @@ public static class Audio
     /// <summary>再生中の BGM の音量を変更する（1.0 = 等倍）。</summary>
     public static void SetBgmVolume(float volume)
         => ScriptHost.AudioCommand(CmdSetBgmVolume, "", volume, 0);
+
+    /// <summary>
+    /// BGM の再生速度を変更する（1.0 = 等倍）。
+    ///
+    /// 早送り／スロー再生なので<b>速度に比例してピッチも変わる</b>
+    /// （テンポだけを変える機能ではない）。指定値は 0.25〜4.0 にクランプされる。
+    ///
+    /// 速度は BGM を差し替えても保持される（<see cref="PlayBgm"/> の前に指定しても後に
+    /// 指定しても同じ結果になる）。等倍へ戻したいときは明示的に 1.0 を渡すこと。
+    /// </summary>
+    /// <param name="speed">再生速度（1.0 = 等倍）</param>
+    public static void SetBgmSpeed(float speed)
+        => ScriptHost.AudioCommand(CmdSetBgmSpeed, "", speed, 0);
 }

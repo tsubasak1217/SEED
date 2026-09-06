@@ -26,6 +26,13 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameCont
 /// <see cref="metronomeSePath"/> を鳴らし、小節頭だけ音量を上げる。
 /// <see cref="Paused"/>（わらしべ連鎖のアタリ受付中）のあいだは時計ごと止まる＝無音になる。
 ///
+/// ■ ドラムループ（<see cref="SetupDrumLoop"/>）
+/// バトル中は BGM 枠でドラムループを鳴らし、再生速度を <c>魚のBPM ÷ 素材のBPM</c> に
+/// 変えて魚の拍と同じテンポにする。開始は余白の頭（余白が拍子の倍数でないときだけ
+/// 次の小節頭まで待つ）、以後は <see cref="drumResyncBars"/> 小節ごとに鳴らし直して
+/// ズレを消す。<see cref="Paused"/> 中は止め、再開時は次のループ境界へ揃えて鳴らし直す。
+/// メトロノームと併用する前提だが、メトロノームの音量を 0 にすればドラムだけにもできる。
+///
 /// ■ フェーズ（LeadIn だけ<b>拍単位</b>・それ以外は<b>小節単位</b>、切り替えは必ず小節頭）
 /// <code>
 /// 余白(LeadIn) → 出題(Call) → 回答(Answer) → 隙(Rest) → 出題 → …
@@ -148,6 +155,34 @@ public class FishingFight : SEEDScript
     /// <summary>フェーズの長さ（小節数）の下限。</summary>
     private const int MinPhaseBars = 1;
 
+    /// <summary>
+    /// ドラムループ素材の拍子（4/4 前提）。素材の小節数から総拍数を出すのに使う。
+    /// 魚側の拍子（<see cref="beatsPerBar"/>）とは別物なので混同しないこと。
+    /// </summary>
+    private const int DrumMaterialBeatsPerBar = 4;
+
+    /// <summary>ドラムループ素材の小節数の下限。</summary>
+    private const int MinDrumLoopBars = 1;
+
+    /// <summary>ドラムループ素材の BPM の下限（0 除算・速度破綻の番人値）。</summary>
+    private const float MinDrumLoopBpm = 1f;
+
+    /// <summary>ドラムループを再同期しないことを表す小節数。</summary>
+    private const int DrumResyncDisabled = 0;
+
+    /// <summary>再生速度の既定値（等倍）。</summary>
+    private const float NormalPlaybackSpeed = 1f;
+
+    /// <summary>音量の下限（負の音量を渡さないためのクランプ値）。</summary>
+    private const float VolumeMin = 0f;
+
+    /// <summary>
+    /// 「小節頭／ループ境界にいるか」を判定するときの許容誤差（小節数・ループ数の単位）。
+    /// ちょうど境界の時刻が浮動小数の丸めで境界の直前に見えると、
+    /// 切り上げが 1 区間ぶん余計に進んでしまうため、その幅だけ手前を境界とみなす。
+    /// </summary>
+    private const float GridEpsilon = 0.0001f;
+
     /// <summary>「魚データ側の指定なし（＝バトル側の既定を使う）」を表す値。</summary>
     private const int UseFightDefaultBars = 0;
 
@@ -232,6 +267,37 @@ public class FishingFight : SEEDScript
     /// <summary>小節頭の拍で鳴らす音量（0〜1）。強拍を分かりやすくするため大きめにする。</summary>
     [SerializeField(Label = "メトロノームの音量(小節頭)")]
     private float metronomeBarHeadVolume = 0.9f;
+
+    // ─── ドラムループ ────────────────────────────────────
+    //
+    // バトル中だけ BGM 枠でドラムループを鳴らし、再生速度を
+    // 「魚の BPM ÷ 素材の BPM」に変えて魚の拍と完全に同じテンポにする。
+    // メトロノームと二重で鳴らす前提だが、metronomeVolume 系を 0 にすれば
+    // ドラムだけにもできる（メトロノームは拍の頭を鳴らす別系統のまま）。
+
+    /// <summary>ドラムループ素材のアセットパス（空ならドラムを鳴らさない）。</summary>
+    [Header("ドラムループ"), SerializeField(Label = "ドラムループの音源")]
+    private string drumLoopPath = "assets://mainGame/audios/drum.wav";
+
+    /// <summary>ドラムループ素材そのものの BPM（この値を基準に再生速度を決める）。</summary>
+    [SerializeField(Label = "素材のBPM")]
+    private float drumLoopBpm = 100f;
+
+    /// <summary>ドラムループ素材の小節数（4/4 前提）。ループ長＝この小節数ぶんの拍。</summary>
+    [SerializeField(Label = "素材の小節数(4/4)")]
+    private int drumLoopBars = 2;
+
+    /// <summary>ドラムループの音量（1.0 = 等倍）。</summary>
+    [SerializeField(Label = "ドラムループの音量")]
+    private float drumLoopVolume = 0.8f;
+
+    /// <summary>
+    /// ドラムループを鳴らし直して位相ズレを消す間隔（小節）。0 なら再同期しない。
+    /// 実際の再同期はこの小節数<b>以上</b>で、かつ「ループ先頭かつ魚の小節頭」に
+    /// なる最小周期の整数倍になる（<see cref="SetupDrumLoop"/> で算出）。
+    /// </summary>
+    [SerializeField(Label = "再同期の間隔(小節・0で無効)")]
+    private int drumResyncBars = 8;
 
     // ─── 判定窓 ──────────────────────────────────────────
 
@@ -682,6 +748,30 @@ public class FishingFight : SEEDScript
     /// <summary>最後にメトロノームを鳴らした拍番号（<see cref="NoBeatPlayed"/> ＝ 未再生）。</summary>
     private int lastBeatPlayed = NoBeatPlayed;
 
+    /// <summary>このバトルでドラムループを鳴らす予定か（パス未設定なら false）。</summary>
+    private bool drumScheduled = false;
+
+    /// <summary>ドラムループがいま実際に鳴っているか（開始待ち・一時停止中は false）。</summary>
+    private bool drumPlaying = false;
+
+    /// <summary>
+    /// ドラムループの（再）開始時刻＝ループ位相 0 の時刻（<see cref="clockTime"/> と同じ時間軸）。
+    /// 必ず魚の小節頭に一致する。
+    /// </summary>
+    private float drumStartTime = 0f;
+
+    /// <summary>
+    /// ドラムループの位相が「ループ先頭かつ魚の小節頭」へ戻る最小周期（秒）。
+    /// 開始・再同期・一時停止からの復帰はすべてこの周期の整数倍の時刻で行う。
+    /// </summary>
+    private float drumUnitSeconds = 0f;
+
+    /// <summary>ドラムループを鳴らし直す周期（秒）。0 以下なら再同期しない。</summary>
+    private float drumResyncSeconds = 0f;
+
+    /// <summary><see cref="Paused"/> によってドラムを止めたか（再開時に整列して鳴らし直す）。</summary>
+    private bool drumPausedByFight = false;
+
     /// <summary>現在のフェーズが始まった時刻（秒・必ず小節頭）。</summary>
     private float phaseStartTime = 0f;
 
@@ -793,6 +883,10 @@ public class FishingFight : SEEDScript
         // 完全に一致する（余白の拍数が拍子の倍数でなくてもズレない）。
         EnterLeadInOrCall();
 
+        // ドラムループは拍時計の原点が決まってから仕込む
+        //（開始時刻を余白の開始＝いまの clockTime から算出するため、必ずこの順序で呼ぶ）
+        SetupDrumLoop();
+
         InvalidateSegmentCache();
         ApplyUi();
 
@@ -829,12 +923,20 @@ public class FishingFight : SEEDScript
         // 一時停止中（わらしべ連鎖のアタリ受付中）は時計も値も一切進めない。
         if (Paused)
         {
+            // 拍時計だけが止まってドラムが鳴り続けると位相が壊れるので、ドラムも止める。
+            // 再開時は次のループ境界（＝小節頭）へ揃えて鳴らし直す（UpdateDrumLoop 参照）。
+            if (drumPlaying)
+            {
+                StopDrumLoop();
+                drumPausedByFight = true;
+            }
             ApplyUi();
             return;
         }
 
         clockTime += deltaTime;
 
+        UpdateDrumLoop();
         UpdateMetronome();
         UpdatePhaseTransition();
         UpdateTiredTimer();
@@ -1005,6 +1107,158 @@ public class FishingFight : SEEDScript
         bool barHead = beatsPerBar > 0 && beat % beatsPerBar == 0;
         SEED.Audio.Play(metronomeSePath, SEED.Mathf.Clamped01(barHead ? metronomeBarHeadVolume : metronomeVolume));
     }
+
+    // ─── 内部処理: ドラムループ ─────────────────────────────
+
+    /// <summary>
+    /// ドラムループを仕込む【ドラムの時間設計を決める唯一の入口】。
+    /// <see cref="SetupRhythm"/> と <see cref="EnterLeadInOrCall"/> の<b>後</b>に呼ぶこと
+    /// （魚の BPM と拍時計の原点が確定していないと開始時刻を計算できない）。
+    ///
+    /// 【設計】
+    /// ・素材は 4/4・<see cref="drumLoopBars"/> 小節と仮定し、総拍数
+    ///   <c>loopBeats = drumLoopBars × 4</c> で長さを数える。
+    ///   再生速度を <c>魚のBPM ÷ 素材のBPM</c> にすると、素材の 1 拍が魚の 1 拍に一致するので、
+    ///   ループ長は<b>魚のテンポでの loopBeats 拍</b>になる。
+    /// ・開始時刻は「いまの時刻（＝余白の開始。余白なしなら最初の Call）以降で最初の魚の小節頭」。
+    ///   余白が拍子の倍数（例: 1 小節 = 4 拍）なら余白の開始そのものが小節頭なので、
+    ///   要求どおり<b>余白の頭からドラムが鳴る</b>。倍数でない半端な余白のときだけ、
+    ///   小節頭が来るまで開始を遅らせる（＝小節線が絶対にズレない）。
+    /// ・ループ先頭が再び魚の小節頭に重なる最小周期
+    ///   <c>drumUnitSeconds = loopBeats × (beatsPerBar / gcd(loopBeats, beatsPerBar)) 拍</c>
+    ///   を求めておき、再同期も一時停止からの復帰もこの周期の時刻でだけ行う。
+    ///   （余白 1 小節・素材 2 小節・4 拍子なら loopBeats=8, beatsPerBar=4 → 8 拍 = 2 小節ごと。）
+    /// </summary>
+    private void SetupDrumLoop()
+    {
+        StopDrumLoop();
+        drumScheduled = false;
+        drumPausedByFight = false;
+        drumUnitSeconds = 0f;
+        drumResyncSeconds = 0f;
+
+        if (string.IsNullOrEmpty(drumLoopPath)) { return; }
+
+        // 素材の総拍数（4/4 前提）と、位相が魚の小節頭へ戻る最小のループ回数
+        int loopBeats = SEED.Mathf.Max(drumLoopBars, MinDrumLoopBars) * DrumMaterialBeatsPerBar;
+        int barBeats = SEED.Mathf.Max(beatsPerBar, MinBeatsPerBar);
+        int unitBeats = loopBeats * (barBeats / Gcd(loopBeats, barBeats));
+        drumUnitSeconds = unitBeats * secondsPerBeat;
+
+        // 再同期の周期: 指定小節数以上で、かつ最小周期の整数倍（＝必ずループ先頭かつ小節頭）
+        if (drumResyncBars > DrumResyncDisabled && unitBeats > 0)
+        {
+            int neededBeats = drumResyncBars * barBeats;
+            int multiplier = SEED.Mathf.Max(CeilDiv(neededBeats, unitBeats), 1);
+            drumResyncSeconds = unitBeats * multiplier * secondsPerBeat;
+        }
+
+        drumStartTime = NextBarHeadAtOrAfter(clockTime);
+        drumScheduled = true;
+
+        // 開始時刻に既に達しているなら（＝余白の頭が小節頭）このフレームで鳴らし始める
+        UpdateDrumLoop();
+    }
+
+    /// <summary>
+    /// ドラムループを進める【開始待ち・再同期・一時停止復帰の唯一の集約点】。
+    /// 拍時計を進めた直後に毎フレーム呼ぶ。
+    /// </summary>
+    private void UpdateDrumLoop()
+    {
+        if (!drumScheduled) { return; }
+
+        // 一時停止から戻ったフレーム: 次のループ境界（＝小節頭）まで開始を持ち越す
+        if (drumPausedByFight)
+        {
+            drumPausedByFight = false;
+            drumStartTime = NextDrumBoundaryAtOrAfter(clockTime);
+        }
+
+        // 開始待ち
+        if (!drumPlaying)
+        {
+            if (clockTime + DivideEpsilon >= drumStartTime) { StartDrumLoop(); }
+            return;
+        }
+
+        // 再同期（鳴らし直しで累積したズレを消す。わずかな途切れは許容する）
+        if (drumResyncSeconds <= DivideEpsilon) { return; }
+        if (clockTime + DivideEpsilon >= drumStartTime + drumResyncSeconds)
+        {
+            drumStartTime += drumResyncSeconds;
+            StartDrumLoop();
+        }
+    }
+
+    /// <summary>
+    /// ドラムループを実際に鳴らす【BGM 発行の唯一の出口】。
+    /// 再生速度＝<c>魚の BPM ÷ 素材の BPM</c>（速度に比例してピッチも上がる点は素材側で許容する）。
+    /// </summary>
+    private void StartDrumLoop()
+    {
+        float fishBpm = secondsPerBeat > DivideEpsilon
+            ? SecondsPerMinute / secondsPerBeat
+            : MinBpm;
+        float speed = fishBpm / SEED.Mathf.Max(drumLoopBpm, MinDrumLoopBpm);
+
+        SEED.Audio.PlayBgm(drumLoopPath, SEED.Mathf.Max(drumLoopVolume, VolumeMin), loop: true);
+        SEED.Audio.SetBgmSpeed(speed);
+        drumPlaying = true;
+    }
+
+    /// <summary>ドラムループを止める（鳴っていなければ何もしない）。</summary>
+    private void StopDrumLoop()
+    {
+        if (!drumPlaying) { return; }
+
+        SEED.Audio.StopBgm();
+        SEED.Audio.SetBgmSpeed(NormalPlaybackSpeed);   // 速度は BGM をまたいで保持されるため戻す
+        drumPlaying = false;
+    }
+
+    /// <summary>指定時刻以降で最初の魚の小節頭の時刻（秒）。</summary>
+    /// <param name="time">基準の時刻（<see cref="clockTime"/> と同じ時間軸）。</param>
+    private float NextBarHeadAtOrAfter(float time)
+    {
+        float barSeconds = SecondsPerBar;
+        if (barSeconds <= DivideEpsilon) { return time; }
+        return SEED.Mathf.Ceil(time / barSeconds - GridEpsilon) * barSeconds;
+    }
+
+    /// <summary>
+    /// 指定時刻以降で最初の「ループ先頭かつ魚の小節頭」になる時刻（秒）。
+    /// <see cref="drumStartTime"/> からの <see cref="drumUnitSeconds"/> の整数倍で求める。
+    /// </summary>
+    /// <param name="time">基準の時刻（<see cref="clockTime"/> と同じ時間軸）。</param>
+    private float NextDrumBoundaryAtOrAfter(float time)
+    {
+        if (drumUnitSeconds <= DivideEpsilon) { return NextBarHeadAtOrAfter(time); }
+        float units = SEED.Mathf.Ceil((time - drumStartTime) / drumUnitSeconds - GridEpsilon);
+        return drumStartTime + units * drumUnitSeconds;
+    }
+
+    /// <summary>最大公約数（0 以下が混ざっても 1 以上を返す番人つき）。</summary>
+    /// <param name="a">値 A。</param>
+    /// <param name="b">値 B。</param>
+    private static int Gcd(int a, int b)
+    {
+        a = SEED.Mathf.Abs(a);
+        b = SEED.Mathf.Abs(b);
+        while (b != 0)
+        {
+            int t = a % b;
+            a = b;
+            b = t;
+        }
+        return a > 0 ? a : 1;
+    }
+
+    /// <summary>切り上げ除算（除数が 0 以下なら 1 を返す番人つき）。</summary>
+    /// <param name="value">被除数。</param>
+    /// <param name="divisor">除数。</param>
+    private static int CeilDiv(int value, int divisor)
+        => divisor > 0 ? (value + divisor - 1) / divisor : 1;
 
     /// <summary>
     /// フェーズの切り替えと予告を行う【フェーズ遷移の唯一の集約点】。
@@ -1558,6 +1812,15 @@ public class FishingFight : SEEDScript
     /// <summary>実行時の状態をすべて初期値へ戻す（開始前・終了後の共通処理）。</summary>
     private void ResetRuntimeState()
     {
+        // ドラムループ（BGM 枠）はバトル中だけ鳴らすので、終了・糸切れ・釣り上げ・
+        // 開始直前のいずれからここへ来ても必ず止める【停止の唯一の出口】。
+        StopDrumLoop();
+        drumScheduled = false;
+        drumPausedByFight = false;
+        drumStartTime = 0f;
+        drumUnitSeconds = 0f;
+        drumResyncSeconds = 0f;
+
         Active = false;
         Paused = false;                // 一時停止の持ち越しを防ぐ
         LineBroken = false;

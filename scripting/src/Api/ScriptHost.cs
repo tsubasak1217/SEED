@@ -465,7 +465,9 @@ public static unsafe class ScriptHost
     // ── オーディオ ───────────────────────────────────────────────
 
     /// <summary>
-    /// オーディオコマンドを発行する（kind: 0=SE再生/1=BGM再生/2=BGM停止/3=BGM音量）。
+    /// オーディオコマンドを発行する
+    /// （kind: 0=SE再生/1=BGM再生/2=BGM停止/3=BGM音量/4=BGM再生速度）。
+    /// kind=4 では volume 引数を再生速度として使う。
     /// 受理されたら true。
     /// </summary>
     public static bool AudioCommand(int kind, string path, float volume, int flag)

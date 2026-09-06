@@ -248,6 +248,8 @@ pub enum ScriptAudioCommand {
     StopBgm,
     /// BGM の音量を変更する
     SetBgmVolume { volume: f32 },
+    /// BGM の再生速度を変更する（1.0 = 等倍。速度に比例してピッチも変わる）
+    SetBgmSpeed { speed: f32 },
     /// AudioComponent の音源を再生する（entity = スロットエンティティ）
     PlayComponent { entity: Entity },
     /// AudioComponent の音源を停止する（entity = スロットエンティティ）
@@ -2072,11 +2074,14 @@ const AUDIO_CMD_PLAY_SE: i32 = 0;        // SE 再生（path, volume）
 const AUDIO_CMD_PLAY_BGM: i32 = 1;       // BGM 再生（path, volume, flag=ループ 0/1）
 const AUDIO_CMD_STOP_BGM: i32 = 2;       // BGM 停止
 const AUDIO_CMD_SET_BGM_VOLUME: i32 = 3; // BGM 音量変更（volume）
+const AUDIO_CMD_SET_BGM_SPEED: i32 = 4;  // BGM 再生速度変更（volume 引数を速度として使う）
 
 /// オーディオコマンドを発行する。受理=1 / 失敗=0。
 ///
 /// kind: 上記 AUDIO_CMD_*。path は SE/BGM 再生時のみ使用（それ以外は無視）。
 /// volume は 1.0 = 等倍。flag は BGM 再生時のループ指定（0/1）。
+/// AUDIO_CMD_SET_BGM_SPEED では volume 引数を**再生速度**として解釈する
+/// （数値 1 個の追加コマンドのために FFI シグネチャを増やさない設計）。
 unsafe extern "system" fn ffi_audio(
     kind: i32,
     path: *const u8, path_len: i32,
@@ -2095,6 +2100,7 @@ unsafe extern "system" fn ffi_audio(
         }
         AUDIO_CMD_STOP_BGM       => ScriptAudioCommand::StopBgm,
         AUDIO_CMD_SET_BGM_VOLUME => ScriptAudioCommand::SetBgmVolume { volume },
+        AUDIO_CMD_SET_BGM_SPEED  => ScriptAudioCommand::SetBgmSpeed { speed: volume },
         _ => return 0,
     };
     AUDIO_COMMANDS.with(|q| q.borrow_mut().push(cmd));

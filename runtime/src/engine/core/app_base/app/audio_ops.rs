@@ -70,6 +70,11 @@ impl App {
                         audio.set_bgm_volume(volume);
                     }
                 }
+                ScriptAudioCommand::SetBgmSpeed { speed } => {
+                    if let Some(audio) = &mut self.audio {
+                        audio.set_bgm_speed(speed);
+                    }
+                }
                 ScriptAudioCommand::PlayComponent { entity } => {
                     // コンポーネントデータを読み取ってから再生する
                     //（scene と audio の借用を分離するため 2 段階で行う）

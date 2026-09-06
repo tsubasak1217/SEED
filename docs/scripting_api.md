@@ -593,9 +593,11 @@ SEED.Audio.PlayBgm("assets://sounds/stage1.ogg");
 SEED.Audio.PlayBgm("assets://sounds/jingle.ogg", 0.8f, loop: false);
 
 SEED.Audio.SetBgmVolume(0.3f);   // BGM 音量を変更
+SEED.Audio.SetBgmSpeed(1.25f);   // BGM 再生速度を変更（1.0 = 等倍）
 SEED.Audio.StopBgm();            // BGM を停止
 ```
 
+- `SetBgmSpeed` は早送り／スロー再生なので、**速度に比例してピッチも変わります**（テンポだけを変える機能ではありません）。値は 0.25〜4.0 にクランプされ、BGM を差し替えても保持されます（`PlayBgm` の前後どちらで指定しても同じ結果）。等倍へ戻すときは明示的に `1.0` を渡してください。素材の BPM が分かっていれば `SetBgmSpeed(目標BPM / 素材BPM)` で任意のテンポに合わせられます。
 - 同じファイルはキャッシュされ、2 回目以降の再生でディスク読み込みは発生しません。
 - オーディオデバイスが無い環境では全操作が無音で無視されます（エラーになりません）。
 - アクターに紐づく音源（3D 距離減衰・パン対応）は **AudioComponent**（第 7 節の `gameObject.GetComponent<AudioSource>()`）を使ってください。こちらの静的 API はアクターに紐づかない BGM / 単発 SE 向けです。

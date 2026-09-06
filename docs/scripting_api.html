@@ -609,7 +609,9 @@ transform.Position += horizontal + <span class="k">new</span> <span class="t">SE
   <div class="api"><code class="sig">Audio.PlayBgm("assets://sounds/stage1.ogg")</code><span class="desc">BGM を再生（既存 BGM は停止して置き換え。既定でループ）</span></div>
   <div class="api"><code class="sig">Audio.PlayBgm(path, 0.8f, loop: false)</code><span class="desc">音量・ループ指定で BGM を再生</span></div>
   <div class="api"><code class="sig">Audio.SetBgmVolume(0.3f)</code><span class="desc">BGM 音量を変更</span></div>
+  <div class="api"><code class="sig">Audio.SetBgmSpeed(1.25f)</code><span class="desc">BGM 再生速度を変更（1.0 = 等倍・0.25〜4.0 にクランプ）</span></div>
   <div class="api"><code class="sig">Audio.StopBgm()</code><span class="desc">BGM を停止</span></div>
+  <div class="warn"><b>SetBgmSpeed</b> は早送り／スロー再生のため<b>速度に比例してピッチも変わります</b>（テンポだけを変える機能ではありません）。速度は BGM を差し替えても保持されるので、等倍へ戻すときは明示的に 1.0 を渡してください。素材の BPM が分かっていれば <code>SetBgmSpeed(目標BPM / 素材BPM)</code> で任意のテンポに合わせられます。</div>
   <div class="warn">同じファイルはキャッシュされ、2 回目以降の再生でディスク読み込みは発生しません。オーディオデバイスが無い環境では全操作が無音で無視されます。アクターに紐づく音源（3D 距離減衰・パン）は <b>AudioSource コンポーネント</b>（第 7 節）を使ってください。</div>
 </section>
 

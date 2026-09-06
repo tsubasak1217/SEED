@@ -29,6 +29,17 @@ use crate::engine::ecs::Entity;
 /// コンポーネント音源はエミッタを単位球面上に置くため、この値との比率でパンの強さが決まる。
 const EAR_OFFSET: f32 = 0.3;
 
+// ─── BGM 再生速度の定数 ──────────────────────────────────────
+
+/// BGM 再生速度の下限（これ未満は音として成立しないため切り上げる）。
+const BGM_SPEED_MIN: f32 = 0.25;
+
+/// BGM 再生速度の上限。
+const BGM_SPEED_MAX: f32 = 4.0;
+
+/// BGM 再生速度の既定値（等倍）。
+const BGM_SPEED_DEFAULT: f32 = 1.0;
+
 // ─── 生バイト列の共有ラッパー ────────────────────────────────
 
 /// キャッシュ済み音声ファイルの生バイト列。
@@ -54,6 +65,10 @@ pub struct AudioManager {
     handle: OutputStreamHandle,
     /// 再生中の BGM（None = BGM なし）
     bgm: Option<Sink>,
+    /// BGM の再生速度（1.0 = 等倍）。
+    /// **Sink をまたいで保持する**ため、play_bgm で新しく作った Sink にもこの値が適用される
+    /// （スクリプトが再生前に速度を決めても、再生後に変えても同じ結果になる）。
+    bgm_speed: f32,
     /// 再生中の SE 群（finished は cleanup で回収する）
     se_sinks: Vec<Sink>,
     /// 再生中のコンポーネント音源（Key = AudioComponent のスロットエンティティ）。
@@ -74,6 +89,7 @@ impl AudioManager {
             _stream: stream,
             handle,
             bgm: None,
+            bgm_speed: BGM_SPEED_DEFAULT,
             se_sinks: Vec::new(),
             component_voices: HashMap::new(),
             component_started: HashSet::new(),
@@ -109,6 +125,8 @@ impl AudioManager {
             return;
         };
         sink.set_volume(volume.max(0.0));
+        // 保持している再生速度を新しい Sink にも引き継ぐ（等倍ならリセット扱いになる）
+        sink.set_speed(self.bgm_speed);
         if looped {
             sink.append(decoder.repeat_infinite());
         } else {
@@ -128,6 +146,25 @@ impl AudioManager {
     pub fn set_bgm_volume(&mut self, volume: f32) {
         if let Some(sink) = &self.bgm {
             sink.set_volume(volume.max(0.0));
+        }
+    }
+
+    /// BGM の再生速度を変更する（1.0 = 等倍）。
+    ///
+    /// rodio の Sink::set_speed は**リサンプリングによる早送り／スロー再生**なので、
+    /// 速度に比例してピッチも上下する（テンポだけを変える機能ではない）。
+    ///
+    /// 値は BGM_SPEED_MIN..=BGM_SPEED_MAX にクランプして保持し、BGM 再生中でなくても
+    /// 記憶する（次の play_bgm で作られる Sink にも適用される）。
+    pub fn set_bgm_speed(&mut self, speed: f32) {
+        let speed = if speed.is_finite() {
+            speed.clamp(BGM_SPEED_MIN, BGM_SPEED_MAX)
+        } else {
+            BGM_SPEED_DEFAULT
+        };
+        self.bgm_speed = speed;
+        if let Some(sink) = &self.bgm {
+            sink.set_speed(speed);
         }
     }
 
