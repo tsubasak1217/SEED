@@ -984,6 +984,14 @@ public class FishingController : SEEDScript
     [SerializeField(Label = "キャストの音量")]
     private float castSeVolume = 1f;
 
+    /// <summary>竿を引いて構えた瞬間（<see cref="EnterWindup"/>、投げる前の振りかぶり）に鳴らす擦れ音のアセットパス。空文字なら鳴らさない。</summary>
+    [SerializeField(Label = "構え（引き）の効果音")]
+    private string windupSePath = "assets://mainGame/audios/kosure.mp3";
+
+    /// <summary>構え効果音の音量（0〜1）。</summary>
+    [SerializeField(Label = "構えの音量")]
+    private float windupSeVolume = 1f;
+
     /// <summary>ウキが着水した瞬間（<see cref="UpdateFlight"/> で Casting → Floating へ遷移する瞬間）に鳴らす効果音のアセットパス。空文字なら鳴らさない。</summary>
     [SerializeField(Label = "着水の効果音")]
     private string splashSePath = "assets://mainGame/audios/sei_ge_mizu_chapon06.mp3";
@@ -1808,6 +1816,9 @@ public class FishingController : SEEDScript
         windupAccumPx = WindupThreshold();
         swingAccumPx = 0f;
         previewElapsed = 0f;
+
+        // 竿を引いた手応えとして擦れ音を鳴らす（投げる前の振りかぶりに入った瞬間）
+        PlaySe(windupSePath, windupSeVolume);
 
         SEED.Debug.Log("[Fishing] Windup");
     }
