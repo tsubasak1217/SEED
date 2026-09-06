@@ -81,9 +81,21 @@ public class StunEffect : SEEDScript
     // ─── 効果音（すべて Inspector から調整可能） ─────────────────
 
     /// <summary>
-    /// 演出を開始した瞬間に鳴らす効果音のアセットパス。空文字なら鳴らさない。
+    /// スタン中ずっとループ再生する音源（<c>StunEffect</c> アクタの Audio スロット）。
+    /// <see cref="Show"/> の立ち上がりで Loop=true にして再生を開始し、
+    /// <see cref="Stop"/> で停止する。未割り当て（IsValid==false）の場合は
+    /// 互換のため <see cref="stunSePath"/> による従来のワンショット再生にフォールバックする。
     /// </summary>
-    [Header("効果音"), SerializeField(Label = "スタンの効果音")]
+    [Header("効果音"), SerializeField(Label = "スタンの音源(ループ)")]
+    private SEED.AudioSource? stunAudio;
+
+    /// <summary>
+    /// <see cref="stunAudio"/> 未割り当て時のフォールバック用ワンショット効果音パス。
+    /// 空文字なら鳴らさない。<see cref="stunAudio"/> が有効なときは、
+    /// 空文字でなければ Play 前に <see cref="SEED.AudioSource.Path"/> へ上書きするための
+    /// Inspector 差し替え用パスとしても使う。
+    /// </summary>
+    [SerializeField(Label = "スタンの効果音(フォールバック/上書き用パス)")]
     private string stunSePath = "assets://mainGame/audios/stan.mp3";
 
     /// <summary>スタン効果音の音量（0〜1）。</summary>
@@ -155,10 +167,22 @@ public class StunEffect : SEEDScript
         showing = true;
         ApplyStarLayout();
 
-        // 「畳んでいた → 出す」の立ち上がりでだけ鳴らす（空文字なら無音を許容）
-        if (!wasShowing && !string.IsNullOrEmpty(stunSePath))
+        // 「畳んでいた → 出す」の立ち上がりでだけ鳴らす（毎フレーム Show されても鳴らし直さない）
+        if (!wasShowing)
         {
-            SEED.Audio.Play(stunSePath, stunSeVolume);
+            if (stunAudio is { IsValid: true } audio)
+            {
+                // ループ音源側: Inspector でパス差し替えが指定されていれば反映してからループ再生
+                if (!string.IsNullOrEmpty(stunSePath)) { audio.Path = stunSePath; }
+                audio.Volume = stunSeVolume;
+                audio.Loop = true;
+                audio.Play();
+            }
+            else if (!string.IsNullOrEmpty(stunSePath))
+            {
+                // フォールバック: AudioSource 未割り当て時は従来どおりワンショットで鳴らす
+                SEED.Audio.Play(stunSePath, stunSeVolume);
+            }
         }
     }
 
@@ -179,6 +203,9 @@ public class StunEffect : SEEDScript
     public void Stop()
     {
         showing = false;
+
+        // ループ中の効果音を止める（未割り当て/未再生でも IsValid ガードで安全）
+        if (stunAudio is { IsValid: true } audio) { audio.Stop(); }
 
         for (int i = 0; i < stars.Count; i++)
         {
