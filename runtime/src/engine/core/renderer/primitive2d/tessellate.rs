@@ -45,6 +45,10 @@ const BEZIER_MAX_SEGMENTS: u32 = 512;
 const POINT_EPSILON: f32 = 1e-4;
 /// 正多角形の最小頂点数。
 const POLY_MIN_VERTICES: u32 = 3;
+/// 全周の角度（度）。
+const FULL_CIRCLE_DEG: f32 = 360.0;
+/// 「全周とみなす」角度の許容誤差（度）。359.999° 等を全周として扱う。
+const FULL_CIRCLE_EPS_DEG: f32 = 1e-3;
 
 // ─── メッシュ ────────────────────────────────────────────────
 
@@ -394,10 +398,19 @@ pub fn arc_points(
     out
 }
 
-/// 円環（リング）セクタの閉輪郭を返す。
+/// 円環（リング）セクタの閉輪郭を返す。**部分リング（sweep < 360°）専用**。
 ///
 /// 外周を start→end、内周を end→start と辿って 1 本の単純多角形にする。
-/// 全周（360°）の場合も同じ輪郭でよい（内周と外周が縮退せず耳刈りが通る）。
+///
+/// 【全周で使ってはいけない理由】
+/// sweep が 360° の場合、外周の終点と始点、内周の終点と始点がそれぞれ同一座標に
+/// なるため、「外周リング＋幅ゼロのスリット＋内周リング」という**縮退した自己接触
+/// 多角形**になる。これを耳刈り（`triangulate_ear_clip`）へ渡すと穴が認識されず、
+/// 円盤全体が塗り潰される（＝リングが単色の円になる不具合の直接原因）。
+/// 全周リングの塗りは `fill_ring_band()`（三角形ストリップ）を使うこと。
+///
+/// 安全弁として、全周が渡された場合も重複端点だけは落として返す
+/// （それでもスリットは残るため、塗りには使わない）。
 pub fn ring_contour(
     center: [f32; 2],
     inner_r: f32,
@@ -406,17 +419,192 @@ pub fn ring_contour(
     end_deg: f32,
 ) -> Vec<[f32; 2]> {
     let sweep = end_deg - start_deg;
+    let full = is_full_circle(sweep);
     let segs = arc_segments_for(outer_r.max(inner_r), sweep);
     let mut out = arc_points(center, outer_r, outer_r, start_deg, end_deg, segs, false);
+    if full {
+        out.pop(); // 全周では最終点が始点と重なるので落とす
+    }
     // 内半径が 0 なら扇形（中心 1 点で閉じる）
     if inner_r <= POINT_EPSILON {
-        out.push(center);
+        if !full {
+            out.push(center);
+        }
     } else {
-        out.extend(arc_points(
-            center, inner_r, inner_r, end_deg, start_deg, segs, false,
-        ));
+        let mut inner = arc_points(center, inner_r, inner_r, end_deg, start_deg, segs, false);
+        if full {
+            inner.pop();
+        }
+        out.extend(inner);
     }
     out
+}
+
+// ─── 円環（リング／円弧帯）の塗り ───────────────────────────
+
+/// sweep（度）が全周とみなせるか。
+///
+/// 浮動小数の誤差で 359.9999 になった場合も全周として扱う。
+#[inline]
+fn is_full_circle(sweep_deg: f32) -> bool {
+    sweep_deg.abs() >= FULL_CIRCLE_DEG - FULL_CIRCLE_EPS_DEG
+}
+
+/// 扇形（内半径 0 のリング）を塗る。
+///
+/// 全周なら「中心点を含まない閉じた円輪郭」、部分なら「中心点で閉じた扇形」を
+/// `fill_contour` へ渡す（どちらも単純多角形なので耳刈りが正しく通る）。
+fn fill_sector(
+    mesh: &mut Mesh2d,
+    center: [f32; 2],
+    radius: f32,
+    start_deg: f32,
+    end_deg: f32,
+    feather: f32,
+) {
+    let sweep = end_deg - start_deg;
+    let segs = arc_segments_for(radius, sweep);
+    if is_full_circle(sweep) {
+        // 全周: 円の輪郭そのもの（終点は始点と重なるので落とす）
+        let mut c = arc_points(center, radius, radius, start_deg, end_deg, segs, false);
+        c.pop();
+        fill_contour(mesh, &c, feather);
+    } else {
+        // 部分: 中心 → 弧 → （閉じる）で扇形
+        let c = arc_points(center, radius, radius, start_deg, end_deg, segs, true);
+        fill_contour(mesh, &c, feather);
+    }
+}
+
+/// 円環の帯（inner_r < outer_r）を **三角形ストリップ** で塗る。
+///
+/// 耳刈りは「穴のある形状」を扱えないため、リングは内周／外周の対応点どうしを
+/// 直接つないで四角形（＝三角形 2 枚）を並べる。これなら全周でも縮退しない。
+///
+/// アンチエイリアスのフェザー帯は **外周・内周の両方** に張る。押し出し方向は
+/// 中心からの半径方向（外周は外向き、内周は内向き）なので、頂点ごとの法線が
+/// 連続し、角の隙間を埋める処理が要らない。
+/// 部分リング（sweep < 360°）では半径方向の 2 本の切り口（キャップ）にも
+/// 接線方向のフェザー帯と角の三角形を張る。
+fn fill_ring_band(
+    mesh: &mut Mesh2d,
+    center: [f32; 2],
+    inner_r: f32,
+    outer_r: f32,
+    start_deg: f32,
+    end_deg: f32,
+    feather: f32,
+) {
+    let sweep = end_deg - start_deg;
+    if sweep.abs() <= POINT_EPSILON || outer_r - inner_r <= POINT_EPSILON {
+        return;
+    }
+    let full = is_full_circle(sweep);
+    let segs = arc_segments_for(outer_r, sweep);
+    // 各分割点の角度・半径方向（外向き単位ベクトル）を先に作る。
+    let start = start_deg.to_radians();
+    let end = end_deg.to_radians();
+    let dirs: Vec<[f32; 2]> = (0..=segs)
+        .map(|i| {
+            let t = i as f32 / segs as f32;
+            let a = start + (end - start) * t;
+            [a.cos(), a.sin()]
+        })
+        .collect();
+    // 半径 r・方向 d の座標。
+    let at = |d: [f32; 2], r: f32| [center[0] + d[0] * r, center[1] + d[1] * r];
+
+    // ── 本体（alpha = 1）: 区間ごとに四角形を 2 三角形で張る ──
+    for i in 0..segs as usize {
+        let (d0, d1) = (dirs[i], dirs[i + 1]);
+        let (o0, o1) = (at(d0, outer_r), at(d1, outer_r));
+        let (i0, i1) = (at(d0, inner_r), at(d1, inner_r));
+        mesh.push_tri((o0, 1.0), (o1, 1.0), (i1, 1.0));
+        mesh.push_tri((o0, 1.0), (i1, 1.0), (i0, 1.0));
+    }
+    if feather <= 0.0 {
+        return;
+    }
+    // 内側のフェザーは内半径を超えて中心を跨がないよう制限する。
+    let feather_in = feather.min(inner_r);
+
+    // ── 外周・内周のフェザー帯（alpha 1 → 0）──
+    for i in 0..segs as usize {
+        let (d0, d1) = (dirs[i], dirs[i + 1]);
+        // 外周: 半径方向の外向きへ押し出す
+        let (o0, o1) = (at(d0, outer_r), at(d1, outer_r));
+        let (o0f, o1f) = (at(d0, outer_r + feather), at(d1, outer_r + feather));
+        mesh.push_tri((o0, 1.0), (o1, 1.0), (o1f, 0.0));
+        mesh.push_tri((o0, 1.0), (o1f, 0.0), (o0f, 0.0));
+        // 内周: 半径方向の内向きへ押し出す
+        let (i0, i1) = (at(d0, inner_r), at(d1, inner_r));
+        let (i0f, i1f) = (at(d0, inner_r - feather_in), at(d1, inner_r - feather_in));
+        mesh.push_tri((i0, 1.0), (i1, 1.0), (i1f, 0.0));
+        mesh.push_tri((i0, 1.0), (i1f, 0.0), (i0f, 0.0));
+    }
+
+    // ── 部分リングの切り口（キャップ）──
+    if full {
+        return;
+    }
+    // 掃引の向き（正 = 角度が増える方向）。キャップの外向きは接線の逆／順。
+    let dir_sign = if sweep >= 0.0 { 1.0 } else { -1.0 };
+    // (端点の半径方向, その端でのキャップ外向き) の 2 組
+    let caps = [
+        // 始端: 掃引の手前側 = 接線の逆向き
+        (dirs[0], -dir_sign),
+        // 終端: 掃引の先側 = 接線の順向き
+        (dirs[segs as usize], dir_sign),
+    ];
+    for (d, tan_sign) in caps {
+        // 接線（角度が増える向き）は半径方向を +90° 回したもの
+        let out_n = [-d[1] * tan_sign, d[0] * tan_sign];
+        let (o, ip) = (at(d, outer_r), at(d, inner_r));
+        let of = [o[0] + out_n[0] * feather, o[1] + out_n[1] * feather];
+        let ifp = [ip[0] + out_n[0] * feather, ip[1] + out_n[1] * feather];
+        mesh.push_tri((o, 1.0), (ip, 1.0), (ifp, 0.0));
+        mesh.push_tri((o, 1.0), (ifp, 0.0), (of, 0.0));
+        // 角（キャップ帯と外周／内周帯の間）を三角形で塞ぐ
+        let o_rad = at(d, outer_r + feather);
+        mesh.push_tri((o, 1.0), (of, 0.0), (o_rad, 0.0));
+        let i_rad = at(d, inner_r - feather_in);
+        mesh.push_tri((ip, 1.0), (i_rad, 0.0), (ifp, 0.0));
+    }
+}
+
+/// 円環を輪郭線（Outline）で描く。
+///
+/// 全周なら外周・内周をそれぞれ独立した閉じた折れ線として描く
+/// （1 本の輪郭にすると半径方向に余計な線が 1 本入るため）。
+/// 部分リングなら外周＋内周＋半径方向 2 辺を 1 本の閉輪郭として描く。
+fn stroke_ring(
+    mesh: &mut Mesh2d,
+    center: [f32; 2],
+    inner_r: f32,
+    outer_r: f32,
+    start_deg: f32,
+    end_deg: f32,
+    thickness: f32,
+    feather: f32,
+) {
+    let sweep = end_deg - start_deg;
+    if !is_full_circle(sweep) {
+        let c = ring_contour(center, inner_r, outer_r, start_deg, end_deg);
+        if c.len() >= 3 {
+            stroke_polyline(mesh, &c, true, thickness, feather);
+        }
+        return;
+    }
+    // 全周: 外周と内周を別々の閉じた円として描く
+    let segs = arc_segments_for(outer_r.max(inner_r), sweep);
+    for r in [outer_r, inner_r] {
+        if r <= POINT_EPSILON {
+            continue;
+        }
+        let mut c = arc_points(center, r, r, start_deg, end_deg, segs, false);
+        c.pop(); // 終点＝始点の重複を落としてから閉じる
+        stroke_polyline(mesh, &c, true, thickness, feather);
+    }
 }
 
 // ─── 角丸 ────────────────────────────────────────────────────
@@ -590,8 +778,16 @@ pub fn tessellate(cmd: &PrimitiveCommand, feather: f32) -> Mesh2d {
             if outer <= POINT_EPSILON {
                 return mesh;
             }
-            let c = ring_contour(center, inner, outer, cmd.extras[2], cmd.extras[3]);
-            emit_closed(&mut mesh, &c, outline, thickness, feather);
+            let (start, end) = (cmd.extras[2], cmd.extras[3]);
+            if outline {
+                stroke_ring(&mut mesh, center, inner, outer, start, end, thickness, feather);
+            } else if inner <= POINT_EPSILON {
+                // 内半径 0 → 扇形（従来どおり中心を含む輪郭を耳刈り）
+                fill_sector(&mut mesh, center, outer, start, end, feather);
+            } else {
+                // 円環 → 耳刈りではなく内外周のストリップで塗る（全周でも縮退しない）
+                fill_ring_band(&mut mesh, center, inner, outer, start, end, feather);
+            }
         }
         // ── 円弧 ──
         PrimitiveKind::Arc => {
@@ -608,10 +804,16 @@ pub fn tessellate(cmd: &PrimitiveCommand, feather: f32) -> Mesh2d {
                 let pl = arc_points(center, radius, radius, start, end, segs, false);
                 stroke_polyline(&mut mesh, &pl, false, thickness, feather);
             } else {
-                // 塗りモード: 太さ thickness のリング（radius を帯の中心とする）
+                // 塗りモード: 太さ thickness のリング帯（radius を帯の中心とする）
                 let half = thickness.max(MIN_THICKNESS) * 0.5;
-                let c = ring_contour(center, (radius - half).max(0.0), radius + half, start, end);
-                fill_contour(&mut mesh, &c, feather);
+                let inner = (radius - half).max(0.0);
+                let outer = radius + half;
+                if inner <= POINT_EPSILON {
+                    // 帯が中心まで届く → 扇形として塗る
+                    fill_sector(&mut mesh, center, outer, start, end, feather);
+                } else {
+                    fill_ring_band(&mut mesh, center, inner, outer, start, end, feather);
+                }
             }
         }
         // ── 3 次ベジエ（常に線）──
@@ -805,6 +1007,149 @@ mod tests {
         let c3 = cmd(PrimitiveKind::Polyline);
         assert!(tessellate(&c3, 1.0).is_empty());
     }
+
+    // ── リング（円環）のテスト用ヘルパ ──────────────────────
+
+    /// alpha = 1 の三角形（＝塗りの本体。フェザー帯は除く）だけを取り出す。
+    fn solid_triangles(mesh: &Mesh2d) -> Vec<([f32; 2], [f32; 2], [f32; 2])> {
+        mesh.idx
+            .chunks_exact(3)
+            .filter_map(|t| {
+                let (a, b, c) = (
+                    mesh.verts[t[0] as usize],
+                    mesh.verts[t[1] as usize],
+                    mesh.verts[t[2] as usize],
+                );
+                // 3 頂点すべてが不透明なものだけが「本体」
+                (a.alpha >= 1.0 && b.alpha >= 1.0 && c.alpha >= 1.0)
+                    .then_some((a.pos, b.pos, c.pos))
+            })
+            .collect()
+    }
+
+    /// 本体三角形の面積合計。
+    fn solid_area(mesh: &Mesh2d) -> f32 {
+        solid_triangles(mesh)
+            .iter()
+            .map(|(a, b, c)| (cross(sub(*b, *a), sub(*c, *a)) * 0.5).abs())
+            .sum()
+    }
+
+    /// リング用コマンドを作る。
+    fn ring_cmd(inner: f32, outer: f32, start: f32, end: f32) -> PrimitiveCommand {
+        let mut c = cmd(PrimitiveKind::Ring);
+        c.points = vec![[0.0, 0.0]];
+        c.extras[0] = inner;
+        c.extras[1] = outer;
+        c.extras[2] = start;
+        c.extras[3] = end;
+        c
+    }
+
+    /// 【回帰】全周リング（内 88 / 外 90）の塗りが中心を覆わないこと。
+    ///
+    /// 以前は「外周＋幅ゼロのスリット＋内周」という縮退多角形を耳刈りへ渡しており、
+    /// 穴が認識されず円盤全体が塗られていた（レーダーが真っ黄色になる不具合）。
+    #[test]
+    fn ring_full_circle_fill_does_not_cover_center() {
+        let mesh = tessellate(&ring_cmd(88.0, 90.0, 0.0, 360.0), 1.0);
+        assert!(!mesh.is_empty(), "リングが空メッシュになっている");
+        // どの三角形も中心 (0,0) を含まない
+        for (a, b, c) in solid_triangles(&mesh) {
+            assert!(
+                !point_in_triangle([0.0, 0.0], a, b, c),
+                "中心を覆う三角形がある: {a:?} {b:?} {c:?}"
+            );
+        }
+        // 塗り面積 ≒ π(90² - 88²)
+        let expect = std::f32::consts::PI * (90.0 * 90.0 - 88.0 * 88.0);
+        let got = solid_area(&mesh);
+        assert!(
+            (got - expect).abs() / expect < 0.05,
+            "面積が想定外: got={got} expect={expect}"
+        );
+    }
+
+    /// リングセクタ（部分リング）の塗り面積が扇形帯の面積と一致する。
+    #[test]
+    fn ring_sector_fill_area() {
+        // 90° ぶんのリング（内 40 / 外 50）
+        let mesh = tessellate(&ring_cmd(40.0, 50.0, 0.0, 90.0), 1.0);
+        let expect = std::f32::consts::PI * (50.0 * 50.0 - 40.0 * 40.0) * (90.0 / 360.0);
+        let got = solid_area(&mesh);
+        assert!(
+            (got - expect).abs() / expect < 0.05,
+            "面積が想定外: got={got} expect={expect}"
+        );
+        // 中心は塗られない
+        for (a, b, c) in solid_triangles(&mesh) {
+            assert!(!point_in_triangle([0.0, 0.0], a, b, c));
+        }
+    }
+
+    /// 内半径 0 のリング（＝扇形）は中心を含み、面積が扇形と一致する。
+    #[test]
+    fn ring_zero_inner_is_sector() {
+        let mesh = tessellate(&ring_cmd(0.0, 50.0, 0.0, 90.0), 1.0);
+        let expect = std::f32::consts::PI * 50.0 * 50.0 * (90.0 / 360.0);
+        let got = solid_area(&mesh);
+        assert!((got - expect).abs() / expect < 0.05, "got={got}");
+        // 扇形なので中心は覆われている
+        assert!(solid_triangles(&mesh)
+            .iter()
+            .any(|(a, b, c)| point_in_triangle([0.0, 0.0], *a, *b, *c)));
+    }
+
+    /// Arc の Fill は「太さ thickness の帯」になり、中心を塗らない。
+    #[test]
+    fn arc_band_fill_area() {
+        let mut c = cmd(PrimitiveKind::Arc);
+        c.points = vec![[0.0, 0.0]];
+        c.extras[0] = 60.0; // 半径（帯の中心）
+        c.extras[1] = 0.0; // 開始角
+        c.extras[2] = 360.0; // 終了角（全周）
+        c.thickness = 4.0; // → 内 58 / 外 62
+        let mesh = tessellate(&c, 1.0);
+        let expect = std::f32::consts::PI * (62.0 * 62.0 - 58.0 * 58.0);
+        let got = solid_area(&mesh);
+        assert!(
+            (got - expect).abs() / expect < 0.05,
+            "面積が想定外: got={got} expect={expect}"
+        );
+        for (a, b, c3) in solid_triangles(&mesh) {
+            assert!(!point_in_triangle([0.0, 0.0], a, b, c3), "中心が塗られた");
+        }
+    }
+
+    /// 全周リングの Outline は外周・内周の 2 本を描き、半径方向の線を出さない。
+    #[test]
+    fn ring_full_circle_outline_has_no_radial_spoke() {
+        let mut c = ring_cmd(40.0, 50.0, 0.0, 360.0);
+        c.mode = PrimitiveDrawMode::Outline;
+        c.thickness = 2.0;
+        let mesh = tessellate(&c, 0.0);
+        assert!(!mesh.is_empty());
+        // 半径方向のスポークがあれば、内周(40)と外周(50)の中間半径(45 付近)に
+        // 頂点が現れる。線の太さ 2（半径 ±1）を考慮しても 43..47 は空のはず。
+        let mid = mesh.verts.iter().any(|v| {
+            let r = (v.pos[0] * v.pos[0] + v.pos[1] * v.pos[1]).sqrt();
+            (43.0..47.0).contains(&r)
+        });
+        assert!(!mid, "全周リングの輪郭に半径方向の線が入っている");
+    }
+
+    /// 円（Circle）の塗り輪郭には終点の重複が無い（面積が正しく出る）。
+    #[test]
+    fn circle_fill_contour_has_no_duplicate_endpoint() {
+        let mut c = cmd(PrimitiveKind::Circle);
+        c.points = vec![[0.0, 0.0]];
+        c.extras = [50.0, 1.0, 1.0, 0.0, 0.0];
+        let mesh = tessellate(&c, 1.0);
+        let expect = std::f32::consts::PI * 50.0 * 50.0;
+        let got = solid_area(&mesh);
+        assert!((got - expect).abs() / expect < 0.05, "got={got}");
+    }
+
 
     /// SRT が点列へ適用される（平行移動）。
     #[test]
