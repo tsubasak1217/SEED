@@ -183,9 +183,16 @@ public class HitBanner : SEEDScript
     [SerializeField(Label = "HITの文言")]
     private string hitText = "HIT!!!";
 
-    /// <summary>白い帯の色（RGB・0〜1）。</summary>
+    /// <summary>白い帯の色（RGB・0〜1）。<see cref="showWhiteBand"/> が false なら描かない。</summary>
     [SerializeField(Label = "帯の色(RGB)")]
     private SEED.Vector3 bandColor = new(1f, 1f, 1f);
+
+    /// <summary>
+    /// 帯（黒ベタに挟まれた中央部分）を白で塗るか。false なら中央は透明のままで、
+    /// 後ろの海の画面がそのまま見える（既定）。
+    /// </summary>
+    [SerializeField(Label = "帯を白で塗る")]
+    private bool showWhiteBand = false;
 
     /// <summary>黒ベタの色（RGB・0〜1）。</summary>
     [SerializeField(Label = "黒ベタの色(RGB)")]
@@ -368,7 +375,8 @@ public class HitBanner : SEEDScript
             along * (hitTextAlongPx + slide) + across * hitTextAcrossPx);
 
         // 色（再生中は不透明）
-        SetSpriteColor(bandWhiteSprite, bandColor, AlphaVisible);
+        // 帯の白塗りは任意（既定 OFF＝中央は透明で海が見える）
+        SetSpriteColor(bandWhiteSprite, bandColor, showWhiteBand ? AlphaVisible : AlphaHidden);
         SetSpriteColor(bandBlackTopSprite, blackColor, AlphaVisible);
         SetSpriteColor(bandBlackBottomSprite, blackColor, AlphaVisible);
         SetTextColor(levelLabel, textColor, AlphaVisible);
