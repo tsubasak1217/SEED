@@ -189,15 +189,17 @@ fn placement_actor_name(name_prefix: &str, index: usize) -> String {
     format!("{name_prefix}_{:0width$}", index + 1, width = NAME_INDEX_WIDTH)
 }
 
-/// グループフォルダ（2D なら CanvasTransform 付きの 2D アクタ）を作る。
+/// グループフォルダ（2D なら単位 CanvasTransform 付きのフォルダノード）を作る。
 ///
-/// 2D グループをフォルダノードにすると `canvas_collect` がサブツリーを打ち切り、
-/// 配下のスプライトが描画対象から外れる（`handle_create_group` と同じ理由）。
+/// 2D フォルダに CanvasTransform を持たせないと `canvas_collect` などのキャンバス走査が
+/// サブツリーを打ち切り、配下のスプライトが描画対象から外れる。そこで 2D だけは
+/// 単位 CanvasTransform を必ず添える（`handle_create_group` と同じ設計）。
 fn spawn_placement_group(world: &mut World, wl: u32, is_2d: bool, name: &str) -> Actor {
     let entity = world.spawn();
     let mut group = if is_2d {
+        // 単位変換なので子のワールド変換には影響しない（透過ノードのまま）
         world.insert(entity, CanvasTransform::default());
-        Actor::new_2d(entity, name.to_string())
+        Actor::new_folder_2d(entity, name.to_string())
     } else {
         Actor::new_folder(entity, name.to_string())
     };

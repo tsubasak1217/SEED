@@ -997,10 +997,15 @@ impl App {
     /// # 生成するアクタの種別
     /// - 通常（3D 側）: `Actor::new_folder`（Transform 非保持の透過フォルダノード）。
     ///   子のワールド変換に一切影響しないため、まとめても見た目が動かない。
-    /// - 2D 側（親が 2D、または子に 2D が含まれる）: `Actor::new_2d` + 既定の
-    ///   `CanvasTransform`。2D の描画収集（canvas_collect）は CanvasTransform を
-    ///   持たないアクタでサブツリーを打ち切るため、フォルダノードで包むと
-    ///   スプライトが描画対象から外れてしまう。
+    /// - 2D 側（親が 2D、または子に 2D が含まれる）: `Actor::new_folder_2d` + 既定の
+    ///   `CanvasTransform`（単位変換）。2D もフォルダノード（is_folder=true）だが、
+    ///   **単位 CanvasTransform を必ず持たせる**点だけが 3D と異なる。
+    ///   キャンバス系の走査（canvas_collect / pick_2d / collider2d / physics2d 等）は
+    ///   CanvasTransform を持たないアクタでサブツリーを打ち切る仕様のため、変換を
+    ///   持たないフォルダで包むと配下のスプライトが描画・当たり判定から外れてしまう。
+    ///   単位変換であれば子のワールド変換には影響しないので、フォルダの「透過ノード」
+    ///   としての性質は保たれる。Inspector は is_folder を見て Transform 欄を出さない
+    ///   （component_ops）ので、この単位変換がユーザー編集で壊れることもない。
     ///
     /// 2D と 3D の子が混在する選択はどちらの器でも破綻するため拒否する。
     ///
@@ -1051,9 +1056,11 @@ impl App {
             // Actor::with_name() の Entity::default() は index=0 で全アクタと衝突するため使わない。
             let entity = scene.world.spawn();
             let group = if group_is_2d {
-                // 2D グループ: 既定の CanvasTransform（原点・等倍）を持たせて透過的にする
+                // 2D グループ: フォルダノード + 単位 CanvasTransform（原点・等倍）。
+                // 単位変換なので子のワールド変換に影響せず、かつキャンバス走査が
+                // サブツリーを打ち切らない（上記「生成するアクタの種別」を参照）。
                 scene.world.insert(entity, CanvasTransform::default());
-                Actor::new_2d(entity, name)
+                Actor::new_folder_2d(entity, name)
             } else {
                 // 3D グループ: Transform を持たないフォルダノード（子の変換に影響しない）
                 Actor::new_folder(entity, name)

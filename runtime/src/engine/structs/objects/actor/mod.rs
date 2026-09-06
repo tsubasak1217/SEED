@@ -201,54 +201,63 @@ pub struct Actor {
 }
 
 impl Actor {
-    pub fn new(entity: Entity, name: impl Into<String>) -> Self {
-        Self {
-            entity,
-            name:       name.into(),
-            world_line: 0,
-            actor_kind: ActorKind::Actor3D,
-            children:   Vec::new(),
-            active:     true,
-            prefab_source: None,
-            scatter_prop_id: None,
-            is_folder:  false,
-            slots:      Vec::new(),
-        }
-    }
-
-    /// 2D Actor として生成するヘルパー。
-    pub fn new_2d(entity: Entity, name: impl Into<String>) -> Self {
-        Self {
-            entity,
-            name:       name.into(),
-            world_line: 0,
-            actor_kind: ActorKind::Actor2D,
-            children:   Vec::new(),
-            active:     true,
-            prefab_source: None,
-            scatter_prop_id: None,
-            is_folder:  false,
-            slots:      Vec::new(),
-        }
-    }
-
-    /// フォルダノード（整理専用・Transform 非保持）として生成するヘルパー。
+    /// 全コンストラクタ共通の生成処理。
     ///
-    /// 呼び出し側は World に Transform / CanvasTransform を挿入しないこと
-    /// （フォルダは子のワールド変換に影響しない透過ノードのため）。
-    pub fn new_folder(entity: Entity, name: impl Into<String>) -> Self {
+    /// アクタ種別（3D / 2D）とフォルダ属性だけが違うので、フィールドの並びは
+    /// ここ 1 か所に集約する（フィールド追加時の書き漏らしを防ぐ）。
+    fn make(
+        entity:     Entity,
+        name:       impl Into<String>,
+        actor_kind: ActorKind,
+        is_folder:  bool,
+    ) -> Self {
         Self {
             entity,
             name:       name.into(),
             world_line: 0,
-            actor_kind: ActorKind::Actor3D,
+            actor_kind,
             children:   Vec::new(),
             active:     true,
             prefab_source: None,
             scatter_prop_id: None,
-            is_folder:  true,
+            is_folder,
             slots:      Vec::new(),
         }
+    }
+
+    /// 3D Actor（通常）として生成する。呼び出し側は World へ `Transform` を挿入すること。
+    pub fn new(entity: Entity, name: impl Into<String>) -> Self {
+        Self::make(entity, name, ActorKind::Actor3D, false)
+    }
+
+    /// 2D Actor として生成するヘルパー。呼び出し側は World へ `CanvasTransform` を挿入すること。
+    pub fn new_2d(entity: Entity, name: impl Into<String>) -> Self {
+        Self::make(entity, name, ActorKind::Actor2D, false)
+    }
+
+    /// 3D のフォルダノード（整理専用・Transform 非保持）として生成するヘルパー。
+    ///
+    /// 呼び出し側は World に Transform を挿入しないこと
+    /// （フォルダは子のワールド変換に影響しない透過ノードのため）。
+    ///
+    /// # 2D フォルダとの違い（重要）
+    /// 2D フォルダ（`new_folder_2d`）は例外的に**単位 CanvasTransform を必ず持つ**。
+    /// キャンバス系の走査（canvas_collect / pick_2d / collider2d 等）は
+    /// CanvasTransform を持たないアクタでサブツリーを打ち切るため、変換を持たない
+    /// フォルダで包むと配下のスプライトが丸ごと描画・当たり判定から外れてしまう。
+    /// 単位変換なら子のワールド変換に影響しないので「透過ノード」の性質は保てる。
+    pub fn new_folder(entity: Entity, name: impl Into<String>) -> Self {
+        Self::make(entity, name, ActorKind::Actor3D, true)
+    }
+
+    /// 2D のフォルダノード（整理専用・単位 CanvasTransform 保持）として生成するヘルパー。
+    ///
+    /// 呼び出し側は World へ **必ず `CanvasTransform::default()`（単位変換）を挿入**すること。
+    /// 理由は `new_folder` のコメント（2D フォルダとの違い）を参照。
+    /// Inspector 側は is_folder を見て Transform 欄を出さないため、この単位変換が
+    /// 編集されて透過性が壊れることはない。
+    pub fn new_folder_2d(entity: Entity, name: impl Into<String>) -> Self {
+        Self::make(entity, name, ActorKind::Actor2D, true)
     }
 
     pub fn with_name(name: impl Into<String>) -> Self {
@@ -588,4 +597,34 @@ mod folder_tests {
         assert!(!mesh.is_folder());
         assert!(mdata.transform.is_some(), "normal actor must carry a Transform");
     }
+
+    /// 2D フォルダノード（`new_folder_2d`）の属性と、単位 CanvasTransform 保持を検証する。
+    ///
+    /// 2D フォルダだけは CanvasTransform を持つ（キャンバス系の走査が
+    /// CanvasTransform 無しのアクタでサブツリーを打ち切るため）。ただし単位変換なので
+    /// 子のワールド変換には影響しない＝透過ノードの性質は 3D フォルダと同じ。
+    #[test]
+    fn folder_2d_is_folder_and_2d_with_identity_canvas_transform() {
+        use crate::engine::components::CanvasTransform;
+        let mut world = World::new();
+
+        let e = world.spawn();
+        world.insert(e, CanvasTransform::default());
+        let folder = Actor::new_folder_2d(e, "UIGroup");
+
+        assert!(folder.is_folder(), "2D グループはフォルダノードでなければならない");
+        assert!(folder.is_2d(), "2D グループの種別は Actor2D でなければならない");
+
+        let data = folder.to_data(&world);
+        assert!(data.is_folder);
+        assert_eq!(data.actor_kind, ActorKind::Actor2D);
+        // 3D 用 Transform は持たない。CanvasTransform は単位のまま保存される。
+        assert!(data.transform.is_none(), "2D フォルダは Transform を持たない");
+        let ct = data.canvas_transform.expect("2D フォルダは CanvasTransform を持つ");
+        let identity = CanvasTransform::default();
+        assert_eq!(ct.position, identity.position);
+        assert_eq!(ct.scale,    identity.scale);
+        assert_eq!(ct.rotation, identity.rotation);
+    }
+
 }

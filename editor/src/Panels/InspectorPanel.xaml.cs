@@ -1195,8 +1195,11 @@ public partial class InspectorPanel : UserControl
         var isFolder = root.TryGetProperty("is_folder", out var ifj) && ReadJsonBool(ifj, false);
         if (isFolder)
         {
-            // フォルダは 2D/3D どちらでもないため 2D アクター判定は false に固定する
-            _isActor2D = false;
+            // フォルダは Transform 欄を出さないが、種別（2D/3D）自体は持つ。
+            // 2D フォルダ（グループ）へコンポーネントを足すときに 3D 用の一覧が
+            // 出ないよう、ランタイムが送る is_2d をそのまま採用する
+            // （旧ランタイム互換のため未送信時は false = 3D 扱い）。
+            _isActor2D = root.TryGetProperty("is_2d", out var i2dj) && ReadJsonBool(i2dj, false);
             transformContent = new TextBlock
             {
                 Text       = "フォルダ（整理用ノード・Transform なし）",

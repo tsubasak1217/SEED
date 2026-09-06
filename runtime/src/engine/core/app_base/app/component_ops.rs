@@ -853,9 +853,13 @@ impl App {
         // active はアクター自身のフラグ（インスペクタのチェックボックス状態用。
         // 祖先の状態はヒエラルキー側の実効 active 表示が担う）
         // prefab_source: プレハブ参照リンク（null = リンクなし）
+        // is_2d: このアクター自身の種別（Actor2D か）。フォルダは transform 欄を出さないので
+        //   transform_json の有無から 2D/3D を判別できない。2D フォルダに対して
+        //   コンポーネント選択ウィンドウが 3D 用の一覧を出さないよう、種別を明示的に送る。
+        //   （is_vp は「サブツリーのルートが 2D か」であって自身の種別ではない）
         let json = format!(
-            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx},"is_root":{},"is_vp":{},"active":{},"is_folder":{},"prefab_source":{prefab_source_json}{transform_json},"components":{comps_json}}}"#,
-            is_root as u8, root_is_2d as u8, actor.active as u8, is_folder as u8,
+            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx},"is_root":{},"is_vp":{},"active":{},"is_folder":{},"is_2d":{},"prefab_source":{prefab_source_json}{transform_json},"components":{comps_json}}}"#,
+            is_root as u8, root_is_2d as u8, actor.active as u8, is_folder as u8, is_2d as u8,
         );
         ipc.send(&format!("ACTOR_COMPONENTS:{json}"));
     }

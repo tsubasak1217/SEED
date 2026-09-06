@@ -24,13 +24,13 @@ use crate::engine::core::scripting::ScriptingHost;
 use crate::engine::methods::drawer::DrawContext;
 use crate::engine::components::{
     ComponentData, ComponentKind,
-    Transform,
+    Transform, CanvasTransform,
     ModelComponent, InstanceMeta,
     ScriptComponent, PlaceholderScriptSlot,
     CameraComponent, CameraComponentData,
 };
 use crate::engine::structs::objects::Actor;
-use crate::engine::structs::objects::actor::ActorData;
+use crate::engine::structs::objects::actor::{ActorData, ActorKind};
 use crate::engine::core::app_base::scene_settings::SceneSettingsData;
 
 // ============================================================
@@ -489,6 +489,60 @@ impl Scene {
 //  build_actor — ActorData → Actor 構築
 // ============================================================
 
+/// アクタ本体 entity の既定トランスフォーム（Transform / CanvasTransform）を整える。
+///
+/// `build_actor` から切り出した純粋な World 操作。DrawContext を必要としないので
+/// 単体テストから直接検証できる（フォルダの不変条件を守るための要）。
+///
+/// # 分岐
+/// - **3D フォルダ**（is_folder かつ Actor3D）: Transform を一切持たない。
+///   予約済みルート（Instantiate）に仮挿入された Transform があれば取り除く。
+/// - **2D フォルダ**（is_folder かつ Actor2D）: **単位 CanvasTransform を必ず持つ**。
+///   キャンバス系の走査（canvas_collect / pick_2d / collider2d / physics2d 等）は
+///   CanvasTransform を持たないアクタでサブツリーを打ち切る仕様のため、変換なしの
+///   フォルダで包むと配下のスプライトが丸ごと描画・当たり判定から外れてしまう。
+///   単位変換なら子のワールド変換に影響しないので「透過ノード」の性質は保てる。
+///   保存側（`Actor::to_data_recursive`）は World の CanvasTransform をそのまま書き出すが、
+///   ここでは保存値を採用せず**常に単位変換**を入れる（フォルダの透過性を保存データに
+///   依存させない不変条件。手書きや旧データで非単位の値が入っていても無視する）。
+/// - **通常 3D**: Transform を挿入する。ただし予約済みルートに既に Transform がある場合
+///   （Instantiate 直後にスクリプトが Position を設定済み）はその値を優先する。
+/// - **通常 2D**: 保存済み canvas_transform（pivot/anchor 含む）を復元。旧フォーマット
+///   （フィールド無し）との互換のため既定値へフォールバックする。
+///   予約時に仮挿入された 3D Transform は不要なので取り除く。
+pub(crate) fn setup_actor_root_transform(
+    world:            &mut World,
+    entity:           Entity,
+    actor_kind:       ActorKind,
+    is_folder:        bool,
+    transform:        Option<Transform>,
+    canvas_transform: Option<CanvasTransform>,
+    reused:           bool,
+) {
+    match (is_folder, actor_kind) {
+        // 3D フォルダ: 変換を一切持たせない
+        (true, ActorKind::Actor3D) => {
+            if reused { world.remove::<Transform>(entity); }
+        }
+        // 2D フォルダ: 単位 CanvasTransform を必ず持たせる（保存値は採用しない）
+        (true, ActorKind::Actor2D) => {
+            if reused { world.remove::<Transform>(entity); }
+            world.insert(entity, CanvasTransform::default());
+        }
+        // 通常 3D
+        (false, ActorKind::Actor3D) => {
+            if !(reused && world.contains::<Transform>(entity)) {
+                world.insert(entity, transform.unwrap_or_default());
+            }
+        }
+        // 通常 2D
+        (false, ActorKind::Actor2D) => {
+            if reused { world.remove::<Transform>(entity); }
+            world.insert(entity, canvas_transform.unwrap_or_default());
+        }
+    }
+}
+
 /// ActorData から Actor を構築し、コンポーネントを World に挿入する。
 ///
 /// `root_entity` に Some を渡すと、ルートの entity を新規 spawn せずその予約済み
@@ -501,44 +555,21 @@ pub fn build_actor(
     scripting_host: Option<&Arc<ScriptingHost>>,
     root_entity:    Option<Entity>,
 ) -> Result<Actor, SceneError> {
-    use crate::engine::structs::objects::actor::ActorKind;
-    use crate::engine::components::Transform;
-
     // 予約済みルートがあればそれを使い、なければ新規 spawn する
     let reused = root_entity.is_some();
     let entity = root_entity.unwrap_or_else(|| world.spawn());
 
-    // フォルダノード（is_folder）は整理専用の透過ノードで Transform を一切持たない。
-    // よってデフォルト Transform / CanvasTransform の挿入をスキップする
-    // （子のワールド変換に影響させないため）。予約済みルートに仮挿入された
-    // Transform があれば取り除いておく（フォルダに Transform を残さない）。
-    if data.is_folder {
-        if reused {
-            world.remove::<Transform>(entity);
-        }
-    } else {
-        // actor_kind に応じてデフォルトトランスフォームを挿入する。
-        // Actor3D → Transform（3D ワールド空間）
-        // Actor2D → CanvasTransform（XY キャンバス空間）+ Transform（ダミーとして挿入しない）
-        match data.actor_kind {
-            ActorKind::Actor3D => {
-                // 予約済みルートに既に Transform がある場合（Instantiate 直後にスクリプトが
-                // Position を設定済み）はその値を優先し、アクターファイルの値で上書きしない。
-                if !(reused && world.contains::<Transform>(entity)) {
-                    world.insert(entity, data.transform.unwrap_or_default());
-                }
-            }
-            ActorKind::Actor2D => {
-                // 予約時に仮挿入された 3D Transform は 2D アクターには不要なので取り除く
-                if reused {
-                    world.remove::<Transform>(entity);
-                }
-                // 保存済み canvas_transform があれば復元（pivot/anchor を含む）。
-                // 旧フォーマット（canvas_transform フィールドなし）との互換のためデフォルトにフォールバック。
-                world.insert(entity, data.canvas_transform.unwrap_or_default());
-            }
-        }
-    }
+    // アクタ本体 entity の既定トランスフォームを整える（種別・フォルダ属性で分岐）。
+    // 分岐の中身と根拠は `setup_actor_root_transform` のコメントを参照。
+    setup_actor_root_transform(
+        world,
+        entity,
+        data.actor_kind,
+        data.is_folder,
+        data.transform,
+        data.canvas_transform.clone(),
+        reused,
+    );
 
     let mut actor = Actor::new(entity, data.name);
     actor.actor_kind = data.actor_kind;
@@ -945,5 +976,107 @@ mod find_main_camera_tests {
 
         let (tf, _) = scene.find_main_camera().expect("メインカメラが見つからない");
         assert_eq!(tf.position, [10.0, 0.0, 0.0], "DFS 先頭のメインカメラを返すべき");
+    }
+}
+
+// ============================================================
+//  テスト — フォルダノードの既定トランスフォーム不変条件
+//  （setup_actor_root_transform = シーン読込 / プレハブ展開 / Instantiate /
+//    Undo スナップショット復元がすべて通る唯一の経路）
+// ============================================================
+#[cfg(test)]
+mod folder_transform_tests {
+    use super::*;
+
+    /// 2D フォルダは **常に単位 CanvasTransform を持つ**（保存値があっても無視する）。
+    ///
+    /// キャンバス系の走査は CanvasTransform を持たないアクタでサブツリーを打ち切るため、
+    /// 変換を持たないフォルダで包むと配下のスプライトが描画対象から外れてしまう。
+    /// 一方で非単位の変換を復元してしまうと「フォルダは透過」という前提が壊れるので、
+    /// 読み込み時に単位変換へ正規化する。
+    #[test]
+    fn folder_2d_always_gets_identity_canvas_transform() {
+        let mut world = World::new();
+        let e = world.spawn();
+
+        // 保存データ側に非単位の CanvasTransform が入っていても採用しない。
+        let mut saved = CanvasTransform::default();
+        saved.position = [100.0, -50.0];
+        saved.scale    = [2.0, 3.0];
+        saved.rotation = 45.0;
+
+        setup_actor_root_transform(
+            &mut world, e, ActorKind::Actor2D, true, None, Some(saved), false,
+        );
+
+        let ct = world.get::<CanvasTransform>(e).cloned()
+            .expect("2D フォルダは CanvasTransform を必ず持つ");
+        let identity = CanvasTransform::default();
+        assert_eq!(ct.position, identity.position, "2D フォルダの位置は単位（原点）でなければならない");
+        assert_eq!(ct.scale,    identity.scale,    "2D フォルダのスケールは単位でなければならない");
+        assert_eq!(ct.rotation, identity.rotation, "2D フォルダの回転は単位でなければならない");
+        // 3D 用 Transform は持たない（2D アクタ共通）。
+        assert!(!world.contains::<Transform>(e), "2D フォルダに Transform を持たせてはならない");
+    }
+
+    /// 3D フォルダは Transform も CanvasTransform も一切持たない（完全な透過ノード）。
+    #[test]
+    fn folder_3d_carries_no_transform_at_all() {
+        let mut world = World::new();
+        let e = world.spawn();
+
+        setup_actor_root_transform(
+            &mut world, e, ActorKind::Actor3D, true, Some(Transform::default()), None, false,
+        );
+
+        assert!(!world.contains::<Transform>(e), "3D フォルダは Transform を持たない");
+        assert!(!world.contains::<CanvasTransform>(e), "3D フォルダは CanvasTransform を持たない");
+    }
+
+    /// 通常（非フォルダ）2D アクタは保存済み CanvasTransform をそのまま復元する
+    /// （フォルダの正規化が通常アクタへ波及していないことの対照テスト）。
+    #[test]
+    fn normal_2d_actor_restores_saved_canvas_transform() {
+        let mut world = World::new();
+        let e = world.spawn();
+
+        let mut saved = CanvasTransform::default();
+        saved.position = [12.0, 34.0];
+
+        setup_actor_root_transform(
+            &mut world, e, ActorKind::Actor2D, false, None, Some(saved), false,
+        );
+
+        let ct = world.get::<CanvasTransform>(e).cloned().unwrap();
+        assert_eq!(ct.position, [12.0, 34.0], "通常 2D アクタは保存値を復元する");
+    }
+
+    /// ActorData（is_folder=true / Actor2D）の serde 往復後も、読み込み経路を通せば
+    /// 単位 CanvasTransform が入る（シーン保存 → 読込のラウンドトリップ相当）。
+    #[test]
+    fn folder_2d_scene_roundtrip_yields_identity_canvas_transform() {
+        // 2D フォルダを World 上に作り、保存用データへ変換する。
+        let mut world = World::new();
+        let fe = world.spawn();
+        world.insert(fe, CanvasTransform::default());
+        let folder = Actor::new_folder_2d(fe, "UIGroup");
+        let data   = folder.to_data(&world);
+        assert!(data.is_folder);
+        assert_eq!(data.actor_kind, ActorKind::Actor2D);
+
+        // .scene と同じく JSON を経由してから読み込み経路へ通す。
+        let json: String = serde_json::to_string(&data).unwrap();
+        let back: ActorData = serde_json::from_str(&json).unwrap();
+        assert!(back.is_folder, "is_folder が往復で失われている");
+        assert_eq!(back.actor_kind, ActorKind::Actor2D, "actor_kind が往復で失われている");
+
+        let mut world2 = World::new();
+        let e2 = world2.spawn();
+        setup_actor_root_transform(
+            &mut world2, e2, back.actor_kind, back.is_folder,
+            back.transform, back.canvas_transform, false,
+        );
+        assert!(world2.contains::<CanvasTransform>(e2),
+                "読み込んだ 2D フォルダに CanvasTransform が入っていない");
     }
 }

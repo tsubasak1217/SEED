@@ -346,10 +346,10 @@ public partial class HierarchyPanel : UserControl
             {
                 var name = _pendingRenameGroupName;
                 _pendingRenameGroupName = null;
-                // グループは実アクタとして生成される。3D グループはフォルダノード
-                // （IsGroup=true）だが、2D グループは通常の 2D アクタ（IsGroup=false）
-                // になるため、IsGroup では絞り込まず名前一致だけで探す。
-                var node = GetAllNodes(_roots).FirstOrDefault(n => n.Name == name);
+                // グループは実アクタとして生成される。2D / 3D いずれもフォルダノード
+                // （IsFolder=true・is_group も true で届く）なので、同名の通常アクタを
+                // 誤って掴まないようフォルダ属性でも絞り込む。
+                var node = GetAllNodes(_roots).FirstOrDefault(n => n.Name == name && n.IsFolder);
                 if (node != null)
                     Dispatcher.BeginInvoke(() => StartRename(node.Id), DispatcherPriority.Background);
             }
