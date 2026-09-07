@@ -468,6 +468,40 @@ public static unsafe class ScriptHost
         return true;
     }
 
+    // ── 時間スケール（SEED.Time.Scale）──────────────────────────
+
+    /// <summary>
+    /// 時間スケールの取得／設定（op: 0=取得 / 1=設定）。
+    /// 戻り値は「設定後の実効値」（Rust 側で有効範囲へ丸められた値）。
+    /// FFI が使えないときは既定値 1.0 を返す（＝等速。スクリプトが破綻しない）。
+    /// </summary>
+    public static float TimeScale(int op, float value)
+    {
+        if (!_available || _api.TimeScale == null) return 1f;
+        float result = 1f;
+        if (_api.TimeScale(op, value, &result) == 0) return 1f;
+        return result;
+    }
+
+    // ── カメラ射影（SEED.Camera.WorldToScreen）──────────────────
+
+    /// <summary>
+    /// カメラでワールド座標を射影する（mode: 0=スクリーン座標 / 1=キャンバス座標）。
+    /// 成功時 out に [x, y, カメラ前方距離] が入る。
+    /// </summary>
+    public static bool TryCameraWorldToScreen(
+        Entity e, float wx, float wy, float wz, int mode, out Vector3 result)
+    {
+        result = Vector3.Zero;
+        if (!_available || _api.CameraWorldToScreen == null || !e.IsValid) return false;
+        float* world = stackalloc float[3];
+        world[0] = wx; world[1] = wy; world[2] = wz;
+        float* outBuf = stackalloc float[3];
+        if (_api.CameraWorldToScreen(e.Index, e.Generation, world, mode, outBuf) == 0) return false;
+        result = new Vector3(outBuf[0], outBuf[1], outBuf[2]);
+        return true;
+    }
+
     // ── 入力（キー・マウス）─────────────────────────────────────
 
     /// <summary>キー入力判定（kind: 0=押下中/1=押した瞬間/2=離した瞬間）。</summary>
@@ -984,4 +1018,8 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<uint, uint, uint, uint, int, int> SetParent;
     /// <summary>(idx, gen, out uint[2] parent) → 1/0（現在の親。ルート直下は 0）</summary>
     public delegate* unmanaged[Cdecl]<uint, uint, uint*, int> ParentOf;
+    /// <summary>(op, value, out float*) → 1/0（時間スケール。op: 0=取得/1=設定）</summary>
+    public delegate* unmanaged[Cdecl]<int, float, float*, int> TimeScale;
+    /// <summary>(idx, gen, world float[3], mode, out float[3]) → 書き込んだ要素数（3）/失敗=0。カメラのワールド→スクリーン射影（mode: 0=スクリーン/1=キャンバス）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, float*, int, float*, int> CameraWorldToScreen;
 }

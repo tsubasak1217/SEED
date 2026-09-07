@@ -35,7 +35,7 @@ impl App {
     ///
     /// `key` は
     /// `content` / `font_size` / `color` / `align` / `vertical_align` /
-    /// `line_spacing` / `layer` / `font_path` / `outline_width` / `outline_color` /
+    /// `line_spacing` / `layer` / `font_path` / `icon_set` / `outline_width` / `outline_color` /
     /// `box_width` / `box_height` / `wrap` / `weight` /
     /// `shadow_offset_x` / `shadow_offset_y` / `shadow_color` / `shadow_softness`。
     /// パースできない値は無視する（不正入力で既存値を壊さない）。
@@ -72,6 +72,10 @@ impl App {
             // content のようなエスケープ解除は行わず、そのまま格納する。
             // 空文字 = 組み込みフォントへ戻す、という意味を持つ。
             "font_path" => tc.font_path = value.to_string(),
+            // アイコンセット（.icons）のアセットパス。font_path と同じく
+            // 改行を含まないためエスケープ解除は行わない。
+            // 空文字 = アイコンセット未使用（[icon:] は未解決になる）。
+            "icon_set" => tc.icon_set = value.to_string(),
             // ── 色（RGBA。"r,g,b,a" 形式）──────────────────────
             "color" => {
                 if let Some(rgba) = parse_rgba(value) {

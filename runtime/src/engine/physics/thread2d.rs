@@ -183,6 +183,11 @@ fn run_physics_loop_2d(cmd_rx: Receiver<PhysicsCommand2d>, res_tx: Sender<Physic
     // Pause/Resume 状態（true のとき物理ステップをスキップ、速度は保持される）
     let mut paused = false;
 
+    // ── 時間スケール（SEED.Time.Scale）────────────────────────────────────
+    // 3D 版 thread.rs と同じ方式: 1 ステップの積分時間だけを伸縮させ、
+    // ステップ間隔（実時間）は据え置く。0 のときはステップ自体を止める。
+    let mut time_scale = crate::engine::core::clock::TIME_SCALE_DEFAULT;
+
     // ── スムーズドラッグ状態（2D）──────────────────────────────────────────
     // SetBodyKinematic(is_kinematic=true, smooth=true) された「スムーズドラッグ中」
     // ボディの entity_id → 目標ワールド姿勢のマップ。キーが存在する間、UpdateKinematic は
@@ -195,6 +200,12 @@ fn run_physics_loop_2d(cmd_rx: Receiver<PhysicsCommand2d>, res_tx: Sender<Physic
         loop {
             match cmd_rx.try_recv() {
                 Ok(PhysicsCommand2d::Stop) => return,
+                Ok(PhysicsCommand2d::SetTimeScale { scale }) => {
+                    time_scale = crate::engine::core::clock::sanitize_time_scale(scale);
+                    integration_params.dt = (PHYSICS_2D_FIXED_STEP as Real) * time_scale as Real;
+                    // 停止からの復帰時に取り戻しステップが連続しないようリセットする
+                    next_step = Instant::now();
+                }
                 Ok(PhysicsCommand2d::Pause) => {
                     paused = true;
                 }
@@ -242,8 +253,9 @@ fn run_physics_loop_2d(cmd_rx: Receiver<PhysicsCommand2d>, res_tx: Sender<Physic
             }
         }
 
-        // Pause 中は物理ステップをスキップ
-        if paused {
+        // Pause 中・時間スケール 0 のときは物理ステップをスキップする
+        // （速度・内部状態は保持されるので、戻せば続きから動く）
+        if paused || crate::engine::core::clock::is_time_stopped(time_scale) {
             std::thread::sleep(Duration::from_millis(5));
             continue;
         }
@@ -259,11 +271,12 @@ fn run_physics_loop_2d(cmd_rx: Receiver<PhysicsCommand2d>, res_tx: Sender<Physic
         // スムーズドラッグ: このステップの次目標位置を最大速度クランプ付きで更新する。
         // ステップ直前・かつ実際にステップを実行するタイミングでのみ前進させることで、
         // 1 ステップあたりの移動量（= 伝達速度 × dt）を確実に上限内に収める。
+        // dt はステップと同じ（時間スケール適用後の）積分時間を使う（3D 版と同じ理由）。
         advance_smooth_drag_targets_2d(
             &mut rigid_body_set,
             &entries,
             &drag_targets,
-            PHYSICS_2D_FIXED_STEP as Real,
+            integration_params.dt,
         );
 
         physics_pipeline.step(
@@ -465,6 +478,7 @@ fn handle_command_2d(
     match cmd {
         PhysicsCommand2d::Stop => { /* 呼び出し元で処理済み */ }
         PhysicsCommand2d::Pause => { /* ループ側で処理済み */ }
+        PhysicsCommand2d::SetTimeScale { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
         PhysicsCommand2d::Resume => { /* ループ側で処理済み */ }
         PhysicsCommand2d::CheckKinematicOverlap2d { .. } => { /* ループ側（コマンドドレイン）で処理済み */
         }

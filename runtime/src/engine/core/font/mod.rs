@@ -30,6 +30,10 @@ pub mod canvas_text;
 /// 操作ガイドの背景プレート（角丸クアッド。screen_hint 専用の極小パイプライン）
 pub mod hint_plate;
 pub mod icon_overlay;
+/// 本文中のインライン画像（記法・アイコンセット・配置）
+pub mod inline;
+/// 描画器を持たない層のための GPU 非依存フォントキャッシュ
+pub mod layout_fonts;
 pub mod pipeline;
 /// フォント実体のレジストリ（アセットパス → フォント ID）
 pub mod registry;

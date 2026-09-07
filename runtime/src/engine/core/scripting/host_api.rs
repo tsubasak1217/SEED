@@ -117,6 +117,67 @@ thread_local! {
     /// 同一フレーム内の getter は「実際の状態」より「未処理の要求」を優先して返すので、
     /// スクリプトからは即座に反映されたように見える。
     static CURSOR_LOCK_REQUEST: Cell<Option<bool>> = const { Cell::new(None) };
+
+    /// ゲーム時間の進み方を伸縮させる係数（`SEED.Time.Scale`）。
+    ///
+    /// 【なぜここに置くか】値の読み書き主体はスクリプト（FFI）で、World も Actor ツリーも
+    /// 必要としない。App 側は毎フレーム先頭で `time_scale()` を 1 度だけ読み、
+    /// `Clock::tick` へ渡して「スケール適用済み dt」を作り、各サブシステムへ配る。
+    /// これにより「値の保管」と「時間の計算」を分離できる（Clock は純粋な計算層のまま）。
+    ///
+    /// 有効範囲・丸めの規約は `core::clock::sanitize_time_scale` が正典。
+    static TIME_SCALE: Cell<f32> =
+        const { Cell::new(crate::engine::core::clock::TIME_SCALE_DEFAULT) };
+
+    /// ゲーム描画のレンダーターゲットサイズ（px）。frame_renderer が毎フレーム公開する。
+    ///
+    /// エディタ埋め込み Play では親ウィンドウのクライアント領域、ウィンドウ Play では
+    /// ウィンドウの inner_size。`SEED.Input.MousePos` および
+    /// `CanvasTransform.ScreenPosition` が基準にしているのと同じ矩形なので、
+    /// `Camera.WorldToScreen` の返り値もこれに揃う。
+    static RENDER_TARGET_SIZE: Cell<[f32; 2]> = const {
+        Cell::new([
+            super::camera_project::FALLBACK_TARGET_WIDTH,
+            super::camera_project::FALLBACK_TARGET_HEIGHT,
+        ])
+    };
+}
+
+// ─── 時間スケール（SEED.Time.Scale）──────────────────────────
+
+/// 現在の時間スケールを返す（常に丸め済みの有効値）。
+///
+/// App がフレーム先頭で 1 度だけ読み、`Clock::tick` へ渡す。
+pub fn time_scale() -> f32 {
+    crate::engine::core::clock::sanitize_time_scale(TIME_SCALE.with(|c| c.get()))
+}
+
+/// 時間スケールを設定する（範囲外の値は丸められる）。
+pub fn set_time_scale(scale: f32) {
+    TIME_SCALE.with(|c| c.set(crate::engine::core::clock::sanitize_time_scale(scale)));
+}
+
+/// 時間スケールを既定値（等速）へ戻す。
+///
+/// Play 開始・Play 停止・シーン遷移で必ず呼ぶこと。スケールはシーンをまたいで
+/// 持ち越さない仕様であり、「ヒットストップ中にシーン遷移して戻し忘れ、
+/// 次のシーンが永久にスローのまま」という事故を構造的に防ぐ。
+pub fn reset_time_scale() {
+    TIME_SCALE.with(|c| c.set(crate::engine::core::clock::TIME_SCALE_DEFAULT));
+}
+
+// ─── レンダーターゲットサイズ ────────────────────────────────
+
+/// ゲーム描画のレンダーターゲットサイズ（px）を公開する。
+///
+/// frame_renderer がスクリプトフェーズより前に毎フレーム呼ぶ。
+pub fn publish_render_target_size(size: [f32; 2]) {
+    RENDER_TARGET_SIZE.with(|c| c.set(size));
+}
+
+/// 公開中のレンダーターゲットサイズ（px）を返す。
+fn render_target_size() -> [f32; 2] {
+    RENDER_TARGET_SIZE.with(|c| c.get())
 }
 
 /// スクリプトが積んだカーソルロック要求を引き取る（未要求なら None）。
@@ -1471,6 +1532,8 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
                 "vertical_align" => Some(t.vertical_align.key().to_string()),
                 // 使用フォントの assets:// パス（空文字 = 組み込みフォント）
                 "font_path"      => Some(t.font_path.clone()),
+                // アイコンセット（.icons）の assets:// パス（空文字 = 未使用）
+                "icon_set"       => Some(t.icon_set.clone()),
                 _                => None,
             }
         }
@@ -1553,6 +1616,8 @@ fn write_string(
                 "content" => { t.content = value.to_string(); true }
                 // 使用フォントの assets:// パス（空文字 = 組み込みフォントへ戻す）
                 "font_path" => { t.font_path = value.to_string(); true }
+                // アイコンセット（.icons）の assets:// パス（空文字 = 未使用へ戻す）
+                "icon_set" => { t.icon_set = value.to_string(); true }
                 // 未知のキーは既存値を保つ（typo で左寄せに戻らないようにする）。
                 "align" => match TextAlign::from_key(value) {
                     Some(a) => { t.align = a; true }
@@ -3044,6 +3109,104 @@ unsafe extern "system" fn ffi_path_sample(
 /// `ffi_path_sample` が返す要素数（Vector3）。
 const PATH_SAMPLE_LEN: usize = 3;
 
+// ─── 時間スケール FFI（SEED.Time.Scale）──────────────────────
+
+/// `ffi_time_scale` の操作種別: 現在値の取得。C# 側 `Time.TimeScaleGet` と一致させること。
+pub const TIME_SCALE_OP_GET: i32 = 0;
+/// `ffi_time_scale` の操作種別: 値の設定。C# 側 `Time.TimeScaleSet` と一致させること。
+pub const TIME_SCALE_OP_SET: i32 = 1;
+
+/// 時間スケール（`SEED.Time.Scale`）の取得／設定。
+///
+/// - `op = TIME_SCALE_OP_GET`: `value` を無視し、現在値を `out[0]` へ書いて 1 を返す。
+/// - `op = TIME_SCALE_OP_SET`: `value` を丸めて設定する。`out` が非 NULL なら
+///   丸めた後の実効値を `out[0]` へ書く（設定直後の getter と値が食い違わない）。
+///
+/// World も Actor ツリーも参照しないため、フェーズ外から呼ばれても安全。
+unsafe extern "system" fn ffi_time_scale(op: i32, value: f32, out: *mut f32) -> i32 {
+    match op {
+        TIME_SCALE_OP_GET => {
+            if out.is_null() { return 0; }
+            *out = time_scale();
+            1
+        }
+        TIME_SCALE_OP_SET => {
+            set_time_scale(value);
+            if !out.is_null() { *out = time_scale(); }
+            1
+        }
+        _ => 0,
+    }
+}
+
+// ─── カメラ射影 FFI（SEED.Camera.WorldToScreen / WorldToCanvas）───
+
+/// `ffi_camera_world_to_screen` の出力モード: スクリーン座標（左上原点 px）。
+/// C# 側 `Camera.ProjectModeScreen` と一致させること。
+pub const CAMERA_PROJECT_MODE_SCREEN: i32 = 0;
+/// `ffi_camera_world_to_screen` の出力モード: キャンバス座標（画面中央原点 px・Y 下向き）。
+/// C# 側 `Camera.ProjectModeCanvas` と一致させること。
+pub const CAMERA_PROJECT_MODE_CANVAS: i32 = 1;
+
+/// `ffi_camera_world_to_screen` が書き込む要素数（x, y, 前方距離）。
+const CAMERA_PROJECT_OUT_LEN: usize = 3;
+
+/// 指定カメラでワールド座標をスクリーン／キャンバス座標へ射影する。
+///
+/// # 引数
+/// - `idx` / `generation`: Camera ハンドルが指すエンティティ
+///   （スロット entity。ルート entity でも `locate` が解決する）。
+/// - `world`: ワールド座標（3 要素）。
+/// - `mode`: `CAMERA_PROJECT_MODE_SCREEN` / `CAMERA_PROJECT_MODE_CANVAS`。
+/// - `out`: 3 要素の書き込み先。`[x, y, 前方距離]`。
+///
+/// # 戻り値
+/// 書き込んだ要素数（3）。カメラが見つからない・射影が定義できない場合は 0。
+///
+/// # 座標系
+/// スクリーンは `SEED.Input.MousePos` と同じ「レンダーターゲット左上原点・Y 下向き px」、
+/// キャンバスは `SEED.Input.MousePositionCanvas` と同じ「中央原点・Y 下向き px」。
+/// 3 要素目はどちらのモードでも共通で、**正ならカメラ前方・負なら背後**を表す
+/// ビュー空間 Z（ワールド単位の距離）である。
+unsafe extern "system" fn ffi_camera_world_to_screen(
+    idx:        u32,
+    generation: u32,
+    world:      *const f32,
+    mode:       i32,
+    out:        *mut f32,
+) -> i32 {
+    if world.is_null() || out.is_null() { return 0; }
+    let ptr = WORLD_PTR.with(|p| p.get());
+    if ptr.is_null() { return 0; }
+    let w = &mut *ptr;
+
+    let entity = Entity::from_raw(idx, generation);
+    // Camera はスロット格納型。ルート entity で呼ばれてもスロットへ解決する。
+    let Some(slot) = locate::<CameraComponent>(w, entity) else { return 0 };
+    let Some(camera) = w.get::<CameraComponent>(slot) else { return 0 };
+    // カメラの姿勢は「スロットを持つアクター」の Transform（ワールド空間）が持つ。
+    let camera_tf = actor_root_transform_of(w, slot);
+
+    let world_pos = [*world, *world.add(1), *world.add(2)];
+    let [target_w, target_h] = render_target_size();
+
+    let Some(point) = super::camera_project::world_to_screen(
+        camera, &camera_tf, target_w, target_h, world_pos,
+    ) else { return 0 };
+
+    let xy = match mode {
+        CAMERA_PROJECT_MODE_CANVAS =>
+            super::camera_project::screen_to_canvas(point.screen, target_w, target_h),
+        // 既定（未知の mode を含む）はスクリーン座標
+        _ => point.screen,
+    };
+
+    *out        = xy[0];
+    *out.add(1) = xy[1];
+    *out.add(2) = point.depth;
+    CAMERA_PROJECT_OUT_LEN as i32
+}
+
 // ─── C# へ渡す関数ポインタ表 ─────────────────────────────────
 
 /// C# の #[StructLayout(Sequential)] ScriptHostApi と同一レイアウト。
@@ -3108,6 +3271,12 @@ pub struct ScriptHostApi {
     instantiate_under:       unsafe extern "system" fn(*const u8, i32, u32, u32, *mut u32) -> i32,
     set_parent:              unsafe extern "system" fn(u32, u32, u32, u32, i32) -> i32,
     parent_of:               unsafe extern "system" fn(u32, u32, *mut u32) -> i32,
+    // 時間スケール（SEED.Time.Scale）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    time_scale:              unsafe extern "system" fn(i32, f32, *mut f32) -> i32,
+    // カメラ射影（SEED.Camera.WorldToScreen / WorldToCanvas）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    camera_world_to_screen:  unsafe extern "system" fn(u32, u32, *const f32, i32, *mut f32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -3148,6 +3317,8 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     instantiate_under:       ffi_instantiate_under,
     set_parent:              ffi_set_parent,
     parent_of:               ffi_parent_of,
+    time_scale:              ffi_time_scale,
+    camera_world_to_screen:  ffi_camera_world_to_screen,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

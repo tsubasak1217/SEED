@@ -21,6 +21,8 @@ pub mod host_api;
 pub mod input_bridge;
 // ControlPoint パス評価（時刻 → ワールド位置／進行方向）の純関数層
 pub mod path_query;
+// カメラのワールド→スクリーン射影（Camera.WorldToScreen / WorldToCanvas）の純関数層
+pub mod camera_project;
 pub use host_api::{
     with_world, with_actors, take_scene_commands, take_audio_commands,
     publish_input, publish_physics_sender, publish_canvas_mouse_position,
@@ -46,10 +48,20 @@ pub use crate::engine::components::{
 /// entity_index = u32::MAX（C# の Entity.None に対応）。
 #[repr(C)]
 pub(crate) struct RawFrameContext {
+    /// 時間スケール適用後のフレーム delta（秒）。C# の `Time.DeltaTime`。
     pub delta_time:        f32,
+    /// 時間スケール適用後のゲーム内累計時間（秒）。C# の `Time.ElapsedTime`。
     pub anim_time:         f32,
     pub entity_index:      u32,
     pub entity_generation: u32,
+    /// 時間スケール**未適用**のフレーム delta（秒）。C# の `Time.UnscaledDeltaTime`。
+    ///
+    /// 【末尾に追加する理由】既存フィールドの間へ挿入すると C# 側 NativeFrameContext の
+    /// オフセットが全部ずれる。末尾追加なら旧フィールドの位置が変わらず、
+    /// 万一片側のビルドが古くても既存フィールドは正しく読める（壊れ方が穏やか）。
+    pub unscaled_delta_time: f32,
+    /// 時間スケール**未適用**のゲーム内累計時間（秒）。C# の `Time.UnscaledElapsedTime`。
+    pub unscaled_elapsed_time: f32,
 }
 
 impl RawFrameContext {
@@ -64,6 +76,8 @@ impl RawFrameContext {
             anim_time:  ctx.anim_time,
             entity_index,
             entity_generation,
+            unscaled_delta_time:   ctx.unscaled_delta_time,
+            unscaled_elapsed_time: ctx.unscaled_anim_time,
         }
     }
 }

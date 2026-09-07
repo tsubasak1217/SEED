@@ -220,6 +220,12 @@ pub struct TextComponentData {
     /// 使用フォントの assets:// 仮想パス。空文字 = 組み込みフォント。
     #[serde(default)]
     pub font_path: String,
+    /// アイコンセット（.icons）の assets:// 仮想パス。空文字 = アイコンセット未使用。
+    ///
+    /// 本文中の `[icon:名前]` 記法は、このファイルの表で名前 → 画像パスを引く。
+    /// 未設定でも `[img:assets://...]`（パス直接指定）は使える。
+    #[serde(default)]
+    pub icon_set: String,
     /// 縁取りの太さ（キャンバスピクセル）。0 = 縁取りなし。
     #[serde(default)]
     pub outline_width: f32,
@@ -263,6 +269,7 @@ impl Default for TextComponentData {
             line_spacing: default_line_spacing(),
             layer: 0,
             font_path: String::new(),
+            icon_set: String::new(),
             outline_width: DEFAULT_OUTLINE_WIDTH,
             outline_color: default_outline_color(),
             box_width: MIN_BOX_SIZE,
@@ -299,6 +306,8 @@ pub struct TextComponent {
     pub layer: i32,
     /// 使用フォントの assets:// 仮想パス。空文字 = 組み込みフォント。
     pub font_path: String,
+    /// アイコンセット（.icons）の assets:// 仮想パス。空文字 = アイコンセット未使用。
+    pub icon_set: String,
     /// 縁取りの太さ（キャンバスピクセル）。0 = 縁取りなし。
     pub outline_width: f32,
     /// 縁取りの色（RGBA 0..1）。
@@ -337,6 +346,7 @@ impl TextComponent {
             line_spacing: data.line_spacing,
             layer: data.layer,
             font_path: data.font_path,
+            icon_set: data.icon_set,
             outline_width: data.outline_width,
             outline_color: data.outline_color,
             box_width: data.box_width,
@@ -361,6 +371,7 @@ impl TextComponent {
             line_spacing: self.line_spacing,
             layer: self.layer,
             font_path: self.font_path.clone(),
+            icon_set: self.icon_set.clone(),
             outline_width: self.outline_width,
             outline_color: self.outline_color,
             box_width: self.box_width,
@@ -418,6 +429,7 @@ mod tests {
         assert_eq!(d.shadow_offset_y, 0.0);
         assert_eq!(d.shadow_color, DEFAULT_SHADOW_COLOR);
         assert_eq!(d.shadow_softness, MIN_SHADOW_SOFTNESS);
+        assert_eq!(d.icon_set, "", "アイコンセット未指定の旧シーンは空文字になる");
         // 既存フィールドが壊れていないことも併せて確認する。
         assert_eq!(d.content, "所持金");
         assert_eq!(d.align, TextAlign::Center);
@@ -436,6 +448,7 @@ mod tests {
         data.shadow_offset_y = 3.0;
         data.shadow_color = [1.0, 0.0, 0.0, 0.25];
         data.shadow_softness = 4.0;
+        data.icon_set = "assets://ui/keys.icons".to_string();
         let back = TextComponent::from_data(data.clone()).to_data();
         assert_eq!(back.box_width, data.box_width);
         assert_eq!(back.box_height, data.box_height);
@@ -445,5 +458,6 @@ mod tests {
         assert_eq!(back.shadow_offset_y, data.shadow_offset_y);
         assert_eq!(back.shadow_color, data.shadow_color);
         assert_eq!(back.shadow_softness, data.shadow_softness);
+        assert_eq!(back.icon_set, data.icon_set);
     }
 }

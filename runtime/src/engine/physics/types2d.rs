@@ -136,6 +136,8 @@ pub enum PhysicsCommand2d {
     },
     /// 重力ベクトルを変更する
     SetGravity { gravity: [f32; 2] },
+    /// 時間スケール（`SEED.Time.Scale`）を変更する。3D 版 `PhysicsCommand::SetTimeScale` と同義。
+    SetTimeScale { scale: f32 },
     /// 力を加える（継続的）
     ApplyForce { entity_id: u64, force: [f32; 2] },
     /// 速度変化（インパルス）を即時加える

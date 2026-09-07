@@ -53,6 +53,10 @@ impl App {
             // 旧シーンのアクター entity を指す JointAttach 子孫キャッシュを破棄する
             //（新シーンで entity が再利用されると別実体の相対位置として誤適用される）。
             self.joint_attach_child_locals.clear();
+            // 時間スケールを等速へ戻す。スケールはシーンをまたいで持ち越さない仕様で、
+            // 「ヒットストップ中に遷移して戻し忘れ、次のシーンが永久にスロー」という
+            // 復帰不能な事故を構造的に防ぐ（カーソルロック解除と同じ考え方）。
+            self.reset_time_scale_for_play();
             self.apply_script_transition_scene(&name);
             self.send_hierarchy();
             return;

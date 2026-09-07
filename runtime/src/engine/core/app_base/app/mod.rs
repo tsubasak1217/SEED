@@ -75,7 +75,10 @@ mod screenshot_ops;
 mod merge_batch_gate;
 mod merge_collect;
 pub(crate) mod merge_stats;
-mod canvas_collect;
+// スクリプト API のカメラ射影（core::scripting::camera_project）が
+// compute_game_viewport を共有するため pub(crate) で公開する。
+// 「描画のビューポート計算」を 2 か所に複製しないための最小限の公開。
+pub(crate) mod canvas_collect;
 mod collider2d_wireframe;
 mod collider3d_pick;
 mod app_init;
@@ -1118,6 +1121,12 @@ pub struct App {
     /// 固定ステップ物理スレッド。Play モード開始時に起動、停止時に Drop する。
     /// 編集時の物理シミュレーションが有効な場合は Edit モードでも起動する。
     pub(super) physics_thread: Option<crate::engine::physics::PhysicsThread>,
+    /// 物理スレッドへ最後に通知した時間スケール（`SEED.Time.Scale`）。
+    ///
+    /// 物理はメインループと独立したスレッドで固定ステップを刻むため、
+    /// 変化したときだけ `SetTimeScale` コマンドを送る。その差分判定用のキャッシュ。
+    /// 初期値は等速（スレッド側の既定と一致させること）。
+    pub(super) physics_time_scale: f32,
 
     /// メインスレッド常駐のキャラクター衝突ミラー（`CharacterWorld`）。
     /// 物理スレッドと同一形状のコライダー集合を保持し、キャラクターの押し戻しを
@@ -1551,6 +1560,7 @@ impl App {
             placement_mode: None,
             plugin_registry:  crate::engine::plugin::registry::PluginRegistry::empty(),
             physics_thread:   None,
+            physics_time_scale: crate::engine::core::clock::TIME_SCALE_DEFAULT,
             character_world:  None,
             character_gravity: crate::engine::physics::CharacterGravity::new(),
             physics_thread_2d:           None,

@@ -225,6 +225,12 @@ fn run_physics_loop(
     // Pause/Resume 状態（true のとき物理ステップをスキップ、速度は保持される）
     let mut paused = false;
 
+    // ── 時間スケール（SEED.Time.Scale）────────────────────────────────────
+    // 1 ステップの積分時間を PHYSICS_FIXED_STEP * time_scale に伸縮させる。
+    // ステップ間隔（実時間）は変えないので、スロー時もステップ数が減らず滑らか。
+    // 0 のときは step 自体を止める（Pause と同じ扱い。速度・内部状態は保持）。
+    let mut time_scale = crate::engine::core::clock::TIME_SCALE_DEFAULT;
+
     // ── コマンド処理ディスパッチ（即応化のためのローカルマクロ）─────────────
     //
     // 【なぜマクロ化するか】
@@ -243,6 +249,16 @@ fn run_physics_loop(
             // マクロ内から外側の query_dirty を直接触れないため、返り値で伝える）。
             match $cmd {
                 PhysicsCommand::Stop   => return,
+                PhysicsCommand::SetTimeScale { scale } => {
+                    time_scale = crate::engine::core::clock::sanitize_time_scale(scale);
+                    // 1 ステップの積分時間を伸縮させる（0 のときは下のガードで
+                    // ステップ自体を踏まないので dt=0 が rapier へ渡ることはない）。
+                    integration_params.dt = (PHYSICS_FIXED_STEP as Real) * time_scale as Real;
+                    // 停止から復帰した直後に「止まっていた間ぶん」を取り戻そうとして
+                    // ステップが連続実行されないよう、次ステップ時刻をリセットする。
+                    next_step = Instant::now();
+                    false
+                }
                 PhysicsCommand::Pause  => { paused = true; false }
                 PhysicsCommand::Resume => {
                     paused = false;
@@ -317,7 +333,9 @@ fn run_physics_loop(
         //   （Resume や同期問い合わせ CheckKinematicOverlap 等）をドレインできず reply が
         //   遅れた。recv_timeout でブロックすればコマンド到着で即起きて処理でき、来なければ
         //   タイムアウトで再ループしてドレインへ戻るだけ（挙動は不変・応答だけ即応化）。
-        if paused {
+        // スケール 0（ゲーム時間の完全停止）も Pause と同一の待機経路に載せる。
+        // dt=0 で step を呼ぶより「呼ばない」方が確実に静止し、無駄な計算も発生しない。
+        if paused || crate::engine::core::clock::is_time_stopped(time_scale) {
             match cmd_rx.recv_timeout(PAUSE_IDLE_TIMEOUT) {
                 Ok(cmd) => { if dispatch_command!(cmd) { query_dirty = true; } }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -349,7 +367,10 @@ fn run_physics_loop(
         // スムーズドラッグ: このステップの次目標位置を最大速度クランプ付きで更新する。
         // ステップ直前・かつ実際にステップを実行するタイミングでのみ前進させることで、
         // 1 ステップあたりの移動量（= 伝達速度 × dt）を確実に上限内に収める。
-        advance_smooth_drag_targets(&mut rigid_body_set, &entries, &drag_targets, PHYSICS_FIXED_STEP as Real);
+        // dt は integration_params.dt（＝時間スケール適用後の 1 ステップ積分時間）を使う。
+        // ステップと同じ dt でクランプしないと、スロー中に伝達速度の上限だけが
+        // 相対的に緩くなって編集ドラッグの押し出しが強くなる。
+        advance_smooth_drag_targets(&mut rigid_body_set, &entries, &drag_targets, integration_params.dt);
 
         physics_pipeline.step(
             &gravity,
@@ -580,6 +601,7 @@ fn handle_command(
     match cmd {
         PhysicsCommand::Stop   => { /* 呼び出し元で処理済み */ }
         PhysicsCommand::Pause  => { /* ループ側で処理済み */ }
+        PhysicsCommand::SetTimeScale { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
         PhysicsCommand::Resume => { /* ループ側で処理済み */ }
         PhysicsCommand::Raycast { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
         PhysicsCommand::CheckKinematicOverlap { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }

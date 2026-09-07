@@ -36,6 +36,29 @@ use super::play_snapshot::PlayStartState;
 use super::terrain_ops::TERRAIN_ROOT_NAME;
 
 impl App {
+    /// 時間スケール（`SEED.Time.Scale`）を等速へ戻し、物理スレッドへも通知する。
+    ///
+    /// Play 開始・Play 停止・シーン遷移で必ず呼ぶ。スケールは「その Play・その
+    /// シーンだけの揮発状態」であり、持ち越すと
+    /// 「ヒットストップ中に遷移して戻し忘れ、次のシーンが永久にスロー」という
+    /// 復帰不能な事故になるため、境界で必ずリセットする。
+    pub(super) fn reset_time_scale_for_play(&mut self) {
+        use crate::engine::core::clock::TIME_SCALE_DEFAULT;
+        crate::engine::core::scripting::host_api::reset_time_scale();
+        // 物理スレッドは独立して回っているので、キャッシュとコマンドの両方を戻す。
+        self.physics_time_scale = TIME_SCALE_DEFAULT;
+        if let Some(t) = self.physics_thread.as_ref() {
+            t.send(crate::engine::physics::PhysicsCommand::SetTimeScale {
+                scale: TIME_SCALE_DEFAULT,
+            });
+        }
+        if let Some(t) = self.physics_thread_2d.as_ref() {
+            t.send(crate::engine::physics::PhysicsCommand2d::SetTimeScale {
+                scale: TIME_SCALE_DEFAULT,
+            });
+        }
+    }
+
     /// あるトップレベルアクターが「地形ルート」か（world_line == 0 かつ名前が terrain）。
     /// スナップショット/復元で Keep（現物保持）とすべきかの判定に使う。
     ///
@@ -96,6 +119,7 @@ impl App {
             // 応答は返す（アクター無しの空 Play）。
             self.mode = RuntimeMode::Play;
             self.paused = false;
+            self.reset_time_scale_for_play();
             if let Some(ipc) = &self.ipc { ipc.send("PLAY_ENTERED"); }
             return;
         }
@@ -165,6 +189,9 @@ impl App {
         // ── 6) 時間リセット・ポーズ解除・モード切替 ─────────────────────────
         // Clock::new() で Time.time / deltaTime を新規 Play と揃える。
         self.clock  = Clock::new();
+        // 時間スケール（SEED.Time.Scale）も等速へ戻す。前回 Play で
+        // ヒットストップ中に停止した場合でも、次の Play は必ず等速で始まる。
+        self.reset_time_scale_for_play();
         self.paused = false;
         self.mode   = RuntimeMode::Play;
 
@@ -240,6 +267,7 @@ impl App {
             // 本来の履歴が失われるため必ずここで回収する。
             self.restore_undo_history_after_play();
             self.mode = RuntimeMode::Edit;
+            self.reset_time_scale_for_play();
             if let Some(ipc) = &self.ipc { ipc.send("PLAY_EXITED"); }
             return;
         }
@@ -312,6 +340,9 @@ impl App {
 
         // ── 4) 編集状態へ復帰 ───────────────────────────────────────────
         self.mode = RuntimeMode::Edit;
+        // 時間スケールを等速へ戻す。Play 中に 0（停止）にしたまま Stop しても
+        // 編集操作・物理プレビューが凍ったままにならないようにする。
+        self.reset_time_scale_for_play();
         // clock は編集用にそのまま継続する（Edit は経過時間の連続性を持つ）。
 
         // 選択状態をクリアしてヒエラルキーを送り直す。

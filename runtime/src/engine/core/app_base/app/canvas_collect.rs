@@ -18,6 +18,10 @@ use crate::engine::components::{
     TextComponent, Transform as ActorTransform,
 };
 use crate::engine::core::font::canvas_text::CanvasTextItem;
+use crate::engine::core::font::inline::markup::TOKEN_OPEN as INLINE_MARKUP_OPEN;
+use crate::engine::core::font::inline::{build_doc, collect_image_rects};
+use crate::engine::core::font::layout_fonts;
+use crate::engine::core::font::text_layout::{TextLayoutSpec, resolve_layout_with_images};
 use crate::engine::core::loader::sprite_mesh::SpriteMesh;
 use crate::engine::core::renderer::primitive2d::PrimitiveSpaceCollector;
 use crate::engine::core::renderer::SpriteDrawItem;
@@ -574,6 +578,148 @@ pub(super) fn resolve_sprite_texture(
     cache.get(path).and_then(|e| e.clone())
 }
 
+/// テキストの本文に埋め込まれたインライン画像を、スプライト描画アイテムとして積む。
+///
+/// # なぜスプライト経路で描くのか（方式の選定）
+/// テキストは **R8 の SDF アトラス 1 枚**を束ねて描く専用パイプラインなので、
+/// 色つきテクスチャを混ぜられない（アトラスへ入れても色が落ちる）。
+/// 一方スプライト経路は
+///   ・SpriteComponent と共通のテクスチャキャッシュ（毎フレーム再読込しない）
+///   ・ゾーン／レイヤーの共通ソート
+/// をそのまま使えるため、画像を「Text 由来のスプライト矩形」として流すのが
+/// 最小の変更でレイヤー規約に完全に乗る方法になる。
+/// レイヤー値はテキストと同じ（`tc.layer`）なので、同一レイヤー内では
+/// 既存順（スプライト → プリミティブ → テキスト）に従って画像がグリフより
+/// 1 段奥に出るが、本文中で文字と画像は重ならないため見た目には現れない。
+///
+/// # 引数
+/// - `text_local_rs` : テキストのローカル px 空間 → ワールドの**行優先**行列
+///   （描画側 `CanvasTextItem::model` の元になる行列と同一のもの）
+/// - `pivot`         : 枠モードのときの正規化ピボット（枠なしは `[0, 0]`）
+///
+/// # 制限
+/// - 文字の太さ（`weight`）は画像に効かない（SDF のしきい値操作のため）
+/// - 影のぼかし（`shadow_softness`）も画像には効かない（スプライトはぼかせない）
+#[allow(clippy::too_many_arguments)]
+pub(super) fn collect_inline_image_sprites(
+    draw_ctx: &DrawContext,
+    tc: &TextComponent,
+    text_local_rs: [[f32; 4]; 4],
+    pivot: [f32; 2],
+    canvas_scale: f32,
+    y_sign: f32,
+    zone: CanvasDrawZone,
+    out: &mut Vec<SpriteDrawItem>,
+) {
+    // 記法の入口（角括弧）を含まない本文は解析すら行わない（大多数の経路）。
+    if tc.font_size <= 0.0 || !tc.content.contains(INLINE_MARKUP_OPEN) {
+        return;
+    }
+    let doc = build_doc(&tc.content, &tc.icon_set);
+    if doc.images.is_empty() {
+        return;
+    }
+    // レイアウトは描画側とまったく同じ純関数で解く（位置がズレない要）。
+    let font = layout_fonts::font_for(&tc.font_path);
+    let spec = TextLayoutSpec {
+        font_size: tc.font_size,
+        line_spacing: tc.line_spacing,
+        align: tc.align,
+        vertical_align: tc.vertical_align,
+        outline_width: tc.outline_width,
+        box_width: tc.box_width,
+        box_height: tc.box_height,
+        wrap: tc.wrap,
+    };
+    let Some(layout) = resolve_layout_with_images(&font, &doc.text, &spec, &doc.images) else {
+        return;
+    };
+    let pivot_offset = layout.pivot_offset(pivot);
+
+    // ── 影（本体より先に積む＝下へ回る）──
+    // グリフの影と同じオフセット・同じ色を使う。スプライトの color は乗算なので、
+    // 半透明の黒を掛けると「画像のアルファ形状をした黒い影」になる。
+    let draw_shadow = (tc.shadow_offset_x != 0.0 || tc.shadow_offset_y != 0.0)
+        && tc.shadow_color[3] > 0.0;
+    if draw_shadow {
+        push_inline_image_rects(
+            draw_ctx,
+            &layout,
+            &font,
+            tc,
+            [
+                pivot_offset[0] + tc.shadow_offset_x,
+                pivot_offset[1] + tc.shadow_offset_y,
+            ],
+            tc.shadow_color,
+            text_local_rs,
+            canvas_scale,
+            y_sign,
+            zone,
+            out,
+        );
+    }
+
+    // ── 本体 ──
+    // 画像は**テキスト色で着色しない**（アイコンは自前の色を持つ）。
+    // ただし不透明度だけはテキストに追従させる（フェードで文字だけ残らないように）。
+    if tc.color[3] > 0.0 {
+        push_inline_image_rects(
+            draw_ctx,
+            &layout,
+            &font,
+            tc,
+            pivot_offset,
+            [1.0, 1.0, 1.0, tc.color[3]],
+            text_local_rs,
+            canvas_scale,
+            y_sign,
+            zone,
+            out,
+        );
+    }
+}
+
+/// 解決済みレイアウトから画像矩形を作り、スプライトとして `out` へ積む。
+///
+/// 影と本体は「オフセットと色だけ違う同じ形」なので、この 1 本を 2 回呼ぶ
+/// （式の二重定義を避ける。canvas_text.rs の `emit_glyph_quads` と同じ流儀）。
+#[allow(clippy::too_many_arguments)]
+fn push_inline_image_rects(
+    draw_ctx: &DrawContext,
+    layout: &crate::engine::core::font::text_layout::ResolvedLayout,
+    font: &ab_glyph::FontArc,
+    tc: &TextComponent,
+    offset: [f32; 2],
+    color: [f32; 4],
+    text_local_rs: [[f32; 4]; 4],
+    canvas_scale: f32,
+    y_sign: f32,
+    zone: CanvasDrawZone,
+    out: &mut Vec<SpriteDrawItem>,
+) {
+    for rect in collect_image_rects(layout, font, tc.font_size, offset) {
+        // テクスチャは SpriteComponent と共通のキャッシュ経路で解決する
+        // （失敗も記録されるので毎フレームの再読込・ログ爆発は起きない）。
+        let Some(tex) = resolve_sprite_texture(draw_ctx, &rect.path) else {
+            continue;
+        };
+        // ユニットクワッド [0,1]^2 を画像矩形へ写すローカル行列（ID パスと同じ関数）。
+        let Some(local) = text_box_unit_quad_mat(rect.min, rect.max) else {
+            continue;
+        };
+        out.push(SpriteDrawItem {
+            model: canvas_mat_to_gpu(mat4x4_mul(text_local_rs, local), canvas_scale, y_sign),
+            color,
+            tex: Some(tex),
+            mesh: None,
+            zone,
+            // レイヤーはテキストと同じ値（同じレイヤー位置に出す）。
+            layer: tc.layer,
+        });
+    }
+}
+
 // ============================================================
 //  collect_sprite_items
 // ============================================================
@@ -979,22 +1125,36 @@ pub(super) fn collect_sprite_items(
                 if tc.content.is_empty() {
                     continue;
                 }
+                let has_box = tc.box_width > 0.0;
+                // テキストのローカル px 空間 → ワールド（行優先）。
                 // 枠モード（box_width > 0）は pivot を行列で効かせず、
                 // グリフ座標側（CanvasTextItem::pivot）で平行移動する。
                 // こうすると行列がフォント寸法に依存しなくなる。
-                let has_box = tc.box_width > 0.0;
-                let text_model = if has_box {
-                    canvas_mat_to_gpu(
-                        mat4x4_mul(
-                            parent_world_rs,
-                            eff_ct.to_mesh_mat4_no_pivot(size_scale_x, size_scale_y),
-                        ),
-                        canvas_scale,
-                        y_sign,
-                    )
-                } else {
-                    node_mesh_gpu_mat
-                };
+                // 枠なしのときの値は `node_mesh_gpu_mat` の元になる行列と同一。
+                let text_local_rs = mat4x4_mul(
+                    parent_world_rs,
+                    if has_box {
+                        eff_ct.to_mesh_mat4_no_pivot(size_scale_x, size_scale_y)
+                    } else {
+                        eff_ct.to_mesh_mat4(size_scale_x, size_scale_y)
+                    },
+                );
+                let text_model = canvas_mat_to_gpu(text_local_rs, canvas_scale, y_sign);
+                // 枠なしのときは pivot を渡さない（従来どおり pivot 無効）。
+                let text_pivot = if has_box { eff_ct.pivot } else { [0.0, 0.0] };
+
+                // 本文に埋め込まれたインライン画像を**スプライト**として積む
+                // （テキストと同じレイヤー値・同じゾーンで共通ソートに乗る）。
+                collect_inline_image_sprites(
+                    draw_ctx,
+                    tc,
+                    text_local_rs,
+                    text_pivot,
+                    canvas_scale,
+                    y_sign,
+                    my_zone,
+                    out,
+                );
                 text_out.push(CanvasTextItem {
                     text: tc.content.clone(),
                     // フォントサイズは**素の値**を渡す。キャンバスの拡縮
@@ -1011,14 +1171,15 @@ pub(super) fn collect_sprite_items(
                     // フォント指定と縁取りはコンポーネントの値をそのまま渡す
                     // （フォントの読み込みは描画側の FontRegistry がキャッシュする）。
                     font_path: tc.font_path.clone(),
+                    // アイコンセット（[icon:名前] の解決表）。
+                    icon_set: tc.icon_set.clone(),
                     outline_width: tc.outline_width,
                     outline_color: tc.outline_color,
                     // 枠・折り返し（0 = 枠なし = 従来レイアウト）
                     box_width: tc.box_width,
                     box_height: tc.box_height,
                     wrap: tc.wrap,
-                    // 枠なしのときは pivot を渡さない（従来どおり pivot 無効）
-                    pivot: if has_box { eff_ct.pivot } else { [0.0, 0.0] },
+                    pivot: text_pivot,
                     // SDF の太さとドロップシャドウ
                     weight: tc.weight,
                     shadow_offset: [tc.shadow_offset_x, tc.shadow_offset_y],
@@ -2479,7 +2640,7 @@ pub(super) fn sprite_world_corners(sprite_world: &[[f32; 4]; 4]) -> [[f32; 3]; 4
 /// スケーリングモードに応じたゲームビューポート矩形・アスペクト比・FOV を計算する。
 ///
 /// 戻り値: (vp_x, vp_y, vp_w, vp_h, proj_aspect, fov_y_rad)
-pub(super) fn compute_game_viewport(
+pub(crate) fn compute_game_viewport(
     scaling_mode: &ScalingMode,
     window_w: f32,
     window_h: f32,

@@ -37,7 +37,8 @@ use std::ops::Range;
 
 use ab_glyph::FontArc;
 
-use super::text_layout::{advance_em, measure_line_width};
+use super::inline::{IMAGE_PLACEHOLDER, InlineImages};
+use super::text_layout::{advance_em, measure_line_width, measure_range_width};
 
 // ─── 禁則・クラスタ規則の定数（マジックナンバー禁止）─────────────
 
@@ -170,7 +171,14 @@ fn is_kinsoku_tail(c: char) -> bool {
 ///
 /// 空白は直前クラスタへ吸収する（行頭へ送らないため）。
 /// 先頭にいきなり空白が来た場合のみ、空白だけのクラスタになる。
-fn split_clusters(font: &FontArc, para: &str, base: usize, font_size: f32) -> Vec<Cluster> {
+fn split_clusters(
+    font: &FontArc,
+    full_text: &str,
+    para: &str,
+    base: usize,
+    font_size: f32,
+    images: &InlineImages,
+) -> Vec<Cluster> {
     let chars: Vec<(usize, char)> = para.char_indices().collect();
     let mut clusters: Vec<Cluster> = Vec::new();
     let mut i = 0usize;
@@ -215,7 +223,7 @@ fn split_clusters(font: &FontArc, para: &str, base: usize, font_size: f32) -> Ve
         }
         let core_end = if j < chars.len() { chars[j].0 } else { para.len() };
         let core = &para[start..core_end];
-        let w = measure_line_width(font, core, font_size);
+        let w = measure_range_width(font, full_text, base + start..base + core_end, font_size, images);
         clusters.push(Cluster {
             range: base + start..base + core_end,
             end_trimmed: base + core_end,
@@ -233,13 +241,23 @@ fn split_clusters(font: &FontArc, para: &str, base: usize, font_size: f32) -> Ve
 /// クラスタを 1 文字ずつのクラスタ列へ分解する（強制分割用）。
 ///
 /// 末尾空白は最後の文字クラスタへ引き継ぐ（空白だけのクラスタを作らないため）。
-fn explode_cluster(font: &FontArc, text: &str, cluster: &Cluster, font_size: f32) -> Vec<Cluster> {
+fn explode_cluster(
+    font: &FontArc,
+    text: &str,
+    cluster: &Cluster,
+    font_size: f32,
+    images: &InlineImages,
+) -> Vec<Cluster> {
     let core = &text[cluster.range.start..cluster.end_trimmed];
     let mut out: Vec<Cluster> = Vec::with_capacity(cluster.core_char_count);
     for (off, ch) in core.char_indices() {
         let start = cluster.range.start + off;
         let end = start + ch.len_utf8();
-        let w = advance_em(font, ch) * font_size;
+        // 画像の代替文字はフォントの送り幅ではなく画像の送り幅を使う。
+        let w = match images.get(start).filter(|_| ch == IMAGE_PLACEHOLDER) {
+            Some(img) => img.advance_px(font_size),
+            None => advance_em(font, ch) * font_size,
+        };
         out.push(Cluster {
             range: start..end,
             end_trimmed: end,
@@ -259,7 +277,7 @@ fn explode_cluster(font: &FontArc, text: &str, cluster: &Cluster, font_size: f32
 
 // ─── 折り返し本体 ──────────────────────────────────────────────
 
-/// テキストを `max_width` に収まるよう折り返して行へ分割する。
+/// テキストを `max_width` に収まるよう折り返して行へ分割する（画像なし）。
 ///
 /// - `max_width <= 0` のときは折り返さず、改行での分割と完全に同一の
 ///   行分割（範囲・幅とも）を返す。枠なしテキストの従来経路がこれ。
@@ -267,6 +285,26 @@ fn explode_cluster(font: &FontArc, text: &str, cluster: &Cluster, font_size: f32
 ///
 /// 空文字列に対しては「幅 0 の 1 行」を返す（行数 1 = 従来の分割と同じ）。
 pub fn wrap_lines(font: &FontArc, text: &str, font_size: f32, max_width: f32) -> Vec<WrappedLine> {
+    wrap_lines_with_images(font, text, font_size, max_width, InlineImages::empty())
+}
+
+/// インライン画像を含むテキストを折り返して行へ分割する（**折り返しの実体**）。
+///
+/// 画像は `inline::IMAGE_PLACEHOLDER` 1 文字として本文へ埋まっており、
+/// ここでは「送り幅が画像固有の、分割不可な 1 文字クラスタ」として扱われる。
+/// したがって語単位／文字単位の折り返しも禁則も、既存規則がそのまま働く。
+///
+/// # 引数の契約
+/// `images` のキーは **正規化後**の本文に対する絶対バイト位置であること
+/// （`inline::build_doc` の出力をそのまま渡す）。`text` が正規化済みなら
+/// ここでの正規化は何もしない（`Cow::Borrowed`）ので位置はズレない。
+pub fn wrap_lines_with_images(
+    font: &FontArc,
+    text: &str,
+    font_size: f32,
+    max_width: f32,
+    images: &InlineImages,
+) -> Vec<WrappedLine> {
     // 改行表記を \n へ正規化する（唯一の入口。詳細は normalize_newlines のコメント）。
     // Cow なので \r を含まない通常入力ではアロケーションが発生しない。
     let normalized = normalize_newlines(text);
@@ -279,10 +317,10 @@ pub fn wrap_lines(font: &FontArc, text: &str, font_size: f32, max_width: f32) ->
             // 折り返しなし: 段落 = 1 行（従来経路とビット一致させる）。
             out.push(WrappedLine {
                 range: base..base + para.len(),
-                width: measure_line_width(font, para, font_size),
+                width: measure_range_width(font, text, base..base + para.len(), font_size, images),
             });
         } else {
-            wrap_paragraph(font, text, para, base, font_size, max_width, &mut out);
+            wrap_paragraph(font, text, para, base, font_size, max_width, images, &mut out);
         }
         // 改行 1 バイトぶん進める（段落間の区切り文字）。
         base += para.len() + 1;
@@ -299,9 +337,10 @@ fn wrap_paragraph(
     base: usize,
     font_size: f32,
     max_width: f32,
+    images: &InlineImages,
     out: &mut Vec<WrappedLine>,
 ) {
-    let mut clusters = split_clusters(font, para, base, font_size);
+    let mut clusters = split_clusters(font, full_text, para, base, font_size, images);
     if clusters.is_empty() {
         // 空段落は幅 0 の 1 行（行数を保つ）。
         out.push(WrappedLine {
@@ -327,7 +366,7 @@ fn wrap_paragraph(
                 // 行頭のクラスタが単独で入りきらない場合のみ強制分割する。
                 // 1 文字でも入りきらないときは分割しても縮まらないので、
                 // そのまま 1 クラスタ載せて前進する（無限ループ防止）。
-                let pieces = explode_cluster(font, full_text, &clusters[e], font_size);
+                let pieces = explode_cluster(font, full_text, &clusters[e], font_size, images);
                 clusters.splice(e..e + 1, pieces);
                 continue; // 分解後の先頭クラスタで再判定する
             }
@@ -362,7 +401,7 @@ fn wrap_paragraph(
         let end = clusters[e - 1].end_trimmed;
         out.push(WrappedLine {
             range: start..end,
-            width: measure_line_width(font, &full_text[start..end], font_size),
+            width: measure_range_width(font, full_text, start..end, font_size, images),
         });
         s = e;
     }
@@ -577,5 +616,111 @@ mod tests {
         let lf = wrap_lines(&f, "あいうえお\nかきくけこ", font_size, w);
         let crlf = wrap_lines(&f, "あいうえお\r\nかきくけこ", font_size, w);
         assert_eq!(lf.len(), crlf.len(), "CRLF でも折り返し結果の行数が変わらない");
+    }
+}
+
+// ============================================================
+//  インライン画像を含む折り返しの単体テスト
+//
+//  実画像を用意せずに規則だけを検証するため、画像表は
+//  `InlineImages::from_entries` で直接組み立てる。
+// ============================================================
+
+#[cfg(test)]
+mod inline_image_tests {
+    use super::*;
+    use crate::engine::core::font::inline::doc::InlineImage;
+
+    /// テスト用フォント（組み込みフォント）。
+    fn builtin() -> FontArc {
+        FontArc::try_from_slice(crate::engine::core::font::DEFAULT_FONT_BYTES)
+            .expect("組み込みフォントを読める")
+    }
+
+    /// 行の文字列を取り出すヘルパ。
+    fn texts<'a>(src: &'a str, lines: &[WrappedLine]) -> Vec<&'a str> {
+        lines.iter().map(|l| &src[l.range.clone()]).collect()
+    }
+
+    /// 「幅 advance_em・高さ height_em の画像が 1 つ」の表を作る。
+    fn one_image(offset: usize, advance_em: f32, height_em: f32) -> InlineImages {
+        InlineImages::from_entries(vec![(
+            offset,
+            InlineImage {
+                path: "assets://dummy.png".to_string(),
+                advance_em,
+                height_em,
+            },
+        )])
+    }
+
+    /// 画像の送り幅が行幅へ加算される（フォントの送り幅ではなく画像の幅が使われる）。
+    #[test]
+    fn image_advance_is_added_to_line_width() {
+        let f = builtin();
+        let font_size = 20.0;
+        let text = format!("あ{IMAGE_PLACEHOLDER}");
+        let offset = "あ".len();
+        let images = one_image(offset, 2.0, 1.0);
+
+        let with_img = wrap_lines_with_images(&f, &text, font_size, 0.0, &images);
+        let plain = wrap_lines(&f, "あ", font_size, 0.0);
+        assert_eq!(with_img.len(), 1);
+        // 画像ぶん（2em = 40px）だけ広がる。代替文字自体の送り幅は使われない。
+        let expected = plain[0].width + 2.0 * font_size;
+        assert!(
+            (with_img[0].width - expected).abs() < 1e-3,
+            "行幅に画像の送り幅が入っていない（{} vs {}）",
+            with_img[0].width,
+            expected
+        );
+    }
+
+    /// 画像は分割不可の 1 クラスタとして折り返しへ参加する。
+    #[test]
+    fn image_wraps_as_single_cluster() {
+        let f = builtin();
+        let font_size = 20.0;
+        // 「あ」+ 画像(2em) + 「い」。幅は「あ」+ 画像 ちょうどぶん。
+        let text = format!("あ{IMAGE_PLACEHOLDER}い");
+        let img_off = "あ".len();
+        let images = one_image(img_off, 2.0, 1.0);
+        let a_w = measure_range_width(&f, "あ", 0.."あ".len(), font_size, InlineImages::empty());
+        let max_w = a_w + 2.0 * font_size + 0.01;
+
+        let lines = wrap_lines_with_images(&f, &text, font_size, max_w, &images);
+        let got = texts(&text, &lines);
+        assert_eq!(got.len(), 2, "画像の後ろで折り返る");
+        assert!(got[0].ends_with(IMAGE_PLACEHOLDER), "1 行目は画像で終わる");
+        assert_eq!(got[1], "い");
+    }
+
+    /// 枠より広い画像でも、1 行に必ず 1 クラスタは載る（無限ループしない）。
+    #[test]
+    fn oversized_image_still_advances() {
+        let f = builtin();
+        let font_size = 20.0;
+        let text = format!("{IMAGE_PLACEHOLDER}あ");
+        let images = one_image(0, 8.0, 1.0);
+        let lines = wrap_lines_with_images(&f, &text, font_size, 1.0, &images);
+        let got = texts(&text, &lines);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].chars().count(), 1, "画像だけで 1 行になる");
+        assert_eq!(got[1], "あ");
+    }
+
+    /// 画像を含む段落でも明示改行はそのまま効く（範囲がズレない）。
+    #[test]
+    fn image_offsets_stay_valid_across_paragraphs() {
+        let f = builtin();
+        let font_size = 20.0;
+        let text = format!("あ\nい{IMAGE_PLACEHOLDER}");
+        let img_off = text.find(IMAGE_PLACEHOLDER).unwrap();
+        let images = one_image(img_off, 3.0, 1.0);
+        let lines = wrap_lines_with_images(&f, &text, font_size, 0.0, &images);
+        assert_eq!(lines.len(), 2);
+        // 2 行目にだけ画像ぶんの幅が乗る（2 行目の base オフセットで引けている証拠）。
+        let i_w = measure_range_width(&f, "い", 0.."い".len(), font_size, InlineImages::empty());
+        assert!((lines[1].width - (i_w + 3.0 * font_size)).abs() < 1e-3);
     }
 }

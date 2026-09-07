@@ -879,6 +879,9 @@ public partial class InspectorPanel : UserControl
         // フォント参照と縁取り。JSON キーは "font_path" / "outline_width" /
         // "outline_r".."outline_a"（本文色の "text_r".."text_a" と衝突しない専用の綴り）。
         string TextFontPath = "",
+        // 本文中のインライン画像記法 [icon:名前] を解決するアイコンセット（.icons）。
+        // JSON キーは "icon_set"。空欄 = アイコンセット未使用。
+        string TextIconSet = "",
         float TextOutlineWidth = 0f,
         float TextOutlineR = 0f, float TextOutlineG = 0f, float TextOutlineB = 0f, float TextOutlineA = 1f,
         // 枠と自動折り返し（JSON キーは "box_width" / "box_height" / "wrap"）。
@@ -1454,6 +1457,8 @@ public partial class InspectorPanel : UserControl
             var textLayer      = comp.TryGetProperty("text_layer",     out var txly) ? txly.GetInt32() : 0;
             // フォント参照（空 = 組み込みフォント）と縁取り（太さ 0 = 縁取りなし・色は既定で不透明な黒）。
             var textFontPath   = comp.TryGetProperty("font_path",      out var txfp) ? txfp.GetString() ?? "" : "";
+            // アイコンセット（.icons）。未設定のシーンでは空文字になる。
+            var textIconSet    = comp.TryGetProperty("icon_set",       out var txis) ? txis.GetString() ?? "" : "";
             var textOutlineW   = comp.TryGetProperty("outline_width",  out var txow) ? txow.GetSingle() : 0f;
             var textOutlineR   = comp.TryGetProperty("outline_r",      out var txor) ? txor.GetSingle() : 0f;
             var textOutlineG   = comp.TryGetProperty("outline_g",      out var txog) ? txog.GetSingle() : 0f;
@@ -1713,7 +1718,8 @@ public partial class InspectorPanel : UserControl
                 TextR: textR, TextG: textG, TextB: textB, TextA: textA,
                 TextAlign: textAlign, TextVerticalAlign: textVAlign,
                 TextLineSpacing: textLineSpacing, TextLayer: textLayer,
-                TextFontPath: textFontPath, TextOutlineWidth: textOutlineW,
+                TextFontPath: textFontPath, TextIconSet: textIconSet,
+                TextOutlineWidth: textOutlineW,
                 TextOutlineR: textOutlineR, TextOutlineG: textOutlineG,
                 TextOutlineB: textOutlineB, TextOutlineA: textOutlineA,
                 TextBoxWidth: textBoxWidth, TextBoxHeight: textBoxHeight, TextWrap: textWrap,
@@ -8902,6 +8908,21 @@ public partial class InspectorPanel : UserControl
     private const string TextFontTooltip =
         "描画に使うフォント（.otf / .ttf）。空欄 = 組み込みフォントを使用します";
 
+    /// <summary>アイコンセット参照行が受け付ける拡張子（ドラッグ＆ドロップ判定にも使う）。</summary>
+    private static readonly string[] TextIconSetExtensions = { ".icons" };
+
+    /// <summary>アイコンセット選択ダイアログのフィルタ文字列。</summary>
+    private const string TextIconSetDialogFilter =
+        "アイコンセット|*.icons|すべてのファイル|*.*";
+
+    /// <summary>アイコンセット選択ダイアログのタイトル。</summary>
+    private const string TextIconSetDialogTitle = "アイコンセット（.icons）を選択";
+
+    /// <summary>アイコンセット参照行のツールチップ（記法の使い方を明示する）。</summary>
+    private const string TextIconSetTooltip =
+        "本文の [icon:名前] で使うアイコンセット（.icons）。"
+        + "空欄でも [img:assets://xxx.png] のパス直接指定は使えます";
+
     /// <summary>水平整列の選択肢（値キー, 表示ラベル）。値キーは Rust 側と一致必須。</summary>
     private static readonly (string Value, string Label)[] TextAlignOptions =
     {
@@ -8995,6 +9016,34 @@ public partial class InspectorPanel : UserControl
         // FileRefBuilder はツールチップ引数を持たないため、生成後の要素へ設定する。
         if (fontRow is FrameworkElement fontRowElement) fontRowElement.ToolTip = TextFontTooltip;
         sp.Children.Add(fontRow);
+
+        // ── アイコンセット選択行（空欄 = [icon:] 記法を使わない）──────
+        // フォント行とまったく同じ流儀（FileRefBuilder + ダイアログ + 仮想パス変換）。
+        var iconSetRow = FileRefBuilder.Build(
+            "アイコンセット",
+            info.TextIconSet,
+            TextIconSetExtensions,
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = TextIconSetDialogTitle,
+                    Filter = TextIconSetDialogFilter,
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                // 絶対パスを assets:// 仮想パスへ変換してからランタイムへ送信する。
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                SendField("icon_set", virtualPath);
+            },
+            // クリアでアイコンセット未使用へ戻せるよう空文字を送る。
+            () => SendField("icon_set", ""));
+        if (iconSetRow is FrameworkElement iconSetRowElement)
+            iconSetRowElement.ToolTip = TextIconSetTooltip;
+        sp.Children.Add(iconSetRow);
 
         // ── フォントサイズ（キャンバスピクセル）──────────────────
         sp.Children.Add(BuildResettableFloatRow(

@@ -20,7 +20,8 @@
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 
 use super::sdf::{SDF_EM_PX, SDF_SPREAD_EM};
-use super::text_wrap::{WrappedLine, normalize_newlines, wrap_lines};
+use super::inline::{IMAGE_PLACEHOLDER, InlineImages};
+use super::text_wrap::{WrappedLine, normalize_newlines, wrap_lines_with_images};
 use crate::engine::components::{MAX_TEXT_CHARS, TextAlign, TextVerticalAlign};
 
 /// テキストブロックのローカル境界矩形（キャンバス px）。
@@ -86,9 +87,101 @@ pub fn outline_pad_px(outline_width_px: f32, font_size: f32) -> f32 {
     outline_width_px.min(SDF_SPREAD_EM * font_size)
 }
 
-/// 1 行の幅（px）を測る。
+/// 1 行の幅（px）を測る（インライン画像を含まない本文用）。
+///
+/// ギズモ・操作ガイドなど「記法を使わない」経路はこちらを使う。
 pub fn measure_line_width(font: &FontArc, line: &str, font_size: f32) -> f32 {
-    line.chars().map(|ch| advance_em(font, ch) * font_size).sum()
+    measure_range_width(font, line, 0..line.len(), font_size, InlineImages::empty())
+}
+
+/// 本文の指定バイト範囲の幅（px）を測る（インライン画像を含みうる本文用）。
+///
+/// `images` のキーは**本文全体**に対するバイト位置なので、範囲の先頭
+/// （`range.start`）を足した絶対位置で引く。ここを相対位置で引くと
+/// 2 行目以降の画像幅が丸ごと落ちて行が詰まる。
+///
+/// 代替文字の位置に画像が登録されていない場合（利用者が U+FFFC を直接
+/// 入力した等）は、ふつうのグリフとして送り幅を引く。
+pub fn measure_range_width(
+    font: &FontArc,
+    text: &str,
+    range: std::ops::Range<usize>,
+    font_size: f32,
+    images: &InlineImages,
+) -> f32 {
+    let base = range.start;
+    text[range]
+        .char_indices()
+        .map(|(rel, ch)| {
+            if ch == IMAGE_PLACEHOLDER {
+                if let Some(img) = images.get(base + rel) {
+                    return img.advance_px(font_size);
+                }
+            }
+            advance_em(font, ch) * font_size
+        })
+        .sum()
+}
+
+// ─── インライン画像のベースライン整列 ──────────────────────────
+
+/// x ハイトを取得できないフォント（記号専用など）で使う代替値（em）。
+///
+/// 一般的なラテン系フォントの x ハイトはおおむね 0.5em 前後なので、
+/// 取得できない場合もそこへ寄せておけば見た目が大きく破綻しない。
+pub const FALLBACK_X_HEIGHT_EM: f32 = 0.5;
+
+/// x ハイト（小文字 x の高さ）を em 単位で返す。
+///
+/// ab_glyph はフォントの x ハイトを直接公開しないため、
+/// 小文字 `x` のアウトライン実寸から求める。`x` を持たないフォント
+/// （日本語専用サブセット等）では `FALLBACK_X_HEIGHT_EM` を返す。
+pub fn x_height_em(font: &FontArc) -> f32 {
+    let units_per_em = font.units_per_em().unwrap_or(0.0);
+    if units_per_em <= 0.0 {
+        return FALLBACK_X_HEIGHT_EM;
+    }
+    match font.outline(font.glyph_id(X_HEIGHT_REFERENCE_CHAR)) {
+        // アウトラインの境界はフォントユニット。高さを em へ正規化する。
+        // 座標系の上下向きに依存しないよう絶対値を取る。
+        Some(outline) => {
+            let h = (outline.bounds.height()).abs() / units_per_em;
+            if h > 0.0 { h } else { FALLBACK_X_HEIGHT_EM }
+        }
+        None => FALLBACK_X_HEIGHT_EM,
+    }
+}
+
+/// x ハイトの基準に使う文字（小文字 x）。
+const X_HEIGHT_REFERENCE_CHAR: char = 'x';
+
+/// インライン画像のベースライン整列の規則。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InlineImageBaseline {
+    /// 画像の下端をベースラインへ合わせる（絵文字ではなく「図」を並べる感覚）。
+    BottomOnBaseline,
+    /// 画像の縦中央を x ハイトの中央へ合わせる（本文中のアイコン向け。既定）。
+    CenterOnXHeight,
+}
+
+/// インライン画像の整列規則（既定）。
+///
+/// 本文に混ぜるキーアイコン・ボタンアイコンは「文字の背の中央」に来るほうが
+/// 自然に見えるため、x ハイト中央そろえを既定にする。
+pub const INLINE_IMAGE_BASELINE: InlineImageBaseline = InlineImageBaseline::CenterOnXHeight;
+
+/// ベースラインから画像クアッド**上端**までのオフセット（px。Y は下向き）。
+///
+/// - `height_px`   : 画像の描画高さ（px）
+/// - `x_height_px` : そのフォント・サイズでの x ハイト（px）
+///
+/// 描画（スプライト収集）と計測（境界矩形）が同じ式を使うための唯一の定義。
+pub fn inline_image_top_offset(height_px: f32, x_height_px: f32) -> f32 {
+    match INLINE_IMAGE_BASELINE {
+        InlineImageBaseline::BottomOnBaseline => -height_px,
+        // x ハイト中央（ベースラインより x_height/2 だけ上）へ画像の中央を置く。
+        InlineImageBaseline::CenterOnXHeight => -x_height_px * 0.5 - height_px * 0.5,
+    }
 }
 
 /// テキストブロックのレイアウト原点を求める（**描画・計測の唯一の定義**）。
@@ -262,6 +355,12 @@ pub struct ResolvedLayout {
     pub pivot_size: [f32; 2],
     /// 枠と字面を合わせた境界矩形（ピック・選択枠が使う）。
     pub bounds: TextLocalBox,
+    /// 本文中のインライン画像の位置表（切り詰め後）。
+    ///
+    /// 描画側（`canvas_text` / スプライト収集）は、この表と `lines` の範囲から
+    /// 画像の矩形を組み立てる。行分割と同じ表を使うので、
+    /// 「折り返しに使った幅」と「描く矩形」がズレない。
+    pub images: InlineImages,
 }
 
 impl ResolvedLayout {
@@ -296,6 +395,27 @@ impl ResolvedLayout {
 ///
 /// 描画されない入力（空文字・サイズ 0）は `None` を返す。
 pub fn resolve_layout(font: &FontArc, text: &str, spec: &TextLayoutSpec) -> Option<ResolvedLayout> {
+    resolve_layout_with_images(font, text, spec, InlineImages::empty())
+}
+
+/// インライン画像を含む本文のレイアウトを解決する（**すべての解決の実体**）。
+///
+/// `resolve_layout` は「画像なし」でここへ委譲する薄いラッパである
+/// （レイアウト規則の定義を 2 本持たないため）。
+///
+/// # 引数の契約（ここを外すと範囲がズレて描画が破綻する）
+/// - `text`   : `inline::build_doc` が返した **改行正規化済み**の本文。
+///   画像は 1 文字の代替文字（`inline::IMAGE_PLACEHOLDER`）へ潰されていること。
+/// - `images` : その `text` に対するバイト位置の画像表（同じく `build_doc` の出力）。
+///
+/// 画像は「幅 = 高さ × アスペクト比・分割不可の 1 クラスタ」として扱われるため、
+/// 折り返し・禁則・整列・枠・pivot・影といった既存規則がそのまま適用される。
+pub fn resolve_layout_with_images(
+    font: &FontArc,
+    text: &str,
+    spec: &TextLayoutSpec,
+    images: &InlineImages,
+) -> Option<ResolvedLayout> {
     if text.is_empty() || spec.font_size <= 0.0 {
         return None;
     }
@@ -319,8 +439,13 @@ pub fn resolve_layout(font: &FontArc, text: &str, spec: &TextLayoutSpec) -> Opti
         normalized.into_owned()
     };
 
+    // 切り詰めで消えた画像を位置表からも落とす（描かれない画像を枠へ含めない）。
+    // 画像は 1 つにつき代替文字 1 文字なので、切り詰めが記法の途中で切れることはない。
+    let images = images.truncated(truncated.len());
+
     // 行分割（枠なし・折り返し無効なら明示改行での分割と同一）。
-    let lines = wrap_lines(font, &truncated, spec.font_size, spec.wrap_width());
+    // 画像は「分割不可・幅 = 高さ × アスペクト比の 1 クラスタ」として混ざる。
+    let lines = wrap_lines_with_images(font, &truncated, spec.font_size, spec.wrap_width(), &images);
     if lines.is_empty() {
         return None;
     }
@@ -388,6 +513,26 @@ pub fn resolve_layout(font: &FontArc, text: &str, spec: &TextLayoutSpec) -> Opti
         min: [min_x - pad, first_baseline_y - ascent - pad],
         max: [max_x + pad, last_baseline_y + descent + pad],
     };
+    // ── インライン画像ぶんの縦の張り出しを境界へ足す ──
+    // 画像はフォントのアセント／ディセントを超える高さを持てるので、
+    // 字面だけの境界では画像がはみ出す。ピック矩形・選択枠が見た目と
+    // 一致するよう、実際に置かれる矩形の上下端まで境界を広げる。
+    // 横方向は送り幅に既に含まれている（行幅の実測値が画像幅を含む）。
+    if !images.is_empty() {
+        let x_height = x_height_em(font) * spec.font_size;
+        for (row, line) in lines.iter().enumerate() {
+            let baseline = first_baseline_y + line_step * row as f32;
+            for (_, img) in images.iter_range(line.range.clone()) {
+                if !img.is_drawable() {
+                    continue;
+                }
+                let h = img.height_px(spec.font_size);
+                let top = baseline + inline_image_top_offset(h, x_height);
+                bounds.min[1] = bounds.min[1].min(top - pad);
+                bounds.max[1] = bounds.max[1].max(top + h + pad);
+            }
+        }
+    }
     // 枠がある場合は枠との和集合にする（空白だけの行でも枠全体を掴めるように）。
     if let Some(f) = frame {
         bounds.min[0] = bounds.min[0].min(f.min[0]);
@@ -405,6 +550,7 @@ pub fn resolve_layout(font: &FontArc, text: &str, spec: &TextLayoutSpec) -> Opti
         frame,
         pivot_size,
         bounds,
+        images,
     })
 }
 
@@ -801,5 +947,170 @@ mod tests {
         assert_eq!(lf.bounds, crlf.bounds, "枠が変わらない");
         // layout.text（wrap_lines の range が対応する文字列）にも \r が残らない。
         assert!(!crlf.text.contains('\r'), "正規化済みの text に \r が残っていない");
+    }
+}
+
+// ============================================================
+//  インライン画像を含むレイアウトの単体テスト
+// ============================================================
+
+#[cfg(test)]
+mod inline_image_layout_tests {
+    use super::*;
+    use crate::engine::core::font::inline::doc::InlineImage;
+
+    /// テスト用フォント（組み込みフォント）。
+    fn builtin() -> FontArc {
+        FontArc::try_from_slice(super::super::DEFAULT_FONT_BYTES).expect("組み込みフォントを読める")
+    }
+
+    /// 「幅 advance_em・高さ height_em の画像が 1 つ」の表を作る。
+    fn one_image(offset: usize, advance_em: f32, height_em: f32) -> InlineImages {
+        InlineImages::from_entries(vec![(
+            offset,
+            InlineImage {
+                path: "assets://dummy.png".to_string(),
+                advance_em,
+                height_em,
+            },
+        )])
+    }
+
+    /// 枠なし・左上そろえの基本条件。
+    fn spec(font_size: f32) -> TextLayoutSpec {
+        TextLayoutSpec {
+            font_size,
+            line_spacing: 1.2,
+            ..TextLayoutSpec::default()
+        }
+    }
+
+    /// 境界矩形の幅に画像の送り幅が含まれる。
+    #[test]
+    fn bounds_width_includes_image_advance() {
+        let f = builtin();
+        let font_size = 20.0;
+        let text = format!("あ{IMAGE_PLACEHOLDER}");
+        let images = one_image("あ".len(), 2.0, 1.0);
+
+        let with_img = resolve_layout_with_images(&f, &text, &spec(font_size), &images)
+            .expect("レイアウトできる");
+        let plain = resolve_layout(&f, "あ", &spec(font_size)).expect("レイアウトできる");
+        let dw = (with_img.bounds.max[0] - with_img.bounds.min[0])
+            - (plain.bounds.max[0] - plain.bounds.min[0]);
+        assert!(
+            (dw - 2.0 * font_size).abs() < 1e-3,
+            "枠の幅が画像ぶん広がっていない（差 {dw}）"
+        );
+    }
+
+    /// アセントを超える高い画像は境界矩形の上端を押し上げる。
+    #[test]
+    fn tall_image_expands_bounds_vertically() {
+        let f = builtin();
+        let font_size = 20.0;
+        let text = format!("あ{IMAGE_PLACEHOLDER}");
+        // 高さ 4em の極端に高い画像（フォントのアセント約 0.88em を大きく超える）。
+        let images = one_image("あ".len(), 4.0, 4.0);
+
+        let with_img = resolve_layout_with_images(&f, &text, &spec(font_size), &images)
+            .expect("レイアウトできる");
+        let plain = resolve_layout(&f, "あ", &spec(font_size)).expect("レイアウトできる");
+        assert!(
+            with_img.bounds.min[1] < plain.bounds.min[1],
+            "高い画像で枠の上端が伸びていない"
+        );
+        assert!(
+            with_img.bounds.max[1] > plain.bounds.max[1],
+            "高い画像で枠の下端が伸びていない"
+        );
+    }
+
+    /// 描画されない画像（未解決）は境界矩形を縦に広げない（幅だけ確保する）。
+    #[test]
+    fn unresolved_image_does_not_expand_height() {
+        let f = builtin();
+        let font_size = 20.0;
+        let text = format!("あ{IMAGE_PLACEHOLDER}");
+        // path 空・height 0 = 未解決。送り幅 1em だけ取る。
+        let images = InlineImages::from_entries(vec![(
+            "あ".len(),
+            InlineImage {
+                path: String::new(),
+                advance_em: 1.0,
+                height_em: 0.0,
+            },
+        )]);
+        let with_img = resolve_layout_with_images(&f, &text, &spec(font_size), &images)
+            .expect("レイアウトできる");
+        let plain = resolve_layout(&f, "あ", &spec(font_size)).expect("レイアウトできる");
+        assert!((with_img.bounds.min[1] - plain.bounds.min[1]).abs() < 1e-4);
+        assert!((with_img.bounds.max[1] - plain.bounds.max[1]).abs() < 1e-4);
+    }
+
+    /// 切り詰め（MAX_TEXT_CHARS）は代替文字の境界で行われ、
+    /// 上限を超えた画像は位置表からも落ちる（記法が壊れない）。
+    #[test]
+    fn truncation_drops_images_beyond_limit() {
+        let f = builtin();
+        let font_size = 20.0;
+        // 「あ」を上限ちょうどまで並べ、その直後に画像を 1 つ置く。
+        let mut text: String = "あ".repeat(MAX_TEXT_CHARS);
+        let img_off = text.len();
+        text.push(IMAGE_PLACEHOLDER);
+        let images = one_image(img_off, 3.0, 1.0);
+
+        let layout = resolve_layout_with_images(&f, &text, &spec(font_size), &images)
+            .expect("レイアウトできる");
+        assert_eq!(
+            layout.text.chars().count(),
+            MAX_TEXT_CHARS,
+            "上限ちょうどで切り詰められる"
+        );
+        assert!(
+            layout.images.is_empty(),
+            "切り捨てられた画像が位置表に残っている"
+        );
+    }
+
+    /// 上限の内側にある画像は残る（境界の逆側）。
+    #[test]
+    fn image_just_inside_limit_is_kept() {
+        let f = builtin();
+        let font_size = 20.0;
+        // 画像を 1 文字目に置き、そのあと上限ちょうどまで文字を並べる。
+        let mut text = String::new();
+        text.push(IMAGE_PLACEHOLDER);
+        text.push_str(&"あ".repeat(MAX_TEXT_CHARS));
+        let images = one_image(0, 3.0, 1.0);
+
+        let layout = resolve_layout_with_images(&f, &text, &spec(font_size), &images)
+            .expect("レイアウトできる");
+        assert_eq!(layout.text.chars().count(), MAX_TEXT_CHARS);
+        assert_eq!(layout.images.len(), 1, "先頭の画像は残る");
+    }
+
+    /// x ハイトは正の値で、アセントより小さい（整列式の前提）。
+    #[test]
+    fn x_height_is_sane() {
+        let f = builtin();
+        let xh = x_height_em(&f);
+        assert!(xh > 0.0, "x ハイトは正");
+        assert!(xh < ascent_em(&f), "x ハイトはアセントより小さい");
+    }
+
+    /// 画像の縦中央が x ハイトの中央に来る（既定の整列規則）。
+    #[test]
+    fn image_is_centered_on_x_height() {
+        let font_size = 20.0;
+        let x_height = 10.0;
+        let h = 30.0;
+        let top = inline_image_top_offset(h, x_height);
+        let center = top + h * 0.5;
+        assert!(
+            (center + x_height * 0.5).abs() < 1e-4,
+            "画像の中央が x ハイト中央に一致しない（center={center}）"
+        );
+        let _ = font_size;
     }
 }

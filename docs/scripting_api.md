@@ -499,9 +499,68 @@ if (hitInfo is { } hit) { var target = hit.Position; }
 ## 3. Time（フレーム時間） / Debug（ログ）
 
 ```csharp
-Time.DeltaTime      // float: 前フレームからの経過秒
-Time.ElapsedTime    // float: ゲーム内の累計時間（秒）
+Time.DeltaTime            // float: 前フレームからの経過秒（Time.Scale 適用後のゲーム時間）
+Time.ElapsedTime          // float: ゲーム内の累計時間（秒。Time.Scale 適用後）
+Time.UnscaledDeltaTime    // float: 前フレームからの経過秒（Time.Scale 未適用の実時間）
+Time.UnscaledElapsedTime  // float: ゲーム内の累計時間（秒。Time.Scale 未適用）
+Time.Scale                // float（get/set）: ゲーム時間の進む速さ。既定 1.0 / 0 で停止 / 上限 100
+```
 
+### Time.Scale（ヒットストップ・スローモーション）
+
+`Time.Scale` はゲーム時間の進む速さをまとめて伸縮させます。`0` で完全停止、`0.5` で半分、`2` で倍速。
+負の値は `0` に丸められ、上限は `100`（`NaN` は `1` に戻ります）。
+
+| 項目 | Time.Scale の影響 |
+|---|---|
+| `Time.DeltaTime` / `Time.ElapsedTime` | 止まる（スケール倍される） |
+| `ConstantUpdate` の呼び出し回数 | 止まる（スケール 0 で 1 回も呼ばれない） |
+| アニメーション（キーフレーム／モデル／クロスフェード） | 止まる |
+| 物理（3D / 2D） | 止まる（スケール 0 でステップ停止・速度は保持） |
+| パーティクル | 止まる |
+| 水面・水位シミュレーション・インタラクション場 | 止まる |
+| `Time.UnscaledDeltaTime` / `Time.UnscaledElapsedTime` | 止まらない |
+| 入力（`Input.*`） | 止まらない |
+| オーディオ（`Audio.PlayBgm` などの再生） | 止まらない（BGM は鳴り続ける） |
+| `Update` などフェーズの呼び出しそのもの | 止まらない（毎フレーム呼ばれ続ける） |
+| エディタのカメラ操作・Edit モードのプレビュー | 影響なし（Play 中のみ効く） |
+
+```csharp
+// ヒットストップ: 0.08 秒だけゲームを 0.1 倍速にする
+private float _hitStopLeft;
+
+public override void OnHit()
+{
+    SEED.Time.Scale = 0.1f;   // 遅くする
+    _hitStopLeft = 0.08f;
+}
+
+public override void Update(ref NativeFrameContext ctx)
+{
+    if (_hitStopLeft > 0f)
+    {
+        // 【重要】戻すためのタイマーは必ず UnscaledDeltaTime で減らす。
+        // DeltaTime で減らすと Scale = 0 のとき永久に減らず、ゲームが止まったままになる。
+        _hitStopLeft -= SEED.Time.UnscaledDeltaTime;
+        if (_hitStopLeft <= 0f) SEED.Time.Scale = 1f;   // 戻し忘れ厳禁
+    }
+}
+```
+
+```csharp
+// ポーズ: ゲームだけ止め、UI は動かし続ける
+SEED.Time.Scale = 0f;                                   // ゲーム時間を停止
+menuAlpha += SEED.Time.UnscaledDeltaTime * 4f;          // UI は実時間で動く
+SEED.Time.Scale = 1f;                                   // 再開
+```
+
+> **重要**: `Time.Scale` は Play 開始時・Play 停止時・シーン遷移時に自動で `1.0` へ戻りますが、
+> それ以外では戻りません。ヒットストップ・ポーズは**必ず自分で `1.0` に戻す**こと。
+> 戻すためのタイマーは必ず `Time.UnscaledDeltaTime` で減らしてください
+> （`DeltaTime` は `Scale = 0` のとき 0 になり、永久に復帰できなくなります）。
+> UI・演出・ポーズメニューは `UnscaledDeltaTime` を使うのが原則です。
+
+```csharp
 Debug.Log("メッセージ");        // 情報ログ
 Debug.LogWarning("注意");       // 警告
 Debug.LogError("失敗");         // エラー
@@ -1047,10 +1106,44 @@ if (gameObject.GetComponent<Camera>() is { } cam)   // Camera?（未アタッチ
     cam.BarColor           // Color（get/set。レターボックス帯の色）
     cam.Projection         // string（get/set。"perspective" / "orthographic"）
     cam.OrthoHeight        // float（get/set。正射投影時の縦の描画範囲・ワールド単位）
+
+    // ワールド座標 → 画面座標の変換
+    cam.WorldToScreen(worldPos)   // Vector3: x,y = 画面左上原点のピクセル / z = カメラ前方距離
+    cam.WorldToCanvas(worldPos)   // Vector2: 画面中央原点・Y 下向き・1 単位 1px（キャンバス座標）
 }
 ```
 
 - `Projection = "orthographic"` で平行投影（遠近感なし）。縦 `OrthoHeight`・横 `OrthoHeight × アスペクト比` の範囲を写します。透視投影時は `FieldOfView` を使用します。
+
+#### WorldToScreen / WorldToCanvas（ワールド座標 → 画面座標）
+
+`WorldToScreen` の `x` / `y` は**ゲーム画面左上を原点とするピクセル**（右が +X・下が +Y）で、`Input.MousePos` と同じ座標系です。レターボックス／ピラーボックスの帯も考慮した「実際に描かれている位置」を返します。
+`z` は**カメラ前方距離**（ワールド単位）で、**正ならカメラの前方・負なら背後**です。背後の点は `x` / `y` が画面内に見える値になることがあるため、可視判定には必ず `z > 0` を使ってください。
+
+`WorldToCanvas` は**画面中央が原点・Y 下向き・1 単位 1px** のキャンバス座標を返します。`Input.MousePositionCanvas` および `CanvasTransform.Position` と同じ座標系なので、返り値をそのまま 2D アクターの位置に代入できます。
+
+メインカメラ以外のカメラでも使えます（ハンドルが指すカメラで計算します）。エディタ埋め込み Play・ウィンドウ Play のどちらでも同じ基準になります。
+
+```csharp
+// 敵の頭上に HP バー（2D アクター）を追従させる
+[SerializeField] SEED.GameObject? cameraActor;   // Camera を持つアクター
+[SerializeField] SEED.GameObject? hpBar;         // CanvasTransform を持つ 2D アクター
+
+public override void LateUpdate(ref NativeFrameContext ctx)
+{
+    if (cameraActor?.GetComponent<SEED.Camera>() is not { } cam) return;
+    if (hpBar?.GetComponent<SEED.CanvasTransform>() is not { } ct) return;
+
+    var headWorld = transform.Position + SEED.Vector3.Up * 2f;   // 頭上 2m
+    var screen    = cam.WorldToScreen(headWorld);
+
+    // カメラ背後なら隠す（z <= 0 の x,y は意味を持たない）
+    if (screen.z <= 0f) { ct.Scale = SEED.Vector2.Zero; return; }
+
+    ct.Scale    = SEED.Vector2.One;
+    ct.Position = cam.WorldToCanvas(headWorld);   // キャンバス座標へそのまま代入
+}
+```
 
 ### AudioSource（アクター紐づけの音源。3D 距離減衰・パン対応）
 
@@ -1258,6 +1351,7 @@ if (gameObject.GetComponent<Text>() is { } label)
     label.Align          // string（get/set。"left" / "center" / "right"）
     label.VerticalAlign  // string（get/set。"top" / "middle" / "bottom"）
     label.FontPath       // string（get/set。assets:// 仮想パス。空文字=組み込みフォント）
+    label.IconSet        // string（get/set。アイコンセット .icons の assets:// パス。空文字=未使用）
     label.OutlineWidth   // float（get/set。縁取りの太さ px。0=縁取りなし）
     label.OutlineColor   // Color（get/set。縁取りの色。既定=不透明な黒）
 
@@ -1305,6 +1399,43 @@ public void Update()
 > **重要 — 折り返しの規則**: 英数字は単語単位（`'` と `-` は単語の一部として扱う）、日本語などは 1 文字単位で折ります。行末の空白は幅に数えず、次の行頭へは送りません。1 単語が枠幅より長い場合は文字単位で強制分割します。簡易禁則として、句読点・閉じ括弧・長音・小書き仮名（`、。・？！」）】ー` など）は行頭に来ないよう**最大 2 文字まで前の行末へぶら下げ**、開き括弧（`「（【` など）が行末に来た場合は次の行頭へ追い出します。
 
 > **重要 — 太さと影**: `Weight` は SDF のしきい値をずらして太さを変えるため、縁取りと同じくフォントサイズの約 1/8 で頭打ちになります。影は本体と同じ字形を `ShadowOffset` だけずらして本体の下へ描くもので、`ShadowOffset` が (0,0) か `ShadowColor` のアルファが 0 のときは描かれません（＝コストもかかりません）。
+
+#### インライン画像（本文に画像を 1 文字として混ぜる）
+
+本文（`Content`）の中に次の記法を書くと、その位置に画像が **1 文字として** 並びます。折り返し・整列・枠・ピボット・影といった通常の文字と同じ規則がそのまま効きます。
+
+| 記法 | 意味 |
+| --- | --- |
+| `[icon:名前]` | `IconSet` に指定した `.icons` の表で名前 → 画像パスを引く |
+| `[img:assets://path/to.png]` | 画像パスを直接指定する |
+| `[icon:名前 h=1.4]` / `[img:... h=0.8]` | 高さ倍率（画像の高さ = フォントサイズ × h。既定 1.0）。幅は画像のアスペクト比から決まる |
+| `\[` | 「[」そのものを描くエスケープ |
+
+```csharp
+if (gameObject.GetComponent<Text>() is { } hint)
+{
+    hint.IconSet = "assets://ui/keys.icons";
+    hint.Content = "移動 [icon:key_w][icon:key_a][icon:key_s][icon:key_d] / "
+                 + "決定 [icon:mouse_l h=1.2] / 直接指定 [img:assets://ui/coin.png]";
+}
+```
+
+**アイコンセット（`.icons`）の形式** — 中身は JSON です。値は「パス文字列」か「`path` と既定倍率 `h` を持つオブジェクト」のどちらでも書けます。
+
+```json
+{
+  "icons": {
+    "key_w":   "assets://ui/key_w.png",
+    "mouse_l": { "path": "assets://ui/mouse_l.png", "h": 1.2 }
+  }
+}
+```
+
+高さ倍率の優先順位は **記法の `h=` > `.icons` の `h` > 既定値 1.0** です。倍率は 0.05〜16.0 に丸められます。
+
+> **重要 — 未解決・不正な記法のときの挙動**: アイコン名が `.icons` に無い、`IconSet` が未設定、画像ファイルが読めない、といった場合は **幅 1em（フォントサイズと同じ幅）の空白**になり、本文のレイアウトは崩れません。警告はその名前／パスにつき **1 回だけ** ログへ出ます。`[` で始まっても `icon:` / `img:` のどちらでもないもの（例 `[0]`、`[note:x]`）、対応する `]` が無いもの（例 `[icon:key_w`）は **記法とみなさず、そのまま通常の文字として描かれます**。
+
+> **重要 — 制限**: (1) 画像に文字の太さ（`Weight`）は効きません（SDF のしきい値操作なので画像には適用できません）。(2) 影は画像にも同じオフセットで落ちますが、`ShadowSoftness`（ぼかし）は画像には効きません（スプライトとして描くため）。(3) 画像は `Color` で着色されません（アイコン本来の色で出ます）が、`Color` のアルファには追従します。(4) 縦書きには対応していません。(5) 画像も 1 つにつき 1 文字として数えるため、4096 文字の上限に含まれます（上限で切れても記法の途中で壊れることはありません）。(6) 画像は本文のグリフと同じレイヤー値で、スプライトとして描かれます（同一レイヤー内ではグリフより 1 段奥になりますが、文字と画像は重ならないため見た目には現れません）。
 
 ### Skybox（天球の色調整：時間帯・天候の演出）
 
@@ -1965,6 +2096,98 @@ void DrawSenseRange(Vector3 center, float range, bool found)
 | 角（ジョイント） | 折れ線の角は継ぎ目処理をしていないため、太い線では外側にわずかな欠けが出る |
 
 > **重要**: `Draw3D.*` は「呼んだフレームだけ描く」API です。図形を出し続けたいなら毎フレーム呼んでください。Play していないフレームに積まれたコマンドは破棄されます。
+
+---
+
+## 7.10 Events（名前付きイベント：スクリプト間の通知）
+
+「名前」でイベントを発火し、その名前を購読している全スクリプトへ同期で配るイベントバスです。
+発火側は受け手を知らなくてよいので、`GameObject.Find` で相手を探し回らずに 1 対多の通知を飛ばせます
+（例: 「魚がヒットした」を HUD・SE・カメラ演出が同時に受ける）。
+
+### 発火（Raise）
+
+引数は **0 個または 1 個**（`string` / `float` / `GameObject`）です。戻り値は実際に呼び出したハンドラ件数です。
+
+```csharp
+SEED.Events.Raise("Bite");                    // 引数なし
+SEED.Events.Raise("ScoreTag", "combo");       // string 1 個
+SEED.Events.Raise("Damage", 12.5f);           // float 1 個
+SEED.Events.Raise("Caught", gameObject);      // GameObject 1 個
+int called = SEED.Events.Raise("Bite");       // 戻り値 = 呼び出したハンドラ件数（0 = 誰も受けていない）
+```
+
+### 購読（推奨：`this.On` — スクリプトの寿命に自動追従）
+
+`SEEDScript` を継承したスクリプトからは `this.On(...)` を使います。**そのスクリプトが破棄される
+（アクター破棄・シーン遷移・Play 終了・ホットリロード）ときに自動で解除**されるため、解除漏れが起きません。
+
+```csharp
+public class HudFish : SEEDScript
+{
+    private float _hp = 100f;
+
+    public override void OnStart()
+    {
+        this.On("Bite", () => SEED.Debug.Log("ヒット！"));                    // 引数なし
+        this.On("ScoreTag", (string tag) => SEED.Debug.Log(tag));            // string
+        this.On("Damage", (float amount) => _hp -= amount);                  // float
+        this.On("Caught", (SEED.GameObject fish) => SEED.Debug.Log(fish.IsValid)); // GameObject
+
+        SEED.EventSubscription handle = this.On("Bite", OnBite);  // 早期に解除したいときはハンドルを保持
+    }
+
+    private void OnBite() { }
+}
+```
+
+### 手動購読（寿命を自分で管理する）
+
+`SEED.Events.Subscribe` は自動解除されません。**必ず** `Dispose()` か `Events.Unsubscribe` で解除してください。
+
+```csharp
+SEED.EventSubscription sub = SEED.Events.Subscribe("Bite", OnBite);          // 引数なし
+SEED.EventSubscription s2  = SEED.Events.Subscribe("Damage", (float v) => { });
+SEED.EventSubscription s3  = SEED.Events.Subscribe("ScoreTag", (string v) => { });
+SEED.EventSubscription s4  = SEED.Events.Subscribe("Caught", (SEED.GameObject g) => { });
+
+sub.Dispose();                          // 解除（二重解除は無害）
+SEED.Events.Unsubscribe(sub);           // 同上（null・解除済みも無害）
+bool alive  = sub.IsActive;             // まだ購読中か
+string name = sub.Name;                 // 購読しているイベント名
+
+SEED.Events.Clear("Bite");              // この名前の購読をすべて解除
+SEED.Events.ClearAll();                 // 全イベントの購読を破棄（シーン遷移前の掃除用）
+int n = SEED.Events.SubscriberCount("Bite");  // 現在の購読件数（デバッグ用）
+```
+
+### ScriptEvent（インスペクタ結線）との使い分け
+
+`ScriptEvent` は「どのアクターのどのメソッドを呼ぶか」をインスペクタで**結線**する仕組みで、呼び先が
+決まっている 1 対 1（少数）の通知や、デザイナーが GUI 上で差し替えたい通知に向きます。一方
+`SEED.Events` は呼び先を一切知らずに**名前だけ**で飛ばす 1 対多の通知で、受け手が実行中に増減する場合
+（生成・破棄されるアクターが受ける、複数の HUD が同じ通知を受ける）に向きます。引数の種類は両者で
+揃えてありますが（0 個 or 1 個）、`ScriptEvent` はインスペクタで入力した**固定引数**を渡すのに対し、
+`SEED.Events` は発火側が**実行時の値**を渡す点が異なります。迷ったら「結線を見せたいなら ScriptEvent、
+配線なしで広く配りたいなら Events」で選んでください。
+
+### 仕様
+
+| 項目 | 動作 |
+|---|---|
+| 発火 | 同期・即時。購読の登録順に呼ぶ |
+| 引数 | 0 個または 1 個（`string` / `float` / `GameObject`）。`int` / `bool` は `float` か `string` で表現する |
+| 型不一致 | `float` で購読している所へ `string` で発火しても**呼ばれない**（暗黙変換なし）。警告ログが 1 回だけ出る |
+| 名前 | **大文字小文字を区別**する（`"Bite"` と `"bite"` は別イベント）。空文字は無視して警告 1 回 |
+| ハンドラの例外 | 1 件ずつ捕捉して `Debug.LogError` へ出し、**残りのハンドラは続行**する |
+| 発火中の購読変更 | 発火中の `Subscribe` / `Unsubscribe` / `Clear` は進行中の発火には反映されず、**次回の発火から**反映される |
+| 再入（ハンドラ内で同名を発火） | 深さ 8 段で打ち切り、警告 1 回（無限再帰の保険） |
+| 未購読イベントの発火 | 何も起きない（エラーにはならない。戻り値 0） |
+| ホットリロード | スクリプト再コンパイル時に**全購読が破棄**される（購読は `OnStart` で張り直す設計にすること） |
+
+> **重要**: `this.On(...)` で張った購読はスクリプト破棄時に自動解除されるが、`SEED.Events.Subscribe` で張った購読は**シーン遷移しても残る**。シーンをまたいで生きるハンドラを作りたくない場合は手動購読を使わず `this.On(...)` を使うか、遷移前に `SEED.Events.Clear(name)` / `SEED.Events.ClearAll()` で掃除すること。
+
+> **重要**: イベント名は文字列なのでタイプミスをコンパイラが検出できない。名前は `public const string BiteEvent = "Bite";` のように 1 か所へ定数化し、発火側・購読側の両方から参照することを推奨する。
 
 ---
 

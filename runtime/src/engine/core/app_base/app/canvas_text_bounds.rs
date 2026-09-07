@@ -51,6 +51,11 @@ struct TextMeasureReq {
     slot_entity: Entity,
     content: String,
     font_path: String,
+    /// アイコンセット（.icons）の assets:// パス。空文字 = 未使用。
+    ///
+    /// 本文の `[icon:名前]` を解決してから測るために必要
+    /// （画像は文字と同じく行幅・境界矩形に効く）。
+    icon_set: String,
     /// レイアウト条件（サイズ・整列・縁取り・枠・折り返し）。
     spec: TextLayoutSpec,
     /// 所属アクターの正規化ピボット（枠ありのときだけ効く）。
@@ -77,7 +82,8 @@ impl App {
             return map;
         };
         for r in reqs {
-            let Some((bx, pivot_size)) = renderer.resolve_bounds(&r.content, &r.spec, &r.font_path)
+            let Some((bx, pivot_size)) =
+                renderer.resolve_bounds(&r.content, &r.spec, &r.font_path, &r.icon_set)
             else {
                 continue;
             };
@@ -128,6 +134,7 @@ fn collect_text_reqs(
             slot_entity: slot.entity,
             content: tc.content.clone(),
             font_path: tc.font_path.clone(),
+            icon_set: tc.icon_set.clone(),
             spec: TextLayoutSpec {
                 font_size: tc.font_size,
                 line_spacing: tc.line_spacing,

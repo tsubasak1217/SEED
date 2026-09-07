@@ -228,6 +228,7 @@
     <a href="#sec-savedata">SaveData</a>
     <a href="#sec-draw">Draw（2D 図形）</a>
     <a href="#sec-draw3d">Draw3D（3D 図形）</a>
+    <a href="#sec-events">Events（イベント）</a>
     <a href="#sec-libs">ライブラリ</a>
     <a href="#sec-shading">シェーディング (WGSL)</a>
   </nav>
@@ -531,10 +532,37 @@
 </section>
 
 <!-- ════════════════ 3. Time / Debug ════════════════ -->
-<section id="sec-time" data-keywords="Time Debug 時間 ログ 出力 デルタタイム">
+<section id="sec-time" data-keywords="Time Debug 時間 ログ 出力 デルタタイム TimeScale 時間スケール ヒットストップ スローモーション ポーズ Unscaled">
   <h2>3. Time（フレーム時間） / Debug（ログ）</h2>
-  <div class="api"><code class="sig">Time.DeltaTime</code><span class="desc">float: 前フレームからの経過秒</span></div>
-  <div class="api"><code class="sig">Time.ElapsedTime</code><span class="desc">float: ゲーム内の累計時間（秒）</span></div>
+  <div class="api"><code class="sig">Time.DeltaTime</code><span class="desc">float: 前フレームからの経過秒（Time.Scale 適用後のゲーム時間）</span></div>
+  <div class="api"><code class="sig">Time.ElapsedTime</code><span class="desc">float: ゲーム内の累計時間（秒。Time.Scale 適用後）</span></div>
+  <div class="api"><code class="sig">Time.UnscaledDeltaTime</code><span class="desc">float: 前フレームからの経過秒（Time.Scale 未適用の実時間）。UI・演出・ポーズメニューはこちらを使う</span></div>
+  <div class="api"><code class="sig">Time.UnscaledElapsedTime</code><span class="desc">float: ゲーム内の累計時間（秒。Time.Scale 未適用）</span></div>
+  <div class="api"><code class="sig">Time.Scale</code><span class="desc">float（get/set）: ゲーム時間の進む速さ。既定 1.0 / 0 で完全停止 / 負値は 0 に丸め / 上限 100。ヒットストップ・スローモーション用</span></div>
+
+  <h3 id="time-scale">Time.Scale（ヒットストップ・スローモーション）</h3>
+  <p class="section-note">Play 開始時・Play 停止時・シーン遷移時に自動で 1.0 へ戻りますが、それ以外では戻りません。<b>必ず自分で 1.0 に戻すこと</b>。戻すためのタイマーは必ず <code>Time.UnscaledDeltaTime</code> で減らしてください（<code>DeltaTime</code> は Scale = 0 のとき 0 になり、永久に復帰できなくなります）。Play の一時停止（エディタのポーズ）とは独立で、Edit モードには影響しません。</p>
+  <table>
+    <tr><th>対象</th><th>Time.Scale の影響</th></tr>
+    <tr><td>Time.DeltaTime / Time.ElapsedTime</td><td>止まる（スケール倍される）</td></tr>
+    <tr><td>ConstantUpdate の呼び出し回数</td><td>止まる（スケール 0 で 1 回も呼ばれない）</td></tr>
+    <tr><td>アニメーション（キーフレーム／モデル／クロスフェード）</td><td>止まる</td></tr>
+    <tr><td>物理（3D / 2D）</td><td>止まる（スケール 0 でステップ停止・速度は保持）</td></tr>
+    <tr><td>パーティクル</td><td>止まる</td></tr>
+    <tr><td>水面・水位シミュレーション・インタラクション場</td><td>止まる</td></tr>
+    <tr><td>Time.UnscaledDeltaTime / Time.UnscaledElapsedTime</td><td>止まらない</td></tr>
+    <tr><td>入力（Input.*）</td><td>止まらない</td></tr>
+    <tr><td>オーディオ（BGM・SE の再生）</td><td>止まらない</td></tr>
+    <tr><td>Update などフェーズの呼び出しそのもの</td><td>止まらない（毎フレーム呼ばれ続ける）</td></tr>
+    <tr><td>エディタのカメラ操作・Edit モードのプレビュー</td><td>影響なし（Play 中のみ効く）</td></tr>
+  </table>
+  <pre><code>// ヒットストップ: 0.08 秒だけゲームを 0.1 倍速にする
+SEED.Time.Scale = 0.1f;
+_hitStopLeft = 0.08f;
+
+// 戻しは必ず UnscaledDeltaTime で（DeltaTime だと Scale=0 で永久に戻らない）
+_hitStopLeft -= SEED.Time.UnscaledDeltaTime;
+if (_hitStopLeft &lt;= 0f) SEED.Time.Scale = 1f;</code></pre>
   <div class="api"><code class="sig">Debug.Log("メッセージ")</code><span class="desc">情報ログ（エディタの Output パネルに表示）</span></div>
   <div class="api"><code class="sig">Debug.LogWarning("注意")</code><span class="desc">警告ログ</span></div>
   <div class="api"><code class="sig">Debug.LogError("失敗")</code><span class="desc">エラーログ</span></div>
@@ -796,7 +824,7 @@ icon.SetParent(<span class="k">null</span>);     <span class="c">// シーンの
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale Visible 表示 非表示 表示切替 隠す 可視 可視性 コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル スクリプト参照 自作スクリプト 他スクリプト 他のスクリプト インスタンス参照 スクリプト間 参照渡し PlayerMove WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing 枠 テキストボックス BoxWidth BoxHeight 折り返し 自動折り返し Wrap ワードラップ 禁則 ぶら下げ 追い出し 太さ Weight ウェイト ボールド 影 ドロップシャドウ ShadowOffset ShadowColor ShadowSoftness ぼかし ピボット Pivot LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width ControlPointPath ControlPoint コントロールポイント 制御点 経路 パス path レール 巡回 ルート 閉ループ ループ 周回 SamplePosition SampleTangent 接線 進行方向 Duration StartTime PointCount Closed">
+<section id="sec-components" data-keywords="Model モデル 描画オフセット オフセット 原点ズレ 持ち手 グリップ OffsetPosition OffsetRotation OffsetScale Visible 表示 非表示 表示切替 隠す 可視 可視性 コンポーネント GetComponent Transform Forward Back Left Right Up Down 前方向 後方 右方向 左方向 上方向 下方向 方向ベクトル 向き 正規化 基底 CanvasTransform Sprite Camera AudioSource Animator CrossFade クロスフェード フェード ブレンド 補間 モデル内蔵アニメ 複数アニメ ParticleEmitter InputMap 入力 アクション GetAction GetActionStart GetActionEnd GetAxis GetVector2 ゲームパッド Gamepad GamepadButton GamepadAxis condition Trigger Press Release deadZone デッドゾーン Axis2D 正規化 normalize パーティクル エミッタ 放出 Burst アニメーション 一覧 参照フィールド 参照 SerializeField ドラッグアンドドロップ D&amp;D IsValid null 未設定 アクタ参照 GameObject参照 ハンドル スクリプト参照 自作スクリプト 他スクリプト 他のスクリプト インスタンス参照 スクリプト間 参照渡し PlayerMove WaterVolume WaterLink 水 水位 浸水 バルブ 開閉 Openness WaterLevel 水面 水位グラフ 連通 SetShaderParam GetShaderParamFloat GetShaderParamVector3 水面シェーダ シェーディングアセット override パラメータ SkinnedSprite スキン メッシュ変形 ボーン sprite_mesh Text テキスト 文字 文字列 ラベル HUD フォント FontSize Content Align 整列 行送り LineSpacing 枠 テキストボックス BoxWidth BoxHeight 折り返し 自動折り返し Wrap ワードラップ 禁則 ぶら下げ 追い出し 太さ Weight ウェイト ボールド 影 ドロップシャドウ ShadowOffset ShadowColor ShadowSoftness ぼかし ピボット Pivot LineRenderer LineHelper 線 ライン ポリライン 釣り糸 糸 ロープ 軌跡 トレイル カテナリー 懸垂線 たわみ SetPoints Catenary 太さ Width ControlPointPath ControlPoint コントロールポイント 制御点 経路 パス path レール 巡回 ルート 閉ループ ループ 周回 SamplePosition SampleTangent 接線 進行方向 Duration StartTime PointCount Closed WorldToScreen WorldToCanvas ワールド スクリーン 画面座標 スクリーン座標 キャンバス座標 射影 変換 頭上UI HPバー ダメージ表示 ミニマップ">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -876,6 +904,14 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
   <div class="api"><code class="sig">cam.BarColor</code><span class="desc">Color（get/set。レターボックス帯の色）</span></div>
   <div class="api"><code class="sig">cam.Projection</code><span class="desc">string（get/set。<code>"perspective"</code> / <code>"orthographic"</code>）</span></div>
   <div class="api"><code class="sig">cam.OrthoHeight</code><span class="desc">float（get/set。正射投影時の縦の描画範囲・ワールド単位。横は OrthoHeight × アスペクト比）</span></div>
+  <div class="api"><code class="sig">cam.WorldToScreen(worldPos)</code><span class="desc">Vector3: ワールド座標 → 画面座標。x,y = ゲーム画面左上原点のピクセル（Input.MousePos と同じ系。レターボックス帯も考慮）／z = カメラ前方距離（正なら前方・負なら背後）。可視判定は必ず z &gt; 0 で行う</span></div>
+  <div class="api"><code class="sig">cam.WorldToCanvas(worldPos)</code><span class="desc">Vector2: ワールド座標 → キャンバス座標（画面中央原点・Y 下向き・1 単位 1px）。Input.MousePositionCanvas / CanvasTransform.Position と同じ系なので、頭上 UI の位置へそのまま代入できる。メインカメラ以外でも可</span></div>
+  <pre><code>// 敵の頭上に HP バー（2D アクター）を追従させる
+var headWorld = transform.Position + SEED.Vector3.Up * 2f;
+var screen    = cam.WorldToScreen(headWorld);
+if (screen.z &lt;= 0f) { ct.Scale = SEED.Vector2.Zero; return; }   // カメラ背後なら隠す
+ct.Scale    = SEED.Vector2.One;
+ct.Position = cam.WorldToCanvas(headWorld);</code></pre>
 
   <h3 id="cmp-audiosource">AudioSource（アクター紐づけの音源。3D 距離減衰・パン対応）</h3>
   <p class="section-note">エディタの「コンポーネント追加 → サウンド → Audio Source」で追加し、インスペクタで設定します。</p>
@@ -1000,6 +1036,7 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
   <div class="api"><code class="sig">label.Align</code><span class="desc">string（get/set。"left" / "center" / "right"）</span></div>
   <div class="api"><code class="sig">label.VerticalAlign</code><span class="desc">string（get/set。"top" / "middle" / "bottom"）</span></div>
   <div class="api"><code class="sig">label.FontPath</code><span class="desc">string（get/set。assets:// 仮想パス。空文字=組み込みフォント）</span></div>
+  <div class="api"><code class="sig">label.IconSet</code><span class="desc">string（get/set。アイコンセット .icons の assets:// パス。空文字=未使用）</span></div>
   <div class="api"><code class="sig">label.OutlineWidth</code><span class="desc">float（get/set。縁取りの太さ px。0=縁取りなし）</span></div>
   <div class="api"><code class="sig">label.OutlineColor</code><span class="desc">Color（get/set。縁取りの色。既定=不透明な黒）</span></div>
   <div class="api"><code class="sig">label.BoxWidth</code><span class="desc">float（get/set。枠の幅 px。0=枠なし＝従来レイアウト）</span></div>
@@ -1032,6 +1069,40 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
   </div>
   <div class="warn">
     <b>太さと影</b>: <code>Weight</code> は SDF のしきい値をずらすため、縁取りと同じく<b>フォントサイズの約 1/8 で頭打ち</b>になります。影は本体と同じ字形を <code>ShadowOffset</code> だけずらして本体の下へ描くもので、<code>ShadowOffset</code> が (0,0) か <code>ShadowColor</code> のアルファが 0 のときは描かれません。
+  </div>
+
+  <h4>インライン画像（本文に画像を 1 文字として混ぜる）</h4>
+  <p class="section-note">本文（<code>Content</code>）の中に次の記法を書くと、その位置に画像が <b>1 文字として</b>並びます。折り返し・整列・枠・ピボット・影といった通常の文字と同じ規則がそのまま効きます。</p>
+  <div class="api"><code class="sig">[icon:名前]</code><span class="desc">IconSet に指定した .icons の表で名前 → 画像パスを引く</span></div>
+  <div class="api"><code class="sig">[img:assets://path/to.png]</code><span class="desc">画像パスを直接指定する</span></div>
+  <div class="api"><code class="sig">[icon:名前 h=1.4] / [img:... h=0.8]</code><span class="desc">高さ倍率（画像の高さ = フォントサイズ × h。既定 1.0）。幅は画像のアスペクト比から決まる</span></div>
+  <div class="api"><code class="sig">&#92;[</code><span class="desc">「[」そのものを描くエスケープ</span></div>
+<pre><span class="k">if</span> (gameObject.GetComponent&lt;<span class="t">Text</span>&gt;() <span class="k">is</span> { } hint)
+{
+    hint.IconSet = <span class="s">"assets://ui/keys.icons"</span>;
+    hint.Content = <span class="s">"移動 [icon:key_w][icon:key_a][icon:key_s][icon:key_d] / "</span>
+                 + <span class="s">"決定 [icon:mouse_l h=1.2] / 直接指定 [img:assets://ui/coin.png]"</span>;
+}</pre>
+  <p class="section-note">アイコンセット（<code>.icons</code>）の中身は JSON です。値は「パス文字列」か「<code>path</code> と既定倍率 <code>h</code> を持つオブジェクト」のどちらでも書けます。</p>
+<pre>{
+  <span class="s">"icons"</span>: {
+    <span class="s">"key_w"</span>:   <span class="s">"assets://ui/key_w.png"</span>,
+    <span class="s">"mouse_l"</span>: { <span class="s">"path"</span>: <span class="s">"assets://ui/mouse_l.png"</span>, <span class="s">"h"</span>: 1.2 }
+  }
+}</pre>
+  <p class="section-note">高さ倍率の優先順位は <b>記法の <code>h=</code> &gt; <code>.icons</code> の <code>h</code> &gt; 既定値 1.0</b> です。倍率は 0.05〜16.0 に丸められます。</p>
+  <div class="warn">
+    <b>未解決・不正な記法のときの挙動</b>: アイコン名が <code>.icons</code> に無い、<code>IconSet</code> が未設定、画像ファイルが読めない、といった場合は<b>幅 1em（フォントサイズと同じ幅）の空白</b>になり、本文のレイアウトは崩れません。警告はその名前／パスにつき<b>1 回だけ</b>ログへ出ます。<br>
+    <code>[</code> で始まっても <code>icon:</code> / <code>img:</code> のどちらでもないもの（例 <code>[0]</code>、<code>[note:x]</code>）、対応する <code>]</code> が無いもの（例 <code>[icon:key_w</code>）は<b>記法とみなさず、そのまま通常の文字として描かれます</b>。
+  </div>
+  <div class="warn">
+    <b>インライン画像の制限</b>:<br>
+    (1) 画像に文字の太さ（<code>Weight</code>）は効きません（SDF のしきい値操作のため）。<br>
+    (2) 影は画像にも同じオフセットで落ちますが、<code>ShadowSoftness</code>（ぼかし）は画像には効きません。<br>
+    (3) 画像は <code>Color</code> で着色されません（アイコン本来の色で出ます）が、<code>Color</code> のアルファには追従します。<br>
+    (4) 縦書きには対応していません。<br>
+    (5) 画像も 1 つにつき 1 文字として数えるため、4096 文字の上限に含まれます（上限で切れても記法の途中で壊れることはありません）。<br>
+    (6) 画像は本文のグリフと同じレイヤー値でスプライトとして描かれます（同一レイヤー内ではグリフより 1 段奥ですが、文字と画像は重ならないため見た目には現れません）。
   </div>
 
   <h3 id="cmp-linerenderer">LineRenderer（3D の線を描く：釣り糸・ロープ・軌跡）</h3>
@@ -1490,6 +1561,92 @@ SolvePath();
   <div class="warn">
     <code>Draw3D.*</code> は<b>呼んだフレームだけ描く</b> API です。図形を出し続けたいなら毎フレーム呼んでください。
     Play していないフレームに積まれたコマンドは破棄されます。
+  </div>
+</section>
+
+
+<!-- ════════════════ 7.10 Events（名前付きイベント） ════════════════ -->
+<section id="sec-events" data-keywords="Events イベント 名前付きイベント イベントバス EventBus 通知 メッセージ Raise Subscribe Unsubscribe On 購読 発火 解除 EventSubscription Dispose ハンドル 疎結合 スクリプト間 通信 ブロードキャスト pub sub パブサブ observer オブザーバ ScriptEvent 使い分け">
+  <h2>7.10 Events（名前付きイベント：スクリプト間の通知）</h2>
+  <p class="section-note">
+    <code>SEED.Events</code> は「名前」でイベントを発火し、その名前を購読している全スクリプトへ
+    <b>同期で</b>配るイベントバスです。発火側は受け手を知らなくてよいので、
+    <code>GameObject.Find</code> で相手を探し回らずに 1 対多の通知を飛ばせます
+    （例:「魚がヒットした」を HUD・SE・カメラ演出が同時に受ける）。
+  </p>
+
+  <h3 id="events-raise">発火（Raise）</h3>
+  <p class="section-note">引数は<b>0 個または 1 個</b>（<code>string</code> / <code>float</code> / <code>GameObject</code>）。戻り値は実際に呼び出したハンドラ件数です。</p>
+<pre><span class="t">Events</span>.Raise(<span class="s">"Bite"</span>);                    <span class="c">// 引数なし</span>
+<span class="t">Events</span>.Raise(<span class="s">"ScoreTag"</span>, <span class="s">"combo"</span>);       <span class="c">// string 1 個</span>
+<span class="t">Events</span>.Raise(<span class="s">"Damage"</span>, 12.5f);           <span class="c">// float 1 個</span>
+<span class="t">Events</span>.Raise(<span class="s">"Caught"</span>, gameObject);      <span class="c">// GameObject 1 個</span>
+<span class="k">int</span> called = <span class="t">Events</span>.Raise(<span class="s">"Bite"</span>);      <span class="c">// 戻り値 = 呼び出したハンドラ件数（0 = 誰も受けていない）</span></pre>
+
+  <h3 id="events-on">購読（推奨：this.On — スクリプトの寿命に自動追従）</h3>
+  <p class="section-note">
+    <code>this.On(...)</code> で張った購読は、そのスクリプトが破棄される（アクター破棄・シーン遷移・
+    Play 終了・ホットリロード）ときに<b>自動で解除</b>されます。解除漏れが起きないので通常はこちらを使ってください。
+  </p>
+<pre><span class="k">public override void</span> OnStart()
+{
+    <span class="k">this</span>.On(<span class="s">"Bite"</span>, () =&gt; <span class="t">Debug</span>.Log(<span class="s">"ヒット！"</span>));                       <span class="c">// 引数なし</span>
+    <span class="k">this</span>.On(<span class="s">"ScoreTag"</span>, (<span class="k">string</span> tag) =&gt; <span class="t">Debug</span>.Log(tag));             <span class="c">// string</span>
+    <span class="k">this</span>.On(<span class="s">"Damage"</span>, (<span class="k">float</span> amount) =&gt; _hp -= amount);            <span class="c">// float</span>
+    <span class="k">this</span>.On(<span class="s">"Caught"</span>, (<span class="t">GameObject</span> fish) =&gt; _last = fish);          <span class="c">// GameObject</span>
+
+    <span class="t">EventSubscription</span> handle = <span class="k">this</span>.On(<span class="s">"Bite"</span>, OnBite);          <span class="c">// 早期に解除したいときはハンドルを保持</span>
+}</pre>
+
+  <h3 id="events-manual">手動購読（寿命を自分で管理する）</h3>
+  <p class="section-note"><code>Events.Subscribe</code> は自動解除されません。<b>必ず</b> <code>Dispose()</code> か <code>Events.Unsubscribe</code> で解除してください。</p>
+<pre><span class="t">EventSubscription</span> sub = <span class="t">Events</span>.Subscribe(<span class="s">"Bite"</span>, OnBite);
+<span class="t">EventSubscription</span> s2  = <span class="t">Events</span>.Subscribe(<span class="s">"Damage"</span>, (<span class="k">float</span> v) =&gt; { });
+<span class="t">EventSubscription</span> s3  = <span class="t">Events</span>.Subscribe(<span class="s">"ScoreTag"</span>, (<span class="k">string</span> v) =&gt; { });
+<span class="t">EventSubscription</span> s4  = <span class="t">Events</span>.Subscribe(<span class="s">"Caught"</span>, (<span class="t">GameObject</span> g) =&gt; { });
+
+sub.Dispose();                          <span class="c">// 解除（二重解除は無害）</span>
+<span class="t">Events</span>.Unsubscribe(sub);              <span class="c">// 同上（null・解除済みも無害）</span>
+<span class="k">bool</span> alive  = sub.IsActive;            <span class="c">// まだ購読中か</span>
+<span class="k">string</span> name = sub.Name;                <span class="c">// 購読しているイベント名</span>
+
+<span class="t">Events</span>.Clear(<span class="s">"Bite"</span>);                  <span class="c">// この名前の購読をすべて解除</span>
+<span class="t">Events</span>.ClearAll();                     <span class="c">// 全イベントの購読を破棄（シーン遷移前の掃除用）</span>
+<span class="k">int</span> n = <span class="t">Events</span>.SubscriberCount(<span class="s">"Bite"</span>);  <span class="c">// 現在の購読件数（デバッグ用）</span></pre>
+
+  <h3 id="events-vs-scriptevent">ScriptEvent（インスペクタ結線）との使い分け</h3>
+  <p class="section-note">
+    <code>ScriptEvent</code> は「どのアクターのどのメソッドを呼ぶか」をインスペクタで<b>結線</b>する仕組みで、
+    呼び先が決まっている 1 対 1（少数）の通知や、デザイナーが GUI 上で差し替えたい通知に向きます。一方
+    <code>SEED.Events</code> は呼び先を一切知らずに<b>名前だけ</b>で飛ばす 1 対多の通知で、受け手が実行中に
+    増減する場合（生成・破棄されるアクターが受ける、複数の HUD が同じ通知を受ける）に向きます。
+    引数の種類は両者で揃えてありますが（0 個 or 1 個）、<code>ScriptEvent</code> はインスペクタで入力した
+    <b>固定引数</b>を渡すのに対し、<code>SEED.Events</code> は発火側が<b>実行時の値</b>を渡す点が異なります。
+    迷ったら「結線を見せたいなら ScriptEvent、配線なしで広く配りたいなら Events」で選んでください。
+  </p>
+
+  <h3 id="events-spec">仕様</h3>
+  <table>
+    <tr><th>項目</th><th>動作</th></tr>
+    <tr><td>発火</td><td>同期・即時。購読の登録順に呼ぶ</td></tr>
+    <tr><td>引数</td><td>0 個または 1 個（<code>string</code> / <code>float</code> / <code>GameObject</code>）。<code>int</code> / <code>bool</code> は <code>float</code> か <code>string</code> で表現する</td></tr>
+    <tr><td>型不一致</td><td><code>float</code> で購読している所へ <code>string</code> で発火しても<b>呼ばれない</b>（暗黙変換なし）。警告ログが 1 回だけ出る</td></tr>
+    <tr><td>名前</td><td><b>大文字小文字を区別</b>する（<code>"Bite"</code> と <code>"bite"</code> は別イベント）。空文字は無視して警告 1 回</td></tr>
+    <tr><td>ハンドラの例外</td><td>1 件ずつ捕捉して <code>Debug.LogError</code> へ出し、<b>残りのハンドラは続行</b>する</td></tr>
+    <tr><td>発火中の購読変更</td><td>発火中の <code>Subscribe</code> / <code>Unsubscribe</code> / <code>Clear</code> は進行中の発火には反映されず、<b>次回の発火から</b>反映される</td></tr>
+    <tr><td>再入（ハンドラ内で同名を発火）</td><td>深さ 8 段で打ち切り、警告 1 回（無限再帰の保険）</td></tr>
+    <tr><td>未購読イベントの発火</td><td>何も起きない（エラーにはならない。戻り値 0）</td></tr>
+    <tr><td>ホットリロード</td><td>スクリプト再コンパイル時に<b>全購読が破棄</b>される（購読は <code>OnStart</code> で張り直す設計にすること）</td></tr>
+  </table>
+  <div class="warn">
+    <code>this.On(...)</code> の購読はスクリプト破棄時に自動解除されますが、<code>Events.Subscribe</code> の
+    購読は<b>シーン遷移しても残ります</b>。シーンをまたいで生きるハンドラを作りたくない場合は、手動購読を使わず
+    <code>this.On(...)</code> を使うか、遷移前に <code>Events.Clear(name)</code> / <code>Events.ClearAll()</code> で掃除してください。
+  </div>
+  <div class="warn">
+    イベント名は文字列なのでタイプミスをコンパイラが検出できません。名前は
+    <code>public const string BiteEvent = "Bite";</code> のように 1 か所へ定数化し、
+    発火側・購読側の両方から参照することを推奨します。
   </div>
 </section>
 

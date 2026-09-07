@@ -69,6 +69,26 @@ public readonly struct Text : IComponentHandle<Text>
     }
 
     /// <summary>
+    /// アイコンセット（.icons）の assets:// 仮想パス（get/set。空文字 = 未使用）。
+    ///
+    /// <para>本文の <c>[icon:名前]</c> 記法は、このファイルの表で名前 → 画像パスを引く。
+    /// 未設定でも <c>[img:assets://...]</c>（パス直接指定）は使える。
+    /// 名前が引けない・画像が読めない場合は 1em 幅の空白になり、本文は崩れない。</para>
+    ///
+    /// <example>
+    /// <code>
+    /// label.IconSet = "assets://ui/keys.icons";
+    /// label.Content = "移動: [icon:key_w][icon:key_a][icon:key_s][icon:key_d]";
+    /// </code>
+    /// </example>
+    /// </summary>
+    public string IconSet
+    {
+        get => ScriptHost.TryGetString(_entity, Comp, "icon_set", out var s) ? s : "";
+        set => ScriptHost.TrySetString(_entity, Comp, "icon_set", value ?? "");
+    }
+
+    /// <summary>
     /// 縁取りの太さ（get/set。キャンバスピクセル。0 = 縁取りなし）。
     /// フォントサイズの約 1/8 が実効上限で、それを超える値は上限で頭打ちになる。
     /// </summary>

@@ -102,4 +102,60 @@ public readonly struct Camera : IComponentHandle<Camera>
         get => ScriptHost.TryGetFloat(_entity, Comp, "ortho_height", out var v) ? v : 0f;
         set => ScriptHost.TrySetFloat(_entity, Comp, "ortho_height", value);
     }
+
+    // ── ワールド → スクリーン射影 ───────────────────────────
+
+    // 射影モード（Rust 側 host_api.rs の CAMERA_PROJECT_MODE_* と一致させる）
+    private const int ProjectModeScreen = 0;
+    private const int ProjectModeCanvas = 1;
+
+    /// <summary>
+    /// ワールド座標を、このカメラで見たときのスクリーン座標へ変換する。
+    ///
+    /// <para>
+    /// 戻り値の <c>x</c> / <c>y</c> は<b>ゲーム画面左上を原点とするピクセル</b>
+    /// （右が +X・下が +Y）で、<see cref="Input.MousePos"/> と同じ座標系。
+    /// レターボックス／ピラーボックスの帯も考慮した「実際に描かれている位置」を返す。
+    /// </para>
+    /// <para>
+    /// 戻り値の <c>z</c> は<b>カメラ前方距離</b>（ワールド単位）。
+    /// <b>正ならカメラの前方、負なら背後</b>である。背後の点は x/y が
+    /// 画面内に見える値になることがあるため、可視判定には必ず <c>z &gt; 0</c> を使うこと。
+    /// </para>
+    /// <para>
+    /// メインカメラでなくても使える（このハンドルが指すカメラで計算する）。
+    /// エディタ埋め込み Play・ウィンドウ Play のどちらでも同じ基準になる。
+    /// カメラが解決できないときは <see cref="Vector3.Zero"/> を返す。
+    /// </para>
+    /// </summary>
+    /// <param name="world">変換したいワールド座標。</param>
+    public Vector3 WorldToScreen(Vector3 world)
+    {
+        return ScriptHost.TryCameraWorldToScreen(
+            _entity, world.x, world.y, world.z, ProjectModeScreen, out var r)
+            ? r : Vector3.Zero;
+    }
+
+    /// <summary>
+    /// ワールド座標を、スクリーンスペースキャンバスの座標系へ変換する。
+    ///
+    /// <para>
+    /// 座標系は<b>画面中央が原点・Y 下向き・1 単位 = 1px</b>で、
+    /// <see cref="Input.MousePositionCanvas"/> および
+    /// <see cref="CanvasTransform.Position"/> と同じ。
+    /// 返り値をそのまま 2D アクターの <c>CanvasTransform.Position</c> へ代入すれば、
+    /// その UI が対象のワールド位置に重なる（キャラクターの頭上 HP バーなど）。
+    /// </para>
+    /// <para>
+    /// カメラ背後の判定が必要な場合は <see cref="WorldToScreen"/> の z を使うこと
+    /// （このメソッドは 2 成分しか返さないため前後の情報が落ちる）。
+    /// </para>
+    /// </summary>
+    /// <param name="world">変換したいワールド座標。</param>
+    public Vector2 WorldToCanvas(Vector3 world)
+    {
+        return ScriptHost.TryCameraWorldToScreen(
+            _entity, world.x, world.y, world.z, ProjectModeCanvas, out var r)
+            ? new Vector2(r.x, r.y) : Vector2.Zero;
+    }
 }

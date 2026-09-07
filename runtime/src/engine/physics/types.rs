@@ -147,6 +147,14 @@ pub enum PhysicsCommand {
     },
     /// 重力ベクトルを変更する
     SetGravity { gravity: [f32; 3] },
+    /// 時間スケール（`SEED.Time.Scale`）を変更する。
+    ///
+    /// 1 ステップあたりの積分時間を `PHYSICS_FIXED_STEP * scale` に伸縮させる。
+    /// ステップの実行間隔（実時間 1/60 秒）は変えないため、スロー時も
+    /// カクつかず滑らかに減速する。`scale = 0` ではステップ自体を止める
+    /// （速度・内部状態は保持されるので、戻せば続きから動く）。
+    /// 値の丸めは送信側（`core::clock::sanitize_time_scale`）で済ませてある。
+    SetTimeScale { scale: f32 },
     /// 力を加える（継続的）
     ApplyForce { entity_id: u64, force: [f32; 3] },
     /// トルクを加える（継続的）

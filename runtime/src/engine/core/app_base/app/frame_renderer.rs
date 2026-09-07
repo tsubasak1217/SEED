@@ -292,6 +292,55 @@ fn pair_if_consistent<'a>(
 }
 
 impl App {
+    /// ゲーム描画の実レンダーターゲットサイズ（px）を返す。
+    ///
+    /// エディタ埋め込み Play では**親ウィンドウのクライアント領域**、
+    /// スタンドアロン（ウィンドウ Play）では自ウィンドウの inner_size。
+    /// どちらも取れないときはフォールバック解像度を返す。
+    ///
+    /// 【なぜ 1 か所に集約するか】この値は描画のビューポート計算・
+    /// `Input.MousePos` の基準・`Camera.WorldToScreen` の基準を兼ねる。
+    /// 導出が 2 か所に分かれると、埋め込み Play でだけ座標が数十 px ずれる、
+    /// といった再現性の低い不具合になる。
+    pub(super) fn render_target_size_px(&self) -> [f32; 2] {
+        use crate::engine::core::scripting::camera_project::{
+            FALLBACK_TARGET_HEIGHT, FALLBACK_TARGET_WIDTH,
+        };
+        let size = self
+            .get_parent_client_size()
+            .or_else(|| self.window.as_ref().map(|w| w.inner_size()));
+        [
+            size.map_or(FALLBACK_TARGET_WIDTH,  |s| s.width  as f32),
+            size.map_or(FALLBACK_TARGET_HEIGHT, |s| s.height as f32),
+        ]
+    }
+
+    /// 物理スレッド（3D / 2D）へ時間スケールの変化を通知する。
+    ///
+    /// 物理はメインループとは独立したスレッドで固定ステップを刻んでいるため、
+    /// `Clock` の dt を配るだけでは減速・停止しない。スケールが**変化したフレームだけ**
+    /// コマンドを送り、スレッド側の 1 ステップあたり積分時間（`integration_params.dt`）を
+    /// 伸縮させる（スケール 0 ではステップ自体を停止する）。
+    ///
+    /// 毎フレーム無条件に送らないのは、変化が無いのにチャンネルを叩き続けると
+    /// 物理スレッドが `recv_timeout` から起こされ続けてステップ精度が落ちるため。
+    fn sync_physics_time_scale(&mut self, scale: f32) {
+        use crate::engine::core::clock::sanitize_time_scale;
+        let scale = sanitize_time_scale(scale);
+        // 変化なしなら何もしない（浮動小数の完全一致で判定してよい。
+        // 値は sanitize 済みで、同じ入力からは必ず同じビットが出る）
+        if self.physics_time_scale == scale {
+            return;
+        }
+        self.physics_time_scale = scale;
+        if let Some(t) = self.physics_thread.as_ref() {
+            t.send(crate::engine::physics::PhysicsCommand::SetTimeScale { scale });
+        }
+        if let Some(t) = self.physics_thread_2d.as_ref() {
+            t.send(crate::engine::physics::PhysicsCommand2d::SetTimeScale { scale });
+        }
+    }
+
     /// スクリーン座標のワールドスポーン位置を IDバッファ読み取りで解決する。
     ///
     /// `did_pick` が true の場合はピック処理でバッファ消費済みのため None を返す
@@ -682,7 +731,16 @@ impl App {
 
         // ── 時間 ──────────────────────────────────────
         let time_running = self.mode == RuntimeMode::Play && !self.paused;
-        let ctx: FrameContext = self.clock.tick(time_running);
+        // ── 時間スケール（SEED.Time.Scale）をフレーム先頭で 1 度だけ確定させる ──
+        // スクリプトはフレーム中に何度でも Scale を書き換えられるが、それを即座に
+        // 反映すると「同じフレーム内でサブシステムごとに違う dt が配られる」ことになる。
+        // フレーム先頭で 1 度読み、その値から作った dt を全サブシステムへ配ることで、
+        // 1 フレーム = 1 つの時間、を保証する（書き換えは次フレームから効く）。
+        let time_scale = crate::engine::core::scripting::host_api::time_scale();
+        // 物理スレッドは独自のペースで回っているため、スケール変化を明示的に通知する。
+        // （スケール 0 = ステップ停止、0.5 = 1 ステップの積分時間が半分）
+        self.sync_physics_time_scale(if time_running { time_scale } else { crate::engine::core::clock::TIME_SCALE_DEFAULT });
+        let ctx: FrameContext = self.clock.tick(time_running, time_scale);
         // ── シェーダへ配る時間（CameraUniform.time）─────────────────────────
         //   Play（非ポーズ）  … ゲーム内時間 `anim_time`。スクリプトの
         //                        SEED.Time.ElapsedTime と位相が揃う（従来仕様）。
@@ -821,6 +879,15 @@ impl App {
                 crate::engine::core::scripting::host_api::publish_screen_positions(
                     self.collect_2d_screen_positions());
             }
+            {
+                // Camera.WorldToScreen / WorldToCanvas 用にレンダーターゲットサイズを公開する。
+                // 下の描画ブロックが使う `render_target_size` と同じ導出
+                //（親クライアント領域 → 無ければウィンドウ inner_size）なので、
+                // エディタ埋め込み Play とウィンドウ Play のどちらでも
+                // Input.MousePos と同じ基準になる。
+                let rt = self.render_target_size_px();
+                crate::engine::core::scripting::host_api::publish_render_target_size(rt);
+            }
             // スクリプト（＋ ECS システム）のフェーズ別実行時間を計測する。
             // 親スコープ「スクリプト」の下に各フェーズがぶら下がるので、
             // パネル上で「どのフェーズが重いか」が階層で読める。
@@ -937,8 +1004,9 @@ impl App {
         // スタンドアロン（ウィンドウ Play 等）では親が無く None → window_size に落ちるため
         // 従来と同一挙動になる（後退なし）。
         let render_target_size = self.get_parent_client_size().or(window_size);
-        let win_w_f = render_target_size.map_or(1280.0_f32, |s| s.width  as f32);
-        let win_h_f = render_target_size.map_or(720.0_f32,  |s| s.height as f32);
+        // 実レンダーターゲットサイズ（px）。スクリプト API（Camera.WorldToScreen）へ
+        // 公開する値と必ず同じ導出になるよう、共通ヘルパー経由で取る。
+        let [win_w_f, win_h_f] = self.render_target_size_px();
 
         // NOTE: オブジェクト単位の視錐台カリングは撤去したため、Edit モードのカメラプレビュー用
         //       OR カリング視錐台（旧 preview_frustum）も不要になった。メッシュレットカリングは

@@ -19,8 +19,11 @@
 //  行幅・ブロック高さを先に測ってから `align` / `vertical_align` のオフセットを適用する。
 // ============================================================
 
+use super::inline::{IMAGE_PLACEHOLDER, InlineImages, build_doc};
 use super::sdf::{outline_px_to_sdf, px_to_sdf};
-use super::text_layout::{ResolvedLayout, TextLayoutSpec, TextLocalBox, resolve_layout};
+use super::text_layout::{
+    ResolvedLayout, TextLayoutSpec, TextLocalBox, resolve_layout_with_images,
+};
 use super::{FontSystem, GlyphShading, GpuTextBatch, TextBatch};
 use crate::engine::components::{CanvasDrawZone, TextAlign, TextVerticalAlign};
 
@@ -52,6 +55,13 @@ pub struct CanvasTextItem {
     pub layer: i32,
     /// 使用フォントの assets:// 仮想パス。空文字 = 組み込みフォント。
     pub font_path: String,
+    /// アイコンセット（.icons）の assets:// 仮想パス。空文字 = 未使用。
+    ///
+    /// 本文の `[icon:名前]` 記法をこの表で解決する。
+    /// **画像そのものはここでは描かない**（SDF アトラスは色を持てないため、
+    /// スプライト経路へ回す。`canvas_collect` を参照）。ここで必要なのは
+    /// 「画像がどれだけ場所を取るか」だけで、文字の送り幅に反映される。
+    pub icon_set: String,
     /// 縁取りの太さ（キャンバスピクセル）。0 = 縁取りなし。
     pub outline_width: f32,
     /// 縁取りの色（RGBA 0..1）。
@@ -174,10 +184,14 @@ impl CanvasTextRenderer {
         text: &str,
         spec: &TextLayoutSpec,
         font_path: &str,
+        icon_set: &str,
     ) -> Option<(TextLocalBox, [f32; 2])> {
+        // 記法を解決してから測る（画像はグリフと同じく行幅・境界に効く）。
+        let doc = build_doc(text, icon_set);
         let font_id = self.font.registry.font_id(font_path);
         let font = self.font.registry.font(font_id);
-        resolve_layout(font, text, spec).map(|r| (r.bounds, r.pivot_size))
+        resolve_layout_with_images(font, &doc.text, spec, &doc.images)
+            .map(|r| (r.bounds, r.pivot_size))
     }
 
     /// 焼いたバッチをレンダーパスへ描画する。
@@ -216,7 +230,11 @@ impl CanvasTextRenderer {
         let font_id = self.font.registry.font_id(&item.font_path);
         let font = self.font.registry.font(font_id).clone();
         let spec = item.layout_spec();
-        let Some(layout) = resolve_layout(&font, &item.text, &spec) else {
+        // 記法（インライン画像）を解決してからレイアウトする。
+        // 画像は 1 文字ぶんの代替文字として本文に埋まり、送り幅だけが効く
+        // （画像の絵そのものはスプライト経路が描く）。
+        let doc = build_doc(&item.text, &item.icon_set);
+        let Some(layout) = resolve_layout_with_images(&font, &doc.text, &spec, &doc.images) else {
             return;
         };
 
@@ -226,7 +244,13 @@ impl CanvasTextRenderer {
         let mut lines: Vec<LineLayout> = Vec::with_capacity(layout.lines.len());
         for wrapped in &layout.lines {
             let text = layout.text[wrapped.range.clone()].to_string();
-            lines.push(self.layout_line(&text, item.font_size, &item.font_path));
+            lines.push(self.layout_line(
+                &text,
+                wrapped.range.start,
+                item.font_size,
+                &item.font_path,
+                &layout.images,
+            ));
         }
 
         // px → SDF テクスチャ単位の変換は 1 度だけ行う（グリフごとに同じ値）。
@@ -281,17 +305,50 @@ impl CanvasTextRenderer {
 
     /// 1 行分のグリフを準備し、行幅を測る。
     ///
-    /// `font_path` は使用フォントのアセットパス（空文字 = 組み込み）。
-    fn layout_line(&mut self, line: &str, font_size: f32, font_path: &str) -> LineLayout {
+    /// - `line`       : 行の文字列（`layout.text` の当該範囲を切り出したもの）
+    /// - `line_start` : その行が本文全体で何バイト目から始まるか（画像表の引き当てに使う）
+    /// - `font_path`  : 使用フォントのアセットパス（空文字 = 組み込み）
+    /// - `images`     : 本文全体に対するインライン画像の位置表
+    ///
+    /// インライン画像の代替文字は**グリフを作らず**、画像の送り幅だけを進める
+    /// （画像の絵はスプライト経路が描く）。ここで代替文字をフォントへ渡すと
+    /// 未定義グリフ（豆腐）が本文中へ描かれてしまうため、必ず除外する。
+    fn layout_line(
+        &mut self,
+        line: &str,
+        line_start: usize,
+        font_size: f32,
+        font_path: &str,
+        images: &InlineImages,
+    ) -> LineLayout {
+        // 代替文字はグリフ化しない。含まれる行だけ除去した文字列を作る
+        // （含まない大多数の行では確保が起きない）。
+        let glyph_src: std::borrow::Cow<str> = if line.contains(IMAGE_PLACEHOLDER) {
+            std::borrow::Cow::Owned(line.replace(IMAGE_PLACEHOLDER, ""))
+        } else {
+            std::borrow::Cow::Borrowed(line)
+        };
         // アウトラインを持つ文字のグリフ情報（アトラス登録込み）。
-        let prepared = self.font.prepare_glyphs(line, font_path);
+        let prepared = self.font.prepare_glyphs(&glyph_src, font_path);
 
         let mut glyphs = Vec::with_capacity(line.chars().count());
         let mut width = 0.0f32;
         // prepared は「アウトラインを持つ文字だけ」を入力順に並べたもの。
         // 元の文字列を走査しながら、対応する要素を順に取り出す。
         let mut it = prepared.into_iter().peekable();
-        for ch in line.chars() {
+        for (rel, ch) in line.char_indices() {
+            // ── インライン画像: グリフ無し・送り幅は画像のもの ──
+            if ch == IMAGE_PLACEHOLDER {
+                if let Some(img) = images.get(line_start + rel) {
+                    let advance = img.advance_px(font_size);
+                    width += advance;
+                    glyphs.push(PlacedGlyph {
+                        info: None,
+                        advance,
+                    });
+                    continue;
+                }
+            }
             let info = match it.peek() {
                 Some((c, _)) if *c == ch => it.next().map(|(_, i)| i),
                 _ => None,
