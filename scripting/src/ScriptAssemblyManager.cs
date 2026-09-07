@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -46,6 +46,70 @@ public static class ScriptAssemblyManager
             .Select(a => (MetadataReference)MetadataReference.CreateFromFile(a.Location))
             .ToList();
 
+    // ─── スクリプトファイルの収集 ─────────────────────────────
+
+    /// <summary>探索するファイルの拡張子パターン（C# ソースのみ）。</summary>
+    private const string ScriptSearchPattern = "*.cs";
+
+    /// <summary>
+    /// アセットルート配下の .cs を再帰的に集める【スクリプト収集の唯一の実装】。
+    ///
+    /// <para>
+    /// <b>なぜ <c>SearchOption.AllDirectories</c> を使わないのか</b><br/>
+    /// 1 回の列挙で全階層をなめる書き方だと、途中に「開けないフォルダ」が
+    /// 1 つでもあった時点で例外が飛び、<b>プロジェクト全体のスクリプトが
+    /// 1 本もコンパイルされなくなる</b>（＝ゲームのスクリプトが全滅する）。
+    /// 実際に、削除済みフォルダがハンドル保持で消えきらず ACL が読めない状態になり、
+    /// 全スクリプトが起動しない不具合が起きた。
+    /// </para>
+    /// <para>
+    /// そこでフォルダ単位に <c>try/catch</c> を掛けて幅優先で自前に降り、
+    /// 読めないフォルダはその 1 つだけを警告して読み飛ばす。
+    /// アセットの一部が読めなくても、残りのスクリプトは正しく動く。
+    /// </para>
+    /// </summary>
+    /// <param name="assetsRoot">アセットルートの絶対パス。</param>
+    /// <returns>見つかった .cs の絶対パス一覧（読めなかったフォルダの中身は含まない）。</returns>
+    private static List<string> CollectScriptFiles(string assetsRoot)
+    {
+        var files = new List<string>();
+        if (string.IsNullOrEmpty(assetsRoot) || !Directory.Exists(assetsRoot)) return files;
+
+        // 幅優先で自前に降りる（再帰だと深いツリーでスタックを消費するため）
+        var pending = new Queue<string>();
+        pending.Enqueue(assetsRoot);
+
+        while (pending.Count > 0)
+        {
+            var dir = pending.Dequeue();
+
+            // このフォルダ直下のファイル（読めなければこのフォルダだけ諦める）
+            try
+            {
+                files.AddRange(Directory.EnumerateFiles(dir, ScriptSearchPattern));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[SEEDScripting] skip unreadable folder (files) '{dir}': {ex.Message}");
+                continue;   // 中身が読めないフォルダは子も辿らない
+            }
+
+            // 子フォルダ（読めなければこのフォルダの子は諦める）
+            try
+            {
+                foreach (var sub in Directory.EnumerateDirectories(dir)) pending.Enqueue(sub);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[SEEDScripting] skip unreadable folder (subdirs) '{dir}': {ex.Message}");
+            }
+        }
+
+        return files;
+    }
+
     /// <summary>
     /// assetsRoot 配下の全 .cs をコンパイルしてロードする。
     /// 既存アセンブリがあればアンロードして置き換える。
@@ -55,18 +119,10 @@ public static class ScriptAssemblyManager
     /// </summary>
     public static int CompileAndLoad(string assetsRoot)
     {
-        List<string> files;
-        try
-        {
-            files = Directory.Exists(assetsRoot)
-                ? Directory.EnumerateFiles(assetsRoot, "*.cs", SearchOption.AllDirectories).ToList()
-                : new List<string>();
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[SEEDScripting] script enumeration failed: {ex.Message}");
-            return -1;
-        }
+        // 収集は「読めないフォルダを飛ばして続行する」方式。
+        // 1 つでも開けないフォルダ（権限・削除保留・壊れた再解析ポイント等）があるだけで
+        // プロジェクト全体のスクリプトが 1 本も動かなくなるのを防ぐ。
+        var files = CollectScriptFiles(assetsRoot);
 
         // スクリプトが 1 つも無い場合は空状態にして正常終了する
         if (files.Count == 0)

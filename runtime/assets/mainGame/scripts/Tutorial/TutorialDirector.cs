@@ -127,6 +127,16 @@ public class TutorialDirector : SEEDScript
     /// <summary>終了条件のイベント購読（手順を切り替えるたびに張り直す）。</summary>
     private SEED.EventSubscription? finishSubscription;
 
+    /// <summary>
+    /// 自動開始を「最初の Update」まで持ち越すための予約フラグ。
+    ///
+    /// OnStart の呼び出し順はスクリプト間で保証されない。OnStart の中で説明窓を
+    /// 表示すると、そのあとに走る TutorialWindow.OnStart が窓を隠してしまい、
+    /// 説明が一切見えないまま進行が止まる。開始を 1 フレーム遅らせれば
+    /// 全スクリプトの OnStart が済んでいることが保証される。
+    /// </summary>
+    private bool autoStartPending;
+
     // ─── ライフサイクル ──────────────────────────────────────
 
     /// <summary>
@@ -149,7 +159,9 @@ public class TutorialDirector : SEEDScript
         }
 
         window?.Hide();
-        if (autoStart) { Begin(); }
+
+        // 開始は次の Update まで持ち越す（他スクリプトの OnStart 完了を待つ）
+        autoStartPending = autoStart;
     }
 
     /// <summary>
@@ -171,6 +183,13 @@ public class TutorialDirector : SEEDScript
     /// <param name="ctx">フレーム情報（ここでは使わず Time.UnscaledDeltaTime を使う）。</param>
     public override void Update(ref NativeFrameContext ctx)
     {
+        // 予約されていた自動開始をここで実行する（全スクリプトの OnStart 完了後）
+        if (autoStartPending)
+        {
+            autoStartPending = false;
+            Begin();
+        }
+
         if (phase is DirectorPhase.Idle or DirectorPhase.Finished) { return; }
 
         float unscaledDelta = SEED.Time.UnscaledDeltaTime;

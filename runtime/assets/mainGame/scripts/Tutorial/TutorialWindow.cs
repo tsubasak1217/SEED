@@ -151,8 +151,21 @@ public class TutorialWindow : SEEDScript
 
     // ─── 内部状態 ────────────────────────────────────────────
 
-    /// <summary>シーンで設定された元の色を控えたか（初回アクセス時に一度だけ行う）。</summary>
-    private bool baseColorsCaptured;
+    // 元の色は「部品ごとに」控える。窓全体で 1 つのフラグにすると、
+    // 参照がまだ解決されていない時点で 1 度呼ばれただけで「控えた」ことになってしまい、
+    // 以降ずっと真っ黒・完全透明（既定色）で表示される（下の CaptureBaseColors 参照）。
+
+    /// <summary>ミニキャラの元の色を控えたか。</summary>
+    private bool charaColorCaptured;
+
+    /// <summary>吹き出しの元の色を控えたか。</summary>
+    private bool balloonColorCaptured;
+
+    /// <summary>本文テキストの元の色を控えたか。</summary>
+    private bool bodyColorCaptured;
+
+    /// <summary>送りマークの元の色を控えたか。</summary>
+    private bool arrowColorCaptured;
 
     /// <summary>ミニキャラの元の色。</summary>
     private SEED.Color charaBaseColor;
@@ -201,6 +214,18 @@ public class TutorialWindow : SEEDScript
     {
         CaptureBaseColors();
         ApplyTextStyle();
+
+        // 自分より先に TutorialDirector の OnStart が走って ShowAt / SetText 済みの
+        // ことがある（スクリプトの OnStart 順は保証されない）。
+        // そこで無条件に Hide せず、「まだ表示要求が来ていないときだけ」隠す。
+        // 表示要求済みなら、参照が解決された今の状態で色と本文を貼り直す。
+        if (visible)
+        {
+            ApplyVisibility();
+            ApplyBodyContent();
+            return;
+        }
+
         Hide();
     }
 
@@ -213,6 +238,9 @@ public class TutorialWindow : SEEDScript
     {
         // 非表示中は何も進めない（隠したまま文字送りが進むのを防ぐ）
         if (!visible) { return; }
+
+        // 参照が後から有効になった場合に備えて、未取得の部品だけ元の色を控える
+        CaptureBaseColors();
 
         float unscaledDelta = SEED.Time.UnscaledDeltaTime;
 
@@ -310,13 +338,30 @@ public class TutorialWindow : SEEDScript
     /// </summary>
     private void CaptureBaseColors()
     {
-        if (baseColorsCaptured) { return; }
-        baseColorsCaptured = true;
-
-        if (charaSprite     is { } chara   && chara.IsValid)   { charaBaseColor   = chara.Color; }
-        if (balloonSprite   is { } balloon && balloon.IsValid) { balloonBaseColor = balloon.Color; }
-        if (bodyText        is { } body    && body.IsValid)    { bodyBaseColor    = body.Color; }
-        if (nextArrowSprite is { } arrow   && arrow.IsValid)   { arrowBaseColor   = arrow.Color; }
+        // 「参照が有効になった最初の 1 回」を部品ごとに判定する。
+        // 参照フィールドの解決は自分の OnStart の直前に行われるため、
+        // それより先に TutorialDirector から呼ばれた場合は参照がまだ無効で、
+        // ここで一括に「控え済み」にしてしまうと元の色を永久に取り込めない。
+        if (!charaColorCaptured   && charaSprite     is { } chara   && chara.IsValid)
+        {
+            charaBaseColor     = chara.Color;
+            charaColorCaptured = true;
+        }
+        if (!balloonColorCaptured && balloonSprite   is { } balloon && balloon.IsValid)
+        {
+            balloonBaseColor     = balloon.Color;
+            balloonColorCaptured = true;
+        }
+        if (!bodyColorCaptured    && bodyText        is { } body    && body.IsValid)
+        {
+            bodyBaseColor     = body.Color;
+            bodyColorCaptured = true;
+        }
+        if (!arrowColorCaptured   && nextArrowSprite is { } arrow   && arrow.IsValid)
+        {
+            arrowBaseColor     = arrow.Color;
+            arrowColorCaptured = true;
+        }
     }
 
     /// <summary>
