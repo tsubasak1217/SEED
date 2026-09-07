@@ -1,0 +1,2177 @@
+{
+  "name": "zukan",
+  "debug_camera": {
+    "position": [
+      0.0,
+      0.0,
+      -10.0
+    ],
+    "yaw": 0.0,
+    "pitch": 0.0,
+    "fov_deg": 45.0,
+    "far": 1000.0,
+    "speed": 5.0
+  },
+  "actors": [
+    {
+      "name": "MainCamera",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          -10.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "name": "Camera",
+          "component": {
+            "type": "CameraComponent",
+            "data": {
+              "fov_y_deg": 45.0,
+              "near": 0.1,
+              "far": 1000.0,
+              "is_main": true,
+              "clear_color": [
+                0.04,
+                0.07,
+                0.16,
+                1.0
+              ],
+              "scaling_mode": "letter_pillar_box",
+              "target_width": 1280,
+              "target_height": 720,
+              "bar_color": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ],
+              "projection": "perspective",
+              "ortho_height": 10.0,
+              "shading_asset": null,
+              "shading_params": {},
+              "shading_bindings": {}
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "ZukanUI",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Canvas",
+          "component": {
+            "type": "CanvasComponent",
+            "data": {
+              "width": 1280.0,
+              "height": 720.0,
+              "auto_scale": true,
+              "viewport_ref": {
+                "type": "main_camera"
+              },
+              "gravity_mode": "world_down",
+              "draw_zone": "foreground",
+              "pivot": [
+                0.0,
+                0.0
+              ]
+            }
+          }
+        },
+        {
+          "name": "ZukanUI",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "assets://zukan/scripts/Zukan.cs",
+              "fields": {
+                "headerText": "ZukanHeader|Text",
+                "pageText": "ZukanPage|Text",
+                "hintText": "ZukanHint|Text",
+                "cards": "[\"ZukanCard0\", \"ZukanCard1\", \"ZukanCard2\", \"ZukanCard3\"]",
+                "cardImages": "[\"ZukanCard0Image|Sprite\", \"ZukanCard1Image|Sprite\", \"ZukanCard2Image|Sprite\", \"ZukanCard3Image|Sprite\"]",
+                "cardNames": "[\"ZukanCard0Name|Text\", \"ZukanCard1Name|Text\", \"ZukanCard2Name|Text\", \"ZukanCard3Name|Text\"]",
+                "cardBests": "[\"ZukanCard0Best|Text\", \"ZukanCard1Best|Text\", \"ZukanCard2Best|Text\", \"ZukanCard3Best|Text\"]",
+                "cardRanks": "[\"ZukanCard0Rank|Text\", \"ZukanCard1Rank|Text\", \"ZukanCard2Rank|Text\", \"ZukanCard3Rank|Text\"]",
+                "cardCounts": "[\"ZukanCard0Count|Text\", \"ZukanCard1Count|Text\", \"ZukanCard2Count|Text\", \"ZukanCard3Count|Text\"]"
+              }
+            }
+          }
+        }
+      ],
+      "children": [
+        {
+          "name": "ZukanBg",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.0,
+              0.0
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/white.png",
+                  "color": [
+                    0.04,
+                    0.07,
+                    0.16,
+                    1.0
+                  ],
+                  "width": 1280.0,
+                  "height": 720.0,
+                  "layer": 0,
+                  "postfx_path": "",
+                  "raycast_target": false
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "ZukanHeader",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              -285.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "ずかん",
+                  "font_size": 48.0,
+                  "color": [
+                    1.0,
+                    0.95,
+                    0.82,
+                    1.0
+                  ],
+                  "align": "center",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 10,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "icon_set": "",
+                  "outline_width": 3.5,
+                  "outline_color": [
+                    0.02,
+                    0.03,
+                    0.06,
+                    1.0
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": false,
+                  "weight": 0.8,
+                  "shadow_offset_x": 2.0,
+                  "shadow_offset_y": 2.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 1.5
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "ZukanPage",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              248.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "",
+                  "font_size": 24.0,
+                  "color": [
+                    0.72,
+                    0.84,
+                    0.98,
+                    1.0
+                  ],
+                  "align": "center",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 10,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "icon_set": "",
+                  "outline_width": 2.0,
+                  "outline_color": [
+                    0.02,
+                    0.03,
+                    0.06,
+                    1.0
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": false,
+                  "weight": 0.3,
+                  "shadow_offset_x": 2.0,
+                  "shadow_offset_y": 2.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 1.5
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "ZukanHint",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              298.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "",
+                  "font_size": 22.0,
+                  "color": [
+                    0.72,
+                    0.84,
+                    0.98,
+                    1.0
+                  ],
+                  "align": "center",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 10,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "icon_set": "",
+                  "outline_width": 2.0,
+                  "outline_color": [
+                    0.02,
+                    0.03,
+                    0.06,
+                    1.0
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": false,
+                  "weight": 0.3,
+                  "shadow_offset_x": 2.0,
+                  "shadow_offset_y": 2.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 1.5
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "ZukanPageArea",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [],
+          "children": [
+            {
+              "name": "ZukanCard0",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [],
+              "children": [
+                {
+                  "name": "ZukanCard0Image",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      -70.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.5,
+                      0.5
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Sprite",
+                      "component": {
+                        "type": "SpriteComponent",
+                        "data": {
+                          "texture_path": "",
+                          "color": [
+                            1.0,
+                            1.0,
+                            1.0,
+                            1.0
+                          ],
+                          "width": 190.0,
+                          "height": 190.0,
+                          "layer": 5,
+                          "postfx_path": "",
+                          "raycast_target": false
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard0Name",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      52.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 22.0,
+                          "color": [
+                            0.94,
+                            0.97,
+                            1.0,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.5,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.6,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard0Best",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      96.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 19.0,
+                          "color": [
+                            0.72,
+                            0.84,
+                            0.98,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.3,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard0Rank",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      128.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 19.0,
+                          "color": [
+                            0.72,
+                            0.84,
+                            0.98,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.3,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard0Count",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      160.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 19.0,
+                          "color": [
+                            0.72,
+                            0.84,
+                            0.98,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.3,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                }
+              ]
+            },
+            {
+              "name": "ZukanCard1",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [],
+              "children": [
+                {
+                  "name": "ZukanCard1Image",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      -70.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.5,
+                      0.5
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Sprite",
+                      "component": {
+                        "type": "SpriteComponent",
+                        "data": {
+                          "texture_path": "",
+                          "color": [
+                            1.0,
+                            1.0,
+                            1.0,
+                            1.0
+                          ],
+                          "width": 190.0,
+                          "height": 190.0,
+                          "layer": 5,
+                          "postfx_path": "",
+                          "raycast_target": false
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard1Name",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      52.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 22.0,
+                          "color": [
+                            0.94,
+                            0.97,
+                            1.0,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.5,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.6,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard1Best",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      96.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 19.0,
+                          "color": [
+                            0.72,
+                            0.84,
+                            0.98,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.3,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard1Rank",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      128.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 19.0,
+                          "color": [
+                            0.72,
+                            0.84,
+                            0.98,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.3,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard1Count",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      160.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 19.0,
+                          "color": [
+                            0.72,
+                            0.84,
+                            0.98,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.3,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                }
+              ]
+            },
+            {
+              "name": "ZukanCard2",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [],
+              "children": [
+                {
+                  "name": "ZukanCard2Image",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      -70.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.5,
+                      0.5
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Sprite",
+                      "component": {
+                        "type": "SpriteComponent",
+                        "data": {
+                          "texture_path": "",
+                          "color": [
+                            1.0,
+                            1.0,
+                            1.0,
+                            1.0
+                          ],
+                          "width": 190.0,
+                          "height": 190.0,
+                          "layer": 5,
+                          "postfx_path": "",
+                          "raycast_target": false
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard2Name",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      52.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 22.0,
+                          "color": [
+                            0.94,
+                            0.97,
+                            1.0,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.5,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.6,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard2Best",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      96.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 19.0,
+                          "color": [
+                            0.72,
+                            0.84,
+                            0.98,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.3,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard2Rank",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      128.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 19.0,
+                          "color": [
+                            0.72,
+                            0.84,
+                            0.98,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.3,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard2Count",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      160.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 19.0,
+                          "color": [
+                            0.72,
+                            0.84,
+                            0.98,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.3,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                }
+              ]
+            },
+            {
+              "name": "ZukanCard3",
+              "actor_kind": "Actor2D",
+              "canvas_transform": {
+                "position": [
+                  0.0,
+                  0.0
+                ],
+                "rotation": 0.0,
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "pivot": [
+                  0.0,
+                  0.0
+                ],
+                "anchor": [
+                  0.0,
+                  0.0
+                ],
+                "scale_transform": true,
+                "scale_size": true,
+                "keep_aspect_ratio": false,
+                "aspect_ratio_axis": "width"
+              },
+              "components": [],
+              "children": [
+                {
+                  "name": "ZukanCard3Image",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      -70.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.5,
+                      0.5
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Sprite",
+                      "component": {
+                        "type": "SpriteComponent",
+                        "data": {
+                          "texture_path": "",
+                          "color": [
+                            1.0,
+                            1.0,
+                            1.0,
+                            1.0
+                          ],
+                          "width": 190.0,
+                          "height": 190.0,
+                          "layer": 5,
+                          "postfx_path": "",
+                          "raycast_target": false
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard3Name",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      52.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 22.0,
+                          "color": [
+                            0.94,
+                            0.97,
+                            1.0,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.5,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.6,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard3Best",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      96.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 19.0,
+                          "color": [
+                            0.72,
+                            0.84,
+                            0.98,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.3,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard3Rank",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      128.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 19.0,
+                          "color": [
+                            0.72,
+                            0.84,
+                            0.98,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.3,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                },
+                {
+                  "name": "ZukanCard3Count",
+                  "actor_kind": "Actor2D",
+                  "canvas_transform": {
+                    "position": [
+                      0.0,
+                      160.0
+                    ],
+                    "rotation": 0.0,
+                    "scale": [
+                      1.0,
+                      1.0
+                    ],
+                    "pivot": [
+                      0.0,
+                      0.0
+                    ],
+                    "anchor": [
+                      0.0,
+                      0.0
+                    ],
+                    "scale_transform": true,
+                    "scale_size": true,
+                    "keep_aspect_ratio": false,
+                    "aspect_ratio_axis": "width"
+                  },
+                  "components": [
+                    {
+                      "name": "Text",
+                      "component": {
+                        "type": "TextComponent",
+                        "data": {
+                          "content": "",
+                          "font_size": 19.0,
+                          "color": [
+                            0.72,
+                            0.84,
+                            0.98,
+                            1.0
+                          ],
+                          "align": "center",
+                          "vertical_align": "middle",
+                          "line_spacing": 1.2,
+                          "layer": 6,
+                          "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                          "icon_set": "",
+                          "outline_width": 2.0,
+                          "outline_color": [
+                            0.02,
+                            0.03,
+                            0.06,
+                            1.0
+                          ],
+                          "box_width": 0.0,
+                          "box_height": 0.0,
+                          "wrap": false,
+                          "weight": 0.3,
+                          "shadow_offset_x": 2.0,
+                          "shadow_offset_y": 2.0,
+                          "shadow_color": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.5
+                          ],
+                          "shadow_softness": 1.5
+                        }
+                      }
+                    }
+                  ],
+                  "children": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "ZukanPrev",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              -560.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/white.png",
+                  "color": [
+                    0.2,
+                    0.38,
+                    0.62,
+                    0.85
+                  ],
+                  "width": 64.0,
+                  "height": 96.0,
+                  "layer": 8,
+                  "postfx_path": "",
+                  "raycast_target": true
+                }
+              }
+            },
+            {
+              "name": "ZukanPrev",
+              "component": {
+                "type": "ScriptComponent",
+                "data": {
+                  "type_name": "assets://zukan/scripts/ZukanArrow.cs",
+                  "fields": {
+                    "pageStep": "-1"
+                  }
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "ZukanPrevLabel",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              -560.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "◀",
+                  "font_size": 34.0,
+                  "color": [
+                    0.94,
+                    0.97,
+                    1.0,
+                    1.0
+                  ],
+                  "align": "center",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 10,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "icon_set": "",
+                  "outline_width": 2.0,
+                  "outline_color": [
+                    0.02,
+                    0.03,
+                    0.06,
+                    1.0
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": false,
+                  "weight": 0.3,
+                  "shadow_offset_x": 2.0,
+                  "shadow_offset_y": 2.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 1.5
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "ZukanNext",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              560.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.5,
+              0.5
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Sprite",
+              "component": {
+                "type": "SpriteComponent",
+                "data": {
+                  "texture_path": "assets://mainGame/textures/ui/white.png",
+                  "color": [
+                    0.2,
+                    0.38,
+                    0.62,
+                    0.85
+                  ],
+                  "width": 64.0,
+                  "height": 96.0,
+                  "layer": 8,
+                  "postfx_path": "",
+                  "raycast_target": true
+                }
+              }
+            },
+            {
+              "name": "ZukanNext",
+              "component": {
+                "type": "ScriptComponent",
+                "data": {
+                  "type_name": "assets://zukan/scripts/ZukanArrow.cs",
+                  "fields": {}
+                }
+              }
+            }
+          ],
+          "children": []
+        },
+        {
+          "name": "ZukanNextLabel",
+          "actor_kind": "Actor2D",
+          "canvas_transform": {
+            "position": [
+              560.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "pivot": [
+              0.0,
+              0.0
+            ],
+            "anchor": [
+              0.5,
+              0.5
+            ],
+            "scale_transform": true,
+            "scale_size": true,
+            "keep_aspect_ratio": false,
+            "aspect_ratio_axis": "width"
+          },
+          "components": [
+            {
+              "name": "Text",
+              "component": {
+                "type": "TextComponent",
+                "data": {
+                  "content": "▶",
+                  "font_size": 34.0,
+                  "color": [
+                    0.94,
+                    0.97,
+                    1.0,
+                    1.0
+                  ],
+                  "align": "center",
+                  "vertical_align": "middle",
+                  "line_spacing": 1.2,
+                  "layer": 10,
+                  "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+                  "icon_set": "",
+                  "outline_width": 2.0,
+                  "outline_color": [
+                    0.02,
+                    0.03,
+                    0.06,
+                    1.0
+                  ],
+                  "box_width": 0.0,
+                  "box_height": 0.0,
+                  "wrap": false,
+                  "weight": 0.3,
+                  "shadow_offset_x": 2.0,
+                  "shadow_offset_y": 2.0,
+                  "shadow_color": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.5
+                  ],
+                  "shadow_softness": 1.5
+                }
+              }
+            }
+          ],
+          "children": []
+        }
+      ]
+    }
+  ]
+}

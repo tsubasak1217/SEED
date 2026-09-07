@@ -1,0 +1,716 @@
+{
+  "name": "PauseMenu",
+  "actor_kind": "Actor2D",
+  "canvas_transform": {
+    "position": [
+      0.0,
+      0.0
+    ],
+    "rotation": 0.0,
+    "scale": [
+      1.0,
+      1.0
+    ],
+    "pivot": [
+      0.0,
+      0.0
+    ],
+    "anchor": [
+      0.0,
+      0.0
+    ],
+    "scale_transform": true,
+    "scale_size": true,
+    "keep_aspect_ratio": false,
+    "aspect_ratio_axis": "width"
+  },
+  "components": [
+    {
+      "name": "Canvas",
+      "component": {
+        "type": "CanvasComponent",
+        "data": {
+          "width": 1280.0,
+          "height": 720.0,
+          "auto_scale": true,
+          "viewport_ref": {
+            "type": "main_camera"
+          },
+          "gravity_mode": "world_down",
+          "draw_zone": "foreground",
+          "pivot": [
+            0.0,
+            0.0
+          ]
+        }
+      }
+    },
+    {
+      "name": "PauseMenu",
+      "component": {
+        "type": "ScriptComponent",
+        "data": {
+          "type_name": "assets://mainGame/scripts/PauseMenu.cs",
+          "fields": {
+            "titleText": "PauseTitle|Text",
+            "item0Text": "PauseItem0Label|Text",
+            "item1Text": "PauseItem1Label|Text",
+            "item2Text": "PauseItem2Label|Text",
+            "hintText": "PauseHint|Text",
+            "highlightSprite": "PauseHighlight|Sprite",
+            "highlightTransform": "PauseHighlight",
+            "item0Transform": "PauseItem0",
+            "item1Transform": "PauseItem1",
+            "item2Transform": "PauseItem2"
+          }
+        }
+      }
+    }
+  ],
+  "children": [
+    {
+      "name": "PauseOverlay",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.0,
+          0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Sprite",
+          "component": {
+            "type": "SpriteComponent",
+            "data": {
+              "texture_path": "assets://mainGame/textures/ui/white.png",
+              "color": [
+                0.02,
+                0.04,
+                0.09,
+                0.78
+              ],
+              "width": 1920.0,
+              "height": 1080.0,
+              "layer": 100,
+              "postfx_path": "",
+              "raycast_target": false
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "PauseTitle",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          -230.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "ポーズ",
+              "font_size": 58.0,
+              "color": [
+                1.0,
+                0.96,
+                0.86,
+                1.0
+              ],
+              "align": "center",
+              "vertical_align": "middle",
+              "line_spacing": 1.2,
+              "layer": 104,
+              "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+              "icon_set": "",
+              "outline_width": 4.0,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.06,
+                1.0
+              ],
+              "box_width": 0.0,
+              "box_height": 0.0,
+              "wrap": false,
+              "weight": 0.8,
+              "shadow_offset_x": 2.0,
+              "shadow_offset_y": 2.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.5
+              ],
+              "shadow_softness": 1.5
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "PauseHighlight",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          -60.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Sprite",
+          "component": {
+            "type": "SpriteComponent",
+            "data": {
+              "texture_path": "assets://mainGame/textures/ui/white.png",
+              "color": [
+                0.16,
+                0.36,
+                0.62,
+                0.85
+              ],
+              "width": 460.0,
+              "height": 70.0,
+              "layer": 101,
+              "postfx_path": "",
+              "raycast_target": false
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "PauseItem0",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          -60.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Sprite",
+          "component": {
+            "type": "SpriteComponent",
+            "data": {
+              "texture_path": "assets://mainGame/textures/ui/white.png",
+              "color": [
+                1.0,
+                1.0,
+                1.0,
+                0.0
+              ],
+              "width": 460.0,
+              "height": 70.0,
+              "layer": 102,
+              "postfx_path": "",
+              "raycast_target": true
+            }
+          }
+        },
+        {
+          "name": "PauseItem0",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "assets://mainGame/scripts/PauseMenuItem.cs",
+              "fields": {}
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "PauseItem0Label",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          -60.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "ゲームにもどる",
+              "font_size": 34.0,
+              "color": [
+                0.86,
+                0.92,
+                1.0,
+                1.0
+              ],
+              "align": "center",
+              "vertical_align": "middle",
+              "line_spacing": 1.2,
+              "layer": 103,
+              "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+              "icon_set": "",
+              "outline_width": 3.0,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.06,
+                1.0
+              ],
+              "box_width": 0.0,
+              "box_height": 0.0,
+              "wrap": false,
+              "weight": 0.5,
+              "shadow_offset_x": 2.0,
+              "shadow_offset_y": 2.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.5
+              ],
+              "shadow_softness": 1.5
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "PauseItem1",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          30.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Sprite",
+          "component": {
+            "type": "SpriteComponent",
+            "data": {
+              "texture_path": "assets://mainGame/textures/ui/white.png",
+              "color": [
+                1.0,
+                1.0,
+                1.0,
+                0.0
+              ],
+              "width": 460.0,
+              "height": 70.0,
+              "layer": 102,
+              "postfx_path": "",
+              "raycast_target": true
+            }
+          }
+        },
+        {
+          "name": "PauseItem1",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "assets://mainGame/scripts/PauseMenuItem.cs",
+              "fields": {
+                "itemIndex": "1"
+              }
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "PauseItem1Label",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          30.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "図鑑",
+              "font_size": 34.0,
+              "color": [
+                0.86,
+                0.92,
+                1.0,
+                1.0
+              ],
+              "align": "center",
+              "vertical_align": "middle",
+              "line_spacing": 1.2,
+              "layer": 103,
+              "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+              "icon_set": "",
+              "outline_width": 3.0,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.06,
+                1.0
+              ],
+              "box_width": 0.0,
+              "box_height": 0.0,
+              "wrap": false,
+              "weight": 0.5,
+              "shadow_offset_x": 2.0,
+              "shadow_offset_y": 2.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.5
+              ],
+              "shadow_softness": 1.5
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "PauseItem2",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          120.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.5,
+          0.5
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Sprite",
+          "component": {
+            "type": "SpriteComponent",
+            "data": {
+              "texture_path": "assets://mainGame/textures/ui/white.png",
+              "color": [
+                1.0,
+                1.0,
+                1.0,
+                0.0
+              ],
+              "width": 460.0,
+              "height": 70.0,
+              "layer": 102,
+              "postfx_path": "",
+              "raycast_target": true
+            }
+          }
+        },
+        {
+          "name": "PauseItem2",
+          "component": {
+            "type": "ScriptComponent",
+            "data": {
+              "type_name": "assets://mainGame/scripts/PauseMenuItem.cs",
+              "fields": {
+                "itemIndex": "2"
+              }
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "PauseItem2Label",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          120.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "タイトルへ",
+              "font_size": 34.0,
+              "color": [
+                0.86,
+                0.92,
+                1.0,
+                1.0
+              ],
+              "align": "center",
+              "vertical_align": "middle",
+              "line_spacing": 1.2,
+              "layer": 103,
+              "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+              "icon_set": "",
+              "outline_width": 3.0,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.06,
+                1.0
+              ],
+              "box_width": 0.0,
+              "box_height": 0.0,
+              "wrap": false,
+              "weight": 0.5,
+              "shadow_offset_x": 2.0,
+              "shadow_offset_y": 2.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.5
+              ],
+              "shadow_softness": 1.5
+            }
+          }
+        }
+      ],
+      "children": []
+    },
+    {
+      "name": "PauseHint",
+      "actor_kind": "Actor2D",
+      "canvas_transform": {
+        "position": [
+          0.0,
+          270.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "pivot": [
+          0.0,
+          0.0
+        ],
+        "anchor": [
+          0.5,
+          0.5
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+      },
+      "components": [
+        {
+          "name": "Text",
+          "component": {
+            "type": "TextComponent",
+            "data": {
+              "content": "W / S で選択    Enter・左クリックで決定    Esc でもどる",
+              "font_size": 20.0,
+              "color": [
+                0.72,
+                0.82,
+                0.95,
+                1.0
+              ],
+              "align": "center",
+              "vertical_align": "middle",
+              "line_spacing": 1.2,
+              "layer": 104,
+              "font_path": "assets://mainGame/fonts/LightNovelPopV2/LightNovelPOPv2.otf",
+              "icon_set": "",
+              "outline_width": 2.0,
+              "outline_color": [
+                0.02,
+                0.03,
+                0.06,
+                1.0
+              ],
+              "box_width": 0.0,
+              "box_height": 0.0,
+              "wrap": false,
+              "weight": 0.2,
+              "shadow_offset_x": 2.0,
+              "shadow_offset_y": 2.0,
+              "shadow_color": [
+                0.0,
+                0.0,
+                0.0,
+                0.5
+              ],
+              "shadow_softness": 1.5
+            }
+          }
+        }
+      ],
+      "children": []
+    }
+  ]
+}

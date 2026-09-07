@@ -109,8 +109,8 @@ public class CatchPresenter : SEEDScript
     /// <summary>easeOutBack / easeInBack の跳ね返り係数 c3 ＝ c1 + 1（標準値）。</summary>
     private const float BackEaseC3 = BackEaseC1 + 1f;
 
-    /// <summary>ベストサイズの保存キーの接頭辞（キーは <c>best_size:&lt;魚の表示名&gt;</c>）。</summary>
-    private const string BestSizeKeyPrefix = "best_size:";
+    // ベストサイズ・ベストランク・釣った数の保存キーは FishRecords が一元管理する
+    // （図鑑 Zukan と CatchPresenter でキーがずれる事故を防ぐため、ここには持たない）。
 
     /// <summary>ベスト更新時にサイズ表示へ添える文言。</summary>
     private const string NewRecordSuffix = "  NEW!";
@@ -1215,8 +1215,9 @@ public class CatchPresenter : SEEDScript
     /// 釣果テキストを組み立てて表示する【表示内容を決める唯一の場所】。
     ///
     /// サイズは「魚の基準サイズ × 個体のサイズ倍率」で、単位ラベルは魚側の設定
-    /// （<see cref="Fish.SizeUnitLabel"/>）を使う。ベストサイズはセーブデータの
-    /// <c>best_size:&lt;表示名&gt;</c> に魚種ごとに記録し、更新したらその場で保存する。
+    /// （<see cref="Fish.SizeUnitLabel"/>）を使う。釣果（ベストサイズ・ベストランク・
+    /// 釣った数）の保存は <see cref="FishRecords.RecordCatch"/> が担当する
+    /// （キーの定義とセーブのタイミングは FishRecords に一元化してある）。
     /// </summary>
     private void ShowTexts()
     {
@@ -1226,16 +1227,11 @@ public class CatchPresenter : SEEDScript
         float displaySize = fish.DisplaySize;
         string unit = fish.SizeUnitLabel;
 
-        // ベストサイズ（魚種ごと）を読み、更新していれば書き戻して保存する
-        string bestKey = BestSizeKeyPrefix + displayName;
-        float previousBest = SEED.SaveData.GetFloat(bestKey, 0f);
-        bool isNewRecord = displaySize > previousBest;
-        if (isNewRecord)
-        {
-            SEED.SaveData.SetFloat(bestKey, displaySize);
-            SEED.SaveData.Save();
-        }
-        float best = isNewRecord ? displaySize : previousBest;
+        // 釣果（ベストサイズ・ベストランク・釣った数）を 1 回だけ記録する。
+        // このフェーズの頭でしか呼ばれない（EnterPhase(CatchPhase.Show)）ので、
+        // ここで釣った数を 1 増やしても二重加算にはならない。
+        bool isNewRecord = FishRecords.RecordCatch(displayName, displaySize, fish.SizeRank);
+        float best = FishRecords.BestSize(displayName);
 
         SetText(nameText, displayName);
         SetText(sizeText, FormatSize(displaySize, unit) + (isNewRecord ? NewRecordSuffix : ""));

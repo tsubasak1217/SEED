@@ -1252,6 +1252,18 @@ public class FishingController : SEEDScript
 
     // ─── ライフサイクル ───────────────────────────────────────
 
+    // ─── ポーズメニュー ───────────────────────────────────────
+
+    /// <summary>
+    /// ポーズメニューのプレハブ（assets:// パス）。
+    ///
+    /// Esc を拾ったときに <see cref="PauseMenu.Toggle"/> へ渡す。
+    /// メニュー本体はこのパスのプレハブが初回だけ動的生成されるので、
+    /// シーンへポーズメニューを置いておく必要はない。
+    /// </summary>
+    [Header("ポーズメニュー"), SerializeField(Label = "メニューのprefab")]
+    private string pauseMenuActorPath = "assets://mainGame/actors/UI/PauseMenu.actor";
+
     /// <summary>
     /// 生成直後の初期化。糸をワールド座標系（親子合成なし）で扱う設定にし、初期状態は非表示にする。
     /// 参照フィールドはこの時点で注入済みだが、参照先スクリプトの OnStart 完了は保証されない。
@@ -1260,6 +1272,10 @@ public class FishingController : SEEDScript
     {
         // 動的生成される魚から参照できるよう、自分を静的アクセサへ登録する。
         Current = this;
+
+        // ポーズの静的状態はシーン遷移で作り直されないので、シーン開始時に必ず戻す
+        // （前のシーンでポーズしたまま遷移した場合に、操作不能で始まるのを防ぐ）。
+        PauseMenu.ResetStaticState();
 
         if (line is { } l && l.IsValid)
         {
@@ -1672,6 +1688,19 @@ public class FishingController : SEEDScript
     /// </summary>
     public override void Update(ref NativeFrameContext ctx)
     {
+        // ポーズの開閉はどの釣り状態でも最優先で受け付ける。
+        // ここで拾った Esc をメニュー側が同じフレームで再処理しないよう、
+        // PauseMenu 側に「開閉と同じ刻の入力は無視する」門が入っている。
+        if (!PauseMenu.IsOpen && SEED.Input.GetKeyDown(SEED.KeyCode.Escape))
+        {
+            PauseMenu.Toggle(pauseMenuActorPath);
+        }
+
+        // ポーズ中はゲーム側の更新も入力も止める。
+        // カーソルロックの再適用（UpdateCursorLock）より前に抜けることが重要で、
+        // ここを通してしまうとメニュー操作中にカーソルが消える。
+        if (PauseMenu.IsOpen) { return; }
+
         // カーソルロックを状態へ同期する。ここで毎フレーム引き直しておけば、
         // 途中で return する経路（プレイヤー未設定・待機中など）でもロックが残らない。
         UpdateCursorLock();
