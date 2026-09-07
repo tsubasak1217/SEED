@@ -41,16 +41,16 @@ using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]（衝突しない
 ///   <item><see cref="Play"/> で全 Animator にクリップの再生を依頼する</item>
 /// </list>
 ///
-/// <b>帯スプライトの初期アルファは 0</b>: 帯（HitBandBlack*）はシーン上で
-/// 色のアルファを 0 にしてある。演出前から画面に黒帯が出っぱなしになるのを防ぐためで、
-/// 再生中の表示はクリップの色トラック（0 秒で不透明・終端で透明）が受け持つ。
-/// 文字のほうは <see cref="OnStart"/> が同じ目的でアルファを 0 にしている。
+/// <b>待機中は帯も文字も透明</b>: シーン上ではアイテムを不透明のまま置いてよい
+/// （エディタで位置を確認しながら並べるため）。<see cref="OnStart"/> が帯スプライトと
+/// 文字のアルファを 0 にして待機状態にし、再生中の表示はクリップの色トラック
+/// （先頭で不透明・終端で透明）が受け持つ。
 ///
-/// <b>動きを直したいとき</b>: エディタのアニメーションパネルで<b>動かしたいアイテム自身</b>
-/// （例: HitBandBlackTop）を選び、そのクリップ "Hit" を開いてキーを編集する
-/// （＝ 対応する <c>hit_banner_*.anim</c> を直接編集してもよい）。
-/// <b>帯の角度を変えるときはクリップの作り直しが要る</b>: 位置キーは角度 −12° で
-/// 展開済みの実座標であり、回転トラックだけ変えても位置は追従しない。
+/// <b>動きを直したいとき</b>: シーン上の各アイテムの位置が「出現したときの静止位置」。
+/// 位置を並べ直したら、生成スクリプト（<c>tools/gen_hit_banner_clips.py</c>）で
+/// 4 本の <c>hit_banner_*.anim</c> を作り直す（帯は法線方向、文字は帯方向に出入りする
+/// キーを静止位置から展開する）。細かい調整はアニメーションパネルで
+/// <b>動かしたいアイテム自身</b>を選び、クリップ "Hit" を編集する。
 /// 入退場の向きも角度に依存する: 帯は<b>法線方向</b>（上帯は左上の外へ、下帯は右下の外へ）
 /// に出入りし、文字は<b>帯の方向</b>に流れる（Lv は左から入って右上へ、HIT は右から
 /// 入って左下へ抜ける）。
@@ -127,6 +127,13 @@ public class HitBanner : SEEDScript
     [SerializeField(Label = "文字の縁取り色(RGB)")]
     private SEED.Vector3 outlineColor = new(0f, 0f, 0f);
 
+    /// <summary>
+    /// 待機中に透明にしておく帯スプライトのアクタ名。シーンでは不透明のまま置けるよう、
+    /// <see cref="OnStart"/> が名前で探してアルファを 0 にする（見つからなければ何もしない）。
+    /// </summary>
+    [Header("帯"), SerializeField(Label = "帯スプライトのアクタ名")]
+    private List<string> bandActorNames = new() { "HitBandBlackTop", "HitBandBlackBottom" };
+
     // ─── 実行時の状態 ────────────────────────────────────────
 
     /// <summary>
@@ -190,6 +197,19 @@ public class HitBanner : SEEDScript
         ApplyTextStyle(hitLabel);
         HideText(levelLabel);
         HideText(hitLabel);
+        for (int i = 0; i < bandActorNames.Count; i++) { HideBandByName(bandActorNames[i]); }
+    }
+
+    /// <summary>名前で帯アクタを探し、その Sprite を透明にする（無ければ何もしない）。</summary>
+    /// <param name="actorName">帯スプライトを持つアクタ名。</param>
+    private static void HideBandByName(string actorName)
+    {
+        if (string.IsNullOrEmpty(actorName)) { return; }
+        var go = SEED.GameObject.Find(actorName);
+        if (!go.IsValid) { return; }
+        if (go.GetComponent<SEED.Sprite>() is not { } sprite) { return; }
+        SEED.Color c = sprite.Color;
+        sprite.Color = new SEED.Color(c.r, c.g, c.b, AlphaHidden);
     }
 
     // ─── 内部: 小さな代入ヘルパ ──────────────────────────────
