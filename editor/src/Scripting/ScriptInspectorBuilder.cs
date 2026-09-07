@@ -119,7 +119,8 @@ public static class ScriptInspectorBuilder
                 continue;
             }
 
-            var row = BuildRow(field, fullPath, values, onChange, onRefDrop, eventCatalog);
+            var row = BuildRow(field, fullPath, values, onChange, onRefDrop,
+                               assetPathToVirtual, eventCatalog);
             if (row is not null) stack.Children.Add(row);
         }
     }
@@ -135,9 +136,10 @@ public static class ScriptInspectorBuilder
     private static UIElement? BuildRow(
         ScriptFieldInfo field, string path,
         IReadOnlyDictionary<string, string> values, Action<string, string> onChange,
-        IReferenceDropResolver? onRefDrop, IScriptEventCatalogProvider? eventCatalog)
+        IReferenceDropResolver? onRefDrop, Func<string, string>? assetPathToVirtual,
+        IScriptEventCatalogProvider? eventCatalog)
     {
-        var row = BuildRowCore(field, path, values, onChange, onRefDrop, eventCatalog);
+        var row = BuildRowCore(field, path, values, onChange, onRefDrop, assetPathToVirtual, eventCatalog);
         if (row is null || !field.ShowResetButton) return row;
 
         // 既定値を文字列化できない型（[Flags] 列挙型など未対応の読み取り専用行）はボタンを出さない。
@@ -191,9 +193,15 @@ public static class ScriptInspectorBuilder
             if (t == typeof(string))
             {
                 var s = (string?)d ?? "";
-                // IPC は 1 行 1 コマンドの行区切りなので、改行を含む既定値は送れない
-                // （途中で別コマンドとして解釈されてしまう）。値を勝手に書き換えるより、
-                // ボタンを出さない方が安全なのでリセット非対応として扱う。
+
+                // [TextArea] のフィールドは改行を畳んだ表記で保存・送信する規約なので、
+                // 既定値も同じ表記へ畳めばそのまま送れる（行ビルダー側で元へ戻る）。
+                if (NeedsNewLineEscape(field)) return SEED.ScriptTextArea.Escape(s);
+
+                // それ以外の string は生の値をそのまま送る。IPC は 1 行 1 コマンドの
+                // 行区切りなので、改行を含む既定値は送れない（途中で別コマンドとして
+                // 解釈されてしまう）。値を勝手に書き換えるより、ボタンを出さない方が
+                // 安全なのでリセット非対応として扱う。
                 return s.Contains('\n') || s.Contains('\r') ? null : s;
             }
         }
@@ -205,16 +213,41 @@ public static class ScriptInspectorBuilder
         return null;
     }
 
-    /// <summary>型に応じた行本体を生成する（リセットボタンは付けない）。</summary>
+    /// <summary>
+    /// 型に応じた行本体を生成する（リセットボタンは付けない）。
+    ///
+    /// [TextArea] の string フィールドだけは、ここで「保存表記 ⇔ 生の文字列」を変換する。
+    /// IPC は 1 行 1 コマンドのテキストプロトコルなので改行をそのまま送れず、
+    /// トップレベル（＋ネストクラス）の値は改行を畳んだ表記で保存・送信するためである
+    /// （エスケープ規約の正典は SEED.ScriptTextArea。ランタイム側は ScriptBridge が戻す）。
+    /// 構造体リストのメンバは JSON 文字列として運ばれるため、この経路を通らない＝二重に畳まない。
+    /// </summary>
     private static UIElement? BuildRowCore(
         ScriptFieldInfo field, string path,
         IReadOnlyDictionary<string, string> values, Action<string, string> onChange,
-        IReferenceDropResolver? onRefDrop, IScriptEventCatalogProvider? eventCatalog)
+        IReferenceDropResolver? onRefDrop, Func<string, string>? assetPathToVirtual,
+        IScriptEventCatalogProvider? eventCatalog)
     {
         values.TryGetValue(path, out var raw);
-        return BuildValueRow(field, raw, s => onChange(path, s), onRefDrop, eventCatalog,
-                             expandStates: null, expandKey: path);
+
+        // [TextArea] のときだけ、表示前にアンエスケープ・送信前にエスケープを挟む
+        var needsEscape = NeedsNewLineEscape(field);
+        var shownValue  = needsEscape ? SEED.ScriptTextArea.Unescape(raw) : raw;
+        Action<string> commit = needsEscape
+            ? text => onChange(path, SEED.ScriptTextArea.Escape(text))
+            : text => onChange(path, text);
+
+        return BuildValueRow(field, shownValue, commit, onRefDrop, eventCatalog,
+                             expandStates: null, expandKey: path,
+                             assetPathToVirtual: assetPathToVirtual);
     }
+
+    /// <summary>
+    /// このフィールドの値が「改行をエスケープした表記」で保存・送信されるか。
+    /// [TextArea] を付けた string フィールドだけが対象（判定条件を 1 か所へ集約する）。
+    /// </summary>
+    private static bool NeedsNewLineEscape(ScriptFieldInfo field)
+        => field.TextAreaLines is not null && field.Field.FieldType == typeof(string);
 
     /// <summary>
     /// 「現在値の文字列 1 本」と「変更通知」だけで 1 行を組む（フィールドパスに依存しない版）。
@@ -231,11 +264,16 @@ public static class ScriptInspectorBuilder
     /// <param name="eventCatalog">ScriptEvent の結線先候補の問い合わせ先（null なら候補なし）。</param>
     /// <param name="expandStates">ScriptEvent の折りたたみ状態ストア（null なら記憶しない）。</param>
     /// <param name="expandKey">ScriptEvent の折りたたみ状態キー。</param>
+    /// <param name="assetPathToVirtual">
+    /// [AssetReference] 行が使う「絶対パス → assets:// 仮想パス」の変換
+    /// （null なら参照ボタン・ドロップを無効化して現在値の表示のみにする）。
+    /// </param>
     internal static UIElement? BuildValueRow(
         ScriptFieldInfo field, string? raw, Action<string> onLeaf, IReferenceDropResolver? onRefDrop,
-        IScriptEventCatalogProvider? eventCatalog = null,
-        ExpandStateStore?            expandStates = null,
-        string                       expandKey    = "")
+        IScriptEventCatalogProvider? eventCatalog       = null,
+        ExpandStateStore?            expandStates       = null,
+        string                       expandKey          = "",
+        Func<string, string>?        assetPathToVirtual = null)
     {
         var t = field.Field.FieldType;
 
@@ -277,6 +315,16 @@ public static class ScriptInspectorBuilder
         if (t == typeof(string))
         {
             var v = raw ?? (string?)field.DefaultValue ?? "";
+
+            // [AssetReference] … パス表示 ＋ 参照 ＋ × のアセット参照行
+            if (field.AssetExtensions is { Count: > 0 } assetExtensions)
+                return ScriptAssetRefFieldBuilder.Build(
+                    field, assetExtensions, v, onLeaf, assetPathToVirtual);
+
+            // [TextArea] … 複数行テキストボックス（Enter は改行。確定は LostFocus）
+            if (field.TextAreaLines is { } textAreaLines)
+                return ScriptTextAreaFieldBuilder.Build(field, textAreaLines, v, onLeaf);
+
             return BuildStringRow(field, v, onLeaf);
         }
         return BuildReadOnlyRow(field);

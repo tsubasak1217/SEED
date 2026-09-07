@@ -947,6 +947,17 @@ public static unsafe class ScriptBridge
     {
         if (!TryResolveLeafField(root, path, createMissing: true, out var owner, out var leaf)) return;
 
+        // [TextArea] を付けた string フィールドは、IPC が 1 行 1 コマンドである都合で
+        // 改行・タブをエスケープした表記で届く（シーン JSON にも同じ表記で保存されている）。
+        // 実体へ入れる直前に生の文字列へ戻す。エスケープ規約の正典は SEED.ScriptTextArea。
+        //
+        // 対象を [TextArea] 付きの string に限定しているのは、無条件に戻すと
+        // バックスラッシュを含む既存の文字列（Windows のパスなど）を壊すため。
+        // 構造体リストの中の string は JSON 文字列として運ばれるのでこの経路を通らない。
+        if (leaf.FieldType == typeof(string) &&
+            HasAttributeNamed(leaf, SEED.ScriptTextArea.AttributeName))
+            value = SEED.ScriptTextArea.Unescape(value);
+
         var converted = ConvertValue(leaf.FieldType, value);
         if (converted is null)
         {

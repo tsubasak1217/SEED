@@ -251,7 +251,7 @@
 </div>
 
 <!-- ════════════════ 1. 基本形 ════════════════ -->
-<section id="sec-basic" data-keywords="スクリプト 基本形 テンプレート SEEDScript SerializeField 継承 class インスペクタ 属性 Header Tooltip Range ResetButton リセット デフォルトに戻す RequireComponent DisallowMultipleComponent Serializable Bindable バインド 参照バインド 水面シェーダ ref ScriptEvent UnityEvent イベント 結線 コールバック 呼び出し Invoke バインディング 引数 argKind enum 列挙型 列挙子 ドロップダウン コンボボックス プルダウン 選択肢 Flags">
+<section id="sec-basic" data-keywords="スクリプト 基本形 テンプレート SEEDScript SerializeField 継承 class インスペクタ 属性 Header Tooltip Range ResetButton リセット デフォルトに戻す RequireComponent DisallowMultipleComponent Serializable Bindable バインド 参照バインド 水面シェーダ ref ScriptEvent UnityEvent イベント 結線 コールバック 呼び出し Invoke バインディング 引数 argKind enum 列挙型 列挙子 ドロップダウン コンボボックス プルダウン 選択肢 Flags TextArea 複数行 テキストエリア 改行 エスケープ AssetReference アセット参照 パス 拡張子 ドラッグアンドドロップ フォント">
   <h2>1. スクリプトの基本形</h2>
   <p class="section-note">C# で書き、<code>SEEDScript</code>（<code>SEEDEditor.Scripting</code> 名前空間）を継承します。</p>
 <pre><span class="k">using</span> SEEDEditor.Scripting;   <span class="c">// SEEDScript・[SerializeField]・NativeFrameContext</span>
@@ -282,6 +282,8 @@
     <tr><td><code>[Range(min, max)]</code></td><td>フィールド</td><td>数値フィールドをスライダー表示にする（float / int）</td></tr>
     <tr><td><code>[ResetButton]</code></td><td>フィールド</td><td>行の右端に「デフォルトに戻す」ボタン（⟲）を出す。押すと<b>宣言の初期化子の値</b>（無ければ 0 / false / 空文字 / 参照は未設定）へ戻る。Ctrl+Z で取り消せる</td></tr>
     <tr><td><code>[Bindable]</code></td><td>フィールド</td><td>このフィールドを<b>シェーダパラメータのバインド元</b>として公開する（<code>[SerializeField]</code> との併用が必須）。対応型は <code>float</code> と <code>Vector3</code> のみ</td></tr>
+    <tr><td><code>[TextArea]</code> / <code>[TextArea(4)]</code></td><td>フィールド</td><td><code>string</code> を<b>複数行のテキストボックス</b>にする（既定 3 行、引数で行数指定。<code>MinLines</code> / <code>MaxLines</code> も指定できる）。Enter は改行で、値の確定はフォーカスが外れたとき</td></tr>
+    <tr><td><code>[AssetReference("ttf", "otf")]</code></td><td>フィールド</td><td><code>string</code> を<b>アセットファイルへの参照行</b>（パス表示＋参照ボタン＋✕）にする。指定した拡張子のファイルだけを D&amp;D で受け付け、値は <code>assets://</code> 仮想パスで保存される</td></tr>
     <tr><td><code>[RequireComponent(typeof(OtherScript))]</code> / <code>[RequireComponent("Camera")]</code></td><td>クラス</td><td>アタッチ時に不足コンポーネントを<b>自動追加</b>する。型指定＝他スクリプト（型名から <code>.cs</code> を探す）、文字列指定＝ネイティブコンポーネント名</td></tr>
     <tr><td><code>[DisallowMultipleComponent]</code></td><td>クラス</td><td>同一アクターに同じスクリプトを 2 つ以上付けられなくする（追加操作が警告で中止される）</td></tr>
   </table>
@@ -316,6 +318,27 @@
   <p class="section-note">スクリプトのコンパイルに失敗している間は、そのスクリプトのフィールドはバインド候補に一切現れません（まずコンパイルエラーを直してください）。</p>
 <pre>[<span class="t">SerializeField</span>, <span class="t">Bindable</span>]
 <span class="k">private float</span> glowPower = 1.0f;</pre>
+
+  <h3><code>[TextArea]</code> の詳細（改行の扱い）</h3>
+<pre>[<span class="t">SerializeField</span>(Label = <span class="s">"本文"</span>), <span class="t">TextArea</span>(4)]     <span class="c">// 4 行ぶんの高さで表示する</span>
+<span class="k">public string</span> text = <span class="s">""</span>;
+
+[<span class="t">SerializeField</span>, <span class="t">TextArea</span>]                       <span class="c">// 引数を省くと 3 行</span>
+<span class="k">private string</span> memo = <span class="s">""</span>;
+
+[<span class="t">SerializeField</span>, <span class="t">TextArea</span>(MinLines = 2, MaxLines = 8)]
+<span class="k">private string</span> note = <span class="s">""</span>;</pre>
+  <p class="section-note">効果があるのは <code>string</code> フィールドだけです（他の型に付けても無視され、値は壊れません）。インスペクタでは <b>Enter が改行</b>になるため、値の確定は<b>フォーカスが外れたとき</b>に行われます。<code>[System.Serializable]</code> 構造体リストの <code>string</code> メンバにも付けられます。<b>配列・リスト（<code>string[]</code> / <code>List&lt;string&gt;</code>）の要素には効きません</b>（属性は配列フィールド全体に付くため）。</p>
+  <p class="section-note"><b>重要（改行の保存形式）</b>: エディタ ⇔ ランタイムの通信は「1 行 = 1 コマンド」のテキストプロトコルなので、生の改行を含む値はそのまま送れません。そのため <b><code>[TextArea]</code> を付けたトップレベル（および <code>[Serializable]</code> ネストクラス）の <code>string</code></b> は、改行を <code>\n</code>（バックスラッシュ + n）、タブを <code>\t</code> に畳んだ表記で送受信し、<b>シーン JSON にもその表記のまま保存</b>されます。スクリプトのフィールドへ入る値は元どおりの<b>実際の改行を含む文字列</b>なので、コード側で気にする必要はありません。バックスラッシュ自体は <code>\\</code> に畳まれるため往復で失われません。バックスラッシュを含まない既存の値は無変換のままです（後方互換）。ただし、<b>すでに値が保存されているフィールドへ後から <code>[TextArea]</code> を付ける</b>場合、その値に含まれるバックスラッシュはエスケープ記号として読み直されます（1 度インスペクタで編集し直せば正しい表記へ揃います）。構造体リストの中の <code>string</code> は JSON 文字列として運ばれるので、この畳み込みは行われません。</p>
+
+  <h3><code>[AssetReference]</code> の詳細</h3>
+<pre>[<span class="t">SerializeField</span>(Label = <span class="s">"フォント"</span>), <span class="t">AssetReference</span>(<span class="s">"ttf"</span>, <span class="s">"otf"</span>)]
+<span class="k">public string</span> fontPath = <span class="s">""</span>;   <span class="c">// 例: "assets://prologue/fonts/MyFont.ttf"</span>
+
+[<span class="t">SerializeField</span>, <span class="t">AssetReference</span>(<span class="s">"wav"</span>, <span class="s">"ogg"</span>)]
+<span class="k">public string</span> sePath = <span class="s">""</span>;</pre>
+  <p class="section-note">拡張子は<b>ドット無し・大文字小文字どちらでも</b>書けます（内部で「小文字・ドット無し」へ正規化されます）。行は「パス表示（読み取り専用）＋ <code>参照</code> ボタン ＋ <code>✕</code>」になり、<code>参照</code> はファイル選択ダイアログ、<code>✕</code> は未設定へ戻します。</p>
+  <p class="section-note"><b>Project パネルやエクスプローラーからのドラッグ＆ドロップ</b>で設定できます。指定した拡張子以外のファイルはドロップを拒否します。保存される値は <code>assets://</code> 仮想パス（アセットルート外のファイルは絶対パスのまま）です。効果があるのは <code>string</code> フィールドだけで、拡張子を 1 つも指定しない <code>[AssetReference()]</code> は通常の 1 行テキストボックスに戻ります。<code>[System.Serializable]</code> 構造体リストの <code>string</code> メンバにも付けられます。</p>
 
   <p class="section-note"><code>[Serializable]</code> を付けたクラス／構造体型のフィールドに <code>[SerializeField]</code> を付けると、インスペクタで<b>子フィールドが再帰的に展開</b>されます（入れ子の上限は 8 段）。</p>
   <p class="section-note"><code>GameObject</code> やコンポーネントハンドル型（<code>Transform</code> / <code>Camera</code> など）のフィールドに <code>[SerializeField]</code> を付けると、<b>他アクターへの参照フィールド</b>になります（Hierarchy から D&amp;D で設定）。詳細は第 7 節の「参照フィールド」を参照してください。</p>

@@ -41,8 +41,12 @@ public struct DialogueEntry
     [SerializeField(Label = "話者名", Tooltip = "名札に表示する名前（空文字なら空欄）")]
     public string speaker;
 
-    /// <summary>本文。"\n" で改行できる（自動折り返しは無いので手動で改行を入れる）。</summary>
-    [SerializeField(Label = "本文", Tooltip = "表示する台詞。\n で改行（自動折り返しは無い）")]
+    /// <summary>
+    /// 本文。インスペクタでは複数行のテキストボックスになり、そのまま改行を入力できる
+    /// （自動折り返しは無いので、表示幅に合わせて手で改行を入れる）。
+    /// </summary>
+    [SerializeField(Label = "本文", Tooltip = "表示する台詞。複数行で入力できる（自動折り返しは無い）")]
+    [TextArea(4)]
     public string text;
 
     /// <summary>

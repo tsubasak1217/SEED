@@ -423,6 +423,13 @@ public static class ScriptCompiler
             };
         }
 
+        // string フィールド専用の表示指定（[TextArea] / [AssetReference]）。
+        // どちらも「行の見た目」を変えるだけなので、string 以外に付いていても無視する
+        // （型で行の形が決まる原則を崩さないため）。
+        var isStringField     = f.FieldType == typeof(string);
+        var textAreaLines     = isStringField ? ReadTextAreaLines(f)     : null;
+        var assetExtensions   = isStringField ? ReadAssetExtensions(f)   : null;
+
         // [Serializable] なネストクラスなら子フィールドを再帰展開する。
         // 参照フィールドはハンドル構造体なので展開対象から除外する
         // （ハンドルの内部 entity をインスペクタに晒さないため）。
@@ -446,6 +453,8 @@ public static class ScriptCompiler
             Array     = arrayInfo,
             IsScriptEvent = isScriptEvent,
             EnumOptions   = enumOptions,
+            TextAreaLines   = textAreaLines,
+            AssetExtensions = assetExtensions,
             // [Serializable] ネストクラスそのものにはボタンを出さない
             // （子を一括で戻すと Undo が 1 手にまとまらないため。子フィールド個別には付けられる）。
             // ScriptEvent も同様に出さない（結線の並び全体を 1 手で消すのは事故が大きく、
@@ -537,6 +546,62 @@ public static class ScriptCompiler
             return (min, max);
         }
         catch { return (null, null); }
+    }
+
+    /// <summary>
+    /// [TextArea] 属性から「実際の表示行数」を読み取る（無ければ null）。
+    ///
+    /// Lines は省略時も属性側のコンストラクタが既定行数を入れているので、
+    /// ここでは MinLines / MaxLines と合わせて 1 つの行数へ解決するだけでよい
+    /// （解決規則の正典は SEED.ScriptTextArea.ResolveLines）。
+    /// </summary>
+    private static int? ReadTextAreaLines(FieldInfo f)
+    {
+        var data = f.GetCustomAttributesData()
+            .FirstOrDefault(a => a.AttributeType.Name == SEED.ScriptTextArea.AttributeName);
+        if (data is null) return null;
+
+        try
+        {
+            // 引数なしのコンストラクタ（[TextArea]）では既定行数を使う
+            var lines = data.ConstructorArguments.Count > 0
+                ? Convert.ToInt32(data.ConstructorArguments[0].Value)
+                : TextAreaAttribute.DefaultLines;
+
+            int min = 0, max = 0;
+            foreach (var na in data.NamedArguments)
+            {
+                if (na.MemberName == nameof(TextAreaAttribute.MinLines)) min = Convert.ToInt32(na.TypedValue.Value);
+                if (na.MemberName == nameof(TextAreaAttribute.MaxLines)) max = Convert.ToInt32(na.TypedValue.Value);
+            }
+            return SEED.ScriptTextArea.ResolveLines(lines, min, max);
+        }
+        catch (Exception e) when (e is InvalidCastException or FormatException or OverflowException)
+        {
+            // 想定外の引数が入っていた場合は「属性なし」と同じ扱いにする（1 行の入力欄に落とす）。
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// [AssetReference] 属性から受け付ける拡張子を読み取る（無ければ null）。
+    ///
+    /// 属性は params 配列を取るので、属性データ上は「配列 1 個の引数」として現れる。
+    /// 正規化（小文字・ドット無し・重複除去）は SEED.ScriptAssetReference が正典。
+    /// 1 つも拡張子が無い指定は「属性なし」と同じ扱い（＝通常のテキスト行）にする。
+    /// </summary>
+    private static IReadOnlyList<string>? ReadAssetExtensions(FieldInfo f)
+    {
+        var data = f.GetCustomAttributesData()
+            .FirstOrDefault(a => a.AttributeType.Name == SEED.ScriptAssetReference.AttributeName);
+        if (data is null || data.ConstructorArguments.Count == 0) return null;
+
+        var arg = data.ConstructorArguments[0];
+        if (arg.Value is not System.Collections.ObjectModel.ReadOnlyCollection<CustomAttributeTypedArgument> items)
+            return null;
+
+        var normalized = SEED.ScriptAssetReference.Normalize(items.Select(i => i.Value as string));
+        return normalized.Length == 0 ? null : normalized;
     }
 
     private static string PrettifyName(string name)

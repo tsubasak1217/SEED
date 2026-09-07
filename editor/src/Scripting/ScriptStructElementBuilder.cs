@@ -96,9 +96,12 @@ internal static class ScriptStructElementBuilder
             // スカラ・参照・ScriptEvent メンバは通常のフィールド行をそのまま使う。
             // ScriptEvent は折りたたみを持つので、入れ子配列と同じ規約
             // （要素キー + "." + メンバ名）で開閉状態のキーを配る。
+            // [AssetReference] メンバの参照ボタン・ドロップに使う仮想パス変換も渡す
+            // （構造体リストの中でも単体フィールドと同じ操作感になるようにするため）。
             var row = ScriptInspectorBuilder.BuildValueRow(
                 member, raw, text => CommitMember(name, text), onRefDrop,
-                eventCatalog, expandStates, expandKey + MemberKeySeparator + name);
+                eventCatalog, expandStates, expandKey + MemberKeySeparator + name,
+                assetPathToVirtual);
             if (row is not null) panel.Children.Add(row);
         }
 

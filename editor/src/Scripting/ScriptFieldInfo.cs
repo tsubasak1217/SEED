@@ -109,4 +109,26 @@ public record ScriptFieldInfo(
     /// （Rust 側は型タグ <c>"enum"</c> で文字列であることだけを検査する）。
     /// </summary>
     public IReadOnlyList<string>? EnumOptions { get; init; }
+
+    /// <summary>
+    /// <c>[TextArea]</c> が付いた string フィールドの表示行数。null なら 1 行のテキストボックス。
+    ///
+    /// 属性の Lines / MinLines / MaxLines を
+    /// <see cref="SEED.ScriptTextArea.ResolveLines"/> で 1 つの行数へ解決した結果を持つ。
+    /// string 以外の型では常に null（行の形は型で決まるため、誤って付いていても無視する）。
+    ///
+    /// この値が非 null のトップレベル（＋ネストクラス）フィールドは、
+    /// 改行をエスケープした表記で IPC・シーン保存を通る（正典は <see cref="SEED.ScriptTextArea"/>）。
+    /// </summary>
+    public int? TextAreaLines { get; init; }
+
+    /// <summary>
+    /// <c>[AssetReference]</c> が付いた string フィールドの、受け付ける拡張子
+    /// （小文字・ドット無しへ正規化済み）。null なら通常のテキスト入力行にする。
+    ///
+    /// 非 null のとき、行は「パス表示（読み取り専用）＋ 参照ボタン ＋ ×」になり、
+    /// 値は <c>assets://</c> 仮想パスで保存される。
+    /// string 以外の型・拡張子が 1 つも無い指定では null。
+    /// </summary>
+    public IReadOnlyList<string>? AssetExtensions { get; init; }
 }

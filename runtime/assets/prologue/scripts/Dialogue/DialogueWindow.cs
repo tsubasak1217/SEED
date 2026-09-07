@@ -99,6 +99,14 @@ public class DialogueWindow : SEEDScript
     [SerializeField(Label = "送りマーク点滅周期(秒)", Tooltip = "送りマークが 1 往復するのに掛かる秒数")]
     public float arrowBlinkPeriod = DefaultArrowBlinkPeriod;
 
+    /// <summary>
+    /// 話者名・本文に共通で使うフォントファイル（.ttf / .otf）の assets:// 参照。
+    /// 空文字なら各 Text コンポーネント側の設定をそのまま使う（＝この機能を使わない）。
+    /// </summary>
+    [SerializeField(Label = "フォント", Tooltip = "話者名・本文に使うフォント（.ttf / .otf）。空なら各 Text の設定のまま")]
+    [AssetReference("ttf", "otf")]
+    public string fontPath = EmptyText;
+
     // ── 内部状態 ────────────────────────────────────────────
 
     /// <summary>シーンで設定された元の色を控えたか（初回アクセス時に一度だけ行う）。</summary>
@@ -164,6 +172,7 @@ public class DialogueWindow : SEEDScript
     public override void OnStart()
     {
         CaptureBaseColors();
+        ApplyFont();
     }
 
     /// <summary>
@@ -266,6 +275,20 @@ public class DialogueWindow : SEEDScript
     }
 
     // ── 内部処理 ────────────────────────────────────────────
+
+    /// <summary>
+    /// インスペクタで指定されたフォントを話者名 Text と本文 Text へ適用する。
+    ///
+    /// 会話窓の中で書体が食い違わないよう、2 つの Text へまとめて同じフォントを流す。
+    /// fontPath が空のときは何もしない（各 Text がシーンで持っている設定を尊重する）。
+    /// </summary>
+    private void ApplyFont()
+    {
+        if (string.IsNullOrEmpty(fontPath)) return;
+
+        if (speakerText is { } speaker && speaker.IsValid) speaker.FontPath = fontPath;
+        if (bodyText    is { } body    && body.IsValid)    body.FontPath    = fontPath;
+    }
 
     /// <summary>
     /// シーンで設定された各パーツの色を初回だけ控える。

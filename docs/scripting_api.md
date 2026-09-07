@@ -51,6 +51,8 @@ public class Mover : SEEDScript
 | `[Range(min, max)]` | フィールド | 数値フィールドをスライダー表示にする（float / int） |
 | `[ResetButton]` | フィールド | 行の右端に「デフォルトに戻す」ボタン（⟲）を出す。押すと**宣言の初期化子の値**（無ければ 0 / false / 空文字 / 参照は未設定）へ戻る。Ctrl+Z で取り消せる |
 | `[Bindable]` | フィールド | このフィールドを**シェーダパラメータのバインド元**として公開する（`[SerializeField]` との併用が必須）。対応型は `float` と `Vector3` のみ |
+| `[TextArea]` / `[TextArea(4)]` | フィールド | `string` を**複数行のテキストボックス**にする（既定 3 行、引数で行数指定。`MinLines` / `MaxLines` も指定できる）。Enter は改行で、値の確定はフォーカスが外れたとき |
+| `[AssetReference("ttf", "otf")]` | フィールド | `string` を**アセットファイルへの参照行**（パス表示＋参照ボタン＋✕）にする。指定した拡張子のファイルだけを D&D で受け付け、値は `assets://` 仮想パスで保存される |
 | `[RequireComponent(typeof(OtherScript))]` / `[RequireComponent("Camera")]` | クラス | アタッチ時に不足コンポーネントを**自動追加**する。型指定＝他スクリプト（型名から `.cs` を探す）、文字列指定＝ネイティブコンポーネント名 |
 | `[DisallowMultipleComponent]` | クラス | 同一アクターに同じスクリプトを 2 つ以上付けられなくする（追加操作が警告で中止される） |
 
@@ -117,6 +119,43 @@ public class CameraShake : SEEDScript
 [SerializeField, Bindable]
 private float glowPower = 1.0f;
 ```
+
+**`[TextArea]` の詳細（改行の扱い）**
+
+```csharp
+[SerializeField(Label = "本文"), TextArea(4)]          // 4 行ぶんの高さで表示する
+public string text = "";
+
+[SerializeField, TextArea]                            // 引数を省くと 3 行
+private string memo = "";
+
+[SerializeField, TextArea(MinLines = 2, MaxLines = 8)] // 行数を範囲で挟む
+private string note = "";
+```
+
+- 効果があるのは `string` フィールドだけです。他の型に付けても無視されます（値は壊れません）。
+- インスペクタでは **Enter が改行**になるため、値の確定は**フォーカスが外れたとき**に行われます。
+- `[System.Serializable]` 構造体リストの `string` メンバにも付けられます。
+- **配列・リスト（`string[]` / `List<string>`）の要素には効きません**（属性は配列フィールド全体に付くため）。
+
+> **重要（改行の保存形式）**: エディタ ⇔ ランタイムの通信は「1 行 = 1 コマンド」のテキストプロトコルなので、生の改行を含む値はそのまま送れません。そのため **`[TextArea]` を付けたトップレベル（および `[Serializable]` ネストクラス）の `string`** は、改行を `\n`（バックスラッシュ + n）、タブを `\t` に畳んだ表記で送受信し、**シーン JSON にもその表記のまま保存**されます。スクリプトのフィールドへ入る値は元どおりの**実際の改行を含む文字列**なので、コード側で気にする必要はありません。バックスラッシュ自体は `\\` に畳まれるため往復で失われません。バックスラッシュを含まない既存の値は無変換のままです（後方互換）。ただし、**すでに値が保存されているフィールドへ後から `[TextArea]` を付ける**場合、その値に含まれるバックスラッシュはエスケープ記号として読み直されます（1 度インスペクタで編集し直せば正しい表記へ揃います）。構造体リストの中の `string` は JSON 文字列として運ばれるので、この畳み込みは行われません（JSON 側の規則で既にエスケープされます）。
+
+**`[AssetReference]` の詳細**
+
+```csharp
+[SerializeField(Label = "フォント"), AssetReference("ttf", "otf")]
+public string fontPath = "";      // 例: "assets://prologue/fonts/MyFont.ttf"
+
+[SerializeField, AssetReference("wav", "ogg")]
+public string sePath = "";
+```
+
+- 拡張子は**ドット無し・大文字小文字どちらでも**書けます（内部で「小文字・ドット無し」へ正規化されます）。
+- 行は「パス表示（読み取り専用）＋ `参照` ボタン ＋ `✕`」になります。`参照` はファイル選択ダイアログ、`✕` は未設定へ戻します。
+- **Project パネルやエクスプローラーからのドラッグ＆ドロップ**で設定できます。指定した拡張子以外のファイルはドロップを拒否します。
+- 保存される値は `assets://` 仮想パス（アセットルート外のファイルは絶対パスのまま）です。
+- 効果があるのは `string` フィールドだけです。拡張子を 1 つも指定しない `[AssetReference()]` は通常の 1 行テキストボックスに戻ります。
+- `[System.Serializable]` 構造体リストの `string` メンバにも付けられます。
 
 - `[Serializable]` を付けたクラス／構造体型のフィールドに `[SerializeField]` を付けると、インスペクタで**子フィールドが再帰的に展開**されます（入れ子の上限は 8 段）。
 - `GameObject` やコンポーネントハンドル型（`Transform` / `Camera` など）のフィールドに `[SerializeField]` を付けると、**他アクターへの参照フィールド**になります（Hierarchy から D&D で設定）。詳細は第 7 節の「参照フィールド」を参照してください。
