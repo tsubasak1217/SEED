@@ -57,11 +57,21 @@ public sealed class ScriptWorkspace
         LoadAllScripts(assetsRoot);
     }
 
-    /// <summary>アセットルート配下の全 .cs をドキュメントとして登録する。</summary>
+    /// <summary>
+    /// アセットルート配下の全 .cs をドキュメントとして登録する。
+    ///
+    /// 列挙は <see cref="SEEDEditor.Scripting.ScriptCompiler.CollectFilesTolerant"/>
+    /// （フォルダ単位の try/catch による幅優先列挙）を使う。
+    /// <c>Directory.EnumerateFiles(..., SearchOption.AllDirectories)</c> の
+    /// 一括列挙だと、途中に 1 つでも開けないフォルダがあると例外で列挙全体が
+    /// 失敗し、ワークスペースにスクリプトが 1 本も登録されず補完・定義ジャンプが
+    /// 全滅する（ScriptCompiler / ScriptAssemblyManager と同じ不具合のため、
+    /// 判定方式を揃えて二重管理を避ける）。
+    /// </summary>
     private void LoadAllScripts(string assetsRoot)
     {
         if (!Directory.Exists(assetsRoot)) return;
-        foreach (var file in Directory.EnumerateFiles(assetsRoot, "*.cs", SearchOption.AllDirectories))
+        foreach (var file in global::SEEDEditor.Scripting.ScriptCompiler.CollectFilesTolerant(assetsRoot, "*.cs"))
         {
             try { UpsertText(file, File.ReadAllText(file)); }
             catch { /* 読めないファイルはスキップ */ }

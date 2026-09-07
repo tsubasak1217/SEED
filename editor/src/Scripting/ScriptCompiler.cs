@@ -60,6 +60,73 @@ public static class ScriptCompiler
         new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
             .WithNullableContextOptions(NullableContextOptions.Annotations);
 
+    // ── 耐障害なファイル列挙 ────────────────────────────────
+
+    /// <summary>
+    /// アセットルート配下の指定パターンに一致するファイルを再帰的に集める
+    /// 【エディタ側スクリプト列挙の唯一の実装】。
+    ///
+    /// <para>
+    /// <b>なぜ <c>Directory.EnumerateFiles(..., SearchOption.AllDirectories)</c> を
+    /// 使わないのか</b><br/>
+    /// 1 回の列挙で全階層をなめる書き方だと、途中に「開けないフォルダ」が
+    /// 1 つでもあった時点で例外が飛び、<b>プロジェクト全体のスクリプトが
+    /// 1 本もコンパイル・補完できなくなる</b>。ランタイム側
+    /// （scripting/src/ScriptAssemblyManager.cs の CollectScriptFiles）は既に
+    /// フォルダ単位の try/catch による幅優先列挙で対処済みであり、同じ不具合が
+    /// エディタ側で再発しないよう判定方式をここへ揃える（二重管理を避けるため、
+    /// エディタ内の他の一括列挙箇所は全てこのメソッドを呼ぶ）。
+    /// </para>
+    /// <para>
+    /// フォルダ単位に try/catch を掛けて幅優先で自前に降り、読めないフォルダは
+    /// その 1 つだけを警告して読み飛ばす。アセットの一部が読めなくても、
+    /// 残りのスクリプトは正しくコンパイル・補完できる。
+    /// </para>
+    /// </summary>
+    /// <param name="root">探索を開始するフォルダの絶対パス。</param>
+    /// <param name="searchPattern">
+    /// ファイル名の検索パターン（<c>Directory.EnumerateFiles</c> と同じ書式）。
+    /// 例: "*.cs"、"PlayerMove.cs"。
+    /// </param>
+    /// <returns>見つかったファイルの絶対パス一覧（読めなかったフォルダの中身は含まない）。</returns>
+    internal static List<string> CollectFilesTolerant(string root, string searchPattern)
+    {
+        var files = new List<string>();
+        if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) return files;
+
+        // 幅優先で自前に降りる（再帰だと深いツリーでスタックを消費するため）
+        var pending = new Queue<string>();
+        pending.Enqueue(root);
+
+        while (pending.Count > 0)
+        {
+            var dir = pending.Dequeue();
+
+            // このフォルダ直下のファイル（読めなければこのフォルダだけ諦める）
+            try
+            {
+                files.AddRange(Directory.EnumerateFiles(dir, searchPattern));
+            }
+            catch (Exception ex)
+            {
+                EditorLog.Write($"[ScriptCompiler] 読み取れないフォルダをスキップ（ファイル列挙） '{dir}': {ex.Message}");
+                continue;   // 中身が読めないフォルダは子も辿らない
+            }
+
+            // 子フォルダ（読めなければこのフォルダの子は諦める）
+            try
+            {
+                foreach (var sub in Directory.EnumerateDirectories(dir)) pending.Enqueue(sub);
+            }
+            catch (Exception ex)
+            {
+                EditorLog.Write($"[ScriptCompiler] 読み取れないフォルダをスキップ（サブフォルダ列挙） '{dir}': {ex.Message}");
+            }
+        }
+
+        return files;
+    }
+
     // ── プロジェクト全体の構文木収集（キャッシュ付き）─────────
 
     /// <summary>構文木キャッシュ 1 件（最終更新時刻とサイズが一致する限り再利用する）。</summary>
@@ -108,7 +175,7 @@ public static class ScriptCompiler
 
         if (string.IsNullOrEmpty(assetsRoot) || !Directory.Exists(assetsRoot)) return trees;
 
-        foreach (var f in Directory.EnumerateFiles(assetsRoot, "*.cs", SearchOption.AllDirectories))
+        foreach (var f in CollectFilesTolerant(assetsRoot, "*.cs"))
         {
             var key = CacheKey(f);
             if (key == overrideKey) continue;   // 編集中タブのディスク版は使わない
@@ -291,12 +358,10 @@ public static class ScriptCompiler
         {
             if (!Directory.Exists(assetsRoot)) return null;
 
-            var direct = Directory
-                .EnumerateFiles(assetsRoot, typeName + ".cs", SearchOption.AllDirectories)
-                .FirstOrDefault();
+            var direct = CollectFilesTolerant(assetsRoot, typeName + ".cs").FirstOrDefault();
             if (direct is not null) return direct;
 
-            foreach (var f in Directory.EnumerateFiles(assetsRoot, "*.cs", SearchOption.AllDirectories))
+            foreach (var f in CollectFilesTolerant(assetsRoot, "*.cs"))
             {
                 try
                 {
