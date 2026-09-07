@@ -39,6 +39,17 @@ public class ActorNode
     /// <summary>実効アクティブか（自身と全祖先の active が true）。false は淡色表示する。</summary>
     public bool            Active   { get; set; } = true;
     /// <summary>
+    /// 実効表示か（自身と全祖先の visible が true）。false は目アイコンを「非表示」状態にし、
+    /// 行を淡色表示する。アクティブと違い描画だけが止まっている状態を表す。
+    /// </summary>
+    public bool            Visible  { get; set; } = true;
+    /// <summary>
+    /// このアクター自身の表示フラグ（祖先を考慮しない生の値）。
+    /// 目アイコンをクリックしたときはこの値を反転して送る
+    /// （実効値を反転すると、祖先が非表示のとき操作が効かなくなる）。
+    /// </summary>
+    public bool            SelfVisible { get; set; } = true;
+    /// <summary>
     /// このアクター自身が Canvas コンポーネントを持つか。
     /// 2D アクターの新しい親として「Canvas を持つ 3D アクター」を許可する判定に使用する
     /// （Canvas を持たない 3D アクターへの 2D 子付けは禁止）。
@@ -458,6 +469,9 @@ public partial class HierarchyPanel : UserControl
                     IsVp     = e.TryGetProperty("is_vp",    out var iv) && iv.GetBoolean(),
                     // 実効アクティブ（省略時は true = アクティブ扱い）
                     Active   = !e.TryGetProperty("active",   out var ac) || ac.GetBoolean(),
+                    // 実効表示・自身の表示フラグ（旧 JSON にフィールドが無ければ表示扱い）
+                    Visible     = !e.TryGetProperty("visible",      out var vs) || vs.GetBoolean(),
+                    SelfVisible = !e.TryGetProperty("self_visible", out var sv) || sv.GetBoolean(),
                     // Canvas 保有フラグ（旧 JSON にフィールドが無ければ false）
                     HasCanvas = e.TryGetProperty("has_canvas", out var hc) && hc.GetBoolean(),
                     // プレハブインスタンスのルートか（旧 JSON にフィールドが無ければ false）
@@ -638,7 +652,7 @@ public partial class HierarchyPanel : UserControl
     /// ヘッダーの見た目に効くフィールドが変わったときだけ Header を作り直す
     /// （アイコンは Visual を生成するため、無条件の作り直しは差分更新の意味を失わせる）。
     /// </summary>
-    private static void UpdateItemForNode(TreeViewItem item, ActorNode node)
+    private void UpdateItemForNode(TreeViewItem item, ActorNode node)
     {
         var old = item.Tag as ActorNode;
         item.Tag = node;
@@ -660,7 +674,9 @@ public partial class HierarchyPanel : UserControl
         || a.IsGroup  != b.IsGroup
         || a.Is2D     != b.Is2D
         || a.IsPrefab != b.IsPrefab
-        || a.Active   != b.Active;
+        || a.Active   != b.Active
+        || a.Visible     != b.Visible
+        || a.SelfVisible != b.SelfVisible;
 
     /// <summary>
     /// 差分更新後の選択復元。既に同じ DFS ID の項目が選択済みなら何もしない
@@ -728,9 +744,23 @@ public partial class HierarchyPanel : UserControl
         };
     }
 
-    private static TextBlock BuildItemHeader(ActorNode node)
+    private TextBlock BuildItemHeader(ActorNode node)
     {
         var tb = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+        // 表示 / 非表示トグル（目アイコン）を行頭に置く。
+        // 状態表示には「実効表示」を、送る値には「自身のフラグの反転」を使う
+        // （祖先が非表示のときに自分のフラグを戻せなくなるのを防ぐ）。
+        tb.Inlines.Add(new InlineUIContainer(
+            SEEDEditor.Controls.VisibilityToggle.Create(
+                node.Visible,
+                // アイコンの見た目は「実効表示」、送る値は「自身のフラグの反転」。
+                // コールバック引数（実効値の反転）はここでは使わない。
+                _ => _runtime?.SendToRuntime(
+                    SEEDEditor.Controls.VisibilityToggle.BuildCommand(node.Id, !node.SelfVisible)),
+                NodeIconSize))
+        {
+            BaselineAlignment = BaselineAlignment.Center,
+        });
         // ノード種別アイコン。色は従来の記号表示と同じ配色を踏襲する。
         // フォルダ判定が最優先（フォルダは IsGroup も true で届くため先に弾く）。
         var iconBrush = node.IsFolder ? BrushFolderIcon
@@ -753,9 +783,11 @@ public partial class HierarchyPanel : UserControl
         {
             tb.Inlines.Add(new Run(node.Name) { FontSize = 13 });
         }
-        // 非アクティブ（自身または祖先の active が false）は Unity 風に淡色表示する。
+        // 非アクティブ（active=false）・非表示（visible=false）は Unity 風に淡色表示する。
+        // どちらも「ビューポートに出ていない」状態なので見た目は共通にする。
         // テキスト色（プレハブ青）と Opacity は併存し、色を保ったまま淡くなる。
-        if (!node.Active) tb.Opacity = 0.45;
+        if (!node.Active || !node.Visible)
+            tb.Opacity = SEEDEditor.Controls.VisibilityToggle.DimmedRowOpacity;
         return tb;
     }
 

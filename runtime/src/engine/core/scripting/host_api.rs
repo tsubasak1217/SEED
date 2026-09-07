@@ -47,6 +47,8 @@ use crate::engine::structs::objects::actor::ComponentSlot;
 use crate::engine::structs::objects::Actor;
 
 use super::input_bridge;
+// GameObject.Visible の set は遅延適用なので、保留値テーブルを併用する
+use super::visible_pending;
 use super::path_query::{path_position_at, path_tangent_at};
 
 // ─── スレッドローカル World ポインタ ──────────────────────────
@@ -388,6 +390,10 @@ pub enum ScriptSceneCommand {
     /// new_parent = None はシーンのルート（トップレベル）へ移動する。
     /// Instantiate / Destroy と同じ適用パスで、発行順に処理される。
     Reparent { entity: Entity, new_parent: Option<Entity> },
+    /// 指定ルートエンティティの Actor の表示フラグを切り替える（GameObject.Visible の set）。
+    /// Actor ツリーがスクリプトフェーズ中は読み取り専用のため、ここで遅延させる。
+    /// 描画だけが止まり、スクリプト・アニメ・物理は動き続ける。
+    SetVisible { entity: Entity, visible: bool },
     /// シーンを事前読み込みする（遷移はしない）。
     /// Transition 前に呼んでおくことで、遷移時のロード時間をなくせる。
     /// name_or_path はシーンマネージャ登録名または assets:// パス。
@@ -402,6 +408,9 @@ pub enum ScriptSceneCommand {
 /// 積まれたシーン操作コマンドを取り出す（キューは空になる）。
 /// App がフレームのゲームロジック後に呼び、順番に適用する。
 pub fn take_scene_commands() -> Vec<ScriptSceneCommand> {
+    // 表示フラグの保留値も同時に捨てる。ここから先は実ツリーが正となるため、
+    // 保留値を残すと「反映済みの古い値」を返し続けてしまう。
+    visible_pending::clear();
     SCENE_COMMANDS.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
@@ -828,6 +837,24 @@ fn read_floats(
         Some(v.len())
     }
     match component {
+        // ── アクター自身の属性（ECS コンポーネントではなく Actor ツリーのフラグ）──
+        // GameObject.Visible 用の疑似コンポーネント。World ではなく Actor ツリーを引く。
+        // 返すのは「自分自身の visible」（Unity の activeSelf と同じ流儀）で、
+        // 祖先が非表示でもここでは true のまま。実効表示は描画側が伝播計算する。
+        "GameObject" => {
+            match field {
+                "visible" => {
+                    // 同フレーム中に set 済みなら保留値を優先する（set 直後の get が
+                    // 古い値を返さないようにするため。実ツリーへはフレーム末尾で反映される）。
+                    let v = match visible_pending::get(entity) {
+                        Some(v) => v,
+                        None    => actor_of_entity(entity)?.visible,
+                    };
+                    put(out, &[if v { 1.0 } else { 0.0 }])
+                }
+                _ => None,
+            }
+        }
         // ── 3D トランスフォーム ──
         "Transform" => {
             let t = world.get::<Transform>(entity)?;
@@ -1176,6 +1203,27 @@ fn write_floats(
         v.try_into().ok()
     }
     match component {
+        // ── アクター自身の属性（Actor ツリーのフラグ。read_floats と対）──
+        // Actor ツリーは読み取り専用ポインタでしか公開されていないため、その場では
+        // 書き換えられない。保留値を記録したうえで遅延コマンドを積み、フレーム末尾に
+        // App（apply_script_scene_commands）が実ツリーへ反映する。
+        "GameObject" => {
+            match field {
+                "visible" => {
+                    let Some(a) = take::<1>(v) else { return false };
+                    // 対象がアクターのルートエンティティであることを確認してから積む
+                    // （スロット entity や破棄済みハンドルを黙って受理しない）。
+                    if actor_of_entity(entity).is_none() { return false; }
+                    let visible = a[0] != 0.0;
+                    visible_pending::set(entity, visible);
+                    SCENE_COMMANDS.with(|q| {
+                        q.borrow_mut().push(ScriptSceneCommand::SetVisible { entity, visible })
+                    });
+                    true
+                }
+                _ => false,
+            }
+        }
         // ── 3D トランスフォーム ──
         // Transform はワールド空間で保持され、描画実体は ModelComponent.instance_mats、
         // 親子関係は Actor ツリーが持つ。そのためコンポーネントの数値を書くだけでは
@@ -1683,6 +1731,9 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
         "WaterVolume"     => locate::<WaterVolumeComponent>(world, entity).is_some(),
         // コントロールポイント（汎用パス。Phase: スクリプト経路移動）
         "ControlPoint"    => locate::<ControlPointComponent>(world, entity).is_some(),
+        // アクター自身の属性を表す疑似コンポーネント（GameObject.Visible などの受け皿）。
+        // 「そのエンティティがアクターのルートか」＝ GameObject として扱えるか、を返す。
+        "GameObject"      => actor_of_entity(entity).is_some(),
         _ => false,
     }
 }

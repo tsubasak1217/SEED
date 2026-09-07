@@ -613,7 +613,7 @@ impl ParticleSystem {
 
         // ① シーンを走査してエミッタのスナップショットを収集し、pending_burst を消費する。
         let mut raws: Vec<RawEmitter> = Vec::new();
-        gather_emitters(world, actors, wl, &mut raws);
+        gather_emitters(world, actors, wl, true, &mut raws);
 
         // ② 各エミッタの放出個数を決定し、GPU パラメータを組む。
         let mut present: HashSet<Entity> = HashSet::with_capacity(raws.len());
@@ -1225,8 +1225,27 @@ impl ParticleSystem {
 /// Transform は Actor 本体の entity から、ParticleEmitterComponent は
 /// ParticleEmitter スロットの entity から取得する（light_scene_gizmo と同じ慣例）。
 /// World の借用を跨がないよう、Transform 行列を先にコピーしてから component を &mut する。
-fn gather_emitters(world: &mut World, actors: &[Actor], wl: u32, out: &mut Vec<RawEmitter>) {
+///
+/// `parent_visible` は祖先の実効表示。非表示（visible=false）のアクターは
+/// **サブツリーごと収集しない**（＝描画されない）。パーティクルはシミュレーションと
+/// 描画が同じプール上で一体なので、非表示中はシミュレーションも進まない点に注意
+/// （再表示すると止まっていた状態から再開する）。
+fn gather_emitters(
+    world:          &mut World,
+    actors:         &[Actor],
+    wl:             u32,
+    parent_visible: bool,
+    out:            &mut Vec<RawEmitter>,
+) {
     for actor in actors {
+        // 実効表示（祖先も含めて表示か）。規則は actor/visibility.rs に集約している。
+        let visible = crate::engine::structs::objects::actor::visibility::effective_visible(
+            parent_visible, actor,
+        );
+        if !visible {
+            // 自身も子孫も描画対象外。DFS カウンタを持たない収集なので単純に飛ばしてよい。
+            continue;
+        }
         if actor.world_line == wl {
             // 先に Transform 行列をコピーして World の不変借用を解放する。
             let mat = world.get::<Transform>(actor.entity).map(|t| t.to_mat4());
@@ -1278,7 +1297,7 @@ fn gather_emitters(world: &mut World, actors: &[Actor], wl: u32, out: &mut Vec<R
             }
         }
         // 子アクターを再帰走査する（world の &mut は上の借用が解放済み）。
-        gather_emitters(world, actor.children(), wl, out);
+        gather_emitters(world, actor.children(), wl, visible, out);
     }
 }
 

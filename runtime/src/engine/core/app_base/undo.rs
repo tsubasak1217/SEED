@@ -954,6 +954,47 @@ fn set_actor_active(scene: &mut Scene, wl: u32, dfs_id: u32, active: bool) {
 }
 
 // ============================================================
+//  ActorVisibleCommand — アクターの表示フラグ変更
+// ============================================================
+
+/// アクターの visible フラグ（Unity の Renderer.enabled / Godot の visible 相当）の変更を
+/// Undo/Redo するコマンド。
+///
+/// `ActorActiveCommand` と対になる構造で、違いは書き換えるフラグだけ。
+/// ヒエラルキーの目アイコン表示にも出るため is_structural = true とし、Undo 後に再送信させる。
+pub struct ActorVisibleCommand {
+    pub world_line: u32,
+    pub dfs_id: u32,
+    pub before: bool,
+    pub after: bool,
+}
+
+impl Command for ActorVisibleCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        set_actor_visible(scene, self.world_line, self.dfs_id, self.after);
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        set_actor_visible(scene, self.world_line, self.dfs_id, self.before);
+    }
+    fn is_structural(&self) -> bool {
+        true
+    }
+    fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
+        Some((self.world_line, self.dfs_id))
+    }
+}
+
+/// DFS id でアクターの visible フラグを更新する。
+/// 探索は `set_actor_active` と同じ共有ユーティリティを使う（DFS 規則の二重実装を避ける）。
+fn set_actor_visible(scene: &mut Scene, wl: u32, dfs_id: u32, visible: bool) {
+    use crate::engine::core::app_base::app::find_actor_by_dfs_mut;
+    let mut c = 0u32;
+    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
+        actor.visible = visible;
+    }
+}
+
+// ============================================================
 //  SceneShadingCommand — シーン設定の「シェーダ」まわりの編集
 // ============================================================
 

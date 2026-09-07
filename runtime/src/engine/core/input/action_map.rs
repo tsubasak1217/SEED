@@ -621,7 +621,9 @@ fn expand_wasd(value: &str, positive: &mut Vec<Source>, negative: &mut Vec<Sourc
 
 /// エディタのキー名（"Space" / "LeftShift" / "Q" / "Alpha0" / "Keypad0" / "UpArrow" …）を
 /// winit KeyCode へ対応させる。正典はエディタ側 InputMapEditorWindow の Key 一覧。
-fn key_from_name(name: &str) -> Option<KeyCode> {
+///
+/// 入力注入（`inject::command`）からも同じ表を引く。表を二重に持たないための公開。
+pub(super) fn key_from_name(name: &str) -> Option<KeyCode> {
     Some(match name {
         // ── 特殊キー ──
         "Space" => KeyCode::Space,

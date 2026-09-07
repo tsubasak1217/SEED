@@ -147,7 +147,7 @@ pub(crate) fn collect_line_ribbons(
 
 /// `collect_line_ribbons` の再帰実装。
 ///
-/// 非アクティブなアクターはサブツリーごと除外し、enabled=false のスロットも飛ばす
+/// 非アクティブ／非表示のアクターはサブツリーごと除外し、enabled=false のスロットも飛ばす
 /// （他のコンポーネント収集＝collect_gpu_lights と同じ扱い）。
 fn collect_recursive(
     actors: &[Actor],
@@ -157,7 +157,7 @@ fn collect_recursive(
     out: &mut LineRibbonVertices,
 ) {
     for actor in actors {
-        if actor.world_line != wl || !actor.active {
+        if actor.world_line != wl || !actor.active || !actor.visible {
             continue;
         }
 

@@ -1153,6 +1153,27 @@ public partial class InspectorPanel : UserControl
         _runtime?.SendToRuntime($"SET_ACTOR_ACTIVE:{_currentActorId},{(on ? 1 : 0)}");
     }
 
+    /// <summary>
+    /// アクター名の横に置く表示 / 非表示トグル（目アイコン）を作り直す。
+    ///
+    /// ヒエラルキーの行アイコンと同じ <see cref="SEEDEditor.Controls.VisibilityToggle"/> を使うため、
+    /// 見た目・IPC 文字列は 2 か所で必ず一致する。ACTOR_COMPONENTS が届くたびに作り直す
+    /// （トグルは状態を持たず、ランタイムから来た値だけが正典）。
+    /// </summary>
+    /// <param name="visible">このアクター自身の表示フラグ。</param>
+    private void RebuildActorVisibleToggle(bool visible)
+    {
+        ActorVisibleToggleHost.Content = SEEDEditor.Controls.VisibilityToggle.Create(
+            visible,
+            next => _runtime?.SendToRuntime(
+                SEEDEditor.Controls.VisibilityToggle.BuildCommand(_currentActorId, next)),
+            ActorVisibleToggleIconSize);
+        ActorVisibleToggleHost.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>インスペクタのアクタ名横に出す目アイコンの一辺サイズ（px）。</summary>
+    private const double ActorVisibleToggleIconSize = 14.0;
+
     private void BuildActorComponentList(string json)
     {
         _lastComponentsJson = json;
@@ -1178,6 +1199,12 @@ public partial class InspectorPanel : UserControl
         ActorActiveCheck.IsChecked  = actorActive;
         ActorActiveCheck.Visibility = Visibility.Visible;
         _updatingActorActive = false;
+
+        // アクターの表示フラグ（Unity の Renderer.enabled 相当）の目アイコンを同期する。
+        // ここで送られるのは「アクター自身の値」（祖先の状態はヒエラルキー側が担う）。
+        // トグルは状態を持たない使い捨て UI なので、イベント再帰の抑止フラグは不要。
+        var actorVisible = !root.TryGetProperty("visible", out var avv) || ReadJsonBool(avv, true);
+        RebuildActorVisibleToggle(actorVisible);
 
         // 複製後の新スロット検出用に現在のスロット ID セットを保存する
         var prevSlotIdxSet = _slotInfos.Select(s => s.SlotIdx).ToHashSet();

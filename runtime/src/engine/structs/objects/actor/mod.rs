@@ -23,6 +23,8 @@
 //  シリアライズは World を渡して actor.to_data(&world) を呼ぶ。
 // ============================================================
 
+pub mod visibility;
+
 use std::any::TypeId;
 use serde::{Deserialize, Serialize};
 
@@ -127,6 +129,15 @@ pub struct ActorData {
     /// 既存ファイルとの互換性のため省略時は true、true の場合は書き出さない。
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub active: bool,
+    /// アクターの表示フラグ（Unity の Renderer.enabled / Godot の visible 相当）。
+    ///
+    /// `active` と違い **描画だけ** を止める。false のとき自身と全子孫の描画
+    /// （モデル・スプライト・Text・SkinnedSprite・パーティクル・ライト・スカイボックス等）が
+    /// スキップされるが、スクリプト・アニメーション・物理・イベント配信は動き続ける。
+    /// 実効表示（自身と全祖先が visible）の計算は `visibility::effective_visible` に集約する。
+    /// 既存ファイルとの互換性のため省略時は true、true の場合は書き出さない。
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub visible: bool,
     /// プレハブ参照リンク（アセット相対 `assets://` パス）。Unity のプレハブに相当する。
     /// このアクターが `.actor` / `.actor2d` ファイルのインスタンスである場合に参照元のパスを保持する。
     /// **インスタンスのルートのみが Some を持ち、子アクターは常に None**。
@@ -183,8 +194,13 @@ pub struct Actor {
     pub children:   Vec<Actor>,
     /// アクティブフラグ（Unity の activeSelf 相当）。
     /// 自身が true でも祖先が false なら実効的に非アクティブになる
-    /// （実効判定は collect_inactive_actor_entities で集合として計算する）。
+    /// （実効判定は各収集処理が親から `parent_active && actor.active` で伝播させる）。
     pub active:     bool,
+    /// 表示フラグ（Unity の Renderer.enabled / Godot の visible 相当）。
+    /// 自身が true でも祖先が false なら実効的に非表示になる。
+    /// `active` と違い描画だけを止め、スクリプト・物理・アニメは動き続ける。
+    /// 実効表示の計算は `visibility::effective_visible` に集約する。
+    pub visible:    bool,
     /// プレハブ参照リンク（アセット相対 `assets://` パス）。ActorData の同名フィールドと対応する。
     /// **インスタンスのルートのみ Some**（子アクターは常に None）。
     /// build_actor で ActorData から復元し、to_data で書き戻す。
@@ -218,6 +234,8 @@ impl Actor {
             actor_kind,
             children:   Vec::new(),
             active:     true,
+            // 表示フラグの既定は「表示」。非表示はエディタ／スクリプトからの明示操作でのみ立つ。
+            visible:    true,
             prefab_source: None,
             scatter_prop_id: None,
             is_folder,
@@ -377,6 +395,8 @@ impl Actor {
             children:         self.children.iter()
                                   .map(|c| c.to_data_recursive(world, counter)).collect(),
             active:           self.active,
+            // 表示フラグを往復させる（true は skip_serializing_if で出力されない）。
+            visible:          self.visible,
             // プレハブ参照リンクを往復させる（ルートのみ Some、子は None）。
             prefab_source:    self.prefab_source.clone(),
             // 散布自動生成マーカーを往復させる（手動配置は None）。
@@ -551,6 +571,7 @@ mod folder_tests {
             components:       Vec::new(),
             children:         Vec::new(),
             active:           true,
+            visible:          true,
             prefab_source:    None,
             scatter_prop_id:  None,
         };
@@ -627,4 +648,76 @@ mod folder_tests {
         assert_eq!(ct.rotation, identity.rotation);
     }
 
+}
+
+// ============================================================
+//  テスト — 表示フラグ（visible）の serde 後方互換
+// ============================================================
+
+#[cfg(test)]
+mod visible_tests {
+    use super::*;
+
+    /// ActorData を最小構成で作るテストヘルパ（フィールド追加時の書き漏らしを 1 か所に閉じる）。
+    fn minimal_actor_data(visible: bool) -> ActorData {
+        ActorData {
+            name:             "actor".into(),
+            dfs_id:           None,
+            actor_kind:       ActorKind::Actor3D,
+            transform:        None,
+            canvas_transform: None,
+            is_folder:        false,
+            components:       Vec::new(),
+            children:         Vec::new(),
+            active:           true,
+            visible,
+            prefab_source:    None,
+            scatter_prop_id:  None,
+        }
+    }
+
+    /// 表示フラグの serde 往復と、旧シーンとの後方互換を検証する。
+    ///
+    /// - visible=false は JSON へ出力され、往復で保持される。
+    /// - visible=true は skip_serializing_if で出力されない（旧 .scene とバイト互換）。
+    /// - visible フィールドを持たない旧 JSON は true（＝表示）として読める。
+    #[test]
+    fn visible_flag_serde_roundtrip_and_backward_compat() {
+        // false は出力され、往復で保持される。
+        let hidden = minimal_actor_data(false);
+        let json = serde_json::to_string(&hidden).unwrap();
+        assert!(json.contains("\"visible\":false"), "hidden must serialize visible: {json}");
+        let back: ActorData = serde_json::from_str(&json).unwrap();
+        assert!(!back.visible);
+
+        // true は出力されない（既存シーンとのバイト互換維持）。
+        let shown = minimal_actor_data(true);
+        let json = serde_json::to_string(&shown).unwrap();
+        assert!(!json.contains("visible"), "visible=true must be omitted: {json}");
+
+        // visible フィールドが無い旧 JSON は true として読める。
+        let legacy = r#"{"name":"old","components":[],"children":[]}"#;
+        let back: ActorData = serde_json::from_str(legacy).unwrap();
+        assert!(back.visible, "legacy scenes must default to visible");
+    }
+
+    /// Actor → ActorData → Actor の往復で visible が保たれる
+    /// （プレハブ保存・複製・グループ化・Undo のツリースナップショットが通る経路）。
+    #[test]
+    fn visible_survives_actor_data_roundtrip() {
+        let mut world = World::new();
+        let mut actor = Actor::new(world.spawn(), "a");
+        world.insert(actor.entity, Transform::default());
+        actor.visible = false;
+
+        let mut counter: Option<u32> = None;
+        let data = actor.to_data_recursive(&world, &mut counter);
+        assert!(!data.visible, "to_data must carry visible");
+
+        // 復元側（scene.rs::build_actor）は data.visible を actor.visible へ書き戻す。
+        // ここでは同じ代入を再現して契約を固定する。
+        let mut restored = Actor::new(world.spawn(), data.name.clone());
+        restored.visible = data.visible;
+        assert!(!restored.visible);
+    }
 }

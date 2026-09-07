@@ -171,8 +171,9 @@ fn collect_lights_recursive(actors: &[Actor], world: &World, wl: u32, out: &mut 
         if actor.world_line != wl {
             continue;
         }
-        // 非アクティブアクターはサブツリーごと除外する。
-        if !actor.active {
+        // 非アクティブ／非表示アクターはサブツリーごと除外する。
+        // ライトも「描画」の一部なので visible=false で消える（actor/visibility.rs の規則）。
+        if !actor.active || !actor.visible {
             continue;
         }
 

@@ -23,6 +23,13 @@
                               Visibility="Collapsed"
                               ToolTip="アクターのアクティブ切替（OFF で自身と子孫を無効化）"
                               Checked="OnActorActiveChanged" Unchecked="OnActorActiveChanged"/>
+                    <!-- アクターの表示切替（Unity の Renderer.enabled 相当）。
+                         非表示は自身と子孫の描画だけが止まり、スクリプト・物理は動き続ける。
+                         中身（目アイコン）はコードビハインドが VisibilityToggle で差し込む -->
+                    <ContentControl x:Name="ActorVisibleToggleHost"
+                                    VerticalAlignment="Center"
+                                    Margin="0,0,6,0"
+                                    Visibility="Collapsed"/>
                     <TextBlock x:Name="ActorNameBlock"
                                Text="選択なし"
                                VerticalAlignment="Center"

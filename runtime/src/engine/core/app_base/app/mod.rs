@@ -38,6 +38,8 @@ mod field_edit;
 /// （RESET_COMPONENT_FIELD）。
 mod component_reset_ops;
 mod ipc_handler;
+/// 入力注入 IPC（INPUT_*）のハンドラ。
+mod input_inject_ops;
 /// 未保存クリップのライブプレビュー（ANIM_PREVIEW_CLIP）
 mod anim_preview_clip_ops;
 mod hierarchy_sync;
@@ -1723,7 +1725,7 @@ mod shading_param_ops;
 // actor_utils / platform_utils の関数を親名前空間に再エクスポートする。
 // サブモジュール（render.rs 等）は既存の `use super::fn_name` のまま使用可能。
 use actor_utils::{
-    collect_actor_nodes, build_hierarchy_json,
+    ActorNodeInfo, collect_actor_nodes, build_hierarchy_json,
     find_actor_by_dfs,
     canvas_anchor_offset_for_dfs, collect_canvas_actors_in_rect,
     collect_transform_only_in_rect,

@@ -1536,6 +1536,8 @@ pub(super) fn terrain_marker_data(actor: &Actor) -> ActorData {
         components:       Vec::new(),
         children:         Vec::new(),
         active:           actor.active,
+        // 表示フラグもマーカーへ引き継ぐ（地形ルートを非表示にした状態を保存で失わない）。
+        visible:          actor.visible,
         prefab_source:    None,
         scatter_prop_id:  None,
     }

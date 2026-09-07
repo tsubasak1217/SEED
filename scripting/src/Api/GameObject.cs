@@ -50,6 +50,33 @@ public readonly struct GameObject
     /// <summary>指定名のコンポーネントを持つか（例 "Transform", "Sprite"）。</summary>
     public bool HasComponent(string component) => ScriptHost.HasComponent(_entity, component);
 
+    // ── 表示フラグ ───────────────────────────────────────────
+
+    /// <summary>
+    /// アクター自身の属性を表す疑似コンポーネント名（Rust 側レジストリのキーと一致必須）。
+    /// ECS コンポーネントではなく Actor ツリーのフラグを読み書きする受け皿。
+    /// </summary>
+    private const string ActorComp = "GameObject";
+
+    /// <summary>
+    /// 表示フラグ（Unity の <c>Renderer.enabled</c> / Godot の <c>visible</c> 相当）。
+    ///
+    /// false にすると、このアクターと**全子孫**の描画（モデル・スプライト・Text・
+    /// SkinnedSprite・パーティクル・ライト・スカイボックス）が止まる。
+    /// 描画だけが止まり、スクリプトの Update・アニメーション・物理は動き続ける
+    /// （＝「更新ごと止める」非アクティブとは別の概念）。
+    /// 非表示のアクターはポインタイベントのヒット判定にも当たらない。
+    ///
+    /// get が返すのは**自分自身のフラグ**（Unity の activeSelf と同じ流儀）で、
+    /// 祖先が非表示でも自分が true なら true を返す。
+    /// set はフレーム末尾にエンジンへ反映されるが、同フレーム中の get は設定した値を返す。
+    /// </summary>
+    public bool Visible
+    {
+        get => !ScriptHost.TryGetBool(_entity, ActorComp, "visible", out var v) || v;
+        set => ScriptHost.TrySetBool(_entity, ActorComp, "visible", value);
+    }
+
     // ── シーン操作（静的 API）────────────────────────────────
 
     /// <summary>

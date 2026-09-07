@@ -36,7 +36,7 @@ use crate::engine::components::ComponentData;
 use crate::engine::components::ComponentKind;
 use crate::engine::core::app_base::ipc::IpcCommand;
 use crate::engine::core::app_base::undo::{
-    ActorActiveCommand, CanvasTransformCommand, SceneShadingCommand, SceneShadingState,
+    ActorActiveCommand, ActorVisibleCommand, CanvasTransformCommand, SceneShadingCommand, SceneShadingState,
     SlotFieldEditCommand,
 };
 use crate::engine::components::CanvasTransform;
@@ -70,6 +70,8 @@ pub(super) enum FieldEditTarget {
     CanvasTransform { actor_dfs_id: u32, merge_key: String },
     /// アクターのアクティブフラグ編集。
     ActorActive { actor_dfs_id: u32 },
+    /// アクターの表示フラグ編集（ヒエラルキーの目アイコン／インスペクタのトグル）。
+    ActorVisible { actor_dfs_id: u32 },
     /// シーン設定ウィンドウの「シェーダ」まわり（アセットパス・パラメータ・`@ref` バインド）。
     ///
     /// コンポーネントスロットではないので `Slot` には載らないが、
@@ -264,6 +266,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
             },
         IpcCommand::SetActorActive { dfs_id, .. } =>
             FieldEditTarget::ActorActive { actor_dfs_id: *dfs_id },
+        IpcCommand::SetActorVisible { dfs_id, .. } =>
+            FieldEditTarget::ActorVisible { actor_dfs_id: *dfs_id },
 
         // ── シーン設定ウィンドウの「シェーダ」まわり ──────────
         // アセットパス・パラメータ値・`@ref` バインドの 3 種。まとめて 1 つの
@@ -439,6 +443,8 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::AnimPreviewClip { .. }
         // スクリーンショットはシーンを一切変更しないため Undo 対象外。
         | IpcCommand::Screenshot { .. }
+        // 入力注入は Play 中の一時的な入力状態であってシーンの編集ではない。
+        | IpcCommand::InputInject(..)
         | IpcCommand::SetEditPhysics { .. }
         | IpcCommand::SetEditPhysicsAll { .. }
         | IpcCommand::SetEditPhysics2d { .. }
@@ -483,6 +489,8 @@ pub(super) enum FieldEditSnapshot {
     Slot(ComponentSlotData),
     CanvasTransform(CanvasTransform),
     ActorActive(bool),
+    /// アクターの表示フラグ 1 個。
+    ActorVisible(bool),
     /// シーン既定のシェーディング設定 1 式。
     SceneShading(SceneShadingState),
 }
@@ -502,6 +510,7 @@ fn json_of(snap: &FieldEditSnapshot) -> String {
         FieldEditSnapshot::Slot(d) => serde_json::to_string(d).unwrap_or_default(),
         FieldEditSnapshot::CanvasTransform(ct) => serde_json::to_string(ct).unwrap_or_default(),
         FieldEditSnapshot::ActorActive(a) => a.to_string(),
+        FieldEditSnapshot::ActorVisible(v) => v.to_string(),
         FieldEditSnapshot::SceneShading(st) => format!("{st:?}"),
     }
 }
@@ -793,6 +802,11 @@ impl App {
                 let actor = find_actor_by_dfs(&scene.actors, wl, *actor_dfs_id, &mut c)?;
                 Some(FieldEditSnapshot::ActorActive(actor.active))
             }
+            FieldEditTarget::ActorVisible { actor_dfs_id } => {
+                let mut c = 0u32;
+                let actor = find_actor_by_dfs(&scene.actors, wl, *actor_dfs_id, &mut c)?;
+                Some(FieldEditSnapshot::ActorVisible(actor.visible))
+            }
             // シーン設定は世界線に属さない（シーン全体で 1 つ）。
             FieldEditTarget::SceneShading { .. } =>
                 Some(FieldEditSnapshot::SceneShading(SceneShadingState::capture(scene))),
@@ -822,6 +836,11 @@ impl App {
             // 同じキーでも 2 回目は値が異なるため実質マージされない）。
             FieldEditTarget::ActorActive { actor_dfs_id } => (
                 format!("SetActorActive/{actor_dfs_id}"),
+                self.active_world_line,
+            ),
+            // 表示切替もトグルなのでマージ対象にしない（active と同じ理由）。
+            FieldEditTarget::ActorVisible { actor_dfs_id } => (
+                format!("SetActorVisible/{actor_dfs_id}"),
                 self.active_world_line,
             ),
         };
@@ -902,6 +921,18 @@ impl App {
                 FieldEditSnapshot::ActorActive(a),
             ) => {
                 self.undo_history.record(Box::new(ActorActiveCommand {
+                    world_line: wl,
+                    dfs_id: *actor_dfs_id,
+                    before: *b,
+                    after: *a,
+                }));
+            }
+            (
+                FieldEditTarget::ActorVisible { actor_dfs_id },
+                FieldEditSnapshot::ActorVisible(b),
+                FieldEditSnapshot::ActorVisible(a),
+            ) => {
+                self.undo_history.record(Box::new(ActorVisibleCommand {
                     world_line: wl,
                     dfs_id: *actor_dfs_id,
                     before: *b,

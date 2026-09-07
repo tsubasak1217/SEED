@@ -28,7 +28,7 @@ use crate::engine::structs::objects::Actor;
 
 use super::{
     App, attach_actor_under, despawn_actor_recursive, extract_actor_by_entity,
-    find_actor_by_entity, reparent_actor_by_entity,
+    find_actor_by_entity, find_actor_by_entity_mut, reparent_actor_by_entity,
 };
 
 impl App {
@@ -72,6 +72,9 @@ impl App {
                 }
                 ScriptSceneCommand::Reparent { entity, new_parent } => {
                     self.apply_script_reparent(entity, new_parent);
+                }
+                ScriptSceneCommand::SetVisible { entity, visible } => {
+                    self.apply_script_set_visible(entity, visible);
                 }
                 ScriptSceneCommand::PreloadScene { name_or_path } => {
                     self.apply_script_preload_scene(&name_or_path);
@@ -405,6 +408,21 @@ impl App {
     /// - DFS 順 ID（物理・スクリプトの対応表）は毎フレーム構築されるため無効化不要。
     /// - canvas_world_lines は「その世界線に 2D アクターが存在するか」だけを表し、
     ///   付け替えでは増減しないため更新不要（Instantiate 経路のみが更新する）。
+    /// SetVisible コマンドを適用する: 対象アクターの表示フラグを書き換える。
+    ///
+    /// `GameObject.Visible` の set はスクリプトフェーズ中に Actor ツリーを可変参照できないため
+    /// 遅延コマンド化されている（`host_api::visible_pending` が同フレームの読み戻しを担う）。
+    /// ここで実ツリーへ反映する。子孫への波及は各描画収集が親から伝播計算するので、
+    /// 対象アクター自身のフラグだけを書き換えればよい。
+    ///
+    /// 対象が既に破棄されている場合は何もしない（スクリプト側の無効ハンドルは無視する規約）。
+    fn apply_script_set_visible(&mut self, entity: Entity, visible: bool) {
+        let Some(scene) = self.scene.as_mut() else { return };
+        if let Some(actor) = find_actor_by_entity_mut(&mut scene.actors, entity) {
+            actor.visible = visible;
+        }
+    }
+
     fn apply_script_reparent(&mut self, entity: Entity, new_parent: Option<Entity>) {
         // キャンバス編集タブのルート（トップレベル唯一のアクター）は移動させない。
         // 移動できてしまうと handle_edit_canvas_end の前提（ルート 1 体）が壊れる。

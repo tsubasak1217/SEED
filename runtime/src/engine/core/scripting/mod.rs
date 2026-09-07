@@ -23,6 +23,8 @@ pub mod input_bridge;
 pub mod path_query;
 // カメラのワールド→スクリーン射影（Camera.WorldToScreen / WorldToCanvas）の純関数層
 pub mod camera_project;
+// GameObject.Visible の set を遅延適用するまでの保留値テーブル
+pub mod visible_pending;
 pub use host_api::{
     with_world, with_actors, take_scene_commands, take_audio_commands,
     publish_input, publish_physics_sender, publish_canvas_mouse_position,

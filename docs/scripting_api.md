@@ -839,6 +839,25 @@ if (gameObject.GetComponent<Sprite>() is { } sprite)
 
 > **`HasComponent(name)` の名前**: 受け付ける文字列は `Transform` / `CanvasTransform` / `Sprite` / `Camera` / **`Audio`**（AudioSource ではなく `Audio`）/ `Animator` / `ParticleEmitter` / `InputMap` の 8 つで、それ以外は常に false です。型で判定できる場面では `GetComponent<T>() is { }` のほうが安全です。
 
+### 表示 / 非表示（GameObject.Visible）
+
+```csharp
+gameObject.Visible = false;   // このアクターと全子孫の「描画だけ」を止める
+bool v = gameObject.Visible;  // bool（get/set。自分自身のフラグ）
+```
+
+| 項目 | 挙動 |
+| --- | --- |
+| 止まるもの | モデル・スプライト・Text・SkinnedSprite・パーティクル・ライト・スカイボックス・`SEED.Draw` の座標空間参照 |
+| 止まらないもの | スクリプトの `OnUpdate`・アニメーション・物理・イベント配信（`Visible=false` でも動き続けます） |
+| 子孫への波及 | 祖先が 1 つでも非表示なら子孫も非表示（実効表示 = 祖先すべて `Visible` かつ自分 `Visible`） |
+| ポインタ | 非表示のアクターはポインタイベントのヒット判定に**当たりません** |
+| get の意味 | **自分自身のフラグ**を返します（Unity の `activeSelf` と同じ流儀。祖先が非表示でも自分が `true` なら `true`） |
+| set の反映 | 実際の反映はフレーム末尾（`Destroy` と同じ遅延モデル）。ただし同フレーム中の get は設定した値を返します |
+| アクティブとの違い | 非アクティブ（`active=false`）は更新も描画も止めます。`Visible` は**描画だけ**を止めます |
+
+> **重要**: `Visible` はシーン／`.actor` ファイルへ `"visible": false` として保存されます（`true` は省略）。エディタのヒエラルキー各行の目アイコン、およびインスペクタのアクタ名の横のトグルと同じフラグです。
+
 ### 生成・破棄・検索（Instantiate / Destroy / Find）
 
 ```csharp
@@ -1597,6 +1616,7 @@ public class FishingLine : SEEDScript
 
 | コンポーネント名 | 取得 | 内容 |
 |---|---|---|
+| （アクター自身） | `gameObject.Visible` | アクターと全子孫の**描画だけ**を止める表示フラグ。スクリプト・物理は動き続ける |
 | `Transform` | `gameObject.GetComponent<Transform>()` / `transform` | 3D 位置・回転・スケール |
 | `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー |
 | `Model` | `gameObject.GetComponent<Model>()` | 3D モデルの表示切替（`Visible`）と描画オフセット（位置・回転・スケール）。描画のみで物理・追従には影響しない |

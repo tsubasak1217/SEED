@@ -720,8 +720,8 @@ fn gather_skyboxes(
         if actor.world_line != wl {
             continue;
         }
-        // 非アクティブアクターはサブツリーごと除外する。
-        if !actor.active {
+        // 非アクティブ／非表示アクターはサブツリーごと除外する。
+        if !actor.active || !actor.visible {
             continue;
         }
 

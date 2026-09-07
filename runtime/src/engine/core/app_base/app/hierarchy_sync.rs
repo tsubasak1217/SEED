@@ -9,7 +9,7 @@ use crate::engine::components::ModelComponent;
 use crate::engine::structs::tensor::Mat4x4;
 use crate::engine::structs::transforms::Quaternion;
 
-use super::{App, RuntimeMode, build_hierarchy_json, collect_actor_nodes};
+use super::{App, RuntimeMode, ActorNodeInfo, build_hierarchy_json, collect_actor_nodes};
 
 // ── ヒエラルキー送信スロットリング定数 ────────────────────────────
 //
@@ -43,13 +43,13 @@ impl App {
         let wl = self.active_world_line;
         let roots: Vec<_> = scene.actors.iter().filter(|a| a.world_line == wl).collect();
 
-        let mut nodes: Vec<(u32, String, Option<u32>, bool, bool, bool, bool, bool, bool)> =
-            Vec::new();
+        let mut nodes: Vec<ActorNodeInfo> = Vec::new();
         let mut counter = 0u32;
         for root in &roots {
             // is_vp（ビューポート所属）はトップレベルルートが Actor2D かで決まり、
             // サブツリー全体へ伝播する（3D ワールドキャンバス配下の 2D スプライトは false）
-            collect_actor_nodes(root, None, &mut counter, root.is_2d(), true, &mut nodes);
+            // parent_active / parent_visible はトップレベルなので両方 true から始める。
+            collect_actor_nodes(root, None, &mut counter, root.is_2d(), true, true, &mut nodes);
         }
 
         let json = build_hierarchy_json(&nodes);

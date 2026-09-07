@@ -436,11 +436,13 @@ pub(super) fn walk_pick_candidates_2d(
         let my_dfs = *counter as usize;
         *counter += 1;
 
-        // 非アクティブアクター（ポインタイベント時のみ）: 自身と全子孫を候補から外す。
+        // 非アクティブ／非表示アクター（ポインタイベント時のみ）: 自身と全子孫を候補から外す。
         // 描画（collect_sprite_items）が同じ条件でサブツリーごと省くため、
         // 「見えていないものはクリックできない」を描画と一致させられる。
+        // visible=false は「スクリプトも物理も動くが描画だけ止まる」状態だが、
+        // 描画されない以上ポインタにも当たらない（active と同じ扱い）。
         // DFS 番号だけは正典どおり消費する（番号ズレ = 誤配信の原因）。
-        if filter.respect_visibility && !actor.active {
+        if filter.respect_visibility && (!actor.active || !actor.visible) {
             skip_dfs_subtree(&actor.children, counter);
             continue;
         }

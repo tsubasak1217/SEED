@@ -154,6 +154,9 @@ CATALOG = [
     ("Icon.Node.Group", "folder-multiple-outline"),
     ("Icon.Node.Actor3D", "cube"),
     ("Icon.Node.Actor2D", "vector-square"),
+    # 表示/非表示トグル（ヒエラルキー行・インスペクタのアクタ名の横）
+    ("Icon.Node.Visible", "eye"),
+    ("Icon.Node.Hidden", "eye-off"),
 
     ("── ファイル形式（プロジェクトパネル）──", None),
     ("Icon.File.Generic", "file-outline"),

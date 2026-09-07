@@ -440,9 +440,11 @@ fn reinstantiate_single(
         return;
     }
 
-    // ── 維持する値を退避する（ルート Transform/CanvasTransform・name・active・world_line）──
+    // ── 維持する値を退避する（ルート Transform/CanvasTransform・name・active・visible・world_line）──
     let keep_name = slot.name.clone();
     let keep_active = slot.active;
+    // 表示フラグもインスタンス側の値を維持する（再展開でプレハブ既定へ戻さない）。
+    let keep_visible = slot.visible;
     let keep_wl = slot.world_line;
     let keep_tf = world.get::<Transform>(slot.entity).cloned();
     let keep_ct = world.get::<CanvasTransform>(slot.entity).cloned();
@@ -464,6 +466,7 @@ fn reinstantiate_single(
     // ── 退避値を書き戻す ──
     new_actor.name = keep_name;
     new_actor.active = keep_active;
+    new_actor.visible = keep_visible;
     new_actor.prefab_source = Some(src.to_string());
     new_actor.set_world_line_recursive(keep_wl);
     // ルート Transform を維持する。新アクターの種別に合わせて適切な型を挿入する

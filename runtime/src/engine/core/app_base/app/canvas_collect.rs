@@ -794,7 +794,10 @@ pub(super) fn collect_sprite_items(
         // 非アクティブアクター: 自身と全子孫のスプライトを描画しない。
         // 子孫は本再帰でしか到達しないため、ここで continue すればサブツリー全体が省かれる
         // （この収集は DFS カウンタを持たないためスキップしても番号ズレは起きない）。
-        if !actor.active {
+        // 非表示（visible=false）も描画・ピックの対象外にする。
+        // 実効判定は「祖先も含めて非表示ならサブツリーごと省く」で、この continue／
+        // skip_dfs_subtree がそのままサブツリー全体の伝播になる（actor/visibility.rs の規則）。
+        if !actor.active || !actor.visible {
             continue;
         }
         // フォルダノード: レイアウト上は存在しないものとして扱う
@@ -1291,7 +1294,10 @@ pub(super) fn collect_canvas_rects(
         *counter += 1;
 
         // 非アクティブアクター: 枠線を描画しない（DFS 番号は子孫分も進める）
-        if !actor.active {
+        // 非表示（visible=false）も描画・ピックの対象外にする。
+        // 実効判定は「祖先も含めて非表示ならサブツリーごと省く」で、この continue／
+        // skip_dfs_subtree がそのままサブツリー全体の伝播になる（actor/visibility.rs の規則）。
+        if !actor.active || !actor.visible {
             skip_dfs_subtree(&actor.children, counter);
             continue;
         }
@@ -1728,7 +1734,10 @@ pub(super) fn collect_canvas_id_items(
 
         // 非アクティブアクター: 描画されないためピック（ID）対象からも外す。
         // DFS 番号は選択系と整合させるため子孫分も含めて進める。
-        if !actor.active {
+        // 非表示（visible=false）も描画・ピックの対象外にする。
+        // 実効判定は「祖先も含めて非表示ならサブツリーごと省く」で、この continue／
+        // skip_dfs_subtree がそのままサブツリー全体の伝播になる（actor/visibility.rs の規則）。
+        if !actor.active || !actor.visible {
             skip_dfs_subtree(&actor.children, counter);
             continue;
         }
@@ -2083,7 +2092,10 @@ pub(super) fn collect_3d_canvas_child_id_items(
 
         // 非アクティブアクター: 描画されないためピック（ID）対象からも外す。
         // DFS 番号は選択系と整合させるため子孫分も含めて進める。
-        if !actor.active {
+        // 非表示（visible=false）も描画・ピックの対象外にする。
+        // 実効判定は「祖先も含めて非表示ならサブツリーごと省く」で、この continue／
+        // skip_dfs_subtree がそのままサブツリー全体の伝播になる（actor/visibility.rs の規則）。
+        if !actor.active || !actor.visible {
             skip_dfs_subtree(&actor.children, counter);
             continue;
         }
@@ -2233,7 +2245,10 @@ fn walk_3d_canvas_children_id(
         *counter += 1;
 
         // 非アクティブアクター: ピック対象から外す（DFS 番号は子孫分も進める）
-        if !actor.active {
+        // 非表示（visible=false）も描画・ピックの対象外にする。
+        // 実効判定は「祖先も含めて非表示ならサブツリーごと省く」で、この continue／
+        // skip_dfs_subtree がそのままサブツリー全体の伝播になる（actor/visibility.rs の規則）。
+        if !actor.active || !actor.visible {
             skip_dfs_subtree(&actor.children, counter);
             continue;
         }
@@ -2476,7 +2491,10 @@ pub(super) fn collect_3d_canvas_child_outlines(
 
         // 非アクティブアクター: スプライトが描画されないため枠も描かない。
         // DFS 番号は選択系と整合させるため子孫分も進める。
-        if !actor.active {
+        // 非表示（visible=false）も描画・ピックの対象外にする。
+        // 実効判定は「祖先も含めて非表示ならサブツリーごと省く」で、この continue／
+        // skip_dfs_subtree がそのままサブツリー全体の伝播になる（actor/visibility.rs の規則）。
+        if !actor.active || !actor.visible {
             skip_dfs_subtree(&actor.children, counter);
             continue;
         }

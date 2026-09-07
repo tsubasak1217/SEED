@@ -654,6 +654,9 @@ pub fn build_actor(
     actor.is_folder = data.is_folder;
     // アクティブフラグを復元する（省略時は serde デフォルトで true）
     actor.active = data.active;
+    // 表示フラグを復元する（省略時は serde デフォルトで true）。
+    // active と独立で、false のとき描画だけが止まる。
+    actor.visible = data.visible;
     // プレハブ参照リンクを復元する（インスタンスのルートのみ Some、子は None）。
     // シーンロード時の再展開・ライブ反映の対象判定に使用する。
     actor.prefab_source = data.prefab_source;

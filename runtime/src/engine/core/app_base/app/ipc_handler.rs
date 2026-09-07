@@ -117,6 +117,9 @@ impl App {
             match cmd {
                 IpcCommand::CtrlDown           => self.ctrl_held = true,
                 IpcCommand::CtrlUp             => self.ctrl_held = false,
+                // 外部（エディタ／MCP 経由の AI）からのゲーム入力注入。
+                // 受理可否の判定・応答はすべて input_inject_ops.rs に集約する。
+                IpcCommand::InputInject(inject) => self.handle_input_inject(inject),
                 IpcCommand::Pause => {
                     // Play モード中にメインカメラが存在する場合、
                     // デバッグカメラをその視点に同期してから Pause に入る。
@@ -1564,6 +1567,22 @@ impl App {
                         }
                     }
                 }
+                IpcCommand::SetActorVisible { dfs_id, visible } => {
+                    // アクターの表示切替（Unity の Renderer.enabled 相当）。
+                    // 子孫への影響（実効表示）は各描画収集が親の visible を継承して
+                    // 判定するため、自身のフラグのみ書き換えればよい。
+                    // Undo は field_edit の共通機構（FieldEditTarget::ActorVisible）が担当する。
+                    let wl = self.active_world_line;
+                    if let Some(scene) = self.scene.as_mut() {
+                        let mut c = 0u32;
+                        if let Some(actor) = super::find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
+                            actor.visible = visible;
+                            if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                            // ヒエラルキーの目アイコン・淡色表示を更新するため再送する
+                            self.send_hierarchy();
+                        }
+                    }
+                }
                 IpcCommand::SetSlotEnabled { actor_dfs_id, slot_idx, enabled } => {
                     // コンポーネントスロットの有効切替（Unity の enabled 相当）
                     let wl = self.active_world_line;
@@ -1806,6 +1825,12 @@ impl App {
         //   1 回だけ再メッシュする。IPC 応答（TERRAIN_BRUSH_OK 等）は各コマンド処理時に
         //   既に返してあるので、ここで送信タイミング・文言が変わることはない。
         self.flush_terrain_pending_remesh();
+
+        // ── 入力注入のシーケンスを実時間で進める ──
+        //   process_ipc はフレーム先頭（およびフレーム途絶中のポンプ）から
+        //   毎回呼ばれるため、ここが「ゲームロジックより前で必ず 1 回通る」点になる。
+        //   このフレームで発火した注入は、直後のスクリプトからそのまま読める。
+        self.tick_input_injection();
     }
 
     // ============================================================

@@ -613,3 +613,144 @@ AI が `seed_launch` でヘッドレスエディタを起動し、`MainGame.scen
 3. `editor/logs/SEEDEditor.log` で `[SeedAIBridge] 起動` の行を確認し、
    どのインスタンスがどのポートを掴んでいたかを突き合わせる。
 4. `seed_instance` を呼び、MCP がどのインスタンスを束縛しているかを確認する。
+
+---
+
+## 9. ゲーム入力の注入（`INPUT_*` IPC）
+
+AI が**実際にゲームを遊んで**（キーボード・マウスを送って）結果を
+`seed_screenshot` で確認するための IPC。ランタイムの `Input` へ直接注入するので、
+スクリプトの `SEED.Input.*` / `InputMap` のアクションがそのまま反応する。
+
+- パース: `runtime/src/engine/core/input/inject/command.rs`（純粋関数・単体テスト付き）
+- 注入状態: `runtime/src/engine/core/input/inject/state.rs`
+- シーケンス再生: `runtime/src/engine/core/input/inject/sequence.rs`
+- 実入力との合成: `runtime/src/engine/core/input/mod.rs`（`Input` の各クエリ）
+- アプリ側ハンドラ: `runtime/src/engine/core/app_base/app/input_inject_ops.rs`
+- IPC 配線: `runtime/src/engine/core/app_base/ipc.rs`（`IpcCommand::InputInject`）＋
+  `app/ipc_handler.rs`（分岐 1 本と毎フレームの `tick_input_injection`）
+
+### 9.1 コマンド一覧
+
+| コマンド | 意味 |
+|---|---|
+| `INPUT_KEY:{keyName},{down\|up}` | キーの押下 / 解放 |
+| `INPUT_MOUSE_BUTTON:{left\|right\|middle},{down\|up}` | マウスボタンの押下 / 解放 |
+| `INPUT_MOUSE_MOVE:{dx},{dy}` | 相対移動（`MouseDelta` / `MouseMove` に加算） |
+| `INPUT_MOUSE_POS:{x},{y}` | 絶対座標（ゲームビューポート左上原点 px） |
+| `INPUT_SCROLL:{amount}` | ホイール（ライン数。実入力と同じ単位） |
+| `INPUT_SEQUENCE:{json}` | 時間軸付きイベント列を 1 バッチで再生 |
+| `INPUT_RELEASE_ALL` | 注入中の押下をすべて解放（安全弁） |
+
+`keyName` は **InputMap と同じ表記**（`W` / `Space` / `Enter` / `LeftShift` /
+`Alpha0` / `Keypad0` / `UpArrow` / `F1` …）。表の正典は
+`runtime/src/engine/core/input/action_map.rs::key_from_name` で、注入側に複製は無い。
+`down|up` とボタン名は大文字小文字を問わない。
+
+### 9.2 応答
+
+| 応答 | いつ |
+|---|---|
+| `INPUT_OK` | 受理した |
+| `INPUT_ERROR:{reason}` | 拒否した（下表） |
+| `INPUT_SEQUENCE_DONE` | シーケンスの全イベントを発火し終えた（非同期） |
+
+| reason | 意味 |
+|---|---|
+| `not_playing` | Play 中でない（Edit 中は一律で拒否する） |
+| `sequence_busy` | 別のシーケンスを再生中（`INPUT_SEQUENCE_DONE` を待ってから送り直す） |
+| `unknown_command` | `INPUT_` で始まるが未知のコマンド |
+| `bad_args` | 引数の個数が違う / 空 |
+| `bad_number` | 数値として読めない・NaN・無限大 |
+| `unknown_key:{name}` / `unknown_mouse_button:{name}` | 名前が表に無い |
+| `bad_key_state:{s}` | `down` / `up` 以外 |
+| `bad_json:{…}` / `empty_sequence` / `empty_event:{i}` / `ambiguous_event:{i}` / `missing_down:{i}` / `bad_vec2:{i}` / `bad_time:{i}` | シーケンス JSON の不備（`{i}` は要素の添字） |
+
+`reason` は必ず 1 行・200 文字以内に整形される（IPC は 1 行 1 コマンドのため）。
+
+### 9.3 `INPUT_SEQUENCE` の JSON
+
+```json
+[
+  {"t":0.0, "key":"W", "down":true},
+  {"t":0.5, "key":"W", "down":false},
+  {"t":0.6, "mouse_move":[120,0]},
+  {"t":0.62,"mouse_move":[120,0]},
+  {"t":0.7, "mouse_button":"left", "down":true},
+  {"t":0.8, "mouse_pos":[640,360]},
+  {"t":0.9, "scroll":-1.0}
+]
+```
+
+- `t` は**シーケンス開始からの経過秒（実時間）**。ゲーム時間ではないので
+  `Time.Scale` の影響を受けない。**Play 一時停止中は進まない**。
+- `t` は省略可（既定 0＝即時）。t の昇順へ安定ソートされるため、
+  **同じ t の要素は書いた順に同一フレームでまとめて発火する**。
+- **1 要素につき操作は 1 個**（`key` / `mouse_button` / `mouse_move` / `mouse_pos` /
+  `scroll` のいずれか 1 つ）。2 つ以上書くと `ambiguous_event`。
+  同時刻に複数やりたいときは、同じ `t` の要素を並べる。
+- `key` / `mouse_button` には `down` が必須。
+- 未知のキー名（綴り間違い）は `bad_json` で拒否する（黙って無視しない）。
+- 「マウスを左から右へ振る」ような連続移動は、`mouse_move` を複数フレームに
+  割って並べる（1 フレームに全部入れても速度は生まれない）。
+- 再生中に次の `INPUT_SEQUENCE` を送ると `sequence_busy`。
+  `INPUT_SEQUENCE_DONE` を待ってから送ること。
+
+### 9.4 実入力との合成規約
+
+| 種別 | 合成 |
+|---|---|
+| キー / マウスボタンの押下・トリガ・リリース | 実入力と **OR**（どちらかが立てば立つ） |
+| 相対移動 (`MouseDelta` / `MouseMove`) | **加算** |
+| ホイール | **加算** |
+| 絶対座標 (`MousePos` / `MousePositionCanvas`) | 注入がある間は**注入値が優先**（実カーソルを無視） |
+
+- 注入した押下は、**明示の `up` / `INPUT_RELEASE_ALL` / Play 停止**まで保持される。
+- `GetKeyDown` / `GetKeyUp` に相当するエッジは、注入側も実入力と**同じフレーム境界**
+  （`Input::end_frame`）で畳まれるので、きっちり 1 フレームだけ立つ。
+- `INPUT_RELEASE_ALL` と Play 停止による解放は、解放されたキーを
+  そのフレームの `GetKeyUp` として観測させる（押しっぱなしのまま消えて
+  スクリプトの状態機械が壊れるのを防ぐため）。
+- 絶対座標の注入は `INPUT_RELEASE_ALL` / Play 停止で解除され、実カーソルへ戻る。
+- **注入が 1 つも無ければ、実入力の挙動は従来とビット単位で同一**
+  （実入力側の判定式には手を入れていない）。
+
+### 9.5 制約
+
+- **Play 中のみ有効**。Edit 中はすべて `INPUT_ERROR:not_playing`
+  （Edit で注入するとギズモ・カメラ操作と混ざり、誰の入力か分からなくなるため）。
+- 一時停止（`seed_play(action:"pause")`）中でも単発コマンドは受理される
+  （押下は保持され、`resume` 後に効く）。進まないのはシーケンスの時計だけ。
+- 注入はランタイム内部の `Input` に対して行うもので、**OS のカーソルは動かない**。
+  スクリーンショットにカーソルは写らないし、他のウィンドウにも影響しない。
+- ゲームパッドの注入は未対応（必要になったら `INPUT_PAD_*` を同じ流儀で足す）。
+
+### 9.6 エディタ / MCP 側の結線（未実装）
+
+ランタイム側だけが実装済みで、**エディタ・MCP サーバー側は未着手**。
+必要な差分は以下（`seed_send_ipc` で上記コマンドを直接送れば今すぐ動作確認はできる）。
+
+1. `editor/src/AI/Tools/EditorCommandExecutor.Visual.cs` に `game_input_*` コマンドを追加し、
+   `RuntimeManager.SendToRuntime` で `INPUT_*` を送る。応答（`INPUT_OK` /
+   `INPUT_ERROR:` / `INPUT_SEQUENCE_DONE`）は既存の `SCREENSHOT_DONE` と同じ
+   「ランタイム → エディタの 1 行応答」待ち機構で拾う。
+2. `AiOperationPolicy` の許可表に `game_input_*` を**変更系**として登録する
+   （読み取り専用インスタンスからゲームを操作させない）。
+3. `editor/SeedMcpServer/Program.cs` に MCP ツールを追加する。
+
+| MCP ツール | 引数 | 説明 |
+|---|---|---|
+| `game_input_key` | `key`（KeyCode 名）, `down`（bool） | キーを押す / 離す。押しっぱなしは維持される |
+| `game_input_mouse` | `button?`（left/right/middle）, `down?`, `dx?`,`dy?`（相対移動）, `x?`,`y?`（絶対座標）, `scroll?` | マウス操作 1 件。指定した種類の `INPUT_MOUSE_*` / `INPUT_SCROLL` へ振り分ける |
+| `game_input_sequence` | `events`（上記 JSON 配列）, `wait?`（既定 true = `INPUT_SEQUENCE_DONE` まで待つ） | 時間軸付き操作をまとめて再生 |
+| `game_input_release_all` | なし | 注入中の押下をすべて解放 |
+
+典型ループ:
+
+```
+seed_play(action:"play", wait_seconds:2)
+game_input_sequence(events:[{"t":0,"key":"W","down":true},{"t":1.0,"key":"W","down":false}])
+seed_screenshot(target:"game", max_width:800)
+game_input_release_all()
+seed_play(action:"stop")
+```

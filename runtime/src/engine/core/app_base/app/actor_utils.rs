@@ -44,17 +44,23 @@ use crate::engine::methods::gizmo_interact::mat4x4_mul;
 /// エディタ側で「2D アクターの新しい親として、Canvas を持たない 3D アクターを禁止する」
 /// ドロップ制限（3D Canvas アクターは 2D の親として許可）に使用する。
 pub(super) fn collect_actor_nodes(
-    actor:         &Actor,
-    parent:        Option<u32>,
-    counter:       &mut u32,
-    root_is_vp:    bool,
-    parent_active: bool,
-    out:           &mut Vec<(u32, String, Option<u32>, bool, bool, bool, bool, bool, bool)>,
+    actor:          &Actor,
+    parent:         Option<u32>,
+    counter:        &mut u32,
+    root_is_vp:     bool,
+    parent_active:  bool,
+    parent_visible: bool,
+    out:            &mut Vec<ActorNodeInfo>,
 ) {
     let id = *counter;
     *counter += 1;
     // active は「実効アクティブ」（自身と全祖先が active）。エディタの淡色表示に使う。
     let active = parent_active && actor.active;
+    // visible は「実効表示」（自身と全祖先が visible）。エディタの目アイコン淡色＋行の淡色に使う。
+    // 規則は actor/visibility.rs に集約している（描画収集と同じ関数を使う）。
+    let visible = crate::engine::structs::objects::actor::visibility::effective_visible(
+        parent_visible, actor,
+    );
     // has_canvas: このアクターが CanvasComponent スロットを持つか（3D Canvas 判定に使う）
     let has_canvas = actor.has_kind(ComponentKind::Canvas);
     // is_prefab: このアクターがプレハブ参照リンクを持つか（= プレハブインスタンスのルート）。
@@ -64,11 +70,54 @@ pub(super) fn collect_actor_nodes(
     // is_folder: 整理専用のフォルダノードか（Transform 非保持・透過）。
     // エディタでフォルダアイコン表示＋Inspector で Transform を出さない判定に使う。
     let is_folder = actor.is_folder();
-    out.push((id, actor.name.clone(), parent, actor.is_2d(), root_is_vp, active, has_canvas, is_prefab, is_folder));
+    out.push(ActorNodeInfo {
+        id,
+        name: actor.name.clone(),
+        parent,
+        is_2d: actor.is_2d(),
+        is_vp: root_is_vp,
+        active,
+        visible,
+        // self_visible は「このアクター自身の visible」。ヒエラルキーの目アイコンを
+        // クリックしたときに反転させる値なので、実効値ではなく自身の値を送る必要がある。
+        self_visible: actor.visible,
+        has_canvas,
+        is_prefab,
+        is_folder,
+    });
     for child in actor.children() {
         // ルートのビューポート所属フラグを子孫全体へそのまま伝播する
-        collect_actor_nodes(child, Some(id), counter, root_is_vp, active, out);
+        collect_actor_nodes(child, Some(id), counter, root_is_vp, active, visible, out);
     }
+}
+
+/// `collect_actor_nodes` が組み立てるヒエラルキー 1 ノード分の中間データ。
+///
+/// 以前は 9 要素タプルだったが、フラグが増えるたびに読めなくなるため名前付き構造体にした
+/// （収集 → JSON 化の 2 段構えは維持し、JSON 表現は `HierarchyNode` が持つ）。
+pub(super) struct ActorNodeInfo {
+    /// DFS 順 ID（エディタの選択・IPC の宛先に使う正典 ID）。
+    pub id:           u32,
+    /// ヒエラルキー表示名。
+    pub name:         String,
+    /// 親ノードの DFS 順 ID（トップレベルは None）。
+    pub parent:       Option<u32>,
+    /// 2D アクター（CanvasTransform）か。
+    pub is_2d:        bool,
+    /// ビューポート所属（サブツリーのトップレベルルートが Actor2D）か。
+    pub is_vp:        bool,
+    /// 実効アクティブ（自身と全祖先の active が true）。
+    pub active:       bool,
+    /// 実効表示（自身と全祖先の visible が true）。
+    pub visible:      bool,
+    /// 自身の表示フラグ（祖先を考慮しない生の値。目アイコンのトグル対象）。
+    pub self_visible: bool,
+    /// 自身が CanvasComponent を持つか。
+    pub has_canvas:   bool,
+    /// プレハブインスタンスのルートか。
+    pub is_prefab:    bool,
+    /// 整理専用のフォルダノードか。
+    pub is_folder:    bool,
 }
 
 /// ヒエラルキー JSON 1 ノード分のシリアライズ用構造体。
@@ -88,6 +137,13 @@ struct HierarchyNode<'a> {
     /// 実効アクティブフラグ（自身と全祖先の active が true）。
     /// false のノードはエディタのヒエラルキーで淡色表示する。
     active:   bool,
+    /// 実効表示フラグ（自身と全祖先の visible が true）。
+    /// false のノードはエディタのヒエラルキーで目アイコンを「非表示」状態にし、行を淡色表示する。
+    visible:  bool,
+    /// 自身の表示フラグ（祖先を考慮しない生の値）。
+    /// エディタの目アイコンをクリックしたときに反転して送る値の基準になる
+    /// （実効値を反転すると、祖先が非表示のときに操作が効かなくなる）。
+    self_visible: bool,
     /// このアクター自身が CanvasComponent を持つか。
     /// エディタの 2D ドロップ制限（Canvas を持たない 3D アクターへの 2D 子付け禁止）に使用する。
     has_canvas: bool,
@@ -101,22 +157,24 @@ struct HierarchyNode<'a> {
 }
 
 /// フラットリストから HIERARCHY JSON を生成する。
-pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool, bool, bool, bool, bool, bool)]) -> String {
+pub(super) fn build_hierarchy_json(nodes: &[ActorNodeInfo]) -> String {
     let items: Vec<HierarchyNode<'_>> = nodes
         .iter()
-        .map(|(id, name, parent, is_2d, is_vp, active, has_canvas, is_prefab, is_folder)| HierarchyNode {
-            id:       *id,
-            name:     name.as_str(),
-            parent:   *parent,
+        .map(|n| HierarchyNode {
+            id:       n.id,
+            name:     n.name.as_str(),
+            parent:   n.parent,
             // フォルダノードはグループ同様「器」なので is_group も true にして、
             // 既存エディタのグループ系ロジック（選択種別判定のスキップ等）と整合させる。
-            is_group: *is_folder,
-            is_2d:    *is_2d,
-            is_vp:    *is_vp,
-            active:   *active,
-            has_canvas: *has_canvas,
-            is_prefab: *is_prefab,
-            is_folder: *is_folder,
+            is_group: n.is_folder,
+            is_2d:    n.is_2d,
+            is_vp:    n.is_vp,
+            active:   n.active,
+            visible:      n.visible,
+            self_visible: n.self_visible,
+            has_canvas: n.has_canvas,
+            is_prefab: n.is_prefab,
+            is_folder: n.is_folder,
         })
         .collect();
     serde_json::to_string(&items).unwrap_or_default()
@@ -404,31 +462,41 @@ pub(super) fn collect_mcs_in_world_line<'a>(
     let mut base    = 0u32;
     let mut counter = 0u32;
     for root in actors.iter().filter(|a| a.world_line == wl) {
-        collect_mcs_in_actor(root, world, &mut counter, &mut base, &mut result, true);
+        collect_mcs_in_actor(root, world, &mut counter, &mut base, &mut result, true, true);
     }
     result
 }
 
 /// collect_mcs_in_world_line の再帰実装。
 ///
-/// `parent_active` は祖先のアクティブ状態。非アクティブなアクター（自身または祖先が
-/// active=false）および enabled=false のスロットの MC は収集しない（描画・ピック対象外）。
+/// `parent_active` / `parent_visible` は祖先のアクティブ・表示状態。次のいずれかに当たる
+/// アクターの MC は収集しない（描画・ピック対象外）:
+///   - 自身または祖先が active=false（更新も描画も止まる）
+///   - 自身または祖先が visible=false（描画だけ止まる）
+///   - スロットが enabled=false
+/// この関数の呼び出し元は描画（frame_renderer）とピック・ドラッグだけなので、
+/// ここで表示フラグを見ても物理・スクリプトには影響しない。
 /// DFS カウントは選択系と整合させるため、スキップ時も必ず進める。
 fn collect_mcs_in_actor<'a>(
-    actor:         &'a Actor,
-    world:         &'a World,
-    counter:       &mut u32,
-    base:          &mut u32,
-    result:        &mut Vec<(u32, u32, usize, &'a ModelComponent)>,
-    parent_active: bool,
+    actor:          &'a Actor,
+    world:          &'a World,
+    counter:        &mut u32,
+    base:           &mut u32,
+    result:         &mut Vec<(u32, u32, usize, &'a ModelComponent)>,
+    parent_active:  bool,
+    parent_visible: bool,
 ) {
     let dfs = *counter;
     *counter += 1;
-    let active = parent_active && actor.active;
+    // 実効アクティブ・実効表示・描画対象かをまとめて求める（規則は actor/visibility.rs）。
+    let (active, visible, drawable) =
+        crate::engine::structs::objects::actor::visibility::effective_active_visible(
+            parent_active, parent_visible, actor,
+        );
     // スロット専用 entity から ModelComponent を収集する（複数スロット対応）
     // slot_i は「Model スロット内の連番」なので、無効スロットも含めて数える
     // （mc_entity_at と整合させるため enumerate を filter の後に置かない）
-    if active {
+    if drawable {
         let mut slot_i = 0usize;
         for slot in actor.slots().iter().filter(|s| s.kind == ComponentKind::Model) {
             if slot.enabled {
@@ -441,7 +509,7 @@ fn collect_mcs_in_actor<'a>(
         }
     }
     for child in actor.children() {
-        collect_mcs_in_actor(child, world, counter, base, result, active);
+        collect_mcs_in_actor(child, world, counter, base, result, active, visible);
     }
 }
 
@@ -1885,5 +1953,67 @@ mod reparent_tests {
         assert!(validate_reparent_kind(true,  Some((true,  false))).is_ok(), "2D → 2D");
         assert!(validate_reparent_kind(true,  Some((false, true ))).is_ok(), "2D → Canvas 付き 3D");
         assert!(validate_reparent_kind(true,  Some((false, false))).is_err(), "2D → 素の 3D は不可");
+    }
+}
+
+// ============================================================
+//  テスト — 表示フラグ（visible）のヒエラルキー同期
+// ============================================================
+
+#[cfg(test)]
+mod visible_hierarchy_tests {
+    use super::*;
+    use crate::engine::ecs::World;
+
+    /// 3D アクタ（Transform 保持）を作るテストヘルパ。
+    fn actor3d(world: &mut World, name: &str) -> Actor {
+        let e = world.spawn();
+        world.insert(e, ActorTransform::default());
+        Actor::new(e, name)
+    }
+
+    /// ヒエラルキー JSON に「実効表示」と「自身の表示フラグ」が両方乗り、
+    /// 実効表示が祖先へ正しく伝播することを検証する。
+    ///
+    /// エディタ側は実効表示で行を淡色化し、自身のフラグを反転して SET_VISIBLE を送るため、
+    /// この 2 つが別物として届くことが目アイコンの正しい動作の前提になる。
+    #[test]
+    fn hierarchy_json_carries_effective_and_self_visible() {
+        let mut world = World::new();
+        let mut root  = actor3d(&mut world, "root");
+        let child     = actor3d(&mut world, "child");
+        root.add_child(child);
+        // 親だけを非表示にする（子自身のフラグは true のまま）。
+        root.visible = false;
+
+        let mut nodes   = Vec::new();
+        let mut counter = 0u32;
+        collect_actor_nodes(&root, None, &mut counter, false, true, true, &mut nodes);
+
+        assert_eq!(nodes.len(), 2, "root と child の 2 ノード");
+        // 親: 自身も実効も非表示。
+        assert!(!nodes[0].visible);
+        assert!(!nodes[0].self_visible);
+        // 子: 自身は表示のままだが、祖先が非表示なので実効は非表示。
+        assert!(!nodes[1].visible, "祖先が非表示なら実効表示も false");
+        assert!(nodes[1].self_visible, "子自身のフラグは変わらない");
+
+        let json = build_hierarchy_json(&nodes);
+        assert!(json.contains("\"visible\":false"));
+        assert!(json.contains("\"self_visible\":true"));
+    }
+
+    /// すべて表示のときは実効表示も自身のフラグも true になる（既定状態の回帰防止）。
+    #[test]
+    fn hierarchy_json_defaults_to_visible() {
+        let mut world = World::new();
+        let mut root  = actor3d(&mut world, "root");
+        root.add_child(actor3d(&mut world, "child"));
+
+        let mut nodes   = Vec::new();
+        let mut counter = 0u32;
+        collect_actor_nodes(&root, None, &mut counter, false, true, true, &mut nodes);
+
+        assert!(nodes.iter().all(|n| n.visible && n.self_visible));
     }
 }

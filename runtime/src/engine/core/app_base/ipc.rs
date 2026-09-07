@@ -1,3 +1,5 @@
+use crate::engine::core::input::inject::{parse_inject_command, INJECT_COMMAND_PREFIX};
+
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc;
@@ -888,6 +890,10 @@ pub enum IpcCommand {
     /// アクターのアクティブ切替（Unity の SetActive 相当）。
     /// フォーマット: SET_ACTOR_ACTIVE:{dfs_id},{0|1}
     SetActorActive { dfs_id: u32, active: bool },
+    /// アクターの表示切替（Unity の Renderer.enabled / Godot の visible 相当）。
+    /// active と違い描画だけを止める（スクリプト・アニメ・物理は動き続ける）。
+    /// フォーマット: SET_VISIBLE:{dfs_id},{0|1}
+    SetActorVisible { dfs_id: u32, visible: bool },
     /// コンポーネントスロットの有効切替（Unity の enabled 相当）。
     /// フォーマット: SET_SLOT_ENABLED:{actor_dfs_id},{slot_idx},{0|1}
     SetSlotEnabled { actor_dfs_id: u32, slot_idx: u32, enabled: bool },
@@ -1060,6 +1066,19 @@ pub enum IpcCommand {
     ///   abs_path … 書き出し先の絶対パス（カンマを含まない前提で最初の 1 個で分割する）
     /// 応答: `SCREENSHOT_DONE:{abs_path},{width},{height}` または `SCREENSHOT_ERROR:{message}`
     Screenshot { target: String, path: String },
+
+    // ─── 入力注入（エディタ／MCP 経由の AI がゲームを操作する）──────────────
+    /// 外部から注入されたゲーム入力 1 件。
+    ///
+    /// ワイヤ書式（詳細と全書式は `engine::core::input::inject::command`）:
+    ///   `INPUT_KEY:{keyName},{down|up}` / `INPUT_MOUSE_BUTTON:{left|right|middle},{down|up}` /
+    ///   `INPUT_MOUSE_MOVE:{dx},{dy}` / `INPUT_MOUSE_POS:{x},{y}` / `INPUT_SCROLL:{amount}` /
+    ///   `INPUT_SEQUENCE:{json}` / `INPUT_RELEASE_ALL`
+    /// 応答: `INPUT_OK` / `INPUT_ERROR:{reason}` / `INPUT_SEQUENCE_DONE`（シーケンス完走時）。
+    ///
+    /// **不正な引数もここへ到達する**（`InjectCommand::Invalid`）。IPC 受信スレッドは
+    /// 応答を返せないため、エラーもアプリ側まで運んで `INPUT_ERROR` を返させる。
+    InputInject(crate::engine::core::input::InjectCommand),
 }
 
 // ============================================================
@@ -2018,6 +2037,11 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             // フォーマット: SET_ACTOR_ACTIVE:{dfs_id},{0|1}
                             parse2u(&s["SET_ACTOR_ACTIVE:".len()..])
                                 .map(|(dfs, v)| IpcCommand::SetActorActive { dfs_id: dfs, active: v != 0 })
+                        }
+                        s if s.starts_with("SET_VISIBLE:") => {
+                            // フォーマット: SET_VISIBLE:{dfs_id},{0|1}
+                            parse2u(&s["SET_VISIBLE:".len()..])
+                                .map(|(dfs, v)| IpcCommand::SetActorVisible { dfs_id: dfs, visible: v != 0 })
                         }
                         s if s.starts_with("SET_SLOT_ENABLED:") => {
                             // フォーマット: SET_SLOT_ENABLED:{actor_dfs_id},{slot_idx},{0|1}
@@ -3041,6 +3065,11 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         }
                         s if s.starts_with(ANIM_PREVIEW_CLIP_PREFIX) => parse_anim_preview_clip(s),
                         s if s.starts_with(SCREENSHOT_PREFIX) => parse_screenshot(s),
+                        // 入力注入（INPUT_*）。パースは input::inject::command が正典で、
+                        // ここは 1 行を渡して IpcCommand へ包むだけ。
+                        s if s.starts_with(INJECT_COMMAND_PREFIX) => {
+                            parse_inject_command(s).map(IpcCommand::InputInject)
+                        }
 
                         _                    => None,
                     }
